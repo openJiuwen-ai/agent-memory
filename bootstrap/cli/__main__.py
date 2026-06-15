@@ -1,0 +1,85 @@
+"""BlinkMem / JiuwenMemory CLI — the command-line surface over the memory engine.
+
+A §15 surface (protocol adapter): it parses argv into a ``(verb, payload)`` and
+hands it to an :class:`~client.EngineClient`, reusing the same dispatch the HTTP
+surface uses. No business logic lives here. The verb + flag vocabulary tracks
+**Mem0's CLI** (see ``DESIGN.md`` § "Mem0 compatibility").
+
+Run it as a script so the CLI's own directory (not ``bootstrap/``) leads the
+import path — that keeps ``import server`` resolving to ``bootstrap/server/
+server.py`` rather than the ``server`` *package* dir::
+
+    python3 bootstrap/cli/__main__.py [global opts] <verb> [verb opts]
+    scripts/run-cli.sh [global opts] <verb> [verb opts]      # convenience wrapper
+
+Two backends, chosen by ``--server`` / ``--base-url`` (else in-process):
+
+    scripts/run-cli.sh add "buy milk" -u alice                 # Mem0-style
+    scripts/run-cli.sh search "milk" -u alice -k 3 -o text
+    scripts/run-cli.sh --server http://127.0.0.1:8080 list -u alice
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+# Run-as-script: ensure this directory is an import root for the sibling CLI
+# modules (client/commands), mirroring how bootstrap/server modules flat-import.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import commands  # noqa: E402  (after sys.path setup)
+from client import make_client  # noqa: E402
+from commands import CliError  # noqa: E402
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="blinkmem", description="BlinkMem / JiuwenMemory memory engine CLI")
+    parser.add_argument(
+        "--server", "--base-url", dest="server",
+        metavar="URL", default=os.environ.get("BLINKMEM_SERVER"),
+        help="drive a running server over HTTP (Mem0 --base-url; default: in-process)",
+    )
+    parser.add_argument(
+        "--config", action="append", default=[], metavar="PATH",
+        help="JSON config layer stacked on OFFLINE (in-process only; repeatable)",
+    )
+
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    for name, cmd in commands.COMMANDS.items():
+        sp = sub.add_parser(name, help=cmd.help)
+        cmd.add_arguments(sp)
+
+    for alias in ("health", "status"):  # `status` is the Mem0 spelling
+        hp = sub.add_parser(alias, help="liveness probe (GET /healthz)")
+        commands.add_output_args(hp)
+
+    batch = sub.add_parser("batch", help="run NDJSON ops on one stateful client (LoCoMo ingest)")
+    batch.add_argument("--input", default="-", help="NDJSON file of {op, ...payload}; '-' for stdin")
+    commands.add_output_args(batch)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+
+    if args.server and args.config:
+        sys.stderr.write("note: --config is ignored in --server (HTTP) mode\n")
+
+    try:
+        client = make_client(args.server, args.config)
+        if args.command in ("health", "status"):
+            return commands.run_health(client, args)
+        if args.command == "batch":
+            return commands.run_batch(client, args)
+        return commands.run_command(client, args.command, args)
+    except CliError as exc:
+        sys.stderr.write(f"error: {exc}\n")
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
