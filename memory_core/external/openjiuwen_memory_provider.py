@@ -273,12 +273,16 @@ class OpenJiuwenMemoryProvider(MemoryProvider):
         db_cfg = self._config.get("db", {})
         backend = db_cfg.get("backend", self._DEFAULT_DB_BACKEND)
         try:
+            from sqlalchemy.ext.asyncio import create_async_engine
+            path = db_cfg.get("path", "memory.db")
             if backend == "sqlite":
                 from foundation.store.db.default_db_store import DefaultDbStore
-                from sqlalchemy.ext.asyncio import create_async_engine
-                path = db_cfg.get("path", "memory.db")
                 engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
                 return DefaultDbStore(engine)
+            elif backend == "gaussdb":
+                from foundation.store.db.gauss_db_store import GaussDbStore
+                engine = create_async_engine(f"gaussdb+async_gaussdb://{path}")
+                return GaussDbStore(engine)
         except Exception as e:
             logger.error(f"[OpenJiuwenMemoryProvider] DB store creation failed ({backend}): {e}")
         return None

@@ -32,7 +32,7 @@ VECTOR_STORE_ENTRY_POINT_GROUP = "openjiuwen.vector_stores"
 
 # Built-in backends. Closed to extension by design — use register_vector_store
 # or the entry_points mechanism for 3rd-party backends.
-_BUILTIN_VECTOR_STORE_NAMES = frozenset({"chroma", "milvus", "gaussvector"})
+_BUILTIN_VECTOR_STORE_NAMES = frozenset({"chroma", "milvus", "gaussvector", "elasticsearch"})
 
 # Explicit in-process registrations (register_vector_store).
 # Maps backend name -> factory callable (typically a class).
@@ -75,6 +75,9 @@ def _resolve_builtin(store_type: str, kwargs: dict) -> "BaseVectorStore | None":
     if store_type == "gaussvector":
         from foundation.store.vector.gauss_vector_store import GaussVectorStore
         return GaussVectorStore(**kwargs)
+    if store_type == "elasticsearch":
+        from foundation.store.vector.es_vector_store import ElasticsearchVectorStore
+        return ElasticsearchVectorStore(**kwargs)
     return None
 
 
