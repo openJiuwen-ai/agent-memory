@@ -4,7 +4,7 @@ from sqlalchemy import inspect, Column, String, insert, delete
 from sqlalchemy.orm import declarative_mixin, declarative_base
 from common.logging import memory_logger
 from foundation.store.base_db_store import BaseDbStore
-from memory.migration.migration_plan import sql_registry
+from memory_core.migration.migration_plan import sql_registry
 
 
 Base = declarative_base()

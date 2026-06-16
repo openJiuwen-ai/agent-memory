@@ -6,14 +6,14 @@ from typing import Any, Optional
 
 from foundation.llm import Model
 from foundation.store.base_memory_index import BaseMemoryIndex, MemoryDoc
-from memory.manage.index.base_memory_manager import BaseMemoryManager
-from memory.manage.mem_model.memory_unit import (
+from memory_core.manage.index.base_memory_manager import BaseMemoryManager
+from memory_core.manage.mem_model.memory_unit import (
     BaseMemoryUnit,
     FragmentMemoryUnit,
     MemoryType,
     OperationType,
 )
-from memory.manage.update.mem_update_checker import (
+from memory_core.manage.update.mem_update_checker import (
     MemUpdateChecker,
     MemoryStatus,
 )

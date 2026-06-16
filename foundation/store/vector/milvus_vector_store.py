@@ -22,7 +22,7 @@ from foundation.store.vector.utils import (
     convert_l2_squared,
     convert_ip_similarity,
 )
-from memory.migration.operation.base_operation import BaseOperation
+from memory_core.migration.operation.base_operation import BaseOperation
 from foundation.store.vector.utils import (
     compute_new_schema,
     build_transform_func_for_operations

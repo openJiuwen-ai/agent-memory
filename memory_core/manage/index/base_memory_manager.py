@@ -6,7 +6,7 @@ from typing import Any
 
 from foundation.llm import Model
 
-from memory.manage.mem_model.memory_unit import BaseMemoryUnit
+from memory_core.manage.mem_model.memory_unit import BaseMemoryUnit
 from common.exception.codes import StatusCode
 from common.exception.errors import BaseError, build_error, raise_error
 from common.logging import memory_logger

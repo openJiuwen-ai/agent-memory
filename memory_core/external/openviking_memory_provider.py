@@ -8,7 +8,7 @@ import os
 from typing import Any, Optional
 
 from common.logging import memory_logger as logger
-from memory.external.provider import MemoryProvider
+from memory_core.external.provider import MemoryProvider
 
 
 class _VikingClient:

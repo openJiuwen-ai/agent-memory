@@ -11,7 +11,7 @@ import time
 from typing import Any
 
 from common.logging import logger
-from memory.external.provider import MemoryProvider
+from memory_core.external.provider import MemoryProvider
 
 _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN_SECS = 120.0

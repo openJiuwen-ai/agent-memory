@@ -4,11 +4,11 @@ import json
 from datetime import datetime, timedelta
 from typing import Dict, Any
 from foundation.llm import JsonOutputParser
-from memory.process.extract.common import ExtractMemoryParams
-from memory.prompts.prompt_applier import PromptApplier
+from memory_core.process.extract.common import ExtractMemoryParams
+from memory_core.prompts.prompt_applier import PromptApplier
 from common.logging import memory_logger
 from common.logging.events import LogEventType
-from memory.config.config import MemoryScopeConfig
+from memory_core.config.config import MemoryScopeConfig
 
 
 class LongTermMemoryExtractor:

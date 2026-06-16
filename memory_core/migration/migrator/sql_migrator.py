@@ -5,11 +5,11 @@ from alembic.runtime.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text,\
     inspect, MetaData, Table, select, text, insert, update
-from memory.manage.mem_model.sql_db_store import SqlDbStore
-from memory.manage.mem_model.db_model import MEMORY_TABLES_CONFIG
-from memory.migration.migrator.memory_meta_manager import MemoryMetaManager
-from memory.migration.operation.base_operation import BaseOperation
-from memory.migration.operation.operations import AddColumnOperation,\
+from memory_core.manage.mem_model.sql_db_store import SqlDbStore
+from memory_core.manage.mem_model.db_model import MEMORY_TABLES_CONFIG
+from memory_core.migration.migrator.memory_meta_manager import MemoryMetaManager
+from memory_core.migration.operation.base_operation import BaseOperation
+from memory_core.migration.operation.operations import AddColumnOperation,\
 RenameColumnOperation, UpdateColumnTypeOperation
 from common.logging import memory_logger
 

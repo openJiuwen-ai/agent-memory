@@ -6,12 +6,12 @@ import time
 from typing import List
 
 from foundation.store.base_kv_store import BaseKVStore
-from memory.migration.operation.base_operation import BaseOperation
-from memory.migration.operation.operations import UpdateKVOperation
+from memory_core.migration.operation.base_operation import BaseOperation
+from memory_core.migration.operation.operations import UpdateKVOperation
 from common.logging import memory_logger
 from common.logging.events import LogEventType
-from memory.migration.migration_plan import kv_registry
-from memory.common.kv_prefix_registry import kv_prefix_registry
+from memory_core.migration.migration_plan import kv_registry
+from memory_core.common.kv_prefix_registry import kv_prefix_registry
 
 
 KV_SCHEMA_VERSION = "MEMORY_MIGRATION_KV_SCHEMA_VERSION"

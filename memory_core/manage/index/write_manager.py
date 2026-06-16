@@ -1,8 +1,8 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
-from memory.manage.index.base_memory_manager import BaseMemoryManager
-from memory.manage.mem_model.memory_unit import BaseMemoryUnit
+from memory_core.manage.index.base_memory_manager import BaseMemoryManager
+from memory_core.manage.mem_model.memory_unit import BaseMemoryUnit
 from foundation.llm import Model
 from foundation.store.base_memory_index import BaseMemoryIndex
 from common.logging import memory_logger

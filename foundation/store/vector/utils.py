@@ -8,8 +8,8 @@ from foundation.store.base_vector_store import VectorDataType
 from common.exception.codes import StatusCode
 from common.exception.errors import build_error
 from foundation.store.base_vector_store import CollectionSchema, FieldSchema
-from memory.migration.operation.base_operation import BaseOperation
-from memory.migration.operation.operations import (
+from memory_core.migration.operation.base_operation import BaseOperation
+from memory_core.migration.operation.operations import (
     AddScalarFieldOperation,
     RenameScalarFieldOperation,
     UpdateScalarFieldTypeOperation,

@@ -3,8 +3,8 @@
 from typing import Any, Dict, List
 
 from foundation.store.base_message_store import BaseMessageStore
-from memory.migration.operation.base_operation import BaseOperation
-from memory.migration.operation.operations import (
+from memory_core.migration.operation.base_operation import BaseOperation
+from memory_core.migration.operation.operations import (
     UpdateMessageOperation,
 )
 from common.exception.codes import StatusCode

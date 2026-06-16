@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from foundation.store import BaseKVStore
-from memory.migration.operation.base_operation import BaseOperation
+from memory_core.migration.operation.base_operation import BaseOperation
 
 
 UpdateKVCallable = Callable[[BaseKVStore], Awaitable[None]]

@@ -12,8 +12,8 @@ from foundation.llm.schema.message import BaseMessage
 from foundation.store.base_message_store import (
     BaseMessageStore, MessageMetadata,
 )
-from memory.codec.aes_storage_codec import AesStorageCodec
-from memory.migration.migrator.memory_meta_manager import MemoryMetaManager
+from memory_core.codec.aes_storage_codec import AesStorageCodec
+from memory_core.migration.migrator.memory_meta_manager import MemoryMetaManager
 
 DEFAULT_TABLE_NAME = "user_message"
 COUNT_QUERY_LIMIT = 1000000

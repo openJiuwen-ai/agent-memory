@@ -4,8 +4,8 @@
 from common.logging import memory_logger
 from common.logging.events import LogEventType
 from foundation.store.base_memory_index import BaseMemoryIndex
-from memory.migration.operation.base_operation import BaseOperation
-from memory.migration.operation.operations import (
+from memory_core.migration.operation.base_operation import BaseOperation
+from memory_core.migration.operation.operations import (
     RenameMemoryDocFieldOperation,
     TransformMemoryDocFieldOperation,
     AddMemoryDocFieldOperation,
