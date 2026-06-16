@@ -4,7 +4,7 @@ from typing import Dict, List
 
 from common.exception.codes import StatusCode
 from common.exception.errors import build_error
-from memory.migration.operation.base_operation import BaseOperation
+from memory_core.migration.operation.base_operation import BaseOperation
 
 
 class OperationRegistry:

@@ -14,7 +14,7 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 from foundation.llm import Model, JsonOutputParser
-from memory.prompts.prompt_applier import PromptApplier
+from memory_core.prompts.prompt_applier import PromptApplier
 from common.logging import memory_logger
 from common.logging.events import LogEventType
 

@@ -5,8 +5,8 @@ from typing import Any, List, Tuple
 
 from foundation.llm import Model
 from foundation.store.base_memory_index import BaseMemoryIndex, MemoryDoc
-from memory.manage.index.base_memory_manager import BaseMemoryManager
-from memory.manage.mem_model.memory_unit import SummaryUnit, BaseMemoryUnit, MemoryType
+from memory_core.manage.index.base_memory_manager import BaseMemoryManager
+from memory_core.manage.mem_model.memory_unit import SummaryUnit, BaseMemoryUnit, MemoryType
 from common.exception.codes import StatusCode
 from common.exception.errors import BaseError
 from common.logging import memory_logger

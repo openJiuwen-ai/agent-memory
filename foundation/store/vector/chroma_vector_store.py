@@ -25,7 +25,7 @@ from foundation.store.vector.utils import (
     compute_new_schema,
     build_transform_func_for_operations
 )
-from memory.migration.operation.base_operation import BaseOperation
+from memory_core.migration.operation.base_operation import BaseOperation
 
 
 class ChromaVectorStore(BaseVectorStore):

@@ -4,8 +4,8 @@
 from typing import List
 
 from foundation.store.base_vector_store import BaseVectorStore
-from memory.manage.mem_model.memory_unit import SupportMemoryType
-from memory.migration.operation.base_operation import BaseOperation
+from memory_core.manage.mem_model.memory_unit import SupportMemoryType
+from memory_core.migration.operation.base_operation import BaseOperation
 from common.exception.codes import StatusCode
 from common.exception.errors import build_error
 

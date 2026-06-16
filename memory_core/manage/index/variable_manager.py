@@ -4,13 +4,13 @@
 from typing import Any, List, Optional, Tuple
 
 from foundation.llm import Model
-from memory.manage.mem_model.memory_unit import MemoryType, BaseMemoryUnit, VariableUnit
-from memory.manage.index.base_memory_manager import BaseMemoryManager
-from memory.codec.aes_storage_codec import AesStorageCodec
+from memory_core.manage.mem_model.memory_unit import MemoryType, BaseMemoryUnit, VariableUnit
+from memory_core.manage.index.base_memory_manager import BaseMemoryManager
+from memory_core.codec.aes_storage_codec import AesStorageCodec
 from foundation.store.base_kv_store import BaseKVStore
 from common.logging import memory_logger
 from common.logging.events import LogEventType
-from memory.common.kv_prefix_registry import kv_prefix_registry
+from memory_core.common.kv_prefix_registry import kv_prefix_registry
 
 
 class VariableManager(BaseMemoryManager):

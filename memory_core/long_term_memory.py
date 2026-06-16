@@ -6,24 +6,24 @@ from typing import Any, Tuple
 from pydantic import BaseModel, Field
 
 from foundation.llm.schema.config import ModelRequestConfig, ModelClientConfig
-from memory.common.distributed_lock import DistributedLock
-from memory.config.config import MemoryEngineConfig, MemoryScopeConfig, AgentMemoryConfig
-from memory.process.extract.generation import Generator
-from memory.manage.mem_model.data_id_manager import DataIdManager
-from memory.manage.mem_model.message_manager import MessageManager, MessageAddRequest
+from memory_core.common.distributed_lock import DistributedLock
+from memory_core.config.config import MemoryEngineConfig, MemoryScopeConfig, AgentMemoryConfig
+from memory_core.process.extract.generation import Generator
+from memory_core.manage.mem_model.data_id_manager import DataIdManager
+from memory_core.manage.mem_model.message_manager import MessageManager, MessageAddRequest
 from foundation.store.base_message_store import BaseMessageStore
-from memory.manage.index.fragment_memory_manager import FragmentMemoryManager
-from memory.manage.index.variable_manager import VariableManager
-from memory.manage.index.write_manager import WriteManager
-from memory.manage.index.summary_manager import SummaryManager
-from memory.manage.mem_model.memory_unit import FragmentMemoryUnit, MemoryType,\
+from memory_core.manage.index.fragment_memory_manager import FragmentMemoryManager
+from memory_core.manage.index.variable_manager import VariableManager
+from memory_core.manage.index.write_manager import WriteManager
+from memory_core.manage.index.summary_manager import SummaryManager
+from memory_core.manage.mem_model.memory_unit import FragmentMemoryUnit, MemoryType,\
     SummaryUnit, VariableUnit
-from memory.manage.search.search_manager import SearchManager, SearchParams
+from memory_core.manage.search.search_manager import SearchManager, SearchParams
 from foundation.store.base_db_store import BaseDbStore
 from foundation.store.base_kv_store import BaseKVStore
-from memory.manage.mem_model.db_model import create_tables
-from memory.manage.mem_model.sql_db_store import SqlDbStore
-from memory.manage.mem_model.sql_message_store import SqlMessageStore
+from memory_core.manage.mem_model.db_model import create_tables
+from memory_core.manage.mem_model.sql_db_store import SqlDbStore
+from memory_core.manage.mem_model.sql_message_store import SqlMessageStore
 from foundation.llm import UserMessage, BaseMessage, Model
 from common.utils.singleton import Singleton
 from retrieval.embedding.base import Embedding
@@ -31,14 +31,14 @@ from retrieval.embedding.api_embedding import APIEmbedding
 from foundation.store.base_vector_store import BaseVectorStore
 from foundation.store.base_memory_index import BaseMemoryIndex, MemoryDoc
 from foundation.store.index.simple_memory_index import SimpleMemoryIndex
-from memory.manage.mem_model.scope_user_mapping_manager import ScopeUserMappingManager
+from memory_core.manage.mem_model.scope_user_mapping_manager import ScopeUserMappingManager
 from common.exception.codes import StatusCode
 from common.exception.errors import build_error
 from common.logging import memory_logger
 from common.logging.events import LogEventType
-from memory.migration.run_migrations import run_kv_migrations,\
+from memory_core.migration.run_migrations import run_kv_migrations,\
     run_vector_migrations, run_sql_migrations, run_message_migrations
-from memory.codec.aes_storage_codec import AesStorageCodec
+from memory_core.codec.aes_storage_codec import AesStorageCodec
 
 
 class MemInfo(BaseModel):

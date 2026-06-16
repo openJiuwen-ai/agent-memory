@@ -7,11 +7,11 @@ from typing import Optional, Any
 from pydantic import BaseModel, Field
 
 from foundation.store.base_memory_index import BaseMemoryIndex
-from memory.manage.index.base_memory_manager import BaseMemoryManager
-from memory.manage.index.summary_manager import SummaryManager
-from memory.manage.index.fragment_memory_manager import FragmentMemoryManager, FRAGMENT_MEMORY_TYPE
-from memory.manage.index.variable_manager import VariableManager
-from memory.manage.mem_model.memory_unit import MemoryType
+from memory_core.manage.index.base_memory_manager import BaseMemoryManager
+from memory_core.manage.index.summary_manager import SummaryManager
+from memory_core.manage.index.fragment_memory_manager import FragmentMemoryManager, FRAGMENT_MEMORY_TYPE
+from memory_core.manage.index.variable_manager import VariableManager
+from memory_core.manage.mem_model.memory_unit import MemoryType
 from common.exception.codes import StatusCode
 from common.exception.errors import build_error
 

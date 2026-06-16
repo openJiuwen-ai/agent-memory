@@ -1,0 +1,143 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "JiuwenMemory"
+version = "0.1.0"
+description = "JiuwenMemory is a long-term memory module for AI agents, providing memory extraction, storage, retrieval, and migration capabilities."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+classifiers = [
+    'Development Status :: 4 - Beta',
+    'Programming Language :: Python',
+    'Programming Language :: Python :: Implementation :: CPython',
+    'Programming Language :: Python :: 3',
+    'Programming Language :: Python :: 3 :: Only',
+    'Programming Language :: Python :: 3.11',
+    'Programming Language :: Python :: 3.12',
+    'Programming Language :: Python :: 3.13',
+]
+dependencies = [
+    # HTTP clients
+    "aiohttp>=3.11.12",
+    "httpx>=0.24",
+    "requests>=2.32.3",
+    # Data model & validation
+    "pydantic>=2.0",
+    # Database ORM
+    "sqlalchemy>=2.0.41",
+    "sqlmodel>=0.0.37",
+    "alembic>=1.13.1",
+    # AI/LLM
+    "openai>=1.108.0",
+    "dashscope>=1.25.6",
+    # Embedding & vector
+    "pymilvus>=2.6.2,<2.6.10",
+    # Encryption
+    "pycryptodome>=3.23.0",
+    # Utilities
+    "pyyaml>=6.0",
+    "tqdm>=4.0",
+    "oauthlib>=3.3.1",
+    "python-dotenv>=1.2.1",
+    "anyio>=4.0.0",
+    "loguru>=0.7.3",
+    "tenacity>=9.1.2",
+    "python-dateutil>=2.9.0",
+    "filelock>=3.20.1",
+    "aiofiles>=25.1.0",
+    "charset-normalizer>=3.4.4",
+]
+
+[project.optional-dependencies]
+chromadb = ["chromadb>=1.5.4", "opentelemetry-proto>=1.33.0", "protobuf>=5.0,<7.0"]
+gaussvector = ["psycopg2-binary>=2.9.10"]
+postgres = ["asyncpg>=0.30.0"]
+mysql = ["aiomysql>=0.3.2"]
+gaussdb = ["async-gaussdb~=0.30.0", "asyncpg>=0.29.0"]
+sqlite = ["aiosqlite>=0.22.1", "greenlet>=3.1.1"]
+redis = ["redis>=7.1.0"]
+mem0 = ["mem0ai>=1.0.0"]
+agentarts = ["agentarts-sdk>=0.1.2,<0.2"]
+all-storage = ["JiuwenMemory[sqlite,postgres,mysql,gaussdb,redis]"]
+all-vector = ["JiuwenMemory[pgvector,chromadb,gaussvector]"]
+default = []
+all = ["JiuwenMemory[all-storage,all-vector]"]
+
+[dependency-groups]
+test = [
+    "pytest>=8.3.5", "pytest-asyncio>=1.0.0", "pytest-html>=4.1.1",
+    "pytest-mock>=3.14.0", "pytest-cov>=7.0.0", "coverage>=7.7.1",
+]
+lint = ["ruff>=0.11.2", "pylint>=3.0.0", "mypy>=1.12.0"]
+dev = [{ include-group = "test" }, { include-group = "lint" }]
+
+[project.urls]
+Homepage = "https://openjiuwen.com"
+Repository = "https://gitcode.com/openJiuwen/agent-memory.git"
+
+[tool.uv]
+default-groups = ['dev']
+
+[[tool.uv.index]]
+name = "aliyun"
+url = "https://mirrors.aliyun.com/pypi/simple"
+default = true
+
+[tool.setuptools.packages.find]
+include = ["memory_core*", "common*", "foundation*", "retrieval*"]
+
+[tool.setuptools.package-data]
+memory_core = ["prompts/**/*.md"]
+
+[tool.coverage.run]
+omit = ["tests/*"]
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+extend-ignore = ["E203"]
+
+[tool.ruff.format]
+skip-magic-trailing-comma = false
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+[tool.pylint.MAIN]
+ignore-paths = ["^(examples|tests)/.*"]
+py-version = "3.11"
+
+[tool.pylint.FORMAT]
+max-line-length = 120
+
+[tool.pylint.DESIGN]
+max-return = 5
+max-args = 10
+max-locals = 15
+max-branches = 25
+
+[tool.pylint."MESSAGES CONTROL"]
+disable = [
+    "import-outside-toplevel", "missing-module-docstring", "too-few-public-methods",
+    "use-dict-literal", "use-list-literal", "unused-argument", "too-many-nested-blocks",
+    "too-many-positional-arguments", "too-many-instance-attributes", "too-many-ancestors",
+    "broad-exception-caught", "broad-exception-raised", "missing-timeout",
+]
+
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
+disable_error_code = ["index"]
+disallow_untyped_defs = false
+ignore_missing_imports = true
+strict_optional = false
+show_error_codes = true

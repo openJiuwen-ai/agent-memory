@@ -3,12 +3,12 @@
 import json
 from typing import Any, List
 from foundation.store.base_kv_store import BaseKVStore
-from memory.manage.mem_model.memory_unit import MemoryType
+from memory_core.manage.mem_model.memory_unit import MemoryType
 from common.exception.codes import StatusCode
 from common.exception.errors import build_error
 from common.logging import memory_logger
 from common.logging.events import LogEventType
-from memory.common.kv_prefix_registry import kv_prefix_registry
+from memory_core.common.kv_prefix_registry import kv_prefix_registry
 
 
 class UserMemStore:

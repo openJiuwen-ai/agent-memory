@@ -11,7 +11,7 @@ from typing import Any
 from common.logging import memory_logger as logger
 from foundation.store.base_kv_store import BaseKVStore
 from foundation.store.kv.in_memory_kv_store import InMemoryKVStore
-from memory.external.provider import MemoryProvider
+from memory_core.external.provider import MemoryProvider
 
 DEFAULT_BASE_URL = "https://memory.cn-southwest-2.huaweicloud-agentarts.com"
 AGENTARTS_EXTRA = "agentarts"

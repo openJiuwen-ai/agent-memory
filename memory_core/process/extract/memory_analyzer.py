@@ -6,10 +6,10 @@ from pydantic import BaseModel, Field
 
 from foundation.llm import Model, JsonOutputParser
 from foundation.llm.schema.message import BaseMessage
-from memory.config.config import AgentMemoryConfig, MemoryScopeConfig
+from memory_core.config.config import AgentMemoryConfig, MemoryScopeConfig
 from common.logging import memory_logger
 from common.logging.events import LogEventType
-from memory.prompts.prompt_applier import PromptApplier
+from memory_core.prompts.prompt_applier import PromptApplier
 
 
 class VariableResult(BaseModel):

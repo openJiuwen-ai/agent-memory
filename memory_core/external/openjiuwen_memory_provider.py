@@ -11,13 +11,13 @@ from foundation.store.base_db_store import BaseDbStore
 from foundation.store.base_kv_store import BaseKVStore
 from foundation.store.base_vector_store import BaseVectorStore
 from foundation.store.base_embedding import Embedding, EmbeddingConfig
-from memory.config.config import (
+from memory_core.config.config import (
     AgentMemoryConfig,
     MemoryEngineConfig,
     MemoryScopeConfig,
 )
-from memory.long_term_memory import LongTermMemory
-from memory.external.provider import MemoryProvider
+from memory_core.long_term_memory import LongTermMemory
+from memory_core.external.provider import MemoryProvider
 
 
 DEFAULT_RECALL_USER_MEM_NUM = 5

@@ -3,17 +3,17 @@
 from typing import Optional, Tuple
 
 from foundation.llm import Model
-from memory.manage.search.search_manager import SearchManager, SearchParams
-from memory.prompts.prompt_applier import PromptApplier
-from memory.process.extract.common import ExtractMemoryParams, MemoryOperationParams
-from memory.process.extract.long_term_memory_extractor import LongTermMemoryExtractor
-from memory.manage.mem_model.memory_unit import MemoryType, BaseMemoryUnit, \
+from memory_core.manage.search.search_manager import SearchManager, SearchParams
+from memory_core.prompts.prompt_applier import PromptApplier
+from memory_core.process.extract.common import ExtractMemoryParams, MemoryOperationParams
+from memory_core.process.extract.long_term_memory_extractor import LongTermMemoryExtractor
+from memory_core.manage.mem_model.memory_unit import MemoryType, BaseMemoryUnit, \
     VariableUnit, FragmentMemoryUnit, SummaryUnit, OperationType
-from memory.manage.mem_model.data_id_manager import DataIdManager
-from memory.process.extract.memory_analyzer import MemoryAnalyzer, VariableResult
+from memory_core.manage.mem_model.data_id_manager import DataIdManager
+from memory_core.process.extract.memory_analyzer import MemoryAnalyzer, VariableResult
 from common.logging import memory_logger
 from common.logging.events import LogEventType
-from memory.config.config import MemoryScopeConfig
+from memory_core.config.config import MemoryScopeConfig
 
 category_to_class = {
     "user_profile": MemoryType.USER_PROFILE,

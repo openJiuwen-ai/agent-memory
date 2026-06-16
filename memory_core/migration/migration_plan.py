@@ -1,6 +1,6 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-from memory.migration.operation.operation_registry import OperationRegistry
+from memory_core.migration.operation.operation_registry import OperationRegistry
 
 
 sql_registry = OperationRegistry()
@@ -11,8 +11,8 @@ index_registry = OperationRegistry()
 
 """
 # SQL Example
-from memory.migration.operation.operations import AddColumnOperation
-from memory.migration.operation.base_operation import OperationMetadata
+from memory_core.migration.operation.operations import AddColumnOperation
+from memory_core.migration.operation.base_operation import OperationMetadata
 sql_registry.register(
     "user_messages",
     AddColumnOperation(
@@ -26,7 +26,7 @@ sql_registry.register(
 )
 
 # Vector Example
-from memory.migration.operation.operations import RenameScalarFieldOperation
+from memory_core.migration.operation.operations import RenameScalarFieldOperation
 vector_registry.register(
     "vector_summary",
     RenameScalarFieldOperation(
@@ -38,7 +38,7 @@ vector_registry.register(
 )
 
 # KV Example
-from memory.migration.operation.operations import UpdateKVOperation
+from memory_core.migration.operation.operations import UpdateKVOperation
 async def update_user_settings_kv(kv_store):
     # Example: Update user settings by adding a new field
     user_settings = await kv_store.get("user_settings")
@@ -56,7 +56,7 @@ kv_registry.register(
 )
 
 # Message Example
-from memory.migration.operation.operations import UpdateMessageOperation
+from memory_core.migration.operation.operations import UpdateMessageOperation
 
 async def add_role_prefix(message_store):
     # Example: Update all messages by prefixing role with 'user:' if role is 'user'
@@ -84,7 +84,7 @@ message_registry.register(
 
 
 # Index Example - Rename MemoryDoc Field
-from memory.migration.operation.operations import RenameMemoryDocFieldOperation
+from memory_core.migration.operation.operations import RenameMemoryDocFieldOperation
 index_registry.register(
     "index_fragment",
     RenameMemoryDocFieldOperation(
@@ -95,7 +95,7 @@ index_registry.register(
 )
 
 # Index Example - Add MemoryDoc Field
-from memory.migration.operation.operations import AddMemoryDocFieldOperation
+from memory_core.migration.operation.operations import AddMemoryDocFieldOperation
 index_registry.register(
     "index_fragment",
     AddMemoryDocFieldOperation(
@@ -106,7 +106,7 @@ index_registry.register(
 )
 
 # Index Example - Remove MemoryDoc Field
-from memory.migration.operation.operations import RemoveMemoryDocFieldOperation
+from memory_core.migration.operation.operations import RemoveMemoryDocFieldOperation
 index_registry.register(
     "index_fragment",
     RemoveMemoryDocFieldOperation(
@@ -116,7 +116,7 @@ index_registry.register(
 )
 
 # Index Example - Transform MemoryDoc Field
-from memory.migration.operation.operations import TransformMemoryDocFieldOperation
+from memory_core.migration.operation.operations import TransformMemoryDocFieldOperation
 index_registry.register(
     "index_fragment",
     TransformMemoryDocFieldOperation(

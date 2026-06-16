@@ -5,14 +5,14 @@ from typing import Callable, Any
 from foundation.store.base_vector_store import BaseVectorStore
 from foundation.store.base_kv_store import BaseKVStore
 from foundation.store.base_memory_index import BaseMemoryIndex
-from memory.manage.mem_model.sql_db_store import SqlDbStore
-from memory.migration.migration_plan import vector_registry, kv_registry,\
+from memory_core.manage.mem_model.sql_db_store import SqlDbStore
+from memory_core.migration.migration_plan import vector_registry, kv_registry,\
                                             sql_registry, message_registry, index_registry
-from memory.migration.migrator.sql_migrator import SQLMigrator
-from memory.migration.migrator.vector_migrator import VectorMigrator
-from memory.migration.migrator.kv_migrator import KVMigrator
-from memory.migration.migrator.message_migrator import MessageMigrator
-from memory.migration.migrator.index_version_migrator import IndexVersionMigrator
+from memory_core.migration.migrator.sql_migrator import SQLMigrator
+from memory_core.migration.migrator.vector_migrator import VectorMigrator
+from memory_core.migration.migrator.kv_migrator import KVMigrator
+from memory_core.migration.migrator.message_migrator import MessageMigrator
+from memory_core.migration.migrator.index_version_migrator import IndexVersionMigrator
 from common.logging import memory_logger
 from common.logging.events import LogEventType
 from common.exception.codes import StatusCode

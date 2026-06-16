@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 from common.exception.codes import StatusCode
 from common.exception.errors import build_error
 if TYPE_CHECKING:
-    from memory.migration.operation.base_operation import BaseOperation
+    from memory_core.migration.operation.base_operation import BaseOperation
 
 
 class VectorDataType(str, Enum):

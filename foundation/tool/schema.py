@@ -1,8 +1,6 @@
 # coding: utf-8
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 from typing import Dict, Any, Type, Union
 from pydantic import BaseModel, Field
-
 
 
 class ToolInfo(BaseModel):

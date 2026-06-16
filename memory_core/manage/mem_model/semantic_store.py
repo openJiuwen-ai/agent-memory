@@ -13,8 +13,8 @@ from common.exception.codes import StatusCode
 from common.exception.errors import build_error
 from common.logging import memory_logger
 from common.logging.events import LogEventType
-from memory.migration.migration_plan import vector_registry
-from memory.common.base import parse_memtype_from_idx_name
+from memory_core.migration.migration_plan import vector_registry
+from memory_core.common.base import parse_memtype_from_idx_name
 
 
 class SemanticStore:
