@@ -1,1 +1,314 @@
-# agent-memory
+# openJiuwen Memory
+
+[中文版](README.zh.md) | [English Version](README.md)
+
+## Introduction
+
+**openJiuwen Memory** is a long-term memory module for AI agents, providing memory extraction, storage, retrieval, and migration capabilities for agents running on the **openJiuwen** framework. This module not only supports automatic extraction and structured management of multiple memory types — including user profile, semantic memory, episodic memory, variable memory, and summary memory — but also features built-in vector-based semantic search, flexible integration with multiple storage backends (KV store, vector database, relational database), and data migration capabilities. Additionally, it provides a pluggable MemoryProvider mechanism that supports seamless integration with third-party memory services such as Mem0 and AgentArts. **openJiuwen Memory** balances flexibility and security, helping developers efficiently build intelligent agent applications with persistent memory capabilities.
+
+## Why Choose openJiuwen Memory?
+
+- **Multi-type Automatic Memory Extraction**: Through intelligent analysis of conversation content, automatically extracts multiple types of memory including user profile, semantic memory, episodic memory, variables, and summaries — no manual rule configuration required, significantly lowering the development barrier for memory management.
+
+- **Flexible and Extensible Storage Architecture**: Built-in abstract interfaces for multiple storage backends including KV store, vector database, and relational database, supporting Milvus, ChromaDB, PostgreSQL, MySQL, GaussDB, SQLite, Redis, and more — developers can choose and replace as needed.
+
+- **Efficient and Precise Semantic Retrieval**: Vector embedding-based semantic search capability with unified cross-memory-type retrieval, combined with similarity threshold filtering and ranking mechanisms to ensure high relevance and precision of search results.
+
+- **Secure and Reliable Data Management**: Built-in AES-GCM encryption codec supporting encrypted storage and transmission of memory data; distributed lock mechanism ensuring data consistency under concurrent scenarios; fine-grained configuration management by scope.
+
+- **Flexible Data Migration**: A complete versioned migration framework supporting schema migration for KV store, vector database, SQL database, and message store, as well as cross-index data migration for smooth upgrades.
+
+## Quick Start
+
+### Installation
+
+- Operating System: Compatible with Windows, Linux, and macOS.
+- Python Version: Python version should be 3.11 or higher, but lower than 3.14. Please check your Python version before use, Python 3.11.4 is recommended.
+
+**Install from PyPI**
+
+```bash
+pip install -U JiuwenMemory
+```
+
+**Install Optional Storage Backends**
+
+```bash
+# SQLite support
+pip install JiuwenMemory[sqlite]
+
+# PostgreSQL support
+pip install JiuwenMemory[postgres]
+
+# MySQL support
+pip install JiuwenMemory[mysql]
+
+# GaussDB support
+pip install JiuwenMemory[gaussdb]
+
+# Redis support
+pip install JiuwenMemory[redis]
+
+# ChromaDB vector store
+pip install JiuwenMemory[chromadb]
+
+# Install all storage backends
+pip install JiuwenMemory[all]
+```
+
+### Example
+
+Let's create a simple long-term memory instance, register storage backends, add conversation messages, and retrieve memories:
+
+```python
+import os
+import asyncio
+import tempfile
+from dotenv import load_dotenv
+from sqlalchemy.ext.asyncio import create_async_engine
+from memory_core import LongTermMemory
+from memory_core.config.config import MemoryEngineConfig, MemoryScopeConfig, AgentMemoryConfig
+from foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
+from foundation.llm import UserMessage
+from foundation.store.kv.in_memory_kv_store import InMemoryKVStore
+from foundation.store.db.default_db_store import DefaultDbStore
+from foundation.store.vector.chroma_vector_store import ChromaVectorStore
+from retrieval.embedding.api_embedding import APIEmbedding
+from retrieval.common.config import EmbeddingConfig
+
+load_dotenv()
+
+
+async def main():
+    # Get the LongTermMemory singleton
+    memory = LongTermMemory()
+
+    # Create LLM configuration (refer to .env file for configuration)
+    model_client_config = ModelClientConfig(
+        client_provider=os.getenv("MODEL_PROVIDER"),
+        api_key=os.getenv("API_KEY"),
+        api_base=os.getenv("API_BASE"),
+        verify_ssl=False,
+    )
+    model_config = ModelRequestConfig(
+        model=os.getenv("MODEL_NAME")
+    )
+
+    # Create storage backends (example uses in-memory KV, SQLite, and ChromaDB)
+    kv_store = InMemoryKVStore()
+    engine = create_async_engine("sqlite+aiosqlite:///./memory.db")
+    db_store = DefaultDbStore(engine)
+    vector_store = ChromaVectorStore(persist_directory=tempfile.mkdtemp())
+
+    # Create embedding model
+    embedding_config = EmbeddingConfig(
+        model_name=os.getenv("EMBED_MODEL_NAME"),
+        base_url=os.getenv("EMBED_API_BASE"),
+        api_key=os.getenv("EMBED_API_KEY"),
+    )
+    embedding_model = APIEmbedding(config=embedding_config)
+
+    # Register storage backends
+    await memory.register_store(
+        kv_store=kv_store,
+        db_store=db_store,
+        vector_store=vector_store,
+        embedding_model=embedding_model,
+    )
+
+    # Configure memory engine
+    engine_config = MemoryEngineConfig(
+        default_model_cfg=model_config,
+        default_model_client_cfg=model_client_config,
+    )
+    memory.set_config(engine_config)
+
+    # Configure scope
+    scope_config = MemoryScopeConfig(
+        model_cfg=model_config,
+        model_client_cfg=model_client_config,
+        embedding_cfg=embedding_config,
+    )
+    await memory.set_scope_config(scope_id="my_app", memory_scope_config=scope_config)
+
+    # Configure agent memory
+    agent_config = AgentMemoryConfig(
+        enable_long_term_mem=True,
+        enable_user_profile=True,
+        enable_semantic_memory=True,
+        enable_episodic_memory=True,
+        enable_summary_memory=True,
+    )
+
+    # Add conversation messages, automatically extract memories
+    messages = [
+        UserMessage(content="My name is Zhang San, I like playing basketball and reading sci-fi novels."),
+        UserMessage(content="This afternoon I played basketball with friends at the park, it was really fun."),
+    ]
+    result = await memory.add_messages(
+        messages=messages,
+        agent_config=agent_config,
+        user_id="user_001",
+        scope_id="my_app",
+        session_id="session_001",
+    )
+
+    # View extraction results
+    print(f"User Profile: {[m.content for m in result.user_profile]}")
+    print(f"Semantic Memory: {[m.content for m in result.semantic_memory]}")
+    print(f"Episodic Memory: {[m.content for m in result.episodic_memory]}")
+    print(f"Summary: {[s.summary for s in result.summary]}")
+
+    # Semantic search for memories
+    search_results = await memory.search_user_mem(
+        query="basketball",
+        num=5,
+        user_id="user_001",
+        scope_id="my_app",
+    )
+    for res in search_results:
+        print(f"Search Result: {res.mem_info.content} (relevance: {res.score:.2f})")
+
+    # Get user variables
+    variables = await memory.get_variables(
+        user_id="user_001",
+        scope_id="my_app",
+    )
+    print(f"User Variables: {variables}")
+
+asyncio.run(main())
+```
+
+Expected Output
+```
+User Profile: ["User's hobby is reading sci-fi novels", "User's hobby is playing basketball", "User's name is Zhang San"]
+Semantic Memory: []
+Episodic Memory: ["User played basketball with friends at the park on the afternoon of June 17, 2026"]
+Summary: ['User Zhang San likes playing basketball and reading sci-fi novels. This afternoon, Zhang San played basketball with friends at the park and felt very happy.']
+Search Result: User's hobby is playing basketball (relevance: 0.85)
+Search Result: User played basketball with friends at the park on the afternoon of June 17, 2026 (relevance: 0.81)
+Search Result: User's hobby is reading sci-fi novels (relevance: 0.69)
+Search Result: User's name is Zhang San (relevance: 0.68)
+User Variables: {}
+```
+
+## Architecture Design
+
+**openJiuwen Memory** serves as the core module of the openJiuwen memory architecture. In this open-source version, the core capabilities include:
+
+* **Memory Processing Layer**: Through intelligent analysis of conversation messages, automatically extracts five types of memory — user profile (UserProfile), semantic memory (SemanticMemory), episodic memory (EpisodicMemory), variable (Variable), and summary (Summary) — and supports custom extraction rules and instruct-based memory operations (add, update, delete).
+
+* **Memory Management Layer**: Provides differentiated management strategies for different memory types, including FragmentMemoryManager, VariableManager, and SummaryManager, coordinated through WriteManager and SearchManager for unified read/write operations.
+
+* **Storage Foundation Layer**: Provides abstract interfaces for four types of storage — KV store, vector store, relational database, and message store — supporting flexible integration with multiple storage backends, and ensuring smooth data schema upgrades through the versioned migration framework.
+
+* **External Integration Layer**: Through the MemoryProvider abstract interface, supports seamless integration with third-party memory services such as Mem0, AgentArts, openJiuwen, and openViking, providing unified tool calling and session synchronization mechanisms.
+
+## Features
+
+### **Multi-type Memory Extraction**
+
+**openJiuwen Memory** supports automatic extraction and management of five types of memory, with rich functionality and flexible development to meet intelligent needs in different scenarios.
+
+- **User Profile**: Extracts affirmative or negative statements about the user, covering basic identity, interest preferences, interpersonal relationships, asset status, etc., building a personalized user profile.
+- **Semantic Memory**: Extracts factual content or concepts from conversations that have no explicit temporal relationship, storing general knowledge-based information.
+- **Episodic Memory**: Extracts factual content or concepts from conversations that have an explicit temporal relationship, recording timestamped event-based information.
+- **Variable**: Extracts structured key-value pair information from conversations, supporting custom variable definitions and forbidden variable configurations.
+- **Summary**: Automatically summarizes conversation content, supporting per-turn generation and incremental updates.
+
+### **Semantic Retrieval and Conflict Detection**
+
+- **Vector Semantic Search**: Vector retrieval capability based on embedding models, supporting unified cross-memory-type search with similarity threshold filtering and ranking mechanisms.
+- **Conflict Detection and Update**: Before writing new memories, automatically detects semantic conflicts with existing memories, determining whether to update or add through semantic validation to ensure memory consistency.
+- **Instruct-based Memory Operations**: Supports updating and deleting existing memories through LLM output instructions, combined with semantic validation to ensure operational accuracy.
+
+### **Flexible Storage Backends and Data Migration**
+
+- **Multiple Storage Backends**: Built-in abstract interfaces for four types of storage — KV store (in-memory, Shelve, Redis, database), vector store (Milvus, ChromaDB, GaussVector), relational database (SQLite, PostgreSQL, MySQL, GaussDB), and message store.
+- **Versioned Migration**: A complete migration framework supporting SQL schema changes, vector field renaming, KV data updates, message data transformation, and index field operations.
+- **Cross-index Migration**: Supports batch migration of memory data between different BaseMemoryIndex instances for smooth storage engine switching.
+
+### **Security and Concurrency Control**
+
+- **AES-GCM Encryption**: Built-in encryption codec supporting encrypted storage of memory data, with automatic encryption protection for sensitive information such as API keys.
+- **Distributed Lock**: Distributed lock mechanism based on KV store, ensuring atomicity and consistency of user-level data operations under concurrent scenarios.
+- **Scope Isolation**: Supports memory data isolation by scope_id, with each scope independently configurable for LLM, embedding model, and extraction rules.
+
+## Project Structure
+
+```
+agent-memory/
+├── memory_core/                  # Core memory module
+│   ├── long_term_memory.py       # Long-term memory engine entry
+│   ├── config/                   # Configuration management
+│   │   └── config.py             # Engine config, scope config, agent config
+│   ├── manage/                   # Memory management
+│   │   ├── index/                # Memory managers
+│   │   │   ├── base_memory_manager.py     # Base manager class
+│   │   │   ├── fragment_memory_manager.py # Fragment memory manager
+│   │   │   ├── variable_manager.py        # Variable manager
+│   │   │   ├── summary_manager.py         # Summary manager
+│   │   │   └── write_manager.py           # Write manager
+│   │   ├── search/               # Search management
+│   │   │   └── search_manager.py # Search manager
+│   │   ├── update/               # Update detection
+│   │   └── mem_model/            # Data models
+│   │       ├── memory_unit.py    # Memory unit definitions
+│   │       ├── db_model.py       # Database models
+│   │       └── sql_db_store.py   # SQL database store
+│   ├── process/                  # Memory processing
+│   │   ├── extract/              # Memory extraction
+│   │   │   ├── generation.py     # Memory generator
+│   │   │   ├── long_term_memory_extractor.py  # Long-term memory extractor
+│   │   │   └── memory_analyzer.py # Memory analyzer
+│   │   └── refine/               # Memory refinement
+│   ├── prompts/                  # Prompt management
+│   │   └── prompt_applier.py     # Prompt template engine
+│   ├── codec/                    # Encoding/decoding
+│   │   └── aes_storage_codec.py  # AES encryption codec
+│   ├── migration/                # Data migration
+│   │   ├── migration_plan.py     # Migration plan and registry
+│   │   ├── migrator/             # Various migrators
+│   │   └── operation/            # Migration operation definitions
+│   ├── external/                 # External integrations
+│   │   ├── provider.py           # MemoryProvider abstract interface
+│   │   ├── mem0_provider.py      # Mem0 integration
+│   │   ├── agentarts_memory_provider.py  # AgentArts integration
+│   │   ├── openjiuwen_memory_provider.py # openJiuwen integration
+│   │   └── openviking_memory_provider.py  # openViking integration
+│   └── common/                   # Common utilities
+│       ├── distributed_lock.py   # Distributed lock
+│       └── kv_prefix_registry.py # KV prefix registry
+├── foundation/                   # Foundation capabilities
+│   ├── llm/                      # LLM invocation
+│   │   ├── model.py              # Unified model interface
+│   │   └── model_clients/        # Various model clients
+│   ├── store/                    # Storage abstractions
+│   │   ├── base_kv_store.py      # KV store base class
+│   │   ├── base_vector_store.py  # Vector store base class
+│   │   ├── base_db_store.py      # Database store base class
+│   │   ├── base_message_store.py # Message store base class
+│   │   └── base_memory_index.py  # Memory index base class
+│   ├── prompt/                   # Prompt templates
+│   └── tool/                     # Tool definitions
+├── retrieval/                    # Retrieval capabilities
+│   └── embedding/                # Embedding models
+├── common/                       # Common components
+│   ├── security/                 # Security utilities
+│   ├── logging/                  # Logging management
+│   ├── exception/                # Exception handling
+│   └── utils/                    # General utilities
+└── tests/                        # Test cases
+```
+
+## Contributing
+
+We welcome all forms of contributions, including but not limited to:
+- Submitting issues and feature suggestions
+- Improving documentation
+- Submitting code
+- Sharing usage experiences
+
+## Open Source License
+
+This project is licensed under the Apache-2.0 License.

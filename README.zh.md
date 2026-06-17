@@ -1,0 +1,314 @@
+# openJiuwen Memory
+
+[中文版](README.zh.md) | [English Version](README.md)
+
+## 简介
+
+**openJiuwen Memory** 是一款面向 AI 智能体的长期记忆模块，为运行在 **openJiuwen** 框架上的智能体提供记忆提取、存储、检索与迁移能力。该模块不仅支持用户画像、语义记忆、情景记忆、变量记忆和摘要记忆等多类型记忆的自动提取与结构化管理；还内置了基于向量检索的语义搜索能力，支持多种存储后端（KV 存储、向量数据库、关系型数据库）的灵活接入与数据迁移；更提供了可插拔的外部记忆提供者（MemoryProvider）机制，支持与 Mem0、AgentArts 等第三方记忆服务的无缝集成。**openJiuwen Memory** 模块兼顾灵活性与安全性，助力开发者高效构建具备持久记忆能力的智能体应用。
+
+## 为什么选择 openJiuwen Memory?
+
+- **多类型记忆自动提取**：通过对对话内容的智能分析，自动提取用户画像、语义记忆、情景记忆、变量和摘要等多类型记忆，无需手动配置规则，大幅降低记忆管理的开发门槛。
+
+- **灵活可扩展的存储架构**：内置 KV 存储、向量数据库、关系型数据库等多种存储后端的抽象接口，支持 Milvus、ChromaDB、PostgreSQL、MySQL、GaussDB、SQLite、Redis 等多种存储引擎，开发者可按需选择和替换。
+
+- **高效精准的语义检索**：基于向量嵌入的语义搜索能力，支持跨记忆类型的统一检索，结合相似度阈值过滤和排序机制，确保检索结果的高相关性与精准性。
+
+- **安全可靠的数据管理**：内置 AES-GCM 加密编解码能力，支持记忆数据加密存储与传输；提供分布式锁机制，确保并发场景下的数据一致性；支持按作用域（scope）的细粒度配置管理。
+
+- **灵活的数据迁移能力**：提供完整的版本化迁移框架，支持 KV 存储、向量数据库、SQL 数据库和消息存储的 schema 迁移，以及跨索引的数据迁移，助力平滑升级。
+
+## 快速开始
+
+### 安装
+
+- 操作系统：兼容 Windows、Linux、macOS。
+- Python 版本：Python 的版本应高于或者等于 Python 3.11 版本，并小于 Python 3.14。使用前请检查 Python 版本信息，我们建议使用 3.11.4 版本。
+
+**从 PyPI 安装**
+
+```bash
+pip install -U JiuwenMemory
+```
+
+**安装可选存储后端**
+
+```bash
+# SQLite 支持
+pip install JiuwenMemory[sqlite]
+
+# PostgreSQL 支持
+pip install JiuwenMemory[postgres]
+
+# MySQL 支持
+pip install JiuwenMemory[mysql]
+
+# GaussDB 支持
+pip install JiuwenMemory[gaussdb]
+
+# Redis 支持
+pip install JiuwenMemory[redis]
+
+# ChromaDB 向量存储
+pip install JiuwenMemory[chromadb]
+
+# 安装所有存储后端
+pip install JiuwenMemory[all]
+```
+
+### 样例
+
+让我们创建一个简单的长期记忆实例，注册存储后端，添加对话消息并检索记忆：
+
+```python
+import os
+import asyncio
+import tempfile
+from dotenv import load_dotenv
+from sqlalchemy.ext.asyncio import create_async_engine
+from memory_core import LongTermMemory
+from memory_core.config.config import MemoryEngineConfig, MemoryScopeConfig, AgentMemoryConfig
+from foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
+from foundation.llm import UserMessage
+from foundation.store.kv.in_memory_kv_store import InMemoryKVStore
+from foundation.store.db.default_db_store import DefaultDbStore
+from foundation.store.vector.chroma_vector_store import ChromaVectorStore
+from retrieval.embedding.api_embedding import APIEmbedding
+from retrieval.common.config import EmbeddingConfig
+
+load_dotenv()
+
+
+async def main():
+    # 获取 LongTermMemory 单例
+    memory = LongTermMemory()
+
+    # 创建大模型配置（参考 .env 文件配置）
+    model_client_config = ModelClientConfig(
+        client_provider=os.getenv("MODEL_PROVIDER"),
+        api_key=os.getenv("API_KEY"),
+        api_base=os.getenv("API_BASE"),
+        verify_ssl=False,
+    )
+    model_config = ModelRequestConfig(
+        model=os.getenv("MODEL_NAME")
+    )
+
+    # 创建存储后端（示例使用内存 KV、SQLite 和 ChromaDB）
+    kv_store = InMemoryKVStore()
+    engine = create_async_engine("sqlite+aiosqlite:///./memory.db")
+    db_store = DefaultDbStore(engine)
+    vector_store = ChromaVectorStore(persist_directory=tempfile.mkdtemp())
+
+    # 创建嵌入模型
+    embedding_config = EmbeddingConfig(
+        model_name=os.getenv("EMBED_MODEL_NAME"),
+        base_url=os.getenv("EMBED_API_BASE"),
+        api_key=os.getenv("EMBED_API_KEY"),
+    )
+    embedding_model = APIEmbedding(config=embedding_config)
+
+    # 注册存储后端
+    await memory.register_store(
+        kv_store=kv_store,
+        db_store=db_store,
+        vector_store=vector_store,
+        embedding_model=embedding_model,
+    )
+
+    # 配置记忆引擎
+    engine_config = MemoryEngineConfig(
+        default_model_cfg=model_config,
+        default_model_client_cfg=model_client_config,
+    )
+    memory.set_config(engine_config)
+
+    # 配置作用域
+    scope_config = MemoryScopeConfig(
+        model_cfg=model_config,
+        model_client_cfg=model_client_config,
+        embedding_cfg=embedding_config,
+    )
+    await memory.set_scope_config(scope_id="my_app", memory_scope_config=scope_config)
+
+    # 配置智能体记忆
+    agent_config = AgentMemoryConfig(
+        enable_long_term_mem=True,
+        enable_user_profile=True,
+        enable_semantic_memory=True,
+        enable_episodic_memory=True,
+        enable_summary_memory=True,
+    )
+
+    # 添加对话消息，自动提取记忆
+    messages = [
+        UserMessage(content="我叫张三，我喜欢打篮球和阅读科幻小说。"),
+        UserMessage(content="今天下午我和朋友去公园打了一场篮球，非常开心。"),
+    ]
+    result = await memory.add_messages(
+        messages=messages,
+        agent_config=agent_config,
+        user_id="user_001",
+        scope_id="my_app",
+        session_id="session_001",
+    )
+
+    # 查看提取结果
+    print(f"用户画像: {[m.content for m in result.user_profile]}")
+    print(f"语义记忆: {[m.content for m in result.semantic_memory]}")
+    print(f"情景记忆: {[m.content for m in result.episodic_memory]}")
+    print(f"摘要: {[s.summary for s in result.summary]}")
+
+    # 语义检索记忆
+    search_results = await memory.search_user_mem(
+        query="篮球",
+        num=5,
+        user_id="user_001",
+        scope_id="my_app",
+    )
+    for res in search_results:
+        print(f"检索结果: {res.mem_info.content} (相关度: {res.score:.2f})")
+
+    # 获取用户变量
+    variables = await memory.get_variables(
+        user_id="user_001",
+        scope_id="my_app",
+    )
+    print(f"用户变量: {variables}")
+
+asyncio.run(main())
+```
+
+预期输出
+```
+用户画像: ['用户的兴趣是阅读科幻小说', '用户的兴趣是打篮球', '用户的名字是张三']
+语义记忆: []
+情景记忆: ['用户在2026年6月17日下午和朋友去公园打了一场篮球']
+摘要: ['用户张三喜欢打篮球和阅读科幻小说。今天下午，张三和朋友去公园打了一场篮球，感到非常开心。']
+检索结果: 用户的兴趣是打篮球 (相关度: 0.85)
+检索结果: 用户在2026年6月17日下午和朋友去公园打了一场篮球 (相关度: 0.81)
+检索结果: 用户的兴趣是阅读科幻小说 (相关度: 0.69)
+检索结果: 用户的名字是张三 (相关度: 0.68)
+用户变量: {}
+```
+
+## 架构设计
+
+**openJiuwen Memory** 作为 openJiuwen 记忆架构的核心模块，核心能力包括：
+
+* **记忆处理层**：通过对对话消息的智能分析，自动提取用户画像（UserProfile）、语义记忆（SemanticMemory）、情景记忆（EpisodicMemory）、变量（Variable）和摘要（Summary）五类记忆，并支持自定义提取规则和指令式记忆操作（新增、更新、删除）。
+
+* **记忆管理层**：针对不同记忆类型提供差异化的管理策略，包括片段记忆管理器（FragmentMemoryManager）、变量管理器（VariableManager）和摘要管理器（SummaryManager），通过写入管理器（WriteManager）和检索管理器（SearchManager）统一协调读写操作。
+
+* **存储基础层**：提供 KV 存储、向量存储、关系型数据库和消息存储四类抽象接口，支持多种存储后端的灵活接入，并通过版本化迁移框架保障数据 schema 的平滑升级。
+
+* **外部集成层**：通过 MemoryProvider 抽象接口，支持与 Mem0、AgentArts、openJiuwen 和 openViking 等第三方记忆服务的无缝集成，提供统一的工具调用和会话同步机制。
+
+## 功能特性
+
+### **多类型记忆提取**
+
+**openJiuwen Memory** 支持五类记忆的自动提取与管理，功能丰富、开发灵活，可满足不同场景下的智能需求。
+
+- **用户画像（UserProfile）**：提取用户本人的肯定或否定表述，涵盖基本身份、兴趣偏好、人际关系、资产状况等，构建用户个性化画像。
+- **语义记忆（SemanticMemory）**：提取对话中涉及的和时间无明确关系的事实性内容或概念，存储通用知识性信息。
+- **情景记忆（EpisodicMemory）**：提取对话中涉及的和时间有明确关系的事实性内容或概念，记录带时间戳的事件性信息。
+- **变量（Variable）**：从对话中提取结构化的键值对信息，支持自定义变量定义和禁止变量配置。
+- **摘要（Summary）**：对对话内容进行自动摘要，支持按轮次生成和增量更新。
+
+### **语义检索与冲突检测**
+
+- **向量语义搜索**：基于嵌入模型的向量检索能力，支持跨记忆类型的统一搜索，结合相似度阈值过滤和排序机制。
+- **冲突检测与更新**：在写入新记忆前，自动检测与已有记忆的语义冲突，通过语义校验决定是更新还是新增，确保记忆的一致性。
+- **指令式记忆操作**：支持通过 LLM 输出指令对已有记忆进行更新和删除，结合语义校验保障操作准确性。
+
+### **灵活的存储后端与数据迁移**
+
+- **多存储后端**：内置 KV 存储（内存、Shelve、Redis、数据库）、向量存储（Milvus、ChromaDB、GaussVector）、关系型数据库（SQLite、PostgreSQL、MySQL、GaussDB）和消息存储四类抽象接口。
+- **版本化迁移**：提供完整的迁移框架，支持 SQL schema 变更、向量字段重命名、KV 数据更新、消息数据转换和索引字段操作等多种迁移类型。
+- **跨索引迁移**：支持在不同 BaseMemoryIndex 实例之间批量迁移记忆数据，实现存储引擎的平滑切换。
+
+### **安全与并发控制**
+
+- **AES-GCM 加密**：内置加密编解码器，支持记忆数据加密存储，API Key 等敏感信息自动加密保护。
+- **分布式锁**：基于 KV 存储的分布式锁机制，确保并发场景下用户级数据操作的原子性与一致性。
+- **作用域隔离**：支持按 scope_id 进行记忆数据隔离，每个作用域可独立配置 LLM、嵌入模型和提取规则。
+
+## 项目结构
+
+```
+agent-memory/
+├── memory_core/                  # 核心记忆模块
+│   ├── long_term_memory.py       # 长期记忆引擎入口
+│   ├── config/                   # 配置管理
+│   │   └── config.py             # 引擎配置、作用域配置、智能体配置
+│   ├── manage/                   # 记忆管理
+│   │   ├── index/                # 记忆管理器
+│   │   │   ├── base_memory_manager.py     # 管理器基类
+│   │   │   ├── fragment_memory_manager.py # 片段记忆管理器
+│   │   │   ├── variable_manager.py        # 变量管理器
+│   │   │   ├── summary_manager.py         # 摘要管理器
+│   │   │   └── write_manager.py           # 写入管理器
+│   │   ├── search/               # 检索管理
+│   │   │   └── search_manager.py # 检索管理器
+│   │   ├── update/               # 更新检测
+│   │   └── mem_model/            # 数据模型
+│   │       ├── memory_unit.py    # 记忆单元定义
+│   │       ├── db_model.py       # 数据库模型
+│   │       └── sql_db_store.py   # SQL 数据库存储
+│   ├── process/                  # 记忆处理
+│   │   ├── extract/              # 记忆提取
+│   │   │   ├── generation.py     # 记忆生成器
+│   │   │   ├── long_term_memory_extractor.py  # 长期记忆提取器
+│   │   │   └── memory_analyzer.py # 记忆分析器
+│   │   └── refine/               # 记忆精炼
+│   ├── prompts/                  # 提示词管理
+│   │   └── prompt_applier.py     # 提示词模板引擎
+│   ├── codec/                    # 编解码
+│   │   └── aes_storage_codec.py  # AES 加密编解码器
+│   ├── migration/                # 数据迁移
+│   │   ├── migration_plan.py     # 迁移计划与注册
+│   │   ├── migrator/             # 各类迁移器
+│   │   └── operation/            # 迁移操作定义
+│   ├── external/                 # 外部集成
+│   │   ├── provider.py           # MemoryProvider 抽象接口
+│   │   ├── mem0_provider.py      # Mem0 集成
+│   │   ├── agentarts_memory_provider.py  # AgentArts 集成
+│   │   ├── openjiuwen_memory_provider.py # openJiuwen 集成
+│   │   └── openviking_memory_provider.py  # openViking 集成
+│   └── common/                   # 公共工具
+│       ├── distributed_lock.py   # 分布式锁
+│       └── kv_prefix_registry.py # KV 前缀注册
+├── foundation/                   # 基础能力层
+│   ├── llm/                      # 大模型调用
+│   │   ├── model.py              # 模型统一接口
+│   │   └── model_clients/        # 多种模型客户端
+│   ├── store/                    # 存储抽象
+│   │   ├── base_kv_store.py      # KV 存储基类
+│   │   ├── base_vector_store.py  # 向量存储基类
+│   │   ├── base_db_store.py      # 数据库存储基类
+│   │   ├── base_message_store.py # 消息存储基类
+│   │   └── base_memory_index.py  # 记忆索引基类
+│   ├── prompt/                   # 提示词模板
+│   └── tool/                     # 工具定义
+├── retrieval/                    # 检索能力
+│   └── embedding/                # 嵌入模型
+├── common/                       # 公共组件
+│   ├── security/                 # 安全工具
+│   ├── logging/                  # 日志管理
+│   ├── exception/                # 异常处理
+│   └── utils/                    # 通用工具
+└── tests/                        # 测试用例
+```
+
+## 参与贡献
+
+我们欢迎所有形式的贡献，包括但不限于:
+- 提交问题和功能建议
+- 改进文档
+- 提交代码
+- 分享使用经验
+
+## 开源许可证
+
+本项目依据 Apache-2.0 许可证授权。
