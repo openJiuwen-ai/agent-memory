@@ -4,7 +4,8 @@
 
 - 定义 `MemoryEngineConfig` 全局引擎配置；
 - 定义 `MemoryScopeConfig` 作用域级配置（用于不同业务场景的模型/向量参数）；
-- 定义 `AgentMemoryConfig` Agent 级记忆策略配置（用于定义需要提取的变量记忆和是否开启长期记忆）。
+- 定义 `AgentMemoryConfig` Agent 级记忆策略配置（用于定义需要提取的变量记忆和是否开启长期记忆）；
+- 定义 `DreamingConfig` 睡时记忆巩固（后台整合用户历史会话）流程的配置。
 
 
 ## class memory_core.config.config.MemoryEngineConfig
@@ -150,6 +151,40 @@ Agent 级记忆策略配置，描述某个智能体希望提取和管理哪些�
 >>>     enable_semantic_memory=True,
 >>>     enable_episodic_memory=True,
 >>>     enable_summary_memory=True,
+>>> )
+```
+
+
+## class memory_core.config.config.DreamingConfig
+
+```
+class memory_core.config.config.DreamingConfig(enabled: bool = False, interval_seconds: float = 14400.0, min_session_rounds: int = 4, max_sessions_per_sweep: int = 10, max_compress_tokens: int = 30000, max_items_per_session: int = 5)
+```
+
+**睡时记忆巩固**（Dreaming）流程的配置：后台周期性地重新读取用户已存储的会话，从中提炼可复用知识。由调用方构造并传入 `LongTermMemory.start_dreaming`，**不**从任何全局配置文件读取。
+
+**参数**：
+
+* **enabled**(bool, 可选)：总开关。为 `False` 时 `LongTermMemory.start_dreaming` 返回 `None`，不启动任何流程。默认：`False`。
+* **interval_seconds**(float, 可选)：两次后台 sweep 之间的间隔（秒），必须大于 0。orchestrator 会将实际生效值钳制为最小 60 秒。默认：`14400.0`（4 小时）。
+* **min_session_rounds**(int, 可选)：会话被处理所需的最小用户轮次，轮次更少的会话会被跳过，必须 >= 1。默认：4。
+* **max_sessions_per_sweep**(int, 可选)：单次 sweep 处理的最大会话数，必须 >= 1。默认：10。
+* **max_compress_tokens**(int, 可选)：提取前会话被压缩到的 token 预算，必须大于 0。默认：30000。
+* **max_items_per_session**(int, 可选)：从单个会话中提取的最大知识条数，必须 >= 1。默认：5。
+
+**示例**：
+
+```python
+>>> from memory_core.config import DreamingConfig
+>>> 
+>>> # 开启睡时记忆巩固，sweep 间隔设为 1 小时
+>>> dreaming_config = DreamingConfig(
+>>>     enabled=True,
+>>>     interval_seconds=3600,
+>>>     min_session_rounds=2,
+>>>     max_sessions_per_sweep=10,
+>>>     max_compress_tokens=30000,
+>>>     max_items_per_session=5,
 >>> )
 ```
 
