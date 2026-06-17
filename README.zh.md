@@ -216,6 +216,14 @@ asyncio.run(main())
 - **变量（Variable）**：从对话中提取结构化的键值对信息，支持自定义变量定义和禁止变量配置。
 - **摘要（Summary）**：对对话内容进行自动摘要，支持按轮次生成和增量更新。
 
+### **Dreaming（睡时记忆巩固）**
+
+在线提取（`add_messages`）每次只能看到一轮对话。**Dreaming** 是一个可选的后台服务，会定期重新读取用户已存储的会话，从中提炼出可复用的知识，并通过与在线提取相同的写入路径写回——产出的就是普通的用户画像 / 语义 / 情景记忆单元，不引入新的记忆类型，也不新增存储字段。
+
+- **一次启动，后台自动运行**：`start_dreaming(scope_id, user_id, config=DreamingConfig(enabled=True))` 启动一个后台调度器（对每个 `(scope_id, user_id)` 幂等）；`stop_dreaming()` 停止它。默认关闭。
+- **通过 `DreamingConfig` 调节**：sweep 间隔（`interval_seconds`）、会话预过滤（`min_session_rounds`、`max_sessions_per_sweep`）以及提取上限（`max_compress_tokens`、`max_items_per_session`）。
+- **带 checkpoint、并发安全**：已扫描的会话在 KV 存储中记录 checkpoint，可跨进程重启保留；写入时持有与 `add_messages` 相同的用户级锁并复用语义冲突检测，因此在线与睡时写入不会冲突或重复。
+
 ### **语义检索与冲突检测**
 
 - **向量语义搜索**：基于嵌入模型的向量检索能力，支持跨记忆类型的统一搜索，结合相似度阈值过滤和排序机制。
@@ -261,6 +269,11 @@ agent-memory/
 │   │   │   ├── generation.py     # 记忆生成器
 │   │   │   ├── long_term_memory_extractor.py  # 长期记忆提取器
 │   │   │   └── memory_analyzer.py # 记忆分析器
+│   │   ├── dreaming/             # 睡时记忆巩固
+│   │   │   ├── orchestrator.py   # 后台 sweep 调度器
+│   │   │   ├── source.py         # 会话来源（读取消息存储）
+│   │   │   ├── sweeper.py        # 压缩 -> 提取 -> 写入 流水线
+│   │   │   └── store.py          # 将提炼知识写为记忆单元
 │   │   └── refine/               # 记忆精炼
 │   ├── prompts/                  # 提示词管理
 │   │   └── prompt_applier.py     # 提示词模板引擎

@@ -4,7 +4,8 @@
 
 - Defining `MemoryEngineConfig` — global engine configuration;
 - Defining `MemoryScopeConfig` — scope-level configuration (for model/vector parameters in different business scenarios);
-- Defining `AgentMemoryConfig` — agent-level memory strategy configuration (for defining variable memories to extract and whether to enable long-term memory).
+- Defining `AgentMemoryConfig` — agent-level memory strategy configuration (for defining variable memories to extract and whether to enable long-term memory);
+- Defining `DreamingConfig` — configuration for the offline dreaming process (background memory consolidation).
 
 
 ## class memory_core.config.config.MemoryEngineConfig
@@ -150,6 +151,40 @@ Agent-level memory strategy configuration that describes which types of memory a
 >>>     enable_semantic_memory=True,
 >>>     enable_episodic_memory=True,
 >>>     enable_summary_memory=True,
+>>> )
+```
+
+
+## class memory_core.config.config.DreamingConfig
+
+```
+class memory_core.config.config.DreamingConfig(enabled: bool = False, interval_seconds: float = 14400.0, min_session_rounds: int = 4, max_sessions_per_sweep: int = 10, max_compress_tokens: int = 30000, max_items_per_session: int = 5)
+```
+
+Configuration for the offline **dreaming** process (background memory consolidation that distills knowledge from a user's stored sessions). Constructed by the caller and passed to `LongTermMemory.start_dreaming`; it is **not** read from any global config file.
+
+**Parameters**:
+
+* **enabled**(bool, optional): Master switch. When `False`, `LongTermMemory.start_dreaming` returns `None` and starts nothing. Default: `False`.
+* **interval_seconds**(float, optional): Delay between background sweeps, in seconds; must be greater than 0. The orchestrator clamps the effective value to a minimum of 60 seconds. Default: `14400.0` (4 hours).
+* **min_session_rounds**(int, optional): Minimum number of user turns a session must contain to be processed; shorter sessions are skipped; must be >= 1. Default: 4.
+* **max_sessions_per_sweep**(int, optional): Maximum number of sessions processed in a single sweep; must be >= 1. Default: 10.
+* **max_compress_tokens**(int, optional): Token budget a session is compressed to before extraction; must be greater than 0. Default: 30000.
+* **max_items_per_session**(int, optional): Maximum number of knowledge items extracted from a single session; must be >= 1. Default: 5.
+
+**Example**:
+
+```python
+>>> from memory_core.config import DreamingConfig
+>>> 
+>>> # Enable dreaming with a 1-hour sweep interval
+>>> dreaming_config = DreamingConfig(
+>>>     enabled=True,
+>>>     interval_seconds=3600,
+>>>     min_session_rounds=2,
+>>>     max_sessions_per_sweep=10,
+>>>     max_compress_tokens=30000,
+>>>     max_items_per_session=5,
 >>> )
 ```
 

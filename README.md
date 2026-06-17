@@ -216,6 +216,14 @@ User Variables: {}
 - **Variable**: Extracts structured key-value pair information from conversations, supporting custom variable definitions and forbidden variable configurations.
 - **Summary**: Automatically summarizes conversation content, supporting per-turn generation and incremental updates.
 
+### **Dreaming (Offline Memory Consolidation)**
+
+Online extraction (`add_messages`) only ever sees a single turn. **Dreaming** is an optional background service that periodically re-reads a user's stored sessions, distills durable knowledge from them, and writes it back through the same path as online extraction — dreamed memories are ordinary user profile / semantic / episodic units, with no new memory type or storage field.
+
+- **Fire-and-forget lifecycle**: `start_dreaming(scope_id, user_id, config=DreamingConfig(enabled=True))` launches a background scheduler (idempotent per `(scope_id, user_id)`); `stop_dreaming()` stops it. Disabled by default.
+- **Tunable via `DreamingConfig`**: sweep interval (`interval_seconds`), session pre-filters (`min_session_rounds`, `max_sessions_per_sweep`), and extraction caps (`max_compress_tokens`, `max_items_per_session`).
+- **Checkpointed and concurrency-safe**: scanned sessions are checkpointed in the KV store and survive restarts; writes take the same user-level lock as `add_messages` and reuse semantic conflict detection, so online and offline writes never collide or duplicate.
+
 ### **Semantic Retrieval and Conflict Detection**
 
 - **Vector Semantic Search**: Vector retrieval capability based on embedding models, supporting unified cross-memory-type search with similarity threshold filtering and ranking mechanisms.
@@ -261,6 +269,11 @@ agent-memory/
 │   │   │   ├── generation.py     # Memory generator
 │   │   │   ├── long_term_memory_extractor.py  # Long-term memory extractor
 │   │   │   └── memory_analyzer.py # Memory analyzer
+│   │   ├── dreaming/             # Offline memory consolidation
+│   │   │   ├── orchestrator.py   # Background sweep scheduler
+│   │   │   ├── source.py         # Session source (reads message store)
+│   │   │   ├── sweeper.py        # Compress -> extract -> promote pipeline
+│   │   │   └── store.py          # Writes distilled knowledge as memory units
 │   │   └── refine/               # Memory refinement
 │   ├── prompts/                  # Prompt management
 │   │   └── prompt_applier.py     # Prompt template engine

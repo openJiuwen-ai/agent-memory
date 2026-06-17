@@ -1074,4 +1074,89 @@ async def get_user_mem_by_page(
 ```
 
 
+### async start_dreaming
+
+```
+async def start_dreaming(
+    self,
+    scope_id: str,
+    user_id: str,
+    *,
+    config: DreamingConfig | None = None,
+    busy_checker: Callable[[], bool] | None = None,
+) -> DreamingOrchestrator | None
+```
+
+为 `(scope_id, user_id)` 启动后台**睡时记忆巩固**（Dreaming）流程：一个后台调度器，周期性地重新读取该用户已存储的会话，通过 LLM 提炼可复用知识，并经由正常的记忆写入路径写回（与 `add_messages` 使用相同的管理器、用户级锁和冲突检测）。产出的就是普通的用户画像 / 语义 / 情景记忆单元——不引入新的记忆类型。
+
+**参数**：
+
+* **scope_id**(str)：作用域标识；格式非法时抛出异常。
+* **user_id**(str)：用户标识。
+* **config**(DreamingConfig | None, 可选)：睡时巩固配置。为 `None` 时使用默认的 `DreamingConfig()`（其 `enabled=False`，因此不会启动）。默认：`None`。
+* **busy_checker**(Callable[[], bool] | None, 可选)：可选回调，每次 sweep 前调用；返回 `True` 则跳过本次 sweep（例如 agent 正忙于服务用户时）。默认：`None`。
+
+**返回**：
+
+* **DreamingOrchestrator | None**：后台 orchestrator 实例；当 `config.enabled` 为 `False` 时返回 `None`。**幂等**：对同一 `(scope_id, user_id)` 再次调用会返回已有的 orchestrator，而不会重复启动。
+
+**前置条件**：
+
+- 需先通过 `register_store` 注册 `kv_store`、消息存储以及向量存储 + 嵌入模型，并配置好该 scope 的 LLM（通过 `set_scope_config` 或 `set_config` 中的全局默认模型），否则抛出异常。
+
+**行为**：
+
+- orchestrator 在后台运行，每隔 `config.interval_seconds` 执行一次 sweep（首次有一段预热延迟）。已扫描的会话在 `kv_store` 中记录 checkpoint（键为 `dreaming/checkpoint/{scope_id}/{user_id}`），因此进程重启后不会重复处理旧会话。
+- 会话按 `session_id` 分组；请在调用 `add_messages` 时传入有意义的 `session_id`，以保证巩固效果符合预期。
+
+**异常**：
+
+* **build_error**：当 `scope_id` 格式非法、所需存储未注册，或 LLM 未初始化时抛出（`MEMORY_ADD_MEMORY_EXECUTION_ERROR`）。
+
+**示例**：
+
+```python
+>>> from memory_core.long_term_memory import LongTermMemory
+>>> from memory_core.config import DreamingConfig
+>>> 
+>>> memory = LongTermMemory()
+>>> # ... 事先完成 register_store + set_scope_config ...
+>>> 
+>>> # 启动后台睡时记忆巩固（启动即不管，sweep 在后台按间隔运行）
+>>> orchestrator = await memory.start_dreaming(
+>>>     scope_id="my_scope",
+>>>     user_id="user123",
+>>>     config=DreamingConfig(enabled=True, interval_seconds=3600, min_session_rounds=2),
+>>> )
+```
+
+
+### async stop_dreaming
+
+```
+async def stop_dreaming(
+    self,
+    scope_id: str | None = None,
+    user_id: str | None = None,
+) -> None
+```
+
+停止正在运行的睡时巩固 orchestrator。不带参数时停止全部；否则只停止匹配所给 `scope_id` 和/或 `user_id` 的实例。
+
+**参数**：
+
+* **scope_id**(str | None, 可选)：若提供，只停止该 scope 的 orchestrator。默认：`None`。
+* **user_id**(str | None, 可选)：若提供，只停止该用户的 orchestrator。默认：`None`。
+
+**示例**：
+
+```python
+>>> # 停止指定 (scope, user) 的 orchestrator
+>>> await memory.stop_dreaming(scope_id="my_scope", user_id="user123")
+>>> 
+>>> # 全部停止（例如服务关闭时）
+>>> await memory.stop_dreaming()
+```
+
+
 > **说明**：所有方法中涉及的 `user_id`、`scope_id`、`session_id` 若使用默认值 `"__default__"`，表示使用系统默认标识符；在实际业务中，建议传入有意义的业务标识符以支持多租户隔离和精确查询。
