@@ -53,3 +53,18 @@ class AgentMemoryConfig(BaseModel):
     enable_semantic_memory: bool = Field(default=True)  # enable semantic memory or not
     enable_episodic_memory: bool = Field(default=True)  # enable episodic memory or not
     enable_summary_memory: bool = Field(default=True)  # enable summary memory or not
+
+
+class DreamingConfig(BaseModel):
+    """
+    Config for the offline dreaming (cross-session consolidation) process.
+
+    Constructed by the caller and passed into ``LongTermMemory.start_dreaming``;
+    not read from any global config file.
+    """
+    enabled: bool = Field(default=False)
+    interval_seconds: float = Field(default=14400.0, gt=0)   # 4h
+    min_session_rounds: int = Field(default=4, ge=1)         # pre-filter: skip sessions with fewer rounds
+    max_sessions_per_sweep: int = Field(default=10, ge=1)    # cap sessions processed per sweep
+    max_compress_tokens: int = Field(default=30000, gt=0)    # compression token budget
+    max_items_per_session: int = Field(default=5, ge=1)      # cap knowledge items extracted per session

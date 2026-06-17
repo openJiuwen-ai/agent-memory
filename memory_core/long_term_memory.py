@@ -2,13 +2,19 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 import copy
 from datetime import datetime, timedelta, timezone
-from typing import Any, Tuple
+from typing import Any, Callable, Tuple
 from pydantic import BaseModel, Field
 
 from foundation.llm.schema.config import ModelRequestConfig, ModelClientConfig
 from memory_core.common.distributed_lock import DistributedLock
-from memory_core.config.config import MemoryEngineConfig, MemoryScopeConfig, AgentMemoryConfig
+from memory_core.config.config import MemoryEngineConfig, MemoryScopeConfig, AgentMemoryConfig, DreamingConfig
 from memory_core.process.extract.generation import Generator
+from memory_core.process.dreaming import (
+    DreamingOrchestrator,
+    MemoryUnitKnowledgeStore,
+    MessageStoreSessionSource,
+    Sweeper,
+)
 from memory_core.manage.mem_model.data_id_manager import DataIdManager
 from memory_core.manage.mem_model.message_manager import MessageManager, MessageAddRequest
 from foundation.store.base_message_store import BaseMessageStore
@@ -106,6 +112,8 @@ class LongTermMemory(metaclass=Singleton):
         self._base_embed: Embedding | None = None
         # embedding model cache
         self._scope_embedding: dict[str, Embedding] = {}
+        # dreaming: one orchestrator per (scope_id, user_id)
+        self._dreaming_orchestrators: dict[tuple[str, str], DreamingOrchestrator] = {}
 
     async def register_plugin(self, name: str, cls: type, params: dict[str, Any]):
         """
@@ -744,6 +752,10 @@ class LongTermMemory(metaclass=Singleton):
             user_id=user_id,
             scope_id=scope_id
         )
+        # the dreaming source is these messages; once they are gone the swept-session
+        # checkpoint is stale (a reused session_id would otherwise be skipped forever).
+        if self.kv_store:
+            await self.kv_store.delete(f"dreaming/checkpoint/{scope_id}/{user_id}")
 
     async def delete_mem_by_id(self,
                                mem_id: str,
@@ -1393,6 +1405,103 @@ class LongTermMemory(metaclass=Singleton):
             scope_id=scope_id
         )
         return None
+
+    async def start_dreaming(
+        self,
+        scope_id: str,
+        user_id: str,
+        *,
+        config: DreamingConfig | None = None,
+        busy_checker: Callable[[], bool] | None = None,
+    ) -> DreamingOrchestrator | None:
+        """
+        Start background dreaming (offline cross-session consolidation) for a
+        (scope_id, user_id).
+
+        Reuses this instance's ``_get_scope_llm`` / ``message_manager`` /
+        ``write_manager`` / ``kv_store``; promotes extracted knowledge through the
+        normal memory write path (vector store).
+
+        Idempotent: a second call for the same (scope_id, user_id) returns the
+        existing orchestrator. Returns ``None`` when ``config.enabled`` is False.
+        """
+        if not self._validate_id(event_type=LogEventType.MEMORY_STORE, scope_id=scope_id):
+            raise build_error(
+                StatusCode.MEMORY_ADD_MEMORY_EXECUTION_ERROR,
+                memory_type="dreaming",
+                error_msg="invalid scope_id format",
+            )
+
+        config = config or DreamingConfig()
+        if not config.enabled:
+            memory_logger.info(
+                "Dreaming disabled by config, not starting.",
+                event_type=LogEventType.MEMORY_STORE,
+                user_id=user_id, scope_id=scope_id,
+            )
+            return None
+
+        if not self.message_manager or not self.write_manager or not self.kv_store:
+            raise build_error(
+                StatusCode.MEMORY_ADD_MEMORY_EXECUTION_ERROR,
+                memory_type="dreaming",
+                error_msg="stores not registered; call register_store before start_dreaming",
+            )
+
+        key = (scope_id, user_id)
+        existing = self._dreaming_orchestrators.get(key)
+        if existing is not None:
+            return existing
+
+        llm = await self._get_scope_llm(scope_id)
+        if not llm:
+            raise build_error(
+                StatusCode.MEMORY_ADD_MEMORY_EXECUTION_ERROR,
+                memory_type="dreaming",
+                error_msg="LLM is not initialized",
+            )
+
+        source = MessageStoreSessionSource(
+            self.message_manager, user_id, scope_id,
+            min_rounds=config.min_session_rounds,
+            max_sessions=config.max_sessions_per_sweep,
+        )
+        store = MemoryUnitKnowledgeStore(
+            self.write_manager, self.kv_store, llm, user_id, scope_id,
+            # apply the scope's embedding onto the shared memory_index before each write,
+            # consistent with add_messages' _apply_scope_embedding
+            prepare_write=lambda: self._apply_scope_embedding(scope_id),
+        )
+        sweeper = Sweeper(
+            source=source, store=store, llm=llm, config=config,
+            checkpoint_io=self.kv_store, user_id=user_id, scope_id=scope_id,
+        )
+        orch = DreamingOrchestrator(
+            sweeper.run_sweep, config.interval_seconds, busy_checker,
+            name=f"dreaming/{scope_id}/{user_id}",
+        )
+        self._dreaming_orchestrators[key] = orch
+        await orch.start()
+        memory_logger.info(
+            "Dreaming started.",
+            event_type=LogEventType.MEMORY_STORE,
+            user_id=user_id, scope_id=scope_id,
+        )
+        return orch
+
+    async def stop_dreaming(self, scope_id: str | None = None, user_id: str | None = None) -> None:
+        """
+        Stop dreaming. With no args, stop everything; otherwise stop the
+        orchestrators matching the provided scope_id and/or user_id.
+        """
+        to_stop = [
+            (key, orch)
+            for key, orch in self._dreaming_orchestrators.items()
+            if (scope_id is None or key[0] == scope_id) and (user_id is None or key[1] == user_id)
+        ]
+        for key, orch in to_stop:
+            self._dreaming_orchestrators.pop(key, None)
+            await orch.stop()
 
     async def _get_scope_llm(self, scope_id: str) -> Model:
         """
