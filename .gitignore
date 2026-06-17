@@ -22,6 +22,7 @@ logs/
 
 # benchmark datasets (large; fetched separately) + eval run outputs
 automated_testing/data/
+evaluation/benchmark/data/
 results.json
 
 .env

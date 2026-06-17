@@ -1,0 +1,41 @@
+[
+  {
+    "sample_id": "orig-0",
+    "conversation": {
+      "speaker_a": "Alice",
+      "speaker_b": "Bob",
+      "session_1": [
+        {"speaker": "Alice", "text": "I adopted a golden retriever puppy named Max last weekend."},
+        {"speaker": "Bob", "text": "That's wonderful! How old is Max?"},
+        {"speaker": "Alice", "text": "He is three months old and loves chasing tennis balls."}
+      ],
+      "session_1_date_time": "1:56 pm on 8 May, 2023",
+      "session_2": [
+        {"speaker": "Bob", "text": "Did you start the new job at the hospital yet?"},
+        {"speaker": "Alice", "text": "Yes, I began working as a nurse in the cardiology ward on Monday."}
+      ],
+      "session_2_date_time": "10:30 am on 15 May, 2023"
+    },
+    "qa": [
+      {"question": "What is the name of Alice's puppy?", "answer": "Max", "category": 4, "evidence": ["D1:1"]},
+      {"question": "Where does Alice work?", "answer": "the cardiology ward of a hospital", "category": 4, "evidence": ["D2:2"]},
+      {"question": "What kind of unanswerable trap is this?", "answer": "Not mentioned", "category": 5, "evidence": []}
+    ]
+  },
+  {
+    "sample_id": "orig-1",
+    "conversation": {
+      "speaker_a": "Carol",
+      "speaker_b": "Dave",
+      "session_1": [
+        {"speaker": "Carol", "text": "I'm planning a trip to Kyoto in the autumn to see the maple leaves."},
+        {"speaker": "Dave", "text": "Kyoto in autumn is stunning. Are you going alone?"},
+        {"speaker": "Carol", "text": "No, my sister Emma is coming with me."}
+      ],
+      "session_1_date_time": "9:00 am on 2 April, 2023"
+    },
+    "qa": [
+      {"question": "Who is travelling to Kyoto with Carol?", "answer": "her sister Emma", "category": 1, "evidence": ["D1:1", "D1:3"]}
+    ]
+  }
+]
