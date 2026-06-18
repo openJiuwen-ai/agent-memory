@@ -1074,4 +1074,89 @@ Paginate memories for a specified user under a scope.
 ```
 
 
+### async start_dreaming
+
+```
+async def start_dreaming(
+    self,
+    scope_id: str,
+    user_id: str,
+    *,
+    config: DreamingConfig | None = None,
+    busy_checker: Callable[[], bool] | None = None,
+) -> DreamingOrchestrator | None
+```
+
+Start the background **dreaming** process for a `(scope_id, user_id)` pair: a scheduler that periodically re-reads the user's stored sessions, distills durable knowledge via the LLM, and writes it back through the normal memory write path (same managers, user-level lock, and conflict detection as `add_messages`). Dreamed memories are ordinary user profile / semantic / episodic units — no new memory type is introduced.
+
+**Parameters**:
+
+* **scope_id**(str): Scope identifier; if the format is invalid, an exception is raised.
+* **user_id**(str): User identifier.
+* **config**(DreamingConfig | None, optional): Dreaming configuration. When `None`, a default `DreamingConfig()` is used (which has `enabled=False`, so nothing starts). Default: `None`.
+* **busy_checker**(Callable[[], bool] | None, optional): Optional callback polled before each sweep; return `True` to defer the current sweep (e.g., while the agent is busy serving the user). Default: `None`.
+
+**Returns**:
+
+* **DreamingOrchestrator | None**: The background orchestrator instance, or `None` when `config.enabled` is `False`. **Idempotent**: a second call for the same `(scope_id, user_id)` returns the existing orchestrator instead of starting a new one.
+
+**Prerequisites**:
+
+- `register_store` must have registered `kv_store`, a message store, and a vector store + embedding model; a scope LLM must be available (via `set_scope_config` or the global default model in `set_config`). Otherwise an exception is raised.
+
+**Behavior**:
+
+- The orchestrator runs in the background, performing a sweep every `config.interval_seconds` (after an initial warm-up). Scanned sessions are checkpointed in `kv_store` (key `dreaming/checkpoint/{scope_id}/{user_id}`), so a restarted process does not re-process old sessions.
+- Sessions are grouped by `session_id`; pass meaningful `session_id` values to `add_messages` so consolidation behaves as expected.
+
+**Exceptions**:
+
+* **build_error**: Raised when `scope_id` format is invalid, the required stores are not registered, or the LLM is not initialized (`MEMORY_ADD_MEMORY_EXECUTION_ERROR`).
+
+**Example**:
+
+```python
+>>> from memory_core.long_term_memory import LongTermMemory
+>>> from memory_core.config import DreamingConfig
+>>> 
+>>> memory = LongTermMemory()
+>>> # ... register_store + set_scope_config beforehand ...
+>>> 
+>>> # Start background dreaming (fire-and-forget; sweeps run on the interval)
+>>> orchestrator = await memory.start_dreaming(
+>>>     scope_id="my_scope",
+>>>     user_id="user123",
+>>>     config=DreamingConfig(enabled=True, interval_seconds=3600, min_session_rounds=2),
+>>> )
+```
+
+
+### async stop_dreaming
+
+```
+async def stop_dreaming(
+    self,
+    scope_id: str | None = None,
+    user_id: str | None = None,
+) -> None
+```
+
+Stop running dreaming orchestrators. With no arguments, stops all of them; otherwise stops only those matching the provided `scope_id` and/or `user_id`.
+
+**Parameters**:
+
+* **scope_id**(str | None, optional): If provided, only orchestrators with this scope are stopped. Default: `None`.
+* **user_id**(str | None, optional): If provided, only orchestrators for this user are stopped. Default: `None`.
+
+**Example**:
+
+```python
+>>> # Stop a specific (scope, user) orchestrator
+>>> await memory.stop_dreaming(scope_id="my_scope", user_id="user123")
+>>> 
+>>> # Stop everything (e.g., on shutdown)
+>>> await memory.stop_dreaming()
+```
+
+
 > **Note**: For all methods involving `user_id`, `scope_id`, and `session_id`, using the default value `"__default__"` means using the system default identifier; in production, it is recommended to pass meaningful business identifiers to support multi-tenant isolation and precise queries.
