@@ -124,7 +124,6 @@ class Sweeper:
                 for obj in parsed[: self._config.max_items_per_session]:
                     items.append(KnowledgeItem(
                         mem_type=str(obj.get("mem_type", "")),
-                        title=str(obj.get("title", "")),
                         content=str(obj.get("content", "")),
                         source_session_id=session.session_id,
                     ))

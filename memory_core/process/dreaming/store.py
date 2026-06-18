@@ -32,8 +32,7 @@ _ALLOWED_MEM_TYPES = {
 @dataclass
 class KnowledgeItem:
     mem_type: str               # canonical enum value: "user_profile" | "semantic_memory" | "episodic_memory"
-    title: str
-    content: str
+    content: str                # the memory statement, stored as-is (consistent with online extraction)
     source_session_id: str
 
 
@@ -44,15 +43,6 @@ def _to_mem_type(value: str) -> Optional[MemoryType]:
     except ValueError:
         return None
     return mem_type if mem_type in _ALLOWED_MEM_TYPES else None
-
-
-def _compose_text(title: str, content: str) -> str:
-    """Fold the (optional) title into the stored memory text."""
-    title = (title or "").strip()
-    content = (content or "").strip()
-    if title and content:
-        return f"{title}\n{content}"
-    return title or content
 
 
 class MemoryUnitKnowledgeStore:
@@ -98,7 +88,7 @@ class MemoryUnitKnowledgeStore:
                 )
                 continue
 
-            text = _compose_text(item.title, item.content)
+            text = (item.content or "").strip()
             if not text:
                 continue
 

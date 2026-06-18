@@ -67,9 +67,9 @@ import tempfile
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import create_async_engine
 from memory_core import LongTermMemory
-from memory_core.config.config import MemoryEngineConfig, MemoryScopeConfig, AgentMemoryConfig
+from memory_core.config.config import MemoryEngineConfig, MemoryScopeConfig, AgentMemoryConfig, DreamingConfig
 from foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
-from foundation.llm import UserMessage
+from foundation.llm import UserMessage, AssistantMessage
 from foundation.store.kv.in_memory_kv_store import InMemoryKVStore
 from foundation.store.db.default_db_store import DefaultDbStore
 from foundation.store.vector.chroma_vector_store import ChromaVectorStore
@@ -140,57 +140,88 @@ async def main():
         enable_summary_memory=True,
     )
 
-    # Add conversation messages, automatically extract memories
-    messages = [
-        UserMessage(content="My name is Zhang San, I like playing basketball and reading sci-fi novels."),
-        UserMessage(content="This afternoon I played basketball with friends at the park, it was really fun."),
+    # Enable background dreaming up front. It consolidates this user's stored
+    # sessions on its own timer, supplementing the per-turn extraction below.
+    await memory.start_dreaming(
+        scope_id="my_app",
+        user_id="user_001",
+        config=DreamingConfig(enabled=True, interval_seconds=3600, min_session_rounds=2),
+    )
+
+    # Feed the conversation turn by turn — each turn is stored and extracted online in real time.
+    conversation = [
+        ("I'm a data analyst; I use pandas on our sales data, but my pipeline has gotten slow.",
+         "You could try Polars — it's usually 5-10x faster than pandas and great for large datasets."),
+        ("I also enjoy basketball and reading sci-fi novels.",
+         "Nice balance! For hard sci-fi, Liu Cixin's 'The Three-Body Problem' is worth a read."),
+        ("This afternoon I played basketball with friends at the park, it was really fun.",
+         "Sounds like a great afternoon!"),
     ]
-    result = await memory.add_messages(
-        messages=messages,
-        agent_config=agent_config,
-        user_id="user_001",
-        scope_id="my_app",
-        session_id="session_001",
-    )
+    for user_text, assistant_text in conversation:
+        await memory.add_messages(
+            messages=[UserMessage(content=user_text), AssistantMessage(content=assistant_text)],
+            agent_config=agent_config,
+            user_id="user_001",
+            scope_id="my_app",
+            session_id="session_001",
+        )
 
-    # View extraction results
-    print(f"User Profile: {[m.content for m in result.user_profile]}")
-    print(f"Semantic Memory: {[m.content for m in result.semantic_memory]}")
-    print(f"Episodic Memory: {[m.content for m in result.episodic_memory]}")
-    print(f"Summary: {[s.summary for s in result.summary]}")
+    query = "how to speed up data processing"
 
-    # Semantic search for memories
-    search_results = await memory.search_user_mem(
-        query="basketball",
-        num=5,
-        user_id="user_001",
-        scope_id="my_app",
-    )
-    for res in search_results:
-        print(f"Search Result: {res.mem_info.content} (relevance: {res.score:.2f})")
+    # Print all of this user's memories, then run one semantic search.
+    async def show():
+        print("  memories:")
+        page = await memory.get_user_mem_by_page(user_id="user_001", scope_id="my_app", page_size=50)
+        for m in page["data"]:
+            print(f"    [{m.type.value}] {m.content}")
+        print("  search:")
+        for res in await memory.search_user_mem(query=query, num=5, user_id="user_001", scope_id="my_app"):
+            print(f"    {res.mem_info.content} (relevance: {res.score:.2f})")
 
-    # Get user variables
-    variables = await memory.get_variables(
-        user_id="user_001",
-        scope_id="my_app",
-    )
-    print(f"User Variables: {variables}")
+    # ===== before dreaming =====
+    print("===== before dreaming =====")
+    await show()
+
+    # look again after the background sweep has run (first sweep follows a short warm-up)
+    # ===== after dreaming =====
+    print("===== after dreaming =====")
+    await show()
+
+    await memory.stop_dreaming()  # on shutdown
 
 asyncio.run(main())
 ```
 
-Expected Output
+Expected Output (memory content is LLM-generated, so wording will vary):
 ```
-User Profile: ["User's hobby is reading sci-fi novels", "User's hobby is playing basketball", "User's name is Zhang San"]
-Semantic Memory: []
-Episodic Memory: ["User played basketball with friends at the park on the afternoon of June 17, 2026"]
-Summary: ['User Zhang San likes playing basketball and reading sci-fi novels. This afternoon, Zhang San played basketball with friends at the park and felt very happy.']
-Search Result: User's hobby is playing basketball (relevance: 0.85)
-Search Result: User played basketball with friends at the park on the afternoon of June 17, 2026 (relevance: 0.81)
-Search Result: User's hobby is reading sci-fi novels (relevance: 0.69)
-Search Result: User's name is Zhang San (relevance: 0.68)
-User Variables: {}
+===== before dreaming =====
+  memories:
+    [user_profile] User is a data analyst
+    [user_profile] User uses pandas on sales data
+    [user_profile] User enjoys basketball
+    [user_profile] User enjoys reading sci-fi novels
+    [episodic_memory] User played basketball with friends at the park on the afternoon of 2026-06-18   # date reflects the run date and will vary
+  search:
+    User uses pandas on sales data (relevance: 0.80)
+
+===== after dreaming =====
+  memories:
+    [user_profile] User is a data analyst
+    [user_profile] User uses pandas on sales data
+    [user_profile] User enjoys basketball
+    [user_profile] User enjoys reading sci-fi novels
+    [episodic_memory] User played basketball with friends at the park on the afternoon of 2026-06-18
+    [semantic_memory] Polars is usually 5-10x faster than pandas and suits large-scale data processing   # <- added by dreaming
+  search:
+    User uses pandas on sales data (relevance: 0.80)
+    Polars is usually 5-10x faster than pandas and suits large-scale data processing (relevance: 0.86)
 ```
+
+> Dreaming writes the same memory types through the same path as online extraction — so its
+> output is ordinary `user_profile` / `semantic_memory` / `episodic_memory`, retrieved by the
+> same `search_user_mem`. Its added value here is the **Polars tip**: a reusable fact the
+> assistant supplied that the narrow per-turn window skipped, which the full-session sweep
+> consolidates into memory.
 
 ## Architecture Design
 

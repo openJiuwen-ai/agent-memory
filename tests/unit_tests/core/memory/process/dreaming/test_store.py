@@ -41,17 +41,17 @@ def _make_store():
     return store, write_manager, kv_store
 
 
-def _item(mem_type="semantic_memory", title="t", content="c", sid="sess_1"):
-    return KnowledgeItem(mem_type=mem_type, title=title, content=content, source_session_id=sid)
+def _item(mem_type="semantic_memory", content="c", sid="sess_1"):
+    return KnowledgeItem(mem_type=mem_type, content=content, source_session_id=sid)
 
 
 @pytest.mark.asyncio
 async def test_promote_builds_units_grouped_by_value():
     store, wm, _ = _make_store()
     n = await store.promote([
-        _item("user_profile", "Job", "data analyst", "sess_a"),
-        _item("semantic_memory", "Fact", "likes python", "sess_a"),
-        _item("semantic_memory", "Fact2", "uses pandas", "sess_b"),
+        _item("user_profile", "data analyst", "sess_a"),
+        _item("semantic_memory", "likes python", "sess_a"),
+        _item("semantic_memory", "uses pandas", "sess_b"),
     ])
 
     assert n == 3
@@ -64,7 +64,7 @@ async def test_promote_builds_units_grouped_by_value():
     unit = memories["user_profile"][0]
     assert isinstance(unit, FragmentMemoryUnit)
     assert unit.mem_type is MemoryType.USER_PROFILE          # enum, not str
-    assert unit.content == "Job\ndata analyst"               # title folded in
+    assert unit.content == "data analyst"                    # content stored as-is
     assert unit.message_mem_id == "sess_a"                   # provenance → source_id
     assert unit.mem_id                                       # generated id present
 
@@ -73,9 +73,9 @@ async def test_promote_builds_units_grouped_by_value():
 async def test_invalid_mem_type_is_dropped():
     store, wm, _ = _make_store()
     n = await store.promote([
-        _item("semantic_memory", "ok", "kept"),
-        _item("garbage", "bad", "dropped"),
-        _item("summary", "also-bad", "dropped"),   # valid enum member but not a fragment type
+        _item("semantic_memory", "kept"),
+        _item("garbage", "dropped"),
+        _item("summary", "dropped"),   # valid enum member but not a fragment type
     ])
 
     assert n == 1
@@ -102,7 +102,7 @@ async def test_all_invalid_skips_write():
 @pytest.mark.asyncio
 async def test_empty_text_item_is_dropped():
     store, wm, _ = _make_store()
-    n = await store.promote([_item("semantic_memory", title="", content="")])
+    n = await store.promote([_item("semantic_memory", content="")])
     assert n == 0
     wm.add_memories.assert_not_called()
 
@@ -110,7 +110,7 @@ async def test_empty_text_item_is_dropped():
 @pytest.mark.asyncio
 async def test_holds_user_lock_around_write():
     store, wm, kv = _make_store()
-    await store.promote([_item("semantic_memory", "t", "c")])
+    await store.promote([_item("semantic_memory", "c")])
 
     # the user lock key matches add_messages' lock: "_lock/" + "user/{user_id}"
     lock_args, _ = kv.exclusive_set.call_args
@@ -124,7 +124,7 @@ async def test_returns_post_dedup_count():
     store, wm, _ = _make_store()
     # simulate MemUpdateChecker dropping one as duplicate: only 1 written back
     wm.add_memories = AsyncMock(return_value=[MagicMock()])
-    n = await store.promote([_item("semantic_memory", "a", "x"), _item("semantic_memory", "b", "y")])
+    n = await store.promote([_item("semantic_memory", "x"), _item("semantic_memory", "y")])
     assert n == 1
 
 
@@ -152,8 +152,8 @@ async def test_concurrent_promotes_do_not_overlap():
     wm.add_memories = AsyncMock(side_effect=tracking_add)
 
     await asyncio.gather(
-        store.promote([_item("semantic_memory", "a", "x")]),
-        store.promote([_item("semantic_memory", "b", "y")]),
+        store.promote([_item("semantic_memory", "x")]),
+        store.promote([_item("semantic_memory", "y")]),
     )
     assert max_active == 1                  # the user lock prevented overlap
 
@@ -179,7 +179,7 @@ async def test_prepare_write_runs_inside_lock_before_add():
     store._prepare_write = prepare
     wm.add_memories = AsyncMock(side_effect=add)
 
-    await store.promote([_item("semantic_memory", "t", "c")])
+    await store.promote([_item("semantic_memory", "c")])
     assert order == ["prepare", "add"]
 
 
@@ -208,7 +208,7 @@ async def test_promote_waits_for_externally_held_user_lock():
     done = asyncio.Event()
 
     async def run_promote():
-        await store.promote([_item("semantic_memory", "a", "x")])
+        await store.promote([_item("semantic_memory", "x")])
         done.set()
 
     task = asyncio.create_task(run_promote())
