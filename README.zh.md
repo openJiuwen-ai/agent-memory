@@ -67,9 +67,9 @@ import tempfile
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import create_async_engine
 from memory_core import LongTermMemory
-from memory_core.config.config import MemoryEngineConfig, MemoryScopeConfig, AgentMemoryConfig
+from memory_core.config.config import MemoryEngineConfig, MemoryScopeConfig, AgentMemoryConfig, DreamingConfig
 from foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
-from foundation.llm import UserMessage
+from foundation.llm import UserMessage, AssistantMessage
 from foundation.store.kv.in_memory_kv_store import InMemoryKVStore
 from foundation.store.db.default_db_store import DefaultDbStore
 from foundation.store.vector.chroma_vector_store import ChromaVectorStore
@@ -140,57 +140,83 @@ async def main():
         enable_summary_memory=True,
     )
 
-    # 添加对话消息，自动提取记忆
-    messages = [
-        UserMessage(content="我叫张三，我喜欢打篮球和阅读科幻小说。"),
-        UserMessage(content="今天下午我和朋友去公园打了一场篮球，非常开心。"),
+    # 先启动后台“睡时记忆巩固”。它按自己的定时器在后台运行，作为下面逐轮提取的补充。
+    await memory.start_dreaming(
+        scope_id="my_app",
+        user_id="user_001",
+        config=DreamingConfig(enabled=True, interval_seconds=3600, min_session_rounds=2),
+    )
+
+    # 逐轮喂入对话——每轮都会实时存储并在线提取记忆
+    conversation = [
+        ("我是一名数据分析师，平时用 pandas 处理销售数据，但最近流水线太慢了。",
+         "可以试试 Polars，它通常比 pandas 快 5-10 倍，很适合大规模数据处理。"),
+        ("我平时挺喜欢打篮球，也爱看科幻小说。",
+         "劳逸结合不错！如果喜欢硬科幻，刘慈欣的《三体》很值得一读。"),
+        ("今天下午我还和朋友在公园打了场篮球，很开心。",
+         "听起来是个充实的下午！"),
     ]
-    result = await memory.add_messages(
-        messages=messages,
-        agent_config=agent_config,
-        user_id="user_001",
-        scope_id="my_app",
-        session_id="session_001",
-    )
+    for user_text, assistant_text in conversation:
+        await memory.add_messages(
+            messages=[UserMessage(content=user_text), AssistantMessage(content=assistant_text)],
+            agent_config=agent_config,
+            user_id="user_001",
+            scope_id="my_app",
+            session_id="session_001",
+        )
 
-    # 查看提取结果
-    print(f"用户画像: {[m.content for m in result.user_profile]}")
-    print(f"语义记忆: {[m.content for m in result.semantic_memory]}")
-    print(f"情景记忆: {[m.content for m in result.episodic_memory]}")
-    print(f"摘要: {[s.summary for s in result.summary]}")
+    query = "怎样加速数据处理"
 
-    # 语义检索记忆
-    search_results = await memory.search_user_mem(
-        query="篮球",
-        num=5,
-        user_id="user_001",
-        scope_id="my_app",
-    )
-    for res in search_results:
-        print(f"检索结果: {res.mem_info.content} (相关度: {res.score:.2f})")
+    # 打印该用户当前的全部记忆，并执行一次语义检索
+    async def show():
+        print("  记忆生成:")
+        page = await memory.get_user_mem_by_page(user_id="user_001", scope_id="my_app", page_size=50)
+        for m in page["data"]:
+            print(f"    [{m.type.value}] {m.content}")
+        print("  记忆检索:")
+        for res in await memory.search_user_mem(query=query, num=5, user_id="user_001", scope_id="my_app"):
+            print(f"    {res.mem_info.content} (相关度: {res.score:.2f})")
 
-    # 获取用户变量
-    variables = await memory.get_variables(
-        user_id="user_001",
-        scope_id="my_app",
-    )
-    print(f"用户变量: {variables}")
+    # ===== dreaming 完成前 =====
+    print("===== dreaming 完成前 =====")
+    await show()
+
+    # 待后台睡时整理完成后（首次 sweep 有一小段预热）再看一次
+    # ===== dreaming 完成后 =====
+    print("===== dreaming 完成后 =====")
+    await show()
+
+    await memory.stop_dreaming()  # 关闭时停止
 
 asyncio.run(main())
 ```
 
-预期输出
+预期输出（记忆内容由大模型生成，措辞会有出入）：
 ```
-用户画像: ['用户的兴趣是阅读科幻小说', '用户的兴趣是打篮球', '用户的名字是张三']
-语义记忆: []
-情景记忆: ['用户在2026年6月17日下午和朋友去公园打了一场篮球']
-摘要: ['用户张三喜欢打篮球和阅读科幻小说。今天下午，张三和朋友去公园打了一场篮球，感到非常开心。']
-检索结果: 用户的兴趣是打篮球 (相关度: 0.85)
-检索结果: 用户在2026年6月17日下午和朋友去公园打了一场篮球 (相关度: 0.81)
-检索结果: 用户的兴趣是阅读科幻小说 (相关度: 0.69)
-检索结果: 用户的名字是张三 (相关度: 0.68)
-用户变量: {}
+===== dreaming 完成前 =====
+  记忆生成:
+    [user_profile] 用户的职业是数据分析师
+    [user_profile] 用户平时用 pandas 处理销售数据
+    [user_profile] 用户喜欢打篮球
+    [user_profile] 用户爱看科幻小说
+    [episodic_memory] 用户在2026年6月18日下午和朋友在公园打了场篮球   # 日期取运行当天，会变
+  记忆检索:
+    用户平时用 pandas 处理销售数据 (相关度: 0.80)
+
+===== dreaming 完成后 =====
+  记忆生成:
+    [user_profile] 用户的职业是数据分析师
+    [user_profile] 用户平时用 pandas 处理销售数据
+    [user_profile] 用户喜欢打篮球
+    [user_profile] 用户爱看科幻小说
+    [episodic_memory] 用户在2026年6月18日下午和朋友在公园打了场篮球
+    [semantic_memory] Polars 通常比 pandas 快 5-10 倍，适合大规模数据处理   # ← dreaming 新增
+  记忆检索:
+    用户平时用 pandas 处理销售数据 (相关度: 0.80)
+    Polars 通常比 pandas 快 5-10 倍，适合大规模数据处理 (相关度: 0.86)
 ```
+
+> 睡时巩固走的是与在线提取**相同**的写入路径、产出**相同**的记忆类型（`user_profile` / `semantic_memory` / `episodic_memory`），由同一个 `search_user_mem` 检索。它在这里的增量价值就是那条 **Polars 知识**：助手给出的、对用户有长期复用价值的事实，逐轮窄窗口漏掉了，而通读整段会话的 sweep 把它沉淀成了记忆。
 
 ## 架构设计
 
