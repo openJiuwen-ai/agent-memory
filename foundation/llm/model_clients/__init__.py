@@ -1,0 +1,81 @@
+# -*- coding: UTF-8 -*-
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+from common.clients import get_client_registry
+from common.exception.codes import StatusCode
+from common.exception.errors import build_error
+from foundation.llm.model_clients.base_model_client import BaseModelClient
+from foundation.llm.schema.config import ModelRequestConfig, ModelClientConfig, ProviderType
+
+
+def _builtin_model_client(provider, client_config: ModelClientConfig, model_config: ModelRequestConfig):
+    if client_config is None:
+        return None
+    if provider == ProviderType.OpenAI.value:
+        from foundation.llm.model_clients.openai_model_client import OpenAIModelClient
+        return OpenAIModelClient(model_config=model_config, model_client_config=client_config)
+
+    if provider == ProviderType.OpenRouter.value:
+        from foundation.llm.model_clients.openrouter_model_client import OpenRouterModelClient
+        return OpenRouterModelClient(model_config=model_config, model_client_config=client_config)
+
+    if provider == ProviderType.SiliconFlow.value:
+        from foundation.llm.model_clients.siliconflow_model_client import \
+            SiliconFlowModelClient
+        return SiliconFlowModelClient(model_config=model_config, model_client_config=client_config)
+
+    if provider == ProviderType.DashScope.value:
+        from foundation.llm.model_clients.dashscope_model_client import \
+            DashScopeModelClient
+        return DashScopeModelClient(model_config=model_config, model_client_config=client_config)
+
+    if provider == ProviderType.InferenceAffinity.value:
+        from foundation.llm.model_clients.inference_affinity_model_client import \
+            InferenceAffinityModelClient
+        return InferenceAffinityModelClient(model_config=model_config, model_client_config=client_config)
+
+    if provider == ProviderType.DeepSeek.value:
+        from foundation.llm.model_clients.deepseek_model_client import \
+            DeepSeekModelClient
+        return DeepSeekModelClient(model_config=model_config, model_client_config=client_config)
+
+    if provider == ProviderType.IntelliRouter.value:
+        from foundation.llm.model_clients.intelli_router_model_client import \
+            IntelliRouterModelClient
+        return IntelliRouterModelClient(model_config=model_config, model_client_config=client_config)
+    return None
+
+
+def create_model_client(client_config: ModelClientConfig, model_config: ModelRequestConfig) -> BaseModelClient:
+    """Create corresponding ModelClient instance based on client_type
+
+    Args:
+        client_config: Client configuration
+
+    Returns:
+        BaseModelClient: ModelClient instance
+
+    Raises:
+        ValueError: When client_provider is not supported
+    """
+    if client_config.client_provider is None:
+        raise build_error(StatusCode.MODEL_SERVICE_CONFIG_ERROR,
+                          error_msg="model client config client_provider is none")
+    if client_config.client_id is None:
+        raise build_error(StatusCode.MODEL_SERVICE_CONFIG_ERROR,
+                          error_msg="model client config client_id is none")
+    provider = client_config.client_provider.value if isinstance(client_config.client_provider, ProviderType)\
+        else client_config.client_provider
+    client = _builtin_model_client(provider, client_config, model_config)
+    if client is not None:
+        return client
+    try:
+        client = get_client_registry().get_client(provider, "llm", model_config=model_config,
+                                                  model_client_config=client_config)
+    except ValueError as e:
+        supported_types = [name[4:] for name in get_client_registry().list_clients() if name.startswith("llm_")]
+        raise build_error(
+            StatusCode.MODEL_PROVIDER_INVALID,
+            error_msg=f"Unsupported client_provider: '{client_config.client_provider}', Supported types:"
+                      f" {supported_types}"
+        )
+    return client
