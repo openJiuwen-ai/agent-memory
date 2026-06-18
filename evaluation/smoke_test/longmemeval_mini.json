@@ -1,0 +1,38 @@
+[
+  {
+    "question_id": "lme_0",
+    "question_type": "single-session-user",
+    "question": "What breed of dog did the user get?",
+    "answer": "a golden retriever",
+    "question_date": "2023/05/20 (Sat) 10:30",
+    "haystack_session_ids": ["s1", "s2"],
+    "haystack_dates": ["2023/05/08 (Mon) 13:56", "2023/05/15 (Mon) 09:00"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "I just adopted a golden retriever puppy named Max.", "has_answer": true},
+        {"role": "assistant", "content": "Congratulations! Golden retrievers are wonderful dogs."}
+      ],
+      [
+        {"role": "user", "content": "The weather has been rainy all week in Seattle."},
+        {"role": "assistant", "content": "Rainy weeks can be cozy. Stay dry!"}
+      ]
+    ],
+    "answer_session_ids": ["s1"]
+  },
+  {
+    "question_id": "lme_1_abs",
+    "question_type": "knowledge-update",
+    "question": "What is the user's current car model?",
+    "answer": "The user never mentioned owning a car; the information is not available.",
+    "question_date": "2023/06/01 (Thu) 08:00",
+    "haystack_session_ids": ["s1"],
+    "haystack_dates": ["2023/05/30 (Tue) 18:00"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "I started learning to play the cello this month."},
+        {"role": "assistant", "content": "The cello is a beautiful instrument to learn."}
+      ]
+    ],
+    "answer_session_ids": []
+  }
+]
