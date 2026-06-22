@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest *)",
+      "Bash(python evaluation/scripts/*.py *)",
+      "Bash(python -m *)",
+      "Bash(git *)",
+      "Bash(curl -X POST *gitcode.com/api*)",
+      "Bash(find * -name *.py)",
+      "Bash(ls *)",
+      "Bash(pwd)",
+      "Bash(cat *)",
+      "Grep(*)",
+      "Read(*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.local)",
+      "Read(./.env.development)",
+      "Read(./.env.production)",
+      "Read(./.env.test)",
+      "Read(./.env.*.local)",
+      "Read(./service.yaml)",
+      "Read(./**/secrets/**)",
+      "Read(./**/credentials/**)"
+    ]
+  },
+  "env": {
+    "PYTHONPATH": "."
+  },
+  "language": "chinese",
+  "includeGitInstructions": true,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git commit*)",
+            "command": "if grep -qE \"git[[:space:]]+commit([[:space:]]+--?[A-Za-z-]+)*[[:space:]]+-m[[:space:]]+@['\\\"]\"; then echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"检测到 PowerShell here-string 语法 (-m @'\\''...'\\''@) 用在 Bash 工具里。Bash 不认这个语法，会导致 commit message 头部混入孤立的 @。请改用 here-doc：git commit -F - <<'\\''EOF'\\'' ... EOF\"}}'; fi",
+            "statusMessage": "检查 commit message 语法"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,50 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$doc": "GitCode skill 系列共享配置文件。首次无此文件时，GitCode skill 应自动生成（通过 AI agent 理解此模板中的 $generate_* 元字段）。",
+
+    "upstream": {
+        "$doc": "主仓库信息（只读同步源），用于 fetch/rebase/MR 目标",
+        "owner": "<主仓 owner>",
+        "$generate_owner": "从 git remote（名为 upstream 或 origin）的 URL 提取。示例：https://gitcode.com/openJiuwen/agent-memory.git → owner='openJiuwen'",
+        "repo": "<主仓 repo 名>",
+        "$generate_repo": "从同一 remote URL 提取 repo 名",
+        "remote_name": "origin",
+        "$generate_remote_name": "主仓的本地 remote 别名。若存在名为 upstream 的 remote 选它，否则用 origin。若两者都不存在，列出所有 remote 并询问用户哪个是主仓",
+        "base_branch": "main",
+        "$generate_base_branch": "主干分支名。生成逻辑：执行 'git rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>/dev/null | sed \"s#^<upstream_remote>/##\"'，获取当前分支跟踪的上游分支名。若命令失败（当前分支未设置 upstream）或返回空，则列出上游所有分支并询问用户"
+    },
+
+    "fork": {
+        "$doc": "个人 fork 仓库信息（推送目标）",
+        "owner": "",
+        "$generate_owner": "fork owner（通常是 GitCode 用户名），从 git remote（除 upstream 外的那个）URL 提取。可为空表示非 fork 流",
+        "repo": "<fork repo 名，缺省取 upstream.repo>",
+        "$generate_repo": "fork repo 名，缺省取 upstream.repo",
+        "remote_name": "<fork remote 别名>",
+        "$generate_remote_name": "fork 的本地 remote 别名。git remote 列表里除 upstream.remote_name 外的那个（git remote | grep -vx <upstream_remote> | head -1）。若有多个非主仓 remote 或无其他 remote，列出所有 remote 并询问用户哪个是 fork（可选择「无 fork」）"
+    },
+
+    "branch_prefix": {
+        "$doc": "Issue 专属分支命名前缀（gitcode-smart-commit / issue-resolver 用）",
+        "bug": "fix/issue-",
+        "feature": "feat/issue-",
+        "refactor": "refactor/issue-",
+        "$generate": "固定值（约定前缀，不从工程推断）"
+    },
+
+    "source_dirs": ["src/", "evaluation/", "bootstrap/"],
+    "$generate_source_dirs": "需暂存和提交的代码目录。生成规则（根据工程类型自适应）：Python: 扫描含 __init__.py 的顶层目录或从 pyproject.toml 读取 packages；Go: 扫描含 go.mod 或 *.go 的顶层目录；Java: 扫描 src/main/java 或 Maven/Gradle 指定的源码目录；C++: 扫描 src/、csrc/、include/ 等常见 C++ 源码目录。通用：固定追加 tests/、test/、server/、api/、cmd/ 等常见测试和服务目录（若存在）。去重按字母排序",
+
+    "exclude_dirs": [".claude/", ".cursor/", ".idea/", ".vscode/", "build/", "dist/", "logs/", ".pytest_cache/"],
+    "$generate_exclude_dirs": "需排除提交的目录。生成规则：固定模式 ['.claude/', '.cursor/', '.vscode/', '.idea/'] + 从 .gitignore 提取的目录条目（以 / 结尾且无 glob 通配符的行），去重按字母排序",
+
+    "poller": {
+        "$doc": "issue_poller.py 自动轮询配置（可选，生成时可省略）",
+        "interval_seconds": 60,
+        "trigger_on_assign": true,
+        "trigger_on_mention": true,
+        "trigger_on_labels": ["auto-resolve"],
+        "mention_keywords": ["@bot-resolve"],
+        "auto_trigger": false
+    }
+}

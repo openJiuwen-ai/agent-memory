@@ -33,3 +33,6 @@ results.json
 .idea/
 .vscode/
 CLAUDE.md
+
+# Personal GitCode skill config (fork info, local remote names)
+.claude/skills/gitcode-config.json
