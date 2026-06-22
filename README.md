@@ -61,10 +61,8 @@ pip install JiuwenMemory[all]
 Let's create a simple long-term memory instance, register storage backends, add conversation messages, and retrieve memories:
 
 ```python
-import os
 import asyncio
 import tempfile
-from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import create_async_engine
 from memory_core import LongTermMemory
 from memory_core.config.config import MemoryEngineConfig, MemoryScopeConfig, AgentMemoryConfig, DreamingConfig
@@ -76,22 +74,33 @@ from foundation.store.vector.chroma_vector_store import ChromaVectorStore
 from retrieval.embedding.api_embedding import APIEmbedding
 from retrieval.common.config import EmbeddingConfig
 
-load_dotenv()
+# ============== Configuration: set directly in code, no .env required ==============
+# LLM configuration
+MODEL_PROVIDER = "xxxx"
+API_BASE = "xxxx"
+API_KEY = "xxxx"
+MODEL_NAME = "xxxx"
+
+# Embedding configuration
+EMBED_MODEL_NAME = "xxxx"
+EMBED_API_BASE = "xxxx"
+EMBED_API_KEY = "xxxx"
+# ====================================================================================
 
 
 async def main():
     # Get the LongTermMemory singleton
     memory = LongTermMemory()
 
-    # Create LLM configuration (refer to .env file for configuration)
+    # Create LLM configuration
     model_client_config = ModelClientConfig(
-        client_provider=os.getenv("MODEL_PROVIDER"),
-        api_key=os.getenv("API_KEY"),
-        api_base=os.getenv("API_BASE"),
+        client_provider=MODEL_PROVIDER,
+        api_key=API_KEY,
+        api_base=API_BASE,
         verify_ssl=False,
     )
     model_config = ModelRequestConfig(
-        model=os.getenv("MODEL_NAME")
+        model=MODEL_NAME
     )
 
     # Create storage backends (example uses in-memory KV, SQLite, and ChromaDB)
@@ -102,9 +111,9 @@ async def main():
 
     # Create embedding model
     embedding_config = EmbeddingConfig(
-        model_name=os.getenv("EMBED_MODEL_NAME"),
-        base_url=os.getenv("EMBED_API_BASE"),
-        api_key=os.getenv("EMBED_API_KEY"),
+        model_name=EMBED_MODEL_NAME,
+        base_url=EMBED_API_BASE,
+        api_key=EMBED_API_KEY,
     )
     embedding_model = APIEmbedding(config=embedding_config)
 
@@ -172,7 +181,7 @@ async def main():
     async def show():
         print("  memories:")
         page = await memory.get_user_mem_by_page(user_id="user_001", scope_id="my_app", page_size=50)
-        for m in page["data"]:
+        for m in page:
             print(f"    [{m.type.value}] {m.content}")
         print("  search:")
         for res in await memory.search_user_mem(query=query, num=5, user_id="user_001", scope_id="my_app"):

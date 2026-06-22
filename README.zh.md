@@ -61,10 +61,8 @@ pip install JiuwenMemory[all]
 让我们创建一个简单的长期记忆实例，注册存储后端，添加对话消息并检索记忆：
 
 ```python
-import os
 import asyncio
 import tempfile
-from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import create_async_engine
 from memory_core import LongTermMemory
 from memory_core.config.config import MemoryEngineConfig, MemoryScopeConfig, AgentMemoryConfig, DreamingConfig
@@ -76,22 +74,33 @@ from foundation.store.vector.chroma_vector_store import ChromaVectorStore
 from retrieval.embedding.api_embedding import APIEmbedding
 from retrieval.common.config import EmbeddingConfig
 
-load_dotenv()
+# ============== 配置区：直接在代码中设置，无需 .env ==============
+# LLM 配置
+MODEL_PROVIDER = "xxxx"
+API_BASE = "xxxx"
+API_KEY = "xxxx"
+MODEL_NAME = "xxxx"
+
+# Embedding 配置
+EMBED_MODEL_NAME = "xxxx"
+EMBED_API_BASE = "xxxx"
+EMBED_API_KEY = "xxxx"
+# =================================================================
 
 
 async def main():
     # 获取 LongTermMemory 单例
     memory = LongTermMemory()
 
-    # 创建大模型配置（参考 .env 文件配置）
+    # 创建大模型配置
     model_client_config = ModelClientConfig(
-        client_provider=os.getenv("MODEL_PROVIDER"),
-        api_key=os.getenv("API_KEY"),
-        api_base=os.getenv("API_BASE"),
+        client_provider=MODEL_PROVIDER,
+        api_key=API_KEY,
+        api_base=API_BASE,
         verify_ssl=False,
     )
     model_config = ModelRequestConfig(
-        model=os.getenv("MODEL_NAME")
+        model=MODEL_NAME
     )
 
     # 创建存储后端（示例使用内存 KV、SQLite 和 ChromaDB）
@@ -102,9 +111,9 @@ async def main():
 
     # 创建嵌入模型
     embedding_config = EmbeddingConfig(
-        model_name=os.getenv("EMBED_MODEL_NAME"),
-        base_url=os.getenv("EMBED_API_BASE"),
-        api_key=os.getenv("EMBED_API_KEY"),
+        model_name=EMBED_MODEL_NAME,
+        base_url=EMBED_API_BASE,
+        api_key=EMBED_API_KEY,
     )
     embedding_model = APIEmbedding(config=embedding_config)
 
@@ -171,7 +180,7 @@ async def main():
     async def show():
         print("  记忆生成:")
         page = await memory.get_user_mem_by_page(user_id="user_001", scope_id="my_app", page_size=50)
-        for m in page["data"]:
+        for m in page:
             print(f"    [{m.type.value}] {m.content}")
         print("  记忆检索:")
         for res in await memory.search_user_mem(query=query, num=5, user_id="user_001", scope_id="my_app"):
