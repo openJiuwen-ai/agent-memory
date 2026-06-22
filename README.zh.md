@@ -277,6 +277,27 @@ asyncio.run(main())
 - **分布式锁**：基于 KV 存储的分布式锁机制，确保并发场景下用户级数据操作的原子性与一致性。
 - **作用域隔离**：支持按 scope_id 进行记忆数据隔离，每个作用域可独立配置 LLM、嵌入模型和提取规则。
 
+## 记忆服务与 OpenClaw 插件
+
+一行命令启动记忆后端，配一个 OpenClaw 插件即可让智能体拥有持久、可检索的记忆——无需额外开发。
+
+### 记忆服务
+
+一条命令启动本地记忆引擎，完整 REST API：
+
+- **记忆读写** — 添加消息、增删改记忆、管理键值变量。
+- **语义搜索** — 按含义检索，不是关键词匹配。
+- **零配置起步** — 把 LLM 和 Embedding 的 key 填入 `server/.env`，执行 `python ./server/memory_server.py` 即跑起来。
+
+### OpenClaw 插件
+
+OpenClaw 智能体的"自动记忆"——记住用户说过什么，在每次回复前自动召回。
+
+- **回复前先回忆** — 注入相关历史上下文，智能体不再"从零开始"。
+- **回复后自动存储** — 捕获每一轮对话，后台提取结构化记忆。
+
+[→ 完整安装指引](agent-memory-plugin/README.md)
+
 ## 项目结构
 
 ```
@@ -346,6 +367,16 @@ agent-memory/
 │   ├── logging/                  # 日志管理
 │   ├── exception/                # 异常处理
 │   └── utils/                    # 通用工具
+├── server/                       # 记忆服务（FastAPI）
+│   ├── memory_server.py          # HTTP API 服务
+│   └── .env.example              # 环境变量模板
+├── agent-memory-plugin/          # OpenClaw 生命周期插件
+│   ├── lib/                      # 插件库
+│   │   └── openjiuwen-memory-api.js # 记忆 API 客户端
+│   ├── openjiuwen-memory-index.js # 插件入口
+│   ├── openclaw.plugin.json      # 插件清单
+│   ├── package.json              # npm 包配置
+│   └── README.md                 # 插件文档
 └── tests/                        # 测试用例
 ```
 

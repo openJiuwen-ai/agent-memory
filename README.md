@@ -282,6 +282,27 @@ Online extraction (`add_messages`) only ever sees a single turn. **Dreaming** is
 - **Distributed Lock**: Distributed lock mechanism based on KV store, ensuring atomicity and consistency of user-level data operations under concurrent scenarios.
 - **Scope Isolation**: Supports memory data isolation by scope_id, with each scope independently configurable for LLM, embedding model, and extraction rules.
 
+## Memory Service & OpenClaw Plugin
+
+A ready-to-run memory backend and an OpenClaw plugin that give agents persistent, searchable memory — zero extra code.
+
+### Memory Service
+
+One command to start a local memory engine backed by REST APIs:
+
+- **Memory CRUD** — add messages, update/delete memories, manage key-value variables.
+- **Semantic search** — retrieves memories by meaning, not keywords.
+- **Zero config** — drop your LLM + embedding keys into `server/.env` and run `python ./server/memory_server.py`.
+
+### OpenClaw Plugin
+
+Auto-memory for OpenClaw agents — remembers what users said and recalls it before every reply.
+
+- **Recall before reply** — injects relevant context so the agent never starts from scratch.
+- **Store after reply** — captures every exchange and extracts structured memories in the background.
+
+[→ Full setup guide](agent-memory-plugin/README.md)
+
 ## Project Structure
 
 ```
@@ -351,6 +372,16 @@ agent-memory/
 │   ├── logging/                  # Logging management
 │   ├── exception/                # Exception handling
 │   └── utils/                    # General utilities
+├── server/                       # Memory service (FastAPI)
+│   ├── memory_server.py          # HTTP API server
+│   └── .env.example              # Environment config template
+├── agent-memory-plugin/          # OpenClaw lifecycle plugin
+│   ├── lib/                      # Plugin library
+│   │   └── openjiuwen-memory-api.js # Memory API client
+│   ├── openjiuwen-memory-index.js # Plugin entry point
+│   ├── openclaw.plugin.json      # Plugin manifest
+│   ├── package.json              # npm package config
+│   └── README.md                 # Plugin documentation
 └── tests/                        # Test cases
 ```
 
