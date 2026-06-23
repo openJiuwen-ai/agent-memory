@@ -104,7 +104,8 @@ class SemanticStore:
             metadata={"collection_name": collection_name, "embedding_dim": embedding_dim}
         )
 
-    async def add_docs(self, docs: List[Tuple[str, str]], table_name: str, scope_id: str | None = None) -> bool:
+    async def add_docs(self, docs: List[Tuple[str, str]], table_name: str, scope_id: str | None = None,
+                       is_middle: bool | None = False) -> bool:
         """
         Add documents to a specified table after generating their embeddings.
 
@@ -128,7 +129,10 @@ class SemanticStore:
             return False
 
         try:
-            memory_ids, texts = zip(*docs)
+            if is_middle:
+                memory_ids, texts, timestamp = zip(*docs)
+            else:
+                memory_ids, texts = zip(*docs)
             memory_ids = list(memory_ids)
             texts = list(texts)
 
@@ -149,11 +153,20 @@ class SemanticStore:
 
             # Prepare data for vector store, content is not stored
             data = []
-            for doc_id, embedding in zip(memory_ids, embeddings):
-                data.append({
-                    "id": doc_id,
-                    "embedding": embedding,
-                })
+            if is_middle:
+                for doc_id, embedding in zip(memory_ids, embeddings):
+                    data.append({
+                        "id": doc_id,
+                        "embedding": embedding,
+                        "content": texts,
+                        "timestamp": timestamp
+                    })
+            else:
+                for doc_id, embedding in zip(memory_ids, embeddings):
+                    data.append({
+                        "id": doc_id,
+                        "embedding": embedding,
+                    })
 
             # Add to vector store
             await self.vector_store.add_docs(collection_name=table_name, docs=data)
@@ -197,8 +210,8 @@ class SemanticStore:
                 memory_id=ids
             )
 
-    async def search(self, query: str, table_name: str,
-                     scope_id: str | None = None, top_k: int = 5) -> List[Tuple[str, float]]:
+    async def search(self, query: str, table_name: str, scope_id: str | None = None,
+                     is_middle: bool | None = False, top_k: int = 5):
         """
         Search for the top-k most similar documents to a query string.
 
@@ -250,9 +263,20 @@ class SemanticStore:
                 vector_field="embedding",
                 top_k=top_k,
             )
-
             # Convert to required format
-            return [(result.fields.get("id", ""), result.score) for result in results]
+            if is_middle:
+                return [
+                    (
+                        result.fields.get("id", ""),
+                        result.score,
+                        result.fields.get("content", [""])[0],
+                        result.fields.get("timestamp", ""),
+                    )
+                    for result in results
+                ]
+            else:
+                return [(result.fields.get("id", ""), result.score) for result in results]
+
         except Exception as e:
             memory_logger.error(
                 "Failed to embed query.",

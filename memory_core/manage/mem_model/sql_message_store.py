@@ -44,8 +44,8 @@ class SqlMessageStore(BaseMessageStore):
         content_str = json.dumps(message.content, ensure_ascii=False)
         message_hash = hashlib.sha256(f"{content_str}{timestamp}".encode()).hexdigest()
         return f"msg_{message_hash[:16]}_{int(timestamp.timestamp()*1000)}"
-    
-    async def add_message(self, message_add: Dict[str, Any]) -> str:
+
+    async def add_message(self, message_add: Dict[str, Any], msg_id: str = None) -> str:
         """
         Add a single message
 
@@ -62,9 +62,12 @@ class SqlMessageStore(BaseMessageStore):
         timestamp: datetime = message_add.get('timestamp') or datetime.now(timezone.utc).astimezone()
 
         message_id = self._generate_message_id(message, timestamp)
-        
+
+        if msg_id:
+            message_id = msg_id + "_mid"
+
         content = self._codec.encode(message.content)
-        
+
         data = {
             'message_id': message_id,
             'user_id': user_id or '',
@@ -76,7 +79,7 @@ class SqlMessageStore(BaseMessageStore):
         }
 
         await self.sql_db_store.write(self.table_name, data)
-        
+
         return message_id
     
     async def add_messages(self, message_adds: List[Dict[str, Any]]) -> List[str]:
