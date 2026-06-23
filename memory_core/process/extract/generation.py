@@ -8,7 +8,7 @@ from memory_core.prompts.prompt_applier import PromptApplier
 from memory_core.process.extract.common import ExtractMemoryParams, MemoryOperationParams
 from memory_core.process.extract.long_term_memory_extractor import LongTermMemoryExtractor
 from memory_core.manage.mem_model.memory_unit import MemoryType, BaseMemoryUnit, \
-    VariableUnit, FragmentMemoryUnit, SummaryUnit, OperationType
+    VariableUnit, FragmentMemoryUnit, SummaryUnit, MiddleTermUnit, OperationType
 from memory_core.manage.mem_model.data_id_manager import DataIdManager
 from memory_core.process.extract.memory_analyzer import MemoryAnalyzer, VariableResult
 from common.logging import memory_logger
@@ -156,6 +156,35 @@ class Generator:
             metadata={"all_memory_result": all_memory_results}
         )
         return all_memory_results
+
+    async def check_continuity_analyzer(self, previous_dialogue, current_dialogue, base_chat_model):
+
+        result = await MemoryAnalyzer.check_conversation_continuity(
+            previous_dialogue=previous_dialogue,
+            current_dialogue=current_dialogue,
+            base_chat_model=base_chat_model
+        )
+
+        return result
+
+    async def middle_term_memory_unit_generator(self, **kwargs) -> dict[str, list[BaseMemoryUnit]]:
+
+        user_id = kwargs.get("user_id")
+        msg = kwargs.get("msg")
+        message_mem_id = kwargs.get("message_mem_id")
+        content = msg.content
+        timestamp = kwargs.get("timestamp")
+
+        middle_term_unit = await self._process_middle_term_data(
+            user_id=user_id,
+            message_mem_id=message_mem_id,
+            content=content + " time:" + timestamp,
+            timestamp=timestamp
+        )
+
+        return {
+            'middle_term_memory': [middle_term_unit]
+        }
 
     async def _categories_to_memory_unit(
         self,
@@ -397,3 +426,18 @@ class Generator:
                     operation_type=operation_type
                 ))
         return ret_memories
+
+    async def _process_middle_term_data(
+                self,
+                user_id: str,
+                message_mem_id: str,
+                content: str,
+                timestamp: str
+        ):
+            mem_id = str(await self.data_id_generator.generate_next_id(user_id=user_id))
+            return MiddleTermUnit(
+                mem_id=mem_id,
+                content=content,
+                message_mem_id=message_mem_id,
+                timestamp=timestamp,
+            )

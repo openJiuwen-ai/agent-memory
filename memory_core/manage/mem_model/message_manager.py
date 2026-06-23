@@ -1,4 +1,4 @@
-# coding: utf-8
+﻿# coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 from datetime import datetime, timezone
@@ -29,7 +29,7 @@ class MessageManager:
     def store(self) -> BaseMessageStore:
         return self._store
 
-    async def add(self, req: MessageAddRequest) -> str:
+    async def add(self, req: MessageAddRequest, msg_id: str = None) -> str:
         if req.user_id is None:
             raise build_error(
                 StatusCode.MEMORY_ADD_MEMORY_EXECUTION_ERROR,
@@ -57,10 +57,10 @@ class MessageManager:
             'session_id': req.session_id,
             'timestamp': req.timestamp
         }
-        return await self._store.add_message(message_add)
+        return await self._store.add_message(message_add, msg_id)
 
     async def get(self, user_id: str = None, scope_id: str = None, session_id: str = None,
-                  message_len: int = 10) -> list[Tuple[BaseMessage, datetime]]:
+                    message_len: int = 10) -> list[Tuple[BaseMessage, datetime, str]]:
         if message_len <= 0:
             raise build_error(
                 StatusCode.MEMORY_GET_MEMORY_EXECUTION_ERROR,
@@ -80,8 +80,8 @@ class MessageManager:
 
         result = []
         for message, metadata in reversed(messages_with_metadata):
-            result.append((message, metadata.timestamp))
-
+            result.append((message, metadata.timestamp, metadata.message_id))
+        
         return result
 
     async def get_by_id(self, msg_id: str) -> Tuple[BaseMessage, datetime] | None:
@@ -99,3 +99,7 @@ class MessageManager:
 
         count = await self._store.delete_messages(message_filter)
         return count > 0
+
+    async def delete_by_id(self, msg_id: str) -> bool:
+        """Delete a single message by its ID."""
+        return await self._store.delete_message_by_id(msg_id)
