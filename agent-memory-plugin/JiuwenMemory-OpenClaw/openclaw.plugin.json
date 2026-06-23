@@ -1,0 +1,119 @@
+{
+  "id": "openjiuwen-memory-index",
+  "activation": {
+    "onStartup": true
+  },
+  "name": "OpenJiuwen Memory Index",
+  "description": "OpenJiuwen Memory Server recall + add memory via lifecycle hooks",
+  "version": "1.0.0",
+  "main": "./openjiuwen-memory-index.js",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "baseUrl": {
+        "type": "string",
+        "description": "Memory Server base URL",
+        "default": "http://127.0.0.1:8000"
+      },
+      "apiKey": {
+        "type": "string",
+        "description": "Memory API Key (optional)"
+      },
+      "userId": {
+        "type": "string",
+        "description": "User ID for memory isolation",
+        "default": "openclaw-user"
+      },
+      "scopeId": {
+        "type": "string",
+        "description": "Scope ID for memory isolation (session/conversation level)"
+      },
+      "scopeIdPrefix": {
+        "type": "string",
+        "description": "Prefix for auto-generated scope ID"
+      },
+      "scopeIdSuffix": {
+        "type": "string",
+        "description": "Suffix for auto-generated scope ID"
+      },
+      "scopeSuffixMode": {
+        "type": "string",
+        "enum": ["none", "counter"],
+        "default": "none",
+        "description": "Mode for generating scope suffix (counter increments on /new command)"
+      },
+      "resetOnNew": {
+        "type": "boolean",
+        "default": true,
+        "description": "Reset counter on new conversation"
+      },
+      "searchEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable memory recall/search"
+      },
+      "addEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable memory add/capture"
+      },
+      "recallGlobal": {
+        "type": "boolean",
+        "default": true,
+        "description": "Search memories globally (not scoped to current session)"
+      },
+      "captureStrategy": {
+        "type": "string",
+        "enum": ["last_turn", "full_session"],
+        "default": "last_turn",
+        "description": "Strategy for capturing messages (last_turn = last user-assistant pair, full_session = all messages)"
+      },
+      "maxMessageChars": {
+        "type": "integer",
+        "default": 20000,
+        "description": "Maximum characters per message to store"
+      },
+      "includeAssistant": {
+        "type": "boolean",
+        "default": true,
+        "description": "Include assistant messages in memory capture"
+      },
+      "threshold": {
+        "type": "number",
+        "default": 0.3,
+        "description": "Similarity threshold for memory search (0-1)"
+      },
+      "num": {
+        "type": "integer",
+        "default": 10,
+        "description": "Number of memories to retrieve"
+      },
+      "summaryNum": {
+        "type": "integer",
+        "default": 5,
+        "description": "Number of user history summaries to retrieve"
+      },
+      "summaryThreshold": {
+        "type": "number",
+        "default": 0.3,
+        "description": "Similarity threshold for user history summary search"
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "default": 5000,
+        "description": "API request timeout in milliseconds"
+      },
+      "retries": {
+        "type": "integer",
+        "default": 1,
+        "description": "Number of retries for failed API calls"
+      },
+      "throttleMs": {
+        "type": "integer",
+        "default": 1000,
+        "description": "Minimum time between add operations (throttling)"
+      }
+    },
+    "additionalProperties": false
+  }
+}

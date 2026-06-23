@@ -1,0 +1,17 @@
+{
+  "name": "openjiuwen-memory-index",
+  "version": "1.0.0",
+  "description": "OpenJiuwen Memory Server integration for OpenClaw",
+  "type": "module",
+  "author": "",
+  "license": "MIT",
+  "openclaw": {
+    "extensions": ["./openjiuwen-memory-index.js"]
+  },
+  "clawdbot": {
+    "extensions": ["./openjiuwen-memory-index.js"]
+  },
+  "moltbot": {
+    "extensions": ["./openjiuwen-memory-index.js"]
+  }
+}
