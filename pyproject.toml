@@ -90,7 +90,11 @@ default = true
 include = ["memory_core*", "common*", "foundation*", "retrieval*"]
 
 [tool.setuptools.package-data]
-memory_core = ["prompts/**/*.md"]
+memory_core = [
+    "prompts/**/*.md",
+    "graph/extraction/prompts/**/*.pr.md",
+    "graph/extraction/prompts/**/*.yaml",
+]
 
 [tool.coverage.run]
 omit = ["tests/*"]
