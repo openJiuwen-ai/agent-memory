@@ -355,7 +355,6 @@ class TestGraphMemoryInitState:
         """_init_state returns GraphMemState with reference_timestamp set"""
         mock_from_config.return_value = _make_mock_backend()
         mem = GraphMemory(db_config=_make_mock_config(), language="en", llm_client=_make_mock_llm_client())
-        import datetime
 
         ref = datetime.datetime(2025, 1, 1, 12, 0, 0)
         state = getattr(mem, "_init_state")(reference_time=ref)
