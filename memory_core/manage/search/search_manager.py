@@ -88,50 +88,6 @@ class SearchManager:
             result.sort(key=lambda item: item["score"], reverse=True)
         return [item for item in result if item["score"] >= threshold][:top_k]
 
-    async def search_middle(self, params: SearchParams, semantic_store, **kwargs) -> list[dict[str, Any]] | None:
-        user_id = params.user_id
-        scope_id = params.scope_id
-        query = params.query
-        top_k = params.top_k
-        threshold = params.threshold
-        search_type = params.search_type
-        kwargs['mem_type'] = search_type
-        # search_type is illegal
-        print("search_type", search_type)
-        if search_type is not None and search_type not in self.all_mem_manager_list:
-            raise build_error(
-                StatusCode.MEMORY_GET_MEMORY_EXECUTION_ERROR,
-                memory_type=search_type,
-                error_msg=f"{search_type} is not a valid search type",
-            )
-        # search_type is valid, but the corresponding manager has not been initialized
-        if search_type and not self.managers.get(search_type):
-            raise build_error(
-                StatusCode.MEMORY_GET_MEMORY_EXECUTION_ERROR,
-                memory_type=search_type,
-                error_msg=f"{search_type} memory manager not inited",
-            )
-        result = []
-        if search_type is None:
-            for manager in set(self.managers.values()):
-                res = await manager.search(user_id=user_id, scope_id=scope_id, query=query, top_k=top_k,
-                                           semantic_store=semantic_store, **kwargs)
-                if res is not None:
-                    result.extend(res)
-        # call the manager corresponding to search_type
-        else:
-            res = await self.managers[search_type].search(user_id=user_id, scope_id=scope_id, query=query, top_k=top_k,
-                                                          semantic_store=semantic_store, **kwargs)
-            if res:
-                result = res
-
-        print("middle search results", result)
-        # sort and truncate multiple search_type results based on score
-        if len(result) > top_k:
-            result.sort(key=lambda item: item[2], reverse=True)
-
-        return result
-
     async def list_user_mem(
         self,
         user_id: str,

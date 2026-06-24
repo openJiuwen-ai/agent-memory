@@ -105,35 +105,3 @@ class MemoryAnalyzer:
                 )
 
         return MemoryAnalyzerResult()
-
-    @staticmethod
-    async def check_conversation_continuity(
-            previous_dialogue,
-            current_dialogue,
-            base_chat_model: Model,
-            retries: int = 3):
-
-        prompt_content = PromptApplier().apply(
-            "continuity_check_system_prompt",
-            {
-                "old_conversation": previous_dialogue,
-                "new_conversation": current_dialogue,
-            },
-        )
-
-        model_input = [{"role": "user", "content": prompt_content}]
-        parser = JsonOutputParser()
-        for attempt in range(retries):
-            try:
-                response = await base_chat_model.invoke(messages=model_input)
-                result = json.loads(response.content)["results"]
-                return result[0]
-
-            except json.JSONDecodeError as e:
-                if attempt < retries - 1:
-                    continue
-                memory_logger.error(
-                    "Categories model output format error",
-                    event_type=LogEventType.MEMORY_PROCESS,
-                    exception=str(e)
-                )

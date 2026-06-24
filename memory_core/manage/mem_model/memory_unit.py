@@ -12,7 +12,6 @@ class MemoryType(Enum):
     EPISODIC_MEMORY = "episodic_memory"
     VARIABLE = "variable"
     SUMMARY = "summary"
-    MIDDLE_TERM_MEMORY = "middle_term_memory"
     UNKNOWN = "unknown"
 
 
@@ -54,12 +53,5 @@ class VariableUnit(BaseMemoryUnit):
 class SummaryUnit(BaseMemoryUnit):
     mem_type: MemoryType = field(default=MemoryType.SUMMARY, init=False)
     summary: str
-    message_mem_id: Optional[str] = None  # Corresponding Message ID
-    timestamp: str = ""
-
-@dataclass
-class MiddleTermUnit(BaseMemoryUnit):
-    mem_type: MemoryType = field(default=MemoryType.MIDDLE_TERM_MEMORY, init=False)
-    content: str
     message_mem_id: Optional[str] = None  # Corresponding Message ID
     timestamp: str = ""
