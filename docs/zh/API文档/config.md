@@ -264,3 +264,14 @@ class memory_core.config.config.DreamingConfig(enabled: bool = False, interval_s
 >>> )
 >>>
 ```
+
+## Graph Memory 配置
+
+`memory_core.config.config` 中的 `MemoryEngineConfig`、`MemoryScopeConfig`、`AgentMemoryConfig` 和 `DreamingConfig` 面向 `LongTermMemory` 主流程。Graph Memory 使用独立配置模块 `memory_core.config.graph`，主要包含：
+
+- `EpisodeType`：标识写入来源类型，支持对话、文档和 JSON 字符串。
+- `AddMemStrategy`：控制图记忆写入阶段的实体召回、实体合并、关系去重和提示词语言。
+- `RetrievalStrategy` / `EpisodeRetrievalStrategy`：`AddMemStrategy` 内部使用的召回策略，包含 `top_k`、`min_score`、`same_kind`、`exclude_future_results` 等字段。
+- `SearchConfig`：控制图记忆检索阶段的 top_k、分数阈值、混合排序、rerank，以及实体/关系集合上的 BFS 图扩展。
+
+Graph Memory 的图存储连接、向量维度、索引类型和后端参数由 `foundation.store.graph.GraphConfig` 及其子配置管理。详见 [memory_core.graph.graph_memory](graph_memory.md)。

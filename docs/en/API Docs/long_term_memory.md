@@ -1160,3 +1160,7 @@ Stop running dreaming orchestrators. With no arguments, stops all of them; other
 
 
 > **Note**: For all methods involving `user_id`, `scope_id`, and `session_id`, using the default value `"__default__"` means using the system default identifier; in production, it is recommended to pass meaningful business identifiers to support multi-tenant isolation and precise queries.
+
+## Related Modules
+
+`LongTermMemory` manages flat memory units such as user profiles, semantic memories, episodic memories, variables, and summaries. If you need to turn conversations, documents, or JSON strings into a knowledge graph of entities, relations, and source episodes, use the independent Graph Memory module. See [memory_core.graph.graph_memory](graph_memory.md).

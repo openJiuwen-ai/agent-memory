@@ -1160,3 +1160,7 @@ async def stop_dreaming(
 
 
 > **说明**：所有方法中涉及的 `user_id`、`scope_id`、`session_id` 若使用默认值 `"__default__"`，表示使用系统默认标识符；在实际业务中，建议传入有意义的业务标识符以支持多租户隔离和精确查询。
+
+## 相关模块
+
+`LongTermMemory` 管理用户画像、语义记忆、情景记忆、变量和摘要等扁平记忆单元。如果需要把对话、文档或 JSON 字符串沉淀为实体、关系和事件片段组成的知识图谱，可以使用独立的 Graph Memory 模块。详见 [memory_core.graph.graph_memory](graph_memory.md)。

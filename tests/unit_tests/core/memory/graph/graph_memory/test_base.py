@@ -278,6 +278,7 @@ class TestAddMemory:
 
         assert isinstance(result, GraphMemUpdate)
         assert hasattr(result, "added_episode")
+        assert result.added_episode[0].obj_type == EpisodeType.DOCUMENT.name
         assert hasattr(result, "added_entity")
         assert hasattr(result, "added_relation")
         backend.refresh.assert_called()

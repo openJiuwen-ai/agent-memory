@@ -264,3 +264,14 @@ Configuration for the offline **dreaming** process (background memory consolidat
 >>> )
 >>>
 ```
+
+## Graph Memory Configuration
+
+`MemoryEngineConfig`, `MemoryScopeConfig`, `AgentMemoryConfig`, and `DreamingConfig` in `memory_core.config.config` are for the main `LongTermMemory` pipeline. Graph Memory uses the independent configuration module `memory_core.config.graph`, mainly including:
+
+- `EpisodeType`: identifies source types, including conversation, document, and JSON strings.
+- `AddMemStrategy`: controls entity recall, entity merging, relation deduplication, and prompt language during graph memory writes.
+- `RetrievalStrategy` / `EpisodeRetrievalStrategy`: nested recall strategies used by `AddMemStrategy`, including fields such as `top_k`, `min_score`, `same_kind`, and `exclude_future_results`.
+- `SearchConfig`: controls top_k, score thresholds, hybrid ranking, rerank, and BFS graph expansion for entity/relation collections during graph memory search.
+
+Graph Memory graph-store connection settings, vector dimensions, index types, and backend options are managed by `foundation.store.graph.GraphConfig` and its sub-configs. See [memory_core.graph.graph_memory](graph_memory.md).
