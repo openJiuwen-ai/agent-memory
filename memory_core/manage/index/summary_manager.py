@@ -1,4 +1,4 @@
-﻿# coding: utf-8
+# coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 from datetime import datetime, timezone
 from typing import Any, List, Tuple
@@ -24,8 +24,6 @@ class SummaryManager(BaseMemoryManager):
 
     @staticmethod
     def _parse_timestamp(ts: str) -> datetime:
-        if isinstance(ts, datetime):
-            return ts
         if not ts:
             return datetime.now(timezone.utc).astimezone()
         for fmt in ("%Y-%m-%d %H-%M-%S", "%Y-%m-%d %H:%M:%S"):
