@@ -14,6 +14,8 @@
 
 - **Efficient and Precise Semantic Retrieval**: Vector embedding-based semantic search capability with unified cross-memory-type retrieval, combined with similarity threshold filtering and ranking mechanisms to ensure high relevance and precision of search results.
 
+- **Structured Knowledge Graph Memory**: Graph Memory writes entities, relations, and source episodes from conversations, documents, or JSON strings into graph storage, supporting entity merging, relation deduplication, hybrid retrieval, and graph expansion recall.
+
 - **Secure and Reliable Data Management**: Built-in AES-GCM encryption codec supporting encrypted storage and transmission of memory data; distributed lock mechanism ensuring data consistency under concurrent scenarios; fine-grained configuration management by scope.
 
 - **Flexible Data Migration**: A complete versioned migration framework supporting schema migration for KV store, vector database, SQL database, and message store, as well as cross-index data migration for smooth upgrades.
@@ -242,6 +244,8 @@ Expected Output (memory content is LLM-generated, so wording will vary):
 
 * **Storage Foundation Layer**: Provides abstract interfaces for four types of storage — KV store, vector store, relational database, and message store — supporting flexible integration with multiple storage backends, and ensuring smooth data schema upgrades through the versioned migration framework.
 
+* **Graph Memory Layer**: Graph Memory uses LLMs to extract entities (Entity), relations (Relation), and source episodes (Episode) from conversations, documents, or JSON strings, then performs entity merging, relation deduplication, and graph-structured retrieval. It is currently used as an independent module and is not wired into the `LongTermMemory.add_messages` pipeline.
+
 * **External Integration Layer**: Through the MemoryProvider abstract interface, supports seamless integration with third-party memory services such as Mem0, AgentArts, openJiuwen, and openViking, providing unified tool calling and session synchronization mechanisms.
 
 ## Features
@@ -269,6 +273,17 @@ Online extraction (`add_messages`) only ever sees a single turn. **Dreaming** is
 - **Vector Semantic Search**: Vector retrieval capability based on embedding models, supporting unified cross-memory-type search with similarity threshold filtering and ranking mechanisms.
 - **Conflict Detection and Update**: Before writing new memories, automatically detects semantic conflicts with existing memories, determining whether to update or add through semantic validation to ensure memory consistency.
 - **Instruct-based Memory Operations**: Supports updating and deleting existing memories through LLM output instructions, combined with semantic validation to ensure operational accuracy.
+
+### **Graph Memory (Knowledge Graph Memory)**
+
+Graph Memory is an independent knowledge graph memory module. It turns input content into a graph of entities, relations, and source episodes, suitable for relationship retrieval, entity tracking, and graph expansion recall.
+
+- **Multi-source writes**: Supports conversation, document, and JSON-string `EpisodeType` inputs, and stores the original source as an Episode.
+- **Entity and relation extraction**: Uses an LLM to extract entity declarations, entity summaries, attributes, relations, and relation validity times.
+- **Merging and deduplication**: Recalls existing entities and relations during writes, performs entity merging, relation filtering, and semantic deduplication.
+- **Graph-structured retrieval**: Searches entity, relation, and Episode collections in parallel, with configurable hybrid ranking, rerank, and BFS expansion for entity/relation results.
+
+[→ Graph Memory API Docs](docs/en/API%20Docs/graph_memory.md)
 
 ### **Flexible Storage Backends and Data Migration**
 
@@ -310,7 +325,8 @@ agent-memory/
 ├── memory_core/                  # Core memory module
 │   ├── long_term_memory.py       # Long-term memory engine entry
 │   ├── config/                   # Configuration management
-│   │   └── config.py             # Engine config, scope config, agent config
+│   │   ├── config.py             # Engine config, scope config, agent config
+│   │   └── graph.py              # Graph Memory write and search strategy config
 │   ├── manage/                   # Memory management
 │   │   ├── index/                # Memory managers
 │   │   │   ├── base_memory_manager.py     # Base manager class
@@ -336,6 +352,9 @@ agent-memory/
 │   │   │   ├── sweeper.py        # Compress -> extract -> promote pipeline
 │   │   │   └── store.py          # Writes distilled knowledge as memory units
 │   │   └── refine/               # Memory refinement
+│   ├── graph/                    # Knowledge graph memory
+│   │   ├── graph_memory/         # GraphMemory write, search, and state management
+│   │   └── extraction/           # Entity/relation extraction models and prompts
 │   ├── prompts/                  # Prompt management
 │   │   └── prompt_applier.py     # Prompt template engine
 │   ├── codec/                    # Encoding/decoding
@@ -362,7 +381,8 @@ agent-memory/
 │   │   ├── base_vector_store.py  # Vector store base class
 │   │   ├── base_db_store.py      # Database store base class
 │   │   ├── base_message_store.py # Message store base class
-│   │   └── base_memory_index.py  # Memory index base class
+│   │   ├── base_memory_index.py  # Memory index base class
+│   │   └── graph/                # Graph store abstraction and Milvus implementation
 │   ├── prompt/                   # Prompt templates
 │   └── tool/                     # Tool definitions
 ├── retrieval/                    # Retrieval capabilities

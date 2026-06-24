@@ -255,6 +255,7 @@ class GraphMemory:
             )
         with self.user_locks[user_id]:
             state = self._init_state(reference_time)
+            state.episode_type = src_type
 
             content = await self._prepare_episodes(
                 src_type,
