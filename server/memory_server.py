@@ -10,14 +10,17 @@ from pydantic import BaseModel
 from common.logging import memory_logger
 from foundation.llm import BaseMessage
 from foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
-from foundation.store import DbBasedKVStore
-from foundation.store.db.default_db_store import DefaultDbStore
-from foundation.store.vector.chroma_vector_store import ChromaVectorStore
 from memory_core.config.config import AgentMemoryConfig, MemoryEngineConfig, MemoryScopeConfig
 from memory_core.long_term_memory import LongTermMemory
 from memory_core.manage.mem_model.memory_unit import MemoryType
 from retrieval.common.config import EmbeddingConfig
 from retrieval.embedding.api_embedding import APIEmbedding
+from server.store_factory import (
+    create_async_engine_from_env,
+    create_db_store,
+    create_kv_store,
+    create_vector_store,
+)
 
 # 加载 .env 文件 - 使用绝对路径确保无论从哪个目录启动都能找到
 env_path = Path(__file__).parent / ".env"
@@ -133,23 +136,11 @@ class GetUserMemByPageRequest(BaseModel):
 async def startup_event():
     """Initialize the memory engine with stores and configuration."""
     try:
-        # 创建存储实例
-        from sqlalchemy.ext.asyncio import create_async_engine
-
-        # 使用SQLite作为示例数据库
-        data_directory = os.getenv("MEMORY_DATA_DIR", "./memory_data")
-        db_path = Path(data_directory) / "sqlite_db.db"
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-
-        engine = create_async_engine(
-            f"sqlite+aiosqlite:///{db_path}",
-            pool_pre_ping=True,
-            echo=False,
-        )
-
-        kv_store = DbBasedKVStore(engine)
-        db_store = DefaultDbStore(engine)
-        vector_store = ChromaVectorStore(persist_directory=data_directory)
+        # 通过 store_factory 根据 .env 装配 KV / DB / Vector store
+        engine = create_async_engine_from_env()
+        kv_store = create_kv_store(engine)
+        db_store = create_db_store(engine)
+        vector_store = create_vector_store()
 
         embedding_model = APIEmbedding(
             config=EmbeddingConfig(
