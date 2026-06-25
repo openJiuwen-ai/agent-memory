@@ -307,7 +307,7 @@ One command to start a local memory engine backed by REST APIs:
 
 - **Memory CRUD** — add messages, update/delete memories, manage key-value variables.
 - **Semantic search** — retrieves memories by meaning, not keywords.
-- **Zero config** — drop your LLM + embedding keys into `server/.env` and run `python ./server/memory_server.py`.
+- **Zero config** — drop your LLM + embedding keys into `server/.env` and run `python -m server.memory_server`.
 
 ### OpenClaw Plugin
 
@@ -316,7 +316,7 @@ Auto-memory for OpenClaw agents — remembers what users said and recalls it bef
 - **Recall before reply** — injects relevant context so the agent never starts from scratch.
 - **Store after reply** — captures every exchange and extracts structured memories in the background.
 
-[→ Full setup guide](agent-memory-plugin/README.md)
+[→ Full setup guide](agent-memory-plugin/JiuwenMemory-OpenClaw/README.md)
 
 ## Project Structure
 

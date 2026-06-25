@@ -302,7 +302,7 @@ Graph Memory 是独立的知识图谱记忆模块，可将输入内容沉淀为�
 
 - **记忆读写** — 添加消息、增删改记忆、管理键值变量。
 - **语义搜索** — 按含义检索，不是关键词匹配。
-- **零配置起步** — 把 LLM 和 Embedding 的 key 填入 `server/.env`，执行 `python ./server/memory_server.py` 即跑起来。
+- **零配置起步** — 把 LLM 和 Embedding 的 key 填入 `server/.env`，执行 `python -m server.memory_server` 即跑起来。
 
 ### OpenClaw 插件
 
@@ -311,7 +311,7 @@ OpenClaw 智能体的"自动记忆"——记住用户说过什么，在每次回
 - **回复前先回忆** — 注入相关历史上下文，智能体不再"从零开始"。
 - **回复后自动存储** — 捕获每一轮对话，后台提取结构化记忆。
 
-[→ 完整安装指引](agent-memory-plugin/README.md)
+[→ 完整安装指引](agent-memory-plugin/JiuwenMemory-OpenClaw/README.md)
 
 ## 项目结构
 

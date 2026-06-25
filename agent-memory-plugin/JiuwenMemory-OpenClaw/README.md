@@ -44,13 +44,49 @@ pip install fastapi uvicorn
 | `EMBED_MODEL_NAME` | Embedding 模型调用名称 |
 | `EMBED_API_KEY` | Embedding 模型的 API Key |
 | `MEMORY_DATA_DIR` | 记忆数据文件保存目录，默认 `./memory_data` |
-| `IP` | 记忆服务监听 IP，默认 `0.0.0.0` |
+| `IP` | 记忆服务监听 IP，默认 `127.0.0.1`（仅本机访问；对外暴露需改 `0.0.0.0` 并设置 `MEMORY_API_KEY`） |
 | `PORT` | 记忆服务监听端口，默认 `8000` |
+| `MEMORY_API_KEY` | API 鉴权 Key，留空则不鉴权（仅限本地）；非本机部署时必填，插件需在 `openclaw.json` 的 `apiKey` 配同一值 |
 
-**3.3 启动记忆服务**
+**3.3 选择存储后端（可选）**
+
+记忆服务的 KV / DB / Vector 三类存储都可以通过 `.env` 切换实现，留空则全部走默认（SQLite + Chroma），首次跑通建议保持默认。
+
+通用：
+
+| 变量 | 说明 |
+| --- | --- |
+| `DB_URL` | SQLAlchemy 异步连接 URL，KV(db 模式) 与 DB store 共用；留空则回退到 `sqlite+aiosqlite:///${MEMORY_DATA_DIR}/sqlite_db.db` |
+
+KV Store：
+
+| 变量 | 说明 |
+| --- | --- |
+| `KV_STORE_TYPE` | `db`（默认，复用 `DB_URL`）/ `in_memory`（进程内，不持久化）/ `shelve`（本地文件） |
+| `KV_SHELVE_PATH` | 仅 `KV_STORE_TYPE=shelve` 时生效，留空默认 `${MEMORY_DATA_DIR}/shelve_kv` |
+
+DB Store：
+
+| 变量 | 说明 |
+| --- | --- |
+| `DB_STORE_TYPE` | `default`（默认）/ `gauss`（GaussDB，需在 `DB_URL` 配 GaussDB 连接串） |
+
+Vector Store：
+
+| 变量 | 说明 |
+| --- | --- |
+| `VECTOR_STORE_TYPE` | `chroma`（默认）/ `milvus` / `elasticsearch` / `gauss` |
+| `VECTOR_CHROMA_PERSIST_DIR` | 仅 chroma；留空默认 `${MEMORY_DATA_DIR}` |
+| `VECTOR_MILVUS_URI` / `VECTOR_MILVUS_TOKEN` / `VECTOR_MILVUS_DATABASE` | 仅 milvus；URI 形如 `http://localhost:19530`，DATABASE 默认 `default` |
+| `VECTOR_ES_HOSTS` / `VECTOR_ES_INDEX_PREFIX` | 仅 elasticsearch；HOSTS 逗号分隔，例如 `http://localhost:9200`，前缀默认 `agent_vector` |
+| `VECTOR_GAUSS_HOST` / `VECTOR_GAUSS_PORT` / `VECTOR_GAUSS_DATABASE` / `VECTOR_GAUSS_USER` / `VECTOR_GAUSS_PASSWORD` | 仅 gauss 向量库；默认 `localhost:5432`、库名 `postgres`、用户 `postgres` |
+
+> 第三方依赖（pymilvus / elasticsearch / psycopg2 等）按需懒导入，只在切到对应后端时才需要安装；停留在默认 chroma 不受影响。
+
+**3.4 启动记忆服务**
 在仓库根目录下执行：
 ```bash
-python ./server/memory_server.py
+python -m server.memory_server
 ```
 看到提示 `Memory engine initialized successfully` 即启动成功。
 
