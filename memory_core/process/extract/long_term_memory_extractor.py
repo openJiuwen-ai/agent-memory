@@ -22,19 +22,42 @@ class LongTermMemoryExtractor:
         scope_config: MemoryScopeConfig,
         retries: int = 3,
     ) -> Dict[str, Any]:
+        if not scope_config:
+            scope_config = MemoryScopeConfig()
+        # 多主体场景：开启后 assistant 角色说话人的消息也作为抽取目标
+        extract_assistant = bool(getattr(scope_config, "extract_assistant_memory", False))
+
+        # 默认（单主体）沿用 name or role 的说话人标识；多主体下用纯 role，使前缀与
+        # prompt 的角色锁定规则（user / assistant）逐字一致。
+        def _speaker(msg) -> str:
+            return msg.role if extract_assistant else (msg.name or msg.role)
+
         reference_str = ""
         input_msg_str = ""
         for msg in extract_memory_paras.history_messages:
-            reference_str += f"{msg.name or msg.role}: {msg.content}\n"
+            reference_str += f"{_speaker(msg)}: {msg.content}\n"
         for msg in extract_memory_paras.messages:
-            reference_str += f"{msg.name or msg.role}: {msg.content}\n"
-            if msg.role == "user":
-                input_msg_str += f"{msg.name or msg.role}: {msg.content}\n"
-
-        if not scope_config:
-            scope_config = MemoryScopeConfig()
+            reference_str += f"{_speaker(msg)}: {msg.content}\n"
+            if msg.role == "user" or (extract_assistant and msg.role == "assistant"):
+                input_msg_str += f"{_speaker(msg)}: {msg.content}\n"
 
         current_week = LongTermMemoryExtractor._build_time_context(timestamp)
+        if extract_assistant:
+            subject_locking_rule = (chr(13) + chr(10)).join([
+                "  - 本对话含多个真实参与者，【目标消息】每行前缀“角色:”（如 user / assistant）即该句的主体说话人。",
+                "  - 以每行前缀的角色标识为该句主体；句中第一人称（我/本人/我们）指代该前缀说话人；每位参与者均为合法主体。",
+                "  - 若无主语且无法确定主体 -> 直接丢弃整句，绝不提取。",
+            ])
+            subject_scope = "该句的主体说话人"
+            subject_naming_rule = "主语改为该句前缀标识的说话人（取自该句前缀，例如 user / assistant），与前缀保持一致"
+        else:
+            subject_locking_rule = (chr(13) + chr(10)).join([
+                "  - 若主语是“我”、“本人”、“我们” -> 锁定为用户本人。",
+                "  - 若主语是其他情况 -> 锁定为其它主体。",
+                "  - 若无主语 -> 直接丢弃整句，绝不提取。",
+            ])
+            subject_scope = "用户本人"
+            subject_naming_rule = '主语全部改为"用户"'
         prompt_content = PromptApplier().apply(
             "fragment_memory_prompt",
             {
@@ -45,6 +68,9 @@ class LongTermMemoryExtractor:
                 "semantic_memory_definition": scope_config.semantic_memory_definition or "",
                 "episodic_memory_definition": scope_config.episodic_memory_definition or "",
                 "current_week": current_week,
+                "subject_locking_rule": subject_locking_rule,
+                "subject_scope": subject_scope,
+                "subject_naming_rule": subject_naming_rule,
             },
         )
         model_input = [{"role": "user", "content": prompt_content}]

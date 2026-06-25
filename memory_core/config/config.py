@@ -44,6 +44,8 @@ class MemoryScopeConfig(BaseModel):
     semantic_memory_definition: str = Field(default="用户对话中涉及的和时间无明确关系的事实性内容或概念")
     # user-defined rules for episodic memory extraction
     episodic_memory_definition: str = Field(default="用户对话中涉及的和时间有明确关系的事实性内容或概念")
+    # 是否同时抽取 assistant 角色说话人的记忆（多主体/双人对话场景）；默认仅抽取 user 角色
+    extract_assistant_memory: bool = Field(default=False)
 
 
 class AgentMemoryConfig(BaseModel):
