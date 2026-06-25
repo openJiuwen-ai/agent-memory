@@ -1,7 +1,7 @@
 # Agent 记忆系统竞品调研（Competitor Analysis）
 
 > 调研对象：业界主流的「Agent 长期记忆 / Memory Layer」产品与框架
-> 用途：为 `jiuwen-memory` 记忆系统的架构设计与差异化定位提供参考
+> 用途：为 `agent-memory` 记忆系统的架构设计与差异化定位提供参考
 > 调研时间：2026-05
 > 维度：支持的 Agent 类型、核心架构（信息源 / 索引检索方式 / 模态支持 / 端云支持）、关键特性、优缺点
 >
@@ -475,17 +475,17 @@
 
 ---
 
-## 3. 对 jiuwen-memory 的启示（讨论用，非结论）
+## 3. 对 agent-memory 的启示（讨论用，非结论）
 
 > 以下为基于调研的观察，供后续设计探讨，未做任何取舍决策。
 
-1. **检索方式趋同于「混合检索 + 重排」**：纯向量已不够，主流头部（Mem0 v3、Zep、MemOS、ReMe）都走「向量 + 关键词 + 图/实体 + 重排」。jiuwen-memory 若想对标头部，混合检索应是基线。
+1. **检索方式趋同于「混合检索 + 重排」**：纯向量已不够，主流头部（Mem0 v3、Zep、MemOS、ReMe）都走「向量 + 关键词 + 图/实体 + 重排」。agent-memory 若想对标头部，混合检索应是基线。
 2. **时序能力是高价值差异化点**：Zep 的双时间模型 + 有效期 + 非破坏式更新，是当前时序推理与「点查历史」的标杆，但部署偏重。是否引入「有效期 + 失效标记」值得评估。
-3. **端云一体（尤其端侧/零云依赖）是差异化机会**：MemOS、memU、SuperLocalMemory 都在押注本地优先。若 jiuwen-memory 面向隐私/合规或端侧场景，端云双形态是清晰卖点。
+3. **端云一体（尤其端侧/零云依赖）是差异化机会**：MemOS、memU、SuperLocalMemory 都在押注本地优先。若 agent-memory 面向隐私/合规或端侧场景，端云双形态是清晰卖点。
 4. **记忆可治理/可检视 vs 黑盒**：MemOS、memU（Markdown）、ReMe（审计日志）都强调透明可编辑可回溯。可控性正成为企业级刚需。
 5. **冲突消解与遗忘**几乎是标配：抽取→相似检索→LLM 决策 ADD/UPDATE/DELETE/NOOP（Mem0 范式），加自动过期/遗忘（Supermemory），是写入流水线的成熟模板。
 6. **多模态 + 工具记忆（tool memory）/技能记忆**是新前沿：MemOS、Cognee、memU 已在做。若目标是「Agent」而非纯聊天，工具调用轨迹与技能复用值得纳入。
-7. **Agent 类型决定记忆形态**：Code Agent（memSearch / Claude Code / Cursor）普遍走「Markdown 文件 + 可选向量索引 + 仓库内共享 + 人工审批」，强调透明、可 git 化、跨工具复用；个人助手类更重「事实抽取 + 画像 + 自动遗忘」；企业级更重「图谱 + 时序 + 审计」。jiuwen-memory 需先明确主打哪类 Agent，再决定记忆形态——若覆盖 Code Agent，文件友好 + 仓库共享 + MCP 接入几乎是入场券。
+7. **Agent 类型决定记忆形态**：Code Agent（memSearch / Claude Code / Cursor）普遍走「Markdown 文件 + 可选向量索引 + 仓库内共享 + 人工审批」，强调透明、可 git 化、跨工具复用；个人助手类更重「事实抽取 + 画像 + 自动遗忘」；企业级更重「图谱 + 时序 + 审计」。agent-memory 需先明确主打哪类 Agent，再决定记忆形态——若覆盖 Code Agent，文件友好 + 仓库共享 + MCP 接入几乎是入场券。
 8. **文件系统范式正在兴起**：OpenViking（viking://）、memU、memSearch、Claude Code 都把「记忆」落到可浏览/可编辑的文件结构上，相比黑盒向量库更透明可观测，是当前一条清晰的产品化路线。
 
 ---

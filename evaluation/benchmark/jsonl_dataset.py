@@ -1,4 +1,4 @@
-"""通用 JSONL ground truth 数据集——自建 ground truth 与回归数据的标准载体。
+"""通用 JSONL 评测标注数据集——自定义评测标注与回归数据的标准载体。
 
 每行一条 JSON 记录，``type`` 区分两类：
 
@@ -18,7 +18,6 @@ import os
 from typing import List, Optional, Sequence
 
 from common.type_def import Scope
-
 from evaluation.core.types import Dataset, MemorySeed, QueryCase
 
 _DEFAULT_SCOPE = Scope(org="eval", user="u1")
@@ -36,7 +35,7 @@ def _to_scope(raw: Optional[dict], fallback: Scope) -> Scope:
 
 
 class JsonlDataset(Dataset):
-    """从 ``.jsonl`` ground truth 文件加载 seeds + queries。"""
+    """从 ``.jsonl`` 评测标注文件加载 seeds + queries。"""
 
     def __init__(
         self,

@@ -1,0 +1,141 @@
+"""APIReranker — 云端 rerank API（多方言：Cohere 扁平风格 / 阿里 DashScope 信封）。
+
+rerank 无统一标准，各厂商请求/响应形态不一。本实现用 ``dialect`` 旋钮覆盖主流两套：
+
+- ``cohere``（智谱 / Jina / SiliconFlow / Cohere / voyage / TEM…）：扁平 body
+  ``{model, query, documents, top_n}`` → 顶层 ``{results: [{index, relevance_score}]}``；
+  端点 = ``base_url/rerank``。
+- ``dashscope``（阿里百炼 ``gte-rerank*``）：信封 body
+  ``{model, input:{query,documents}, parameters:{top_n,…}}`` → ``{output:{results:[…]}}``；
+  端点 = ``base_url/services/rerank/text-rerank/text-rerank``。
+
+两套的结果项都用 ``{index, relevance_score}``，故方言只差「端点 + body 拼装 + results
+取法」三处，打分还原逻辑共用。换 ``dialect``/base_url/model 即可切厂商。rerank 无官方
+SDK，故走 httpx——**懒加载**（未装时给明确提示），不在模块导入期连坐其余实现。
+"""
+
+from __future__ import annotations
+
+from typing import Any, Callable, Dict, List
+
+from common.base import PluginType
+from common.errors import BackendError, HealthCheckError, ValidationError
+from common.log import get_logger
+from common.reranker.base import Reranker, RerankerProducer
+
+logger = get_logger(__name__)
+
+
+# 每种方言 = 端点后缀 + body 拼装 + 从响应取 results 列表（项均为 {index, relevance_score}）。
+_DIALECTS: Dict[str, Dict[str, Any]] = {
+    "cohere": {
+        "path": "/rerank",
+        "body": lambda model, query, docs: {
+            "model": model,
+            "query": query,
+            "documents": docs,
+            "top_n": len(docs),
+        },
+        "results": lambda data: data.get("results", []),
+    },
+    "dashscope": {
+        "path": "/services/rerank/text-rerank/text-rerank",
+        "body": lambda model, query, docs: {
+            "model": model,
+            "input": {"query": query, "documents": docs},
+            "parameters": {"return_documents": False, "top_n": len(docs)},
+        },
+        "results": lambda data: (data.get("output") or {}).get("results", []),
+    },
+}
+
+
+class APIReranker(Reranker):
+    """云端 rerank API（多方言）。对每条候选返回相关性分，**顺序与输入一致**。
+
+    参数：
+        model_name: rerank 模型名（智谱 ``"rerank"``、阿里 ``"gte-rerank-v2"`` 等）
+        base_url: API 根地址（实现内部按方言拼端点后缀）
+        api_key: API KEY（Bearer）
+        timeout: 单次请求超时（秒）
+        dialect: ``"cohere"`` | ``"dashscope"``
+        client: 可注入的 httpx.Client（测试/复用连接用）；``None`` 则懒建
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        base_url: str,
+        api_key: str = "",
+        timeout: float = 30.0,
+        dialect: str = "cohere",
+        client: object = None,
+    ) -> None:
+        dialect = (dialect or "cohere").lower()
+        if dialect not in _DIALECTS:
+            raise ValidationError(
+                f"unknown rerank dialect: {dialect!r}（支持 {sorted(_DIALECTS)}）"
+            )
+        self._dialect = dialect
+        self._spec = _DIALECTS[dialect]
+        self._model = model_name
+        self._url = base_url.rstrip("/") + self._spec["path"]
+        self._api_key = api_key
+        self._timeout = timeout
+        if client is not None:
+            self._client = client
+        else:
+            try:
+                import httpx
+            except ImportError as exc:  # pragma: no cover - 依赖缺失路径
+                raise ImportError("APIReranker 需要 `pip install httpx`") from exc
+            self._client = httpx.Client(timeout=timeout)
+
+    def plugin_type(self) -> PluginType:
+        return PluginType.RERANKER
+
+    def health(self) -> None:
+        """探活：调用一次 rerank 测试 API 可达。"""
+        try:
+            self.rerank("health check", ["ok"])
+        except Exception as exc:
+            raise HealthCheckError(f"Reranker health check failed: {exc}") from exc
+
+    def rerank(self, query: str, texts: List[str]) -> List[float]:
+        if not texts:
+            return []
+        build_body: Callable = self._spec["body"]
+        extract: Callable = self._spec["results"]
+        try:
+            resp = self._client.post(
+                self._url,
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                json=build_body(self._model, query, list(texts)),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            logger.error("APIReranker(%s): rerank request failed — %s", self._dialect, exc)
+            raise BackendError(f"rerank API call failed: {exc}") from exc
+
+        # 响应按分排序、各带原始 index；据 index 还原到输入顺序（缺失者保持 0.0）。
+        scores = [0.0] * len(texts)
+        for item in extract(data):
+            idx = item.get("index")
+            if isinstance(idx, int) and 0 <= idx < len(scores):
+                scores[idx] = float(item.get("relevance_score", 0.0))
+        return scores
+
+
+# -- 注册到 RerankerProducer（实现自注册，新增无需改 producer/make_plugins） ------ #
+
+
+@RerankerProducer.register("api")
+def _build(config):
+    return APIReranker(
+        model_name=config.get("reranker_model") or "rerank",
+        base_url=config.get("reranker_base_url", ""),
+        api_key=config.get("reranker_api_key", ""),
+        timeout=config.get("reranker_timeout", 30.0),
+        dialect=config.get("reranker_dialect", "cohere"),
+    )

@@ -1,0 +1,87 @@
+# agent-memory 部署配置（docker compose）
+#
+# 选型：LLM 云端（OpenAI 兼容）+ 本地 bge 嵌入/精排（进程内）+ Milvus 向量召回 +
+# Elasticsearch 关键词召回 + Redis 真源。召回走「向量 + 关键词」双路，关闭图。
+#
+# 配置模型为**两级命名空间**（见 src/config）：顶层 = 各组件（Producer 的 TOP_NAME），
+# 其下 = 具名实例（target/params）。用户配置会**合并覆盖**到内置默认（纯内存离线栈）之上，
+# 故此处只写要改动的部分：globals 跨切面参数 + 把各 default 实例换成真后端实现。其余拓扑
+# （recaller / constructor / evolver / scheduler 等）沿用默认并经具名引用自动指向这些真后端。
+#
+# 连接串与密钥经环境变量注入（${VAR} / ${VAR:-默认值}，由 __main__.py 展开），配置文件
+# 本身不落密；可改的项见同目录 .env.example。换实现/换后端只动本文件。
+#
+# 注意：profile 供服务面（profiles 层）使用；memory_api 段的值即交给内核装配的两级命名空间。
+profile: docker
+
+memory_api:
+  # ---- 跨切面参数（写一处，各组件经 globals 读到；具名实例 params 可覆盖）----
+  globals:
+    vector_enabled: true        # 向量索引 + 向量召回路（Milvus）
+    graph_enabled: false        # 不启用图召回路
+    rerank_enabled: true        # 披露前精排（本地 bge reranker）
+
+    # bge-m3 dense 维度 = 1024，必须与 Milvus collection 的 dim 一致
+    embedder_dim: 1024
+    chunk_size: 512
+
+    # —— LLM：云端 OpenAI 兼容端点（默认智谱，可换通义/DeepSeek/OpenAI）——
+    llm_model: "${LLM_MODEL:-glm-4-plus}"
+    llm_base_url: "${LLM_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}"
+    llm_api_key: "${LLM_API_KEY}"
+    llm_temperature: 0.0
+
+    # —— 本地 bge-m3 嵌入（进程内）——
+    # 模型须提前通过 ModelScope 下载至 ./models（见 README 的「预下载模型」），并经
+    # compose 挂载到容器 /models-local。此处为目录路径 → 直接从磁盘加载，不联网。
+    embedder_bge_m3_model: "${EMBED_MODEL:-/models-local/bge-m3}"
+    embedder_bge_m3_fp16: true
+
+    # —— 本地 bge reranker（进程内；同样从 /models-local 离线加载）——
+    reranker_bge_model: "${RERANK_MODEL:-/models-local/bge-reranker-v2-m3}"
+    reranker_bge_fp16: true
+
+    # —— 运行时可变策略（交 PolicyManager；值保持字符串）——
+    policies:
+      rerank.enabled: "true"
+
+  # ---- 共享插件：覆盖各命名空间下的 default 实例（参数缺省读 globals）----
+  llm:
+    default: { target: openai }
+  embedder:
+    default: { target: bge_m3 }
+  reranker:
+    default: { target: bge_reranker }
+  tokenizer:
+    default: { target: jieba }
+
+  # ---- 存储后端：覆盖各命名空间下的 default 实例（必填连接参数缺失会在装配期直接报错）----
+  kv_store:                      # 真源
+    default:
+      target: redis
+      params:
+        url: "${REDIS_URL:-redis://redis:6379/0}"
+  fulltext_store:               # 关键词召回（BM25）
+    default:
+      target: elasticsearch
+      params:
+        hosts: "${ES_HOSTS:-http://elasticsearch:9200}"
+  vector_store:                 # 向量召回（ANN）
+    default:
+      target: milvus
+      params:
+        uri: "${MILVUS_URI:-http://milvus:19530}"
+        collection: "${MILVUS_COLLECTION:-agent_memory_vectors}"
+        dim: 1024
+        metric_type: COSINE
+
+  # query_parser 不走 LLM 改写：对话模型会把 query「答」成长文，反而拖垮召回（语义漂移 +
+  # 10~19s 延迟）。这里把它的 llm 依赖内联成匿名 echo（不引用共享 openai）令 query 原样透传；
+  # 实例级覆盖会整体替换默认 params，故 tokenizer/embedder 需一并写出（仍引用各自 default）。
+  query_parser:
+    default:
+      target: simple
+      params:
+        tokenizer: default
+        embedder: default
+        llm: { target: echo }

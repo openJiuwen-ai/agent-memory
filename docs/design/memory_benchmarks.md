@@ -1,7 +1,7 @@
 # Agent 记忆 Benchmark 调研（Memory Benchmarks Survey）
 
 > 调研对象：业界用于评测「Agent 长期记忆 / Memory Layer」能力的主流公开 Benchmark
-> 用途：为 `jiuwen-memory` 记忆系统的能力评测、效果对标与差异化定位提供参考
+> 用途：为 `agent-memory` 记忆系统的能力评测、效果对标与差异化定位提供参考
 > 调研时间：2026-05
 > 维度：来源链接、Benchmark 介绍说明、数据量、适用领域（评测能力）
 
@@ -231,7 +231,7 @@
 
 ---
 
-## 5. 选型建议（面向 jiuwen-memory）
+## 5. 选型建议（面向 agent-memory）
 
 - **对话记忆基线对标**：优先用 **LoCoMo** + **LongMemEval**，二者是业界事实标准，便于与 Mem0、Zep/Graphiti、MemOS 等横向比较；注意 LoCoMo 已存在约 6.4% 标注噪声、LongMemEval 评测对 judge prompt 敏感（约 ±10% 摆动）。
 - **大规模 / 生产级压力测试**：用 **BEAM（1M / 10M）** 验证「大上下文窗口不能替代记忆架构」，重点看矛盾消解与跨会话身份一致性。

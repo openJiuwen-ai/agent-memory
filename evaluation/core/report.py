@@ -28,12 +28,11 @@ def to_json(run: RunResult) -> Dict[str, Any]:
 
 def to_markdown(run: RunResult) -> str:
     """人读报告：装配摘要 + 指标表。"""
-    config = ", ".join(f"`{k}={v}`" for k, v in run.config_summary.items()) or "-"
     lines = [
         f"# Eval Report — {run.dataset}",
         "",
         f"- queries: **{run.n_queries}**",
-        "- config: " + config,
+        "- config: " + ", ".join(f"`{k}={v}`" for k, v in run.config_summary.items()),
         "",
         "| metric | value | detail |",
         "| --- | --- | --- |",

@@ -10,10 +10,21 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
+from common.factory.factory import Factory
 from common.type_def import Scope
 
 from .base import RetrievalOperator
 from .types import ParsedQuery, RecallChannel, ScoredUnit
+
+
+class RecallerProducer(Factory):
+    """Recaller 的注册式工厂（与契约同处接口层，消费方只依赖接口即可取实例）。
+
+    ``name`` 即实现名（如 keyword / vector / graph）。各实现在 ``recaller_impl`` 下以
+    ``@RecallerProducer.register("<名>")`` 自注册——由 :func:`retrieval.bootstrap.register_operators` 统一触发。
+    """
+
+    TOP_NAME = "recaller"
 
 
 class Recaller(RetrievalOperator):

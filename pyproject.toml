@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-memory"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.24",
+    "openai>=1.0",
+    "jieba>=0.42",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9.0",
+    "pytest-cov>=6.0,<7.0",
+    "ruff>=0.8",
+]
+nlp = [
+    "spacy>=3.7",
+    "hanlp>=2.1",
+]
+embed = [
+    "FlagEmbedding>=1.2",
+    "torch>=2.0",
+    # transformers 5.x 移除了 FlagReranker 仍调用的 prepare_for_model，会令 bge reranker 崩；固定在 4.x。
+    "transformers>=4.39,<5",
+]
+# 接真后端部署所需的客户端库（Milvus / Elasticsearch / Redis）+ YAML 配置解析。
+deploy = [
+    "pymilvus>=2.4",
+    "elasticsearch>=8,<9",
+    "redis>=5",
+    "pyyaml>=6",
+]
+# MCP surface（bootstrap/mcp_server）：把记忆动词暴露为 Model Context Protocol 工具。
+mcp = [
+    "mcp>=1.2",
+    "pyyaml>=6",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0,<9.0",
+    "pytest-cov>=6.0,<7.0",
+    "ruff>=0.8",
+]
+
+[[tool.uv.index]]
+name = "aliyun"
+url = "https://mirrors.aliyun.com/pypi/simple/"
+default = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-ra -q"
+markers = [
+    "unit: fast unit and contract tests",
+    "integration: multi-component integration tests",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]

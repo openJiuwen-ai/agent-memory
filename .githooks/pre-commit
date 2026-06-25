@@ -1,0 +1,179 @@
+#!/bin/bash
+# pre-commit hook: 文档同步检查与自动更新建议
+# 确保代码变更时同步更新相关文档
+
+set -e
+
+# 颜色输出
+RED='\033[1;31m'
+GREEN='\033[1;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[1;36m'
+NC='\033[0m'
+
+# 检查是否在交互终端（非 CI 环境）
+if [ ! -t 0 ]; then
+    exit 0
+fi
+
+# 询问用户
+ask_user() {
+    local prompt="$1"
+    local answer
+    echo -en "${CYAN}${prompt} [y/N]: ${NC}" >&2
+    read -r answer < /dev/tty
+    [ "$answer" = "y" ] || [ "$answer" = "Y" ]
+}
+
+echo -e "${CYAN}[docs-hook]${NC} 检查是否需要更新文档..." >&2
+
+# 获取暂存的代码文件（排除文档本身）
+staged_code=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(py|yaml|yml)$' || true)
+
+if [ -z "$staged_code" ]; then
+    # 只有文档变更或无变更，跳过检查
+    exit 0
+fi
+
+# 提取变更的模块路径
+changed_modules=$(echo "$staged_code" | grep '^src/' | cut -d'/' -f1-2 | sort -u || true)
+
+# 检查是否有文档一起提交
+staged_docs=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '(^docs/|AGENTS\.md$)' || true)
+
+# 检查文档完整性
+check_doc_completeness() {
+    local module="$1"
+    local agents_file="$module/AGENTS.md"
+    local issues=""
+
+    if [ ! -f "$agents_file" ]; then
+        return 0
+    fi
+
+    # 检查必需章节
+    if ! grep -q '^## 模块地图' "$agents_file"; then
+        issues="${issues}  - 缺少「模块地图」章节\n"
+    fi
+    if ! grep -q '^## 行为铁律' "$agents_file"; then
+        issues="${issues}  - 缺少「行为铁律」章节\n"
+    fi
+    if ! grep -q '^## 与其他子目录的边界' "$agents_file"; then
+        issues="${issues}  - 缺少「与其他子目录的边界」章节\n"
+    fi
+
+    # 检查是否列举了实现文件
+    local impl_dirs=$(find "$module" -maxdepth 1 -type d -name '*_impl' 2>/dev/null || true)
+    if [ -n "$impl_dirs" ]; then
+        for impl_dir in $impl_dirs; do
+            local impl_files=$(find "$impl_dir" -maxdepth 1 -name '*.py' ! -name '__init__.py' 2>/dev/null | wc -l)
+            if [ "$impl_files" -gt 0 ]; then
+                # 检查 AGENTS.md 中是否提到实现文件
+                if ! grep -q "$(basename "$impl_dir")" "$agents_file"; then
+                    issues="${issues}  - 未在模块地图中列出 $(basename "$impl_dir")/ 实现目录\n"
+                fi
+            fi
+        done
+    fi
+
+    echo -e "$issues"
+}
+
+if [ -n "$changed_modules" ] && [ -z "$staged_docs" ]; then
+    echo -e "${RED}[docs-hook]${NC} ⚠️  检测到源码变更但未包含文档更新" >&2
+    echo "" >&2
+    echo "变更的模块：" >&2
+    echo "$changed_modules" | sed 's/^/  - /' >&2
+    echo "" >&2
+    echo "需要检查更新：" >&2
+    for module in $changed_modules; do
+        if [ -f "$module/AGENTS.md" ]; then
+            echo "  - $module/AGENTS.md （模块地图、当前实现列表、行为铁律）" >&2
+        fi
+    done
+    echo "  - docs/specs/S*.md （跨模块接口契约变更时）" >&2
+    echo "  - docs/features/F*.md （新特性/方案决策时）" >&2
+    echo "" >&2
+
+    if ask_user "是否需要自动触发文档更新建议？"; then
+        echo -e "${YELLOW}[docs-hook]${NC} 建议执行以下命令让 AI 更新文档：" >&2
+        echo "" >&2
+        echo "  kiro chat --prompt \"根据本次代码变更，检查并更新以下文档：" >&2
+        for module in $changed_modules; do
+            [ -f "$module/AGENTS.md" ] && echo "  - $module/AGENTS.md" >&2
+        done
+        echo "  确保记录当前实现列表、模块地图、行为铁律与代码一致\"" >&2
+        echo "" >&2
+        exit 1
+    fi
+
+    if ! ask_user "确认无需更新文档？"; then
+        exit 1
+    fi
+fi
+
+# 检查已暂存文档的完整性
+if [ -n "$staged_docs" ]; then
+    echo -e "${CYAN}[docs-hook]${NC} 检查文档完整性..." >&2
+
+    has_issues=0
+    for doc in $staged_docs; do
+        if [[ "$doc" =~ /AGENTS\.md$ ]]; then
+            module=$(dirname "$doc")
+            issues=$(check_doc_completeness "$module")
+
+            if [ -n "$issues" ]; then
+                echo -e "${YELLOW}[docs-hook]${NC} $doc 存在以下问题：" >&2
+                echo -e "$issues" >&2
+                has_issues=1
+            fi
+        fi
+    done
+
+    if [ $has_issues -eq 1 ]; then
+        echo "" >&2
+        if ask_user "是否需要自动修复文档问题？"; then
+            echo -e "${YELLOW}[docs-hook]${NC} 建议执行以下命令让 AI 修复文档：" >&2
+            echo "" >&2
+            echo "  kiro chat --prompt \"检查并修复以下文档的结构完整性：" >&2
+            for doc in $staged_docs; do
+                [[ "$doc" =~ /AGENTS\.md$ ]] && echo "  - $doc" >&2
+            done
+            echo "  确保包含所有必需章节且内容与代码一致\"" >&2
+            echo "" >&2
+            exit 1
+        fi
+
+        if ! ask_user "确认继续提交不完整的文档？"; then
+            exit 1
+        fi
+    fi
+fi
+
+# 检查 specs 是否更新修订日期
+if echo "$staged_docs" | grep -q '^docs/specs/S.*\.md$'; then
+    today=$(date +%Y-%m-%d 2>/dev/null || date -u +%Y-%m-%d)
+    for spec in $(echo "$staged_docs" | grep '^docs/specs/S.*\.md$'); do
+        # 检查 diff 中是否有修订日期的变更
+        date_changed=$(git diff --cached "$spec" | grep '^\+.*最近一次修订日期' || true)
+
+        if [ -z "$date_changed" ]; then
+            echo -e "${RED}[docs-hook]${NC} ⚠️  spec 文件变更但未更新修订日期" >&2
+            echo "  文件: $spec" >&2
+            echo "  请在元信息中更新「最近一次修订日期」为今天 ($today)" >&2
+            echo "" >&2
+
+            if ask_user "是否自动更新修订日期？"; then
+                # 自动更新修订日期
+                sed -i "s/| 最近一次修订日期 | .* |/| 最近一次修订日期 | $today |/" "$spec"
+                git add "$spec"
+                echo -e "${GREEN}[docs-hook]${NC} ✓ 已自动更新 $spec 的修订日期" >&2
+            else
+                exit 1
+            fi
+        fi
+    done
+fi
+
+echo -e "${GREEN}[docs-hook]${NC} ✓ 文档同步检查通过" >&2
+exit 0

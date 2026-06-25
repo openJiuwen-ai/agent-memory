@@ -9,8 +9,19 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
+from ..factory.factory import Factory
 from ..base import Plugin
 from ..type_def import Chunk
+
+
+class ChunkerProducer(Factory):
+    """Chunker 的注册式工厂（与契约同处接口层，消费方只依赖接口即可取实例）。
+
+    ``name`` 即实现名。各实现在 ``chunker_impl`` 下以 ``@ChunkerProducer.register("<名>")`` 自注册——
+    注册发生在 import 实现模块时，由 :func:`common.bootstrap.register_plugins` 统一触发。
+    """
+
+    TOP_NAME = "chunker"
 
 
 class Chunker(Plugin):

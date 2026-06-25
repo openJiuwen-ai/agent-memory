@@ -10,13 +10,35 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
+from common.factory.factory import Factory
 from common.type_def import Scope
 
 from .base import BaseStore
 from .types import Edge, GraphQuery, Node
 
 
+class GraphProducer(Factory):
+    """GraphStore 的注册式工厂（与契约同处接口层，消费方只依赖接口即可取实例）。
+
+    ``name`` 即后端名（如 memory / nano_graphrag）。各实现在 ``graph_impl`` 下以
+    ``@GraphProducer.register("<后端>")`` 自注册——注册发生在 import 实现模块时，由
+    :func:`storage.bootstrap.register_backends` 统一触发。
+    """
+
+    TOP_NAME = "graph_store"
+
+
 class GraphStore(BaseStore):
+    @abstractmethod
+    def seed_ids(self, scope: Scope, tokens: set[str]) -> list[str]:
+        """
+        在 ``scope`` 内按关键词/词项定位**种子节点 id**：图召回路在
+        query 不携带显式起点时，先据此找到入口节点，再以其为 ``start_id``
+        调 :meth:`search` 多跳扩展。匹配语义（节点哪些属性、是否子串/词项）
+        由后端定义；``tokens`` 为空时返回空。后端可用其原生查询能力实现
+        （如 Neo4j 全文索引、Cypher）。
+        """
+
     @abstractmethod
     def insert(
         self,

@@ -1,4 +1,4 @@
-"""BlinkMem / JiuwenMemory CLI — the command-line surface over the memory engine.
+"""agent-memory CLI — the command-line surface over the memory engine.
 
 A §15 surface (protocol adapter): it parses argv into a ``(verb, payload)`` and
 hands it to an :class:`~client.EngineClient`, reusing the same dispatch the HTTP
@@ -6,8 +6,8 @@ surface uses. No business logic lives here. The verb + flag vocabulary tracks
 **Mem0's CLI** (see ``DESIGN.md`` § "Mem0 compatibility").
 
 Run it as a script so the CLI's own directory (not ``bootstrap/``) leads the
-import path — that keeps ``import server`` resolving to ``bootstrap/server/
-server.py`` rather than the ``server`` *package* dir::
+import path; :mod:`client` then puts ``bootstrap/core`` first so ``import server``
+resolves to ``bootstrap/core/server.py`` (the shared application core)::
 
     python3 bootstrap/cli/__main__.py [global opts] <verb> [verb opts]
     scripts/run-cli.sh [global opts] <verb> [verb opts]      # convenience wrapper
@@ -24,21 +24,27 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from importlib import import_module
 
 # Run-as-script: ensure this directory is an import root for the sibling CLI
-# modules (client/commands), mirroring how bootstrap/server modules flat-import.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# modules (client/commands), mirroring how the core/http_server modules flat-import.
+_CLI_DIR = os.path.dirname(os.path.abspath(__file__))
+if _CLI_DIR not in sys.path:
+    sys.path.append(_CLI_DIR)
 
-import commands  # noqa: E402  (after sys.path setup)
-from client import make_client  # noqa: E402
-from commands import CliError  # noqa: E402
+commands = import_module("commands")
+make_client = import_module("client").make_client
+CliError = commands.CliError
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="blinkmem", description="BlinkMem / JiuwenMemory memory engine CLI")
+    parser = argparse.ArgumentParser(
+        prog="agent-memory",
+        description="agent-memory memory engine CLI",
+    )
     parser.add_argument(
         "--server", "--base-url", dest="server",
-        metavar="URL", default=os.environ.get("BLINKMEM_SERVER"),
+        metavar="URL", default=os.environ.get("AGENT_MEMORY_SERVER"),
         help="drive a running server over HTTP (Mem0 --base-url; default: in-process)",
     )
     parser.add_argument(
@@ -57,7 +63,11 @@ def build_parser() -> argparse.ArgumentParser:
         commands.add_output_args(hp)
 
     batch = sub.add_parser("batch", help="run NDJSON ops on one stateful client (LoCoMo ingest)")
-    batch.add_argument("--input", default="-", help="NDJSON file of {op, ...payload}; '-' for stdin")
+    batch.add_argument(
+        "--input",
+        default="-",
+        help="NDJSON file of {op, ...payload}; '-' for stdin",
+    )
     commands.add_output_args(batch)
 
     return parser

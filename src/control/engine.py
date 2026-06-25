@@ -20,12 +20,23 @@ from __future__ import annotations
 from abc import abstractmethod
 from datetime import datetime
 
+from common.factory.factory import Factory
 from common.type_def import MemoryUnit, Modality, Scope
 from construction import EvolveMode
 from retrieval import RetrievalQuery, RetrievalResult
 
 from .base import ControlOperator
 from .types import Channel, DeleteSelector, MemoryPatch
+
+
+class EngineProducer(Factory):
+    """MemoryEngine 的注册式工厂（与契约同处接口层，消费方只依赖接口即可取实例）。
+
+    ``name`` 即实现名。各实现在 ``engine_impl`` 下以 ``@EngineProducer.register("<名>")`` 自注册——
+    注册发生在 import 实现模块时，由 :func:`control.bootstrap.register_controllers` 统一触发。
+    """
+
+    TOP_NAME = "engine"
 
 
 class MemoryEngine(ControlOperator):

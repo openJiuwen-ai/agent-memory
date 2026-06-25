@@ -2,7 +2,7 @@
 
 设计要点：
 - **逻辑 key vs 物理 id**：数据集用稳定的 ``key`` 标识每条语料；真实 ``unit_id``
-  在写入时由 ``MemoryAPI.write`` 返回后捕获。ground truth 相关集以 ``key`` 表达，跑分前
+  在写入时由 ``MemoryAPI.write`` 返回后捕获。标准相关集以 ``key`` 表达，跑分前
   经 harness 的 ``key→unit_id`` 映射落到物理 id，再与召回结果比对。
 - **IR 与 QA 共用一套 case**：``relevant_keys`` 服务 IR 排序指标；``expected_answer``
   服务端到端 QA 指标。二者可并存，按注入的 metric 各取所需。
@@ -22,7 +22,7 @@ from common.type_def import FilterClause, Scope
 class MemorySeed:
     """一条待写入语料：数据集内稳定 ``key`` + 写入内容与元信息。"""
 
-    key: str  # 数据集内稳定标识（ground truth 用它表达相关性，不是物理 unit_id）
+    key: str  # 数据集内稳定标识（相关性标注用它表达相关性，不是物理 unit_id）
     content: str
     scope: Scope
     tags: List[str] = field(default_factory=list)
@@ -32,17 +32,18 @@ class MemorySeed:
 
 @dataclass
 class QueryCase:
-    """一个查询样例：query + ground truth（IR 相关 key 集 / QA 期望答案）+ 检索选项。"""
+    """一个查询样例：query + 评测标注（IR 相关 key 集 / QA 参考答案）+ 检索选项。"""
 
     query_id: str
     text: str
     scope: Scope
-    relevant_keys: Set[str] = field(default_factory=set)  # IR ground truth：相关语料的 key
-    expected_answer: str = ""  # QA ground truth：期望答案（端到端用，可空）
+    relevant_keys: Set[str] = field(default_factory=set)  # IR 相关性标注：相关语料的 key
+    expected_answer: str = ""  # QA 参考答案（端到端用，可空）
     filters: List[FilterClause] = field(default_factory=list)
     as_of: Optional[datetime] = None
     top_k: int = 10
-    metadata: dict[str, str] = field(default_factory=dict)  # 题目标签（如 LoCoMo category），用于分桶统计
+    # 题目标签（如 LoCoMo category），用于分桶统计
+    metadata: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -82,7 +83,7 @@ class RunResult:
 class Dataset(ABC):
     """评测数据集契约：产出待写入语料与查询样例。
 
-    Benchmark 适配器（JSONL ground truth、LoCoMo 等）实现本接口，把各自原生格式归一到
+    Benchmark 适配器（JSONL 评测标注、LoCoMo 等）实现本接口，把各自原生格式归一到
     ``MemorySeed`` / ``QueryCase``，使 harness/runner 与具体数据集解耦。
     """
 
@@ -94,4 +95,4 @@ class Dataset(ABC):
 
     @abstractmethod
     def queries(self) -> Sequence[QueryCase]:
-        """返回全部查询样例（含 ground truth）。"""
+        """返回全部查询样例（含评测标注）。"""

@@ -1,7 +1,7 @@
 """可插拔 LLM judge——端到端 QA 的「答案合成 + 判分」实现。
 
 端到端评测分两步 LLM 调用：① 从召回的记忆合成答案；② LLM-as-judge
-比对 ground truth 答案给 CORRECT/WRONG。本模块把两步封装成一个符合
+比对参考答案给 CORRECT/WRONG。本模块把两步封装成一个符合
 :data:`evaluation.metrics.qa_metrics.JudgeFn` 的可调用，注入即用：
 
     from evaluation.metrics.llm_judge import LLMJudge, openai_chat
@@ -47,8 +47,8 @@ def _answer_user(question: str, memories: str, question_date: str) -> str:
     )
 
 
-# 拒答判定（LongMemEval judge 通行规则）：ground truth 是拒答时，模型唯有也拒答才算对；
-# ground truth 是具体事实时，模型拒答即错。
+# 拒答判定（LongMemEval judge 通行规则）：参考答案是拒答时，模型唯有也拒答才算对；
+# 参考答案是具体事实时，模型拒答即错。
 _ABSTENTION_RULE = (
     "If the gold answer indicates the information is unavailable/unanswerable, the response is "
     "correct only if it also clearly declines/abstains. If the gold answer is a concrete fact, "
@@ -78,8 +78,8 @@ def _parse_correct(content: str) -> Optional[bool]:
     start, end = text.find("{"), text.rfind("}")
     if start != -1 and end != -1:
         try:
-            parsed = json.loads(text[start:end + 1])
-            label = str(parsed.get("label", "")).strip().upper()
+            json_end = end + 1
+            label = str(json.loads(text[start:json_end]).get("label", "")).strip().upper()
         except json.JSONDecodeError:
             label = ""
         if label == "CORRECT":
@@ -90,7 +90,7 @@ def _parse_correct(content: str) -> Optional[bool]:
 
 
 class LLMJudge:
-    """两步 LLM judge：召回记忆 → 合成答案 → 比对 ground truth → 1.0/0.0。"""
+    """两步 LLM judge：召回记忆 → 合成答案 → 比对参考答案 → 1.0/0.0。"""
 
     def __init__(self, chat: ChatFn, strict: bool = False) -> None:
         self._chat = chat

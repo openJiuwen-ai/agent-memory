@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, List, Mapping, Optional, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from evaluation.core.types import CaseOutcome, MetricResult
 
@@ -18,13 +18,13 @@ from evaluation.core.types import CaseOutcome, MetricResult
 JudgeFn = Callable[[str, str, Sequence[str], Mapping[str, str]], float]
 
 
-def qa_accuracy(judge: Optional[JudgeFn] = None):
+def qa_accuracy(judge: JudgeFn | None = None):
     """构造端到端 QA 准确率指标（一个 :data:`evaluation.core.runner.Metric`）。
 
     仅对带 ``expected_answer`` 的 case 计分；judge 缺省（None）则标记 skipped。
     """
 
-    def _metric(outcomes: List[CaseOutcome]) -> List[MetricResult]:
+    def _metric(outcomes: list[CaseOutcome]) -> list[MetricResult]:
         graded = [outcome for outcome in outcomes if outcome.expected_answer]
         if judge is None:
             return [
