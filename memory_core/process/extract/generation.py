@@ -235,12 +235,16 @@ class Generator:
             if not mem_type:
                 continue
             for mem_content in fragment_memories:
-                if not isinstance(mem_content, str):
-                    content = mem_content.get("content")
-                    if content:
-                        mem_content = content
-                    else:
-                        mem_content = str(mem_content)
+                if isinstance(mem_content, dict):
+                    # 兼容 LLM 偶发把记忆包成 dict 返回：取常见键或最长字符串值，避免 str(dict) 污染记忆库
+                    cand = mem_content.get("content") or mem_content.get("mem_content")
+                    if not cand:
+                        _vals = [v for k, v in mem_content.items()
+                                 if k not in ("type", "mem_type") and isinstance(v, str) and v.strip()]
+                        cand = max(_vals, key=len) if _vals else None
+                    mem_content = cand
+                if not isinstance(mem_content, str) or not mem_content.strip():
+                    continue
                 mem_id = str(await self.data_id_generator.generate_next_id(user_id=user_id))
                 fragment_mem_units.append(FragmentMemoryUnit(
                     mem_type=mem_type,
