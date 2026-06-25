@@ -12,6 +12,7 @@ from abc import abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 
+from common.factory.factory import Factory
 from common.type_def import MemoryUnit
 
 from .base import ConstructionOperator
@@ -39,6 +40,16 @@ class EvolveResult:
     updated_ids: list[str] = field(default_factory=list)
     superseded_ids: list[str] = field(default_factory=list)
     forgotten_ids: list[str] = field(default_factory=list)
+
+
+class EvolverProducer(Factory):
+    """Evolver 的注册式工厂（与契约同处接口层，消费方只依赖接口即可取实例）。
+
+    ``name`` 即实现名。各实现在 ``evolver_impl`` 下以 ``@EvolverProducer.register("<名>")`` 自注册——
+    注册发生在 import 实现模块时，由 :func:`construction.bootstrap.register_constructors` 统一触发。
+    """
+
+    TOP_NAME = "evolver"
 
 
 class Evolver(ConstructionOperator):

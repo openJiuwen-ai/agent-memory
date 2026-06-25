@@ -3,7 +3,7 @@
 The verb set and flag names track **Mem0's CLI** (`mem0 add/search/list/get/
 update/delete`, `-u/--user-id`, positional content/id, `-k/--top-k`,
 `-o/--output`, `--messages`/`--file`, `--categories`, `--all`) so a Mem0 user can
-drive JiuwenMemory with the same muscle memory. Where our engine's contract
+drive agent-memory with the same muscle memory. Where our engine's contract
 differs (a mandatory `tenant_id`, the two id spaces), we adapt rather than fake —
 see ``DESIGN.md`` § "Mem0 compatibility".
 
@@ -41,7 +41,7 @@ def add_identity_args(p) -> None:
     alias; ``--tenant`` is our multi-tenant dimension (optional, defaults)."""
     p.add_argument("-u", "--user-id", dest="user_id", help="scope to a user (Mem0 --user-id)")
     p.add_argument("--scope", help="native alias of --user-id")
-    p.add_argument("--tenant", help="tenant_id (default: $BLINKMEM_TENANT or 'default')")
+    p.add_argument("--tenant", help="tenant_id (default: $AGENT_MEMORY_TENANT or 'default')")
     p.add_argument("--trace", default="", help="optional trace_id")
 
 
@@ -56,11 +56,11 @@ def add_output_args(p) -> None:
 def triple(args) -> dict[str, Any]:
     """Resolve the mandatory (tenant, scope, trace) from Mem0/native flags + env."""
     scope = getattr(args, "user_id", None) or getattr(args, "scope", None) \
-        or os.environ.get("BLINKMEM_USER_ID", "")
+        or os.environ.get("AGENT_MEMORY_USER_ID", "")
     if not scope:
         raise CliError("a scope is required — pass -u/--user-id (or --scope), "
-                       "or set $BLINKMEM_USER_ID")
-    tenant = getattr(args, "tenant", None) or os.environ.get("BLINKMEM_TENANT", "") or "default"
+                       "or set $AGENT_MEMORY_USER_ID")
+    tenant = getattr(args, "tenant", None) or os.environ.get("AGENT_MEMORY_TENANT", "") or "default"
     return {"tenant_id": tenant, "scope": scope, "trace_id": getattr(args, "trace", "") or ""}
 
 
@@ -221,7 +221,11 @@ def _args_delete(p) -> None:
     p.add_argument("id_pos", nargs="?", metavar="memory-id", help="lifecycle id (positional)")
     p.add_argument("--item-id", dest="item_id", help="alias of the positional id")
     p.add_argument("--all", action="store_true", help="delete all memories in scope (Mem0 --all)")
-    p.add_argument("--force", action="store_true", help="skip confirmation (accepted for Mem0 parity)")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="skip confirmation (accepted for Mem0 parity)",
+    )
     p.add_argument("--hard", action="store_true", help="hard delete (needs --approval-token)")
     p.add_argument("--approval-token", default="", help="approval token for a hard delete")
     add_output_args(p)
@@ -242,7 +246,12 @@ COMMANDS: dict[str, Command] = {
     "list": Command("list", "list memories in scope", _args_list, _payload_list),
     "get": Command("get", "fetch one memory by id", _args_get, _payload_get),
     "update": Command("update", "partial-update a memory", _args_update, _payload_update),
-    "delete": Command("delete", "soft/hard delete a memory (or --all)", _args_delete, _payload_delete),
+    "delete": Command(
+        "delete",
+        "soft/hard delete a memory (or --all)",
+        _args_delete,
+        _payload_delete,
+    ),
 }
 
 
@@ -352,7 +361,13 @@ def _render_text(body: dict[str, Any]) -> str:
     lines: list[str] = []
     if body.get("hits"):
         for h in body["hits"]:
-            lines.append(f"{h.get('score', 0.0):.4f}  {h.get('item_id', '')}  {h.get('content', '')}".rstrip())
+            lines.append(
+                (
+                    f"{h.get('score', 0.0):.4f}  "
+                    f"{h.get('item_id', '')}  "
+                    f"{h.get('content', '')}"
+                ).rstrip()
+            )
     if body.get("items"):
         for it in body["items"]:
             tags = f" {it.get('tags')}" if it.get("tags") else ""
@@ -362,7 +377,11 @@ def _render_text(body: dict[str, Any]) -> str:
         tags = f" {it.get('tags')}" if it.get("tags") else ""
         lines.append(f"{it.get('item_id', '')}  {it.get('content', '')}{tags}")
     if not lines:
-        lines.append(f"ok ({body.get('op', '')})" if body.get("ok") else json.dumps(body, ensure_ascii=False))
+        lines.append(
+            f"ok ({body.get('op', '')})"
+            if body.get("ok")
+            else json.dumps(body, ensure_ascii=False)
+        )
     return "\n".join(lines)
 
 

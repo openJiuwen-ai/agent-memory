@@ -13,10 +13,11 @@ import os
 import pytest
 
 from evaluation.benchmark.longmemeval_adapter import LongMemEvalDataset
-from evaluation.api_adapter import build_evaluation_api
 from evaluation.core.runner import Runner
 from evaluation.metrics.ir_metrics import ir_metrics
 from evaluation.metrics.qa_metrics import qa_accuracy
+
+pytestmark = pytest.mark.integration
 
 _MINI = os.path.join(os.path.dirname(__file__), "longmemeval_mini.json")
 
@@ -47,16 +48,13 @@ def test_queries_evidence_bucket_and_abstention(dataset) -> None:
 
 
 def test_end_to_end_with_stub_judge(dataset) -> None:
-    # 桩 judge：拒答题看是否「不知道」，否则看 ground truth 关键词是否被召回——确定性。
+    # 桩 judge：拒答题看是否「不知道」，否则看参考答案关键词是否被召回——确定性。
     def stub_judge(query: str, expected: str, contexts, meta=None) -> float:
         if (meta or {}).get("abstention") == "true":
             return 1.0  # 桩：视作正确拒答
         return 1.0 if any("retriever" in c.lower() for c in contexts) else 0.0
 
-    runner = Runner(
-        [ir_metrics(ks=(5,)), qa_accuracy(judge=stub_judge)],
-        api_factory=build_evaluation_api,
-    )
+    runner = Runner([ir_metrics(ks=(5,)), qa_accuracy(judge=stub_judge)])
     result = runner.run(dataset)
 
     qa = next(m for m in result.metrics if m.name == "qa_accuracy")

@@ -6,6 +6,7 @@
 
 from common.type_def import (
     AuditEvent,
+    Context,
     FilterClause,
     FilterOp,
     LifecycleState,
@@ -13,6 +14,7 @@ from common.type_def import (
     MemoryUnit,
     Modality,
     Scope,
+    Segment,
 )
 from construction import EvolveMode
 from control import (
@@ -34,15 +36,23 @@ from retrieval import (
 )
 
 from .memory_api import MemoryAPI
+from .memory_api_impl import Kernel, LocalMemoryAPI, assemble, build_kernel
 
 __all__ = [
     "MemoryAPI",
+    # 单进程实现 + 装配（参考装配，把各层具体实现串起来）
+    "LocalMemoryAPI",
+    "Kernel",
+    "assemble",
+    "build_kernel",
     # 数据模型（common.type_def）
     "Scope",
+    "Context",
     "Modality",
     "MemoryTier",
     "LifecycleState",
     "MemoryUnit",
+    "Segment",
     # 写入/修正/删除（control）
     "MemoryPatch",
     "UpdateMode",

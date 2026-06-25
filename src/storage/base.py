@@ -12,8 +12,8 @@
 ============ ==========================================================
 
 检索型存储（fulltext / vector / graph / fusion）在四个动词之上再提供
-``search`` 查询；kv 提供 ``exists`` 存在性查询；fs 提供 ``stat``
-元信息查询。后端不可用等非预期失败统一抛 :class:`~common.errors.BackendError`。
+``search`` 查询；kv 提供 ``exists`` 存在性查询与 ``list`` 范围枚举；fs 提供
+``stat`` 元信息查询。后端不可用等非预期失败统一抛 :class:`~common.errors.BackendError`。
 
 **scope 隔离是存储层的原生职责**（不靠调用方纪律）：``scope`` 是每个 Store
 方法的**显式第一入参**（``scope: Scope``，架构 §7「scope 是独立轴、显式串参，

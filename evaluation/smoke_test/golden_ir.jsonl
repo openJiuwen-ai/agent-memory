@@ -1,12 +1,12 @@
-# 评测冒烟 ground truth：6 条主题互不相同的语料 + 4 个查询（含明确相关语料）
-# 走 baseline adapter write→recall，断言检索能把相关语料排进 top-k。
-{"type":"seed","key":"m1","content":"Alice likes iced americano coffee","tags":["coffee"]}
-{"type":"seed","key":"m2","content":"BlinkMem gives agents a memory subsystem","tags":["project"]}
-{"type":"seed","key":"m3","content":"Retrieval pipeline design review","tags":["meeting"]}
-{"type":"seed","key":"m4","content":"Bob enjoys green tea and dislikes espresso","tags":["tea"]}
-{"type":"seed","key":"m5","content":"Quarterly budget report is due in March","tags":["finance"]}
-{"type":"seed","key":"m6","content":"Charlie travels to Tokyo for ML conference","tags":["travel"]}
-{"type":"query","query_id":"q1","text":"iced americano coffee","relevant_keys":["m1"],"top_k":5}
-{"type":"query","query_id":"q2","text":"BlinkMem memory subsystem","relevant_keys":["m2"],"top_k":5}
-{"type":"query","query_id":"q3","text":"retrieval pipeline design","relevant_keys":["m3"],"top_k":5}
-{"type":"query","query_id":"q4","text":"green tea espresso","relevant_keys":["m4"],"top_k":5}
+# 冒烟评测基准：6 条主题互不相同的语料 + 4 个查询（含明确相关语料）
+# 走真实装配 write→recall，断言检索能把相关语料排进 top-k（确定性）。
+{"type": "seed", "key": "m1", "content": "Alice prefers iced americano coffee without sugar in the morning", "tags": ["coffee", "habit"]}
+{"type": "seed", "key": "m2", "content": "The agent-memory project provides AI agents with an independent memory subsystem", "tags": ["project"]}
+{"type": "seed", "key": "m3", "content": "Design team review of the retrieval pipeline is scheduled for Wednesday afternoon", "tags": ["meeting"]}
+{"type": "seed", "key": "m4", "content": "Bob enjoys green tea and dislikes strong espresso drinks", "tags": ["tea"]}
+{"type": "seed", "key": "m5", "content": "The quarterly budget report is due at the end of March", "tags": ["finance"]}
+{"type": "seed", "key": "m6", "content": "Charlie travels to Tokyo for the machine learning conference next month", "tags": ["travel"]}
+{"type": "query", "query_id": "q1", "text": "iced americano coffee morning", "relevant_keys": ["m1"], "top_k": 5}
+{"type": "query", "query_id": "q2", "text": "agent-memory memory subsystem for agents", "relevant_keys": ["m2"], "top_k": 5}
+{"type": "query", "query_id": "q3", "text": "retrieval pipeline design review meeting", "relevant_keys": ["m3"], "top_k": 5}
+{"type": "query", "query_id": "q4", "text": "green tea espresso preference", "relevant_keys": ["m4"], "top_k": 5}

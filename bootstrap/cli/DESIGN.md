@@ -1,6 +1,6 @@
 # bootstrap/cli — the command-line surface
 
-The **CLI surface**: a §15 protocol adapter peer to `bootstrap/server` (the HTTP
+The **CLI surface**: a §15 protocol adapter peer to `bootstrap/http_server` (the HTTP
 surface). It parses argv into a `(verb, payload)` and routes it through the same
 kernel dispatch the HTTP path uses — **no business logic lives here**. It is the
 concrete, scriptable 对外接口 (external interface) of the memory engine, and the
@@ -18,7 +18,7 @@ Every backend implements `call(verb, payload) -> (status, body)` and
 `healthz()`. `make_client(server_url, configs)` picks one:
 
 - **`InProcessClient` (default).** Assembles the engine in *this* process exactly
-  like `bootstrap/server/__main__` — `server.build(load_config([OFFLINE,
+  like `bootstrap/http_server/__main__` — `server.build(load_config([OFFLINE,
   *configs]))` — and routes each call through `handler.dispatch`, the very code
   path the HTTP surface uses minus the socket. The `Server` is held for the
   client's lifetime, so repeated writes share the in-memory store.
@@ -33,13 +33,12 @@ shapes argv ergonomics.
 
 ### The `server` import-root subtlety
 
-`server.py`, `handler.py`, `profiles.py` are a *flat* import root in the sibling
-`bootstrap/server/` directory, and that directory is **also** a package named
-`server`. If `bootstrap/` were on `sys.path` ahead of `bootstrap/server/`, then
-`import server` would bind the (empty) package and shadow the module. So the CLI
-is launched **as a script** (not `python3 -m`), and `client.py` inserts
-`bootstrap/server` at `sys.path[0]` before importing — guaranteeing `import
-server` resolves to `server.py`.
+`server.py`, `handler.py`, `profiles.py` are a *flat* import root in the shared
+`bootstrap/core/` directory. If `bootstrap/` were on `sys.path` ahead of
+`bootstrap/core/`, then `import server` could be shadowed. So the CLI is launched
+**as a script** (not `python3 -m`), and `client.py` inserts `bootstrap/core` at
+`sys.path[0]` before importing — guaranteeing `import server` resolves to
+`core/server.py` (the shared application core all surfaces reuse).
 
 ## Subcommands are a table, not a switch (`commands.py`)
 
@@ -49,7 +48,7 @@ parsed args — adding a verb is adding a row, never editing a dispatch `if/else
 (the same A20 "route by table" rule the engine follows). Conventions:
 
 - Scope is required on every data verb (I1 user isolation): pass `-u/--user-id`
-  (Mem0) or `--scope` (native), or set `$BLINKMEM_USER_ID`; `--trace` is optional.
+  (Mem0) or `--scope` (native), or set `$AGENT_MEMORY_USER_ID`; `--trace` is optional.
 - `update` omits content/tags when not given, so a partial update means "leave
   unchanged" rather than "set empty" (the `None` sentinel, end to end).
 - Output: `-o/--output {json,text,table,quiet}` (default `json`); `--json`/
@@ -59,13 +58,13 @@ parsed args — adding a verb is adding a row, never editing a dispatch `if/else
 ## Mem0 compatibility
 
 The verb + flag vocabulary deliberately tracks [Mem0's CLI](https://docs.mem0.ai/platform/cli)
-so a Mem0 user drives JiuwenMemory with the same muscle memory. Verbs already line
+so a Mem0 user drives agent-memory with the same muscle memory. Verbs already line
 up (`add`/`search`/`list`/`get`/`update`/`delete`); the flags are mapped as:
 
 | Mem0 | here | note |
 |------|------|------|
 | `-u/--user-id` | `-u/--user-id` → scope | primary scoping; `--scope` is the native alias |
-| (n/a) | `--tenant` | our extra multi-tenant dimension; optional, default `default` / `$BLINKMEM_TENANT` |
+| (n/a) | `--tenant` | our extra multi-tenant dimension; optional, default `default` / `$AGENT_MEMORY_TENANT` |
 | `add 'text'` (positional) | positional `text` (+ `-c/--content`) | |
 | `--messages '[{role,content}]'` | `--messages` | flattened to one memory (`role: content` lines) |
 | `-f/--file` (`-`=stdin) | `-f/--file` | JSON message arrays are flattened; else raw text |
@@ -76,7 +75,7 @@ up (`add`/`search`/`list`/`get`/`update`/`delete`); the flags are mapped as:
 | `delete --all` / `--force` | `delete --all` / `--force` | `--all` fans out over a `list` client-side; `--force` is a no-op (we never prompt) |
 | `-o/--output`, `--json/--agent` | same | **default differs: we default to `json`** (programmatic-first surface), use `-o text` for humans |
 | `--base-url`, `status` | `--server`/`--base-url`, `status`/`health` | |
-| `MEM0_USER_ID` / `MEM0_BASE_URL` | `BLINKMEM_USER_ID` / `BLINKMEM_SERVER` | env defaults |
+| `MEM0_USER_ID` / `MEM0_BASE_URL` | `AGENT_MEMORY_USER_ID` / `AGENT_MEMORY_SERVER` | env defaults |
 
 **Intentional divergences** (our engine contract, not Mem0's):
 

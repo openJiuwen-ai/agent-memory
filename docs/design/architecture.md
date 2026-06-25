@@ -1,4 +1,4 @@
-# 九问记忆（jiuwen-memory）架构设计（Architecture）
+# agent-memory架构设计（Architecture）
 
 > 文档性质：架构设计（探索/设计阶段产出，概念与结构层面，非实现承诺）
 > 版本：v0.1 ｜ 日期：2026-05
@@ -282,7 +282,7 @@ MemoryUnit
 > - **薄封装 + 引擎编排**：`MemoryAPI` 不含业务逻辑；接入/落盘/索引/检索/调度的编排全部在 `MemoryEngine`（`src/control`）。引擎内核只保留**一条异步写链路**（`async def write`），接口层的同步 `write` 由其自行桥接（如 `asyncio.run`）。
 > - 接口形态无关：不论真源是文档还是结构化、运行在端还是云，调用方语义一致。
 > - **双时间一等暴露**：`recall`/`get` 的 `as_of`（valid-time）直接消费 §3.1 的双时间模型，支持「按当时状态」的时间点查询与历史回溯，与 query 文本里解析出的事件时间（event-time）分轴（对应 §15 吸收 Zep 的落点）。
-> - **统一异常契约**：错误由 `common/errors`（根 `BlinkMemError`）的类型承载——`NotFoundError`/`ConflictError`/`PermissionDeniedError`/`ValidationError`/`PolicyError`/`HealthCheckError`/`BackendError`，调用方跨后端/跨层用同一套捕获，不依赖具体实现自带异常。
+> - **统一异常契约**：错误由 `common/errors`（根 `AgentMemoryError`）的类型承载——`NotFoundError`/`ConflictError`/`PermissionDeniedError`/`ValidationError`/`PolicyError`/`HealthCheckError`/`BackendError`，调用方跨后端/跨层用同一套捕获，不依赖具体实现自带异常。
 > - **控制模式**：`evolve` 与自动触发对应 §8 的 `agent_control / static_control / both`。
 > - **不设 `link` 接口**：记忆/实体关联不对外暴露为接口语义，由构建层 Associator 在演进（§8）中自动维护（`Relation` 结构供图索引内部使用）。
 
@@ -438,7 +438,7 @@ MemoryUnit
 ### 13.4 实现落点
 
 - **`config/settings.py`**：配置 schema 与校验（各维度的取值与默认）。
-- **`bootstrap/profiles.py`**：把维度组合成 `edge/cloud/hybrid` 与上述场景 Preset，装配对应组件与后端。
+- **`bootstrap/core/profiles.py`**：把维度组合成 `edge/cloud/hybrid` 与上述场景 Preset，装配对应组件与后端。
 - **`admin_get/set/all`（§9）**：运行时查询/调整可变配置（如启停某索引、切换演进模式）。
 - 不可变/重型配置（真源形态、后端选型）在实例初始化时确定；可变策略（检索/演进开关）支持运行时调整。
 
@@ -495,7 +495,7 @@ evolve()/触发器 → 读取原始数据 → LLM 提取/抽象升华 → 关联
 > Python 为主（SDK 一等支持）。整体是 **`src/` 内核** + `bootstrap/`、`agent_plugin/` 薄封装的多形态接入；目录直接对应 §2 的分层，使架构可被代码落地。
 
 ```
-jiuwen-memory/
+agent-memory/
 ├── deploy/                         # 部署物料
 │   ├── docker/                     #   容器化部署
 │   └── local/                      #   本地部署
@@ -513,12 +513,12 @@ jiuwen-memory/
 │   ├── codex/
 │   └── hermes/
 │
-├── bootstrap/                      # A 调用层（§10）：内核的薄封装（多形态接入）
-│   ├── cli/
-│   │   └── client.py               #   CLI 客户端
-│   ├── sdk/                        #   SDK（Python）
-│   └── mcp_server/
-│       └── server.py               #   MCP Server
+├── bootstrap/                      # A 调用层（§10）：内核的薄封装（多形态接入），各 surface 共用 core
+│   ├── core/                       #   共享应用核：Server 装配 + 共享 dispatch + profiles + config_loader
+│   ├── http_server/                #   HTTP/REST surface（POST /v1/<verb>）
+│   ├── mcp_server/                 #   MCP surface（FastMCP：记忆 API → MCP 工具）
+│   ├── cli/                        #   CLI surface（client + 命令表）
+│   └── sdk/                        #   SDK（Python 库嵌入）
 │
 ├── examples/                       # 示例：嵌入用法 / 服务用法 / 端云协同
 │
@@ -533,7 +533,7 @@ jiuwen-memory/
     │
     ├── common/                     # 跨层共享：能力插件 + 通用结构体 + 异常 + 横切组件
     │   ├── base.py                 #   Plugin 插件契约（pluginType/health）+ PluginType 枚举
-    │   ├── errors.py               #   异常类型：BlinkMemError 根 + NotFound/Conflict/PermissionDenied/Validation/Policy/HealthCheck/Backend
+    │   ├── errors.py               #   异常类型：AgentMemoryError 根 + NotFound/Conflict/PermissionDenied/Validation/Policy/HealthCheck/Backend
     │   ├── type_def/               #   通用结构体：Scope / MemoryUnit（tier·双时间·provenance血缘·supersedes版本链·生命周期）/
     │   │                           #   RawPayload / Chunk / Entity·Relation·FeatureSet / ChatMessage / AuditEvent /
     │   │                           #   FilterClause·FilterOp（结构化前置过滤谓词）
@@ -602,7 +602,7 @@ jiuwen-memory/
 
 | 目录                                  | 对应架构层 / 章节            |
 | ----------------------------------- | -------------------- |
-| `bootstrap/`、`agent_plugin/`        | A 调用层（§10）：内核的薄封装（CLI/SDK/MCP）与 Agent 插件接入 |
+| `bootstrap/`、`agent_plugin/`        | A 调用层（§10）：内核的薄封装（core 共享 + CLI/SDK/HTTP/MCP surface）与 Agent 插件接入 |
 | `src/ingest/`                       | A 数据接入（§10/§10.1）：信息源接入 + 模态规约 + 转换为 MemoryUnit（**不落盘**） |
 | `src/api/`                          | B 记忆接口层（§9）：`MemoryAPI` 统一 Core API，`MemoryEngine` 的薄封装 |
 | `src/control/`                      | C 控制层：记忆引擎编排（§9 语义的执行中枢）/ 生命周期（§3.1）/ 治理审计（§12）/ scope 权限（§3.2）/ 演进调度（§8）/ 运行时策略（§13.4） |
@@ -620,8 +620,8 @@ jiuwen-memory/
 - **索引「构建」与「持久化」分离**：`src/construction/index_builder` 负责构建/更新索引（逻辑），`src/storage` 负责持久化驱动（后端），经 Store 抽象解耦；统一 CRUD 动词为 `insert`（增，冲突抛 `ConflictError`）/ `delete`（删，幂等）/ `update`（改，缺失抛 `NotFoundError`）/ `get`（查，按 id 点读）。检索型 Store 的记录/查询带一等 `scope` 字段，按 scope **原生隔离**（kv/fs 为通用键值/二进制原语，不引入 scope）。
 - **共享插件保证两侧一致**：分词/切分/向量化/特征抽取/LLM/规约/重排抽到 `src/common`，构建侧与检索侧（以及重建/演进路径）注入**同一实现**——同词表、同向量空间、同切分规则、同规约器，是「派生可重建」与召回对齐的前提。
 - **依赖方向**：各层只依赖 `src/common`，互不 import；例外集中在编排侧——`control/scheduler` 与 `control/engine` 引用 `construction.EvolveMode`（控制层驱动构建层演进），`control/engine` 引用 `retrieval` 的查询/结果类型（引擎编排检索链路），`src/api` 依赖 `control`/`retrieval`/`construction`（薄封装的委托与类型重导出）。
-- **鉴权/隔离/异常的统一落点**：① **PEP 在接口层**——`MemoryAPI` 每方法分离 `actor`（调用方，必填 keyword-only）与 `scope`（目标 target），`check` + 入口审计在此完成，actor 不下沉、下游信任 target；② **scope 原生隔离**——记录/查询带一等 `scope`，过滤条件用结构化 `FilterClause`（等值/集合/范围）由上层组装，不靠 `dict` 透传；③ **统一异常**——`common/errors`（`BlinkMemError` 根）作为跨层错误契约；④ **版本模型**——`update` 经 `UpdateMode`（SUPERSEDE 新 id / OVERWRITE 同 id）区分，版本链走 `supersedes`、演进血缘走 `provenance`。
-- **一个内核，多张「脸」**：`bootstrap/*` 与 `agent_plugin/*` 依赖内核、仅做协议/参数转换后调用 `src/api`，不含业务逻辑；`bootstrap/mcp_server` 独立服务对外提供，`bootstrap/sdk` 作为库嵌入，二者共用同一 `src/api`。
+- **鉴权/隔离/异常的统一落点**：① **PEP 在接口层**——`MemoryAPI` 每方法分离 `actor`（调用方，必填 keyword-only）与 `scope`（目标 target），`check` + 入口审计在此完成，actor 不下沉、下游信任 target；② **scope 原生隔离**——记录/查询带一等 `scope`，过滤条件用结构化 `FilterClause`（等值/集合/范围）由上层组装，不靠 `dict` 透传；③ **统一异常**——`common/errors`（`AgentMemoryError` 根）作为跨层错误契约；④ **版本模型**——`update` 经 `UpdateMode`（SUPERSEDE 新 id / OVERWRITE 同 id）区分，版本链走 `supersedes`、演进血缘走 `provenance`。
+- **一个内核，多形态接入**：`bootstrap/*` 与 `agent_plugin/*` 依赖内核、仅做协议/参数转换后调用 `src/api`，不含业务逻辑。`bootstrap/core` 是各 surface 共享的应用核（内核装配 + 共享 `dispatch` + profile/配置加载）；其上 `http_server`（HTTP/REST）与 `mcp_server`（MCP）作为独立服务对外提供、`sdk` 作为库嵌入、`cli` 作为命令行——四个 surface 彼此解耦，共用同一 `core` 与 `src/api`。
 - **端/云/混合**靠 `src/config` 的部署 profile 装配不同后端组合（端侧 SQLite+轻向量，云侧 PG+Milvus+Neo4j），逻辑模型不变。
 
 > 说明：`src/` 各层接口（含 `src/api` 与 `src/control/engine`）已按此布局生成（仅接口定义，无实现）；`src/config`、`bootstrap/`、`agent_plugin/` 等待生成。实际签名以 `src/` 代码为准。

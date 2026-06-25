@@ -10,7 +10,7 @@ once against :class:`EngineClient` and chooses a backend at the edge.
 Two backends, mirroring the two ways to reach an assembled memory engine:
 
 - :class:`InProcessClient` builds the engine in *this* process (like
-  ``bootstrap/server/__main__``) and routes through :func:`handler.dispatch` —
+  ``bootstrap/http_server/__main__``) and routes through :func:`handler.dispatch` —
   the exact code path the HTTP surface uses, minus the socket. The engine lives
   for the client's lifetime, so repeated ``add`` calls share the in-memory store
   (the stateful path the LoCoMo ingest needs without a running server).
@@ -29,13 +29,12 @@ import urllib.error
 import urllib.request
 from typing import Any, Protocol
 
-# The server modules (server.py, handler.py, profiles.py) are a flat import root
-# living in the sibling ``bootstrap/server`` directory. Put it first on the path
-# so ``import server`` resolves to that module — not to the ``server`` *package*
-# directory that would shadow it if ``bootstrap/`` itself were on the path.
-_SERVER_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "server")
-if _SERVER_DIR not in sys.path:
-    sys.path.insert(0, _SERVER_DIR)
+# The shared core modules (server.py, handler.py, profiles.py) are a flat import
+# root living in ``bootstrap/core``. Add it to the path so in-process mode can
+# reuse the shared dispatch modules.
+_CORE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core")
+if _CORE_DIR not in sys.path:
+    sys.path.append(_CORE_DIR)
 
 
 class EngineClient(Protocol):
@@ -52,7 +51,7 @@ class InProcessClient:
     """Assemble an engine in this process and route verbs through it.
 
     ``configs`` are paths to JSON config layers stacked on top of the OFFLINE
-    profile (nearest-wins), matching ``bootstrap/server/__main__``. The built
+    profile (nearest-wins), matching ``bootstrap/http_server/__main__``. The built
     :class:`Server` is held for the client's lifetime so writes persist across
     calls within the process.
     """

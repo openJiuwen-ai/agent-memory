@@ -35,7 +35,6 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Sequence
 
 from common.type_def import Scope
-
 from evaluation.core.types import Dataset, MemorySeed, QueryCase
 
 _DEFAULT_DATA = "evaluation/benchmark/data/locomo10.json"

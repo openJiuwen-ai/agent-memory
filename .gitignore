@@ -25,6 +25,11 @@ automated_testing/data/
 evaluation/benchmark/data/
 results.json
 
+# 预下载的本地模型（GB 级二进制；用 deploy/docker/download-models.sh 自行拉取，不入库）
+deploy/docker/models/
+# modelscope 下载脚本临时 venv
+deploy/docker/.venv-modelscope/
+
 .env
 .env.*
 !.env.example
@@ -33,6 +38,3 @@ results.json
 .idea/
 .vscode/
 CLAUDE.md
-
-# Personal GitCode skill config (fork info, local remote names)
-.claude/skills/gitcode-config.json

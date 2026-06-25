@@ -15,6 +15,7 @@ class DisclosureLevel(str, Enum):
     L0 = "l0"  # 摘要
     L1 = "l1"  # 片段
     L2 = "l2"  # 全文
+    ADAPTIVE = "adaptive"  # 自适应：按预算自动选择实际 L0/L1/L2
 
 
 class RecallChannel(str, Enum):
@@ -34,6 +35,17 @@ class RecallChannel(str, Enum):
 
 
 @dataclass
+class ChannelEvidence:
+    """单条结果在某召回通道内的融合证据。"""
+
+    channel: RecallChannel = RecallChannel.VECTOR  # 来源通道
+    rank: int = 0  # 通道内名次（0-based）
+    score: float = 0.0  # 通道原始分
+    weight: float = 1.0  # 融合时使用的通道权重
+    contribution: float = 0.0  # 对最终融合分的贡献
+
+
+@dataclass
 class RetrievalQuery:
     """检索请求：原始 query + 过滤条件 + 检索选项。
 
@@ -43,11 +55,20 @@ class RetrievalQuery:
     """
 
     text: str = ""  # 自然语言查询
-    filters: list[FilterClause] = field(default_factory=list)  # 标签/元数据前置过滤（结构化谓词，AND 组合）
+    # 标签/元数据前置过滤（结构化谓词，AND 组合）。
+    filters: list[FilterClause] = field(default_factory=list)
     as_of: datetime | None = None  # 时间点回溯（双时间模型 valid-time）；None 表示当前
     top_k: int = 10  # 返回条数
     disclosure: DisclosureLevel = DisclosureLevel.L0  # 结果披露层级
+    max_tokens: int | None = None  # 自适应披露预算；None 表示使用 discloser 默认策略
     with_trajectory: bool = False  # 是否返回检索轨迹
+    # -- 调用级 options（就近覆盖 profile/scope 配置，§13.2）；None = 用装配默认 -- #
+    channels: list[RecallChannel] | None = None  # 覆盖启用的召回通道；None 用 parser 建议
+    rerank: bool | None = None  # 覆盖重排开关；None 用装配默认（是否注入了 reranker）
+    include_archived: bool = False  # 当前态查询是否纳入 archived 记忆
+    # 调用方自定义透传配置（源自 Context.extensions）；内核核心不解释，
+    # 顺 parser 进 ParsedQuery 供自定义检索模块按约定 key 读取。
+    extensions: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -67,11 +88,15 @@ class ParsedQuery:
     keywords: list[str] = field(default_factory=list)  # 抽取的关键词
     entities: list[Entity] = field(default_factory=list)  # 实体（图通道用）
     vector: list[float] = field(default_factory=list)  # query 向量（向量通道用）
-    scalar_filters: list[FilterClause] = field(default_factory=list)  # 硬前置过滤谓词（源自 RetrievalQuery.filters），组装进各 Store 查询的 filters 做索引级排除
-    as_of: datetime | None = None  # 系统相信时间轴回溯点（valid-time）：过滤 [t_valid, t_invalid]，问「T 时刻哪个版本有效」
+    # 硬前置过滤谓词（源自 RetrievalQuery.filters），组装进各 Store 查询 filters。
+    scalar_filters: list[FilterClause] = field(default_factory=list)
+    # valid-time 回溯点：过滤 [t_valid, t_invalid]，问「T 时刻哪个版本有效」。
+    as_of: datetime | None = None
     time_from: datetime | None = None  # 事件时间下界（event-time）：从 query 文本解析，过滤 t_event
     time_to: datetime | None = None  # 事件时间上界（event-time）
     channels: list[RecallChannel] = field(default_factory=list)  # 建议启用的通道
+    # 透传自 RetrievalQuery.extensions，供自定义 Recaller 按约定 key 读取（内核核心不解释）。
+    extensions: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -81,6 +106,7 @@ class ScoredUnit:
     unit_id: str = ""  # 记忆单元 id
     score: float = 0.0  # 本通道内的召回得分
     channel: RecallChannel = RecallChannel.VECTOR  # 来源通道
+    evidence: list[ChannelEvidence] = field(default_factory=list)  # 融合证据明细
 
 
 @dataclass
@@ -109,4 +135,6 @@ class RetrievalResult:
     """一次检索的返回：结果项 + 可选的完整检索轨迹。"""
 
     items: list[RetrievedItem] = field(default_factory=list)  # 排序后的结果项
-    trajectory: list[TrajectoryStep] = field(default_factory=list)  # 检索轨迹（with_trajectory 时返回）
+    trajectory: list[TrajectoryStep] = field(
+        default_factory=list
+    )  # 检索轨迹（with_trajectory 时返回）

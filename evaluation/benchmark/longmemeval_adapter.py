@@ -11,7 +11,7 @@ schema（按 LongMemEval 官方字段解析）：
         "haystack_session_ids": ["s1", ...],
         "haystack_dates": ["2023/05/01 (Mon) 09:00", ...],
         "haystack_sessions": [ [ {"role", "content", "has_answer"?}, ... ], ... ],
-        "answer_session_ids": ["s3", ...]            # 含证据的会话 id（会话级 ground truth）
+        "answer_session_ids": ["s3", ...]            # 含证据的会话 id（会话级标注）
       }, ... ]
 
 映射：
@@ -36,7 +36,6 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Sequence
 
 from common.type_def import Scope
-
 from evaluation.core.types import Dataset, MemorySeed, QueryCase
 
 _DEFAULT_DATA = "evaluation/benchmark/data/longmemeval_s.json"
@@ -113,10 +112,10 @@ class LongMemEvalDataset(Dataset):
                         occurred_at=(base_dt + timedelta(seconds=t_idx) if base_dt else None),
                     )
                 )
-                if turn.get("has_answer"):  # turn 级 ground truth（更精确）
+                if turn.get("has_answer"):  # turn 级证据标注（更精确）
                     evidence_keys.add(key)
 
-        # 无 turn 级 has_answer 时，回退到会话级 ground truth（answer_session_ids 整会话）。
+        # 无 turn 级 has_answer 时，回退到会话级证据标注（answer_session_ids 整会话）。
         if not evidence_keys:
             for sid in answer_session_ids:
                 evidence_keys.update(session_keys.get(sid, []))

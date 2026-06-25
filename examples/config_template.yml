@@ -1,0 +1,39 @@
+# agent-memory 装配配置示例（被 examples/quickstart.py 通过 Config.from_yaml 解析）
+#
+# 配置是**两级命名空间**：顶层 = 各组件（Producer 的 TOP_NAME），其下 = 具名实例（target/params）。
+# 用户配置会**合并覆盖**到内置默认（纯内存离线栈）之上——只需写要改动的部分。
+# 依赖写法：「引用名(字符串)」= 共享同一具名实例；「内联(映射)」= 就地建匿名实例。
+#
+# 下面除 globals 外全部注释掉 → 本文件等价于纯默认装配；按需取消注释即可覆盖。
+
+# ---- 跨切面参数（写一处，各组件经 globals 读到；具名实例 params 可覆盖）----
+globals:
+  vector_enabled: true        # 向量索引 + 向量召回路
+  graph_enabled: true         # 图召回路
+  rerank_enabled: true        # 披露前精排
+  embedder_dim: 64
+  chunk_size: 120
+  policies:                   # 运行时可变策略（交 PolicyManager；值保持字符串）
+    rerank.enabled: "true"
+
+# ---- 换存储后端：覆盖各命名空间下的 default 实例（三方后端必填参数在 build 期即校验）----
+# kv_store:
+#   default: { target: redis, params: { url: "redis://localhost:6379/0", db: 0 } }
+# vector_store:
+#   default: { target: milvus, params: { uri: "http://localhost:19530" } }
+
+# ---- 覆盖算子参数 ----
+# fuser:
+#   default: { target: rrf, params: { k: 80 } }
+
+# ---- 本地高级精排（需安装 extra: embed，并准备模型文件）----
+# reranker:
+#   default: { target: bge_reranker, params: { reranker_bge_model: BAAI/bge-reranker-v2-m3 } }
+
+# ---- 多实例 + 引用共享示例：构建侧与召回侧共享同一具名 vector_store ----
+# vector_store:
+#   shared_vec: { target: milvus, params: { uri: "http://localhost:19530" } }
+# constructor:
+#   default: { target: hybrid, params: { vector_store: shared_vec } }   # 引用 → 与召回侧共享
+# recaller:
+#   vector: { target: vector, params: { vector_store: shared_vec } }

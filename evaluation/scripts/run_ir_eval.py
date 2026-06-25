@@ -1,79 +1,69 @@
-"""组件级 IR 评测入口——灌库 → 跑 query → 算 IR/性能指标 → 出报告。
+"""组件级 IR 评测入口——装配 → 灌库 → 跑 query → 算 IR/性能指标 → 出报告。
 
     python3 evaluation/scripts/run_ir_eval.py [--dataset PATH.jsonl] [--json OUT.json]
 
-确定性、无需 LLM。缺省读取内置 ground truth（smoke_test/golden_ir.jsonl）。
-当前默认使用 evaluation-only in-memory baseline adapter；后续真实 MemoryAPI
-adapter 接入后可替换 ``api_factory``。
+确定性、无需 LLM、无外部依赖。缺省跑内置冒烟评测基准（smoke_test/golden_ir.jsonl）。
+可选 ``--fuser`` / ``--discloser`` 切换装配后端，用同一评测标注集对比改动收益。
 """
 
 from __future__ import annotations
 
 import argparse
-import importlib
 import json
 import logging
 import os
 import sys
-from types import SimpleNamespace
-from typing import Any
+from importlib import import_module
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+for _p in (os.path.join(_ROOT, "src"), _ROOT):
+    if _p not in sys.path:
+        sys.path.append(_p)
+
+Config = import_module("config.config").Config
+JsonlDataset = import_module("evaluation.benchmark.jsonl_dataset").JsonlDataset
+_report_module = import_module("evaluation.core.report")
+to_json = _report_module.to_json
+to_markdown = _report_module.to_markdown
+Runner = import_module("evaluation.core.runner").Runner
+ir_metrics = import_module("evaluation.metrics.ir_metrics").ir_metrics
+perf_metrics = import_module("evaluation.metrics.perf_metrics").perf_metrics
+
 _DEFAULT_DATASET = os.path.join(_ROOT, "evaluation", "smoke_test", "golden_ir.jsonl")
-_LOGGER = logging.getLogger("evaluation.run_ir_eval")
-
-
-def _ensure_import_path() -> None:
-    for path in (os.path.join(_ROOT, "src"), _ROOT):
-        if path not in sys.path:
-            sys.path.append(path)
-
-
-def _load_symbol(module_name: str, symbol_name: str) -> Any:
-    return getattr(importlib.import_module(module_name), symbol_name)
-
-
-def _configure_logging() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+logger = logging.getLogger(__name__)
 
 
 def main() -> int:
-    _configure_logging()
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description="组件级 IR 评测")
-    parser.add_argument("--dataset", default=_DEFAULT_DATASET, help="JSONL ground truth 路径")
-    parser.add_argument("--fuser", default=None, help="真实 adapter 接入后覆盖 fuser_backend")
-    parser.add_argument("--discloser", default=None, help="真实 adapter 接入后覆盖 discloser_backend")
+    parser.add_argument("--dataset", default=_DEFAULT_DATASET, help="JSONL 评测标注路径")
+    parser.add_argument("--fuser", default=None, help="覆盖 fuser_backend（rrf | weighted_rrf）")
+    parser.add_argument(
+        "--discloser",
+        default=None,
+        help="覆盖 discloser_backend（truncating | structured）",
+    )
     parser.add_argument("--json", default=None, help="把机读报告写到此路径")
     args = parser.parse_args()
 
-    config = None
-    if args.fuser or args.discloser:
-        config = SimpleNamespace(
-            fuser_backend=args.fuser or "",
-            discloser_backend=args.discloser or "",
-        )
+    # 两级命名空间配置：只覆盖要切换的 producer 顶层（fuser / discloser）下的 default 实例，
+    # 其余沿用内置默认（build_kernel 把本配置合并覆盖到 default_context 之上）。
+    overrides: dict = {}
+    if args.fuser:
+        overrides["fuser"] = {"default": args.fuser}
+    if args.discloser:
+        overrides["discloser"] = {"default": args.discloser}
+    config = Config.from_dict(overrides)
 
-    _ensure_import_path()
-    jsonl_dataset_cls = _load_symbol(
-        "evaluation.benchmark.jsonl_dataset",
-        "JsonlDataset",
-    )
-    runner_cls = _load_symbol("evaluation.core.runner", "Runner")
-    build_evaluation_api = _load_symbol("evaluation.api_adapter", "build_evaluation_api")
-    to_json = _load_symbol("evaluation.core.report", "to_json")
-    to_markdown = _load_symbol("evaluation.core.report", "to_markdown")
-    ir_metrics = _load_symbol("evaluation.metrics.ir_metrics", "ir_metrics")
-    perf_metrics = _load_symbol("evaluation.metrics.perf_metrics", "perf_metrics")
-
-    dataset = jsonl_dataset_cls(args.dataset)
-    runner = runner_cls([ir_metrics(), perf_metrics()], api_factory=build_evaluation_api)
+    dataset = JsonlDataset(args.dataset)
+    runner = Runner([ir_metrics(), perf_metrics()])
     result = runner.run(dataset, config=config)
 
-    _LOGGER.info(to_markdown(result))
+    logger.info(to_markdown(result))
     if args.json:
         with open(args.json, "w", encoding="utf-8") as fh:
             json.dump(to_json(result), fh, ensure_ascii=False, indent=2)
-        _LOGGER.info("\n[json] %s", args.json)
+        logger.info("\n[json] %s", args.json)
     return 0
 
 

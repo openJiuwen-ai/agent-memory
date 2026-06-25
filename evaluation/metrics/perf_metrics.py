@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import List, Sequence
+from collections.abc import Sequence
 
 from evaluation.core.types import CaseOutcome, MetricResult
 
@@ -30,7 +30,7 @@ def _estimate_tokens(text: str) -> int:
 def perf_metrics():
     """构造性能指标套件（一个 :data:`evaluation.core.runner.Metric`）。"""
 
-    def _metric(outcomes: List[CaseOutcome]) -> List[MetricResult]:
+    def _metric(outcomes: list[CaseOutcome]) -> list[MetricResult]:
         latencies = [
             sum(getattr(step, "cost_ms", 0.0) for step in outcome.trajectory)
             for outcome in outcomes
@@ -45,13 +45,11 @@ def perf_metrics():
                 stage_totals[stage] = stage_totals.get(stage, 0.0) + getattr(step, "cost_ms", 0.0)
                 stage_counts[stage] = stage_counts.get(stage, 0) + 1
         stage_avg = {
-            f"{stage}_ms": stage_totals[stage] / stage_counts[stage]
-            for stage in stage_totals
+            f"{stage}_ms": stage_totals[stage] / stage_counts[stage] for stage in stage_totals
         }
 
         token_counts = [
-            sum(_estimate_tokens(content) for content in outcome.contents)
-            for outcome in outcomes
+            sum(_estimate_tokens(content) for content in outcome.contents) for outcome in outcomes
         ]
         avg_tokens = sum(token_counts) / len(token_counts) if token_counts else 0.0
 

@@ -7,6 +7,7 @@ from .query_parser import QueryParser
 from .recaller import Recaller
 from .retriever import Retriever
 from .types import (
+    ChannelEvidence,
     DisclosureLevel,
     ParsedQuery,
     RecallChannel,
@@ -28,6 +29,7 @@ __all__ = [
     "RetrievalQuery",
     "ParsedQuery",
     "RecallChannel",
+    "ChannelEvidence",
     "ScoredUnit",
     "RetrievedItem",
     "DisclosureLevel",

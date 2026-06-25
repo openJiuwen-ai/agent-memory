@@ -1,0 +1,27 @@
+# 缩小 docker 构建上下文（context 为仓库根）：排除虚拟环境、缓存、数据与密钥。
+.git/
+.venv/
+venv/
+python11venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+logs/
+*.log
+*.db
+.env
+.env.*
+deploy/docker/.env
+evaluation/benchmark/data/
+automated_testing/data/
+results.json
+.DS_Store
+.idea/
+.vscode/

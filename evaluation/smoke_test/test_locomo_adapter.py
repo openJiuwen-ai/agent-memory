@@ -13,10 +13,11 @@ import os
 import pytest
 
 from evaluation.benchmark.locomo_adapter import LoCoMoDataset
-from evaluation.api_adapter import build_evaluation_api
 from evaluation.core.runner import Runner
 from evaluation.metrics.ir_metrics import ir_metrics
 from evaluation.metrics.qa_metrics import qa_accuracy
+
+pytestmark = pytest.mark.integration
 
 _MINI = os.path.join(os.path.dirname(__file__), "locomo_mini.json")
 
@@ -30,8 +31,9 @@ def test_seeds_cover_all_turns(dataset) -> None:
     seeds = {s.key: s for s in dataset.seeds()}
     # sample_0: session_1(3) + session_2(2) = 5；sample_1: session_1(3) = 3
     assert len(seeds) == 8
-    assert seeds["sample_0/D1:1"].content == (
-        "[Alice]: I adopted a golden retriever puppy named Max last weekend."
+    assert (
+        seeds["sample_0/D1:1"].content
+        == "[Alice]: I adopted a golden retriever puppy named Max last weekend."
     )
     # 每个 sample 独立 scope（user=sample_id）
     assert seeds["sample_0/D1:1"].scope.user == "sample_0"
@@ -48,15 +50,12 @@ def test_queries_map_evidence_and_skip_adversarial(dataset) -> None:
 
 
 def test_end_to_end_with_stub_judge(dataset) -> None:
-    # 桩 judge：ground truth 答案的首词若出现在任一召回内容里则判对——确定性，替代真实 LLM。
+    # 桩 judge：参考答案的首词若出现在任一召回内容里则判对——确定性，替代真实 LLM。
     def stub_judge(query: str, expected: str, contexts, meta=None) -> float:
         needle = expected.split()[0].lower() if expected else ""
         return 1.0 if any(needle in c.lower() for c in contexts) else 0.0
 
-    runner = Runner(
-        [ir_metrics(ks=(5,)), qa_accuracy(judge=stub_judge)],
-        api_factory=build_evaluation_api,
-    )
+    runner = Runner([ir_metrics(ks=(5,)), qa_accuracy(judge=stub_judge)])
     result = runner.run(dataset)
 
     qa = next(m for m in result.metrics if m.name == "qa_accuracy")

@@ -1,0 +1,161 @@
+# agent-memory docker compose 部署
+
+使用 docker compose 将 agent-memory 接入真实后端，作为常驻 HTTP 服务运行。
+
+## 选型
+
+| 角色 | 实现 | 形态 |
+|---|---|---|
+| LLM | OpenAI 兼容云端 API | 外部，凭 `LLM_API_KEY` |
+| 嵌入 | `bge-m3`（1024 维） | 进程内，FlagEmbedding；模型预下载到 `./models` |
+| 精排 | `bge-reranker-v2-m3` | 进程内，FlagEmbedding；模型预下载到 `./models` |
+| 向量召回 | Milvus（etcd + MinIO + standalone） | 容器 |
+| 关键词召回 | Elasticsearch（BM25） | 容器 |
+| 真源 | Redis | 容器 |
+
+召回采用「向量 + 关键词」双通道，图召回关闭。对外暴露 `POST /v1/<verb>` 的 HTTP 接口，
+单个内核实例随进程生命周期常驻，跨请求保持状态。
+
+## 前置条件
+
+- Docker + docker compose v2。
+- 分配给 Docker 的内存 **≥ 20 GB**（若默认配额偏低，请在 Docker Desktop 设置中上调）。
+  全栈常驻约占用 13–18 GB。
+- 网络可达：拉取镜像、通过 ModelScope 下载 bge 模型（约 4 GB，详见「预下载模型」）、访问云端 LLM 端点。
+- 无 GPU：嵌入/精排走 CPU 推理，功能可用，但批量写入与高并发场景下吞吐受限。
+
+## 预下载模型（必需，先于启动）
+
+嵌入/精排使用本地 bge 模型，**不在容器启动时联网下载**。直连 HuggingFace 在部分网络环境下
+并不稳定，且下载失败时索引构建会静默降级（捕获嵌入异常后记录日志并继续），导致写入看似
+成功、召回却为空。建议在宿主机预先通过 ModelScope 下载至 `./models`，再由 compose 挂载到
+容器 `/models-local` 离线加载。
+
+```bash
+cd deploy/docker
+./download-models.sh
+# 等价手动步骤：
+#   pip install modelscope
+#   modelscope download --model BAAI/bge-m3             --local_dir ./models/bge-m3
+#   modelscope download --model BAAI/bge-reranker-v2-m3 --local_dir ./models/bge-reranker-v2-m3
+```
+
+下载完成后，`./models/` 下应包含 `bge-m3/` 与 `bge-reranker-v2-m3/` 两个目录。`.env` 中的
+`EMBED_MODEL` / `RERANK_MODEL` 默认即指向容器内的 `/models-local/...`，无需修改。
+
+## 启动
+
+```bash
+cd deploy/docker
+cp .env.example .env
+# 编辑 .env，至少填入 LLM_API_KEY（如换厂商再改 LLM_BASE_URL / LLM_MODEL）
+docker compose up -d --build
+```
+
+首次启动顺序：etcd / MinIO → Milvus、Elasticsearch、Redis 健康后，应用才会启动
+（`depends_on: service_healthy`）。bge 模型从挂载的 `/models-local` 直接加载，全程不联网；
+模型在**应用首次收到请求时**载入内存，该次请求耗时较长，此后常驻复用。
+
+查看状态与日志：
+
+```bash
+docker compose ps
+docker compose logs -f agent-memory
+```
+
+## 验证
+
+```bash
+# 健康检查
+curl http://localhost:8137/healthz
+
+# 写入一条记忆（首次请求会触发模型载入内存，需等待数秒）
+curl -X POST http://localhost:8137/v1/add \
+  -H 'Content-Type: application/json' \
+  -d '{"tenant_id":"demo","scope":"alice","content":"用户偏好用 Python 写代码"}'
+
+# 召回
+curl -X POST http://localhost:8137/v1/search \
+  -H 'Content-Type: application/json' \
+  -d '{"tenant_id":"demo","scope":"alice","query":"用什么语言","k":5}'
+```
+
+其他接口参见 [bootstrap/core/handler.py](../../bootstrap/core/handler.py)：
+`add / search / list / get / update / delete / evolve / job / inspect / trace / audit / admin / grant`。
+
+## 端口
+
+| 服务 | 端口 | 用途 |
+|---|---|---|
+| agent-memory | 8137 | HTTP API |
+| elasticsearch | 9200 | ES REST |
+| milvus | 19530 / 9091 | SDK / healthz |
+
+## 常见调整
+
+- **换 LLM 厂商**：改 `.env` 的 `LLM_BASE_URL` / `LLM_MODEL`（任意 OpenAI 兼容端点）。
+- **降低内存占用（省去 Milvus 三件套）**：将 `vector_store` 改用 Milvus Lite（pymilvus 内嵌、
+  文件存储），在 `config.yml` 中把 `uri` 改为本地文件（如 `./milvus.db`），并从 compose 中移除
+  etcd / minio / milvus 三个服务。注意 Milvus Lite 不适用于生产环境。
+- **嵌入/精排改用独立 TEI 服务**（解耦，便于启用 GPU）：启动两个 TEI 容器分别承载嵌入与精排，
+  在 `config.yml` 中将 `embedder` 改为 `openai`（指向 TEI 的 `/v1/embeddings`）、`reranker`
+  改为 `api`（Cohere 方言，指向 `/rerank`），并可从镜像中移除 `[embed]` 依赖。
+- **提升中文关键词检索精度**：为 Elasticsearch 安装 IK 分词插件（需自建 ES 镜像）；默认的 standard
+  分析器对中文按单字切分。
+
+## 配置文件
+
+服务读哪个配置由两处决定：`docker-compose.yml` 把宿主机文件挂到容器 `/config/config.yml`，
+`Dockerfile` 的 `CMD` 把该路径作为参数传给 `__main__.py`。即**真正"用哪个文件"的开关是 compose
+里的挂载源**：
+
+```yaml
+# docker-compose.yml → 服务 agent-memory
+volumes:
+  - ./config.yml:/config/config.yml:ro    # 左 = 宿主机文件，右 = 容器内固定路径
+```
+
+配置是**两级命名空间**且会**合并覆盖内置默认**（纯内存离线栈），故配置文件只需写「与默认不同」
+的部分（详见 [config.yml](config.yml) 与 `src/config`）。
+
+### 新增并启用一个配置文件
+
+1. 在 `deploy/docker/` 下新建文件，例如 `config.lite.yml`，只写要改动的命名空间/参数（其余继承默认）。
+2. 把 compose 的挂载源指过去（**整体替换**，无需改 CMD）：
+
+   ```yaml
+   volumes:
+     - ./config.lite.yml:/config/config.yml:ro
+   ```
+3. 重新创建容器使挂载生效（改 compose 须 recreate，`restart` 不够）：
+
+   ```bash
+   docker compose up -d agent-memory
+   ```
+
+### 多文件分层（进阶）
+
+`__main__.py` 接收**多个**配置路径，依次叠在内置 `OFFLINE` 之上、靠后覆盖靠前。可挂多个文件并用
+`command:` 覆盖 `CMD` 显式指定：
+
+```yaml
+volumes:
+  - ./config.yml:/config/config.yml:ro
+  - ./config.prod.yml:/config/config.prod.yml:ro
+command: ["python", "bootstrap/http_server/__main__.py",
+          "--host", "0.0.0.0", "--port", "8137",
+          "/config/config.yml", "/config/config.prod.yml"]
+```
+
+⚠️ 注意：**文件之间是顶层键浅合并** —— 后一个文件的 `memory_api` 会**整体替换**前一个的，不做
+深合并。所以「只覆盖内核里某几项」应写在**单个文件的 `memory_api` 内**（它本就只需写与默认的差异），
+而不要把 `memory_api` 拆到多个文件。分层更适合覆盖 `profile` / `policies` 这类顶层键。
+
+> 不走 docker 直接本地跑同理：`python bootstrap/http_server/__main__.py <配置路径> [更多路径…]`。
+
+## 关停 / 清数据
+
+```bash
+docker compose down           # 停止服务，保留数据卷
+docker compose down -v        # 停止服务并删除 Redis / ES / Milvus / 模型缓存等数据卷
+```

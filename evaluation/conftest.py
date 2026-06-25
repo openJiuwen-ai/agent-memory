@@ -11,6 +11,6 @@ import os
 import sys
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 仓库根 = evaluation 的上一级
-for _path in (os.path.join(_ROOT, "src"), _ROOT):
-    if _path not in sys.path:
-        sys.path.append(_path)
+for _p in (os.path.join(_ROOT, "src"), _ROOT):
+    if _p not in sys.path:
+        sys.path.append(_p)
