@@ -151,7 +151,7 @@ command: ["python", "bootstrap/http_server/__main__.py",
 深合并。所以「只覆盖内核里某几项」应写在**单个文件的 `memory_api` 内**（它本就只需写与默认的差异），
 而不要把 `memory_api` 拆到多个文件。分层更适合覆盖 `profile` / `policies` 这类顶层键。
 
-> 不走 docker 直接本地跑同理：`python bootstrap/http_server/__main__.py <配置路径> [更多路径…]`。
+> 不走 docker 直接本地跑同理：`scripts/run-server.sh <配置路径> [更多路径…]`。
 
 ## 关停 / 清数据
 

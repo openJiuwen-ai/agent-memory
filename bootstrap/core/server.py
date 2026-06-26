@@ -11,8 +11,9 @@ impls wired together, pure in-memory, no external deps). Swapping in a real prof
 means assembling real plugins/Stores in :meth:`build` and reusing the same
 ``dispatch``.
 
-This is a *flat* import root (``import server``), so it puts the repo's ``src/``
-on ``sys.path`` itself rather than relying on ``PYTHONPATH``.
+本模块仍按 flat import root 使用（``import server``）。Docker 镜像通过 editable
+安装、本地启动脚本通过 ``PYTHONPATH`` 保证仓库 ``src/`` 的导入优先级；这里仅在
+直接运行且未配置环境时把 ``src/`` 追加为兜底路径。
 """
 
 from __future__ import annotations
@@ -26,6 +27,8 @@ _SRC = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "src"
 )
 if _SRC not in sys.path:
+    # 直接运行且未做 editable 安装/PYTHONPATH 配置时的兜底。导入优先级由 Docker
+    # editable 安装或 scripts/run-*.sh 保证，避免运行时把路径强插到最前。
     sys.path.append(_SRC)
 
 Config = import_module("profiles").Config

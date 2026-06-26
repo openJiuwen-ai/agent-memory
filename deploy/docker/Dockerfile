@@ -17,8 +17,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# 依赖 + 本地包安装：用 BuildKit pip 缓存挂载。COPY src 在前，src 改动（如合并重构）
-# 会令本层缓存失效而重跑 pip，但已下载的 wheel 从 /root/.cache/pip 命中、不再联网重下。
+# 依赖 + 本地包安装：用 BuildKit pip 缓存挂载。项目用 editable 安装，site-packages
+# 只保留指向 /app/src 的链接；compose 挂载 src 后会被同一个链接读取。
 COPY pyproject.toml ./
 COPY src ./src
 # 先从 PyTorch CPU 索引装 CPU 版 torch（x86_64/aarch64 均有 +cpu wheel），避免默认拉 CUDA
@@ -28,7 +28,7 @@ COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip \
     && pip install torch==2.12.1+cpu --extra-index-url https://download.pytorch.org/whl/cpu \
-    && pip install ".[embed,deploy]"
+    && pip install -e ".[embed,deploy]"
 
 ENV HF_HOME=/models \
     HF_ENDPOINT=https://huggingface.co

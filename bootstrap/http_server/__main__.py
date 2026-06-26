@@ -6,10 +6,10 @@ adds a socket: ``POST /v1/<verb>`` with a JSON body, ``GET /healthz``. The
 and one assembled kernel is held for the server's lifetime so state persists
 across requests.
 
-Run as a script so the sibling flat-import roots (server/handler/profiles) resolve::
+通过启动脚本运行，以便把 ``src`` 与 ``bootstrap/core`` 放入 ``PYTHONPATH``::
 
-    python3 bootstrap/http_server/__main__.py [--host H] [--port P] [config.json ...]
-    scripts/run-server.sh --port 8137                       # convenience wrapper
+    scripts/run-server.sh --port 8137
+    scripts/run-server.sh [--host H] [--port P] [config.json ...]
 """
 
 from __future__ import annotations

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/api/ |
-| 最近一次修订日期 | 2026-06-24 |
+| 最近一次修订日期 | 2026-06-26 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md |
 ## 范围 / 边界
 
@@ -27,7 +27,7 @@
 1. **本层是薄封装 + PEP**：数据面委托 `MemoryEngine`，治理面委托 `Governor`，授权面委托 `PermissionManager`，调度面委托 `Scheduler`，策略面直达 `PolicyManager`。
 2. **`identity` 不下沉**：鉴权通过后只透传已鉴权的 target `scope`，`identity` 不传入控制层。
 3. **`identity` 为必填 keyword-only 参数**：与 target `scope` 同为 `Scope` 类型，强制具名传入防止位置传反。
-4. **recall 参数拆分**：`context: Context` 在本层边界拆开——`context.scope` 作独立轴穿透，`context.max_tokens` 写入 `RetrievalQuery`，`context.extensions` 写入调用级 options；`Context` 对象本身不进控制层。
+4. **recall 参数拆分**：`context: Context` 在本层边界拆开——`context.scope` 作独立轴穿透，`context.extensions` 写入调用级 options；约定 key `context.extensions["max_tokens"]` 由 API 边界解析为 int 后写入 `RetrievalQuery.max_tokens`，并从透传 extensions 中移除；`Context` 对象本身不进控制层。
 5. **admin 不经 Engine**：admin_get/set/all 直达 PolicyManager。
 6. **管理面闸门 = 根 scope**：无具体 target scope 的方法（admin_*、全局 audit）以根 scope `Scope()` 为鉴权目标——「能对根 scope 行权」即管理员闸门；租户数据/治理方法仍按各自 target scope 鉴权。
 7. **`as_of` = valid-time 回溯点**：`recall`/`get` 的 `as_of` 沿系统相信时间轴回溯，返回「那时被认为有效」的版本（`get` 沿 `supersedes` 版本链定位）；`None` 表示当前态。
@@ -83,10 +83,9 @@
 | 字段 | 类型 | 默认 | 语义 |
 |------|------|------|------|
 | `scope` | Scope | 空 Scope | 检索目标范围（多租户隔离） |
-| `max_tokens` | int \| None | None | 自适应披露 token 预算（**内核解释**；`disclosure=ADAPTIVE` 时按此选层级）；None 用 discloser 默认 |
-| `extensions` | dict[str, str] | `{}` | 调用方自定义透传配置（**内核不解释**，值须为传输安全的 str） |
+| `extensions` | dict[str, str] | `{}` | 调用方自定义透传配置，值须为传输安全的 str；约定 key `"max_tokens"` 表示自适应披露 token 预算，由 API 边界解析为 `RetrievalQuery.max_tokens` |
 
-> `max_tokens`（typed 预算）与 `extensions`（不透明透传）性质不同，故各占独立字段。
+> `extensions["max_tokens"]` 是 API 边界解释的约定 key，解析后从透传 extensions 中移除；无此 key 或空串时披露阶段使用默认策略。
 
 ### MemoryUnit / Segment（读取类方法返回，`common/type_def/memory.py`）
 

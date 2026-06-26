@@ -5,12 +5,10 @@ hands it to an :class:`~client.EngineClient`, reusing the same dispatch the HTTP
 surface uses. No business logic lives here. The verb + flag vocabulary tracks
 **Mem0's CLI** (see ``DESIGN.md`` § "Mem0 compatibility").
 
-Run it as a script so the CLI's own directory (not ``bootstrap/``) leads the
-import path; :mod:`client` then puts ``bootstrap/core`` first so ``import server``
-resolves to ``bootstrap/core/server.py`` (the shared application core)::
+通过启动脚本运行，以便把 ``src`` 与 ``bootstrap/core`` 放入 ``PYTHONPATH``，
+并确保 ``import server`` 解析到共享应用核 ``bootstrap/core/server.py``::
 
-    python3 bootstrap/cli/__main__.py [global opts] <verb> [verb opts]
-    scripts/run-cli.sh [global opts] <verb> [verb opts]      # convenience wrapper
+    scripts/run-cli.sh [global opts] <verb> [verb opts]
 
 Two backends, chosen by ``--server`` / ``--base-url`` (else in-process):
 

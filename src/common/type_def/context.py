@@ -1,15 +1,16 @@
-"""Context — 调用上下文：目标范围 + 内核一等调用级配置 + 用户自定义透传配置。
+"""Context — 调用上下文：目标范围 + 调用级透传配置。
 
-把「在谁的范围内」（``scope``）、「内核解释的调用级配置」（如 ``max_tokens`` 自适应
-披露预算）与「用户自定义透传配置」（``extensions``）打包成调用端便利结构。
-**Context 只活在接口层**：API 方法在边界处把它拆开——target ``scope`` 照旧作为独立轴
-下推（鉴权/检索），``max_tokens`` 等一等字段写入 ``RetrievalQuery`` 对应槽位由内核解释，
-``extensions`` 写入调用级 options 段、顺 parser 进 ``ParsedQuery``，透传给（用户自定义的）
-检索模块按约定 key 读取——**不把 Context 对象本身灌进内核**。如此既保留 scope 的独立轴
-设计，又让 ``extensions`` 过得了 CLI/MCP/HTTP 的序列化边界（故值类型为传输安全的 ``str``）。
+把「在谁的范围内」（``scope``）与「调用级透传配置」（``extensions``）打包成调用端
+便利结构。**Context 只活在接口层**：API 方法在边界处把它拆开——target ``scope`` 照旧
+作为独立轴下推（鉴权/检索），``extensions`` 经 API 边界写入调用级 options、顺 parser
+进 ``ParsedQuery``，透传给（用户自定义的）检索模块按约定 key 读取——**不把 Context
+对象本身灌进内核**。``extensions`` 的值类型为传输安全的 ``str``，以过 CLI/MCP/HTTP 的
+序列化边界。
 
-``max_tokens`` 与 ``extensions`` 性质不同：前者是**内核解释**的披露预算（typed ``int``），
-后者是**内核不解释**的不透明透传——故各占独立字段，不混为一谈。
+自适应披露预算经**约定 key** ``extensions[EXT_MAX_TOKENS]``（即 ``"max_tokens"``）承载：
+它本质是内核（披露阶段）解释的 int 预算，但作为调用级配置统一收进 ``extensions``，由
+API 边界（:class:`~api.memory_api_impl.local_memory_api.LocalMemoryAPI`）取出、解析为
+int 后写入 ``RetrievalQuery`` 对应槽位；无此 key（或空串）时披露阶段用默认策略。
 
 鉴权身份 ``identity`` 不在此：它是与「目标范围 + 配置」正交的鉴权关注点，
 仍由各 API 方法以独立 keyword-only 参数承载。
@@ -21,9 +22,13 @@ from dataclasses import dataclass, field
 
 from .scope import Scope
 
+# extensions 中承载自适应披露预算的约定 key（值为 int 的字符串形式）。
+# 由 API 边界解析为 RetrievalQuery.max_tokens；自定义检索模块亦可按此 key 读取。
+EXT_MAX_TOKENS = "max_tokens"
+
 
 @dataclass
 class Context:
     scope: Scope = field(default_factory=Scope)  # 操作/检索的目标范围（多租户隔离）
-    max_tokens: int | None = None  # 自适应披露预算（内核解释）；None = 用 discloser 默认策略
-    extensions: dict[str, str] = field(default_factory=dict)  # 用户自定义透传配置；内核核心不解释，自定义检索模块按约定 key 读取（值须传输安全）
+    # 调用级透传配置；内核核心不解释，值须传输安全（str）。约定 key 见 EXT_MAX_TOKENS。
+    extensions: dict[str, str] = field(default_factory=dict)

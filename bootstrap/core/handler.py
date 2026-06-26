@@ -35,6 +35,7 @@ ValidationError = _errors_module.ValidationError
 _type_def_module = import_module("common.type_def")
 AuditEvent = _type_def_module.AuditEvent
 Context = _type_def_module.Context
+EXT_MAX_TOKENS = _type_def_module.EXT_MAX_TOKENS
 MemoryUnit = _type_def_module.MemoryUnit
 Modality = _type_def_module.Modality
 Scope = _type_def_module.Scope
@@ -113,15 +114,14 @@ def _search(srv, payload: Body) -> Body:
     scope, actor = _scopes(payload)
     # extensions：把调用方在请求里给的自定义配置透传给（可能自定义的）检索模块。
     extensions = {k: str(v) for k, v in (payload.get("extensions") or {}).items()}
+    # 自适应披露预算经约定 key 并入 extensions（由 API 边界解析为 typed 预算）。
     max_tokens = payload.get("max_tokens")
+    if max_tokens is not None:
+        extensions[EXT_MAX_TOKENS] = str(max_tokens)
     trace = bool(payload.get("trace"))  # 入参 trace=true 时附带检索轨迹（默认不返回）
     res = srv.api.recall(
         _require(payload, "query"),
-        Context(
-            scope,
-            max_tokens=int(max_tokens) if max_tokens is not None else None,
-            extensions=extensions,
-        ),
+        Context(scope, extensions=extensions),
         identity=actor,
         top_k=int(payload.get("k", 10)),
         disclosure=DisclosureLevel.L2,

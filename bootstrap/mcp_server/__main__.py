@@ -6,11 +6,11 @@
 启动（stdio 传输，供 Claude Desktop / Claude Code 等 MCP 客户端挂载）::
 
     pip install ".[mcp]"
-    python3 bootstrap/mcp_server/__main__.py [config.yml ...]     # 缺省纯内存 OFFLINE 栈
+    scripts/run-mcp.sh [config.yml ...]     # 缺省纯内存 OFFLINE 栈
 
 或 Streamable HTTP::
 
-    MCP_TRANSPORT=http MCP_PORT=8138 python3 bootstrap/mcp_server/__main__.py /config/config.yml
+    MCP_TRANSPORT=http MCP_PORT=8138 scripts/run-mcp.sh /config/config.yml
 """
 
 from __future__ import annotations
@@ -20,7 +20,8 @@ import sys
 from importlib import import_module
 
 # 复用 bootstrap/core 的共享件（server 内核装配 + profiles 配置叠加 + handler dispatch +
-# config_loader 配置加载），与 CLI 相同的 flat-import：把 core 目录置 sys.path 首位再 import。
+# config_loader 配置加载），与 CLI 相同的 flat-import；启动脚本通过 PYTHONPATH 保证优先级，
+# 这里 append 仅作为直接运行本文件时的兜底。
 _BOOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _REPO = os.path.dirname(_BOOT)
 for _p in (os.path.join(_BOOT, "core"), os.path.join(_REPO, "src")):
