@@ -1237,7 +1237,7 @@ class LongTermMemory(metaclass=Singleton):
             session_id=session_id,
             message_len=num
         )
-        recent_messages = [msg for msg, _ in recent_messages_tuple]
+        recent_messages = [msg for msg, *_ in recent_messages_tuple]
         return recent_messages
 
     async def get_message_by_id(self, msg_id: str) -> Tuple[BaseMessage, datetime] | None:
@@ -2223,7 +2223,7 @@ class LongTermMemory(metaclass=Singleton):
         )
         history_messages = []
         human_message: UserMessage = UserMessage()
-        for msg, _ in history_messages_tuple:
+        for msg, _, _ in history_messages_tuple:
             if msg.role == human_message.role:
                 history_messages.append(msg)
                 continue

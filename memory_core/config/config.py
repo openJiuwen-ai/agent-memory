@@ -17,7 +17,7 @@ class MemoryEngineConfig(BaseModel):
     input_msg_max_len: int = Field(default=8192)  # max length of input message
     crypto_key: bytes = Field(default=b'')  # aes key, length must be 32, not enable encrypt memory if empty
     single_turn_history_summary_max_token: int = Field(default=128, gt=0)
-    enable_middle_memory: bool = Field(default=True)  # enable middle memory or not
+    enable_middle_memory: bool = Field(default=False)  # enable middle memory or not
     middle_memory_check_interval: int = Field(default=50)  # middle memory check interval, default 50
 
     @field_validator('crypto_key')
