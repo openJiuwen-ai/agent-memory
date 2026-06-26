@@ -54,7 +54,10 @@ pip install JiuwenMemory[redis]
 # ChromaDB vector store
 pip install JiuwenMemory[chromadb]
 
-# Install all storage backends
+# Memory server (includes uvicorn + fastapi; enables `memory-server` CLI command)
+pip install JiuwenMemory[server]
+
+# Install all storage backends (includes server)
 pip install JiuwenMemory[all]
 ```
 
@@ -151,14 +154,6 @@ async def main():
         enable_summary_memory=True,
     )
 
-    # Enable background dreaming up front. It consolidates this user's stored
-    # sessions on its own timer, supplementing the per-turn extraction below.
-    await memory.start_dreaming(
-        scope_id="my_app",
-        user_id="user_001",
-        config=DreamingConfig(enabled=True, interval_seconds=3600, min_session_rounds=2),
-    )
-
     # Feed the conversation turn by turn — each turn is stored and extracted online in real time.
     conversation = [
         ("I'm a data analyst; I use pandas on our sales data, but my pipeline has gotten slow.",
@@ -188,17 +183,6 @@ async def main():
         print("  search:")
         for res in await memory.search_user_mem(query=query, num=5, user_id="user_001", scope_id="my_app"):
             print(f"    {res.mem_info.content} (relevance: {res.score:.2f})")
-
-    # ===== before dreaming =====
-    print("===== before dreaming =====")
-    await show()
-
-    # look again after the background sweep has run (first sweep follows a short warm-up)
-    # ===== after dreaming =====
-    print("===== after dreaming =====")
-    await show()
-
-    await memory.stop_dreaming()  # on shutdown
 
 asyncio.run(main())
 ```
@@ -307,7 +291,31 @@ One command to start a local memory engine backed by REST APIs:
 
 - **Memory CRUD** — add messages, update/delete memories, manage key-value variables.
 - **Semantic search** — retrieves memories by meaning, not keywords.
-- **Zero config** — drop your LLM + embedding keys into `server/.env` and run `python -m server.memory_server`.
+- **Zero config** — install `JiuwenMemory[server]`, drop your LLM + embedding keys into `~/.jiuwenmemory/.env`, and run `memory-server`.
+
+```bash
+# Install the memory server
+pip install JiuwenMemory[server]
+
+# Create config directory and edit .env (see server/.env.example in the source repo for a template)
+mkdir -p ~/.jiuwenmemory
+cp server/.env.example ~/.jiuwenmemory/.env   # or create manually
+vim ~/.jiuwenmemory/.env                       # fill in API keys and backend config
+
+# Start the server
+memory-server
+
+# Source-code launch (still works during development)
+python -m server.memory_server
+```
+
+Configuration and data are stored under `~/.jiuwenmemory/`:
+
+```
+~/.jiuwenmemory/
+├── .env              ← environment config (LLM / embedding / storage backends)
+├── memory_data/      ← data directory (SQLite / ChromaDB, auto-created)
+```
 
 ### OpenClaw Plugin
 
@@ -393,7 +401,9 @@ agent-memory/
 │   ├── exception/                # Exception handling
 │   └── utils/                    # General utilities
 ├── server/                       # Memory service (FastAPI)
-│   ├── memory_server.py          # HTTP API server
+│   ├── __init__.py               # Package init
+│   ├── memory_server.py          # HTTP API server (CLI entry point main())
+│   ├── store_factory.py          # Storage backend factory
 │   └── .env.example              # Environment config template
 ├── agent-memory-plugin/          # OpenClaw lifecycle plugin
 │   ├── lib/                      # Plugin library

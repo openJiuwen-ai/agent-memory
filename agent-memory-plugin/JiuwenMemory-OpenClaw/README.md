@@ -25,14 +25,30 @@ openclaw plugins install .
 
 **3.1 安装依赖**
 ```bash
-# 安装本仓库（JiuwenMemory）并带上 SQLite + ChromaDB 存储后端
-pip install -e .[sqlite,chromadb]
-# 记忆服务额外依赖的 Web 框架
-pip install fastapi uvicorn
+# 安装 JiuwenMemory 并带上记忆服务 + SQLite + ChromaDB 存储后端
+pip install JiuwenMemory[server,sqlite,chromadb]
+
+# 源码安装（开发时）
+pip install -e .[server,sqlite,chromadb]
 ```
 
 **3.2 配置 `.env`**
-在 `server/` 目录下创建 `.env` 文件（可参考同目录的 `server/.env.example`），必须配置大模型和 Embedding 模型，其他按需配置：
+在 `~/.jiuwenmemory/` 目录下创建 `.env` 文件（可参考源码仓库 `server/.env.example`），必须配置大模型和 Embedding 模型，其他按需配置：
+
+```bash
+mkdir -p ~/.jiuwenmemory
+# 从源码仓库复制模板（如果已 clone），或手动创建
+cp server/.env.example ~/.jiuwenmemory/.env
+vim ~/.jiuwenmemory/.env
+```
+
+配置文件和数据目录统一存放在 `~/.jiuwenmemory/` 下：
+
+```
+~/.jiuwenmemory/
+├── .env              ← 环境配置
+├── memory_data/      ← 数据目录（自动创建）
+```
 
 | 变量 | 说明 |
 | --- | --- |
@@ -43,7 +59,7 @@ pip install fastapi uvicorn
 | `EMBED_API_BASE` | Embedding 模型服务地址 |
 | `EMBED_MODEL_NAME` | Embedding 模型调用名称 |
 | `EMBED_API_KEY` | Embedding 模型的 API Key |
-| `MEMORY_DATA_DIR` | 记忆数据文件保存目录，默认 `./memory_data` |
+| `MEMORY_DATA_DIR` | 记忆数据文件保存目录，默认 `~/.jiuwenmemory/memory_data` |
 | `IP` | 记忆服务监听 IP，默认 `127.0.0.1`（仅本机访问；对外暴露需改 `0.0.0.0` 并设置 `MEMORY_API_KEY`） |
 | `PORT` | 记忆服务监听端口，默认 `8000` |
 | `MEMORY_API_KEY` | API 鉴权 Key，留空则不鉴权（仅限本地）；非本机部署时必填，插件需在 `openclaw.json` 的 `apiKey` 配同一值 |
@@ -84,10 +100,15 @@ Vector Store：
 > 第三方依赖（pymilvus / elasticsearch / psycopg2 等）按需懒导入，只在切到对应后端时才需要安装；停留在默认 chroma 不受影响。
 
 **3.4 启动记忆服务**
-在仓库根目录下执行：
+
 ```bash
+# pip 安装方式（推荐）
+memory-server
+
+# 源码启动方式（开发时）
 python -m server.memory_server
 ```
+
 看到提示 `Memory engine initialized successfully` 即启动成功。
 
 ### 4. 修改 openclaw.json 配置

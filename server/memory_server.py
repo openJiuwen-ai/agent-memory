@@ -22,15 +22,38 @@ from server.store_factory import (
     create_vector_store,
 )
 
-# 加载 .env 文件 - 使用绝对路径确保无论从哪个目录启动都能找到
-env_path = Path(__file__).parent / ".env"
-if env_path.exists():
-    load_dotenv(dotenv_path=str(env_path))
-    memory_logger.info("Loaded .env from: %s", str(env_path))
-else:
-    # 尝试从当前工作目录加载
-    load_dotenv(dotenv_path=".env")
-    memory_logger.info("Loaded .env from current directory")
+# 加载 .env 文件 — fallback 链: ~/.jiuwenmemory/.env → 当前工作目录/.env
+_JIUWEN_DIR = Path.home() / ".jiuwenmemory"
+
+
+def _load_env() -> None:
+    """按优先级加载 .env，找不到时自动创建 ~/.jiuwenmemory/ 目录。"""
+    # 优先 ~/.jiuwenmemory/.env
+    home_env = _JIUWEN_DIR / ".env"
+    if home_env.exists():
+        load_dotenv(dotenv_path=str(home_env), override=True)
+        memory_logger.info("Loaded .env from: %s", str(home_env))
+        return
+
+    # 其次 当前工作目录/.env
+    cwd_env = Path.cwd() / ".env"
+    if cwd_env.exists():
+        load_dotenv(dotenv_path=str(cwd_env), override=True)
+        memory_logger.info("Loaded .env from current directory: %s", str(cwd_env))
+        return
+
+    # 都没找到 — 自动创建 ~/.jiuwenmemory/ 目录，并提示用户配置
+    _JIUWEN_DIR.mkdir(parents=True, exist_ok=True)
+    memory_logger.warning(
+        "No .env found in %s or current directory. "
+        "Please create %s/.env with your configuration. "
+        "A template is available in the server/.env.example file of the source repository.",
+        str(_JIUWEN_DIR),
+        str(_JIUWEN_DIR),
+    )
+
+
+_load_env()
 
 # 读取 API Key（空字符串 = 不启用鉴权，仅限本地开发）
 MEMORY_API_KEY = os.getenv("MEMORY_API_KEY", "")
@@ -396,7 +419,8 @@ async def root():
     }
 
 
-if __name__ == "__main__":
+def main():
+    """CLI entry point: start the Memory Server via uvicorn."""
     import sys
     import uvicorn
 
@@ -408,9 +432,13 @@ if __name__ == "__main__":
     if not host.startswith("127.") and host != "localhost" and not MEMORY_API_KEY:
         memory_logger.error(
             "IP=%s exposes the service to the network, but MEMORY_API_KEY is not set. "
-            "Set MEMORY_API_KEY in server/.env, or use IP=127.0.0.1 for local-only access.",
+            "Set MEMORY_API_KEY in ~/.jiuwenmemory/.env, or use IP=127.0.0.1 for local-only access.",
             host,
         )
         sys.exit(1)
 
     uvicorn.run(app, host=host, port=port)
+
+
+if __name__ == "__main__":
+    main()

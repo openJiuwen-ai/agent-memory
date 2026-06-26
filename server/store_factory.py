@@ -18,8 +18,9 @@ from foundation.store.base_vector_store import BaseVectorStore
 
 
 def _data_dir() -> str:
-    """统一读取 MEMORY_DATA_DIR，并确保目录存在。"""
-    data_directory = os.getenv("MEMORY_DATA_DIR", "./memory_data")
+    """统一读取 MEMORY_DATA_DIR，默认为 ~/.jiuwenmemory/memory_data，并确保目录存在。"""
+    default_dir = str(Path.home() / ".jiuwenmemory" / "memory_data")
+    data_directory = os.getenv("MEMORY_DATA_DIR", default_dir)
     Path(data_directory).mkdir(parents=True, exist_ok=True)
     return data_directory
 

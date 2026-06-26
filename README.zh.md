@@ -54,7 +54,10 @@ pip install JiuwenMemory[redis]
 # ChromaDB 向量存储
 pip install JiuwenMemory[chromadb]
 
-# 安装所有存储后端
+# 记忆服务（含 uvicorn + fastapi，安装后可直接 memory-server 命令启动）
+pip install JiuwenMemory[server]
+
+# 安装所有存储后端（含记忆服务）
 pip install JiuwenMemory[all]
 ```
 
@@ -151,13 +154,6 @@ async def main():
         enable_summary_memory=True,
     )
 
-    # 先启动后台“睡时记忆巩固”。它按自己的定时器在后台运行，作为下面逐轮提取的补充。
-    await memory.start_dreaming(
-        scope_id="my_app",
-        user_id="user_001",
-        config=DreamingConfig(enabled=True, interval_seconds=3600, min_session_rounds=2),
-    )
-
     # 逐轮喂入对话——每轮都会实时存储并在线提取记忆
     conversation = [
         ("我是一名数据分析师，平时用 pandas 处理销售数据，但最近流水线太慢了。",
@@ -188,16 +184,7 @@ async def main():
         for res in await memory.search_user_mem(query=query, num=5, user_id="user_001", scope_id="my_app"):
             print(f"    {res.mem_info.content} (相关度: {res.score:.2f})")
 
-    # ===== dreaming 完成前 =====
-    print("===== dreaming 完成前 =====")
     await show()
-
-    # 待后台睡时整理完成后（首次 sweep 有一小段预热）再看一次
-    # ===== dreaming 完成后 =====
-    print("===== dreaming 完成后 =====")
-    await show()
-
-    await memory.stop_dreaming()  # 关闭时停止
 
 asyncio.run(main())
 ```
@@ -302,7 +289,31 @@ Graph Memory 是独立的知识图谱记忆模块，可将输入内容沉淀为�
 
 - **记忆读写** — 添加消息、增删改记忆、管理键值变量。
 - **语义搜索** — 按含义检索，不是关键词匹配。
-- **零配置起步** — 把 LLM 和 Embedding 的 key 填入 `server/.env`，执行 `python -m server.memory_server` 即跑起来。
+- **零配置起步** — 安装 `JiuwenMemory[server]` 后，把 LLM 和 Embedding 的 key 填入 `~/.jiuwenmemory/.env`，执行 `memory-server` 即可启动。
+
+```bash
+# 安装记忆服务
+pip install JiuwenMemory[server]
+
+# 创建配置目录并编辑 .env（可参考源码仓库 server/.env.example）
+mkdir -p ~/.jiuwenmemory
+cp server/.env.example ~/.jiuwenmemory/.env   # 或手动创建
+vim ~/.jiuwenmemory/.env                       # 填入 API Key 等配置
+
+# 启动服务
+memory-server
+
+# 源码启动（开发时仍可使用）
+python -m server.memory_server
+```
+
+配置文件和数据目录统一存放在 `~/.jiuwenmemory/` 下：
+
+```
+~/.jiuwenmemory/
+├── .env              ← 环境配置（LLM / Embedding / 存储后端等）
+├── memory_data/      ← 数据目录（SQLite / ChromaDB 等，自动创建）
+```
 
 ### OpenClaw 插件
 
@@ -388,7 +399,9 @@ agent-memory/
 │   ├── exception/                # 异常处理
 │   └── utils/                    # 通用工具
 ├── server/                       # 记忆服务（FastAPI）
-│   ├── memory_server.py          # HTTP API 服务
+│   ├── __init__.py               # 包初始化
+│   ├── memory_server.py          # HTTP API 服务（CLI 入口 main()）
+│   ├── store_factory.py          # 存储后端工厂
 │   └── .env.example              # 环境变量模板
 ├── agent-memory-plugin/          # OpenClaw 生命周期插件
 │   ├── lib/                      # 插件库
