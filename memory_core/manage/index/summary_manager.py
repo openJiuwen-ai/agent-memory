@@ -47,6 +47,9 @@ class SummaryManager(BaseMemoryManager):
             for mem_unit in memory_list:
                 if not isinstance(mem_unit, SummaryUnit):
                     continue
+                # 空摘要不入库：避免向量化时触发 embedding 的 "empty chunk" 校验报错
+                if not mem_unit.summary or not mem_unit.summary.strip():
+                    continue
 
                 memory_doc = MemoryDoc(
                     id=mem_unit.mem_id,
