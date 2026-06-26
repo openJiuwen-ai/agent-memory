@@ -61,10 +61,10 @@ from api import (
 `recall` 收到的 `Context` 在边界即被拆开，**Context 对象本身不进内核**：
 
 - `context.scope` → 照旧作独立轴下推（先鉴权、再作检索隔离轴）；
-- `context.max_tokens` → 写入 `RetrievalQuery` 由披露阶段消费；
-- `context.extensions` → 写入调用级 options，顺 parser 透传给（用户自定义的）检索模块按约定 key 取用。
+- `context.extensions["max_tokens"]` → API 边界解析为 int 后写入 `RetrievalQuery.max_tokens` 由披露阶段消费；
+- 其余 `context.extensions` → 写入调用级 options，顺 parser 透传给（用户自定义的）检索模块按约定 key 取用。
 
-`max_tokens`（内核解释的 typed 预算）与 `extensions`（内核不解释的不透明透传）性质不同，故各占独立字段而非混在一处。
+`extensions["max_tokens"]` 是接口层解释的约定 key，解析后从透传 extensions 中移除；其他 extensions 仍保持内核不解释的不透明透传语义。
 
 ### 4. 异步内核 + 同步桥接
 
@@ -115,7 +115,7 @@ kernel = build_kernel(config=Config(...))         # 另需真源 kv 句柄时
 ## 拒绝的方案
 
 - **`identity` 作为位置参数**：被拒。与 target `scope` 同为 `Scope`，位置传反即静默越权；强制 keyword-only 把错误挡在调用处。
-- **Context 对象下沉进内核**：被拒。Context 是接口层的打包容器，下沉会让内核耦合「调用形态」；改为边界拆包，scope/max_tokens/extensions 各按自己的轴下推。
+- **Context 对象下沉进内核**：被拒。Context 是接口层的打包容器，下沉会让内核耦合「调用形态」；改为边界拆包，scope 独立下推，extensions 中的约定 key 由 API 边界解释，其余 extensions 透传。
 - **接口层承担编排**：被拒。api 层只做 PEP + 参数装配 + 审计，所有编排（write 的规约/索引、recall 的多路召回/融合/披露、evolve 的阶段调度）留在 `src/control` 与各算子层，保证入口薄、可替换接入形态。
 - **管理面也走 MemoryEngine**：被拒。engine 聚焦数据面；任务/策略/治理/授权直达对应控制算子，避免 engine 变成「什么都转发」的上帝对象。
 - **同步实现整套内核**：被拒。内核选异步（适配 HTTP/MCP 高并发），同步入口用 `asyncio.run` 桥接；避免维护同步/异步两份实现导致语义漂移。
@@ -128,7 +128,7 @@ kernel = build_kernel(config=Config(...))         # 另需真源 kv 句柄时
 
 - `pytest tests/unit/api` 全绿（exit 0）。
   - `test_build_kernel_config`：装配路径——默认上下文、用户 config 合并覆盖、`build_named` 具名共享、顶层名校验、kv 注入。
-  - `test_recall_context`：Context 边界拆包（scope/max_tokens/extensions 各自下推）与 recall 端到端。
+  - `test_recall_context`：Context 边界拆包（scope、extensions 约定 key、其余 extensions）与 recall 端到端。
 - 鉴权/审计语义随控制层 `tests/unit/control/` 一并回归（PEP 在接口层，闸门行为在 `allow_all` 与真实 PermissionManager 下分别覆盖）。
 
 ---

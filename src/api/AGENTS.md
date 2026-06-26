@@ -26,8 +26,8 @@
 3. **recall 参数拆分在本层边界**  
    `recall(query, context, *, identity, ...)` 中的 `context: Context` 在本层拆开：
    - `context.scope` 作独立轴穿透到 Engine
-   - `context.max_tokens` 写入 `RetrievalQuery.max_tokens`
-   - `context.extensions` 写入 `RetrievalQuery.extensions`
+   - `context.extensions["max_tokens"]` 由 API 边界解析为 `RetrievalQuery.max_tokens`
+   - 其余 `context.extensions` 写入 `RetrievalQuery.extensions`
 
 4. **admin_* 不经 Engine**  
    `admin_get/set/all` 直达 `PolicyManager`，不经过 `MemoryEngine`（Engine 中对应方法抛 NotImplementedError）。

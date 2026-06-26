@@ -33,12 +33,12 @@ shapes argv ergonomics.
 
 ### The `server` import-root subtlety
 
-`server.py`, `handler.py`, `profiles.py` are a *flat* import root in the shared
-`bootstrap/core/` directory. If `bootstrap/` were on `sys.path` ahead of
-`bootstrap/core/`, then `import server` could be shadowed. So the CLI is launched
-**as a script** (not `python3 -m`), and `client.py` inserts `bootstrap/core` at
-`sys.path[0]` before importing — guaranteeing `import server` resolves to
-`core/server.py` (the shared application core all surfaces reuse).
+`server.py`、`handler.py`、`profiles.py` 是共享目录 `bootstrap/core/` 下的
+flat import root。如果 `bootstrap/` 排在 `bootstrap/core/` 前面，`import server`
+就可能被同名模块遮蔽。因此 CLI 仍以脚本方式启动（不用 `python3 -m`），并由
+`scripts/run-cli.sh` 把 `bootstrap/core` 与 `src` 前置到 `PYTHONPATH`，确保
+`import server` 解析到 `core/server.py`（所有 surface 复用的共享应用核），同时
+避免在运行时把路径强插到 `sys.path` 最前。
 
 ## Subcommands are a table, not a switch (`commands.py`)
 

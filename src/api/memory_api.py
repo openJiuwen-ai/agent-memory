@@ -95,11 +95,11 @@ class MemoryAPI(ABC):
         disclosure: DisclosureLevel = DisclosureLevel.L0,
         with_trajectory: bool = False,
     ) -> RetrievalResult:
-        """混合检索召回。``context`` 携带检索目标范围 ``context.scope``、自适应披露
-        预算 ``context.max_tokens``（内核解释）与调用方自定义透传配置
-        ``context.extensions``（**不被内核核心逻辑解释**），``identity`` 为调用方身份
-        （本层据 scope/identity 鉴权 READ）。边界处把 Context 拆开：scope 作独立轴穿透，
-        ``max_tokens`` 写入 ``RetrievalQuery`` 由披露阶段消费，``extensions`` 写入调用级
+        """混合检索召回。``context`` 携带检索目标范围 ``context.scope`` 与调用级透传配置
+        ``context.extensions``（**不被内核核心逻辑解释**，值为传输安全的 ``str``），
+        ``identity`` 为调用方身份（本层据 scope/identity 鉴权 READ）。边界处把 Context
+        拆开：scope 作独立轴穿透；``extensions`` 中约定 key ``max_tokens``（自适应披露预算）
+        被解析为 int 写入 ``RetrievalQuery`` 由披露阶段消费，其余 ``extensions`` 写入调用级
         options、顺 parser 进 ``ParsedQuery`` 供自定义检索模块按约定 key 读取；Context
         本身不下沉。``filters`` 标签/元数据前置过滤（结构化
         :class:`~common.type_def.FilterClause` 列表，支持等值/集合/范围，AND 组合），

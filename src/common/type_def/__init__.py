@@ -3,7 +3,7 @@
 from .audit import AuditEvent
 from .chat import ChatMessage
 from .chunk import Chunk
-from .context import Context
+from .context import EXT_MAX_TOKENS, Context
 from .feature import Entity, FeatureSet, Relation
 from .filter import FilterClause, FilterOp
 from .memory import DedupDecision, LifecycleState, MemoryTier, MemoryUnit, Modality, Segment, Temporal
@@ -13,6 +13,7 @@ from .scope import Scope
 __all__ = [
     "Scope",
     "Context",
+    "EXT_MAX_TOKENS",
     "Modality",
     "MemoryTier",
     "DedupDecision",

@@ -18,8 +18,16 @@ from datetime import datetime, timezone
 from typing import Dict, List
 
 from common.audit import AuditLogger
-from common.errors import PermissionDeniedError
-from common.type_def import AuditEvent, Context, FilterClause, MemoryUnit, Modality, Scope
+from common.errors import PermissionDeniedError, ValidationError
+from common.type_def import (
+    EXT_MAX_TOKENS,
+    AuditEvent,
+    Context,
+    FilterClause,
+    MemoryUnit,
+    Modality,
+    Scope,
+)
 from construction import EvolveMode
 from control.engine import MemoryEngine
 from control.governance import Governor
@@ -35,6 +43,20 @@ from api.memory_api import MemoryAPI
 # 在真实 RBAC 后端下，「能对全局根 scope 行权」即等价于管理员闸门；在 allow_all
 # 装配下为 no-op。租户数据/治理方法仍按各自的 target scope 鉴权。
 _ROOT = Scope()
+
+
+def _parse_max_tokens(raw: str | None) -> int | None:
+    """解析 ``Context.extensions`` 的约定 key ``max_tokens`` 为披露预算（int）。
+
+    缺失/空串 → ``None``（披露阶段用默认策略）；非整数 → :class:`~common.errors.ValidationError`
+    （可预期的调用错误，与 ``RetrievalQuery`` 的 ``max_tokens<=0`` 校验同档）。
+    """
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise ValidationError(f"max_tokens must be an integer, got {raw!r}") from None
 
 
 class LocalMemoryAPI(MemoryAPI):
@@ -137,20 +159,23 @@ class LocalMemoryAPI(MemoryAPI):
         disclosure: DisclosureLevel = DisclosureLevel.L0,
         with_trajectory: bool = False,
     ) -> RetrievalResult:
-        # Context 在边界处拆包：scope 照旧作独立轴下推（鉴权 + 检索），
-        # max_tokens 写入 RetrievalQuery 由披露阶段消费，extensions 写入调用级
-        # options 顺 parser 透传给自定义检索模块；Context 对象本身不进内核。
+        # Context 在边界处拆包：scope 照旧作独立轴下推（鉴权 + 检索），extensions 写入
+        # 调用级 options 顺 parser 透传给自定义检索模块；Context 对象本身不进内核。
+        # 约定 key max_tokens（自适应披露预算）在此解析为 typed int 写入 RetrievalQuery，
+        # 并从透传 extensions 中移除，避免与内核已解释的字段重复。
         self._authorize(identity, context.scope, Action.READ)
         self._log(identity, "recall")
+        options = dict(context.extensions)
+        max_tokens = _parse_max_tokens(options.pop(EXT_MAX_TOKENS, None))
         rq = RetrievalQuery(
             text=query,
             filters=list(filters or []),
             as_of=as_of,
             top_k=top_k,
             disclosure=disclosure,
-            max_tokens=context.max_tokens,
+            max_tokens=max_tokens,
             with_trajectory=with_trajectory,
-            extensions=dict(context.extensions),
+            extensions=options,
         )
         return asyncio.run(self._engine.recall(context.scope, rq))
 

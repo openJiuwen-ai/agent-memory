@@ -1,11 +1,11 @@
-"""recall 的 Context 契约：max_tokens 经 Context 下达自适应披露（而非独立参数）。"""
+"""recall 的 Context 契约：max_tokens 经 Context.extensions 下达自适应披露。"""
 
 from __future__ import annotations
 
 import pytest
 
 from api.memory_api_impl import assemble
-from common.type_def import Context, Modality, Scope
+from common.type_def import EXT_MAX_TOKENS, Context, Modality, Scope
 from config import Config
 from retrieval.types import DisclosureLevel
 
@@ -29,7 +29,7 @@ def test_context_max_tokens_reaches_adaptive_disclosure() -> None:
 
     res = api.recall(
         "coffee",
-        Context(_SCOPE, max_tokens=300),
+        Context(_SCOPE, extensions={EXT_MAX_TOKENS: "300"}),
         identity=_ACTOR,
         disclosure=DisclosureLevel.ADAPTIVE,
         with_trajectory=True,
