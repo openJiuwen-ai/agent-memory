@@ -165,6 +165,7 @@ class FragmentMemoryManager(BaseMemoryManager):
                 new_memories=new_mem_content,
                 old_memories=old_memories,
                 base_chat_model=llm,
+                extract_assistant_memory=bool(kwargs.get("extract_assistant_memory", False)),
             )
             memory_logger.info(
                 "Memory check completed, got %s action items",

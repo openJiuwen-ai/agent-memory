@@ -19,6 +19,18 @@ from common.logging import memory_logger
 from common.logging.events import LogEventType
 
 
+# Injected into memory_update_check prompt only when the batch may contain
+# multiple distinct subjects (extract_assistant_memory). Hardens the soft
+# "仅当主体完全匹配时" rule so identical predicates across different subjects
+# are not collapsed into one (which would silently drop a subject's memory).
+_SUBJECT_EMPHASIS = """
+# 主体优先匹配（最高优先级，先于冗余/冲突判断）
+- 本场景可能存在多个不同主体的信息。判定任意两条信息前，**必须先各自确定其主体说话人**。
+- 铁律：**只要两条信息的主体不同，一律判 `none`（共存）**——即便谓词、属性或取值完全相同，也严禁判 `redundant` 或 `conflicting`。
+- 只有在**两条信息的主体完全相同**时，才继续按下列定义判断冗余或冲突。
+"""
+
+
 class CheckResult(str, Enum):
     """Result of memory check operation."""
 
@@ -129,6 +141,7 @@ class MemUpdateChecker:
         old_memories: Dict[str, str],
         base_chat_model: Model,
         retries: int = 3,
+        extract_assistant_memory: bool = False,
     ) -> List[MemoryActionItem]:
         """
         Check for redundancy and conflicts between new and old memories.
@@ -138,6 +151,13 @@ class MemUpdateChecker:
             old_memories: Dictionary of existing memories {id: content}
             base_chat_model: Model instance for LLM invocation
             retries: Number of retries for LLM invocation (default: 3)
+            extract_assistant_memory: Mirrors the scope-level config flag of the
+                same name. When True, the batch may contain multiple distinct
+                subjects (e.g. both user and assistant), so a top-priority
+                "subject-first" rule is injected: facts with identical predicates
+                but different subjects are kept as coexisting (none) instead of
+                being mis-judged redundant/conflicting. Default False keeps the
+                prompt byte-identical to the single-subject behavior.
 
         Returns:
             List[MemoryActionItem]: List of memories with action status (add/delete)
@@ -176,6 +196,7 @@ class MemUpdateChecker:
             {
                 "new_information": new_info_str,
                 "old_information": old_info_str,
+                "subject_emphasis": _SUBJECT_EMPHASIS if extract_assistant_memory else "",
             },
         )
 

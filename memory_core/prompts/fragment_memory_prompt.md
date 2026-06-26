@@ -49,6 +49,7 @@
              - `old_mem`绝对禁止为空字符串。切绝对禁止出现`未提交`、`未明确`、`未提及`等文字，应该根据上下文推理并明确给出用户要修改的值。
          - `mem_type`：根据目标记忆的内容属性，归类为`user_profile`、`episodic_memory`或`semantic_memory`
          - `mem_instruct`：`UPDATE`(修改)或`DELETE`（删除）
+{{instruct_issuer_rule}}
 
 ## Step 5: 内容整理
 - 动作：隐私内容过滤，并按规则对每条内容整理
