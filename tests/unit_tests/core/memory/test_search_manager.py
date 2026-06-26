@@ -1,9 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-
-import pytest
 from typing import Any
+import pytest
 from memory_core.manage.search.search_manager import SearchManager
 from memory_core.manage.index.variable_manager import VariableManager
 from foundation.store.kv.in_memory_kv_store import InMemoryKVStore
