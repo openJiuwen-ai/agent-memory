@@ -24,6 +24,8 @@ class SummaryManager(BaseMemoryManager):
 
     @staticmethod
     def _parse_timestamp(ts: str) -> datetime:
+        if isinstance(ts, datetime):
+            return ts
         if not ts:
             return datetime.now(timezone.utc).astimezone()
         for fmt in ("%Y-%m-%d %H-%M-%S", "%Y-%m-%d %H:%M:%S"):
