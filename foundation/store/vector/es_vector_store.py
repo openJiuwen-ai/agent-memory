@@ -71,7 +71,7 @@ class ElasticsearchVectorStore(BaseVectorStore):
         if dtype == VectorDataType.BOOL:
             return {"type": "boolean"}
         if dtype in (VectorDataType.JSON, VectorDataType.ARRAY):
-            return {"type": "object", "enabled": True}
+            return {"type": "object", "enabled": False}
         return {"type": "keyword"}
 
     @staticmethod
