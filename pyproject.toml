@@ -61,10 +61,14 @@ sqlite = ["aiosqlite>=0.22.1", "greenlet>=3.1.1"]
 redis = ["redis>=7.1.0"]
 mem0 = ["mem0ai>=1.0.0"]
 agentarts = ["agentarts-sdk>=0.1.2,<0.2"]
+server = ["uvicorn>=0.30.0", "fastapi>=0.110.0", "python-dotenv>=1.2.1"]
 all-storage = ["JiuwenMemory[sqlite,postgres,mysql,gaussdb,redis]"]
 all-vector = ["JiuwenMemory[chromadb,gaussvector,elasticsearch]"]
 default = []
-all = ["JiuwenMemory[all-storage,all-vector]"]
+all = ["JiuwenMemory[all-storage,all-vector,server]"]
+
+[project.scripts]
+memory-server = "server.memory_server:main"
 
 [dependency-groups]
 test = [
@@ -87,7 +91,7 @@ url = "https://mirrors.aliyun.com/pypi/simple"
 default = true
 
 [tool.setuptools.packages.find]
-include = ["memory_core*", "common*", "foundation*", "retrieval*"]
+include = ["memory_core*", "common*", "foundation*", "retrieval*", "server*"]
 
 [tool.setuptools.package-data]
 memory_core = [
