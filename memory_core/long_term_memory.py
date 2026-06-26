@@ -540,7 +540,8 @@ class LongTermMemory(metaclass=Singleton):
             if memories:
                 logger.info(f"[Thread] Storing {len(memories)} long-term memories")
                 await self.write_manager.add_memories(
-                    user_id=user_id, scope_id=scope_id, memories=memories, llm=llm
+                    user_id=user_id, scope_id=scope_id, memories=memories, llm=llm,
+                    extract_assistant_memory=bool(getattr(scope_config, "extract_assistant_memory", False)),
                 )
                 # Return processing result (do not delete here, unified batch deletion)
                 return {
@@ -1016,7 +1017,8 @@ class LongTermMemory(metaclass=Singleton):
                         user_id=user_id,
                         scope_id=scope_id,
                         memories=all_memory,
-                        llm=llm
+                        llm=llm,
+                        extract_assistant_memory=bool(getattr(scope_config, "extract_assistant_memory", False)),
                     )
                     memory_logger.debug(
                         "Successfully added memory units.",
