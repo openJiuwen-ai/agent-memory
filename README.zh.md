@@ -191,27 +191,14 @@ asyncio.run(main())
 
 预期输出（记忆内容由大模型生成，措辞会有出入）：
 ```
-===== dreaming 完成前 =====
-  记忆生成:
-    [user_profile] 用户的职业是数据分析师
-    [user_profile] 用户平时用 pandas 处理销售数据
-    [user_profile] 用户喜欢打篮球
-    [user_profile] 用户爱看科幻小说
-    [episodic_memory] 用户在2026年6月18日下午和朋友在公园打了场篮球   # 日期取运行当天，会变
-  记忆检索:
-    用户平时用 pandas 处理销售数据 (相关度: 0.80)
-
-===== dreaming 完成后 =====
-  记忆生成:
-    [user_profile] 用户的职业是数据分析师
-    [user_profile] 用户平时用 pandas 处理销售数据
-    [user_profile] 用户喜欢打篮球
-    [user_profile] 用户爱看科幻小说
-    [episodic_memory] 用户在2026年6月18日下午和朋友在公园打了场篮球
-    [semantic_memory] Polars 通常比 pandas 快 5-10 倍，适合大规模数据处理   # ← dreaming 新增
-  记忆检索:
-    用户平时用 pandas 处理销售数据 (相关度: 0.80)
-    Polars 通常比 pandas 快 5-10 倍，适合大规模数据处理 (相关度: 0.86)
+记忆生成:
+  [user_profile] 用户的职业是数据分析师
+  [user_profile] 用户平时用 pandas 处理销售数据
+  [user_profile] 用户喜欢打篮球
+  [user_profile] 用户爱看科幻小说
+  [episodic_memory] 用户在2026年6月18日下午和朋友在公园打了场篮球   # 日期取运行当天，会变
+记忆检索:
+  用户平时用 pandas 处理销售数据 (相关度: 0.80)
 ```
 
 > 睡时巩固走的是与在线提取**相同**的写入路径、产出**相同**的记忆类型（`user_profile` / `semantic_memory` / `episodic_memory`），由同一个 `search_user_mem` 检索。它在这里的增量价值就是那条 **Polars 知识**：助手给出的、对用户有长期复用价值的事实，逐轮窄窗口漏掉了，而通读整段会话的 sweep 把它沉淀成了记忆。
