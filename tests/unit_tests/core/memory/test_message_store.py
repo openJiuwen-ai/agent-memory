@@ -447,5 +447,53 @@ class TestLongTermMemoryMessageStore:
         assert len(recent) == 0
 
 
+class TestTimestampNormalization:
+    """Verify that mixing naive-local and aware-UTC timestamps still produces
+    chronologically ordered messages.  The bug was: naive datetime.now() stores
+    local wall-clock (e.g. 15:00) while aware datetime.now(tz=utc) stores UTC
+    (e.g. 07:00); ORDER BY timestamp compared them on different time scales and
+    returned rows out of chronological order.  The fix normalizes all timestamps
+    to aware-UTC at the API entry (LongTermMemory.add_messages) and at the
+    storage entry (SqlMessageStore.add_message).
+    """
+
+    @pytest.mark.asyncio
+    @patch.object(LongTermMemory, "_get_scope_llm", new_callable=AsyncMock)
+    async def test_naive_and_aware_timestamps_ordered_via_add_messages(
+        self, mock_get_llm, long_term_memory
+    ):
+        """
+        add_messages normalizes timestamps to aware-UTC at the API entry,
+        so mixing naive datetime.now() and aware datetime.now(tz=utc) must
+        still produce chronologically ordered get_recent_messages results.
+        """
+        mock_get_llm.return_value = AsyncMock()
+        agent_config = AgentMemoryConfig()
+
+        await long_term_memory.add_messages(
+            messages=[UserMessage(content="naive_msg")],
+            agent_config=agent_config,
+            user_id="user_ts", scope_id="scope_ts", session_id="s_ts",
+            timestamp=datetime(2026, 6, 27, 15, 0, 0),  # naive, no tzinfo
+            gen_mem=False,
+        )
+        # Second batch: aware UTC time (like test line 127)
+        await long_term_memory.add_messages(
+            messages=[AssistantMessage(content="aware_msg")],
+            agent_config=agent_config,
+            user_id="user_ts", scope_id="scope_ts", session_id="s_ts",
+            timestamp=datetime.now(tz=timezone.utc),  # aware UTC
+            gen_mem=False,
+        )
+
+        recent = await long_term_memory.get_recent_messages(
+            user_id="user_ts", scope_id="scope_ts", session_id="s_ts", num=10,
+        )
+        assert len(recent) == 2
+        # Chronological order: naive batch first, aware batch second
+        assert recent[0].content == "naive_msg"
+        assert recent[1].content == "aware_msg"
+
+
 if __name__ == "__main__":
     pytest.main([__file__])

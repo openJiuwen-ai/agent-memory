@@ -851,6 +851,10 @@ class LongTermMemory(metaclass=Singleton):
             gen_mem: bool = True,
             gen_mem_with_history_msg_num: int = 2,
     ) -> AddMemResult:
+        if timestamp is None:
+            timestamp = datetime.now(timezone.utc)
+        else:
+            timestamp = timestamp.astimezone(timezone.utc)
         if self._enable_hierarchical_memory:
             if not self._validate_id(event_type=LogEventType.MEMORY_STORE, scope_id=scope_id):
                 memory_logger.error(
@@ -886,9 +890,6 @@ class LongTermMemory(metaclass=Singleton):
                     )
                 # add meta data
                 await self.scope_user_mapping_manager.add(user_id=user_id, scope_id=scope_id)
-                # if timestamp is None, take the current time
-                if not timestamp:
-                    timestamp = datetime.now(timezone.utc).astimezone()
                 timestamp_str = timestamp.strftime('%Y-%m-%d %H:%M:%S')
                 # when multi messages, use last msg_id
                 for i, msg in enumerate(messages):
@@ -966,9 +967,6 @@ class LongTermMemory(metaclass=Singleton):
                     history_window_size=gen_mem_with_history_msg_num)
                 # add meta data
                 await self.scope_user_mapping_manager.add(user_id=user_id, scope_id=scope_id)
-                # if timestamp is None, take the current time
-                if not timestamp:
-                    timestamp = datetime.now(timezone.utc).astimezone()
                 timestamp_str = timestamp.strftime('%Y-%m-%d %H:%M:%S')
                 # when multi messages, use last msg_id
                 for i, msg in enumerate(messages):
