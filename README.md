@@ -183,33 +183,22 @@ async def main():
         print("  search:")
         for res in await memory.search_user_mem(query=query, num=5, user_id="user_001", scope_id="my_app"):
             print(f"    {res.mem_info.content} (relevance: {res.score:.2f})")
+    
+    await show()
 
 asyncio.run(main())
 ```
 
 Expected Output (memory content is LLM-generated, so wording will vary):
 ```
-===== before dreaming =====
-  memories:
-    [user_profile] User is a data analyst
-    [user_profile] User uses pandas on sales data
-    [user_profile] User enjoys basketball
-    [user_profile] User enjoys reading sci-fi novels
-    [episodic_memory] User played basketball with friends at the park on the afternoon of 2026-06-18   # date reflects the run date and will vary
-  search:
-    User uses pandas on sales data (relevance: 0.80)
-
-===== after dreaming =====
-  memories:
-    [user_profile] User is a data analyst
-    [user_profile] User uses pandas on sales data
-    [user_profile] User enjoys basketball
-    [user_profile] User enjoys reading sci-fi novels
-    [episodic_memory] User played basketball with friends at the park on the afternoon of 2026-06-18
-    [semantic_memory] Polars is usually 5-10x faster than pandas and suits large-scale data processing   # <- added by dreaming
-  search:
-    User uses pandas on sales data (relevance: 0.80)
-    Polars is usually 5-10x faster than pandas and suits large-scale data processing (relevance: 0.86)
+memories:
+  [user_profile] User is a data analyst
+  [user_profile] User uses pandas on sales data
+  [user_profile] User enjoys basketball
+  [user_profile] User enjoys reading sci-fi novels
+  [episodic_memory] User played basketball with friends at the park on the afternoon of 2026-06-18   # date reflects the run date and will vary
+search:
+  User uses pandas on sales data (relevance: 0.80)
 ```
 
 > Dreaming writes the same memory types through the same path as online extraction — so its
