@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from common.exception.errors import BaseError
-from common.utils.singleton import Singleton
-from memory_core.config import DreamingConfig
-from memory_core.long_term_memory import LongTermMemory
+from jiuwen_memory.common.exception.errors import BaseError
+from jiuwen_memory.common.utils.singleton import Singleton
+from jiuwen_memory.memory_core.config import DreamingConfig
+from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 
 
 @pytest.fixture

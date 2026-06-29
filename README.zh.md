@@ -69,15 +69,15 @@ pip install JiuwenMemory[all]
 import asyncio
 import tempfile
 from sqlalchemy.ext.asyncio import create_async_engine
-from memory_core import LongTermMemory
-from memory_core.config.config import MemoryEngineConfig, MemoryScopeConfig, AgentMemoryConfig, DreamingConfig
-from foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
-from foundation.llm import UserMessage, AssistantMessage
-from foundation.store.kv.in_memory_kv_store import InMemoryKVStore
-from foundation.store.db.default_db_store import DefaultDbStore
-from foundation.store.vector.chroma_vector_store import ChromaVectorStore
-from retrieval.embedding.api_embedding import APIEmbedding
-from retrieval.common.config import EmbeddingConfig
+from jiuwen_memory.memory_core import LongTermMemory
+from jiuwen_memory.memory_core.config.config import MemoryEngineConfig, MemoryScopeConfig, AgentMemoryConfig, DreamingConfig
+from jiuwen_memory.foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
+from jiuwen_memory.foundation.llm import UserMessage, AssistantMessage
+from jiuwen_memory.foundation.store.kv.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.foundation.store.db.default_db_store import DefaultDbStore
+from jiuwen_memory.foundation.store.vector.chroma_vector_store import ChromaVectorStore
+from jiuwen_memory.retrieval.embedding.api_embedding import APIEmbedding
+from jiuwen_memory.retrieval.common.config import EmbeddingConfig
 
 # ============== 配置区：直接在代码中设置，无需 .env ==============
 # LLM 配置
@@ -315,89 +315,91 @@ OpenClaw 智能体的"自动记忆"——记住用户说过什么，在每次回
 
 ```
 agent-memory/
-├── memory_core/                  # 核心记忆模块
-│   ├── long_term_memory.py       # 长期记忆引擎入口
-│   ├── config/                   # 配置管理
-│   │   ├── config.py             # 引擎配置、作用域配置、智能体配置
-│   │   └── graph.py              # Graph Memory 写入与检索策略配置
-│   ├── manage/                   # 记忆管理
-│   │   ├── index/                # 记忆管理器
-│   │   │   ├── base_memory_manager.py     # 管理器基类
-│   │   │   ├── fragment_memory_manager.py # 片段记忆管理器
-│   │   │   ├── variable_manager.py        # 变量管理器
-│   │   │   ├── summary_manager.py         # 摘要管理器
-│   │   │   └── write_manager.py           # 写入管理器
-│   │   ├── search/               # 检索管理
-│   │   │   └── search_manager.py # 检索管理器
-│   │   ├── update/               # 更新检测
-│   │   └── mem_model/            # 数据模型
-│   │       ├── memory_unit.py    # 记忆单元定义
-│   │       ├── db_model.py       # 数据库模型
-│   │       └── sql_db_store.py   # SQL 数据库存储
-│   ├── process/                  # 记忆处理
-│   │   ├── extract/              # 记忆提取
-│   │   │   ├── generation.py     # 记忆生成器
-│   │   │   ├── long_term_memory_extractor.py  # 长期记忆提取器
-│   │   │   └── memory_analyzer.py # 记忆分析器
-│   │   ├── dreaming/             # 睡时记忆巩固
-│   │   │   ├── orchestrator.py   # 后台 sweep 调度器
-│   │   │   ├── source.py         # 会话来源（读取消息存储）
-│   │   │   ├── sweeper.py        # 压缩 -> 提取 -> 写入 流水线
-│   │   │   └── store.py          # 将提炼知识写为记忆单元
-│   │   └── refine/               # 记忆精炼
-│   ├── graph/                    # 知识图谱记忆
-│   │   ├── graph_memory/         # GraphMemory 写入、检索和状态管理
-│   │   └── extraction/           # 实体/关系抽取模型与提示词
-│   ├── prompts/                  # 提示词管理
-│   │   └── prompt_applier.py     # 提示词模板引擎
-│   ├── codec/                    # 编解码
-│   │   └── aes_storage_codec.py  # AES 加密编解码器
-│   ├── migration/                # 数据迁移
-│   │   ├── migration_plan.py     # 迁移计划与注册
-│   │   ├── migrator/             # 各类迁移器
-│   │   └── operation/            # 迁移操作定义
-│   ├── external/                 # 外部集成
-│   │   ├── provider.py           # MemoryProvider 抽象接口
-│   │   ├── mem0_provider.py      # Mem0 集成
-│   │   ├── agentarts_memory_provider.py  # AgentArts 集成
-│   │   ├── openjiuwen_memory_provider.py # openJiuwen 集成
-│   │   └── openviking_memory_provider.py  # openViking 集成
-│   └── common/                   # 公共工具
-│       ├── distributed_lock.py   # 分布式锁
-│       └── kv_prefix_registry.py # KV 前缀注册
-├── foundation/                   # 基础能力层
-│   ├── llm/                      # 大模型调用
-│   │   ├── model.py              # 模型统一接口
-│   │   └── model_clients/        # 多种模型客户端
-│   ├── store/                    # 存储抽象
-│   │   ├── base_kv_store.py      # KV 存储基类
-│   │   ├── base_vector_store.py  # 向量存储基类
-│   │   ├── base_db_store.py      # 数据库存储基类
-│   │   ├── base_message_store.py # 消息存储基类
-│   │   ├── base_memory_index.py  # 记忆索引基类
-│   │   └── graph/                # 图存储抽象与 Milvus 图存储实现
-│   ├── prompt/                   # 提示词模板
-│   └── tool/                     # 工具定义
-├── retrieval/                    # 检索能力
-│   └── embedding/                # 嵌入模型
-├── common/                       # 公共组件
-│   ├── security/                 # 安全工具
-│   ├── logging/                  # 日志管理
-│   ├── exception/                # 异常处理
-│   └── utils/                    # 通用工具
-├── server/                       # 记忆服务（FastAPI）
-│   ├── __init__.py               # 包初始化
-│   ├── memory_server.py          # HTTP API 服务（CLI 入口 main()）
-│   ├── store_factory.py          # 存储后端工厂
-│   └── .env.example              # 环境变量模板
-├── agent-memory-plugin/          # OpenClaw 生命周期插件
-│   ├── lib/                      # 插件库
-│   │   └── openjiuwen-memory-api.js # 记忆 API 客户端
-│   ├── openjiuwen-memory-index.js # 插件入口
-│   ├── openclaw.plugin.json      # 插件清单
-│   ├── package.json              # npm 包配置
-│   └── README.md                 # 插件文档
-└── tests/                        # 测试用例
+├── jiuwen_memory/                # 主包
+│   ├── memory_core/                  # 核心记忆模块
+│   │   ├── long_term_memory.py       # 长期记忆引擎入口
+│   │   ├── config/                   # 配置管理
+│   │   │   ├── config.py             # 引擎配置、作用域配置、智能体配置
+│   │   │   └── graph.py              # Graph Memory 写入与检索策略配置
+│   │   ├── manage/                   # 记忆管理
+│   │   │   ├── index/                # 记忆管理器
+│   │   │   │   ├── base_memory_manager.py     # 管理器基类
+│   │   │   │   ├── fragment_memory_manager.py # 片段记忆管理器
+│   │   │   │   ├── variable_manager.py        # 变量管理器
+│   │   │   │   ├── summary_manager.py         # 摘要管理器
+│   │   │   │   └── write_manager.py           # 写入管理器
+│   │   │   ├── search/               # 检索管理
+│   │   │   │   └── search_manager.py # 检索管理器
+│   │   │   ├── update/               # 更新检测
+│   │   │   └── mem_model/            # 数据模型
+│   │   │       ├── memory_unit.py    # 记忆单元定义
+│   │   │       ├── db_model.py       # 数据库模型
+│   │   │       └── sql_db_store.py   # SQL 数据库存储
+│   │   ├── process/                  # 记忆处理
+│   │   │   ├── extract/              # 记忆提取
+│   │   │   │   ├── generation.py     # 记忆生成器
+│   │   │   │   ├── long_term_memory_extractor.py  # 长期记忆提取器
+│   │   │   │   └── memory_analyzer.py # 记忆分析器
+│   │   │   ├── dreaming/             # 睡时记忆巩固
+│   │   │   │   ├── orchestrator.py   # 后台 sweep 调度器
+│   │   │   │   ├── source.py         # 会话来源（读取消息存储）
+│   │   │   │   ├── sweeper.py        # 压缩 -> 提取 -> 写入 流水线
+│   │   │   │   └── store.py          # 将提炼知识写为记忆单元
+│   │   │   └── refine/               # 记忆精炼
+│   │   ├── graph/                    # 知识图谱记忆
+│   │   │   ├── graph_memory/         # GraphMemory 写入、检索和状态管理
+│   │   │   └── extraction/           # 实体/关系抽取模型与提示词
+│   │   ├── prompts/                  # 提示词管理
+│   │   │   └── prompt_applier.py     # 提示词模板引擎
+│   │   ├── codec/                    # 编解码
+│   │   │   └── aes_storage_codec.py  # AES 加密编解码器
+│   │   ├── migration/                # 数据迁移
+│   │   │   ├── migration_plan.py     # 迁移计划与注册
+│   │   │   ├── migrator/             # 各类迁移器
+│   │   │   └── operation/            # 迁移操作定义
+│   │   ├── external/                 # 外部集成
+│   │   │   ├── provider.py           # MemoryProvider 抽象接口
+│   │   │   ├── mem0_provider.py      # Mem0 集成
+│   │   │   ├── agentarts_memory_provider.py  # AgentArts 集成
+│   │   │   ├── openjiuwen_memory_provider.py # openJiuwen 集成
+│   │   │   └── openviking_memory_provider.py  # openViking 集成
+│   │   └── common/                   # 公共工具
+│   │       ├── distributed_lock.py   # 分布式锁
+│   │       └── kv_prefix_registry.py # KV 前缀注册
+│   ├── foundation/                   # 基础能力层
+│   │   ├── llm/                      # 大模型调用
+│   │   │   ├── model.py              # 模型统一接口
+│   │   │   └── model_clients/        # 多种模型客户端
+│   │   ├── store/                    # 存储抽象
+│   │   │   ├── base_kv_store.py      # KV 存储基类
+│   │   │   ├── base_vector_store.py  # 向量存储基类
+│   │   │   ├── base_db_store.py      # 数据库存储基类
+│   │   │   ├── base_message_store.py # 消息存储基类
+│   │   │   ├── base_memory_index.py  # 记忆索引基类
+│   │   │   └── graph/                # 图存储抽象与 Milvus 图存储实现
+│   │   ├── prompt/                   # 提示词模板
+│   │   └── tool/                     # 工具定义
+│   ├── retrieval/                    # 检索能力
+│   │   └── embedding/                # 嵌入模型
+│   ├── common/                       # 公共组件
+│   │   ├── security/                 # 安全工具
+│   │   ├── logging/                  # 日志管理
+│   │   ├── exception/                # 异常处理
+│   │   └── utils/                    # 通用工具
+│   ├── server/                       # 记忆服务（FastAPI）
+│   │   ├── __init__.py               # 包初始化
+│   │   ├── memory_server.py          # HTTP API 服务（CLI 入口 main()）
+│   │   ├── store_factory.py          # 存储后端工厂
+│   │   └── .env.example              # 环境变量模板
+│   └── agent-memory-plugin/          # OpenClaw 生命周期插件
+│       ├── lib/                      # 插件库
+│       │   └── openjiuwen-memory-api.js # 记忆 API 客户端
+│       ├── openjiuwen-memory-index.js # 插件入口
+│       ├── openclaw.plugin.json      # 插件清单
+│       ├── package.json              # npm 包配置
+│       └── README.md                 # 插件文档
+├── docs/                             # 文档
+└── tests/                            # 测试用例
 ```
 
 ## 参与贡献

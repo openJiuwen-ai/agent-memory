@@ -3,7 +3,7 @@
 
 """Unit tests for graph store constants."""
 
-from foundation.store.graph.constants import (
+from jiuwen_memory.foundation.store.graph.constants import (
     ARRAY_LIMIT,
     DEFAULT_WORKER_NUM,
     ENTITY_COLLECTION,

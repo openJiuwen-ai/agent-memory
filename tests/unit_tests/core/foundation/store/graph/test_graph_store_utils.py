@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from foundation.store.graph import utils as graph_utils
+from jiuwen_memory.foundation.store.graph import utils as graph_utils
 
 
 class TestBatched:
@@ -17,7 +17,7 @@ class TestBatched:
     @staticmethod
     def test_yields_batches_of_size_n():
         """Yields batches of size n from iterable."""
-        from foundation.store.graph.utils import batched
+        from jiuwen_memory.foundation.store.graph.utils import batched
 
         data = list(range(7))
         batches = list(batched(data, 3))
@@ -26,7 +26,7 @@ class TestBatched:
     @staticmethod
     def test_n_less_than_one_raises():
         """n < 1 raises ValueError."""
-        from foundation.store.graph.utils import batched
+        from jiuwen_memory.foundation.store.graph.utils import batched
 
         with pytest.raises(ValueError, match="n must be at least one"):
             list(batched([1, 2, 3], 0))
@@ -38,7 +38,7 @@ class TestBatched:
         """When strict=True and last batch is incomplete, raises ValueError (fallback impl)."""
         import sys
 
-        from foundation.store.graph.utils import batched
+        from jiuwen_memory.foundation.store.graph.utils import batched
 
         data = list(range(5))  # 5 items, batch 3 -> (0,1,2), (3,4) incomplete
         if sys.version_info >= (3, 12):
@@ -51,7 +51,7 @@ class TestBatched:
         """strict=True with complete batches does not raise (fallback impl)."""
         import sys
 
-        from foundation.store.graph.utils import batched
+        from jiuwen_memory.foundation.store.graph.utils import batched
 
         if sys.version_info >= (3, 12):
             pytest.skip("itertools.batched (3.12+) does not support strict=")
@@ -285,7 +285,7 @@ class TestTzOffsetRoundtrip:
     @staticmethod
     def test_utc_plus_8_roundtrip():
         """Roundtrip offset e.g. UTC+8 -> int -> timezone."""
-        from foundation.store.graph.utils import (
+        from jiuwen_memory.foundation.store.graph.utils import (
             _load_tz_offset,
             _store_tz_offset,
         )
@@ -298,7 +298,7 @@ class TestTzOffsetRoundtrip:
     @staticmethod
     def test_load_tz_offset_zero():
         """Offset 0 -> UTC."""
-        from foundation.store.graph.utils import _load_tz_offset
+        from jiuwen_memory.foundation.store.graph.utils import _load_tz_offset
 
         tz = _load_tz_offset(0)
         assert tz.utcoffset(None).total_seconds() == 0

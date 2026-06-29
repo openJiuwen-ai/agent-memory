@@ -7,10 +7,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from common.exception.errors import BaseError
-from foundation.store.graph.base import GraphStoreFactory
-from foundation.store.graph.base_graph_store import GraphStore
-from foundation.store.graph.config import GraphConfig
+from jiuwen_memory.common.exception.errors import BaseError
+from jiuwen_memory.foundation.store.graph.base import GraphStoreFactory
+from jiuwen_memory.foundation.store.graph.base_graph_store import GraphStore
+from jiuwen_memory.foundation.store.graph.config import GraphConfig
 
 
 class TestGraphStoreFactoryCannotInstantiate:
@@ -66,7 +66,7 @@ class TestRegisterBackend:
     @staticmethod
     def test_backend_not_graphstore_force_true_logs_and_registers():
         """Backend not GraphStore with force=True: log and register."""
-        with patch("foundation.store.graph.base.logger") as logger:
+        with patch("jiuwen_memory.foundation.store.graph.base.logger") as logger:
             GraphStoreFactory.register_backend("bad_force", object(), force=True)
             try:
                 assert "bad_force" in GraphStoreFactory.class_map
@@ -118,7 +118,7 @@ class TestFromConfig:
     def test_milvus_backend_registers_and_retries():
         """backend_name='milvus': patch register_milvus_support and avoid testing milvus internals."""
         # Ensure milvus module is loaded so our patch is not overwritten on import
-        import foundation.store.graph.milvus as milvus_mod  # noqa: F401
+        import jiuwen_memory.foundation.store.graph.milvus as milvus_mod  # noqa: F401
 
         saved_milvus = GraphStoreFactory.class_map.pop("milvus", None)
         config = MagicMock(spec=GraphConfig)

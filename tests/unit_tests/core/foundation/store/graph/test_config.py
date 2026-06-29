@@ -9,11 +9,11 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from foundation.store.graph.config import GraphConfig
-from foundation.store.graph.database_config import (
+from jiuwen_memory.foundation.store.graph.config import GraphConfig
+from jiuwen_memory.foundation.store.graph.database_config import (
     GraphStoreIndexConfig,
 )
-from foundation.store.graph.index_field import MilvusAUTO
+from jiuwen_memory.foundation.store.graph.index_field import MilvusAUTO
 
 
 def _minimal_embed_config():
@@ -27,7 +27,7 @@ class TestGraphConfigDefaults:
     @staticmethod
     def test_defaults():
         """Defaults: name='', token='', backend='milvus', timeout=15.0, max_concurrent=10, embed_dim=512, etc."""
-        with patch("foundation.store.graph.config.os.makedirs"):
+        with patch("jiuwen_memory.foundation.store.graph.config.os.makedirs"):
             cfg = GraphConfig(uri="/tmp/graph_db", db_embed_config=_minimal_embed_config())
         assert cfg.name == ""
         assert cfg.token == ""
@@ -46,7 +46,7 @@ class TestGraphConfigCheckExtras:
     @staticmethod
     def test_valid_dict_with_string_keys_passes():
         """Valid dict with string keys passes."""
-        with patch("foundation.store.graph.config.os.makedirs"):
+        with patch("jiuwen_memory.foundation.store.graph.config.os.makedirs"):
             cfg = GraphConfig(
                 uri="/tmp/graph_db",
                 extras={"alias": "default"},
@@ -81,7 +81,7 @@ class TestGraphConfigCheckValidity:
     @staticmethod
     def test_file_path_uri_creates_parent_dir():
         """File path URI (no ://): creates parent dir if needed (mock os.makedirs)."""
-        with patch("foundation.store.graph.config.os.makedirs") as makedirs:
+        with patch("jiuwen_memory.foundation.store.graph.config.os.makedirs") as makedirs:
             GraphConfig(
                 uri="/some/path/to/db",
                 db_embed_config=_minimal_embed_config(),
@@ -109,7 +109,7 @@ class TestGraphConfigCheckValidity:
     @staticmethod
     def test_network_uri_success_no_raise():
         """Network URI: socket.create_connection succeeds, no raise."""
-        with patch("foundation.store.graph.config.socket.create_connection") as create_conn:
+        with patch("jiuwen_memory.foundation.store.graph.config.socket.create_connection") as create_conn:
 
             def _return_none(*args, **kwargs):
                 return None
@@ -125,9 +125,9 @@ class TestGraphConfigCheckValidity:
     @staticmethod
     def test_network_uri_failure_logs_error():
         """Network URI: connection failure logs error, still returns self (no raise)."""
-        with patch("foundation.store.graph.config.socket.create_connection") as create_conn:
+        with patch("jiuwen_memory.foundation.store.graph.config.socket.create_connection") as create_conn:
             create_conn.side_effect = OSError("Connection refused")
-            with patch("foundation.store.graph.config.store_logger") as logger:
+            with patch("jiuwen_memory.foundation.store.graph.config.store_logger") as logger:
                 cfg = GraphConfig(
                     uri="http://badhost:19530",
                     db_embed_config=_minimal_embed_config(),
@@ -142,7 +142,7 @@ class TestGraphConfigFieldConstraints:
     @staticmethod
     def test_timeout_gt_zero():
         """timeout > 0."""
-        with patch("foundation.store.graph.config.os.makedirs"):
+        with patch("jiuwen_memory.foundation.store.graph.config.os.makedirs"):
             cfg = GraphConfig(
                 uri="/tmp/db",
                 timeout=1.0,
@@ -159,7 +159,7 @@ class TestGraphConfigFieldConstraints:
     @staticmethod
     def test_max_concurrent_ge_zero():
         """max_concurrent >= 0."""
-        with patch("foundation.store.graph.config.os.makedirs"):
+        with patch("jiuwen_memory.foundation.store.graph.config.os.makedirs"):
             cfg = GraphConfig(
                 uri="/tmp/db",
                 max_concurrent=0,
@@ -176,7 +176,7 @@ class TestGraphConfigFieldConstraints:
     @staticmethod
     def test_embed_dim_ge_32():
         """embed_dim >= 32."""
-        with patch("foundation.store.graph.config.os.makedirs"):
+        with patch("jiuwen_memory.foundation.store.graph.config.os.makedirs"):
             cfg = GraphConfig(
                 uri="/tmp/db",
                 embed_dim=32,
@@ -193,7 +193,7 @@ class TestGraphConfigFieldConstraints:
     @staticmethod
     def test_embed_batch_size_ge_one():
         """embed_batch_size >= 1."""
-        with patch("foundation.store.graph.config.os.makedirs"):
+        with patch("jiuwen_memory.foundation.store.graph.config.os.makedirs"):
             cfg = GraphConfig(
                 uri="/tmp/db",
                 embed_batch_size=1,

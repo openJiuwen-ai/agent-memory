@@ -6,7 +6,7 @@
 import pytest
 from pydantic import ValidationError
 
-from foundation.store.graph.graph_object import (
+from jiuwen_memory.foundation.store.graph.graph_object import (
     BaseGraphObject,
     Entity,
     Episode,

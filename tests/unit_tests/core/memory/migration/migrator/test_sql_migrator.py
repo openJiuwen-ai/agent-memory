@@ -11,12 +11,12 @@ import pytest
 from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Float, inspect, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from foundation.store.db.default_db_store import DefaultDbStore
-from memory_core.manage.mem_model.db_model import create_tables
-from memory_core.manage.mem_model.sql_db_store import SqlDbStore
-from memory_core.migration.migrator.sql_migrator import SQLMigrator
-from memory_core.migration.operation.base_operation import OperationMetadata
-from memory_core.migration.operation.operations import (
+from jiuwen_memory.foundation.store.db.default_db_store import DefaultDbStore
+from jiuwen_memory.memory_core.manage.mem_model.db_model import create_tables
+from jiuwen_memory.memory_core.manage.mem_model.sql_db_store import SqlDbStore
+from jiuwen_memory.memory_core.migration.migrator.sql_migrator import SQLMigrator
+from jiuwen_memory.memory_core.migration.operation.base_operation import OperationMetadata
+from jiuwen_memory.memory_core.migration.operation.operations import (
     AddColumnOperation,
     RenameColumnOperation,
     UpdateColumnTypeOperation,

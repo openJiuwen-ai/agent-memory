@@ -6,12 +6,12 @@
 import pytest
 from pydantic import ValidationError
 
-from foundation.store.graph.database_config import (
+from jiuwen_memory.foundation.store.graph.database_config import (
     BM25Config,
     GraphStoreIndexConfig,
     GraphStoreStorageConfig,
 )
-from foundation.store.graph.index_field import MilvusAUTO
+from jiuwen_memory.foundation.store.graph.index_field import MilvusAUTO
 
 
 class TestBM25Config:

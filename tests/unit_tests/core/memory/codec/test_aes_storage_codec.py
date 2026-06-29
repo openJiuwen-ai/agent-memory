@@ -3,12 +3,12 @@
 import pytest
 from unittest.mock import MagicMock
 
-from common.security.crypt_utils import (
+from jiuwen_memory.common.security.crypt_utils import (
     AesGcmCrypt,
     CryptUtils,
 )
-from common.utils.singleton import Singleton
-from memory_core.codec.aes_storage_codec import AesStorageCodec
+from jiuwen_memory.common.utils.singleton import Singleton
+from jiuwen_memory.memory_core.codec.aes_storage_codec import AesStorageCodec
 
 
 _VALID_KEY = b"0123456789abcdef0123456789abcdef"

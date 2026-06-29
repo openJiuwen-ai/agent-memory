@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from common.exception.errors import BaseError
-from foundation.store.base_embedding import Embedding
-from foundation.store.base_reranker import Reranker
-from foundation.store.graph import (
+from jiuwen_memory.common.exception.errors import BaseError
+from jiuwen_memory.foundation.store.base_embedding import Embedding
+from jiuwen_memory.foundation.store.base_reranker import Reranker
+from jiuwen_memory.foundation.store.graph import (
     ENTITY_COLLECTION,
     EPISODE_COLLECTION,
     RELATION_COLLECTION,
@@ -21,14 +21,14 @@ from foundation.store.graph import (
     GraphStoreFactory,
     Relation,
 )
-from foundation.store.graph.config import GraphStoreStorageConfig
-from foundation.store.graph.database_config import GraphStoreIndexConfig
-from foundation.store.graph.result_ranking import WeightedRankConfig
-from foundation.store.graph.index_field import MilvusAUTO
-from memory_core.config.graph import AddMemStrategy, EpisodeType, SearchConfig
-from memory_core.graph.extraction.extraction_models import EntityDeclaration
-from memory_core.graph.graph_memory.base import GraphMemory
-from memory_core.graph.graph_memory.states import EntityMerge, GraphMemState, GraphMemUpdate
+from jiuwen_memory.foundation.store.graph.config import GraphStoreStorageConfig
+from jiuwen_memory.foundation.store.graph.database_config import GraphStoreIndexConfig
+from jiuwen_memory.foundation.store.graph.result_ranking import WeightedRankConfig
+from jiuwen_memory.foundation.store.graph.index_field import MilvusAUTO
+from jiuwen_memory.memory_core.config.graph import AddMemStrategy, EpisodeType, SearchConfig
+from jiuwen_memory.memory_core.graph.extraction.extraction_models import EntityDeclaration
+from jiuwen_memory.memory_core.graph.graph_memory.base import GraphMemory
+from jiuwen_memory.memory_core.graph.graph_memory.states import EntityMerge, GraphMemState, GraphMemUpdate
 
 
 def _make_mock_config():
@@ -237,7 +237,7 @@ class TestAddMemory:
     @staticmethod
     @pytest.mark.asyncio
     @patch.object(GraphStoreFactory, "from_config")
-    @patch("memory_core.graph.graph_memory.postprocess_graph_objects.ensure_unique_uuids")
+    @patch("jiuwen_memory.memory_core.graph.graph_memory.postprocess_graph_objects.ensure_unique_uuids")
     @patch.object(GraphMemory, "_invoke_llm")
     async def test_add_memory_success_returns_graph_mem_update(mock_invoke_llm, mock_ensure_uuids, mock_from_config):
         """add_memory runs full pipeline with mocks and returns GraphMemUpdate"""
@@ -285,7 +285,7 @@ class TestAddMemory:
 
     @staticmethod
     @pytest.mark.asyncio
-    @patch("memory_core.graph.graph_memory.postprocess_graph_objects.ensure_unique_uuids")
+    @patch("jiuwen_memory.memory_core.graph.graph_memory.postprocess_graph_objects.ensure_unique_uuids")
     @patch.object(GraphMemory, "_invoke_llm")
     async def test_add_memory_after_delayed_attach_with_reference_time(
         mock_invoke_llm, mock_ensure_uuids
@@ -298,10 +298,10 @@ class TestAddMemory:
         mock_client.get_collection_stats.return_value = {"row_count": 0}
         mock_client.list_collections.return_value = []
         with patch(
-            "foundation.store.graph.milvus.milvus_support.MilvusClient",
+            "jiuwen_memory.foundation.store.graph.milvus.milvus_support.MilvusClient",
             return_value=mock_client,
         ):
-            with patch("foundation.store.graph.config.os.makedirs"):
+            with patch("jiuwen_memory.foundation.store.graph.config.os.makedirs"):
                 mem = GraphMemory(db_config=config, llm_client=_make_mock_llm_client())
 
         backend = mem.db_backend
@@ -554,7 +554,7 @@ class TestParseRelationFilteringResult:
         fut = asyncio.ensure_future(done_fut())
         state.relation_filter_tasks[fut] = (e, [rel])
         with patch(
-            "memory_core.graph.graph_memory.base.parse_json", return_value={"relevant_relations": [1]}
+            "jiuwen_memory.memory_core.graph.graph_memory.base.parse_json", return_value={"relevant_relations": [1]}
         ):
             await getattr(mem, "_parse_relation_filtering_result")([rel], state)
         assert state.merge_infos["e1"].new_relations == [rel]
@@ -587,7 +587,7 @@ class TestParseRelationFilteringResult:
         fut = asyncio.ensure_future(done())
         state.relation_filter_tasks[fut] = (e, [rel_keep, rel_drop])  # index 1 = rel_drop
         with patch(
-            "memory_core.graph.graph_memory.base.parse_json", return_value={"relevant_relations": [1]}
+            "jiuwen_memory.memory_core.graph.graph_memory.base.parse_json", return_value={"relevant_relations": [1]}
         ):
             await getattr(mem, "_parse_relation_filtering_result")([rel_keep, rel_drop], state)
         assert state.merge_infos["e1"].new_relations == [rel_keep]
@@ -626,7 +626,7 @@ class TestParseRelationFilteringResult:
         state.relation_filter_tasks[f1] = (e1, [rel_a])
         state.relation_filter_tasks[f2] = (e2, [rel_b])
         with patch(
-            "memory_core.graph.graph_memory.base.parse_json",
+            "jiuwen_memory.memory_core.graph.graph_memory.base.parse_json",
             side_effect=[{"relevant_relations": [1]}, {"relevant_relations": []}],
         ):
             await getattr(mem, "_parse_relation_filtering_result")([rel_a, rel_b], state)
@@ -714,7 +714,7 @@ class TestInvokeLlm:
 
     @pytest.mark.asyncio
     @patch.object(GraphStoreFactory, "from_config")
-    @patch("memory_core.graph.graph_memory.base.memory_logger")
+    @patch("jiuwen_memory.memory_core.graph.graph_memory.base.memory_logger")
     async def test_invoke_llm_debug_logs_when_enabled(self, mock_logger, mock_from_config):
         """When debug=True, _invoke_llm logs template and content"""
         mock_from_config.return_value = _make_mock_backend()
@@ -1096,7 +1096,7 @@ class TestExtractEntityDeclarations:
             mem, "_invoke_llm", AsyncMock(return_value=MagicMock(content='[{"name": "Alice", "entity_type_id": 0}]'))
         )
         with patch(
-            "memory_core.graph.graph_memory.base.parse_json",
+            "jiuwen_memory.memory_core.graph.graph_memory.base.parse_json",
             return_value=[{"name": "Alice", "entity_type_id": 0}],
         ):
             no_exist, decls = await getattr(mem, "_extract_entity_declarations")(
@@ -1120,7 +1120,7 @@ class TestExtractEntityDeclarations:
             mem, "_invoke_llm", AsyncMock(return_value=MagicMock(content='[{"name": "user", "entity_type_id": 0}]'))
         )
         with patch(
-            "memory_core.graph.graph_memory.base.parse_json",
+            "jiuwen_memory.memory_core.graph.graph_memory.base.parse_json",
             return_value=[{"name": "user", "entity_type_id": 0}],
         ):
             no_exist, decls = await getattr(mem, "_extract_entity_declarations")(
@@ -1142,7 +1142,7 @@ class TestExtractEntityDeclarations:
             AsyncMock(return_value=MagicMock(content='{"entities": [{"name": "Alice", "entity_type_id": 0}]}')),
         )
         with patch(
-            "memory_core.graph.graph_memory.base.parse_json",
+            "jiuwen_memory.memory_core.graph.graph_memory.base.parse_json",
             return_value={"entities": [{"name": "Alice", "entity_type_id": 0}]},
         ):
             no_exist, decls = await getattr(mem, "_extract_entity_declarations")(
@@ -1165,7 +1165,7 @@ class TestExtractEntityDeclarations:
             AsyncMock(return_value=MagicMock(content='{"entity": {"name": "Bob", "entity_type_id": 0}}')),
         )
         with patch(
-            "memory_core.graph.graph_memory.base.parse_json",
+            "jiuwen_memory.memory_core.graph.graph_memory.base.parse_json",
             return_value={"entity": {"name": "Bob", "entity_type_id": 0}},
         ):
             no_exist, decls = await getattr(mem, "_extract_entity_declarations")(
@@ -1184,7 +1184,7 @@ class TestExtractEntityDeclarations:
         mem = GraphMemory(db_config=_make_mock_config(), llm_client=_make_mock_llm_client())
         setattr(mem, "_invoke_llm", AsyncMock(return_value=MagicMock(content="[]")))
         with patch(
-            "memory_core.graph.graph_memory.base.parse_json",
+            "jiuwen_memory.memory_core.graph.graph_memory.base.parse_json",
             return_value=[{"name": 123, "entity_type_id": 0}],
         ):
             no_exist, decls = await getattr(mem, "_extract_entity_declarations")(
@@ -1202,7 +1202,7 @@ class TestExtractEntityDeclarations:
         mem = GraphMemory(db_config=_make_mock_config(), llm_client=_make_mock_llm_client())
 
         setattr(mem, "_invoke_llm", AsyncMock(return_value=MagicMock(content="null")))
-        with patch("memory_core.graph.graph_memory.base.parse_json", return_value={"key": "not_a_list"}):
+        with patch("jiuwen_memory.memory_core.graph.graph_memory.base.parse_json", return_value={"key": "not_a_list"}):
             no_exist, decls = await getattr(mem, "_extract_entity_declarations")(
                 EpisodeType.DOCUMENT, "c", GraphMemState(strategy=AddMemStrategy(), entity_types=[MagicMock()])
             )
@@ -1225,7 +1225,7 @@ class TestExtractEntityDeclarations:
         )
         state = GraphMemState(strategy=AddMemStrategy(), entity_types=[MagicMock()])
         with patch(
-            "memory_core.graph.graph_memory.base.parse_json",
+            "jiuwen_memory.memory_core.graph.graph_memory.base.parse_json",
             return_value=[{"name": "Alice", "entity_type_id": 0}],
         ):
             no_exist, decls = await getattr(mem, "_extract_entity_declarations")(EpisodeType.DOCUMENT, "c", state)
@@ -1473,7 +1473,7 @@ class TestResolveEachRelation:
 
     @pytest.mark.asyncio
     @patch.object(GraphStoreFactory, "from_config")
-    @patch("memory_core.graph.graph_memory.base.memory_logger")
+    @patch("jiuwen_memory.memory_core.graph.graph_memory.base.memory_logger")
     async def test_resolve_each_relation_not_connected_marked_faulty(self, mock_logger, mock_from_config):
         """When relation endpoints are not in map_src2tgt chain, relation is marked faulty and warning logged"""
         backend = _make_mock_backend()
@@ -1587,7 +1587,8 @@ class TestEntityMerge:
         existing = [{"uuid": "tgt", "name": "T", "content": "", "obj_type": "Entity"}]
         state.lookup_table.get_entity = MagicMock(return_value=tgt)
         with patch(
-            "memory_core.graph.graph_memory.base.resolve_entities", return_value=([decl], [(tgt, [])], set())
+            "jiuwen_memory.memory_core.graph.graph_memory.base.resolve_entities",
+              return_value=([decl], [(tgt, [])], set())
         ):
             with patch.object(mem, "_resolve_entity_merges", new_callable=AsyncMock) as resolve_mock:
                 await getattr(mem, "_entity_merge")([decl], existing, state)
@@ -1622,7 +1623,7 @@ class TestEntityMerge:
             {"uuid": "src", "name": "S", "content": "", "obj_type": "Entity"},
         ]
         with patch(
-            "memory_core.graph.graph_memory.base.resolve_entities",
+            "jiuwen_memory.memory_core.graph.graph_memory.base.resolve_entities",
             return_value=([tgt], [(tgt, [src])], set()),
         ):
             with patch.object(mem, "_resolve_entity_merges", new_callable=AsyncMock):
@@ -1658,7 +1659,7 @@ class TestEntityMerge:
             {"uuid": "src", "name": "S", "content": "", "obj_type": "Entity"},
         ]
         with patch(
-            "memory_core.graph.graph_memory.base.resolve_entities",
+            "jiuwen_memory.memory_core.graph.graph_memory.base.resolve_entities",
             return_value=([decl_only], [(tgt, [src])], set()),
         ):
             with patch.object(mem, "_resolve_entity_merges", new_callable=AsyncMock) as resolve_mock:

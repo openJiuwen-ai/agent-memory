@@ -68,7 +68,7 @@ default = []
 all = ["JiuwenMemory[all-storage,all-vector,server]"]
 
 [project.scripts]
-memory-server = "server.memory_server:main"
+memory-server = "jiuwen_memory.server.memory_server:main"
 
 [dependency-groups]
 test = [
@@ -91,13 +91,13 @@ url = "https://mirrors.aliyun.com/pypi/simple"
 default = true
 
 [tool.setuptools.packages.find]
-include = ["memory_core*", "common*", "foundation*", "retrieval*", "server*"]
+include = ["jiuwen_memory*"]
 
 [tool.setuptools.package-data]
-memory_core = [
-    "prompts/**/*.md",
-    "graph/extraction/prompts/**/*.pr.md",
-    "graph/extraction/prompts/**/*.yaml",
+jiuwen_memory = [
+    "**/prompts/**/*.md",
+    "**/prompts/**/*.pr.md",
+    "**/prompts/**/*.yaml",
 ]
 
 [tool.coverage.run]

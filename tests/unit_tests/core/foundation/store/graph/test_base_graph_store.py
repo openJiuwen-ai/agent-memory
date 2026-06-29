@@ -5,7 +5,7 @@
 
 from unittest.mock import MagicMock
 
-from foundation.store.graph.base_graph_store import GraphStore
+from jiuwen_memory.foundation.store.graph.base_graph_store import GraphStore
 
 
 class TestGraphStoreProtocol:

@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from foundation.llm.schema.message import BaseMessage
-from foundation.store.base_message_store import MessageMetadata
-from memory_core.process.dreaming.source import MessageStoreSessionSource, NormalizedSession
+from jiuwen_memory.foundation.llm.schema.message import BaseMessage
+from jiuwen_memory.foundation.store.base_message_store import MessageMetadata
+from jiuwen_memory.memory_core.process.dreaming.source import MessageStoreSessionSource, NormalizedSession
 
 
 def _row(role, content, session_id, ts=0):

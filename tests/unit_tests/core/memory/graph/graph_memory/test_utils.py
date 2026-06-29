@@ -7,10 +7,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from common.exception.errors import BaseError
-from foundation.llm.schema.message import UserMessage
-from foundation.store.graph import Entity
-from memory_core.graph.graph_memory.utils import (
+from jiuwen_memory.common.exception.errors import BaseError
+from jiuwen_memory.foundation.llm.schema.message import UserMessage
+from jiuwen_memory.foundation.store.graph import Entity
+from jiuwen_memory.memory_core.graph.graph_memory.utils import (
     assemble_invoke_params,
     msg2dict,
     update_entity,
@@ -95,7 +95,7 @@ class TestUpdateEntity:
     @staticmethod
     def test_update_entity_extracted_info_as_str_treated_as_summary():
         """When extracted_entity_info is a string (branch in update_entity), it is used as summary"""
-        from memory_core.graph.graph_memory import utils as utils_mod
+        from jiuwen_memory.memory_core.graph.graph_memory import utils as utils_mod
 
         entity = Entity(name="E1", content="")
         getattr(utils_mod, "_parse_summary")(entity, {"summary": "just a string summary"})
@@ -104,7 +104,7 @@ class TestUpdateEntity:
     @staticmethod
     def test_update_entity_summary_as_set_joined():
         """Summary as set is joined with newlines via _parse_summary"""
-        from memory_core.graph.graph_memory import utils as utils_mod
+        from jiuwen_memory.memory_core.graph.graph_memory import utils as utils_mod
 
         entity = Entity(name="E1", content="")
         getattr(utils_mod, "_parse_summary")(entity, {"summary": {"a", "b"}})
@@ -137,7 +137,8 @@ class TestUpdateEntity:
     def test_update_entity_extracted_info_list_takes_first():
         """When parse_json returns a list, extracted_entity_info is first element"""
         entity = Entity(name="E1", content="")
-        with patch("memory_core.graph.graph_memory.utils.parse_json", return_value=[{"summary": "first"}]):
+        with patch("jiuwen_memory.memory_core.graph.graph_memory.utils.parse_json",
+                    return_value=[{"summary": "first"}]):
             update_entity(entity, "[]", {"type": "object"})
         assert entity.content == "first"
 
@@ -145,14 +146,14 @@ class TestUpdateEntity:
     def test_update_entity_extracted_info_str_wrapped_as_summary():
         """When parse_json returns a str, update_entity wraps as dict(summary=...)"""
         entity = Entity(name="E1", content="")
-        with patch("memory_core.graph.graph_memory.utils.parse_json", return_value="string summary"):
+        with patch("jiuwen_memory.memory_core.graph.graph_memory.utils.parse_json", return_value="string summary"):
             update_entity(entity, '"x"', {"type": "string"})
         assert entity.content == "string summary"
 
     @staticmethod
     def test_parse_summary_non_str_summary_converted():
         """_parse_summary with non-str summary (e.g. int) uses str(summary) or empty"""
-        from memory_core.graph.graph_memory import utils as utils_mod
+        from jiuwen_memory.memory_core.graph.graph_memory import utils as utils_mod
 
         entity = Entity(name="E1", content="")
         getattr(utils_mod, "_parse_summary")(entity, {"summary": 42})

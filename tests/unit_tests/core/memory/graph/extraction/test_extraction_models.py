@@ -8,8 +8,8 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from memory_core.graph.extraction.base import MULTILINGUAL_DESCRIPTION
-from memory_core.graph.extraction.extraction_models import (
+from jiuwen_memory.memory_core.graph.extraction.base import MULTILINGUAL_DESCRIPTION
+from jiuwen_memory.memory_core.graph.extraction.extraction_models import (
     Datetime,
     Duplication,
     EntityDeclaration,

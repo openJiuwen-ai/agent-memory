@@ -8,20 +8,20 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from foundation.store.graph import (
+from jiuwen_memory.foundation.store.graph import (
     Entity,
     Episode,
     Relation,
 )
-from memory_core.config.graph import AddMemStrategy
-from memory_core.graph.graph_memory.postprocess_graph_objects import (
+from jiuwen_memory.memory_core.config.graph import AddMemStrategy
+from jiuwen_memory.memory_core.graph.graph_memory.postprocess_graph_objects import (
     create_episode,
     parse_relation_uuids_to_remove,
     process_entities,
     process_relations,
     validate_entities_episodes,
 )
-from memory_core.graph.graph_memory.states import EntityMerge, GraphMemState
+from jiuwen_memory.memory_core.graph.graph_memory.states import EntityMerge, GraphMemState
 
 
 @pytest.fixture
@@ -226,7 +226,7 @@ class TestCreateEpisode:
     async def test_create_episode_appends_to_mem_update(self, mock_db, sample_state):
         """create_episode appends new episode to state.mem_update.added_episode"""
         with patch(
-            "memory_core.graph.graph_memory.postprocess_graph_objects.ensure_unique_uuids",
+            "jiuwen_memory.memory_core.graph.graph_memory.postprocess_graph_objects.ensure_unique_uuids",
             new_callable=AsyncMock,
             return_value=["new-ep-uuid"],
         ):
@@ -258,7 +258,7 @@ class TestProcessRelations:
             valid_until=-1,
         )
         with patch(
-            "memory_core.graph.graph_memory.postprocess_graph_objects.ensure_unique_uuids",
+            "jiuwen_memory.memory_core.graph.graph_memory.postprocess_graph_objects.ensure_unique_uuids",
             new_callable=AsyncMock,
             return_value=["r-uuid-1"],
         ):
@@ -282,7 +282,7 @@ class TestProcessRelations:
         sample_state.lookup_table.relations["r-old"] = old_rel
         new_rel = Relation(name="R2", content="y", lhs=e1, rhs=e2, obj_type="Relation", valid_since=0, valid_until=-1)
         with patch(
-            "memory_core.graph.graph_memory.postprocess_graph_objects.ensure_unique_uuids",
+            "jiuwen_memory.memory_core.graph.graph_memory.postprocess_graph_objects.ensure_unique_uuids",
             new_callable=AsyncMock,
             return_value=["r-new-uuid"],
         ):
@@ -306,7 +306,7 @@ class TestProcessRelations:
         sample_state.lookup_table.relations["r-old"] = old_rel
         new_rel = Relation(name="R2", content="y", lhs=e1, rhs=e2, obj_type="Relation", valid_since=0, valid_until=-1)
         with patch(
-            "memory_core.graph.graph_memory.postprocess_graph_objects.ensure_unique_uuids",
+            "jiuwen_memory.memory_core.graph.graph_memory.postprocess_graph_objects.ensure_unique_uuids",
             new_callable=AsyncMock,
             return_value=["r-new-uuid"],
         ):
@@ -325,7 +325,7 @@ class TestProcessEntities:
         e1 = Entity(name="E1", content="", obj_type="Entity")
         e1.uuid = "e1"
         with patch(
-            "memory_core.graph.graph_memory.postprocess_graph_objects._resolve_entity_uuid",
+            "jiuwen_memory.memory_core.graph.graph_memory.postprocess_graph_objects._resolve_entity_uuid",
             new_callable=AsyncMock,
         ):
             await process_entities(mock_db, [e1], ep, sample_state)
@@ -355,7 +355,7 @@ class TestProcessEntities:
         sample_state.merging_tasks.append(asyncio.ensure_future(_merge_coro()))
         sample_state.merging_tasks_entities[sample_state.merging_tasks[0]] = e1
         with patch(
-            "memory_core.graph.graph_memory.postprocess_graph_objects._resolve_entity_uuid",
+            "jiuwen_memory.memory_core.graph.graph_memory.postprocess_graph_objects._resolve_entity_uuid",
             new_callable=AsyncMock,
         ):
             await process_entities(mock_db, [e1], ep, sample_state)
@@ -387,7 +387,7 @@ class TestProcessEntities:
         sample_state.merging_tasks_entities[sample_state.merging_tasks[0]] = e2
         entities_list = [e1]
         with patch(
-            "memory_core.graph.graph_memory.postprocess_graph_objects._resolve_entity_uuid",
+            "jiuwen_memory.memory_core.graph.graph_memory.postprocess_graph_objects._resolve_entity_uuid",
             new_callable=AsyncMock,
         ):
             await process_entities(mock_db, entities_list, ep, sample_state)
@@ -404,7 +404,7 @@ class TestProcessEntities:
         e1.relations = ["r-gone"]
         sample_state.mem_update.removed_relation.add("r-gone")
         with patch(
-            "memory_core.graph.graph_memory.postprocess_graph_objects._resolve_entity_uuid",
+            "jiuwen_memory.memory_core.graph.graph_memory.postprocess_graph_objects._resolve_entity_uuid",
             new_callable=AsyncMock,
         ):
             await process_entities(mock_db, [e1], ep, sample_state)
@@ -418,7 +418,7 @@ class TestProcessEntities:
         e1 = Entity(name="E1", content="", obj_type="Entity")
         e1.uuid = "e1"
         with patch(
-            "memory_core.graph.graph_memory.postprocess_graph_objects.ensure_unique_uuids",
+            "jiuwen_memory.memory_core.graph.graph_memory.postprocess_graph_objects.ensure_unique_uuids",
             new_callable=AsyncMock,
             return_value=["resolved-uuid-1"],
         ):

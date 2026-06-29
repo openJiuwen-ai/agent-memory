@@ -1,6 +1,6 @@
-# memory_core.graph.graph_memory
+# jiuwen_memory.memory_core.graph.graph_memory
 
-`memory_core.graph.graph_memory` 是 JiuwenMemory 中的**知识图谱记忆模块**，用于把对话、文档或 JSON 字符串中的长期信息沉淀为实体、关系和事件片段，并支持面向图结构的混合检索。
+`jiuwen_memory.memory_core.graph.graph_memory` 是 JiuwenMemory 中的**知识图谱记忆模块**，用于把对话、文档或 JSON 字符串中的长期信息沉淀为实体、关系和事件片段，并支持面向图结构的混合检索。
 
 > **说明**：Graph Memory 当前是独立模块，尚未接入 `LongTermMemory.add_messages` 主流程。使用时需要直接创建 `GraphMemory`，单独注册图存储、LLM 和 Embedding。
 
@@ -36,14 +36,14 @@ Graph Memory 的数据由三类图对象组成：
 ```python
 import asyncio
 
-from foundation.llm import Model
-from foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
-from foundation.store.graph import GraphConfig, GraphStoreIndexConfig
-from foundation.store.graph.index_field import MilvusAUTO
-from memory_core.config.graph import EpisodeType
-from memory_core.graph.graph_memory.base import GraphMemory
-from retrieval.common.config import EmbeddingConfig
-from retrieval.embedding.api_embedding import APIEmbedding
+from jiuwen_memory.foundation.llm import Model
+from jiuwen_memory.foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
+from jiuwen_memory.foundation.store.graph import GraphConfig, GraphStoreIndexConfig
+from jiuwen_memory.foundation.store.graph.index_field import MilvusAUTO
+from jiuwen_memory.memory_core.config.graph import EpisodeType
+from jiuwen_memory.memory_core.graph.graph_memory.base import GraphMemory
+from jiuwen_memory.retrieval.common.config import EmbeddingConfig
+from jiuwen_memory.retrieval.embedding.api_embedding import APIEmbedding
 
 
 async def main():
@@ -123,7 +123,7 @@ class GraphMemory:
         ...
 ```
 
-`GraphMemory` 是图记忆的主入口，负责调度 LLM 抽取、实体/关系合并、图存储写入和图检索。推荐从 `memory_core.graph.graph_memory.base` 导入 `GraphMemory`；当前 `memory_core.graph.graph_memory` 包入口未重新导出该类。
+`GraphMemory` 是图记忆的主入口，负责调度 LLM 抽取、实体/关系合并、图存储写入和图检索。推荐从 `jiuwen_memory.memory_core.graph.graph_memory.base` 导入 `GraphMemory`；当前 `jiuwen_memory.memory_core.graph.graph_memory` 包入口未重新导出该类。
 
 主要参数：
 
@@ -339,7 +339,7 @@ class EpisodeType(Enum):
 
 ## 图存储后端
 
-图存储抽象定义在 `foundation.store.graph`：
+图存储抽象定义在 `jiuwen_memory.foundation.store.graph`：
 
 - `GraphStore`：图存储协议，定义添加、查询、删除、搜索、刷新和关闭接口。
 - `GraphStoreFactory`：根据 `GraphConfig.backend` 创建后端实例。
@@ -399,8 +399,8 @@ memory.attach_embedder(embedding)
 如果希望实体召回更严格、关系召回更宽松，或者希望只对实体/关系启用 BFS、对某类结果启用 rerank，可以注册自定义策略：
 
 ```python
-from foundation.store.graph.result_ranking import WeightedRankConfig
-from memory_core.config.graph import SearchConfig
+from jiuwen_memory.foundation.store.graph.result_ranking import WeightedRankConfig
+from jiuwen_memory.memory_core.config.graph import SearchConfig
 
 memory.register_search_strategy(
     "entity_heavy",

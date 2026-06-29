@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from memory_core.common.distributed_lock import DistributedLock
-from memory_core.process.dreaming.store import KnowledgeItem, MemoryUnitKnowledgeStore
-from memory_core.manage.mem_model.memory_unit import FragmentMemoryUnit, MemoryType
+from jiuwen_memory.memory_core.common.distributed_lock import DistributedLock
+from jiuwen_memory.memory_core.process.dreaming.store import KnowledgeItem, MemoryUnitKnowledgeStore
+from jiuwen_memory.memory_core.manage.mem_model.memory_unit import FragmentMemoryUnit, MemoryType
 
 
 def _make_store():

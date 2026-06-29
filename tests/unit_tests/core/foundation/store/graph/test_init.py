@@ -3,7 +3,7 @@
 
 """Unit tests for graph package exports (__init__.py)."""
 
-from foundation.store import graph as graph_module
+from jiuwen_memory.foundation.store import graph as graph_module
 
 
 class TestExports:
@@ -11,7 +11,7 @@ class TestExports:
 
     @staticmethod
     def test_exports():
-        """Import from foundation.store.graph and assert expected names are present."""
+        """Import from jiuwen_memory.foundation.store.graph and assert expected names are present."""
         assert hasattr(graph_module, "GraphStore")
         assert hasattr(graph_module, "GraphStoreFactory")
         assert hasattr(graph_module, "GraphConfig")

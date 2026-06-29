@@ -6,13 +6,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from foundation.store.base_db_store import BaseDbStore
-from foundation.store.base_vector_store import BaseVectorStore, CollectionSchema
-from foundation.store.kv.in_memory_kv_store import InMemoryKVStore
-from memory_core.long_term_memory import LongTermMemory
-from memory_core.migration.migration_plan import kv_registry, sql_registry, vector_registry
-from memory_core.migration.operation.base_operation import OperationMetadata
-from memory_core.migration.operation.operations import (
+from jiuwen_memory.foundation.store.base_db_store import BaseDbStore
+from jiuwen_memory.foundation.store.base_vector_store import BaseVectorStore, CollectionSchema
+from jiuwen_memory.foundation.store.kv.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+from jiuwen_memory.memory_core.migration.migration_plan import kv_registry, sql_registry, vector_registry
+from jiuwen_memory.memory_core.migration.operation.base_operation import OperationMetadata
+from jiuwen_memory.memory_core.migration.operation.operations import (
     AddColumnOperation,
     RenameScalarFieldOperation,
     UpdateKVOperation
@@ -122,7 +122,7 @@ class TestLongTermMemoryMigrationIntegration:
         vector_store = MockVectorStore()
         db_store = MockDbStore()
 
-        from memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
+        from jiuwen_memory.memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
         await kv_store.set(KV_SCHEMA_VERSION, "1")
 
         await kv_store.set("old_key", "old_value")
@@ -160,7 +160,7 @@ class TestLongTermMemoryMigrationIntegration:
         vector_store = MockVectorStore()
         db_store = MockDbStore()
 
-        from memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
+        from jiuwen_memory.memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
         await kv_store.set(KV_SCHEMA_VERSION, "1")
 
         async def failing_migration(store):
@@ -189,7 +189,7 @@ class TestLongTermMemoryMigrationIntegration:
         This integration test verifies that running migration multiple times
         does not cause issues or duplicate data.
         """
-        from memory_core.common.kv_prefix_registry import kv_prefix_registry
+        from jiuwen_memory.memory_core.common.kv_prefix_registry import kv_prefix_registry
 
         kv_store = InMemoryKVStore()
         vector_store = MockVectorStore()
@@ -201,7 +201,7 @@ class TestLongTermMemoryMigrationIntegration:
         try:
             await kv_store.set(f"{test_prefix}/existing_data", "value")
 
-            from memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
+            from jiuwen_memory.memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
             await kv_store.set(KV_SCHEMA_VERSION, "0")
 
             async def migrate(store):
@@ -244,7 +244,7 @@ class TestLongTermMemoryMigrationIntegration:
         ltm = LongTermMemory()
         await ltm.register_store(kv_store=kv_store, vector_store=vector_store, db_store=db_store)
 
-        from memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
+        from jiuwen_memory.memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
         assert await kv_store.get(KV_SCHEMA_VERSION) is None
 
     @pytest.mark.asyncio
@@ -313,7 +313,7 @@ class TestLongTermMemoryMigrationIntegration:
         vector_store = MockVectorStore()
         db_store = MockDbStore()
 
-        from memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
+        from jiuwen_memory.memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
         await kv_store.set(KV_SCHEMA_VERSION, "0")
 
         await kv_store.set("old_key", "old_value")

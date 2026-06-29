@@ -8,11 +8,11 @@ from unittest.mock import patch
 
 from pydantic import Field
 
-from memory_core.graph.extraction.base import (
+from jiuwen_memory.memory_core.graph.extraction.base import (
     MULTILINGUAL_DESCRIPTION,
     MultilingualBaseModel,
 )
-from memory_core.graph.extraction.extraction_models import EntityExtraction
+from jiuwen_memory.memory_core.graph.extraction.extraction_models import EntityExtraction
 
 
 def _object_nodes_with_wrong_additional_properties(schema: object, path: str = "$") -> list[str]:

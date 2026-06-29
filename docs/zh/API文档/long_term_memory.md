@@ -1,6 +1,6 @@
-# memory_core.long_term_memory
+# jiuwen_memory.memory_core.long_term_memory
 
-`memory_core.long_term_memory` 是 JiuwenMemory 中统一的**长期记忆管理引擎**，负责：
+`jiuwen_memory.memory_core.long_term_memory` 是 JiuwenMemory 中统一的**长期记忆管理引擎**，负责：
 
 - 管理用户对话消息的持久化与检索；
 - 管理用户变量记忆（如偏好、个人信息等结构化数据）；
@@ -9,10 +9,10 @@
 - 支持向量检索、分页查询、按条件删除等操作。
 
 
-## class memory_core.long_term_memory.LongTermMemory
+## class jiuwen_memory.memory_core.long_term_memory.LongTermMemory
 
 ```
-class memory_core.long_term_memory.LongTermMemory(metaclass=Singleton)
+class jiuwen_memory.memory_core.long_term_memory.LongTermMemory(metaclass=Singleton)
 ```
 
 `LongTermMemory` 是 JiuwenMemory 中统一的**长期记忆管理引擎**，采用单例模式。
@@ -74,10 +74,10 @@ async def register_store(
 **样例**：
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
->>> from foundation.store.kv.db_based_kv_store import DbBasedKVStore
->>> from foundation.store import create_vector_store
->>> from foundation.store.db.default_db_store import DefaultDbStore
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.foundation.store.kv.db_based_kv_store import DbBasedKVStore
+>>> from jiuwen_memory.foundation.store import create_vector_store
+>>> from jiuwen_memory.foundation.store.db.default_db_store import DefaultDbStore
 >>> from sqlalchemy.ext.asyncio import create_async_engine
 >>>
 >>> # 创建 LongTermMemory 实例
@@ -137,9 +137,9 @@ async def register_plugin(
 **样例**：
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
->>> from foundation.store.index.simple_memory_index import SimpleMemoryIndex
->>> from foundation.store.base_vector_store import BaseVectorStore
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.foundation.store.index.simple_memory_index import SimpleMemoryIndex
+>>> from jiuwen_memory.foundation.store.base_vector_store import BaseVectorStore
 >>>
 >>> # 使用默认 SimpleMemoryIndex
 >>> memory = LongTermMemory()
@@ -205,9 +205,9 @@ def set_config(self, config: MemoryEngineConfig) -> None
 **样例**：
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
->>> from memory_core.config import MemoryEngineConfig
->>> from foundation.llm.schema.config import ModelRequestConfig, ModelClientConfig
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.config import MemoryEngineConfig
+>>> from jiuwen_memory.foundation.llm.schema.config import ModelRequestConfig, ModelClientConfig
 >>> 
 >>> # 创建配置
 >>> config = MemoryEngineConfig(
@@ -257,8 +257,8 @@ async def migrate_between_indices(
 **样例**：
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
->>> from foundation.store.index.simple_memory_index import SimpleMemoryIndex
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.foundation.store.index.simple_memory_index import SimpleMemoryIndex
 >>>
 >>> # 假设已有旧的 SimpleMemoryIndex 实例
 >>> old_index = SimpleMemoryIndex(kv_store=kv_store, vector_store=vector_store, embedding_model=embed)
@@ -300,10 +300,10 @@ async def set_scope_config(
 **样例**：
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
->>> from memory_core.config import MemoryScopeConfig
->>> from foundation.llm.schema.config import ModelRequestConfig, ModelClientConfig
->>> from retrieval.common.config import EmbeddingConfig
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.config import MemoryScopeConfig
+>>> from jiuwen_memory.foundation.llm.schema.config import ModelRequestConfig, ModelClientConfig
+>>> from jiuwen_memory.retrieval.common.config import EmbeddingConfig
 >>> 
 >>> # 创建作用域配置
 >>> scope_config = MemoryScopeConfig(
@@ -350,7 +350,7 @@ async def get_scope_config(self, scope_id: str) -> MemoryScopeConfig | None
 **样例**：
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # 获取作用域配置
 >>> memory = LongTermMemory()
@@ -387,7 +387,7 @@ async def delete_scope_config(self, scope_id: str) -> bool
 **样例**：
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # 删除作用域配置
 >>> memory = LongTermMemory()
@@ -419,7 +419,7 @@ async def delete_mem_by_scope(self, scope_id: str) -> bool
 **样例**：
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # 删除作用域下的所有记忆
 >>> memory = LongTermMemory()
@@ -482,10 +482,10 @@ async def add_messages(
 **样例**：
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
->>> from memory_core.config import AgentMemoryConfig
->>> from common.schema.param import Param
->>> from foundation.llm.schema.message import UserMessage, AssistantMessage
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.config import AgentMemoryConfig
+>>> from jiuwen_memory.common.schema.param import Param
+>>> from jiuwen_memory.foundation.llm.schema.message import UserMessage, AssistantMessage
 >>> 
 >>> # 创建 Agent 记忆策略配置
 >>> agent_config = AgentMemoryConfig(
@@ -555,10 +555,10 @@ async def add_messages(
 ```
 
 
-## class memory_core.long_term_memory.AddMemResult
+## class jiuwen_memory.memory_core.long_term_memory.AddMemResult
 
 ```
-class memory_core.long_term_memory.AddMemResult(BaseModel)
+class jiuwen_memory.memory_core.long_term_memory.AddMemResult(BaseModel)
 ```
 
 `add_messages` 方法的返回值模型，封装了本次记忆提取的所有结果。
@@ -580,10 +580,10 @@ class memory_core.long_term_memory.AddMemResult(BaseModel)
 - 当 `add_messages` 因各种原因（`gen_mem=False`、`scope_id` 无效、LLM 未初始化等）未执行记忆提取时，返回空 `AddMemResult()`。
 
 
-## class memory_core.long_term_memory.MemInfo
+## class jiuwen_memory.memory_core.long_term_memory.MemInfo
 
 ```
-class memory_core.long_term_memory.MemInfo(BaseModel)
+class jiuwen_memory.memory_core.long_term_memory.MemInfo(BaseModel)
 ```
 
 记忆信息模型，描述一条记忆的基本信息。
@@ -598,10 +598,10 @@ class memory_core.long_term_memory.MemInfo(BaseModel)
 | `timestamp` | `datetime | None` | `None` | 记忆时间戳 |
 
 
-## class memory_core.long_term_memory.MemResult
+## class jiuwen_memory.memory_core.long_term_memory.MemResult
 
 ```
-class memory_core.long_term_memory.MemResult(BaseModel)
+class jiuwen_memory.memory_core.long_term_memory.MemResult(BaseModel)
 ```
 
 记忆搜索结果模型，包含记忆信息与相似度分数。
@@ -646,7 +646,7 @@ async def get_recent_messages(
 **样例**：
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # 获取最近消息
 >>> memory = LongTermMemory()
@@ -681,7 +681,7 @@ async def get_message_by_id(self, msg_id: str) -> Tuple[BaseMessage, datetime] |
 **样例**：
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # 根据ID获取消息
 >>> memory = LongTermMemory()
@@ -722,7 +722,7 @@ async def delete_mem_by_id(
 **样例**：
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # 删除指定记忆
 >>> memory = LongTermMemory()
@@ -758,7 +758,7 @@ async def delete_mem_by_user_id(
 **样例**：
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # 删除用户的所有记忆
 >>> memory = LongTermMemory()
@@ -797,7 +797,7 @@ async def update_mem_by_id(
 **样例**：
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # 更新记忆内容
 >>> memory_engine = LongTermMemory()
@@ -844,7 +844,7 @@ async def get_variables(
 **样例**：
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # 获取所有变量
 >>> memory = LongTermMemory()
@@ -908,7 +908,7 @@ async def search_user_mem(
 **样例**：
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # 搜索用户记忆
 >>> memory = LongTermMemory()
@@ -951,7 +951,7 @@ async def user_mem_total_num(
 **样例**：
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # 获取记忆总数
 >>> memory = LongTermMemory()
@@ -999,7 +999,7 @@ async def search_user_history_summary(
 **样例**：
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # 搜索用户摘要记忆
 >>> memory = LongTermMemory()
@@ -1055,7 +1055,7 @@ async def get_user_mem_by_page(
 **样例**：
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # 分页获取用户记忆
 >>> memory = LongTermMemory()
@@ -1116,8 +1116,8 @@ async def start_dreaming(
 **示例**：
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
->>> from memory_core.config import DreamingConfig
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.config import DreamingConfig
 >>> 
 >>> memory = LongTermMemory()
 >>> # ... 事先完成 register_store + set_scope_config ...
@@ -1163,4 +1163,4 @@ async def stop_dreaming(
 
 ## 相关模块
 
-`LongTermMemory` 管理用户画像、语义记忆、情景记忆、变量和摘要等扁平记忆单元。如果需要把对话、文档或 JSON 字符串沉淀为实体、关系和事件片段组成的知识图谱，可以使用独立的 Graph Memory 模块。详见 [memory_core.graph.graph_memory](graph_memory.md)。
+`LongTermMemory` 管理用户画像、语义记忆、情景记忆、变量和摘要等扁平记忆单元。如果需要把对话、文档或 JSON 字符串沉淀为实体、关系和事件片段组成的知识图谱，可以使用独立的 Graph Memory 模块。详见 [jiuwen_memory.memory_core.graph.graph_memory](graph_memory.md)。

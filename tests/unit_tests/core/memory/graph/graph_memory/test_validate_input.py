@@ -5,9 +5,9 @@
 
 import pytest
 
-from common.exception.errors import BaseError
-from memory_core.config.graph import EpisodeType
-from memory_core.graph.graph_memory.validate_input import (
+from jiuwen_memory.common.exception.errors import BaseError
+from jiuwen_memory.memory_core.config.graph import EpisodeType
+from jiuwen_memory.memory_core.graph.graph_memory.validate_input import (
     validate_add_memory_input,
     validate_search_input,
 )

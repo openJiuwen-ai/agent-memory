@@ -3,16 +3,16 @@
 from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
-from common.security.crypt_utils import (
+from jiuwen_memory.common.security.crypt_utils import (
     AesGcmCrypt,
     CryptUtils,
 )
-from common.utils.singleton import Singleton
-from foundation.store.base_kv_store import BaseKVStore
-from foundation.store.base_memory_index import MemoryDoc
-from foundation.store.index.simple_memory_index import SimpleMemoryIndex
-from memory_core.config.config import MemoryEngineConfig
-from memory_core.long_term_memory import LongTermMemory
+from jiuwen_memory.common.utils.singleton import Singleton
+from jiuwen_memory.foundation.store.base_kv_store import BaseKVStore
+from jiuwen_memory.foundation.store.base_memory_index import MemoryDoc
+from jiuwen_memory.foundation.store.index.simple_memory_index import SimpleMemoryIndex
+from jiuwen_memory.memory_core.config.config import MemoryEngineConfig
+from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 
 
 _VALID_KEY = b"0123456789abcdef0123456789abcdef"
@@ -30,7 +30,7 @@ def _clean_global_state():
 
 
 def _setup_minimal_ltm(ltm, crypto_key):
-    from foundation.store.kv.in_memory_kv_store import InMemoryKVStore
+    from jiuwen_memory.foundation.store.kv.in_memory_kv_store import InMemoryKVStore
     kv = InMemoryKVStore()
     vs = Mock()
     vs.collection_exists = AsyncMock(return_value=False)
@@ -52,7 +52,7 @@ def _setup_minimal_ltm(ltm, crypto_key):
     ltm.memory_index = SimpleMemoryIndex(kv_store=kv, vector_store=vs, embedding_model=emb)
     ltm._sys_mem_config = MemoryEngineConfig(crypto_key=crypto_key)
 
-    from memory_core.codec.aes_storage_codec import AesStorageCodec
+    from jiuwen_memory.memory_core.codec.aes_storage_codec import AesStorageCodec
     codec = AesStorageCodec(crypto_key)
     if crypto_key:
         crypt = AesGcmCrypt()

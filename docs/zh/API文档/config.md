@@ -1,6 +1,6 @@
-# memory_core.config
+# jiuwen_memory.memory_core.config
 
-`memory_core.config` 是 JiuwenMemory 中统一的**记忆配置管理模块**，负责：
+`jiuwen_memory.memory_core.config` 是 JiuwenMemory 中统一的**记忆配置管理模块**，负责：
 
 - 定义 `MemoryEngineConfig` 全局引擎配置；
 - 定义 `MemoryScopeConfig` 作用域级配置（用于不同业务场景的模型/向量参数）；
@@ -8,10 +8,10 @@
 - 定义 `DreamingConfig` 睡时记忆巩固（后台整合用户历史会话）流程的配置。
 
 
-## class memory_core.config.config.MemoryEngineConfig
+## class jiuwen_memory.memory_core.config.config.MemoryEngineConfig
 
 ```
-class memory_core.config.config.MemoryEngineConfig(default_model_cfg: ModelRequestConfig | None = None, default_model_client_cfg: ModelClientConfig | None = None, input_msg_max_len: int = 8192, crypto_key: bytes = b'')
+class jiuwen_memory.memory_core.config.config.MemoryEngineConfig(default_model_cfg: ModelRequestConfig | None = None, default_model_client_cfg: ModelClientConfig | None = None, input_msg_max_len: int = 8192, crypto_key: bytes = b'')
 ```
 
 全局记忆引擎配置，用于设置引擎级别的通用参数。
@@ -36,8 +36,8 @@ class memory_core.config.config.MemoryEngineConfig(default_model_cfg: ModelReque
 **样例**：
 
 ```python
->>> from memory_core.config import MemoryEngineConfig
->>> from foundation.llm.schema.config import ModelRequestConfig, ModelClientConfig
+>>> from jiuwen_memory.memory_core.config import MemoryEngineConfig
+>>> from jiuwen_memory.foundation.llm.schema.config import ModelRequestConfig, ModelClientConfig
 >>> 
 >>> # 创建全局引擎配置
 >>> engine_config = MemoryEngineConfig(
@@ -58,10 +58,10 @@ class memory_core.config.config.MemoryEngineConfig(default_model_cfg: ModelReque
 ```
 
 
-## class memory_core.config.config.MemoryScopeConfig
+## class jiuwen_memory.memory_core.config.config.MemoryScopeConfig
 
 ```
-class memory_core.config.config.MemoryScopeConfig(model_cfg: ModelRequestConfig | None = None, model_client_cfg: ModelClientConfig | None = None, embedding_cfg: EmbeddingConfig | None = None, user_profile_definition: str = "用户本人的肯定或否定表述（包含不限于基本身份、兴趣偏好、人际关系、资产状况）", semantic_memory_definition: str = "用户对话中涉及的和时间无明确关系的事实性内容或概念", episodic_memory_definition: str = "用户对话中涉及的和时间有明确关系的事实性内容或概念")
+class jiuwen_memory.memory_core.config.config.MemoryScopeConfig(model_cfg: ModelRequestConfig | None = None, model_client_cfg: ModelClientConfig | None = None, embedding_cfg: EmbeddingConfig | None = None, user_profile_definition: str = "用户本人的肯定或否定表述（包含不限于基本身份、兴趣偏好、人际关系、资产状况）", semantic_memory_definition: str = "用户对话中涉及的和时间无明确关系的事实性内容或概念", episodic_memory_definition: str = "用户对话中涉及的和时间有明确关系的事实性内容或概念")
 ```
 
 作用域级记忆配置，用于为不同的 `scope_id` 定义独立的模型和向量参数。
@@ -80,9 +80,9 @@ class memory_core.config.config.MemoryScopeConfig(model_cfg: ModelRequestConfig 
 **样例**：
 
 ```python
->>> from memory_core.config import MemoryScopeConfig
->>> from foundation.llm.schema.config import ModelRequestConfig, ModelClientConfig
->>> from retrieval.common.config import EmbeddingConfig
+>>> from jiuwen_memory.memory_core.config import MemoryScopeConfig
+>>> from jiuwen_memory.foundation.llm.schema.config import ModelRequestConfig, ModelClientConfig
+>>> from jiuwen_memory.retrieval.common.config import EmbeddingConfig
 >>> 
 >>> # 创建作用域配置
 >>> scope_config = MemoryScopeConfig(
@@ -105,10 +105,10 @@ class memory_core.config.config.MemoryScopeConfig(model_cfg: ModelRequestConfig 
 ```
 
 
-## class memory_core.config.config.AgentMemoryConfig
+## class jiuwen_memory.memory_core.config.config.AgentMemoryConfig
 
 ```
-class memory_core.config.config.AgentMemoryConfig(mem_variables: list[Param] = [], enable_long_term_mem: bool = True, enable_user_profile: bool = True, enable_semantic_memory: bool = True, enable_episodic_memory: bool = True, enable_summary_memory: bool = True)
+class jiuwen_memory.memory_core.config.config.AgentMemoryConfig(mem_variables: list[Param] = [], enable_long_term_mem: bool = True, enable_user_profile: bool = True, enable_semantic_memory: bool = True, enable_episodic_memory: bool = True, enable_summary_memory: bool = True)
 ```
 
 Agent 级记忆策略配置，描述某个智能体希望提取和管理哪些类型的记忆。
@@ -122,13 +122,13 @@ Agent 级记忆策略配置，描述某个智能体希望提取和管理哪些�
 * **enable_episodic_memory**(bool, 可选)：是否开启情景记忆生成；为 `True` 时，会从对话中提取情景记忆并保存到语义存储中，在后续搜索中会使用情景记忆；为 `False` 时，不生成和使用情景记忆。默认值：`True`。
 * **enable_summary_memory**(bool, 可选)：是否开启用户摘要记忆生成；为 `True` 时，会从对话中提取用户摘要（如最近的对话内容）并保存到语义存储中；为 `False` 时，不生成用户摘要记忆。默认值：`True`。
 
-> **说明**：`Param` 类型定义在 `common.schema.param` 中，通常包含 `name / description / type / required` 等参数。
+> **说明**：`Param` 类型定义在 `jiuwen_memory.common.schema.param` 中，通常包含 `name / description / type / required` 等参数。
 
 **样例**：
 
 ```python
->>> from memory_core.config import AgentMemoryConfig
->>> from common.schema.param import Param
+>>> from jiuwen_memory.memory_core.config import AgentMemoryConfig
+>>> from jiuwen_memory.common.schema.param import Param
 >>> 
 >>> # 创建 Agent 记忆策略配置
 >>> agent_config = AgentMemoryConfig(
@@ -155,10 +155,10 @@ Agent 级记忆策略配置，描述某个智能体希望提取和管理哪些�
 ```
 
 
-## class memory_core.config.config.DreamingConfig
+## class jiuwen_memory.memory_core.config.config.DreamingConfig
 
 ```
-class memory_core.config.config.DreamingConfig(enabled: bool = False, interval_seconds: float = 14400.0, min_session_rounds: int = 4, max_sessions_per_sweep: int = 10, max_compress_tokens: int = 30000, max_items_per_session: int = 5)
+class jiuwen_memory.memory_core.config.config.DreamingConfig(enabled: bool = False, interval_seconds: float = 14400.0, min_session_rounds: int = 4, max_sessions_per_sweep: int = 10, max_compress_tokens: int = 30000, max_items_per_session: int = 5)
 ```
 
 **睡时记忆巩固**（Dreaming）流程的配置：后台周期性地重新读取用户已存储的会话，从中提炼可复用知识。由调用方构造并传入 `LongTermMemory.start_dreaming`，**不**从任何全局配置文件读取。
@@ -175,7 +175,7 @@ class memory_core.config.config.DreamingConfig(enabled: bool = False, interval_s
 **示例**：
 
 ```python
->>> from memory_core.config import DreamingConfig
+>>> from jiuwen_memory.memory_core.config import DreamingConfig
 >>> 
 >>> # 开启睡时记忆巩固，sweep 间隔设为 1 小时
 >>> dreaming_config = DreamingConfig(
@@ -192,17 +192,17 @@ class memory_core.config.config.DreamingConfig(enabled: bool = False, interval_s
 ## 使用示例
 
 ```python
->>> from memory_core import (
+>>> from jiuwen_memory.memory_core import (
 >>>     MemoryEngineConfig,
 >>>     MemoryScopeConfig,
 >>>     AgentMemoryConfig,
 >>> )
->>> from foundation.llm.schema.config import (
+>>> from jiuwen_memory.foundation.llm.schema.config import (
 >>>     ModelClientConfig,
 >>>     ModelRequestConfig,
 >>> )
->>> from retrieval.common.config import EmbeddingConfig
->>> from common.schema.param import Param
+>>> from jiuwen_memory.retrieval.common.config import EmbeddingConfig
+>>> from jiuwen_memory.common.schema.param import Param
 >>> 
 >>> # 1. 创建全局引擎配置
 >>> engine_config = MemoryEngineConfig(
@@ -267,11 +267,11 @@ class memory_core.config.config.DreamingConfig(enabled: bool = False, interval_s
 
 ## Graph Memory 配置
 
-`memory_core.config.config` 中的 `MemoryEngineConfig`、`MemoryScopeConfig`、`AgentMemoryConfig` 和 `DreamingConfig` 面向 `LongTermMemory` 主流程。Graph Memory 使用独立配置模块 `memory_core.config.graph`，主要包含：
+`jiuwen_memory.memory_core.config.config` 中的 `MemoryEngineConfig`、`MemoryScopeConfig`、`AgentMemoryConfig` 和 `DreamingConfig` 面向 `LongTermMemory` 主流程。Graph Memory 使用独立配置模块 `jiuwen_memory.memory_core.config.graph`，主要包含：
 
 - `EpisodeType`：标识写入来源类型，支持对话、文档和 JSON 字符串。
 - `AddMemStrategy`：控制图记忆写入阶段的实体召回、实体合并、关系去重和提示词语言。
 - `RetrievalStrategy` / `EpisodeRetrievalStrategy`：`AddMemStrategy` 内部使用的召回策略，包含 `top_k`、`min_score`、`same_kind`、`exclude_future_results` 等字段。
 - `SearchConfig`：控制图记忆检索阶段的 top_k、分数阈值、混合排序、rerank，以及实体/关系集合上的 BFS 图扩展。
 
-Graph Memory 的图存储连接、向量维度、索引类型和后端参数由 `foundation.store.graph.GraphConfig` 及其子配置管理。详见 [memory_core.graph.graph_memory](graph_memory.md)。
+Graph Memory 的图存储连接、向量维度、索引类型和后端参数由 `jiuwen_memory.foundation.store.graph.GraphConfig` 及其子配置管理。详见 [jiuwen_memory.memory_core.graph.graph_memory](graph_memory.md)。

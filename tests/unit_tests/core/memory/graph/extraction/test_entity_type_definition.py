@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from memory_core.graph.extraction.entity_type_definition import (
+from jiuwen_memory.memory_core.graph.extraction.entity_type_definition import (
     AIEntity,
     EntityDef,
     EntityDefAttr,
@@ -21,11 +21,11 @@ def patch_descriptions():
     """Patch description dicts so models can build schema"""
     with (
         patch(
-            "memory_core.graph.extraction.entity_type_definition.ENTITY_DEFINITION_DESCRIPTION",
+            "jiuwen_memory.memory_core.graph.extraction.entity_type_definition.ENTITY_DEFINITION_DESCRIPTION",
             {"cn": "", "en": ""},
         ),
         patch(
-            "memory_core.graph.extraction.entity_type_definition.RELATION_DEFINITION_DESCRIPTION",
+            "jiuwen_memory.memory_core.graph.extraction.entity_type_definition.RELATION_DEFINITION_DESCRIPTION",
             {"cn": "", "en": ""},
         ),
     ):

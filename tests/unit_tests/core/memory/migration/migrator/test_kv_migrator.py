@@ -5,11 +5,11 @@ import json
 import pytest
 import pytest_asyncio
 
-from common.logging import logger
-from foundation.store.kv.in_memory_kv_store import InMemoryKVStore
-from memory_core.migration.operation.base_operation import OperationMetadata
-from memory_core.migration.operation.operations import UpdateKVOperation
-from memory_core.migration.migrator.kv_migrator import KVMigrator, KV_SCHEMA_VERSION, KV_ENTITY_KEY
+from jiuwen_memory.common.logging import logger
+from jiuwen_memory.foundation.store.kv.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.memory_core.migration.operation.base_operation import OperationMetadata
+from jiuwen_memory.memory_core.migration.operation.operations import UpdateKVOperation
+from jiuwen_memory.memory_core.migration.migrator.kv_migrator import KVMigrator, KV_SCHEMA_VERSION, KV_ENTITY_KEY
 
 
 class TestKVMigrator:
@@ -860,7 +860,7 @@ class TestKVMigrator:
         all changes are rolled back to state before migration started,
         including both data and schema version.
         """
-        from memory_core.common.kv_prefix_registry import kv_prefix_registry
+        from jiuwen_memory.memory_core.common.kv_prefix_registry import kv_prefix_registry
 
         kv_store = InMemoryKVStore()
         migrator = KVMigrator(kv_store)
@@ -925,7 +925,7 @@ class TestKVMigrator:
         Test that migration failure rolls back prefix-based data correctly
         This test verifies rollback functionality with data using (test_prefix)
         """
-        from memory_core.common.kv_prefix_registry import kv_prefix_registry
+        from jiuwen_memory.memory_core.common.kv_prefix_registry import kv_prefix_registry
 
         kv_store = InMemoryKVStore()
         migrator = KVMigrator(kv_store)

@@ -7,20 +7,20 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from common.exception.errors import BaseError
-from foundation.store.graph.constants import (
+from jiuwen_memory.common.exception.errors import BaseError
+from jiuwen_memory.foundation.store.graph.constants import (
     ENTITY_COLLECTION,
     EPISODE_COLLECTION,
     RELATION_COLLECTION,
 )
-from foundation.store.graph.database_config import (
+from jiuwen_memory.foundation.store.graph.database_config import (
     GraphStoreIndexConfig,
     GraphStoreStorageConfig,
 )
-from foundation.store.graph.milvus.generate_milvus_schema import (
+from jiuwen_memory.foundation.store.graph.milvus.generate_milvus_schema import (
     generate_schema_and_index,
 )
-from foundation.store.graph.index_field import MilvusAUTO
+from jiuwen_memory.foundation.store.graph.index_field import MilvusAUTO
 
 
 def _make_storage_config():

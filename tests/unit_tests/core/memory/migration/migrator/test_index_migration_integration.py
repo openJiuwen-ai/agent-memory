@@ -6,18 +6,18 @@ from datetime import datetime, timezone
 
 import pytest
 
-from foundation.store.base_memory_index import MemoryDoc
-from foundation.store.base_embedding import Embedding
-from foundation.store.base_vector_store import BaseVectorStore, VectorSearchResult
-from foundation.store.base_kv_store import BaseKVStore
-from foundation.store.index.simple_memory_index import SimpleMemoryIndex
-from memory_core.migration.migrator.index_version_migrator import IndexVersionMigrator
-from memory_core.migration.operation.operations import (
+from jiuwen_memory.foundation.store.base_memory_index import MemoryDoc
+from jiuwen_memory.foundation.store.base_embedding import Embedding
+from jiuwen_memory.foundation.store.base_vector_store import BaseVectorStore, VectorSearchResult
+from jiuwen_memory.foundation.store.base_kv_store import BaseKVStore
+from jiuwen_memory.foundation.store.index.simple_memory_index import SimpleMemoryIndex
+from jiuwen_memory.memory_core.migration.migrator.index_version_migrator import IndexVersionMigrator
+from jiuwen_memory.memory_core.migration.operation.operations import (
     RenameMemoryDocFieldOperation,
     TransformMemoryDocFieldOperation,
     AddMemoryDocFieldOperation
 )
-from memory_core.migration.operation.base_operation import OperationMetadata
+from jiuwen_memory.memory_core.migration.operation.base_operation import OperationMetadata
 
 
 _EMBEDDING_DIM = 768

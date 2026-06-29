@@ -5,7 +5,7 @@
 
 import os
 
-from memory_core.graph.graph_memory.local_storage import DEFAULT_GRAPH_STORAGE_DIR
+from jiuwen_memory.memory_core.graph.graph_memory.local_storage import DEFAULT_GRAPH_STORAGE_DIR
 
 
 class TestDefaultGraphStorageDir:
@@ -20,7 +20,7 @@ class TestDefaultGraphStorageDir:
     @staticmethod
     def test_default_resolves_to_local_storage_package_dir():
         """DEFAULT_GRAPH_STORAGE_DIR equals dirname of local_storage __file__"""
-        import memory_core.graph.graph_memory.local_storage as mod
+        import jiuwen_memory.memory_core.graph.graph_memory.local_storage as mod
 
         expected = os.path.dirname(os.path.abspath(mod.__file__))
         assert os.path.normpath(DEFAULT_GRAPH_STORAGE_DIR) == os.path.normpath(expected)

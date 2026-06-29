@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from memory_core.graph.extraction.prompts.manager import (
+from jiuwen_memory.memory_core.graph.extraction.prompts.manager import (
     ThreadSafePromptManager,
 )
 
@@ -65,7 +65,7 @@ class TestRegisterInBulk:
     @staticmethod
     def test_empty_directory_raises():
         """Directory with no .pr.md files raises error"""
-        from common.exception.errors import BaseError
+        from jiuwen_memory.common.exception.errors import BaseError
 
         with tempfile.TemporaryDirectory() as tmpdir:
             inst = ThreadSafePromptManager()
