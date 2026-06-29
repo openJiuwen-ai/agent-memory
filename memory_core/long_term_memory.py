@@ -388,6 +388,9 @@ class LongTermMemory(metaclass=Singleton):
         self._enable_hierarchical_memory = config.enable_middle_memory
         self.middle_memory_check_interval = config.middle_memory_check_interval
 
+        if self._enable_hierarchical_memory:
+            self.start()
+
     def start(self):
         """[Daemon thread mode] Start background tasks, continue running after main program ends"""
         if self._enable_hierarchical_memory:
@@ -489,7 +492,7 @@ class LongTermMemory(metaclass=Singleton):
             return {"success": False, "mem_ids": [], "error": "Empty batch"}
 
         try:
-            logger.info(f"[Thread] Processing batch with {len(dialogue_batch)} dialogues")
+            memory_logger.info(f"[Thread] Processing batch with {len(dialogue_batch)} dialogues")
             # Each thread independently gets resources (avoid concurrency conflicts)
             llm = await self._get_scope_llm(scope_id)
             semantic_store = await self._create_semantic_store_with_embedding(scope_id)
@@ -498,7 +501,7 @@ class LongTermMemory(metaclass=Singleton):
             if not llm:
                 return {"success": False, "mem_ids": mem_ids, "error": "LLM not ready"}
 
-            logger.info(f"[Thread] LLM ready, parsing dialogues...")
+            memory_logger.info(f"[Thread] LLM ready, parsing dialogues...")
             # Parse conversation
             converted = []
             for dialogue in dialogue_batch:
@@ -514,7 +517,7 @@ class LongTermMemory(metaclass=Singleton):
 
             if not converted:
                 return {"success": False, "mem_ids": mem_ids, "error": "No valid messages"}
-            logger.info(f"[Thread] Parsed {len(converted)} messages, extracting memories...")
+            memory_logger.info(f"[Thread] Parsed {len(converted)} messages, extracting memories...")
             check_res, valid_msgs = self._check_messages(converted)
 
             if not check_res:
@@ -538,7 +541,7 @@ class LongTermMemory(metaclass=Singleton):
 
             # Store long-term memory (execute independently within thread)
             if memories:
-                logger.info(f"[Thread] Storing {len(memories)} long-term memories")
+                memory_logger.info(f"[Thread] Storing {len(memories)} long-term memories")
                 await self.write_manager.add_memories(
                     user_id=user_id, scope_id=scope_id, memories=memories, llm=llm,
                     extract_assistant_memory=bool(getattr(scope_config, "extract_assistant_memory", False)),
@@ -1066,7 +1069,7 @@ class LongTermMemory(metaclass=Singleton):
                 memory_logger.info("No middle memories to process")
                 return
 
-            logger.info(f"Processing {len(middle_messages_all)} middle memories")
+            memory_logger.info(f"Processing {len(middle_messages_all)} middle memories")
 
             # Step 2: Continuity check + batch partitioning (keep serial)
             batches = []
@@ -1124,8 +1127,9 @@ class LongTermMemory(metaclass=Singleton):
                     {"dialogues": dialogue_batch.copy(), "mem_ids": batch_mem_ids.copy(), "timestamp": pre_timestamp}
                 )
 
-            logger.info(f"Split into {len(batches)} batches for concurrent processing")
-            memory_logger.info(f"Split {len(middle_messages_all)} memories into {len(batches)} batches")
+            memory_logger.info(
+                f"Split {len(middle_messages_all)} memories into {len(batches)} batches for concurrent processing"
+            )
 
             # Step 3: Thread pool concurrent processing of all batches
             if not batches:
@@ -1147,7 +1151,7 @@ class LongTermMemory(metaclass=Singleton):
                     session_id,
                 )
                 futures.append(future)
-                logger.info(f"Batch {i + 1} submitted to thread pool (size: {len(batch_data['dialogues'])})")
+                memory_logger.info(f"Batch {i + 1} submitted to thread pool (size: {len(batch_data['dialogues'])})")
 
             # Step 4: Wait for all batches to complete
             memory_logger.info(f"Waiting for {len(futures)} batch processing tasks to complete...")
@@ -1165,7 +1169,7 @@ class LongTermMemory(metaclass=Singleton):
                 elif result and result.get("success"):
                     successful_batches += 1
                     all_mem_ids_to_delete.extend(result.get("mem_ids", []))
-                    logger.info(
+                    memory_logger.info(
                         f"Batch {i + 1} succeeded: processed {result.get('batch_size')} dialogues, "
                         f"extracted {result.get('memories_count', 0)} memories"
                     )
@@ -1176,9 +1180,7 @@ class LongTermMemory(metaclass=Singleton):
 
             # Step 6: Batch delete processed middle-term memories
             if all_mem_ids_to_delete:
-                logger.info(f"Deleting {len(all_mem_ids_to_delete)} processed middle memories in batch")
-                logger.info("all_mem_ids_to_delete", all_mem_ids_to_delete)
-                memory_logger.info(f"Batch deleting {len(all_mem_ids_to_delete)} middle memories")
+                memory_logger.info(f"all_mem_ids_to_delete: {all_mem_ids_to_delete}")
 
                 try:
                     await self._batch_delete_middle_messages(all_mem_ids_to_delete)
@@ -1187,7 +1189,6 @@ class LongTermMemory(metaclass=Singleton):
                     memory_logger.error(f"Failed to batch delete middle memories: {str(e)}", exception=str(e))
 
             # Step 7: Output statistics
-            logger.info(f"Processing completed: {successful_batches}/{len(batches)} batches succeeded")
             memory_logger.info(
                 f"Middle memory conversion completed: {successful_batches} succeeded, "
                 f"{failed_batches} failed, {len(all_mem_ids_to_delete)} memories deleted"
@@ -1196,8 +1197,7 @@ class LongTermMemory(metaclass=Singleton):
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
-            logger.info(f"middle_mem_to_long failed: {str(e)}\n{tb}")
-            memory_logger.error("middle_mem_to_long failed", exception=str(e), traceback=traceback.format_exc())
+            memory_logger.warning("middle_mem_to_long failed", exception=str(e), traceback=traceback.format_exc())
 
     async def get_recent_messages(
             self,
