@@ -79,20 +79,7 @@ class MiddleTermMemoryManager(BaseMemoryManager):
 
     async def delete_by_user_id(self, user_id: str, scope_id: str, **kwargs):
         """delete memory by user id and app id."""
-        semantic_store = self._get_semantic_store("delete", **kwargs)
-        data = await self.mem_store.get_all(user_id=user_id, scope_id=scope_id, mem_type=MemoryType.SUMMARY.value)
-        if data is None:
-            memory_logger.error(
-                "Delete summary in store failed, the mem of user_id is not exist.",
-                event_type=LogEventType.MEMORY_STORE,
-                user_id=user_id,
-                scope_id=scope_id
-            )
-            return False
-        await self._delete_vector_store_table(user_id=user_id,
-                                              scope_id=scope_id,
-                                              semantic_store=semantic_store)
-        return True
+        pass
 
     async def get(self, user_id: str, scope_id: str, mem_id: str) -> dict[str, Any] | None:
         """get memory by its id."""
