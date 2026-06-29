@@ -5,11 +5,11 @@
 
 from unittest.mock import MagicMock, patch
 
-from foundation.store.graph.graph_object import Entity
-from memory_core.graph.extraction.base import MULTILINGUAL_DESCRIPTION
-from memory_core.graph.extraction.entity_type_definition import EntityDef
-from memory_core.graph.extraction.extraction_models import EntityDeclaration
-from memory_core.graph.extraction.extraction_prompts import (
+from jiuwen_memory.foundation.store.graph.graph_object import Entity
+from jiuwen_memory.memory_core.graph.extraction.base import MULTILINGUAL_DESCRIPTION
+from jiuwen_memory.memory_core.graph.extraction.entity_type_definition import EntityDef
+from jiuwen_memory.memory_core.graph.extraction.extraction_models import EntityDeclaration
+from jiuwen_memory.memory_core.graph.extraction.extraction_prompts import (
     dedupe_entity_list,
     dedupe_relation_list,
     extract_entity_attributes,
@@ -69,11 +69,11 @@ class TestExtractEntityDeclaration:
     """Tests for extract_entity_declaration"""
 
     @staticmethod
-    @patch("memory_core.graph.extraction.extraction_prompts.TemplateManager")
-    @patch("memory_core.graph.extraction.extraction_prompts.get_formatting_kwargs")
+    @patch("jiuwen_memory.memory_core.graph.extraction.extraction_prompts.TemplateManager")
+    @patch("jiuwen_memory.memory_core.graph.extraction.extraction_prompts.get_formatting_kwargs")
     def test_returns_kwargs_template_and_response_format(get_kwargs, mock_tm_cls):
         """extract_entity_declaration returns (kwargs, template, response_format)"""
-        from memory_core.config.graph import EpisodeType
+        from jiuwen_memory.memory_core.config.graph import EpisodeType
 
         get_kwargs.return_value = {"content": "", "context": "", "extra_message": ""}
         mock_tm_cls.return_value.get.return_value = MagicMock()
@@ -85,11 +85,11 @@ class TestExtractEntityDeclaration:
         assert "json_schema" in resp_fmt
 
     @staticmethod
-    @patch("memory_core.graph.extraction.extraction_prompts.TemplateManager")
-    @patch("memory_core.graph.extraction.extraction_prompts.get_formatting_kwargs")
+    @patch("jiuwen_memory.memory_core.graph.extraction.extraction_prompts.TemplateManager")
+    @patch("jiuwen_memory.memory_core.graph.extraction.extraction_prompts.get_formatting_kwargs")
     def test_entity_types_default_single_entity_def(get_kwargs, mock_tm_cls):
         """When entity_types is None, kwargs['entity_types'] uses single EntityDef()"""
-        from memory_core.config.graph import EpisodeType
+        from jiuwen_memory.memory_core.config.graph import EpisodeType
 
         get_kwargs.return_value = {}
         mock_tm_cls.return_value.get.return_value = MagicMock()
@@ -102,8 +102,8 @@ class TestExtractEntityAttributes:
     """Tests for extract_entity_attributes"""
 
     @staticmethod
-    @patch("memory_core.graph.extraction.extraction_prompts.TemplateManager")
-    @patch("memory_core.graph.extraction.extraction_prompts.get_formatting_kwargs")
+    @patch("jiuwen_memory.memory_core.graph.extraction.extraction_prompts.TemplateManager")
+    @patch("jiuwen_memory.memory_core.graph.extraction.extraction_prompts.get_formatting_kwargs")
     def test_sets_entity_name_and_summary(get_kwargs, mock_tm_cls):
         """extract_entity_attributes sets entity_name and entity_summary in kwargs"""
 
@@ -119,9 +119,9 @@ class TestExtractRelationDeclaration:
     """Tests for extract_relation_declaration"""
 
     @staticmethod
-    @patch("memory_core.graph.extraction.extraction_prompts.TemplateManager")
+    @patch("jiuwen_memory.memory_core.graph.extraction.extraction_prompts.TemplateManager")
     @patch(
-        "memory_core.graph.extraction.extraction_prompts.get_formatting_kwargs",
+        "jiuwen_memory.memory_core.graph.extraction.extraction_prompts.get_formatting_kwargs",
         return_value={"source_description": "", "extra_message": "", "context": ""},
     )
     def test_returns_kwargs_with_entities_tz_and_relation_types(mock_get_kwargs, mock_tm_cls):
@@ -145,9 +145,9 @@ class TestExtractTimezone:
     """Tests for extract_timezone"""
 
     @staticmethod
-    @patch("memory_core.graph.extraction.extraction_prompts.TemplateManager")
+    @patch("jiuwen_memory.memory_core.graph.extraction.extraction_prompts.TemplateManager")
     @patch(
-        "memory_core.graph.extraction.extraction_prompts.get_formatting_kwargs",
+        "jiuwen_memory.memory_core.graph.extraction.extraction_prompts.get_formatting_kwargs",
         return_value={"source_description": "", "extra_message": "", "context": ""},
     )
     def test_returns_kwargs_template_and_response_format(mock_get_kwargs, mock_tm_cls):
@@ -162,13 +162,13 @@ class TestMergeExistingEntities:
     """Tests for merge_existing_entities"""
 
     @staticmethod
-    @patch("memory_core.graph.extraction.extraction_prompts.TemplateManager")
+    @patch("jiuwen_memory.memory_core.graph.extraction.extraction_prompts.TemplateManager")
     @patch(
-        "memory_core.graph.extraction.extraction_prompts.get_formatting_kwargs",
+        "jiuwen_memory.memory_core.graph.extraction.extraction_prompts.get_formatting_kwargs",
         return_value={"source_description": "", "extra_message": "", "context": ""},
     )
     @patch(
-        "memory_core.graph.extraction.extraction_prompts.format_existing_entities",
+        "jiuwen_memory.memory_core.graph.extraction.extraction_prompts.format_existing_entities",
         return_value="",
     )
     def test_returns_kwargs_with_entities_to_merge(mock_fmt_entities, mock_get_kwargs, mock_tm_cls):
@@ -185,18 +185,18 @@ class TestFilterRelationsForMerge:
     """Tests for filter_relations_for_merge"""
 
     @staticmethod
-    @patch("memory_core.graph.extraction.extraction_prompts.TemplateManager")
+    @patch("jiuwen_memory.memory_core.graph.extraction.extraction_prompts.TemplateManager")
     @patch(
-        "memory_core.graph.extraction.extraction_prompts.get_formatting_kwargs",
+        "jiuwen_memory.memory_core.graph.extraction.extraction_prompts.get_formatting_kwargs",
         return_value={"source_description": "", "extra_message": "", "context": ""},
     )
     @patch(
-        "memory_core.graph.extraction.extraction_prompts.format_existing_relations",
+        "jiuwen_memory.memory_core.graph.extraction.extraction_prompts.format_existing_relations",
         return_value="",
     )
     def test_returns_kwargs_with_existing_relations(mock_fmt_rel, mock_get_kwargs, mock_tm_cls):
         """filter_relations_for_merge returns kwargs with entity_name, existing_relations"""
-        from foundation.store.graph.graph_object import Relation
+        from jiuwen_memory.foundation.store.graph.graph_object import Relation
 
         mock_tm_cls.return_value.get.return_value = MagicMock()
         target = Entity(name="T", content="", obj_type="human")
@@ -210,17 +210,17 @@ class TestDedupeEntityList:
     """Tests for dedupe_entity_list"""
 
     @staticmethod
-    @patch("memory_core.graph.extraction.extraction_prompts.TemplateManager")
+    @patch("jiuwen_memory.memory_core.graph.extraction.extraction_prompts.TemplateManager")
     @patch(
-        "memory_core.graph.extraction.extraction_prompts.get_formatting_kwargs",
+        "jiuwen_memory.memory_core.graph.extraction.extraction_prompts.get_formatting_kwargs",
         return_value={"source_description": "", "extra_message": "", "context": ""},
     )
     @patch(
-        "memory_core.graph.extraction.extraction_prompts.format_existing_entities",
+        "jiuwen_memory.memory_core.graph.extraction.extraction_prompts.format_existing_entities",
         return_value="",
     )
     @patch(
-        "memory_core.graph.extraction.extraction_prompts.format_new_entities",
+        "jiuwen_memory.memory_core.graph.extraction.extraction_prompts.format_new_entities",
         return_value="",
     )
     def test_returns_kwargs_with_entities_and_candidates(mock_fmt_new, mock_fmt_ex, mock_get_kwargs, mock_tm_cls):
@@ -236,22 +236,22 @@ class TestDedupeRelationList:
     """Tests for dedupe_relation_list"""
 
     @staticmethod
-    @patch("memory_core.graph.extraction.extraction_prompts.TemplateManager")
+    @patch("jiuwen_memory.memory_core.graph.extraction.extraction_prompts.TemplateManager")
     @patch(
-        "memory_core.graph.extraction.extraction_prompts.get_formatting_kwargs",
+        "jiuwen_memory.memory_core.graph.extraction.extraction_prompts.get_formatting_kwargs",
         return_value={"source_description": "", "extra_message": "", "context": ""},
     )
     @patch(
-        "memory_core.graph.extraction.extraction_prompts.format_existing_entities",
+        "jiuwen_memory.memory_core.graph.extraction.extraction_prompts.format_existing_entities",
         return_value="",
     )
     @patch(
-        "memory_core.graph.extraction.extraction_prompts.format_existing_relations",
+        "jiuwen_memory.memory_core.graph.extraction.extraction_prompts.format_existing_relations",
         return_value="",
     )
     def test_returns_kwargs_with_relations_and_new_relation(mock_fmt_rel, mock_fmt_ent, mock_get_kwargs, mock_tm_cls):
         """dedupe_relation_list returns kwargs with entities, existing_relations, new_relation"""
-        from foundation.store.graph.graph_object import Relation
+        from jiuwen_memory.foundation.store.graph.graph_object import Relation
 
         mock_tm_cls.return_value.get.return_value = MagicMock()
         rel = Relation(content="r1", lhs="e1", rhs="e2", obj_type="Relation")

@@ -3,8 +3,8 @@
 
 """Unit tests for Milvus graph store package __init__ and registration."""
 
-from foundation.store.graph.base import GraphStoreFactory
-from foundation.store.graph.result_ranking import RANKER_CLS
+from jiuwen_memory.foundation.store.graph.base import GraphStoreFactory
+from jiuwen_memory.foundation.store.graph.result_ranking import RANKER_CLS
 
 
 class TestRegisterMilvusSupport:
@@ -14,7 +14,7 @@ class TestRegisterMilvusSupport:
     def test_milvus_backend_registered_in_factory():
         """After import, 'milvus' backend is registered in GraphStoreFactory."""
         assert "milvus" in GraphStoreFactory.class_map
-        from foundation.store.graph.milvus.milvus_support import MilvusGraphStore
+        from jiuwen_memory.foundation.store.graph.milvus.milvus_support import MilvusGraphStore
 
         assert GraphStoreFactory.class_map["milvus"] is MilvusGraphStore
 
@@ -30,10 +30,10 @@ class TestRegisterMilvusSupport:
     @staticmethod
     def test_register_is_idempotent():
         """Calling register_milvus_support again does not double-register."""
-        from foundation.store.graph.milvus import (
+        from jiuwen_memory.foundation.store.graph.milvus import (
             register_milvus_support,
         )
-        from foundation.store.graph.milvus.milvus_support import MilvusGraphStore
+        from jiuwen_memory.foundation.store.graph.milvus.milvus_support import MilvusGraphStore
 
         register_milvus_support()
         assert GraphStoreFactory.class_map["milvus"] is MilvusGraphStore

@@ -1,6 +1,6 @@
-# memory_core.config
+# jiuwen_memory.memory_core.config
 
-`memory_core.config` is the unified **memory configuration management module** in JiuwenMemory, responsible for:
+`jiuwen_memory.memory_core.config` is the unified **memory configuration management module** in JiuwenMemory, responsible for:
 
 - Defining `MemoryEngineConfig` — global engine configuration;
 - Defining `MemoryScopeConfig` — scope-level configuration (for model/vector parameters in different business scenarios);
@@ -8,10 +8,10 @@
 - Defining `DreamingConfig` — configuration for the offline dreaming process (background memory consolidation).
 
 
-## class memory_core.config.config.MemoryEngineConfig
+## class jiuwen_memory.memory_core.config.config.MemoryEngineConfig
 
 ```
-class memory_core.config.config.MemoryEngineConfig(default_model_cfg: ModelRequestConfig | None = None, default_model_client_cfg: ModelClientConfig | None = None, input_msg_max_len: int = 8192, crypto_key: bytes = b'')
+class jiuwen_memory.memory_core.config.config.MemoryEngineConfig(default_model_cfg: ModelRequestConfig | None = None, default_model_client_cfg: ModelClientConfig | None = None, input_msg_max_len: int = 8192, crypto_key: bytes = b'')
 ```
 
 Global memory engine configuration for setting engine-level common parameters.
@@ -36,8 +36,8 @@ The `crypto_key` parameter has a `field_validator`:
 **Example**:
 
 ```python
->>> from memory_core.config import MemoryEngineConfig
->>> from foundation.llm.schema.config import ModelRequestConfig, ModelClientConfig
+>>> from jiuwen_memory.memory_core.config import MemoryEngineConfig
+>>> from jiuwen_memory.foundation.llm.schema.config import ModelRequestConfig, ModelClientConfig
 >>> 
 >>> # Create global engine configuration
 >>> engine_config = MemoryEngineConfig(
@@ -58,10 +58,10 @@ The `crypto_key` parameter has a `field_validator`:
 ```
 
 
-## class memory_core.config.config.MemoryScopeConfig
+## class jiuwen_memory.memory_core.config.config.MemoryScopeConfig
 
 ```
-class memory_core.config.config.MemoryScopeConfig(model_cfg: ModelRequestConfig | None = None, model_client_cfg: ModelClientConfig | None = None, embedding_cfg: EmbeddingConfig | None = None, user_profile_definition: str = "Affirmative or negative statements about the user (including but not limited to identity, interests, relationships, assets)", semantic_memory_definition: str = "Factual content or concepts in user conversations that have no explicit temporal relationship", episodic_memory_definition: str = "Factual content or concepts in user conversations that have an explicit temporal relationship")
+class jiuwen_memory.memory_core.config.config.MemoryScopeConfig(model_cfg: ModelRequestConfig | None = None, model_client_cfg: ModelClientConfig | None = None, embedding_cfg: EmbeddingConfig | None = None, user_profile_definition: str = "Affirmative or negative statements about the user (including but not limited to identity, interests, relationships, assets)", semantic_memory_definition: str = "Factual content or concepts in user conversations that have no explicit temporal relationship", episodic_memory_definition: str = "Factual content or concepts in user conversations that have an explicit temporal relationship")
 ```
 
 Scope-level memory configuration for defining independent model and vector parameters for different `scope_id` values.
@@ -80,9 +80,9 @@ Scope-level memory configuration for defining independent model and vector param
 **Example**:
 
 ```python
->>> from memory_core.config import MemoryScopeConfig
->>> from foundation.llm.schema.config import ModelRequestConfig, ModelClientConfig
->>> from retrieval.common.config import EmbeddingConfig
+>>> from jiuwen_memory.memory_core.config import MemoryScopeConfig
+>>> from jiuwen_memory.foundation.llm.schema.config import ModelRequestConfig, ModelClientConfig
+>>> from jiuwen_memory.retrieval.common.config import EmbeddingConfig
 >>> 
 >>> # Create scope configuration
 >>> scope_config = MemoryScopeConfig(
@@ -105,10 +105,10 @@ Scope-level memory configuration for defining independent model and vector param
 ```
 
 
-## class memory_core.config.config.AgentMemoryConfig
+## class jiuwen_memory.memory_core.config.config.AgentMemoryConfig
 
 ```
-class memory_core.config.config.AgentMemoryConfig(mem_variables: list[Param] = [], enable_long_term_mem: bool = True, enable_user_profile: bool = True, enable_semantic_memory: bool = True, enable_episodic_memory: bool = True, enable_summary_memory: bool = True)
+class jiuwen_memory.memory_core.config.config.AgentMemoryConfig(mem_variables: list[Param] = [], enable_long_term_mem: bool = True, enable_user_profile: bool = True, enable_semantic_memory: bool = True, enable_episodic_memory: bool = True, enable_summary_memory: bool = True)
 ```
 
 Agent-level memory strategy configuration that describes which types of memory an agent wants to extract and manage.
@@ -122,13 +122,13 @@ Agent-level memory strategy configuration that describes which types of memory a
 * **enable_episodic_memory**(bool, optional): Whether to enable episodic memory generation; when `True`, episodic memories are extracted from conversations and saved to the semantic store, and used in subsequent searches; when `False`, episodic memories are not generated or used. Default: `True`.
 * **enable_summary_memory**(bool, optional): Whether to enable user summary memory generation; when `True`, user summaries (such as recent conversation content) are extracted from conversations and saved to the semantic store; when `False`, user summary memories are not generated. Default: `True`.
 
-> **Note**: The `Param` type is defined in `common.schema.param` and typically includes `name / description / type / required` parameters.
+> **Note**: The `Param` type is defined in `jiuwen_memory.common.schema.param` and typically includes `name / description / type / required` parameters.
 
 **Example**:
 
 ```python
->>> from memory_core.config import AgentMemoryConfig
->>> from common.schema.param import Param
+>>> from jiuwen_memory.memory_core.config import AgentMemoryConfig
+>>> from jiuwen_memory.common.schema.param import Param
 >>> 
 >>> # Create agent memory strategy configuration
 >>> agent_config = AgentMemoryConfig(
@@ -155,10 +155,10 @@ Agent-level memory strategy configuration that describes which types of memory a
 ```
 
 
-## class memory_core.config.config.DreamingConfig
+## class jiuwen_memory.memory_core.config.config.DreamingConfig
 
 ```
-class memory_core.config.config.DreamingConfig(enabled: bool = False, interval_seconds: float = 14400.0, min_session_rounds: int = 4, max_sessions_per_sweep: int = 10, max_compress_tokens: int = 30000, max_items_per_session: int = 5)
+class jiuwen_memory.memory_core.config.config.DreamingConfig(enabled: bool = False, interval_seconds: float = 14400.0, min_session_rounds: int = 4, max_sessions_per_sweep: int = 10, max_compress_tokens: int = 30000, max_items_per_session: int = 5)
 ```
 
 Configuration for the offline **dreaming** process (background memory consolidation that distills knowledge from a user's stored sessions). Constructed by the caller and passed to `LongTermMemory.start_dreaming`; it is **not** read from any global config file.
@@ -175,7 +175,7 @@ Configuration for the offline **dreaming** process (background memory consolidat
 **Example**:
 
 ```python
->>> from memory_core.config import DreamingConfig
+>>> from jiuwen_memory.memory_core.config import DreamingConfig
 >>> 
 >>> # Enable dreaming with a 1-hour sweep interval
 >>> dreaming_config = DreamingConfig(
@@ -192,17 +192,17 @@ Configuration for the offline **dreaming** process (background memory consolidat
 ## Usage Example
 
 ```python
->>> from memory_core import (
+>>> from jiuwen_memory.memory_core import (
 >>>     MemoryEngineConfig,
 >>>     MemoryScopeConfig,
 >>>     AgentMemoryConfig,
 >>> )
->>> from foundation.llm.schema.config import (
+>>> from jiuwen_memory.foundation.llm.schema.config import (
 >>>     ModelClientConfig,
 >>>     ModelRequestConfig,
 >>> )
->>> from retrieval.common.config import EmbeddingConfig
->>> from common.schema.param import Param
+>>> from jiuwen_memory.retrieval.common.config import EmbeddingConfig
+>>> from jiuwen_memory.common.schema.param import Param
 >>> 
 >>> # 1. Create global engine configuration
 >>> engine_config = MemoryEngineConfig(
@@ -267,11 +267,11 @@ Configuration for the offline **dreaming** process (background memory consolidat
 
 ## Graph Memory Configuration
 
-`MemoryEngineConfig`, `MemoryScopeConfig`, `AgentMemoryConfig`, and `DreamingConfig` in `memory_core.config.config` are for the main `LongTermMemory` pipeline. Graph Memory uses the independent configuration module `memory_core.config.graph`, mainly including:
+`MemoryEngineConfig`, `MemoryScopeConfig`, `AgentMemoryConfig`, and `DreamingConfig` in `jiuwen_memory.memory_core.config.config` are for the main `LongTermMemory` pipeline. Graph Memory uses the independent configuration module `jiuwen_memory.memory_core.config.graph`, mainly including:
 
 - `EpisodeType`: identifies source types, including conversation, document, and JSON strings.
 - `AddMemStrategy`: controls entity recall, entity merging, relation deduplication, and prompt language during graph memory writes.
 - `RetrievalStrategy` / `EpisodeRetrievalStrategy`: nested recall strategies used by `AddMemStrategy`, including fields such as `top_k`, `min_score`, `same_kind`, and `exclude_future_results`.
 - `SearchConfig`: controls top_k, score thresholds, hybrid ranking, rerank, and BFS graph expansion for entity/relation collections during graph memory search.
 
-Graph Memory graph-store connection settings, vector dimensions, index types, and backend options are managed by `foundation.store.graph.GraphConfig` and its sub-configs. See [memory_core.graph.graph_memory](graph_memory.md).
+Graph Memory graph-store connection settings, vector dimensions, index types, and backend options are managed by `jiuwen_memory.foundation.store.graph.GraphConfig` and its sub-configs. See [jiuwen_memory.memory_core.graph.graph_memory](graph_memory.md).

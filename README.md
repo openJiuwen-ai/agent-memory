@@ -69,15 +69,15 @@ Let's create a simple long-term memory instance, register storage backends, add 
 import asyncio
 import tempfile
 from sqlalchemy.ext.asyncio import create_async_engine
-from memory_core import LongTermMemory
-from memory_core.config.config import MemoryEngineConfig, MemoryScopeConfig, AgentMemoryConfig, DreamingConfig
-from foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
-from foundation.llm import UserMessage, AssistantMessage
-from foundation.store.kv.in_memory_kv_store import InMemoryKVStore
-from foundation.store.db.default_db_store import DefaultDbStore
-from foundation.store.vector.chroma_vector_store import ChromaVectorStore
-from retrieval.embedding.api_embedding import APIEmbedding
-from retrieval.common.config import EmbeddingConfig
+from jiuwen_memory.memory_core import LongTermMemory
+from jiuwen_memory.memory_core.config.config import MemoryEngineConfig, MemoryScopeConfig, AgentMemoryConfig, DreamingConfig
+from jiuwen_memory.foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
+from jiuwen_memory.foundation.llm import UserMessage, AssistantMessage
+from jiuwen_memory.foundation.store.kv.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.foundation.store.db.default_db_store import DefaultDbStore
+from jiuwen_memory.foundation.store.vector.chroma_vector_store import ChromaVectorStore
+from jiuwen_memory.retrieval.embedding.api_embedding import APIEmbedding
+from jiuwen_memory.retrieval.common.config import EmbeddingConfig
 
 # ============== Configuration: set directly in code, no .env required ==============
 # LLM configuration
@@ -319,89 +319,91 @@ Auto-memory for OpenClaw agents — remembers what users said and recalls it bef
 
 ```
 agent-memory/
-├── memory_core/                  # Core memory module
-│   ├── long_term_memory.py       # Long-term memory engine entry
-│   ├── config/                   # Configuration management
-│   │   ├── config.py             # Engine config, scope config, agent config
-│   │   └── graph.py              # Graph Memory write and search strategy config
-│   ├── manage/                   # Memory management
-│   │   ├── index/                # Memory managers
-│   │   │   ├── base_memory_manager.py     # Base manager class
-│   │   │   ├── fragment_memory_manager.py # Fragment memory manager
-│   │   │   ├── variable_manager.py        # Variable manager
-│   │   │   ├── summary_manager.py         # Summary manager
-│   │   │   └── write_manager.py           # Write manager
-│   │   ├── search/               # Search management
-│   │   │   └── search_manager.py # Search manager
-│   │   ├── update/               # Update detection
-│   │   └── mem_model/            # Data models
-│   │       ├── memory_unit.py    # Memory unit definitions
-│   │       ├── db_model.py       # Database models
-│   │       └── sql_db_store.py   # SQL database store
-│   ├── process/                  # Memory processing
-│   │   ├── extract/              # Memory extraction
-│   │   │   ├── generation.py     # Memory generator
-│   │   │   ├── long_term_memory_extractor.py  # Long-term memory extractor
-│   │   │   └── memory_analyzer.py # Memory analyzer
-│   │   ├── dreaming/             # Offline memory consolidation
-│   │   │   ├── orchestrator.py   # Background sweep scheduler
-│   │   │   ├── source.py         # Session source (reads message store)
-│   │   │   ├── sweeper.py        # Compress -> extract -> promote pipeline
-│   │   │   └── store.py          # Writes distilled knowledge as memory units
-│   │   └── refine/               # Memory refinement
-│   ├── graph/                    # Knowledge graph memory
-│   │   ├── graph_memory/         # GraphMemory write, search, and state management
-│   │   └── extraction/           # Entity/relation extraction models and prompts
-│   ├── prompts/                  # Prompt management
-│   │   └── prompt_applier.py     # Prompt template engine
-│   ├── codec/                    # Encoding/decoding
-│   │   └── aes_storage_codec.py  # AES encryption codec
-│   ├── migration/                # Data migration
-│   │   ├── migration_plan.py     # Migration plan and registry
-│   │   ├── migrator/             # Various migrators
-│   │   └── operation/            # Migration operation definitions
-│   ├── external/                 # External integrations
-│   │   ├── provider.py           # MemoryProvider abstract interface
-│   │   ├── mem0_provider.py      # Mem0 integration
-│   │   ├── agentarts_memory_provider.py  # AgentArts integration
-│   │   ├── openjiuwen_memory_provider.py # openJiuwen integration
-│   │   └── openviking_memory_provider.py  # openViking integration
-│   └── common/                   # Common utilities
-│       ├── distributed_lock.py   # Distributed lock
-│       └── kv_prefix_registry.py # KV prefix registry
-├── foundation/                   # Foundation capabilities
-│   ├── llm/                      # LLM invocation
-│   │   ├── model.py              # Unified model interface
-│   │   └── model_clients/        # Various model clients
-│   ├── store/                    # Storage abstractions
-│   │   ├── base_kv_store.py      # KV store base class
-│   │   ├── base_vector_store.py  # Vector store base class
-│   │   ├── base_db_store.py      # Database store base class
-│   │   ├── base_message_store.py # Message store base class
-│   │   ├── base_memory_index.py  # Memory index base class
-│   │   └── graph/                # Graph store abstraction and Milvus implementation
-│   ├── prompt/                   # Prompt templates
-│   └── tool/                     # Tool definitions
-├── retrieval/                    # Retrieval capabilities
-│   └── embedding/                # Embedding models
-├── common/                       # Common components
-│   ├── security/                 # Security utilities
-│   ├── logging/                  # Logging management
-│   ├── exception/                # Exception handling
-│   └── utils/                    # General utilities
-├── server/                       # Memory service (FastAPI)
-│   ├── __init__.py               # Package init
-│   ├── memory_server.py          # HTTP API server (CLI entry point main())
-│   ├── store_factory.py          # Storage backend factory
-│   └── .env.example              # Environment config template
-├── agent-memory-plugin/          # OpenClaw lifecycle plugin
-│   ├── lib/                      # Plugin library
-│   │   └── openjiuwen-memory-api.js # Memory API client
-│   ├── openjiuwen-memory-index.js # Plugin entry point
-│   ├── openclaw.plugin.json      # Plugin manifest
-│   ├── package.json              # npm package config
-│   └── README.md                 # Plugin documentation
-└── tests/                        # Test cases
+├── jiuwen_memory/                # Main package
+│   ├── memory_core/                  # Core memory module
+│   │   ├── long_term_memory.py       # Long-term memory engine entry
+│   │   ├── config/                   # Configuration management
+│   │   │   ├── config.py             # Engine config, scope config, agent config
+│   │   │   └── graph.py              # Graph Memory write and search strategy config
+│   │   ├── manage/                   # Memory management
+│   │   │   ├── index/                # Memory managers
+│   │   │   │   ├── base_memory_manager.py     # Base manager class
+│   │   │   │   ├── fragment_memory_manager.py # Fragment memory manager
+│   │   │   │   ├── variable_manager.py        # Variable manager
+│   │   │   │   ├── summary_manager.py         # Summary manager
+│   │   │   │   └── write_manager.py           # Write manager
+│   │   │   ├── search/               # Search management
+│   │   │   │   └── search_manager.py # Search manager
+│   │   │   ├── update/               # Update detection
+│   │   │   └── mem_model/            # Data models
+│   │   │       ├── memory_unit.py    # Memory unit definitions
+│   │   │       ├── db_model.py       # Database models
+│   │   │       └── sql_db_store.py   # SQL database store
+│   │   ├── process/                  # Memory processing
+│   │   │   ├── extract/              # Memory extraction
+│   │   │   │   ├── generation.py     # Memory generator
+│   │   │   │   ├── long_term_memory_extractor.py  # Long-term memory extractor
+│   │   │   │   └── memory_analyzer.py # Memory analyzer
+│   │   │   ├── dreaming/             # Offline memory consolidation
+│   │   │   │   ├── orchestrator.py   # Background sweep scheduler
+│   │   │   │   ├── source.py         # Session source (reads message store)
+│   │   │   │   ├── sweeper.py        # Compress -> extract -> promote pipeline
+│   │   │   │   └── store.py          # Writes distilled knowledge as memory units
+│   │   │   └── refine/               # Memory refinement
+│   │   ├── graph/                    # Knowledge graph memory
+│   │   │   ├── graph_memory/         # GraphMemory write, search, and state management
+│   │   │   └── extraction/           # Entity/relation extraction models and prompts
+│   │   ├── prompts/                  # Prompt management
+│   │   │   └── prompt_applier.py     # Prompt template engine
+│   │   ├── codec/                    # Encoding/decoding
+│   │   │   └── aes_storage_codec.py  # AES encryption codec
+│   │   ├── migration/                # Data migration
+│   │   │   ├── migration_plan.py     # Migration plan and registry
+│   │   │   ├── migrator/             # Various migrators
+│   │   │   └── operation/            # Migration operation definitions
+│   │   ├── external/                 # External integrations
+│   │   │   ├── provider.py           # MemoryProvider abstract interface
+│   │   │   ├── mem0_provider.py      # Mem0 integration
+│   │   │   ├── agentarts_memory_provider.py  # AgentArts integration
+│   │   │   ├── openjiuwen_memory_provider.py # openJiuwen integration
+│   │   │   └── openviking_memory_provider.py  # openViking integration
+│   │   └── common/                   # Common utilities
+│   │       ├── distributed_lock.py   # Distributed lock
+│   │       └── kv_prefix_registry.py # KV prefix registry
+│   ├── foundation/                   # Foundation capabilities
+│   │   ├── llm/                      # LLM invocation
+│   │   │   ├── model.py              # Unified model interface
+│   │   │   └── model_clients/        # Various model clients
+│   │   ├── store/                    # Storage abstractions
+│   │   │   ├── base_kv_store.py      # KV store base class
+│   │   │   ├── base_vector_store.py  # Vector store base class
+│   │   │   ├── base_db_store.py      # Database store base class
+│   │   │   ├── base_message_store.py # Message store base class
+│   │   │   ├── base_memory_index.py  # Memory index base class
+│   │   │   └── graph/                # Graph store abstraction and Milvus implementation
+│   │   ├── prompt/                   # Prompt templates
+│   │   └── tool/                     # Tool definitions
+│   ├── retrieval/                    # Retrieval capabilities
+│   │   └── embedding/                # Embedding models
+│   ├── common/                       # Common components
+│   │   ├── security/                 # Security utilities
+│   │   ├── logging/                  # Logging management
+│   │   ├── exception/                # Exception handling
+│   │   └── utils/                    # General utilities
+│   ├── server/                       # Memory service (FastAPI)
+│   │   ├── __init__.py               # Package init
+│   │   ├── memory_server.py          # HTTP API server (CLI entry point main())
+│   │   ├── store_factory.py          # Storage backend factory
+│   │   └── .env.example              # Environment config template
+│   └── agent-memory-plugin/          # OpenClaw lifecycle plugin
+│       ├── lib/                      # Plugin library
+│       │   └── openjiuwen-memory-api.js # Memory API client
+│       ├── openjiuwen-memory-index.js # Plugin entry point
+│       ├── openclaw.plugin.json      # Plugin manifest
+│       ├── package.json              # npm package config
+│       └── README.md                 # Plugin documentation
+├── docs/                             # Documentation
+└── tests/                            # Test cases
 ```
 
 ## Contributing

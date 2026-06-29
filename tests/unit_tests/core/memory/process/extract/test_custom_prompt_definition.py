@@ -5,18 +5,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from common.utils.singleton import Singleton
-from foundation.llm.schema.message import BaseMessage
-from memory_core.config.config import (
+from jiuwen_memory.common.utils.singleton import Singleton
+from jiuwen_memory.foundation.llm.schema.message import BaseMessage
+from jiuwen_memory.memory_core.config.config import (
     AgentMemoryConfig,
     MemoryScopeConfig,
 )
-from memory_core.process.extract.common import ExtractMemoryParams
-from memory_core.process.extract.long_term_memory_extractor import (
+from jiuwen_memory.memory_core.process.extract.common import ExtractMemoryParams
+from jiuwen_memory.memory_core.process.extract.long_term_memory_extractor import (
     LongTermMemoryExtractor,
 )
-from memory_core.process.extract.memory_analyzer import MemoryAnalyzer
-from memory_core.prompts.prompt_applier import PromptApplier
+from jiuwen_memory.memory_core.process.extract.memory_analyzer import MemoryAnalyzer
+from jiuwen_memory.memory_core.prompts.prompt_applier import PromptApplier
 
 
 CUSTOM_USER_PROFILE_DEFINITION = "自定义用户画像定义"
@@ -107,7 +107,8 @@ class TestMemoryAnalyzerPromptInjection:
         memory_config = AgentMemoryConfig()
 
         with patch.object(PromptApplier, "apply", return_value="rendered_prompt") as mock_apply, \
-             patch("memory_core.process.extract.memory_analyzer.JsonOutputParser", return_value=mock_parser_instance):
+             patch("jiuwen_memory.memory_core.process.extract.memory_analyzer.JsonOutputParser",
+                    return_value=mock_parser_instance):
             result = await MemoryAnalyzer.analyze(
                 messages=messages,
                 history_messages=history_messages,
@@ -141,7 +142,8 @@ class TestMemoryAnalyzerPromptInjection:
         memory_config = AgentMemoryConfig()
 
         with patch.object(PromptApplier, "apply", return_value="rendered_prompt") as mock_apply, \
-             patch("memory_core.process.extract.memory_analyzer.JsonOutputParser", return_value=mock_parser_instance):
+             patch("jiuwen_memory.memory_core.process.extract.memory_analyzer.JsonOutputParser",
+                    return_value=mock_parser_instance):
             result = await MemoryAnalyzer.analyze(
                 messages=messages,
                 history_messages=history_messages,
@@ -175,7 +177,8 @@ class TestMemoryAnalyzerPromptInjection:
         memory_config = AgentMemoryConfig()
 
         with patch.object(PromptApplier, "apply", return_value="rendered_prompt") as mock_apply, \
-             patch("memory_core.process.extract.memory_analyzer.JsonOutputParser", return_value=mock_parser_instance):
+             patch("jiuwen_memory.memory_core.process.extract.memory_analyzer.JsonOutputParser",
+                    return_value=mock_parser_instance):
             result = await MemoryAnalyzer.analyze(
                 messages=messages,
                 history_messages=history_messages,
@@ -245,7 +248,8 @@ class TestLongTermMemoryExtractorPromptInjection:
         )
 
         with patch.object(PromptApplier, "apply", return_value="rendered_prompt") as mock_apply, \
-             patch("memory_core.process.extract.long_term_memory_extractor.JsonOutputParser", return_value=mock_parser_instance):
+             patch("jiuwen_memory.memory_core.process.extract.long_term_memory_extractor.JsonOutputParser",
+                    return_value=mock_parser_instance):
             result = await LongTermMemoryExtractor.extract_long_term_memory(
                 extract_memory_paras=extract_params,
                 timestamp="2026-01-01T00:00:00",
@@ -285,7 +289,8 @@ class TestLongTermMemoryExtractorPromptInjection:
         )
 
         with patch.object(PromptApplier, "apply", return_value="rendered_prompt") as mock_apply, \
-             patch("memory_core.process.extract.long_term_memory_extractor.JsonOutputParser", return_value=mock_parser_instance):
+             patch("jiuwen_memory.memory_core.process.extract.long_term_memory_extractor.JsonOutputParser",
+                    return_value=mock_parser_instance):
             result = await LongTermMemoryExtractor.extract_long_term_memory(
                 extract_memory_paras=extract_params,
                 timestamp="2026-01-01T00:00:00",

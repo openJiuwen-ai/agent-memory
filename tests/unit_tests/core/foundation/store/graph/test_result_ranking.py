@@ -6,7 +6,7 @@
 import pytest
 from pydantic import ValidationError
 
-from foundation.store.graph.result_ranking import (
+from jiuwen_memory.foundation.store.graph.result_ranking import (
     RANKER_CLS,
     BaseRankConfig,
     RRFRankConfig,

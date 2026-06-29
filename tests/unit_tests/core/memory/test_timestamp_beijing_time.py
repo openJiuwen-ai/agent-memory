@@ -7,9 +7,9 @@ import pytest
 
 logger = logging.getLogger(__name__)
 
-from memory_core.long_term_memory import LongTermMemory
-from foundation.llm.schema.message import BaseMessage
-from memory_core.config.config import AgentMemoryConfig
+from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+from jiuwen_memory.foundation.llm.schema.message import BaseMessage
+from jiuwen_memory.memory_core.config.config import AgentMemoryConfig
 
 
 @pytest.mark.asyncio
@@ -18,7 +18,7 @@ async def test_add_messages_timestamp_beijing_time():
     Test that when the input timestamp is empty, the current conversation time seen in the log is Beijing time
     """
     # Mock the entire LongTermMemory class
-    with patch('memory_core.long_term_memory.LongTermMemory') as mock_memory_class:
+    with patch('jiuwen_memory.memory_core.long_term_memory.LongTermMemory') as mock_memory_class:
         # Create mock instance
         mock_mem = MagicMock()
         mock_memory_class.return_value = mock_mem

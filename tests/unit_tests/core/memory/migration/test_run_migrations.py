@@ -6,19 +6,19 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from foundation.store.base_db_store import BaseDbStore
-from foundation.store.base_kv_store import BaseKVStore, BasedKVStorePipeline
-from foundation.store.base_vector_store import BaseVectorStore, CollectionSchema
-from foundation.store.kv.in_memory_kv_store import InMemoryKVStore
-from memory_core.manage.mem_model.sql_db_store import SqlDbStore
-from memory_core.migration.migration_plan import kv_registry, sql_registry, vector_registry
-from memory_core.migration.operation.base_operation import OperationMetadata
-from memory_core.migration.operation.operations import (
+from jiuwen_memory.foundation.store.base_db_store import BaseDbStore
+from jiuwen_memory.foundation.store.base_kv_store import BaseKVStore, BasedKVStorePipeline
+from jiuwen_memory.foundation.store.base_vector_store import BaseVectorStore, CollectionSchema
+from jiuwen_memory.foundation.store.kv.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.memory_core.manage.mem_model.sql_db_store import SqlDbStore
+from jiuwen_memory.memory_core.migration.migration_plan import kv_registry, sql_registry, vector_registry
+from jiuwen_memory.memory_core.migration.operation.base_operation import OperationMetadata
+from jiuwen_memory.memory_core.migration.operation.operations import (
     AddColumnOperation,
     RenameScalarFieldOperation,
     UpdateKVOperation
 )
-from memory_core.migration.run_migrations import (
+from jiuwen_memory.memory_core.migration.run_migrations import (
     run_kv_migrations,
     run_sql_migrations,
     run_vector_migrations
@@ -184,7 +184,7 @@ class TestRunMigrations:
         """
         kv_store = InMemoryKVStore()
 
-        from memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
+        from jiuwen_memory.memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
         await kv_store.set(KV_SCHEMA_VERSION, "1")
 
         await kv_store.set("old_key_v1", "value_v1")
@@ -234,7 +234,7 @@ class TestRunMigrations:
         """
         kv_store = InMemoryKVStore()
 
-        from memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
+        from jiuwen_memory.memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
         await kv_store.set(KV_SCHEMA_VERSION, "3")
 
         await kv_store.set("key1", "value1")
@@ -277,7 +277,7 @@ class TestRunMigrations:
         This test simulates a scenario where there is no existing schema version,
         and verifies that all operations are executed.
         """
-        from memory_core.common.kv_prefix_registry import kv_prefix_registry
+        from jiuwen_memory.memory_core.common.kv_prefix_registry import kv_prefix_registry
 
         kv_store = InMemoryKVStore()
 
@@ -287,7 +287,7 @@ class TestRunMigrations:
         try:
             await kv_store.set(f"{test_prefix}/existing_data", "value")
 
-            from memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
+            from jiuwen_memory.memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
             await kv_store.set(KV_SCHEMA_VERSION, "0")
 
             async def update_func_v1(store):
@@ -341,7 +341,7 @@ class TestRunMigrations:
         """
         kv_store = InMemoryKVStore()
 
-        from memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
+        from jiuwen_memory.memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
         await kv_store.set(KV_SCHEMA_VERSION, "1")
 
         async def failing_update_func(store):
@@ -370,7 +370,7 @@ class TestRunMigrations:
         """
         kv_store = InMemoryKVStore()
 
-        from memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
+        from jiuwen_memory.memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
         await kv_store.set(KV_SCHEMA_VERSION, "1")
 
         async def update_v2(store):
@@ -412,7 +412,7 @@ class TestRunMigrations:
         """
         kv_store = InMemoryKVStore()
 
-        from memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
+        from jiuwen_memory.memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
         await kv_store.set(KV_SCHEMA_VERSION, "invalid_version")
 
         async def update_func(store):
@@ -447,7 +447,7 @@ class TestRunMigrations:
 
         kv_store = MockKVStoreWithConnectionError()
 
-        from memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
+        from jiuwen_memory.memory_core.migration.migrator.kv_migrator import KV_SCHEMA_VERSION
         await kv_store.set(KV_SCHEMA_VERSION, "1")
 
         async def update_func(store):

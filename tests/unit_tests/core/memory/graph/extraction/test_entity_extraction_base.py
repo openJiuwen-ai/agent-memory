@@ -7,14 +7,14 @@ from unittest.mock import patch
 
 import pytest
 
-from common.exception.errors import BaseError
-from memory_core.graph.extraction.entity_type_definition import (
+from jiuwen_memory.common.exception.errors import BaseError
+from jiuwen_memory.memory_core.graph.extraction.entity_type_definition import (
     AIEntity,
     HumanEntity,
     RelationDef,
 )
-from memory_core.graph.extraction.extraction_models import EntityExtraction
-from memory_core.graph.extraction.prompts.entity_extraction import base as entity_base
+from jiuwen_memory.memory_core.graph.extraction.extraction_models import EntityExtraction
+from jiuwen_memory.memory_core.graph.extraction.prompts.entity_extraction import base as entity_base
 
 
 class TestFormatSchemaInfo:
@@ -39,7 +39,7 @@ class TestFormatSchemaInfo:
     )
     def test_format_schema_info_with_model_returns_string():
         """format_schema_info with output_model returns schema string"""
-        from memory_core.graph.extraction.base import MULTILINGUAL_DESCRIPTION
+        from jiuwen_memory.memory_core.graph.extraction.base import MULTILINGUAL_DESCRIPTION
 
         with patch.dict(
             MULTILINGUAL_DESCRIPTION,

@@ -5,18 +5,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from foundation.store.base_message_store import (
+from jiuwen_memory.foundation.store.base_message_store import (
     BaseMessageStore,
 )
-from memory_core.migration.migrator.message_migrator import (
+from jiuwen_memory.memory_core.migration.migrator.message_migrator import (
     MessageMigrator,
     MESSAGE_ENTITY_KEY,
 )
-from memory_core.migration.operation.base_operation import (
+from jiuwen_memory.memory_core.migration.operation.base_operation import (
     BaseOperation,
     OperationMetadata,
 )
-from memory_core.migration.operation.operations import (
+from jiuwen_memory.memory_core.migration.operation.operations import (
     UpdateMessageOperation,
 )
 
@@ -255,8 +255,8 @@ class TestMessageMigrator:
         mock_message_store.get_schema_version = AsyncMock(return_value=None)
 
         failing_func = AsyncMock(side_effect=RuntimeError("migration failed"))
-        from foundation.llm.schema.message import BaseMessage
-        from foundation.store.base_message_store import MessageMetadata
+        from jiuwen_memory.foundation.llm.schema.message import BaseMessage
+        from jiuwen_memory.foundation.store.base_message_store import MessageMetadata
         from datetime import datetime, timezone
 
         mock_msg = BaseMessage(content="hello", role="user")

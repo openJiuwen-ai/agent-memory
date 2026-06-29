@@ -10,18 +10,18 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from common.utils.singleton import Singleton
-from foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
-from foundation.llm.schema.message import AssistantMessage, BaseMessage
-from foundation.store import create_vector_store
-from foundation.store.base_embedding import Embedding
-from foundation.store.db.default_db_store import DefaultDbStore
-from foundation.store.kv.in_memory_kv_store import InMemoryKVStore
-from common.exception.codes import StatusCode
-from common.exception.errors import BaseError
-from memory_core.config.config import AgentMemoryConfig, MemoryEngineConfig
-from memory_core.long_term_memory import AddMemResult, LongTermMemory
-from memory_core.manage.mem_model.memory_unit import (
+from jiuwen_memory.common.utils.singleton import Singleton
+from jiuwen_memory.foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
+from jiuwen_memory.foundation.llm.schema.message import AssistantMessage, BaseMessage
+from jiuwen_memory.foundation.store import create_vector_store
+from jiuwen_memory.foundation.store.base_embedding import Embedding
+from jiuwen_memory.foundation.store.db.default_db_store import DefaultDbStore
+from jiuwen_memory.foundation.store.kv.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.common.exception.codes import StatusCode
+from jiuwen_memory.common.exception.errors import BaseError
+from jiuwen_memory.memory_core.config.config import AgentMemoryConfig, MemoryEngineConfig
+from jiuwen_memory.memory_core.long_term_memory import AddMemResult, LongTermMemory
+from jiuwen_memory.memory_core.manage.mem_model.memory_unit import (
     MemoryType,
     OperationType,
 )

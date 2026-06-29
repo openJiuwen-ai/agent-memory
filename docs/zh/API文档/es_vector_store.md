@@ -40,7 +40,7 @@ Accept version must be either version 8 or 7, but found 9
 ### 通过 hosts 创建
 
 ```python
-from foundation.store.vector.es_vector_store import ElasticsearchVectorStore
+from jiuwen_memory.foundation.store.vector.es_vector_store import ElasticsearchVectorStore
 
 store = ElasticsearchVectorStore(
     hosts="http://127.0.0.1:9200",
@@ -52,7 +52,7 @@ store = ElasticsearchVectorStore(
 ### 通过工厂创建
 
 ```python
-from foundation.store import create_vector_store
+from jiuwen_memory.foundation.store import create_vector_store
 
 store = create_vector_store(
     "elasticsearch",
@@ -66,7 +66,7 @@ store = create_vector_store(
 
 ```python
 from elasticsearch import AsyncElasticsearch
-from foundation.store.vector.es_vector_store import ElasticsearchVectorStore
+from jiuwen_memory.foundation.store.vector.es_vector_store import ElasticsearchVectorStore
 
 client = AsyncElasticsearch(
     hosts="http://127.0.0.1:9200",
@@ -101,7 +101,7 @@ await store.close()
 ## Schema 示例
 
 ```python
-from foundation.store.base_vector_store import CollectionSchema, FieldSchema, VectorDataType
+from jiuwen_memory.foundation.store.base_vector_store import CollectionSchema, FieldSchema, VectorDataType
 
 schema = CollectionSchema(
     fields=[

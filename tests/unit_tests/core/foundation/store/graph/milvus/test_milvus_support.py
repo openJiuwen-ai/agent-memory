@@ -8,26 +8,26 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pymilvus import MilvusException
 
-from common.exception.errors import BaseError
-from foundation.store.base_embedding import Embedding
-from foundation.store.graph.config import GraphConfig
-from foundation.store.graph.constants import (
+from jiuwen_memory.common.exception.errors import BaseError
+from jiuwen_memory.foundation.store.base_embedding import Embedding
+from jiuwen_memory.foundation.store.graph.config import GraphConfig
+from jiuwen_memory.foundation.store.graph.constants import (
     ENTITY_COLLECTION,
     EPISODE_COLLECTION,
     RELATION_COLLECTION,
 )
-from foundation.store.graph.database_config import (
+from jiuwen_memory.foundation.store.graph.database_config import (
     GraphStoreIndexConfig,
     GraphStoreStorageConfig,
 )
-from foundation.store.graph.graph_object import Entity, Episode, Relation
-from foundation.store.graph.milvus.milvus_support import MilvusGraphStore
-from foundation.store.graph.result_ranking import (
+from jiuwen_memory.foundation.store.graph.graph_object import Entity, Episode, Relation
+from jiuwen_memory.foundation.store.graph.milvus.milvus_support import MilvusGraphStore
+from jiuwen_memory.foundation.store.graph.result_ranking import (
     RRFRankConfig,
     WeightedRankConfig,
 )
-from foundation.store.query import in_list
-from foundation.store.graph.index_field import MilvusAUTO
+from jiuwen_memory.foundation.store.query import in_list
+from jiuwen_memory.foundation.store.graph.index_field import MilvusAUTO
 
 
 class _StubEmbedding(Embedding):
@@ -82,10 +82,10 @@ def store(mock_client):
     """MilvusGraphStore with mocked MilvusClient and config with stub embedder."""
     config = _make_config(with_embedder=True)
     with patch(
-        "foundation.store.graph.milvus.milvus_support.MilvusClient",
+        "jiuwen_memory.foundation.store.graph.milvus.milvus_support.MilvusClient",
         return_value=mock_client,
     ):
-        with patch("foundation.store.graph.config.os.makedirs"):
+        with patch("jiuwen_memory.foundation.store.graph.config.os.makedirs"):
             return MilvusGraphStore(config=config)
 
 
@@ -97,10 +97,10 @@ class TestMilvusGraphStoreInit:
         """from_config(config) returns MilvusGraphStore instance."""
         config = _make_config(with_embedder=True)
         with patch(
-            "foundation.store.graph.milvus.milvus_support.MilvusClient",
+            "jiuwen_memory.foundation.store.graph.milvus.milvus_support.MilvusClient",
             return_value=mock_client,
         ):
-            with patch("foundation.store.graph.config.os.makedirs"):
+            with patch("jiuwen_memory.foundation.store.graph.config.os.makedirs"):
                 store = MilvusGraphStore.from_config(config)
         assert isinstance(store, MilvusGraphStore)
         assert store.config is config
@@ -111,10 +111,10 @@ class TestMilvusGraphStoreInit:
         config = _make_config(with_embedder=True)
         mock_client.list_databases.return_value = []
         with patch(
-            "foundation.store.graph.milvus.milvus_support.MilvusClient",
+            "jiuwen_memory.foundation.store.graph.milvus.milvus_support.MilvusClient",
             return_value=mock_client,
         ):
-            with patch("foundation.store.graph.config.os.makedirs"):
+            with patch("jiuwen_memory.foundation.store.graph.config.os.makedirs"):
                 MilvusGraphStore(config=config)
         mock_client.create_database.assert_called_once_with("test_db", timeout=10.0)
         mock_client.use_database.assert_called_with("test_db", timeout=10.0)
@@ -125,10 +125,10 @@ class TestMilvusGraphStoreInit:
         config = _make_config(with_embedder=True)
         mock_client.list_databases.return_value = ["test_db"]
         with patch(
-            "foundation.store.graph.milvus.milvus_support.MilvusClient",
+            "jiuwen_memory.foundation.store.graph.milvus.milvus_support.MilvusClient",
             return_value=mock_client,
         ):
-            with patch("foundation.store.graph.config.os.makedirs"):
+            with patch("jiuwen_memory.foundation.store.graph.config.os.makedirs"):
                 MilvusGraphStore(config=config)
         mock_client.create_database.assert_not_called()
         mock_client.use_database.assert_called()
@@ -232,7 +232,7 @@ class TestClose:
     @staticmethod
     def test_close_logs_on_error(store):
         store.client.close.side_effect = Exception("connection error")
-        with patch("foundation.store.graph.milvus.milvus_support.store_logger") as logger:
+        with patch("jiuwen_memory.foundation.store.graph.milvus.milvus_support.store_logger") as logger:
             store.close()
             logger.error.assert_called()
 
@@ -548,12 +548,12 @@ class TestBuildIndices:
         """When embedding_model is None, collections still initialize with config.embed_dim."""
         config = _make_config(embed_dim=96, with_embedder=False)
         with patch(
-            "foundation.store.graph.milvus.milvus_support.MilvusClient",
+            "jiuwen_memory.foundation.store.graph.milvus.milvus_support.MilvusClient",
             return_value=mock_client,
         ):
-            with patch("foundation.store.graph.config.os.makedirs"):
+            with patch("jiuwen_memory.foundation.store.graph.config.os.makedirs"):
                 with patch(
-                    "foundation.store.graph.milvus.milvus_support.generate_schema_and_index",
+                    "jiuwen_memory.foundation.store.graph.milvus.milvus_support.generate_schema_and_index",
                     return_value=(MagicMock(), MagicMock()),
                 ) as generate_schema:
                     store = MilvusGraphStore(config=config)
@@ -569,10 +569,10 @@ class TestBuildIndices:
         mock_client.has_collection.return_value = True
         config = _make_config(with_embedder=True)
         with patch(
-            "foundation.store.graph.milvus.milvus_support.MilvusClient",
+            "jiuwen_memory.foundation.store.graph.milvus.milvus_support.MilvusClient",
             return_value=mock_client,
         ):
-            with patch("foundation.store.graph.config.os.makedirs"):
+            with patch("jiuwen_memory.foundation.store.graph.config.os.makedirs"):
                 MilvusGraphStore(config=config)
         assert mock_client.load_collection.call_count == 3
         mock_client.create_collection.assert_not_called()
@@ -584,10 +584,10 @@ class TestBuildIndices:
         mock_client.load_collection.side_effect = MilvusException("load error")
         config = _make_config(with_embedder=True)
         with patch(
-            "foundation.store.graph.milvus.milvus_support.MilvusClient",
+            "jiuwen_memory.foundation.store.graph.milvus.milvus_support.MilvusClient",
             return_value=mock_client,
         ):
-            with patch("foundation.store.graph.config.os.makedirs"):
+            with patch("jiuwen_memory.foundation.store.graph.config.os.makedirs"):
                 with patch.object(MilvusGraphStore, "rebuild") as rebuild:
                     MilvusGraphStore(config=config)
         rebuild.assert_called_once()
@@ -626,10 +626,10 @@ class TestRankResults:
         config = _make_config(with_embedder=True)
         config.db_embed_config.distance_metric = "euclidean"
         with patch(
-            "foundation.store.graph.milvus.milvus_support.MilvusClient",
+            "jiuwen_memory.foundation.store.graph.milvus.milvus_support.MilvusClient",
             return_value=mock_client,
         ):
-            with patch("foundation.store.graph.config.os.makedirs"):
+            with patch("jiuwen_memory.foundation.store.graph.config.os.makedirs"):
                 store = MilvusGraphStore(config=config)
         assert store.metric == "L2"
         candidates = [
@@ -776,7 +776,7 @@ class TestAddDataTruncationAndBatchRetry:
         e.uuid = "mock_uuid"
         store.client.insert = MagicMock(side_effect=[MilvusException("too large"), None, None])
         store.client.delete = MagicMock()
-        with patch("foundation.store.graph.milvus.milvus_support.batched") as batched_mock:
+        with patch("jiuwen_memory.foundation.store.graph.milvus.milvus_support.batched") as batched_mock:
 
             def batched_side_effect(data, n):
                 return [tuple(data)]
@@ -813,13 +813,13 @@ class TestAddDataTruncationAndBatchRetry:
         e.uuid = "mock_uuid"
         store.client.insert = MagicMock(side_effect=[MilvusException("too large"), None])
         store.client.delete = MagicMock(side_effect=Exception("delete failed"))
-        with patch("foundation.store.graph.milvus.milvus_support.batched") as batched_mock:
+        with patch("jiuwen_memory.foundation.store.graph.milvus.milvus_support.batched") as batched_mock:
 
             def _mock_batched(data: object, n: int):
                 return [tuple(data)]
 
             batched_mock.side_effect = _mock_batched
-            with patch("foundation.store.graph.milvus.milvus_support.store_logger") as log_mock:
+            with patch("jiuwen_memory.foundation.store.graph.milvus.milvus_support.store_logger") as log_mock:
                 await getattr(store, "_add_data")(ENTITY_COLLECTION, [e], flush=True, no_embed=True)
                 log_mock.warning.assert_called_once()
                 args = log_mock.warning.call_args[0]

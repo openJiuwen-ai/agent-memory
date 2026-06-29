@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from memory_core.config.config import DreamingConfig
-from memory_core.process.dreaming.source import NormalizedSession
-from memory_core.process.dreaming.sweeper import Sweeper, _compress, _events_tokens
+from jiuwen_memory.memory_core.config.config import DreamingConfig
+from jiuwen_memory.memory_core.process.dreaming.source import NormalizedSession
+from jiuwen_memory.memory_core.process.dreaming.sweeper import Sweeper, _compress, _events_tokens
 
 
 # ---------------------------------------------------------------- _compress
@@ -29,7 +29,7 @@ def test_compress_noop_when_within_budget():
 # ---------------------------------------------------------------- prompt
 
 def test_extraction_prompt_md_renders():
-    from memory_core.prompts.prompt_applier import PromptApplier
+    from jiuwen_memory.memory_core.prompts.prompt_applier import PromptApplier
     p = PromptApplier().apply("dreaming_extraction", {"dialogue": "user: hello", "max_items": "3"})
     assert "user: hello" in p
     assert "最多输出 3 条" in p

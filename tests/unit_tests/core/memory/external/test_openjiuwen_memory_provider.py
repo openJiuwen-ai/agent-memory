@@ -7,13 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from memory_core.external.openjiuwen_memory_provider import (
+from jiuwen_memory.memory_core.external.openjiuwen_memory_provider import (
     LTM_SEARCH_SCHEMA,
     LTM_SEARCH_SUMMARY_SCHEMA,
     OpenJiuwenMemoryProvider,
 )
-from memory_core.long_term_memory import MemInfo, MemResult
-from memory_core.manage.mem_model.memory_unit import MemoryType
+from jiuwen_memory.memory_core.long_term_memory import MemInfo, MemResult
+from jiuwen_memory.memory_core.manage.mem_model.memory_unit import MemoryType
 
 
 def _make_mem_result(mem_id="id1", content="test content", mem_type=MemoryType.USER_PROFILE, score=0.85):
@@ -109,7 +109,7 @@ class TestIsInitialized:
     @pytest.mark.asyncio
     async def test_initialized_after_initialize(self, provider_with_stores, mock_ltm):
         with patch(
-            "memory_core.external.openjiuwen_memory_provider.LongTermMemory",
+            "jiuwen_memory.memory_core.external.openjiuwen_memory_provider.LongTermMemory",
             return_value=mock_ltm,
         ):
             await provider_with_stores.initialize(user_id="u1", scope_id="s1")
@@ -118,7 +118,7 @@ class TestIsInitialized:
     @pytest.mark.asyncio
     async def test_shutdown_resets_initialized(self, provider_with_stores, mock_ltm):
         with patch(
-            "memory_core.external.openjiuwen_memory_provider.LongTermMemory",
+            "jiuwen_memory.memory_core.external.openjiuwen_memory_provider.LongTermMemory",
             return_value=mock_ltm,
         ):
             await provider_with_stores.initialize()
@@ -130,7 +130,7 @@ class TestInitialize:
     @pytest.mark.asyncio
     async def test_initialize_with_pre_provided_stores(self, provider_with_stores, mock_ltm):
         with patch(
-            "memory_core.external.openjiuwen_memory_provider.LongTermMemory",
+            "jiuwen_memory.memory_core.external.openjiuwen_memory_provider.LongTermMemory",
             return_value=mock_ltm,
         ):
             await provider_with_stores.initialize(user_id="u1", scope_id="s1", session_id="sess1")
@@ -149,7 +149,7 @@ class TestInitialize:
             embedding_model=mock_embedding,
         )
         with patch(
-            "memory_core.external.openjiuwen_memory_provider.LongTermMemory",
+            "jiuwen_memory.memory_core.external.openjiuwen_memory_provider.LongTermMemory",
             return_value=mock_ltm,
         ):
             await provider.initialize()
@@ -157,7 +157,7 @@ class TestInitialize:
 
     @pytest.mark.asyncio
     async def test_initialize_sets_scope_config_when_non_default(self, provider_with_stores, mock_ltm):
-        from memory_core.config.config import MemoryScopeConfig
+        from jiuwen_memory.memory_core.config.config import MemoryScopeConfig
 
         scope_cfg = MemoryScopeConfig()
         provider = OpenJiuwenMemoryProvider(
@@ -168,7 +168,7 @@ class TestInitialize:
             scope_config=scope_cfg,
         )
         with patch(
-            "memory_core.external.openjiuwen_memory_provider.LongTermMemory",
+            "jiuwen_memory.memory_core.external.openjiuwen_memory_provider.LongTermMemory",
             return_value=mock_ltm,
         ):
             await provider.initialize(scope_id="my_scope")
@@ -176,7 +176,7 @@ class TestInitialize:
 
     @pytest.mark.asyncio
     async def test_initialize_skips_scope_config_for_default_scope(self, provider_with_stores, mock_ltm):
-        from memory_core.config.config import MemoryScopeConfig
+        from jiuwen_memory.memory_core.config.config import MemoryScopeConfig
 
         scope_cfg = MemoryScopeConfig()
         provider = OpenJiuwenMemoryProvider(
@@ -187,7 +187,7 @@ class TestInitialize:
             scope_config=scope_cfg,
         )
         with patch(
-            "memory_core.external.openjiuwen_memory_provider.LongTermMemory",
+            "jiuwen_memory.memory_core.external.openjiuwen_memory_provider.LongTermMemory",
             return_value=mock_ltm,
         ):
             await provider.initialize(scope_id="__default__")
@@ -200,7 +200,7 @@ class TestInitialize:
             }
         )
         with patch(
-            "memory_core.external.openjiuwen_memory_provider.LongTermMemory",
+            "jiuwen_memory.memory_core.external.openjiuwen_memory_provider.LongTermMemory",
             return_value=mock_ltm,
         ), patch.object(provider, "_create_kv_store", return_value=MagicMock()) as mock_kv_create, \
              patch.object(provider, "_create_vector_store", return_value=MagicMock()) as mock_vec_create, \
@@ -216,7 +216,7 @@ class TestInitialize:
     async def test_initialize_fails_if_store_creation_returns_none(self, mock_ltm):
         provider = OpenJiuwenMemoryProvider(config={})
         with patch(
-            "memory_core.external.openjiuwen_memory_provider.LongTermMemory",
+            "jiuwen_memory.memory_core.external.openjiuwen_memory_provider.LongTermMemory",
             return_value=mock_ltm,
         ), patch.object(provider, "_create_kv_store", return_value=None):
             await provider.initialize()
@@ -479,7 +479,7 @@ class TestShutdown:
     @pytest.mark.asyncio
     async def test_shutdown_resets_initialized(self, provider_with_stores, mock_ltm):
         with patch(
-            "memory_core.external.openjiuwen_memory_provider.LongTermMemory",
+            "jiuwen_memory.memory_core.external.openjiuwen_memory_provider.LongTermMemory",
             return_value=mock_ltm,
         ):
             await provider_with_stores.initialize()

@@ -6,15 +6,15 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, Mock
 
-from foundation.store.base_memory_index import BaseMemoryIndex, MemoryDoc
-from memory_core.migration.migrator.index_version_migrator import IndexVersionMigrator
-from memory_core.migration.operation.operations import (
+from jiuwen_memory.foundation.store.base_memory_index import BaseMemoryIndex, MemoryDoc
+from jiuwen_memory.memory_core.migration.migrator.index_version_migrator import IndexVersionMigrator
+from jiuwen_memory.memory_core.migration.operation.operations import (
     RenameMemoryDocFieldOperation,
     TransformMemoryDocFieldOperation,
     AddMemoryDocFieldOperation,
     RemoveMemoryDocFieldOperation
 )
-from memory_core.migration.operation.base_operation import OperationMetadata
+from jiuwen_memory.memory_core.migration.operation.base_operation import OperationMetadata
 
 
 class TestIndexVersionMigrator(unittest.IsolatedAsyncioTestCase):

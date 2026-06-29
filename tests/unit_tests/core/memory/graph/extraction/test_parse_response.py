@@ -3,7 +3,7 @@
 
 """Unit tests for parse_response"""
 
-from memory_core.graph.extraction.parse_response import (
+from jiuwen_memory.memory_core.graph.extraction.parse_response import (
     _raw_decode_json,
     ensure_list,
     parse_json,

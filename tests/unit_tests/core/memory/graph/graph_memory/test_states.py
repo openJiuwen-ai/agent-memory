@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from foundation.store.graph import Entity, Episode, Relation
-from memory_core.config.graph import AddMemStrategy, EpisodeType
-from memory_core.graph.graph_memory.states import (
+from jiuwen_memory.foundation.store.graph import Entity, Episode, Relation
+from jiuwen_memory.memory_core.config.graph import AddMemStrategy, EpisodeType
+from jiuwen_memory.memory_core.graph.graph_memory.states import (
     EntityMerge,
     GraphMemPrompting,
     GraphMemState,
@@ -258,7 +258,7 @@ class TestBatchEmbed:
     @pytest.mark.asyncio
     async def test_batch_embed_empty_data_returns_empty(self):
         """Empty data returns []"""
-        from foundation.store.graph.config import GraphConfig
+        from jiuwen_memory.foundation.store.graph.config import GraphConfig
 
         embedder = AsyncMock()
         config = MagicMock(spec=GraphConfig)
@@ -269,8 +269,8 @@ class TestBatchEmbed:
     @pytest.mark.asyncio
     async def test_batch_embed_no_embed_tasks_returns_empty(self):
         """When fetch_embed_task returns [], no embed call and returns []"""
-        from foundation.store.graph.config import GraphConfig
-        from foundation.store.graph.graph_object import BaseGraphObject
+        from jiuwen_memory.foundation.store.graph.config import GraphConfig
+        from jiuwen_memory.foundation.store.graph.graph_object import BaseGraphObject
 
         obj = MagicMock(spec=BaseGraphObject)
         obj.fetch_embed_task.return_value = []
@@ -284,7 +284,7 @@ class TestBatchEmbed:
     @pytest.mark.asyncio
     async def test_batch_embed_success_returns_empty(self):
         """Successful embed returns [] (objects updated in place)"""
-        from foundation.store.graph.config import GraphConfig
+        from jiuwen_memory.foundation.store.graph.config import GraphConfig
 
         ent = Entity(name="E", content="text", obj_type="Entity")
         embedder = AsyncMock()
@@ -300,7 +300,7 @@ class TestBatchEmbed:
     @pytest.mark.asyncio
     async def test_batch_embed_exception_returns_objects(self):
         """On exception, returns list of objects that were not embedded"""
-        from foundation.store.graph.config import GraphConfig
+        from jiuwen_memory.foundation.store.graph.config import GraphConfig
 
         ent = Entity(name="E", content="text", obj_type="Entity")
         embedder = AsyncMock()
@@ -317,7 +317,7 @@ class TestPersistToDb:
     @pytest.mark.asyncio
     async def test_persist_to_db_embeds_and_flushes(self):
         """persist_to_db embeds via batch_embed and calls db_backend add/delete"""
-        from foundation.store.graph.config import GraphConfig
+        from jiuwen_memory.foundation.store.graph.config import GraphConfig
 
         db = AsyncMock()
         db.embedder = AsyncMock()
@@ -333,7 +333,7 @@ class TestPersistToDb:
             Episode(content="c", obj_type="conversation", user_id="u1", created_at=0, valid_since=0)
         )
         with patch(
-            "memory_core.graph.graph_memory.states.batch_embed",
+            "jiuwen_memory.memory_core.graph.graph_memory.states.batch_embed",
             new_callable=AsyncMock,
             return_value=[],
         ):
@@ -344,7 +344,7 @@ class TestPersistToDb:
     @pytest.mark.asyncio
     async def test_persist_to_db_skip_embed_entity_missing_embedding_moved_to_embed(self):
         """Entity in mem_update_skip_embed with None embedding is moved to mem_update.updated_entity"""
-        from foundation.store.graph.config import GraphConfig
+        from jiuwen_memory.foundation.store.graph.config import GraphConfig
 
         db = AsyncMock()
         db.embedder = AsyncMock()
@@ -363,7 +363,7 @@ class TestPersistToDb:
         ent_skip.name_embedding = None
         state.mem_update_skip_embed.updated_entity.append(ent_skip)
         with patch(
-            "memory_core.graph.graph_memory.states.batch_embed",
+            "jiuwen_memory.memory_core.graph.graph_memory.states.batch_embed",
             new_callable=AsyncMock,
             return_value=[],
         ):
@@ -376,7 +376,7 @@ class TestPersistToDb:
         """
         Entity in skip_embed with None embedding but already in updated_entity is not appended again
         """
-        from foundation.store.graph.config import GraphConfig
+        from jiuwen_memory.foundation.store.graph.config import GraphConfig
 
         db = AsyncMock()
         db.embedder = AsyncMock()
@@ -397,7 +397,7 @@ class TestPersistToDb:
         state.mem_update.updated_entity.append(ent)
         initial_len = len(state.mem_update.updated_entity)
         with patch(
-            "memory_core.graph.graph_memory.states.batch_embed",
+            "jiuwen_memory.memory_core.graph.graph_memory.states.batch_embed",
             new_callable=AsyncMock,
             return_value=[],
         ):
@@ -408,8 +408,8 @@ class TestPersistToDb:
     @pytest.mark.asyncio
     async def test_persist_to_db_embed_failure_raises(self):
         """When batch_embed keeps returning objects, persist_to_db raises after retries"""
-        from common.exception.errors import BaseError
-        from foundation.store.graph.config import GraphConfig
+        from jiuwen_memory.common.exception.errors import BaseError
+        from jiuwen_memory.foundation.store.graph.config import GraphConfig
 
         db = AsyncMock()
         db.embedder = AsyncMock()
@@ -418,7 +418,7 @@ class TestPersistToDb:
         state = GraphMemState(strategy=AddMemStrategy(), entity_types=[])
         state.mem_update.added_entity.append(Entity(name="E", content="x", obj_type="Entity"))
         with patch(
-            "memory_core.graph.graph_memory.states.batch_embed",
+            "jiuwen_memory.memory_core.graph.graph_memory.states.batch_embed",
             new_callable=AsyncMock,
             return_value=state.mem_update.added_entity,
         ):
@@ -428,7 +428,7 @@ class TestPersistToDb:
     @pytest.mark.asyncio
     async def test_persist_to_db_skip_embed_and_removed_branches(self):
         """persist_to_db calls add_episode/add_entity/add_relation/delete for skip_embed and removed"""
-        from foundation.store.graph.config import GraphConfig
+        from jiuwen_memory.foundation.store.graph.config import GraphConfig
 
         db = AsyncMock()
         db.embedder = AsyncMock()
@@ -452,7 +452,7 @@ class TestPersistToDb:
         state.mem_update.removed_entity.add("old-e")
         state.mem_update.removed_relation.add("old-r")
         with patch(
-            "memory_core.graph.graph_memory.states.batch_embed",
+            "jiuwen_memory.memory_core.graph.graph_memory.states.batch_embed",
             new_callable=AsyncMock,
             return_value=[],
         ):
@@ -465,7 +465,7 @@ class TestPersistToDb:
     @pytest.mark.asyncio
     async def test_persist_to_db_episode_embed_retry_truncates_content(self):
         """When episode batch_embed fails then succeeds, episode content is truncated"""
-        from foundation.store.graph.config import GraphConfig
+        from jiuwen_memory.foundation.store.graph.config import GraphConfig
 
         db = AsyncMock()
         db.embedder = AsyncMock()
@@ -493,7 +493,7 @@ class TestPersistToDb:
             return []
 
         with patch(
-            "memory_core.graph.graph_memory.states.batch_embed",
+            "jiuwen_memory.memory_core.graph.graph_memory.states.batch_embed",
             new_callable=AsyncMock,
             side_effect=batch_embed_side_effect,
         ):
@@ -505,7 +505,7 @@ class TestPersistToDb:
     @pytest.mark.asyncio
     async def test_persist_to_db_skip_embed_updated_entity_with_embeddings_calls_add_entity(self):
         """When mem_update_skip_embed.updated_entity has entities with embeddings, add_entity is called"""
-        from foundation.store.graph.config import GraphConfig
+        from jiuwen_memory.foundation.store.graph.config import GraphConfig
 
         db = AsyncMock()
         db.embedder = AsyncMock()
@@ -524,7 +524,7 @@ class TestPersistToDb:
         ent_with_embed.name_embedding = [0.1] * 32
         state.mem_update_skip_embed.updated_entity.append(ent_with_embed)
         with patch(
-            "memory_core.graph.graph_memory.states.batch_embed",
+            "jiuwen_memory.memory_core.graph.graph_memory.states.batch_embed",
             new_callable=AsyncMock,
             return_value=[],
         ):

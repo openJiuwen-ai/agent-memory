@@ -1,6 +1,6 @@
-# memory_core.long_term_memory
+# jiuwen_memory.memory_core.long_term_memory
 
-`memory_core.long_term_memory` is the unified **long-term memory management engine** in JiuwenMemory, responsible for:
+`jiuwen_memory.memory_core.long_term_memory` is the unified **long-term memory management engine** in JiuwenMemory, responsible for:
 
 - Managing persistence and retrieval of user conversation messages;
 - Managing user variable memories (e.g., preferences, personal information as structured data);
@@ -9,10 +9,10 @@
 - Supporting vector search, paginated queries, conditional deletion, and more.
 
 
-## class memory_core.long_term_memory.LongTermMemory
+## class jiuwen_memory.memory_core.long_term_memory.LongTermMemory
 
 ```
-class memory_core.long_term_memory.LongTermMemory(metaclass=Singleton)
+class jiuwen_memory.memory_core.long_term_memory.LongTermMemory(metaclass=Singleton)
 ```
 
 `LongTermMemory` is the unified **long-term memory management engine** in JiuwenMemory, using the singleton pattern.
@@ -74,10 +74,10 @@ Register underlying storage instances. Must be called before `set_config`.
 **Example**:
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
->>> from foundation.store.kv.db_based_kv_store import DbBasedKVStore
->>> from foundation.store import create_vector_store
->>> from foundation.store.db.default_db_store import DefaultDbStore
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.foundation.store.kv.db_based_kv_store import DbBasedKVStore
+>>> from jiuwen_memory.foundation.store import create_vector_store
+>>> from jiuwen_memory.foundation.store.db.default_db_store import DefaultDbStore
 >>> from sqlalchemy.ext.asyncio import create_async_engine
 >>>
 >>> # Create LongTermMemory instance
@@ -137,9 +137,9 @@ Register a custom `BaseMemoryIndex` plugin instance to replace or extend the def
 **Example**:
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
->>> from foundation.store.index.simple_memory_index import SimpleMemoryIndex
->>> from foundation.store.base_vector_store import BaseVectorStore
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.foundation.store.index.simple_memory_index import SimpleMemoryIndex
+>>> from jiuwen_memory.foundation.store.base_vector_store import BaseVectorStore
 >>>
 >>> # Use default SimpleMemoryIndex
 >>> memory = LongTermMemory()
@@ -205,9 +205,9 @@ This method initializes the following internal managers:
 **Example**:
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
->>> from memory_core.config import MemoryEngineConfig
->>> from foundation.llm.schema.config import ModelRequestConfig, ModelClientConfig
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.config import MemoryEngineConfig
+>>> from jiuwen_memory.foundation.llm.schema.config import ModelRequestConfig, ModelClientConfig
 >>> 
 >>> # Create configuration
 >>> config = MemoryEngineConfig(
@@ -257,8 +257,8 @@ Copy data from one `BaseMemoryIndex` to another. Suitable for data migration bet
 **Example**:
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
->>> from foundation.store.index.simple_memory_index import SimpleMemoryIndex
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.foundation.store.index.simple_memory_index import SimpleMemoryIndex
 >>>
 >>> # Assume an existing SimpleMemoryIndex instance
 >>> old_index = SimpleMemoryIndex(kv_store=kv_store, vector_store=vector_store, embedding_model=embed)
@@ -300,10 +300,10 @@ Set scope-level memory configuration for the specified `scope_id` and persist it
 **Example**:
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
->>> from memory_core.config import MemoryScopeConfig
->>> from foundation.llm.schema.config import ModelRequestConfig, ModelClientConfig
->>> from retrieval.common.config import EmbeddingConfig
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.config import MemoryScopeConfig
+>>> from jiuwen_memory.foundation.llm.schema.config import ModelRequestConfig, ModelClientConfig
+>>> from jiuwen_memory.retrieval.common.config import EmbeddingConfig
 >>> 
 >>> # Create scope configuration
 >>> scope_config = MemoryScopeConfig(
@@ -350,7 +350,7 @@ Read the scope configuration for the specified `scope_id` from `kv_store`, with 
 **Example**:
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # Get scope configuration
 >>> memory = LongTermMemory()
@@ -387,7 +387,7 @@ Delete the scope configuration for the specified `scope_id` (removed from `kv_st
 **Example**:
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # Delete scope configuration
 >>> memory = LongTermMemory()
@@ -419,7 +419,7 @@ Delete all memory data under the specified `scope_id` (including messages, user 
 **Example**:
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # Delete all memories under a scope
 >>> memory = LongTermMemory()
@@ -482,10 +482,10 @@ Returns an empty `AddMemResult()` (all fields as empty lists) when `gen_mem=Fals
 **Example**:
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
->>> from memory_core.config import AgentMemoryConfig
->>> from common.schema.param import Param
->>> from foundation.llm.schema.message import UserMessage, AssistantMessage
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.config import AgentMemoryConfig
+>>> from jiuwen_memory.common.schema.param import Param
+>>> from jiuwen_memory.foundation.llm.schema.message import UserMessage, AssistantMessage
 >>> 
 >>> # Create agent memory strategy configuration
 >>> agent_config = AgentMemoryConfig(
@@ -555,10 +555,10 @@ Returns an empty `AddMemResult()` (all fields as empty lists) when `gen_mem=Fals
 ```
 
 
-## class memory_core.long_term_memory.AddMemResult
+## class jiuwen_memory.memory_core.long_term_memory.AddMemResult
 
 ```
-class memory_core.long_term_memory.AddMemResult(BaseModel)
+class jiuwen_memory.memory_core.long_term_memory.AddMemResult(BaseModel)
 ```
 
 Return value model for the `add_messages` method, encapsulating all results of this memory extraction.
@@ -580,10 +580,10 @@ Return value model for the `add_messages` method, encapsulating all results of t
 - When `add_messages` does not perform memory extraction for any reason (`gen_mem=False`, invalid `scope_id`, LLM not initialized, etc.), an empty `AddMemResult()` is returned.
 
 
-## class memory_core.long_term_memory.MemInfo
+## class jiuwen_memory.memory_core.long_term_memory.MemInfo
 
 ```
-class memory_core.long_term_memory.MemInfo(BaseModel)
+class jiuwen_memory.memory_core.long_term_memory.MemInfo(BaseModel)
 ```
 
 Memory information model describing the basic information of a memory entry.
@@ -598,10 +598,10 @@ Memory information model describing the basic information of a memory entry.
 | `timestamp` | `datetime | None` | `None` | Memory timestamp |
 
 
-## class memory_core.long_term_memory.MemResult
+## class jiuwen_memory.memory_core.long_term_memory.MemResult
 
 ```
-class memory_core.long_term_memory.MemResult(BaseModel)
+class jiuwen_memory.memory_core.long_term_memory.MemResult(BaseModel)
 ```
 
 Memory search result model containing memory information and a similarity score.
@@ -646,7 +646,7 @@ Get the most recent N messages for the specified user/scope/session, returned in
 **Example**:
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # Get recent messages
 >>> memory = LongTermMemory()
@@ -681,7 +681,7 @@ Get a single message and its creation timestamp by message ID.
 **Example**:
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # Get message by ID
 >>> memory = LongTermMemory()
@@ -722,7 +722,7 @@ Delete a memory entry by its ID (user profile or variable).
 **Example**:
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # Delete a specific memory
 >>> memory = LongTermMemory()
@@ -758,7 +758,7 @@ Delete all types of memories for a specified user under a scope (user profiles, 
 **Example**:
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # Delete all memories for a user
 >>> memory = LongTermMemory()
@@ -797,7 +797,7 @@ Update the content of a memory entry by its ID.
 **Example**:
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # Update memory content
 >>> memory_engine = LongTermMemory()
@@ -844,7 +844,7 @@ Get user variables (one or more).
 **Example**:
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # Get all variables
 >>> memory = LongTermMemory()
@@ -908,7 +908,7 @@ Search user memories (user profiles, variables, etc.) based on semantic similari
 **Example**:
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # Search user memories
 >>> memory = LongTermMemory()
@@ -951,7 +951,7 @@ Return the total number of memories for a specified user under a scope.
 **Example**:
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # Get total memory count
 >>> memory = LongTermMemory()
@@ -999,7 +999,7 @@ Search user summary memories based on semantic similarity, returning the top-N m
 **Example**:
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # Search user summary memories
 >>> memory = LongTermMemory()
@@ -1055,7 +1055,7 @@ Paginate memories for a specified user under a scope.
 **Example**:
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
 >>> # Paginate user memories
 >>> memory = LongTermMemory()
@@ -1116,8 +1116,8 @@ Start the background **dreaming** process for a `(scope_id, user_id)` pair: a sc
 **Example**:
 
 ```python
->>> from memory_core.long_term_memory import LongTermMemory
->>> from memory_core.config import DreamingConfig
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.memory_core.config import DreamingConfig
 >>> 
 >>> memory = LongTermMemory()
 >>> # ... register_store + set_scope_config beforehand ...
@@ -1163,4 +1163,4 @@ Stop running dreaming orchestrators. With no arguments, stops all of them; other
 
 ## Related Modules
 
-`LongTermMemory` manages flat memory units such as user profiles, semantic memories, episodic memories, variables, and summaries. If you need to turn conversations, documents, or JSON strings into a knowledge graph of entities, relations, and source episodes, use the independent Graph Memory module. See [memory_core.graph.graph_memory](graph_memory.md).
+`LongTermMemory` manages flat memory units such as user profiles, semantic memories, episodic memories, variables, and summaries. If you need to turn conversations, documents, or JSON strings into a knowledge graph of entities, relations, and source episodes, use the independent Graph Memory module. See [jiuwen_memory.memory_core.graph.graph_memory](graph_memory.md).

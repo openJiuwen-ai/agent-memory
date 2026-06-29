@@ -8,7 +8,7 @@ import asyncio
 import json
 import pytest
 
-from memory_core.external.mem0_provider import Mem0MemoryProvider
+from jiuwen_memory.memory_core.external.mem0_provider import Mem0MemoryProvider
 
 
 class FakeMem0Client:

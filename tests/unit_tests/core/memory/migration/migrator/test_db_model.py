@@ -10,11 +10,11 @@ import pytest
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from foundation.store.db.default_db_store import DefaultDbStore
-from memory_core.manage.mem_model.db_model import create_tables
-from memory_core.migration.migration_plan import sql_registry
-from memory_core.migration.operation.base_operation import OperationMetadata
-from memory_core.migration.operation.operations import AddColumnOperation
+from jiuwen_memory.foundation.store.db.default_db_store import DefaultDbStore
+from jiuwen_memory.memory_core.manage.mem_model.db_model import create_tables
+from jiuwen_memory.memory_core.migration.migration_plan import sql_registry
+from jiuwen_memory.memory_core.migration.operation.base_operation import OperationMetadata
+from jiuwen_memory.memory_core.migration.operation.operations import AddColumnOperation
 
 
 @pytest.fixture(name="test_store")
@@ -202,4 +202,4 @@ class TestCreateTablesSchemaVersion:
 
 
 # Make sure we import SqlDbStore
-from memory_core.manage.mem_model.sql_db_store import SqlDbStore
+from jiuwen_memory.memory_core.manage.mem_model.sql_db_store import SqlDbStore

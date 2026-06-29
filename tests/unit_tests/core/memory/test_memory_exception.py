@@ -1,12 +1,12 @@
 from unittest.mock import MagicMock, patch, AsyncMock
 import pytest
 
-from memory_core.long_term_memory import LongTermMemory
-from common.exception.errors import BaseError
-from common.exception.codes import StatusCode
+from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+from jiuwen_memory.common.exception.errors import BaseError
+from jiuwen_memory.common.exception.codes import StatusCode
 
-from foundation.store.base_kv_store import BaseKVStore
-from foundation.store.base_vector_store import BaseVectorStore
+from jiuwen_memory.foundation.store.base_kv_store import BaseKVStore
+from jiuwen_memory.foundation.store.base_vector_store import BaseVectorStore
 
 
 @pytest.mark.asyncio
@@ -68,7 +68,7 @@ def test_set_scope_config_llm_init_failed():
     fake_scope_cfg.crypto_key = b""
 
     with patch(
-        "memory_core.long_term_memory.LongTermMemory._get_llm_from_config",
+        "jiuwen_memory.memory_core.long_term_memory.LongTermMemory._get_llm_from_config",
         side_effect=Exception("llm init failed")
     ):
         with pytest.raises(Exception) as e:

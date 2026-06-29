@@ -3,16 +3,16 @@ import uuid
 import pytest
 from pymilvus import MilvusException
 
-from foundation.store.base_vector_store import CollectionSchema, FieldSchema, VectorDataType
-from foundation.store.vector.milvus_vector_store import MilvusVectorStore
-from memory_core.migration.migrator.vector_migrator import VectorMigrator
-from memory_core.migration.operation.operations import (
+from jiuwen_memory.foundation.store.base_vector_store import CollectionSchema, FieldSchema, VectorDataType
+from jiuwen_memory.foundation.store.vector.milvus_vector_store import MilvusVectorStore
+from jiuwen_memory.memory_core.migration.migrator.vector_migrator import VectorMigrator
+from jiuwen_memory.memory_core.migration.operation.operations import (
     AddScalarFieldOperation,
     RenameScalarFieldOperation,
     UpdateScalarFieldTypeOperation,
     UpdateEmbeddingDimensionOperation,
 )
-from memory_core.migration.operation.base_operation import OperationMetadata
+from jiuwen_memory.memory_core.migration.operation.base_operation import OperationMetadata
 
 
 async def _create_initial_collection(vector_store, collection_name):

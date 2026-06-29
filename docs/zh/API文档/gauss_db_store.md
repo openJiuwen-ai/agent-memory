@@ -1,4 +1,4 @@
-# foundation.store.db — GaussDB 适配模块功能说明
+# jiuwen_memory.foundation.store.db — GaussDB 适配模块功能说明
 
 本文档描述 `foundation/store/db/` 目录下两个文件的实现功能、对外接口、约束条件，以及在 `LongTermMemory` 长期记忆引擎中接入 GaussDB 的完整使用样例（涉及表创建与数据增删改查）。
 
@@ -113,7 +113,7 @@ def _patch_gaussdb_driver(driver_module):
 ## 2. 调用链路
 
 ```
-from foundation.store.db.gauss_db_store import GaussDbStore
+from jiuwen_memory.foundation.store.db.gauss_db_store import GaussDbStore
   │
   ▼
 gauss_db_store.py → import gauss_dialect            # 模块加载，仅执行一次
@@ -144,7 +144,7 @@ store.get_async_engine()                            # 获取 AsyncEngine → 通
 ### 3.1 `class GaussDbStore(BaseDbStore)`
 
 ```python
-class foundation.store.db.gauss_db_store.GaussDbStore(async_conn: AsyncEngine)
+class jiuwen_memory.foundation.store.db.gauss_db_store.GaussDbStore(async_conn: AsyncEngine)
 ```
 
 GaussDB 数据库存储实现，继承自 `BaseDbStore`。封装 SQLAlchemy `AsyncEngine`，上层业务通过 `get_async_engine()` 获取引擎后即可使用标准 SQLAlchemy 异步接口执行增删改查。
@@ -159,7 +159,7 @@ GaussDB 数据库存储实现，继承自 `BaseDbStore`。封装 SQLAlchemy `Asy
 
 ```python
 from sqlalchemy.ext.asyncio import create_async_engine
-from foundation.store.db.gauss_db_store import GaussDbStore
+from jiuwen_memory.foundation.store.db.gauss_db_store import GaussDbStore
 
 engine = create_async_engine("gaussdb+async_gaussdb://user:password@host:port/database")
 store = GaussDbStore(async_conn=engine)
@@ -241,7 +241,7 @@ gaussdb://username:password@host:port/database
 
 | 表名 | 模型类 | 用途 |
 |------|--------|------|
-| `user_message` | `memory_core.manage.mem_model.db_model.UserMessage` | 多轮对话原始消息（按 `user_id` / `scope_id` / `session_id` 关联） |
+| `user_message` | `jiuwen_memory.memory_core.manage.mem_model.db_model.UserMessage` | 多轮对话原始消息（按 `user_id` / `scope_id` / `session_id` 关联） |
 | `scope_user_mapping` | `ScopeUserMapping` | scope 与 user 的多对多映射关系，用于按 scope 批量清理记忆 |
 | `memory_meta` | `MemoryMeta` | 各业务表的 schema 版本号，配合 `run_sql_migrations` 做迁移 |
 
@@ -270,8 +270,8 @@ schema_version  VARCHAR(64)  NOT NULL
 
 ```python
 from sqlalchemy.ext.asyncio import create_async_engine
-from foundation.store.db.gauss_db_store import GaussDbStore
-from memory_core.long_term_memory import LongTermMemory
+from jiuwen_memory.foundation.store.db.gauss_db_store import GaussDbStore
+from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 
 engine = create_async_engine(
     "gaussdb+async_gaussdb://user:password@host:port/agentmgr"
@@ -299,8 +299,8 @@ from sqlalchemy import select, update, delete
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
-from foundation.store.db.gauss_db_store import GaussDbStore
-from memory_core.manage.mem_model.db_model import (
+from jiuwen_memory.foundation.store.db.gauss_db_store import GaussDbStore
+from jiuwen_memory.memory_core.manage.mem_model.db_model import (
     Base,
     UserMessage,
     ScopeUserMapping,
@@ -447,9 +447,9 @@ async with store.get_async_engine().begin() as conn:
 
    ```python
    try:
-       from foundation.store.db.gauss_db_store import GaussDbStore
+       from jiuwen_memory.foundation.store.db.gauss_db_store import GaussDbStore
    except ImportError:
-       from foundation.store.db.default_db_store import DefaultDbStore as GaussDbStore
+       from jiuwen_memory.foundation.store.db.default_db_store import DefaultDbStore as GaussDbStore
    ```
 
 4. **DDL 在启动期统一执行**：通过 `LongTermMemory.register_store` 自动建表，或显式调用 `create_tables(store)`，避免运行时反射造成额外开销与兼容性风险。

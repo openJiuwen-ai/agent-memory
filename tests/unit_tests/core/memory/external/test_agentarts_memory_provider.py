@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-import memory_core.external as external_memory
-from foundation.store.kv.in_memory_kv_store import InMemoryKVStore
-from memory_core.external import AgentArtsMemoryProvider
+import jiuwen_memory.memory_core.external as external_memory
+from jiuwen_memory.foundation.store.kv.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.memory_core.external import AgentArtsMemoryProvider
 
 
 class FakeRecord:

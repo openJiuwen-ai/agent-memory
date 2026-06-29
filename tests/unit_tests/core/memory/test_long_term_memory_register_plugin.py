@@ -4,12 +4,12 @@
 from unittest.mock import Mock, patch
 import pytest
 
-from memory_core.long_term_memory import LongTermMemory
-from foundation.store.index.simple_memory_index import SimpleMemoryIndex
-from foundation.store.base_vector_store import BaseVectorStore
-from foundation.store.base_kv_store import BaseKVStore
-from foundation.store.base_embedding import Embedding as BaseEmbedding
-from common.utils.singleton import Singleton
+from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+from jiuwen_memory.foundation.store.index.simple_memory_index import SimpleMemoryIndex
+from jiuwen_memory.foundation.store.base_vector_store import BaseVectorStore
+from jiuwen_memory.foundation.store.base_kv_store import BaseKVStore
+from jiuwen_memory.foundation.store.base_embedding import Embedding as BaseEmbedding
+from jiuwen_memory.common.utils.singleton import Singleton
 
 
 class TestLongTermMemoryRegisterPlugin:
@@ -72,14 +72,14 @@ class TestLongTermMemoryRegisterPlugin:
         assert isinstance(long_term_memory.memory_index, SimpleMemoryIndex)
 
     @pytest.mark.asyncio
-    @patch('memory_core.long_term_memory.create_tables', return_value=None)
+    @patch('jiuwen_memory.memory_core.long_term_memory.create_tables', return_value=None)
     async def test_register_plugin_after_store_registration(self, mock_create_tables):
         """Test that manual plugin registration doesn't overwrite auto-registered default"""
         long_term_memory = LongTermMemory()
 
         mock_kv_store = Mock()
         mock_vector_store = Mock(spec=BaseVectorStore)
-        from foundation.store.base_db_store import BaseDbStore
+        from jiuwen_memory.foundation.store.base_db_store import BaseDbStore
         mock_db_store = Mock(spec=BaseDbStore)
         mock_embedding = Mock(spec=BaseEmbedding)
         mock_embedding.embed_documents.return_value = [[0.1, 0.2, 0.3]]

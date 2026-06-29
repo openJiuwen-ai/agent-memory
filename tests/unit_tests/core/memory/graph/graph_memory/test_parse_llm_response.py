@@ -3,11 +3,11 @@
 
 """Unit tests for graph_memory parse_llm_response"""
 
-from foundation.store.graph import Entity, Relation
-from memory_core.graph.extraction.entity_type_definition import EntityDef
-from memory_core.graph.extraction.extraction_models import EntityDeclaration
-from memory_core.graph.graph_memory import parse_llm_response as parse_llm_response_mod
-from memory_core.graph.graph_memory.parse_llm_response import (
+from jiuwen_memory.foundation.store.graph import Entity, Relation
+from jiuwen_memory.memory_core.graph.extraction.entity_type_definition import EntityDef
+from jiuwen_memory.memory_core.graph.extraction.extraction_models import EntityDeclaration
+from jiuwen_memory.memory_core.graph.graph_memory import parse_llm_response as parse_llm_response_mod
+from jiuwen_memory.memory_core.graph.graph_memory.parse_llm_response import (
     declare_entities,
     dict2relation,
     parse_all_relations,

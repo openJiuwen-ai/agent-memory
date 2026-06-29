@@ -4,10 +4,10 @@
 import copy
 import pytest
 
-from memory_core.migration.migration_plan import sql_registry, vector_registry, kv_registry
-from memory_core.migration.operation.base_operation import OperationMetadata
-from memory_core.migration.operation.operations import UpdateKVOperation
-from foundation.store.kv.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.memory_core.migration.migration_plan import sql_registry, vector_registry, kv_registry
+from jiuwen_memory.memory_core.migration.operation.base_operation import OperationMetadata
+from jiuwen_memory.memory_core.migration.operation.operations import UpdateKVOperation
+from jiuwen_memory.foundation.store.kv.in_memory_kv_store import InMemoryKVStore
 
 
 @pytest.fixture(scope="function", autouse=True)

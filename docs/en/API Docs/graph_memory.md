@@ -1,6 +1,6 @@
-# memory_core.graph.graph_memory
+# jiuwen_memory.memory_core.graph.graph_memory
 
-`memory_core.graph.graph_memory` is the **Graph Memory** module in JiuwenMemory. It turns conversations, documents, or JSON strings into entities, relations, and source episodes, and supports hybrid retrieval over the graph structure.
+`jiuwen_memory.memory_core.graph.graph_memory` is the **Graph Memory** module in JiuwenMemory. It turns conversations, documents, or JSON strings into entities, relations, and source episodes, and supports hybrid retrieval over the graph structure.
 
 > **Note**: Graph Memory is currently an independent module. It is not wired into the `LongTermMemory.add_messages` pipeline. To use it, create `GraphMemory` directly and register graph storage, an LLM, and an embedding model.
 
@@ -36,14 +36,14 @@ The following example creates a Graph Memory instance, writes a document, and se
 ```python
 import asyncio
 
-from foundation.llm import Model
-from foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
-from foundation.store.graph import GraphConfig, GraphStoreIndexConfig
-from foundation.store.graph.index_field import MilvusAUTO
-from memory_core.config.graph import AddMemStrategy, EpisodeType
-from memory_core.graph.graph_memory.base import GraphMemory
-from retrieval.common.config import EmbeddingConfig
-from retrieval.embedding.api_embedding import APIEmbedding
+from jiuwen_memory.foundation.llm import Model
+from jiuwen_memory.foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
+from jiuwen_memory.foundation.store.graph import GraphConfig, GraphStoreIndexConfig
+from jiuwen_memory.foundation.store.graph.index_field import MilvusAUTO
+from jiuwen_memory.memory_core.config.graph import AddMemStrategy, EpisodeType
+from jiuwen_memory.memory_core.graph.graph_memory.base import GraphMemory
+from jiuwen_memory.retrieval.common.config import EmbeddingConfig
+from jiuwen_memory.retrieval.embedding.api_embedding import APIEmbedding
 
 
 async def main():
@@ -124,7 +124,7 @@ class GraphMemory:
         ...
 ```
 
-`GraphMemory` is the main entry point for graph memory. It orchestrates LLM extraction, entity and relation merging, graph store writes, and graph retrieval. Import it from `memory_core.graph.graph_memory.base`; the package `memory_core.graph.graph_memory` does not currently re-export `GraphMemory`.
+`GraphMemory` is the main entry point for graph memory. It orchestrates LLM extraction, entity and relation merging, graph store writes, and graph retrieval. Import it from `jiuwen_memory.memory_core.graph.graph_memory.base`; the package `jiuwen_memory.memory_core.graph.graph_memory` does not currently re-export `GraphMemory`.
 
 Key parameters:
 
@@ -340,7 +340,7 @@ If `bfs_depth > 0`, the underlying `GraphStore` can expand along graph relations
 
 ## Graph Store Backend
 
-Graph storage abstractions are defined in `foundation.store.graph`:
+Graph storage abstractions are defined in `jiuwen_memory.foundation.store.graph`:
 
 - `GraphStore`: graph store protocol for add, query, delete, search, refresh, and close operations.
 - `GraphStoreFactory`: creates backend instances from `GraphConfig.backend`.
@@ -400,8 +400,8 @@ Alternatively, pass it through `GraphConfig(embedding_model=embedding, embed_dim
 Register a custom strategy if you want stricter entity recall, looser relation recall, BFS only for entity/relation collections, or rerank only for selected result types:
 
 ```python
-from foundation.store.graph.result_ranking import WeightedRankConfig
-from memory_core.config.graph import SearchConfig
+from jiuwen_memory.foundation.store.graph.result_ranking import WeightedRankConfig
+from jiuwen_memory.memory_core.config.graph import SearchConfig
 
 memory.register_search_strategy(
     "entity_heavy",

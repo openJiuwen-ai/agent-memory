@@ -8,18 +8,18 @@ from typing import Dict, List
 
 import pytest
 import pytest_asyncio
-from foundation.store.base_vector_store import (
+from jiuwen_memory.foundation.store.base_vector_store import (
     CollectionSchema, FieldSchema, VectorDataType
 )
-from foundation.store.vector.chroma_vector_store import ChromaVectorStore
-from memory_core.migration.migrator.vector_migrator import VectorMigrator
-from memory_core.migration.operation.operations import (
+from jiuwen_memory.foundation.store.vector.chroma_vector_store import ChromaVectorStore
+from jiuwen_memory.memory_core.migration.migrator.vector_migrator import VectorMigrator
+from jiuwen_memory.memory_core.migration.operation.operations import (
     AddScalarFieldOperation,
     RenameScalarFieldOperation,
     UpdateScalarFieldTypeOperation,
     UpdateEmbeddingDimensionOperation,
 )
-from memory_core.migration.operation.base_operation import OperationMetadata
+from jiuwen_memory.memory_core.migration.operation.base_operation import OperationMetadata
 
 
 @pytest_asyncio.fixture(name="test_fixture")
