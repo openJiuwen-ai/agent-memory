@@ -144,7 +144,7 @@ class GetUserMemByPageRequest(BaseModel):
     user_id: Optional[str] = LongTermMemory.DEFAULT_VALUE
     scope_id: Optional[str] = LongTermMemory.DEFAULT_VALUE
     page_size: int = 10
-    page_idx: int = 0
+    page_idx: int = 1
     memory_type: Optional[str] = "UNKNOWN"  # 对应MemoryType枚举值
 
     def get_memory_type_enum(self):
