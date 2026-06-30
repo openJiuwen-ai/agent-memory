@@ -33,7 +33,7 @@
 - 介绍说明：由 Snap Research 提出，通过「LLM Agent + 人物 persona + 时序事件图」的人机协作流水线生成**超长期多会话对话**，并经人工校验长程一致性。每段对话由两个虚拟人物跨多个会话进行，包含**图片分享与图片反应**行为（具备多模态属性）。评测框架包含三类任务：**问答（QA）、事件摘要（event summarization）、多模态对话生成**。问题分为 5 类推理：单跳（single-hop）、多跳（multi-hop）、时序（temporal）、常识/世界知识（open-domain）、对抗（adversarial）。
 
 - 数据量：公开版 `locomo10.json` 含 **10 段**高质量超长对话（初版 arxiv 为 50 段，后裁剪为最长的 10 段以降低闭源模型评测成本）；平均每段约 **600 turns / 16K tokens**，最多 **32 个会话**；QA 任务约 **1,540 道**非对抗问题（业界常用此 1,540 题口径）。
-  - 注：社区审计（2026）发现 1,540 题中约 **6.4%（99 题）** 存在标注/答案错误，引用分数时建议参考其「调整后上限」。
+  - 注：社区 issue 中有标注/答案噪声反馈；具体比例需以单个 issue、修订版数据或后续官方说明为准。引用分数时建议保留评测口径与数据版本。
 
 - 适用领域：个人助手 / 陪伴类、开放域多会话对话记忆；是业界最早、被引用最广的「长期对话记忆」基准，常用于对标 Mem0、Zep、OpenAI Memory 等记忆层产品。
 
@@ -62,9 +62,9 @@
 ### 1.3 BEAM（Beyond a Million Tokens）
 
 - 来源链接：
-  - 论文：Beyond a Million Tokens: Benchmarking and Enhancing Long-Term Memory in LLMs（ICLR 2026）
+  - 论文：https://arxiv.org/abs/2510.27246 （Beyond a Million Tokens: Benchmarking and Enhancing Long-Term Memory in LLMs）
   - GitHub：https://github.com/leegisang/BEAM
-  - 数据：https://huggingface.co/datasets/Mohammadta/BEAM （及 `Mohammadta/BEAM-10M`）
+  - 数据：https://huggingface.co/datasets/Mohammadta/BEAM （及 `Mohammadta/BEAM-10M`，论文数据页）
   - 解读：https://mem0.ai/blog/what-is-beam-memory-benchmark-the-paper-that-shows-1m-context-window-isnt-enough
   - Leaderboard：**统一榜 AMB（含 beam 100K/500K/1M/10M 四档）** https://agentmemorybenchmark.ai/ ；另见 mem0 研究页 https://mem0.ai/research 与 Hindsight 的 10M 档 SOTA 汇总 https://hindsight.vectorize.io/blog/2026/04/02/beam-sota 。
 
@@ -180,7 +180,7 @@
 | --- | --- | --- | --- | --- |
 | **MSC（Multi-Session Chat）** | Facebook AI（arxiv 2107.07567） | 早期多会话开放域闲聊数据集，奠定「跨会话记忆」评测雏形 | ~5K 对话，平均 3.4 会话 | 开放域双人闲聊记忆 |
 | **Conversation Chronicles** | arxiv 2310.13420（EMNLP 2023） | 带时间关系标注的多会话对话数据集 | ~200K 对话，平均 5 会话 | 开放域双人长期对话 |
-| **MADail-Bench** | arxiv 2409.xxxxx | 儿童—助手情感对话的记忆/情感评测 | 80 段，平均 9.2 turns | 情感陪伴 / 儿童对话 |
+| **MADial-Bench** | arxiv 2409.15240 | 记忆增强对话生成评测，覆盖被动/主动记忆唤起与情感支持指标 | 80 段，平均 9.2 turns | 情感支持 / 记忆增强对话 |
 | **ES-MemEval / EvoEmo** | arxiv 2602.01885 | 面向**情感支持**场景、用户状态随时间演化的多会话记忆基准（QA + 摘要 + 对话生成） | EvoEmo 平均 27.2 会话 / 13.3K tokens / 最多 33 会话 | 个性化情感支持对话 |
 | **Life-Bench（多模态）** | arxiv 2602.19001 | 围绕「虚拟账户」的多模态个性化记忆与推理基准（文本+图像） | 16,315 QA / 10 账户 / 33 概念 / 2,479 图像 / 10 任务 | 多模态个性化检索与推理 |
 | **LifeDialBench（EgoMem/LifeMem）** | github.com/qys77714/LifeDialBench | 面向「麦克风常开」生活日志式连续对话的长期记忆基准（含真实第一视角视频 EgoMem 与模拟社区 LifeMem），采用在线流式评测防时间泄漏 | 待论文接收后释出 | 生活日志 / 多方连续对话 |
@@ -233,7 +233,7 @@
 
 ## 5. 选型建议（面向 agent-memory）
 
-- **对话记忆基线对标**：优先用 **LoCoMo** + **LongMemEval**，二者是业界事实标准，便于与 Mem0、Zep/Graphiti、MemOS 等横向比较；注意 LoCoMo 已存在约 6.4% 标注噪声、LongMemEval 评测对 judge prompt 敏感（约 ±10% 摆动）。
+- **对话记忆基线对标**：优先用 **LoCoMo** + **LongMemEval**，二者是业界事实标准，便于与 Mem0、Zep/Graphiti、MemOS 等横向比较；注意 LoCoMo 社区 issue 中存在标注噪声反馈、LongMemEval 评测对 judge prompt 敏感（约 ±10% 摆动）。
 - **大规模 / 生产级压力测试**：用 **BEAM（1M / 10M）** 验证「大上下文窗口不能替代记忆架构」，重点看矛盾消解与跨会话身份一致性。
 - **能力维度诊断**：用 **MemoryAgentBench**（检索/学习/理解/更新四维）与 **MemBench**（事实 vs 反思、效率/容量）做细粒度短板分析。
 - **个性化 / 偏好追踪**：用 **PersonaMem(-v2)** 评测隐式偏好与画像演化。
@@ -248,7 +248,8 @@
 
 - LoCoMo：https://arxiv.org/abs/2402.17753 · https://github.com/snap-research/LoCoMo · https://snap-research.github.io/locomo/
 - LongMemEval：https://arxiv.org/abs/2410.10813 · https://github.com/xiaowu0162/LongMemEval
-- BEAM：https://github.com/leegisang/BEAM · https://huggingface.co/datasets/Mohammadta/BEAM · https://mem0.ai/blog/what-is-beam-memory-benchmark-the-paper-that-shows-1m-context-window-isnt-enough
+- BEAM：https://arxiv.org/abs/2510.27246 · https://github.com/leegisang/BEAM · https://huggingface.co/datasets/Mohammadta/BEAM · https://mem0.ai/blog/what-is-beam-memory-benchmark-the-paper-that-shows-1m-context-window-isnt-enough
+- MADial-Bench：https://arxiv.org/abs/2409.15240
 - MemoryAgentBench：https://arxiv.org/abs/2507.05257 · https://github.com/HUST-AI-HYZ/MemoryAgentBench
 - PersonaMem：https://arxiv.org/abs/2504.14225 · https://huggingface.co/datasets/bowen-upenn/PersonaMem · https://arxiv.org/html/2512.06688v1
 - MemBench：https://arxiv.org/abs/2506.21605 · https://github.com/import-myself/Membench
