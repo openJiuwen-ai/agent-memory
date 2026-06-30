@@ -5,9 +5,10 @@ from typing import Dict, List, Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from jiuwen_memory.common.logging import memory_logger
+from jiuwen_memory.common.schema.param import Param
 from jiuwen_memory.foundation.llm import BaseMessage
 from jiuwen_memory.foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
 from jiuwen_memory.memory_core.config.config import AgentMemoryConfig, MemoryEngineConfig, MemoryScopeConfig
@@ -93,6 +94,15 @@ class AddMessagesRequest(BaseModel):
     messages: list[dict[str, str]]
     user_id: Optional[str] = LongTermMemory.DEFAULT_VALUE
     scope_id: Optional[str] = LongTermMemory.DEFAULT_VALUE
+    # 可选：调用方传入需抽取的变量定义，直接复用引擎的 Param（对齐 AgentMemoryConfig.mem_variables）；
+    # 不传则 mem_variables 为空（不抽取变量）
+    mem_variables: list[Param] = Field(default_factory=list)
+    # 抽取开关，默认与引擎保持一致（全开），调用方可按需关闭某类记忆抽取
+    enable_long_term_mem: bool = Field(default=True)
+    enable_user_profile: bool = Field(default=True)
+    enable_semantic_memory: bool = Field(default=True)
+    enable_episodic_memory: bool = Field(default=True)
+    enable_summary_memory: bool = Field(default=True)
 
 
 class UpdateMemoryRequest(BaseModel):
@@ -216,10 +226,15 @@ async def add_messages_endpoint(request: AddMessagesRequest):
         base_messages = []
         for msg in request.messages:
             base_messages.append(BaseMessage(role=msg.get('role', 'user'), content=msg.get('content', '')))
-        # 使用默认的AgentMemoryConfig
+        # mem_variables 已由 pydantic 反序列化为 Param 列表，直接透传给 AgentMemoryConfig；
+        # 未传则 mem_variables 为空（不抽取变量）
         agent_cfg = AgentMemoryConfig(
-            mem_variables=[],
-            enable_long_term_mem=True,
+            mem_variables=request.mem_variables,
+            enable_long_term_mem=request.enable_long_term_mem,
+            enable_user_profile=request.enable_user_profile,
+            enable_semantic_memory=request.enable_semantic_memory,
+            enable_episodic_memory=request.enable_episodic_memory,
+            enable_summary_memory=request.enable_summary_memory,
         )
 
         await memory_engine.add_messages(
