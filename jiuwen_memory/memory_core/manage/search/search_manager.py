@@ -79,10 +79,10 @@ class SearchManager:
             for manager, types in used_types.items():
                 kwargs['mem_types'] = types
                 res = await manager.search(user_id=user_id, scope_id=scope_id,
-                                                      query=query, top_k=top_k, **kwargs)
+                                           query=query, top_k=top_k, **kwargs)
                 if res:
                     result.extend(res)
-        
+
         # sort and truncate multiple search_type results based on score
         if len(result) > top_k:
             result.sort(key=lambda item: item["score"], reverse=True)
@@ -124,19 +124,21 @@ class SearchManager:
             if res:
                 result = res
 
+        result = [item for item in result if item[1] >= threshold]
+
         # sort and truncate multiple search_type results based on score
         if len(result) > top_k:
-            result.sort(key=lambda item: item[2], reverse=True)
+            result.sort(key=lambda item: item[1], reverse=True)
 
-        return result
+        return result[:top_k]
 
     async def list_user_mem(
-        self,
-        user_id: str,
-        scope_id: str,
-        nums: int,
-        pages: int,
-        mem_type: str = None
+            self,
+            user_id: str,
+            scope_id: str,
+            nums: int,
+            pages: int,
+            mem_type: str = None
     ) -> list[dict[str, Any]] | None:
         result = []
         start = nums * (pages - 1)
@@ -193,7 +195,7 @@ class SearchManager:
                 error_msg=f"{MemoryType.SUMMARY.value} manager class is not SummaryManager",
             )
         return await self.managers[MemoryType.SUMMARY.value].list_user_summary(user_id=user_id,
-                                                                                    scope_id=scope_id)
+                                                                               scope_id=scope_id)
 
     async def get_user_variable(self, user_id: str, scope_id: str, var_name: str) -> str | None:
         if MemoryType.VARIABLE.value not in self.managers:

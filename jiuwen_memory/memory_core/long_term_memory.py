@@ -390,19 +390,33 @@ class LongTermMemory(metaclass=Singleton):
                                                     model_client_config=config.default_model_client_cfg)
             self._base_llm = llm
 
+        self._middle_memory_threads: dict[tuple[str, str], threading.Thread] = {}
+
         self._enable_hierarchical_memory = config.enable_middle_memory
         self.middle_memory_check_interval = config.middle_memory_check_interval
 
-        if self._enable_hierarchical_memory:
-            self.start()
 
-    def start(self):
-        """[Daemon thread mode] Start background tasks, continue running after main program ends"""
-        if self._enable_hierarchical_memory:
-            if self._thread_running:
-                memory_logger.warning("Middle memory processor is already running")
-                return
+    def start(
+            self,
+            user_id: str = DEFAULT_VALUE,
+            scope_id: str = DEFAULT_VALUE,
+            agent_config: AgentMemoryConfig | None = None,
+    ):
+        if not self._enable_hierarchical_memory:
+            return
 
+        worker_key = (scope_id, user_id)
+
+        existing_thread = self._middle_memory_threads.get(worker_key)
+        if existing_thread and existing_thread.is_alive():
+            memory_logger.info(
+                "Middle memory processor already running, skip start",
+                user_id=user_id,
+                scope_id=scope_id,
+            )
+            return
+
+        if agent_config is None:
             agent_config = AgentMemoryConfig(
                 mem_variables=[],
                 enable_long_term_mem=True,
@@ -412,32 +426,36 @@ class LongTermMemory(metaclass=Singleton):
                 enable_summary_memory=True,
             )
 
-            self._stop_event.clear()
-            self._thread_running = True
+        thread = threading.Thread(
+            target=self._start_async_loop_in_thread,
+            args=(agent_config, user_id, scope_id),
+            daemon=True,
+            name=f"MiddleMemoryThread/{scope_id}/{user_id}",
+        )
 
-            # ✅ Key: Create independent daemon thread, detach from main process lifecycle
-            self.thread = threading.Thread(
-                target=self._start_async_loop_in_thread,
-                args=(agent_config,),
-                daemon=True,
-                name="MiddleMemoryThread",
+        self._middle_memory_threads[worker_key] = thread
+
+        thread.start()
+
+        memory_logger.info(
+            "Middle memory processor started successfully",
+            user_id=user_id,
+            scope_id=scope_id,
+        )
+
+    def _start_async_loop_in_thread(self, agent_config, user_id: str, scope_id: str):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(
+                self._middle_memory_loop(
+                    agent_config,
+                    user_id=user_id,
+                    scope_id=scope_id,
+                )
             )
-            self.thread.start()
-            memory_logger.info("Middle memory processor started successfully (daemon thread mode)")
-
-        pass
-
-    def _start_async_loop_in_thread(self, agent_config):
-        """Run async event loop independently within thread"""
-        if self._enable_hierarchical_memory:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(self._middle_memory_loop(agent_config))
-            finally:
-                loop.close()
-        else:
-            pass
+        finally:
+            loop.close()
 
     def stop(self):
         """Stop background tasks (safe shutdown)"""
@@ -450,7 +468,8 @@ class LongTermMemory(metaclass=Singleton):
                 self._batch_executor.shutdown(wait=True)
                 self._executor_active = False
 
-            self.thread.join()
+            for each in self._middle_memory_threads:
+                self._middle_memory_threads[each].join()
             memory_logger.info("Middle memory processor stopped")
         else:
             pass
@@ -864,6 +883,7 @@ class LongTermMemory(metaclass=Singleton):
         else:
             timestamp = timestamp.astimezone(timezone.utc)
         if self._enable_hierarchical_memory:
+            self.start(user_id=user_id, scope_id=scope_id, agent_config=agent_config)
             if not self._validate_id(event_type=LogEventType.MEMORY_STORE, scope_id=scope_id):
                 memory_logger.error(
                     "Invalid scope_id format.",
@@ -1068,7 +1088,8 @@ class LongTermMemory(metaclass=Singleton):
         """
         try:
             # Step 1: Get middle-term memories
-            middle_messages_all = await self.message_manager.get(scope_id="middle_term_memory", message_len=100)
+            middle_messages_all = await self.message_manager.get(user_id=user_id, scope_id="middle_term_memory",
+                                                                 message_len=100)
 
             if not middle_messages_all:
                 memory_logger.info("No middle memories to process")
@@ -1188,8 +1209,12 @@ class LongTermMemory(metaclass=Singleton):
                 memory_logger.info(f"all_mem_ids_to_delete: {all_mem_ids_to_delete}")
 
                 try:
+                    await self._batch_delete_middle_memories(
+                                all_mem_ids_to_delete,
+                                user_id = user_id,
+                                scope_id = scope_id,
+                                )
                     await self._batch_delete_middle_messages(all_mem_ids_to_delete)
-                    await self._batch_delete_middle_memories(all_mem_ids_to_delete)
                 except Exception as e:
                     memory_logger.error(f"Failed to batch delete middle memories: {str(e)}", exception=str(e))
 
