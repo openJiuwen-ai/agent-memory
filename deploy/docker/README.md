@@ -2,13 +2,20 @@
 
 使用 docker compose 将 agent-memory 接入真实后端，作为常驻 HTTP 服务运行。
 
+本目录维护两套部署文件：
+
+| 模式 | Compose | 镜像 | 配置 | 环境变量示例 |
+|---|---|---|---|---|
+| 在线模型 | `online/docker-compose.yml` | `online/Dockerfile` | `online/config.yml` | `online/.env.example` |
+| 本地模型 | `local/docker-compose.yml` | `local/Dockerfile` | `local/config.yml` | `local/.env.example` |
+
 ## 选型
 
 | 角色 | 实现 | 形态 |
 |---|---|---|
 | LLM | OpenAI 兼容云端 API | 外部，凭 `LLM_API_KEY` |
-| 嵌入 | `bge-m3`（1024 维） | 进程内，FlagEmbedding；模型预下载到 `./models` |
-| 精排 | `bge-reranker-v2-m3` | 进程内，FlagEmbedding；模型预下载到 `./models` |
+| 嵌入 | `bge-m3`（1024 维） | 在线模型：HTTP `/v1/embeddings`；本地模型：进程内 FlagEmbedding |
+| 精排 | `bge-reranker-v2-m3` | 在线模型：HTTP `/rerank`；本地模型：进程内 FlagEmbedding |
 | 向量召回 | Milvus（etcd + MinIO + standalone） | 容器 |
 | 关键词召回 | Elasticsearch（BM25） | 容器 |
 | 真源 | Redis | 容器 |
@@ -21,40 +28,60 @@
 - Docker + docker compose v2。
 - 分配给 Docker 的内存 **≥ 20 GB**（若默认配额偏低，请在 Docker Desktop 设置中上调）。
   全栈常驻约占用 13–18 GB。
-- 网络可达：拉取镜像、通过 ModelScope 下载 bge 模型（约 4 GB，详见「预下载模型」）、访问云端 LLM 端点。
-- 无 GPU：嵌入/精排走 CPU 推理，功能可用，但批量写入与高并发场景下吞吐受限。
+- 网络可达：拉取镜像、访问云端 LLM 端点；在线模型模式还需能访问 `EMBEDDER_BASE_URL` /
+  `RERANKER_BASE_URL`。
+- 本地模型模式需通过 ModelScope 下载 bge 模型（约 4 GB，详见「预下载模型」）。
+- 无 GPU：本地模型模式下嵌入/精排走 CPU 推理，功能可用，但批量写入与高并发场景下吞吐受限。
 
-## 预下载模型（必需，先于启动）
+## 预下载模型（仅本地模型模式必需）
 
 嵌入/精排使用本地 bge 模型，**不在容器启动时联网下载**。直连 HuggingFace 在部分网络环境下
 并不稳定，且下载失败时索引构建会静默降级（捕获嵌入异常后记录日志并继续），导致写入看似
-成功、召回却为空。建议在宿主机预先通过 ModelScope 下载至 `./models`，再由 compose 挂载到
-容器 `/models-local` 离线加载。
+成功、召回却为空。建议在宿主机预先通过 ModelScope 下载至 `deploy/docker/models`，再由
+compose 挂载到容器 `/models-local` 离线加载。
 
 ```bash
-cd deploy/docker
+cd deploy/docker/local
 ./download-models.sh
 # 等价手动步骤：
 #   pip install modelscope
-#   modelscope download --model BAAI/bge-m3             --local_dir ./models/bge-m3
-#   modelscope download --model BAAI/bge-reranker-v2-m3 --local_dir ./models/bge-reranker-v2-m3
+#   modelscope download --model BAAI/bge-m3             --local_dir ../models/bge-m3
+#   modelscope download --model BAAI/bge-reranker-v2-m3 --local_dir ../models/bge-reranker-v2-m3
 ```
 
-下载完成后，`./models/` 下应包含 `bge-m3/` 与 `bge-reranker-v2-m3/` 两个目录。`.env` 中的
-`EMBED_MODEL` / `RERANK_MODEL` 默认即指向容器内的 `/models-local/...`，无需修改。
+下载完成后，`deploy/docker/models/` 下应包含 `bge-m3/` 与 `bge-reranker-v2-m3` 两个目录。
+`local/.env` 中的 `EMBED_MODEL` / `RERANK_MODEL` 默认即指向容器内的 `/models-local/...`，
+无需修改。
 
 ## 启动
 
+### 在线模型模式
+
+在线模型模式不安装 `torch` / `FlagEmbedding` / `transformers`，也不挂载本地模型目录。嵌入与精排
+通过外部 HTTP 服务提供：
+
 ```bash
-cd deploy/docker
+cd deploy/docker/online
 cp .env.example .env
-# 编辑 .env，至少填入 LLM_API_KEY（如换厂商再改 LLM_BASE_URL / LLM_MODEL）
+# 编辑 .env，至少填入 LLM_API_KEY、MODEL_API_TOKEN、EMBEDDER_BASE_URL、RERANKER_BASE_URL
+docker compose up -d --build
+```
+
+`EMBEDDER_BASE_URL` 必须包含 `/v1`，例如 `https://models.example.com/v1`；
+`RERANKER_BASE_URL` 不要包含 `/rerank`，例如 `https://models.example.com`。
+
+### 本地模型模式
+
+```bash
+cd deploy/docker/local
+cp .env.example .env
+# 编辑 .env，至少填入 LLM_API_KEY
 docker compose up -d --build
 ```
 
 首次启动顺序：etcd / MinIO → Milvus、Elasticsearch、Redis 健康后，应用才会启动
-（`depends_on: service_healthy`）。bge 模型从挂载的 `/models-local` 直接加载，全程不联网；
-模型在**应用首次收到请求时**载入内存，该次请求耗时较长，此后常驻复用。
+（`depends_on: service_healthy`）。本地模型模式下 bge 模型从挂载的 `/models-local` 直接加载，
+全程不联网；模型在**应用首次收到请求时**载入内存，该次请求耗时较长，此后常驻复用。
 
 查看状态与日志：
 
@@ -93,34 +120,33 @@ curl -X POST http://localhost:8137/v1/search \
 
 ## 常见调整
 
-- **换 LLM 厂商**：改 `.env` 的 `LLM_BASE_URL` / `LLM_MODEL`（任意 OpenAI 兼容端点）。
+- **换 LLM 厂商**：改当前模式目录下 `.env` 的 `LLM_BASE_URL` / `LLM_MODEL`（任意 OpenAI 兼容端点）。
+- **换在线模型服务**：改 `online/.env` 的 `EMBEDDER_BASE_URL` / `RERANKER_BASE_URL` /
+  `MODEL_API_TOKEN`。`EMBEDDER_BASE_URL` 带 `/v1`，`RERANKER_BASE_URL` 不带 `/rerank`。
 - **降低内存占用（省去 Milvus 三件套）**：将 `vector_store` 改用 Milvus Lite（pymilvus 内嵌、
-  文件存储），在 `config.yml` 中把 `uri` 改为本地文件（如 `./milvus.db`），并从 compose 中移除
+  文件存储），在对应模式目录的 `config.yml` 中把 `uri` 改为本地文件（如 `./milvus.db`），并从 compose 中移除
   etcd / minio / milvus 三个服务。注意 Milvus Lite 不适用于生产环境。
-- **嵌入/精排改用独立 TEI 服务**（解耦，便于启用 GPU）：启动两个 TEI 容器分别承载嵌入与精排，
-  在 `config.yml` 中将 `embedder` 改为 `openai`（指向 TEI 的 `/v1/embeddings`）、`reranker`
-  改为 `api`（Cohere 方言，指向 `/rerank`），并可从镜像中移除 `[embed]` 依赖。
 - **提升中文关键词检索精度**：为 Elasticsearch 安装 IK 分词插件（需自建 ES 镜像）；默认的 standard
   分析器对中文按单字切分。
 
 ## 配置文件
 
-服务读哪个配置由两处决定：`docker-compose.yml` 把宿主机文件挂到容器 `/config/config.yml`，
-`Dockerfile` 的 `CMD` 把该路径作为参数传给 `__main__.py`。即**真正"用哪个文件"的开关是 compose
+服务读哪个配置由两处决定：模式目录下的 `docker-compose.yml` 把宿主机文件挂到容器 `/config/config.yml`，
+同目录 `Dockerfile` 的 `CMD` 把该路径作为参数传给 `__main__.py`。即**真正"用哪个文件"的开关是 compose
 里的挂载源**：
 
 ```yaml
-# docker-compose.yml → 服务 agent-memory
+# online/docker-compose.yml → 服务 agent-memory
 volumes:
   - ./config.yml:/config/config.yml:ro    # 左 = 宿主机文件，右 = 容器内固定路径
 ```
 
 配置是**两级命名空间**且会**合并覆盖内置默认**（纯内存离线栈），故配置文件只需写「与默认不同」
-的部分（详见 [config.yml](config.yml) 与 `src/config`）。
+的部分（详见 [online/config.yml](online/config.yml)、[local/config.yml](local/config.yml) 与 `src/config`）。
 
 ### 新增并启用一个配置文件
 
-1. 在 `deploy/docker/` 下新建文件，例如 `config.lite.yml`，只写要改动的命名空间/参数（其余继承默认）。
+1. 在对应模式目录下新建文件，例如 `online/config.lite.yml`，只写要改动的命名空间/参数（其余继承默认）。
 2. 把 compose 的挂载源指过去（**整体替换**，无需改 CMD）：
 
    ```yaml
@@ -157,5 +183,5 @@ command: ["python", "bootstrap/http_server/__main__.py",
 
 ```bash
 docker compose down           # 停止服务，保留数据卷
-docker compose down -v        # 停止服务并删除 Redis / ES / Milvus / 模型缓存等数据卷
+docker compose down -v        # 停止服务并删除 Redis / ES / Milvus 等数据卷
 ```

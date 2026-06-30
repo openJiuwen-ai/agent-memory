@@ -1,0 +1,78 @@
+# agent-memory docker compose config using remote embedding/rerank HTTP services.
+#
+# Local bge model files and Docker volumes may still exist for rollback, but this
+# config does not load them. Embedding uses the OpenAI-compatible /v1/embeddings
+# endpoint; rerank uses the Cohere-style /rerank endpoint.
+profile: docker
+
+memory_api:
+  globals:
+    vector_enabled: true
+    graph_enabled: false
+    rerank_enabled: true
+
+    # bge-m3 dense dimension. Must match the Milvus collection dim.
+    embedder_dim: 1024
+    chunk_size: 512
+
+    # LLM: cloud OpenAI-compatible endpoint.
+    llm_model: "${LLM_MODEL:-glm-4-plus}"
+    llm_base_url: "${LLM_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}"
+    llm_api_key: "${LLM_API_KEY}"
+    llm_temperature: 0.0
+
+    # Remote bge-m3 embedding service. Base URL must include /v1 because the
+    # OpenAI client appends /embeddings. No public default is provided: memory
+    # content must only be sent to the endpoint explicitly configured in .env.
+    embedder_model: "${EMBEDDER_MODEL:-bge-m3}"
+    embedder_base_url: "${EMBEDDER_BASE_URL}"
+    embedder_api_key: "${MODEL_API_TOKEN}"
+    embedder_max_batch: 16
+
+    # Remote bge-reranker service. Base URL must not include /rerank because the
+    # api reranker appends it for the Cohere dialect.
+    reranker_model: "${RERANKER_MODEL:-bge-reranker-v2-m3}"
+    reranker_base_url: "${RERANKER_BASE_URL}"
+    reranker_api_key: "${MODEL_API_TOKEN}"
+    reranker_dialect: "${RERANKER_DIALECT:-cohere}"
+    reranker_timeout: 120.0
+
+    policies:
+      rerank.enabled: "true"
+
+  llm:
+    default: { target: openai }
+  embedder:
+    default: { target: openai }
+  reranker:
+    default: { target: api }
+  tokenizer:
+    default: { target: jieba }
+
+  kv_store:
+    default:
+      target: redis
+      params:
+        url: "${REDIS_URL:-redis://redis:6379/0}"
+  fulltext_store:
+    default:
+      target: elasticsearch
+      params:
+        hosts: "${ES_HOSTS:-http://elasticsearch:9200}"
+  vector_store:
+    default:
+      target: milvus
+      params:
+        uri: "${MILVUS_URI:-http://milvus:19530}"
+        collection: "${MILVUS_COLLECTION:-agent_memory_vectors}"
+        dim: 1024
+        metric_type: COSINE
+
+  # Keep query text unchanged: the chat LLM is not used for query rewriting.
+  query_parser:
+    default:
+      target: simple
+      params:
+        tokenizer: default
+        embedder: default
+        llm: { target: echo }

@@ -2,7 +2,7 @@
 # agent-memory 应用镜像：HTTP 在线服务 + 进程内 bge 嵌入/精排。
 #
 # 注意：含 CPU 版 torch + FlagEmbedding（纯 CPU 推理，不装 CUDA 库，镜像约 5–6GB）。
-# 若改用「独立 TEI 推理服务」，可去掉下方 pip 安装里的 [embed]，并在 config.yml 把
+# 若改用「独立 TEI 推理服务」，可使用 ../online/Dockerfile，并在 ../online/config.yml 把
 # embedder 改 openai、reranker 改 api。
 FROM python:3.11-slim
 
