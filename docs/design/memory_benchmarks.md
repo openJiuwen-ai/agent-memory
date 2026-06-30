@@ -3,7 +3,7 @@
 > 调研对象：业界用于评测「Agent 长期记忆 / Memory Layer」能力的主流公开 Benchmark
 > 用途：为 `agent-memory` 记忆系统的能力评测、效果对标与差异化定位提供参考
 > 调研时间：2026-05
-> 维度：来源链接、Benchmark 介绍说明、数据量、适用领域（评测能力）
+> 维度：来源链接、Benchmark 介绍说明、数据量、适用领域（评测能力）、License、Leaderboard 状态、成本估算
 
 ---
 
@@ -22,155 +22,97 @@
 
 ## 1. 主流 Benchmark 逐一分析
 
+> 统一字段：来源链接 / 介绍说明 / 数据量 / 适用领域 / License / Leaderboard 状态 / 成本估算。
+
 ### 1.1 LoCoMo（Long Conversational Memory）
 
-- 来源链接：
-  - 论文：https://arxiv.org/abs/2402.17753 （Evaluating Very Long-Term Conversational Memory of LLM Agents, ACL 2024）
-  - 项目主页：https://snap-research.github.io/locomo/
-  - GitHub / 数据：https://github.com/snap-research/LoCoMo （`data/locomo10.json`）
-  - Leaderboard：**无官方榜单**。可参考第三方聚合榜：① 统一榜 AMB https://agentmemorybenchmark.ai/ （含 locomo 列）；② mem0 公开研究页 https://mem0.ai/research ；③ Papers With Code 聚合 https://www.wizwand.com/dataset/longmemeval （含 LoCoMo 相关任务）；④ 社区跑分多以「GitHub Issue 提交」形式公开，见 https://github.com/snap-research/locomo/issues （如 #31/#34 等 SOTA 提交）。
-
-- 介绍说明：由 Snap Research 提出，通过「LLM Agent + 人物 persona + 时序事件图」的人机协作流水线生成**超长期多会话对话**，并经人工校验长程一致性。每段对话由两个虚拟人物跨多个会话进行，包含**图片分享与图片反应**行为（具备多模态属性）。评测框架包含三类任务：**问答（QA）、事件摘要（event summarization）、多模态对话生成**。问题分为 5 类推理：单跳（single-hop）、多跳（multi-hop）、时序（temporal）、常识/世界知识（open-domain）、对抗（adversarial）。
-
-- 数据量：公开版 `locomo10.json` 含 **10 段**高质量超长对话（初版 arxiv 为 50 段，后裁剪为最长的 10 段以降低闭源模型评测成本）；平均每段约 **600 turns / 16K tokens**，最多 **32 个会话**；QA 任务约 **1,540 道**非对抗问题（业界常用此 1,540 题口径）。
-  - 注：社区 issue 中有标注/答案噪声反馈；具体比例需以单个 issue、修订版数据或后续官方说明为准。引用分数时建议保留评测口径与数据版本。
-
-- 适用领域：个人助手 / 陪伴类、开放域多会话对话记忆；是业界最早、被引用最广的「长期对话记忆」基准，常用于对标 Mem0、Zep、OpenAI Memory 等记忆层产品。
-
----
+- 来源链接：论文 https://arxiv.org/abs/2402.17753 ；项目主页 https://snap-research.github.io/locomo/ ；GitHub / 数据 https://github.com/snap-research/LoCoMo （`data/locomo10.json`）。
+- 介绍说明：Snap Research 提出的超长期多会话对话基准，通过「LLM Agent + 人物 persona + 时序事件图」生成并人工校验长程一致性。任务覆盖 QA、事件摘要、多模态对话生成；问题含单跳、多跳、时序、开放域、对抗等类型。
+- 数据量：公开版 `locomo10.json` 含 **10 段**高质量超长对话（初版 arxiv 为 50 段）；平均每段约 **600 turns / 16K tokens**，最多 **32 个会话**；QA 任务约 **1,540 道**非对抗问题。
+- 适用领域：个人助手 / 陪伴类、开放域多会话对话记忆；常用于对标 Mem0、Zep、OpenAI Memory 等记忆层产品。
+- License：以 GitHub 仓库声明为准。
+- Leaderboard 状态：无官方榜单；推荐查分入口为 AMB、mem0 研究页、wizwand 聚合与 GitHub Issues 自报。
+- 成本估算：中等；公开版规模小，但多题型评测通常需要 LLM-as-judge，引用分数时需保留数据版本与 judge 口径。
 
 ### 1.2 LongMemEval
 
-- 来源链接：
-  - 论文：https://arxiv.org/abs/2410.10813 （LongMemEval: Benchmarking Chat Assistants on Long-Term Interactive Memory, ICLR 2025）
-  - GitHub / 数据：https://github.com/xiaowu0162/LongMemEval
-  - ICLR Poster：https://iclr.cc/virtual/2025/poster/28290
-  - Leaderboard：**无官方榜单**。可参考：① 统一榜 AMB https://agentmemorybenchmark.ai/ （含 longmemeval 列）；② mem0 公开研究页 https://mem0.ai/research ；③ Papers With Code 风格聚合 https://www.wizwand.com/dataset/longmemeval ；④ 厂商/社区 SOTA 提交多以 GitHub Issue 公开，见 https://github.com/xiaowu0162/LongMemEval/issues 。
-
-- 介绍说明：聚焦**聊天助手的长期交互记忆**。通过「属性可控」的 needle-in-a-haystack 风格流水线，把含证据的对话嵌入到可自由扩展、带时间戳的聊天历史中。评测 **5 项核心记忆能力**：信息抽取（information extraction）、多会话推理（multi-session reasoning）、时序推理（temporal reasoning）、知识更新（knowledge updates）、拒答（abstention）。题目细分为 7 种类型（single-session-user / single-session-assistant / single-session-preference / temporal-reasoning / knowledge-update / multi-session，以及 `_abs` 拒答变体）。主流以 GPT-4o 作为 LLM-as-judge。
-
-- 数据量：**500 道**人工精编问题；提供两档标准设定：
-  - **LongMemEval-S**：约 **115K tokens**（约 40 个历史会话）。
-  - **LongMemEval-M**：约 **500 个会话**（约 **1.5M tokens**）。
-  - 另含 `longmemeval_oracle.json`（仅保留证据会话的 oracle 检索设定）。
-  - 问题源自 164 个用户属性本体（生活方式、所属物、人生事件、情境、人口统计 5 大类）。
-
-- 适用领域：带历史记忆的聊天机器人 / 个人助手；是当前**直接对比记忆架构**最常被引用的基准（尤其在知识更新与多会话任务上区分度高）。长上下文 LLM 在 S 档相比简单设定有 30%~60% 的性能下降。
-
----
+- 来源链接：论文 https://arxiv.org/abs/2410.10813 ；GitHub / 数据 https://github.com/xiaowu0162/LongMemEval ；ICLR Poster https://iclr.cc/virtual/2025/poster/28290 。
+- 介绍说明：聚焦聊天助手的长期交互记忆，通过 needle-in-a-haystack 风格流水线将证据对话嵌入可扩展、带时间戳的聊天历史。评测信息抽取、多会话推理、时序推理、知识更新、拒答等能力。
+- 数据量：**500 道**人工精编问题；LongMemEval-S 约 **115K tokens / 40 会话**，LongMemEval-M 约 **500 会话 / 1.5M tokens**；另含 oracle 检索设定。
+- 适用领域：带历史记忆的聊天机器人 / 个人助手；尤其适合区分知识更新与多会话推理能力。
+- License：以 GitHub 仓库声明为准。
+- Leaderboard 状态：无官方榜单；推荐查分入口为 AMB、mem0 研究页、wizwand 与 GitHub Issues / 厂商博客自报。
+- 成本估算：中到高；M 档上下文长，且主流以 GPT-4o 作为 LLM-as-judge，成本随模型与样本重复次数上升。
 
 ### 1.3 BEAM（Beyond a Million Tokens）
 
-- 来源链接：
-  - 论文：https://arxiv.org/abs/2510.27246 （Beyond a Million Tokens: Benchmarking and Enhancing Long-Term Memory in LLMs）
-  - GitHub：https://github.com/leegisang/BEAM
-  - 数据：https://huggingface.co/datasets/Mohammadta/BEAM （及 `Mohammadta/BEAM-10M`，论文数据页）
-  - 解读：https://mem0.ai/blog/what-is-beam-memory-benchmark-the-paper-that-shows-1m-context-window-isnt-enough
-  - Leaderboard：**统一榜 AMB（含 beam 100K/500K/1M/10M 四档）** https://agentmemorybenchmark.ai/ ；另见 mem0 研究页 https://mem0.ai/research 与 Hindsight 的 10M 档 SOTA 汇总 https://hindsight.vectorize.io/blog/2026/04/02/beam-sota 。
-
-- 介绍说明：针对「1M 上下文窗口是否足以替代记忆系统」这一问题设计。通过规划式流水线生成**叙事连贯、保持身份一致、事实随时间演化**的多领域超长对话，并配套探针问题。评测 **10 项记忆能力**：事实/实体追踪、信息更新、矛盾消解（contradiction resolution）、时序顺序/事件排序、区分指令与偏好、多跳推理、长历史摘要、偏好遵循、指令遵循、拒答等。论文同时提出受人类认知启发的 **LIGHT** 框架（情景记忆 + 工作记忆 + 事实便签 scratchpad）。
-
-- 数据量：**100 段**对话、**2,000 道**校验过的探针问题；多尺度上下文 **128K / 500K / 1M / 10M tokens**（分 BEAM-1M 与 BEAM-10M 两个 track）。10M 档单段约含 1 万+ 用户/助手消息、7,757 turns。
-
-- 适用领域：多领域（编程、数学、健康、金融、个人等）**生产级、超大规模**记忆评测。设计目标是「任何现有记忆架构都无法刷满」——是验证大上下文窗口无法替代真正记忆架构的关键基准（10M 档下纯 RAG 显著退化）。
-
----
+- 来源链接：论文 https://arxiv.org/abs/2510.27246 ；GitHub https://github.com/leegisang/BEAM ；数据 https://huggingface.co/datasets/Mohammadta/BEAM ；解读 https://mem0.ai/blog/what-is-beam-memory-benchmark-the-paper-that-shows-1m-context-window-isnt-enough 。
+- 介绍说明：针对「1M 上下文窗口是否足以替代记忆系统」设计，通过规划式流水线生成身份一致、事实随时间演化的多领域超长对话。评测事实追踪、信息更新、矛盾消解、时序、多跳、摘要、偏好/指令遵循、拒答等 10 项能力。
+- 数据量：**100 段**对话、**2,000 道**探针问题；上下文覆盖 **128K / 500K / 1M / 10M tokens**，含 BEAM-1M 与 BEAM-10M track。
+- 适用领域：生产级、超大规模、多领域记忆评测；用于验证大上下文窗口无法替代真正记忆架构。
+- License：以 GitHub / Hugging Face 数据页声明为准。
+- Leaderboard 状态：无独立官方榜，AMB 统一托管 100K/500K/1M/10M 四档；可参考 mem0 研究页与 Hindsight 10M 档汇总。
+- 成本估算：高；1M/10M 档对上下文长度、检索延迟、存储与 judge 成本要求最高，适合作为压力测试而非日常单测。
 
 ### 1.4 MemoryAgentBench
 
-- 来源链接：
-  - 论文：https://arxiv.org/abs/2507.05257 （Evaluating Memory in LLM Agents via Incremental Multi-Turn Interactions）
-  - GitHub：https://github.com/HUST-AI-HYZ/MemoryAgentBench
-  - 数据：https://huggingface.co/datasets/ai-hyz/MemoryAgentBench
-  - Leaderboard：**无官方在线榜单**。结果以论文表格形式给出（详见论文与仓库 README）；HF 数据卡 https://huggingface.co/datasets/ai-hyz/MemoryAgentBench 亦含各记忆 Agent 对比。
-
-- 介绍说明：强调**增量式多轮交互**（把数据切块模拟真实多轮对话流），而非静态长上下文 QA。基于认知科学定义 **4 项核心能力**：准确检索（Accurate Retrieval, AR，含多跳）、测试时学习（Test-Time Learning, TTL，运行时学习新规则/技能而无需训练）、长程理解（Long-Range Understanding, LRU，≥100K tokens 的全局理解/摘要）、冲突消解 / 选择性遗忘（Conflict Resolution / Selective Forgetting, CR/SF，覆盖过时事实）。是首个同时覆盖这四项能力的基准。
-
-- 数据量：由既有数据集重构 + 新构建的 **EventQA** 与 **FactConsolidation** 两个数据集组成；上下文规模覆盖 100K+ tokens 量级（增量切块注入）。
-
-- 适用领域：通用记忆 Agent（从 context-based、RAG 到带外部记忆模块/工具集成的高级 Agent）。适合系统性诊断记忆系统在「检索 / 学习 / 理解 / 更新」四个维度的短板。
-
----
+- 来源链接：论文 https://arxiv.org/abs/2507.05257 ；GitHub https://github.com/HUST-AI-HYZ/MemoryAgentBench ；数据 https://huggingface.co/datasets/ai-hyz/MemoryAgentBench 。
+- 介绍说明：强调增量式多轮交互，而非静态长上下文 QA。基于认知科学定义准确检索、测试时学习、长程理解、冲突消解 / 选择性遗忘四项核心能力。
+- 数据量：由既有数据集重构并新增 **EventQA** 与 **FactConsolidation**；上下文规模覆盖 100K+ tokens 量级。
+- 适用领域：通用记忆 Agent 的系统性诊断，适合定位检索、学习、理解、更新四类短板。
+- License：以 GitHub / Hugging Face 数据页声明为准。
+- Leaderboard 状态：无官方在线榜；结果以论文表格、仓库 README 与 HF 数据卡为主。
+- 成本估算：中等；增量切块注入增加运行轮次，但上下文规模低于 BEAM 超长档。
 
 ### 1.5 PersonaMem（及 PersonaMem-v2）
 
-- 来源链接：
-  - PersonaMem 论文：https://arxiv.org/abs/2504.14225 （Know Me, Respond to Me: Benchmarking LLMs for Dynamic User Profiling and Personalized Responses at Scale）
-  - 项目主页：https://zhuoqunhao.github.io/PersonaMem.github.io/
-  - 数据：https://huggingface.co/datasets/bowen-upenn/PersonaMem
-  - PersonaMem-v2 论文：https://arxiv.org/html/2512.06688v1
-  - Leaderboard：**有榜单**。① GitHub README「Performance Leaderboard」区（评测 15 个 SOTA LLM）https://github.com/bowen-upenn/PersonaMem ；② 统一榜 AMB（含 personamem 列）https://agentmemorybenchmark.ai/ 。
-
-- 介绍说明：聚焦**个性化 / 人格与偏好追踪**。每个样本是一个含静态属性（人口统计）与动态属性（随时间演化的偏好）的用户 persona，用户与 chatbot 在多会话、多场景（如餐饮推荐、旅行规划、心理咨询）中交互。评测 **7 类 in-situ 用户查询**，考察模型能否：记住用户画像、追踪偏好演化、在新场景下生成个性化回复。强调**偏好多为隐式表达**。
-
-- 数据量：
-  - **PersonaMem (v1)**：180+ 段模拟交互历史，每段最多 **60 个会话（~1M tokens）**，覆盖 15 个个性化场景；提供按上下文长度划分的多个版本。
-  - **PersonaMem-v2**：1,000 个 persona、20,000+ 偏好、300+ 场景、每条上下文最高 **128K tokens**；含 5,000 条评测 QA + 20,000 条训练/验证 QA；支持多模态、多语言。
-
-- 适用领域：个性化助手 / 推荐型对话、用户画像与偏好建模。前沿模型（GPT-4.5、o1、Gemini-2.0、Llama-4-Maverick 等）整体准确率约 50% 或更低，说明隐式偏好追踪仍是难点。
-
----
+- 来源链接：PersonaMem 论文 https://arxiv.org/abs/2504.14225 ；项目主页 https://zhuoqunhao.github.io/PersonaMem.github.io/ ；数据 https://huggingface.co/datasets/bowen-upenn/PersonaMem ；PersonaMem-v2 论文 https://arxiv.org/html/2512.06688v1 。
+- 介绍说明：聚焦个性化 / 人格与偏好追踪。样本包含静态属性与动态偏好，用户与 chatbot 在多会话、多场景中交互，评测模型能否记住画像、追踪偏好演化并生成个性化回复。
+- 数据量：PersonaMem v1 含 **180+ 段**模拟交互历史，每段最多 **60 会话 / ~1M tokens**，覆盖 15 个场景；PersonaMem-v2 含 **1,000 persona、20,000+ 偏好、300+ 场景、5,000 评测 QA、20,000 训练/验证 QA**，上下文最高 **128K tokens**。
+- 适用领域：个性化助手 / 推荐型对话、用户画像与偏好建模，尤其适合隐式偏好追踪。
+- License：以 GitHub / Hugging Face 数据页声明为准。
+- Leaderboard 状态：有 README 榜；推荐查分入口为 GitHub README「Performance Leaderboard」与 AMB。
+- 成本估算：中到高；v2 样本规模更大，个性化回复通常需要生成式 judge 或人工复核。
 
 ### 1.6 MemBench
 
-- 来源链接：
-  - 论文：https://arxiv.org/abs/2506.21605 （MemBench: Towards More Comprehensive Evaluation on the Memory of LLM-based Agents, ACL 2025 Findings）
-  - ACL Anthology：https://aclanthology.org/2025.findings-acl.989.pdf
-  - GitHub：https://github.com/import-myself/Membench
-  - Leaderboard：**无官方在线榜单**。论文给出 7 种记忆机制对比结果；第三方统一榜 AMB（含 membench 列）https://agentmemorybenchmark.ai/ 收录。
-
-- 介绍说明：强调评测维度的「全面性」。数据集区分两个**记忆层级**：事实性记忆（factual memory，显式陈述的信息）与反思性记忆（reflective memory，隐式推断的偏好等）；并设计两类**交互场景**：参与（participation，Agent 直接与用户交互）与观察（observation，Agent 以第三方视角追踪消息）。提供时间感知的评测框架，含 **4 项指标**：准确率（accuracy）、召回（recall）、容量（capacity）、时间效率（temporal efficiency）。是首个强调反思性记忆的基准之一。
-
-- 数据量：多场景（participation / observation）× 多层级（factual / reflective）构建的可扩展数据集，约 100K tokens 量级上下文；论文在其上评测了 7 种常见记忆机制。
-
-- 适用领域：通用 LLM Agent 记忆机制的综合性诊断，特别适合需要同时衡量**有效性、效率与容量**的研究对标。
-
----
+- 来源链接：论文 https://arxiv.org/abs/2506.21605 ；ACL Anthology https://aclanthology.org/2025.findings-acl.989.pdf ；GitHub https://github.com/import-myself/Membench 。
+- 介绍说明：强调评测维度的全面性，区分事实性记忆与反思性记忆，并覆盖参与 / 观察两类交互场景。指标包含准确率、召回、容量、时间效率。
+- 数据量：多场景 × 多层级构建的可扩展数据集，约 100K tokens 量级上下文；论文评测了 7 种常见记忆机制。
+- 适用领域：通用 LLM Agent 记忆机制综合诊断，适合同时衡量有效性、效率与容量。
+- License：以 GitHub 仓库声明为准。
+- Leaderboard 状态：无官方在线榜；可参考论文表格与 AMB。
+- 成本估算：中等；数据规模适合作为回归基准，成本主要来自多机制对比与 judge。
 
 ### 1.7 MemSim / MemDaily
 
-- 来源链接：
-  - 论文：https://arxiv.org/abs/2409.20163 （MemSim: A Bayesian Simulator for Evaluating Memory of LLM-based Personal Assistants）
-  - OpenReview：https://openreview.net/pdf?id=8w22WLy2R8
-  - GitHub：https://github.com/nuster1128/MemSim
-  - Leaderboard：**无官方在线榜单**。完整基准结果在仓库 `benchmark/full_results`；第三方统一榜 AMB（含 memsim 列）https://agentmemorybenchmark.ai/ 收录。
-
-- 介绍说明：本质是一个**数据生成器 + 基准**。提出 **Bayesian Relation Network (BRNet)** 与因果生成机制，从模拟的用户消息中**自动构造可靠的 QA 对**，以缓解 LLM 幻觉对事实信息的污染，同时兼顾多样性与可扩展性。基于该模拟器生成日常生活场景数据集 **MemDaily**，并据此构建评测基准。从两个角度评测：有效性（effectiveness，存储与利用事实的能力）与效率（efficiency）。
-
-- 数据量：MemDaily 为自动合成、规模可扩展的日常生活 QA 数据集（完整基准结果在仓库 `benchmark/full_results`）。
-
-- 适用领域：LLM 个人助手的记忆机制评测；其「可自动、低成本扩展生成可靠 QA」的特性，适合作为持续回归测试与大规模评测的数据来源。
-
----
+- 来源链接：论文 https://arxiv.org/abs/2409.20163 ；OpenReview https://openreview.net/pdf?id=8w22WLy2R8 ；GitHub https://github.com/nuster1128/MemSim 。
+- 介绍说明：本质是数据生成器 + 基准。通过 Bayesian Relation Network 与因果生成机制，从模拟用户消息中自动构造可靠 QA 对，生成日常生活场景数据集 MemDaily，并从有效性与效率两个角度评测。
+- 数据量：MemDaily 为自动合成、规模可扩展的日常生活 QA 数据集，完整结果在仓库 `benchmark/full_results`。
+- 适用领域：LLM 个人助手记忆机制评测；适合作为持续回归测试与大规模合成评测数据来源。
+- License：以 GitHub 仓库声明为准。
+- Leaderboard 状态：无官方在线榜；可参考仓库 `benchmark/full_results` 与 AMB。
+- 成本估算：低到中；可自动扩展数据，适合低成本回归，但需控制生成数据质量与分布漂移。
 
 ### 1.8 LifeBench（Long-Horizon Multi-Source Memory）
 
-- 来源链接：
-  - 论文：https://arxiv.org/html/2603.03781 （LifeBench: A Benchmark for Long-Horizon Multi-Source Memory）
-  - GitHub / 数据：https://github.com/1754955896/LifeBench
-  - TLDR：https://tldr.takara.ai/p/2603.03781
-  - Leaderboard：**无官方在线榜单**。论文 Figure 7 给出 MemU / Hindsight / MemOS 等系统排名（MemOS 居首约 55.2%）；第三方统一榜 AMB（含 lifebench 列）https://agentmemorybenchmark.ai/ 收录。
-
-- 介绍说明：突破「只评对话」的局限，模拟个人**长达一整年的多源数字痕迹**（personas、每日事件、手机操作痕迹、健康记录、月度摘要等），同时要求**陈述性记忆（语义/情景）与非陈述性记忆（习惯/程序性）** 的联合推理。受认知科学启发，按事件的部分—整体层级（partonomy）组织以保证跨时间尺度一致性，并支持并行生成。设计 **4 大类共 2,003 道问题**：信息抽取、多源推理、时序演化、非陈述性记忆推理。提供中英文双语版本，并已转换为 LoCoMo 输入格式（`our.json`）便于复用。Apache 2.0 许可。
-
-- 数据量：**10 个用户**的全年数据；总规模约 **66M tokens / 332 MB**；单用户均值：短信约 1,813 条、事件约 234 个、Agent 对话约 688 段、照片约 1,233 张、笔记约 363 条、推送约 2,350 条。问题共 **2,003 道**。
-
-- 适用领域：个性化 Agent 的长周期、多源记忆；也可用于推荐系统、弱势群体服务研究、游戏 NPC 生成等。SOTA 记忆系统（MemU、Hindsight、MemOS 等）准确率仅约 **55.2%**，难度较高。
-
----
+- 来源链接：论文 https://arxiv.org/html/2603.03781 ；GitHub / 数据 https://github.com/1754955896/LifeBench ；TLDR https://tldr.takara.ai/p/2603.03781 。
+- 介绍说明：模拟个人长达一整年的多源数字痕迹，要求陈述性记忆与非陈述性记忆联合推理。问题覆盖信息抽取、多源推理、时序演化、非陈述性记忆推理，并提供中英文双语版本。
+- 数据量：**10 个用户**全年数据，总规模约 **66M tokens / 332 MB**；问题共 **2,003 道**。
+- 适用领域：个性化 Agent 的长周期、多源记忆，也可用于推荐系统、服务研究、游戏 NPC 生成等。
+- License：Apache 2.0。
+- Leaderboard 状态：无官方在线榜；可参考论文 Figure 7 与 AMB。
+- 成本估算：高；多源全年数据和 66M token 规模适合作为系统级能力验证，常规迭代应抽样或做 mini split。
 
 ### 1.9 DialSim / LongDialQA
 
-- 来源链接：
-  - 论文：https://arxiv.org/abs/2406.13144 （DialSim: A Real-Time Simulator for Evaluating Long-Term Multi-Party Dialogue Understanding）
-  - OpenReview（ICLR 2026 投稿）：https://openreview.net/forum?id=O0FcS21JVY
-  - Leaderboard：**无官方在线榜单**。结果以论文表格形式给出，代码/榜单维护在项目仓库 https://github.com/jiho-kim/DialSim 。
-
-- 介绍说明：面向**长期多人对话（multi-party）** 理解的对话模拟评测框架。Agent 扮演剧本中的一个角色，仅凭对话历史实时回答自发提出的问题，并需识别「自己信息不足」而拒答。为减少对先验知识的依赖，所有角色名被匿名化/替换。配套数据集 **LongDialQA** 由长篇美剧剧本构建。
-
+- 来源链接：论文 https://arxiv.org/abs/2406.13144 ；OpenReview https://openreview.net/forum?id=O0FcS21JVY ；代码/榜单维护在项目仓库 https://github.com/jiho-kim/DialSim 。
+- 介绍说明：面向长期多人对话理解的实时模拟评测框架。Agent 扮演剧本角色，仅凭对话历史回答自发问题，并需在信息不足时拒答。
 - 数据量：LongDialQA 含 **1,300+ 对话会话**，每段配 **1,000+** 精编问题，单段总量超 **352,000 tokens**。
-
-- 适用领域：多人对话场景（影视、群聊、客服多方）下的长期记忆与理解；强调实时性与多方依赖，是对「两两对话」类基准的补充。即便大上下文窗口或 RAG 模型也难以在多方长程交互中保持准确理解。
+- 适用领域：多人对话场景（影视、群聊、客服多方）下的长期记忆与理解，强调实时性与多方依赖。
+- License：以项目仓库声明为准。
+- Leaderboard 状态：无官方在线榜；结果以论文表格与项目仓库为主。
+- 成本估算：中到高；问题量大且多方上下文长，适合评估多方依赖和拒答策略。
 
 ---
 
@@ -189,7 +131,7 @@
 
 ---
 
-## 3. 排行榜（Leaderboard）资源总览
+## 3. 排行榜（Leaderboard）资源入口
 
 > 重要现实：**多数学术 Benchmark（LoCoMo、LongMemEval、MemBench、MemSim、MemoryAgentBench、LifeBench、DialSim）并无官方维护的在线排行榜**，分数主要散落在原论文表格、各厂商研究页与 GitHub Issue/README 的「自报跑分」中，口径（judge 模型、检索设定、prompt）差异较大，横向对比需谨慎。
 
@@ -201,17 +143,7 @@
 - **Papers With Code 风格聚合**：https://www.wizwand.com/dataset/longmemeval —— 汇总 LongMemEval / LoCoMo 各子任务的 SOTA。
 - **PersonaMem 自带榜**：https://github.com/bowen-upenn/PersonaMem （README「Performance Leaderboard」评测 15 个 SOTA LLM）。
 
-| Benchmark | 是否有官方榜 | 推荐查分入口 |
-| --- | --- | --- |
-| LoCoMo | ✖ | AMB · mem0 研究页 · wizwand · GitHub Issues 自报 |
-| LongMemEval | ✖ | AMB · mem0 研究页 · wizwand · 厂商博客（Exabase/Honcho 等） |
-| BEAM | ✖（AMB 统一托管） | **AMB（100K/500K/1M/10M）** · mem0 研究页 · Hindsight 博客 |
-| MemoryAgentBench | ✖ | 论文表格 · HF 数据卡 |
-| PersonaMem | ✅（README 榜） | GitHub README · AMB |
-| MemBench | ✖ | 论文表格（7 种机制对比）· AMB |
-| MemSim / MemDaily | ✖ | 仓库 `benchmark/full_results` · AMB |
-| LifeBench | ✖ | 论文 Figure 7（MemOS≈55.2% 居首）· AMB |
-| DialSim / LongDialQA | ✖ | 论文表格 · 项目仓库 |
+各 Benchmark 的「是否有官方榜」与推荐查分入口已并入 §1 各小节的 `Leaderboard 状态` 字段，避免同一口径在两处维护。
 
 ---
 

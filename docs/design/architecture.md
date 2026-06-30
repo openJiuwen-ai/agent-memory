@@ -45,7 +45,7 @@
 │  E. 记忆构建层 Build          分层记忆结构（皆可从原始数据重建）：           │
 │     (Layered Memory)          从原始数据提取 → 抽象精炼/关联分析 → 多抽象粒度 │
 │                               记忆 ＋ 多形式索引(文档·关键词·向量·图)；       │
-│                               由记忆自演进(§8)持续构建与维护                 │
+│                               由记忆自演进(§9.3)持续构建与维护                 │
 ├──────────────────────────────────────────────────────────────────────────┤
 │  F. 记忆存储层 Storage        可配置真源: 文档(Markdown,影子索引) / 结构化   │
 │                               后端: 向量库·图库·KV/全文·文件系统·审计日志    │
@@ -57,7 +57,7 @@
 
 > 从下往上看：**数据层（G）持久化原始数据 → 记忆构建层（E）从原始数据提取、经抽象精炼/关联分析挖掘多粒度记忆并构建多形式索引（皆可重建） → 记忆检索层（D）消费记忆构建层 → 记忆管理层（C）做生命周期/治理/权限/配置 → 记忆接口层（B）→ 调用与数据接入层（A）**。记忆存储层（F）提供可配置真源与多后端；端/云/端云协同为部署维度（§11）。
 >
-> **记忆管理层（C）是一个管理面**：本身不新增独立章节，其职责贯穿 §3.1/§8（生命周期）、§3.2（scope 权限）、§12（治理/可观测）、§13（可配置化），在此显式成层以与 VISION 概念架构一致。
+> **记忆管理层（C）总览**：C 层是管理面，负责生命周期、权限、治理、调度与运行时策略的统一编排；职责总览见 §7。
 
 ---
 
@@ -85,7 +85,7 @@ MemoryUnit
 - `temporal` 借鉴 Zep **双时间模型**，支持有效期与时间点回溯。
 - **`provenance` 与 `supersedes` 分离**：`provenance` 是「多→一」演进血缘（抽取/升华/合并；来源 unit 可仍有效），支撑「派生可重建 + 可审计回溯」与 `trace` 回溯；`supersedes` 是「一→一」版本链，支撑按 `as_of` 的版本回溯（`get` 沿链返回当时有效版本）。两者不再共用一个字段。
 - `lifecycle` 用「标记失效」而非物理删除（非破坏式更新）。`update` 默认 **SUPERSEDE**（生成新 id 版本、旧版标记 superseded、新版 `supersedes` 记链），亦可 **OVERWRITE**（同 id 原地覆写，旧内容仅留审计——非破坏式原则的有意例外）。
-- **多模态**：`assets` 保留原模态资产（或引用）作为真源的一部分；`content` 是其**可治理文本/结构投影**（转录/OCR/caption/描述），由接入层生成。下游索引与检索统一作用在 `content` 投影上（详见 §10.1）。
+- **多模态**：`assets` 保留原模态资产（或引用）作为真源的一部分；`content` 是其**可治理文本/结构投影**（转录/OCR/caption/描述），由接入层生成。下游索引与检索统一作用在 `content` 投影上（详见 §5.1）。
 
 ### 3.2 作用域与多租户（Scope）
 
@@ -97,12 +97,12 @@ MemoryUnit
 
 ## 4. 分层记忆结构（Layered Memory by Abstraction Granularity）
 
-记忆构建层是本架构的核心：区分**短时记忆**（工作/会话态，易失）与**长时记忆**。长时记忆是核心的分层记忆结构——**从唯一真源（原始数据）提取相关信息，经抽象与精炼、关联分析，挖掘出不同抽象粒度的记忆，并在其上构建多种形式的索引。** 所有长时记忆与索引皆可从原始数据重建。
+本节只定义记忆结构的 **What**：系统区分**短时记忆**（工作/会话态，易失）与**长时记忆**（可持久、可治理、可重建的分层结构）。长时记忆按抽象粒度组织，索引是建在记忆之上的可配置检索结构，不是记忆本体。
 
 ```
  ┌────────────────────────────────────────────────────────────────────────────┐
  │ 多形式索引 Indexes：文档索引 · 关键词索引 · 向量索引 · 图索引（主要建于长时记忆）│
- │   （检索时由记忆检索层 §7 做融合召回 + 重排）                                 │
+ │   （检索时由记忆检索层 §8 做融合召回 + 重排）                                 │
  └────────────────────────────────────────────────────────────────────────────┘
                               ▲ 在各抽象粒度记忆上构建索引
  ┌────────────────────┐  升华  ┌──────────────────────────────────────────────────┐
@@ -111,184 +111,25 @@ MemoryUnit
  │  近期缓冲/临时状态    │        │   中抽象（关联/组织）  事件 · 实体关系 · 主题聚类     │
  │  易失、快速读写       │        │   低抽象（贴近原始）  抽取的事实/片段               │
  └────────────────────┘        └──────────────────────────────────────────────────┘
-            ▲ 提取/缓冲                 ▲ 提取 · 抽象与精炼 · 关联分析
+            ▲ 缓冲/沉淀                 ▲ 构建算子生成不同抽象粒度（见 §9.1）
  ┌────────────────────────────────────────────────────────────────────────────┐
  │ 数据层 原始数据（唯一真源，承载形态可配：文档 / 结构化）                        │
  └────────────────────────────────────────────────────────────────────────────┘
-   ▲ 自下而上构建；长时记忆与索引皆可从原始数据重建（短时记忆为易失工作态，不必持久重建）
+   ▲ 长时记忆与索引皆可从原始数据重建（短时记忆为易失工作态，不必持久重建）
 ```
 
-- **短时记忆 vs 长时记忆**：**短时记忆**承载当前工作/会话上下文（近期缓冲、临时状态，易失、快速读写，≈ 认知角色中的 working）；**长时记忆**是经提取/抽象/关联沉淀的分层记忆结构（≈ episodic/semantic/procedural/archival）。短时记忆经**升华/沉淀**转入长时记忆；多形式索引主要建于长时记忆之上。
-- **从原始数据到多粒度记忆**（长时记忆）：从原始数据**提取**相关信息 →**抽象与精炼**（情景→语义、经验→技能/模式）+**关联分析**（实体共指、因果/引用、跨会话/跨 Agent）→ 沉淀出**不同抽象粒度**的记忆，让 Agent 既能取细节也能取高层概括。
-- **多形式索引（按配置启用）**：索引是建立在记忆之上、**可配置的检索结构，并非记忆本身的固有结构**。索引阶段**支持**文档 / 关键词 / 向量 / 图索引，**具体启用哪些由配置决定**（§13），对启用的索引互补检索（详见 §6）。这是「不止向量」的体现——结构化关联/图并非默认必备，而是可选的索引形式。
+- **短时记忆 vs 长时记忆**：短时记忆承载当前工作/会话上下文（近期缓冲、临时状态，易失、快速读写）；长时记忆承载可跨会话复用的事实、事件、主题关系、画像、偏好、技能与模式。
+- **抽象粒度**：低抽象贴近原始事实/片段，中抽象组织事件、实体关系与主题，高抽象沉淀画像、长期偏好、可复用技能/模式。具体构建算子见 §9.1。
+- **多形式索引（按配置启用）**：索引建立在记忆之上，支持文档 / 关键词 / 向量 / 图等形态，具体启用哪些由配置决定（§13），检索融合见 §8。
 - **真源唯一、皆可重建**：原始数据是唯一权威来源；各粒度记忆与索引均可从它重算（推广 memSearch「删索引不丢数据」理念到整个记忆构建层）。本架构主信条。
 - **认知角色作为分类维度**：「认知角色（working/core/episodic/semantic/procedural/archival）」作为记忆的**一个分类维度**存在（决定常驻上下文 or 按需检索），不单列为独立轴。
-- **由自演进持续构建**：上述提取/抽象/关联/精炼并非一次性，而是由**记忆自演进**（§8）持续驱动与维护。
+- **由自演进持续维护**：这些结构不是一次性产物，而是由记忆自演进（§9.3）按触发时机持续维护。
 
 > 注：「演进产物与真源的关系（append-only？演进产物是否回写真源？）」为**设计阶段开放问题**，见 §17。
 
 ---
 
-## 5. 记忆存储层：真源与存储抽象（Source of Truth & Storage）
-
-### 5.1 可配置的真源承载形态
-
-真源唯一（数据层中的原始数据），但**承载形态按场景配置**，对上层接口透明：
-
-```
- ┌────────── 文档形式 (Document-as-source) ──────────┐   ┌──── 结构化形式 (Structured-as-source) ────┐
- │ 真源 = Markdown / 文件                            │   │ 真源 = DB 记录 / 向量 / 图               │
- │ 派生 = 影子索引(可重建)                           │   │ 派生 = 在真源之上的附加索引              │
- │ 优势: 人可读·可编辑·可 git·可审计·删索引不丢数据  │   │ 优势: 高并发·强检索·规模化·多租户弹性    │
- │ 适配: 编码 Agent / 跨工具复用 / 端侧轻量          │   │ 适配: 高并发个性化 / 大规模多租户        │
- └───────────────────────────────────────────────────┘   └──────────────────────────────────────────┘
-```
-
-
-| 场景                           | 建议真源形态                |
-| ---------------------------- | --------------------- |
-| 编码 Agent / git 化 / 可审计 / 跨工具 | 文档形式（Markdown + 影子索引） |
-| 高并发个性化 / 大规模多租户              | 结构化形式（向量 + 结构化关联）     |
-| 时序敏感 / 企业知识                  | 结构化 + 时序图             |
-| 端侧隐私 / 轻量                    | 文档形式 或 SQLite         |
-
-
-### 5.2 存储抽象（Pluggable Backends）
-
-统一的 `StorageProvider` 抽象，按部署形态选型；真源与各派生索引可落在不同后端：
-
-
-| 抽象          | 端侧默认                   | 云侧默认        | 备选                         |
-| ----------- | ---------------------- | ----------- | -------------------------- |
-| 真源（文档）      | 本地文件系统 / Markdown      | 对象存储 / 文件服务 | Git 仓库                     |
-| 真源（结构化）/ KV | SQLite                 | PostgreSQL  | —                          |
-| 向量索引        | 轻量本地向量（如内嵌）            | Milvus      | pgvector / Qdrant / Chroma / GuassVector |
-| 图/关联索引      | 内嵌图（如 SQLite 关系表/Kuzu） | Neo4j       | FalkorDB / Kuzu            |
-| 全文索引        | SQLite FTS5            | 专用全文引擎      | —                          |
-| 审计日志        | SQLite                 | 关系库 / 日志系统  | —                          |
-
-
-> 端侧强调「轻量、可离线、低资源」；云侧强调「强检索、可扩缩」。同一逻辑模型，不同物理实现。
-
----
-
-## 6. 记忆构建层详解：提取·抽象·关联·多形式索引（自演进见 §8）
-
-记忆构建层从真源构建，**全部可重建**（真源不变即可重算）。本节展开「多粒度记忆挖掘」与「多形式索引」；持续构建/维护它的自演进闭环详见 §8。
-
-### 6.1 多粒度记忆挖掘：提取 → 抽象精炼 → 关联分析
-
-从原始数据沉淀出不同抽象粒度的记忆：
-
-
-| 环节        | 作用                         | 关键点                                                                           |
-| --------- | -------------------------- | ----------------------------------------------------------------------------- |
-| **信息提取**  | 从原始数据抽取事实/事件/偏好（贴近原始的低抽象粒度） | 多模态信息源已在接入层规约为可治理文本/结构                                                         |
-| **抽象与精炼** | 情景→语义、经验→技能/模式，概括出高抽象记忆    | 升华出画像、长期偏好、可复用技能/模式                                                            |
-| **关联分析**  | 实体共指、因果/引用链、跨会话/跨 Agent 关联 | 支持多跳推理、「连点成线」；构成中抽象的关系/主题结构                                                    |
-| **多维分类**  | 按主题/认知角色/来源/重要度等多维度归类      | 认知角色（working/core/episodic/semantic/procedural/archival）是其中一维，决定常驻上下文 or 按需检索 |
-| **按需加载**  | L0 摘要 → L1 片段 → L2 全文，分层取用 | 吸收 OpenViking 分层加载，省 token                                                    |
-| **时序组织**  | 有效期、时间点、事件先后               | 双时间模型，支持历史回溯与非破坏式更新                                                           |
-
-
-### 6.2 多形式索引：文档 / 关键词 / 向量 / 图
-
-索引是建立在记忆之上、**可配置的检索结构，并非记忆本身的固有结构**。索引阶段**支持**以下多种互补索引，**具体启用哪些由配置决定**（§13，如端侧轻量场景可只用关键词+轻向量、关闭图索引）；检索时由记忆检索层（§7）对启用的索引做融合召回 + 重排。
-
-
-| 索引        | 作用                   | 关键点                                |
-| --------- | -------------------- | ---------------------------------- |
-| **文档索引**  | 面向文档形态记忆的路径/章节式定位与浏览 | 对齐 memSearch/OpenViking；文档真源下的一等索引 |
-| **关键词索引** | 全文/BM25 精确匹配         | 与向量互补，提升可解释性                       |
-| **向量索引**  | 语义相似召回               | 可插拔 embedding；端侧用轻量模型              |
-| **图索引**   | 实体-关系、因果/引用链多跳遍历     | 支撑关联分析与「连点成线」                      |
-| 标签/命名空间   | scope 过滤、多租户隔离       | 检索前置过滤（贯穿各索引）                      |
-
-
-> 各粒度记忆与各形式索引本身都是可重建派生物（可由自演进 §8 重建），落在记忆存储层的对应后端中。
-
----
-
-## 7. 记忆检索层（Retrieve）
-
-```
- query ─▶ ① scope/标签前置过滤
-        ─▶ ② 并行多路召回  ┌ 向量(语义)
-                            ├ 全文(BM25)
-                            ├ 图遍历(关联/多跳)
-                            └ 时序过滤(有效期/时间点)
-        ─▶ ③ 融合 + 重排 (RRF / Reranker)
-        ─▶ ④ 渐进式披露 (L0 摘要 → L1 片段 → L2 全文，按需加载省 token)
-        ─▶ ⑤ 返回 + 检索轨迹 (trajectory，可观测可调试)
-```
-
-- **混合召回 + 重排**：对齐 Mem0 v3 / Zep 的混合检索，并通过实测验证差异化收益。
-- **渐进式披露**：吸收 OpenViking 的 L0/L1/L2 分层加载，控制 token。
-- **检索轨迹**：吸收 OpenViking 的可观测性，每步召回/排序可追溯，非黑盒。
-- **scope 是独立轴、显式串参**：检索范围作为首参贯穿 `Retriever.retrieve(scope, query)` → `Recaller.recall(scope, …)`（query 是「找什么」、scope 是「在谁的范围内找」），并落到各 Store 查询的专用 `scope` 字段做**原生隔离**——不随查询对象携带、也不混进过滤条件。
-- **前置过滤结构化**：`filters` 为 `FilterClause` 列表（字段+算子+值，支持等值/集合命中/数值·时间范围，AND 组合），由检索层**组装**进各 Store 查询，替代旧的 `dict[str,str]` 平铺等值。
-- **两条时间轴**：`as_of` 是系统相信时间（valid-time，回溯「T 时刻哪个版本有效」），与从 query 文本解析出的事件时间约束（event-time，`time_from/time_to`，过滤 `t_event`）分开，互不折叠。
-- **通道↔Store 非 1:1**：`RecallChannel` 是逻辑召回路，到物理 Store 的映射由检索层装配内部决定（一路对一 Store，多路也可合到 FusionStore 一次召回；TEMPORAL 多为叠加在其他通道上的时间过滤）。
-
----
-
-## 8. 记忆自演进（Evolution）：持续构建与维护分层记忆
-
-记忆构建层并非一次成形，而是由自演进闭环持续驱动——记忆随交互自我整理：
-
-```
-   交互流 ─▶ 抽取 ─▶ 关联 ─▶ 冲突消解 ─▶ 升华 ─▶ 遗忘/降权
- (对话/工具/  (候选   (挂实体   (新旧矛盾   (情景→语义  (过期/低价值
-  多源痕迹)   事实)    /图谱)    标记失效)   经验→技能)   清理)
-                              ▲                         │
-                              └──── 反馈 / 自评 ◀────────┘
-```
-
-- **写入流水线**：吸收 Mem0「抽取 → 相似检索 → `ADD/UPDATE/DELETE/NOOP` 决策」做去重与冲突消解。
-- **升华（Consolidation）**：情景→语义、经验→可复用技能（吸收 MemOS 技能记忆思路）。
-- **遗忘**：到期/低价值自动降权或归档（非破坏式，保留血缘）。
-- **双通道**：
-  - **Hot path（在线）**：低时延的即时记忆写入与轻量更新。
-  - **Background（离线）**：异步做重的抽取/升华/重索引，不阻塞主链路。
-- **控制模式**：`agent_control`（Agent 自主调用记忆工具）/ `static_control`（开发者/管线控制）/ `both`。
-- **演进阶段（EvolveMode）= 内容演进四阶段**：`extract / associate / consolidate / forget`。**索引维护不是演进模式**——它随数据面操作（write/update/delete）由 IndexBuilder 增量跟进（build/update/remove），从真源全量重建走 `IndexBuilder.rebuild()` 维护路径（上述 background「重索引」即指此类维护工作，由数据面/维护触发，而非 `evolve(mode=…)`）。
-
----
-
-## 9. 记忆接口层（Memory API）
-
-所有接入形态最终映射到同一组语义。接口已落地为 `src/api/memory_api.py` 的 `MemoryAPI`（统一 Core API，形态无关）。它是**控制层的薄封装且为鉴权/审计执行点（PEP）**：数据面（write/recall/get/update/delete/evolve/admin）委托 `src/control/engine.py` 的 `MemoryEngine`（编排中枢），管理面查询（任务状态、治理、授权）直达对应控制算子（Scheduler/Governor/PermissionManager）。每个涉及租户数据/治理的方法都收 `scope`（目标范围 target）与 `actor`（调用方身份，**必填 keyword-only**）——本层先 `check(actor, scope, action)`、落带 actor 的入口审计，通过后才委托，下游只收已鉴权的 target scope（签名以代码为准）：
-
-
-| 方法                                            | 语义                                              |
-| --------------------------------------------- | ----------------------------------------------- |
-| `write(content, scope, source, *, actor, assets=…, tags=…, metadata=…, occurred_at=…) -> list[MemoryUnit]` | **同步**写入记忆：`content` 文本/结构投影 + 可选 `assets` 原模态资产引用；阻塞至 hot path 完成（落盘 + 轻量索引）后返回**本次插入的记忆单元列表**（规约/切分可产生多条），重演进走 background 通道；实现上桥接引擎的异步 write，供 CLI/脚本等同步形态 |
-| `write_async(…)`（协程，签名/返回值同 `write`）   | **异步**写入记忆：直通引擎的异步 write，供事件循环/高并发接入形态（HTTP/MCP）非阻塞调用 |
-| `recall(query, scope, *, actor, filters=…, as_of=…, top_k=…, disclosure=…, with_trajectory=…) -> RetrievalResult` | 混合检索召回；`filters` 为结构化 `FilterClause` 列表（等值/集合/范围，AND 组合），`as_of` **时间点回溯（valid-time）**，`disclosure` 渐进式披露层级，`with_trajectory` 返回检索轨迹 |
-| `get(unit_id, scope, *, actor, as_of=None) -> MemoryUnit`      | 按 id 读取记忆单元；`as_of` 非空时沿 `supersedes` 版本链返回当时有效版本；不存在抛 `NotFoundError` |
-| `update(unit_id, scope, patch: MemoryPatch, *, actor) -> MemoryUnit` | 修正记忆（仅非 None 字段生效）：`patch.mode` = **SUPERSEDE**（默认、非破坏式：生成新 id 版本、旧版标记 superseded、新版 `supersedes` 记链）/ **OVERWRITE**（同 id 原地覆写、旧内容仅留审计）；返回结果记忆单元 |
-| `delete(selector: DeleteSelector, *, actor) -> list[str]` | 删除：按选择器（id / scope / 标签 / 时间，条件取「与」）批量执行；`mode` = forget 遗忘 / archive 归档 / downweight 降权（均非破坏式）/ **purge 完全删除**（物理删除真源与全部派生索引，合规删除、不可恢复、仅留审计记录）；返回命中的 id |
-| `evolve(scope, mode, channel=BACKGROUND, *, actor) -> job_id` | 触发演进（mode：extract / associate / consolidate / forget），经控制层 Scheduler 双通道调度，返回任务 id；索引维护不在此（随数据面操作自动跟进） |
-| `job_status(job_id, *, actor) -> JobInfo` / `job_cancel(job_id, *, actor)` | 查询 / 取消演进任务（委托 Scheduler） |
-| `inspect(unit_ids, scope, *, actor) -> list[MemoryUnit]` | 治理·检视：读取完整内容与治理字段（含已失效版本，委托 Governor） |
-| `trace(unit_id, scope, *, actor) -> list[MemoryUnit]` | 治理·血缘回溯：沿 `provenance` 追溯演进来源链（委托 Governor） |
-| `audit(filters, *, actor, limit=100) -> list[AuditEvent]` | 治理·审计查询：按 actor/action/layer/时间段等检索审计留痕（委托 Governor） |
-| `grant(grant: Grant, *, actor)` / `revoke(grant, *, actor)` | 跨 scope 授权 / 回收（委托 PermissionManager；revoke 匹配规则由实现定义） |
-| `admin_get(key, *, actor)` / `admin_set(key, value, *, actor)` / `admin_all(*, actor)` | admin：运行时可变策略的查询与调整（委托 PolicyManager；键未知/不可变配置抛 `PolicyError`） |
-
-
-> - **鉴权与审计执行点（PEP）在接口层**：`actor`（调用方）与 `scope`（目标 target）分离，本层 `check(actor, scope, action)` 不通过抛 `PermissionDeniedError` 并落入口审计；通过后只把已鉴权的 target scope 下沉，actor 不下沉。`actor` 设为必填 keyword-only，杜绝与 `scope`（同为 Scope 类型）位置传反致越权。
-> - **表面 = 数据面 + 管理面**：数据面委托 `MemoryEngine`，管理面查询（job/inspect/trace/audit/grant/revoke）直达 Scheduler/Governor/PermissionManager；调用层只依赖 `src/api` 即可触达全部对外能力。
-> - **薄封装 + 引擎编排**：`MemoryAPI` 不含业务逻辑；接入/落盘/索引/检索/调度的编排全部在 `MemoryEngine`（`src/control`）。引擎内核只保留**一条异步写链路**（`async def write`），接口层的同步 `write` 由其自行桥接（如 `asyncio.run`）。
-> - 接口形态无关：不论真源是文档还是结构化、运行在端还是云，调用方语义一致。
-> - **双时间一等暴露**：`recall`/`get` 的 `as_of`（valid-time）直接消费 §3.1 的双时间模型，支持「按当时状态」的时间点查询与历史回溯，与 query 文本里解析出的事件时间（event-time）分轴（对应 §15 吸收 Zep 的落点）。
-> - **统一异常契约**：错误由 `common/errors`（根 `AgentMemoryError`）的类型承载——`NotFoundError`/`ConflictError`/`PermissionDeniedError`/`ValidationError`/`PolicyError`/`HealthCheckError`/`BackendError`，调用方跨后端/跨层用同一套捕获，不依赖具体实现自带异常。
-> - **控制模式**：`evolve` 与自动触发对应 §8 的 `agent_control / static_control / both`。
-> - **不设 `link` 接口**：记忆/实体关联不对外暴露为接口语义，由构建层 Associator 在演进（§8）中自动维护（`Relation` 结构供图索引内部使用）。
-
----
-
-## 10. 调用与数据接入层（Access & Ingest）
+## 5. 调用与数据接入层（Access & Ingest）
 
 本层合并「调用」与「数据接入」两个职责：对外暴露多形态调用入口，并承接多模态信息源的接入与规约。调用入口是记忆接口层的**薄封装**，区分「嵌入」与「接入」两类耦合（见 VISION §6 讨论）：
 
@@ -316,7 +157,7 @@ MemoryUnit
 
 > 核心主张是**框架无关**：SDK 提供嵌入，CLI/Skill/MCP/API 提供接入，二者共同支撑「不绑定单一框架」。
 
-### 10.1 多模态数据接入与规约
+### 5.1 多模态数据接入与规约
 
 多模态体现在**数据输入侧**：图像/音频/视频/文档/代码等均可作为记忆来源。接入层对每种模态做两件事，**检索链路本身不感知模态**：
 
@@ -329,12 +170,185 @@ MemoryUnit
                  · 文档/代码 → 解析 + 结构化切分
                           │
                           ▼
-            记忆构建层(§4/§6) 在 content 投影上提取/抽象/关联、构建多形式索引
+            记忆构建层(§9.1/§9.2，分层结构见 §4) 在 content 投影上提取/抽象/关联、构建多形式索引
 ```
 
 - **原模态资产为真源、文本投影为派生**：与「真源唯一 + 派生可重建」一致；重跑规约器即可重建投影。
 - **检索统一在文本/结构投影上进行**：向量/关键词/图/文档索引均基于 `content`，不引入专门的「多模态向量检索」（保持检索链路简单一致）。
 - **可插拔规约器**：ASR/OCR/caption 模型为可替换组件（§12 可插拔），端侧可降级或延迟到云侧（§17 开放问题）。
+
+---
+
+## 6. 记忆接口层（Memory API）
+
+所有接入形态最终映射到同一组语义。接口已落地为 `src/api/memory_api.py` 的 `MemoryAPI`（统一 Core API，形态无关）。它是**控制层的薄封装且为鉴权/审计执行点（PEP）**：数据面（write/recall/get/update/delete/evolve/admin）委托 `src/control/engine.py` 的 `MemoryEngine`（编排中枢），管理面查询（任务状态、治理、授权）直达对应控制算子（Scheduler/Governor/PermissionManager）。每个涉及租户数据/治理的方法都收 `scope`（目标范围 target）与 `actor`（调用方身份，**必填 keyword-only**）——本层先 `check(actor, scope, action)`、落带 actor 的入口审计，通过后才委托，下游只收已鉴权的 target scope（签名以代码为准）：
+
+
+| 方法                                            | 语义                                              |
+| --------------------------------------------- | ----------------------------------------------- |
+| `write(content, scope, source, *, actor, assets=…, tags=…, metadata=…, occurred_at=…) -> list[MemoryUnit]` | **同步**写入记忆：`content` 文本/结构投影 + 可选 `assets` 原模态资产引用；阻塞至 hot path 完成（落盘 + 轻量索引）后返回**本次插入的记忆单元列表**（规约/切分可产生多条），重演进走 background 通道；实现上桥接引擎的异步 write，供 CLI/脚本等同步形态 |
+| `write_async(…)`（协程，签名/返回值同 `write`）   | **异步**写入记忆：直通引擎的异步 write，供事件循环/高并发接入形态（HTTP/MCP）非阻塞调用 |
+| `recall(query, scope, *, actor, filters=…, as_of=…, top_k=…, disclosure=…, with_trajectory=…) -> RetrievalResult` | 混合检索召回；`filters` 为结构化 `FilterClause` 列表（等值/集合/范围，AND 组合），`as_of` **时间点回溯（valid-time）**，`disclosure` 渐进式披露层级，`with_trajectory` 返回检索轨迹 |
+| `get(unit_id, scope, *, actor, as_of=None) -> MemoryUnit`      | 按 id 读取记忆单元；`as_of` 非空时沿 `supersedes` 版本链返回当时有效版本；不存在抛 `NotFoundError` |
+| `update(unit_id, scope, patch: MemoryPatch, *, actor) -> MemoryUnit` | 修正记忆（仅非 None 字段生效）：`patch.mode` = **SUPERSEDE**（默认、非破坏式：生成新 id 版本、旧版标记 superseded、新版 `supersedes` 记链）/ **OVERWRITE**（同 id 原地覆写、旧内容仅留审计）；返回结果记忆单元 |
+| `delete(selector: DeleteSelector, *, actor) -> list[str]` | 删除：按选择器（id / scope / 标签 / 时间，条件取「与」）批量执行；`mode` = forget 遗忘 / archive 归档 / downweight 降权（均非破坏式）/ **purge 完全删除**（物理删除真源与全部派生索引，合规删除、不可恢复、仅留审计记录）；返回命中的 id |
+| `evolve(scope, mode, channel=BACKGROUND, *, actor) -> job_id` | 触发演进（mode：extract / associate / consolidate / forget），经控制层 Scheduler 双通道调度，返回任务 id；索引维护不在此（随数据面操作自动跟进） |
+| `job_status(job_id, *, actor) -> JobInfo` / `job_cancel(job_id, *, actor)` | 查询 / 取消演进任务（委托 Scheduler） |
+| `inspect(unit_ids, scope, *, actor) -> list[MemoryUnit]` | 治理·检视：读取完整内容与治理字段（含已失效版本，委托 Governor） |
+| `trace(unit_id, scope, *, actor) -> list[MemoryUnit]` | 治理·血缘回溯：沿 `provenance` 追溯演进来源链（委托 Governor） |
+| `audit(filters, *, actor, limit=100) -> list[AuditEvent]` | 治理·审计查询：按 actor/action/layer/时间段等检索审计留痕（委托 Governor） |
+| `grant(grant: Grant, *, actor)` / `revoke(grant, *, actor)` | 跨 scope 授权 / 回收（委托 PermissionManager；revoke 匹配规则由实现定义） |
+| `admin_get(key, *, actor)` / `admin_set(key, value, *, actor)` / `admin_all(*, actor)` | admin：运行时可变策略的查询与调整（委托 PolicyManager；键未知/不可变配置抛 `PolicyError`） |
+
+
+> - **鉴权与审计执行点（PEP）在接口层**：`actor`（调用方）与 `scope`（目标 target）分离，本层 `check(actor, scope, action)` 不通过抛 `PermissionDeniedError` 并落入口审计；通过后只把已鉴权的 target scope 下沉，actor 不下沉。`actor` 设为必填 keyword-only，杜绝与 `scope`（同为 Scope 类型）位置传反致越权。
+> - **表面 = 数据面 + 管理面**：数据面委托 `MemoryEngine`，管理面查询（job/inspect/trace/audit/grant/revoke）直达 Scheduler/Governor/PermissionManager；调用层只依赖 `src/api` 即可触达全部对外能力。
+> - **薄封装 + 引擎编排**：`MemoryAPI` 不含业务逻辑；接入/落盘/索引/检索/调度的编排全部在 `MemoryEngine`（`src/control`）。引擎内核只保留**一条异步写链路**（`async def write`），接口层的同步 `write` 由其自行桥接（如 `asyncio.run`）。
+> - 接口形态无关：不论真源是文档还是结构化、运行在端还是云，调用方语义一致。
+> - **双时间一等暴露**：`recall`/`get` 的 `as_of`（valid-time）直接消费 §3.1 的双时间模型，支持「按当时状态」的时间点查询与历史回溯，与 query 文本里解析出的事件时间（event-time）分轴（对应 §15 吸收 Zep 的落点）。
+> - **统一异常契约**：错误由 `common/errors`（根 `AgentMemoryError`）的类型承载——`NotFoundError`/`ConflictError`/`PermissionDeniedError`/`ValidationError`/`PolicyError`/`HealthCheckError`/`BackendError`，调用方跨后端/跨层用同一套捕获，不依赖具体实现自带异常。
+> - **控制模式**：`evolve` 与自动触发对应 §9.3 的 `agent_control / static_control / both`。
+> - **不设 `link` 接口**：记忆/实体关联不对外暴露为接口语义，由构建层 Associator 在演进（§9.3）中自动维护（`Relation` 结构供图索引内部使用）。
+
+---
+
+## 7. 记忆管理层（Manage）
+
+记忆管理层是架构中的控制面，而非另一条数据存储或检索流水线。它负责把生命周期、治理、权限、调度与运行时策略统一成可审计的管理动作，并通过记忆接口层暴露给调用方。
+
+| 管理职责 | 作用 | 主要落点 |
+| --- | --- | --- |
+| 生命周期 | 维护 active / superseded / archived / forgotten 等状态，支持过期、降权、归档、遗忘与合规删除 | 数据模型 §3.1；自演进触发 §9.3；接口 `delete/update/inspect` §6 |
+| 权限与隔离 | 基于 scope 与 actor 做访问控制，跨 scope 共享必须显式授权 | scope 模型 §3.2；接口层 PEP §6 |
+| 治理与审计 | 支持检视、编辑、血缘回溯、审计查询与可观测轨迹 | 横切关注点 §12；接口 `inspect/trace/audit` §6 |
+| 调度与策略 | 管理 hot/background 任务、演进阶段、索引开关与运行时可变策略 | 自演进控制 §9.3；配置体系 §13 |
+
+管理层只编排和约束这些动作，不定义新的记忆结构。分层记忆的内容结构见 §4；构建算子见 §9.1/§9.2；演进触发时机与控制模式见 §9.3。
+
+---
+
+## 8. 记忆检索层（Retrieve）
+
+```
+ query ─▶ ① scope/标签前置过滤
+        ─▶ ② 并行多路召回  ┌ 向量(语义)
+                            ├ 全文(BM25)
+                            ├ 图遍历(关联/多跳)
+                            └ 时序过滤(有效期/时间点)
+        ─▶ ③ 融合 + 重排 (RRF / Reranker)
+        ─▶ ④ 渐进式披露 (L0 摘要 → L1 片段 → L2 全文，按需加载省 token)
+        ─▶ ⑤ 返回 + 检索轨迹 (trajectory，可观测可调试)
+```
+
+- **混合召回 + 重排**：对齐 Mem0 v3 / Zep 的混合检索，并通过实测验证差异化收益。
+- **渐进式披露**：吸收 OpenViking 的 L0/L1/L2 分层加载，控制 token。
+- **检索轨迹**：吸收 OpenViking 的可观测性，每步召回/排序可追溯，非黑盒。
+- **scope 是独立轴、显式串参**：检索范围作为首参贯穿 `Retriever.retrieve(scope, query)` → `Recaller.recall(scope, …)`（query 是「找什么」、scope 是「在谁的范围内找」），并落到各 Store 查询的专用 `scope` 字段做**原生隔离**——不随查询对象携带、也不混进过滤条件。
+- **前置过滤结构化**：`filters` 为 `FilterClause` 列表（字段+算子+值，支持等值/集合命中/数值·时间范围，AND 组合），由检索层**组装**进各 Store 查询，替代旧的 `dict[str,str]` 平铺等值。
+- **两条时间轴**：`as_of` 是系统相信时间（valid-time，回溯「T 时刻哪个版本有效」），与从 query 文本解析出的事件时间约束（event-time，`time_from/time_to`，过滤 `t_event`）分开，互不折叠。
+- **通道↔Store 非 1:1**：`RecallChannel` 是逻辑召回路，到物理 Store 的映射由检索层装配内部决定（一路对一 Store，多路也可合到 FusionStore 一次召回；TEMPORAL 多为叠加在其他通道上的时间过滤）。
+
+---
+
+## 9. 记忆构建层详解：构建算子（自演进触发见 §9.3）
+
+本层对应 §2 的 E 层，负责从真源或既有记忆产物生成派生记忆、关系与索引，并按自演进触发持续维护。分层记忆结构本体见 §4；§9.1/§9.2 讲 How，§9.3 讲 When。
+
+本节定义记忆构建的 **How**：构建层由一组可组合算子组成，从真源或已有记忆产物生成新的记忆单元、关系与索引。算子本身不决定何时运行；触发时机、hot/background 通道与控制模式见 §9.3。
+
+### 9.1 多粒度记忆挖掘：提取 → 抽象精炼 → 关联分析
+
+从原始数据或既有记忆产物沉淀出不同抽象粒度的记忆：
+
+
+| 环节        | 作用                         | 关键点                                                                           |
+| --------- | -------------------------- | ----------------------------------------------------------------------------- |
+| **信息提取**  | 从原始数据抽取事实/事件/偏好（贴近原始的低抽象粒度） | 多模态信息源已在接入层规约为可治理文本/结构                                                         |
+| **抽象与精炼** | 情景→语义、经验→技能/模式，概括出高抽象记忆    | 升华出画像、长期偏好、可复用技能/模式                                                            |
+| **关联分析**  | 实体共指、因果/引用链、跨会话/跨 Agent 关联 | 支持多跳推理、「连点成线」；构成中抽象的关系/主题结构                                                    |
+| **多维分类**  | 按主题/认知角色/来源/重要度等多维度归类      | 认知角色（working/core/episodic/semantic/procedural/archival）是其中一维，决定常驻上下文 or 按需检索 |
+| **分层披露标注** | 标注 L0 摘要 / L1 片段 / L2 全文等披露层级 | 检索层按需加载，吸收 OpenViking 分层加载以节省 token |
+| **时序组织**  | 有效期、时间点、事件先后               | 双时间模型，支持历史回溯与非破坏式更新                                                           |
+
+### 9.2 多形式索引：文档 / 关键词 / 向量 / 图
+
+索引构建器把记忆单元、关系与分类字段写入对应检索结构。索引类型由配置决定（§13），检索层（§8）只消费已启用的索引。
+
+
+| 索引        | 作用                   | 关键点                                |
+| --------- | -------------------- | ---------------------------------- |
+| **文档索引**  | 面向文档形态记忆的路径/章节式定位与浏览 | 对齐 memSearch/OpenViking；文档真源下的一等索引 |
+| **关键词索引** | 全文/BM25 精确匹配         | 与向量互补，提升可解释性                       |
+| **向量索引**  | 语义相似召回               | 可插拔 embedding；端侧用轻量模型              |
+| **图索引**   | 实体-关系、因果/引用链多跳遍历     | 支撑关联分析与「连点成线」                      |
+| 标签/命名空间   | scope 过滤、多租户隔离       | 检索前置过滤（贯穿各索引）                      |
+
+
+> 各粒度记忆与各形式索引本身都是可重建派生物，落在记忆存储层的对应后端中。
+
+### 9.3 记忆自演进（Evolution）：触发时机与控制模式
+
+本节定义自演进的 **When**：哪些事件触发构建算子、走在线还是后台、由 Agent 还是系统管线控制。构建算子的职责见 §9.1/§9.2。
+
+```
+   交互流 ─▶ 抽取 ─▶ 关联 ─▶ 冲突消解 ─▶ 升华 ─▶ 遗忘/降权
+ (对话/工具/  (候选   (挂实体   (新旧矛盾   (情景→语义  (过期/低价值
+  多源痕迹)   事实)    /图谱)    标记失效)   经验→技能)   清理)
+                              ▲                         │
+                              └──── 反馈 / 自评 ◀────────┘
+```
+
+- **写入触发**：新内容写入后，hot path 做低时延落盘与轻量索引；需要重推理的抽取、关联、升华与冲突消解进入 background。
+- **周期触发**：按策略对过期、低价值或长期未访问记忆做降权、归档或遗忘（非破坏式，保留血缘）。
+- **显式触发**：调用方可通过 `evolve(scope, mode, channel, *, actor)` 触发指定阶段。
+- **双通道**：
+  - **Hot path（在线）**：低时延的即时记忆写入与轻量更新。
+  - **Background（离线）**：异步做重的抽取/升华/重索引，不阻塞主链路。
+- **控制模式**：`agent_control`（Agent 自主调用记忆工具）/ `static_control`（开发者/管线控制）/ `both`。
+- **演进阶段（EvolveMode）= 内容演进四阶段**：`extract / associate / consolidate / forget`。**索引维护不是演进模式**——它随数据面操作（write/update/delete）由 IndexBuilder 增量跟进（build/update/remove），从真源全量重建走 `IndexBuilder.rebuild()` 维护路径（上述 background「重索引」即指此类维护工作，由数据面/维护触发，而非 `evolve(mode=…)`）。
+
+---
+
+## 10. 记忆存储层：真源与存储抽象（Source of Truth & Storage）
+
+### 10.1 可配置的真源承载形态
+
+真源唯一（数据层中的原始数据），但**承载形态按场景配置**，对上层接口透明：
+
+```
+ ┌────────── 文档形式 (Document-as-source) ──────────┐   ┌──── 结构化形式 (Structured-as-source) ────┐
+ │ 真源 = Markdown / 文件                            │   │ 真源 = DB 记录 / 向量 / 图               │
+ │ 派生 = 影子索引(可重建)                           │   │ 派生 = 在真源之上的附加索引              │
+ │ 优势: 人可读·可编辑·可 git·可审计·删索引不丢数据  │   │ 优势: 高并发·强检索·规模化·多租户弹性    │
+ │ 适配: 编码 Agent / 跨工具复用 / 端侧轻量          │   │ 适配: 高并发个性化 / 大规模多租户        │
+ └───────────────────────────────────────────────────┘   └──────────────────────────────────────────┘
+```
+
+
+| 场景                           | 建议真源形态                |
+| ---------------------------- | --------------------- |
+| 编码 Agent / git 化 / 可审计 / 跨工具 | 文档形式（Markdown + 影子索引） |
+| 高并发个性化 / 大规模多租户              | 结构化形式（向量 + 结构化关联）     |
+| 时序敏感 / 企业知识                  | 结构化 + 时序图             |
+| 端侧隐私 / 轻量                    | 文档形式 或 SQLite         |
+
+
+### 10.2 存储抽象（Pluggable Backends）
+
+统一的 `StorageProvider` 抽象，按部署形态选型；真源与各派生索引可落在不同后端：
+
+
+| 抽象          | 端侧默认                   | 云侧默认        | 备选                         |
+| ----------- | ---------------------- | ----------- | -------------------------- |
+| 真源（文档）      | 本地文件系统 / Markdown      | 对象存储 / 文件服务 | Git 仓库                     |
+| 真源（结构化）/ KV | SQLite                 | PostgreSQL  | —                          |
+| 向量索引        | 轻量本地向量（如内嵌）            | Milvus      | pgvector / Qdrant / Chroma / GuassVector |
+| 图/关联索引      | 内嵌图（如 SQLite 关系表/Kuzu） | Neo4j       | FalkorDB / Kuzu            |
+| 全文索引        | SQLite FTS5            | 专用全文引擎      | —                          |
+| 审计日志        | SQLite                 | 关系库 / 日志系统  | —                          |
+
+
+> 端侧强调「轻量、可离线、低资源」；云侧强调「强检索、可扩缩」。同一逻辑模型，不同物理实现。
 
 ---
 
@@ -396,14 +410,14 @@ MemoryUnit
 
 | 维度 | 可配置内容 | 默认 | 调小/关闭的收益 |
 | --- | --- | --- | --- |
-| **真源形态**（§5.1） | 文档 / 结构化 | 按 profile | 切轻量真源降存储与运维 |
-| **索引类型**（§6.2） | 文档 / 关键词 / 向量 / 图 各自开关 | 关键词+向量（图/文档按需启用） | 关图/向量大幅降写入与存储成本 |
-| **检索策略**（§7） | 召回通道、重排 on/off、渐进披露层级、`as_of` | 混合+重排 | 关重排/单通道降时延 |
-| **自演进**（§8） | 总开关、阶段（extract/associate/consolidate/forget）、hot/background、控制模式 | 全闭环+双通道 | 仅 extract 或纯离线，降在线时延与 LLM 成本 |
+| **真源形态**（§10.1） | 文档 / 结构化 | 按 profile | 切轻量真源降存储与运维 |
+| **索引类型**（§9.2） | 文档 / 关键词 / 向量 / 图 各自开关 | 关键词+向量（图/文档按需启用） | 关图/向量大幅降写入与存储成本 |
+| **检索策略**（§8） | 召回通道、重排 on/off、渐进披露层级、`as_of` | 混合+重排 | 关重排/单通道降时延 |
+| **自演进**（§9.3） | 总开关、阶段（extract/associate/consolidate/forget）、hot/background、控制模式 | 全闭环+双通道 | 仅 extract 或纯离线，降在线时延与 LLM 成本 |
 | **双时间**（§3.1） | 启用 / 关闭（仅留最新版本） | 启用 | 关闭省时序维护，适合无回溯需求 |
-| **多模态规约**（§10.1） | 启用的规约器、是否留原模态资产、投影粒度 | 文本+按需图像 | 仅文本，去掉 ASR/OCR/caption 依赖 |
+| **多模态规约**（§5.1） | 启用的规约器、是否留原模态资产、投影粒度 | 文本+按需图像 | 仅文本，去掉 ASR/OCR/caption 依赖 |
 | **scope / 共享**（§3.2） | 隔离粒度、共享池、跨 scope 授权策略 | user/agent 隔离 | 单租户简化 |
-| **存储后端**（§5.2） | 向量/图/全文/KV 各自选型（extras 选装） | 端 SQLite / 云 PG+专用库 | 端侧仅 SQLite，去重依赖 |
+| **存储后端**（§10.2） | 向量/图/全文/KV 各自选型（extras 选装） | 端 SQLite / 云 PG+专用库 | 端侧仅 SQLite，去重依赖 |
 | **部署 profile**（§11） | edge / cloud / hybrid | 按场景 | — |
 | **模型**（§12 可插拔） | embedding / LLM 抽取器 / reranker；端侧降级策略 | 可插拔 | 端侧用小模型或规则降级 |
 
@@ -439,7 +453,7 @@ MemoryUnit
 
 - **`config/settings.py`**：配置 schema 与校验（各维度的取值与默认）。
 - **`bootstrap/core/profiles.py`**：把维度组合成 `edge/cloud/hybrid` 与上述场景 Preset，装配对应组件与后端。
-- **`admin_get/set/all`（§9）**：运行时查询/调整可变配置（如启停某索引、切换演进模式）。
+- **`admin_get/set/all`（§6）**：运行时查询/调整可变配置（如启停某索引、切换演进模式）。
 - 不可变/重型配置（真源形态、后端选型）在实例初始化时确定；可变策略（检索/演进开关）支持运行时调整。
 
 ---
@@ -479,11 +493,11 @@ evolve()/触发器 → 读取原始数据 → LLM 提取/抽象升华 → 关联
 
 | 吸收来源         | 优点                               | 在本架构的落点                               |
 | ------------ | -------------------------------- | ------------------------------------- |
-| Mem0         | 抽取+更新双阶段流水线、可插拔后端、多租户 scope、混合检索 | §8 自演进、§5.2 存储抽象、§3.2 scope、§7 检索     |
-| OpenViking   | 统一上下文、L0/L1/L2 分层加载、检索轨迹、记忆自迭代   | §7 渐进式披露+轨迹、§8 演进、§5.1 文档真源           |
-| Zep/Graphiti | 双时间模型、有效期、非破坏式更新                 | §3.1 temporal、§6.1 时序组织、§14 同步冲突解决    |
-| MemOS        | 技能记忆、memory cube 共享、异步调度         | §8 升华(经验→技能)、§3.2 共享、§8 background 通道 |
-| memSearch    | 文档为真源 + 影子索引可重建                  | §5.1 文档真源、核心信条「派生可重建」                 |
+| Mem0         | 抽取+更新双阶段流水线、可插拔后端、多租户 scope、混合检索 | §9.3 自演进、§10.2 存储抽象、§3.2 scope、§8 检索     |
+| OpenViking   | 统一上下文、L0/L1/L2 分层加载、检索轨迹、记忆自迭代   | §8 渐进式披露+轨迹、§9.3 演进、§10.1 文档真源           |
+| Zep/Graphiti | 双时间模型、有效期、非破坏式更新                 | §3.1 temporal、§9.1 时序组织、§14 同步冲突解决    |
+| MemOS        | 技能记忆、memory cube 共享、异步调度         | §9.3 升华(经验→技能)、§3.2 共享、§9.3 background 通道 |
+| memSearch    | 文档为真源 + 影子索引可重建                  | §10.1 文档真源、核心信条「派生可重建」                 |
 
 
 **差异化目标**：以上各家多为单点强项，本架构尝试以「**唯一真源（形态可配） + 多抽象粒度的分层记忆 + 多形式索引 + 多形态接入 + 端云三态**」统一整合，且接口/检索体验一致。该目标是否成立，需要在公开基准、端侧资源占用、检索延迟与部署迁移成本上验证。
@@ -513,7 +527,7 @@ agent-memory/
 │   ├── codex/
 │   └── hermes/
 │
-├── bootstrap/                      # A 调用层（§10）：内核的薄封装（多形态接入），各 surface 共用 core
+├── bootstrap/                      # A 调用层（§5）：内核的薄封装（多形态接入），各 surface 共用 core
 │   ├── core/                       #   共享应用核：Server 装配 + 共享 dispatch + profiles + config_loader
 │   ├── http_server/                #   HTTP/REST surface（POST /v1/<verb>）
 │   ├── mcp_server/                 #   MCP surface（FastMCP：记忆 API → MCP 工具）
@@ -546,17 +560,17 @@ agent-memory/
     │   ├── reranker/               #   重排：检索融合后精排 ↔ 写入流水线相似去重排序
     │   └── audit/                  #   AuditLogger 审计记录（横切组件，非模型插件）
     │
-    ├── api/                        # B 记忆接口层（§9）：统一 Core API（形态无关）
+    ├── api/                        # B 记忆接口层（§6）：统一 Core API（形态无关）
     │   └── memory_api.py           #   MemoryAPI：控制层薄封装 + 鉴权/审计执行点（PEP）；每方法收 scope(target)+actor；
     │                               #   数据面委托 MemoryEngine、管理面查询（job/inspect/trace/audit/grant）直达控制算子；
     │                               #   write 同步/异步双形态；重导出调用所需类型（调用层只 import 本包）
     │
-    ├── ingest/                     # A 数据接入层（§10/§10.1）：规约 + 转换，不落盘
+    ├── ingest/                     # A 数据接入层（§5/§5.1）：规约 + 转换，不落盘
     │   ├── base.py                 #   IngestOperator 算子契约（含「规约投影」白话说明）
     │   ├── source.py               #   Source 信息源连接器：fetch → RawPayload
     │   └── ingestor.py             #   Ingestor 接入编排：记资产引用 + 规约投影 → MemoryUnit
     │
-    ├── construction/               # E 记忆构建层（§4/§6/§8）：负责落盘 + 建索引（无编排 service）
+    ├── construction/               # E 记忆构建层（§4/§9.1/§9.2/§9.3）：负责落盘 + 建索引（无编排 service）
     │   ├── base.py                 #   ConstructionOperator 算子契约
     │   ├── extractor.py            #   信息提取：原始 unit → 低抽象派生 unit
     │   ├── abstractor.py           #   抽象与精炼/升华：→ 高抽象 unit（provenance 记血缘）
@@ -565,7 +579,7 @@ agent-memory/
     │   ├── index_builder.py        #   多形式索引构建：build / update / remove / rebuild（记录落 unit.scope）
     │   └── evolver.py              #   自演进：EvolveMode（extract/associate/consolidate/forget；索引维护非演进模式）
     │
-    ├── retrieval/                  # D 记忆检索层（§7）：①过滤→②多路召回→③融合重排→④披露→⑤轨迹
+    ├── retrieval/                  # D 记忆检索层（§8）：①过滤→②多路召回→③融合重排→④披露→⑤轨迹
     │   ├── base.py                 #   RetrievalOperator 算子契约
     │   ├── types.py                #   RetrievalQuery（filters=FilterClause·as_of valid-time）/ ParsedQuery（scalar_filters·as_of·time_from/to event-time）/ ScoredUnit / RetrievedItem / 轨迹
     │   ├── query_parser.py         #   查询理解：改写 / 分词 / 实体 / 向量化 / 时间约束解析
@@ -574,7 +588,7 @@ agent-memory/
     │   ├── discloser.py            #   渐进式披露：disclose(query, …) L0 摘要 → L1 片段 → L2 全文
     │   └── retriever.py            #   检索入口：retrieve(scope, query) 编排整条链路，接口层 recall 映射到它
     │
-    ├── storage/                    # F 记忆存储层（§5）：统一 CRUD 动词（insert/delete/update/get）
+    ├── storage/                    # F 记忆存储层（§10）：统一 CRUD 动词（insert/delete/update/get）
     │   ├── base.py                 #   BaseStore（storeType/health）+ StoreType 枚举；检索型 Store 原生按 scope 隔离
     │   ├── types.py                #   各 Store 的记录与查询结构（scope 一等字段 + filters=FilterClause 列表）
     │   ├── kv.py                   #   KVStore（+exists）
@@ -588,7 +602,7 @@ agent-memory/
         ├── base.py                 #   ControlOperator 算子契约
         ├── types.py                #   Action / Grant / Channel（hot·background）/ JobInfo /
         │                           #   MemoryPatch·UpdateMode（supersede·overwrite）/ DeleteSelector·DeleteMode（forget·archive·downweight·purge）
-        ├── engine.py               #   MemoryEngine 记忆引擎：§9 各语义的编排中枢（api 数据面委托于此；get/update 收 scope；
+        ├── engine.py               #   MemoryEngine 记忆引擎：§6 各语义的编排中枢（api 数据面委托于此；get/update 收 scope；
         │                           #   写链路仅异步 async write，返回插入的 MemoryUnit 列表）
         ├── lifecycle.py            #   生命周期：transition / sweep（非破坏式标记）
         ├── governance.py           #   治理：inspect 检视 / trace 血缘回溯 / audit 审计查询
@@ -602,13 +616,13 @@ agent-memory/
 
 | 目录                                  | 对应架构层 / 章节            |
 | ----------------------------------- | -------------------- |
-| `bootstrap/`、`agent_plugin/`        | A 调用层（§10）：内核的薄封装（core 共享 + CLI/SDK/HTTP/MCP surface）与 Agent 插件接入 |
-| `src/ingest/`                       | A 数据接入（§10/§10.1）：信息源接入 + 模态规约 + 转换为 MemoryUnit（**不落盘**） |
-| `src/api/`                          | B 记忆接口层（§9）：`MemoryAPI` 统一 Core API，`MemoryEngine` 的薄封装 |
-| `src/control/`                      | C 控制层：记忆引擎编排（§9 语义的执行中枢）/ 生命周期（§3.1）/ 治理审计（§12）/ scope 权限（§3.2）/ 演进调度（§8）/ 运行时策略（§13.4） |
-| `src/retrieval/`                    | D 记忆检索层（§7）：查询理解 + 多路召回 + 融合重排 + 渐进披露 + 轨迹 |
-| `src/construction/`                 | E 记忆构建层 / 分层记忆结构（§4/§6/§8）：**负责 MemoryUnit 落盘**与多形式索引构建、自演进 |
-| `src/storage/`                      | F 记忆存储层（§5）：六种 Store（kv/fulltext/vector/graph/fusion/fs），统一 CRUD 动词 |
+| `bootstrap/`、`agent_plugin/`        | A 调用层（§5）：内核的薄封装（core 共享 + CLI/SDK/HTTP/MCP surface）与 Agent 插件接入 |
+| `src/ingest/`                       | A 数据接入（§5/§5.1）：信息源接入 + 模态规约 + 转换为 MemoryUnit（**不落盘**） |
+| `src/api/`                          | B 记忆接口层（§6）：`MemoryAPI` 统一 Core API，`MemoryEngine` 的薄封装 |
+| `src/control/`                      | C 控制层：记忆引擎编排（§6 语义的执行中枢）/ 生命周期（§3.1）/ 治理审计（§12）/ scope 权限（§3.2）/ 演进调度（§9.3）/ 运行时策略（§13.4） |
+| `src/retrieval/`                    | D 记忆检索层（§8）：查询理解 + 多路召回 + 融合重排 + 渐进披露 + 轨迹 |
+| `src/construction/`                 | E 记忆构建层 / 分层记忆结构（§4/§9.1/§9.2/§9.3）：**负责 MemoryUnit 落盘**与多形式索引构建、自演进 |
+| `src/storage/`                      | F 记忆存储层（§10）：六种 Store（kv/fulltext/vector/graph/fusion/fs），统一 CRUD 动词 |
 | `src/common/`                       | 跨层共享：能力插件（Plugin：tokenizer/chunker/embedder/feature_extractor/llm/normalizer/reranker）+ 通用结构体（type_def，含 §3 数据模型）+ 横切组件（audit） |
 | `src/config/`                       | 配置：真源形态 / 索引策略 / 部署 profile（§13，部署 §11）——不可变/重型配置；运行时可变策略归 `src/control/policy` |
 | `evaluation/`                       | 测评（对接 VISION §7：benchmark / metrics / scripts / smoke_test） |
@@ -636,11 +650,11 @@ agent-memory/
 2. **双真源是否可在同一实例内共存**：是「部署时二选一」，还是「同一实例不同 scope/namespace 用不同真源」？后者更强但一致性/同步更复杂。
 3. **端云同步的一致性级别**：最终一致 vs 更强一致；冲突合并的具体策略与冲突可视化。
 4. **演进所用 LLM 的端侧降级**：端侧无强模型时，抽取/升华如何降级（规则/小模型/延迟到云）。
-5. **多模态规约的保真边界**：§10.1 已定（保留原模态资产 + 文本投影、检索走投影），但仍待细化——投影的保真度/成本权衡、是否保留多份不同粒度投影、原模态资产的生命周期与遗忘策略。
+5. **多模态规约的保真边界**：§5.1 已定（保留原模态资产 + 文本投影、检索走投影），但仍待细化——投影的保真度/成本权衡、是否保留多份不同粒度投影、原模态资产的生命周期与遗忘策略。
 6. **审计后端缺口**：`common/audit` 已定义横切的 `AuditLogger` 记录接口与 `AuditEvent` 结构，但 `src/storage` 的六种 Store 中没有审计持久化后端——是新增 `AuditStore`（append-only 写入 + 按条件查询，供 `Governor.audit()` 消费），还是复用 KV/Fulltext 存储审计流水？涉及合规保留期限与查询能力的权衡。
 7. **数值元数据的类型**：`FilterClause` 已支持数值/时间范围算子（gt/lt 等），但 `MemoryUnit.metadata` 仍为 `dict[str,str]`、重要度/置信度按字符串存放。范围比较与 `LifecycleManager.sweep` 的「低价值」判断要可靠生效，需让数值类元数据以可比较类型入库，或把 `importance`/`confidence` 提升为 `MemoryUnit` 的显式数值字段；本轮暂不改，留待实现/调优阶段定。
 
-> 注：原「召回通道 ↔ 存储后端一一对应」一项已结论——`RecallChannel` 是逻辑召回路，到物理 Store 的映射由检索层装配内部决定（非 1:1，详见 §7）。
+> 注：原「召回通道 ↔ 存储后端一一对应」一项已结论——`RecallChannel` 是逻辑召回路，到物理 Store 的映射由检索层装配内部决定（非 1:1，详见 §8）。
 
 ---
 
