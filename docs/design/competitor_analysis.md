@@ -20,6 +20,8 @@
 5. **记忆建模（How to store）**：扁平事实、向量、知识图谱、分层（核心/归档）、时序图。
 6. **端云支持（Where it runs）**：托管云服务、可自托管、纯本地/端侧（on-device / 零云依赖）。
 
+> 术语说明：本文中的 **OpenClaw** 指公开资料中的开源自主 Agent 平台/生态（https://openclaw.ai/ ，https://github.com/openclaw/openclaw），在若干被调研项目中作为插件宿主或集成对象出现。本文引用 OpenClaw 仅用于描述这些项目的生态对接关系，不表示 `agent-memory` 依赖或绑定 OpenClaw。
+
 ---
 
 ## 1. 竞品逐一分析
