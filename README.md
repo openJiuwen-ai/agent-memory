@@ -1,26 +1,52 @@
-# openJiuwen Memory
+# JiuwenMemory
 
 [中文版](README.zh.md) | [English Version](README.md)
 
-## Introduction
+## 1 Introduction
 
-**openJiuwen Memory** is a long-term memory module for AI agents, providing memory extraction, storage, retrieval, and migration capabilities for agents running on the **openJiuwen** framework. This module not only supports automatic extraction and structured management of multiple memory types — including user profile, semantic memory, episodic memory, variable memory, and summary memory — but also features built-in vector-based semantic search, flexible integration with multiple storage backends (KV store, vector database, relational database), and data migration capabilities. Additionally, it provides a pluggable MemoryProvider mechanism that supports seamless integration with third-party memory services such as Mem0 and AgentArts. **openJiuwen Memory** balances flexibility and security, helping developers efficiently build intelligent agent applications with persistent memory capabilities.
+**JiuwenMemory** is an **AutoGenetic Memory** system open-sourced by the **openJiuwen community** and designed specifically for Agents — enabling a cognitive leap from "**information storage**" to "**autonomous growth**" for memory. Its core philosophy: in an AutoGenetic memory system, every memory acts like a **gene segment**, and the key technical capabilities are built around genetic memory's **precision, efficiency, and cross-organism replication**.
 
-## Why Choose openJiuwen Memory?
+Agent conversational systems rely on limited context windows — once the Token limit is exceeded or a session restarts, information vanishes entirely. The team categorizes this "amnesia" into four perennial problems: users forced to repeat questions, lack of personalization, contradictory cross-session decisions, and experience perpetually stuck at zero with no accumulation. As large-model applications enter deeper waters, what determines an Agent's experience ceiling is no longer just "getting the right answer," but "being able to continuously remember the same person."
 
-- **Multi-type Automatic Memory Extraction**: Through intelligent analysis of conversation content, automatically extracts multiple types of memory including user profile, semantic memory, episodic memory, variables, and summaries — no manual rule configuration required, significantly lowering the development barrier for memory management.
+> "Model capabilities determine the 'lower bound of intelligence' for Agents; memory systems determine the 'upper bound of experience.'"
 
-- **Flexible and Extensible Storage Architecture**: Built-in abstract interfaces for multiple storage backends including KV store, vector database, and relational database, supporting Milvus, ChromaDB, PostgreSQL, MySQL, GaussDB, SQLite, Redis, and more — developers can choose and replace as needed.
+**JiuwenMemory** restructures AI memory from **passive information storage** into **governable, cross-platform shared, and self-evolving** core data assets — empowering Agents with the ability to truly "remember, understand, and serve users."
 
-- **Efficient and Precise Semantic Retrieval**: Vector embedding-based semantic search capability with unified cross-memory-type retrieval, combined with similarity threshold filtering and ranking mechanisms to ensure high relevance and precision of search results.
+## 2 Why Choose JiuwenMemory?
 
-- **Structured Knowledge Graph Memory**: Graph Memory writes entities, relations, and source episodes from conversations, documents, or JSON strings into graph storage, supporting entity merging, relation deduplication, hybrid retrieval, and graph expansion recall.
+### 🧠 Precise Memory Construction & Self-Evolution
 
-- **Secure and Reliable Data Management**: Built-in AES-GCM encryption codec supporting encrypted storage and transmission of memory data; distributed lock mechanism ensuring data consistency under concurrent scenarios; fine-grained configuration management by scope.
+- **Layered Memory Architecture (L0–L3)**: Four-tier progressive architecture — L0 Raw Information → L1 Summary Memory → L2 Structured Memory → L3 User Profile — with independent persistent storage per layer, progressively increasing information density and resolving long-dialogue memory loss and preference overwrite issues. Supports automatic extraction of UserProfile, SemanticMemory, EpisodicMemory, Variable, and Summary, with flexible custom variable definitions and prohibited variable configurations for precise user need matching.
 
-- **Flexible Data Migration**: A complete versioned migration framework supporting schema migration for KV store, vector database, SQL database, and message store, as well as cross-index data migration for smooth upgrades.
+- **Auto Dreaming (Sleep-Time Memory Consolidation)**: Three-stage sleep paradigm inspired by cognitive neuroscience (Light Sleep screening → REM extraction & classification → Deep Sleep deduplication & conflict resolution), with background daemon scheduling, busy-retreat deferment, and checkpoint-based incremental scanning for linearly controllable Token costs.
 
-## Quick Start
+- **MemoryTurbo Acceleration**: Conversations write to cache instantly for immediate updates while memory extraction runs asynchronously in the background; small models merge conversations by topic for group extraction, ensuring coherence and significantly amortizing large model call costs.
+
+- **Graph Memory (Knowledge Graph)**: Supports CONVERSATION/DOCUMENT/JSON multi-source writing, LLM-powered automatic entity and relationship extraction with merge deduplication, graph-structure retrieval, BFS expansion, and parallel Entity/Relationship/Episode retrieval with rerank scoring for precise knowledge localization.
+
+### 🔍 Efficient Memory Retrieval & Storage
+
+- **Semantic Retrieval & Conflict Detection**: Unified cross-type vector semantic retrieval; `MemUpdateChecker` uses LLM to analyze semantic conflicts and intelligently decide ADD/DELETE strategies; LLM outputs UPDATE/DELETE directives validated via semantic checks before execution, ensuring memory consistency and controllable operations.
+
+- **Full-Stack Storage Backend System**: Coverage across five storage categories — KV (InMemoryKV/ShelveStore/DbBasedKV/Redis), Vector (ChromaDB/Milvus/Elasticsearch/GaussVector), Relational (SQLite/PostgreSQL/MySQL/GaussDB), Message (SqlMessageStore), and Graph (Milvus GraphStore) — adapting from local single-node to cloud cluster scenarios.
+
+- **Data Migration Framework**: Supports versioned schema migration for KV/vector/SQL/message/index stores and cross-BaseMemoryIndex batch data migration, with an operation registry for custom migration extensions.
+
+### 🔌 Ecosystem Integration & Extensibility
+
+- **Dual-Dimension Decoupled Adapter Layer**: Plugin dimension (hook-based memory injection, supporting OpenClaw/openJiuwen) and Provider dimension (unified `MemoryProvider` interface with JiuwenMemory/Mem0) extend independently, enabling N × M free combination.
+
+- **REST API Service & OpenClaw Plugin**: FastAPI complete REST API + bearer-token authentication for rapid backend integration; OpenClaw JavaScript lifecycle plugin for automatic memory storage and recall — zero-config, ready to use.
+
+### 🔒 Security & Privacy Hardening
+
+- **AES-256-GCM Encryption**: Transparent encryption for memory data and API Keys to safeguard privacy, with automatic encryption protection for sensitive information to prevent unauthorized access.
+
+- **Distributed Lock & Concurrency Consistency**: Distributed lock mechanism based on KV storage, ensuring atomicity and consistency of user-level data operations under multi-instance concurrent scenarios.
+
+- **Multi-Tenant Security Isolation**: Independent LLM/embedding/extraction rule configuration per `scope_id` with encrypted storage, achieving secure isolation of both data and configuration across tenants.
+
+## 3 Quick Start
 
 ### Installation
 
@@ -207,9 +233,9 @@ search:
 > assistant supplied that the narrow per-turn window skipped, which the full-session sweep
 > consolidates into memory.
 
-## Architecture Design
+## 4 Architecture Design
 
-**openJiuwen Memory** serves as the core module of the openJiuwen memory architecture. In this open-source version, the core capabilities include:
+**JiuwenMemory** serves as the core module of the memory architecture. In this open-source version, the core capabilities include:
 
 * **Memory Processing Layer**: Through intelligent analysis of conversation messages, automatically extracts five types of memory — user profile (UserProfile), semantic memory (SemanticMemory), episodic memory (EpisodicMemory), variable (Variable), and summary (Summary) — and supports custom extraction rules and instruct-based memory operations (add, update, delete).
 
@@ -221,31 +247,42 @@ search:
 
 * **External Integration Layer**: Through the MemoryProvider abstract interface, supports seamless integration with third-party memory services such as Mem0, AgentArts, openJiuwen, and openViking, providing unified tool calling and session synchronization mechanisms.
 
-## Features
+## 5 Features
 
-### **Multi-type Memory Extraction**
+### **Layered Memory System (L0–L3)**
 
-**openJiuwen Memory** supports automatic extraction and management of five types of memory, with rich functionality and flexible development to meet intelligent needs in different scenarios.
+**JiuwenMemory** introduces a four-tier progressive architecture with independent persistent storage per layer, progressively increasing information density and resolving long-dialogue memory loss and preference overwrite issues:
 
-- **User Profile**: Extracts affirmative or negative statements about the user, covering basic identity, interest preferences, interpersonal relationships, asset status, etc., building a personalized user profile.
-- **Semantic Memory**: Extracts factual content or concepts from conversations that have no explicit temporal relationship, storing general knowledge-based information.
-- **Episodic Memory**: Extracts factual content or concepts from conversations that have an explicit temporal relationship, recording timestamped event-based information.
-- **Variable**: Extracts structured key-value pair information from conversations, supporting custom variable definitions and forbidden variable configurations.
-- **Summary**: Automatically summarizes conversation content, supporting per-turn generation and incremental updates.
+- **L0 — Raw Information**: Original conversation messages stored verbatim as the foundation layer.
+- **L1 — Summary Memory**: Per-turn and incremental summaries that compress conversation context.
+- **L2 — Structured Memory**: Automatically extracted SemanticMemory, EpisodicMemory, and Variable units — factual knowledge and event records organized by type.
+- **L3 — User Profile**: Consolidated affirmative/negative statements about the user (identity, preferences, relationships, assets, etc.), forming a personalized long-term portrait.
 
-### **Dreaming (Offline Memory Consolidation)**
+Supports flexible custom variable definitions and prohibited variable configurations for precise user need matching.
+
+### **Dreaming (Sleep-Time Memory Consolidation)**
 
 Online extraction (`add_messages`) only ever sees a single turn. **Dreaming** is an optional background service that periodically re-reads a user's stored sessions, distills durable knowledge from them, and writes it back through the same path as online extraction — dreamed memories are ordinary user profile / semantic / episodic units, with no new memory type or storage field.
 
+- **Three-stage sleep paradigm**: Inspired by cognitive neuroscience — Light Sleep screening → REM extraction & classification → Deep Sleep deduplication & conflict resolution — mirroring how human memory consolidates during sleep.
 - **Fire-and-forget lifecycle**: `start_dreaming(scope_id, user_id, config=DreamingConfig(enabled=True))` launches a background scheduler (idempotent per `(scope_id, user_id)`); `stop_dreaming()` stops it. Disabled by default.
 - **Tunable via `DreamingConfig`**: sweep interval (`interval_seconds`), session pre-filters (`min_session_rounds`, `max_sessions_per_sweep`), and extraction caps (`max_compress_tokens`, `max_items_per_session`).
-- **Checkpointed and concurrency-safe**: scanned sessions are checkpointed in the KV store and survive restarts; writes take the same user-level lock as `add_messages` and reuse semantic conflict detection, so online and offline writes never collide or duplicate.
+- **Busy-retreat deferment**: Automatically backs off when the system is under heavy load, avoiding interference with online serving.
+- **Checkpointed and concurrency-safe**: Incremental scanning with checkpoint-based progress tracking that survives restarts; writes take the same user-level lock as `add_messages` and reuse semantic conflict detection, so online and offline writes never collide or duplicate.
+
+### **MemoryTurbo Acceleration**
+
+Conversations write to cache instantly for immediate updates while memory extraction runs asynchronously in the background. Small models merge conversations by topic for group extraction, ensuring coherence and significantly amortizing large model call costs — the memory flywheel spins faster with less fuel.
+
+- **Momentum Decoupling**: Breaks the serial pipeline — raw conversations write to the cache-layer vector store instantly for immediate updates, while memory extraction runs asynchronously in the background based on priority and compute load, reducing perceived user latency by 92%.
+- **Centrifugal Semantic Clustering**: Before asynchronous extraction, a small model groups and merges conversations by topic for batch extraction. This preserves topic coherence and avoids semantic drift caused by multiple separate LLM calls; compared to traditional per-turn extraction, it significantly amortizes both the number of extraction calls and Token consumption.
+- **Early Retrieval & Precision Guarantee**: Retrieval is available even before background extraction completes — cached raw conversations carry vector embeddings and are searchable. Results are merged from both the cache layer and the extraction layer, ensuring reduced latency without sacrificing precision.
 
 ### **Semantic Retrieval and Conflict Detection**
 
-- **Vector Semantic Search**: Vector retrieval capability based on embedding models, supporting unified cross-memory-type search with similarity threshold filtering and ranking mechanisms.
-- **Conflict Detection and Update**: Before writing new memories, automatically detects semantic conflicts with existing memories, determining whether to update or add through semantic validation to ensure memory consistency.
-- **Instruct-based Memory Operations**: Supports updating and deleting existing memories through LLM output instructions, combined with semantic validation to ensure operational accuracy.
+- **Vector Semantic Search**: Unified cross-memory-type vector retrieval based on embedding models, with similarity threshold filtering and ranking mechanisms.
+- **MemUpdateChecker**: Uses LLM to analyze semantic conflicts and intelligently decide ADD/DELETE strategies — before writing new memories, automatically detects semantic conflicts with existing memories to ensure memory consistency.
+- **Instruct-based Memory Operations**: Supports updating and deleting existing memories through LLM output UPDATE/DELETE instructions, validated via semantic checks before execution, ensuring operational accuracy and controllable operations.
 
 ### **Graph Memory (Knowledge Graph Memory)**
 
@@ -260,17 +297,30 @@ Graph Memory is an independent knowledge graph memory module. It turns input con
 
 ### **Flexible Storage Backends and Data Migration**
 
-- **Multiple Storage Backends**: Built-in abstract interfaces for four types of storage — KV store (in-memory, Shelve, Redis, database), vector store (Milvus, ChromaDB, GaussVector), relational database (SQLite, PostgreSQL, MySQL, GaussDB), and message store.
+- **Full-Stack Storage Backends**: Coverage across five storage categories — KV (InMemoryKV/ShelveStore/DbBasedKV/Redis), Vector (ChromaDB/Milvus/Elasticsearch/GaussVector), Relational (SQLite/PostgreSQL/MySQL/GaussDB), Message (SqlMessageStore), and Graph (Milvus GraphStore) — adapting from local single-node to cloud cluster scenarios.
 - **Versioned Migration**: A complete migration framework supporting SQL schema changes, vector field renaming, KV data updates, message data transformation, and index field operations.
-- **Cross-index Migration**: Supports batch migration of memory data between different BaseMemoryIndex instances for smooth storage engine switching.
+- **Cross-index Migration**: Supports batch migration of memory data between different BaseMemoryIndex instances for smooth storage engine switching, with an operation registry for custom migration extensions.
 
 ### **Security and Concurrency Control**
 
-- **AES-GCM Encryption**: Built-in encryption codec supporting encrypted storage of memory data, with automatic encryption protection for sensitive information such as API keys.
-- **Distributed Lock**: Distributed lock mechanism based on KV store, ensuring atomicity and consistency of user-level data operations under concurrent scenarios.
-- **Scope Isolation**: Supports memory data isolation by scope_id, with each scope independently configurable for LLM, embedding model, and extraction rules.
+- **AES-256-GCM Encryption**: Transparent encryption for memory data and API Keys to safeguard privacy, with automatic encryption protection for sensitive information.
+- **Distributed Lock**: Distributed lock mechanism based on KV storage, ensuring atomicity and consistency of user-level data operations under multi-instance concurrent scenarios.
+- **Multi-Tenant Scope Isolation**: Supports memory data isolation by `scope_id`, with each scope independently configurable for LLM, embedding model, and extraction rules — configuration data is encrypted and stored separately for multi-tenant security isolation.
 
-## Memory Service & OpenClaw Plugin
+### **Dual-Dimension Decoupled Adapter Layer**
+
+JiuwenMemory decouples Agent platforms from the memory engine through two independent dimensions:
+
+- **Plugin Dimension**: Hook-based memory injection, supporting JiuwenSwarm/OpenClaw/openJiuwen — injects relevant context before agent replies and captures exchanges after replies.
+- **Provider Dimension**: Unified `MemoryProvider` interface, supporting JiuwenMemory/Mem0/openViking/AgentArts — any provider can be swapped without changing agent code.
+
+The two dimensions extend independently, enabling N × M free combination of platforms and providers.
+
+### **Multi-Model LLM Clients**
+
+Supports OpenAI, DashScope, DeepSeek, SiliconFlow, OpenRouter, InferenceAffinity, IntelliRouter, and more — flexible selection of the optimal inference engine for your deployment scenario.
+
+## 6 Memory Service & OpenClaw Plugin
 
 A ready-to-run memory backend and an OpenClaw plugin that give agents persistent, searchable memory — zero extra code.
 
@@ -315,7 +365,7 @@ Auto-memory for OpenClaw agents — remembers what users said and recalls it bef
 
 [→ Full setup guide](agent-memory-plugin/JiuwenMemory-OpenClaw/README.md)
 
-## Project Structure
+## 7 Project Structure
 
 ```
 agent-memory/

@@ -21,95 +21,7 @@ openclaw plugins install .
 
 ### 3. 本地启动记忆服务
 
-记忆服务是一个基于 FastAPI 的 Python 服务，需要先在本地跑起来，插件才能读写记忆。
-
-**3.1 安装依赖**
-```bash
-# 安装 JiuwenMemory 并带上记忆服务 + SQLite + ChromaDB 存储后端
-pip install JiuwenMemory[server,sqlite,chromadb]
-
-# 源码安装（开发时）
-pip install -e .[server,sqlite,chromadb]
-```
-
-**3.2 配置 `.env`**
-在 `~/.jiuwenmemory/` 目录下创建 `.env` 文件（可参考源码仓库 `server/.env.example`），必须配置大模型和 Embedding 模型，其他按需配置：
-
-```bash
-mkdir -p ~/.jiuwenmemory
-# 从源码仓库复制模板（如果已 clone），或手动创建
-cp server/.env.example ~/.jiuwenmemory/.env
-vim ~/.jiuwenmemory/.env
-```
-
-配置文件和数据目录统一存放在 `~/.jiuwenmemory/` 下：
-
-```
-~/.jiuwenmemory/
-├── .env              ← 环境配置
-├── memory_data/      ← 数据目录（自动创建）
-```
-
-| 变量 | 说明 |
-| --- | --- |
-| `API_BASE` | 大模型服务提供商的 API 地址 |
-| `MODEL_NAME` | 大模型调用名称 |
-| `API_KEY` | 大模型的 API Key |
-| `MODEL_PROVIDER` | 大模型 API 协议，如 `OpenAI`、`SiliconFlow` |
-| `EMBED_API_BASE` | Embedding 模型服务地址 |
-| `EMBED_MODEL_NAME` | Embedding 模型调用名称 |
-| `EMBED_API_KEY` | Embedding 模型的 API Key |
-| `MEMORY_DATA_DIR` | 记忆数据文件保存目录，默认 `~/.jiuwenmemory/memory_data` |
-| `IP` | 记忆服务监听 IP，默认 `127.0.0.1`（仅本机访问；对外暴露需改 `0.0.0.0` 并设置 `MEMORY_API_KEY`） |
-| `PORT` | 记忆服务监听端口，默认 `8000` |
-| `MEMORY_API_KEY` | API 鉴权 Key，留空则不鉴权（仅限本地）；非本机部署时必填，插件需在 `openclaw.json` 的 `apiKey` 配同一值 |
-
-**3.3 选择存储后端（可选）**
-
-记忆服务的 KV / DB / Vector 三类存储都可以通过 `.env` 切换实现，留空则全部走默认（SQLite + Chroma），首次跑通建议保持默认。
-
-通用：
-
-| 变量 | 说明 |
-| --- | --- |
-| `DB_URL` | SQLAlchemy 异步连接 URL，KV(db 模式) 与 DB store 共用；留空则回退到 `sqlite+aiosqlite:///${MEMORY_DATA_DIR}/sqlite_db.db` |
-
-KV Store：
-
-| 变量 | 说明 |
-| --- | --- |
-| `KV_STORE_TYPE` | `db`（默认，复用 `DB_URL`）/ `in_memory`（进程内，不持久化）/ `shelve`（本地文件） |
-| `KV_SHELVE_PATH` | 仅 `KV_STORE_TYPE=shelve` 时生效，留空默认 `${MEMORY_DATA_DIR}/shelve_kv` |
-
-DB Store：
-
-| 变量 | 说明 |
-| --- | --- |
-| `DB_STORE_TYPE` | `default`（默认）/ `gauss`（GaussDB，需在 `DB_URL` 配 GaussDB 连接串） |
-
-Vector Store：
-
-| 变量 | 说明 |
-| --- | --- |
-| `VECTOR_STORE_TYPE` | `chroma`（默认）/ `milvus` / `elasticsearch` / `gauss` |
-| `VECTOR_CHROMA_PERSIST_DIR` | 仅 chroma；留空默认 `${MEMORY_DATA_DIR}` |
-| `VECTOR_MILVUS_URI` / `VECTOR_MILVUS_TOKEN` / `VECTOR_MILVUS_DATABASE` | 仅 milvus；URI 形如 `http://localhost:19530`，DATABASE 默认 `default` |
-| `VECTOR_ES_HOSTS` / `VECTOR_ES_INDEX_PREFIX` | 仅 elasticsearch；HOSTS 逗号分隔，例如 `http://localhost:9200`，前缀默认 `agent_vector` |
-| `VECTOR_GAUSS_HOST` / `VECTOR_GAUSS_PORT` / `VECTOR_GAUSS_DATABASE` / `VECTOR_GAUSS_USER` / `VECTOR_GAUSS_PASSWORD` | 仅 gauss 向量库；默认 `localhost:5432`、库名 `postgres`、用户 `postgres` |
-
-> 第三方依赖（pymilvus / elasticsearch / psycopg2 等）按需懒导入，只在切到对应后端时才需要安装；停留在默认 chroma 不受影响。
-
-**3.4 启动记忆服务**
-
-```bash
-# pip 安装方式（推荐）
-memory-server
-
-# 源码启动方式（开发时）
-python -m server.memory_server
-```
-
-看到提示 `Memory engine initialized successfully` 即启动成功。
+记忆服务的安装、配置和启动方式详见 [memory_server.md](../../../docs/zh/API文档/memory_server.md)。
 
 ### 4. 修改 openclaw.json 配置
 
@@ -125,7 +37,7 @@ C:/Users/用户名/.openclaw/openclaw.json
 
 - **`config.baseUrl`**：改成记忆服务的地址  
   本地部署默认为：`http://127.0.0.1:8000`  
-  如果第 3.3 步修改了 `IP`/`PORT`，这里要对应改。
+  如果在 `.env` 中修改了 `IP`/`PORT`，这里要对应改。
 
 - **`config.userId` / `config.scopeId`**：可任意命名，用于不同用户/会话间的记忆数据隔离。
 
