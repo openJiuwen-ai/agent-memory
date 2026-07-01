@@ -947,7 +947,7 @@ class LongTermMemory(metaclass=Singleton):
                     await self.message_manager.add(
                         MessageAddRequest(
                             user_id=user_id,
-                            scope_id="middle_term_memory",
+                            scope_id=f"middle_term_memory:{scope_id}:{user_id}",
                             role=msg.role,
                             content=msg.content,
                             session_id=session_id,
@@ -1088,7 +1088,8 @@ class LongTermMemory(metaclass=Singleton):
         """
         try:
             # Step 1: Get middle-term memories
-            middle_messages_all = await self.message_manager.get(user_id=user_id, scope_id="middle_term_memory",
+            middle_messages_all = await self.message_manager.get(user_id=user_id,
+                                                                 scope_id=f"middle_term_memory:{scope_id}:{user_id}",
                                                                  message_len=100)
 
             if not middle_messages_all:
@@ -1211,8 +1212,8 @@ class LongTermMemory(metaclass=Singleton):
                 try:
                     await self._batch_delete_middle_memories(
                                 all_mem_ids_to_delete,
-                                user_id = user_id,
-                                scope_id = scope_id,
+                                user_id=user_id,
+                                scope_id=scope_id,
                                 )
                     await self._batch_delete_middle_messages(all_mem_ids_to_delete)
                 except Exception as e:
