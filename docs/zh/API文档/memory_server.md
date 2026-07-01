@@ -27,7 +27,7 @@ memory-server
 
 ```toml
 [project.scripts]
-memory-server = "server.memory_server:main"
+memory-server = "jiuwen_memory.server.memory_server:main"
 ```
 
 ### 方式二：源码运行
@@ -35,8 +35,10 @@ memory-server = "server.memory_server:main"
 在项目根目录下运行：
 
 ```bash
-python -m server.memory_server
+python -m jiuwen_memory.server.memory_server
 ```
+
+> **配置说明**：大模型（`MODEL_PROVIDER`、`MODEL_NAME`、`API_KEY`、`API_BASE`）和嵌入模型（`EMBED_MODEL_NAME`、`EMBED_API_KEY`、`EMBED_API_BASE`）相关环境变量**必须手动配置**，默认值为空，未配置时服务无法正常工作。存储、监听地址等其他配置项均有默认值，可按需覆盖。
 
 两种方式效果完全一致，启动后默认监听：
 
@@ -53,7 +55,7 @@ IP=127.0.0.1 PORT=8000 memory-server
 或源码方式：
 
 ```bash
-IP=127.0.0.1 PORT=8000 python -m server.memory_server
+IP=127.0.0.1 PORT=8000 python -m jiuwen_memory.server.memory_server
 ```
 
 > **安全说明**：当 `IP` 不是 `127.*` 且不是 `localhost` 时，服务会检查是否配置了 `MEMORY_API_KEY`。如果未配置，进程会直接退出，避免无鉴权服务暴露到网络。
@@ -83,13 +85,13 @@ IP=127.0.0.1 PORT=8000 python -m server.memory_server
 
 | 变量名 | 默认值 | 说明 |
 |---|---|---|
-| `MODEL_NAME` | `default-model` | 记忆生成使用的大模型名称。 |
-| `MODEL_PROVIDER` | `SiliconFlow` | 大模型客户端提供方。 |
+| `MODEL_NAME` | 空字符串 | 记忆生成使用的大模型名称，需在 `.env` 中配置。 |
+| `MODEL_PROVIDER` | 空字符串 | 大模型客户端提供方，需在 `.env` 中配置。 |
 | `API_KEY` | 空字符串 | 大模型 API Key。 |
 | `API_BASE` | 空字符串 | 大模型 API Base URL。 |
-| `EMBED_MODEL_NAME` | `BAAI/bge-m3` | 嵌入模型名称。 |
-| `EMBED_API_KEY` | 空字符串 | 嵌入模型 API Key。 |
-| `EMBED_API_BASE` | `https://api.siliconflow.cn/v1/embeddings` | 嵌入模型接口地址。 |
+| `EMBED_MODEL_NAME` | 空字符串 | 嵌入模型名称，需在 `.env` 中配置。 |
+| `EMBED_API_KEY` | 空字符串 | 嵌入模型 API Key，需在 `.env` 中配置。 |
+| `EMBED_API_BASE` | 空字符串 | 嵌入模型接口地址，需在 `.env` 中配置。 |
 
 ### 存储配置
 
@@ -606,8 +608,13 @@ CLI 命令方式：
 
 ```bash
 MEMORY_API_KEY="dev-secret" \
-API_KEY="your-llm-api-key" \
-EMBED_API_KEY="your-embedding-api-key" \
+MODEL_PROVIDER="xxxx" \
+MODEL_NAME="xxxx" \
+API_KEY="xxxx" \
+API_BASE="xxxx" \
+EMBED_MODEL_NAME="xxxx" \
+EMBED_API_KEY="xxxx" \
+EMBED_API_BASE="xxxx" \
 memory-server
 ```
 
@@ -615,12 +622,17 @@ memory-server
 
 ```bash
 MEMORY_API_KEY="dev-secret" \
-API_KEY="your-llm-api-key" \
-EMBED_API_KEY="your-embedding-api-key" \
-python -m server.memory_server
+MODEL_PROVIDER="xxxx" \
+MODEL_NAME="xxxx" \
+API_KEY="xxxx" \
+API_BASE="xxxx" \
+EMBED_MODEL_NAME="xxxx" \
+EMBED_API_KEY="xxxx" \
+EMBED_API_BASE="xxxx" \
+python -m jiuwen_memory.server.memory_server
 ```
 
-> 更推荐的方式是在 `~/.jiuwenmemory/.env` 中配置好所有环境变量，然后直接运行 `memory-server` 即可。
+> 更推荐的方式是在 `~/.jiuwenmemory/.env` 中配置好所有环境变量，然后直接运行 `memory-server` 即可。上方示例中的 `xxxx` 需替换为你实际使用的 LLM/Embedding 提供方的配置值。
 
 ### 2. 写入对话
 

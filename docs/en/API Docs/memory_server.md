@@ -27,7 +27,7 @@ This command is defined in `pyproject.toml` under `[project.scripts]`:
 
 ```toml
 [project.scripts]
-memory-server = "server.memory_server:main"
+memory-server = "jiuwen_memory.server.memory_server:main"
 ```
 
 ### Method 2: Source code
@@ -35,8 +35,10 @@ memory-server = "server.memory_server:main"
 Run from the project root:
 
 ```bash
-python -m server.memory_server
+python -m jiuwen_memory.server.memory_server
 ```
+
+> **Configuration note**: LLM-related variables (`MODEL_PROVIDER`, `MODEL_NAME`, `API_KEY`, `API_BASE`) and embedding-related variables (`EMBED_MODEL_NAME`, `EMBED_API_KEY`, `EMBED_API_BASE`) **must be manually configured** — their defaults are empty and the service will not function without them. Storage, bind address, and other settings have working defaults and can be overridden as needed.
 
 Both methods are functionally identical. After startup, the service listens on:
 
@@ -53,7 +55,7 @@ IP=127.0.0.1 PORT=8000 memory-server
 Or using the source code method:
 
 ```bash
-IP=127.0.0.1 PORT=8000 python -m server.memory_server
+IP=127.0.0.1 PORT=8000 python -m jiuwen_memory.server.memory_server
 ```
 
 > **Security note**: If `IP` is not `127.*` and not `localhost`, the service checks whether `MEMORY_API_KEY` is configured. If it is missing, the process exits immediately to avoid exposing an unauthenticated API to the network.
@@ -83,13 +85,13 @@ If neither `.env` file is found, the service automatically creates the `~/.jiuwe
 
 | Variable | Default | Description |
 |---|---|---|
-| `MODEL_NAME` | `default-model` | LLM model name used for memory generation. |
-| `MODEL_PROVIDER` | `SiliconFlow` | LLM client provider. |
+| `MODEL_NAME` | empty string | LLM model name used for memory generation. Must be configured in `.env`. |
+| `MODEL_PROVIDER` | empty string | LLM client provider. Must be configured in `.env`. |
 | `API_KEY` | empty string | LLM API key. |
 | `API_BASE` | empty string | LLM API base URL. |
-| `EMBED_MODEL_NAME` | `BAAI/bge-m3` | Embedding model name. |
-| `EMBED_API_KEY` | empty string | Embedding API key. |
-| `EMBED_API_BASE` | `https://api.siliconflow.cn/v1/embeddings` | Embedding API endpoint. |
+| `EMBED_MODEL_NAME` | empty string | Embedding model name. Must be configured in `.env`. |
+| `EMBED_API_KEY` | empty string | Embedding API key. Must be configured in `.env`. |
+| `EMBED_API_BASE` | empty string | Embedding API endpoint. Must be configured in `.env`. |
 
 ### Storage configuration
 
@@ -606,8 +608,13 @@ CLI command method:
 
 ```bash
 MEMORY_API_KEY="dev-secret" \
-API_KEY="your-llm-api-key" \
-EMBED_API_KEY="your-embedding-api-key" \
+MODEL_PROVIDER="xxxx" \
+MODEL_NAME="xxxx" \
+API_KEY="xxxx" \
+API_BASE="xxxx" \
+EMBED_MODEL_NAME="xxxx" \
+EMBED_API_KEY="xxxx" \
+EMBED_API_BASE="xxxx" \
 memory-server
 ```
 
@@ -615,12 +622,17 @@ Source code method:
 
 ```bash
 MEMORY_API_KEY="dev-secret" \
-API_KEY="your-llm-api-key" \
-EMBED_API_KEY="your-embedding-api-key" \
-python -m server.memory_server
+MODEL_PROVIDER="xxxx" \
+MODEL_NAME="xxxx" \
+API_KEY="xxxx" \
+API_BASE="xxxx" \
+EMBED_MODEL_NAME="xxxx" \
+EMBED_API_KEY="xxxx" \
+EMBED_API_BASE="xxxx" \
+python -m jiuwen_memory.server.memory_server
 ```
 
-> The recommended approach is to configure all environment variables in `~/.jiuwenmemory/.env`, then simply run `memory-server`.
+> The recommended approach is to configure all environment variables in `~/.jiuwenmemory/.env`, then simply run `memory-server`. Replace `xxxx` in the examples above with the actual configuration values from your LLM/Embedding provider.
 
 ### 2. Add messages
 

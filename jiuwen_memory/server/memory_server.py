@@ -177,9 +177,9 @@ async def startup_event():
 
         embedding_model = APIEmbedding(
             config=EmbeddingConfig(
-                model_name=os.getenv("EMBED_MODEL_NAME", "BAAI/bge-m3"),
+                model_name=os.getenv("EMBED_MODEL_NAME", ""),
                 api_key=os.getenv("EMBED_API_KEY", ""),
-                base_url=os.getenv("EMBED_API_BASE", "https://api.siliconflow.cn/v1/embeddings")
+                base_url=os.getenv("EMBED_API_BASE", "")
             )
         )
 
@@ -194,10 +194,10 @@ async def startup_event():
         # 创建配置 - 使用默认配置
         config = MemoryEngineConfig(
             default_model_cfg=ModelRequestConfig(
-                model=os.getenv("MODEL_NAME", "default-model")
+                model=os.getenv("MODEL_NAME", "")
             ),
             default_model_client_cfg=ModelClientConfig(
-                client_provider=os.getenv("MODEL_PROVIDER", "SiliconFlow"),
+                client_provider=os.getenv("MODEL_PROVIDER", ""),
                 api_key=os.getenv("API_KEY", ""),
                 api_base=os.getenv("API_BASE", ""),
                 verify_ssl=False
@@ -210,7 +210,7 @@ async def startup_event():
         if not MEMORY_API_KEY:
             memory_logger.warning(
                 "MEMORY_API_KEY is not set — API is running without authentication. "
-                "Set MEMORY_API_KEY in server/.env if the service is exposed to a network."
+                "Set MEMORY_API_KEY in ~/.jiuwenmemory/.env if the service is exposed to a network."
             )
     except Exception as e:
         memory_logger.error("Error initializing memory engine: %s", str(e))
