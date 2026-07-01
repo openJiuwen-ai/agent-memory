@@ -49,6 +49,16 @@
 
 `MemoryEngine.write` 返回时 background 任务尚未完成；`evolve` 显式触发时返回任务 id，通过 `Scheduler.status` 查询进度。
 
+## write 路径 infer 开关
+
+`InMemoryEngine` 不持有独立 `Extractor`（Evolver 自带 extractor，engine 不重复注入）。`write` 据 `metadata["infer"]` 真值（`"true"`，大小写/空白不敏感）分两路：
+
+- **`infer="true"`**：hot path 同步调 `self._evolver.evolve(units, EvolveMode.EXTRACT)` 走 Evolver EXTRACT 全链路。原始记忆落 KV 真源但**不建索引**；Evolver 内部 `Extractor.extract` 抽取派生记忆 → `_dedup_batch` 判定+落盘+建索引（ADD/UPDATE/SUPERSEDE/NOOP）。**不提交** background EXTRACT（已同步抽取）。返回**派生单元列表**（从 `EvolveResult.created_ids` 反查 KV 读回，对齐 mem0 `add(infer=True)`）。
+- **缺省 / 非 `"true"`**：原始落 KV + 建索引，**不提交** background EXTRACT（演进由调用方显式 `evolve()` 触发）。
+- **evolver 缺失**：`infer="true"` 但未注入 `Evolver`（`None`）时抛 `RuntimeError`——装配问题暴露而非静默降级。默认装配 `evolver: orchestrating` 总是注入。
+
+引擎调用注入的 `Evolver` 算子属「编排委托」（与 Evolver 调 extractor 同构），不违反「引擎不直接调 LLM」铁律。派生单元经 Evolver 落盘+建索引，去重由 Evolver `_dedup_batch` 承担（engine 不重写）。详见 `docs/specs/S02-memory-api.md`「infer 开关」与 `docs/features/api/F02-write-infer-extract.md`。
+
 ## 本地约束
 
 - `types.py` 中 `DeleteSelector` 各条件取「与」关系，至少给出一项；Engine 收到空 selector 必须抛 `ValidationError`

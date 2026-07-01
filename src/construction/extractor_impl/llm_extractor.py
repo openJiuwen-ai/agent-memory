@@ -2,13 +2,19 @@
 
 四阶段流水线（接口契约见 docs/specs/S05-construction.md Extractor 节）：
   Phase 1  预处理 — 过滤 lifecycle≠ACTIVE / 空 content
-  Phase 2  LLM 提取 — 逐条 unit 调 LLM → 解析 JSON → ExtractionCandidate
+  Phase 2  LLM 提取 — 批量拼一个 prompt 调 LLM → 解析 JSON → ExtractionCandidate
   Phase 3  特征富化 — FeatureExtractor.extract_batch → 补充 keywords/entities
   Phase 4  构建 MemoryUnit — candidate → MemoryUnit(provenance=[source_id])
 
-Phase 2 采用逐条提取策略：每条 MemoryUnit 单独调一次 LLM，
-source_unit_id 直接取当前 unit 的 id，无需 LLM 输出 source_id，
-也无需事后匹配路由——彻底消除批量场景下 source_id 丢失/错配问题。
+Phase 2 采用批量提取策略：全部 unit 拼一个 prompt，每条带 ``[ID: unit_id]`` 标记，
+LLM 在每个候选里输出裸 ``source_id`` 回指来源。解析时校验 source_id 存在于本批 unit，
+缺失/错配的候选丢弃。``_strip_source_id_shell`` 兜底剥掉 LLM 误带的 ``[ID: ]`` 外壳，
+避免 source_id 恒不匹配导致候选全丢。
+
+prompt 要求 LLM 把同一 source 内**同主题**的多个子事实合并成一条自包含陈述（如咖啡
+偏好：早上美式/下午拿铁/不加糖 合成 1 条，而非 3 条碎片），减少派生单元数量、提升
+每条单元的信息密度。不同主题（咖啡≠编程技能≠会议安排）保持独立。跨次 write 的重复
+仍由 Evolver ``_dedup_batch`` 兜底（向量召回判定 NOOP/UPDATE）。
 
 纯函数：不落盘、不标记、不检索。幂等性依赖 LLM temperature=0。
 """
@@ -16,6 +22,7 @@ source_unit_id 直接取当前 unit 的 id，无需 LLM 输出 source_id，
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -51,6 +58,7 @@ class ExtractionTarget(str, Enum):
     FACT = "fact"
     EVENT = "event"
     PREFERENCE = "preference"
+    CONTEXT = "context"
 
 
 @dataclass
@@ -69,37 +77,75 @@ class ExtractionCandidate:
 
 
 # ---------------------------------------------------------------------------
-# LLM prompt — 逐条提取，无需 source_id / [ID: xxx] 标记
+# LLM prompt — 批量提取，每条 unit 带 [ID: uuid] 标记，LLM 输出裸 uuid 作 source_id
 # ---------------------------------------------------------------------------
 
 _EXTRACT_SYSTEM_PROMPT = """\
-Extract facts, events, and preferences from the text below.
+Extract facts, events, preferences, and context from the source memories below.
 Output ONLY a JSON array. No explanation, no markdown fences.
 
 Rules:
 - Extract only what is explicitly stated. Do not infer or speculate.
 - Each item must be self-contained (understandable without source context).
-- Language: write each extracted statement in the SAME language as the source text
+- MERGE same-topic facts within one source into a single statement. Facts about the
+  same subject/domain (e.g. coffee preferences, a specific skill, a recurring meeting)
+  MUST be combined into one item, not split into many. Each item should be a complete,
+  self-contained statement covering one topic.
+  GOOD: "Alice 的咖啡偏好：早上喝美式、下午喝拿铁，且不加糖" (one item, full topic)
+  BAD:  "Alice 早上喝美式咖啡" + "Alice 下午喝拿铁咖啡" + "Alice 喝咖啡不加糖" (three fragmented items)
+  But different topics stay separate: coffee preferences ≠ programming skills ≠ meeting schedule.
+- "source_id": the bare id of the source memory the item was extracted from.
+  Use the UUID value shown inside the [ID: ...] marker — WITHOUT the "[ID: ]" wrapper,
+  WITHOUT quotes around the marker, and WITHOUT any leading/trailing whitespace.
+  Example: for "--- [ID: 32049cd0-5f7c-419f-928f-503b24318f7c] ---", output
+  "source_id": "32049cd0-5f7c-419f-928f-503b24318f7c". Every item MUST include a valid source_id.
+  Only merge facts that share the same source_id; never merge across different sources.
+- Language: write each extracted statement in the SAME language as its source text
   (Chinese source → Chinese statement; English source → English statement). Never
   translate the extracted content to another language.
-- "evidence": exact quote from the source text.
-- "confidence": 1.0 = directly stated, 0.7 = clearly implied,
-  0.5 = weakly implied. Do not extract below 0.5.
+- "confidence": 1.0 = directly stated, 0.7 = clearly implied, 0.5 = weakly implied. Do not extract below 0.5.
 - If nothing worth extracting, return [].
 
 Target types:
-- "fact": a stated truth or piece of information
+- "fact": a stated truth or piece of information about the user or world
 - "event": something that happened at a point in time
 - "preference": the user likes/dislikes/prefers/wants something
+- "context": any other durable information that may be useful for future conversations
+  (e.g., project background, ongoing tasks, skills demonstrated, topics discussed)
 
 Output schema:
 [{
-  "target": "fact" | "event" | "preference",
-  "content": "self-contained statement",
-  "evidence": "exact source quote",
+  "source_id": "32049cd0-5f7c-419f-928f-503b24318f7c",
+  "target": "fact" | "event" | "preference" | "context",
+  "content": "self-contained statement (one topic, merged if multiple sub-facts)",
   "confidence": 0.5~1.0
 }]
 """
+
+_SOURCE_PREFIX = """\
+---
+[ID: {unit_id}]
+{unit_content}
+---
+"""
+
+
+# 匹配 LLM 误带 [ID: ...] 外壳的 source_id（prompt 已要求裸 uuid，此处为防御性兜底）
+_SOURCE_ID_SHELL_RE = re.compile(r"^\s*\[ID:\s*(?P<id>[^\]]+)\]\s*$", re.IGNORECASE)
+
+# 批量提取的子批大小：把 accepted 拆成若干子批，每子批独立一次 LLM 调用 + 独立
+# try/except——单子批 LLM/解析失败只丢该子批的候选，不波及整批（失败爆炸半径隔离）。
+_EXTRACT_BATCH_SIZE = 8
+
+
+def _strip_source_id_shell(raw: str) -> str:
+    """剥掉 source_id 可能带的 ``[ID: ...]`` 外壳，返回裸 id。
+
+    prompt 已要求 LLM 输出裸 uuid，但部分模型仍会原样回带 ``[ID: ...]`` 标记——
+    解析端兜底剥壳，避免 source_id 恒不匹配 unit_map 导致候选全被丢弃。
+    """
+    m = _SOURCE_ID_SHELL_RE.match(raw)
+    return m.group("id").strip() if m else raw.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +154,7 @@ Output schema:
 
 
 class ExtractorImpl(Extractor):
-    """M1 Extractor：4 Phase 流水线，Phase 2 逐条 unit 调用注入的 LLM 插件。"""
+    """M1 Extractor：4 Phase 流水线，Phase 2 把全部 unit 拼一个 prompt 一次调 LLM。"""
 
     def __init__(
         self,
@@ -153,16 +199,17 @@ class ExtractorImpl(Extractor):
         if not accepted:
             return []
 
-        # Phase 2: LLM 提取（逐条）
+        # Phase 2: LLM 提取（按子批拼 prompt 逐批调用，单批失败不波及其余）
         all_candidates: list[ExtractionCandidate] = []
-        for u in accepted:
+        for start in range(0, len(accepted), _EXTRACT_BATCH_SIZE):
+            sub_batch = accepted[start:start + _EXTRACT_BATCH_SIZE]
             try:
-                candidates = self._llm_extract_single(u)
-                all_candidates.extend(candidates)
+                all_candidates.extend(self._llm_extract_batch(sub_batch))
             except Exception:
-                logger.warning("Extractor: LLM extract failed for unit %s, skipping", u.id[:8])
-                # 失败隔离：单条 unit 失败不影响其余
-                continue
+                logger.warning(
+                    "Extractor: LLM extract failed for sub-batch of %d units (offset=%d), skipping",
+                    len(sub_batch), start,
+                )
 
         logger.info(
             "Extractor: extracted %d candidates from %d units", len(all_candidates), len(accepted)
@@ -206,17 +253,21 @@ class ExtractorImpl(Extractor):
         return accepted
 
     # ------------------------------------------------------------------
-    # Phase 2: LLM 提取（逐条）
+    # Phase 2: LLM 提取（批量）
     # ------------------------------------------------------------------
 
-    def _llm_extract_single(self, unit: MemoryUnit) -> list[ExtractionCandidate]:
-        """对单条 unit 调 LLM 提取——source_unit_id 直接取 unit.id。"""
-
+    def _llm_extract_batch(self, units: list[MemoryUnit]) -> list[ExtractionCandidate]:
+        """对一批 unit 调一次 LLM 提取——每条 unit 带 [ID: ...] 标识，
+        LLM 在每个候选里输出 ``source_id`` 回指来源；解析时校验 source_id 存在。
+        """
         from common.type_def import ChatMessage
 
+        # 拼 user prompt：每条 unit 带 [ID: unit.id] 前缀
+        parts = [_SOURCE_PREFIX.format(unit_id=u.id, unit_content=u.content) for u in units]
+        user_text = "\n".join(parts)
         messages = [
             ChatMessage(role="system", content=_EXTRACT_SYSTEM_PROMPT),
-            ChatMessage(role="user", content=unit.content),
+            ChatMessage(role="user", content=user_text),
         ]
 
         # 调用 LLM（含重试）
@@ -225,11 +276,25 @@ class ExtractorImpl(Extractor):
         # 解析 JSON
         items = self._parse_llm_response(response)
 
-        # 过滤 confidence < min_confidence，并绑定 source_unit_id
-        candidates = []
+        # 建立 id → unit 索引，用于校验 + 绑定 source
+        unit_map = {u.id: u for u in units}
+
+        # 过滤 confidence < min_confidence，按 source_id 绑定到对应 unit
+        candidates: list[ExtractionCandidate] = []
+        unmatched = 0
         for item in items:
             confidence = float(item.get("confidence", 0.0))
             if confidence < self._min_confidence:
+                continue
+
+            source_id = _strip_source_id_shell(str(item.get("source_id", "")))
+            if source_id not in unit_map:
+                # source_id 不匹配——批量提取下 LLM 可能漏写或写错，跳过该候选
+                unmatched += 1
+                logger.warning(
+                    "Extractor: candidate source_id %r not in batch, skipping (content=%s)",
+                    source_id, str(item.get("content", ""))[:80],
+                )
                 continue
 
             target_str = item.get("target", "fact")
@@ -238,28 +303,30 @@ class ExtractorImpl(Extractor):
             except ValueError:
                 target = ExtractionTarget.FACT
 
-            candidates.append(
-                ExtractionCandidate(
-                    target=target,
-                    content=item.get("content", ""),
-                    source_unit_id=unit.id,  # 逐条提取，source 直接确定
-                    confidence=confidence,
-                    evidence=item.get("evidence", ""),
-                )
-            )
+            evidence = item.get("evidence", "")
+            candidates.append(ExtractionCandidate(
+                target=target,
+                content=item.get("content", ""),
+                source_unit_id=source_id,
+                confidence=confidence,
+                evidence=evidence,
+            ))
+            ev_str = f", evidence={evidence[:100]}" if evidence else ""
             logger.info(
-                "Extractor: candidate — target=%s, confidence=%.2f, content=%s, evidence=%s",
+                "Extractor: candidate — source=%s target=%s, confidence=%.2f, content=%s%s",
+                source_id[:8],
                 target.value,
                 confidence,
                 item.get("content", "")[:200],
-                item.get("evidence", "")[:100],
+                ev_str,
             )
 
         logger.info(
-            "Extractor: from unit id=%s extracted %d candidates (raw LLM items=%d)",
-            unit.id[:8],
+            "Extractor: from batch of %d units extracted %d candidates (raw LLM items=%d, unmatched=%d)",
+            len(units),
             len(candidates),
             len(items),
+            unmatched,
         )
         return candidates
 

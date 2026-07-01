@@ -164,6 +164,12 @@ class InMemoryEngine(MemoryEngine):
         metadata: Dict[str, str] | None = None,
         occurred_at: datetime | None = None,
     ) -> List[MemoryUnit]:
+        # infer 开关（对齐 mem0 add(infer=True)）：metadata["infer"]=="true" 时
+        # hot path 同步走 evolve(EXTRACT) 抽取派生记忆——原始记忆落 KV 真源但不建索引，
+        # 经 Evolver 落盘+建索引的派生记忆可被检索；不提交 background EXTRACT（已同步抽取）。
+        # 非真值时走原路径：原始落盘 + 建索引，不自动提交演进（由调用方显式 evolve() 触发）。
+        infer = str((metadata or {}).get("infer", "")).strip().lower() == "true"
+
         payload = RawPayload(
             id=str(uuid.uuid4()),
             scope=scope,
@@ -180,8 +186,23 @@ class InMemoryEngine(MemoryEngine):
         self._classifier.classify(units)                  # 多维分类：定 tier + 主题标签
         for unit in units:
             self._kv.insert(scope, unit.id, dumps(unit))  # 真源落盘：序列化字节
+
+        if infer:
+            # infer=True：原始单元只落 KV 不建索引；直接走 evolve(EXTRACT)——Extractor 抽取派生记忆。
+            if self._evolver is None:
+                raise RuntimeError(
+                    "Engine.write infer=True requires an Evolver (装配未注入 evolver)"
+                )
+            result = self._evolver.evolve(units, EvolveMode.EXTRACT)
+            derived = [self._load(scope, uid) for uid in result.created_ids]
+            logger.info(
+                "Engine.write infer=True: %d originals persisted (unindexed), "
+                "%d derived added, scope=%s",
+                len(units), len(derived), scope,
+            )
+            return derived
+
         self._index.build(units)                          # hot 轻量索引
-        self._scheduler.submit(scope, EvolveMode.EXTRACT, Channel.BACKGROUND)
         return units
 
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:

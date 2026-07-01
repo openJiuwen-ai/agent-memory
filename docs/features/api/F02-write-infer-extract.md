@@ -1,0 +1,123 @@
+# F02 — write 路径演进策略重构 + infer 同步抽取开关
+
+## 元信息
+
+| 项 | 值 |
+|---|---|
+| 日期 | 2026-06-30 |
+| 影响范围 | src/control/engine_impl/in_memory_engine.py、src/control/AGENTS.md、bootstrap/core/handler.py、docs/specs/S02-memory-api.md、docs/specs/S03-memory-manage.md、docs/features/construction/F01-construction-spec-design.md |
+| 测试基线 | `pytest tests/unit/construction` 全绿（82 passed）；`pytest tests/unit/api` 全绿；`pytest tests/unit` 4 failed（仅 `test_bge_reranker.py`，与本特性无关） |
+| Refs | — |
+
+> 本文归档 **write 路径演进策略的两点变更**：(1) 默认路径不再自动提交 background EXTRACT；(2) 新增 `metadata["infer"]=="true"` 同步抽取开关。两者是一个连贯决策的两面——把"是否在写入时抽取"的选择权从"框架硬编码自动提交"交还给"调用方按场景显式选择"。
+
+---
+
+## 背景
+
+记忆系统的写入路径（`MemoryEngine.write`）原本遵循 [`docs/features/construction/F01`](../construction/F01-construction-spec-design.md) 共享前提 1 定下的**双通道**立场：
+
+> 写入路径只做 Classifier 分类 → KVStore 落盘 → IndexBuilder 建索引 → **提交后台 EXTRACT**（< 250ms）；提取/去重/冲突消解/遗忘全放 Background Evolver。
+
+这一立场是为了保住写入时延（agent 等待），其代价是「写入的原始记忆先以 EPISODIC 入库、派生 SEMANTIC 事实要等后台 EXTRACT 跑完才出现」。在两条新诉求下，这个代价变得不可接受：
+
+1. **外接记忆 provider 的同步语义**：`agent_plugin/JiwenSwarm/agent_memory_provider.py` 把本系统适配成 openjiuwen `MemoryProvider`，其 `sync_turn` 契约要求「写完即可被下一轮 `prefetch` 召回派生事实」——若 write 后派生事实要等 background EXTRACT（且 `InProcessScheduler` 当前是**同步执行**，见 F01 已知遗留 1）才出现，provider 的同步语义失效，agent 下一轮检索不到刚写入的事实。
+
+2. **对齐 mem0 `add(infer=True)`**：mem0 的 `add` 支持 `infer=True` 在写入时同步抽取事实。本系统作为可替代 mem0 的独立记忆子系统，需要在 `write` 暴露等价开关，否则上层（如 `ExternalMemoryRail`）无法做语义对等迁移。
+
+但**直接把 write 默认改成同步抽取**会重蹈 F01 拒绝方案 A 的覆辙（时延失控、写入路径脆弱）。于是本特性的核心取舍是：**默认仍不同步（保双通道立场），但提供一个显式 `infer=true` 开关让需要同步语义的调用方自行 opt-in**——把时延代价显式化、由调用方按场景承担。
+
+与此同时，原有"write 后自动提交 background EXTRACT"的行为在默认路径下被移除：因为 (a) `InProcessScheduler` 同步执行使"自动提交"实质等于"同步阻塞"，与双通道立场的"异步"初衷相悖；(b) 大量调用方（SDK/CLI/examples）实际依赖的是"先 write 再显式 `evolve()`"或 `infer=true`，自动提交反而制造了不可控的后台 LLM 风暴。演进触发权交还给调用方显式 `evolve()` 或 `infer=true`。
+
+## 决策
+
+### 1. write 默认路径不再自动提交 background EXTRACT
+
+`InMemoryEngine.write` 默认分支（`infer` 非真值）流程改为：
+
+```
+Ingestor.ingest → 补 assets/tags → Classifier.classify → KVStore.insert（真源）
+→ IndexBuilder.build（hot 索引）
+→ 返回 units
+```
+
+末尾的 `Scheduler.submit(scope, EXTRACT, BACKGROUND)` **删除**。演进由调用方显式 `MemoryAPI.evolve(scope, EXTRACT)` 触发，或经 `infer=true` 同步走（见决策 2）。
+
+**为何删而非保留**：`InProcessScheduler` 同步执行下"自动提交 background"是名不副实的——它并不异步，而是同步阻塞 write 直到 EXTRACT 的 LLM 调用跑完。这既没兑现双通道的时延承诺，又让 write 时延不可预测。在控制层换上真异步 Scheduler 之前（S03 范围的已知遗留），自动提交弊大于利，故移除。真异步 Scheduler 落地后，是否在默认路径恢复可选自动提交，另行决策（见已知遗留）。
+
+### 2. `metadata["infer"]=="true"` 同步抽取开关
+
+`write` 据 `metadata["infer"]` 真值（`str(...).strip().lower() == "true"`，大小写/空白不敏感）分两路：
+
+- **`infer="true"`**：原始单元只落 KV 真源**不建索引**；hot path 同步调 `self._evolver.evolve(units, EvolveMode.EXTRACT)` 走 Evolver EXTRACT 全链路——`Extractor.extract` 抽取派生记忆 → `_dedup_batch` 判定+落盘+建索引（ADD/UPDATE/SUPERSEDE/NOOP）。**不提交** background EXTRACT（已同步抽取，避免重复）。返回**派生单元列表**（从 `EvolveResult.created_ids` 反查 KV 读回，对齐 mem0 `add(infer=True)` 返回派生事实）。
+- **缺省 / 非 `"true"`**：决策 1 的默认路径——原始落盘 + 建索引，不自动提交演进。
+
+**为何经 Evolver 而非独立 Extractor**：`infer=true` 仍必须走 Evolver 的 `_dedup_batch`，否则每轮写入都新增派生记忆、不去重，记忆迅速膨胀。Evolver 自带 extractor，engine 不重复注入独立 Extractor（避免双实例 + 双装配）。
+
+**evolver 缺失显式报错**：`infer="true"` 但装配未注入 `Evolver`（`None`）时抛 `RuntimeError("Engine.write infer=True requires an Evolver")`——装配问题暴露而非静默降级。默认装配 `evolver: orchestrating` 总是注入，故仅非默认装配才可能触发。
+
+### 3. HTTP handler `/v1/add` 透传 metadata
+
+`bootstrap/core/handler.py` 的 `_add`：
+- 把 `payload["metadata"]` 经 `{k: str(v) ...}` str 化后透传给 `api.write`（对齐 `RawPayload.metadata: Dict[str, str]` 约束，同 `_search` 的 extensions 处理）。
+- `infer=true` 下 engine 可能合法返回空列表（派生记忆全部被 dedup 判为 update/noop，`created_ids` 为空）。此时**不伪造 item_id**，如实返回 `{"ok": True, "op": "add", "item_id": None, "item": None, "skipped": "all derived memories deduped (update/noop)"}`——让调用方知道"写入被去重吸收"而非误以为"新建了一条"。
+
+## 拒绝的方案
+
+### 方案 A：write 默认永远同步抽取（推翻双通道）
+
+**描述**：write 时默认就调 Extractor + Dedup，一步到位，不区分 infer 开关。
+
+**拒绝原因**：
+- 重蹈 [`F01` 拒绝方案 A](../construction/F01-construction-spec-design.md) 覆辙——一次 write 触发多次 LLM 调用（抽取 + 去重判定），agent 等待分钟级，写入时延失控
+- LLM 不可用时 write 直接失败，而数据面本应始终可用——写入路径变脆弱
+- 多数调用方（SDK/CLI/批量导入）不需要同步派生事实，强加同步抽取是普适性倒退
+
+> 故本特性只把同步抽取作**可选开关**，默认立场不变。这与 F01 双通道立场不冲突——F01 反对的是"默认同步"，infer 开关是"显式 opt-in 同步"。
+
+### 方案 B：infer 走独立 Extractor，不经 Evolver
+
+**描述**：engine 注入独立 `Extractor`，`infer=true` 时直接 `extractor.extract(units)` 落盘，不走 Evolver `_dedup_batch`。
+
+**拒绝原因**：
+- 绕过去重——每轮 sync_turn 都新增派生记忆，重复事实堆积，记忆膨胀失控
+- 双实例 Extractor（engine 一个 + Evolver 一个）装配冗余，且两处 extractor 配置可能不一致
+- 失去 Evolver 的 ADD/UPDATE/SUPERSEDE/NOOP 决策——无法把"新事实 vs 补充已有 vs 取代旧版"分流
+
+### 方案 C：infer 同步抽取 + 仍提交 background EXTRACT
+
+**描述**：`infer=true` 同步走 EXTRACT 后，照旧 `Scheduler.submit(scope, EXTRACT, BACKGROUND)`。
+
+**拒绝原因**：
+- 重复抽取——同步 EXTRACT 已抽取并落盘派生记忆，background 再扫一遍原始记忆做同样抽取，纯重复 LLM 风暴
+- dedup 虽能最终把重复派生判 NOOP，但每次都要付出全量召回 + LLM 判定代价，与"抑制每轮 EXTRACT 风暴"的初衷相悖
+
+## 验证
+
+### 单元测试
+
+- `tests/unit/construction/test_evolver_dedup.py` — 13 passed：去重四态（ADD/UPDATE/SUPERSEDE/NOOP）+ 降级场景。其中 supersede/update/json-fallback 三例用 `dedup_high_similarity=1.01` 抬高短路阈值，强制走 LLM 判定分支验证（见 [construction F01](../construction/F01-construction-spec-design.md) 测试基线）
+- `tests/unit/construction/test_extractor.py` — 14 passed：含 `test_extract_batch` 批量提取一次调用返回全部候选、source_id 回指正确源 unit
+- `tests/unit/api` — 全绿：write 路径 + 装配
+
+### 端到端验证
+
+- `agent_plugin/JiwenSwarm/_e2e_real.py` — provider ↔ 服务(8137) 全链路：conclude / sync_turn(infer=true) / on_session_end / prefetch / search / profile
+- `examples/quickstart*.py` — write → recall → get → update → evolve 全链路
+
+### 关键场景验证
+
+| 场景 | 验证方式 | 结果 |
+|------|---------|------|
+| infer=true 同步抽取可被下一轮召回 | provider `sync_turn` 后 `prefetch` 命中派生事实 | ✅ |
+| infer=true 全 dedup 合法返空 | handler `/v1/add` 返回 `item_id=null, skipped=...` | ✅ |
+| 默认 write 不触发后台 EXTRACT | write 后无 background 任务、时延不被 LLM 拖累 | ✅ |
+| evolver 缺失 + infer=true | 抛 RuntimeError（装配问题暴露） | ✅ |
+
+## 已知遗留
+
+1. **默认路径不再自动提交 background EXTRACT** 是基于 `InProcessScheduler` 同步执行现状的取舍。待控制层换上真异步 Scheduler（S03 范围）后，可重新评估"默认路径可选自动提交 background EXTRACT"——届时异步提交不再阻塞 write，双通道立场的原始设计可恢复。本特性不预先实现，留给那次决策。
+
+2. **infer=true 同步抽取的时延** 仍受 Extractor LLM 调用拖累（派生 + 去重判定各一次 LLM）。对时延敏感的调用方应慎用 infer=true 或配 `extractor: keyword`（规则切分、~0 LLM）兜底。
+
+3. **HTTP `/v1/add` 的 infer 透传** 仅 str 化 metadata 值，未校验 key 白名单——调用方可经 metadata 下推任意 str 键值。若未来需约束 metadata 键集合，应在 handler 或 RawPayload 装配点加白名单。

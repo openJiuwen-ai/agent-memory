@@ -13,7 +13,7 @@ from common.embedder.base import Embedder, EmbedderProducer
 from common.log import get_logger
 from common.type_def import FilterClause, FilterOp, LifecycleState, MemoryUnit
 from construction.base import OperatorType
-from construction.dedup import Dedup, DedupProducer
+from construction.dedup import Dedup, DedupProducer, same_scope
 from storage.kv import KvProducer, KVStore
 from storage.types import VectorQuery
 from storage.vector import VectorProducer, VectorStore
@@ -94,23 +94,26 @@ class VectorDedup(Dedup):
         if not hits:
             return []
 
-        # 读取命中 unit（record_id → unit_id → KVStore），过滤非 ACTIVE，按 unit 聚合取 max
-        hit_units: List[Tuple[MemoryUnit, float]] = []
+        # 加载 unit → dict 聚合取 MaxP（O(1) 查找/更新，替代旧 O(n²) 列表扫描）
+        aggregated: dict[str, Tuple[MemoryUnit, float]] = {}
         for scored_id in hits:
             if scored_id.score < self._min_similarity:
                 continue
             unit_id = _unit_id_from_record_id(scored_id.id)
             unit = self._load_unit(unit_id, scope)
-            if unit is not None and unit.lifecycle == LifecycleState.ACTIVE:
-                existing_ids = [u.id for u, _ in hit_units]
-                if unit.id not in existing_ids:
-                    hit_units.append((unit, scored_id.score))
-                else:
-                    for i, (u, s) in enumerate(hit_units):
-                        if u.id == unit.id and scored_id.score > s:
-                            hit_units[i] = (unit, scored_id.score)
+            if unit is None or unit.lifecycle != LifecycleState.ACTIVE:
+                continue
+            # scope_filter：只保留与候选同 scope 的 unit
+            if self._scope_filter and not same_scope(unit.scope, candidate.scope):
+                continue
+            # 跳过候选自身
+            if unit.id == candidate.id:
+                continue
+            # dict MaxP 聚合
+            if unit.id not in aggregated or scored_id.score > aggregated[unit.id][1]:
+                aggregated[unit.id] = (unit, scored_id.score)
 
-        hit_units.sort(key=lambda x: x[1], reverse=True)
+        hit_units = sorted(aggregated.values(), key=lambda x: x[1], reverse=True)
         return hit_units
 
 
@@ -127,6 +130,6 @@ def _build(config):
         kv=KvProducer.dep(config, default="memory"),
         min_similarity=config.get("dedup_min_similarity", 0.5),
         top_k=config.get("dedup_top_k", 5),
-        tier_filter=config.get("dedup_tier_filter", True),
+        tier_filter=config.get("dedup_tier_filter", False),
         scope_filter=config.get("dedup_scope_filter", True),
     )

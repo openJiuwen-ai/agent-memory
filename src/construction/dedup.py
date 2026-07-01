@@ -22,7 +22,7 @@ from typing import Optional
 from common.errors import NotFoundError
 from common.factory.factory import Factory
 from common.log import get_logger
-from common.type_def import LifecycleState, MemoryUnit, Scope
+from common.type_def import MemoryUnit, Scope
 from storage.kv import KVStore
 
 from .base import ConstructionOperator
@@ -56,7 +56,7 @@ class Dedup(ConstructionOperator):
         *,
         min_similarity: float = 0.5,
         top_k: int = 5,
-        tier_filter: bool = True,
+        tier_filter: bool = False,
         scope_filter: bool = True,
     ) -> None:
         self._kv = kv
@@ -100,3 +100,13 @@ def _loads(raw: bytes) -> Optional[MemoryUnit]:
     from common.type_def.memory_codec import loads
 
     return loads(raw)
+
+
+def same_scope(a, b) -> bool:
+    """比较两个 Scope 的 org + user 是否相同（跨 session/agent 的去重粒度）。
+
+    VectorDedup / KeywordDedup 共用的 scope 过滤辅助——去重召回时按 org+user
+    聚合（同租户同用户跨 session/agent 视为同 scope），与检索层 scope 隔离粒度对齐。
+    """
+    return (getattr(a, "org", "") == getattr(b, "org", "")
+            and getattr(a, "user", "") == getattr(b, "user", ""))

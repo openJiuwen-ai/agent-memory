@@ -67,6 +67,28 @@ Decision rules:
 
 If unsure, prefer "add" (to avoid losing information)."""
 
+_DEDUP_BATCH_SYSTEM_PROMPT = """You are a memory deduplication assistant. For EACH candidate memory, determine whether
+it is a new fact, an update to an existing memory, a replacement of an existing memory, or a duplicate.
+
+Input format (compact):
+  [cid]: <candidate content>
+    e|<existing_id>|<cosine_score>: <existing content>
+  ---
+
+Output ONLY a JSON array (one entry per candidate, in input order). No explanation, no markdown fences.
+Each entry:
+- "candidate_id": the candidate's id (the value after [ and before ])
+- "decision": "add" | "update" | "supersede" | "noop"
+- "reason": brief explanation (one sentence)
+
+Decision rules:
+- "add": The candidate contains new information not covered by any of its existing similar memories.
+- "update": The candidate adds information to an existing memory (partial overlap, candidate has extra details).
+- "supersede": The candidate completely replaces an existing memory (same topic, candidate is more complete/accurate/recent).
+- "noop": The candidate is fully covered by an existing memory (no new information).
+
+Judge each candidate independently against its OWN listed existing memories. If unsure, prefer "add"."""
+
 _CONTENT_MERGE_SYSTEM_PROMPT = """You are a memory content merger. Merge the old and new memory contents
 into a single coherent statement that preserves all information from both versions.
 
@@ -115,7 +137,7 @@ class OrchestratingEvolver(Evolver):
         llm: LLM,
         *,
         dedup_medium_similarity: float = 0.7,
-        dedup_high_similarity: float = 0.85,
+        dedup_high_similarity: float = 0.9,
     ) -> None:
         self._extractor = extractor
         self._abstractor = abstractor
@@ -128,7 +150,10 @@ class OrchestratingEvolver(Evolver):
         self.relations: List[Relation] = []  # ASSOCIATE 产物（同时已落图）
 
         # 去重阈值配置（min/top_k/tier_filter/scope_filter 已下沉到 recaller；
-        # medium/high 阈值留本类做 LLM 判定的档位划分）
+        # medium/high 阈值留本类做判定档位划分：
+        #   < medium → ADD（低相似，新事实）
+        #   medium ~ high → LLM 语义判定
+        #   ≥ high → 直接 NOOP（确定性重复，跳过 LLM）；LLM 降级时同样规则兜底）
         self._dedup_medium_similarity = dedup_medium_similarity
         self._dedup_high_similarity = dedup_high_similarity
 
@@ -179,98 +204,169 @@ class OrchestratingEvolver(Evolver):
     def _dedup_batch(self, candidates: List[MemoryUnit]) -> EvolveResult:
         """对一批候选 unit 执行去重判定和后续动作，返回 EvolveResult。
 
-        逐条候选走 Dedup.recall(召回+过滤) → Step D(LLM判定) → 执行。
+        两段式（批量 LLM 优化）：
+        1. 逐条 ``Dedup.recall`` 召回 + 阈值筛选——无命中或低相似(< medium)直接判 ADD；
+           分数 ≥ high(默认 0.9)直接判 NOOP（确定性重复，跳过 LLM）；
+           medium ~ high 之间的候选收集成 ``need_llm`` 列表。
+        2. ``need_llm`` 批量喂一次 LLM 判定（``_llm_dedup_decide_batch``），按返回的
+           decision 逐条执行。批量失败则降级为逐条单次 LLM 判定。
         """
         result = EvolveResult()
         noop_count = 0
 
+        # 每条候选的判定上下文：(candidate, best_unit, best_score, hit_units)
+        direct_add: List[Tuple[MemoryUnit, Optional[MemoryUnit], float]] = []
+        direct_noop: List[Tuple[MemoryUnit, MemoryUnit, float]] = []
+        need_llm: List[Tuple[MemoryUnit, MemoryUnit, float, List[Tuple[MemoryUnit, float]]]] = []
+
+        # ---- 第一段：逐条 recall + 阈值筛选（不调 LLM）----
         for candidate in candidates:
             try:
-                decision, existing_unit, similarity = self._dedup_single(candidate)
+                hit_units = self._dedup.recall(candidate)
             except Exception as exc:
                 logger.warning(
-                    "Evolver._dedup: dedup failed for candidate %s, fallback ADD: %s",
+                    "Evolver._dedup: recall failed for %s, fallback ADD: %s",
                     candidate.id[:8], exc,
                 )
-                decision = DedupDecision.ADD
-                existing_unit = None
-                similarity = 0.0
+                direct_add.append((candidate, None, 0.0))
+                continue
 
-            logger.info(
-                "Evolver._dedup: candidate %s → decision=%s existing=%s similarity=%.3f",
-                candidate.id[:8], decision.value,
-                existing_unit.id[:8] if existing_unit else "None",
-                similarity,
+            if not hit_units:
+                direct_add.append((candidate, None, 0.0))
+                continue
+
+            best_unit, best_score = max(hit_units, key=lambda x: x[1])
+            if best_score < self._dedup_medium_similarity:
+                # 低相似 → 直接 ADD（不调 LLM）
+                direct_add.append((candidate, best_unit, best_score))
+            elif best_score >= self._dedup_high_similarity:
+                # 确定性重复 → 直接 NOOP（不调 LLM）
+                direct_noop.append((candidate, best_unit, best_score))
+            else:
+                # medium ~ high → 需 LLM 判定
+                need_llm.append((candidate, best_unit, best_score, hit_units))
+
+        # ---- 第二段：批量 LLM 判定 ----
+        decisions: dict[str, DedupDecision] = {}
+        if need_llm:
+            batch_items = [(c, hits) for c, _, _, hits in need_llm]
+            decisions = self._llm_dedup_decide_batch(batch_items)
+
+        # ---- 第三段：逐条执行 ----
+        for candidate, best_unit, best_score in direct_add:
+            noop_count += self._apply_decision(
+                candidate, DedupDecision.ADD, best_unit, best_score, result
             )
 
-            if decision == DedupDecision.ADD:
-                self._kv.insert(candidate.scope, candidate.id, dumps(candidate))
-                self._index.build([candidate])
-                result.created_ids.append(candidate.id)
+        for candidate, best_unit, best_score in direct_noop:
+            noop_count += self._apply_decision(
+                candidate, DedupDecision.NOOP, best_unit, best_score, result
+            )
 
-            elif decision == DedupDecision.UPDATE:
-                # 合成新旧 content
-                merged_content = self._merge_content(existing_unit, candidate)
-                # 更新 existing_unit
-                if existing_unit.segments:
-                    existing_unit.segments[0].content = merged_content
-                else:
-                    existing_unit.segments = [Segment(content=merged_content)]
-                # 合并 provenance
-                existing_unit.provenance = list(
-                    set(existing_unit.provenance) | set(candidate.provenance) | {candidate.id}
-                )
-                # 合并 metadata
-                existing_unit.metadata.update(candidate.metadata)
-                existing_unit.metadata["dedup_decision"] = "update"
-                existing_unit.metadata["dedup_similarity"] = str(similarity)
-                existing_unit.metadata["dedup_merged_from"] = candidate.id
-                self._kv.update(existing_unit.scope, existing_unit.id, dumps(existing_unit))
-                self._index.update([existing_unit])
-                result.updated_ids.append(existing_unit.id)
-
-            elif decision == DedupDecision.SUPERSEDE:
-                # 新版落盘
-                candidate.supersedes = existing_unit.id
-                candidate.provenance = list(
-                    set(candidate.provenance) | {existing_unit.id}
-                )
-                candidate.metadata["dedup_decision"] = "supersede"
-                candidate.metadata["dedup_similarity"] = str(similarity)
-                candidate.metadata["dedup_superseded"] = existing_unit.id
-                self._kv.insert(candidate.scope, candidate.id, dumps(candidate))
-                self._index.build([candidate])
-                # 旧版标记 SUPERSEDED（直接通过 KVStore，不依赖 LifecycleManager）
-                existing_unit.lifecycle = LifecycleState.SUPERSEDED
-                existing_unit.temporal.t_invalid = _now()
-                self._kv.update(existing_unit.scope, existing_unit.id, dumps(existing_unit))
-                self._index.update([existing_unit])
-                result.created_ids.append(candidate.id)
-                result.superseded_ids.append(existing_unit.id)
-
-            elif decision == DedupDecision.NOOP:
-                noop_count += 1
-                logger.info(
-                    "Evolver._dedup: NOOP candidate %s skipped (duplicate of %s)",
-                    candidate.id[:8],
-                    existing_unit.id[:8] if existing_unit else "N/A",
-                )
+        for candidate, best_unit, best_score, _ in need_llm:
+            decision = decisions.get(candidate.id, DedupDecision.ADD)
+            noop_count += self._apply_decision(
+                candidate, decision, best_unit, best_score, result
+            )
 
         logger.info(
-            "Evolver._dedup: total=%d add=%d update=%d supersede=%d noop=%d",
+            "Evolver._dedup: total=%d add=%d update=%d supersede=%d noop=%d "
+            "(direct_noop=%d, need_llm=%d, llm_batches=%d)",
             len(candidates), len(result.created_ids), len(result.updated_ids),
             len(result.superseded_ids), noop_count,
+            len(direct_noop), len(need_llm), 1 if need_llm else 0,
         )
         return result
+
+    def _apply_decision(
+        self,
+        candidate: MemoryUnit,
+        decision: DedupDecision,
+        existing_unit: Optional[MemoryUnit],
+        similarity: float,
+        result: EvolveResult,
+    ) -> int:
+        """执行单条候选的去重决策，更新 result；返回 noop 计数（0 或 1）。"""
+        logger.info(
+            "Evolver._dedup: candidate %s → decision=%s existing=%s similarity=%.3f",
+            candidate.id[:8], decision.value,
+            existing_unit.id[:8] if existing_unit else "None",
+            similarity,
+        )
+
+        # ADD，或 UPDATE/SUPERSEDE 缺 existing_unit 时降级为 ADD（LLM 误判但 recall
+        # 无命中——宁可重复不丢失，避免 None.segments/.id 抛 AttributeError）。
+        if decision == DedupDecision.ADD or (
+            decision in (DedupDecision.UPDATE, DedupDecision.SUPERSEDE)
+            and existing_unit is None
+        ):
+            if decision != DedupDecision.ADD:
+                logger.warning(
+                    "Evolver._dedup: %s without existing_unit for %s, fallback ADD",
+                    decision.value, candidate.id[:8],
+                )
+            self._kv.insert(candidate.scope, candidate.id, dumps(candidate))
+            self._index.build([candidate])
+            result.created_ids.append(candidate.id)
+
+        elif decision == DedupDecision.UPDATE:
+            # 合成新旧 content
+            merged_content = self._merge_content(existing_unit, candidate)
+            # 更新 existing_unit
+            if existing_unit.segments:
+                existing_unit.segments[0].content = merged_content
+            else:
+                existing_unit.segments = [Segment(content=merged_content)]
+            # 合并 provenance
+            existing_unit.provenance = list(
+                set(existing_unit.provenance) | set(candidate.provenance) | {candidate.id}
+            )
+            # 合并 metadata
+            existing_unit.metadata.update(candidate.metadata)
+            existing_unit.metadata["dedup_decision"] = "update"
+            existing_unit.metadata["dedup_similarity"] = str(similarity)
+            existing_unit.metadata["dedup_merged_from"] = candidate.id
+            self._kv.update(existing_unit.scope, existing_unit.id, dumps(existing_unit))
+            self._index.update([existing_unit])
+            result.updated_ids.append(existing_unit.id)
+
+        elif decision == DedupDecision.SUPERSEDE:
+            # 新版落盘
+            candidate.supersedes = existing_unit.id
+            candidate.provenance = list(
+                set(candidate.provenance) | {existing_unit.id}
+            )
+            candidate.metadata["dedup_decision"] = "supersede"
+            candidate.metadata["dedup_similarity"] = str(similarity)
+            candidate.metadata["dedup_superseded"] = existing_unit.id
+            self._kv.insert(candidate.scope, candidate.id, dumps(candidate))
+            self._index.build([candidate])
+            # 旧版标记 SUPERSEDED（直接通过 KVStore，不依赖 LifecycleManager）
+            existing_unit.lifecycle = LifecycleState.SUPERSEDED
+            existing_unit.temporal.t_invalid = _now()
+            self._kv.update(existing_unit.scope, existing_unit.id, dumps(existing_unit))
+            self._index.update([existing_unit])
+            result.created_ids.append(candidate.id)
+            result.superseded_ids.append(existing_unit.id)
+
+        elif decision == DedupDecision.NOOP:
+            logger.info(
+                "Evolver._dedup: NOOP candidate %s skipped (duplicate of %s)",
+                candidate.id[:8],
+                existing_unit.id[:8] if existing_unit else "N/A",
+            )
+            return 1
+
+        return 0
 
     def _dedup_single(
         self, candidate: MemoryUnit
     ) -> Tuple[DedupDecision, Optional[MemoryUnit], float]:
-        """单条候选的去重判定：Dedup.recall → LLM 语义判定。
+        """单条候选的去重判定：Dedup.recall → 阈值短路 → LLM 语义判定。
 
         返回 (decision, most_similar_existing_unit, max_similarity_score)。
-        召回 + min 阈值过滤 + 加载 + 聚合取 max 全在 recaller 内完成；本方法只做
-        medium/high 档位划分与 LLM 判定。
+        召回 + min 阈值过滤 + 加载 + 聚合取 max 全在 recaller 内完成；本方法做
+        high/medium 阈值短路与 LLM 判定。
         """
         # Step A+B: 召回已有相似记忆（已滤自身、已按 min_similarity 过滤、已聚合取 max）
         hit_units: List[Tuple[MemoryUnit, float]] = self._dedup.recall(candidate)
@@ -282,6 +378,10 @@ class OrchestratingEvolver(Evolver):
         best_unit, best_score = max(hit_units, key=lambda x: x[1])
 
         # Step D: 语义判定
+        # 确定性重复 → 直接 NOOP（不调 LLM）
+        if best_score >= self._dedup_high_similarity:
+            return (DedupDecision.NOOP, best_unit, best_score)
+
         # 低相似 → ADD（新事实，不值得深度判定）
         if best_score < self._dedup_medium_similarity:
             return (DedupDecision.ADD, best_unit, best_score)
@@ -294,11 +394,13 @@ class OrchestratingEvolver(Evolver):
                 "Evolver._dedup_single: LLM dedup failed for %s, fallback rule-based: %s",
                 candidate.id[:8], exc,
             )
-            # 降级：LLM 不可用时按 cosine 阈值规则判定
+            # 降级策略与 _llm_dedup_decide 一致：宁可重复不丢失。
+            # high 相似 → NOOP（确定性重复）；medium 相似 → ADD（不覆盖已有，
+            # 避免 SUPERSEDE 误替换致信息丢失，留待后续 LLM 恢复后修正）。
             if best_score >= self._dedup_high_similarity:
                 decision = DedupDecision.NOOP
             else:
-                decision = DedupDecision.SUPERSEDE
+                decision = DedupDecision.ADD
 
         return (decision, best_unit, best_score)
 
@@ -360,6 +462,128 @@ class OrchestratingEvolver(Evolver):
                 decision_str,
             )
             return DedupDecision.ADD
+
+    def _llm_dedup_decide_batch(
+        self,
+        items: List[Tuple[MemoryUnit, List[Tuple[MemoryUnit, float]]]],
+    ) -> dict[str, DedupDecision]:
+        """批量 LLM 判定：一次调用判多条候选，返回 {candidate_id: decision}。
+
+        ``items`` 为 (candidate, hit_units) 列表。prompt 格式（紧凑）：
+        [cid]: <candidate content>
+          e|<existing_id>|<score>: <existing content>
+        候选之间用 ``---`` 分隔。解析失败或缺项的候选回退为单条判定。
+        """
+        if not items:
+            return {}
+
+        # 构建紧凑批量 prompt
+        blocks: List[str] = []
+        for cand, hits in items:
+            cand_block = f"[{cand.id}]: {cand.content}"
+            for unit, score in hits[:3]:
+                cand_block += f"\n  e|{unit.id}|{score:.3f}: {unit.content}"
+            blocks.append(cand_block)
+        user_prompt = "\n---\n".join(blocks)
+
+        messages = [
+            ChatMessage(role="system", content=_DEDUP_BATCH_SYSTEM_PROMPT),
+            ChatMessage(role="user", content=user_prompt),
+        ]
+
+        try:
+            response = self._llm.chat(messages, temperature=0, max_tokens=1024)
+        except Exception as exc:
+            logger.warning(
+                "Evolver._llm_dedup_decide_batch: LLM call failed, "
+                "fallback to per-candidate single: %s", exc,
+            )
+            return self._fallback_single_decide(items)
+
+        # 解析 JSON 数组
+        results: dict[str, DedupDecision] = {}
+        try:
+            parsed = json.loads(response.strip())
+        except json.JSONDecodeError:
+            # 尝试提取 JSON 片段（LLM 可能裹 markdown fence）
+            arr_match = re.search(r"\[.*\]", response, re.DOTALL)
+            obj_match = re.search(r"\{.*\}", response, re.DOTALL)
+            if arr_match:
+                try:
+                    parsed = json.loads(arr_match.group())
+                except json.JSONDecodeError:
+                    parsed = None
+            elif obj_match:
+                try:
+                    parsed = json.loads(obj_match.group())
+                except json.JSONDecodeError:
+                    parsed = None
+            else:
+                parsed = None
+
+        # 兼容：LLM 返回单对象（而非数组）时，包成单元素列表
+        if isinstance(parsed, dict):
+            parsed = [parsed]
+
+        if not isinstance(parsed, list):
+            logger.warning(
+                "Evolver._llm_dedup_decide_batch: cannot parse LLM response as JSON array, "
+                "fallback to per-candidate single: %s", response[:200],
+            )
+            return self._fallback_single_decide(items)
+
+        # 按候选 id 取 decision
+        for entry in parsed:
+            if not isinstance(entry, dict):
+                continue
+            cid = entry.get("candidate_id")
+            # 单对象响应（无 candidate_id 字段）且只有一条候选 → 用该候选 id
+            if cid is None and len(items) == 1:
+                cid = items[0][0].id
+            decision_str = str(entry.get("decision", "add")).lower()
+            try:
+                results[cid] = DedupDecision(decision_str)
+            except ValueError:
+                logger.warning(
+                    "Evolver._llm_dedup_decide_batch: unknown decision '%s' for %s, fallback ADD",
+                    decision_str, cid,
+                )
+                results[cid] = DedupDecision.ADD
+
+        # 缺项候选（LLM 漏了某条）→ 单条补判
+        missing = [(c, h) for c, h in items if c.id not in results]
+        if missing:
+            logger.warning(
+                "Evolver._llm_dedup_decide_batch: %d candidates missing in LLM response, "
+                "fallback to per-candidate single", len(missing),
+            )
+            results.update(self._fallback_single_decide(missing))
+
+        return results
+
+    def _fallback_single_decide(
+        self,
+        items: List[Tuple[MemoryUnit, List[Tuple[MemoryUnit, float]]]],
+    ) -> dict[str, DedupDecision]:
+        """批量降级：逐条调单条 LLM 判定。某条失败 → 按规则（score 阈值）判定。"""
+        results: dict[str, DedupDecision] = {}
+        for cand, hits in items:
+            best_score = max(s for _, s in hits) if hits else 0.0
+            try:
+                results[cand.id] = self._llm_dedup_decide(cand, hits)
+            except Exception:
+                logger.warning(
+                    "Evolver._fallback_single_decide: single LLM failed for %s, rule-based",
+                    cand.id[:8],
+                )
+                # 降级策略与 _llm_dedup_decide 一致：宁可重复不丢失。
+                # high 相似 → NOOP（确定性重复）；medium 相似 → ADD（新事实，不覆盖已有，
+                # 避免 SUPERSEDE 误替换可能各有补充的同主题记忆致信息丢失）。
+                if best_score >= self._dedup_high_similarity:
+                    results[cand.id] = DedupDecision.NOOP
+                else:
+                    results[cand.id] = DedupDecision.ADD
+        return results
 
     def _merge_content(self, old: MemoryUnit, new: MemoryUnit) -> str:
         """UPDATE 场景：LLM 合成新旧 content 为一条完整陈述。"""
@@ -454,5 +678,5 @@ def _build(config):
         dedup=DedupProducer.dep(config, default=dr_default),
         llm=LlmProducer.dep(config, default="echo"),
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
-        dedup_high_similarity=config.get("dedup_high_similarity", 0.85),
+        dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
     )

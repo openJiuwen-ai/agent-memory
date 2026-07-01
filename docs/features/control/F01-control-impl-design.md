@@ -35,7 +35,7 @@
 
 | 路径 | 第一版语义 |
 |---|---|
-| `write` | 构造 `RawPayload` → `Ingestor.ingest` → 补 `assets/tags` → `Classifier.classify` → `KVStore.insert` 真源落盘 → `IndexBuilder.build` hot 索引 → `Scheduler.submit(EXTRACT, BACKGROUND)` |
+| `write` | 构造 `RawPayload` → `Ingestor.ingest` → 补 `assets/tags` → `Classifier.classify` → `KVStore.insert` 真源落盘 → `IndexBuilder.build` hot 索引 → 返回 units。`metadata["infer"]=="true"` 时改为同步走 `Evolver.evolve(units, EXTRACT)` 抽取派生记忆（原始不建索引），返回派生单元；默认路径**不再** `Scheduler.submit(EXTRACT, BACKGROUND)`（演进由调用方显式 `evolve()` 触发）。详见 [`F02-write-infer-extract`](../api/F02-write-infer-extract.md) |
 | `recall` | 直接委托 `Retriever.retrieve(scope, query)` |
 | `get` | 从 KV 真源加载；`as_of` 非空时沿 `supersedes` 版本族选 valid-time 命中的版本 |
 | `update` | `SUPERSEDE` 新建新 id、旧版经 `LifecycleManager.supersede` 标记失效；`OVERWRITE` 原地覆写 |

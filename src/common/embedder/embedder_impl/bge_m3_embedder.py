@@ -10,6 +10,10 @@ L2 归一化在 encode 之后手动完成（而非传 normalize_embeddings 给�
 加载策略：先离线从本地缓存加载（快速、不联网）；缓存不存在时再联网下载。
 本地路径（目录存在）时直接加载，跳过离线/联网逻辑。
 
+``use_fp16`` 仅在 CUDA 可用时生效——CPU-only 运行时（如 ``python:3.11-slim`` 容器）
+强制降级 fp32，否则 torch>=2.x 的 meta device 会让权重停留在占位状态，推理时报
+``Cannot copy out of meta tensor; no data!``。
+
 依赖：``FlagEmbedding`` + ``sentence-transformers`` + ``torch``（pip install FlagEmbedding）。
 """
 
@@ -27,11 +31,24 @@ logger = get_logger(__name__)
 
 
 def _l2_normalize(vec: List[float]) -> List[float]:
-    """L2 归一化：将向量缩放为单位长度，兼容归一化需求同时不依赖底层 tokenizer 参数。"""
+    """L2 归一化：缩放为单位长度，不依赖底层 tokenizer 参数。
+
+    NaN/Inf 防御：fp16 推理下短文本/特殊字符可能产出含 NaN/Inf 的向量（注意力
+    softmax 溢出）。含 NaN/Inf 或 norm 为 0/NaN/Inf 时返回零向量——零向量无语义但
+    不污染 Milvus 索引（Milvus 拒收 NaN/Inf；零向量由上层 ConflictError 路径处理，
+    远好于整批 insert 失败）。
+    """
+    if any(math.isnan(v) or math.isinf(v) for v in vec):
+        return [0.0] * len(vec)
     norm = math.sqrt(sum(v * v for v in vec))
-    if norm == 0:
-        return vec
+    if norm == 0 or math.isnan(norm) or math.isinf(norm):
+        return [0.0] * len(vec)
     return [v / norm for v in vec]
+
+
+def _sanitize_vector(vec: List[float]) -> List[float]:
+    """把 NaN/Inf 替换为 0（不做归一化），用于未开归一化路径，防 Milvus 拒收。"""
+    return [0.0 if math.isnan(v) or math.isinf(v) else float(v) for v in vec]
 
 
 class BGEM3Embedder(Embedder):
@@ -70,6 +87,23 @@ class BGEM3Embedder(Embedder):
                 "Install it with: pip install FlagEmbedding"
             ) from None
 
+        # CPU 环境下强制 fp32：fp16 是 CUDA tensor 优化，CPU 上 FlagEmbedding 的设备
+        # 转移逻辑（torch>=2.x meta device）会令权重停留在 meta 占位状态，推理时报
+        # "Cannot copy out of meta tensor; no data!"。无 CUDA 时无视配置强制 fp32。
+        effective_fp16 = self._use_fp16
+        if self._use_fp16:
+            try:
+                import torch
+                cuda_available = torch.cuda.is_available()
+            except Exception:  # noqa: BLE001
+                cuda_available = False
+            if not cuda_available:
+                effective_fp16 = False
+                logger.warning(
+                    "BGEM3Embedder: use_fp16=true ignored on CPU-only runtime "
+                    "(would trigger meta-tensor error); falling back to fp32."
+                )
+
         import os
 
         is_local_path = os.path.isdir(self._model_name_or_path)
@@ -83,7 +117,7 @@ class BGEM3Embedder(Embedder):
             try:
                 self._model = BGEM3FlagModel(
                     self._model_name_or_path,
-                    use_fp16=self._use_fp16,
+                    use_fp16=effective_fp16,
                 )
                 logger.info("BGEM3Embedder: model loaded from local cache successfully")
                 os.environ.pop("HF_HUB_OFFLINE", None)
@@ -96,13 +130,13 @@ class BGEM3Embedder(Embedder):
         logger.info(
             "BGEM3Embedder: loading model %s (fp16=%s, local=%s)",
             self._model_name_or_path,
-            self._use_fp16,
+            effective_fp16,
             is_local_path,
         )
         try:
             self._model = BGEM3FlagModel(
                 self._model_name_or_path,
-                use_fp16=self._use_fp16,
+                use_fp16=effective_fp16,
             )
             logger.info("BGEM3Embedder: model loaded successfully")
         except Exception as exc:
@@ -167,6 +201,8 @@ class BGEM3Embedder(Embedder):
         # 手动 L2 归一化（替代传 normalize_embeddings 参数，兼容所有版本）
         if self._normalize_embeddings:
             vectors = [_l2_normalize(v) for v in vectors]
+        else:
+            vectors = [_sanitize_vector(v) for v in vectors]
         return vectors
 
     def _split_batches(self, texts: List[str]) -> List[List[str]]:

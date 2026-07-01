@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/api/ |
-| 最近一次修订日期 | 2026-06-26 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md |
+| 最近一次修订日期 | 2026-06-30 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -41,7 +41,7 @@
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `write` | `(content, scope, source=TEXT, *, identity, assets, tags, metadata, occurred_at) -> list[MemoryUnit]` | 同步写入：鉴权 WRITE→委托 Engine→阻塞至 hot path 完成 |
+| `write` | `(content, scope, source=TEXT, *, identity, assets, tags, metadata, occurred_at) -> list[MemoryUnit]` | 同步写入：鉴权 WRITE→委托 Engine→阻塞至 hot path 完成。`metadata["infer"]=="true"` 时返回**派生单元**（同步抽取，对齐 mem0 `add(infer=True)`，可空），否则返回**原始单元** |
 | `write_async` | `async (同签名) -> list[MemoryUnit]` | 异步写入：直通 Engine 协程，供事件循环形态使用 |
 | `recall` | `(query, context: Context, *, identity, filters, as_of, top_k, disclosure, with_trajectory) -> RetrievalResult` | 混合检索：鉴权 READ→拆 Context→装配 RetrievalQuery→委托 Engine |
 | `get` | `(unit_id, scope, *, identity, as_of=None) -> MemoryUnit` | 真源点读：鉴权 READ→委托 Engine |
@@ -53,6 +53,17 @@
 | `admin_get` | `(key, *, identity) -> str` | 读策略（直达 PolicyManager） |
 | `admin_set` | `(key, value, *, identity) -> None` | 写策略（直达 PolicyManager） |
 | `admin_all` | `(*, identity) -> dict[str, str]` | 列全部策略（直达 PolicyManager） |
+
+#### infer 开关（write 的同步抽取语义）
+
+`write` 的 `metadata["infer"]` 是调用级开关，控制写入时是否同步抽取派生记忆（对齐 mem0 `add(infer=True)`）：
+
+- **真值判定**：`str(metadata.get("infer", "")).strip().lower() == "true"`——大小写/空白不敏感，仅字符串 `"true"` 触发，其余值（含 `"false"`/缺省/空）均走默认路径。
+- **`infer="true"`**：原始记忆落 KV 真源但**不建索引**；hot path 同步走 `Engine → Evolver.evolve(units, EXTRACT)`——Extractor 抽取派生记忆 → `_dedup_batch` 判定+落盘+建索引（ADD/UPDATE/SUPERSEDE/NOOP）；**不提交** background EXTRACT（已同步抽取）。返回**派生单元列表**（从 `EvolveResult.created_ids` 反查 KV 读回）；派生全部被 dedup 判 update/noop 时合法返回**空列表**。
+- **缺省 / 非 `"true"`**：原始落盘 + 建索引，不自动提交演进（由调用方显式 `evolve()` 触发）。返回原始单元列表。
+- **evolver 缺失**：`infer="true"` 但装配未注入 `Evolver` 时 Engine 抛 `RuntimeError`——装配问题暴露而非静默降级。默认装配 `evolver: orchestrating` 总是注入。
+
+> 开关由来与"为何默认不同步、为何经 Evolver 而非独立 Extractor"的取舍见 [`docs/features/api/F02-write-infer-extract.md`](../features/api/F02-write-infer-extract.md)；write 路径流程见 [`S03-memory-manage.md`](S03-memory-manage.md)。
 
 #### 治理面（委托 Governor）
 

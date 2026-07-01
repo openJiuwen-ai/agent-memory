@@ -15,7 +15,7 @@ from typing import List, Tuple
 from common.log import get_logger
 from common.type_def import LifecycleState, MemoryUnit
 from construction.base import OperatorType
-from construction.dedup import Dedup, DedupProducer
+from construction.dedup import Dedup, DedupProducer, same_scope
 from storage.fulltext import FulltextProducer, FulltextStore
 from storage.kv import KvProducer, KVStore
 from storage.types import TextQuery
@@ -69,25 +69,25 @@ class KeywordDedup(Dedup):
         if not hits:
             return []
 
-        # 加载 unit，过滤非 ACTIVE / tier 不符，按 unit 聚合取 max，按 min_similarity 过滤
-        hit_units: List[Tuple[MemoryUnit, float]] = []
+        # 加载 unit → dict 聚合取 MaxP（O(1) 查找/更新，替代旧 O(n²) 列表扫描）
+        aggregated: dict[str, Tuple[MemoryUnit, float]] = {}
         for scored_id in hits:
             if scored_id.score < self._min_similarity:
                 continue
             unit = self._load_unit(scored_id.id, scope)
             if unit is None or unit.lifecycle != LifecycleState.ACTIVE:
                 continue
+            # tier_filter: 可选按 tier 过滤（默认 False，允许跨层去重）
             if self._tier_filter and unit.tier != candidate.tier:
                 continue
-            existing_ids = [u.id for u, _ in hit_units]
-            if unit.id not in existing_ids:
-                hit_units.append((unit, scored_id.score))
-            else:
-                for i, (u, s) in enumerate(hit_units):
-                    if u.id == unit.id and scored_id.score > s:
-                        hit_units[i] = (unit, scored_id.score)
+            # scope_filter: 只保留与候选同 scope 的 unit
+            if self._scope_filter and not same_scope(unit.scope, candidate.scope):
+                continue
+            # dict MaxP 聚合
+            if unit.id not in aggregated or scored_id.score > aggregated[unit.id][1]:
+                aggregated[unit.id] = (unit, scored_id.score)
 
-        hit_units.sort(key=lambda x: x[1], reverse=True)
+        hit_units = sorted(aggregated.values(), key=lambda x: x[1], reverse=True)
         return hit_units
 
 
@@ -102,6 +102,6 @@ def _build(config):
         kv=KvProducer.dep(config, default="memory"),
         min_similarity=config.get("dedup_min_similarity", 0.5),
         top_k=config.get("dedup_top_k", 5),
-        tier_filter=config.get("dedup_tier_filter", True),
+        tier_filter=config.get("dedup_tier_filter", False),
         scope_filter=config.get("dedup_scope_filter", True),
     )

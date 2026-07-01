@@ -522,11 +522,14 @@ class TestDedupSupersede:
         stores = _create_stores()
         llm = _MockLLM(responses=[json.dumps({"decision": "supersede", "reason": "新版更完整"})])
         plugins = {"embedder": _HashEmbedder(), "llm": llm}
+        # 抬高 high 阈值（>1.0），让同文本 cosine=1.0 落入 medium~high 的 LLM 判定区间，
+        # 强制走 mock LLM 判 supersede（否则 1.0≥high 会被短路成 NOOP 跳过 LLM）。
         evolver = _make_evolver(
             stores["kv"],
             stores["vector"],
             plugins["embedder"],
             plugins["llm"],
+            dedup_high_similarity=1.01,
         )
 
         # 先索引旧版记忆
@@ -568,11 +571,14 @@ class TestDedupUpdate:
             ]
         )
         plugins = {"embedder": _HashEmbedder(), "llm": llm}
+        # 抬高 high 阈值（>1.0），让同文本 cosine=1.0 落入 LLM 判定区间走 update+merge，
+        # 否则 1.0≥high 会被短路成 NOOP（merge_content 也就不会被调用）。
         evolver = _make_evolver(
             stores["kv"],
             stores["vector"],
             plugins["embedder"],
             plugins["llm"],
+            dedup_high_similarity=1.01,
         )
 
         # 先索引已有记忆
@@ -681,11 +687,15 @@ class TestDedupDegradation:
         stores = _create_stores()
         llm = _MockLLM(responses=["I think this is a duplicate"])  # 非 JSON
         plugins = {"embedder": _HashEmbedder(), "llm": llm}
+        # 抬高 high 阈值（>1.0），让同文本 cosine=1.0 落入 LLM 判定区间，
+        # 才会真的调用 LLM 并触发"返回非 JSON → fallback ADD"路径；
+        # 否则 1.0≥high 直接短路 NOOP，LLM 根本不被调用，测不到降级。
         evolver = _make_evolver(
             stores["kv"],
             stores["vector"],
             plugins["embedder"],
             plugins["llm"],
+            dedup_high_similarity=1.01,
         )
 
         # 索引已有记忆

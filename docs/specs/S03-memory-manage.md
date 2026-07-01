@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/control/ |
-| 最近一次修订日期 | 2026-06-24 |
+| 最近一次修订日期 | 2026-06-30 |
 
-| 关联特性文档 | docs/features/F01-system-spec-design.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F02-write-infer-extract.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -59,7 +59,7 @@ class ControlOperator(ABC):
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `write` | `async (content, scope, source, *, assets, tags, metadata, occurred_at) -> list[MemoryUnit]` | 规约→落盘→hot 索引→提交 background 演进 |
+| `write` | `async (content, scope, source, *, assets, tags, metadata, occurred_at) -> list[MemoryUnit]` | 规约→分类→落盘→hot 索引；`metadata["infer"]=="true"` 时同步走 `evolve(EXTRACT)` 返派生单元（原始不建索引），否则不自动提交演进（由调用方显式 `evolve()` 触发） |
 | `recall` | `async (scope, query: RetrievalQuery) -> RetrievalResult` | 委托 Retriever 完整检索链路 |
 | `get` | `async (unit_id, scope, as_of=None) -> MemoryUnit` | 真源点读；`as_of` 非空沿 supersedes 链返回当时有效版本 |
 | `update` | `async (unit_id, scope, patch: MemoryPatch) -> MemoryUnit` | SUPERSEDE 新 id 记版本链 / OVERWRITE 原地覆写 |
@@ -72,11 +72,16 @@ class ControlOperator(ABC):
 Ingestor.ingest([RawPayload]) → list[MemoryUnit]
 → 将 content/assets 入参补入接入层产出的 MemoryUnit.segments，并补齐 tags
 → Classifier.classify(units)
-→ KVStore.insert(scope, unit.id, dumps(unit))
-→ IndexBuilder.build(units)
-→ Scheduler.submit(scope, EXTRACT, BACKGROUND)
-→ 返回 units
+→ KVStore.insert(scope, unit.id, dumps(unit))           # 真源落盘
+→ if metadata["infer"] == "true":
+      Evolver.evolve(units, EXTRACT)                     # 同步抽取派生 → 落盘+建索引（ADD/UPDATE/SUPERSEDE/NOOP）
+      返回 EvolveResult.created_ids 反查 KV 的派生单元   # 对齐 mem0 add(infer=True)
+  else:
+      IndexBuilder.build(units)                          # hot 轻量索引
+      返回 units                                         # 不自动提交演进（调用方显式 evolve() 触发）
 ```
+
+> `infer` 开关详见 [`S02-memory-api.md`](S02-memory-api.md)「infer 开关」与 [`docs/features/api/F02-write-infer-extract.md`](../features/api/F02-write-infer-extract.md)。默认路径不再自动提交 background EXTRACT——`InProcessScheduler` 同步执行下"自动提交"实为同步阻塞，与双通道时延初衷相悖；真异步 Scheduler 落地后是否恢复可选自动提交另行决策。
 
 **delete 路径**：
 ```

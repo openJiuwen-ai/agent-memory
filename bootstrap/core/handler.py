@@ -98,6 +98,15 @@ def _event_view(ev: AuditEvent) -> Body:
 def _add(srv, payload: Body) -> Body:
     scope, actor = _scopes(payload)
     modality = Modality(payload.get("modality", "text"))
+    # metadata 透传：infer 等调用级开关经 metadata 下推到引擎（engine.write 从
+    # metadata["infer"]=="true" 判定是否同步走 evolve(EXTRACT) 抽取派生记忆）。
+    # 值统一 str 化，对齐 RawPayload.metadata 的 Dict[str, str] 约束（同 _search 的 extensions）。
+    # 显式校验 dict：metadata 为 truthy 非 dict（字符串/列表等畸形 JSON）时兜底为空，
+    # 避免 .items() 抛 AttributeError → HTTP 500。
+    raw_meta = payload.get("metadata")
+    if not isinstance(raw_meta, dict):
+        raw_meta = {}
+    metadata = {k: str(v) for k, v in raw_meta.items()}
     units = srv.api.write(
         _require(payload, "content"),
         scope,
@@ -105,7 +114,14 @@ def _add(srv, payload: Body) -> Body:
         identity=actor,
         tags=payload.get("tags"),
         assets=payload.get("assets"),
+        metadata=metadata or None,
     )
+    # infer=True 时引擎可能合法返回空：派生记忆全部被 dedup 判为 update/noop
+    # （result.created_ids 为空，见 engine.write 的 infer 分支）。此时不伪造 item_id，
+    # 如实返回 deduped 语义；非空则照常取首条返回。
+    if not units:
+        return {"ok": True, "op": "add", "item_id": None, "item": None,
+                "skipped": "all derived memories deduped (update/noop)"}
     unit = units[0]
     return {"ok": True, "op": "add", "item_id": unit.id, "item": _unit_view(unit)}
 
@@ -113,7 +129,12 @@ def _add(srv, payload: Body) -> Body:
 def _search(srv, payload: Body) -> Body:
     scope, actor = _scopes(payload)
     # extensions：把调用方在请求里给的自定义配置透传给（可能自定义的）检索模块。
-    extensions = {k: str(v) for k, v in (payload.get("extensions") or {}).items()}
+    # 显式校验 dict：extensions 为 truthy 非 dict（字符串/列表等畸形 JSON）时兜底为空，
+    # 避免 .items() 抛 AttributeError → HTTP 500（同 _add 的 metadata 处理）。
+    raw_ext = payload.get("extensions")
+    if not isinstance(raw_ext, dict):
+        raw_ext = {}
+    extensions = {k: str(v) for k, v in raw_ext.items()}
     # 自适应披露预算经约定 key 并入 extensions（由 API 边界解析为 typed 预算）。
     max_tokens = payload.get("max_tokens")
     if max_tokens is not None:

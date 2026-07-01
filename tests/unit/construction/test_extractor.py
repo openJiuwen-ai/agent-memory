@@ -1,4 +1,4 @@
-"""Extractor 单元测试（12 个测试）。
+"""Extractor 单元测试（14 个测试）。
 
 使用 MockLLM 隔离外部 LLM API 依赖。
 """
@@ -10,11 +10,13 @@ from common.type_def import (
     MemoryTier,
 )
 from construction.extractor_impl.llm_extractor import ExtractorImpl
+
 from tests.unit.construction.fixtures import (
     MockLLM,
     RuleFeatureExtractor,
     create_test_unit,
 )
+
 
 # ---------------------------------------------------------------------------
 # Helper: 创建 ExtractorImpl with MockLLM
@@ -44,6 +46,7 @@ def test_extract_preference():
             json.dumps(
                 [
                     {
+                        "source_id": "u1",
                         "target": "preference",
                         "content": "用户偏好用 Python 写代码",
                         "evidence": "偏好 Python",
@@ -75,6 +78,7 @@ def test_extract_fact():
             json.dumps(
                 [
                     {
+                        "source_id": "u1",
                         "target": "fact",
                         "content": "系统已确认数据备份完成",
                         "evidence": "确认",
@@ -103,6 +107,7 @@ def test_extract_event():
             json.dumps(
                 [
                     {
+                        "source_id": "u1",
                         "target": "event",
                         "content": "昨天发生了数据库迁移",
                         "evidence": "昨天发生",
@@ -167,19 +172,21 @@ def test_extract_filter_empty_content():
 
 
 def test_extract_batch():
-    """T-E-07: 3 条 unit → 每条独立提取。"""
-    # 逐条提取：MockLLM 按调用次序循环返回，每条 unit 一次调用、各产出一条候选。
+    """T-E-07: 3 条 unit 批量提取 → 一次 LLM 调用返回 3 条候选，各回指正确源 unit。"""
+    # 批量提取：全部 unit 拼一个 prompt 一次调用，MockLLM 一次响应返回含全部候选的 JSON 数组。
+    # 每条候选的 source_id 回指对应源 unit（u1/u2/u3），实现会校验 source_id 在本批 unit 内。
     payloads = [
-        {"target": "fact", "content": "用户偏好 Python", "evidence": "偏好", "confidence": 1.0},
-        {"target": "event", "content": "系统报错", "evidence": "报错", "confidence": 0.9},
+        {"source_id": "u1", "target": "fact", "content": "用户偏好 Python", "evidence": "偏好", "confidence": 1.0},
+        {"source_id": "u2", "target": "event", "content": "系统报错", "evidence": "报错", "confidence": 0.9},
         {
+            "source_id": "u3",
             "target": "preference",
             "content": "用户喜欢简洁回答",
             "evidence": "喜欢",
             "confidence": 0.8,
         },
     ]
-    responses = [json.dumps([payload]) for payload in payloads]
+    responses = [json.dumps(payloads)]  # 一次调用返回全部 3 条候选
     extractor = _make_extractor(responses)
     units = [
         create_test_unit("u1", "用户偏好 Python"),
@@ -208,6 +215,7 @@ def test_extract_provenance():
             json.dumps(
                 [
                     {
+                        "source_id": "u1",
                         "target": "fact",
                         "content": "用户偏好 Python",
                         "evidence": "偏好",
@@ -236,6 +244,7 @@ def test_extract_feature_enrichment():
             json.dumps(
                 [
                     {
+                        "source_id": "u1",
                         "target": "preference",
                         "content": "用户偏好用 Python 写代码",
                         "evidence": "偏好 Python",
@@ -309,3 +318,41 @@ def test_extractor_operator_type_and_health():
 
     assert extractor.operator_type() == OperatorType.EXTRACTOR
     assert extractor.health() is None
+
+
+# ---------------------------------------------------------------------------
+# T-E-13: 同主题合并（prompt 引导 LLM 合并咖啡相关事实）
+# ---------------------------------------------------------------------------
+
+
+def test_extract_prompt_includes_merge_rule():
+    """T-E-13a: system prompt 含同主题合并规则，引导 LLM 产粗粒度事实。"""
+    from construction.extractor_impl.llm_extractor import _EXTRACT_SYSTEM_PROMPT
+    # 合并规则关键词必须在 prompt 里（防止后续误删）
+    assert "MERGE same-topic" in _EXTRACT_SYSTEM_PROMPT
+    assert "coffee" in _EXTRACT_SYSTEM_PROMPT.lower()  # 咖啡合并示例
+    # 跨 source 不合并的约束
+    assert "never merge across different sources" in _EXTRACT_SYSTEM_PROMPT
+
+
+def test_extract_merged_topic_produces_one_unit():
+    """T-E-13b: LLM 返回合并后的 1 条（咖啡偏好合一条）→ Extractor 产出 1 条派生单元。"""
+    extractor = _make_extractor([
+        json.dumps([
+            {
+                "source_id": "u1",
+                "target": "preference",
+                "content": "Alice 的咖啡偏好：早上喝美式、下午喝拿铁，且不加糖",
+                "evidence": "咖啡偏好",
+                "confidence": 1.0,
+            }
+        ])
+    ])
+    units = [create_test_unit("u1", "Alice 早上喝美式，下午喝拿铁，不加糖")]
+    result = extractor.extract(units)
+
+    assert len(result) == 1
+    assert "咖啡" in result[0].content
+    assert "美式" in result[0].content
+    assert "拿铁" in result[0].content
+    assert "不加糖" in result[0].content
