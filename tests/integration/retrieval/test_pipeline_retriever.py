@@ -8,6 +8,9 @@ from typing import List
 import pytest
 
 from common.errors import BackendError, ValidationError
+from common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (
+    KeywordFeatureExtractor,
+)
 from common.reranker.reranker_impl.overlap_reranker import OverlapReranker
 from common.type_def import FilterClause, FilterOp
 from common.type_def.memory import LifecycleState
@@ -16,6 +19,7 @@ from retrieval.base import RetrievalOperatorType
 from retrieval.discloser_impl.structured_discloser import StructuredDiscloser
 from retrieval.fuser_impl.rrf_fuser import RRFFuser
 from retrieval.fuser_impl.weighted_rrf_fuser import WeightedRRFFuser
+from retrieval.query_parser_impl.simple_query_parser import SimpleQueryParser
 from retrieval.recaller import Recaller
 from retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
 from retrieval.types import (
@@ -113,6 +117,33 @@ def test_empty_query_returns_empty(indexed_world, scope) -> None:
     result = indexed_world.retriever.retrieve(scope, RetrievalQuery(text="   ", top_k=5))
 
     assert result.items == []
+
+
+def test_noise_only_query_short_circuits_after_parse(indexed_world, scope) -> None:
+    parser = SimpleQueryParser(
+        indexed_world.tokenizer,
+        indexed_world.embedder,
+        feature_extractor=KeywordFeatureExtractor(indexed_world.tokenizer),
+        sanitize=True,
+    )
+    retriever = PipelineRetriever(
+        parser,
+        [indexed_world.keyword, indexed_world.vector_recaller],
+        RRFFuser(),
+        indexed_world.discloser,
+        indexed_world.unit_reader,
+    )
+
+    result = retriever.retrieve(
+        scope,
+        RetrievalQuery(text="[Fri 2026-03-27 06:16 UTC]", top_k=5, with_trajectory=True),
+    )
+
+    stages = [step.stage for step in result.trajectory]
+    parse_steps = [step for step in result.trajectory if step.stage == "parse"]
+    assert result.items == [], "噪声 query 清洗为空后应返回空结果"
+    assert "recall" not in stages, "清洗为空后不应触发任何召回通道"
+    assert parse_steps[0].detail["skipped"] == "empty_after_parse", "轨迹应记录解析后空短路"
 
 
 def test_invalid_top_k_raises(indexed_world, scope) -> None:

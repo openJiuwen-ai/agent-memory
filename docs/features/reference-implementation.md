@@ -41,7 +41,7 @@ src/<layer>/<capability>_impl/
 | common | Embedder | `HashingEmbedder` | 确定性哈希词袋 + L2 归一化；构建/检索同向量空间 |
 | common | Chunker | `FixedWindowChunker` | 定长字符窗口切分；Extractor 据此把长内容拆多条事实 |
 | common | FeatureExtractor | `KeywordFeatureExtractor` | 关键词 + 拉丁长词实体；Associator 用它算关联 |
-| common | Reranker | `OverlapReranker` | 词重叠精排；Discloser 在内容物化后重排序 |
+| common | Reranker | `OverlapReranker` | 词重叠精排；PipelineRetriever 在内容物化与后置过滤后重排序 |
 | common | LLM | `EchoLLM` | 回显桩；QueryParser 用它改写 query（恒等、可复现） |
 | common | AuditLogger | `InMemoryAuditLogger` | 审计事件入内存列表，供治理 `audit` 查询 |
 | storage | KVStore | `InMemoryKVStore` | **真源**：存序列化字节；CRUD + `list`（scope 枚举）+ `scopes()` |
@@ -59,11 +59,11 @@ src/<layer>/<capability>_impl/
 | construction | Abstractor | `ConcatAbstractor` | 演进 CONSOLIDATE：升华出 CORE 画像 |
 | construction | Associator | `KeywordAssociator` | 演进 ASSOCIATE：共享关键词建关联 |
 | construction | Evolver | `OrchestratingEvolver` | 编排 extract/associate/consolidate/forget，产物落 kv + 索引 + 图 |
-| retrieval | QueryParser | `SimpleQueryParser` | 分词 + LLM 改写 + 向量化；建议 KEYWORD/GRAPH/VECTOR 通道 |
+| retrieval | QueryParser | `SimpleQueryParser` | 去噪 + 分词 + LLM 改写 + 向量化；建议 KEYWORD/GRAPH/VECTOR 通道 |
 | retrieval | Recaller | `KeywordRecaller` / `VectorRecaller` / `GraphRecaller` | 三条召回通道 |
 | retrieval | Fuser | `RRFFuser` | 倒数排名融合（量纲无关） |
-| retrieval | Discloser | `TruncatingDiscloser` | L0/L1/L2 披露 + valid-time 过滤 + 可选 reranker 精排 |
-| retrieval | Retriever | `PipelineRetriever` | 编排 parse → recall(多路) → fuse → disclose |
+| retrieval | Discloser | `TruncatingDiscloser` | L0/L1/L2 内容塑形；不做点读、过滤或重排 |
+| retrieval | Retriever | `PipelineRetriever` | 编排 parse → recall(多路) → fuse → UnitReader/recheck → rerank → disclose |
 | control | MemoryEngine | `InMemoryEngine` | 接口语义编排中枢 |
 | control | LifecycleManager | `KVLifecycleManager` | `delete` 委托其改状态；`sweep` 清扫到期 |
 | control | Governor | `InMemoryGovernor` | 检视 / 沿 `supersedes` 回溯 / 审计查询 |
@@ -81,10 +81,11 @@ src/<layer>/<capability>_impl/
 
 **recall**（`api.recall`）
 ```
-鉴权 → QueryParser(分词+LLM改写+向量化) → [Keyword, Vector, Graph] 三路召回
-     → RRFFuser 融合 → TruncatingDiscloser(精排 + L0/L1/L2 披露 + as_of 过滤)
+鉴权 → QueryParser(去噪+分词+LLM改写+向量化) → [Keyword, Vector, Graph] 三路召回
+     → RRFFuser 融合 → UnitReader 点读真源 + lifecycle/as_of/event-time/filters 复核
+     → 可选 Reranker 精排 → TruncatingDiscloser(L0/L1/L2 内容塑形)
 ```
-真源只在 Discloser 那一步按 id 反序列化（产出结果的边界）。
+真源只在 PipelineRetriever 的 UnitReader 阶段按 id 反序列化；Discloser 只消费已点读、已过滤、已排序的候选做内容塑形。
 
 **evolve**（`api.evolve(scope, mode)`）
 ```

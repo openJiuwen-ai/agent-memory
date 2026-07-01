@@ -230,19 +230,21 @@ MemoryUnit
 ## 8. 记忆检索层（Retrieve）
 
 ```
- query ─▶ ① scope/标签前置过滤
-        ─▶ ② 并行多路召回  ┌ 向量(语义)
+ query ─▶ ① 查询理解/去噪（清洗为空则短路返回）
+        ─▶ ② scope/标签/时间前置过滤
+        ─▶ ③ 并行多路召回  ┌ 向量(语义)
                             ├ 全文(BM25)
                             ├ 图遍历(关联/多跳)
                             └ 时序过滤(有效期/时间点)
-        ─▶ ③ 融合 + 重排 (RRF / Reranker)
-        ─▶ ④ 渐进式披露 (L0 摘要 → L1 片段 → L2 全文，按需加载省 token)
-        ─▶ ⑤ 返回 + 检索轨迹 (trajectory，可观测可调试)
+        ─▶ ④ 融合 + 重排 (RRF / Reranker)
+        ─▶ ⑤ 渐进式披露 (L0 摘要 → L1 片段 → L2 全文，按需加载省 token)
+        ─▶ ⑥ 返回 + 检索轨迹 (trajectory，可观测可调试)
 ```
 
 - **混合召回 + 重排**：对齐 Mem0 v3 / Zep 的混合检索，并通过实测验证差异化收益。
 - **渐进式披露**：吸收 OpenViking 的 L0/L1/L2 分层加载，控制 token。
 - **检索轨迹**：吸收 OpenViking 的可观测性，每步召回/排序可追溯，非黑盒。
+- **query 去噪与空查询短路**：`QueryParser` 先剥除上游包装噪声并产出结构化查询；清洗后无有效文本时，`Retriever` 在召回前直接返回空结果，避免噪声触发无意义召回。
 - **scope 是独立轴、显式串参**：检索范围作为首参贯穿 `Retriever.retrieve(scope, query)` → `Recaller.recall(scope, …)`（query 是「找什么」、scope 是「在谁的范围内找」），并落到各 Store 查询的专用 `scope` 字段做**原生隔离**——不随查询对象携带、也不混进过滤条件。
 - **前置过滤结构化**：`filters` 为 `FilterClause` 列表（字段+算子+值，支持等值/集合命中/数值·时间范围，AND 组合），由检索层**组装**进各 Store 查询，替代旧的 `dict[str,str]` 平铺等值。
 - **两条时间轴**：`as_of` 是系统相信时间（valid-time，回溯「T 时刻哪个版本有效」），与从 query 文本解析出的事件时间约束（event-time，`time_from/time_to`，过滤 `t_event`）分开，互不折叠。
@@ -471,7 +473,7 @@ write() → 持久化到数据层(G层,原始数据) → [hot] 轻量索引/即�
 **读取路径（Read）**
 
 ```
-recall() → scope 过滤 → 多路召回(向量/全文/图/时序) → 融合重排 → 渐进式披露 → 结果 + 轨迹
+recall() → 查询理解/去噪 → 空查询短路 → scope/标签/时间过滤 → 多路召回(向量/全文/图/时序) → 融合重排 → 渐进式披露 → 结果 + 轨迹
 ```
 
 **演进路径（Evolve）**
@@ -579,10 +581,10 @@ agent-memory/
     │   ├── index_builder.py        #   多形式索引构建：build / update / remove / rebuild（记录落 unit.scope）
     │   └── evolver.py              #   自演进：EvolveMode（extract/associate/consolidate/forget；索引维护非演进模式）
     │
-    ├── retrieval/                  # D 记忆检索层（§8）：①过滤→②多路召回→③融合重排→④披露→⑤轨迹
+    ├── retrieval/                  # D 记忆检索层（§8）：①查询理解→②过滤→③多路召回→④融合重排→⑤披露→⑥轨迹
     │   ├── base.py                 #   RetrievalOperator 算子契约
     │   ├── types.py                #   RetrievalQuery（filters=FilterClause·as_of valid-time）/ ParsedQuery（scalar_filters·as_of·time_from/to event-time）/ ScoredUnit / RetrievedItem / 轨迹
-    │   ├── query_parser.py         #   查询理解：改写 / 分词 / 实体 / 向量化 / 时间约束解析
+    │   ├── query_parser.py         #   查询理解：去噪 / 改写 / 分词 / 实体 / 向量化 / 时间约束解析
     │   ├── recaller.py             #   单路召回：recall(scope, …) 组装 Store 查询；RecallChannel（逻辑路，→Store 非 1:1）
     │   ├── fuser.py                #   多路融合 + 重排（RRF / Reranker）
     │   ├── discloser.py            #   渐进式披露：disclose(query, …) L0 摘要 → L1 片段 → L2 全文

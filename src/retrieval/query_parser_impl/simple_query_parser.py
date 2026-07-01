@@ -9,10 +9,8 @@ FeatureExtractor，则抽实体/关键词（供图通道找种子）。``filters
 
 from __future__ import annotations
 
-from typing import Optional
-
 from common.embedder.base import Embedder, EmbedderProducer
-from common.feature_extractor.base import FeatureExtractor
+from common.feature_extractor.base import FeatureExtractor, FeatureExtractorProducer
 from common.llm.base import LLM, LlmProducer
 from common.tokenizer import Tokenizer
 from common.tokenizer.base import TokenizerProducer
@@ -20,6 +18,7 @@ from retrieval.base import RetrievalOperatorType
 from retrieval.query_parser import QueryParser, QueryParserProducer
 from retrieval.types import ParsedQuery, RecallChannel, RetrievalQuery
 
+from .sanitize import sanitize_query
 from .time_parse import parse_time
 
 
@@ -29,14 +28,19 @@ class SimpleQueryParser(QueryParser):
     def __init__(
         self,
         tokenizer: Tokenizer,
-        embedder: Optional[Embedder] = None,
-        llm: Optional[LLM] = None,
-        feature_extractor: Optional[FeatureExtractor] = None,
+        embedder: Embedder | None = None,
+        llm: LLM | None = None,
+        feature_extractor: FeatureExtractor | None = None,
+        *,
+        sanitize: bool = False,
+        strip_code_fences: bool = False,
     ) -> None:
         self._tokenizer = tokenizer
         self._embedder = embedder
         self._llm = llm
         self._features = feature_extractor
+        self._sanitize = sanitize
+        self._strip_code_fences = strip_code_fences
 
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.QUERY_PARSER
@@ -45,7 +49,12 @@ class SimpleQueryParser(QueryParser):
         return None
 
     def parse(self, query: RetrievalQuery) -> ParsedQuery:
-        rewritten = self._llm.generate(query.text) if self._llm is not None else query.text
+        text = (
+            sanitize_query(query.text, strip_code_fences=self._strip_code_fences)
+            if self._sanitize
+            else query.text
+        )
+        rewritten = self._llm.generate(text) if self._llm is not None else text
         tokens = self._tokenizer.tokenize(rewritten)
         # 关键词与图通道都靠 token/关键词驱动；向量通道需有 Embedder。
         channels = [RecallChannel.KEYWORD, RecallChannel.GRAPH]
@@ -67,10 +76,10 @@ class SimpleQueryParser(QueryParser):
                     seen.add(kw)
 
         # 时间约束解析（event-time 窗口）：规则版，留 LLM 钩子（默认不启用）。
-        time_from, time_to = parse_time(query.text)
+        time_from, time_to = parse_time(text)
 
         return ParsedQuery(
-            raw=query.text,
+            raw=text,
             rewritten=rewritten,
             tokens=tokens,
             keywords=keywords,
@@ -98,4 +107,12 @@ def _build(config):
         else None
     )
     llm = LlmProducer.dep(config, default="echo")
-    return SimpleQueryParser(tokenizer, embedder, llm)
+    features = FeatureExtractorProducer.dep(config, default="keyword")
+    return SimpleQueryParser(
+        tokenizer,
+        embedder,
+        llm,
+        features,
+        sanitize=config.get("query_sanitize_enabled", True),
+        strip_code_fences=config.get("query_sanitize_strip_code", False),
+    )

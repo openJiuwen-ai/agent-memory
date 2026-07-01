@@ -5,14 +5,14 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/retrieval/ |
-| 最近一次修订日期 | 2026-06-23 |
+| 最近一次修订日期 | 2026-06-29 |
 
 | 关联特性文档 | docs/features/F01-system-spec-design.md |
 ## 范围 / 边界
 
 **管什么**：
 - 混合检索的完整链路编排（查询理解 → 并行多路召回 → 融合 + 重排 → 渐进式披露 → 返回 + 检索轨迹）
-- 查询理解：改写/分词/实体/向量化/时间解析
+- 查询理解：去噪/改写/分词/实体/向量化/时间解析
 - 多路召回：按配置启用的通道并行检索（向量/关键词/图/文档/时序）
 - 融合：多路候选合并去重、归一化打分、RRF/加权排序
 - 精排（可选）：调用 Reranker 做 cross-encoder 精排
@@ -60,6 +60,7 @@ class RetrievalOperator(ABC):
 **retrieve 路径**：
 ```
 QueryParser.parse(query) → ParsedQuery
+→ 若 ParsedQuery.raw 为空则短路返回空结果
 → 并行 Recaller[i].recall(scope, parsed_query, top_k) → list[list[ScoredUnit]]
 → Fuser.fuse(parsed_query, candidates) → list[ScoredUnit]（融合 + 可选重排）
 → UnitReader 点读 MemoryUnit → 有效性过滤（lifecycle != FORGOTTEN）
@@ -74,6 +75,10 @@ QueryParser.parse(query) → ParsedQuery
 | `parse` | `(query: RetrievalQuery) -> ParsedQuery` | 将检索请求解析为结构化查询表示 |
 
 **产出**：raw/rewritten/intent/tokens/keywords/entities/vector/scalar_filters/as_of/time_from/time_to/channels/extensions。
+
+`raw` 表示进入检索链路的规范化 query 文本，不要求逐字等于调用方传入的
+`RetrievalQuery.text`。默认 `simple` 实现会先剥除上游包装噪声（如 UTC 时间戳、
+`Sender (untrusted metadata)` 元数据行），再基于清洗后的文本产生分词、向量和时间窗。
 
 ### Recaller（`recaller.py`）
 
@@ -125,7 +130,7 @@ QueryParser.parse(query) → ParsedQuery
 
 | 字段 | 类型 | 语义 |
 |------|------|------|
-| `raw` | str | 原始 query |
+| `raw` | str | 进入检索链路的规范化 query；默认实现会先做保守去噪 |
 | `rewritten` | str | LLM 改写后的 query |
 | `intent` | str | 意图标签 |
 | `tokens` | list[str] | 分词结果 |
@@ -176,4 +181,4 @@ src/retrieval/<算子>_impl/
 | S05-construction | 本层消费构建层产出的索引（向量/全文/图） |
 | S06-storage | Recaller 经注入的 Store 召回候选 |
 | S07-common | 复用 Tokenizer/Embedder/FeatureExtractor/LLM/Reranker |
-| architecture.md §7 | 检索链路五步设计 |
+| architecture.md §8 | 检索链路设计 |

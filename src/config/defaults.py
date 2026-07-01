@@ -27,6 +27,8 @@ def default_config_dict() -> Dict[str, Any]:
             "rerank_enabled": True,
             "embedder_dim": 64,
             "chunk_size": 120,
+            "query_sanitize_enabled": True,
+            "query_sanitize_strip_code": False,
         },
         # -- 存储（有状态，必须对象共享）-------------------------------------- #
         "kv_store": {_D: "memory"},
@@ -49,7 +51,15 @@ def default_config_dict() -> Dict[str, Any]:
             "graph": {"target": "graph", "params": {"graph_store": _D}},
         },
         "query_parser": {
-            _D: {"target": "simple", "params": {"tokenizer": _D, "embedder": _D, "llm": _D}}
+            _D: {
+                "target": "simple",
+                "params": {
+                    "tokenizer": _D,
+                    "embedder": _D,
+                    "llm": _D,
+                    "feature_extractor": _D,
+                },
+            }
         },
         "fuser": {_D: "rrf"},
         "discloser": {_D: "truncating"},

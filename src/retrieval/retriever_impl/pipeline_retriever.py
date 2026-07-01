@@ -101,6 +101,9 @@ class PipelineRetriever(Retriever):
         # [2] 查询理解
         t0 = perf_counter()
         parsed = self._parser.parse(query)
+        if not parsed.raw.strip():
+            step("parse", t0, detail={"skipped": "empty_after_parse"})
+            return RetrievalResult(items=[], trajectory=traj)
         # 调用方自定义透传配置随 parsed 下达各召回路（自定义 Recaller 按约定读取）；
         # 在此统一接力，无需各 parser 实现感知。
         parsed.extensions = dict(query.extensions)

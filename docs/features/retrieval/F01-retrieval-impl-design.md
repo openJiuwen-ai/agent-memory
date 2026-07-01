@@ -15,11 +15,11 @@
 
 ## 背景
 
-检索层（架构 §7，Read 路径）把一条 `RetrievalQuery` 经「查询理解 → 多路召回 → 融合 → 点读复核 → 重排 → 渐进披露」转成 `RetrievalResult`。算子按职责拆分，由 `Retriever` 编排，各算子只做单一职责、彼此不感知：
+检索层（架构 §8，Read 路径）把一条 `RetrievalQuery` 经「查询理解 → 多路召回 → 融合 → 点读复核 → 重排 → 渐进披露」转成 `RetrievalResult`。算子按职责拆分，由 `Retriever` 编排，各算子只做单一职责、彼此不感知：
 
 | 角色 | 接口 / TOP_NAME | 职责 |
 |---|---|---|
-| **QueryParser** | `query_parser.py` · `query_parser` | `RetrievalQuery` → `ParsedQuery`：分词、可选改写/向量化、时间约束解析、过滤透传 |
+| **QueryParser** | `query_parser.py` · `query_parser` | `RetrievalQuery` → `ParsedQuery`：去噪、分词、可选改写/向量化、时间约束解析、过滤透传 |
 | **Recaller** | `recaller.py` · `recaller` | 单通道召回（keyword / vector / graph 各一具名实例），产出 unit 粒度候选 |
 | **Fuser** | `fuser.py` · `fuser` | 多路候选跨通道融合排序 |
 | **Discloser** | `discloser.py` · `discloser` | 按披露层级（L0/L1/L2/ADAPTIVE）塑形结果内容 |
@@ -41,7 +41,9 @@
 
 | target | 类 | 依赖 | 产出 | 关键语义 |
 |---|---|---|---|---|
-| `simple` | `SimpleQueryParser` | `tokenizer`（`dep`，缺省 `whitespace`）；`embedder`（`dep`，缺省 `hashing`，仅 `vector_enabled` 时接入）；`llm`（`dep`，缺省 `echo`） | `ParsedQuery` | 用注入的 `Tokenizer` 分词（与索引侧同实例 = 同词表）；`llm` 非 `echo` 时改写 query（`rewritten`）；接了 `embedder` 时对 query 向量化（同向量空间）并启用 VECTOR 通道；`filters` 透传为硬过滤、`as_of` 透传为 valid-time 回溯点；文本时间约束经 `time_parse` 规则解析为 event-time 窗 |
+| `simple` | `SimpleQueryParser` | `tokenizer`（`dep`，缺省 `whitespace`）；`embedder`（`dep`，缺省 `hashing`，仅 `vector_enabled` 时接入）；`llm`（`dep`，缺省 `echo`）；`feature_extractor`（`dep`，缺省 `keyword`） | `ParsedQuery` | 默认先按 `query_sanitize_enabled=true` 做保守去噪（UTC 时间戳、`Sender (untrusted metadata)` 元数据行；代码围栏默认保留，可用 `query_sanitize_strip_code=true` 剥除），`ParsedQuery.raw` 为清洗后文本；用注入的 `Tokenizer` 分词（与索引侧同实例 = 同词表）；`llm` 非 `echo` 时改写 query（`rewritten`）；接了 `embedder` 时对 query 向量化（同向量空间）并启用 VECTOR 通道；`feature_extractor` 抽实体与补充关键词供图召回使用；`filters` 透传为硬过滤、`as_of` 透传为 valid-time 回溯点；文本时间约束经 `time_parse` 规则解析为 event-time 窗 |
+
+**`sanitize.py`（子模块）**：规则版 query 去噪——剥除上游包装产生的 UTC 方括号时间戳与 `Sender (untrusted metadata)` 元数据整行；默认保护三反引号代码围栏内部格式，只折叠围栏外空白；输入为空或清洗后为空时返回空串。
 
 **`time_parse.py`（子模块）**：规则版自然语言时间解析——覆盖常见中文相对时间（今天/昨天/本周/上月/最近 N 天…），命中返回 event-time 起止 `datetime`，未命中返回 `(None, None)`；`parse_time` 留可选 `llm` 钩子供规则难穷举的表述按需委托，默认不注入。
 
@@ -86,16 +88,17 @@
 
 ### 编排顺序（`PipelineRetriever.retrieve`，Option B）
 
-1. **查询理解**：`query_parser.parse` → `ParsedQuery`（tokens / 可选 rewritten / 可选 vector / 时间窗 / filters）。
-2. **前置谓词**：`build_system_filters` → 并入 `scalar_filters` 下推。
-3. **并行多路召回**：每路超采样 `recall_k = max(top_k, rerank_top_m)`，补偿后续过滤/重排的损耗。
-4. **融合**：`fuser` 跨路合并排序。
-5. **截断重排预算**：取融合结果前 `rerank_top_m`（50）作候选预算。
-6. **点读 + 后置过滤**：`UnitReader` 物化真源 `MemoryUnit`，`passes` / `in_event_window` / `matches_filters` 做纵深防御过滤。
-7. **（可选）重排**：注入 `reranker` 时对存活候选 `rerank`。
-8. **截断 `top_k`**。
-9. **渐进披露**：`discloser.disclose`，按 `disclosure` 层级与 `max_tokens` 塑形（`ADAPTIVE` 按预算自选 L0/L1/L2）。
-10. **返回** `RetrievalResult`（`items` + 可选 `trajectory`，`with_trajectory` 时逐阶段记录 stage/channel/候选数/耗时）。
+1. **查询理解**：`query_parser.parse` → `ParsedQuery`（raw / tokens / 可选 rewritten / 可选 vector / 时间窗 / filters）。
+2. **空信号短路**：若 `ParsedQuery.raw` 为空，直接返回空结果并记录 `empty_after_parse` 轨迹，不触发召回。
+3. **前置谓词**：`build_system_filters` → 并入 `scalar_filters` 下推。
+4. **并行多路召回**：每路超采样 `recall_k = max(top_k, rerank_top_m)`，补偿后续过滤/重排的损耗。
+5. **融合**：`fuser` 跨路合并排序。
+6. **截断重排预算**：取融合结果前 `rerank_top_m`（50）作候选预算。
+7. **点读 + 后置过滤**：`UnitReader` 物化真源 `MemoryUnit`，`passes` / `in_event_window` / `matches_filters` 做纵深防御过滤。
+8. **（可选）重排**：注入 `reranker` 时对存活候选 `rerank`。
+9. **截断 `top_k`**。
+10. **渐进披露**：`discloser.disclose`，按 `disclosure` 层级与 `max_tokens` 塑形（`ADAPTIVE` 按预算自选 L0/L1/L2）。
+11. **返回** `RetrievalResult`（`items` + 可选 `trajectory`，`with_trajectory` 时逐阶段记录 stage/channel/候选数/耗时）。
 
 ---
 
