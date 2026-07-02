@@ -8,11 +8,15 @@ scope 作显式首参贯穿下推到各召回路；各子算子由装配注入�
 
 from __future__ import annotations
 
+import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from time import perf_counter
 from typing import Dict, List, Optional
+from uuid import uuid4
 
 from common.errors import ValidationError
+from common.log import get_logger
 from common.reranker.base import Reranker, RerankerProducer
 from common.type_def import MemoryUnit, Scope
 from retrieval.base import RetrievalOperatorType
@@ -33,6 +37,19 @@ from storage.kv import KvProducer
 
 from .predicate_builder import build_system_filters
 from .unit_reader import UnitReader, in_event_window, matches_filters, passes
+
+logger = get_logger(__name__)
+
+_ERROR_CREDENTIAL_RE = re.compile(r"//[^:/@\s]*:[^@\s]+@")
+_ERROR_AUTH_HEADER_RE = re.compile(
+    r"(?i)(\bauthorization\b['\"]?\s*[:=]\s*['\"]?(?:bearer|basic)\s+)[^'\",\s;&]+"
+)
+_ERROR_AUTH_VALUE_RE = re.compile(
+    r"(?i)(\bauthorization\b['\"]?\s*[:=]\s*['\"]?)(?!(?:bearer|basic)\s+)[^'\",\s;&]+"
+)
+_ERROR_SECRET_RE = re.compile(
+    r"(?i)\b(password|passwd|pwd|token|api[_-]?key|secret)\b\s*[:=]\s*[^,;&]+"
+)
 
 
 class PipelineRetriever(Retriever):
@@ -69,6 +86,22 @@ class PipelineRetriever(Retriever):
         if query.max_tokens is not None and query.max_tokens <= 0:
             raise ValidationError(f"max_tokens must be positive, got {query.max_tokens}")
 
+        started_at = perf_counter()
+        trace_id = uuid4().hex[:16]
+        scope_dims = _scope_log_dims(scope)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Retriever.retrieve start: trace_id=%s scope_dims=%s top_k=%d channels=%s "
+                "rerank=%s disclosure=%s query_len=%d",
+                trace_id,
+                scope_dims,
+                query.top_k,
+                _format_channels(query.channels, auto_label="auto"),
+                query.rerank,
+                query.disclosure.value,
+                len(query.text),
+            )
+
         traj: List[TrajectoryStep] = []
         trace = query.with_trajectory
 
@@ -96,6 +129,21 @@ class PipelineRetriever(Retriever):
         # 空 query 短路：无可检索信号，返回空结果而非把空串喂给各后端。
         if not query.text.strip():
             step("parse", perf_counter(), detail={"skipped": "empty_query"})
+            logger.debug(
+                "Retriever.retrieve empty query: trace_id=%s scope_dims=%s",
+                trace_id,
+                scope_dims,
+            )
+            logger.debug(
+                "Retriever.retrieve done: trace_id=%s scope_dims=%s fused=%d survivors=%d "
+                "returned=%d cost_ms=%.2f",
+                trace_id,
+                scope_dims,
+                0,
+                0,
+                0,
+                (perf_counter() - started_at) * 1000.0,
+            )
             return RetrievalResult(items=[], trajectory=traj)
 
         # [2] 查询理解
@@ -123,6 +171,14 @@ class PipelineRetriever(Retriever):
         selected_recallers = [
             recaller for recaller in self._recallers if not enabled or recaller.channel() in enabled
         ]
+        if not selected_recallers:
+            logger.warning(
+                "Retriever.retrieve no recallers: trace_id=%s scope_dims=%s "
+                "enabled_channels=%s",
+                trace_id,
+                scope_dims,
+                _format_channels(enabled, auto_label="all"),
+            )
         per_channel: List[List[ScoredUnit]] = []
         recall_results: Dict[int, List[ScoredUnit]] = {}
         recall_steps: Dict[int, tuple[float, int, RecallChannel, dict[str, str]]] = {}
@@ -141,10 +197,20 @@ class PipelineRetriever(Retriever):
                         detail: dict[str, str] = {}
                     except Exception as exc:  # 通道隔离：任何后端故障不中断其他通道
                         cands = []
+                        error = _safe_error(exc)
                         detail = {
                             "degraded": type(exc).__name__,
-                            "error": str(exc)[:200],
+                            "error": error,
                         }
+                        logger.warning(
+                            "Retriever.recall degraded: trace_id=%s scope_dims=%s channel=%s "
+                            "error_type=%s error=%s",
+                            trace_id,
+                            scope_dims,
+                            recaller.channel().value,
+                            type(exc).__name__,
+                            error,
+                        )
                     recall_results[idx] = cands
                     recall_steps[idx] = (
                         (perf_counter() - t0) * 1000.0,
@@ -184,7 +250,16 @@ class PipelineRetriever(Retriever):
             )
 
         survivors = [su for su in budget if su.unit_id in units and _keep(units[su.unit_id])]
-        step("recheck", t0, n=len(survivors), detail={"dropped": str(len(budget) - len(survivors))})
+        recheck_dropped = len(budget) - len(survivors)
+        step("recheck", t0, n=len(survivors), detail={"dropped": str(recheck_dropped)})
+        if recheck_dropped:
+            logger.debug(
+                "Retriever.recheck dropped: trace_id=%s scope_dims=%s dropped=%d budget=%d",
+                trace_id,
+                scope_dims,
+                recheck_dropped,
+                len(budget),
+            )
 
         # [7] 可选重排：内容已物化，按与 query 的相关性精排
         do_rerank = query.rerank if query.rerank is not None else (self._reranker is not None)
@@ -207,12 +282,23 @@ class PipelineRetriever(Retriever):
             t0 = perf_counter()
             before_filter = len(survivors)
             survivors = [su for su in survivors if su.score > 0.0]
+            score_dropped = before_filter - len(survivors)
             step(
                 "score_filter",
                 t0,
                 n=len(survivors),
-                detail={"dropped": str(before_filter - len(survivors)), "min_score": ">0"},
+                detail={"dropped": str(score_dropped), "min_score": ">0"},
             )
+            if score_dropped:
+                logger.debug(
+                    "Retriever.score_filter dropped: trace_id=%s scope_dims=%s dropped=%d "
+                    "before=%d min_score=%s",
+                    trace_id,
+                    scope_dims,
+                    score_dropped,
+                    before_filter,
+                    ">0",
+                )
 
         # [8] 截断 top_k
         final = survivors[: query.top_k]
@@ -232,6 +318,16 @@ class PipelineRetriever(Retriever):
             }
         step("disclose", t0, n=len(items), detail=disclose_detail)
 
+        logger.debug(
+            "Retriever.retrieve done: trace_id=%s scope_dims=%s fused=%d survivors=%d "
+            "returned=%d cost_ms=%.2f",
+            trace_id,
+            scope_dims,
+            len(fused),
+            len(survivors),
+            len(items),
+            (perf_counter() - started_at) * 1000.0,
+        )
         return RetrievalResult(items=items, trajectory=traj)
 
 
@@ -266,3 +362,33 @@ def _estimate_tokens(text: str) -> int:
     if not text:
         return 0
     return max(1, (len(text) + 3) // 4)
+
+
+def _format_channels(channels: list[RecallChannel] | None, *, auto_label: str) -> str:
+    if channels is None:
+        return auto_label
+    if not channels:
+        return "all"
+    return ",".join(channel.value for channel in channels)
+
+
+def _scope_log_dims(scope: Scope) -> str:
+    dims: list[str] = []
+    if scope.org:
+        dims.append("org")
+    if scope.user:
+        dims.append("user")
+    if scope.agent:
+        dims.append("agent")
+    if scope.session:
+        dims.append("session")
+    return ",".join(dims) if dims else "none"
+
+
+def _safe_error(exc: Exception) -> str:
+    text = " ".join(str(exc).split())
+    text = _ERROR_CREDENTIAL_RE.sub("//<redacted>:<redacted>@", text)
+    text = _ERROR_AUTH_HEADER_RE.sub(lambda match: f"{match.group(1)}<redacted>", text)
+    text = _ERROR_AUTH_VALUE_RE.sub(lambda match: f"{match.group(1)}<redacted>", text)
+    text = _ERROR_SECRET_RE.sub(lambda match: f"{match.group(1)}=<redacted>", text)
+    return text[:200]
