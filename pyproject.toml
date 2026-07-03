@@ -10,6 +10,7 @@ dependencies = [
     "numpy>=1.24",
     "openai>=1.0",
     "jieba>=0.42",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -54,7 +55,18 @@ url = "https://mirrors.aliyun.com/pypi/simple/"
 default = true
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src", "."]
+include = [
+    "api*",
+    "common*",
+    "config*",
+    "construction*",
+    "control*",
+    "ingest*",
+    "retrieval*",
+    "storage*",
+    "agent_plugin*",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
