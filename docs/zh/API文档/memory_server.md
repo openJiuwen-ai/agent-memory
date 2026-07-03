@@ -210,7 +210,7 @@ Authorization: Bearer <MEMORY_API_KEY>
 | `messages` | `list[dict[str, str]]` | 是 | - | 消息列表，每条消息通常包含 `role` 和 `content`。缺失时分别默认 `user` / 空字符串。 |
 | `user_id` | `str` | 否 | `LongTermMemory.DEFAULT_VALUE` | 用户 ID。 |
 | `scope_id` | `str` | 否 | `LongTermMemory.DEFAULT_VALUE` | 作用域 ID，用于业务隔离。 |
-| `mem_variables` | `list[Param]` | 否 | `[]` | 需抽取的变量定义列表。每个元素为 `Param` 对象，包含 `name`、`description`、`type`、`required` 等字段。不传则不抽取变量。 |
+| `mem_variables` | `list[MemVariable]` | 否 | `[]` | 需抽取的变量定义列表。每个元素只需 `name` + `description`（其余字段可选、有默认值）。不传则不抽取变量。 |
 | `enable_long_term_mem` | `bool` | 否 | `true` | 是否启用长期记忆抽取。 |
 | `enable_user_profile` | `bool` | 否 | `true` | 是否启用用户画像记忆抽取。 |
 | `enable_semantic_memory` | `bool` | 否 | `true` | 是否启用语义记忆抽取。 |
@@ -219,17 +219,17 @@ Authorization: Bearer <MEMORY_API_KEY>
 
 **`mem_variables` 字段说明**：
 
-`Param` 对象用于定义需要从对话中抽取的变量，结构如下：
+`MemVariable` 对象用于定义需要从对话中抽取的变量，结构如下。仅 `name`、`description` 必填，其余由 server 补默认值后透传给引擎：
 
-| 子字段 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `name` | `str` | 是 | 变量名称。 |
-| `description` | `str` | 是 | 变量描述，用于指导 LLM 抽取。 |
-| `type` | `str` | 是 | 变量类型，支持 `string` / `boolean` / `integer` / `number` / `array` / `object`。 |
-| `required` | `bool` | 是 | 是否必填。 |
-| `default` | `any` | 否 | 默认值。 |
-| `items` | `Param` | 否 | 仅 `type=array` 时使用，定义数组元素类型。 |
-| `properties` | `list[Param]` | 否 | 仅 `type=object` 时使用，定义对象属性列表。 |
+| 子字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `name` | `str` | 是 | - | 变量名称。 |
+| `description` | `str` | 是 | - | 变量描述，用于指导 LLM 抽取。 |
+| `type` | `str` | 否 | `string` | 变量类型，仅支持简单类型 `string` / `boolean` / `integer` / `number`。传 `array`/`object` 或未知值会被 422 拒绝（变量抽取是扁平 key/value 结构，不支持嵌套类型）。 |
+| `required` | `bool` | 否 | `true` | 是否必填。 |
+| `default` | `any` | 否 | `null` | 默认值。 |
+
+> 传未知字段会被 422 拒绝（`extra='forbid'`），因此 `descripton` 这类字段名拼错会被显式报出，而非静默忽略。
 
 **请求示例**（不传 `mem_variables`，仅做基础记忆抽取）：
 
@@ -261,7 +261,7 @@ curl -X POST http://127.0.0.1:8000/add_messages/ \
     "user_id": "user_001",
     "scope_id": "demo",
     "mem_variables": [
-      {"name": "favorite_drink", "description": "用户最喜欢的饮品", "type": "string", "required": true},
+      {"name": "favorite_drink", "description": "用户最喜欢的饮品"},
       {"name": "city", "description": "用户所在城市", "type": "string", "required": false}
     ],
     "enable_user_profile": true,

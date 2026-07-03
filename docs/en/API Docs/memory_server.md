@@ -210,7 +210,7 @@ The service converts request `messages` to `BaseMessage` objects and constructs 
 | `messages` | `list[dict[str, str]]` | Yes | - | Message list. Each item usually contains `role` and `content`. Missing values default to `user` / empty string. |
 | `user_id` | `str` | No | `LongTermMemory.DEFAULT_VALUE` | User ID. |
 | `scope_id` | `str` | No | `LongTermMemory.DEFAULT_VALUE` | Scope ID for business isolation. |
-| `mem_variables` | `list[Param]` | No | `[]` | Variable definitions to extract from conversations. Each element is a `Param` object with `name`, `description`, `type`, `required`, etc. If omitted, no variables are extracted. |
+| `mem_variables` | `list[MemVariable]` | No | `[]` | Variable definitions to extract from conversations. Each element only requires `name` + `description` (other fields are optional with defaults). If omitted, no variables are extracted. |
 | `enable_long_term_mem` | `bool` | No | `true` | Enable long-term memory extraction. |
 | `enable_user_profile` | `bool` | No | `true` | Enable user profile memory extraction. |
 | `enable_semantic_memory` | `bool` | No | `true` | Enable semantic memory extraction. |
@@ -219,17 +219,17 @@ The service converts request `messages` to `BaseMessage` objects and constructs 
 
 **`mem_variables` field details**:
 
-The `Param` object defines variables to extract from conversations, with the following structure:
+The `MemVariable` object defines variables to extract from conversations, with the following structure. Only `name` and `description` are required; the server fills in defaults for the rest before passing to the engine.
 
-| Sub-field | Type | Required | Description |
-|---|---|---|---|
-| `name` | `str` | Yes | Variable name. |
-| `description` | `str` | Yes | Variable description, used to guide LLM extraction. |
-| `type` | `str` | Yes | Variable type. Supported values: `string` / `boolean` / `integer` / `number` / `array` / `object`. |
-| `required` | `bool` | Yes | Whether the variable is required. |
-| `default` | `any` | No | Default value. |
-| `items` | `Param` | No | Only used when `type=array`. Defines the array element type. |
-| `properties` | `list[Param]` | No | Only used when `type=object`. Defines the object property list. |
+| Sub-field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `name` | `str` | Yes | - | Variable name. |
+| `description` | `str` | Yes | - | Variable description, used to guide LLM extraction. |
+| `type` | `str` | No | `string` | Variable type. Only simple types are supported: `string` / `boolean` / `integer` / `number`. Array/Object and unknown values are rejected with 422 (variable extraction is a flat key/value structure and does not support nested types). |
+| `required` | `bool` | No | `true` | Whether the variable is required. |
+| `default` | `any` | No | `null` | Default value. |
+
+> Unknown fields are rejected with 422 (`extra='forbid'`), so typos like `descripton` are surfaced instead of being silently ignored.
 
 **Request example** (no `mem_variables`, basic memory extraction only):
 
@@ -261,7 +261,7 @@ curl -X POST http://127.0.0.1:8000/add_messages/ \
     "user_id": "user_001",
     "scope_id": "demo",
     "mem_variables": [
-      {"name": "favorite_drink", "description": "The user's favorite drink", "type": "string", "required": true},
+      {"name": "favorite_drink", "description": "The user's favorite drink"},
       {"name": "city", "description": "The city where the user lives", "type": "string", "required": false}
     ],
     "enable_user_profile": true,

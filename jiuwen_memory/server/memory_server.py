@@ -1,14 +1,14 @@
 import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from jiuwen_memory.common.logging import memory_logger
-from jiuwen_memory.common.schema.param import Param
+from jiuwen_memory.common.schema.param import Param, ParamType
 from jiuwen_memory.foundation.llm import BaseMessage
 from jiuwen_memory.foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
 from jiuwen_memory.memory_core.config.config import AgentMemoryConfig, MemoryEngineConfig, MemoryScopeConfig
@@ -90,13 +90,62 @@ class MessageRequest(BaseModel):
     content: str
 
 
+class MemVariable(BaseModel):
+    """/add_messages/ 变量抽取定义的对外窄模型。
+
+    引擎内部 ``AgentMemoryConfig.mem_variables`` 复用通用 ``Param``，而 ``Param`` 把
+    ``type``/``required`` 声明为必填（``Field(...)``）——这是为 Agent/工作流参数定义设计的强校验。
+    但变量抽取场景调用方只需 ``name``+``description``，引擎（memory_analyzer）也只读这两个字段。
+    故对外只要求 name/description 必填，type/required/default 可选带默认，端点内补齐成 Param。
+
+    type 仅支持简单类型（string/boolean/integer/number）——变量抽取是扁平 key/value 结构，
+    引擎不支持 Array/Object 嵌套类型；传入 array/object 或未知值在反序列化阶段即 422，
+    避免落到 to_param 才 500。extra='forbid' 拒收未知字段，防止字段名拼错被静默吞掉。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., description="变量名")
+    description: str = Field(..., description="变量描述")
+    type: str = Field("string", description="变量类型，默认 string；仅支持 string/boolean/integer/number")
+    required: bool = Field(True, description="是否必填，默认 True")
+    default: Optional[Any] = Field(None, description="默认值")
+
+    @field_validator("type")
+    @classmethod
+    def _validate_type(cls, v: str) -> str:
+        """仅允许简单类型；Array/Object/未知值在反序列化阶段即拒绝（422）。"""
+        allowed = {ParamType.String, ParamType.Boolean, ParamType.Integer, ParamType.Number}
+        try:
+            pt = ParamType(v)
+        except ValueError:
+            raise ValueError(
+                f"mem_variables type '{v}' 不合法，仅支持 string/boolean/integer/number"
+            ) from None
+        if pt not in allowed:
+            raise ValueError(
+                f"mem_variables type '{v}' 不支持，变量抽取仅支持简单类型 string/boolean/integer/number"
+            )
+        return v
+
+    def to_param(self) -> Param:
+        """补齐 type/required 默认值，构造引擎要求的 Param。type 已由校验保证为简单类型。"""
+        return Param(
+            name=self.name,
+            description=self.description,
+            type=ParamType(self.type),
+            required=self.required,
+            default=self.default,
+        )
+
+
 class AddMessagesRequest(BaseModel):
     messages: list[dict[str, str]]
     user_id: Optional[str] = LongTermMemory.DEFAULT_VALUE
     scope_id: Optional[str] = LongTermMemory.DEFAULT_VALUE
-    # 可选：调用方传入需抽取的变量定义，直接复用引擎的 Param（对齐 AgentMemoryConfig.mem_variables）；
-    # 不传则 mem_variables 为空（不抽取变量）
-    mem_variables: list[Param] = Field(default_factory=list)
+    # 可选：调用方传入需抽取的变量定义；对外用窄模型 MemVariable（只要求 name/description），
+    # 端点内适配成引擎的 Param。不传则 mem_variables 为空（不抽取变量）
+    mem_variables: list[MemVariable] = Field(default_factory=list)
     # 抽取开关，默认与引擎保持一致（全开），调用方可按需关闭某类记忆抽取
     enable_long_term_mem: bool = Field(default=True)
     enable_user_profile: bool = Field(default=True)
@@ -226,10 +275,11 @@ async def add_messages_endpoint(request: AddMessagesRequest):
         base_messages = []
         for msg in request.messages:
             base_messages.append(BaseMessage(role=msg.get('role', 'user'), content=msg.get('content', '')))
-        # mem_variables 已由 pydantic 反序列化为 Param 列表，直接透传给 AgentMemoryConfig；
+        # 对外用窄模型 MemVariable（只要求 name/description），这里补齐成引擎要求的 Param 列表；
         # 未传则 mem_variables 为空（不抽取变量）
+        mem_variables = [v.to_param() for v in request.mem_variables]
         agent_cfg = AgentMemoryConfig(
-            mem_variables=request.mem_variables,
+            mem_variables=mem_variables,
             enable_long_term_mem=request.enable_long_term_mem,
             enable_user_profile=request.enable_user_profile,
             enable_semantic_memory=request.enable_semantic_memory,
@@ -434,6 +484,16 @@ async def root():
     }
 
 
+def is_host_exposed_without_key(host: str) -> bool:
+    """安全守卫判断：绑定非本机地址且未配置 MEMORY_API_KEY 时返回 True（应拒绝启动）。
+
+    抽成纯函数便于单测：测试无需触发 sys.exit，只断言本函数返回值。
+    本机地址（127.* / localhost）即使无 key 也放行，仅限本地开发。
+    """
+    is_local = host.startswith("127.") or host == "localhost"
+    return not is_local and not MEMORY_API_KEY
+
+
 def main():
     """CLI entry point: start the Memory Server via uvicorn."""
     import sys
@@ -444,7 +504,7 @@ def main():
     port = int(os.getenv("PORT", "8000"))
 
     # 安全守卫：绑定非本机地址必须配置 MEMORY_API_KEY
-    if not host.startswith("127.") and host != "localhost" and not MEMORY_API_KEY:
+    if is_host_exposed_without_key(host):
         memory_logger.error(
             "IP=%s exposes the service to the network, but MEMORY_API_KEY is not set. "
             "Set MEMORY_API_KEY in ~/.jiuwenmemory/.env, or use IP=127.0.0.1 for local-only access.",
