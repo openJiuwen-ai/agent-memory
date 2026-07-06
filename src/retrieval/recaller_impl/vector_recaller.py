@@ -10,8 +10,8 @@
 
 from __future__ import annotations
 
-from typing import List
-
+from common.errors import ValidationError
+from common.factory.factory import Factory
 from common.type_def import Scope
 from retrieval.base import RetrievalOperatorType
 from retrieval.recaller import Recaller, RecallerProducer
@@ -25,8 +25,18 @@ from .unit_aggregation import aggregate_to_units
 class VectorRecaller(Recaller):
     """向量语义召回路（包一个 VectorStore）。"""
 
-    def __init__(self, vector_store: VectorStore) -> None:
+    def __init__(self, vector_store: VectorStore, min_similarity: float = 0.0) -> None:
         self._vector = vector_store
+        # 语义前置阈值：相似度低于此值的命中直接丢弃（默认 0 关闭）。
+        # 前提是「分越大越相关」（cosine/IP 语义）；方向语义由 store 契约声明。
+        self._min_similarity = float(min_similarity)
+        # 装配期防呆：距离型度量（如 L2，越小越相关）下启用该过滤会静默砍掉最相关
+        # 候选，按 store 声明的分数方向直接拒绝（fail-fast，部署起不来而非静默劣化）。
+        if self._min_similarity > 0.0 and not vector_store.score_higher_is_better():
+            raise ValidationError(
+                "向量召回 min_similarity 需要「分越大越相关」的度量（cosine/IP），"
+                "当前向量库声明分数为距离型（越小越相关，如 L2），不可启用语义前置阈值"
+            )
 
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.RECALLER
@@ -37,11 +47,14 @@ class VectorRecaller(Recaller):
     def channel(self) -> RecallChannel:
         return RecallChannel.VECTOR
 
-    def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> List[ScoredUnit]:
+    def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]:
         if not query.vector:
             return []
         vq = VectorQuery(vector=query.vector, top_k=top_k, filters=query.scalar_filters)
         hits = self._vector.search(scope, vq)
+        # 语义前置阈值：融合前先砍掉明显不相关的语义命中，省下游 recheck/rerank 预算。
+        if self._min_similarity > 0.0:
+            hits = [h for h in hits if h.score >= self._min_similarity]
         # 命中 id 为 chunk 复合 id；再点读记录拿回 metadata['unit_id']，归并到 unit 粒度。
         records = self._vector.get(scope, [h.id for h in hits])
         return aggregate_to_units(hits, records, RecallChannel.VECTOR)
@@ -54,4 +67,7 @@ class VectorRecaller(Recaller):
 @RecallerProducer.register("vector")
 def _build(config):
     # VectorStore 经 VectorProducer 自取（缺省 memory），与索引侧共享同一实例。
-    return VectorRecaller(VectorProducer.dep(config, default="memory"))
+    return VectorRecaller(
+        VectorProducer.dep(config, default="memory"),
+        min_similarity=float(Factory.cfg_get(config, "min_similarity", 0.0)),
+    )

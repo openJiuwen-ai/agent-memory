@@ -247,6 +247,10 @@ class MilvusVectorStore(VectorStore):
         hits = results[0] if results else []
         return [ScoredID(id=hit["id"], score=float(hit["distance"])) for hit in hits]
 
+    def score_higher_is_better(self) -> bool:
+        # 分数方向随 metric_type：COSINE/IP 越大越相关；L2 等距离型越小越相关。
+        return str(self._metric_type).upper() in ("COSINE", "IP")
+
 
 # -- 注册到 VectorProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
 

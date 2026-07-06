@@ -46,3 +46,12 @@ class VectorStore(BaseStore):
     @abstractmethod
     def search(self, scope: Scope, query: VectorQuery) -> list[ScoredID]:
         """在 ``scope`` 内做 ANN 近邻检索，按相似度返回 top-k。"""
+
+    def score_higher_is_better(self) -> bool:
+        """``search`` 返回分数的方向语义：True=分越大越相关（cosine/IP 类）。
+
+        消费方（如召回侧的语义前置阈值）据此判断能否做「低于阈值即丢弃」类过滤。
+        距离型后端（如 L2，越小越相关）**必须** override 返回 False，否则该类过滤
+        会静默反转、砍掉最相关的结果。默认 True（本仓内置实现均为 cosine 语义）。
+        """
+        return True

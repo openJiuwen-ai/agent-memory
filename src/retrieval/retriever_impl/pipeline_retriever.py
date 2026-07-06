@@ -1,8 +1,8 @@
 """最小实现：:class:`~retrieval.retriever.Retriever`——检索链路编排者。
 
 单次 :meth:`retrieve` 驱动完整链路（Option B：点读/有效性/重排为独立阶段）：
-查询理解 → 前置谓词构造 → 并行多路召回 → 融合 → 截断重排预算 → 点读真源 +
-有效性过滤 → （可选）重排 → 截断 top_k → 渐进式披露 → 返回结果与轨迹。
+查询理解 → 前置谓词构造 → 并行多路召回 → 融合 → 截断候选预算 → 点读真源 +
+有效性过滤 → （可选）重排 → 阈值过滤 → 截断 top_k → 渐进式披露 → 返回结果与轨迹。
 scope 作显式首参贯穿下推到各召回路；各子算子由装配注入，本类不含召回/打分逻辑。
 """
 
@@ -12,10 +12,10 @@ import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from time import perf_counter
-from typing import Dict, List, Optional
 from uuid import uuid4
 
 from common.errors import ValidationError
+from common.factory.factory import Factory
 from common.log import get_logger
 from common.reranker.base import Reranker, RerankerProducer
 from common.type_def import MemoryUnit, Scope
@@ -58,12 +58,19 @@ class PipelineRetriever(Retriever):
     def __init__(
         self,
         parser: QueryParser,
-        recallers: List[Recaller],
+        recallers: list[Recaller],
         fuser: Fuser,
         discloser: Discloser,
         unit_reader: UnitReader,
-        reranker: Optional[Reranker] = None,
-        rerank_top_m: int = 50,
+        reranker: Reranker | None = None,
+        over_fetch_factor: int = 4,
+        over_fetch_floor: int = 60,
+        recall_max: int = 100,
+        rerank_max: int = 50,
+        min_score: float = 0.0,
+        min_score_ratio: float = 0.6,
+        min_score_ratio_uncalibrated: float = 0.3,
+        min_results: int = 0,
     ) -> None:
         self._parser = parser
         self._recallers = recallers
@@ -71,7 +78,26 @@ class PipelineRetriever(Retriever):
         self._discloser = discloser
         self._reader = unit_reader
         self._reranker = reranker
-        self._top_m = rerank_top_m
+        # 召回超采样：每路取 max(top_k*factor, floor)，撒宽网喂融合。
+        self._over_fetch_factor = max(1, int(over_fetch_factor))
+        self._over_fetch_floor = max(1, int(over_fetch_floor))
+        # 召回硬上限：封顶每路 recall_k，防止调用方超大 top_k 经 factor 放大压垮后端
+        # （0=不限）。融合池 ≤ recall_max×通道数 → 间接封顶下游点读/复核/重排。
+        self._recall_max = max(0, int(recall_max))
+        # 两旋钮矛盾时上限赢（保护优先），但要让运维可见，避免 floor 静默失效。
+        if 0 < self._recall_max < self._over_fetch_floor:
+            logger.warning(
+                "recall_max(%d) < over_fetch_floor(%d)：召回硬上限压过下限，"
+                "每路生效召回宽度为 recall_max",
+                self._recall_max,
+                self._over_fetch_floor,
+            )
+        # 精排预算：recheck+rerank 封顶（控 cross-encoder 成本），但不低于 top_k。
+        self._rerank_max = max(1, int(rerank_max))
+        self._min_score = float(min_score)
+        self._min_score_ratio = float(min_score_ratio)
+        self._min_score_ratio_uncalibrated = float(min_score_ratio_uncalibrated)
+        self._min_results = max(0, int(min_results))
 
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.RETRIEVER
@@ -102,7 +128,7 @@ class PipelineRetriever(Retriever):
                 len(query.text),
             )
 
-        traj: List[TrajectoryStep] = []
+        traj: list[TrajectoryStep] = []
         trace = query.with_trajectory
 
         def record_step(
@@ -165,7 +191,13 @@ class PipelineRetriever(Retriever):
 
         # 通道选择：调用级 query.channels 覆盖 parser 建议
         enabled = query.channels if query.channels is not None else parsed.channels
-        recall_k = max(query.top_k, self._top_m)  # 每路超采样到重排预算
+        # 召回超采样（撒宽网）与精排预算（控成本）解耦：
+        #   recall_k = max(top_k*factor, floor)  —— 每路召回宽度
+        #   budget_n = max(rerank_max, top_k)    —— recheck+rerank 封顶，永不欠 top_k
+        recall_k = max(query.top_k * self._over_fetch_factor, self._over_fetch_floor)
+        if self._recall_max > 0:
+            recall_k = min(recall_k, self._recall_max)  # 硬上限：封顶后端召回压力
+        budget_n = max(self._rerank_max, query.top_k)
 
         # [3b] 并行多路召回：每通道失败隔离——单路异常降级为空集并记轨迹。
         selected_recallers = [
@@ -179,9 +211,9 @@ class PipelineRetriever(Retriever):
                 scope_dims,
                 _format_channels(enabled, auto_label="all"),
             )
-        per_channel: List[List[ScoredUnit]] = []
-        recall_results: Dict[int, List[ScoredUnit]] = {}
-        recall_steps: Dict[int, tuple[float, int, RecallChannel, dict[str, str]]] = {}
+        per_channel: list[list[ScoredUnit]] = []
+        recall_results: dict[int, list[ScoredUnit]] = {}
+        recall_steps: dict[int, tuple[float, int, RecallChannel, dict[str, str]]] = {}
         if selected_recallers:
             with ThreadPoolExecutor(max_workers=len(selected_recallers)) as executor:
                 futures = {}
@@ -234,13 +266,13 @@ class PipelineRetriever(Retriever):
         fusion_detail = explain_fusion() if callable(explain_fusion) else {}
         step("fuse", t0, n=len(fused), detail=fusion_detail)
 
-        # [5] 截断到重排预算 top-M
-        budget = fused[: self._top_m]
+        # [5] 截断到精排预算；top_k 大于 rerank_max 时自动扩展，避免静默欠召。
+        budget = fused[:budget_n]
 
         # [6] 点读真源（查询 scope 内）+ 后置过滤（纵深防御）：
         #     lifecycle×as_of 有效性 + event-time 窗 + 调用方显式 filters。
         t0 = perf_counter()
-        units: Dict[str, MemoryUnit] = self._reader.load(scope, [su.unit_id for su in budget])
+        units: dict[str, MemoryUnit] = self._reader.load(scope, [su.unit_id for su in budget])
 
         def _keep(u: MemoryUnit) -> bool:
             return (
@@ -263,6 +295,7 @@ class PipelineRetriever(Retriever):
 
         # [7] 可选重排：内容已物化，按与 query 的相关性精排
         do_rerank = query.rerank if query.rerank is not None else (self._reranker is not None)
+        reranked = False
         if do_rerank and self._reranker is not None and survivors:
             t0 = perf_counter()
             scores = self._reranker.rerank(
@@ -279,31 +312,30 @@ class PipelineRetriever(Retriever):
                 for i in order
             ]
             step("rerank", t0, n=len(survivors))
-            t0 = perf_counter()
-            before_filter = len(survivors)
-            survivors = [su for su in survivors if su.score > 0.0]
-            score_dropped = before_filter - len(survivors)
-            step(
-                "score_filter",
-                t0,
-                n=len(survivors),
-                detail={"dropped": str(score_dropped), "min_score": ">0"},
+            reranked = True
+        elif do_rerank and self._reranker is None:
+            # 显式要求精排但装配未注入 reranker：记轨迹让降级可见（阈值走未校准路径）。
+            record_step(
+                "rerank", 0.0, n=len(survivors), detail={"skipped": "no_reranker_configured"}
             )
-            if score_dropped:
-                logger.debug(
-                    "Retriever.score_filter dropped: trace_id=%s scope_dims=%s dropped=%d "
-                    "before=%d min_score=%s",
-                    trace_id,
-                    scope_dims,
-                    score_dropped,
-                    before_filter,
-                    ">0",
-                )
 
-        # [8] 截断 top_k
+        # [8] 统一阈值过滤：精排路径用校准分；未精排路径仅使用相对阈值。
+        t0 = perf_counter()
+        survivors, threshold_detail = apply_threshold(
+            survivors,
+            query.top_k,
+            calibrated=reranked,
+            min_score=self._min_score,
+            min_score_ratio=self._min_score_ratio,
+            min_score_ratio_uncalibrated=self._min_score_ratio_uncalibrated,
+            min_results=self._min_results,
+        )
+        step("threshold", t0, n=len(survivors), detail=threshold_detail)
+
+        # [9] 截断 top_k
         final = survivors[: query.top_k]
 
-        # [9] 渐进式披露（纯内容塑形，复用已点读的 units）
+        # [10] 渐进式披露（纯内容塑形，复用已点读的 units）
         t0 = perf_counter()
         items = self._discloser.disclose(
             parsed, final, units, query.disclosure, max_tokens=query.max_tokens
@@ -330,7 +362,6 @@ class PipelineRetriever(Retriever):
         )
         return RetrievalResult(items=items, trajectory=traj)
 
-
 # -- 注册到 RetrieverProducer（实现自注册，新增无需改 producer/装配入口） -------- #
 
 
@@ -355,6 +386,18 @@ def _build(config):
         DiscloserProducer.dep(config, default="truncating"),
         UnitReader(KvProducer.dep(config, default="memory")),
         reranker,
+        over_fetch_factor=int(Factory.cfg_get(config, "over_fetch_factor", 4)),
+        over_fetch_floor=int(Factory.cfg_get(config, "over_fetch_floor", 60)),
+        # 回退值 = 出厂默认（与 defaults.py 的 retriever params 保持一致）：实例级覆盖会
+        # 整体替换 params，漏写键时落到这里——回退到出厂行为而非静默关闭防护。
+        recall_max=int(Factory.cfg_get(config, "recall_max", 100)),
+        rerank_max=int(Factory.cfg_get(config, "rerank_max", 50)),
+        min_score=float(Factory.cfg_get(config, "min_score", 0.0)),
+        min_score_ratio=float(Factory.cfg_get(config, "min_score_ratio", 0.6)),
+        min_score_ratio_uncalibrated=float(
+            Factory.cfg_get(config, "min_score_ratio_uncalibrated", 0.3)
+        ),
+        min_results=int(Factory.cfg_get(config, "min_results", 0)),
     )
 
 
@@ -362,6 +405,72 @@ def _estimate_tokens(text: str) -> int:
     if not text:
         return 0
     return max(1, (len(text) + 3) // 4)
+
+
+def apply_threshold(
+    survivors: list[ScoredUnit],
+    top_k: int,
+    *,
+    calibrated: bool,
+    min_score: float = 0.0,
+    min_score_ratio: float = 0.0,
+    min_score_ratio_uncalibrated: float = 0.0,
+    min_results: int = 0,
+) -> tuple[list[ScoredUnit], dict[str, str]]:
+    """应用统一相关性阈值，返回保留候选与轨迹明细。"""
+    n_in = len(survivors)
+    positive = sorted(
+        (su for su in survivors if su.score > 0.0),
+        key=lambda su: su.score,
+        reverse=True,
+    )
+    # 绝对阈值仅在校准（已精排）路径生效；相对阈值分路取不同默认：
+    # 校准分较可信取严，未校准 RRF 分聚集取松，避免过度偏好多通道一致。
+    abs_min = min_score if calibrated else 0.0
+    ratio = min_score_ratio if calibrated else min_score_ratio_uncalibrated
+    base_detail = {
+        "in": str(n_in),
+        "positive": str(len(positive)),
+        "calibrated": str(calibrated),
+        "min_score": f"{abs_min:g}",
+        "min_score_ratio": f"{ratio:g}",
+    }
+    if not positive:
+        return [], {
+            **base_detail,
+            "passed": "0",
+            "backfilled": "0",
+            "out": "0",
+            "dropped": str(n_in),
+        }
+
+    max_score = positive[0].score
+
+    def _pass(score: float) -> bool:
+        if abs_min > 0.0 and score < abs_min:
+            return False
+        if ratio > 0.0 and max_score > 0.0 and score < ratio * max_score:
+            return False
+        return True
+
+    n_pass = 0
+    for su in positive:
+        if _pass(su.score):
+            n_pass += 1
+        else:
+            break
+
+    floor = min(max(0, int(min_results)), top_k) if min_results > 0 else 0
+    keep_n = max(n_pass, floor)
+    kept = positive[:keep_n]
+    backfilled = max(0, len(kept) - n_pass)
+    return kept, {
+        **base_detail,
+        "passed": str(n_pass),
+        "backfilled": str(backfilled),
+        "out": str(len(kept)),
+        "dropped": str(n_in - len(kept)),
+    }
 
 
 def _format_channels(channels: list[RecallChannel] | None, *, auto_label: str) -> str:

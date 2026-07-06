@@ -236,7 +236,7 @@ MemoryUnit
                             ├ 全文(BM25)
                             ├ 图遍历(关联/多跳)
                             └ 时序过滤(有效期/时间点)
-        ─▶ ④ 融合 + 重排 (RRF / Reranker)
+        ─▶ ④ 融合 + 重排 + 相关性阈值 (RRF / Reranker / min_score·ratio)
         ─▶ ⑤ 渐进式披露 (L0 摘要 → L1 片段 → L2 全文，按需加载省 token)
         ─▶ ⑥ 返回 + 检索轨迹 (trajectory，可观测可调试)
 ```
@@ -473,7 +473,7 @@ write() → 持久化到数据层(G层,原始数据) → [hot] 轻量索引/即�
 **读取路径（Read）**
 
 ```
-recall() → 查询理解/去噪 → 空查询短路 → scope/标签/时间过滤 → 多路召回(向量/全文/图/时序) → 融合重排 → 渐进式披露 → 结果 + 轨迹
+recall() → 查询理解/去噪 → 空查询短路 → scope/标签/时间过滤 → 多路召回(向量/全文/图/时序) → 融合重排 → 相关性阈值 → 渐进式披露 → 结果 + 轨迹
 ```
 
 **演进路径（Evolve）**
@@ -581,12 +581,12 @@ agent-memory/
     │   ├── index_builder.py        #   多形式索引构建：build / update / remove / rebuild（记录落 unit.scope）
     │   └── evolver.py              #   自演进：EvolveMode（extract/associate/consolidate/forget；索引维护非演进模式）
     │
-    ├── retrieval/                  # D 记忆检索层（§8）：①查询理解→②过滤→③多路召回→④融合重排→⑤披露→⑥轨迹
+    ├── retrieval/                  # D 记忆检索层（§8）：①查询理解→②过滤→③多路召回→④融合重排→⑤相关性阈值→⑥披露→⑦轨迹
     │   ├── base.py                 #   RetrievalOperator 算子契约
     │   ├── types.py                #   RetrievalQuery（filters=FilterClause·as_of valid-time）/ ParsedQuery（scalar_filters·as_of·time_from/to event-time）/ ScoredUnit / RetrievedItem / 轨迹
     │   ├── query_parser.py         #   查询理解：去噪 / 改写 / 分词 / 实体 / 向量化 / 时间约束解析
     │   ├── recaller.py             #   单路召回：recall(scope, …) 组装 Store 查询；RecallChannel（逻辑路，→Store 非 1:1）
-    │   ├── fuser.py                #   多路融合 + 重排（RRF / Reranker）
+    │   ├── fuser.py                #   多路融合排序（RRF；重排由 common Reranker 独立阶段承担）
     │   ├── discloser.py            #   渐进式披露：disclose(query, …) L0 摘要 → L1 片段 → L2 全文
     │   └── retriever.py            #   检索入口：retrieve(scope, query) 编排整条链路，接口层 recall 映射到它
     │
@@ -622,7 +622,7 @@ agent-memory/
 | `src/ingest/`                       | A 数据接入（§5/§5.1）：信息源接入 + 模态规约 + 转换为 MemoryUnit（**不落盘**） |
 | `src/api/`                          | B 记忆接口层（§6）：`MemoryAPI` 统一 Core API，`MemoryEngine` 的薄封装 |
 | `src/control/`                      | C 控制层：记忆引擎编排（§6 语义的执行中枢）/ 生命周期（§3.1）/ 治理审计（§12）/ scope 权限（§3.2）/ 演进调度（§9.3）/ 运行时策略（§13.4） |
-| `src/retrieval/`                    | D 记忆检索层（§8）：查询理解 + 多路召回 + 融合重排 + 渐进披露 + 轨迹 |
+| `src/retrieval/`                    | D 记忆检索层（§8）：查询理解 + 多路召回 + 融合重排 + 相关性阈值 + 渐进披露 + 轨迹 |
 | `src/construction/`                 | E 记忆构建层 / 分层记忆结构（§4/§9.1/§9.2/§9.3）：**负责 MemoryUnit 落盘**与多形式索引构建、自演进 |
 | `src/storage/`                      | F 记忆存储层（§10）：六种 Store（kv/fulltext/vector/graph/fusion/fs），统一 CRUD 动词 |
 | `src/common/`                       | 跨层共享：能力插件（Plugin：tokenizer/chunker/embedder/feature_extractor/llm/normalizer/reranker）+ 通用结构体（type_def，含 §3 数据模型）+ 横切组件（audit） |

@@ -15,7 +15,7 @@
 
 ## 背景
 
-检索层（架构 §8，Read 路径）把一条 `RetrievalQuery` 经「查询理解 → 多路召回 → 融合 → 点读复核 → 重排 → 渐进披露」转成 `RetrievalResult`。算子按职责拆分，由 `Retriever` 编排，各算子只做单一职责、彼此不感知：
+检索层（架构 §8，Read 路径）把一条 `RetrievalQuery` 经「查询理解 → 多路召回 → 融合 → 点读复核 → 重排 → 相关性阈值 → 渐进披露」转成 `RetrievalResult`。算子按职责拆分，由 `Retriever` 编排，各算子只做单一职责、彼此不感知：
 
 | 角色 | 接口 / TOP_NAME | 职责 |
 |---|---|---|
@@ -41,7 +41,7 @@
 
 | target | 类 | 依赖 | 产出 | 关键语义 |
 |---|---|---|---|---|
-| `simple` | `SimpleQueryParser` | `tokenizer`（`dep`，缺省 `whitespace`）；`embedder`（`dep`，缺省 `hashing`，仅 `vector_enabled` 时接入）；`llm`（`dep`，缺省 `echo`）；`feature_extractor`（`dep`，缺省 `keyword`） | `ParsedQuery` | 默认先按 `query_sanitize_enabled=true` 做保守去噪（UTC 时间戳、`Sender (untrusted metadata)` 元数据行；代码围栏默认保留，可用 `query_sanitize_strip_code=true` 剥除），`ParsedQuery.raw` 为清洗后文本；用注入的 `Tokenizer` 分词（与索引侧同实例 = 同词表）；`llm` 非 `echo` 时改写 query（`rewritten`）；接了 `embedder` 时对 query 向量化（同向量空间）并启用 VECTOR 通道；`feature_extractor` 抽实体与补充关键词供图召回使用；`filters` 透传为硬过滤、`as_of` 透传为 valid-time 回溯点；文本时间约束经 `time_parse` 规则解析为 event-time 窗 |
+| `simple` | `SimpleQueryParser` | `tokenizer`（`dep`，缺省 `whitespace`）；`embedder`（`dep`，缺省 `hashing`，仅 `vector_enabled` 时接入）；`llm`（`dep`，缺省 `echo`）；`feature_extractor`（`dep`，缺省 `keyword`） | `ParsedQuery` | 默认先按 `params.sanitize_enabled=true` 做保守去噪（UTC 时间戳、`Sender (untrusted metadata)` 元数据行；代码围栏默认保留，可用 `params.sanitize_strip_code=true` 剥除），`ParsedQuery.raw` 为清洗后文本；用注入的 `Tokenizer` 分词（与索引侧同实例 = 同词表）；`llm` 非 `echo` 时改写 query（`rewritten`）；接了 `embedder` 时对 query 向量化（同向量空间）并启用 VECTOR 通道；`feature_extractor` 抽实体与补充关键词供图召回使用；`filters` 透传为硬过滤、`as_of` 透传为 valid-time 回溯点；文本时间约束经 `time_parse` 规则解析为 event-time 窗 |
 
 **`sanitize.py`（子模块）**：规则版 query 去噪——剥除上游包装产生的 UTC 方括号时间戳与 `Sender (untrusted metadata)` 元数据整行；默认保护三反引号代码围栏内部格式，只折叠围栏外空白；输入为空或清洗后为空时返回空串。
 
@@ -75,7 +75,7 @@
 
 | target | 类 | 依赖（缺省） | 参数（默认） | 关键语义 |
 |---|---|---|---|---|
-| `pipeline` | `PipelineRetriever` | `query_parser`（`simple`）；`recaller` 三路 `keyword_recaller`/`vector_recaller`/`graph_recaller`（后两路按 `vector_enabled`/`graph_enabled` 开关接入）；`fuser`（`rrf`）；`discloser`（`truncating`）；`unit_reader` ← `kv_store`（`memory`）；`reranker`（common，`overlap`，仅 `rerank_enabled` 接入） | `rerank_top_m`（50） | 编排完整 Read 链路（见下「编排顺序」），`scope` 作显式首参贯穿下推到各召回路；本类不含召回/打分逻辑，全由注入算子完成 |
+| `pipeline` | `PipelineRetriever` | `query_parser`（`simple`）；`recaller` 三路 `keyword_recaller`/`vector_recaller`/`graph_recaller`（后两路按 `vector_enabled`/`graph_enabled` 开关接入）；`fuser`（`rrf`）；`discloser`（`truncating`）；`unit_reader` ← `kv_store`（`memory`）；`reranker`（common，`overlap`，仅 `rerank_enabled` 接入） | 召回超采样 `over_fetch_factor`（4）/`over_fetch_floor`（60）/`recall_max`（100，召回硬上限，0=不限）；精排预算 `rerank_max`（50）；相关性阈值 `min_score`（0，绝对，仅校准路径）/`min_score_ratio`（0.6，校准）/`min_score_ratio_uncalibrated`（0.3，未校准）/`min_results`（0，兜底） | 编排完整 Read 链路（见下「编排顺序」），`scope` 作显式首参贯穿下推到各召回路；本类不含召回/打分逻辑，全由注入算子完成 |
 
 ### 非工厂支撑件（由 `PipelineRetriever` 直接构造/调用，不进依赖图）
 
@@ -91,14 +91,15 @@
 1. **查询理解**：`query_parser.parse` → `ParsedQuery`（raw / tokens / 可选 rewritten / 可选 vector / 时间窗 / filters）。
 2. **空信号短路**：若 `ParsedQuery.raw` 为空，直接返回空结果并记录 `empty_after_parse` 轨迹，不触发召回。
 3. **前置谓词**：`build_system_filters` → 并入 `scalar_filters` 下推。
-4. **并行多路召回**：每路超采样 `recall_k = max(top_k, rerank_top_m)`，补偿后续过滤/重排的损耗。
+4. **并行多路召回**：每路超采样 `recall_k = min(max(top_k × over_fetch_factor, over_fetch_floor), recall_max)`（撒宽网补偿后续过滤/重排损耗；`recall_max` 硬上限防超大 `top_k` 放大压垮后端，0=不限）。向量通道可选前置阈值 `min_similarity`（相似度低于此值的命中先丢；仅适用「分越大越相关」语义，方向由 `VectorStore.score_higher_is_better()` 契约声明，距离型度量装配期拒绝）。
 5. **融合**：`fuser` 跨路合并排序。
-6. **截断重排预算**：取融合结果前 `rerank_top_m`（50）作候选预算。
+6. **截断精排预算**：取融合结果前 `budget_n = max(rerank_max, top_k)` 作候选预算（召回宽度与精排成本解耦；`top_k` 大于 `rerank_max` 时自动扩展，不静默欠召）。
 7. **点读 + 后置过滤**：`UnitReader` 物化真源 `MemoryUnit`，`passes` / `in_event_window` / `matches_filters` 做纵深防御过滤。
-8. **（可选）重排**：注入 `reranker` 时对存活候选 `rerank`。
-9. **截断 `top_k`**。
-10. **渐进披露**：`discloser.disclose`，按 `disclosure` 层级与 `max_tokens` 塑形（`ADAPTIVE` 按预算自选 L0/L1/L2）。
-11. **返回** `RetrievalResult`（`items` + 可选 `trajectory`，`with_trajectory` 时逐阶段记录 stage/channel/候选数/耗时）。
+8. **（可选）重排**：注入 `reranker` 时对存活候选 `rerank`；记 `reranked` 标志（即阈值阶段的 `calibrated`）。
+9. **相关性阈值**：`apply_threshold` 统一裁剪——先丢非正分，再按阈值取降序前缀（绝对 `min_score` 仅在校准/已精排路径生效；相对阈值分路取 `min_score_ratio` 0.6（校准）/ `min_score_ratio_uncalibrated` 0.3（未校准）），`min_results` 从正分候选回填到下限（夹到 ≤ `top_k`）。
+10. **截断 `top_k`**。
+11. **渐进披露**：`discloser.disclose`，按 `disclosure` 层级与 `max_tokens` 塑形（`ADAPTIVE` 按预算自选 L0/L1/L2）。
+12. **返回** `RetrievalResult`（`items` + 可选 `trajectory`，`with_trajectory` 时逐阶段记录 stage/channel/候选数/耗时）。
 
 ---
 
@@ -109,7 +110,9 @@
 - **只靠谓词下推 或 只靠后置过滤**：被拒，两者并存 = 纵深防御。能下推的（lifecycle/temporal）在索引级先排除以减少召回浪费；索引未写齐相应字段或异步滞后时，`passes` / `in_event_window` 后置兜底正确性。
 - **`time_parse` 默认注入 LLM**：被拒。规则版覆盖常见中文相对时间且可控；默认不接 LLM，避免规则确定性被弱模型噪声污染，复杂表述留可选钩子按需注入。
 - **召回返回 chunk 粒度**：被拒，统一归并到 unit 粒度（MaxP）。`UnitReader` 需按 unit 点读真源、`Fuser` 需跨通道合并同一 unit，chunk 复合 id 无法承担这两件事。
-- **全量重排**：被拒。按 `rerank_top_m`（50）截断重排预算，并令各召回路超采样到该预算，平衡召回率与重排成本。
+- **全量重排**：被拒。召回宽度与精排成本解耦——各召回路超采样到 `max(top_k × over_fetch_factor, over_fetch_floor)` 撒宽网，融合后按 `max(rerank_max, top_k)` 截断精排预算，平衡召回率与重排成本。
+- **关键词通道加绝对前置阈值**：被拒。BM25/重叠比未校准（ES `_score` 无界、内存重叠比非相关性分），绝对阈值跨 query 行为不稳定；语义前置阈值仅用于已校准的 cosine 通道，关键词降噪交由融合 + 重排 + 相关性阈值兜住。
+- **用 ScoreFuser 校准融合分做阈值**：被拒（搁置）。默认装配重排恒开，相关性阈值作用在 reranker 校准分上即可；ScoreFuser 对「有重排」链路几无增量，留作「不重排」降级路径的备选。
 
 ---
 

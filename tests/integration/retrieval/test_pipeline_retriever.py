@@ -3,24 +3,35 @@
 from __future__ import annotations
 
 from time import perf_counter, sleep
+from types import SimpleNamespace
 from typing import List
 
 import pytest
 
+from common.base import PluginType
+from common.bootstrap import register_plugins
+from common.embedder.base import EmbedderProducer
 from common.errors import BackendError, ValidationError
+from common.factory.factory import Factory
 from common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (
     KeywordFeatureExtractor,
 )
+from common.reranker.base import Reranker
 from common.reranker.reranker_impl.overlap_reranker import OverlapReranker
 from common.type_def import FilterClause, FilterOp
 from common.type_def.memory import LifecycleState
+from common.type_def.memory_codec import dumps
 from common.type_def.scope import Scope
+from config.context import AssemblyContext
+from config.defaults import default_config_dict
 from retrieval.base import RetrievalOperatorType
+from retrieval.bootstrap import register_operators
 from retrieval.discloser_impl.structured_discloser import StructuredDiscloser
 from retrieval.fuser_impl.rrf_fuser import RRFFuser
 from retrieval.fuser_impl.weighted_rrf_fuser import WeightedRRFFuser
 from retrieval.query_parser_impl.simple_query_parser import SimpleQueryParser
-from retrieval.recaller import Recaller
+from retrieval.recaller import Recaller, RecallerProducer
+from retrieval.retriever import RetrieverProducer
 from retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
 from retrieval.types import (
     DisclosureLevel,
@@ -29,6 +40,10 @@ from retrieval.types import (
     RetrievalQuery,
     ScoredUnit,
 )
+from storage.bootstrap import register_backends
+from storage.fulltext import FulltextProducer
+from storage.kv import KvProducer
+from storage.vector import VectorProducer
 from tests.conftest import DEFAULT_SCOPE, index_unit, make_unit, make_world
 
 pytestmark = pytest.mark.integration
@@ -60,6 +75,7 @@ class StaticRecaller(Recaller):
     ) -> None:
         self._candidates = candidates
         self._channel = channel
+        self.calls: List[int] = []
 
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.RECALLER
@@ -71,7 +87,24 @@ class StaticRecaller(Recaller):
         return self._channel
 
     def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> List[ScoredUnit]:
+        self.calls.append(top_k)
         return self._candidates[:top_k]
+
+
+class StaticReranker(Reranker):
+    """Deterministic reranker returning predefined scores in input order."""
+
+    def __init__(self, scores: List[float]) -> None:
+        self._scores = scores
+
+    def plugin_type(self) -> PluginType:
+        return PluginType.RERANKER
+
+    def health(self) -> None:
+        return None
+
+    def rerank(self, query: str, texts: List[str]) -> List[float]:
+        return self._scores[: len(texts)]
 
 
 class SlowRecaller(Recaller):
@@ -300,8 +333,397 @@ def test_rerank_filters_zero_score_candidates() -> None:
     )
 
     assert [item.unit_id for item in result.items] == ["hit"]
-    score_filter = [step for step in result.trajectory if step.stage == "score_filter"][0]
-    assert score_filter.detail["dropped"] == "1"
+    threshold = [step for step in result.trajectory if step.stage == "threshold"][0]
+    assert threshold.detail["dropped"] == "1"
+
+
+def test_min_score_applies_when_reranked() -> None:
+    world = make_world()
+    for uid in ["u1", "u2", "u3"]:
+        index_unit(world, make_unit(uid, f"{uid} candidate"))
+    retriever = PipelineRetriever(
+        world.parser,
+        [
+            StaticRecaller(
+                [
+                    ScoredUnit("u1", 1.0, RecallChannel.KEYWORD),
+                    ScoredUnit("u2", 0.9, RecallChannel.KEYWORD),
+                    ScoredUnit("u3", 0.8, RecallChannel.KEYWORD),
+                ]
+            )
+        ],
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        StaticReranker([0.9, 0.45, 0.1]),
+        min_score=0.5,
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=3, with_trajectory=True)
+    )
+
+    assert [item.unit_id for item in result.items] == ["u1"], "精排后应按绝对阈值欠填"
+    threshold = [step for step in result.trajectory if step.stage == "threshold"][0]
+    assert threshold.detail["calibrated"] == "True"
+    assert threshold.detail["passed"] == "1"
+
+
+def test_min_score_skipped_when_rerank_disabled() -> None:
+    world = make_world()
+    for uid in ["u1", "u2"]:
+        index_unit(world, make_unit(uid, f"{uid} candidate"))
+    retriever = PipelineRetriever(
+        world.parser,
+        [
+            StaticRecaller(
+                [
+                    ScoredUnit("u1", 1.0, RecallChannel.KEYWORD),
+                    ScoredUnit("u2", 0.9, RecallChannel.KEYWORD),
+                ]
+            )
+        ],
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        StaticReranker([0.01, 0.01]),
+        min_score=0.4,
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE,
+        RetrievalQuery(text="candidate", top_k=2, rerank=False, with_trajectory=True),
+    )
+
+    assert [item.unit_id for item in result.items] == ["u1", "u2"]
+    threshold = [step for step in result.trajectory if step.stage == "threshold"][0]
+    assert threshold.detail["calibrated"] == "False"
+
+
+def test_threshold_under_fills_below_top_k() -> None:
+    world = make_world()
+    for uid in ["u1", "u2", "u3"]:
+        index_unit(world, make_unit(uid, f"{uid} candidate"))
+    retriever = PipelineRetriever(
+        world.parser,
+        [
+            StaticRecaller(
+                [
+                    ScoredUnit("u1", 1.0, RecallChannel.KEYWORD),
+                    ScoredUnit("u2", 0.9, RecallChannel.KEYWORD),
+                    ScoredUnit("u3", 0.8, RecallChannel.KEYWORD),
+                ]
+            )
+        ],
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        StaticReranker([0.95, 0.7, 0.2]),
+        min_score_ratio=0.8,
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=3, with_trajectory=True)
+    )
+
+    assert [item.unit_id for item in result.items] == ["u1"]
+    threshold = [step for step in result.trajectory if step.stage == "threshold"][0]
+    assert threshold.detail["dropped"] == "2"
+
+
+def test_budget_expands_to_top_k() -> None:
+    # rerank_max 小于 top_k 时，精排预算自动扩展到 top_k，避免静默欠召。
+    world = make_world()
+    candidates = []
+    for index in range(1, 5):
+        uid = f"u{index}"
+        index_unit(world, make_unit(uid, f"{uid} candidate"))
+        candidates.append(ScoredUnit(uid, 1.0, RecallChannel.KEYWORD))
+    retriever = PipelineRetriever(
+        world.parser,
+        [StaticRecaller(candidates)],
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        over_fetch_factor=1,
+        over_fetch_floor=1,
+        rerank_max=2,
+    )
+
+    result = retriever.retrieve(DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=4))
+
+    assert [item.unit_id for item in result.items] == ["u1", "u2", "u3", "u4"]
+
+
+def test_over_fetch_recall_width() -> None:
+    # 每路召回量 = max(top_k*factor, floor)，撒宽网喂融合。
+    world = make_world()
+    candidates = []
+    for index in range(1, 7):
+        uid = f"u{index}"
+        index_unit(world, make_unit(uid, f"{uid} candidate"))
+        candidates.append(ScoredUnit(uid, 1.0, RecallChannel.KEYWORD))
+
+    factor_driven = StaticRecaller(candidates)
+    retriever = PipelineRetriever(
+        world.parser,
+        [factor_driven],
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        over_fetch_factor=3,
+        over_fetch_floor=1,
+    )
+    result = retriever.retrieve(DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=2))
+    assert factor_driven.calls == [6], "factor 主导：max(2*3, 1) = 6"
+    assert [item.unit_id for item in result.items] == ["u1", "u2"]
+
+    floor_driven = StaticRecaller(candidates)
+    retriever = PipelineRetriever(
+        world.parser,
+        [floor_driven],
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        over_fetch_factor=1,
+        over_fetch_floor=5,
+    )
+    retriever.retrieve(DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=2))
+    assert floor_driven.calls == [5], "floor 主导：max(2*1, 5) = 5"
+
+
+def test_recall_max_caps_recall_k() -> None:
+    # 超大 top_k 经 factor 放大后被 recall_max 硬上限封顶，保护后端。
+    world = make_world()
+    recaller = StaticRecaller([])
+    retriever = PipelineRetriever(
+        world.parser,
+        [recaller],
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        over_fetch_factor=4,
+        over_fetch_floor=60,
+        recall_max=100,
+    )
+
+    retriever.retrieve(DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=50))
+
+    # max(50*4, 60) = 200，被 recall_max=100 封顶。
+    assert recaller.calls == [100], "recall_k 应被 recall_max 硬上限封顶"
+
+
+def test_direct_constructor_default_recall_max_caps_recall_k() -> None:
+    # 直接构造也应使用出厂默认 recall_max=100，避免绕过工厂后后端召回压力失控。
+    world = make_world()
+    recaller = StaticRecaller([])
+    retriever = PipelineRetriever(
+        world.parser,
+        [recaller],
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+    )
+
+    retriever.retrieve(DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=50))
+
+    assert recaller.calls == [100], "直接构造默认值应与工厂出厂默认 recall_max=100 一致"
+
+
+def test_retrieval_over_fetch_read_from_config() -> None:
+    candidates = [
+        ScoredUnit(f"u{index}", 1.0, RecallChannel.KEYWORD)
+        for index in range(1, 12)
+    ]
+    recaller = StaticRecaller(candidates)
+
+    def build_recording_recaller(_config):
+        return recaller
+
+    RecallerProducer.register("recording_config_test")(build_recording_recaller)
+
+    raw = default_config_dict()
+    raw["globals"]["graph_enabled"] = False
+    raw["globals"]["vector_enabled"] = False
+    params = raw["retriever"]["default"]["params"]
+    params["keyword_recaller"] = {"target": "recording_config_test"}
+    params["over_fetch_factor"] = 3
+    params["over_fetch_floor"] = 7
+    params["recall_max"] = 11
+    params["rerank_max"] = 9
+    ctx = AssemblyContext.from_dict(raw)
+
+    register_plugins()
+    register_backends()
+    register_operators()
+    Factory.reset_all()
+    try:
+        retriever = RetrieverProducer.build_named("default", ctx)
+        kv = KvProducer.build_named("default", ctx)
+        for candidate in candidates:
+            kv.insert(
+                DEFAULT_SCOPE,
+                candidate.unit_id,
+                dumps(make_unit(candidate.unit_id, f"{candidate.unit_id} candidate")),
+            )
+        result = retriever.retrieve(
+            DEFAULT_SCOPE,
+            RetrievalQuery(text="candidate", top_k=4, with_trajectory=True),
+        )
+    finally:
+        Factory.reset_all()
+
+    assert isinstance(retriever, PipelineRetriever)
+    assert recaller.calls == [11], "max(4*3, 7)=12，应被 recall_max=11 封顶"
+    recheck = [step for step in result.trajectory if step.stage == "recheck"][0]
+    assert recheck.candidate_count == 9, "rerank_max=9 应控制进入 recheck 的预算"
+
+
+def test_direct_constructor_default_calibrated_threshold_active() -> None:
+    # 直接构造也应默认启用校准路径相对阈值 0.6，而不是只保留正分门。
+    world = make_world()
+    for uid in ["u1", "u2"]:
+        index_unit(world, make_unit(uid, f"{uid} candidate"))
+    retriever = PipelineRetriever(
+        world.parser,
+        [
+            StaticRecaller(
+                [
+                    ScoredUnit("u1", 1.0, RecallChannel.KEYWORD),
+                    ScoredUnit("u2", 0.9, RecallChannel.KEYWORD),
+                ]
+            )
+        ],
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        StaticReranker([0.95, 0.2]),
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=2, with_trajectory=True)
+    )
+
+    assert [item.unit_id for item in result.items] == ["u1"], "低于 0.6×最高分的候选应被裁剪"
+    threshold = [step for step in result.trajectory if step.stage == "threshold"][0]
+    assert threshold.detail["calibrated"] == "True"
+    assert threshold.detail["min_score_ratio"] == "0.6"
+    assert threshold.detail["dropped"] == "1"
+
+
+def test_direct_constructor_default_uncalibrated_threshold_active() -> None:
+    # 未精排路径直接构造时默认启用较松的相对阈值 0.3。
+    world = make_world()
+    candidates = []
+    for index in range(1, 5):
+        uid = f"u{index}"
+        index_unit(world, make_unit(uid, f"{uid} candidate"))
+        candidates.append(ScoredUnit(uid, 1.0, RecallChannel.KEYWORD))
+    retriever = PipelineRetriever(
+        world.parser,
+        [StaticRecaller(candidates)],
+        RRFFuser(k=0),
+        world.discloser,
+        world.unit_reader,
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE,
+        RetrievalQuery(text="candidate", top_k=4, rerank=False, with_trajectory=True),
+    )
+
+    assert [item.unit_id for item in result.items] == ["u1", "u2", "u3"]
+    threshold = [step for step in result.trajectory if step.stage == "threshold"][0]
+    assert threshold.detail["calibrated"] == "False"
+    assert threshold.detail["min_score_ratio"] == "0.3"
+    assert threshold.detail["dropped"] == "1"
+
+
+def test_default_config_threshold_active_end_to_end() -> None:
+    # 出厂默认装配（阈值 ratio 0.6 生效）的端到端行为：低于最高分 60% 的候选被裁剪，
+    # 相关结果不被清空。补齐「测试构造走阈值全关、生产装配走阈值开」的覆盖缺口。
+    raw = default_config_dict()
+    raw["globals"]["graph_enabled"] = False
+    ctx = AssemblyContext.from_dict(raw)
+
+    register_plugins()
+    register_backends()
+    register_operators()
+    Factory.reset_all()
+    try:
+        retriever = RetrieverProducer.build_named("default", ctx)
+        # 经各 Producer 取与 retriever 共享的同一批 store/embedder 实例做写侧索引。
+        stack = SimpleNamespace(
+            kv=KvProducer.build_named("default", ctx),
+            vector=VectorProducer.build_named("default", ctx),
+            fulltext=FulltextProducer.build_named("default", ctx),
+            embedder=EmbedderProducer.build_named("default", ctx),
+        )
+        index_unit(stack, make_unit("u1", "alice likes coffee"))
+        index_unit(stack, make_unit("u2", "bob drinks coffee"))
+
+        result = retriever.retrieve(
+            DEFAULT_SCOPE,
+            RetrievalQuery(text="alice coffee", top_k=10, with_trajectory=True),
+        )
+    finally:
+        Factory.reset_all()
+
+    # overlap 精排分：u1 命中 2/3 查询词、u2 命中 1/3 → 0.6 ratio 裁掉 u2、保留 u1。
+    assert [item.unit_id for item in result.items] == ["u1"], "阈值应裁剪低分候选且不清空结果"
+    threshold = [step for step in result.trajectory if step.stage == "threshold"][0]
+    assert threshold.detail["calibrated"] == "True", "默认装配 rerank 恒开应走校准路径"
+    assert threshold.detail["min_score_ratio"] == "0.6", "默认装配应生效出厂相对阈值"
+    assert threshold.detail["dropped"] == "1", "低于比例线的候选应被裁剪"
+
+
+def test_rerank_requested_without_reranker_records_skip() -> None:
+    # 显式要求精排但装配未注入 reranker：降级须在轨迹可见，阈值走未校准路径。
+    world = make_world()
+    index_unit(world, make_unit("u1", "coffee beans"))
+    retriever = PipelineRetriever(
+        world.parser,
+        [world.keyword],
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        None,
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE, RetrievalQuery(text="coffee", rerank=True, with_trajectory=True)
+    )
+
+    rerank_steps = [step for step in result.trajectory if step.stage == "rerank"]
+    assert rerank_steps, "请求精排但无 reranker 时应记录 rerank 轨迹步"
+    assert rerank_steps[0].detail["skipped"] == "no_reranker_configured"
+    threshold = [step for step in result.trajectory if step.stage == "threshold"][0]
+    assert threshold.detail["calibrated"] == "False", "无 reranker 时阈值应走未校准路径"
+
+
+def test_recall_max_below_floor_warns(monkeypatch) -> None:
+    # recall_max 压过 over_fetch_floor 属于矛盾配置：上限赢，但装配期必须告警可见。
+    # 直接桩掉模块 logger.warning——不依赖全局日志传播配置（setup_logging 会关 propagate）。
+    import retrieval.retriever_impl.pipeline_retriever as pr_module
+
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        pr_module.logger, "warning", lambda msg, *args: warnings.append(msg % args)
+    )
+    world = make_world()
+
+    PipelineRetriever(
+        world.parser,
+        [world.keyword],
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        over_fetch_floor=60,
+        recall_max=30,
+    )
+
+    assert warnings, "recall_max < over_fetch_floor 应产生装配期告警"
+    assert "recall_max" in warnings[0], "告警文案应指明 recall_max 压过下限"
 
 
 def test_adaptive_disclosure_records_actual_levels_in_trajectory() -> None:

@@ -63,7 +63,7 @@ src/<layer>/<capability>_impl/
 | retrieval | Recaller | `KeywordRecaller` / `VectorRecaller` / `GraphRecaller` | 三条召回通道 |
 | retrieval | Fuser | `RRFFuser` | 倒数排名融合（量纲无关） |
 | retrieval | Discloser | `TruncatingDiscloser` | L0/L1/L2 内容塑形；不做点读、过滤或重排 |
-| retrieval | Retriever | `PipelineRetriever` | 编排 parse → recall(多路) → fuse → UnitReader/recheck → rerank → disclose |
+| retrieval | Retriever | `PipelineRetriever` | 编排 parse → recall(多路超采样) → fuse → 精排预算截断 → UnitReader/recheck → rerank → 相关性阈值 → 截断 top_k → disclose |
 | control | MemoryEngine | `InMemoryEngine` | 接口语义编排中枢 |
 | control | LifecycleManager | `KVLifecycleManager` | `delete` 委托其改状态；`sweep` 清扫到期 |
 | control | Governor | `InMemoryGovernor` | 检视 / 沿 `supersedes` 回溯 / 审计查询 |
@@ -81,9 +81,10 @@ src/<layer>/<capability>_impl/
 
 **recall**（`api.recall`）
 ```
-鉴权 → QueryParser(去噪+分词+LLM改写+向量化) → [Keyword, Vector, Graph] 三路召回
-     → RRFFuser 融合 → UnitReader 点读真源 + lifecycle/as_of/event-time/filters 复核
-     → 可选 Reranker 精排 → TruncatingDiscloser(L0/L1/L2 内容塑形)
+鉴权 → QueryParser(去噪+分词+LLM改写+向量化) → [Keyword, Vector, Graph] 三路召回(超采样)
+     → RRFFuser 融合 → 精排预算截断 → UnitReader 点读真源 + lifecycle/as_of/event-time/filters 复核
+     → 可选 Reranker 精排 → 相关性阈值(min_score/ratio + min_results 兜底) → 截断 top_k
+     → TruncatingDiscloser(L0/L1/L2 内容塑形)
 ```
 真源只在 PipelineRetriever 的 UnitReader 阶段按 id 反序列化；Discloser 只消费已点读、已过滤、已排序的候选做内容塑形。
 

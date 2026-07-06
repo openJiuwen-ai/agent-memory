@@ -28,11 +28,9 @@ from common.audit.base import AuditProducer
 from common.bootstrap import register_plugins
 from common.factory.factory import Factory
 from common.log import setup_logging
-
 from config import Config
 from config.context import ComponentConfig
 from config.defaults import KV_DEFAULT_NAME, ROOT_PARAMS, default_context
-
 from construction.bootstrap import register_constructors
 from control.bootstrap import register_controllers
 from control.engine import EngineProducer
@@ -43,7 +41,7 @@ from control.scheduler import SchedulerProducer
 from ingest.bootstrap import register_ingestors
 from retrieval.bootstrap import register_operators
 from storage.bootstrap import register_backends
-from storage.kv import KVStore, KvProducer
+from storage.kv import KvProducer, KVStore
 
 from .local_memory_api import LocalMemoryAPI
 

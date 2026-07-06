@@ -4,7 +4,7 @@
 
 > 本文档只记录相对稳定的模块本地规约（职责边界、行为铁律、本地约束）。特性设计与方案取舍记录在 `docs/features/` 下。
 
-混合检索的完整链路编排：查询理解 → 并行多路召回 → 融合 + 重排 → 渐进式披露 → 返回 + 检索轨迹。记忆接口层的 `recall` 映射到本层 `Retriever`。
+混合检索的完整链路编排：查询理解 → 并行多路召回 → 融合 → 精排 → 相关性阈值 → 渐进式披露 → 返回 + 检索轨迹。记忆接口层的 `recall` 映射到本层 `Retriever`。
 
 ## 模块地图
 
@@ -14,7 +14,7 @@
 | `types.py` | 检索层数据类型：RetrievalQuery / ParsedQuery / ScoredUnit / RetrievedItem / RetrievalResult 等 |
 | `query_parser.py` | QueryParser 接口：查询理解（去噪/改写/分词/实体/向量化/时间解析） |
 | `recaller.py` | Recaller 接口：单路召回（向量/关键词/图/文档/时序） |
-| `fuser.py` | Fuser 接口：多路融合 + 重排 |
+| `fuser.py` | Fuser 接口：多路融合排序（重排由 common `Reranker` 独立阶段承担） |
 | `discloser.py` | Discloser 接口：渐进式披露（L0 摘要/L1 片段/L2 全文） |
 | `retriever.py` | Retriever 接口：检索层入口，编排完整链路 |
 | `query_parser_impl/` | QueryParser 实现目录（simple_query_parser / sanitize / time_parse） |
@@ -24,22 +24,29 @@
 | `retriever_impl/` | Retriever 实现目录 |
 | `bootstrap.py` | 统一触发所有检索算子注册 |
 
-## 检索链路七步
+## 检索链路
 
 ```
 1. QueryParser.parse(query) → ParsedQuery
      ↓ 结构化查询（tokens/keywords/entities/vector/scalar_filters/channels）
 2. ParsedQuery.raw 为空时短路返回空结果
      ↓
-3. 并行 Recaller[i].recall(scope, parsed_query, top_k) → list[list[ScoredUnit]]
-     ↓ 多路召回
+3. 并行 Recaller[i].recall(scope, parsed_query, recall_k) → list[list[ScoredUnit]]
+     ↓ 多路召回；recall_k = min(max(top_k*factor, floor), recall_max) 超采样
+     ↓ 向量通道可选 min_similarity 语义前置过滤（打分方向由 store 契约声明）
 4. Fuser.fuse(parsed_query, candidates) → list[ScoredUnit]
      ↓ 跨通道融合排序
-5. UnitReader 点读 MemoryUnit → 有效性过滤（lifecycle/as_of/event-time/filters）
+5. 截断精排预算 budget = fused[:max(rerank_max, top_k)]
      ↓
-6. 可选 Reranker 精排 → 截断 top_k
+6. UnitReader 点读 MemoryUnit → 有效性过滤（lifecycle/as_of/event-time/filters）
      ↓
-7. Discloser.disclose(...) → list[RetrievedItem]
+7. 可选 Reranker 精排（记 calibrated 标志）
+     ↓
+8. 相关性阈值：绝对 min_score（仅校准路径）+ 相对 ratio（校准 0.6 / 未校准 0.3）
+     ↓ + min_results 从正分候选兜底回填（结果数可 < top_k）
+9. 截断 top_k
+     ↓
+10. Discloser.disclose(...) → list[RetrievedItem]
      ↓ 按层级加载内容（L0/L1/L2）
 → RetrievalResult（items + trajectory）
 ```

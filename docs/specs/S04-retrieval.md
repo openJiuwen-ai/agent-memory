@@ -11,11 +11,12 @@
 ## 范围 / 边界
 
 **管什么**：
-- 混合检索的完整链路编排（查询理解 → 并行多路召回 → 融合 + 重排 → 渐进式披露 → 返回 + 检索轨迹）
+- 混合检索的完整链路编排（查询理解 → 并行多路召回 → 融合 → 精排 → 相关性阈值 → 渐进式披露 → 返回 + 检索轨迹）
 - 查询理解：去噪/改写/分词/实体/向量化/时间解析
 - 多路召回：按配置启用的通道并行检索（向量/关键词/图/文档/时序）
 - 融合：多路候选合并去重、归一化打分、RRF/加权排序
 - 精排（可选）：调用 Reranker 做 cross-encoder 精排
+- 相关性阈值：绝对/相对阈值裁剪低相关候选（结果数可 < top_k），min_results 兜底回填
 - 渐进式披露：L0 摘要/L1 片段/L2 全文 按需加载
 - 检索轨迹：可观测的非黑盒调试信息
 
@@ -61,9 +62,10 @@ class RetrievalOperator(ABC):
 ```
 QueryParser.parse(query) → ParsedQuery
 → 若 ParsedQuery.raw 为空则短路返回空结果
-→ 并行 Recaller[i].recall(scope, parsed_query, top_k) → list[list[ScoredUnit]]
-→ Fuser.fuse(parsed_query, candidates) → list[ScoredUnit]（融合 + 可选重排）
-→ UnitReader 点读 MemoryUnit → 有效性过滤（lifecycle != FORGOTTEN）
+→ 并行 Recaller[i].recall(scope, parsed_query, recall_k) → list[list[ScoredUnit]]（超采样）
+→ Fuser.fuse(parsed_query, candidates) → list[ScoredUnit]
+→ 截断精排预算 → UnitReader 点读 MemoryUnit → 有效性过滤（lifecycle/as_of/event-time/filters）
+→ 可选 Reranker 精排 → 相关性阈值过滤（结果数可 < top_k）→ 截断 top_k
 → Discloser.disclose(parsed_query, candidates, units, level, max_tokens) → list[RetrievedItem]
 → 组装 RetrievalResult（items + trajectory）
 ```
@@ -117,7 +119,7 @@ QueryParser.parse(query) → ParsedQuery
 | `text` | str | "" | 自然语言查询 |
 | `filters` | list[FilterClause] | [] | 标签/元数据前置过滤（AND 组合） |
 | `as_of` | datetime \| None | None | valid-time 回溯点 |
-| `top_k` | int | 10 | 返回条数 |
+| `top_k` | int | 10 | 返回条数上限（经相关性阈值后实际可少于此数） |
 | `disclosure` | DisclosureLevel | L0 | 结果披露层级 |
 | `max_tokens` | int \| None | None | 自适应披露预算 |
 | `with_trajectory` | bool | False | 是否返回检索轨迹 |

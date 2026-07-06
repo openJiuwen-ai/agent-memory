@@ -27,8 +27,6 @@ def default_config_dict() -> Dict[str, Any]:
             "rerank_enabled": True,
             "embedder_dim": 64,
             "chunk_size": 120,
-            "query_sanitize_enabled": True,
-            "query_sanitize_strip_code": False,
         },
         # -- 存储（有状态，必须对象共享）-------------------------------------- #
         "kv_store": {_D: "memory"},
@@ -47,7 +45,10 @@ def default_config_dict() -> Dict[str, Any]:
         # -- 检索 ------------------------------------------------------------ #
         "recaller": {
             "keyword": {"target": "keyword", "params": {"fulltext_store": _D}},
-            "vector": {"target": "vector", "params": {"vector_store": _D}},
+            "vector": {
+                "target": "vector",
+                "params": {"vector_store": _D, "min_similarity": 0.0},
+            },
             "graph": {"target": "graph", "params": {"graph_store": _D}},
         },
         "query_parser": {
@@ -58,6 +59,8 @@ def default_config_dict() -> Dict[str, Any]:
                     "embedder": _D,
                     "llm": _D,
                     "feature_extractor": _D,
+                    "sanitize_enabled": True,
+                    "sanitize_strip_code": False,
                 },
             }
         },
@@ -75,6 +78,15 @@ def default_config_dict() -> Dict[str, Any]:
                     "fuser": _D,
                     "discloser": _D,
                     "kv_store": _D,
+                    # 召回超采样 + 精排预算 + 相关性阈值（本算子私有调参，非跨切面）
+                    "over_fetch_factor": 4,
+                    "over_fetch_floor": 60,
+                    "recall_max": 100,
+                    "rerank_max": 50,
+                    "min_score": 0.0,
+                    "min_score_ratio": 0.6,
+                    "min_score_ratio_uncalibrated": 0.3,
+                    "min_results": 0,
                 },
             }
         },

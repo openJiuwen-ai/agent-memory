@@ -10,6 +10,7 @@ FeatureExtractor，则抽实体/关键词（供图通道找种子）。``filters
 from __future__ import annotations
 
 from common.embedder.base import Embedder, EmbedderProducer
+from common.factory.factory import Factory
 from common.feature_extractor.base import FeatureExtractor, FeatureExtractorProducer
 from common.llm.base import LLM, LlmProducer
 from common.tokenizer import Tokenizer
@@ -113,6 +114,6 @@ def _build(config):
         embedder,
         llm,
         features,
-        sanitize=config.get("query_sanitize_enabled", True),
-        strip_code_fences=config.get("query_sanitize_strip_code", False),
+        sanitize=Factory.cfg_get(config, "sanitize_enabled", True),
+        strip_code_fences=Factory.cfg_get(config, "sanitize_strip_code", False),
     )
