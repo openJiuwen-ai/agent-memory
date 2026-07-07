@@ -872,6 +872,90 @@ Get user variables (one or more).
 ```
 
 
+### async update_variables
+
+```
+async def update_variables(
+    self,
+    variables: dict[str, str],
+    user_id: str = "__default__",
+    scope_id: str = "__default__",
+) -> None
+```
+
+Update user variables. **Upsert semantics**: inserts the variable if its name does not exist, overwrites the value if it does (a name absent from the kv store is treated as a first-time write rather than a silent failure).
+
+**Parameters**:
+
+* **variables**(dict[str, str]): Mapping of variable names to their values; keys are variable names, values are the new values.
+* **user_id**(str, optional): User identifier. Default: `"__default__"`.
+* **scope_id**(str, optional): Scope identifier; raises on invalid format. Default: `"__default__"`.
+
+**Returns**:
+
+* **None**: No return value. Each variable is written in turn under a distributed lock.
+
+**Exceptions**:
+
+* **build_error**: Raised when the `scope_id` format is invalid or `variable_manager` is not initialized (`MEMORY_UPDATE_MEMORY_EXECUTION_ERROR`).
+
+**Example**:
+
+```python
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+>>>
+>>> memory = LongTermMemory()
+>>> # First-time write (name absent -> insert) and overwrite of an existing
+>>> # variable share the same semantics
+>>> await memory.update_variables(
+>>>     variables={"favorite_color": "blue", "city": "Shenzhen"},
+>>>     user_id="user123",
+>>>     scope_id="my_scope"
+>>> )
+```
+
+
+### async delete_variables
+
+```
+async def delete_variables(
+    self,
+    names: list[str],
+    user_id: str = "__default__",
+    scope_id: str = "__default__",
+) -> bool
+```
+
+Delete user variables. Deletes each specified variable name in turn; deleting a name that does not exist is not an error.
+
+**Parameters**:
+
+* **names**(list[str]): List of variable names to delete.
+* **user_id**(str, optional): User identifier. Default: `"__default__"`.
+* **scope_id**(str, optional): Scope identifier; raises on invalid format. Default: `"__default__"`.
+
+**Returns**:
+
+* **bool**: Returns `True` on success.
+
+**Exceptions**:
+
+* **build_error**: Raised when the `scope_id` format is invalid or `variable_manager` is not initialized (`MEMORY_DELETE_MEMORY_EXECUTION_ERROR`).
+
+**Example**:
+
+```python
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+>>>
+>>> memory = LongTermMemory()
+>>> await memory.delete_variables(
+>>>     names=["favorite_color", "city"],
+>>>     user_id="user123",
+>>>     scope_id="my_scope"
+>>> )
+```
+
+
 ### async search_user_mem
 
 ```

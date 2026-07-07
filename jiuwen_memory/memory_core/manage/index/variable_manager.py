@@ -80,6 +80,12 @@ class VariableManager(BaseMemoryManager):
         pass
 
     async def update_user_variable(self, user_id: str, scope_id: str, var_name: str, var_mem: str):
+        """Update a user variable. Upsert semantics: insert if absent, overwrite if present.
+
+        kv_store.set is itself an upsert, so we set directly without an existence
+        precheck — a missing name is treated as a first-time write rather than a
+        silent no-op.
+        """
         if self.kv_store is None:
             memory_logger.error(
                 "KV_store cannot be None",
@@ -88,9 +94,6 @@ class VariableManager(BaseMemoryManager):
                 user_id=user_id,
                 scope_id=scope_id
             )
-            return
-        existing_variable = await self.query_variable(user_id=user_id, scope_id=scope_id, name=var_name)
-        if not VariableManager._check_exist(existing_variable, var_name):
             return
         key, value = self._make_variable_pairs(usr_id=user_id, for_deletion=False,
                                                scope_id=scope_id, var_name=var_name, user_var_value=var_mem)
@@ -231,16 +234,3 @@ class VariableManager(BaseMemoryManager):
                 scope_id=scope_id,
                 metadata={"context": context},
             )
-
-    @staticmethod
-    def _check_exist(variable_dict: dict[str, Any], variable_name: str) -> bool:
-        if not variable_dict:
-            return False
-
-        if variable_name not in variable_dict.keys():
-            return False
-
-        if not variable_dict[variable_name]:
-            return False
-
-        return True

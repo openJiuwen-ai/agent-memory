@@ -872,6 +872,89 @@ async def get_variables(
 ```
 
 
+### async update_variables
+
+```
+async def update_variables(
+    self,
+    variables: dict[str, str],
+    user_id: str = "__default__",
+    scope_id: str = "__default__",
+) -> None
+```
+
+更新用户变量。**upsert 语义**：变量名不存在时插入，存在时覆盖其值（不会因为 name 不在 kv 中而静默失败）。
+
+**参数**：
+
+* **variables**(dict[str, str])：变量名到变量值的映射，键为变量名，值为新值。
+* **user_id**(str, 可选)：用户标识符。默认值：`"__default__"`。
+* **scope_id**(str, 可选)：作用域标识符；格式无效时抛出异常。默认值：`"__default__"`。
+
+**返回**：
+
+* **None**：无返回值。更新过程在分布式锁内逐个写入。
+
+**异常**：
+
+* **build_error**：当 `scope_id` 格式无效、`variable_manager` 未初始化时抛出（`MEMORY_UPDATE_MEMORY_EXECUTION_ERROR`）。
+
+**样例**：
+
+```python
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+>>>
+>>> memory = LongTermMemory()
+>>> # 首次写入（name 不存在则插入）与覆盖已存在变量，语义一致
+>>> await memory.update_variables(
+>>>     variables={"favorite_color": "蓝色", "city": "深圳"},
+>>>     user_id="user123",
+>>>     scope_id="my_scope"
+>>> )
+```
+
+
+### async delete_variables
+
+```
+async def delete_variables(
+    self,
+    names: list[str],
+    user_id: str = "__default__",
+    scope_id: str = "__default__",
+) -> bool
+```
+
+删除用户变量。逐个删除指定的变量名；删除不存在的变量名不会报错。
+
+**参数**：
+
+* **names**(list[str])：待删除的变量名列表。
+* **user_id**(str, 可选)：用户标识符。默认值：`"__default__"`。
+* **scope_id**(str, 可选)：作用域标识符；格式无效时抛出异常。默认值：`"__default__"`。
+
+**返回**：
+
+* **bool**：删除成功返回 `True`。
+
+**异常**：
+
+* **build_error**：当 `scope_id` 格式无效、`variable_manager` 未初始化时抛出（`MEMORY_DELETE_MEMORY_EXECUTION_ERROR`）。
+
+**样例**：
+
+```python
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+>>>
+>>> memory = LongTermMemory()
+>>> await memory.delete_variables(
+>>>     names=["favorite_color", "city"],
+>>>     user_id="user123",
+>>>     scope_id="my_scope"
+>>> )
+```
+
+
 ### async search_user_mem
 
 ```
