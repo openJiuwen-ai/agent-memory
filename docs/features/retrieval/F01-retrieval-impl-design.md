@@ -82,7 +82,7 @@
 | 件 | 文件 | 职责 |
 |---|---|---|
 | `build_system_filters` | `predicate_builder.py` | 把检索策略（lifecycle × as_of / event-time 窗 / include_archived）翻译成 `FilterClause`，召回前并入 `ParsedQuery.scalar_filters` 下推到各 Store，使「先排除什么」在索引级生效 |
-| `UnitReader` + `passes` / `in_event_window` / `matches_filters` | `unit_reader.py` | 融合截断后把候选 id 点读真源物化为 `MemoryUnit`，再做三道**后置过滤**（有效性 lifecycle×as_of / event-time 窗 / 调用方 `filters`）；序列化反序列化（`loads`）只在此处发生 |
+| `UnitReader` + `passes` / `in_event_window` / `matches_filters` | `unit_reader.py` | 融合截断后把候选 id 点读真源物化为 `MemoryUnit`，再做三道**后置过滤**（有效性 lifecycle×as_of / event-time 窗 / 调用方 `filters`）；序列化反序列化（`loads`）只在此处发生。当前 `filters` 为扁平 `list[FilterClause]` 隐式 AND；树形逻辑表达式（AND/OR/NOT 嵌套）已有规划方案，见同目录 `F03-metadata-filtering.md`（落地时本表述与 evaluator 需同步更新） |
 | chunk → unit MaxP 归并 | `unit_aggregation.py` | 各通道命中按 `metadata['unit_id']` 折叠到 unit 粒度取最高分；`metadata` 缺 `unit_id` 时回退记录 id |
 | `parse_time` | `time_parse.py` | 文本时间约束 → event-time 窗（规则版，LLM 钩子可选） |
 
