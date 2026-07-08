@@ -1,0 +1,12 @@
+name: jiuwen_memory
+version: 0.1.0
+description: "Persistent cross-session memory for Hermes Agent via jiuwen-memory (Huawei). Provides pre-LLM context injection, turn-level capture and memory-write mirroring on top of a running jiuwen memory_server."
+author: "JiuwenMemory"
+homepage: "https://github.com/Huawei/JiuwenMemory"
+hooks:
+  - prefetch
+  - sync_turn
+  - on_session_end
+  - on_pre_compress
+  - on_memory_write
+  - system_prompt_block
