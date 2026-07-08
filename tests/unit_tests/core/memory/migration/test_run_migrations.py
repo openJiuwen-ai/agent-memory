@@ -105,6 +105,10 @@ class MockKVStore(BaseKVStore):
         self._store[key] = value
         return True
 
+    async def renew_exclusive(self, key: str, value: str | bytes, expiry: int | None = None) -> bool:
+        # Stub: this mock is only used for migration tests, not lock tests.
+        return True
+
     async def exists(self, key: str) -> bool:
         return key in self._store
 

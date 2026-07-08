@@ -59,6 +59,29 @@ class InMemoryKVStore(BaseKVStore):
             self._store[key] = (value, expiry_ts)
             return True
 
+    async def renew_exclusive(
+        self, key: str, value: str | bytes, expiry: int | None = None
+    ) -> bool:
+        """
+        Renew the expiry of an exclusively-held key, only if the current
+        value matches ``value``. Returns True on success, False otherwise.
+        """
+        async with self._lock:
+            current_time = time.time()
+            if key not in self._store:
+                return False
+            stored_value, stored_expiry = self._store[key]
+            # Already expired → cannot renew
+            if stored_expiry is not None and current_time > stored_expiry:
+                return False
+            # Value mismatch → caller doesn't hold the lock
+            if stored_value != value:
+                return False
+            # Renew: update expiry
+            new_expiry = int(current_time + expiry) if expiry is not None else None
+            self._store[key] = (value, new_expiry)
+            return True
+
     async def exists(self, key: str) -> bool:
         """Check if key exists and is not expired."""
         return await self.get(key) is not None

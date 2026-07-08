@@ -11,20 +11,17 @@ class ScopeUserMappingManager:
         self.meta_table = "scope_user_mapping"
 
     async def add(self, user_id: str, scope_id: str, **kwargs):
+        """Insert (user_id, scope_id) mapping, atomically ignoring duplicates.
+
+        Uses insert_or_ignore (ON CONFLICT DO NOTHING) instead of the previous
+        exist() → write() pattern, which was a non-atomic check-then-act that
+        caused UNIQUE constraint races under concurrency.
+        """
         data = {
             'user_id': user_id or '',
             'scope_id': scope_id or '',
         }
-        exists = await self.sql_db.exist(
-            table=self.meta_table,
-            conditions={
-                "user_id": data["user_id"],
-                "scope_id": data["scope_id"],
-            },
-        )
-        if exists:
-            return
-        await self.sql_db.write(self.meta_table, data)
+        await self.sql_db.insert_or_ignore(self.meta_table, data)
 
     async def delete_by_scope_id(self, scope_id: str) -> bool:
         return await self.sql_db.delete(

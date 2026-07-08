@@ -89,6 +89,38 @@ class ShelveStore(BaseKVStore):
 
         return await self._run_in_thread(_exclusive_set)
 
+    async def renew_exclusive(
+        self, key: str, value: str | bytes, expiry: int | None = None
+    ) -> bool:
+        """
+        Renew the expiry of an exclusively-held key, only if the current
+        value matches ``value``. Returns True on success, False otherwise.
+        """
+
+        def _renew_exclusive():
+            now = time.time()
+            with self._get_db() as db:
+                if key not in db:
+                    return False
+                existing = db[key]
+                if not isinstance(existing, dict) or EXCLUSIVE_VALUE_KEY not in existing:
+                    return False
+                stored_value = existing.get(EXCLUSIVE_VALUE_KEY)
+                old_expire = existing.get(EXCLUSIVE_EXPIRY_KEY)
+                # Already expired → cannot renew
+                if old_expire is not None and old_expire <= now:
+                    return False
+                # Value mismatch → caller doesn't hold the lock
+                if stored_value != value:
+                    return False
+                # Renew: update expiry
+                expire_at = now + expiry if expiry is not None else None
+                db[key] = {EXCLUSIVE_VALUE_KEY: stored_value, EXCLUSIVE_EXPIRY_KEY: expire_at}
+                db.sync()
+                return True
+
+        return await self._run_in_thread(_renew_exclusive)
+
     async def get(self, key: str) -> str | bytes | None:
         """Retrieve the value associated with the given key."""
 

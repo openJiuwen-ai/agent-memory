@@ -4,6 +4,9 @@ import logging
 from typing import Any, Dict, List
 
 from sqlalchemy import insert, update, select, delete, Table, MetaData, and_, or_, desc, asc
+from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from jiuwen_memory.common.exception.codes import StatusCode
 from jiuwen_memory.common.exception.errors import build_error
@@ -31,9 +34,136 @@ class SqlDbStore:
                 async with session.begin():
                     await session.execute(stmt)
                 return True
+        except IntegrityError as e:
+            # UNIQUE / PK constraint violation — must propagate so callers
+            # can distinguish "write failed due to conflict" from "write
+            # succeeded".  Swallowing this was the root cause of silent
+            # data loss (request returned 200 but message was never stored).
+            memory_logger.warning(
+                "Write failed due to UNIQUE constraint violation",
+                event_type=LogEventType.MEMORY_STORE,
+                exception=str(e),
+                metadata={"table_name": table}
+            )
+            raise
         except Exception as e:
             memory_logger.error(
                 "Write failed",
+                event_type=LogEventType.MEMORY_STORE,
+                exception=str(e),
+                metadata={"table_name": table}
+            )
+            raise
+
+    async def insert_or_update(self, table: str, data: dict,
+                                index_elements: list[str] | None = None,
+                                update_fields: dict | None = None) -> bool:
+        """Insert a row, updating it on UNIQUE / primary-key conflict.
+
+        Uses ``INSERT … ON CONFLICT DO UPDATE`` (SQLite / PostgreSQL /
+        GaussDB) or ``INSERT … ON DUPLICATE KEY UPDATE`` (MySQL).  This is
+        an atomic upsert that eliminates the non-atomic exist() → write()
+        race window.
+
+        Args:
+            table: Name of the target table (will be reflected).
+            data: Column values to insert.
+            index_elements: Columns that define the conflict target.
+                Defaults to the table's primary-key columns (auto-detected
+                from the reflected Table).
+            update_fields: Columns to update on conflict.
+                Defaults to ``data`` itself (i.e. every supplied column is
+                overwritten with the new value).
+
+        Returns:
+            True if the row was inserted or updated successfully.
+            False if an unexpected error occurred (logged at ERROR level).
+        """
+        t = await self.get_table(table)
+        dialect_name = self.db_store.get_async_engine().dialect.name
+
+        if index_elements is None:
+            pk_cols = [col.name for col in t.primary_key.columns]
+            if not pk_cols:
+                memory_logger.error(
+                    "insert_or_update requires a conflict target but the "
+                    "reflected table has no primary key",
+                    event_type=LogEventType.MEMORY_STORE,
+                    metadata={"table_name": table}
+                )
+                return False
+            index_elements = pk_cols
+
+        if update_fields is None:
+            update_fields = data
+
+        if dialect_name == "mysql":
+            stmt = (
+                mysql_insert(t)
+                .values(**data)
+                .on_duplicate_key_update(**update_fields)
+            )
+        else:
+            # SQLite, PostgreSQL, GaussDB all use the same
+            # on_conflict_do_update syntax via sqlite_insert.
+            stmt = (
+                sqlite_insert(t)
+                .values(**data)
+                .on_conflict_do_update(
+                    index_elements=index_elements,
+                    set_=update_fields,
+                )
+            )
+
+        try:
+            async with self.async_session() as session:
+                async with session.begin():
+                    await session.execute(stmt)
+            return True
+        except Exception as e:
+            memory_logger.error(
+                "insert_or_update failed",
+                event_type=LogEventType.MEMORY_STORE,
+                exception=str(e),
+                metadata={"table_name": table}
+            )
+            return False
+
+    async def insert_or_ignore(self, table: str, data: dict) -> bool:
+        """Insert a row, silently ignoring UNIQUE / primary-key conflicts.
+
+        Uses ``INSERT … ON CONFLICT DO NOTHING`` (SQLite) or
+        ``INSERT IGNORE …`` (MySQL).  Concurrent writers targeting the
+        same key will not raise IntegrityError and will not cause silent
+        data loss.
+
+        Returns:
+            True if the row was actually inserted.
+            False if the row already existed (conflict ignored) **or** if an
+            unexpected error occurred (logged at ERROR level).
+        """
+        t = await self.get_table(table)
+        dialect_name = self.db_store.get_async_engine().dialect.name
+
+        if dialect_name == "mysql":
+            # INSERT IGNORE: skip rows that violate UNIQUE/PK constraints
+            # without raising an error or performing a no-op UPDATE.
+            stmt = mysql_insert(t).prefix_with("IGNORE").values(**data)
+        else:
+            stmt = sqlite_insert(t).values(**data).on_conflict_do_nothing()
+
+        try:
+            async with self.async_session() as session:
+                async with session.begin():
+                    result = await session.execute(stmt)
+                # rowcount semantics:
+                #   SQLite ON CONFLICT DO NOTHING → 0 when ignored, 1 when inserted
+                #   MySQL INSERT IGNORE → 1 when inserted, 0 when ignored
+                #   (both dialects agree: > 0 means new row, 0 means conflict skipped)
+                return result.rowcount > 0
+        except Exception as e:
+            memory_logger.error(
+                "insert_or_ignore failed",
                 event_type=LogEventType.MEMORY_STORE,
                 exception=str(e),
                 metadata={"table_name": table}

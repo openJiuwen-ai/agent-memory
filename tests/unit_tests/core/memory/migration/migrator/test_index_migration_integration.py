@@ -75,6 +75,11 @@ class _InMemoryKVStore(BaseKVStore):
             return True
         return False
 
+    async def renew_exclusive(self, key, value, expiry=None, **_kw):
+        # Stub: tests in this file don't use distributed locks,
+        # so renewal always succeeds trivially.
+        return True
+
     async def pipeline(self, operations, **_kw):
         for op in operations:
             method = op[0]

@@ -125,6 +125,122 @@ class TestAsyncSqlDbStore:
         for data in inner_data_list:
             assert await store.write(CONTEXT_CONFIG["table"], data)
 
+    async def async_insert_or_update_new_row(self, store):
+        """insert_or_update on a row that does not exist → inserts it."""
+        data = {
+            'table_name': 'user_message',
+            'schema_version': '1',
+        }
+        result = await store.insert_or_update(
+            table='memory_meta',
+            data=data,
+            index_elements=["table_name"],
+        )
+        assert result is True
+        row = await store.condition_get(
+            'memory_meta',
+            conditions={"table_name": ['user_message']},
+        )
+        assert row is not None
+        assert row[0]["table_name"] == "user_message"
+        assert row[0]["schema_version"] == "1"
+
+    async def async_insert_or_update_conflict_updates(self, store):
+        """insert_or_update on an existing PK → updates non-PK columns."""
+        data_v1 = {
+            'table_name': 'user_message',
+            'schema_version': '1',
+        }
+        result = await store.insert_or_update(
+            table='memory_meta',
+            data=data_v1,
+            index_elements=["table_name"],
+        )
+        assert result is True
+
+        # Upgrade schema_version from 1 → 2 (PK = table_name stays the same)
+        data_v2 = {
+            'table_name': 'user_message',
+            'schema_version': '2',
+        }
+        result = await store.insert_or_update(
+            table='memory_meta',
+            data=data_v2,
+            index_elements=["table_name"],
+        )
+        assert result is True
+
+        row = await store.condition_get(
+            'memory_meta',
+            conditions={"table_name": ['user_message']},
+        )
+        assert row is not None
+        assert len(row) == 1  # only one row, not two
+        assert row[0]["schema_version"] == "2"
+
+    async def async_insert_or_update_auto_pk(self, store):
+        """insert_or_update without explicit index_elements → auto-detect PK."""
+        data_v1 = {
+            'table_name': 'scope_mapping',
+            'schema_version': '1',
+        }
+        result = await store.insert_or_update(
+            table='memory_meta',
+            data=data_v1,
+        )
+        assert result is True
+
+        data_v2 = {
+            'table_name': 'scope_mapping',
+            'schema_version': '5',
+        }
+        result = await store.insert_or_update(
+            table='memory_meta',
+            data=data_v2,
+        )
+        assert result is True
+
+        row = await store.condition_get(
+            'memory_meta',
+            conditions={"table_name": ['scope_mapping']},
+        )
+        assert row is not None
+        assert row[0]["schema_version"] == "5"
+
+    async def async_insert_or_update_custom_update_fields(self, store):
+        """insert_or_update with custom update_fields → only listed fields updated on conflict."""
+        data_v1 = {
+            'table_name': 'custom_table',
+            'schema_version': '1',
+        }
+        result = await store.insert_or_update(
+            table='memory_meta',
+            data=data_v1,
+            index_elements=["table_name"],
+        )
+        assert result is True
+
+        # Conflict with same table_name but different schema_version;
+        # Only update schema_version (the default behavior when update_fields=data).
+        data_v2 = {
+            'table_name': 'custom_table',
+            'schema_version': '3',
+        }
+        result = await store.insert_or_update(
+            table='memory_meta',
+            data=data_v2,
+            index_elements=["table_name"],
+            update_fields={"schema_version": "3"},
+        )
+        assert result is True
+
+        row = await store.condition_get(
+            'memory_meta',
+            conditions={"table_name": ['custom_table']},
+        )
+        assert row is not None
+        assert row[0]["schema_version"] == "3"
+
     async def async_get(self, store):
         filters = {}
         filters['message_id'] = ["m1"]
@@ -199,3 +315,19 @@ class TestAsyncSqlDbStore:
         asyncio.run(self.async_exist(test_store))
         asyncio.run(self.async_update(test_store))
         asyncio.run(self.async_delete(test_store))
+
+    @pytest.mark.asyncio
+    async def test_insert_or_update_new_row(self, test_store):
+        await self.async_insert_or_update_new_row(test_store)
+
+    @pytest.mark.asyncio
+    async def test_insert_or_update_conflict_updates(self, test_store):
+        await self.async_insert_or_update_conflict_updates(test_store)
+
+    @pytest.mark.asyncio
+    async def test_insert_or_update_auto_pk(self, test_store):
+        await self.async_insert_or_update_auto_pk(test_store)
+
+    @pytest.mark.asyncio
+    async def test_insert_or_update_custom_update_fields(self, test_store):
+        await self.async_insert_or_update_custom_update_fields(test_store)

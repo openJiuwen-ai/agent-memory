@@ -124,6 +124,44 @@ class DbBasedKVStore(BaseKVStore):
                 await session.execute(stmt)
                 return True
 
+    async def renew_exclusive(
+        self, key: str, value: str | bytes, expiry: Optional[int] = None
+    ) -> bool:
+        """
+        Renew the expiry of an exclusively-held key, only if the current
+        value matches ``value``. Returns True on success, False otherwise.
+        """
+        await self._create_table_if_not_exist()
+        now = time.time()
+        async with self.async_session() as session:
+            async with session.begin():
+                stmt = select(KVStoreTable).where(KVStoreTable.key == key)
+                row = (await session.execute(stmt)).scalar_one_or_none()
+                if row is None:
+                    return False
+                try:
+                    data = json.loads(row.value)
+                    stored_value = data.get(EXCLUSIVE_VALUE_KEY)
+                    old_expire = data.get(EXCLUSIVE_EXPIRY_KEY)
+                except json.JSONDecodeError:
+                    return False
+                # Key already expired → cannot renew
+                if old_expire is not None and old_expire <= now:
+                    return False
+                # Value mismatch → caller doesn't hold the lock
+                encoded_expected = self._encode_value(value)
+                if stored_value != encoded_expected:
+                    return False
+                # Renew: update expiry
+                expire_at = now + expiry if expiry else None
+                new_payload = json.dumps({
+                    EXCLUSIVE_VALUE_KEY: stored_value,
+                    EXCLUSIVE_EXPIRY_KEY: expire_at,
+                })
+                stmt = self._get_upsert_stmt(key, new_payload)
+                await session.execute(stmt)
+                return True
+
     async def get(self, key: str) -> str | bytes | None:
         await self._create_table_if_not_exist()
         async with self.async_session() as session:

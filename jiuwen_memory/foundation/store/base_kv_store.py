@@ -54,6 +54,33 @@ class BaseKVStore(ABC):
         pass
 
     @abstractmethod
+    async def renew_exclusive(
+        self, key: str, value: str | bytes, expiry: int | None = None
+    ) -> bool:
+        """
+        Renew (extend) the expiry of an exclusively-held key, only if the
+        current value matches ``value`` (i.e. the caller still holds the lock).
+
+        This is the safe counterpart to ``exclusive_set`` for lock renewal:
+        it updates the expiry without allowing a different owner to steal the
+        key, and without requiring a delete+re-create cycle.
+
+        Args:
+            key (str): The key to renew.
+            value (str | bytes): The current value — must match the stored value
+                for the renewal to succeed (prevents another owner from
+                extending a lock they don't hold).
+            expiry (int | None): New expiry in seconds from now. If ``None``,
+                the key is set to never expire.
+
+        Returns:
+            bool: True if the key was successfully renewed (value matched and
+                expiry was updated). False if the key does not exist, the value
+                does not match, or the key has already expired.
+        """
+        pass
+
+    @abstractmethod
     async def get(self, key: str) -> str | bytes | None:
         """
         Retrieve the value associated with the given key.
