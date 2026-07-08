@@ -356,6 +356,25 @@ Configuration and data are stored under `~/.jiuwenmemory/`:
 ├── memory_data/      ← data directory (SQLite / ChromaDB, auto-created)
 ```
 
+### MCP Service
+
+The same memory engine is also exposed as an **MCP (Model Context Protocol)** server, so MCP-compatible clients (Claude Code, Codex Cursor, VS Code, …) can call memory tools directly — no HTTP client code needed. The MCP process owns the `LongTermMemory` engine in-process (lazy assembly on the first tool call, no crash on init failure).
+
+```bash
+# Install with the [server] extras (provides mcp + uvicorn)
+pip install JiuwenMemory[server]
+
+# Start the MCP server (default: Streamable HTTP at http://127.0.0.1:8765/mcp)
+memory-mcp
+
+# Or via source
+python -m jiuwen_memory.server.mcp_server
+```
+
+Connect a client by URL; tools include `add_messages`, `search_memories`, `search_history_summaries`, `get_memories`, `update_memory`, `delete_memory`, `get_variables` / `update_variables` / `delete_variables`, and `health_check`.
+
+[→ MCP Server API Docs](docs/en/API%20Docs/mcp_server.md)
+
 ### OpenClaw Plugin
 
 Auto-memory for OpenClaw agents — remembers what users said and recalls it before every reply.

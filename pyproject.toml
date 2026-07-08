@@ -61,7 +61,7 @@ sqlite = ["aiosqlite>=0.22.1", "greenlet>=3.1.1"]
 redis = ["redis>=7.1.0"]
 mem0 = ["mem0ai>=1.0.0"]
 agentarts = ["agentarts-sdk>=0.1.2,<0.2"]
-server = ["uvicorn>=0.30.0", "fastapi>=0.110.0", "python-dotenv>=1.2.1"]
+server = ["uvicorn>=0.30.0", "fastapi>=0.110.0", "python-dotenv>=1.2.1", "mcp>=1.2.0"]
 all-storage = ["JiuwenMemory[sqlite,postgres,mysql,gaussdb,redis]"]
 all-vector = ["JiuwenMemory[chromadb,gaussvector,elasticsearch]"]
 default = []
@@ -69,6 +69,7 @@ all = ["JiuwenMemory[all-storage,all-vector,server]"]
 
 [project.scripts]
 memory-server = "jiuwen_memory.server.memory_server:main"
+memory-mcp = "jiuwen_memory.server.mcp_server:main"
 
 [dependency-groups]
 test = [

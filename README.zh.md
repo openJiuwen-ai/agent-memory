@@ -352,6 +352,25 @@ python -m server.memory_server
 ├── memory_data/      ← 数据目录（SQLite / ChromaDB 等，自动创建）
 ```
 
+### MCP 服务
+
+同一套记忆引擎还以 **MCP（Model Context Protocol）服务**形式暴露，兼容 MCP 的客户端（Claude Code、Codex、Cursor、VS Code ……）可直接调用记忆工具，无需编写 HTTP 客户端代码。MCP 进程**进程内**持有 `LongTermMemory` 引擎（首次工具调用时延迟装配，初始化失败也不崩溃）。
+
+```bash
+# 安装 [server] extras（提供 mcp + uvicorn）
+pip install JiuwenMemory[server]
+
+# 启动 MCP 服务（默认 Streamable HTTP，地址 http://127.0.0.1:8765/mcp）
+memory-mcp
+
+# 或源码启动
+python -m jiuwen_memory.server.mcp_server
+```
+
+客户端按 URL 连接即可，工具包括 `add_messages`、`search_memories`、`search_history_summaries`、`get_memories`、`update_memory`、`delete_memory`、`get_variables` / `update_variables` / `delete_variables` 以及 `health_check`。
+
+[→ MCP Server API 文档](docs/zh/API文档/mcp_server.md)
+
 ### OpenClaw 插件
 
 OpenClaw 智能体的"自动记忆"——记住用户说过什么，在每次回复前自动召回。

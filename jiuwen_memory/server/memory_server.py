@@ -249,7 +249,8 @@ async def startup_event():
                 client_provider=os.getenv("MODEL_PROVIDER", ""),
                 api_key=os.getenv("API_KEY", ""),
                 api_base=os.getenv("API_BASE", ""),
-                verify_ssl=False
+                # 是否校验 LLM API 的 TLS 证书；默认不校验，设为 true 时开启
+                verify_ssl=os.getenv("MODEL_SSL_VERIFY", "false").strip().lower() == "true"
             )
         )
 
