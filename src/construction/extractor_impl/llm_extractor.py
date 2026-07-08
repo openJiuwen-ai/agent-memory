@@ -39,10 +39,9 @@ from common.type_def import (
     Segment,
     Temporal,
 )
-from construction.extractor import ExtractorProducer
 
-from ..base import OperatorType
-from ..extractor import Extractor
+from ..base import ExtractContext, OperatorType
+from ..extractor import Extractor, ExtractorProducer
 
 logger = get_logger(__name__)
 
@@ -71,6 +70,7 @@ class ExtractionCandidate:
     source_span: tuple[int, int] = (0, 0)
     confidence: float = 0.0
     evidence: str = ""
+    event_date: str = ""  # LLM 解析出的绝对事件时间（ISO 8601），写入 temporal.t_event
     keywords: list[str] = field(default_factory=list)
     entities: list[Entity] = field(default_factory=list)
     metadata: dict[str, str] = field(default_factory=dict)
@@ -104,6 +104,14 @@ Rules:
   (Chinese source → Chinese statement; English source → English statement). Never
   translate the extracted content to another language.
 - "confidence": 1.0 = directly stated, 0.7 = clearly implied, 0.5 = weakly implied. Do not extract below 0.5.
+- Relative time resolution: if the user message contains relative time expressions
+  (e.g. "yesterday", "last week", "明天", "昨天上午9点", "上周三"), resolve them to ABSOLUTE
+  dates/times using the observation_date given in the user prompt as the reference point.
+  Write the absolute date/time into the content text AND output an "event_date" field in
+  ISO 8601 format (e.g. "2025-06-09T09:00:00"). If the item has no time component, omit
+  event_date (or output empty string). Example: observation_date=2025-06-10, source
+  "Alice 昨天上午9点参加篮球比赛" → content="Alice 2025年6月9日上午9点参加篮球比赛",
+  event_date="2025-06-09T09:00:00".
 - If nothing worth extracting, return [].
 
 Target types:
@@ -118,8 +126,31 @@ Output schema:
   "source_id": "32049cd0-5f7c-419f-928f-503b24318f7c",
   "target": "fact" | "event" | "preference" | "context",
   "content": "self-contained statement (one topic, merged if multiple sub-facts)",
-  "confidence": 0.5~1.0
+  "confidence": 0.5~1.0,
+  "event_date": "2025-06-09T09:00:00"  // optional, only if time is resolved
 }]
+"""
+
+# 过程记忆抽取 prompt：把本轮对话汇总成 1 条结构化执行历史（PROCEDURAL tier）。
+# 不抽离散事实、不产多条，只产 1 条自包含的「目标→步骤→结果」式汇总。
+_PROCEDURAL_SYSTEM_PROMPT = """\
+Summarize the conversation below into ONE structured execution-history memory.
+
+Output ONLY a JSON object (no array, no markdown fences). Schema:
+{
+  "content": "one self-contained statement summarizing what was done in this turn: \
+the goal/task, the key steps taken, and the outcome/result. Structured but as a single \
+coherent statement (can use inline markers like 目标:/步骤:/结果:). In the SAME language \
+as the source text. Cover the whole turn, not just one fact."
+}
+
+Rules:
+- Produce exactly ONE memory (the whole turn as one procedural record).
+- Do NOT fragment into multiple facts; do NOT output a JSON array.
+- Capture the procedure/how-to: what the user wanted, what was done, how it ended.
+- Keep it self-contained (understandable without the source conversation).
+- If the turn has no actionable procedure (e.g. pure greeting), still summarize its intent
+  and outcome in one statement.
 """
 
 _SOURCE_PREFIX = """\
@@ -146,6 +177,51 @@ def _strip_source_id_shell(raw: str) -> str:
     """
     m = _SOURCE_ID_SHELL_RE.match(raw)
     return m.group("id").strip() if m else raw.strip()
+
+
+def _parse_event_date(raw: str) -> datetime | None:
+    """解析 LLM 输出的 event_date（ISO 8601）为 datetime；失败返回 None。
+
+    兼容带/不带时区、仅日期（YYYY-MM-DD）等形式。解析失败不阻断——回退到 source.t_event。
+    """
+    s = (raw or "").strip()
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        logger.debug("Extractor._parse_event_date: cannot parse %r, fallback", s)
+        return None
+
+
+def _format_context_block(context: ExtractContext | None) -> str:
+    """把 ExtractContext 拼成 user prompt 末尾的参考段（无 context 返回空串）。
+
+    - Recent conversation context：做指代/代词消解与语境，明示「不从中提取、
+      source_id 不指向这些」。
+    - Existing related memories：已有事实，明示「不要重复产出已涵盖的信息」。
+    """
+    if context is None:
+        return ""
+    parts: list[str] = []
+    if context.recent_originals:
+        lines = [f"- {u.content}" for u in context.recent_originals if u.content]
+        if lines:
+            parts.append(
+                "## Recent conversation context "
+                "(for coreference / pronoun resolution only — do NOT extract from these, "
+                "do NOT point source_id at these):\n"
+                + "\n".join(lines)
+            )
+    if context.related_memories:
+        lines = [f"- {u.content}" for u in context.related_memories if u.content]
+        if lines:
+            parts.append(
+                "## Existing related memories "
+                "(already-known facts — do NOT duplicate information these cover):\n"
+                + "\n".join(lines)
+            )
+    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -186,8 +262,23 @@ class ExtractorImpl(Extractor):
     # 主入口
     # ------------------------------------------------------------------
 
-    def extract(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
-        """从一批原始记忆单元中提取零或多条低抽象粒度的派生单元。"""
+    def extract(
+        self,
+        units: list[MemoryUnit],
+        *,
+        context: ExtractContext | None = None,
+    ) -> list[MemoryUnit]:
+        """从一批原始记忆单元中提取零或多条低抽象粒度的派生单元。
+
+        ``context`` 只作 prompt 参考（recent_originals 做指代消解/语境、related_memories
+        提示已有事实），不进提取来源。本轮 ``units`` 是唯一提取来源。
+
+        若 ``units`` 标记了 ``metadata["procedural"]=="true"``，走过程记忆抽取：LLM 把
+        本轮汇总成 **1 条** 结构化执行历史（PROCEDURAL tier），不走走重、不收 context。
+        """
+        # 过程记忆模式：产 1 条 PROCEDURAL 执行历史汇总，直接返回（不经 _dedup_batch）。
+        if self._is_procedural(units):
+            return self._extract_procedural(units)
 
         # Phase 1: 预处理
         accepted = self._preprocess(units)
@@ -204,7 +295,7 @@ class ExtractorImpl(Extractor):
         for start in range(0, len(accepted), _EXTRACT_BATCH_SIZE):
             sub_batch = accepted[start:start + _EXTRACT_BATCH_SIZE]
             try:
-                all_candidates.extend(self._llm_extract_batch(sub_batch))
+                all_candidates.extend(self._llm_extract_batch(sub_batch, context=context))
             except Exception:
                 logger.warning(
                     "Extractor: LLM extract failed for sub-batch of %d units (offset=%d), skipping",
@@ -222,6 +313,108 @@ class ExtractorImpl(Extractor):
 
         # Phase 4: 构建 MemoryUnit
         return self._build_units(all_candidates, accepted)
+
+    # ------------------------------------------------------------------
+    # 过程记忆抽取（procedural=true：1 条结构化执行历史汇总）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_procedural(units: list[MemoryUnit]) -> bool:
+        """本轮是否走过程记忆抽取（metadata["procedural"]=="true"）。"""
+        return any(
+            str(u.metadata.get("procedural", "")).strip().lower() == "true" for u in units
+        )
+
+    def _extract_procedural(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
+        """把本轮汇总成 1 条 PROCEDURAL 执行历史 MemoryUnit。
+
+        不走走重、不收 context。LLM 产 1 条结构化「目标/步骤/结果」汇总，
+        provenance 回指本轮 unit（多源合并到一条，provenance 列全部本轮 unit id）。
+        """
+        from common.type_def import ChatMessage
+
+        # 拼本轮原文（多 unit 合并成一段，作为单个执行历史源）
+        source_text = "\n".join(u.content for u in units if u.content).strip()
+        if not source_text:
+            logger.info("Extractor._extract_procedural: empty source, return []")
+            return []
+
+        messages = [
+            ChatMessage(role="system", content=_PROCEDURAL_SYSTEM_PROMPT),
+            ChatMessage(role="user", content=source_text),
+        ]
+        try:
+            response = self._call_llm_with_retry(messages)
+        except Exception as exc:
+            logger.warning("Extractor._extract_procedural: LLM call failed, return []: %s", exc)
+            return []
+
+        content = self._parse_procedural_response(response)
+        if not content:
+            logger.info("Extractor._extract_procedural: empty content parsed, return []")
+            return []
+
+        # 特征富化（关键词/实体，同普通派生）
+        candidate = ExtractionCandidate(
+            target=ExtractionTarget.CONTEXT,
+            content=content,
+            source_unit_id=units[0].id,
+            confidence=1.0,
+        )
+        self._enrich_features([candidate])
+
+        # 构建 1 条 PROCEDURAL MemoryUnit，provenance 回指全部本轮 unit
+        now = datetime.now(timezone.utc)
+        source = units[0]
+        tags = list(candidate.keywords)
+        if "procedural" not in tags:
+            tags.append("procedural")
+        unit = MemoryUnit(
+            id=str(uuid.uuid4()),
+            scope=source.scope,
+            tier=MemoryTier.PROCEDURAL,
+            segments=[Segment(content=candidate.content, source=source.source)],
+            # 不设 source_ref：procedural 原文不落 KV，source.id 指向不存在的记录，
+            # 设了反而误导溯源。provenance 仍记本轮 unit id（血缘列表，可指向未落盘源）。
+            temporal=Temporal(
+                t_event=source.temporal.t_event or now,
+                t_ingest=now,
+                t_valid=now,
+            ),
+            provenance=[u.id for u in units],
+            tags=tags,
+            metadata={
+                "confidence": str(candidate.confidence),
+                "target": candidate.target.value,
+                "procedural": "true",
+            }
+            | candidate.metadata,
+            lifecycle=LifecycleState.ACTIVE,
+        )
+        logger.info(
+            "Extractor._extract_procedural: built 1 PROCEDURAL unit id=%s provenance=%s content=%s",
+            unit.id[:8], unit.provenance, unit.content[:200],
+        )
+        return [unit]
+
+    def _parse_procedural_response(self, response: str) -> str:
+        """解析 LLM 返回的 {"content": "..."} JSON，取 content 字段。
+
+        多级兜底：直接解析 → 剥 markdown fence 再解析 → 整个响应当 content。
+        任一路径解析出 dict 即取 content 返回；都不成则返回原文（保证产 1 条）。
+        """
+        for candidate_text in (response.strip(), self._strip_non_json(response)):
+            try:
+                parsed = json.loads(candidate_text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return str(parsed.get("content", "")).strip()
+        logger.warning(
+            "Extractor._parse_procedural_response: cannot parse as JSON, use raw response: %s",
+            response[:200],
+        )
+        return response.strip()
 
     # ------------------------------------------------------------------
     # Phase 1: 预处理
@@ -256,15 +449,43 @@ class ExtractorImpl(Extractor):
     # Phase 2: LLM 提取（批量）
     # ------------------------------------------------------------------
 
-    def _llm_extract_batch(self, units: list[MemoryUnit]) -> list[ExtractionCandidate]:
+    def _llm_extract_batch(
+        self,
+        units: list[MemoryUnit],
+        *,
+        context: ExtractContext | None = None,
+    ) -> list[ExtractionCandidate]:
         """对一批 unit 调一次 LLM 提取——每条 unit 带 [ID: ...] 标识，
         LLM 在每个候选里输出 ``source_id`` 回指来源；解析时校验 source_id 存在。
+
+        ``context`` 非空时在 user prompt 末尾追加两段参考项（见 ExtractContext）：
+        - Recent conversation context：做指代/代词消解与语境，不从中提取、不作 source_id。
+        - Existing related memories：已有事实，本轮不要重复产出。
         """
         from common.type_def import ChatMessage
 
         # 拼 user prompt：每条 unit 带 [ID: unit.id] 前缀
         parts = [_SOURCE_PREFIX.format(unit_id=u.id, unit_content=u.content) for u in units]
         user_text = "\n".join(parts)
+        # 基准时间 observation_date（经 metadata 下推）：LLM 据此把相对时间解析成绝对时间。
+        # 取首个含 observation_date 的 unit（同批通常一致）；未传则以当前时间为基准。
+        observation_date = next(
+            (str(u.metadata.get("observation_date", "")).strip() for u in units
+             if u.metadata.get("observation_date")),
+            "",
+        )
+        if not observation_date:
+            observation_date = datetime.now(timezone.utc).isoformat()
+        user_text = (
+            f"observation_date: {observation_date}\n"
+            f"(Use this as the reference point to resolve relative time expressions "
+            f"like \"yesterday\"/\"昨天\"/\"上周\" into absolute dates in content and event_date.)\n\n"
+            + user_text
+        )
+        # 追加 context 参考段（仅本轮 units 作提取来源，context 只供 LLM 参考）
+        context_block = _format_context_block(context)
+        if context_block:
+            user_text = user_text + "\n" + context_block
         messages = [
             ChatMessage(role="system", content=_EXTRACT_SYSTEM_PROMPT),
             ChatMessage(role="user", content=user_text),
@@ -304,21 +525,25 @@ class ExtractorImpl(Extractor):
                 target = ExtractionTarget.FACT
 
             evidence = item.get("evidence", "")
+            event_date = str(item.get("event_date", "") or "").strip()
             candidates.append(ExtractionCandidate(
                 target=target,
                 content=item.get("content", ""),
                 source_unit_id=source_id,
                 confidence=confidence,
                 evidence=evidence,
+                event_date=event_date,
             ))
             ev_str = f", evidence={evidence[:100]}" if evidence else ""
+            ed_str = f", event_date={event_date}" if event_date else ""
             logger.info(
-                "Extractor: candidate — source=%s target=%s, confidence=%.2f, content=%s%s",
+                "Extractor: candidate — source=%s target=%s, confidence=%.2f, content=%s%s%s",
                 source_id[:8],
                 target.value,
                 confidence,
                 item.get("content", "")[:200],
                 ev_str,
+                ed_str,
             )
 
         logger.info(
@@ -455,7 +680,7 @@ class ExtractorImpl(Extractor):
                 segments=[Segment(content=c.content, source=source.source)],
                 source_ref=source.id,
                 temporal=Temporal(
-                    t_event=source.temporal.t_event,
+                    t_event=_parse_event_date(c.event_date) or source.temporal.t_event,
                     t_ingest=datetime.now(timezone.utc),
                 ),
                 provenance=[source.id],

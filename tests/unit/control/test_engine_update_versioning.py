@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from api import MemoryPatch, Scope
 from api.memory_api_impl import build_kernel
 from common.errors import ValidationError
-from common.type_def import LifecycleState, MemoryUnit
+from common.type_def import LifecycleState, MemoryUnit, memory_key
 from common.type_def.memory_codec import dumps, loads
 from control.base import ControlOperatorType
 from control.lifecycle import LifecycleManager
@@ -29,7 +29,8 @@ class RecordingLifecycle(LifecycleManager):
         self.supersede_calls.append((unit_id, invalid_at))
         for scope in self._kv.scopes():
             for key, raw in self._kv.list(scope):
-                if key == unit_id:
+                # key 带前缀（/memory/{id}），取末段作裸 id 再比对
+                if key.rsplit("/", 1)[-1] == unit_id:
                     unit = loads(raw)
                     if unit.lifecycle != LifecycleState.ACTIVE:
                         raise ValidationError("invalid test transition")

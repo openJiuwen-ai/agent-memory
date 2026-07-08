@@ -7,7 +7,7 @@ import pytest
 from api import Scope
 from api.memory_api_impl import build_kernel
 from common.errors import NotFoundError, PolicyError, ValidationError
-from common.type_def import LifecycleState
+from common.type_def import LifecycleState, memory_key
 from common.type_def.memory_codec import dumps, loads
 from control.lifecycle_impl.kv_lifecycle_manager import KVLifecycleManager
 from control.policy_impl.dict_policy_manager import DictPolicyManager
@@ -16,12 +16,12 @@ from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 
 def _store(unit) -> tuple[InMemoryKVStore, KVLifecycleManager]:
     kv = InMemoryKVStore()
-    kv.insert(unit.scope, unit.id, dumps(unit))
+    kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
     return kv, KVLifecycleManager(kv)
 
 
 def _load(kv: InMemoryKVStore, unit) -> object:
-    return loads(kv.get(unit.scope, unit.id))
+    return loads(kv.get(unit.scope, memory_key(unit.id)))
 
 
 def test_transition_allows_defined_forward_lifecycle_moves(unit_factory) -> None:
@@ -107,7 +107,7 @@ def test_sweep_forgets_expired_active_and_superseded_units(unit_factory) -> None
     forgotten = unit_factory("forgotten", "forgotten memory", lifecycle=LifecycleState.FORGOTTEN)
     kv = InMemoryKVStore()
     for unit in [expired, superseded, active, archived, forgotten]:
-        kv.insert(unit.scope, unit.id, dumps(unit))
+        kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
     lifecycle = KVLifecycleManager(kv)
 
     swept = lifecycle.sweep()
@@ -139,7 +139,7 @@ def test_sweep_uses_policy_targets_for_expired_active_and_superseded(unit_factor
     superseded = unit_factory("superseded", "old version", lifecycle=LifecycleState.SUPERSEDED)
     kv = InMemoryKVStore()
     for unit in [expired, superseded]:
-        kv.insert(unit.scope, unit.id, dumps(unit))
+        kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
     policy = DictPolicyManager(
         {
             "lifecycle.expired_active.target": "archived",
@@ -162,7 +162,7 @@ def test_sweep_rejects_invalid_policy_target(unit_factory) -> None:
         t_invalid=now - timedelta(days=1),
     )
     kv = InMemoryKVStore()
-    kv.insert(expired.scope, expired.id, dumps(expired))
+    kv.insert(expired.scope, memory_key(expired.id), dumps(expired))
     policy = DictPolicyManager(
         {
             "lifecycle.expired_active.target": "active",
@@ -198,11 +198,11 @@ def test_default_kernel_lifecycle_sweep_uses_runtime_policy(unit_factory) -> Non
         lifecycle=LifecycleState.ACTIVE,
         t_invalid=datetime.now(timezone.utc) - timedelta(days=1),
     )
-    kernel.kv.insert(scope, expired.id, dumps(expired))
+    kernel.kv.insert(scope, memory_key(expired.id), dumps(expired))
 
     api.admin_set("lifecycle.expired_active.target", "archived", identity=scope)
     swept = getattr(getattr(api, "_engine"), "_lifecycle").sweep()
 
-    stored = loads(kernel.kv.get(scope, expired.id))
+    stored = loads(kernel.kv.get(scope, memory_key(expired.id)))
     assert swept == [expired.id]
     assert stored.lifecycle == LifecycleState.ARCHIVED

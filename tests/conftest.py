@@ -22,6 +22,7 @@ from common.type_def.memory import (
     Segment,
     Temporal,
 )
+from common.type_def import memory_key
 from common.type_def.memory_codec import dumps
 from common.type_def.scope import Scope
 from retrieval.discloser_impl.truncating_discloser import TruncatingDiscloser
@@ -113,7 +114,7 @@ def make_unit(
 
 def index_unit(world: RetrievalWorld, unit: MemoryUnit) -> None:
     """Mirror the minimal write-side indexing needed by retrieval tests."""
-    world.kv.insert(unit.scope, unit.id, dumps(unit))
+    world.kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
     world.vector.insert(
         unit.scope,
         [VectorRecord(id=unit.id, vector=world.embedder.embed_query(unit.content))],

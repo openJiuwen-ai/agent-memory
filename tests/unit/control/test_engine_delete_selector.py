@@ -7,7 +7,7 @@ import pytest
 from api import DeleteMode, DeleteSelector, Scope
 from api.memory_api_impl import build_kernel
 from common.errors import NotFoundError, ValidationError
-from common.type_def import LifecycleState, MemoryUnit, Segment
+from common.type_def import LifecycleState, MemoryUnit, Segment, memory_key
 from common.type_def.memory_codec import dumps
 
 
@@ -185,7 +185,7 @@ def test_delete_archive_uses_lifecycle_transition_validation() -> None:
         segments=[Segment(content="already forgotten")],
         lifecycle=LifecycleState.FORGOTTEN,
     )
-    kernel.kv.insert(scope, forgotten.id, dumps(forgotten))
+    kernel.kv.insert(scope, memory_key(forgotten.id), dumps(forgotten))
 
     with pytest.raises(ValidationError):
         kernel.api.delete(
@@ -215,7 +215,7 @@ def test_delete_purge_recursively_removes_provenance_descendants() -> None:
     )
     unrelated = MemoryUnit(id="unrelated", scope=scope, segments=[Segment(content="unrelated")])
     for unit in [source, direct, nested, unrelated]:
-        kernel.kv.insert(scope, unit.id, dumps(unit))
+        kernel.kv.insert(scope, memory_key(unit.id), dumps(unit))
 
     affected = kernel.api.delete(
         DeleteSelector(unit_ids=[source.id], scope=scope, mode=DeleteMode.PURGE),

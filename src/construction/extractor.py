@@ -13,7 +13,7 @@ from abc import abstractmethod
 from common.factory.factory import Factory
 from common.type_def import MemoryUnit
 
-from .base import ConstructionOperator
+from .base import ConstructionOperator, ExtractContext
 
 
 class ExtractorProducer(Factory):
@@ -28,5 +28,16 @@ class ExtractorProducer(Factory):
 
 class Extractor(ConstructionOperator):
     @abstractmethod
-    def extract(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
-        """从一批原始记忆单元中提取零或多条低抽象粒度的派生单元。"""
+    def extract(
+        self,
+        units: list[MemoryUnit],
+        *,
+        context: ExtractContext | None = None,
+    ) -> list[MemoryUnit]:
+        """从一批原始记忆单元中提取零或多条低抽象粒度的派生单元。
+
+        ``context``（infer=true 同步抽取时由 Evolver 透传）只作 prompt 参考：
+        ``recent_originals`` 做指代/代词消解与语境，``related_memories`` 提示已有
+        事实以规避重复。context 不进提取来源列表——本轮 ``units`` 是唯一提取来源。
+        默认 None → 行为与未扩展前一致（向后兼容）。
+        """

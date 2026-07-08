@@ -23,3 +23,16 @@ class RawPayload:
     uri: str = ""  # 原始数据的外部引用（文件路径/URL/对象存储 key）
     metadata: dict[str, str] = field(default_factory=dict)  # 来源附加信息
     occurred_at: datetime | None = None  # 发生时间（写入 temporal.t_event）
+
+
+# -- KV key 前缀（未建索引的 infer 原文） ------------------------------------- #
+# 真源 KV key 按「是否建索引」带前缀（见 F02 决策6）：未建索引的 infer=true 原文
+# 落 /messages/{id}（建索引记忆落 /memory/{id}，见 memory.py）。所有落盘/回查
+# infer 原文的点用 messages_key；拉取最近 N 条做指代消解/语境时用 list(prefix=...)。
+
+MESSAGES_KEY_PREFIX = "/messages/"
+
+
+def messages_key(unit_id: str) -> str:
+    """未建索引 infer 原文的 KV key。"""
+    return f"{MESSAGES_KEY_PREFIX}{unit_id}"

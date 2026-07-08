@@ -121,3 +121,16 @@ class MemoryUnit:
     def source(self) -> Modality:
         """主来源模态（只读）：首段模态；无段时按 TEXT。"""
         return self.segments[0].source if self.segments else Modality.TEXT
+
+
+# -- KV key 前缀（建索引记忆） ----------------------------------------------- #
+# 真源 KV key 按「是否建索引」带前缀（见 F02 决策6）：建索引记忆 /memory/{id}、
+# 未建索引的 infer 原文 /messages/{id}（MESSAGES_KEY_PREFIX 见 raw.py）。
+# 所有落盘/回查建索引记忆的点用 memory_key，保证同前缀读写对齐。
+
+MEMORY_KEY_PREFIX = "/memory/"
+
+
+def memory_key(unit_id: str) -> str:
+    """建索引记忆的 KV key。"""
+    return f"{MEMORY_KEY_PREFIX}{unit_id}"

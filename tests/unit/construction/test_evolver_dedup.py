@@ -26,6 +26,7 @@ from common.type_def import (
     Segment,
     Temporal,
 )
+from common.type_def import memory_key
 from common.type_def.memory_codec import dumps, loads
 from construction.abstractor import Abstractor
 from construction.associator import Associator
@@ -214,7 +215,7 @@ class NoopExtractor(Extractor):
     def health(self) -> None:
         return None
 
-    def extract(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
+    def extract(self, units: list[MemoryUnit], *, context=None) -> list[MemoryUnit]:
         return []
 
 
@@ -368,7 +369,7 @@ def _index_unit(
     embedder: Embedder,
 ) -> None:
     """将 unit 写入 KVStore + VectorStore（模拟 IndexBuilder.build 的效果）。"""
-    kv.insert(unit.scope, unit.id, dumps(unit))
+    kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
     vector = embedder.embed([unit.content])[0]
     record = VectorRecord(
         id=f"{unit.id}-0",
@@ -446,8 +447,8 @@ class TestDedupAdd:
         result = getattr(evolver, "_dedup_batch")(candidates)
 
         assert result.created_ids == ["c1"]
-        # 验证 KVStore 中有记录
-        unit = loads(stores["kv"].get(_DEFAULT_SCOPE, "c1"))
+        # 验证 KVStore 中有记录（evolver 落盘用 memory_key 前缀）
+        unit = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("c1")))
         assert unit is not None
         assert unit.id == "c1"
 
@@ -504,9 +505,9 @@ class TestDedupNoop:
         assert result.created_ids == []
         assert result.updated_ids == []
         assert result.superseded_ids == []
-        # 候选 id 不在 KVStore 中
+        # 候选 id 不在 KVStore 中（NOOP 不落盘）
         with pytest.raises(NotFoundError):
-            stores["kv"].get(_DEFAULT_SCOPE, "c1")
+            stores["kv"].get(_DEFAULT_SCOPE, memory_key("c1"))
 
 
 class TestDedupSupersede:
@@ -544,12 +545,12 @@ class TestDedupSupersede:
         assert "e1" in result.superseded_ids
 
         # 验证旧版 lifecycle 已变更
-        old_from_kv = loads(stores["kv"].get(_DEFAULT_SCOPE, "e1"))
+        old_from_kv = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("e1")))
         assert old_from_kv.lifecycle == LifecycleState.SUPERSEDED
         assert old_from_kv.temporal.t_invalid is not None
 
         # 验证新版已落盘
-        new_from_kv = loads(stores["kv"].get(_DEFAULT_SCOPE, "c1"))
+        new_from_kv = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("c1")))
         assert new_from_kv.supersedes == "e1"
 
 
@@ -593,7 +594,7 @@ class TestDedupUpdate:
         assert "c1" not in result.created_ids
 
         # 验证已有 unit 的 content 已被更新
-        updated = loads(stores["kv"].get(_DEFAULT_SCOPE, "e1"))
+        updated = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("e1")))
         assert merge_content in updated.content
 
         # 验证 provenance 包含候选 id
@@ -758,7 +759,7 @@ class TestDedupEvolveExtract:
             def health(self) -> None:
                 return None
 
-            def extract(self, units):
+            def extract(self, units, *, context=None):
                 return [
                     _make_unit("ext-1", "用户偏好简洁回答风格"),
                     _make_unit("ext-2", "Python 的 GIL 机制"),

@@ -49,15 +49,20 @@
 
 `MemoryEngine.write` 返回时 background 任务尚未完成；`evolve` 显式触发时返回任务 id，通过 `Scheduler.status` 查询进度。
 
-## write 路径 infer 开关
+## write 路径调用级开关（infer / procedural）
 
-`InMemoryEngine` 不持有独立 `Extractor`（Evolver 自带 extractor，engine 不重复注入）。`write` 据 `metadata["infer"]` 真值（`"true"`，大小写/空白不敏感）分两路：
+`InMemoryEngine.write` 据 `metadata` 下推的两个开关分三路（详见 `docs/features/api/F02-write-infer-extract.md` 决策6-8）：
 
-- **`infer="true"`**：hot path 同步调 `self._evolver.evolve(units, EvolveMode.EXTRACT)` 走 Evolver EXTRACT 全链路。原始记忆落 KV 真源但**不建索引**；Evolver 内部 `Extractor.extract` 抽取派生记忆 → `_dedup_batch` 判定+落盘+建索引（ADD/UPDATE/SUPERSEDE/NOOP）。**不提交** background EXTRACT（已同步抽取）。返回**派生单元列表**（从 `EvolveResult.created_ids` 反查 KV 读回，对齐 mem0 `add(infer=True)`）。
-- **缺省 / 非 `"true"`**：原始落 KV + 建索引，**不提交** background EXTRACT（演进由调用方显式 `evolve()` 触发）。
-- **evolver 缺失**：`infer="true"` 但未注入 `Evolver`（`None`）时抛 `RuntimeError`——装配问题暴露而非静默降级。默认装配 `evolver: orchestrating` 总是注入。
+- **`procedural="true"`**（过程记忆）：原文**不落 KV**；喂 `evolve(EXTRACT)`。evolver 检测 procedural → 跳过 context 收集与 `_dedup_batch`，extractor 把本轮汇总成 **1 条** PROCEDURAL 执行历史，直接 `_persist` 落 `/memory/{id}` 建索引。语义是"把这轮做了什么记成一条可检索 how-to"。
+- **`infer="true"`**（同步抽取）：原文 MemoryUnit 落 `/messages/{id}`（**不建索引**，供后续轮做指代消解/语境）；同一批 MemoryUnit 喂 `evolve(EXTRACT)`。evolver 检测 infer → 内部收集最近 10 条原文（`recent_originals`，做指代/代词消解）+ 经 `dedup.recall` 召回 10 条相关记忆（`related_memories`，做去重提示）→ 拼进 extractor prompt → `_dedup_batch` 兜底落 `/memory/{id}`。返回派生单元列表。
+- **缺省**：原始 MemoryUnit 落 `/memory/{id}` + 建索引，不自动提交演进（由调用方显式 `evolve()` 触发）。
+- **evolver 缺失**：procedural/infer=true 但未注入 `Evolver`（`None`）时抛 `RuntimeError`——装配问题暴露而非静默降级。
 
-引擎调用注入的 `Evolver` 算子属「编排委托」（与 Evolver 调 extractor 同构），不违反「引擎不直接调 LLM」铁律。派生单元经 Evolver 落盘+建索引，去重由 Evolver `_dedup_batch` 承担（engine 不重写）。详见 `docs/specs/S02-memory-api.md`「infer 开关」与 `docs/features/api/F02-write-infer-extract.md`。
+> engine 不再调 `Classifier.classify`（决策9）——原单元 tier 保持 EPISODIC 默认，分类职责改由派生路径承担（extractor 产派生时自定 SEMANTIC/PROCEDURAL）。`InMemoryEngine` 已不注入 `_classifier`。
+
+**KV key 前缀分离**（决策6）：真源 key 按「是否建索引」带前缀——`/memory/{id}`（建索引记忆）、`/messages/{id}`（未建索引 infer 原文）；前缀常量与 helper 在 `common.type_def.memory` / `common.type_def.raw`。所有落盘/回查点用 `memory_key`/`messages_key`，按 key 匹配 id 处（lifecycle）用带前缀 key 直接比对。
+
+引擎调用注入的 `Evolver` 算子属「编排委托」（与 Evolver 调 extractor 同构），不违反「引擎不直接调 LLM」铁律。去重由 Evolver `_dedup_batch` 承担（engine 不重写）。详见 `docs/specs/S02-memory-api.md`「infer 开关」与 `docs/features/api/F02-write-infer-extract.md`。
 
 ## 本地约束
 

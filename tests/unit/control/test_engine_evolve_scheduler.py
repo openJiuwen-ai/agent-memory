@@ -36,7 +36,6 @@ def test_engine_evolve_only_submits_scheduler_job() -> None:
     scheduler = RecordingScheduler()
     engine = InMemoryEngine(
         ingestor=None,
-        classifier=None,
         index_builder=None,
         retriever=None,
         kv=InMemoryKVStore(),

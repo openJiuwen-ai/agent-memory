@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from api.memory_api_impl import assemble
-from common.type_def import Context, Modality, Scope
+from common.type_def import Context, MemoryTier, Modality, Scope
 from config import Config
 from construction import EvolveMode
 
@@ -35,8 +35,8 @@ class TestE2EWritePath:
         return assemble(config=config)
 
     @staticmethod
-    def test_write_classify_and_recall(llm_api):
-        """write → Classifier(LLM) 分类 → 落盘建索引 → recall 可召回原始 unit。"""
+    def test_write_recall_returns_written_unit(llm_api):
+        """write → 落盘建索引 → recall 可召回原始 unit（write 不再调 classify，tier 保持默认）。"""
         units = llm_api.write(
             "用户偏好简洁回答风格",
             DEFAULT_SCOPE,
@@ -44,12 +44,9 @@ class TestE2EWritePath:
             identity=DEFAULT_ACTOR,
         )
         assert len(units) == 1
-
-        # Classifier(LLM) 在 write 路径中设置了 metadata
-        u = units[0]
-        assert "importance" in u.metadata
-        assert "freshness" in u.metadata
-        assert "classify_source" in u.metadata
+        # write 不调 classify：tier 保持 MemoryUnit 默认 EPISODIC，无 classify metadata
+        assert units[0].tier == MemoryTier.EPISODIC
+        assert "classify_source" not in units[0].metadata
 
         # recall 可召回
         result = llm_api.recall(
@@ -60,21 +57,6 @@ class TestE2EWritePath:
         )
         assert len(result.items) > 0
         assert any("简洁" in item.content for item in result.items)
-
-    @staticmethod
-    def test_write_sets_tier_by_classifier(llm_api):
-        """Classifier(LLM) 应识别偏好类内容并设置 tier。"""
-        units = llm_api.write(
-            "用户偏好用 Python 写代码",
-            DEFAULT_SCOPE,
-            source=Modality.TEXT,
-            identity=DEFAULT_ACTOR,
-        )
-        # EchoLLM 对 LLMClassifier 的 chat 调用返回原文，
-        # 规则通道仍应识别"偏好"关键词触发 CORE tier
-        assert units[0].tier in (Modality.TEXT, None) or units[0].tier is not None
-        # 规则优先：含"偏好"关键词 → CORE
-        assert str(units[0].tier) in ("core", "CORE", "MemoryTier.CORE")
 
 
 class TestE2EBackgroundExtract:

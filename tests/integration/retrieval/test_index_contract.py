@@ -17,6 +17,7 @@ from common.feature_extractor.feature_extractor_impl.keyword_feature_extractor i
     KeywordFeatureExtractor,
 )
 from common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
+from common.type_def import memory_key
 from common.type_def.memory_codec import dumps
 from construction.index_builder_impl.hybrid_index_builder import HybridIndexBuilder
 from retrieval.discloser_impl.truncating_discloser import TruncatingDiscloser
@@ -59,7 +60,7 @@ def indexed_via_builder():
     )
 
     unit = make_unit("u_long", "alice loves iced americano coffee every single morning before work")
-    kv.insert(unit.scope, unit.id, dumps(unit))  # 正排真源（控制层写链路的等价物）
+    kv.insert(unit.scope, memory_key(unit.id), dumps(unit))  # 正排真源（控制层写链路的等价物）
     index_builder.build([unit])  # 派生索引：向量按 chunk、全文按 unit
     return retriever, unit
 

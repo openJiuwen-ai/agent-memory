@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from common.audit.base import AuditProducer
-from common.type_def import AuditEvent, MemoryUnit
+from common.type_def import AuditEvent, MemoryUnit, memory_key
 from common.type_def.memory_codec import loads
 from control.base import ControlOperatorType
 from control.governance import Governor, GovernorProducer
@@ -36,7 +36,7 @@ class InMemoryGovernor(Governor):
         """按 unit_id 直接查 KVStore——治理可跨 scope 检视，逐 scope 尝试 get。"""
         for scope in self._kv.scopes():
             try:
-                raw = self._kv.get(scope, unit_id)
+                raw = self._kv.get(scope, memory_key(unit_id))
                 unit = loads(raw)
                 if unit is not None:
                     return unit

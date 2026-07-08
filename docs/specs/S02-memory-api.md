@@ -63,6 +63,20 @@
 - **缺省 / 非 `"true"`**：原始落盘 + 建索引，不自动提交演进（由调用方显式 `evolve()` 触发）。返回原始单元列表。
 - **evolver 缺失**：`infer="true"` 但装配未注入 `Evolver` 时 Engine 抛 `RuntimeError`——装配问题暴露而非静默降级。默认装配 `evolver: orchestrating` 总是注入。
 
+#### procedural 开关（write 的过程记忆抽取）
+
+`write` 的 `metadata["procedural"]` 是独立于 infer 的调用级开关（详见 F02 决策8）：
+
+- **`procedural="true"`**：原文**不落 KV**；喂 `Evolver.evolve(units, EXTRACT)`。evolver 检测 procedural → 跳过 context 收集与 `_dedup_batch`，extractor 把本轮汇总成 **1 条** PROCEDURAL 执行历史（目标/步骤/结果），直接落 `/memory/{id}` 建索引。返回该派生单元。
+- procedural 与 infer 互斥：procedural=true 时原文不落 `/messages/`、不收集 context、不去重。语义是"把这轮做了什么记成一条可检索 how-to"。
+
+#### infer 上下文增强与 KV 前缀分离（增量）
+
+- **infer=true 时 evolver 内部收集上下文**（evolve 接口不变）：`recent_originals`（最近 10 条 infer 原文，做指代消解/语境，不参与去重）+ `related_memories`（`dedup.recall` 召回 10 条相关记忆，做去重提示）。两类参考项只拼进 extractor prompt，不进提取来源。去重靠 prompt 提示 + `_dedup_batch` 兜底（evolver 不再做产出后向量过滤）。详见 F02 决策7。
+- **KV key 前缀分离**：真源 key 按「是否建索引」带前缀——`/memory/{id}`（建索引记忆）、`/messages/{id}`（未建索引 infer 原文）。前缀常量与 helper 在 `common.type_def.memory`/`raw`。详见 F02 决策6。
+- **engine.write 不再调 classify**：原单元 tier 保持 EPISODIC 默认；分类由派生路径承担。详见 F02 决策9。
+- **`/v1/list` 收窄**：handler `_list` 用 `prefix="/memory/"` 直取，只返建索引的 Memory 记忆。详见 F02 决策10。
+
 > 开关由来与"为何默认不同步、为何经 Evolver 而非独立 Extractor"的取舍见 [`docs/features/api/F02-write-infer-extract.md`](../features/api/F02-write-infer-extract.md)；write 路径流程见 [`S03-memory-manage.md`](S03-memory-manage.md)。
 
 #### 治理面（委托 Governor）

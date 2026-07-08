@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
@@ -30,13 +31,21 @@ from typing import List, Optional, Tuple
 from common.errors import ConflictError
 from common.llm.base import LLM, LlmProducer
 from common.log import get_logger
-from common.type_def import DedupDecision, LifecycleState, MemoryUnit, Relation
+from common.type_def import (
+    MESSAGES_KEY_PREFIX,
+    DedupDecision,
+    LifecycleState,
+    MemoryUnit,
+    Relation,
+    memory_key,
+    messages_key,
+)
 from common.type_def.chat import ChatMessage
 from common.type_def.memory import Segment
-from common.type_def.memory_codec import dumps
+from common.type_def.memory_codec import dumps, loads
 from construction.abstractor import Abstractor, AbstractorProducer
 from construction.associator import Associator, AssociatorProducer
-from construction.base import OperatorType
+from construction.base import ExtractContext, OperatorType
 from construction.dedup import Dedup, DedupProducer
 from construction.evolver import EvolveMode, Evolver, EvolveResult, EvolverProducer
 from construction.extractor import Extractor, ExtractorProducer
@@ -157,6 +166,10 @@ class OrchestratingEvolver(Evolver):
         self._dedup_medium_similarity = dedup_medium_similarity
         self._dedup_high_similarity = dedup_high_similarity
 
+        # infer 上下文收集的条数（见 F02「上下文增强抽取」）
+        self._recent_originals_limit = 10
+        self._related_memories_top_k = 10
+
     def operator_type(self) -> OperatorType:
         return OperatorType.EVOLVER
 
@@ -169,7 +182,8 @@ class OrchestratingEvolver(Evolver):
 
     def _persist(self, units: List[MemoryUnit]) -> List[str]:
         for u in units:
-            self._kv.insert(u.scope, u.id, dumps(u))
+            # 派生产物都建索引 → /memory/{id}
+            self._kv.insert(u.scope, memory_key(u.id), dumps(u))
             self._index.build([u])
         return [u.id for u in units]
 
@@ -305,7 +319,7 @@ class OrchestratingEvolver(Evolver):
                     "Evolver._dedup: %s without existing_unit for %s, fallback ADD",
                     decision.value, candidate.id[:8],
                 )
-            self._kv.insert(candidate.scope, candidate.id, dumps(candidate))
+            self._kv.insert(candidate.scope, memory_key(candidate.id), dumps(candidate))
             self._index.build([candidate])
             result.created_ids.append(candidate.id)
 
@@ -326,7 +340,10 @@ class OrchestratingEvolver(Evolver):
             existing_unit.metadata["dedup_decision"] = "update"
             existing_unit.metadata["dedup_similarity"] = str(similarity)
             existing_unit.metadata["dedup_merged_from"] = candidate.id
-            self._kv.update(existing_unit.scope, existing_unit.id, dumps(existing_unit))
+            # existing_unit 是建索引记忆（dedup.recall 从 /memory/ 加载），回写用 memory_key
+            self._kv.update(
+                existing_unit.scope, memory_key(existing_unit.id), dumps(existing_unit)
+            )
             self._index.update([existing_unit])
             result.updated_ids.append(existing_unit.id)
 
@@ -339,12 +356,14 @@ class OrchestratingEvolver(Evolver):
             candidate.metadata["dedup_decision"] = "supersede"
             candidate.metadata["dedup_similarity"] = str(similarity)
             candidate.metadata["dedup_superseded"] = existing_unit.id
-            self._kv.insert(candidate.scope, candidate.id, dumps(candidate))
+            self._kv.insert(candidate.scope, memory_key(candidate.id), dumps(candidate))
             self._index.build([candidate])
             # 旧版标记 SUPERSEDED（直接通过 KVStore，不依赖 LifecycleManager）
             existing_unit.lifecycle = LifecycleState.SUPERSEDED
             existing_unit.temporal.t_invalid = _now()
-            self._kv.update(existing_unit.scope, existing_unit.id, dumps(existing_unit))
+            self._kv.update(
+                existing_unit.scope, memory_key(existing_unit.id), dumps(existing_unit)
+            )
             self._index.update([existing_unit])
             result.created_ids.append(candidate.id)
             result.superseded_ids.append(existing_unit.id)
@@ -609,22 +628,177 @@ class OrchestratingEvolver(Evolver):
             return f"{old.content}\n{new.content}"
 
     # ------------------------------------------------------------------
+    # infer=true 上下文收集（evolver 内部，evolve 接口不变）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_procedural(units: List[MemoryUnit]) -> bool:
+        """本轮是否走过程记忆抽取（metadata["procedural"]=="true"）。"""
+        return any(
+            str(u.metadata.get("procedural", "")).strip().lower() == "true" for u in units
+        )
+
+    def _maybe_collect_extract_context(
+        self, units: List[MemoryUnit], recent: List[MemoryUnit]
+    ) -> ExtractContext | None:
+        """EXTRACT 模式下：若本轮 units 标记了 infer=true，收集上下文参考项。
+
+        - recent_originals：由调用方经 ``_persist_and_maintain_messages`` 一次 list 取得的
+          最近 N 条原文（做指代/代词消解与语境），只进 prompt，不参与去重。
+        - related_memories：用 dedup.recall 召回的相关记忆（MemoryUnit），做去重——
+          进 prompt 提示已有事实、勿重复抽取。
+
+        任一步失败降级为空列表，不阻断（仍靠 prompt + _dedup_batch）。非 infer 返回 None。
+        """
+        infer = any(
+            str(u.metadata.get("infer", "")).strip().lower() == "true" for u in units
+        )
+        if not infer:
+            return None
+        related = self._related_memories(units)
+        ctx = ExtractContext(
+            recent_originals=list(recent), related_memories=related
+        )
+        logger.info(
+            "Evolver._maybe_collect_extract_context: infer=true, recent=%d related=%d",
+            len(recent), len(related),
+        )
+        return ctx
+
+    def _persist_and_maintain_messages(
+        self, units: List[MemoryUnit]
+    ) -> List[MemoryUnit]:
+        """一次 list 完成 /messages/ 的维护：取最近 N 条 → 插入本轮 → 删超出旧原文。
+
+        顺序（只调一次 ``kv.list(/messages/)``）：
+        1. list 拿全部历史原文（本轮尚未落盘，故历史中不含本轮）；
+        2. 取最近 N 条作 recent；
+        3. 插入本轮新原文到 /messages/（不建索引）；
+        4. 删除超出最近 N 条的旧原文（含本轮后总数 > N 时淘汰最早的）。
+
+        返回 recent（供 extractor prompt 做指代消解/语境）。失败降级为空列表，不阻断。
+        """
+        if not units:
+            return []
+        scope = units[0].scope
+        try:
+            pairs = self._kv.list(scope, prefix=MESSAGES_KEY_PREFIX)
+        except Exception as exc:
+            logger.warning(
+                "Evolver._persist_and_maintain_messages: list failed, empty: %s",
+                exc,
+            )
+            # list 失败仍落本轮原文（不维护淘汰），recent 为空
+            for u in units:
+                self._kv.insert(scope, messages_key(u.id), dumps(u))
+            return []
+        # 1) 加载全部历史原文（不含本轮）
+        historical: List[tuple[str, MemoryUnit]] = []
+        for key, raw in pairs:
+            unit = loads(raw)
+            if unit is None:
+                continue
+            historical.append((key, unit))
+        # 2) 本轮新原文先加入 historical（不入 KV），统一排序后决定保留/删除
+        current_ids = {u.id for u in units}
+        for u in units:
+            historical.append((messages_key(u.id), u))
+        # 3) 一次排序：按 t_ingest 降序（最新在前；本轮刚 ingest 排头部，不会被删）
+        historical.sort(
+            key=lambda ku: ku[1].temporal.t_ingest or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+        # 4) recent = 前 N 条历史原文（排除本轮——本轮已是提取来源，不重复进 context）
+        recent = [
+            u for _k, u in historical
+            if u.id not in current_ids
+        ][: self._recent_originals_limit]
+        # 5) 落本轮新原文 + 删除超出 N 条的旧原文（尾部最多 len(historical)-N 条）
+        for u in units:
+            self._kv.insert(scope, messages_key(u.id), dumps(u))
+        evicted = 0
+        for key, _u in historical[self._recent_originals_limit:]:
+            try:
+                self._kv.delete(scope, key)
+                evicted += 1
+            except Exception as exc:
+                logger.warning(
+                    "Evolver._persist_and_maintain_messages: delete %s failed: %s",
+                    key, exc,
+                )
+        if evicted:
+            logger.info(
+                "Evolver._persist_and_maintain_messages: %d old originals evicted (kept %d)",
+                evicted, self._recent_originals_limit,
+            )
+        return recent
+
+    def _related_memories(self, units: List[MemoryUnit]) -> List[MemoryUnit]:
+        """用 dedup.recall 召回相关记忆（复用去重向量空间，返回完整 MemoryUnit + score）。
+
+        对本轮每个 unit 调一次 dedup.recall（它已滤自身、滤非 ACTIVE、按 min_similarity
+        过滤、聚合取 max），合并去重后取 top-N。dedup.recall 内部异常吞掉返回空，不阻断。
+        """
+        seen: dict[str, MemoryUnit] = {}
+        for unit in units:
+            try:
+                hits = self._dedup.recall(unit)
+            except Exception as exc:
+                logger.warning(
+                    "Evolver._related_memories: dedup.recall failed for %s: %s",
+                    unit.id[:8], exc,
+                )
+                continue
+            for hit_unit, _score in hits:
+                if hit_unit.id not in seen:
+                    seen[hit_unit.id] = hit_unit
+                if len(seen) >= self._related_memories_top_k:
+                    break
+            if len(seen) >= self._related_memories_top_k:
+                break
+        return list(seen.values())[: self._related_memories_top_k]
+
+    # ------------------------------------------------------------------
     # Evolver 契约
     # ------------------------------------------------------------------
 
-    def evolve(self, units: List[MemoryUnit], mode: EvolveMode) -> EvolveResult:
+    def evolve(
+        self,
+        units: List[MemoryUnit],
+        mode: EvolveMode,
+    ) -> EvolveResult:
         logger.info("Evolver: evolve mode=%s, %d units", mode.value, len(units))
         for u in units:
             logger.info("Evolver: input unit id=%s tier=%s lifecycle=%s provenance=%s content=%s",
                          u.id[:8], u.tier.value, u.lifecycle.value, u.provenance, u.content[:200])
         if mode == EvolveMode.EXTRACT:
-            extracted = self._extractor.extract(units)
+            procedural = self._is_procedural(units)
+            if procedural:
+                # procedural=true：过程记忆抽取——不收集 context（不检索10条、不拉10条）、
+                # 不走去重。extractor 把本轮汇总成 1 条 PROCEDURAL 执行历史，直接落 /memory/
+                # 建索引。见 F02「过程记忆抽取」。未抽出则直接返回空，不落盘。
+                extracted = self._extractor.extract(units, context=None)
+                logger.info(
+                    "Evolver: EXTRACT(procedural) extractor returned %d units", len(extracted)
+                )
+                if not extracted:
+                    return EvolveResult()
+                created = self._persist(extracted)
+                return EvolveResult(created_ids=created)
+            # 非 procedural 的 EXTRACT 路径（infer 同步抽取 / background EXTRACT）：
+            recent = self._persist_and_maintain_messages(units)
+            context = self._maybe_collect_extract_context(units, recent)
+            extracted = self._extractor.extract(units, context=context)
             logger.info("Evolver: EXTRACT extractor returned %d units", len(extracted))
+            if not extracted:
+                return EvolveResult()
             result = self._dedup_batch(extracted)
             return result
         if mode == EvolveMode.CONSOLIDATE:
             abstracted = self._abstractor.abstract(units)
             logger.info("Evolver: CONSOLIDATE abstractor returned %d units", len(abstracted))
+            if not abstracted:
+                return EvolveResult()
             result = self._dedup_batch(abstracted)
             return result
         if mode == EvolveMode.ASSOCIATE:
@@ -642,7 +816,8 @@ class OrchestratingEvolver(Evolver):
             for u in units:
                 if u.lifecycle == LifecycleState.SUPERSEDED:
                     u.lifecycle = LifecycleState.FORGOTTEN
-                    self._kv.update(u.scope, u.id, dumps(u))
+                    # FORGET 作用于 SUPERSEDED 旧版（建索引记忆，在 /memory/）
+                    self._kv.update(u.scope, memory_key(u.id), dumps(u))
                     self._index.remove([u.id])
                     forgotten.append(u.id)
             logger.info("Evolver: FORGET marked %d units as forgotten", len(forgotten))

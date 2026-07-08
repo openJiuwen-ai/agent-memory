@@ -19,7 +19,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from enum import Enum
+
+from common.type_def.memory import MemoryUnit
 
 
 class OperatorType(str, Enum):
@@ -41,3 +44,25 @@ class ConstructionOperator(ABC):
     @abstractmethod
     def health(self) -> None:
         """存活探测：健康时返回 ``None``，否则抛出异常。"""
+
+
+@dataclass
+class ExtractContext:
+    """infer=true 同步抽取时的上下文参考项（只读，不作为提取来源）。
+
+    见 docs/features/api/F02-write-infer-extract.md「上下文增强抽取」。两类参考项
+    职责不同：
+
+    - ``recent_originals``：最近 N 条 infer=true 原始消息（规约后的 MemoryUnit，落
+      ``/messages/``，未建索引）。**用于指代/代词消解与语境丰富**——让 extractor
+      理解"它/他/那个"指什么、对话背景。只拼进 extractor prompt，**不参与去重**。
+    - ``related_memories``：用本轮信息经 dedup.recall 召回的相关记忆（SEMANTIC 派生
+      MemoryUnit，落 ``/memory/``）。**用于去重**——既进 prompt 提示已有事实，又经
+      产出后相似度过滤丢弃重复候选。
+
+    二者都不进 ``extract()`` 的提取来源列表：本轮 units 才是唯一提取来源。
+    放 construction.base（与算子契约同处），extractor/evolver 直接引用。
+    """
+
+    recent_originals: list[MemoryUnit] = field(default_factory=list)
+    related_memories: list[MemoryUnit] = field(default_factory=list)

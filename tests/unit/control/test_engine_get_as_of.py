@@ -7,7 +7,7 @@ import pytest
 from api import DeleteMode, DeleteSelector, MemoryPatch, Scope
 from api.memory_api_impl import build_kernel
 from common.errors import NotFoundError
-from common.type_def import MemoryTier, MemoryUnit, Modality, Segment, Temporal
+from common.type_def import MemoryTier, MemoryUnit, Modality, Segment, Temporal, memory_key
 from common.type_def.memory_codec import dumps
 
 
@@ -32,8 +32,8 @@ def test_get_as_of_returns_version_valid_at_that_time() -> None:
         temporal=Temporal(t_valid=second_valid),
         supersedes=old.id,
     )
-    kernel.kv.insert(scope, old.id, dumps(old))
-    kernel.kv.insert(scope, new.id, dumps(new))
+    kernel.kv.insert(scope, memory_key(old.id), dumps(old))
+    kernel.kv.insert(scope, memory_key(new.id), dumps(new))
 
     before_update = kernel.api.get(
         new.id,
@@ -111,8 +111,8 @@ def test_get_as_of_does_not_return_forgotten_version() -> None:
         temporal=Temporal(t_valid=new_valid),
         supersedes=old.id,
     )
-    kernel.kv.insert(scope, old.id, dumps(old))
-    kernel.kv.insert(scope, new.id, dumps(new))
+    kernel.kv.insert(scope, memory_key(old.id), dumps(old))
+    kernel.kv.insert(scope, memory_key(new.id), dumps(new))
     kernel.api.delete(
         DeleteSelector(unit_ids=[old.id], scope=scope, mode=DeleteMode.FORGET),
         identity=actor,

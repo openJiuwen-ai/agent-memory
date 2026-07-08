@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Sequence
 
 from common.errors import NotFoundError
-from common.type_def import FilterClause, FilterOp, LifecycleState, MemoryUnit, Scope
+from common.type_def import FilterClause, FilterOp, LifecycleState, MemoryUnit, Scope, memory_key
 from common.type_def.memory_codec import loads
 from storage.kv import KVStore
 
@@ -162,7 +162,7 @@ class UnitReader:
             if uid in out:
                 continue
             try:
-                out[uid] = loads(self._kv.get(scope, uid))
+                out[uid] = loads(self._kv.get(scope, memory_key(uid)))
             except NotFoundError:
                 continue
         return out

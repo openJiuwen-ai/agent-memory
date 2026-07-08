@@ -29,6 +29,9 @@ from typing import Any
 
 from openjiuwen.core.memory.external.provider import MemoryProvider
 
+from common.type_def import MEMORY_KEY_PREFIX
+from common.type_def.memory_codec import loads
+
 # [本地修改 2026-06-29] provider 通过 PYTHONPATH 以顶层模块 agent_memory_provider 被 import，
 # __name__="agent_memory_provider" 不在 jiuwenswarm/openjiuwen 的 logger 树下，INFO 默认不落文件。
 # 挂到 jiuwenswarm logger 树，让 prefetch 召回日志能进 agent_server.log / full.log。
@@ -75,6 +78,26 @@ CONCLUDE_SCHEMA: dict[str, Any] = {
             "conclusion": {"type": "string", "description": "The fact to store."}
         },
         "required": ["conclusion"],
+    },
+}
+
+PROCEDURAL_SCHEMA: dict[str, Any] = {
+    "name": "agent_memory_procedural",
+    "description": (
+        "Store a structured procedural memory — a summary of what was done this turn "
+        "(goal / steps / outcome). The raw conversation is NOT stored; the LLM summarizes "
+        "it into ONE procedural memory record. Use to record how-to / execution history "
+        "worth recalling later. No deduplication or context retrieval is performed."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "content": {
+                "type": "string",
+                "description": "The conversation/turn content to summarize into a procedural memory.",
+            }
+        },
+        "required": ["content"],
     },
 }
 
@@ -157,7 +180,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
         """返回 OpenAI 风格 schema；Rail 自动包成 ToolCard（§4.8）。"""
-        schemas = [PROFILE_SCHEMA, SEARCH_SCHEMA, CONCLUDE_SCHEMA]
+        schemas = [PROFILE_SCHEMA, SEARCH_SCHEMA, CONCLUDE_SCHEMA, PROCEDURAL_SCHEMA]
         logger.info(
             "[AgentMemoryMemoryProvider] get_tool_schemas CALLED -> returning %d schemas: %s",
             len(schemas), [s.get("name") for s in schemas],
@@ -216,6 +239,31 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 await self._client.write(conclusion, scope, tags=["conclude"])
                 logger.info("[AgentMemoryMemoryProvider] agent_memory_conclude stored=%r", conclusion[:300])
                 return json.dumps({"result": "Fact stored."})
+
+            if tool_name == "agent_memory_procedural":
+                content = args.get("content", "")
+                if not content:
+                    return json.dumps({"error": "Missing required parameter: content"})
+                # 过程记忆：经 write(procedural=true) 触发 engine 的 procedural 分支——
+                # 原文不落 KV，evolver 让 extractor 把本轮汇总成 1 条 PROCEDURAL 执行历史，
+                # 落 /memory/ 建索引；不走去重、不收集 context（见 F02「过程记忆抽取」）。
+                # 需配 extractor:llm 才真汇总（默认 keyword 降级为原文原样存 1 条 PROCEDURAL）。
+                item_id = await self._client.write(
+                    content, scope, metadata={"procedural": "true"}
+                )
+                logger.info(
+                    "[AgentMemoryMemoryProvider] agent_memory_procedural summarized=%r item_id=%s",
+                    content[:300], item_id,
+                )
+                # write 返回 None：extractor 产空（LLM 返回不可解析/未产出候选）→ 未持久化任何记忆。
+                # 不可报成功（false success）——evolver 吞掉 LLM 失败返回空 EvolveResult，
+                # engine/handler 返回 item_id=None，需如实告知调用方。content 已在上文校验非空。
+                if not item_id:
+                    return json.dumps({
+                        "error": "Procedural memory not stored: extractor produced nothing "
+                                 "(LLM returned unparseable content or no candidates).",
+                    })
+                return json.dumps({"result": "Procedural memory stored.", "item_id": item_id})
 
             logger.info("[AgentMemoryMemoryProvider] handle_tool_call unknown tool=%s", tool_name)
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
@@ -331,6 +379,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             "# AgentMemory Memory\n"
             f"Active. User: {self._user_id}.\n"
             "Use agent_memory_search to find memories, agent_memory_conclude to store facts, "
+            "agent_memory_procedural to store a procedural memory (goal/steps/outcome of a turn), "
             "agent_memory_profile for a full overview."
         )
 
@@ -642,24 +691,19 @@ class _InProcessClient(_AgentMemoryClient):
         ]
 
     async def list_semantic(self, scope) -> list[dict[str, Any]]:
-        # 进程内无 get_all；用 governor.inspect 或 KV list 过滤 SEMANTIC。
-        # 这里用 recall 空查询兜底不可行（空 query 返空），改用 evolve 前置的
-        # 真源 list：经 KV list + loads 过滤 tier==semantic。
-        from common.type_def.memory import MemoryTier
-        from common.type_def.memory_codec import loads
+        # 进程内无 get_all；经 Kernel.kv 直读真源。与 HTTP /v1/list 对齐：只列建索引的
+        # Memory 记忆（/memory/ 前缀），用 prefix 直取，不再全扫 + tier 过滤——/messages/
+        # 原文（未建索引）与 /index/chunks/ 簿记（loads 返 None）都不在结果中。
+        # （生产应给 MemoryAPI 加 get_all，见 §4.1.3。）
 
         api_scope = self._to_api_scope(scope)
-        # LocalMemoryAPI 无直接 list 入口；经 Kernel.kv 直读真源
-        # （生产应给 MemoryAPI 加 get_all，见 §4.1.3）。
-        raw_pairs = await asyncio.to_thread(self._kv.list, api_scope)
+        raw_pairs = await asyncio.to_thread(self._kv.list, api_scope, MEMORY_KEY_PREFIX)
         items = []
         for _id, raw in raw_pairs:
             unit = loads(raw)
             if unit is None:
                 continue
-            # tier 是 MemoryTier 枚举，比较用 .value（与 _field_value 一致）
-            if getattr(unit, "tier", None) == MemoryTier.SEMANTIC:
-                items.append({"content": unit.content, "item_id": unit.id, "score": 0})
+            items.append({"content": unit.content, "item_id": unit.id, "score": 0})
         return items
 
     async def evolve_extract(self, scope) -> None:

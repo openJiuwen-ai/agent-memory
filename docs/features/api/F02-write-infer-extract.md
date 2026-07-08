@@ -121,3 +121,97 @@ Ingestor.ingest → 补 assets/tags → Classifier.classify → KVStore.insert�
 2. **infer=true 同步抽取的时延** 仍受 Extractor LLM 调用拖累（派生 + 去重判定各一次 LLM）。对时延敏感的调用方应慎用 infer=true 或配 `extractor: keyword`（规则切分、~0 LLM）兜底。
 
 3. **HTTP `/v1/add` 的 infer 透传** 仅 str 化 metadata 值，未校验 key 白名单——调用方可经 metadata 下推任意 str 键值。若未来需约束 metadata 键集合，应在 handler 或 RawPayload 装配点加白名单。
+
+---
+
+## 增量更新（2026-07）
+
+> 以下章节在原 F02 基础上叠加，记录 infer 同步抽取落地后的演进：KV key 前缀分离、infer 上下文增强抽取（原文做指代消解、召回记忆做去重）、过程记忆抽取、write 去 classify、`/v1/list` 收窄、provider 新增过程记忆工具。
+
+### 决策6：KV key 前缀分离（/messages/ vs /memory/）
+
+unit 真源在 KVStore 里的 key 由裸 `{unit.id}` 改为带前缀，按「是否建索引」二分：
+
+- `/messages/{id}` — 未建索引的 infer=true 原始消息（engine infer 分支落盘、不调 `IndexBuilder.build`）。拉取做指代消解/语境时用 `list(scope, prefix="/messages/")` 直取。
+- `/memory/{id}` — 所有建索引的记忆：infer=true 派生（evolver 落盘 + 建索引）+ 默认路径原文（engine 默认分支落盘 + 建索引）+ update SUPERSEDE 新版 + 过程记忆。dedup/retrieve 回查命中必在此前缀下。
+
+前缀常量与 helper 下沉到结构定义层（与 MemoryUnit/RawPayload 同处）：
+- `common.type_def.memory`：`MEMORY_KEY_PREFIX`、`memory_key(unit_id)`
+- `common.type_def.raw`：`MESSAGES_KEY_PREFIX`、`messages_key(unit_id)`
+- 既有 `/index/chunks/{id}`（vector_index_builder chunk 簿记）维持不变，同款前缀风格，互不冲突。
+
+**适配点**（全库扫查）：
+- 落盘：engine.write（infer→`/messages/`、默认→`/memory/`）、evolver `_persist`/`_apply_decision`/FORGET（派生→`/memory/`）、engine.update（OVERWRITE/SUPERSEDE→`/memory/`）。
+- 回查：engine `_load`/`_list_units`、dedup `_load_unit`、unit_reader `load`、governor `_find`（只查 `/memory/{id}`，inspect 语义是建索引记忆）。
+- 按 key 匹配 id：lifecycle transition/supersede 改用带前缀 key 直接比对（`memory_key(unit_id)` 构造 dst_key，`list(scope, MEMORY_KEY_PREFIX)` 限定）。
+- delete 扫描保持全扫（按 `unit.id` 匹配 raw 内 unit，不依赖 key 前缀；PURGE/DOWNWEIGHT 回写用扫描到的带前缀原 key）。
+- scheduler background EXTRACT 的 `kv.list(scope, prefix=MEMORY_KEY_PREFIX)` 只扫 `/memory/`（loads 过滤非 unit，喂 evolver 的是建索引记忆；`/messages/` 的 infer 原文已同步抽取，background 不重扫）。
+
+### 决策7：infer=true 上下文增强抽取（原文做指代消解、召回记忆做去重）
+
+infer=true 同步抽取时，**evolver 内部**收集两类上下文参考项（evolve 接口签名不变，仍 `evolve(units, mode)`）：
+
+- `recent_originals`：最近 10 条 infer=true 原始消息（MemoryUnit，落 `/messages/`）。**用于指代/代词消解与语境丰富**——让 extractor 理解"它/他/那个"指什么、对话背景。只拼进 extractor prompt，**不参与去重**。
+- `related_memories`：用 `dedup.recall` 召回的 10 条相关记忆（MemoryUnit，落 `/memory/`）。**用于去重**——拼进 extractor prompt 告知大模型已有这些记忆、不要再抽重复的。
+
+两类参考项都经 `ExtractContext`（`construction.base`）承载，只作 prompt 参考，**不进 `extract()` 的提取来源列表**（本轮 units 是唯一提取来源）。
+
+**去重两层**（不再在 evolver 做产出后向量过滤）：
+1. prompt 提示：llm_extractor 的 user prompt 追加 `## Existing related memories (do NOT duplicate information these cover)` 段，列出 related_memories 的 content。
+2. `_dedup_batch` 兜底：extractor 产出的候选仍经现有去重链（向量召回 + LLM 判定 ADD/UPDATE/SUPERSEDE/NOOP）落盘。
+
+`recent_originals` 不参与去重——原文与派生事实语义粒度不同，按相似度判重复易误删（如原文"我喜欢猫"和派生"用户喜欢猫"）。原文"防重复"由 extractor"只从本轮提取"的语义 + `_dedup_batch` 全库向量去重兜底覆盖。
+
+**收集逻辑放 evolver**（非 engine）：`_maybe_collect_extract_context` 检测 `metadata["infer"]=="true"` → `_recent_infer_originals`（`list(/messages/)` + 按 `t_ingest` 降序取 10，排除本轮自身）+ `_related_memories`（`dedup.recall` 召回，复用去重向量空间，返回完整 MemoryUnit）。任一步失败降级为空列表，不阻断。
+
+**extracted 为空跳过 dedup**：`extractor.extract` 返回空时，evolver 直接返回空 `EvolveResult()`，不调 `_dedup_batch`（空列表走去重无意义、省一次召回）。CONSOLIDATE 同理。
+
+### 决策8：过程记忆抽取（procedural=true）
+
+新增独立于 infer 的调用级开关 `metadata["procedural"]=="true"`，触发**过程记忆抽取**：
+
+- 原文**不落 KV**（不进 `/messages/` 也不进 `/memory/`）。
+- evolver EXTRACT 分支检测 procedural → **跳过 context 收集**（不检索 10 条、不拉 10 条）、**跳过 `_dedup_batch`**，extractor 产 1 条 PROCEDURAL 执行历史直接 `_persist` 落 `/memory/` 建索引。
+- extractor（llm_extractor）`_extract_procedural`：新增 `_PROCEDURAL_SYSTEM_PROMPT`，要求 LLM 把本轮汇总成 **1 条** 结构化执行历史（目标/步骤/结果），provenance 回指全部本轮 unit，tier=PROCEDURAL。keyword_extractor 降级：无 LLM，把原文原样合成 1 条 PROCEDURAL（仍保证"1 条过程记忆"契约）。
+
+procedural 与 infer 互斥：procedural=true 时 even 不走 infer 的原文落 `/messages/`、不收集 context、不去重。语义是"把这轮做了什么记成一条可检索的 how-to"。
+
+### 决策9：engine.write 不再调 classify
+
+write 路径移除 `self._classifier.classify(units)` 调用——原单元 tier 保持 MemoryUnit 默认（EPISODIC），不再在写入时分类。`InMemoryEngine` 的 `_classifier` 字段、`__init__` 参数、`_build` 的 `ClassifierProducer.dep`、`defaults.py` engine params 的 `classifier` 引用一并移除。
+
+`Classifier` 类、`ClassifierProducer`、`test_classifier.py`、`examples/demo_classifier.py` 保留——Classifier 作为独立构建层算子仍可单独装配使用（demo 改为自行 `ClassifierProducer.dep` 装配实例，直接调 `clf.classify` 验证分类本身），只是 engine 不再注入。
+
+分类职责改由派生路径承担：extractor 产派生时自定 tier（SEMANTIC/PROCEDURAL）。原单元 tier=EPISODIC 不影响检索（检索按向量/倒排召回，不按 tier 过滤——除非 dedup `tier_filter=True` 显式开）。
+
+### 决策10：/v1/list 收窄到 /memory/ 全部
+
+handler `_list` 由全扫 `kv.list(scope)` + loads 过滤，改为 `kv.list(scope, prefix=MEMORY_KEY_PREFIX)` 直取 `/memory/`——只返建索引的 Memory 记忆，不再返 `/messages/` 下的 infer 原文（未建索引）和 `/index/chunks/` 簿记。
+
+InProcess 模式 `list_semantic` 同步对齐：去掉 `tier==SEMANTIC` 过滤，改用 `prefix=MEMORY_KEY_PREFIX` 直取，返 `/memory/` 全部（与 HTTP `_list` 一致）。两条链路返回范围统一。返回结构差异保留（HTTP 经 `_unit_view` 返完整字段，InProcess 返 `{content, item_id, score}`——provider 客户端协议既有差异，`agent_memory_profile` 只取 content，兼容）。
+
+### 决策11：provider 新增 agent_memory_procedural 工具
+
+`agent_plugin/jiuwenswarm/agent_memory_provider.py` 新增第 4 个工具 `agent_memory_procedural`：
+
+- `PROCEDURAL_SCHEMA`：参数 `content`（要汇总的本轮内容），description 说明"汇总成 1 条 procedural 记录、原文不存、不去重不检索"。
+- `handle_tool_call` 分支：调 `self._client.write(content, scope, metadata={"procedural": "true"})` → 经 engine procedural 分支。返回 `{result, item_id}`。
+- `get_tool_schemas` 加入它；`system_prompt_block` 补引导语。
+
+工具经 HTTP `/v1/add`（metadata 透传 procedural=true）或 InProcess `write_async` 都触发 procedural 分支。需配 `extractor:llm` 才真汇总（默认 keyword 降级为原文原样存 1 条 PROCEDURAL）。
+
+## 增量测试基线
+
+`pytest tests/unit tests/integration` 全绿（378 passed, 54 skipped）。新增/适配：
+- `tests/unit/construction/test_infer_context_extract.py`（10 个）：infer context 收集、related_memories 经 prompt 去重 + `_dedup_batch` 兜底、原文不参与去重、procedural 产 1 条 PROCEDURAL 且原文不落 KV、engine infer 原文落 `/messages/`。
+- `tests/unit/construction/test_evolver_dedup.py`（13 个）：内联 KV helper 适配 `memory_key` 前缀；mock extractor 签名加 `context` 参数。
+- `tests/unit/construction/test_e2e_evolution.py`：原 `test_write_classify_and_recall`/`test_write_sets_tier_by_classifier`（测 write 路径分类）合并为 `test_write_recall_returns_written_unit`（write 不再 classify，tier=EPISODIC）。
+- `tests/unit/control/test_lifecycle_manager.py`、`test_governance.py`、`test_engine_*`、`tests/conftest.py`、`tests/integration/retrieval/test_index_contract.py`：KV setup 适配 `memory_key` 前缀。
+
+## 增量已知遗留
+
+4. **procedural 与 infer 不可同时生效**：engine write 的 `procedural or infer` 共用同步抽取路径，procedural=true 优先（原文不落、跳 context/dedup）。若调用方同时传 procedural=true 和 infer=true，按 procedural 语义处理（原文不落 `/messages/`）。若需"原文留存 + 过程汇总"，应分两次 write。
+
+5. **`_related_memories` 用 dedup.recall 召回**：复用去重向量空间，但 dedup.recall 的 `min_similarity`/`tier_filter` 配置影响召回质量。infer 场景本轮是 EPISODIC、相关记忆是 SEMANTIC——若 `tier_filter=True` 会跨 tier 失配。装配默认 `tier_filter=False`（允许跨层去重），故 infer context 召回正常；改 `tier_filter=True` 时需复核。
+
+6. **拉原文性能**：`list(scope, prefix="/messages/")` 只取未建索引原文，但仍需 loads 全部原文 + 按 `t_ingest` 排序取前 10。scope 内原文量大时有开销。当前同步 infer 场景（已接受 LLM 时延）且原文量远小于全库 unit 量，可忽略。若成瓶颈，可维护最近 N 条原文的 ring buffer。

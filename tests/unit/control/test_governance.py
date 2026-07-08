@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from api import Scope
 from api.memory_api_impl import build_kernel
-from common.type_def import MemoryUnit, Segment
+from common.type_def import MemoryUnit, Segment, memory_key
 from common.type_def.memory_codec import dumps
 
 
@@ -23,7 +23,7 @@ def test_trace_follows_provenance_sources_depth_first() -> None:
         provenance=["direct"],
     )
     for unit in [source, direct, nested]:
-        kernel.kv.insert(scope, unit.id, dumps(unit))
+        kernel.kv.insert(scope, memory_key(unit.id), dumps(unit))
 
     assert [unit.id for unit in kernel.api.trace("nested", scope, identity=scope)] == [
         "nested",
@@ -38,6 +38,6 @@ def test_trace_stops_on_provenance_cycles() -> None:
     a = MemoryUnit(id="a", scope=scope, segments=[Segment(content="a")], provenance=["b"])
     b = MemoryUnit(id="b", scope=scope, segments=[Segment(content="b")], provenance=["a"])
     for unit in [a, b]:
-        kernel.kv.insert(scope, unit.id, dumps(unit))
+        kernel.kv.insert(scope, memory_key(unit.id), dumps(unit))
 
     assert [unit.id for unit in kernel.api.trace("a", scope, identity=scope)] == ["a", "b"]

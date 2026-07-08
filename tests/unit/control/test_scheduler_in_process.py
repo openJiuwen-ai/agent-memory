@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from common.type_def import MemoryUnit, Scope, Segment
+from common.type_def import MemoryUnit, Scope, Segment, memory_key
 from common.type_def.memory_codec import dumps
-from construction import EvolveMode, EvolveResult, Evolver
+from construction import EvolveMode, Evolver, EvolveResult
 from construction.base import OperatorType
 from control.scheduler_impl.in_process_scheduler import InProcessScheduler
 from control.types import Channel, JobInfo, JobStatus
@@ -75,11 +75,19 @@ def test_submit_executes_evolver_with_units_from_scope_and_records_result() -> N
     scope = Scope(user="u1")
     other_scope = Scope(user="u2")
     kv = InMemoryKVStore()
-    kv.insert(scope, "unit-1", dumps(MemoryUnit(id="unit-1", scope=scope, segments=[Segment(content="one")])))
-    kv.insert(scope, "unit-2", dumps(MemoryUnit(id="unit-2", scope=scope, segments=[Segment(content="two")])))
+    kv.insert(
+        scope,
+        memory_key("unit-1"),
+        dumps(MemoryUnit(id="unit-1", scope=scope, segments=[Segment(content="one")])),
+    )
+    kv.insert(
+        scope,
+        memory_key("unit-2"),
+        dumps(MemoryUnit(id="unit-2", scope=scope, segments=[Segment(content="two")])),
+    )
     kv.insert(
         other_scope,
-        "other-unit",
+        memory_key("other-unit"),
         dumps(MemoryUnit(id="other-unit", scope=other_scope, segments=[Segment(content="other")])),
     )
     evolver = RecordingEvolver()

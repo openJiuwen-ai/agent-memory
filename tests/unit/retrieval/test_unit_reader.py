@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from common.type_def import FilterClause, FilterOp
+from common.type_def import FilterClause, FilterOp, memory_key
 from common.type_def.memory import LifecycleState
 from common.type_def.memory_codec import dumps
 from retrieval.retriever_impl.unit_reader import (
@@ -122,7 +122,7 @@ def test_filter_and_combination(unit_factory) -> None:
 
 def test_unit_reader_loads_by_id_in_scope(scope, unit_factory) -> None:
     kv = InMemoryKVStore()
-    kv.insert(scope, "u1", dumps(unit_factory("u1", "hello")))
+    kv.insert(scope, memory_key("u1"), dumps(unit_factory("u1", "hello")))
     reader = UnitReader(kv)
 
     loaded = reader.load(scope, ["u1", "missing"])

@@ -12,7 +12,7 @@ from typing import Dict
 
 from common.errors import NotFoundError
 from common.log import get_logger
-from common.type_def import Scope
+from common.type_def import Scope, MEMORY_KEY_PREFIX
 from common.type_def.memory_codec import loads
 from construction import EvolveMode, Evolver, EvolveResult
 from construction.evolver import EvolverProducer
@@ -102,7 +102,7 @@ class InProcessScheduler(Scheduler):
             logger.debug("Scheduler.execute skipped: job_id=%s reason=no_executor", job.id)
             return
         # loads 对非 MemoryUnit 记录返回 None，自然过滤
-        units = [u for u in (loads(raw) for _, raw in self._kv.list(job.scope)) if u is not None]
+        units = [u for u in (loads(raw) for _, raw in self._kv.list(job.scope, MEMORY_KEY_PREFIX)) if u is not None]
         logger.info(
             "Scheduler.execute: job_id=%s mode=%s units=%d",
             job.id,

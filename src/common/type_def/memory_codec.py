@@ -1,10 +1,11 @@
 """``MemoryUnit`` ↔ bytes 编解码（无状态，跨层共用）。
 
 真源不是「一个存 MemoryUnit 的模块」——它就是裸 :class:`~storage.kv.KVStore` 存
-**字节**（key=unit.id，scope 做命名空间隔离）。``MemoryUnit`` 对象只在两处出现：
-写入时把刚产出的单元 :func:`dumps` 成字节落盘；产出结果时（get/recall/list/
-inspect）从字节 :func:`loads` 回对象。系统其余流转只搬 id 与字节，不长期持有
-``MemoryUnit``。
+**字节**（key 带前缀：建索引记忆 ``/memory/{id}``、未建索引的 infer 原文
+``/messages/{id}``，见 :mod:`common.type_def.memory` / :mod:`common.type_def.raw`；
+scope 做命名空间隔离）。``MemoryUnit`` 对象只在两处出现：写入时把刚产出的单元
+:func:`dumps` 成字节落盘；产出结果时（get/recall/list/inspect）从字节 :func:`loads`
+回对象。系统其余流转只搬 id 与字节，不长期持有 ``MemoryUnit``。
 
 编解码与 ``MemoryUnit`` 同住 ``common.type_def``：它只依赖结构定义、不依赖任何
 存储后端，调用方（control/retrieval/接入 surface）按需引用这对纯函数。

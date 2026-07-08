@@ -36,6 +36,7 @@ _type_def_module = import_module("common.type_def")
 AuditEvent = _type_def_module.AuditEvent
 Context = _type_def_module.Context
 EXT_MAX_TOKENS = _type_def_module.EXT_MAX_TOKENS
+MEMORY_KEY_PREFIX = _type_def_module.MEMORY_KEY_PREFIX
 MemoryUnit = _type_def_module.MemoryUnit
 Modality = _type_def_module.Modality
 Scope = _type_def_module.Scope
@@ -172,7 +173,7 @@ def _list(srv, payload: Body) -> Body:
     # 真源 KV 同 scope 下除 unit 外还混有索引簿记（如向量侧 /index/chunks/<id>），
     # 这些 loads 不出 unit（返回 None），需跳过，否则 _unit_view(None) 崩。
     items = []
-    for _, raw in srv.kv.list(scope):
+    for _, raw in srv.kv.list(scope, prefix=MEMORY_KEY_PREFIX):
         unit = loads(raw)
         if unit is not None:
             items.append(_unit_view(unit))

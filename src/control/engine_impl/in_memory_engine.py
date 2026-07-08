@@ -15,10 +15,18 @@ from typing import Dict, List
 
 from common.errors import NotFoundError, ValidationError
 from common.log import get_logger
-from common.type_def import LifecycleState, MemoryUnit, Modality, RawPayload, Scope, Segment
+from common.type_def import (
+    MEMORY_KEY_PREFIX,
+    LifecycleState,
+    MemoryUnit,
+    Modality,
+    RawPayload,
+    Scope,
+    Segment,
+    memory_key,
+)
 from common.type_def.memory_codec import dumps, loads
 from construction import EvolveMode
-from construction.classifier import Classifier, ClassifierProducer
 from construction.evolver import Evolver, EvolverProducer
 from construction.index_builder import IndexBuilder, IndexBuilderProducer
 from control.base import ControlOperatorType
@@ -130,7 +138,6 @@ class InMemoryEngine(MemoryEngine):
     def __init__(
         self,
         ingestor: Ingestor,
-        classifier: Classifier,
         index_builder: IndexBuilder,
         retriever: Retriever,
         kv: KVStore,
@@ -139,7 +146,6 @@ class InMemoryEngine(MemoryEngine):
         lifecycle: LifecycleManager,
     ) -> None:
         self._ingestor = ingestor
-        self._classifier = classifier
         self._index = index_builder
         self._retriever = retriever
         self._kv = kv  # 真源：裸 kv 存序列化字节
@@ -164,44 +170,59 @@ class InMemoryEngine(MemoryEngine):
         metadata: Dict[str, str] | None = None,
         occurred_at: datetime | None = None,
     ) -> List[MemoryUnit]:
-        # infer 开关（对齐 mem0 add(infer=True)）：metadata["infer"]=="true" 时
-        # hot path 同步走 evolve(EXTRACT) 抽取派生记忆——原始记忆落 KV 真源但不建索引，
-        # 经 Evolver 落盘+建索引的派生记忆可被检索；不提交 background EXTRACT（已同步抽取）。
-        # 非真值时走原路径：原始落盘 + 建索引，不自动提交演进（由调用方显式 evolve() 触发）。
-        infer = str((metadata or {}).get("infer", "")).strip().lower() == "true"
+        # 调用级开关（经 metadata 下推，对齐 mem0 add(infer=True)）：
+        # - procedural=true：过程记忆抽取——原文不落 KV，evolver 让 extractor 把本轮汇总成
+        #   1 条 PROCEDURAL 执行历史，落 /memory/ 建索引；不走去重、不收集 context。
+        # - infer=true：同步抽取——原文落 /messages/（不建索引），evolver 收集最近10条原文
+        #   （指代消解/语境）+ 召回10条相关记忆（去重提示），调 extractor 抽派生落 /memory/。
+        # - 缺省：原始落 /memory/ + 建索引，不自动提交演进（由调用方显式 evolve() 触发）。
+        meta = {k: str(v) for k, v in (metadata or {}).items()}
+
+        def _is_true(key: str) -> bool:
+            return meta.get(key, "").strip().lower() == "true"
+
+        procedural = _is_true("procedural")
+        infer = _is_true("infer")
 
         payload = RawPayload(
             id=str(uuid.uuid4()),
             scope=scope,
             modality=source,
             data=content.encode("utf-8"),
-            metadata=dict(metadata or {}),
+            metadata=meta,
             occurred_at=occurred_at,
         )
+        # 三条路径共用：Ingestor 规约。
         units = self._ingestor.ingest([payload])
         for unit in units:  # 接入层不带 assets/tags，由引擎按 write 入参补齐
             if assets and unit.segments:  # write 入参的 assets 归到首段（接入产出的单段投影）
                 unit.segments[0].assets = list(assets)
             unit.tags = list(tags or [])
-        self._classifier.classify(units)                  # 多维分类：定 tier + 主题标签
-        for unit in units:
-            self._kv.insert(scope, unit.id, dumps(unit))  # 真源落盘：序列化字节
 
-        if infer:
-            # infer=True：原始单元只落 KV 不建索引；直接走 evolve(EXTRACT)——Extractor 抽取派生记忆。
+        if procedural or infer:
+            # 同步抽取路径（procedural / infer 共用）：原文不进默认落盘，直接喂 Evolver(EXTRACT)。
+            # evolver 据单元 metadata 区分模式：
+            # - procedural：原文不落 KV，产 1 条 PROCEDURAL 落 /memory/，跳过 context/dedup。
+            # - infer：原文落 /messages/（不建索引，供后续轮指代消解/语境）+ 收集 context + 走 dedup，
+            #   派生落 /memory/。evolver 还负责 /messages/ 的最近 10 条淘汰。
+            # procedural 与 infer 互斥，若两者同传按 procedural 语义（原文不落）。
             if self._evolver is None:
                 raise RuntimeError(
-                    "Engine.write infer=True requires an Evolver (装配未注入 evolver)"
+                    "Engine.write procedural/infer=True requires an Evolver (装配未注入 evolver)"
                 )
             result = self._evolver.evolve(units, EvolveMode.EXTRACT)
             derived = [self._load(scope, uid) for uid in result.created_ids]
             logger.info(
-                "Engine.write infer=True: %d originals persisted (unindexed), "
-                "%d derived added, scope=%s",
-                len(units), len(derived), scope,
+                "Engine.write %s: %d originals, %d derived added, scope=%s",
+                "procedural=True" if procedural else "infer=True",
+                len(units),
+                len(derived), scope,
             )
             return derived
 
+        # 默认路径：原始 MemoryUnit 落 /memory/{id} + 建索引
+        for unit in units:
+            self._kv.insert(scope, memory_key(unit.id), dumps(unit))
         self._index.build(units)                          # hot 轻量索引
         return units
 
@@ -211,7 +232,7 @@ class InMemoryEngine(MemoryEngine):
     def _load(self, scope: Scope, unit_id: str) -> MemoryUnit:
         """从真源读字节并反序列化（产出结果的边界点）。"""
         try:
-            raw = self._kv.get(scope, unit_id)
+            raw = self._kv.get(scope, memory_key(unit_id))
         except NotFoundError:
             raise NotFoundError("memory_unit", unit_id) from None
         unit = loads(raw)
@@ -220,8 +241,12 @@ class InMemoryEngine(MemoryEngine):
         return unit
 
     def _list_units(self, scope: Scope) -> List[MemoryUnit]:
-        # loads 对非 MemoryUnit 记录返回 None，自然过滤
-        return [u for u in (loads(raw) for _, raw in self._kv.list(scope)) if u is not None]
+        # 只列建索引记忆（/memory/ 前缀）。loads 对非 MemoryUnit 记录返回 None，自然过滤。
+        # 版本链（SUPERSEDE/supersedes）只在建索引记忆间；原文 /messages/ 无版本链。
+        return [
+            u for u in (loads(raw) for _, raw in self._kv.list(scope, prefix=MEMORY_KEY_PREFIX))
+            if u is not None
+        ]
 
     def _version_family(self, scope: Scope, unit_id: str) -> List[MemoryUnit]:
         units_by_id = {unit.id: unit for unit in self._list_units(scope)}
@@ -280,7 +305,7 @@ class InMemoryEngine(MemoryEngine):
         new = _apply_patch(old, patch)
         if patch.mode == UpdateMode.OVERWRITE:
             new.id = old.id
-            self._kv.update(scope, new.id, dumps(new))
+            self._kv.update(scope, memory_key(new.id), dumps(new))
             self._index.update([new])
             logger.info("Engine.update overwrite: unit_id=%s scope=%s", new.id, scope)
         else:  # SUPERSEDE：新 id、记版本链，旧版标记 superseded
@@ -289,7 +314,7 @@ class InMemoryEngine(MemoryEngine):
             new.lifecycle = LifecycleState.ACTIVE
             if patch.t_valid is None:
                 new.temporal.t_valid = _now()
-            self._kv.insert(scope, new.id, dumps(new))
+            self._kv.insert(scope, memory_key(new.id), dumps(new))
             old = self._lifecycle.supersede(old.id, new.temporal.t_valid)
             self._index.update([old])
             self._index.build([new])
@@ -403,7 +428,6 @@ def _build(config):
     ib_default = "hybrid" if config.get("vector_enabled", True) else "fulltext"
     return InMemoryEngine(
         IngestorProducer.dep(config, default="simple"),
-        ClassifierProducer.dep(config, default="keyword"),
         IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
         RetrieverProducer.dep(config, default="pipeline"),
         KvProducer.dep(config, default="memory"),

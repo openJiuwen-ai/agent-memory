@@ -18,7 +18,7 @@ from common.feature_extractor.feature_extractor_impl.keyword_feature_extractor i
 )
 from common.reranker.base import Reranker
 from common.reranker.reranker_impl.overlap_reranker import OverlapReranker
-from common.type_def import FilterClause, FilterOp
+from common.type_def import FilterClause, FilterOp, memory_key
 from common.type_def.memory import LifecycleState
 from common.type_def.memory_codec import dumps
 from common.type_def.scope import Scope
@@ -563,7 +563,7 @@ def test_retrieval_over_fetch_read_from_config() -> None:
         for candidate in candidates:
             kv.insert(
                 DEFAULT_SCOPE,
-                candidate.unit_id,
+                memory_key(candidate.unit_id),
                 dumps(make_unit(candidate.unit_id, f"{candidate.unit_id} candidate")),
             )
         result = retriever.retrieve(

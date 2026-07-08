@@ -136,7 +136,6 @@ def default_config_dict() -> Dict[str, Any]:
                 "target": "in_memory",
                 "params": {
                     "ingestor": _D,
-                    "classifier": _D,
                     "index_builder": _D,
                     "retriever": _D,
                     "kv_store": _D,

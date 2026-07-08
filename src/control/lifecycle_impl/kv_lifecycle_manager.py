@@ -14,7 +14,13 @@ from typing import List
 
 from common.errors import NotFoundError, PolicyError, ValidationError
 from common.log import get_logger
-from common.type_def import LifecycleState, MemoryUnit, Scope
+from common.type_def import (
+    MEMORY_KEY_PREFIX,
+    LifecycleState,
+    MemoryUnit,
+    Scope,
+    memory_key,
+)
 from common.type_def.memory_codec import dumps, loads
 from control.base import ControlOperatorType
 from control.lifecycle import LifecycleManager, LifecycleProducer
@@ -105,10 +111,10 @@ class KVLifecycleManager(LifecycleManager):
         return None
 
     def transition(self, unit_ids: List[str], target: LifecycleState) -> None:
-        wanted = set(unit_ids)
+        wanted = {memory_key(unit_id) for unit_id in unit_ids}
         matches: list[tuple[Scope, str, MemoryUnit]] = []
         for scope in self._kv.scopes():
-            for key, raw in self._kv.list(scope):
+            for key, raw in self._kv.list(scope, MEMORY_KEY_PREFIX):
                 unit = loads(raw)
                 if unit is None or key not in wanted:
                     continue
@@ -125,9 +131,10 @@ class KVLifecycleManager(LifecycleManager):
         )
 
     def supersede(self, unit_id: str, invalid_at: datetime) -> MemoryUnit:
+        dst_key = memory_key(unit_id)
         for scope in self._kv.scopes():
-            for key, raw in self._kv.list(scope):
-                if key == unit_id:
+            for key, raw in self._kv.list(scope, MEMORY_KEY_PREFIX):
+                if key == dst_key:
                     unit = loads(raw)
                     if unit is None:
                         continue
@@ -149,7 +156,7 @@ class KVLifecycleManager(LifecycleManager):
         now = datetime.now(timezone.utc)
         swept: List[str] = []
         for scope in self._kv.scopes():
-            for key, raw in self._kv.list(scope):
+            for key, raw in self._kv.list(scope, MEMORY_KEY_PREFIX):
                 unit = loads(raw)
                 if unit is None:
                     continue
@@ -157,7 +164,7 @@ class KVLifecycleManager(LifecycleManager):
                 if target is not None:
                     unit.lifecycle = target
                     self._kv.update(scope, key, dumps(unit))
-                    swept.append(key)
+                    swept.append(unit.id)
         logger.info("Lifecycle.sweep: swept=%d", len(swept))
         return swept
 

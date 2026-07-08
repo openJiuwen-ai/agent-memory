@@ -22,7 +22,7 @@ from typing import Optional
 from common.errors import NotFoundError
 from common.factory.factory import Factory
 from common.log import get_logger
-from common.type_def import MemoryUnit, Scope
+from common.type_def import MemoryUnit, Scope, memory_key
 from storage.kv import KVStore
 
 from .base import ConstructionOperator
@@ -78,14 +78,15 @@ class Dedup(ConstructionOperator):
     def _load_unit(self, unit_id: str, scope: Scope) -> Optional[MemoryUnit]:
         """从 KVStore 按 unit_id 读取 MemoryUnit；缺失/损坏返回 None。
 
+        召回命中的是建索引记忆，落 ``/memory/{id}``（见 memory.py），故用 memory_key。
         优先在候选 scope 读；缺失则回退到全 scope 扫描（unit 可能落在别的 scope）。
         """
         try:
-            return _loads(self._kv.get(scope, unit_id))
+            return _loads(self._kv.get(scope, memory_key(unit_id)))
         except NotFoundError:
             for s in self._kv.scopes():
                 try:
-                    unit = _loads(self._kv.get(s, unit_id))
+                    unit = _loads(self._kv.get(s, memory_key(unit_id)))
                     if unit is not None:
                         return unit
                 except NotFoundError:
