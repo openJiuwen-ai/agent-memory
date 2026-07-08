@@ -41,7 +41,7 @@ from jiuwen_memory.foundation.store.base_kv_store import BaseKVStore
 from jiuwen_memory.memory_core.manage.mem_model.db_model import create_tables
 from jiuwen_memory.memory_core.manage.mem_model.sql_db_store import SqlDbStore
 from jiuwen_memory.memory_core.manage.mem_model.sql_message_store import SqlMessageStore
-from jiuwen_memory.foundation.llm import UserMessage, BaseMessage, Model
+from jiuwen_memory.foundation.llm import UserMessage, AssistantMessage, BaseMessage, Model
 from jiuwen_memory.common.utils.singleton import Singleton
 from jiuwen_memory.retrieval.embedding.base import Embedding
 from jiuwen_memory.retrieval.embedding.api_embedding import APIEmbedding
@@ -613,11 +613,10 @@ class LongTermMemory(metaclass=Singleton):
             converted = []
             for dialogue in dialogue_batch:
                 try:
-                    if "User：" in dialogue or "Assistant：" in dialogue:
-                        parsed_msgs = await self.parse_str_to_messages(dialogue)
-                        converted.extend(parsed_msgs)
+                    if dialogue.role == 'user':
+                        converted.append(UserMessage(role="user", content=dialogue.content))
                     else:
-                        converted.append(UserMessage(role="user", content=dialogue))
+                        converted.append(AssistantMessage(role="assistant", content=dialogue.content))
                 except Exception as e:
                     memory_logger.warning(f"Failed to parse dialogue: {str(e)}")
                     continue
@@ -1189,7 +1188,7 @@ class LongTermMemory(metaclass=Singleton):
             pre_timestamp = ""
 
             for each in middle_messages_all:
-                cur_dialogue = each[0].content
+                cur_dialogue = each[0]
                 cur_timestamp = each[1] if len(each) > 1 else ""
                 cur_mem_id = each[2] if len(each) > 2 else ""
 
@@ -1203,9 +1202,12 @@ class LongTermMemory(metaclass=Singleton):
                     continue
 
                 # Continuity check (serial)
-                continuity_results = await self.check_dialogue_continuity(
-                    scope_id=scope_id, previous_dialogue=pre_dialogue, current_dialogue=cur_dialogue
-                )
+                if pre_dialogue:
+                    continuity_results = await self.check_dialogue_continuity(
+                        scope_id=scope_id, previous_dialogue=pre_dialogue.content, current_dialogue=cur_dialogue.content
+                    )
+                else:
+                    continuity_results = "true"
 
                 if continuity_results == "true" and len(dialogue_batch) <= 10:
                     # Continuous: add to current batch
