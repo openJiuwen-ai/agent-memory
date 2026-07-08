@@ -48,6 +48,9 @@ async def register_store(
     db_store: BaseDbStore | None = None,
     embedding_model: Embedding | None = None,
     message_store: BaseMessageStore | None = None,
+    *,
+    index_backend: str = "simple",
+    file_root_dir: str | None = None,
 ) -> None
 ```
 
@@ -60,10 +63,13 @@ Register underlying storage instances. Must be called before `set_config`.
 * **db_store**(BaseDbStore | None, optional): Relational database store instance for persisting messages, scope-user mappings, etc. If `None`, message persistence is unavailable. Default: `None`.
 * **embedding_model**(Embedding | None, optional): Global embedding model instance for initializing vector index embedding capabilities during registration. If `None`, independent embedding models can be configured per scope later via `set_scope_config`. Default: `None`.
 * **message_store**(BaseMessageStore | None, optional): Custom message store instance; if `None` and `db_store` is provided, a default `SqlMessageStore` will be created automatically. Default: `None`.
+* **index_backend**(str, keyword-only, optional): Memory index backend type, determines which `BaseMemoryIndex` implementation `register_store` auto-registers. Supported: `"simple"` (default, requires `vector_store`+`kv_store`, registers `SimpleMemoryIndex`) / `"file"` (registers `FileMemoryIndex`, long-term memories persisted to markdown + SQLite). Default: `"simple"`.
+* **file_root_dir**(str | None, keyword-only, optional): Data root directory for `FileMemoryIndex` when `index_backend="file"`; memory `.md` files and `memory.db` are stored here. **Required when `index_backend="file"`** — raises `MEMORY_REGISTER_STORE_EXECUTION_ERROR` if missing. Ignored when `index_backend="simple"`. Default: `None`.
 
 **Behavior**:
 
-- When both `vector_store` and `kv_store` are provided, `register_store` automatically calls `register_plugin` to register the default `SimpleMemoryIndex` as `memory_index`. To use a custom `BaseMemoryIndex` implementation, call `register_plugin` manually after `register_store` to override.
+- `index_backend="simple"` (default): when both `vector_store` and `kv_store` are provided, `register_store` automatically calls `register_plugin` to register the default `SimpleMemoryIndex` as `memory_index`. To use a custom `BaseMemoryIndex` implementation, call `register_plugin` manually after `register_store` to override.
+- `index_backend="file"`: auto-registers `FileMemoryIndex` as `memory_index`; `vector_store` is not used as the `memory_index` backend (only for middle-term memory / dreaming, may be left unconfigured). Registration **automatically starts the watchdog file watcher** (`start_watcher`) for real-time incremental sync on external `.md` edits; degrades to lazy sync-on-search if watchdog is not installed.
 - When `db_store` is provided, an internal `SqlMessageStore` is automatically created (if not provided via the `message_store` parameter).
 - After registering storage, `set_config(MemoryEngineConfig())` is automatically called for default initialization, and data migrations are run.
 
@@ -101,6 +107,19 @@ Register underlying storage instances. Must be called before `set_config`.
 >>>     kv_store=kv_store,
 >>>     vector_store=vector_store,
 >>>     db_store=db_store
+>>> )
+```
+
+**file backend example** (`index_backend="file"`, long-term memories persisted to markdown + SQLite):
+
+```python
+>>> # KV / DB store as above; vector_store may be omitted (file backend is not the memory_index)
+>>> await engine.register_store(
+>>>     kv_store=kv_store,
+>>>     db_store=db_store,
+>>>     embedding_model=embedding_model,
+>>>     index_backend="file",
+>>>     file_root_dir="./file_memory_data",
 >>> )
 ```
 

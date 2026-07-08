@@ -18,10 +18,30 @@ from jiuwen_memory.foundation.store.base_vector_store import BaseVectorStore
 
 
 def _data_dir() -> str:
-    """统一读取 MEMORY_DATA_DIR，默认为 ~/.jiuwenmemory/memory_data，并确保目录存在。"""
+    """统一读取 MEMORY_DATA_DIR，默认为 ~/.jiuwenmemory/memory_data，并确保目录存在。
+
+    留空（未设置 / 空串 / 纯空白）时回退默认值 —— ``os.getenv`` 的第二参数只在 key
+    不存在时生效，``.env`` 里 ``KEY=`` 会注册成空串，必须显式判空才走默认，否则
+    ``mkdir('')`` 静默 no-op 后返回空串，下游 register_store 会因 ``not file_root_dir``
+    报错。
+    """
     default_dir = str(Path.home() / ".jiuwenmemory" / "memory_data")
-    data_directory = os.getenv("MEMORY_DATA_DIR", default_dir)
+    data_directory = os.getenv("MEMORY_DATA_DIR", default_dir).strip() or default_dir
     Path(data_directory).mkdir(parents=True, exist_ok=True)
+    return data_directory
+
+
+def create_file_root_dir() -> str:
+    """读取 FILE_MEMORY_DATA_DIR，默认为 ~/.jiuwenmemory/file_memory_data，并确保目录存在。
+
+    供 index_backend='file' 时 FileMemoryIndex 的 root_dir 使用。与 _data_dir()
+    隔离，避免 file 后端的 markdown + memory.db 和引擎的 sqlite_db.db 混在同一目录。
+    留空回退默认值的理由同 ``_data_dir``。
+    """
+    default_dir = str(Path.home() / ".jiuwenmemory" / "file_memory_data")
+    data_directory = os.getenv("FILE_MEMORY_DATA_DIR", default_dir).strip() or default_dir
+    Path(data_directory).mkdir(parents=True, exist_ok=True)
+    memory_logger.info("Using file memory root_dir=%s", data_directory)
     return data_directory
 
 

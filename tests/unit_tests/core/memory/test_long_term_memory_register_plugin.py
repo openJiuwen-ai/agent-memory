@@ -105,6 +105,41 @@ class TestLongTermMemoryRegisterPlugin:
 
         assert long_term_memory.memory_index is auto_index
 
+    @pytest.mark.asyncio
+    @patch('jiuwen_memory.memory_core.long_term_memory.create_tables', return_value=None)
+    async def test_register_store_file_backend_wires_start_watcher(self, mock_create_tables, tmp_path, mocker):
+        """file 后端下 register_store 应自动接线 start_watcher。
+
+        回归检视意见：watcher 启用入口全仓未被调用（仅 file_memory_server 调），
+        memory_server + file 后端下 watchdog 永不启动，外部编辑 .md 不实时同步。
+        修复后 register_store 的 file 分支在 register_plugin 后调
+        memory_index.start_watcher()。
+        """
+        long_term_memory = LongTermMemory()
+
+        mock_kv_store = Mock()
+        from jiuwen_memory.foundation.store.base_db_store import BaseDbStore
+        mock_db_store = Mock(spec=BaseDbStore)
+        mock_embedding = Mock(spec=BaseEmbedding)
+        mock_embedding.embed_documents.return_value = [[0.1, 0.2, 0.3]]
+
+        # spy FileMemoryIndex.start_watcher —— 实例化后会被 register_store 调用
+        from jiuwen_memory.foundation.store.index.file_index import FileMemoryIndex
+        spy_start = mocker.patch.object(FileMemoryIndex, "start_watcher", autospec=True)
+
+        await long_term_memory.register_store(
+            kv_store=mock_kv_store,
+            vector_store=None,
+            db_store=mock_db_store,
+            embedding_model=mock_embedding,
+            index_backend="file",
+            file_root_dir=str(tmp_path / "file_mem"),
+        )
+
+        # ★ 核心断言：register_store 接线了 start_watcher
+        assert spy_start.called, "register_store(file) did not wire start_watcher — watcher never starts"
+        assert long_term_memory.memory_index is not None
+
 
 if __name__ == "__main__":
     pytest.main([__file__])

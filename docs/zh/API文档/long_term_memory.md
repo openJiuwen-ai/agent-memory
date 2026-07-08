@@ -48,6 +48,9 @@ async def register_store(
     db_store: BaseDbStore | None = None,
     embedding_model: Embedding | None = None,
     message_store: BaseMessageStore | None = None,
+    *,
+    index_backend: str = "simple",
+    file_root_dir: str | None = None,
 ) -> None
 ```
 
@@ -60,10 +63,13 @@ async def register_store(
 * **db_store**(BaseDbStore | None, 可选)：关系型数据库存储实例，用于持久化消息、scope-user 映射等。若为 `None`，则消息持久化功能不可用。默认值：`None`。
 * **embedding_model**(Embedding | None, 可选)：全局嵌入模型实例，用于在注册时初始化向量索引的嵌入能力。若为 `None`，后续可通过 `set_scope_config` 为不同 scope 配置独立的嵌入模型。默认值：`None`。
 * **message_store**(BaseMessageStore | None, 可选)：自定义消息存储实例；若为 `None` 且提供了 `db_store`，将自动创建默认的 `SqlMessageStore`。默认值：`None`。
+* **index_backend**(str, 仅关键字参数, 可选)：记忆索引后端类型，决定 `register_store` 自动注册哪个 `BaseMemoryIndex` 实现。支持 `"simple"`（缺省，需 `vector_store`+`kv_store`，注册 `SimpleMemoryIndex`）/ `"file"`（注册 `FileMemoryIndex`，长期记忆落 markdown + SQLite）。默认值：`"simple"`。
+* **file_root_dir**(str | None, 仅关键字参数, 可选)：`index_backend="file"` 时 `FileMemoryIndex` 的数据根目录，记忆 `.md` 与 `memory.db` 落于此。**`index_backend="file"` 时必填**，缺失会抛异常（`MEMORY_REGISTER_STORE_EXECUTION_ERROR`）。`index_backend="simple"` 时忽略。默认值：`None`。
 
 **行为说明**：
 
-- 当同时提供 `vector_store` 和 `kv_store` 时，`register_store` 会自动调用 `register_plugin` 注册默认的 `SimpleMemoryIndex` 作为 `memory_index`。若需要使用自定义的 `BaseMemoryIndex` 实现，可在 `register_store` 之后手动调用 `register_plugin` 进行覆盖。
+- `index_backend="simple"`（缺省）：当同时提供 `vector_store` 和 `kv_store` 时，`register_store` 会自动调用 `register_plugin` 注册默认的 `SimpleMemoryIndex` 作为 `memory_index`。若需要使用自定义的 `BaseMemoryIndex` 实现，可在 `register_store` 之后手动调用 `register_plugin` 进行覆盖。
+- `index_backend="file"`：自动注册 `FileMemoryIndex` 作为 `memory_index`，`vector_store` 不作 `memory_index` 后端（仅用于中间记忆 / dreaming，可不配）。注册时会**自动启动 watchdog 文件监听**（`start_watcher`），外部编辑 `.md` 实时增量同步；watchdog 未安装时为 no-op，退化为 search 时的惰性同步。
 - 当提供 `db_store` 时，会自动创建内部 `SqlMessageStore`（若未通过 `message_store` 参数提供）。
 - 注册存储后会自动调用 `set_config(MemoryEngineConfig())` 进行默认初始化，并运行数据迁移。
 
@@ -101,6 +107,19 @@ async def register_store(
 >>>     kv_store=kv_store,
 >>>     vector_store=vector_store,
 >>>     db_store=db_store
+>>> )
+```
+
+**file 后端样例**（`index_backend="file"`，长期记忆落 markdown + SQLite）：
+
+```python
+>>> # KV / DB store 同上，vector_store 可不配（file 后端不作 memory_index）
+>>> await engine.register_store(
+>>>     kv_store=kv_store,
+>>>     db_store=db_store,
+>>>     embedding_model=embedding_model,
+>>>     index_backend="file",
+>>>     file_root_dir="./file_memory_data",
 >>> )
 ```
 

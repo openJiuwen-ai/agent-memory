@@ -19,6 +19,7 @@ from jiuwen_memory.retrieval.embedding.api_embedding import APIEmbedding
 from jiuwen_memory.server.store_factory import (
     create_async_engine_from_env,
     create_db_store,
+    create_file_root_dir,
     create_kv_store,
     create_vector_store,
 )
@@ -222,7 +223,21 @@ async def startup_event():
         engine = create_async_engine_from_env()
         kv_store = create_kv_store(engine)
         db_store = create_db_store(engine)
-        vector_store = create_vector_store()
+
+        # index_backend 决定 memory_index 后端：simple（缺省，向量）/ file（markdown+SQLite）
+        index_backend = os.getenv("INDEX_BACKEND", "simple").strip().lower()
+        # file 后端的数据目录
+        file_root_dir = None
+        if index_backend == "file":
+            file_root_dir = create_file_root_dir()
+
+        # vector_store 在 simple 模式作 memory_index 后端（无条件创建，缺省 chroma，
+        # 保持原有行为）；在 file 模式仅给中间记忆 / dreaming 的 SemanticStore 用，
+        # 不配 VECTOR_STORE_TYPE 时为 None（此时中间记忆/dreaming 不可用）
+        if index_backend == "simple":
+            vector_store = create_vector_store()
+        else:
+            vector_store = create_vector_store() if os.getenv("VECTOR_STORE_TYPE", "").strip() else None
 
         embedding_model = APIEmbedding(
             config=EmbeddingConfig(
@@ -237,7 +252,9 @@ async def startup_event():
             kv_store=kv_store,
             db_store=db_store,
             vector_store=vector_store,
-            embedding_model=embedding_model
+            embedding_model=embedding_model,
+            index_backend=index_backend,
+            file_root_dir=file_root_dir,
         )
 
         # 创建配置 - 使用默认配置
@@ -266,6 +283,21 @@ async def startup_event():
         memory_logger.error("Error initializing memory engine: %s", str(e))
         raise
 
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Stop the file watcher if running (symmetric with start_watcher in startup).
+
+    file 后端在 register_store 内启动了 watchdog，进程退出时需对称停止，
+    避免 Observer 后台线程挂到 join timeout。watchdog 未安装或未启动时
+    stop_watcher 为 no-op，安全。
+    """
+    try:
+        idx = memory_engine.memory_index
+        if idx is not None and hasattr(idx, "stop_watcher"):
+            idx.stop_watcher()
+    except Exception as e:
+        memory_logger.warning("Failed to stop file watcher on shutdown: %s", str(e))
 
 
 @app.post("/add_messages/")

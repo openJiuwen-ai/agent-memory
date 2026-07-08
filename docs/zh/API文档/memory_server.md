@@ -103,7 +103,9 @@ IP=127.0.0.1 PORT=8000 python -m jiuwen_memory.server.memory_server
 | `KV_STORE_TYPE` | `db` | KV Store 类型，支持 `db` / `in_memory` / `shelve`。 |
 | `KV_SHELVE_PATH` | `{MEMORY_DATA_DIR}/shelve_kv` | `KV_STORE_TYPE=shelve` 时的 shelve 文件路径。 |
 | `DB_STORE_TYPE` | `default` | DB Store 类型，支持 `default` / `gauss`。 |
-| `VECTOR_STORE_TYPE` | `chroma` | Vector Store 类型，支持 `chroma` / `milvus` / `elasticsearch` / `gauss`。 |
+| `INDEX_BACKEND` | `simple` | 记忆索引后端，支持 `simple`（向量，KV+Vector）/ `file`（markdown+SQLite）。`file` 时长期记忆落 markdown 文件，配合 `FILE_MEMORY_DATA_DIR`。 |
+| `FILE_MEMORY_DATA_DIR` | `~/.jiuwenmemory/file_memory_data` | FileMemoryIndex 数据根目录，仅 `INDEX_BACKEND=file` 时生效。 |
+| `VECTOR_STORE_TYPE` | `chroma` | Vector Store 类型，支持 `chroma` / `milvus` / `elasticsearch` / `gauss`。`INDEX_BACKEND=file` 时仅用于中间记忆 / dreaming，可不配。 |
 | `VECTOR_CHROMA_PERSIST_DIR` | `MEMORY_DATA_DIR` | Chroma 向量库持久化目录。 |
 | `VECTOR_MILVUS_URI` | 空字符串 | Milvus 服务地址。 |
 | `VECTOR_MILVUS_TOKEN` | 空字符串 | Milvus Token，可为空。 |
@@ -115,6 +117,19 @@ IP=127.0.0.1 PORT=8000 python -m jiuwen_memory.server.memory_server
 | `VECTOR_GAUSS_DATABASE` | `postgres` | Gauss 向量库数据库名。 |
 | `VECTOR_GAUSS_USER` | `postgres` | Gauss 向量库用户名。 |
 | `VECTOR_GAUSS_PASSWORD` | 空字符串 | Gauss 向量库密码。 |
+
+#### `INDEX_BACKEND=file` 说明
+
+当 `INDEX_BACKEND=file` 时，长期记忆以 markdown 文件形式落盘到 `FILE_MEMORY_DATA_DIR/memories/{user_id}/{scope_id}/{Type}.md`（同 type 的记忆合并到一个文件），SQLite `memory.db` 承载向量 + FTS5 索引。该模式有以下需知：
+
+- **可选依赖**（缺失时优雅降级）：
+  - `sqlite-vec`：向量 KNN 检索。未安装时退化为纯 Python 余弦相似度线性扫描。
+  - `jieba`：FTS5 中文分词。未安装时 FTS5 退化为 `unicode61` 空格切分（中文关键词召回不精确）。
+  - `watchdog`：外部编辑 `.md` 实时同步。未安装时 watcher 为 no-op，外部编辑在下次 `search` 时经 hash 脏检查（`_ensure_synced`）惰性补同步。
+- **混合检索**：向量（sqlite-vec cosine，按 `user_id`+`scope_id` 分区）+ FTS5（jieba + BM25），0.7/0.3 权重融合。embedding 模型不可用时，`search` 降级为 FTS-only 关键词召回，而非返回空。
+- **加密取舍**：file 后端默认**明文**（.md 人类可读），仅配置 `crypto_key` 时才启用 AES-GCM 落盘加密。与 `simple` 后端默认加密不同。
+- **仅限单进程**：除 SQLite WAL 模式外无跨进程锁。不要让多个进程指向同一 `FILE_MEMORY_DATA_DIR`。
+- **V1 → V2 不兼容**：V2 的 SQLite schema（新增 `path`/`start_line`/`end_line` 列、新增 `files` 表）**不兼容** V1 的 `memory.db`。若 `FILE_MEMORY_DATA_DIR` 指向含 V1 DB 的目录，启动时会因 `no such column: path` 崩溃。请指向全新目录或删除旧 `memory.db`。V1 的"一记忆一文件" `.md` 布局也无法被 V2 识别。
 
 
 ## 鉴权机制

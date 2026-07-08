@@ -108,6 +108,7 @@ class LongTermMemory(metaclass=Singleton):
         # memory index
         self.memory_index: BaseMemoryIndex | None = None
         self._storage_codec: AesStorageCodec | None = None
+        self._index_backend: str = "simple"
         # managers
         self.scope_user_mapping_manager = None
         self.message_manager: MessageManager | None = None
@@ -168,15 +169,27 @@ class LongTermMemory(metaclass=Singleton):
                              vector_store: BaseVectorStore | None = None,
                              db_store: BaseDbStore | None = None,
                              embedding_model: Embedding | None = None,
-                             message_store: BaseMessageStore | None = None):
+                             message_store: BaseMessageStore | None = None,
+                             *,
+                             index_backend: str = "simple",
+                             file_root_dir: str | None = None):
         """
         Register store instance.
 
         Args:
             kv_store: Key-value store for fast structured data access
-            vector_store: Vector storage for vector-based similarity search
+            vector_store: Vector storage for vector-based similarity search.
+                在 ``index_backend="file"`` 时，vector_store 不会作为
+                memory_index 后端，但仍可被中间记忆 / dreaming 的 SemanticStore 使用。
             db_store: Database store for persistent data storage
             embedding_model: Embedding model for semantic search
+            message_store: Optional message store for conversation history
+            index_backend: 记忆索引后端类型，``"simple"``（缺省，KV+Vector）
+                或 ``"file"``（markdown+SQLite）。决定 memory_index 注册哪个实现。
+                ``"file"`` 时忽略 vector_store 对 memory_index 的影响，改注册
+                FileMemoryIndex。
+            file_root_dir: ``index_backend="file"`` 时 FileMemoryIndex 的数据根目录，
+                必填。``"simple"`` 时忽略。
         """
         if kv_store is None:
             raise build_error(
@@ -206,14 +219,61 @@ class LongTermMemory(metaclass=Singleton):
                 error_msg="message store must be instance of BaseMessageStore",
             )
 
+        # index_backend 取值校验：避免拼写错误（如 "File"/"files"）静默退化到 simple
+        if index_backend not in ("simple", "file"):
+            raise build_error(
+                StatusCode.MEMORY_REGISTER_STORE_EXECUTION_ERROR,
+                store_type="index backend",
+                error_msg=f"unsupported index_backend={index_backend!r}, expected 'simple' or 'file'",
+            )
+
         self.kv_store = kv_store
         self.vector_store = vector_store
         self.db_store = db_store
         self._base_embed = embedding_model
         self.message_store = message_store
+        self._index_backend = index_backend
 
-        # Auto register SimpleMemoryIndex if vector_store is provided
-        if self.vector_store and self.kv_store:
+        # memory_index 后端选择：index_backend 决定注册哪个实现。
+        # - "file"：注册 FileMemoryIndex（markdown+SQLite），vector_store 不作 memory_index，
+        #   但仍保留供中间记忆 / dreaming 的 SemanticStore 使用。
+        # - "simple"（缺省）：vector_store + kv_store 齐全时注册 SimpleMemoryIndex。
+        if index_backend == "file":
+            if not file_root_dir:
+                raise build_error(
+                    StatusCode.MEMORY_REGISTER_STORE_EXECUTION_ERROR,
+                    store_type="file index",
+                    error_msg="file_root_dir is required when index_backend='file'",
+                )
+            # resolve 成绝对路径并验证可创建（更早暴露权限/路径问题，
+            # 避免启动后才在写入时崩）
+            from pathlib import Path
+            try:
+                resolved_root = str(Path(file_root_dir).expanduser().resolve())
+                Path(resolved_root).mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                raise build_error(
+                    StatusCode.MEMORY_REGISTER_STORE_EXECUTION_ERROR,
+                    store_type="file index",
+                    error_msg=f"file_root_dir {file_root_dir!r} cannot be created or accessed: {e}",
+                ) from e
+            from jiuwen_memory.foundation.store.index.file_index import FileMemoryIndex
+            await self.register_plugin(
+                name="file_index",
+                cls=FileMemoryIndex,
+                params={
+                    "root_dir": resolved_root,
+                    "embedding_model": self._base_embed,
+                },
+            )
+            # 接线 watcher：file 后端的核心能力是外部编辑 .md 实时增量同步，
+            # register_plugin 仅实例化 memory_index，watcher 需在此显式启动。
+            # register_store 是 async，调用必然处于事件循环内（满足 start_watcher
+            # 的 "loop running" 前置条件）；watchdog 未安装时 start 为 no-op，
+            # 优雅降级到 search 时的惰性 _ensure_synced。
+            if self.memory_index is not None and hasattr(self.memory_index, "start_watcher"):
+                self.memory_index.start_watcher()
+        elif self.vector_store and self.kv_store:
             await self.register_plugin(
                 name='semantic_index',
                 cls=SimpleMemoryIndex,
@@ -321,11 +381,34 @@ class LongTermMemory(metaclass=Singleton):
                 config_type="system",
                 error_msg="memory_index must be provided (via register_plugin or register_store)",
             )
+        # file 后端使用中间记忆 / dreaming 时需要 vector_store（SemanticStore 依赖它）。
+        # 若 file 部署未配 vector_store 却开了 enable_middle_memory，启动后 add_messages
+        # 写中间记忆会崩——这里给 warning 提示，不强制改配置。
+        if self._index_backend == "file" and config.enable_middle_memory and not self.vector_store:
+            memory_logger.warning(
+                "index_backend='file' with enable_middle_memory=True but no vector_store registered; "
+                "middle-term memory writes will fail (long-term memory is unaffected). "
+                "Configure VECTOR_STORE_TYPE or disable enable_middle_memory.",
+                event_type=LogEventType.MEMORY_INIT,
+            )
         self._sys_mem_config = config
 
         codec = AesStorageCodec(config.crypto_key)
         if self.memory_index:
-            self.memory_index.set_storage_codec(codec)
+            if self._index_backend == "file":
+                # file 后端：crypto_key 非空时才加密（落盘密文），为空则保持明文
+                # （FileMemoryIndex 默认 codec=None = 不加密），让 .md 人类可读。
+                # 这是 file 后端的取舍：默认明文可读，需要加密时显式配 crypto_key。
+                if config.crypto_key:
+                    self.memory_index.set_storage_codec(codec)
+                else:
+                    memory_logger.info(
+                        "index_backend='file' with empty crypto_key; markdown stays plaintext.",
+                        event_type=LogEventType.MEMORY_INIT,
+                    )
+            else:
+                # 向量后端等仍用 AES 加密
+                self.memory_index.set_storage_codec(codec)
         self._storage_codec = codec
 
         data_id_generator = DataIdManager()
