@@ -192,6 +192,7 @@ Set the global memory engine configuration and initialize internal managers.
   * `forbidden_variables: str`: Variables forbidden from being memorized (comma-separated variable names). Default: `""` (no variables forbidden).
   * `input_msg_max_len: int`: Maximum input message length (default 8192);
   * `crypto_key: bytes`: AES encryption key (must be exactly 32 bytes; empty means no encryption).
+  * `codec: str`: Registered name of a third-party codec (e.g. `"sm4"`, `"hsm"`); empty uses the built-in `AesStorageCodec` built from `crypto_key`. See "Custom codec extension" below.
 
 **Prerequisites**:
 
@@ -201,7 +202,42 @@ Set the global memory engine configuration and initialize internal managers.
 **Behavior**:
 
 - Managers (`FragmentMemoryManager`, `SummaryManager`, `WriteManager`) uniformly use `memory_index` (`BaseMemoryIndex`) as the backend.
-- If `crypto_key` is non-empty, an `AesStorageCodec` is automatically created and `memory_index.set_storage_codec()` is called for transparent AES-256-GCM encryption/decryption of the `text` field at the storage layer.
+- Codec resolution logic:
+  - **Built-in AES (default)**: when `config.codec` is empty, an `AesStorageCodec` is built from `config.crypto_key`. A non-empty `crypto_key` enables transparent AES-256-GCM encryption/decryption of the `text` field at the storage layer.
+  - **Third-party codec extension**: when `config.codec` names a registered codec, the engine looks up a **pre-built** `StorageCodec` instance by name from the registry and injects it, ignoring `crypto_key`; if not found it falls back to built-in AES with a warning.
+  - The resolved codec is injected into `memory_index` (via `set_storage_codec`), `message_store` (via `set_codec`), and `VariableManager`, uniformly covering string payloads such as memory content, message content, and variable values.
+
+#### Custom codec extension
+
+Only `AesStorageCodec` (AES-256-GCM) is built in. To integrate non-AES schemes such as national-crypto SM4 or HSM hardware security modules, use the **look-up-by-name** registry mechanism — no engine code changes required:
+
+```python
+>>> from jiuwen_memory.foundation.codec import (
+...     StorageCodec,
+...     register_storage_codec,
+... )
+>>> from jiuwen_memory.memory_core.config import MemoryEngineConfig
+>>>
+>>> # 1. Custom codec: implement encode/decode (duck typing; no inheritance required)
+>>> class SM4StorageCodec:
+...     def __init__(self, key: bytes):       # any signature — single-param SM4
+...         self._key = key
+...     def encode(self, text: str) -> str: ...
+...     def decode(self, data: str) -> str: ...
+...
+>>> # Multi-param codecs (e.g. HSM: cert/slot/pin) are also supported, because
+>>> # the engine only looks up instances and never calls a constructor:
+>>> # register_storage_codec("hsm", HSMCodec(cert=..., slot=..., pin=...))
+>>>
+>>> # 2. Register the pre-built instance (registration must happen before set_config)
+>>> register_storage_codec("sm4", SM4StorageCodec(key=sm4_key))
+>>>
+>>> # 3. Reference the registered name in config; the engine resolves and injects it
+>>> config = MemoryEngineConfig(crypto_key=b"", codec="sm4")
+>>> memory.set_config(config)
+```
+
+> **Constraints**: a custom codec must satisfy `decode(encode(x)) == x` and pass `None`/empty strings through unchanged (matching `AesStorageCodec`'s empty-key pass-through). The protocol is defined in `jiuwen_memory.foundation.codec.StorageCodec`. The registry is a process-level singleton (`get_default_registry()`) and is **not thread-safe** — register at import/startup time, never concurrently on the hot path.
 
 **Exceptions**:
 

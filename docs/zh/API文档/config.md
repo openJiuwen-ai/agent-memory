@@ -11,7 +11,7 @@
 ## class jiuwen_memory.memory_core.config.config.MemoryEngineConfig
 
 ```
-class jiuwen_memory.memory_core.config.config.MemoryEngineConfig(default_model_cfg: ModelRequestConfig | None = None, default_model_client_cfg: ModelClientConfig | None = None, input_msg_max_len: int = 8192, crypto_key: bytes = b'')
+class jiuwen_memory.memory_core.config.config.MemoryEngineConfig(default_model_cfg: ModelRequestConfig | None = None, default_model_client_cfg: ModelClientConfig | None = None, input_msg_max_len: int = 8192, crypto_key: bytes = b'', codec: str = '')
 ```
 
 全局记忆引擎配置，用于设置引擎级别的通用参数。
@@ -23,6 +23,9 @@ class jiuwen_memory.memory_core.config.config.MemoryEngineConfig(default_model_c
 * **forbidden_variables**(str, 可选)：禁止记忆的变量（逗号分隔的变量名）；默认值：`""`（不禁止任何变量）。
 * **input_msg_max_len**(int, 可选)：输入消息最大长度（字符数）；在生成记忆时，超过此长度的消息内容会被截断。默认值：8192。
 * **crypto_key**(bytes, 可选)：AES-256-GCM 加密密钥，长度必须为 32 字节（32 bytes）。若设置为非空字节串，在调用 `set_config` 时会自动为 `memory_index`（`BaseMemoryIndex`）注入 `AesStorageCodec`，对记忆内容的 `text` 字段进行存储层透明加解密；同时也会用于加密 `MemoryScopeConfig` 中的 `api_key` 等敏感参数。若为空字节串 `b''`，则所有加解密功能不启用。默认值：`b''`（不加密）。
+* **codec**(str, 可选)：第三方加解密编解码器（codec）的**注册名**（如 `"sm4"`、`"hsm"`）。这是接入国密 SM4、HSM 硬件密码机等非 AES 加密方案的扩展点：调用方先通过 `register_storage_codec(name, codec)` 注册一个**已构造好的** `StorageCodec` 实例（密钥已在实例内部，引擎不再调用构造函数，因此支持任意构造签名——单参 SM4 或多参 HSM 均可），再在配置里用该 `name` 引用。`set_config` 时引擎按名查实例；查到则注入该实例，`crypto_key` 被忽略。若 `codec` 为空字符串 `""`，或该名下未注册实例，则回退到由 `crypto_key` 构造的 `AesStorageCodec`（并打一条 warning 日志）。默认值：`""`（使用内置 AES）。
+
+  > **说明**：第三方 codec 需实现 `encode(text: str) -> str` / `decode(data: str) -> str` 两个方法，满足 `decode(encode(x)) == x`；对 `None`/空串应原样返回（与 `AesStorageCodec` 的空密钥直通行为一致）。协议定义见 `jiuwen_memory.foundation.codec.StorageCodec`。注册必须在 `set_config` 之前完成。详见 [LongTermMemory API 文档 — 自定义 codec 拓展](long_term_memory.md)。
 * **single_turn_history_summary_max_token**(int, 可选)：单轮历史摘要生成的最大 token 数，必须大于 0。默认值：128。
 
 **参数校验**：
@@ -54,6 +57,33 @@ class jiuwen_memory.memory_core.config.config.MemoryEngineConfig(default_model_c
 >>>     forbidden_variables="user_id, phone_number, email",
 >>>     input_msg_max_len=8192,
 >>>     crypto_key=b"your-32-byte-aes-key-here!!",  # 32 字节
+>>> )
+```
+
+**第三方 codec 样例**：
+
+```python
+>>> from jiuwen_memory.memory_core.config import MemoryEngineConfig
+>>> from jiuwen_memory.foundation.codec import register_storage_codec
+>>>
+>>> # 1. 自定义 codec（国密 SM4 示意）：密钥在构造时注入实例
+>>> class SM4StorageCodec:
+...     def __init__(self, key: bytes):
+...         self._key = key
+...     def encode(self, text: str) -> str:
+...         ...  # 返回 SM4 密文
+...     def decode(self, data: str) -> str:
+...         ...  # 返回 SM4 明文
+...
+>>> # 2. 注册"已构造好的实例"（引擎不再调用构造函数，故支持任意构造签名，
+>>> #    包括多参的 HSM：HSMCodec(cert=..., slot=..., pin=...)）
+>>> register_storage_codec("sm4", SM4StorageCodec(key=sm4_key))
+>>>
+>>> # 3. 配置里用注册名引用
+>>> engine_config = MemoryEngineConfig(
+>>>     # ...其他参数...
+>>>     crypto_key=b"",     # 第三方 codec 不依赖 crypto_key，可留空
+>>>     codec="sm4",        # 引擎按名查实例并注入
 >>> )
 ```
 

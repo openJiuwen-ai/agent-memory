@@ -55,7 +55,11 @@ from jiuwen_memory.common.logging import memory_logger
 from jiuwen_memory.common.logging.events import LogEventType
 from jiuwen_memory.memory_core.migration.run_migrations import run_kv_migrations,\
     run_vector_migrations, run_sql_migrations, run_message_migrations
-from jiuwen_memory.memory_core.codec.aes_storage_codec import AesStorageCodec
+from jiuwen_memory.foundation.codec import (
+    AesStorageCodec,
+    StorageCodec,
+    get_default_registry,
+)
 from jiuwen_memory.memory_core.manage.mem_model.semantic_store import SemanticStore
 
 
@@ -107,7 +111,7 @@ class LongTermMemory(metaclass=Singleton):
         self.message_store: BaseMessageStore | None = None
         # memory index
         self.memory_index: BaseMemoryIndex | None = None
-        self._storage_codec: AesStorageCodec | None = None
+        self._storage_codec: StorageCodec | None = None
         self._index_backend: str = "simple"
         # managers
         self.scope_user_mapping_manager = None
@@ -140,6 +144,25 @@ class LongTermMemory(metaclass=Singleton):
         )
         self._executor_active = True
 
+    @property
+    def storage_codec(self) -> StorageCodec | None:
+        return self._storage_codec
+
+    @property
+    def index_backend(self) -> str:
+        return self._index_backend
+
+    def configure_index_backend(self, backend: str) -> None:
+        if backend not in ("simple", "file"):
+            raise build_error(
+                StatusCode.MEMORY_REGISTER_STORE_EXECUTION_ERROR,
+                store_type="index backend",
+                error_msg=(
+                    f"unsupported index_backend={backend!r}, "
+                    f"expected 'simple' or 'file'"
+                ),
+            )
+        self._index_backend = backend
 
     async def register_plugin(self, name: str, cls: type, params: dict[str, Any]):
         """
@@ -393,17 +416,49 @@ class LongTermMemory(metaclass=Singleton):
             )
         self._sys_mem_config = config
 
-        codec = AesStorageCodec(config.crypto_key)
+        # Codec resolution: look up a pre-built instance by name in the
+        # registry; if none registered under config.codec, fall back to
+        # AesStorageCodec built from crypto_key. The registry stores
+        # already-constructed instances, so multi-param codecs (HSM
+        # cert/slot/pin) are constructed by the user at registration time —
+        # the engine never calls a constructor, hence no hard-coded ``key=``.
+        codec: StorageCodec
+        registered = get_default_registry().get(config.codec) if config.codec else None
+        if registered is not None:
+            if not isinstance(registered, StorageCodec):
+                raise build_error(
+                    StatusCode.MEMORY_SET_CONFIG_EXECUTION_ERROR,
+                    config_type="codec",
+                    error_msg=(
+                        f"codec '{config.codec}' is not a StorageCodec instance, "
+                        f"got {type(registered).__name__}"
+                    ),
+                )
+            codec = registered
+        else:
+            if config.codec:
+                memory_logger.warning(
+                    "No codec registered under name '%s'; falling back to "
+                    "AesStorageCodec(crypto_key). Register via "
+                    "register_storage_codec() before set_config. Available: %s",
+                    config.codec,
+                    get_default_registry().names(),
+                    event_type=LogEventType.MEMORY_INIT,
+                )
+            codec = AesStorageCodec(config.crypto_key)
         if self.memory_index:
             if self._index_backend == "file":
-                # file 后端：crypto_key 非空时才加密（落盘密文），为空则保持明文
-                # （FileMemoryIndex 默认 codec=None = 不加密），让 .md 人类可读。
-                # 这是 file 后端的取舍：默认明文可读，需要加密时显式配 crypto_key。
-                if config.crypto_key:
+                # file 后端取舍：默认明文可读（让 .md 人类可读），需要加密时显式
+                # 表达意图。注入条件 = crypto_key 非空 OR 用户显式选了 config.codec
+                # （第三方 codec 如 SM4/HSM 不依赖 crypto_key，密钥已在实例里）。
+                # 仅当两者皆空才是真正的"明文可读"设计；若用户显式选了 codec 却
+                # 走明文，会静默忽略加密意图——此处门控避免该陷阱。
+                if config.crypto_key or config.codec:
                     self.memory_index.set_storage_codec(codec)
                 else:
                     memory_logger.info(
-                        "index_backend='file' with empty crypto_key; markdown stays plaintext.",
+                        "index_backend='file' with no crypto_key and no codec; "
+                        "markdown stays plaintext.",
                         event_type=LogEventType.MEMORY_INIT,
                     )
             else:
@@ -420,6 +475,10 @@ class LongTermMemory(metaclass=Singleton):
         if self.message_store:
             if isinstance(self.message_store, SqlMessageStore) and self.message_store.crypto_key is None:
                 self.message_store.crypto_key = config.crypto_key
+            # Inject the engine-level codec into the message store via its
+            # public method (replaces the previous isinstance + private
+            # _codec assignment, which only worked for SqlMessageStore).
+            self.message_store.set_codec(codec)
             self.message_manager = MessageManager(store=self.message_store)
         self.fragment_memory_manager = FragmentMemoryManager(
             memory_index=self.memory_index,
@@ -437,7 +496,8 @@ class LongTermMemory(metaclass=Singleton):
 
         self.variable_manager = VariableManager(
             self.kv_store,
-            config.crypto_key
+            config.crypto_key,
+            codec=codec,
         )
 
         managers = {

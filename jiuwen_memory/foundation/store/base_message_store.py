@@ -6,6 +6,9 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 
+from jiuwen_memory.common.logging import memory_logger
+from jiuwen_memory.common.logging.events import LogEventType
+from jiuwen_memory.foundation.codec import StorageCodec
 from jiuwen_memory.foundation.llm.schema.message import BaseMessage
 
 
@@ -170,3 +173,21 @@ class BaseMessageStore(ABC):
             version: New version number to store
         """
         pass
+
+    def set_codec(self, codec: "StorageCodec") -> None:
+        """Inject a storage codec into the message store.
+
+        The base default is a **no-op with a warning**. Subclasses that persist
+        encrypted payloads (e.g. :class:`SqlMessageStore`) override this to
+        replace their internal codec. Stores that do not need encryption are
+        left untouched — they are not forced to override this method, and the
+        engine injecting an engine-level codec never crashes them.
+
+        """
+        memory_logger.warning(
+            "%s does not override set_codec(); the injected codec is ignored "
+            "(payloads stay unencrypted by this store). Override set_codec() "
+            "in this store to apply encryption.",
+            type(self).__name__,
+            event_type=LogEventType.MEMORY_INIT,
+        )

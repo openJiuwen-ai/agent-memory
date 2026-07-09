@@ -42,7 +42,8 @@ from typing import Any, TYPE_CHECKING
 
 from jiuwen_memory.common.logging import store_logger
 from jiuwen_memory.common.logging.events import LogEventType
-from jiuwen_memory.foundation.store.base_memory_index import MemoryDoc, StorageCodec
+from jiuwen_memory.foundation.codec import StorageCodec
+from jiuwen_memory.foundation.store.base_memory_index import MemoryDoc
 from jiuwen_memory.foundation.store.index.file_index._chunk_parser import (
     Block,
     hash_text,

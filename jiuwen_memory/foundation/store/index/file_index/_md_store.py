@@ -24,7 +24,7 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from jiuwen_memory.foundation.store.base_memory_index import StorageCodec
+from jiuwen_memory.foundation.codec import StorageCodec
 from jiuwen_memory.foundation.store.index.file_index._chunk_parser import (
     Block,
     blocks_to_markdown,

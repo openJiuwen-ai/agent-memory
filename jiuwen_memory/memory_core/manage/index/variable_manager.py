@@ -6,7 +6,7 @@ from typing import Any, List, Optional, Tuple
 from jiuwen_memory.foundation.llm import Model
 from jiuwen_memory.memory_core.manage.mem_model.memory_unit import MemoryType, BaseMemoryUnit, VariableUnit
 from jiuwen_memory.memory_core.manage.index.base_memory_manager import BaseMemoryManager
-from jiuwen_memory.memory_core.codec.aes_storage_codec import AesStorageCodec
+from jiuwen_memory.foundation.codec import AesStorageCodec, StorageCodec
 from jiuwen_memory.foundation.store.base_kv_store import BaseKVStore
 from jiuwen_memory.common.logging import memory_logger
 from jiuwen_memory.common.logging.events import LogEventType
@@ -21,15 +21,20 @@ class VariableManager(BaseMemoryManager):
 
     def __init__(self,
                  kv_store: BaseKVStore,
-                 crypto_key: bytes):
+                 crypto_key: bytes,
+                 codec: Optional[StorageCodec] = None):
         self.kv_store = kv_store
         self.crypto_key = crypto_key
-        self._codec = AesStorageCodec(crypto_key)
+        self._codec = codec if codec is not None else AesStorageCodec(crypto_key)
         self.mem_type = MemoryType.VARIABLE.value
         kv_prefix_registry.register_current(self.USER_VAR_PREFIX)
         kv_prefix_registry.register_current(self.SESSION_VAR_PREFIX)
         for legacy_prefix in self.LEGACY_PREFIXES:
             kv_prefix_registry.register_legacy(legacy_prefix)
+
+    def set_codec(self, codec: StorageCodec) -> None:
+        """Inject an external codec, replacing the default AesStorageCodec."""
+        self._codec = codec
 
     async def add_memories(self, user_id: str, scope_id: str, memories: dict[str, list[BaseMemoryUnit]],
                            llm: Tuple[str, Model] | None = None, **kwargs):

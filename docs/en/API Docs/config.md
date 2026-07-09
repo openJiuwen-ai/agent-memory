@@ -11,7 +11,7 @@
 ## class jiuwen_memory.memory_core.config.config.MemoryEngineConfig
 
 ```
-class jiuwen_memory.memory_core.config.config.MemoryEngineConfig(default_model_cfg: ModelRequestConfig | None = None, default_model_client_cfg: ModelClientConfig | None = None, input_msg_max_len: int = 8192, crypto_key: bytes = b'')
+class jiuwen_memory.memory_core.config.config.MemoryEngineConfig(default_model_cfg: ModelRequestConfig | None = None, default_model_client_cfg: ModelClientConfig | None = None, input_msg_max_len: int = 8192, crypto_key: bytes = b'', codec: str = '')
 ```
 
 Global memory engine configuration for setting engine-level common parameters.
@@ -23,6 +23,9 @@ Global memory engine configuration for setting engine-level common parameters.
 * **forbidden_variables**(str, optional): Variables forbidden from being memorized (comma-separated variable names); default: `""` (no variables forbidden).
 * **input_msg_max_len**(int, optional): Maximum input message length (in characters); messages exceeding this length will be truncated during memory generation. Default: 8192.
 * **crypto_key**(bytes, optional): AES-256-GCM encryption key, must be exactly 32 bytes. If set to a non-empty byte string, `set_config` will automatically inject `AesStorageCodec` into `memory_index` (`BaseMemoryIndex`) for transparent encryption/decryption of the `text` field at the storage layer; it will also be used to encrypt sensitive parameters like `api_key` in `MemoryScopeConfig`. If empty `b''`, all encryption/decryption is disabled. Default: `b''` (no encryption).
+* **codec**(str, optional): The **registered name** of a third-party encryption/decryption codec (e.g. `"sm4"`, `"hsm"`). This is the extension point for non-AES schemes such as national-crypto SM4 or HSM hardware security modules: the caller first registers a **pre-built** `StorageCodec` instance via `register_storage_codec(name, codec)` (the key already lives inside the instance — the engine never calls a constructor, so any construction signature is supported, from single-param SM4 to multi-param HSM), then references that `name` here. During `set_config` the engine looks the instance up by name; if found it is injected and `crypto_key` is ignored. If `codec` is empty `""`, or no instance is registered under that name, the engine falls back to an `AesStorageCodec` built from `crypto_key` (and emits a warning log). Default: `""` (use built-in AES).
+
+  > **Note**: A third-party codec must implement `encode(text: str) -> str` / `decode(data: str) -> str`, satisfying `decode(encode(x)) == x`; `None`/empty strings must be passed through unchanged (matching `AesStorageCodec`'s empty-key pass-through behavior). The protocol is defined in `jiuwen_memory.foundation.codec.StorageCodec`. Registration must happen before `set_config`. See [LongTermMemory API docs — Custom codec extension](long_term_memory.md).
 * **single_turn_history_summary_max_token**(int, optional): Maximum number of tokens for single-turn history summary generation; must be greater than 0. Default: 128.
 
 **Parameter Validation**:
@@ -54,6 +57,34 @@ The `crypto_key` parameter has a `field_validator`:
 >>>     forbidden_variables="user_id, phone_number, email",
 >>>     input_msg_max_len=8192,
 >>>     crypto_key=b"your-32-byte-aes-key-here!!",  # 32 bytes
+>>> )
+```
+
+**Third-party codec example**:
+
+```python
+>>> from jiuwen_memory.memory_core.config import MemoryEngineConfig
+>>> from jiuwen_memory.foundation.codec import register_storage_codec
+>>>
+>>> # 1. Custom codec (national-crypto SM4 sketch): key injected at construction
+>>> class SM4StorageCodec:
+...     def __init__(self, key: bytes):
+...         self._key = key
+...     def encode(self, text: str) -> str:
+...         ...  # return SM4 ciphertext
+...     def decode(self, data: str) -> str:
+...         ...  # return SM4 plaintext
+...
+>>> # 2. Register the "pre-built instance" (the engine never calls a constructor,
+>>> #    so any signature works — including multi-param HSM:
+>>> #    HSMCodec(cert=..., slot=..., pin=...))
+>>> register_storage_codec("sm4", SM4StorageCodec(key=sm4_key))
+>>>
+>>> # 3. Reference the registered name in config
+>>> engine_config = MemoryEngineConfig(
+>>>     # ...other params...
+>>>     crypto_key=b"",     # third-party codec does not depend on crypto_key; may stay empty
+>>>     codec="sm4",        # engine resolves the instance by name and injects it
 >>> )
 ```
 
