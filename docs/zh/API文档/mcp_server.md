@@ -1,6 +1,8 @@
 # server.mcp_server
 
-`server.mcp_server` 是 JiuwenMemory 提供的 **MCP（Model Context Protocol）服务入口**，基于 `mcp` 官方 SDK 的 `FastMCP` 将 `LongTermMemory` 的常用能力封装为 MCP 工具（tools），使任何兼容 MCP 的客户端（Claude Code、Codex、Cursor、VS Code ……）都能直接对长期记忆进行写入、检索、更新、删除和变量管理。
+`server.mcp_server` 是 JiuwenMemory 提供的 **长期记忆专用 MCP（Model Context Protocol）服务入口**，基于 `mcp` 官方 SDK 的 `FastMCP` 将 `LongTermMemory` 的常用能力封装为 MCP 工具（tools），使任何兼容 MCP 的客户端（Claude Code、Codex、Cursor、VS Code ……）都能直接对长期记忆进行写入、检索、更新和删除。
+
+> **定位说明**：该 MCP 服务专注于**长期记忆**（画像、语义记忆、情节记忆、历史摘要）的读写与管理，不提供变量（variables）的增删改查接口。变量管理请通过 `memory_server` 的 REST API（`/get_variables/`、`/update_variables/`、`/delete_variables/`）进行。
 
 与 `server.memory_server`（FastAPI HTTP 服务）不同，MCP 服务**进程内**装配 `LongTermMemory` 引擎 —— 即 KV / DB / Vector / Embedding 的装配与 `memory_server` 启动时完全一致，但不再经过一层 HTTP 转发，而是由 MCP 进程直接持有引擎。客户端只需按 URL 连接即可调用工具，无需自建 HTTP 客户端代码。
 
@@ -8,7 +10,7 @@
 
 - 启动时（延迟到首次工具调用）根据 `.env` 自动装配 KV / DB / Vector Store 与嵌入模型；
 - 注册 `LongTermMemory` 引擎配置；
-- 将记忆的写入、检索、分页、更新、删除、变量管理等能力以 MCP 工具形式暴露；
+- 将长期记忆的写入、检索、分页、更新、删除等能力以 MCP 工具形式暴露；
 - 提供常驻 Streamable HTTP / SSE 两种传输方式；
 - 引擎装配失败时**不崩溃**：服务保持运行，每个工具返回可读的错误信息（与 mem0 的 `get_memory_client_safe` 同样的容错模式）。
 
@@ -140,7 +142,7 @@ MCP 服务通过同一个 `server.store_factory` 装配存储后端，存储相�
 | `scope_id` | `str` | 否 | `MCP_DEFAULT_SCOPE_ID` | 作用域 ID。 |
 | `infer` | `bool` | 否 | `true` | 是否进行 LLM 记忆抽取。`false` 时原样写入，不抽取。 |
 
-> 与 `memory_server` 的 `/add_messages/` 不同：MCP 工具用单一 `infer` 开关替代了多个 `enable_*` 开关，也**不**支持 `mem_variables` 变量抽取定义（变量请用 `update_variables` 单独维护）。返回值也不是简单的 `success`，而是直接返回本次抽取得到的 `user_profile` / `semantic_memory` / `episodic_memory` / `summary` / `variables` 各部分。
+> 与 `memory_server` 的 `/add_messages/` 不同：MCP 工具用单一 `infer` 开关替代了多个 `enable_*` 开关，也**不**支持 `mem_variables` 变量抽取定义（MCP 服务不提供变量管理接口，变量请通过 `memory_server` 的 REST API 维护）。返回值也不是简单的 `success`，而是直接返回本次抽取得到的 `user_profile` / `semantic_memory` / `episodic_memory` / `summary` / `variables` 各部分。
 
 **返回示例**（`infer=true`）：
 
@@ -271,62 +273,6 @@ MCP 服务通过同一个 `server.store_factory` 装配存储后端，存储相�
 {"status": "deleted", "scope_id": "demo"}
 ```
 
-### get_variables
-
-读取用户变量。省略 `names` 时返回全部变量。
-
-**参数**：
-
-| 参数 | 类型 | 必填 | 默认值 | 说明 |
-|---|---|---|---|---|
-| `names` | `list[str] \| null` | 否 | `null` | 指定变量名列表；为 `null` 时返回全部。 |
-| `user_id` | `str` | 否 | `MCP_DEFAULT_USER_ID` | 用户 ID。 |
-| `scope_id` | `str` | 否 | `MCP_DEFAULT_SCOPE_ID` | 作用域 ID。 |
-
-**返回示例**：
-
-```json
-{"variables": {"favorite_drink": "茉莉花茶"}}
-```
-
-### update_variables
-
-设置/更新一个或多个用户变量（`name -> value`）。
-
-**参数**：
-
-| 参数 | 类型 | 必填 | 默认值 | 说明 |
-|---|---|---|---|---|
-| `variables` | `dict` | 是 | - | 变量名到变量值的映射。 |
-| `user_id` | `str` | 否 | `MCP_DEFAULT_USER_ID` | 用户 ID。 |
-| `scope_id` | `str` | 否 | `MCP_DEFAULT_SCOPE_ID` | 作用域 ID。 |
-
-**返回示例**：
-
-```json
-{"status": "updated", "variables": {"favorite_drink": "茉莉花茶"}}
-```
-
-### delete_variables
-
-按变量名删除一个或多个用户变量。
-
-**参数**：
-
-| 参数 | 类型 | 必填 | 默认值 | 说明 |
-|---|---|---|---|---|
-| `names` | `list[str]` | 是 | - | 待删除的变量名列表。 |
-| `user_id` | `str` | 否 | `MCP_DEFAULT_USER_ID` | 用户 ID。 |
-| `scope_id` | `str` | 否 | `MCP_DEFAULT_SCOPE_ID` | 作用域 ID。 |
-
-**返回示例**：
-
-```json
-{"status": "deleted", "deleted": ["favorite_drink", "city"], "names": ["favorite_drink", "city"]}
-```
-
-> `deleted` 字段透传 `LongTermMemory.delete_variables(...)` 的返回值，实际结构取决于底层实现。
-
 ### health_check
 
 报告引擎就绪状态，用于排查初始化失败。会触发 `_get_engine()`，因此也能驱动延迟装配。
@@ -359,7 +305,7 @@ MCP 服务通过同一个 `server.store_factory` 装配存储后端，存储相�
 - `add_messages failed: ...`
 - `search_memories failed: ...`
 - `update_memory failed: ...`
-- `delete_variables failed: ...`
+- `delete_memory failed: ...`
 
 同时会通过 `memory_logger.exception(...)` 记录完整堆栈。
 
@@ -468,5 +414,5 @@ python -m jiuwen_memory.server.mcp_server
 - `search_memories` 与 `search_history_summaries` 应成对调用以获得最完整上下文（见各工具描述）。
 - `get_memories` 的 `page_idx` 从 **1** 开始；返回的 `count` 为本次响应列表长度，不一定代表全量总数。
 - MCP 服务无内置鉴权，对外暴露时务必在网络层做好访问控制。
-- `add_messages` 工具用 `infer` 开关替代了 HTTP 服务的 `enable_*`，且不支持 `mem_variables`；变量维护请使用 `get_variables` / `update_variables` / `delete_variables`。
+- `add_messages` 工具用 `infer` 开关替代了 HTTP 服务的 `enable_*`，且不支持 `mem_variables`；MCP 服务不提供变量管理接口，变量维护请通过 `memory_server` 的 REST API 进行。
 - `user_id` / `scope_id` 的默认值由 `MCP_DEFAULT_USER_ID` / `MCP_DEFAULT_SCOPE_ID` 控制，仅当变量未设置时回退引擎默认值 `__default__`（注意 dotenv 下空字符串不等于未设置，需删行或注释才使用默认值），每次调用仍可覆盖。

@@ -1,6 +1,8 @@
 # server.mcp_server
 
-`server.mcp_server` is the **MCP (Model Context Protocol) service entry point** provided by JiuwenMemory. It uses the official `mcp` SDK's `FastMCP` to expose common `LongTermMemory` capabilities as MCP tools, so any MCP-compatible client (Claude Code, Codex, Cursor, VS Code, …) can write, search, update, delete, and manage long-term memory directly.
+`server.mcp_server` is the **long-term memory-focused MCP (Model Context Protocol) service entry point** provided by JiuwenMemory. It uses the official `mcp` SDK's `FastMCP` to expose common `LongTermMemory` capabilities as MCP tools, so any MCP-compatible client (Claude Code, Codex, Cursor, VS Code, …) can write, search, update, and delete long-term memory directly.
+
+> **Scope note**: This MCP service is dedicated to **long-term memory** (user profile, semantic memory, episodic memory, history summaries) read/write and management. It does not provide variable (variables) CRUD tools. Manage variables through the `memory_server` REST API (`/get_variables/`, `/update_variables/`, `/delete_variables/`) instead.
 
 Unlike `server.memory_server` (a FastAPI HTTP service), the MCP service assembles the `LongTermMemory` engine **in-process** — the KV / DB / Vector / Embedding assembly is identical to `memory_server` startup, but there is no HTTP layer to go through: the MCP process owns the engine directly. Clients just connect by URL and call tools, with no need to hand-roll an HTTP client.
 
@@ -8,7 +10,7 @@ The service is responsible for:
 
 - assembling KV / DB / Vector Store backends and the embedding model from `.env` (lazily, on the first tool call);
 - registering the `LongTermMemory` engine configuration;
-- exposing memory write, search, pagination, update, delete, and variable management as MCP tools;
+- exposing long-term memory write, search, pagination, update, and delete as MCP tools;
 - providing both persistent Streamable HTTP and SSE transports;
 - **not crashing** on engine-assembly failure: the server stays up and each tool returns a readable error (the same resilient pattern mem0's `get_memory_client_safe` uses).
 
@@ -140,7 +142,7 @@ Adds a list of conversation messages (each a `{role, content}` dict) to long-ter
 | `scope_id` | `str` | No | `MCP_DEFAULT_SCOPE_ID` | Scope ID. |
 | `infer` | `bool` | No | `true` | Whether to run LLM memory extraction. `false` ingests the batch raw without extraction. |
 
-> Unlike `memory_server`'s `/add_messages/`, the MCP tool replaces the multiple `enable_*` switches with a single `infer` flag and does **not** support `mem_variables` (maintain variables via `update_variables` instead). The return value is not a simple `success` — it directly returns the `user_profile` / `semantic_memory` / `episodic_memory` / `summary` / `variables` produced by this extraction.
+> Unlike `memory_server`'s `/add_messages/`, the MCP tool replaces the multiple `enable_*` switches with a single `infer` flag and does **not** support `mem_variables` (the MCP service does not offer variable management tools — manage variables through the `memory_server` REST API instead). The return value is not a simple `success` — it directly returns the `user_profile` / `semantic_memory` / `episodic_memory` / `summary` / `variables` produced by this extraction.
 
 **Return example** (`infer=true`):
 
@@ -271,62 +273,6 @@ Delete **all** memories (every type) within a scope.
 {"status": "deleted", "scope_id": "demo"}
 ```
 
-### get_variables
-
-Read user variables. Omit `names` to return all of them.
-
-**Parameters**:
-
-| Parameter | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `names` | `list[str] \| null` | No | `null` | Variable names to query; `null` returns all. |
-| `user_id` | `str` | No | `MCP_DEFAULT_USER_ID` | User ID. |
-| `scope_id` | `str` | No | `MCP_DEFAULT_SCOPE_ID` | Scope ID. |
-
-**Return example**:
-
-```json
-{"variables": {"favorite_drink": "jasmine tea"}}
-```
-
-### update_variables
-
-Set/update one or more user variables (`name -> value`).
-
-**Parameters**:
-
-| Parameter | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `variables` | `dict` | Yes | - | Mapping from variable names to values. |
-| `user_id` | `str` | No | `MCP_DEFAULT_USER_ID` | User ID. |
-| `scope_id` | `str` | No | `MCP_DEFAULT_SCOPE_ID` | Scope ID. |
-
-**Return example**:
-
-```json
-{"status": "updated", "variables": {"favorite_drink": "jasmine tea"}}
-```
-
-### delete_variables
-
-Delete one or more user variables by name.
-
-**Parameters**:
-
-| Parameter | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `names` | `list[str]` | Yes | - | Variable names to delete. |
-| `user_id` | `str` | No | `MCP_DEFAULT_USER_ID` | User ID. |
-| `scope_id` | `str` | No | `MCP_DEFAULT_SCOPE_ID` | Scope ID. |
-
-**Return example**:
-
-```json
-{"status": "deleted", "deleted": ["favorite_drink", "city"], "names": ["favorite_drink", "city"]}
-```
-
-> The `deleted` field passes through the return value of `LongTermMemory.delete_variables(...)`. Its actual structure depends on the underlying implementation.
-
 ### health_check
 
 Report engine readiness — useful for diagnosing init failures. Triggers `_get_engine()`, so it also drives lazy assembly.
@@ -359,7 +305,7 @@ where `<action>` is the tool name, e.g.:
 - `add_messages failed: ...`
 - `search_memories failed: ...`
 - `update_memory failed: ...`
-- `delete_variables failed: ...`
+- `delete_memory failed: ...`
 
 The full stack trace is logged via `memory_logger.exception(...)`.
 
@@ -468,5 +414,5 @@ Both share the same `.env`, the same storage backends, and the same model config
 - Call `search_memories` and `search_history_summaries` together for the fullest context (see each tool's description).
 - `get_memories`'s `page_idx` starts from **1**; the returned `count` is the length of this response's list, not necessarily the total number of matching records.
 - The MCP service has no built-in authentication; enforce access control at the network layer when exposing it externally.
-- `add_messages` uses the `infer` switch instead of the HTTP service's `enable_*` and does not support `mem_variables`; manage variables via `get_variables` / `update_variables` / `delete_variables`.
+- `add_messages` uses the `infer` switch instead of the HTTP service's `enable_*` and does not support `mem_variables`; the MCP service does not offer variable management tools — manage variables through the `memory_server` REST API instead.
 - The defaults for `user_id` / `scope_id` are controlled by `MCP_DEFAULT_USER_ID` / `MCP_DEFAULT_SCOPE_ID`; they fall back to the engine default `__default__` only when unset (note: under dotenv an empty string is not the same as unset — delete or comment out the line to use the default), and both can still be overridden per call.

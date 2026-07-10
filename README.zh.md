@@ -367,7 +367,7 @@ memory-mcp
 python -m jiuwen_memory.server.mcp_server
 ```
 
-客户端按 URL 连接即可，工具包括 `add_messages`、`search_memories`、`search_history_summaries`、`get_memories`、`update_memory`、`delete_memory`、`get_variables` / `update_variables` / `delete_variables` 以及 `health_check`。
+客户端按 URL 连接即可，工具包括 `add_messages`、`search_memories`、`search_history_summaries`、`get_memories`、`update_memory`、`delete_memory`、`delete_all_memories` 以及 `health_check`。
 
 [→ MCP Server API 文档](docs/zh/API文档/mcp_server.md)
 

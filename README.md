@@ -371,7 +371,7 @@ memory-mcp
 python -m jiuwen_memory.server.mcp_server
 ```
 
-Connect a client by URL; tools include `add_messages`, `search_memories`, `search_history_summaries`, `get_memories`, `update_memory`, `delete_memory`, `get_variables` / `update_variables` / `delete_variables`, and `health_check`.
+Connect a client by URL; tools include `add_messages`, `search_memories`, `search_history_summaries`, `get_memories`, `update_memory`, `delete_memory`, `delete_all_memories`, and `health_check`.
 
 [→ MCP Server API Docs](docs/en/API%20Docs/mcp_server.md)
 

@@ -1,10 +1,13 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Jiuwen Memory MCP Server.
+"""Jiuwen Memory MCP Server — long-term memory focused.
 
-A Model Context Protocol server that exposes ``jiuwen_memory``'s long-term
-memory operations as MCP tools, so any MCP-compatible client (Claude Code,
-Codex, Cursor, VS Code, …) can save, search, update and delete memories.
+A Model Context Protocol server dedicated to long-term memory (profile,
+semantic, episodic, summary) CRUD. It does **not** expose variable management
+tools — variables are managed via ``memory_server`` REST API instead.
+
+Any MCP-compatible client (Claude Code, Codex, Cursor, VS Code, …) can save,
+search, update and delete memories through these tools.
 
 The server builds a local ``LongTermMemory`` engine **in-process** via the
 ``jiuwen_memory`` SDK — the same KV / DB / Vector / embedding assembly that
@@ -283,20 +286,6 @@ class _Engine:
         await self._ltm.delete_mem_by_scope(scope_id=scope_id)
         return {"status": "deleted", "scope_id": scope_id}
 
-    async def get_variables(self, names: list[str] | None, user_id: str, scope_id: str) -> dict:
-        user_id, scope_id = _sanitize_id(user_id), _sanitize_id(scope_id)
-        return await self._ltm.get_variables(names=names, user_id=user_id, scope_id=scope_id)
-
-    async def update_variables(self, variables: dict, user_id: str, scope_id: str) -> dict:
-        user_id, scope_id = _sanitize_id(user_id), _sanitize_id(scope_id)
-        await self._ltm.update_variables(variables=variables, user_id=user_id, scope_id=scope_id)
-        return {"status": "updated", "variables": variables}
-
-    async def delete_variables(self, names: list[str], user_id: str, scope_id: str) -> dict:
-        user_id, scope_id = _sanitize_id(user_id), _sanitize_id(scope_id)
-        deleted = await self._ltm.delete_variables(names=names, user_id=user_id, scope_id=scope_id)
-        return {"status": "deleted", "deleted": _dump(deleted), "names": names}
-
     async def shutdown(self) -> None:
         if self._ltm is not None and hasattr(self._ltm, "stop"):
             try:
@@ -500,48 +489,6 @@ async def delete_all_memories(
         return _json(result)
     except Exception as err:
         return _tool_error("delete_all_memories", err)
-
-
-@mcp.tool(description="Read user variables. Omit `names` to return all of them.")
-async def get_variables(
-    names: list[str] | None = None,
-    user_id: str = DEFAULT_USER_ID,
-    scope_id: str = DEFAULT_SCOPE_ID,
-) -> str:
-    try:
-        engine = await _get_engine()
-        result = await engine.get_variables(names=names, user_id=user_id, scope_id=scope_id)
-        return _json({"variables": result})
-    except Exception as err:
-        return _tool_error("get_variables", err)
-
-
-@mcp.tool(description="Set/update one or more user variables (name -> value).")
-async def update_variables(
-    variables: dict,
-    user_id: str = DEFAULT_USER_ID,
-    scope_id: str = DEFAULT_SCOPE_ID,
-) -> str:
-    try:
-        engine = await _get_engine()
-        result = await engine.update_variables(variables=variables, user_id=user_id, scope_id=scope_id)
-        return _json(result)
-    except Exception as err:
-        return _tool_error("update_variables", err)
-
-
-@mcp.tool(description="Delete one or more user variables by name.")
-async def delete_variables(
-    names: list[str],
-    user_id: str = DEFAULT_USER_ID,
-    scope_id: str = DEFAULT_SCOPE_ID,
-) -> str:
-    try:
-        engine = await _get_engine()
-        result = await engine.delete_variables(names=names, user_id=user_id, scope_id=scope_id)
-        return _json(result)
-    except Exception as err:
-        return _tool_error("delete_variables", err)
 
 
 @mcp.tool(description="Report engine readiness — useful for diagnosing init failures.")
