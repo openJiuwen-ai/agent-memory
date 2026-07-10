@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/common/ |
-| 最近一次修订日期 | 2026-06-24 |
+| 最近一次修订日期 | 2026-07-02 |
 
-| 关联特性文档 | docs/features/F01-system-spec-design.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/control/F02-control-isolation-and-audit.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -113,8 +113,10 @@ class Plugin(ABC):
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `log` | `(event: AuditEvent) -> None` | 写入一条审计事件 |
-| `query` | `(filters: dict[str, str], limit=100) -> list[AuditEvent]` | 按条件检索审计留痕 |
+| `record` | `(event: AuditEvent) -> None` | 写入一条审计事件 |
+| `query` | `(filters: dict[str, str], limit=100) -> list[AuditEvent]` | 按 `action` / `layer` / `decision` / `target_id` / `actor_org` / `actor_user` / `actor_agent` / `actor_session` / `occurred_after` / `occurred_before` 检索审计留痕 |
+
+治理层通过 `Governor.audit(filters, limit)` 提供对外查询入口；`AuditLogger.query(...)` 是控制层消费审计后端的内部接口，不直接暴露为用户 API。
 
 ## 数据结构
 
@@ -156,7 +158,7 @@ class Plugin(ABC):
 | `KvProducer` / `VectorProducer` / `FulltextProducer` | `kv_store` / `vector_store` / `fulltext_store` |
 | `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` | `embedder` / `chunker` / `tokenizer` |
 | `IndexBuilderProducer` / `RecallerProducer` | `constructor` / `recaller` |
-| `NormalizerProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditLoggerProducer` | 各自唯一 |
+| `NormalizerProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditProducer` | 各自唯一 |
 
 #### Factory 基类
 
@@ -217,7 +219,7 @@ def _build(config: ComponentConfig) -> Embedder:
 - `reset_all()` 清空缓存（隔离多次装配 / 测试隔离）
 
 各 Producer 继承 `Factory`：
-- `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` / `NormalizerProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditLoggerProducer`
+- `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` / `NormalizerProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditProducer`
 
 ## 错误类型（`errors.py`）
 
@@ -247,7 +249,7 @@ src/common/<插件>/
 | 关联 spec | 关系 |
 |-----------|------|
 | S01-ingest_access | 接入层消费 Normalizer |
-| S03-memory_manage | 控制层消费 AuditLogger |
+| S03-memory_manage | 控制层消费 AuditLogger 记录的审计事件，并通过 Governor.audit 暴露查询 |
 | S04-retrieval | 检索层消费 Embedder/Tokenizer/FeatureExtractor/LLM/Reranker |
 | S05-construction | 构建层消费 Chunker/Embedder/Tokenizer/FeatureExtractor/LLM |
 | S06-storage | 存储层依赖本层的数据类型定义（Scope/FilterClause 等） |

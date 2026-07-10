@@ -435,6 +435,18 @@ class MemoryAuditLogger(AuditLogger):
     def record(self, event: AuditEvent) -> None:
         self._events.append(event)
 
+    def query(self, filters: dict[str, str], limit: int = 100) -> list[AuditEvent]:
+        out: list[AuditEvent] = []
+        for event in self._events:
+            if filters.get("action") and event.action != filters["action"]:
+                continue
+            if filters.get("layer") and event.layer != filters["layer"]:
+                continue
+            out.append(event)
+            if len(out) >= limit:
+                break
+        return out
+
     def get_events(self) -> list[AuditEvent]:
         return list(self._events)
 

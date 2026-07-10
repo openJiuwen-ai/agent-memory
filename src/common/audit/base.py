@@ -33,3 +33,7 @@ class AuditLogger(ABC):
     @abstractmethod
     def record(self, event: AuditEvent) -> None:
         """记录一条审计事件（应尽量异步/低开销，不阻塞业务链路）。"""
+
+    @abstractmethod
+    def query(self, filters: dict[str, str], limit: int = 100) -> list[AuditEvent]:
+        """按条件检索审计事件；查询入口由治理层调用，具体过滤由后端实现。"""

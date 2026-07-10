@@ -25,7 +25,10 @@ def test_delete_selector_matches_tags_within_scope() -> None:
 
     assert stale.id in affected
     assert keep.id not in affected
-    assert all("temp" in kernel.api.get(unit_id, scope, identity=actor).tags for unit_id in affected)
+    assert all(
+        "temp" in kernel.api.get(unit_id, scope, identity=actor).tags
+        for unit_id in affected
+    )
     assert all(
         kernel.api.get(unit_id, scope, identity=actor).lifecycle == LifecycleState.ARCHIVED
         for unit_id in affected
@@ -115,7 +118,10 @@ def test_delete_selector_combines_conditions_with_and() -> None:
     assert matching.id in affected
     assert wrong_tag.id not in affected
     assert too_new.id not in affected
-    assert all("temp" in kernel.api.get(unit_id, scope, identity=actor).tags for unit_id in affected)
+    assert all(
+        "temp" in kernel.api.get(unit_id, scope, identity=actor).tags
+        for unit_id in affected
+    )
     assert all(
         kernel.api.get(unit_id, scope, identity=actor).temporal.t_event < cutoff
         for unit_id in affected

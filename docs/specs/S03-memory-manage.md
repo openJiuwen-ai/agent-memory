@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/control/ |
-| 最近一次修订日期 | 2026-06-30 |
+| 最近一次修订日期 | 2026-07-02 |
 
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F02-write-infer-extract.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/control/F02-control-isolation-and-audit.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -115,7 +115,7 @@ active → archived → forgotten
 |------|------|------|
 | `inspect` | `(unit_ids: list[str]) -> list[MemoryUnit]` | 跨 scope 检视完整内容与治理字段（含已失效版本） |
 | `trace` | `(unit_id: str) -> list[MemoryUnit]` | 沿 `provenance` 血缘向上追溯演进来源链；`supersedes` 仅用于版本链与 `get(as_of)` |
-| `audit` | `(filters: dict[str, str], limit=100) -> list[AuditEvent]` | 按 actor/action/layer 等过滤审计事件 |
+| `audit` | `(filters: dict[str, str], limit=100) -> list[AuditEvent]` | 治理层唯一对外审计查询入口，按 `action` / `layer` / `decision` / `target_id` / `actor_org` / `actor_user` / `actor_agent` / `actor_session` / `occurred_after` / `occurred_before` 过滤审计事件；底层 `AuditLogger` 负责记录事件，并通过 `query(filters, limit)` 向治理层提供后端内查询能力；审计后端默认使用 SQLite `:memory:`，可通过 `audit.default = {"target": "sqlite", "params": {"db_path": "..."}}` 切换为 SQLite 落盘 |
 
 ### PermissionManager（`permission.py`）
 
@@ -126,10 +126,13 @@ active → archived → forgotten
 | `check` | `(actor: Scope, target: Scope, action: Action) -> bool` | 校验 actor 对 target 是否可执行 action |
 
 **check 规则**：
-1. `actor == target` → 通过
-2. `actor ⊃ target`（scope 层级包含：org > user > agent > session）→ 通过
-3. 存在匹配 Grant（未过期 + action 在授权集合内）→ 通过
-4. 否则 → 拒绝
+1. `actor == Scope()`（platform admin）→ 全局通过
+2. actor owner-cover target（当前实现要求同 `org`、同 `user`，并允许 agent/session 向下覆盖）→ 通过
+3. `actor.org != target.org` 且 actor 非 root → 拒绝
+4. 存在匹配 Grant（未过期 + action 在授权集合内 + grantee 覆盖 actor + grantor 覆盖 target）→ 通过
+5. 否则 → 拒绝
+
+默认权限后端为 `sqlite`，配置为 `{"target": "sqlite", "params": {"db_path": ":memory:"}}`；`allow_all` 仅保留为显式 dev-only 配置。无具体 target scope 的管理面方法（`admin_get` / `admin_set` / `admin_all` / 全局 `audit`）统一以根 scope `Scope()` 作为鉴权目标，普通租户 scope 不默认具备管理面访问权；`grant` / `revoke` 则以 grantor scope 为 target 做 `Action.SHARE` 校验。
 
 ### Scheduler（`scheduler.py`）
 
@@ -197,5 +200,5 @@ src/control/<算子>_impl/
 | architecture.md §3.1 | MemoryUnit 数据模型（lifecycle / temporal / supersedes / provenance）由 `common/type_def` 定义，控制层消费 |
 | architecture.md §8 | 演进调度（EvolveMode / Channel）映射到 Scheduler 双通道 + Evolver 四阶段 |
 | architecture.md §9 | `src/api/MemoryAPI` 是控制层的薄封装 + PEP；数据面委托 Engine，管理面直达各算子 |
-| architecture.md §12 | 横切可观测/治理——Governor.audit 消费 `common/audit/AuditLogger` 事件 |
+| architecture.md §12 | 横切可观测/治理——Governor.audit 消费 `common/audit/AuditLogger` 记录的审计事件 |
 | architecture.md §13.4 | PolicyManager 是运行时可变策略的 admin 落点 |

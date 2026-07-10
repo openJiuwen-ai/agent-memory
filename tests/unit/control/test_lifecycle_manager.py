@@ -180,16 +180,18 @@ def test_sweep_rejects_invalid_policy_target(unit_factory) -> None:
 def test_default_kernel_exposes_lifecycle_policy_keys() -> None:
     scope = Scope(org="acme", user="u1", agent="a1", session="s1")
     api = build_kernel().api
+    root = Scope()
 
-    assert api.admin_get("lifecycle.expired_active.target", identity=scope) == "forgotten"
-    assert api.admin_get("lifecycle.superseded.target", identity=scope) == "forgotten"
+    assert api.admin_get("lifecycle.expired_active.target", identity=root) == "forgotten"
+    assert api.admin_get("lifecycle.superseded.target", identity=root) == "forgotten"
 
-    api.admin_set("lifecycle.expired_active.target", "archived", identity=scope)
-    assert api.admin_get("lifecycle.expired_active.target", identity=scope) == "archived"
+    api.admin_set("lifecycle.expired_active.target", "archived", identity=root)
+    assert api.admin_get("lifecycle.expired_active.target", identity=root) == "archived"
 
 
 def test_default_kernel_lifecycle_sweep_uses_runtime_policy(unit_factory) -> None:
     scope = Scope(org="acme", user="u1", agent="a1", session="s1")
+    root = Scope()
     kernel = build_kernel()
     api = kernel.api
     expired = unit_factory(
@@ -200,7 +202,7 @@ def test_default_kernel_lifecycle_sweep_uses_runtime_policy(unit_factory) -> Non
     )
     kernel.kv.insert(scope, memory_key(expired.id), dumps(expired))
 
-    api.admin_set("lifecycle.expired_active.target", "archived", identity=scope)
+    api.admin_set("lifecycle.expired_active.target", "archived", identity=root)
     swept = getattr(getattr(api, "_engine"), "_lifecycle").sweep()
 
     stored = loads(kernel.kv.get(scope, memory_key(expired.id)))

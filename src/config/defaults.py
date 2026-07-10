@@ -1,4 +1,4 @@
-"""内置默认装配配置：纯内存离线栈，用**显式具名 + 引用**复刻系统的共享拓扑。
+"""内置默认装配配置：离线进程内栈，用**显式具名 + 引用**复刻系统的共享拓扑。
 
 ``build_kernel`` 未传 config 时用它装配；传 config 时把用户配置**合并覆盖**到它之上
 （按 namespace/实例名覆盖、globals 按 key 覆盖）。
@@ -41,7 +41,7 @@ def default_config_dict() -> Dict[str, Any]:
         "llm": {_D: "echo"},
         "reranker": {_D: {"target": "overlap", "params": {"tokenizer": _D}}},
         "normalizer": {_D: "passthrough"},
-        "audit": {_D: "in_memory"},
+        "audit": {_D: {"target": "sqlite", "params": {"db_path": ":memory:"}}},
         # -- 检索 ------------------------------------------------------------ #
         "recaller": {
             "keyword": {"target": "keyword", "params": {"fulltext_store": _D}},
@@ -151,7 +151,7 @@ def default_config_dict() -> Dict[str, Any]:
         "lifecycle": {_D: {"target": "kv", "params": {"kv_store": _D, "policy": _D}}},
         "policy": {_D: "dict"},
         "governor": {_D: {"target": "in_memory", "params": {"audit": _D, "kv_store": _D}}},
-        "permission": {_D: "allow_all"},
+        "permission": {_D: {"target": "sqlite", "params": {"db_path": ":memory:"}}},
     }
 
 

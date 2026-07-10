@@ -13,10 +13,12 @@ target scope 透传到引擎/各控制算子（identity 不下沉）。同步方
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, List
 
+from api.memory_api import MemoryAPI
 from common.audit import AuditLogger
 from common.errors import PermissionDeniedError, ValidationError
 from common.type_def import (
@@ -36,8 +38,6 @@ from control.policy import PolicyManager
 from control.scheduler import Scheduler
 from control.types import Action, Channel, DeleteSelector, Grant, JobInfo, MemoryPatch
 from retrieval.types import DisclosureLevel, RetrievalQuery, RetrievalResult
-
-from api.memory_api import MemoryAPI
 
 # 管理面（admin / 全局审计）没有具体 target scope，统一以「根 scope」为鉴权目标：
 # 在真实 RBAC 后端下，「能对全局根 scope 行权」即等价于管理员闸门；在 allow_all
@@ -80,11 +80,17 @@ class LocalMemoryAPI(MemoryAPI):
 
     # -- 鉴权 + 审计公共点 --------------------------------------------------- #
 
-    def _authorize(self, identity: Scope, target: Scope, action: Action) -> None:
-        if not self._perm.check(identity, target, action):
-            raise PermissionDeniedError(action.value)
-
-    def _log(self, identity: Scope, action: str, target_id: str = "") -> None:
+    def _record_audit(
+        self,
+        identity: Scope,
+        action: str,
+        *,
+        target_id: str = "",
+        decision: str = "allow",
+        detail: Dict[str, str] | None = None,
+    ) -> None:
+        payload = dict(detail or {})
+        payload.setdefault("decision", decision)
         self._audit.record(
             AuditEvent(
                 id=str(uuid.uuid4()),
@@ -92,8 +98,59 @@ class LocalMemoryAPI(MemoryAPI):
                 action=action,
                 target_id=target_id,
                 layer="api",
+                decision=decision,
                 occurred_at=datetime.now(timezone.utc),
+                detail=payload,
             )
+        )
+
+    def _authorize(
+        self,
+        identity: Scope,
+        target: Scope,
+        action: Action,
+        audit_action: str,
+        target_id: str = "",
+        *,
+        check_permission: bool = True,
+    ) -> Dict[str, str]:
+        if not check_permission:
+            return {
+                "permission_check": "disabled",
+                "permission_reason": "permission check disabled",
+            }
+        if not self._perm.check(identity, target, action):
+            self._record_audit(
+                identity,
+                audit_action,
+                target_id=target_id,
+                decision="deny",
+                detail={
+                    "permission_check": "enabled",
+                    "permission_reason": f"permission denied for action={action.value}",
+                },
+            )
+            raise PermissionDeniedError(action.value)
+        return {
+            "permission_check": "enabled",
+            "permission_reason": "permission check passed",
+        }
+
+    def _log(
+        self,
+        identity: Scope,
+        action: str,
+        target_id: str = "",
+        *,
+        decision: str = "allow",
+        detail: Dict[str, str] | None = None,
+    ) -> None:
+        self._record_audit(
+            identity,
+            action,
+            target_id=target_id,
+            decision=decision,
+            detail=detail,
         )
 
     # -- 数据面 ------------------------------------------------------------- #
@@ -135,9 +192,8 @@ class LocalMemoryAPI(MemoryAPI):
         metadata: Dict[str, str] | None = None,
         occurred_at: datetime | None = None,
     ) -> List[MemoryUnit]:
-        self._authorize(identity, scope, Action.WRITE)
-        self._log(identity, "write")
-        return await self._engine.write(
+        auth = self._authorize(identity, scope, Action.WRITE, "write")
+        units = await self._engine.write(
             content,
             scope,
             source,
@@ -146,6 +202,8 @@ class LocalMemoryAPI(MemoryAPI):
             metadata=metadata,
             occurred_at=occurred_at,
         )
+        self._log(identity, "write", detail=auth)
+        return units
 
     def recall(
         self,
@@ -163,8 +221,7 @@ class LocalMemoryAPI(MemoryAPI):
         # 调用级 options 顺 parser 透传给自定义检索模块；Context 对象本身不进内核。
         # 约定 key max_tokens（自适应披露预算）在此解析为 typed int 写入 RetrievalQuery，
         # 并从透传 extensions 中移除，避免与内核已解释的字段重复。
-        self._authorize(identity, context.scope, Action.READ)
-        self._log(identity, "recall")
+        auth = self._authorize(identity, context.scope, Action.READ, "recall")
         options = dict(context.extensions)
         max_tokens = _parse_max_tokens(options.pop(EXT_MAX_TOKENS, None))
         rq = RetrievalQuery(
@@ -177,28 +234,46 @@ class LocalMemoryAPI(MemoryAPI):
             with_trajectory=with_trajectory,
             extensions=options,
         )
-        return asyncio.run(self._engine.recall(context.scope, rq))
+        result = asyncio.run(self._engine.recall(context.scope, rq))
+        self._log(identity, "recall", detail=auth)
+        return result
 
     def get(
         self, unit_id: str, scope: Scope, *, identity: Scope, as_of: datetime | None = None
     ) -> MemoryUnit:
-        self._authorize(identity, scope, Action.READ)
-        self._log(identity, "get", unit_id)
-        return asyncio.run(self._engine.get(unit_id, scope, as_of))
+        auth = self._authorize(identity, scope, Action.READ, "get", unit_id)
+        unit = asyncio.run(self._engine.get(unit_id, scope, as_of))
+        self._log(identity, "get", unit_id, detail={**auth, "after_unit_id": unit.id})
+        return unit
 
     def update(
         self, unit_id: str, scope: Scope, patch: MemoryPatch, *, identity: Scope
     ) -> MemoryUnit:
-        self._authorize(identity, scope, Action.UPDATE)
-        self._log(identity, "update", unit_id)
-        return asyncio.run(self._engine.update(unit_id, scope, patch))
+        auth = self._authorize(identity, scope, Action.UPDATE, "update", unit_id)
+        before = asyncio.run(self._engine.get(unit_id, scope, None))
+        unit = asyncio.run(self._engine.update(unit_id, scope, patch))
+        self._log(
+            identity,
+            "update",
+            unit_id,
+            detail={**auth, "before_unit_id": before.id, "after_unit_id": unit.id},
+        )
+        return unit
 
     def delete(self, selector: DeleteSelector, *, identity: Scope) -> List[str]:
+        if not selector.unit_ids and not selector.tags and selector.before is None:
+            raise ValidationError("DeleteSelector requires unit_ids, tags, or before")
         # 按 selector 的目标 scope 鉴权 DELETE；未限定 scope（如纯按 id/标签的
         # 跨范围删除）则退到根 scope 闸门，要求更高权限。
-        self._authorize(identity, selector.scope or _ROOT, Action.DELETE)
-        self._log(identity, "delete")
-        return asyncio.run(self._engine.delete(selector))
+        target = selector.scope or _ROOT
+        auth = self._authorize(identity, target, Action.DELETE, "delete")
+        deleted = asyncio.run(self._engine.delete(selector))
+        self._log(
+            identity,
+            "delete",
+            detail={**auth, "before_unit_ids": json.dumps(deleted, ensure_ascii=False)},
+        )
+        return deleted
 
     def evolve(
         self,
@@ -208,9 +283,10 @@ class LocalMemoryAPI(MemoryAPI):
         *,
         identity: Scope,
     ) -> str:
-        self._authorize(identity, scope, Action.WRITE)
-        self._log(identity, "evolve")
-        return asyncio.run(self._engine.evolve(scope, mode, channel))
+        auth = self._authorize(identity, scope, Action.WRITE, "evolve")
+        job_id = asyncio.run(self._engine.evolve(scope, mode, channel))
+        self._log(identity, "evolve", detail={**auth, "job_id": job_id})
+        return job_id
 
     # -- 任务调度（直达 Scheduler） ----------------------------------------- #
 
@@ -218,32 +294,32 @@ class LocalMemoryAPI(MemoryAPI):
         # 先取任务（含其 scope），再据 identity 对该 scope 的 READ 权放行（仅可查
         # 自身/已授权范围的任务）；status 为只读查询，先取后判权不产生副作用。
         info = self._scheduler.status(job_id)
-        self._authorize(identity, info.scope, Action.READ)
-        self._log(identity, "job_status", job_id)
+        auth = self._authorize(identity, info.scope, Action.READ, "job_status", job_id)
+        self._log(identity, "job_status", job_id, detail=auth)
         return info
 
     def job_cancel(self, job_id: str, *, identity: Scope) -> None:
         # 取消即对该任务范围的写动作，按其 scope 鉴权 WRITE（与 evolve 触发一致）。
         info = self._scheduler.status(job_id)
-        self._authorize(identity, info.scope, Action.WRITE)
-        self._log(identity, "job_cancel", job_id)
+        auth = self._authorize(identity, info.scope, Action.WRITE, "job_cancel", job_id)
+        self._log(identity, "job_cancel", job_id, detail=auth)
         self._scheduler.cancel(job_id)
 
     # -- admin（直达 PolicyManager；管理面闸门 = 根 scope 鉴权） ------------- #
 
     def admin_get(self, key: str, *, identity: Scope) -> str:
-        self._authorize(identity, _ROOT, Action.READ)
-        self._log(identity, "admin_get", key)
+        auth = self._authorize(identity, _ROOT, Action.READ, "admin_get", key)
+        self._log(identity, "admin_get", key, detail=auth)
         return self._policy.get(key)
 
     def admin_set(self, key: str, value: str, *, identity: Scope) -> None:
-        self._authorize(identity, _ROOT, Action.WRITE)
-        self._log(identity, "admin_set", key)
+        auth = self._authorize(identity, _ROOT, Action.WRITE, "admin_set", key)
+        self._log(identity, "admin_set", key, detail=auth)
         self._policy.set(key, value)
 
     def admin_all(self, *, identity: Scope) -> Dict[str, str]:
-        self._authorize(identity, _ROOT, Action.READ)
-        self._log(identity, "admin_all")
+        auth = self._authorize(identity, _ROOT, Action.READ, "admin_all")
+        self._log(identity, "admin_all", detail=auth)
         return self._policy.all()
 
     # -- 治理（直达 Governor） ---------------------------------------------- #
@@ -251,31 +327,31 @@ class LocalMemoryAPI(MemoryAPI):
     def inspect(
         self, unit_ids: List[str], scope: Scope, *, identity: Scope
     ) -> List[MemoryUnit]:
-        self._authorize(identity, scope, Action.READ)
-        self._log(identity, "inspect")
+        auth = self._authorize(identity, scope, Action.READ, "inspect")
+        self._log(identity, "inspect", detail=auth)
         return self._governor.inspect(unit_ids)
 
     def trace(self, unit_id: str, scope: Scope, *, identity: Scope) -> List[MemoryUnit]:
-        self._authorize(identity, scope, Action.READ)
-        self._log(identity, "trace", unit_id)
+        auth = self._authorize(identity, scope, Action.READ, "trace", unit_id)
+        self._log(identity, "trace", unit_id, detail=auth)
         return self._governor.trace(unit_id)
 
     def audit(
         self, filters: Dict[str, str], *, identity: Scope, limit: int = 100
     ) -> List[AuditEvent]:
         # 审计查询跨 scope，按管理面闸门（根 scope READ）鉴权；查询本身亦留痕。
-        self._authorize(identity, _ROOT, Action.READ)
-        self._log(identity, "audit")
+        auth = self._authorize(identity, _ROOT, Action.READ, "audit")
+        self._log(identity, "audit", detail=auth)
         return self._governor.audit(filters, limit)
 
     # -- 跨 scope 授权（直达 PermissionManager） ---------------------------- #
 
     def grant(self, grant: Grant, *, identity: Scope) -> None:
-        self._authorize(identity, grant.grantor, Action.SHARE)
-        self._log(identity, "grant")
+        auth = self._authorize(identity, grant.grantor, Action.SHARE, "grant")
+        self._log(identity, "grant", detail=auth)
         self._perm.grant(grant)
 
     def revoke(self, grant: Grant, *, identity: Scope) -> None:
-        self._authorize(identity, grant.grantor, Action.SHARE)
-        self._log(identity, "revoke")
+        auth = self._authorize(identity, grant.grantor, Action.SHARE, "revoke")
+        self._log(identity, "revoke", detail=auth)
         self._perm.revoke(grant)

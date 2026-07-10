@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/storage/ |
-| 最近一次修订日期 | 2026-06-23 |
+| 最近一次修订日期 | 2026-07-01 |
 
-| 关联特性文档 | docs/features/F01-system-spec-design.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/control/F02-control-isolation-and-audit.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -34,6 +34,7 @@
 7. **scope 对 key/路径做命名空间隔离**：kv / fs 是通用原语，`scope` 入参用于对 key / 路径做命名空间隔离（同一逻辑 key 在不同 scope 下是相互隔离的不同物理键）。
 8. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
 9. **所有 Store 必须实现 `store_type()` 和 `health()`**：继承自 `BaseStore`。
+10. **多租户隔离默认依赖逻辑 scope 边界**：当前不要求物理分库/分 collection，但要求同一逻辑 key/id 在不同 scope 下严格命名空间隔离。
 
 ## 接口契约
 

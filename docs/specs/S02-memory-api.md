@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/api/ |
-| 最近一次修订日期 | 2026-06-30 |
+| 最近一次修订日期 | 2026-07-03 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md |
 ## 范围 / 边界
 
@@ -172,7 +172,7 @@
 
 ### AuditEvent（audit 返回，`common/type_def/audit.py`）
 
-`id` / `actor`（操作者 Scope）/ `action` / `target_id` / `layer`（产生事件的层）/ `occurred_at` / `detail`。
+`id` / `actor`（操作者 Scope）/ `action` / `target_id` / `layer`（产生事件的层）/ `occurred_at` / `detail`。`detail` 常见约定包括 `permission_check`、`permission_reason`、`job_id`、`before_unit_id` / `after_unit_id`、`before_unit_ids` / `after_unit_ids`；其中 `before_unit_*` / `after_unit_*` 仅表示记忆单元 id，不用于调度任务 id。
 
 ## 错误语义
 

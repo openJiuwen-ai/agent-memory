@@ -12,7 +12,7 @@
   ``config.get("vector_enabled", True)`` 读取处，配置的 ``globals`` 可覆盖之。
 - **真源 kv 注入**：``kv`` 入参经 ``KvProducer.put`` 预置进缓存，覆盖配置选择并被各处共享。
 
-- **默认装配**：无 config 时用内置默认上下文（:mod:`config.defaults`）——纯内存离线栈，用
+- **默认装配**：无 config 时用内置默认上下文（:mod:`config.defaults`）——离线进程内栈，用
   显式具名 + 引用复刻共享拓扑；用户 config **合并覆盖**到其上（只写要改动的部分）。
 - **真源 kv 注入**：``kv`` 入参经 ``KvProducer.put`` 预置进缓存，覆盖配置选择并被各处共享。
 
@@ -72,7 +72,7 @@ def build_kernel(
     """把配置装配成内核（api + 真源）。各组件经引用自取依赖、缺省随调用点给出。
 
     - ``config``：用户配置（两级命名空间），**合并覆盖**到内置默认（:mod:`config.defaults`）之上；
-      ``None`` 时纯用内置默认（纯内存离线栈）。
+      ``None`` 时纯用内置默认（离线进程内栈）。
     - ``policies``：便捷覆盖运行时策略（折进 ``globals.policies``）。
     - ``kv``：显式注入真源后端，覆盖配置的 kv_store 选择（如传 ``SQLiteKVStore`` 即落盘）。
     """
@@ -93,11 +93,11 @@ def build_kernel(
 
     api = LocalMemoryAPI(
         engine=EngineProducer.dep(root, default="in_memory"),
-        permission=PermissionProducer.dep(root, default="allow_all"),
+        permission=PermissionProducer.dep(root, default="sqlite"),
         scheduler=SchedulerProducer.dep(root, default="in_process"),
         policy=PolicyProducer.dep(root, default="dict"),
         governor=GovernorProducer.dep(root, default="in_memory"),
-        audit_logger=AuditProducer.dep(root, default="in_memory"),
+        audit_logger=AuditProducer.dep(root, default="sqlite"),
     )
     return Kernel(api=api, kv=KvProducer.dep(root, default="memory"))
 
