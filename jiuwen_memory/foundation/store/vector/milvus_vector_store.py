@@ -41,6 +41,8 @@ class MilvusVectorStore(BaseVectorStore):
         milvus_uri: str,
         milvus_token: Optional[str] = None,
         database_name: str = "default",
+        default_rpc_timeout: float = 10.0,
+        long_rpc_timeout: float = 60.0,
         **kwargs: Any,
     ):
         """
@@ -53,11 +55,18 @@ class MilvusVectorStore(BaseVectorStore):
             milvus_uri: Milvus URI (e.g., "http://localhost:19530")
             milvus_token: Milvus token for authentication (optional)
             database_name: Name of the database. Defaults to "default".
+            default_rpc_timeout: Timeout in seconds for regular RPCs
+                (search/insert/delete/has_collection/describe_collection/list_collections/etc).
+                Defaults to 10.0.
+            long_rpc_timeout: Timeout in seconds for slow operations
+                (flush/query_iterator/release_collection/rename_collection). Defaults to 60.0.
             **kwargs: Additional parameters for Milvus client initialization.
         """
         self.milvus_uri = milvus_uri
         self.milvus_token = milvus_token
         self.database_name = database_name
+        self._default_rpc_timeout = default_rpc_timeout
+        self._long_rpc_timeout = long_rpc_timeout
         self._kwargs = kwargs
 
         # Client will be created lazily on first access
@@ -179,7 +188,7 @@ class MilvusVectorStore(BaseVectorStore):
         """
         # Check if collection already exists
         has_collection = await asyncio.to_thread(
-            self.client.has_collection, collection_name
+            self.client.has_collection, collection_name, timeout=self._default_rpc_timeout
         )
         if has_collection:
             store_logger.info(
@@ -287,6 +296,7 @@ class MilvusVectorStore(BaseVectorStore):
                 collection_name=collection_name,
                 schema=milvus_schema,
                 index_params=index_params,
+                timeout=self._default_rpc_timeout,
             )
 
             # Store collection metadata
@@ -318,14 +328,14 @@ class MilvusVectorStore(BaseVectorStore):
         """
         def _delete():
             try:
-                if not self.client.has_collection(collection_name=collection_name):
+                if not self.client.has_collection(collection_name=collection_name, timeout=self._default_rpc_timeout):
                     store_logger.warning(
                         "Collection does not exist",
                         event_type=LogEventType.STORE_DELETE,
                         table_name=collection_name
                     )
                     return
-                self.client.drop_collection(collection_name=collection_name)
+                self.client.drop_collection(collection_name=collection_name, timeout=self._default_rpc_timeout)
                 if collection_name in self._collection_metadata:
                     del self._collection_metadata[collection_name]
                 store_logger.info(
@@ -359,7 +369,7 @@ class MilvusVectorStore(BaseVectorStore):
         Returns:
             bool: True if the collection exists, False otherwise
         """
-        return await asyncio.to_thread(self.client.has_collection, collection_name)
+        return await asyncio.to_thread(self.client.has_collection, collection_name, timeout=self._default_rpc_timeout)
 
     def _map_milvus_type_to_our_type(self, milvus_type: MilvusDataType) -> VectorDataType:
         """Map Milvus DataType to our VectorDataType."""
@@ -403,11 +413,13 @@ class MilvusVectorStore(BaseVectorStore):
         """
         def _get_schema():
             # Check if collection exists
-            if not self.client.has_collection(collection_name):
+            if not self.client.has_collection(collection_name, timeout=self._default_rpc_timeout):
                 raise build_error(StatusCode.STORE_VECTOR_COLLECTION_NOT_FOUND, collection_name=collection_name)
 
             # Get collection description from Milvus
-            collection_info = self.client.describe_collection(collection_name=collection_name)
+            collection_info = self.client.describe_collection(
+                collection_name=collection_name, timeout=self._default_rpc_timeout
+            )
 
             # Extract schema information
             schema = CollectionSchema(
@@ -479,6 +491,7 @@ class MilvusVectorStore(BaseVectorStore):
                 collection_info = await asyncio.to_thread(
                     self.client.describe_collection,
                     collection_name=collection_name,
+                    timeout=self._default_rpc_timeout,
                 )
                 # Extract vector field from schema
                 vector_field = None
@@ -502,6 +515,7 @@ class MilvusVectorStore(BaseVectorStore):
             self.client.insert(
                 collection_name=collection_name,
                 data=batch,
+                timeout=self._default_rpc_timeout,
             )
 
         # Process in batches
@@ -520,7 +534,7 @@ class MilvusVectorStore(BaseVectorStore):
                 )
 
         # Flush to ensure data is persisted
-        await asyncio.to_thread(self.client.flush, collection_name=collection_name)
+        await asyncio.to_thread(self.client.flush, collection_name=collection_name, timeout=self._long_rpc_timeout)
         store_logger.info(
             "Successfully added documents collection",
             event_type=LogEventType.STORE_ADD,
@@ -568,7 +582,9 @@ class MilvusVectorStore(BaseVectorStore):
             if not search_output_fields:
                 # Try to get collection schema to determine output fields
                 try:
-                    collection_info = self.client.describe_collection(collection_name=collection_name)
+                    collection_info = self.client.describe_collection(
+                        collection_name=collection_name, timeout=self._default_rpc_timeout
+                    )
                     search_output_fields = [field.get("name") for field in collection_info.get("fields", [])]
                 except Exception:
                     # Fallback: use common field names
@@ -583,6 +599,7 @@ class MilvusVectorStore(BaseVectorStore):
                 output_fields=search_output_fields or [],
                 search_params={"metric_type": distance_metric},
                 filter=filter_expr,
+                timeout=self._default_rpc_timeout,
             )
 
             return results
@@ -677,9 +694,10 @@ class MilvusVectorStore(BaseVectorStore):
                 result = self.client.delete(
                     collection_name=collection_name,
                     ids=ids,
+                    timeout=self._default_rpc_timeout,
                 )
                 # Flush to ensure deletion is persisted
-                self.client.flush(collection_name=collection_name)
+                self.client.flush(collection_name=collection_name, timeout=self._long_rpc_timeout)
                 deleted_count = result.get("delete_count", 0) if isinstance(result, dict) else len(ids)
                 store_logger.info(
                     "Deleted documents from collection",
@@ -729,9 +747,10 @@ class MilvusVectorStore(BaseVectorStore):
                 result = self.client.delete(
                     collection_name=collection_name,
                     filter=filter_expr,
+                    timeout=self._default_rpc_timeout,
                 )
                 # Flush to ensure deletion is persisted
-                self.client.flush(collection_name=collection_name)
+                self.client.flush(collection_name=collection_name, timeout=self._long_rpc_timeout)
                 deleted_count = result.get("delete_count", 0) if isinstance(result, dict) else 0
                 store_logger.info(
                     "Deleted documents matching filters from collection",
@@ -754,7 +773,7 @@ class MilvusVectorStore(BaseVectorStore):
         """Ensure a collection is loaded"""
         if collection in self._collections_loaded:
             return
-        if self.client.has_collection(collection, timeout=15.0):
+        if self.client.has_collection(collection, timeout=self._default_rpc_timeout):
             store_logger.info(
                 "MilvusVectorStore: loading collection %s", collection, event_type=LogEventType.STORE_LOAD,
             )
@@ -800,7 +819,7 @@ class MilvusVectorStore(BaseVectorStore):
         try:
             # This is a sync call, needs to be in a thread
             def _describe() -> Dict[str, Any]:
-                collection_info = self.client.describe_collection(collection_name)
+                collection_info = self.client.describe_collection(collection_name, timeout=self._default_rpc_timeout)
                 vector_field_name = None
                 for f in collection_info.get("fields", []):
                     if f.get("type") == MilvusDataType.FLOAT_VECTOR:
@@ -812,7 +831,9 @@ class MilvusVectorStore(BaseVectorStore):
                     return {"distance_metric": "COSINE"}
 
                 # The default index name is the field name
-                index_info = self.client.describe_index(collection_name, index_name=vector_field_name)
+                index_info = self.client.describe_index(
+                    collection_name, index_name=vector_field_name, timeout=self._default_rpc_timeout
+                )
                 metric_type = index_info["metric_type"]
                 return {"distance_metric": metric_type, "vector_field": vector_field_name}
 
@@ -839,7 +860,8 @@ class MilvusVectorStore(BaseVectorStore):
         """Helper method to get schema version from Milvus collection properties."""
         collection_info = await asyncio.to_thread(
             self.client.describe_collection,
-            collection_name=collection_name
+            collection_name=collection_name,
+            timeout=self._default_rpc_timeout,
         )
         properties = collection_info.get("properties", {})
         return int(properties.get("schema_version", 0))
@@ -886,7 +908,8 @@ class MilvusVectorStore(BaseVectorStore):
                 self.client.query_iterator,
                 collection_name=collection_name,
                 filter="",
-                output_fields=["*"]
+                output_fields=["*"],
+                timeout=self._long_rpc_timeout,
             )
 
             batch = []
@@ -913,7 +936,7 @@ class MilvusVectorStore(BaseVectorStore):
             store_logger.info(f"Finished copying {total_docs} documents to '{temp_collection_name}'.",
                               event_type=LogEventType.STORE_UPDATE, table_name=collection_name)
             # Release the old collection to free up memory
-            await asyncio.to_thread(self.client.release_collection, collection_name)
+            await asyncio.to_thread(self.client.release_collection, collection_name, timeout=self._long_rpc_timeout)
 
             # Drop the old collection
             store_logger.info(f"Dropping old collection '{collection_name}'.",
@@ -925,7 +948,8 @@ class MilvusVectorStore(BaseVectorStore):
                               event_type=LogEventType.STORE_UPDATE, table_name=collection_name)
 
             def _rename():
-                self.client.rename_collection(temp_collection_name, collection_name)
+                self.client.rename_collection(temp_collection_name, collection_name, timeout=self._long_rpc_timeout)
+
             await asyncio.to_thread(_rename)
 
             # Clear the old metadata from the cache
@@ -948,7 +972,7 @@ class MilvusVectorStore(BaseVectorStore):
             raise
 
     async def list_collection_names(self) -> List[str]:
-        return self._client.list_collections()
+        return self._client.list_collections(timeout=self._default_rpc_timeout)
 
     async def update_schema(self, collection_name: str, operations: List[BaseOperation]):
         """
@@ -1027,7 +1051,8 @@ class MilvusVectorStore(BaseVectorStore):
         try:
             collection_info = await asyncio.to_thread(
                 self.client.describe_collection,
-                collection_name=collection_name
+                collection_name=collection_name,
+                timeout=self._default_rpc_timeout,
             )
         except MilvusException as e:
             raise build_error(
@@ -1048,6 +1073,7 @@ class MilvusVectorStore(BaseVectorStore):
                 self.client.alter_collection_properties,
                 collection_name=collection_name,
                 properties=properties_to_update,
+                timeout=self._default_rpc_timeout,
             )
         except MilvusException as e:
             raise build_error(
