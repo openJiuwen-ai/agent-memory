@@ -498,10 +498,14 @@ class VectorIndex:
         ).fetchone()
         return row[0] if row else None
 
-    def get_path_for_mem_id(self, mem_id: str) -> str | None:
-        """Return the file path where *mem_id* is stored, or ``None``."""
+    def get_path_for_mem_id_scoped(
+        self, mem_id: str, user_id: str, scope_id: str
+    ) -> str | None:
+        """Return the path for *mem_id* **only if** it belongs to *user_id*/*scope_id*.
+        """
         row = self._conn.execute(
-            "SELECT path FROM chunks WHERE mem_id=?", (mem_id,)
+            "SELECT path FROM chunks WHERE mem_id=? AND user_id=? AND scope_id=?",
+            (mem_id, user_id, scope_id),
         ).fetchone()
         return row[0] if row and row[0] else None
 

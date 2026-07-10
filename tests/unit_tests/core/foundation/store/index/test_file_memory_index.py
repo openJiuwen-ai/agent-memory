@@ -482,7 +482,7 @@ async def test_v2_delete_memories_falls_back_for_unindexed_id(index, tmp_path):
         MemoryDoc(id="kept", text="i stay", type="note"),
     ])
     index.vec_index.delete_chunk_by_mem_id("orphan")
-    assert index.vec_index.get_path_for_mem_id("orphan") is None  # DB oblivious
+    assert index.vec_index.get_path_for_mem_id_scoped("orphan", "u1", "s1") is None  # DB oblivious
 
     # Now delete it — the fallback scan must find it in the file and remove it.
     await index.delete_memories("u1", "s1", ["orphan"])
@@ -564,6 +564,70 @@ async def test_v2_list_memories_and_scopes(index):
     await index.add_memories("u2", "s1", [MemoryDoc(id="x", text="x", type="n")])
     scopes = set(await index.list_user_scopes())
     assert ("u1", "s1") in scopes and ("u2", "s1") in scopes
+
+
+@pytest.mark.asyncio
+async def test_v2_get_by_id_rejects_cross_tenant_read(index):
+    """跨租户 get_by_id 必须返回 None（复现并锁定 FMI-DEF-002）。
+
+    对齐 ``test_file_memory_index_007`` 的 Step3：两个租户各写一条记忆，
+    userA 用 b1 的 id 去 get_by_id，不应读到 userB 的内容。007 用真实
+    embedding（@real_llm）跑，本用例用 FakeEmbedding 复现同一隔离缺陷，
+    无需外部服务即可回归。
+    """
+    user_a, scope_a = "uA", "sA"
+    user_b, scope_b = "uB", "sB"
+
+    # 两个租户各自写一条语义相近的记忆（都含「打篮球」）
+    await index.add_memories(user_a, scope_a, [
+        MemoryDoc(id="a1", text="用户A最喜欢的一项运动是打篮球", type="user_profile"),
+    ])
+    await index.add_memories(user_b, scope_b, [
+        MemoryDoc(id="b1", text="用户B最喜欢的一项运动是打篮球", type="user_profile"),
+    ])
+
+    # 跨租户 get_by_id b1 —— 应返回 None（不可越权读 userB 的内容）
+    cross = await index.get_by_id(user_a, scope_a, "b1")
+    assert cross is None, (
+        f"跨租户 get_by_id 越权读到了 userB 的 b1: {cross!r}（FMI-DEF-002）"
+    )
+    # 反向同理：userB 也不应读到 a1
+    cross_rev = await index.get_by_id(user_b, scope_b, "a1")
+    assert cross_rev is None, (
+        f"跨租户 get_by_id 越权读到了 userA 的 a1: {cross_rev!r}（FMI-DEF-002）"
+    )
+    # 同租户仍可正常读（隔离不应误伤本租户读取）
+    own = await index.get_by_id(user_a, scope_a, "a1")
+    assert own is not None and own.id == "a1" and own.text == "用户A最喜欢的一项运动是打篮球"
+
+    # 额外强化：跨租户共用同一 mem_id 的极端场景。
+    # 两个租户都写 id="shared"，各自内容不同。userA 读 "shared" 应只拿到
+    # 自己的版本（text 标识来源），绝不能拿到 userB 的版本。
+    await index.add_memories(user_a, scope_a, [
+        MemoryDoc(id="shared", text="来自租户A的私有内容", type="user_profile"),
+    ])
+    await index.add_memories(user_b, scope_b, [
+        MemoryDoc(id="shared", text="来自租户B的私有内容", type="user_profile"),
+    ])
+    got_a = await index.get_by_id(user_a, scope_a, "shared")
+    got_b = await index.get_by_id(user_b, scope_b, "shared")
+    assert got_a is not None and got_a.text == "来自租户A的私有内容", (
+        f"userA 读 own 'shared' 失败或读到了他人内容: {got_a!r}"
+    )
+    assert got_b is not None and got_b.text == "来自租户B的私有内容", (
+        f"userB 读 own 'shared' 失败或读到了他人内容: {got_b!r}"
+    )
+
+    # 越权 delete：userA 用 b1 的 id 删自己 scope——绝不能删掉 userB 的 b1。
+    # delete_memories 同样经 get_path_for_mem_id_scoped 定位，跨租户 id 解析
+    # 不到 path → unresolved → 仅扫本 scope 文件，userB 的 b1 必须安然无恙。
+    await index.delete_memories(user_a, scope_a, ["b1"])
+    survivor_b = await index.get_by_id(user_b, scope_b, "b1")
+    assert survivor_b is not None and survivor_b.id == "b1", (
+        f"跨租户 delete 越权删掉了 userB 的 b1: {survivor_b!r}（FMI-DEF-002 delete 变体）"
+    )
+    # userA 自己也没凭空多出/少东西（b1 本就不属于 userA）
+    assert await index.get_by_id(user_a, scope_a, "b1") is None
 
 
 # ===========================================================================

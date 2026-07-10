@@ -490,11 +490,11 @@ class FileMemoryIndex(BaseMemoryIndex):
             return
         ids_set = set(ids)
 
-        # 1. Locate ids via the DB (the common path).
+        # 1. Locate ids via the DB (the common path)
         path_to_ids: dict[str, set[str]] = {}
         unresolved = set[str]()
         for mem_id in ids_set:
-            path = self._vec_index.get_path_for_mem_id(mem_id)
+            path = self._vec_index.get_path_for_mem_id_scoped(mem_id, user_id, scope_id)
             if path:
                 path_to_ids.setdefault(path, set()).add(mem_id)
             else:
@@ -595,16 +595,19 @@ class FileMemoryIndex(BaseMemoryIndex):
         self._vec_index.delete_by_scope(scope_id)
 
     async def get_by_id(self, user_id: str, scope_id: str, mem_id: str) -> MemoryDoc | None:
-        """Get a memory by ID — reads from the ``{Type}.md`` file directly."""
-        # First, try to find the path from chunks table
-        path = self._vec_index.get_path_for_mem_id(mem_id)
+
+        # First, try to find the path from chunks table — scoped to the caller's
+        # tenant so a cross-tenant id can't resolve to another tenant's file.
+        path = self._vec_index.get_path_for_mem_id_scoped(mem_id, user_id, scope_id)
         if path:
             abs_path = self._root_dir / path
             block = await self._md_store.read_block(abs_path, mem_id)
             if block:
                 return self._block_to_doc(block)
 
-        # Fallback: scan all type files in scope dir
+        # Fallback: scan all type files in scope dir. This is inherently
+        # tenant-scoped — list_type_files only returns files under
+        # memories/{user_id}/{scope_id}/, so it cannot leak cross-tenant.
         for type_file in self._md_store.list_type_files(user_id, scope_id):
             block = await self._md_store.read_block(type_file, mem_id)
             if block:
@@ -712,7 +715,7 @@ class FileMemoryIndex(BaseMemoryIndex):
         # Resolve mem_ids to MemoryDocs
         results: list[tuple[MemoryDoc, float]] = []
         for mem_id, score in hits:
-            path = self._vec_index.get_path_for_mem_id(mem_id)
+            path = self._vec_index.get_path_for_mem_id_scoped(mem_id, user_id, scope_id)
             if not path:
                 continue
             abs_path = self._root_dir / path
