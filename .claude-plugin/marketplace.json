@@ -1,0 +1,17 @@
+{
+  "name": "jiuwen-memory-plugins",
+  "owner": {
+    "name": "JiuwenMemory"
+  },
+  "metadata": {
+    "description": "Official JiuwenMemory plugins for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "jiuwen_memory",
+      "source": "./jiuwen_memory/agent-memory-plugin/jiuwen_memory_code_agent",
+      "description": "Persistent cross-session memory for Claude Code via jiuwen-memory server. 12 hooks, MCP tools, 4 skills.",
+      "version": "0.1.0"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "jiuwen-memory-capture",
+  "version": "0.1.0",
+  "description": "OpenCode plugin for jiuwen-memory — session lifecycle capture, assistant reply tracking, system prompt injection. 4 hooks (event / chat.message / system.transform / session.compacting), 2 slash commands.",
+  "author": {
+    "name": "JiuwenMemory"
+  },
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/openJiuwen-ai/agent-memory",
+  "repository": "https://github.com/openJiuwen-ai/agent-memory"
+}

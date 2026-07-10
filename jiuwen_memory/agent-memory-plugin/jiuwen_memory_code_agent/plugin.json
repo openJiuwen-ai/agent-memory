@@ -1,0 +1,12 @@
+{
+  "id": "jiuwen_memory",
+  "name": "jiuwen_memory",
+  "version": "0.1.0",
+  "description": "Persistent cross-session memory for AI coding agents via jiuwen-memory server. Supports Claude Code (12 hooks), Codex (6 hooks), and OpenCode (TypeScript plugin).",
+  "author": { "name": "JiuwenMemory" },
+  "homepage": "https://github.com/openJiuwen-ai/agent-memory",
+  "repository": "https://github.com/openJiuwen-ai/agent-memory",
+  "license": "Apache-2.0",
+  "keywords": ["memory", "persistence", "personalization", "mcp", "semantic-search"],
+  "contextFileName": "AGENTS.md"
+}

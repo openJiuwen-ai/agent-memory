@@ -1,0 +1,20 @@
+{
+  "name": "jiuwen-memory-plugins",
+  "interface": {
+    "displayName": "JiuwenMemory Plugins"
+  },
+  "plugins": [
+    {
+      "name": "jiuwen_memory",
+      "source": {
+        "source": "local",
+        "path": "./jiuwen_memory/agent-memory-plugin/jiuwen_memory_code_agent"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "NONE"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

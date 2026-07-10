@@ -1,0 +1,33 @@
+{
+  "name": "jiuwen_memory",
+  "version": "0.1.0",
+  "description": "Persistent cross-session memory for Claude Code via jiuwen-memory server. 12 hooks, MCP tools, 4 skills.",
+  "author": {
+    "name": "JiuwenMemory"
+  },
+  "homepage": "https://github.com/openJiuwen-ai/agent-memory",
+  "repository": "https://github.com/openJiuwen-ai/agent-memory",
+  "license": "Apache-2.0",
+  "keywords": ["memory", "persistence", "mcp", "semantic-search"],
+  "hooks": "./hooks/hooks.json",
+  "userConfig": {
+    "memory_server_url": {
+      "type": "string",
+      "title": "Memory Server URL",
+      "description": "The HTTP URL of your jiuwen-memory server (default: http://localhost:8000)",
+      "required": false
+    },
+    "mcp_server_url": {
+      "type": "string",
+      "title": "MCP Server URL",
+      "description": "The MCP endpoint URL (default: http://127.0.0.1:8765/mcp)",
+      "required": false
+    },
+    "user_id": {
+      "type": "string",
+      "title": "User ID",
+      "description": "The user ID for memory scope isolation (default: cc-user for Claude Code)",
+      "required": false
+    }
+  }
+}

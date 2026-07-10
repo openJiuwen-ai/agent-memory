@@ -1,0 +1,28 @@
+{
+  "name": "jiuwen_memory",
+  "version": "0.1.0",
+  "description": "Persistent cross-session memory for Codex via jiuwen-memory server. 6 hooks, MCP tools, 4 skills.",
+  "author": {
+    "name": "JiuwenMemory",
+    "url": "https://github.com/openJiuwen-ai/agent-memory"
+  },
+  "homepage": "https://github.com/openJiuwen-ai/agent-memory",
+  "repository": "https://github.com/openJiuwen-ai/agent-memory",
+  "license": "Apache-2.0",
+  "keywords": ["memory", "persistence", "mcp", "semantic-search"],
+  "hooks": "./hooks/hooks.codex.json",
+  "interface": {
+    "displayName": "JiuwenMemory",
+    "shortDescription": "Persistent memory layer for AI coding workflows",
+    "longDescription": "JiuwenMemory adds long-term memory to Codex. Store decisions, user preferences, project context, and session state across conversations. Memories are automatically retrieved via semantic search so Codex always has the right context.",
+    "developerName": "JiuwenMemory",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://github.com/openJiuwen-ai/agent-memory",
+    "defaultPrompt": [
+      "Search my memories for recent project decisions",
+      "Remember that I prefer TypeScript over JavaScript",
+      "What do you know about my coding preferences?"
+    ]
+  }
+}
