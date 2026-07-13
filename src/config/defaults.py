@@ -30,9 +30,19 @@ def default_config_dict() -> Dict[str, Any]:
         },
         # -- 存储（有状态，必须对象共享）-------------------------------------- #
         "kv_store": {_D: "memory"},
-        "vector_store": {_D: "memory"},
+        "vector_store": {
+            _D: "memory",
+            # L0/L1 分表（与构建侧同命名 layers_l0/l1；同后端不同 collection）
+            "layers_l0": "memory",
+            "layers_l1": "memory",
+        },
         "graph_store": {_D: "memory"},
-        "fulltext_store": {_D: {"target": "memory", "params": {"tokenizer": _D}}},
+        "fulltext_store": {
+            _D: {"target": "memory", "params": {"tokenizer": _D}},
+            # L0/L1 分表（与构建侧同命名 layers_l0/l1）
+            "layers_l0": {"target": "memory", "params": {"tokenizer": _D}},
+            "layers_l1": {"target": "memory", "params": {"tokenizer": _D}},
+        },
         # -- 共享插件 -------------------------------------------------------- #
         "tokenizer": {_D: "whitespace"},
         "embedder": {_D: {"target": "hashing", "params": {"tokenizer": _D}}},
@@ -45,10 +55,14 @@ def default_config_dict() -> Dict[str, Any]:
         # -- 检索 ------------------------------------------------------------ #
         "recaller": {
             "keyword": {"target": "keyword", "params": {"fulltext_store": _D}},
+            "keyword_l0": {"target": "keyword_l0"},
+            "keyword_l1": {"target": "keyword_l1"},
             "vector": {
                 "target": "vector",
                 "params": {"vector_store": _D, "min_similarity": 0.0},
             },
+            "vector_l0": {"target": "vector_l0"},
+            "vector_l1": {"target": "vector_l1"},
             "graph": {"target": "graph", "params": {"graph_store": _D}},
         },
         "query_parser": {
@@ -73,6 +87,12 @@ def default_config_dict() -> Dict[str, Any]:
                     "keyword_recaller": "keyword",
                     "vector_recaller": "vector",
                     "graph_recaller": "graph",
+                    # L0/L1 分层召回开关：回退 globals.layers_index_enabled；构建/召回侧默认均 true
+                    # （默认建默认查）。不在 params 硬编码，让 get 回退 globals，便于全局关停。
+                    "keyword_l0_recaller": "keyword_l0",
+                    "keyword_l1_recaller": "keyword_l1",
+                    "vector_l0_recaller": "vector_l0",
+                    "vector_l1_recaller": "vector_l1",
                     "reranker": _D,
                     "query_parser": _D,
                     "fuser": _D,
@@ -94,13 +114,14 @@ def default_config_dict() -> Dict[str, Any]:
         "extractor": {_D: {"target": "keyword", "params": {"chunker": _D}}},
         "abstractor": {_D: "concat"},
         "associator": {_D: {"target": "keyword", "params": {"feature_extractor": _D}}},
-        "classifier": {_D: "keyword"},
+        "classifier": {_D: "llm"},  # infer=false 默认路径用 LLM classifier 打 tier+tags
         "constructor": {
             _D: {
                 "target": "hybrid",
                 "params": {
                     "fulltext_store": _D,
                     "vector_store": _D,
+                    # L0/L1 分表（构建侧经 build_named 取 layers_l0/l1 具名实例，非 params 字段）
                     "kv_store": _D,
                     "chunker": _D,
                     "embedder": _D,

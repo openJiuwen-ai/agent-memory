@@ -31,6 +31,8 @@ from retrieval.fuser_impl.rrf_fuser import RRFFuser
 from retrieval.fuser_impl.weighted_rrf_fuser import WeightedRRFFuser
 from retrieval.query_parser_impl.simple_query_parser import SimpleQueryParser
 from retrieval.recaller import Recaller, RecallerProducer
+from retrieval.recaller_impl.keyword_recaller import KeywordRecaller
+from retrieval.recaller_impl.vector_recaller import VectorRecaller
 from retrieval.retriever import RetrieverProducer
 from retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
 from retrieval.types import (
@@ -823,10 +825,11 @@ def test_weighted_rrf_and_structured_discloser_run_in_pipeline() -> None:
         "rrf_k": "0",
         "channel_weights": "keyword=2,vector=1",
     }
-    top_content = result.items[0].content
-    assert "[summary] packages/foo package manager is pnpm." in top_content
-    assert "[evidence] packages/foo package manager is pnpm." in top_content
-    assert "[why] keyword(rank=1,score=0.3,weight=2,contribution=2)" in top_content
+    top = result.items[0]
+    # 三层都填：abstract(L0) 含 [summary]/[why]，overview(L1) 含 [evidence]
+    assert "[summary] packages/foo package manager is pnpm." in top.abstract
+    assert "[why] keyword(rank=1,score=0.3,weight=2,contribution=2)" in top.abstract
+    assert "[evidence] packages/foo package manager is pnpm." in top.overview
 
 
 def test_user_tag_filter_applied_end_to_end(
@@ -847,3 +850,46 @@ def test_user_tag_filter_applied_end_to_end(
     ids = {item.unit_id for item in result.items}
     assert "w" in ids  # 命中且带 work 标签
     assert "u1" not in ids  # 命中 coffee 但无 work 标签 → 被后置过滤剔除
+
+
+def test_default_config_attaches_l0_l1_recallers() -> None:
+    """默认 config（无 globals.layers_index_enabled）下，pipeline 默认接入 L0/L1 recaller。
+
+    回归 #5：构建侧默认 true、召回侧原默认 false → 默认态下分层索引被建却不被查。
+    对齐后召回侧默认 true，默认 config 应挂上 keyword/vector 的 l0/l1 recaller，
+    且 defaults 已配 layers_l0/l1 具名 store → recaller 拿到非 None store。
+    """
+    raw = default_config_dict()
+    # 不设 globals.layers_index_enabled —— 验证默认值对齐（应默认 true）
+    raw["globals"].pop("layers_index_enabled", None)
+    ctx = AssemblyContext.from_dict(raw)
+
+    register_plugins()
+    register_backends()
+    register_operators()
+    Factory.reset_all()
+    try:
+        retriever = RetrieverProducer.build_named("default", ctx)
+        assert isinstance(retriever, PipelineRetriever)
+
+        # (channel, layer) 联合 key——keyword/vector 各 l0/l1，共四路
+        by_key = {
+            (r.channel().value, r.layer): r
+            for r in retriever.recallers
+            if isinstance(r, (KeywordRecaller, VectorRecaller))
+        }
+        # 默认接入四路分层 recaller（keyword+vector 各 l0/l1）
+        assert ("keyword", "l0") in by_key
+        assert ("keyword", "l1") in by_key
+        assert ("vector", "l0") in by_key
+        assert ("vector", "l1") in by_key
+
+        def _store_of(r):
+            # KeywordRecaller.fulltext_store / VectorRecaller.vector_store
+            return getattr(r, "fulltext_store", None) or getattr(r, "vector_store", None)
+
+        # defaults 已配 layers_l0/l1 具名 store → store 非空（非降级）
+        for key, r in by_key.items():
+            assert _store_of(r) is not None, f"{key} recaller 未注入分层 store"
+    finally:
+        Factory.reset_all()

@@ -1,8 +1,9 @@
-"""OpenAILLM 单元测试（10 个测试）。
+"""OpenAILLM 单元测试。
 
 使用 Mock 替换 openai client，隔离外部 API 依赖。
 """
 
+from dataclasses import dataclass
 from unittest.mock import MagicMock
 
 import pytest
@@ -33,20 +34,28 @@ class MockCompletionResponse:
         self.choices = [MockCompletionChoice(content)]
 
 
-def _make_mock_llm(
-    default_content: str = "mock response",
-    model_name: str = "gpt-4o",
-    default_temperature: float = 0.0,
-    default_max_tokens: int = 4096,
-) -> OpenAILLM:
+@dataclass(frozen=True)
+class MockLLMConfig:
+    """OpenAILLM test double configuration."""
+
+    default_content: str = "mock response"
+    model_name: str = "gpt-4o"
+    base_url: str | None = None
+    default_temperature: float = 0.0
+    default_max_tokens: int = 4096
+
+
+def _make_mock_llm(config: MockLLMConfig | None = None) -> OpenAILLM:
     """创建使用 Mock client 的 OpenAILLM。"""
+    config = config or MockLLMConfig()
     llm = OpenAILLM(
-        model_name=model_name,
+        model_name=config.model_name,
+        base_url=config.base_url,
         api_key="mock-key",
-        default_temperature=default_temperature,
-        default_max_tokens=default_max_tokens,
+        default_temperature=config.default_temperature,
+        default_max_tokens=config.default_max_tokens,
     )
-    mock_create = MagicMock(return_value=MockCompletionResponse(default_content))
+    mock_create = MagicMock(return_value=MockCompletionResponse(config.default_content))
     # 访问 .client 触发惰性建客户端（api_key 已给），再替换其 create 为 mock。
     llm.client.chat.completions.create = mock_create
     return llm
@@ -65,7 +74,7 @@ def test_plugin_type():
 
 def test_chat_basic():
     """T-L-02: 单轮对话返回助手回复文本。"""
-    llm = _make_mock_llm(default_content="hello assistant")
+    llm = _make_mock_llm(MockLLMConfig(default_content="hello assistant"))
     messages = [
         ChatMessage(role="user", content="hello"),
     ]
@@ -75,7 +84,7 @@ def test_chat_basic():
 
 def test_chat_multi_turn():
     """T-L-03: 多轮对话：system + user → 返回助手回复。"""
-    llm = _make_mock_llm(default_content="I prefer Python")
+    llm = _make_mock_llm(MockLLMConfig(default_content="I prefer Python"))
     messages = [
         ChatMessage(role="system", content="You are a helpful assistant."),
         ChatMessage(role="user", content="What language do you prefer?"),
@@ -90,7 +99,7 @@ def test_chat_multi_turn():
 
 def test_chat_options_override():
     """T-L-04: options 参数可覆盖默认 temperature / max_tokens。"""
-    llm = _make_mock_llm(default_temperature=0.0, default_max_tokens=4096)
+    llm = _make_mock_llm(MockLLMConfig(default_temperature=0.0, default_max_tokens=4096))
     llm.chat([ChatMessage(role="user", content="test")], temperature=0.7, max_tokens=100)
 
     call_kwargs = llm.client.chat.completions.create.call_args.kwargs
@@ -100,7 +109,7 @@ def test_chat_options_override():
 
 def test_chat_default_params():
     """T-L-05: 无 options 时使用构造参数的默认值。"""
-    llm = _make_mock_llm(default_temperature=0.5, default_max_tokens=2048)
+    llm = _make_mock_llm(MockLLMConfig(default_temperature=0.5, default_max_tokens=2048))
     llm.chat([ChatMessage(role="user", content="test")])
 
     call_kwargs = llm.client.chat.completions.create.call_args.kwargs
@@ -111,7 +120,7 @@ def test_chat_default_params():
 
 def test_generate():
     """T-L-06: generate 单 prompt 便捷方法。"""
-    llm = _make_mock_llm(default_content="generated text")
+    llm = _make_mock_llm(MockLLMConfig(default_content="generated text"))
     result = llm.generate("test prompt")
     assert result == "generated text"
     call_kwargs = llm.client.chat.completions.create.call_args.kwargs

@@ -16,10 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import math
-
-import pytest
 
 from common.base import PluginType
 from common.embedder.base import Embedder
@@ -27,7 +24,6 @@ from common.errors import ConflictError, NotFoundError
 from common.llm.base import LLM
 from common.type_def import (
     MESSAGES_KEY_PREFIX,
-    ChatMessage,
     LifecycleState,
     MemoryTier,
     MemoryUnit,
@@ -464,11 +460,11 @@ class TestEngineInferPersist:
 
         原文落盘在 evolver 内部（_persist_and_maintain_messages），故用真实 OrchestratingEvolver。
         """
-        from common.normalizer.normalizer_impl.passthrough_normalizer import PassthroughNormalizer
-        from ingest.ingestor_impl.simple_ingestor import SimpleIngestor
         from common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
+        from common.normalizer.normalizer_impl.passthrough_normalizer import PassthroughNormalizer
         from construction.extractor_impl.keyword_extractor import KeywordExtractor
         from control.engine_impl.in_memory_engine import InMemoryEngine
+        from ingest.ingestor_impl.simple_ingestor import SimpleIngestor
 
         stores = {"kv": _MemoryKVStore(), "vector": _MemoryVectorStore()}
         dedup = VectorDedup(
@@ -582,7 +578,6 @@ class TestProceduralExtract:
 
         # evolver 用 keyword_extractor（procedural 降级产 1 条原文 PROCEDURAL）
         from common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
-        from common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
         from construction.extractor_impl.keyword_extractor import KeywordExtractor
 
         dedup = VectorDedup(
@@ -699,10 +694,6 @@ class TestProceduralSourceRef:
         """llm_extractor 的 procedural 产出 source_ref 为空（与 keyword 对齐）。"""
         import json as _json
 
-        from common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (
-            KeywordFeatureExtractor,
-        )
-        from common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
         from construction.extractor_impl.llm_extractor import ExtractorImpl
 
         # MockLLM 返回 procedural JSON（content 字段）
@@ -720,7 +711,6 @@ class TestProceduralSourceRef:
 
         extractor = ExtractorImpl(
             llm=_ProcLLM(),
-            feature_extractor=KeywordFeatureExtractor(WhitespaceTokenizer()),
             min_confidence=0.5,
         )
         source = MemoryUnit(

@@ -14,7 +14,8 @@
 | `bootstrap.py` | 统一触发各插件注册（per-layer bootstrap） |
 | `errors.py` | 自定义异常（ConflictError/NotFoundError/PermissionDeniedError/BackendError 等） |
 | `type_def/` | 核心数据类型定义目录 |
-| `type_def/memory.py` | MemoryUnit/Scope/Relation/Segment/Temporal 等；KV key 前缀 `MEMORY_KEY_PREFIX`/`memory_key`（建索引记忆 `/memory/{id}`） |
+| `type_def/memory.py` | MemoryUnit/Scope/Relation/Segment/Temporal/ContentLayers 等；KV key 前缀 `MEMORY_KEY_PREFIX`/`memory_key`（建索引记忆 `/memory/{id}`）。`ContentLayers`(l0/l1) 为分层披露标注，由 LayerAnnotator 对超阈 content 产出 |
+| `type_def/memory_codec.py` | `MemoryUnit` ↔ bytes 编解码（`dumps`/`loads`）；序列化 `layers`({l0,l1})，缺失取空串容错老数据，详见 F01-memory-layer |
 | `type_def/raw.py` | RawPayload；KV key 前缀 `MESSAGES_KEY_PREFIX`/`messages_key`（未建索引 infer 原文 `/messages/{id}`） |
 | `type_def/audit.py` | AuditEvent |
 | `factory/factory.py` | Factory 基类：`TOP_NAME` 注册 + 三接口 `build`/`build_named`/`dep`（配置数据结构 `ComponentConfig`/`AssemblyContext`/`RawSpec` 在 `config/context.py`） |

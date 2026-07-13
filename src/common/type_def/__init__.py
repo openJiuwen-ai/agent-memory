@@ -8,6 +8,7 @@ from .feature import Entity, FeatureSet, Relation
 from .filter import FilterClause, FilterOp
 from .memory import (
     MEMORY_KEY_PREFIX,
+    ContentLayers,
     DedupDecision,
     LifecycleState,
     MemoryTier,
@@ -31,6 +32,7 @@ __all__ = [
     "Temporal",
     "Segment",
     "MemoryUnit",
+    "ContentLayers",
     "RawPayload",
     "Chunk",
     "Entity",

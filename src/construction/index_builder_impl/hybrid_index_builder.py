@@ -26,7 +26,11 @@ logger = get_logger(__name__)
 
 
 class HybridIndexBuilder(IndexBuilder):
-    """同时维护倒排（全文）与向量两套索引——委托给子 builder。"""
+    """同时维护倒排（全文）与向量两套索引——委托给子 builder。
+
+    L0/L1 分层 store 透传给两个子 builder：非 None 时子 builder 会为带 layers 的 unit
+    构建分层索引（写独立 store = 分表）；None 时子 builder 跳过 L0/L1，只走 content。
+    """
 
     def __init__(
         self,
@@ -35,9 +39,17 @@ class HybridIndexBuilder(IndexBuilder):
         kv: KVStore,
         chunker: Chunker,
         embedder: Embedder,
+        fulltext_l0: FulltextStore | None = None,
+        fulltext_l1: FulltextStore | None = None,
+        vector_l0: VectorStore | None = None,
+        vector_l1: VectorStore | None = None,
     ) -> None:
-        self._fulltext_builder = FulltextIndexBuilder(fulltext)
-        self._vector_builder = VectorIndexBuilder(vector, kv, chunker, embedder)
+        self._fulltext_builder = FulltextIndexBuilder(
+            fulltext, fulltext_l0=fulltext_l0, fulltext_l1=fulltext_l1
+        )
+        self._vector_builder = VectorIndexBuilder(
+            vector, kv, chunker, embedder, vector_l0=vector_l0, vector_l1=vector_l1
+        )
 
     def operator_type(self) -> OperatorType:
         return OperatorType.INDEX_BUILDER
@@ -82,10 +94,34 @@ class HybridIndexBuilder(IndexBuilder):
 @IndexBuilderProducer.register("hybrid")
 def _build(config):
     # 全文/向量 Store 与召回侧共享同一实例；embedder 与查询侧共享 → 同一向量空间。
+    # L0/L1 分层索引：layers_index_enabled（默认 true）开时，取 vector_store_l0/l1、
+    # fulltext_store_l0/l1 具名实例（指向不同 collection/index = 分表）注入子 builder；
+    # 具名实例未配置则该层传 None，子 builder 跳过该层（向后兼容 + 配置降级）。
+    layers_enabled = config.get("layers_index_enabled", True)
+
+    def _opt_dep(producer_cls, name):
+        """取具名实例；未配置则返回 None（不报错，子 builder 跳过该层）。
+
+        直接走 ``build_named``（从 ctx.namespaces 按名取具名实例），不走 ``dep``——
+        ``dep`` 从当前组件 params 取字段，而 layers_l0 是 store 命名空间下的具名实例名，
+        不在 index_builder 的 params 里。
+        """
+        if not layers_enabled:
+            return None
+        ctx = config.ctx
+        ns = ctx.namespaces.get(producer_cls.TOP_NAME, {})
+        if name not in ns:
+            return None  # 该层具名实例未声明，跳过
+        return producer_cls.build_named(name, ctx)
+
     return HybridIndexBuilder(
         FulltextProducer.dep(config, default="memory"),
         VectorProducer.dep(config, default="memory"),
         KvProducer.dep(config, default="memory"),
         ChunkerProducer.dep(config, default="fixed_window"),
         EmbedderProducer.dep(config, default="hashing"),
+        fulltext_l0=_opt_dep(FulltextProducer, "layers_l0"),
+        fulltext_l1=_opt_dep(FulltextProducer, "layers_l1"),
+        vector_l0=_opt_dep(VectorProducer, "layers_l0"),
+        vector_l1=_opt_dep(VectorProducer, "layers_l1"),
     )

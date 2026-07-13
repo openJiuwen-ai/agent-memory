@@ -85,6 +85,14 @@ class Segment:
 
 
 @dataclass
+class ContentLayers:
+    """architecture §9.1 分层披露标注的承载结构。"""
+
+    l0: str = ""  # 概要，50-100 字，供紧预算注入/快速浏览
+    l1: str = ""  # 片段/要点，200-500 字，供上下文增强
+
+
+@dataclass
 class MemoryUnit:
     """一条记忆：多段内容投影 + 归属/时间/血缘/生命周期。
 
@@ -98,6 +106,7 @@ class MemoryUnit:
     id: str = ""  # 全局唯一 id（每条记忆/每个版本各一）
     scope: Scope = field(default_factory=Scope)  # 归属（隔离与共享的依据，unit 级单一 owner）
     tier: MemoryTier = MemoryTier.EPISODIC  # 认知角色分类
+    layers: ContentLayers = field(default_factory=ContentLayers)
     segments: list[Segment] = field(default_factory=list)  # 多段内容投影（每段含 content+assets+source）
     source_ref: str = ""  # 来源引用（RawPayload id / 会话 id 等，可溯源）
     temporal: Temporal = field(default_factory=Temporal)  # 双时间

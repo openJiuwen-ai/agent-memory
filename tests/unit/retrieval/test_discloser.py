@@ -29,9 +29,9 @@ def test_l0_truncates_and_l2_returns_full_content(unit_factory) -> None:
     l2 = discloser.disclose(ParsedQuery(raw="x"), candidates, units, DisclosureLevel.L2)[0]
     l0 = discloser.disclose(ParsedQuery(raw="x"), candidates, units, DisclosureLevel.L0)[0]
 
-    assert l2.content == content
-    assert len(l0.content) < len(l2.content)
-    assert l0.content.endswith("…")
+    assert l2.content == content  # L2 全文
+    assert len(l0.abstract) < len(l2.content)  # L0 摘要比全文短
+    assert l0.abstract.endswith("…")
 
 
 def test_l1_returns_window_around_keyword(unit_factory) -> None:
@@ -44,8 +44,8 @@ def test_l1_returns_window_around_keyword(unit_factory) -> None:
         ParsedQuery(raw="coffee", keywords=["coffee"]), candidates, {"u1": unit}, DisclosureLevel.L1
     )[0]
 
-    assert "coffee" in item.content
-    assert len(item.content) < len(content)
+    assert "coffee" in item.overview
+    assert len(item.overview) < len(content)
 
 
 def test_skips_candidate_without_loaded_unit() -> None:
@@ -71,7 +71,7 @@ def test_truncating_adaptive_falls_back_to_l0(unit_factory) -> None:
     )[0]
 
     assert item.level == DisclosureLevel.L0
-    assert item.content.endswith("…")
+    assert item.abstract.endswith("…")
 
 
 def test_structured_l0_returns_memory_card(unit_factory) -> None:
@@ -102,11 +102,11 @@ def test_structured_l0_returns_memory_card(unit_factory) -> None:
         DisclosureLevel.L0,
     )[0]
 
-    assert "[summary] packages/foo 使用 pnpm 作为包管理器。" in item.content
-    assert "[why] keyword(rank=1,score=0.9,weight=2,contribution=0.2)" in item.content
-    assert "[scope] org=acme user=u1 agent=a1 session=s1" in item.content
-    assert "[tags] repo" in item.content
-    assert "[lifecycle] active" in item.content
+    assert "[summary] packages/foo 使用 pnpm 作为包管理器。" in item.abstract
+    assert "[why] keyword(rank=1,score=0.9,weight=2,contribution=0.2)" in item.abstract
+    assert "[scope] org=acme user=u1 agent=a1 session=s1" in item.abstract
+    assert "[tags] repo" in item.abstract
+    assert "[lifecycle] active" in item.abstract
 
 
 def test_structured_l1_returns_query_focused_evidence(unit_factory) -> None:
@@ -128,10 +128,10 @@ def test_structured_l1_returns_query_focused_evidence(unit_factory) -> None:
     )[0]
 
     assert item.level == DisclosureLevel.L1
-    assert "[evidence]" in item.content
-    assert "packages/foo package manager is pnpm" in item.content
-    assert "[matched] pnpm, package" in item.content
-    evidence = [line for line in item.content.splitlines() if line.startswith("[evidence]")][0]
+    assert "[evidence]" in item.overview
+    assert "packages/foo package manager is pnpm" in item.overview
+    assert "[matched] pnpm, package" in item.overview
+    evidence = [line for line in item.overview.splitlines() if line.startswith("[evidence]")][0]
     assert "root workspace uses npm" not in evidence
 
 
@@ -148,8 +148,8 @@ def test_structured_l1_falls_back_to_l0_without_keyword_hit(unit_factory) -> Non
     )[0]
 
     assert item.level == DisclosureLevel.L1
-    assert "[summary] alice likes coffee in the morning" in item.content
-    assert "[evidence]" not in item.content
+    assert "[summary] alice likes coffee in the morning" in item.overview
+    assert "[evidence]" not in item.overview
 
 
 def test_structured_l2_returns_full_content_with_header(unit_factory) -> None:
@@ -206,7 +206,7 @@ def test_structured_adaptive_upgrades_items_to_l1_with_budget(unit_factory) -> N
     )
 
     assert [item.level for item in items] == [DisclosureLevel.L1, DisclosureLevel.L1]
-    assert all("[evidence]" in item.content for item in items)
+    assert all("[evidence]" in item.overview for item in items)
 
 
 def test_structured_adaptive_upgrades_top_hit_to_l2_when_confident(unit_factory) -> None:

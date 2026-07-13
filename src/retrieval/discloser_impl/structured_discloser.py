@@ -27,8 +27,9 @@ class _DisclosureVariant:
 class StructuredDiscloser(Discloser):
     """L0 记忆卡片 / L1 证据片段 / L2 全文。
 
-    输出仍复用 ``RetrievedItem.content`` 的文本字段，避免扩大 API 改造范围；
-    内容采用稳定的行格式，便于 Agent 读取，也便于后续迁移为结构化字段。
+    三层级一次性填充 ``RetrievedItem`` 的 ``abstract``(L0) / ``overview``(L1) / ``content``(L2)，
+    ``level`` 标本次披露主层级。内容采用稳定的行格式，便于 Agent 读取。
+    优先用预生成 ``unit.layers.l0``/``.l1``，空则回退到规则渲染（卡片/证据片段）。
     """
 
     def operator_type(self) -> RetrievalOperatorType:
@@ -54,12 +55,16 @@ class StructuredDiscloser(Discloser):
             unit = units.get(su.unit_id)
             if unit is None:
                 continue
-            content, _ = self._render(su, unit, level, keywords)
+            abstract, _ = self._render(su, unit, DisclosureLevel.L0, keywords)
+            overview, _ = self._render(su, unit, DisclosureLevel.L1, keywords)
+            full, _ = self._render(su, unit, DisclosureLevel.L2, keywords)
             items.append(
                 RetrievedItem(
                     unit_id=unit.id,
                     score=su.score,
-                    content=content,
+                    abstract=abstract,
+                    overview=overview,
+                    content=full,
                     level=level,
                 )
             )
@@ -96,11 +101,17 @@ class StructuredDiscloser(Discloser):
         for idx, variant in enumerate(variants):
             requested_level = selected_levels[idx]
             actual_level = variant.actual_level_by_level[requested_level]
+            # 三层一次性填充：abstract=L0、overview=L1、content=L2（全文）
+            abstract = variant.content_by_level[DisclosureLevel.L0]
+            overview = variant.content_by_level[DisclosureLevel.L1]
+            full = variant.content_by_level[DisclosureLevel.L2]
             items.append(
                 RetrievedItem(
                     unit_id=variant.unit.id,
                     score=variant.scored.score,
-                    content=variant.content_by_level[requested_level],
+                    abstract=abstract,
+                    overview=overview,
+                    content=full,
                     level=actual_level,
                 )
             )
@@ -165,6 +176,9 @@ class StructuredDiscloser(Discloser):
         if level == DisclosureLevel.L2:
             return "[full]\n" + unit.content, DisclosureLevel.L2
         if level == DisclosureLevel.L1:
+            # 优先预生成 l1；空则回退证据片段渲染
+            if unit.layers.l1:
+                return f"[overview]\n{unit.layers.l1}", DisclosureLevel.L1
             snippet, matched = self._best_snippet(unit.content, keywords)
             if snippet:
                 return (
@@ -178,6 +192,9 @@ class StructuredDiscloser(Discloser):
                     ),
                     DisclosureLevel.L1,
                 )
+        # L0：优先预生成 l0；空则回退卡片渲染
+        if unit.layers.l0:
+            return f"[abstract]\n{unit.layers.l0}", DisclosureLevel.L0
         return self._l0_card(scored, unit), DisclosureLevel.L0
 
     def _l0_card(self, scored: ScoredUnit, unit: MemoryUnit) -> str:

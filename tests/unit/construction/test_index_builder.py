@@ -6,19 +6,25 @@
 
 import json
 
+from common.bootstrap import register_plugins
+from common.factory.factory import Factory
 from common.type_def import (
     Scope,
 )
+from config.context import AssemblyContext
+from construction.bootstrap import register_constructors
+from construction.index_builder import IndexBuilderProducer
 from construction.index_builder_impl.fulltext_index_builder import FulltextIndexBuilder
 from construction.index_builder_impl.vector_index_builder import VectorIndexBuilder
 from construction.index_builder_impl.hybrid_index_builder import HybridIndexBuilder
+from storage.bootstrap import register_backends
+from storage.types import TextQuery, VectorQuery
 
 from tests.unit.construction.fixtures import (
     create_test_stores,
     create_test_plugins,
     create_test_unit,
 )
-from storage.types import TextQuery, VectorQuery
 
 
 # ---------------------------------------------------------------------------
@@ -349,3 +355,149 @@ def test_scope_isolation():
     # scope1 搜索 Java 应不返回 bob 的 unit
     hits3 = stores["fulltext"].search(scope1, TextQuery(text="Java", top_k=10))
     assert not any(h.id == "u2" for h in hits3)
+
+
+# ---------------------------------------------------------------------------
+# T-I-13/T-I-14: 工厂级分层索引注入（回归防护）
+#
+# fulltext/vector 工厂的 _build 必须按 layers_index_enabled + layers_l0/l1 具名
+# 实例注入分层 store——否则用户未用 hybrid 模式时，分层索引静默失效（即便
+# defaults 已配 layers_l0/l1 分表）。与 HybridIndexBuilder._build 行为对齐。
+# ---------------------------------------------------------------------------
+
+
+def _bootstrap_factories():
+    """触发 store + 构造器注册，并返回重置句柄。"""
+    register_plugins()
+    register_backends()
+    register_constructors()
+    Factory.reset_all()
+    return Factory.reset_all
+
+
+def _layered_ctx():
+    """layers_index_enabled=True 且 store 命名空间下声明 layers_l0/l1 具名实例。"""
+    return AssemblyContext.from_dict(
+        {
+            # store 命名空间（_opt_dep 按 VectorProducer/FulltextProducer.TOP_NAME 查这里）
+            "vector_store": {
+                "shared": {"target": "memory"},
+                "layers_l0": {"target": "memory"},
+                "layers_l1": {"target": "memory"},
+            },
+            "fulltext_store": {
+                "shared": {"target": "memory"},
+                "layers_l0": {"target": "memory"},
+                "layers_l1": {"target": "memory"},
+            },
+            "kv_store": {"shared": {"target": "memory"}},
+            # 构造器命名空间（IndexBuilderProducer.TOP_NAME == "constructor"）
+            "constructor": {
+                "fb": {
+                    "target": "fulltext",
+                    "params": {
+                        "fulltext_store": "shared",
+                        "layers_index_enabled": True,
+                    },
+                },
+                "vb": {
+                    "target": "vector",
+                    "params": {
+                        "vector_store": "shared",
+                        "kv_store": "shared",
+                        "layers_index_enabled": True,
+                    },
+                },
+            },
+        }
+    )
+
+
+def test_fulltext_factory_injects_layer_stores():
+    """fulltext 工厂按 layers_l0/l1 具名实例注入分层 store（非 None）。"""
+    teardown = _bootstrap_factories()
+    try:
+        ctx = _layered_ctx()
+        builder = IndexBuilderProducer.build_named("fb", ctx)
+        assert builder.fulltext_l0 is not None, "fulltext 工厂未注入 layers_l0 store"
+        assert builder.fulltext_l1 is not None, "fulltext 工厂未注入 layers_l1 store"
+    finally:
+        teardown()
+
+
+def test_vector_factory_injects_layer_stores():
+    """vector 工厂按 layers_l0/l1 具名实例注入分层 store（非 None）。"""
+    teardown = _bootstrap_factories()
+    try:
+        ctx = _layered_ctx()
+        builder = IndexBuilderProducer.build_named("vb", ctx)
+        assert builder.vector_l0 is not None, "vector 工厂未注入 layers_l0 store"
+        assert builder.vector_l1 is not None, "vector 工厂未注入 layers_l1 store"
+    finally:
+        teardown()
+
+
+def test_fulltext_factory_skips_layers_when_disabled():
+    """layers_index_enabled=False → 分层 store 为 None（向后兼容 + 配置降级）。"""
+    teardown = _bootstrap_factories()
+    try:
+        ctx = _layered_ctx()
+        # 关掉分层开关：即便 namespace 声明了 layers_l0/l1，也不注入
+        ctx.namespaces["constructor"]["fb"].params["layers_index_enabled"] = False
+        builder = IndexBuilderProducer.build_named("fb", ctx)
+        assert builder.fulltext_l0 is None
+        assert builder.fulltext_l1 is None
+    finally:
+        teardown()
+
+
+# ---------------------------------------------------------------------------
+# T-I-15: content 切不出 chunk 时仍建 L0/L1 分层索引（回归防护）
+#
+# build() 的 ``if not all_records: return`` 提前返回曾位于 _build_layers 调用之前，
+# 导致所有 unit content 为空（chunker 返空）→ all_records 空 → _build_layers 永不执行，
+# 即使 unit.layers.l0/l1 非空也不建分层索引。修复后 _build_layers 移到提前返回之前。
+# ---------------------------------------------------------------------------
+
+
+def test_build_layers_runs_even_when_no_content_chunks():
+    """content 全空（无 chunk）但 layers.l0/l1 非空 → 分层 store 仍应有 L0/L1 record。"""
+    from common.type_def import ContentLayers, MemoryUnit, Modality, Segment
+    from tests.unit.construction.fixtures import MemoryVectorStore
+
+    scope = Scope(org="test", user="alice")
+    # content 空（Segment 内容空 → chunker 返空 → 无 chunk record）但 layers 非空
+    unit = MemoryUnit(
+        id="u1",
+        scope=scope,
+        segments=[Segment(content="", source=Modality.TEXT)],
+        layers=ContentLayers(l0="用户偏好 Python 的概要", l1="用户偏好 Python 的要点片段"),
+    )
+
+    vector_l0 = MemoryVectorStore()
+    vector_l1 = MemoryVectorStore()
+    content_store = MemoryVectorStore()
+    stores = create_test_stores()
+    plugins = create_test_plugins()
+    builder = VectorIndexBuilder(
+        vector_store=content_store,
+        kv_store=stores["kv"],
+        chunker=plugins["chunker"],
+        embedder=plugins["embedder"],
+        vector_l0=vector_l0,
+        vector_l1=vector_l1,
+    )
+
+    builder.build([unit])
+
+    # content 表无 chunk record（空 content → chunker 返空）
+    assert content_store.get(scope, []) == []
+
+    # L0/L1 分层 store 应有对应 record（_build_layers 在提前返回之前执行）
+    l0_records = vector_l0.get(scope, ["u1-layer-l0"])
+    assert len(l0_records) == 1, "L0 分层索引未构建：content 无 chunk 时 _build_layers 应仍执行"
+    assert l0_records[0].metadata.get("content_layer") == "l0"
+
+    l1_records = vector_l1.get(scope, ["u1-layer-l1"])
+    assert len(l1_records) == 1, "L1 分层索引未构建：content 无 chunk 时 _build_layers 应仍执行"
+    assert l1_records[0].metadata.get("content_layer") == "l1"

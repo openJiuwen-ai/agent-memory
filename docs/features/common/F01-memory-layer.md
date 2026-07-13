@@ -4,9 +4,9 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-07-07 |
-| 影响范围 | src/common/type_def/, src/construction/, src/control/, src/retrieval/, docs/specs/S02-memory-api.md, docs/specs/S03-memory-manage.md, docs/specs/S04-retrieval.md, docs/specs/S05-construction.md, docs/specs/S07-common.md |
-| 测试基线 | 待实现后运行 pytest |
+| 日期 | 2026-07-07（初版）/ 2026-07-03（落地修订） |
+| 影响范围 | src/common/type_def/memory.py、src/common/type_def/memory_codec.py、src/construction/layer_annotator.py、src/construction/layer_annotator_impl/、src/construction/evolver_impl/orchestrating_evolver.py、src/construction/index_builder_impl/、src/construction/base.py、src/construction/bootstrap.py、docs/specs/S05-construction.md、docs/specs/S07-common.md |
+| 测试基线 | `tests/unit/construction/test_layer_annotator.py`（10 passed）、`tests/unit/construction/test_layers_index.py`（10 passed）、全量 `tests/` 426 passed / 54 skipped |
 | Refs | — |
 
 ## 背景
@@ -19,14 +19,9 @@ architecture §4 定义了长时记忆的纵向抽象分层：低抽象事实/�
 - **横向内容层**：同一条 `MemoryUnit` 的不同压缩度，L0/L1 是构建阶段生成的预标注内容，L2 是全文。
 - **分层索引/召回**：索引层是否把 L0/L1/L2 都作为可检索对象，以及检索策略是否使用这些层级。
 
-当前实现只具备输出概念，不具备持久内容层，也没有让 L0/L1 进入索引构建：
+落地前的状态（已克服）：`MemoryUnit` 只有 `segments`/`content` 合并视图，L0/L1 不在数据结构中；构建管线不产出 L0/L1；索引只基于 `unit.content`。
 
-1. `MemoryUnit` 只有 `segments` 和 `content` 合并视图，L0/L1 不存在于数据结构中。
-2. `DisclosureLevel` 只在检索输出端生效，`TruncatingDiscloser` / `StructuredDiscloser` 临时截断或渲染 L0/L1。
-3. 构建管线不产出 L0/L1。`Classifier` 只分类，`Extractor` / `Abstractor` 产出新的 `MemoryUnit`，不是给已有 unit 做摘要/片段标注。
-4. 当前索引构建只基于 `unit.content`：向量索引切 `unit.content` chunk，全文索引写 `unit.content`。L0/L1 没有索引记录，也不会影响召回候选。
-
-本特性落地 **MemoryUnit 内建内容层 + 构建层标注 + 层级索引记录 + 披露端消费**。纵向抽象级别仍不在本特性中建模。
+本特性已落地 **MemoryUnit 内建内容层 + 构建层标注 + 层级索引记录**，召回/披露端消费尚未接入（见已知遗留）。纵向抽象级别不在本特性中建模。
 
 ## 决策
 
@@ -87,53 +82,58 @@ LLM 版策略：
 
 失败策略：
 
-- `LayerAnnotator` 是 best effort。单条标注失败不得阻断 write/update/evolve。
+- `LayerAnnotator` 是 best effort。单条/单批标注失败不得阻断 write/update/evolve。
 - 失败时保留或写入空 `ContentLayers()`，由检索端 fallback。
 - LLM 标注失败记录日志/轨迹，不影响派生 unit 落盘。
 
+阈值筛选（落地补充）：
+
+- `LayerAnnotator` 按 `layer_annotator_threshold`（默认 512）筛选：仅对
+  `len(content) > threshold` 的 unit 标注，短 content 留空（不调 LLM、不硬凑摘要）。
+  避免海量短记忆都调 LLM 的成本。规则版与 LLM 版共用此筛选。
+
+调用时机（落地补充）：
+
+- 当前由 `OrchestratingEvolver` 在 EXTRACT/CONSOLIDATE 抽取（升华）后、去重落盘前
+  调用 `LayerAnnotator.annotate`（`_annotate_layers`），保证落盘的派生 unit 带 layers。
+- `layer_annotator` 经 `LayerAnnotatorProducer` 注入；未配置则 evolver 跳过标注（向后兼容）。
+- Engine.write 默认路径（原始 unit）未接 LayerAnnotator——原始 unit 无 layers。后续如需
+  原始 unit 也分层，再接 write 路径。
+
 ### 3. L0/L1 生成时机
 
-#### Engine.write 默认路径
+#### Evolve EXTRACT / CONSOLIDATE 路径（已落地）
 
-标注在分类之后、落盘和索引之前：
-
-```text
-Ingestor.ingest
-→ Classifier.classify
-→ LayerAnnotator.annotate
-→ KVStore.insert
-→ IndexBuilder.build
-```
-
-这样真源中的 `MemoryUnit` 已经带 L0/L1，后续索引构建可从同一对象读取层级内容。
-
-#### Engine.write infer=true 路径
-
-原始 unit 仍先标注再落盘。infer=true 下原始 unit 不建索引，派生 unit 由 Evolver 产出并负责标注：
-
-```text
-Ingestor.ingest
-→ Classifier.classify
-→ LayerAnnotator.annotate(originals)
-→ KVStore.insert(originals, unindexed)
-→ Evolver.evolve(EXTRACT)
-```
-
-#### Evolve EXTRACT / CONSOLIDATE 路径
-
-派生 unit 必须在持久化和建索引之前完成标注：
+派生 unit 在持久化和建索引之前完成标注：
 
 ```text
 Extractor.extract / Abstractor.abstract
-→ LayerAnnotator.annotate(derived)
+→ LayerAnnotator.annotate(derived)        # _annotate_layers，best effort
 → Dedup / persist decision
 → KVStore.insert or update
 → IndexBuilder.build or update
 ```
 
-现有 `OrchestratingEvolver._persist` 是 `KVStore.insert` 后立即 `IndexBuilder.build`。因此实现时不能采用"先落盘建索引，再标注写回"的顺序，否则索引 metadata 中的 `l0/l1` 会与真源不一致。
+`OrchestratingEvolver._persist` 是 `KVStore.insert` 后立即 `IndexBuilder.build`，故标注必须在
+`_dedup_batch` 之前完成，否则索引 metadata 中的 `l0/l1` 会与真源不一致。当前实现：procedural
+与非 procedural 的 EXTRACT 路径、CONSOLIDATE 路径均在抽取（升华）后立即调 `_annotate_layers`。
 
-### 4. update/delete 对 layers 的影响
+#### Engine.write 默认 / infer=true 路径（未落地）
+
+蓝图规划原始 unit 在分类后、落盘前标注：
+
+```text
+Ingestor.ingest → Classifier.classify → LayerAnnotator.annotate → KVStore.insert → IndexBuilder.build
+```
+
+当前未接 Engine.write 路径——原始 unit 无 layers。infer=true 下原始 unit 落 `/messages/`
+（不建索引），派生 unit 由 Evolver 产出并标注（已落地，见上）。后续如需原始 unit 也分层，再接 write 路径。
+
+### 4. update/delete 对 layers 的影响（未落地）
+
+> 以下为规划，当前 LayerAnnotator 只在 evolver 抽取后调用，未接 update 路径，
+> 故 update 不会自动重标注（layers 随 SUPERSEDE/OVERWRITE 的版本语义自然继承/清空）。
+> 后续接 write/update 路径时再实现。
 
 #### update
 
@@ -189,6 +189,14 @@ L0/L1 记录 id 可使用稳定格式：
 
 L2 chunk 记录保留现有 `{unit.id}-{chunk.id}` 格式，并补充 `content_layer="l2"`。
 
+**分表与 store 注入（落地补充）**：L0/L1 不与 content 混表——`VectorIndexBuilder`/
+`FulltextIndexBuilder` 构造增 `vector_l0`/`vector_l1`/`fulltext_l0`/`fulltext_l1` 四个可选
+store（默认 None），L0/L1 record 写独立 store 实例（不同 collection/index = 分表）。store 为
+None 则该层跳过（不报错、不建空记录）。`layers_index_enabled`（globals）+ 具名实例
+（`vector_store.layers_l0/l1`、`fulltext_store.layers_l0/l1`）控制。L0/L1 不切片（整段 embed），
+一条 unit 在 L0/L1 表各最多一条。update 先删旧分层 record 再按新 layers 重建（SUPERSEDE 不残留），
+remove 按 id 幂等删。
+
 #### 全文索引
 
 全文索引同样写入层级文档：
@@ -212,44 +220,131 @@ source
 
 为了兼容现有全文索引删除/update 逻辑，实现可短期保留旧 `unit.id` 作为 L2 文档 id，但必须在 metadata 中写 `content_layer="l2"`。
 
-#### 召回聚合
+#### 召回聚合（已实施）
 
-当前 Recaller 聚合到 `unit_id` 的行为保留：命中 L0/L1/L2 任一层后，都折叠成同一条 `ScoredUnit(unit_id=...)`。`ChannelEvidence` 应携带命中层级，至少在 metadata 中保留 `content_layer`，便于后续调试和披露策略使用。
+Recaller 聚合到 `unit_id` 的行为保留，命中 L0/L1/L2 任一层后都折叠成同一条
+`ScoredUnit(unit_id=...)`，多路多层级命中经 Fuser RRF 聚合到 unit 粒度（同通道取 MaxP，
+跨通道 RRF 累加）。详见 §6 检索层分层召回。
 
 本特性要求 L0/L1 **参与构建和召回候选生成**，但最终返回仍以 `MemoryUnit` 为单位，由 UnitReader 点读真源后进入 recheck/rerank/disclose。
 
-### 6. 检索层 Discloser 读层
+### 6. 检索层 L0/L1 分层召回 + 三层披露（已实施）
 
-召回候选聚合到 unit 后，披露阶段按请求层级读取 `unit.layers` / `unit.content`。
+> 状态：已实施（2026-07）。复用 vector/keyword recaller 加 `layer` 参数查 L0/L1 分表，
+> RetrievedItem 三层一次性填充（abstract/overview/content）。经 `extractor_demo.py` 验证：
+> 6 路（content/L0/L1 × vector/keyword）并行召回 + RRF 融合 + 三层披露全链路生效。
 
-`TruncatingDiscloser`：
+#### 6.1 召回侧：recaller 加 layer 参数 + 分表 store（已实施）
+
+**不新建独立 recaller 类**——复用 `VectorRecaller`/`KeywordRecaller` 加 `layer` 参数
+（默认 "l2"=content，可 "l0"/"l1"），注入对应分表 store（vector_store.layers_l0/l1、
+fulltext_store.layers_l0/l1），**store 为 None 时 recall 返空**（该层未注入，向后兼容）。
+
+- `VectorRecaller.__init__(vector_store, min_similarity, layer)`；`KeywordRecaller.__init__(fulltext, layer)`。
+- 注册具名实例：`vector`/`vector_l0`/`vector_l1`、`keyword`/`keyword_l0`/`keyword_l1`。
+- **不新增 RecallChannel**：L0/L1 复用 VECTOR/KEYWORD 通道——同通道不同层级，
+  Fuser 按 unit_id 聚合（同 unit 被 content/L0/L1 多路命中取 RRF 累加）。
+- `PipelineRetriever._build` 按 `layers_index_enabled`（回退 globals）接入 L0/L1 recaller。
+- `layers_index_enabled` 开时（demo config 设 true）→ 6 路并行召回；关时（默认）→ 3 路（content/keyword/graph）。
+
+**store 为 None 降级**：recaller recall 返空，不报错、不影响其他层级/通道。未配 L0/L1
+退化为现状（向后兼容）。
+
+#### 6.2 披露侧：RetrievedItem 三层一次性填充（已实施）
+
+`RetrievedItem` 加 `abstract`(L0)/`overview`(L1) 字段，`content` 对应 L2 全文——三层
+一次性填充，调用方按需取用：
 
 ```python
-def _content(self, unit: MemoryUnit, level: DisclosureLevel, keywords: list[str]) -> str:
-    if level == DisclosureLevel.L2:
-        return unit.content
-    if level == DisclosureLevel.L0:
-        return unit.layers.l0 or self._fallback_l0(unit, keywords)
-    if level == DisclosureLevel.L1:
-        return unit.layers.l1 or self._fallback_l1(unit, keywords)
+@dataclass
+class RetrievedItem:
+    unit_id: str = ""
+    score: float = 0.0
+    abstract: str = ""   # L0 摘要（unit.layers.l0，50-100 字）
+    overview: str = ""   # L1 片段（unit.layers.l1，200-500 字）
+    content: str = ""    # L2 全文（unit.content）
+    level: DisclosureLevel = DisclosureLevel.L0  # 本次披露主层级
 ```
 
-`StructuredDiscloser`：
+`TruncatingDiscloser._l0`/`_l1` 优先用 `unit.layers.l0/l1`（空则截断/取窗兜底）；
+`StructuredDiscloser._render` L0/L1 优先用 layers（空则卡片/证据片段兜底）。disclose 时
+三层都填，`level` 标本次主层级（ADAPTIVE 按 max_tokens 选 L0/L1/L2）。
 
-- `_summary()` 优先读 `unit.layers.l0`，再读 `metadata["summary"]`，最后回退首句/截断。
-- `_best_snippet()` 优先读 `unit.layers.l1`；使用 layers 时 `matched=[]`，`[matched]` 可显示 `-`。
-- ADAPTIVE 预算选择逻辑不变，只是选中层级后优先读 layers。
+**降级兜底**：layers 为空（未跑 LayerAnnotator）回退原截断/卡片逻辑——向后兼容。
 
-`FilterClause` 不扩展 layers 过滤。L0/L1 是内容披露字段，不是结构化筛选维度。
+#### 6.3 多路融合
 
-### 7. 序列化兼容
+```
+query → query_parser → ParsedQuery
+  ↓
+并行召回（每层级 store 非空才参与，layers_index_enabled 开时）：
+  ├─ VectorRecaller vector（content L2 chunk）
+  ├─ VectorRecaller vector_l0（L0 整段，store 非空时）
+  ├─ VectorRecaller vector_l1（L1 整段，store 非空时）
+  ├─ KeywordRecaller keyword（content L2）
+  ├─ KeywordRecaller keyword_l0（L0，store 非空时）
+  ├─ KeywordRecaller keyword_l1（L1，store 非空时）
+  └─ GraphRecaller（GRAPH）
+  ↓
+Fuser RRF 融合（同 unit_id 多路多层级命中聚合——同通道取 MaxP，跨通道 RRF 累加）
+  ↓
+UnitReader 点读 KV → Discloser 三层披露（用预生成 l0/l1 + content 全文）
+  ↓
+RetrievedItem（abstract/overview/content + level）
+```
 
-`memory_codec` 升级到 V3：
+**去重**：同一 unit 被 content/L0/L1 多路命中，Fuser 聚合到 unit 粒度（融合后按 unit_id
+全局唯一一条 ScoredUnit，取融合分 + 全部 evidence）。多路共识的 unit 排名靠前。
 
-- `_v = 3`
-- 新增字段：`layers: {"l0": str, "l1": str}`
-- 读取 V2 或更老数据时，缺 `layers` 默认 `ContentLayers(l0="", l1="")`
-- 未知字段继续忽略，保持向前兼容
+#### 6.4 装配配置
+
+```python
+# defaults.py
+"vector_store": {_D: "memory", "layers_l0": "memory", "layers_l1": "memory"},  # L0/L1 分表
+"fulltext_store": {_D: {...}, "layers_l0": {...}, "layers_l1": {...}},
+"recaller": {
+    "keyword": {...}, "keyword_l0": {"target": "keyword_l0"}, "keyword_l1": {"target": "keyword_l1"},
+    "vector": {...}, "vector_l0": {"target": "vector_l0"}, "vector_l1": {"target": "vector_l1"},
+    "graph": {...},
+},
+"retriever": {
+    _D: {
+        "params": {
+            "keyword_recaller": "keyword", "vector_recaller": "vector", "graph_recaller": "graph",
+            # L0/L1 分层召回开关：回退 globals.layers_index_enabled（demo config 设 true 启用）
+            "keyword_l0_recaller": "keyword_l0", "keyword_l1_recaller": "keyword_l1",
+            "vector_l0_recaller": "vector_l0", "vector_l1_recaller": "vector_l1",
+            ...
+        },
+    },
+},
+```
+
+构建侧 `constructor`（HybridIndexBuilder）经 `_opt_dep(VectorProducer, "layers_l0/l1")`
+取具名实例注入——`layers_index_enabled`（默认 true）开且 layers 非空才建 L0/L1 分表。
+
+#### 6.5 接口变更
+
+| 组件 | 变更 |
+|---|---|
+| `retrieval/types.py` | `RetrievedItem` 加 `abstract`/`overview` 字段（content 对应 L2） |
+| `retrieval/recaller_impl/vector_recaller.py` | `VectorRecaller` 加 `layer` 参数；注册 `vector_l0`/`vector_l1` |
+| `retrieval/recaller_impl/keyword_recaller.py` | `KeywordRecaller` 加 `layer` 参数；注册 `keyword_l0`/`keyword_l1` |
+| `retrieval/retriever_impl/pipeline_retriever.py` | `_build` 按 `layers_index_enabled` 接入 L0/L1 recaller |
+| `retrieval/discloser_impl/*.py` | 优先用 `unit.layers.l0/l1`，空则兜底；RetrievedItem 三层填充 |
+| `config/defaults.py` | 加 vector_store/fulltext_store.layers_l0/l1、recaller 具名实例、retriever 接入 |
+| `construction/index_builder_impl/*` | 无改动（已支持分表） |
+
+**核心**：不新建 recaller 类，复用加 layer 参数；RecallChannel 不扩；pipeline_retriever 只加
+接入逻辑。改动面最小。`RecallChannel` 复用 VECTOR/KEYWORD——同通道不同层级，Fuser 按 unit_id 聚合。
+
+### 7. 序列化兼容（已落地）
+
+`memory_codec` 沿用 `_v=2` + 新增 `layers` 字段（加字段是兼容演进，老数据缺省读出，不升版本，见 S07）：
+
+- `dumps` 写入 `"layers": {"l0": str, "l1": str}`。
+- `loads` 读回构造 `ContentLayers`，缺失取空串（老数据无迁移读出）。
+- 未知字段继续忽略，保持向前兼容。
 
 ## 后续扩展：层级展开
 
@@ -280,27 +375,41 @@ def _content(self, unit: MemoryUnit, level: DisclosureLevel, keywords: list[str]
 
 ## 验证
 
-- [ ] `ContentLayers` 定义在 `common/type_def/memory.py`
-- [ ] `MemoryUnit` 新增 `layers: ContentLayers`
-- [ ] `memory_codec` V3 序列化/反序列化包含 layers，V2 数据默认空 layers
-- [ ] `LayerAnnotator` 接口和 Producer 注册
-- [ ] `KeywordLayerAnnotator` 标注 L0/L1，失败不阻断
-- [ ] `LLMLayerAnnotator` 标注 L0/L1，LLM 失败回退空 layers
-- [ ] Engine.write 默认路径在 KVStore.insert / IndexBuilder.build 前完成标注
-- [ ] infer=true 原始 unit 标注后落盘，派生 unit 标注后再持久化/建索引
-- [ ] Evolver EXTRACT / CONSOLIDATE 派生 unit 在 `_persist` 前完成标注
-- [ ] Engine.update 在 content/tags 变化时重新标注
-- [ ] delete/lifecycle 转换不修改 layers，PURGE 删除真源与索引
-- [ ] VectorIndexBuilder 为 L0/L1/L2 建层级记录，metadata 含 `content_layer`
-- [ ] FulltextIndexBuilder 为 L0/L1/L2 建层级文档，metadata 含 `content_layer`
-- [ ] Recaller 聚合层级命中到 `unit_id`，并在 evidence/metadata 中保留命中层级
-- [ ] TruncatingDiscloser 优先读 layers，空值回退原截断逻辑
-- [ ] StructuredDiscloser 优先读 layers，空值回退原结构化逻辑
-- [ ] specs 同步更新 S02/S03/S04/S05/S07
+- [x] `ContentLayers` 定义在 `common/type_def/memory.py`
+- [x] `MemoryUnit` 新增 `layers: ContentLayers`
+- [x] `memory_codec` 序列化/反序列化包含 layers，老数据默认空 layers（沿用 `_v=2`）
+- [x] `LayerAnnotator` 接口和 Producer 注册（`construction/layer_annotator.py`）
+- [x] `KeywordLayerAnnotator` 标注 L0/L1，失败不阻断（按阈值筛选）
+- [x] `LLMLayerAnnotator` 标注 L0/L1，LLM 失败回退空 layers（按阈值筛选）
+- [ ] Engine.write 默认路径在 KVStore.insert / IndexBuilder.build 前完成标注（未落地）
+- [ ] infer=true 原始 unit 标注后落盘（未落地；派生 unit 标注已落地）
+- [x] Evolver EXTRACT / CONSOLIDATE 派生 unit 在去重落盘前完成标注（`_annotate_layers`）
+- [ ] Engine.update 在 content/tags 变化时重新标注（未落地）
+- [ ] delete/lifecycle 转换不修改 layers，PURGE 删除真源与索引（未落地）
+- [x] VectorIndexBuilder 为 L0/L1/L2 建层级记录，metadata 含 `content_layer`（分表、store None 跳过）
+- [x] FulltextIndexBuilder 为 L0/L1/L2 建层级文档，metadata 含 `content_layer`（分表、store None 跳过）
+- [x] Recaller 聚合层级命中到 `unit_id`，多路多层级经 Fuser RRF 聚合（已实施，§6）
+- [x] TruncatingDiscloser 优先读 layers，空值回退原截断逻辑（已实施，§6）
+- [x] StructuredDiscloser 优先读 layers，空值回退原结构化逻辑（已实施，§6）
+- [x] RetrievedItem 三层一次性填充（abstract/overview/content，已实施，§6）
+- [x] specs 同步更新 S05/S07
 
 ## 已知遗留
 
-1. **父子层级展开未实现**：本次只做同一 unit 的 L0/L1/L2 内容层，不做目录/主题节点展开。
-2. **从索引命中直接返回 L0/L1 未实现**：当前 Discloser 仍依赖 UnitReader 点读真源后读取 layers。
-3. **KeywordLayerAnnotator 质量有限**：规则标注无法保证 LLM 级语义浓缩，hot path 接受该折衷。
-4. **抽象粒度字段未建模**：低/中/高抽象分层仍由 `tier/tags/metadata/provenance` 间接表达；如需一等字段，应另立纵向抽象分层 feature。
+1. **Engine.write 默认/infer 路径未接 LayerAnnotator**：当前只在 evolver 抽取后标注派生 unit；
+   原始 unit 无 layers。后续接 write 路径时再实现。
+2. **update/delete 路径未接**：update 不会自动重标注（layers 随版本语义继承/清空）；delete 不
+   修改 layers。后续接 update 路径时实现 patch 触发重标注。
+3. **父子层级展开未实现**：本次只做同一 unit 的 L0/L1/L2 内容层，不做目录/主题节点展开。
+4. **KeywordLayerAnnotator 质量有限**：规则标注无法保证 LLM 级语义浓缩，hot path 接受该折衷。
+5. **抽象粒度字段未建模**：低/中/高抽象分层仍由 `tier/tags/metadata/provenance` 间接表达；如需
+   一等字段，应另立纵向抽象分层 feature。
+
+## 配置
+
+- `layer_annotator` 命名空间配具名实例（target=keyword/llm），evolver 经
+  `LayerAnnotatorProducer` 取；未配则 evolver 跳过标注（向后兼容）。
+- `layer_annotator_threshold`（globals）控制阈值筛选，默认 512。
+- `layers_index_enabled`（globals）+ `vector_store.layers_l0/l1`、`fulltext_store.layers_l0/l1`
+  具名实例控制分层索引（见 S05 IndexBuilder build 路径）。
+
