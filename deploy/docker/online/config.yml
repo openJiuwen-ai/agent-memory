@@ -15,9 +15,9 @@ memory_api:
     embedder_dim: 1024
     chunk_size: 512
 
-    # LLM: cloud OpenAI-compatible endpoint.
-    llm_model: "${LLM_MODEL:-glm-4-plus}"
-    llm_base_url: "${LLM_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}"
+    # LLM: DashScope OpenAI-compatible endpoint.
+    llm_model: "${LLM_MODEL:-qwen-plus}"
+    llm_base_url: "${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}"
     llm_api_key: "${LLM_API_KEY}"
     llm_temperature: 0.0
 
@@ -41,7 +41,10 @@ memory_api:
       rerank.enabled: "true"
 
   llm:
-    default: { target: openai }
+    default:
+      target: dashscope
+      params:
+        enable_thinking: "${LLM_ENABLE_THINKING:-false}"
   embedder:
     default: { target: openai }
   reranker:

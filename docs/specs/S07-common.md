@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/common/ |
-| 最近一次修订日期 | 2026-07-02 |
+| 最近一次修订日期 | 2026-07-12 |
 
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/control/F02-control-isolation-and-audit.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/control/F02-control-isolation-and-audit.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -31,6 +31,7 @@
 3. **所有插件必须实现 `plugin_type()` 和 `health()`**：继承自 `Plugin` 基类。
 4. **types.py 零依赖其他文件**：纯数据定义，被全局共享依赖。
 5. **工厂注册发生在 import 时**：实现文件尾部 `@XxxProducer.register("name")` 绑定构建函数，`__init__.py` 导入实现文件触发注册。
+6. **LLM Provider 参数不上浮到业务层**：厂商专属请求字段只能由对应 Adapter 生成；消费 `LLM` 的算子只传递通用生成选项。
 
 ## 接口契约
 
@@ -98,6 +99,10 @@ class Plugin(ABC):
 |------|------|------|
 | `chat` | `(messages: list[ChatMessage], **options) -> str` | 执行一次对话补全，返回助手回复文本 |
 | `generate` | `(prompt: str, **options) -> str` | 单 prompt 便捷方法 |
+
+`LLM` 的具名配置通过 `target` 选择 Provider Adapter，`params` 只由该 Adapter
+解释。通用 Adapter 不得默认发送其他厂商的扩展字段；健康检查与正常
+`chat` 必须使用同一套 Provider 请求选项。
 
 ### Reranker（`reranker/base.py`）
 

@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import openai
 
 from common.base import PluginType
@@ -65,14 +67,42 @@ class OpenAILLM(LLM):
     def plugin_type(self) -> PluginType:
         return PluginType.LLM
 
+    def _provider_request_options(self) -> dict[str, object]:
+        """返回 Provider Adapter 的默认请求选项。
+
+        通用 OpenAI 实现不注入任何厂商字段；兼容协议上的厂商差异由子类覆盖。
+        """
+        return {}
+
+    def _merge_request_options(
+        self,
+        create_kwargs: dict[str, object],
+        options: Mapping[str, object],
+    ) -> None:
+        """先合并 Provider 默认值，再让显式调用参数覆盖。"""
+        create_kwargs.update(self._provider_request_options())
+        for key, value in options.items():
+            if key in ("temperature", "max_tokens") or value is None:
+                continue
+            if (
+                key == "extra_body"
+                and isinstance(create_kwargs.get(key), Mapping)
+                and isinstance(value, Mapping)
+            ):
+                create_kwargs[key] = {**create_kwargs[key], **value}
+            else:
+                create_kwargs[key] = value
+
     def health(self) -> None:
         """探活：调用一次极短 chat 测试 API 可达。"""
         try:
-            self.client.chat.completions.create(
-                model=self._model_name,
-                messages=[{"role": "user", "content": "health check"}],
-                max_tokens=1,
-            )
+            create_kwargs: dict[str, object] = {
+                "model": self._model_name,
+                "messages": [{"role": "user", "content": "health check"}],
+                "max_tokens": 1,
+            }
+            create_kwargs.update(self._provider_request_options())
+            self.client.chat.completions.create(**create_kwargs)
         except Exception as exc:
             raise HealthCheckError(f"LLM health check failed: {exc}") from exc
 
@@ -89,17 +119,15 @@ class OpenAILLM(LLM):
         temperature = options.get("temperature", self._default_temperature)
         max_tokens = options.get("max_tokens", self._default_max_tokens)
 
-        create_kwargs: dict = {
+        create_kwargs: dict[str, object] = {
             "model": self._model_name,
             "messages": oa_messages,
             "temperature": float(temperature),
             "max_tokens": int(max_tokens),
         }
 
-        # 透传其他 options（如 top_p、stop、response_format 等）
-        for key, value in options.items():
-            if key not in ("temperature", "max_tokens") and value is not None:
-                create_kwargs[key] = value
+        # 透传其他 options（如 top_p、stop、response_format 等）。
+        self._merge_request_options(create_kwargs, options)
 
         try:
             response = self.client.chat.completions.create(**create_kwargs)

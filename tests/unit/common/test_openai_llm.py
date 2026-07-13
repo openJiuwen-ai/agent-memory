@@ -106,6 +106,7 @@ def test_chat_default_params():
     call_kwargs = llm.client.chat.completions.create.call_args.kwargs
     assert call_kwargs["temperature"] == 0.5
     assert call_kwargs["max_tokens"] == 2048
+    assert "extra_body" not in call_kwargs
 
 
 def test_generate():
@@ -125,6 +126,7 @@ def test_health():
     llm = _make_mock_llm()
     result = llm.health()
     assert result is None
+    assert "extra_body" not in llm.client.chat.completions.create.call_args.kwargs
 
 
 def test_health_failure():
@@ -141,8 +143,9 @@ def test_health_failure():
 
 
 def test_producer_known():
-    """T-P-01: LlmProducer 已注册 openai 和 echo。"""
+    """T-P-01: LlmProducer 已注册内置 LLM Provider。"""
     assert "openai" in LlmProducer.known()
+    assert "dashscope" in LlmProducer.known()
     assert "echo" in LlmProducer.known()
 
 

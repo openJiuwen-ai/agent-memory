@@ -25,9 +25,9 @@ memory_api:
     embedder_dim: 1024
     chunk_size: 512
 
-    # —— LLM：云端 OpenAI 兼容端点（默认智谱，可换通义/DeepSeek/OpenAI）——
-    llm_model: "${LLM_MODEL:-glm-4-plus}"
-    llm_base_url: "${LLM_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}"
+    # —— LLM：阿里云 DashScope OpenAI 兼容端点——
+    llm_model: "${LLM_MODEL:-qwen-plus}"
+    llm_base_url: "${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}"
     llm_api_key: "${LLM_API_KEY}"
     llm_temperature: 0.0
 
@@ -47,7 +47,10 @@ memory_api:
 
   # ---- 共享插件：覆盖各命名空间下的 default 实例（参数缺省读 globals）----
   llm:
-    default: { target: openai }
+    default:
+      target: dashscope
+      params:
+        enable_thinking: "${LLM_ENABLE_THINKING:-false}"
   embedder:
     default: { target: bge_m3 }
   reranker:
@@ -76,7 +79,7 @@ memory_api:
         metric_type: COSINE
 
   # query_parser 不走 LLM 改写：对话模型会把 query「答」成长文，反而拖垮召回（语义漂移 +
-  # 10~19s 延迟）。这里把它的 llm 依赖内联成匿名 echo（不引用共享 openai）令 query 原样透传；
+  # 10~19s 延迟）。这里把它的 llm 依赖内联成匿名 echo（不引用共享 dashscope）令 query 原样透传；
   # 实例级覆盖会整体替换默认 params，故 tokenizer/embedder 需一并写出（仍引用各自 default）。
   query_parser:
     default:

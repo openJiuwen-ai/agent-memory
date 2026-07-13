@@ -13,7 +13,7 @@
 
 | 角色 | 实现 | 形态 |
 |---|---|---|
-| LLM | OpenAI 兼容云端 API | 外部，凭 `LLM_API_KEY` |
+| LLM | DashScope OpenAI-compatible API（默认关闭思考） | 外部，凭 `LLM_API_KEY` |
 | 嵌入 | `bge-m3`（1024 维） | 在线模型：HTTP `/v1/embeddings`；本地模型：进程内 FlagEmbedding |
 | 精排 | `bge-reranker-v2-m3` | 在线模型：HTTP `/rerank`；本地模型：进程内 FlagEmbedding |
 | 向量召回 | Milvus（etcd + MinIO + standalone） | 容器 |
@@ -70,6 +70,10 @@ docker compose up -d --build
 `EMBEDDER_BASE_URL` 必须包含 `/v1`，例如 `https://models.example.com/v1`；
 `RERANKER_BASE_URL` 不要包含 `/rerank`，例如 `https://models.example.com`。
 
+LLM 默认使用 `target: dashscope`。`LLM_ENABLE_THINKING=false` 会通过 DashScope
+Adapter 发送 `extra_body.enable_thinking=false`；设为 `true` 可开启思考，设为
+`null` 则完全不发送该厂商字段。
+
 ### 本地模型模式
 
 ```bash
@@ -120,7 +124,9 @@ curl -X POST http://localhost:8137/v1/search \
 
 ## 常见调整
 
-- **换 LLM 厂商**：改当前模式目录下 `.env` 的 `LLM_BASE_URL` / `LLM_MODEL`（任意 OpenAI 兼容端点）。
+- **换 LLM 厂商**：同时修改 `config.yml` 的 `llm.default.target` 和 `.env` 中的
+  `LLM_BASE_URL` / `LLM_MODEL`。阿里云使用 `dashscope`，通用 OpenAI-compatible
+  端点使用 `openai`；不要只换 URL 而保留其他厂商的专属参数。
 - **换在线模型服务**：改 `online/.env` 的 `EMBEDDER_BASE_URL` / `RERANKER_BASE_URL` /
   `MODEL_API_TOKEN`。`EMBEDDER_BASE_URL` 带 `/v1`，`RERANKER_BASE_URL` 不带 `/rerank`。
 - **降低内存占用（省去 Milvus 三件套）**：将 `vector_store` 改用 Milvus Lite（pymilvus 内嵌、
