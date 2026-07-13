@@ -72,11 +72,11 @@ class MemResult(BaseModel):
 
 
 class AddMemResult(BaseModel):
-    variables: list[VariableUnit] = Field(default=list, description="variables result")
-    user_profile: list[FragmentMemoryUnit] = Field(default=list, description="user_profile memory result")
-    semantic_memory: list[FragmentMemoryUnit] = Field(default=list, description="semantic memory result")
-    episodic_memory: list[FragmentMemoryUnit] = Field(default=list, description="episodic memory result")
-    summary: list[SummaryUnit] = Field(default=list, description="summary result")
+    variables: list[VariableUnit] = Field(default_factory=list, description="variables result")
+    user_profile: list[FragmentMemoryUnit] = Field(default_factory=list, description="user_profile memory result")
+    semantic_memory: list[FragmentMemoryUnit] = Field(default_factory=list, description="semantic memory result")
+    episodic_memory: list[FragmentMemoryUnit] = Field(default_factory=list, description="episodic memory result")
+    summary: list[SummaryUnit] = Field(default_factory=list, description="summary result")
 
 
 class LongTermMemory(metaclass=Singleton):
