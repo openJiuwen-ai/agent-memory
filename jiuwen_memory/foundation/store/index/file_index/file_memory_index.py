@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sqlite3
+import traceback
 import uuid
 from pathlib import Path
 from typing import Any
@@ -601,7 +602,24 @@ class FileMemoryIndex(BaseMemoryIndex):
         path = self._vec_index.get_path_for_mem_id_scoped(mem_id, user_id, scope_id)
         if path:
             abs_path = self._root_dir / path
-            block = await self._md_store.read_block(abs_path, mem_id)
+            try:
+                block = await self._md_store.read_block(abs_path, mem_id)
+            except (OSError, UnicodeDecodeError) as e:
+                # 读失败（权限/IO/编码）属临时故障：跳过此路径，继续走扫盘
+                # fallback。若无防护，OSError 会冒泡到 list_memories 的 fallback
+                # 分支把整条链打挂（FMI-DEF-003），与主路径降级语义不一致。
+                memory_logger.warning(
+                    "read_block failed on direct path lookup — degrading to scan fallback",
+                    event_type=LogEventType.MEMORY_RETRIEVE,
+                    user_id=user_id,
+                    scope_id=scope_id,
+                    operation="get_by_id.direct_path",
+                    memory_id=[mem_id],
+                    exception=str(e),
+                    stacktrace=traceback.format_exc(),
+                    metadata={"file_path": str(abs_path)},
+                )
+                block = None
             if block:
                 return self._block_to_doc(block)
 
@@ -609,7 +627,23 @@ class FileMemoryIndex(BaseMemoryIndex):
         # tenant-scoped — list_type_files only returns files under
         # memories/{user_id}/{scope_id}/, so it cannot leak cross-tenant.
         for type_file in self._md_store.list_type_files(user_id, scope_id):
-            block = await self._md_store.read_block(type_file, mem_id)
+            try:
+                block = await self._md_store.read_block(type_file, mem_id)
+            except (OSError, UnicodeDecodeError) as e:
+                # 单个文件读失败不中断整个扫盘：跳过该文件继续下一个，
+                # 尽力返回能读到的结果（降级语义与主路径一致）。
+                memory_logger.warning(
+                    "read_block failed during scan fallback — skipping file",
+                    event_type=LogEventType.MEMORY_RETRIEVE,
+                    user_id=user_id,
+                    scope_id=scope_id,
+                    operation="get_by_id.scan_fallback",
+                    memory_id=[mem_id],
+                    exception=str(e),
+                    stacktrace=traceback.format_exc(),
+                    metadata={"file_path": str(type_file)},
+                )
+                continue
             if block:
                 return self._block_to_doc(block)
 
@@ -662,8 +696,23 @@ class FileMemoryIndex(BaseMemoryIndex):
                 docs.append(self._block_to_doc(block))
             else:
                 # Fallback: 文件中未找到（罕见，如外部删除了该文件），
-                # 扫描 scope 目录查找
-                doc = await self.get_by_id(user_id, scope_id, mem_id)
+                # 扫描 scope 目录查找。get_by_id 内部已对 read 失败降级，
+                # 此处再兜一层非预期异常，确保单条 mem_id 的兜底失败不会
+                # 把整页分页查询打挂（降级返回部分结果而非崩）。
+                try:
+                    doc = await self.get_by_id(user_id, scope_id, mem_id)
+                except (OSError, UnicodeDecodeError) as e:
+                    memory_logger.warning(
+                        "get_by_id fallback failed during pagination — skipping mem_id",
+                        event_type=LogEventType.MEMORY_RETRIEVE,
+                        user_id=user_id,
+                        scope_id=scope_id,
+                        operation="list_memories.fallback",
+                        memory_id=[mem_id],
+                        exception=str(e),
+                        stacktrace=traceback.format_exc(),
+                    )
+                    continue
                 if doc:
                     docs.append(doc)
 
