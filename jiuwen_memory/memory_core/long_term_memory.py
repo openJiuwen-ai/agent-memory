@@ -627,7 +627,19 @@ class LongTermMemory(metaclass=Singleton):
             check_res, valid_msgs = self._check_messages(converted)
 
             if not check_res:
-                return {"success": False, "mem_ids": mem_ids, "error": "No valid user messages"}
+                memory_logger.info(
+                    "[Thread] Skipping batch without user messages",
+                    scope_id=scope_id,
+                    user_id=user_id,
+                )
+                return {
+                    "success": True,
+                    "mem_ids": mem_ids,
+                    "batch_size": len(dialogue_batch),
+                    "memories_count": 0,
+                    "skipped": True,
+                    "skip_reason": "No valid user messages",
+                }
 
             memories = await self.generator.gen_all_memory(
                 user_id=user_id,
