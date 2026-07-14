@@ -80,6 +80,10 @@ pip install JiuwenMemory[redis]
 # ChromaDB vector store
 pip install JiuwenMemory[chromadb]
 
+# File-system memory backend (sqlite-vec + watchdog + jieba)
+# Required for INDEX_BACKEND=file; missing deps silently degrade:
+pip install JiuwenMemory[file-index]
+
 # Memory server (includes uvicorn + fastapi; enables `memory-server` CLI command)
 pip install JiuwenMemory[server]
 
@@ -232,6 +236,35 @@ search:
 > same `search_user_mem`. Its added value here is the **Polars tip**: a reusable fact the
 > assistant supplied that the narrow per-turn window skipped, which the full-session sweep
 > consolidates into memory.
+
+#### Using the file-system backend (long-term memories persisted to markdown)
+
+The example above defaults to the vector backend (`index_backend="simple"`). To persist
+long-term memories as human-readable markdown files, with vectors + FTS5 index in SQLite,
+change `register_store` to:
+
+```python
+await memory.register_store(
+    kv_store=kv_store,
+    db_store=db_store,
+    embedding_model=embedding_model,
+    index_backend="file",          # file-system memory backend
+    file_root_dir="./file_memory_data",  # root dir for .md files and memory.db
+)
+```
+
+Install the optional dependencies first (missing deps degrade silently; recommended):
+
+```bash
+pip install JiuwenMemory[file-index]
+```
+
+> Full parameter reference (`file_root_dir` required check, watchdog auto-start and
+> degradation, file-backend example) in the
+> [LongTermMemory API docs](docs/en/API%20Docs/long_term_memory.md). For service-style
+> deployment (`.env` with `INDEX_BACKEND=file`, hybrid retrieval weights, encryption
+> trade-offs, V1→V2 incompatibility and other ops constraints) see the
+> [memory_server docs](docs/en/API%20Docs/memory_server.md), section "INDEX_BACKEND=file".
 
 ## 4 Architecture Design
 

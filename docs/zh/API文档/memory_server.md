@@ -126,6 +126,7 @@ IP=127.0.0.1 PORT=8000 python -m jiuwen_memory.server.memory_server
   - `sqlite-vec`：向量 KNN 检索。未安装时退化为纯 Python 余弦相似度线性扫描。
   - `jieba`：FTS5 中文分词。未安装时 FTS5 退化为 `unicode61` 空格切分（中文关键词召回不精确）。
   - `watchdog`：外部编辑 `.md` 实时同步。未安装时 watcher 为 no-op，外部编辑在下次 `search` 时经 hash 脏检查（`_ensure_synced`）惰性补同步。
+  - 一次性安装全部三个：`pip install JiuwenMemory[file-index]`。
 - **混合检索**：向量（sqlite-vec cosine，按 `user_id`+`scope_id` 分区）+ FTS5（jieba + BM25），0.7/0.3 权重融合。embedding 模型不可用时，`search` 降级为 FTS-only 关键词召回，而非返回空。
 - **加密取舍**：file 后端默认**明文**（.md 人类可读），仅配置 `crypto_key` 时才启用 AES-GCM 落盘加密。与 `simple` 后端默认加密不同。
 - **仅限单进程**：除 SQLite WAL 模式外无跨进程锁。不要让多个进程指向同一 `FILE_MEMORY_DATA_DIR`。

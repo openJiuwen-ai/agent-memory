@@ -80,6 +80,10 @@ pip install JiuwenMemory[redis]
 # ChromaDB 向量存储
 pip install JiuwenMemory[chromadb]
 
+# 文件系统记忆后端（sqlite-vec + watchdog + jieba）
+# 用 INDEX_BACKEND=file 时需要，缺失则静默降级
+pip install JiuwenMemory[file-index]
+
 # 记忆服务（含 uvicorn + fastapi，安装后可直接 memory-server 命令启动）
 pip install JiuwenMemory[server]
 
@@ -228,6 +232,31 @@ asyncio.run(main())
 ```
 
 > 睡时巩固走的是与在线提取**相同**的写入路径、产出**相同**的记忆类型（`user_profile` / `semantic_memory` / `episodic_memory`），由同一个 `search_user_mem` 检索。它在这里的增量价值就是那条 **Polars 知识**：助手给出的、对用户有长期复用价值的事实，逐轮窄窗口漏掉了，而通读整段会话的 sweep 把它沉淀成了记忆。
+
+#### 使用文件系统后端（长期记忆落 markdown 文件）
+
+上面的示例默认走向量后端（`index_backend="simple"`）。如需让长期记忆以人类可读的 markdown 文件落盘、向量 + FTS5 索引落到 SQLite，把 `register_store` 改成：
+
+```python
+await memory.register_store(
+    kv_store=kv_store,
+    db_store=db_store,
+    embedding_model=embedding_model,
+    index_backend="file",          # 文件系统记忆后端
+    file_root_dir="./file_memory_data",  # .md 与 memory.db 的数据根目录
+)
+```
+
+file 后端需先安装可选依赖（缺失会静默降级，建议安装）：
+
+```bash
+pip install JiuwenMemory[file-index]
+```
+
+> 完整参数说明（`file_root_dir` 必填校验、watchdog 自动启动与降级、file 后端样例）见
+> [LongTermMemory API 文档](docs/zh/API文档/long_term_memory.md)；服务化部署（`.env` 配置
+> `INDEX_BACKEND=file`、混合检索权重、加密取舍、V1→V2 不兼容等运维约束）见
+> [memory_server 文档](docs/zh/API文档/memory_server.md) 的「INDEX_BACKEND=file 说明」一节。
 
 ## 4 架构设计
 

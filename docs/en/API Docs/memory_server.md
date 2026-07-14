@@ -126,6 +126,7 @@ When `INDEX_BACKEND=file`, long-term memories are persisted as markdown files un
   - `sqlite-vec` — vector KNN search. If not installed, search falls back to a pure-Python cosine scan over stored embeddings.
   - `jieba` — Chinese tokenization for FTS5 keyword recall. If not installed, FTS5 degrades to `unicode61` whitespace splitting (Chinese keyword recall becomes imprecise).
   - `watchdog` — real-time sync on external `.md` edits. If not installed, the watcher is a no-op and external edits are picked up lazily on the next `search` via hash-based dirty check (`_ensure_synced`).
+  - Install all three at once: `pip install JiuwenMemory[file-index]`.
 - **Hybrid search**: vector (sqlite-vec cosine, partitioned by `user_id`+`scope_id`) + FTS5 (jieba + BM25), fused at 0.7/0.3 weight. When the embedding model is unavailable, `search` degrades to FTS-only keyword recall instead of returning empty.
 - **Encryption tradeoff**: the file backend stays **plaintext** by default (human-readable `.md`); AES-GCM encryption at rest is only applied when `crypto_key` is configured. This differs from the `simple` backend, which encrypts by default.
 - **Single-process only**: no cross-process locking beyond SQLite WAL mode. Do not point multiple processes at the same `FILE_MEMORY_DATA_DIR`.
