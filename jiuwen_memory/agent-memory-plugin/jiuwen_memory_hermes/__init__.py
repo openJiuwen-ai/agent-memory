@@ -343,9 +343,9 @@ class JiuwenHermesProvider(MemoryProvider):
         })
         return _results(payload)
 
-    def _send_turn_bg(self, messages: list[dict], **kwargs: Any) -> None:
+    def _send_turn_bg(self, turn_messages: list[dict], **kwargs: Any) -> None:
         body = {
-            "messages": messages,
+            "messages": turn_messages,
             "user_id": kwargs.get("user_id", self._user_id),
             "scope_id": kwargs.get("scope_id", self._scope_id),
         }
