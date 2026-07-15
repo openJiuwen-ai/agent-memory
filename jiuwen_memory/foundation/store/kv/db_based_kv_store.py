@@ -16,8 +16,10 @@ from sqlalchemy import (
     delete,
     select,
     String,
+    Text,
 )
 from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
@@ -42,7 +44,7 @@ class Base(DeclarativeBase):
 class KVStoreTable(Base):
     __tablename__ = "kv_store"
     key = Column(String(255), primary_key=True)
-    value = Column(String(4096), nullable=False)
+    value = Column(Text().with_variant(MEDIUMTEXT(), "mysql"), nullable=False)
 
 
 class DbBasedKVStore(BaseKVStore):
