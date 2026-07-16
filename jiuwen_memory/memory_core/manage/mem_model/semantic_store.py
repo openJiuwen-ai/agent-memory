@@ -70,7 +70,7 @@ class SemanticStore:
         # Create collection with schema
         schema = CollectionSchema(
             description="Semantic memory collection",
-            enable_dynamic_field=False,
+            enable_dynamic_field=True,
         )
         schema.add_field(
             FieldSchema(
