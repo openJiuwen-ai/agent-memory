@@ -110,8 +110,15 @@ If neither `.env` file is found, the service automatically creates the `~/.jiuwe
 | `VECTOR_MILVUS_URI` | empty string | Milvus service URI. |
 | `VECTOR_MILVUS_TOKEN` | empty string | Milvus token; optional. |
 | `VECTOR_MILVUS_DATABASE` | `default` | Milvus database name. |
-| `VECTOR_ES_HOSTS` | empty string | Elasticsearch hosts, comma-separated. |
+| `VECTOR_ES_HOSTS` | empty string | Elasticsearch hosts, comma-separated. Use `https://host:9200` to enable TLS, and configure the auth / SSL options below as needed. |
 | `VECTOR_ES_INDEX_PREFIX` | `agent_vector` | Elasticsearch index prefix. |
+| `VECTOR_ES_USERNAME` | empty string | Elasticsearch username (basic_auth). Usually required when ES 8.x security features are enabled, e.g. `elastic`. |
+| `VECTOR_ES_PASSWORD` | empty string | Elasticsearch password, paired with the username. |
+| `VECTOR_ES_API_KEY` | empty string | Elasticsearch API Key auth. Mutually exclusive with username/password; left empty to disable. |
+| `VECTOR_ES_VERIFY_CERTS` | empty string | Whether to verify TLS certificates. Set `false` to skip verification for self-signed certs; empty uses the default (verify). |
+| `VECTOR_ES_CA_CERTS` | empty string | CA certificate path, commonly used for self-signed certs, e.g. `/path/to/http_ca.crt`. |
+| `VECTOR_ES_CLIENT_CERT` | empty string | Mutual TLS (mTLS) client certificate path; left empty to disable. |
+| `VECTOR_ES_CLIENT_KEY` | empty string | Mutual TLS (mTLS) client private key path; left empty to disable. |
 | `VECTOR_GAUSS_HOST` | `localhost` | Gauss vector store host. |
 | `VECTOR_GAUSS_PORT` | `5432` | Gauss vector store port. |
 | `VECTOR_GAUSS_DATABASE` | `postgres` | Gauss vector store database name. |

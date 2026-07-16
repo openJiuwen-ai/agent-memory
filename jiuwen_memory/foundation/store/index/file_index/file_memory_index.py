@@ -99,39 +99,22 @@ class FileMemoryIndex(BaseMemoryIndex):
 
     @property
     def root_dir(self) -> Path:
-        """The root directory for file-based memory storage (read-only)."""
         return self._root_dir
 
     @property
     def vec_index(self) -> VectorIndex:
-        """The underlying :class:`VectorIndex` (read-only — for testing)."""
         return self._vec_index
 
     @property
     def embedding_model(self) -> Any:
-        """The global embedding model instance (read-only — for testing).
-
-        测试需断言 embedding 已/未初始化（如降级 FTS-only 用例）或临时移除
-        模型模拟故障，通过此 property 读取而非触达 ``_embedding_model``。
-        """
         return self._embedding_model
 
     @property
     def md_store(self) -> MarkdownStore:
-        """The underlying :class:`MarkdownStore` (read-only — for testing).
-
-        测试需 monkeypatch md_store 的 read_blocks/write_blocks 注入 await
-        yield 点放大竞态，通过此 property 拿到实例而非触达 ``_md_store``。
-        """
         return self._md_store
 
     @property
     def watcher(self) -> MemoryFileWatcher:
-        """The underlying :class:`MemoryFileWatcher` (read-only — for testing).
-
-        测试需 mock watcher 的 running/start 验证 start_watcher 幂等性，通过
-        此 property 访问而非触达 ``_watcher``。
-        """
         return self._watcher
 
     # ------------------------------------------------------------------
