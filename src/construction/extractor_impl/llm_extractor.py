@@ -1,15 +1,22 @@
-"""ExtractorImpl — M1 信息提取实现（4 Phase 流水线）。
+"""ExtractorImpl — M1 信息提取实现（3 Phase 流水线）。
 
-四阶段流水线（接口契约见 docs/specs/S05-construction.md Extractor 节）：
+三阶段流水线（接口契约见 docs/specs/S05-construction.md Extractor 节）：
   Phase 1  预处理 — 过滤 lifecycle≠ACTIVE / 空 content
   Phase 2  LLM 提取 — 批量拼一个 prompt 调 LLM → 解析 JSON → ExtractionCandidate
-  Phase 3  特征富化 — FeatureExtractor.extract_batch → 补充 keywords/entities
-  Phase 4  构建 MemoryUnit — candidate → MemoryUnit(provenance=[source_id])
+  Phase 3  构建 MemoryUnit — candidate → MemoryUnit(provenance=[source_id])
 
 Phase 2 采用批量提取策略：全部 unit 拼一个 prompt，每条带 ``[ID: unit_id]`` 标记，
 LLM 在每个候选里输出裸 ``source_id`` 回指来源。解析时校验 source_id 存在于本批 unit，
 缺失/错配的候选丢弃。``_strip_source_id_shell`` 兜底剥掉 LLM 误带的 ``[ID: ]`` 外壳，
 避免 source_id 恒不匹配导致候选全丢。
+
+tier 与 tags 均由 LLM 在抽取时一并产出（同一 prompt，不另调 LLM、不走 FeatureExtractor）：
+- ``tier``：候选认知角色，限定 ``episodic`` / ``semantic`` / ``procedural`` 三选一
+  （WORKING/ARCHIVAL 不由抽取产出，CORE 留给 Abstractor 升华）。
+- ``tags``：1-3 个简短主题标签，供后续过滤/检索。
+
+L0/L1 分层标注不由本算子负责——由 Evolver 在抽取后委托
+:class:`~construction.layer_annotator.LayerAnnotator` 生成（见 F01-memory-layer）。
 
 prompt 要求 LLM 把同一 source 内**同主题**的多个子事实合并成一条自包含陈述（如咖啡
 偏好：早上美式/下午拿铁/不加糖 合成 1 条，而非 3 条碎片），减少派生单元数量、提升
@@ -28,7 +35,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 
-from common.feature_extractor.base import FeatureExtractor, FeatureExtractorProducer
 from common.llm.base import LLM, LlmProducer
 from common.log import get_logger
 from common.type_def import (
@@ -41,6 +47,7 @@ from common.type_def import (
 )
 
 from ..base import ExtractContext, OperatorType
+from ..common import parse_tags
 from ..extractor import Extractor, ExtractorProducer
 
 logger = get_logger(__name__)
@@ -71,8 +78,10 @@ class ExtractionCandidate:
     confidence: float = 0.0
     evidence: str = ""
     event_date: str = ""  # LLM 解析出的绝对事件时间（ISO 8601），写入 temporal.t_event
-    keywords: list[str] = field(default_factory=list)
-    entities: list[Entity] = field(default_factory=list)
+    tier: MemoryTier = MemoryTier.SEMANTIC  # LLM 判定的认知角色（非法值兜底 SEMANTIC）
+    tags: list[str] = field(default_factory=list)  # LLM 抽的 1-3 个主题标签
+    keywords: list[str] = field(default_factory=list)  # 保留字段，普通抽取路径不再填充
+    entities: list[Entity] = field(default_factory=list)  # 保留字段，普通抽取路径不再填充
     metadata: dict[str, str] = field(default_factory=dict)
 
 
@@ -112,6 +121,15 @@ Rules:
   event_date (or output empty string). Example: observation_date=2025-06-10, source
   "Alice 昨天上午9点参加篮球比赛" → content="Alice 2025年6月9日上午9点参加篮球比赛",
   event_date="2025-06-09T09:00:00".
+- "tier": the cognitive role of the extracted memory, one of:
+  - "episodic": something that happened at a point in time (an event/experience).
+  - "semantic": a stated fact / concept / preference (what is known or liked).
+  - "procedural": how-to / skill / process / pattern (how something is done).
+  Choose based on the NATURE of the content, not the target field. When unsure, use "semantic".
+- "tags": 1 to 3 short labels summarizing this memory's topic, for later filtering/retrieval.
+  Rules: lowercase; drop articles/stopwords; same language as the content; do NOT duplicate
+  words already central to the content; keep each tag to 1-3 words. Example: content
+  "Alice 的咖啡偏好：早上喝美式、下午喝拿铁" → tags: ["coffee", "preference"].
 - If nothing worth extracting, return [].
 
 Target types:
@@ -125,7 +143,9 @@ Output schema:
 [{
   "source_id": "32049cd0-5f7c-419f-928f-503b24318f7c",
   "target": "fact" | "event" | "preference" | "context",
+  "tier": "episodic" | "semantic" | "procedural",
   "content": "self-contained statement (one topic, merged if multiple sub-facts)",
+  "tags": ["tag1", "tag2"],
   "confidence": 0.5~1.0,
   "event_date": "2025-06-09T09:00:00"  // optional, only if time is resolved
 }]
@@ -194,6 +214,28 @@ def _parse_event_date(raw: str) -> datetime | None:
         return None
 
 
+# 抽取阶段允许 LLM 产出的 tier（其余值兜底为 SEMANTIC）。
+_EXTRACT_ALLOWED_TIERS: set[str] = {
+    MemoryTier.EPISODIC.value,
+    MemoryTier.SEMANTIC.value,
+    MemoryTier.PROCEDURAL.value,
+}
+
+
+def _parse_tier(raw) -> MemoryTier:
+    """解析 LLM 输出的 tier，限定 episodic/semantic/procedural；非法/缺失兜底 SEMANTIC。
+
+    prompt 限定三选一，但 LLM 可能返回大写、带空格或越界值（如 core/working）——
+    一律归一到三选一，越界值降级 SEMANTIC（宁可保守，不产出 WORKING/ARCHIVAL/CORE）。
+    """
+    s = str(raw or "").strip().lower()
+    if s in _EXTRACT_ALLOWED_TIERS:
+        return MemoryTier(s)
+    if s:
+        logger.debug("Extractor._parse_tier: unknown tier %r, fallback SEMANTIC", s)
+    return MemoryTier.SEMANTIC
+
+
 def _format_context_block(context: ExtractContext | None) -> str:
     """把 ExtractContext 拼成 user prompt 末尾的参考段（无 context 返回空串）。
 
@@ -230,18 +272,20 @@ def _format_context_block(context: ExtractContext | None) -> str:
 
 
 class ExtractorImpl(Extractor):
-    """M1 Extractor：4 Phase 流水线，Phase 2 把全部 unit 拼一个 prompt 一次调 LLM。"""
+    """M1 Extractor：3 Phase 流水线——Phase 1 预处理 → Phase 2 LLM 提取 → Phase 3 构建 MemoryUnit。
+
+    tier/tags 由 LLM 在 Phase 2 一并产出，不经 FeatureExtractor 富化。
+    L0/L1 分层标注不由本算子负责——由 Evolver 抽取后委托 LayerAnnotator 生成。
+    """
 
     def __init__(
         self,
         llm: LLM,
-        feature_extractor: FeatureExtractor,
         min_confidence: float = 0.5,
         retry_max_retries: int = 3,
         retry_backoff_ms: int = 1000,
     ) -> None:
         self._llm = llm
-        self._feature_extractor = feature_extractor
         self._min_confidence = min_confidence
         self._retry_max_retries = retry_max_retries
         self._retry_backoff_ms = retry_backoff_ms
@@ -291,6 +335,7 @@ class ExtractorImpl(Extractor):
             return []
 
         # Phase 2: LLM 提取（按子批拼 prompt 逐批调用，单批失败不波及其余）
+        # tier 与 tags 由 LLM 在此一并产出（同一 prompt），不再走 FeatureExtractor 富化。
         all_candidates: list[ExtractionCandidate] = []
         for start in range(0, len(accepted), _EXTRACT_BATCH_SIZE):
             sub_batch = accepted[start:start + _EXTRACT_BATCH_SIZE]
@@ -308,10 +353,8 @@ class ExtractorImpl(Extractor):
         if not all_candidates:
             return []
 
-        # Phase 3: 特征富化
-        self._enrich_features(all_candidates)
-
-        # Phase 4: 构建 MemoryUnit
+        # Phase 3: 构建 MemoryUnit（tier/tags 取自 candidate，由 LLM 在 Phase 2 产出）
+        # L0/L1 分层标注不由本算子负责——由 Evolver 抽取后委托 LayerAnnotator 生成。
         return self._build_units(all_candidates, accepted)
 
     # ------------------------------------------------------------------
@@ -354,21 +397,19 @@ class ExtractorImpl(Extractor):
             logger.info("Extractor._extract_procedural: empty content parsed, return []")
             return []
 
-        # 特征富化（关键词/实体，同普通派生）
+        # procedural 路径固定产 PROCEDURAL tier，不走 LLM tier/tags 判定、不走富化。
         candidate = ExtractionCandidate(
             target=ExtractionTarget.CONTEXT,
             content=content,
             source_unit_id=units[0].id,
             confidence=1.0,
+            tier=MemoryTier.PROCEDURAL,
         )
-        self._enrich_features([candidate])
 
         # 构建 1 条 PROCEDURAL MemoryUnit，provenance 回指全部本轮 unit
         now = datetime.now(timezone.utc)
         source = units[0]
-        tags = list(candidate.keywords)
-        if "procedural" not in tags:
-            tags.append("procedural")
+        tags = ["procedural"]
         unit = MemoryUnit(
             id=str(uuid.uuid4()),
             scope=source.scope,
@@ -524,6 +565,12 @@ class ExtractorImpl(Extractor):
             except ValueError:
                 target = ExtractionTarget.FACT
 
+            # tier 由 LLM 判定，限定 episodic/semantic/procedural；非法值兜底 SEMANTIC
+            tier = _parse_tier(item.get("tier"))
+
+            # tags 由 LLM 抽，清洗 + 去重 + 截断到 ≤3
+            tags = parse_tags(item.get("tags"))
+
             evidence = item.get("evidence", "")
             event_date = str(item.get("event_date", "") or "").strip()
             candidates.append(ExtractionCandidate(
@@ -533,13 +580,17 @@ class ExtractorImpl(Extractor):
                 confidence=confidence,
                 evidence=evidence,
                 event_date=event_date,
+                tier=tier,
+                tags=tags,
             ))
             ev_str = f", evidence={evidence[:100]}" if evidence else ""
             ed_str = f", event_date={event_date}" if event_date else ""
             logger.info(
-                "Extractor: candidate — source=%s target=%s, confidence=%.2f, content=%s%s%s",
+                "Extractor: candidate — source=%s target=%s tier=%s tags=%s, confidence=%.2f, content=%s%s%s",
                 source_id[:8],
                 target.value,
+                tier.value,
+                tags,
                 confidence,
                 item.get("content", "")[:200],
                 ev_str,
@@ -555,14 +606,14 @@ class ExtractorImpl(Extractor):
         )
         return candidates
 
-    def _call_llm_with_retry(self, messages: list) -> str:
+    def _call_llm_with_retry(self, messages: list, max_tokens: int = 8192) -> str:
         """调用 LLM.chat()，含重试逻辑。"""
         import time
 
         last_exc = None
         for attempt in range(self._retry_max_retries):
             try:
-                return self._llm.chat(messages, temperature=0, max_tokens=4096)
+                return self._llm.chat(messages, temperature=0, max_tokens=max_tokens)
             except Exception as exc:
                 last_exc = exc
                 if attempt < self._retry_max_retries - 1:
@@ -620,32 +671,7 @@ class ExtractorImpl(Extractor):
         return s.strip()
 
     # ------------------------------------------------------------------
-    # Phase 3: 特征富化
-    # ------------------------------------------------------------------
-
-    def _enrich_features(self, candidates: list[ExtractionCandidate]) -> None:
-        """FeatureExtractor 对 LLM 产出的精炼陈述做关键词/实体抽取。"""
-        try:
-            texts = [c.content for c in candidates if c.content]
-            if not texts:
-                return
-            features = self._feature_extractor.extract_batch(texts)
-            # 对齐：content 为空的 candidate 不参与 extract_batch，需偏移索引
-            enrich_idx = 0
-            for c in candidates:
-                if c.content:
-                    if enrich_idx < len(features):
-                        f = features[enrich_idx]
-                        c.keywords = f.keywords
-                        c.entities = f.entities
-                        c.metadata.update(f.labels)
-                    enrich_idx += 1
-        except Exception:
-            # FeatureExtractor 不可用时降级：跳过富化
-            logger.warning("Extractor: FeatureExtractor unavailable, skipping enrichment")
-
-    # ------------------------------------------------------------------
-    # Phase 4: 构建 MemoryUnit
+    # Phase 3: 构建 MemoryUnit
     # ------------------------------------------------------------------
 
     def _build_units(
@@ -653,7 +679,12 @@ class ExtractorImpl(Extractor):
         candidates: list[ExtractionCandidate],
         source_units: list[MemoryUnit],
     ) -> list[MemoryUnit]:
-        """将 ExtractionCandidate 转换为 MemoryUnit。"""
+        """将 ExtractionCandidate 转换为 MemoryUnit。
+
+        tier 与 tags 取自 candidate（由 LLM 在 Phase 2 产出）；不再走 FeatureExtractor 富化。
+        tags 仍兜底追加 ``extracted`` 标记派生来源（与 keyword_extractor 一致，便于后续
+        过滤/避免反复提取）。
+        """
         # 建立 source_unit_id → source_unit 的索引
         source_map = {u.id: u for u in source_units}
 
@@ -667,16 +698,15 @@ class ExtractorImpl(Extractor):
                 )
                 continue
 
-            # tags = FeatureExtractor 关键词 + extracted 标签（与 keyword_extractor 一致，
-            # 标记派生来源，便于后续过滤/避免反复提取）
-            tags = list(c.keywords)
+            # tags = LLM 抽的标签 + extracted 兜底（标记派生来源，便于后续过滤/避免反复提取）
+            tags = list(c.tags)
             if "extracted" not in tags:
                 tags.append("extracted")
 
             unit = MemoryUnit(
                 id=str(uuid.uuid4()),
                 scope=source.scope,
-                tier=MemoryTier.SEMANTIC,
+                tier=c.tier,
                 segments=[Segment(content=c.content, source=source.source)],
                 source_ref=source.id,
                 temporal=Temporal(
@@ -695,9 +725,10 @@ class ExtractorImpl(Extractor):
             )
             result.append(unit)
             logger.info(
-                "Extractor: built unit id=%s tier=%s provenance=%s content=%s",
+                "Extractor: built unit id=%s tier=%s tags=%s provenance=%s content=%s",
                 unit.id[:8],
                 unit.tier.value,
+                unit.tags,
                 unit.provenance,
                 unit.content[:200],
             )
@@ -717,7 +748,6 @@ class ExtractorImpl(Extractor):
 def _build(config):
     return ExtractorImpl(
         llm=LlmProducer.dep(config, default="echo"),
-        feature_extractor=FeatureExtractorProducer.dep(config, default="keyword"),
         min_confidence=config.get("extractor_min_confidence", 0.5),
         retry_max_retries=config.get("extractor_retry_max", 3),
         retry_backoff_ms=config.get("extractor_retry_backoff", 1000),

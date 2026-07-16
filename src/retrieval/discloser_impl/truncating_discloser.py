@@ -1,9 +1,9 @@
 """最小实现：:class:`~retrieval.discloser.Discloser`——渐进式披露（纯内容塑形）。
 
-按层级塑形候选内容：L0 摘要（截断）/ L1 相关片段（围绕 query 关键词的窗口）/
-L2 全文。**纯塑形**：候选记忆单元已由 Retriever 经 UnitReader 点读、有效性过滤、
-（可选）重排后给定——本算子只按 ``level`` 截/取 ``unit.content``，不再点读 / 过滤
-/ 重排（Option B：那些职责上移到 Retriever 阶段）。
+三层级内容：L0 摘要 / L1 片段 / L2 全文。**优先用预生成的** ``unit.layers.l0``/``.l1``
+（由 LayerAnnotator 生成），为空则回退到截断/取窗兜底（向后兼容未跑 LayerAnnotator 的场景）。
+``disclose`` 一次性填充 RetrievedItem 的 abstract/overview/content 三字段，调用方按需取用；
+``level`` 标记本次披露的主层级（ADAPTIVE 按 max_tokens 选定）。
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ _LIMIT = {DisclosureLevel.L0: 80, DisclosureLevel.L1: 240}
 
 
 class TruncatingDiscloser(Discloser):
-    """L0 截断摘要 / L1 关键词片段 / L2 全文。无状态，无后端依赖。"""
+    """L0 摘要 / L1 片段 / L2 全文，优先预生成、兜底截断。无状态，无后端依赖。"""
 
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.DISCLOSER
@@ -27,18 +27,27 @@ class TruncatingDiscloser(Discloser):
     def health(self) -> None:
         return None
 
-    def _content(self, content: str, level: DisclosureLevel, keywords: List[str]) -> str:
-        if level == DisclosureLevel.L2:
-            return content
-        if level == DisclosureLevel.L1:
-            for kw in keywords:  # 围绕首个命中关键词取窗口
-                idx = content.find(kw)
-                if idx >= 0:
-                    start = max(0, idx - 30)
-                    end = start + _LIMIT[DisclosureLevel.L1]
-                    window = content[start:end]
-                    return ("…" if start else "") + window
-        limit = _LIMIT.get(level, 80)
+    def _l0(self, unit: MemoryUnit) -> str:
+        # 优先预生成 l0；空则截断 content 兜底
+        if unit.layers.l0:
+            return unit.layers.l0
+        content = unit.content
+        limit = _LIMIT[DisclosureLevel.L0]
+        return content if len(content) <= limit else content[:limit].rstrip() + "…"
+
+    def _l1(self, unit: MemoryUnit, keywords: List[str]) -> str:
+        # 优先预生成 l1；空则围绕关键词取窗兜底
+        if unit.layers.l1:
+            return unit.layers.l1
+        content = unit.content
+        for kw in keywords:  # 围绕首个命中关键词取窗口
+            idx = content.find(kw)
+            if idx >= 0:
+                start = max(0, idx - 30)
+                end = start + _LIMIT[DisclosureLevel.L1]
+                window = content[start:end]
+                return ("…" if start else "") + window
+        limit = _LIMIT[DisclosureLevel.L1]
         return content if len(content) <= limit else content[:limit].rstrip() + "…"
 
     def disclose(
@@ -59,7 +68,9 @@ class TruncatingDiscloser(Discloser):
                 RetrievedItem(
                     unit_id=unit.id,
                     score=su.score,
-                    content=self._content(unit.content, effective_level, query.keywords),
+                    abstract=self._l0(unit),
+                    overview=self._l1(unit, query.keywords),
+                    content=unit.content,  # L2 全文
                     level=effective_level,
                 )
             )

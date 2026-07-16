@@ -99,6 +99,11 @@ class PipelineRetriever(Retriever):
         self._min_score_ratio_uncalibrated = float(min_score_ratio_uncalibrated)
         self._min_results = max(0, int(min_results))
 
+    @property
+    def recallers(self) -> list[Recaller]:
+        """已接入的 recaller 列表（只读视图；外部不应原地修改）。"""
+        return self._recallers
+
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.RETRIEVER
 
@@ -373,6 +378,14 @@ def _build(config):
         recallers.append(RecallerProducer.dep(config, "vector_recaller", default="vector"))
     if config.get("graph_enabled", True):
         recallers.append(RecallerProducer.dep(config, "graph_recaller", default="graph"))
+    # L0/L1 分层召回：layers_index_enabled 默认 true（与构建侧对齐：默认建默认查）。
+    # recaller 内部 store 为 None 时 recall 返空，不破坏其他路（向后兼容）。
+    if config.get("layers_index_enabled", True):
+        recallers.append(RecallerProducer.dep(config, "keyword_l0_recaller", default="keyword_l0"))
+        recallers.append(RecallerProducer.dep(config, "keyword_l1_recaller", default="keyword_l1"))
+        if config.get("vector_enabled", True):
+            recallers.append(RecallerProducer.dep(config, "vector_l0_recaller", default="vector_l0"))
+            recallers.append(RecallerProducer.dep(config, "vector_l1_recaller", default="vector_l1"))
     # 精排器与 UnitReader 的真源 kv 与索引/构建侧共享同一实例。
     reranker = (
         RerankerProducer.dep(config, default="overlap")

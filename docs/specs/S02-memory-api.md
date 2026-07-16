@@ -60,7 +60,7 @@
 
 - **真值判定**：`str(metadata.get("infer", "")).strip().lower() == "true"`——大小写/空白不敏感，仅字符串 `"true"` 触发，其余值（含 `"false"`/缺省/空）均走默认路径。
 - **`infer="true"`**：原始记忆落 KV 真源但**不建索引**；hot path 同步走 `Engine → Evolver.evolve(units, EXTRACT)`——Extractor 抽取派生记忆 → `_dedup_batch` 判定+落盘+建索引（ADD/UPDATE/SUPERSEDE/NOOP）；**不提交** background EXTRACT（已同步抽取）。返回**派生单元列表**（从 `EvolveResult.created_ids` 反查 KV 读回）；派生全部被 dedup 判 update/noop 时合法返回**空列表**。
-- **缺省 / 非 `"true"`**：原始落盘 + 建索引，不自动提交演进（由调用方显式 `evolve()` 触发）。返回原始单元列表。
+- **缺省 / 非 `"true"`（infer=false）**：原文经 `classifier.classify` 打 tier+tags（纯 LLM 抽取 episodic/semantic/procedural + 1-3 个 tags）→ 落盘 `/memory/{id}` + 建索引。classifier 未注入时跳过（tier 保持 EPISODIC 默认，向后兼容）。返回原始单元列表。
 - **evolver 缺失**：`infer="true"` 但装配未注入 `Evolver` 时 Engine 抛 `RuntimeError`——装配问题暴露而非静默降级。默认装配 `evolver: orchestrating` 总是注入。
 
 #### procedural 开关（write 的过程记忆抽取）
@@ -74,7 +74,7 @@
 
 - **infer=true 时 evolver 内部收集上下文**（evolve 接口不变）：`recent_originals`（最近 10 条 infer 原文，做指代消解/语境，不参与去重）+ `related_memories`（`dedup.recall` 召回 10 条相关记忆，做去重提示）。两类参考项只拼进 extractor prompt，不进提取来源。去重靠 prompt 提示 + `_dedup_batch` 兜底（evolver 不再做产出后向量过滤）。详见 F02 决策7。
 - **KV key 前缀分离**：真源 key 按「是否建索引」带前缀——`/memory/{id}`（建索引记忆）、`/messages/{id}`（未建索引 infer 原文）。前缀常量与 helper 在 `common.type_def.memory`/`raw`。详见 F02 决策6。
-- **engine.write 不再调 classify**：原单元 tier 保持 EPISODIC 默认；分类由派生路径承担。详见 F02 决策9。
+- **engine.write infer=false 调 classify**：默认路径调 `classifier.classify` 给原文打 tier+tags（纯 LLM 抽取 episodic/semantic/procedural + tags）；infer=true 不经 classifier（extractor 产派生时自定）。详见 F02 决策9。
 - **`/v1/list` 收窄**：handler `_list` 用 `prefix="/memory/"` 直取，只返建索引的 Memory 记忆。详见 F02 决策10。
 
 > 开关由来与"为何默认不同步、为何经 Evolver 而非独立 Extractor"的取舍见 [`docs/features/api/F02-write-infer-extract.md`](../features/api/F02-write-infer-extract.md)；write 路径流程见 [`S03-memory-manage.md`](S03-memory-manage.md)。

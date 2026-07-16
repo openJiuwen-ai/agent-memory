@@ -55,10 +55,10 @@
 
 - **`procedural="true"`**（过程记忆）：原文**不落 KV**；喂 `evolve(EXTRACT)`。evolver 检测 procedural → 跳过 context 收集与 `_dedup_batch`，extractor 把本轮汇总成 **1 条** PROCEDURAL 执行历史，直接 `_persist` 落 `/memory/{id}` 建索引。语义是"把这轮做了什么记成一条可检索 how-to"。
 - **`infer="true"`**（同步抽取）：原文 MemoryUnit 落 `/messages/{id}`（**不建索引**，供后续轮做指代消解/语境）；同一批 MemoryUnit 喂 `evolve(EXTRACT)`。evolver 检测 infer → 内部收集最近 10 条原文（`recent_originals`，做指代/代词消解）+ 经 `dedup.recall` 召回 10 条相关记忆（`related_memories`，做去重提示）→ 拼进 extractor prompt → `_dedup_batch` 兜底落 `/memory/{id}`。返回派生单元列表。
-- **缺省**：原始 MemoryUnit 落 `/memory/{id}` + 建索引，不自动提交演进（由调用方显式 `evolve()` 触发）。
+- **缺省（infer=false）**：原文经 `classifier.classify` 打 tier+tags（纯 LLM 抽取 episodic/semantic/procedural + 1-3 个 tags）→ 落 `/memory/{id}` + 建索引。classifier 未注入时跳过（tier 保持 EPISODIC 默认，向后兼容）。
 - **evolver 缺失**：procedural/infer=true 但未注入 `Evolver`（`None`）时抛 `RuntimeError`——装配问题暴露而非静默降级。
 
-> engine 不再调 `Classifier.classify`（决策9）——原单元 tier 保持 EPISODIC 默认，分类职责改由派生路径承担（extractor 产派生时自定 SEMANTIC/PROCEDURAL）。`InMemoryEngine` 已不注入 `_classifier`。
+> tier+tags 的产出路径：**infer=false** 时由 `Classifier`（LLMClassifier）给原文打；**infer=true** 时由 `Extractor` 在派生时一并产出（不经 classifier）。两条路径产出同口径（episodic/semantic/procedural + tags）。procedural 路径 tier 固定 PROCEDURAL。
 
 **KV key 前缀分离**（决策6）：真源 key 按「是否建索引」带前缀——`/memory/{id}`（建索引记忆）、`/messages/{id}`（未建索引 infer 原文）；前缀常量与 helper 在 `common.type_def.memory` / `common.type_def.raw`。所有落盘/回查点用 `memory_key`/`messages_key`，按 key 匹配 id 处（lifecycle）用带前缀 key 直接比对。
 

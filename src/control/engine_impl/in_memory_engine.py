@@ -27,6 +27,7 @@ from common.type_def import (
 )
 from common.type_def.memory_codec import dumps, loads
 from construction import EvolveMode
+from construction.classifier import Classifier, ClassifierProducer
 from construction.evolver import Evolver, EvolverProducer
 from construction.index_builder import IndexBuilder, IndexBuilderProducer
 from control.base import ControlOperatorType
@@ -144,6 +145,7 @@ class InMemoryEngine(MemoryEngine):
         scheduler: Scheduler,
         evolver: Evolver,
         lifecycle: LifecycleManager,
+        classifier: Classifier | None = None,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
@@ -152,6 +154,9 @@ class InMemoryEngine(MemoryEngine):
         self._scheduler = scheduler
         self._evolver = evolver
         self._lifecycle = lifecycle
+        # classifier 可选：infer=false（默认路径）时给原文打 tier+tags；
+        # None 时跳过（原文 tier 保持 EPISODIC 默认，向后兼容）。
+        self._classifier = classifier
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
@@ -220,7 +225,10 @@ class InMemoryEngine(MemoryEngine):
             )
             return derived
 
-        # 默认路径：原始 MemoryUnit 落 /memory/{id} + 建索引
+        # 默认路径（infer=false）：classifier 给原文打 tier+tags → 落 /memory/{id} + 建索引。
+        # classifier 为 None 时跳过（tier 保持 EPISODIC 默认，向后兼容）。
+        if self._classifier is not None:
+            self._classifier.classify(units)
         for unit in units:
             self._kv.insert(scope, memory_key(unit.id), dumps(unit))
         self._index.build(units)                          # hot 轻量索引
@@ -426,6 +434,16 @@ class InMemoryEngine(MemoryEngine):
 def _build(config):
     # index_builder 缺省随 vector_enabled 在 hybrid/fulltext 间择一（与 evolver 一致，共享同一实例）。
     ib_default = "hybrid" if config.get("vector_enabled", True) else "fulltext"
+    # classifier 可选：config 声明了 classifier 命名空间具名实例则注入，None 时跳过（向后兼容）。
+    # infer=false 默认路径用它给原文打 tier+tags；infer=true 由 extractor 产出不经 classifier。
+
+    def _opt_classifier():
+        ctx = config.ctx
+        ns = ctx.namespaces.get(ClassifierProducer.TOP_NAME, {})
+        if "default" not in ns:
+            return None
+        return ClassifierProducer.build_named("default", ctx)
+
     return InMemoryEngine(
         IngestorProducer.dep(config, default="simple"),
         IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
@@ -434,4 +452,5 @@ def _build(config):
         SchedulerProducer.dep(config, default="in_process"),
         EvolverProducer.dep(config, default="orchestrating"),
         LifecycleProducer.dep(config, default="kv"),
+        classifier=_opt_classifier(),
     )

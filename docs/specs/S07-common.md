@@ -2,12 +2,13 @@
 
 ## 元信息
 
-| 项 | 值 |
-|---|---|
+| 项 | 值           |
+|---|-------------|
 | 关联模块 | src/common/ |
 | 最近一次修订日期 | 2026-07-12 |
 
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/control/F02-control-isolation-and-audit.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/control/F02-control-isolation-and-audit.md、docs/features/common/F01-memory-layer.md|
+
 ## 范围 / 边界
 
 **管什么**：
@@ -100,9 +101,17 @@ class Plugin(ABC):
 | `chat` | `(messages: list[ChatMessage], **options) -> str` | 执行一次对话补全，返回助手回复文本 |
 | `generate` | `(prompt: str, **options) -> str` | 单 prompt 便捷方法 |
 
+<<<<<<< Updated upstream
 `LLM` 的具名配置通过 `target` 选择 Provider Adapter，`params` 只由该 Adapter
 解释。通用 Adapter 不得默认发送其他厂商的扩展字段；健康检查与正常
 `chat` 必须使用同一套 Provider 请求选项。
+=======
+OpenAI 兼容实现支持厂商扩展请求体：构造参数 / 配置项 `llm_extra_body` 会作为
+OpenAI SDK 的 `extra_body` 默认值传入；单次 `chat(..., extra_body={...})` 会与默认值
+合并且同名字段以单次调用为准。常见 Aliyun / DashScope base URL 会自动补
+`{"enable_thinking": false}`；自定义网关可显式配置 `llm_extra_body:
+{"enable_thinking": false}` 或 `llm_enable_thinking: false`。
+>>>>>>> Stashed changes
 
 ### Reranker（`reranker/base.py`）
 
@@ -129,7 +138,8 @@ class Plugin(ABC):
 
 | 类型 | 关键字段 | 语义 |
 |------|----------|------|
-| `MemoryUnit` | id / scope / tier / segments / source / temporal / provenance / supersedes / tags / metadata / lifecycle | 记忆单元 |
+| `MemoryUnit` | id / scope / tier / layers / segments / source / temporal / provenance / supersedes / tags / metadata / lifecycle | 记忆单元 |
+| `ContentLayers` | l0 / l1 | 分层披露标注（l0=50-100 字概要、l1=200-500 字要点 overview）；默认空串，extractor 对超阈 content 产出 |
 | `Segment` | type / content / asset_ref / metadata | 内容段 |
 | `Temporal` | t_event / t_ingest / t_valid / t_invalid | 时间字段 |
 | `Relation` | id / source_id / target_id / relation / weight / metadata | 关联关系 |
@@ -149,6 +159,15 @@ class Plugin(ABC):
 |------|------|
 | `Modality` | TEXT / IMAGE / AUDIO / VIDEO / CODE / DOCUMENT |
 | `LifecycleState` | ACTIVE / SUPERSEDED / ARCHIVED / FORGOTTEN |
+
+### MemoryUnit 编解码（`type_def/memory_codec.py`）
+
+真源 KVStore 存**字节**，`MemoryUnit` 对象只在写入（`dumps`）与产出结果（`loads`）两处出现。编解码与 `MemoryUnit` 同住 `common/type_def`，纯函数、无存储后端依赖。
+
+- `dumps(unit) -> bytes`：`MemoryUnit` → JSON 字节，带 `_v` 版本号、枚举取 `.value`、时间取 isoformat。字段含 `layers`（`{l0, l1}`）。
+- `loads(raw) -> MemoryUnit | None`：逆 `dumps`；非 dict 返回 `None`（KVStore 中混有索引/跟踪等非 unit 记录，靠此过滤）。
+- **容错演进**：未知字段忽略、缺失字段取默认。加字段是兼容演进（老数据缺省读出，不升 `_v`）；改字段含义/结构才升 `_v` 并在 `loads` 按 `_v` 分支。当前 `_v=2`（segments 列表化）。
+- `layers` 字段缺失时 `loads` 取空串 `ContentLayers()`——老数据无迁移读出。
 
 ### 工厂注册机制（`factory/factory.py`）
 

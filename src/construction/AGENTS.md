@@ -20,11 +20,13 @@
 | `index_builder.py` | IndexBuilder 接口：多形式索引构建（文档/关键词/向量/图） |
 | `dedup.py` | Dedup 接口：去重召回（向量/倒排两路）+ DedupProducer 工厂 |
 | `evolver.py` | Evolver 接口：记忆自演进（抽取/关联/巩固/遗忘）+ EvolveMode + EvolveResult |
+| `layer_annotator.py` | LayerAnnotator 接口：分层披露标注（L0/L1 写入 unit.layers）+ LayerAnnotatorProducer 工厂 |
 | `extractor_impl/` | Extractor 实现目录（keyword / llm） |
 | `abstractor_impl/` | Abstractor 实现目录（concat / llm） |
 | `associator_impl/` | Associator 实现目录（keyword / llm） |
 | `classifier_impl/` | Classifier 实现目录（keyword / llm） |
-| `index_builder_impl/` | IndexBuilder 实现目录（fulltext / hybrid / vector） |
+| `index_builder_impl/` | IndexBuilder 实现目录（fulltext / hybrid / vector）；vector/fulltext 各扩展 L0/L1 分层索引（独立 store 分表，store None 跳过），详见 F01-memory-layer |
+| `layer_annotator_impl/` | LayerAnnotator 实现目录（keyword / llm）；evolver 抽取后调用，对超阈 content 标注 L0/L1 |
 | `dedup_impl/` | Dedup 实现目录（vector / keyword） |
 | `evolver_impl/` | Evolver 实现目录（orchestrating） |
 | `bootstrap.py` | 统一触发所有构建算子注册（含 dedup_impl） |
@@ -82,6 +84,9 @@
 
 9. **Dedup 与 IndexBuilder 共享底层 Store**  
    去重召回检索的是已索引内容，`Dedup` 实现取的 `VectorStore`/`FulltextStore` 必须与 IndexBuilder 写入的是同一实例（按字段名缓存命中）。
+
+10. **L0/L1 分层索引分表且 store None 跳过**  
+    `unit.layers.l0`/`l1` 非空时，VectorIndexBuilder/FulltextIndexBuilder 对整段文本（不切片）建独立 store 索引（record id 向量=`{uid}-layer-l0`/`-layer-l1`、全文=`{uid}:l0`/`:l1`，与 content 的 chunk id 不冲突），metadata `content_layer`="l0"/"l1"，content 表 chunk record 补 `content_layer="l2"`。物理分表不混 content。`vector_l0`/`vector_l1`/`fulltext_l0`/`fulltext_l1` 任一为 None 则该层跳过（不报错、不建空记录）。update 先删旧分层 record 再按新 layers 重建（SUPERSEDE 不残留），remove 按 id 幂等删。详见 F01-memory-layer。
 
 ## 与其他子目录的边界
 

@@ -17,7 +17,7 @@ import json
 from datetime import datetime
 from typing import Optional
 
-from .memory import LifecycleState, MemoryTier, MemoryUnit, Modality, Segment, Temporal
+from .memory import ContentLayers, LifecycleState, MemoryTier, MemoryUnit, Modality, Segment, Temporal
 from .scope import Scope
 
 # 正排 JSON schema 版本：写入侧固定写出，读取侧据此分流破坏性结构变更。
@@ -44,6 +44,10 @@ def dumps(unit: MemoryUnit) -> bytes:
             "id": unit.id,
             "scope": [unit.scope.org, unit.scope.user, unit.scope.agent, unit.scope.session],
             "tier": unit.tier.value,
+            "layers": {
+                "l0": unit.layers.l0,
+                "l1": unit.layers.l1,
+            },
             "segments": [
                 {"content": s.content, "assets": list(s.assets), "source": s.source.value}
                 for s in unit.segments
@@ -105,6 +109,10 @@ def loads(raw: bytes) -> MemoryUnit | None:
         id=payload.get("id", ""),
         scope=Scope(org=sc[0], user=sc[1], agent=sc[2], session=sc[3]),
         tier=MemoryTier(payload.get("tier", MemoryTier.EPISODIC.value)),
+        layers=ContentLayers(
+            l0=str((payload.get("layers") or {}).get("l0", "") or ""),
+            l1=str((payload.get("layers") or {}).get("l1", "") or ""),
+        ),
         segments=segments,
         source_ref=payload.get("source_ref", ""),
         temporal=Temporal(

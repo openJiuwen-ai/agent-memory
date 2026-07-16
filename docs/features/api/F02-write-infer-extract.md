@@ -176,13 +176,26 @@ infer=true 同步抽取时，**evolver 内部**收集两类上下文参考项（
 
 procedural 与 infer 互斥：procedural=true 时 even 不走 infer 的原文落 `/messages/`、不收集 context、不去重。语义是"把这轮做了什么记成一条可检索的 how-to"。
 
-### 决策9：engine.write 不再调 classify
+### 决策9：engine.write 调用 classify（infer=false 路径）+ Classifier 重写为纯 LLM tier+tags
 
-write 路径移除 `self._classifier.classify(units)` 调用——原单元 tier 保持 MemoryUnit 默认（EPISODIC），不再在写入时分类。`InMemoryEngine` 的 `_classifier` 字段、`__init__` 参数、`_build` 的 `ClassifierProducer.dep`、`defaults.py` engine params 的 `classifier` 引用一并移除。
+**修订（2026-07）**：决策9 原为"engine.write 不再调 classify"，现修订为 **infer=false 默认路径调 classify**：
 
-`Classifier` 类、`ClassifierProducer`、`test_classifier.py`、`examples/demo_classifier.py` 保留——Classifier 作为独立构建层算子仍可单独装配使用（demo 改为自行 `ClassifierProducer.dep` 装配实例，直接调 `clf.classify` 验证分类本身），只是 engine 不再注入。
+- `engine.write` 默认路径（infer=false）调 `classifier.classify(units)` 给原文打 tier+tags → 落 `/memory/{id}` + 建索引。
+- `engine.write` infer=true 路径不经 classifier（extractor 产派生时自定 tier+tags）。
+- `engine.write` procedural=true 路径不经 classifier（tier 固定 PROCEDURAL）。
+- `InMemoryEngine.__init__` 加回 `classifier: Classifier | None = None` 可选参数；`_build` 经 `_opt_classifier` 按 config 注入（命名空间有 default 才注入，None 时跳过向后兼容）。
+- `defaults.py` classifier default 改 `llm`（原 keyword）。
 
-分类职责改由派生路径承担：extractor 产派生时自定 tier（SEMANTIC/PROCEDURAL）。原单元 tier=EPISODIC 不影响检索（检索按向量/倒排召回，不按 tier 过滤——除非 dedup `tier_filter=True` 显式开）。
+**Classifier 重写为纯 LLM tier+tags**（`llm_classifier.py`）：
+- 去掉五维分类（topic/importance/confidence/freshness）+ 规则通道 + FeatureExtractor 依赖。
+- 单次 LLM 调用产出每条 `tier`（episodic/semantic/procedural，非法兜底 EPISODIC）+ `tags`（1-3 个，清洗截断），prompt 与 extractor 的 tier/tags 抽取口径对齐。
+- LLM 不可用/解析失败降级空 tags + EPISODIC，不阻断。
+
+**tier+tags 产出路径分工**：
+- infer=false → Classifier（LLMClassifier）给原文打。
+- infer=true → Extractor 在派生时一并产出（不经 classifier）。
+- procedural=true → tier 固定 PROCEDURAL。
+- `examples/demo_classifier.py` 改为自行 `ClassifierProducer.dep` 装配实例验证分类本身。
 
 ### 决策10：/v1/list 收窄到 /memory/ 全部
 

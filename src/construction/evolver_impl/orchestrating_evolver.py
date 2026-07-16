@@ -50,6 +50,7 @@ from construction.dedup import Dedup, DedupProducer
 from construction.evolver import EvolveMode, Evolver, EvolveResult, EvolverProducer
 from construction.extractor import Extractor, ExtractorProducer
 from construction.index_builder import IndexBuilder, IndexBuilderProducer
+from construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
 from storage.graph import GraphProducer, GraphStore
 from storage.kv import KvProducer, KVStore
 from storage.types import Edge, Node
@@ -144,6 +145,7 @@ class OrchestratingEvolver(Evolver):
         graph: GraphStore,
         dedup: Dedup,
         llm: LLM,
+        layer_annotator: LayerAnnotator | None = None,
         *,
         dedup_medium_similarity: float = 0.7,
         dedup_high_similarity: float = 0.9,
@@ -156,6 +158,8 @@ class OrchestratingEvolver(Evolver):
         self._graph = graph
         self._dedup = dedup
         self._llm = llm
+        # 分层标注算子：None 表示不标注（向后兼容）；非 None 时在抽取/升华后标注 L0/L1。
+        self._layer_annotator = layer_annotator
         self.relations: List[Relation] = []  # ASSOCIATE 产物（同时已落图）
 
         # 去重阈值配置（min/top_k/tier_filter/scope_filter 已下沉到 recaller；
@@ -759,6 +763,27 @@ class OrchestratingEvolver(Evolver):
         return list(seen.values())[: self._related_memories_top_k]
 
     # ------------------------------------------------------------------
+    # 分层标注（抽取/升华后、去重落盘前）
+    # ------------------------------------------------------------------
+
+    def _annotate_layers(self, units: List[MemoryUnit]) -> None:
+        """对派生候选标注 L0/L1 分层（best effort，不阻断）。
+
+        ``layer_annotator`` 为 None 时跳过（向后兼容）。标注在去重落盘前，保证
+        落盘的 unit 已带 layers（见 F01-memory-layer）。annotator 内部按阈值筛选，
+        短 content 留空。失败降级为空 layers。
+        """
+        if self._layer_annotator is None or not units:
+            return
+        try:
+            self._layer_annotator.annotate(units)
+        except Exception as exc:
+            logger.warning(
+                "Evolver._annotate_layers: annotate failed for %d units: %s, proceeding without layers",
+                len(units), exc,
+            )
+
+    # ------------------------------------------------------------------
     # Evolver 契约
     # ------------------------------------------------------------------
 
@@ -783,6 +808,7 @@ class OrchestratingEvolver(Evolver):
                 )
                 if not extracted:
                     return EvolveResult()
+                self._annotate_layers(extracted)
                 created = self._persist(extracted)
                 return EvolveResult(created_ids=created)
             # 非 procedural 的 EXTRACT 路径（infer 同步抽取 / background EXTRACT）：
@@ -792,6 +818,7 @@ class OrchestratingEvolver(Evolver):
             logger.info("Evolver: EXTRACT extractor returned %d units", len(extracted))
             if not extracted:
                 return EvolveResult()
+            self._annotate_layers(extracted)
             result = self._dedup_batch(extracted)
             return result
         if mode == EvolveMode.CONSOLIDATE:
@@ -799,6 +826,7 @@ class OrchestratingEvolver(Evolver):
             logger.info("Evolver: CONSOLIDATE abstractor returned %d units", len(abstracted))
             if not abstracted:
                 return EvolveResult()
+            self._annotate_layers(abstracted)
             result = self._dedup_batch(abstracted)
             return result
         if mode == EvolveMode.ASSOCIATE:
@@ -843,6 +871,17 @@ def _build(config):
     vector_on = config.get("vector_enabled", True)
     ib_default = "hybrid" if vector_on else "fulltext"
     dr_default = "vector" if vector_on else "keyword"
+    # layer_annotator 可选：config 声明了 layer_annotator 命名空间具名实例则注入，
+    # 否则 None（evolver 跳过标注，向后兼容）。直接走 build_named 取具名实例，
+    # 不经 dep（dep 从组件 params 取字段，layer_annotator 是顶层命名空间）。
+
+    def _opt_annotator():
+        ctx = config.ctx
+        ns = ctx.namespaces.get(LayerAnnotatorProducer.TOP_NAME, {})
+        if "default" not in ns:
+            return None
+        return LayerAnnotatorProducer.build_named("default", ctx)
+
     return OrchestratingEvolver(
         extractor=ExtractorProducer.dep(config, default="keyword"),
         abstractor=AbstractorProducer.dep(config, default="concat"),
@@ -852,6 +891,7 @@ def _build(config):
         graph=GraphProducer.dep(config, default="memory"),
         dedup=DedupProducer.dep(config, default=dr_default),
         llm=LlmProducer.dep(config, default="echo"),
+        layer_annotator=_opt_annotator(),
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
         dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
     )

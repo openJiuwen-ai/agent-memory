@@ -10,13 +10,10 @@ from common.type_def import (
     MemoryTier,
 )
 from construction.extractor_impl.llm_extractor import ExtractorImpl
-
 from tests.unit.construction.fixtures import (
     MockLLM,
-    RuleFeatureExtractor,
     create_test_unit,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helper: 创建 ExtractorImpl with MockLLM
@@ -27,7 +24,6 @@ def _make_extractor(llm_responses: list[str] | None = None) -> ExtractorImpl:
     """创建测试用 ExtractorImpl。"""
     return ExtractorImpl(
         llm=MockLLM(responses=llm_responses),
-        feature_extractor=RuleFeatureExtractor(),
         min_confidence=0.5,
         retry_max_retries=3,
         retry_backoff_ms=1000,
@@ -233,12 +229,15 @@ def test_extract_provenance():
 
 
 # ---------------------------------------------------------------------------
-# T-E-09: FeatureExtractor 富化
+# T-E-09: LLM 抽 tag
 # ---------------------------------------------------------------------------
 
 
-def test_extract_feature_enrichment():
-    """T-E-09: 含关键词 → tags 包含关键词（FeatureExtractor 富化）。"""
+def test_extract_tags_from_llm():
+    """T-E-09: LLM 在候选里输出 tags → 派生 unit 的 tags 包含之（+ extracted 兜底）。
+
+    tier/tags 均由 LLM 在同一 prompt 产出，不再走 FeatureExtractor 富化。
+    """
     extractor = _make_extractor(
         [
             json.dumps(
@@ -246,7 +245,9 @@ def test_extract_feature_enrichment():
                     {
                         "source_id": "u1",
                         "target": "preference",
+                        "tier": "semantic",
                         "content": "用户偏好用 Python 写代码",
+                        "tags": ["Python", "preference"],
                         "evidence": "偏好 Python",
                         "confidence": 1.0,
                     }
@@ -258,11 +259,104 @@ def test_extract_feature_enrichment():
     result = extractor.extract(units)
 
     assert len(result) >= 1
-    # RuleFeatureExtractor 会提取关键词
     derived = result[0]
-    # 至少应该有一些 tags（关键词提取）
-    # RuleFeatureExtractor 提取英文词 "Python"
+    # LLM 抽的 tag 进了 tags（extracted 兜底也在）
     assert any("Python" in tag or "python" in tag.lower() for tag in derived.tags)
+    assert "extracted" in derived.tags
+
+
+# ---------------------------------------------------------------------------
+# T-E-14: tier 由 LLM 判定
+# ---------------------------------------------------------------------------
+
+
+def test_extract_tier_by_llm():
+    """T-E-14: LLM 输出 tier=episodic → 派生 unit tier==EPISODIC（不再恒为 SEMANTIC）。"""
+    extractor = _make_extractor(
+        [
+            json.dumps(
+                [
+                    {
+                        "source_id": "u1",
+                        "target": "event",
+                        "tier": "episodic",
+                        "content": "昨天发生了数据库迁移",
+                        "tags": ["database", "migration"],
+                        "evidence": "昨天发生",
+                        "confidence": 0.9,
+                    }
+                ]
+            )
+        ]
+    )
+    units = [create_test_unit("u1", "昨天发生了数据库迁移")]
+    result = extractor.extract(units)
+
+    assert len(result) == 1
+    assert result[0].tier == MemoryTier.EPISODIC
+
+
+def test_extract_tier_invalid_fallback_semantic():
+    """T-E-15: LLM 输出越界 tier（如 core）→ 兜底 SEMANTIC，不产出 CORE/WORKING。"""
+    extractor = _make_extractor(
+        [
+            json.dumps(
+                [
+                    {
+                        "source_id": "u1",
+                        "target": "fact",
+                        "tier": "core",  # 越界，抽取阶段不允许
+                        "content": "用户是资深工程师",
+                        "tags": ["role"],
+                        "confidence": 1.0,
+                    }
+                ]
+            )
+        ]
+    )
+    units = [create_test_unit("u1", "用户是资深工程师")]
+    result = extractor.extract(units)
+
+    assert len(result) == 1
+    assert result[0].tier == MemoryTier.SEMANTIC
+
+
+# ---------------------------------------------------------------------------
+# T-E-16: tags 清洗与截断
+# ---------------------------------------------------------------------------
+
+
+def test_extract_tags_sanitized_and_capped():
+    """T-E-16: LLM 输出 4 个 tag（含空串/重复）→ 清洗去重后截断到 ≤3。"""
+    extractor = _make_extractor(
+        [
+            json.dumps(
+                [
+                    {
+                        "source_id": "u1",
+                        "target": "fact",
+                        "tier": "semantic",
+                        "content": "用户偏好 Python",
+                        # 4 项：含一个重复、一个空串——去重去空后 3 个，再加 extracted 兜底
+                        "tags": ["Python", "preference", "", "Python"],
+                        "confidence": 1.0,
+                    }
+                ]
+            )
+        ]
+    )
+    units = [create_test_unit("u1", "用户偏好 Python")]
+    result = extractor.extract(units)
+
+    assert len(result) == 1
+    tags = result[0].tags
+    # LLM 抽的 tag 去重去空后 ≤3，extracted 兜底追加
+    assert "Python" in tags
+    assert "preference" in tags
+    assert "extracted" in tags
+    # 空串与重复不应出现
+    assert "" not in tags
+    assert tags.count("Python") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -356,3 +450,5 @@ def test_extract_merged_topic_produces_one_unit():
     assert "美式" in result[0].content
     assert "拿铁" in result[0].content
     assert "不加糖" in result[0].content
+
+

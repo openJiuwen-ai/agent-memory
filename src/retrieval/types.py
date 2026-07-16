@@ -111,12 +111,20 @@ class ScoredUnit:
 
 @dataclass
 class RetrievedItem:
-    """最终结果项：按披露层级加载的内容 + 融合后得分。"""
+    """最终结果项：三层级内容 + 融合后得分。
+
+    ``abstract`` / ``overview`` / ``content`` 分别对应 L0 摘要 / L1 片段 / L2 全文，
+    一次性加载（来自 ``unit.layers.l0`` / ``unit.layers.l1`` / ``unit.content``）。
+    调用方按需取用：紧预算用 abstract，中等用 overview，全文用 content。
+    ``level`` 标记本次披露的主层级（ADAPTIVE 按 max_tokens 选定）。
+    """
 
     unit_id: str = ""  # 记忆单元 id
     score: float = 0.0  # 融合/重排后的最终得分
-    content: str = ""  # 按层级加载的内容：L0 摘要 / L1 片段 / L2 全文
-    level: DisclosureLevel = DisclosureLevel.L0  # 实际披露层级
+    abstract: str = ""  # L0 摘要（unit.layers.l0，50-100 字）
+    overview: str = ""  # L1 片段（unit.layers.l1，200-500 字）
+    content: str = ""  # L2 全文（unit.content）
+    level: DisclosureLevel = DisclosureLevel.L0  # 本次披露主层级
 
 
 @dataclass

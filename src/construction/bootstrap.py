@@ -23,4 +23,5 @@ def register_constructors() -> None:
     import_module("construction.evolver_impl")
     import_module("construction.extractor_impl")
     import_module("construction.index_builder_impl")
+    import_module("construction.layer_annotator_impl")
     _REGISTERED = True

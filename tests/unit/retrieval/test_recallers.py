@@ -6,6 +6,7 @@ import pytest
 
 from common.errors import ValidationError
 from retrieval.recaller_impl.graph_recaller import GraphRecaller
+from retrieval.recaller_impl.keyword_recaller import KeywordRecaller
 from retrieval.recaller_impl.vector_recaller import VectorRecaller
 from retrieval.types import ParsedQuery, RetrievalQuery
 from storage.graph_impl.in_memory_graph_store import InMemoryGraphStore
@@ -93,3 +94,42 @@ def test_graph_recaller_returns_seed_neighbor(scope) -> None:
     results = recaller.recall(scope, ParsedQuery(raw="coffee", keywords=["coffee"]), 10)
 
     assert "B" in {result.unit_id for result in results}
+
+
+# ---------------------------------------------------------------------------
+# L0/L1 分层召回（store 为 None 时跳过；layer 参数正确）
+# ---------------------------------------------------------------------------
+
+
+def test_vector_recaller_layer_none_store_returns_empty(scope) -> None:
+    """L0/L1 recaller store 未注入（None）→ recall 返空，不报错。"""
+    recaller = VectorRecaller(None, layer="l0")
+    parsed = ParsedQuery(raw="x", vector=[0.1, 0.2, 0.3])
+    assert recaller.recall(scope, parsed, 10) == []
+
+    recaller_l1 = VectorRecaller(None, layer="l1")
+    assert recaller_l1.recall(scope, parsed, 10) == []
+
+
+def test_keyword_recaller_layer_none_store_returns_empty(scope) -> None:
+    """L0/L1 keyword recaller store 未注入 → recall 返空。"""
+    recaller = KeywordRecaller(None, layer="l0")
+    parsed = ParsedQuery(raw="x", keywords=["x"])
+    assert recaller.recall(scope, parsed, 10) == []
+
+
+def test_vector_recaller_layer_param_set() -> None:
+    """layer 参数正确传入（l2/l0/l1）。"""
+    r_l2 = VectorRecaller(None, layer="l2")
+    r_l0 = VectorRecaller(None, layer="l0")
+    r_l1 = VectorRecaller(None, layer="l1")
+    assert r_l2.layer == "l2"
+    assert r_l0.layer == "l0"
+    assert r_l1.layer == "l1"
+
+
+def test_keyword_recaller_layer_param_set() -> None:
+    """layer 参数正确传入。"""
+    assert KeywordRecaller(None, layer="l2").layer == "l2"
+    assert KeywordRecaller(None, layer="l0").layer == "l0"
+    assert KeywordRecaller(None, layer="l1").layer == "l1"

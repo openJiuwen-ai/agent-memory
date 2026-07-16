@@ -18,7 +18,7 @@
 | `discloser.py` | Discloser 接口：渐进式披露（L0 摘要/L1 片段/L2 全文） |
 | `retriever.py` | Retriever 接口：检索层入口，编排完整链路 |
 | `query_parser_impl/` | QueryParser 实现目录（simple_query_parser / sanitize / time_parse） |
-| `recaller_impl/` | Recaller 实现目录（keyword / vector / graph） |
+| `recaller_impl/` | Recaller 实现目录（keyword / keyword_l0/l1 / vector / vector_l0/l1 / graph） |
 | `fuser_impl/` | Fuser 实现目录（rrf / weighted_rrf） |
 | `discloser_impl/` | Discloser 实现目录（structured / truncating） |
 | `retriever_impl/` | Retriever 实现目录 |
@@ -50,6 +50,16 @@
      ↓ 按层级加载内容（L0/L1/L2）
 → RetrievalResult（items + trajectory）
 ```
+
+## L0/L1 分层召回 + 三层披露
+
+L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L0）/片段（L1），三层并行召回 + RRF 融合 + 三层一次性披露。详见 `docs/features/common/F01-memory-layer.md` §6。
+
+**构建侧**（已就绪）：`LayerAnnotator` 对长 content 产出 `unit.layers.l0`/`l1`，`VectorIndexBuilder`/`FulltextIndexBuilder` 对非空 layers 整段 embed 建独立分表（`vector_store.layers_l0/l1`、`fulltext_store.layers_l0/l1`），record id `{unit_id}-l0/l1`。
+
+**召回侧**：复用 `VectorRecaller`/`KeywordRecaller` 加 `layer` 参数（l2/l0/l1），注册 `vector_l0/l1`/`keyword_l0/l1` 具名实例，查对应分表 store。`layers_index_enabled` 开时（回退 globals）接入——store 为 None 时 recall 返空（该层未配，向后兼容）。同通道不同层级，Fuser 按 unit_id 聚合（多路多层级命中取 RRF 累加）。
+
+**披露侧**：`RetrievedItem` 三层一次性填充——`abstract`(L0) / `overview`(L1) / `content`(L2)，优先用 `unit.layers.l0/l1`（空则回退截断/取窗兜底）。调用方按需取用：紧预算用 abstract，中等用 overview，全文用 content。`level` 标本次披露主层级（ADAPTIVE 按 max_tokens 选）。
 
 ## 行为铁律
 

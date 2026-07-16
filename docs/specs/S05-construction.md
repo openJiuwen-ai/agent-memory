@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/construction/ |
-| 最近一次修订日期 | 2026-06-25 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md |
+| 最近一次修订日期 | 2026-07-03 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/common/F01-memory-layer.md |
 
 ## 范围 / 边界
 
@@ -62,6 +62,9 @@ class ConstructionOperator(ABC):
 |------|------|------|
 | `extract` | `(units: list[MemoryUnit]) -> list[MemoryUnit]` | 从一批原始记忆单元中提取零或多条低抽象粒度的派生单元 |
 
+派生单元的 `tier`/`tags` 由 LLM 在抽取时产出。`layers`（L0/L1 分层标注）不由 Extractor
+产出——由 Evolver 抽取后委托 `LayerAnnotator` 生成（见下文 LayerAnnotator 节 + F01-memory-layer）。
+
 ### Abstractor（`abstractor.py`）
 
 抽象与精炼/升华，产出高抽象粒度的新记忆单元。
@@ -88,6 +91,18 @@ class ConstructionOperator(ABC):
 |------|------|------|
 | `classify` | `(units: list[MemoryUnit]) -> list[MemoryUnit]` | 为一批记忆单元打上 tier/主题/重要度等分类标签，返回更新后的单元 |
 
+### LayerAnnotator（`layer_annotator.py`）
+
+分层披露标注，给已有 `MemoryUnit` 写 `layers.l0`/`layers.l1`（不产出新记忆）。
+
+| 方法 | 签名 | 语义 |
+|------|------|------|
+| `annotate` | `(units: list[MemoryUnit]) -> list[MemoryUnit]` | 为一批 unit 生成 L0/L1 标注，原地写 `unit.layers`，返回原列表 |
+
+按 `layer_annotator_threshold`（默认 512）筛选：仅对 `len(content) > threshold` 的 unit
+标注，短 content 留空。best effort——失败降级为空 layers，不阻断演进。Evolver 在
+EXTRACT/CONSOLIDATE 抽取（升华）后、去重落盘前调用，保证落盘 unit 带 layers。详见 F01。
+
 ### IndexBuilder（`index_builder.py`）
 
 多形式索引构建与维护。
@@ -109,6 +124,11 @@ MemoryUnit
 │   → Chunker.chunk(unit.content) → chunks
 │   → Embedder.embed(chunks) → VectorRecord(id={unit.id}-{chunk.id}, vector, metadata={unit_id,tier})
 │   → VectorStore.insert + KVStore 维护 chunk_id 跟踪（供 update/remove 读旧 chunk）
+├─ L0/L1 分层路（FulltextIndexBuilder + VectorIndexBuilder 扩展）：
+│   → unit.layers.l0/l1 非空且对应 store 已注入 → 整段不切片
+│   → Document/VectorRecord(id={unit.id}-l0/-l1, text/vector=layers.l0/l1, metadata={unit_id,layer})
+│   → 写独立 FulltextStore/VectorStore 实例（不同 collection/index = 分表，与 content 物理隔离）
+│   → store 为 None 跳过该层（向后兼容 + 配置降级）；update 先删后建，remove 幂等删
 ├─ 图路（Evolver ASSOCIATE 模式编排）：
 │   → FeatureExtractor → Node → GraphStore.insert
 │   → Associator.associate → Edge → GraphStore.insert
@@ -116,6 +136,7 @@ MemoryUnit
 ```
 
 > 注：文档索引（path → unit_id 映射）与 FusionStore 融合索引在当前实现中**未落地**，属设计预留。
+> L0/L1 分层索引的召回接入未落地（为披露层预留），详见 F01。
 
 ### Evolver（`evolver.py`）
 
