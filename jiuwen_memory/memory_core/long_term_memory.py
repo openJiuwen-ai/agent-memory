@@ -544,14 +544,6 @@ class LongTermMemory(metaclass=Singleton):
             memory_logger.warning("Middle memory processor is already running")
             return
 
-        self._stop_event.clear()
-        if not self._executor_active:
-            self._batch_executor = ThreadPoolExecutor(
-                max_workers=20,
-                thread_name_prefix="batch_memory_processor",
-            )
-            self._executor_active = True
-
         if agent_config is None:
             agent_config = AgentMemoryConfig(
                 mem_variables=[],
