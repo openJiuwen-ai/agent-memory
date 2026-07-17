@@ -14,13 +14,13 @@ from jiuwen_memory.memory_core.process.extract.long_term_memory_extractor import
 @pytest.fixture(autouse=True)
 def reset_long_term_memory_singleton():
     instance = Singleton._instances.pop(LongTermMemory, None)
-    if instance and instance._executor_active:
+    if instance and getattr(instance, "_executor_active", False):
         instance._batch_executor.shutdown(wait=False)
 
     yield
 
     instance = Singleton._instances.pop(LongTermMemory, None)
-    if instance and instance._executor_active:
+    if instance and getattr(instance, "_executor_active", False):
         instance._batch_executor.shutdown(wait=False)
 
 
@@ -72,11 +72,15 @@ async def test_middle_mem_to_long_keeps_dialogue_object_and_skips_initial_contin
     memory._batch_delete_middle_messages = AsyncMock()
     captured_batches = []
 
-    def fake_run_batch_in_thread(batch_data, *args):
-        captured_batches.append(batch_data)
-        return {"success": True, "mem_ids": batch_data["mem_ids"], "batch_size": len(batch_data["dialogues"])}
+    async def fake_process_dialogue_batch_to_long_term_safe(
+        dialogue_batch, agent_config, user_id, scope_id, session_id, timestamp_str, mem_ids
+    ):
+        captured_batches.append({"dialogues": dialogue_batch, "mem_ids": mem_ids, "timestamp": timestamp_str})
+        return {"success": True, "mem_ids": mem_ids, "batch_size": len(dialogue_batch)}
 
-    memory._run_batch_in_thread = fake_run_batch_in_thread
+    memory._process_dialogue_batch_to_long_term_safe = AsyncMock(
+        side_effect=fake_process_dialogue_batch_to_long_term_safe
+    )
 
     await memory.middle_mem_to_long(
         agent_config=AgentMemoryConfig(),
@@ -107,11 +111,15 @@ async def test_middle_mem_to_long_passes_dialogue_content_to_continuity_check():
     memory._batch_delete_middle_messages = AsyncMock()
     captured_batches = []
 
-    def fake_run_batch_in_thread(batch_data, *args):
-        captured_batches.append(batch_data)
-        return {"success": True, "mem_ids": batch_data["mem_ids"], "batch_size": len(batch_data["dialogues"])}
+    async def fake_process_dialogue_batch_to_long_term_safe(
+        dialogue_batch, agent_config, user_id, scope_id, session_id, timestamp_str, mem_ids
+    ):
+        captured_batches.append({"dialogues": dialogue_batch, "mem_ids": mem_ids, "timestamp": timestamp_str})
+        return {"success": True, "mem_ids": mem_ids, "batch_size": len(dialogue_batch)}
 
-    memory._run_batch_in_thread = fake_run_batch_in_thread
+    memory._process_dialogue_batch_to_long_term_safe = AsyncMock(
+        side_effect=fake_process_dialogue_batch_to_long_term_safe
+    )
 
     await memory.middle_mem_to_long(
         agent_config=AgentMemoryConfig(),

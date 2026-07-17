@@ -114,6 +114,12 @@ async def test_add_middle_term_memory_multiple_units():
     assert result == [unit1, unit2]
 
     assert semantic_store.add_docs.call_count == 1
+    call_args = semantic_store.add_docs.call_args
+    assert call_args.kwargs["is_middle"] == True
+    assert call_args.kwargs["docs"] == [
+        ("msg-001", "用户喜欢喝咖啡", "2026-06-23 10:00:00"),
+        ("msg-002", "用户周末去健身房", "2026-06-23 11:00:00"),
+    ]
 
 
 @pytest.mark.asyncio

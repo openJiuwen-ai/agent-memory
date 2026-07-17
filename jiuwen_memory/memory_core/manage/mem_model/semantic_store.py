@@ -104,7 +104,7 @@ class SemanticStore:
             metadata={"collection_name": collection_name, "embedding_dim": embedding_dim}
         )
 
-    async def add_docs(self, docs: List[Tuple[str, str]], table_name: str, scope_id: str | None = None,
+    async def add_docs(self, docs: List[Tuple[str, str] | Tuple[str, str, str]], table_name: str, scope_id: str | None = None,
                        is_middle: bool | None = False) -> bool:
         """
         Add documents to a specified table after generating their embeddings.
@@ -130,11 +130,13 @@ class SemanticStore:
 
         try:
             if is_middle:
-                memory_ids, texts, timestamp = zip(*docs)
+                memory_ids, texts, timestamps = zip(*docs)
             else:
                 memory_ids, texts = zip(*docs)
+                timestamps = []
             memory_ids = list(memory_ids)
             texts = list(texts)
+            timestamps = list(timestamps)
 
             # Generate embeddings for the texts
             embeddings = await self.embedding_model.embed_documents(texts=texts)
@@ -154,11 +156,11 @@ class SemanticStore:
             # Prepare data for vector store, content is not stored
             data = []
             if is_middle:
-                for doc_id, embedding in zip(memory_ids, embeddings):
+                for doc_id, text, timestamp, embedding in zip(memory_ids, texts, timestamps, embeddings):
                     data.append({
                         "id": doc_id,
                         "embedding": embedding,
-                        "content": texts,
+                        "content": text,
                         "timestamp": timestamp
                     })
             else:
@@ -269,8 +271,8 @@ class SemanticStore:
                     (
                         result.fields.get("id", ""),
                         result.score,
-                        result.fields.get("content", [""])[0],
-                        result.fields.get("timestamp", ""),
+                        self._get_middle_field_value(result.fields.get("content", "")),
+                        self._get_middle_field_value(result.fields.get("timestamp", "")),
                     )
                     for result in results
                 ]
@@ -286,6 +288,12 @@ class SemanticStore:
                 metadata={"collection_name": table_name}
             )
             return []
+
+    @staticmethod
+    def _get_middle_field_value(value):
+        if isinstance(value, (list, tuple)):
+            return value[0] if value else ""
+        return value
 
     async def delete_table(self, table_name: str) -> None:
         """

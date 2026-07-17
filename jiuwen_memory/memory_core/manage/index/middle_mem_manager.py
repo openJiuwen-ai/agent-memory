@@ -47,21 +47,20 @@ class MiddleTermMemoryManager(BaseMemoryManager):
             )
             return []
 
-        for unit in valid_units:
-            vector_success = await self._add_middle_term_memory_to_vector(
-                middleterm_unit=unit,
-                user_id=user_id,
-                scope_id=scope_id,
-                semantic_store=semantic_store
+        vector_success = await self._add_middle_term_memories_to_vector(
+            middleterm_units=valid_units,
+            user_id=user_id,
+            scope_id=scope_id,
+            semantic_store=semantic_store
+        )
+        if not vector_success:
+            raise build_error(
+                StatusCode.MEMORY_ADD_MEMORY_EXECUTION_ERROR,
+                memory_type=self.mem_type,
+                error_msg="middle term memory add to vector store failed",
             )
-            if not vector_success:
-                raise build_error(
-                    StatusCode.MEMORY_ADD_MEMORY_EXECUTION_ERROR,
-                    memory_type=self.mem_type,
-                    error_msg="middle term memory add to vector store failed",
-                )
 
-            return valid_units
+        return valid_units
 
     async def update(self, user_id: str, scope_id: str, mem_id: str, new_memory: str, **kwargs):
         """update memory by its id."""
@@ -104,6 +103,21 @@ class MiddleTermMemoryManager(BaseMemoryManager):
         semantic_store: SemanticStore
     ) -> bool:
         """Add plaintext summary to vector store for semantic recall."""
+        return await self._add_middle_term_memories_to_vector(
+            middleterm_units=[middleterm_unit],
+            user_id=user_id,
+            scope_id=scope_id,
+            semantic_store=semantic_store,
+        )
+
+    async def _add_middle_term_memories_to_vector(
+        self,
+        middleterm_units: list[MiddleTermUnit],
+        user_id: str,
+        scope_id: str,
+        semantic_store: SemanticStore
+    ) -> bool:
+        """Add plaintext summaries to vector store for semantic recall."""
         if not semantic_store:
             raise build_error(
                 StatusCode.MEMORY_ADD_MEMORY_EXECUTION_ERROR,
@@ -114,8 +128,9 @@ class MiddleTermMemoryManager(BaseMemoryManager):
                                        scope_id=scope_id,
                                        mem_type=self.mem_type)
 
+        docs = [(unit.message_mem_id, unit.content, unit.timestamp) for unit in middleterm_units]
         return await semantic_store.add_docs(
-            docs=[(middleterm_unit.message_mem_id, middleterm_unit.content, middleterm_unit.timestamp)],
+            docs=docs,
             table_name=table_name,
             scope_id=scope_id,
             is_middle=True
