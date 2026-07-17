@@ -571,51 +571,16 @@ class LongTermMemory(metaclass=Singleton):
         if self._enable_hierarchical_memory:
             self._stop_event.set()
 
-            tasks = [task for task in self._middle_memory_tasks.values() if not task.done()]
             if self._background_task is not None and not self._background_task.done():
-                tasks.append(self._background_task)
+                self._background_task.cancel()
 
-            unique_tasks = set(tasks)
-            for task in unique_tasks:
-                task.cancel()
+                try:
+                    await self._background_task
+                except asyncio.CancelledError:
+                    pass
 
-            if unique_tasks:
-                await asyncio.gather(*unique_tasks, return_exceptions=True)
-
-            self._middle_memory_tasks.clear()
             self._background_task = None
             memory_logger.info("Middle memory process stopped")
-
-    def _run_batch_in_thread(
-        self, batch_data: dict, agent_config: AgentMemoryConfig, user_id: str, scope_id: str, session_id: str
-    ):
-        """Run batch processing in independent thread
-        Each thread creates independent event loop
-        """
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        try:
-            result = loop.run_until_complete(
-                self._process_dialogue_batch_to_long_term_safe(
-                    dialogue_batch=batch_data["dialogues"],
-                    agent_config=agent_config,
-                    user_id=user_id,
-                    scope_id=scope_id,
-                    session_id=session_id,
-                    timestamp_str=batch_data["timestamp"],
-                    mem_ids=batch_data["mem_ids"],
-                )
-            )
-            return result
-        except Exception as e:
-            import traceback
-            memory_logger.error(
-                f"Batch processing failed in thread: {str(e)}", exception=str(e), traceback=traceback.format_exc()
-            )
-            return {"success": False, "mem_ids": batch_data["mem_ids"], "error": str(e)}
-        finally:
-            loop.close()
 
     async def _process_dialogue_batch_to_long_term_safe(
         self, dialogue_batch, agent_config, user_id, scope_id, session_id, timestamp_str, mem_ids
