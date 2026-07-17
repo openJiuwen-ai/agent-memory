@@ -16,6 +16,7 @@ def register_controllers() -> None:
     global _REGISTERED
     if _REGISTERED:
         return
+    import_module("control.pipeline_impl")
     import_module("control.engine_impl")
     import_module("control.governance_impl")
     import_module("control.lifecycle_impl")

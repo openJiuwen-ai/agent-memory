@@ -19,6 +19,25 @@ class Action(str, Enum):
     SHARE = "share"  # 再授权给其他 scope
 
 
+@dataclass(frozen=True)
+class PermissionContext:
+    """权限判断的资源上下文。
+
+    `PermissionManager.check` 的 scope/action 只描述"谁对哪个范围做什么"；
+    本上下文补充"操作的资源是什么类型、属于哪类记忆"，供按 memory_type /
+    pipeline profile 分流的权限策略使用。调用方无法可信声明已有 unit 的
+    memory_type；这类上下文必须由 API/Engine 从真源元数据解析。
+    """
+
+    resource_type: str = ""  # write_input / query / memory_unit / delete_selector / admin / job
+    memory_type: str = ""  # coding / episodic / procedural ...
+    pipeline: str = ""  # pipeline profile 名（如调用侧或真源元数据已知）
+    unit_id: str = ""  # 已存在记忆单元 id；非 unit 操作为空
+    scope: Scope = field(default_factory=Scope)  # 资源真实归属；未知时为空 scope
+    tags: tuple[str, ...] = ()
+    metadata: dict[str, str] = field(default_factory=dict)
+
+
 @dataclass
 class Grant:
     """一条跨 scope 授权：grantor 把自己 scope 内的某些动作授权给 grantee。"""

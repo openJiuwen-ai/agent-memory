@@ -26,7 +26,7 @@ from construction import EvolveMode
 from retrieval import RetrievalQuery, RetrievalResult
 
 from .base import ControlOperator
-from .types import Channel, DeleteSelector, MemoryPatch
+from .types import Channel, DeleteSelector, MemoryPatch, PermissionContext
 
 
 class EngineProducer(Factory):
@@ -63,6 +63,26 @@ class MemoryEngine(ControlOperator):
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         """混合检索召回：scope/权限校验后委托 ``Retriever.retrieve(scope, query)``
         执行完整链路。scope 作为显式参数传入（不随 query 携带）。"""
+
+    @abstractmethod
+    async def permission_context_for_unit(
+        self, unit_id: str, scope: Scope
+    ) -> PermissionContext:
+        """读取已有记忆的权限判断上下文。
+
+        只返回鉴权需要的元数据（memory_type/tags/metadata 等），不返回 content/assets。
+        API 层用于 get/update/delete 等只有 unit_id 的入口在正式数据操作前做类型化鉴权。
+        """
+
+    @abstractmethod
+    async def permission_contexts_for_delete(
+        self, selector: DeleteSelector
+    ) -> list[PermissionContext]:
+        """解析 delete selector 会命中的候选 unit 权限上下文。
+
+        Engine 负责按 selector 扫描候选，但只暴露鉴权元数据；API 层据返回结果逐条
+        调用 PermissionManager.check，全部通过后才执行 delete。
+        """
 
     @abstractmethod
     async def get(

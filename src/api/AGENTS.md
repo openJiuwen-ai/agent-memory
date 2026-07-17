@@ -13,7 +13,7 @@
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（write/recall/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke） |
 | `memory_api_impl/` | 具体实现目录 |
 | `memory_api_impl/assembly.py` | 装配入口：`build_kernel(config)` 递归构建 MemoryAPI 实例 |
-| `memory_api_impl/concrete_memory_api.py` | ConcreteMemoryAPI：委托 Engine/Governor/Scheduler/PermissionManager + PEP 鉴权 |
+| `memory_api_impl/local_memory_api.py` | LocalMemoryAPI：委托 Engine/Governor/Scheduler/PermissionManager + PEP 鉴权 |
 
 ## 行为铁律
 
@@ -39,7 +39,8 @@
 
 ```
 MemoryAPI.method(scope=target, identity=caller)
-  → PermissionManager.check(actor=identity, target=scope, action=<对应动作>)
+  → 构造 PermissionContext（write/recall 来自入参；get/update/delete 来自 Engine 元数据解析）
+  → PermissionManager.check(actor=identity, target=scope, action=<对应动作>, context=...)
     → 通过 → 委托 Engine/Governor/PolicyManager（仅传 scope，不传 identity）
     → 拒绝 → 抛 PermissionDeniedError
   → 落审计事件（含 identity + action + target_id + 时间）
@@ -65,4 +66,4 @@ MemoryAPI.method(scope=target, identity=caller)
 1. `identity` 为必填 keyword-only 参数，与 `scope` 同为 Scope 类型，强制具名传入防止位置传反。
 2. 所有数据面方法（write/recall/get/update/delete/evolve）都需要鉴权，治理面（inspect/trace/audit）也需要鉴权。
 3. 装配由 `assembly.build_kernel(config)` 完成，递归调用各 Producer.create_from(spec)。
-4. 实现类（ConcreteMemoryAPI）不对外暴露，外部只依赖 `MemoryAPI` 抽象接口。
+4. 实现类（LocalMemoryAPI）不对外暴露，外部只依赖 `MemoryAPI` 抽象接口。

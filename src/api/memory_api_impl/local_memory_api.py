@@ -1,10 +1,11 @@
 """:class:`~api.memory_api.MemoryAPI` 的单进程实现（``LocalMemoryAPI``）+ 装配。
 
 ``LocalMemoryAPI`` 是鉴权与审计的执行点（PEP）：每个涉及租户数据/治理的
-方法先 ``PermissionManager.check(identity, target, action)``，不通过抛
-:class:`~common.errors.PermissionDeniedError`，通过后落入口审计并把已鉴权的
-target scope 透传到引擎/各控制算子（identity 不下沉）。同步方法以 ``asyncio.run``
-桥接引擎的异步协程，供 CLI/脚本使用。各控制算子按其抽象基类型注入。
+方法先构造权限上下文并调用 ``PermissionManager.check(..., context=...)``，
+不通过抛 :class:`~common.errors.PermissionDeniedError`，通过后落入口审计并把
+已鉴权的 target scope 透传到引擎/各控制算子（identity 不下沉）。同步方法以
+``asyncio.run`` 桥接引擎的异步协程，供 CLI/脚本使用。各控制算子按其
+抽象基类型注入。
 
 :func:`build_kernel` / :func:`assemble` 把各层具体实现串成一个可直接
 调用的内核——是「把整个项目串起来」的落点；生产装配只需在此换成真实实现。
@@ -26,6 +27,7 @@ from common.type_def import (
     AuditEvent,
     Context,
     FilterClause,
+    FilterOp,
     MemoryUnit,
     Modality,
     Scope,
@@ -36,7 +38,15 @@ from control.governance import Governor
 from control.permission import PermissionManager
 from control.policy import PolicyManager
 from control.scheduler import Scheduler
-from control.types import Action, Channel, DeleteSelector, Grant, JobInfo, MemoryPatch
+from control.types import (
+    Action,
+    Channel,
+    DeleteSelector,
+    Grant,
+    JobInfo,
+    MemoryPatch,
+    PermissionContext,
+)
 from retrieval.types import DisclosureLevel, RetrievalQuery, RetrievalResult
 
 # 管理面（admin / 全局审计）没有具体 target scope，统一以「根 scope」为鉴权目标：
@@ -57,6 +67,74 @@ def _parse_max_tokens(raw: str | None) -> int | None:
         return int(raw)
     except (TypeError, ValueError):
         raise ValidationError(f"max_tokens must be an integer, got {raw!r}") from None
+
+
+def _context_detail(context: PermissionContext | None) -> Dict[str, str]:
+    if context is None:
+        return {}
+    detail = {
+        "permission_resource_type": context.resource_type,
+        "permission_memory_type": context.memory_type,
+        "permission_pipeline": context.pipeline,
+        "permission_unit_id": context.unit_id,
+    }
+    if context.tags:
+        detail["permission_tags"] = ",".join(context.tags)
+    return {key: value for key, value in detail.items() if value}
+
+
+def _memory_type_from_filters(filters: List[FilterClause] | None) -> str:
+    for clause in filters or []:
+        if clause.field in {"memory_type", "metadata.memory_type"} and clause.op == FilterOp.EQ:
+            return str(clause.value).strip()
+    return ""
+
+
+def _write_permission_context(
+    scope: Scope,
+    tags: List[str] | None,
+    metadata: Dict[str, str] | None,
+) -> PermissionContext:
+    meta = {key: str(value) for key, value in (metadata or {}).items()}
+    return PermissionContext(
+        resource_type="write_input",
+        memory_type=meta.get("memory_type", "").strip(),
+        pipeline=meta.get("pipeline", "").strip(),
+        scope=scope,
+        tags=tuple(tags or ()),
+        metadata=meta,
+    )
+
+
+def _recall_permission_context(
+    context: Context,
+    filters: List[FilterClause] | None,
+) -> PermissionContext:
+    extensions = {key: str(value) for key, value in context.extensions.items()}
+    return PermissionContext(
+        resource_type="query",
+        memory_type=extensions.get("memory_type", "").strip() or _memory_type_from_filters(filters),
+        pipeline=extensions.get("pipeline", "").strip(),
+        scope=context.scope,
+        metadata=extensions,
+    )
+
+
+def _selector_permission_context(selector: DeleteSelector, scope: Scope) -> PermissionContext:
+    return PermissionContext(
+        resource_type="delete_selector",
+        scope=scope,
+        tags=tuple(selector.tags),
+        metadata={"mode": selector.mode.value},
+    )
+
+
+def _unit_lookup_permission_context(unit_id: str, scope: Scope) -> PermissionContext:
+    return PermissionContext(
+        resource_type="memory_unit_lookup",
+        unit_id=unit_id,
+        scope=scope,
+    )
 
 
 class LocalMemoryAPI(MemoryAPI):
@@ -112,14 +190,16 @@ class LocalMemoryAPI(MemoryAPI):
         audit_action: str,
         target_id: str = "",
         *,
+        context: PermissionContext | None = None,
         check_permission: bool = True,
     ) -> Dict[str, str]:
         if not check_permission:
             return {
                 "permission_check": "disabled",
                 "permission_reason": "permission check disabled",
+                **_context_detail(context),
             }
-        if not self._perm.check(identity, target, action):
+        if not self._perm.check(identity, target, action, context=context):
             self._record_audit(
                 identity,
                 audit_action,
@@ -128,12 +208,14 @@ class LocalMemoryAPI(MemoryAPI):
                 detail={
                     "permission_check": "enabled",
                     "permission_reason": f"permission denied for action={action.value}",
+                    **_context_detail(context),
                 },
             )
             raise PermissionDeniedError(action.value)
         return {
             "permission_check": "enabled",
             "permission_reason": "permission check passed",
+            **_context_detail(context),
         }
 
     def _log(
@@ -192,7 +274,14 @@ class LocalMemoryAPI(MemoryAPI):
         metadata: Dict[str, str] | None = None,
         occurred_at: datetime | None = None,
     ) -> List[MemoryUnit]:
-        auth = self._authorize(identity, scope, Action.WRITE, "write")
+        permission_context = _write_permission_context(scope, tags, metadata)
+        auth = self._authorize(
+            identity,
+            scope,
+            Action.WRITE,
+            "write",
+            context=permission_context,
+        )
         units = await self._engine.write(
             content,
             scope,
@@ -221,7 +310,14 @@ class LocalMemoryAPI(MemoryAPI):
         # 调用级 options 顺 parser 透传给自定义检索模块；Context 对象本身不进内核。
         # 约定 key max_tokens（自适应披露预算）在此解析为 typed int 写入 RetrievalQuery，
         # 并从透传 extensions 中移除，避免与内核已解释的字段重复。
-        auth = self._authorize(identity, context.scope, Action.READ, "recall")
+        permission_context = _recall_permission_context(context, filters)
+        auth = self._authorize(
+            identity,
+            context.scope,
+            Action.READ,
+            "recall",
+            context=permission_context,
+        )
         options = dict(context.extensions)
         max_tokens = _parse_max_tokens(options.pop(EXT_MAX_TOKENS, None))
         rq = RetrievalQuery(
@@ -241,7 +337,23 @@ class LocalMemoryAPI(MemoryAPI):
     def get(
         self, unit_id: str, scope: Scope, *, identity: Scope, as_of: datetime | None = None
     ) -> MemoryUnit:
-        auth = self._authorize(identity, scope, Action.READ, "get", unit_id)
+        self._authorize(
+            identity,
+            scope,
+            Action.READ,
+            "get",
+            unit_id,
+            context=_unit_lookup_permission_context(unit_id, scope),
+        )
+        permission_context = asyncio.run(self._engine.permission_context_for_unit(unit_id, scope))
+        auth = self._authorize(
+            identity,
+            scope,
+            Action.READ,
+            "get",
+            unit_id,
+            context=permission_context,
+        )
         unit = asyncio.run(self._engine.get(unit_id, scope, as_of))
         self._log(identity, "get", unit_id, detail={**auth, "after_unit_id": unit.id})
         return unit
@@ -249,7 +361,23 @@ class LocalMemoryAPI(MemoryAPI):
     def update(
         self, unit_id: str, scope: Scope, patch: MemoryPatch, *, identity: Scope
     ) -> MemoryUnit:
-        auth = self._authorize(identity, scope, Action.UPDATE, "update", unit_id)
+        self._authorize(
+            identity,
+            scope,
+            Action.UPDATE,
+            "update",
+            unit_id,
+            context=_unit_lookup_permission_context(unit_id, scope),
+        )
+        permission_context = asyncio.run(self._engine.permission_context_for_unit(unit_id, scope))
+        auth = self._authorize(
+            identity,
+            scope,
+            Action.UPDATE,
+            "update",
+            unit_id,
+            context=permission_context,
+        )
         before = asyncio.run(self._engine.get(unit_id, scope, None))
         unit = asyncio.run(self._engine.update(unit_id, scope, patch))
         self._log(
@@ -266,7 +394,36 @@ class LocalMemoryAPI(MemoryAPI):
         # 按 selector 的目标 scope 鉴权 DELETE；未限定 scope（如纯按 id/标签的
         # 跨范围删除）则退到根 scope 闸门，要求更高权限。
         target = selector.scope or _ROOT
-        auth = self._authorize(identity, target, Action.DELETE, "delete")
+        selector_context = _selector_permission_context(selector, target)
+        if selector.scope is not None or not selector.unit_ids:
+            self._authorize(
+                identity,
+                target,
+                Action.DELETE,
+                "delete",
+                context=selector_context,
+            )
+        contexts = asyncio.run(self._engine.permission_contexts_for_delete(selector))
+        if not contexts:
+            auth = self._authorize(
+                identity,
+                target,
+                Action.DELETE,
+                "delete",
+                context=selector_context,
+            )
+        else:
+            auth = {"permission_check": "enabled", "permission_reason": "permission check passed"}
+            for permission_context in contexts:
+                unit_auth = self._authorize(
+                    identity,
+                    permission_context.scope,
+                    Action.DELETE,
+                    "delete",
+                    permission_context.unit_id,
+                    context=permission_context,
+                )
+                auth.update(unit_auth)
         deleted = asyncio.run(self._engine.delete(selector))
         self._log(
             identity,

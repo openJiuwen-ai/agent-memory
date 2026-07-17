@@ -33,12 +33,14 @@ from construction.index_builder import IndexBuilder, IndexBuilderProducer
 from control.base import ControlOperatorType
 from control.engine import EngineProducer, MemoryEngine
 from control.lifecycle import LifecycleManager, LifecycleProducer
+from control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
 from control.scheduler import Scheduler, SchedulerProducer
 from control.types import (
     Channel,
     DeleteMode,
     DeleteSelector,
     MemoryPatch,
+    PermissionContext,
     UpdateMode,
 )
 from ingest.ingestor import Ingestor, IngestorProducer
@@ -103,6 +105,18 @@ def _downweight_importance(unit: MemoryUnit) -> None:
     unit.metadata["importance"] = f"{max(0.0, value * 0.5):g}"
 
 
+def _permission_context_from_unit(unit: MemoryUnit) -> PermissionContext:
+    return PermissionContext(
+        resource_type="memory_unit",
+        memory_type=str(unit.metadata.get("memory_type", "")).strip(),
+        pipeline=str(unit.metadata.get("pipeline", "")).strip(),
+        unit_id=unit.id,
+        scope=unit.scope,
+        tags=tuple(unit.tags),
+        metadata=dict(unit.metadata),
+    )
+
+
 def _matches_delete_selector(unit: MemoryUnit, selector: DeleteSelector) -> bool:
     wanted_ids = set(selector.unit_ids)
     wanted_tags = set(selector.tags)
@@ -146,6 +160,7 @@ class InMemoryEngine(MemoryEngine):
         evolver: Evolver,
         lifecycle: LifecycleManager,
         classifier: Classifier | None = None,
+        pipeline: MemoryPipeline | None = None,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
@@ -154,6 +169,7 @@ class InMemoryEngine(MemoryEngine):
         self._scheduler = scheduler
         self._evolver = evolver
         self._lifecycle = lifecycle
+        self._pipeline = pipeline
         # classifier 可选：infer=false（默认路径）时给原文打 tier+tags；
         # None 时跳过（原文 tier 保持 EPISODIC 默认，向后兼容）。
         self._classifier = classifier
@@ -163,6 +179,16 @@ class InMemoryEngine(MemoryEngine):
 
     def health(self) -> None:
         return None
+
+    def _write_binding(self, units: list[MemoryUnit]) -> PipelineBinding | None:
+        if self._pipeline is None:
+            return None
+        return self._pipeline.select_for_write(units)
+
+    def _recall_binding(self, query: RetrievalQuery) -> PipelineBinding | None:
+        if self._pipeline is None:
+            return None
+        return self._pipeline.select_for_recall(query)
 
     async def write(
         self,
@@ -204,6 +230,11 @@ class InMemoryEngine(MemoryEngine):
                 unit.segments[0].assets = list(assets)
             unit.tags = list(tags or [])
 
+        binding = self._write_binding(units)
+        evolver = binding.evolver if binding is not None else self._evolver
+        index_builder = binding.index_builder if binding is not None else self._index
+        classifier = binding.classifier if binding is not None else self._classifier
+
         if procedural or infer:
             # 同步抽取路径（procedural / infer 共用）：原文不进默认落盘，直接喂 Evolver(EXTRACT)。
             # evolver 据单元 metadata 区分模式：
@@ -211,11 +242,11 @@ class InMemoryEngine(MemoryEngine):
             # - infer：原文落 /messages/（不建索引，供后续轮指代消解/语境）+ 收集 context + 走 dedup，
             #   派生落 /memory/。evolver 还负责 /messages/ 的最近 10 条淘汰。
             # procedural 与 infer 互斥，若两者同传按 procedural 语义（原文不落）。
-            if self._evolver is None:
+            if evolver is None:
                 raise RuntimeError(
                     "Engine.write procedural/infer=True requires an Evolver (装配未注入 evolver)"
                 )
-            result = self._evolver.evolve(units, EvolveMode.EXTRACT)
+            result = evolver.evolve(units, EvolveMode.EXTRACT)
             derived = [self._load(scope, uid) for uid in result.created_ids]
             logger.info(
                 "Engine.write %s: %d originals, %d derived added, scope=%s",
@@ -227,15 +258,35 @@ class InMemoryEngine(MemoryEngine):
 
         # 默认路径（infer=false）：classifier 给原文打 tier+tags → 落 /memory/{id} + 建索引。
         # classifier 为 None 时跳过（tier 保持 EPISODIC 默认，向后兼容）。
-        if self._classifier is not None:
-            self._classifier.classify(units)
+        if classifier is not None:
+            classifier.classify(units)
         for unit in units:
             self._kv.insert(scope, memory_key(unit.id), dumps(unit))
-        self._index.build(units)                          # hot 轻量索引
+        index_builder.build(units)                        # hot 轻量索引
         return units
 
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
-        return self._retriever.retrieve(scope, query)
+        binding = self._recall_binding(query)
+        retriever = binding.retriever if binding is not None else self._retriever
+        return retriever.retrieve(scope, query)
+
+    async def permission_context_for_unit(
+        self, unit_id: str, scope: Scope
+    ) -> PermissionContext:
+        return _permission_context_from_unit(self._load(scope, unit_id))
+
+    async def permission_contexts_for_delete(
+        self, selector: DeleteSelector
+    ) -> list[PermissionContext]:
+        scopes = [selector.scope] if selector.scope is not None else self._kv.scopes()
+        if not scopes:
+            scopes = [Scope()]
+        contexts: list[PermissionContext] = []
+        for scope in scopes:
+            for unit in self._list_units(scope):
+                if _matches_delete_selector(unit, selector):
+                    contexts.append(_permission_context_from_unit(unit))
+        return contexts
 
     def _load(self, scope: Scope, unit_id: str) -> MemoryUnit:
         """从真源读字节并反序列化（产出结果的边界点）。"""
@@ -444,6 +495,13 @@ def _build(config):
             return None
         return ClassifierProducer.build_named("default", ctx)
 
+    def _opt_pipeline():
+        ctx = config.ctx
+        ns = ctx.namespaces.get(PipelineProducer.TOP_NAME, {})
+        if "default" not in ns:
+            return None
+        return PipelineProducer.build_named("default", ctx)
+
     return InMemoryEngine(
         IngestorProducer.dep(config, default="simple"),
         IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
@@ -453,4 +511,5 @@ def _build(config):
         EvolverProducer.dep(config, default="orchestrating"),
         LifecycleProducer.dep(config, default="kv"),
         classifier=_opt_classifier(),
+        pipeline=_opt_pipeline(),
     )

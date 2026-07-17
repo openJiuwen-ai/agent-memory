@@ -35,11 +35,11 @@ class MemoryAPI(ABC):
 
     **鉴权与审计的执行点（PEP）在本层**：每个涉及租户数据/治理的方法都收
     ``scope``（操作的目标范围 target）与 ``identity``（调用方身份）两个 Scope。
-    本层先 ``PermissionManager.check(identity, scope, action)``，不通过即抛
-    :class:`~common.errors.PermissionDeniedError`（适用于下列所有方法，各方法
-    不再重复说明）；通过后才委托 :class:`~control.engine.MemoryEngine`，且仅
-    透传已鉴权的 target ``scope``（identity 不下沉，下游信任 target）；同时在本层
-    落带 identity 的入口审计事件。
+    本层先构造权限上下文并调用 ``PermissionManager.check(identity, scope, action,
+    context=...)``，不通过即抛 :class:`~common.errors.PermissionDeniedError`
+    （适用于下列所有方法，各方法不再重复说明）；通过后才委托
+    :class:`~control.engine.MemoryEngine`，且仅透传已鉴权的 target ``scope``
+    （identity 不下沉，下游信任 target）；同时在本层落带 identity 的入口审计事件。
 
     ``identity`` 一律为**必填 keyword-only** 参数：它与 target ``scope`` 同为
     Scope 类型，强制具名传入可杜绝二者位置传反导致的越权。
