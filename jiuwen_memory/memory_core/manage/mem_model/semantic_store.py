@@ -104,8 +104,8 @@ class SemanticStore:
             metadata={"collection_name": collection_name, "embedding_dim": embedding_dim}
         )
 
-    async def add_docs(self, docs: List[Tuple[str, str] | Tuple[str, str, str]], table_name: str, scope_id: str | None = None,
-                       is_middle: bool | None = False) -> bool:
+    async def add_docs(self, docs: List[Tuple[str, str] | Tuple[str, str, str]], table_name: str, 
+                       scope_id: str | None = None, is_middle: bool | None = False) -> bool:
         """
         Add documents to a specified table after generating their embeddings.
 
