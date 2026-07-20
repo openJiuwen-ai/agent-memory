@@ -1,7 +1,9 @@
 # coding: utf-8
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import pytest_asyncio
 
 from jiuwen_memory.common.utils.singleton import Singleton
 from jiuwen_memory.foundation.llm.schema.message import AssistantMessage, BaseMessage, UserMessage
@@ -11,17 +13,34 @@ from jiuwen_memory.memory_core.process.extract.common import ExtractMemoryParams
 from jiuwen_memory.memory_core.process.extract.long_term_memory_extractor import LongTermMemoryExtractor
 
 
-@pytest.fixture(autouse=True)
-def reset_long_term_memory_singleton():
+async def _cleanup_long_term_memory_singleton():
     instance = Singleton._instances.pop(LongTermMemory, None)
-    if instance and getattr(instance, "_executor_active", False):
-        instance._batch_executor.shutdown(wait=False)
+    if instance is None:
+        return
+
+    stop_event = getattr(instance, "_stop_event", None)
+    if stop_event is not None:
+        stop_event.set()
+
+    middle_memory_tasks = getattr(instance, "_middle_memory_tasks", {})
+    tasks = [task for task in middle_memory_tasks.values() if not task.done()]
+    for task in tasks:
+        task.cancel()
+
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    middle_memory_tasks.clear()
+    instance._background_task = None
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def reset_long_term_memory_singleton():
+    await _cleanup_long_term_memory_singleton()
 
     yield
 
-    instance = Singleton._instances.pop(LongTermMemory, None)
-    if instance and getattr(instance, "_executor_active", False):
-        instance._batch_executor.shutdown(wait=False)
+    await _cleanup_long_term_memory_singleton()
 
 
 @pytest.mark.asyncio

@@ -529,7 +529,7 @@ class LongTermMemory(metaclass=Singleton):
         self.middle_memory_check_interval = config.middle_memory_check_interval
 
 
-    def start(
+    async def start(
         self,
         user_id: str = DEFAULT_VALUE,
         scope_id: str = DEFAULT_VALUE,
@@ -568,19 +568,26 @@ class LongTermMemory(metaclass=Singleton):
 
     async def stop(self):
         """Stop background tasks (safe shutdown)"""
-        if self._enable_hierarchical_memory:
-            self._stop_event.set()
+        if not self._enable_hierarchical_memory:
+            return
 
-            if self._background_task is not None and not self._background_task.done():
-                self._background_task.cancel()
+        self._stop_event.set()
 
-                try:
-                    await self._background_task
-                except asyncio.CancelledError:
-                    pass
+        tasks = [
+            task
+            for task in self._middle_memory_tasks.values()
+            if not task.done()
+        ]
 
-            self._background_task = None
-            memory_logger.info("Middle memory process stopped")
+        for task in tasks:
+            task.cancel()
+
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        self._middle_memory_tasks.clear()
+        self._background_task = None
+        memory_logger.info("Middle memory process stopped")
 
     async def _process_dialogue_batch_to_long_term_safe(
         self, dialogue_batch, agent_config, user_id, scope_id, session_id, timestamp_str, mem_ids
@@ -971,7 +978,7 @@ class LongTermMemory(metaclass=Singleton):
         else:
             timestamp = timestamp.astimezone(timezone.utc)
         if self._enable_hierarchical_memory:
-            self.start(user_id=user_id, scope_id=scope_id, agent_config=agent_config)
+            await self.start(user_id=user_id, scope_id=scope_id, agent_config=agent_config)
             if not self._validate_id(event_type=LogEventType.MEMORY_STORE, scope_id=scope_id):
                 memory_logger.error(
                     "Invalid scope_id format.",
