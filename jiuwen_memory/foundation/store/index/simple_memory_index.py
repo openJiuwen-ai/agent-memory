@@ -26,7 +26,8 @@ from jiuwen_memory.common.exception.errors import build_error
 from jiuwen_memory.common.logging import memory_logger
 from jiuwen_memory.common.logging.events import LogEventType
 from jiuwen_memory.foundation.store.base_kv_store import BaseKVStore
-from jiuwen_memory.foundation.store.base_memory_index import BaseMemoryIndex, MemoryDoc, StorageCodec
+from jiuwen_memory.foundation.codec import StorageCodec
+from jiuwen_memory.foundation.store.base_memory_index import BaseMemoryIndex, MemoryDoc
 from jiuwen_memory.foundation.store.base_vector_store import (
     BaseVectorStore,
     CollectionSchema,

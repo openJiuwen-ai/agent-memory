@@ -11,35 +11,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 from pydantic import BaseModel, Field
+from jiuwen_memory.foundation.codec import StorageCodec
 
-
-@runtime_checkable
-class StorageCodec(Protocol):
-    """
-    .. code-block:: python
-
-        class AesStorageCodec:
-            def __init__(self, key: bytes):
-                self._key = key
-
-            def encode(self, text: str) -> str:
-                return aes_encrypt(text)
-
-            def decode(self, data: str) -> str:
-                return aes_decrypt(data)
-
-        index = SimpleMemoryIndex(...)
-        index.set_storage_codec(AesStorageCodec(key=b"..."))
-    """
-
-    def encode(self, text: str) -> str:
-        ...
-
-    def decode(self, data: str) -> str:
-        ...
+__all__ = ["StorageCodec", "MemoryDoc", "BaseMemoryIndex"]
 
 
 class MemoryDoc(BaseModel):

@@ -6,7 +6,7 @@ from jiuwen_memory.common.logging import memory_logger
 from jiuwen_memory.common.logging.events import LogEventType
 
 
-class AesStorageCodec:
+class AesStorageCodec:  # implements StorageCodec (Protocol, via duck typing)
     """AES-256-GCM storage codec implementing the StorageCodec protocol.
 
     Injected into :class:`BaseMemoryIndex` subclasses via

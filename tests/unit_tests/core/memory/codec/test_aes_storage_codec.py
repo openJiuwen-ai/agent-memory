@@ -8,7 +8,7 @@ from jiuwen_memory.common.security.crypt_utils import (
     CryptUtils,
 )
 from jiuwen_memory.common.utils.singleton import Singleton
-from jiuwen_memory.memory_core.codec.aes_storage_codec import AesStorageCodec
+from jiuwen_memory.foundation.codec import AesStorageCodec
 
 
 _VALID_KEY = b"0123456789abcdef0123456789abcdef"

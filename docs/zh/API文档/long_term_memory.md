@@ -192,6 +192,7 @@ def set_config(self, config: MemoryEngineConfig) -> None
   * `forbidden_variables: str`：禁止记忆的变量（逗号分隔的变量名）。默认值：`""`（不禁止任何变量）。
   * `input_msg_max_len: int`：输入消息最大长度（默认 8192）；
   * `crypto_key: bytes`：AES 加密密钥（长度必须为 32 字节；为空则不加密）。
+  * `codec: str`：第三方 codec 的注册名（如 `"sm4"`、`"hsm"`），为空则使用 `crypto_key` 构造内置 `AesStorageCodec`。详见下方「自定义 codec 拓展」。
 
 **前置条件**：
 
@@ -201,7 +202,41 @@ def set_config(self, config: MemoryEngineConfig) -> None
 **行为说明**：
 
 - 管理器（`FragmentMemoryManager`、`SummaryManager`、`WriteManager`）统一使用 `memory_index`（`BaseMemoryIndex`）作为后端。
-- 若 `crypto_key` 非空，会自动创建 `AesStorageCodec` 并调用 `memory_index.set_storage_codec()`，对记忆内容 `text` 字段进行存储层透明 AES-256-GCM 加解密。
+- 加解密解析逻辑：
+  - **内置 AES（默认）**：`config.codec` 为空时，由 `config.crypto_key` 构造 `AesStorageCodec`。`crypto_key` 非空即对记忆内容 `text` 字段做存储层透明 AES-256-GCM 加解密。
+  - **第三方 codec 拓展**：`config.codec` 指定一个注册名时，引擎从注册表中按名查出**已构造好的** `StorageCodec` 实例并注入，`crypto_key` 被忽略；查不到则回退到内置 AES 并打 warning。
+  - 解析出的 codec 会被注入到 `memory_index`（经 `set_storage_codec`）、`message_store`（经 `set_codec`）以及 `VariableManager`，统一覆盖记忆内容、消息内容、变量值等字符串载荷。
+
+#### 自定义 codec 拓展
+
+内置仅提供 `AesStorageCodec`（AES-256-GCM）。接入国密 SM4、HSM 硬件密码机等非 AES 方案时，通过 **「按名查实例」** 的注册表机制接入，无需改动引擎代码：
+
+```python
+>>> from jiuwen_memory.foundation.codec import (
+...     StorageCodec,
+...     register_storage_codec,
+... )
+>>> from jiuwen_memory.memory_core.config import MemoryEngineConfig
+>>>
+>>> # 1. 自定义 codec：实现 encode/decode 两个方法即可（duck typing，无需继承）
+>>> class SM4StorageCodec:
+...     def __init__(self, key: bytes):       # 任意构造签名——单参 SM4
+...         self._key = key
+...     def encode(self, text: str) -> str: ...
+...     def decode(self, data: str) -> str: ...
+...
+>>> # 多参 codec（如 HSM：证书/槽位/PIN）同样支持，因为引擎只查实例、不调用构造函数
+>>> # register_storage_codec("hsm", HSMCodec(cert=..., slot=..., pin=...))
+>>>
+>>> # 2. 注册已构造好的实例（注册须在 set_config 之前完成）
+>>> register_storage_codec("sm4", SM4StorageCodec(key=sm4_key))
+>>>
+>>> # 3. 配置里用注册名引用，引擎按名查实例并注入
+>>> config = MemoryEngineConfig(crypto_key=b"", codec="sm4")
+>>> memory.set_config(config)
+```
+
+> **约束**：自定义 codec 须满足 `decode(encode(x)) == x`；对 `None`/空串原样返回（与 `AesStorageCodec` 空密钥直通一致）。协议定义见 `jiuwen_memory.foundation.codec.StorageCodec`。注册表为进程级单例（`get_default_registry()`），**非线程安全**——注册应在导入/启动阶段完成，勿在热路径并发写。
 
 **异常**：
 

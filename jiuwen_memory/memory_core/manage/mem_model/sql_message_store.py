@@ -15,7 +15,7 @@ from jiuwen_memory.foundation.llm.schema.message import BaseMessage
 from jiuwen_memory.foundation.store.base_message_store import (
     BaseMessageStore, MessageMetadata,
 )
-from jiuwen_memory.memory_core.codec.aes_storage_codec import AesStorageCodec
+from jiuwen_memory.foundation.codec import AesStorageCodec, StorageCodec
 from jiuwen_memory.memory_core.migration.migrator.memory_meta_manager import MemoryMetaManager
 
 DEFAULT_TABLE_NAME = "user_message"
@@ -29,7 +29,8 @@ class SqlMessageStore(BaseMessageStore):
     def __init__(self,
         crypto_key: Optional[bytes] = None,
         sql_db_store: object = None,
-        table_name: str = DEFAULT_TABLE_NAME):
+        table_name: str = DEFAULT_TABLE_NAME,
+        codec: Optional[StorageCodec] = None):
         """
         Initialize SQL message storage
 
@@ -37,11 +38,18 @@ class SqlMessageStore(BaseMessageStore):
             crypto_key: Encryption key (optional)
             sql_db_store: Existing SqlDbStore instance
             table_name: Message table name
+            codec: Optional pre-built StorageCodec instance. When provided it
+                takes precedence over crypto_key; otherwise an AesStorageCodec
+                is built from crypto_key (empty key -> pass-through).
         """
         self.crypto_key = crypto_key
         self.sql_db_store = sql_db_store
         self.table_name = table_name
-        self._codec = AesStorageCodec(crypto_key)
+        self._codec = codec if codec is not None else AesStorageCodec(crypto_key or b"")
+
+    def set_codec(self, codec: StorageCodec) -> None:
+        """Inject an external codec, replacing the default AesStorageCodec."""
+        self._codec = codec
 
     def _generate_message_id(self, message: BaseMessage, timestamp: datetime) -> str:
         """Generate a unique message ID from content, timestamp, and a random nonce.

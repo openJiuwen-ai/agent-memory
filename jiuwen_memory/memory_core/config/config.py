@@ -19,6 +19,11 @@ class MemoryEngineConfig(BaseModel):
     single_turn_history_summary_max_token: int = Field(default=128, gt=0)
     enable_middle_memory: bool = Field(default=False)  # enable middle memory or not
     middle_memory_check_interval: int = Field(default=50)  # middle memory check interval, default 50
+    # registered codec name (e.g. "sm4", "hsm"). Empty -> default
+    # AesStorageCodec built from crypto_key. The name must have been
+    # registered via register_storage_codec() (a pre-built instance) before
+    # set_config is called; if not registered, falls back to AesStorageCodec.
+    codec: str = Field(default="")
 
     @field_validator('crypto_key')
     @classmethod
