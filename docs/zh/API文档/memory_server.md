@@ -110,8 +110,15 @@ IP=127.0.0.1 PORT=8000 python -m jiuwen_memory.server.memory_server
 | `VECTOR_MILVUS_URI` | 空字符串 | Milvus 服务地址。 |
 | `VECTOR_MILVUS_TOKEN` | 空字符串 | Milvus Token，可为空。 |
 | `VECTOR_MILVUS_DATABASE` | `default` | Milvus 数据库名。 |
-| `VECTOR_ES_HOSTS` | 空字符串 | Elasticsearch hosts，多个地址用英文逗号分隔。 |
-| `VECTOR_ES_INDEX_PREFIX` | `agent_vector` | Elasticsearch 紀引前缀。 |
+| `VECTOR_ES_HOSTS` | 空字符串 | Elasticsearch hosts，多个地址用英文逗号分隔。开启 HTTPS 时写 `https://host:9200`，并按需配置下方认证 / SSL 证书参数。 |
+| `VECTOR_ES_INDEX_PREFIX` | `agent_vector` | Elasticsearch 索引前缀。 |
+| `VECTOR_ES_USERNAME` | 空字符串 | Elasticsearch 用户名（basic_auth），ES 8.x 默认开启安全特性时通常需要，例如 `elastic`。 |
+| `VECTOR_ES_PASSWORD` | 空字符串 | Elasticsearch 密码，与用户名配对使用。 |
+| `VECTOR_ES_API_KEY` | 空字符串 | Elasticsearch API Key 鉴权，与用户名密码二选一，留空不启用。 |
+| `VECTOR_ES_VERIFY_CERTS` | 空字符串 | 是否校验 TLS 证书。自签证书可设 `false` 跳过校验；留空走默认（校验）。 |
+| `VECTOR_ES_CA_CERTS` | 空字符串 | CA 证书路径，自签证书场景常用，例如 `/path/to/http_ca.crt`。 |
+| `VECTOR_ES_CLIENT_CERT` | 空字符串 | 双向 TLS（mTLS）客户端证书路径，留空不启用。 |
+| `VECTOR_ES_CLIENT_KEY` | 空字符串 | 双向 TLS（mTLS）客户端私钥路径，留空不启用。 |
 | `VECTOR_GAUSS_HOST` | `localhost` | Gauss 向量库主机。 |
 | `VECTOR_GAUSS_PORT` | `5432` | Gauss 向量库端口。 |
 | `VECTOR_GAUSS_DATABASE` | `postgres` | Gauss 向量库数据库名。 |

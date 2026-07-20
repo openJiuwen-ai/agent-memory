@@ -143,9 +143,41 @@ def create_vector_store() -> BaseVectorStore:
         from jiuwen_memory.foundation.store.vector.es_vector_store import ElasticsearchVectorStore
         hosts_raw = os.getenv("VECTOR_ES_HOSTS", "").strip()
         hosts = [h.strip() for h in hosts_raw.split(",") if h.strip()] or None
+
+        # ES 8.x 默认开启安全特性（HTTPS + basic_auth），以下参数经 **kwargs 透传给
+        # AsyncElasticsearch，仅在对应环境变量存在时才组装，避免覆盖 client 默认行为。
+        # hosts 支持写 https://... 以启用 TLS；自签证书可关校验或指定 CA。
+        kwargs: dict = {}
+        es_username = os.getenv("VECTOR_ES_USERNAME", "").strip()
+        es_password = os.getenv("VECTOR_ES_PASSWORD", "").strip()
+        if es_username or es_password:
+            kwargs["basic_auth"] = (es_username, es_password)
+
+        es_api_key = os.getenv("VECTOR_ES_API_KEY", "").strip()
+        if es_api_key:
+            kwargs["api_key"] = es_api_key
+
+        verify_certs_raw = os.getenv("VECTOR_ES_VERIFY_CERTS", "").strip().lower()
+        if verify_certs_raw:
+            kwargs["verify_certs"] = verify_certs_raw != "false"
+        # 留空时不设置，沿用 client 默认（verify_certs=True）。
+
+        ca_certs = os.getenv("VECTOR_ES_CA_CERTS", "").strip()
+        if ca_certs:
+            kwargs["ca_certs"] = ca_certs
+
+        client_cert = os.getenv("VECTOR_ES_CLIENT_CERT", "").strip()
+        if client_cert:
+            kwargs["client_cert"] = client_cert
+
+        client_key = os.getenv("VECTOR_ES_CLIENT_KEY", "").strip()
+        if client_key:
+            kwargs["client_key"] = client_key
+
         return ElasticsearchVectorStore(
             hosts=hosts,
             index_prefix=os.getenv("VECTOR_ES_INDEX_PREFIX", "agent_vector"),
+            **kwargs,
         )
 
     if vec_type == "gauss":
