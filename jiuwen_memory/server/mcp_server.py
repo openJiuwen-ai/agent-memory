@@ -289,7 +289,7 @@ class _Engine:
     async def shutdown(self) -> None:
         if self._ltm is not None and hasattr(self._ltm, "stop"):
             try:
-                self._ltm.stop()
+                await self._ltm.stop()
             except Exception as stop_exc:
                 memory_logger.debug("[mcp] engine stop failed: %s", stop_exc)
         self._ready = False

@@ -1,7 +1,9 @@
 # coding: utf-8
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import pytest_asyncio
 
 from jiuwen_memory.common.utils.singleton import Singleton
 from jiuwen_memory.foundation.llm.schema.message import AssistantMessage, BaseMessage, UserMessage
@@ -11,17 +13,34 @@ from jiuwen_memory.memory_core.process.extract.common import ExtractMemoryParams
 from jiuwen_memory.memory_core.process.extract.long_term_memory_extractor import LongTermMemoryExtractor
 
 
-@pytest.fixture(autouse=True)
-def reset_long_term_memory_singleton():
+async def _cleanup_long_term_memory_singleton():
     instance = Singleton._instances.pop(LongTermMemory, None)
-    if instance and instance._executor_active:
-        instance._batch_executor.shutdown(wait=False)
+    if instance is None:
+        return
+
+    stop_event = getattr(instance, "_stop_event", None)
+    if stop_event is not None:
+        stop_event.set()
+
+    middle_memory_tasks = getattr(instance, "_middle_memory_tasks", {})
+    tasks = [task for task in middle_memory_tasks.values() if not task.done()]
+    for task in tasks:
+        task.cancel()
+
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    middle_memory_tasks.clear()
+    instance._background_task = None
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def reset_long_term_memory_singleton():
+    await _cleanup_long_term_memory_singleton()
 
     yield
 
-    instance = Singleton._instances.pop(LongTermMemory, None)
-    if instance and instance._executor_active:
-        instance._batch_executor.shutdown(wait=False)
+    await _cleanup_long_term_memory_singleton()
 
 
 @pytest.mark.asyncio
@@ -72,11 +91,15 @@ async def test_middle_mem_to_long_keeps_dialogue_object_and_skips_initial_contin
     memory._batch_delete_middle_messages = AsyncMock()
     captured_batches = []
 
-    def fake_run_batch_in_thread(batch_data, *args):
-        captured_batches.append(batch_data)
-        return {"success": True, "mem_ids": batch_data["mem_ids"], "batch_size": len(batch_data["dialogues"])}
+    async def fake_process_dialogue_batch_to_long_term_safe(
+        dialogue_batch, agent_config, user_id, scope_id, session_id, timestamp_str, mem_ids
+    ):
+        captured_batches.append({"dialogues": dialogue_batch, "mem_ids": mem_ids, "timestamp": timestamp_str})
+        return {"success": True, "mem_ids": mem_ids, "batch_size": len(dialogue_batch)}
 
-    memory._run_batch_in_thread = fake_run_batch_in_thread
+    memory._process_dialogue_batch_to_long_term_safe = AsyncMock(
+        side_effect=fake_process_dialogue_batch_to_long_term_safe
+    )
 
     await memory.middle_mem_to_long(
         agent_config=AgentMemoryConfig(),
@@ -107,11 +130,15 @@ async def test_middle_mem_to_long_passes_dialogue_content_to_continuity_check():
     memory._batch_delete_middle_messages = AsyncMock()
     captured_batches = []
 
-    def fake_run_batch_in_thread(batch_data, *args):
-        captured_batches.append(batch_data)
-        return {"success": True, "mem_ids": batch_data["mem_ids"], "batch_size": len(batch_data["dialogues"])}
+    async def fake_process_dialogue_batch_to_long_term_safe(
+        dialogue_batch, agent_config, user_id, scope_id, session_id, timestamp_str, mem_ids
+    ):
+        captured_batches.append({"dialogues": dialogue_batch, "mem_ids": mem_ids, "timestamp": timestamp_str})
+        return {"success": True, "mem_ids": mem_ids, "batch_size": len(dialogue_batch)}
 
-    memory._run_batch_in_thread = fake_run_batch_in_thread
+    memory._process_dialogue_batch_to_long_term_safe = AsyncMock(
+        side_effect=fake_process_dialogue_batch_to_long_term_safe
+    )
 
     await memory.middle_mem_to_long(
         agent_config=AgentMemoryConfig(),

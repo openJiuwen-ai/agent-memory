@@ -1,10 +1,8 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 import copy
-import threading
 import asyncio
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Tuple
 from pydantic import BaseModel, Field
@@ -132,17 +130,11 @@ class LongTermMemory(metaclass=Singleton):
         # dreaming: one orchestrator per (scope_id, user_id)
         self._dreaming_orchestrators: dict[tuple[str, str], DreamingOrchestrator] = {}
         # asynchronous mode
-        self._stop_event = threading.Event()
-        self._thread_running = False
-        self._background_task = None
-        self._background_task_running = False
+        self._stop_event = asyncio.Event()
+        self._background_task: asyncio.Task | None = None
+        self._middle_memory_tasks: dict[tuple[str, str], asyncio.Task] = {}
         self._agent_config = None  # Save configuration
-        # Thread pool: for batch concurrent processing
-        self._batch_executor = ThreadPoolExecutor(
-            max_workers=20,  # Adjust based on LLM API concurrency limits
-            thread_name_prefix="batch_memory_processor",
-        )
-        self._executor_active = True
+        self._batch_concurrency_limit = 20
 
     @property
     def storage_codec(self) -> StorageCodec | None:
@@ -533,39 +525,24 @@ class LongTermMemory(metaclass=Singleton):
                                                     model_client_config=config.default_model_client_cfg)
             self._base_llm = llm
 
-        self._middle_memory_threads: dict[tuple[str, str], threading.Thread] = {}
-
         self._enable_hierarchical_memory = config.enable_middle_memory
         self.middle_memory_check_interval = config.middle_memory_check_interval
 
 
-    def start(
-            self,
-            user_id: str = DEFAULT_VALUE,
-            scope_id: str = DEFAULT_VALUE,
-            agent_config: AgentMemoryConfig | None = None,
+    async def start(
+        self,
+        user_id: str = DEFAULT_VALUE,
+        scope_id: str = DEFAULT_VALUE,
+        agent_config: AgentMemoryConfig | None = None,
     ):
         if not self._enable_hierarchical_memory:
             return
 
         worker_key = (scope_id, user_id)
-
-        existing_thread = self._middle_memory_threads.get(worker_key)
-        if existing_thread and existing_thread.is_alive():
-            memory_logger.info(
-                "Middle memory processor already running, skip start",
-                user_id=user_id,
-                scope_id=scope_id,
-            )
+        existing_task = self._middle_memory_tasks.get(worker_key)
+        if existing_task is not None and not existing_task.done():
+            memory_logger.warning("Middle memory processor is already running")
             return
-
-        self._stop_event.clear()
-        if not self._executor_active:
-            self._batch_executor = ThreadPoolExecutor(
-                max_workers=20,
-                thread_name_prefix="batch_memory_processor",
-            )
-            self._executor_active = True
 
         if agent_config is None:
             agent_config = AgentMemoryConfig(
@@ -577,84 +554,40 @@ class LongTermMemory(metaclass=Singleton):
                 enable_summary_memory=True,
             )
 
-        thread = threading.Thread(
-            target=self._start_async_loop_in_thread,
-            args=(agent_config, user_id, scope_id),
-            daemon=True,
-            name=f"MiddleMemoryThread/{scope_id}/{user_id}",
+        self._stop_event.clear()
+
+        task = asyncio.create_task(
+            self._middle_memory_loop(agent_config, user_id=user_id, scope_id=scope_id),
+            name=f"MiddleMemoryTask/{scope_id}/{user_id}",
         )
+        self._middle_memory_tasks[worker_key] = task
+        self._background_task = task
 
-        self._middle_memory_threads[worker_key] = thread
+        memory_logger.info("Middle memory processor started successfully (asyncio task mode)")
 
-        thread.start()
 
-        memory_logger.info(
-            "Middle memory processor started successfully",
-            user_id=user_id,
-            scope_id=scope_id,
-        )
-
-    def _start_async_loop_in_thread(self, agent_config, user_id: str, scope_id: str):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(
-                self._middle_memory_loop(
-                    agent_config,
-                    user_id=user_id,
-                    scope_id=scope_id,
-                )
-            )
-        finally:
-            loop.close()
-
-    def stop(self):
+    async def stop(self):
         """Stop background tasks (safe shutdown)"""
-        if self._enable_hierarchical_memory:
-            self._stop_event.set()
+        if not self._enable_hierarchical_memory:
+            return
 
-            # Close thread pool
-            if self._batch_executor and self._executor_active:
-                memory_logger.info("Shutting down batch executor...")
-                self._batch_executor.shutdown(wait=True)
-                self._executor_active = False
+        self._stop_event.set()
 
-            for each in self._middle_memory_threads:
-                self._middle_memory_threads[each].join()
-            memory_logger.info("Middle memory processor stopped")
-        else:
-            pass
+        tasks = [
+            task
+            for task in self._middle_memory_tasks.values()
+            if not task.done()
+        ]
 
-    def _run_batch_in_thread(
-        self, batch_data: dict, agent_config: AgentMemoryConfig, user_id: str, scope_id: str, session_id: str
-    ):
-        """Run batch processing in independent thread
-        Each thread creates independent event loop
-        """
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        for task in tasks:
+            task.cancel()
 
-        try:
-            result = loop.run_until_complete(
-                self._process_dialogue_batch_to_long_term_safe(
-                    dialogue_batch=batch_data["dialogues"],
-                    agent_config=agent_config,
-                    user_id=user_id,
-                    scope_id=scope_id,
-                    session_id=session_id,
-                    timestamp_str=batch_data["timestamp"],
-                    mem_ids=batch_data["mem_ids"],
-                )
-            )
-            return result
-        except Exception as e:
-            import traceback
-            memory_logger.error(
-                f"Batch processing failed in thread: {str(e)}", exception=str(e), traceback=traceback.format_exc()
-            )
-            return {"success": False, "mem_ids": batch_data["mem_ids"], "error": str(e)}
-        finally:
-            loop.close()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        self._middle_memory_tasks.clear()
+        self._background_task = None
+        memory_logger.info("Middle memory process stopped")
 
     async def _process_dialogue_batch_to_long_term_safe(
         self, dialogue_batch, agent_config, user_id, scope_id, session_id, timestamp_str, mem_ids
@@ -1045,7 +978,7 @@ class LongTermMemory(metaclass=Singleton):
         else:
             timestamp = timestamp.astimezone(timezone.utc)
         if self._enable_hierarchical_memory:
-            self.start(user_id=user_id, scope_id=scope_id, agent_config=agent_config)
+            await self.start(user_id=user_id, scope_id=scope_id, agent_config=agent_config)
             if not self._validate_id(event_type=LogEventType.MEMORY_STORE, scope_id=scope_id):
                 memory_logger.error(
                     "Invalid scope_id format.",
@@ -1327,27 +1260,30 @@ class LongTermMemory(metaclass=Singleton):
             if not batches:
                 return
 
-            # Use asyncio + ThreadPoolExecutor for concurrency
-            loop = asyncio.get_running_loop()
-            futures = []
+            semaphore = asyncio.Semaphore(self._batch_concurrency_limit)
+            tasks = []
+
+            async def _run_batch_with_semaphore(batch_data):
+                async with semaphore:
+                    return await self._process_dialogue_batch_to_long_term_safe(
+                        dialogue_batch=batch_data["dialogues"],
+                        agent_config=agent_config,
+                        user_id=user_id,
+                        scope_id=scope_id,
+                        session_id=session_id,
+                        timestamp_str=batch_data["timestamp"],
+                        mem_ids=batch_data["mem_ids"],
+                    )
 
             for i, batch_data in enumerate(batches):
-                # Submit each batch to thread pool
-                future = loop.run_in_executor(
-                    self._batch_executor,
-                    self._run_batch_in_thread,
-                    batch_data,
-                    agent_config,
-                    user_id,
-                    scope_id,
-                    session_id,
-                )
-                futures.append(future)
-                memory_logger.info(f"Batch {i + 1} submitted to thread pool (size: {len(batch_data['dialogues'])})")
+                task = asyncio.create_task(_run_batch_with_semaphore(batch_data))
+                tasks.append(task)
+                memory_logger.info(f"Batch {i+1} scheduled (size: {len(batch_data['dialogues'])}")
+
 
             # Step 4: Wait for all batches to complete
-            memory_logger.info(f"Waiting for {len(futures)} batch processing tasks to complete...")
-            results = await asyncio.gather(*futures, return_exceptions=True)
+            memory_logger.info(f"Waiting for {len(tasks)} batch processing tasks to complete...")
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
             # Step 5: Aggregate results + batch deletion
             all_mem_ids_to_delete = []
