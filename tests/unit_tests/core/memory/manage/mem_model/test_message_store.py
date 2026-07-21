@@ -299,6 +299,12 @@ class _FakeVectorStore(BaseVectorStore):
     async def delete_docs_by_filters(self, *a, **kw):
         pass
 
+    async def list_docs(self, *a, **kw):
+        return []
+
+    async def update_doc_fields(self, *a, **kw):
+        pass
+
     async def collection_exists(self, *a, **kw):
         return False
 

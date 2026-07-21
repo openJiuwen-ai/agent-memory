@@ -17,6 +17,13 @@ from jiuwen_memory.foundation.store.base_vector_store import (
     VectorDataType,
     FieldSchema,
 )
+from jiuwen_memory.foundation.store.filter_dsl import (
+    FilterCondition,
+    FilterGroup,
+    FilterLogic,
+    FilterOperator,
+    MAX_NESTING_DEPTH,
+)
 from jiuwen_memory.foundation.store.vector.utils import (
     convert_cosine_similarity,
     convert_l2_squared,
@@ -154,7 +161,12 @@ class MilvusVectorStore(BaseVectorStore):
         return type_mapping[field_type]
 
     def _build_filter_expr(self, filters: Dict[str, Any]) -> Optional[str]:
-        """Build Milvus filter expression from filters dictionary (equality only)"""
+        """Build Milvus filter expression from filters dictionary (equality only).
+
+        .. deprecated::
+            Kept for legacy callers passing plain dict. New callers should pass
+            ``FilterGroup`` via ``search(filters=...)`` / ``list_docs(filters=...)``.
+        """
         if not filters:
             return None
 
@@ -166,6 +178,60 @@ class MilvusVectorStore(BaseVectorStore):
                 filter_parts.append(f"{key} == {value}")
 
         return " && ".join(filter_parts) if filter_parts else None
+
+    # ------------------------------------------------------------------ #
+    #  FilterGroup DSL → Milvus expression                                #
+    # ------------------------------------------------------------------ #
+
+    def _render_filters(self, filters: Optional[FilterGroup]) -> Optional[str]:
+        """Render FilterGroup DSL to a Milvus expression string, or None if no filter."""
+        if filters is None:
+            return None
+        return self._render_filter_group(filters, depth=0)
+
+    def _render_filter_group(self, group: FilterGroup, depth: int) -> str:
+        if depth > MAX_NESTING_DEPTH:
+            raise build_error(
+                StatusCode.MEMORY_FILTER_FORMAT_ERROR,
+                error_msg=f"FilterGroup nesting depth exceeds {MAX_NESTING_DEPTH}",
+            )
+        if not group.conditions:
+            raise build_error(
+                StatusCode.MEMORY_FILTER_FORMAT_ERROR,
+                error_msg="FilterGroup.conditions must be non-empty",
+            )
+        parts: list[str] = []
+        for c in group.conditions:
+            if isinstance(c, FilterGroup):
+                parts.append(f"({self._render_filter_group(c, depth + 1)})")
+            else:
+                parts.append(self._render_condition(c))
+        sep = " && " if group.logic == FilterLogic.AND else " || "
+        return sep.join(parts)
+
+    def _render_condition(self, cond: FilterCondition) -> str:
+        val = self._render_value(cond.value)
+        op = "==" if cond.op == FilterOperator.EQ else "!="
+        return f"{cond.field} {op} {val}"
+
+    @staticmethod
+    def _render_value(v: Any) -> str:
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if isinstance(v, str):
+            # Escape backslashes first, then double quotes, so a value like
+            # ``hello"world`` renders as the legal Milvus expression
+            # ``"hello\"world"`` instead of the broken ``"hello"world"``.
+            escaped = v.replace("\\", "\\\\").replace('"', '\\"')
+            return f'"{escaped}"'
+        if v is None:
+            return "null"
+        if isinstance(v, (int, float)):
+            return str(v)
+        raise build_error(
+            StatusCode.MEMORY_FILTER_FORMAT_ERROR,
+            error_msg=f"unsupported filter value type, type={type(v).__name__}",
+        )
 
     async def create_collection(
         self,
@@ -270,13 +336,20 @@ class MilvusVectorStore(BaseVectorStore):
                         datatype=milvus_type,
                     )
                 else:
-                    # Other scalar types
-                    milvus_schema.add_field(
-                        field_name=field_name,
-                        datatype=milvus_type,
-                        is_primary=is_primary,
-                        auto_id=auto_id,
-                    )
+                    # Other scalar types (incl. BOOL used by Ebbinghaus scalar fields).
+                    add_kwargs: Dict[str, Any] = {
+                        "field_name": field_name,
+                        "datatype": milvus_type,
+                        "is_primary": is_primary,
+                        "auto_id": auto_id,
+                    }
+                    # Milvus requires nullable=True when default_value is set on
+                    # a non-primary scalar field; we only set default_value for
+                    # Ebbinghaus blacklisted / is_important BOOL fields.
+                    if field.default_value is not None and not is_primary:
+                        add_kwargs["default_value"] = field.default_value
+                        add_kwargs["nullable"] = True
+                    milvus_schema.add_field(**add_kwargs)
 
                     # Add inverted index for scalar fields (for filtering)
                     if not is_primary and milvus_type in (MilvusDataType.INT64, MilvusDataType.INT32):
@@ -548,7 +621,7 @@ class MilvusVectorStore(BaseVectorStore):
         query_vector: List[float],
         vector_field: str,
         top_k: int = 5,
-        filters: Optional[Dict[str, Any]] = None,
+        filters: Optional[FilterGroup] = None,
         **kwargs: Any,
     ) -> List[VectorSearchResult]:
         """
@@ -559,7 +632,7 @@ class MilvusVectorStore(BaseVectorStore):
             query_vector: Query vector for similarity search
             vector_field: Name of the vector field to search against (e.g., "embedding")
             top_k: Number of most relevant documents to return
-            filters: Optional dictionary of scalar field filters for filtering results
+            filters: Optional FilterGroup scalar filter (EQ/NE + AND/OR nesting)
             **kwargs: Additional search parameters
                 - metric_type (str, optional): Distance metric override
                 - output_fields (List[str], optional): Fields to return in results
@@ -573,8 +646,8 @@ class MilvusVectorStore(BaseVectorStore):
         distance_metric = kwargs.get("metric_type") or collection_meta.get("distance_metric", "COSINE")
         output_fields = kwargs.get("output_fields")
 
-        # Build filter expression
-        filter_expr = self._build_filter_expr(filters) if filters else None
+        # Build filter expression from FilterGroup DSL
+        filter_expr = self._render_filters(filters)
 
         def _search():
             # Determine output fields
@@ -768,6 +841,112 @@ class MilvusVectorStore(BaseVectorStore):
                 raise
 
         await asyncio.to_thread(_delete)
+
+    async def list_docs(
+        self,
+        collection_name: str,
+        filters: Optional[FilterGroup] = None,
+        limit: int = 100,
+        offset: int = 0,
+        **kwargs: Any,
+    ) -> List[Dict[str, Any]]:
+        """List documents by scalar filters (no vector similarity)."""
+        self._ensure_loaded(collection_name)
+        filter_expr = self._render_filters(filters)
+        output_fields = kwargs.get("output_fields")
+
+        def _query():
+            try:
+                collection_info = self.client.describe_collection(collection_name=collection_name)
+                schema_fields = [f.get("name") for f in collection_info.get("fields", [])]
+            except Exception:
+                schema_fields = None
+
+            if not output_fields:
+                requested = output_fields or schema_fields or ["id", "text", "metadata"]
+            else:
+                requested = output_fields
+
+            results = self.client.query(
+                collection_name=collection_name,
+                filter=filter_expr or "",
+                output_fields=requested,
+                limit=limit,
+                offset=offset,
+            )
+            return results or []
+
+        rows = await asyncio.to_thread(_query)
+        docs: List[Dict[str, Any]] = []
+        for row in rows:
+            if isinstance(row, dict):
+                docs.append(row)
+        return docs
+
+    async def update_doc_fields(
+        self,
+        collection_name: str,
+        doc_id: str,
+        fields: Dict[str, Any],
+    ) -> None:
+        """Update scalar fields on a single document; the vector field is not touched."""
+        if not doc_id:
+            raise build_error(
+                StatusCode.STORE_VECTOR_DOC_INVALID,
+                error_msg="doc_id is required for update_doc_fields",
+            )
+        if not fields:
+            return
+        self._ensure_loaded(collection_name)
+
+        def _update():
+            try:
+                # Milvus ``upsert`` is a full-row replace (delete-then-insert),
+                # so submitting only ``{"id": doc_id, "blacklisted": True}``
+                # would zero out every other field — including the vector
+                # embedding — and silently break ANN search. Read the full
+                # entity first, merge the scalar updates onto it, then upsert
+                # the complete row so non-targeted fields (esp. the vector)
+                # are preserved.
+                collection_info = self.client.describe_collection(
+                    collection_name=collection_name,
+                )
+                schema_fields = [f.get("name") for f in collection_info.get("fields", [])]
+
+                existing = self.client.query(
+                    collection_name=collection_name,
+                    filter=f'id == "{doc_id}"',
+                    output_fields=schema_fields or ["*"],
+                    limit=1,
+                )
+                if not existing:
+                    raise MilvusException(
+                        code=StatusCode.STORE_VECTOR_DOC_INVALID.code,
+                        message=f"doc not found in collection for update_doc_fields: id={doc_id}",
+                    )
+                full_row: Dict[str, Any] = dict(existing[0])
+                full_row.update(fields)
+                self.client.upsert(
+                    collection_name=collection_name,
+                    data=[full_row],
+                )
+                self.client.flush(collection_name=collection_name)
+                store_logger.info(
+                    "Updated doc fields in collection",
+                    event_type=LogEventType.STORE_ADD,
+                    table_name=collection_name,
+                    data_num=1,
+                )
+            except MilvusException as e:
+                store_logger.error(
+                    "Failed to update doc fields in collection",
+                    event_type=LogEventType.STORE_ADD,
+                    table_name=collection_name,
+                    exception=str(e),
+                )
+                raise
+
+        await asyncio.to_thread(_update)
 
     def _ensure_loaded(self, collection: str) -> None:
         """Ensure a collection is loaded"""

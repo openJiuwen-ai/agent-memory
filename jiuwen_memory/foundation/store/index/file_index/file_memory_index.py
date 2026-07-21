@@ -37,6 +37,7 @@ from jiuwen_memory.foundation.store.base_memory_index import (
 from jiuwen_memory.foundation.store.index.file_index._chunk_parser import (
     Block,
     blocks_to_markdown,
+    find_block_by_id,
     merge_blocks,
     parse_blocks,
     remove_blocks_by_ids,
@@ -459,6 +460,96 @@ class FileMemoryIndex(BaseMemoryIndex):
                     TenantScope(user_id=user_id, scope_id=scope_id),
                     type_name, docs,
                 )
+
+
+    async def update_mem_by_id(
+        self,
+        user_id: str,
+        scope_id: str,
+        mem_id: str,
+        fields: dict[str, Any],
+    ) -> None:
+        """Update scalar fields on a single memory document by id.
+
+        Only the fields present in ``fields`` are modified; the body text and
+        its embedding are never touched (no re-embedding roundtrip). The
+        ``.md`` file is the source of truth, so scalar fields are written into
+        the block's ``fields`` dict (and ``timestamp`` when requested) and the
+        block is rewritten in place under the per-file sync lock.
+
+        Because the body hash does not change, the downstream
+        :meth:`VectorIndex.sync_file` call classifies the block as
+        "text-unchanged" and at most re-lines it — the embedding is preserved.
+
+        Raises ``STORE_VECTOR_DOC_INVALID`` when the memory is not found.
+        """
+        if not fields:
+            return
+        if not mem_id:
+            raise build_error(
+                StatusCode.STORE_VECTOR_DOC_INVALID,
+                error_msg="update_mem_by_id requires non-empty mem_id",
+            )
+
+        # Locate the file that holds this mem_id (tenant-scoped).
+        rel_path = self._vec_index.get_path_for_mem_id_scoped(mem_id, user_id, scope_id)
+        abs_path: Path | None = None
+        if rel_path:
+            abs_path = self._root_dir / rel_path
+            if not abs_path.exists():
+                abs_path = None
+
+        if abs_path is None:
+            # Fallback: scan the scope's type files (covers hand-edited files
+            # whose sync to the DB hasn't run yet).
+            for type_file in self._md_store.list_type_files(user_id, scope_id):
+                block = await self._md_store.read_block(type_file, mem_id)
+                if block is not None:
+                    abs_path = type_file
+                    rel_path = self._abs_to_rel(str(type_file))
+                    break
+
+        if abs_path is None:
+            raise build_error(
+                StatusCode.STORE_VECTOR_DOC_INVALID,
+                error_msg=(
+                    f"memory doc not found: user_id={user_id} "
+                    f"scope_id={scope_id} mem_id={mem_id}"
+                ),
+            )
+
+        uid, sid, tname = self._parse_rel_path(rel_path)
+        tenant = TenantScope(user_id=uid, scope_id=sid)
+        lock = await self._get_sync_lock(rel_path)
+        async with lock:
+            blocks = await self._md_store.read_blocks(abs_path)
+            target = find_block_by_id(blocks, mem_id)
+            if target is None:
+                raise build_error(
+                    StatusCode.STORE_VECTOR_DOC_INVALID,
+                    error_msg=(
+                        f"memory doc not found: user_id={user_id} "
+                        f"scope_id={scope_id} mem_id={mem_id}"
+                    ),
+                )
+            # Merge scalar field updates onto the block's extension dict.
+            # ``blacklisted`` / ``is_important`` / arbitrary user fields all
+            # land here — the .md frontmatter ``fields:`` map is the single
+            # extension surface for FileMemoryIndex (no separate vector scalar
+            # schema to push to).
+            for name, value in fields.items():
+                target.fields[name] = value
+
+            await self._md_store.write_blocks(abs_path, blocks)
+
+            content = abs_path.read_text(encoding="utf-8")
+            await self._vec_index.sync_file(
+                path=rel_path,
+                tenant=tenant,
+                type_name=tname,
+                file_content=content,
+                blocks=blocks,
+            )
 
 
     async def delete_memories(self, user_id: str, scope_id: str, ids: list[str]) -> None:

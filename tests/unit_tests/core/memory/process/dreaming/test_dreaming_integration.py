@@ -55,6 +55,17 @@ class _InMemoryIndex(BaseMemoryIndex):
     async def update_memories(self, user_id, scope_id, memories):
         await self.add_memories(user_id, scope_id, memories)
 
+    async def update_mem_by_id(self, user_id, scope_id, mem_id, fields):
+        bucket = self._docs.get((user_id, scope_id), {})
+        doc = bucket.get(mem_id)
+        if doc is None:
+            return
+        for name, value in fields.items():
+            if hasattr(doc, name):
+                setattr(doc, name, value)
+            else:
+                doc.fields[name] = value
+
     async def delete_memories(self, user_id, scope_id, ids):
         bucket = self._docs.get((user_id, scope_id), {})
         for i in ids:

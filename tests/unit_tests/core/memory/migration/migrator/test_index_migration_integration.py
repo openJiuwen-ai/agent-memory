@@ -145,6 +145,21 @@ class _InMemoryVectorStore(BaseVectorStore):
                 if not all(d.get(k) == v for k, v in filters.items())
             ]
 
+    async def list_docs(self, collection_name, filters=None, limit=100, offset=0, **_kw):
+        bucket = self._docs.get(collection_name, [])
+        # Simple equality filter for mock (filters expected as FilterGroup is not used here).
+        out = list(bucket)
+        return out[offset:offset + limit]
+
+    async def update_doc_fields(self, collection_name, doc_id, fields, **_kw):
+        bucket = self._docs.get(collection_name)
+        if bucket is None:
+            return
+        for d in bucket:
+            if d.get("id") == doc_id:
+                d.update(fields)
+                return
+
     async def list_collection_names(self) -> list[str]:
         return list(self._cols)
 

@@ -19,7 +19,7 @@ Legacy data layout
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 from jiuwen_memory.common.exception.codes import StatusCode
 from jiuwen_memory.common.exception.errors import build_error
@@ -34,6 +34,7 @@ from jiuwen_memory.foundation.store.base_vector_store import (
     FieldSchema,
     VectorDataType,
 )
+from jiuwen_memory.foundation.store.filter_dsl import FilterGroup
 
 
 class SimpleMemoryIndex(BaseMemoryIndex):
@@ -158,7 +159,11 @@ class SimpleMemoryIndex(BaseMemoryIndex):
 
     @staticmethod
     def _kv_data_to_memory_doc(data: dict[str, Any], mem_id: str) -> MemoryDoc:
-        skip = {"id", "mem", "mem_type", "timestamp", "user_id", "scope_id"}
+        skip = {
+            "id", "mem", "mem_type", "timestamp", "user_id", "scope_id",
+            # Top-level scalar fields on MemoryDoc — pulled out below.
+            "blacklisted", "is_important",
+        }
         extra = {k: v for k, v in data.items() if k not in skip}
 
         ts_raw = data.get("timestamp", "")
@@ -182,12 +187,17 @@ class SimpleMemoryIndex(BaseMemoryIndex):
         else:
             timestamp = datetime.now(timezone.utc).astimezone()
 
+        blacklisted = bool(data.get("blacklisted", False))
+        is_important = bool(data.get("is_important", False))
+
         return MemoryDoc(
             id=mem_id,
             text=data.get("mem", ""),
             type=data.get("mem_type", ""),
             timestamp=timestamp,
             fields=extra,
+            is_important=is_important,
+            blacklisted=blacklisted,
         )
 
     @staticmethod
@@ -201,6 +211,8 @@ class SimpleMemoryIndex(BaseMemoryIndex):
             "mem": doc.text,
             "mem_type": doc.type,
             "timestamp": ts,
+            "blacklisted": doc.blacklisted,
+            "is_important": doc.is_important,
             **doc.fields,
         }
 
@@ -227,6 +239,8 @@ class SimpleMemoryIndex(BaseMemoryIndex):
         schema = CollectionSchema(description="Semantic memory collection", enable_dynamic_field=False)
         schema.add_field(FieldSchema(name="id", dtype=VectorDataType.VARCHAR, max_length=256, is_primary=True))
         schema.add_field(FieldSchema(name="embedding", dtype=VectorDataType.FLOAT_VECTOR, dim=dim))
+        schema.add_field(FieldSchema(name="blacklisted", dtype=VectorDataType.BOOL, default_value=False))
+        schema.add_field(FieldSchema(name="is_important", dtype=VectorDataType.BOOL, default_value=False))
         await self._vector_store.create_collection(name, schema)
         self._created_collections.add(name)
 
@@ -271,7 +285,16 @@ class SimpleMemoryIndex(BaseMemoryIndex):
                 await self._ensure_collection(col, len(embeddings[0]))
 
             await self._vector_store.add_docs(
-                col, [{"id": d.id, "embedding": e} for d, e in zip(docs, embeddings)]
+                col,
+                [
+                    {
+                        "id": d.id,
+                        "embedding": e,
+                        "blacklisted": d.blacklisted,
+                        "is_important": d.is_important,
+                    }
+                    for d, e in zip(docs, embeddings)
+                ],
             )
 
             for doc in docs:
@@ -292,6 +315,8 @@ class SimpleMemoryIndex(BaseMemoryIndex):
         query: str,
         mem_types: list[str] | None = None,
         top_k: int = 10,
+        *,
+        filters: Optional[FilterGroup] = None,
     ) -> list[tuple[MemoryDoc, float]]:
         """Search memories via vector similarity, then fetch content from KV store."""
         if not self._embedding_model:
@@ -321,6 +346,7 @@ class SimpleMemoryIndex(BaseMemoryIndex):
                 query_vector=query_vec,
                 vector_field="embedding",
                 top_k=top_k,
+                filters=filters,
             )
 
             hit_ids: list[str] = []
@@ -356,6 +382,98 @@ class SimpleMemoryIndex(BaseMemoryIndex):
         ids = [m.id for m in memories]
         await self.delete_memories(user_id, scope_id, ids)
         await self.add_memories(user_id, scope_id, memories)
+
+    async def update_mem_by_id(
+        self,
+        user_id: str,
+        scope_id: str,
+        mem_id: str,
+        fields: dict[str, Any],
+    ) -> None:
+        """Update scalar fields on a single memory document by id.
+
+        Only the fields present in ``fields`` are modified. The text
+        content and embedding are never touched — this path does not
+        call ``embed_documents`` or rewrite the vector document. Used by
+        the forgetting pipeline to flip ``blacklisted`` / ``is_important``
+        without paying for a re-embedding roundtrip, and by update paths
+        that need to preserve scalar flags while changing other fields.
+
+        Fields are split by destination:
+        * ``blacklisted`` / ``is_important`` (top-level MemoryDoc scalar
+          fields that exist on the vector collection schema) → pushed to
+          ``vector_store.update_doc_fields`` (in-place scalar update on
+          the existing vector doc, no re-embedding).
+        * Any other field (e.g. ``mem_type``, ``timestamp``, arbitrary
+          user fields) → written into the KV JSON. Top-level keys on the
+          KV dict (``mem_type`` / ``timestamp`` / ``mem``) are updated
+          by name; everything else goes into the ``fields`` sub-dict
+          of the KV JSON so ``_kv_data_to_memory_doc`` can round-trip it.
+
+        Both stores are always updated together so the KV JSON and the
+        vector scalar index stay consistent. If the document does not
+        exist in KV, ``STORE_VECTOR_DOC_INVALID`` is raised (the legacy
+        layout treats the KV entry as the source of truth for mem_type
+        / collection routing — without it we cannot target the correct
+        vector collection).
+        """
+        if not fields:
+            return
+        if not mem_id:
+            raise build_error(
+                StatusCode.STORE_VECTOR_DOC_INVALID,
+                error_msg="update_mem_by_id requires non-empty mem_id",
+            )
+
+        kv_key = self._kv_mem_key(user_id, scope_id, mem_id)
+        raw = self._read_kv_value(await self._kv_store.get(kv_key))
+        if raw is None:
+            raise build_error(
+                StatusCode.STORE_VECTOR_DOC_INVALID,
+                error_msg=f"memory doc not found: user_id={user_id} scope_id={scope_id} mem_id={mem_id}",
+            )
+        data: dict[str, Any] = json.loads(raw)
+        if self._codec is not None and "mem" in data:
+            data["mem"] = self._codec.decode(data["mem"])
+
+        # Partition fields by destination.
+        vector_scalar_updates: dict[str, Any] = {}
+        for name, value in fields.items():
+            if name in self._VECTOR_PUSHDOWN_FIELDS:
+                vector_scalar_updates[name] = value
+        # KV JSON is flat: every field — whether top-level KV key
+        # (mem_type / timestamp / mem) or arbitrary user field — goes
+        # directly onto the top-level dict. ``_memory_doc_to_kv_data``
+        # flattens ``doc.fields`` this way on write; we mirror it here
+        # so ``_kv_data_to_memory_doc`` can round-trip via its ``extra``
+        # collector.
+        for name, value in fields.items():
+            data[name] = value
+
+        # Write KV JSON back (re-encode mem if codec is in use).
+        out_data = dict(data)
+        if self._codec is not None and "mem" in out_data:
+            out_data["mem"] = self._codec.encode(out_data["mem"])
+        await self._kv_store.set(kv_key, self._write_kv_value(json.dumps(out_data)))
+
+        # Vector scalar update — only if there's at least one vector-schema
+        # field to flip. Non-vector fields are KV-only and require no
+        # vector call.
+        if vector_scalar_updates:
+            mem_type = data.get("mem_type", "")
+            if not mem_type:
+                # Without mem_type we can't resolve the collection name.
+                # This shouldn't happen for docs written via add_memories,
+                # but guard anyway rather than silently skipping.
+                raise build_error(
+                    StatusCode.STORE_VECTOR_DOC_INVALID,
+                    error_msg=(
+                        f"memory doc {mem_id} has no mem_type; cannot resolve "
+                        "vector collection for scalar update"
+                    ),
+                )
+            col = self._get_collection_name(user_id, scope_id, mem_type)
+            await self._vector_store.update_doc_fields(col, mem_id, vector_scalar_updates)
 
     async def delete_memories(self, user_id: str, scope_id: str, ids: list[str]) -> None:
         """Delete memory documents from both KV and vector stores."""
@@ -427,9 +545,121 @@ class SimpleMemoryIndex(BaseMemoryIndex):
             data["mem"] = self._codec.decode(data["mem"])
         return self._kv_data_to_memory_doc(data, mem_id)
 
-    async def list_memories(self, user_id: str, scope_id: str, offset: int = 0,
-                            limit: int = 100, mem_types: list[str] | None = None) -> list[MemoryDoc]:
-        """List memory documents with pagination, reading from the KV store."""
+    # Vector schema fields that ``_ensure_collection`` declares on every
+    # collection. These are the only scalar fields eligible for pushdown
+    # to ``vector_store.list_docs`` — other conditions (e.g. on mem_type
+    # / timestamp / custom fields dict entries) must still be evaluated
+    # at the application layer because the legacy layout keeps those
+    # values inside the KV JSON blob.
+    _VECTOR_PUSHDOWN_FIELDS = frozenset({"blacklisted", "is_important"})
+
+    async def list_memories(
+        self,
+        user_id: str,
+        scope_id: str,
+        offset: int = 0,
+        limit: int = 100,
+        mem_types: list[str] | None = None,
+        *,
+        filters: Optional[FilterGroup] = None,
+    ) -> list[MemoryDoc]:
+        """List memory documents with pagination, reading from the KV store.
+
+        Filtering strategy (§3.16 方式一 + 方式三):
+
+        * If ``filters`` only references fields that exist on the vector
+          collection's scalar schema (``blacklisted`` / ``is_important`` —
+          injected by ``_ensure_collection`` when the collection is first
+          created), the entire FilterGroup is **pushed down** to
+          ``vector_store.list_docs`` so the backend's scalar index handles
+          the predicate. The matching ids are then joined back to KV to
+          materialise ``MemoryDoc`` bodies.
+          This is §3.16 方式一 (vector filter).
+
+        * If ``filters`` also references fields that live only inside the KV
+          JSON (mem_type / timestamp / arbitrary user fields), the whole
+          FilterGroup falls back to application-layer evaluation after the
+          KV scan. This is §3.16 方式三 (application filter).
+
+        * ``filters=None`` always takes the KV-scan path.
+        """
+        if filters is not None and _can_pushdown_filter(filters, self._VECTOR_PUSHDOWN_FIELDS):
+            return await self._list_memories_via_vector_pushdown(
+                user_id, scope_id, offset, limit, mem_types, filters=filters
+            )
+        return await self._list_memories_via_kv_scan(
+            user_id, scope_id, offset, limit, mem_types, filters=filters
+        )
+
+    async def _list_memories_via_vector_pushdown(
+        self,
+        user_id: str,
+        scope_id: str,
+        offset: int,
+        limit: int,
+        mem_types: list[str] | None,
+        *,
+        filters: FilterGroup,
+    ) -> list[MemoryDoc]:
+        """Push the entire FilterGroup to ``vector_store.list_docs`` for each
+        target collection, then materialise MemoryDoc bodies from KV.
+        Only used when every referenced field is on the vector schema
+        (see ``_can_pushdown_filter``).
+        """
+        # Determine target collections from mem_types (or all user+scope cols).
+        if mem_types:
+            types = list(mem_types)
+        else:
+            cols = await self._collections_for(user_id, scope_id)
+            types = [t for t in (self._parse_mem_type_from_collection(c) for c in cols) if t]
+
+        # The pushdown path needs ids only — ask list_docs to skip text fields.
+        # Use a comfortable page size: caller's pagination is applied after the
+        # merge, so we fetch enough to satisfy offset+limit across all types.
+        wanted = offset + limit
+
+        docs: list[MemoryDoc] = []
+        for mt in types:
+            col = self._get_collection_name(user_id, scope_id, mt)
+            if not await self._vector_store.collection_exists(col):
+                continue
+            rows = await self._vector_store.list_docs(
+                collection_name=col,
+                filters=filters,
+                limit=wanted,
+                offset=0,
+            )
+            ids_in_col = [str(r.get("id")) for r in rows if r.get("id")]
+            if not ids_in_col:
+                continue
+            keys = [self._kv_mem_key(user_id, scope_id, mid) for mid in ids_in_col]
+            values = await self._kv_store.mget(keys)
+            for mid, val in zip(ids_in_col, values):
+                decoded = self._read_kv_value(val)
+                if decoded is None:
+                    continue
+                data = json.loads(decoded)
+                if self._codec is not None and "mem" in data:
+                    data["mem"] = self._codec.decode(data["mem"])
+                docs.append(self._kv_data_to_memory_doc(data, mid))
+
+        if mem_types:
+            type_order = {mt: i for i, mt in enumerate(mem_types)}
+            docs.sort(key=lambda d: (type_order.get(d.type, len(type_order)), -d.timestamp.timestamp()))
+        return docs[offset:offset + limit]
+
+    async def _list_memories_via_kv_scan(
+        self,
+        user_id: str,
+        scope_id: str,
+        offset: int,
+        limit: int,
+        mem_types: list[str] | None,
+        *,
+        filters: Optional[FilterGroup],
+    ) -> list[MemoryDoc]:
+        """Original KV-prefix-scan path. Used when ``filters`` references
+        non-vector-schema fields or when ``filters`` is None."""
         ids_key = self._kv_ids_key(user_id, scope_id)
         raw = self._read_kv_value(await self._kv_store.get(ids_key)) or ""
         if not raw:
@@ -456,6 +686,8 @@ class SimpleMemoryIndex(BaseMemoryIndex):
         if mem_types:
             type_order = {mt: i for i, mt in enumerate(mem_types)}
             docs.sort(key=lambda d: (type_order.get(d.type, len(type_order)), -d.timestamp.timestamp()))
+        if filters is not None:
+            docs = [d for d in docs if _apply_filter_group(d, filters)]
         return docs[offset:offset + limit]
 
     def get_schema_version(self) -> int:
@@ -487,3 +719,64 @@ class SimpleMemoryIndex(BaseMemoryIndex):
             if len(parts) >= 3:
                 scopes.add((parts[1], parts[2]))
         return list(scopes)
+
+
+def _apply_filter_group(doc: MemoryDoc, group: FilterGroup) -> bool:
+    """Application-layer FilterGroup evaluator used by SimpleMemoryIndex.
+
+    The legacy layout stores scalar fields inside the KV JSON value; we read
+    them off the MemoryDoc (top-level fields take priority over ``fields`` dict).
+    """
+    results = [_apply_filter_condition_or_group(doc, c) for c in group.conditions]
+    if not results:
+        return True
+    if group.logic.value == "and":
+        return all(results)
+    return any(results)
+
+
+def _apply_filter_condition_or_group(doc: MemoryDoc, cond_or_group: Any) -> bool:
+    if isinstance(cond_or_group, FilterGroup):
+        return _apply_filter_group(doc, cond_or_group)
+    return _apply_filter_condition(doc, cond_or_group)
+
+
+def _apply_filter_condition(doc: MemoryDoc, cond) -> bool:
+    # Top-level MemoryDoc fields first, then fields dict.
+    if hasattr(doc, cond.field):
+        value = getattr(doc, cond.field, None)
+    else:
+        value = doc.fields.get(cond.field)
+    op = cond.op.value
+    target = cond.value
+    if op == "eq":
+        return value == target
+    if op == "ne":
+        return value != target
+    # Other operators are out of scope for the first version.
+    return False
+
+
+def _can_pushdown_filter(group: FilterGroup, pushdown_fields: frozenset[str]) -> bool:
+    """Return True iff every FilterCondition in ``group`` references a field
+    that exists on the vector collection's scalar schema.
+
+    Used by ``SimpleMemoryIndex.list_memories`` to decide whether the
+    FilterGroup can be pushed down to ``vector_store.list_docs`` (§3.16 方式一)
+    or must fall back to application-layer evaluation (§3.16 方式三). A mixed
+    group (some pushable + some app-only fields) is NOT partially pushed —
+    partial pushdown would require splitting the group, which the DSL's
+    EQ/NE-only first version doesn't support cleanly; the safe fallback is
+    to evaluate the whole group at the application layer.
+
+    Traverses nested FilterGroup subtrees recursively; any subtree that
+    references a non-pushable field disqualifies the entire filter.
+    """
+    for cond_or_group in group.conditions:
+        if isinstance(cond_or_group, FilterGroup):
+            if not _can_pushdown_filter(cond_or_group, pushdown_fields):
+                return False
+        else:
+            if cond_or_group.field not in pushdown_fields:
+                return False
+    return True
