@@ -54,8 +54,8 @@ from jiuwen_memory.foundation.store.filter_dsl import FilterGroup, FilterLogic
 if TYPE_CHECKING:
     pass
 
-VECTOR_WEIGHT = 0.7
-FTS_WEIGHT = 0.3
+VECTOR_WEIGHT = 0.9
+FTS_WEIGHT = 0.1
 _OVERFETCH_MULTIPLIER = 2
 _FTS_QUERY_MAX_TOKENS = 10
 
