@@ -5,13 +5,14 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/control/ |
-| 最近一次修订日期 | 2026-07-02 |
+| 最近一次修订日期 | 2026-07-17 |
 
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/control/F02-control-isolation-and-audit.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md |
 ## 范围 / 边界
 
 **管什么**：
 - 记忆引擎编排（接口层各语义的跨层委托中枢）
+- 按记忆类型选择构建/查询 pipeline profile
 - 记忆单元生命周期状态流转（active → superseded → archived → forgotten）
 - 治理「看」侧（检视 / 血缘回溯 / 审计查询）
 - 跨 scope 权限授权与校验
@@ -39,6 +40,8 @@
 9. **admin_* 不经 Engine**：由 API 层直达 PolicyManager；Engine 中对应方法抛 NotImplementedError。
 10. **所有算子必须实现 `operator_type()` 和 `health()`**：继承自 `ControlOperator`，自描述 + 存活探测。
 11. **自演进由控制层调度、构建层执行**：控制层只提交任务、管理通道和任务状态；抽取、升华、关联、冲突消解与索引维护逻辑归构建层。
+12. **Pipeline 只做跨层 profile 选择**：`MemoryPipeline` 可以选择不同的构建/查询组件绑定，但不得实现抽取、索引、检索算法；construction/retrieval 不反向依赖 control。
+13. **权限上下文由 API/Engine 解析，不信任调用方声明**：write/recall 可直接从请求参数构造 `PermissionContext`；get/update/delete 这类已有 unit 操作必须由 Engine 从真源元数据解析 memory_type/tags 后再鉴权。
 
 ## 接口契约
 
@@ -46,7 +49,7 @@
 
 ```python
 class ControlOperatorType(str, Enum):
-    ENGINE / LIFECYCLE / GOVERNOR / PERMISSION / SCHEDULER / POLICY
+    ENGINE / PIPELINE / LIFECYCLE / GOVERNOR / PERMISSION / SCHEDULER / POLICY
 
 class ControlOperator(ABC):
     def operator_type(self) -> ControlOperatorType  # 自描述
@@ -55,12 +58,14 @@ class ControlOperator(ABC):
 
 ### MemoryEngine（`engine.py`）
 
-编排接口层各语义的中枢。注入依赖：Ingestor、Classifier、IndexBuilder、Evolver、Retriever、KVStore、Scheduler、LifecycleManager。
+编排接口层各语义的中枢。注入依赖：Ingestor、Classifier、IndexBuilder、Evolver、Retriever、KVStore、Scheduler、LifecycleManager；可选注入 MemoryPipeline 做按记忆类型的 profile 选择。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
 | `write` | `async (content, scope, source, *, assets, tags, metadata, occurred_at) -> list[MemoryUnit]` | 规约→分类→落盘→hot 索引；`metadata["infer"]=="true"` 时同步走 `evolve(EXTRACT)` 返派生单元（原始不建索引），否则不自动提交演进（由调用方显式 `evolve()` 触发） |
 | `recall` | `async (scope, query: RetrievalQuery) -> RetrievalResult` | 委托 Retriever 完整检索链路 |
+| `permission_context_for_unit` | `async (unit_id, scope) -> PermissionContext` | 读取已有记忆的权限上下文，只返回 memory_type/tags/metadata 等鉴权元数据，不返回 content/assets |
+| `permission_contexts_for_delete` | `async (selector: DeleteSelector) -> list[PermissionContext]` | 解析 delete selector 命中的候选 unit 权限上下文，供 API 层逐条鉴权 |
 | `get` | `async (unit_id, scope, as_of=None) -> MemoryUnit` | 真源点读；`as_of` 非空沿 supersedes 链返回当时有效版本 |
 | `update` | `async (unit_id, scope, patch: MemoryPatch) -> MemoryUnit` | SUPERSEDE 新 id 记版本链 / OVERWRITE 原地覆写 |
 | `delete` | `async (selector: DeleteSelector) -> list[str]` | PURGE 物理删 / 其他委托 LifecycleManager 非破坏式流转 |
@@ -71,15 +76,65 @@ class ControlOperator(ABC):
 ```
 Ingestor.ingest([RawPayload]) → list[MemoryUnit]
 → 将 content/assets 入参补入接入层产出的 MemoryUnit.segments，并补齐 tags
+→ MemoryPipeline.select_for_write(units)  # 可选；未注入时使用 Engine 默认组件
 → Classifier.classify(units)
 → KVStore.insert(scope, unit.id, dumps(unit))           # 真源落盘
 → if metadata["infer"] == "true":
-      Evolver.evolve(units, EXTRACT)                     # 同步抽取派生 → 落盘+建索引（ADD/UPDATE/SUPERSEDE/NOOP）
+      选中 profile 的 Evolver.evolve(units, EXTRACT)      # 同步抽取派生 → 落盘+建索引（ADD/UPDATE/SUPERSEDE/NOOP）
       返回 EvolveResult.created_ids 反查 KV 的派生单元   # 对齐 mem0 add(infer=True)
   else:
-      IndexBuilder.build(units)                          # hot 轻量索引
+      选中 profile 的 IndexBuilder.build(units)           # hot 轻量索引
       返回 units                                         # 不自动提交演进（调用方显式 evolve() 触发）
 ```
+
+### MemoryPipeline（`pipeline.py`）
+
+控制层的跨构建/查询 profile 编排抽象。Pipeline 不实现具体能力，只返回一组已装配的组件绑定。
+
+```python
+@dataclass(frozen=True)
+class PipelineBinding:
+    name: str
+    index_builder: IndexBuilder
+    retriever: Retriever
+    evolver: Evolver
+    classifier: Classifier | None = None
+
+class MemoryPipeline(ControlOperator):
+    def select_for_write(units: list[MemoryUnit]) -> PipelineBinding
+    def select_for_recall(query: RetrievalQuery) -> PipelineBinding
+```
+
+默认 `metadata` 实现的配置形态：
+
+```yaml
+pipeline:
+  default:
+    target: metadata
+    params:
+      route_key: memory_type
+      fallback: default
+      routes:
+        coding: coding
+      profiles:
+        default:
+          index_builder: default
+          retriever: default
+          evolver: default
+          classifier: default
+        coding:
+          index_builder: coding
+          retriever: coding
+          evolver: coding
+          classifier: coding
+```
+
+路由规则：
+
+- 写入侧读取 `MemoryUnit.metadata[route_key]`。
+- 查询侧优先读取 `RetrievalQuery.extensions[route_key]`，其次读取等值 filter 的 `route_key` 或 `metadata.<route_key>`。
+- `routes` 把路由值映射到 profile 名；未命中时若路由值本身是 profile 名则直接使用，否则退回 `fallback`。
+- 未配置 `pipeline.default` 时不启用 pipeline，行为等价旧单 pipeline；用户通过 YAML 显式声明后启用。
 
 > `infer` 开关详见 [`S02-memory-api.md`](S02-memory-api.md)「infer 开关」与 [`docs/features/api/F02-write-infer-extract.md`](../features/api/F02-write-infer-extract.md)。默认路径不再自动提交 background EXTRACT——`InProcessScheduler` 同步执行下"自动提交"实为同步阻塞，与双通道时延初衷相悖；真异步 Scheduler 落地后是否恢复可选自动提交另行决策。
 
@@ -123,7 +178,7 @@ active → archived → forgotten
 |------|------|------|
 | `grant` | `(grant: Grant) -> None` | 新增跨 scope 授权 |
 | `revoke` | `(grant: Grant) -> None` | 回收授权（幂等） |
-| `check` | `(actor: Scope, target: Scope, action: Action) -> bool` | 校验 actor 对 target 是否可执行 action |
+| `check` | `(actor: Scope, target: Scope, action: Action, context: PermissionContext \| None = None) -> bool` | 校验 actor 对 target 是否可执行 action；context 为资源类型、memory_type、pipeline、unit_id、tags 等可选上下文 |
 
 **check 规则**：
 1. `actor == Scope()`（platform admin）→ 全局通过
@@ -133,6 +188,23 @@ active → archived → forgotten
 5. 否则 → 拒绝
 
 默认权限后端为 `sqlite`，配置为 `{"target": "sqlite", "params": {"db_path": ":memory:"}}`；`allow_all` 仅保留为显式 dev-only 配置。无具体 target scope 的管理面方法（`admin_get` / `admin_set` / `admin_all` / 全局 `audit`）统一以根 scope `Scope()` 作为鉴权目标，普通租户 scope 不默认具备管理面访问权；`grant` / `revoke` 则以 grantor scope 为 target 做 `Action.SHARE` 校验。
+
+`routing` 权限后端按 `PermissionContext` 分派到不同具名 permission policy。示例：
+
+```yaml
+permission:
+  default:
+    target: routing
+    params:
+      route_key: memory_type
+      fallback: standard
+      routes:
+        coding: strict
+  standard: allow_all
+  strict: sqlite
+```
+
+`routing` 不改变授权语义，只选择 delegate；`grant` / `revoke` 会广播给全部 delegate，避免调用方理解授权记录应落在哪个后端。
 
 ### Scheduler（`scheduler.py`）
 
@@ -159,6 +231,7 @@ active → archived → forgotten
 | 类型 | 性质 | 关键字段 |
 |------|------|----------|
 | `Action` | 枚举 | READ / WRITE / UPDATE / DELETE / SHARE |
+| `PermissionContext` | dataclass | resource_type / memory_type / pipeline / unit_id / scope / tags / metadata |
 | `Grant` | dataclass | grantor(Scope) / grantee(Scope) / actions(list[Action]) / expires_at |
 | `Channel` | 枚举 | HOT / BACKGROUND |
 | `JobStatus` | 枚举 | PENDING / RUNNING / SUCCEEDED / FAILED / CANCELLED |

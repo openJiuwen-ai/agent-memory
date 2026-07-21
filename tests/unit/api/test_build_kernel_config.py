@@ -20,7 +20,7 @@ from config.context import AssemblyContext
 from config.defaults import default_config_dict
 from control.base import ControlOperatorType
 from control.permission import PermissionManager, PermissionProducer
-from control.types import Action, Grant
+from control.types import Action, Grant, PermissionContext
 from storage.vector import VectorProducer
 
 SCOPE = Scope(org="o", user="u")
@@ -52,7 +52,13 @@ class _DenyAllPermission(PermissionManager):
     def revoke(self, grant: Grant) -> None:  # pragma: no cover
         ...
 
-    def check(self, actor: Scope, target: Scope, action: Action) -> bool:
+    def check(
+        self,
+        actor: Scope,
+        target: Scope,
+        action: Action,
+        context: PermissionContext | None = None,
+    ) -> bool:
         return False
 
 

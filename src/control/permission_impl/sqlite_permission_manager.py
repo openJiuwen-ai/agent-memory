@@ -19,7 +19,7 @@ from pathlib import Path
 from common.type_def import Scope
 from control.base import ControlOperatorType
 from control.permission import PermissionManager, PermissionProducer
-from control.types import Action, Grant
+from control.types import Action, Grant, PermissionContext
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS grants (
@@ -151,7 +151,13 @@ class SQLitePermissionManager(PermissionManager):
                     ),
                 )
 
-    def check(self, actor: Scope, target: Scope, action: Action) -> bool:
+    def check(
+        self,
+        actor: Scope,
+        target: Scope,
+        action: Action,
+        context: PermissionContext | None = None,
+    ) -> bool:
         if actor == Scope():
             return True
 

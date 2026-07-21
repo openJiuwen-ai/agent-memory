@@ -11,7 +11,7 @@ from typing import List
 from common.type_def import Scope
 from control.base import ControlOperatorType
 from control.permission import PermissionManager, PermissionProducer
-from control.types import Action, Grant
+from control.types import Action, Grant, PermissionContext
 
 
 class AllowAllPermissionManager(PermissionManager):
@@ -36,7 +36,13 @@ class AllowAllPermissionManager(PermissionManager):
             if not (g.grantor == grant.grantor and g.grantee == grant.grantee)
         ]
 
-    def check(self, actor: Scope, target: Scope, action: Action) -> bool:
+    def check(
+        self,
+        actor: Scope,
+        target: Scope,
+        action: Action,
+        context: PermissionContext | None = None,
+    ) -> bool:
         return True
 
 

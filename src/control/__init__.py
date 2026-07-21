@@ -5,6 +5,7 @@ from .engine import MemoryEngine
 from .governance import Governor
 from .lifecycle import LifecycleManager
 from .permission import PermissionManager
+from .pipeline import MemoryPipeline, PipelineBinding
 from .policy import PolicyManager
 from .scheduler import Scheduler
 from .types import (
@@ -16,6 +17,7 @@ from .types import (
     JobInfo,
     JobStatus,
     MemoryPatch,
+    PermissionContext,
     UpdateMode,
 )
 
@@ -26,6 +28,8 @@ __all__ = [
     "LifecycleManager",
     "Governor",
     "PermissionManager",
+    "MemoryPipeline",
+    "PipelineBinding",
     "Scheduler",
     "PolicyManager",
     "Action",
@@ -34,6 +38,7 @@ __all__ = [
     "JobStatus",
     "JobInfo",
     "MemoryPatch",
+    "PermissionContext",
     "UpdateMode",
     "DeleteMode",
     "DeleteSelector",

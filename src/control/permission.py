@@ -12,7 +12,7 @@ from common.factory.factory import Factory
 from common.type_def import Scope
 
 from .base import ControlOperator
-from .types import Action, Grant
+from .types import Action, Grant, PermissionContext
 
 
 class PermissionProducer(Factory):
@@ -36,5 +36,11 @@ class PermissionManager(ControlOperator):
         逐 action 撤销等）由具体实现定义。"""
 
     @abstractmethod
-    def check(self, actor: Scope, target: Scope, action: Action) -> bool:
+    def check(
+        self,
+        actor: Scope,
+        target: Scope,
+        action: Action,
+        context: PermissionContext | None = None,
+    ) -> bool:
         """校验 ``actor`` 是否可对 ``target`` scope 执行 ``action``。"""

@@ -4,7 +4,7 @@
 
 > 本文档只记录相对稳定的模块本地规约（职责边界、行为铁律、本地约束）。特性设计与方案取舍记录在 `docs/features/` 下。
 
-编排层（管理面）：不直接生产/检索记忆,而是管理它们的生命周期与使用规则。`MemoryEngine` 是接口层各语义的编排中枢，驱动接入层、构建层、检索层、存储层完成实际工作；其余算子（Lifecycle/Governance/Permission/Scheduler/Policy）各自管一个治理切面。
+编排层（管理面）：不直接生产/检索记忆,而是管理它们的生命周期与使用规则。`MemoryEngine` 是接口层各语义的编排中枢，驱动接入层、构建层、检索层、存储层完成实际工作；其余算子（Pipeline/Lifecycle/Governance/Permission/Scheduler/Policy）各自管一个治理切面。
 
 所有算子继承 `ControlOperator`（`base.py`），由外部装配注入到引擎，引擎本身不实现具体能力。
 
@@ -15,6 +15,7 @@
 | `base.py` | `ControlOperator` 抽象基类 + `ControlOperatorType` 枚举；所有算子的自描述契约 |
 | `types.py` | 控制层数据类型（Action/Grant/Channel/JobInfo/MemoryPatch/DeleteSelector 等），被本层所有文件及上游 `api/` 依赖 |
 | `engine.py` | `MemoryEngine` 抽象接口——跨层编排中枢，异步协程 |
+| `pipeline.py` | `MemoryPipeline` 抽象接口——按记忆类型选择构建/查询 profile |
 | `lifecycle.py` | `LifecycleManager` 接口——状态流转（transition）与到期清扫（sweep） |
 | `governance.py` | `Governor` 接口——检视/血缘回溯/审计查询 |
 | `permission.py` | `PermissionManager` 接口——跨 scope 授权与校验 |
@@ -23,6 +24,7 @@
 | `__init__.py` | 公开导出全部接口类与数据类型 |
 | `*_impl/` | 每个算子对应一个实现子目录，含具体实现类；Producer 定义在顶层接口文件，具体实现用 `@XProducer.register(...)` 自注册 |
 | `bootstrap.py` | `register_controllers()` 统一 import 各 `*_impl/` 包，触发实现自注册（幂等） |
+| `pipeline_impl/` | MemoryPipeline 实现目录（metadata） |
 
 ## 文件关系
 
@@ -36,9 +38,11 @@
 
 1. **引擎不实现具体算法能力**：`MemoryEngine` 只编排，Ingestor/构建算子/Retriever/Store 全部由装配注入。Engine 可通过注入的 `KVStore` 完成接口语义要求的真源落盘/点读/删除，但禁止绕过 Store 抽象绑定具体后端或在 engine 内调用 LLM。
 2. **引擎方法一律异步协程**：同步调用由 `api/` 层自行桥接（`asyncio.run`），engine 内不做同步阻塞。
-3. **鉴权不在本层执行**：`PermissionManager.check` 由 `api/MemoryAPI` 在入口调用，engine 信任传入的 scope 已鉴权。禁止在 engine 内部重复 check。
+3. **鉴权不在本层执行**：`PermissionManager.check` 由 `api/MemoryAPI` 在入口调用，engine 信任传入的 scope 已鉴权。Engine 只提供 `permission_context_for_unit` / `permission_contexts_for_delete` 这类 metadata-only 解析入口，供 API 做类型化鉴权；禁止在 engine 内部重复 check。
 4. **LifecycleManager 只做非破坏式标记**：`transition` 标记状态（superseded/archived/forgotten），绝不物理删除。物理删除（purge）走 engine 的 `delete` 路径 + `DeleteMode.PURGE`。
 5. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。`*_impl/` 通过 producer 工厂被外部装配消费，不被顶层接口引用。
+6. **Pipeline 只做 profile 选择**：`MemoryPipeline` 选择一组已装配的 `IndexBuilder` / `Evolver` / `Retriever` / `Classifier` 绑定，不实现抽取、索引、检索算法，不让 construction/retrieval 反向依赖 control。
+7. **PermissionContext 由可信边界构造**：write/recall 的 context 来自 API 入参；get/update/delete 的已有 unit context 必须由 Engine 从真源元数据解析，不能信任调用方声明 memory_type。
 
 ## 双通道调度机制
 
@@ -51,7 +55,7 @@
 
 ## write 路径调用级开关（infer / procedural）
 
-`InMemoryEngine.write` 据 `metadata` 下推的两个开关分三路（详见 `docs/features/api/F02-write-infer-extract.md` 决策6-8）：
+`InMemoryEngine.write` 先经可选 `MemoryPipeline.select_for_write` 选择构建 profile，再据 `metadata` 下推的两个开关分三路（详见 `docs/features/api/F02-write-infer-extract.md` 决策6-8）：
 
 - **`procedural="true"`**（过程记忆）：原文**不落 KV**；喂 `evolve(EXTRACT)`。evolver 检测 procedural → 跳过 context 收集与 `_dedup_batch`，extractor 把本轮汇总成 **1 条** PROCEDURAL 执行历史，直接 `_persist` 落 `/memory/{id}` 建索引。语义是"把这轮做了什么记成一条可检索 how-to"。
 - **`infer="true"`**（同步抽取）：原文 MemoryUnit 落 `/messages/{id}`（**不建索引**，供后续轮做指代消解/语境）；同一批 MemoryUnit 喂 `evolve(EXTRACT)`。evolver 检测 infer → 内部收集最近 10 条原文（`recent_originals`，做指代/代词消解）+ 经 `dedup.recall` 召回 10 条相关记忆（`related_memories`，做去重提示）→ 拼进 extractor prompt → `_dedup_batch` 兜底落 `/memory/{id}`。返回派生单元列表。
@@ -63,6 +67,16 @@
 **KV key 前缀分离**（决策6）：真源 key 按「是否建索引」带前缀——`/memory/{id}`（建索引记忆）、`/messages/{id}`（未建索引 infer 原文）；前缀常量与 helper 在 `common.type_def.memory` / `common.type_def.raw`。所有落盘/回查点用 `memory_key`/`messages_key`，按 key 匹配 id 处（lifecycle）用带前缀 key 直接比对。
 
 引擎调用注入的 `Evolver` 算子属「编排委托」（与 Evolver 调 extractor 同构），不违反「引擎不直接调 LLM」铁律。去重由 Evolver `_dedup_batch` 承担（engine 不重写）。详见 `docs/specs/S02-memory-api.md`「infer 开关」与 `docs/features/api/F02-write-infer-extract.md`。
+
+## pipeline 路由
+
+`MemoryPipeline` 是 control 层的跨构建/查询 profile 编排点：
+
+- 写入侧：`select_for_write(units)` 返回 `PipelineBinding`，默认 `metadata` 实现读取 `MemoryUnit.metadata[route_key]`（默认 `memory_type`）。
+- 查询侧：`select_for_recall(query)` 返回 `PipelineBinding`，默认 `metadata` 实现优先读取 `RetrievalQuery.extensions[route_key]`，其次读取等值 filter 的 `route_key` / `metadata.<route_key>`。
+- `PipelineBinding` 只绑定组件引用：`index_builder`、`evolver`、`retriever`、可选 `classifier`。
+- `InMemoryEngine` 使用绑定后的 `index_builder/evolver/classifier` 处理 write，使用绑定后的 `retriever` 处理 recall。未注入 pipeline 时走原单 profile 字段。
+- 未配置 `pipeline.default` 时不启用 pipeline，行为等价旧单 pipeline；用户通过 YAML 显式声明后启用。
 
 ## 本地约束
 
