@@ -82,6 +82,7 @@ class LongTermMemoryExtractor:
                 "user_profile_definition": scope_config.user_profile_definition or "",
                 "semantic_memory_definition": scope_config.semantic_memory_definition or "",
                 "episodic_memory_definition": scope_config.episodic_memory_definition or "",
+                "important_memory_definition": scope_config.important_memory_definition or "",
                 "current_week": current_week,
                 "subject_locking_rule": subject_locking_rule,
                 "subject_scope": subject_scope,

@@ -57,6 +57,7 @@ class Sweeper:
         checkpoint_io,
         user_id: str,
         scope_id: str,
+        important_memory_definition: str = "",
     ) -> None:
         self._source = source
         self._store = store
@@ -65,6 +66,7 @@ class Sweeper:
         self._kv = checkpoint_io
         self._user_id = user_id
         self._scope_id = scope_id
+        self._important_memory_definition = important_memory_definition
         self._ckpt_key = f"dreaming/checkpoint/{scope_id}/{user_id}"
         self._prompt_applier = PromptApplier()
 
@@ -106,7 +108,11 @@ class Sweeper:
         dialogue = _format_dialogue(session.events)
         prompt = self._prompt_applier.apply(
             "dreaming_extraction",
-            {"dialogue": dialogue, "max_items": str(self._config.max_items_per_session)},
+            {
+                "dialogue": dialogue,
+                "max_items": str(self._config.max_items_per_session),
+                "important_memory_definition": self._important_memory_definition,
+            },
         )
         messages = [{"role": "user", "content": prompt}]
         parser = JsonOutputParser()
@@ -122,10 +128,20 @@ class Sweeper:
                     raise ValueError(f"expected JSON array, got {type(parsed).__name__}")
                 items = []
                 for obj in parsed[: self._config.max_items_per_session]:
+                    # is_important: default False when the LLM omits the
+                    # field or returns a non-bool. Strictly coerce —
+                    # anything truthy that isn't an explicit bool True
+                    # becomes False so we never accidentally protect a
+                    # memory the LLM didn't actually flag.
+                    raw_flag = obj.get("is_important", False)
+                    is_important = raw_flag is True or raw_flag == 1 or (
+                        isinstance(raw_flag, str) and raw_flag.strip().lower() == "true"
+                    )
                     items.append(KnowledgeItem(
                         mem_type=str(obj.get("mem_type", "")),
                         content=str(obj.get("content", "")),
                         source_session_id=session.session_id,
+                        is_important=is_important,
                     ))
                 return items
             except (KeyError, ValueError, TypeError, AttributeError) as exc:

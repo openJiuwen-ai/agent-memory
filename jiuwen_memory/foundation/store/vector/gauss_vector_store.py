@@ -302,7 +302,7 @@ class GaussVectorStore(BaseVectorStore):
                         col_def = f"{col_name} VARCHAR({max_length})"
                     else:
                         col_def = f"{col_name} {col_type}"
-                    # §3.8 Ebbinghaus: BOOL scalar fields carry a DEFAULT value
+                    # Ebbinghaus: BOOL scalar fields carry a DEFAULT value
                     # so that existing rows (and any rows written without the
                     # field) get False instead of NULL.
                     if field.default_value is not None:

@@ -34,6 +34,7 @@ class KnowledgeItem:
     mem_type: str               # canonical enum value: "user_profile" | "semantic_memory" | "episodic_memory"
     content: str                # the memory statement, stored as-is (consistent with online extraction)
     source_session_id: str
+    is_important: bool = False  # protected from Ebbinghaus forgetting
 
 
 def _to_mem_type(value: str) -> Optional[MemoryType]:
@@ -99,6 +100,7 @@ class MemoryUnitKnowledgeStore:
                 content=text,
                 message_mem_id=item.source_session_id,   # provenance marker → MemoryDoc.fields.source_id
                 timestamp="",                            # empty → write path stamps now
+                is_important=item.is_important,
             )
             memories.setdefault(mem_type.value, []).append(unit)
             attempted += 1

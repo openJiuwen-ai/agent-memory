@@ -138,7 +138,7 @@ class TestChromaCreateAndAdd:
 
 class TestChromaListDocsPushdown:
     """
-        The whole point of Step 2 + the §3.16 方式一 refactor: a
+        The whole point of Step 2 + the vector-filter refactor: a
         FilterGroup that only references vector-schema scalar fields
         (``blacklisted`` / ``is_important``) gets pushed down to the
         backend's scalar filter. For Chroma, this means rendering the

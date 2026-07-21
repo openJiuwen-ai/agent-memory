@@ -1,6 +1,6 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Unit tests for FilterGroup DSL validation rules (§3.16 test matrix)."""
+"""Unit tests for FilterGroup DSL validation rules."""
 import pytest
 from pydantic import ValidationError
 

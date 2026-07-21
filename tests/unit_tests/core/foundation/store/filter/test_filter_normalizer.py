@@ -1,6 +1,6 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Unit tests for normalize_filters and ensure_blacklisted_ne (§3.16 test matrix)."""
+"""Unit tests for normalize_filters and ensure_blacklisted_ne."""
 import pytest
 
 from jiuwen_memory.common.exception.codes import StatusCode

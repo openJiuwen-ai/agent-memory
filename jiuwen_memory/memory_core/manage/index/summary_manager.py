@@ -59,7 +59,8 @@ class SummaryManager(BaseMemoryManager):
                     fields={
                         "source_id": mem_unit.message_mem_id,
                         "metadata": {}
-                    }
+                    },
+                    is_important=mem_unit.is_important,
                 )
                 memory_docs.append(memory_doc)
         return memory_docs
@@ -104,7 +105,12 @@ class SummaryManager(BaseMemoryManager):
                 text=new_memory,
                 type=self.mem_type,
                 timestamp=datetime.now(timezone.utc).astimezone(),
-                fields=memory_doc.fields
+                fields=memory_doc.fields,
+                # Preserve forgetting-related flags from the existing doc:
+                # update_mem_by_id only rewrites content (and re-embeds);
+                # the Ebbinghaus tags must survive the rewrite.
+                is_important=memory_doc.is_important,
+                blacklisted=memory_doc.blacklisted,
             )
             await self.memory_index.update_memories(user_id, scope_id, [updated_doc])
             return True
@@ -172,12 +178,15 @@ class SummaryManager(BaseMemoryManager):
         )
 
         try:
+            # Optional FilterGroup forwarded by the search entrypoint.
+            filters = kwargs.get("filters", None)
             search_results = await self.memory_index.search(
                 user_id=user_id,
                 scope_id=scope_id,
                 query=query,
                 mem_types=[self.mem_type],
-                top_k=top_k
+                top_k=top_k,
+                filters=filters,
             )
 
             result = []

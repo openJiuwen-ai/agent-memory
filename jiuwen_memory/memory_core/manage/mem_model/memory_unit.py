@@ -40,6 +40,7 @@ class FragmentMemoryUnit(BaseMemoryUnit):
     message_mem_id: Optional[str] = None  # Corresponding Message ID
     timestamp: str = ""
     operation_type: Optional[OperationType] = None
+    is_important: bool = False  # protected from Ebbinghaus forgetting
 
 
 @dataclass
@@ -56,6 +57,7 @@ class SummaryUnit(BaseMemoryUnit):
     summary: str
     message_mem_id: Optional[str] = None  # Corresponding Message ID
     timestamp: str = ""
+    is_important: bool = False  # protected from Ebbinghaus forgetting
 
 
 @dataclass

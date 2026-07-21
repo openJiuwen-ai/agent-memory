@@ -2,7 +2,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Unit tests for backend FilterGroup renderers — Milvus / Chroma / ES / Gauss.
 
-Covers the §3.16 test matrix:
+Covers the following cases:
   - EQ / NE / AND / OR across each backend
   - nested group rendering
   - empty FilterGroup rejection

@@ -1,11 +1,15 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 import copy
+import json
 import asyncio
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Tuple
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from jiuwen_memory.foundation.store.filter_dsl import FilterGroup
 
 from jiuwen_memory.foundation.llm.schema.config import ModelRequestConfig, ModelClientConfig
 from jiuwen_memory.foundation.llm import Model, UserMessage, AssistantMessage, BaseMessage
@@ -14,7 +18,8 @@ from jiuwen_memory.memory_core.config.config import (
     MemoryEngineConfig,
     MemoryScopeConfig,
     AgentMemoryConfig,
-    DreamingConfig
+    DreamingConfig,
+    ForgettingConfig,
 )
 from jiuwen_memory.memory_core.process.extract.generation import Generator
 from jiuwen_memory.memory_core.process.dreaming import (
@@ -22,6 +27,10 @@ from jiuwen_memory.memory_core.process.dreaming import (
     MemoryUnitKnowledgeStore,
     MessageStoreSessionSource,
     Sweeper,
+)
+from jiuwen_memory.memory_core.process.forgetting import (
+    EbbinghausEvaluator,
+    ForgetContext,
 )
 from jiuwen_memory.memory_core.manage.mem_model.data_id_manager import DataIdManager
 from jiuwen_memory.memory_core.manage.mem_model.message_manager import MessageManager, MessageAddRequest
@@ -48,7 +57,7 @@ from jiuwen_memory.foundation.store.base_memory_index import BaseMemoryIndex, Me
 from jiuwen_memory.foundation.store.index.simple_memory_index import SimpleMemoryIndex
 from jiuwen_memory.memory_core.manage.mem_model.scope_user_mapping_manager import ScopeUserMappingManager
 from jiuwen_memory.common.exception.codes import StatusCode
-from jiuwen_memory.common.exception.errors import build_error
+from jiuwen_memory.common.exception.errors import BaseError, build_error
 from jiuwen_memory.common.logging import memory_logger
 from jiuwen_memory.common.logging.events import LogEventType
 from jiuwen_memory.memory_core.migration.run_migrations import run_kv_migrations,\
@@ -59,6 +68,24 @@ from jiuwen_memory.foundation.codec import (
     get_default_registry,
 )
 from jiuwen_memory.memory_core.manage.mem_model.semantic_store import SemanticStore
+from jiuwen_memory.memory_core.common.kv_prefix_registry import kv_prefix_registry
+
+
+# KV key prefix for the per-mem retrieve_history records written by
+# ``SearchManager._append_retrieve_history`` (search path) and seeded /
+# cleaned up by ``LongTermMemory.add_memory_unit`` / ``delete_mem_by_id``.
+# Co-located with the user_var / session_var prefixes so the KV migrator
+# / batch cleaner picks it up automatically. Layout of a single key:
+#   retrieve_history{SEP}{user_id}{SEP}{scope_id}{SEP}{mem_id}
+# where SEP is ``VariableManager.SEPARATOR`` (currently ``/``).
+RETRIEVE_HISTORY_PREFIX = "retrieve_history"
+
+# retrieve_history is a FIFO rolling window: once it reaches
+# _RETRIEVE_HISTORY_MAX_LEN entries, the oldest (front) entry is
+# dropped before the new ts is appended. Keeps KV payload bounded and
+# favours recency — which is what the Ebbinghaus reinforcement term
+# (σ · Σ 1/d) cares about.
+_RETRIEVE_HISTORY_MAX_LEN = 20
 
 
 class MemInfo(BaseModel):
@@ -249,6 +276,11 @@ class LongTermMemory(metaclass=Singleton):
         self.message_store = message_store
         self._index_backend = index_backend
 
+        # Register the retrieve_history KV prefix so the KV migrator /
+        # batch cleaner picks it up alongside user_var / session_var.
+        # Idempotent — re-registering on repeat register_store calls is a no-op.
+        kv_prefix_registry.register_current(RETRIEVE_HISTORY_PREFIX)
+
         # memory_index 后端选择：index_backend 决定注册哪个实现。
         # - "file"：注册 FileMemoryIndex（markdown+SQLite），vector_store 不作 memory_index，
         #   但仍保留供中间记忆 / dreaming 的 SemanticStore 使用。
@@ -364,7 +396,9 @@ class LongTermMemory(metaclass=Singleton):
                         text=doc.text,
                         type=doc.type,
                         timestamp=doc.timestamp,
-                        fields=doc.fields.copy()
+                        fields=doc.fields.copy(),
+                        is_important=doc.is_important,
+                        blacklisted=doc.blacklisted,
                     )
                     for doc in documents
                 ]
@@ -509,13 +543,15 @@ class LongTermMemory(metaclass=Singleton):
         self.search_manager = SearchManager(
             managers,
             config.crypto_key,
-            self.memory_index
+            self.memory_index,
+            kv_store=self.kv_store,
         )
 
         self.middle_search_manager = SearchManager(
             middle_managers,
             config.crypto_key,
-            self.memory_index
+            self.memory_index,
+            kv_store=self.kv_store,
         )
 
         self.generator = Generator(data_id_generator=data_id_generator, search_manager=self.search_manager)
@@ -1461,6 +1497,134 @@ class LongTermMemory(metaclass=Singleton):
                 scope_id=scope_id,
                 mem_id=mem_id
             )
+            # Step 8a: synchronously clean up the Ebbinghaus forgetting
+            # traces for this mem_id so a later recall/re-add does not
+            # pick up stale state. Both KV writes are best-effort —
+            # missing key is NOT an error.
+            await self._cleanup_forgetting_traces(
+                scope_id=scope_id, user_id=user_id, mem_id=mem_id,
+            )
+
+    async def _cleanup_forgetting_traces(
+        self, *, scope_id: str, user_id: str, mem_id: str,
+    ) -> None:
+        """Drop retrieve_history KV key for a deleted mem_id.
+
+        Called from delete_mem_by_id after the doc is removed from the
+        vector store. All errors are logged and swallowed — main delete
+        flow already succeeded; this is housekeeping.
+        """
+        if not self.kv_store:
+            return
+        # retrieve_history KV key
+        rh_key = self._retrieve_history_key(user_id, scope_id, mem_id)
+        try:
+            await self.kv_store.delete(rh_key)
+        except Exception as exc:
+            memory_logger.warning(
+                "cleanup_forgetting_traces: delete retrieve_history failed: %s",
+                str(exc),
+                event_type=LogEventType.MEMORY_PROCESS,
+                user_id=user_id, scope_id=scope_id, mem_id=mem_id,
+            )
+
+    # ---------------------------------------------------------------- recall path
+
+    async def add_memory_unit(
+        self,
+        *,
+        scope_id: str,
+        user_id: str,
+        memory_doc: MemoryDoc,
+        retrieve_history: dict | None = None,
+    ) -> str:
+        """
+        Write a single ``MemoryDoc`` directly to the memory index.
+
+        Used by the recall flow: the caller constructs the full doc (an
+        evicted memory they want to "remember again"), and this method
+        bypasses LLM extraction / conflict detection, writes straight to
+        ``memory_index.add_memories`` with ``blacklisted=False`` (the
+        default on ``MemoryDoc``), and optionally initializes a
+        ``retrieve_history`` KV entry so the new unit starts with a
+        non-zero reinforcement score.
+
+        Args:
+            scope_id: tenant / scope boundary.
+            user_id: user identifier within the scope.
+            memory_doc: fully-constructed doc (caller sets id / text /
+                type / timestamp / fields / is_important). ``blacklisted``
+                on the doc is ignored — this method always writes
+                ``blacklisted=False`` (recall = un-forget).
+            retrieve_history: optional initial payload to seed the
+                retrieve_history KV (e.g. carry over the old count +
+                timestamps). When None, no retrieve_history key is written.
+
+        Returns:
+            The written memory id (``memory_doc.id``).
+
+        Raises:
+            BaseError(StatusCode.MEMORY_ADD_MEMORY_UNIT_ERROR): on
+                validation or write failures.
+        """
+        if not scope_id or not user_id:
+            raise build_error(
+                StatusCode.MEMORY_ADD_MEMORY_UNIT_ERROR,
+                error_msg="scope_id and user_id are required",
+            )
+        if memory_doc is None or not getattr(memory_doc, "id", ""):
+            raise build_error(
+                StatusCode.MEMORY_ADD_MEMORY_UNIT_ERROR,
+                error_msg="memory_doc.id is required",
+            )
+        if not getattr(memory_doc, "text", ""):
+            raise build_error(
+                StatusCode.MEMORY_ADD_MEMORY_UNIT_ERROR,
+                error_msg="memory_doc.text is required",
+            )
+
+        if not self.memory_index:
+            raise build_error(
+                StatusCode.MEMORY_ADD_MEMORY_UNIT_ERROR,
+                error_msg="memory index not initialized",
+            )
+
+        # Recall = un-forget. The caller's blacklisted flag is overwritten
+        # to False; any stale blacklist entries are cleaned up by the
+        # caller via delete_mem_by_id before re-adding.
+        memory_doc.blacklisted = False
+
+        try:
+            await self.memory_index.add_memories(user_id, scope_id, [memory_doc])
+        except BaseError:
+            raise
+        except Exception as exc:
+            memory_logger.error(
+                "add_memory_unit failed: %s", str(exc),
+                event_type=LogEventType.MEMORY_STORE,
+                user_id=user_id, scope_id=scope_id, mem_id=memory_doc.id,
+            )
+            raise build_error(
+                StatusCode.MEMORY_ADD_MEMORY_UNIT_ERROR,
+                error_msg=str(exc),
+            ) from exc
+
+        # Optional retrieve_history seed. Failures here are swallowed —
+        # the doc is already written; missing retrieve_history just means
+        # the new memory scores like a fresh memory next forget sweep.
+        if retrieve_history is not None and self.kv_store:
+            rh_key = self._retrieve_history_key(user_id, scope_id, memory_doc.id)
+            try:
+                await self.kv_store.set(rh_key, json.dumps(retrieve_history))
+            except Exception as exc:
+                memory_logger.warning(
+                    "add_memory_unit: retrieve_history seed failed, skip: %s",
+                    str(exc),
+                    event_type=LogEventType.MEMORY_PROCESS,
+                    user_id=user_id, scope_id=scope_id, mem_id=memory_doc.id,
+                )
+
+        return memory_doc.id
 
     async def delete_mem_by_user_id(self,
                                     user_id: str = DEFAULT_VALUE,
@@ -1593,12 +1757,25 @@ class LongTermMemory(metaclass=Singleton):
             error_msg=f"names must be str | list[str] | None",
         )
 
+    @staticmethod
+    def _retrieve_history_key(user_id: str, scope_id: str, mem_id: str) -> str:
+        """retrieve_history KV key. Layout matches SearchManager.RETRIEVE_HISTORY_PREFIX.
+
+        Co-located with the cleanup / add_memory_unit paths so they can
+        format the same key without going through SearchManager (which
+        is the fire-and-forget writer for the search path).
+        """
+        sep = VariableManager.SEPARATOR
+        return f"{RETRIEVE_HISTORY_PREFIX}{sep}{user_id}{sep}{scope_id}{sep}{mem_id}"
+
     async def search_user_mem(self,
                               query: str,
                               num: int,
                               user_id: str = DEFAULT_VALUE,
                               scope_id: str = DEFAULT_VALUE,
-                              threshold: float = 0.3
+                              threshold: float = 0.3,
+                              *,
+                              filters: "FilterGroup | None" = None,
                               ) -> list[MemResult]:
         if not self._validate_id(event_type=LogEventType.MEMORY_RETRIEVE, scope_id=scope_id):
             memory_logger.error(
@@ -1626,7 +1803,8 @@ class LongTermMemory(metaclass=Singleton):
             top_k=num,
             user_id=user_id,
             threshold=threshold,
-            search_type=self.fragment_type
+            search_type=self.fragment_type,
+            filters=filters,
         )
         try:
             search_data = []
@@ -1665,6 +1843,9 @@ class LongTermMemory(metaclass=Singleton):
             ]
             mem_results.extend(middle_results)
 
+            # retrieve_history is now appended inside SearchManager.search
+            # (and middle_search_manager.search_middle does not, by design —
+            # middle-term memories are not subject to Ebbinghaus forgetting).
             return mem_results
 
         except AttributeError as e:
@@ -1943,7 +2124,9 @@ class LongTermMemory(metaclass=Singleton):
                                    scope_id: str = DEFAULT_VALUE,
                                    page_size: int = 10,
                                    page_idx: int = 1,
-                                   memory_type: MemoryType = MemoryType.UNKNOWN) -> list[MemInfo]:
+                                   memory_type: MemoryType = MemoryType.UNKNOWN,
+                                   *,
+                                   filters: "FilterGroup | None" = None) -> list[MemInfo]:
         """
         List user memories with pagination support.
 
@@ -1956,6 +2139,11 @@ class LongTermMemory(metaclass=Singleton):
             page_size: Number of memories per page
             page_idx: Page index (1-based)
             memory_type: Memory type to filter. If UNKNOWN, no filtering is applied.
+            filters: caller-supplied FilterGroup. None (default) = auto-inject
+                ``NE("blacklisted", True)`` — the normal user-facing listing
+                excluding forgotten memories. Callers wanting to surface
+                blacklisted memories pass a FilterGroup that mentions the
+                ``blacklisted`` field (e.g. ``EQ("blacklisted", True)``).
 
         Returns:
             List of memory information
@@ -1986,7 +2174,8 @@ class LongTermMemory(metaclass=Singleton):
             search_memory_type = memory_type.value
         search_data = await self.search_manager.list_user_mem(user_id=user_id, scope_id=scope_id,
                                                               nums=page_size, pages=page_idx,
-                                                              mem_type=search_memory_type)
+                                                              mem_type=search_memory_type,
+                                                              filters=filters)
 
         if not search_data:
             return []
@@ -2190,15 +2379,31 @@ class LongTermMemory(metaclass=Singleton):
         busy_checker: Callable[[], bool] | None = None,
     ) -> DreamingOrchestrator | None:
         """
-        Start background dreaming (offline cross-session consolidation) for a
-        (scope_id, user_id).
+        Start the sleep-time consolidation loop for a (scope_id, user_id).
 
-        Reuses this instance's ``_get_scope_llm`` / ``message_manager`` /
-        ``write_manager`` / ``kv_store``; promotes extracted knowledge through the
-        normal memory write path (vector store).
+        The loop runs **two independent sub-flows** per tick, controlled by
+        separate flags on ``DreamingConfig`` / ``ForgettingConfig``:
 
-        Idempotent: a second call for the same (scope_id, user_id) returns the
-        existing orchestrator. Returns ``None`` when ``config.enabled`` is False.
+        - ``config.enabled`` (DreamingConfig.enabled) controls whether the
+          sweeper (compress → extract → promote) runs. Only the dreaming
+          sub-flow is gated by this flag.
+        - ``config.forgetting.enabled`` (ForgettingConfig.enabled) controls
+          whether the Ebbinghaus forgetting step runs. Only the forgetting
+          sub-flow is gated by this flag.
+
+        Both sub-flows share the same orchestrator thread and the same
+        ``interval_seconds`` tick — they are co-scheduled, not independent
+        loops. If **both** flags are False, ``None`` is returned and no
+        orchestrator is started. If either is True, the orchestrator runs
+        and each tick dispatches whichever sub-flow(s) are enabled.
+
+        Idempotent: a second call for the same (scope_id, user_id) returns
+        the existing orchestrator.
+
+        When only forgetting is enabled (dreaming disabled), the sweeper
+        is skipped — no session reads, no LLM extraction, no new writes.
+        This is the common case for tenants who want Ebbinghaus forgetting
+        without offline consolidation.
         """
         if not self._validate_id(event_type=LogEventType.MEMORY_STORE, scope_id=scope_id):
             raise build_error(
@@ -2208,9 +2413,17 @@ class LongTermMemory(metaclass=Singleton):
             )
 
         config = config or DreamingConfig()
-        if not config.enabled:
+        # Forgetting config defaults to a fresh ForgettingConfig() (which
+        # itself defaults to enabled=False). Treating None as
+        # "ForgettingConfig(enabled=False)" keeps the downstream code path
+        # uniform — there's always a forgetting_config object to read.
+        forgetting_config = config.forgetting or ForgettingConfig()
+
+        dream_enabled = config.enabled
+        forget_enabled = forgetting_config.enabled
+        if not dream_enabled and not forget_enabled:
             memory_logger.info(
-                "Dreaming disabled by config, not starting.",
+                "Dreaming and forgetting both disabled by config, not starting.",
                 event_type=LogEventType.MEMORY_STORE,
                 user_id=user_id, scope_id=scope_id,
             )
@@ -2247,18 +2460,72 @@ class LongTermMemory(metaclass=Singleton):
             # consistent with add_messages' _apply_scope_embedding
             prepare_write=lambda: self._apply_scope_embedding(scope_id),
         )
+        # Pull the scope's important_memory_definition (defaulting to the
+        # global default when the scope isn't registered or the read
+        # fails) so sweeper can inject it into the dreaming_extraction
+        # prompt. Failures here must not break start_dreaming — the
+        # default definition is reasonable.
+        try:
+            scope_config = await self._get_scope_config(scope_id)
+            important_definition = (
+                scope_config.important_memory_definition
+                if scope_config and scope_config.important_memory_definition
+                else MemoryScopeConfig().important_memory_definition
+            )
+        except Exception as exc:
+            memory_logger.warning(
+                "start_dreaming: failed to read scope config for "
+                "important_memory_definition, using global default: %s",
+                str(exc),
+                event_type=LogEventType.MEMORY_STORE,
+                user_id=user_id, scope_id=scope_id,
+            )
+            important_definition = MemoryScopeConfig().important_memory_definition
         sweeper = Sweeper(
             source=source, store=store, llm=llm, config=config,
             checkpoint_io=self.kv_store, user_id=user_id, scope_id=scope_id,
+            important_memory_definition=important_definition,
         )
+
+        # Build the sweep closure. The two sub-flows are independently
+        # gated by their own flags:
+        #   - sweeper.run_sweep() runs only when config.enabled (dreaming)
+        #   - _forget_memories_step runs only when forgetting_config.enabled
+        # Both share the same orchestrator tick and the same user-level
+        # lock semantics; forgetting still runs AFTER sweeper when both are
+        # enabled, so newly-promoted memories get their retrieve_history
+        # seeded before being scored.
+        async def sweep_fn() -> None:
+            if dream_enabled:
+                await sweeper.run_sweep()
+            if not forget_enabled:
+                return
+            # _forget_memories_step already downgrades internal failures
+            # to memory_logger.warning; the outer try/except is defence
+            # in depth for anything unexpected.
+            try:
+                await self._forget_memories_step(
+                    scope_id=scope_id,
+                    user_id=user_id,
+                    forgetting_config=forgetting_config,
+                )
+            except Exception as exc:
+                memory_logger.warning(
+                    "forget step failed, will retry next cycle: %s",
+                    str(exc),
+                    event_type=LogEventType.MEMORY_PROCESS,
+                    user_id=user_id, scope_id=scope_id,
+                )
+
         orch = DreamingOrchestrator(
-            sweeper.run_sweep, config.interval_seconds, busy_checker,
+            sweep_fn, config.interval_seconds, busy_checker,
             name=f"dreaming/{scope_id}/{user_id}",
         )
         self._dreaming_orchestrators[key] = orch
         await orch.start()
         memory_logger.info(
-            "Dreaming started.",
+            "Dreaming orchestrator started (dreaming=%s, forgetting=%s).",
+            dream_enabled, forget_enabled,
             event_type=LogEventType.MEMORY_STORE,
             user_id=user_id, scope_id=scope_id,
         )
@@ -2277,6 +2544,129 @@ class LongTermMemory(metaclass=Singleton):
         for key, orch in to_stop:
             self._dreaming_orchestrators.pop(key, None)
             await orch.stop()
+
+    # --- Ebbinghaus forgetting -----------------------------------------------
+    # Step 6: the forgetting step that runs inside dreaming.
+    # Marked-blacklisted memories are kept in storage but excluded from normal
+    # search via the ``NE("blacklisted", True)`` FilterGroup (Step 7).
+    #
+    # Implementation notes:
+    #   - ``DistributedLock(store, lock_name)`` takes no ``timeout`` parameter.
+    #   - ``update_mem_by_id(user_id, scope_id, mem_id, fields: dict)`` takes
+    #     a dict, not keyword args.
+    #   - ``ForgetEvaluator.evaluate`` is ``async``, so we ``await`` it here.
+
+    #: mem_types the forget sweep scans. Variable / middle_term are excluded
+    #: (variable is tiny + ephemeral; middle_term is a separate hot-cache).
+    _FORGET_MEM_TYPES = (
+        MemoryType.USER_PROFILE.value,
+        MemoryType.SEMANTIC_MEMORY.value,
+        MemoryType.EPISODIC_MEMORY.value,
+        MemoryType.SUMMARY.value,
+    )
+
+    async def _mark_blacklisted(
+        self,
+        *,
+        scope_id: str,
+        user_id: str,
+        evicted: list[MemoryDoc],
+    ) -> None:
+        """
+        Mark evicted memories as forgotten by flipping their vector scalar
+        ``blacklisted`` field to ``True``.
+
+        The vector scalar is the single source of truth for "is this memory
+        forgotten": search and list paths filter via ``NE("blacklisted", True)``
+        / ``EQ("blacklisted", True)``, so a successful flip is sufficient.
+
+        Failures are logged and swallowed — a single bad doc doesn't abort
+        the rest of the batch. Failed ids are simply skipped; the next sweep
+        will retry the flip (the operation is idempotent).
+        """
+        if not evicted:
+            return
+
+        for doc in evicted:
+            try:
+                await self.memory_index.update_mem_by_id(
+                    user_id, scope_id, doc.id, {"blacklisted": True}
+                )
+            except Exception as exc:
+                memory_logger.warning(
+                    "mark blacklisted (vector) failed for %s: %s",
+                    doc.id, exc,
+                    event_type=LogEventType.MEMORY_PROCESS,
+                    user_id=user_id, scope_id=scope_id, mem_id=doc.id,
+                )
+
+    async def _forget_memories_step(
+        self,
+        *,
+        scope_id: str,
+        user_id: str,
+        forgetting_config: "ForgettingConfig",
+    ) -> None:
+        """
+        Sleep-time forgetting sweep. Orchestrates only: lock → sweep →
+        delegate to evaluator → mark blacklist. The scoring / eviction
+        decision is fully owned by ``ForgetEvaluator.evaluate``.
+
+        Failures (lock contention, list_memories exception, evaluator
+        exception) are downgraded to ``memory_logger.warning`` and do NOT
+        abort the surrounding dreaming sweep — the next interval retry
+        is the recovery path.
+        """
+        # The evaluator may be None → fall back to the built-in Ebbinghaus
+        # formula with this instance's KV store.
+        evaluator = forgetting_config.evaluator or EbbinghausEvaluator(self.kv_store)
+        ctx = ForgetContext(
+            scope_id=scope_id,
+            user_id=user_id,
+            now=datetime.now(timezone.utc).astimezone(),
+            forgetting_config=forgetting_config,
+        )
+
+        # Independent user-level lock — sweeper.run_sweep takes the same
+        # lock but releases it after each write; forget must hold its own
+        # to avoid racing add_messages / other writers during the sweep.
+        try:
+            async with DistributedLock(self.kv_store, f"user/{user_id}"):
+                # Paginated sweep of the candidate set. No filters here
+                # — we scan the whole eligible mem_type set including
+                # already-blacklisted (they'll just be re-marked, idempotent).
+                memories: list[MemoryDoc] = []
+                offset = 0
+                page_size = 100
+                while True:
+                    batch = await self.memory_index.list_memories(
+                        user_id, scope_id,
+                        offset=offset, limit=page_size,
+                        mem_types=list(self._FORGET_MEM_TYPES),
+                    )
+                    if not batch:
+                        break
+                    memories.extend(batch)
+                    offset += page_size
+                    if len(batch) < page_size:
+                        break
+
+                # Delegate scoring + eviction decision to the evaluator
+                # (Ebbinghaus by default; pluggable via ForgettingConfig).
+                evicted = await evaluator.evaluate(ctx, memories)
+
+                # Apply blacklist (vector scalar flip — single source of
+                # truth; the next sweep will retry any id whose flip failed).
+                await self._mark_blacklisted(
+                    scope_id=scope_id, user_id=user_id, evicted=evicted,
+                )
+        except Exception as exc:
+            memory_logger.warning(
+                "forget_memories_step failed, will retry next sweep: %s",
+                str(exc),
+                event_type=LogEventType.MEMORY_PROCESS,
+                user_id=user_id, scope_id=scope_id,
+            )
 
     async def _get_scope_llm(self, scope_id: str) -> Model:
         """

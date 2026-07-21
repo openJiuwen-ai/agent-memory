@@ -39,6 +39,11 @@
     2. 情景记忆信息(episodic_memory)：Step 2中主体锁定为{{subject_scope}}，且是关于**{{subject_scope}}**的{{episodic_memory_definition}}
     3. 语义记忆信息(semantic_memory)：{{semantic_memory_definition}}
     4. 变更记忆指令(instruct_memories)：用户明确要求**修改**或**删除**已有记忆，【目标消息】中必须包含以下关键字：`改为`、`修改`、`更新`、`换成`,`删除`、`去掉`、`清除`、`移除`等明确表示修改和删除含义的词。
+  - 重要记忆标注：每条 user_profile / episodic_memory / semantic_memory 记忆都必须判断是否属于"重要记忆"。
+    - 重要记忆定义：{{important_memory_definition}}
+    - 若该条记忆属于上述定义（涉及用户身份、关键决策、长期承诺、不可替代的事实性内容）→ `is_important=true`
+    - 否则 → `is_important=false`
+    - 重要记忆会被系统永久保护，不被遗忘曲线淘汰；非重要记忆则可能随时间衰减。
        - 变更记忆指令的提取规则：
          - 禁止将【目标消息】中不包含上述关键字的信息提取为变更记忆指令
          - `mem_content`：第三人称陈述，完整描述修改后的新状态（DELETE指令时为空字符串）
@@ -78,14 +83,22 @@
             "old_mem": "被修改或删除的旧记忆"
         }
     ],
-    "user_profile": [...],
-    "semantic_memory": [...],
-    "episodic_memory": [...]
+    "user_profile": [
+        {"content": "记忆内容", "is_important": true | false}
+    ],
+    "semantic_memory": [
+        {"content": "记忆内容", "is_important": true | false}
+    ],
+    "episodic_memory": [
+        {"content": "记忆内容", "is_important": true | false}
+    ]
   }
   ```
   - 规范：
     - 若无符合条件的信息，返回 `{"has_explict_instruct": false,"instruct_memories": [],"user_profile": [],"semantic_memory": [], "episodic_memory": []}`。
     - `has_explict_instruct`:当`instruct_memories`不为空时为`true`，否则为`false`。
+    - `user_profile` / `semantic_memory` / `episodic_memory` 三个数组的每项都是 `{"content": str, "is_important": bool}` 结构，必须显式给出 `is_important` 字段。
+    - **兼容性**：系统也能解析每项为纯字符串的旧格式（`["记忆内容"]`），此时 `is_important` 默认为 `false`。但模型输出应优先采用 `{"content", "is_important"}` 结构。
     - **禁止**输出任何解释、注释或非JSON文本。
 
 # Core Rules (必须严格遵守)

@@ -109,7 +109,8 @@ class FragmentMemoryManager(BaseMemoryManager):
             mem_unit.timestamp else datetime.now(timezone.utc).astimezone(),
             fields={
                 "source_id": mem_unit.message_mem_id,
-            }
+            },
+            is_important=mem_unit.is_important,
         )
 
     def _doc_to_dict(self, doc: MemoryDoc, score: float = 0.0) -> dict[str, Any]:
@@ -210,7 +211,12 @@ class FragmentMemoryManager(BaseMemoryManager):
                 text=new_memory,
                 type=old_doc.type,
                 timestamp=datetime.now(timezone.utc).astimezone(),
-                fields=old_doc.fields
+                fields=old_doc.fields,
+                # Preserve forgetting-related flags from the existing doc:
+                # update_mem_by_id only rewrites content (and re-embeds);
+                # the Ebbinghaus tags must survive the rewrite.
+                is_important=old_doc.is_important,
+                blacklisted=old_doc.blacklisted,
             )
             await self.memory_index.update_memories(user_id, scope_id, [updated_doc])
             return True
@@ -227,13 +233,17 @@ class FragmentMemoryManager(BaseMemoryManager):
 
         try:
             mem_types = kwargs.get("mem_types", None)
+            # Optional FilterGroup forwarded by the search entrypoint. None
+            # means "caller let the framework inject NE('blacklisted', True)".
+            filters = kwargs.get("filters", None)
             result = []
             search_results = await self.memory_index.search(
                 user_id=user_id,
                 scope_id=scope_id,
                 query=query,
                 mem_types=mem_types if mem_types else FRAGMENT_MEMORY_TYPE,
-                top_k=top_k
+                top_k=top_k,
+                filters=filters,
             )
             for memory_doc, score in search_results:
                 result.append(self._doc_to_dict(memory_doc, score))

@@ -1,13 +1,18 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
-from pydantic import BaseModel, Field, field_validator
+from __future__ import annotations
+
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from jiuwen_memory.common.schema.param import Param
 from jiuwen_memory.common.security.crypt_utils import AES_KEY_LENGTH
 from jiuwen_memory.foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
 from jiuwen_memory.retrieval.common.config import EmbeddingConfig
 from jiuwen_memory.common.exception.codes import StatusCode
 from jiuwen_memory.common.exception.errors import build_error
+from jiuwen_memory.memory_core.process.forgetting.evaluator import ForgetEvaluator
 
 
 class MemoryEngineConfig(BaseModel):
@@ -51,6 +56,13 @@ class MemoryScopeConfig(BaseModel):
     semantic_memory_definition: str = Field(default="用户对话中涉及的和时间无明确关系的事实性内容或概念")
     # user-defined rules for episodic memory extraction
     episodic_memory_definition: str = Field(default="用户对话中涉及的和时间有明确关系的事实性内容或概念")
+    # user-defined rules for important memory tagging — feeds
+    # the ``important_memory_definition`` placeholder in extraction prompts.
+    # Memories matching this definition get ``is_important=True`` from the
+    # LLM extractor, which protects them from Ebbinghaus forgetting.
+    important_memory_definition: str = Field(
+        default="涉及用户身份、关键决策、长期承诺、不可替代的事实性内容"
+    )
     # 是否同时抽取 assistant 角色说话人的记忆（多主体/双人对话场景）；默认仅抽取 user 角色
     extract_assistant_memory: bool = Field(default=False)
 
@@ -64,6 +76,38 @@ class AgentMemoryConfig(BaseModel):
     enable_summary_memory: bool = Field(default=True)  # enable summary memory or not
 
 
+class ForgettingConfig(BaseModel):
+    """
+    Config for the Ebbinghaus forgetting step that runs inside dreaming.
+
+    The forgetting step scores candidate memories using an Ebbinghaus-style
+    decay formula and marks low-score memories as ``blacklisted`` (soft
+    forgetting — they are kept in storage for recall but excluded from
+    normal search).
+
+    The actual scoring algorithm is implemented by ``ForgetEvaluator``
+    subclasses. ``evaluator`` is optional: when ``None``, the framework
+    falls back to the built-in ``EbbinghausEvaluator`` constructed with
+    the runtime ``kv_store``.
+
+    ``model_config`` enables ``arbitrary_types_allowed`` so that the
+    ``ForgetEvaluator`` ABC (an arbitrary Python type, not a pydantic
+    model) can be carried on the field. The evaluator instance is
+    opaque to pydantic — it is never serialized, only passed by
+    reference to the dreaming orchestrator.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    enabled: bool = Field(default=False)
+    threshold: float = Field(default=0.15, ge=0, le=1)  # memories with score < threshold are evicted
+    max_evict: int = Field(default=1000, ge=1)  # cap on evictions per sweep (anti-avalanche)
+    min_retention_days: int = Field(default=30, ge=0)  # never evict memories accessed within this window
+    evaluator: Optional["ForgetEvaluator"] = Field(default=None)
+    # None → default EbbinghausEvaluator(self.kv_store)
+    # instance → use as-is (custom subclasses)
+
+
 class DreamingConfig(BaseModel):
     """
     Config for the offline dreaming (cross-session consolidation) process.
@@ -72,8 +116,10 @@ class DreamingConfig(BaseModel):
     not read from any global config file.
     """
     enabled: bool = Field(default=False)
-    interval_seconds: float = Field(default=14400.0, gt=0)   # 4h
-    min_session_rounds: int = Field(default=4, ge=1)         # pre-filter: skip sessions with fewer rounds
-    max_sessions_per_sweep: int = Field(default=10, ge=1)    # cap sessions processed per sweep
-    max_compress_tokens: int = Field(default=30000, gt=0)    # compression token budget
-    max_items_per_session: int = Field(default=5, ge=1)      # cap knowledge items extracted per session
+    interval_seconds: float = Field(default=14400.0, gt=0)  # 4h
+    min_session_rounds: int = Field(default=4, ge=1)  # pre-filter: skip sessions with fewer rounds
+    max_sessions_per_sweep: int = Field(default=10, ge=1)  # cap sessions processed per sweep
+    max_compress_tokens: int = Field(default=30000, gt=0)  # compression token budget
+    max_items_per_session: int = Field(default=5, ge=1)  # cap knowledge items extracted per session
+    forgetting: Optional[ForgettingConfig] = Field(default=None)
+    # None = forgetting step is not wired into dreaming
