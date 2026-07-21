@@ -36,6 +36,7 @@ dependencies = [
     "pymilvus>=2.6.2,<2.6.10",
     # Encryption
     "pycryptodome>=3.23.0",
+    "gmssl>=3.2.2",
     # Utilities
     "pyyaml>=6.0",
     "tqdm>=4.0",
