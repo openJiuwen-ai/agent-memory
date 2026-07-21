@@ -59,7 +59,7 @@ def create_async_engine_from_env() -> AsyncEngine:
         db_url = f"sqlite+aiosqlite:///{db_path}"
 
     if db_url.startswith("gaussdb"):
-        import jiuwen_memmory.foundation.store.db.gauss_dialect
+        import jiuwen_memory.foundation.store.db.gauss_dialect
 
     memory_logger.info("Using DB engine url=%s", db_url)
     return create_async_engine(
