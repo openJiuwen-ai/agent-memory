@@ -63,8 +63,35 @@ class MiddleTermMemoryManager(BaseMemoryManager):
         return valid_units
 
     async def update(self, user_id: str, scope_id: str, mem_id: str, new_memory: str, **kwargs):
-        """update memory by its id."""
-        pass
+        """Update middle-term memory by replacing its vector document."""
+        semantic_store = self._get_semantic_store("update", **kwargs)
+        await self._delete_vector_middle_memory(
+            memory_id=[mem_id],
+            user_id=user_id,
+            scope_id=scope_id,
+            semantic_store=semantic_store,
+        )
+
+        timestamp = datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S')
+        updated_unit = MiddleTermUnit(
+            mem_id=mem_id,
+            content=new_memory,
+            message_mem_id=mem_id,
+            timestamp=timestamp,
+        )
+        vector_success = await self._add_middle_term_memories_to_vector(
+            middleterm_units=[updated_unit],
+            user_id=user_id,
+            scope_id=scope_id,
+            semantic_store=semantic_store,
+        )
+        if not vector_success:
+            raise build_error(
+                StatusCode.MEMORY_UPDATE_MEMORY_EXECUTION_ERROR,
+                memory_type=self.mem_type,
+                error_msg="middle term memory update in vector store failed",
+            )
+        return True
 
     async def delete(self, user_id: str, scope_id: str, mem_id: str, **kwargs):
         """delete memory by its id."""
@@ -77,8 +104,14 @@ class MiddleTermMemoryManager(BaseMemoryManager):
         return True
 
     async def delete_by_user_id(self, user_id: str, scope_id: str, **kwargs):
-        """delete memory by user id and app id."""
-        pass
+        """Delete all middle-term memories for a user within a scope."""
+        semantic_store = self._get_semantic_store("delete", **kwargs)
+        await self._delete_vector_store_table(
+            user_id=user_id,
+            scope_id=scope_id,
+            semantic_store=semantic_store,
+        )
+        return True
 
     async def get(self, user_id: str, scope_id: str, mem_id: str) -> dict[str, Any] | None:
         """get memory by its id."""

@@ -70,6 +70,9 @@ def ltm():
     m.write_manager = MagicMock()
     m.write_manager.delete_mem_by_id = AsyncMock()
     m.write_manager.delete_mem_by_user_id = AsyncMock()
+    m.middle_write_manager = None
+    m.message_manager = None
+    m._middle_memory_tasks = {}
     yield m
     Singleton._instances.pop(LongTermMemory, None)
 
