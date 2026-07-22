@@ -59,7 +59,10 @@ services:
 
 networks:
   # Shared bridge — Java + memory containers resolve by service name.
+  # 显式 name 避免被 compose 项目名前缀化，保持与 deploy.sh 中
+  # NETWORK_NAME="agent-memory-net" 一致，便于外部容器通过该名接入。
   agent-memory-net:
+    name: agent-memory-net
     driver: bridge
 
 volumes:

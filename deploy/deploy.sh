@@ -6,6 +6,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+if [ ! -f "$SCRIPT_DIR/.env" ]; then
+  echo "错误: 未找到 .env 配置文件，请先执行 cp .env.example .env 并填写配置" >&2
+  exit 1
+fi
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/.env"
 
@@ -53,13 +57,20 @@ docker run -d \
 timer_stop "agent-memory 启动"
 
 echo "等待健康检查..."
+healthy=false
 for _ in $(seq 1 30); do
   if curl -fsS "http://localhost:${MEMORY_PORT}/health" >/dev/null 2>&1; then
+    healthy=true
     echo "agent-memory 健康检查通过"
     break
   fi
   sleep 2
 done
+
+if [ "$healthy" = false ]; then
+  echo "错误: agent-memory 健康检查未通过，部署失败" >&2
+  exit 1
+fi
 
 echo "=== 步骤5: 验证容器状态 ==="
 docker ps --filter "name=$CONTAINER_NAME" \
