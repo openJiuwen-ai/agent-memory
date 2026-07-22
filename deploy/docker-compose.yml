@@ -1,0 +1,67 @@
+# JiuwenMemory — Docker Compose deployment.
+# Brings up the Python FastAPI memory engine on a shared bridge network so
+# spring-ai-ascend (Java) can reach it at http://agent-memory:8000.
+#
+# Usage:
+#   cd deploy && cp .env.example .env && docker compose up -d
+# Verify: curl http://localhost:8001/health
+#
+# To add the Java service, join it to this network:
+#   docker network connect agent-memory-net agent-runtime-a2a
+
+name: agent-memory
+
+services:
+  # JiuwenMemory — Python memory engine (FastAPI :8000)
+  agent-memory:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: agent-memory:latest
+    container_name: agent-memory
+    ports:
+      # Host 8001 -> container 8000. Use HOST_PORT to avoid clashing with
+      # the PORT env var read by memory_server.py inside the container.
+      - "${HOST_PORT:-8001}:8000"
+    environment:
+      # Service
+      IP: ${IP:-0.0.0.0}
+      PORT: "8000"
+      MEMORY_DATA_DIR: /app/memory_data
+      # Embedding model
+      EMBED_MODEL_NAME: ${EMBED_MODEL_NAME:-BAAI/bge-m3}
+      EMBED_API_KEY: ${EMBED_API_KEY:-}
+      EMBED_API_BASE: ${EMBED_API_BASE:-https://api.siliconflow.cn/v1/embeddings}
+      # LLM model
+      MODEL_NAME: ${MODEL_NAME:-Qwen/Qwen2.5-7B-Instruct}
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-SiliconFlow}
+      API_KEY: ${API_KEY:-}
+      API_BASE: ${API_BASE:-https://api.siliconflow.cn/v1}
+      # API auth (empty = no auth)
+      MEMORY_API_KEY: ${MEMORY_API_KEY:-}
+      # Stores
+      KV_STORE_TYPE: ${KV_STORE_TYPE:-db}
+      DB_STORE_TYPE: ${DB_STORE_TYPE:-gauss}
+      # GaussDB URL (encode @ as %40). Must come from .env, never hardcode secrets.
+      DB_URL: ${DB_URL:?DB_URL is required, set it in deploy/.env (see .env.example)}
+      VECTOR_STORE_TYPE: ${VECTOR_STORE_TYPE:-elasticsearch}
+      # Elasticsearch
+      VECTOR_ES_HOSTS: ${VECTOR_ES_HOSTS:?VECTOR_ES_HOSTS is required, set it in deploy/.env}
+      VECTOR_ES_INDEX_PREFIX: ${VECTOR_ES_INDEX_PREFIX:-agent_vector}
+      VECTOR_ES_USERNAME: ${VECTOR_ES_USERNAME:-}
+      VECTOR_ES_PASSWORD: ${VECTOR_ES_PASSWORD:-}
+      VECTOR_CHROMA_PERSIST_DIR: /app/memory_data
+    volumes:
+      - memory_data:/app/memory_data
+    networks:
+      - agent-memory-net
+    restart: unless-stopped
+
+networks:
+  # Shared bridge — Java + memory containers resolve by service name.
+  agent-memory-net:
+    driver: bridge
+
+volumes:
+  # Persists SQLite + ChromaDB.
+  memory_data:
