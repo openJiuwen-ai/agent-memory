@@ -565,7 +565,7 @@ class SimpleMemoryIndex(BaseMemoryIndex):
     ) -> list[MemoryDoc]:
         """List memory documents with pagination, reading from the KV store.
 
-        Filtering strategy (§3.16 方式一 + 方式三):
+        Filtering strategy (two paths):
 
         * If ``filters`` only references fields that exist on the vector
           collection's scalar schema (``blacklisted`` / ``is_important`` —
@@ -574,12 +574,12 @@ class SimpleMemoryIndex(BaseMemoryIndex):
           ``vector_store.list_docs`` so the backend's scalar index handles
           the predicate. The matching ids are then joined back to KV to
           materialise ``MemoryDoc`` bodies.
-          This is §3.16 方式一 (vector filter).
+          This is the vector-filter path.
 
         * If ``filters`` also references fields that live only inside the KV
           JSON (mem_type / timestamp / arbitrary user fields), the whole
           FilterGroup falls back to application-layer evaluation after the
-          KV scan. This is §3.16 方式三 (application filter).
+          KV scan. This is the application-filter path.
 
         * ``filters=None`` always takes the KV-scan path.
         """
@@ -762,8 +762,8 @@ def _can_pushdown_filter(group: FilterGroup, pushdown_fields: frozenset[str]) ->
     that exists on the vector collection's scalar schema.
 
     Used by ``SimpleMemoryIndex.list_memories`` to decide whether the
-    FilterGroup can be pushed down to ``vector_store.list_docs`` (§3.16 方式一)
-    or must fall back to application-layer evaluation (§3.16 方式三). A mixed
+    FilterGroup can be pushed down to ``vector_store.list_docs`` (vector-filter path)
+    or must fall back to application-layer evaluation (application-filter path). A mixed
     group (some pushable + some app-only fields) is NOT partially pushed —
     partial pushdown would require splitting the group, which the DSL's
     EQ/NE-only first version doesn't support cleanly; the safe fallback is

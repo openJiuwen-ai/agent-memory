@@ -82,21 +82,25 @@ class _InMemoryIndex(BaseMemoryIndex):
     async def delete_by_user_and_scope(self, user_id, scope_id):
         self._docs.pop((user_id, scope_id), None)
 
-    async def search(self, user_id, scope_id, query, mem_types=None, top_k=10):
+    async def search(self, user_id, scope_id, query, mem_types=None, top_k=10, *, filters=None):
         bucket = self._docs.get((user_id, scope_id), {})
-        hits = [
-            (doc, 1.0) for doc in bucket.values()
-            if not mem_types or doc.type in mem_types
-        ]
+        hits = []
+        for doc in bucket.values():
+            type_ok = not mem_types or doc.type in mem_types
+            filter_ok = filters is None or not getattr(doc, "blacklisted", False)
+            if type_ok and filter_ok:
+                hits.append((doc, 1.0))
         return hits[:top_k]
 
     async def get_by_id(self, user_id, scope_id, mem_id):
         return self._docs.get((user_id, scope_id), {}).get(mem_id)
 
-    async def list_memories(self, user_id, scope_id, offset=0, limit=100, mem_types=None):
+    async def list_memories(self, user_id, scope_id, offset=0, limit=100, mem_types=None, *, filters=None):
         docs = list(self._docs.get((user_id, scope_id), {}).values())
         if mem_types:
             docs = [d for d in docs if d.type in mem_types]
+        if filters is not None:
+            docs = [d for d in docs if not getattr(d, "blacklisted", False)]
         return docs[offset:offset + limit]
 
     async def cleanup_backup(self, backup_id):

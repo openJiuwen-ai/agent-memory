@@ -1,5 +1,7 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+from __future__ import annotations
+
 from typing import Optional, Tuple
 
 from jiuwen_memory.foundation.llm import Model
@@ -263,15 +265,11 @@ class Generator:
             mem_type = category_to_class.get(fragment_type, None)
             if not mem_type:
                 continue
-            for mem_content in fragment_memories:
-                if isinstance(mem_content, dict):
-                    # 兼容 LLM 偶发把记忆包成 dict 返回：取常见键或最长字符串值，避免 str(dict) 污染记忆库
-                    cand = mem_content.get("content") or mem_content.get("mem_content")
-                    if not cand:
-                        _vals = [v for k, v in mem_content.items()
-                                 if k not in ("type", "mem_type") and isinstance(v, str) and v.strip()]
-                        cand = max(_vals, key=len) if _vals else None
-                    mem_content = cand
+            for entry in fragment_memories:
+                # LLM 输出每项可能是 str（旧格式）或 {"content", "is_important"}
+                # （新格式）。归一化后透传 is_important 到
+                # FragmentMemoryUnit；缺失或非 bool 时默认 False（不保护）。
+                mem_content, is_important = self._normalize_memory_entry(entry)
                 if not isinstance(mem_content, str) or not mem_content.strip():
                     continue
                 mem_id = str(await self.data_id_generator.generate_next_id(user_id=user_id))
@@ -281,9 +279,45 @@ class Generator:
                     message_mem_id=message_mem_id,
                     timestamp=timestamp,
                     mem_id=mem_id,
-                    operation_type=OperationType.ADD
+                    operation_type=OperationType.ADD,
+                    is_important=is_important,
                 ))
         return fragment_mem_units
+
+    @staticmethod
+    def _normalize_memory_entry(entry) -> tuple[str | None, bool]:
+        """
+        Normalize one LLM-output entry from the user_profile /
+        semantic_memory / episodic_memory arrays into (content, is_important).
+
+        Accepted shapes:
+          - str → (str, False)
+          - {"content": str, "is_important": bool} → (content, is_important)
+          - {"mem_content": str, ...} → (mem_content, flag or False)
+          - dict with no content-ish key → (longest str value, False)
+          - anything else → (None, False)
+        """
+        if isinstance(entry, str):
+            return entry, False
+        if isinstance(entry, dict):
+            cand = entry.get("content") or entry.get("mem_content")
+            if not cand:
+                _vals = []
+                for k, v in entry.items():
+                    if (
+                        k not in ("type", "mem_type", "is_important")
+                        and isinstance(v, str) and v.strip()
+                    ):
+                        _vals.append(v)
+                cand = max(_vals, key=len) if _vals else None
+            raw_flag = entry.get("is_important", False)
+            is_important = (
+                raw_flag is True
+                or raw_flag == 1
+                or (isinstance(raw_flag, str) and raw_flag.strip().lower() == "true")
+            )
+            return cand, is_important
+        return None, False
 
     async def _process_proactive_memory_data(
             self,

@@ -2,7 +2,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Unit tests for SimpleMemoryIndex filters support and update_mem_by_id preservation.
 
-Covers §3.16 test matrix entries for ``BaseMemoryIndex.search`` /
+Covers ``BaseMemoryIndex.search`` /
 ``list_memories`` filters passthrough and ``update_mem_by_id`` field retention.
 """
 # Tests assert behaviour through the index's protected collaborators
@@ -212,8 +212,8 @@ class TestListMemoriesFilters:
 class TestListMemoriesPushdownPath:
     """
         Verify that blacklisted / is_important filters go through
-        vector_store.list_docs (§3.16 方式一), while non-vector-schema fields
-        fall back to the KV-scan path (§3.16 方式三).
+        vector_store.list_docs (vector-filter path), while non-vector-schema fields
+        fall back to the KV-scan path (application-filter path).
     """
 
     @pytest.mark.asyncio
@@ -343,7 +343,7 @@ class TestCanPushdownFilterHelper:
 
 
 class TestUpdateMemByIdScalarPath:
-    """Cover §3.16 方式一 for scalar-only updates: ``update_mem_by_id``
+    """Cover the vector-filter path for scalar-only updates: ``update_mem_by_id``
     must route ``blacklisted`` / ``is_important`` to
     ``vector_store.update_doc_fields`` and never call ``embed_documents``
     or ``add_docs``.

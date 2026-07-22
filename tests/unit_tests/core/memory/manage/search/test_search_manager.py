@@ -71,12 +71,18 @@ class MockMemoryIndex(BaseMemoryIndex):
             self._data[user_id].pop(scope_id, None)
 
     async def search(self, user_id: str, scope_id: str, query: str,
-                     mem_types: list[str] | None = None, top_k: int = 10) -> list[tuple[MemoryDoc, float]]:
+                     mem_types: list[str] | None = None, top_k: int = 10,
+                     *, filters=None) -> list[tuple[MemoryDoc, float]]:
         if user_id not in self._data or scope_id not in self._data[user_id]:
             return []
         results = []
         for doc in self._data[user_id][scope_id].values():
             if mem_types and doc.type not in mem_types:
+                continue
+            # Honor the NE("blacklisted", True) default-injected by the
+            # search entrypoint — exclude blacklisted docs unless the caller
+            # explicitly opted out.
+            if filters is not None and getattr(doc, "blacklisted", False):
                 continue
             score = 1.0 if query in doc.text else 0.5
             results.append((doc, score))
@@ -89,10 +95,15 @@ class MockMemoryIndex(BaseMemoryIndex):
         return None
 
     async def list_memories(self, user_id: str, scope_id: str, offset: int = 0, limit: int = 100,
-                            mem_types: list[str] | None = None) -> list[MemoryDoc]:
+                            mem_types: list[str] | None = None,
+                            *, filters=None) -> list[MemoryDoc]:
         if user_id not in self._data or scope_id not in self._data[user_id]:
             return []
         docs = sorted(self._data[user_id][scope_id].values(), key=lambda d: d.timestamp, reverse=True)
+        # Honor the NE("blacklisted", True) default-injected by the list
+        # entrypoint when filters is non-None.
+        if filters is not None:
+            docs = [d for d in docs if not getattr(d, "blacklisted", False)]
         return docs[offset:offset + limit]
 
     async def cleanup_backup(self, backup_id: str) -> None:

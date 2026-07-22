@@ -177,7 +177,7 @@ async def test_elasticsearch_vector_store_public_interfaces(es_vector_store):
         assert "doc-1" not in {result.fields["id"] for result in after_id_delete}
 
         # delete_docs_by_filters is out-of-scope for Step 1 (it stays dict-typed in
-        # ES backend until §3.13 Step 8). Only the search() path was migrated to FilterGroup.
+        # ES backend until Step 8). Only the search() path was migrated to FilterGroup.
         await es_vector_store.delete_docs_by_filters(collection_name, {"category": "vehicle"})
         after_filter_delete = await es_vector_store.search(
             collection_name=collection_name,
