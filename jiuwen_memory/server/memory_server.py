@@ -144,6 +144,7 @@ class AddMessagesRequest(BaseModel):
     messages: list[dict[str, str]]
     user_id: Optional[str] = LongTermMemory.DEFAULT_VALUE
     scope_id: Optional[str] = LongTermMemory.DEFAULT_VALUE
+    session_id: Optional[str] = LongTermMemory.DEFAULT_VALUE
     # 可选：调用方传入需抽取的变量定义；对外用窄模型 MemVariable（只要求 name/description），
     # 端点内适配成引擎的 Param。不传则 mem_variables 为空（不抽取变量）
     mem_variables: list[MemVariable] = Field(default_factory=list)
@@ -325,6 +326,7 @@ async def add_messages_endpoint(request: AddMessagesRequest):
             agent_config=agent_cfg,
             user_id=request.user_id,
             scope_id=request.scope_id,
+            session_id=request.session_id,
         )
 
         return {"status": "success", "message": "Messages added successfully"}
