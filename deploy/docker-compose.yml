@@ -29,18 +29,18 @@ services:
       PORT: "8000"
       MEMORY_DATA_DIR: /app/memory_data
       # Embedding model
-      EMBED_MODEL_NAME: ${EMBED_MODEL_NAME:-BAAI/bge-m3}
+      EMBED_MODEL_NAME: ${EMBED_MODEL_NAME:-your-embedding-model-name}
       EMBED_API_KEY: ${EMBED_API_KEY:-}
-      EMBED_API_BASE: ${EMBED_API_BASE:-https://api.siliconflow.cn/v1/embeddings}
+      EMBED_API_BASE: ${EMBED_API_BASE:-https://your-embedding-api-base/v1/embeddings}
       # LLM model
-      MODEL_NAME: ${MODEL_NAME:-Qwen/Qwen2.5-7B-Instruct}
-      MODEL_PROVIDER: ${MODEL_PROVIDER:-SiliconFlow}
+      MODEL_NAME: ${MODEL_NAME:-your-llm-model-name}
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-your-llm-provider}
       API_KEY: ${API_KEY:-}
-      API_BASE: ${API_BASE:-https://api.siliconflow.cn/v1}
+      API_BASE: ${API_BASE:-https://your-llm-api-base/v1}
       # API auth (empty = no auth)
       MEMORY_API_KEY: ${MEMORY_API_KEY:-}
       # Stores
-      KV_STORE_TYPE: ${KV_STORE_TYPE:-db}
+      KV_STORE_TYPE: ${KV_STORE_TYPE:-in_memory}
       DB_STORE_TYPE: ${DB_STORE_TYPE:-gauss}
       # GaussDB URL (encode @ as %40). Must come from .env, never hardcode secrets.
       DB_URL: ${DB_URL:?DB_URL is required, set it in deploy/.env (see .env.example)}
