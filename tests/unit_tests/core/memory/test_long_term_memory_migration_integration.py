@@ -49,6 +49,12 @@ class MockVectorStore(BaseVectorStore):
     async def delete_docs_by_filters(self, collection_name: str, filters, **kwargs):
         pass
 
+    async def list_docs(self, collection_name: str, filters=None, limit=100, offset=0, **kwargs):
+        return []
+
+    async def update_doc_fields(self, collection_name: str, doc_id: str, fields: dict, **kwargs):
+        pass
+
     async def list_collection_names(self):
         return list(self._collections.keys())
 

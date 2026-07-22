@@ -603,6 +603,11 @@ class StatusCode(Enum):
     )
     MEMORY_MIGRATE_MEMORY_EXECUTION_ERROR = (158010, "failed to migrate memory, reason: {error_msg}")
 
+    # Memory Engine - Filter / Forgetting / Add Unit 158100 - 158199
+    MEMORY_FILTER_FORMAT_ERROR = (158100, "filter format error, reason: {error_msg}")
+    MEMORY_ADD_MEMORY_UNIT_ERROR = (158101, "failed to add memory unit, reason: {error_msg}")
+    MEMORY_FORGET_EXECUTION_ERROR = (158102, "failed to forget memories, reason: {error_msg}")
+
     # Memory Engine - Common Utility 158200 - 158299
     MEMORY_GRAPH_LANGUAGE_INVALID = (158200, "graph memory language invalid: {error_msg}")
     MEMORY_GRAPH_EMBEDDING_CALL_FAILED = (158201, "graph memory embedding call failed, reason: {error_msg}")

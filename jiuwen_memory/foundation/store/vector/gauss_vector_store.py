@@ -17,13 +17,21 @@ from jiuwen_memory.foundation.store.base_vector_store import (
     VectorDataType,
     FieldSchema,
 )
+from jiuwen_memory.foundation.store.filter_dsl import (
+    FilterCondition,
+    FilterGroup,
+    FilterLogic,
+    FilterOperator,
+    MAX_NESTING_DEPTH,
+)
 from jiuwen_memory.foundation.store.vector.utils import (
     convert_cosine_similarity,
     convert_l2_squared,
     convert_ip_similarity,
+    compute_new_schema,
+    build_transform_func_for_operations,
 )
 from jiuwen_memory.memory_core.migration.operation.base_operation import BaseOperation
-from jiuwen_memory.foundation.store.vector.utils import compute_new_schema, build_transform_func_for_operations
 
 
 class GaussVectorStore(BaseVectorStore):
@@ -145,7 +153,12 @@ class GaussVectorStore(BaseVectorStore):
         return VectorDataType.VARCHAR
 
     def _build_filter_clause(self, filters: Dict[str, Any]) -> Optional[str]:
-        """Build SQL WHERE clause from filters dictionary."""
+        """Build SQL WHERE clause from filters dictionary.
+
+        .. deprecated::
+            Kept for legacy dict-based callers. New callers should pass a
+            FilterGroup through ``search(filters=...)`` / ``list_docs(filters=...)``.
+        """
         if not filters:
             return None
 
@@ -159,6 +172,66 @@ class GaussVectorStore(BaseVectorStore):
                 filter_parts.append(f"{key} = {value}")
 
         return " AND ".join(filter_parts) if filter_parts else None
+
+    # ------------------------------------------------------------------ #
+    #  FilterGroup DSL → Gauss SQL                                         #
+    # ------------------------------------------------------------------ #
+
+    # Whitelist for SQL identifiers (field / table / column names) interpolated
+    # into Gauss SQL. ``FilterCondition.field`` is a public API surface only
+    # validated as non-empty by the DSL, so a caller-controlled value like
+    # ``"1; DROP TABLE users; --"`` would otherwise reach the rendered SQL
+    # verbatim. Reject anything outside the Postgres identifier grammar.
+    _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+    @classmethod
+    def _validate_identifier(cls, name: str, context: str) -> str:
+        if not name or not cls._IDENTIFIER_RE.match(name):
+            raise build_error(
+                StatusCode.MEMORY_FILTER_FORMAT_ERROR,
+                error_msg=f"invalid SQL identifier for {context}: {name!r}",
+            )
+        return name
+
+    def _render_filters(self, filters: Optional[FilterGroup]) -> Optional[str]:
+        if filters is None:
+            return None
+        return self._render_filter_group(filters, depth=0)
+
+    def _render_filter_group(self, group: FilterGroup, depth: int) -> str:
+        if depth > MAX_NESTING_DEPTH:
+            raise build_error(
+                StatusCode.MEMORY_FILTER_FORMAT_ERROR,
+                error_msg=f"FilterGroup nesting depth exceeds {MAX_NESTING_DEPTH}",
+            )
+        if not group.conditions:
+            raise build_error(
+                StatusCode.MEMORY_FILTER_FORMAT_ERROR,
+                error_msg="FilterGroup.conditions must be non-empty",
+            )
+        parts = []
+        for c in group.conditions:
+            if isinstance(c, FilterGroup):
+                parts.append(f"({self._render_filter_group(c, depth + 1)})")
+            else:
+                parts.append(self._render_condition(c))
+        sep = " AND " if group.logic == FilterLogic.AND else " OR "
+        return sep.join(parts)
+
+    def _render_condition(self, cond: FilterCondition) -> str:
+        field = self._validate_identifier(cond.field, "FilterCondition.field")
+        val = cond.value
+        if isinstance(val, bool):
+            rendered = "TRUE" if val else "FALSE"
+        elif isinstance(val, str):
+            escaped = val.replace("'", "''")
+            rendered = f"'{escaped}'"
+        elif val is None:
+            rendered = "NULL"
+        else:
+            rendered = str(val)
+        op = "=" if cond.op == FilterOperator.EQ else "!="
+        return f"{field} {op} {rendered}"
 
     async def create_collection(
             self,
@@ -226,9 +299,15 @@ class GaussVectorStore(BaseVectorStore):
                 else:
                     max_length = field.max_length or 65535
                     if field.dtype == VectorDataType.VARCHAR:
-                        columns.append(f"{col_name} VARCHAR({max_length})")
+                        col_def = f"{col_name} VARCHAR({max_length})"
                     else:
-                        columns.append(f"{col_name} {col_type}")
+                        col_def = f"{col_name} {col_type}"
+                    # §3.8 Ebbinghaus: BOOL scalar fields carry a DEFAULT value
+                    # so that existing rows (and any rows written without the
+                    # field) get False instead of NULL.
+                    if field.default_value is not None:
+                        col_def += f" DEFAULT {field.default_value}"
+                    columns.append(col_def)
 
             if not vector_field_name:
                 raise build_error(
@@ -490,7 +569,7 @@ class GaussVectorStore(BaseVectorStore):
             query_vector: List[float],
             vector_field: str,
             top_k: int = 5,
-            filters: Optional[Dict[str, Any]] = None,
+            filters: Optional[FilterGroup] = None,
             **kwargs: Any,
     ) -> List[VectorSearchResult]:
         """
@@ -502,10 +581,9 @@ class GaussVectorStore(BaseVectorStore):
         vector_str = "[" + ",".join(str(x) for x in query_vector) + "]"
 
         where_clause = ""
-        if filters:
-            filter_clause = self._build_filter_clause(filters)
-            if filter_clause:
-                where_clause = f"WHERE {filter_clause}"
+        filter_clause = self._render_filters(filters)
+        if filter_clause:
+            where_clause = f"WHERE {filter_clause}"
 
         output_fields = kwargs.get("output_fields")
         select_fields = ", ".join(output_fields) if output_fields else "*"
@@ -629,7 +707,10 @@ class GaussVectorStore(BaseVectorStore):
 
         cursor = self.connection.cursor()
         try:
-            filter_clause = self._build_filter_clause(filters)
+            if isinstance(filters, FilterGroup):
+                filter_clause = self._render_filters(filters)
+            else:
+                filter_clause = self._build_filter_clause(filters)
             if not filter_clause:
                 return
 
@@ -649,6 +730,112 @@ class GaussVectorStore(BaseVectorStore):
             raise build_error(
                 StatusCode.STORE_VECTOR_DOC_INVALID,
                 error_msg=f"Failed to delete documents by filters: {e}"
+            ) from e
+        finally:
+            cursor.close()
+
+    async def list_docs(
+        self,
+        collection_name: str,
+        filters: Optional[FilterGroup] = None,
+        limit: int = 100,
+        offset: int = 0,
+        **kwargs: Any,
+    ) -> List[Dict[str, Any]]:
+        """List documents by scalar filters (no vector similarity)."""
+        where_clause = ""
+        filter_clause = self._render_filters(filters)
+        if filter_clause:
+            where_clause = f"WHERE {filter_clause}"
+        table = self._validate_identifier(collection_name, "collection_name")
+        output_fields = kwargs.get("output_fields")
+        if output_fields:
+            select_fields = ", ".join(
+                self._validate_identifier(f, "output_field") for f in output_fields
+            )
+        else:
+            select_fields = "*"
+        sql = (
+            f"SELECT {select_fields} FROM {table} "
+            f"{where_clause} LIMIT {limit} OFFSET {offset};"
+        )
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            docs: List[Dict[str, Any]] = []
+            for row in rows:
+                doc: Dict[str, Any] = {}
+                for idx, desc in enumerate(cursor.description):
+                    col_name = desc.name
+                    value = row[idx]
+                    if isinstance(value, str) and value.startswith("{"):
+                        try:
+                            value = json.loads(value.replace("'", '"'))
+                        except ValueError:
+                            # ValueError covers json.JSONDecodeError (its
+                            # subclass); catching both is flagged by G.ERR.09.
+                            store_logger.debug(
+                                "Failed to parse JSON-like column value, keep raw string",
+                                event_type=LogEventType.STORE_RETRIEVE,
+                            )
+                    doc[col_name] = value
+                docs.append(doc)
+            return docs
+        except Exception as e:
+            raise build_error(
+                StatusCode.STORE_VECTOR_DOC_INVALID,
+                error_msg=f"Failed to list docs: {e}",
+            ) from e
+        finally:
+            cursor.close()
+
+    async def update_doc_fields(
+        self,
+        collection_name: str,
+        doc_id: str,
+        fields: Dict[str, Any],
+    ) -> None:
+        """Update scalar fields on a single document (vector field untouched)."""
+        if not doc_id:
+            raise build_error(
+                StatusCode.STORE_VECTOR_DOC_INVALID,
+                error_msg="doc_id is required for update_doc_fields",
+            )
+        if not fields:
+            return
+        table = self._validate_identifier(collection_name, "collection_name")
+        set_parts = []
+        values: list[Any] = []
+        for k, v in fields.items():
+            col = self._validate_identifier(k, "update_doc_fields field name")
+            if isinstance(v, str):
+                set_parts.append(f"{col} = %s")
+                values.append(v)
+            elif isinstance(v, bool):
+                set_parts.append(f"{col} = {'TRUE' if v else 'FALSE'}")
+            elif v is None:
+                set_parts.append(f"{col} = NULL")
+            else:
+                set_parts.append(f"{col} = %s")
+                values.append(v)
+        if not set_parts:
+            return
+        sql = f"UPDATE {table} SET {', '.join(set_parts)} WHERE id = %s;"
+        values.append(doc_id)
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(sql, tuple(values))
+            store_logger.info(
+                "Updated doc fields in collection",
+                event_type=LogEventType.STORE_ADD,
+                table_name=collection_name,
+                data_num=1,
+            )
+        except Exception as e:
+            raise build_error(
+                StatusCode.STORE_VECTOR_DOC_INVALID,
+                error_msg=f"Failed to update doc fields: {e}",
             ) from e
         finally:
             cursor.close()

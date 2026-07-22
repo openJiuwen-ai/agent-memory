@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from jiuwen_memory.common.exception.codes import StatusCode
 from jiuwen_memory.common.exception.errors import build_error
+from jiuwen_memory.foundation.store.filter_dsl import FilterGroup
 if TYPE_CHECKING:
     from jiuwen_memory.memory_core.migration.operation.base_operation import BaseOperation
 
@@ -479,7 +480,7 @@ class BaseVectorStore(ABC):
         query_vector: List[float],
         vector_field: str,
         top_k: int = 5,
-        filters: Optional[Dict[str, Any]] = None,
+        filters: Optional[FilterGroup] = None,
         **kwargs: Any,
     ) -> List[VectorSearchResult]:
         """
@@ -490,9 +491,10 @@ class BaseVectorStore(ABC):
             query_vector: Query vector for similarity search
             vector_field: Name of the vector field to search against (e.g., "embedding")
             top_k: Number of most relevant documents to return
-            filters: Optional dictionary of scalar field filters for filtering results.
-                Keys are field names, values are the field values to match (equality filter only).
-                Example: {"category": "tech", "status": "active"}
+            filters: Optional backend-neutral scalar filter (FilterGroup DSL).
+                The DSL is rendered to the backend's native expression by
+                the store's ``_render_filters`` implementation. ``None`` means
+                no scalar pre-filter.
             **kwargs: Additional search parameters
                 - metric_type (str, optional): Distance metric (e.g., "COSINE", "L2", "IP")
                 - output_fields (List[str], optional): Fields to return in results
@@ -504,12 +506,19 @@ class BaseVectorStore(ABC):
                   including id, text, metadata, and other fields as defined in the collection schema
 
         Example:
+            from jiuwen_memory.memory_core.manage.search.filter_dsl import (
+                FilterGroup, FilterCondition, FilterOperator,
+            )
+            filters = FilterGroup(conditions=[
+                FilterCondition(field="category", op=FilterOperator.EQ, value="tech"),
+                FilterCondition(field="status", op=FilterOperator.NE, value="inactive"),
+            ])
             results = await store.search(
                 collection_name="my_collection",
                 query_vector=[0.1, 0.2, 0.3, ...],
                 vector_field="embedding",
                 top_k=10,
-                filters={"category": "tech", "status": "active"},
+                filters=filters,
             )
             # Access results
             for result in results:
@@ -517,6 +526,69 @@ class BaseVectorStore(ABC):
                 print(f"ID: {result.fields.get('id')}")
                 print(f"Text: {result.fields.get('text')}")
                 print(f"Metadata: {result.fields.get('metadata')}")
+        """
+        pass
+
+    @abstractmethod
+    async def list_docs(
+        self,
+        collection_name: str,
+        filters: Optional[FilterGroup] = None,
+        limit: int = 100,
+        offset: int = 0,
+        **kwargs: Any,
+    ) -> List[Dict[str, Any]]:
+        """
+        List documents by scalar filters (no vector similarity).
+
+        Used by the forgetting pipeline and by list-style paginated APIs that
+        do NOT need ANN search. Keeping this separate from ``search`` (which
+        requires a query vector) avoids forcing the caller to fabricate a
+        dummy vector and avoids semantic confusion between ANN + scalar
+        pre-filter vs. pure-scalar scan.
+
+        Args:
+            collection_name: Name of the collection
+            filters: FilterGroup (EQ/NE + AND/OR nesting), normalized by upper layer
+            limit: Maximum number of documents to return
+            offset: Number of documents to skip
+            **kwargs: Additional parameters
+                - output_fields (List[str], optional): Fields to return
+
+        Returns:
+            List of documents, each containing id, text, metadata, and other fields.
+
+        Raises:
+            BaseError(StatusCode.MEMORY_FILTER_FORMAT_ERROR): on rendering errors.
+            BaseError(StatusCode.STORE_VECTOR_COLLECTION_NOT_FOUND): missing collection.
+        """
+        pass
+
+    @abstractmethod
+    async def update_doc_fields(
+        self,
+        collection_name: str,
+        doc_id: str,
+        fields: Dict[str, Any],
+    ) -> None:
+        """
+        Update scalar fields on a single document by id.
+
+        Only the fields present in ``fields`` are modified; the vector field
+        is never touched by this call. Used by the forgetting pipeline to
+        flip ``blacklisted`` to ``true`` and by update paths that need to
+        preserve ``is_important`` / ``blacklisted`` while changing content.
+
+        Args:
+            collection_name: Name of the collection
+            doc_id: Document id (primary key)
+            fields: Mapping of field name -> new value.
+                Example: ``{"blacklisted": True}`` or
+                ``{"content": "...", "is_important": True}``.
+
+        Raises:
+            BaseError(StatusCode.STORE_VECTOR_COLLECTION_NOT_FOUND): missing collection.
+            BaseError(StatusCode.STORE_VECTOR_DOC_INVALID): when ``doc_id`` is missing.
         """
         pass
 

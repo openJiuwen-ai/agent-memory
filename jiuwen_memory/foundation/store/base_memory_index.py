@@ -11,10 +11,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 from jiuwen_memory.foundation.codec import StorageCodec
+from jiuwen_memory.foundation.store.filter_dsl import FilterGroup
+
 
 __all__ = ["StorageCodec", "MemoryDoc", "BaseMemoryIndex"]
 
@@ -34,6 +36,8 @@ class MemoryDoc(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc).astimezone(),
         description="Timestamp of the memory entry",
     )
+    is_important: bool = Field(default=False, description="Whether this memory is protected from forgetting.")
+    blacklisted: bool = Field(default=False, description="Whether this memory is forgotten (blacklisted).")
     fields: dict[str, Any] = Field(default_factory=dict, description="Additional extension fields.")
 
 
@@ -75,6 +79,39 @@ class BaseMemoryIndex(ABC):
             user_id: The user identifier to scope memories under
             scope_id: The scope identifier for grouping related memories
             memories: List of memory documents to update
+        """
+        pass
+
+    @abstractmethod
+    async def update_mem_by_id(
+        self,
+        user_id: str,
+        scope_id: str,
+        mem_id: str,
+        fields: dict[str, Any],
+    ) -> None:
+        """
+        Update scalar fields on a single memory document by id.
+
+        Only the fields present in ``fields`` are modified. The text
+        content and embedding are never touched by this call — use
+        ``update_memories`` when text changes (which requires
+        re-embedding).
+
+        Used by the forgetting pipeline to flip ``blacklisted`` to
+        ``True`` without paying for an embedding roundtrip, and by update
+        paths that need to preserve ``is_important`` / ``blacklisted``
+        while changing other scalar fields.
+
+        Args:
+            user_id: The user identifier to scope memories under.
+            scope_id: The scope identifier for grouping related memories.
+            mem_id: The unique identifier of the memory document to update.
+            fields: Mapping of field name -> new value.
+                Top-level MemoryDoc fields (``blacklisted`` /
+                ``is_important``) are pushed to the vector store's scalar
+                schema; any other field is written into the KV JSON
+                ``fields`` dict.
         """
         pass
 
@@ -128,7 +165,9 @@ class BaseMemoryIndex(ABC):
         scope_id: str,
         query: str,
         mem_types: list[str] | None = None,
-        top_k: int = 10
+        top_k: int = 10,
+        *,
+        filters: Optional[FilterGroup] = None,
     ) -> list[tuple[MemoryDoc, float]]:
         """
         Search for memory documents matching a query.
@@ -144,6 +183,9 @@ class BaseMemoryIndex(ABC):
                 - A list with one or more specific memory types (e.g., ["user_profile"]).
                 - An empty list [] to search all memory types.
             top_k: Maximum number of results to return (default: 10)
+            filters: Optional backend-neutral scalar filters (FilterGroup DSL).
+                When provided, backends translate this to their native scalar
+                filter expression and apply it as a pre-filter on ANN search.
 
         Returns:
             A list of tuples, each containing a MemoryDoc and its relevance score.
@@ -170,8 +212,16 @@ class BaseMemoryIndex(ABC):
         """
         pass
 
-    async def list_memories(self, user_id: str, scope_id: str, offset: int = 0,
-                            limit: int = 100, mem_types: list[str] | None = None) -> list[MemoryDoc]:
+    async def list_memories(
+        self,
+        user_id: str,
+        scope_id: str,
+        offset: int = 0,
+        limit: int = 100,
+        mem_types: list[str] | None = None,
+        *,
+        filters: Optional[FilterGroup] = None,
+    ) -> list[MemoryDoc]:
         """
         Retrieve a paginated list of memory documents for a specific user and scope.
 
@@ -187,6 +237,9 @@ class BaseMemoryIndex(ABC):
                 - A list with one or more specific memory types (e.g., ["user_profile"]).
                 - An empty list [] to search all memory types.
                 - If multiple mem_types are provided, output them in the order of mem_type.
+            filters: Optional backend-neutral scalar filters (FilterGroup DSL).
+                When provided, backends translate this to their native scalar
+                filter expression; pure-scalar pagination (no ANN) is preferred.
 
         Returns:
             list[MemoryDoc]: A list of memory documents matching the criteria.

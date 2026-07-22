@@ -36,6 +36,24 @@ class MockMemoryIndex(BaseMemoryIndex):
         await self.delete_memories(user_id, scope_id, ids)
         await self.add_memories(user_id, scope_id, memories)
 
+    async def update_mem_by_id(
+        self,
+        user_id: str,
+        scope_id: str,
+        mem_id: str,
+        fields: dict,
+    ) -> None:
+        if user_id not in self._data or scope_id not in self._data[user_id]:
+            return
+        doc = self._data[user_id][scope_id].get(mem_id)
+        if doc is None:
+            return
+        for name, value in fields.items():
+            if hasattr(doc, name):
+                setattr(doc, name, value)
+            else:
+                doc.fields[name] = value
+
     async def delete_memories(self, user_id: str, scope_id: str, ids: list[str]):
         if user_id in self._data and scope_id in self._data[user_id]:
             for mid in ids:

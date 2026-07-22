@@ -45,6 +45,24 @@ class MockVectorStore(BaseVectorStore):
     async def delete_docs_by_ids(self, *args, **kwargs):
         pass
 
+    async def list_docs(self, *args, **kwargs):
+        return []
+
+    async def update_doc_fields(self, *args, **kwargs):
+        pass
+
+    async def list_collection_names(self, *args, **kwargs):
+        return []
+
+    async def update_schema(self, *args, **kwargs):
+        pass
+
+    async def update_collection_metadata(self, *args, **kwargs):
+        pass
+
+    async def get_collection_metadata(self, *args, **kwargs):
+        return {}
+
 
 class MockAsyncEngine:
     def begin(self):

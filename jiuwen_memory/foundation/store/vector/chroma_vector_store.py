@@ -18,12 +18,19 @@ from jiuwen_memory.foundation.store.base_vector_store import (
     FieldSchema,
     VectorDataType,
 )
+from jiuwen_memory.foundation.store.filter_dsl import (
+    FilterCondition,
+    FilterGroup,
+    FilterLogic,
+    FilterOperator,
+    MAX_NESTING_DEPTH,
+)
 from jiuwen_memory.foundation.store.vector.utils import (
     convert_cosine_distance,
     convert_l2_squared,
     convert_ip_distance,
     compute_new_schema,
-    build_transform_func_for_operations
+    build_transform_func_for_operations,
 )
 from jiuwen_memory.memory_core.migration.operation.base_operation import BaseOperation
 
@@ -437,7 +444,7 @@ class ChromaVectorStore(BaseVectorStore):
         query_vector: List[float],
         vector_field: str,
         top_k: int = 5,
-        filters: Optional[Dict[str, Any]] = None,
+        filters: Optional[FilterGroup] = None,
         **kwargs: Any,
     ) -> List[VectorSearchResult]:
         """
@@ -448,7 +455,7 @@ class ChromaVectorStore(BaseVectorStore):
             query_vector: Query vector for similarity search
             vector_field: Name of the vector field to search against (for compatibility, ignored)
             top_k: Number of most relevant documents to return
-            filters: Optional dictionary of scalar field filters (equality only)
+            filters: Optional FilterGroup scalar filter (EQ/NE + AND/OR nesting)
             **kwargs: Additional search parameters
                 - metric_type (str, optional): Distance metric (not used, already set in collection)
 
@@ -465,8 +472,8 @@ class ChromaVectorStore(BaseVectorStore):
             primary_key = field_mapping.get("primary_key", "id")
             text_field = field_mapping.get("text_field", None)
 
-            # Build where filter for ChromaDB (equality filters only)
-            where = filters if filters else None
+            # Build where filter for ChromaDB via FilterGroup rendering
+            where = self._render_filters(filters)
 
             results = collection.query(
                 query_embeddings=[query_vector],
@@ -567,6 +574,131 @@ class ChromaVectorStore(BaseVectorStore):
             )
 
         await asyncio.to_thread(_delete)
+
+    # ------------------------------------------------------------------ #
+    #  FilterGroup DSL → Chroma where                                       #
+    # ------------------------------------------------------------------ #
+
+    def _render_filters(self, filters: Optional[FilterGroup]) -> Optional[dict]:
+        if filters is None:
+            return None
+        return self._render_filter_group(filters, depth=0)
+
+    def _render_filter_group(self, group: FilterGroup, depth: int) -> dict:
+        if depth > MAX_NESTING_DEPTH:
+            raise build_error(
+                StatusCode.MEMORY_FILTER_FORMAT_ERROR,
+                error_msg=f"FilterGroup nesting depth exceeds {MAX_NESTING_DEPTH}",
+            )
+        if not group.conditions:
+            raise build_error(
+                StatusCode.MEMORY_FILTER_FORMAT_ERROR,
+                error_msg="FilterGroup.conditions must be non-empty",
+            )
+        clauses = [
+            self._render_filter_group(c, depth + 1) if isinstance(c, FilterGroup)
+            else self._render_condition(c)
+            for c in group.conditions
+        ]
+        op = "$and" if group.logic == FilterLogic.AND else "$or"
+        if len(clauses) == 1:
+            return clauses[0]
+        return {op: clauses}
+
+    def _render_condition(self, cond: FilterCondition) -> dict:
+        if cond.op == FilterOperator.EQ:
+            return {cond.field: {"$eq": cond.value}}
+        # Chroma has no ``$ne`` operator (raises at runtime — see
+        # ``query/chroma_query_func.py`` OPERATOR_MAP ``!= → "$nin"``). The
+        # correct negation primitive is ``$nin: [value]``.
+        return {cond.field: {"$nin": [cond.value]}}
+
+    async def list_docs(
+        self,
+        collection_name: str,
+        filters: Optional[FilterGroup] = None,
+        limit: int = 100,
+        offset: int = 0,
+        **kwargs: Any,
+    ) -> List[Dict[str, Any]]:
+        """List documents by scalar filters (no vector similarity)."""
+        collection = self._get_collection(collection_name)
+        where = self._render_filters(filters)
+
+        def _query():
+            results = collection.get(
+                where=where,
+                limit=limit,
+                offset=offset,
+                include=["documents", "metadatas"],
+            )
+            docs: List[Dict[str, Any]] = []
+            if not results:
+                return docs
+            ids_list = results.get("ids", []) or []
+            documents_list = results.get("documents", []) or []
+            metadatas_list = results.get("metadatas", []) or []
+            metadata = collection.metadata or {}
+            field_mapping = json.loads(metadata.get("field_mapping", "{}") or "{}")
+            primary_key = field_mapping.get("primary_key", "id")
+            text_field = field_mapping.get("text_field")
+            for idx, doc_id in enumerate(ids_list):
+                text = documents_list[idx] if idx < len(documents_list) else ""
+                meta = metadatas_list[idx] if idx < len(metadatas_list) else {}
+                if not isinstance(meta, dict):
+                    meta = {}
+                parsed = {}
+                for k, v in meta.items():
+                    if isinstance(v, str):
+                        try:
+                            parsed[k] = json.loads(v)
+                        except (json.JSONDecodeError, TypeError):
+                            parsed[k] = v
+                    else:
+                        parsed[k] = v
+                doc = {primary_key: str(doc_id), **parsed}
+                if text_field:
+                    doc[text_field] = text
+                docs.append(doc)
+            return docs
+
+        return await asyncio.to_thread(_query)
+
+    async def update_doc_fields(
+        self,
+        collection_name: str,
+        doc_id: str,
+        fields: Dict[str, Any],
+    ) -> None:
+        """Update scalar fields on a single document (vector field untouched)."""
+        if not doc_id:
+            raise build_error(
+                StatusCode.STORE_VECTOR_DOC_INVALID,
+                error_msg="doc_id is required for update_doc_fields",
+            )
+        if not fields:
+            return
+        collection = self._get_collection(collection_name)
+
+        def _update():
+            existing = collection.get(ids=[doc_id], include=["metadatas"])
+            if not existing or not existing.get("ids"):
+                raise build_error(
+                    StatusCode.STORE_VECTOR_DOC_INVALID,
+                    error_msg=f"doc not found in collection, doc_id={doc_id}",
+                )
+            existing_meta = existing.get("metadatas", [{}])[0] or {}
+            # Merge scalar fields into metadata (vector field untouched by Chroma semantics).
+            new_meta = {**existing_meta, **fields}
+            collection.update(ids=[doc_id], metadatas=[new_meta])
+            store_logger.info(
+                "Updated doc fields in collection",
+                event_type=LogEventType.STORE_ADD,
+                table_name=collection_name,
+                data_num=1,
+            )
+
+        await asyncio.to_thread(_update)
 
     async def delete_docs_by_filters(
         self,

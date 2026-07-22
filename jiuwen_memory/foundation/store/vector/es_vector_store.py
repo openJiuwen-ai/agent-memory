@@ -16,7 +16,17 @@ from jiuwen_memory.foundation.store.base_vector_store import (
     VectorDataType,
     VectorSearchResult,
 )
-from jiuwen_memory.foundation.store.vector.utils import compute_new_schema, build_transform_func_for_operations
+from jiuwen_memory.foundation.store.filter_dsl import (
+    FilterCondition,
+    FilterGroup,
+    FilterLogic,
+    FilterOperator,
+    MAX_NESTING_DEPTH,
+)
+from jiuwen_memory.foundation.store.vector.utils import (
+    compute_new_schema,
+    build_transform_func_for_operations,
+)
 from jiuwen_memory.memory_core.migration.operation.base_operation import BaseOperation
 
 _ES_SIMILARITY_MAP = {
@@ -353,7 +363,7 @@ class ElasticsearchVectorStore(BaseVectorStore):
         query_vector: List[float],
         vector_field: str,
         top_k: int = 5,
-        filters: Optional[Dict[str, Any]] = None,
+        filters: Optional[FilterGroup] = None,
         **kwargs: Any,
     ) -> List[VectorSearchResult]:
         index_name = self._index_name(collection_name)
@@ -367,14 +377,9 @@ class ElasticsearchVectorStore(BaseVectorStore):
             "num_candidates": num_candidates,
         }
 
-        if filters:
-            filter_parts = []
-            for key, value in filters.items():
-                if isinstance(value, (list, tuple)):
-                    filter_parts.append({"terms": {key: list(value)}})
-                else:
-                    filter_parts.append({"term": {key: value}})
-            knn_clause["filter"] = {"bool": {"filter": filter_parts}}
+        rendered = self._render_filters(filters)
+        if rendered is not None:
+            knn_clause["filter"] = rendered
 
         body: Dict[str, Any] = {"knn": knn_clause, "size": top_k, "_source": {"excludes": ["_meta"]}}
         if output_fields:
@@ -400,6 +405,109 @@ class ElasticsearchVectorStore(BaseVectorStore):
             search_results.append(VectorSearchResult(score=float(hit.get("_score", 0.0)), fields=source))
 
         return search_results
+
+    # ------------------------------------------------------------------ #
+    #  FilterGroup DSL → ES query                                          #
+    # ------------------------------------------------------------------ #
+
+    def _render_filters(self, filters: Optional[FilterGroup]) -> Optional[Dict[str, Any]]:
+        if filters is None:
+            return None
+        return self._render_filter_group(filters, depth=0)
+
+    def _render_filter_group(self, group: FilterGroup, depth: int) -> Dict[str, Any]:
+        if depth > MAX_NESTING_DEPTH:
+            raise build_error(
+                StatusCode.MEMORY_FILTER_FORMAT_ERROR,
+                error_msg=f"FilterGroup nesting depth exceeds {MAX_NESTING_DEPTH}",
+            )
+        if not group.conditions:
+            raise build_error(
+                StatusCode.MEMORY_FILTER_FORMAT_ERROR,
+                error_msg="FilterGroup.conditions must be non-empty",
+            )
+        clauses = [
+            self._render_filter_group(c, depth + 1) if isinstance(c, FilterGroup)
+            else self._render_condition(c)
+            for c in group.conditions
+        ]
+        if group.logic == FilterLogic.AND:
+            return {"bool": {"filter": clauses}}
+        return {"bool": {"should": clauses, "minimum_should_match": 1}}
+
+    def _render_condition(self, cond: FilterCondition) -> Dict[str, Any]:
+        if cond.op == FilterOperator.EQ:
+            return {"term": {cond.field: cond.value}}
+        return {"bool": {"must_not": [{"term": {cond.field: cond.value}}]}}
+
+    async def list_docs(
+        self,
+        collection_name: str,
+        filters: Optional[FilterGroup] = None,
+        limit: int = 100,
+        offset: int = 0,
+        **kwargs: Any,
+    ) -> List[Dict[str, Any]]:
+        """List documents by scalar filters (no vector similarity)."""
+        index_name = self._index_name(collection_name)
+        body: Dict[str, Any] = {
+            "size": limit,
+            "from": offset,
+            "_source": {"excludes": ["_meta"]},
+        }
+        rendered = self._render_filters(filters)
+        if rendered is not None:
+            body["query"] = rendered
+        try:
+            resp = await self._es.search(index=index_name, body=body)
+        except Exception as e:
+            store_logger.error(
+                "List docs failed",
+                event_type=LogEventType.STORE_RETRIEVE,
+                table_name=collection_name,
+                exception=str(e),
+            )
+            raise
+        docs: List[Dict[str, Any]] = []
+        for hit in resp.get("hits", {}).get("hits", []):
+            source = hit.get("_source", {})
+            source.pop("_meta", None)
+            if "id" not in source and "_id" in hit:
+                source["id"] = hit["_id"]
+            docs.append(source)
+        return docs
+
+    async def update_doc_fields(
+        self,
+        collection_name: str,
+        doc_id: str,
+        fields: Dict[str, Any],
+    ) -> None:
+        """Update scalar fields on a single document (vector field untouched)."""
+        if not doc_id:
+            raise build_error(
+                StatusCode.STORE_VECTOR_DOC_INVALID,
+                error_msg="doc_id is required for update_doc_fields",
+            )
+        if not fields:
+            return
+        index_name = self._index_name(collection_name)
+        try:
+            await self._es.update(index=index_name, id=doc_id, body={"doc": fields}, refresh=True)
+            store_logger.info(
+                "Updated doc fields in collection",
+                event_type=LogEventType.STORE_ADD,
+                table_name=collection_name,
+                data_num=1,
+            )
+        except Exception as e:
+            store_logger.error(
+                "Failed to update doc fields",
+                event_type=LogEventType.STORE_ADD,
+                table_name=collection_name,
+                exception=str(e),
+            )
+            raise
 
     async def delete_docs_by_ids(self, collection_name: str, ids: List[str], **kwargs: Any) -> None:
         if not ids:
