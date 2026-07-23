@@ -86,6 +86,7 @@ class AuthMode(str, Enum):
     DEV = "dev"           # 无认证,恒返回 ROOT
     TRUSTED = "trusted"   # 信任上游网关已认证
     API_KEY = "api_key"   # 框架自己校验 API key
+    OAUTH = "oauth"       # AI Agent 经 OAuth 2.1 bearer token 接入(见 §2.4)
 
 
 @dataclass
@@ -93,6 +94,7 @@ class ServerConfig:
     # 如果为 None,则自动推断
     auth_mode: AuthMode | None = None
     # 自动推断逻辑:有 root_api_key → API_KEY,否则 → DEV
+    # OAUTH 通常显式配置(数据面 bearer-only,与 API_KEY 并列,不靠 root_api_key 推断)。
     root_api_key: str | None = None
 
     def get_effective_auth_mode(self) -> AuthMode:
@@ -239,6 +241,10 @@ class PrincipalKeyStore:
             "is_hashed": is_hashed,
         }
 
+        # 维护前缀索引:供 resolve_api_key(§2.3.2)按前 8 字符定位候选,
+        # 避免全表扫描。索引只存定位三元组,记录本体仍在 principal_registry。
+        prefix_index.setdefault(key[:8], []).append((org_id, principal_type, principal_id))
+
         # 返回明文 key——这是调用方唯一一次拿到它
         return key
 ```
@@ -262,6 +268,7 @@ hasher = PasswordHasher(
 ```python
 import hmac
 from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHashError
 
 # 明文存储时:用 HMAC 常时间比对
 def verify_plain_key(stored_key: str, provided_key: str) -> bool:
@@ -272,6 +279,10 @@ def verify_hashed_key(stored_hash: str, provided_key: str) -> bool:
     try:
         return PasswordHasher().verify(stored_hash, provided_key)
     except VerifyMismatchError:
+        # 提供的 key 与存储哈希不匹配 -> 正常的"密码错误"路径
+        return False
+    except (InvalidHashError, VerificationError):
+        # 存储的哈希格式损坏或参数不符 -> 视为校验失败,fail-closed
         return False
 ```
 
@@ -283,38 +294,27 @@ def resolve_api_key(api_key: str) -> AuthContext | None:
         return AuthContext(actor=Scope(org="*"), role=Role.ROOT)
 
     # 2. 前缀索引(dict 直查,非 timing-sensitive)
+    #    prefix_index: key_prefix(前8字符) -> list[(org, principal_type, principal_id)]
+    #    候选只存定位三元组,真正的记录回 principal_registry 取(见 §2.3.2 store_key)。
     key_prefix = api_key[:8]
     candidates = prefix_index.get(key_prefix, [])
 
     # 3. 逐个候选常时间比对
-    for candidate in candidates:
-        if candidate.is_hashed:
-            if verify_hashed_key(candidate.stored_key, api_key):
-                actor = Scope(
-                    org=candidate.org,
-                    **{candidate.principal_type: candidate.principal_id},
-                )
-                return AuthContext(
-                    actor=actor,
-                    role=candidate.role,
-                    acting_user=candidate.principal_id
-                    if candidate.principal_type == "user"
-                    else "",
-                )
+    for org, p_type, p_id in candidates:
+        record = principal_registry[org][p_type][p_id]
+        stored_key = record["key"]
+        if record["is_hashed"]:
+            matched = verify_hashed_key(stored_key, api_key)
         else:
             # HMAC 常时间
-            if hmac.compare_digest(candidate.stored_key, api_key):
-                actor = Scope(
-                    org=candidate.org,
-                    **{candidate.principal_type: candidate.principal_id},
-                )
-                return AuthContext(
-                    actor=actor,
-                    role=candidate.role,
-                    acting_user=candidate.principal_id
-                    if candidate.principal_type == "user"
-                    else "",
-                )
+            matched = hmac.compare_digest(stored_key, api_key)
+        if matched:
+            actor = Scope(org=org, **{p_type: p_id})
+            return AuthContext(
+                actor=actor,
+                role=record["role"],
+                acting_user=p_id if p_type == "user" else "",
+            )
 
     return None
 ```
@@ -381,7 +381,16 @@ def verify_bearer_token(token_value: str) -> AuthContext | None:
         return None
 
     # 关键：校验绑定 Principal API Key 的 fingerprint 是否匹配
-    principal = principal_registry.get(token.authorizing_principal)
+    # principal_registry 按 [org][principal_type][principal_id] 三层嵌套存储
+    # (见 §2.3.2 store_key),不能拿 Scope 对象直接 .get()。
+    ap = token.authorizing_principal
+    if ap.user:
+        p_type, p_id = "user", ap.user
+    elif ap.agent:
+        p_type, p_id = "agent", ap.agent
+    else:
+        return None  # token 绑定的主体缺失,拒绝
+    principal = principal_registry.get(ap.org, {}).get(p_type, {}).get(p_id)
     if principal is None:
         return None
 
@@ -1344,7 +1353,9 @@ def compute_fingerprint_from_store(org_id: str, principal_type: str, principal_i
     必须直接读取 store_key 时持久化的 key_fingerprint 字段,而不能用
     stored_value 重算--Argon2 哈希不可逆,无法从哈希值反推明文再算 sha256。
     """
-    record = principal_registry[org_id][principal_type][principal_id]
+    record = principal_registry.get(org_id, {}).get(principal_type, {}).get(principal_id)
+    if record is None:
+        raise PrincipalNotFoundError(f"No such principal: {org_id}/{principal_type}/{principal_id}")
     return record["key_fingerprint"]
 
 
@@ -1357,7 +1368,9 @@ async def regenerate_key(
     """轮换 key:旧 key 立即失效。"""
     # 先取旧 key 的 fingerprint,用于级联失效该 key 签发的所有 OAuth token。
     # 必须在覆盖存储之前取--store_key 会覆盖注册表,之后取到的就是新 key 的 fp。
-    old_record = principal_registry[org_id][principal_type][principal_id]
+    old_record = principal_registry.get(org_id, {}).get(principal_type, {}).get(principal_id)
+    if old_record is None:
+        raise PrincipalNotFoundError(f"No such principal: {org_id}/{principal_type}/{principal_id}")
     old_fp = old_record["key_fingerprint"]
 
     # 更新存储(hashing 策略由 key_store 自身持有,role 沿用原值)
@@ -1374,14 +1387,31 @@ Token 记录声明了 authorizing key fingerprint：
 
 ```python
 class Token:
-    token_hash: str
-    authorizing_key_fp: str
+    # 字段集与 §2.4.2 OAuthToken 对齐,避免同一概念两套定义。
+    token_hash: str               # sha256(token_value)
+    actor: Scope                  # 已认证执行者:user 或 agent
+    acting_user: str              # agent 代 user 时填写,否则为空
     authorizing_principal: Scope  # token 绑定的 user/agent API Key 归属
+    role: str
+    authorizing_key_fp: str       # 签发时记录的 key 指纹
+    expires_at: int
+    revoked: bool = False
 
-def verify_token(token_value: str) -> Token:
+def verify_token(token_value: str) -> Token | None:
     token = lookup_token(token_value)
 
-    current_fp = fingerprint(get_principal_key(token.authorizing_principal))
+    # fingerprint 必须读 store_key 时持久化的 key_fingerprint 字段
+    # (见 §6.4 compute_fingerprint_from_store),不能从 stored_value 现算--
+    # Argon2 哈希不可逆,且与 §2.4.2 verify_bearer_token 取法保持一致。
+    ap = token.authorizing_principal
+    # Scope 只携带 org/user/agent/session,需据此推出 (principal_type, principal_id)
+    if ap.user:
+        p_type, p_id = "user", ap.user
+    elif ap.agent:
+        p_type, p_id = "agent", ap.agent
+    else:
+        return None  # token 绑定的主体缺失,拒绝
+    current_fp = compute_fingerprint_from_store(ap.org, p_type, p_id)
     if not hmac.compare_digest(current_fp, token.authorizing_key_fp):
         # key 被轮换,该 token 失效
         revoke_token(token)
@@ -1652,7 +1682,7 @@ async def write(uri, data):
     fs.write(uri, data)
 ```
 
-**自查**：是否存在某个写操作（create / delete / mv / mkdir / upsert）**自诊断**：留意 `append`——如果你实现了 append，它用的是读级 access (`ensure_access`)而不是 create(`ensure_mutable_access`)?如果是，确认是否合理。
+**自查**：是否存在某个写操作（create / delete / mv / mkdir / upsert）只做了读级检查而没经过 `ensure_mutable_access`？**自诊断**：留意 `append`——如果你实现了 append，它用的是读级 access (`ensure_access`)而不是 create(`ensure_mutable_access`)?如果是，确认是否合理。
 
 ### 5. ROOT 数据操作必须有租户 guard
 
@@ -1680,16 +1710,15 @@ def read_file(path):
     with open(path, "r") as f:
         return f.read()
 
-# ✅ GOOD
-def ensure_safe_path(uri: str):
-    for seg in uri.split("/"):
-        if seg in (".", ".."):
-            raise PermissionDeniedError("Path traversal denied")
-    if "\\" in uri:
-        raise PermissionDeniedError("Backslash denied")
-    if re.search(r'^[A-Za-z]:', uri):
-        raise PermissionDeniedError("Drive letter denied")
+# ✅ GOOD: 复用 §3.3.3 的 normalize_uri_parts(同一份校验,不要另起实现)
+def read_file(uri: str, target: Scope, ctx: AuthContext):
+    ensure_access(target, ctx)
+    safe = normalize_uri_parts(uri)   # 拒 .. / . / \ / 盘符,返回规范化相对路径
+    path = f"{scope_namespace(target)}/{safe}"
+    ...
 ```
+
+> 不要为路径校验另写一份 `ensure_safe_path`--`normalize_uri_parts`(§3.3.3)已是统一入口,写操作(§4.4)与读操作都应复用它,避免两份逻辑漂移。
 
 **自查**：是否过滤了 `..` / `.` / `\\` / Windows 盘符前缀?如果代码内部又拼接了一次 URI，确保后端层也做了对应转义。对用户可控的 URI 传入 `os.path.join` / `open()` 之类标准库函数的场景，特别小心——这些函数对 `..` 不会做防护，需要应用层提前拒绝。
 
