@@ -581,8 +581,10 @@ def test_retrieval_over_fetch_read_from_config() -> None:
     assert recheck.candidate_count == 9, "rerank_max=9 应控制进入 recheck 的预算"
 
 
-def test_direct_constructor_default_calibrated_threshold_active() -> None:
-    # 直接构造也应默认启用校准路径相对阈值 0.6，而不是只保留正分门。
+def test_configured_calibrated_threshold_active() -> None:
+    # 校准路径（走了 rerank）配置相对阈值 0.6 时按比例裁剪，而不是只保留正分门。
+    # 出厂默认已改为 0.0（见 test_direct_constructor_threshold_off_by_default），
+    # 故此处显式传参——本用例锁的是阈值机制，不是某个默认值。
     world = make_world()
     for uid in ["u1", "u2"]:
         index_unit(world, make_unit(uid, f"{uid} candidate"))
@@ -600,6 +602,7 @@ def test_direct_constructor_default_calibrated_threshold_active() -> None:
         world.discloser,
         world.unit_reader,
         StaticReranker([0.95, 0.2]),
+        min_score_ratio=0.6,
     )
 
     result = retriever.retrieve(
@@ -613,8 +616,38 @@ def test_direct_constructor_default_calibrated_threshold_active() -> None:
     assert threshold.detail["dropped"] == "1"
 
 
-def test_direct_constructor_default_uncalibrated_threshold_active() -> None:
-    # 未精排路径直接构造时默认启用较松的相对阈值 0.3。
+def test_configured_uncalibrated_threshold_active() -> None:
+    # 未精排路径按 min_score_ratio_uncalibrated 走较松的相对阈值（此处配 0.3）。
+    world = make_world()
+    candidates = []
+    for index in range(1, 5):
+        uid = f"u{index}"
+        index_unit(world, make_unit(uid, f"{uid} candidate"))
+        candidates.append(ScoredUnit(uid, 1.0, RecallChannel.KEYWORD))
+    retriever = PipelineRetriever(
+        world.parser,
+        [StaticRecaller(candidates)],
+        RRFFuser(k=0),
+        world.discloser,
+        world.unit_reader,
+        min_score_ratio_uncalibrated=0.3,
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE,
+        RetrievalQuery(text="candidate", top_k=4, rerank=False, with_trajectory=True),
+    )
+
+    assert [item.unit_id for item in result.items] == ["u1", "u2", "u3"]
+    threshold = [step for step in result.trajectory if step.stage == "threshold"][0]
+    assert threshold.detail["calibrated"] == "False"
+    assert threshold.detail["min_score_ratio"] == "0.3"
+    assert threshold.detail["dropped"] == "1"
+
+
+def test_direct_constructor_threshold_off_by_default() -> None:
+    # 直接构造的出厂默认：校准/未校准两路相对阈值均为 0，不按比例裁剪。
+    # 锁定默认值本身——与上面两个显式配置用例互补。
     world = make_world()
     candidates = []
     for index in range(1, 5):
@@ -634,18 +667,20 @@ def test_direct_constructor_default_uncalibrated_threshold_active() -> None:
         RetrievalQuery(text="candidate", top_k=4, rerank=False, with_trajectory=True),
     )
 
-    assert [item.unit_id for item in result.items] == ["u1", "u2", "u3"]
+    assert [item.unit_id for item in result.items] == ["u1", "u2", "u3", "u4"]
     threshold = [step for step in result.trajectory if step.stage == "threshold"][0]
-    assert threshold.detail["calibrated"] == "False"
-    assert threshold.detail["min_score_ratio"] == "0.3"
-    assert threshold.detail["dropped"] == "1"
+    assert threshold.detail["min_score_ratio"] == "0", "出厂默认相对阈值应为 0"
+    assert threshold.detail["dropped"] == "0"
 
 
-def test_default_config_threshold_active_end_to_end() -> None:
-    # 出厂默认装配（阈值 ratio 0.6 生效）的端到端行为：低于最高分 60% 的候选被裁剪，
-    # 相关结果不被清空。补齐「测试构造走阈值全关、生产装配走阈值开」的覆盖缺口。
+def test_configured_threshold_active_end_to_end() -> None:
+    # 生产装配 + 显式开启相对阈值（ratio 0.6）的端到端行为：低于最高分 60% 的候选
+    # 被裁剪，相关结果不被清空。补齐「测试构造走阈值全关、生产装配走阈值开」的
+    # 覆盖缺口。出厂默认已改为 0.0（见 test_default_config_threshold_off_end_to_end），
+    # 故此处显式配置——本用例锁的是阈值机制本身，不是某个默认值。
     raw = default_config_dict()
     raw["globals"]["graph_enabled"] = False
+    raw["retriever"]["default"]["params"]["min_score_ratio"] = 0.6
     ctx = AssemblyContext.from_dict(raw)
 
     register_plugins()
@@ -675,8 +710,44 @@ def test_default_config_threshold_active_end_to_end() -> None:
     assert [item.unit_id for item in result.items] == ["u1"], "阈值应裁剪低分候选且不清空结果"
     threshold = [step for step in result.trajectory if step.stage == "threshold"][0]
     assert threshold.detail["calibrated"] == "True", "默认装配 rerank 恒开应走校准路径"
-    assert threshold.detail["min_score_ratio"] == "0.6", "默认装配应生效出厂相对阈值"
+    assert threshold.detail["min_score_ratio"] == "0.6", "显式配置的相对阈值应生效"
     assert threshold.detail["dropped"] == "1", "低于比例线的候选应被裁剪"
+
+
+def test_default_config_threshold_off_end_to_end() -> None:
+    # 出厂默认 min_score_ratio=0.0：相对阈值不裁剪，弱相关候选保留交由调用方 top_k
+    # 决定。相对阈值会随融合分布变化误杀尾部候选（分层召回下尤甚——有无 layers
+    # 属索引覆盖差异而非相关性差异），故默认关闭，需要时按场景显式开启。
+    raw = default_config_dict()
+    raw["globals"]["graph_enabled"] = False
+    ctx = AssemblyContext.from_dict(raw)
+
+    register_plugins()
+    register_backends()
+    register_operators()
+    Factory.reset_all()
+    try:
+        retriever = RetrieverProducer.build_named("default", ctx)
+        stack = SimpleNamespace(
+            kv=KvProducer.build_named("default", ctx),
+            vector=VectorProducer.build_named("default", ctx),
+            fulltext=FulltextProducer.build_named("default", ctx),
+            embedder=EmbedderProducer.build_named("default", ctx),
+        )
+        index_unit(stack, make_unit("u1", "alice likes coffee"))
+        index_unit(stack, make_unit("u2", "bob drinks coffee"))
+
+        result = retriever.retrieve(
+            DEFAULT_SCOPE,
+            RetrievalQuery(text="alice coffee", top_k=10, with_trajectory=True),
+        )
+    finally:
+        Factory.reset_all()
+
+    assert [item.unit_id for item in result.items] == ["u1", "u2"], "默认不应按比例裁剪"
+    threshold = [step for step in result.trajectory if step.stage == "threshold"][0]
+    assert threshold.detail["min_score_ratio"] == "0", "出厂默认相对阈值应为 0"
+    assert threshold.detail["dropped"] == "0"
 
 
 def test_rerank_requested_without_reranker_records_skip() -> None:

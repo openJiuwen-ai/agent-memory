@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Mapping
+from typing import Mapping
 
 from retrieval.base import RetrievalOperatorType
 from retrieval.fuser import Fuser, FuserProducer
 from retrieval.types import ChannelEvidence, ParsedQuery, RecallChannel, ScoredUnit
+
+from .layered_merge import merge_layered_channels
 
 
 class WeightedRRFFuser(Fuser):
@@ -42,11 +44,14 @@ class WeightedRRFFuser(Fuser):
             "channel_weights": weights or "default=1",
         }
 
-    def fuse(self, query: ParsedQuery, candidates: List[List[ScoredUnit]]) -> List[ScoredUnit]:
-        scores: Dict[str, float] = {}
-        channel: Dict[str, RecallChannel] = {}
-        evidence: Dict[str, List[ChannelEvidence]] = {}
-        for one_channel in candidates:
+    def fuse(
+        self, query: ParsedQuery, candidates: list[list[ScoredUnit]]
+    ) -> list[ScoredUnit]:
+        scores: dict[str, float] = {}
+        channel: dict[str, RecallChannel] = {}
+        evidence: dict[str, list[ChannelEvidence]] = {}
+        # 分层召回下同通道有多路（L2/L0/L1），先归并再计分（见 layered_merge）。
+        for one_channel in merge_layered_channels(candidates):
             for rank, su in enumerate(one_channel):
                 weight = self._channel_weights.get(su.channel, 1.0)
                 contribution = weight / (self._k + rank + 1)
@@ -76,8 +81,8 @@ class WeightedRRFFuser(Fuser):
     @staticmethod
     def _normalize_weights(
         weights: Mapping[RecallChannel | str, float | str],
-    ) -> Dict[RecallChannel, float]:
-        normalized: Dict[RecallChannel, float] = {}
+    ) -> dict[RecallChannel, float]:
+        normalized: dict[RecallChannel, float] = {}
         for raw_channel, raw_weight in weights.items():
             if isinstance(raw_channel, RecallChannel):
                 channel = raw_channel

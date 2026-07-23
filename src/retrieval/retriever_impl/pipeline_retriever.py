@@ -66,10 +66,11 @@ class PipelineRetriever(Retriever):
         over_fetch_factor: int = 4,
         over_fetch_floor: int = 60,
         recall_max: int = 100,
-        rerank_max: int = 50,
+        rerank_max: int = 60,
         min_score: float = 0.0,
-        min_score_ratio: float = 0.6,
-        min_score_ratio_uncalibrated: float = 0.3,
+        # 相对阈值默认关闭，与 defaults.py 的 retriever params 保持一致。
+        min_score_ratio: float = 0.0,
+        min_score_ratio_uncalibrated: float = 0.0,
         min_results: int = 0,
     ) -> None:
         self._parser = parser
@@ -256,7 +257,7 @@ class PipelineRetriever(Retriever):
                         detail,
                     )
 
-        for idx in range(len(selected_recallers)):
+        for idx, _ in enumerate(selected_recallers):
             cands = recall_results.get(idx, [])
             if cands:
                 per_channel.append(cands)
@@ -384,8 +385,12 @@ def _build(config):
         recallers.append(RecallerProducer.dep(config, "keyword_l0_recaller", default="keyword_l0"))
         recallers.append(RecallerProducer.dep(config, "keyword_l1_recaller", default="keyword_l1"))
         if config.get("vector_enabled", True):
-            recallers.append(RecallerProducer.dep(config, "vector_l0_recaller", default="vector_l0"))
-            recallers.append(RecallerProducer.dep(config, "vector_l1_recaller", default="vector_l1"))
+            recallers.append(
+                RecallerProducer.dep(config, "vector_l0_recaller", default="vector_l0")
+            )
+            recallers.append(
+                RecallerProducer.dep(config, "vector_l1_recaller", default="vector_l1")
+            )
     # 精排器与 UnitReader 的真源 kv 与索引/构建侧共享同一实例。
     reranker = (
         RerankerProducer.dep(config, default="overlap")
@@ -404,11 +409,11 @@ def _build(config):
         # 回退值 = 出厂默认（与 defaults.py 的 retriever params 保持一致）：实例级覆盖会
         # 整体替换 params，漏写键时落到这里——回退到出厂行为而非静默关闭防护。
         recall_max=int(Factory.cfg_get(config, "recall_max", 100)),
-        rerank_max=int(Factory.cfg_get(config, "rerank_max", 50)),
+        rerank_max=int(Factory.cfg_get(config, "rerank_max", 60)),
         min_score=float(Factory.cfg_get(config, "min_score", 0.0)),
-        min_score_ratio=float(Factory.cfg_get(config, "min_score_ratio", 0.6)),
+        min_score_ratio=float(Factory.cfg_get(config, "min_score_ratio", 0.0)),
         min_score_ratio_uncalibrated=float(
-            Factory.cfg_get(config, "min_score_ratio_uncalibrated", 0.3)
+            Factory.cfg_get(config, "min_score_ratio_uncalibrated", 0.0)
         ),
         min_results=int(Factory.cfg_get(config, "min_results", 0)),
     )

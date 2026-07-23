@@ -7,12 +7,12 @@
 
 from __future__ import annotations
 
-from typing import Dict, List
-
 from common.factory.factory import Factory
 from retrieval.base import RetrievalOperatorType
 from retrieval.fuser import Fuser, FuserProducer
 from retrieval.types import ChannelEvidence, ParsedQuery, RecallChannel, ScoredUnit
+
+from .layered_merge import merge_layered_channels
 
 
 class RRFFuser(Fuser):
@@ -30,11 +30,15 @@ class RRFFuser(Fuser):
     def explain(self) -> dict[str, str]:
         return {"strategy": "rrf", "rrf_k": str(self._k)}
 
-    def fuse(self, query: ParsedQuery, candidates: List[List[ScoredUnit]]) -> List[ScoredUnit]:
-        scores: Dict[str, float] = {}
-        channel: Dict[str, RecallChannel] = {}
-        evidence: Dict[str, List[ChannelEvidence]] = {}
-        for one_channel in candidates:
+    def fuse(
+        self, query: ParsedQuery, candidates: list[list[ScoredUnit]]
+    ) -> list[ScoredUnit]:
+        scores: dict[str, float] = {}
+        channel: dict[str, RecallChannel] = {}
+        evidence: dict[str, list[ChannelEvidence]] = {}
+        # 分层召回下同通道有多路（L2/L0/L1），先归并再计分——否则同一 unit 的
+        # 多层命中会被当作多路投票重复累加（见 layered_merge）。
+        for one_channel in merge_layered_channels(candidates):
             for rank, su in enumerate(one_channel):
                 contribution = 1.0 / (self._k + rank + 1)
                 scores[su.unit_id] = scores.get(su.unit_id, 0.0) + contribution

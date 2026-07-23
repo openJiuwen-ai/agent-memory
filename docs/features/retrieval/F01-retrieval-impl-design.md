@@ -61,8 +61,15 @@
 
 | target | 类 | 参数（默认） | 关键语义 |
 |---|---|---|---|
-| `rrf` | `RRFFuser` | `k`（60） | RRF 倒数排名融合：同一 unit 在每路按名次 `r` 贡献 `1/(k+r+1)`，跨路累加得融合分降序；与各路得分量纲无关，单路退化为按名次排序 |
+| `rrf`（默认） | `RRFFuser` | `k`（60） | RRF 倒数排名融合：同一 unit 在每路按名次 `r` 贡献 `1/(k+r+1)`，跨路累加得融合分降序；与各路得分量纲无关，单路退化为按名次排序 |
 | `weighted_rrf` | `WeightedRRFFuser` | `fusion_rrf_k`（60）、`fusion_channel_weights`（`{}`） | 带通道权重的 RRF：各通道贡献按 `channel_weights` 加权；产出融合证据（每路名次与对最终分的 `contribution`），供可解释排序 |
+| `score_max` | `ScoreMaxFuser` | `fusion_channel_weights`（`{}`=全 1.0） | 可选 CombMAX：各通道以自身最高分为 1.0 做归一化，候选取其在各通道归一化分中的**最大值**。不奖励多通道命中，需按场景显式配置。见 `F04-score-max-fusion.md` |
+
+> **分层归并（三实现共用）**：L0/L1 分层召回下同一通道存在多个 recall 实例，`channel()` 三层同值。各
+> `fuse` 入口统一经 `fuser_impl/layered_merge.py` 按通道做 unit 级 MaxP 归并再计分——分层是同通道的多个
+> 索引入口，非独立信号源（`F01-memory-layer.md` §6.3：同通道取 MaxP）。对计分类融合（rrf/weighted_rrf）
+> 它消除多层重复累加；对 `score_max` 它还消除归一化基准按层分裂（候选少的层会把弱命中抬到与主层最强
+> 同级），故顺序必须为「归并 → 归一化 → 取最大值」。未启用分层时为恒等变换。
 
 ### Discloser（`discloser.py` · `DiscloserProducer` · TOP_NAME=`discloser`）
 
@@ -75,7 +82,7 @@
 
 | target | 类 | 依赖（缺省） | 参数（默认） | 关键语义 |
 |---|---|---|---|---|
-| `pipeline` | `PipelineRetriever` | `query_parser`（`simple`）；`recaller` 三路 `keyword_recaller`/`vector_recaller`/`graph_recaller`（后两路按 `vector_enabled`/`graph_enabled` 开关接入）；`fuser`（`rrf`）；`discloser`（`truncating`）；`unit_reader` ← `kv_store`（`memory`）；`reranker`（common，`overlap`，仅 `rerank_enabled` 接入） | 召回超采样 `over_fetch_factor`（4）/`over_fetch_floor`（60）/`recall_max`（100，召回硬上限，0=不限）；精排预算 `rerank_max`（50）；相关性阈值 `min_score`（0，绝对，仅校准路径）/`min_score_ratio`（0.6，校准）/`min_score_ratio_uncalibrated`（0.3，未校准）/`min_results`（0，兜底） | 编排完整 Read 链路（见下「编排顺序」），`scope` 作显式首参贯穿下推到各召回路；本类不含召回/打分逻辑，全由注入算子完成 |
+| `pipeline` | `PipelineRetriever` | `query_parser`（`simple`）；`recaller` 三路 `keyword_recaller`/`vector_recaller`/`graph_recaller`（后两路按 `vector_enabled`/`graph_enabled` 开关接入）；`fuser`（`rrf`）；`discloser`（`truncating`）；`unit_reader` ← `kv_store`（`memory`）；`reranker`（common，`overlap`，仅 `rerank_enabled` 接入） | 召回超采样 `over_fetch_factor`（4）/`over_fetch_floor`（60）/`recall_max`（100，召回硬上限，0=不限）；精排预算 `rerank_max`（60）；相关性阈值 `min_score`（0，绝对，仅校准路径）/`min_score_ratio`（0，校准）/`min_score_ratio_uncalibrated`（0，未校准；两项默认关闭，见 `F04`）/`min_results`（0，兜底） | 编排完整 Read 链路（见下「编排顺序」），`scope` 作显式首参贯穿下推到各召回路；本类不含召回/打分逻辑，全由注入算子完成 |
 
 ### 非工厂支撑件（由 `PipelineRetriever` 直接构造/调用，不进依赖图）
 
@@ -96,7 +103,7 @@
 6. **截断精排预算**：取融合结果前 `budget_n = max(rerank_max, top_k)` 作候选预算（召回宽度与精排成本解耦；`top_k` 大于 `rerank_max` 时自动扩展，不静默欠召）。
 7. **点读 + 后置过滤**：`UnitReader` 物化真源 `MemoryUnit`，`passes` / `in_event_window` / `matches_filters` 做纵深防御过滤。
 8. **（可选）重排**：注入 `reranker` 时对存活候选 `rerank`；记 `reranked` 标志（即阈值阶段的 `calibrated`）。
-9. **相关性阈值**：`apply_threshold` 统一裁剪——先丢非正分，再按阈值取降序前缀（绝对 `min_score` 仅在校准/已精排路径生效；相对阈值分路取 `min_score_ratio` 0.6（校准）/ `min_score_ratio_uncalibrated` 0.3（未校准）），`min_results` 从正分候选回填到下限（夹到 ≤ `top_k`）。
+9. **相关性阈值**：`apply_threshold` 统一裁剪——先丢非正分，再按阈值取降序前缀（绝对 `min_score` 仅在校准/已精排路径生效；相对阈值分路取 `min_score_ratio`（校准）/ `min_score_ratio_uncalibrated`（未校准），出厂默认均为 0（关闭，见 F04）），`min_results` 从正分候选回填到下限（夹到 ≤ `top_k`）。
 10. **截断 `top_k`**。
 11. **渐进披露**：`discloser.disclose`，按 `disclosure` 层级与 `max_tokens` 塑形（`ADAPTIVE` 按预算自选 L0/L1/L2）。
 12. **返回** `RetrievalResult`（`items` + 可选 `trajectory`，`with_trajectory` 时逐阶段记录 stage/channel/候选数/耗时）。
