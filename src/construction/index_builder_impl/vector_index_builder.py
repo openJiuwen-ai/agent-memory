@@ -33,7 +33,8 @@ class VectorIndexBuilder(IndexBuilder):
 
     L0/L1 分层索引（架构 §9.1）：``unit.layers.l0``/``.l1`` 非空且对应 store 已注入时，
     对整段 l0/l1 文本（不切片）做 embed，写独立 VectorStore 实例（不同 collection = 分表），
-    record id = ``{unit_id}-l0``/``{unit_id}-l1``。store 为 None 时跳过该层，不影响 content。
+    record id = ``{unit_id}-layer-l0``/``{unit_id}-layer-l1``。store 为 None 时跳过该层，
+    不影响 content。
     """
 
     def __init__(
@@ -102,7 +103,11 @@ class VectorIndexBuilder(IndexBuilder):
             try:
                 vectors = self._embedder.embed(texts)
             except Exception as exc:
-                logger.warning("VectorIndexBuilder: Embedder.embed failed for unit %s: %s", unit.id[:8], exc)
+                logger.warning(
+                    "VectorIndexBuilder: Embedder.embed failed for unit %s: %s",
+                    unit.id[:8],
+                    exc,
+                )
                 continue
 
             # 构建 VectorRecord（id = unit.id + "-" + chunk.id，确保全局唯一）
@@ -115,9 +120,11 @@ class VectorIndexBuilder(IndexBuilder):
                     metadata={
                         "unit_id": unit.id,
                         "tier": unit.tier.value,
-                        "lifecycle": unit.lifecycle.value,  # 召回下推 lifecycle 谓词需此字段（真后端按缺失字段排他）
+                        # 召回下推 lifecycle 谓词需此字段（真后端按缺失字段排他）。
+                        "lifecycle": unit.lifecycle.value,
                         "seq": str(chunk.seq),
-                        "content_layer": "l2",  # L2=content 全文 chunk（与 L0/L1 分层 record 对齐，见 F01）
+                        # L2=content 全文 chunk（与 L0/L1 分层 record 对齐）。
+                        "content_layer": "l2",
                     },
                 )
                 all_records.append(record)
@@ -151,16 +158,27 @@ class VectorIndexBuilder(IndexBuilder):
             try:
                 self._vector_store.insert(scope, group_records)
             except Exception as exc:
-                logger.warning("VectorIndexBuilder: VectorStore.insert failed for scope %s: %s", key, exc)
+                logger.warning(
+                    "VectorIndexBuilder: VectorStore.insert failed for scope %s: %s", key, exc
+                )
                 try:
                     self._vector_store.update(scope, group_records)
                 except Exception as exc2:
-                    logger.error("VectorIndexBuilder: VectorStore.update also failed for scope %s: %s", key, exc2)
+                    logger.error(
+                        "VectorIndexBuilder: VectorStore.update also failed for scope %s: %s",
+                        key,
+                        exc2,
+                    )
 
         # chunk_id 跟踪写入 KVStore
         for unit_id, chunk_ids in chunk_tracking.items():
             key_tuple = unit_scope_map.get(unit_id, ("", "", "", ""))
-            scope = Scope(org=key_tuple[0], user=key_tuple[1], agent=key_tuple[2], session=key_tuple[3])
+            scope = Scope(
+                org=key_tuple[0],
+                user=key_tuple[1],
+                agent=key_tuple[2],
+                session=key_tuple[3],
+            )
             kv_key = self._chunk_tracking_key(unit_id)
             try:
                 if self._kv_store.exists(scope, kv_key):
@@ -168,7 +186,11 @@ class VectorIndexBuilder(IndexBuilder):
                 else:
                     self._kv_store.insert(scope, kv_key, json.dumps(chunk_ids).encode())
             except Exception as exc:
-                logger.warning("VectorIndexBuilder: KVStore chunk tracking write failed for %s: %s", kv_key, exc)
+                logger.warning(
+                    "VectorIndexBuilder: KVStore chunk tracking write failed for %s: %s",
+                    kv_key,
+                    exc,
+                )
 
     def update(self, units: List[MemoryUnit]) -> None:
         """增量更新向量索引：先删旧 chunk + 旧 L0/L1 record → 再建新。
@@ -185,7 +207,11 @@ class VectorIndexBuilder(IndexBuilder):
                 old_chunk_ids = json.loads(raw.decode())
                 self._vector_store.delete(unit.scope, old_chunk_ids)
             except Exception as exc:
-                logger.warning("VectorIndexBuilder: no old chunks found for unit %s: %s", unit.id[:8], exc)
+                logger.warning(
+                    "VectorIndexBuilder: no old chunks found for unit %s: %s",
+                    unit.id[:8],
+                    exc,
+                )
             # 先删旧 L0/L1 record（幂等），build 会按新 layers 重建
             self._delete_layer_records(unit.id, unit.scope)
 
@@ -257,7 +283,9 @@ class VectorIndexBuilder(IndexBuilder):
                 continue  # 该层未注入，跳过
             self._build_one_layer(store, layer, get_text, units)
 
-    def _build_one_layer(self, store: VectorStore, layer: str, get_text, units: List[MemoryUnit]) -> None:
+    def _build_one_layer(
+        self, store: VectorStore, layer: str, get_text, units: List[MemoryUnit]
+    ) -> None:
         """构建单层（L0 或 L1）向量索引：整段 embed → 写独立 store。
 
         L0/L1 是 unit 级整体（不切片），一条 unit 在该层表最多一条 record。

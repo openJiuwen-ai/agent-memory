@@ -223,8 +223,9 @@ source
 #### 召回聚合（已实施）
 
 Recaller 聚合到 `unit_id` 的行为保留，命中 L0/L1/L2 任一层后都折叠成同一条
-`ScoredUnit(unit_id=...)`，多路多层级命中经 Fuser RRF 聚合到 unit 粒度（同通道取 MaxP，
-跨通道 RRF 累加）。详见 §6 检索层分层召回。
+`ScoredUnit(unit_id=...)`，多路多层级命中经 Fuser 聚合到 unit 粒度：**同通道多层命中一律
+取 MaxP**（分层是同通道的多个索引入口，非独立信号源）；跨通道如何合并由所选 Fuser 决定。
+详见 §6 检索层分层召回。
 
 本特性要求 L0/L1 **参与构建和召回候选生成**，但最终返回仍以 `MemoryUnit` 为单位，由 UnitReader 点读真源后进入 recheck/rerank/disclose。
 
@@ -232,7 +233,7 @@ Recaller 聚合到 `unit_id` 的行为保留，命中 L0/L1/L2 任一层后都�
 
 > 状态：已实施（2026-07）。复用 vector/keyword recaller 加 `layer` 参数查 L0/L1 分表，
 > RetrievedItem 三层一次性填充（abstract/overview/content）。经 `extractor_demo.py` 验证：
-> 6 路（content/L0/L1 × vector/keyword）并行召回 + RRF 融合 + 三层披露全链路生效。
+> 6 路（content/L0/L1 × vector/keyword）并行召回 + 融合 + 三层披露全链路生效。
 
 #### 6.1 召回侧：recaller 加 layer 参数 + 分表 store（已实施）
 
@@ -243,9 +244,13 @@ fulltext_store.layers_l0/l1），**store 为 None 时 recall 返空**（该层�
 - `VectorRecaller.__init__(vector_store, min_similarity, layer)`；`KeywordRecaller.__init__(fulltext, layer)`。
 - 注册具名实例：`vector`/`vector_l0`/`vector_l1`、`keyword`/`keyword_l0`/`keyword_l1`。
 - **不新增 RecallChannel**：L0/L1 复用 VECTOR/KEYWORD 通道——同通道不同层级，
-  Fuser 按 unit_id 聚合（同 unit 被 content/L0/L1 多路命中取 RRF 累加）。
+  Fuser 按 unit_id 聚合（同 unit 被 content/L0/L1 多路命中**取 MaxP，不累加**；
+  归并由 `fuser_impl/layered_merge.py` 前置，各 Fuser 实现共用）。
+- 分层 MaxP 统一按「分越大越相关」处理；L0/L1/L2 必须使用同类后端和同一
+  分词/度量配置，向量路不接受 L2 等 lower-is-better 度量。
 - `PipelineRetriever._build` 按 `layers_index_enabled`（回退 globals）接入 L0/L1 recaller。
-- `layers_index_enabled` 开时（demo config 设 true）→ 6 路并行召回；关时（默认）→ 3 路（content/keyword/graph）。
+- `layers_index_enabled` 开时（出厂默认）→ 6 路并行召回；显式关闭时→ 3 路
+  （content keyword/vector + graph，具体受通道开关控制）。
 
 **store 为 None 降级**：recaller recall 返空，不报错、不影响其他层级/通道。未配 L0/L1
 退化为现状（向后兼容）。
@@ -286,7 +291,7 @@ query → query_parser → ParsedQuery
   ├─ KeywordRecaller keyword_l1（L1，store 非空时）
   └─ GraphRecaller（GRAPH）
   ↓
-Fuser RRF 融合（同 unit_id 多路多层级命中聚合——同通道取 MaxP，跨通道 RRF 累加）
+Fuser 融合（同 unit_id 多路多层级命中聚合——同通道取 MaxP；跨通道由所选 Fuser 决定）
   ↓
 UnitReader 点读 KV → Discloser 三层披露（用预生成 l0/l1 + content 全文）
   ↓
@@ -322,6 +327,8 @@ RetrievedItem（abstract/overview/content + level）
 
 构建侧 `constructor`（HybridIndexBuilder）经 `_opt_dep(VectorProducer, "layers_l0/l1")`
 取具名实例注入——`layers_index_enabled`（默认 true）开且 layers 非空才建 L0/L1 分表。
+在线配置中，全文 L0/L1/L2 分别落独立 ES index 且共用同一 analyzer；向量
+L0/L1/L2 分别落独立 Milvus collection，共用同一维度与 COSINE 度量。
 
 #### 6.5 接口变更
 
@@ -412,4 +419,3 @@ RetrievedItem（abstract/overview/content + level）
 - `layer_annotator_threshold`（globals）控制阈值筛选，默认 512。
 - `layers_index_enabled`（globals）+ `vector_store.layers_l0/l1`、`fulltext_store.layers_l0/l1`
   具名实例控制分层索引（见 S05 IndexBuilder build 路径）。
-

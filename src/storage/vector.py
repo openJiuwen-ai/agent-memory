@@ -50,8 +50,8 @@ class VectorStore(BaseStore):
     def score_higher_is_better(self) -> bool:
         """``search`` 返回分数的方向语义：True=分越大越相关（cosine/IP 类）。
 
-        消费方（如召回侧的语义前置阈值）据此判断能否做「低于阈值即丢弃」类过滤。
-        距离型后端（如 L2，越小越相关）**必须** override 返回 False，否则该类过滤
-        会静默反转、砍掉最相关的结果。默认 True（本仓内置实现均为 cosine 语义）。
+        召回层的 chunk→unit MaxP、分层归并和融合排序统一要求高分优先。
+        距离型后端（如 L2，越小越相关）**必须** override 返回 False，
+        ``VectorRecaller`` 会在装配期拒绝该后端，避免静默反转相关性。默认 True。
         """
         return True

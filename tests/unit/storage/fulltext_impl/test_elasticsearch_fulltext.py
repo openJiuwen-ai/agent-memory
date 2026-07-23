@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import sys
+from types import ModuleType
+
 import pytest
 
 from storage.fulltext_impl.elasticsearch_fulltext import ElasticsearchFulltextStore
@@ -26,12 +29,18 @@ class _FakeClient:
         self.indices = _FakeIndices()
 
 
-def test_text_analyzer_is_written_to_index_mapping() -> None:
-    store = ElasticsearchFulltextStore(index="memory_l0", text_analyzer="english")
+def test_text_analyzer_is_written_to_index_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _FakeClient()
-    store._client = client
 
-    store._ensure_index()
+    def create_client(*_args: object, **_kwargs: object) -> _FakeClient:
+        return client
+
+    elasticsearch = ModuleType("elasticsearch")
+    setattr(elasticsearch, "Elasticsearch", create_client)
+    monkeypatch.setitem(sys.modules, "elasticsearch", elasticsearch)
+
+    store = ElasticsearchFulltextStore(index="memory_l0", text_analyzer="english")
+    assert store.client is client
 
     assert client.indices.created is not None
     text_mapping = client.indices.created["mappings"]["properties"]["text"]

@@ -62,12 +62,51 @@ memory_api:
       target: elasticsearch
       params:
         hosts: "${ES_HOSTS:-http://elasticsearch:9200}"
+        index: "${ES_INDEX:-agent_memory_fulltext}"
+        # 建索引期文本分析器，决定 BM25 匹配的词条形态（查询侧自动同规则）。
+        # 按记忆内容的主语言选择，经 ES_TEXT_ANALYZER 环境变量覆盖：
+        # - 英文记忆: english（ES 内置，词干化 attended→attend + 去停用词）
+        # - 中文记忆: ik_max_word（需 ES 安装 analysis-ik 插件，中文分词效果最好）；
+        #   无法装插件时用 cjk（ES 内置，CJK 二元切分，优于 standard 的单字切分）
+        # - 中英混合: ik_max_word（保留完整英文单词，但无英文词干化）；
+        #   或置空回退 standard（英文不词干化、中文按单字切分，即本参数引入前的行为）
+        # 注意：仅索引创建时生效，变更后需删除旧索引重建才能应用。
+        text_analyzer: "${ES_TEXT_ANALYZER:-english}"
+    # L0/L1 与 L2 使用同一 ES 后端和 analyzer，但分别落独立 index。
+    # 三层同通道分数统一按「越大越相关」归并。
+    layers_l0:
+      target: elasticsearch
+      params:
+        hosts: "${ES_HOSTS:-http://elasticsearch:9200}"
+        index: "${ES_INDEX_L0:-agent_memory_fulltext_l0}"
+        text_analyzer: "${ES_TEXT_ANALYZER:-english}"
+    layers_l1:
+      target: elasticsearch
+      params:
+        hosts: "${ES_HOSTS:-http://elasticsearch:9200}"
+        index: "${ES_INDEX_L1:-agent_memory_fulltext_l1}"
+        text_analyzer: "${ES_TEXT_ANALYZER:-english}"
   vector_store:
     default:
       target: milvus
       params:
         uri: "${MILVUS_URI:-http://milvus:19530}"
         collection: "${MILVUS_COLLECTION:-agent_memory_vectors}"
+        dim: 1024
+        metric_type: COSINE
+    # L0/L1 与 L2 使用同一 embedding 维度与 COSINE 度量，分别落独立 collection。
+    layers_l0:
+      target: milvus
+      params:
+        uri: "${MILVUS_URI:-http://milvus:19530}"
+        collection: "${MILVUS_COLLECTION_L0:-agent_memory_vectors_l0}"
+        dim: 1024
+        metric_type: COSINE
+    layers_l1:
+      target: milvus
+      params:
+        uri: "${MILVUS_URI:-http://milvus:19530}"
+        collection: "${MILVUS_COLLECTION_L1:-agent_memory_vectors_l1}"
         dim: 1024
         metric_type: COSINE
 

@@ -45,12 +45,13 @@ class ScoreMaxFuser(Fuser):
         return None
 
     def explain(self) -> dict[str, str]:
-        weights = ",".join(
-            f"{channel.value}={weight:g}"
-            for channel, weight in sorted(
-                self._channel_weights.items(), key=lambda item: item[0].value
-            )
+        ordered_weights = sorted(
+            self._channel_weights.items(), key=lambda item: item[0].value
         )
+        weight_parts: list[str] = []
+        for channel, weight in ordered_weights:
+            weight_parts.append(f"{channel.value}={weight:g}")
+        weights = ",".join(weight_parts)
         return {
             "strategy": "score_max",
             "normalization": "channel_max",
