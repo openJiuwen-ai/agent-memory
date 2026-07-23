@@ -404,7 +404,7 @@ def verify_bearer_token(token_value: str) -> AuthContext | None:
 #### 2.4.3 Refresh Token Rotation 与重放检测
 
 ```python
-async def exchange_refresh_token(old_refresh: str) -> tuple[str, str, str]:
+async def exchange_refresh_token(old_refresh: str) -> tuple[str, str]:
     """消费旧 refresh token,发放新的 access + refresh pair。"""
     hash_ = sha256(old_refresh)
     record = token_store.get_refresh(hash_)
@@ -417,14 +417,15 @@ async def exchange_refresh_token(old_refresh: str) -> tuple[str, str, str]:
         token_store.revoke_family(record.family_id)
         raise InvalidTokenError("Refresh token replayed, family revoked")
 
-    # 标记旧 token 为已消费
-    record.consumed = True
-    record.replaced_by = new_token_hash
-    token_store.persist(record)
-
-    # 发放新的
+    # 先发放新的 access + refresh pair,才能确定旧 token 被谁替换
     new_access = issue_access_token(record)
     new_refresh = issue_refresh_token(record)
+
+    # 标记旧 token 为已消费,并记录被哪个新 token 替换(支撑家族可追溯)
+    record.consumed = True
+    record.replaced_by = sha256(new_refresh)
+    token_store.persist(record)
+
     return new_access, new_refresh
 ```
 
@@ -1447,6 +1448,7 @@ class AuthContext:
 
 ```python
 import hmac
+from datetime import datetime, timezone
 
 class AuditLogger:
     def __init__(self, hmac_key: bytes):
@@ -1455,12 +1457,14 @@ class AuditLogger:
 
     def log(self, event: str, **fields):
         entry = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "event": event,
             **fields,
         }
         # 链式 HMAC:每行都做 HMAC,且 HMAC 包含前一条的 HMAC
-        prev_hmac = self._entries[-1] if self._entries else ""
+        # 注意:prev_hmac 取的是"前一条 entry 的 _hmac 字段值",必须与
+        # verify_integrity() 的取法一致,否则校验必然全量误报。
+        prev_hmac = json.loads(self._entries[-1])["_hmac"] if self._entries else ""
         entry["_hmac"] = hmac.new(
             self._hmac_key,
             (prev_hmac + json.dumps(entry, sort_keys=True)).encode(),
@@ -1474,7 +1478,9 @@ class AuditLogger:
         tampered = []
         for i, line in enumerate(self._entries):
             entry = json.loads(line)
-            prev_hmac = self._entries[i - 1]["_hmac"] if i > 0 else ""
+            # self._entries[i-1] 是 JSON 字符串,必须先 json.loads 再取 _hmac;
+            # 且取值方式与 log() 完全一致(前一条的 _hmac 字段值)。
+            prev_hmac = json.loads(self._entries[i - 1])["_hmac"] if i > 0 else ""
             expected = hmac.new(
                 self._hmac_key,
                 (prev_hmac + json.dumps(
