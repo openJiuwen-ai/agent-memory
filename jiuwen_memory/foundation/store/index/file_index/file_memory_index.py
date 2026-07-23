@@ -23,7 +23,7 @@ import sqlite3
 import traceback
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from jiuwen_memory.common.exception.codes import StatusCode
 from jiuwen_memory.common.exception.errors import build_error
@@ -34,6 +34,7 @@ from jiuwen_memory.foundation.store.base_memory_index import (
     MemoryDoc,
     StorageCodec,
 )
+from jiuwen_memory.foundation.store.filter_dsl import FilterGroup, FilterLogic
 from jiuwen_memory.foundation.store.index.file_index._chunk_parser import (
     Block,
     blocks_to_markdown,
@@ -44,7 +45,11 @@ from jiuwen_memory.foundation.store.index.file_index._chunk_parser import (
 )
 from jiuwen_memory.foundation.store.index.file_index._file_watcher import MemoryFileWatcher
 from jiuwen_memory.foundation.store.index.file_index._md_store import MarkdownStore, _validate_path_segment
-from jiuwen_memory.foundation.store.index.file_index._vector_index import TenantScope, VectorIndex
+from jiuwen_memory.foundation.store.index.file_index._vector_index import (
+    SearchConstraints,
+    TenantScope,
+    VectorIndex,
+)
 
 
 class FileMemoryIndex(BaseMemoryIndex):
@@ -315,6 +320,8 @@ class FileMemoryIndex(BaseMemoryIndex):
             type=block.type,
             timestamp=ts,
             fields=block.fields,
+            blacklisted=block.blacklisted,
+            is_important=block.is_important,
         )
 
     @staticmethod
@@ -334,6 +341,8 @@ class FileMemoryIndex(BaseMemoryIndex):
             end_line=0,
             fields=dict(doc.fields),
             timestamp=ts,
+            blacklisted=doc.blacklisted,
+            is_important=doc.is_important,
         )
 
     # ------------------------------------------------------------------
@@ -532,13 +541,21 @@ class FileMemoryIndex(BaseMemoryIndex):
                         f"scope_id={scope_id} mem_id={mem_id}"
                     ),
                 )
-            # Merge scalar field updates onto the block's extension dict.
-            # ``blacklisted`` / ``is_important`` / arbitrary user fields all
-            # land here — the .md frontmatter ``fields:`` map is the single
-            # extension surface for FileMemoryIndex (no separate vector scalar
-            # schema to push to).
+            # Merge scalar field updates onto the block. ``blacklisted`` /
+            # ``is_important`` are top-level Block attributes (persisted to
+            # the chunks table + the .md frontmatter top-level keys); any
+            # other field falls through to the .md frontmatter ``fields:``
+            # map (the single extension surface for arbitrary user fields).
+            scalar_updates: dict[str, Any] = {}
             for name, value in fields.items():
-                target.fields[name] = value
+                if name == "blacklisted":
+                    target.blacklisted = bool(value)
+                    scalar_updates["blacklisted"] = bool(value)
+                elif name == "is_important":
+                    target.is_important = bool(value)
+                    scalar_updates["is_important"] = bool(value)
+                else:
+                    target.fields[name] = value
 
             await self._md_store.write_blocks(abs_path, blocks)
 
@@ -550,6 +567,16 @@ class FileMemoryIndex(BaseMemoryIndex):
                 file_content=content,
                 blocks=blocks,
             )
+
+            # ``sync_file`` classifies blocks by body hash — a pure-scalar
+            # flip (blacklisted=True with unchanged text) lands in the
+            # "unchanged" bucket and is never re-upserted, so the new
+            # scalar value would not reach the chunks table. Direct
+            # UPDATE keeps the SQL index in lockstep with the .md file
+            # the moment the flip happens (parallel to SimpleMemoryIndex's
+            # ``vector_store.update_doc_fields`` scalar path).
+            if scalar_updates:
+                self._vec_index.update_chunk_scalars(mem_id, scalar_updates)
 
 
     async def delete_memories(self, user_id: str, scope_id: str, ids: list[str]) -> None:
@@ -724,7 +751,8 @@ class FileMemoryIndex(BaseMemoryIndex):
         return None
 
     async def list_memories(self, user_id: str, scope_id: str, offset: int = 0,
-                            limit: int = 100, mem_types: list[str] | None = None) -> list[MemoryDoc]:
+                            limit: int = 100, mem_types: list[str] | None = None,
+                            *, filters: Optional[FilterGroup] = None) -> list[MemoryDoc]:
         """List memories with pagination and optional type filter.
 
         Uses chunks table for ID ordering (by updated_at DESC), then reads
@@ -734,8 +762,18 @@ class FileMemoryIndex(BaseMemoryIndex):
         mem_id 查 block，避免对同一文件的每条记忆重复读取解析（N+1 I/O）。
         ``list_chunks_meta`` 返回全量（无 SQL 分页），offset/limit 在
         Python 侧截断。
+
+        Args:
+            filters: Optional FilterGroup DSL predicate. The SQL layer
+                pushes down ``EQ`` / ``NE`` on ``blacklisted`` /
+                ``is_important`` (see ``VectorIndex._render_filter_group_to_sql``);
+                any other field / operator is re-evaluated in Python via
+                ``_apply_file_filter_group`` against the loaded MemoryDoc
+                set, mirroring SimpleMemoryIndex's fallback strategy.
         """
-        rows = self._vec_index.list_chunks_meta(user_id, scope_id, mem_types)
+        rows = self._vec_index.list_chunks_meta(
+            user_id, scope_id, mem_types, filters=filters,
+        )
         if not rows:
             return []
 
@@ -790,13 +828,24 @@ class FileMemoryIndex(BaseMemoryIndex):
                 if doc:
                     docs.append(doc)
 
+        # Re-evaluate the full FilterGroup in Python. ``list_chunks_meta``
+        # only pushes EQ/NE on blacklisted/is_important to SQL; conditions
+        # on other fields (mem_type / arbitrary user fields) are dropped
+        # there and must be evaluated against the loaded MemoryDoc set —
+        # same fallback strategy SimpleMemoryIndex uses. The default
+        # NE(blacklisted, True) path is a no-op here because those rows
+        # never came back from SQL.
+        if filters is not None and not _filter_group_is_pure_sql(filters):
+            docs = [d for d in docs if _apply_filter_group_to_doc(d, filters)]
+
         return docs[offset:offset + limit]
 
     async def list_user_scopes(self) -> list[tuple[str, str]]:
         return self._md_store.list_user_scopes()
 
     async def search(self, user_id: str, scope_id: str, query: str,
-                     mem_types: list[str] | None = None, top_k: int = 10) -> list[tuple[MemoryDoc, float]]:
+                     mem_types: list[str] | None = None, top_k: int = 10,
+                     *, filters: Optional[FilterGroup] = None) -> list[tuple[MemoryDoc, float]]:
         """Semantic search (vector + FTS5 hybrid).
 
         embedding 缺失时降级为 FTS-only：跳过 ``embed_query`` 与 ``_ensure_synced``，
@@ -809,6 +858,17 @@ class FileMemoryIndex(BaseMemoryIndex):
         RuntimeError。故用存量 FTS 索引尽力搜（embedding 故障是临时的，恢复
         后下次 search 会补同步）。API 临时故障时保住基本可用性，而非直接
         返回空；FTS5 基建（jieba 分词 + BM25）在无 embedding 时也可达。
+
+        Args:
+            filters: Optional FilterGroup DSL predicate. The SQL layer
+                pushes down ``EQ`` / ``NE`` on ``blacklisted`` /
+                ``is_important`` (see ``VectorIndex._render_filter_group_to_sql``);
+                non-pushable conditions are re-evaluated in Python via
+                ``_apply_filter_group_to_doc`` after the MemoryDoc lookup,
+                matching SimpleMemoryIndex's fallback path. The default
+                ``NE("blacklisted", True)`` injected by ``ensure_blacklisted_ne``
+                is pushed down to SQL entirely, so no Python overhead
+                lands on the common path.
         """
         if self._embedding_model:
             # Ensure all type files for this user/scope are synced (lazy, hash-based check).
@@ -830,9 +890,12 @@ class FileMemoryIndex(BaseMemoryIndex):
 
         hits = await self._vec_index.search(
             TenantScope(user_id=user_id, scope_id=scope_id), query_vec,
-            mem_types=mem_types,
             top_k=top_k,
-            query_text=query,
+            constraints=SearchConstraints(
+                mem_types=mem_types,
+                query_text=query,
+                filters=filters,
+            ),
         )
 
         # Resolve mem_ids to MemoryDocs
@@ -846,6 +909,12 @@ class FileMemoryIndex(BaseMemoryIndex):
             if block is None:
                 continue
             results.append((self._block_to_doc(block), score))
+
+        if filters is not None and not _filter_group_is_pure_sql(filters):
+            results = [
+                (d, s) for (d, s) in results
+                if _apply_filter_group_to_doc(d, filters)
+            ]
 
         results.sort(key=lambda x: x[1], reverse=True)
         return results[:top_k]
@@ -872,3 +941,64 @@ class FileMemoryIndex(BaseMemoryIndex):
 
     async def cleanup_backup(self, backup_id: str) -> None:
         self._backups.pop(backup_id, None)
+
+
+# ------------------------------------------------------------------
+# FilterGroup application helpers (module-level)
+# ------------------------------------------------------------------
+#
+# FileMemoryIndex pushes EQ/NE on blacklisted/is_important to the chunks
+# SQL layer (see VectorIndex._render_filter_group_to_sql). When a caller's
+# FilterGroup also references other fields (mem_type / arbitrary user
+# fields stored in the .md frontmatter), the SQL layer drops those
+# conditions and we re-evaluate the full FilterGroup in Python against
+# the loaded MemoryDoc set. Same fallback strategy as SimpleMemoryIndex.
+_SQL_PUSHDOWN_FIELDS = frozenset({"blacklisted", "is_important"})
+
+
+def _filter_group_is_pure_sql(group: FilterGroup) -> bool:
+    """Return True iff every condition references a SQL-pushable field."""
+    for cond in group.conditions:
+        if isinstance(cond, FilterGroup):
+            if not _filter_group_is_pure_sql(cond):
+                return False
+        else:
+            if cond.field not in _SQL_PUSHDOWN_FIELDS:
+                return False
+    return True
+
+
+def _apply_filter_group_to_doc(doc: MemoryDoc, group: FilterGroup) -> bool:
+    """Application-layer FilterGroup evaluator for FileMemoryIndex.
+
+    Mirrors SimpleMemoryIndex's ``_apply_filter_group`` so the two backends
+    evaluate non-pushable conditions identically. Top-level MemoryDoc
+    fields (``blacklisted`` / ``is_important``) take priority; otherwise
+    the ``fields`` dict is consulted.
+    """
+    if not group.conditions:
+        return True
+    results = [_apply_filter_condition_or_group_to_doc(doc, c) for c in group.conditions]
+    if group.logic == FilterLogic.AND:
+        return all(results)
+    return any(results)
+
+
+def _apply_filter_condition_or_group_to_doc(doc: MemoryDoc, cond_or_group) -> bool:
+    if isinstance(cond_or_group, FilterGroup):
+        return _apply_filter_group_to_doc(doc, cond_or_group)
+    return _apply_filter_condition_to_doc(doc, cond_or_group)
+
+
+def _apply_filter_condition_to_doc(doc: MemoryDoc, cond) -> bool:
+    if hasattr(doc, cond.field):
+        value = getattr(doc, cond.field, None)
+    else:
+        value = doc.fields.get(cond.field)
+    op = cond.op.value
+    target = cond.value
+    if op == "eq":
+        return value == target
+    if op == "ne":
+        return value != target
+    return False

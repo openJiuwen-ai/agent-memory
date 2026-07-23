@@ -45,6 +45,8 @@ class Block:
         end_line: 1-based line number of the last body line.
         fields: Optional extension fields.
         timestamp: ISO 8601 timestamp string.
+        blacklisted: Whether this memory is forgotten (Ebbinghaus).
+        is_important: Whether this memory is protected from forgetting.
         hash: SHA256 first-16-chars of ``text``.
     """
 
@@ -55,6 +57,8 @@ class Block:
     end_line: int = 0
     fields: dict[str, Any] = field(default_factory=dict)
     timestamp: str = ""
+    blacklisted: bool = False
+    is_important: bool = False
     hash: str = ""
 
     def __post_init__(self) -> None:
@@ -208,6 +212,14 @@ def parse_blocks(content: str) -> list[Block]:
 
         fields = fm.get("fields", {}) or {}
 
+        # Forgetting-pipeline flags. Persisted as top-level frontmatter keys
+        # (parallel to id/type/timestamp) so list_memories can render them
+        # to a SQL WHERE clause on the chunks table, and search/list can
+        # apply the default NE("blacklisted", True) filter the same way
+        # SimpleMemoryIndex does on its vector collection schema.
+        blacklisted = bool(fm.get("blacklisted", False))
+        is_important = bool(fm.get("is_important", False))
+
         blocks.append(Block(
             mem_id=mem_id,
             type=mem_type,
@@ -216,6 +228,8 @@ def parse_blocks(content: str) -> list[Block]:
             end_line=body_end + 1,      # 1-based
             fields=fields,
             timestamp=timestamp,
+            blacklisted=blacklisted,
+            is_important=is_important,
         ))
 
     return blocks
@@ -254,6 +268,10 @@ def blocks_to_markdown(blocks: list[Block]) -> str:
             "type": block.type,
             "timestamp": block.timestamp,
         }
+        if block.blacklisted:
+            fm["blacklisted"] = True
+        if block.is_important:
+            fm["is_important"] = True
         if block.fields:
             fm["fields"] = block.fields
 
