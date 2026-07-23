@@ -217,6 +217,10 @@ class PrincipalKeyStore:
         """生成 API Key，存进主体注册表，返回一次性明文。"""
         key = generate_api_key()
 
+        # fingerprint 基于"明文 key"计算:既是确定性查找键,也是 OAuth token
+        # 绑定锚(见 §2.3.1)。必须在 Argon2 哈希之前算--哈希后无法反推明文重算。
+        key_fp = sha256(key)
+
         if self.hashing_enabled:
             # Argon2id 哈希
             from argon2 import PasswordHasher
@@ -230,6 +234,7 @@ class PrincipalKeyStore:
         principal_registry[org_id][principal_type][principal_id] = {
             "key": stored_value,
             "key_prefix": key[:8],
+            "key_fingerprint": key_fp,
             "role": role,
             "is_hashed": is_hashed,
         }
@@ -576,8 +581,8 @@ def ensure_mutable_access(target: Scope, ctx: AuthContext):
 #### 3.3.3 路径穿越防护
 
 ```python
-def normalize_uri_parts(uri: str) -> list[str]:
-    """规范路径并拒绝穿越。"""
+def normalize_uri_parts(uri: str) -> str:
+    """规范路径并拒绝穿越,返回以 '/' 连接的相对路径片段。"""
     segments = uri.split("/")
 
     # 拒绝:
@@ -593,7 +598,7 @@ def normalize_uri_parts(uri: str) -> list[str]:
     if re.search(r'^[A-Za-z]:', uri):
         raise PermissionDeniedError(f"Drive letter denied: {uri}")
 
-    return segments
+    return "/".join(segments)
 ```
 
 ### 3.4 ROOT 的特殊约束
@@ -1311,6 +1316,7 @@ user 与 agent 是同级主体，API Key 注册表应使用 `org + principal_typ
 
 ```python
 async def register_principal(
+    key_store: PrincipalKeyStore,
     org_id: str,
     principal_type: str,
     principal_id: str,
@@ -1322,8 +1328,9 @@ async def register_principal(
     if role == "root":
         raise PermissionDeniedError("Cannot create ROOT via register endpoint")
 
-    key = generate_api_key()
-    store_principal_key(org_id, principal_type, principal_id, key, role, hashing_enabled)
+    # 生成 + 持久化都在 key_store.store_key 内完成(hashing 策略由 key_store 持有,
+    # fingerprint 也在其中一并存入注册表)。返回一次性明文 key。
+    key = key_store.store_key(org_id, principal_type, principal_id, role=role)
 
     return key  # ← 明文 key 仅在此返回,之后只有哈希版本
 ```
@@ -1331,14 +1338,31 @@ async def register_principal(
 ### 6.4 Principal API Key 轮换
 
 ```python
-async def regenerate_key(org_id: str, principal_type: str, principal_id: str) -> str:
-    """轮换 key:旧 key 立即失效。"""
-    # 更新存储
-    new_key = generate_api_key()
-    store_principal_key(org_id, principal_type, principal_id, new_key, ...)
+def compute_fingerprint_from_store(org_id: str, principal_type: str, principal_id: str) -> str:
+    """从注册表读取主体当前 key 的 fingerprint。
 
-    # 级联失效:该 key 签发的所有 OAuth token
-    old_fp = compute_fingerprint_from_store(org_id, principal_type, principal_id)
+    必须直接读取 store_key 时持久化的 key_fingerprint 字段,而不能用
+    stored_value 重算--Argon2 哈希不可逆,无法从哈希值反推明文再算 sha256。
+    """
+    record = principal_registry[org_id][principal_type][principal_id]
+    return record["key_fingerprint"]
+
+
+async def regenerate_key(
+    key_store: PrincipalKeyStore,
+    org_id: str,
+    principal_type: str,
+    principal_id: str,
+) -> str:
+    """轮换 key:旧 key 立即失效。"""
+    # 先取旧 key 的 fingerprint,用于级联失效该 key 签发的所有 OAuth token。
+    # 必须在覆盖存储之前取--store_key 会覆盖注册表,之后取到的就是新 key 的 fp。
+    old_record = principal_registry[org_id][principal_type][principal_id]
+    old_fp = old_record["key_fingerprint"]
+
+    # 更新存储(hashing 策略由 key_store 自身持有,role 沿用原值)
+    new_key = key_store.store_key(org_id, principal_type, principal_id, role=old_record["role"])
+
     revoke_all_tokens_with_fp(old_fp)
 
     return new_key
