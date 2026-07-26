@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/control/ |
-| 最近一次修订日期 | 2026-07-17 |
+| 最近一次修订日期 | 2026-07-25 |
 
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -58,11 +58,11 @@ class ControlOperator(ABC):
 
 ### MemoryEngine（`engine.py`）
 
-编排接口层各语义的中枢。注入依赖：Ingestor、Classifier、IndexBuilder、Evolver、Retriever、KVStore、Scheduler、LifecycleManager；可选注入 MemoryPipeline 做按记忆类型的 profile 选择。
+编排接口层各语义的中枢。注入依赖：Ingestor、Classifier、Consolidator、IndexBuilder、Evolver、Retriever、KVStore、Scheduler、LifecycleManager；可选注入 MemoryPipeline 做按记忆类型的 profile 选择。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `write` | `async (content, scope, source, *, assets, tags, metadata, occurred_at) -> list[MemoryUnit]` | 规约→分类→落盘→hot 索引；`metadata["infer"]=="true"` 时同步走 `evolve(EXTRACT)` 返派生单元（原始不建索引），否则不自动提交演进（由调用方显式 `evolve()` 触发） |
+| `write` | `async (content, scope, source, *, assets, tags, metadata, occurred_at) -> list[MemoryUnit]` | 规约→可选抽取/分类→Consolidator 巩固落盘；`infer=true` 时返回派生结果，否则处理原始单元 |
 | `recall` | `async (scope, query: RetrievalQuery) -> RetrievalResult` | 委托 Retriever 完整检索链路 |
 | `permission_context_for_unit` | `async (unit_id, scope) -> PermissionContext` | 读取已有记忆的权限上下文，只返回 memory_type/tags/metadata 等鉴权元数据，不返回 content/assets |
 | `permission_contexts_for_delete` | `async (selector: DeleteSelector) -> list[PermissionContext]` | 解析 delete selector 命中的候选 unit 权限上下文，供 API 层逐条鉴权 |
@@ -78,13 +78,12 @@ Ingestor.ingest([RawPayload]) → list[MemoryUnit]
 → 将 content/assets 入参补入接入层产出的 MemoryUnit.segments，并补齐 tags
 → MemoryPipeline.select_for_write(units)  # 可选；未注入时使用 Engine 默认组件
 → Classifier.classify(units)
-→ KVStore.insert(scope, unit.id, dumps(unit))           # 真源落盘
 → if metadata["infer"] == "true":
-      选中 profile 的 Evolver.evolve(units, EXTRACT)      # 同步抽取派生 → 落盘+建索引（ADD/UPDATE/SUPERSEDE/NOOP）
-      返回 EvolveResult.created_ids 反查 KV 的派生单元   # 对齐 mem0 add(infer=True)
+      选中 profile 的 Evolver.evolve(units, EXTRACT)
+      Extractor → LayerAnnotator → Consolidator
   else:
-      选中 profile 的 IndexBuilder.build(units)           # hot 轻量索引
-      返回 units                                         # 不自动提交演进（调用方显式 evolve() 触发）
+      选中 profile 的 Consolidator.consolidate(units)
+→ 返回本次 created_ids + updated_ids 对应单元；NOOP 可返回空
 ```
 
 ### MemoryPipeline（`pipeline.py`）
@@ -99,6 +98,7 @@ class PipelineBinding:
     retriever: Retriever
     evolver: Evolver
     classifier: Classifier | None = None
+    consolidator: Consolidator | None = None
 
 class MemoryPipeline(ControlOperator):
     def select_for_write(units: list[MemoryUnit]) -> PipelineBinding

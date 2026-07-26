@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
@@ -46,11 +45,13 @@ from common.type_def.memory_codec import dumps, loads
 from construction.abstractor import Abstractor, AbstractorProducer
 from construction.associator import Associator, AssociatorProducer
 from construction.base import ExtractContext, OperatorType
+from construction.consolidation import Consolidator, ConsolidatorProducer
 from construction.dedup import Dedup, DedupProducer
 from construction.evolver import EvolveMode, Evolver, EvolveResult, EvolverProducer
 from construction.extractor import Extractor, ExtractorProducer
 from construction.index_builder import IndexBuilder, IndexBuilderProducer
 from construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
+from construction.prompt_strategy import copy_consolidation_prompts
 from storage.graph import GraphProducer, GraphStore
 from storage.kv import KvProducer, KVStore
 from storage.types import Edge, Node
@@ -146,6 +147,7 @@ class OrchestratingEvolver(Evolver):
         dedup: Dedup,
         llm: LLM,
         layer_annotator: LayerAnnotator | None = None,
+        consolidator: Consolidator | None = None,
         *,
         dedup_medium_similarity: float = 0.7,
         dedup_high_similarity: float = 0.9,
@@ -160,6 +162,8 @@ class OrchestratingEvolver(Evolver):
         self._llm = llm
         # 分层标注算子：None 表示不标注（向后兼容）；非 None 时在抽取/升华后标注 L0/L1。
         self._layer_annotator = layer_annotator
+        # 独立巩固算子；None 时保留旧内联路径，兼容直接构造本类的调用方。
+        self._consolidator = consolidator
         self.relations: List[Relation] = []  # ASSOCIATE 产物（同时已落图）
 
         # 去重阈值配置（min/top_k/tier_filter/scope_filter 已下沉到 recaller；
@@ -808,7 +812,10 @@ class OrchestratingEvolver(Evolver):
                 )
                 if not extracted:
                     return EvolveResult()
+                copy_consolidation_prompts(units, extracted)
                 self._annotate_layers(extracted)
+                if self._consolidator is not None:
+                    return self._consolidator.consolidate(extracted)
                 created = self._persist(extracted)
                 return EvolveResult(created_ids=created)
             # 非 procedural 的 EXTRACT 路径（infer 同步抽取 / background EXTRACT）：
@@ -818,16 +825,26 @@ class OrchestratingEvolver(Evolver):
             logger.info("Evolver: EXTRACT extractor returned %d units", len(extracted))
             if not extracted:
                 return EvolveResult()
+            copy_consolidation_prompts(units, extracted)
             self._annotate_layers(extracted)
-            result = self._dedup_batch(extracted)
+            result = (
+                self._consolidator.consolidate(extracted)
+                if self._consolidator is not None
+                else self._dedup_batch(extracted)
+            )
             return result
         if mode == EvolveMode.CONSOLIDATE:
             abstracted = self._abstractor.abstract(units)
             logger.info("Evolver: CONSOLIDATE abstractor returned %d units", len(abstracted))
             if not abstracted:
                 return EvolveResult()
+            copy_consolidation_prompts(units, abstracted)
             self._annotate_layers(abstracted)
-            result = self._dedup_batch(abstracted)
+            result = (
+                self._consolidator.consolidate(abstracted)
+                if self._consolidator is not None
+                else self._dedup_batch(abstracted)
+            )
             return result
         if mode == EvolveMode.ASSOCIATE:
             relations = self._associator.associate(units)
@@ -892,6 +909,7 @@ def _build(config):
         dedup=DedupProducer.dep(config, default=dr_default),
         llm=LlmProducer.dep(config, default="echo"),
         layer_annotator=_opt_annotator(),
+        consolidator=ConsolidatorProducer.dep(config, default="consolidation_2"),
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
         dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
     )

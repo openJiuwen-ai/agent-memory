@@ -4,7 +4,8 @@ from .abstractor import Abstractor
 from .associator import Associator
 from .base import ConstructionOperator, OperatorType
 from .classifier import Classifier
-from .evolver import EvolveMode, EvolveResult, Evolver
+from .consolidation import Consolidator
+from .evolver import EvolveMode, Evolver, EvolveResult
 from .extractor import Extractor
 from .index_builder import IndexBuilder
 
@@ -15,6 +16,7 @@ __all__ = [
     "Abstractor",
     "Associator",
     "Classifier",
+    "Consolidator",
     "IndexBuilder",
     "Evolver",
     "EvolveMode",

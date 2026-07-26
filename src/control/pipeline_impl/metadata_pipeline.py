@@ -8,6 +8,7 @@ from common.errors import ValidationError
 from common.log import get_logger
 from common.type_def import FilterOp, MemoryUnit
 from construction.classifier import ClassifierProducer
+from construction.consolidation import ConsolidatorProducer
 from construction.evolver import EvolverProducer
 from construction.index_builder import IndexBuilderProducer
 from control.base import ControlOperatorType
@@ -53,6 +54,8 @@ class MetadataPipeline(MemoryPipeline):
             binding.evolver.health()
             if binding.classifier is not None:
                 binding.classifier.health()
+            if binding.consolidator is not None:
+                binding.consolidator.health()
 
     def select_for_write(self, units: list[MemoryUnit]) -> PipelineBinding:
         value = _route_value_from_units(units, self._route_key)
@@ -128,12 +131,19 @@ def _build_profile(config, name: str, raw: object) -> PipelineBinding:
     classifier = None
     if classifier_name is not None and str(classifier_name).strip():
         classifier = ClassifierProducer.build_named(str(classifier_name).strip(), config.ctx)
+    consolidator_name = raw.get("consolidator")
+    consolidator = None
+    if consolidator_name is not None and str(consolidator_name).strip():
+        consolidator = ConsolidatorProducer.build_named(
+            str(consolidator_name).strip(), config.ctx
+        )
     return PipelineBinding(
         name=name,
         index_builder=IndexBuilderProducer.build_named(index_builder_name, config.ctx),
         retriever=RetrieverProducer.build_named(retriever_name, config.ctx),
         evolver=EvolverProducer.build_named(evolver_name, config.ctx),
         classifier=classifier,
+        consolidator=consolidator,
     )
 
 

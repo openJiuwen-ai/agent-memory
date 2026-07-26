@@ -115,7 +115,13 @@ def default_config_dict() -> dict[str, Any]:
             }
         },
         # -- 构建 ------------------------------------------------------------ #
-        "extractor": {_D: {"target": "keyword", "params": {"chunker": _D}}},
+        "extractor": {
+            _D: {
+                "target": "dynamic_llm",
+                "params": {"llm": _D, "fallback": "legacy"},
+            },
+            "legacy": {"target": "keyword", "params": {"chunker": _D}},
+        },
         "abstractor": {_D: "concat"},
         "associator": {_D: {"target": "keyword", "params": {"feature_extractor": _D}}},
         "classifier": {_D: "llm"},  # infer=false 默认路径用 LLM classifier 打 tier+tags
@@ -138,6 +144,17 @@ def default_config_dict() -> dict[str, Any]:
                 "params": {"vector_store": _D, "embedder": _D, "kv_store": _D},
             }
         },
+        "consolidator": {
+            _D: {
+                "target": "consolidation_2",
+                "params": {
+                    "dedup": _D,
+                    "index_builder": _D,
+                    "kv_store": _D,
+                    "llm": _D,
+                },
+            }
+        },
         "evolver": {
             _D: {
                 "target": "orchestrating",
@@ -149,6 +166,7 @@ def default_config_dict() -> dict[str, Any]:
                     "kv_store": _D,
                     "graph_store": _D,
                     "dedup": _D,
+                    "consolidator": _D,
                     "llm": _D,
                 },
             }
@@ -166,6 +184,7 @@ def default_config_dict() -> dict[str, Any]:
                     "kv_store": _D,
                     "scheduler": _D,
                     "evolver": _D,
+                    "consolidator": _D,
                     "lifecycle": _D,
                 },
             }

@@ -4,7 +4,7 @@
 
 > 本文档只记录相对稳定的模块本地规约（职责边界、行为铁律、本地约束）。特性设计与方案取舍记录在 `docs/features/` 下。
 
-接收接入层产出的 `MemoryUnit`，调用 `storage` 落盘，在其上构建多形式索引。七个可插拔算子：`Extractor`（信息提取）→ `Abstractor`（抽象升华）→ `Associator`（关联分析）→ `Classifier`（多维分类）→ `IndexBuilder`（索引构建）→ `Dedup`（去重召回）→ `Evolver`（自演进闭环）。
+接收接入层产出的 `MemoryUnit`，调用 `storage` 落盘，在其上构建多形式索引。可插拔算子由 Extractor、Abstractor、Associator、Classifier、Consolidator、IndexBuilder、Dedup、LayerAnnotator 与 Evolver 组成。
 
 > 契约（接口签名/数据结构/不变量）见 [`docs/specs/S05-construction.md`](../../docs/specs/S05-construction.md)；设计理念与决策取舍（双通道/演进闭环/依赖关系）见 [`docs/features/construction/F01-construction-spec-design.md`](../../docs/features/construction/F01-construction-spec-design.md)。本文件只记当前实现地图与本地约束。
 
@@ -17,11 +17,14 @@
 | `abstractor.py` | Abstractor 接口：抽象与精炼/升华（高抽象粒度） |
 | `associator.py` | Associator 接口：关联分析（实体共指/因果链/引用关系） |
 | `classifier.py` | Classifier 接口：多维分类（认知角色/主题/重要度） |
+| `consolidation.py` | Consolidator 接口：候选落盘前的 ADD/UPDATE/SUPERSEDE/NOOP 巩固 |
+| `prompt_strategy.py` | 动态抽取/巩固 prompt metadata 的解析与传递 |
 | `index_builder.py` | IndexBuilder 接口：多形式索引构建（文档/关键词/向量/图） |
 | `dedup.py` | Dedup 接口：去重召回（向量/倒排两路）+ DedupProducer 工厂 |
 | `evolver.py` | Evolver 接口：记忆自演进（抽取/关联/巩固/遗忘）+ EvolveMode + EvolveResult |
 | `layer_annotator.py` | LayerAnnotator 接口：分层披露标注（L0/L1 写入 unit.layers）+ LayerAnnotatorProducer 工厂 |
-| `extractor_impl/` | Extractor 实现目录（keyword / llm） |
+| `extractor_impl/` | Extractor 实现目录（keyword / llm / dynamic_llm） |
+| `consolidation_impl/` | Consolidator 实现目录（consolidation_1 兼容四态 / consolidation_2 动态策略） |
 | `abstractor_impl/` | Abstractor 实现目录（concat / llm） |
 | `associator_impl/` | Associator 实现目录（keyword / llm） |
 | `classifier_impl/` | Classifier 实现目录（keyword / llm） |
@@ -38,7 +41,7 @@
   ↓
 1. Classifier.classify(units) → 打上 tier/主题/重要度标签
   ↓
-2. KVStore.insert(scope, unit.id, dumps(unit)) → 真源落盘
+2. Consolidator.consolidate(units) → 召回、四态判定、真源落盘
   ↓
 3. IndexBuilder.build(units) → 构建多形式索引
      │
@@ -50,8 +53,8 @@
 4. Scheduler.submit(scope, EXTRACT, BACKGROUND) → 提交演进任务
   ↓
 （后台）Evolver.evolve(units, mode):
-  EXTRACT     → Extractor.extract → Dedup.recall → 去重决策 → 落盘建索引
-  CONSOLIDATE → Abstractor.abstract → Dedup.recall → 去重决策 → 落盘建索引
+  EXTRACT     → Extractor.extract → Consolidator.consolidate → 落盘建索引
+  CONSOLIDATE → Abstractor.abstract → Consolidator.consolidate → 落盘建索引
   ASSOCIATE   → Associator.associate → 冲突消解 → 图索引 Edge
   FORGET     → 遗忘候选筛选 → lifecycle 标记 → IndexBuilder.remove
 ```
@@ -76,17 +79,25 @@
 6. **Evolver 四阶段独立**  
    `EvolveMode.EXTRACT`（信息提取）/ `ASSOCIATE`（关联分析）/ `CONSOLIDATE`（冲突消解/近重复融合）/ `FORGET`（遗忘/降权）四阶段独立，可单独触发。索引维护不作为 evolve 模式。
 
-7. **去重召回与判定分离**  
-   `Dedup` 接口只管召回（向量化/分词 → Store.search → 加载 → 聚合取 max），Evolver 做阈值 + LLM 判定。装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`——只配倒排时去重仍可用（向量路在 fulltext-only 下 VectorStore 恒空会失效）。
+7. **去重召回与巩固判定分离**
+   `Dedup` 只管召回；`Consolidator` 做阈值、LLM 判定与 ADD/UPDATE/SUPERSEDE/NOOP 落盘。Evolver 只编排。
 
-8. **Evolver 不依赖 control**  
-   SUPERSEDE/FORGET 标记由 Evolver 直接通过 `KVStore.update` 完成，不经 `LifecycleManager`（construction → control 严禁）。
+8. **构建层不依赖 control**
+   SUPERSEDE/FORGET 标记由 Consolidator/Evolver 直接通过 `KVStore.update` 完成，不经 `LifecycleManager`。
 
 9. **Dedup 与 IndexBuilder 共享底层 Store**  
    去重召回检索的是已索引内容，`Dedup` 实现取的 `VectorStore`/`FulltextStore` 必须与 IndexBuilder 写入的是同一实例（按字段名缓存命中）。
 
 10. **L0/L1 分层索引分表且 store None 跳过**  
     `unit.layers.l0`/`l1` 非空时，VectorIndexBuilder/FulltextIndexBuilder 对整段文本（不切片）建独立 store 索引（record id 向量=`{uid}-layer-l0`/`-layer-l1`、全文=`{uid}:l0`/`:l1`，与 content 的 chunk id 不冲突），metadata `content_layer`="l0"/"l1"，content 表 chunk record 补 `content_layer="l2"`。物理分表不混 content。`vector_l0`/`vector_l1`/`fulltext_l0`/`fulltext_l1` 任一为 None 则该层跳过（不报错、不建空记录）。update 先删旧分层 record 再按新 layers 重建（SUPERSEDE 不残留），remove 按 id 幂等删。详见 F01-memory-layer。
+
+11. **动态抽取格式在实现内收敛**
+    `_extract_prompt_<strategy>` 支持任意非空策略名，其值作为 system prompt 原样发送，
+    不由内核追加输出契约。`DynamicLLMExtractor` 默认按 JSON 解析，子类可覆盖
+    `parse_response` 支持 XML 等格式，但必须在该方法内转换为 `list[MemoryUnit]`；
+    格式相关中间结构不得传给 Evolver。
+    `_consolidation_prompt_<strategy>` 仍追加固定四态 JSON schema；动态巩固缺 prompt
+    或响应非法时回退 consolidation_1。
 
 ## 与其他子目录的边界
 
@@ -95,6 +106,7 @@
 - 信息提取与抽象升华（Extractor / Abstractor）
 - 关联分析（Associator）
 - 多维分类（Classifier）
+- 落盘前隐式巩固（Consolidator）
 - 多形式索引构建（IndexBuilder）
 - 去重召回（Dedup）
 - 记忆自演进（Evolver）
@@ -113,4 +125,7 @@
 4. Evolver 返回 `EvolveResult`（created_ids / updated_ids / superseded_ids / forgotten_ids）。
 5. Dedup 必须实现 `recall(candidate) -> list[(MemoryUnit, score)]`；实现内部异常吞掉返回空列表，不阻断演进。
 6. 算子内部调用共享插件（Chunker/Embedder/Tokenizer/FeatureExtractor/LLM）必须使用注入的实例，不自行构造。
-7. Evolver 持有 `Dedup` 实例做去重，不直接持 `VectorStore`/`Embedder`（已下沉到 Dedup 实现）。
+7. Consolidator 持有 `Dedup` 做召回；Evolver 仅在 infer 上下文收集时直接复用 Dedup。
+8. `consolidation_2` 与 IndexBuilder/KVStore/Dedup 必须使用同一 profile 的共享实例；pipeline profile 未绑定 consolidator 时保持旧直写语义，不能误用默认 profile。
+9. `DynamicLLMExtractor` 子类只覆盖 `parse_response` 完成响应解析与构建；策略遍历、fallback、
+   `_extraction_strategy` 标记和 consolidation prompt 透传由基类统一执行。

@@ -19,6 +19,7 @@ from .base import ControlOperator
 
 if TYPE_CHECKING:
     from construction.classifier import Classifier
+    from construction.consolidation import Consolidator
     from construction.evolver import Evolver
     from construction.index_builder import IndexBuilder
     from retrieval.retriever import Retriever
@@ -43,6 +44,7 @@ class PipelineBinding:
     retriever: "Retriever"
     evolver: "Evolver"
     classifier: "Classifier | None" = None
+    consolidator: "Consolidator | None" = None
 
 
 class MemoryPipeline(ControlOperator):

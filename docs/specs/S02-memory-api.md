@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/api/ |
-| 最近一次修订日期 | 2026-07-03 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md |
+| 最近一次修订日期 | 2026-07-25 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/construction/F02-dynamic-extraction-consolidation.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -41,7 +41,7 @@
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `write` | `(content, scope, source=TEXT, *, identity, assets, tags, metadata, occurred_at) -> list[MemoryUnit]` | 同步写入：鉴权 WRITE→委托 Engine→阻塞至 hot path 完成。`metadata["infer"]=="true"` 时返回**派生单元**（同步抽取，对齐 mem0 `add(infer=True)`，可空），否则返回**原始单元** |
+| `write` | `(content, scope, source=TEXT, *, identity, assets, tags, metadata, occurred_at) -> list[MemoryUnit]` | 同步写入：鉴权 WRITE→委托 Engine→阻塞至 hot path 巩固完成。返回本次新增或更新的单元；NOOP 时可空 |
 | `write_async` | `async (同签名) -> list[MemoryUnit]` | 异步写入：直通 Engine 协程，供事件循环形态使用 |
 | `recall` | `(query, context: Context, *, identity, filters, as_of, top_k, disclosure, with_trajectory) -> RetrievalResult` | 混合检索：鉴权 READ→拆 Context→装配 RetrievalQuery→委托 Engine |
 | `get` | `(unit_id, scope, *, identity, as_of=None) -> MemoryUnit` | 真源点读：鉴权 READ→委托 Engine |
@@ -59,16 +59,27 @@
 `write` 的 `metadata["infer"]` 是调用级开关，控制写入时是否同步抽取派生记忆（对齐 mem0 `add(infer=True)`）：
 
 - **真值判定**：`str(metadata.get("infer", "")).strip().lower() == "true"`——大小写/空白不敏感，仅字符串 `"true"` 触发，其余值（含 `"false"`/缺省/空）均走默认路径。
-- **`infer="true"`**：原始记忆落 KV 真源但**不建索引**；hot path 同步走 `Engine → Evolver.evolve(units, EXTRACT)`——Extractor 抽取派生记忆 → `_dedup_batch` 判定+落盘+建索引（ADD/UPDATE/SUPERSEDE/NOOP）；**不提交** background EXTRACT（已同步抽取）。返回**派生单元列表**（从 `EvolveResult.created_ids` 反查 KV 读回）；派生全部被 dedup 判 update/noop 时合法返回**空列表**。
-- **缺省 / 非 `"true"`（infer=false）**：原文经 `classifier.classify` 打 tier+tags（纯 LLM 抽取 episodic/semantic/procedural + 1-3 个 tags）→ 落盘 `/memory/{id}` + 建索引。classifier 未注入时跳过（tier 保持 EPISODIC 默认，向后兼容）。返回原始单元列表。
+- **`infer="true"`**：原始记忆落 KV 真源但**不建索引**；hot path 同步走 `Engine → Evolver.evolve(units, EXTRACT)`——Extractor 抽取派生记忆 → Consolidator 判定+落盘+建索引（ADD/UPDATE/SUPERSEDE/NOOP）。返回新增或更新的派生单元；全部 NOOP 时合法返回空列表。
+- **缺省 / 非 `"true"`（infer=false）**：原文经 `classifier.classify` 打 tier+tags，再统一交给 Consolidator 落盘。classifier 未注入时跳过。
 - **evolver 缺失**：`infer="true"` 但装配未注入 `Evolver` 时 Engine 抛 `RuntimeError`——装配问题暴露而非静默降级。默认装配 `evolver: orchestrating` 总是注入。
 
 #### procedural 开关（write 的过程记忆抽取）
 
 `write` 的 `metadata["procedural"]` 是独立于 infer 的调用级开关（详见 F02 决策8）：
 
-- **`procedural="true"`**：原文**不落 KV**；喂 `Evolver.evolve(units, EXTRACT)`。evolver 检测 procedural → 跳过 context 收集与 `_dedup_batch`，extractor 把本轮汇总成 **1 条** PROCEDURAL 执行历史（目标/步骤/结果），直接落 `/memory/{id}` 建索引。返回该派生单元。
-- procedural 与 infer 互斥：procedural=true 时原文不落 `/messages/`、不收集 context、不去重。语义是"把这轮做了什么记成一条可检索 how-to"。
+- **`procedural="true"`**：原文**不落 KV**；喂 `Evolver.evolve(units, EXTRACT)`。extractor 把本轮汇总成一条 PROCEDURAL 执行历史，再交给 Consolidator。
+- procedural 与 infer 互斥：procedural=true 时原文不落 `/messages/`、不收集 context。语义是"把这轮做了什么记成一条可检索 how-to"。
+
+#### 动态抽取与巩固 prompt
+
+- metadata 是 `dict[str, str]`，调用方用 `metadata["_extract_prompt_<strategy>"] = prompt`
+  或 `metadata.update(...)` 传值；不存在 `metadata.append()`。
+- `_extract_prompt_<strategy>` 仅在 `infer=true` 时触发动态抽取；支持任意非空 strategy，
+  每个策略调用一次。无动态 prompt 时回退旧 Extractor。
+- `_consolidation_prompt_<strategy>` 为落盘前动态巩固 prompt。所有默认单 pipeline write
+  都经过 `consolidation_2`；无 prompt 或输出不合法时回退 `consolidation_1`。
+- 内核在自定义 prompt 后追加固定 JSON schema，调用方不能改变候选字段或
+  ADD/UPDATE/SUPERSEDE/NOOP 决策集合。
 
 #### infer 上下文增强与 KV 前缀分离（增量）
 

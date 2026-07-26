@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/construction/ |
-| 最近一次修订日期 | 2026-07-03 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/common/F01-memory-layer.md |
+| 最近一次修订日期 | 2026-07-26 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/common/F01-memory-layer.md |
 
 ## 范围 / 边界
 
@@ -16,6 +16,7 @@
 - 抽象与精炼/升华（高抽象粒度：画像/长期偏好/可复用技能）
 - 关联分析（实体共指/因果链/引用关系）
 - 多维分类（认知角色/主题/重要度）
+- 候选落盘前巩固（ADD/UPDATE/SUPERSEDE/NOOP）
 - 多形式索引构建（文档/关键词/向量/图，按配置启用）
 - 记忆自演进（抽取 → 关联 → 冲突消解 → 升华 → 遗忘/降权）
 
@@ -34,10 +35,10 @@
 5. **所有算子必须实现 `operator_type()` 和 `health()`**：继承自 `ConstructionOperator`。
 6. **构建与存储解耦**：算子负责构建逻辑（生成索引投影），持久化由注入的 Store 承担。
 7. **scope 原生隔离**：构建索引记录时把来源 `MemoryUnit.scope` 落到记录的专用 `scope` 字段（`VectorRecord`/`Document`/`Node` 等），使检索得以按 scope 原生隔离。
-8. **去重召回与判定分离**：去重召回（用哪个索引）由 `Dedup` 接口承担，Evolver 只做阈值 + LLM 判定。装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`，保证只配倒排索引时去重仍可用（向量路在 fulltext-only 下 VectorStore 恒空会失效）。
-9. **Evolver 不依赖 control**：SUPERSEDE/FORGET 标记由 Evolver 直接通过 `KVStore.update` 完成，不经 `LifecycleManager`（construction → control 严禁）。
+8. **去重召回与判定分离**：去重召回（用哪个索引）由 `Dedup` 接口承担，`Consolidator` 负责阈值、LLM 判定及落盘动作。装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`。
+9. **构建层不依赖 control**：Consolidator 的 SUPERSEDE 与 Evolver 的 FORGET 直接通过 `KVStore.update` 完成，不经 `LifecycleManager`。
 10. **Dedup 与 IndexBuilder 共享底层 Store**：去重召回检索的是已索引内容，`Dedup` 实现取的 `VectorStore`/`FulltextStore` 必须与 IndexBuilder 写入的是同一实例（按字段名缓存命中）。
-11. **分类 metadata 键约定**：Classifier 写入 `unit.metadata` 的 `importance`/`confidence`/`freshness`/`classify_source` 是跨模块契约——Evolver 遗忘策略读 `importance`/`freshness`，检索层前置过滤读 `tier`/`tags`。键名稳定，值的类型固定（importance/confidence 为浮点字符串，freshness 为 hot/warm/cold，classify_source 为 JSON 字符串）。
+11. **分类结果落字段**：当前 Classifier 只更新 `MemoryUnit.tier` 与 `MemoryUnit.tags`，不约定额外分类 metadata 键。
 
 ## 接口契约
 
@@ -45,7 +46,7 @@
 
 ```python
 class OperatorType(str, Enum):
-    EXTRACTOR / ABSTRACTOR / ASSOCIATOR / CLASSIFIER / INDEX_BUILDER / EVOLVER
+    EXTRACTOR / ABSTRACTOR / ASSOCIATOR / CLASSIFIER / CONSOLIDATOR / INDEX_BUILDER / EVOLVER
 
 class ConstructionOperator(ABC):
     def operator_type(self) -> OperatorType  # 自描述
@@ -60,10 +61,29 @@ class ConstructionOperator(ABC):
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `extract` | `(units: list[MemoryUnit]) -> list[MemoryUnit]` | 从一批原始记忆单元中提取零或多条低抽象粒度的派生单元 |
+| `extract` | `(units: list[MemoryUnit], *, context: ExtractContext \| None = None) -> list[MemoryUnit]` | 从一批原始记忆单元中提取零或多条低抽象粒度的派生单元；context 只作 prompt 参考 |
 
 派生单元的 `tier`/`tags` 由 LLM 在抽取时产出。`layers`（L0/L1 分层标注）不由 Extractor
 产出——由 Evolver 抽取后委托 `LayerAnnotator` 生成（见下文 LayerAnnotator 节 + F01-memory-layer）。
+
+动态实现识别 `_extract_prompt_<strategy>`。`infer=true` 仍是 write 触发抽取的条件；
+每个非空自定义策略执行一次 LLM 调用，metadata 中的 prompt 作为 system prompt 原样发送，
+由调用方自行约束响应格式。`DynamicLLMExtractor` 默认按 JSON 解析，并开放
+`parse_response(response, sources, strategy) -> list[MemoryUnit]` 继承扩展点，允许新实现
+解析 XML 或其它响应格式。格式相关中间结构不得越过 `parse_response` 边界；所有实现最终
+仍向 Evolver 返回 `list[MemoryUnit]`。没有动态 prompt 时委托配置的旧 Extractor。
+
+### Consolidator（`consolidation.py`）
+
+候选记忆最终落盘前执行隐式巩固。
+
+| 方法 | 签名 | 语义 |
+|------|------|------|
+| `consolidate` | `(candidates: list[MemoryUnit]) -> EvolveResult` | 召回已有记忆，判定并执行 ADD/UPDATE/SUPERSEDE/NOOP |
+
+`consolidation_1` 保留原阈值短路与 LLM 去重行为。`consolidation_2` 识别
+`_consolidation_prompt_<strategy>`，追加固定四态 JSON 契约；无 prompt、响应非法或
+引用未知 existing id 时回退 `consolidation_1`。动态抽取候选按同名 strategy 配对。
 
 ### Abstractor（`abstractor.py`）
 
@@ -160,11 +180,11 @@ MemoryUnit
 
 ### Dedup（`dedup.py`）
 
-去重召回，Evolver 的 EXTRACT/CONSOLIDATE 模式调用。召回 + 阈值过滤 + 加载 + 聚合取 max 全在实现内完成；判定（中/高阈值 + LLM）留 Evolver。
+去重召回，由 Consolidator 及 infer 上下文收集调用。召回 + 阈值过滤 + 加载 + 聚合取 max 全在实现内完成；判定与落盘动作归 Consolidator。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `recall` | `(candidate: MemoryUnit) -> list[tuple[MemoryUnit, float]]` | 对候选召回已有相似记忆，返回 (unit, score) 列表（按 score 降序）；已完成过滤自身、过滤非 ACTIVE、按 unit 聚合取 max、按 min_similarity 过滤低分。空列表 → Evolver 判 ADD |
+| `recall` | `(candidate: MemoryUnit) -> list[tuple[MemoryUnit, float]]` | 对候选召回已有相似记忆，返回 (unit, score) 列表（按 score 降序）；已完成过滤自身、过滤非 ACTIVE、按 unit 聚合取 max、按 min_similarity 过滤低分。空列表 → Consolidator 判 ADD |
 
 **score 量纲 0~1**：向量路=cosine，倒排路=词重叠率，阈值统一复用。
 
