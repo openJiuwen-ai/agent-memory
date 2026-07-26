@@ -5,16 +5,16 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/retrieval/ |
-| 最近一次修订日期 | 2026-06-29 |
+| 最近一次修订日期 | 2026-07-23 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/retrieval/F04-score-max-fusion.md |
 
-| 关联特性文档 | docs/features/F01-system-spec-design.md |
 ## 范围 / 边界
 
 **管什么**：
 - 混合检索的完整链路编排（查询理解 → 并行多路召回 → 融合 → 精排 → 相关性阈值 → 渐进式披露 → 返回 + 检索轨迹）
 - 查询理解：去噪/改写/分词/实体/向量化/时间解析
 - 多路召回：按配置启用的通道并行检索（向量/关键词/图/文档/时序）
-- 融合：多路候选合并去重、归一化打分、RRF/加权排序
+- 融合：多路候选合并去重、归一化打分、取最大值/RRF/加权排序
 - 精排（可选）：调用 Reranker 做 cross-encoder 精排
 - 相关性阈值：绝对/相对阈值裁剪低相关候选（结果数可 < top_k），min_results 兜底回填
 - 渐进式披露：L0 摘要/L1 片段/L2 全文 按需加载
@@ -36,6 +36,7 @@
 6. **所有算子必须实现 `operator_type()` 和 `health()`**：继承自 `RetrievalOperator`。
 7. **scalar_filters 与软召回信号分离**：ParsedQuery 中 `scalar_filters`（硬前置过滤）与 `tokens/keywords/entities/vector`（软召回信号）不能互相折叠。
 8. **双时间轴独立**：`as_of`（valid-time 回溯点）与 `time_from/time_to`（event-time 范围）是两条独立时间轴。
+9. **召回分数高分优先**：chunk→unit MaxP、分层归并与融合排序统一按「分越大越相关」处理；向量 Recaller 不接受 L2 等 lower-is-better 度量。
 
 ## 接口契约
 

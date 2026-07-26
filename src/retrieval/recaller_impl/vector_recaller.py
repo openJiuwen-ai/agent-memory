@@ -42,12 +42,14 @@ class VectorRecaller(Recaller):
         # 语义前置阈值：相似度低于此值的命中直接丢弃（默认 0 关闭）。
         self._min_similarity = float(min_similarity)
         self._layer = layer  # "l2"(content) | "l0" | "l1"
-        # 装配期防呆：距离型度量（如 L2，越小越相关）下启用该过滤会静默砍掉最相关
-        # 候选，按 store 声明的分数方向直接拒绝（fail-fast，部署起不来而非静默劣化）。
-        if self._vector is not None and self._min_similarity > 0.0 and not vector_store.score_higher_is_better():
+        # 召回后的 chunk→unit MaxP、分层 MaxP 与融合排序统一采用「分越大越相关」
+        # 语义。距离型度量（如 L2，越小越相关）即使关闭 min_similarity，也会在
+        # MaxP/降序排序时反转相关性，因此装配期统一拒绝。
+        if self._vector is not None and not vector_store.score_higher_is_better():
             raise ValidationError(
-                "向量召回 min_similarity 需要「分越大越相关」的度量（cosine/IP），"
-                "当前向量库声明分数为距离型（越小越相关，如 L2），不可启用语义前置阈值"
+                "向量召回链路要求「分越大越相关」的度量（cosine/IP）；"
+                "当前向量库声明为距离型（越小越相关，如 L2），"
+                "无法用于 MaxP 聚合与降序融合"
             )
 
     def operator_type(self) -> RetrievalOperatorType:
@@ -126,4 +128,3 @@ def _build_l1(config):
     if store is None:
         logger.info("VectorRecaller(vector_l1): store 未注入，recall 将返空")
     return VectorRecaller(store, layer="l1")
-

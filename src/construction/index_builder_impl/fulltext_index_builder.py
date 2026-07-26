@@ -24,8 +24,8 @@ class FulltextIndexBuilder(IndexBuilder):
     """把记忆单元 content 写入全文索引（hot 轻量索引）。
 
     L0/L1 分层索引（架构 §9.1）：``unit.layers.l0``/``.l1`` 非空且对应 store 已注入时，
-    写独立 FulltextStore 实例（不同 index = 分表），document id = ``{unit_id}-l0``/
-    ``{unit_id}-l1``。store 为 None 时跳过该层，不影响 content。
+    写独立 FulltextStore 实例（不同 index = 分表），document id = ``{unit_id}:l0``/
+    ``{unit_id}:l1``。store 为 None 时跳过该层，不影响 content。
     """
 
     def __init__(
@@ -63,7 +63,8 @@ class FulltextIndexBuilder(IndexBuilder):
             metadata={
                 "unit_id": unit.id,
                 "tier": unit.tier.value,
-                "lifecycle": unit.lifecycle.value,  # 召回下推 lifecycle 谓词需此字段（真后端按缺失字段排他）
+                # 召回下推 lifecycle 谓词需此字段（真后端按缺失字段排他）。
+                "lifecycle": unit.lifecycle.value,
                 "tags": json.dumps(unit.tags),
                 "source": unit.source.value,
                 "content_layer": "l2",  # L2=content 全文（与 L0/L1 分层文档对齐，见 F01）

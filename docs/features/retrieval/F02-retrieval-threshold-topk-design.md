@@ -56,9 +56,10 @@
 - 故 `apply_threshold` 接收 `calibrated = reranked` 形参：**绝对 `min_score` 仅在 `calibrated=True` 生效**；
   未校准路径 `abs_min = 0`，只走相对阈值。
 
-**相对阈值分校准/未校准两套默认**：校准分较可信，取严 `min_score_ratio`（默认 0.6）；未校准 RRF 分聚集
-（多路命中 ≈ 0.033、单路 ≈ 0.016），0.6 会过度偏好多通道一致，故未校准路径取松
-`min_score_ratio_uncalibrated`（默认 0.3）。`apply_threshold` 按 `calibrated` 选用其一。
+**相对阈值分校准/未校准两套配置**：`apply_threshold` 按 `calibrated` 选用
+`min_score_ratio` 或 `min_score_ratio_uncalibrated`。两者出厂默认均为 `0.0`（关闭）；
+原始方案的 `0.6/0.3` 仅保留为显式配置参考，默认值调整原因见
+`F04-score-max-fusion.md` 决策 4。
 
 **原则**：`top_k = 数量上界`、`阈值 = 质量下界`，AND 组合；结果数可 `< top_k`（欠填是正确且期望的，不拿
 次阈值结果凑数）。`min_results` 仅从**正分候选**回填；若无正分（例如 logit 型 reranker 对全部候选打负分），
@@ -70,8 +71,8 @@
 
 - **召回超采样**（撒宽网，喂融合）：`recall_k = max(top_k × over_fetch_factor, over_fetch_floor)`
   （默认 `4` / `60`，即 mem0 风格 `max(limit×4, 60)`）。
-- **精排预算**（控 cross-encoder 成本）：`budget = fused[: max(rerank_max, top_k)]`（默认 `rerank_max=50`，
-  且**永不低于 `top_k`**，避免静默欠召）。
+- **精排预算**（控 cross-encoder 成本）：`budget = fused[: max(rerank_max, top_k)]`（本次引入时默认
+  `rerank_max=50`，后调整为 `60`，见文末注记；且**永不低于 `top_k`**，避免静默欠召）。
 
 收益：召回撒宽网提升跨通道融合质量，同时**顺带修复背景 3 的截断边界**（时间窗内候选更不易被前排挤掉）；
 精排成本由 `rerank_max` 单独封顶，不随召回宽度膨胀。
@@ -88,13 +89,14 @@
 **同名不同量纲**，改名避免误配。作用：
 融合前先砍掉明显不相关的语义命中，省下游点读/复核/精排预算并降噪。
 
-**边界与防呆**：仅适用「分越大越相关」的 cosine / IP 语义。**距离型度量（如 Milvus L2）越小越相关，
-`score >= min_similarity` 会砍掉最相关的候选、静默劣化**。打分方向由 **store 接口契约声明**：`VectorStore`
-基类提供 `score_higher_is_better() -> bool`（默认 True，本仓内置实现均为 cosine 语义），距离型后端必须
-override 返回 False（Milvus 按 `metric_type` 判定）。`VectorRecaller.__init__` 装配期据此校验——启用非零
-`min_similarity` 且 store 声明为距离型时直接 `raise ValidationError`（fail-fast，部署起不来而非静默反转）。
-早期版本靠内省私有属性 `_metric_type`（鸭子类型），存在「属性名不符→绕过」与「枚举/Mock→误拒」两面漏，
-已升级为接口契约。**拒绝而非自动转换**：L2 距离无界、无干净 [0,1] 映射，自动反转会让阈值语义含糊。
+**边界与防呆**：检索链路统一要求「分越大越相关」的 cosine / IP 语义。
+chunk→unit MaxP、分层 MaxP、融合排序和 `min_similarity` 都依赖该方向。
+**距离型度量（如 Milvus L2）越小越相关，会静默反转整条链路的相关性**。
+打分方向由 **store 接口契约声明**：`VectorStore` 基类提供
+`score_higher_is_better() -> bool`（默认 True），距离型后端必须 override 返回
+False（Milvus 按 `metric_type` 判定）。`VectorRecaller.__init__` 无条件校验该契约：
+store 声明为距离型时直接 `raise ValidationError`，与 `min_similarity` 是否开启无关。
+**拒绝而非自动转换**：L2 距离无界、无统一 [0,1] 映射，自动反转会让分数和阈值语义含糊。
 
 ---
 
@@ -111,10 +113,10 @@ override 返回 False（Milvus 按 `metric_type` 判定）。`VectorRecaller.__i
 | `over_fetch_factor` | int | `4` | 每路召回超采样倍数：`recall_k = max(top_k×factor, floor)` |
 | `over_fetch_floor` | int | `60` | 每路召回下限（撒宽网底座） |
 | `recall_max` | int | `100` | 每路召回硬上限（0=不限）：`recall_k` 封顶，防超大 `top_k` 经 factor 放大压垮后端 |
-| `rerank_max` | int | `50` | 精排预算封顶：`budget = fused[:max(rerank_max, top_k)]`，不低于 `top_k` |
+| `rerank_max` | int | `60` | 精排预算封顶：`budget = fused[:max(rerank_max, top_k)]`，不低于 `top_k`（本次引入时 `50`，后调整为 `60`，见文末注记） |
 | `min_score` | float | `0.0` | 绝对阈值（0=关；**仅校准/已精排路径**生效） |
-| `min_score_ratio` | float | `0.6` | 相对阈值（**校准路径**，`score ≥ ratio×最高分`） |
-| `min_score_ratio_uncalibrated` | float | `0.3` | 相对阈值（**未校准路径**） |
+| `min_score_ratio` | float | `0.0` | 相对阈值（**校准路径**，`score ≥ ratio×最高分`；0=关） |
+| `min_score_ratio_uncalibrated` | float | `0.0` | 相对阈值（**未校准路径**；0=关） |
 | `min_results` | int | `0` | 欠填兜底下限（0=关；自动夹到 ≤ top_k） |
 
 **`recaller.vector.params`（1 个，`VectorRecaller` 消费）**
@@ -124,9 +126,14 @@ override 返回 False（Milvus 按 `metric_type` 判定）。`VectorRecaller.__i
 | `min_similarity` | float | `0.0` | 向量通道语义前置阈值——相似度下限（0=关；仅 cosine/IP，距离型度量装配期拒绝） |
 
 > 删除的键：`retrieval_rerank_top_m`（被 `over_fetch_*` + `rerank_max` 取代）。
-> `min_score_ratio`(0.6) 与 `min_score_ratio_uncalibrated`(0.3) 默认**开**；retriever 的 `min_score` /
-> `min_results` 与 vector 的 `min_similarity` 默认关。retriever 的绝对 `min_score` 待接入真实 bge reranker、
-> 摸清分数分布后再定量纲。
+> `min_score_ratio` 与 `min_score_ratio_uncalibrated` 当前默认关闭，需要时按场景显式配置；
+> 阈值机制、绝对 `min_score` 与 `min_results` 回填保持不变。变更原因见
+> `F04-score-max-fusion.md` 决策 4。
+> **精排预算调整（2026-07-23）**：`rerank_max` 由 `50` 提高到 `60`。gold 因构建层去重优化
+> 而细碎化（单查询 gold 数上升），固定召回深度下进精排池的比例被稀释；离线重放显示精排池
+> `top50→top65` 使已召回 gold 进池率提升约 5–6pp。这与本文「拒绝的方案」中否决的「放宽精排
+> 预算到全池 127」不矛盾——后者是把预算放到召回上限、成本翻倍，此处是小幅上调（成本仅 ×1.2）；
+> 对比见 `F04-score-max-fusion.md`「拒绝的方案」中对全池扩容的否决条目。
 > **迁移说明**：这批参数（连同 `query_parser` 的 `sanitize_enabled` / `sanitize_strip_code`）原置于
 > `globals`，现按「globals 仅放跨切面参数」的约定移入各算子实例 `params`。
 
@@ -164,11 +171,11 @@ min_score / min_score_ratio`（`min_score`/`min_score_ratio` 记本次实际生�
 ## 验证
 
 - 新增 `tests/unit/retrieval/test_threshold.py`：绝对/相对阈值、都关保留正分、全砍空、`min_results` 回填、
-  回填夹 top_k、空输入、`calibrated` 防呆、相对阈值分路选择（0.6/0.3）、未校准路径正分门钉行为
+  回填夹 top_k、空输入、`calibrated` 防呆、显式配置 `0.6/0.3` 时的相对阈值分路选择、未校准路径正分门钉行为
   （`test_positive_gate_applies_uncalibrated_path`）。
 - `tests/unit/retrieval/test_recallers.py`：`min_similarity` 前置过滤（阈值高于最高分→空、低于→保留最相关）；
-  store 声明距离型度量 + 非零 `min_similarity` → 装配期 `ValidationError`
-  （`test_vector_min_similarity_rejects_lower_is_better_metric`，契约桩 override `score_higher_is_better`）。
+  store 声明距离型度量时，无论 `min_similarity` 是否开启均在装配期抛
+  `ValidationError`（`test_vector_recaller_rejects_lower_is_better_metric`）。
 - `tests/integration/retrieval/test_pipeline_retriever.py`：`budget_expands_to_top_k`、`over_fetch_recall_width`
   （factor/floor 双主导）、`recall_max_caps_recall_k`、`retrieval_over_fetch_read_from_config`（含 `recall_max`）；
   `default_config_threshold_active_end_to_end`（出厂默认装配的阈值端到端行为）、

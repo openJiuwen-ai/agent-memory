@@ -70,13 +70,13 @@ class _LowerIsBetterStore:
         return False
 
 
-def test_vector_min_similarity_rejects_lower_is_better_metric() -> None:
-    # 距离型度量（越小越相关）+ 非零 min_similarity → 装配期直接拒绝（语义会反转）。
+def test_vector_recaller_rejects_lower_is_better_metric() -> None:
+    # MaxP 与融合统一要求高分优先；距离型度量无论是否开阈值都拒绝。
     with pytest.raises(ValidationError):
         VectorRecaller(_LowerIsBetterStore(), min_similarity=0.5)
 
-    # min_similarity=0（默认关）不触发校验，任何度量都放行。
-    VectorRecaller(_LowerIsBetterStore(), min_similarity=0.0)
+    with pytest.raises(ValidationError):
+        VectorRecaller(_LowerIsBetterStore(), min_similarity=0.0)
 
 
 def test_graph_recaller_returns_seed_neighbor(scope) -> None:

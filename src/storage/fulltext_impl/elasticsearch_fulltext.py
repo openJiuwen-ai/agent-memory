@@ -43,12 +43,19 @@ class ElasticsearchFulltextStore(FulltextStore):
         password: str | None = None,
         api_key: str | None = None,
         text_field: str = "text",
+        text_analyzer: str | None = None,
         refresh: str = "false",
         **options: Any,
     ) -> None:
         self._hosts = hosts or "http://localhost:9200"
         self._index = index
         self._text_field = text_field
+        # 建索引期分析器，按记忆主语言选（查询侧自动同规则）：
+        # 英文 "english"（词干化+去停用词）；中文 "ik_max_word"（需 analysis-ik
+        # 插件）或内置 "cjk"（二元切分兜底）；中英混合优先 ik_max_word。
+        # None = ES standard（英文不词干化、中文单字切分）。仅在索引创建时
+        # 生效——已存在的索引不会被重映射，变更后需删除或换 index 重建才能应用。
+        self._text_analyzer = text_analyzer
         self._refresh = refresh  # "false" / "true" / "wait_for"
         self._auth = dict(username=username, password=password, api_key=api_key)
         self._options = options
@@ -91,7 +98,11 @@ class ElasticsearchFulltextStore(FulltextStore):
                         }
                     ],
                     "properties": {
-                        self._text_field: {"type": "text"},
+                        self._text_field: (
+                            {"type": "text", "analyzer": self._text_analyzer}
+                            if self._text_analyzer
+                            else {"type": "text"}
+                        ),
                         "scope": {
                             "properties": {
                                 "org": {"type": "keyword"},
@@ -108,10 +119,19 @@ class ElasticsearchFulltextStore(FulltextStore):
     # --------------------------------------------------------------- 序列化
     @staticmethod
     def _scope_dict(scope: Scope) -> dict[str, str]:
-        return {"org": scope.org, "user": scope.user, "agent": scope.agent, "session": scope.session}
+        return {
+            "org": scope.org,
+            "user": scope.user,
+            "agent": scope.agent,
+            "session": scope.session,
+        }
 
     def _source(self, scope: Scope, doc: Document) -> dict[str, Any]:
-        return {self._text_field: doc.text, "scope": self._scope_dict(scope), "metadata": doc.metadata}
+        return {
+            self._text_field: doc.text,
+            "scope": self._scope_dict(scope),
+            "metadata": doc.metadata,
+        }
 
     def _to_document(self, doc_id: str, src: dict[str, Any]) -> Document:
         return Document(
@@ -237,5 +257,6 @@ def _build(config):
         password=Factory.cfg_get(config, "password"),
         api_key=Factory.cfg_get(config, "api_key"),
         text_field=Factory.cfg_get(config, "text_field", "text"),
+        text_analyzer=Factory.cfg_get(config, "text_analyzer"),
         refresh=Factory.cfg_get(config, "refresh", "false"),
     )

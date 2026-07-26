@@ -19,7 +19,7 @@
 | `retriever.py` | Retriever 接口：检索层入口，编排完整链路 |
 | `query_parser_impl/` | QueryParser 实现目录（simple_query_parser / sanitize / time_parse） |
 | `recaller_impl/` | Recaller 实现目录（keyword / keyword_l0/l1 / vector / vector_l0/l1 / graph） |
-| `fuser_impl/` | Fuser 实现目录（rrf / weighted_rrf） |
+| `fuser_impl/` | Fuser 实现目录（rrf【默认】/ weighted_rrf / score_max）+ `layered_merge` 分层归并前处理 |
 | `discloser_impl/` | Discloser 实现目录（structured / truncating） |
 | `retriever_impl/` | Retriever 实现目录 |
 | `bootstrap.py` | 统一触发所有检索算子注册 |
@@ -42,7 +42,7 @@
      ↓
 7. 可选 Reranker 精排（记 calibrated 标志）
      ↓
-8. 相关性阈值：绝对 min_score（仅校准路径）+ 相对 ratio（校准 0.6 / 未校准 0.3）
+8. 相关性阈值：绝对 min_score（仅校准路径）+ 相对 ratio（校准/未校准两路，出厂默认均为 0=关闭）
      ↓ + min_results 从正分候选兜底回填（结果数可 < top_k）
 9. 截断 top_k
      ↓
@@ -53,11 +53,11 @@
 
 ## L0/L1 分层召回 + 三层披露
 
-L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L0）/片段（L1），三层并行召回 + RRF 融合 + 三层一次性披露。详见 `docs/features/common/F01-memory-layer.md` §6。
+L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L0）/片段（L1），三层并行召回 + 融合 + 三层一次性披露。详见 `docs/features/common/F01-memory-layer.md` §6；融合策略与分层归并见 `docs/features/retrieval/F04-score-max-fusion.md`。
 
-**构建侧**（已就绪）：`LayerAnnotator` 对长 content 产出 `unit.layers.l0`/`l1`，`VectorIndexBuilder`/`FulltextIndexBuilder` 对非空 layers 整段 embed 建独立分表（`vector_store.layers_l0/l1`、`fulltext_store.layers_l0/l1`），record id `{unit_id}-l0/l1`。
+**构建侧**（已就绪）：`LayerAnnotator` 对长 content 产出 `unit.layers.l0`/`l1`，`VectorIndexBuilder`/`FulltextIndexBuilder` 对非空 layers 整段 embed 建独立分表（`vector_store.layers_l0/l1`、`fulltext_store.layers_l0/l1`）。向量 record id 为 `{unit_id}-layer-l0/l1`，全文 document id 为 `{unit_id}:l0/l1`。
 
-**召回侧**：复用 `VectorRecaller`/`KeywordRecaller` 加 `layer` 参数（l2/l0/l1），注册 `vector_l0/l1`/`keyword_l0/l1` 具名实例，查对应分表 store。`layers_index_enabled` 开时（回退 globals）接入——store 为 None 时 recall 返空（该层未配，向后兼容）。同通道不同层级，Fuser 按 unit_id 聚合（多路多层级命中取 RRF 累加）。
+**召回侧**：复用 `VectorRecaller`/`KeywordRecaller` 加 `layer` 参数（l2/l0/l1），注册 `vector_l0/l1`/`keyword_l0/l1` 具名实例，查对应分表 store。`layers_index_enabled` 开时（回退 globals）接入——store 为 None 时 recall 返空（该层未配，向后兼容）。同通道不同层级，Fuser 按 unit_id 聚合：**同通道多层命中一律取 MaxP（最高分）**（F01-memory-layer §6.3）。分层是同通道的多个索引入口，不是独立信号源——按多路处理会让分数偏向"有 layers 的 unit"，那是索引覆盖差异而非相关性差异。三层 store 必须使用同类后端、同一分词/度量配置，并统一满足「分越大越相关」。归并由 `fuser_impl/layered_merge.py` 统一前置，三个 Fuser 实现共用；未启用分层时为恒等变换。跨通道如何合并则取决于所选 Fuser：默认 `rrf` 按名次倒数累加，`weighted_rrf` 加通道权重，可选 `score_max` 取通道归一化分的最大值。
 
 **披露侧**：`RetrievedItem` 三层一次性填充——`abstract`(L0) / `overview`(L1) / `content`(L2)，优先用 `unit.layers.l0/l1`（空则回退截断/取窗兜底）。调用方按需取用：紧预算用 abstract，中等用 overview，全文用 content。`level` 标本次披露主层级（ADAPTIVE 按 max_tokens 选）。
 

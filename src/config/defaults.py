@@ -11,14 +11,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 from .context import AssemblyContext
 
 _D = "default"
 
 
-def default_config_dict() -> Dict[str, Any]:
+def default_config_dict() -> dict[str, Any]:
     """返回内置默认配置（两级命名空间字典）。"""
     return {
         "globals": {
@@ -102,10 +102,14 @@ def default_config_dict() -> Dict[str, Any]:
                     "over_fetch_factor": 4,
                     "over_fetch_floor": 60,
                     "recall_max": 100,
-                    "rerank_max": 50,
+                    "rerank_max": 60,
                     "min_score": 0.0,
-                    "min_score_ratio": 0.6,
-                    "min_score_ratio_uncalibrated": 0.3,
+                    # 相对阈值默认关闭（校准/未校准两路均是）：按最高分比例裁剪会随
+                    # 融合分布变化误杀尾部候选（分层召回下尤甚——有无 layers 属索引
+                    # 覆盖差异，不是相关性差异）。裁剪交由调用方 top_k 决定，需要时
+                    # 按场景显式配置。
+                    "min_score_ratio": 0.0,
+                    "min_score_ratio_uncalibrated": 0.0,
                     "min_results": 0,
                 },
             }
@@ -177,7 +181,7 @@ def default_config_dict() -> Dict[str, Any]:
 
 
 # 根组件（LocalMemoryAPI）对各顶层组件的引用——全部指向各命名空间下的 default 实例。
-ROOT_PARAMS: Dict[str, str] = {
+ROOT_PARAMS: dict[str, str] = {
     "engine": _D,
     "permission": _D,
     "scheduler": _D,
