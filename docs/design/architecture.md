@@ -70,7 +70,7 @@
 ```
 MemoryUnit
 ├── id              全局唯一 id
-├── scope           归属：{ org, user, agent, session }（多维，用于隔离/共享）
+├── scope           归属：{ org, space, agent, user, session }（多维，用于隔离/共享）
 ├── tier            认知角色（记忆分类维度之一）：working/core/episodic/semantic/procedural/archival
 ├── content         内容（可治理文本/结构化字段；多模态来源在接入时规约为此投影）
 ├── assets          原模态资产引用（图像/音频/视频等，或对象存储路径；文本投影的来源）
@@ -89,7 +89,22 @@ MemoryUnit
 
 ### 3.2 作用域与多租户（Scope）
 
-`org > user > agent > session` 多维 scope，既支持**隔离**（多租户、单 Agent 私有），也支持**共享**（跨 Agent 共享记忆池，借鉴 Letta 共享 block / MemOS memory cube）。检索/写入默认在 scope 内，跨 scope 需显式授权。
+`Scope` 的字段集合为 `org / space / agent / user / session`。其中 `org > space`
+是全局硬层级：`org` 表示组织、账务和上级管理边界，`space` 表示一个 org 内的
+逻辑隔离单元，负责多租户的数据边界、权限边界和存储分区边界。检索、写入、更新、
+删除、演进和治理默认都限定在单个 target space 内，跨 space 访问必须显式授权。
+
+`agent` 与 `user` 不再隐含全局固定父子关系。space 内的主体归属顺序由
+`principal_path` 配置决定：
+
+| `principal_path` | 逻辑层级 | 适用场景 |
+| --- | --- | --- |
+| `user_agent` | `org > space > user > agent > session` | 以用户为中心的个人助手、企业员工助手、用户画像记忆 |
+| `agent_user` | `org > space > agent > user > session` | 以 Agent/应用为中心的客服机器人、编码 Agent、多用户产品服务 |
+
+权限判断中的 owner-cover 规则按 `principal_path` 解释为“actor scope 是 target
+scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`，也能表达
+`agent -> user`，不会把某一种业务关系写死成全局模型。
 
 > **统一连接点**：同一套 scope 模型同时支撑两条正交维度——「**单/多 Agent 的隔离与共享**」与「**端云协同时数据的分级放置与同步粒度**」（哪些 scope 留端、哪些上云、按什么粒度同步），见 §11。
 
@@ -181,7 +196,7 @@ MemoryUnit
 
 ## 6. 记忆接口层（Memory API）
 
-所有接入形态最终映射到同一组语义。接口已落地为 `src/api/memory_api.py` 的 `MemoryAPI`（统一 Core API，形态无关）。它是**控制层的薄封装且为鉴权/审计执行点（PEP）**：数据面（write/recall/get/update/delete/evolve/admin）委托 `src/control/engine.py` 的 `MemoryEngine`（编排中枢），管理面查询（任务状态、治理、授权）直达对应控制算子（Scheduler/Governor/PermissionManager）。每个涉及租户数据/治理的方法都收 `scope`（目标范围 target）与 `actor`（调用方身份，**必填 keyword-only**）——本层先 `check(actor, scope, action)`、落带 actor 的入口审计，通过后才委托，下游只收已鉴权的 target scope（签名以代码为准）：
+所有接入形态最终映射到同一组语义。接口已落地为 `src/api/memory_api.py` 的 `MemoryAPI`（统一 Core API，形态无关）。它是**控制层的薄封装且为鉴权/审计执行点（PEP）**：数据面（write/recall/get/update/delete/evolve/admin）委托 `src/control/engine.py` 的 `MemoryEngine`（编排中枢），管理面查询（任务状态、治理、授权）直达对应控制算子（Scheduler/Governor/PermissionManager）。每个涉及租户数据/治理的方法都收 `scope`（目标范围 target）与 `actor`（调用方身份，**必填 keyword-only**）——本层先 `check(actor, scope, action)`、落带 actor 的入口审计，通过后才委托，下游只收已鉴权的 target scope（签名以代码为准）。Space 管理接口为 F03 的新增目标，建议由 SpaceManager 或等价控制算子承接，最终签名以落地后的 specs 与代码为准：
 
 
 | 方法                                            | 语义                                              |
@@ -198,11 +213,21 @@ MemoryUnit
 | `trace(unit_id, scope, *, actor) -> list[MemoryUnit]` | 治理·血缘回溯：沿 `provenance` 追溯演进来源链（委托 Governor） |
 | `audit(filters, *, actor, limit=100) -> list[AuditEvent]` | 治理·审计查询：按 actor/action/layer/时间段等检索审计留痕（委托 Governor） |
 | `grant(grant: Grant, *, actor)` / `revoke(grant, *, actor)` | 跨 scope 授权 / 回收（委托 PermissionManager；revoke 匹配规则由实现定义） |
+| `create_space(spec, *, actor) -> SpaceInfo` | 创建 space，并写入 `principal_path`、状态、metadata 与初始 policy |
+| `get_space(org, space, *, actor) -> SpaceInfo` | 读取单个 space 的基础信息、状态与策略摘要 |
+| `list_spaces(org, *, actor, status=None, limit=100, cursor=None) -> SpaceList` | 列出 org 下调用方可见的 spaces |
+| `update_space(org, space, patch, *, actor) -> SpaceInfo` | 修改 display name、metadata、policy 等非破坏字段 |
+| `archive_space(org, space, *, actor) -> SpaceInfo` | 归档 space，默认停止写入但保留读取与导出能力 |
+| `delete_space(org, space, *, actor, mode=PURGE) -> SpaceDeleteResult` | 删除 space 的真源与可重建索引，作为 offboarding 主路径 |
+| `export_space(org, space, *, actor, include_audit=True) -> str` | 提交 space 导出任务，返回 job id 或 export id |
+| `space_usage(org, space, *, actor) -> SpaceUsage` | 查询 space 级 memory/message/index/audit 容量与调用统计 |
+| `get_space_policy(org, space, *, actor) -> SpacePolicy` / `set_space_policy(org, space, policy, *, actor) -> SpacePolicy` | 查询 / 设置 space 级策略，包括 `principal_path`、retention、配额、索引和演进策略 |
+| `list_space_members(org, space, *, actor) -> list[SpaceMember]` / `add_space_member(org, space, member, role, *, actor)` / `remove_space_member(org, space, member, *, actor)` | 查询、添加或移除 space 成员与角色 |
 | `admin_get(key, *, actor)` / `admin_set(key, value, *, actor)` / `admin_all(*, actor)` | admin：运行时可变策略的查询与调整（委托 PolicyManager；键未知/不可变配置抛 `PolicyError`） |
 
 
 > - **鉴权与审计执行点（PEP）在接口层**：`actor`（调用方）与 `scope`（目标 target）分离，本层 `check(actor, scope, action)` 不通过抛 `PermissionDeniedError` 并落入口审计；通过后只把已鉴权的 target scope 下沉，actor 不下沉。`actor` 设为必填 keyword-only，杜绝与 `scope`（同为 Scope 类型）位置传反致越权。
-> - **表面 = 数据面 + 管理面**：数据面委托 `MemoryEngine`，管理面查询（job/inspect/trace/audit/grant/revoke）直达 Scheduler/Governor/PermissionManager；调用层只依赖 `src/api` 即可触达全部对外能力。
+> - **表面 = 数据面 + 管理面**：数据面委托 `MemoryEngine`，管理面查询（job/inspect/trace/audit/grant/revoke/space 管理）直达 Scheduler/Governor/PermissionManager/SpaceManager；调用层只依赖 `src/api` 即可触达全部对外能力。
 > - **薄封装 + 引擎编排**：`MemoryAPI` 不含业务逻辑；接入/落盘/索引/检索/调度的编排全部在 `MemoryEngine`（`src/control`）。引擎内核只保留**一条异步写链路**（`async def write`），接口层的同步 `write` 由其自行桥接（如 `asyncio.run`）。
 > - 接口形态无关：不论真源是文档还是结构化、运行在端还是云，调用方语义一致。
 > - **双时间一等暴露**：`recall`/`get` 的 `as_of`（valid-time）直接消费 §3.1 的双时间模型，支持「按当时状态」的时间点查询与历史回溯，与 query 文本里解析出的事件时间（event-time）分轴（对应 §15 吸收 Zep 的落点）。
@@ -218,9 +243,9 @@ MemoryUnit
 
 | 管理职责 | 作用 | 主要落点 |
 | --- | --- | --- |
-| 生命周期 | 维护 active / superseded / archived / forgotten 等状态，支持过期、降权、归档、遗忘与合规删除 | 数据模型 §3.1；自演进触发 §9.3；接口 `delete/update/inspect` §6 |
-| 权限与隔离 | 基于 scope 与 actor 做访问控制，跨 scope 共享必须显式授权 | scope 模型 §3.2；接口层 PEP §6 |
-| 治理与审计 | 支持检视、编辑、血缘回溯、审计查询与可观测轨迹 | 横切关注点 §12；接口 `inspect/trace/audit` §6 |
+| 生命周期 | 维护 memory 的 active / superseded / archived / forgotten 状态，并管理 space 的创建、冻结、归档、删除与 offboarding | 数据模型 §3.1；scope 模型 §3.2；自演进触发 §9.3；接口 `delete/update/inspect/delete_space` §6 |
+| 权限与隔离 | 基于 `org + space` 硬边界、space 级 `principal_path` 与 actor 做访问控制，跨 space 共享必须显式授权 | scope 模型 §3.2；接口层 PEP §6 |
+| 治理与审计 | 支持检视、编辑、血缘回溯、space 级审计查询、导出、用量统计与可观测轨迹 | 横切关注点 §12；接口 `inspect/trace/audit/export_space/space_usage` §6 |
 | 调度与策略 | 管理 hot/background 任务、演进阶段、索引开关与运行时可变策略 | 自演进控制 §9.3；配置体系 §13 |
 
 管理层只编排和约束这些动作，不定义新的记忆结构。分层记忆的内容结构见 §4；构建算子见 §9.1/§9.2；演进触发时机与控制模式见 §9.3。
@@ -245,7 +270,7 @@ MemoryUnit
 - **渐进式披露**：吸收 OpenViking 的 L0/L1/L2 分层加载，控制 token。
 - **检索轨迹**：吸收 OpenViking 的可观测性，每步召回/排序可追溯，非黑盒。
 - **query 去噪与空查询短路**：`QueryParser` 先剥除上游包装噪声并产出结构化查询；清洗后无有效文本时，`Retriever` 在召回前直接返回空结果，避免噪声触发无意义召回。
-- **scope 是独立轴、显式串参**：检索范围作为首参贯穿 `Retriever.retrieve(scope, query)` → `Recaller.recall(scope, …)`（query 是「找什么」、scope 是「在谁的范围内找」），并落到各 Store 查询的专用 `scope` 字段做**原生隔离**——不随查询对象携带、也不混进过滤条件。
+- **scope 是独立轴、显式串参**：检索范围作为首参贯穿 `Retriever.retrieve(scope, query)` → `Recaller.recall(scope, …)`（query 是「找什么」、scope 是「在谁的范围内找」），并落到各 Store 查询的专用 `scope` 字段做**原生隔离**——不随查询对象携带、也不混进过滤条件。Store 层必须以 `org + space` 作为硬隔离键；`agent/user/session` 只在 space 内按 `principal_path` 参与归属与过滤。
 - **前置过滤结构化**：`filters` 为 `FilterClause` 列表（字段+算子+值，支持等值/集合命中/数值·时间范围，AND 组合），由检索层**组装**进各 Store 查询，替代旧的 `dict[str,str]` 平铺等值。
 - **两条时间轴**：`as_of` 是系统相信时间（valid-time，回溯「T 时刻哪个版本有效」），与从 query 文本解析出的事件时间约束（event-time，`time_from/time_to`，过滤 `t_event`）分开，互不折叠。
 - **通道↔Store 非 1:1**：`RecallChannel` 是逻辑召回路，到物理 Store 的映射由检索层装配内部决定（一路对一 Store，多路也可合到 FusionStore 一次召回；TEMPORAL 多为叠加在其他通道上的时间过滤）。
@@ -283,7 +308,7 @@ MemoryUnit
 | **关键词索引** | 全文/BM25 精确匹配         | 与向量互补，提升可解释性                       |
 | **向量索引**  | 语义相似召回               | 可插拔 embedding；端侧用轻量模型              |
 | **图索引**   | 实体-关系、因果/引用链多跳遍历     | 支撑关联分析与「连点成线」                      |
-| 标签/命名空间   | scope 过滤、多租户隔离       | 检索前置过滤（贯穿各索引）                      |
+| 标签/命名空间   | scope 过滤、多租户隔离       | `org + space` 硬隔离，`agent/user/session` 按 space 内主体路径过滤 |
 
 
 > 各粒度记忆与各形式索引本身都是可重建派生物，落在记忆存储层的对应后端中。
@@ -398,7 +423,7 @@ MemoryUnit
 | 可观测性 | 检索轨迹、演进事件、指标（检索 token、p50/p95 时延、容量） |
 | 可治理  | 记忆可检视/编辑/审计/回溯/遗忘；演进血缘可追溯            |
 | 安全合规 | scope 权限、端侧数据不出端、传输/存储加密、可遗忘（合规删除）   |
-| 多租户  | org/user/agent/session 隔离与受控共享       |
+| 多租户  | `org + space` 硬隔离；space 内支持 `user -> agent` 或 `agent -> user` 主体路径；跨 space 受控共享 |
 | 可插拔  | embedding、向量库、图库、LLM 抽取器、重排器均为可替换组件  |
 
 
@@ -418,7 +443,7 @@ MemoryUnit
 | **自演进**（§9.3） | 总开关、阶段（extract/associate/consolidate/forget）、hot/background、控制模式 | 全闭环+双通道 | 仅 extract 或纯离线，降在线时延与 LLM 成本 |
 | **双时间**（§3.1） | 启用 / 关闭（仅留最新版本） | 启用 | 关闭省时序维护，适合无回溯需求 |
 | **多模态规约**（§5.1） | 启用的规约器、是否留原模态资产、投影粒度 | 文本+按需图像 | 仅文本，去掉 ASR/OCR/caption 依赖 |
-| **scope / 共享**（§3.2） | 隔离粒度、共享池、跨 scope 授权策略 | user/agent 隔离 | 单租户简化 |
+| **scope / 共享**（§3.2） | `org + space` 隔离粒度、space 级 `principal_path`、共享池、跨 scope 授权策略 | space 隔离 + `user_agent` 默认 | 单租户简化 |
 | **存储后端**（§10.2） | 向量/图/全文/KV 各自选型（extras 选装） | 端 SQLite / 云 PG+专用库 | 端侧仅 SQLite，去重依赖 |
 | **部署 profile**（§11） | edge / cloud / hybrid | 按场景 | — |
 | **模型**（§12 可插拔） | embedding / LLM 抽取器 / reranker；端侧降级策略 | 可插拔 | 端侧用小模型或规则降级 |
@@ -430,7 +455,7 @@ MemoryUnit
 ```
  全局默认（内置）
    └─▶ 部署 Profile（edge/cloud/hybrid，见 §11 / bootstrap）
-         └─▶ 租户/scope 级（org/user/agent 可各自不同策略）
+         └─▶ 租户/scope 级（org/space 及其 principal path 可各自不同策略）
                └─▶ 调用级 options（recall/write/evolve 的逐次参数）
 ```
 
