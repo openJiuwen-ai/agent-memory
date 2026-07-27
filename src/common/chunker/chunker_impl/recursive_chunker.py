@@ -18,6 +18,7 @@ Document，不做切片，因为 TF-IDF 统计建立在整篇文档上。
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from common.base import PluginType
 from common.chunker.base import Chunker, ChunkerProducer
@@ -93,7 +94,7 @@ class RecursiveChunker(Chunker):
         self,
         text: str,
         unit_id: str = "",
-        metadata: dict[str, str] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> list[Chunk]:
         """将 text 递归切分为有序 chunk。"""
         if not text.strip():
@@ -226,7 +227,7 @@ class RecursiveChunker(Chunker):
         self,
         splits: list[_Split],
         unit_id: str,
-        metadata: dict[str, str],
+        metadata: dict[str, Any],
     ) -> list[Chunk]:
         """将 splits 按 chunk_size 分组加 overlap，产出 Chunk 列表。
 

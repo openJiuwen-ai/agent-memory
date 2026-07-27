@@ -45,10 +45,17 @@ class HybridIndexBuilder(IndexBuilder):
         vector_l1: VectorStore | None = None,
     ) -> None:
         self._fulltext_builder = FulltextIndexBuilder(
-            fulltext, fulltext_l0=fulltext_l0, fulltext_l1=fulltext_l1
+            fulltext,
+            fulltext_l0=fulltext_l0,
+            fulltext_l1=fulltext_l1,
         )
         self._vector_builder = VectorIndexBuilder(
-            vector, kv, chunker, embedder, vector_l0=vector_l0, vector_l1=vector_l1
+            vector,
+            kv,
+            chunker,
+            embedder,
+            vector_l0=vector_l0,
+            vector_l1=vector_l1,
         )
 
     def operator_type(self) -> OperatorType:

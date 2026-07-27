@@ -18,8 +18,9 @@ from .types import Action, Grant, PermissionContext
 class PermissionProducer(Factory):
     """PermissionManager 的注册式工厂（与契约同处接口层，消费方只依赖接口即可取实例）。
 
-    ``name`` 即实现名。各实现在 ``permission_impl`` 下以 ``@PermissionProducer.register("<名>")`` 自注册——
-    注册发生在 import 实现模块时，由 :func:`control.bootstrap.register_controllers` 统一触发。
+    ``name`` 即实现名。各实现在 ``permission_impl`` 下以
+    ``@PermissionProducer.register("<名>")`` 自注册——注册发生在 import 实现模块时，
+    由 :func:`control.bootstrap.register_controllers` 统一触发。
     """
 
     TOP_NAME = "permission"
@@ -44,3 +45,13 @@ class PermissionManager(ControlOperator):
         context: PermissionContext | None = None,
     ) -> bool:
         """校验 ``actor`` 是否可对 ``target`` scope 执行 ``action``。"""
+
+    def routing_fields(self) -> tuple[str, ...]:
+        """本实现据以**选择策略**的 :class:`PermissionContext` 字段名（默认不路由）。
+
+        路由型实现按请求里的某个字段挑选 delegate，而该字段由调用方提供——若不同时
+        约束查询能触达的数据，调用方就能"用 A 的钥匙开 B 的门"：路由值填宽松策略对应
+        的类型、``filters`` 却指向受严格策略保护的数据。API 层据此把路由值**回注为
+        系统谓词**，使授权依据与数据范围绑定。
+        """
+        return ()

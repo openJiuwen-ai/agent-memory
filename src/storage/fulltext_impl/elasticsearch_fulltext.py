@@ -22,7 +22,14 @@ from common.errors import (
     ValidationError,
 )
 from common.factory.factory import Factory
-from common.type_def import FilterClause, FilterOp, Scope
+from common.type_def import (
+    FilterClause,
+    FilterExpr,
+    FilterLogic,
+    FilterOp,
+    Scope,
+    filter_field_metadata_key,
+)
 from storage.fulltext import FulltextProducer
 
 from .._support import scope_dims, wrap_backend
@@ -87,7 +94,14 @@ class ElasticsearchFulltextStore(FulltextStore):
                 mappings={
                     # 元数据里的字符串一律映射为 keyword：等值/集合/包含过滤需要精确
                     # 匹配（text 的分析器会拆词、小写化，导致 "Red Hat" 之类匹配不上）。
-                    # 数值/布尔仍按动态推断（long/double/boolean），以支持范围比较。
+                    #
+                    # 整数与浮点数一律映射为 double。metadata 值是 JSON 原生标量，
+                    # mapping 由该字段第一条文档决定：不接管 long 的话，先写 8 会把
+                    # priority 定成 long，此后 9.5 在索引里被截断成 9——_source 仍显示
+                    # 9.5，range gte 9.5 却查不出这条文档。接管 double 则是因为 ES 对
+                    # JSON 浮点默认推断 float(32 位，尾数 24 bit)，2^24 以上的整数会
+                    # 塌陷——16777216 与 16777217 索引成同一个值，两个 EQ 互相命中。
+                    # 布尔仍按动态推断。
                     "dynamic_templates": [
                         {
                             "metadata_strings_as_keyword": {
@@ -95,7 +109,21 @@ class ElasticsearchFulltextStore(FulltextStore):
                                 "match_mapping_type": "string",
                                 "mapping": {"type": "keyword"},
                             }
-                        }
+                        },
+                        {
+                            "metadata_longs_as_double": {
+                                "path_match": "metadata.*",
+                                "match_mapping_type": "long",
+                                "mapping": {"type": "double"},
+                            }
+                        },
+                        {
+                            "metadata_floats_as_double": {
+                                "path_match": "metadata.*",
+                                "match_mapping_type": "double",
+                                "mapping": {"type": "double"},
+                            }
+                        },
                     ],
                     "properties": {
                         self._text_field: (
@@ -142,7 +170,7 @@ class ElasticsearchFulltextStore(FulltextStore):
 
     @staticmethod
     def _filter_clause(fc: FilterClause) -> dict[str, Any]:
-        field = f"metadata.{fc.field}"
+        field = f"metadata.{filter_field_metadata_key(fc.field)}"
         if fc.op in (FilterOp.EQ, FilterOp.CONTAINS):
             return {"term": {field: fc.value}}
         if fc.op == FilterOp.NE:
@@ -154,6 +182,23 @@ class ElasticsearchFulltextStore(FulltextStore):
         if fc.op in _RANGE_OPS:
             return {"range": {field: {_RANGE_OPS[fc.op]: fc.value}}}
         raise ValidationError(f"unsupported filter op for fulltext: {fc.op}")
+
+    @classmethod
+    def _compile_filter(cls, expr: FilterExpr | None) -> dict[str, Any] | None:
+        """把完整 FilterExpr 编译为 Elasticsearch bool/filter Query DSL。"""
+        if expr is None:
+            return None
+        if isinstance(expr, FilterClause):
+            return cls._filter_clause(expr)
+        children = [cls._compile_filter(child) for child in expr.children]
+        compiled = [child for child in children if child is not None]
+        if expr.logic is FilterLogic.AND:
+            return {"bool": {"filter": compiled}}
+        if expr.logic is FilterLogic.OR:
+            return {"bool": {"should": compiled, "minimum_should_match": 1}}
+        if expr.logic is FilterLogic.NOT:
+            return {"bool": {"must_not": compiled}}
+        raise ValidationError(f"unsupported filter logic for fulltext: {expr.logic}")
 
     def _scope_filters(self, scope: Scope) -> list[dict[str, Any]]:
         return [{"term": {f"scope.{dim}": val}} for dim, val in scope_dims(scope)]
@@ -235,7 +280,10 @@ class ElasticsearchFulltextStore(FulltextStore):
         return out
 
     def search(self, scope: Scope, query: TextQuery) -> list[ScoredID]:
-        filters = self._scope_filters(scope) + [self._filter_clause(fc) for fc in query.filters]
+        filters = self._scope_filters(scope)
+        compiled = self._compile_filter(query.filters)
+        if compiled is not None:
+            filters.append(compiled)
         bool_query = {"must": [{"match": {self._text_field: query.text}}], "filter": filters}
         with wrap_backend("elasticsearch search"):
             resp = self.client.search(

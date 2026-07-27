@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from common.type_def import FilterClause
+from common.type_def import FilterExpr, normalize
 
 
 @dataclass
@@ -43,7 +43,10 @@ class VectorQuery:
 
     vector: list[float]  # 查询向量
     top_k: int = 10  # 返回条数
-    filters: list[FilterClause] = field(default_factory=list)  # scope 之外的元数据谓词（AND 组合）
+    filters: FilterExpr | None = None  # scope 之外的元数据谓词（AND/OR/NOT 树；None 表示无过滤）
+
+    def __post_init__(self) -> None:
+        self.filters = normalize(self.filters)  # 边界规范化：兼容旧 list，内部统一 FilterExpr
 
 
 # --------------------------------------------------------------------------- #
@@ -66,7 +69,10 @@ class TextQuery:
 
     text: str  # 查询文本（关键词/短语）
     top_k: int = 10  # 返回条数
-    filters: list[FilterClause] = field(default_factory=list)  # scope 之外的元数据谓词（AND 组合）
+    filters: FilterExpr | None = None  # scope 之外的元数据谓词（AND/OR/NOT 树；None 表示无过滤）
+
+    def __post_init__(self) -> None:
+        self.filters = normalize(self.filters)  # 边界规范化：兼容旧 list，内部统一 FilterExpr
 
 
 # --------------------------------------------------------------------------- #
@@ -128,9 +134,12 @@ class FusionQuery:
 
     vector: list[float] | None = None  # 查询向量；None 则不走向量召回
     text: str | None = None  # 查询文本；None 则不计文本相关性
-    scalar_filters: list[FilterClause] = field(default_factory=list)  # scope 之外的标量谓词（AND 组合，如 modality=text）
+    scalar_filters: FilterExpr | None = None  # scope 之外的标量谓词（AND/OR/NOT 树）
     top_k: int = 10  # 返回条数
     vector_weight: float = 0.5  # 向量得分权重（1.0 纯向量，0.0 纯文本）
+
+    def __post_init__(self) -> None:
+        self.scalar_filters = normalize(self.scalar_filters)  # 边界规范化：兼容旧 list，内部统一
 
 
 # --------------------------------------------------------------------------- #

@@ -8,9 +8,10 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from typing import Any
 
-from ..factory.factory import Factory
 from ..base import Plugin
+from ..factory.factory import Factory
 from ..type_def import Chunk
 
 
@@ -30,6 +31,6 @@ class Chunker(Plugin):
         self,
         text: str,
         unit_id: str = "",
-        metadata: dict[str, str] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> list[Chunk]:
         """将 ``text`` 切分为有序 chunk，每块带上 ``unit_id`` 与透传的 ``metadata``。"""

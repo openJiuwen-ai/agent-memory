@@ -7,17 +7,48 @@
 
 from __future__ import annotations
 
-import json
 from typing import Dict, List
 
 from common.log import get_logger
-from common.type_def import MemoryUnit, Scope
+from common.type_def import T_INVALID_OPEN, MemoryUnit, Scope
 from construction.base import OperatorType
 from construction.index_builder import IndexBuilder, IndexBuilderProducer
 from storage.fulltext import FulltextProducer, FulltextStore
 from storage.types import Document
 
 logger = get_logger(__name__)
+
+
+def _index_metadata(unit: MemoryUnit, *, layer: str) -> dict[str, object]:
+    """构造可过滤索引投影；用户 metadata 原样带入，系统真源字段随后覆盖。
+
+    ``metadata`` 值为 JSON 标量原生类型，后端据此建 double/boolean/keyword mapping
+    并在 top-k 截断前原生下推。UnitReader 复核读的是同一个对象，两侧判定不分叉。
+    """
+    metadata = dict(unit.metadata)
+    metadata.update(
+        {
+            "unit_id": unit.id,
+            "tier": unit.tier.value,
+            # 召回下推 lifecycle 谓词需此字段（真后端按缺失字段排他）。
+            "lifecycle": unit.lifecycle.value,
+            "tags": list(unit.tags),  # 真数组，后端才能按成员做 term 匹配
+            "source": unit.source.value,
+            "content_layer": layer,  # l2=content 全文；l0/l1 为分层文档（见 F01）
+        }
+    )
+    temporal = unit.temporal
+    for field, value in (("t_event", temporal.t_event), ("t_valid", temporal.t_valid)):
+        if value is not None:
+            metadata[field] = int(value.timestamp() * 1000)
+    # t_invalid 恒写：空（永久有效）落哨兵值，否则该字段缺失会被 `t_invalid > as_of`
+    # 的下推按缺失字段排他——那批正是回溯查询最该命中的活跃记忆。
+    metadata["t_invalid"] = (
+        int(temporal.t_invalid.timestamp() * 1000)
+        if temporal.t_invalid is not None
+        else T_INVALID_OPEN
+    )
+    return metadata
 
 
 class FulltextIndexBuilder(IndexBuilder):
@@ -60,15 +91,7 @@ class FulltextIndexBuilder(IndexBuilder):
         return Document(
             id=unit.id,  # L2 文档沿用 unit.id（F01 允许短期保留旧 id 兼容删除/update）
             text=unit.content,
-            metadata={
-                "unit_id": unit.id,
-                "tier": unit.tier.value,
-                # 召回下推 lifecycle 谓词需此字段（真后端按缺失字段排他）。
-                "lifecycle": unit.lifecycle.value,
-                "tags": json.dumps(unit.tags),
-                "source": unit.source.value,
-                "content_layer": "l2",  # L2=content 全文（与 L0/L1 分层文档对齐，见 F01）
-            },
+            metadata=_index_metadata(unit, layer="l2"),
         )
 
     def _layer_doc(self, unit: MemoryUnit, layer: str) -> Document:
@@ -77,12 +100,7 @@ class FulltextIndexBuilder(IndexBuilder):
         return Document(
             id=f"{unit.id}:{layer}",
             text=text,
-            metadata={
-                "unit_id": unit.id,
-                "tier": unit.tier.value,
-                "lifecycle": unit.lifecycle.value,
-                "content_layer": layer,  # "l0" | "l1"
-            },
+            metadata=_index_metadata(unit, layer=layer),
         )
 
     def build(self, units: List[MemoryUnit]) -> None:

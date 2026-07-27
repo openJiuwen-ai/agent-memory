@@ -18,7 +18,7 @@ from common.errors import ValidationError
 from common.factory.factory import Factory
 from common.log import get_logger
 from common.reranker.base import Reranker, RerankerProducer
-from common.type_def import MemoryUnit, Scope
+from common.type_def import MemoryUnit, Scope, and_merge
 from retrieval.base import RetrievalOperatorType
 from retrieval.discloser import Discloser, DiscloserProducer
 from retrieval.fuser import Fuser, FuserProducer
@@ -189,11 +189,13 @@ class PipelineRetriever(Retriever):
         parsed.extensions = dict(query.extensions)
         step("parse", t0, n=len(parsed.tokens))
 
-        # [3a] 前置谓词：系统谓词（lifecycle×as_of / 时间窗）并入用户 filters 一同下推
+        # [3a] 前置谓词：系统谓词（lifecycle×as_of / 时间窗）与用户表达式 AND 外包一同下推。
+        #      用户表达式作整体 child——绝不摊平，防其 OR 稀释 lifecycle 等安全谓词。
         sys_filters = build_system_filters(
             parsed.as_of, parsed.time_from, parsed.time_to, query.include_archived
         )
-        parsed.scalar_filters = list(parsed.scalar_filters) + sys_filters
+        user_filters = parsed.scalar_filters  # parser 已 normalize 的用户表达式（供 §6 复核）
+        parsed.scalar_filters = and_merge(user_filters, sys_filters)
 
         # 通道选择：调用级 query.channels 覆盖 parser 建议
         enabled = query.channels if query.channels is not None else parsed.channels
@@ -284,7 +286,7 @@ class PipelineRetriever(Retriever):
             return (
                 passes(u, parsed.as_of, query.include_archived)
                 and in_event_window(u, parsed.time_from, parsed.time_to)
-                and matches_filters(u, query.filters)
+                and matches_filters(u, user_filters)
             )
 
         survivors = [su for su in budget if su.unit_id in units and _keep(units[su.unit_id])]

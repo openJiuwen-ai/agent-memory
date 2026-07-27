@@ -145,13 +145,14 @@ def _add(srv, payload: Body) -> Body:
     modality = Modality(payload.get("modality", "text"))
     # metadata 透传：infer 等调用级开关经 metadata 下推到引擎（engine.write 从
     # metadata["infer"]=="true" 判定是否同步走 evolve(EXTRACT) 抽取派生记忆）。
-    # 值统一 str 化，对齐 RawPayload.metadata 的 Dict[str, str] 约束（同 _search 的 extensions）。
+    # JSON 标量原样透传（不 str 化）：数值/布尔要保持原生类型才能在索引里建
+    # double/boolean mapping 并原生下推；合法性由 API 写入边界统一校验。
     # 显式校验 dict：metadata 为 truthy 非 dict（字符串/列表等畸形 JSON）时兜底为空，
-    # 避免 .items() 抛 AttributeError → HTTP 500。
+    # 避免下游 .items() 抛 AttributeError → HTTP 500。
     raw_meta = payload.get("metadata")
     if not isinstance(raw_meta, dict):
         raw_meta = {}
-    metadata = {k: str(v) for k, v in raw_meta.items()}
+    metadata = dict(raw_meta)
     units = srv.api.write(
         _require(payload, "content"),
         scope,
@@ -189,6 +190,7 @@ def _search(srv, payload: Body) -> Body:
         _require(payload, "query"),
         Context(scope, extensions=extensions),
         identity=actor,
+        filters=payload.get("filters"),  # dict DSL / 旧 list：由 API 边界 normalize，非法则 400
         top_k=int(payload.get("k", 10)),
         disclosure=DisclosureLevel.L2,
         with_trajectory=trace,

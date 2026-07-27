@@ -33,79 +33,6 @@ wheels = [
 ]
 
 [[package]]
-name = "agent-memory"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "jieba" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }, marker = "python_full_version < '3.12'" },
-    { name = "numpy", version = "2.5.0", source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }, marker = "python_full_version >= '3.12'" },
-    { name = "openai" },
-]
-
-[package.optional-dependencies]
-deploy = [
-    { name = "elasticsearch" },
-    { name = "pymilvus" },
-    { name = "pyyaml" },
-    { name = "redis" },
-]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-]
-embed = [
-    { name = "flagembedding" },
-    { name = "torch" },
-    { name = "transformers" },
-]
-mcp = [
-    { name = "mcp" },
-    { name = "pyyaml" },
-]
-nlp = [
-    { name = "hanlp" },
-    { name = "spacy" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "elasticsearch", marker = "extra == 'deploy'", specifier = ">=8,<9" },
-    { name = "flagembedding", marker = "extra == 'embed'", specifier = ">=1.2" },
-    { name = "hanlp", marker = "extra == 'nlp'", specifier = ">=2.1" },
-    { name = "jieba", specifier = ">=0.42" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2" },
-    { name = "numpy", specifier = ">=1.24" },
-    { name = "openai", specifier = ">=1.0" },
-    { name = "pymilvus", marker = "extra == 'deploy'", specifier = ">=2.4" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0,<9.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0,<7.0" },
-    { name = "pyyaml", marker = "extra == 'deploy'", specifier = ">=6" },
-    { name = "pyyaml", marker = "extra == 'mcp'", specifier = ">=6" },
-    { name = "redis", marker = "extra == 'deploy'", specifier = ">=5" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
-    { name = "spacy", marker = "extra == 'nlp'", specifier = ">=3.7" },
-    { name = "torch", marker = "extra == 'embed'", specifier = ">=2.0" },
-    { name = "transformers", marker = "extra == 'embed'", specifier = ">=4.39,<5" },
-]
-provides-extras = ["dev", "nlp", "embed", "deploy", "mcp"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8.0,<9.0" },
-    { name = "pytest-cov", specifier = ">=6.0,<7.0" },
-    { name = "ruff", specifier = ">=0.8" },
-]
-
-[[package]]
 name = "aiohappyeyeballs"
 version = "2.6.2"
 source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }
@@ -1399,6 +1326,81 @@ wheels = [
     { url = "https://mirrors.aliyun.com/pypi/packages/e7/95/a06692b29e77473f286e1ec1f426d3ca44d7b5843be8ad21d7a5f3fcdcc0/jiter-0.15.0-graalpy312-graalpy250_312_native-macosx_11_0_arm64.whl", hash = "sha256:b6c0ffae686c39bf3737be60793783267628783ea42545632c10b291105aee45" },
     { url = "https://mirrors.aliyun.com/pypi/packages/23/85/7270d7ad41d6061a25b950c6bf91d638bd9aacb113200a8c8d57a055fd67/jiter-0.15.0-graalpy312-graalpy250_312_native-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:1d54fb5b31dea401a41af3f8a7d2512e9b6a6a005491e6166c7e4ffab9639a9c" },
     { url = "https://mirrors.aliyun.com/pypi/packages/c8/8d/302cb2057b7513327b4d575cff6b1d066ee6431a5357fc3f8867cd684406/jiter-0.15.0-graalpy312-graalpy250_312_native-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:54d5d6090cdc1b7c9e780dfb04949a990adb1e301a2fc0bbcee7de4638d33f9a" },
+]
+
+[[package]]
+name = "jiuwenmemory"
+version = "0.2.0"
+source = { editable = "." }
+dependencies = [
+    { name = "jieba" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.0", source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }, marker = "python_full_version >= '3.12'" },
+    { name = "openai" },
+    { name = "pyyaml" },
+]
+
+[package.optional-dependencies]
+deploy = [
+    { name = "elasticsearch" },
+    { name = "pymilvus" },
+    { name = "pyyaml" },
+    { name = "redis" },
+]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+]
+embed = [
+    { name = "flagembedding" },
+    { name = "torch" },
+    { name = "transformers" },
+]
+mcp = [
+    { name = "mcp" },
+    { name = "pyyaml" },
+]
+nlp = [
+    { name = "hanlp" },
+    { name = "spacy" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "elasticsearch", marker = "extra == 'deploy'", specifier = ">=8,<9" },
+    { name = "flagembedding", marker = "extra == 'embed'", specifier = ">=1.2" },
+    { name = "hanlp", marker = "extra == 'nlp'", specifier = ">=2.1" },
+    { name = "jieba", specifier = ">=0.42" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2" },
+    { name = "numpy", specifier = ">=1.24" },
+    { name = "openai", specifier = ">=1.0" },
+    { name = "pymilvus", marker = "extra == 'deploy'", specifier = ">=2.4" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0,<9.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0,<7.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "pyyaml", marker = "extra == 'deploy'", specifier = ">=6" },
+    { name = "pyyaml", marker = "extra == 'mcp'", specifier = ">=6" },
+    { name = "redis", marker = "extra == 'deploy'", specifier = ">=5" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
+    { name = "spacy", marker = "extra == 'nlp'", specifier = ">=3.7" },
+    { name = "torch", marker = "extra == 'embed'", specifier = ">=2.0" },
+    { name = "transformers", marker = "extra == 'embed'", specifier = ">=4.39,<5" },
+]
+provides-extras = ["dev", "nlp", "embed", "deploy", "mcp"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0,<9.0" },
+    { name = "pytest-cov", specifier = ">=6.0,<7.0" },
+    { name = "ruff", specifier = ">=0.8" },
 ]
 
 [[package]]

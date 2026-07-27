@@ -16,11 +16,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime
+from typing import Any
 
 from common.type_def import (
     AuditEvent,
     Context,
     FilterClause,
+    FilterExpr,
     MemoryUnit,
     Modality,
     Scope,
@@ -55,7 +57,7 @@ class MemoryAPI(ABC):
         identity: Scope,
         assets: list[str] | None = None,
         tags: list[str] | None = None,
-        metadata: dict[str, str] | None = None,
+        metadata: dict[str, Any] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
         """同步写入记忆：``scope`` 为写入目标范围、``identity`` 为调用方身份
@@ -75,7 +77,7 @@ class MemoryAPI(ABC):
         identity: Scope,
         assets: list[str] | None = None,
         tags: list[str] | None = None,
-        metadata: dict[str, str] | None = None,
+        metadata: dict[str, Any] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
         """异步（协程）写入记忆：语义与 :meth:`write` 一致（同样以
@@ -89,7 +91,7 @@ class MemoryAPI(ABC):
         context: Context,
         *,
         identity: Scope,
-        filters: list[FilterClause] | None = None,
+        filters: FilterExpr | list[FilterClause] | dict | None = None,
         as_of: datetime | None = None,
         top_k: int = 10,
         disclosure: DisclosureLevel = DisclosureLevel.L0,
@@ -101,8 +103,8 @@ class MemoryAPI(ABC):
         拆开：scope 作独立轴穿透；``extensions`` 中约定 key ``max_tokens``（自适应披露预算）
         被解析为 int 写入 ``RetrievalQuery`` 由披露阶段消费，其余 ``extensions`` 写入调用级
         options、顺 parser 进 ``ParsedQuery`` 供自定义检索模块按约定 key 读取；Context
-        本身不下沉。``filters`` 标签/元数据前置过滤（结构化
-        :class:`~common.type_def.FilterClause` 列表，支持等值/集合/范围，AND 组合），
+        本身不下沉。``filters`` 在本边界兼容旧 list、单 clause 和 dict DSL，并立即
+        规范化为支持 AND/OR/NOT 的 :class:`~common.type_def.FilterExpr`，
         ``as_of`` 时间点回溯（双时间模型），``disclosure`` 渐进式披露层级，
         ``with_trajectory`` 返回检索轨迹。"""
 
