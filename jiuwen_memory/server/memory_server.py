@@ -220,9 +220,15 @@ async def startup_event():
     """Initialize the memory engine with stores and configuration."""
     try:
         # 通过 store_factory 根据 .env 装配 KV / DB / Vector store
-        engine = create_async_engine_from_env()
-        kv_store = create_kv_store(engine)
-        db_store = create_db_store(engine)
+        # KV 与 DB 解耦为两个独立 engine（指向同一 sqlite_db.db，WAL 下并发安全）：
+        # KV 承载 DistributedLock（高频短写：每 3s renew_exclusive）+ 配置键，
+        # DB 承载 message_store（长事务：add_messages 多次写 + LLM 提取）。
+        # 共用 engine 时二者抢同一把库级写锁，长稳 1h 后写者堆积、5s busy_timeout
+        # 顶不住开始掉 500。解耦后两连接池独立，短事务与长事务不再互相同步等待。
+        kv_engine = create_async_engine_from_env()
+        db_engine = create_async_engine_from_env()
+        kv_store = create_kv_store(kv_engine)
+        db_store = create_db_store(db_engine)
 
         # index_backend 决定 memory_index 后端：simple（缺省，向量）/ file（markdown+SQLite）
         index_backend = os.getenv("INDEX_BACKEND", "simple").strip().lower()
