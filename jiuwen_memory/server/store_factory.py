@@ -57,7 +57,7 @@ def create_async_engine_from_env() -> AsyncEngine:
     - ``PRAGMA busy_timeout=30000``：与 ``timeout`` 对齐，给底层 sqlite3 连接也兜底。
     PRAGMA 走 ``connect`` 事件而非一次性 ``engine.connect()`` 设置：aiosqlite 连接池
     每条新连接都需这套 PRAGMA，否则换连接后又退回 rollback journal。
-    非 sqlite（gaussdb 等）保持原行为。
+    非 sqlite（gaussdb 等）保持 QueuePool 原行为。
     """
     data_directory = _data_dir()
     db_url = os.getenv("DB_URL", "").strip()
@@ -74,18 +74,20 @@ def create_async_engine_from_env() -> AsyncEngine:
 
     is_sqlite = db_url.startswith("sqlite")
     connect_args: dict = {}
+    engine_kwargs: dict = {
+        "pool_pre_ping": True,
+        "echo": False,
+    }
     if is_sqlite:
         # timeout = busy_timeout（秒）；aiosqlite 把它透传给底层 sqlite3 Connection。
         # check_same_thread=False：aiosqlite 自身已在不同线程跑连接，必须关掉
         # sqlite3 的线程校验，否则跨线程 execute 报 ProgrammingError。
         connect_args = {"timeout": 30, "check_same_thread": False}
+        from sqlalchemy import pool
+        engine_kwargs["poolclass"] = pool.NullPool
 
-    engine = create_async_engine(
-        db_url,
-        pool_pre_ping=True,
-        echo=False,
-        connect_args=connect_args,
-    )
+    engine_kwargs["connect_args"] = connect_args
+    engine = create_async_engine(db_url, **engine_kwargs)
 
     if is_sqlite:
         from sqlalchemy import event

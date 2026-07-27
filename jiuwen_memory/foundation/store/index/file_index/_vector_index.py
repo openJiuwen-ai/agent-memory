@@ -161,6 +161,8 @@ class VectorIndex:
         self._vec_available = False
         self._dims: int | None = None
         self._fts_available = False
+
+        self._conn_lock = asyncio.Lock()
         self._ensure_schema()
         self._try_load_vec()
         self._recover_dims_if_exists()
@@ -484,8 +486,9 @@ class VectorIndex:
     async def _get_embedding(self, text: str) -> list[float]:
         if self._embedding_model is None:
             raise RuntimeError("embedding model not initialized")
-        # cache 命中查询走线程池，不阻塞事件循环
-        cached = await asyncio.to_thread(self._get_cached_embedding_sync, text)
+        # cache 命中查询走线程池 + _conn_lock 串行化（与其他 to_thread 的 _conn 访问隔离）
+        async with self._conn_lock:
+            cached = await asyncio.to_thread(self._get_cached_embedding_sync, text)
         if cached is not None:
             return cached
         # 未命中：embed_documents 是网络 IO，留在 async 侧 await
@@ -493,8 +496,9 @@ class VectorIndex:
         if not vec:
             return []
         v = vec[0]
-        # 回写 cache 走线程池
-        await asyncio.to_thread(self._cache_embedding_sync, text, v)
+
+        async with self._conn_lock:
+            await asyncio.to_thread(self._cache_embedding_sync, text, v)
         return v
 
     # ------------------------------------------------------------------
@@ -525,10 +529,12 @@ class VectorIndex:
         # 收拢到 _upsert_sync，在线程池执行，避免阻塞事件循环（长稳缺陷修复）。
         # _get_embedding 已是 async（含网络调用），不在 _upsert_sync 内重复。
         # doc 透传以读取 Ebbinghaus forgetting flags（blacklisted/is_important）。
-        await asyncio.to_thread(
-            self._upsert_sync, doc, user_id, scope_id, path,
-            start_line, end_line, text, vec,
-        )
+
+        async with self._conn_lock:
+            await asyncio.to_thread(
+                self._upsert_sync, doc, user_id, scope_id, path,
+                start_line, end_line, text, vec,
+            )
 
     def _upsert_sync(
         self,
@@ -814,7 +820,7 @@ class VectorIndex:
                 )
         self._conn.commit()
 
-    def delete_by_path(self, path: str) -> None:
+    async def delete_by_path(self, path: str) -> None:
         """Delete all chunks belonging to a ``{Type}.md`` file, plus its
         ``files`` table entry.
 
@@ -822,7 +828,10 @@ class VectorIndex:
         is removed, or the user deletes the file). Encapsulates chunks_vec /
         chunks_fts cleanup so callers don't reach into the connection.
         """
+        async with self._conn_lock:
+            await asyncio.to_thread(self._delete_by_path_sync, path)
 
+    def _delete_by_path_sync(self, path: str) -> None:
         sql = "SELECT rowid FROM chunks WHERE path=?"
         cur = self._conn.execute(sql, (path,))
         rowids = [r[0] for r in cur.fetchall()]
@@ -835,7 +844,11 @@ class VectorIndex:
     # batch delete
     # ------------------------------------------------------------------
 
-    def delete_by_user(self, user_id: str) -> None:
+    async def delete_by_user(self, user_id: str) -> None:
+        async with self._conn_lock:
+            await asyncio.to_thread(self._delete_by_user_sync, user_id)
+
+    def _delete_by_user_sync(self, user_id: str) -> None:
         sql = "SELECT rowid FROM chunks WHERE user_id=?"
         cur = self._conn.execute(sql, (user_id,))
         rowids = [r[0] for r in cur.fetchall()]
@@ -848,7 +861,11 @@ class VectorIndex:
         )
         self._conn.commit()
 
-    def delete_by_scope(self, scope_id: str) -> None:
+    async def delete_by_scope(self, scope_id: str) -> None:
+        async with self._conn_lock:
+            await asyncio.to_thread(self._delete_by_scope_sync, scope_id)
+
+    def _delete_by_scope_sync(self, scope_id: str) -> None:
         sql = "SELECT rowid FROM chunks WHERE scope_id=?"
         cur = self._conn.execute(sql, (scope_id,))
         rowids = [r[0] for r in cur.fetchall()]
@@ -860,7 +877,11 @@ class VectorIndex:
         )
         self._conn.commit()
 
-    def delete_by_user_and_scope(self, user_id: str, scope_id: str) -> None:
+    async def delete_by_user_and_scope(self, user_id: str, scope_id: str) -> None:
+        async with self._conn_lock:
+            await asyncio.to_thread(self._delete_by_user_and_scope_sync, user_id, scope_id)
+
+    def _delete_by_user_and_scope_sync(self, user_id: str, scope_id: str) -> None:
         sql = "SELECT rowid FROM chunks WHERE user_id=? AND scope_id=?"
         cur = self._conn.execute(sql, (user_id, scope_id))
         rowids = [r[0] for r in cur.fetchall()]
@@ -948,25 +969,28 @@ class VectorIndex:
             file_blocks = parse_blocks(file_content)
         file_map: dict[str, Block] = {b.mem_id: b for b in file_blocks}
 
-        # 2-3. Query DB state + classify（SELECT + 内存分类）走线程池，避免阻塞事件循环。
+        # 2-3. Query DB state + classify（SELECT + 内存分类）走线程池 + _conn_lock 串行化。
         #      返回 (to_upsert, to_reline, to_delete, short_circuit_flag)。
-        to_upsert, to_reline, to_delete, short_circuited = await asyncio.to_thread(
-            self._classify_sync, path, file_map
-        )
+        async with self._conn_lock:
+            to_upsert, to_reline, to_delete, short_circuited = await asyncio.to_thread(
+                self._classify_sync, path, file_map
+            )
 
         # Short-circuit if nothing changed
         if short_circuited:
             # Still update files table (mtime/size may have changed, hash unchanged)
-            await asyncio.to_thread(self._upsert_file_record, path, file_content)
-            await asyncio.to_thread(self._conn.commit)
+            async with self._conn_lock:
+                await asyncio.to_thread(self._upsert_file_record, path, file_content)
+                await asyncio.to_thread(self._conn.commit)
             return
 
-        # 4. Execute deletions（同步 delete 收拢到线程池）
+        # 4. Execute deletions（同步 delete 收拢到线程池，加写锁串行化）
         if to_delete:
-            await asyncio.to_thread(self._delete_many_sync, to_delete)
+            async with self._conn_lock:
+                await asyncio.to_thread(self._delete_many_sync, to_delete)
 
         # 5. Execute upserts (only changed/new blocks get fresh embeddings)
-        #    upsert 是 async（含 embedding 网络调用 + 内部已自卸载），留在 async 侧逐个 await。
+        #    upsert 内部已自持 _conn_lock（每 block 一次），不在此持锁以避免死锁。
         for block in to_upsert:
             doc = MemoryDoc(
                 id=block.mem_id,
@@ -986,10 +1010,12 @@ class VectorIndex:
                 ),
             )
 
-        # 6-7. Fix line numbers（reline UPDATE）+ Update files table + commit，收拢到线程池。
-        await asyncio.to_thread(
-            self._reline_and_finalize_sync, path, file_content, to_reline
-        )
+        # 6-7. Fix line numbers（reline UPDATE）+ Update files table + commit，
+        #      收拢到线程池，加写锁串行化。
+        async with self._conn_lock:
+            await asyncio.to_thread(
+                self._reline_and_finalize_sync, path, file_content, to_reline
+            )
 
     def _classify_sync(
         self,
@@ -1309,22 +1335,25 @@ class VectorIndex:
         """
         c = constraints or SearchConstraints()
         overfetch = max(top_k * _OVERFETCH_MULTIPLIER, 20)
-        # 三个 _search_* 是同步 sqlite3 查询（全表/分区扫描），跑在线程池避免阻塞
-        # 事件循环（长稳缺陷修复）。merge/sort 是纯内存，留 async 侧。
+        # 三个 _search_* 是同步 sqlite3 查询（全表/分区扫描），跑在线程池 + _conn_lock
+        # 串行化以避免与并发写共享同一 sqlite3 连接。merge/sort 是纯内存，留 async 侧。
         if self._vec_available and self._dims == len(query_vec):
-            vec_hits = await asyncio.to_thread(
-                self._search_vec, tenant, query_vec, c.mem_types, overfetch, c.filters
-            )
+            async with self._conn_lock:
+                vec_hits = await asyncio.to_thread(
+                    self._search_vec, tenant, query_vec, c.mem_types, overfetch, c.filters
+                )
         else:
-            vec_hits = await asyncio.to_thread(
-                self._search_fallback, tenant, query_vec, c.mem_types, overfetch, c.filters
-            )
-        fts_hits = (
-            await asyncio.to_thread(
-                self._search_fts, tenant, c.query_text, c.mem_types, overfetch, c.filters
-            )
-            if self._fts_available else []
-        )
+            async with self._conn_lock:
+                vec_hits = await asyncio.to_thread(
+                    self._search_fallback, tenant, query_vec, c.mem_types, overfetch, c.filters
+                )
+        if self._fts_available:
+            async with self._conn_lock:
+                fts_hits = await asyncio.to_thread(
+                    self._search_fts, tenant, c.query_text, c.mem_types, overfetch, c.filters
+                )
+        else:
+            fts_hits = []
         merged: dict[str, float] = {}
         for mid, s in vec_hits:
             merged[mid] = merged.get(mid, 0.0) + VECTOR_WEIGHT * s
