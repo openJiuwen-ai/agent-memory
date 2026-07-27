@@ -9,7 +9,6 @@
 - :class:`~construction.abstractor.Abstractor` 抽象与精炼/升华（高抽象粒度）
 - :class:`~construction.associator.Associator` 关联分析（实体/因果/引用）
 - :class:`~construction.classifier.Classifier` 多维分类（认知角色/主题/重要度）
-- :class:`~construction.consolidation.Consolidator` 落盘前隐式巩固
 - :class:`~construction.index_builder.IndexBuilder` 多形式索引构建
 - :class:`~construction.evolver.Evolver` 自演进闭环
 
@@ -31,7 +30,6 @@ class OperatorType(str, Enum):
     ABSTRACTOR = "abstractor"
     ASSOCIATOR = "associator"
     CLASSIFIER = "classifier"
-    CONSOLIDATOR = "consolidator"
     INDEX_BUILDER = "index_builder"
     EVOLVER = "evolver"
     LAYER_ANNOTATOR = "layer_annotator"

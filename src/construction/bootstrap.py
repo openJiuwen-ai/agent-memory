@@ -19,7 +19,6 @@ def register_constructors() -> None:
     import_module("construction.abstractor_impl")
     import_module("construction.associator_impl")
     import_module("construction.classifier_impl")
-    import_module("construction.consolidation_impl")
     import_module("construction.dedup_impl")
     import_module("construction.evolver_impl")
     import_module("construction.extractor_impl")

@@ -59,15 +59,15 @@
 `write` 的 `metadata["infer"]` 是调用级开关，控制写入时是否同步抽取派生记忆（对齐 mem0 `add(infer=True)`）：
 
 - **真值判定**：`str(metadata.get("infer", "")).strip().lower() == "true"`——大小写/空白不敏感，仅字符串 `"true"` 触发，其余值（含 `"false"`/缺省/空）均走默认路径。
-- **`infer="true"`**：原始记忆落 KV 真源但**不建索引**；hot path 同步走 `Engine → Evolver.evolve(units, EXTRACT)`——Extractor 抽取派生记忆 → Consolidator 判定+落盘+建索引（ADD/UPDATE/SUPERSEDE/NOOP）。返回新增或更新的派生单元；全部 NOOP 时合法返回空列表。
-- **缺省 / 非 `"true"`（infer=false）**：原文经 `classifier.classify` 打 tier+tags，再统一交给 Consolidator 落盘。classifier 未注入时跳过。
+- **`infer="true"`**：原始记忆落 KV 真源但**不建索引**；hot path 同步走 `Engine → Evolver.evolve(units, EXTRACT)`——Extractor 抽取派生记忆 → Evolver 判定+落盘+建索引（ADD/UPDATE/SUPERSEDE/NOOP）。`OrchestratingEvolver` 走 `_dedup_batch`（判定+落盘耦合），`DynamicEvolver` 走 consolidate(判定)→reflect→落盘。返回新增或更新的派生单元；全部 NOOP 时合法返回空列表。
+- **缺省 / 非 `"true"`（infer=false）**：原文经 `classifier.classify` 打 tier+tags，再直接落 `/memory/{id}` + 建索引（直写路径，不去重）。classifier 未注入时跳过。
 - **evolver 缺失**：`infer="true"` 但装配未注入 `Evolver` 时 Engine 抛 `RuntimeError`——装配问题暴露而非静默降级。默认装配 `evolver: orchestrating` 总是注入。
 
 #### procedural 开关（write 的过程记忆抽取）
 
 `write` 的 `metadata["procedural"]` 是独立于 infer 的调用级开关（详见 F02 决策8）：
 
-- **`procedural="true"`**：原文**不落 KV**；喂 `Evolver.evolve(units, EXTRACT)`。extractor 把本轮汇总成一条 PROCEDURAL 执行历史，再交给 Consolidator。
+- **`procedural="true"`**：原文**不落 KV**；喂 `Evolver.evolve(units, EXTRACT)`。extractor 把本轮汇总成一条 PROCEDURAL 执行历史，再由 Evolver 落盘（`DynamicEvolver` 也走父类 procedural 路径，不判定）。
 - procedural 与 infer 互斥：procedural=true 时原文不落 `/messages/`、不收集 context。语义是"把这轮做了什么记成一条可检索 how-to"。
 
 #### 动态抽取与巩固 prompt
@@ -76,10 +76,9 @@
   或 `metadata.update(...)` 传值；不存在 `metadata.append()`。
 - `_extract_prompt_<strategy>` 仅在 `infer=true` 时触发动态抽取；支持任意非空 strategy，
   每个策略调用一次。无动态 prompt 时回退旧 Extractor。
-- `_consolidation_prompt_<strategy>` 为落盘前动态巩固 prompt。所有默认单 pipeline write
-  都经过 `consolidation_2`；无 prompt 或输出不合法时回退 `consolidation_1`。
-- 内核在自定义 prompt 后追加固定 JSON schema，调用方不能改变候选字段或
-  ADD/UPDATE/SUPERSEDE/NOOP 决策集合。
+- `_consolidation_prompt_<strategy>` 为落盘前动态巩固 prompt 的 **key**（引用 yml `prompts` 段的命名 prompt）。运行时由 `PromptRegistry` 按 `phase=consolidate + key` 查真实文本。`DynamicEvolver` 消费；无 prompt 或输出不合法时回退规则判定（高相似度 NOOP，否则 ADD）。
+- `_reflect_prompt_<strategy>` 为反思步 prompt 的 key（同上，`phase=reflect`）。reflect 默认 no-op，子类可覆盖 `_reflect_step`。
+- LLM 输出格式由 prompt 自身约定，内核不追加固定 schema。
 
 #### infer 上下文增强与 KV 前缀分离（增量）
 

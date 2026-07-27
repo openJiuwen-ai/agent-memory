@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/construction/ |
-| 最近一次修订日期 | 2026-07-26 |
+| 最近一次修订日期 | 2026-07-25 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/common/F01-memory-layer.md |
 
 ## 范围 / 边界
@@ -35,10 +35,11 @@
 5. **所有算子必须实现 `operator_type()` 和 `health()`**：继承自 `ConstructionOperator`。
 6. **构建与存储解耦**：算子负责构建逻辑（生成索引投影），持久化由注入的 Store 承担。
 7. **scope 原生隔离**：构建索引记录时把来源 `MemoryUnit.scope` 落到记录的专用 `scope` 字段（`VectorRecord`/`Document`/`Node` 等），使检索得以按 scope 原生隔离。
-8. **去重召回与判定分离**：去重召回（用哪个索引）由 `Dedup` 接口承担，`Consolidator` 负责阈值、LLM 判定及落盘动作。装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`。
-9. **构建层不依赖 control**：Consolidator 的 SUPERSEDE 与 Evolver 的 FORGET 直接通过 `KVStore.update` 完成，不经 `LifecycleManager`。
+8. **去重召回与判定分离**：去重召回（用哪个索引）由 `Dedup` 接口承担，判定（ADD/UPDATE/SUPERSEDE/NOOP）与落盘由 Evolver 实现承担——`OrchestratingEvolver._evolve_extract`（legacy，`_dedup_batch` 判定+落盘耦合）或 `DynamicEvolver._evolve_extract`（dynamic，consolidate 只判定、落盘延后到 reflect 之后）。装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`。
+9. **构建层不依赖 control**：`DynamicEvolver`/`OrchestratingEvolver` 的 SUPERSEDE 与 FORGET 直接通过 `KVStore.update` 完成，不经 `LifecycleManager`。
 10. **Dedup 与 IndexBuilder 共享底层 Store**：去重召回检索的是已索引内容，`Dedup` 实现取的 `VectorStore`/`FulltextStore` 必须与 IndexBuilder 写入的是同一实例（按字段名缓存命中）。
 11. **分类结果落字段**：当前 Classifier 只更新 `MemoryUnit.tier` 与 `MemoryUnit.tags`，不约定额外分类 metadata 键。
+12. **consolidate 只判定不落盘**：`DynamicEvolver` 的 consolidate 步只产出 `ConsolidateDecision`（候选 + 决策 + 已有记忆 + 相似度），落盘延后到 reflect 之后统一执行。reflect 默认 no-op，子类可覆盖 `_reflect_step`。
 
 ## 接口契约
 
@@ -46,14 +47,14 @@
 
 ```python
 class OperatorType(str, Enum):
-    EXTRACTOR / ABSTRACTOR / ASSOCIATOR / CLASSIFIER / CONSOLIDATOR / INDEX_BUILDER / EVOLVER
+    EXTRACTOR / ABSTRACTOR / ASSOCIATOR / CLASSIFIER / INDEX_BUILDER / EVOLVER / LAYER_ANNOTATOR
 
 class ConstructionOperator(ABC):
     def operator_type(self) -> OperatorType  # 自描述
     def health(self) -> None                 # 存活探测
 ```
 
-> `OperatorType` 枚举无独立 DEDUP 值——`Dedup` 实现复用 `OperatorType.EVOLVER`（去重召回服务于 evolver）。
+> `OperatorType` 枚举无独立 DEDUP 值——`Dedup` 实现复用 `OperatorType.EVOLVER`（去重召回服务于 evolver）。`DynamicEvolver` 是 `OrchestratingEvolver` 的子类，同样返回 `OperatorType.EVOLVER`——它是 evolver 的动态 prompt 变体，通过覆盖 `_evolve_extract` 切换 EXTRACT 路径。
 
 ### Extractor（`extractor.py`）
 
@@ -67,23 +68,35 @@ class ConstructionOperator(ABC):
 产出——由 Evolver 抽取后委托 `LayerAnnotator` 生成（见下文 LayerAnnotator 节 + F01-memory-layer）。
 
 动态实现识别 `_extract_prompt_<strategy>`。`infer=true` 仍是 write 触发抽取的条件；
-每个非空自定义策略执行一次 LLM 调用，metadata 中的 prompt 作为 system prompt 原样发送，
-由调用方自行约束响应格式。`DynamicLLMExtractor` 默认按 JSON 解析，并开放
+每个非空自定义策略执行一次 LLM 调用。metadata 中 `_extract_prompt_<strategy>` 的值是
+prompt 的 **key**（引用 yml `prompts.extract` 段的命名 prompt），运行时由
+`PromptRegistry` 按 `phase=extract + key` 查真实文本作为 system prompt 发给 LLM；
+registry 未配置或 key 缺失时回退把值本身当文本用（兼容内联文本）。响应格式由 prompt
+自身约定，调用方在 prompt 文本里写清。`DynamicLLMExtractor` 默认按 JSON 解析，并开放
 `parse_response(response, sources, strategy) -> list[MemoryUnit]` 继承扩展点，允许新实现
 解析 XML 或其它响应格式。格式相关中间结构不得越过 `parse_response` 边界；所有实现最终
 仍向 Evolver 返回 `list[MemoryUnit]`。没有动态 prompt 时委托配置的旧 Extractor。
 
-### Consolidator（`consolidation.py`）
+### DynamicEvolver（`evolver_impl/dynamic_evolver.py`）
 
-候选记忆最终落盘前执行隐式巩固。
+`OrchestratingEvolver` 的子类，覆盖 `_evolve_extract` 走动态 prompt 四步编排：`extract → consolidate(判定) → reflect → 落盘`。其余三模式（CONSOLIDATE/ASSOCIATE/FORGET）继承父类行为。注册名 `dynamic`，与 `orchestrating` 平级，同属 `evolver` 顶层命名空间——装配或 pipeline profile 选哪个 evolver 实例即启用哪条 EXTRACT 路径。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `consolidate` | `(candidates: list[MemoryUnit]) -> EvolveResult` | 召回已有记忆，判定并执行 ADD/UPDATE/SUPERSEDE/NOOP |
+| `_evolve_extract` | `(units: list[MemoryUnit]) -> EvolveResult`（覆盖父类） | 动态四步：抽取候选 → 巩固判定 → 反思 → 按判定落盘 |
 
-`consolidation_1` 保留原阈值短路与 LLM 去重行为。`consolidation_2` 识别
-`_consolidation_prompt_<strategy>`，追加固定四态 JSON 契约；无 prompt、响应非法或
-引用未知 existing id 时回退 `consolidation_1`。动态抽取候选按同名 strategy 配对。
+**四步语义**：
+
+1. **extract**：委托父类持有的 `Extractor.extract`，产出派生候选；把源 unit 的 consolidation/reflect prompt key 透传给候选；调 `_annotate_layers` 标注 L0/L1。
+2. **consolidate（只判定不落盘）**：对每个候选调 `Dedup.recall` 召回已有记忆，按相似度阈值 + LLM 判定产出 `ConsolidateDecision`（候选 + `DedupDecision` + 已有记忆 + 相似度）。无命中 → ADD；高相似度（≥ `dedup_high_similarity`）→ NOOP；中段（`dedup_medium_similarity` ~ high）→ 查 `PromptRegistry` 取 consolidate prompt 调 LLM 判定；无 prompt 或 LLM 失败 → 回退规则。
+3. **reflect（默认 no-op）**：基类 `_reflect_step` 直接返回候选；子类可覆盖 `_reflect_step` 以在落盘前做反思修正。
+4. **落盘**：按每个 `ConsolidateDecision.decision` 执行 ADD/UPDATE/SUPERSEDE/NOOP——ADD/SUPERSEDE 调 `KVStore.insert` + `IndexBuilder.build`，UPDATE 调 LLM 合并内容后 `KVStore.update` + `IndexBuilder.update`，NOOP 跳过。
+
+**procedural 路径**：`_evolve_extract` 检测到 procedural=true 时 `super()._evolve_extract(units)` 走父类行为（不收集 context、不判定、直接落盘）——procedural 语义是"记成一条 how-to"，无需动态判定。
+
+**PromptRegistry**（`prompt_registry.py`）：从 yml 顶层 `prompts` 段加载的命名 prompt 文本，按 `phase + key` 查询。metadata 只写 prompt 的 **key**（引用 yml 命名 prompt），运行时按 key 查真实文本。三步（extract/consolidate/reflect）各按对应 phase 查；extract 步的 registry 由 `ExtractorProducer._build` 注入 `DynamicLLMExtractor`，consolidate/reflect 步的 registry 由 `DynamicEvolver._build` 注入。两者都从 `ctx.globals["prompts"]` 加载，共享同一份 yml `prompts` 段。phase 常量：`PHASE_EXTRACT` / `PHASE_CONSOLIDATE` / `PHASE_REFLECT`。
+
+**prompt key 透传**：源 unit 的 `_consolidation_prompt_<strategy>` / `_reflect_prompt_<strategy>` 由 `copy_consolidation_prompts` / `copy_reflect_prompts` 透传给派生候选，供后续步骤按 key 查 PromptRegistry。`_extract_prompt_<strategy>` 由调用方在 write 时直接传入，extract 步就地消费。
 
 ### Abstractor（`abstractor.py`）
 
@@ -160,7 +173,7 @@ MemoryUnit
 
 ### Evolver（`evolver.py`）
 
-记忆自演进，持续驱动演进闭环。
+记忆自演进，持续驱动演进闭环。两个实现：`OrchestratingEvolver`（注册名 `orchestrating`，legacy）与 `DynamicEvolver`（注册名 `dynamic`，子类，EXTRACT 走动态 prompt 四步）。`evolve` 按模式分派到 `_evolve_extract` / `_evolve_consolidate` / `_evolve_associate` / `_evolve_forget` 四个可覆盖方法。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
@@ -180,11 +193,11 @@ MemoryUnit
 
 ### Dedup（`dedup.py`）
 
-去重召回，由 Consolidator 及 infer 上下文收集调用。召回 + 阈值过滤 + 加载 + 聚合取 max 全在实现内完成；判定与落盘动作归 Consolidator。
+去重召回，由 Evolver 实现（`OrchestratingEvolver._dedup_batch` / `DynamicEvolver._consolidate_step`）及 infer 上下文收集调用。召回 + 阈值过滤 + 加载 + 聚合取 max 全在实现内完成；判定与落盘动作归调用方（evolver）。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `recall` | `(candidate: MemoryUnit) -> list[tuple[MemoryUnit, float]]` | 对候选召回已有相似记忆，返回 (unit, score) 列表（按 score 降序）；已完成过滤自身、过滤非 ACTIVE、按 unit 聚合取 max、按 min_similarity 过滤低分。空列表 → Consolidator 判 ADD |
+| `recall` | `(candidate: MemoryUnit) -> list[tuple[MemoryUnit, float]]` | 对候选召回已有相似记忆，返回 (unit, score) 列表（按 score 降序）；已完成过滤自身、过滤非 ACTIVE、按 unit 聚合取 max、按 min_similarity 过滤低分。空列表 → 调用方判 ADD |
 
 **score 量纲 0~1**：向量路=cosine，倒排路=词重叠率，阈值统一复用。
 

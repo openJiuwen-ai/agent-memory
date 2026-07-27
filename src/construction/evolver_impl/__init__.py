@@ -8,5 +8,6 @@ from importlib import import_module
 from construction.evolver import EvolverProducer
 
 import_module(".orchestrating_evolver", __name__)
+import_module(".dynamic_evolver", __name__)
 
 __all__ = ["EvolverProducer"]

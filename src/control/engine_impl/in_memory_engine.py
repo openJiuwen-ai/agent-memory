@@ -28,7 +28,6 @@ from common.type_def import (
 from common.type_def.memory_codec import dumps, loads
 from construction import EvolveMode
 from construction.classifier import Classifier, ClassifierProducer
-from construction.consolidation import Consolidator, ConsolidatorProducer
 from construction.evolver import Evolver, EvolverProducer
 from construction.index_builder import IndexBuilder, IndexBuilderProducer
 from control.base import ControlOperatorType
@@ -162,7 +161,6 @@ class InMemoryEngine(MemoryEngine):
         lifecycle: LifecycleManager,
         classifier: Classifier | None = None,
         pipeline: MemoryPipeline | None = None,
-        consolidator: Consolidator | None = None,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
@@ -175,7 +173,6 @@ class InMemoryEngine(MemoryEngine):
         # classifier 可选：infer=false（默认路径）时给原文打 tier+tags；
         # None 时跳过（原文 tier 保持 EPISODIC 默认，向后兼容）。
         self._classifier = classifier
-        self._consolidator = consolidator
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
@@ -237,9 +234,6 @@ class InMemoryEngine(MemoryEngine):
         evolver = binding.evolver if binding is not None else self._evolver
         index_builder = binding.index_builder if binding is not None else self._index
         classifier = binding.classifier if binding is not None else self._classifier
-        # pipeline profile 必须显式绑定自己的 consolidator，避免误用默认 profile 的
-        # KV/Index/Dedup 实例；旧 profile 未声明时保持原直写语义。
-        consolidator = binding.consolidator if binding is not None else self._consolidator
 
         if procedural or infer:
             # 同步抽取路径（procedural / infer 共用）：原文不进默认落盘，直接喂 Evolver(EXTRACT)。
@@ -266,10 +260,6 @@ class InMemoryEngine(MemoryEngine):
         # classifier 为 None 时跳过（tier 保持 EPISODIC 默认，向后兼容）。
         if classifier is not None:
             classifier.classify(units)
-        if consolidator is not None:
-            result = consolidator.consolidate(units)
-            affected_ids = list(dict.fromkeys(result.created_ids + result.updated_ids))
-            return [self._load(scope, unit_id) for unit_id in affected_ids]
         for unit in units:
             self._kv.insert(scope, memory_key(unit.id), dumps(unit))
         index_builder.build(units)                        # hot 轻量索引
@@ -522,5 +512,4 @@ def _build(config):
         LifecycleProducer.dep(config, default="kv"),
         classifier=_opt_classifier(),
         pipeline=_opt_pipeline(),
-        consolidator=ConsolidatorProducer.dep(config, default="consolidation_2"),
     )

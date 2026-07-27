@@ -30,6 +30,10 @@ from typing import Any, Dict, Optional
 
 from common.errors import ValidationError
 
+# 保留的顶层段名：不作为命名空间解析。globals=跨切面参数；prompts=动态 prompt 文本，
+# 进 globals["prompts"] 供 PromptRegistry 加载。
+_RESERVED_TOP_NAMES = {"globals", "prompts"}
+
 
 @dataclass(frozen=True)
 class RawSpec:
@@ -78,12 +82,19 @@ class AssemblyContext:
         *,
         known_top_names: Optional[set[str]] = None,
     ) -> "AssemblyContext":
-        """从配置字典解析。``known_top_names`` 非空时校验每个顶层段是已注册的 Producer 顶层名。"""
+        """从配置字典解析。``known_top_names`` 非空时校验每个顶层段是已注册的 Producer 顶层名。
+
+        ``globals`` 与 ``prompts`` 是保留段：``globals`` 进跨切面参数；``prompts`` 进
+        ``globals["prompts"]`` 供 :class:`~construction.prompt_registry.PromptRegistry` 加载。
+        """
         data = data or {}
         globals_ = dict(data.get("globals", {}) or {})
+        prompts = data.get("prompts")
+        if prompts is not None:
+            globals_["prompts"] = prompts
         namespaces: Dict[str, Dict[str, RawSpec]] = {}
         for top_name, section in data.items():
-            if top_name == "globals":
+            if top_name in _RESERVED_TOP_NAMES:
                 continue
             if known_top_names is not None and top_name not in known_top_names:
                 raise ValidationError(
@@ -107,7 +118,8 @@ def _parse_instance(top_name: str, inst_name: str, raw: Any) -> RawSpec:
         return RawSpec(target=raw)
     if not isinstance(raw, Mapping):
         raise ValidationError(
-            f"{top_name}.{inst_name!r} 应是实现名字符串或含 'target' 的映射，得到 {type(raw).__name__}"
+            f"{top_name}.{inst_name!r} 应是实现名字符串或含 'target' 的映射，"
+            f"得到 {type(raw).__name__}"
         )
     target = raw.get("target")
     if not target:
