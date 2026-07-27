@@ -5,7 +5,7 @@ import json
 import asyncio
 import time
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Callable, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Optional, Tuple
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
@@ -982,6 +982,9 @@ class LongTermMemory(metaclass=Singleton):
                         scope_id=scope_id,
                         user_id=user_id
                     )
+                    await self._cleanup_forgetting_traces(
+                        scope_id=scope_id, user_id=user_id,
+                    )
         await self.scope_user_mapping_manager.delete_by_scope_id(scope_id=scope_id)
         memory_logger.debug(
             "Successfully deleted memories.",
@@ -1497,36 +1500,56 @@ class LongTermMemory(metaclass=Singleton):
                 scope_id=scope_id,
                 mem_id=mem_id
             )
-            # Step 8a: synchronously clean up the Ebbinghaus forgetting
-            # traces for this mem_id so a later recall/re-add does not
-            # pick up stale state. Both KV writes are best-effort —
-            # missing key is NOT an error.
             await self._cleanup_forgetting_traces(
                 scope_id=scope_id, user_id=user_id, mem_id=mem_id,
             )
 
     async def _cleanup_forgetting_traces(
-        self, *, scope_id: str, user_id: str, mem_id: str,
+        self, *, scope_id: str, user_id: str,
+        mem_id: Optional[str] = None,
     ) -> None:
-        """Drop retrieve_history KV key for a deleted mem_id.
+        """Drop retrieve_history KV traces for a delete operation.
 
-        Called from delete_mem_by_id after the doc is removed from the
-        vector store. All errors are logged and swallowed — main delete
-        flow already succeeded; this is housekeeping.
+        - ``mem_id`` given  → drop the single ``retrieve_history/{user}/
+          {scope}/{mem_id}`` key (per-mem delete path).
+        - ``mem_id`` is None → drop every ``retrieve_history/{user}/`` key
+          via ``delete_by_prefix`` (batch delete path; covers all scopes
+          for that user).
+
+        Called from delete_mem_by_id / delete_mem_by_user_id /
+        delete_mem_by_scope after the doc(s) are removed from the store.
+        All errors are logged and swallowed — the main delete flow already
+        succeeded; this is housekeeping.
         """
         if not self.kv_store:
             return
-        # retrieve_history KV key
-        rh_key = self._retrieve_history_key(user_id, scope_id, mem_id)
-        try:
-            await self.kv_store.delete(rh_key)
-        except Exception as exc:
-            memory_logger.warning(
-                "cleanup_forgetting_traces: delete retrieve_history failed: %s",
-                str(exc),
-                event_type=LogEventType.MEMORY_PROCESS,
-                user_id=user_id, scope_id=scope_id, mem_id=mem_id,
+        if mem_id:
+            # Per-mem: exact key drop.
+            rh_key = self._retrieve_history_key(user_id, scope_id, mem_id)
+            try:
+                await self.kv_store.delete(rh_key)
+            except Exception as exc:
+                memory_logger.warning(
+                    "cleanup_forgetting_traces: delete retrieve_history failed: %s",
+                    str(exc),
+                    event_type=LogEventType.MEMORY_PROCESS,
+                    user_id=user_id, scope_id=scope_id, mem_id=mem_id,
+                )
+        else:
+            # Batch: prefix sweep over the user's retrieve_history keys.
+            rh_prefix = (
+                f"{RETRIEVE_HISTORY_PREFIX}{VariableManager.SEPARATOR}"
+                f"{user_id}{VariableManager.SEPARATOR}"
             )
+            try:
+                await self.kv_store.delete_by_prefix(rh_prefix)
+            except Exception as exc:
+                memory_logger.warning(
+                    "cleanup_forgetting_traces: delete retrieve_history prefix failed: %s",
+                    str(exc),
+                    event_type=LogEventType.MEMORY_PROCESS,
+                    user_id=user_id, scope_id=scope_id,
+                )
 
     # ---------------------------------------------------------------- recall path
 
@@ -1661,6 +1684,9 @@ class LongTermMemory(metaclass=Singleton):
             await self.write_manager.delete_mem_by_user_id(
                 user_id=user_id,
                 scope_id=scope_id
+            )
+            await self._cleanup_forgetting_traces(
+                scope_id=scope_id, user_id=user_id,
             )
 
     async def update_mem_by_id(self,
