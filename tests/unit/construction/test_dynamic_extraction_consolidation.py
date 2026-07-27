@@ -400,14 +400,12 @@ def test_dynamic_evolver_invalid_llm_response_falls_back_to_add():
     evolver, kv, _ = _make_evolver(
         llm=_ScriptedLLM(["not-json"]),
         dedup_hits=[],
+        prompts={"consolidate": {"custom": "自定义策略"}},
     )
     candidate = _unit(
         "candidate",
         "新事实",
         {"_consolidation_prompt_custom": "custom"},
-    )
-    evolver._prompts = PromptRegistry.from_dict(  # noqa: SLF001
-        {"consolidate": {"custom": "自定义策略"}}
     )
 
     result = evolver.evolve([candidate], EvolveMode.EXTRACT)
@@ -473,5 +471,5 @@ def test_evolver_producer_registers_dynamic():
 
     bootstrap.register_constructors()
 
-    assert "dynamic" in EvolverProducer._registry  # noqa: SLF001
-    assert "orchestrating" in EvolverProducer._registry  # noqa: SLF001
+    assert "dynamic" in EvolverProducer.known()
+    assert "orchestrating" in EvolverProducer.known()

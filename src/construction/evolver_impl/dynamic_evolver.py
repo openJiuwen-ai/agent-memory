@@ -278,7 +278,8 @@ class DynamicEvolver(OrchestratingEvolver):
         if decision == DedupDecision.NOOP:
             return
         if decision == DedupDecision.UPDATE:
-            assert existing is not None
+            if existing is None:
+                raise ValueError("UPDATE 决策必须提供 existing memory")
             merged = self._merge_content(existing, candidate)
             if existing.segments:
                 existing.segments[0].content = merged
@@ -299,7 +300,8 @@ class DynamicEvolver(OrchestratingEvolver):
             self._index.update([existing])
             result.updated_ids.append(existing.id)
             return
-        assert existing is not None
+        if existing is None:
+            raise ValueError("SUPERSEDE 决策必须提供 existing memory")
         candidate.supersedes = existing.id
         candidate.provenance = list(set(candidate.provenance) | {existing.id})
         candidate.metadata.update(

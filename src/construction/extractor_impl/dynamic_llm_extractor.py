@@ -90,7 +90,7 @@ class DynamicLLMExtractor(Extractor):
             copy_consolidation_prompts(units, extracted)
             return extracted
 
-        accepted = self._helper._preprocess(units)
+        accepted = self._helper.preprocess(units)
         if not accepted:
             return []
         result: list[MemoryUnit] = []
@@ -138,7 +138,7 @@ class DynamicLLMExtractor(Extractor):
             f"strategy: {strategy}\nobservation_date: {observation_date}\n\n{source_text}"
             + (f"\n{context_block}" if context_block else "")
         )
-        response = self._helper._call_llm_with_retry(
+        response = self._helper.call_llm_with_retry(
             [
                 ChatMessage(role="system", content=prompt),
                 ChatMessage(role="user", content=user_text),
@@ -158,7 +158,7 @@ class DynamicLLMExtractor(Extractor):
         结构，但必须在本方法边界内完成到 ``list[MemoryUnit]`` 的转换。
         """
         candidates = self._parse_json_candidates(response, sources, strategy)
-        return self._helper._build_units(candidates, sources)
+        return self._helper.build_units(candidates, sources)
 
     def _parse_json_candidates(
         self,
@@ -168,7 +168,7 @@ class DynamicLLMExtractor(Extractor):
     ) -> list[ExtractionCandidate]:
         unit_map = {unit.id: unit for unit in sources}
         candidates: list[ExtractionCandidate] = []
-        for item in self._helper._parse_llm_response(response):
+        for item in self._helper.parse_llm_response(response):
             try:
                 confidence = float(item.get("confidence", 0.0))
             except (TypeError, ValueError):

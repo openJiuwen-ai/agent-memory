@@ -325,7 +325,7 @@ class ExtractorImpl(Extractor):
             return self._extract_procedural(units)
 
         # Phase 1: 预处理
-        accepted = self._preprocess(units)
+        accepted = self.preprocess(units)
         logger.info(
             "Extractor: received %d units, %d accepted after preprocessing",
             len(units),
@@ -355,7 +355,7 @@ class ExtractorImpl(Extractor):
 
         # Phase 3: 构建 MemoryUnit（tier/tags 取自 candidate，由 LLM 在 Phase 2 产出）
         # L0/L1 分层标注不由本算子负责——由 Evolver 抽取后委托 LayerAnnotator 生成。
-        return self._build_units(all_candidates, accepted)
+        return self.build_units(all_candidates, accepted)
 
     # ------------------------------------------------------------------
     # 过程记忆抽取（procedural=true：1 条结构化执行历史汇总）
@@ -387,7 +387,7 @@ class ExtractorImpl(Extractor):
             ChatMessage(role="user", content=source_text),
         ]
         try:
-            response = self._call_llm_with_retry(messages)
+            response = self.call_llm_with_retry(messages)
         except Exception as exc:
             logger.warning("Extractor._extract_procedural: LLM call failed, return []: %s", exc)
             return []
@@ -461,7 +461,7 @@ class ExtractorImpl(Extractor):
     # Phase 1: 预处理
     # ------------------------------------------------------------------
 
-    def _preprocess(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
+    def preprocess(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         """过滤 lifecycle≠ACTIVE / 空 content / 派生单元（provenance 非空）。"""
         accepted = []
         skipped_reasons: dict[str, int] = {}
@@ -533,10 +533,10 @@ class ExtractorImpl(Extractor):
         ]
 
         # 调用 LLM（含重试）
-        response = self._call_llm_with_retry(messages)
+        response = self.call_llm_with_retry(messages)
 
         # 解析 JSON
-        items = self._parse_llm_response(response)
+        items = self.parse_llm_response(response)
 
         # 建立 id → unit 索引，用于校验 + 绑定 source
         unit_map = {u.id: u for u in units}
@@ -606,7 +606,7 @@ class ExtractorImpl(Extractor):
         )
         return candidates
 
-    def _call_llm_with_retry(self, messages: list, max_tokens: int = 8192) -> str:
+    def call_llm_with_retry(self, messages: list, max_tokens: int = 8192) -> str:
         """调用 LLM.chat()，含重试逻辑。"""
         import time
 
@@ -629,7 +629,7 @@ class ExtractorImpl(Extractor):
             raise RuntimeError("LLM 调用未执行：retry_max_retries 必须 >= 1")
         raise last_exc
 
-    def _parse_llm_response(self, response: str) -> list[dict]:
+    def parse_llm_response(self, response: str) -> list[dict]:
         """解析 LLM 返回的 JSON。"""
         # 尝试直接解析
         try:
@@ -674,7 +674,7 @@ class ExtractorImpl(Extractor):
     # Phase 3: 构建 MemoryUnit
     # ------------------------------------------------------------------
 
-    def _build_units(
+    def build_units(
         self,
         candidates: list[ExtractionCandidate],
         source_units: list[MemoryUnit],
@@ -734,7 +734,7 @@ class ExtractorImpl(Extractor):
             )
 
         logger.info(
-            "Extractor: _build_units produced %d MemoryUnits from %d candidates",
+            "Extractor: build_units produced %d MemoryUnits from %d candidates",
             len(result),
             len(candidates),
         )
