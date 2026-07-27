@@ -18,9 +18,10 @@ def test_parser_transfers_filters_and_as_of(world) -> None:
     as_of = datetime(2026, 6, 10, tzinfo=timezone.utc)
     filters = [FilterClause("tags", FilterOp.CONTAINS, "x")]
 
-    parsed = world.parser.parse(RetrievalQuery(text="hello world", filters=filters, as_of=as_of))
+    query = RetrievalQuery(text="hello world", filters=filters, as_of=as_of)
+    parsed = world.parser.parse(query)
 
-    assert parsed.scalar_filters == filters
+    assert parsed.scalar_filters is query.filters
     assert parsed.as_of == as_of
     assert parsed.tokens == ["hello", "world"]
     assert parsed.vector

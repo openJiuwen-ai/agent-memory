@@ -18,7 +18,7 @@ import uuid
 import pytest
 
 from common.errors import ConflictError, NotFoundError
-from common.type_def import FilterClause, FilterOp, Scope
+from common.type_def import T_INVALID_OPEN, FilterClause, FilterGroup, FilterLogic, FilterOp, Scope
 from storage._support import scope_segments
 from storage.kv_impl.redis_kv import RedisKVStore
 from storage.types import VectorQuery, VectorRecord
@@ -283,6 +283,95 @@ def test_vec_metadata_filters(vec):
     assert query_ids(
         [FilterClause("color", FilterOp.EQ, "red"), FilterClause("n", FilterOp.GTE, 5)]
     ) == {"r3"}
+    tree = FilterGroup(
+        FilterLogic.AND,
+        [
+            FilterGroup(
+                FilterLogic.OR,
+                [
+                    FilterClause("color", FilterOp.EQ, "blue"),
+                    FilterClause("n", FilterOp.LTE, 1),
+                ],
+            ),
+            FilterGroup(
+                FilterLogic.NOT,
+                [FilterClause("tags", FilterOp.CONTAINS, "c")],
+            ),
+        ],
+    )
+    assert query_ids(tree) == {"r1"}
+
+
+def test_vec_mixed_scalar_types_on_same_key(vec):
+    """JSON 字段上同一 key 混存 int/float/str：数值比较按数值，类型不符者跳过。
+
+    Milvus 的 metadata 是 DataType.JSON，没有 mapping 锁定——int 与 float 混存不会
+    像 ES 那样让先写入的类型截断后来的值。类型不匹配（该记录存的是字符串）时既不
+    隐式转换也不报错，而是当作不满足条件：脏数据只造成自身漏召，不污染其他结果、
+    也不会让整个查询失败。
+    """
+    store, scope = vec
+    store.insert(
+        scope,
+        [
+            VectorRecord(id="i", vector=_vec((0, 1.0)), metadata={"p": 8}),
+            VectorRecord(id="f", vector=_vec((0, 0.99)), metadata={"p": 9.5}),
+            VectorRecord(id="lo", vector=_vec((0, 0.98)), metadata={"p": 7.5}),
+            VectorRecord(id="s", vector=_vec((0, 0.97)), metadata={"p": "8"}),
+            VectorRecord(id="bad", vector=_vec((0, 0.96)), metadata={"p": "high"}),
+        ],
+    )
+
+    def query_ids(filters):
+        query = VectorQuery(vector=_vec((0, 1.0)), top_k=10, filters=filters)
+        return {h.id for h in store.search(scope, query)}
+
+    # int 与 float 参与同一次数值比较，均按数值语义
+    assert query_ids([FilterClause("p", FilterOp.GTE, 8)]) == {"i", "f"}
+    assert query_ids([FilterClause("p", FilterOp.GT, 8)]) == {"f"}
+    assert query_ids([FilterClause("p", FilterOp.LT, 9)]) == {"i", "lo"}
+    # 存成字符串的 "8" 不参与数值比较——不隐式转换
+    assert "s" not in query_ids([FilterClause("p", FilterOp.GTE, 8)])
+    # 非数值脏数据不使查询报错，其余结果不受影响
+    assert query_ids([FilterClause("p", FilterOp.GTE, 9.5)]) == {"f"}
+
+
+def test_vec_sentinel_makes_open_ended_recallable_at_as_of(vec):
+    """哨兵在 Milvus JSON 字段上同样成立：as_of 回溯命中开放有效期记忆。
+
+    哨兵值 253402300799000 远小于 2^53，在 JSON 存取与比较中均精确，
+    与 ES 侧（映射为 double）的行为一致。
+    """
+    store, scope = vec
+    as_of = 2000
+    store.insert(
+        scope,
+        [
+            VectorRecord(
+                id="open", vector=_vec((0, 1.0)),
+                metadata={"t_valid": 1000, "t_invalid": T_INVALID_OPEN},
+            ),
+            VectorRecord(
+                id="expired", vector=_vec((0, 0.99)),
+                metadata={"t_valid": 1000, "t_invalid": 1500},
+            ),
+            VectorRecord(
+                id="later", vector=_vec((0, 0.98)),
+                metadata={"t_valid": 1000, "t_invalid": 3000},
+            ),
+        ],
+    )
+
+    query = VectorQuery(
+        vector=_vec((0, 1.0)),
+        top_k=10,
+        filters=[
+            FilterClause("t_valid", FilterOp.LTE, as_of),
+            FilterClause("t_invalid", FilterOp.GT, as_of),
+        ],
+    )
+
+    assert {h.id for h in store.search(scope, query)} == {"open", "later"}
 
 
 def test_vec_scope_isolation(vec):

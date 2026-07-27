@@ -18,7 +18,7 @@ import uuid
 import pytest
 
 from common.errors import ConflictError, NotFoundError
-from common.type_def import FilterClause, FilterOp, Scope
+from common.type_def import T_INVALID_OPEN, FilterClause, FilterGroup, FilterLogic, FilterOp, Scope
 from storage.fulltext_impl.elasticsearch_fulltext import ElasticsearchFulltextStore
 from storage.types import Document, TextQuery
 
@@ -195,6 +195,23 @@ def test_ft_metadata_filters(ft):
     assert query_ids(
         [FilterClause("color", FilterOp.EQ, "red"), FilterClause("n", FilterOp.GTE, 5)]
     ) == {"r3"}
+    tree = FilterGroup(
+        FilterLogic.AND,
+        [
+            FilterGroup(
+                FilterLogic.OR,
+                [
+                    FilterClause("color", FilterOp.EQ, "blue"),
+                    FilterClause("n", FilterOp.LTE, 1),
+                ],
+            ),
+            FilterGroup(
+                FilterLogic.NOT,
+                [FilterClause("tags", FilterOp.CONTAINS, "z")],
+            ),
+        ],
+    )
+    assert query_ids(tree) == {"r1"}
 
 
 def test_ft_exact_match_multiword_keyword(ft):
@@ -214,6 +231,119 @@ def test_ft_exact_match_multiword_keyword(ft):
 
     assert query_ids("Red Hat") == {"a"}  # 精确匹配，不被分析器拆词/小写化
     assert query_ids("red hat") == {"b"}
+
+
+def test_ft_int_written_first_does_not_truncate_later_float(ft):
+    """首条整数不得把字段 mapping 锁成整型，否则其后的小数在索引里被截断。
+
+    ES 的 mapping 由该字段第一条文档决定：没有 long→double 的 dynamic_template 时，
+    先写 8 会把 metadata.priority 定成 long，随后写入的 9.5 在索引里变成 9——_source
+    仍显示 9.5，但 gte 9.5 查不出这条文档，错得完全静默。
+    """
+    store, scope = ft
+    store.insert(scope, [Document(id="i", text="p", metadata={"priority": 8})])
+    store.insert(scope, [Document(id="f", text="p", metadata={"priority": 9.5})])
+
+    def query_ids(op, value):
+        query = TextQuery(text="p", filters=[FilterClause("priority", op, value)])
+        return _ids(store.search(scope, query))
+
+    mapping = store.client.indices.get_mapping(index=store._index)
+    priority = mapping[store._index]["mappings"]["properties"]["metadata"]["properties"]["priority"]
+    assert priority["type"] == "double"
+
+    assert query_ids(FilterOp.GTE, 9.5) == {"f"}  # 被截断成 9 时此断言为空集
+    assert query_ids(FilterOp.GTE, 9) == {"f"}
+    assert query_ids(FilterOp.GTE, 8) == {"i", "f"}
+    assert query_ids(FilterOp.LT, 9) == {"i"}
+
+
+def test_ft_missing_field_is_excluded_by_range_predicate(ft):
+    """缺失字段遇 range 谓词被排他——这是 t_invalid 必须落哨兵的直接依据。
+
+    若索引沿用"空则不写"，活跃记忆（t_invalid 恒为空）会被 `t_invalid > as_of`
+    整批排他，正好滤掉回溯查询最该命中的那些。此处固定 ES 的实际行为：哪天缺失
+    字段不再被排他，哨兵才可以撤掉。
+    """
+    store, scope = ft
+    store.insert(
+        scope,
+        [
+            Document(id="nofield", text="doc", metadata={"t_valid": 1000}),
+            Document(id="closed", text="doc", metadata={"t_valid": 1000, "t_invalid": 3000}),
+        ],
+    )
+
+    def query_ids(filters):
+        return _ids(store.search(scope, TextQuery(text="doc", filters=filters)))
+
+    assert query_ids([FilterClause("t_valid", FilterOp.LTE, 2000)]) == {"nofield", "closed"}
+    # nofield 因字段缺失被排他，尽管它在 as_of=2000 时应当有效
+    assert query_ids([FilterClause("t_invalid", FilterOp.GT, 2000)]) == {"closed"}
+
+
+def test_ft_sentinel_makes_open_ended_recallable_at_as_of(ft):
+    """落哨兵后，开放有效期记忆能被 as_of 回溯命中，且不影响已失效记忆的排除。
+
+    与 index_builder 的投影约定端到端对齐：as_of 查询下推的三个谓词
+    （lifecycle != forgotten / t_valid <= as_of / t_invalid > as_of）合起来
+    应当恰好命中"as_of 时刻有效"的记忆。
+    """
+    store, scope = ft
+    as_of = 2000
+    store.insert(
+        scope,
+        [
+            # 永久有效 → 哨兵
+            Document(
+                id="open", text="doc", metadata={"t_valid": 1000, "t_invalid": T_INVALID_OPEN}
+            ),
+            # as_of 之前就失效
+            Document(id="expired", text="doc", metadata={"t_valid": 1000, "t_invalid": 1500}),
+            # as_of 之后才失效 → 当时仍有效
+            Document(id="later", text="doc", metadata={"t_valid": 1000, "t_invalid": 3000}),
+            # as_of 时还没生效
+            Document(
+                id="future", text="doc", metadata={"t_valid": 5000, "t_invalid": T_INVALID_OPEN}
+            ),
+        ],
+    )
+
+    hits = _ids(
+        store.search(
+            scope,
+            TextQuery(
+                text="doc",
+                filters=[
+                    FilterClause("t_valid", FilterOp.LTE, as_of),
+                    FilterClause("t_invalid", FilterOp.GT, as_of),
+                ],
+            ),
+        )
+    )
+
+    assert hits == {"open", "later"}
+
+
+def test_ft_range_on_string_metadata_does_not_silently_lexicographic(ft):
+    """字符串字段映射为 keyword，range 打上去不会返回字典序结果。
+
+    "high" >= "8" 在字典序下为真——若 metadata 字符串被映射成可比较的文本类型，
+    范围过滤会静默误召。keyword 上的 range 是词典序但语义明确，此处固定实际行为，
+    确保它不与数值字段的 range 混淆。
+    """
+    store, scope = ft
+    store.insert(
+        scope,
+        [
+            Document(id="s", text="lvl", metadata={"level": "high"}),
+            Document(id="n", text="lvl", metadata={"level": 8}),
+        ],
+    )
+    mapping = store.client.indices.get_mapping(index=store._index)
+    level = mapping[store._index]["mappings"]["properties"]["metadata"]["properties"]["level"]
+    # 首条是字符串 → keyword；后写的数值被 ES 转成字符串存入（已知残留风险，非 crash）
+    assert level["type"] == "keyword"
 
 
 # --------------------------------------------------------------- 多轮一致性

@@ -7,7 +7,7 @@ from construction.base import OperatorType
 from construction.index_builder import IndexBuilder, IndexBuilderProducer
 from retrieval.base import RetrievalOperatorType
 from retrieval.retriever import Retriever, RetrieverProducer
-from retrieval.types import RetrievedItem, RetrievalQuery, RetrievalResult
+from retrieval.types import RetrievalQuery, RetrievalResult, RetrievedItem
 
 _INDEX_BUILDERS: dict[str, "RecordingIndexBuilder"] = {}
 
@@ -127,6 +127,34 @@ def test_engine_recall_uses_pipeline_profile_from_context_extensions() -> None:
         "test strategy",
         Context(scope=scope, extensions={"memory_type": "coding"}),
         identity=scope,
+    )
+
+    assert [item.unit_id for item in result.items] == ["coding"]
+
+
+def test_engine_recall_uses_pipeline_profile_from_metadata_memory_type_filter() -> None:
+    kernel = build_kernel(config=_kernel_config())
+    scope = Scope(user="u1")
+
+    result = kernel.api.recall(
+        "test strategy",
+        Context(scope=scope),
+        identity=scope,
+        filters={"metadata.memory_type": "coding"},
+    )
+
+    assert [item.unit_id for item in result.items] == ["coding"]
+
+
+def test_engine_recall_canonicalizes_legacy_memory_type_filter_name() -> None:
+    kernel = build_kernel(config=_kernel_config())
+    scope = Scope(user="u1")
+
+    result = kernel.api.recall(
+        "test strategy",
+        Context(scope=scope),
+        identity=scope,
+        filters={"memory_type": "coding"},
     )
 
     assert [item.unit_id for item in result.items] == ["coding"]

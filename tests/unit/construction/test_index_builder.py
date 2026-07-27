@@ -5,27 +5,27 @@
 """
 
 import json
+from datetime import datetime, timezone
 
 from common.bootstrap import register_plugins
 from common.factory.factory import Factory
 from common.type_def import (
+    T_INVALID_OPEN,
     Scope,
 )
 from config.context import AssemblyContext
 from construction.bootstrap import register_constructors
 from construction.index_builder import IndexBuilderProducer
 from construction.index_builder_impl.fulltext_index_builder import FulltextIndexBuilder
-from construction.index_builder_impl.vector_index_builder import VectorIndexBuilder
 from construction.index_builder_impl.hybrid_index_builder import HybridIndexBuilder
+from construction.index_builder_impl.vector_index_builder import VectorIndexBuilder
 from storage.bootstrap import register_backends
 from storage.types import TextQuery, VectorQuery
-
 from tests.unit.construction.fixtures import (
-    create_test_stores,
     create_test_plugins,
+    create_test_stores,
     create_test_unit,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helper
@@ -136,7 +136,13 @@ def test_vector_build_basic():
     """T-I-04: vector build → VectorStore 中有写入的 chunk 记录。"""
     builder, stores, plugins = _make_vector_builder()
     scope = Scope(org="test", user="alice")
-    units = [create_test_unit("u1", "用户偏好用 Python 写代码，经常使用 Python 进行数据分析", scope=scope)]
+    units = [
+        create_test_unit(
+            "u1",
+            "用户偏好用 Python 写代码，经常使用 Python 进行数据分析",
+            scope=scope,
+        )
+    ]
 
     builder.build(units)
 
@@ -154,6 +160,83 @@ def test_vector_build_basic():
     query_vec = embedder.embed_query("用户偏好用 Python 写代码，经常使用 Python 进行数据分析")
     hits = stores["vector"].search(scope, VectorQuery(vector=query_vec, top_k=10))
     assert len(hits) >= 1
+
+
+def test_index_builders_project_user_metadata_for_filtering():
+    scope = Scope(org="test", user="alice")
+    unit = create_test_unit("u1", "metadata projection", scope=scope)
+    unit.metadata.update(
+        {
+            "memory_type": "coding",
+            "project": "alpha",
+            # 非字符串标量原样带入——后端据此建 double/boolean mapping 才能原生下推
+            "priority": 8,
+            "score": 9.5,
+            "archived": False,
+            "unit_id": "must-not-override-system-id",
+            "lifecycle": "must-not-override-system-lifecycle",
+        }
+    )
+    unit.tags = ["work"]
+
+    fulltext_builder, fulltext_stores, _ = _make_fulltext_builder()
+    fulltext_builder.build([unit])
+    doc = fulltext_stores["fulltext"].get(scope, ["u1"])[0]
+
+    assert doc.metadata["memory_type"] == "coding"
+    assert doc.metadata["project"] == "alpha"
+    assert doc.metadata["tags"] == ["work"]
+    assert doc.metadata["unit_id"] == "u1"
+    assert doc.metadata["lifecycle"] == "active"
+    # 类型不得在投影处被改写：字符串化会让 range 退化成字典序
+    assert doc.metadata["priority"] == 8 and not isinstance(doc.metadata["priority"], str)
+    assert doc.metadata["score"] == 9.5
+    assert doc.metadata["archived"] is False
+
+    vector_builder, vector_stores, _ = _make_vector_builder()
+    vector_builder.build([unit])
+    chunk_ids = json.loads(vector_stores["kv"].get(scope, "/index/chunks/u1").decode())
+    records = vector_stores["vector"].get(scope, chunk_ids)
+
+    assert records
+    assert all(record.metadata["memory_type"] == "coding" for record in records)
+    assert all(record.metadata["project"] == "alpha" for record in records)
+    assert all(record.metadata["tags"] == ["work"] for record in records)
+    assert all(record.metadata["unit_id"] == "u1" for record in records)
+    assert all(record.metadata["lifecycle"] == "active" for record in records)
+    assert all(record.metadata["priority"] == 8 for record in records)
+    assert all(record.metadata["score"] == 9.5 for record in records)
+    assert all(record.metadata["archived"] is False for record in records)
+
+
+def test_index_builders_write_sentinel_for_open_ended_t_invalid():
+    """t_invalid 为空（永久有效）时索引落哨兵，非空时落真实时间戳。
+
+    字段缺失会被 `t_invalid > as_of` 的下推按缺失字段排他，滤掉回溯查询最该命中的
+    活跃记忆。哨兵只在索引层，真源 temporal.t_invalid 仍是 None。
+    """
+    scope = Scope(org="test", user="alice")
+    open_unit = create_test_unit("u_open", "open ended", scope=scope)
+    closed_unit = create_test_unit("u_closed", "already invalid", scope=scope)
+    invalid_at = datetime(2026, 6, 16, tzinfo=timezone.utc)
+    closed_unit.temporal.t_invalid = invalid_at
+
+    fulltext_builder, fulltext_stores, _ = _make_fulltext_builder()
+    fulltext_builder.build([open_unit, closed_unit])
+    docs = {d.id: d for d in fulltext_stores["fulltext"].get(scope, ["u_open", "u_closed"])}
+
+    assert docs["u_open"].metadata["t_invalid"] == T_INVALID_OPEN
+    assert docs["u_closed"].metadata["t_invalid"] == int(invalid_at.timestamp() * 1000)
+    # 真源不受影响：哨兵是索引投影的约定，valid_at 仍按 None 判"永久有效"
+    assert open_unit.temporal.t_invalid is None
+
+    vector_builder, vector_stores, _ = _make_vector_builder()
+    vector_builder.build([open_unit])
+    chunk_ids = json.loads(vector_stores["kv"].get(scope, "/index/chunks/u_open").decode())
+    records = vector_stores["vector"].get(scope, chunk_ids)
+
+    assert records
+    assert all(record.metadata["t_invalid"] == T_INVALID_OPEN for record in records)
 
 
 # ---------------------------------------------------------------------------
@@ -187,15 +270,26 @@ def test_vector_update():
     scope = Scope(org="test", user="alice")
 
     # 先 build
-    units = [create_test_unit("u1", "用户偏好 Python 进行数据分析，经常使用 Python 写脚本", scope=scope)]
+    units = [
+        create_test_unit(
+            "u1",
+            "用户偏好 Python 进行数据分析，经常使用 Python 写脚本",
+            scope=scope,
+        )
+    ]
     builder.build(units)
 
     # 记录旧 chunk_ids
     old_chunk_ids = json.loads(stores["kv"].get(scope, "/index/chunks/u1").decode())
-    old_records = stores["vector"].get(scope, old_chunk_ids)
 
     # update（修改 content → chunk 内容改变）
-    updated_units = [create_test_unit("u1", "用户偏好 Java 进行数据分析，经常使用 Java 写脚本", scope=scope)]
+    updated_units = [
+        create_test_unit(
+            "u1",
+            "用户偏好 Java 进行数据分析，经常使用 Java 写脚本",
+            scope=scope,
+        )
+    ]
     builder.update(updated_units)
 
     # 新 chunk_ids 应存在
