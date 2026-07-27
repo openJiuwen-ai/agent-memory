@@ -415,11 +415,13 @@ class LocalMemoryAPI(MemoryAPI):
         # 独立输入、且都由调用方控制——路由值填宽松策略对应的类型、filters 指向受严格
         # 策略保护的数据，即可用 A 的钥匙开 B 的门。用户表达式作整体 child 并入外层 AND
         # （与 lifecycle/时间谓词同一机制），不会被其内部的 OR 稀释。
-        routing_clauses = [
-            FilterClause(canonical_filter_field(field), FilterOp.EQ, routed)
-            for field in self._perm.routing_fields()
-            if (routed := permission_context.metadata.get(field, "").strip())
-        ]
+        routing_clauses: list[FilterClause] = []
+        for field in self._perm.routing_fields():
+            routed = permission_context.metadata.get(field, "").strip()
+            if routed:
+                routing_clauses.append(
+                    FilterClause(canonical_filter_field(field), FilterOp.EQ, routed)
+                )
         if routing_clauses:
             rq.filters = and_merge(rq.filters, routing_clauses)
         result = asyncio.run(self._engine.recall(context.scope, rq))

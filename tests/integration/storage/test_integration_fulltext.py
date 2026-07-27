@@ -27,11 +27,16 @@ SCOPE = Scope(org="itest", user="u1")
 
 
 @pytest.fixture
-def ft():
+def ft_index():
+    """为每个测试生成唯一 Elasticsearch index 名称。"""
+    return f"itest_{uuid.uuid4().hex[:12]}"
+
+
+@pytest.fixture
+def ft(ft_index):
     """连到真实 ES 的 fulltext store（唯一 index）+ scope；teardown 删 index。"""
     pytest.importorskip("elasticsearch")
-    index = f"itest_{uuid.uuid4().hex[:12]}"
-    store = ElasticsearchFulltextStore(hosts=ES_HOSTS, index=index, refresh="wait_for")
+    store = ElasticsearchFulltextStore(hosts=ES_HOSTS, index=ft_index, refresh="wait_for")
     try:
         store.health()
         _ = store.client  # 触发连接 + 建索引
@@ -39,7 +44,7 @@ def ft():
         pytest.skip(f"elasticsearch unreachable on {ES_HOSTS}: {exc}")
     yield store, SCOPE
     try:
-        store.client.indices.delete(index=index, ignore_unavailable=True)
+        store.client.indices.delete(index=ft_index, ignore_unavailable=True)
     except Exception:  # 清理尽力而为
         pass
 
@@ -233,7 +238,7 @@ def test_ft_exact_match_multiword_keyword(ft):
     assert query_ids("red hat") == {"b"}
 
 
-def test_ft_int_written_first_does_not_truncate_later_float(ft):
+def test_ft_int_written_first_does_not_truncate_later_float(ft, ft_index):
     """首条整数不得把字段 mapping 锁成整型，否则其后的小数在索引里被截断。
 
     ES 的 mapping 由该字段第一条文档决定：没有 long→double 的 dynamic_template 时，
@@ -248,8 +253,8 @@ def test_ft_int_written_first_does_not_truncate_later_float(ft):
         query = TextQuery(text="p", filters=[FilterClause("priority", op, value)])
         return _ids(store.search(scope, query))
 
-    mapping = store.client.indices.get_mapping(index=store._index)
-    priority = mapping[store._index]["mappings"]["properties"]["metadata"]["properties"]["priority"]
+    mapping = store.client.indices.get_mapping(index=ft_index)
+    priority = mapping[ft_index]["mappings"]["properties"]["metadata"]["properties"]["priority"]
     assert priority["type"] == "double"
 
     assert query_ids(FilterOp.GTE, 9.5) == {"f"}  # 被截断成 9 时此断言为空集
@@ -325,7 +330,7 @@ def test_ft_sentinel_makes_open_ended_recallable_at_as_of(ft):
     assert hits == {"open", "later"}
 
 
-def test_ft_range_on_string_metadata_does_not_silently_lexicographic(ft):
+def test_ft_range_on_string_metadata_does_not_silently_lexicographic(ft, ft_index):
     """字符串字段映射为 keyword，range 打上去不会返回字典序结果。
 
     "high" >= "8" 在字典序下为真——若 metadata 字符串被映射成可比较的文本类型，
@@ -340,8 +345,8 @@ def test_ft_range_on_string_metadata_does_not_silently_lexicographic(ft):
             Document(id="n", text="lvl", metadata={"level": 8}),
         ],
     )
-    mapping = store.client.indices.get_mapping(index=store._index)
-    level = mapping[store._index]["mappings"]["properties"]["metadata"]["properties"]["level"]
+    mapping = store.client.indices.get_mapping(index=ft_index)
+    level = mapping[ft_index]["mappings"]["properties"]["metadata"]["properties"]["level"]
     # 首条是字符串 → keyword；后写的数值被 ES 转成字符串存入（已知残留风险，非 crash）
     assert level["type"] == "keyword"
 
