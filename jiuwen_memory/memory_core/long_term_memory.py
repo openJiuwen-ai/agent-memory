@@ -95,6 +95,7 @@ class MemInfo(BaseModel):
     timestamp: datetime | None = Field(default=None, description="memory timestamp")
     source_id: str | None = Field(default=None, description="source message id")
 
+
 class MemResult(BaseModel):
     mem_info: MemInfo = Field(default=None, description="memory information")
     score: float = Field(default=0.0, description="memory score of relevance")
