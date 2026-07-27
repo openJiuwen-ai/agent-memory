@@ -23,4 +23,5 @@ def register_controllers() -> None:
     import_module("control.permission_impl")
     import_module("control.policy_impl")
     import_module("control.scheduler_impl")
+    import_module("control.space_impl")
     _REGISTERED = True

@@ -18,15 +18,15 @@
 存储层定义 6 类 Store 契约（`kv` / `vector` / `fulltext` / `fusion` / `graph` / `fs`），每类各有一个或多个后端实现。装配按「两级命名空间 + Producer」选用：配置里 `kv_store.<实例>.target: redis` 即选 Redis 后端，参数走 `params`。所有实现共享三条铁律：
 
 1. **接口与实现分离**：顶层 `storage/<type>.py` 是纯抽象 + `XProducer` 工厂（声明 `TOP_NAME`）；实现在 `<type>_impl/*.py`，文件尾部 `@XProducer.register("target")` 自注册，`import storage` 即注册（重依赖后端用惰性导入，未装也能 import + 注册，仅访问后端才报 `BackendError`）。
-2. **scope 原生隔离**：所有实现按 `Scope(org/user/agent/session)` 隔离。两种落地范式见下「scope 隔离范式」。
+2. **scope 原生隔离**：所有实现按 `Scope(org/space/user/agent/session)` 隔离。两种落地范式见下「scope 隔离范式」。
 3. **错误语义统一**：业务异常（`ConflictError`/`NotFoundError`/`ValidationError` 等 `AgentMemoryError` 子类）由实现按契约主动抛出并原样透传；后端 I/O 的非预期异常经 `_support.wrap_backend` 归一为 `BackendError`。
 
 ### scope 隔离范式（`_support.py`）
 
 | 范式 | 工具 | 适用 | 语义 |
 |---|---|---|---|
-| **定长四段命名空间** | `scope_segments(scope)` | kv / fs / graph / fusion-graph | scope 折成定长四段（空维用 `_` 占位，`/`、`:` 转义），拼进 key/路径/namespace；不同 scope 互不可见，**精确匹配**该 scope |
-| **非空维度等值过滤** | `scope_dims(scope)` | vector / fulltext（检索型后端） | 只对**非空**维度施加等值约束 → scope 越具体检索范围越窄，实现**层级包含**式多租户隔离 |
+| **定长五段命名空间** | `scope_segments(scope)` | kv / fs / graph / fusion-graph | scope 折成 `org/space/user/agent/session` 定长五段（空维用 `_` 占位，`/`、`:` 转义），拼进 key/路径/namespace；不同 scope 互不可见，**精确匹配**该 scope |
+| **维度等值过滤** | `scope_dims(scope)` | vector / fulltext（检索型后端） | 对非空维度施加等值约束；`org` 非空时即便 `space==""` 也下推 `space == ""`，避免空 space 查询跨到其他 space |
 
 ---
 
@@ -38,20 +38,20 @@
 
 | target | 类 | 后端 | 必填参数 | 可选参数（默认） | 隔离 | 关键语义 |
 |---|---|---|---|---|---|---|
-| `memory` | `InMemoryKVStore` | 进程内 dict | — | — | scope 折四段命名空间键 | `ttl` 过期在 get/exists/list 时**惰性清除**；无依赖 |
-| `sqlite` | `SQLiteKVStore` | 标准库 `sqlite3` 落盘 | — | `db_path`(`agent_memory.db`) | scope 四维各落一列，主键 `(org,user,agent,session,key)` | 跨进程/重启保留；`check_same_thread=False` + 一把锁串行化（HTTP 多线程）；过期行读时过滤 + 惰性删；`":memory:"` 为进程内 |
-| `redis` | `RedisKVStore` | Redis（`redis-py` 惰性导入） | `url` | `host`/`port`(6379)/`db`(0)/`password` | key 前缀 `org:user:agent:session:<key>` | `insert`=`SET NX`（已存在→`ConflictError`）、`update`=`SET XX`（不存在→`NotFoundError`）；`ttl`→`px` 毫秒；`scopes()` 扫 `*` 还原四段 |
+| `memory` | `InMemoryKVStore` | 进程内 dict | — | — | scope 折五段命名空间键 | `ttl` 过期在 get/exists/list 时**惰性清除**；无依赖 |
+| `sqlite` | `SQLiteKVStore` | 标准库 `sqlite3` 落盘 | — | `db_path`(`agent_memory.db`) | scope 五维各落一列，主键 `(org,space,user,agent,session,key)` | 跨进程/重启保留；`check_same_thread=False` + 一把锁串行化（HTTP 多线程）；过期行读时过滤 + 惰性删；`":memory:"` 为进程内；旧表迁移到空 `space` |
+| `redis` | `RedisKVStore` | Redis（`redis-py` 惰性导入） | `url` | `host`/`port`(6379)/`db`(0)/`password` | key 前缀 `org:space:user:agent:session:<key>` | `insert`=`SET NX`（已存在→`ConflictError`）、`update`=`SET XX`（不存在→`NotFoundError`）；`ttl`→`px` 毫秒；`scopes()` 扫 `*` 还原五段 |
 
 > 三者同实现 `KVStore` 契约 + 同一字节编码，装配时可直接互换让真源从内存切到落盘/Redis，上层无改动。
 
 ### VectorStore（`storage/vector.py` · `VectorProducer` · TOP_NAME=`vector_store`）
 
-向量 ANN 索引 + 按 id 正排。`insert/update/delete/get` 走主键 CRUD，`search` 走近邻检索；`id` 全局唯一主键，`metadata` 承载标量、`filters` 为 scope 之外的谓词。
+向量 ANN 索引 + 按 id 正排。`insert/update/delete/get` 走主键 CRUD，`search` 走近邻检索；`id` 是 scope 内逻辑主键，外部后端可用 `scope + id` 生成物理主键，`metadata` 承载标量、`filters` 为 scope 之外的谓词。
 
 | target | 类 | 后端 | 必填参数 | 可选参数（默认） | 隔离 | 关键语义 |
 |---|---|---|---|---|---|---|
-| `memory` | `InMemoryVectorStore` | 进程内暴力余弦 | — | — | scope 折四段命名空间键 | `search` 暴力算余弦、过滤 `score>0`、降序 top-k；维度一致性由调用方（同一 Embedder）保证 |
-| `milvus` | `MilvusVectorStore` | Milvus（`pymilvus` 2.4+ `MilvusClient` 惰性导入） | `uri`、`dim`（>0，回退 `globals.embedder_dim`） | `host`/`port`(19530)/`token`/`collection`(`agent_memory_vectors`)/`metric_type`(`COSINE`)/`consistency_level`(`Strong`)/`scope_field_max_length`(256)/`id_max_length`(512) | scope 四维落标量字段，表达式 `scope_x == v` 约束 | 首次连接 `_ensure_collection`（建 schema：id/vector/4×scope/metadata-JSON + AUTOINDEX）；**Strong 一致性**保证 read-after-write；`insert` 先 query 查重→`ConflictError`，`update` 查缺→`NotFoundError` 后 `upsert`；`score`=Milvus distance（COSINE/IP 越大越近、L2 越小越近） |
+| `memory` | `InMemoryVectorStore` | 进程内暴力余弦 | — | — | scope 折五段命名空间键 | `search` 暴力算余弦、过滤 `score>0`、降序 top-k；维度一致性由调用方（同一 Embedder）保证 |
+| `milvus` | `MilvusVectorStore` | Milvus（`pymilvus` 2.4+ `MilvusClient` 惰性导入） | `uri`、`dim`（>0，回退 `globals.embedder_dim`） | `host`/`port`(19530)/`token`/`collection`(`agent_memory_vectors`)/`metric_type`(`COSINE`)/`consistency_level`(`Strong`)/`scope_field_max_length`(256)/`id_max_length`(512) | scope 五维落标量字段，表达式 `scope_x == v` 约束 | 首次连接 `_ensure_collection`（建 schema：id/vector/5×scope/metadata-JSON + AUTOINDEX）；**Strong 一致性**保证 read-after-write；`insert` 先 query 查重→`ConflictError`，`update` 查缺→`NotFoundError` 后 `upsert`；`score`=Milvus distance（COSINE/IP 越大越近、L2 越小越近） |
 
 > `dim` 必须 >0，构造期即校验（缺失或回退后仍为 0 → `ValidationError`）。
 
@@ -61,7 +61,7 @@
 
 | target | 类 | 后端 | 必填参数 | 可选参数（默认） | 隔离 | 关键语义 |
 |---|---|---|---|---|---|---|
-| `memory` | `InMemoryFulltextStore` | 进程内词重叠计分 | — | 依赖 `tokenizer`（`dep`，缺省 `whitespace`） | scope 折四段命名空间键 | 分词复用注入的 `Tokenizer`（与构建侧同实例=同词表）；`score`=命中词数/文档词数模拟 BM25；降序 top-k |
+| `memory` | `InMemoryFulltextStore` | 进程内词重叠计分 | — | 依赖 `tokenizer`（`dep`，缺省 `whitespace`） | scope 折五段命名空间键 | 分词复用注入的 `Tokenizer`（与构建侧同实例=同词表）；`score`=命中词数/文档词数模拟 BM25；降序 top-k |
 | `elasticsearch` | `ElasticsearchFulltextStore` | Elasticsearch（`elasticsearch-py` 8.x 惰性导入） | `hosts` | `index`(`agent_memory_fulltext`)/`username`+`password` 或 `api_key`/`text_field`(`text`)/`refresh`(`false`) | scope 落文档 `scope.{dim}` 嵌套 keyword，`term` 过滤非空维 | 首次连接 `_ensure_index`：`metadata.*` 字符串**动态映射为 keyword**（精确等值/集合/包含；text 分析器会拆词小写化导致匹配不上），数值/布尔动态推断支持 range；`insert`=bulk `create`（409→`ConflictError`），`update` 先 mget 查缺→`NotFoundError` 再 bulk `index`，`delete` 用受 scope 约束的 `delete_by_query`；`refresh: wait_for` 让写入对随后 search 立即可见；`search`=`match` + scope/filters，`score`=BM25 `_score` |
 
 ### FusionStore（`storage/fusion.py` · `FusionProducer` · TOP_NAME=`fusion_store`）
@@ -81,7 +81,7 @@
 
 | target | 类 | 后端 | 必填参数 | 可选参数（默认） | 隔离 | 关键语义 |
 |---|---|---|---|---|---|---|
-| `memory` | `InMemoryGraphStore` | 进程内邻接表 | — | — | scope 折四段命名空间键 | 节点/边按 id 隔离存；`search` 从 `start_id` 无向 BFS 扩展（按 `depth` 跳、可选 `relation` 过滤、`limit` 截断）；删节点连带删关联边；`seed_ids` 属性子串命中 |
+| `memory` | `InMemoryGraphStore` | 进程内邻接表 | — | — | scope 折五段命名空间键 | 节点/边按 id 隔离存；`search` 从 `start_id` 无向 BFS 扩展（按 `depth` 跳、可选 `relation` 过滤、`limit` 截断）；删节点连带删关联边；`seed_ids` 属性子串命中 |
 | `nano_graphrag` | `NanoGraphRAGGraphStore` | nano-graphrag `NetworkXStorage`（GraphML 持久化） | `working_dir` | `namespace_prefix`(`agent_memory_graph`)/`create_root`(True) | 每 scope 一 namespace（独立 GraphML 文件） | **shim 惰性加载**：直接加载 `nano_graphrag._storage.gdb_networkx`，绕过包 `__init__` 的重依赖（openai/tiktoken/graspologic/dspy/hnswlib/neo4j），仅需 networkx+numpy+tiktoken；async↔sync 经常驻事件循环桥接；`nx.Graph` 单边（非多重图），边逻辑 id 存为属性、按 id 反查 `(u,v)` 定位，同对端点至多一边（再插→冲突）；删除走底层 `_graph`（`NetworkXStorage` 无删除） |
 
 ### FSStore（`storage/fs.py` · `FsProducer` · TOP_NAME=`fs_store`）
@@ -90,8 +90,8 @@
 
 | target | 类 | 后端 | 必填参数 | 可选参数（默认） | 隔离 | 关键语义 |
 |---|---|---|---|---|---|---|
-| `memory` | `InMemoryFSStore` | 进程内 bytes | — | — | `ref = fs://org/user/agent/session/key` | `insert` 读流落库、返回 ref；`get` 返回 `BytesIO`；`stat` 给 size/时间，content_type 固定 `application/octet-stream` |
-| `local` | `LocalFSStore` | 本地文件系统 | `root` | `create_root`(True) | `root/<scope 四段>/<ref>` | `ref`=相对 scope 子目录的逻辑路径（`insert` 的 `key` 即 ref）；**阻断目录穿越**（`ref` 逃出 scope root → `ValidationError`）；`delete` 幂等（`missing_ok`）；`stat` 经 `mimetypes` 猜 content_type |
+| `memory` | `InMemoryFSStore` | 进程内 bytes | — | — | `ref = fs://org/space/user/agent/session/key` | `insert` 读流落库、返回 ref；`get` 返回 `BytesIO`；`stat` 给 size/时间，content_type 固定 `application/octet-stream` |
+| `local` | `LocalFSStore` | 本地文件系统 | `root` | `create_root`(True) | `root/<scope 五段>/<ref>` | `ref`=相对 scope 子目录的逻辑路径（`insert` 的 `key` 即 ref）；**阻断目录穿越**（`ref` 逃出 scope root → `ValidationError`）；`delete` 幂等（`missing_ok`）；`stat` 经 `mimetypes` 猜 content_type |
 
 ---
 

@@ -6,10 +6,11 @@ envelope the surfaces render. Routing is a table (A20 "route by table"), not an
 if/else ladder; domain exceptions map to HTTP-ish status codes.
 
 Scope mapping (DESIGN.md "Two id spaces" / "Mem0 compatibility"): the kernel
-scopes by ``tenant_id`` + a single ``scope`` string, mapped onto the native
-``Scope(org=tenant_id, user=scope)``. Phase 1 keeps this request shape for the
-target scope, while allowing an optional claimed actor override via
-``actor_tenant_id`` / ``actor_scope`` fields.
+scopes by ``tenant_id`` + optional ``space`` / ``space_id`` + a single
+``scope`` string, mapped onto the native
+``Scope(org=tenant_id, space=space, user=scope)``. The request shape keeps old
+empty-space payloads compatible, while allowing an optional claimed actor
+override via ``actor_tenant_id`` / ``actor_space`` / ``actor_scope`` fields.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from __future__ import annotations
 import os
 import sys
 from importlib import import_module
-from typing import Any, Callable, Dict, Tuple
+from typing import Any, Callable
 
 _SRC = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "src"
@@ -49,9 +50,15 @@ DeleteMode = _control_types_module.DeleteMode
 DeleteSelector = _control_types_module.DeleteSelector
 Grant = _control_types_module.Grant
 MemoryPatch = _control_types_module.MemoryPatch
+PrincipalPath = _control_types_module.PrincipalPath
+SpaceMember = _control_types_module.SpaceMember
+SpacePatch = _control_types_module.SpacePatch
+SpacePolicy = _control_types_module.SpacePolicy
+SpaceSpec = _control_types_module.SpaceSpec
+SpaceStatus = _control_types_module.SpaceStatus
 DisclosureLevel = import_module("retrieval.types").DisclosureLevel
 
-Body = Dict[str, Any]
+Body = dict[str, Any]
 
 _STATUS = {
     NotFoundError: 404,
@@ -74,31 +81,86 @@ def _parse_positive_int(value: Any, *, name: str, default: int) -> int:
     return parsed
 
 
+def _parse_non_negative_int(value: Any, *, name: str, default: int) -> int:
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise ValidationError(f"{name} must be a non-negative integer") from None
+    if parsed < 0:
+        raise ValidationError(f"{name} must be a non-negative integer")
+    return parsed
+
+
+def _parse_string_list(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        items = [part.strip() for part in value.split(",")]
+    elif isinstance(value, list):
+        items = [str(part).strip() for part in value]
+    else:
+        raise ValidationError("memory_types must be a list or comma-separated string")
+    return [item for item in items if item]
+
+
+def _space_value(payload: Body, *, prefix: str = "") -> str:
+    raw = payload.get(f"{prefix}space", payload.get(f"{prefix}space_id", ""))
+    return "" if raw is None else str(raw)
+
+
+def _require_space(payload: Body) -> str:
+    value = _space_value(payload)
+    if not value:
+        raise ValidationError("missing required field: 'space'")
+    return value
+
+
 def _target_scope(payload: Body) -> Scope:
-    """Target scope from tenant_id + scope."""
+    """Target scope from tenant_id + space + scope."""
     return Scope(
         org=str(payload.get("tenant_id", "default")) or "default",
+        space=_space_value(payload),
         user=str(payload.get("scope", "")),
     )
 
 
 def _actor_scope(payload: Body) -> Scope:
     """Claimed actor scope; defaults to payload scope, with optional explicit override."""
-    if any(
-        key in payload
-        for key in ("actor_tenant_id", "actor_scope", "actor_agent", "actor_session")
-    ):
+    has_actor_override = False
+    actor_fields = (
+        "actor_tenant_id",
+        "actor_space",
+        "actor_space_id",
+        "actor_scope",
+        "actor_agent",
+        "actor_session",
+    )
+    for key in actor_fields:
+        if key in payload:
+            has_actor_override = True
+            break
+
+    if has_actor_override:
         actor_org = str(payload.get("actor_tenant_id", ""))
         if actor_org == "":
             actor_org = str(payload.get("tenant_id", "default")) or "default"
+        actor_space = (
+            _space_value(payload, prefix="actor_")
+            if "actor_space" in payload or "actor_space_id" in payload
+            else _space_value(payload)
+        )
         return Scope(
             org=actor_org,
+            space=actor_space,
             user=str(payload.get("actor_scope", "")),
             agent=str(payload.get("actor_agent", "")),
             session=str(payload.get("actor_session", "")),
         )
     return Scope(
         org=str(payload.get("tenant_id", "default")) or "default",
+        space=_space_value(payload),
         user=str(payload.get("scope", "")),
     )
 
@@ -121,19 +183,132 @@ def _unit_view(unit: MemoryUnit) -> Body:
     }
 
 
+def _scope_view(scope: Scope) -> Body:
+    return {
+        "org": scope.org,
+        "space": scope.space,
+        "user": scope.user,
+        "agent": scope.agent,
+        "session": scope.session,
+    }
+
+
 def _event_view(ev: AuditEvent) -> Body:
     return {
         "action": ev.action,
         "target_id": ev.target_id,
         "layer": ev.layer,
-        "actor": {
-            "org": ev.actor.org,
-            "user": ev.actor.user,
-            "agent": ev.actor.agent,
-            "session": ev.actor.session,
-        },
+        "actor": _scope_view(ev.actor),
+        "target": _scope_view(ev.target),
         "decision": ev.decision,
         "detail": dict(ev.detail),
+    }
+
+
+def _string_map(value: Any) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValidationError("expected object")
+    return {str(k): str(v) for k, v in value.items()}
+
+
+def _bool_value(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _enum_value(enum_cls: Any, value: Any, *, name: str) -> Any:
+    try:
+        return enum_cls(str(value))
+    except ValueError:
+        allowed = ", ".join(item.value for item in enum_cls)
+        raise ValidationError(f"{name} must be one of: {allowed}") from None
+
+
+def _space_policy(payload: Body) -> SpacePolicy:
+    raw = payload.get("policy")
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValidationError("policy must be an object")
+    principal_path = str(payload.get("principal_path", raw.get("principal_path", "user_agent")))
+    return SpacePolicy(
+        require_space=_bool_value(raw.get("require_space"), default=False),
+        principal_path=_enum_value(PrincipalPath, principal_path, name="principal_path"),
+        storage_isolation_strategy=str(
+            raw.get("storage_isolation_strategy", "metadata_filter")
+        ),
+        retention=_string_map(raw.get("retention")),
+        quotas=_string_map(raw.get("quotas")),
+        index_profiles=_string_map(raw.get("index_profiles", raw.get("indexes"))),
+        pipeline_profiles=_string_map(raw.get("pipeline_profiles", raw.get("pipelines"))),
+    )
+
+
+def _space_info_view(info) -> Body:
+    return {
+        "org": info.org,
+        "space": info.space,
+        "display_name": info.display_name,
+        "status": info.status.value,
+        "principal_path": info.principal_path.value,
+        "policy": _space_policy_view(info.policy),
+        "metadata": dict(info.metadata),
+        "created_at": info.created_at.isoformat() if info.created_at else None,
+        "archived_at": info.archived_at.isoformat() if info.archived_at else None,
+    }
+
+
+def _space_policy_view(policy) -> Body:
+    return {
+        "require_space": policy.require_space,
+        "principal_path": policy.principal_path.value,
+        "storage_isolation_strategy": policy.storage_isolation_strategy,
+        "retention": dict(policy.retention),
+        "quotas": dict(policy.quotas),
+        "index_profiles": dict(policy.index_profiles),
+        "pipeline_profiles": dict(policy.pipeline_profiles),
+    }
+
+
+def _space_member(payload: Body) -> SpaceMember:
+    target = _target_scope(payload)
+    member_scope = Scope(
+        org=str(payload.get("member_tenant_id", target.org)) or target.org,
+        space=_space_value(payload, prefix="member_") or target.space,
+        user=str(_require(payload, "member")),
+        agent=str(payload.get("member_agent", "")),
+        session=str(payload.get("member_session", "")),
+    )
+    return SpaceMember(scope=member_scope, role=str(payload.get("role", "member")) or "member")
+
+
+def _member_scope(payload: Body) -> Scope:
+    return _space_member(payload).scope
+
+
+def _member_view(member) -> Body:
+    return {
+        "scope": _scope_view(member.scope),
+        "role": member.role,
+        "created_at": member.created_at.isoformat() if member.created_at else None,
+        "expires_at": member.expires_at.isoformat() if member.expires_at else None,
+    }
+
+
+def _usage_view(usage) -> Body:
+    return {
+        "org": usage.org,
+        "space": usage.space,
+        "memory_count": usage.memory_count,
+        "message_count": usage.message_count,
+        "index_count": usage.index_count,
+        "storage_bytes": usage.storage_bytes,
+        "audit_count": usage.audit_count,
     }
 
 
@@ -163,7 +338,8 @@ def _add(srv, payload: Body) -> Body:
         metadata=metadata or None,
     )
     # infer=True 时引擎可能合法返回空：派生记忆全部被 dedup 判为 update/noop
-    # （result.created_ids 为空，见 engine.write 的 infer 分支）。此时不伪造 item_id，
+    # （result.created_ids 为空，见 engine.write 的 infer 分支）。
+    # 此时不伪造 item_id，
     # 如实返回 deduped 语义；非空则照常取首条返回。
     if not units:
         return {"ok": True, "op": "add", "item_id": None, "item": None,
@@ -174,18 +350,20 @@ def _add(srv, payload: Body) -> Body:
 
 def _search(srv, payload: Body) -> Body:
     scope, actor = _target_scope(payload), _actor_scope(payload)
-    # extensions：把调用方在请求里给的自定义配置透传给（可能自定义的）检索模块。
-    # 显式校验 dict：extensions 为 truthy 非 dict（字符串/列表等畸形 JSON）时兜底为空，
+    # extensions：把调用方在请求里给的自定义配置透传给（可能自定义的）
+    # 检索模块。显式校验 dict：extensions 为 truthy 非 dict（字符串/列表等
+    # 畸形 JSON）时兜底为空，
     # 避免 .items() 抛 AttributeError → HTTP 500（同 _add 的 metadata 处理）。
     raw_ext = payload.get("extensions")
     if not isinstance(raw_ext, dict):
         raw_ext = {}
     extensions = {k: str(v) for k, v in raw_ext.items()}
-    # 自适应披露预算经约定 key 并入 extensions（由 API 边界解析为 typed 预算）。
+    # 自适应披露预算经约定 key 并入 extensions（由 API 边界解析为 typed
+    # 预算）。
     max_tokens = payload.get("max_tokens")
     if max_tokens is not None:
         extensions[EXT_MAX_TOKENS] = str(max_tokens)
-    trace = bool(payload.get("trace"))  # 入参 trace=true 时附带检索轨迹（默认不返回）
+    trace = bool(payload.get("trace"))
     res = srv.api.recall(
         _require(payload, "query"),
         Context(scope, extensions=extensions),
@@ -201,26 +379,42 @@ def _search(srv, payload: Body) -> Body:
     ]
     body = {"ok": True, "op": "search", "hits": hits, "count": len(hits)}
     if trace:
-        body["trajectory"] = [
-            {
-                "stage": s.stage,
-                "channel": s.channel.value if s.channel is not None else None,
-                "candidate_count": s.candidate_count,
-                "cost_ms": round(s.cost_ms, 3),
-                "detail": s.detail,
-            }
-            for s in res.trajectory
-        ]
+        trajectory = []
+        for step in res.trajectory:
+            trajectory.append(
+                {
+                    "stage": step.stage,
+                    "channel": step.channel.value if step.channel is not None else None,
+                    "candidate_count": step.candidate_count,
+                    "cost_ms": round(step.cost_ms, 3),
+                    "detail": step.detail,
+                }
+            )
+        body["trajectory"] = trajectory
     return body
 
 
 def _list(srv, payload: Body) -> Body:
-    # api层暂无对应接口，实现待定
+    scope, actor = _target_scope(payload), _actor_scope(payload)
+    offset = _parse_non_negative_int(payload.get("offset"), name="offset", default=0)
+    limit = _parse_positive_int(payload.get("limit"), name="limit", default=100)
+    memory_types = _parse_string_list(
+        payload.get("memory_types", payload.get("mem_types", payload.get("memory_type")))
+    )
+    units = srv.api.list(
+        scope,
+        identity=actor,
+        offset=offset,
+        limit=limit,
+        memory_types=memory_types,
+    )
     return {
-        "ok": False,
+        "ok": True,
         "op": "list",
-        "error": "NotImplemented",
-        "message": "list is not yet available",
+        "items": [_unit_view(unit) for unit in units],
+        "count": len(units),
+        "offset": offset,
+        "limit": limit,
     }
 
 
@@ -296,9 +490,15 @@ def _audit(srv, payload: Body) -> Body:
         "decision",
         "target_id",
         "actor_org",
+        "actor_space",
         "actor_user",
         "actor_agent",
         "actor_session",
+        "target_org",
+        "target_space",
+        "target_user",
+        "target_agent",
+        "target_session",
         "occurred_after",
         "occurred_before",
     ):
@@ -318,7 +518,7 @@ def _audit(srv, payload: Body) -> Body:
 
 
 def _admin(srv, payload: Body) -> Body:
-    """运行时策略读写（PolicyManager）：给 value 即 set、给 key 即 get、否则列全部。"""
+    """运行时策略读写：给 value 即 set、给 key 即 get、否则列全部。"""
     actor = _actor_scope(payload)
     key, value = payload.get("key"), payload.get("value")
     if key and value is not None:
@@ -342,22 +542,199 @@ def _admin(srv, payload: Body) -> Body:
 def _grant(srv, payload: Body) -> Body:
     """跨 scope 授权（PermissionManager）。"""
     scope, actor = _target_scope(payload), _actor_scope(payload)
-    grantee = Scope(org=scope.org, user=str(_require(payload, "grantee")))
+    grantee = Scope(
+        org=str(payload.get("grantee_tenant_id", scope.org)) or scope.org,
+        space=_space_value(payload, prefix="grantee_") or scope.space,
+        user=str(_require(payload, "grantee")),
+        agent=str(payload.get("grantee_agent", "")),
+        session=str(payload.get("grantee_session", "")),
+    )
     grant = Grant(grantor=scope, grantee=grantee, actions=[Action.READ])
     srv.api.grant(grant, identity=actor)
-    return {"ok": True, "op": "grant", "grantor": scope.user, "grantee": grantee.user}
+    return {
+        "ok": True,
+        "op": "grant",
+        "grantor": {"space": scope.space, "user": scope.user},
+        "grantee": {"space": grantee.space, "user": grantee.user},
+    }
 
 
 def _revoke(srv, payload: Body) -> Body:
     """Cross-scope revoke (PermissionManager)."""
     scope, actor = _target_scope(payload), _actor_scope(payload)
-    grantee = Scope(org=scope.org, user=str(_require(payload, "grantee")))
+    grantee = Scope(
+        org=str(payload.get("grantee_tenant_id", scope.org)) or scope.org,
+        space=_space_value(payload, prefix="grantee_") or scope.space,
+        user=str(_require(payload, "grantee")),
+        agent=str(payload.get("grantee_agent", "")),
+        session=str(payload.get("grantee_session", "")),
+    )
     grant = Grant(grantor=scope, grantee=grantee, actions=[Action.READ])
     srv.api.revoke(grant, identity=actor)
-    return {"ok": True, "op": "revoke", "grantor": scope.user, "grantee": grantee.user}
+    return {
+        "ok": True,
+        "op": "revoke",
+        "grantor": {"space": scope.space, "user": scope.user},
+        "grantee": {"space": grantee.space, "user": grantee.user},
+    }
 
 
-_ROUTES: Dict[str, Callable[[Any, Body], Body]] = {
+def _create_space(srv, payload: Body) -> Body:
+    actor = _actor_scope(payload)
+    org = str(payload.get("tenant_id", "default")) or "default"
+    space = _require_space(payload)
+    policy = _space_policy(payload)
+    info = srv.api.create_space(
+        SpaceSpec(
+            org=org,
+            space=space,
+            display_name=str(payload.get("display_name", "")),
+            principal_path=policy.principal_path,
+            policy=policy,
+            metadata=_string_map(payload.get("metadata")),
+        ),
+        identity=actor,
+    )
+    return {"ok": True, "op": "create_space", "space": _space_info_view(info)}
+
+
+def _get_space(srv, payload: Body) -> Body:
+    actor = _actor_scope(payload)
+    org = str(payload.get("tenant_id", "default")) or "default"
+    info = srv.api.get_space(org, _require_space(payload), identity=actor)
+    return {"ok": True, "op": "get_space", "space": _space_info_view(info)}
+
+
+def _list_spaces(srv, payload: Body) -> Body:
+    actor = _actor_scope(payload)
+    org = str(payload.get("tenant_id", "default")) or "default"
+    raw_status = payload.get("status")
+    status = _enum_value(SpaceStatus, raw_status, name="status") if raw_status else None
+    spaces = srv.api.list_spaces(
+        org,
+        identity=actor,
+        status=status,
+        limit=_parse_positive_int(payload.get("limit"), name="limit", default=100),
+        cursor=payload.get("cursor"),
+    )
+    return {
+        "ok": True,
+        "op": "list_spaces",
+        "spaces": [_space_info_view(info) for info in spaces],
+        "count": len(spaces),
+    }
+
+
+def _update_space(srv, payload: Body) -> Body:
+    actor = _actor_scope(payload)
+    org = str(payload.get("tenant_id", "default")) or "default"
+    patch = SpacePatch(
+        display_name=payload.get("display_name"),
+        status=_enum_value(SpaceStatus, payload["status"], name="status")
+        if payload.get("status")
+        else None,
+        principal_path=_enum_value(PrincipalPath, payload["principal_path"], name="principal_path")
+        if payload.get("principal_path")
+        else None,
+        policy=_space_policy(payload) if payload.get("policy") else None,
+        metadata=_string_map(payload.get("metadata")) if payload.get("metadata") else None,
+    )
+    info = srv.api.update_space(org, _require_space(payload), patch, identity=actor)
+    return {"ok": True, "op": "update_space", "space": _space_info_view(info)}
+
+
+def _archive_space(srv, payload: Body) -> Body:
+    actor = _actor_scope(payload)
+    org = str(payload.get("tenant_id", "default")) or "default"
+    info = srv.api.archive_space(org, _require_space(payload), identity=actor)
+    return {"ok": True, "op": "archive_space", "space": _space_info_view(info)}
+
+
+def _delete_space(srv, payload: Body) -> Body:
+    actor = _actor_scope(payload)
+    org = str(payload.get("tenant_id", "default")) or "default"
+    mode = _enum_value(DeleteMode, payload.get("mode", "purge"), name="mode")
+    result = srv.api.delete_space(org, _require_space(payload), identity=actor, mode=mode)
+    return {
+        "ok": True,
+        "op": "delete_space",
+        "org": result.org,
+        "space": result.space,
+        "status": result.status.value,
+        "deleted_counts": dict(result.deleted_counts),
+    }
+
+
+def _export_space(srv, payload: Body) -> Body:
+    actor = _actor_scope(payload)
+    org = str(payload.get("tenant_id", "default")) or "default"
+    export_id = srv.api.export_space(
+        org,
+        _require_space(payload),
+        identity=actor,
+        include_audit=_bool_value(payload.get("include_audit"), default=True),
+    )
+    return {"ok": True, "op": "export_space", "export_id": export_id}
+
+
+def _space_usage(srv, payload: Body) -> Body:
+    actor = _actor_scope(payload)
+    org = str(payload.get("tenant_id", "default")) or "default"
+    usage = srv.api.space_usage(org, _require_space(payload), identity=actor)
+    return {"ok": True, "op": "space_usage", "usage": _usage_view(usage)}
+
+
+def _get_space_policy(srv, payload: Body) -> Body:
+    actor = _actor_scope(payload)
+    org = str(payload.get("tenant_id", "default")) or "default"
+    policy = srv.api.get_space_policy(org, _require_space(payload), identity=actor)
+    return {"ok": True, "op": "get_space_policy", "policy": _space_policy_view(policy)}
+
+
+def _set_space_policy(srv, payload: Body) -> Body:
+    actor = _actor_scope(payload)
+    org = str(payload.get("tenant_id", "default")) or "default"
+    policy = srv.api.set_space_policy(
+        org,
+        _require_space(payload),
+        _space_policy(payload),
+        identity=actor,
+    )
+    return {"ok": True, "op": "set_space_policy", "policy": _space_policy_view(policy)}
+
+
+def _list_space_members(srv, payload: Body) -> Body:
+    actor = _actor_scope(payload)
+    org = str(payload.get("tenant_id", "default")) or "default"
+    members = srv.api.list_space_members(org, _require_space(payload), identity=actor)
+    return {
+        "ok": True,
+        "op": "list_space_members",
+        "members": [_member_view(member) for member in members],
+        "count": len(members),
+    }
+
+
+def _add_space_member(srv, payload: Body) -> Body:
+    actor = _actor_scope(payload)
+    org = str(payload.get("tenant_id", "default")) or "default"
+    srv.api.add_space_member(org, _require_space(payload), _space_member(payload), identity=actor)
+    return {"ok": True, "op": "add_space_member"}
+
+
+def _remove_space_member(srv, payload: Body) -> Body:
+    actor = _actor_scope(payload)
+    org = str(payload.get("tenant_id", "default")) or "default"
+    srv.api.remove_space_member(
+        org,
+        _require_space(payload),
+        _member_scope(payload),
+        identity=actor,
+    )
+    return {"ok": True, "op": "remove_space_member"}
+
+
+_ROUTES: dict[str, Callable[[Any, Body], Body]] = {
     "add": _add,
     "search": _search,
     "list": _list,
@@ -372,10 +749,23 @@ _ROUTES: Dict[str, Callable[[Any, Body], Body]] = {
     "admin": _admin,
     "grant": _grant,
     "revoke": _revoke,
+    "create_space": _create_space,
+    "get_space": _get_space,
+    "list_spaces": _list_spaces,
+    "update_space": _update_space,
+    "archive_space": _archive_space,
+    "delete_space": _delete_space,
+    "export_space": _export_space,
+    "space_usage": _space_usage,
+    "get_space_policy": _get_space_policy,
+    "set_space_policy": _set_space_policy,
+    "list_space_members": _list_space_members,
+    "add_space_member": _add_space_member,
+    "remove_space_member": _remove_space_member,
 }
 
 
-def dispatch(srv, verb: str, payload: Body) -> Tuple[int, Body]:
+def dispatch(srv, verb: str, payload: Body) -> tuple[int, Body]:
     """Route ``verb`` through the kernel; return ``(status, body)``."""
     handler = _ROUTES.get(verb)
     if handler is None:

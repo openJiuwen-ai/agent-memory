@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-02 |
-| 影响范围 | `bootstrap/core/handler.py`、`src/api/`、`src/control/`、`src/storage/`、`src/common/audit/`、`docs/specs/S03-memory-manage.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md` |
+| 影响范围 | `bootstrap/core/handler.py`、`src/api/`、`src/control/`、`src/storage/`、`src/common/audit/`、`docs/specs/S03-control.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md` |
 | 测试基线 | `ruff check` 通过；相关单测通过 |
 | Refs | `docs/design/mem0-control-layer-gap-analysis.md` |
 
@@ -15,7 +15,7 @@
 
 ## 背景
 
-`agent-memory` 已经具备较好的多租户数据模型基础：`Scope(org, user, agent, session)` 是一等结构，存储层也明确把 scope 隔离作为原生职责。问题不在“有没有 scope”，而在“scope 是否真正形成了可执行的租户隔离边界”。
+`agent-memory` 已经具备较好的多租户数据模型基础：`Scope(org, space, user, agent, session)` 是一等结构，存储层也明确把 scope 隔离作为原生职责。问题不在“有没有 scope”，而在“scope 是否真正形成了可执行的租户隔离边界”。
 
 改造前主要有三个缺口：
 
@@ -138,21 +138,22 @@ surface actor -> API gate -> control decision -> storage scope boundary
 
 1. `bootstrap/core/handler.py` 已拆分 `_target_scope(payload)` 与 `_actor_scope(payload)`。
 2. 对外请求形状保持兼容，`tenant_id + scope` 仍代表 target scope。
-3. dispatch surface 新增可选 claimed actor 字段：`actor_tenant_id`、`actor_scope`、`actor_agent`、`actor_session`。
+3. dispatch surface 新增可选 claimed actor 字段：`actor_tenant_id`、`actor_space` / `actor_space_id`、`actor_scope`、`actor_agent`、`actor_session`。
 4. 若未传任何 `actor_*` 字段，则 actor 默认继承当前请求的 `tenant_id + scope`。
 5. 若完全未传身份字段，actor 回落为 `Scope(org="default", user="")`，不再通过空 payload 表达 `platform admin`。
 6. 只要显式传入任一 `actor_*` 字段，也不允许通过空值构造 `Scope()`；空 `actor_tenant_id` 会回落到当前请求的 `tenant_id`，避免 claimed identity 升级为 platform admin。
 7. `Scope()` 仍可作为 API 内部可信调用的 platform admin 身份，但 dispatch surface 不从业务 payload 推导它；后续应由真实认证层注入。
 8. dispatch 路由已补齐 `revoke`。
-9. dispatch `list` 当前先置空，不再走 `MemoryAPI.list(...)`；后续若恢复再单独设计安全的枚举路径。
+9. dispatch `list` 已恢复为正式数据面入口：`handler._list` 先解析 target/actor 与分页参数，再委托 `MemoryAPI.list(...)`；鉴权与审计仍在 API 层完成。
 
 ### 审计
 
-审计事件当前只新增一项顶层字段：
+审计事件当前新增以下顶层字段：
 
 | 字段 | 语义 |
 |---|---|
 | `decision` | `allow` / `deny` |
+| `target` | 操作目标 `Scope`；无具体目标时为空 scope |
 
 其余可见信息统一写入 `detail`，且不输出敏感 scope 明细。当前约定包括：
 
@@ -164,11 +165,11 @@ surface actor -> API gate -> control decision -> storage scope boundary
 | `before_unit_id` / `after_unit_id` | 单条记忆变更前后 id |
 | `before_unit_ids` / `after_unit_ids` | 批量记忆变更前后 id 列表（JSON 字符串） |
 
-dispatch `audit` 返回体只透出 `actor`、`action`、`target_id`、`layer`、`decision`、`detail`。
+dispatch `audit` 返回体透出 `actor`、`target`、`action`、`target_id`、`layer`、`decision`、`detail`。
 
 审计查询入口仍然是治理层的 `Governor.audit(filters, limit)`，并由 API 层通过 `MemoryAPI.audit(...)` 暴露；`AuditLogger.query(filters, limit)` 只作为治理层消费审计后端的内部接口，不直接暴露为用户 API。这样可以保持“审计查询属于治理面”的边界。
 
-当前 `filters` 支持 `action`、`layer`、`decision`、`target_id`、`actor_org`、`actor_user`、`actor_agent`、`actor_session`，以及闭区间时间边界 `occurred_after` / `occurred_before`（ISO datetime 字符串）。
+当前 `filters` 支持 `action`、`layer`、`decision`、`target_id`、`actor_org`、`actor_space`、`actor_user`、`actor_agent`、`actor_session`、`target_org`、`target_space`、`target_user`、`target_agent`、`target_session`，以及闭区间时间边界 `occurred_after` / `occurred_before`（ISO datetime 字符串）。
 
 当前审计后端有两类：
 
@@ -249,7 +250,7 @@ SQLite 审计通过 `audit.default` 配置启用：
 ### 审计追责
 
 - permission deny 会形成结构化审计事件。
-- audit 返回体能看出 `actor`，并通过 `decision/detail` 解释这次访问的结果。
+- audit 返回体能看出 `actor` 与 `target`，并通过 `decision/detail` 解释这次访问的结果。
 - grant/revoke 形成审计留痕。
 - 启用 SQLite audit 后端后，审计事件会落盘，并可在重新装配内核后继续通过 `api.audit(...)` 查询。
 

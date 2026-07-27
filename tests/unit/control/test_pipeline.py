@@ -29,7 +29,7 @@ class RecordingIndexBuilder(IndexBuilder):
     def update(self, units) -> None:
         return None
 
-    def remove(self, unit_ids) -> None:
+    def remove(self, units) -> None:
         return None
 
     def rebuild(self) -> None:

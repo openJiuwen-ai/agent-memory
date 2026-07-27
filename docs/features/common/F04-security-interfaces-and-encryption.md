@@ -1,19 +1,19 @@
-# 安全架构指南（Security Architecture Guide）
+# 安全接口与加密设计
 
-> 文档性质：安全架构开发指导（通用 blueprint，认证/授权/隔离/加密/审计设计指导）
-> 版本：v0.3 ｜ 日期：2026-07
-> 关联文档：[架构设计 Architecture](../design/architecture.md) ｜ [愿景 Vision](../design/vision.md) ｜ [认证与加密 Demo 设计](./auth_encryption_demo_design.md)
-> 说明：本文档为 jiuwen-memory 项目的通用安全 blueprint，不等同于具体实现。`examples/security_demo` 是第一个落地（v2.0 + ADMIN）；关键差异处以「Demo 实现注记」标出。
-> v0.3 对齐 `agent-memory` mem2.0 分支（`actor` -> `identity`、AuditLogger 加 `query`、PermissionManager/AuditLogger 已有实现、Factory/Producer 注册模式、bootstrap/ 已生成）。
-> 设计文档若需追溯某条架构决策的安全依据，可在本文对应章节找到落地实现。
+## 元信息
 
----
+| 项 | 值 |
+|---|---|
+| 日期 | 2026-07-27 |
+| 影响范围 | `src/common/security/`、`src/storage/kv_impl/`、`src/control/engine_impl/`、`docs/specs/S07-common.md`、`docs/specs/S06-storage.md` |
+| 测试基线 | `local` SecurityProvider 直接行为校验通过，`EncryptedKVStore` 单测函数直接执行通过；当前环境缺少 pytest/ruff runner |
 
-> **本文与 demo 的关系**：demo 做了取舍与 v2 演化（agent 提升为 org 级、数据面 bearer-only 等）。完整设计见：
->
-> - [`docs/security/auth_encryption_demo_design.md`](./auth_encryption_demo_design.md) — demo 认证+加密模块设计（v2.0）
-> - [`examples/security_demo/problems/design_change_agent_org_level.md`](../../examples/security_demo/problems/design_change_agent_org_level.md) — agent org 级模型变更
-> - [`examples/security_demo/problems/design_add_admin_role.md`](../../examples/security_demo/problems/design_add_admin_role.md) — ORG_ADMIN 角色
+本文由原 `docs/security/security.md` 迁入 common 特性归档，作为认证、授权、隔离、加密与审计的安全设计基线。后续 `common/security` 接口、`EncryptedKVStore`、`cloud_engine` 读写编排与安全配置均以本文为设计入口。
+
+当前落地状态（2026-07-27）：`common/security` 接口已提供 `SecurityProvider` /
+`SecurityProducer`，`storage/kv_impl/encrypted_kv_store.py` 已提供 KV 加密装饰器；
+`security_impl/local_envelope_security_provider.py` 已提供 `local` ENC1 AES-GCM
+真实加解密 provider。KMS / Vault provider 仍未实现。
 
 ---
 
@@ -41,7 +41,7 @@
 
 **核心不变量**：身份信息（org / user 或 agent / role）**永远来自认证层产出的 AuthContext**，不来自 URI、不来自请求体参数、不来自未经校验的 HTTP header（trusted 模式也必须有明确的网关信任边界）。user 与 agent 是同级主体；Agent 代 user 操作时，委托关系来自已验证的 `acting_user`，不能由调用方自报。
 
-> **关联设计文档**：本框架的三道防线与项目的「透明可治理」设计原则一脉相承——见 [`design/vision.md` §3 设计原则](../design/vision.md)（记忆可检视、可编辑、可审计、可回溯、可遗忘）与 [`design/architecture.md` §12 横切关注点](../design/architecture.md)（安全合规：scope 权限、端侧数据不出端、传输/存储加密、可遗忘）。
+> **关联设计文档**：本框架的三道防线与项目的「透明可治理」设计原则一脉相承——见 [`design/vision.md` §3 设计原则](../../design/vision.md)（记忆可检视、可编辑、可审计、可回溯、可遗忘）与 [`design/architecture.md` §12 横切关注点](../../design/architecture.md)（安全合规：scope 权限、端侧数据不出端、传输/存储加密、可遗忘）。
 
 ### 1.2 不在三道防线内、但同样重要
 
@@ -58,7 +58,7 @@
 
 ## 2. 认证（Authentication）
 
-> **关联设计文档**：认证的执行点（PEP, Policy Enforcement Point）落在接口层——每个 API 方法先 `check(identity, scope, action)`、落带 identity 的入口审计，通过后才委托业务。详见 [`design/architecture.md` §9 记忆接口层](../design/architecture.md)。
+> **关联设计文档**：认证的执行点（PEP, Policy Enforcement Point）落在接口层——每个 API 方法先 `check(identity, scope, action)`、落带 identity 的入口审计，通过后才委托业务。详见 [`design/architecture.md` §9 记忆接口层](../../design/architecture.md)。
 
 ### 2.1 设计原则
 
@@ -492,7 +492,7 @@ def get_ctx() -> AuthContext:
 
 ## 3. 授权（Authorization）
 
-> **关联设计文档**：本框架的授权以 `org > user = agent > session` scope 模型为载体——user 与 agent 是同级主体，检索/写入默认限制在各自主体 scope 内，跨主体访问需显式授权。授权检查在接口层以 `identity`（调用方）与 `scope`（目标）分离的形式执行，见 [`design/architecture.md` §3.2 作用域与多租户](../design/architecture.md) 与 [`design/architecture.md` §9 记忆接口层](../design/architecture.md)。
+> **关联设计文档**：本框架的授权以 `org > user = agent > session` scope 模型为载体——user 与 agent 是同级主体，检索/写入默认限制在各自主体 scope 内，跨主体访问需显式授权。授权检查在接口层以 `identity`（调用方）与 `scope`（目标）分离的形式执行，见 [`design/architecture.md` §3.2 作用域与多租户](../../design/architecture.md) 与 [`design/architecture.md` §9 记忆接口层](../../design/architecture.md)。
 
 ### 3.1 角色模型
 
@@ -500,8 +500,7 @@ def get_ctx() -> AuthContext:
 
 > **Demo 实现注记**：demo 三档角色为 **user / org_admin / ROOT**（对应指南 USER/ADMIN/ROOT）。
 > demo 的 org_admin 比指南的 ADMIN 更细：绑具体 org、**org 首个 user 自动成为 admin**（引导）、可自治提拔/降级本 org
-> admin（对称）、受**最后一个 admin 保护**、永不能签 ROOT、走 api_key 不进数据面。详见
-> [`design_add_admin_role.md`](../../examples/security_demo/problems/design_add_admin_role.md)。
+> admin（对称）、受**最后一个 admin 保护**、永不能签 ROOT、走 api_key 不进数据面。
 > `agent-memory` mem2.0 的 `permission_impl/` 已有两个实现：`AllowAllPermissionManager`（全放行，测试用）和
 > `SQLitePermissionManager`（SQLite ACL：grant 持久化 + revoke 软撤销 `revoked_at` + owner scope covers + 跨 org 拒 + grants 表查询）。
 > demo 的 `DemoPermissionManager` 多一层 `acting_user`（agent 经 user 授权代其操作时从 ContextVar 取）。这是同级主体间的委托关系，不是 agent 从属于 user；该信息计划通过 AuthContext 侧车与 SQLitePermissionManager 协作。
@@ -666,13 +665,13 @@ T=3: ROOT 通过 PUT .../role 可把某个 user 或 agent 提升为 ROOT
 
 ## 4. 多租户隔离（Isolation）
 
-> **关联设计文档**：本框架的路径前缀注入是项目 scope 模型的存储层落地。scope 层级为 `org > user = agent > session`：`user` 与 `agent` 是 org 下同级主体，二者不存在从属关系；`session` 可归属于其中任一主体。跨主体访问必须经显式授权。详见 [`design/architecture.md` §3.2 作用域与多租户](../design/architecture.md)、[`design/vision.md` §4 支柱五](../design/vision.md) 与 [`design/competitor_analysis.md` §1](../design/competitor_analysis.md)。
+> **关联设计文档**：本框架的路径前缀注入是项目 scope 模型的存储层落地。scope 层级为 `org > space > user/agent > session`：`space` 是 org 下的逻辑隔离单元；`user` 与 `agent` 在 space 内的归属顺序由 `principal_path` 决定。跨主体或跨 space 访问必须经显式授权。详见 [`design/architecture.md` §3.2 作用域与多租户](../../design/architecture.md)。
 
 ### 4.1 设计的核心：身份注入路径前缀
 
-`user` 与 `agent` 是并列的记忆主体：用户自己的记忆落 `Scope(org, user)`，Agent 自身记忆落 `Scope(org, agent)`。同一个归属 scope 不应同时设置 `user` 与 `agent`；否则会重新引入二者的组合层级。`session` 只能挂在已确定的 user 或 agent 主体下。
+`user` 与 `agent` 是 space 内的记忆主体：用户自己的记忆落 `Scope(org, space, user)`，Agent 自身记忆落 `Scope(org, space, agent)`。默认 `principal_path=user_agent` 时 user 是 agent 的上级主体；`principal_path=agent_user` 时 agent 是 user 的上级主体。`session` 只能挂在已确定的主体路径下。
 
-Agent 经用户授权代其操作记忆时，委托关系由认证产物表达：`AuthContext.actor = Scope(org, agent)`、`AuthContext.acting_user = user`，目标仍是 `Scope(org, user)`。这里的“代 user”是授权关系，不代表 agent 从属于 user，也不把 agent 写入用户记忆的目标 scope。
+Agent 经用户授权代其操作记忆时，委托关系由认证产物表达：`AuthContext.actor = Scope(org, space, agent)`、`AuthContext.acting_user = user`，目标仍是 `Scope(org, space, user)`。这里的“代 user”是授权关系，不代表 agent 必然从属于 user，也不把 agent 写入用户记忆的目标 scope。
 
 > **Demo 实现注记**：参考 demo 将操作方 `actor` 与目标记忆归属分开：OAuth token 同时证明 agent 身份和用户授权，`AuthContext` 保存 `actor` 与 `acting_user`，PEP 校验后只把 user target scope 下沉到 Engine/Store。
 
@@ -695,19 +694,19 @@ def scope_namespace(scope: Scope) -> str:
         if owner == "_org":
             raise ValidationError("session requires a user or agent owner")
         owner = f"{owner}/session/{scope.session}"
-    return f"/local/{scope.org}/{owner}"
+    return f"/local/{scope.org}/{scope.space}/{owner}"
 ```
 
 结果：
 ```
-Scope(org="acme", user="u1")
-  → /local/acme/user/u1
+Scope(org="acme", space="product", user="u1")
+  → /local/acme/product/user/u1
 
-Scope(org="acme", agent="a1")
-  → /local/acme/agent/a1
+Scope(org="acme", space="product", agent="a1")
+  → /local/acme/product/agent/a1
 
-Scope(org="acme", user="u1", session="s1")
-  → /local/acme/user/u1/session/s1
+Scope(org="acme", space="product", user="u1", session="s1")
+  → /local/acme/product/user/u1/session/s1
 ```
 
 相同名称的 user 与 agent 仍落到不同分支；不同 org 也落到不同租户子树。路径结构本身不授予访问权，真正的授权决定必须在 PEP 完成。
@@ -827,7 +826,7 @@ def get_search_roots(context_type, ctx):
 
 ## 5. 数据加密（Encryption at Rest）
 
-> **关联设计文档**：存储加密是「端侧数据不出端、传输/存储加密」原则的落地。端云协同场景下，热/私有记忆留端、冷/共享上云，选择性同步需加密传输——见 [`design/vision.md` §4 支柱四 端云协同](../design/vision.md) 与 [`design/architecture.md` §11 部署架构](../design/architecture.md)。可插拔存储后端（SQLite/PostgreSQL/Milvus 等）的加密生效边界见 [`design/architecture.md` §5.2 存储抽象](../design/architecture.md)。
+> **关联设计文档**：存储加密是「端侧数据不出端、传输/存储加密」原则的落地。端云协同场景下，热/私有记忆留端、冷/共享上云，选择性同步需加密传输——见 [`design/vision.md` §4 支柱四 端云协同](../../design/vision.md) 与 [`design/architecture.md` §11 部署架构](../../design/architecture.md)。可插拔存储后端（SQLite/PostgreSQL/Milvus 等）的加密生效边界见 [`design/architecture.md` §5.2 存储抽象](../../design/architecture.md)。
 >
 > **Demo 实现注记**：`security_demo` 已实现 ENC1 信封加密（crypto/ 模块：BlobEncryptor + LocalRootKeyProvider + ENC1 envelope，AES-256-GCM + HKDF-by-org，AAD 绑定 scope，fail-closed）。接缝在 EncryptedFSStore（装饰 FSStore，对 Engine 透明）。`agent-memory` mem2.0 的存储层用 KVStore（非 FSStore），加密移植时改为 EncryptedKVStore（装饰 KVStore，同构）。加密模块通过 store_factory 接缝注入（见可移植模块 ClawAegis/memory-server）。外部加密模块可不依赖 demo 的 crypto/，自行实现 KVStore 装饰器。
 
@@ -1212,22 +1211,32 @@ FileEncryptor.decrypt(data, org_id)      ← ★ 解密
 
 ### 5.4 配置
 
+当前落地的 KV 加密通过组合 `security` provider 与 `kv_store` 装饰器启用；不存在全局
+`encryption.enabled` 开关。未把业务 KV 指向 `target: encrypted` 时，存储仍按 raw KV
+后端的原始行为运行。
+
 ```yaml
-encryption:
-  enabled: false                    # 默认关闭
-  provider: "local"                 # "local" | "vault"
-  local:
-    key_file: "~/.framework/master.key"
-  vault:
-    address: "http://127.0.0.1:8200"
-    token: "hvs.xxx"
-    mount_point: "transit"
-    kv_mount_point: "secret"
-    kv_version: 1
-    key_name: "framework-root-key"
+security:
+  default:
+    target: local
+    params:
+      key_file: "~/.agent-memory/security/master.key"
+      allow_plaintext: false
+
+kv_store:
+  raw:
+    target: sqlite
+    params:
+      db_path: agent_memory.db
+
+  default:
+    target: encrypted
+    params:
+      raw_kv_store: raw
+      security: default
 ```
 
-**默认关闭**，因为加密增加复杂度：随机读必须全量解密、grep 必须应用层解密、append 必须读全重写。部署者在确认需要 before storage encryption at rest 场景（如文件磁盘 on laptop、S3 bucket）时才开启。
+**默认不启用加密包装**，因为加密增加复杂度：随机读必须全量解密、grep 必须应用层解密、append 必须读全重写。部署者在确认需要 before storage encryption at rest 场景（如文件磁盘 on laptop、S3 bucket）时才把业务 KV 指向 encrypted wrapper。
 
 ### 5.5 错误分类
 
@@ -1266,11 +1275,11 @@ class KeyMismatchError(EncryptionError):
 |---|---|---|---|
 | **Root API Key** | 认证最高权限调用方，解析为 ROOT 身份 | `root_api_key`；Secret/Vault/K8s Secret | 攻击者取得系统管理权限，但不能直接解密落盘密文 |
 | **Principal API Key** | 认证具体 user 或 agent；也可作为 OAuth token 的授权锚 | API Key 注册表中的 Argon2id hash + SHA-256 fingerprint | 对应主体被冒用，绑定 token 可能需级联撤销 |
-| **Encryption Root Key** | 派生 Org Key、包裹 File Key，保护静态数据 | `encryption.local.key_file` 或 KMS/Vault transit，见 §5 | 攻击者可能解密受其保护的数据，但不会因此自动获得 API 权限 |
+| **Encryption Root Key** | 派生 Org Key、包裹 File Key，保护静态数据 | `security.default.params.key_file` 或 KMS/Vault transit，见 §5 | 攻击者可能解密受其保护的数据，但不会因此自动获得 API 权限 |
 
-> **命名约束**：下文的 “Root API Key” 专指认证根凭据；第 5 章的 “Encryption Root Key” 专指加密根密钥。代码中应分别使用 `root_api_key` 与 `encryption_root_key`，配置中分别放在 `root_api_key` 与 `encryption.*` 命名空间，不要都简称为 `root_key`。
+> **命名约束**：下文的 “Root API Key” 专指认证根凭据；第 5 章的 “Encryption Root Key” 专指加密根密钥。代码中应分别使用 `root_api_key` 与 `encryption_root_key`，配置中分别放在 `root_api_key` 与 `security.*` 命名空间，不要都简称为 `root_key`。
 
-> **关联设计文档**：端云协同部署（Edge-only / Cloud-only / Hybrid）决定了两类 key 的保管位置与分发信道。Encryption Root Key 在端侧场景不出端、云侧场景由 KMS/Vault 托管；Root API Key 只通过 Secret 管理系统交付给受信管理员。见 [`design/architecture.md` §11 部署架构](../design/architecture.md)。
+> **关联设计文档**：端云协同部署（Edge-only / Cloud-only / Hybrid）决定了两类 key 的保管位置与分发信道。Encryption Root Key 在端侧场景不出端、云侧场景由 KMS/Vault 托管；Root API Key 只通过 Secret 管理系统交付给受信管理员。见 [`design/architecture.md` §11 部署架构](../../design/architecture.md)。
 
 ### 6.1 整体分发流程
 
@@ -1404,14 +1413,14 @@ def verify_token(token_value: str) -> Token | None:
     # (见 §6.4 compute_fingerprint_from_store),不能从 stored_value 现算--
     # Argon2 哈希不可逆,且与 §2.4.2 verify_bearer_token 取法保持一致。
     ap = token.authorizing_principal
-    # Scope 只携带 org/user/agent/session,需据此推出 (principal_type, principal_id)
+    # Scope 携带 org/space/user/agent/session,需据此推出 (principal_type, principal_id)
     if ap.user:
         p_type, p_id = "user", ap.user
     elif ap.agent:
         p_type, p_id = "agent", ap.agent
     else:
         return None  # token 绑定的主体缺失,拒绝
-    current_fp = compute_fingerprint_from_store(ap.org, p_type, p_id)
+    current_fp = compute_fingerprint_from_store(ap.org, ap.space, p_type, p_id)
     if not hmac.compare_digest(current_fp, token.authorizing_key_fp):
         # key 被轮换,该 token 失效
         revoke_token(token)
@@ -1426,7 +1435,7 @@ def verify_token(token_value: str) -> Token | None:
 
 ## 7. 审计日志（Audit Logging）
 
-> **关联设计文档**：审计是「可治理」原则（可检视/编辑/审计/回溯/遗忘）的一环。记忆的 `lifecycle` 用「标记失效」而非物理删除（非破坏式更新），`delete` 支持 `purge` 合规删除（物理删除真源与全部派生索引，仅留审计记录）——这两种删除都需审计留痕。见 [`design/architecture.md` §3.1 记忆单元](../design/architecture.md)、[`design/architecture.md` §12 横切关注点](../design/architecture.md)、[`design/architecture.md` §14 关键数据流](../design/architecture.md)（写入路径含审计落点）、[`design/vision.md` §3 设计原则](../design/vision.md)。
+> **关联设计文档**：审计是「可治理」原则（可检视/编辑/审计/回溯/遗忘）的一环。记忆的 `lifecycle` 用「标记失效」而非物理删除（非破坏式更新），`delete` 支持 `purge` 合规删除（物理删除真源与全部派生索引，仅留审计记录）——这两种删除都需审计留痕。见 [`design/architecture.md` §3.1 记忆单元](../../design/architecture.md)、[`design/architecture.md` §12 横切关注点](../../design/architecture.md)、[`design/architecture.md` §14 关键数据流](../../design/architecture.md)（写入路径含审计落点）、[`design/vision.md` §3 设计原则](../../design/vision.md)。
 
 ### 7.1 AuthContext：认证产物与审计来源
 
@@ -1434,8 +1443,8 @@ def verify_token(token_value: str) -> Token | None:
 
 `AuthContext` 与 `Scope` 的职责不同：
 
-- `Scope` 只表达 actor 或 target 的资源归属，保持 `org > user = agent > session` 的纯作用域模型；user 与 agent 在同一 Scope 中互斥。
-- `AuthContext.actor` 表示已认证的操作执行者，可以是 `Scope(org, user)` 或 `Scope(org, agent)`。
+- `Scope` 只表达 actor 或 target 的资源归属，保持 `org > space > user/agent > session` 的纯作用域模型；space 是逻辑隔离单元，user/agent 的顺序由 `principal_path` 决定。
+- `AuthContext.actor` 表示已认证的操作执行者，可以是 `Scope(org, space, user)` 或 `Scope(org, space, agent)`。
 - `AuthContext.acting_user` 表示当前操作对应的 user：user 自操作时等于 `actor.user`；Agent 经 user 授权代其操作时，是委托目标。它来自服务端验证过的 OAuth claim、授权记录或 session，不来自请求 body/URI；该字段不表示 user 与 agent 存在从属关系。
 - PEP 使用完整 `AuthContext` 做授权和审计；鉴权通过后只把 target scope 下沉到 Engine/Store，避免认证元数据污染存储接口。
 
@@ -1567,7 +1576,7 @@ class AuditLogger:
 
 ## 8. 附加攻击面指引
 
-> **关联设计文档**：分层记忆结构（L0 摘要 / L1 片段 / L2 全文，原始数据为唯一真源）与检索层（scope 为独立轴、各 Store 查询的专用 `scope` 字段做原生隔离）共同决定了索引层攻击面。向量库的明文 abstract 列、各 Store 的索引，需与内容层分开评估访问控制。见 [`design/architecture.md` §4 分层记忆结构](../design/architecture.md)、[`design/architecture.md` §7 记忆检索层](../design/architecture.md)、[`design/vision.md` §4 支柱二](../design/vision.md)。
+> **关联设计文档**：分层记忆结构（L0 摘要 / L1 片段 / L2 全文，原始数据为唯一真源）与检索层（scope 为独立轴、各 Store 查询的专用 `scope` 字段做原生隔离）共同决定了索引层攻击面。向量库的明文 abstract 列、各 Store 的索引，需与内容层分开评估访问控制。见 [`design/architecture.md` §4 分层记忆结构](../../design/architecture.md)、[`design/architecture.md` §7 记忆检索层](../../design/architecture.md)、[`design/vision.md` §4 支柱二](../../design/vision.md)。
 
 ### 8.1 速率限制（Rate Limiting）
 

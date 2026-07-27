@@ -13,6 +13,8 @@ from control.lifecycle_impl.kv_lifecycle_manager import KVLifecycleManager
 from control.policy_impl.dict_policy_manager import DictPolicyManager
 from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 
+pytestmark = pytest.mark.unit
+
 
 def _store(unit) -> tuple[InMemoryKVStore, KVLifecycleManager]:
     kv = InMemoryKVStore()
@@ -28,7 +30,7 @@ def test_transition_allows_defined_forward_lifecycle_moves(unit_factory) -> None
     unit = unit_factory("u1", "active memory", lifecycle=LifecycleState.ACTIVE)
     kv, lifecycle = _store(unit)
 
-    lifecycle.transition([unit.id], LifecycleState.ARCHIVED)
+    lifecycle.transition(unit.scope, [unit.id], LifecycleState.ARCHIVED)
 
     assert _load(kv, unit).lifecycle == LifecycleState.ARCHIVED
 
@@ -38,7 +40,7 @@ def test_transition_rejects_reactivating_forgotten_memory(unit_factory) -> None:
     kv, lifecycle = _store(unit)
 
     with pytest.raises(ValidationError):
-        lifecycle.transition([unit.id], LifecycleState.ACTIVE)
+        lifecycle.transition(unit.scope, [unit.id], LifecycleState.ACTIVE)
 
     assert _load(kv, unit).lifecycle == LifecycleState.FORGOTTEN
 
@@ -48,7 +50,7 @@ def test_transition_rejects_reactivating_superseded_memory(unit_factory) -> None
     kv, lifecycle = _store(unit)
 
     with pytest.raises(ValidationError):
-        lifecycle.transition([unit.id], LifecycleState.ACTIVE)
+        lifecycle.transition(unit.scope, [unit.id], LifecycleState.ACTIVE)
 
     assert _load(kv, unit).lifecycle == LifecycleState.SUPERSEDED
 
@@ -58,7 +60,7 @@ def test_supersede_sets_state_and_invalid_time(unit_factory) -> None:
     unit = unit_factory("u1", "old version", lifecycle=LifecycleState.ACTIVE)
     kv, lifecycle = _store(unit)
 
-    updated = lifecycle.supersede(unit.id, invalid_at)
+    updated = lifecycle.supersede(unit.scope, unit.id, invalid_at)
 
     stored = _load(kv, unit)
     assert updated.id == unit.id
@@ -74,7 +76,7 @@ def test_supersede_rejects_invalid_lifecycle_state(unit_factory) -> None:
     kv, lifecycle = _store(unit)
 
     with pytest.raises(ValidationError):
-        lifecycle.supersede(unit.id, invalid_at)
+        lifecycle.supersede(unit.scope, unit.id, invalid_at)
 
     stored = _load(kv, unit)
     assert stored.lifecycle == LifecycleState.ARCHIVED
@@ -85,7 +87,29 @@ def test_supersede_raises_not_found_for_missing_unit() -> None:
     lifecycle = KVLifecycleManager(InMemoryKVStore())
 
     with pytest.raises(NotFoundError):
-        lifecycle.supersede("missing", datetime(2026, 6, 17, 11, 0, tzinfo=timezone.utc))
+        lifecycle.supersede(
+            Scope(),
+            "missing",
+            datetime(2026, 6, 17, 11, 0, tzinfo=timezone.utc),
+        )
+
+
+def test_targeted_transition_does_not_mutate_same_id_in_another_scope(unit_factory) -> None:
+    scope_a = Scope(org="acme", space="space-a", user="alice")
+    scope_b = Scope(org="acme", space="space-b", user="alice")
+    unit_a = unit_factory("shared-id", "space A", lifecycle=LifecycleState.ACTIVE)
+    unit_b = unit_factory("shared-id", "space B", lifecycle=LifecycleState.ACTIVE)
+    unit_a.scope = scope_a
+    unit_b.scope = scope_b
+    kv = InMemoryKVStore()
+    kv.insert(scope_a, memory_key(unit_a.id), dumps(unit_a))
+    kv.insert(scope_b, memory_key(unit_b.id), dumps(unit_b))
+    lifecycle = KVLifecycleManager(kv)
+
+    lifecycle.transition(scope_b, [unit_b.id], LifecycleState.FORGOTTEN)
+
+    assert _load(kv, unit_a).lifecycle == LifecycleState.ACTIVE
+    assert _load(kv, unit_b).lifecycle == LifecycleState.FORGOTTEN
 
 
 def test_sweep_forgets_expired_active_and_superseded_units(unit_factory) -> None:

@@ -18,12 +18,12 @@ from storage.base import StoreType
 from storage.fulltext import FulltextProducer, FulltextStore
 from storage.types import Document, ScoredID, TextQuery
 
-_ScopeKey = Tuple[str, str, str, str]
+_ScopeKey = Tuple[str, str, str, str, str]
 
 
 def _skey(scope: Scope) -> _ScopeKey:
     """把 scope 折成可哈希的命名空间键（隔离单位）。"""
-    return (scope.org, scope.user, scope.agent, scope.session)
+    return (scope.org, scope.space, scope.user, scope.agent, scope.session)
 
 
 class InMemoryFulltextStore(FulltextStore):

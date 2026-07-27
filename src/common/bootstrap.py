@@ -1,8 +1,8 @@
-"""注册引导：import 各共享插件实现包，触发其 ``@Producer.register`` 自注册。
+"""注册引导：import 各共享组件实现包，触发其 ``@Producer.register`` 自注册。
 
-工厂句柄定义在各插件的接口模块 ``common.<plugin>.base``（如
-:class:`~common.tokenizer.base.TokenizerProducer`），消费方只依赖接口层；实现的注册发生在
-import 实现模块时，由本函数在装配入口统一触发。与各层 bootstrap 同构。
+工厂句柄定义在各组件的接口模块（多数插件为 ``common.<plugin>.base``，
+security 为 ``common.security.security``），消费方只依赖接口层；实现的注册
+发生在 import 实现模块时，由本函数在装配入口统一触发。与各层 bootstrap 同构。
 """
 
 from __future__ import annotations
@@ -25,4 +25,5 @@ def register_plugins() -> None:
     import_module("common.reranker.reranker_impl")
     import_module("common.llm.llm_impl")
     import_module("common.audit.audit_impl")
+    import_module("common.security.security_impl")
     _REGISTERED = True

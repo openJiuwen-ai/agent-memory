@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import copy
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any
 
 from common.errors import NotFoundError, ValidationError
 from common.log import get_logger
@@ -83,7 +84,10 @@ def _now() -> datetime:
 def _valid_at(unit: MemoryUnit, as_of: datetime) -> bool:
     valid_from = unit.temporal.t_valid
     invalid_from = unit.temporal.t_invalid
-    if valid_from is not None and invalid_from is not None and invalid_from <= valid_from:
+    has_non_positive_validity_window = (
+        valid_from is not None and invalid_from is not None and invalid_from <= valid_from
+    )
+    if has_non_positive_validity_window:
         return as_of < invalid_from
     if valid_from is not None and as_of < valid_from:
         return False
@@ -103,6 +107,40 @@ def _downweight_importance(unit: MemoryUnit) -> None:
     except ValueError:
         value = 1.0
     unit.metadata["importance"] = f"{max(0.0, value * 0.5):g}"
+
+
+def _unit_memory_type(unit: MemoryUnit) -> str:
+    return str(unit.metadata.get("memory_type", "")).strip() or unit.tier.value
+
+
+def _unit_sort_key(unit: MemoryUnit) -> tuple[datetime, str]:
+    return (unit.temporal.t_ingest or datetime.min.replace(tzinfo=timezone.utc), unit.id)
+
+
+@dataclass(frozen=True)
+class _ScopedUnitId:
+    org: str
+    space: str
+    user: str
+    agent: str
+    session: str
+    unit_id: str
+
+
+def _scoped_unit_id(scope: Scope, unit_id: str) -> _ScopedUnitId:
+    return _ScopedUnitId(
+        org=scope.org,
+        space=scope.space,
+        user=scope.user,
+        agent=scope.agent,
+        session=scope.session,
+        unit_id=unit_id,
+    )
+
+
+def _ensure_local_scope(scope: Scope) -> None:
+    if scope.space:
+        raise ValidationError("InMemoryEngine only supports scope.space == ''")
 
 
 def _permission_context_from_unit(unit: MemoryUnit) -> PermissionContext:
@@ -132,17 +170,22 @@ def _matches_delete_selector(unit: MemoryUnit, selector: DeleteSelector) -> bool
 
 
 def _expand_provenance_descendants(
-    units: list[tuple[Scope, str, MemoryUnit]], seed_ids: set[str]
-) -> set[str]:
+    units: list[tuple[Scope, str, MemoryUnit]],
+    seed_ids: set[_ScopedUnitId],
+) -> set[_ScopedUnitId]:
     purge_ids = set(seed_ids)
     changed = True
     while changed:
         changed = False
-        for _, _, unit in units:
-            if unit.id in purge_ids:
+        for scope, _, unit in units:
+            unit_ref = _scoped_unit_id(scope, unit.id)
+            if unit_ref in purge_ids:
                 continue
-            if any(parent_id in purge_ids for parent_id in unit.provenance):
-                purge_ids.add(unit.id)
+            if any(
+                _scoped_unit_id(scope, parent_id) in purge_ids
+                for parent_id in unit.provenance
+            ):
+                purge_ids.add(unit_ref)
                 changed = True
     return purge_ids
 
@@ -196,11 +239,12 @@ class InMemoryEngine(MemoryEngine):
         scope: Scope,
         source: Modality = Modality.TEXT,
         *,
-        assets: List[str] | None = None,
-        tags: List[str] | None = None,
+        assets: list[str] | None = None,
+        tags: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
         occurred_at: datetime | None = None,
-    ) -> List[MemoryUnit]:
+    ) -> list[MemoryUnit]:
+        _ensure_local_scope(scope)
         # 调用级开关（经 metadata 下推，对齐 mem0 add(infer=True)）：
         # - procedural=true：过程记忆抽取——原文不落 KV，evolver 让 extractor 把本轮汇总成
         #   1 条 PROCEDURAL 执行历史，落 /memory/ 建索引；不走去重、不收集 context。
@@ -270,19 +314,82 @@ class InMemoryEngine(MemoryEngine):
         return units
 
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
+        _ensure_local_scope(scope)
         binding = self._recall_binding(query)
         retriever = binding.retriever if binding is not None else self._retriever
         return retriever.retrieve(scope, query)
 
+    async def list(
+        self,
+        scope: Scope,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        memory_types: list[str] | None = None,
+    ) -> list[MemoryUnit]:
+        return self._list_page(
+            scope,
+            offset=offset,
+            limit=limit,
+            memory_types=memory_types,
+        )
+
+    def _list_page(
+        self,
+        scope: Scope,
+        *,
+        offset: int,
+        limit: int,
+        memory_types: list[str] | None,
+    ) -> list[MemoryUnit]:
+        _ensure_local_scope(scope)
+        if offset < 0:
+            raise ValidationError("offset must be >= 0")
+        if limit <= 0:
+            raise ValidationError("limit must be > 0")
+        wanted: set[str] = set()
+        for raw_memory_type in memory_types or []:
+            memory_type = str(raw_memory_type).strip()
+            if memory_type:
+                wanted.add(memory_type)
+        units = self._list_units(scope)
+        if wanted:
+            units = [unit for unit in units if _unit_memory_type(unit) in wanted]
+        units.sort(key=_unit_sort_key, reverse=True)
+        return units[offset: offset + limit]
+
     async def permission_context_for_unit(
         self, unit_id: str, scope: Scope
     ) -> PermissionContext:
+        _ensure_local_scope(scope)
         return _permission_context_from_unit(self._load(scope, unit_id))
+
+    async def list_with_permission_contexts(
+        self,
+        scope: Scope,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        memory_types: list[str] | None = None,
+    ) -> tuple[list[MemoryUnit], list[PermissionContext]]:
+        units = self._list_page(
+            scope,
+            offset=offset,
+            limit=limit,
+            memory_types=memory_types,
+        )
+        return units, [_permission_context_from_unit(unit) for unit in units]
 
     async def permission_contexts_for_delete(
         self, selector: DeleteSelector
     ) -> list[PermissionContext]:
-        scopes = [selector.scope] if selector.scope is not None else self._kv.scopes()
+        if selector.scope is not None:
+            _ensure_local_scope(selector.scope)
+        scopes = (
+            [selector.scope]
+            if selector.scope is not None
+            else [scope for scope in self._kv.scopes() if not scope.space]
+        )
         if not scopes:
             scopes = [Scope()]
         contexts: list[PermissionContext] = []
@@ -303,20 +410,22 @@ class InMemoryEngine(MemoryEngine):
             raise NotFoundError("memory_unit", unit_id)
         return unit
 
-    def _list_units(self, scope: Scope) -> List[MemoryUnit]:
+    def _list_units(self, scope: Scope) -> list[MemoryUnit]:
         # 只列建索引记忆（/memory/ 前缀）。loads 对非 MemoryUnit 记录返回 None，自然过滤。
         # 版本链（SUPERSEDE/supersedes）只在建索引记忆间；原文 /messages/ 无版本链。
-        return [
-            u for u in (loads(raw) for _, raw in self._kv.list(scope, prefix=MEMORY_KEY_PREFIX))
-            if u is not None
-        ]
+        units = []
+        for _, raw in self._kv.list(scope, prefix=MEMORY_KEY_PREFIX):
+            unit = loads(raw)
+            if unit is not None:
+                units.append(unit)
+        return units
 
-    def _version_family(self, scope: Scope, unit_id: str) -> List[MemoryUnit]:
+    def _version_family(self, scope: Scope, unit_id: str) -> list[MemoryUnit]:
         units_by_id = {unit.id: unit for unit in self._list_units(scope)}
         if unit_id not in units_by_id:
             raise NotFoundError("memory_unit", unit_id)
 
-        neighbors: Dict[str, set[str]] = {uid: set() for uid in units_by_id}
+        neighbors: dict[str, set[str]] = {uid: set() for uid in units_by_id}
         for unit in units_by_id.values():
             if unit.supersedes in units_by_id:
                 neighbors[unit.id].add(unit.supersedes)
@@ -335,14 +444,16 @@ class InMemoryEngine(MemoryEngine):
     async def get(
         self, unit_id: str, scope: Scope, as_of: datetime | None = None
     ) -> MemoryUnit:
+        _ensure_local_scope(scope)
         if as_of is None:
             return self._load(scope, unit_id)
 
-        candidates = [
-            unit
-            for unit in self._version_family(scope, unit_id)
-            if unit.lifecycle != LifecycleState.FORGOTTEN and _valid_at(unit, as_of)
-        ]
+        candidates = []
+        for unit in self._version_family(scope, unit_id):
+            if unit.lifecycle == LifecycleState.FORGOTTEN:
+                continue
+            if _valid_at(unit, as_of):
+                candidates.append(unit)
         if not candidates:
             logger.warning(
                 "Engine.get as_of miss: unit_id=%s scope=%s as_of=%s",
@@ -364,6 +475,7 @@ class InMemoryEngine(MemoryEngine):
     async def update(
         self, unit_id: str, scope: Scope, patch: MemoryPatch
     ) -> MemoryUnit:
+        _ensure_local_scope(scope)
         old = self._load(scope, unit_id)
         new = _apply_patch(old, patch)
         if patch.mode == UpdateMode.OVERWRITE:
@@ -378,7 +490,7 @@ class InMemoryEngine(MemoryEngine):
             if patch.t_valid is None:
                 new.temporal.t_valid = _now()
             self._kv.insert(scope, memory_key(new.id), dumps(new))
-            old = self._lifecycle.supersede(old.id, new.temporal.t_valid)
+            old = self._lifecycle.supersede(scope, old.id, new.temporal.t_valid)
             self._index.update([old])
             self._index.build([new])
             logger.info(
@@ -390,12 +502,21 @@ class InMemoryEngine(MemoryEngine):
             )
         return new
 
-    async def delete(self, selector: DeleteSelector) -> List[str]:
-        if not selector.unit_ids and not selector.tags and selector.before is None:
+    async def delete(self, selector: DeleteSelector) -> list[str]:
+        selector_is_empty = (
+            not selector.unit_ids and not selector.tags and selector.before is None
+        )
+        if selector_is_empty:
             logger.warning("Engine.delete rejected empty selector")
             raise ValidationError("DeleteSelector requires unit_ids, tags, or before")
 
-        scopes = [selector.scope] if selector.scope is not None else self._kv.scopes()
+        if selector.scope is not None:
+            _ensure_local_scope(selector.scope)
+        scopes = (
+            [selector.scope]
+            if selector.scope is not None
+            else [scope for scope in self._kv.scopes() if not scope.space]
+        )
         if not scopes:
             scopes = [Scope()]
         scanned: list[tuple[Scope, str, MemoryUnit]] = []
@@ -420,18 +541,25 @@ class InMemoryEngine(MemoryEngine):
             return []
 
         if selector.mode == DeleteMode.PURGE:
-            purge_ids = _expand_provenance_descendants(scanned, set(affected))
-            purged: List[str] = []
+            purge_ids = _expand_provenance_descendants(
+                scanned,
+                {_scoped_unit_id(scope, unit.id) for scope, _, unit in matches},
+            )
+            purged_units: list[MemoryUnit] = []
             for scope, unit_id, unit in scanned:
-                if unit.id in purge_ids:
+                if _scoped_unit_id(scope, unit.id) in purge_ids:
                     self._kv.delete(scope, unit_id)
-                    purged.append(unit.id)
-            self._index.remove(purged)
-            logger.info("Engine.delete purge: count=%d scope=%s", len(purged), selector.scope)
-            return purged
+                    purged_units.append(unit)
+            self._index.remove(purged_units)
+            logger.info(
+                "Engine.delete purge: count=%d scope=%s",
+                len(purged_units),
+                selector.scope,
+            )
+            return [unit.id for unit in purged_units]
 
         if selector.mode == DeleteMode.DOWNWEIGHT:
-            update_index: List[MemoryUnit] = []
+            update_index: list[MemoryUnit] = []
             for scope, unit_id, unit in matches:
                 _downweight_importance(unit)
                 self._kv.update(scope, unit_id, dumps(unit))
@@ -444,8 +572,24 @@ class InMemoryEngine(MemoryEngine):
             )
             return affected
 
-        self._lifecycle.transition(affected, _LIFECYCLE_OF_DELETE[selector.mode])
-        self._index.remove(affected)
+        by_scope: dict[tuple[str, str, str, str, str], tuple[Scope, list[str]]] = {}
+        for matched_scope, _, unit in matches:
+            key = (
+                matched_scope.org,
+                matched_scope.space,
+                matched_scope.user,
+                matched_scope.agent,
+                matched_scope.session,
+            )
+            _, unit_ids = by_scope.setdefault(key, (matched_scope, []))
+            unit_ids.append(unit.id)
+        for matched_scope, unit_ids in by_scope.values():
+            self._lifecycle.transition(
+                matched_scope,
+                unit_ids,
+                _LIFECYCLE_OF_DELETE[selector.mode],
+            )
+        self._index.remove([unit for _, _, unit in matches])
         logger.info(
             "Engine.delete transition: mode=%s target=%s count=%d scope=%s",
             selector.mode.value,
@@ -455,9 +599,25 @@ class InMemoryEngine(MemoryEngine):
         )
         return affected
 
+    async def purge_space(self, org: str, space: str) -> list[str]:
+        _ensure_local_scope(Scope(org=org, space=space))
+        purged_units: list[MemoryUnit] = []
+        for scope in [
+            candidate
+            for candidate in self._kv.scopes()
+            if candidate.org == org and candidate.space == space
+        ]:
+            units = self._list_units(scope)
+            for unit in units:
+                self._kv.delete(scope, memory_key(unit.id))
+            purged_units.extend(units)
+        self._index.remove(purged_units)
+        return [unit.id for unit in purged_units]
+
     async def evolve(
         self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
     ) -> str:
+        _ensure_local_scope(scope)
         job_id = self._scheduler.submit(scope, mode, channel)
         logger.info(
             "Engine.evolve submitted: job_id=%s scope=%s mode=%s channel=%s",
@@ -474,7 +634,7 @@ class InMemoryEngine(MemoryEngine):
     async def admin_set(self, key: str, value: str) -> None:
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")
 
-    async def admin_all(self) -> Dict[str, str]:
+    async def admin_all(self) -> dict[str, str]:
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")
 
 
@@ -487,7 +647,8 @@ class InMemoryEngine(MemoryEngine):
 
 @EngineProducer.register("in_memory")
 def _build(config):
-    # index_builder 缺省随 vector_enabled 在 hybrid/fulltext 间择一，并与 evolver 共享。
+    # index_builder 缺省随 vector_enabled 在 hybrid/fulltext 间择一。
+    # 与 evolver 一致，共享同一实例。
     ib_default = "hybrid" if config.get("vector_enabled", True) else "fulltext"
     # classifier 可选：config 声明了 classifier 命名空间具名实例则注入，None 时跳过（向后兼容）。
     # infer=false 默认路径用它给原文打 tier+tags；infer=true 由 extractor 产出不经 classifier。

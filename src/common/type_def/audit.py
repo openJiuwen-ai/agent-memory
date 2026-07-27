@@ -26,5 +26,6 @@ class AuditEvent:
     detail: dict[str, str] = field(
         default_factory=dict
     )  # 附加明细（字符串化扩展字段；不放敏感 scope）
+    target: Scope = field(default_factory=Scope)  # 操作目标 scope；无具体目标时为空
     # 常见约定：permission_check、permission_reason、job_id、
     # before_unit_id / after_unit_id、before_unit_ids / after_unit_ids

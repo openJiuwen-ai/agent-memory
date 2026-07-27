@@ -61,7 +61,8 @@ logger = get_logger(__name__)
 # 去重判定 Prompt
 # ---------------------------------------------------------------------------
 
-_DEDUP_SYSTEM_PROMPT = """You are a memory deduplication assistant. Determine whether a candidate memory
+_DEDUP_SYSTEM_PROMPT = """You are a memory deduplication assistant. Determine whether a \
+candidate memory
 is a new fact, an update to an existing memory, a replacement of an existing memory, or a duplicate
 of an existing memory.
 
@@ -71,21 +72,26 @@ Output ONLY a JSON object with:
 
 Decision rules:
 - "add": The candidate contains new information not covered by any existing memory.
-- "update": The candidate adds information to an existing memory (partial overlap, candidate has extra details).
-- "supersede": The candidate completely replaces an existing memory (same topic, candidate is more complete/accurate/recent).
+- "update": The candidate adds information to an existing memory (partial overlap, candidate \
+has extra details).
+- "supersede": The candidate completely replaces an existing memory (same topic, candidate is \
+more complete/accurate/recent).
 - "noop": The candidate is fully covered by an existing memory (no new information).
 
 If unsure, prefer "add" (to avoid losing information)."""
 
-_DEDUP_BATCH_SYSTEM_PROMPT = """You are a memory deduplication assistant. For EACH candidate memory, determine whether
-it is a new fact, an update to an existing memory, a replacement of an existing memory, or a duplicate.
+_DEDUP_BATCH_SYSTEM_PROMPT = """You are a memory deduplication assistant. For EACH candidate \
+memory, determine whether
+it is a new fact, an update to an existing memory, a replacement of an existing memory, or a \
+duplicate.
 
 Input format (compact):
   [cid]: <candidate content>
     e|<existing_id>|<cosine_score>: <existing content>
   ---
 
-Output ONLY a JSON array (one entry per candidate, in input order). No explanation, no markdown fences.
+Output ONLY a JSON array (one entry per candidate, in input order). No explanation, no markdown \
+fences.
 Each entry:
 - "candidate_id": the candidate's id (the value after [ and before ])
 - "decision": "add" | "update" | "supersede" | "noop"
@@ -93,13 +99,17 @@ Each entry:
 
 Decision rules:
 - "add": The candidate contains new information not covered by any of its existing similar memories.
-- "update": The candidate adds information to an existing memory (partial overlap, candidate has extra details).
-- "supersede": The candidate completely replaces an existing memory (same topic, candidate is more complete/accurate/recent).
+- "update": The candidate adds information to an existing memory (partial overlap, candidate \
+has extra details).
+- "supersede": The candidate completely replaces an existing memory (same topic, candidate is \
+more complete/accurate/recent).
 - "noop": The candidate is fully covered by an existing memory (no new information).
 
-Judge each candidate independently against its OWN listed existing memories. If unsure, prefer "add"."""
+Judge each candidate independently against its OWN listed existing memories. If unsure, prefer \
+"add"."""
 
-_CONTENT_MERGE_SYSTEM_PROMPT = """You are a memory content merger. Merge the old and new memory contents
+_CONTENT_MERGE_SYSTEM_PROMPT = """You are a memory content merger. Merge the old and new memory \
+contents
 into a single coherent statement that preserves all information from both versions.
 
 Output ONLY the merged content as plain text. No explanation, no labels, no JSON.
@@ -202,16 +212,17 @@ class OrchestratingEvolver(Evolver):
                 self._graph.insert(scope, nodes=[node])
             except ConflictError:
                 pass  # 节点已存在
-        edges = [
-            Edge(
-                id=str(uuid.uuid4()),
-                source=r.source_id,
-                target=r.target_id,
-                relation=r.relation,
-                properties=dict(r.metadata),
+        edges = []
+        for relation in relations:
+            edges.append(
+                Edge(
+                    id=str(uuid.uuid4()),
+                    source=relation.source_id,
+                    target=relation.target_id,
+                    relation=relation.relation,
+                    properties=dict(relation.metadata),
+                )
             )
-            for r in relations
-        ]
         if edges:
             self._graph.insert(scope, edges=edges)
 
@@ -779,8 +790,10 @@ class OrchestratingEvolver(Evolver):
             self._layer_annotator.annotate(units)
         except Exception as exc:
             logger.warning(
-                "Evolver._annotate_layers: annotate failed for %d units: %s, proceeding without layers",
-                len(units), exc,
+                "Evolver._annotate_layers: annotate failed for %d units: %s, "
+                "proceeding without layers",
+                len(units),
+                exc,
             )
 
     # ------------------------------------------------------------------
@@ -851,11 +864,19 @@ class OrchestratingEvolver(Evolver):
         self.relations.extend(relations)
         self._persist_graph(units, relations)
         logger.info("Evolver: ASSOCIATE found %d relations", len(relations))
-        for r in relations:
-            logger.info("Evolver: relation %s→%s type=%s score=%.2f metadata=%s",
-                         r.source_id[:8], r.target_id[:8], r.relation, r.score,
-                         {k: v[:50] if isinstance(v, str) else v for k, v in r.metadata.items()})
-        return EvolveResult(updated_ids=[r.target_id for r in relations])
+        for relation in relations:
+            metadata_preview = {}
+            for key, value in relation.metadata.items():
+                metadata_preview[key] = value[:50] if isinstance(value, str) else value
+            logger.info(
+                "Evolver: relation %s→%s type=%s score=%.2f metadata=%s",
+                relation.source_id[:8],
+                relation.target_id[:8],
+                relation.relation,
+                relation.score,
+                metadata_preview,
+            )
+        return EvolveResult(updated_ids=[relation.target_id for relation in relations])
 
     def _evolve_forget(self, units: List[MemoryUnit]) -> EvolveResult:
         forgotten: List[str] = []
@@ -864,7 +885,7 @@ class OrchestratingEvolver(Evolver):
                 u.lifecycle = LifecycleState.FORGOTTEN
                 # FORGET 作用于 SUPERSEDED 旧版（建索引记忆，在 /memory/）
                 self._kv.update(u.scope, memory_key(u.id), dumps(u))
-                self._index.remove([u.id])
+                self._index.remove([u])
                 forgotten.append(u.id)
         logger.info("Evolver: FORGET marked %d units as forgotten", len(forgotten))
         return EvolveResult(forgotten_ids=forgotten)

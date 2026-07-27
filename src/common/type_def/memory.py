@@ -104,7 +104,7 @@ class MemoryUnit:
     存储真相（单段时折叠结果即该段原值）。
     """
 
-    id: str = ""  # 全局唯一 id（每条记忆/每个版本各一）
+    id: str = ""  # scope 内唯一 id（每条记忆/每个版本各一）
     scope: Scope = field(default_factory=Scope)  # 归属（隔离与共享的依据，unit 级单一 owner）
     tier: MemoryTier = MemoryTier.EPISODIC  # 认知角色分类
     layers: ContentLayers = field(default_factory=ContentLayers)

@@ -8,6 +8,7 @@ from .permission import PermissionManager
 from .pipeline import MemoryPipeline, PipelineBinding
 from .policy import PolicyManager
 from .scheduler import Scheduler
+from .space import SpaceManager
 from .types import (
     Action,
     Channel,
@@ -18,6 +19,15 @@ from .types import (
     JobStatus,
     MemoryPatch,
     PermissionContext,
+    PrincipalPath,
+    SpaceDeleteResult,
+    SpaceInfo,
+    SpaceMember,
+    SpacePatch,
+    SpacePolicy,
+    SpaceSpec,
+    SpaceStatus,
+    SpaceUsage,
     UpdateMode,
 )
 
@@ -32,8 +42,18 @@ __all__ = [
     "PipelineBinding",
     "Scheduler",
     "PolicyManager",
+    "SpaceManager",
     "Action",
     "Grant",
+    "PrincipalPath",
+    "SpaceStatus",
+    "SpacePolicy",
+    "SpaceSpec",
+    "SpaceInfo",
+    "SpacePatch",
+    "SpaceMember",
+    "SpaceUsage",
+    "SpaceDeleteResult",
     "Channel",
     "JobStatus",
     "JobInfo",

@@ -71,4 +71,6 @@ def test_format_channels_handles_auto_all_and_explicit_channels() -> None:
 
 def test_scope_log_dims_reports_only_present_dimensions() -> None:
     assert _scope_log_dims(Scope()) == "none"
-    assert _scope_log_dims(Scope(org="o", user="u", session="s")) == "org,user,session"
+    assert _scope_log_dims(Scope(org="o", space="p", user="u", session="s")) == (
+        "org,space,user,session"
+    )

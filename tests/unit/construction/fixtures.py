@@ -58,7 +58,7 @@ class MemoryKVStore(KVStore):
         return None
 
     def _scope_key(self, scope: Scope) -> str:
-        return f"{scope.org}/{scope.user}/{scope.agent}/{scope.session}"
+        return f"{scope.org}/{scope.space}/{scope.user}/{scope.agent}/{scope.session}"
 
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
         sk = self._scope_key(scope)
@@ -100,7 +100,15 @@ class MemoryKVStore(KVStore):
         result = []
         for sk in self._data:
             parts = sk.split("/")
-            result.append(Scope(org=parts[0], user=parts[1], agent=parts[2], session=parts[3]))
+            result.append(
+                Scope(
+                    org=parts[0],
+                    space=parts[1],
+                    user=parts[2],
+                    agent=parts[3],
+                    session=parts[4],
+                )
+            )
         return result
 
 
@@ -117,7 +125,7 @@ class MemoryFulltextStore(FulltextStore):
         return None
 
     def _scope_key(self, scope: Scope) -> str:
-        return f"{scope.org}/{scope.user}/{scope.agent}/{scope.session}"
+        return f"{scope.org}/{scope.space}/{scope.user}/{scope.agent}/{scope.session}"
 
     def insert(self, scope: Scope, docs: list[Document]) -> None:
         sk = self._scope_key(scope)
@@ -188,7 +196,7 @@ class MemoryVectorStore(VectorStore):
         return None
 
     def _scope_key(self, scope: Scope) -> str:
-        return f"{scope.org}/{scope.user}/{scope.agent}/{scope.session}"
+        return f"{scope.org}/{scope.space}/{scope.user}/{scope.agent}/{scope.session}"
 
     def insert(self, scope: Scope, records: list[VectorRecord]) -> None:
         sk = self._scope_key(scope)

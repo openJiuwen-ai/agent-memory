@@ -11,6 +11,7 @@
 - :class:`~control.scheduler.Scheduler` 演进调度（hot/background 双通道）
 - :class:`~control.policy.PolicyManager` 运行时可变策略（§13.4 admin 落点）
 - :class:`~control.pipeline.MemoryPipeline` 记忆类型 pipeline 路由（跨构建/查询 profile 编排）
+- :class:`~control.space.SpaceManager` space 生命周期、策略、成员与 offboarding 管理
 
 控制层驱动构建层做演进、经 ``src/storage`` 读写状态；审计记录走
 ``src/common`` 的 :class:`~common.audit.AuditLogger`（横切共用）。
@@ -30,6 +31,7 @@ class ControlOperatorType(str, Enum):
     PERMISSION = "permission"
     SCHEDULER = "scheduler"
     POLICY = "policy"
+    SPACE = "space"
 
 
 class ControlOperator(ABC):

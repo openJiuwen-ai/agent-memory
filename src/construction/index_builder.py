@@ -39,7 +39,7 @@ class IndexBuilder(ConstructionOperator):
         """记忆变更后增量更新对应索引条目。"""
 
     @abstractmethod
-    def remove(self, unit_ids: list[str]) -> None:
+    def remove(self, units: list[MemoryUnit]) -> None:
         """删除一批记忆单元对应的索引条目（幂等）。"""
 
     @abstractmethod

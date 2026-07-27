@@ -1,10 +1,10 @@
 # Agent Memory Control
 
-**规约文档**：[S03-memory-manage.md](../../docs/specs/S03-memory-manage.md)
+**规约文档**：[S03-control.md](../../docs/specs/S03-control.md)
 
 > 本文档只记录相对稳定的模块本地规约（职责边界、行为铁律、本地约束）。特性设计与方案取舍记录在 `docs/features/` 下。
 
-编排层（管理面）：不直接生产/检索记忆,而是管理它们的生命周期与使用规则。`MemoryEngine` 是接口层各语义的编排中枢，驱动接入层、构建层、检索层、存储层完成实际工作；其余算子（Pipeline/Lifecycle/Governance/Permission/Scheduler/Policy）各自管一个治理切面。
+编排层（管理面）：不直接生产/检索记忆,而是管理它们的生命周期与使用规则。`MemoryEngine` 是接口层各语义的编排中枢，驱动接入层、构建层、检索层、存储层完成实际工作；其余算子（Pipeline/Lifecycle/Governance/Permission/Scheduler/Policy/Space）各自管一个治理切面。
 
 所有算子继承 `ControlOperator`（`base.py`），由外部装配注入到引擎，引擎本身不实现具体能力。
 
@@ -21,10 +21,13 @@
 | `permission.py` | `PermissionManager` 接口——跨 scope 授权与校验 |
 | `scheduler.py` | `Scheduler` 接口——hot/background 双通道演进调度 |
 | `policy.py` | `PolicyManager` 接口——运行时可变策略读写 |
+| `space.py` | `SpaceManager` 接口——space 创建/读取/列表/更新/归档/删除/导出/用量/策略/成员 |
 | `__init__.py` | 公开导出全部接口类与数据类型 |
+| `engine_impl/` | MemoryEngine 实现目录：`in_memory_engine.py`（本地最小实现）/ `cloud_engine.py`（云侧 message_type/profile 编排） |
 | `*_impl/` | 每个算子对应一个实现子目录，含具体实现类；Producer 定义在顶层接口文件，具体实现用 `@XProducer.register(...)` 自注册 |
 | `bootstrap.py` | `register_controllers()` 统一 import 各 `*_impl/` 包，触发实现自注册（幂等） |
 | `pipeline_impl/` | MemoryPipeline 实现目录（metadata） |
+| `space_impl/` | SpaceManager 实现目录（kv） |
 
 ## 文件关系
 
@@ -38,14 +41,18 @@
 
 1. **引擎不实现具体算法能力**：`MemoryEngine` 只编排，Ingestor/构建算子/Retriever/Store 全部由装配注入。Engine 可通过注入的 `KVStore` 完成接口语义要求的真源落盘/点读/删除，但禁止绕过 Store 抽象绑定具体后端或在 engine 内调用 LLM。
 2. **引擎方法一律异步协程**：同步调用由 `api/` 层自行桥接（`asyncio.run`），engine 内不做同步阻塞。
-3. **鉴权不在本层执行**：`PermissionManager.check` 由 `api/MemoryAPI` 在入口调用，engine 信任传入的 scope 已鉴权。Engine 只提供 `permission_context_for_unit` / `permission_contexts_for_delete` 这类 metadata-only 解析入口，供 API 做类型化鉴权；禁止在 engine 内部重复 check。
-4. **LifecycleManager 只做非破坏式标记**：`transition` 标记状态（superseded/archived/forgotten），绝不物理删除。物理删除（purge）走 engine 的 `delete` 路径 + `DeleteMode.PURGE`。
+3. **鉴权不在本层执行**：`PermissionManager.check` 由 `api/MemoryAPI` 在入口调用，engine 信任传入的 scope 已鉴权。Engine 提供 `permission_context_for_unit`、`list_with_permission_contexts` 和 `permission_contexts_for_delete`，供 API 使用真源 metadata 做类型化鉴权；list 的 units 与 contexts 必须来自同一次分页读取。禁止在 engine 内部重复 check。
+4. **LifecycleManager 只做 Scope 内非破坏式标记**：`transition` / `supersede` 必须接收完整 Scope，只标记该 Scope 下的目标 id，绝不物理删除。物理删除（purge）走 engine 的 `delete` 路径 + `DeleteMode.PURGE`。
 5. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。`*_impl/` 通过 producer 工厂被外部装配消费，不被顶层接口引用。
 6. **Pipeline 只做 profile 选择**：`MemoryPipeline` 选择一组已装配的 `IndexBuilder` / `Evolver` / `Retriever` / `Classifier` 绑定，不实现抽取、巩固、索引、检索算法，不让 construction/retrieval 反向依赖 control。
-7. **PermissionContext 由可信边界构造**：write/recall 的 context 来自 API 入参；get/update/delete 的已有 unit context 必须由 Engine 从真源元数据解析，不能信任调用方声明 memory_type。
+7. **PermissionContext 由可信边界构造**：write/recall/list 的请求 context 来自 API 入参；list 当前页实际 unit 与 get/update/delete 的已有 unit context 必须由 Engine 从真源元数据解析，不能信任调用方声明 memory_type。
 8. **权限路由与数据范围绑定**：RoutingPermissionManager 只按 PermissionContext 选择
    delegate；API 必须把授权所依据的路由字段回注为系统过滤谓词。未知路由值和直接
    policy 名落最小权限 fallback，fallback 不得配置为 allow_all。
+9. **space 是权限硬边界**：`PermissionManager.check` 先按 `org + space` 判断 owner-cover；同 org 跨 space 默认拒绝，只有 `Scope()` 或显式 grant 可跨 space。owner-cover 的主体路径由 `PermissionContext.metadata["principal_path"]` 选择（默认 `user_agent`，可选 `agent_user`）。
+10. **space policy 是主体路径来源**：`LocalMemoryAPI` 在鉴权前读取目标 space policy，并用其中的 `principal_path` 覆盖 `PermissionContext.metadata["principal_path"]`；调用级 metadata 不能临时改变已有 space 的主体路径。
+11. **Space id 全局唯一**：`KVSpaceManager` 在根 Scope 维护全局 Space 注册键；不同 org 创建同一非空 Space id 必须报 `ConflictError`。
+12. **治理读取按已鉴权 Scope 定位**：Governor 的 `inspect` / `trace` 必须接收 API 已鉴权 target Scope，不得仅按 unit id 跨 Scope 扫描。
 
 ## 双通道调度机制
 
@@ -81,7 +88,8 @@ metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` /
   读取 `RetrievalQuery.extensions[route_key]`，其次从规范化 FilterExpr 提取逻辑上
   强制成立的 `metadata.<route_key>` 唯一等值（`memory_type` 裸字段仅作兼容别名）。
 - `PipelineBinding` 只绑定组件引用：`index_builder`、`evolver`、`retriever`、可选 `classifier`。
-- `InMemoryEngine` 使用绑定后的 `index_builder/evolver/classifier` 处理 write，使用绑定后的 `retriever` 处理 recall。未注入 pipeline 时走原单 profile 字段。
+- `InMemoryEngine` 仅接受 `space=""` 的本地兼容域，使用绑定后的 `index_builder/evolver/classifier` 处理 write；profile 选择 `OrchestratingEvolver` 或 `DynamicEvolver` 决定 EXTRACT 路径。recall 使用绑定后的 `retriever`；`list` 只枚举已落 `/memory/` 的真源记忆，不经 pipeline。未注入 pipeline 时走原单 profile 字段。
+- `CloudEngine` 使用 `message_type`（默认 metadata key）选择构建/查询 profile，写入后固化 `metadata["message_type"]` 与 `metadata["pipeline"]`，并校验真源 unit.scope 与 target scope 一致。
 - 未配置 `pipeline.default` 时不启用 pipeline，行为等价旧单 pipeline；用户通过 YAML 显式声明后启用。
 
 ## 本地约束
@@ -91,6 +99,7 @@ metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` /
 - `DeleteMode.PURGE` 是唯一物理删除路径；会删除真源、移除索引，并递归删除 provenance 后代
 - `DeleteMode.DOWNWEIGHT` 不改变 lifecycle，只降低 `metadata.importance`
 - 运行时策略的读写职责归 `PolicyManager`；Engine 不承载具体策略存储或策略键校验逻辑
+- space 元数据、space policy、成员和 offboarding 状态职责归 `SpaceManager`；Engine 的 `purge_space` 负责枚举目标 `org + space` 的全部子 Scope 并清理记忆真源与索引
 - `PolicyManager` 只管理运行时可变策略；未知 key 或试图新增 key 必须抛 `PolicyError`
 - 所有算子必须实现 `operator_type()` 和 `health()`（继承自 `ControlOperator`）
 - 跨模块规则（如 scope 隔离、MemoryUnit 跨层传递）见 `docs/specs/`，不在本文件重复

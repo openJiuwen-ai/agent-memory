@@ -1,4 +1,4 @@
-"""IndexBuilder 单元测试（12 个测试）。
+"""IndexBuilder 单元测试。
 
 分别测试 FulltextIndexBuilder（关键词）和 VectorIndexBuilder（向量），
 以及 HybridIndexBuilder（联合）。
@@ -6,6 +6,8 @@
 
 import json
 from datetime import datetime, timezone
+
+import pytest
 
 from common.bootstrap import register_plugins
 from common.factory.factory import Factory
@@ -26,6 +28,9 @@ from tests.unit.construction.fixtures import (
     create_test_stores,
     create_test_unit,
 )
+
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Helper
@@ -121,10 +126,24 @@ def test_keyword_remove():
     units = [create_test_unit("u1", "用户偏好 Python", scope=scope)]
     builder.build(units)
 
-    builder.remove(["u1"])
+    builder.remove(units)
 
     hits = stores["fulltext"].search(scope, TextQuery(text="Python", top_k=10))
     assert len(hits) == 0
+
+
+def test_keyword_remove_is_bound_to_each_units_scope():
+    builder, stores, _ = _make_fulltext_builder()
+    scope_a = Scope(org="test", space="space-a", user="alice")
+    scope_b = Scope(org="test", space="space-b", user="alice")
+    unit_a = create_test_unit("shared-id", "space A Python", scope=scope_a)
+    unit_b = create_test_unit("shared-id", "space B Python", scope=scope_b)
+    builder.build([unit_a, unit_b])
+
+    builder.remove([unit_b])
+
+    assert stores["fulltext"].get(scope_a, [unit_a.id])
+    assert stores["fulltext"].get(scope_b, [unit_b.id]) == []
 
 
 # ---------------------------------------------------------------------------
@@ -323,11 +342,31 @@ def test_vector_remove():
     # 记录 chunk_ids
     chunk_ids = json.loads(stores["kv"].get(scope, "/index/chunks/u1").decode())
 
-    builder.remove(["u1"])
+    builder.remove(units)
 
     # VectorStore 中不应有这些 chunk
     remaining = stores["vector"].get(scope, chunk_ids)
     assert len(remaining) == 0
+
+
+def test_vector_build_and_remove_are_bound_to_each_units_scope():
+    builder, stores, _ = _make_vector_builder()
+    scope_a = Scope(org="test", space="space-a", user="alice")
+    scope_b = Scope(org="test", space="space-b", user="alice")
+    unit_a = create_test_unit("shared-id", "space A Python vector content", scope=scope_a)
+    unit_b = create_test_unit("shared-id", "space B Python vector content", scope=scope_b)
+
+    builder.build([unit_a, unit_b])
+
+    chunk_ids_a = json.loads(stores["kv"].get(scope_a, "/index/chunks/shared-id").decode())
+    chunk_ids_b = json.loads(stores["kv"].get(scope_b, "/index/chunks/shared-id").decode())
+    assert stores["vector"].get(scope_a, chunk_ids_a)
+    assert stores["vector"].get(scope_b, chunk_ids_b)
+
+    builder.remove([unit_b])
+
+    assert stores["vector"].get(scope_a, chunk_ids_a)
+    assert stores["vector"].get(scope_b, chunk_ids_b) == []
 
 
 # ---------------------------------------------------------------------------

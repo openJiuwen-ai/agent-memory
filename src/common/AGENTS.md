@@ -14,11 +14,12 @@
 | `bootstrap.py` | 统一触发各插件注册（per-layer bootstrap） |
 | `errors.py` | 自定义异常（ConflictError/NotFoundError/PermissionDeniedError/BackendError 等） |
 | `type_def/` | 核心数据类型定义目录 |
-| `type_def/memory.py` | MemoryUnit/Scope/Relation/Segment/Temporal/ContentLayers 等；KV key 前缀 `MEMORY_KEY_PREFIX`/`memory_key`（建索引记忆 `/memory/{id}`）。`ContentLayers`(l0/l1) 为分层披露标注，由 LayerAnnotator 对超阈 content 产出 |
+| `type_def/memory.py` | MemoryUnit/Relation/Segment/Temporal/ContentLayers 等；MemoryUnit id 在完整 Scope 内唯一；KV key 前缀 `MEMORY_KEY_PREFIX`/`memory_key`（建索引记忆 `/memory/{id}`）。`ContentLayers`(l0/l1) 为分层披露标注，由 LayerAnnotator 对超阈 content 产出 |
+| `type_def/scope.py` | Scope：`org/space/user/agent/session` 五维归属；非空 `space` 是全局唯一的逻辑隔离标识且为 keyword-only，旧位置参数保持 `org/user/agent/session` 顺序 |
 | `type_def/filter.py` | FilterClause/FilterGroup/FilterExpr 及 normalize/evaluate；统一 API、检索和存储的树形过滤契约 |
-| `type_def/memory_codec.py` | `MemoryUnit` ↔ bytes 编解码（`dumps`/`loads`）；序列化 `layers`({l0,l1})，缺失取空串容错老数据，详见 F01-memory-layer |
+| `type_def/memory_codec.py` | `MemoryUnit` ↔ bytes 编解码（`dumps`/`loads`）；当前 `_v=3`，序列化 `layers`({l0,l1}) 与五段 scope，缺失取默认容错老数据，详见 F01-memory-layer / F03-scope-space-isolation |
 | `type_def/raw.py` | RawPayload；KV key 前缀 `MESSAGES_KEY_PREFIX`/`messages_key`（未建索引 infer 原文 `/messages/{id}`） |
-| `type_def/audit.py` | AuditEvent |
+| `type_def/audit.py` | AuditEvent：记录 actor scope、target scope、action、decision、target_id 与 detail |
 | `factory/factory.py` | Factory 基类：`TOP_NAME` 注册 + 三接口 `build`/`build_named`/`dep`（配置数据结构 `ComponentConfig`/`AssemblyContext`/`RawSpec` 在 `config/context.py`） |
 | `embedder/` | Embedder 插件目录（接口 + 实现） |
 | `chunker/` | Chunker 插件目录 |
@@ -28,6 +29,7 @@
 | `llm/` | LLM 插件目录（`echo` / `openai` / `dashscope`） |
 | `reranker/` | Reranker 插件目录 |
 | `audit/` | AuditLogger 插件目录 |
+| `security/` | SecurityProvider 横切接口目录（接口 + `local` ENC1 AES-GCM 实现） |
 
 ## 行为铁律
 
@@ -56,6 +58,7 @@
 - 共享插件接口定义与注册式工厂
 - 核心数据类型（MemoryUnit/Scope/Context/Relation/Chunk/AuditEvent 等）
 - 工厂注册基础设施（Factory 基类 + `TOP_NAME` 命名空间 + `build`/`build_named`/`dep` 三接口）
+- 横切接口（AuditLogger / SecurityProvider）
 - 错误类型
 - 工具函数
 
@@ -73,3 +76,4 @@
 4. 重依赖实现在 `*_impl/__init__.py` 中用 `try/except ImportError` 包裹。
 5. 两级命名空间配置驱动装配：每个 Producer 声明全局唯一 `TOP_NAME`（占配置顶层段），其下是若干具名实例（`target` 指定实现名、`params` 传参、`new_instance` 控制是否共享）。`_build(config)` 里用 `XProducer.dep(config, param_name=None, default=...)` 取子依赖（引用名→共享 / 内联 dict→匿名 / 缺省→默认匿名）。
 6. LLM 的厂商扩展参数必须由对应 Provider Adapter 注入；构建、检索等内核业务调用点不得硬编码 `extra_body` 等传输层字段。
+7. SecurityProvider 与 AuditLogger 一样是横切组件，不继承 `Plugin`、不进入 `PluginType`；实现仍通过独立 Producer 与 `*_impl` 自注册。

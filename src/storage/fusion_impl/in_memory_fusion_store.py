@@ -22,11 +22,11 @@ from storage.base import StoreType
 from storage.fusion import FusionProducer, FusionStore
 from storage.types import FusionQuery, FusionRecord, ScoredID
 
-_ScopeKey = Tuple[str, str, str, str]
+_ScopeKey = Tuple[str, str, str, str, str]
 
 
 def _skey(scope: Scope) -> _ScopeKey:
-    return (scope.org, scope.user, scope.agent, scope.session)
+    return (scope.org, scope.space, scope.user, scope.agent, scope.session)
 
 
 def _cosine(a: List[float], b: List[float]) -> float:

@@ -218,7 +218,7 @@ def test_fusion_empty_inputs_are_noops(fusion_factory):
 
 # --------------------------------------------------------------- scope 隔离
 def test_fusion_scope_isolation(fusion_factory):
-    """id 为全局唯一主键（Milvus 单集合），跨 scope 用不同 id；检索/正排在 scope 内隔离。"""
+    """逻辑 id 只在 Scope 内唯一；跨 Scope 同 id 的检索与正排互相隔离。"""
     f = fusion_factory()
     other = Scope(org="itest", user="u2")
     f.insert(
@@ -228,10 +228,10 @@ def test_fusion_scope_isolation(fusion_factory):
             FusionRecord(id="b", vector=_vec((1, 1.0))),
         ],
     )
-    f.insert(other, [FusionRecord(id="c", vector=_vec((0, 1.0)))])
+    f.insert(other, [FusionRecord(id="a", vector=_vec((0, 1.0)))])
     # 检索不跨 scope
     assert _ids(f.search(SCOPE, FusionQuery(vector=_vec((0, 1.0)), top_k=10))) == {"a", "b"}
-    assert _ids(f.search(other, FusionQuery(vector=_vec((0, 1.0)), top_k=10))) == {"c"}
-    # get 跨 scope 的 id 读不到
-    assert _ids(f.get(SCOPE, ["a", "b", "c"])) == {"a", "b"}
-    assert _ids(f.get(other, ["a"])) == set()
+    assert _ids(f.search(other, FusionQuery(vector=_vec((0, 1.0)), top_k=10))) == {"a"}
+    # 同一逻辑 id 在各 Scope 独立存在，其他 id 不跨 Scope 可见。
+    assert _ids(f.get(SCOPE, ["a", "b"])) == {"a", "b"}
+    assert _ids(f.get(other, ["a", "b"])) == {"a"}

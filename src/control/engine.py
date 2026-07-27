@@ -9,6 +9,7 @@ MCP）可直接 await 非阻塞调用，CLI/脚本等同步形态由接口层 ``
   → 构建层落盘 + hot 轻量索引 → Scheduler 提交 background 重演进，
   返回插入的记忆单元；
 - recall：scope/权限校验 → Retriever 完整检索链路；
+- list：按 scope 枚举已建索引的 `/memory/` 真源记忆，支持分页与记忆类型过滤；
 - get / update / delete：存储层点读 + 非破坏式修正/遗忘（记血缘）；
 - evolve：委托 Scheduler 双通道调度；admin_*：委托 PolicyManager。
 
@@ -66,6 +67,22 @@ class MemoryEngine(ControlOperator):
         执行完整链路。scope 作为显式参数传入（不随 query 携带）。"""
 
     @abstractmethod
+    async def list(
+        self,
+        scope: Scope,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        memory_types: list[str] | None = None,
+    ) -> list[MemoryUnit]:
+        """列出 ``scope`` 下已建索引的记忆单元。
+
+        只返回真源中 ``/memory/`` 前缀的 MemoryUnit，不包含 ``/messages/`` 下的
+        infer 原文缓存。``offset``/``limit`` 语义参考 mem1.0 的 list_memories；
+        ``memory_types`` 为空或 ``None`` 时不过滤。
+        """
+
+    @abstractmethod
     async def permission_context_for_unit(
         self, unit_id: str, scope: Scope
     ) -> PermissionContext:
@@ -74,6 +91,17 @@ class MemoryEngine(ControlOperator):
         只返回鉴权需要的元数据（memory_type/tags/metadata 等），不返回 content/assets。
         API 层用于 get/update/delete 等只有 unit_id 的入口在正式数据操作前做类型化鉴权。
         """
+
+    @abstractmethod
+    async def list_with_permission_contexts(
+        self,
+        scope: Scope,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        memory_types: list[str] | None = None,
+    ) -> tuple[list[MemoryUnit], list[PermissionContext]]:
+        """一次读取 list 当前分页及其逐项权限上下文，供 API 鉴权后返回。"""
 
     @abstractmethod
     async def permission_contexts_for_delete(
@@ -105,6 +133,10 @@ class MemoryEngine(ControlOperator):
     async def delete(self, selector: DeleteSelector) -> list[str]:
         """按选择器遗忘/归档/降权（非破坏式、可审计），返回命中的记忆
         单元 id。"""
+
+    @abstractmethod
+    async def purge_space(self, org: str, space: str) -> list[str]:
+        """物理删除指定 space 及其全部子 scope 的记忆真源和派生索引。"""
 
     @abstractmethod
     async def evolve(

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-27 |
-| 影响范围 | `src/control/permission.py`、`src/control/types.py`、`src/control/permission_impl/`、`src/control/engine.py`、`src/api/memory_api_impl/local_memory_api.py`、`docs/specs/S03-memory-manage.md` |
+| 影响范围 | `src/control/permission.py`、`src/control/types.py`、`src/control/permission_impl/`、`src/control/engine.py`、`src/api/memory_api_impl/local_memory_api.py`、`docs/specs/S03-control.md` |
 | 测试基线 | `PYTHONPATH=src uv run --no-sync pytest -q tests/unit/control/test_permission_context_routing.py tests/unit/control/test_pipeline.py tests/unit/api/test_handler_identity_split.py tests/unit/api/test_write_reserved_metadata.py` 通过；本特性变更的 Python 文件通过 `ruff check` |
 
 ## 背景
@@ -37,8 +37,9 @@ API 层的上下文来源：
 2. `recall`：先从规范化 `FilterExpr` 提取逻辑上强制的唯一等值，再由
    `Context.extensions[route_key]` 的非空值覆盖。OR 多值、NOT、AND 冲突不产生路由值。
    该取值规则与执行侧 `MemoryPipeline` 一致。
-3. `get/update`：先做基础 scope 门槛，再调用 `Engine.permission_context_for_unit` 从真源解析 unit 元数据，再做类型化权限检查。
-4. `delete`：调用 `Engine.permission_contexts_for_delete` 解析 selector 命中的候选 unit，逐条做 DELETE 权限检查，全部通过后才执行删除。
+3. `list`：从入参 `memory_types` 构造；显式传多个类型时逐个 memory_type 做 READ 权限检查，全部通过后才枚举。
+4. `get/update`：先做基础 scope 门槛，再调用 `Engine.permission_context_for_unit` 从真源解析 unit 元数据，再做类型化权限检查。
+5. `delete`：调用 `Engine.permission_contexts_for_delete` 解析 selector 命中的候选 unit，逐条做 DELETE 权限检查，全部通过后才执行删除。
 
 新增 `permission_impl.routing_permission_manager`。它不自行定义授权语义，只按
 `PermissionContext` 选择一个已配置的 `PermissionManager` delegate。授权路由只接受
@@ -66,6 +67,7 @@ API 层的上下文来源：
 
 - `write` 按请求 metadata 的 `memory_type` 路由。
 - `recall` 的 extensions 与等值 filter 使用同一优先级解析，并把授权路由值回注数据过滤。
+- `list` 按请求 `memory_types` 路由，显式多类型请求逐类型鉴权。
 - 未声明、未知路由值和直接 policy 名均落最小权限 fallback。
 - `allow_all` 作为 routing fallback 在装配期失败。
 - OR/NOT/冲突 filter 不会被误判为强制路由等值。

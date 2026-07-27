@@ -6,7 +6,7 @@
 |---|---|
 | 关联模块 | src/construction/ |
 | 最近一次修订日期 | 2026-07-29 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/common/F01-memory-layer.md, docs/features/retrieval/F03-metadata-filtering.md, docs/features/F02-cc-memory-compat.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/retrieval/F03-metadata-filtering.md |
 
 ## 范围 / 边界
 
@@ -51,6 +51,7 @@
 13. **索引投影保留业务 metadata 类型**：Vector/Fulltext IndexBuilder 先复制
     `MemoryUnit.metadata`，再用系统真源字段覆盖保留 key；时间投影为 epoch 毫秒，
     `t_invalid=None` 仅在索引中写为 `T_INVALID_OPEN`，不改写真源。
+14. **索引删除按 MemoryUnit 定位**：`IndexBuilder.remove` 接收带 Scope 的 MemoryUnit，禁止维护仅按 unit id 的单值 Scope 缓存；同一逻辑 id 在不同 Scope 的索引互不影响。
 
 ## 接口契约
 
@@ -169,7 +170,7 @@ Extractor。
 |------|------|------|
 | `build` | `(units: list[MemoryUnit]) -> None` | 为一批记忆单元构建已启用的各形式索引 |
 | `update` | `(units: list[MemoryUnit]) -> None` | 记忆变更后增量更新对应索引条目 |
-| `remove` | `(unit_ids: list[str]) -> None` | 删除一批记忆单元对应的索引条目（幂等） |
+| `remove` | `(units: list[MemoryUnit]) -> None` | 按每个 MemoryUnit 自带 Scope 删除对应索引条目（幂等） |
 | `rebuild` | `() -> None` | 从真源全量重建索引（删索引不丢数据的保障） |
 
 **build 路径**（按配置启用的索引类型，各实现独立构建）：
@@ -193,7 +194,7 @@ MemoryUnit
 └─ HybridIndexBuilder：组合 fulltext + vector 两个子 builder（默认实现）
 ```
 
-> 注：文档索引（path → unit_id 映射）与 FusionStore 融合索引在当前实现中**未落地**，属设计预留。
+> 注：文档索引（path → unit_id 映射）与 FusionStore 融合索引不属于本文已固化的构建接口契约，属设计预留。
 > L0/L1 分层索引的召回接入未落地（为披露层预留），详见 F01。
 
 ### Evolver（`evolver.py`）
@@ -238,7 +239,7 @@ MemoryUnit
 
 | 字段 | 类型 | 语义 |
 |------|------|------|
-| `id` | str | 全局唯一 id |
+| `id` | str | Scope 内唯一 id |
 | `scope` | Scope | 归属 scope |
 | `tier` | MemoryTier | 认知角色（working/core/episodic/semantic/procedural/archival） |
 | `segments` | list[Segment] | 内容段列表（多段内容投影，每段含 content+assets+source） |
@@ -290,7 +291,7 @@ src/construction/<算子>_impl/
 | 关联 spec | 关系 |
 |-----------|------|
 | S01-ingest_access | 本层接收接入层产出的 MemoryUnit 做落盘+索引 |
-| S03-memory_manage | Engine.write 路径调用本层 IndexBuilder.build，Engine.evolve 路径调用本层 Evolver |
+| S03-control | Engine.write 路径调用本层 IndexBuilder.build，Engine.evolve 路径调用本层 Evolver |
 | S04-retrieval | 检索层消费本层构建的索引 |
 | S06-storage | 本层通过注入的 Store 抽象做真源与索引持久化 |
 | S07-common | 本层消费 Chunker/Tokenizer/Embedder/FeatureExtractor/LLM/Reranker 共享插件 |

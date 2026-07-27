@@ -96,7 +96,7 @@
    去重召回检索的是已索引内容，`Dedup` 实现取的 `VectorStore`/`FulltextStore` 必须与 IndexBuilder 写入的是同一实例（按字段名缓存命中）。
 
 10. **L0/L1 分层索引分表且 store None 跳过**
-    `unit.layers.l0`/`l1` 非空时，VectorIndexBuilder/FulltextIndexBuilder 对整段文本（不切片）建独立 store 索引（record id 向量=`{uid}-layer-l0`/`-layer-l1`、全文=`{uid}:l0`/`:l1`，与 content 的 chunk id 不冲突），metadata `content_layer`="l0"/"l1"，content 表 chunk record 补 `content_layer="l2"`。物理分表不混 content。`vector_l0`/`vector_l1`/`fulltext_l0`/`fulltext_l1` 任一为 None 则该层跳过（不报错、不建空记录）。update 先删旧分层 record 再按新 layers 重建（SUPERSEDE 不残留），remove 按 id 幂等删。详见 F01-memory-layer。
+    `unit.layers.l0`/`l1` 非空时，VectorIndexBuilder/FulltextIndexBuilder 对整段文本（不切片）建独立 store 索引（record id 向量=`{uid}-layer-l0`/`-layer-l1`、全文=`{uid}:l0`/`:l1`，与 content 的 chunk id 不冲突），metadata `content_layer`="l0"/"l1"，content 表 chunk record 补 `content_layer="l2"`。物理分表不混 content。`vector_l0`/`vector_l1`/`fulltext_l0`/`fulltext_l1` 任一为 None 则该层跳过（不报错、不建空记录）。update 先删旧分层 record 再按新 layers 重建（SUPERSEDE 不残留），remove 使用 MemoryUnit 自带 Scope 幂等删除。详见 F01-memory-layer。
 
 11. **动态抽取格式在实现内收敛**
     `_extract_prompt_<strategy>` 支持任意非空策略名，其值是引用 yml `prompts.extract` 段的
@@ -149,7 +149,7 @@
 
 1. 所有 Operator 必须实现 `operator_type()` 和 `health()`（继承自 `ConstructionOperator`）。
 2. 算子实现通过 `@XxxProducer.register("name")` 自注册。
-3. IndexBuilder 必须实现四个方法：`build`（新建）/ `update`（更新）/ `remove`（删除）/ `rebuild`（全量重建）。
+3. IndexBuilder 必须实现四个方法：`build`（新建）/ `update`（更新）/ `remove(units)`（按 MemoryUnit 自带 Scope 删除）/ `rebuild`（全量重建）；不得维护仅按 unit id 的单值 Scope 缓存。
 4. Evolver 返回 `EvolveResult`（created_ids / updated_ids / superseded_ids / forgotten_ids）。
 5. Dedup 必须实现 `recall(candidate) -> list[(MemoryUnit, score)]`；实现内部异常吞掉返回空列表，不阻断演进。
 6. 算子内部调用共享插件（Chunker/Embedder/Tokenizer/FeatureExtractor/LLM）必须使用注入的实例，不自行构造。

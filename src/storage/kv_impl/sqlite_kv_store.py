@@ -1,6 +1,6 @@
 """落盘实现：:class:`~storage.kv.KVStore` 的 SQLite 后端（纯标准库 ``sqlite3``）。
 
-一张表承载所有 scope 的键值：``(org,user,agent,session,key)`` 为主键、``value`` 为
+一张表承载所有 scope 的键值：``(org,space,user,agent,session,key)`` 为主键、``value`` 为
 BLOB、``expires_at`` 为过期 Unix 秒（NULL 永不过期）。scope 各维落列做原生隔离，
 ``list`` / ``scopes`` 即带 ``WHERE`` / ``DISTINCT`` 的查询，过期行读时过滤并惰性清除。
 
@@ -26,9 +26,10 @@ from storage.kv import KvProducer, KVStore
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS kv (
-    org TEXT NOT NULL, "user" TEXT NOT NULL, agent TEXT NOT NULL, session TEXT NOT NULL,
+    org TEXT NOT NULL, space TEXT NOT NULL, "user" TEXT NOT NULL,
+    agent TEXT NOT NULL, session TEXT NOT NULL,
     key TEXT NOT NULL, value BLOB NOT NULL, expires_at REAL,
-    PRIMARY KEY (org, "user", agent, session, key)
+    PRIMARY KEY (org, space, "user", agent, session, key)
 )
 """
 
@@ -40,6 +41,7 @@ class SQLiteKVStore(KVStore):
         self._conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
         self._lock = threading.Lock()
         self._conn.execute(_SCHEMA)
+        self._migrate_schema()
 
     def store_type(self) -> StoreType:
         return StoreType.KV
@@ -59,20 +61,35 @@ class SQLiteKVStore(KVStore):
     def _expiry(ttl: float) -> float | None:
         return time.time() + ttl if ttl else None
 
+    def _migrate_schema(self) -> None:
+        columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(kv)").fetchall()
+        }
+        if not columns or "space" in columns:
+            return
+        self._conn.execute("ALTER TABLE kv RENAME TO kv_legacy")
+        self._conn.execute(_SCHEMA)
+        self._conn.execute(
+            'INSERT INTO kv (org, space, "user", agent, session, key, value, expires_at) '
+            'SELECT org, "", "user", agent, session, key, value, expires_at FROM kv_legacy'
+        )
+        self._conn.execute("DROP TABLE kv_legacy")
+
     def _live_value(self, scope: Scope, key: str) -> bytes | None:
         """返回未过期的值；过期则惰性删除并返回 None（调用方持锁）。"""
         row = self._conn.execute(
-            'SELECT value, expires_at FROM kv WHERE org=? AND "user"=? AND agent=? '
-            "AND session=? AND key=?",
-            (scope.org, scope.user, scope.agent, scope.session, key),
+            'SELECT value, expires_at FROM kv WHERE org=? AND space=? AND "user"=? '
+            "AND agent=? AND session=? AND key=?",
+            (scope.org, scope.space, scope.user, scope.agent, scope.session, key),
         ).fetchone()
         if row is None:
             return None
         value, expires_at = row
         if expires_at is not None and expires_at <= time.time():
             self._conn.execute(
-                'DELETE FROM kv WHERE org=? AND "user"=? AND agent=? AND session=? AND key=?',
-                (scope.org, scope.user, scope.agent, scope.session, key),
+                'DELETE FROM kv WHERE org=? AND space=? AND "user"=? '
+                "AND agent=? AND session=? AND key=?",
+                (scope.org, scope.space, scope.user, scope.agent, scope.session, key),
             )
             return None
         return bytes(value)
@@ -84,9 +101,18 @@ class SQLiteKVStore(KVStore):
             if self._live_value(scope, key) is not None:
                 raise ConflictError("kv", key)
             self._conn.execute(
-                'INSERT OR REPLACE INTO kv (org,"user",agent,session,key,value,expires_at) '
-                "VALUES (?,?,?,?,?,?,?)",
-                (scope.org, scope.user, scope.agent, scope.session, key, value, self._expiry(ttl)),
+                'INSERT OR REPLACE INTO kv (org,space,"user",agent,session,key,value,expires_at) '
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    scope.org,
+                    scope.space,
+                    scope.user,
+                    scope.agent,
+                    scope.session,
+                    key,
+                    value,
+                    self._expiry(ttl),
+                ),
             )
 
     def update(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
@@ -94,16 +120,26 @@ class SQLiteKVStore(KVStore):
             if self._live_value(scope, key) is None:
                 raise NotFoundError("kv", key)
             self._conn.execute(
-                'INSERT OR REPLACE INTO kv (org,"user",agent,session,key,value,expires_at) '
-                "VALUES (?,?,?,?,?,?,?)",
-                (scope.org, scope.user, scope.agent, scope.session, key, value, self._expiry(ttl)),
+                'INSERT OR REPLACE INTO kv (org,space,"user",agent,session,key,value,expires_at) '
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    scope.org,
+                    scope.space,
+                    scope.user,
+                    scope.agent,
+                    scope.session,
+                    key,
+                    value,
+                    self._expiry(ttl),
+                ),
             )
 
     def delete(self, scope: Scope, key: str) -> None:
         with self._lock:
             self._conn.execute(
-                'DELETE FROM kv WHERE org=? AND "user"=? AND agent=? AND session=? AND key=?',
-                (scope.org, scope.user, scope.agent, scope.session, key),
+                'DELETE FROM kv WHERE org=? AND space=? AND "user"=? '
+                "AND agent=? AND session=? AND key=?",
+                (scope.org, scope.space, scope.user, scope.agent, scope.session, key),
             )
 
     def get(self, scope: Scope, key: str) -> bytes:
@@ -121,20 +157,27 @@ class SQLiteKVStore(KVStore):
         now = time.time()
         with self._lock:
             rows = self._conn.execute(
-                'SELECT key, value FROM kv WHERE org=? AND "user"=? AND agent=? AND session=? '
-                "AND key LIKE ? AND (expires_at IS NULL OR expires_at > ?)",
-                (scope.org, scope.user, scope.agent, scope.session, prefix + "%", now),
+                'SELECT key, value FROM kv WHERE org=? AND space=? AND "user"=? '
+                "AND agent=? AND session=? AND key LIKE ? "
+                "AND (expires_at IS NULL OR expires_at > ?)",
+                (scope.org, scope.space, scope.user, scope.agent, scope.session, prefix + "%", now),
             ).fetchall()
         return [(key, bytes(value)) for key, value in rows]
 
     def scopes(self) -> List[Scope]:
         with self._lock:
             rows = self._conn.execute(
-                'SELECT DISTINCT org, "user", agent, session FROM kv'
+                'SELECT DISTINCT org, space, "user", agent, session FROM kv'
             ).fetchall()
         return [
-            Scope(org=org_name, user=user_name, agent=agent_name, session=session_name)
-            for org_name, user_name, agent_name, session_name in rows
+            Scope(
+                org=org_name,
+                space=space_name,
+                user=user_name,
+                agent=agent_name,
+                session=session_name,
+            )
+            for org_name, space_name, user_name, agent_name, session_name in rows
         ]
 
 

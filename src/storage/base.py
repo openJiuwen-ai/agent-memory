@@ -22,8 +22,8 @@
 
 - 检索型存储（fulltext / vector / graph / fusion）：写入按入参 ``scope`` 落库，
   ``search`` / 按 id 的 ``get`` / ``delete`` 物理约束在该 ``scope`` 内，绝不跨
-  scope 返回或影响。记录 ``id`` 仍是**全局唯一主键**（``insert`` 冲突 /
-  ``update`` 缺失按 id 判定），``scope`` 是其归属属性。
+  scope 返回或影响。记录 ``id`` 是 scope 内逻辑主键（``insert`` 冲突 /
+  ``update`` 缺失按 ``(scope, id)`` 判定），后端可用 scope+id 生成物理主键。
 - ``kv`` / ``fs`` 是通用键值/二进制原语：``scope`` 入参用于**对 key / 路径做命名
   空间隔离**——同一逻辑 key 在不同 scope 下是相互隔离的不同物理键，由存储层
   原生承担（不再由上层拼前缀）。

@@ -505,6 +505,8 @@ def _scope_log_dims(scope: Scope) -> str:
     dims: list[str] = []
     if scope.org:
         dims.append("org")
+    if scope.space:
+        dims.append("space")
     if scope.user:
         dims.append("user")
     if scope.agent:

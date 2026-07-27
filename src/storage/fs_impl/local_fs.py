@@ -1,6 +1,6 @@
 """LocalFSStore — 基于本地文件系统的 :class:`~storage.fs.FSStore` 实现。
 
-原模态资产/原始负载落在 ``root/<scope 四段>/`` 下，``ref`` 即相对该 scope 子目录
+原模态资产/原始负载落在 ``root/<scope 五段>/`` 下，``ref`` 即相对该 scope 子目录
 的逻辑路径（``insert`` 的 ``key`` 直接作为 ``ref`` 返回）；后续 ``get/stat/delete``
 凭 ``(scope, ref)`` 还原物理路径，故同一逻辑 ``key`` 在不同 scope 下天然隔离。
 """

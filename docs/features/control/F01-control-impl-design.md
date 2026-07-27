@@ -5,11 +5,11 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-06-24 |
-| 影响范围 | src/control/{engine,governance,lifecycle,permission,policy,scheduler}_impl/，docs/specs/S03-memory-manage.md |
+| 影响范围 | src/control/{engine,governance,lifecycle,permission,policy,scheduler}_impl/，docs/specs/S03-control.md |
 | 测试基线 | `pytest tests/unit/control` 全绿；控制层主链路同时被 `tests/unit/api/test_recall_context.py` 与 quickstart 类端到端用例间接覆盖 |
 | Refs | — |
 
-> 本文档归档**控制层第一版实现规约**：每个控制算子的当前实现、注册名、依赖、行为边界与取舍。接口契约本身归 [`docs/specs/S03-memory-manage.md`](../../specs/S03-memory-manage.md)；当前文件地图和本地铁律见 [`src/control/AGENTS.md`](../../../src/control/AGENTS.md)。本文聚焦「当前实现怎么落地、为什么这么做」。
+> 本文档归档**控制层第一版实现规约**：每个控制算子的当前实现、注册名、依赖、行为边界与取舍。接口契约本身归 [`docs/specs/S03-control.md`](../../specs/S03-control.md)；当前文件地图和本地铁律见 [`src/control/AGENTS.md`](../../../src/control/AGENTS.md)。本文聚焦「当前实现怎么落地、为什么这么做」。
 
 ---
 
@@ -75,7 +75,7 @@
 |---|---|
 | `inspect(unit_ids)` | 跨 scope 查找 id，返回能找到的 `MemoryUnit`，包括已失效版本 |
 | `trace(unit_id)` | 沿 `provenance` 递归向上回溯来源链，循环用 `seen` 防止重复 |
-| `audit(filters, limit)` | 当前支持按 `action`、`layer` 过滤内存审计事件，按插入顺序取前 `limit` 条 |
+| `audit(filters, limit)` | 当前支持按 `action`、`layer`、`decision`、`target_id`、actor scope、target scope 与时间区间过滤审计事件，按插入顺序取前 `limit` 条 |
 
 **关键权衡**：
 
@@ -120,6 +120,7 @@
 | `rerank.enabled` | `true` | 检索/装配侧策略开关 |
 | `lifecycle.expired_active.target` | `forgotten` | `KVLifecycleManager.sweep` |
 | `lifecycle.superseded.target` | `forgotten` | `KVLifecycleManager.sweep` |
+| `scope.require_space` | `false` | `LocalMemoryAPI` target scope 校验 |
 
 **关键权衡**：
 
@@ -232,7 +233,7 @@ scheduler:
 
 3. **Policy 未持久化、未审计**：`DictPolicyManager` 只存在于进程内，重启丢失；`set` 也未直接产生日志/审计事件。后续应接持久化后端并补 admin 审计。
 
-4. **Governor.audit 过滤能力很窄**：当前只按 `action`、`layer` 过滤，尚未实现 actor、target、时间区间等完整查询条件。
+4. **Governor.audit 过滤能力仍是结构化精确匹配**：当前已支持 action/layer/decision/target_id、actor scope、target scope 与时间区间；更复杂的模糊查询、聚合统计和长期审计保留策略仍需后续补齐。
 
 5. **Lifecycle.transition 按 id 跨 scope 扫描**：便于治理/测试，但大规模后端成本高；生产实现应利用索引或把 scope 纳入调用条件。
 

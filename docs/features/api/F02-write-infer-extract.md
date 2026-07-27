@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-06-30 |
-| 影响范围 | src/control/engine_impl/in_memory_engine.py、src/control/AGENTS.md、bootstrap/core/handler.py、docs/specs/S02-memory-api.md、docs/specs/S03-memory-manage.md、docs/features/construction/F01-construction-spec-design.md |
+| 影响范围 | src/control/engine_impl/in_memory_engine.py、src/control/AGENTS.md、bootstrap/core/handler.py、docs/specs/S02-memory-api.md、docs/specs/S03-control.md、docs/features/construction/F01-construction-spec-design.md |
 | 测试基线 | `pytest tests/unit/construction` 全绿（82 passed）；`pytest tests/unit/api` 全绿；`pytest tests/unit` 4 failed（仅 `test_bge_reranker.py`，与本特性无关） |
 | Refs | — |
 
@@ -202,7 +202,9 @@ procedural 与 infer 互斥：procedural=true 时 even 不走 infer 的原文落
 
 ### 决策10：/v1/list 收窄到 /memory/ 全部
 
-handler `_list` 由全扫 `kv.list(scope)` + loads 过滤，改为 `kv.list(scope, prefix=MEMORY_KEY_PREFIX)` 直取 `/memory/`——只返建索引的 Memory 记忆，不再返 `/messages/` 下的 infer 原文（未建索引）和 `/index/chunks/` 簿记。
+handler `_list` 的返回范围由全扫 `kv.list(scope)` + loads 过滤，收窄为只返 `/memory/` 下的建索引 Memory 记忆，不再返 `/messages/` 下的 infer 原文（未建索引）和 `/index/chunks/` 簿记。
+
+后续 F01 的 list 决策已将 `list` 上收为正式 `MemoryAPI.list -> MemoryEngine.list` 数据面接口；当前 handler `_list` 不再直连 KV，而是委托 API。`MemoryEngine.list` 内部使用 `prefix=MEMORY_KEY_PREFIX` 直取 `/memory/`，并补齐 offset/limit 分页与 `memory_types` 过滤。
 
 InProcess 模式 `list_semantic` 同步对齐：去掉 `tier==SEMANTIC` 过滤，改用 `prefix=MEMORY_KEY_PREFIX` 直取，返 `/memory/` 全部（与 HTTP `_list` 一致）。两条链路返回范围统一。返回结构差异保留（HTTP 经 `_unit_view` 返完整字段，InProcess 返 `{content, item_id, score}`——provider 客户端协议既有差异，`agent_memory_profile` 只取 content，兼容）。
 

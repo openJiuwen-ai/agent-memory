@@ -22,7 +22,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict
 
 from common.audit.base import AuditProducer
 from common.bootstrap import register_plugins
@@ -38,6 +37,7 @@ from control.governance import GovernorProducer
 from control.permission import PermissionProducer
 from control.policy import PolicyProducer
 from control.scheduler import SchedulerProducer
+from control.space import SpaceManager, SpaceProducer
 from ingest.bootstrap import register_ingestors
 from retrieval.bootstrap import register_operators
 from storage.bootstrap import register_backends
@@ -48,10 +48,11 @@ from .local_memory_api import LocalMemoryAPI
 
 @dataclass
 class Kernel:
-    """一次装配的产物：对外 ``MemoryAPI`` + 真源 kv 句柄（供 surface 做 list 等读取）。"""
+    """一次装配的产物：对外 ``MemoryAPI`` + 真源 kv 句柄（供测试/特殊装配观测真源）。"""
 
     api: LocalMemoryAPI
     kv: KVStore
+    space: SpaceManager | None = None
 
 
 def _register_all() -> None:
@@ -65,7 +66,7 @@ def _register_all() -> None:
 
 
 def build_kernel(
-    policies: Dict[str, str] | None = None,
+    policies: dict[str, str] | None = None,
     kv: KVStore | None = None,
     config: Config | None = None,
 ) -> Kernel:
@@ -98,12 +99,13 @@ def build_kernel(
         policy=PolicyProducer.dep(root, default="dict"),
         governor=GovernorProducer.dep(root, default="in_memory"),
         audit_logger=AuditProducer.dep(root, default="sqlite"),
+        space=SpaceProducer.dep(root, default="kv"),
     )
-    return Kernel(api=api, kv=KvProducer.dep(root, default="memory"))
+    return Kernel(api=api, kv=KvProducer.dep(root, default="memory"), space=api.space_manager)
 
 
 def assemble(
-    policies: Dict[str, str] | None = None,
+    policies: dict[str, str] | None = None,
     kv: KVStore | None = None,
     config: Config | None = None,
 ) -> LocalMemoryAPI:

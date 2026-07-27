@@ -19,11 +19,11 @@ from storage.base import StoreType
 from storage.graph import GraphProducer, GraphStore
 from storage.types import Edge, GraphQuery, Node
 
-_ScopeKey = Tuple[str, str, str, str]
+_ScopeKey = Tuple[str, str, str, str, str]
 
 
 def _skey(scope: Scope) -> _ScopeKey:
-    return (scope.org, scope.user, scope.agent, scope.session)
+    return (scope.org, scope.space, scope.user, scope.agent, scope.session)
 
 
 class InMemoryGraphStore(GraphStore):

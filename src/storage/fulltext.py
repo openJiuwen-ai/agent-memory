@@ -1,7 +1,7 @@
 """FulltextStore — 全文倒排索引存储，统一 CRUD + 关键词检索。
 
 ``scope`` 为显式第一入参：写入按 ``scope`` 落库，``search`` / 按 id 的 ``get`` /
-``delete`` 物理约束在该 ``scope`` 内。``id`` 为全局唯一主键。
+``delete`` 物理约束在该 ``scope`` 内。``id`` 为 scope 内逻辑主键。
 """
 
 from __future__ import annotations

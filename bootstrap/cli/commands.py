@@ -76,7 +76,12 @@ def _tags(value: str | None) -> list[str] | None:
             return [str(t) for t in json.loads(value)]
         except (ValueError, json.JSONDecodeError) as exc:
             raise CliError(f"--categories/--tags: bad JSON array ({exc})")
-    return [t for t in (s.strip() for s in value.split(",")) if t]
+    tags = []
+    for raw_tag in value.split(","):
+        tag = raw_tag.strip()
+        if tag:
+            tags.append(tag)
+    return tags
 
 
 def _flatten_messages(raw: str) -> str:

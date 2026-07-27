@@ -32,7 +32,7 @@ class ScoredID:
 class VectorRecord:
     """向量行：id + embedding + 可选元数据（scope 由写入方法入参提供）。"""
 
-    id: str  # 向量行 id（与记忆单元/chunk 对应，全局唯一）
+    id: str  # 向量行逻辑 id（与记忆单元/chunk 对应，scope 内唯一）
     vector: list[float]  # 稠密向量（维度须与索引一致）
     metadata: dict[str, Any] = field(default_factory=dict)  # scope 之外的额外过滤元数据
 
@@ -58,7 +58,7 @@ class VectorQuery:
 class Document:
     """全文文档：id + 待索引文本 + 可选元数据（scope 由写入方法入参提供）。"""
 
-    id: str  # 文档 id（全局唯一）
+    id: str  # 文档逻辑 id（scope 内唯一）
     text: str  # 待索引正文
     metadata: dict[str, Any] = field(default_factory=dict)  # scope 之外的额外过滤元数据
 
@@ -84,7 +84,7 @@ class TextQuery:
 class Node:
     """图节点：id + 标签 + 属性（scope 由写入方法入参提供）。"""
 
-    id: str  # 节点 id（全局唯一）
+    id: str  # 节点逻辑 id（scope 内唯一）
     label: str = ""  # 节点标签/类型（如 PERSON / EVENT / TOPIC）
     properties: dict[str, Any] = field(default_factory=dict)  # 节点属性
 
@@ -93,7 +93,7 @@ class Node:
 class Edge:
     """图边：id + 起止节点 + 关系类型 + 属性（scope 由写入方法入参提供）。"""
 
-    id: str  # 边 id（全局唯一）
+    id: str  # 边逻辑 id（scope 内唯一）
     source: str  # 起点节点 id
     target: str  # 终点节点 id
     relation: str = ""  # 关系类型（如 caused_by / refers_to）
@@ -120,7 +120,7 @@ class FusionRecord:
     """融合行：同一 id 上同时携带向量（ANN）、文本（倒排）、标量字段（过滤）
     与原始值（正排 by-id 读取）；scope 由写入方法入参提供。"""
 
-    id: str  # 行 id（全局唯一，同时服务向量/倒排/正排三条路）
+    id: str  # 行逻辑 id（scope 内唯一，同时服务向量/倒排/正排三条路）
     vector: list[float] | None = None  # 稠密向量（ANN 召回用）；None 表示无
     text: str | None = None  # 文本（倒排/关键词相关性用）；None 表示无
     scalars: dict[str, Any] = field(default_factory=dict)  # scope 之外的标量字段

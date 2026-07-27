@@ -16,11 +16,11 @@ from storage.base import StoreType
 from storage.types import ScoredID, VectorQuery, VectorRecord
 from storage.vector import VectorProducer, VectorStore
 
-_ScopeKey = Tuple[str, str, str, str]
+_ScopeKey = Tuple[str, str, str, str, str]
 
 
 def _skey(scope: Scope) -> _ScopeKey:
-    return (scope.org, scope.user, scope.agent, scope.session)
+    return (scope.org, scope.space, scope.user, scope.agent, scope.session)
 
 
 def _cosine(a: List[float], b: List[float]) -> float:

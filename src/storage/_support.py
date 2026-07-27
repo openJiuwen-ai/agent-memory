@@ -8,7 +8,7 @@ from typing import Iterator
 from common.errors import AgentMemoryError, BackendError
 from common.type_def import Scope
 
-_DIMS = ("org", "user", "agent", "session")
+_DIMS = ("org", "space", "user", "agent", "session")
 
 
 @contextmanager
@@ -31,15 +31,23 @@ def wrap_backend(action: str) -> Iterator[None]:
 def scope_dims(scope: Scope) -> list[tuple[str, str]]:
     """返回 scope 中**非空**的维度 ``(dim, value)`` 列表。
 
-    用于检索型后端构造 scope 过滤：org>user>agent>session 的层级语义下，
-    只对非空维度施加等值约束（空维度 = 不限定该层），从而 ``scope`` 越具体、
+    用于检索型后端构造 scope 过滤：org>space>user/agent>session 的层级语义下，
+    只对非空维度施加等值约束（空维度 = 不限定该层）。``space`` 例外：只要
+    ``org`` 已给出，即便 ``space`` 为空也会下推 ``space == ""``，避免空
+    space 请求跨到其他 space。从而 ``scope`` 越具体、
     检索范围越窄，实现原生的多租户隔离与层级包含。
     """
-    return [(dim, getattr(scope, dim)) for dim in _DIMS if getattr(scope, dim)]
+    out: list[tuple[str, str]] = []
+    for dim in _DIMS:
+        value = getattr(scope, dim)
+        include_dimension = bool(value) or (dim == "space" and bool(scope.org))
+        if include_dimension:
+            out.append((dim, value))
+    return out
 
 
 def scope_segments(scope: Scope) -> list[str]:
-    """把 scope 渲染为定长四段（空维度用 ``_`` 占位），供 kv/fs 做命名空间隔离。
+    """把 scope 渲染为定长五段（空维度用 ``_`` 占位），供 kv/fs 做命名空间隔离。
 
     定长且占位可避免不同 scope 折叠到同一命名空间（如 ``org`` 空与 ``user`` 空
     错位拼接）；各段把路径分隔符替换掉以防越界。

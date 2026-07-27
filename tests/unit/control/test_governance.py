@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import pytest
+
 from api import Scope
 from api.memory_api_impl import build_kernel
 from common.audit.base import AuditLogger
+from common.errors import BackendError
 from common.type_def import AuditEvent, MemoryUnit, Segment, memory_key
 from common.type_def.memory_codec import dumps
 from control.governance_impl.in_memory_governor import InMemoryGovernor
+
+pytestmark = pytest.mark.unit
 
 
 class _QueryOnlyAuditLogger(AuditLogger):
@@ -17,6 +22,12 @@ class _QueryOnlyAuditLogger(AuditLogger):
 
     def query(self, filters: dict[str, str], limit: int = 100) -> list[AuditEvent]:
         return self._events[:limit]
+
+
+class _FailingKV:
+    @staticmethod
+    def get(scope: Scope, key: str) -> bytes:
+        raise BackendError("storage unavailable")
 
 
 def test_trace_follows_provenance_sources_depth_first() -> None:
@@ -54,6 +65,35 @@ def test_trace_stops_on_provenance_cycles() -> None:
         kernel.kv.insert(scope, memory_key(unit.id), dumps(unit))
 
     assert [unit.id for unit in kernel.api.trace("a", scope, identity=scope)] == ["a", "b"]
+
+
+def test_inspect_is_bound_to_the_authorized_scope() -> None:
+    kernel = build_kernel()
+    scope_a = Scope(org="acme", space="space-a", user="alice")
+    scope_b = Scope(org="acme", space="space-b", user="alice")
+    unit_a = MemoryUnit(
+        id="shared-id",
+        scope=scope_a,
+        segments=[Segment(content="space A secret")],
+    )
+    unit_b = MemoryUnit(
+        id="shared-id",
+        scope=scope_b,
+        segments=[Segment(content="space B content")],
+    )
+    kernel.kv.insert(scope_a, memory_key(unit_a.id), dumps(unit_a))
+    kernel.kv.insert(scope_b, memory_key(unit_b.id), dumps(unit_b))
+
+    inspected = kernel.api.inspect([unit_b.id], scope_b, identity=scope_b)
+
+    assert [unit.content for unit in inspected] == ["space B content"]
+
+
+def test_inspect_does_not_hide_storage_failures() -> None:
+    governor = InMemoryGovernor(_FailingKV(), _QueryOnlyAuditLogger([]))
+
+    with pytest.raises(BackendError, match="storage unavailable"):
+        governor.inspect(["unit-id"], Scope(org="acme"))
 
 
 def test_audit_uses_logger_query_interface() -> None:

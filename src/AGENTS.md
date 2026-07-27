@@ -13,7 +13,7 @@ src/
 ├── common/         # 跨层共享插件（Tokenizer/Chunker/Embedder/FeatureExtractor/LLM/Normalizer/Reranker）+ type_def/
 ├── config/         # 配置加载与校验（待实现）
 ├── construction/   # 构建层：落盘 + 多形式索引构建 + 自演进闭环
-├── control/        # 编排层：MemoryEngine 跨层编排中枢 + Scheduler/Permission/Policy/Governance
+├── control/        # 编排层：MemoryEngine 跨层编排中枢 + Scheduler/Permission/Policy/Governance/Space
 ├── ingest/         # 接入层：多模态 → 文本投影 + MemoryUnit，不落盘
 ├── retrieval/      # 检索层：scope 过滤 → 多路召回 → 融合重排 → 渐进式披露
 └── storage/        # 存储层：统一 CRUD + search，scope 原生隔离（vector/graph/fulltext/kv/fs/fusion）
@@ -54,7 +54,7 @@ src/
 
 ### control/ — 编排层
 
-`MemoryEngine` 是接口层各语义的编排中枢（异步协程）。`Scheduler` 双通道调度演进任务，`PermissionManager` / `PolicyManager` / `Governor` 管治理面。
+`MemoryEngine` 是接口层各语义的编排中枢（异步协程）。`Scheduler` 双通道调度演进任务，`PermissionManager` / `PolicyManager` / `Governor` / `SpaceManager` 管治理面。
 
 ### storage/ — 存储层
 

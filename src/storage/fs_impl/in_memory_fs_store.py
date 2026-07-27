@@ -18,16 +18,16 @@ from storage.base import StoreType
 from storage.fs import FsProducer, FSStore
 from storage.types import FileStat
 
-_ScopeKey = Tuple[str, str, str, str]
+_ScopeKey = Tuple[str, str, str, str, str]
 
 
 def _skey(scope: Scope) -> _ScopeKey:
-    return (scope.org, scope.user, scope.agent, scope.session)
+    return (scope.org, scope.space, scope.user, scope.agent, scope.session)
 
 
 def _ref(scope: Scope, key: str) -> str:
     """规范引用：scope 命名空间 + key（写入方据此回读/溯源）。"""
-    return f"fs://{scope.org}/{scope.user}/{scope.agent}/{scope.session}/{key}"
+    return f"fs://{scope.org}/{scope.space}/{scope.user}/{scope.agent}/{scope.session}/{key}"
 
 
 class _Blob:

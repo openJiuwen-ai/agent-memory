@@ -1333,6 +1333,7 @@ name = "jiuwenmemory"
 version = "0.2.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "jieba" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.0", source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }, marker = "python_full_version >= '3.12'" },
@@ -1375,6 +1376,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=42" },
     { name = "elasticsearch", marker = "extra == 'deploy'", specifier = ">=8,<9" },
     { name = "flagembedding", marker = "extra == 'embed'", specifier = ">=1.2" },
     { name = "hanlp", marker = "extra == 'nlp'", specifier = ">=2.1" },
