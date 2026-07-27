@@ -360,6 +360,48 @@ class SearchManager:
         } for res in result]
         return result
 
+    async def list_user_mem_with_total(
+            self,
+            user_id: str,
+            scope_id: str,
+            nums: int,
+            pages: int,
+            mem_type: str = None,
+            *,
+            filters: Optional[FilterGroup] = None,
+    ) -> tuple[list[dict[str, Any]], int] | None:
+        """Like ``list_user_mem`` but also returns the global total count
+        (before pagination). Always uses the KV scan path for correct total.
+        """
+        start = nums * (pages - 1)
+        if not self.memory_index:
+            raise build_error(
+                StatusCode.MEMORY_GET_MEMORY_EXECUTION_ERROR,
+                memory_type="search_memory",
+                error_msg=f"memory index not inited",
+            )
+        filters = ensure_blacklisted_ne(normalize_filters(filters))
+        if mem_type:
+            result, total = await self.memory_index.list_memories_with_total(
+                user_id, scope_id, start, nums, [mem_type], filters=filters,
+            )
+        else:
+            result, total = await self.memory_index.list_memories_with_total(
+                user_id, scope_id, start, nums, [], filters=filters,
+            )
+        result = [{
+            "id": res.id,
+            "user_id": user_id,
+            "scope_id": scope_id,
+            "mem": res.text,
+            "mem_type": res.type,
+            "timestamp": res.timestamp,
+            "blacklisted": res.blacklisted,
+            "is_important": res.is_important,
+            **res.fields,
+        } for res in result]
+        return result, total
+
     async def list_user_profile(self, user_id: str, scope_id: str) -> list[dict]:
         if any(item not in self.managers for item in FRAGMENT_MEMORY_TYPE):
             raise build_error(
