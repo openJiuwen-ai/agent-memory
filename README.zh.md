@@ -28,7 +28,7 @@ Agent对话系统依赖有限的上下文窗口，一旦超出 Token 限制或�
 
 - **语义检索与冲突检测**：跨记忆类型统一向量语义检索；`MemUpdateChecker` 通过 LLM 分析语义冲突智能决定 ADD/DELETE 策略，LLM 输出 UPDATE/DELETE 指令经语义校验后执行，确保记忆一致与操作可控。
 
-- **全栈存储后端体系**：覆盖 KV（InMemoryKV/ShelveStore/DbBasedKV/Redis）、向量（ChromaDB/Milvus/Elasticsearch/GaussVector）、关系型（SQLite/PostgreSQL/MySQL/GaussDB）、消息（SqlMessageStore）、图（Milvus GraphStore）五大存储类别，适配本地单机到云端集群全场景。
+- **全栈存储后端体系**：覆盖 KV（InMemoryKV/ShelveStore/DbBasedKV/Redis）、向量（ChromaDB/Milvus/Elasticsearch/GaussVector/Qdrant）、关系型（SQLite/PostgreSQL/MySQL/GaussDB）、消息（SqlMessageStore）、图（Milvus GraphStore）五大存储类别，适配本地单机到云端集群全场景。
 
 - **数据迁移框架**：支持 KV/向量/SQL/消息/索引的版本化 schema 迁移与跨 BaseMemoryIndex 实例批量数据迁移，操作注册表支持自定义迁移扩展。
 
@@ -79,6 +79,9 @@ pip install JiuwenMemory[redis]
 
 # ChromaDB 向量存储
 pip install JiuwenMemory[chromadb]
+
+# Qdrant 向量存储
+pip install JiuwenMemory[qdrant]
 
 # 文件系统记忆后端（sqlite-vec + watchdog + jieba）
 # 用 INDEX_BACKEND=file 时需要，缺失则静默降级
@@ -322,7 +325,7 @@ Graph Memory 是独立的知识图谱记忆模块，可将输入内容沉淀为�
 
 ### **灵活的存储后端与数据迁移**
 
-- **全栈存储后端**：覆盖 KV（InMemoryKV/ShelveStore/DbBasedKV/Redis）、向量（ChromaDB/Milvus/Elasticsearch/GaussVector）、关系型（SQLite/PostgreSQL/MySQL/GaussDB）、消息（SqlMessageStore）、图（Milvus GraphStore）五大存储类别，适配本地单机到云端集群全场景。
+- **全栈存储后端**：覆盖 KV（InMemoryKV/ShelveStore/DbBasedKV/Redis）、向量（ChromaDB/Milvus/Elasticsearch/GaussVector/Qdrant）、关系型（SQLite/PostgreSQL/MySQL/GaussDB）、消息（SqlMessageStore）、图（Milvus GraphStore）五大存储类别，适配本地单机到云端集群全场景。
 - **版本化迁移**：提供完整的迁移框架，支持 SQL schema 变更、向量字段重命名、KV 数据更新、消息数据转换和索引字段操作等多种迁移类型。
 - **跨索引迁移**：支持在不同 BaseMemoryIndex 实例之间批量迁移记忆数据，操作注册表支持自定义迁移扩展，实现存储引擎的平滑切换。
 

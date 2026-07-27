@@ -32,7 +32,7 @@ VECTOR_STORE_ENTRY_POINT_GROUP = "openjiuwen.vector_stores"
 
 # Built-in backends. Closed to extension by design — use register_vector_store
 # or the entry_points mechanism for 3rd-party backends.
-_BUILTIN_VECTOR_STORE_NAMES = frozenset({"chroma", "milvus", "gaussvector", "elasticsearch"})
+_BUILTIN_VECTOR_STORE_NAMES = frozenset({"chroma", "milvus", "gaussvector", "elasticsearch", "qdrant"})
 
 # Explicit in-process registrations (register_vector_store).
 # Maps backend name -> factory callable (typically a class).
@@ -48,7 +48,7 @@ def register_vector_store(
     Use this in application init code when shipping a plugin via
     entry_points is not practical (e.g., private in-repo backend).
 
-    Built-in names (chroma, milvus, gaussvector) cannot be overridden — a
+    Built-in names (chroma, milvus, gaussvector, elasticsearch, qdrant) cannot be overridden — a
     register call with a built-in name is kept in the registry but the
     built-in still wins in ``create_vector_store()`` resolution.
 
@@ -78,6 +78,9 @@ def _resolve_builtin(store_type: str, kwargs: dict) -> "BaseVectorStore | None":
     if store_type == "elasticsearch":
         from jiuwen_memory.foundation.store.vector.es_vector_store import ElasticsearchVectorStore
         return ElasticsearchVectorStore(**kwargs)
+    if store_type == "qdrant":
+        from jiuwen_memory.foundation.store.vector.qdrant_vector_store import QdrantVectorStore
+        return QdrantVectorStore(**kwargs)
     return None
 
 
@@ -122,7 +125,7 @@ def create_vector_store(store_type: str, **kwargs) -> "BaseVectorStore | None":
     """Factory for vector-store backends.
 
     Resolution order:
-      1. Built-in (chroma, milvus, gaussvector) — always wins, closed set.
+      1. Built-in (chroma, milvus, gaussvector, elasticsearch, qdrant) — always wins, closed set.
       2. Explicit registrations via ``register_vector_store()``.
       3. Entry_points in group ``openjiuwen.vector_stores``.
 
