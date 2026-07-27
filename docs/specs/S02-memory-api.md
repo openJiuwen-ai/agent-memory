@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/api/ |
-| 最近一次修订日期 | 2026-07-25 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/F02-cc-memory-compat.md |
+| 最近一次修订日期 | 2026-07-29 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/F02-cc-memory-compat.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -32,6 +32,9 @@
 6. **管理面闸门 = 根 scope**：无具体 target scope 的方法（admin_*、全局 audit）以根 scope `Scope()` 为鉴权目标——「能对根 scope 行权」即管理员闸门；租户数据/治理方法仍按各自 target scope 鉴权。
 7. **`as_of` = valid-time 回溯点**：`recall`/`get` 的 `as_of` 沿系统相信时间轴回溯，返回「那时被认为有效」的版本（`get` 沿 `supersedes` 版本链定位）；`None` 表示当前态。
 8. **target scope 兜底**：`delete` 等以 `selector.scope or 根 scope` 为鉴权目标——未限定 scope 的跨范围操作退到根闸门，要求更高权限。
+9. **路由鉴权绑定数据范围**：路由型 PermissionManager 依据请求中的字段选择策略时，
+   API 必须把同一个授权路由值作为系统过滤谓词回注查询，避免「按 A 类型授权、读取
+   B 类型数据」。系统谓词与用户 `filters` 以外层 `AND` 合并。
 
 ## 接口契约
 
@@ -41,7 +44,7 @@
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `write` | `(content, scope, source=TEXT, *, identity, assets, tags, metadata, occurred_at) -> list[MemoryUnit]` | 同步写入：鉴权 WRITE→委托 Engine→阻塞至 hot path 巩固完成。返回本次新增或更新的单元；NOOP 时可空 |
+| `write` | `(content, scope, source=TEXT, *, identity, assets, tags, metadata, occurred_at) -> list[MemoryUnit]` | 同步写入：鉴权 WRITE→委托 Engine→阻塞至 hot path 完成。infer/procedural 触发时返回 `created_ids` 对应的派生单元（可空），否则返回原始单元 |
 | `write_async` | `async (同签名) -> list[MemoryUnit]` | 异步写入：直通 Engine 协程，供事件循环形态使用 |
 | `recall` | `(query, context: Context, *, identity, filters, as_of, top_k, disclosure, with_trajectory) -> RetrievalResult` | 混合检索：鉴权 READ→拆 Context→装配 RetrievalQuery→委托 Engine |
 | `get` | `(unit_id, scope, *, identity, as_of=None) -> MemoryUnit` | 真源点读：鉴权 READ→委托 Engine |
@@ -58,9 +61,16 @@
 
 `write` 的 `metadata["infer"]` 是调用级开关，控制写入时是否同步抽取派生记忆（对齐 mem0 `add(infer=True)`）：
 
-- **真值判定**：`str(metadata.get("infer", "")).strip().lower() == "true"`——大小写/空白不敏感，仅字符串 `"true"` 触发，其余值（含 `"false"`/缺省/空）均走默认路径。
-- **`infer="true"`**：原始记忆落 KV 真源但**不建索引**；hot path 同步走 `Engine → Evolver.evolve(units, EXTRACT)`——Extractor 抽取派生记忆 → Evolver 判定+落盘+建索引（ADD/UPDATE/SUPERSEDE/NOOP）。`OrchestratingEvolver` 走 `_dedup_batch`（判定+落盘耦合），`DynamicEvolver` 走 consolidate(判定)→reflect→落盘。返回新增或更新的派生单元；全部 NOOP 时合法返回空列表。
-- **缺省 / 非 `"true"`（infer=false）**：原文经 `classifier.classify` 打 tier+tags，再直接落 `/memory/{id}` + 建索引（直写路径，不去重）。classifier 未注入时跳过。
+- **真值判定**：`str(metadata.get("infer", "")).strip().lower() == "true"`——大小写/
+  空白不敏感，字符串 `"true"` 和布尔值 `True` 均会触发；`"false"`/`False`/缺省/
+  空值走默认路径。
+- **`infer="true"`**：原始记忆落 `/messages/{id}` 真源但**不建索引**；hot path
+  同步走 `Engine → Evolver.evolve(units, EXTRACT)`。`OrchestratingEvolver`
+  以 `_dedup_batch` 完成判定与落盘，`DynamicEvolver` 走
+  extract → consolidate（只判定）→ reflect → 落盘；**不提交** background EXTRACT。
+  Engine 从 `EvolveResult.created_ids` 反查并返回派生单元，因此 ADD/SUPERSEDE
+  返回新派生单元，只有 UPDATE/NOOP 时合法返回空列表。
+- **缺省 / 非 `"true"`（infer=false）**：原文经 `classifier.classify` 打 tier+tags（纯 LLM 抽取 episodic/semantic/procedural + 1-3 个 tags）→ 落盘 `/memory/{id}` + 建索引。classifier 未注入时跳过（tier 保持 EPISODIC 默认，向后兼容）。返回原始单元列表。
 - **evolver 缺失**：`infer="true"` 但装配未注入 `Evolver` 时 Engine 抛 `RuntimeError`——装配问题暴露而非静默降级。默认装配 `evolver: orchestrating` 总是注入。
 
 #### procedural 开关（write 的过程记忆抽取）
@@ -68,21 +78,26 @@
 `write` 的 `metadata["procedural"]` 是独立于 infer 的调用级开关（详见 F02 决策8）：
 
 - **`procedural="true"`**：原文**不落 KV**；喂 `Evolver.evolve(units, EXTRACT)`。extractor 把本轮汇总成一条 PROCEDURAL 执行历史，再由 Evolver 落盘（`DynamicEvolver` 也走父类 procedural 路径，不判定）。
-- procedural 与 infer 互斥：procedural=true 时原文不落 `/messages/`、不收集 context。语义是"把这轮做了什么记成一条可检索 how-to"。
+- procedural 与 infer 同传时按 procedural 语义：原文不落 `/messages/`、不收集
+  context、不去重。语义是"把这轮做了什么记成一条可检索 how-to"。
 
 #### 动态抽取与巩固 prompt
 
-- metadata 是 `dict[str, str]`，调用方用 `metadata["_extract_prompt_<strategy>"] = prompt`
-  或 `metadata.update(...)` 传值；不存在 `metadata.append()`。
-- `_extract_prompt_<strategy>` 仅在 `infer=true` 时触发动态抽取；支持任意非空 strategy，
-  每个策略调用一次。无动态 prompt 时回退旧 Extractor。
+- metadata 的公共类型是 `dict[str, Any]`；动态 prompt 控制项的值按
+  `str(value).strip()` 解释为 prompt key。调用方使用
+  `metadata["_extract_prompt_<strategy>"] = prompt_key` 或 `metadata.update(...)`
+  传值；不存在 `metadata.append()`。
+- 在 `write` 的普通同步抽取路径中，`_extract_prompt_<strategy>` 随 `infer=true`
+  进入 EXTRACT；procedural 或显式 `evolve(EXTRACT)` 同样进入 Evolver 的 EXTRACT
+  路径，Extractor 本身不校验 infer。支持任意非空 strategy，每个策略调用一次；
+  无动态 prompt 时回退旧 Extractor。
 - `_consolidation_prompt_<strategy>` 为落盘前动态巩固 prompt 的 **key**（引用 yml `prompts` 段的命名 prompt）。运行时由 `PromptRegistry` 按 `phase=consolidate + key` 查真实文本。`DynamicEvolver` 消费；无 prompt 或输出不合法时回退规则判定（高相似度 NOOP，否则 ADD）。
 - `_reflect_prompt_<strategy>` 为反思步 prompt 的 key（同上，`phase=reflect`）。reflect 默认 no-op，子类可覆盖 `_reflect_step`。
 - LLM 输出格式由 prompt 自身约定，内核不追加固定 schema。
 
 #### infer 上下文增强与 KV 前缀分离（增量）
 
-- **infer=true 时 evolver 内部收集上下文**（evolve 接口不变）：`recent_originals`（最近 10 条 infer 原文，做指代消解/语境，不参与去重）+ `related_memories`（`dedup.recall` 召回 10 条相关记忆，做去重提示）。两类参考项只拼进 extractor prompt，不进提取来源。去重靠 prompt 提示 + `_dedup_batch` 兜底（evolver 不再做产出后向量过滤）。详见 F02 决策7。
+- **infer=true 时 evolver 内部收集上下文**（evolve 接口不变）：`recent_originals`（最近 10 条 infer 原文，做指代消解/语境，不参与去重）+ `related_memories`（`dedup.recall` 召回 10 条相关记忆，做去重提示）。两类参考项只拼进 extractor prompt，不进提取来源；最终判定由所选 Evolver 完成：`OrchestratingEvolver` 走 `_dedup_batch`，`DynamicEvolver` 走 consolidate → reflect → 落盘。详见 F02 决策7。
 - **KV key 前缀分离**：真源 key 按「是否建索引」带前缀——`/memory/{id}`（建索引记忆）、`/messages/{id}`（未建索引 infer 原文）。前缀常量与 helper 在 `common.type_def.memory`/`raw`。详见 F02 决策6。
 - **engine.write infer=false 调 classify**：默认路径调 `classifier.classify` 给原文打 tier+tags（纯 LLM 抽取 episodic/semantic/procedural + tags）；infer=true 不经 classifier（extractor 产派生时自定）。详见 F02 决策9。
 - **`/v1/list` 收窄**：handler `_list` 用 `prefix="/memory/"` 直取，只返建索引的 Memory 记忆。详见 F02 决策10。
@@ -135,10 +150,17 @@
 | `provenance` | list[str] | 演进血缘（多→一合成）：由哪些 unit 提取/升华/合并而来 |
 | `supersedes` | str | 版本链（一→一更替）：本版本取代的上一版 id；空表示首版 |
 | `tags` | list[str] | 标签（检索前置过滤用） |
-| `metadata` | dict[str, str] | 其他元数据 |
+| `metadata` | dict[str, Any] | 业务元数据；保留 JSON 标量原生类型，也可使用字符串数组 |
 | `lifecycle` | LifecycleState | 生命周期状态 |
 
 `Segment`：`content`（可治理文本/结构投影，索引与检索对象）、`assets`（本段原模态资产引用）、`source`（本段来源 Modality）。便捷只读折叠属性：`unit.content`（各段换行连接）、`unit.assets`（各段扁平合并）、`unit.source`（首段模态）——返回新对象，勿就地 `append`。
+
+写入和更新边界对 metadata 执行以下约束：
+
+- 接受 JSON 标量（string / number / boolean / null）和字符串数组；
+- 不把业务值统一转换为字符串，真源与索引保留原生类型；
+- 拒绝 `unit_id`、`tier`、`lifecycle`、`tags`、时间字段等系统保留 key；
+- 不接受嵌套 object 或非字符串数组。
 
 ### MemoryPatch / UpdateMode（update，`control/types.py`）
 
@@ -152,9 +174,26 @@
 
 `DeleteMode`：`FORGET`（标记遗忘，可恢复，默认）/ `ARCHIVE`（归档转冷）/ `DOWNWEIGHT`（保持 active 仅降权）/ `PURGE`（物理删真源与索引，合规硬删，不可恢复）。
 
-### FilterClause / FilterOp（recall 前置过滤，`common/type_def`）
+### FilterExpr / FilterClause / FilterGroup（recall 前置过滤，`common/type_def`）
 
-单条 `FilterClause` = 一个谓词：`field`（标签维度 / 元数据 key / 标量字段名）、`op`、`value`。多条放进列表语义为 **AND**（取交），字段内「或」用 `IN`。`FilterOp`：`EQ`/`NE`/`IN`（value 为 list）/`NOT_IN`/`GT`/`GTE`/`LT`/`LTE`/`CONTAINS`（列表型字段含某元素）。scope 不走 filters——它是记录/查询上的专用隔离字段。
+`FilterExpr = FilterClause | FilterGroup`。单条 `FilterClause` 表示字段比较；
+`FilterGroup` 用 `AND` / `OR` / `NOT` 递归组合子表达式。旧
+`list[FilterClause]` 兼容为隐式 `AND`，dict DSL 可在 API / SDK 边界写成：
+
+```python
+{
+    "AND": [
+        {"metadata.project": {"in": ["alpha", "beta"]}},
+        {"metadata.priority": {"gte": 8}},
+        {"NOT": {"metadata.archived": True}},
+    ]
+}
+```
+
+`FilterOp`：`EQ`/`NE`/`IN`/`NOT_IN`/`GT`/`GTE`/`LT`/`LTE`/`CONTAINS`。
+scope 不走 filters。metadata 比较严格保留类型：number、string、boolean 不互相转换；
+`int` / 有限 `float` 属于同一数值类别。当前不维护中央 metadata schema，同一业务 key
+的写入和查询类型应由调用方保持一致。
 
 ### DisclosureLevel / RetrievalResult（recall 返回，`retrieval/types.py`）
 

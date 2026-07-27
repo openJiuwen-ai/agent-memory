@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/retrieval/ |
-| 最近一次修订日期 | 2026-07-23 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/F02-cc-memory-compat.md |
+| 最近一次修订日期 | 2026-07-29 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/F02-cc-memory-compat.md |
 
 ## 范围 / 边界
 
@@ -37,6 +37,10 @@
 7. **scalar_filters 与软召回信号分离**：ParsedQuery 中 `scalar_filters`（硬前置过滤）与 `tokens/keywords/entities/vector`（软召回信号）不能互相折叠。
 8. **双时间轴独立**：`as_of`（valid-time 回溯点）与 `time_from/time_to`（event-time 范围）是两条独立时间轴。
 9. **召回分数高分优先**：chunk→unit MaxP、分层归并与融合排序统一按「分越大越相关」处理；向量 Recaller 不接受 L2 等 lower-is-better 度量。
+10. **生产过滤先于 top-k**：Milvus / Elasticsearch 必须在 `limit/top_k` 前完整下推
+    `FilterExpr`；UnitReader 的真源复核只做纵深防御，不能补回已被截断的候选。
+11. **系统谓词不可被用户逻辑稀释**：lifecycle / valid-time / event-time 谓词与用户
+    `filters` 以外层 `AND` 合并，用户表达式内部的 `OR` / `NOT` 不能绕过系统约束。
 
 ## 接口契约
 
@@ -65,7 +69,7 @@ QueryParser.parse(query) → ParsedQuery
 → 若 ParsedQuery.raw 为空则短路返回空结果
 → 并行 Recaller[i].recall(scope, parsed_query, recall_k) → list[list[ScoredUnit]]（超采样）
 → Fuser.fuse(parsed_query, candidates) → list[ScoredUnit]
-→ 截断精排预算 → UnitReader 点读 MemoryUnit → 有效性过滤（lifecycle/as_of/event-time/filters）
+→ 截断精排预算 → UnitReader 点读 MemoryUnit → 真源复核（lifecycle/valid-time/event-time/filters）
 → 可选 Reranker 精排 → 相关性阈值过滤（结果数可 < top_k）→ 截断 top_k
 → Discloser.disclose(parsed_query, candidates, units, level, max_tokens) → list[RetrievedItem]
 → 组装 RetrievalResult（items + trajectory）
@@ -82,6 +86,23 @@ QueryParser.parse(query) → ParsedQuery
 `raw` 表示进入检索链路的规范化 query 文本，不要求逐字等于调用方传入的
 `RetrievalQuery.text`。默认 `simple` 实现会先剥除上游包装噪声（如 UTC 时间戳、
 `Sender (untrusted metadata)` 元数据行），再基于清洗后的文本产生分词、向量和时间窗。
+
+### 过滤表达式
+
+`RetrievalQuery.filters` 的内核类型是 `FilterExpr | None`：
+
+- `FilterClause(field, op, value)` 表示叶子谓词；
+- `FilterGroup(logic, children)` 表示可嵌套的 `AND` / `OR` / `NOT`；
+- 旧 `list[FilterClause]` 在查询对象边界规范化为 `AND`；
+- dict DSL 仅作为 API / SDK 兼容输入，在进入检索内核前转换为 `FilterExpr`；
+- scope 字段不得进入 filters，隔离仍由 `scope: Scope` 专用入参保证。
+
+metadata 比较保留 JSON 原生类型。查询侧不做 string / number / boolean 隐式互转；
+范围算子只接受有限 `int` / `float`，同一业务 key 的类型稳定性由调用方负责。
+
+历史 `as_of` 查询追加 `lifecycle != forgotten`、`t_valid <= as_of`、
+`t_invalid > as_of`。开放有效期在索引中投影为 `T_INVALID_OPEN`，真源仍保持
+`t_invalid=None`；UnitReader 按真源 `[t_valid, t_invalid)` 区间复核。
 
 ### Recaller（`recaller.py`）
 
@@ -118,7 +139,7 @@ QueryParser.parse(query) → ParsedQuery
 | 字段 | 类型 | 默认 | 语义 |
 |------|------|------|------|
 | `text` | str | "" | 自然语言查询 |
-| `filters` | list[FilterClause] | [] | 标签/元数据前置过滤（AND 组合） |
+| `filters` | FilterExpr \| None | None | 标签/元数据硬过滤；支持 AND / OR / NOT 树 |
 | `as_of` | datetime \| None | None | valid-time 回溯点 |
 | `top_k` | int | 10 | 返回条数上限（经相关性阈值后实际可少于此数） |
 | `disclosure` | DisclosureLevel | L0 | 结果披露层级 |
@@ -140,7 +161,7 @@ QueryParser.parse(query) → ParsedQuery
 | `keywords` | list[str] | 抽取的关键词 |
 | `entities` | list[Entity] | 实体（图通道用） |
 | `vector` | list[float] | query 向量 |
-| `scalar_filters` | list[FilterClause] | 硬前置过滤谓词 |
+| `scalar_filters` | FilterExpr \| None | 已规范化的硬前置过滤谓词 |
 | `as_of` | datetime \| None | valid-time 回溯 |
 | `time_from` | datetime \| None | event-time 下界 |
 | `time_to` | datetime \| None | event-time 上界 |

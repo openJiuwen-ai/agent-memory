@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/ingest/ |
-| 最近一次修订日期 | 2026-06-23 |
+| 最近一次修订日期 | 2026-07-27 |
 
 | 关联特性文档 | docs/features/F01-system-spec-design.md |
 ## 范围 / 边界
@@ -79,7 +79,7 @@ Source.fetch() → list[RawPayload]
 | `modality` | Modality | 来源模态 |
 | `data` | bytes | 原始二进制内容 |
 | `uri` | str | 外部来源 URI/路径 |
-| `metadata` | dict[str, str] | 附加元数据 |
+| `metadata` | dict[str, Any] | 附加元数据；JSON 标量原生类型由接入链路透传 |
 | `occurred_at` | datetime \| None | 事件发生时间 |
 
 ### Modality（`common/type_def/memory.py`）

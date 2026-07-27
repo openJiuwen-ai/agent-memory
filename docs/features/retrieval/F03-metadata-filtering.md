@@ -4,9 +4,9 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-07-03 |
-| 影响范围 | src/common/type_def/filter.py，src/retrieval/types.py，src/retrieval/retriever_impl/unit_reader.py，src/storage/{vector,fulltext,fusion}.py，docs/specs/S02-memory-api.md，docs/specs/S04-retrieval.md，docs/specs/S06-storage.md |
-| 测试基线 | 未执行（本文仅归档设计，未改代码） |
+| 日期 | 2026-07-27 |
+| 影响范围 | src/common/type_def/filter.py，src/common/type_def/memory.py，src/api/memory_api_impl/local_memory_api.py，src/construction/index_builder_impl/，src/retrieval/types.py，src/retrieval/retriever_impl/，src/storage/{vector,fulltext,fusion}.py，docs/specs/S02-memory-api.md，docs/specs/S04-retrieval.md，docs/specs/S06-storage.md |
+| 测试基线 | `PYTHONPATH=src uv run --no-sync pytest -q -m unit` 通过；Milvus/Elasticsearch 集成测试通过；本特性变更的 Python 文件通过 `ruff check` |
 | Refs | — |
 
 > 本文归档 agent-memory 的 metadata 过滤设计。目标是让 `filters` 支持类似 DSL 的树形逻辑表达，同时保持 scope 过滤仍由现有 scope 链路负责，避免把租户、用户、agent、session 隔离语义混进 metadata filter。
@@ -15,7 +15,7 @@
 
 ## 背景
 
-当前检索过滤模型是扁平结构：
+落地前的检索过滤模型是扁平结构：
 
 - `RetrievalQuery.filters: list[FilterClause]`
 - 多个 `FilterClause` 之间隐式为 `AND`
@@ -190,18 +190,57 @@ Store.search(scope, query)
 
 这些字段如果需要参与隔离，应进入 `Context.scope` 或对应的 scope 类型，而不是进入 `filters`。
 
-### 6. 后置复核必须支持完整表达式
+### 6. 生产 Store 完整下推，UnitReader 做纵深复核
 
-无论 Store 是否能下推完整过滤条件，`UnitReader` 都需要使用同一套 evaluator 对完整 `FilterExpr` 复核。
+向量和全文生产 Store 必须在 `limit/top_k` 截断前完整下推 `FilterExpr`；否则先取
+未过滤 top-k 再做后置过滤，会漏掉排序靠后但满足条件的真实命中。`UnitReader`
+仍使用同一套 evaluator 对完整表达式复核，用于防御索引滞后和后端语义偏差，但它
+只能保证最终返回项不误召，不能找回已被 top-k 截断的候选。
 
-执行顺序保持当前思路：
+执行顺序：
 
 1. API / SDK 输入规范化为 `FilterExpr`
 2. `QueryParser` 把 `filters` 放入解析结果
-3. Store 在自身能力范围内下推过滤条件
-4. `UnitReader` 点读真源后执行完整过滤表达式
+3. lifecycle、valid-time、event-time 等系统谓词作为外层 `AND` 与用户表达式合并
+4. Milvus / Elasticsearch 在 top-k 截断前完整下推合并后的表达式
+5. `UnitReader` 点读真源后执行完整过滤表达式
 
-正确性以 UnitReader 真源复核为准。Store 下推只是性能优化，不能成为唯一正确性边界。
+图和内存实现不属于当前生产过滤保证范围；它们可依赖 UnitReader 做返回精度复核，
+但不保证过滤条件下的 top-k 完整性。
+
+### 7. metadata 保留 JSON 原生类型，不做查询侧隐式转换
+
+`MemoryUnit.metadata`、`RawPayload.metadata`、`Document.metadata` 和
+`VectorRecord.metadata` 统一使用 `dict[str, Any]`。写入和更新边界只接受 JSON
+标量（string / number / boolean / null）或字符串数组，并拒绝与系统索引字段同名的
+保留 key。索引构建直接复制业务 metadata，再用真源系统字段覆盖保留字段，不再把
+业务值统一字符串化。
+
+查询侧同样不根据 metadata 样本或外部 schema 做隐式转换：
+
+- `int` 与有限 `float` 视为同一数值类别，可用于范围比较；
+- string、number、boolean 之间不互转；
+- 范围算子的查询值必须是有限数值；
+- `IN` / `NOT_IN` 的元素必须属于同一类型类别。
+
+因此同一个业务 key 的类型稳定性由调用方负责。当前不引入独立
+`metadata_schema`，也不在查询时猜测 `"8"` 应解释为字符串还是数字，避免静默改变
+业务语义。
+
+### 8. valid-time 开放区间使用索引哨兵
+
+真源中 `Temporal.t_invalid is None` 表示开放有效期。由于缺失字段无法满足
+`t_invalid > as_of` 的后端谓词，索引投影将其写为 `T_INVALID_OPEN`
+（9999-12-31T23:59:59Z 的 epoch 毫秒）；真源仍保留 `None`。
+
+历史查询把以下系统谓词作为外层 `AND` 下推，用户表达式中的 `OR` 不能稀释它们：
+
+- `lifecycle != forgotten`
+- `t_valid <= as_of`
+- `t_invalid > as_of`
+
+`UnitReader.valid_at` 直接读取真源 `[t_valid, t_invalid)` 区间；调用方显式过滤
+`t_invalid` 时，后置 evaluator 则使用与索引一致的哨兵投影，避免下推和复核语义分叉。
 
 ## 示例
 
@@ -264,10 +303,15 @@ filters = {
 - **直接把内核 filters 改成 `dict[str, Any]`**：被拒。dict 适合 API 输入，不适合作为检索内核契约；内核应消费类型稳定的 `FilterExpr`。
 - **把 scope 编进 metadata filter**：继续拒绝。scope 是隔离轴，不是业务 metadata；混进 filter 会削弱存储层强制隔离，也破坏现有 scope 链路的不变量。
 - **只在 Store 下推，不做 UnitReader 复核**：被拒。索引字段可能滞后，不同后端过滤语义也可能不同；真源复核是最终正确性边界。
+- **查询时按 schema 或样本自动转换字符串数值**：被拒。当前没有中央 metadata
+  schema，猜测转换会让 `"001"`、`"true"` 等业务值产生歧义；调用方应按写入类型
+  构造过滤值。
+- **开放 `t_invalid` 在索引中保持缺失**：被拒。生产后端对缺失字段执行范围谓词会
+  排除记录，历史查询因此系统性漏召仍有效记忆。
 
 ## 验证
 
-落地实现时应补以下测试基线：
+已覆盖以下测试基线：
 
 - `tests/unit/common/test_filters.py`
   - `list[FilterClause]` 规范化为 `AND` 组
@@ -277,19 +321,33 @@ filters = {
 - `tests/unit/retrieval/test_unit_reader.py`
   - `AND` / `OR` / `NOT` 嵌套复核
   - 旧的扁平 filters 行为保持兼容
-- `tests/unit/storage/`
-  - Store 能接收新的 `FilterExpr`
-  - Store 忽略或只部分下推时，UnitReader 后置复核仍保证结果正确
+- `tests/unit/storage/test_filter_compilers.py`
+  - Milvus / Elasticsearch 完整编译 AND / OR / NOT、集合和数值范围
+  - 系统谓词与用户表达式保持外层 AND
+- `tests/unit/construction/test_index_builder.py`
+  - 业务 metadata 原生类型写入索引
+  - `t_invalid=None` 投影为 `T_INVALID_OPEN`
+- `tests/integration/storage/test_integration_backends.py`
+- `tests/integration/storage/test_integration_fulltext.py`
+  - 真实 Milvus / Elasticsearch 在 top-k 前执行过滤
 
 文档落地对应命令：
 
 ```bash
-pytest tests/unit/common tests/unit/retrieval tests/unit/storage
-ruff check
+PYTHONPATH=src uv run --no-sync pytest -q -m unit
+PYTHONPATH=src uv run --no-sync pytest -q \
+  tests/integration/storage/test_integration_backends.py \
+  tests/integration/storage/test_integration_fulltext.py
+git diff --name-only -z HEAD -- '*.py' | xargs -0 uv run --no-sync ruff check
 ```
 
 ## 已知遗留
 
-- 当前代码仍是 `filters: list[FilterClause]`，落地时需要先增加 `FilterGroup` / `FilterExpr`，再迁移 `RetrievalQuery`、`ParsedQuery`、Store query 类型和 UnitReader evaluator。
-- API / SDK 的 dict DSL 需要在 specs 中同步定义输入格式和错误语义。
-- 生产 Store 的复杂表达式下推能力可以分阶段实现，但 UnitReader 必须先支持完整表达式复核。
+- 当前不维护中央 metadata schema，也不阻止同一业务 key 在不同记忆间发生类型漂移；
+  调用方须保持同 key 类型稳定，不可比记录按不匹配处理。
+- 当前态查询的索引前置谓词只包含 lifecycle；未来生效或已经过期但仍为 ACTIVE 的记录
+  会被 UnitReader 正确剔除，但可能先占用召回预算，因而在使用 TTL/未来
+  `t_valid` 时仍有 top-k 完整性风险。
+- `T_INVALID_OPEN` 定义了历史查询的最大支持边界；`as_of` 达到或超过该哨兵时，开放
+  有效期记录无法满足严格大于谓词。
+- 图和测试用内存后端未实现生产级完整下推；当前部署未启用图通道，内存后端只用于测试。

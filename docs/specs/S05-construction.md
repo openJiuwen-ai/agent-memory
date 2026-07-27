@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/construction/ |
-| 最近一次修订日期 | 2026-07-28 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/common/F01-memory-layer.md, docs/features/F02-cc-memory-compat.md |
+| 最近一次修订日期 | 2026-07-29 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/common/F01-memory-layer.md, docs/features/retrieval/F03-metadata-filtering.md, docs/features/F02-cc-memory-compat.md |
 
 ## 范围 / 边界
 
@@ -34,12 +34,23 @@
 4. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
 5. **所有算子必须实现 `operator_type()` 和 `health()`**：继承自 `ConstructionOperator`。
 6. **构建与存储解耦**：算子负责构建逻辑（生成索引投影），持久化由注入的 Store 承担。
-7. **scope 原生隔离**：构建索引记录时把来源 `MemoryUnit.scope` 落到记录的专用 `scope` 字段（`VectorRecord`/`Document`/`Node` 等），使检索得以按 scope 原生隔离。
+7. **scope 原生隔离**：构建索引时将来源 `MemoryUnit.scope` 作为 Store 方法的显式
+   入参下推；`VectorRecord` / `Document` / `Node` 等记录结构不混入 scope 字段。
 8. **去重召回与判定分离**：去重召回（用哪个索引）由 `Dedup` 接口承担，判定（ADD/UPDATE/SUPERSEDE/NOOP）与落盘由 Evolver 实现承担——`OrchestratingEvolver._evolve_extract`（legacy，`_dedup_batch` 判定+落盘耦合）或 `DynamicEvolver._evolve_extract`（dynamic，consolidate 只判定、落盘延后到 reflect 之后）。装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`。
 9. **构建层不依赖 control**：`DynamicEvolver`/`OrchestratingEvolver` 的 SUPERSEDE 与 FORGET 直接通过 `KVStore.update` 完成，不经 `LifecycleManager`。
 10. **Dedup 与 IndexBuilder 共享底层 Store**：去重召回检索的是已索引内容，`Dedup` 实现取的 `VectorStore`/`FulltextStore` 必须与 IndexBuilder 写入的是同一实例（按字段名缓存命中）。
-11. **分类结果落字段**：当前 Classifier 只更新 `MemoryUnit.tier` 与 `MemoryUnit.tags`，不约定额外分类 metadata 键。
-12. **consolidate 只判定不落盘**：`DynamicEvolver` 的 consolidate 步只产出 `ConsolidateDecision`（候选 + 决策 + 已有记忆 + 相似度），落盘延后到 reflect 之后统一执行。reflect 默认 no-op，子类可覆盖 `_reflect_step`。
+11. **派生 metadata 键保持类型稳定**：当前 Classifier 只更新
+    `MemoryUnit.tier` / `MemoryUnit.tags`，不约定额外分类 metadata 键；
+    LLM Extractor / LLM Abstractor 写出 `metadata.confidence` 时使用浮点字符串，
+    非 LLM 实现不保证存在该键。Evolver 写回 `metadata.dedup_similarity`、
+    `DeleteMode.DOWNWEIGHT` 写回 `metadata.importance` 时也使用浮点字符串。
+    查询侧不对这些键做隐式类型转换。
+12. **consolidate 只判定不落盘**：`DynamicEvolver` 的 consolidate 步只产出
+    `ConsolidateDecision`（候选 + 决策 + 已有记忆 + 相似度），落盘延后到
+    reflect 之后统一执行。reflect 默认 no-op；当前只有对子候选的原地修改能影响落盘。
+13. **索引投影保留业务 metadata 类型**：Vector/Fulltext IndexBuilder 先复制
+    `MemoryUnit.metadata`，再用系统真源字段覆盖保留 key；时间投影为 epoch 毫秒，
+    `t_invalid=None` 仅在索引中写为 `T_INVALID_OPEN`，不改写真源。
 
 ## 接口契约
 
@@ -74,9 +85,10 @@ LLM 抽取只合并同一实体同一关系或同一事件。派生单元的 L2 
 同批合法候选继续保留。单个子批失败不阻断其它子批；仅当整次抽取没有产生任何可用候选
 时向上抛出首个错误，以区别于模型明确返回合法 `[]`。
 
-动态实现识别 `_extract_prompt_<strategy>`。`infer=true` 仍是 write 触发抽取的条件；
-每个非空自定义策略执行一次 LLM 调用。metadata 中 `_extract_prompt_<strategy>` 的值是
-prompt 的 **key**（引用 yml `prompts.extract` 段的命名 prompt），运行时由
+动态实现识别 `_extract_prompt_<strategy>`。普通 write 路径以 `infer=true` 触发抽取，
+procedural write 或显式 `evolve(EXTRACT)` 也会进入同一 Extractor；每个非空自定义策略
+执行一次 LLM 调用。metadata 中 `_extract_prompt_<strategy>` 的值是 prompt 的
+**key**（引用 yml `prompts.extract` 段的命名 prompt），运行时由
 `PromptRegistry` 按 `phase=extract + key` 查真实文本作为 system prompt 发给 LLM；
 registry 未配置或 key 缺失时回退把值本身当文本用（兼容内联文本）。响应格式由 prompt
 自身约定，调用方在 prompt 文本里写清。`DynamicLLMExtractor` 默认按 JSON 解析，并开放
@@ -98,12 +110,14 @@ Extractor。
 
 1. **extract**：委托父类持有的 `Extractor.extract`，产出派生候选；把源 unit 的 consolidation/reflect prompt key 透传给候选；调 `_annotate_layers` 标注 L0/L1。
 2. **consolidate（只判定不落盘）**：对每个候选调 `Dedup.recall` 召回已有记忆，按相似度阈值 + LLM 判定产出 `ConsolidateDecision`（候选 + `DedupDecision` + 已有记忆 + 相似度）。无命中 → ADD；高相似度（≥ `dedup_high_similarity`）→ NOOP；中段（`dedup_medium_similarity` ~ high）→ 查 `PromptRegistry` 取 consolidate prompt 调 LLM 判定；无 prompt 或 LLM 失败 → 回退规则。
-3. **reflect（默认 no-op）**：基类 `_reflect_step` 直接返回候选；子类可覆盖 `_reflect_step` 以在落盘前做反思修正。
+3. **reflect（默认 no-op）**：基类 `_reflect_step` 直接返回候选；子类可覆盖
+   `_reflect_step` 在落盘前原地修正候选。当前持久化仍读取
+   `ConsolidateDecision.candidate`，替换候选对象不会生效。
 4. **落盘**：按每个 `ConsolidateDecision.decision` 执行 ADD/UPDATE/SUPERSEDE/NOOP——ADD/SUPERSEDE 调 `KVStore.insert` + `IndexBuilder.build`，UPDATE 调 LLM 合并内容后 `KVStore.update` + `IndexBuilder.update`，NOOP 跳过。
 
 **procedural 路径**：`_evolve_extract` 检测到 procedural=true 时 `super()._evolve_extract(units)` 走父类行为（不收集 context、不判定、直接落盘）——procedural 语义是"记成一条 how-to"，无需动态判定。
 
-**PromptRegistry**（`prompt_registry.py`）：从 yml 顶层 `prompts` 段加载的命名 prompt 文本，按 `phase + key` 查询。metadata 只写 prompt 的 **key**（引用 yml 命名 prompt），运行时按 key 查真实文本。三步（extract/consolidate/reflect）各按对应 phase 查；extract 步的 registry 由 `ExtractorProducer._build` 注入 `DynamicLLMExtractor`，consolidate/reflect 步的 registry 由 `DynamicEvolver._build` 注入。两者都从 `ctx.globals["prompts"]` 加载，共享同一份 yml `prompts` 段。phase 常量：`PHASE_EXTRACT` / `PHASE_CONSOLIDATE` / `PHASE_REFLECT`。
+**PromptRegistry**（`prompt_registry.py`）：从 yml 顶层 `prompts` 段加载的命名 prompt 文本，按 `phase + key` 查询。metadata 只写 prompt 的 **key**（引用 yml 命名 prompt），运行时按 key 查真实文本。extract 步的 registry 由 `ExtractorProducer._build` 注入 `DynamicLLMExtractor`；consolidate 步的 registry 由 `DynamicEvolver._build` 注入。reflect key 当前只透传给候选，默认实现不查询 registry，子类可按 `PHASE_REFLECT` 扩展。两个 builder 都从 `ctx.globals["prompts"]` 加载，共享同一份 yml `prompts` 段而非同一 registry 实例。
 
 **prompt key 透传**：源 unit 的 `_consolidation_prompt_<strategy>` / `_reflect_prompt_<strategy>` 由 `copy_consolidation_prompts` / `copy_reflect_prompts` 透传给派生候选，供后续步骤按 key 查 PromptRegistry。`_extract_prompt_<strategy>` 由调用方在 write 时直接传入，extract 步就地消费。
 
@@ -233,7 +247,7 @@ MemoryUnit
 | `provenance` | list[str] | 演进血缘（多→一）：由哪些 unit 抽取/升华/合并而来 |
 | `supersedes` | str | 版本链（一→一）：本版取代的上一版 id（空=首版） |
 | `tags` | list[str] | 标签（检索前置过滤用） |
-| `metadata` | dict[str, str] | 元数据（importance/confidence/freshness/classify_source 等） |
+| `metadata` | dict[str, Any] | 元数据（保留 JSON 标量原生类型） |
 | `lifecycle` | LifecycleState | 生命周期状态 |
 
 **注**：`MemoryUnit.content` / `assets` / `source` 是基于 segments 的只读合并视图，非独立字段。
@@ -246,7 +260,7 @@ MemoryUnit
 | `target_id` | str | 关联终点（记忆单元/实体 id） |
 | `relation` | str | 关系类型（caused_by / refers_to / corefers ...） |
 | `score` | float | 关联置信度 |
-| `metadata` | dict[str, str] | 附加信息 |
+| `metadata` | dict[str, Any] | 附加信息 |
 
 ### Segment（`common/type_def/memory.py`）
 

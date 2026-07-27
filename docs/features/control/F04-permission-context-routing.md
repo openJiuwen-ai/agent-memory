@@ -4,9 +4,9 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-07-17 |
+| 日期 | 2026-07-27 |
 | 影响范围 | `src/control/permission.py`、`src/control/types.py`、`src/control/permission_impl/`、`src/control/engine.py`、`src/api/memory_api_impl/local_memory_api.py`、`docs/specs/S03-memory-manage.md` |
-| 测试基线 | `python3 -m compileall -q src/control src/api tests/unit/control/test_permission_context_routing.py tests/unit/api/test_build_kernel_config.py` 通过；`PYTHONPATH=src python3` 权限路由烟测通过；当前环境缺少 `pytest` / `ruff` 模块 |
+| 测试基线 | `PYTHONPATH=src uv run --no-sync pytest -q tests/unit/control/test_permission_context_routing.py tests/unit/control/test_pipeline.py tests/unit/api/test_handler_identity_split.py tests/unit/api/test_write_reserved_metadata.py` 通过；本特性变更的 Python 文件通过 `ruff check` |
 
 ## 背景
 
@@ -32,12 +32,25 @@ def check(
 
 API 层的上下文来源：
 
-1. `write`：从入参 `metadata["memory_type"]`、`metadata["pipeline"]`、`tags` 构造。
-2. `recall`：从 `Context.extensions["memory_type"]` / `["pipeline"]` 构造，等值 filter 作为 memory_type 兜底。
+1. `write`：从入参 `metadata["memory_type"]`、`metadata["pipeline"]`、`tags` 构造；
+   业务 metadata 在真源中保留原生类型，进入 PermissionContext 的路由值才规范为字符串。
+2. `recall`：先从规范化 `FilterExpr` 提取逻辑上强制的唯一等值，再由
+   `Context.extensions[route_key]` 的非空值覆盖。OR 多值、NOT、AND 冲突不产生路由值。
+   该取值规则与执行侧 `MemoryPipeline` 一致。
 3. `get/update`：先做基础 scope 门槛，再调用 `Engine.permission_context_for_unit` 从真源解析 unit 元数据，再做类型化权限检查。
 4. `delete`：调用 `Engine.permission_contexts_for_delete` 解析 selector 命中的候选 unit，逐条做 DELETE 权限检查，全部通过后才执行删除。
 
-新增 `permission_impl.routing_permission_manager`。它不自行定义授权语义，只按 `PermissionContext` 选择一个已配置的 `PermissionManager` delegate。`grant` / `revoke` 广播给全部 delegate，保证授权记录不会因为调用方不了解路由而落错后端。
+新增 `permission_impl.routing_permission_manager`。它不自行定义授权语义，只按
+`PermissionContext` 选择一个已配置的 `PermissionManager` delegate。授权路由只接受
+`routes` 中显式声明的业务值；直接传 policy 名或未知值均落 `fallback`，避免调用方
+自行挑选审查策略。`fallback` 承接路由值缺失的请求，装配期禁止配置为
+`allow_all`，必须是最小权限策略。`grant` / `revoke` 广播给全部 delegate。
+
+对 recall，仅选对 delegate 仍不足以防越权：API 会通过
+`PermissionManager.routing_fields()` 获取授权所依据的字段，把该路由值作为系统
+`FilterClause(EQ)` 回注 `RetrievalQuery.filters`，并与用户表达式做外层 `AND`。
+因此按 `memory_type=episodic` 获得的授权只能读取同类型数据，不能再用另一组 filters
+指向 `coding` 记忆。
 
 ## 拒绝的方案
 
@@ -52,14 +65,16 @@ API 层的上下文来源：
 新增 `tests/unit/control/test_permission_context_routing.py`：
 
 - `write` 按请求 metadata 的 `memory_type` 路由。
-- `recall` 按 `Context.extensions["memory_type"]` 路由。
+- `recall` 的 extensions 与等值 filter 使用同一优先级解析，并把授权路由值回注数据过滤。
+- 未声明、未知路由值和直接 policy 名均落最小权限 fallback。
+- `allow_all` 作为 routing fallback 在装配期失败。
+- OR/NOT/冲突 filter 不会被误判为强制路由等值。
 - `get` 按真源中已保存的 unit `memory_type` 路由。
 - `delete` 对 selector 命中的 unit 逐条按真源 `memory_type` 鉴权。
-
-当前环境缺少 `pytest` / `ruff`，已用 `compileall` 和直接烟测验证关键路径。
 
 ## 已知遗留
 
 - delete 按 selector 预解析候选上下文会扫描 KV；大规模后端需要更高效的 metadata-only 查询接口。
 - audit/admin/job 权限仍走全局或 scope 级上下文，没有按 memory_type 分流。
-- `routing` 权限后端的 route key 当前只支持 `memory_type`、`pipeline`、`resource_type` 或 metadata 字符串等值。
+- `routing` 权限后端的 route key 当前只支持 `memory_type`、`pipeline`、
+  `resource_type` 或可规范为字符串的 metadata 等值。

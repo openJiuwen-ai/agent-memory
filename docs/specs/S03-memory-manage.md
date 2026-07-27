@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/control/ |
-| 最近一次修订日期 | 2026-07-25 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/F02-cc-memory-compat.md |
+| 最近一次修订日期 | 2026-07-29 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/F02-cc-memory-compat.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -40,7 +40,14 @@
 10. **所有算子必须实现 `operator_type()` 和 `health()`**：继承自 `ControlOperator`，自描述 + 存活探测。
 11. **自演进由控制层调度、构建层执行**：控制层只提交任务、管理通道和任务状态；抽取、升华、关联、冲突消解与索引维护逻辑归构建层。
 12. **Pipeline 只做跨层 profile 选择**：`MemoryPipeline` 可以选择不同的构建/查询组件绑定，但不得实现抽取、索引、检索算法；construction/retrieval 不反向依赖 control。
-13. **权限上下文由 API/Engine 解析，不信任调用方声明**：write/recall 可直接从请求参数构造 `PermissionContext`；get/update/delete 这类已有 unit 操作必须由 Engine 从真源元数据解析 memory_type/tags 后再鉴权。
+13. **权限上下文由 API/Engine 解析，不信任调用方声明**：write/recall 可从请求参数
+    构造 `PermissionContext`；get/update/delete 这类已有 unit 操作必须由 Engine
+    从真源元数据解析 memory_type/tags 后再鉴权。
+14. **权限路由与执行路由同源但职责独立**：两者对 recall 都使用
+    extensions 优先、FilterExpr 强制唯一等值兜底的取值规则；PermissionManager 选择
+    授权策略，MemoryPipeline 选择执行组件，互不代替。
+15. **路由授权绑定数据范围**：路由型权限根据某字段授权后，API 必须把同一值回注为
+    系统过滤谓词；routing fallback 必须是最小权限策略，不得使用 `allow_all`。
 
 ## 接口契约
 
@@ -61,7 +68,7 @@ class ControlOperator(ABC):
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `write` | `async (content, scope, source, *, assets, tags, metadata, occurred_at) -> list[MemoryUnit]` | 规约→可选抽取/分类→落盘+建索引；`infer=true` 时返回派生结果，否则处理原始单元（直写不去重） |
+| `write` | `async (content, scope, source, *, assets, tags, metadata: dict[str, Any] \| None, occurred_at) -> list[MemoryUnit]` | 规约→可选抽取/分类→落盘+建索引；`infer=true` 时返回 `created_ids` 对应的派生结果，否则处理原始单元（直写不去重） |
 | `recall` | `async (scope, query: RetrievalQuery) -> RetrievalResult` | 委托 Retriever 完整检索链路 |
 | `permission_context_for_unit` | `async (unit_id, scope) -> PermissionContext` | 读取已有记忆的权限上下文，只返回 memory_type/tags/metadata 等鉴权元数据，不返回 content/assets |
 | `permission_contexts_for_delete` | `async (selector: DeleteSelector) -> list[PermissionContext]` | 解析 delete selector 命中的候选 unit 权限上下文，供 API 层逐条鉴权 |
@@ -76,7 +83,8 @@ class ControlOperator(ABC):
 Ingestor.ingest([RawPayload]) → list[MemoryUnit]
 → 将 content/assets 入参补入接入层产出的 MemoryUnit.segments，并补齐 tags
 → MemoryPipeline.select_for_write(units)  # 可选；未注入时使用 Engine 默认组件
-→ if metadata["procedural"] == "true" or metadata["infer"] == "true":
+→ if str((metadata or {}).get("procedural", "")).strip().lower() == "true"
+     or str((metadata or {}).get("infer", "")).strip().lower() == "true":
       选中 profile 的 Evolver.evolve(units, EXTRACT)
       # Evolver 实现决定 EXTRACT 路径：
       #   OrchestratingEvolver → _evolve_extract: extract→annotate→_dedup_batch(判定+落盘)
@@ -84,7 +92,7 @@ Ingestor.ingest([RawPayload]) → list[MemoryUnit]
   else:
       Classifier.classify(units)（可选）
       KVStore.insert + IndexBuilder.build  # 直写路径，不去重
-→ 返回本次 created_ids + updated_ids 对应单元；NOOP 可返回空
+→ 返回本次 created_ids 对应单元；UPDATE/NOOP 可返回空
 ```
 
 ### MemoryPipeline（`pipeline.py`）
@@ -132,7 +140,9 @@ pipeline:
 路由规则：
 
 - 写入侧读取 `MemoryUnit.metadata[route_key]`。
-- 查询侧优先读取 `RetrievalQuery.extensions[route_key]`，其次读取等值 filter 的 `route_key` 或 `metadata.<route_key>`。
+- 查询侧优先读取 `RetrievalQuery.extensions[route_key]`，其次从规范化
+  `FilterExpr` 提取逻辑上强制成立的 `metadata.<route_key>` 唯一等值；
+  `memory_type` 裸字段仅作为 `metadata.memory_type` 的旧输入别名。
 - `routes` 把路由值映射到 profile 名；未命中时若路由值本身是 profile 名则直接使用，否则退回 `fallback`。
 - 未配置 `pipeline.default` 时不启用 pipeline，行为等价旧单 pipeline；用户通过 YAML 显式声明后启用。
 
@@ -179,6 +189,7 @@ active → archived → forgotten
 | `grant` | `(grant: Grant) -> None` | 新增跨 scope 授权 |
 | `revoke` | `(grant: Grant) -> None` | 回收授权（幂等） |
 | `check` | `(actor: Scope, target: Scope, action: Action, context: PermissionContext \| None = None) -> bool` | 校验 actor 对 target 是否可执行 action；context 为资源类型、memory_type、pipeline、unit_id、tags 等可选上下文 |
+| `routing_fields` | `() -> tuple[str, ...]` | 返回本实现鉴权路由所依据的 metadata 字段；非路由实现返回空元组 |
 
 **check 规则**：
 1. `actor == Scope()`（platform admin）→ 全局通过
@@ -200,11 +211,19 @@ permission:
       fallback: standard
       routes:
         coding: strict
-  standard: allow_all
+  standard: sqlite
   strict: sqlite
 ```
 
-`routing` 不改变授权语义，只选择 delegate；`grant` / `revoke` 会广播给全部 delegate，避免调用方理解授权记录应落在哪个后端。
+`routing` 不改变授权语义，只选择 delegate；`grant` / `revoke` 会广播给全部
+delegate，避免调用方理解授权记录应落在哪个后端。路由值只接受 `routes` 中显式
+声明的业务值，未知值和直接 policy 名都落 `fallback`；`fallback` 在装配期禁止指向
+`allow_all`。
+
+recall 完成权限检查后，API 读取 `PermissionManager.routing_fields()`，把授权所依据
+的路由值作为等值系统谓词回注查询，并与用户 `FilterExpr` 做外层 `AND`。这保证
+“选择哪条权限策略”和“实际能读取哪类数据”使用同一个值，用户表达式中的 `OR`
+不能绕过该约束。
 
 ### Scheduler（`scheduler.py`）
 
