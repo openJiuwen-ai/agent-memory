@@ -241,7 +241,7 @@ def test_delete_by_path_clears_chunks_vec_fts_and_files(vi, tmp_path):
         assert vi.get_text("m1") is not None
         assert vi.get_file_hash_from_db(rel) is not None
 
-        vi.delete_by_path(rel)
+        await vi.delete_by_path(rel)
         assert vi.get_text("m1") is None
         assert vi.get_text("m2") is None
         assert vi.get_file_hash_from_db(rel) is None
@@ -886,7 +886,7 @@ def test_delete_by_path_tolerates_corrupt_chunks_vec(vi, tmp_path):
         # 触发 DELETE FROM chunks_vec 抛 OperationalError 的真实场景。
 
         # 修复前：此调用抛 sqlite3.OperationalError；修复后：记 warning，不抛
-        vi.delete_by_path(rel)
+        await vi.delete_by_path(rel)
 
         # chunks 主表和 files 表应正常清理完成（不被 vec 异常中断）
         assert vi.get_text("m1") is None
@@ -913,7 +913,7 @@ def test_delete_by_user_and_scope_tolerates_corrupt_chunks_vec(vi, tmp_path):
         vi.conn.execute("DROP TABLE IF EXISTS chunks_vec")
 
         # 批量 delete 路径，vec 损坏不应抛
-        vi.delete_by_user_and_scope("u1", "s1")
+        await vi.delete_by_user_and_scope("u1", "s1")
         assert vi.get_text("m1") is None
         assert vi.get_text("m2") is None
 
