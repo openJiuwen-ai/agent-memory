@@ -6,8 +6,7 @@
 |---|---|
 | 关联模块 | src/control/ |
 | 最近一次修订日期 | 2026-07-25 |
-
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/F02-cc-memory-compat.md |
 ## 范围 / 边界
 
 **管什么**：

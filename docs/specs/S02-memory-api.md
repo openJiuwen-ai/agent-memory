@@ -6,7 +6,7 @@
 |---|---|
 | 关联模块 | src/api/ |
 | 最近一次修订日期 | 2026-07-25 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/construction/F02-dynamic-extraction-consolidation.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/F02-cc-memory-compat.md |
 ## 范围 / 边界
 
 **管什么**：
