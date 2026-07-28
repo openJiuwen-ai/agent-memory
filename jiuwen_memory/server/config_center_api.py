@@ -257,10 +257,6 @@ def _config_param_value(env_key: str, default: Any = "") -> Dict[str, Any]:
 
 
 def _serialize_env_value(key: str, value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return str(value)
     text = "" if value is None else str(value).strip()
     if key in {
         "MEMORY_ENABLE_MIDDLE_MEMORY",
@@ -273,6 +269,10 @@ def _serialize_env_value(key: str, value: Any) -> str:
         if lowered not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
             raise ValueError(f"{key} 必须为布尔值")
         return "true" if lowered in {"true", "1", "yes", "on"} else "false"
+    if isinstance(value, bool):
+        raise ValueError(f"{key} 不接受布尔值")
+    if isinstance(value, (int, float)):
+        return str(value)
     if key in {
         "PORT",
         "MEMORY_MIDDLE_CHECK_INTERVAL",
@@ -335,7 +335,7 @@ def _admin_config_payload() -> Dict[str, Any]:
         "RERANK_THRESHOLD": 0.3,
         "RERANK_POOL_FACTOR": 3,
         "CRYPTO_KEY": "",
-        "MEMORY_ENABLE_MIDDLE_MEMORY": True,
+        "MEMORY_ENABLE_MIDDLE_MEMORY": False,
         "MEMORY_MIDDLE_CHECK_INTERVAL": 50,
         "MEMORY_ENABLE_FORGETTING": False,
         "MEMORY_FORGET_THRESHOLD": 0.15,

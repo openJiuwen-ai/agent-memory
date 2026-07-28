@@ -2603,7 +2603,7 @@ class LongTermMemory(metaclass=Singleton):
         comply with G.CLS.11 (avoid accessing protected members from outside
         the class).
         """
-        return self._dreaming_orchestrators
+        return dict(self._dreaming_orchestrators)
 
     async def stop_dreaming(self, scope_id: str | None = None, user_id: str | None = None) -> None:
         """

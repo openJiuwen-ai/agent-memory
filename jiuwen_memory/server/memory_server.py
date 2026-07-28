@@ -1,8 +1,6 @@
 import asyncio
-import json
 import os
 import sys
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -17,7 +15,6 @@ from jiuwen_memory.foundation.llm import BaseMessage
 from jiuwen_memory.foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
 from jiuwen_memory.memory_core.config.config import (
     AgentMemoryConfig,
-    DreamingConfig,
     MemoryEngineConfig,
     MemoryScopeConfig,
 )
@@ -177,7 +174,7 @@ async def _reload_memory_engine() -> None:
                 api_base=_env_value("API_BASE", ""),
                 verify_ssl=_bool_env("MODEL_SSL_VERIFY", False),
             ),
-            enable_middle_memory=_bool_env("MEMORY_ENABLE_MIDDLE_MEMORY", True),
+            enable_middle_memory=_bool_env("MEMORY_ENABLE_MIDDLE_MEMORY", False),
             middle_memory_check_interval=int(_env_value("MEMORY_MIDDLE_CHECK_INTERVAL", "50")),
             crypto_key=crypto_key_str.encode("utf-8") if crypto_key_str else b"",
         )
@@ -320,26 +317,6 @@ class BatchDeleteMemRequest(BaseModel):
     scope_id: Optional[str] = LongTermMemory.DEFAULT_VALUE
 
 
-class GetMessageByIdRequest(BaseModel):
-    message_id: str
-
-
-class StartDreamingRequest(BaseModel):
-    scope_id: Optional[str] = LongTermMemory.DEFAULT_VALUE
-    user_id: Optional[str] = LongTermMemory.DEFAULT_VALUE
-    enabled: bool = True
-    interval_seconds: int = 14400
-    min_session_rounds: int = 4
-    max_sessions_per_sweep: int = 10
-    max_compress_tokens: int = 30000
-    max_items_per_session: int = 5
-
-
-class StopDreamingRequest(BaseModel):
-    scope_id: Optional[str] = None
-    user_id: Optional[str] = None
-
-
 class GetVariablesRequest(BaseModel):
     names: Optional[List[str]] = None
     user_id: Optional[str] = LongTermMemory.DEFAULT_VALUE
@@ -432,7 +409,7 @@ async def startup_event():
                 verify_ssl=os.getenv("MODEL_SSL_VERIFY", "false").strip().lower() == "true"
             ),
             # 是否启用中期记忆；默认不启用，设为 true 时开启
-            enable_middle_memory=os.getenv("ENABLE_MIDDLE_MEMORY", "false").strip().lower() == "true"
+            enable_middle_memory=_bool_env("MEMORY_ENABLE_MIDDLE_MEMORY", False)
         )
 
         memory_engine.set_config(config)
@@ -774,100 +751,6 @@ async def batch_delete_mem_endpoint(request: BatchDeleteMemRequest):
         raise HTTPException(status_code=500, detail=f"Error batch deleting memory: {str(e)}") from e
 
 
-@app.post("/get_message_by_id/")
-async def get_message_by_id_endpoint(request: GetMessageByIdRequest):
-    """按消息 id 反查原始消息（role/content/timestamp）"""
-    try:
-        result = await memory_engine.get_message_by_id(request.message_id)
-        if result is None:
-            return {"found": False, "message_id": request.message_id}
-        msg, ts = result
-        return {
-            "found": True,
-            "message_id": request.message_id,
-            "role": msg.role,
-            "content": msg.content,
-            "timestamp": ts.isoformat() if ts else None,
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting message: {str(e)}") from e
-
-
-@app.post("/start_dreaming")
-async def start_dreaming_endpoint(request: StartDreamingRequest):
-    """Start cross-session dreaming consolidation for a (scope_id, user_id)."""
-    try:
-        config = DreamingConfig(
-            enabled=request.enabled,
-            interval_seconds=request.interval_seconds,
-            min_session_rounds=request.min_session_rounds,
-            max_sessions_per_sweep=request.max_sessions_per_sweep,
-            max_compress_tokens=request.max_compress_tokens,
-            max_items_per_session=request.max_items_per_session,
-        )
-        orch = await memory_engine.start_dreaming(
-            scope_id=request.scope_id,
-            user_id=request.user_id,
-            config=config,
-        )
-        return {"started": orch is not None, "scope_id": request.scope_id, "user_id": request.user_id}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error starting dreaming: {str(e)}") from e
-
-
-@app.post("/stop_dreaming")
-async def stop_dreaming_endpoint(request: StopDreamingRequest):
-    """Stop dreaming. With no args, stop everything; otherwise stop matching scope/user."""
-    try:
-        await memory_engine.stop_dreaming(scope_id=request.scope_id, user_id=request.user_id)
-        return {"success": True, "scope_id": request.scope_id, "user_id": request.user_id}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error stopping dreaming: {str(e)}") from e
-
-
-@app.get("/dreaming/status")
-async def dreaming_status_endpoint():
-    """List all dreaming orchestrators with checkpoint info."""
-    try:
-        out = []
-        for (scope_id, user_id), orch in memory_engine.dreaming_orchestrators.items():
-            h = orch.health
-            running = h.get("running", False)
-            interval = h.get("interval_seconds")
-            entry = {
-                "scope_id": scope_id,
-                "user_id": user_id,
-                "running": running,
-                "interval_seconds": interval,
-                "last_scan_ts": None,
-                "next_estimated_ts": None,
-                "scanned_sessions_count": 0,
-                "last_promoted_count": None,
-            }
-            if memory_engine.kv_store:
-                ckpt_key = f"dreaming/checkpoint/{scope_id}/{user_id}"
-                raw = await memory_engine.kv_store.get(ckpt_key)
-                if raw:
-                    data = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
-                    entry["last_scan_ts"] = data.get("last_scan_ts")
-                    entry["scanned_sessions_count"] = len(data.get("scanned_sessions", []))
-                    if entry["last_scan_ts"] and interval and running:
-                        try:
-                            last = datetime.fromisoformat(entry["last_scan_ts"])
-                            nxt = last + timedelta(seconds=float(interval))
-                            entry["next_estimated_ts"] = nxt.isoformat()
-                        except (ValueError, TypeError) as exc:
-                            memory_logger.warning(
-                                "Failed to compute next_estimated_ts for "
-                                "scope=%s user=%s: %s",
-                                scope_id, user_id, exc,
-                            )
-            out.append(entry)
-        return {"orchestrators": out}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting dreaming status: {str(e)}") from e
-
-
 @app.get("/health")
 async def health_check():
     """健康检查端点"""
@@ -910,10 +793,6 @@ async def root():
             "GET /logs/download",
             "GET /logs/files",
             "POST /get_user_mem_by_page_with_total/",
-            "POST /get_message_by_id/",
-            "POST /start_dreaming",
-            "POST /stop_dreaming",
-            "GET /dreaming/status",
             "GET /health"
         ]
     }

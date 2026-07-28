@@ -199,15 +199,17 @@ class SqlMessageStore(BaseMessageStore):
             clauses.append(table.c.scope_id == message_filter['scope_id'])
         if message_filter.get('session_id') is not None:
             clauses.append(table.c.session_id == message_filter['session_id'])
-        # 排除指定 scope（如中间产物 middle_term_memory），仅在未显式查询该 scope 时生效
+        # Exclude specified scopes (e.g. middle_term_memory intermediate products),
+        # only when the caller has not explicitly queried that scope.
         exclude_scopes = message_filter.get('exclude_scopes')
         if exclude_scopes:
-            from sqlalchemy import not_
             clauses.append(table.c.scope_id.notin_(exclude_scopes))
-        # NOTE: timestamp 列是 String(32)，存储值为 str(aware_datetime) 产物
-        # （空格分隔、含时区，如 '2026-01-01 00:01:00+00:00'）。比较必须是同格式
-        # 字符串，否则字典序错位（空格 0x20 < 'T' 0x54 会错误地排除下界）。
-        # 因此把 _parse_ts 的 datetime 结果用 str() 规范化成与存储一致的表示再绑定。
+        # NOTE: the timestamp column is String(32), storing str(aware_datetime)
+        # output (space-separated, with timezone, e.g. '2026-01-01 00:01:00+00:00').
+        # Comparisons must use the same string format, otherwise lexicographic
+        # ordering breaks (space 0x20 < 'T' 0x54 would incorrectly exclude the
+        # lower bound). Therefore _parse_ts datetime results are normalized via
+        # str() to match the stored representation before binding.
         start_time = self._parse_ts(message_filter.get('start_time'))
         if start_time is not None:
             clauses.append(table.c.timestamp >= str(start_time))
@@ -258,7 +260,8 @@ class SqlMessageStore(BaseMessageStore):
         """
         # Fast path: no time-range filter, no offset, and no exclude_scopes ->
         # keep the original equality-only code path so data-plane callers are untouched.
-        # exclude_scopes 需要 NOT IN 条件，get_with_sort 不支持，必须走 range path。
+        # exclude_scopes requires a NOT IN condition, which get_with_sort
+        # does not support — must take the range path.
         has_time_filter = (
             self._parse_ts(message_filter.get('start_time')) is not None
             or self._parse_ts(message_filter.get('end_time')) is not None
@@ -389,7 +392,7 @@ class SqlMessageStore(BaseMessageStore):
                 filters['user_id'] = message_filter['user_id']
             if message_filter.get('scope_id'):
                 filters['scope_id'] = message_filter['scope_id']
-            if message_filter.get('session_id'):
+            if message_filter.get('session_id') is not None:
                 filters['session_id'] = message_filter['session_id']
 
             messages = await self.sql_db_store.get_with_sort(

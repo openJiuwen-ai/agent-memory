@@ -125,8 +125,12 @@ class MessageManager:
         """
         try:
             return await self._store.get_message_by_id(msg_id)
-        except (ValueError, BaseError):
+        except ValueError:
             return None
+        except BaseError as e:
+            if e.status == StatusCode.MEMORY_GET_MEMORY_EXECUTION_ERROR:
+                return None
+            raise
 
     async def get_by_id(self, msg_id: str) -> Tuple[BaseMessage, datetime] | None:
         try:
