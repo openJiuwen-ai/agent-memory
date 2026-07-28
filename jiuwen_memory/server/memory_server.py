@@ -339,12 +339,70 @@ class SearchUserHistorySummaryRequest(BaseModel):
     threshold: Optional[float] = 0.3
 
 
+# page_size 入参校验常量
+DEFAULT_PAGE_SIZE = 10
+MAX_PAGE_SIZE = 100
+
+
 class GetUserMemByPageRequest(BaseModel):
     user_id: Optional[str] = LongTermMemory.DEFAULT_VALUE
     scope_id: Optional[str] = LongTermMemory.DEFAULT_VALUE
-    page_size: int = 10
+    page_size: int = DEFAULT_PAGE_SIZE
     page_idx: int = 1
     memory_type: Optional[str] = "UNKNOWN"  # 对应MemoryType枚举值
+
+    @field_validator("page_size", mode="before")
+    @classmethod
+    def _validate_page_size(cls, value):
+        """page_size 入参校验与兜底处理。
+
+        严格拒绝负数、零值及非数值类型：命中时记录日志并回退到默认值
+        DEFAULT_PAGE_SIZE；对超出 MAX_PAGE_SIZE 的极大值做上限钳制，
+        避免非法/越界参数透传给底层 Elasticsearch 触发 BadRequestError(400)，
+        继而被端点错误包装为 500 Internal Server Error 的问题。
+        """
+        # 缺省值 None → 默认
+        if value is None:
+            memory_logger.warning(
+                "page_size is None, fallback to default %d", DEFAULT_PAGE_SIZE
+            )
+            return DEFAULT_PAGE_SIZE
+
+        # bool 是 int 子类，先排除，视作非数值类型
+        if isinstance(value, bool):
+            memory_logger.warning(
+                "page_size got non-numeric type bool(%s), fallback to default %d",
+                value, DEFAULT_PAGE_SIZE,
+            )
+            return DEFAULT_PAGE_SIZE
+
+        # 尝试转为 int（兼容 "10" / 10.0 等数值形态）；失败则兜底
+        try:
+            numeric = int(value)
+        except (TypeError, ValueError):
+            memory_logger.warning(
+                "page_size got non-numeric value %r, fallback to default %d",
+                value, DEFAULT_PAGE_SIZE,
+            )
+            return DEFAULT_PAGE_SIZE
+
+        # 负数 / 零：拒绝并兜底
+        if numeric <= 0:
+            memory_logger.warning(
+                "page_size %d invalid (must be positive), fallback to default %d",
+                numeric, DEFAULT_PAGE_SIZE,
+            )
+            return DEFAULT_PAGE_SIZE
+
+        # 极大值：上限钳制，避免触发底层搜索引擎 size 上限
+        if numeric > MAX_PAGE_SIZE:
+            memory_logger.warning(
+                "page_size %d exceeds max %d, clamped to %d",
+                numeric, MAX_PAGE_SIZE, MAX_PAGE_SIZE,
+            )
+            return MAX_PAGE_SIZE
+
+        return numeric
 
     def get_memory_type_enum(self):
         """将字符串转换为MemoryType枚举"""
