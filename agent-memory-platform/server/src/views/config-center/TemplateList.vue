@@ -142,6 +142,7 @@
                 </el-button>
                 <el-button size="small" @click="openCopyPage(row)">复制</el-button>
                 <el-button size="small" @click="openEditPage(row)">编辑</el-button>
+                <el-button size="small" type="danger" @click="onDelete(row)">删除</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -259,7 +260,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
-import { listTemplates, applyTemplate } from '@/api/template'
+import { listTemplates, applyTemplate, deleteTemplate } from '@/api/template'
 import { getTenantList } from '@/api/tenant'
 import { listTenantScopeConfigs, syncTenantFromTemplate } from '@/api/tenant-scope-config'
 import type { Template, TemplateApplyResult, TemplateType, TemplateTenantUsage, TenantScopeConfig } from '@/types/config'
@@ -318,6 +319,19 @@ const loadTenants = async () => {
 
 const onCreate = () => {
   router.push('/config/templates/new')
+}
+
+const onDelete = async (row: Template) => {
+  try {
+    await ElMessageBox.confirm(`确定要删除模板 "${row.template_name}" 吗？`, '警告', { type: 'warning' })
+    await deleteTemplate(row.id)
+    ElMessage.success('删除成功')
+    loadList()
+  } catch (e: any) {
+    if (e !== 'cancel') {
+      ElMessage.error('删除失败: ' + (e?.message || e))
+    }
+  }
 }
 
 const openDetailPage = (row: Template) => {

@@ -19,7 +19,7 @@ import java.time.Instant;
 @TableName("config_templates")
 public class ConfigTemplateEntity {
 
-    @TableId
+    @TableId(type = com.baomidou.mybatisplus.annotation.IdType.INPUT)
     private String id;
 
     private String templateName;
