@@ -50,6 +50,11 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           target: env.VITE_BACKEND_API_BASE_URL || 'http://localhost:9000',
         },
+        '/ws': {
+          target: env.VITE_BACKEND_API_BASE_URL?.replace('http', 'ws').replace('https', 'wss') || 'ws://localhost:9000',
+          ws: true,
+          changeOrigin: true,
+        },
       },
     },
   }

@@ -9,7 +9,7 @@ export interface ApiResponse<T = any> {
   data: T
 }
 
-// 后端断开标志（防止重复跳转）
+// 后端断开标志（已废弃，WebSocket心跳监控已接管断连检测）
 let isBackendDisconnected = false
 
 const request = axios.create({
@@ -86,39 +86,14 @@ request.interceptors.response.use(
       } else if (status === 404) {
         ElMessage.error('请求的接口不存在，请检查API路径')
       } else if (status === 500) {
-        // 500 错误：记录详细信息用于调试
+        // 500 错误：仅提示，不清除登录状态
+        // WebSocket 心跳监控会自动检测后端断开并处理退出登录
         console.error('500 错误详情:', {
           message,
           error_code: error.code,
           error_message: error.message
         })
-        
-        // 简化逻辑：500 错误且可能是后端问题时，直接跳转登录页
-        // 这样可以确保后端断开时一定能检测到
-        if (!isBackendDisconnected) {
-          isBackendDisconnected = true
-          
-          // 清除登录状态
-          localStorage.removeItem('token')
-          localStorage.removeItem('username')
-          localStorage.removeItem('role')
-          localStorage.removeItem('tenantId')
-          localStorage.removeItem('scopeIds')
-          localStorage.removeItem('permissions')
-          
-          // 显示错误提示
-          ElMessage.error('后端服务异常，请检查后端是否正常运行')
-          
-          // 强制跳转到登录页（使用 window.location 确保一定能跳转）
-          setTimeout(() => {
-            window.location.href = '/login'
-          }, 500) // 延迟 500ms，让用户看到错误提示
-          
-          // 3秒后重置标志，允许下次检测
-          setTimeout(() => {
-            isBackendDisconnected = false
-          }, 3000)
-        }
+        ElMessage.error('后端服务异常，请检查后端是否正常运行')
       } else if (status === 400) {
         // 400 业务校验错误：不自动弹 toast，把 message 挂到 error 上，
         // 由页面自行决定展示方式（如 ElMessageBox 弹框），避免瞬时 toast 不易阅读。
@@ -128,36 +103,19 @@ request.interceptors.response.use(
       }
     } else if (error.request) {
       // 请求已发送但没有收到响应(后端断开/网络错误)
+      // 仅提示错误，不清除登录状态
+      // WebSocket 心跳监控会自动检测后端断开并处理退出登录
       console.error('后端服务连接失败:', error)
       
-      // 如果已经处理过后端断开，不再重复处理
-      if (isBackendDisconnected) {
-        return Promise.reject(error)
+      if (!isBackendDisconnected) {
+        isBackendDisconnected = true
+        ElMessage.error('后端服务已断开，请检查后端是否正常运行')
+        
+        // 3秒后重置标志，避免频繁提示
+        setTimeout(() => {
+          isBackendDisconnected = false
+        }, 3000)
       }
-      
-      // 标记后端已断开
-      isBackendDisconnected = true
-      
-      // 清除登录状态
-      localStorage.removeItem('token')
-      localStorage.removeItem('username')
-      localStorage.removeItem('role')
-      localStorage.removeItem('tenantId')
-      localStorage.removeItem('scopeIds')
-      localStorage.removeItem('permissions')
-      
-      // 显示错误提示
-      ElMessage.error('后端服务已断开，请检查后端是否正常运行')
-      
-      // 强制跳转到登录页（使用 window.location 确保一定能跳转）
-      setTimeout(() => {
-        window.location.href = '/login'
-      }, 500)
-      
-      // 3秒后重置标志，允许下次检测
-      setTimeout(() => {
-        isBackendDisconnected = false
-      }, 3000)
     } else {
       // 其他错误
       ElMessage.error(error.message || '请求失败')
