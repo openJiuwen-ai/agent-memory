@@ -203,7 +203,8 @@ _SOURCE_PREFIX = """\
 _SOURCE_ID_SHELL_RE = re.compile(r"^\s*\[ID:\s*(?P<id>[^\]]+)\]\s*$", re.IGNORECASE)
 
 # 批量提取的子批大小：把 accepted 拆成若干子批，每子批独立一次 LLM 调用。
-# 任一子批失败会显式向上抛出，避免把故障伪装成正常空抽取。
+# 单个子批失败与其它子批隔离；仅当整次抽取没有产生任何可用候选时向上抛错，
+# 避免把完全失败伪装成模型明确返回的正常空抽取。
 _EXTRACT_BATCH_SIZE = 8
 
 
@@ -353,12 +354,49 @@ class ExtractorImpl(Extractor):
             return []
 
         # Phase 2: LLM 提取（按子批拼 prompt 逐批调用）。
-        # 无效 JSON / 上游调用失败必须向调用方暴露，不能伪装成模型明确返回 []。
+        # 子批之间隔离失败；若仍有合法候选则保留部分成功，否则显式抛出首个错误，
+        # 不能把完全失败伪装成模型明确返回 []。
         # tier 与 tags 由 LLM 在此一并产出（同一 prompt），不再走 FeatureExtractor 富化。
         all_candidates: list[ExtractionCandidate] = []
+        successful_batches = 0
+        failed_batches: list[tuple[int, int, Exception]] = []
         for start in range(0, len(accepted), _EXTRACT_BATCH_SIZE):
             sub_batch = accepted[start:start + _EXTRACT_BATCH_SIZE]
-            all_candidates.extend(self._llm_extract_batch(sub_batch, context=context))
+            try:
+                batch_candidates = self._llm_extract_batch(sub_batch, context=context)
+            except Exception as exc:
+                failed_batches.append((start, len(sub_batch), exc))
+                logger.warning(
+                    "Extractor: sub-batch failed and was skipped "
+                    "(offset=%d, units=%d, error=%s: %s)",
+                    start,
+                    len(sub_batch),
+                    type(exc).__name__,
+                    exc,
+                )
+                continue
+            successful_batches += 1
+            all_candidates.extend(batch_candidates)
+
+        if failed_batches and not all_candidates:
+            first_error = failed_batches[0][2]
+            logger.error(
+                "Extractor: no usable candidates after %d successful and %d failed "
+                "sub-batches; re-raising first error %s: %s",
+                successful_batches,
+                len(failed_batches),
+                type(first_error).__name__,
+                first_error,
+            )
+            raise first_error
+        if failed_batches:
+            logger.warning(
+                "Extractor: completed with partial success: candidates=%d, "
+                "successful_sub_batches=%d, failed_sub_batches=%d",
+                len(all_candidates),
+                successful_batches,
+                len(failed_batches),
+            )
 
         logger.info(
             "Extractor: extracted %d candidates from %d units", len(all_candidates), len(accepted)
@@ -644,7 +682,15 @@ class ExtractorImpl(Extractor):
             details = "; ".join(invalid_reasons[:8])
             if len(invalid_reasons) > 8:
                 details += f"; +{len(invalid_reasons) - 8} more"
-            raise InvalidExtractionCandidateError(details)
+            if not candidates:
+                raise InvalidExtractionCandidateError(details)
+            logger.warning(
+                "Extractor: skipped %d invalid candidates while preserving %d valid "
+                "candidates: %s",
+                len(invalid_reasons),
+                len(candidates),
+                details,
+            )
 
         logger.info(
             "Extractor: from batch of %d units extracted %d candidates "
