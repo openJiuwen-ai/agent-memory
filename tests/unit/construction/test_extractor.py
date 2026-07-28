@@ -1,15 +1,21 @@
-"""Extractor 单元测试（14 个测试）。
+"""Extractor 单元测试。
 
 使用 MockLLM 隔离外部 LLM API 依赖。
 """
 
 import json
 
+import pytest
+
 from common.type_def import (
     LifecycleState,
     MemoryTier,
 )
-from construction.extractor_impl.llm_extractor import ExtractorImpl
+from construction.extractor_impl.llm_extractor import (
+    ExtractorImpl,
+    InvalidExtractionCandidateError,
+    InvalidExtractionJSONError,
+)
 from tests.unit.construction.fixtures import (
     MockLLM,
     create_test_unit,
@@ -172,8 +178,20 @@ def test_extract_batch():
     # 批量提取：全部 unit 拼一个 prompt 一次调用，MockLLM 一次响应返回含全部候选的 JSON 数组。
     # 每条候选的 source_id 回指对应源 unit（u1/u2/u3），实现会校验 source_id 在本批 unit 内。
     payloads = [
-        {"source_id": "u1", "target": "fact", "content": "用户偏好 Python", "evidence": "偏好", "confidence": 1.0},
-        {"source_id": "u2", "target": "event", "content": "系统报错", "evidence": "报错", "confidence": 0.9},
+        {
+            "source_id": "u1",
+            "target": "fact",
+            "content": "用户偏好 Python",
+            "evidence": "偏好",
+            "confidence": 1.0,
+        },
+        {
+            "source_id": "u2",
+            "target": "event",
+            "content": "系统报错",
+            "evidence": "报错",
+            "confidence": 0.9,
+        },
         {
             "source_id": "u3",
             "target": "preference",
@@ -369,10 +387,11 @@ def test_extract_confidence_filter():
     extractor = _make_extractor(
         [
             json.dumps(
-                [
-                    {
-                        "target": "fact",
-                        "content": "用户可能使用 Python",
+                    [
+                        {
+                            "source_id": "u1",
+                            "target": "fact",
+                            "content": "用户可能使用 Python",
                         "evidence": "可能",
                         "confidence": 0.3,
                     }
@@ -392,12 +411,12 @@ def test_extract_confidence_filter():
 
 
 def test_extract_llm_non_json():
-    """T-E-11: MockLLM 返回纯文本 → 解析失败，返回空 list。"""
+    """T-E-11: 非 JSON 是失败，不得伪装成模型明确返回空数组。"""
     extractor = _make_extractor(["This is not a JSON response"])
     units = [create_test_unit("u1", "用户偏好 Python")]
-    result = extractor.extract(units)
 
-    assert result == []
+    with pytest.raises(InvalidExtractionJSONError):
+        extractor.extract(units)
 
 
 # ---------------------------------------------------------------------------
@@ -420,11 +439,13 @@ def test_extractor_operator_type_and_health():
 
 
 def test_extract_prompt_includes_merge_rule():
-    """T-E-13a: system prompt 含同主题合并规则，引导 LLM 产粗粒度事实。"""
+    """T-E-13a: prompt 只允许同实体同关系或同事件合并。"""
     from construction.extractor_impl.llm_extractor import _EXTRACT_SYSTEM_PROMPT
-    # 合并规则关键词必须在 prompt 里（防止后续误删）
-    assert "MERGE same-topic" in _EXTRACT_SYSTEM_PROMPT
-    assert "coffee" in _EXTRACT_SYSTEM_PROMPT.lower()  # 咖啡合并示例
+
+    assert "SAME entity and SAME relationship" in _EXTRACT_SYSTEM_PROMPT
+    assert 'For "evidence", copy the smallest complete verbatim source span' in (
+        _EXTRACT_SYSTEM_PROMPT
+    )
     # 跨 source 不合并的约束
     assert "never merge across different sources" in _EXTRACT_SYSTEM_PROMPT
 
@@ -452,3 +473,91 @@ def test_extract_merged_topic_produces_one_unit():
     assert "不加糖" in result[0].content
 
 
+def test_extract_l2_is_compact_statement_with_source_reference():
+    """派生 L2 只保存紧凑陈述，通过 source_ref/provenance 回指来源。"""
+    source = "Alice owns two red bicycles and one blue bicycle."
+    statement = "Alice owns three bicycles."
+    extractor = _make_extractor([
+        json.dumps([{
+            "source_id": "u1",
+            "target": "fact",
+            "content": statement,
+            "evidence": "two red bicycles and one blue bicycle",
+            "confidence": 1.0,
+        }])
+    ])
+
+    result = extractor.extract([create_test_unit("u1", source)])
+
+    assert result[0].content == statement
+    assert "Source:" not in result[0].content
+    assert result[0].source_ref == "u1"
+    assert result[0].provenance == ["u1"]
+    assert result[0].metadata["extracted_statement"] == statement
+
+
+def test_extract_rejects_invalid_candidate_instead_of_partial_success():
+    extractor = _make_extractor([
+        json.dumps([
+            {
+                "source_id": "u1",
+                "target": "fact",
+                "content": "valid statement",
+                "confidence": 1.0,
+            },
+            {
+                "source_id": "missing",
+                "target": "fact",
+                "content": "invalid statement",
+                "confidence": 1.0,
+            },
+        ])
+    ])
+
+    with pytest.raises(InvalidExtractionCandidateError):
+        extractor.extract([create_test_unit("u1", "source")])
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        {},
+        {"source_id": "u1", "content": "statement"},
+        {"source_id": "u1", "content": "statement", "confidence": "nan"},
+    ],
+)
+def test_extract_rejects_missing_or_invalid_confidence(item):
+    extractor = _make_extractor([json.dumps([item])])
+
+    with pytest.raises(InvalidExtractionCandidateError):
+        extractor.extract([create_test_unit("u1", "source")])
+
+
+def test_extract_deduplicates_same_statement_within_source():
+    item = {
+        "source_id": "u1",
+        "target": "fact",
+        "content": "Alice owns three bicycles.",
+        "confidence": 1.0,
+    }
+    extractor = _make_extractor([json.dumps([item, item])])
+
+    result = extractor.extract([create_test_unit("u1", "source")])
+
+    assert len(result) == 1
+
+
+def test_extract_preserves_structured_record_target():
+    extractor = _make_extractor([
+        json.dumps([{
+            "source_id": "u1",
+            "target": "structured_record",
+            "content": "Sunday: Admon works from 8 a.m. to 4 p.m.",
+            "evidence": "Sunday | Admon | 8am-4pm",
+            "confidence": 1.0,
+        }])
+    ])
+
+    result = extractor.extract([create_test_unit("u1", "Sunday | Admon | 8am-4pm")])
+
+    assert result[0].metadata["target"] == "structured_record"

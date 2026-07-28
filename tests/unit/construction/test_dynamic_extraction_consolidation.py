@@ -22,6 +22,10 @@ from construction.evolver import EvolveMode, EvolverProducer
 from construction.evolver_impl.dynamic_evolver import DynamicEvolver
 from construction.extractor import Extractor
 from construction.extractor_impl.dynamic_llm_extractor import DynamicLLMExtractor
+from construction.extractor_impl.llm_extractor import (
+    InvalidExtractionCandidateError,
+    InvalidExtractionJSONError,
+)
 from construction.prompt_registry import (
     PHASE_CONSOLIDATE,
     PHASE_EXTRACT,
@@ -286,6 +290,48 @@ def test_dynamic_extractor_subclass_failure_isolated_per_strategy():
 
     assert len(result) == 1
     assert result[0].metadata["_extraction_strategy"] == "json"
+
+
+@pytest.mark.unit
+def test_dynamic_extractor_raises_when_every_strategy_payload_is_invalid():
+    source = _unit(
+        "source-1",
+        "原始内容",
+        {"_extract_prompt_broken": "broken_key"},
+    )
+    registry = PromptRegistry.from_dict(
+        {"extract": {"broken_key": "返回 JSON 数组"}}
+    )
+    extractor = DynamicLLMExtractor(
+        _ScriptedLLM(["not json"]),
+        _FallbackExtractor(),
+        prompt_registry=registry,
+    )
+
+    with pytest.raises(InvalidExtractionJSONError):
+        extractor.extract([source])
+
+
+@pytest.mark.unit
+def test_dynamic_extractor_raises_for_invalid_candidate_structure():
+    source = _unit(
+        "source-1",
+        "原始内容",
+        {"_extract_prompt_broken": "broken_key"},
+    )
+    response = json.dumps(
+        [{"source_id": "missing", "content": "orphan fact", "confidence": 1.0}]
+    )
+    extractor = DynamicLLMExtractor(
+        _ScriptedLLM([response]),
+        _FallbackExtractor(),
+        prompt_registry=PromptRegistry.from_dict(
+            {"extract": {"broken_key": "返回 JSON 数组"}}
+        ),
+    )
+
+    with pytest.raises(InvalidExtractionCandidateError):
+        extractor.extract([source])
 
 
 @pytest.mark.unit
