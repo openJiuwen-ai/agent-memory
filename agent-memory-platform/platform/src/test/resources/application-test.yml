@@ -1,0 +1,15 @@
+spring:
+  datasource:
+    url: jdbc:sqlite:./data/platform-test.db
+    driver-class-name: org.sqlite.JDBC
+    username: sa
+    password: ""
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:db/migration/V1__ops_center_init_sqlite.sql
+
+platform:
+  memory-service:
+    base-url: http://127.0.0.1:8516   # 上下文测试不实际调用 :8516
+    api-key: test-key

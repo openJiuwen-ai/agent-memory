@@ -1,0 +1,27 @@
+# 平台后端 .dockerignore：避免把本地构建产物 / 依赖 / IDE 文件塞进 build context
+target/
+*.class
+build/
+out/
+.mvn/wrapper/maven-wrapper.jar
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+*.log
+logs/
+*.tmp
+*.bak
+*.orig
+*.rej
+data/*
+!data/.gitkeep
+.git/
+.gitignore
+Dockerfile
+.dockerignore

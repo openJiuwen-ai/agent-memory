@@ -1,0 +1,324 @@
+/* 全局重置 */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue',
+    Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  color: #1F2937;
+  /* 科技感渐变背景 */
+  background: linear-gradient(135deg, #F8F9FA 0%, #EEF2FF 50%, #F8F9FA 100%);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  position: relative;
+}
+
+/* 科技网格背景纹理 */
+body::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-image: 
+    linear-gradient(rgba(99, 102, 241, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(99, 102, 241, 0.03) 1px, transparent 1px);
+  background-size: 50px 50px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+a {
+  text-decoration: none;
+  color: inherit;
+}
+
+/* ========== MemOS 风格全局样式 ========== */
+
+/* 卡片样式 - 科技感增强版 */
+.el-card {
+  border-radius: 12px !important;
+  border: 1px solid rgba(229, 231, 235, 0.8) !important;
+  /* 多层阴影增强立体感 */
+  box-shadow: 
+    0 4px 6px -1px rgba(99, 102, 241, 0.05),
+    0 2px 4px -1px rgba(99, 102, 241, 0.03),
+    0 0 0 1px rgba(255, 255, 255, 0.5) inset !important;
+  background: rgba(255, 255, 255, 0.95) !important;
+  backdrop-filter: blur(10px) !important;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.el-card:hover {
+  box-shadow: 
+    0 10px 15px -3px rgba(99, 102, 241, 0.1),
+    0 4px 6px -2px rgba(99, 102, 241, 0.05),
+    0 0 0 1px rgba(255, 255, 255, 0.8) inset !important;
+  transform: translateY(-2px);
+}
+
+/* 表格样式优化 - 科技感增强 */
+.el-table {
+  border-radius: 12px !important;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.95) !important;
+  backdrop-filter: blur(10px) !important;
+}
+
+.el-table th {
+  background: linear-gradient(180deg, #F9FAFB 0%, #F3F4F6 100%) !important;
+  color: #374151 !important;
+  font-weight: 600 !important;
+  border-bottom: 2px solid rgba(99, 102, 241, 0.1) !important;
+}
+
+.el-table td {
+  color: #374151 !important;
+  transition: all 0.2s ease;
+}
+
+.el-table--border {
+  border: 1px solid rgba(229, 231, 235, 0.8) !important;
+}
+
+.el-table tbody tr:hover td {
+  background-color: rgba(99, 102, 241, 0.03) !important;
+}
+
+/* 按钮样式优化 - 科技感增强（仅应用于非 link 按钮） */
+.el-button--primary:not(.is-link) {
+  background: linear-gradient(135deg, #6366F1 0%, #4F46E5 100%) !important;
+  border: none !important;
+  box-shadow: 0 4px 6px -1px rgba(99, 102, 241, 0.3), 0 2px 4px -1px rgba(99, 102, 241, 0.2) !important;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  position: relative;
+  overflow: hidden;
+}
+
+.el-button--primary:not(.is-link)::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+  transition: left 0.5s;
+}
+
+.el-button--primary:not(.is-link):hover {
+  box-shadow: 0 6px 8px -2px rgba(99, 102, 241, 0.4), 0 4px 6px -2px rgba(99, 102, 241, 0.3) !important;
+  transform: translateY(-1px);
+}
+
+.el-button--primary:not(.is-link):hover::before {
+  left: 100%;
+}
+
+.el-button--primary:not(.is-link):active {
+  transform: translateY(0);
+}
+
+/* 标签页样式 - 科技感增强 */
+.el-tabs__header {
+  background: #FFFFFF !important;
+  backdrop-filter: none !important;
+  border-bottom: 1px solid rgba(229, 231, 235, 0.8) !important;
+  margin-bottom: 0 !important;
+}
+
+.el-tabs__item {
+  color: #6B7280 !important;
+  font-weight: 500 !important;
+  transition: all 0.3s ease !important;
+}
+
+.el-tabs__item:hover {
+  color: #6366F1 !important;
+}
+
+.el-tabs__item.is-active {
+  color: #6366F1 !important;
+  font-weight: 600 !important;
+}
+
+.el-tabs__active-bar {
+  background: linear-gradient(90deg, #6366F1 0%, #4F46E5 100%) !important;
+  height: 3px !important;
+  box-shadow: 0 2px 4px rgba(99, 102, 241, 0.3) !important;
+}
+
+/* 输入框样式 - 科技感增强 */
+.el-input__wrapper {
+  box-shadow: 0 0 0 1px rgba(209, 213, 219, 0.8) inset !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+  backdrop-filter: blur(5px) !important;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.el-input__wrapper:hover {
+  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.3) inset, 0 0 0 3px rgba(99, 102, 241, 0.05) !important;
+}
+
+.el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.5) inset, 0 0 0 4px rgba(99, 102, 241, 0.1) !important;
+  background: rgba(255, 255, 255, 1) !important;
+}
+
+/* 对话框样式 */
+.el-dialog {
+  border-radius: 12px !important;
+}
+
+/* 侧边栏样式优化 */
+.el-menu {
+  border-right: none !important;
+}
+
+.el-menu-item {
+  color: #4B5563 !important;
+}
+
+.el-menu-item:hover {
+  background-color: #F3F4F6 !important;
+}
+
+.el-menu-item.is-active {
+  background-color: #EEF2FF !important;
+  color: #6366F1 !important;
+}
+
+/* 分页样式 - 科技感增强 */
+.el-pagination {
+  backdrop-filter: blur(10px) !important;
+}
+
+.el-pagination .el-pager li {
+  color: #6B7280 !important;
+  border-radius: 8px !important;
+  transition: all 0.3s ease !important;
+}
+
+.el-pagination .el-pager li:hover {
+  color: #6366F1 !important;
+  background-color: rgba(99, 102, 241, 0.05) !important;
+}
+
+.el-pagination .el-pager li.is-active {
+  color: #FFFFFF !important;
+  background: linear-gradient(135deg, #6366F1 0%, #4F46E5 100%) !important;
+  box-shadow: 0 2px 4px rgba(99, 102, 241, 0.3) !important;
+  font-weight: 600 !important;
+}
+
+/* 链接样式 */
+.el-link--primary {
+  color: #6366F1 !important;
+  font-weight: 500 !important;
+}
+
+.el-link--primary:hover {
+  color: #4F46E5 !important;
+}
+
+.el-link--warning {
+  color: #F59E0B !important;
+  font-weight: 500 !important;
+}
+
+.el-link--warning:hover {
+  color: #D97706 !important;
+}
+
+.el-link--danger {
+  color: #EF4444 !important;
+  font-weight: 500 !important;
+}
+
+.el-link--danger:hover {
+  color: #DC2626 !important;
+}
+
+/* Element Plus 按钮链接样式 - 去掉背景填充 */
+.el-button--primary.is-link {
+  color: #6366F1 !important;
+  font-weight: 500 !important;
+  background-color: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+}
+
+.el-button--primary.is-link:hover {
+  color: #4F46E5 !important;
+  background-color: transparent !important;
+}
+
+.el-button--warning.is-link {
+  color: #F59E0B !important;
+  font-weight: 500 !important;
+  background-color: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+}
+
+.el-button--warning.is-link:hover {
+  color: #D97706 !important;
+  background-color: transparent !important;
+}
+
+.el-button--danger.is-link {
+  color: #EF4444 !important;
+  font-weight: 500 !important;
+  background-color: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+}
+
+.el-button--danger.is-link:hover {
+  color: #DC2626 !important;
+  background-color: transparent !important;
+}
+
+/* 标签样式 - 科技感增强 */
+.el-tag {
+  border-radius: 8px !important;
+  font-weight: 500 !important;
+  backdrop-filter: blur(5px) !important;
+}
+
+.el-tag--primary {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(79, 70, 229, 0.1) 100%) !important;
+  border-color: rgba(99, 102, 241, 0.3) !important;
+  color: #6366F1 !important;
+}
+
+.el-tag--success {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(5, 150, 105, 0.1) 100%) !important;
+  border-color: rgba(16, 185, 129, 0.3) !important;
+  color: #10B981 !important;
+}
+
+.el-tag--warning {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.1) 0%, rgba(217, 119, 6, 0.1) 100%) !important;
+  border-color: rgba(245, 158, 11, 0.3) !important;
+  color: #F59E0B !important;
+}
+
+.el-tag--danger {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.1) 0%, rgba(220, 38, 38, 0.1) 100%) !important;
+  border-color: rgba(239, 68, 68, 0.3) !important;
+  color: #EF4444 !important;
+}
