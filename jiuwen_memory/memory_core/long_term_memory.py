@@ -2194,6 +2194,7 @@ class LongTermMemory(metaclass=Singleton):
         search_data = await self.search_manager.list_user_profile(user_id=user_id,
                                                                   scope_id=scope_id)
         return len(search_data)
+
     async def get_user_mem_by_page_with_total(self,
                                                user_id: str = DEFAULT_VALUE,
                                                scope_id: str = DEFAULT_VALUE,
