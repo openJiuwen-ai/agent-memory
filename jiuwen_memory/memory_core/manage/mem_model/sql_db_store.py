@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 from sqlalchemy import insert, update, select, delete, Table, MetaData, and_, or_, desc, asc
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from jiuwen_memory.common.exception.codes import StatusCode
@@ -93,6 +94,8 @@ class SqlDbStore:
                 )
                 return False
             index_elements = pk_cols
+        else:
+            pk_cols = index_elements
 
         if update_fields is None:
             update_fields = data
@@ -103,9 +106,50 @@ class SqlDbStore:
                 .values(**data)
                 .on_duplicate_key_update(**update_fields)
             )
+        elif dialect_name == "gaussdb":
+            # GaussDB 不支持 ON CONFLICT 语法,使用 UPDATE + INSERT 方案
+            # 先尝试 UPDATE,如果影响行数为 0 再 INSERT
+            if not pk_cols:
+                memory_logger.error(
+                    "insert_or_update requires primary key but table has none",
+                    event_type=LogEventType.MEMORY_STORE,
+                    metadata={"table_name": table}
+                )
+                return False
+            
+            # 构造 UPDATE 语句
+            set_clause = ', '.join([f"{k}=:{k}" for k in update_fields.keys()])
+            where_clause = ' AND '.join([f"{col}=:{col}" for col in pk_cols])
+            update_sql = f"UPDATE {table} SET {set_clause} WHERE {where_clause}"
+            
+            # 构造 INSERT 语句
+            insert_cols = ', '.join(data.keys())
+            placeholders = ', '.join([f":{k}" for k in data.keys()])
+            insert_sql = f"INSERT INTO {table} ({insert_cols}) VALUES ({placeholders})"
+            
+            from sqlalchemy import text
+            try:
+                async with self.async_session() as session:
+                    async with session.begin():
+                        # 先执行 UPDATE
+                        update_result = await session.execute(text(update_sql), data)
+                        # 如果没有更新任何行,执行 INSERT
+                        if update_result.rowcount == 0:
+                            await session.execute(text(insert_sql), data)
+            except IntegrityError:
+                # 并发场景: 另一个事务已经插入了该行,视为成功
+                return True
+            except Exception as e:
+                memory_logger.error(
+                    "insert_or_update failed",
+                    event_type=LogEventType.MEMORY_STORE,
+                    exception=str(e),
+                    metadata={"table_name": table}
+                )
+                return False
+            return True
         else:
-            # SQLite, PostgreSQL, GaussDB all use the same
-            # on_conflict_do_update syntax via sqlite_insert.
+            # SQLite 使用 sqlite_insert
             stmt = (
                 sqlite_insert(t)
                 .values(**data)
@@ -144,11 +188,54 @@ class SqlDbStore:
         """
         t = await self.get_table(table)
         dialect_name = self.db_store.get_async_engine().dialect.name
+        pk_cols = [col.name for col in t.primary_key.columns]
 
         if dialect_name == "mysql":
             # INSERT IGNORE: skip rows that violate UNIQUE/PK constraints
             # without raising an error or performing a no-op UPDATE.
             stmt = mysql_insert(t).prefix_with("IGNORE").values(**data)
+        elif dialect_name == "gaussdb":
+            # GaussDB 不支持 ON CONFLICT DO NOTHING,使用 SELECT 检查
+            if not pk_cols:
+                memory_logger.error(
+                    "insert_or_ignore requires primary key but table has none",
+                    event_type=LogEventType.MEMORY_STORE,
+                    metadata={"table_name": table}
+                )
+                return False
+            
+            # 检查是否已存在
+            where_clause = ' AND '.join([f"{col}=:{col}" for col in pk_cols])
+            check_sql = f"SELECT 1 FROM {table} WHERE {where_clause} LIMIT 1"
+            
+            # 构造 INSERT 语句
+            insert_cols = ', '.join(data.keys())
+            placeholders = ', '.join([f":{k}" for k in data.keys()])
+            insert_sql = f"INSERT INTO {table} ({insert_cols}) VALUES ({placeholders})"
+            
+            from sqlalchemy import text
+            try:
+                async with self.async_session() as session:
+                    async with session.begin():
+                        # 先检查是否存在
+                        result = await session.execute(text(check_sql), data)
+                        if result.first() is not None:
+                            # 已存在,直接返回 False
+                            return False
+                        # 不存在,执行 INSERT
+                        await session.execute(text(insert_sql), data)
+            except IntegrityError:
+                # 并发场景: 另一个事务已经插入了该行
+                return False
+            except Exception as e:
+                memory_logger.error(
+                    "insert_or_ignore failed",
+                    event_type=LogEventType.MEMORY_STORE,
+                    exception=str(e),
+                    metadata={"table_name": table}
+                )
+                return False
+            return True
         else:
             stmt = sqlite_insert(t).values(**data).on_conflict_do_nothing()
 
