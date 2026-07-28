@@ -48,7 +48,8 @@ Classify each memory below into its cognitive role (tier) and topic tags.
 Output ONLY a JSON array. No explanation, no markdown fences. One entry per input memory,
 in the SAME order as input. Each entry:
 
-- "source_id": the bare id of the input memory (the UUID shown in the [ID: ...] marker, WITHOUT the wrapper).
+- "source_id": the bare id of the input memory (the UUID shown in the [ID: ...] marker,
+  WITHOUT the wrapper).
 - "tier": one of:
   - "episodic": an event/experience that happened at a point in time.
   - "semantic": a stated fact / concept / preference (what is known or liked).
@@ -57,7 +58,7 @@ in the SAME order as input. Each entry:
   defaults to episodic — it records what happened).
 - "tags": 1 to 3 short labels summarizing the memory's topic. Rules: lowercase; drop
   articles/stopwords; same language as the content; keep each tag 1-3 words. Example:
-  content "Alice 偏好早上喝美式咖啡" → tags: ["coffee", "preference"].
+  content "Alice prefers an Americano in the morning" → tags: ["coffee", "preference"].
 
 Output schema:
 [{

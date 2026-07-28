@@ -8,8 +8,11 @@
 """
 
 import json
+from unittest.mock import patch
 
-from common.type_def import ContentLayers, MemoryUnit
+import pytest
+
+from common.type_def import MemoryUnit
 from construction.layer_annotator_impl.keyword_layer_annotator import KeywordLayerAnnotator
 from construction.layer_annotator_impl.llm_layer_annotator import LLMLayerAnnotator
 from tests.unit.construction.fixtures import (
@@ -21,7 +24,8 @@ from tests.unit.construction.fixtures import (
 _LONG_CONTENT = (
     "Alice 是 BlinkMem 项目的后端负责人，擅长 Python 和 Go，负责整体架构设计与核心模块开发。"
     "她每周三主持技术评审会，习惯用 pytest 写自动化测试，并要求团队遵循代码审查规范。"
-    "最近一周她在研究向量数据库的 ANN 算法，打算把召回延迟降到 50ms 以内，为此对比了 HNSW 与 IVF-PQ。"
+    "最近一周她在研究向量数据库的 ANN 算法，打算把召回延迟降到 50ms 以内，"
+    "为此对比了 HNSW 与 IVF-PQ。"
     "她对咖啡的偏好是早上喝美式、下午喝拿铁，且不加糖，认为这能保持下午的专注力。"
     "在团队管理上她主张文档先行，所有接口变更必须先更新设计文档再动代码。"
     "她还负责新人的 mentor 工作，每月组织一次技术分享会，主题由成员轮流申报。"
@@ -147,10 +151,18 @@ def test_llm_annotate_failure_leaves_empty():
     """LLM 返回非 JSON → layers 留空，不阻断（best effort）。"""
     ann = _llm_annotator(["not a json"])
     unit = _long_unit()
-    ann.annotate([unit])  # 不抛异常
+    with patch(
+        "construction.layer_annotator_impl.llm_layer_annotator.logger.warning"
+    ) as warning:
+        ann.annotate([unit])  # 不抛异常
 
     assert unit.layers.l0 == ""
     assert unit.layers.l1 == ""
+    message, offset, size, exc = warning.call_args.args
+    assert message.endswith("skipping: %s")
+    assert (offset, size) == (0, 1)
+    assert isinstance(exc, ValueError)
+    assert str(exc) == "layer response is not valid JSON"
 
 
 def test_llm_annotate_batch_multiple():
@@ -179,3 +191,73 @@ def test_llm_annotate_mixed_long_short():
 
     assert long_u.layers.l0 == "概要"
     assert short_u.layers.l0 == ""
+
+
+def test_llm_duplicate_ids_do_not_partially_mutate_batch():
+    ann = _llm_annotator([
+        json.dumps([
+            {"id": 0, "l0": "summary", "l1": "detailed overview"},
+            {"id": 0, "l0": "other", "l1": "other detailed overview"},
+        ])
+    ])
+    u0, u1 = _long_unit("u0"), _long_unit("u1")
+
+    ann.annotate([u0, u1])
+
+    assert u0.layers.l0 == ""
+    assert u1.layers.l0 == ""
+
+
+@pytest.mark.parametrize("invalid_id", [True, 0.9])
+def test_llm_rejects_non_integer_ids(invalid_id):
+    ann = _llm_annotator([
+        json.dumps([{"id": invalid_id, "l0": "summary", "l1": "detailed overview"}])
+    ])
+    unit = _long_unit()
+
+    ann.annotate([unit])
+
+    assert unit.layers.l0 == ""
+    assert unit.layers.l1 == ""
+
+
+def test_llm_missing_id_does_not_partially_mutate_batch():
+    ann = _llm_annotator([
+        json.dumps([{"id": 0, "l0": "summary", "l1": "detailed overview"}])
+    ])
+    u0, u1 = _long_unit("u0"), _long_unit("u1")
+
+    ann.annotate([u0, u1])
+
+    assert u0.layers.l0 == ""
+    assert u1.layers.l0 == ""
+
+
+def test_llm_non_monotonic_layers_are_rejected():
+    ann = _llm_annotator([
+        json.dumps([{"id": 0, "l0": "long summary", "l1": "short"}])
+    ])
+    unit = _long_unit()
+
+    ann.annotate([unit])
+
+    assert unit.layers.l0 == ""
+    assert unit.layers.l1 == ""
+
+
+def test_llm_invalid_length_skips_only_that_item():
+    """单条长度不合法不应抹掉同批其他合法分层。"""
+    ann = _llm_annotator([
+        json.dumps([
+            {"id": 0, "l0": "long summary", "l1": "short"},
+            {"id": 1, "l0": "summary", "l1": "a valid detailed overview"},
+        ])
+    ])
+    invalid, valid = _long_unit("u0"), _long_unit("u1")
+
+    ann.annotate([invalid, valid])
+
+    assert invalid.layers.l0 == ""
+    assert invalid.layers.l1 == ""
+    assert valid.layers.l0 == "summary"
+    assert valid.layers.l1 == "a valid detailed overview"

@@ -16,7 +16,6 @@ from typing import List
 from common.llm.base import LLM, LlmProducer
 from common.log import get_logger
 from common.type_def import MemoryUnit
-from construction.base import OperatorType
 from construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
 
 logger = get_logger(__name__)
@@ -28,8 +27,12 @@ Output ONLY a JSON array. No explanation, no markdown fences.
 
 Rules:
 - For each item, output its "id" (the numeric index from the [ID: N] marker) plus "l0" and "l1".
-- "l0": a 50-100 character summary/abstract of the content, for tight-budget context injection.
-- "l1": a 200-500 character overview of key points, for context augmentation.
+- Generate L1 from the L2 input, then generate L0 from L1.
+- "l0": a compact summary for tight-budget context injection.
+- "l1": a more detailed overview for context augmentation.
+- Preserve exact entities, actions, objects, numbers, dates, negation, and state.
+- Do not merge separate people, actions, records, or events.
+- Each result must satisfy 0 < len(l0) < len(l1) < len(L2 input).
 - Same language as the content. Faithful to the content — do not add new information.
 - If the content is too short to meaningfully layer, you may output shorter l0/l1.
 
@@ -141,10 +144,10 @@ class LLMLayerAnnotator(LayerAnnotator):
             batch = long_units[start:start + _LAYERS_BATCH_SIZE]
             try:
                 self._annotate_batch(batch)
-            except Exception:
+            except Exception as exc:
                 logger.warning(
-                    "LLMLayerAnnotator: batch failed offset=%d size=%d, skipping",
-                    start, len(batch),
+                    "LLMLayerAnnotator: batch failed offset=%d size=%d, skipping: %s",
+                    start, len(batch), exc,
                 )
 
         filled = sum(1 for u in long_units if u.layers.l0 or u.layers.l1)
@@ -175,24 +178,46 @@ class LLMLayerAnnotator(LayerAnnotator):
 
         parsed = _parse_json_array(response)
         if parsed is None:
-            logger.warning(
-                "LLMLayerAnnotator: response not valid JSON (len=%d), raw: %s",
-                len(response), response[:500],
-            )
-            return
+            raise ValueError("layer response is not valid JSON")
 
-        filled = 0
+        staged: dict[int, tuple[str, str]] = {}
+        seen_ids: set[int] = set()
         for item in parsed:
-            try:
-                idx = int(item.get("id", -1))
-            except (ValueError, TypeError):
+            if not isinstance(item, dict):
+                raise ValueError("layer output item is not an object")
+            raw_id = item.get("id")
+            if isinstance(raw_id, bool):
+                raise ValueError("layer output id is invalid")
+            if isinstance(raw_id, int):
+                idx = raw_id
+            elif isinstance(raw_id, str) and re.fullmatch(r"\d+", raw_id.strip()):
+                idx = int(raw_id)
+            else:
+                raise ValueError("layer output id is invalid")
+            if not 0 <= idx < len(units):
+                raise ValueError(f"layer output id {idx} is out of range")
+            if idx in seen_ids:
+                raise ValueError(f"duplicate layer output id {idx}")
+            seen_ids.add(idx)
+            l0 = _parse_layer_text(item.get("l0"))
+            l1 = _parse_layer_text(item.get("l1"))
+            if not 0 < len(l0) < len(l1) < len(units[idx].content):
+                logger.warning(
+                    "LLMLayerAnnotator: invalid layer lengths for id %d, skipping item",
+                    idx,
+                )
                 continue
-            if 0 <= idx < len(units):
-                units[idx].layers.l0 = _parse_layer_text(item.get("l0"))
-                units[idx].layers.l1 = _parse_layer_text(item.get("l1"))
-                filled += 1
+            staged[idx] = (l0, l1)
+
+        expected = set(range(len(units)))
+        if seen_ids != expected:
+            raise ValueError(f"layer output ids must exactly match {sorted(expected)}")
+
+        for idx, (l0, l1) in staged.items():
+            units[idx].layers.l0 = l0
+            units[idx].layers.l1 = l1
         logger.info(
-            "LLMLayerAnnotator: batch filled %d/%d units", filled, len(units),
+            "LLMLayerAnnotator: batch filled %d/%d units", len(staged), len(units),
         )
 
     def _call_llm_with_retry(self, messages: list, max_tokens: int = 4096) -> str:
