@@ -10,9 +10,15 @@ from jiuwen_memory.common.logging.events import LogEventType
 
 
 class WriteManager:
-    def __init__(self, managers: dict[str, BaseMemoryManager], memory_index: BaseMemoryIndex):
+    def __init__(
+            self,
+            managers: dict[str, BaseMemoryManager],
+            memory_index: BaseMemoryIndex,
+            middle_manager: BaseMemoryManager | None = None,
+    ):
         self.managers = managers
         self.memory_index = memory_index
+        self.middle_manager = middle_manager
 
     async def add_memories(self, user_id: str, scope_id: str, memories: dict[str, list[BaseMemoryUnit]],
                            llm: Model | None, **kwargs) -> list[BaseMemoryUnit]:
@@ -39,31 +45,46 @@ class WriteManager:
         mem_type = await self.__get_mem_type_from_index(user_id, scope_id, mem_id)
         if mem_type is None:
             memory_logger.warning(
-                "Skipping this update due to failure in getting memory type",
+                "Long-term memory type not found, trying middle-term memory update",
                 memory_type=mem_type,
                 memory_id=[mem_id],
                 event_type=LogEventType.MEMORY_STORE,
                 user_id=user_id,
                 scope_id=scope_id,
             )
-            return
-        await self.managers[mem_type].update(user_id=user_id, scope_id=scope_id, mem_id=mem_id,
-                                             new_memory=memory, **kwargs)
+            if self.middle_manager:
+                return await self.middle_manager.update(
+                    user_id=user_id,
+                    scope_id=scope_id,
+                    mem_id=mem_id,
+                    new_memory=memory,
+                    **kwargs,
+                )
+            return False
+        return await self.managers[mem_type].update(user_id=user_id, scope_id=scope_id, mem_id=mem_id,
+                                                    new_memory=memory, **kwargs)
 
     async def delete_mem_by_id(self, user_id: str, scope_id: str, mem_id: str, **kwargs):
         mem_type = await self.__get_mem_type_from_index(user_id, scope_id, mem_id)
         if mem_type is None:
             memory_logger.warning(
-                "Skipping this deletion due to failure in getting memory type",
+                "Long-term memory type not found, trying middle-term memory deletion",
                 memory_type=mem_type,
                 memory_id=[mem_id],
                 event_type=LogEventType.MEMORY_STORE,
                 user_id=user_id,
                 scope_id=scope_id
             )
-            return
-        await self.managers[mem_type].delete(user_id=user_id, scope_id=scope_id,
-                                            mem_id=mem_id, **kwargs)
+            if self.middle_manager:
+                return await self.middle_manager.delete(
+                    user_id=user_id,
+                    scope_id=scope_id,
+                    mem_id=mem_id,
+                    **kwargs,
+                )
+            return False
+        return await self.managers[mem_type].delete(user_id=user_id, scope_id=scope_id,
+                                                    mem_id=mem_id, **kwargs)
 
     async def delete_mem_by_user_id(self, user_id: str, scope_id: str, **kwargs):
         for manager in set(self.managers.values()):
