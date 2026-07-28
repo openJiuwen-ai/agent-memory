@@ -1151,7 +1151,7 @@ class MilvusVectorStore(BaseVectorStore):
             raise
 
     async def list_collection_names(self) -> List[str]:
-        return self._client.list_collections(timeout=self._default_rpc_timeout)
+        return self.client.list_collections(timeout=self._default_rpc_timeout)
 
     async def update_schema(self, collection_name: str, operations: List[BaseOperation]):
         """
