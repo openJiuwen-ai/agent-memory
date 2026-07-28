@@ -155,9 +155,14 @@ class VectorIndex:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._embedding_model = embedding_model
         self._codec: StorageCodec | None = codec
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30.0)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
+        # busy_timeout 与 store_factory.py 对齐：sqlite3.connect 默认 timeout=5.0
+        # （即 busy_timeout=5000），to_thread 线程池并发写时 5s 等锁远低于 aiosqlite
+        # engine 的 30s，长事务下易触发 database is locked → 500。显式提到 30000ms，
+        # 与 connect(timeout=30.0) 双保险（PRAGMA 对老连接/复用场景兜底）。
+        self._conn.execute("PRAGMA busy_timeout=30000")
         self._vec_available = False
         self._dims: int | None = None
         self._fts_available = False
