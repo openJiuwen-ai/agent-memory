@@ -700,9 +700,9 @@ class ExtractorImpl(Extractor):
                 return parsed
             if isinstance(parsed, dict):
                 return [parsed]
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
             logger.warning("Extractor: LLM response is not valid JSON")
-            raise InvalidExtractionJSONError("extractor response is not valid JSON")
+            raise InvalidExtractionJSONError("extractor response is not valid JSON") from exc
         raise InvalidExtractionJSONError(
             f"extractor response must be a JSON array or object, got {type(parsed).__name__}"
         )

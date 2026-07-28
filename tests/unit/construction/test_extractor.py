@@ -415,8 +415,10 @@ def test_extract_llm_non_json():
     extractor = _make_extractor(["This is not a JSON response"])
     units = [create_test_unit("u1", "用户偏好 Python")]
 
-    with pytest.raises(InvalidExtractionJSONError):
+    with pytest.raises(InvalidExtractionJSONError) as exc_info:
         extractor.extract(units)
+
+    assert isinstance(exc_info.value.__cause__, json.JSONDecodeError)
 
 
 # ---------------------------------------------------------------------------
