@@ -246,6 +246,18 @@ class BaseMemoryIndex(ABC):
         """
         pass
 
+    async def list_memories_with_total(
+        self, user_id: str, scope_id: str, offset: int = 0,
+        limit: int = 100, mem_types: list[str] | None = None,
+        *, filters: "FilterGroup | None" = None,
+    ) -> tuple[list["MemoryDoc"], int]:
+        """
+        Like ``list_memories`` but also returns the total count of all
+        matching documents (before pagination).
+        """
+        pass
+
+
     def get_schema_version(self) -> int:
         """
         Get the current schema version.

@@ -93,6 +93,7 @@ class MemInfo(BaseModel):
     content: str = Field(default="", description="memory content")
     type: MemoryType = Field(default=MemoryType.USER_PROFILE, description="memory type")
     timestamp: datetime | None = Field(default=None, description="memory timestamp")
+    source_id: str | None = Field(default=None, description="source message id")
 
 
 class MemResult(BaseModel):
@@ -2194,6 +2195,68 @@ class LongTermMemory(metaclass=Singleton):
                                                                   scope_id=scope_id)
         return len(search_data)
 
+    async def get_user_mem_by_page_with_total(self,
+                                               user_id: str = DEFAULT_VALUE,
+                                               scope_id: str = DEFAULT_VALUE,
+                                               page_size: int = 10,
+                                               page_idx: int = 1,
+                                               memory_type: MemoryType = MemoryType.UNKNOWN,
+                                               *,
+                                               filters: "FilterGroup | None" = None) -> tuple[list[MemInfo], int]:
+        """Like ``get_user_mem_by_page`` but also returns the global total count.
+
+        Uses the KV scan path (not vector pushdown) to ensure correct total.
+        """
+        if not self._validate_id(event_type=LogEventType.MEMORY_RETRIEVE, scope_id=scope_id):
+            memory_logger.error(
+                "Invalid scope_id format.",
+                event_type=LogEventType.MEMORY_RETRIEVE,
+                user_id=user_id,
+                scope_id=scope_id,
+            )
+            raise build_error(
+                StatusCode.MEMORY_GET_MEMORY_EXECUTION_ERROR,
+                memory_type="all",
+                error_msg="invalid scope_id format",
+            )
+        if not self.search_manager:
+            raise build_error(
+                StatusCode.MEMORY_GET_MEMORY_EXECUTION_ERROR,
+                memory_type="all",
+                error_msg=f"search manager is not initialized",
+            )
+
+        if memory_type == MemoryType.UNKNOWN:
+            search_memory_type = None
+        else:
+            search_memory_type = memory_type.value
+        search_data = await self.search_manager.list_user_mem_with_total(
+            user_id=user_id, scope_id=scope_id,
+            nums=page_size, pages=page_idx,
+            mem_type=search_memory_type,
+            filters=filters)
+
+        if not search_data:
+            return [], 0
+
+        search_result, total = search_data
+        if not search_result:
+            return [], total
+
+        mem_results: list[MemInfo] = []
+        for item in search_result:
+            mem_type = item.get("mem_type", MemoryType.UNKNOWN.value)
+            mem_results.append(
+                MemInfo(
+                    mem_id=item["id"],
+                    content=item["mem"],
+                    type=mem_type,
+                    timestamp=item.get("timestamp"),
+                    source_id=item.get("source_id"),
+                )
+            )
+        return mem_results, total
+
     async def get_user_mem_by_page(self,
                                    user_id: str = DEFAULT_VALUE,
                                    scope_id: str = DEFAULT_VALUE,
@@ -2661,6 +2724,17 @@ class LongTermMemory(metaclass=Singleton):
             user_id=user_id, scope_id=scope_id,
         )
         return orch
+
+    @property
+    def dreaming_orchestrators(self) -> dict[tuple[str, str], "DreamingOrchestrator"]:
+        """Public read-only accessor for the dreaming orchestrator registry.
+
+        External callers (e.g. status endpoints) must use this property instead
+        of accessing the underscore-prefixed ``_dreaming_orchestrators`` to
+        comply with G.CLS.11 (avoid accessing protected members from outside
+        the class).
+        """
+        return dict(self._dreaming_orchestrators)
 
     async def stop_dreaming(self, scope_id: str | None = None, user_id: str | None = None) -> None:
         """
