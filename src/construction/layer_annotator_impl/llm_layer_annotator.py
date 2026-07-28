@@ -144,10 +144,10 @@ class LLMLayerAnnotator(LayerAnnotator):
             batch = long_units[start:start + _LAYERS_BATCH_SIZE]
             try:
                 self._annotate_batch(batch)
-            except Exception:
+            except Exception as exc:
                 logger.warning(
-                    "LLMLayerAnnotator: batch failed offset=%d size=%d, skipping",
-                    start, len(batch),
+                    "LLMLayerAnnotator: batch failed offset=%d size=%d, skipping: %s",
+                    start, len(batch), exc,
                 )
 
         filled = sum(1 for u in long_units if u.layers.l0 or u.layers.l1)

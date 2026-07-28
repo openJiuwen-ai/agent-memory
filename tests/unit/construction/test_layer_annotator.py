@@ -8,6 +8,7 @@
 """
 
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -150,10 +151,18 @@ def test_llm_annotate_failure_leaves_empty():
     """LLM 返回非 JSON → layers 留空，不阻断（best effort）。"""
     ann = _llm_annotator(["not a json"])
     unit = _long_unit()
-    ann.annotate([unit])  # 不抛异常
+    with patch(
+        "construction.layer_annotator_impl.llm_layer_annotator.logger.warning"
+    ) as warning:
+        ann.annotate([unit])  # 不抛异常
 
     assert unit.layers.l0 == ""
     assert unit.layers.l1 == ""
+    message, offset, size, exc = warning.call_args.args
+    assert message.endswith("skipping: %s")
+    assert (offset, size) == (0, 1)
+    assert isinstance(exc, ValueError)
+    assert str(exc) == "layer response is not valid JSON"
 
 
 def test_llm_annotate_batch_multiple():
