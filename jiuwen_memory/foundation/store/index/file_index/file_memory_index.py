@@ -263,7 +263,7 @@ class FileMemoryIndex(BaseMemoryIndex):
     async def _handle_deleted_file(self, rel_path: str) -> None:
         """Remove all chunks and the files table entry for a deleted .md file."""
         try:
-            self._vec_index.delete_by_path(rel_path)
+            await self._vec_index.delete_by_path(rel_path)
         except sqlite3.Error:
             memory_logger.warning(
                 "Failed to delete chunks for removed file — will retry on next sync",
@@ -686,15 +686,15 @@ class FileMemoryIndex(BaseMemoryIndex):
 
     async def delete_by_user_and_scope(self, user_id: str, scope_id: str) -> None:
         self._md_store.delete_scope_dir(user_id, scope_id)
-        self._vec_index.delete_by_user_and_scope(user_id, scope_id)
+        await self._vec_index.delete_by_user_and_scope(user_id, scope_id)
 
     async def delete_by_user(self, user_id: str) -> None:
         self._md_store.delete_user_dir(user_id)
-        self._vec_index.delete_by_user(user_id)
+        await self._vec_index.delete_by_user(user_id)
 
     async def delete_by_scope(self, scope_id: str) -> None:
         self._md_store.delete_scope_all(scope_id)
-        self._vec_index.delete_by_scope(scope_id)
+        await self._vec_index.delete_by_scope(scope_id)
 
     async def get_by_id(self, user_id: str, scope_id: str, mem_id: str) -> MemoryDoc | None:
 

@@ -29,6 +29,7 @@ pure-Python cosine fallback when sqlite-vec is unavailable.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import math
 import os
@@ -54,8 +55,8 @@ from jiuwen_memory.foundation.store.filter_dsl import FilterGroup, FilterLogic
 if TYPE_CHECKING:
     pass
 
-VECTOR_WEIGHT = 0.7
-FTS_WEIGHT = 0.3
+VECTOR_WEIGHT = 0.9
+FTS_WEIGHT = 0.1
 _OVERFETCH_MULTIPLIER = 2
 _FTS_QUERY_MAX_TOKENS = 10
 
@@ -154,12 +155,19 @@ class VectorIndex:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._embedding_model = embedding_model
         self._codec: StorageCodec | None = codec
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30.0)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
+        # busy_timeout 与 store_factory.py 对齐：sqlite3.connect 默认 timeout=5.0
+        # （即 busy_timeout=5000），to_thread 线程池并发写时 5s 等锁远低于 aiosqlite
+        # engine 的 30s，长事务下易触发 database is locked → 500。显式提到 30000ms，
+        # 与 connect(timeout=30.0) 双保险（PRAGMA 对老连接/复用场景兜底）。
+        self._conn.execute("PRAGMA busy_timeout=30000")
         self._vec_available = False
         self._dims: int | None = None
         self._fts_available = False
+
+        self._conn_lock = asyncio.Lock()
         self._ensure_schema()
         self._try_load_vec()
         self._recover_dims_if_exists()
@@ -450,9 +458,14 @@ class VectorIndex:
         name = type(model).__name__ if model is not None else "none"
         return name, name
 
-    async def _get_embedding(self, text: str) -> list[float]:
-        if self._embedding_model is None:
-            raise RuntimeError("embedding model not initialized")
+    def _get_cached_embedding_sync(self, text: str) -> list[float] | None:
+        """同步查 embedding_cache —— 命中则返回向量，未命中返回 None。
+
+        拆自 ``_get_embedding``：cache 查询是同步 sqlite3 调用，跑在线程池
+        而非事件循环，避免阻塞 uvicorn worker（长稳缺陷修复）。未命中时
+        调用方（``_get_embedding``）走 ``embed_documents`` 真实网络调用，
+        再用 ``_cache_embedding_sync`` 回写。
+        """
         h = hash_text(text)
         provider, model = self._provider_key()
         row = self._conn.execute(
@@ -461,17 +474,36 @@ class VectorIndex:
         ).fetchone()
         if row and row[0]:
             return self._blob_to_vector(row[0])
+        return None
+
+    def _cache_embedding_sync(self, text: str, vec: list[float]) -> None:
+        """同步回写 embedding_cache —— 写库 + commit。"""
+        h = hash_text(text)
+        provider, model = self._provider_key()
+        self._conn.execute(
+            "INSERT OR REPLACE INTO embedding_cache(provider, model, hash, embedding, dims, updated_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (provider, model, h, self._vector_to_blob(vec), len(vec),
+             datetime.now(timezone.utc).astimezone().isoformat()),
+        )
+        self._conn.commit()
+
+    async def _get_embedding(self, text: str) -> list[float]:
+        if self._embedding_model is None:
+            raise RuntimeError("embedding model not initialized")
+        # cache 命中查询走线程池 + _conn_lock 串行化（与其他 to_thread 的 _conn 访问隔离）
+        async with self._conn_lock:
+            cached = await asyncio.to_thread(self._get_cached_embedding_sync, text)
+        if cached is not None:
+            return cached
+        # 未命中：embed_documents 是网络 IO，留在 async 侧 await
         vec = await self._embedding_model.embed_documents([text])
         if not vec:
             return []
         v = vec[0]
-        self._conn.execute(
-            "INSERT OR REPLACE INTO embedding_cache(provider, model, hash, embedding, dims, updated_at) "
-            "VALUES(?,?,?,?,?,?)",
-            (provider, model, h, self._vector_to_blob(v), len(v),
-             datetime.now(timezone.utc).astimezone().isoformat()),
-        )
-        self._conn.commit()
+
+        async with self._conn_lock:
+            await asyncio.to_thread(self._cache_embedding_sync, text, v)
         return v
 
     # ------------------------------------------------------------------
@@ -492,12 +524,37 @@ class VectorIndex:
             location: Chunk's physical location in its ``{Type}.md`` file.
                 ``None`` defaults to an empty location (path/lines unset).
         """
+        text = doc.text
+        vec = await self._get_embedding(text)
+        # 同步 DB 操作段（建表 + INSERT chunks + chunks_vec/chunks_fts 维护 + commit）
+        # 收拢到 _upsert_sync，在线程池执行，避免阻塞事件循环（长稳缺陷修复）。
+        # _get_embedding 已是 async（含网络调用），不在 _upsert_sync 内重复。
+        # tenant/location 直接透传结构体（G.FNM.03：参数 ≤5），_upsert_sync 内部解包。
+
+        async with self._conn_lock:
+            await asyncio.to_thread(
+                self._upsert_sync, doc, tenant, location, text, vec,
+            )
+
+    def _upsert_sync(
+        self,
+        doc: MemoryDoc,
+        tenant: TenantScope,
+        location: ChunkLocation | None,
+        text: str,
+        vec: list[float],
+    ) -> None:
+        """upsert 的同步 DB 段 —— 由 upsert 经 to_thread 调用。
+
+        建表（_ensure_vec_table）、INSERT chunks（含 Ebbinghaus forgetting flags）、
+        chunks_vec/chunks_fts 维护、commit 全在此。caller 已 await _get_embedding
+        拿到 vec。tenant/location 在此解包为标量，避免 caller 提前拆解
+        8 个散参（G.FNM.03：函数参数 ≤5）。
+        """
         user_id, scope_id = tenant.user_id, tenant.scope_id
         path = location.path if location else ""
         start_line = location.start_line if location else 0
         end_line = location.end_line if location else 0
-        text = doc.text
-        vec = await self._get_embedding(text)
         if vec:
             self._ensure_vec_table(len(vec))
             if self._dims is None:
@@ -765,7 +822,7 @@ class VectorIndex:
                 )
         self._conn.commit()
 
-    def delete_by_path(self, path: str) -> None:
+    async def delete_by_path(self, path: str) -> None:
         """Delete all chunks belonging to a ``{Type}.md`` file, plus its
         ``files`` table entry.
 
@@ -773,7 +830,10 @@ class VectorIndex:
         is removed, or the user deletes the file). Encapsulates chunks_vec /
         chunks_fts cleanup so callers don't reach into the connection.
         """
+        async with self._conn_lock:
+            await asyncio.to_thread(self._delete_by_path_sync, path)
 
+    def _delete_by_path_sync(self, path: str) -> None:
         sql = "SELECT rowid FROM chunks WHERE path=?"
         cur = self._conn.execute(sql, (path,))
         rowids = [r[0] for r in cur.fetchall()]
@@ -786,7 +846,11 @@ class VectorIndex:
     # batch delete
     # ------------------------------------------------------------------
 
-    def delete_by_user(self, user_id: str) -> None:
+    async def delete_by_user(self, user_id: str) -> None:
+        async with self._conn_lock:
+            await asyncio.to_thread(self._delete_by_user_sync, user_id)
+
+    def _delete_by_user_sync(self, user_id: str) -> None:
         sql = "SELECT rowid FROM chunks WHERE user_id=?"
         cur = self._conn.execute(sql, (user_id,))
         rowids = [r[0] for r in cur.fetchall()]
@@ -799,7 +863,11 @@ class VectorIndex:
         )
         self._conn.commit()
 
-    def delete_by_scope(self, scope_id: str) -> None:
+    async def delete_by_scope(self, scope_id: str) -> None:
+        async with self._conn_lock:
+            await asyncio.to_thread(self._delete_by_scope_sync, scope_id)
+
+    def _delete_by_scope_sync(self, scope_id: str) -> None:
         sql = "SELECT rowid FROM chunks WHERE scope_id=?"
         cur = self._conn.execute(sql, (scope_id,))
         rowids = [r[0] for r in cur.fetchall()]
@@ -811,7 +879,11 @@ class VectorIndex:
         )
         self._conn.commit()
 
-    def delete_by_user_and_scope(self, user_id: str, scope_id: str) -> None:
+    async def delete_by_user_and_scope(self, user_id: str, scope_id: str) -> None:
+        async with self._conn_lock:
+            await asyncio.to_thread(self._delete_by_user_and_scope_sync, user_id, scope_id)
+
+    def _delete_by_user_and_scope_sync(self, user_id: str, scope_id: str) -> None:
         sql = "SELECT rowid FROM chunks WHERE user_id=? AND scope_id=?"
         cur = self._conn.execute(sql, (user_id, scope_id))
         rowids = [r[0] for r in cur.fetchall()]
@@ -899,7 +971,64 @@ class VectorIndex:
             file_blocks = parse_blocks(file_content)
         file_map: dict[str, Block] = {b.mem_id: b for b in file_blocks}
 
-        # 2. Query current DB state for this path
+        # 2-3. Query DB state + classify（SELECT + 内存分类）走线程池 + _conn_lock 串行化。
+        #      返回 (to_upsert, to_reline, to_delete, short_circuit_flag)。
+        async with self._conn_lock:
+            to_upsert, to_reline, to_delete, short_circuited = await asyncio.to_thread(
+                self._classify_sync, path, file_map
+            )
+
+        # Short-circuit if nothing changed
+        if short_circuited:
+            # Still update files table (mtime/size may have changed, hash unchanged)
+            async with self._conn_lock:
+                await asyncio.to_thread(self._upsert_file_record, path, file_content)
+                await asyncio.to_thread(self._conn.commit)
+            return
+
+        # 4. Execute deletions（同步 delete 收拢到线程池，加写锁串行化）
+        if to_delete:
+            async with self._conn_lock:
+                await asyncio.to_thread(self._delete_many_sync, to_delete)
+
+        # 5. Execute upserts (only changed/new blocks get fresh embeddings)
+        #    upsert 内部已自持 _conn_lock（每 block 一次），不在此持锁以避免死锁。
+        for block in to_upsert:
+            doc = MemoryDoc(
+                id=block.mem_id,
+                text=block.text,
+                type=block.type,
+                fields=block.fields,
+                blacklisted=block.blacklisted,
+                is_important=block.is_important,
+            )
+            await self.upsert(
+                doc,
+                tenant=tenant,
+                location=ChunkLocation(
+                    path=path,
+                    start_line=block.start_line,
+                    end_line=block.end_line,
+                ),
+            )
+
+        # 6-7. Fix line numbers（reline UPDATE）+ Update files table + commit，
+        #      收拢到线程池，加写锁串行化。
+        async with self._conn_lock:
+            await asyncio.to_thread(
+                self._reline_and_finalize_sync, path, file_content, to_reline
+            )
+
+    def _classify_sync(
+        self,
+        path: str,
+        file_map: dict[str, Block],
+    ) -> tuple[list[Block], list[Block], list[str], bool]:
+        """sync_file 的查询+分类段（同步 DB） —— 由 sync_file 经 to_thread 调用。
+
+        返回 (to_upsert, to_reline, to_delete, short_circuited)。short_circuited=True
+        表示三类全空，调用方走 short-circuit 分支（仅更新 files 表 + commit）。
+        """
         db_rows = self._conn.execute(
             "SELECT mem_id, hash, start_line, end_line FROM chunks WHERE path=?",
             (path,),
@@ -910,7 +1039,6 @@ class VectorIndex:
         db_ids = set(db_map.keys())
         file_ids = set(file_map.keys())
 
-        # 3. Classify
         to_upsert: list[Block] = []        # new or text-changed blocks → re-embed
         to_reline: list[Block] = []        # unchanged text but line numbers shifted
         to_delete: list[str] = []
@@ -934,37 +1062,20 @@ class VectorIndex:
                 # Removed from file
                 to_delete.append(bid)
 
-        # Short-circuit if nothing changed
-        if not to_upsert and not to_reline and not to_delete:
-            # Still update files table (mtime/size may have changed, hash unchanged)
-            self._upsert_file_record(path, file_content)
-            self._conn.commit()
-            return
+        return to_upsert, to_reline, to_delete, (not to_upsert and not to_reline and not to_delete)
 
-        # 4. Execute deletions
-        for mem_id in to_delete:
+    def _delete_many_sync(self, mem_ids: list[str]) -> None:
+        """sync_file 执行段的删除 —— 同步 self.delete(mem_id) 批量。"""
+        for mem_id in mem_ids:
             self.delete(mem_id)
 
-        # 5. Execute upserts (only changed/new blocks get fresh embeddings)
-        for block in to_upsert:
-            doc = MemoryDoc(
-                id=block.mem_id,
-                text=block.text,
-                type=block.type,
-                fields=block.fields,
-                blacklisted=block.blacklisted,
-                is_important=block.is_important,
-            )
-            await self.upsert(
-                doc,
-                tenant=tenant,
-                location=ChunkLocation(
-                    path=path,
-                    start_line=block.start_line,
-                    end_line=block.end_line,
-                ),
-            )
-
+    def _reline_and_finalize_sync(
+        self,
+        path: str,
+        file_content: str,
+        to_reline: list[Block],
+    ) -> None:
+        """sync_file 执行段尾部：reline UPDATE + files 表更新 + commit（同步）。"""
         # 6. Fix line numbers for unchanged-text blocks whose position drifted.
         #    This is the line-number rebase:
         #    instead of a delta-offset over trailing blocks, we directly write
@@ -1226,12 +1337,25 @@ class VectorIndex:
         """
         c = constraints or SearchConstraints()
         overfetch = max(top_k * _OVERFETCH_MULTIPLIER, 20)
+        # 三个 _search_* 是同步 sqlite3 查询（全表/分区扫描），跑在线程池 + _conn_lock
+        # 串行化以避免与并发写共享同一 sqlite3 连接。merge/sort 是纯内存，留 async 侧。
         if self._vec_available and self._dims == len(query_vec):
-            vec_hits = self._search_vec(tenant, query_vec, c.mem_types, overfetch, filters=c.filters)
+            async with self._conn_lock:
+                vec_hits = await asyncio.to_thread(
+                    self._search_vec, tenant, query_vec, c.mem_types, overfetch, c.filters
+                )
         else:
-            vec_hits = self._search_fallback(tenant, query_vec, c.mem_types, overfetch, filters=c.filters)
-        fts_hits = self._search_fts(tenant, c.query_text, c.mem_types, overfetch, filters=c.filters) \
-            if self._fts_available else []
+            async with self._conn_lock:
+                vec_hits = await asyncio.to_thread(
+                    self._search_fallback, tenant, query_vec, c.mem_types, overfetch, c.filters
+                )
+        if self._fts_available:
+            async with self._conn_lock:
+                fts_hits = await asyncio.to_thread(
+                    self._search_fts, tenant, c.query_text, c.mem_types, overfetch, c.filters
+                )
+        else:
+            fts_hits = []
         merged: dict[str, float] = {}
         for mid, s in vec_hits:
             merged[mid] = merged.get(mid, 0.0) + VECTOR_WEIGHT * s
