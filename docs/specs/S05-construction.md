@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/construction/ |
-| 最近一次修订日期 | 2026-07-25 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/common/F01-memory-layer.md |
+| 最近一次修订日期 | 2026-07-28 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/common/F01-memory-layer.md |
 
 ## 范围 / 边界
 
@@ -67,6 +67,11 @@ class ConstructionOperator(ABC):
 派生单元的 `tier`/`tags` 由 LLM 在抽取时产出。`layers`（L0/L1 分层标注）不由 Extractor
 产出——由 Evolver 抽取后委托 `LayerAnnotator` 生成（见下文 LayerAnnotator 节 + F01-memory-layer）。
 
+LLM 抽取只合并同一实体同一关系或同一事件。派生单元的 L2 只保存紧凑抽取陈述，
+通过 `source_ref`、`provenance` 和模型返回的 `metadata["evidence"]` 回指来源（兼容
+自定义 prompt，允许 evidence 为空）。表格独立记录使用 `structured_record`，可复用助手
+产物使用 `artifact`。非法 JSON 或候选结构错误显式失败，与模型明确返回合法 `[]` 区分。
+
 动态实现识别 `_extract_prompt_<strategy>`。`infer=true` 仍是 write 触发抽取的条件；
 每个非空自定义策略执行一次 LLM 调用。metadata 中 `_extract_prompt_<strategy>` 的值是
 prompt 的 **key**（引用 yml `prompts.extract` 段的命名 prompt），运行时由
@@ -75,7 +80,9 @@ registry 未配置或 key 缺失时回退把值本身当文本用（兼容内联
 自身约定，调用方在 prompt 文本里写清。`DynamicLLMExtractor` 默认按 JSON 解析，并开放
 `parse_response(response, sources, strategy) -> list[MemoryUnit]` 继承扩展点，允许新实现
 解析 XML 或其它响应格式。格式相关中间结构不得越过 `parse_response` 边界；所有实现最终
-仍向 Evolver 返回 `list[MemoryUnit]`。没有动态 prompt 时委托配置的旧 Extractor。
+仍向 Evolver 返回 `list[MemoryUnit]`。单个策略失败与其它策略隔离；若所有策略都失败则
+向上抛出最后一个错误，以区别于策略成功返回合法空结果。没有动态 prompt 时委托配置的旧
+Extractor。
 
 ### DynamicEvolver（`evolver_impl/dynamic_evolver.py`）
 
@@ -133,8 +140,10 @@ registry 未配置或 key 缺失时回退把值本身当文本用（兼容内联
 | `annotate` | `(units: list[MemoryUnit]) -> list[MemoryUnit]` | 为一批 unit 生成 L0/L1 标注，原地写 `unit.layers`，返回原列表 |
 
 按 `layer_annotator_threshold`（默认 512）筛选：仅对 `len(content) > threshold` 的 unit
-标注，短 content 留空。best effort——失败降级为空 layers，不阻断演进。Evolver 在
-EXTRACT/CONSOLIDATE 抽取（升华）后、去重落盘前调用，保证落盘 unit 带 layers。详见 F01。
+标注，短 content 留空。LLM 批量结果必须以合法、唯一的 ID 完整覆盖输入；重复、越界或
+遗漏 ID 时整批不写。每条结果应满足 `0 < len(L0) < len(L1) < len(L2)`，仅长度不合法的
+条目单独跳过，其余条目在结构校验完成后写入。Evolver 在 EXTRACT/CONSOLIDATE 抽取
+（升华）后、去重落盘前调用。
 
 ### IndexBuilder（`index_builder.py`）
 
