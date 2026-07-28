@@ -498,7 +498,7 @@ def test_extract_l2_is_compact_statement_with_source_reference():
     assert result[0].metadata["extracted_statement"] == statement
 
 
-def test_extract_rejects_invalid_candidate_instead_of_partial_success():
+def test_extract_skips_invalid_candidate_and_preserves_valid_candidate():
     extractor = _make_extractor([
         json.dumps([
             {
@@ -516,8 +516,11 @@ def test_extract_rejects_invalid_candidate_instead_of_partial_success():
         ])
     ])
 
-    with pytest.raises(InvalidExtractionCandidateError):
-        extractor.extract([create_test_unit("u1", "source")])
+    result = extractor.extract([create_test_unit("u1", "source")])
+
+    assert len(result) == 1
+    assert result[0].content == "valid statement"
+    assert result[0].provenance == ["u1"]
 
 
 @pytest.mark.parametrize(
@@ -533,6 +536,35 @@ def test_extract_rejects_missing_or_invalid_confidence(item):
 
     with pytest.raises(InvalidExtractionCandidateError):
         extractor.extract([create_test_unit("u1", "source")])
+
+
+def test_extract_continues_after_one_sub_batch_fails():
+    extractor = _make_extractor([
+        "not valid JSON",
+        json.dumps([
+            {
+                "source_id": "u9",
+                "target": "fact",
+                "content": "valid statement from the second sub-batch",
+                "confidence": 1.0,
+            }
+        ]),
+    ])
+    units = [create_test_unit(f"u{i}", f"source {i}") for i in range(1, 10)]
+
+    result = extractor.extract(units)
+
+    assert len(result) == 1
+    assert result[0].content == "valid statement from the second sub-batch"
+    assert result[0].provenance == ["u9"]
+
+
+def test_extract_does_not_hide_failed_sub_batch_as_empty_result():
+    extractor = _make_extractor(["not valid JSON", "[]"])
+    units = [create_test_unit(f"u{i}", f"source {i}") for i in range(1, 10)]
+
+    with pytest.raises(InvalidExtractionJSONError):
+        extractor.extract(units)
 
 
 def test_extract_deduplicates_same_statement_within_source():
