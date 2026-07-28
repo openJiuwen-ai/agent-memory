@@ -46,11 +46,18 @@ def _dict_kv_backed():
     async def _set(key, value):
         backing[key] = value
 
+    async def _delete_by_prefix(prefix, batch_size=None):
+        # Walk a snapshot of keys; prefix-match like a real KV would.
+        for key in list(backing.keys()):
+            if key.startswith(prefix):
+                backing.pop(key, None)
+
     kv = MagicMock()
     kv.exclusive_set = AsyncMock(side_effect=_exclusive_set)
     kv.get = AsyncMock(side_effect=_get)
     kv.set = AsyncMock(side_effect=_set)
     kv.delete = AsyncMock(side_effect=_delete)
+    kv.delete_by_prefix = AsyncMock(side_effect=_delete_by_prefix)
     return kv, backing
 
 
@@ -62,6 +69,10 @@ def ltm():
     m.kv_store = kv
     m.write_manager = MagicMock()
     m.write_manager.delete_mem_by_id = AsyncMock()
+    m.write_manager.delete_mem_by_user_id = AsyncMock()
+    m.middle_write_manager = None
+    m.message_manager = None
+    m._middle_memory_tasks = {}
     yield m
     Singleton._instances.pop(LongTermMemory, None)
 
@@ -151,3 +162,94 @@ async def test_delete_mem_by_id_acquires_user_lock(ltm):
     await ltm.delete_mem_by_id(mem_id="m1", user_id="u", scope_id="s")
     lock_keys = [c.args[0] for c in ltm.kv_store.exclusive_set.call_args_list]
     assert "_lock/user/u" in lock_keys
+
+
+# ---------------------------------------------------------------- batch delete cleanup
+# ``delete_mem_by_user_id`` / ``delete_mem_by_scope`` must clean up the
+# Ebbinghaus traces the same way ``delete_mem_by_id`` does — otherwise the
+# retrieve_history/{user}/{scope}/{mem_id} keys become orphans and the
+# blacklist/{scope}/{user} set keeps stale mem_ids forever ("forget me"
+# compliance gap).
+
+
+@pytest.mark.asyncio
+async def test_delete_mem_by_user_id_drops_retrieve_history_prefix(ltm):
+    """delete_mem_by_id must delete every retrieve_history key for
+    that user across all scopes (prefix sweep).
+    """
+    # Seed retrieve_history under two scopes + an unrelated user that
+    # must survive.
+    await ltm.kv_store.set(_rh_key("u", "s1", "m1"), json.dumps({"retrieve_count": 1}))
+    await ltm.kv_store.set(_rh_key("u", "s1", "m2"), json.dumps({"retrieve_count": 2}))
+    await ltm.kv_store.set(_rh_key("u", "s2", "m3"), json.dumps({"retrieve_count": 1}))
+    await ltm.kv_store.set(_rh_key("other", "s1", "mX"), json.dumps({"retrieve_count": 9}))
+
+    await ltm.delete_mem_by_user_id(user_id="u", scope_id="s1")
+
+    # All of u's retrieve_history keys are gone, regardless of scope.
+    assert await ltm.kv_store.get(_rh_key("u", "s1", "m1")) is None
+    assert await ltm.kv_store.get(_rh_key("u", "s1", "m2")) is None
+    assert await ltm.kv_store.get(_rh_key("u", "s2", "m3")) is None
+    # Unrelated user's key survives — the sweep is user-scoped.
+    assert await ltm.kv_store.get(_rh_key("other", "s1", "mX")) is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_mem_by_user_id_kv_cleanup_failure_does_not_break_main_delete(ltm):
+    """KV prefix sweep raises — main delete flow already succeeded; the
+    caller must not see an exception.
+    """
+    ltm.kv_store.delete_by_prefix = AsyncMock(side_effect=RuntimeError("kv down"))
+    await ltm.delete_mem_by_user_id(user_id="u", scope_id="s")
+    ltm.write_manager.delete_mem_by_user_id.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_forgetting_traces_batch_kv_store_none_is_noop():
+    """kv_store is None (stores not registered) — cleanup is a no-op,
+    must not raise. Batch path (mem_id omitted).
+    """
+    Singleton._instances.pop(LongTermMemory, None)
+    m = LongTermMemory()
+    m.kv_store = None
+    try:
+        await m._cleanup_forgetting_traces(scope_id="s", user_id="u")
+    finally:
+        Singleton._instances.pop(LongTermMemory, None)
+
+
+@pytest.mark.asyncio
+async def test_delete_mem_by_user_id_acquires_user_lock(ltm):
+    """delete_mem_by_user_id must hold the same user-level lock the per-mem
+    delete uses, so a concurrent add / batch-delete can't race.
+    """
+    await ltm.delete_mem_by_user_id(user_id="u", scope_id="s")
+    lock_keys = [c.args[0] for c in ltm.kv_store.exclusive_set.call_args_list]
+    assert "_lock/user/u" in lock_keys
+
+
+@pytest.mark.asyncio
+async def test_delete_mem_by_scope_runs_user_cleanup_per_user(ltm):
+    """delete_mem_by_scope fans out per user_id via
+    write_manager.delete_mem_by_user_id, then runs the user-level
+    forgetting-traces cleanup inside the same per-user lock scope —
+    so each user's retrieve_history keys are swept.
+    """
+    # scope_user_mapping_manager returns the user list that delete_mem_by_scope
+    # iterates over.
+    ltm.scope_user_mapping_manager = MagicMock()
+    ltm.scope_user_mapping_manager.get_by_scope_id = AsyncMock(
+        return_value=[{"user_id": "u1"}, {"user_id": "u2"}],
+    )
+    ltm.scope_user_mapping_manager.delete_by_scope_id = AsyncMock()
+
+    # Seed retrieve_history for both users.
+    await ltm.kv_store.set(_rh_key("u1", "s", "m1"), json.dumps({"retrieve_count": 1}))
+    await ltm.kv_store.set(_rh_key("u2", "s", "m2"), json.dumps({"retrieve_count": 1}))
+
+    ok = await ltm.delete_mem_by_scope(scope_id="s")
+    assert ok is True
+
+    # Both users' retrieve_history keys are gone.
+    assert await ltm.kv_store.get(_rh_key("u1", "s", "m1")) is None
+    assert await ltm.kv_store.get(_rh_key("u2", "s", "m2")) is None
