@@ -460,7 +460,48 @@ async def startup_event():
             file_root_dir=file_root_dir,
         )
 
-        # 创建配置 - 使用默认配置
+        # 创建配置 - 支持从.env读取加密配置
+        codec_name = os.getenv("MEMORY_CODEC", "").strip().lower()
+        crypto_key = b""
+        
+        # 根据加密算法类型处理密钥
+        if codec_name == "sm4":
+            # SM4国密算法：需要从.env读取SM4_KEY并注册codec
+            from jiuwen_memory.foundation.codec import register_storage_codec, SM4StorageCodec
+            sm4_key_hex = os.getenv("SM4_KEY", "")
+            if sm4_key_hex:
+                try:
+                    sm4_key = bytes.fromhex(sm4_key_hex)
+                    register_storage_codec("sm4", SM4StorageCodec(key=sm4_key))
+                    memory_logger.info("SM4 codec registered successfully")
+                except Exception as e:
+                    memory_logger.error(
+                        "Failed to register SM4 codec: %s, falling back to plaintext",
+                        str(e),
+                    )
+                    codec_name = ""  # 回退到明文模式
+            else:
+                memory_logger.warning(
+                    "SM4 codec specified but SM4_KEY not set, falling back to plaintext"
+                )
+                codec_name = ""  # 回退到明文模式
+        elif codec_name == "aes":
+            # AES加密算法：从.env读取AES_KEY
+            aes_key_hex = os.getenv("AES_KEY", "")
+            if aes_key_hex:
+                try:
+                    crypto_key = bytes.fromhex(aes_key_hex)
+                    memory_logger.info("AES crypto_key loaded from environment")
+                except Exception as e:
+                    memory_logger.error(
+                        "Failed to parse AES_KEY: %s, using empty key",
+                        str(e),
+                    )
+                    crypto_key = b""
+            else:
+                memory_logger.warning("AES codec specified but AES_KEY not set, using empty key")
+                crypto_key = b""
+        
         config = MemoryEngineConfig(
             default_model_cfg=ModelRequestConfig(
                 model=os.getenv("MODEL_NAME", "")
@@ -473,7 +514,9 @@ async def startup_event():
                 verify_ssl=os.getenv("MODEL_SSL_VERIFY", "false").strip().lower() == "true"
             ),
             # 是否启用中期记忆；默认不启用，设为 true 时开启
-            enable_middle_memory=_bool_env("MEMORY_ENABLE_MIDDLE_MEMORY", False)
+            enable_middle_memory=_bool_env("MEMORY_ENABLE_MIDDLE_MEMORY", False),
+            codec=codec_name,
+            crypto_key=crypto_key
         )
 
         memory_engine.set_config(config)

@@ -32,6 +32,7 @@ the engine falls back to ``AesStorageCodec(config.crypto_key)``.
 
 """
 from jiuwen_memory.foundation.codec.aes_storage_codec import AesStorageCodec
+from jiuwen_memory.foundation.codec.sm4_storage_codec import SM4StorageCodec
 from jiuwen_memory.foundation.codec.codec_registry import (
     CodecRegistry,
     get_default_registry,
@@ -43,6 +44,7 @@ from jiuwen_memory.foundation.codec.storage_codec import StorageCodec
 __all__ = [
     "StorageCodec",
     "AesStorageCodec",
+    "SM4StorageCodec",
     "CodecRegistry",
     "get_default_registry",
     "register_storage_codec",
