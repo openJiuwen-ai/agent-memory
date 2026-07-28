@@ -15,7 +15,6 @@ from common.log import get_logger
 from common.type_def import MemoryUnit
 from common.type_def.chat import ChatMessage
 from construction.base import ExtractContext, OperatorType
-from construction.common import parse_tags
 from construction.extractor import Extractor, ExtractorProducer
 from construction.prompt_registry import PHASE_EXTRACT, PromptRegistry
 from construction.prompt_strategy import (
@@ -28,11 +27,8 @@ from construction.prompt_strategy import (
 from .llm_extractor import (
     _SOURCE_PREFIX,
     ExtractionCandidate,
-    ExtractionTarget,
     ExtractorImpl,
     _format_context_block,
-    _parse_tier,
-    _strip_source_id_shell,
 )
 
 logger = get_logger(__name__)
@@ -67,7 +63,6 @@ class DynamicLLMExtractor(Extractor):
             retry_max_retries=retry_max_retries,
             retry_backoff_ms=retry_backoff_ms,
         )
-        self._min_confidence = min_confidence
 
     def operator_type(self) -> OperatorType:
         return OperatorType.EXTRACTOR
@@ -95,6 +90,8 @@ class DynamicLLMExtractor(Extractor):
             return []
         result: list[MemoryUnit] = []
         seen: set[str] = set()
+        successful_strategies = 0
+        last_error: Exception | None = None
         for strategy, prompt_key in prompts:
             if strategy in seen:
                 continue
@@ -103,11 +100,15 @@ class DynamicLLMExtractor(Extractor):
                 built = self._extract_strategy(accepted, context, strategy, prompt_key)
             except Exception as exc:
                 logger.warning("Dynamic extractor strategy=%s failed: %s", strategy, exc)
+                last_error = exc
                 continue
+            successful_strategies += 1
             for unit in built:
                 unit.metadata[EXTRACTION_STRATEGY_KEY] = strategy
             copy_consolidation_prompts(units, built)
             result.extend(built)
+        if successful_strategies == 0 and last_error is not None:
+            raise last_error
         return result
 
     def _extract_strategy(
@@ -166,34 +167,10 @@ class DynamicLLMExtractor(Extractor):
         sources: list[MemoryUnit],
         strategy: str,
     ) -> list[ExtractionCandidate]:
-        unit_map = {unit.id: unit for unit in sources}
-        candidates: list[ExtractionCandidate] = []
-        for item in self._helper.parse_llm_response(response):
-            try:
-                confidence = float(item.get("confidence", 0.0))
-            except (TypeError, ValueError):
-                continue
-            source_id = _strip_source_id_shell(str(item.get("source_id", "")))
-            content = str(item.get("content", "")).strip()
-            if confidence < self._min_confidence or source_id not in unit_map or not content:
-                continue
-            try:
-                target = ExtractionTarget(str(item.get("target", "fact")).lower())
-            except ValueError:
-                target = ExtractionTarget.FACT
-            candidates.append(
-                ExtractionCandidate(
-                    target=target,
-                    content=content,
-                    source_unit_id=source_id,
-                    confidence=confidence,
-                    evidence=str(item.get("evidence", "")),
-                    event_date=str(item.get("event_date", "") or ""),
-                    tier=_parse_tier(item.get("tier")),
-                    tags=parse_tags(item.get("tags")),
-                    metadata={EXTRACTION_STRATEGY_KEY: strategy},
-                )
-            )
+        items = self._helper.parse_llm_response(response)
+        candidates = self._helper.build_candidates(items, sources)
+        for candidate in candidates:
+            candidate.metadata[EXTRACTION_STRATEGY_KEY] = strategy
         return candidates
 
 

@@ -18,10 +18,10 @@ tier 与 tags 均由 LLM 在抽取时一并产出（同一 prompt，不另调 LL
 L0/L1 分层标注不由本算子负责——由 Evolver 在抽取后委托
 :class:`~construction.layer_annotator.LayerAnnotator` 生成（见 F01-memory-layer）。
 
-prompt 要求 LLM 把同一 source 内**同主题**的多个子事实合并成一条自包含陈述（如咖啡
-偏好：早上美式/下午拿铁/不加糖 合成 1 条，而非 3 条碎片），减少派生单元数量、提升
-每条单元的信息密度。不同主题（咖啡≠编程技能≠会议安排）保持独立。跨次 write 的重复
-仍由 Evolver ``_dedup_batch`` 兜底（向量召回判定 NOOP/UPDATE）。
+prompt 只允许把同一 source 内**同一实体、同一关系或同一事件**的子事实合并成一条
+自包含陈述（如同一个人的咖啡偏好：早上美式/下午拿铁/不加糖），不同人物、记录、动作
+或事件保持独立。跨次 write 的重复仍由 Evolver ``_dedup_batch`` 兜底（向量召回判定
+NOOP/UPDATE）。
 
 纯函数：不落盘、不标记、不检索。幂等性依赖 LLM temperature=0。
 """
@@ -58,6 +58,14 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
+class InvalidExtractionJSONError(ValueError):
+    """LLM 抽取结果不是合法 JSON；与模型明确返回 ``[]`` 区分。"""
+
+
+class InvalidExtractionCandidateError(ValueError):
+    """LLM 抽取候选不满足最小结构契约。"""
+
+
 class ExtractionTarget(str, Enum):
     """LLM 产出的提取目标类型。"""
 
@@ -65,6 +73,8 @@ class ExtractionTarget(str, Enum):
     EVENT = "event"
     PREFERENCE = "preference"
     CONTEXT = "context"
+    STRUCTURED_RECORD = "structured_record"
+    ARTIFACT = "artifact"
 
 
 @dataclass
@@ -96,13 +106,14 @@ Output ONLY a JSON array. No explanation, no markdown fences.
 Rules:
 - Extract only what is explicitly stated. Do not infer or speculate.
 - Each item must be self-contained (understandable without source context).
-- MERGE same-topic facts within one source into a single statement. Facts about the
-  same subject/domain (e.g. coffee preferences, a specific skill, a recurring meeting)
-  MUST be combined into one item, not split into many. Each item should be a complete,
-  self-contained statement covering one topic.
-  GOOD: "Alice 的咖啡偏好：早上喝美式、下午喝拿铁，且不加糖" (one item, full topic)
-  BAD:  "Alice 早上喝美式咖啡" + "Alice 下午喝拿铁咖啡" + "Alice 喝咖啡不加糖" (three fragmented items)
-  But different topics stay separate: coffee preferences ≠ programming skills ≠ meeting schedule.
+- MERGE facts only when they describe the SAME entity and SAME relationship, or the SAME event.
+  Never merge different people, objects, actions, table rows, or events just because they
+  share a topic.
+- Preserve exact names, identifiers, numbers, dates, times, counts, negation, and action state.
+- For a table or schedule, emit one "structured_record" per independent row or relationship.
+- For reusable code, configuration, checklists, decision records, or complete plans, emit an
+  "artifact" and retain the reusable content rather than only saying that it was created.
+- For "evidence", copy the smallest complete verbatim source span that proves the item.
 - "source_id": the bare id of the source memory the item was extracted from.
   Use the UUID value shown inside the [ID: ...] marker — WITHOUT the "[ID: ]" wrapper,
   WITHOUT quotes around the marker, and WITHOUT any leading/trailing whitespace.
@@ -112,14 +123,17 @@ Rules:
 - Language: write each extracted statement in the SAME language as its source text
   (Chinese source → Chinese statement; English source → English statement). Never
   translate the extracted content to another language.
-- "confidence": 1.0 = directly stated, 0.7 = clearly implied, 0.5 = weakly implied. Do not extract below 0.5.
+- "confidence": 1.0 = directly stated, 0.7 = clearly implied, 0.5 = weakly implied.
+  Do not extract below 0.5.
 - Relative time resolution: if the user message contains relative time expressions
-  (e.g. "yesterday", "last week", "明天", "昨天上午9点", "上周三"), resolve them to ABSOLUTE
+  (e.g. "yesterday", "last week", "tomorrow at 9 a.m.", "last Wednesday"),
+  resolve them to ABSOLUTE
   dates/times using the observation_date given in the user prompt as the reference point.
   Write the absolute date/time into the content text AND output an "event_date" field in
   ISO 8601 format (e.g. "2025-06-09T09:00:00"). If the item has no time component, omit
   event_date (or output empty string). Example: observation_date=2025-06-10, source
-  "Alice 昨天上午9点参加篮球比赛" → content="Alice 2025年6月9日上午9点参加篮球比赛",
+  "Alice attended a basketball game yesterday at 9 a.m." →
+  content="Alice attended a basketball game on 2025-06-09 at 9 a.m.",
   event_date="2025-06-09T09:00:00".
 - "tier": the cognitive role of the extracted memory, one of:
   - "episodic": something that happened at a point in time (an event/experience).
@@ -129,7 +143,8 @@ Rules:
 - "tags": 1 to 3 short labels summarizing this memory's topic, for later filtering/retrieval.
   Rules: lowercase; drop articles/stopwords; same language as the content; do NOT duplicate
   words already central to the content; keep each tag to 1-3 words. Example: content
-  "Alice 的咖啡偏好：早上喝美式、下午喝拿铁" → tags: ["coffee", "preference"].
+  "Alice prefers an Americano in the morning and a latte in the afternoon" →
+  tags: ["coffee", "preference"].
 - If nothing worth extracting, return [].
 
 Target types:
@@ -138,13 +153,16 @@ Target types:
 - "preference": the user likes/dislikes/prefers/wants something
 - "context": any other durable information that may be useful for future conversations
   (e.g., project background, ongoing tasks, skills demonstrated, topics discussed)
+- "structured_record": one independent row or relationship from a table, schedule, or list
+- "artifact": reusable assistant output such as code, configuration, checklist, or plan
 
 Output schema:
 [{
   "source_id": "32049cd0-5f7c-419f-928f-503b24318f7c",
-  "target": "fact" | "event" | "preference" | "context",
+  "target": "fact" | "event" | "preference" | "context" | "structured_record" | "artifact",
   "tier": "episodic" | "semantic" | "procedural",
   "content": "self-contained statement (one topic, merged if multiple sub-facts)",
+  "evidence": "smallest complete verbatim source span",
   "tags": ["tag1", "tag2"],
   "confidence": 0.5~1.0,
   "event_date": "2025-06-09T09:00:00"  // optional, only if time is resolved
@@ -160,7 +178,7 @@ Output ONLY a JSON object (no array, no markdown fences). Schema:
 {
   "content": "one self-contained statement summarizing what was done in this turn: \
 the goal/task, the key steps taken, and the outcome/result. Structured but as a single \
-coherent statement (can use inline markers like 目标:/步骤:/结果:). In the SAME language \
+coherent statement (can use inline markers like Goal:/Steps:/Outcome:). In the SAME language \
 as the source text. Cover the whole turn, not just one fact."
 }
 
@@ -184,8 +202,8 @@ _SOURCE_PREFIX = """\
 # 匹配 LLM 误带 [ID: ...] 外壳的 source_id（prompt 已要求裸 uuid，此处为防御性兜底）
 _SOURCE_ID_SHELL_RE = re.compile(r"^\s*\[ID:\s*(?P<id>[^\]]+)\]\s*$", re.IGNORECASE)
 
-# 批量提取的子批大小：把 accepted 拆成若干子批，每子批独立一次 LLM 调用 + 独立
-# try/except——单子批 LLM/解析失败只丢该子批的候选，不波及整批（失败爆炸半径隔离）。
+# 批量提取的子批大小：把 accepted 拆成若干子批，每子批独立一次 LLM 调用。
+# 任一子批失败会显式向上抛出，避免把故障伪装成正常空抽取。
 _EXTRACT_BATCH_SIZE = 8
 
 
@@ -334,18 +352,13 @@ class ExtractorImpl(Extractor):
         if not accepted:
             return []
 
-        # Phase 2: LLM 提取（按子批拼 prompt 逐批调用，单批失败不波及其余）
+        # Phase 2: LLM 提取（按子批拼 prompt 逐批调用）。
+        # 无效 JSON / 上游调用失败必须向调用方暴露，不能伪装成模型明确返回 []。
         # tier 与 tags 由 LLM 在此一并产出（同一 prompt），不再走 FeatureExtractor 富化。
         all_candidates: list[ExtractionCandidate] = []
         for start in range(0, len(accepted), _EXTRACT_BATCH_SIZE):
             sub_batch = accepted[start:start + _EXTRACT_BATCH_SIZE]
-            try:
-                all_candidates.extend(self._llm_extract_batch(sub_batch, context=context))
-            except Exception:
-                logger.warning(
-                    "Extractor: LLM extract failed for sub-batch of %d units (offset=%d), skipping",
-                    len(sub_batch), start,
-                )
+            all_candidates.extend(self._llm_extract_batch(sub_batch, context=context))
 
         logger.info(
             "Extractor: extracted %d candidates from %d units", len(all_candidates), len(accepted)
@@ -520,7 +533,8 @@ class ExtractorImpl(Extractor):
         user_text = (
             f"observation_date: {observation_date}\n"
             f"(Use this as the reference point to resolve relative time expressions "
-            f"like \"yesterday\"/\"昨天\"/\"上周\" into absolute dates in content and event_date.)\n\n"
+            f"like \"yesterday\"/\"last week\"/\"tomorrow\" into absolute dates in content "
+            f"and event_date.)\n\n"
             + user_text
         )
         # 追加 context 参考段（仅本轮 units 作提取来源，context 只供 LLM 参考）
@@ -537,26 +551,48 @@ class ExtractorImpl(Extractor):
 
         # 解析 JSON
         items = self.parse_llm_response(response)
+        return self.build_candidates(items, units)
 
+    def build_candidates(
+        self,
+        items: list[dict],
+        units: list[MemoryUnit],
+    ) -> list[ExtractionCandidate]:
+        """校验已解析的候选，并绑定到本批 source units。"""
         # 建立 id → unit 索引，用于校验 + 绑定 source
         unit_map = {u.id: u for u in units}
 
         # 过滤 confidence < min_confidence，按 source_id 绑定到对应 unit
         candidates: list[ExtractionCandidate] = []
         unmatched = 0
-        for item in items:
-            confidence = float(item.get("confidence", 0.0))
-            if confidence < self._min_confidence:
+        invalid_reasons: list[str] = []
+        for item_index, item in enumerate(items):
+            if not isinstance(item, dict):
+                invalid_reasons.append(f"item {item_index} is not an object")
+                continue
+            if "confidence" not in item:
+                invalid_reasons.append(f"item {item_index} is missing confidence")
+                continue
+            try:
+                confidence = float(item["confidence"])
+            except (TypeError, ValueError):
+                invalid_reasons.append(f"item {item_index} has invalid confidence")
+                continue
+            if not 0.0 <= confidence <= 1.0:
+                invalid_reasons.append(f"item {item_index} confidence is outside [0, 1]")
                 continue
 
             source_id = _strip_source_id_shell(str(item.get("source_id", "")))
             if source_id not in unit_map:
-                # source_id 不匹配——批量提取下 LLM 可能漏写或写错，跳过该候选
                 unmatched += 1
-                logger.warning(
-                    "Extractor: candidate source_id %r not in batch, skipping (content=%s)",
-                    source_id, str(item.get("content", ""))[:80],
+                invalid_reasons.append(
+                    f"item {item_index} source_id {source_id!r} is not in the batch"
                 )
+                continue
+
+            content = item.get("content")
+            if not isinstance(content, str) or not content.strip():
+                invalid_reasons.append(f"item {item_index} has empty content")
                 continue
 
             target_str = item.get("target", "fact")
@@ -572,10 +608,16 @@ class ExtractorImpl(Extractor):
             tags = parse_tags(item.get("tags"))
 
             evidence = item.get("evidence", "")
+            if not isinstance(evidence, str):
+                invalid_reasons.append(f"item {item_index} has non-string evidence")
+                continue
+            if confidence < self._min_confidence:
+                continue
+
             event_date = str(item.get("event_date", "") or "").strip()
             candidates.append(ExtractionCandidate(
                 target=target,
-                content=item.get("content", ""),
+                content=content.strip(),
                 source_unit_id=source_id,
                 confidence=confidence,
                 evidence=evidence,
@@ -586,7 +628,8 @@ class ExtractorImpl(Extractor):
             ev_str = f", evidence={evidence[:100]}" if evidence else ""
             ed_str = f", event_date={event_date}" if event_date else ""
             logger.info(
-                "Extractor: candidate — source=%s target=%s tier=%s tags=%s, confidence=%.2f, content=%s%s%s",
+                "Extractor: candidate — source=%s target=%s tier=%s tags=%s, "
+                "confidence=%.2f, content=%s%s%s",
                 source_id[:8],
                 target.value,
                 tier.value,
@@ -597,8 +640,15 @@ class ExtractorImpl(Extractor):
                 ed_str,
             )
 
+        if invalid_reasons:
+            details = "; ".join(invalid_reasons[:8])
+            if len(invalid_reasons) > 8:
+                details += f"; +{len(invalid_reasons) - 8} more"
+            raise InvalidExtractionCandidateError(details)
+
         logger.info(
-            "Extractor: from batch of %d units extracted %d candidates (raw LLM items=%d, unmatched=%d)",
+            "Extractor: from batch of %d units extracted %d candidates "
+            "(raw LLM items=%d, unmatched=%d)",
             len(units),
             len(candidates),
             len(items),
@@ -630,7 +680,7 @@ class ExtractorImpl(Extractor):
         raise last_exc
 
     def parse_llm_response(self, response: str) -> list[dict]:
-        """解析 LLM 返回的 JSON。"""
+        """解析抽取 JSON；非法载荷显式失败，合法 ``[]`` 原样返回。"""
         # 尝试直接解析
         try:
             parsed = json.loads(response)
@@ -651,9 +701,11 @@ class ExtractorImpl(Extractor):
             if isinstance(parsed, dict):
                 return [parsed]
         except json.JSONDecodeError:
-            logger.warning("Extractor: LLM response not valid JSON, returning empty")
-            return []
-        return []
+            logger.warning("Extractor: LLM response is not valid JSON")
+            raise InvalidExtractionJSONError("extractor response is not valid JSON")
+        raise InvalidExtractionJSONError(
+            f"extractor response must be a JSON array or object, got {type(parsed).__name__}"
+        )
 
     @staticmethod
     def _strip_non_json(text: str) -> str:
@@ -689,6 +741,7 @@ class ExtractorImpl(Extractor):
         source_map = {u.id: u for u in source_units}
 
         result = []
+        seen: set[tuple[str, str]] = set()
         for c in candidates:
             source = source_map.get(c.source_unit_id)
             if source is None:
@@ -703,11 +756,19 @@ class ExtractorImpl(Extractor):
             if "extracted" not in tags:
                 tags.append("extracted")
 
+            statement = c.content.strip()
+            if not statement:
+                continue
+            dedup_key = (source.id, " ".join(statement.split()).casefold())
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+
             unit = MemoryUnit(
                 id=str(uuid.uuid4()),
                 scope=source.scope,
                 tier=c.tier,
-                segments=[Segment(content=c.content, source=source.source)],
+                segments=[Segment(content=statement, source=source.source)],
                 source_ref=source.id,
                 temporal=Temporal(
                     t_event=_parse_event_date(c.event_date) or source.temporal.t_event,
@@ -719,6 +780,7 @@ class ExtractorImpl(Extractor):
                     "confidence": str(c.confidence),
                     "target": c.target.value,
                     "evidence": c.evidence,
+                    "extracted_statement": statement,
                 }
                 | c.metadata,
                 lifecycle=LifecycleState.ACTIVE,
