@@ -70,7 +70,9 @@ class ConstructionOperator(ABC):
 LLM 抽取只合并同一实体同一关系或同一事件。派生单元的 L2 只保存紧凑抽取陈述，
 通过 `source_ref`、`provenance` 和模型返回的 `metadata["evidence"]` 回指来源（兼容
 自定义 prompt，允许 evidence 为空）。表格独立记录使用 `structured_record`，可复用助手
-产物使用 `artifact`。非法 JSON 或候选结构错误显式失败，与模型明确返回合法 `[]` 区分。
+产物使用 `artifact`。非法 JSON 作为子批失败显式记录；候选结构逐条校验并隔离坏候选，
+同批合法候选继续保留。单个子批失败不阻断其它子批；仅当整次抽取没有产生任何可用候选
+时向上抛出首个错误，以区别于模型明确返回合法 `[]`。
 
 动态实现识别 `_extract_prompt_<strategy>`。`infer=true` 仍是 write 触发抽取的条件；
 每个非空自定义策略执行一次 LLM 调用。metadata 中 `_extract_prompt_<strategy>` 的值是
