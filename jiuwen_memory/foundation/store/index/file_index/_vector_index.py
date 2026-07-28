@@ -519,31 +519,23 @@ class VectorIndex:
             location: Chunk's physical location in its ``{Type}.md`` file.
                 ``None`` defaults to an empty location (path/lines unset).
         """
-        user_id, scope_id = tenant.user_id, tenant.scope_id
-        path = location.path if location else ""
-        start_line = location.start_line if location else 0
-        end_line = location.end_line if location else 0
         text = doc.text
         vec = await self._get_embedding(text)
         # 同步 DB 操作段（建表 + INSERT chunks + chunks_vec/chunks_fts 维护 + commit）
         # 收拢到 _upsert_sync，在线程池执行，避免阻塞事件循环（长稳缺陷修复）。
         # _get_embedding 已是 async（含网络调用），不在 _upsert_sync 内重复。
-        # doc 透传以读取 Ebbinghaus forgetting flags（blacklisted/is_important）。
+        # tenant/location 直接透传结构体（G.FNM.03：参数 ≤5），_upsert_sync 内部解包。
 
         async with self._conn_lock:
             await asyncio.to_thread(
-                self._upsert_sync, doc, user_id, scope_id, path,
-                start_line, end_line, text, vec,
+                self._upsert_sync, doc, tenant, location, text, vec,
             )
 
     def _upsert_sync(
         self,
         doc: MemoryDoc,
-        user_id: str,
-        scope_id: str,
-        path: str,
-        start_line: int,
-        end_line: int,
+        tenant: TenantScope,
+        location: ChunkLocation | None,
         text: str,
         vec: list[float],
     ) -> None:
@@ -551,8 +543,13 @@ class VectorIndex:
 
         建表（_ensure_vec_table）、INSERT chunks（含 Ebbinghaus forgetting flags）、
         chunks_vec/chunks_fts 维护、commit 全在此。caller 已 await _get_embedding
-        拿到 vec。
+        拿到 vec。tenant/location 在此解包为标量，避免 caller 提前拆解
+        8 个散参（G.FNM.03：函数参数 ≤5）。
         """
+        user_id, scope_id = tenant.user_id, tenant.scope_id
+        path = location.path if location else ""
+        start_line = location.start_line if location else 0
+        end_line = location.end_line if location else 0
         if vec:
             self._ensure_vec_table(len(vec))
             if self._dims is None:
