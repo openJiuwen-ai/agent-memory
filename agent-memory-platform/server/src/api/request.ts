@@ -9,6 +9,9 @@ export interface ApiResponse<T = any> {
   data: T
 }
 
+// 后端断开标志（防止重复跳转）
+let isBackendDisconnected = false
+
 const request = axios.create({
   baseURL: '', // API 路径直接写在每个调用中,通过 Vite 代理转发
   timeout: 15000,
@@ -93,7 +96,34 @@ request.interceptors.response.use(
       }
     } else if (error.request) {
       // 请求已发送但没有收到响应(后端断开/网络错误)
-      ElMessage.error('网络错误,请检查后端服务是否启动')
+      console.error('后端服务连接失败:', error)
+      
+      // 如果已经处理过后端断开，不再重复处理
+      if (isBackendDisconnected) {
+        return Promise.reject(error)
+      }
+      
+      // 标记后端已断开
+      isBackendDisconnected = true
+      
+      // 清除登录状态
+      localStorage.removeItem('token')
+      localStorage.removeItem('username')
+      localStorage.removeItem('role')
+      localStorage.removeItem('tenantId')
+      localStorage.removeItem('scopeIds')
+      localStorage.removeItem('permissions')
+      
+      // 显示错误提示
+      ElMessage.error('后端服务已断开，请检查后端是否正常运行')
+      
+      // 跳转到登录页
+      router.push('/login')
+      
+      // 3秒后重置标志，允许下次检测
+      setTimeout(() => {
+        isBackendDisconnected = false
+      }, 3000)
     } else {
       // 其他错误
       ElMessage.error(error.message || '请求失败')
