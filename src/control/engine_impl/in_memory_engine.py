@@ -239,7 +239,7 @@ class InMemoryEngine(MemoryEngine):
             # 同步抽取路径（procedural / infer 共用）：原文不进默认落盘，直接喂 Evolver(EXTRACT)。
             # evolver 据单元 metadata 区分模式：
             # - procedural：原文不落 KV，产 1 条 PROCEDURAL 落 /memory/，跳过 context/dedup。
-            # - infer：原文落 /messages/（不建索引，供后续轮指代消解/语境）+ 收集 context + 走 dedup，
+            # - infer：原文落 /messages/（不建索引）+ 收集 context + 走 consolidation，
             #   派生落 /memory/。evolver 还负责 /messages/ 的最近 10 条淘汰。
             # procedural 与 infer 互斥，若两者同传按 procedural 语义（原文不落）。
             if evolver is None:
@@ -483,7 +483,7 @@ class InMemoryEngine(MemoryEngine):
 
 @EngineProducer.register("in_memory")
 def _build(config):
-    # index_builder 缺省随 vector_enabled 在 hybrid/fulltext 间择一（与 evolver 一致，共享同一实例）。
+    # index_builder 缺省随 vector_enabled 在 hybrid/fulltext 间择一，并与 evolver 共享。
     ib_default = "hybrid" if config.get("vector_enabled", True) else "fulltext"
     # classifier 可选：config 声明了 classifier 命名空间具名实例则注入，None 时跳过（向后兼容）。
     # infer=false 默认路径用它给原文打 tier+tags；infer=true 由 extractor 产出不经 classifier。

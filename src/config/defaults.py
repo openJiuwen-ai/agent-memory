@@ -17,6 +17,15 @@ from .context import AssemblyContext
 
 _D = "default"
 
+# 默认 prompts 段（顶层 ``prompts``）：按 phase/key 命名引用。metadata 只写 key，
+# 运行时由 PromptRegistry 按 key 查文本。这里给出空骨架——具体 prompt 由用户在 yml
+# 里覆盖；空 dict 表示该 phase 下无可用 prompt（consolidate/reflect 步会回退到规则）。
+_PROMPTS_DEFAULT: dict[str, dict[str, str]] = {
+    "extract": {},
+    "consolidate": {},
+    "reflect": {},
+}
+
 
 def default_config_dict() -> dict[str, Any]:
     """返回内置默认配置（两级命名空间字典）。"""
@@ -28,6 +37,10 @@ def default_config_dict() -> dict[str, Any]:
             "embedder_dim": 64,
             "chunk_size": 120,
         },
+        # 顶层 prompts 段：按 phase（consolidate/reflect）→ key → prompt 文本。
+        # 与 globals 同级，由 AssemblyContext 抽取到 globals["prompts"] 供
+        # PromptRegistry 加载。metadata 只引用 key，不内联 prompt 文本。
+        "prompts": _PROMPTS_DEFAULT,
         # -- 存储（有状态，必须对象共享）-------------------------------------- #
         "kv_store": {_D: "memory"},
         "vector_store": {
@@ -115,7 +128,13 @@ def default_config_dict() -> dict[str, Any]:
             }
         },
         # -- 构建 ------------------------------------------------------------ #
-        "extractor": {_D: {"target": "keyword", "params": {"chunker": _D}}},
+        "extractor": {
+            _D: {
+                "target": "dynamic_llm",
+                "params": {"llm": _D, "fallback": "legacy"},
+            },
+            "legacy": {"target": "keyword", "params": {"chunker": _D}},
+        },
         "abstractor": {_D: "concat"},
         "associator": {_D: {"target": "keyword", "params": {"feature_extractor": _D}}},
         "classifier": {_D: "llm"},  # infer=false 默认路径用 LLM classifier 打 tier+tags
@@ -151,7 +170,22 @@ def default_config_dict() -> dict[str, Any]:
                     "dedup": _D,
                     "llm": _D,
                 },
-            }
+            },
+            # dynamic：EXTRACT 走动态 prompt 四步编排（extract→consolidate→reflect→落盘）。
+            # 与 orchestrating 平级；装配或 pipeline profile 选它即启用动态路径。
+            "dynamic": {
+                "target": "dynamic",
+                "params": {
+                    "extractor": _D,
+                    "abstractor": _D,
+                    "associator": _D,
+                    "index_builder": _D,
+                    "kv_store": _D,
+                    "graph_store": _D,
+                    "dedup": _D,
+                    "llm": _D,
+                },
+            },
         },
         # -- 摄取 ------------------------------------------------------------ #
         "ingestor": {_D: {"target": "simple", "params": {"normalizer": _D}}},

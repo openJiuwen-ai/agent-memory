@@ -37,3 +37,29 @@ globals:
 #   default: { target: hybrid, params: { vector_store: shared_vec } }   # 引用 → 与召回侧共享
 # recaller:
 #   vector: { target: vector, params: { vector_store: shared_vec } }
+
+# ---- 动态 prompt 四步编排（DynamicEvolver：extract→consolidate→reflect→落盘）----
+# prompts 段（顶层，与 globals 同级）：按 phase → key → prompt 文本。
+# metadata 只写 prompt 的 **key**（引用此处的命名 prompt），三步统一，运行时由
+# PromptRegistry 按 phase+key 查真实文本发给 LLM。
+# prompts:
+#   extract:
+#     episodic: "抽取事件，输出 JSON [{source_id, content, tier, tags}]"
+#     preference: "抽取偏好，输出 JSON [{source_id, content, tier, tags}]"
+#   consolidate:
+#     episodic: "事件变化时替换旧记忆，输出 JSON {decision, existing_id, reason}"
+#   reflect:
+#     default: "对候选记忆做一致性反思，必要时修正 content"
+
+# 启用动态四步：把默认 evolver 的 target 改为 dynamic（与 orchestrating 平级）。
+# 可选 target：
+#   - orchestrating  默认。legacy 四模式（EXTRACT/CONSOLIDATE/ASSOCIATE/FORGET），
+#                    EXTRACT 走 _dedup_batch 判定+落盘耦合的旧路径。
+#   - dynamic        动态 prompt 四步编排（extract→consolidate(判定)→reflect→落盘），
+#                    EXTRACT 走 DynamicEvolver；其余三模式继承 orchestrating 行为。
+# 仅在要调阈值时才写下面两个可选参数。
+# evolver:
+#   default:
+#     target: dynamic
+#     # dedup_medium_similarity: 0.7    # 可选：consolidate 中段阈值（< 此值直接 ADD）
+#     # dedup_high_similarity: 0.9       # 可选：consolidate 高相似阈值（≥ 此值直接 NOOP）

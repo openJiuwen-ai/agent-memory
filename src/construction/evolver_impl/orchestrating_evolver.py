@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
@@ -51,6 +50,7 @@ from construction.evolver import EvolveMode, Evolver, EvolveResult, EvolverProdu
 from construction.extractor import Extractor, ExtractorProducer
 from construction.index_builder import IndexBuilder, IndexBuilderProducer
 from construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
+from construction.prompt_strategy import copy_consolidation_prompts
 from storage.graph import GraphProducer, GraphStore
 from storage.kv import KvProducer, KVStore
 from storage.types import Edge, Node
@@ -797,60 +797,77 @@ class OrchestratingEvolver(Evolver):
             logger.info("Evolver: input unit id=%s tier=%s lifecycle=%s provenance=%s content=%s",
                          u.id[:8], u.tier.value, u.lifecycle.value, u.provenance, u.content[:200])
         if mode == EvolveMode.EXTRACT:
-            procedural = self._is_procedural(units)
-            if procedural:
-                # procedural=true：过程记忆抽取——不收集 context（不检索10条、不拉10条）、
-                # 不走去重。extractor 把本轮汇总成 1 条 PROCEDURAL 执行历史，直接落 /memory/
-                # 建索引。见 F02「过程记忆抽取」。未抽出则直接返回空，不落盘。
-                extracted = self._extractor.extract(units, context=None)
-                logger.info(
-                    "Evolver: EXTRACT(procedural) extractor returned %d units", len(extracted)
-                )
-                if not extracted:
-                    return EvolveResult()
-                self._annotate_layers(extracted)
-                created = self._persist(extracted)
-                return EvolveResult(created_ids=created)
-            # 非 procedural 的 EXTRACT 路径（infer 同步抽取 / background EXTRACT）：
-            recent = self._persist_and_maintain_messages(units)
-            context = self._maybe_collect_extract_context(units, recent)
-            extracted = self._extractor.extract(units, context=context)
-            logger.info("Evolver: EXTRACT extractor returned %d units", len(extracted))
+            return self._evolve_extract(units)
+        if mode == EvolveMode.CONSOLIDATE:
+            return self._evolve_consolidate(units)
+        if mode == EvolveMode.ASSOCIATE:
+            return self._evolve_associate(units)
+        if mode == EvolveMode.FORGET:
+            return self._evolve_forget(units)
+        return EvolveResult()
+
+    def _evolve_extract(self, units: List[MemoryUnit]) -> EvolveResult:
+        """EXTRACT：抽取派生候选 → 分层标注 → 去重判定+落盘（_dedup_batch）。
+
+        子类可覆盖本方法切换 EXTRACT 路径（如 DynamicEvolver 走 extract→consolidate→reflect→落盘）。
+        """
+        procedural = self._is_procedural(units)
+        if procedural:
+            # procedural=true：过程记忆抽取——不收集 context（不检索10条、不拉10条）、
+            # 不走去重。extractor 把本轮汇总成 1 条 PROCEDURAL 执行历史，直接落 /memory/
+            # 建索引。见 F02「过程记忆抽取」。未抽出则直接返回空，不落盘。
+            extracted = self._extractor.extract(units, context=None)
+            logger.info(
+                "Evolver: EXTRACT(procedural) extractor returned %d units", len(extracted)
+            )
             if not extracted:
                 return EvolveResult()
+            copy_consolidation_prompts(units, extracted)
             self._annotate_layers(extracted)
-            result = self._dedup_batch(extracted)
-            return result
-        if mode == EvolveMode.CONSOLIDATE:
-            abstracted = self._abstractor.abstract(units)
-            logger.info("Evolver: CONSOLIDATE abstractor returned %d units", len(abstracted))
-            if not abstracted:
-                return EvolveResult()
-            self._annotate_layers(abstracted)
-            result = self._dedup_batch(abstracted)
-            return result
-        if mode == EvolveMode.ASSOCIATE:
-            relations = self._associator.associate(units)
-            self.relations.extend(relations)
-            self._persist_graph(units, relations)
-            logger.info("Evolver: ASSOCIATE found %d relations", len(relations))
-            for r in relations:
-                logger.info("Evolver: relation %s→%s type=%s score=%.2f metadata=%s",
-                             r.source_id[:8], r.target_id[:8], r.relation, r.score,
-                             {k: v[:50] if isinstance(v, str) else v for k, v in r.metadata.items()})
-            return EvolveResult(updated_ids=[r.target_id for r in relations])
-        if mode == EvolveMode.FORGET:
-            forgotten: List[str] = []
-            for u in units:
-                if u.lifecycle == LifecycleState.SUPERSEDED:
-                    u.lifecycle = LifecycleState.FORGOTTEN
-                    # FORGET 作用于 SUPERSEDED 旧版（建索引记忆，在 /memory/）
-                    self._kv.update(u.scope, memory_key(u.id), dumps(u))
-                    self._index.remove([u.id])
-                    forgotten.append(u.id)
-            logger.info("Evolver: FORGET marked %d units as forgotten", len(forgotten))
-            return EvolveResult(forgotten_ids=forgotten)
-        return EvolveResult()
+            created = self._persist(extracted)
+            return EvolveResult(created_ids=created)
+        # 非 procedural 的 EXTRACT 路径（infer 同步抽取 / background EXTRACT）：
+        recent = self._persist_and_maintain_messages(units)
+        context = self._maybe_collect_extract_context(units, recent)
+        extracted = self._extractor.extract(units, context=context)
+        logger.info("Evolver: EXTRACT extractor returned %d units", len(extracted))
+        if not extracted:
+            return EvolveResult()
+        copy_consolidation_prompts(units, extracted)
+        self._annotate_layers(extracted)
+        return self._dedup_batch(extracted)
+
+    def _evolve_consolidate(self, units: List[MemoryUnit]) -> EvolveResult:
+        abstracted = self._abstractor.abstract(units)
+        logger.info("Evolver: CONSOLIDATE abstractor returned %d units", len(abstracted))
+        if not abstracted:
+            return EvolveResult()
+        copy_consolidation_prompts(units, abstracted)
+        self._annotate_layers(abstracted)
+        return self._dedup_batch(abstracted)
+
+    def _evolve_associate(self, units: List[MemoryUnit]) -> EvolveResult:
+        relations = self._associator.associate(units)
+        self.relations.extend(relations)
+        self._persist_graph(units, relations)
+        logger.info("Evolver: ASSOCIATE found %d relations", len(relations))
+        for r in relations:
+            logger.info("Evolver: relation %s→%s type=%s score=%.2f metadata=%s",
+                         r.source_id[:8], r.target_id[:8], r.relation, r.score,
+                         {k: v[:50] if isinstance(v, str) else v for k, v in r.metadata.items()})
+        return EvolveResult(updated_ids=[r.target_id for r in relations])
+
+    def _evolve_forget(self, units: List[MemoryUnit]) -> EvolveResult:
+        forgotten: List[str] = []
+        for u in units:
+            if u.lifecycle == LifecycleState.SUPERSEDED:
+                u.lifecycle = LifecycleState.FORGOTTEN
+                # FORGET 作用于 SUPERSEDED 旧版（建索引记忆，在 /memory/）
+                self._kv.update(u.scope, memory_key(u.id), dumps(u))
+                self._index.remove([u.id])
+                forgotten.append(u.id)
+        logger.info("Evolver: FORGET marked %d units as forgotten", len(forgotten))
+        return EvolveResult(forgotten_ids=forgotten)
 
 
 # -- 注册到 EvolverProducer（实现自注册，新增无需改 producer/build_kernel） -------- #

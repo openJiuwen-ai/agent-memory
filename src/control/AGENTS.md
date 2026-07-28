@@ -41,7 +41,7 @@
 3. **鉴权不在本层执行**：`PermissionManager.check` 由 `api/MemoryAPI` 在入口调用，engine 信任传入的 scope 已鉴权。Engine 只提供 `permission_context_for_unit` / `permission_contexts_for_delete` 这类 metadata-only 解析入口，供 API 做类型化鉴权；禁止在 engine 内部重复 check。
 4. **LifecycleManager 只做非破坏式标记**：`transition` 标记状态（superseded/archived/forgotten），绝不物理删除。物理删除（purge）走 engine 的 `delete` 路径 + `DeleteMode.PURGE`。
 5. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。`*_impl/` 通过 producer 工厂被外部装配消费，不被顶层接口引用。
-6. **Pipeline 只做 profile 选择**：`MemoryPipeline` 选择一组已装配的 `IndexBuilder` / `Evolver` / `Retriever` / `Classifier` 绑定，不实现抽取、索引、检索算法，不让 construction/retrieval 反向依赖 control。
+6. **Pipeline 只做 profile 选择**：`MemoryPipeline` 选择一组已装配的 `IndexBuilder` / `Evolver` / `Retriever` / `Classifier` 绑定，不实现抽取、巩固、索引、检索算法。
 7. **PermissionContext 由可信边界构造**：write/recall 的 context 来自 API 入参；get/update/delete 的已有 unit context 必须由 Engine 从真源元数据解析，不能信任调用方声明 memory_type。
 
 ## 双通道调度机制
@@ -57,16 +57,17 @@
 
 `InMemoryEngine.write` 先经可选 `MemoryPipeline.select_for_write` 选择构建 profile，再据 `metadata` 下推的两个开关分三路（详见 `docs/features/api/F02-write-infer-extract.md` 决策6-8）：
 
-- **`procedural="true"`**（过程记忆）：原文**不落 KV**；喂 `evolve(EXTRACT)`。evolver 检测 procedural → 跳过 context 收集与 `_dedup_batch`，extractor 把本轮汇总成 **1 条** PROCEDURAL 执行历史，直接 `_persist` 落 `/memory/{id}` 建索引。语义是"把这轮做了什么记成一条可检索 how-to"。
-- **`infer="true"`**（同步抽取）：原文 MemoryUnit 落 `/messages/{id}`（**不建索引**，供后续轮做指代消解/语境）；同一批 MemoryUnit 喂 `evolve(EXTRACT)`。evolver 检测 infer → 内部收集最近 10 条原文（`recent_originals`，做指代/代词消解）+ 经 `dedup.recall` 召回 10 条相关记忆（`related_memories`，做去重提示）→ 拼进 extractor prompt → `_dedup_batch` 兜底落 `/memory/{id}`。返回派生单元列表。
-- **缺省（infer=false）**：原文经 `classifier.classify` 打 tier+tags（纯 LLM 抽取 episodic/semantic/procedural + 1-3 个 tags）→ 落 `/memory/{id}` + 建索引。classifier 未注入时跳过（tier 保持 EPISODIC 默认，向后兼容）。
+- **`procedural="true"`**（过程记忆）：原文不落 KV；Extractor 汇总成一条 PROCEDURAL 后由 Evolver 直接落盘（`DynamicEvolver` 也走父类 procedural 路径，不判定）。
+- **`infer="true"`**（同步抽取）：原文落 `/messages/{id}` 但不建索引；Evolver 收集上下文后调用 Extractor，派生候选经 Evolver 落盘（`OrchestratingEvolver` 走 `_dedup_batch`，`DynamicEvolver` 走 consolidate→reflect→落盘）。
+- **缺省（infer=false）**：原文经 Classifier 后直接落 `/memory/{id}` + 建索引（直写路径，不去重）；去重交给显式 `evolve()` 触发。
 - **evolver 缺失**：procedural/infer=true 但未注入 `Evolver`（`None`）时抛 `RuntimeError`——装配问题暴露而非静默降级。
 
 > tier+tags 的产出路径：**infer=false** 时由 `Classifier`（LLMClassifier）给原文打；**infer=true** 时由 `Extractor` 在派生时一并产出（不经 classifier）。两条路径产出同口径（episodic/semantic/procedural + tags）。procedural 路径 tier 固定 PROCEDURAL。
 
 **KV key 前缀分离**（决策6）：真源 key 按「是否建索引」带前缀——`/memory/{id}`（建索引记忆）、`/messages/{id}`（未建索引 infer 原文）；前缀常量与 helper 在 `common.type_def.memory` / `common.type_def.raw`。所有落盘/回查点用 `memory_key`/`messages_key`，按 key 匹配 id 处（lifecycle）用带前缀 key 直接比对。
 
-引擎调用注入的 `Evolver` 算子属「编排委托」（与 Evolver 调 extractor 同构），不违反「引擎不直接调 LLM」铁律。去重由 Evolver `_dedup_batch` 承担（engine 不重写）。详见 `docs/specs/S02-memory-api.md`「infer 开关」与 `docs/features/api/F02-write-infer-extract.md`。
+引擎只调用注入的 Evolver（`OrchestratingEvolver` 或 `DynamicEvolver`，由装配/pipeline 选择），不直接调用 LLM。动态抽取仍要求 `infer=true`；
+metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` / `_reflect_prompt_<strategy>` 传 prompt key（引用 yml `prompts` 段）。
 
 ## pipeline 路由
 
@@ -74,8 +75,8 @@
 
 - 写入侧：`select_for_write(units)` 返回 `PipelineBinding`，默认 `metadata` 实现读取 `MemoryUnit.metadata[route_key]`（默认 `memory_type`）。
 - 查询侧：`select_for_recall(query)` 返回 `PipelineBinding`，默认 `metadata` 实现优先读取 `RetrievalQuery.extensions[route_key]`，其次读取等值 filter 的 `route_key` / `metadata.<route_key>`。
-- `PipelineBinding` 只绑定组件引用：`index_builder`、`evolver`、`retriever`、可选 `classifier`。
-- `InMemoryEngine` 使用绑定后的 `index_builder/evolver/classifier` 处理 write，使用绑定后的 `retriever` 处理 recall。未注入 pipeline 时走原单 profile 字段。
+- `PipelineBinding` 绑定 `index_builder`、`evolver`、`retriever`，以及可选 `classifier`。
+- `InMemoryEngine` 使用绑定后的构建组件处理 write。profile 未显式绑定某组件时回退默认实例。
 - 未配置 `pipeline.default` 时不启用 pipeline，行为等价旧单 pipeline；用户通过 YAML 显式声明后启用。
 
 ## 本地约束
