@@ -17,14 +17,17 @@ import java.util.Map;
 @Component
 public class JwtTokenProvider {
     
-    // 密钥（生产环境应从配置文件读取）
-    private static final SecretKey SECRET_KEY = Keys.secretKeyFor(SignatureAlgorithm.HS256);
+    // 密钥（生产环境应从配置文件读取，这里使用固定密钥用于开发测试）
+    // 注意：密钥必须至少 256 bits（32 字节），这里使用固定字符串生成
+    private static final SecretKey SECRET_KEY = Keys.hmacShaKeyFor(
+        "agent-memory-platform-jwt-secret-key-must-be-at-least-256-bits!".getBytes()
+    );
     
-    // Token 有效期：24小时
-    private static final long EXPIRATION_TIME = 24 * 60 * 60 * 1000;
+    // Token 有效期：30分钟
+    private static final long EXPIRATION_TIME = 30 * 60 * 1000;
     
     /**
-     * 生成 JWT Token
+     * 生成 JWT Token（30分钟有效期）
      * @param userId 用户ID
      * @param username 用户名
      * @param role 角色
@@ -84,7 +87,7 @@ public class JwtTokenProvider {
     /**
      * 解析 Token 获取 Claims
      */
-    private Claims getClaimsFromToken(String token) {
+    public Claims getClaimsFromToken(String token) {
         try {
             return Jwts.parserBuilder()
                     .setSigningKey(SECRET_KEY)

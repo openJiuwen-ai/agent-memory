@@ -2,16 +2,21 @@ package com.openjiuwen.memory.authcenter.config;
 
 import com.openjiuwen.memory.authcenter.filter.JwtAuthenticationFilter;
 import com.openjiuwen.memory.authcenter.filter.PermissionFilter;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.security.web.AuthenticationEntryPoint;
 
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * 运维中心 Spring Security 配置。
@@ -46,7 +51,7 @@ public class SecurityConfig {
     public SecurityConfig(
             JwtAuthenticationFilter jwtAuthenticationFilter,
             PermissionFilter permissionFilter,
-            @Value("${platform.security.public-paths:/api/v1/auth/login,/api/v1/auth/register,/api/v1/auth/info,/api/v1/auth/logout}")
+            @Value("${platform.security.public-paths:/api/v1/auth/login,/api/v1/auth/register,/api/v1/auth/info,/api/v1/auth/logout,/api/v1/auth/refresh}")
             String publicPathsCsv) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
         this.permissionFilter = permissionFilter;
@@ -65,9 +70,30 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(publicPaths).permitAll()
                 .anyRequest().authenticated())
+            .exceptionHandling(exceptions -> exceptions
+                .authenticationEntryPoint(authenticationEntryPoint()))
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
             .addFilterAfter(permissionFilter, JwtAuthenticationFilter.class);
 
         return http.build();
+    }
+
+    /**
+     * 自定义认证入口点：未认证时返回 401（而非默认的 403）
+     * 符合 HTTP 语义：401 = 未认证，403 = 已认证但无权限
+     */
+    @Bean
+    public AuthenticationEntryPoint authenticationEntryPoint() {
+        return (request, response, authException) -> {
+            response.setStatus(HttpStatus.UNAUTHORIZED.value());
+            response.setContentType("application/json;charset=UTF-8");
+            ObjectMapper mapper = new ObjectMapper();
+            Map<String, Object> errorResponse = new HashMap<>();
+            errorResponse.put("code", 401);
+            errorResponse.put("message", "未认证，请先登录");
+            errorResponse.put("data", null);
+            String body = mapper.writeValueAsString(errorResponse);
+            response.getWriter().write(body);
+        };
     }
 }
