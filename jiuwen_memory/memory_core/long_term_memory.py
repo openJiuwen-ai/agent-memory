@@ -2194,67 +2194,6 @@ class LongTermMemory(metaclass=Singleton):
             )
         return mem_results
 
-    async def get_user_mem_by_page_with_total(self,
-                                               user_id: str = DEFAULT_VALUE,
-                                               scope_id: str = DEFAULT_VALUE,
-                                               page_size: int = 10,
-                                               page_idx: int = 1,
-                                               memory_type: MemoryType = MemoryType.UNKNOWN,
-                                               *,
-                                               filters: "FilterGroup | None" = None) -> tuple[list[MemInfo], int]:
-        """Like ``get_user_mem_by_page`` but also returns the global total count.
-
-        Uses the KV scan path (not vector pushdown) to ensure correct total.
-        """
-        if not self._validate_id(event_type=LogEventType.MEMORY_RETRIEVE, scope_id=scope_id):
-            memory_logger.error(
-                "Invalid scope_id format.",
-                event_type=LogEventType.MEMORY_RETRIEVE,
-                user_id=user_id,
-                scope_id=scope_id,
-            )
-            raise build_error(
-                StatusCode.MEMORY_GET_MEMORY_EXECUTION_ERROR,
-                memory_type="all",
-                error_msg="invalid scope_id format",
-            )
-        if not self.search_manager:
-            raise build_error(
-                StatusCode.MEMORY_GET_MEMORY_EXECUTION_ERROR,
-                memory_type="all",
-                error_msg=f"search manager is not initialized",
-            )
-
-        if memory_type == MemoryType.UNKNOWN:
-            search_memory_type = None
-        else:
-            search_memory_type = memory_type.value
-        search_data = await self.search_manager.list_user_mem_with_total(
-            user_id=user_id, scope_id=scope_id,
-            nums=page_size, pages=page_idx,
-            mem_type=search_memory_type,
-            filters=filters)
-
-        if not search_data:
-            return [], 0
-
-        search_result, total = search_data
-        if not search_result:
-            return [], total
-
-        mem_results: list[MemInfo] = []
-        for item in search_result:
-            mem_type = item.get("mem_type", MemoryType.UNKNOWN.value)
-            mem_results.append(
-                MemInfo(
-                    mem_id=item["id"],
-                    content=item["mem"],
-                    type=mem_type,
-                    timestamp=item.get("timestamp"),
-                    source_id=item.get("source_id"),
-                )
-            )
-        return mem_results, total
 
     async def update_variables(self,
                                    variables: dict[str, str],
