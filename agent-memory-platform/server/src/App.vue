@@ -140,7 +140,8 @@ function connectWebSocket() {
   }
 
   ws.onerror = (error) => {
-    console.error('[WebSocket] ❌ 连接错误:', error)
+    // 只打警告日志：后续 onclose 会接管处理
+    console.warn('[WebSocket] ⚠️ 连接错误:', error)
   }
 
   ws.onclose = (event) => {
