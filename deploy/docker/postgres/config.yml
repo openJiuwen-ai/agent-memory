@@ -1,0 +1,110 @@
+# Online model profile backed by the PostgreSQL service in this Compose stack.
+profile: docker-postgres
+
+memory_api:
+  globals:
+    vector_enabled: true
+    graph_enabled: false
+    rerank_enabled: true
+    embedder_dim: 1024
+    chunk_size: 512
+
+    llm_model: "${LLM_MODEL:-qwen-plus}"
+    llm_base_url: "${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}"
+    llm_api_key: "${LLM_API_KEY}"
+    llm_temperature: 0.0
+
+    embedder_model: "${EMBEDDER_MODEL:-bge-m3}"
+    embedder_base_url: "${EMBEDDER_BASE_URL}"
+    embedder_api_key: "${MODEL_API_TOKEN}"
+    embedder_max_batch: 16
+
+    reranker_model: "${RERANKER_MODEL:-bge-reranker-v2-m3}"
+    reranker_base_url: "${RERANKER_BASE_URL}"
+    reranker_api_key: "${MODEL_API_TOKEN}"
+    reranker_dialect: "${RERANKER_DIALECT:-cohere}"
+    reranker_timeout: 120.0
+
+    policies:
+      rerank.enabled: "true"
+
+  llm:
+    default:
+      target: dashscope
+      params:
+        enable_thinking: "${LLM_ENABLE_THINKING:-false}"
+  embedder:
+    default: { target: openai }
+  reranker:
+    default: { target: api }
+  tokenizer:
+    default: { target: jieba }
+
+  kv_store:
+    default:
+      target: postgres
+      params:
+        dsn: "postgresql://${POSTGRES_USER:-agent_memory}:${POSTGRES_PASSWORD:-agent_memory}@postgres:5432/${POSTGRES_DB:-agent_memory}"
+        schema: "${PG_SCHEMA:-public}"
+        table: "${PG_KV_TABLE:-agent_memory_kv}"
+        auto_create_schema: false
+
+  fulltext_store:
+    default:
+      target: elasticsearch
+      params:
+        hosts: "${ES_HOSTS:-http://elasticsearch:9200}"
+        index: "${ES_INDEX:-agent_memory_fulltext}"
+        text_analyzer: "${ES_TEXT_ANALYZER:-english}"
+    layers_l0:
+      target: elasticsearch
+      params:
+        hosts: "${ES_HOSTS:-http://elasticsearch:9200}"
+        index: "${ES_INDEX_L0:-agent_memory_fulltext_l0}"
+        text_analyzer: "${ES_TEXT_ANALYZER:-english}"
+    layers_l1:
+      target: elasticsearch
+      params:
+        hosts: "${ES_HOSTS:-http://elasticsearch:9200}"
+        index: "${ES_INDEX_L1:-agent_memory_fulltext_l1}"
+        text_analyzer: "${ES_TEXT_ANALYZER:-english}"
+
+  vector_store:
+    default:
+      target: pgvector
+      params:
+        dsn: "postgresql://${POSTGRES_USER:-agent_memory}:${POSTGRES_PASSWORD:-agent_memory}@postgres:5432/${POSTGRES_DB:-agent_memory}"
+        schema: "${PG_SCHEMA:-public}"
+        table: "${PG_VECTOR_TABLE:-agent_memory_vectors}"
+        dim: 1024
+        metric_type: COSINE
+        auto_create_schema: false
+        create_extension: false
+    layers_l0:
+      target: pgvector
+      params:
+        dsn: "postgresql://${POSTGRES_USER:-agent_memory}:${POSTGRES_PASSWORD:-agent_memory}@postgres:5432/${POSTGRES_DB:-agent_memory}"
+        schema: "${PG_SCHEMA:-public}"
+        table: "${PG_VECTOR_TABLE_L0:-agent_memory_vectors_l0}"
+        dim: 1024
+        metric_type: COSINE
+        auto_create_schema: false
+        create_extension: false
+    layers_l1:
+      target: pgvector
+      params:
+        dsn: "postgresql://${POSTGRES_USER:-agent_memory}:${POSTGRES_PASSWORD:-agent_memory}@postgres:5432/${POSTGRES_DB:-agent_memory}"
+        schema: "${PG_SCHEMA:-public}"
+        table: "${PG_VECTOR_TABLE_L1:-agent_memory_vectors_l1}"
+        dim: 1024
+        metric_type: COSINE
+        auto_create_schema: false
+        create_extension: false
+
+  query_parser:
+    default:
+      target: simple
+      params:
+        tokenizer: default
+        embedder: default
+        llm: { target: echo }

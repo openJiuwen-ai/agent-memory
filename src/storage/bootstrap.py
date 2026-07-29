@@ -5,8 +5,8 @@
 一处显式调用，由装配入口 ``build_kernel`` 在组装前调用一次，
 保证注册表已填满——避免「从接口拿到 Producer 句柄，注册表却是空的」。
 
-第三方后端（redis / milvus / elasticsearch / nano-graphrag）的重依赖均为惰性导入，
-仅在实例化/访问时才需就绪，故 import 实现模块本身始终安全。
+第三方后端（redis / postgres / milvus / pgvector / elasticsearch / nano-graphrag）的
+重依赖均为惰性导入，仅在实例化/访问时才需就绪，故 import 实现模块本身始终安全。
 """
 
 from __future__ import annotations

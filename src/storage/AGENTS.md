@@ -18,8 +18,9 @@
 | `fulltext.py` | FulltextStore 接口：全文倒排索引存储，统一 CRUD + 关键词检索（BM25） |
 | `fusion.py` | FusionStore 接口：融合存储（向量+倒排+正排一体） |
 | `fs.py` | FSStore 接口：文件系统存储（原始负载/二进制资产） |
-| `kv_impl/` | KVStore 实现目录（memory / sqlite / redis / encrypted）及共用的 `memory_list.py` 兼容逻辑 |
-| `vector_impl/` | VectorStore 实现目录（memory） |
+| `_pg.py` | PostgreSQL 后端共享的惰性连接池、schema 工具与 FilterExpr SQL 编译 |
+| `kv_impl/` | KVStore 实现目录（memory / sqlite / redis / encrypted / postgres）及共用的 `memory_list.py` 兼容逻辑 |
+| `vector_impl/` | VectorStore 实现目录（memory / milvus / pgvector） |
 | `graph_impl/` | GraphStore 实现目录（memory） |
 | `fulltext_impl/` | FulltextStore 实现目录（memory） |
 | `fusion_impl/` | FusionStore 实现目录（memory） |
