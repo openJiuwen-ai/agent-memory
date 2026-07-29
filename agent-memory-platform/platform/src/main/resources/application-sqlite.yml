@@ -18,4 +18,5 @@ spring:
         - classpath:db/migration/V7__scope_registry_init_sqlite.sql
         - classpath:db/migration/V9__auth_kernel_restart_perm_sqlite.sql
         - classpath:db/migration/V10__log_collect_records_sqlite.sql
+        - classpath:db/migration/V11__token_blacklist_init_sqlite.sql
 

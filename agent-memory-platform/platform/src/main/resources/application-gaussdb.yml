@@ -42,6 +42,7 @@ spring:
         - classpath:db/migration/V7__scope_registry_init_gaussdb.sql
         - classpath:db/migration/V9__auth_kernel_restart_perm_gaussdb.sql
         - classpath:db/migration/V10__log_collect_records_gaussdb.sql
+        - classpath:db/migration/V11__token_blacklist_init_gaussdb.sql
 
 # MyBatis-Plus 配置
 mybatis-plus:

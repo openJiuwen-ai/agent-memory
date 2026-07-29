@@ -35,6 +35,9 @@ public class AuthController {
     @Autowired
     private com.openjiuwen.memory.authcenter.config.JwtTokenProvider jwtTokenProvider;
     
+    @Autowired
+    private com.openjiuwen.memory.authcenter.service.TokenBlacklistService tokenBlacklistService;
+    
     /**
      * 用户登录
      */
@@ -88,11 +91,23 @@ public class AuthController {
     }
 
     /**
-     * 退出登录（JWT 无状态，前端清 token 即可；此端点用于审计记录）。
+     * 退出登录：将当前 Token 加入黑名单，服务端立即失效。
      */
     @PostMapping("/auth/logout")
-    public CommonResult<Void> logout() {
-        // JWT 无状态，服务端无需维护会话；前端清除本地 token 即完成登出
+    public CommonResult<Void> logout(jakarta.servlet.http.HttpServletRequest request) {
+        String bearerToken = request.getHeader("Authorization");
+        if (bearerToken != null && bearerToken.startsWith("Bearer ")) {
+            String token = bearerToken.substring(7);
+            String jti = jwtTokenProvider.getJtiFromToken(token);
+            if (jti != null) {
+                String username = jwtTokenProvider.getUsernameFromToken(token);
+                java.util.Date expiration = jwtTokenProvider.getExpirationFromToken(token);
+                java.time.LocalDateTime expiresAt = expiration != null
+                        ? java.time.LocalDateTime.ofInstant(expiration.toInstant(), java.time.ZoneId.systemDefault())
+                        : java.time.LocalDateTime.now().plusMinutes(30);
+                tokenBlacklistService.addToBlacklist(jti, token, username, expiresAt);
+            }
+        }
         return CommonResult.success(null);
     }
     

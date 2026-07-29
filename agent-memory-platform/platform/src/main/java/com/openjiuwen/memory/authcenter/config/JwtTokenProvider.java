@@ -42,10 +42,27 @@ public class JwtTokenProvider {
         return Jwts.builder()
                 .setClaims(claims)
                 .setSubject(username)
+                .setId(java.util.UUID.randomUUID().toString())  // jti：唯一标识，用于登出黑名单
                 .setIssuedAt(new Date())
                 .setExpiration(new Date(System.currentTimeMillis() + EXPIRATION_TIME))
                 .signWith(SECRET_KEY)
                 .compact();
+    }
+    
+    /**
+     * 从 Token 中获取 jti（JWT ID）
+     */
+    public String getJtiFromToken(String token) {
+        Claims claims = getClaimsFromToken(token);
+        return claims != null ? claims.getId() : null;
+    }
+    
+    /**
+     * 从 Token 中获取过期时间
+     */
+    public Date getExpirationFromToken(String token) {
+        Claims claims = getClaimsFromToken(token);
+        return claims != null ? claims.getExpiration() : null;
     }
     
     /**
