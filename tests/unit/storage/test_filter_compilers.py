@@ -1,10 +1,11 @@
-"""Milvus / Elasticsearch 完整 FilterExpr 编译器测试。"""
+"""Milvus / Elasticsearch / PostgreSQL 完整 FilterExpr 编译器测试。"""
 
 from __future__ import annotations
 
 import pytest
 
 from common.type_def import FilterClause, FilterGroup, FilterLogic, FilterOp, Scope, normalize
+from storage._pg import compile_pg_filter, pg_scope_clause
 from storage.fulltext_impl.elasticsearch_fulltext import ElasticsearchFulltextStore
 from storage.types import TextQuery, VectorQuery
 from storage.vector_impl.milvus_vector import MilvusVectorStore
@@ -181,3 +182,70 @@ def test_elasticsearch_compiles_nested_not_group() -> None:
             ]
         }
     }
+
+
+def test_postgres_compiles_complete_boolean_tree_with_parameters() -> None:
+    fragment, params = compile_pg_filter(_tree())
+
+    assert "metadata @> jsonb_build_object(%s::text" in fragment
+    assert "::numeric >= %s::numeric" in fragment
+    assert " OR " in fragment
+    assert "NOT COALESCE" in fragment
+    assert "memory_type" in params
+    assert "metadata.memory_type" not in params
+    assert {"coding", "alpha", "beta", 8, "archived", "work"} <= set(params)
+
+
+@pytest.mark.parametrize(
+    "op,value,expected",
+    [
+        (FilterOp.EQ, "x", "COALESCE"),
+        (FilterOp.NE, "x", "NOT COALESCE"),
+        (FilterOp.IN, ["x", "y"], " OR "),
+        (FilterOp.NOT_IN, ["x"], "NOT COALESCE"),
+        (FilterOp.GT, 1, "::numeric > %s::numeric"),
+        (FilterOp.GTE, 1, "::numeric >= %s::numeric"),
+        (FilterOp.LT, 1, "::numeric < %s::numeric"),
+        (FilterOp.LTE, 1, "::numeric <= %s::numeric"),
+        (FilterOp.CONTAINS, "x", "jsonb_build_array"),
+    ],
+)
+def test_postgres_compiles_every_leaf_operator(
+    op: FilterOp, value, expected: str
+) -> None:
+    fragment, params = compile_pg_filter(normalize(FilterClause("f", op, value)))
+
+    assert expected in fragment
+    assert "f" in params
+
+
+def test_postgres_filter_values_never_enter_sql_text() -> None:
+    hostile = "x'); DROP TABLE memories; --"
+    fragment, params = compile_pg_filter(
+        normalize(FilterClause("metadata.hostile", FilterOp.EQ, hostile))
+    )
+
+    assert hostile not in fragment
+    assert "hostile" not in fragment
+    assert hostile in params
+    assert "hostile" in params
+
+
+def test_postgres_scope_clause_uses_five_dimensions_for_exact_crud() -> None:
+    fragment, params = pg_scope_clause(
+        Scope(org="acme", space="prod", user="alice", agent="bot", session="s1"),
+        exact=True,
+    )
+
+    assert fragment == (
+        "scope_org = %s AND scope_space = %s AND scope_user = %s "
+        "AND scope_agent = %s AND scope_session = %s"
+    )
+    assert params == ["acme", "prod", "alice", "bot", "s1"]
+
+
+def test_postgres_hierarchical_scope_keeps_empty_space_boundary() -> None:
+    fragment, params = pg_scope_clause(Scope(org="acme"), exact=False)
+
+    assert fragment == "scope_org = %s AND scope_space = %s"
+    assert params == ["acme", ""]

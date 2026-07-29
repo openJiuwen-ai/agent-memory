@@ -6,7 +6,7 @@
 |---|---|
 | 关联模块 | src/storage/ |
 | 最近一次修订日期 | 2026-07-30 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F02-postgres-backend.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -33,9 +33,8 @@
 6. **fs 提供 stat**：stat（文件元信息查询）。
 7. **scope 对 key/路径做命名空间隔离**：kv / fs 是通用原语，`scope` 入参用于对 key / 路径做命名空间隔离（同一逻辑 key 在不同 scope 下是相互隔离的不同物理键）。
 8. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
-9. **生产过滤先于截断**：Milvus VectorStore 与 Elasticsearch FulltextStore 对
-   `FilterExpr` 完整编译，并在 `limit/top_k` 前执行；不允许依赖检索层后置过滤替代
-   生产下推。
+9. **生产过滤先于截断**：生产检索后端必须完整编译所支持的 `FilterExpr`，并在
+   `limit/top_k` 前执行；不允许依赖检索层后置过滤替代生产下推。
 10. **metadata 原生类型入库**：Document / VectorRecord 的 metadata 保留 JSON 标量
     原生类型，不统一字符串化；不同类型之间不做隐式比较转换。
 11. **所有 Store 必须实现 `store_type()` 和 `health()`**：继承自 `BaseStore`。
