@@ -16,9 +16,15 @@ from common.type_def import AuditEvent, Scope
 class AuditRow(NamedTuple):
     id: str
     actor_org: str
+    actor_space: str
     actor_user: str
     actor_agent: str
     actor_session: str
+    target_org: str
+    target_space: str
+    target_user: str
+    target_agent: str
+    target_session: str
     action: str
     target_id: str
     layer: str
@@ -47,9 +53,15 @@ class SqliteAuditLogger(AuditLogger):
                     seq INTEGER PRIMARY KEY AUTOINCREMENT,
                     id TEXT NOT NULL,
                     actor_org TEXT NOT NULL,
+                    actor_space TEXT NOT NULL,
                     actor_user TEXT NOT NULL,
                     actor_agent TEXT NOT NULL,
                     actor_session TEXT NOT NULL,
+                    target_org TEXT NOT NULL,
+                    target_space TEXT NOT NULL,
+                    target_user TEXT NOT NULL,
+                    target_agent TEXT NOT NULL,
+                    target_session TEXT NOT NULL,
                     action TEXT NOT NULL,
                     target_id TEXT NOT NULL,
                     layer TEXT NOT NULL,
@@ -63,6 +75,26 @@ class SqliteAuditLogger(AuditLogger):
                 "CREATE INDEX IF NOT EXISTS idx_audit_events_action_layer "
                 "ON audit_events(action, layer, seq)"
             )
+            columns = {
+                row["name"]
+                for row in self._conn.execute("PRAGMA table_info(audit_events)").fetchall()
+            }
+            if "actor_space" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE audit_events "
+                    "ADD COLUMN actor_space TEXT NOT NULL DEFAULT ''"
+                )
+            for column in (
+                "target_org",
+                "target_space",
+                "target_user",
+                "target_agent",
+                "target_session",
+            ):
+                if column not in columns:
+                    self._conn.execute(
+                        f"ALTER TABLE audit_events ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
+                    )
 
     def record(self, event: AuditEvent) -> None:
         self._record_many([event])
@@ -76,10 +108,11 @@ class SqliteAuditLogger(AuditLogger):
             self._conn.executemany(
                 """
                 INSERT INTO audit_events (
-                    id, actor_org, actor_user, actor_agent, actor_session,
+                    id, actor_org, actor_space, actor_user, actor_agent, actor_session,
+                    target_org, target_space, target_user, target_agent, target_session,
                     action, target_id, layer, decision, occurred_at, detail_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
@@ -94,9 +127,15 @@ class SqliteAuditLogger(AuditLogger):
                 "decision": "decision",
                 "target_id": "target_id",
                 "actor_org": "actor_org",
+                "actor_space": "actor_space",
                 "actor_user": "actor_user",
                 "actor_agent": "actor_agent",
                 "actor_session": "actor_session",
+                "target_org": "target_org",
+                "target_space": "target_space",
+                "target_user": "target_user",
+                "target_agent": "target_agent",
+                "target_session": "target_session",
             }
             for field, column in exact_fields.items():
                 if filters.get(field):
@@ -128,9 +167,15 @@ def _event_to_row(event: AuditEvent) -> AuditRow:
     return AuditRow(
         id=event.id,
         actor_org=event.actor.org,
+        actor_space=event.actor.space,
         actor_user=event.actor.user,
         actor_agent=event.actor.agent,
         actor_session=event.actor.session,
+        target_org=event.target.org,
+        target_space=event.target.space,
+        target_user=event.target.user,
+        target_agent=event.target.agent,
+        target_session=event.target.session,
         action=event.action,
         target_id=event.target_id,
         layer=event.layer,
@@ -146,9 +191,17 @@ def _row_to_event(row: sqlite3.Row) -> AuditEvent:
         id=row["id"],
         actor=Scope(
             org=row["actor_org"],
+            space=row["actor_space"],
             user=row["actor_user"],
             agent=row["actor_agent"],
             session=row["actor_session"],
+        ),
+        target=Scope(
+            org=row["target_org"],
+            space=row["target_space"],
+            user=row["target_user"],
+            agent=row["target_agent"],
+            session=row["target_session"],
         ),
         action=row["action"],
         target_id=row["target_id"],

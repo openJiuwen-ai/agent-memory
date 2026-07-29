@@ -10,7 +10,7 @@
 ``search`` 在一次调用内完成「向量近邻 AND 标量谓词 (+ 文本相关性混合)」
 的融合检索，调用方无需分库召回再做 join；``get`` 即正排读取。``scope`` 为显式
 第一入参：写入按 ``scope`` 落库，``search`` / 按 id 的 ``get`` / ``delete`` 物理
-约束在该 ``scope`` 内。``id`` 为全局唯一主键。
+约束在该 ``scope`` 内。``id`` 为 scope 内逻辑主键。
 """
 
 from __future__ import annotations

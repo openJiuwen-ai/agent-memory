@@ -10,7 +10,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from datetime import datetime
 
-from common.type_def import LifecycleState, MemoryUnit
+from common.type_def import LifecycleState, MemoryUnit, Scope
 from common.factory.factory import Factory
 
 from .base import ControlOperator
@@ -28,11 +28,13 @@ class LifecycleProducer(Factory):
 
 class LifecycleManager(ControlOperator):
     @abstractmethod
-    def transition(self, unit_ids: list[str], target: LifecycleState) -> None:
+    def transition(
+        self, scope: Scope, unit_ids: list[str], target: LifecycleState
+    ) -> None:
         """将一批记忆单元流转到目标状态（非破坏式标记）。"""
 
     @abstractmethod
-    def supersede(self, unit_id: str, invalid_at: datetime) -> MemoryUnit:
+    def supersede(self, scope: Scope, unit_id: str, invalid_at: datetime) -> MemoryUnit:
         """Mark an old version as superseded and set its valid-time invalid boundary."""
 
     @abstractmethod

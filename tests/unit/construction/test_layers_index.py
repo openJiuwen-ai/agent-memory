@@ -161,11 +161,11 @@ def test_vector_layers_remove_idempotent():
     builder.build([unit])
     assert len(vl0.get(scope, ["u1-layer-l0"])) == 1
 
-    builder.remove(["u1"])
+    builder.remove([unit])
     assert vl0.get(scope, ["u1-layer-l0"]) == []
     assert vl1.get(scope, ["u1-layer-l1"]) == []
     # 重复 remove 不报错（幂等）
-    builder.remove(["u1"])
+    builder.remove([unit])
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +223,7 @@ def test_fulltext_layers_remove_idempotent():
     unit = _unit_with_layers("u1", "内容", l0="概要", l1="要点")
     builder.build([unit])
 
-    builder.remove(["u1"])
+    builder.remove([unit])
     assert fl0.get(scope, ["u1:l0"]) == []
     assert fl1.get(scope, ["u1:l1"]) == []
-    builder.remove(["u1"])  # 幂等不报错
+    builder.remove([unit])  # 幂等不报错

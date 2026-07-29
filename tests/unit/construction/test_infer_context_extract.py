@@ -18,6 +18,8 @@ import asyncio
 import hashlib
 import math
 
+import pytest
+
 from common.base import PluginType
 from common.embedder.base import Embedder
 from common.errors import ConflictError, NotFoundError
@@ -45,6 +47,8 @@ from storage.kv import KVStore
 from storage.types import ScoredID, VectorRecord
 from storage.vector import VectorStore
 
+pytestmark = pytest.mark.unit
+
 _DEFAULT_SCOPE = Scope(org="test", user="alice", agent="a1", session="s1")
 
 
@@ -64,7 +68,7 @@ class _MemoryKVStore(KVStore):
         return None
 
     def _sk(self, scope: Scope) -> str:
-        return f"{scope.org}/{scope.user}/{scope.agent}/{scope.session}"
+        return f"{scope.org}/{scope.space}/{scope.user}/{scope.agent}/{scope.session}"
 
     def insert(self, scope, key, value, ttl=0.0):
         b = self._data.setdefault(self._sk(scope), {})
@@ -98,7 +102,7 @@ class _MemoryKVStore(KVStore):
         result = []
         for sk in self._data:
             p = sk.split("/")
-            result.append(Scope(org=p[0], user=p[1], agent=p[2], session=p[3]))
+            result.append(Scope(org=p[0], space=p[1], user=p[2], agent=p[3], session=p[4]))
         return result
 
 
@@ -113,7 +117,7 @@ class _MemoryVectorStore(VectorStore):
         return None
 
     def _sk(self, scope: Scope) -> str:
-        return f"{scope.org}/{scope.user}/{scope.agent}/{scope.session}"
+        return f"{scope.org}/{scope.space}/{scope.user}/{scope.agent}/{scope.session}"
 
     def insert(self, scope, records):
         b = self._data.setdefault(self._sk(scope), {})
@@ -236,7 +240,7 @@ class _NoopIndexBuilder:
     def update(self, units):
         pass
 
-    def remove(self, unit_ids):
+    def remove(self, units):
         pass
 
     def rebuild(self):
@@ -484,7 +488,7 @@ class TestEngineInferPersist:
             def update(self, units):
                 pass
 
-            def remove(self, ids):
+            def remove(self, units):
                 pass
 
             def rebuild(self):
@@ -598,7 +602,7 @@ class TestProceduralExtract:
             def update(self, units):
                 pass
 
-            def remove(self, ids):
+            def remove(self, units):
                 pass
 
             def rebuild(self):
@@ -660,7 +664,7 @@ class TestProceduralExtract:
             def update(self, units):
                 pass
 
-            def remove(self, ids):
+            def remove(self, units):
                 pass
 
             def rebuild(self):

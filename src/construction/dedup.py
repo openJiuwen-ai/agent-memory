@@ -104,10 +104,13 @@ def _loads(raw: bytes) -> Optional[MemoryUnit]:
 
 
 def same_scope(a, b) -> bool:
-    """比较两个 Scope 的 org + user 是否相同（跨 session/agent 的去重粒度）。
+    """比较两个 Scope 的 org + space + user 是否相同（跨 session/agent 的去重粒度）。
 
-    VectorDedup / KeywordDedup 共用的 scope 过滤辅助——去重召回时按 org+user
+    VectorDedup / KeywordDedup 共用的 scope 过滤辅助——去重召回时按 org+space+user
     聚合（同租户同用户跨 session/agent 视为同 scope），与检索层 scope 隔离粒度对齐。
     """
-    return (getattr(a, "org", "") == getattr(b, "org", "")
-            and getattr(a, "user", "") == getattr(b, "user", ""))
+    return (
+        getattr(a, "org", "") == getattr(b, "org", "")
+        and getattr(a, "space", "") == getattr(b, "space", "")
+        and getattr(a, "user", "") == getattr(b, "user", "")
+    )

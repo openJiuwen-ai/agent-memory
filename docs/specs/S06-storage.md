@@ -6,12 +6,12 @@
 |---|---|
 | 关联模块 | src/storage/ |
 | 最近一次修订日期 | 2026-07-27 |
-
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md |
 ## 范围 / 边界
 
 **管什么**：
 - 可配置真源（文档/结构化）的 KV 存储抽象
+- KV 加密装饰器（EncryptedKVStore）
 - 多后端索引存储抽象：向量（VectorStore）、全文（FulltextStore）、图（GraphStore）、融合（FusionStore）、文件系统（FSStore）
 - 统一 CRUD 动词（insert / delete / update / get）
 - 检索型存储的 search 查询
@@ -26,7 +26,7 @@
 ## 不变量
 
 1. **scope 原生隔离**：`scope: Scope` 为每个 Store 方法的显式第一入参，不放进记录/查询结构体、也不编进 `metadata` / `filters`。
-2. **记录 id 是全局唯一主键**：`insert` 冲突 / `update` 缺失按 id 判定，scope 是其归属属性。
+2. **记录 id 在 scope 内唯一**：`insert` 冲突 / `update` 缺失按 `(scope, id)` 判定；后端可用 `scope + id` 生成物理主键，保证同一逻辑 id 在不同 space 下互不冲突。
 3. **统一 CRUD 动词**：insert（增）/ delete（删）/ update（改）/ get（查），各存储接口保持同一命名。
 4. **检索型存储额外提供 search**：fulltext / vector / graph / fusion 在 CRUD 之上再提供 `search` 查询。
 5. **kv 提供 exists 与 list**：exists（存在性查询）、list（枚举一个 scope 内的全部 key-value）、scopes（枚举有哪些 scope）。
@@ -40,6 +40,9 @@
     原生类型，不统一字符串化；不同类型之间不做隐式比较转换。
 11. **所有 Store 必须实现 `store_type()` 和 `health()`**：继承自 `BaseStore`。
 12. **多租户隔离默认依赖逻辑 scope 边界**：当前不要求物理分库/分 collection，但要求同一逻辑 key/id 在不同 scope 下严格命名空间隔离。
+13. **EncryptedKVStore 只装饰 KV，不实现算法**：写前加密、读后解密通过注入的 `SecurityProvider` 完成；storage 层只负责构造 `SecurityContext` / AAD 与委托 raw KV。
+14. **space 是 scope 的硬分区维度**：`scope_segments(scope)` 使用 `org/space/user/agent/session` 五段；`scope_dims(scope)` 在 `org` 非空时即使 `space==""` 也下推 `space == ""`，避免空 space 查询跨到非空 space。
+15. **标识唯一性分层**：非空 Space id 在 Space 资源注册表中全局唯一；MemoryUnit 与各 Store 记录 id 只要求在完整 Scope 内唯一。
 
 ## 接口契约
 
@@ -69,6 +72,25 @@ class BaseStore(ABC):
 | `scopes` | `() -> list[Scope]` | 枚举本存储中已用过的全部 scope |
 
 **ttl** 单位为秒（float），`0` 表示永不过期。
+
+#### EncryptedKVStore（`kv_impl/encrypted_kv_store.py`）
+
+`encrypted` 是 KVStore 装饰器实现，用于把加密能力透明套到任意 raw KV 后端之上。
+
+| 方法 | 行为 |
+|------|------|
+| `insert` / `update` | 构造 `SecurityContext(scope, purpose, metadata)` 与 AAD，调用 `SecurityProvider.encrypt` 后写入 raw KV |
+| `get` / `list` | 从 raw KV 读取密文字节，调用 `SecurityProvider.decrypt` 后返回明文字节；任一解密失败抛 `BackendError`，不跳过坏数据 |
+| `exists` / `delete` / `scopes` | 直接委托 raw KV，不读取或改写 value |
+
+装配参数：
+
+| 参数 | 语义 |
+|------|------|
+| `raw_kv_store` | 必填，指向被装饰的 raw KVStore 具名实例或内联配置；不得指向当前 encrypted 实例自身 |
+| `security` | 必填，指向 `common.security.SecurityProvider` 具名实例或内联配置 |
+
+AAD 版本当前为 `1`，绑定 `scope(org/space/user/agent/session)`、KV `key` 与 `purpose`。`purpose` 由 key 前缀推导：`/memory/` 为 `memory_unit`，`/messages/` 为 `raw_message`，其他为 `kv_value`。
 
 ### FulltextStore（`fulltext.py`）
 
@@ -187,11 +209,14 @@ src/storage/<store>_impl/
 各 Producer：`KvProducer` / `FulltextProducer` / `VectorProducer` / `GraphProducer` / `FusionProducer` / `FsProducer`。
 注册由 `storage.bootstrap.register_backends` 统一触发。
 
+具体 Store target 名与实现文件列表归 `src/storage/AGENTS.md` 维护；本 spec 只固化
+Store 抽象、跨后端不变量与注册机制。
+
 ## 与其它 spec 的关系
 
 | 关联 spec | 关系 |
 |-----------|------|
-| S03-memory_manage | Engine 通过 KVStore 读写真源；LifecycleManager/Governor 依赖 kv.scopes() + kv.list() 跨 scope 枚举 |
+| S03-control | Engine 通过 KVStore 读写真源；目标生命周期/治理操作按显式 Scope 定位，全局 sweep/offboarding 才跨 Scope 枚举 |
 | S04-retrieval | 检索层各 Recaller 消费本层索引 Store |
 | S05-construction | 构建层通过本层抽象做真源与索引持久化 |
 | architecture.md §5 | 可配置真源形态（文档/结构化）与多后端 |

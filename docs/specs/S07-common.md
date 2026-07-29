@@ -6,8 +6,7 @@
 |---|-------------|
 | 关联模块 | src/common/ |
 | 最近一次修订日期 | 2026-07-29 |
-
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/control/F02-control-isolation-and-audit.md、docs/features/common/F01-memory-layer.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/F02-cc-memory-compat.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md |
 
 ## 范围 / 边界
 
@@ -16,6 +15,7 @@
 - 核心数据类型定义（MemoryUnit/Scope/Context/Relation 等）
 - 工厂注册机制（Factory/Producer 基础设施）
 - 审计日志（AuditLogger）
+- 数据保护横切接口（SecurityProvider）
 - 错误类型（自定义异常）
 - 工具函数（ID 生成/时间解析等）
 
@@ -33,6 +33,10 @@
 4. **types.py 零依赖其他文件**：纯数据定义，被全局共享依赖。
 5. **工厂注册发生在 import 时**：实现文件尾部 `@XxxProducer.register("name")` 绑定构建函数，`__init__.py` 导入实现文件触发注册。
 6. **LLM Provider 参数不上浮到业务层**：厂商专属请求字段只能由对应 Adapter 生成；消费 `LLM` 的算子只传递通用生成选项。
+7. **SecurityProvider 是字节级横切接口**：调用方在持久化字节写入前加密、读取后解密；接口不绑定 `MemoryUnit` 或存储后端，是否启用由装配配置决定。
+8. **标识唯一性分层**：非空 Space id 全局唯一；`MemoryUnit.id` 只要求在完整 Scope 内唯一。
+9. **Scope 位置参数兼容**：`space` 可为空但只能按关键字传入；旧位置参数顺序保持
+   `Scope(org, user, agent, session)`。
 
 ## 接口契约
 
@@ -40,7 +44,7 @@
 
 ```python
 class PluginType(str, Enum):
-    EMBEDDER / CHUNKER / TOKENIZER / NORMALIZER / FEATURE_EXTRACTOR / LLM / RERANKER / AUDIT_LOGGER
+    TOKENIZER / CHUNKER / EMBEDDER / FEATURE_EXTRACTOR / LLM / NORMALIZER / RERANKER
 
 class Plugin(ABC):
     def plugin_type(self) -> PluginType  # 自描述
@@ -102,7 +106,8 @@ class Plugin(ABC):
 | `generate` | `(prompt: str, **options) -> str` | 单 prompt 便捷方法 |
 
 `LLM` 的具名配置通过 `target` 选择 Provider Adapter，`params` 只由该 Adapter
-解释。通用 Adapter 不得默认发送其他厂商的扩展字段；健康检查与正常
+解释。通用 Adapter 不得默认发送其他厂商的扩展字段，业务算子不得硬编码
+`extra_body` 等厂商专属请求字段；健康检查与正常
 `chat` 必须使用同一套 Provider 请求选项。
 
 DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
@@ -124,9 +129,23 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 | 方法 | 签名 | 语义 |
 |------|------|------|
 | `record` | `(event: AuditEvent) -> None` | 写入一条审计事件 |
-| `query` | `(filters: dict[str, str], limit=100) -> list[AuditEvent]` | 按 `action` / `layer` / `decision` / `target_id` / `actor_org` / `actor_user` / `actor_agent` / `actor_session` / `occurred_after` / `occurred_before` 检索审计留痕 |
+| `query` | `(filters: dict[str, str], limit=100) -> list[AuditEvent]` | 按 `action` / `layer` / `decision` / `target_id` / `actor_org` / `actor_space` / `actor_user` / `actor_agent` / `actor_session` / `target_org` / `target_space` / `target_user` / `target_agent` / `target_session` / `occurred_after` / `occurred_before` 检索审计留痕 |
 
 治理层通过 `Governor.audit(filters, limit)` 提供对外查询入口；`AuditLogger.query(...)` 是控制层消费审计后端的内部接口，不直接暴露为用户 API。
+
+### SecurityProvider（`security/security.py`）
+
+数据保护横切接口。调用方以 bytes 为边界接入：写入持久化字节前调用 `encrypt`，读取持久化字节后调用 `decrypt`。接口只表达数据保护能力，不绑定 `MemoryUnit` 序列化、不绑定 KV 后端、不决定是否默认启用加密。
+
+| 方法 | 签名 | 语义 |
+|------|------|------|
+| `encrypt` | `(plaintext: bytes, *, context: SecurityContext | None = None, aad: bytes = b"") -> bytes` | 加密明文字节，可结合 scope / purpose / metadata 与 AAD 做租户隔离和完整性保护 |
+| `decrypt` | `(ciphertext: bytes, *, context: SecurityContext | None = None, aad: bytes = b"") -> bytes` | 解密密文字节并校验完整性 |
+| `health` | `() -> None` | 存活探测；默认返回 `None`，具体实现可覆盖并抛出健康检查异常 |
+
+`SecurityProducer.TOP_NAME` 为 `security`。具体 provider 的实现列表、target 名与
+私有配置参数归 `src/common/AGENTS.md` 与对应 feature 文档记录；本 spec 只固化
+接口、上下文和错误语义。
 
 ## 数据结构
 
@@ -134,12 +153,12 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 
 | 类型 | 关键字段 | 语义 |
 |------|----------|------|
-| `MemoryUnit` | id / scope / tier / layers / segments / source / temporal / provenance / supersedes / tags / metadata / lifecycle | 记忆单元 |
+| `MemoryUnit` | id / scope / tier / layers / segments / source / temporal / provenance / supersedes / tags / metadata / lifecycle | 记忆单元；id 在完整 Scope 内唯一 |
 | `ContentLayers` | l0 / l1 | 分层披露标注（l0=50-100 字概要、l1=200-500 字要点 overview）；默认空串，extractor 对超阈 content 产出 |
 | `Segment` | type / content / asset_ref / metadata | 内容段 |
 | `Temporal` | t_event / t_ingest / t_valid / t_invalid | 时间字段 |
 | `Relation` | id / source_id / target_id / relation / weight / metadata | 关联关系 |
-| `Scope` | org / user / agent / session | 作用域 |
+| `Scope` | org / space / user / agent / session | 作用域；非空 `space` 是全局唯一逻辑隔离标识，空值为兼容域且该字段为 keyword-only |
 | `Context` | scope / max_tokens / extensions | 检索上下文 |
 | `Entity` | text / type / confidence | 实体 |
 | `FeatureSet` | keywords / entities / tags | 特征集合 |
@@ -149,7 +168,8 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 | `FilterClause` | field / op / value | 原子过滤谓词 |
 | `FilterGroup` | logic / children | AND / OR / NOT 逻辑节点 |
 | `FilterExpr` | FilterClause \| FilterGroup | 跨 API、检索和存储层的过滤树 |
-| `AuditEvent` | id / timestamp / actor / action / target_id / layer / detail | 审计事件 |
+| `AuditEvent` | id / timestamp / actor / target / action / target_id / layer / detail | 审计事件；`actor` 与 `target` 均为 Scope，支持 actor_* 与 target_* 字段过滤 |
+| `SecurityContext` | scope / purpose / metadata | 一次加密/解密调用的安全上下文 |
 
 ### 枚举（`type_def/memory.py`）
 
@@ -164,7 +184,7 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 
 - `dumps(unit) -> bytes`：`MemoryUnit` → JSON 字节，带 `_v` 版本号、枚举取 `.value`、时间取 isoformat。字段含 `layers`（`{l0, l1}`）。
 - `loads(raw) -> MemoryUnit | None`：逆 `dumps`；非 dict 返回 `None`（KVStore 中混有索引/跟踪等非 unit 记录，靠此过滤）。
-- **容错演进**：未知字段忽略、缺失字段取默认。加字段是兼容演进（老数据缺省读出，不升 `_v`）；改字段含义/结构才升 `_v` 并在 `loads` 按 `_v` 分支。当前 `_v=2`（segments 列表化）。
+- **容错演进**：未知字段忽略、缺失字段取默认。加字段是兼容演进（老数据缺省读出，不升 `_v`）；改字段含义/结构才升 `_v` 并在 `loads` 按 `_v` 分支。当前 `_v=3`（`_v=2` 为 segments 列表化；`_v=3` 把 scope 从 `org/user/agent/session` 扩展为 `org/space/user/agent/session`，老数据读为空 `space`）。
 - `layers` 字段缺失时 `loads` 取空串 `ContentLayers()`——老数据无迁移读出。
 
 ### 工厂注册机制（`factory/factory.py`）
@@ -180,7 +200,8 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 | `KvProducer` / `VectorProducer` / `FulltextProducer` | `kv_store` / `vector_store` / `fulltext_store` |
 | `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` | `embedder` / `chunker` / `tokenizer` |
 | `IndexBuilderProducer` / `RecallerProducer` | `constructor` / `recaller` |
-| `NormalizerProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditProducer` | 各自唯一 |
+| `NormalizerProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` | `normalizer` / `feature_extractor` / `llm` / `reranker` |
+| `AuditProducer` / `SecurityProducer` | `audit` / `security` |
 
 #### Factory 基类
 
@@ -241,9 +262,9 @@ def _build(config: ComponentConfig) -> Embedder:
 - `reset_all()` 清空缓存（隔离多次装配 / 测试隔离）
 
 各 Producer 继承 `Factory`：
-- `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` / `NormalizerProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditProducer`
+- `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` / `NormalizerProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditProducer` / `SecurityProducer`
 
-## 错误类型（`errors.py`）
+## 错误类型（`errors.py` / `security.py`）
 
 | 异常 | 含义 |
 |------|------|
@@ -253,25 +274,30 @@ def _build(config: ComponentConfig) -> Embedder:
 | `PolicyError` | 策略错误（未知键/不可变配置） |
 | `BackendError` | 后端不可用 |
 | `HealthCheckError` | 健康检查失败 |
+| `SecurityError` / `EncryptionError` | 安全横切处理失败的基类 |
+| `InvalidMagicError` | 密文字节不符合当前 provider 期望的信封魔数 |
+| `CorruptedCiphertextError` | 密文信封结构损坏、版本不支持或长度不完整 |
+| `AuthenticationFailedError` | AES-GCM tag 校验失败，通常表示 AAD 不匹配或内容被篡改 |
+| `KeyMismatchError` | 包裹的数据密钥无法用当前租户密钥解开 |
 
 ## 实现注册机制
 
 ```
-src/common/<插件>/
-    base.py                 # 接口 + Producer
-    <插件>_impl/
+src/common/<组件>/
+    base.py | security.py   # 接口 + Producer
+    <组件>_impl/
         __init__.py         # 重导出实现类
         <impl_class_snake>.py   # 具体实现 + 尾部 @XxxProducer.register("name")
 ```
 
-注册由 `common.bootstrap.register_plugins` 统一触发。
+注册由 `common.bootstrap.register_plugins` 统一触发。`security_impl/` 当前注册 `local` SecurityProvider 实现。
 
 ## 与其它 spec 的关系
 
 | 关联 spec | 关系 |
 |-----------|------|
 | S01-ingest_access | 接入层消费 Normalizer |
-| S03-memory_manage | 控制层消费 AuditLogger 记录的审计事件，并通过 Governor.audit 暴露查询 |
+| S03-control | 控制层消费 AuditLogger 记录的审计事件，并通过 Governor.audit 暴露查询 |
 | S04-retrieval | 检索层消费 Embedder/Tokenizer/FeatureExtractor/LLM/Reranker |
 | S05-construction | 构建层消费 Chunker/Embedder/Tokenizer/FeatureExtractor/LLM |
 | S06-storage | 存储层依赖本层的数据类型定义（Scope/FilterClause 等） |

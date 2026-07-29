@@ -47,6 +47,7 @@ _DEFAULT_POLICIES = {
     "rerank.enabled": "true",
     "lifecycle.expired_active.target": "forgotten",
     "lifecycle.superseded.target": "forgotten",
+    "scope.require_space": "false",
 }
 
 

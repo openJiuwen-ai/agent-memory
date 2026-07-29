@@ -1,9 +1,9 @@
 """MilvusVectorStore — 基于 Milvus 的 :class:`~storage.vector.VectorStore` 实现。
 
 ``insert/update/delete/get`` 走主键 CRUD，``search`` 走 ANN 近邻检索。``scope`` 为
-方法显式入参——写入时拆为四个标量字段落库，``search`` / 按 id 的 ``get`` /
+方法显式入参——写入时拆为五个标量字段落库，``search`` / 按 id 的 ``get`` /
 ``delete`` 通过布尔表达式约束在该 scope 内（对非空维度施加等值），实现原生隔离
-（§5.2 / §7）；``id`` 是全局唯一主键（冲突/缺失按 id 判定），``metadata`` 经动态
+（§5.2 / §7）；``id`` 是 scope 内逻辑主键，物理主键由 scope+id 生成，``metadata`` 经动态
 字段承载，``filters`` 转为 scope 之外的标量谓词。
 
 ``pymilvus`` 惰性导入与连接（目标 API：``MilvusClient``，pymilvus 2.4+）。``score``
@@ -34,12 +34,18 @@ from common.type_def import (
 )
 from storage.vector import VectorProducer
 
-from .._support import scope_dims, wrap_backend
+from .._support import scope_dims, scope_segments, wrap_backend
 from ..base import StoreType
 from ..types import ScoredID, VectorQuery, VectorRecord
 from ..vector import VectorStore
 
-_SCOPE_FIELDS = ("scope_org", "scope_user", "scope_agent", "scope_session")
+_SCOPE_FIELDS = (
+    "scope_org",
+    "scope_space",
+    "scope_user",
+    "scope_agent",
+    "scope_session",
+)
 _CMP_OPS = {
     FilterOp.EQ: "==",
     FilterOp.NE: "!=",
@@ -59,6 +65,28 @@ def _lit(value: Any) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     raise ValidationError(f"unsupported filter literal: {value!r}")
+
+
+def _hit_id(hit: Any) -> str:
+    if isinstance(hit, dict):
+        entity = hit.get("entity") or {}
+        if isinstance(entity, dict) and entity.get("logical_id"):
+            return str(entity["logical_id"])
+        if hit.get("logical_id"):
+            return str(hit["logical_id"])
+        return _logical_id(str(hit["id"]))
+    try:
+        entity = hit.get("entity") or {}
+        if entity.get("logical_id"):
+            return str(entity["logical_id"])
+    except AttributeError:
+        pass
+    return _logical_id(str(hit["id"]))
+
+
+def _logical_id(physical_id: str) -> str:
+    parts = physical_id.split(":", 5)
+    return parts[-1] if len(parts) == 6 else physical_id
 
 
 class MilvusVectorStore(VectorStore):
@@ -89,6 +117,7 @@ class MilvusVectorStore(VectorStore):
         self._consistency = consistency_level
         self._scope_len = scope_field_max_length
         self._id_len = id_max_length
+        self._physical_id_len = id_max_length + 5 * (scope_field_max_length + 1)
         self._options = options
         self._client: Any = None
 
@@ -116,7 +145,10 @@ class MilvusVectorStore(VectorStore):
         from pymilvus import DataType
 
         schema = self._client.create_schema(auto_id=False, enable_dynamic_field=False)
-        schema.add_field("id", DataType.VARCHAR, is_primary=True, max_length=self._id_len)
+        schema.add_field(
+            "id", DataType.VARCHAR, is_primary=True, max_length=self._physical_id_len
+        )
+        schema.add_field("logical_id", DataType.VARCHAR, max_length=self._id_len)
         schema.add_field("vector", DataType.FLOAT_VECTOR, dim=self._dim)
         for fld in _SCOPE_FIELDS:
             schema.add_field(fld, DataType.VARCHAR, max_length=self._scope_len)
@@ -135,11 +167,17 @@ class MilvusVectorStore(VectorStore):
 
     # --------------------------------------------------------------- 序列化
     @staticmethod
-    def _row(scope: Scope, rec: VectorRecord) -> dict[str, Any]:
+    def _physical_id(scope: Scope, logical_id: str) -> str:
+        return ":".join((*scope_segments(scope), logical_id))
+
+    @classmethod
+    def _row(cls, scope: Scope, rec: VectorRecord) -> dict[str, Any]:
         return {
-            "id": rec.id,
+            "id": cls._physical_id(scope, rec.id),
+            "logical_id": rec.id,
             "vector": rec.vector,
             "scope_org": scope.org,
+            "scope_space": scope.space,
             "scope_user": scope.user,
             "scope_agent": scope.agent,
             "scope_session": scope.session,
@@ -149,7 +187,7 @@ class MilvusVectorStore(VectorStore):
     @staticmethod
     def _to_record(row: dict[str, Any]) -> VectorRecord:
         return VectorRecord(
-            id=row["id"],
+            id=row.get("logical_id") or _logical_id(row["id"]),
             vector=list(row.get("vector") or []),
             metadata=row.get("metadata") or {},
         )
@@ -196,16 +234,17 @@ class MilvusVectorStore(VectorStore):
             parts.append(compiled)
         return " && ".join(p for p in parts if p)
 
-    def _existing_ids(self, ids: list[str]) -> set[str]:
-        items = ", ".join(_lit(i) for i in ids)
+    def _existing_ids(self, scope: Scope, ids: list[str]) -> set[str]:
+        physical_ids = [self._physical_id(scope, rec_id) for rec_id in ids]
+        items = ", ".join(_lit(i) for i in physical_ids)
         with wrap_backend("milvus query"):
             rows = self.client.query(
                 self._collection,
                 filter=f"id in [{items}]",
-                output_fields=["id"],
+                output_fields=["logical_id"],
                 consistency_level=self._consistency,
             )
-        return {row["id"] for row in rows}
+        return {row["logical_id"] for row in rows}
 
     # --------------------------------------------------------------- CRUD
     def store_type(self) -> StoreType:
@@ -220,7 +259,7 @@ class MilvusVectorStore(VectorStore):
     def insert(self, scope: Scope, records: list[VectorRecord]) -> None:
         if not records:
             return
-        existing = self._existing_ids([r.id for r in records])
+        existing = self._existing_ids(scope, [r.id for r in records])
         if existing:
             raise ConflictError(entity="vector", key=next(iter(existing)))
         with wrap_backend("milvus insert"):
@@ -230,7 +269,7 @@ class MilvusVectorStore(VectorStore):
         if not records:
             return
         ids = [r.id for r in records]
-        missing = set(ids) - self._existing_ids(ids)
+        missing = set(ids) - self._existing_ids(scope, ids)
         if missing:
             raise NotFoundError(entity="vector", key=next(iter(missing)))
         with wrap_backend("milvus update"):
@@ -239,7 +278,7 @@ class MilvusVectorStore(VectorStore):
     def delete(self, scope: Scope, ids: list[str]) -> None:
         if not ids:
             return
-        items = ", ".join(_lit(i) for i in ids)
+        items = ", ".join(_lit(self._physical_id(scope, i)) for i in ids)
         expr = self._expr(scope, None)
         filter_ = f"id in [{items}]" + (f" && {expr}" if expr else "")
         with wrap_backend("milvus delete"):
@@ -248,14 +287,14 @@ class MilvusVectorStore(VectorStore):
     def get(self, scope: Scope, ids: list[str]) -> list[VectorRecord]:
         if not ids:
             return []
-        items = ", ".join(_lit(i) for i in ids)
+        items = ", ".join(_lit(self._physical_id(scope, i)) for i in ids)
         expr = self._expr(scope, None)
         filter_ = f"id in [{items}]" + (f" && {expr}" if expr else "")
         with wrap_backend("milvus get"):
             rows = self.client.query(
                 self._collection,
                 filter=filter_,
-                output_fields=["id", "vector", *_SCOPE_FIELDS, "metadata"],
+                output_fields=["id", "logical_id", "vector", *_SCOPE_FIELDS, "metadata"],
                 consistency_level=self._consistency,
             )
         return [self._to_record(row) for row in rows]
@@ -268,11 +307,12 @@ class MilvusVectorStore(VectorStore):
                 data=[query.vector],
                 limit=query.top_k,
                 filter=expr,
+                output_fields=["logical_id"],
                 search_params={"metric_type": self._metric_type},
                 consistency_level=self._consistency,
             )
         hits = results[0] if results else []
-        return [ScoredID(id=hit["id"], score=float(hit["distance"])) for hit in hits]
+        return [ScoredID(id=_hit_id(hit), score=float(hit["distance"])) for hit in hits]
 
     def score_higher_is_better(self) -> bool:
         # 分数方向随 metric_type：COSINE/IP 越大越相关；L2 等距离型越小越相关。

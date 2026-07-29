@@ -10,7 +10,7 @@ from __future__ import annotations
 from abc import abstractmethod
 
 from common.factory.factory import Factory
-from common.type_def import AuditEvent, MemoryUnit
+from common.type_def import AuditEvent, MemoryUnit, Scope
 
 from .base import ControlOperator
 
@@ -27,11 +27,11 @@ class GovernorProducer(Factory):
 
 class Governor(ControlOperator):
     @abstractmethod
-    def inspect(self, unit_ids: list[str]) -> list[MemoryUnit]:
+    def inspect(self, unit_ids: list[str], scope: Scope) -> list[MemoryUnit]:
         """检视：读取记忆单元的完整内容与治理字段（含已失效版本）。"""
 
     @abstractmethod
-    def trace(self, unit_id: str) -> list[MemoryUnit]:
+    def trace(self, unit_id: str, scope: Scope) -> list[MemoryUnit]:
         """回溯：沿 provenance 血缘向上追溯，返回该记忆的演进来源链。"""
 
     @abstractmethod

@@ -7,8 +7,6 @@
 
 from __future__ import annotations
 
-from typing import List
-
 from common.chunker.base import Chunker, ChunkerProducer
 from common.embedder.base import Embedder, EmbedderProducer
 from common.log import get_logger
@@ -64,20 +62,20 @@ class HybridIndexBuilder(IndexBuilder):
     def health(self) -> None:
         return None
 
-    def build(self, units: List[MemoryUnit]) -> None:
+    def build(self, units: list[MemoryUnit]) -> None:
         logger.info("HybridIndexBuilder: building index for %d units", len(units))
         self._fulltext_builder.build(units)
         self._vector_builder.build(units)
 
-    def update(self, units: List[MemoryUnit]) -> None:
+    def update(self, units: list[MemoryUnit]) -> None:
         logger.info("HybridIndexBuilder: updating index for %d units", len(units))
         self._fulltext_builder.update(units)
         self._vector_builder.update(units)
 
-    def remove(self, unit_ids: List[str]) -> None:
-        logger.info("HybridIndexBuilder: removing %d unit ids from index", len(unit_ids))
-        self._fulltext_builder.remove(unit_ids)
-        self._vector_builder.remove(unit_ids)
+    def remove(self, units: list[MemoryUnit]) -> None:
+        logger.info("HybridIndexBuilder: removing %d units from index", len(units))
+        self._fulltext_builder.remove(units)
+        self._vector_builder.remove(units)
 
     def rebuild(self) -> None:
         # 最小实现：索引与真源同生命周期，无独立重建路径。
@@ -87,7 +85,7 @@ class HybridIndexBuilder(IndexBuilder):
     # 便捷方法
     # ------------------------------------------------------------------
 
-    def remove_with_scope(self, unit_ids: List[str], scope: Scope) -> None:
+    def remove_with_scope(self, unit_ids: list[str], scope: Scope) -> None:
         """已知 scope 时直接删除索引条目，避免 lookup。"""
         self._fulltext_builder.remove_with_scope(unit_ids, scope)
         self._vector_builder.remove_with_scope(unit_ids, scope)

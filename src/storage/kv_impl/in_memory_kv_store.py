@@ -16,12 +16,12 @@ from common.type_def import Scope
 from storage.base import StoreType
 from storage.kv import KvProducer, KVStore
 
-_ScopeKey = Tuple[str, str, str, str]
+_ScopeKey = Tuple[str, str, str, str, str]
 
 
 def _skey(scope: Scope) -> _ScopeKey:
     """把 scope 折成可哈希的命名空间键（隔离单位）。"""
-    return (scope.org, scope.user, scope.agent, scope.session)
+    return (scope.org, scope.space, scope.user, scope.agent, scope.session)
 
 
 class InMemoryKVStore(KVStore):
@@ -83,7 +83,10 @@ class InMemoryKVStore(KVStore):
         return out
 
     def scopes(self) -> List[Scope]:
-        return [Scope(org=k[0], user=k[1], agent=k[2], session=k[3]) for k in self._data]
+        return [
+            Scope(org=k[0], space=k[1], user=k[2], agent=k[3], session=k[4])
+            for k in self._data
+        ]
 
 
 # -- 注册到 KvProducer（接口层定义的工厂；实现自注册，新增无需改 producer/build_kernel） -------- #

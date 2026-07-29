@@ -10,15 +10,15 @@
 
 | 文件 | 职责 |
 |---|---|
-| `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（write/recall/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke） |
+| `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（write/recall/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
 | `memory_api_impl/assembly.py` | 装配入口：`build_kernel(config)` 递归构建 MemoryAPI 实例 |
-| `memory_api_impl/local_memory_api.py` | LocalMemoryAPI：委托 Engine/Governor/Scheduler/PermissionManager + PEP 鉴权 |
+| `memory_api_impl/local_memory_api.py` | LocalMemoryAPI：委托 Engine/Governor/Scheduler/PermissionManager/SpaceManager + PEP 鉴权 |
 
 ## 行为铁律
 
 1. **本层不做编排**  
-   `MemoryAPI` 只做三件事：鉴权（PEP）、参数装配、委托。编排逻辑（write 路径、recall 路径、evolve 调度）全部在 `control/MemoryEngine`，禁止在本层堆业务逻辑。
+   `MemoryAPI` 只做三件事：鉴权（PEP）、参数装配、委托。编排逻辑（write 路径、recall/list 路径、evolve 调度）全部在 `control/MemoryEngine`，禁止在本层堆业务逻辑。
 
 2. **identity 不下沉**  
    鉴权通过后只透传已鉴权的 target `scope`，`identity` 参数不传入控制层/检索层/构建层/存储层。
@@ -35,11 +35,25 @@
 5. **write/write_async 分离**  
    `write` 是同步桥接（内部 `asyncio.run(write_async)`），供 CLI/脚本使用；`write_async` 直通 Engine 协程，供事件循环形态使用。
 
+6. **space 必须在 API 边界执行策略校验**
+   `scope.require_space=true` 时，具体 target scope 缺少 `space` 的数据面/治理面操作必须在 `LocalMemoryAPI._authorize` 拒绝并记录 deny audit；`Scope()` 根管理面与 org 级 `list_spaces/create_space` 鉴权目标不受此策略影响。
+
+7. **space policy 在 API 边界注入权限上下文**
+   已创建 space 的 `principal_path` 由 `SpaceManager.get_policy` 提供，`LocalMemoryAPI._authorize` 在调用 `PermissionManager.check` 前写入 `PermissionContext.metadata["principal_path"]`；调用侧 metadata 不覆盖 space policy。
+
+8. **list 对实际返回资源逐条鉴权**
+   请求级 `memory_types` 鉴权通过后，API 必须调用 Engine 的
+   `list_with_permission_contexts` 一次取得当前分页及其真源权限上下文，再逐条 READ 鉴权；
+   不得把未指定类型解释为可绕过类型路由，也不得用两次分页分别读取上下文和内容。
+
+9. **Space 删除覆盖全部子 Scope**
+   `delete_space` 通过 `MemoryEngine.purge_space` 清理同一 `org + space` 下所有 user/agent/session 子 Scope 的真源和索引，再委托 `SpaceManager` 清理 messages 与管理元数据。
+
 ## PEP 鉴权流程
 
 ```
 MemoryAPI.method(scope=target, identity=caller)
-  → 构造 PermissionContext（write/recall 来自入参；get/update/delete 来自 Engine 元数据解析）
+  → 构造 PermissionContext（write/recall/list 请求条件来自入参；list 实际 unit 与 get/update/delete 来自 Engine 真源元数据）
   → PermissionManager.check(actor=identity, target=scope, action=<对应动作>, context=...)
     → 通过 → 委托 Engine/Governor/PolicyManager（仅传 scope，不传 identity）
     → 拒绝 → 抛 PermissionDeniedError
@@ -64,6 +78,6 @@ MemoryAPI.method(scope=target, identity=caller)
 ## 本地约束
 
 1. `identity` 为必填 keyword-only 参数，与 `scope` 同为 Scope 类型，强制具名传入防止位置传反。
-2. 所有数据面方法（write/recall/get/update/delete/evolve）都需要鉴权，治理面（inspect/trace/audit）也需要鉴权。
+2. 所有数据面方法（write/recall/list/get/update/delete/evolve）都需要鉴权，治理面（inspect/trace/audit）也需要鉴权。
 3. 装配由 `assembly.build_kernel(config)` 完成，递归调用各 Producer.create_from(spec)。
 4. 实现类（LocalMemoryAPI）不对外暴露，外部只依赖 `MemoryAPI` 抽象接口。

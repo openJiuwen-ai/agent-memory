@@ -3,10 +3,12 @@ from __future__ import annotations
 import pytest
 
 from api.memory_api_impl import build_kernel
-from common.errors import PermissionDeniedError
+from common.errors import PermissionDeniedError, ValidationError
 from common.type_def import Scope
 from config import Config
 from construction import EvolveMode
+
+pytestmark = pytest.mark.unit
 
 
 def test_permission_denial_is_audited() -> None:
@@ -116,3 +118,37 @@ def test_configured_sqlite_audit_memory_database_is_queryable() -> None:
     events = api.audit({"action": "write"}, identity=root, limit=10)
 
     assert any(event.action == "write" and event.actor == scope for event in events)
+
+
+def test_require_space_policy_rejects_empty_space_and_audits_denial() -> None:
+    cfg = Config.from_dict(
+        {
+            "permission": {"default": "sqlite"},
+            "policy": {
+                "default": {
+                    "target": "dict",
+                    "params": {
+                        "policies": {
+                            "rerank.enabled": "true",
+                            "lifecycle.expired_active.target": "forgotten",
+                            "lifecycle.superseded.target": "forgotten",
+                            "scope.require_space": "true",
+                        }
+                    },
+                }
+            },
+        }
+    )
+    api = build_kernel(config=cfg).api
+    scope = Scope(org="acme", user="owner")
+
+    with pytest.raises(ValidationError):
+        api.write("missing space", scope, identity=scope)
+
+    denied = [
+        event
+        for event in api.audit({"action": "write"}, identity=Scope(), limit=10)
+        if event.decision == "deny"
+    ]
+    assert denied
+    assert denied[-1].detail["permission_reason"] == "scope.space is required"

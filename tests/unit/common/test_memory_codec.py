@@ -7,10 +7,24 @@ from datetime import datetime, timezone
 
 import pytest
 
+from common.type_def import MemoryUnit, Segment
 from common.type_def.memory import LifecycleState, MemoryTier, Modality
 from common.type_def.memory_codec import dumps, loads
+from common.type_def.scope import Scope
 
 pytestmark = pytest.mark.unit
+
+
+def test_scope_space_is_keyword_only_and_old_positional_order_is_preserved() -> None:
+    scope = Scope("org", "user", "agent", "session")
+
+    assert scope == Scope(
+        org="org",
+        space="",
+        user="user",
+        agent="agent",
+        session="session",
+    )
 
 
 def test_roundtrip_preserves_fields(unit_factory) -> None:
@@ -39,15 +53,13 @@ def test_roundtrip_preserves_fields(unit_factory) -> None:
 
 def test_dumps_carries_schema_version(unit_factory) -> None:
     obj = json.loads(dumps(unit_factory("u1", "x")).decode("utf-8"))
-    assert obj["_v"] == 2
+    assert obj["_v"] == 3
 
 
 def test_roundtrip_preserves_multiple_segments() -> None:
-    from common.type_def import MemoryUnit, Scope, Segment
-
     unit = MemoryUnit(
         id="u1",
-        scope=Scope(org="o", user="a"),
+        scope=Scope(org="o", space="p", user="a"),
         segments=[
             Segment(content="文本段", assets=["img1"], source=Modality.TEXT),
             Segment(content="图描述", assets=["img2"], source=Modality.IMAGE),
@@ -62,6 +74,27 @@ def test_roundtrip_preserves_multiple_segments() -> None:
     assert back.content == "文本段\n图描述"  # 折叠视图：换行连接
     assert back.assets == ["img1", "img2"]  # 折叠视图：扁平合并
     assert back.source == Modality.TEXT  # 折叠视图：主模态=首段
+    assert back.scope.space == "p"
+
+
+def test_loads_v2_scope_defaults_space() -> None:
+    raw = json.dumps(
+        {
+            "_v": 2,
+            "id": "old2",
+            "scope": ["o", "u", "a", "s"],
+            "tier": "semantic",
+            "segments": [{"content": "旧内容", "assets": [], "source": "text"}],
+        }
+    ).encode("utf-8")
+
+    back = loads(raw)
+
+    assert back.scope.org == "o"
+    assert back.scope.space == ""
+    assert back.scope.user == "u"
+    assert back.scope.agent == "a"
+    assert back.scope.session == "s"
 
 
 def test_loads_v1_flat_data_becomes_single_segment() -> None:

@@ -5,7 +5,11 @@ import os
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 from common.type_def import Segment
+
+pytestmark = pytest.mark.unit
 
 _BOOTSTRAP = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
@@ -64,10 +68,11 @@ def _dispatch_add(payload: dict) -> dict:
 
 
 def test_actor_scope_and_target_scope_match_when_actor_fields_are_omitted() -> None:
-    call = _dispatch_add({"tenant_id": "acme", "scope": "alice"})
+    call = _dispatch_add({"tenant_id": "acme", "space": "product", "scope": "alice"})
 
     assert call["identity"] == call["scope"]
     assert call["identity"].org == "acme"
+    assert call["identity"].space == "product"
     assert call["identity"].user == "alice"
 
 
@@ -79,10 +84,17 @@ def test_actor_scope_uses_default_scope_when_identity_fields_are_omitted() -> No
 
 
 def test_actor_scope_override_inherits_target_tenant_when_actor_tenant_not_provided() -> None:
-    call = _dispatch_add({"tenant_id": "acme", "scope": "owner", "actor_scope": "auditor"})
+    call = _dispatch_add(
+        {
+            "tenant_id": "acme",
+            "space_id": "product",
+            "scope": "owner",
+            "actor_scope": "auditor",
+        }
+    )
 
-    assert call["identity"] == handler.Scope(org="acme", user="auditor")
-    assert call["scope"] == handler.Scope(org="acme", user="owner")
+    assert call["identity"] == handler.Scope(org="acme", space="product", user="auditor")
+    assert call["scope"] == handler.Scope(org="acme", space="product", user="owner")
 
 
 def test_search_forwards_filter_dsl_to_api_boundary() -> None:
@@ -102,3 +114,18 @@ def test_search_forwards_filter_dsl_to_api_boundary() -> None:
 
     assert status == 200, body
     assert srv.api.recall_calls[0]["filters"] == filters
+
+
+def test_actor_space_override_can_differ_from_target_space() -> None:
+    call = _dispatch_add(
+        {
+            "tenant_id": "acme",
+            "space": "product",
+            "scope": "owner",
+            "actor_space": "coding",
+            "actor_scope": "reader",
+        }
+    )
+
+    assert call["identity"] == handler.Scope(org="acme", space="coding", user="reader")
+    assert call["scope"] == handler.Scope(org="acme", space="product", user="owner")

@@ -3,7 +3,7 @@
 增/删/改在一次调用内同时作用于节点与边（任一列表可为空），
 保持与其他存储一致的四动词形态。``scope`` 为显式第一入参：写入按 ``scope``
 落库，``search`` 遍历 / 按 id 的 ``get`` / ``delete`` 物理约束在该 ``scope`` 内。
-``id`` 为全局唯一主键。
+``id`` 为 scope 内逻辑主键。
 """
 
 from __future__ import annotations

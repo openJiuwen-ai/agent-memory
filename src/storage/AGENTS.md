@@ -18,7 +18,7 @@
 | `fulltext.py` | FulltextStore 接口：全文倒排索引存储，统一 CRUD + 关键词检索（BM25） |
 | `fusion.py` | FusionStore 接口：融合存储（向量+倒排+正排一体） |
 | `fs.py` | FSStore 接口：文件系统存储（原始负载/二进制资产） |
-| `kv_impl/` | KVStore 实现目录（memory / sqlite） |
+| `kv_impl/` | KVStore 实现目录（memory / sqlite / redis / encrypted） |
 | `vector_impl/` | VectorStore 实现目录（memory） |
 | `graph_impl/` | GraphStore 实现目录（memory） |
 | `fulltext_impl/` | FulltextStore 实现目录（memory） |
@@ -40,10 +40,10 @@
 ## 行为铁律
 
 1. **scope 原生隔离**  
-   `scope: Scope` 为每个 Store 方法的显式第一入参，物理约束在该 scope 内。写入按 scope 落库，检索/点查/删除绝不跨 scope 返回或影响。隔离必须在存储层强制，上层不依赖调用纪律。
+   `scope: Scope` 为每个 Store 方法的显式第一入参，物理约束在该 scope 内。写入按 scope 落库，检索/点查/删除绝不跨 scope 返回或影响。`org/space/user/agent/session` 五段 scope 必须参与命名空间或过滤；空 `space` 只匹配空 space 兼容域。隔离必须在存储层强制，上层不依赖调用纪律。
 
-2. **记录 id 是全局唯一主键**  
-   `insert` 冲突 / `update` 缺失按 id 判定，scope 是其归属属性。同一 id 在不同 scope 下物理隔离（kv/fs 通过命名空间，检索型 Store 通过 scope 字段）。
+2. **记录 id 在 scope 内唯一**
+   `insert` 冲突 / `update` 缺失按 `(scope, id)` 判定。同一 id 在不同 scope 下物理隔离（kv/fs 通过五段命名空间，检索型 Store 可用 scope+id 物理主键和 scope 字段）。
 
 3. **scope 不在记录结构体里**  
    `VectorRecord` / `Document` / `Node` / `FusionRecord` 等结构体不含 `scope` 字段（scope 是方法入参，不混进记录/查询结构体，也不编进 `metadata` / `filters`）。
@@ -56,6 +56,9 @@
 
 6. **后端不可用统一抛 BackendError**  
    连接失败/超时/服务不可用等非预期失败统一抛 `BackendError`（不抛泛化的 Exception）。
+
+7. **EncryptedKVStore 只做装饰，不做算法**
+   `encrypted` KV target 必须显式包装一个 raw KVStore，并调用 `common.security.SecurityProvider` 做 value 加解密；真实加密算法不放在 storage 层。
 
 ## 与其他子目录的边界
 
@@ -80,3 +83,4 @@
 4. KVStore 的 `ttl` 单位为秒（float），`0` 表示永不过期。
 5. GraphStore 的 `seed_ids` 用于图召回时定位入口节点，匹配语义由后端定义（允许实现差异）。
 6. FusionStore 的 `FusionRecord` 可部分字段为 None（如只写向量不写文本）。
+7. `EncryptedKVStore` 的 `raw_kv_store` 不能指向自身；未配置 raw 依赖时必须在装配阶段报错。

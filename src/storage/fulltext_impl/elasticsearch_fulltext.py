@@ -4,7 +4,7 @@
 CRUD，``search`` 走 ``match`` 关键词检索（BM25）。``scope`` 为方法显式入参——写入
 时落到文档的 ``scope`` 嵌套字段，``search`` / 按 id 的 ``get`` / ``delete`` 物理
 约束在该 scope 内（对非空维度施加 ``term`` 过滤），实现原生隔离（§5.2 / §7）；
-``id`` 是全局唯一主键（冲突/缺失按 id 判定），``filters`` 仅承载 scope 之外的谓词。
+``id`` 是 scope 内逻辑主键，物理 ``_id`` 由 scope+id 生成，``filters`` 仅承载 scope 之外的谓词。
 
 ``elasticsearch`` 客户端惰性导入与连接，未安装/未就绪不影响 ``import storage``。
 目标客户端 API 为 elasticsearch-py 8.x。
@@ -32,7 +32,7 @@ from common.type_def import (
 )
 from storage.fulltext import FulltextProducer
 
-from .._support import scope_dims, wrap_backend
+from .._support import scope_dims, scope_segments, wrap_backend
 from ..base import StoreType
 from ..fulltext import FulltextStore
 from ..types import Document, ScoredID, TextQuery
@@ -131,9 +131,11 @@ class ElasticsearchFulltextStore(FulltextStore):
                             if self._text_analyzer
                             else {"type": "text"}
                         ),
+                        "logical_id": {"type": "keyword"},
                         "scope": {
                             "properties": {
                                 "org": {"type": "keyword"},
+                                "space": {"type": "keyword"},
                                 "user": {"type": "keyword"},
                                 "agent": {"type": "keyword"},
                                 "session": {"type": "keyword"},
@@ -149,13 +151,24 @@ class ElasticsearchFulltextStore(FulltextStore):
     def _scope_dict(scope: Scope) -> dict[str, str]:
         return {
             "org": scope.org,
+            "space": scope.space,
             "user": scope.user,
             "agent": scope.agent,
             "session": scope.session,
         }
 
+    @staticmethod
+    def _doc_id(scope: Scope, logical_id: str) -> str:
+        return ":".join((*scope_segments(scope), logical_id))
+
+    @staticmethod
+    def _logical_id(doc_id: str) -> str:
+        parts = doc_id.split(":", 5)
+        return parts[-1] if len(parts) == 6 else doc_id
+
     def _source(self, scope: Scope, doc: Document) -> dict[str, Any]:
         return {
+            "logical_id": doc.id,
             self._text_field: doc.text,
             "scope": self._scope_dict(scope),
             "metadata": doc.metadata,
@@ -163,7 +176,7 @@ class ElasticsearchFulltextStore(FulltextStore):
 
     def _to_document(self, doc_id: str, src: dict[str, Any]) -> Document:
         return Document(
-            id=doc_id,
+            id=src.get("logical_id") or self._logical_id(doc_id),
             text=src.get(self._text_field, ""),
             metadata=src.get("metadata") or {},
         )
@@ -220,7 +233,7 @@ class ElasticsearchFulltextStore(FulltextStore):
             return
         ops: list[dict[str, Any]] = []
         for doc in docs:
-            ops.append({"create": {"_index": self._index, "_id": doc.id}})
+            ops.append({"create": {"_index": self._index, "_id": self._doc_id(scope, doc.id)}})
             ops.append(self._source(scope, doc))
         with wrap_backend("elasticsearch insert"):
             resp = self.client.bulk(operations=ops, refresh=self._refresh)
@@ -236,12 +249,12 @@ class ElasticsearchFulltextStore(FulltextStore):
     def update(self, scope: Scope, docs: list[Document]) -> None:
         if not docs:
             return
-        missing = self._missing_ids([doc.id for doc in docs])
+        missing = self._missing_ids(scope, [doc.id for doc in docs])
         if missing:
             raise NotFoundError(entity="document", key=missing[0])
         ops: list[dict[str, Any]] = []
         for doc in docs:
-            ops.append({"index": {"_index": self._index, "_id": doc.id}})
+            ops.append({"index": {"_index": self._index, "_id": self._doc_id(scope, doc.id)}})
             ops.append(self._source(scope, doc))
         with wrap_backend("elasticsearch update"):
             resp = self.client.bulk(operations=ops, refresh=self._refresh)
@@ -252,22 +265,33 @@ class ElasticsearchFulltextStore(FulltextStore):
         if not ids:
             return
         # delete_by_query 受 scope 约束：只删 scope 内命中的 id（幂等）。
-        query = {"bool": {"filter": [{"ids": {"values": ids}}, *self._scope_filters(scope)]}}
+        query = {
+            "bool": {
+                "filter": [
+                    {"ids": {"values": [self._doc_id(scope, doc_id) for doc_id in ids]}},
+                    *self._scope_filters(scope),
+                ]
+            }
+        }
         with wrap_backend("elasticsearch delete"):
             self.client.delete_by_query(
                 index=self._index, query=query, refresh=bool(self._refresh != "false")
             )
 
-    def _missing_ids(self, ids: list[str]) -> list[str]:
+    def _missing_ids(self, scope: Scope, ids: list[str]) -> list[str]:
+        physical_to_logical = {self._doc_id(scope, doc_id): doc_id for doc_id in ids}
         with wrap_backend("elasticsearch mget"):
-            resp = self.client.mget(index=self._index, ids=ids)
-        return [d["_id"] for d in resp["docs"] if not d.get("found")]
+            resp = self.client.mget(index=self._index, ids=list(physical_to_logical))
+        return [physical_to_logical[d["_id"]] for d in resp["docs"] if not d.get("found")]
 
     def get(self, scope: Scope, ids: list[str]) -> list[Document]:
         if not ids:
             return []
         with wrap_backend("elasticsearch get"):
-            resp = self.client.mget(index=self._index, ids=ids)
+            resp = self.client.mget(
+                index=self._index,
+                ids=[self._doc_id(scope, doc_id) for doc_id in ids],
+            )
         wanted = dict(scope_dims(scope))
         out: list[Document] = []
         for d in resp["docs"]:
@@ -289,7 +313,17 @@ class ElasticsearchFulltextStore(FulltextStore):
             resp = self.client.search(
                 index=self._index, query={"bool": bool_query}, size=query.top_k
             )
-        return [ScoredID(id=hit["_id"], score=float(hit["_score"])) for hit in resp["hits"]["hits"]]
+        results: list[ScoredID] = []
+        for hit in resp["hits"]["hits"]:
+            source = hit.get("_source") or {}
+            logical_id = source.get("logical_id") or self._logical_id(hit["_id"])
+            results.append(
+                ScoredID(
+                    id=logical_id,
+                    score=float(hit["_score"]),
+                )
+            )
+        return results
 
 
 # -- 注册到 FulltextProducer（实现自注册，新增无需改 producer/build_kernel） -------- #

@@ -3,7 +3,7 @@
 所有接入形态（SDK/CLI/Skill/MCP/HTTP·gRPC）最终映射到本接口；不论
 真源是文档还是结构化、运行在端还是云，调用方语义一致。
 
-本层是控制层（``src/control``）的薄封装：数据面（write/recall/get/update/
+本层是控制层（``src/control``）的薄封装：数据面（write/recall/list/get/update/
 delete/evolve/admin）委托 :class:`~control.engine.MemoryEngine`，管理面查询
 （任务状态、血缘/审计、跨 scope 授权）直达对应控制算子
 （:class:`~control.scheduler.Scheduler` / :class:`~control.governance.Governor`
@@ -28,7 +28,22 @@ from common.type_def import (
     Scope,
 )
 from construction import EvolveMode
-from control import Channel, DeleteSelector, Grant, JobInfo, MemoryPatch
+from control import (
+    Channel,
+    DeleteMode,
+    DeleteSelector,
+    Grant,
+    JobInfo,
+    MemoryPatch,
+    SpaceDeleteResult,
+    SpaceInfo,
+    SpaceMember,
+    SpacePatch,
+    SpacePolicy,
+    SpaceSpec,
+    SpaceStatus,
+    SpaceUsage,
+)
 from retrieval import DisclosureLevel, RetrievalResult
 
 
@@ -107,6 +122,24 @@ class MemoryAPI(ABC):
         规范化为支持 AND/OR/NOT 的 :class:`~common.type_def.FilterExpr`，
         ``as_of`` 时间点回溯（双时间模型），``disclosure`` 渐进式披露层级，
         ``with_trajectory`` 返回检索轨迹。"""
+
+    @abstractmethod
+    def list(
+        self,
+        scope: Scope,
+        *,
+        identity: Scope,
+        offset: int = 0,
+        limit: int = 100,
+        memory_types: list[str] | None = None,
+    ) -> list[MemoryUnit]:
+        """列出目标 ``scope`` 下已建索引的记忆单元。
+
+        语义参考 mem1.0 ``list_memories``：支持 ``offset``/``limit`` 分页与
+        ``memory_types`` 类型过滤。只返回 ``/memory/`` 真源记录，不包含
+        ``/messages/`` 下的 infer 原文缓存。``identity`` 为调用方身份，本层据
+        ``scope`` 鉴权 READ 后委托 Engine。
+        """
 
     @abstractmethod
     def get(
@@ -224,3 +257,89 @@ class MemoryAPI(ABC):
         回收一条授权（幂等）；``identity`` 为调用方身份，本层据其鉴权。匹配
         哪条既有授权由具体实现定义。
         """
+
+    # -- Space 管理（委托 SpaceManager） ------------------------------------ #
+
+    @abstractmethod
+    def create_space(self, spec: SpaceSpec, *, identity: Scope) -> SpaceInfo:
+        """创建 space，并写入主体路径、策略、状态与 metadata。"""
+
+    @abstractmethod
+    def get_space(self, org: str, space: str, *, identity: Scope) -> SpaceInfo:
+        """读取单个 space 的基础信息与策略。"""
+
+    @abstractmethod
+    def list_spaces(
+        self,
+        org: str,
+        *,
+        identity: Scope,
+        status: SpaceStatus | None = None,
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> list[SpaceInfo]:
+        """列出 org 下调用方可见的 spaces。"""
+
+    @abstractmethod
+    def update_space(
+        self, org: str, space: str, patch: SpacePatch, *, identity: Scope
+    ) -> SpaceInfo:
+        """修改 space display name、metadata、policy 或状态。"""
+
+    @abstractmethod
+    def archive_space(self, org: str, space: str, *, identity: Scope) -> SpaceInfo:
+        """归档 space，保留读取、导出与审计能力。"""
+
+    @abstractmethod
+    def delete_space(
+        self,
+        org: str,
+        space: str,
+        *,
+        identity: Scope,
+        mode: DeleteMode = DeleteMode.PURGE,
+    ) -> SpaceDeleteResult:
+        """删除 space 真源与可重建索引；当前实现只支持 PURGE。"""
+
+    @abstractmethod
+    def export_space(
+        self,
+        org: str,
+        space: str,
+        *,
+        identity: Scope,
+        include_audit: bool = True,
+    ) -> str:
+        """提交 space 导出，返回 export id。"""
+
+    @abstractmethod
+    def space_usage(self, org: str, space: str, *, identity: Scope) -> SpaceUsage:
+        """查询 space 级用量。"""
+
+    @abstractmethod
+    def get_space_policy(self, org: str, space: str, *, identity: Scope) -> SpacePolicy:
+        """读取 space 级 policy。"""
+
+    @abstractmethod
+    def set_space_policy(
+        self, org: str, space: str, policy: SpacePolicy, *, identity: Scope
+    ) -> SpacePolicy:
+        """替换 space 级 policy。"""
+
+    @abstractmethod
+    def list_space_members(
+        self, org: str, space: str, *, identity: Scope
+    ) -> list[SpaceMember]:
+        """列出 space 成员。"""
+
+    @abstractmethod
+    def add_space_member(
+        self, org: str, space: str, member: SpaceMember, *, identity: Scope
+    ) -> None:
+        """添加或更新 space 成员角色。"""
+
+    @abstractmethod
+    def remove_space_member(
+        self, org: str, space: str, member: Scope, *, identity: Scope
+    ) -> None:
+        """移除 space 成员。"""

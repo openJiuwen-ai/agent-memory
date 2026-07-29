@@ -1,16 +1,16 @@
-# F03 — Scope 新增 Space 隔离层设计
+# F03 — Scope Space 隔离与目标定位设计
 
 ## 元信息
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-07-26 |
-| 影响范围 | `src/common/type_def/scope.py`、`src/api/`、`src/control/`、`src/storage/`、`src/retrieval/`、`src/construction/`、`docs/design/architecture.md`、`docs/specs/S02-memory-api.md`、`docs/specs/S03-memory-manage.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md` |
-| 测试基线 | 设计文档阶段，未改代码，未运行测试 |
+| 日期 | 2026-07-27 |
+| 影响范围 | `src/common/type_def/`、`src/api/`、`src/control/`、`src/storage/`、`src/retrieval/`、`src/construction/`、`docs/design/architecture.md`、`docs/specs/S02-memory-api.md`、`docs/specs/S03-control.md`、`docs/specs/S05-construction.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md` |
+| 测试基线 | `python3 -m compileall -q src bootstrap/core tests`；12 个 Scope/Space 关键测试函数直接执行；`git diff --check`。当前环境未安装 pytest 与 ruff，未执行完整测试和 lint |
 
 ## 背景
 
-当前 `Scope` 为四维结构：
+变更前 `Scope` 为四维结构：
 
 ```python
 Scope(org, user, agent, session)
@@ -31,6 +31,12 @@ Scope(org, user, agent, session)
 是多租户隔离的主边界，覆盖 access 隔离与 storage 隔离；`org` 继续承担上级
 组织、账务、管理员与聚合治理边界。
 
+Space 字段初步落地后，生命周期、治理读取和索引删除仍有只接收裸
+`MemoryUnit.id`、再扫描全部 Scope 或维护 `unit_id -> Scope` 缓存的路径。这隐含了 Memory
+ID 全局唯一的前提，与 Store 的“完整 Scope 内唯一”契约冲突。list 若只按请求级过滤条件选择
+权限 profile，也可能在未指定 `memory_types` 时跳过实际资源类型的二次鉴权。因此 Space 隔离
+不仅是增加字段，还要求所有目标操作、权限上下文和 offboarding 链路使用同一 Scope 边界。
+
 ## 目标模型
 
 ### Scope 字段
@@ -41,23 +47,27 @@ Scope(org, user, agent, session)
 @dataclass
 class Scope:
     org: str = ""
-    space: str = ""
-    agent: str = ""
+    space: str = field(default="", kw_only=True)
     user: str = ""
+    agent: str = ""
     session: str = ""
 ```
 
 字段语义：
 
 - `org`：组织、账务、合同、平台管理边界。
-- `space`：逻辑隔离单元，承载多租户数据边界、权限边界、存储分区边界。
-- `agent`：space 内的 Agent、助手、自动化执行主体或 persona。
+- `space`：全局唯一的逻辑隔离单元标识，承载多租户数据边界、权限边界、存储分区边界；
+  空字符串是未注册的本地兼容域。
 - `user`：space 内的人类用户、业务对象、终端客户或 owner 主体。
+- `agent`：space 内的 Agent、助手、自动化执行主体或 persona。
 - `session`：space 内的短生命周期会话、run、thread、ticket。
 
 `Scope` 的字段顺序不表达 `agent` 与 `user` 的固定父子关系。系统只把
 `org > space` 作为全局硬层级；`space` 内部的主体归属顺序由 `principal_path`
 配置决定。
+
+`space` 使用 keyword-only 参数，旧位置参数继续保持
+`Scope(org, user, agent, session)` 的顺序，避免新增字段把旧调用的 `user` 错绑定到 `space`。
 
 ### 主体路径
 
@@ -85,15 +95,16 @@ owner-cover 规则：同一 `org` 与同一 `user` 下，actor 可覆盖更窄�
 默认访问规则调整为：
 
 1. `Scope()` 仍表示 platform admin。
-2. `actor.org != target.org` 默认拒绝，除非 platform admin 或显式跨 org grant。
-3. `actor.space != target.space` 默认拒绝，除非 org admin、显式 cross-space grant，
-   或治理接口正在执行 org 级 space 管理动作。
+2. `actor.org != target.org` 默认拒绝；当前实现不支持跨 org grant。
+3. `actor.space != target.space` 默认拒绝，除非 platform admin 或显式 cross-space grant。
 4. `actor` 与 `target` 在同一 `org + space` 内时，再按该 space 的
    `principal_path` 判断 owner-cover。
-5. grant 必须记录完整 `Scope`，包括 `space`；省略 `space` 不得被解释为跨所有 space。
+5. grant 必须记录完整 `Scope`，包括 `space`；省略 `space` 只匹配空 space 兼容域，不得被解释为跨所有 space。
 
 `space` 为空仅用于兼容旧数据和本地单租户默认配置。生产多租户部署应开启
-`require_space=true`，要求租户数据面 API 的 target scope 同时包含 `org` 与 `space`。
+`scope.require_space=true`，要求租户数据面 API 的 target scope 同时包含 `org` 与 `space`。
+非空 Space ID 在管理面全局唯一，`org` 表示该 Space 的归属组织；不同 org 不能重复创建
+同一个 Space ID。
 
 ### 决策 2：owner-cover 由 `principal_path` 决定
 
@@ -168,11 +179,62 @@ Store 层必须把 `org + space` 当成隔离字段，所有读写删查都带�
 删除 space 不应只做 metadata 标记。若后端支持物理 namespace/tenant/database 删除，应优先使用
 物理删除；否则必须扫描完整 `org/space` 范围并删除真源、索引和派生记录。
 
+### 决策 6：Space ID 全局唯一，Memory ID 仅在 Scope 内唯一
+
+非空 Space ID 是全局唯一的资源标识。`KVSpaceManager` 在根 Scope 维护注册键，并以 KV
+`insert` 冲突作为唯一性闸门；空字符串只表示未注册的本地兼容域。
+
+`MemoryUnit.id` 只要求在完整 Scope 内唯一。Lifecycle、Governor、IndexBuilder、
+provenance 扩展和 Space 清理必须携带完整 Scope 或带 Scope 的 MemoryUnit，不得用裸 ID
+反向猜测 Scope。
+
+### 决策 7：本地与云侧 Engine 的 Space 边界明确
+
+`InMemoryEngine` 只处理 `space=""`；非空 Space 的数据面读写、生命周期和 offboarding 由
+`CloudEngine` 处理。Space 管理仍由 API 与 SpaceManager 承担，Engine 只提供数据清理原语。
+
+`MemoryAPI.list` 在请求级鉴权后，通过 `list_with_permission_contexts` 一次读取当前分页和
+每个实际 unit 的真源权限上下文并逐条鉴权。上下文与内容不得来自两次独立分页，也不能把未指定
+`memory_types` 解释为 fallback profile 已授权全部实际资源。
+
+### 决策 8：迁移与 offboarding 顺序必须保留 Scope 语义
+
+SQLite grant 旧表必须先增加 `grantor_space/grantee_space` 列，再创建引用这些列的索引。
+`delete_space` 先通过 `MemoryEngine.purge_space` 清理目标 Space 下全部子 Scope 的真源与
+索引，再由 SpaceManager 删除 messages、管理元数据和全局注册键。
+
+## 当前落地范围
+
+本次实现已覆盖核心多租户隔离链路：
+
+- `Scope` 增加 `space` 字段，`MemoryUnit` codec 升级到 `_v=3`，读取 `_v<3` 四段 scope 时把 `space` 补为空字符串。
+- `space` 为 keyword-only 字段，保留旧的 `Scope(org, user, agent, session)` 位置参数语义。
+- `scope_segments(scope)` 输出 `org/space/user/agent/session` 五段；KV、FS、Graph、Fusion 等命名空间型后端按五段精确隔离。
+- `scope_dims(scope)` 在 `org` 已给出时固定下推 `space == ""`，防止空 space 查询跨到其他 space；Vector / Fulltext 后端记录并过滤 `space`。
+- SQLite KV、SQLite Permission、SQLite Audit 支持旧表轻量迁移，旧数据进入空 space 兼容域。
+- `PermissionManager.check` 先要求同 `org + space`，再按 `principal_path`（默认 `user_agent`，可通过 `PermissionContext.metadata["principal_path"]="agent_user"` 覆盖）判断 owner-cover；显式 grant 可跨 space 授权。
+- `LocalMemoryAPI` 支持 `scope.require_space` 策略，开启后具体 target scope 缺少 `space` 会被拒绝并记录 deny audit。
+- `SpaceManager` 已作为 control 算子落地，默认 `kv` 实现在根 Scope 维护全局 Space ID 注册键，
+  并存储 space metadata、space policy、member/role、export 记录，提供 usage 与
+  delete/offboarding。
+- `LocalMemoryAPI` 已暴露 create/get/list/update/archive/delete/export/usage/policy/member space
+  管理接口；`delete_space` 当前只支持 PURGE，先经 CloudEngine 清目标 Space 的全部子 Scope
+  真源与索引，再由 SpaceManager 删除 KV/messages/metadata 和全局注册键。
+- `InMemoryEngine` 只处理 `space=""` 本地兼容域；命名 Space 的数据面读写与清理由
+  `CloudEngine` 负责。
+- Lifecycle、Governor 和 IndexBuilder 的目标操作携带完整 Scope，允许不同 Scope 内复用同一
+  `MemoryUnit.id` 而不串改、串查或串删。
+- 已创建 space 的 `principal_path` 由 `SpaceManager.get_policy` 注入 `PermissionContext.metadata["principal_path"]`，调用级 metadata 不能临时覆盖 space policy。
+- `AuditEvent` 增加 target scope，内存/SQLite 审计后端支持 `target_org` / `target_space` / `target_user` / `target_agent` / `target_session` 过滤。
+- dispatch payload 支持 `space` / `space_id`、`actor_space` / `actor_space_id`、`grantee_space` / `grantee_space_id`，并新增 space 管理 verbs。
+
+尚未落地：基于 `SpaceMember.role` 的默认权限矩阵、跨 space recall 的多 target API、index/audit 专用后端的精确 usage 计数、后端原生 namespace/tenant 物理删除适配。
+
 ## 需要增加的 API 接口
 
 ### 现有 API 的入参语义变化
 
-这些接口不需要改名，但 target scope 必须支持 `space`，并在 `require_space=true`
+这些接口不需要改名，但 target scope 必须支持 `space`，并在 `scope.require_space=true`
 时拒绝缺少 `space` 的租户数据操作：
 
 | 接口 | 需要变化 |
@@ -183,29 +245,28 @@ Store 层必须把 `org + space` 当成隔离字段，所有读写删查都带�
 | `delete` | `DeleteSelector.scope` 支持 space；无 scope 的跨范围删除继续退到根 scope 管理闸门 |
 | `evolve` | 演进任务按 target space 提交和扫描 |
 | `inspect` / `trace` | 治理读取按 target space 鉴权 |
-| `audit` | filters 增加 `target_org`、`target_space`、`actor_space` |
+| `audit` | filters 增加 `actor_space` 与 `target_org` / `target_space` / `target_user` / `target_agent` / `target_session` |
 | `grant` / `revoke` | `Grant.grantor` 与 `Grant.grantee` 持久化 `space`，匹配逻辑不得跨 space 漏命中 |
 
 ### 新增 Space 管理 API
 
-建议在 `MemoryAPI` 管理面新增以下接口，并由 control 层的 `SpaceManager`
-或等价控制算子承接：
+`MemoryAPI` 管理面已新增以下接口，并由 control 层的 `SpaceManager` 承接：
 
 | 接口 | 语义 |
 |---|---|
-| `create_space(spec, *, actor) -> SpaceInfo` | 创建 space，写入 `principal_path`、状态、metadata 与初始 policy |
-| `get_space(org, space, *, actor) -> SpaceInfo` | 读取单个 space 的基础信息与状态 |
-| `list_spaces(org, *, actor, status=None, limit=100, cursor=None) -> SpaceList` | 列出 org 下可见 spaces |
-| `update_space(org, space, patch, *, actor) -> SpaceInfo` | 修改 display name、metadata、policy 等非破坏字段 |
-| `archive_space(org, space, *, actor) -> SpaceInfo` | 归档 space，默认停止写入但保留读取与导出能力 |
-| `delete_space(org, space, *, actor, mode=PURGE) -> SpaceDeleteResult` | 删除 space 真源与派生索引；物理删除失败必须返回可审计错误 |
-| `export_space(org, space, *, actor, include_audit=True) -> str` | 提交 space 导出任务，返回 job id 或 export id |
-| `space_usage(org, space, *, actor) -> SpaceUsage` | 查询 memory/message/index/audit 容量与调用统计 |
-| `get_space_policy(org, space, *, actor) -> SpacePolicy` | 查询 space 级 policy |
-| `set_space_policy(org, space, policy, *, actor) -> SpacePolicy` | 设置 space 级 policy，包括 `principal_path`、retention、配额、索引和演进策略 |
-| `list_space_members(org, space, *, actor) -> list[SpaceMember]` | 查询 space 成员与角色 |
-| `add_space_member(org, space, member, role, *, actor) -> None` | 添加或更新 space 成员角色 |
-| `remove_space_member(org, space, member, *, actor) -> None` | 移除 space 成员 |
+| `create_space(spec, *, identity) -> SpaceInfo` | 创建 space，写入 `principal_path`、状态、metadata 与初始 policy |
+| `get_space(org, space, *, identity) -> SpaceInfo` | 读取单个 space 的基础信息与状态 |
+| `list_spaces(org, *, identity, status=None, limit=100, cursor=None) -> list[SpaceInfo]` | 列出 org 下 spaces |
+| `update_space(org, space, patch, *, identity) -> SpaceInfo` | 修改 display name、metadata、policy 等非破坏字段 |
+| `archive_space(org, space, *, identity) -> SpaceInfo` | 归档 space，默认停止写入但保留读取与导出能力 |
+| `delete_space(org, space, *, identity, mode=PURGE) -> SpaceDeleteResult` | 删除 space 真源与派生索引；当前只支持 PURGE |
+| `export_space(org, space, *, identity, include_audit=True) -> str` | 提交 space 导出任务，返回 export id |
+| `space_usage(org, space, *, identity) -> SpaceUsage` | 查询 memory/message/KV bytes 用量 |
+| `get_space_policy(org, space, *, identity) -> SpacePolicy` | 查询 space 级 policy |
+| `set_space_policy(org, space, policy, *, identity) -> SpacePolicy` | 设置 space 级 policy，包括 `principal_path`、retention、配额、索引和演进策略 |
+| `list_space_members(org, space, *, identity) -> list[SpaceMember]` | 查询 space 成员与角色 |
+| `add_space_member(org, space, member, *, identity) -> None` | 添加或更新 space 成员角色 |
+| `remove_space_member(org, space, member, *, identity) -> None` | 移除 space 成员 |
 
 ### 新增或扩展的数据类型
 
@@ -221,7 +282,31 @@ Store 层必须把 `org + space` 当成隔离字段，所有读写删查都带�
 | `SpaceUsage` | `memory_count` / `message_count` / `index_count` / `storage_bytes` / `audit_count` |
 | `SpaceDeleteResult` | `org` / `space` / `deleted_counts` / `status` / `audit_event_id` |
 
-## 配置草案
+## 当前已实现配置
+
+```yaml
+policy:
+  default:
+    target: dict
+    params:
+      policies:
+        rerank.enabled: "true"
+        lifecycle.expired_active.target: forgotten
+        lifecycle.superseded.target: forgotten
+        scope.require_space: "true"
+
+space:
+  default:
+    target: kv
+    params:
+      kv_store: default
+```
+
+接入 payload 支持 `space` / `space_id`，actor override 支持 `actor_space` /
+`actor_space_id`，授权 grantee 支持 `grantee_space` / `grantee_space_id`。未传时
+进入空 space 兼容域。
+
+## 后续配置草案
 
 ```yaml
 memory_api:
@@ -287,7 +372,7 @@ memory_api:
 - 修改 owner-cover 规则，先校验 `org + space`，再按 `principal_path` 判断前缀覆盖。
 - 修改 `Grant` 持久化，增加 grantor/grantee 的 `space` 字段。
 - 增加 migration：旧 grants 的 `space` 填空串。
-- 增加 `require_space` 策略：生产配置打开后，target scope 缺少 `space` 直接拒绝写入/检索。
+- 增加 `scope.require_space` 策略：生产配置打开后，target scope 缺少 `space` 直接拒绝写入/检索。
 - 增加 space member / role / policy 的管理模型。
 
 ### 阶段 3：Storage 隔离
@@ -295,7 +380,8 @@ memory_api:
 - 所有 Store record 增加或下推 `space` 字段。
 - Vector/Fulltext/Graph/KV 后端补 `org + space` filter 或 namespace 映射。
 - `IndexBuilder` 构建索引时把 `unit.scope.org` 与 `unit.scope.space` 写入索引记录。
-- `Retriever`、`Dedup`、`Lifecycle`、`Governor` 跨 scope 扫描都必须包含 space。
+- `Retriever`、`Dedup` 的查询必须包含 space；Lifecycle、Governor 的目标操作必须显式接收
+  完整 Scope，全局 sweep 逐 Scope 分组执行。
 
 ### 阶段 4：Space 治理
 
@@ -303,24 +389,33 @@ memory_api:
 - 增加 space 级审计过滤。
 - 增加 offboarding 流程：冻结写入 -> 导出 -> 删除真源与索引 -> 审计记录。
 
-## 验证计划
+## 验证
 
 ### 单测
 
 - `Scope` 新字段默认兼容：旧构造不传 `space` 仍可用。
-- `require_space=true`：缺少 space 的 write/recall 拒绝。
+- `Scope(org, user, agent, session)` 四个位置参数的绑定顺序保持不变，`space` 只能按关键字传入。
+- 不同 org 创建相同非空 Space ID 时返回冲突。
+- `scope.require_space=true`：缺少 space 的 write/recall 拒绝。
 - owner-cover：`user_agent` 下 user 覆盖 agent/session；agent 不反向覆盖 user。
 - owner-cover：`agent_user` 下 agent 覆盖 user/session；user 不反向覆盖 agent。
 - Grant：只授权指定 space；不同 space 不命中。
 - Space policy：`principal_path` 只能在 space policy 上生效，不被调用级 options 覆盖。
+- Lifecycle、Governor、Fulltext/Vector IndexBuilder：跨 Space 同 Memory ID 时只处理目标
+  Scope。
+- InMemoryEngine：非空 Space 请求被拒绝；CloudEngine 承担命名 Space 数据面操作。
+- list：对当前分页实际资源类型逐条鉴权，未指定 `memory_types` 也不能绕过类型路由。
+- SQLite PermissionManager：缺少 Space 列的旧表先完成迁移，再创建索引。
 
 ### 集成测试
 
 - 同 org 两个 space 写入同样内容，recall 只返回目标 space 的结果。
 - delete space A 不影响 space B。
+- 不同 space 使用相同 `MemoryUnit.id` 时，生命周期、治理读取和索引删除只影响目标 Scope。
 - vector/fulltext/graph 三类索引均不跨 space 召回。
+- Fusion 后端允许跨 Scope 使用相同逻辑 id，检索与正排仍严格隔离。
 - lifecycle sweep 只处理目标 space，或按 space 分组扫描。
-- audit 可按 `target_space` 查询。
+- audit 可按 `actor_space` 与 `target_space` 查询。
 - `agent_user` 与 `user_agent` 两类 space 在同一部署中共存。
 
 ### 回归测试
@@ -328,6 +423,9 @@ memory_api:
 - 旧单租户默认配置仍可用，`space=""` 兼容。
 - 旧数据 loads 不失败。
 - CLI/HTTP/MCP 未传 space 时在 `require_space=false` 下行为不变。
+
+当前环境未安装 pytest 和 ruff，因此实际执行了 Python 编译、12 个关键测试函数直接调用、
+新增行长检查与 `git diff --check`；完整测试和 lint 仍需在项目开发环境运行。
 
 ## 拒绝的方案
 
@@ -368,10 +466,38 @@ metadata filter 只能作为低层实现策略，不能作为核心模型。若 
 跨 space 检索容易造成数据泄露和审计困难。需要共享时，应显式授权或显式查询 shared space。
 默认 recall 永远只在 target space 内执行。
 
+### 拒绝方案 6：把 Memory ID 改为全局唯一
+
+Store 接口已经以 Scope 作为命名空间，强制 Memory ID 全局唯一会扩大迁移成本，也不能替代
+调用链显式传递租户边界。
+
+### 拒绝方案 7：保留 `unit_id -> Scope` 单值缓存
+
+缓存键会在跨 Scope 同 ID 时碰撞，并引入失效和重建问题。目标操作应直接接收 Scope 或
+带 Scope 的 MemoryUnit。
+
+### 拒绝方案 8：让 API 直接扫描 KV 完成 Space 清理
+
+API 不应依赖具体存储实现。跨真源与索引的清理编排属于 Engine 契约，API 只负责鉴权、委托和
+审计。
+
+### 拒绝方案 9：信任 list 请求过滤条件代表实际资源类型
+
+请求未指定 `memory_types` 时仍可能返回多种资源。权限路由必须来自真源中的实际 unit
+metadata，并与返回内容来自同一次分页读取。
+
+### 拒绝方案 10：让 InMemoryEngine 部分支持命名 Space
+
+两个 Engine 对非空 Space 的责任边界必须明确，避免本地最小实现逐步复制云侧隔离、治理和
+offboarding 逻辑。
+
 ## 已知遗留
 
 - `org admin`、`space admin`、`space member` 的角色枚举与默认权限矩阵需要在 API spec 中固化。
 - 跨 space recall 的最终 API 形态需要独立设计，建议显式传 authorized scopes。
 - 各后端的物理隔离能力差异较大，需要在 `docs/specs/S06-storage.md` 中补矩阵。
-- 迁移旧数据时是否把 `space` 填为 `default` 还是空串，需要根据部署方式决定。
-- 若保留 `Scope` 的位置参数兼容，需要审计所有非 keyword 构造调用，避免新增字段后位置错位。
+- 全局 Space 注册键与 Space metadata 分两次 KV 写入，进程在两次写入之间崩溃时需要后台
+  reconciliation 清理孤立注册键。
+- CloudEngine 开启 EncryptedKVStore 后的跨 Space recall/offboarding 仍缺完整集成测试。
+- `purge_space` 当前按 KV Scope 枚举并逐 Scope 清理；具备原生 namespace/tenant 删除能力的
+  云 Store 后端后续应提供物理清理适配。

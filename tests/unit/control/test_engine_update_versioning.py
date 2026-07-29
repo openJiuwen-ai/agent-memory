@@ -14,7 +14,7 @@ from control.lifecycle import LifecycleManager
 class RecordingLifecycle(LifecycleManager):
     def __init__(self, kv) -> None:
         self._kv = kv
-        self.supersede_calls: list[tuple[str, datetime]] = []
+        self.supersede_calls: list[tuple[Scope, str, datetime]] = []
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.LIFECYCLE
@@ -22,22 +22,22 @@ class RecordingLifecycle(LifecycleManager):
     def health(self) -> None:
         return None
 
-    def transition(self, unit_ids: list[str], target: LifecycleState) -> None:
+    def transition(
+        self, scope: Scope, unit_ids: list[str], target: LifecycleState
+    ) -> None:
         raise AssertionError("Engine.update(SUPERSEDE) should call supersede(), not transition()")
 
-    def supersede(self, unit_id: str, invalid_at: datetime) -> MemoryUnit:
-        self.supersede_calls.append((unit_id, invalid_at))
-        for scope in self._kv.scopes():
-            for key, raw in self._kv.list(scope):
-                # key 带前缀（/memory/{id}），取末段作裸 id 再比对
-                if key.rsplit("/", 1)[-1] == unit_id:
-                    unit = loads(raw)
-                    if unit.lifecycle != LifecycleState.ACTIVE:
-                        raise ValidationError("invalid test transition")
-                    unit.lifecycle = LifecycleState.SUPERSEDED
-                    unit.temporal.t_invalid = invalid_at
-                    self._kv.update(scope, key, dumps(unit))
-                    return unit
+    def supersede(self, scope: Scope, unit_id: str, invalid_at: datetime) -> MemoryUnit:
+        self.supersede_calls.append((scope, unit_id, invalid_at))
+        for key, raw in self._kv.list(scope):
+            if key.rsplit("/", 1)[-1] == unit_id:
+                unit = loads(raw)
+                if unit.lifecycle != LifecycleState.ACTIVE:
+                    raise ValidationError("invalid test transition")
+                unit.lifecycle = LifecycleState.SUPERSEDED
+                unit.temporal.t_invalid = invalid_at
+                self._kv.update(scope, key, dumps(unit))
+                return unit
         raise AssertionError(f"missing test unit: {unit_id}")
 
     def sweep(self) -> list[str]:
@@ -101,7 +101,7 @@ def test_update_supersede_delegates_old_version_lifecycle_to_manager() -> None:
         identity=actor,
     )
 
-    assert lifecycle.supersede_calls == [(old.id, valid_from)]
+    assert lifecycle.supersede_calls == [(scope, old.id, valid_from)]
     stored_old = kernel.api.get(old.id, scope, identity=actor)
     assert stored_old.lifecycle == LifecycleState.SUPERSEDED
     assert stored_old.temporal.t_invalid == valid_from

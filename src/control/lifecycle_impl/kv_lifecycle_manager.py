@@ -10,8 +10,6 @@ forgotten），不物理删除。``sweep`` 扫描到期（``t_invalid`` 已过�
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import List
-
 from common.errors import NotFoundError, PolicyError, ValidationError
 from common.log import get_logger
 from common.type_def import (
@@ -110,51 +108,53 @@ class KVLifecycleManager(LifecycleManager):
     def health(self) -> None:
         return None
 
-    def transition(self, unit_ids: List[str], target: LifecycleState) -> None:
+    def transition(
+        self, scope: Scope, unit_ids: list[str], target: LifecycleState
+    ) -> None:
         wanted = {memory_key(unit_id) for unit_id in unit_ids}
         matches: list[tuple[Scope, str, MemoryUnit]] = []
-        for scope in self._kv.scopes():
-            for key, raw in self._kv.list(scope, MEMORY_KEY_PREFIX):
-                unit = loads(raw)
-                if unit is None or key not in wanted:
-                    continue
-                _ensure_transition_allowed(unit.lifecycle, target, key)
-                matches.append((scope, key, unit))
-        for scope, key, unit in matches:
+        for key, raw in self._kv.list(scope, MEMORY_KEY_PREFIX):
+            unit = loads(raw)
+            if unit is None or key not in wanted:
+                continue
+            _ensure_transition_allowed(unit.lifecycle, target, key)
+            matches.append((scope, key, unit))
+        for matched_scope, key, unit in matches:
             unit.lifecycle = target
-            self._kv.update(scope, key, dumps(unit))
+            self._kv.update(matched_scope, key, dumps(unit))
         logger.info(
-            "Lifecycle.transition: target=%s requested=%d matched=%d",
+            "Lifecycle.transition: scope=%s target=%s requested=%d matched=%d",
+            scope,
             target.value,
             len(wanted),
             len(matches),
         )
 
-    def supersede(self, unit_id: str, invalid_at: datetime) -> MemoryUnit:
+    def supersede(self, scope: Scope, unit_id: str, invalid_at: datetime) -> MemoryUnit:
         dst_key = memory_key(unit_id)
-        for scope in self._kv.scopes():
-            for key, raw in self._kv.list(scope, MEMORY_KEY_PREFIX):
-                if key == dst_key:
-                    unit = loads(raw)
-                    if unit is None:
-                        continue
-                    _ensure_transition_allowed(unit.lifecycle, LifecycleState.SUPERSEDED, key)
-                    unit.lifecycle = LifecycleState.SUPERSEDED
-                    unit.temporal.t_invalid = invalid_at
-                    self._kv.update(scope, key, dumps(unit))
-                    logger.info(
-                        "Lifecycle.supersede: unit_id=%s scope=%s invalid_at=%s",
-                        unit_id,
-                        scope,
-                        invalid_at,
-                    )
-                    return unit
-        logger.warning("Lifecycle.supersede missing unit: unit_id=%s", unit_id)
+        for key, raw in self._kv.list(scope, MEMORY_KEY_PREFIX):
+            if key != dst_key:
+                continue
+            unit = loads(raw)
+            if unit is None:
+                continue
+            _ensure_transition_allowed(unit.lifecycle, LifecycleState.SUPERSEDED, key)
+            unit.lifecycle = LifecycleState.SUPERSEDED
+            unit.temporal.t_invalid = invalid_at
+            self._kv.update(scope, key, dumps(unit))
+            logger.info(
+                "Lifecycle.supersede: unit_id=%s scope=%s invalid_at=%s",
+                unit_id,
+                scope,
+                invalid_at,
+            )
+            return unit
+        logger.warning("Lifecycle.supersede missing unit: unit_id=%s scope=%s", unit_id, scope)
         raise NotFoundError("memory_unit", unit_id)
 
-    def sweep(self) -> List[str]:
+    def sweep(self) -> list[str]:
         now = datetime.now(timezone.utc)
-        swept: List[str] = []
+        swept: list[str] = []
         for scope in self._kv.scopes():
             for key, raw in self._kv.list(scope, MEMORY_KEY_PREFIX):
                 unit = loads(raw)

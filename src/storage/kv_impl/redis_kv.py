@@ -2,7 +2,7 @@
 
 ``redis`` 客户端在首次使用时惰性导入与连接，故未安装 ``redis-py`` 或后端未就绪
 时，仍可 ``import storage`` 与注册工厂；只有真正访问后端才会触发 ``BackendError``。
-``scope`` 入参对 Redis key 做命名空间隔离（``org:user:agent:session:<key>``），同一
+``scope`` 入参对 Redis key 做命名空间隔离（``org:space:user:agent:session:<key>``），同一
 逻辑 ``key`` 在不同 scope 下互不可见。``ttl`` 为秒（float），``0`` 表示永不过期。
 """
 
@@ -23,6 +23,10 @@ from storage.kv import KvProducer
 from .._support import scope_segments, wrap_backend
 from ..base import StoreType
 from ..kv import KVStore
+
+
+def _decode_scope_segment(segment: str) -> str:
+    return "" if segment == "_" else segment
 
 
 class RedisKVStore(KVStore):
@@ -121,24 +125,27 @@ class RedisKVStore(KVStore):
         return out
 
     def scopes(self) -> list[Scope]:
-        seen: set[tuple[str, str, str, str]] = set()
+        seen: set[tuple[str, str, str, str, str]] = set()
         with wrap_backend("redis scopes"):
             for raw in self.client.scan_iter(match="*"):
                 k = raw.decode("utf-8") if isinstance(raw, bytes) else raw
-                parts = k.split(":", 4)
-                if len(parts) < 5:  # 非本存储写入的键（不足 4 段 scope + key）
+                parts = k.split(":", 5)
+                if len(parts) < 6:  # 非本存储写入的键（不足 5 段 scope + key）
                     continue
-                seen.add(tuple(parts[:4]))
-        # 还原定长四段：``_`` 占位还原为空维度（与 scope_segments 互逆）
-        return [
-            Scope(
-                org="" if s[0] == "_" else s[0],
-                user="" if s[1] == "_" else s[1],
-                agent="" if s[2] == "_" else s[2],
-                session="" if s[3] == "_" else s[3],
+                seen.add(tuple(parts[:5]))
+        # 还原定长五段：``_`` 占位还原为空维度（与 scope_segments 互逆）
+        scopes = []
+        for segments in seen:
+            scopes.append(
+                Scope(
+                    org=_decode_scope_segment(segments[0]),
+                    space=_decode_scope_segment(segments[1]),
+                    user=_decode_scope_segment(segments[2]),
+                    agent=_decode_scope_segment(segments[3]),
+                    session=_decode_scope_segment(segments[4]),
+                )
             )
-            for s in seen
-        ]
+        return scopes
 
 
 # -- 注册到 KvProducer（接口层定义的工厂；实现自注册，新增无需改 producer/build_kernel） -------- #

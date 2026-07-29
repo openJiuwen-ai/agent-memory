@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from common.type_def import Scope
 from control.permission_impl import sqlite_permission_manager
 from control.permission_impl.sqlite_permission_manager import SQLitePermissionManager
-from control.types import Action, Grant
+from control.types import Action, Grant, PermissionContext
+
+pytestmark = pytest.mark.unit
 
 
 def test_owner_scope_is_allowed_without_grant(tmp_path) -> None:
@@ -24,6 +29,44 @@ def test_cross_org_is_denied_by_default(tmp_path) -> None:
     actor = Scope(org="acme", user="alice")
     target = Scope(org="other", user="bob")
 
+    assert mgr.check(actor, target, Action.READ) is False
+
+
+def test_cross_space_is_denied_by_default(tmp_path) -> None:
+    db_path = tmp_path / "permission.db"
+    mgr = SQLitePermissionManager(str(db_path))
+
+    actor = Scope(org="acme", space="product", user="alice")
+    target = Scope(org="acme", space="coding", user="alice")
+
+    assert mgr.check(actor, target, Action.READ) is False
+
+
+def test_cross_space_explicit_grant_allows_action(tmp_path) -> None:
+    db_path = tmp_path / "permission.db"
+    mgr = SQLitePermissionManager(str(db_path))
+    grantor = Scope(org="acme", space="product", user="owner")
+    grantee = Scope(org="acme", space="coding", user="reader")
+    target = Scope(org="acme", space="product", user="owner", agent="agent-a")
+
+    mgr.grant(Grant(grantor=grantor, grantee=grantee, actions=[Action.READ]))
+
+    assert mgr.check(grantee, target, Action.READ) is True
+    assert mgr.check(
+        Scope(org="acme", space="other", user="reader"),
+        target,
+        Action.READ,
+    ) is False
+
+
+def test_agent_user_principal_path_changes_owner_cover(tmp_path) -> None:
+    db_path = tmp_path / "permission.db"
+    mgr = SQLitePermissionManager(str(db_path))
+    context = PermissionContext(metadata={"principal_path": "agent_user"})
+    actor = Scope(org="acme", space="coding", agent="agent-a")
+    target = Scope(org="acme", space="coding", agent="agent-a", user="alice")
+
+    assert mgr.check(actor, target, Action.READ, context=context) is True
     assert mgr.check(actor, target, Action.READ) is False
 
 
@@ -124,6 +167,38 @@ def test_sqlite_permission_manager_creates_parent_directory(tmp_path) -> None:
     assert mgr.health() is None
 
 
+def test_sqlite_permission_manager_migrates_legacy_grants_before_indexes(tmp_path) -> None:
+    db_path = tmp_path / "legacy-permission.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE grants (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            grantor_org TEXT NOT NULL,
+            grantor_user TEXT NOT NULL,
+            grantor_agent TEXT NOT NULL,
+            grantor_session TEXT NOT NULL,
+            grantee_org TEXT NOT NULL,
+            grantee_user TEXT NOT NULL,
+            grantee_agent TEXT NOT NULL,
+            grantee_session TEXT NOT NULL,
+            action TEXT NOT NULL,
+            expires_at TEXT NULL,
+            created_at TEXT NOT NULL,
+            revoked_at TEXT NULL
+        );
+        """
+    )
+    conn.close()
+
+    manager = SQLitePermissionManager(str(db_path))
+    grantor = Scope(org="acme", space="coding", user="owner")
+    grantee = Scope(org="acme", space="coding", user="reader")
+    manager.grant(Grant(grantor=grantor, grantee=grantee, actions=[Action.READ]))
+
+    assert manager.check(grantee, grantor, Action.READ) is True
+
+
 def test_check_pushes_scope_matching_into_sql(tmp_path, monkeypatch) -> None:
     class _ConnectionSpy:
         def __init__(self, conn) -> None:
@@ -169,4 +244,4 @@ def test_check_pushes_scope_matching_into_sql(tmp_path, monkeypatch) -> None:
     query = spy.grant_selects[0]
     assert "grantee_org=?" in query
     assert "grantor_org=?" in query
-    assert "LIMIT 1" in query
+    assert "grantee_user=?" not in query

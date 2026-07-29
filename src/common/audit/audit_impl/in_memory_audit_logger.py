@@ -47,11 +47,23 @@ def _matches(event: AuditEvent, filters: dict[str, str]) -> bool:
 
     actor_filters = {
         "actor_org": event.actor.org,
+        "actor_space": event.actor.space,
         "actor_user": event.actor.user,
         "actor_agent": event.actor.agent,
         "actor_session": event.actor.session,
     }
     for field, value in actor_filters.items():
+        if filters.get(field) and value != filters[field]:
+            return False
+
+    target_filters = {
+        "target_org": event.target.org,
+        "target_space": event.target.space,
+        "target_user": event.target.user,
+        "target_agent": event.target.agent,
+        "target_session": event.target.session,
+    }
+    for field, value in target_filters.items():
         if filters.get(field) and value != filters[field]:
             return False
 

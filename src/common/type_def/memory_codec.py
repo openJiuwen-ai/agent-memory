@@ -15,9 +15,16 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Optional
 
-from .memory import ContentLayers, LifecycleState, MemoryTier, MemoryUnit, Modality, Segment, Temporal
+from .memory import (
+    ContentLayers,
+    LifecycleState,
+    MemoryTier,
+    MemoryUnit,
+    Modality,
+    Segment,
+    Temporal,
+)
 from .scope import Scope
 
 # 正排 JSON schema 版本：写入侧固定写出，读取侧据此分流破坏性结构变更。
@@ -25,14 +32,16 @@ from .scope import Scope
 # 含义/结构才升版本并在 loads 里按 _v 分支。
 # _v=2：内容侧由扁平 content/assets/source 改为 segments 列表（破坏性结构变更）；
 #       loads 对 _v<2 的老数据把单一 content/assets/source 读成单元素 segments。
-_V = 2
+# _v=3：scope 由 org/user/agent/session 四段扩展为 org/space/user/agent/session 五段；
+#       loads 对 _v<3 的老数据把 space 读成空字符串。
+_V = 3
 
 
-def _dt(value: Optional[datetime]) -> Optional[str]:
+def _dt(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
-def _pt(value: Optional[str]) -> Optional[datetime]:
+def _pt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
@@ -42,7 +51,13 @@ def dumps(unit: MemoryUnit) -> bytes:
         {
             "_v": _V,
             "id": unit.id,
-            "scope": [unit.scope.org, unit.scope.user, unit.scope.agent, unit.scope.session],
+            "scope": [
+                unit.scope.org,
+                unit.scope.space,
+                unit.scope.user,
+                unit.scope.agent,
+                unit.scope.session,
+            ],
             "tier": unit.tier.value,
             "layers": {
                 "l0": unit.layers.l0,
@@ -85,17 +100,21 @@ def loads(raw: bytes) -> MemoryUnit | None:
     if not isinstance(payload, dict):
         return None
     version = payload.get("_v", 1)  # 据此分流破坏性变更
-    sc = (list(payload.get("scope") or []) + ["", "", "", ""])[:4]
+    raw_scope = list(payload.get("scope") or [])
+    padded_scope = (raw_scope + ["", "", "", "", ""])[:5]
     tm = (list(payload.get("temporal") or []) + [None, None, None, None])[:4]
     if version >= 2:
-        segments = [
-            Segment(
-                content=seg.get("content", ""),
-                assets=list(seg.get("assets") or []),
-                source=Modality(seg.get("source", Modality.TEXT.value)),
+        segments = []
+        for segment_payload in payload.get("segments") or []:
+            segments.append(
+                Segment(
+                    content=segment_payload.get("content", ""),
+                    assets=list(segment_payload.get("assets") or []),
+                    source=Modality(
+                        segment_payload.get("source", Modality.TEXT.value)
+                    ),
+                )
             )
-            for seg in (payload.get("segments") or [])
-        ]
     else:
         # _v<2 老数据：扁平 content/assets/source → 单元素 segments（无迁移读出）。
         segments = [
@@ -107,7 +126,22 @@ def loads(raw: bytes) -> MemoryUnit | None:
         ]
     return MemoryUnit(
         id=payload.get("id", ""),
-        scope=Scope(org=sc[0], user=sc[1], agent=sc[2], session=sc[3]),
+        scope=(
+            Scope(
+                org=padded_scope[0],
+                space=padded_scope[1],
+                user=padded_scope[2],
+                agent=padded_scope[3],
+                session=padded_scope[4],
+            )
+            if version >= 3 or len(raw_scope) >= 5
+            else Scope(
+                org=padded_scope[0],
+                user=padded_scope[1],
+                agent=padded_scope[2],
+                session=padded_scope[3],
+            )
+        ),
         tier=MemoryTier(payload.get("tier", MemoryTier.EPISODIC.value)),
         layers=ContentLayers(
             l0=str((payload.get("layers") or {}).get("l0", "") or ""),

@@ -20,6 +20,112 @@ class Action(str, Enum):
     SHARE = "share"  # 再授权给其他 scope
 
 
+class PrincipalPath(str, Enum):
+    """space 内主体归属路径。"""
+
+    USER_AGENT = "user_agent"
+    AGENT_USER = "agent_user"
+
+
+class SpaceStatus(str, Enum):
+    """space 生命周期状态。"""
+
+    ACTIVE = "active"
+    FROZEN = "frozen"
+    ARCHIVED = "archived"
+    DELETING = "deleting"
+    DELETED = "deleted"
+
+
+@dataclass
+class SpacePolicy:
+    """space 级策略。
+
+    这些策略描述租户隔离、主体路径、保留期、配额、索引与 pipeline profile。
+    默认值保持本地单租户兼容；生产多租户部署通常应把 ``require_space`` 打开。
+    """
+
+    require_space: bool = False
+    principal_path: PrincipalPath = PrincipalPath.USER_AGENT
+    storage_isolation_strategy: str = "metadata_filter"
+    retention: dict[str, str] = field(default_factory=dict)
+    quotas: dict[str, str] = field(default_factory=dict)
+    index_profiles: dict[str, str] = field(default_factory=dict)
+    pipeline_profiles: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class SpaceSpec:
+    """创建 space 的输入。"""
+
+    org: str = ""
+    space: str = ""
+    display_name: str = ""
+    principal_path: PrincipalPath = PrincipalPath.USER_AGENT
+    policy: SpacePolicy = field(default_factory=SpacePolicy)
+    metadata: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class SpaceInfo:
+    """space 元数据。"""
+
+    org: str = ""
+    space: str = ""
+    display_name: str = ""
+    status: SpaceStatus = SpaceStatus.ACTIVE
+    principal_path: PrincipalPath = PrincipalPath.USER_AGENT
+    policy: SpacePolicy = field(default_factory=SpacePolicy)
+    metadata: dict[str, str] = field(default_factory=dict)
+    created_at: datetime | None = None
+    archived_at: datetime | None = None
+
+
+@dataclass
+class SpacePatch:
+    """修改 space 的输入；仅非 None 字段生效。"""
+
+    display_name: str | None = None
+    status: SpaceStatus | None = None
+    principal_path: PrincipalPath | None = None
+    policy: SpacePolicy | None = None
+    metadata: dict[str, str] | None = None
+
+
+@dataclass
+class SpaceMember:
+    """space 成员与角色。"""
+
+    scope: Scope = field(default_factory=Scope)
+    role: str = "member"
+    created_at: datetime | None = None
+    expires_at: datetime | None = None
+
+
+@dataclass
+class SpaceUsage:
+    """space 级用量统计。"""
+
+    org: str = ""
+    space: str = ""
+    memory_count: int = 0
+    message_count: int = 0
+    index_count: int = 0
+    storage_bytes: int = 0
+    audit_count: int = 0
+
+
+@dataclass
+class SpaceDeleteResult:
+    """space 删除结果。"""
+
+    org: str = ""
+    space: str = ""
+    deleted_counts: dict[str, int] = field(default_factory=dict)
+    status: SpaceStatus = SpaceStatus.DELETED
+    audit_event_id: str = ""
+
+
 @dataclass(frozen=True)
 class PermissionContext:
     """权限判断的资源上下文。
@@ -31,7 +137,8 @@ class PermissionContext:
     谓词。已有 unit 的 memory_type 则必须由 API/Engine 从真源元数据解析。
     """
 
-    resource_type: str = ""  # write_input / query / memory_unit / delete_selector / admin / job
+    # write_input / query / memory_list / memory_unit / delete_selector / admin / job
+    resource_type: str = ""
     memory_type: str = ""  # coding / episodic / procedural ...
     pipeline: str = ""  # pipeline profile 名（如调用侧或真源元数据已知）
     unit_id: str = ""  # 已存在记忆单元 id；非 unit 操作为空

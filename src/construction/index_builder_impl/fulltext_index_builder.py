@@ -1,13 +1,10 @@
 """最小实现：:class:`~construction.index_builder.IndexBuilder`。
 
 把记忆单元的 content 写入注入的 :class:`~storage.fulltext.FulltextStore`
-（hot 轻量索引）。自留 ``id→scope`` 映射，使无 scope 入参的 ``remove`` 也能
-定位到对应 scope 删除索引。
+（hot 轻量索引）。删除入口接收 ``MemoryUnit``，直接使用其 scope 定位索引。
 """
 
 from __future__ import annotations
-
-from typing import Dict, List
 
 from common.log import get_logger
 from common.type_def import T_INVALID_OPEN, MemoryUnit, Scope
@@ -69,7 +66,6 @@ class FulltextIndexBuilder(IndexBuilder):
         # L0/L1 分层 store：None 表示不构建该层索引（向后兼容 + 配置降级）。
         self._fulltext_l0 = fulltext_l0
         self._fulltext_l1 = fulltext_l1
-        self._scope_of: Dict[str, Scope] = {}
 
     @property
     def fulltext_l0(self) -> FulltextStore | None:
@@ -103,10 +99,9 @@ class FulltextIndexBuilder(IndexBuilder):
             metadata=_index_metadata(unit, layer=layer),
         )
 
-    def build(self, units: List[MemoryUnit]) -> None:
+    def build(self, units: list[MemoryUnit]) -> None:
         logger.info("FulltextIndexBuilder: building index for %d units", len(units))
         for unit in units:
-            self._scope_of[unit.id] = unit.scope
             doc = self._doc(unit)
             logger.info("FulltextIndexBuilder: indexing unit id=%s tier=%s tags=%s content=%s",
                          unit.id[:8], unit.tier.value, unit.tags, unit.content[:200])
@@ -114,23 +109,19 @@ class FulltextIndexBuilder(IndexBuilder):
             # L0/L1 分层：store 非空且 layers 非空才写独立 store（分表）
             self._build_layers(unit)
 
-    def update(self, units: List[MemoryUnit]) -> None:
+    def update(self, units: list[MemoryUnit]) -> None:
         logger.info("FulltextIndexBuilder: updating index for %d units", len(units))
         for unit in units:
-            self._scope_of[unit.id] = unit.scope
             self._store.update(unit.scope, [self._doc(unit)])
             # L0/L1：先删旧 record（store 非空才删），再按新 layers 重建——避免旧分层残留
             self._delete_layer_records(unit.id, unit.scope)
             self._build_layers(unit)
 
-    def remove(self, unit_ids: List[str]) -> None:
-        logger.info("FulltextIndexBuilder: removing %d unit ids from index", len(unit_ids))
-        for unit_id in unit_ids:
-            scope = self._scope_of.pop(unit_id, None)
-            if scope is not None:
-                self._store.delete(scope, [unit_id])
-                # 删 L0/L1 分层 record（store 非空才删，幂等）
-                self._delete_layer_records(unit_id, scope)
+    def remove(self, units: list[MemoryUnit]) -> None:
+        logger.info("FulltextIndexBuilder: removing %d units from index", len(units))
+        for unit in units:
+            self._store.delete(unit.scope, [unit.id])
+            self._delete_layer_records(unit.id, unit.scope)
 
     def rebuild(self) -> None:
         # 最小实现：索引与真源同生命周期，无独立重建路径。
