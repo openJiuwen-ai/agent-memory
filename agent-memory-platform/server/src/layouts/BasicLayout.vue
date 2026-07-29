@@ -6,11 +6,14 @@
         <span v-show="!isCollapse" class="logo-text">记忆管理平台</span>
       </div>
       <el-menu :default-active="activeMenu" :collapse="isCollapse" :collapse-transition="false" router class="side-menu">
-        <!-- 仪表盘 -->
-        <el-menu-item index="/dashboard">
-          <el-icon><HomeFilled /></el-icon>
-          <template #title>仪表盘</template>
-        </el-menu-item>
+        <!-- 平台概览分组 -->
+        <el-menu-item-group>
+          <template #title>平台概览</template>
+          <el-menu-item index="/dashboard">
+            <el-icon><HomeFilled /></el-icon>
+            <template #title>仪表盘</template>
+          </el-menu-item>
+        </el-menu-item-group>
         
         <!-- 记忆系统管理分组 -->
         <el-menu-item-group v-if="userStore.hasPermission('config:read') || userStore.hasPermission('ops:read') || userStore.hasPermission('log:read') || userStore.hasPermission('memory:read')">
