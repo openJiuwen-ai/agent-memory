@@ -6,7 +6,7 @@
 |---|---|
 | 关联模块 | src/construction/ |
 | 最近一次修订日期 | 2026-07-28 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/common/F01-memory-layer.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/common/F01-memory-layer.md, docs/features/F02-cc-memory-compat.md |
 
 ## 范围 / 边界
 

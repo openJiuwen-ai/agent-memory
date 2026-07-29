@@ -101,17 +101,15 @@ class Plugin(ABC):
 | `chat` | `(messages: list[ChatMessage], **options) -> str` | 执行一次对话补全，返回助手回复文本 |
 | `generate` | `(prompt: str, **options) -> str` | 单 prompt 便捷方法 |
 
-<<<<<<< Updated upstream
 `LLM` 的具名配置通过 `target` 选择 Provider Adapter，`params` 只由该 Adapter
 解释。通用 Adapter 不得默认发送其他厂商的扩展字段；健康检查与正常
 `chat` 必须使用同一套 Provider 请求选项。
-=======
+
 OpenAI 兼容实现支持厂商扩展请求体：构造参数 / 配置项 `llm_extra_body` 会作为
 OpenAI SDK 的 `extra_body` 默认值传入；单次 `chat(..., extra_body={...})` 会与默认值
 合并且同名字段以单次调用为准。常见 Aliyun / DashScope base URL 会自动补
 `{"enable_thinking": false}`；自定义网关可显式配置 `llm_extra_body:
 {"enable_thinking": false}` 或 `llm_enable_thinking: false`。
->>>>>>> Stashed changes
 
 ### Reranker（`reranker/base.py`）
 
