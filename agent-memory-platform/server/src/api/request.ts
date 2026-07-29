@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import router from '@/router'
+import { useUserStore } from '@/stores/user'
 
 // 后端统一响应格式
 export interface ApiResponse<T = any> {
@@ -76,12 +77,24 @@ request.interceptors.response.use(
 
       if (status === 401) {
         ElMessage.error('登录已过期，请重新登录')
+        
+        // 清除 localStorage
         localStorage.removeItem('token')
         localStorage.removeItem('username')
         localStorage.removeItem('role')
         localStorage.removeItem('tenantId')
         localStorage.removeItem('scopeIds')
         localStorage.removeItem('permissions')
+        
+        // 清除 Pinia store（关键！否则路由守卫会拦截跳转）
+        const userStore = useUserStore()
+        userStore.token = ''
+        userStore.username = ''
+        userStore.role = ''
+        userStore.tenantId = ''
+        userStore.scopeIds = []
+        userStore.permissions = []
+        
         router.push('/login')
       } else if (status === 404) {
         ElMessage.error('请求的接口不存在，请检查API路径')
