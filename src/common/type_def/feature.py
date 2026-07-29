@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -26,7 +27,7 @@ class Relation:
     target_id: str = ""  # 关联终点（记忆单元/实体 id）
     relation: str = ""  # 关系类型（caused_by / refers_to / corefers ...）
     score: float = 0.0  # 关联置信度
-    metadata: dict[str, str] = field(default_factory=dict)  # 附加信息
+    metadata: dict[str, Any] = field(default_factory=dict)  # 附加信息
 
 
 @dataclass

@@ -38,7 +38,7 @@
      ↓ 跨通道融合排序
 5. 截断精排预算 budget = fused[:max(rerank_max, top_k)]
      ↓
-6. UnitReader 点读 MemoryUnit → 有效性过滤（lifecycle/as_of/event-time/filters）
+6. UnitReader 点读 MemoryUnit → 真源复核（lifecycle/valid-time/event-time/FilterExpr）
      ↓
 7. 可选 Reranker 精排（记 calibrated 标志）
      ↓
@@ -81,7 +81,15 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 6. **双时间轴独立**
    `as_of`（valid-time 回溯点，问"T 时刻哪个版本有效"）与 `time_from/time_to`（event-time 范围，问"事件发生在何时"）是两条独立时间轴，不可混用。
 
-7. **Discloser 只做内容塑形**
+7. **生产过滤必须先于 top-k**
+   Milvus / Elasticsearch 必须在 limit 前完整下推系统谓词与用户 FilterExpr。
+   UnitReader 复核只能防错召，不能找回已经被 top-k 截断的真实命中。
+
+8. **系统谓词以外层 AND 合并**
+   lifecycle / valid-time / event-time 谓词不得摊平进用户表达式；用户 OR/NOT 不能稀释
+   系统边界。历史 as_of 使用 `[t_valid, t_invalid)`，开放 t_invalid 依赖索引哨兵。
+
+9. **Discloser 只做内容塑形**
    候选记忆单元已由 Retriever 经 UnitReader 点读、有效性过滤、（可选）重排后给定。Discloser 不再做点读/过滤/重排，只按 level 截/取内容产出结果。
 
 ## 与其他子目录的边界
@@ -104,5 +112,6 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 1. 所有 Operator 必须实现 `operator_type()` 和 `health()`（继承自 `RetrievalOperator`）。
 2. Recaller 实现必须声明 `channel()` 返回对应的 `RecallChannel`。
 3. 算子实现通过 `@XxxProducer.register("name")` 自注册。
-4. Retriever 内部 UnitReader 点读后必须做 lifecycle 过滤（排除 FORGOTTEN）。
+4. Retriever 内部 UnitReader 点读后必须复核 lifecycle、valid-time、event-time 和完整
+   FilterExpr；当前态也须按当前 UTC 时间检查 `[t_valid, t_invalid)`。
 5. `extensions` 字段透传配置：RetrievalQuery.extensions → ParsedQuery.extensions，供自定义 Recaller 按约定 key 读取，内核核心不解释。

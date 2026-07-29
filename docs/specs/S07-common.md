@@ -5,9 +5,9 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | src/common/ |
-| 最近一次修订日期 | 2026-07-12 |
+| 最近一次修订日期 | 2026-07-29 |
 
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/control/F02-control-isolation-and-audit.md、docs/features/common/F01-memory-layer.md|
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/control/F02-control-isolation-and-audit.md、docs/features/common/F01-memory-layer.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/F02-cc-memory-compat.md |
 
 ## 范围 / 边界
 
@@ -105,11 +105,9 @@ class Plugin(ABC):
 解释。通用 Adapter 不得默认发送其他厂商的扩展字段；健康检查与正常
 `chat` 必须使用同一套 Provider 请求选项。
 
-OpenAI 兼容实现支持厂商扩展请求体：构造参数 / 配置项 `llm_extra_body` 会作为
-OpenAI SDK 的 `extra_body` 默认值传入；单次 `chat(..., extra_body={...})` 会与默认值
-合并且同名字段以单次调用为准。常见 Aliyun / DashScope base URL 会自动补
-`{"enable_thinking": false}`；自定义网关可显式配置 `llm_extra_body:
-{"enable_thinking": false}` 或 `llm_enable_thinking: false`。
+DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
+`extra_body.enable_thinking`，缺省为 `false`；通用 OpenAI Adapter 不按 base URL
+猜测厂商，也不自动注入该字段。
 
 ### Reranker（`reranker/base.py`）
 
@@ -148,7 +146,9 @@ OpenAI SDK 的 `extra_body` 默认值传入；单次 `chat(..., extra_body={...}
 | `Chunk` | id / text / unit_id / metadata | 切分块 |
 | `ChatMessage` | role / content | LLM 对话消息 |
 | `RawPayload` | id / scope / modality / data / uri / metadata / occurred_at | 原始负载 |
-| `FilterClause` | key / op / value | 过滤条件 |
+| `FilterClause` | field / op / value | 原子过滤谓词 |
+| `FilterGroup` | logic / children | AND / OR / NOT 逻辑节点 |
+| `FilterExpr` | FilterClause \| FilterGroup | 跨 API、检索和存储层的过滤树 |
 | `AuditEvent` | id / timestamp / actor / action / target_id / layer / detail | 审计事件 |
 
 ### 枚举（`type_def/memory.py`）

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from typing import Any
 
 from common.type_def import MemoryTier, Scope
 
@@ -25,8 +26,9 @@ class PermissionContext:
 
     `PermissionManager.check` 的 scope/action 只描述"谁对哪个范围做什么"；
     本上下文补充"操作的资源是什么类型、属于哪类记忆"，供按 memory_type /
-    pipeline profile 分流的权限策略使用。调用方无法可信声明已有 unit 的
-    memory_type；这类上下文必须由 API/Engine 从真源元数据解析。
+    pipeline profile 分流的权限策略使用。recall 先从规范化 FilterExpr 提取逻辑上
+    强制的唯一等值，再由 extensions 的非空值覆盖；API 随后把授权路由值回注为系统
+    谓词。已有 unit 的 memory_type 则必须由 API/Engine 从真源元数据解析。
     """
 
     resource_type: str = ""  # write_input / query / memory_unit / delete_selector / admin / job
@@ -35,6 +37,8 @@ class PermissionContext:
     unit_id: str = ""  # 已存在记忆单元 id；非 unit 操作为空
     scope: Scope = field(default_factory=Scope)  # 资源真实归属；未知时为空 scope
     tags: tuple[str, ...] = ()
+    # 路由值恒为字符串：构造点（_write/_recall_permission_context）已做 str().strip()
+    # 归一化，delegate 选择也按字符串比较。此处不随 MemoryUnit.metadata 放宽。
     metadata: dict[str, str] = field(default_factory=dict)
 
 
@@ -78,8 +82,11 @@ class JobInfo:
 class UpdateMode(str, Enum):
     """``update`` 的版本语义：决定修正后是否保留旧内容、用同 id 还是新 id。"""
 
-    SUPERSEDE = "supersede"  # 保留原有（默认、非破坏式）：新建一条新 id 的记忆承载修正后内容，旧记忆标记 superseded 保留，新记忆 supersedes 指向旧 id
-    OVERWRITE = "overwrite"  # 覆盖：原地改写、沿用同 id，旧内容不单独留存为记忆（仅审计留痕）；用于纠错等无需版本史的场景
+    # 默认、非破坏式：新建一条新 id 的记忆承载修正后内容，旧记忆标记 superseded，
+    # 新记忆 supersedes 指向旧 id。
+    SUPERSEDE = "supersede"
+    # 原地改写、沿用同 id，旧内容不单独留存为记忆（仅审计留痕）。
+    OVERWRITE = "overwrite"
 
 
 @dataclass
@@ -94,7 +101,7 @@ class MemoryPatch:
     content: str | None = None  # 修正后的内容投影
     tier: MemoryTier | None = None  # 重新归类认知角色
     tags: list[str] | None = None  # 整体替换标签
-    metadata: dict[str, str] | None = None  # 合并更新元数据
+    metadata: dict[str, Any] | None = None  # 合并更新元数据
     t_valid: datetime | None = None  # 调整生效时间（双时间模型）
     t_invalid: datetime | None = None  # 调整失效时间
     mode: UpdateMode = UpdateMode.SUPERSEDE  # 版本语义：保留原有(新 id) / 覆盖(同 id)

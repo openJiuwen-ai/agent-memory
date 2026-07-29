@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -14,4 +15,4 @@ class Chunk:
     start: int = 0  # 在源内容中的起始字符偏移
     end: int = 0  # 在源内容中的结束字符偏移
     token_count: int = 0  # 片段的 token 数
-    metadata: dict[str, str] = field(default_factory=dict)  # 从父内容透传的元数据
+    metadata: dict[str, Any] = field(default_factory=dict)  # 从父内容透传的元数据

@@ -6,7 +6,7 @@ from collections.abc import Mapping
 
 from common.errors import ValidationError
 from common.log import get_logger
-from common.type_def import FilterOp, MemoryUnit
+from common.type_def import MEMORY_TYPE_FILTER_FIELD, MemoryUnit, extract_required_equality
 from construction.classifier import ClassifierProducer
 from construction.evolver import EvolverProducer
 from construction.index_builder import IndexBuilderProducer
@@ -22,8 +22,8 @@ class MetadataPipeline(MemoryPipeline):
     """按 ``memory_type`` 等字符串键选择 profile。
 
     写入侧从 ``MemoryUnit.metadata[route_key]`` 读取；查询侧优先从
-    ``RetrievalQuery.extensions[route_key]`` 读取，其次从等值 filters 读取
-    ``route_key`` 或 ``metadata.<route_key>``。
+    ``RetrievalQuery.extensions[route_key]`` 读取，其次从规范字段
+    ``metadata.<route_key>`` 的等值 filters 读取。
     """
 
     def __init__(
@@ -96,11 +96,12 @@ def _route_value_from_query(query: RetrievalQuery, route_key: str) -> str:
     value = str(query.extensions.get(route_key, "")).strip()
     if value:
         return value
-    accepted_fields = {route_key, f"metadata.{route_key}"}
-    for clause in query.filters:
-        if clause.field in accepted_fields and clause.op == FilterOp.EQ:
-            return str(clause.value).strip()
-    return ""
+    # query.filters 已在 RetrievalQuery 边界规范化；memory_type 使用共享规范字段常量。
+    filter_field = (
+        MEMORY_TYPE_FILTER_FIELD if route_key == "memory_type" else f"metadata.{route_key}"
+    )
+    routed = extract_required_equality(query.filters, filter_field)
+    return str(routed).strip() if routed is not None else ""
 
 
 def _string_param(raw: object, *, field: str, default: str | None = None) -> str:

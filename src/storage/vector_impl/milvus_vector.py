@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from common.errors import (
@@ -23,7 +24,14 @@ from common.errors import (
     ValidationError,
 )
 from common.factory.factory import Factory
-from common.type_def import FilterClause, FilterOp, Scope
+from common.type_def import (
+    FilterClause,
+    FilterExpr,
+    FilterLogic,
+    FilterOp,
+    Scope,
+    filter_field_metadata_key,
+)
 from storage.vector import VectorProducer
 
 from .._support import scope_dims, wrap_backend
@@ -47,8 +55,7 @@ def _lit(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, str):
-        escaped = value.replace('"', '\\"')
-        return f'"{escaped}"'
+        return json.dumps(value, ensure_ascii=False)
     if isinstance(value, (int, float)):
         return str(value)
     raise ValidationError(f"unsupported filter literal: {value!r}")
@@ -149,24 +156,44 @@ class MilvusVectorStore(VectorStore):
 
     @staticmethod
     def _filter_clause(fc: FilterClause) -> str:
+        key = filter_field_metadata_key(fc.field)
+        field = f"metadata[{_lit(key)}]"
         if fc.op in _CMP_OPS:
-            return f'metadata["{fc.field}"] {_CMP_OPS[fc.op]} {_lit(fc.value)}'
+            return f"{field} {_CMP_OPS[fc.op]} {_lit(fc.value)}"
         if fc.op == FilterOp.IN:
             items = ", ".join(_lit(v) for v in fc.value)
-            return f'metadata["{fc.field}"] in [{items}]'
+            return f"{field} in [{items}]"
         if fc.op == FilterOp.NOT_IN:
             items = ", ".join(_lit(v) for v in fc.value)
-            return f'metadata["{fc.field}"] not in [{items}]'
+            return f"{field} not in [{items}]"
         if fc.op == FilterOp.CONTAINS:  # metadata 为 JSON，数组包含用 json_contains
-            return f'json_contains(metadata["{fc.field}"], {_lit(fc.value)})'
+            return f"json_contains({field}, {_lit(fc.value)})"
         raise ValidationError(f"unsupported filter op for vector: {fc.op}")
+
+    @classmethod
+    def _compile_filter(cls, expr: FilterExpr | None) -> str:
+        """把完整 FilterExpr 编译为 Milvus scalar filtering 表达式。"""
+        if expr is None:
+            return ""
+        if isinstance(expr, FilterClause):
+            return cls._filter_clause(expr)
+        children = [cls._compile_filter(child) for child in expr.children]
+        if expr.logic is FilterLogic.AND:
+            return f"({' && '.join(children)})"
+        if expr.logic is FilterLogic.OR:
+            return f"({' || '.join(children)})"
+        if expr.logic is FilterLogic.NOT:
+            return f"(not ({children[0]}))"
+        raise ValidationError(f"unsupported filter logic for vector: {expr.logic}")
 
     def _scope_expr(self, scope: Scope) -> str:
         return " && ".join(f'scope_{dim} == {_lit(val)}' for dim, val in scope_dims(scope))
 
-    def _expr(self, scope: Scope, filters: list[FilterClause]) -> str:
+    def _expr(self, scope: Scope, filters: FilterExpr | None) -> str:
         parts = [self._scope_expr(scope)] if scope_dims(scope) else []
-        parts.extend(self._filter_clause(fc) for fc in filters)
+        compiled = self._compile_filter(filters)
+        if compiled:
+            parts.append(compiled)
         return " && ".join(p for p in parts if p)
 
     def _existing_ids(self, ids: list[str]) -> set[str]:
@@ -213,7 +240,7 @@ class MilvusVectorStore(VectorStore):
         if not ids:
             return
         items = ", ".join(_lit(i) for i in ids)
-        expr = self._expr(scope, [])
+        expr = self._expr(scope, None)
         filter_ = f"id in [{items}]" + (f" && {expr}" if expr else "")
         with wrap_backend("milvus delete"):
             self.client.delete(self._collection, filter=filter_)  # scope 内幂等删除
@@ -222,7 +249,7 @@ class MilvusVectorStore(VectorStore):
         if not ids:
             return []
         items = ", ".join(_lit(i) for i in ids)
-        expr = self._expr(scope, [])
+        expr = self._expr(scope, None)
         filter_ = f"id in [{items}]" + (f" && {expr}" if expr else "")
         with wrap_backend("milvus get"):
             rows = self.client.query(

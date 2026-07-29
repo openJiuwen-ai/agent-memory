@@ -17,20 +17,27 @@ import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from api.memory_api import MemoryAPI
 from common.audit import AuditLogger
 from common.errors import PermissionDeniedError, ValidationError
 from common.type_def import (
     EXT_MAX_TOKENS,
+    RESERVED_METADATA_KEYS,
     AuditEvent,
     Context,
     FilterClause,
+    FilterExpr,
     FilterOp,
     MemoryUnit,
     Modality,
     Scope,
+    and_merge,
+    canonical_filter_field,
+    extract_required_equality,
+    filter_field_metadata_key,
+    iter_clauses,
 )
 from construction import EvolveMode
 from control.engine import MemoryEngine
@@ -83,17 +90,70 @@ def _context_detail(context: PermissionContext | None) -> Dict[str, str]:
     return {key: value for key, value in detail.items() if value}
 
 
-def _memory_type_from_filters(filters: List[FilterClause] | None) -> str:
-    for clause in filters or []:
-        if clause.field in {"memory_type", "metadata.memory_type"} and clause.op == FilterOp.EQ:
-            return str(clause.value).strip()
-    return ""
+def _required_filter_metadata(filters: FilterExpr | None) -> dict[str, Any]:
+    """提取 FilterExpr 逻辑上强制的唯一等值，作为查询路由的 filter 侧候选值。
+
+    ``_recall_permission_context`` 随后按 S03「MemoryPipeline 路由规则」让
+    ``Context.extensions`` 中的非空值覆盖本结果，使权限路由与 Pipeline 执行路由同源。
+    OR 多值、NOT、AND 冲突和未限定字段不会从 filters 产出候选值；若 extensions 也未
+    提供，则权限路由进入最小权限 ``fallback``。
+    """
+    routed: Dict[str, str] = {}
+    ambiguous: set[str] = set()
+    fields = {clause.field for clause in iter_clauses(filters)}
+    for field in fields:
+        value = extract_required_equality(filters, field)
+        if value is None:
+            continue
+        normalized = str(value).strip()
+        key = filter_field_metadata_key(field)
+        if not normalized or key in ambiguous:
+            continue
+        if key in routed and routed[key] != normalized:
+            routed.pop(key)
+            ambiguous.add(key)
+            continue
+        routed[key] = normalized
+    return routed
+
+
+def _reject_reserved_metadata(metadata: dict[str, Any] | None) -> None:
+    """写入/更新边界拒绝系统保留 key。
+
+    索引投影会用真源系统字段覆盖同名用户 metadata，而 UnitReader 复核 ``metadata.<key>``
+    读的是用户值——同名会让 Store 与真源两侧判定相反，过滤结果静默出错。在此失败响亮。
+    """
+    if not metadata:
+        return
+    clash = sorted(set(metadata) & RESERVED_METADATA_KEYS)
+    if clash:
+        raise ValidationError(f"metadata 不得使用系统保留 key：{clash}")
+
+
+def _reject_non_scalar_metadata(metadata: dict[str, Any] | None) -> None:
+    """写入/更新边界只接受 JSON 标量与字符串数组。
+
+    嵌套 dict/混合类型数组在各后端语义不一：ES 会把嵌套对象展开成 ``metadata.a.b``
+    另建 mapping，Milvus 的 JSON 字段能存但过滤算子对其未定义，UnitReader 又会把
+    list 当集合字段走成员语义。三方各行其是且无一致契约，因此在入口挡住。
+    字符串数组是例外——tags 类用法有明确的成员包含语义（``json_contains`` / ``term``）。
+    """
+    if not metadata:
+        return
+    for key, value in metadata.items():
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            continue
+        if isinstance(value, list) and all(isinstance(item, str) for item in value):
+            continue
+        raise ValidationError(
+            f"metadata[{key!r}] 仅支持 JSON 标量或字符串数组，收到 {type(value).__name__}"
+        )
 
 
 def _write_permission_context(
     scope: Scope,
     tags: List[str] | None,
-    metadata: Dict[str, str] | None,
+    metadata: dict[str, Any] | None,
 ) -> PermissionContext:
     meta = {key: str(value) for key, value in (metadata or {}).items()}
     return PermissionContext(
@@ -108,15 +168,31 @@ def _write_permission_context(
 
 def _recall_permission_context(
     context: Context,
-    filters: List[FilterClause] | None,
+    filters: FilterExpr | None,
 ) -> PermissionContext:
-    extensions = {key: str(value) for key, value in context.extensions.items()}
+    """构造查询鉴权上下文：按 **S03 的路由取值规则**解析，授权针对真正会执行的 profile。
+
+    S03「查询侧优先读取 ``extensions[route_key]``，其次读等值 filter」是路由取值的
+    唯一口径。权限若另立一套（只认 filters），就会出现「按 A 授权、按 B 执行」——
+    调用方用 ``filters=general`` + ``extensions=coding`` 即可拿宽松策略的授权去跑
+    coding profile。这里与 S03 同源解析，两侧必然指向同一个 delegate。
+
+    含义是 extensions 能决定命中哪条 policy，因此各 profile 的 policy 必须与该
+    profile 可触达的数据相匹配——这是部署配置的责任，路由层不做补偿（S03「routing
+    不改变授权语义，只选择 delegate」）。
+    """
+    routed_metadata = _required_filter_metadata(filters)
+    # S03「MemoryPipeline 路由规则」——extensions 优先。
+    for key, override in context.extensions.items():
+        effective = str(override).strip()
+        if effective:
+            routed_metadata[key] = effective
     return PermissionContext(
         resource_type="query",
-        memory_type=extensions.get("memory_type", "").strip() or _memory_type_from_filters(filters),
-        pipeline=extensions.get("pipeline", "").strip(),
+        memory_type=routed_metadata.get("memory_type", ""),
+        pipeline=routed_metadata.get("pipeline", ""),
         scope=context.scope,
-        metadata=extensions,
+        metadata=routed_metadata,
     )
 
 
@@ -246,7 +322,7 @@ class LocalMemoryAPI(MemoryAPI):
         identity: Scope,
         assets: List[str] | None = None,
         tags: List[str] | None = None,
-        metadata: Dict[str, str] | None = None,
+        metadata: dict[str, Any] | None = None,
         occurred_at: datetime | None = None,
     ) -> List[MemoryUnit]:
         return asyncio.run(
@@ -271,9 +347,11 @@ class LocalMemoryAPI(MemoryAPI):
         identity: Scope,
         assets: List[str] | None = None,
         tags: List[str] | None = None,
-        metadata: Dict[str, str] | None = None,
+        metadata: dict[str, Any] | None = None,
         occurred_at: datetime | None = None,
     ) -> List[MemoryUnit]:
+        _reject_reserved_metadata(metadata)
+        _reject_non_scalar_metadata(metadata)
         permission_context = _write_permission_context(scope, tags, metadata)
         auth = self._authorize(
             identity,
@@ -300,7 +378,7 @@ class LocalMemoryAPI(MemoryAPI):
         context: Context,
         *,
         identity: Scope,
-        filters: List[FilterClause] | None = None,
+        filters: FilterExpr | list[FilterClause] | dict | None = None,
         as_of: datetime | None = None,
         top_k: int = 10,
         disclosure: DisclosureLevel = DisclosureLevel.L0,
@@ -310,19 +388,12 @@ class LocalMemoryAPI(MemoryAPI):
         # 调用级 options 顺 parser 透传给自定义检索模块；Context 对象本身不进内核。
         # 约定 key max_tokens（自适应披露预算）在此解析为 typed int 写入 RetrievalQuery，
         # 并从透传 extensions 中移除，避免与内核已解释的字段重复。
-        permission_context = _recall_permission_context(context, filters)
-        auth = self._authorize(
-            identity,
-            context.scope,
-            Action.READ,
-            "recall",
-            context=permission_context,
-        )
         options = dict(context.extensions)
         max_tokens = _parse_max_tokens(options.pop(EXT_MAX_TOKENS, None))
         rq = RetrievalQuery(
             text=query,
-            filters=list(filters or []),
+            # RetrievalQuery 边界统一 normalize 旧 list、clause 与 dict DSL。
+            filters=filters,
             as_of=as_of,
             top_k=top_k,
             disclosure=disclosure,
@@ -330,6 +401,29 @@ class LocalMemoryAPI(MemoryAPI):
             with_trajectory=with_trajectory,
             extensions=options,
         )
+        # 权限上下文与 RetrievalQuery 共用同一规范化后的 FilterExpr（不重复转换）。
+        permission_context = _recall_permission_context(context, rq.filters)
+        auth = self._authorize(
+            identity,
+            context.scope,
+            Action.READ,
+            "recall",
+            context=permission_context,
+        )
+        # 把**授权所依据的路由值**回注为系统谓词：按 memory_type=notes 授的权，这次查询
+        # 就只能读到 memory_type=notes 的数据。否则"选哪条策略"与"能读到哪些数据"是两个
+        # 独立输入、且都由调用方控制——路由值填宽松策略对应的类型、filters 指向受严格
+        # 策略保护的数据，即可用 A 的钥匙开 B 的门。用户表达式作整体 child 并入外层 AND
+        # （与 lifecycle/时间谓词同一机制），不会被其内部的 OR 稀释。
+        routing_clauses: list[FilterClause] = []
+        for field in self._perm.routing_fields():
+            routed = permission_context.metadata.get(field, "").strip()
+            if routed:
+                routing_clauses.append(
+                    FilterClause(canonical_filter_field(field), FilterOp.EQ, routed)
+                )
+        if routing_clauses:
+            rq.filters = and_merge(rq.filters, routing_clauses)
         result = asyncio.run(self._engine.recall(context.scope, rq))
         self._log(identity, "recall", detail=auth)
         return result
@@ -361,6 +455,8 @@ class LocalMemoryAPI(MemoryAPI):
     def update(
         self, unit_id: str, scope: Scope, patch: MemoryPatch, *, identity: Scope
     ) -> MemoryUnit:
+        _reject_reserved_metadata(patch.metadata)
+        _reject_non_scalar_metadata(patch.metadata)
         self._authorize(
             identity,
             scope,

@@ -59,7 +59,9 @@ Ingestor.ingest → 补 assets/tags → Classifier.classify → KVStore.insert�
 ### 3. HTTP handler `/v1/add` 透传 metadata
 
 `bootstrap/core/handler.py` 的 `_add`：
-- 把 `payload["metadata"]` 经 `{k: str(v) ...}` str 化后透传给 `api.write`（对齐 `RawPayload.metadata: Dict[str, str]` 约束，同 `_search` 的 extensions 处理）。
+- 校验 `payload["metadata"]` 必须是对象后按原生类型透传给 `api.write`；API 写入边界只
+  接受 JSON 标量或字符串数组，并拒绝系统保留 key。业务 metadata 不再统一
+  string 化，`RawPayload` / `MemoryUnit` / 索引投影保持同一值类型。
 - `infer=true` 下 engine 可能合法返回空列表（派生记忆全部被 dedup 判为 update/noop，`created_ids` 为空）。此时**不伪造 item_id**，如实返回 `{"ok": True, "op": "add", "item_id": None, "item": None, "skipped": "all derived memories deduped (update/noop)"}`——让调用方知道"写入被去重吸收"而非误以为"新建了一条"。
 
 ## 拒绝的方案
@@ -120,7 +122,8 @@ Ingestor.ingest → 补 assets/tags → Classifier.classify → KVStore.insert�
 
 2. **infer=true 同步抽取的时延** 仍受 Extractor LLM 调用拖累（派生 + 去重判定各一次 LLM）。对时延敏感的调用方应慎用 infer=true 或配 `extractor: keyword`（规则切分、~0 LLM）兜底。
 
-3. **HTTP `/v1/add` 的 infer 透传** 仅 str 化 metadata 值，未校验 key 白名单——调用方可经 metadata 下推任意 str 键值。若未来需约束 metadata 键集合，应在 handler 或 RawPayload 装配点加白名单。
+3. **metadata 暂无中央 schema**：写入边界已约束可接受值类型和系统保留 key，但不维护
+   业务 key → 类型的全局声明。同一 key 在不同记忆间的类型稳定性仍由调用方负责。
 
 ---
 

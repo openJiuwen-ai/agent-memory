@@ -4,9 +4,9 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-07-17 |
+| 日期 | 2026-07-27 |
 | 影响范围 | `src/control/`、`docs/specs/S03-memory-manage.md` |
-| 测试基线 | `python3 -m compileall -q src/control src/config tests/unit/control/test_pipeline.py` 通过；`PYTHONPATH=src python3` 直接执行 `tests.unit.control.test_pipeline` 两个测试函数通过；当前环境缺少 `pytest` / `ruff` 模块 |
+| 测试基线 | `PYTHONPATH=src uv run --no-sync pytest -q tests/unit/control/test_pipeline.py tests/unit/control/test_permission_context_routing.py` 通过；本特性变更的 Python 文件通过 `ruff check` |
 
 ## 背景
 
@@ -19,7 +19,8 @@
 第一版实现 `metadata` pipeline：
 
 1. 写入侧按 `MemoryUnit.metadata[route_key]` 路由。
-2. 查询侧按 `RetrievalQuery.extensions[route_key]` 路由，等值 filter 作为兜底。
+2. 查询侧按 `RetrievalQuery.extensions[route_key]` 路由，规范化 `FilterExpr` 中逻辑上
+   强制成立的 `metadata.<route_key>` 唯一等值作为兜底；OR 多值、NOT、AND 冲突不参与路由。
 3. route 只返回 `PipelineBinding`，其中包含已装配的 `index_builder`、`evolver`、`retriever`、可选 `classifier`。
 4. `InMemoryEngine` 仍负责数据面编排：写入时使用选中绑定处理分类/索引/同步抽取，查询时使用选中绑定的 retriever。
 5. 默认配置不注入 pipeline；未配置 `pipeline.default` 时 `InMemoryEngine` 使用旧的单组组件字段，用户通过 YAML 显式声明后才启用 profile 路由。
@@ -39,10 +40,8 @@
 - `metadata.memory_type=coding` 写入时使用 coding profile 的 `IndexBuilder`。
 - `Context.extensions["memory_type"]="coding"` 查询时使用 coding profile 的 `Retriever`。
 
-受当前环境限制，未能运行 `pytest` / `ruff` 命令；已用 `compileall` 和直接执行测试函数做行为验证。
-
 ## 已知遗留
 
 - 显式 `MemoryEngine.evolve(scope, mode)` 仍委托单一 `Scheduler`，没有按 profile 路由后台演进任务。
-- 第一版 route key 只支持字符串等值；复杂条件、优先级规则和组合路由需要后续扩展。
+- 第一版 route key 只支持能唯一提取并规范为字符串的等值；复杂条件、优先级规则和组合路由需要后续扩展。
 - Pipeline profile 当前要求同时声明构建和查询组件；未来可以拆成 write-only / recall-only profile。

@@ -86,7 +86,7 @@ class SimpleQueryParser(QueryParser):
             keywords=keywords,
             entities=entities,
             vector=vector,
-            scalar_filters=list(query.filters),
+            scalar_filters=query.filters,
             as_of=query.as_of,
             time_from=time_from,
             time_to=time_to,

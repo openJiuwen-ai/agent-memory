@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Tuple
 from common.errors import ConflictError, NotFoundError
 from common.tokenizer import Tokenizer
 from common.tokenizer.base import TokenizerProducer
-from common.type_def import FilterClause, FilterOp, Scope
+from common.type_def import FilterClause, FilterOp, Scope, evaluate, filter_field_metadata_key
 from storage.base import StoreType
 from storage.fusion import FusionProducer, FusionStore
 from storage.types import FusionQuery, FusionRecord, ScoredID
@@ -39,7 +39,7 @@ def _cosine(a: List[float], b: List[float]) -> float:
 
 
 def _passes(scalars: Dict[str, Any], clause: FilterClause) -> bool:
-    val = scalars.get(clause.field)
+    val = scalars.get(filter_field_metadata_key(clause.field))
     if clause.op == FilterOp.EQ:
         return val == clause.value
     if clause.op == FilterOp.NE:
@@ -111,11 +111,15 @@ class InMemoryFusionStore(FusionStore):
         q_tokens = set(self._tokenizer.tokenize(query.text)) if query.text else set()
         scored: List[ScoredID] = []
         for rec_id, rec in self._data[sk].items():
-            if not all(_passes(rec.scalars, c) for c in query.scalar_filters):
+            if not evaluate(query.scalar_filters, lambda c: _passes(rec.scalars, c)):
                 continue
             vscore = _cosine(query.vector or [], rec.vector or [])
             toks = self._tokens[sk].get(rec_id, [])
-            tscore = (sum(1 for t in toks if t in q_tokens) / len(toks)) if toks and q_tokens else 0.0
+            tscore = (
+                sum(1 for t in toks if t in q_tokens) / len(toks)
+                if toks and q_tokens
+                else 0.0
+            )
             mixed = query.vector_weight * vscore + (1.0 - query.vector_weight) * tscore
             if mixed > 0.0:
                 scored.append(ScoredID(id=rec_id, score=mixed))

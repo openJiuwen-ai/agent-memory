@@ -11,7 +11,7 @@ from __future__ import annotations
 import copy
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from common.errors import NotFoundError, ValidationError
 from common.log import get_logger
@@ -198,7 +198,7 @@ class InMemoryEngine(MemoryEngine):
         *,
         assets: List[str] | None = None,
         tags: List[str] | None = None,
-        metadata: Dict[str, str] | None = None,
+        metadata: dict[str, Any] | None = None,
         occurred_at: datetime | None = None,
     ) -> List[MemoryUnit]:
         # 调用级开关（经 metadata 下推，对齐 mem0 add(infer=True)）：
@@ -207,10 +207,12 @@ class InMemoryEngine(MemoryEngine):
         # - infer=true：同步抽取——原文落 /messages/（不建索引），evolver 收集最近10条原文
         #   （指代消解/语境）+ 召回10条相关记忆（去重提示），调 extractor 抽派生落 /memory/。
         # - 缺省：原始落 /memory/ + 建索引，不自动提交演进（由调用方显式 evolve() 触发）。
-        meta = {k: str(v) for k, v in (metadata or {}).items()}
+        # 开关按字符串判定（兼容 "true" 与 Python True），业务值保持原生类型落库——
+        # 整体 str 化会让数值/布尔在索引里变成 keyword，range 退化为字典序。
+        meta = dict(metadata or {})
 
         def _is_true(key: str) -> bool:
-            return meta.get(key, "").strip().lower() == "true"
+            return str(meta.get(key, "")).strip().lower() == "true"
 
         procedural = _is_true("procedural")
         infer = _is_true("infer")
@@ -239,7 +241,9 @@ class InMemoryEngine(MemoryEngine):
             # 同步抽取路径（procedural / infer 共用）：原文不进默认落盘，直接喂 Evolver(EXTRACT)。
             # evolver 据单元 metadata 区分模式：
             # - procedural：原文不落 KV，产 1 条 PROCEDURAL 落 /memory/，跳过 context/dedup。
-            # - infer：原文落 /messages/（不建索引）+ 收集 context + 走 consolidation，
+            # - infer：原文落 /messages/（不建索引，供后续轮指代消解/语境）
+            #   + 收集 context；legacy Evolver 走 dedup，DynamicEvolver 走
+            #   consolidate → reflect，
             #   派生落 /memory/。evolver 还负责 /messages/ 的最近 10 条淘汰。
             # procedural 与 infer 互斥，若两者同传按 procedural 语义（原文不落）。
             if evolver is None:

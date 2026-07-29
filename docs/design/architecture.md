@@ -196,37 +196,37 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 ## 6. 记忆接口层（Memory API）
 
-所有接入形态最终映射到同一组语义。接口已落地为 `src/api/memory_api.py` 的 `MemoryAPI`（统一 Core API，形态无关）。它是**控制层的薄封装且为鉴权/审计执行点（PEP）**：数据面（write/recall/get/update/delete/evolve/admin）委托 `src/control/engine.py` 的 `MemoryEngine`（编排中枢），管理面查询（任务状态、治理、授权）直达对应控制算子（Scheduler/Governor/PermissionManager）。每个涉及租户数据/治理的方法都收 `scope`（目标范围 target）与 `actor`（调用方身份，**必填 keyword-only**）——本层先 `check(actor, scope, action)`、落带 actor 的入口审计，通过后才委托，下游只收已鉴权的 target scope（签名以代码为准）。Space 管理接口为 F03 的新增目标，建议由 SpaceManager 或等价控制算子承接，最终签名以落地后的 specs 与代码为准：
+所有接入形态最终映射到同一组语义。接口已落地为 `src/api/memory_api.py` 的 `MemoryAPI`（统一 Core API，形态无关）。它是**控制层的薄封装且为鉴权/审计执行点（PEP）**：数据面（write/recall/get/update/delete/evolve/admin）委托 `src/control/engine.py` 的 `MemoryEngine`（编排中枢），管理面查询（任务状态、治理、授权）直达对应控制算子（Scheduler/Governor/PermissionManager）。每个涉及租户数据/治理的方法都收 `scope`（目标范围 target）与 `identity`（调用方身份，**必填 keyword-only**）——本层先 `check(identity, scope, action)`、落带 identity 的入口审计，通过后才委托，下游只收已鉴权的 target scope（签名以代码为准）。Space 管理接口为 F03 的新增目标，建议由 SpaceManager 或等价控制算子承接，最终签名以落地后的 specs 与代码为准：
 
 
 | 方法                                            | 语义                                              |
 | --------------------------------------------- | ----------------------------------------------- |
-| `write(content, scope, source, *, actor, assets=…, tags=…, metadata=…, occurred_at=…) -> list[MemoryUnit]` | **同步**写入记忆：`content` 文本/结构投影 + 可选 `assets` 原模态资产引用；阻塞至 hot path 完成（落盘 + 轻量索引）后返回**本次插入的记忆单元列表**（规约/切分可产生多条），重演进走 background 通道；实现上桥接引擎的异步 write，供 CLI/脚本等同步形态 |
+| `write(content, scope, source, *, identity, assets=…, tags=…, metadata=…, occurred_at=…) -> list[MemoryUnit]` | **同步**写入记忆：`content` 文本/结构投影 + 可选 `assets` 原模态资产引用；阻塞至 hot path 完成（落盘 + 轻量索引）后返回**本次插入的记忆单元列表**（规约/切分可产生多条），重演进走 background 通道；实现上桥接引擎的异步 write，供 CLI/脚本等同步形态 |
 | `write_async(…)`（协程，签名/返回值同 `write`）   | **异步**写入记忆：直通引擎的异步 write，供事件循环/高并发接入形态（HTTP/MCP）非阻塞调用 |
-| `recall(query, scope, *, actor, filters=…, as_of=…, top_k=…, disclosure=…, with_trajectory=…) -> RetrievalResult` | 混合检索召回；`filters` 为结构化 `FilterClause` 列表（等值/集合/范围，AND 组合），`as_of` **时间点回溯（valid-time）**，`disclosure` 渐进式披露层级，`with_trajectory` 返回检索轨迹 |
-| `get(unit_id, scope, *, actor, as_of=None) -> MemoryUnit`      | 按 id 读取记忆单元；`as_of` 非空时沿 `supersedes` 版本链返回当时有效版本；不存在抛 `NotFoundError` |
-| `update(unit_id, scope, patch: MemoryPatch, *, actor) -> MemoryUnit` | 修正记忆（仅非 None 字段生效）：`patch.mode` = **SUPERSEDE**（默认、非破坏式：生成新 id 版本、旧版标记 superseded、新版 `supersedes` 记链）/ **OVERWRITE**（同 id 原地覆写、旧内容仅留审计）；返回结果记忆单元 |
-| `delete(selector: DeleteSelector, *, actor) -> list[str]` | 删除：按选择器（id / scope / 标签 / 时间，条件取「与」）批量执行；`mode` = forget 遗忘 / archive 归档 / downweight 降权（均非破坏式）/ **purge 完全删除**（物理删除真源与全部派生索引，合规删除、不可恢复、仅留审计记录）；返回命中的 id |
-| `evolve(scope, mode, channel=BACKGROUND, *, actor) -> job_id` | 触发演进（mode：extract / associate / consolidate / forget），经控制层 Scheduler 双通道调度，返回任务 id；索引维护不在此（随数据面操作自动跟进） |
-| `job_status(job_id, *, actor) -> JobInfo` / `job_cancel(job_id, *, actor)` | 查询 / 取消演进任务（委托 Scheduler） |
-| `inspect(unit_ids, scope, *, actor) -> list[MemoryUnit]` | 治理·检视：读取完整内容与治理字段（含已失效版本，委托 Governor） |
-| `trace(unit_id, scope, *, actor) -> list[MemoryUnit]` | 治理·血缘回溯：沿 `provenance` 追溯演进来源链（委托 Governor） |
-| `audit(filters, *, actor, limit=100) -> list[AuditEvent]` | 治理·审计查询：按 actor/action/layer/时间段等检索审计留痕（委托 Governor） |
-| `grant(grant: Grant, *, actor)` / `revoke(grant, *, actor)` | 跨 scope 授权 / 回收（委托 PermissionManager；revoke 匹配规则由实现定义） |
-| `create_space(spec, *, actor) -> SpaceInfo` | 创建 space，并写入 `principal_path`、状态、metadata 与初始 policy |
-| `get_space(org, space, *, actor) -> SpaceInfo` | 读取单个 space 的基础信息、状态与策略摘要 |
-| `list_spaces(org, *, actor, status=None, limit=100, cursor=None) -> SpaceList` | 列出 org 下调用方可见的 spaces |
-| `update_space(org, space, patch, *, actor) -> SpaceInfo` | 修改 display name、metadata、policy 等非破坏字段 |
-| `archive_space(org, space, *, actor) -> SpaceInfo` | 归档 space，默认停止写入但保留读取与导出能力 |
-| `delete_space(org, space, *, actor, mode=PURGE) -> SpaceDeleteResult` | 删除 space 的真源与可重建索引，作为 offboarding 主路径 |
-| `export_space(org, space, *, actor, include_audit=True) -> str` | 提交 space 导出任务，返回 job id 或 export id |
-| `space_usage(org, space, *, actor) -> SpaceUsage` | 查询 space 级 memory/message/index/audit 容量与调用统计 |
-| `get_space_policy(org, space, *, actor) -> SpacePolicy` / `set_space_policy(org, space, policy, *, actor) -> SpacePolicy` | 查询 / 设置 space 级策略，包括 `principal_path`、retention、配额、索引和演进策略 |
-| `list_space_members(org, space, *, actor) -> list[SpaceMember]` / `add_space_member(org, space, member, role, *, actor)` / `remove_space_member(org, space, member, *, actor)` | 查询、添加或移除 space 成员与角色 |
-| `admin_get(key, *, actor)` / `admin_set(key, value, *, actor)` / `admin_all(*, actor)` | admin：运行时可变策略的查询与调整（委托 PolicyManager；键未知/不可变配置抛 `PolicyError`） |
+| `recall(query, scope, *, identity, filters=…, as_of=…, top_k=…, disclosure=…, with_trajectory=…) -> RetrievalResult` | 混合检索召回；`filters` 为结构化 `FilterExpr`（叶子谓词 + AND/OR/NOT 树），`as_of` **时间点回溯（valid-time）**，`disclosure` 渐进式披露层级，`with_trajectory` 返回检索轨迹 |
+| `get(unit_id, scope, *, identity, as_of=None) -> MemoryUnit`      | 按 id 读取记忆单元；`as_of` 非空时沿 `supersedes` 版本链返回当时有效版本；不存在抛 `NotFoundError` |
+| `update(unit_id, scope, patch: MemoryPatch, *, identity) -> MemoryUnit` | 修正记忆（仅非 None 字段生效）：`patch.mode` = **SUPERSEDE**（默认、非破坏式：生成新 id 版本、旧版标记 superseded、新版 `supersedes` 记链）/ **OVERWRITE**（同 id 原地覆写、旧内容仅留审计）；返回结果记忆单元 |
+| `delete(selector: DeleteSelector, *, identity) -> list[str]` | 删除：按选择器（id / scope / 标签 / 时间，条件取「与」）批量执行；`mode` = forget 遗忘 / archive 归档 / downweight 降权（均非破坏式）/ **purge 完全删除**（物理删除真源与全部派生索引，合规删除、不可恢复、仅留审计记录）；返回命中的 id |
+| `evolve(scope, mode, channel=BACKGROUND, *, identity) -> job_id` | 触发演进（mode：extract / associate / consolidate / forget），经控制层 Scheduler 双通道调度，返回任务 id；索引维护不在此（随数据面操作自动跟进） |
+| `job_status(job_id, *, identity) -> JobInfo` / `job_cancel(job_id, *, identity)` | 查询 / 取消演进任务（委托 Scheduler） |
+| `inspect(unit_ids, scope, *, identity) -> list[MemoryUnit]` | 治理·检视：读取完整内容与治理字段（含已失效版本，委托 Governor） |
+| `trace(unit_id, scope, *, identity) -> list[MemoryUnit]` | 治理·血缘回溯：沿 `provenance` 追溯演进来源链（委托 Governor） |
+| `audit(filters, *, identity, limit=100) -> list[AuditEvent]` | 治理·审计查询：按 actor/action/layer/时间段等检索审计留痕（委托 Governor） |
+| `grant(grant: Grant, *, identity)` / `revoke(grant, *, identity)` | 跨 scope 授权 / 回收（委托 PermissionManager；revoke 匹配规则由实现定义） |
+| `create_space(spec, *, identity) -> SpaceInfo` | 创建 space，并写入 `principal_path`、状态、metadata 与初始 policy |
+| `get_space(org, space, *, identity) -> SpaceInfo` | 读取单个 space 的基础信息、状态与策略摘要 |
+| `list_spaces(org, *, identity, status=None, limit=100, cursor=None) -> SpaceList` | 列出 org 下调用方可见的 spaces |
+| `update_space(org, space, patch, *, identity) -> SpaceInfo` | 修改 display name、metadata、policy 等非破坏字段 |
+| `archive_space(org, space, *, identity) -> SpaceInfo` | 归档 space，默认停止写入但保留读取与导出能力 |
+| `delete_space(org, space, *, identity, mode=PURGE) -> SpaceDeleteResult` | 删除 space 的真源与可重建索引，作为 offboarding 主路径 |
+| `export_space(org, space, *, identity, include_audit=True) -> str` | 提交 space 导出任务，返回 job id 或 export id |
+| `space_usage(org, space, *, identity) -> SpaceUsage` | 查询 space 级 memory/message/index/audit 容量与调用统计 |
+| `get_space_policy(org, space, *, identity) -> SpacePolicy` / `set_space_policy(org, space, policy, *, identity) -> SpacePolicy` | 查询 / 设置 space 级策略，包括 `principal_path`、retention、配额、索引和演进策略 |
+| `list_space_members(org, space, *, identity) -> list[SpaceMember]` / `add_space_member(org, space, member, role, *, identity)` / `remove_space_member(org, space, member, *, identity)` | 查询、添加或移除 space 成员与角色 |
+| `admin_get(key, *, identity)` / `admin_set(key, value, *, identity)` / `admin_all(*, identity)` | admin：运行时可变策略的查询与调整（委托 PolicyManager；键未知/不可变配置抛 `PolicyError`） |
 
 
-> - **鉴权与审计执行点（PEP）在接口层**：`actor`（调用方）与 `scope`（目标 target）分离，本层 `check(actor, scope, action)` 不通过抛 `PermissionDeniedError` 并落入口审计；通过后只把已鉴权的 target scope 下沉，actor 不下沉。`actor` 设为必填 keyword-only，杜绝与 `scope`（同为 Scope 类型）位置传反致越权。
+> - **鉴权与审计执行点（PEP）在接口层**：`identity`（调用方）与 `scope`（目标 target）分离，本层 `check(identity, scope, action)` 不通过抛 `PermissionDeniedError` 并落入口审计；通过后只把已鉴权的 target scope 下沉，identity 不下沉。`identity` 设为必填 keyword-only，杜绝与 `scope`（同为 Scope 类型）位置传反致越权。
 > - **表面 = 数据面 + 管理面**：数据面委托 `MemoryEngine`，管理面查询（job/inspect/trace/audit/grant/revoke/space 管理）直达 Scheduler/Governor/PermissionManager/SpaceManager；调用层只依赖 `src/api` 即可触达全部对外能力。
 > - **薄封装 + 引擎编排**：`MemoryAPI` 不含业务逻辑；接入/落盘/索引/检索/调度的编排全部在 `MemoryEngine`（`src/control`）。引擎内核只保留**一条异步写链路**（`async def write`），接口层的同步 `write` 由其自行桥接（如 `asyncio.run`）。
 > - 接口形态无关：不论真源是文档还是结构化、运行在端还是云，调用方语义一致。
@@ -244,7 +244,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | 管理职责 | 作用 | 主要落点 |
 | --- | --- | --- |
 | 生命周期 | 维护 memory 的 active / superseded / archived / forgotten 状态，并管理 space 的创建、冻结、归档、删除与 offboarding | 数据模型 §3.1；scope 模型 §3.2；自演进触发 §9.3；接口 `delete/update/inspect/delete_space` §6 |
-| 权限与隔离 | 基于 `org + space` 硬边界、space 级 `principal_path` 与 actor 做访问控制，跨 space 共享必须显式授权 | scope 模型 §3.2；接口层 PEP §6 |
+| 权限与隔离 | 基于 `org + space` 硬边界、space 级 `principal_path` 与 identity 做访问控制，跨 space 共享必须显式授权 | scope 模型 §3.2；接口层 PEP §6 |
 | 治理与审计 | 支持检视、编辑、血缘回溯、space 级审计查询、导出、用量统计与可观测轨迹 | 横切关注点 §12；接口 `inspect/trace/audit/export_space/space_usage` §6 |
 | 调度与策略 | 管理 hot/background 任务、演进阶段、索引开关与运行时可变策略 | 自演进控制 §9.3；配置体系 §13 |
 
@@ -271,7 +271,9 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 - **检索轨迹**：吸收 OpenViking 的可观测性，每步召回/排序可追溯，非黑盒。
 - **query 去噪与空查询短路**：`QueryParser` 先剥除上游包装噪声并产出结构化查询；清洗后无有效文本时，`Retriever` 在召回前直接返回空结果，避免噪声触发无意义召回。
 - **scope 是独立轴、显式串参**：检索范围作为首参贯穿 `Retriever.retrieve(scope, query)` → `Recaller.recall(scope, …)`（query 是「找什么」、scope 是「在谁的范围内找」），并落到各 Store 查询的专用 `scope` 字段做**原生隔离**——不随查询对象携带、也不混进过滤条件。Store 层必须以 `org + space` 作为硬隔离键；`agent/user/session` 只在 space 内按 `principal_path` 参与归属与过滤。
-- **前置过滤结构化**：`filters` 为 `FilterClause` 列表（字段+算子+值，支持等值/集合命中/数值·时间范围，AND 组合），由检索层**组装**进各 Store 查询，替代旧的 `dict[str,str]` 平铺等值。
+- **前置过滤结构化**：`filters` 为 `FilterExpr`（`FilterClause` 叶子 +
+  `FilterGroup` 的 AND/OR/NOT 树），由检索层与系统谓词做外层 AND 后下推。生产
+  Milvus/Elasticsearch 在 top-k 前完整执行，UnitReader 点读真源后再做纵深复核。
 - **两条时间轴**：`as_of` 是系统相信时间（valid-time，回溯「T 时刻哪个版本有效」），与从 query 文本解析出的事件时间约束（event-time，`time_from/time_to`，过滤 `t_event`）分开，互不折叠。
 - **通道↔Store 非 1:1**：`RecallChannel` 是逻辑召回路，到物理 Store 的映射由检索层装配内部决定（一路对一 Store，多路也可合到 FusionStore 一次召回；TEMPORAL 多为叠加在其他通道上的时间过滤）。
 
@@ -327,7 +329,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 - **写入触发**：新内容写入后，hot path 做低时延落盘与轻量索引；需要重推理的抽取、关联、升华与冲突消解进入 background。
 - **周期触发**：按策略对过期、低价值或长期未访问记忆做降权、归档或遗忘（非破坏式，保留血缘）。
-- **显式触发**：调用方可通过 `evolve(scope, mode, channel, *, actor)` 触发指定阶段。
+- **显式触发**：调用方可通过 `evolve(scope, mode, channel, *, identity)` 触发指定阶段。
 - **双通道**：
   - **Hot path（在线）**：低时延的即时记忆写入与轻量更新。
   - **Background（离线）**：异步做重的抽取/升华/重索引，不阻塞主链路。
@@ -588,7 +590,7 @@ agent-memory/
     │   └── audit/                  #   AuditLogger 审计记录（横切组件，非模型插件）
     │
     ├── api/                        # B 记忆接口层（§6）：统一 Core API（形态无关）
-    │   └── memory_api.py           #   MemoryAPI：控制层薄封装 + 鉴权/审计执行点（PEP）；每方法收 scope(target)+actor；
+    │   └── memory_api.py           #   MemoryAPI：控制层薄封装 + 鉴权/审计执行点（PEP）；每方法收 scope(target)+identity；
     │                               #   数据面委托 MemoryEngine、管理面查询（job/inspect/trace/audit/grant）直达控制算子；
     │                               #   write 同步/异步双形态；重导出调用所需类型（调用层只 import 本包）
     │
@@ -608,7 +610,7 @@ agent-memory/
     │
     ├── retrieval/                  # D 记忆检索层（§8）：①查询理解→②过滤→③多路召回→④融合重排→⑤相关性阈值→⑥披露→⑦轨迹
     │   ├── base.py                 #   RetrievalOperator 算子契约
-    │   ├── types.py                #   RetrievalQuery（filters=FilterClause·as_of valid-time）/ ParsedQuery（scalar_filters·as_of·time_from/to event-time）/ ScoredUnit / RetrievedItem / 轨迹
+    │   ├── types.py                #   RetrievalQuery（filters=FilterExpr·as_of valid-time）/ ParsedQuery（scalar_filters·as_of·time_from/to event-time）/ ScoredUnit / RetrievedItem / 轨迹
     │   ├── query_parser.py         #   查询理解：去噪 / 改写 / 分词 / 实体 / 向量化 / 时间约束解析
     │   ├── recaller.py             #   单路召回：recall(scope, …) 组装 Store 查询；RecallChannel（逻辑路，→Store 非 1:1）
     │   ├── fuser.py                #   多路融合排序（RRF；重排由 common Reranker 独立阶段承担）
@@ -617,7 +619,7 @@ agent-memory/
     │
     ├── storage/                    # F 记忆存储层（§10）：统一 CRUD 动词（insert/delete/update/get）
     │   ├── base.py                 #   BaseStore（storeType/health）+ StoreType 枚举；检索型 Store 原生按 scope 隔离
-    │   ├── types.py                #   各 Store 的记录与查询结构（scope 一等字段 + filters=FilterClause 列表）
+    │   ├── types.py                #   各 Store 的记录与查询结构（scope 独立入参 + filters=FilterExpr）
     │   ├── kv.py                   #   KVStore（+exists）
     │   ├── fulltext.py             #   FulltextStore 全文倒排（+search）
     │   ├── vector.py               #   VectorStore 向量 ANN（+search）
@@ -662,7 +664,7 @@ agent-memory/
 - **索引「构建」与「持久化」分离**：`src/construction/index_builder` 负责构建/更新索引（逻辑），`src/storage` 负责持久化驱动（后端），经 Store 抽象解耦；统一 CRUD 动词为 `insert`（增，冲突抛 `ConflictError`）/ `delete`（删，幂等）/ `update`（改，缺失抛 `NotFoundError`）/ `get`（查，按 id 点读）。检索型 Store 的记录/查询带一等 `scope` 字段，按 scope **原生隔离**（kv/fs 为通用键值/二进制原语，不引入 scope）。
 - **共享插件保证两侧一致**：分词/切分/向量化/特征抽取/LLM/规约/重排抽到 `src/common`，构建侧与检索侧（以及重建/演进路径）注入**同一实现**——同词表、同向量空间、同切分规则、同规约器，是「派生可重建」与召回对齐的前提。
 - **依赖方向**：各层只依赖 `src/common`，互不 import；例外集中在编排侧——`control/scheduler` 与 `control/engine` 引用 `construction.EvolveMode`（控制层驱动构建层演进），`control/engine` 引用 `retrieval` 的查询/结果类型（引擎编排检索链路），`src/api` 依赖 `control`/`retrieval`/`construction`（薄封装的委托与类型重导出）。
-- **鉴权/隔离/异常的统一落点**：① **PEP 在接口层**——`MemoryAPI` 每方法分离 `actor`（调用方，必填 keyword-only）与 `scope`（目标 target），`check` + 入口审计在此完成，actor 不下沉、下游信任 target；② **scope 原生隔离**——记录/查询带一等 `scope`，过滤条件用结构化 `FilterClause`（等值/集合/范围）由上层组装，不靠 `dict` 透传；③ **统一异常**——`common/errors`（`AgentMemoryError` 根）作为跨层错误契约；④ **版本模型**——`update` 经 `UpdateMode`（SUPERSEDE 新 id / OVERWRITE 同 id）区分，版本链走 `supersedes`、演进血缘走 `provenance`。
+- **鉴权/隔离/异常的统一落点**：① **PEP 在接口层**——`MemoryAPI` 每方法分离 `identity`（调用方，必填 keyword-only）与 `scope`（目标 target），`check` + 入口审计在此完成，identity 不下沉、下游信任 target；② **scope 原生隔离**——scope 作为 Store 专用入参，过滤条件用结构化 `FilterExpr` 由上层组装，不靠 `dict` 透传；③ **统一异常**——`common/errors`（`AgentMemoryError` 根）作为跨层错误契约；④ **版本模型**——`update` 经 `UpdateMode`（SUPERSEDE 新 id / OVERWRITE 同 id）区分，版本链走 `supersedes`、演进血缘走 `provenance`。
 - **一个内核，多形态接入**：`bootstrap/*` 与 `agent_plugin/*` 依赖内核、仅做协议/参数转换后调用 `src/api`，不含业务逻辑。`bootstrap/core` 是各 surface 共享的应用核（内核装配 + 共享 `dispatch` + profile/配置加载）；其上 `http_server`（HTTP/REST）与 `mcp_server`（MCP）作为独立服务对外提供、`sdk` 作为库嵌入、`cli` 作为命令行——四个 surface 彼此解耦，共用同一 `core` 与 `src/api`。
 - **端/云/混合**靠 `src/config` 的部署 profile 装配不同后端组合（端侧 SQLite+轻向量，云侧 PG+Milvus+Neo4j），逻辑模型不变。
 

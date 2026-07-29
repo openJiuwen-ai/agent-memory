@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/storage/ |
-| 最近一次修订日期 | 2026-07-01 |
+| 最近一次修订日期 | 2026-07-27 |
 
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/control/F02-control-isolation-and-audit.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -33,8 +33,13 @@
 6. **fs 提供 stat**：stat（文件元信息查询）。
 7. **scope 对 key/路径做命名空间隔离**：kv / fs 是通用原语，`scope` 入参用于对 key / 路径做命名空间隔离（同一逻辑 key 在不同 scope 下是相互隔离的不同物理键）。
 8. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
-9. **所有 Store 必须实现 `store_type()` 和 `health()`**：继承自 `BaseStore`。
-10. **多租户隔离默认依赖逻辑 scope 边界**：当前不要求物理分库/分 collection，但要求同一逻辑 key/id 在不同 scope 下严格命名空间隔离。
+9. **生产过滤先于截断**：Milvus VectorStore 与 Elasticsearch FulltextStore 对
+   `FilterExpr` 完整编译，并在 `limit/top_k` 前执行；不允许依赖检索层后置过滤替代
+   生产下推。
+10. **metadata 原生类型入库**：Document / VectorRecord 的 metadata 保留 JSON 标量
+    原生类型，不统一字符串化；不同类型之间不做隐式比较转换。
+11. **所有 Store 必须实现 `store_type()` 和 `health()`**：继承自 `BaseStore`。
+12. **多租户隔离默认依赖逻辑 scope 边界**：当前不要求物理分库/分 collection，但要求同一逻辑 key/id 在不同 scope 下严格命名空间隔离。
 
 ## 接口契约
 
@@ -133,14 +138,14 @@ class BaseStore(ABC):
 | 类型 | 关键字段 |
 |------|----------|
 | `VectorRecord` | id / vector: list[float] / metadata |
-| `VectorQuery` | vector: list[float] / top_k / filters: list[FilterClause] |
+| `VectorQuery` | vector: list[float] / top_k / filters: FilterExpr \| None |
 
 ### 全文（`types.py`）
 
 | 类型 | 关键字段 |
 |------|----------|
 | `Document` | id / text / metadata |
-| `TextQuery` | text / top_k / filters: list[FilterClause] |
+| `TextQuery` | text / top_k / filters: FilterExpr \| None |
 
 ### 图（`types.py`）
 
@@ -155,7 +160,7 @@ class BaseStore(ABC):
 | 类型 | 关键字段 |
 |------|----------|
 | `FusionRecord` | id / vector / text / scalars / value: bytes |
-| `FusionQuery` | vector / text / scalar_filters / top_k / vector_weight |
+| `FusionQuery` | vector / text / scalar_filters: FilterExpr \| None / top_k / vector_weight |
 
 ### 文件系统（`types.py`）
 

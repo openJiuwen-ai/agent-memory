@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from datetime import datetime
+from typing import Any
 
 from common.factory.factory import Factory
 from common.type_def import MemoryUnit, Modality, Scope
@@ -51,7 +52,7 @@ class MemoryEngine(ControlOperator):
         *,
         assets: list[str] | None = None,
         tags: list[str] | None = None,
-        metadata: dict[str, str] | None = None,
+        metadata: dict[str, Any] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
         """异步（协程）写入：hot path 完成（真源落盘 + 轻量索引）后返回

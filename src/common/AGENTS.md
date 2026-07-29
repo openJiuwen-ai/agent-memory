@@ -15,6 +15,7 @@
 | `errors.py` | 自定义异常（ConflictError/NotFoundError/PermissionDeniedError/BackendError 等） |
 | `type_def/` | 核心数据类型定义目录 |
 | `type_def/memory.py` | MemoryUnit/Scope/Relation/Segment/Temporal/ContentLayers 等；KV key 前缀 `MEMORY_KEY_PREFIX`/`memory_key`（建索引记忆 `/memory/{id}`）。`ContentLayers`(l0/l1) 为分层披露标注，由 LayerAnnotator 对超阈 content 产出 |
+| `type_def/filter.py` | FilterClause/FilterGroup/FilterExpr 及 normalize/evaluate；统一 API、检索和存储的树形过滤契约 |
 | `type_def/memory_codec.py` | `MemoryUnit` ↔ bytes 编解码（`dumps`/`loads`）；序列化 `layers`({l0,l1})，缺失取空串容错老数据，详见 F01-memory-layer |
 | `type_def/raw.py` | RawPayload；KV key 前缀 `MESSAGES_KEY_PREFIX`/`messages_key`（未建索引 infer 原文 `/messages/{id}`） |
 | `type_def/audit.py` | AuditEvent |
@@ -30,20 +31,24 @@
 
 ## 行为铁律
 
-1. **插件接口与实现严格分离**  
+1. **插件接口与实现严格分离**
    接口模块（`<plugin>/base.py`）定义抽象契约 + Producer 工厂类，零依赖实现。实现模块（`<plugin>/<plugin>_impl/*.py`）具体实现 + 尾部 `@XxxProducer.register("name")` 自注册。消费方只 import 接口层，不触达 `*_impl`。
 
-2. **工厂随契约（住在接口层）**  
+2. **工厂随契约（住在接口层）**
    每个插件的 Producer 工厂定义在其接口模块（`base.py`）中，与抽象契约同处一地。
 
-3. **注册靠 import 触发**  
+3. **注册靠 import 触发**
    实现文件尾部 `@XxxProducer.register("name")` 注册 _build 函数，`*_impl/__init__.py` import 各实现模块触发注册，`bootstrap.py::register_plugins()` 在装配前统一触发。
 
-4. **types.py 零依赖其他文件**  
+4. **types.py 零依赖其他文件**
    `type_def/*.py` 是纯数据定义，不 import 本层其他文件，被全局共享依赖。
 
-5. **共享插件必须双侧同一**  
+5. **共享插件必须双侧同一**
    Embedder/Tokenizer/FeatureExtractor 必须在构建侧与检索侧使用同一实现/同一配置，保证同词表/同向量空间。靠配置里「具名 + 引用」显式表达共享：双侧 `dep` 引用同一具名实例 → `build_named` 命中同一缓存键 → 同一实例。
+
+6. **业务 metadata 保留原生类型**
+   `MemoryUnit` / `RawPayload` / `Chunk` / `Relation` 的 metadata 使用 `dict[str, Any]`；
+   不在公共类型层统一 string 化。过滤只做严格类型比较，不推测字符串数值的业务含义。
 
 ## 与其他子目录的边界
 

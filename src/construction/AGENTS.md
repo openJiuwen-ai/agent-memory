@@ -63,52 +63,63 @@
 
 ## 行为铁律
 
-1. **落盘由本层负责**  
+1. **落盘由本层负责**
    接入层产出 `MemoryUnit` 后，真源写入由本层调用 `KVStore.insert` 完成。接入层禁止落盘。
 
-2. **索引是可重建派生**  
+2. **索引是可重建派生**
    索引（向量/关键词/图/文档）全部可从真源（KVStore 中的 MemoryUnit）重建。`IndexBuilder.rebuild()` 是非破坏式保障——删索引不丢数据。
 
-3. **provenance 回指来源**  
+3. **provenance 回指来源**
    派生记忆单元（Extractor/Abstractor 产出）的 `provenance` 字段记录由哪些 unit 演进而来，保证可重建、可审计回溯。
 
-4. **构建与存储解耦**  
+4. **构建与存储解耦**
    算子负责构建逻辑（生成索引投影：Chunk → VectorRecord/Document/Node），持久化由注入的 Store 承担。算子不依赖具体后端。
 
-5. **scope 原生隔离**  
+5. **scope 原生隔离**
    构建索引记录时把来源 `MemoryUnit.scope` 落到记录的专用 `scope` 字段（`VectorRecord.scope` / `Document.scope` / `Node.scope`），使检索得以按 scope 原生隔离。
 
-6. **Evolver 四阶段独立**  
+6. **Evolver 四阶段独立**
    `EvolveMode.EXTRACT`（信息提取）/ `ASSOCIATE`（关联分析）/ `CONSOLIDATE`（冲突消解/近重复融合）/ `FORGET`（遗忘/降权）四阶段独立，可单独触发。索引维护不作为 evolve 模式。
 
-7. **去重召回与巩固判定分离**  
-   `Dedup` 只管召回；判定（ADD/UPDATE/SUPERSEDE/NOOP）与落盘归 Evolver 实现——`OrchestratingEvolver._evolve_extract`（legacy，`_dedup_batch` 判定+落盘耦合）或 `DynamicEvolver._evolve_extract`（dynamic，consolidate 只判定、落盘延后到 reflect 之后）。
+7. **去重召回与判定分离**
+   `Dedup` 接口只管召回（向量化/分词 → Store.search → 加载 → 聚合取 max），判定
+   （ADD/UPDATE/SUPERSEDE/NOOP）与落盘归 Evolver 实现：
+   `OrchestratingEvolver._evolve_extract`（legacy）由 `_dedup_batch` 耦合判定与落盘；
+   `DynamicEvolver._evolve_extract`（dynamic）在 consolidate 只判定，reflect 后统一落盘。
+   装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`，保证 fulltext-only 下去重仍可用。
 
-8. **构建层不依赖 control**  
-   SUPERSEDE/FORGET 标记由 `OrchestratingEvolver`/`DynamicEvolver` 直接通过 `KVStore.update` 完成，不经 `LifecycleManager`。
+8. **构建层不依赖 control**
+   SUPERSEDE/FORGET 标记由 `OrchestratingEvolver`/`DynamicEvolver` 直接通过
+   `KVStore.update` 完成，不经 `LifecycleManager`（construction → control 严禁）。
 
-9. **Dedup 与 IndexBuilder 共享底层 Store**  
+9. **Dedup 与 IndexBuilder 共享底层 Store**
    去重召回检索的是已索引内容，`Dedup` 实现取的 `VectorStore`/`FulltextStore` 必须与 IndexBuilder 写入的是同一实例（按字段名缓存命中）。
 
-10. **L0/L1 分层索引分表且 store None 跳过**  
+10. **L0/L1 分层索引分表且 store None 跳过**
     `unit.layers.l0`/`l1` 非空时，VectorIndexBuilder/FulltextIndexBuilder 对整段文本（不切片）建独立 store 索引（record id 向量=`{uid}-layer-l0`/`-layer-l1`、全文=`{uid}:l0`/`:l1`，与 content 的 chunk id 不冲突），metadata `content_layer`="l0"/"l1"，content 表 chunk record 补 `content_layer="l2"`。物理分表不混 content。`vector_l0`/`vector_l1`/`fulltext_l0`/`fulltext_l1` 任一为 None 则该层跳过（不报错、不建空记录）。update 先删旧分层 record 再按新 layers 重建（SUPERSEDE 不残留），remove 按 id 幂等删。详见 F01-memory-layer。
 
-11. **动态抽取格式在实现内收敛**  
+11. **动态抽取格式在实现内收敛**
     `_extract_prompt_<strategy>` 支持任意非空策略名，其值是引用 yml `prompts.extract` 段的
     prompt **key**，运行时由 `PromptRegistry` 按 `phase=extract + key` 查真实文本作为 system
     prompt 发送；registry 未配置或 key 缺失时回退把值本身当文本用（兼容内联文本）。不由内核
     追加输出契约。`DynamicLLMExtractor` 默认按 JSON 解析，子类可覆盖 `parse_response` 支持
     XML 等格式，但必须在该方法内转换为 `list[MemoryUnit]`；格式相关中间结构不得传给 Evolver。
 
-12. **consolidate 只判定不落盘**  
+12. **consolidate 只判定不落盘**
     `DynamicEvolver` 的 consolidate 步只产出 `ConsolidateDecision`（候选 + 决策 +
     已有记忆 + 相似度），不调 KVStore / IndexBuilder；落盘在 reflect 之后统一执行。
     reflect 默认 no-op，子类可覆盖 `_reflect_step` 在落盘前做反思修正。
 
-13. **prompt key 而非文本**  
+13. **prompt key 而非文本**
     metadata 只写 prompt 的 **key**（引用 yml `prompts` 段的命名 prompt），不内联 prompt 文本。
-    运行时由 `PromptRegistry` 按 `phase + key` 查真实文本。三步（extract/consolidate/reflect）
-    共享同一 `PromptRegistry` 实例（由装配注入）。
+    运行时由 `PromptRegistry` 按 `phase + key` 查真实文本。三步
+    （extract/consolidate/reflect）共享同一份 `prompts` 配置与查询规则；
+    Extractor 和 Evolver 的 builder 分别构造并注入 registry。
+
+14. **过滤索引投影与真源语义对齐**
+    Vector/Fulltext IndexBuilder 原样复制业务 metadata，再由真源系统字段覆盖保留 key；
+    时间写 epoch 毫秒，开放 `t_invalid=None` 仅在索引中投影为 `T_INVALID_OPEN`。
+    真源仍保留 None，禁止为适配后端改写 MemoryUnit。
 
 14. **抽取与分层优先保证完整性**
     派生 L2 只保存紧凑陈述，通过 `source_ref`/`provenance`/`evidence` 回指来源；坏候选

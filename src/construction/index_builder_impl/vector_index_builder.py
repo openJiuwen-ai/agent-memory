@@ -18,7 +18,7 @@ from typing import Dict, List
 from common.chunker.base import Chunker, ChunkerProducer
 from common.embedder.base import Embedder, EmbedderProducer
 from common.log import get_logger
-from common.type_def import MemoryUnit, Scope
+from common.type_def import T_INVALID_OPEN, MemoryUnit, Scope
 from construction.base import OperatorType
 from construction.index_builder import IndexBuilder, IndexBuilderProducer
 from storage.kv import KvProducer, KVStore
@@ -26,6 +26,44 @@ from storage.types import VectorRecord
 from storage.vector import VectorProducer, VectorStore
 
 logger = get_logger(__name__)
+
+
+def _index_metadata(
+    unit: MemoryUnit,
+    *,
+    layer: str,
+    seq: int | None = None,
+) -> dict[str, object]:
+    """构造可过滤索引投影；用户 metadata 原样带入，系统真源字段随后覆盖。
+
+    ``metadata`` 值为 JSON 标量原生类型，后端据此在 top-k 截断前原生比较。
+    UnitReader 复核读的是同一个对象，两侧判定一致。
+    """
+    metadata = dict(unit.metadata)
+    metadata.update(
+        {
+            "unit_id": unit.id,
+            "tier": unit.tier.value,
+            "lifecycle": unit.lifecycle.value,
+            "tags": list(unit.tags),
+            "source": unit.source.value,
+            "content_layer": layer,
+        }
+    )
+    if seq is not None:
+        metadata["seq"] = seq
+    temporal = unit.temporal
+    for field, value in (("t_event", temporal.t_event), ("t_valid", temporal.t_valid)):
+        if value is not None:
+            metadata[field] = int(value.timestamp() * 1000)
+    # t_invalid 恒写：空（永久有效）落哨兵值，否则该字段缺失会被 `t_invalid > as_of`
+    # 的下推按缺失字段排他——那批正是回溯查询最该命中的活跃记忆。
+    metadata["t_invalid"] = (
+        int(temporal.t_invalid.timestamp() * 1000)
+        if temporal.t_invalid is not None
+        else T_INVALID_OPEN
+    )
+    return metadata
 
 
 class VectorIndexBuilder(IndexBuilder):
@@ -117,15 +155,7 @@ class VectorIndexBuilder(IndexBuilder):
                 record = VectorRecord(
                     id=record_id,
                     vector=vector,
-                    metadata={
-                        "unit_id": unit.id,
-                        "tier": unit.tier.value,
-                        # 召回下推 lifecycle 谓词需此字段（真后端按缺失字段排他）。
-                        "lifecycle": unit.lifecycle.value,
-                        "seq": str(chunk.seq),
-                        # L2=content 全文 chunk（与 L0/L1 分层 record 对齐）。
-                        "content_layer": "l2",
-                    },
+                    metadata=_index_metadata(unit, layer="l2", seq=chunk.seq),
                 )
                 all_records.append(record)
                 chunk_ids.append(record_id)
@@ -314,12 +344,7 @@ class VectorIndexBuilder(IndexBuilder):
             record = VectorRecord(
                 id=self._layer_record_id(unit.id, layer),
                 vector=vector,
-                metadata={
-                    "unit_id": unit.id,
-                    "tier": unit.tier.value,
-                    "lifecycle": unit.lifecycle.value,
-                    "content_layer": layer,  # "l0" | "l1"（L2 在 content 表 chunk record，见 F01）
-                },
+                metadata=_index_metadata(unit, layer=layer),
             )
             key = (unit.scope.org, unit.scope.user, unit.scope.agent, unit.scope.session)
             groups.setdefault(key, []).append(record)

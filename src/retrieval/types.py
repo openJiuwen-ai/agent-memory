@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
-from common.type_def import Entity, FilterClause
+from common.type_def import Entity, FilterExpr, normalize
 
 
 class DisclosureLevel(str, Enum):
@@ -55,8 +55,8 @@ class RetrievalQuery:
     """
 
     text: str = ""  # 自然语言查询
-    # 标签/元数据前置过滤（结构化谓词，AND 组合）。
-    filters: list[FilterClause] = field(default_factory=list)
+    # 标签/元数据前置过滤：树形谓词；旧 list/dict 仅在本查询对象边界兼容。
+    filters: FilterExpr | None = None
     as_of: datetime | None = None  # 时间点回溯（双时间模型 valid-time）；None 表示当前
     top_k: int = 10  # 返回条数
     disclosure: DisclosureLevel = DisclosureLevel.L0  # 结果披露层级
@@ -69,6 +69,10 @@ class RetrievalQuery:
     # 调用方自定义透传配置（源自 Context.extensions）；内核核心不解释，
     # 顺 parser 进 ParsedQuery 供自定义检索模块按约定 key 读取。
     extensions: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # 查询对象边界规范化：外部兼容旧输入，内部只保留 FilterExpr | None。
+        self.filters = normalize(self.filters)
 
 
 @dataclass
@@ -88,8 +92,8 @@ class ParsedQuery:
     keywords: list[str] = field(default_factory=list)  # 抽取的关键词
     entities: list[Entity] = field(default_factory=list)  # 实体（图通道用）
     vector: list[float] = field(default_factory=list)  # query 向量（向量通道用）
-    # 硬前置过滤谓词（源自 RetrievalQuery.filters），组装进各 Store 查询 filters。
-    scalar_filters: list[FilterClause] = field(default_factory=list)
+    # 硬前置过滤谓词（源自 RetrievalQuery.filters，已规范化为 FilterExpr），下推各 Store。
+    scalar_filters: FilterExpr | None = None
     # valid-time 回溯点：过滤 [t_valid, t_invalid]，问「T 时刻哪个版本有效」。
     as_of: datetime | None = None
     time_from: datetime | None = None  # 事件时间下界（event-time）：从 query 文本解析，过滤 t_event

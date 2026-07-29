@@ -41,8 +41,11 @@
 3. **鉴权不在本层执行**：`PermissionManager.check` 由 `api/MemoryAPI` 在入口调用，engine 信任传入的 scope 已鉴权。Engine 只提供 `permission_context_for_unit` / `permission_contexts_for_delete` 这类 metadata-only 解析入口，供 API 做类型化鉴权；禁止在 engine 内部重复 check。
 4. **LifecycleManager 只做非破坏式标记**：`transition` 标记状态（superseded/archived/forgotten），绝不物理删除。物理删除（purge）走 engine 的 `delete` 路径 + `DeleteMode.PURGE`。
 5. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。`*_impl/` 通过 producer 工厂被外部装配消费，不被顶层接口引用。
-6. **Pipeline 只做 profile 选择**：`MemoryPipeline` 选择一组已装配的 `IndexBuilder` / `Evolver` / `Retriever` / `Classifier` 绑定，不实现抽取、巩固、索引、检索算法。
+6. **Pipeline 只做 profile 选择**：`MemoryPipeline` 选择一组已装配的 `IndexBuilder` / `Evolver` / `Retriever` / `Classifier` 绑定，不实现抽取、巩固、索引、检索算法，不让 construction/retrieval 反向依赖 control。
 7. **PermissionContext 由可信边界构造**：write/recall 的 context 来自 API 入参；get/update/delete 的已有 unit context 必须由 Engine 从真源元数据解析，不能信任调用方声明 memory_type。
+8. **权限路由与数据范围绑定**：RoutingPermissionManager 只按 PermissionContext 选择
+   delegate；API 必须把授权所依据的路由字段回注为系统过滤谓词。未知路由值和直接
+   policy 名落最小权限 fallback，fallback 不得配置为 allow_all。
 
 ## 双通道调度机制
 
@@ -66,7 +69,7 @@
 
 **KV key 前缀分离**（决策6）：真源 key 按「是否建索引」带前缀——`/memory/{id}`（建索引记忆）、`/messages/{id}`（未建索引 infer 原文）；前缀常量与 helper 在 `common.type_def.memory` / `common.type_def.raw`。所有落盘/回查点用 `memory_key`/`messages_key`，按 key 匹配 id 处（lifecycle）用带前缀 key 直接比对。
 
-引擎只调用注入的 Evolver（`OrchestratingEvolver` 或 `DynamicEvolver`，由装配/pipeline 选择），不直接调用 LLM。动态抽取仍要求 `infer=true`；
+引擎只调用注入的 Evolver（`OrchestratingEvolver` 或 `DynamicEvolver`，由装配/pipeline 选择），不直接调用 LLM。write 同步路径中的动态抽取仍要求 `infer=true`；
 metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` / `_reflect_prompt_<strategy>` 传 prompt key（引用 yml `prompts` 段）。
 
 ## pipeline 路由
@@ -74,9 +77,11 @@ metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` /
 `MemoryPipeline` 是 control 层的跨构建/查询 profile 编排点：
 
 - 写入侧：`select_for_write(units)` 返回 `PipelineBinding`，默认 `metadata` 实现读取 `MemoryUnit.metadata[route_key]`（默认 `memory_type`）。
-- 查询侧：`select_for_recall(query)` 返回 `PipelineBinding`，默认 `metadata` 实现优先读取 `RetrievalQuery.extensions[route_key]`，其次读取等值 filter 的 `route_key` / `metadata.<route_key>`。
-- `PipelineBinding` 绑定 `index_builder`、`evolver`、`retriever`，以及可选 `classifier`。
-- `InMemoryEngine` 使用绑定后的构建组件处理 write。profile 未显式绑定某组件时回退默认实例。
+- 查询侧：`select_for_recall(query)` 返回 `PipelineBinding`，默认 `metadata` 实现优先
+  读取 `RetrievalQuery.extensions[route_key]`，其次从规范化 FilterExpr 提取逻辑上
+  强制成立的 `metadata.<route_key>` 唯一等值（`memory_type` 裸字段仅作兼容别名）。
+- `PipelineBinding` 只绑定组件引用：`index_builder`、`evolver`、`retriever`、可选 `classifier`。
+- `InMemoryEngine` 使用绑定后的 `index_builder/evolver/classifier` 处理 write，使用绑定后的 `retriever` 处理 recall。未注入 pipeline 时走原单 profile 字段。
 - 未配置 `pipeline.default` 时不启用 pipeline，行为等价旧单 pipeline；用户通过 YAML 显式声明后启用。
 
 ## 本地约束

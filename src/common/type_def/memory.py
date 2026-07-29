@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from typing import Any
 
 from .scope import Scope
 
@@ -107,13 +108,16 @@ class MemoryUnit:
     scope: Scope = field(default_factory=Scope)  # 归属（隔离与共享的依据，unit 级单一 owner）
     tier: MemoryTier = MemoryTier.EPISODIC  # 认知角色分类
     layers: ContentLayers = field(default_factory=ContentLayers)
-    segments: list[Segment] = field(default_factory=list)  # 多段内容投影（每段含 content+assets+source）
+    # 多段内容投影（每段含 content+assets+source）
+    segments: list[Segment] = field(default_factory=list)
     source_ref: str = ""  # 来源引用（RawPayload id / 会话 id 等，可溯源）
     temporal: Temporal = field(default_factory=Temporal)  # 双时间
-    provenance: list[str] = field(default_factory=list)  # 演进血缘（多→一合成）：由哪些 unit 提取/升华/合并而来；来源 unit 可仍有效
-    supersedes: str = ""  # 版本链（一→一更替）：本版本取代的上一版 id（update 的 SUPERSEDE 模式产生）；空表示首版
+    # 演进血缘（多→一合成）：由哪些 unit 提取/升华/合并而来；来源 unit 可仍有效
+    provenance: list[str] = field(default_factory=list)
+    # 版本链（一→一更替）：本版本取代的上一版 id；空表示首版
+    supersedes: str = ""
     tags: list[str] = field(default_factory=list)  # 标签（检索前置过滤用）
-    metadata: dict[str, str] = field(default_factory=dict)  # 其他元数据（置信度/重要度等）
+    metadata: dict[str, Any] = field(default_factory=dict)  # 其他元数据（置信度/重要度等）
     lifecycle: LifecycleState = LifecycleState.ACTIVE  # 生命周期状态
 
     @property
@@ -138,6 +142,35 @@ class MemoryUnit:
 # 所有落盘/回查建索引记忆的点用 memory_key，保证同前缀读写对齐。
 
 MEMORY_KEY_PREFIX = "/memory/"
+
+# 索引投影用真源系统字段覆盖同名用户 metadata（见 construction 的 _index_metadata），
+# 而 UnitReader 复核 ``metadata.<key>`` 时读的是用户值——同名会让两侧语义相反、静默错筛。
+# 故这些 key 在写入边界即拒绝，用户元数据不得占用。
+RESERVED_METADATA_KEYS = frozenset(
+    {
+        "unit_id",
+        "tier",
+        "lifecycle",
+        "tags",
+        "source",
+        "content_layer",
+        "t_event",
+        "t_valid",
+        "t_invalid",
+        "seq",
+    }
+)
+
+# 开放有效期（``Temporal.t_invalid is None``，即"仍有效"）在索引里的哨兵值：
+# 9999-12-31T23:59:59Z 的 epoch 毫秒。
+#
+# 真源的 None 无法参与 ``t_invalid > as_of`` 下推——字段不写入索引，真后端按缺失
+# 字段排他，恰好滤掉回溯查询最该命中的那批活跃记忆。落哨兵后该谓词对开放区间成立。
+# 哨兵只存在于索引投影，真源仍是 None，``UnitReader.valid_at`` 的判定不受影响。
+#
+# 取值须小于 2^53：ES 的 metadata 数值字段由 dynamic_template 映射为 double，
+# 超出该范围的整数会丢精度，相邻时间戳将无法区分。
+T_INVALID_OPEN = 253402300799000
 
 
 def memory_key(unit_id: str) -> str:
