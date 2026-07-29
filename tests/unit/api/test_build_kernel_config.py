@@ -15,6 +15,7 @@ from common.audit.base import AuditProducer
 from common.errors import PermissionDeniedError, ValidationError
 from common.factory.factory import Factory
 from common.type_def import Context, Scope
+from common.type_def.auth import AuthContext
 from config import Config
 from config.context import AssemblyContext
 from config.defaults import default_config_dict
@@ -58,6 +59,8 @@ class _DenyAllPermission(PermissionManager):
         target: Scope,
         action: Action,
         context: PermissionContext | None = None,
+        *,
+        auth: AuthContext | None = None,
     ) -> bool:
         return False
 

@@ -32,6 +32,11 @@ def alice_key(key_store) -> str:
     return key_store.issue(Scope(org="acme", user="alice"), Role.USER)
 
 
+@pytest.fixture(scope="module")
+def agent_key(key_store) -> str:
+    return key_store.issue(Scope(org="acme", agent="assistant"), Role.USER)
+
+
 # -- DevAuthenticator ------------------------------------------------------- #
 
 
@@ -124,6 +129,46 @@ def test_trusted_gateway_key_survives_non_ascii(key_store, alice_key) -> None:
     auth = TrustedAuthenticator(key_store=key_store, gateway_key="shared-secret")
     with pytest.raises(AuthenticationError):
         auth.authenticate(Credentials(api_key="密钥", headers=_gateway_headers()))
+
+
+def test_trusted_user_principal_carries_itself_as_acting_user(key_store, alice_key) -> None:
+    """user 主体的 acting_user 就是它自己--与改造前的行为逐字一致。"""
+    auth = TrustedAuthenticator(key_store=key_store)
+    ctx = auth.authenticate(Credentials(headers=_gateway_headers()))
+    assert ctx.acting_user == "alice"
+
+
+def test_trusted_agent_without_acting_user_header_has_empty_acting_user(
+    key_store, agent_key
+) -> None:
+    """agent 主体未声明代操作时 acting_user 为空，委托规则不会触发。
+
+    证明放行（在 PDP 侧）来自 X-Acting-User 而非「agent 主体天然可代任何人」。
+    """
+    auth = TrustedAuthenticator(key_store=key_store)
+    headers = _gateway_headers(**{"x-principal-type": "agent", "x-principal-id": "assistant"})
+    ctx = auth.authenticate(Credentials(headers=headers))
+    assert ctx.actor == Scope(org="acme", agent="assistant")
+    assert ctx.acting_user == ""
+
+
+def test_trusted_agent_carries_declared_acting_user(key_store, agent_key) -> None:
+    """§4.3：网关声明「这次调用替 alice 做的」，框架原样写入 acting_user。
+
+    「该 user 是否授权了这个 agent」属网关侧认证结论，与 X-Principal-Id 同档；
+    授权边界仍在 PDP（同 org+space、只指向该 user、不指向别的 agent 分支）。
+    """
+    auth = TrustedAuthenticator(key_store=key_store)
+    headers = _gateway_headers(
+        **{
+            "x-principal-type": "agent",
+            "x-principal-id": "assistant",
+            "x-acting-user": "alice",
+        }
+    )
+    ctx = auth.authenticate(Credentials(headers=headers))
+    assert ctx.actor == Scope(org="acme", agent="assistant")
+    assert ctx.acting_user == "alice"
 
 
 # -- ApiKeyAuthenticator ---------------------------------------------------- #
