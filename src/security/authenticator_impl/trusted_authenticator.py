@@ -28,10 +28,32 @@ _LOG = logging.getLogger(__name__)
 _H_ORG = "x-org-id"
 _H_TYPE = "x-principal-type"
 _H_ID = "x-principal-id"
+_H_ACTING_USER = "x-acting-user"
 
 _PRINCIPAL_TYPES = frozenset({"user", "agent"})
 
 _FAILED = "authentication failed"
+
+
+def _acting_user(actor: Scope, headers) -> str:
+    """本次操作对应的 user（§4.3 用户授权 Agent 代操作）。
+
+    user 主体就是它自己。agent 主体才读 ``X-Acting-User``——网关声明「这次调用是
+    替谁做的」，授权层据此放行该 user 的 scope（见
+    ``SQLitePermissionManager._delegation_covers``）。
+
+    **为什么这个 header 可以信**：TRUSTED 模式的前提就是网关已完成认证，而
+    「该 user 是否授权了这个 agent」正属于网关侧的认证结论——与 ``X-Principal-Id``
+    同档，不比它更弱。绕过网关直连由 ``gateway_key`` 挡住。
+
+    与 ``role`` 的区别值得对照：``role`` 坚决不从 header 读（本模块 docstring），
+    因为那是**权限**；``acting_user`` 是**身份的一部分**，和 principal-id 一样
+    由网关声明。授权边界仍在 PDP：委托只能指向同 org + space 的该 user，
+    且不能指向别的 agent 分支。
+    """
+    if not actor.agent:
+        return actor.user
+    return str(headers.get(_H_ACTING_USER, "")).strip()
 
 
 class TrustedAuthenticator(Authenticator):
@@ -65,7 +87,7 @@ class TrustedAuthenticator(Authenticator):
             # 未注册主体一律拒绝，不默认给 USER 放行——fail-closed。
             raise AuthenticationError(_FAILED)
 
-        return AuthContext(actor=actor, acting_user=actor.user, role=role)
+        return AuthContext(actor=actor, acting_user=_acting_user(actor, headers), role=role)
 
     def mode(self) -> AuthMode:
         return AuthMode.TRUSTED

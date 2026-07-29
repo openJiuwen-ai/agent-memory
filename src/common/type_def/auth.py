@@ -44,12 +44,17 @@ class AuthContext:
     本结构。任何 handler、业务参数或 LLM tool_call 都不得覆盖其中字段——
     故 ``frozen=True``。
 
-    ``actor`` **无默认值**，必须显式传入：空 ``Scope()`` 是 ROOT 的 actor
-    形态（``SQLitePermissionManager.check`` 第一条规则即 ``actor == Scope()``
-    全局通过），若给它默认值，则「忘了传 actor」会静默得到全局权限。
+    ``actor`` **无默认值**，必须显式传入。给它默认值等于让「忘了传 actor」
+    静默产出一个空 ``Scope()`` 身份，而空 scope 在 ACL 里是「覆盖一切」的通配
+    形态（见 ``_owner_scope_covers``）——最糟糕的 fail-open。
+
+    注意 ROOT **不由 actor 的形状决定**：``role`` 才是唯一依据。带
+    ``AuthContext`` 调用时 ``SQLitePermissionManager.check`` 会显式拒绝空
+    ``actor``；``actor == Scope()`` 的 platform-admin 规则只在**没有**认证
+    上下文时保留（后台 job / 单测 / ``build_kernel`` 直连）。
     """
 
-    actor: Scope  # 已认证的操作执行者；ROOT 为空 Scope()
+    actor: Scope  # 已认证的操作执行者；不得为空 Scope()
     acting_user: str = ""  # 当前操作对应的 user；agent 代操作时为委托目标
     role: Role = Role.USER  # 服务端角色注册表的产物，不来自请求
     from_oauth: bool = False  # 区分 OAuth 与 API Key 路径（第二期消费）

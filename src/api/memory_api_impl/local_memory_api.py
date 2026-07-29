@@ -42,6 +42,7 @@ from common.type_def import (
     iter_clauses,
     normalize,
 )
+from common.type_def.auth import get_current
 from construction import EvolveMode
 from control.engine import MemoryEngine
 from control.governance import Governor
@@ -352,6 +353,17 @@ def _space_permission_context(resource_type: str, scope: Scope) -> PermissionCon
     return PermissionContext(resource_type=resource_type, scope=scope)
 
 
+def _management_permission_context(resource_type: str) -> PermissionContext:
+    """管理面（系统配置 / 审计查询）的鉴权上下文。
+
+    这些操作的鉴权 target 是 ``_ROOT``，但「它是管理操作」这件事此前只能从
+    「target 恰好是空 scope」间接读出来。显式写成 ``resource_type`` 后，
+    PDP 不必再从数据形状反推语义（见 `SQLitePermissionManager` 的
+    ``_management_plane_denies``）。
+    """
+    return PermissionContext(resource_type=resource_type, scope=_ROOT)
+
+
 class LocalMemoryAPI(MemoryAPI):
     """单进程装配下的统一记忆接口实现（鉴权 + 审计 + 委派）。"""
 
@@ -459,6 +471,10 @@ class LocalMemoryAPI(MemoryAPI):
         require_space: bool = True,
     ) -> dict[str, str]:
         effective_context = self._apply_space_policy_context(target, context)
+        # 认证上下文在 PEP 这一处取，取完透传进 PDP——不让 PermissionManager 自己去读
+        # ContextVar（见 `PermissionManager.check` 的契约）。无认证上下文时为 None，
+        # PDP 退回纯 ACL，后台 job 与直连 build_kernel 的路径不受影响。
+        auth = get_current()
         if _missing_required_space(self._policy, target, require_space):
             self._record_audit(
                 identity,
@@ -479,7 +495,9 @@ class LocalMemoryAPI(MemoryAPI):
                 "permission_reason": "permission check disabled",
                 **_context_detail(effective_context),
             }
-        if not self._perm.check(identity, target, action, context=effective_context):
+        if not self._perm.check(
+            identity, target, action, context=effective_context, auth=auth
+        ):
             self._record_audit(
                 identity,
                 audit_action,
@@ -852,17 +870,37 @@ class LocalMemoryAPI(MemoryAPI):
     # -- admin（直达 PolicyManager；管理面闸门 = 根 scope 鉴权） ------------- #
 
     def admin_get(self, key: str, *, identity: Scope) -> str:
-        auth = self._authorize(identity, _ROOT, Action.READ, "admin_get", key)
+        auth = self._authorize(
+            identity,
+            _ROOT,
+            Action.READ,
+            "admin_get",
+            key,
+            context=_management_permission_context("admin"),
+        )
         self._log(identity, "admin_get", key, target_scope=_ROOT, detail=auth)
         return self._policy.get(key)
 
     def admin_set(self, key: str, value: str, *, identity: Scope) -> None:
-        auth = self._authorize(identity, _ROOT, Action.WRITE, "admin_set", key)
+        auth = self._authorize(
+            identity,
+            _ROOT,
+            Action.WRITE,
+            "admin_set",
+            key,
+            context=_management_permission_context("admin"),
+        )
         self._log(identity, "admin_set", key, target_scope=_ROOT, detail=auth)
         self._policy.set(key, value)
 
     def admin_all(self, *, identity: Scope) -> dict[str, str]:
-        auth = self._authorize(identity, _ROOT, Action.READ, "admin_all")
+        auth = self._authorize(
+            identity,
+            _ROOT,
+            Action.READ,
+            "admin_all",
+            context=_management_permission_context("admin"),
+        )
         self._log(identity, "admin_all", target_scope=_ROOT, detail=auth)
         return self._policy.all()
 
@@ -883,7 +921,13 @@ class LocalMemoryAPI(MemoryAPI):
     ) -> list[AuditEvent]:
         # 审计查询跨 scope，按管理面闸门（根 scope READ）鉴权；
         # 查询本身亦留痕。
-        auth = self._authorize(identity, _ROOT, Action.READ, "audit")
+        auth = self._authorize(
+            identity,
+            _ROOT,
+            Action.READ,
+            "audit",
+            context=_management_permission_context("audit"),
+        )
         self._log(identity, "audit", target_scope=_ROOT, detail=auth)
         return self._governor.audit(filters, limit)
 

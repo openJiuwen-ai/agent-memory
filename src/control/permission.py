@@ -10,6 +10,7 @@ from abc import abstractmethod
 
 from common.factory.factory import Factory
 from common.type_def import Scope
+from common.type_def.auth import AuthContext
 
 from .base import ControlOperator
 from .types import Action, Grant, PermissionContext
@@ -43,8 +44,21 @@ class PermissionManager(ControlOperator):
         target: Scope,
         action: Action,
         context: PermissionContext | None = None,
+        *,
+        auth: AuthContext | None = None,
     ) -> bool:
-        """校验 ``actor`` 是否可对 ``target`` scope 执行 ``action``。"""
+        """校验 ``actor`` 是否可对 ``target`` scope 执行 ``action``。
+
+        ``auth`` 是认证层产出的可信上下文（由 PEP 从 ContextVar 取出后透传），
+        携带 ``actor`` 之外的两样判定依据：``role``（§3.1 三级角色）与
+        ``acting_user``（§4.3 用户授权 Agent 代操作）。二者都**不可**从 ``actor``
+        这个 Scope 推断出来，故必须单独传入。
+
+        ``auth`` 为 ``None`` 时行为退回纯 ACL——即认证接入前的语义。这条兼容线
+        承载后台 job、单测与 ``build_kernel`` 直连等非请求场景：它们没有认证上下文，
+        不该因此被拒。实现**不得**自行去读 ContextVar：PDP 应当是其入参的纯函数，
+        否则单测要先布置环境态才能跑，判定依据也不再显式可见。
+        """
 
     def routing_fields(self) -> tuple[str, ...]:
         """本实现据以**选择策略**的 :class:`PermissionContext` 字段名（默认不路由）。
