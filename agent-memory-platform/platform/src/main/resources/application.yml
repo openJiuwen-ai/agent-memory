@@ -51,7 +51,7 @@ platform:
   # Spring Security 公开端点——这些路径跳过 JWT 认证。
   # 新增公开端点时在此追加，逗号分隔，无需改代码。
   security:
-    public-paths: /api/v1/auth/login,/api/v1/auth/register,/api/v1/auth/info,/api/v1/auth/logout
+    public-paths: /api/v1/auth/login,/api/v1/auth/register,/api/v1/auth/info,/api/v1/auth/logout,/api/v1/auth/refresh,/ws/heartbeat
 
 logging:
   level:
