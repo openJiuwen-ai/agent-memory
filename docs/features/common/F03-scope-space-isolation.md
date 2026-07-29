@@ -44,7 +44,7 @@ ID 全局唯一的前提，与 Store 的“完整 Scope 内唯一”契约冲突
 目标 `Scope` 字段集合为：
 
 ```python
-@dataclass
+@dataclass(frozen=True)  # 安全加固：身份/隔离值不可变（F01 决策 16）
 class Scope:
     org: str = ""
     space: str = field(default="", kw_only=True)
@@ -52,6 +52,11 @@ class Scope:
     agent: str = ""
     session: str = ""
 ```
+
+> **当前状态（安全加固后）**：`Scope` 已是 frozen value object。改某维用
+> `dataclasses.replace(scope, org=...)` 返回新值，禁止原地 `scope.x = ...`
+> （抛 `FrozenInstanceError`）。防的是「签发 key 后改原 actor 的 org 让已签发身份
+> 跟着变」的越权。详见 S07 不变量 10 与 F01 决策 16。
 
 字段语义：
 

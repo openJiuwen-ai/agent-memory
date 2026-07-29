@@ -115,6 +115,12 @@ if auth_mode == AuthMode.DEV:
     return AuthContext(actor=Scope(org="*"), role=Role.ROOT)
 ```
 
+> **主干实现注记**（F01）：主干的 ROOT actor 是**空 `Scope()`**，不是
+> `Scope(org="*")`。`SQLitePermissionManager.check` 的第一条规则是
+> `actor == Scope() → True`（platform admin 全局放行），而 `org="*"` 会先撞上
+> 「跨 org 一律拒绝」规则——用 `org="*"` 的 ROOT 反而寸步难行。
+> 见 `src/security/authenticator_impl/dev_authenticator.py`。
+
 **约束**：DEV 模式只允许监听 localhost。启动时如果检测到非 localhost 绑定，应当 `sys.exit(1)` 并打印错误消息。**注意覆盖容器化场景下 `0.0.0.0` 这种最危险的情况**：
 
 ```python
@@ -142,6 +148,12 @@ def enforce_dev_localhost_binding(bind_host):
 ```
 
 > DEV 模式唯一正确的用途：本地开发、单机调试。**永远不要**在非 localhost 上 DEV 模式运行。容器化场景下，即使绑了 `127.0.0.1`，也要保证 Docker/K8s 的网络配置不会把端口转发出去——这一层 guard 无法替你检查。生产部署必须显式配 `auth_mode: api_key` 或 `trusted`。
+
+> **主干实现注记**（F01）：主干把这段拆成两半——`security.binding.check_dev_binding(hosts)`
+> 是**纯函数**，非 localhost 抛 `ValidationError`，容器场景走 `logging.warning`；
+> `sys.exit(1)` 与 stderr 上的 `FATAL:` 留在 `bootstrap/http_server/__main__.py:main`。
+> 这样 guard 本身可被单测直接断言（`tests/unit/security/test_binding.py`），
+> 而不必在测试里捕获 `SystemExit`。
 
 #### 2.2.2 TRUSTED 模式
 
@@ -176,6 +188,13 @@ if auth_mode == AuthMode.TRUSTED:
 
 **关键设计**：role 不来自 header——header 说「你是谁」，框架自己要查「你能干什么」。这样即使网关被攻破或误配，也无法任意提权。
 
+> **主干实现注记**（F01）：`TrustedAuthenticator` 查的 header 名一律是**小写常量**
+> ——归一在 `bootstrap.core.auth_middleware.credentials_from_headers` 里做了一次
+> （RFC 9110 §5.1，header 名大小写不敏感），authenticator 侧不再重复处理大小写。
+> `principal_role_store.get_role` 对应主干的 `PrincipalKeyStore.get_role(actor)`：
+> 参数是一个 `Scope` 而非三元组，与本仓 `Scope` 的实际形状对齐。
+> 主体查不到时抛 `AuthenticationError`（不回落任何默认 role）。
+
 #### 2.2.3 API_KEY 模式
 
 **语义**：框架自己验证 API Key。Root API Key 比对成功后直接返回 ROOT 身份；普通主体的 API Key 查注册表。
@@ -195,6 +214,12 @@ if auth_mode == AuthMode.API_KEY:
 
     return identity
 ```
+
+> **主干实现注记**（F01）：`compare_digest` 在主干里两边都 `.encode("utf-8")`
+> 成 **bytes** 再比。str 版本在参数含非 ASCII 字符时抛 `TypeError`，那会让一次
+> 认证失败变成 500 而不是 401——把「凭据错误」暴露成「服务器错误」，
+> 且绕过了统一的失败审计路径。见
+> `src/security/authenticator_impl/api_key_authenticator.py`。
 
 ### 2.3 API Key 系统
 
@@ -248,6 +273,15 @@ class PrincipalKeyStore:
         # 返回明文 key——这是调用方唯一一次拿到它
         return key
 ```
+
+> **主干实现注记**（F01）：主干把 `store_key` 拆成对外的
+> `PrincipalKeyStore.issue(actor: Scope, role: Role) -> str` 与实现内部的前缀
+> 索引维护——索引是**实现细节**，不该出现在跨实现的 ABC 上。另有三处收紧：
+> `api_key_hashing_enabled` 开关**不提供**（缺 `argon2-cffi` 时在装配期抛
+> `ValidationError`，绝不回落明文，铁律 #3）；`role=ROOT` 抛
+> `PermissionDeniedError`（§3.2 禁止自签发 ROOT）；`actor` 必须且只能指定
+> `user` 或 `agent` 之一。第一期唯一实现注册名为 **`memory`**（进程内），
+> Argon2 是它的内部细节而非后端名。
 
 **重要**：`api_key_hashing_enabled` 建议**默认开启**。Argon2id 推荐参数（2024+ 标准）：**`time_cost=4, memory_cost=128 * 1024 (128 MB), parallelism=2`**。这是当前 OWASP 推荐的最低值，适合 2026 年的硬件水准。金融、医疗等合规场景应进一步提高（`time_cost=6+`)。如果默认关闭，当加密层也关闭时，key 就是磁盘上的裸明文。
 
@@ -867,6 +901,18 @@ EFK长度(2B) | KeyIV长度(2B) | DataIV长度(2B) |         ← 12B 定长头
 
 密文自描述——头里记录 provider 类型，解密时按头里的 provider 类型走对应路径。
 
+> **实现注记（主干与本节的偏离）**：信封实现在
+> `src/common/security/security_impl/local_envelope_security_provider.py`，头是
+> **11 字节**（`!4sBBHHH`），比下方代码块里的 `HEADER_SIZE = 12` 少一字节——
+> `4+1+1+2+2+2 = 11`，12 是把 struct 的对齐算进去了。字段构成与本节一致。
+>
+> **缺口：没有 `key_id`**。密文无法自述「我是用哪把根密钥加密的」，因此轮换根
+> 密钥后所有历史密文立刻不可解——只能停机全量重加密或双写。补法是在头里加一个
+> `KeyIdLen(1B)` + 变长体最前面一段 `key_id`，轮换即退化成一次配置文件编辑
+> （keyring 保留旧 key、`current_key_id` 指向新 key）。这是信封格式的改动，属于
+> `common/security/` 的面，记在
+> [storage/F02 已知遗留](../storage/F02-encrypted-storage.md)。
+
 ```python
 ENVELOPE_MAGIC = b"ENC1"
 VERSION = 0x01
@@ -983,6 +1029,24 @@ async def decrypt(self, org_id: str, raw: bytes) -> bytes:
     ...
 ```
 
+> **实现注记（主干把它做成了开关，且落在 provider 上）**：
+> `LocalEnvelopeSecurityProvider` 有 `allow_plaintext` 参数（默认 `True`，即本节
+> 描述的行为）。加个开关的理由是这条兼容规则在两个部署阶段的正确答案相反：
+>
+> - **迁移期**必须宽松。加密层上线时，库里全是加密前写的明文；一律拒绝就等于
+>   上线即全量不可读。
+> - **迁移完成后必须收紧**。此时「读到明文」只可能意味着有人绕过了加密层直接写
+>   底层存储，或者配置被改坏了。宽松模式下这两种情况都会被静默放行——而这正是
+>   降级攻击的着力点：攻击者只要能往底层写明文，就能让读路径完全跳过解密。
+>
+> 开关只有 provider 上这一个，两个存储装饰器（KV / FS）都不重复提供同语义旋钮
+> ——两个开关意味着两处配置、两种组合，其中「装饰器宽松 + provider 严格」这类
+> 组合没有任何意义，只会在排查时多一个要查的地方。
+>
+> 无论开关如何，**写路径永远加密**
+> （`test_encrypted_fs_store_write_always_encrypts_even_when_plaintext_allowed`）。
+> 开关若顺带放松了写，迁移期写进去的数据会永远是明文而调用方毫无察觉。
+
 ### 5.2 Key Provider 抽象
 
 框架应通过 Key Provider 这个策略接口来解耦上层的加密逻辑与底层的密钥托管方式：
@@ -1017,6 +1081,26 @@ class KeyProvider(ABC):
         """获取 Encryption Root Key；远程 provider 必须在受控边界内实现。"""
         ...
 ```
+
+> **实现注记（主干与本节的偏离）**：主干没有独立的 `KeyProvider` 顶层抽象——
+> 对外的策略接口是 `common.security.SecurityProvider`
+> （`encrypt(plaintext, *, context, aad)` / `decrypt(...)` / `health()`），密钥托管
+> 方式是它的实现细节（`LocalEnvelopeSecurityProvider` 内部持有一个
+> `LocalKeyProvider` 做 HKDF 派生与 data key 包装）。两处具体偏离：
+>
+> 1. **接口是同步的，不是 `async def`**。`KVStore` / `FSStore` 的方法全是同步的
+>    （`get(scope, key) -> bytes`）。异步 provider 会逼着同步的 `get` 内部调
+>    `asyncio.run(...)`，而这在一个已有事件循环的进程里直接抛
+>    `RuntimeError: asyncio.run() cannot be called from a running event loop`——
+>    也就是说，在真实的 ASGI 部署下必炸。要么整个存储层改异步（远超本期范围），
+>    要么 provider 同步。选后者。远程 provider（Vault/KMS）用同步 HTTP 客户端实现，
+>    这是它们的库都支持的形态。
+> 2. **`get_encryption_root_key()` 不在对外接口上**。`SecurityProvider` 只暴露
+>    `encrypt` / `decrypt` / `health`，根密钥不跨接口边界。这是收紧不是缺失：把根
+>    密钥交出接口边界，就等于要求每个调用方都正确处理它的生命周期（不落日志、
+>    不进异常、用完清零）——而 KMS/HSM 类 provider **根本交不出来**，根密钥永远
+>    不离开硬件。（`LocalKeyProvider` 上还有这个方法，但那是实现内部的类，不是
+>    存储层能看到的接口。）
 
 #### 5.2.1 LocalProvider（本地开发/单机）
 
@@ -1469,6 +1553,18 @@ class AuthContext:
 ```
 
 中间件构造 `AuthContext` 后，应通过显式参数或 `ContextVar` 在单次请求内传播，并在请求结束时可靠 reset。任何 handler、LLM tool_call 或业务参数都不能覆盖其中字段。
+
+> **主干实现注记**（F01）：主干实现在 `src/common/type_def/auth.py`
+> （横切结构，故落在 `common` 而非 `security` 私有），与上表有三处差异：
+> `role` 是 **`Role` 枚举**（`USER` / `ADMIN` / `ROOT`，继承 `str, Enum` 以便直接
+> 进 `AuditEvent.detail`）而非裸 `str`，且**无默认值**——「忘了传 role」不该
+> 静默得到 `user`；dataclass 是 **`frozen=True`**，落实「任何 handler 都不能覆盖
+> 其中字段」；`actor` 同样**不给默认值**，否则漏传会得到空 `Scope()`
+> 即 platform-admin 全局权限，是最糟的 fail-open 形态。
+> 传播用 `ContextVar`：`set_current` / `reset_current` / `get_current`，
+> **reset 必须在 `finally`**（`ThreadingHTTPServer` 复用线程，泄漏的 ContextVar
+> 会让下一个请求继承上一个的身份）；`get_current()` 未认证时返回 `None`，
+> **不返回默认上下文**。
 
 未来可按审计和协议演进增加以下字段：
 

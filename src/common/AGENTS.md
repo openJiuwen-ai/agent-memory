@@ -15,11 +15,12 @@
 | `errors.py` | 自定义异常（ConflictError/NotFoundError/PermissionDeniedError/BackendError 等） |
 | `type_def/` | 核心数据类型定义目录 |
 | `type_def/memory.py` | MemoryUnit/Relation/Segment/Temporal/ContentLayers 等；MemoryUnit id 在完整 Scope 内唯一；KV key 前缀 `MEMORY_KEY_PREFIX`/`memory_key`（建索引记忆 `/memory/{id}`）。`ContentLayers`(l0/l1) 为分层披露标注，由 LayerAnnotator 对超阈 content 产出 |
-| `type_def/scope.py` | Scope：`org/space/user/agent/session` 五维归属；非空 `space` 是全局唯一的逻辑隔离标识且为 keyword-only，旧位置参数保持 `org/user/agent/session` 顺序 |
+| `type_def/scope.py` | Scope：`org/space/user/agent/session` 五维归属；非空 `space` 是全局唯一的逻辑隔离标识且为 keyword-only，旧位置参数保持 `org/user/agent/session` 顺序。**frozen value object**（`@dataclass(frozen=True)`）：身份/隔离不可变是跨模块安全不变量，改某维用 `dataclasses.replace(scope, org=...)` 返回新值，禁止原地 `scope.x = ...`（抛 `FrozenInstanceError`）。详见 S07 不变量与 F01 决策 16 |
 | `type_def/filter.py` | FilterClause/FilterGroup/FilterExpr 及 normalize/evaluate；统一 API、检索和存储的树形过滤契约 |
 | `type_def/memory_codec.py` | `MemoryUnit` ↔ bytes 编解码（`dumps`/`loads`）；当前 `_v=3`，序列化 `layers`({l0,l1}) 与五段 scope，缺失取默认容错老数据，详见 F01-memory-layer / F03-scope-space-isolation |
 | `type_def/raw.py` | RawPayload；KV key 前缀 `MESSAGES_KEY_PREFIX`/`messages_key`（未建索引 infer 原文 `/messages/{id}`） |
 | `type_def/audit.py` | AuditEvent：记录 actor scope、target scope、action、decision、target_id 与 detail |
+| `type_def/auth.py` | AuthContext（frozen）：认证层产出的请求级安全上下文（`actor`/`acting_user`/`role`/`from_oauth`/`authorizing_key_fp`），ContextVar 传播（`set_current`/`reset_current`/`get_current`，未认证返回 `None`）；`Role` 枚举（USER/ADMIN/ROOT）。横切结构，故落 `common` 而非 `security` 私有 |
 | `factory/factory.py` | Factory 基类：`TOP_NAME` 注册 + 三接口 `build`/`build_named`/`dep`（配置数据结构 `ComponentConfig`/`AssemblyContext`/`RawSpec` 在 `config/context.py`） |
 | `embedder/` | Embedder 插件目录（接口 + 实现） |
 | `chunker/` | Chunker 插件目录 |

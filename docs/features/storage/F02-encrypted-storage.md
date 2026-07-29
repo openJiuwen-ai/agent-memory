@@ -1,12 +1,12 @@
-# F02 — 加密 KV 存储设计（EncryptedKVStore）
+# F02 — 加密存储设计（EncryptedKVStore / EncryptedFSStore）
 
 ## 元信息
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-07-27 |
-| 影响范围 | src/storage/kv_impl/encrypted_kv_store.py，src/storage/kv_impl/__init__.py，src/common/security/，docs/specs/S06-storage.md，docs/features/common/F04-security-interfaces-and-encryption.md |
-| 测试基线 | `tests/unit/storage/test_encrypted_kv_store.py` 覆盖加密写入、读后解密、list 解密、透传操作、工厂装配与失败关闭；当前环境未安装 pytest/ruff，文档变更用 `git diff --check` 校验 |
+| 日期 | 2026-07-27（KV 侧）；2026-07-29（FS 侧补入） |
+| 影响范围 | src/storage/kv_impl/encrypted_kv_store.py，src/storage/kv_impl/\_\_init\_\_.py，src/storage/fs_impl/encrypted_fs_store.py，src/storage/fs_impl/\_\_init\_\_.py，src/common/security/，docs/specs/S06-storage.md，docs/features/common/F04-security-interfaces-and-encryption.md |
+| 测试基线 | KV 侧：`tests/unit/storage/test_encrypted_kv_store.py`。FS 侧：`tests/unit/storage/test_encrypted_fs_store.py` 13 条全绿；单元全量 `15 failed, 814 passed, 1 skipped`，15 个失败全为预存在的环境失败（14 个 `test_jieba_tokenizer.py` 缺 `nlp` extra，1 个上游 `test_local_security_provider.py` 断言 `0o600` 权限位、Windows `os.chmod` 设不出来，已在纯上游代码上复现） |
 | Refs | — |
 
 ## 背景
@@ -14,6 +14,8 @@
 KVStore 是 `MemoryUnit` 内容、原始消息与部分控制数据的真源字节存储。未加密时，落盘后端或远端 KV 后端可以直接看到 value 明文；但如果把加解密逻辑分散到 `write`、`recall`、`get` 等上层接口，会导致每条读写路径都要重复处理开关、密钥、AAD 与错误语义，也容易让新增入口绕过加密。
 
 因此加密能力需要落在 KV 边界：对调用方保持 `KVStore` 合同不变，对底层后端只写入密文。算法、密钥来源、明文兼容策略不归 storage 层管理，而是由 `src/common/security/` 的 `SecurityProvider` 提供。
+
+**FS 侧同理，且更迫切**：原模态资产（上传的文档、图片、音视频）走 `FSStore`，它们往往比 KV 里的结构化记忆更敏感，却完全裸着落盘。静态加密保护的是**访问路径之外**的泄露面——拿到磁盘快照的人绕过了认证与授权，因为快照根本不走访问路径。KV 侧先落地，FS 侧随后按同一形态补齐。
 
 ## 决策
 
@@ -80,6 +82,78 @@ KVStore 是 `MemoryUnit` 内容、原始消息与部分控制数据的真源字�
 
    `exists`、`delete`、`scopes` 只依赖 key/scope，不需要读取 value，因此直接透传给 raw KV。租户删除、session 清理、TTL 过期等生命周期操作删除的是密文记录，不要求先解密。
 
+## FS 侧：EncryptedFSStore
+
+### 9. FS 装饰器与 KV 装饰器同构，不自带任何密码学
+
+`EncryptedFSStore` 做的事和 `EncryptedKVStore` 逐条对应：构造 `SecurityContext` 与 AAD，转发给注入的 `SecurityProvider`。密码学一行都不在 storage 里。
+
+依赖方向 `storage → common.security`，单向；security 不认识 Store。回归防线：`test_encrypted_fs_is_registered_by_storage_bootstrap`。
+
+### 10. 装饰器住在 `src/storage/`，不住在 `src/security/`
+
+理由不是分层美学，是**注册路径**：`api.build_kernel` 只调 `register_backends()`，从不调 `register_security()`（后者唯一调用方是 `bootstrap/core/server.py:Server.build`）。注册若挂在 security 下，任何不经 `Server.build` 的装配路径——`examples/quickstart.py`、直接调 `build_kernel` 的测试——都会得到「未注册的实现 `encrypted`」。那是一个**只在部分入口出现**的故障。
+
+这与 KV 侧的落点一致，FS 侧只是照做。
+
+### 11. 明文兼容开关只在 provider 上，装饰器不重复提供
+
+「读到非 ENC1 的数据怎么办」有两个对立的正确答案，各自对应一个部署阶段：
+
+- **迁移期必须宽松**——加密层上线时库里全是加密前的明文，一律拒绝就是上线即全量不可读。
+- **迁移完成后必须收紧**——此时「读到明文」只可能是有人绕过加密层直接写了底层存储。宽松模式会静默放行，而这正是降级攻击的着力点。
+
+`LocalEnvelopeSecurityProvider` 的 `allow_plaintext` 参数已经管这件事（决策 5 的最后一句）。两个装饰器都不再重复提供同语义旋钮：两个开关意味着两处配置、两种组合，其中「装饰器宽松 + provider 严格」这类组合没有任何意义，只会在排查时多一个要查的地方。
+
+**写路径永远加密**，与开关无关——`test_encrypted_fs_store_write_always_encrypts_even_when_plaintext_allowed` 钉住这条。开关若顺带放松了写，迁移期写进去的数据会永远是明文而调用方毫无察觉。
+
+### 12. FS 加密整个文件内容，`ref` 与 scope 保持明文
+
+与决策 2（KV 只加密 value）同理：路径要能寻址，加密 `ref` 就没法 `get`/`stat`/`delete`。泄露的信息是「有哪些文件」，不是文件里是什么。
+
+### 13. AAD 绑满五维 scope + `ref`
+
+与决策 4 同构，`key` 换成 `ref`，`purpose` 固定为 `fs_object`。
+
+不绑 AAD 时，只要根密钥相同（同一部署），把 org A 的密文块搬进 org B 的存储位置就能解开——加密在这种攻击下等于没有。只绑 `org` 会让同 org 内的用户互读。存储层的 scope 隔离是**访问控制**，可以被绕过（直接写底层、备份恢复串了）；AAD 是密码学的，绕不过。
+
+`space` 是 `Scope` 五维化时新加的维度，漏了它同 org 下的两个 space 就能互读。回归防线：`test_encrypted_fs_store_aad_binds_all_five_scope_dimensions`、`test_encrypted_fs_store_cross_scope_ciphertext_move_fails`。
+
+### 14. 解密失败一律 `BackendError`，不透传底层异常
+
+与决策 5 一致。provider 抛的 `KeyMismatchError` / `AuthenticationFailedError` 对运维有诊断价值，但它们不是跨层契约——装饰器把它们收敛成 `BackendError` 并在消息里带上 `ref`，原异常经 `raise ... from exc` 保留在 `__cause__` 里，traceback 上一行不丢。
+
+### 15. `inner` 无默认值
+
+给 `inner` 一个默认会让「配错了」静默变成「加密了一个空的内存 store」——数据写得进去，重启后全没了。未配置时在装配期抛 `ValidationError`，并拒绝自引用。回归防线：`test_encrypted_fs_store_factory_requires_inner_dependency`。
+
+（KV 侧的 `raw_kv_store` 同此约束；FS 侧的参数名是 `inner`，与 `fs_store` 既有的装饰器命名一致。）
+
+### 16. 默认关闭
+
+与决策 6 一致：不配 `target: encrypted` 就没有任何加密行为。现有部署零影响，不需要迁移。
+
+FS 侧配置形态：
+
+```yaml
+security:
+  main_sec:
+    target: local
+    params:
+      key_file: /etc/agent-memory/master.key
+      allow_plaintext: true       # 迁移完成后改 false
+
+fs_store:
+  raw_fs:
+    target: local
+    params: { root: /var/lib/agent-memory/files }
+  main_fs:                        # 上层引用这个
+    target: encrypted
+    params:
+      inner: raw_fs
+      security: main_sec
+```
+
 ## 拒绝的方案
 
 - **在 MemoryAPI/write/recall/get 中分别调用 security**：被拒。上层入口太多，且未来新增 engine 或批处理入口时容易遗漏；KV 装饰器可以把加密收敛到单一边界。
@@ -87,6 +161,8 @@ KVStore 是 `MemoryUnit` 内容、原始消息与部分控制数据的真源字�
 - **storage 层直接实现加密算法和密钥管理**：被拒。storage 只负责存取语义，不应持有算法选择、密钥加载、KMS/Vault 访问、轮换策略等安全治理能力。
 - **同时加密 key 和 scope 命名空间**：本阶段拒绝。完全隐藏 key/scope 会破坏 list、exists、delete、TTL、space 清理与审计定位。后续如需隐藏元数据，应单独设计 opaque key 或索引加密方案。
 - **解密失败时返回密文或跳过记录**：被拒。这会把安全错误伪装成业务数据，导致调用方在不知情的情况下继续处理损坏或越界数据。
+- **chunked encryption（FS 侧分块加密以支持流式读）**：本阶段拒绝。F04 §5.3 自己就说了它不适合作默认方案——chunk 之间没有密码学绑定，可以被重排、截断、拼接。代价是 `FSStore.get` 必须读全文件到内存才能解密，大文件会吃内存，见「已知遗留」。
+- **在装饰器上再开一个 `allow_plaintext_read`**：被拒。见决策 11，两个同语义开关只会制造无意义的组合与多余的排查点。
 
 ## 验证
 
@@ -106,10 +182,33 @@ KVStore 是 `MemoryUnit` 内容、原始消息与部分控制数据的真源字�
 git diff --check
 ```
 
+### FS 侧断言（`tests/unit/storage/test_encrypted_fs_store.py`，13 条全绿）
+
+| 断言 | 落点 |
+|---|---|
+| 内层存的是密文，且不含明文片段 | `test_encrypted_fs_store_encrypts_content_and_decrypts_get` |
+| 交给 provider 的 `SecurityContext` 带对 scope / purpose / ref | 同上 |
+| AAD 绑满五维 scope + ref | `test_encrypted_fs_store_aad_binds_all_five_scope_dimensions` |
+| 换 scope 搬密文解不开（绕过访问控制后仍拦得住） | `test_encrypted_fs_store_cross_scope_ciphertext_move_fails` |
+| `update` 也加密（第二条写路径） | `test_encrypted_fs_store_update_also_encrypts` |
+| 空文件 roundtrip | `test_encrypted_fs_store_roundtrips_empty_file` |
+| `stat.size` 是密文长度（已知代价，显式钉住） | `test_encrypted_fs_store_stat_reports_ciphertext_size` |
+| `get`/`delete` 的 NotFound 与幂等语义不被加密改变 | `test_encrypted_fs_store_passes_through_missing_and_delete` |
+| 迁移期明文可读（provider 允许时） | `test_encrypted_fs_store_supports_plaintext_compatibility_via_provider` |
+| 明文兼容开着时写路径**仍然**加密 | `test_encrypted_fs_store_write_always_encrypts_even_when_plaintext_allowed` |
+| 解密失败 fail-closed 成 `BackendError` | `test_encrypted_fs_store_decryption_failure_is_fail_closed` |
+| 具名依赖装配 / 缺 `inner` 报错 | `test_encrypted_fs_store_factory_*` |
+| `encrypted` 在只调 `register_backends()` 时已注册 | `test_encrypted_fs_is_registered_by_storage_bootstrap` |
+
 ## 已知遗留
 
-- 默认配置不会自动切到 encrypted KV，调用方必须显式把业务使用的 `kv_store` 实例指向 `target: encrypted`。
-- 当前只保护 KV value；vector/fulltext/fusion/graph/fs 中的索引字段、文本、向量、图边、文件资产不在该装饰器保护范围内。
-- key、scope 维度、TTL 与 raw 后端中的记录数量仍对后端可见。
+- 默认配置不会自动切到 encrypted KV，调用方必须显式把业务使用的 `kv_store` 实例指向 `target: encrypted`。FS 侧同理（`fs_store` 的 `target: encrypted`）。
+- 当前只保护 KV value 与 FS 文件内容；vector/fulltext/fusion/graph 中的索引字段、文本、向量、图边不在装饰器保护范围内。**向量本身可被反演出近似原文**，这是一个真实的信息泄露面，但加密向量就没法做 ANN 检索——需要的是加密检索方案，不是装饰器能解决的。
+- key、ref、scope 维度、TTL 与 raw 后端中的记录数量仍对后端可见。
+- **`FSStore.get` 必须读全文件到内存**才能解密（见「拒绝的方案」里的 chunked encryption）。大文件（视频、模型权重）会吃内存。
+- **`FileStat.size` 返回密文长度**，比明文长（信封头 + 包装后的数据密钥 + 两个 nonce + 两个 16B GCM tag）。不修正——修正需要先解密才能知道明文长度，代价荒谬。调用方拿它分配缓冲区只会偏大，不影响正确性。
+- **无根密钥轮换接缝**：ENC1 信封头 11 字节（`!4sBBHHH`）里没有 `key_id`，密文无法自述「我是用哪把根密钥加密的」，因此轮换根密钥后所有历史密文立刻不可解——只能停机全量重加密或双写。补法是在头里加一个 `KeyIdLen(1B)` + 变长体最前面一段 `key_id`，轮换即退化成一次配置文件编辑（keyring 保留旧 key、`current_key_id` 指向新 key）。这是信封格式的改动，属于 `common/security/` 的面。
+- **`LocalKeyProvider` 的根密钥是磁盘上的明文文件**。生产应走 KMS/Vault。
+- **根密钥文件权限在 Windows 上设不出 `0o600`**，`test_local_security_provider_encrypts_enc1_and_round_trips` 因此在 Windows 开发机上恒红。不影响 Linux 部署。
 - KMS/Vault provider、密钥轮换、密钥版本迁移、批量重加密仍需在 `common/security` 与运维流程中补齐。
 - cloud engine 与 encrypted KV 的端到端集成测试、space 删除后的密文清理验证、严格关闭明文兼容后的迁移验证仍需补充。

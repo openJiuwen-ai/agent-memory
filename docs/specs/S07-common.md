@@ -5,8 +5,8 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | src/common/ |
-| 最近一次修订日期 | 2026-07-29 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md |
+| 最近一次修订日期 | 2026-07-30 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/security/F01-authentication-kernel.md |
 
 ## 范围 / 边界
 
@@ -37,6 +37,10 @@
 8. **标识唯一性分层**：非空 Space id 全局唯一；`MemoryUnit.id` 只要求在完整 Scope 内唯一。
 9. **Scope 位置参数兼容**：`space` 可为空但只能按关键字传入；旧位置参数顺序保持
    `Scope(org, user, agent, session)`。
+10. **Scope 是 frozen value object**（安全加固，F01 决策 16）：`@dataclass(frozen=True)`，
+    身份/隔离值不可变是跨模块安全不变量。改某维用 `dataclasses.replace(scope, org=...)`
+    返回新值，禁止原地 `scope.x = ...`（抛 `FrozenInstanceError`）。frozen 同时使 Scope
+    可哈希。防的是「签发 key 后改原 actor 的 org 让已签发身份跟着变」的越权。
 
 ## 接口契约
 
@@ -158,7 +162,7 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 | `Segment` | type / content / asset_ref / metadata | 内容段 |
 | `Temporal` | t_event / t_ingest / t_valid / t_invalid | 时间字段 |
 | `Relation` | id / source_id / target_id / relation / weight / metadata | 关联关系 |
-| `Scope` | org / space / user / agent / session | 作用域；非空 `space` 是全局唯一逻辑隔离标识，空值为兼容域且该字段为 keyword-only |
+| `Scope` | org / space / user / agent / session | 作用域（frozen value object，`frozen=True`）；非空 `space` 是全局唯一逻辑隔离标识，空值为兼容域且该字段为 keyword-only。改维度用 `dataclasses.replace`，不可原地修改（见不变量 10） |
 | `Context` | scope / max_tokens / extensions | 检索上下文 |
 | `Entity` | text / type / confidence | 实体 |
 | `FeatureSet` | keywords / entities / tags | 特征集合 |
