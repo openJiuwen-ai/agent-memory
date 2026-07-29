@@ -62,6 +62,32 @@ export interface TemplateApplyResult {
   restartStatus?: string
 }
 
+/** 模板删除结果（含级联清理的 scope 详情） */
+export interface TemplateDeleteResult {
+  templateId: string
+  templateName?: string
+  cleanedScopes: Array<{
+    tenantId: string
+    tenantName?: string
+    scopeId?: string
+    kernelDeleted: boolean
+    dbBindingDeleted: boolean
+    errorMessage?: string
+  }>
+  kernelSuccessCount: number
+  kernelFailCount: number
+}
+
+/** 清除租户 Scope 配置的结果 DTO（对应后端 TenantScopeConfigDeleteResultDTO） */
+export interface TenantScopeConfigDeleteResult {
+  tenantId: string
+  tenantName?: string
+  scopeId?: string | null
+  kernelDeleted: boolean
+  dbBindingDeleted: boolean
+  errorMessage?: string | null
+}
+
 // =============== 租户级配置（1 tenant = 1 scope） ===============
 
 /** 租户级 Scope 配置快照 DTO */

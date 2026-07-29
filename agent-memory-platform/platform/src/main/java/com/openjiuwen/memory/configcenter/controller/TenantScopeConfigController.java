@@ -1,5 +1,6 @@
 package com.openjiuwen.memory.configcenter.controller;
 
+import com.openjiuwen.memory.configcenter.dto.TenantScopeConfigDeleteResultDTO;
 import com.openjiuwen.memory.configcenter.dto.TenantScopeConfigListItemDTO;
 
 import com.openjiuwen.memory.common.ApiResponse;
@@ -79,16 +80,15 @@ public class TenantScopeConfigController {
     }
 
     /**
-     * 删除租户 Scope 配置（V3 §4.5 API#5）。
+     * 清除租户的 Scope 配置：删除内核 KV 中的 scope 配置 + DB 绑定记录，
+     * 使该租户回退到默认配置。租户本身不删除。
      * <p>
-     * 注意：租户配置不可单独删除（身份绑定），Service 层会抛 FORBIDDEN。
-     * 此端点存在是为了符合 V3 API 规范，实际删除需走租户删除流程。
+     * 适用场景：在租户管理页移除某租户的自定义配置，让其走默认配置。
      */
     @DeleteMapping("/{tenantId}")
-    public ApiResponse<Void> delete(@PathVariable String tenantId) {
+    public ApiResponse<TenantScopeConfigDeleteResultDTO> delete(@PathVariable String tenantId) {
         permissionChecker.require("config:write");
-        service.delete(tenantId, resolveOperator());
-        return ApiResponse.ok();
+        return ApiResponse.ok(service.delete(tenantId, resolveOperator()));
     }
 
     private String resolveOperator() {

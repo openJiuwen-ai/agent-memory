@@ -169,6 +169,9 @@
             >
               <el-option v-for="t in tenants" :key="t.id" :label="t.name" :value="t.id" />
             </el-select>
+            <div class="hint" v-if="isCreateOrCopyMode">
+              新建/复制时选择目标租户并点击"应用"即可绑定；编辑模式不提供修改绑定，请使用模板列表的"应用"按钮增加租户，或在租户管理页"清除Scope配置"移除租户。
+            </div>
           </el-form-item>
 
           <el-form-item label="变更原因" v-if="!isViewMode">
@@ -178,22 +181,24 @@
 
         <div class="page-actions" v-if="!isViewMode">
           <el-button @click="goBack">取消</el-button>
-          <el-button v-if="isCreateMode" @click="saveCreate('only')" :loading="saving">确定（仅创建）</el-button>
+          <!-- 新建/复制模式：走 saveCreate → createTemplate/copyTemplate 创建新模板 -->
+          <el-button v-if="isCreateOrCopyMode" @click="saveCreate('only')" :loading="saving">确定（仅创建）</el-button>
           <el-button
-            v-if="isCreateMode"
+            v-if="isCreateOrCopyMode"
             type="primary"
             @click="saveCreate('apply')"
             :loading="saving"
           >
             {{ form.template_type === 'INSTANCE' ? '保存（自动应用单例）' : '应用（需选租户）' }}
           </el-button>
-          <el-button v-if="!isCreateMode" @click="saveUpdate(false)" :loading="saving">
+          <!-- 编辑模式：走 saveUpdate → updateTemplate 修改现有模板 -->
+          <el-button v-if="!isCreateOrCopyMode" @click="saveUpdate(false)" :loading="saving">
             保存草稿
           </el-button>
-          <el-button v-if="!isCreateMode" type="primary" @click="saveUpdate(true)" :loading="saving">
+          <el-button v-if="!isCreateOrCopyMode" type="primary" @click="saveUpdate(true)" :loading="saving">
             保存修改
           </el-button>
-          <div v-if="!isCreateMode" class="action-hint">
+          <div v-if="!isCreateOrCopyMode" class="action-hint">
             <span v-if="template?.status === 'draft'">
               💡 提示：当前为草稿状态，修改后请点击"保存修改"推送到内核
             </span>
@@ -313,8 +318,13 @@ const mode = computed(() => String(route.query.mode || (route.params.id ? 'view'
 const isCreateMode = computed(() => mode.value === 'create')
 const isCopyMode = computed(() => mode.value === 'copy')
 const isViewMode = computed(() => mode.value === 'view')
+// 复制模式与新建模式一样都是创建新模板，保存逻辑走 saveCreate → copyTemplate/createTemplate，
+// 而非 saveUpdate → updateTemplate（后者会修改源模板）。
+const isCreateOrCopyMode = computed(() => isCreateMode.value || isCopyMode.value)
 const isEditableName = computed(() => isCreateMode.value || isCopyMode.value)
-const showTargetTenants = computed(() => !isViewMode.value && form.value.template_type === 'SCOPE')
+// 仅新建/复制模式显示"应用目标租户"选择框；编辑模式不提供修改绑定（编辑只改配置）。
+// 增加租户走模板列表"应用"按钮，移除租户走租户管理页"清除Scope配置"。
+const showTargetTenants = computed(() => isCreateOrCopyMode.value && form.value.template_type === 'SCOPE')
 const templateId = computed(() => String(route.params.id || ''))
 
 const pageTitle = computed(() => {
@@ -485,6 +495,11 @@ const loadPage = async () => {
     configItems.value = parseConfigItems(t.config_json)
     if (t.template_type === 'SCOPE') {
       await loadUsageTenants(t.id)
+      // 复制模式：loadUsageTenants 会把源模板的租户回填到 target_tenant_ids，
+      // 但复制是创建新模板，不应继承源模板的租户绑定，需清空让用户重新选择。
+      if (isCopyMode.value) {
+        form.value.target_tenant_ids = []
+      }
     } else {
       usageTenants.value = []
     }
@@ -511,7 +526,8 @@ const switchToEdit = () => {
 }
 
 const saveCreate = async (saveMode: 'only' | 'apply') => {
-  if (!selectedSourceTemplateId.value) {
+  // 新建模式必须选择来源模板；复制模式来源即当前 templateId（已加载配置），无需选择
+  if (isCreateMode.value && !selectedSourceTemplateId.value) {
     ElMessage.warning('请选择来源模板')
     return
   }
@@ -539,7 +555,24 @@ const saveCreate = async (saveMode: 'only' | 'apply') => {
     const result: TemplateApplyResult = isCopyMode.value
       ? await copyTemplate(templateId.value, payload)
       : await createTemplate(payload)
-    ElMessage.success(result.successCount > 0 ? `已保存并应用 ${result.successCount} 个目标` : '模板已保存')
+    // 根据下发结果区分提示：全部成功 / 部分失败 / 全部失败（全部失败后端已抛异常走 catch）
+    if (result.failCount > 0 && result.successCount > 0) {
+      // 部分成功：模板已保存，但部分租户下发内核失败，需告知用户具体失败项
+      const failedDetail = result.results
+        .filter((r) => !r.success)
+        .map((r) => `${r.tenantName || r.tenantId}: ${r.errorMessage || '未知错误'}`)
+        .join('\n')
+      await ElMessageBox.alert(
+        `模板已保存，但 ${result.failCount} 个租户配置下发内核失败（成功 ${result.successCount} 个）。\n\n失败详情:\n${failedDetail}\n\n请检查内核服务状态后重试。`,
+        '部分下发失败',
+        { type: 'warning', confirmButtonText: '知道了' }
+      )
+    } else if (result.successCount > 0) {
+      ElMessage.success(`已保存并应用 ${result.successCount} 个目标`)
+    } else {
+      // 无目标租户的纯保存（INSTANCE 自动应用或 SCOPE 仅创建）
+      ElMessage.success('模板已保存')
+    }
     goBack()
   } catch (e: any) {
     // 400 业务校验错误用弹框展示（拦截器已把 message 挂到 e.message），其他错误回退 toast
@@ -559,10 +592,9 @@ const saveUpdate = async (apply: boolean = true) => {
       config_json: buildConfigJson(configItems.value),
       reason: form.value.reason,
       apply: apply,
-      // SCOPE 模板编辑保存时，把"应用目标租户"一并提交给后端，
-      // 后端会与已绑定租户合并后应用（新增绑定 + 已绑定重下发）。
-      // INSTANCE 模板无此字段语义，传 undefined 即可。
-      targetTenantIds: form.value.template_type === 'SCOPE' ? form.value.target_tenant_ids : undefined,
+      // 编辑模式不再管理租户绑定：不传 targetTenantIds，后端仅对已绑定租户重下发配置。
+      // 增加租户走模板列表"应用"按钮，移除租户走租户管理页"清除Scope配置"。
+      targetTenantIds: undefined,
     })
     ElMessage.success(apply ? '模板已更新并应用' : '草稿已保存')
     router.replace({ path: `/config/templates/${templateId.value}`, query: { mode: 'view' } })

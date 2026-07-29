@@ -235,7 +235,7 @@
               <el-tag v-else type="success" size="small">一致</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="120" fixed="right">
+          <el-table-column label="操作" width="160" fixed="right">
             <template #default="{ row }">
               <el-button
                 v-if="row.isDeviated"
@@ -246,7 +246,14 @@
               >
                 同步
               </el-button>
-              <span v-else class="muted">—</span>
+              <el-button
+                size="small"
+                type="danger"
+                :loading="row.removing"
+                @click="removeTenant(row)"
+              >
+                删除
+              </el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -262,8 +269,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { listTemplates, applyTemplate, deleteTemplate } from '@/api/template'
 import { getTenantList } from '@/api/tenant'
-import { listTenantScopeConfigs, syncTenantFromTemplate } from '@/api/tenant-scope-config'
-import type { Template, TemplateApplyResult, TemplateType, TemplateTenantUsage, TenantScopeConfig } from '@/types/config'
+import { listTenantScopeConfigs, syncTenantFromTemplate, deleteTenantScopeConfig } from '@/api/tenant-scope-config'
+import type { Template, TemplateApplyResult, TemplateType, TemplateTenantUsage, TenantScopeConfig, TenantScopeConfigDeleteResult } from '@/types/config'
 import type { Tenant } from '@/types/tenant'
 
 const route = useRoute()
@@ -281,7 +288,7 @@ const usageTenants = ref<TemplateTenantUsage[]>([])
 const usageLoading = ref(false)
 const tenantDrawerVisible = ref(false)
 const tenantDrawerLoading = ref(false)
-const tenantDrawerList = ref<Array<TenantScopeConfig & { syncing?: boolean }>>([])
+const tenantDrawerList = ref<Array<TenantScopeConfig & { syncing?: boolean; removing?: boolean }>>([])
 const applyDialogVisible = ref(false)
 const applyForm = ref<{ targetTenantIds: string[]; reason: string }>({
   targetTenantIds: [],
@@ -324,9 +331,38 @@ const onCreate = () => {
 
 const onDelete = async (row: Template) => {
   try {
-    await ElMessageBox.confirm(`确定要删除模板 "${row.template_name}" 吗？`, '警告', { type: 'warning' })
-    await deleteTemplate(row.id)
-    ElMessage.success('删除成功')
+    // 先查询该模板绑定的租户，在确认弹框中告知用户哪些 scope 会被清理
+    let boundTenants: TenantScopeConfig[] = []
+    try {
+      boundTenants = await listTenantScopeConfigs(row.id)
+    } catch {
+      // 查询失败不阻塞删除流程，仅不展示绑定信息
+    }
+    const tenantInfo = boundTenants.length > 0
+      ? `\n\n⚠️ 该模板当前被 ${boundTenants.length} 个租户应用，删除后以下所有租户的自定义配置将被全部清除（内核 scope 配置 + 数据库绑定记录），这些租户将回退到默认配置：\n${boundTenants.map((t) => `  • ${t.tenantName || t.tenantId} (scope: ${t.scopeId || '—'})`).join('\n')}`
+      : ''
+    await ElMessageBox.confirm(
+      `确定要删除模板 "${row.template_name}" 吗？${tenantInfo}`,
+      '删除模板',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消', dangerouslyUseHTMLString: false }
+    )
+    const result = await deleteTemplate(row.id)
+    // 根据内核清理结果展示详情
+    if (result.kernelFailCount > 0) {
+      const failedDetail = result.cleanedScopes
+        .filter((s) => !s.kernelDeleted)
+        .map((s) => `${s.tenantName || s.tenantId} (scope: ${s.scopeId || '—'}): ${s.errorMessage || '未知错误'}`)
+        .join('\n')
+      await ElMessageBox.alert(
+        `模板已删除，但 ${result.kernelFailCount} 个 scope 的内核配置清理失败（成功 ${result.kernelSuccessCount} 个）。\n\n失败详情:\n${failedDetail}\n\n请手动检查内核服务状态。`,
+        '部分清理失败',
+        { type: 'warning', confirmButtonText: '知道了' }
+      )
+    } else if (result.cleanedScopes.length > 0) {
+      ElMessage.success(`删除成功，已清理 ${result.kernelSuccessCount} 个 scope 的内核配置`)
+    } else {
+      ElMessage.success('删除成功')
+    }
     loadList()
   } catch (e: any) {
     if (e !== 'cancel') {
@@ -469,6 +505,63 @@ const syncTenant = async (row: TenantScopeConfig & { syncing?: boolean }) => {
     ElMessage.error('同步失败: ' + e.message)
   } finally {
     row.syncing = false
+  }
+}
+
+/**
+ * 删除租户的 Scope 配置：清除内核 KV 中的 scope 配置 + DB 绑定记录，
+ * 使该租户从当前模板解绑并回退到默认配置。租户本身不删除。
+ */
+const removeTenant = async (row: TenantScopeConfig & { removing?: boolean }) => {
+  const scopeId = row.scopeId || (row.scopeIds && row.scopeIds.length > 0 ? row.scopeIds[0] : '—')
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除租户「${row.tenantName || row.tenantId}」的 Scope 配置吗？\n\n` +
+      `⚠️ 此操作将清除该租户的内核 Scope 配置（scope: ${scopeId}）和数据库绑定记录，` +
+      `该租户将从当前模板解绑并回退到默认配置。租户本身不会被删除。\n\n` +
+      `如需重新应用配置，可再次对该租户应用模板。`,
+      '删除 Scope 配置',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' }
+    )
+  } catch {
+    return // 用户取消
+  }
+  row.removing = true
+  try {
+    const result: TenantScopeConfigDeleteResult = await deleteTenantScopeConfig(row.tenantId)
+    if (result.kernelDeleted && result.dbBindingDeleted) {
+      ElMessage.success(`已删除租户「${row.tenantName || row.tenantId}」的 Scope 配置，该租户已回退到默认配置`)
+    } else if (!result.kernelDeleted && !result.dbBindingDeleted) {
+      await ElMessageBox.alert(
+        `删除失败：内核配置和 DB 绑定记录均未删除。\n\n错误详情: ${result.errorMessage || '未知错误'}\n\n请检查服务状态后重试。`,
+        '删除失败',
+        { type: 'error', confirmButtonText: '知道了' }
+      )
+    } else {
+      // 部分成功
+      const parts: string[] = []
+      if (!result.kernelDeleted) parts.push(`内核配置未删除: ${result.errorMessage || '未知错误'}`)
+      if (!result.dbBindingDeleted) parts.push(`DB 绑定记录未删除: ${result.errorMessage || '未知错误'}`)
+      await ElMessageBox.alert(
+        `部分删除失败：\n\n${parts.join('\n')}\n\n请手动检查服务状态。`,
+        '部分删除失败',
+        { type: 'warning', confirmButtonText: '知道了' }
+      )
+    }
+    // 刷新抽屉列表 + 模板列表（tenant_usage 计数会变）
+    // 同时刷新租户列表，否则 applicableTenants 仍拿着旧的 currentTemplateId，
+    // 会把刚解绑的租户误判为"已应用本模板"而在应用弹框中排除（无法选中）
+    await openTenantDrawer(currentTemplate.value!)
+    await Promise.all([loadList(), loadTenants()])
+  } catch (e: any) {
+    const msg = e?.response?.data?.detail || e?.message || '删除失败'
+    if (msg.includes('不存在') || msg.includes('not found') || e?.response?.status === 404) {
+      ElMessage.info(`租户「${row.tenantName || row.tenantId}」当前无 Scope 配置，无需删除`)
+    } else {
+      ElMessage.error(msg)
+    }
+  } finally {
+    row.removing = false
   }
 }
 

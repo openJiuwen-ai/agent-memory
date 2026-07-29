@@ -15,6 +15,7 @@ import com.openjiuwen.memory.configcenter.dto.ApplyTemplateRequest;
 import com.openjiuwen.memory.configcenter.dto.ConfigTemplateListItemDTO;
 import com.openjiuwen.memory.configcenter.dto.CreateTemplateRequest;
 import com.openjiuwen.memory.configcenter.dto.TemplateApplyResultDTO;
+import com.openjiuwen.memory.configcenter.dto.TemplateDeleteResultDTO;
 import com.openjiuwen.memory.configcenter.dto.TemplateTenantUsageDTO;
 import com.openjiuwen.memory.configcenter.dto.UpdateTemplateRequest;
 import com.openjiuwen.memory.configcenter.mapper.ConfigAuditLogMapper;
@@ -300,21 +301,90 @@ public class ConfigTemplateServiceImpl implements ConfigTemplateService {
 
     @Override
     @Transactional
-    public void delete(String id, String operator) {
+    public TemplateDeleteResultDTO delete(String id, String operator) {
         ConfigTemplateEntity t = get(id);
         if (t.getIsBuiltin() != null && t.getIsBuiltin() == 1) {
             throw new BizException(ResultCode.FORBIDDEN, "预置模板不可删除");
         }
-        // 检查是否有租户使用
-        Long usageCount = tenantScopeConfigMapper.selectCount(
+
+        // 查询所有绑定该模板的租户配置记录
+        List<TenantScopeConfigEntity> boundConfigs = tenantScopeConfigMapper.selectList(
             new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<TenantScopeConfigEntity>()
                 .eq("template_id", id));
-        if (usageCount > 0) {
-            throw new BizException(ResultCode.BAD_REQUEST,
-                "模板被 " + usageCount + " 个租户使用，无法删除（请先解绑或迁移）");
+
+        List<TemplateDeleteResultDTO.ScopeCleanupResult> cleanedScopes = new ArrayList<>();
+        int kernelSuccess = 0, kernelFail = 0;
+
+        // 级联清理：对每个绑定的租户，删除内核 scope 配置 + DB 绑定记录
+        for (TenantScopeConfigEntity cfg : boundConfigs) {
+            String tenantId = cfg.getTenantId();
+            String tenantName = cfg.getTenantName();
+            String scopeId = null;
+            boolean kernelDeleted = false;
+            boolean dbDeleted = false;
+            String errorMsg = null;
+
+            // 解析 scope_id（仅 SCOPE 类型模板绑定的租户才有 scope 配置需清理）
+            try {
+                scopeId = resolveScopeId(tenantId);
+            } catch (Exception e) {
+                errorMsg = "解析 scope_id 失败: " + e.getMessage();
+                log.warn("删除模板时解析 scope_id 失败: templateId={}, tenantId={}, error={}",
+                    id, tenantId, e.getMessage());
+            }
+
+            // 删除内核 scope 配置
+            if (scopeId != null) {
+                try {
+                    kernelDeleted = memoryEngineClient.deleteScopeConfig(scopeId);
+                    if (kernelDeleted) {
+                        kernelSuccess++;
+                    } else {
+                        kernelFail++;
+                        errorMsg = "内核返回删除失败";
+                    }
+                } catch (Exception e) {
+                    kernelFail++;
+                    errorMsg = "内核 scope 配置删除异常: " + e.getMessage();
+                    log.warn("删除模板时内核 scope 配置删除失败: templateId={}, tenantId={}, scopeId={}, error={}",
+                        id, tenantId, scopeId, e.getMessage(), e);
+                }
+            }
+
+            // 删除 DB 绑定记录
+            try {
+                tenantScopeConfigMapper.deleteById(cfg.getTenantId());
+                dbDeleted = true;
+            } catch (Exception e) {
+                log.warn("删除模板时 DB 绑定记录删除失败: templateId={}, tenantId={}, error={}",
+                    id, tenantId, e.getMessage(), e);
+                if (errorMsg == null) errorMsg = "DB 绑定记录删除失败: " + e.getMessage();
+            }
+
+            cleanedScopes.add(TemplateDeleteResultDTO.ScopeCleanupResult.builder()
+                .tenantId(tenantId)
+                .tenantName(tenantName)
+                .scopeId(scopeId)
+                .kernelDeleted(kernelDeleted)
+                .dbBindingDeleted(dbDeleted)
+                .errorMessage(errorMsg)
+                .build());
         }
+
+        // 删除模板本身
         templateMapper.deleteById(id);
         recordAudit(operator, id, "TEMPLATE_DELETE", null, null, true, null, null);
+
+        log.info("模板删除成功: id={}, name={}, 绑定租户数={}, 内核清理成功={}, 内核清理失败={}",
+            id, t.getTemplateName(), boundConfigs.size(), kernelSuccess, kernelFail);
+
+        return TemplateDeleteResultDTO.builder()
+            .templateId(id)
+            .templateName(t.getTemplateName())
+            .cleanedScopes(cleanedScopes)
+            .kernelSuccessCount(kernelSuccess)
+            .kernelFailCount(kernelFail)
+            .build();
     }
 
     @Override
@@ -411,10 +481,23 @@ public class ConfigTemplateServiceImpl implements ConfigTemplateService {
                     .currentVersion(t.getVersion()).build());
                 success++;
             } catch (Exception e) {
+                // 记录服务端日志（原实现静默吞掉异常，导致问题无法排查）
+                log.warn("SCOPE 模板下发到内核失败: templateId={}, tenantId={}, scopeId={}, error={}",
+                    t.getId(), tenantId, resolveScopeIdSafe(tenantId), e.getMessage(), e);
                 results.add(TemplateApplyResultDTO.TenantApplyResult.builder()
                     .tenantId(tenantId).success(false).errorMessage(e.getMessage()).build());
                 fail++;
             }
+        }
+        // 全部租户下发失败时，抛出业务异常返回非 200 错误码给前端，
+        // 避免前端误以为操作成功（原实现返回 HTTP 200 + failCount>0，前端只显示"模板已保存"）。
+        if (success == 0 && fail > 0) {
+            String failedTenants = results.stream()
+                .map(r -> r.getTenantId() + ": " + r.getErrorMessage())
+                .collect(Collectors.joining("; "));
+            throw new BizException(ResultCode.UPSTREAM_ERROR,
+                "配置下发到内核全部失败（" + fail + " 个租户）。失败详情: " + failedTenants +
+                "。模板已保存但未生效，请检查内核服务状态后重试。");
         }
         return TemplateApplyResultDTO.builder()
             .templateId(t.getId()).templateName(t.getTemplateName()).templateType("SCOPE")
@@ -454,6 +537,18 @@ public class ConfigTemplateServiceImpl implements ConfigTemplateService {
             throw new BizException(ResultCode.BAD_REQUEST, "租户绑定了多个 scope_id，当前配置中心仅支持一对一映射");
         }
         return scopeIds.get(0);
+    }
+
+    /**
+     * resolveScopeId 的安全版本：不抛异常，用于 catch 块日志记录场景，
+     * 避免在异常处理中再次抛出掩盖原始异常。
+     */
+    private String resolveScopeIdSafe(String tenantId) {
+        try {
+            return resolveScopeId(tenantId);
+        } catch (Exception e) {
+            return "(unresolved: " + e.getMessage() + ")";
+        }
     }
 
     /** 解析 scope_ids JSON 数组 */

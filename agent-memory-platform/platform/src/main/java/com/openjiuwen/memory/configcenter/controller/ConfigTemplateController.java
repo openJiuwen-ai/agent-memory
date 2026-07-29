@@ -10,6 +10,7 @@ import com.openjiuwen.memory.configcenter.dto.ApplyTemplateRequest;
 import com.openjiuwen.memory.configcenter.dto.ConfigTemplateListItemDTO;
 import com.openjiuwen.memory.configcenter.dto.CreateTemplateRequest;
 import com.openjiuwen.memory.configcenter.dto.TemplateApplyResultDTO;
+import com.openjiuwen.memory.configcenter.dto.TemplateDeleteResultDTO;
 import com.openjiuwen.memory.configcenter.dto.UpdateTemplateRequest;
 import com.openjiuwen.memory.configcenter.service.ConfigTemplateService;
 import org.springframework.web.bind.annotation.*;
@@ -86,10 +87,9 @@ public class ConfigTemplateController {
     }
 
     @DeleteMapping("/{id}")
-    public ApiResponse<Void> delete(@PathVariable String id) {
+    public ApiResponse<TemplateDeleteResultDTO> delete(@PathVariable String id) {
         permissionChecker.require("config:write");
-        service.delete(id, resolveOperator());
-        return ApiResponse.ok();
+        return ApiResponse.ok(service.delete(id, resolveOperator()));
     }
 
     @PostMapping("/apply")

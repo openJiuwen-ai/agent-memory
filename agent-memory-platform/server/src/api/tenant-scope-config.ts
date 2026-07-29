@@ -3,7 +3,7 @@
  *  端点前缀 /api/v1/tenant-scope-configs
  */
 import { api } from './request'
-import type { TenantScopeConfig } from '@/types/config'
+import type { TenantScopeConfig, TenantScopeConfigDeleteResult } from '@/types/config'
 
 function normalizeTenantScopeConfig(raw: any): TenantScopeConfig {
   // 列表接口返回 scope_ids 数组；单条接口返回 scope_id 单值 —— 统一规整成 scopeIds 数组
@@ -68,4 +68,22 @@ export function syncTenantFromTemplate(tenantId: string): Promise<TenantScopeCon
   return api
     .post<TenantScopeConfig>(`/api/v1/tenant-scope-configs/${tenantId}/sync-from-template`)
     .then((res: any) => (res ? normalizeTenantScopeConfig(res) : res))
+}
+
+/**
+ * 清除租户的 Scope 配置：删除内核 KV 中的 scope 配置 + DB 绑定记录，
+ * 使该租户回退到默认配置。租户本身不删除。
+ * 适用场景：在租户管理页移除某租户的自定义配置。
+ */
+export function deleteTenantScopeConfig(tenantId: string): Promise<TenantScopeConfigDeleteResult> {
+  return api
+    .delete<any>(`/api/v1/tenant-scope-configs/${tenantId}`)
+    .then((raw: any) => ({
+      tenantId: raw.tenant_id ?? raw.tenantId,
+      tenantName: raw.tenant_name ?? raw.tenantName,
+      scopeId: raw.scope_id ?? raw.scopeId,
+      kernelDeleted: raw.kernel_deleted ?? raw.kernelDeleted ?? false,
+      dbBindingDeleted: raw.db_binding_deleted ?? raw.dbBindingDeleted ?? false,
+      errorMessage: raw.error_message ?? raw.errorMessage,
+    }))
 }
