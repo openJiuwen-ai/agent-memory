@@ -257,7 +257,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { listTemplates, applyTemplate, deleteTemplate } from '@/api/template'
@@ -266,6 +266,7 @@ import { listTenantScopeConfigs, syncTenantFromTemplate } from '@/api/tenant-sco
 import type { Template, TemplateApplyResult, TemplateType, TemplateTenantUsage, TenantScopeConfig } from '@/types/config'
 import type { Tenant } from '@/types/tenant'
 
+const route = useRoute()
 const router = useRouter()
 
 const activeSubTab = ref<'builtin' | 'custom'>('builtin')
@@ -474,6 +475,12 @@ const syncTenant = async (row: TenantScopeConfig & { syncing?: boolean }) => {
 watch(activeSubTab, loadList)
 
 onMounted(() => {
+  // 从路由参数读取标签页，默认显示"自定义"
+  const tab = route.query.tab as string
+  if (tab === 'custom' || tab === 'builtin') {
+    activeSubTab.value = tab
+  }
+  
   loadList()
   loadTenants()
 })

@@ -4,7 +4,10 @@
       <template #header>
         <div class="page-header">
           <div>
-            <el-button link @click="goBack">返回模板列表</el-button>
+            <el-button type="default" @click="goBack" style="margin-bottom: 12px">
+              <el-icon><ArrowLeft /></el-icon>
+              返回模板列表
+            </el-button>
             <h2>
               {{ pageTitle }}
               <el-tag v-if="template && template.status === 'draft'" type="warning" style="margin-left: 12px">
@@ -219,6 +222,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { ArrowLeft } from '@element-plus/icons-vue'
 import { createTemplate, copyTemplate, getTemplate, listTemplates, updateTemplate } from '@/api/template'
 import { getTenantList } from '@/api/tenant'
 import { listTenantScopeConfigs } from '@/api/tenant-scope-config'
@@ -499,7 +503,7 @@ const onTypeChange = () => {
 }
 
 const goBack = () => {
-  router.push('/config')
+  router.push({ path: '/config', query: { tab: 'custom' } })
 }
 
 const switchToEdit = () => {
