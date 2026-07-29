@@ -23,7 +23,7 @@ from control.types import (
     SpaceStatus,
     SpaceUsage,
 )
-from storage.kv import KVStore, KvProducer
+from storage.kv import KvProducer, KVStore
 
 _INFO_KEY = "/space/info"
 _MEMBER_PREFIX = "/space/members/"
@@ -181,8 +181,8 @@ def _normalize_member(org: str, space: str, member: SpaceMember) -> SpaceMember:
         raise ValidationError("member scope org must match target space org")
     if scope.space and scope.space != space:
         raise ValidationError("member scope space must match target space")
-    scope.org = org
-    scope.space = space
+    # Scope 是 frozen 值对象（验收第三次 P2-1）：用 replace 返回新值，不原地修改。
+    scope = replace(scope, org=org, space=space)
     created_at = member.created_at or _now()
     return SpaceMember(
         scope=scope,
@@ -198,9 +198,7 @@ def _normalize_member_scope(org: str, space: str, member: Scope) -> Scope:
         raise ValidationError("member scope org must match target space org")
     if scope.space and scope.space != space:
         raise ValidationError("member scope space must match target space")
-    scope.org = org
-    scope.space = space
-    return scope
+    return replace(scope, org=org, space=space)
 
 
 class KVSpaceManager(SpaceManager):

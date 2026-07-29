@@ -11,6 +11,14 @@
 或 Streamable HTTP::
 
     MCP_TRANSPORT=http MCP_PORT=8138 scripts/run-mcp.sh /config/config.yml
+
+**第一期认证限制（务必知悉）**：MCP 协议自己的凭据传递机制（OAuth 2.1 资源服务器、
+工具调用级的 token 下发）是第二期内容，本 surface 目前只把一个**空凭据**过认证中间件。
+后果是：DEV 模式（缺省 OFFLINE 档）下所有工具照常可用；一旦配成 API_KEY / TRUSTED 模式，
+**所有 MCP 工具调用都会失败**（认证失败）。这是有意的——
+``docs/features/common/F04-security-interfaces-and-encryption.md``
+§8.2「MCP 协议的攻击面」需要专门设计，在设计落地前，让 MCP 在生产模式下不可用，
+好过让它无认证可用。
 """
 
 from __future__ import annotations
@@ -34,6 +42,14 @@ OFFLINE = _profiles_module.OFFLINE
 load_config = _profiles_module.load_config
 Server = import_module("server").Server
 
+_auth_middleware = import_module("auth_middleware")
+authenticated = _auth_middleware.authenticated
+AuthenticationError = import_module("common.errors").AuthenticationError
+ValidationError = import_module("common.errors").ValidationError
+Credentials = import_module("security.types").Credentials
+check_dev_binding = import_module("security").check_dev_binding
+AuthMode = import_module("security.types").AuthMode
+
 try:
     FastMCP = import_module("mcp.server.fastmcp").FastMCP
 except ImportError as exc:  # pragma: no cover
@@ -54,8 +70,20 @@ mcp = FastMCP(
 def _call(verb: str, payload: dict) -> dict:
     """
     走共享 dispatch；非 2xx 抛错，让 MCP 客户端看到失败原因（None 入参不下发）。
+
+    与 ``InProcessClient`` 同样过一个空 ``Credentials()``：MCP 尚无凭据通道（见模块
+    docstring 的第一期限制）。DEV 模式下得到 ROOT，非 DEV 模式下这里就会抛认证失败。
     """
-    status, body = _SRV.dispatch(verb, {k: v for k, v in payload.items() if v is not None})
+    try:
+        with authenticated(_SRV.authenticator, Credentials(), _SRV.audit):
+            status, body = _SRV.dispatch(
+                verb, {k: v for k, v in payload.items() if v is not None}
+            )
+    except AuthenticationError as exc:
+        raise RuntimeError(
+            f"{type(exc).__name__}: {exc}（MCP surface 尚未支持凭据传递，"
+            f"仅可在 DEV 模式下使用）"
+        ) from exc
     if status >= 400:
         raise RuntimeError(f"{body.get('error', 'Error')}: {body.get('message', '')}")
     return body
@@ -138,6 +166,15 @@ def memory_evolve(tenant_id: str, scope: str, mode: str = "extract") -> dict:
 def main() -> int:
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
     if transport in ("http", "streamable-http"):
+        # MCP 尚无凭据通道（见模块 docstring）：DEV 模式下空凭据即 ROOT，绑非
+        # loopback 等于把 ROOT 级记忆工具暴露给整个网络。与 HTTP surface 同一道
+        # 闸（审计 P1-4：此前 MCP HTTP 启动没调 check_dev_binding）。
+        if _SRV.authenticator.mode() is AuthMode.DEV:
+            try:
+                check_dev_binding(os.environ.get("MCP_HOST", "127.0.0.1"))
+            except ValidationError as exc:
+                print(f"FATAL: {exc}", file=sys.stderr)
+                return 1
         mcp.run(transport="streamable-http")  # host/port 已在 FastMCP(...) 设好
     else:
         mcp.run()  # stdio（默认）——Claude Desktop / Claude Code 直接挂载

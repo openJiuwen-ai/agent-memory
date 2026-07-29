@@ -49,6 +49,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--config", action="append", default=[], metavar="PATH",
         help="JSON config layer stacked on OFFLINE (in-process only; repeatable)",
     )
+    parser.add_argument(
+        "--api-key", dest="api_key", metavar="KEY", default=None,
+        help="API key for --server mode (default: $AGENT_MEMORY_API_KEY)",
+    )
 
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -78,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("note: --config is ignored in --server (HTTP) mode\n")
 
     try:
-        client = make_client(args.server, args.config)
+        client = make_client(args.server, args.config, args.api_key)
         if args.command in ("health", "status"):
             return commands.run_health(client, args)
         if args.command == "batch":

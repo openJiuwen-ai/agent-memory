@@ -74,9 +74,24 @@ class InProcessClient:
         return self._srv
 
     def call(self, verb: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        from auth_middleware import authenticated
         from handler import dispatch
 
-        return dispatch(self._srv, verb, payload)
+        from common.errors import AuthenticationError
+        from security.types import Credentials
+
+        # 进程内直连没有 HTTP header，故过一个空 Credentials。DEV 模式下得到
+        # ROOT，与现状一致（CLI 一直是全权限的）；API_KEY 模式下会认证失败——
+        # 这是**正确的**：没有凭据就不该有权限。要在 API_KEY 模式下用 CLI，
+        # 走 HttpClient 带 --api-key。
+        #
+        # 认证失败转成 (401, body) 而非抛出：本方法的契约是返回状态码，
+        # 与 HttpClient.call 一致。
+        try:
+            with authenticated(self._srv.authenticator, Credentials(), self._srv.audit):
+                return dispatch(self._srv, verb, payload)
+        except AuthenticationError as exc:
+            return 401, {"error": type(exc).__name__, "message": str(exc)}
 
     def healthz(self) -> tuple[int, dict[str, Any]]:
         return 200, {"status": "ok", "profile": self._srv.config.profile}
@@ -85,17 +100,21 @@ class InProcessClient:
 class HttpClient:
     """Drive a running ``bootstrap`` server over HTTP (``POST /v1/<verb>``)."""
 
-    def __init__(self, base_url: str, timeout: float = 30.0) -> None:
+    def __init__(self, base_url: str, timeout: float = 30.0, api_key: str = "") -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.api_key = api_key
 
     def _request(self, method: str, path: str, body: dict | None) -> tuple[int, dict[str, Any]]:
         url = f"{self.base_url}{path}"
         data = json.dumps(body).encode("utf-8") if body is not None else None
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         req = urllib.request.Request(
             url,
             data=data,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method=method,
         )
         try:
@@ -124,8 +143,16 @@ def _read_json(resp) -> dict[str, Any]:
         return {"error": "BadResponse", "message": raw.decode("utf-8", "replace")}
 
 
-def make_client(server_url: str | None, configs: list[str] | None = None) -> EngineClient:
-    """Pick a backend: HTTP when ``server_url`` is given, else in-process."""
+def make_client(
+    server_url: str | None,
+    configs: list[str] | None = None,
+    api_key: str | None = None,
+) -> EngineClient:
+    """Pick a backend: HTTP when ``server_url`` is given, else in-process.
+
+    ``api_key`` 缺省读环境变量 ``AGENT_MEMORY_API_KEY``——让 key 不必出现在
+    shell history 与 ``ps`` 输出里。
+    """
     if server_url:
-        return HttpClient(server_url)
+        return HttpClient(server_url, api_key=api_key or os.environ.get("AGENT_MEMORY_API_KEY", ""))
     return InProcessClient(configs)

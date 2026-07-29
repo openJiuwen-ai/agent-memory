@@ -184,8 +184,11 @@ class LocalEnvelopeSecurityProvider(SecurityProvider):
         self,
         key_provider: LocalKeyProvider,
         *,
-        allow_plaintext: bool = True,
+        allow_plaintext: bool = False,
     ) -> None:
+        # allow_plaintext 默认 False（fail-closed，审计 P2-3）：否则拥有底层存储写
+        # 权限的攻击者可用任意明文替换密文，绕过 AES-GCM tag 与 AAD 校验。迁移期
+        # 读旧明文数据须显式 opt-in（allow_plaintext=true），迁移完成后应关闭。
         _ensure_crypto()
         self._key_provider = key_provider
         self._allow_plaintext = allow_plaintext
@@ -448,7 +451,7 @@ def _build(config):
             ),
         ),
         allow_plaintext=_as_bool(
-            Factory.cfg_get(config, "allow_plaintext", True),
-            default=True,
+            Factory.cfg_get(config, "allow_plaintext", False),
+            default=False,
         ),
     )

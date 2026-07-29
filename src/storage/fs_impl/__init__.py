@@ -9,5 +9,6 @@ from storage.fs import FsProducer
 
 import_module(".in_memory_fs_store", __name__)
 import_module(".local_fs", __name__)
+import_module(".encrypted_fs_store", __name__)
 
 __all__ = ["FsProducer"]

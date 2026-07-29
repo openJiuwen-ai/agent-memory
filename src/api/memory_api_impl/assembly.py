@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from common.audit.base import AuditProducer
+from common.audit.base import AuditLogger, AuditProducer
 from common.bootstrap import register_plugins
 from common.factory.factory import Factory
 from common.log import setup_logging
@@ -53,6 +53,7 @@ class Kernel:
     api: LocalMemoryAPI
     kv: KVStore
     space: SpaceManager | None = None
+    audit: AuditLogger | None = None  # 装配好的审计器；surface 侧记认证失败等入口事件
 
 
 def _register_all() -> None:
@@ -92,16 +93,24 @@ def build_kernel(
     root = ComponentConfig(params=dict(ROOT_PARAMS), ctx=ctx, target="local", name="memory_api")
     setup_logging(root)  # 初始化 agent-memory 根 logger（按 globals 的 log_* 配置；幂等）
 
+    # audit logger 装配一次、两处共用：API 内部记业务事件，Kernel.audit 暴露给
+    # surface 记入口事件（认证失败等发生在 API 之外，拿不到 API 的私有引用）。
+    audit_logger = AuditProducer.dep(root, default="sqlite")
     api = LocalMemoryAPI(
         engine=EngineProducer.dep(root, default="in_memory"),
         permission=PermissionProducer.dep(root, default="sqlite"),
         scheduler=SchedulerProducer.dep(root, default="in_process"),
         policy=PolicyProducer.dep(root, default="dict"),
         governor=GovernorProducer.dep(root, default="in_memory"),
-        audit_logger=AuditProducer.dep(root, default="sqlite"),
+        audit_logger=audit_logger,
         space=SpaceProducer.dep(root, default="kv"),
     )
-    return Kernel(api=api, kv=KvProducer.dep(root, default="memory"), space=api.space_manager)
+    return Kernel(
+        api=api,
+        kv=KvProducer.dep(root, default="memory"),
+        space=api.space_manager,
+        audit=audit_logger,
+    )
 
 
 def assemble(
