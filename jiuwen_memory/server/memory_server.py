@@ -166,7 +166,9 @@ async def _reload_memory_engine() -> None:
         crypto_key_str = _env_value("CRYPTO_KEY", "")
         config = MemoryEngineConfig(
             default_model_cfg=ModelRequestConfig(
-                model=_env_value("MODEL_NAME", "default-model")
+                model=_env_value("MODEL_NAME", "default-model"),
+                enable_thinking=_bool_env("ENABLE_THINKING", False),
+                temperature=_typed_env_value("TEMPERATURE", 0.95),
             ),
             default_model_client_cfg=ModelClientConfig(
                 client_provider=_env_value("MODEL_PROVIDER", "SiliconFlow"),
@@ -504,7 +506,10 @@ async def startup_event():
         
         config = MemoryEngineConfig(
             default_model_cfg=ModelRequestConfig(
-                model=os.getenv("MODEL_NAME", "")
+                model=os.getenv("MODEL_NAME", ""),
+                # 是否启用模型深度思考(thinking)；默认关闭以减少 output token 消耗
+                enable_thinking=os.getenv("ENABLE_THINKING", "false").strip().lower() == "true",
+                temperature=_typed_env_value("TEMPERATURE", 0.95),
             ),
             default_model_client_cfg=ModelClientConfig(
                 client_provider=os.getenv("MODEL_PROVIDER", ""),
