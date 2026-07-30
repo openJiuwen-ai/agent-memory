@@ -176,13 +176,26 @@ public class MessageLogController {
     @GetMapping("/{msgId}")
     public ApiResponse<Map<String, Object>> getMessageDetail(@PathVariable String msgId) {
         permissionChecker.require("log:read");
-        Map<String, Object> detail = memoryEngineClient.getKernelMessageDetail(msgId);
-        if (detail == null) {
-            detail = new LinkedHashMap<>();
-            detail.put("message_id", msgId);
-            detail.put("found", false);
-            detail.put("message", "消息不存在");
+        
+        // 校验 msgId 有效性
+        if (msgId == null || msgId.isBlank()) {
+            throw new BizException(ResultCode.BAD_REQUEST, "消息 ID 不能为空");
         }
+        
+        Map<String, Object> detail = memoryEngineClient.getKernelMessageDetail(msgId);
+        
+        // V3-DEFECT-047: 区分"资源不存在"和"系统错误"
+        if (detail == null) {
+            // 消息不存在 → 返回 404
+            throw new BizException(ResultCode.NOT_FOUND, "消息不存在：" + msgId);
+        }
+        
+        Boolean found = (Boolean) detail.get("found");
+        if (Boolean.FALSE.equals(found)) {
+            // 明确告知消息不存在
+            throw new BizException(ResultCode.NOT_FOUND, "消息不存在：" + msgId);
+        }
+        
         return ApiResponse.ok(detail);
     }
 
@@ -223,7 +236,9 @@ public class MessageLogController {
         try {
             return Instant.parse(iso);
         } catch (Exception e) {
-            return null;
+            // V3-DEFECT-046: 严格验证时间格式，不再静默忽略
+            throw new BizException(ResultCode.BAD_REQUEST, 
+                String.format("时间格式无效，请使用 ISO 8601 格式 (如 2026-01-01T00:00:00Z): %s", iso));
         }
     }
 }
