@@ -26,7 +26,8 @@
 | `key_store.py` | `PrincipalKeyStore` 抽象接口 + `KeyStoreProducer`（`TOP_NAME = "key_store"`）+ 模块级 helper：`fingerprint` / `key_prefix` / `generate_api_key` |
 | `binding.py` | `check_dev_binding()`——DEV 模式的 localhost 强制绑定 guard，供接入形态在启动期调用 |
 | `rate_limit.py` | `RateLimiter` 抽象接口 + `RateLimitProducer`（`TOP_NAME = "rate_limiter"`） |
-| `bootstrap.py` | `register_security()` 统一 import 各 `*_impl/` 包，触发实现自注册（幂等） |
+| `audit_hmac.py` | `HmacAuditLogger` 装饰器 + `derive_audit_key`：给任意 `AuditLogger` 加链式 HMAC 完整性保护（§7.3）；`@AuditProducer.register("hmac")` 配置驱动 opt-in |
+| `bootstrap.py` | `register_security()` 统一 import 各 `*_impl/` 包 + `audit_hmac`，触发实现自注册（幂等） |
 | `authenticator_impl/` | 认证实现目录。当前实现：`dev_authenticator.py` / `trusted_authenticator.py` / `api_key_authenticator.py` |
 | `key_store_impl/` | 主体 key 存储实现目录。当前实现：`memory_key_store.py`（进程内注册表 + Argon2id） |
 | `rate_limit_impl/` | 限流实现目录。当前实现：`token_bucket_limiter.py` / `unlimited_limiter.py` |

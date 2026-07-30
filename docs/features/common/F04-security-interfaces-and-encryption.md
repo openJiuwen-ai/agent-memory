@@ -1541,15 +1541,17 @@ def verify_token(token_value: str) -> Token | None:
 | `role: str` | 服务端角色注册表或已验证 claim | ROOT/org_admin/user 等特权闸门与审计 |
 | `from_oauth: bool` | 认证分流器 | 区分 OAuth 与 API Key 路径，阻止 OAuth 凭据签发新的 OAuth 状态 |
 | `authorizing_key_fp: str` | 签发 token/session 时绑定的 Principal API Key fingerprint | key 轮换后的 token/session 级联失效与审计追责 |
+| `auth_mode: str` | authenticator（dev/trusted/api_key/oauth） | 认证路径，供审计（§7.2）。由 authenticator 填，不来自请求 |
 
 ```python
-@dataclass
+@dataclass(frozen=True)
 class AuthContext:
     actor: Scope
     acting_user: str = ""
     from_oauth: bool = False
     role: str = "user"
     authorizing_key_fp: str = ""
+    auth_mode: str = ""
 ```
 
 中间件构造 `AuthContext` 后，应通过显式参数或 `ContextVar` 在单次请求内传播，并在请求结束时可靠 reset。任何 handler、LLM tool_call 或业务参数都不能覆盖其中字段。

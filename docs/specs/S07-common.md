@@ -6,7 +6,7 @@
 |---|-------------|
 | 关联模块 | src/common/ |
 | 最近一次修订日期 | 2026-07-31 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/security/F01-authentication-kernel.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/security/F01-authentication-kernel.md，docs/features/security/F03-audit-integrity.md |
 
 ## 范围 / 边界
 
@@ -128,14 +128,19 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 
 ### AuditLogger（`audit/base.py`）
 
-审计日志。
+审计日志。完整性保护（HMAC）方法有默认实现，普通后端不破坏（审计 PR③ F03）。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
 | `record` | `(event: AuditEvent) -> None` | 写入一条审计事件 |
-| `query` | `(filters: dict[str, str], limit=100) -> list[AuditEvent]` | 按 `action` / `layer` / `decision` / `target_id` / `actor_org` / `actor_space` / `actor_user` / `actor_agent` / `actor_session` / `target_org` / `target_space` / `target_user` / `target_agent` / `target_session` / `occurred_after` / `occurred_before` 检索审计留痕 |
+| `query` | `(filters: dict[str, str], limit=100, *, offset=0) -> list[AuditEvent]` | 按 `action` / `layer` / `decision` / `target_id` / `actor_*` / `target_*` / `occurred_after` / `occurred_before` 检索；`offset` 分页流式（审计 P2-1） |
+| `tail` | `(limit=1) -> list[AuditEvent]` | 最近 `limit` 条事件（O(1)，持久化后端 override 成 DESC LIMIT；默认全量取最后） |
+| `record_chained` | `(event, expected_head) -> str` | 链式 CAS 追加（持久化后端 override 成事务 CAS；默认降级为 record，不检查 expected_head） |
+| `get_chain_head` | `() -> str` | 当前链头 HMAC（O(1)，持久化后端读 chain-head 表；默认走 tail） |
+| `iter_chain` | `(after_seq=0, limit=1000) -> list[tuple[int, AuditEvent]]` | keyset 分页遍历（`WHERE seq > ?`，审计 P2-1；默认降级为 query offset） |
+| `verify_integrity` | `() -> AuditIntegrityResult` | 校验完整性，返回结构化状态（`unsupported`/`clean`/`tampered`，审计 P2-2；默认 `unsupported`） |
 
-治理层通过 `Governor.audit(filters, limit)` 提供对外查询入口；`AuditLogger.query(...)` 是控制层消费审计后端的内部接口，不直接暴露为用户 API。
+治理层通过 `Governor.audit(filters, limit)` 提供对外查询入口；`AuditLogger.query(...)` 是控制层消费审计后端的内部接口，不直接暴露为用户 API。完整性保护由 `HmacAuditLogger` 装饰器（`security/audit_hmac.py`）提供，详见 F03。
 
 ### SecurityProvider（`security/security.py`）
 
@@ -173,7 +178,8 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 | `FilterGroup` | logic / children | AND / OR / NOT 逻辑节点 |
 | `FilterExpr` | FilterClause \| FilterGroup | 跨 API、检索和存储层的过滤树 |
 | `matches_memory_unit` | `(MemoryUnit, FilterExpr \| None) -> bool` | retrieval 真源复核和 KV list 共用的 MemoryUnit 字段投影与过滤求值 |
-| `AuditEvent` | id / timestamp / actor / target / action / target_id / layer / detail | 审计事件；`actor` 与 `target` 均为 Scope，支持 actor_* 与 target_* 字段过滤 |
+| `AuditEvent` | id / timestamp / actor / target / action / target_id / layer / detail | 审计事件；`actor` 与 `target` 均为 Scope，支持 actor_* 与 target_* 字段过滤。`detail` 承载安全层四字段（`acting_user`/`role`/`key_fp`/`auth_mode`，§7.2）与 HMAC（`_hmac`/`prev_hmac`，§7.3） |
+| `AuthContext` | actor / acting_user / role / from_oauth / authorizing_key_fp / auth_mode | 认证层产出的请求级安全上下文（`frozen=True`，`common/type_def/auth.py`）；ContextVar 传播（`set_current`/`reset_current`/`get_current`，未认证返回 `None`）。`auth_mode` 由 authenticator 填（dev/trusted/api_key）。详见 F01 / F03 |
 | `SecurityContext` | scope / purpose / metadata | 一次加密/解密调用的安全上下文 |
 
 ### 枚举（`type_def/memory.py`）
