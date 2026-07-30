@@ -21,15 +21,44 @@ class InMemoryAuditLogger(AuditLogger):
     def record(self, event: AuditEvent) -> None:
         self.events.append(event)
 
-    def query(self, filters: dict[str, str], limit: int = 100) -> list[AuditEvent]:
+    def query(
+        self, filters: dict[str, str], limit: int = 100, *, offset: int = 0
+    ) -> list[AuditEvent]:
         out: list[AuditEvent] = []
+        skipped = 0
         for event in self.events:
             if not _matches(event, filters):
+                continue
+            if skipped < offset:
+                skipped += 1
                 continue
             out.append(event)
             if len(out) >= limit:
                 break
         return out
+
+    def tail(self, limit: int = 1) -> list[AuditEvent]:
+        # list 切片 O(k)，避免默认实现的全量 query
+        return self.events[-limit:] if limit else list(self.events)
+
+    def record_chained(self, event: AuditEvent, expected_head: str) -> str:
+        """单进程链式追加（审计 P2-2 capability）。
+
+        InMemoryAuditLogger 不支持跨进程事务 CAS--expected_head 在此**不检查**
+        （单进程内由 HmacAuditLogger 的实例锁保证链头一致）。多进程/多实例场景
+        必须用持久化后端（SqliteAuditLogger 的事务 CAS）。本实现显式标明此边界，
+        不静默伪装具备 CAS 能力。
+        """
+        self.events.append(event)
+        return event.detail.get("_hmac", "")
+
+    def get_chain_state(self) -> tuple[str, int, int, str]:
+        """内存后端链状态（单进程，head 即最后事件 _hmac）。"""
+        if not self.events:
+            return ("", 0, 0, "")
+        last = self.events[-1]
+        hmac_val = last.detail.get("_hmac", "")
+        return (hmac_val, len(self.events), len(self.events), hmac_val)
 
 
 # -- 注册到 AuditProducer（实现自注册，新增无需改 producer/make_plugins） ------ #

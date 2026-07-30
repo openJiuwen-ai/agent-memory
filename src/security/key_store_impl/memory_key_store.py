@@ -29,6 +29,7 @@ from security.key_store import (
     generate_api_key,
     key_prefix,
 )
+from security.types import AuthMode
 
 # Argon2id 参数（OWASP 2024+，security.md §2.3.1）。
 # 显式指定全部五项，不用库默认——argon2-cffi 的默认 memory_cost 是 64 MiB，
@@ -173,6 +174,7 @@ class InMemoryKeyStore(PrincipalKeyStore):
                         acting_user=current.actor.user,
                         role=current.role,
                         authorizing_key_fp=record.key_fp,
+                        auth_mode=AuthMode.API_KEY.value,
                     )
 
         # 无候选时补一次 dummy verify，把耗时 pad 到与「有候选」路径同量级。

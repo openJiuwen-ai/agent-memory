@@ -41,7 +41,16 @@ class ApiKeyAuthenticator(Authenticator):
         if self._root_key and hmac.compare_digest(
             self._root_key.encode("utf-8"), api_key.encode("utf-8")
         ):
-            return AuthContext(actor=Scope(), role=Role.ROOT)
+            # root key 记不可逆 fingerprint（审计 P3-2）：最高权限调用也留追责依据，
+            # 绝不记原 key。用与主体 key 同款 fingerprint（sha256）。
+            from security.key_store import fingerprint
+
+            return AuthContext(
+                actor=Scope(),
+                role=Role.ROOT,
+                auth_mode=AuthMode.API_KEY.value,
+                authorizing_key_fp=fingerprint(api_key),
+            )
 
         # Step 2: 主体注册表（内部已做常时间比对与 dummy pad）。
         identity = self._key_store.resolve(api_key)

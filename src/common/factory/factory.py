@@ -40,6 +40,7 @@ class Factory:
         super().__init_subclass__(**kwargs)
         cls._registry = {}  # 每个 producer 子类一张独立注册表
         cls._instances = {}  # 每个 producer 子类一份具名实例缓存
+        cls._building = set()  # 正在构建的具名实例（环检测，审计 PR③ P2-3）
         Factory._subclasses.append(cls)
         top = cls.__dict__.get("TOP_NAME", "")  # 仅认本类显式声明的（不继承父类）
         if top:
@@ -90,16 +91,31 @@ class Factory:
 
     @classmethod
     def build_named(cls, name: str, ctx: Any) -> Any:
-        """接口 2（具名/共享）：按 ``name`` 取/建该 Producer 命名空间下的具名实例。
+        """接口 2（具名/共享）：按 name 取/建该 Producer 命名空间下的具名实例。
 
-        命中缓存即返回共享实例；否则经 ``ctx.lookup(cls.TOP_NAME, name)`` 取配置、调
-        :meth:`build` 新建。``new_instance`` 为假则存入缓存供共享，为真则不存（每次新建）。
-        命名空间由 ``cls.TOP_NAME`` 决定——故只需传具名实例名。
+        命中缓存即返回共享实例；否则经 ctx.lookup 取配置、调 build 新建。
+        new_instance 为假则存入缓存供共享，为真则不存（每次新建）。
+        命名空间由 cls.TOP_NAME 决定--故只需传具名实例名。
+
+        依赖环检测（审计 PR3 P2-3）：维护正在构建的具名实例集合，命中即抛
+        ValidationError（含路径），不 RecursionError 崩溃。覆盖任意长度环。
         """
         if name in cls._instances:
             return cls._instances[name]
-        spec = ctx.lookup(cls.TOP_NAME, name)
-        instance = cls.build(spec.target, spec.params, ctx, name=name)
+        key = (cls.TOP_NAME, name)
+        if hasattr(cls, "_building") and key in cls._building:
+            raise ValidationError(
+                f"{cls.__name__}: 检测到依赖环（{cls.TOP_NAME}.{name} 间接引用自身）。"
+                "请检查 audit/各 Producer 的 inner 引用链。"
+            )
+        if not hasattr(cls, "_building"):
+            cls._building = set()
+        cls._building.add(key)
+        try:
+            spec = ctx.lookup(cls.TOP_NAME, name)
+            instance = cls.build(spec.target, spec.params, ctx, name=name)
+        finally:
+            cls._building.discard(key)
         if not spec.new_instance:
             cls._instances[name] = instance
         return instance
@@ -167,6 +183,8 @@ class Factory:
     def reset_instances(cls) -> None:
         """清空本 producer 的具名实例缓存。"""
         cls._instances = {}
+        if hasattr(cls, "_building"):
+            cls._building = set()
 
     @classmethod
     def reset_all(cls) -> None:

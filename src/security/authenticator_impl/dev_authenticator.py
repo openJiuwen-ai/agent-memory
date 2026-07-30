@@ -24,7 +24,7 @@ class DevAuthenticator(Authenticator):
         全局通过）一致。security.md §2.2.1 示例写的 ``Scope(org="*")`` 是参考
         demo 的形态，在本主干会被 check 的「跨 org 拒绝」规则挡住，不可照搬。
         """
-        return AuthContext(actor=Scope(), role=Role.ROOT)
+        return AuthContext(actor=Scope(), role=Role.ROOT, auth_mode=AuthMode.DEV.value)
 
     def mode(self) -> AuthMode:
         return AuthMode.DEV

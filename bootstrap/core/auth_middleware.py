@@ -133,7 +133,7 @@ def _record_denial(audit, authenticator, credentials, action) -> None:
                 decision="deny",
                 layer="security",
                 detail={
-                    "mode": authenticator.mode().value,
+                    "auth_mode": authenticator.mode().value,
                     "peer": credentials.peer_address,
                 },
             )

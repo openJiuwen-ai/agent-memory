@@ -87,7 +87,12 @@ class TrustedAuthenticator(Authenticator):
             # 未注册主体一律拒绝，不默认给 USER 放行——fail-closed。
             raise AuthenticationError(_FAILED)
 
-        return AuthContext(actor=actor, acting_user=_acting_user(actor, headers), role=role)
+        return AuthContext(
+            actor=actor,
+            acting_user=_acting_user(actor, headers),
+            role=role,
+            auth_mode=AuthMode.TRUSTED.value,
+        )
 
     def mode(self) -> AuthMode:
         return AuthMode.TRUSTED

@@ -423,6 +423,16 @@ class LocalMemoryAPI(MemoryAPI):
     ) -> None:
         payload = dict(detail or {})
         payload.setdefault("decision", decision)
+        # §7.2：审计记录认证元数据。从请求级 AuthContext 取，缺失（后台 job / 直连）
+        # 则不写--这几项是认证产物，无认证上下文时不存在比填空更诚实。
+        # 直接赋值（非 setdefault，审计 P3-1）：这几项是可信认证产物，调用方传入的
+        # detail 不应覆盖它们--安全边界不依赖所有未来调用者不用这些键名。
+        ctx = get_current()
+        if ctx is not None:
+            payload["acting_user"] = ctx.acting_user
+            payload["role"] = ctx.role.value if ctx.role else ""
+            payload["key_fp"] = ctx.authorizing_key_fp
+            payload["auth_mode"] = ctx.auth_mode
         self._audit.record(
             AuditEvent(
                 id=str(uuid.uuid4()),

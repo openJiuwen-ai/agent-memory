@@ -25,4 +25,5 @@ def register_security() -> None:
     import_module("security.key_store_impl")
     import_module("security.authenticator_impl")
     import_module("security.rate_limit_impl")
+    import_module("security.audit_hmac")  # 注册 hmac audit 装饰器到 AuditProducer
     _REGISTERED = True

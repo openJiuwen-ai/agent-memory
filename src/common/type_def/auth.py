@@ -59,6 +59,7 @@ class AuthContext:
     role: Role = Role.USER  # 服务端角色注册表的产物，不来自请求
     from_oauth: bool = False  # 区分 OAuth 与 API Key 路径（第二期消费）
     authorizing_key_fp: str = ""  # 签发本次凭据的 key 指纹，供轮换级联失效与追责
+    auth_mode: str = ""  # 认证路径（dev/trusted/api_key/oauth），供审计；由 authenticator 填
 
 
 _CURRENT: ContextVar[AuthContext | None] = ContextVar("auth_context", default=None)
