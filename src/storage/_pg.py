@@ -38,15 +38,22 @@ def _typed_value(value: Any) -> tuple[str, Any]:
     raise ValidationError(f"unsupported PostgreSQL filter literal: {value!r}")
 
 
-def _contains_clause(key: str, value: Any) -> tuple[str, list[Any]]:
+def _scalar_clause(key: str, value: Any) -> tuple[str, list[Any]]:
     type_name, parameter = _typed_value(value)
-    fragment = (
-        "(metadata @> jsonb_build_object(%s::text, to_jsonb(%s::"
-        f"{type_name}"
-        ")) OR metadata @> jsonb_build_object(%s::text, "
-        f"jsonb_build_array(to_jsonb(%s::{type_name}))))"
+    return (
+        f"metadata @> jsonb_build_object(%s::text, to_jsonb(%s::{type_name}))",
+        [key, parameter],
     )
-    return fragment, [key, parameter, key, parameter]
+
+
+def _array_contains_clause(key: str, value: Any) -> tuple[str, list[Any]]:
+    type_name, parameter = _typed_value(value)
+    return (
+        "(jsonb_typeof(metadata->%s) = 'array' AND "
+        "metadata @> jsonb_build_object(%s::text, "
+        f"jsonb_build_array(to_jsonb(%s::{type_name}))))",
+        [key, key, parameter],
+    )
 
 
 def compile_pg_filter(expr: FilterExpr | None) -> tuple[str, list[Any]]:
@@ -55,16 +62,19 @@ def compile_pg_filter(expr: FilterExpr | None) -> tuple[str, list[Any]]:
         return "", []
     if isinstance(expr, FilterClause):
         key = filter_field_metadata_key(expr.field)
-        if expr.op in (FilterOp.EQ, FilterOp.CONTAINS, FilterOp.NE):
-            base, params = _contains_clause(key, expr.value)
+        if expr.op in (FilterOp.EQ, FilterOp.NE):
+            base, params = _scalar_clause(key, expr.value)
             if expr.op is FilterOp.NE:
                 return f"(NOT COALESCE({base}, FALSE))", params
+            return f"(COALESCE({base}, FALSE))", params
+        if expr.op is FilterOp.CONTAINS:
+            base, params = _array_contains_clause(key, expr.value)
             return f"(COALESCE({base}, FALSE))", params
         if expr.op in (FilterOp.IN, FilterOp.NOT_IN):
             parts: list[str] = []
             params: list[Any] = []
             for value in expr.value:
-                part, part_params = _contains_clause(key, value)
+                part, part_params = _scalar_clause(key, value)
                 parts.append(part)
                 params.extend(part_params)
             base = f"({' OR '.join(parts)})"
