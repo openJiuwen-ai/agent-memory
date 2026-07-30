@@ -109,6 +109,21 @@ class RedisKVStore(KVStore):
             raise NotFoundError(entity="key", key=key)
         return value
 
+    def mget(self, scope: Scope, keys: list[str]) -> list[bytes]:
+        # 原生 MGET 一次往返召回，返回与 keys 下标一一对应；天然支持重复 key。
+        # 缺失位 redis 返回 None，归一为 NotFoundError（与 get 一致）。
+        if not keys:
+            return []
+        namespaced = [self._namespaced(scope, key) for key in keys]
+        with wrap_backend(f"redis mget {len(keys)} keys"):
+            values = self.client.mget(namespaced)
+        out: list[bytes] = []
+        for key, value in zip(keys, values):
+            if value is None:
+                raise NotFoundError(entity="key", key=key)
+            out.append(value)
+        return out
+
     def exists(self, scope: Scope, key: str) -> bool:
         with wrap_backend(f"redis exists {key!r}"):
             return self.client.exists(self._namespaced(scope, key)) > 0

@@ -111,11 +111,28 @@ class UnitReader:
         """
         在 ``scope`` 内批量点读，返回 ``unit_id → MemoryUnit``；缺失的 id 省略
         （索引↔真源短暂不一致）。
+
+        重复 ``unit_id`` 的去重在此处（load）完成——先去重再一次性 ``mget`` 召回
+        真源字节（位置对应、重复 key 各下标独立返回），省去逐条 ``get`` 的 kv 接口
+        往返；去重不下沉到 ``mget``。``mget`` 任一 key 缺失即报 ``NotFoundError``
+        （与 ``get`` 一致），故批量点读的「缺失省略」兜底由 load 承担：捕获缺失时
+        回退逐条 ``get``，仅跳过确实不存在的 id。
         """
+        # 去重保序：mget 按位置返回，传入去重后的 key 避免重复点读/重复反序列化。
+        unique = list(dict.fromkeys(unit_ids))
+        keys = [memory_key(uid) for uid in unique]
+        try:
+            return {uid: loads(data) for uid, data in zip(unique, self._kv.mget(scope, keys))}
+        except NotFoundError:
+            # 索引↔真源短暂不一致（个别 id 尚未落盘）：退回逐条，仅跳过缺失。
+            return self._load_missing_fallback(scope, unique)
+
+    def _load_missing_fallback(
+        self, scope: Scope, unique: list[str]
+    ) -> dict[str, MemoryUnit]:
+        """mget 报缺失时的逐条兜底：逐个 get，缺失的 id 跳过（不报错）。"""
         out: dict[str, MemoryUnit] = {}
-        for uid in unit_ids:
-            if uid in out:
-                continue
+        for uid in unique:
             try:
                 out[uid] = loads(self._kv.get(scope, memory_key(uid)))
             except NotFoundError:

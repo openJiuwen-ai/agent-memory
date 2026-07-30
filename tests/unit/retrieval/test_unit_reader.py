@@ -383,3 +383,37 @@ def test_unit_reader_loads_by_id_in_scope(scope, unit_factory) -> None:
 
     assert set(loaded) == {"u1"}
     assert loaded["u1"].content == "hello"
+
+
+def test_unit_reader_load_batch_omits_missing(scope, unit_factory) -> None:
+    # load 一次性 mget 召回：批量命中省逐条 get 往返，缺失 id 省略。
+    kv = InMemoryKVStore()
+    kv.insert(scope, memory_key("u1"), dumps(unit_factory("u1", "one")))
+    kv.insert(scope, memory_key("u2"), dumps(unit_factory("u2", "two")))
+    reader = UnitReader(kv)
+
+    loaded = reader.load(scope, ["u1", "u2", "missing"])
+
+    assert set(loaded) == {"u1", "u2"}
+    assert loaded["u1"].content == "one"
+    assert loaded["u2"].content == "two"
+
+
+def test_unit_reader_load_dedups_repeated_ids(scope, unit_factory) -> None:
+    # 重复 uid 的去重留在 load（不下沉到 mget）：同一 uid 传多次只点读一次。
+    kv = InMemoryKVStore()
+    kv.insert(scope, memory_key("u1"), dumps(unit_factory("u1", "x")))
+    reader = UnitReader(kv)
+
+    loaded = reader.load(scope, ["u1", "u1", "u1"])
+
+    assert set(loaded) == {"u1"}
+    assert loaded["u1"].content == "x"
+
+
+def test_unit_reader_load_empty_ids_returns_empty(scope) -> None:
+    assert UnitReader(InMemoryKVStore()).load(scope, []) == {}
+
+
+def test_unit_reader_load_all_missing_returns_empty(scope) -> None:
+    assert UnitReader(InMemoryKVStore()).load(scope, ["ghost"]) == {}

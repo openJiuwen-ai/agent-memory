@@ -86,6 +86,15 @@ class _MemoryKVStore(KVStore):
             raise NotFoundError("kv", key)
         return b[key]
 
+    def mget(self, scope, keys):
+        b = self._data.get(self._sk(scope), {})
+        out = []
+        for key in keys:
+            if key not in b:
+                raise NotFoundError("kv", key)
+            out.append(b[key])
+        return out
+
     def exists(self, scope, key):
         return key in self._data.get(self._sk(scope), {})
 

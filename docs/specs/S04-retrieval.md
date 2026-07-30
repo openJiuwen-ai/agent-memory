@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/retrieval/ |
-| 最近一次修订日期 | 2026-07-29 |
+| 最近一次修订日期 | 2026-07-30 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md |
 
 ## 范围 / 边界
@@ -69,7 +69,7 @@ QueryParser.parse(query) → ParsedQuery
 → 若 ParsedQuery.raw 为空则短路返回空结果
 → 并行 Recaller[i].recall(scope, parsed_query, recall_k) → list[list[ScoredUnit]]（超采样）
 → Fuser.fuse(parsed_query, candidates) → list[ScoredUnit]
-→ 截断精排预算 → UnitReader 点读 MemoryUnit → 真源复核（lifecycle/valid-time/event-time/filters）
+→ 截断精排预算 → UnitReader 批量点读 MemoryUnit（mget 一次召回 + 去重/缺失兜底在 load）→ 真源复核（lifecycle/valid-time/event-time/filters）
 → 可选 Reranker 精排 → 相关性阈值过滤（结果数可 < top_k）→ 截断 top_k
 → Discloser.disclose(parsed_query, candidates, units, level, max_tokens) → list[RetrievedItem]
 → 组装 RetrievalResult（items + trajectory）
