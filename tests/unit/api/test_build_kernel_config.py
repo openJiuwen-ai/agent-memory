@@ -146,3 +146,73 @@ def test_build_named_shares_single_instance() -> None:
     b = VectorProducer.build_named("main", ctx)
     assert a is b
     assert len(_VEC_BUILT) == 1
+
+
+# -- audit 完整性启动约束（PR③ HMAC 策略）----------------------------------- #
+
+
+def test_persistent_file_sqlite_without_hmac_rejected(tmp_path) -> None:
+    """真文件持久化 sqlite 未包 HMAC -> 拒绝启动（PR③ 策略）。"""
+
+    cfg = Config.from_dict(
+        {
+            "audit": {
+                "default": {
+                    "target": "sqlite",
+                    "params": {"db_path": str(tmp_path / "audit.sqlite3")},
+                }
+            }
+        }
+    )
+
+    with pytest.raises(ValidationError):
+        assemble(config=cfg)
+
+
+def test_memory_sqlite_without_hmac_allowed() -> None:
+    """sqlite ':memory:' 不算真持久化，允许无 HMAC（DEV/测试路径）。"""
+
+    cfg = Config.from_dict(
+        {"audit": {"default": {"target": "sqlite", "params": {"db_path": ":memory:"}}}}
+    )
+
+    # 不应抛 ValidationError
+
+    assemble(config=cfg)
+
+
+def test_in_memory_audit_without_hmac_allowed() -> None:
+    """in_memory 后端允许无 HMAC。"""
+
+    cfg = Config.from_dict({"audit": {"default": {"target": "in_memory"}}})
+
+    assemble(config=cfg)
+
+
+def test_persistent_file_sqlite_with_hmac_allowed(tmp_path) -> None:
+    """真文件 sqlite 包 HMAC -> 允许启动。"""
+
+    from security.bootstrap import register_security
+
+    register_security()
+
+    Factory.reset_all()
+
+    cfg = Config.from_dict(
+        {
+            "audit": {
+                "raw": {"target": "sqlite", "params": {"db_path": str(tmp_path / "audit.sqlite3")}},
+                "default": {"target": "hmac", "params": {"inner": "raw", "key_hex": "00" * 32}},
+            }
+        }
+    )
+
+    assemble(config=cfg)
+
+
+def test_dev_default_no_audit_config_allowed() -> None:
+    """无 audit 配置（默认 sqlite :memory:）允许启动（DEV 直连路径）。"""
+
+    # 不传 audit 段，走默认
+
+    assemble(config=Config.from_dict({}))

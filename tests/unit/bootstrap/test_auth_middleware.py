@@ -282,7 +282,7 @@ def test_rate_limit_audit_carries_no_bucket_state() -> None:
             pass  # pragma: no cover
 
     detail = recorded[0].detail
-    assert set(detail) == {"mode", "peer"}
+    assert set(detail) == {"auth_mode", "peer"}
     assert "secret-key" not in str(detail)  # §7.5：凭据不进审计
 
 
