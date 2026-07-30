@@ -66,7 +66,10 @@ def test_normalize_rejects_non_clause_list_element() -> None:
 # -- validate ----------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("field", ["scope", "tenant", "org", "user", "agent", "session", "scope_x"])
+@pytest.mark.parametrize(
+    "field",
+    ["scope", "tenant", "org", "space", "user", "agent", "session", "scope_x"],
+)
 def test_validate_rejects_scope_fields(field: str) -> None:
     with pytest.raises(ValidationError):
         validate(FilterClause(field, FilterOp.EQ, "v"))

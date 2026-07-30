@@ -658,7 +658,7 @@ class OrchestratingEvolver(Evolver):
     ) -> ExtractContext | None:
         """EXTRACT 模式下：若本轮 units 标记了 infer=true，收集上下文参考项。
 
-        - recent_originals：由调用方经 ``_persist_and_maintain_messages`` 一次 list 取得的
+        - recent_originals：由调用方经 ``_persist_and_maintain_messages`` 一次 scan 取得的
           最近 N 条原文（做指代/代词消解与语境），只进 prompt，不参与去重。
         - related_memories：用 dedup.recall 召回的相关记忆（MemoryUnit），做去重——
           进 prompt 提示已有事实、勿重复抽取。
@@ -683,10 +683,10 @@ class OrchestratingEvolver(Evolver):
     def _persist_and_maintain_messages(
         self, units: List[MemoryUnit]
     ) -> List[MemoryUnit]:
-        """一次 list 完成 /messages/ 的维护：取最近 N 条 → 插入本轮 → 删超出旧原文。
+        """一次 scan 完成 /messages/ 的维护：取最近 N 条 → 插入本轮 → 删超出旧原文。
 
-        顺序（只调一次 ``kv.list(/messages/)``）：
-        1. list 拿全部历史原文（本轮尚未落盘，故历史中不含本轮）；
+        顺序（只调一次 ``kv.scan(/messages/)``）：
+        1. scan 拿全部历史原文（本轮尚未落盘，故历史中不含本轮）；
         2. 取最近 N 条作 recent；
         3. 插入本轮新原文到 /messages/（不建索引）；
         4. 删除超出最近 N 条的旧原文（含本轮后总数 > N 时淘汰最早的）。
@@ -697,10 +697,10 @@ class OrchestratingEvolver(Evolver):
             return []
         scope = units[0].scope
         try:
-            pairs = self._kv.list(scope, prefix=MESSAGES_KEY_PREFIX)
+            pairs = self._kv.scan(scope, prefix=MESSAGES_KEY_PREFIX)
         except Exception as exc:
             logger.warning(
-                "Evolver._persist_and_maintain_messages: list failed, empty: %s",
+                "Evolver._persist_and_maintain_messages: scan failed, empty: %s",
                 exc,
             )
             # list 失败仍落本轮原文（不维护淘汰），recent 为空

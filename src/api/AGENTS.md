@@ -45,6 +45,8 @@
    请求级 `memory_types` 鉴权通过后，API 必须调用 Engine 的
    `list_with_permission_contexts` 一次取得当前分页及其真源权限上下文，再逐条 READ 鉴权；
    不得把未指定类型解释为可绕过类型路由，也不得用两次分页分别读取上下文和内容。
+   API 在委托前复制 `extensions`、规范化 `filters`，并把权限路由值作为系统过滤条件
+   与用户过滤做外层 AND；返回 `MemoryListResult` 的 count 为分页前匹配总数。
 
 9. **Space 删除覆盖全部子 Scope**
    `delete_space` 通过 `MemoryEngine.purge_space` 清理同一 `org + space` 下所有 user/agent/session 子 Scope 的真源和索引，再委托 `SpaceManager` 清理 messages 与管理元数据。

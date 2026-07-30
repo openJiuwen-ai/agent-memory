@@ -7,7 +7,7 @@ import sys
 import pytest
 
 from common.type_def import Segment
-from control import PrincipalPath, SpaceInfo, SpaceStatus
+from control import MemoryListResult, PrincipalPath, SpaceInfo, SpaceStatus
 
 pytestmark = pytest.mark.unit
 
@@ -158,6 +158,8 @@ def test_dispatch_list_delegates_to_api_with_pagination_and_type_filter() -> Non
             offset=0,
             limit=100,
             memory_types=None,
+            extensions=None,
+            filters=None,
         ):
             self.call = {
                 "scope": scope,
@@ -165,15 +167,20 @@ def test_dispatch_list_delegates_to_api_with_pagination_and_type_filter() -> Non
                 "offset": offset,
                 "limit": limit,
                 "memory_types": memory_types,
+                "extensions": extensions,
+                "filters": filters,
             }
-            return [
-                handler.MemoryUnit(
-                    id="unit-1",
-                    scope=scope,
-                    segments=[Segment(content="repo uses pytest")],
-                    metadata={"memory_type": "coding"},
-                )
-            ]
+            return MemoryListResult(
+                items=[
+                    handler.MemoryUnit(
+                        id="unit-1",
+                        scope=scope,
+                        segments=[Segment(content="repo uses pytest")],
+                        metadata={"memory_type": "coding"},
+                    )
+                ],
+                count=7,
+            )
 
     class _Srv:
         def __init__(self) -> None:
@@ -190,6 +197,8 @@ def test_dispatch_list_delegates_to_api_with_pagination_and_type_filter() -> Non
             "offset": "2",
             "limit": "5",
             "memory_types": "coding,episodic",
+            "extensions": {"vendor_mode": 3},
+            "filter": {"metadata.project": "alpha"},
         },
     )
 
@@ -200,16 +209,27 @@ def test_dispatch_list_delegates_to_api_with_pagination_and_type_filter() -> Non
         "offset": 2,
         "limit": 5,
         "memory_types": ["coding", "episodic"],
+        "extensions": {"vendor_mode": "3"},
+        "filters": {"metadata.project": "alpha"},
     }
     assert body["ok"] is True
     assert body["op"] == "list"
-    assert body["count"] == 1
+    assert body["count"] == 7
     assert body["offset"] == 2
     assert body["limit"] == 5
     assert body["items"][0]["item_id"] == "unit-1"
 
 
-@pytest.mark.parametrize("payload", [{"offset": -1}, {"limit": 0}, {"memory_types": {}}])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"offset": -1},
+        {"limit": 0},
+        {"memory_types": {}},
+        {"extensions": []},
+        {"filters": {}, "filter": {}},
+    ],
+)
 def test_dispatch_list_rejects_invalid_options(payload) -> None:
     class _Api:
         @staticmethod

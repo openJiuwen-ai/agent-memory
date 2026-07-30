@@ -34,6 +34,7 @@ from control import (
     DeleteSelector,
     Grant,
     JobInfo,
+    MemoryListResult,
     MemoryPatch,
     SpaceDeleteResult,
     SpaceInfo,
@@ -132,13 +133,16 @@ class MemoryAPI(ABC):
         offset: int = 0,
         limit: int = 100,
         memory_types: list[str] | None = None,
-    ) -> list[MemoryUnit]:
+        extensions: dict[str, str] | None = None,
+        filters: FilterExpr | list[FilterClause] | dict | None = None,
+    ) -> MemoryListResult:
         """列出目标 ``scope`` 下已建索引的记忆单元。
 
         语义参考 mem1.0 ``list_memories``：支持 ``offset``/``limit`` 分页与
-        ``memory_types`` 类型过滤。只返回 ``/memory/`` 真源记录，不包含
+        ``memory_types`` 类型过滤，``extensions`` 透传自定义参数，``filters``
+        支持结构化过滤。只返回 ``/memory/`` 真源记录，不包含
         ``/messages/`` 下的 infer 原文缓存。``identity`` 为调用方身份，本层据
-        ``scope`` 鉴权 READ 后委托 Engine。
+        ``scope`` 鉴权 READ 后委托 Engine。返回当前页 items 和分页前匹配总数 count。
         """
 
     @abstractmethod

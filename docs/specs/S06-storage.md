@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/storage/ |
-| 最近一次修订日期 | 2026-07-27 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md |
+| 最近一次修订日期 | 2026-07-30 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -29,7 +29,7 @@
 2. **记录 id 在 scope 内唯一**：`insert` 冲突 / `update` 缺失按 `(scope, id)` 判定；后端可用 `scope + id` 生成物理主键，保证同一逻辑 id 在不同 space 下互不冲突。
 3. **统一 CRUD 动词**：insert（增）/ delete（删）/ update（改）/ get（查），各存储接口保持同一命名。
 4. **检索型存储额外提供 search**：fulltext / vector / graph / fusion 在 CRUD 之上再提供 `search` 查询。
-5. **kv 提供 exists 与 list**：exists（存在性查询）、list（枚举一个 scope 内的全部 key-value）、scopes（枚举有哪些 scope）。
+5. **kv 区分 list 与 scan**：`list` 是 `/memory/` MemoryUnit 的过滤、计数、排序和分页查询；`scan` 是无业务语义的 scope 内原始 key-value 扫描；`scopes` 枚举已有 scope。
 6. **fs 提供 stat**：stat（文件元信息查询）。
 7. **scope 对 key/路径做命名空间隔离**：kv / fs 是通用原语，`scope` 入参用于对 key / 路径做命名空间隔离（同一逻辑 key 在不同 scope 下是相互隔离的不同物理键）。
 8. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
@@ -40,7 +40,7 @@
     原生类型，不统一字符串化；不同类型之间不做隐式比较转换。
 11. **所有 Store 必须实现 `store_type()` 和 `health()`**：继承自 `BaseStore`。
 12. **多租户隔离默认依赖逻辑 scope 边界**：当前不要求物理分库/分 collection，但要求同一逻辑 key/id 在不同 scope 下严格命名空间隔离。
-13. **EncryptedKVStore 只装饰 KV，不实现算法**：写前加密、读后解密通过注入的 `SecurityProvider` 完成；storage 层只负责构造 `SecurityContext` / AAD 与委托 raw KV。
+13. **EncryptedKVStore 只装饰 KV，不实现算法**：写前加密、读后解密通过注入的 `SecurityProvider` 完成；`list` 在解密后执行 MemoryUnit 过滤，不能把过滤下推到密文 raw KV。
 14. **space 是 scope 的硬分区维度**：`scope_segments(scope)` 使用 `org/space/user/agent/session` 五段；`scope_dims(scope)` 在 `org` 非空时即使 `space==""` 也下推 `space == ""`，避免空 space 查询跨到非空 space。
 15. **标识唯一性分层**：非空 Space id 在 Space 资源注册表中全局唯一；MemoryUnit 与各 Store 记录 id 只要求在完整 Scope 内唯一。
 
@@ -59,7 +59,7 @@ class BaseStore(ABC):
 
 ### KVStore（`kv.py`）
 
-键值存储，统一 CRUD + 范围枚举。
+键值存储，统一 CRUD + MemoryUnit 列表查询 + 范围枚举。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
@@ -68,7 +68,8 @@ class BaseStore(ABC):
 | `delete` | `(scope, key) -> None` | 删除 scope 下的 key（幂等） |
 | `get` | `(scope, key) -> bytes` | 读取 scope 下 key 的值；不存在时报缺失 |
 | `exists` | `(scope, key) -> bool` | 返回 scope 下 key 是否存在 |
-| `list` | `(scope, prefix="") -> list[tuple[str, bytes]]` | 枚举 scope 下的全部 (key, value)（可选只取 prefix 开头的 key） |
+| `list` | `(scope, *, offset=0, limit=100, memory_types=None, filters=None, extensions=None) -> KVMemoryListResult` | 查询 `/memory/` MemoryUnit；先执行 `memory_types AND filters`，再精确计数、稳定排序和分页 |
+| `scan` | `(scope, prefix="") -> list[tuple[str, bytes]]` | 扫描 scope 下的全部 (key, value)（可选只取 prefix 开头的 key）；顺序由实现定义 |
 | `scopes` | `() -> list[Scope]` | 枚举本存储中已用过的全部 scope |
 
 **ttl** 单位为秒（float），`0` 表示永不过期。
@@ -80,7 +81,8 @@ class BaseStore(ABC):
 | 方法 | 行为 |
 |------|------|
 | `insert` / `update` | 构造 `SecurityContext(scope, purpose, metadata)` 与 AAD，调用 `SecurityProvider.encrypt` 后写入 raw KV |
-| `get` / `list` | 从 raw KV 读取密文字节，调用 `SecurityProvider.decrypt` 后返回明文字节；任一解密失败抛 `BackendError`，不跳过坏数据 |
+| `get` / `scan` | 从 raw KV 读取密文字节，调用 `SecurityProvider.decrypt` 后返回明文字节；任一解密失败抛 `BackendError`，不跳过坏数据 |
+| `list` | 扫描目标 Scope 的 `/memory/` 密文并逐条解密，再执行统一过滤、计数、排序和分页；不调用 raw KV 的 `list` |
 | `exists` / `delete` / `scopes` | 直接委托 raw KV，不读取或改写 value |
 
 装配参数：
@@ -154,6 +156,12 @@ AAD 版本当前为 `1`，绑定 `scope(org/space/user/agent/session)`、KV `key
 | `stat` | `(scope, ref) -> FileStat` | 返回 scope 下 ref 处文件的元信息 |
 
 ## 数据结构
+
+### KV（`types.py`）
+
+| 类型 | 关键字段 |
+|------|----------|
+| `KVMemoryListResult` | entries: list[tuple[str, bytes]] / count: int |
 
 ### 向量（`types.py`）
 

@@ -25,6 +25,7 @@ from control import (
     Grant,
     JobInfo,
     JobStatus,
+    MemoryListResult,
     MemoryPatch,
     PrincipalPath,
     SpaceDeleteResult,
@@ -64,6 +65,7 @@ __all__ = [
     "Segment",
     # 写入/修正/删除（control）
     "MemoryPatch",
+    "MemoryListResult",
     "UpdateMode",
     "DeleteMode",
     "DeleteSelector",

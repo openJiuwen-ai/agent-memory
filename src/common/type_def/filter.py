@@ -82,7 +82,7 @@ class FilterGroup:
 FilterExpr = FilterClause | FilterGroup
 
 # scope 是隔离轴、走独立入参，不得混入 filters（见模块 docstring）。
-_SCOPE_FIELDS = frozenset({"scope", "tenant", "org", "user", "agent", "session"})
+_SCOPE_FIELDS = frozenset({"scope", "tenant", "org", "space", "user", "agent", "session"})
 _SET_OPS = frozenset({FilterOp.IN, FilterOp.NOT_IN})
 _RANGE_OPS = frozenset({FilterOp.GT, FilterOp.GTE, FilterOp.LT, FilterOp.LTE})
 _LOGIC_KEYS = {"AND": FilterLogic.AND, "OR": FilterLogic.OR, "NOT": FilterLogic.NOT}

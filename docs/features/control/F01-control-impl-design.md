@@ -81,7 +81,7 @@
 
 - 治理层只做可检视、可回溯、可审计；编辑和遗忘仍走 API 的 update/delete，以便统一鉴权和审计。
 - `trace` 只沿 `provenance`，不沿 `supersedes`。前者表示「这条记忆从哪些来源演进而来」，后者表示版本替换链，服务 `get(as_of)`。
-- 第一版跨 scope 查找依赖 KVStore 的 `scopes()` + `list()` 能力，适合治理后台；生产环境若需要更细粒度授权，应在 API 层和真实 Governor 后端补访问控制。
+- 第一版跨 scope 查找依赖 KVStore 的 `scopes()` + `scan()` 能力，适合治理后台；生产环境若需要更细粒度授权，应在 API 层和真实 Governor 后端补访问控制。
 
 ### 决策 4：权限第一版用 allow-all 占位，保留 Grant 记录形状
 

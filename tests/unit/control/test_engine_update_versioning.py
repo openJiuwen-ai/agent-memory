@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from api import MemoryPatch, Scope
 from api.memory_api_impl import build_kernel
 from common.errors import ValidationError
-from common.type_def import LifecycleState, MemoryUnit, memory_key
+from common.type_def import LifecycleState, MemoryUnit
 from common.type_def.memory_codec import dumps, loads
 from control.base import ControlOperatorType
 from control.lifecycle import LifecycleManager
@@ -29,7 +29,7 @@ class RecordingLifecycle(LifecycleManager):
 
     def supersede(self, scope: Scope, unit_id: str, invalid_at: datetime) -> MemoryUnit:
         self.supersede_calls.append((scope, unit_id, invalid_at))
-        for key, raw in self._kv.list(scope):
+        for key, raw in self._kv.scan(scope):
             if key.rsplit("/", 1)[-1] == unit_id:
                 unit = loads(raw)
                 if unit.lifecycle != LifecycleState.ACTIVE:

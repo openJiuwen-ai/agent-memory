@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-06-24 |
-| 影响范围 | src/api/memory_api.py，src/api/memory_api_impl/{local_memory_api.py,assembly.py}，src/control/engine.py，bootstrap/core/handler.py，docs/specs/S02-memory-api.md（如有） |
-| 测试基线 | `pytest tests/unit/api` 全绿（exit 0；含 `test_build_kernel_config` / `test_recall_context`）；list 增量用 `compileall` + 直接 smoke 验证，当前环境缺少 `pytest` / `ruff` 模块 |
+| 影响范围 | src/api/，src/control/，src/storage/，src/common/type_def/，bootstrap/core/handler.py，docs/specs/S02-memory-api.md，docs/specs/S03-control.md，docs/specs/S06-storage.md，docs/specs/S07-common.md |
+| 测试基线 | list 相关 API/handler/Engine/KV/common/retrieval 单测通过；ruff、compileall 与 `git diff --check` 通过；完整 `tests/unit` 仅两项因环境缺少 torch 失败 |
 | Refs | —（如有 issue 补 `Refs: #<n>`） |
 
 > 本文档归档**记忆接口层实现的设计与取舍**：`MemoryAPI` 的单进程实现 `LocalMemoryAPI`（鉴权/审计执行点）与装配落点 `assembly.py`（`build_kernel`/`assemble`/`Kernel`）。
@@ -118,6 +118,11 @@ kernel = build_kernel(config=Config(...))         # 另需真源 kv 句柄时
 参考 mem1.0 `list_memories(user_id, scope_id, offset, limit, mem_types)` 的核心语义，
 本层把 list 收口到统一 API：
 
+当前默认实现的职责链是
+`MemoryAPI.list -> MemoryEngine.list_with_permission_contexts -> KVStore.list`。
+`KVStore.list` 在完整 `Scope` 内完成 `/memory/` MemoryUnit 的类型/FilterExpr 过滤、精确
+计数、稳定排序和分页；Engine 只反序列化当前页并生成权限上下文。
+
 ```python
 def list(
     self,
@@ -127,14 +132,16 @@ def list(
     offset: int = 0,
     limit: int = 100,
     memory_types: list[str] | None = None,
-) -> list[MemoryUnit]:
+    extensions: dict[str, str] | None = None,
+    filters: FilterExpr | list[FilterClause] | dict | None = None,
+) -> MemoryListResult:
     ...
 ```
 
 设计目标：
 
 - `MemoryAPI.list` 做 READ 鉴权、入口审计和参数委托。
-- `MemoryEngine.list` 做 scope 内真源枚举，支持 offset/limit 分页和 `memory_types` 过滤。
+- `MemoryEngine.list` 校验分页参数并把查询参数完整委托 `KVStore.list`。
 - bootstrap `handler._list` 只解析 payload 并委托 `srv.api.list(...)`，不再直连 KV。
 - 返回范围只包含 `/memory/` 前缀的已建索引 `MemoryUnit`，不返回 `/messages/` 下的 infer 原文缓存。
 - list 是范围枚举，不走 `MemoryPipeline`；pipeline 仍只负责构建/查询组件绑定。
@@ -147,13 +154,13 @@ API 层权限上下文：
 - 这样 `RoutingPermissionManager(route_key="memory_type")` 可以让不同记忆类型使用不同权限逻辑，
   且多类型请求不会绕过更严格的类型策略。
 
-Engine 层枚举语义：
+KV 层列表语义：
 
 - 校验 `offset >= 0`、`limit > 0`。
-- 调用 `KVStore.list(scope, prefix=MEMORY_KEY_PREFIX)`，只加载 `/memory/` 记录。
+- `KVStore.list` 只加载 `/memory/` 记录。
 - `memory_types` 过滤优先读取 `unit.metadata["memory_type"]`，缺省退回 `unit.tier.value`。
 - 按 `unit.temporal.t_ingest` 倒序返回，`unit.id` 作为稳定次级排序键。
-- 返回 `units[offset:offset + limit]`；响应中的 `count` 是本页数量，不是过滤后的总数。
+- 返回当前页 `items`；响应中的 `count` 是过滤后的分页前总数。
 
 bootstrap payload 兼容：
 
@@ -180,6 +187,215 @@ bootstrap payload 兼容：
 - `tests/unit/api/test_dispatch_management_compat.py`：bootstrap `list` 委托 `MemoryAPI.list`，
   以及 handler 对 offset/limit/memory_types 的入参校验。
 
+#### 10.1 List 自定义参数、过滤与结果总数增量设计（2026-07-30，已实现）
+
+List 需要在“按 Scope 枚举”基础上支持调用方自定义参数和结构化过滤，同时返回过滤后的
+结果总数。目标接口调整为：
+
+```python
+@dataclass
+class MemoryListResult:
+    items: list[MemoryUnit] = field(default_factory=list)
+    count: int = 0
+
+
+def list(
+    self,
+    scope: Scope,
+    *,
+    identity: Scope,
+    offset: int = 0,
+    limit: int = 100,
+    memory_types: list[str] | None = None,
+    extensions: dict[str, str] | None = None,
+    filters: FilterExpr | list[FilterClause] | dict | None = None,
+) -> MemoryListResult:
+    ...
+```
+
+Python API 使用 `filters` 作为规范参数名，与 `recall` 保持一致；bootstrap payload 以
+`filters` 为规范字段，同时兼容调用方使用单数 `filter`。两者同时出现时拒绝请求，避免
+静默选择其中一份条件。
+
+`extensions` 的契约与 `RetrievalQuery.extensions` 一致：
+
+- 类型为 `dict[str, str]`；API 边界复制并把传输层值规范为字符串，避免调用方后续修改
+  原字典影响正在执行的请求。
+- 内核默认实现不解释业务 key，必须沿
+  `MemoryAPI -> MemoryEngine -> KVStore.list` 完整透传；自定义 Engine 或 KV
+  后端可按约定消费，未知 key 不报错。
+- `extensions` 不得改变 `scope`、绕过权限或覆盖系统过滤谓词。若某个扩展值参与权限路由，
+  API 必须像 recall 一样把对应路由值回注为系统等值过滤条件，并与用户 filters 做外层
+  `AND`，确保“按什么条件授权，就只列出什么范围的数据”。
+- `None` 与空字典都表示没有自定义参数。非字典输入在 API/handler 边界抛
+  `ValidationError`，不静默丢弃。
+
+`filters` 复用 retrieval 的完整过滤契约：
+
+- 接受单个 `FilterClause`、`FilterExpr` 树、旧式 `list[FilterClause]` 和 dict DSL；
+  在 API 边界统一通过 `normalize` 转成 `FilterExpr | None`。
+- 支持 `EQ/NE/IN/NOT_IN/GT/GTE/LT/LTE/CONTAINS` 以及 `AND/OR/NOT`。
+- Scope 是独立的强隔离轴，`org/space/user/agent/session` 不允许放入 filters；
+  用户过滤只能进一步收窄已鉴权的 target Scope，不能扩大查询范围。
+- `memory_types` 保留为兼容快捷参数，与 filters 是 `AND` 关系；类型匹配仍优先读取
+  `unit.metadata["memory_type"]`，缺省退回 `unit.tier.value`。
+- 规范化后的 filters、`memory_types`、`extensions`、`offset` 和 `limit` 必须由 Engine
+  原样下推 KV 查询契约；过滤必须在存储适配器内部先于排序、`offset` 和 `limit` 执行，
+  禁止 Engine 先取一页再做后置过滤。
+
+通用 `KVStore.scan(scope, prefix)` 是无业务语义的字节扫描能力，供 lifecycle、
+offboarding 和兼容代码使用；不能直接在该方法上堆叠 MemoryUnit 过滤参数。KV 契约新增
+面向 `/memory/` 真源的结构化查询：
+
+```python
+@dataclass
+class KVMemoryListResult:
+    entries: list[tuple[str, bytes]] = field(default_factory=list)
+    count: int = 0
+
+
+class KVStore:
+    def list(
+        self,
+        scope: Scope,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        memory_types: list[str] | None = None,
+        filters: FilterExpr | None = None,
+        extensions: dict[str, str] | None = None,
+    ) -> KVMemoryListResult:
+        ...
+```
+
+参数传递规则：
+
+- API 对 `extensions` 做防御性复制和字符串值规范化，对 filters 做 AST 规范化。
+- Engine 校验分页参数后，以同名 keyword 参数直接调用 `KVStore.list`。
+- KV 实现将 `memory_types/filters/extensions` 视为只读参数；需要异步保存或跨请求缓存时
+  自行复制。
+- `KVMemoryListResult` 由同一次存储查询返回当前页 entries 和分页前 count，保证两者基于
+  相同的数据状态。
+
+`KVStore.list` 只查询 `MEMORY_KEY_PREFIX` 下由 `memory_codec.dumps` 写入的 MemoryUnit，
+不包含 `/messages/` 或其他普通 KV 记录。各 KV 实现必须保证：
+
+- 在完整 Scope 内执行查询，不能跨 Scope/Space。
+- 返回的 `entries` 已完成 filters、memory_types、稳定排序和分页。
+- `count` 是同一查询条件下的分页前精确总数。
+- `extensions` 完整到达后端；默认后端可以不解释未知 key，但不能在 Engine 层提前丢弃。
+- 原生支持 JSON/metadata 查询和 count 的后端可直接下推；不支持的内存、加密或简单
+  key-value 后端在自身适配器内执行“枚举、解码、过滤、计数、排序、分页”兼容回退。
+- `EncryptedKVStore` 不能把 MemoryUnit filters 直接下推到密文 raw KV；它必须先解密再执行
+  兼容回退，或者依赖不泄露敏感值的独立可查询 metadata sidecar。无 sidecar 时不能用密文
+  条数近似过滤后 count。
+
+新增 `KVStore.list` 是抽象接口变更，当前所有 KV 实现都必须同步修改，不能只在
+默认 `memory` 后端实现：
+
+| KV 实现 | `list` 首版策略 | 约束 |
+|---|---|---|
+| `InMemoryKVStore` | 在目标 Scope 的 `/memory/` entries 上解码并使用公共 MemoryUnit filter evaluator，再精确计数、排序、分页 | 不得依赖 dict 遍历顺序 |
+| `SQLiteKVStore` | 当前 bytes schema 使用公共 evaluator 回退；先按 Scope 和 `/memory/` 前缀取值，再解码、过滤、计数、排序、分页 | 不拼接 FilterExpr SQL；后续 schema 支持 JSON 查询后再单独增加原生下推 |
+| `RedisKVStore` | 普通 Redis bytes 模式没有通用 metadata query，首版按 namespaced `/memory/` key 扫描并使用公共 evaluator；将来启用 RedisJSON/搜索索引时可增加方言编译器 | 不得把不同 Scope 的 key 混入候选 |
+| `EncryptedKVStore` | 先取得并解密目标 Scope 的 `/memory/` entries，再使用公共 evaluator；若未来有安全 metadata sidecar 才允许原生下推 | filters/extensions 不能直接委托给看不到明文的 raw KV |
+
+`extensions` 必须传到以上每个实现。默认实现忽略未知 key；某实现声明并消费自定义 key 时，
+必须在该实现的配置/文档中定义语义，不允许不同后端对同名 key 给出相反含义。
+
+FilterExpr 到“KV 可执行条件”的转换不能是一份固定查询字符串，因为各后端没有共同查询
+语言。可复用边界分成三层：
+
+1. **公共 AST 与校验**：继续由 `common.type_def.filter.normalize` 负责，把单 clause、旧 list
+   和 dict DSL 收口成合法的 `FilterExpr | None`。
+2. **公共树遍历**：复用 `common.type_def.filter.evaluate` 递归处理 `AND/OR/NOT`。
+3. **公共 MemoryUnit 求值**：`matches_memory_unit(unit, expr)` 统一字段投影和叶子比较；
+   当前 memory/sqlite/redis/encrypted 四个实现都用该兼容路径。后续后端如需原生下推，
+   由各自方言编译 FilterExpr，不改变 `KVStore.list` 契约。
+
+公共 `matches_memory_unit` 已从 retrieval UnitReader 的字段投影和叶子比较逻辑中提取，
+统一 `tags/tier/source/lifecycle/unit_id/t_event/t_valid/t_invalid/metadata.*` 的取值、缺值、
+集合和类型比较语义。Retrieval 真源复核与 KV 扫描回退都调用它，禁止各自复制一套比较逻辑。
+“树形结构遍历”和“MemoryUnit 过滤语义”可以通用；“如何表达为 SQL、Milvus 字符串或
+Elasticsearch DSL”必须由方言适配，不能伪装成跨后端通用查询语句。
+
+`CloudEngine` 与 `InMemoryEngine` 的 List 能力必须对齐：
+
+- `list`、`list_with_permission_contexts` 接受完全相同的
+  `offset/limit/memory_types/extensions/filters`，返回相同的 items/count 语义。
+- 两个 Engine 都直接调用同一个 `KVStore.list` 契约，不允许一个下推 KV、另一个
+  在 Engine 内全量扫描。
+- 两者都只反序列化 KV 返回的当前页 entries，并从同一批 MemoryUnit 构造逐项
+  PermissionContext，避免 items 与鉴权上下文来自两次查询。
+- `offset/limit` 校验、空 filters/extensions、稳定排序、count 和异常语义完全一致；公共
+  逻辑提取到 Engine 共享 helper，两个实现不复制 `_list_page`。
+- 唯一允许的能力差异是既有部署边界：`InMemoryEngine` 继续拒绝非空 `scope.space`，
+  `CloudEngine` 支持命名 Space。该差异不改变 List 查询、过滤和返回协议。
+
+默认执行顺序固定为：
+
+```text
+MemoryAPI
+  -> 规范化 extensions/filters，完成请求级 READ 鉴权
+  -> MemoryEngine 校验分页参数，不解释、复制或丢弃查询参数
+  -> KVStore.list(
+       scope,
+       offset=offset,
+       limit=limit,
+       memory_types=memory_types,
+       filters=filters,
+       extensions=extensions,
+     )
+       -> memory_types AND filters
+       -> count = len(全部匹配结果)
+       -> t_ingest DESC, id DESC 稳定排序
+       -> entries = matches[offset:offset + limit]
+  -> Engine 只反序列化当前页 entries，生成 MemoryUnit + PermissionContext
+  -> API 对当前页实际 MemoryUnit 二次 READ 鉴权
+  -> MemoryListResult(items, count)
+```
+
+`MemoryListResult.count` 表示同一 Scope 下同时满足 `memory_types` 和 `filters` 的**分页前
+总数**，不受 `offset/limit` 影响；本页数量由 `len(result.items)` 得到。bootstrap 响应中的
+`count` 同步改为该总数，`items` 仍只包含当前页。请求级鉴权未通过时不得执行枚举或返回
+count；实际资源二次鉴权未通过时整个请求失败，不返回部分 items 或可推断未授权数据规模的
+count。
+
+这一阶段继续以 KV 真源查询保证语义正确，不复用 recall：list 是确定性范围枚举，不应受
+相关性、召回通道、阈值、top-k 或披露策略影响。简单 KV 后端的兼容回退仍需扫描 Scope
+下全部 `/memory/` 记录，复杂度为 O(N)，但扫描职责封装在 KV 适配器内，Engine 始终使用
+同一个 `list` 契约。生产后端应在分页前完整下推 FilterExpr 并使用原生 count；
+不能用“先取 limit 条再过滤/计数”的近似实现替代精确语义。
+
+拒绝的方案：
+
+- **继续返回裸 `list[MemoryUnit]`，另加 count 接口**：同一过滤条件会执行两次，数据在两次
+  调用间变化时 items 与 count 不一致。
+- **让 `count = len(items)`**：这是本页大小，不是调用方要求的符合条件总数。
+- **先分页再过滤**：会造成空页、漏项和错误总数。
+- **直接扩展通用 `KVStore.scan`**：该方法还承担 lifecycle/offboarding 的无业务语义字节
+  枚举；强塞 MemoryUnit filters 会污染通用契约。新增专用 `list`，但参数和
+  执行职责仍完整下推 KV 层。
+- **Engine 全量读取后自行过滤**：能实现功能但 extensions 到不了自定义 KV，生产后端也
+  无法使用原生 metadata filter/count，且所有 Engine 都会重复扫描逻辑。
+- **复用 recall 实现过滤 List**：会把确定性枚举错误地绑定到相关性检索语义。
+
+验证覆盖：
+
+- `extensions` 逐层透传、自定义 Engine/KV 可见、非字典输入拒绝且输入字典不被修改。
+- dict DSL 与完整 FilterExpr 的各算子/逻辑组合，以及非法 Scope filter 拒绝。
+- `memory_types AND filters`、过滤后再分页、稳定排序和 `/messages/` 不外泄。
+- `count` 为分页前精确总数，空结果为 0，超出 offset 时 items 为空但 count 保持不变。
+- filters/extensions 权限路由值与系统过滤绑定，当前页逐条二次鉴权仍然生效。
+- 相同 unit id 在不同 Scope/Space 下的过滤和计数互不影响。
+- Engine/KV 记录调用断言 offset/limit/memory_types/filters/extensions 完整透传。
+- `memory/sqlite/redis/encrypted` 四个实现运行同一组 `list` 契约测试，覆盖 Scope 隔离和
+  encrypted 解密后过滤。
+- 公共 FilterExpr truth table 继续由 common/retrieval 单测覆盖；KV list 直接复用同一
+  `matches_memory_unit`。
+- `CloudEngine` 与默认 `InMemoryEngine` 分别覆盖过滤、extensions 透传、分页和 count；
+  命名 Space 仍只由 CloudEngine 支持。
+
 ---
 
 ## 拒绝的方案
@@ -200,7 +416,8 @@ bootstrap payload 兼容：
   - `test_build_kernel_config`：装配路径——默认上下文、用户 config 合并覆盖、`build_named` 具名共享、顶层名校验、kv 注入。
   - `test_recall_context`：Context 边界拆包（scope、extensions 约定 key、其余 extensions）与 recall 端到端。
 - 鉴权/审计语义随控制层 `tests/unit/control/` 一并回归（PEP 在接口层，闸门行为在 `allow_all` 与真实 PermissionManager 下分别覆盖）。
-- list 增量：`compileall` 与直接 smoke 已覆盖分页、类型过滤、`/messages/` 不外泄、权限路由和 handler 委托；当前环境缺少 `pytest` / `ruff` 模块，未能运行标准命令。
+- list 增量：API、handler、CloudEngine、四个 KV 实现、公共过滤求值相关单测通过；
+  ruff、compileall 与 `git diff --check` 通过。
 
 ---
 

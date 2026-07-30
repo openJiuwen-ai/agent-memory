@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-07-27 |
 | 影响范围 | src/storage/kv_impl/encrypted_kv_store.py，src/storage/kv_impl/__init__.py，src/common/security/，docs/specs/S06-storage.md，docs/features/common/F04-security-interfaces-and-encryption.md |
-| 测试基线 | `tests/unit/storage/test_encrypted_kv_store.py` 覆盖加密写入、读后解密、list 解密、透传操作、工厂装配与失败关闭；当前环境未安装 pytest/ruff，文档变更用 `git diff --check` 校验 |
+| 测试基线 | `tests/unit/storage/test_encrypted_kv_store.py` 覆盖加密写入、读后解密、scan 解密、透传操作、工厂装配与失败关闭；`pytest -q tests/unit/storage`、相关模块测试、ruff 与 `git diff --check` 已通过 |
 | Refs | — |
 
 ## 背景
@@ -23,7 +23,9 @@ KVStore 是 `MemoryUnit` 内容、原始消息与部分控制数据的真源字�
 
 2. **加密边界限定为 KV value**
 
-   `insert` / `update` 在写入 raw KV 前加密 `bytes` value；`get` / `list` 从 raw KV 读出后解密再返回。`key`、scope 维度、TTL、exists/delete/scopes 所需的命名空间信息保持可见，确保现有枚举、删除、过期与租户清理语义不被破坏。
+   `insert` / `update` 在写入 raw KV 前加密 `bytes` value；`get` / `scan` 从 raw KV
+   读出后解密再返回。`list` 扫描并解密 `/memory/` 条目后，再执行公共 MemoryUnit
+   过滤、计数、排序和分页，不能把明文过滤条件委托给 raw KV。
 
 3. **算法与密钥管理委托给 SecurityProvider**
 
@@ -43,7 +45,7 @@ KVStore 是 `MemoryUnit` 内容、原始消息与部分控制数据的真源字�
 
 5. **失败关闭**
 
-   加密或解密异常统一转成 `BackendError`。`list` 中任意一条记录无法解密时，整个 list 调用失败；storage 层不返回密文、不静默跳过坏数据，也不自行回退明文。是否允许旧明文数据兼容读取，由 provider 的配置决定。
+   加密或解密异常统一转成 `BackendError`。`scan` 中任意一条记录无法解密时，整个 scan 调用失败；storage 层不返回密文、不静默跳过坏数据，也不自行回退明文。是否允许旧明文数据兼容读取，由 provider 的配置决定。
 
 6. **配置通过嵌套 KV 实例完成**
 
@@ -85,7 +87,7 @@ KVStore 是 `MemoryUnit` 内容、原始消息与部分控制数据的真源字�
 - **在 MemoryAPI/write/recall/get 中分别调用 security**：被拒。上层入口太多，且未来新增 engine 或批处理入口时容易遗漏；KV 装饰器可以把加密收敛到单一边界。
 - **每个 raw KV 后端各自实现加密**：被拒。memory/sqlite/redis 会重复实现 AAD、失败关闭与明文兼容策略，后续增加后端时也会复制安全逻辑。
 - **storage 层直接实现加密算法和密钥管理**：被拒。storage 只负责存取语义，不应持有算法选择、密钥加载、KMS/Vault 访问、轮换策略等安全治理能力。
-- **同时加密 key 和 scope 命名空间**：本阶段拒绝。完全隐藏 key/scope 会破坏 list、exists、delete、TTL、space 清理与审计定位。后续如需隐藏元数据，应单独设计 opaque key 或索引加密方案。
+- **同时加密 key 和 scope 命名空间**：本阶段拒绝。完全隐藏 key/scope 会破坏 scan、exists、delete、TTL、space 清理与审计定位。后续如需隐藏元数据，应单独设计 opaque key 或索引加密方案。
 - **解密失败时返回密文或跳过记录**：被拒。这会把安全错误伪装成业务数据，导致调用方在不知情的情况下继续处理损坏或越界数据。
 
 ## 验证
@@ -93,7 +95,7 @@ KVStore 是 `MemoryUnit` 内容、原始消息与部分控制数据的真源字�
 既有单测应覆盖以下行为：
 
 - `insert` / `update` 写入 raw KV 的 value 不是明文，`get` 返回原始明文。
-- `list` 对每个 key 单独构造 AAD 并返回解密后的 `(key, value)`。
+- `scan` 对每个 key 单独构造 AAD 并返回解密后的 `(key, value)`。
 - `exists`、`delete`、`scopes` 透传给 raw KV，不触发解密。
 - factory 可以通过 `raw_kv_store` 与 `security` 依赖装配出 encrypted KV。
 - `raw_kv_store` 缺失或指向自身时构造失败，避免递归装配。

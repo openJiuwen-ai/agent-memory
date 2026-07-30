@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/control/ |
-| 最近一次修订日期 | 2026-07-29 |
+| 最近一次修订日期 | 2026-07-30 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md |
 ## 范围 / 边界
 
@@ -71,9 +71,9 @@ class ControlOperator(ABC):
 |------|------|------|
 | `write` | `async (content, scope, source, *, assets, tags, metadata: dict[str, Any] \| None, occurred_at) -> list[MemoryUnit]` | 规约→可选抽取/分类→落盘+建索引；`infer=true` 时返回 `created_ids` 对应的派生结果，否则处理原始单元（直写不去重） |
 | `recall` | `async (scope, query: RetrievalQuery) -> RetrievalResult` | 委托 Retriever 完整检索链路 |
-| `list` | `async (scope, *, offset=0, limit=100, memory_types=None) -> list[MemoryUnit]` | 枚举 scope 下 `/memory/` 已建索引记忆；支持 offset/limit 分页与 memory_types 过滤；不返回 `/messages/` infer 原文缓存 |
+| `list` | `async (scope, *, offset=0, limit=100, memory_types=None, extensions=None, filters=None) -> MemoryListResult` | 校验分页参数并完整委托 `KVStore.list`；返回当前页和分页前匹配总数 |
 | `permission_context_for_unit` | `async (unit_id, scope) -> PermissionContext` | 读取已有记忆的权限上下文，只返回 memory_type/tags/metadata 等鉴权元数据，不返回 content/assets |
-| `list_with_permission_contexts` | `async (scope, *, offset=0, limit=100, memory_types=None) -> tuple[list[MemoryUnit], list[PermissionContext]]` | 一次读取 list 当前分页及逐项真源权限上下文，供 API 鉴权后返回，避免两次分页竞态 |
+| `list_with_permission_contexts` | `async (同 list 参数) -> tuple[MemoryListResult, list[PermissionContext]]` | 从同一次 KV 查询的当前页构造逐项真源权限上下文，items/count/context 不做二次读取 |
 | `permission_contexts_for_delete` | `async (selector: DeleteSelector) -> list[PermissionContext]` | 解析 delete selector 命中的候选 unit 权限上下文，供 API 层逐条鉴权 |
 | `get` | `async (unit_id, scope, as_of=None) -> MemoryUnit` | 真源点读；`as_of` 非空沿 supersedes 链返回当时有效版本 |
 | `update` | `async (unit_id, scope, patch: MemoryPatch) -> MemoryUnit` | SUPERSEDE 新 id 记版本链 / OVERWRITE 原地覆写 |
@@ -286,6 +286,7 @@ space 元数据、space policy、成员、用量与 offboarding 状态管理。
 | `Channel` | 枚举 | HOT / BACKGROUND |
 | `JobStatus` | 枚举 | PENDING / RUNNING / SUCCEEDED / FAILED / CANCELLED |
 | `JobInfo` | dataclass | id / channel / mode / scope / status / detail |
+| `MemoryListResult` | dataclass | items: list[MemoryUnit] / count: int（分页前匹配总数） |
 | `UpdateMode` | 枚举 | SUPERSEDE（默认，新 id）/ OVERWRITE（同 id） |
 | `MemoryPatch` | dataclass | content（修正后的文本投影，应用时更新对应 Segment 内容） / tier / tags / metadata / t_valid / t_invalid / mode(UpdateMode) |
 | `DeleteMode` | 枚举 | FORGET / ARCHIVE / DOWNWEIGHT / PURGE |

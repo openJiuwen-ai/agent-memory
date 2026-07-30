@@ -25,8 +25,8 @@ from common.type_def import (
     Scope,
     Segment,
     Temporal,
+    memory_key,
 )
-from common.type_def import memory_key
 from common.type_def.memory_codec import dumps, loads
 from construction.abstractor import Abstractor
 from construction.associator import Associator
@@ -89,9 +89,12 @@ class _MemoryKVStore(KVStore):
     def exists(self, scope, key):
         return key in self._data.get(self._sk(scope), {})
 
-    def list(self, scope, prefix=""):
+    def scan(self, scope, prefix=""):
         b = self._data.get(self._sk(scope), {})
         return [(k, v) for k, v in b.items() if k.startswith(prefix)]
+
+    def list(self, scope, **kwargs):
+        raise NotImplementedError
 
     def scopes(self):
         result = []
