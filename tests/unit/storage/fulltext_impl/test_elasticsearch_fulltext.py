@@ -33,6 +33,25 @@ class _FakeIndices:
 class _FakeClient:
     def __init__(self, *, index_exists: bool = False) -> None:
         self.indices = _FakeIndices(exists=index_exists)
+        self.documents: dict[str, dict] = {}
+
+    def bulk(self, *, operations: list[dict], refresh: str) -> dict:
+        for offset in range(0, len(operations), 2):
+            action = operations[offset]["create"]
+            self.documents[action["_id"]] = operations[offset + 1]
+        return {"errors": False}
+
+    def mget(self, *, index: str, ids: list[str]) -> dict:
+        return {
+            "docs": [
+                (
+                    {"_id": doc_id, "found": True, "_source": self.documents[doc_id]}
+                    if doc_id in self.documents
+                    else {"_id": doc_id, "found": False}
+                )
+                for doc_id in ids
+            ]
+        }
 
 
 def test_text_analyzer_is_written_to_index_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -74,18 +93,27 @@ def test_existing_index_gets_array_marker_mapping(monkeypatch: pytest.MonkeyPatc
     }
 
 
-def test_source_records_array_metadata_keys_without_exposing_them_as_metadata() -> None:
-    store = ElasticsearchFulltextStore()
+def test_source_records_array_metadata_keys_without_exposing_them_as_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeClient()
 
-    source = store._source(
-        Scope(org="acme"),
-        Document(
-            id="a",
-            text="doc",
-            metadata={"project": "alpha", "tags": ["work", "urgent"]},
-        ),
+    def create_client(*_args: object, **_kwargs: object) -> _FakeClient:
+        return client
+
+    elasticsearch = ModuleType("elasticsearch")
+    setattr(elasticsearch, "Elasticsearch", create_client)
+    monkeypatch.setitem(sys.modules, "elasticsearch", elasticsearch)
+
+    store = ElasticsearchFulltextStore()
+    scope = Scope(org="acme")
+    metadata = {"project": "alpha", "tags": ["work", "urgent"]}
+    store.insert(
+        scope,
+        [Document(id="a", text="doc", metadata=metadata)],
     )
 
-    assert source["metadata"] == {"project": "alpha", "tags": ["work", "urgent"]}
+    source = next(iter(client.documents.values()))
+    assert source["metadata"] == metadata
     assert source["metadata_array_fields"] == ["tags"]
-    assert store._to_document("physical-id", source).metadata == source["metadata"]
+    assert store.get(scope, ["a"])[0].metadata == metadata
