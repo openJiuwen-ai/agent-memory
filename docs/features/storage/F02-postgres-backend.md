@@ -33,10 +33,14 @@
    embedding/metadata，scope 不符视为缺失，不允许借 update 迁移 scope。
 6. 默认 HNSW + COSINE，同时保留 L2/IP 高分归一和 `index_type=none`。none 模式在查询
    事务内关闭 index scan，保证已有 HNSW 索引时仍执行精确搜索。
-7. `FilterExpr` 完整下推到 jsonb SQL，并保留标量/数组成员、缺失 key 取反和数值类型
-   语义；值和 scope 全部参数化，schema/table/index 使用安全标识符。
+7. `FilterExpr` 完整下推到 jsonb SQL：`EQ` / `IN` 只匹配标量，
+   `CONTAINS` 通过 `jsonb_typeof(...)= 'array'` 只匹配数组成员，`NE` / `NOT_IN`
+   按对应正向谓词取反；缺失 key 与数值类型语义保持一致。值和 scope 全部参数化，
+   schema/table/index 使用安全标识符。
 8. 新增独立 `postgres` profile，以 online 配置为基线，只替换 KV 与三层 Vector；
    Compose 同时启动 PostgreSQL/pgvector 与 Elasticsearch，应用等待两者健康后启动。
+9. `agent-memory` 镜像的构建阶段以 root 安装依赖，运行阶段固定切换为
+   UID/GID `10001:10001`；应用源码、bootstrap 与配置只读挂载，不依赖 root 权限。
 
 ## 拒绝的方案
 
@@ -56,6 +60,8 @@
   预存 HNSW 下的 none 精确模式；无 `AGENT_MEMORY_TEST_PG_DSN` 时按既有约定 skip。
 - `postgres` Compose 包含应用、PostgreSQL/pgvector 和 Elasticsearch，不包含 Redis、
   Milvus、etcd 或 MinIO；初始化 DDL 只在空 PostgreSQL 数据卷首次启动时执行。
+- 应用镜像构建、Compose 配置解析和非 root 容器冒烟通过；默认启动命令在只读源码与
+  配置挂载下可启动 HTTP 服务并通过 `/healthz`。
 
 ## 已知遗留
 

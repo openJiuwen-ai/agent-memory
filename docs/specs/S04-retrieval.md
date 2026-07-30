@@ -37,8 +37,9 @@
 7. **scalar_filters 与软召回信号分离**：ParsedQuery 中 `scalar_filters`（硬前置过滤）与 `tokens/keywords/entities/vector`（软召回信号）不能互相折叠。
 8. **双时间轴独立**：`as_of`（valid-time 回溯点）与 `time_from/time_to`（event-time 范围）是两条独立时间轴。
 9. **召回分数高分优先**：chunk→unit MaxP、分层归并与融合排序统一按「分越大越相关」处理；向量 Recaller 不接受 L2 等 lower-is-better 度量。
-10. **生产过滤先于 top-k**：Milvus / Elasticsearch 必须在 `limit/top_k` 前完整下推
-    `FilterExpr`；UnitReader 的真源复核只做纵深防御，不能补回已被截断的候选。
+10. **生产过滤先于 top-k**：Milvus / Elasticsearch / pgvector 必须在
+    `limit/top_k` 前完整下推 `FilterExpr`；UnitReader 的真源复核只做纵深防御，
+    不能补回已被截断的候选。
 11. **系统谓词不可被用户逻辑稀释**：lifecycle / valid-time / event-time 谓词与用户
     `filters` 以外层 `AND` 合并，用户表达式内部的 `OR` / `NOT` 不能绕过系统约束。
 
@@ -99,6 +100,9 @@ QueryParser.parse(query) → ParsedQuery
 
 metadata 比较保留 JSON 原生类型。查询侧不做 string / number / boolean 隐式互转；
 范围算子只接受有限 `int` / `float`，同一业务 key 的类型稳定性由调用方负责。
+字段形态同样属于比较语义：`EQ` / `IN` 的正向匹配只命中标量，`CONTAINS` 只命中
+数组成员；`NE` / `NOT_IN` 分别按对应正向谓词取反。标量 `CONTAINS` 不退化为等值或
+字符串子串，数组 `EQ` / `IN` 也不退化为成员匹配。
 
 历史 `as_of` 查询追加 `lifecycle != forgotten`、`t_valid <= as_of`、
 `t_invalid > as_of`。开放有效期在索引中投影为 `T_INVALID_OPEN`，真源仍保持

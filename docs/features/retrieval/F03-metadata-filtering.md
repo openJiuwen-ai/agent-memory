@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-07-27 |
 | 影响范围 | src/common/type_def/filter.py，src/common/type_def/memory.py，src/api/memory_api_impl/local_memory_api.py，src/construction/index_builder_impl/，src/retrieval/types.py，src/retrieval/retriever_impl/，src/storage/{vector,fulltext,fusion}.py，docs/specs/S02-memory-api.md，docs/specs/S04-retrieval.md，docs/specs/S06-storage.md |
-| 测试基线 | `PYTHONPATH=src uv run --no-sync pytest -q -m unit` 通过；Milvus/Elasticsearch 集成测试通过；本特性变更的 Python 文件通过 `ruff check` |
+| 测试基线 | `PYTHONPATH=src uv run --no-sync pytest -q -m unit` 通过；Milvus/Elasticsearch/PostgreSQL 集成测试由真实后端环境启用；本特性变更的 Python 文件通过 `ruff check` |
 | Refs | — |
 
 > 本文归档 agent-memory 的 metadata 过滤设计。目标是让 `filters` 支持类似 DSL 的树形逻辑表达，同时保持 scope 过滤仍由现有 scope 链路负责，避免把租户、用户、agent、session 隔离语义混进 metadata filter。
@@ -202,7 +202,7 @@ Store.search(scope, query)
 1. API / SDK 输入规范化为 `FilterExpr`
 2. `QueryParser` 把 `filters` 放入解析结果
 3. lifecycle、valid-time、event-time 等系统谓词作为外层 `AND` 与用户表达式合并
-4. Milvus / Elasticsearch 在 top-k 截断前完整下推合并后的表达式
+4. Milvus / Elasticsearch / pgvector 在 top-k 截断前完整下推合并后的表达式
 5. `UnitReader` 点读真源后执行完整过滤表达式
 
 图和内存实现不属于当前生产过滤保证范围；它们可依赖 UnitReader 做返回精度复核，
@@ -221,11 +221,21 @@ Store.search(scope, query)
 - `int` 与有限 `float` 视为同一数值类别，可用于范围比较；
 - string、number、boolean 之间不互转；
 - 范围算子的查询值必须是有限数值；
-- `IN` / `NOT_IN` 的元素必须属于同一类型类别。
+- `IN` / `NOT_IN` 的元素必须属于同一类型类别；
+- `EQ` / `IN` 的正向匹配只命中标量，`CONTAINS` 只命中数组成员；
+- `NE` / `NOT_IN` 分别是 `EQ` / `IN` 的逻辑否定，因此数组和缺失字段不满足正向
+  标量谓词时满足其否定；
+- 标量 `CONTAINS` 不退化为等值或字符串子串，数组 `EQ` / `IN` 不退化为成员匹配。
 
 因此同一个业务 key 的类型稳定性由调用方负责。当前不引入独立
 `metadata_schema`，也不在查询时猜测 `"8"` 应解释为字符串还是数字，避免静默改变
 业务语义。
+
+Elasticsearch 的倒排字段本身不区分单值与数组，因此文档写入时额外生成内部
+`metadata_array_fields` 字段记录数组 key，查询编译器据此区分 `EQ` 与 `CONTAINS`。
+该字段不进入公开 `Document.metadata`。为已有索引增加 mapping 不会回填历史文档，
+启用严格语义后需重建旧索引。PostgreSQL/pgvector 直接通过 JSONB 值和
+`jsonb_typeof(...)= 'array'` 区分标量等值与数组成员，不需要额外 schema。
 
 ### 8. valid-time 开放区间使用索引哨兵
 
@@ -321,15 +331,19 @@ filters = {
 - `tests/unit/retrieval/test_unit_reader.py`
   - `AND` / `OR` / `NOT` 嵌套复核
   - 旧的扁平 filters 行为保持兼容
+  - 标量 `EQ` / `IN` 与数组 `CONTAINS` 形态严格区分
 - `tests/unit/storage/test_filter_compilers.py`
-  - Milvus / Elasticsearch 完整编译 AND / OR / NOT、集合和数值范围
+  - Milvus / Elasticsearch / PostgreSQL 完整编译 AND / OR / NOT、集合和数值范围
+  - Elasticsearch 派生数组标记与 PostgreSQL JSONB 形态判断保持相同语义
   - 系统谓词与用户表达式保持外层 AND
 - `tests/unit/construction/test_index_builder.py`
   - 业务 metadata 原生类型写入索引
   - `t_invalid=None` 投影为 `T_INVALID_OPEN`
 - `tests/integration/storage/test_integration_backends.py`
 - `tests/integration/storage/test_integration_fulltext.py`
-  - 真实 Milvus / Elasticsearch 在 top-k 前执行过滤
+  - 真实 Milvus / Elasticsearch 在 top-k 前执行过滤，并区分标量等值与数组成员
+- `tests/integration/storage/test_integration_postgres.py`
+  - 真实 pgvector 在 top-k 前执行过滤，并区分标量等值与数组成员
 
 文档落地对应命令：
 
@@ -345,6 +359,8 @@ git diff --name-only -z HEAD -- '*.py' | xargs -0 uv run --no-sync ruff check
 
 - 当前不维护中央 metadata schema，也不阻止同一业务 key 在不同记忆间发生类型漂移；
   调用方须保持同 key 类型稳定，不可比记录按不匹配处理。
+- Elasticsearch 旧索引中的历史文档没有 `metadata_array_fields` 派生标记；仅增加
+  mapping 不能回填，升级后必须重建索引才能获得严格的标量/数组过滤语义。
 - 当前态查询的索引前置谓词只包含 lifecycle；未来生效或已经过期但仍为 ACTIVE 的记录
   会被 UnitReader 正确剔除，但可能先占用召回预算，因而在使用 TTL/未来
   `t_valid` 时仍有 top-k 完整性风险。

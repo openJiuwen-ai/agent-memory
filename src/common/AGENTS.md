@@ -51,7 +51,8 @@
 
 6. **业务 metadata 保留原生类型**
    `MemoryUnit` / `RawPayload` / `Chunk` / `Relation` 的 metadata 使用 `dict[str, Any]`；
-   不在公共类型层统一 string 化。过滤只做严格类型比较，不推测字符串数值的业务含义。
+   不在公共类型层统一 string 化。过滤只做严格类型与形态比较，不推测字符串数值的业务
+   含义；`EQ` / `IN` 匹配标量，`CONTAINS` 只做数组成员匹配。
 
 ## 与其他子目录的边界
 
