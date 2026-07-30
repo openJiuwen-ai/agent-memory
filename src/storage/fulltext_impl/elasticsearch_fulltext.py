@@ -38,6 +38,7 @@ from ..fulltext import FulltextStore
 from ..types import Document, ScoredID, TextQuery
 
 _RANGE_OPS = {FilterOp.GT: "gt", FilterOp.GTE: "gte", FilterOp.LT: "lt", FilterOp.LTE: "lte"}
+_METADATA_ARRAY_FIELDS = "metadata_array_fields"
 
 
 class ElasticsearchFulltextStore(FulltextStore):
@@ -142,9 +143,20 @@ class ElasticsearchFulltextStore(FulltextStore):
                             }
                         },
                         "metadata": {"type": "object"},
+                        # ES 的倒排字段不区分单值与数组。记录数组 key，供 EQ 与
+                        # CONTAINS 编译器恢复公共过滤契约里的形态语义；该字段不暴露
+                        # 给 Document。
+                        _METADATA_ARRAY_FIELDS: {"type": "keyword"},
                     },
                 },
             )
+            return
+        # mapping 可原地增加，但历史文档没有派生标记，仍需重建索引后才能获得
+        # 严格的 EQ / CONTAINS 语义。
+        self._client.indices.put_mapping(
+            index=self._index,
+            properties={_METADATA_ARRAY_FIELDS: {"type": "keyword"}},
+        )
 
     # --------------------------------------------------------------- 序列化
     @staticmethod
@@ -172,6 +184,9 @@ class ElasticsearchFulltextStore(FulltextStore):
             self._text_field: doc.text,
             "scope": self._scope_dict(scope),
             "metadata": doc.metadata,
+            _METADATA_ARRAY_FIELDS: [
+                key for key, value in doc.metadata.items() if isinstance(value, list)
+            ],
         }
 
     def _to_document(self, doc_id: str, src: dict[str, Any]) -> Document:
@@ -182,16 +197,39 @@ class ElasticsearchFulltextStore(FulltextStore):
         )
 
     @staticmethod
-    def _filter_clause(fc: FilterClause) -> dict[str, Any]:
-        field = f"metadata.{filter_field_metadata_key(fc.field)}"
-        if fc.op in (FilterOp.EQ, FilterOp.CONTAINS):
-            return {"term": {field: fc.value}}
+    def _array_marker(key: str) -> dict[str, Any]:
+        return {"term": {_METADATA_ARRAY_FIELDS: key}}
+
+    @classmethod
+    def _scalar_match(cls, key: str, query: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "bool": {
+                "filter": [query],
+                "must_not": [cls._array_marker(key)],
+            }
+        }
+
+    @classmethod
+    def _filter_clause(cls, fc: FilterClause) -> dict[str, Any]:
+        key = filter_field_metadata_key(fc.field)
+        field = f"metadata.{key}"
+        if fc.op == FilterOp.EQ:
+            return cls._scalar_match(key, {"term": {field: fc.value}})
         if fc.op == FilterOp.NE:
-            return {"bool": {"must_not": {"term": {field: fc.value}}}}
+            return {"bool": {"must_not": [cls._scalar_match(key, {"term": {field: fc.value}})]}}
         if fc.op == FilterOp.IN:
-            return {"terms": {field: fc.value}}
+            return cls._scalar_match(key, {"terms": {field: fc.value}})
         if fc.op == FilterOp.NOT_IN:
-            return {"bool": {"must_not": {"terms": {field: fc.value}}}}
+            return {"bool": {"must_not": [cls._scalar_match(key, {"terms": {field: fc.value}})]}}
+        if fc.op == FilterOp.CONTAINS:
+            return {
+                "bool": {
+                    "filter": [
+                        {"term": {field: fc.value}},
+                        cls._array_marker(key),
+                    ]
+                }
+            }
         if fc.op in _RANGE_OPS:
             return {"range": {field: {_RANGE_OPS[fc.op]: fc.value}}}
         raise ValidationError(f"unsupported filter op for fulltext: {fc.op}")

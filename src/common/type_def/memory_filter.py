@@ -37,16 +37,22 @@ def _matches_clause(unit: MemoryUnit, clause: FilterClause) -> bool:
     value = _field_value(unit, clause.field)
     op, target = clause.op, clause.value
 
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, (list, tuple, set)):  # 集合字段（如 tags）
         members = set(value)
-        if op in (FilterOp.CONTAINS, FilterOp.EQ):
+        # 形态语义严格分离：CONTAINS 只命中数组成员，EQ / IN 只命中标量，
+        # 两者不重叠；NE / NOT_IN 分别是后两者的逻辑否定，对数组恒真。
+        if op is FilterOp.CONTAINS:
             return target in members
+        if op is FilterOp.EQ:
+            return False
         if op is FilterOp.NE:
-            return target not in members
+            return True
         if op is FilterOp.IN:
-            return bool(members & set(target or []))
+            return False
         if op is FilterOp.NOT_IN:
-            return not (members & set(target or []))
+            return True
+        # 范围算子对集合无意义：判否，与下方标量不可比时的 TypeError 分支同答案。
+        # 放行会让该谓词失效——真源复核是正确性边界，不可判定的组合不能当作不约束。
         return False
 
     if value is None:
@@ -60,7 +66,7 @@ def _matches_clause(unit: MemoryUnit, clause: FilterClause) -> bool:
     if op is FilterOp.NOT_IN:
         return value not in (target or [])
     if op is FilterOp.CONTAINS:
-        return value == target
+        return False  # 标量既不做等值退化，也不做字符串子串匹配
     try:
         if op is FilterOp.GT:
             return value > target

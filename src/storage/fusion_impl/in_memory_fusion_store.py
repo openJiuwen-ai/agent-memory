@@ -40,6 +40,14 @@ def _cosine(a: List[float], b: List[float]) -> float:
 
 def _passes(scalars: Dict[str, Any], clause: FilterClause) -> bool:
     val = scalars.get(filter_field_metadata_key(clause.field))
+    if isinstance(val, (list, tuple, set)):
+        if clause.op == FilterOp.CONTAINS:
+            return clause.value in val
+        if clause.op in (FilterOp.NE, FilterOp.NOT_IN):
+            return True
+        return False
+    if val is None:
+        return clause.op in (FilterOp.NE, FilterOp.NOT_IN)
     if clause.op == FilterOp.EQ:
         return val == clause.value
     if clause.op == FilterOp.NE:
@@ -49,8 +57,6 @@ def _passes(scalars: Dict[str, Any], clause: FilterClause) -> bool:
     if clause.op == FilterOp.NOT_IN:
         return val not in (clause.value or [])
     if clause.op == FilterOp.CONTAINS:
-        return bool(val) and clause.value in val
-    if val is None:
         return False
     if clause.op == FilterOp.GT:
         return val > clause.value
