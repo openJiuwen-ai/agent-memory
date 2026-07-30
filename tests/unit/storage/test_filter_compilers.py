@@ -85,6 +85,16 @@ def _elasticsearch_filter(filters):
     return store.recording_client.last_query["bool"]["filter"][0]
 
 
+def _es_scalar_match(field: str, value_query: dict) -> dict:
+    key = field.removeprefix("metadata.")
+    return {
+        "bool": {
+            "filter": [value_query],
+            "must_not": [{"term": {"metadata_array_fields": key}}],
+        }
+    }
+
+
 def test_milvus_compiles_complete_boolean_tree() -> None:
     compiled = _milvus_filter(_tree())
 
@@ -112,11 +122,17 @@ def test_elasticsearch_compiles_complete_boolean_tree() -> None:
     assert compiled == {
         "bool": {
             "filter": [
-                {"term": {"metadata.memory_type": "coding"}},
+                _es_scalar_match(
+                    "metadata.memory_type",
+                    {"term": {"metadata.memory_type": "coding"}},
+                ),
                 {
                     "bool": {
                         "should": [
-                            {"terms": {"metadata.project": ["alpha", "beta"]}},
+                            _es_scalar_match(
+                                "metadata.project",
+                                {"terms": {"metadata.project": ["alpha", "beta"]}},
+                            ),
                             {"range": {"metadata.priority": {"gte": 8}}},
                         ],
                         "minimum_should_match": 1,
@@ -124,10 +140,22 @@ def test_elasticsearch_compiles_complete_boolean_tree() -> None:
                 },
                 {
                     "bool": {
-                        "must_not": [{"term": {"metadata.status": "archived"}}],
+                        "must_not": [
+                            _es_scalar_match(
+                                "metadata.status",
+                                {"term": {"metadata.status": "archived"}},
+                            )
+                        ],
                     }
                 },
-                {"term": {"metadata.tags": "work"}},
+                {
+                    "bool": {
+                        "filter": [
+                            {"term": {"metadata.tags": "work"}},
+                            {"term": {"metadata_array_fields": "tags"}},
+                        ]
+                    }
+                },
             ]
         }
     }
@@ -173,12 +201,36 @@ def test_elasticsearch_compiles_nested_not_group() -> None:
                 {
                     "bool": {
                         "should": [
-                            {"term": {"metadata.project": "alpha"}},
-                            {"term": {"metadata.project": "beta"}},
+                            _es_scalar_match(
+                                "metadata.project",
+                                {"term": {"metadata.project": "alpha"}},
+                            ),
+                            _es_scalar_match(
+                                "metadata.project",
+                                {"term": {"metadata.project": "beta"}},
+                            ),
                         ],
                         "minimum_should_match": 1,
                     }
                 }
+            ]
+        }
+    }
+
+
+def test_elasticsearch_distinguishes_scalar_equality_from_array_membership() -> None:
+    eq = _elasticsearch_filter(FilterClause("field", FilterOp.EQ, "x"))
+    contains = _elasticsearch_filter(FilterClause("field", FilterOp.CONTAINS, "x"))
+
+    assert eq == _es_scalar_match(
+        "metadata.field",
+        {"term": {"metadata.field": "x"}},
+    )
+    assert contains == {
+        "bool": {
+            "filter": [
+                {"term": {"metadata.field": "x"}},
+                {"term": {"metadata_array_fields": "field"}},
             ]
         }
     }
@@ -217,6 +269,22 @@ def test_postgres_compiles_every_leaf_operator(
 
     assert expected in fragment
     assert "f" in params
+
+
+def test_postgres_distinguishes_scalar_equality_from_array_membership() -> None:
+    eq_fragment, eq_params = compile_pg_filter(FilterClause("f", FilterOp.EQ, "x"))
+    contains_fragment, contains_params = compile_pg_filter(
+        FilterClause("f", FilterOp.CONTAINS, "x")
+    )
+    in_fragment, _ = compile_pg_filter(FilterClause("f", FilterOp.IN, ["x", "y"]))
+
+    assert "jsonb_build_array" not in eq_fragment
+    assert "jsonb_typeof" not in eq_fragment
+    assert eq_params == ["f", "x"]
+    assert "jsonb_typeof(metadata->%s) = 'array'" in contains_fragment
+    assert "jsonb_build_array" in contains_fragment
+    assert contains_params == ["f", "f", "x"]
+    assert "jsonb_build_array" not in in_fragment
 
 
 def test_postgres_filter_values_never_enter_sql_text() -> None:

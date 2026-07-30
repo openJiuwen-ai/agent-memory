@@ -208,6 +208,28 @@ def test_pgvector_search_order_scope_and_filters(pg_vector) -> None:
     )
 
 
+def test_pgvector_distinguishes_scalar_equality_from_array_membership(pg_vector) -> None:
+    store, scope, _ = pg_vector
+    store.insert(
+        scope,
+        [
+            VectorRecord(id="scalar", vector=_vector(0), metadata={"kind": "work"}),
+            VectorRecord(id="array", vector=_vector(0), metadata={"kind": ["work"]}),
+        ],
+    )
+
+    def query_ids(op):
+        query = VectorQuery(
+            vector=_vector(0),
+            top_k=10,
+            filters=FilterClause("kind", op, "work"),
+        )
+        return {hit.id for hit in store.search(scope, query)}
+
+    assert query_ids(FilterOp.EQ) == {"scalar"}
+    assert query_ids(FilterOp.CONTAINS) == {"array"}
+
+
 def test_pgvector_none_mode_runs_against_preexisting_hnsw(pg_vector) -> None:
     store, scope, schema = pg_vector
     store.insert(
