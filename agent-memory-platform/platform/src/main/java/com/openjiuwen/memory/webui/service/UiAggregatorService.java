@@ -11,11 +11,6 @@ import java.util.Map;
 public interface UiAggregatorService {
 
     /**
-     * §8.2.1 仪表盘聚合数据
-     */
-    Map<String, Object> buildDashboard(String adminUserId, String scopeId, String userId);
-
-    /**
      * §8.2.2 记忆浏览页聚合数据
      */
     Map<String, Object> buildMemoryBrowse(String scopeId, String userId, String memoryType, int pageSize, int pageIdx);

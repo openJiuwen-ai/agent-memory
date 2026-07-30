@@ -30,8 +30,8 @@ import java.util.Map;
  * <p>
  * 实现说明（线上实测）：
  * <ul>
- *   <li>get_user_mem_by_page 的响应 total = 当前页条数，非全局总数 → 本类返回的 PageResult.total
- *       无法表达全局总数；需要精确总数请用全量翻页计数（见 OpsToolService#memoryCount）。</li>
+ *   <li>FIX-004A: getUserMemByPage 调用内核 /get_user_mem_by_page_with_total/ 端点，
+ *       该端点返回的 total 是真实全局总数（非当前页条数）。PageResult.total 可直接用于计数。</li>
  *   <li>add_messages 仅返回 {status,message}，无 mem_id。</li>
  * </ul>
  */
@@ -39,8 +39,10 @@ public class DefaultMemoryEngineClient implements MemoryEngineClient {
 
     private final RestClient restClient;
 
-    /** 流式下载专用：手动 createRequest 拿 ClientHttpResponse，完全自掌控流关闭时机（绕开 RestClient.exchange 自动关流） */
-    private final org.springframework.http.client.SimpleClientHttpRequestFactory requestFactory;
+    /** 流式下载专用：手动 createRequest 拿 ClientHttpResponse，完全自掌控流关闭时机（绕开 RestClient.exchange 自动关流）。
+     *  FIX-007A: 类型从 SimpleClientHttpRequestFactory 改为 ClientHttpRequestFactory 接口，
+     *  以兼容 HttpComponentsClientHttpRequestFactory（Apache HttpClient 5 连接池）。 */
+    private final org.springframework.http.client.ClientHttpRequestFactory requestFactory;
     private final String baseUrl;
     private final String apiKey;
 
@@ -49,7 +51,7 @@ public class DefaultMemoryEngineClient implements MemoryEngineClient {
     }
 
     public DefaultMemoryEngineClient(RestClient memoryRestClient,
-                                     org.springframework.http.client.SimpleClientHttpRequestFactory requestFactory,
+                                     org.springframework.http.client.ClientHttpRequestFactory requestFactory,
                                      String baseUrl, String apiKey) {
         this.restClient = memoryRestClient;
         this.requestFactory = requestFactory;
@@ -63,7 +65,7 @@ public class DefaultMemoryEngineClient implements MemoryEngineClient {
         RawResponses.GetMemByPageResponse body = post("/get_user_mem_by_page_with_total/", req,
                 RawResponses.GetMemByPageResponse.class);
         List<MemoryItem> items = body.getResults() == null ? Collections.emptyList() : body.getResults();
-        // 注意：body.getTotal() 是当前页条数，非全局总数。
+        // FIX-004A: /get_user_mem_by_page_with_total/ 端点返回的 total 是真实全局总数。
         long total = body.getTotal() == null ? items.size() : body.getTotal();
         return PageResult.of(items, total,
                 req.getPageIdx() == null ? 1 : req.getPageIdx(),
@@ -320,12 +322,14 @@ public class DefaultMemoryEngineClient implements MemoryEngineClient {
      * 全链路不经过 byte[] 堆缓冲。
      */
     /**
-     * 流式下载内核日志：手动用 {@link SimpleClientHttpRequestFactory} 发 GET，
-     * 返回仍打开的 {@link ClientHttpResponse}，由调用方 close（连带关 body 流）。
+     * 流式下载内核日志：手动用 {@link org.springframework.http.client.ClientHttpRequestFactory} 发 GET，
+     * 返回仍打开的 {@link org.springframework.http.client.ClientHttpResponse}，由调用方 close（连带关 body 流）。
      *
      * <p>为何不用 RestClient.exchange 返回 response：exchange 回调返回后 RestClient
      * 会自动关闭底层流，调用方再 transferTo 读时抛 "stream is closed"（实测 bf6c1c6f 案例）。
      * 手动 createRequest 拿到的 response 生命周期完全归调用方，可安全流式读取。</p>
+     * <p>FIX-007A: requestFactory 类型已从 SimpleClientHttpRequestFactory 改为 ClientHttpRequestFactory 接口，
+     * 当前实现为 HttpComponentsClientHttpRequestFactory（Apache HttpClient 5 连接池）。</p>
      */
     @Override
     public org.springframework.http.client.ClientHttpResponse downloadKernelLogs(String filename) {

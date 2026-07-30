@@ -1,6 +1,6 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-from sqlalchemy import inspect, Column, String, insert, delete
+from sqlalchemy import inspect, Column, String, Index, insert, delete, text
 from sqlalchemy.orm import declarative_mixin, declarative_base
 from jiuwen_memory.common.logging import memory_logger
 from jiuwen_memory.foundation.store.base_db_store import BaseDbStore
@@ -35,6 +35,14 @@ class MemoryMetaMixin:
 
 class UserMessage(MessageMixin, Base):
     __tablename__ = "user_message"
+    # FIX-002A: Add composite index for the most common query pattern:
+    # WHERE scope_id = ? ORDER BY timestamp DESC. Without this index, the
+    # database performs a full table scan + filesort on large tables
+    # (6.5万行 ~4s). The composite index allows index-only range scan.
+    __table_args__ = (
+        Index('idx_scope_timestamp', 'scope_id', 'timestamp'),
+        Index('idx_user_id', 'user_id'),
+    )
 
 
 class ScopeUserMapping(ScopeUserMixin, Base):
@@ -89,6 +97,28 @@ async def create_tables(
                 ],
                 checkfirst=True
             )
+
+            # FIX-002A: create_all(checkfirst=True) does not add indexes to
+            # already-existing tables. Explicitly create the indexes here so
+            # existing databases benefit from the performance improvement.
+            # CREATE INDEX IF NOT EXISTS is supported by SQLite 3.3.8+ and
+            # PostgreSQL 9.5+.
+            if inspector.has_table(UserMessage.__tablename__):
+                existing_indexes = {
+                    idx['name']
+                    for idx in inspector.get_indexes(UserMessage.__tablename__)
+                }
+                index_ddl = [
+                    "CREATE INDEX IF NOT EXISTS idx_scope_timestamp "
+                    "ON user_message (scope_id, timestamp)",
+                    "CREATE INDEX IF NOT EXISTS idx_user_id "
+                    "ON user_message (user_id)",
+                ]
+                for ddl in index_ddl:
+                    idx_name = ddl.split("IF NOT EXISTS ")[1].split(" ")[0]
+                    if idx_name not in existing_indexes:
+                        sync_conn.execute(text(ddl))
+                        memory_logger.info(f"Created index: {idx_name}")
 
         await conn.run_sync(check_and_create)
 

@@ -76,6 +76,13 @@
             <artifactId>spring-boot-starter-webflux</artifactId>
             <optional>true</optional>
         </dependency>
+        <!-- FIX-007A: Apache HttpClient 5 — 连接池化（替代 SimpleClientHttpRequestFactory 的无池 HttpURLConnection）。
+             版本由 Spring Boot 3.3.5 BOM 管理。PoolingHttpClientConnectionManager 提供 keep-alive 连接复用，
+             消除 50 并发下每请求新建 TCP 握手开销（TC-PERF-002 P99=259ms 根因）。 -->
+        <dependency>
+            <groupId>org.apache.httpcomponents.client5</groupId>
+            <artifactId>httpclient5</artifactId>
+        </dependency>
         <!-- 配置元数据 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

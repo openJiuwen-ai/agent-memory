@@ -32,8 +32,8 @@ server:
 
 platform:
   memory-service:
-    base-url:         # 本地内核（jiuwen_memory memory_server，端口 8000）
-    api-key:                              # 留空：服务层与内核属同一信任域，无需鉴权（内核原 auth_middleware 机制保留）
+    base-url: http://127.0.0.1:8000        # 本地内核（jiuwen_memory memory_server，默认端口 8000）
+    api-key:                               # 留空：服务层与内核属同一信任域，无需鉴权（内核原 auth_middleware 机制保留）
     connect-timeout: 10s
     read-timeout: 120s            # 热重建 /admin/restart 重建 stores 耗时 >30s，放宽到 2 分钟；普通调用秒级完成不受影响
   feature:

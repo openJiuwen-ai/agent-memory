@@ -30,16 +30,6 @@ public class UiController {
         this.uiAggregatorService = uiAggregatorService;
     }
 
-    // —— §8.2.1 仪表盘 ——
-
-    @GetMapping("/dashboard")
-    public ApiResponse<Map<String, Object>> dashboard(
-            @RequestParam(name = "admin_user_id", required = false) String adminUserId,
-            @RequestParam(name = "scope_id", required = false) String scopeId,
-            @RequestParam(name = "user_id", required = false) String userId) {
-        return ApiResponse.ok(uiAggregatorService.buildDashboard(adminUserId, scopeId, userId));
-    }
-
     // —— §8.2.2 记忆浏览页 ——
 
     @GetMapping("/memory/browse")

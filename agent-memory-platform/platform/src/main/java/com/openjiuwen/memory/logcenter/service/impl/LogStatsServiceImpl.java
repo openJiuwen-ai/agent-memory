@@ -58,10 +58,17 @@ public class LogStatsServiceImpl implements LogStatsService {
     }
 
     private LogStatsDTO getMessageLogStats(String adminUserId, Instant start, Instant end) {
+        // FIX-003A: Previously this method made 3 identical HTTP calls to the kernel
+        // (count, countMemoryGenerated, statsByUser all call statsKernelMessages with
+        // the same arguments). Now we call count() once and reuse the result:
+        //   - memoryGenerated is defined as `return count(...)` in MessageLogServiceImpl
+        //   - statsByUser extracts `total` from the same kernel response and wraps it
+        //     as [{user_id: "__all__", count: total}]
+        // avgResponseTime() returns 0.0 without any HTTP call (no change needed).
         long total = messageLogService.count(adminUserId, start, end);
-        long memoryGenerated = messageLogService.countMemoryGenerated(adminUserId, start, end);
-        double avgResponseTime = messageLogService.avgResponseTime(adminUserId, start, end);
-        List<Map<String, Object>> byUser = messageLogService.statsByUser(adminUserId, start, end);
+        long memoryGenerated = total; // countMemoryGenerated() == count()
+        double avgResponseTime = 0.0d; // avgResponseTime() always returns 0 (no HTTP)
+        List<Map<String, Object>> byUser = List.of(Map.of("user_id", "__all__", "count", total));
 
         return LogStatsDTO.builder()
                 .logType("messages")
