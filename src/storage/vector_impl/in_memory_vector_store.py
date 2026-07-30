@@ -68,9 +68,14 @@ class InMemoryVectorStore(VectorStore):
         return [bucket[i] for i in ids if i in bucket]
 
     def search(self, scope: Scope, query: VectorQuery) -> List[ScoredID]:
+        bucket = self._data[_skey(scope)]
         scored = [
-            ScoredID(id=rec.id, score=_cosine(query.vector, rec.vector))
-            for rec in self._data[_skey(scope)].values()
+            ScoredID(
+                id=rec.id,
+                score=_cosine(query.vector, rec.vector),
+                metadata=dict(rec.metadata) if query.return_metadata else None,
+            )
+            for rec in bucket.values()
         ]
         scored = [s for s in scored if s.score > 0.0]
         scored.sort(key=lambda s: s.score, reverse=True)

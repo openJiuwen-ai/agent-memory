@@ -441,15 +441,15 @@ def test_extractor_operator_type_and_health():
 
 
 def test_extract_prompt_includes_merge_rule():
-    """T-E-13a: prompt 只允许同实体同关系或同事件合并。"""
+    """T-E-13a: prompt 约束粒度双向——一 matter 不拆成碎片、二 matter 不在合并中消失。"""
     from construction.extractor_impl.llm_extractor import _EXTRACT_SYSTEM_PROMPT
 
-    assert "SAME entity and SAME relationship" in _EXTRACT_SYSTEM_PROMPT
-    assert 'For "evidence", copy the smallest complete verbatim source span' in (
-        _EXTRACT_SYSTEM_PROMPT
-    )
+    # 粒度双向约束：既不拆一件事成并列碎片，也不让第二件事消失进第一件
+    assert "one matter per item" in _EXTRACT_SYSTEM_PROMPT
+    assert "Do not split one matter into parallel fragments" in _EXTRACT_SYSTEM_PROMPT
+    assert "do not let a second matter vanish into" in _EXTRACT_SYSTEM_PROMPT
     # 跨 source 不合并的约束
-    assert "never merge across different sources" in _EXTRACT_SYSTEM_PROMPT
+    assert "combine across source lines" in _EXTRACT_SYSTEM_PROMPT
 
 
 def test_extract_merged_topic_produces_one_unit():
