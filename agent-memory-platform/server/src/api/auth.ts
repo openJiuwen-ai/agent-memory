@@ -12,10 +12,12 @@ export interface LoginResult {
   token: string
   user: {
     id: string
-    tenant_id: string
+    tenant_id?: string           // 兼容旧版下划线命名
+    tenantId?: string            // 新版驼峰命名
     username: string
     role: UserRole
-    scope_ids: string[] | null
+    scope_ids?: string[] | null   // 兼容旧版下划线命名
+    scopeIds?: string[] | null     // 新版驼峰命名
     remark: string
   }
 }
@@ -23,10 +25,12 @@ export interface LoginResult {
 /** 当前用户信息（由 /auth/info 返回，不含 password） */
 export interface UserInfo {
   id: string
-  tenant_id: string
+  tenant_id?: string           // 兼容旧版下划线命名
+  tenantId?: string            // 新版驼峰命名
   username: string
   role: UserRole
-  scope_ids: string[] | null
+  scope_ids?: string[] | null   // 兼容旧版下划线命名
+  scopeIds?: string[] | null     // 新版驼峰命名
   remark: string
 }
 

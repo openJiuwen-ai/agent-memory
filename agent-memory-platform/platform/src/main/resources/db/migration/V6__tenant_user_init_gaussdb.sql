@@ -99,6 +99,10 @@ INSERT INTO role_permissions (id, role, permission) SELECT 'rp_051', 'SCOPE_ADMI
 INSERT INTO role_permissions (id, role, permission) SELECT 'rp_052', 'SCOPE_ADMIN', 'governance:read' WHERE NOT EXISTS (SELECT 1 FROM role_permissions WHERE id = 'rp_052');
 INSERT INTO role_permissions (id, role, permission) SELECT 'rp_053', 'SCOPE_ADMIN', 'governance:write' WHERE NOT EXISTS (SELECT 1 FROM role_permissions WHERE id = 'rp_053');
 INSERT INTO role_permissions (id, role, permission) SELECT 'rp_054', 'SCOPE_ADMIN', 'trace:read' WHERE NOT EXISTS (SELECT 1 FROM role_permissions WHERE id = 'rp_054');
+INSERT INTO role_permissions (id, role, permission) SELECT 'rp_064', 'SCOPE_ADMIN', 'config:read' WHERE NOT EXISTS (SELECT 1 FROM role_permissions WHERE id = 'rp_064');
+INSERT INTO role_permissions (id, role, permission) SELECT 'rp_065', 'SCOPE_ADMIN', 'config:write' WHERE NOT EXISTS (SELECT 1 FROM role_permissions WHERE id = 'rp_065');
+INSERT INTO role_permissions (id, role, permission) SELECT 'rp_066', 'SCOPE_ADMIN', 'log:read' WHERE NOT EXISTS (SELECT 1 FROM role_permissions WHERE id = 'rp_066');
+INSERT INTO role_permissions (id, role, permission) SELECT 'rp_067', 'SCOPE_ADMIN', 'tenant:read' WHERE NOT EXISTS (SELECT 1 FROM role_permissions WHERE id = 'rp_067');
 
 -- READ_ONLY 权限
 INSERT INTO role_permissions (id, role, permission) SELECT 'rp_055', 'READ_ONLY', 'tenant:read' WHERE NOT EXISTS (SELECT 1 FROM role_permissions WHERE id = 'rp_055');

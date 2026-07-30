@@ -1,5 +1,6 @@
 package com.openjiuwen.memory.authcenter.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 
 import java.util.List;
@@ -31,8 +32,9 @@ public class CreateUserRequest {
     private String tenantId;
     
     /**
-     * Scope权限列表
+     * Scope 权限列表
      */
+    @JsonProperty("scopeIds")
     private List<String> scopeIds;
     
     /**
