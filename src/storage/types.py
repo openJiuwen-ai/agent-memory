@@ -32,6 +32,15 @@ class KVMemoryListResult:
     count: int = 0
 
 
+@dataclass
+class ScoredHit:
+    """检索命中项：id + 相关性得分 + 按需回带的元数据 payload。"""
+
+    id: str  # 记录 id（与 ScoredID.id 同义：scope 内逻辑主键）
+    score: float  # 相关性得分（越大越相关，与 ScoredID.score 同口径）
+    metadata: dict[str, Any] = field(default_factory=dict)  # 命中行按需回带的元数据
+
+
 # --------------------------------------------------------------------------- #
 # vector
 # --------------------------------------------------------------------------- #

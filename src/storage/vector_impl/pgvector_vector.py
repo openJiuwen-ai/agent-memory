@@ -7,14 +7,17 @@ from typing import Any
 
 from common.errors import BackendError, ConflictError, NotFoundError, ValidationError
 from common.factory.factory import Factory
+from common.log import get_logger
 from common.type_def import FilterExpr, Scope
 from storage.vector import VectorProducer
 
 from .._pg import PgStoreBase, compile_pg_filter, pg_scope_clause
 from .._support import read_ssl_config, wrap_backend
 from ..base import StoreType
-from ..types import ScoredID, VectorQuery, VectorRecord
+from ..types import ScoredHit, ScoredID, VectorQuery, VectorRecord
 from ..vector import VectorStore
+
+logger = get_logger(__name__)
 
 _METRICS = {
     "COSINE": {
@@ -352,42 +355,100 @@ class PgVectorStore(PgStoreBase, VectorStore):
             params.extend(filter_params)
         return (" AND ".join(parts) if parts else "TRUE"), params
 
-    def search(self, scope: Scope, query: VectorQuery) -> list[ScoredID]:
-        query_vector = self._vector_text(query.vector)
-        actual_ef = min(1000, max(self._ef_search, query.top_k * 4))
-        operator = _METRICS[self._metric]["operator"]
+    def _knn_statement(self, where: str, *, extra_columns: str = "") -> Any:
+        """构造 ANN 检索语句；``extra_columns`` 追加在 SELECT 列（如 ``metadata``）。
+
+        ``search`` 与 ``recall`` 共用同款 HNSW 调优（ef_search / iterative_scan /
+        max_scan_tuples / none 精确模式）与 scope+filters 下推，``recall`` 仅在
+        SELECT 列上追加 ``metadata``，把"召回 + 取 payload"合并为一次查询，省掉
+        调用方再发一次 ``get`` 的往返（pgvector 下比远端后端更天然——本就一条 SELECT）。
+        ``where`` 是已参数化的 SQL 片段字符串（``TRUE`` 或 scope/filter 子句拼接）。
+        """
         score = _METRICS[self._metric]["score"]
-        where, where_params = self._search_where(scope, query.filters)
-        statement = self.sql.SQL(
+        operator = _METRICS[self._metric]["operator"]
+        columns = "id, " + (f"{extra_columns}, " if extra_columns else "") + f"{score} AS score"
+        return self.sql.SQL(
             f"""
-            SELECT id, {score} AS score
+            SELECT {columns}
             FROM {{}}
             WHERE {where}
             ORDER BY embedding {operator} %s::vector
             LIMIT %s
             """
         ).format(self._qualified())
+
+    def _apply_knn_settings(self, cursor: Any, query: VectorQuery) -> None:
+        """在一次事务内设置 HNSW 检索参数（随连接归还即失效，不影响连接池其他使用者）。"""
+        actual_ef = min(1000, max(self._ef_search, query.top_k * 4))
+        cursor.execute(
+            self.sql.SQL("SET LOCAL hnsw.ef_search = {}").format(self.sql.Literal(actual_ef))
+        )
+        cursor.execute("SET LOCAL hnsw.iterative_scan = strict_order")
+        cursor.execute(
+            self.sql.SQL("SET LOCAL hnsw.max_scan_tuples = {}").format(
+                self.sql.Literal(self._max_scan_tuples)
+            )
+        )
+        if self._index_type == "none":
+            cursor.execute("SET LOCAL enable_indexscan = off")
+
+    def search(self, scope: Scope, query: VectorQuery) -> list[ScoredID]:
+        query_vector = self._vector_text(query.vector)
+        where, where_params = self._search_where(scope, query.filters)
+        statement = self._knn_statement(where)
         with wrap_backend("pgvector search"):
             with self.pool.connection() as conn, conn.cursor() as cursor:
-                cursor.execute(
-                    self.sql.SQL("SET LOCAL hnsw.ef_search = {}").format(
-                        self.sql.Literal(actual_ef)
-                    )
-                )
-                cursor.execute("SET LOCAL hnsw.iterative_scan = strict_order")
-                cursor.execute(
-                    self.sql.SQL("SET LOCAL hnsw.max_scan_tuples = {}").format(
-                        self.sql.Literal(self._max_scan_tuples)
-                    )
-                )
-                if self._index_type == "none":
-                    cursor.execute("SET LOCAL enable_indexscan = off")
+                self._apply_knn_settings(cursor, query)
                 cursor.execute(
                     statement,
                     [query_vector, *where_params, query_vector, query.top_k],
                 )
                 rows = cursor.fetchall()
         return [ScoredID(id=str(id_), score=float(score_value)) for id_, score_value in rows]
+
+    def recall(
+        self,
+        scope: Scope,
+        query: VectorQuery,
+        output_fields: list[str] | None = None,
+    ) -> list[ScoredHit]:
+        # 把"召回 + 取 metadata"合并为同一条 KNN SELECT——仅在 SELECT 列追加
+        # metadata，省掉调用方再发一次 get 的往返。output_fields 仅认 "metadata"
+        # （归并所需的 unit_id 即在其中），其余值忽略并记日志，与 milvus 后端对齐。
+        fetch_meta = bool(output_fields) and "metadata" in output_fields
+        if output_fields:
+            unknown = [f for f in output_fields if f != "metadata"]
+            if unknown:
+                logger.info(
+                    "PgVectorStore.recall: output_fields only supports 'metadata', ignoring %s",
+                    unknown,
+                )
+        query_vector = self._vector_text(query.vector)
+        where, where_params = self._search_where(scope, query.filters)
+        statement = self._knn_statement(where, extra_columns="metadata" if fetch_meta else "")
+        with wrap_backend("pgvector recall"):
+            with self.pool.connection() as conn, conn.cursor() as cursor:
+                self._apply_knn_settings(cursor, query)
+                cursor.execute(
+                    statement,
+                    [query_vector, *where_params, query_vector, query.top_k],
+                )
+                rows = cursor.fetchall()
+        out: list[ScoredHit] = []
+        for row in rows:
+            if fetch_meta:
+                id_, metadata, score_value = row
+                out.append(
+                    ScoredHit(
+                        id=str(id_),
+                        score=float(score_value),
+                        metadata=metadata or {},
+                    )
+                )
+            else:
+                id_, score_value = row
+                out.append(ScoredHit(id=str(id_), score=float(score_value)))
+        return out
 
 
 @VectorProducer.register("pgvector")

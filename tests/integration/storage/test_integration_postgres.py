@@ -203,9 +203,7 @@ def test_pgvector_search_order_scope_and_filters(pg_vector) -> None:
     )
 
     assert [hit.id for hit in hits] == ["x", "y"]
-    assert [hit.score for hit in hits] == sorted(
-        (hit.score for hit in hits), reverse=True
-    )
+    assert [hit.score for hit in hits] == sorted((hit.score for hit in hits), reverse=True)
 
 
 def test_pgvector_distinguishes_scalar_equality_from_array_membership(pg_vector) -> None:
@@ -254,3 +252,94 @@ def test_pgvector_none_mode_runs_against_preexisting_hnsw(pg_vector) -> None:
         exact.close()
 
     assert [hit.id for hit in hits] == ["x", "y"]
+
+
+def test_pgvector_recall_returns_metadata_in_one_query(pg_vector) -> None:
+    """recall 在同一条 KNN SELECT 内回带 metadata，省掉再 get 的往返。
+
+    与 search 对比：id/score 完全一致；recall 命中项额外携带写入时的 metadata。
+    """
+    store, scope, _ = pg_vector
+    store.insert(
+        scope,
+        [
+            VectorRecord(id="x", vector=_vector(0), metadata={"color": "red", "n": 1}),
+            VectorRecord(id="y", vector=[0.8, 0.2, 0, 0, 0, 0, 0, 0], metadata={"color": "blue"}),
+        ],
+    )
+
+    searched = store.search(scope, VectorQuery(vector=_vector(0), top_k=2))
+    recalled = store.recall(scope, VectorQuery(vector=_vector(0), top_k=2))
+
+    # recall 与 search 的 id/score 同源（同一条 KNN SELECT），分数方向一致
+    assert [h.id for h in recalled] == [h.id for h in searched]
+    assert [h.score for h in recalled] == pytest.approx([h.score for h in searched])
+    assert [h.score for h in recalled] == sorted((h.score for h in recalled), reverse=True)
+    # metadata 在命中项内回带，无需再发 get
+    meta_by_id = {h.id: h.metadata for h in recalled}
+    assert meta_by_id["x"] == {"color": "red", "n": 1}
+    assert meta_by_id["y"] == {"color": "blue"}
+
+
+def test_pgvector_recall_without_output_fields_returns_empty_metadata(pg_vector) -> None:
+    """output_fields 不含 metadata 时返回 ScoredHit，metadata 为空 dict。"""
+    store, scope, _ = pg_vector
+    store.insert(
+        scope,
+        [VectorRecord(id="x", vector=_vector(0), metadata={"color": "red"})],
+    )
+
+    hits = store.recall(scope, VectorQuery(vector=_vector(0), top_k=1))
+    assert len(hits) == 1
+    assert hits[0].id == "x"
+    assert hits[0].metadata == {}
+
+    # None 与空列表同样视为不回带
+    assert store.recall(scope, VectorQuery(vector=_vector(0), top_k=1), None)[0].metadata == {}
+    assert store.recall(scope, VectorQuery(vector=_vector(0), top_k=1), [])[0].metadata == {}
+
+
+def test_pgvector_recall_scope_isolation_and_filters(pg_vector) -> None:
+    """recall 同样受 scope 隔离与 filters 下推约束，与 search 语义一致。"""
+    store, scope, _ = pg_vector
+    other = Scope(org=scope.org, space=f"{scope.space}-other", user=scope.user)
+    store.insert(
+        scope,
+        [
+            VectorRecord(id="red", vector=_vector(0), metadata={"color": "red"}),
+            VectorRecord(id="blue", vector=_vector(0), metadata={"color": "blue"}),
+        ],
+    )
+    store.insert(other, [VectorRecord(id="red", vector=_vector(0), metadata={"color": "green"})])
+
+    # scope 隔离：不跨 scope 命中
+    recalled = store.recall(scope, VectorQuery(vector=_vector(0), top_k=10))
+    assert {h.id for h in recalled} == {"red", "blue"}
+
+    # filters 下推：recall 同 search 一样在 top-k 前编译 FilterExpr
+    filtered = store.recall(
+        scope,
+        VectorQuery(vector=_vector(0), top_k=10, filters=FilterClause("color", FilterOp.EQ, "red")),
+    )
+    assert {h.id for h in filtered} == {"red"}
+    assert filtered[0].metadata == {"color": "red"}
+
+
+def test_pgvector_recall_ignores_unknown_output_fields(pg_vector) -> None:
+    """output_fields 仅认 metadata，未知值忽略并记日志，命中结果不受影响。"""
+    store, scope, _ = pg_vector
+    store.insert(
+        scope,
+        [VectorRecord(id="x", vector=_vector(0), metadata={"color": "red"})],
+    )
+
+    # 未知字段与 metadata 并列传入：不抛错，metadata 仍正常回带
+    hits = store.recall(
+        scope,
+        VectorQuery(vector=_vector(0), top_k=1),
+        output_fields=["metadata", "vector", "embedding"],
+    )
+
+    assert len(hits) == 1
+    assert hits[0].id == "x"
+    assert hits[0].metadata == {"color": "red"}

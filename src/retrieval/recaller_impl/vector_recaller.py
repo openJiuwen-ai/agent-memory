@@ -75,14 +75,30 @@ class VectorRecaller(Recaller):
         if self._vector is None or not query.vector:
             return []  # store 未注入（该层未配）或无 query 向量 → 跳过
         vq = VectorQuery(vector=query.vector, top_k=top_k, filters=query.scalar_filters)
-        hits = self._vector.search(scope, vq)
-        # 语义前置阈值：融合前先砍掉明显不相关的语义命中，省下游 recheck/rerank 预算。
+        # 优先走 store.recall：在召回请求内一并回带 metadata，省掉再发一次 get 的
+        # 网络 RTT 与服务端 id 匹配开销（远端后端如 milvus 收益显著）。store 未实现
+        # recall 时抛 NotImplementedError，回退到 search + get 两段式（内存后端零成本）。
+        try:
+            hits = self._vector.recall(scope, vq, output_fields=["metadata"])
+        except NotImplementedError:
+            scored = self._vector.search(scope, vq)
+            # 语义前置阈值：融合前先砍掉明显不相关的语义命中，省下游 recheck/rerank 预算。
+            if self._min_similarity > 0.0:
+                scored = [s for s in scored if s.score >= self._min_similarity]
+            # 命中 id 为 chunk 复合 id（L2）或 {unit_id}-l0/l1（L0/L1）；点读记录拿回
+            # metadata['unit_id']，归并到 unit 粒度（同 unit 多 record 取 MaxP）。
+            records = self._vector.get(scope, [s.id for s in scored])
+            result = aggregate_to_units(scored, records, RecallChannel.VECTOR)
+            logger.info(
+                "VectorRecaller(fallback search+get): layer=%s scope=%s "
+                "top_k=%d hits=%d units=%d",
+                self._layer, scope, top_k, len(scored), len(result),
+            )
+            return result
+        # recall 路径下 metadata 已在 hits 内，records 即 hits 自身（aggregate 只读 .id/.metadata）。
         if self._min_similarity > 0.0:
             hits = [h for h in hits if h.score >= self._min_similarity]
-        # 命中 id 为 chunk 复合 id（L2）或 {unit_id}-l0/l1（L0/L1）；点读记录拿回
-        # metadata['unit_id']，归并到 unit 粒度（同 unit 多 record 取 MaxP）。
-        records = self._vector.get(scope, [h.id for h in hits])
-        result = aggregate_to_units(hits, records, RecallChannel.VECTOR)
+        result = aggregate_to_units(hits, hits, RecallChannel.VECTOR)
         logger.info(
             "VectorRecaller: layer=%s scope=%s top_k=%d hits=%d units=%d",
             self._layer, scope, top_k, len(hits), len(result),

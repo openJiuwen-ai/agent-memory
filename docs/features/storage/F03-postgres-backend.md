@@ -37,10 +37,14 @@
    `CONTAINS` 通过 `jsonb_typeof(...)= 'array'` 只匹配数组成员，`NE` / `NOT_IN`
    按对应正向谓词取反；缺失 key 与数值类型语义保持一致。值和 scope 全部参数化，
    schema/table/index 使用安全标识符。
-8. 新增独立 `postgres` profile，以 online 配置为基线，只替换 KV 与三层 Vector；
+8. 实现 `recall`：与 `search` 共用同条 KNN SELECT（同一套 HNSW 调优 + scope/filters
+   下推），仅在 SELECT 列追加 `metadata` 一次回带——pgvector 本就一条 SELECT，
+   合并"召回 + 取 payload"比远端后端（milvus）更直接，省去调用方再 `get` 的往返。
+   `output_fields` 仅认 `"metadata"`，其余值忽略并记日志。
+9. 新增独立 `postgres` profile，以 online 配置为基线，只替换 KV 与三层 Vector；
    Compose 同时启动 PostgreSQL/pgvector 与 Elasticsearch，应用等待两者健康后启动。
-9. `agent-memory` 镜像的构建阶段以 root 安装依赖，运行阶段固定切换为
-   UID/GID `10001:10001`；应用源码、bootstrap 与配置只读挂载，不依赖 root 权限。
+10. `agent-memory` 镜像的构建阶段以 root 安装依赖，运行阶段固定切换为
+    UID/GID `10001:10001`；应用源码、bootstrap 与配置只读挂载，不依赖 root 权限。
 
 ## 拒绝的方案
 
@@ -56,8 +60,10 @@
 ## 验证
 
 - 工厂注册、必填参数、metric/index 白名单和 PostgreSQL FilterExpr 编译由离线单测覆盖。
-- 真库集成测试覆盖 KV CRUD/TTL/scope、Vector 原子冲突/update scope、过滤、排序及
-  预存 HNSW 下的 none 精确模式；无 `AGENT_MEMORY_TEST_PG_DSN` 时按既有约定 skip。
+- 真库集成测试覆盖 KV CRUD/TTL/scope、Vector 原子冲突/update scope、过滤、排序、
+  `recall` 一次回带 metadata（与 `search` 同源、scope 隔离、filters 下推、未知
+  `output_fields` 忽略）及预存 HNSW 下的 none 精确模式；无 `AGENT_MEMORY_TEST_PG_DSN`
+  时按既有约定 skip。
 - `postgres` Compose 包含应用、PostgreSQL/pgvector 和 Elasticsearch，不包含 Redis、
   Milvus、etcd 或 MinIO；初始化 DDL 只在空 PostgreSQL 数据卷首次启动时执行。
 - 应用镜像构建、Compose 配置解析和非 root 容器冒烟通过；默认启动命令在只读源码与
