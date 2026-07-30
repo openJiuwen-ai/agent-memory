@@ -20,6 +20,12 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 COPY bootstrap ./bootstrap
 COPY scripts ./scripts
 
+RUN groupadd --gid 10001 agentmemory \
+    && useradd --uid 10001 --gid agentmemory --create-home \
+        --home-dir /home/agentmemory --shell /usr/sbin/nologin agentmemory
+
+USER 10001:10001
+
 EXPOSE 8137
 
 CMD ["python", "bootstrap/http_server/__main__.py", \
