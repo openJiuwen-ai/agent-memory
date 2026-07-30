@@ -1,7 +1,8 @@
 package com.openjiuwen.memory.scopecenter.controller;
 
-import com.openjiuwen.memory.common.CommonResult;
+import com.openjiuwen.memory.common.ApiResponse;
 import com.openjiuwen.memory.scopecenter.domain.ScopeRegistry;
+import com.openjiuwen.memory.scopecenter.dto.ScopeStatsDTO;
 import com.openjiuwen.memory.scopecenter.service.ScopeRegistryService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
@@ -181,7 +182,19 @@ public class ScopeRegistryController {
                 return CommonResult.error("Scope删除失败");
             }
         } catch (Exception e) {
-            return CommonResult.error("Scope删除失败：" + e.getMessage());
+            return CommonResult.error("Scope 删除失败：" + e.getMessage());
         }
+    }
+    
+    /**
+     * 根据 Scope ID 获取统计信息（包含绑定租户状态）
+     */
+    @GetMapping("/{scopeId}/stats")
+    public ApiResponse<ScopeStatsDTO> getScopeStats(@PathVariable String scopeId) {
+        ScopeStatsDTO stats = scopeRegistryService.getScopeStats(scopeId);
+        if (stats == null) {
+            return ApiResponse.fail(40401, "Scope 不存在");
+        }
+        return ApiResponse.ok(stats);
     }
 }

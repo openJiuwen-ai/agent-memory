@@ -3,9 +3,13 @@ package com.openjiuwen.memory.scopecenter.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.openjiuwen.memory.configcenter.domain.TenantScopeConfigEntity;
+import com.openjiuwen.memory.configcenter.mapper.TenantScopeConfigMapper;
 import com.openjiuwen.memory.scopecenter.domain.ScopeRegistry;
+import com.openjiuwen.memory.scopecenter.dto.ScopeStatsDTO;
 import com.openjiuwen.memory.scopecenter.mapper.ScopeRegistryMapper;
 import com.openjiuwen.memory.scopecenter.service.ScopeRegistryService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -17,6 +21,9 @@ import java.util.List;
  */
 @Service
 public class ScopeRegistryServiceImpl extends ServiceImpl<ScopeRegistryMapper, ScopeRegistry> implements ScopeRegistryService {
+    
+    @Autowired
+    private TenantScopeConfigMapper tenantScopeConfigMapper;
     
     @Override
     public List<ScopeRegistry> getAllScopes() {
@@ -91,5 +98,44 @@ public class ScopeRegistryServiceImpl extends ServiceImpl<ScopeRegistryMapper, S
         for (String scopeId : scopeIds) {
             releaseScope(scopeId);
         }
+    }
+    
+    @Override
+    public ScopeStatsDTO getScopeStats(String scopeId) {
+        // 1. 查询 Scope 基本信息
+        ScopeRegistry scope = lambdaQuery()
+                .eq(ScopeRegistry::getScopeId, scopeId)
+                .one();
+        
+        if (scope == null) {
+            return null;
+        }
+        
+        // 2. 检查是否已绑定租户（通过 scope.status 和 assigned_to_tenant_id）
+        boolean isBoundToTenant = "assigned".equals(scope.getStatus()) && 
+                                  scope.getAssignedToTenantId() != null;
+        
+        // 3. 如果已绑定，从 tenant_scope_configs 表中获取租户名称
+        String tenantName = null;
+        String tenantId = null;
+        
+        if (isBoundToTenant) {
+            TenantScopeConfigEntity tenantConfig = tenantScopeConfigMapper.selectById(
+                    scope.getAssignedToTenantId());
+            if (tenantConfig != null) {
+                tenantId = tenantConfig.getTenantId();
+                tenantName = tenantConfig.getTenantName();
+            }
+        }
+        
+        // 4. 构建返回的 DTO
+        return ScopeStatsDTO.builder()
+                .scopeId(scope.getScopeId())
+                .scopeName(scope.getScopeName())
+                .description(scope.getDescription())
+                .boundToTenant(isBoundToTenant ? "yes" : "no")
+                .tenantId(tenantId)
+                .tenantName(tenantName)
+                .build();
     }
 }
