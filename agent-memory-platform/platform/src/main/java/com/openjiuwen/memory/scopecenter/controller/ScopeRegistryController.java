@@ -1,6 +1,8 @@
 package com.openjiuwen.memory.scopecenter.controller;
 
 import com.openjiuwen.memory.common.ApiResponse;
+import com.openjiuwen.memory.common.exception.BizException;
+import com.openjiuwen.memory.common.ResultCode;
 import com.openjiuwen.memory.scopecenter.domain.ScopeRegistry;
 import com.openjiuwen.memory.scopecenter.dto.ScopeStatsDTO;
 import com.openjiuwen.memory.scopecenter.service.ScopeRegistryService;
@@ -23,118 +25,118 @@ public class ScopeRegistryController {
     private ScopeRegistryService scopeRegistryService;
     
     /**
-     * 获取所有Scope列表（SUPER_ADMIN/PLATFORM_ADMIN/SECURITY_ADMIN）
+     * 获取所有 Scope 列表（SUPER_ADMIN/PLATFORM_ADMIN/SECURITY_ADMIN）
      */
     @GetMapping
-    public CommonResult<List<ScopeRegistry>> getAllScopes() {
+    public ApiResponse<List<ScopeRegistry>> getAllScopes() {
         List<ScopeRegistry> scopes = scopeRegistryService.getAllScopes();
-        return CommonResult.success(scopes);
+        return ApiResponse.ok(scopes);
     }
     
     /**
-     * 获取可分配的Scope列表（仅SUPER_ADMIN）
+     * 获取可分配的 Scope 列表（仅 SUPER_ADMIN）
      */
     @GetMapping("/available")
-    public CommonResult<List<ScopeRegistry>> getAvailableScopes() {
+    public ApiResponse<List<ScopeRegistry>> getAvailableScopes() {
         List<ScopeRegistry> scopes = scopeRegistryService.getAvailableScopes();
-        return CommonResult.success(scopes);
+        return ApiResponse.ok(scopes);
     }
     
     /**
-     * 获取已分配的Scope列表
+     * 获取已分配的 Scope 列表
      */
     @GetMapping("/assigned")
-    public CommonResult<List<ScopeRegistry>> getAssignedScopes() {
+    public ApiResponse<List<ScopeRegistry>> getAssignedScopes() {
         List<ScopeRegistry> scopes = scopeRegistryService.getAssignedScopes();
-        return CommonResult.success(scopes);
+        return ApiResponse.ok(scopes);
     }
     
     /**
-     * 根据租户ID获取Scope列表
+     * 根据租户 ID 获取 Scope 列表
      */
     @GetMapping("/tenant/{tenantId}")
-    public CommonResult<List<ScopeRegistry>> getScopesByTenantId(@PathVariable String tenantId) {
+    public ApiResponse<List<ScopeRegistry>> getScopesByTenantId(@PathVariable String tenantId) {
         List<ScopeRegistry> scopes = scopeRegistryService.getScopesByTenantId(tenantId);
-        return CommonResult.success(scopes);
+        return ApiResponse.ok(scopes);
     }
     
     /**
-     * 修改租户的Scope分配（仅SUPER_ADMIN）
+     * 修改租户的 Scope 分配（仅 SUPER_ADMIN）
      */
     @PutMapping("/tenant/{tenantId}")
-    public CommonResult<Void> updateTenantScopes(
+    public ApiResponse<Void> updateTenantScopes(
             @PathVariable String tenantId,
             @RequestBody Map<String, List<String>> request) {
-        
-        List<String> newScopeIds = request.get("scopeIds");
-        List<String> oldScopeIds = request.getOrDefault("oldScopeIds", List.of());
-        
+            
         try {
-            // 释放旧Scope
+            List<String> newScopeIds = request.get("scopeIds");
+            List<String> oldScopeIds = request.getOrDefault("oldScopeIds", List.of());
+                
+            // 释放旧 Scope
             if (!oldScopeIds.isEmpty()) {
                 scopeRegistryService.batchReleaseScopes(oldScopeIds);
             }
-            
-            // 分配新Scope
+                
+            // 分配新 Scope
             if (newScopeIds != null && !newScopeIds.isEmpty()) {
                 scopeRegistryService.batchAssignScopesToTenant(newScopeIds, tenantId);
             }
-            
-            return CommonResult.success();
+                
+            return ApiResponse.ok(null);
         } catch (Exception e) {
-            return CommonResult.error("Scope分配失败：" + e.getMessage());
+            return ApiResponse.fail(50000, "Scope 分配失败：" + e.getMessage());
         }
     }
     
     /**
-     * 创建新Scope（仅SUPER_ADMIN）
+     * 创建新 Scope（仅 SUPER_ADMIN）
      */
     @PostMapping
-    public CommonResult<ScopeRegistry> createScope(@RequestBody Map<String, String> request) {
+    public ApiResponse<ScopeRegistry> createScope(@RequestBody Map<String, String> request) {
         try {
             ScopeRegistry scope = new ScopeRegistry();
             scope.setId(UUID.randomUUID().toString().replace("-", ""));
-            
+                
             // scope_id: 如果未提供则随机生成
             String scopeId = request.get("scopeId");
             if (scopeId == null || scopeId.trim().isEmpty()) {
                 scopeId = "scope_" + UUID.randomUUID().toString().substring(0, 8);
             }
             scope.setScopeId(scopeId);
-            
+                
             scope.setScopeName(request.get("scopeName"));
             scope.setDescription(request.get("description"));
             scope.setStatus("unassigned");
             scope.setCreatedAt(LocalDateTime.now());
             scope.setUpdatedAt(LocalDateTime.now());
-            
+                
             boolean success = scopeRegistryService.save(scope);
             if (success) {
-                return CommonResult.success(scope);
+                return ApiResponse.ok(scope);
             } else {
-                return CommonResult.error("Scope创建失败");
+                return ApiResponse.fail(50000, "Scope 创建失败");
             }
         } catch (Exception e) {
-            return CommonResult.error("Scope创建失败：" + e.getMessage());
+            return ApiResponse.fail(50000, "Scope 创建失败：" + e.getMessage());
         }
     }
     
     /**
-     * 更新Scope信息（仅SUPER_ADMIN）
+     * 更新 Scope 信息（仅 SUPER_ADMIN）
      */
     @PutMapping("/{scopeId}")
-    public CommonResult<ScopeRegistry> updateScope(
+    public ApiResponse<ScopeRegistry> updateScope(
             @PathVariable String scopeId,
             @RequestBody Map<String, String> request) {
         try {
             ScopeRegistry scope = scopeRegistryService.lambdaQuery()
                     .eq(ScopeRegistry::getScopeId, scopeId)
                     .one();
-            
+                
             if (scope == null) {
-                return CommonResult.error("Scope不存在");
+                return ApiResponse.fail(40401, "Scope 不存在");
             }
-            
+                
             // 更新字段
             if (request.containsKey("scopeName")) {
                 scope.setScopeName(request.get("scopeName"));
@@ -143,46 +145,46 @@ public class ScopeRegistryController {
                 scope.setDescription(request.get("description"));
             }
             scope.setUpdatedAt(LocalDateTime.now());
-            
+                
             boolean success = scopeRegistryService.updateById(scope);
             if (success) {
-                return CommonResult.success(scope);
+                return ApiResponse.ok(scope);
             } else {
-                return CommonResult.error("Scope更新失败");
+                return ApiResponse.fail(50000, "Scope 更新失败");
             }
         } catch (Exception e) {
-            return CommonResult.error("Scope更新失败：" + e.getMessage());
+            return ApiResponse.fail(50000, "Scope 更新失败：" + e.getMessage());
         }
     }
     
     /**
-     * 删除Scope（仅SUPER_ADMIN）
+     * 删除 Scope（仅 SUPER_ADMIN）
      */
     @DeleteMapping("/{scopeId}")
-    public CommonResult<Void> deleteScope(@PathVariable String scopeId) {
+    public ApiResponse<Void> deleteScope(@PathVariable String scopeId) {
         try {
             ScopeRegistry scope = scopeRegistryService.lambdaQuery()
                     .eq(ScopeRegistry::getScopeId, scopeId)
                     .one();
-            
+                
             if (scope == null) {
-                return CommonResult.error("Scope不存在");
+                return ApiResponse.fail(40401, "Scope 不存在");
             }
-            
+                
             // 只允许删除未分配的 Scope
             if ("assigned".equals(scope.getStatus())) {
-                return CommonResult.error(String.format("该 Scope 已分配给租户「%s」，请先解除绑定后再删除",
+                return ApiResponse.fail(40900, String.format("该 Scope 已分配给租户「%s」，请先解除绑定后再删除",
                     scope.getAssignedToTenantId()));
             }
-            
+                
             boolean success = scopeRegistryService.removeById(scope.getId());
             if (success) {
-                return CommonResult.success();
+                return ApiResponse.ok(null);
             } else {
-                return CommonResult.error("Scope删除失败");
+                return ApiResponse.fail(50000, "Scope 删除失败");
             }
         } catch (Exception e) {
-            return CommonResult.error("Scope 删除失败：" + e.getMessage());
+            return ApiResponse.fail(50000, "Scope 删除失败：" + e.getMessage());
         }
     }
     
