@@ -168,9 +168,10 @@ public class ScopeRegistryController {
                 return CommonResult.error("Scope不存在");
             }
             
-            // 只允许删除未分配的Scope
+            // 只允许删除未分配的 Scope
             if ("assigned".equals(scope.getStatus())) {
-                return CommonResult.error("已分配的Scope不能删除");
+                return CommonResult.error(String.format("该 Scope 已分配给租户「%s」，请先解除绑定后再删除",
+                    scope.getAssignedToTenantId()));
             }
             
             boolean success = scopeRegistryService.removeById(scope.getId());
