@@ -165,7 +165,7 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 | `Chunk` | id / text / unit_id / metadata | 切分块 |
 | `ChatMessage` | role / content | LLM 对话消息 |
 | `RawPayload` | id / scope / modality / data / uri / metadata / occurred_at | 原始负载 |
-| `FilterClause` | field / op / value | 原子过滤谓词 |
+| `FilterClause` | field / op / value | 原子过滤谓词；`EQ` / `IN` 正向匹配标量，`CONTAINS` 匹配数组成员，`NE` / `NOT_IN` 分别取反 |
 | `FilterGroup` | logic / children | AND / OR / NOT 逻辑节点 |
 | `FilterExpr` | FilterClause \| FilterGroup | 跨 API、检索和存储层的过滤树 |
 | `matches_memory_unit` | `(MemoryUnit, FilterExpr \| None) -> bool` | retrieval 真源复核和 KV list 共用的 MemoryUnit 字段投影与过滤求值 |

@@ -82,14 +82,18 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
    `as_of`（valid-time 回溯点，问"T 时刻哪个版本有效"）与 `time_from/time_to`（event-time 范围，问"事件发生在何时"）是两条独立时间轴，不可混用。
 
 7. **生产过滤必须先于 top-k**
-   Milvus / Elasticsearch 必须在 limit 前完整下推系统谓词与用户 FilterExpr。
+   Milvus / Elasticsearch / pgvector 必须在 limit 前完整下推系统谓词与用户 FilterExpr。
    UnitReader 复核只能防错召，不能找回已经被 top-k 截断的真实命中。
 
-8. **系统谓词以外层 AND 合并**
+8. **UnitReader 复核保持字段形态**
+   标量上的 `EQ` / `IN` 与数组上的 `CONTAINS` 不得互相退化；标量
+   `CONTAINS`、数组 `EQ` / `IN` 均判否，否定算子按对应正向谓词取反。
+
+9. **系统谓词以外层 AND 合并**
    lifecycle / valid-time / event-time 谓词不得摊平进用户表达式；用户 OR/NOT 不能稀释
    系统边界。历史 as_of 使用 `[t_valid, t_invalid)`，开放 t_invalid 依赖索引哨兵。
 
-9. **Discloser 只做内容塑形**
+10. **Discloser 只做内容塑形**
    候选记忆单元已由 Retriever 经 UnitReader 点读、有效性过滤、（可选）重排后给定。Discloser 不再做点读/过滤/重排，只按 level 截/取内容产出结果。
 
 ## 与其他子目录的边界
