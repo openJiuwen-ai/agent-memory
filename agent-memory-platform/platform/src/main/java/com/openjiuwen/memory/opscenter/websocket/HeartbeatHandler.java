@@ -1,5 +1,7 @@
 package com.openjiuwen.memory.opscenter.websocket;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -9,8 +11,9 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
-import java.time.Duration;
 import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -32,8 +35,10 @@ public class HeartbeatHandler extends TextWebSocketHandler {
     
     private final ConcurrentHashMap<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private final ObjectMapper objectMapper;
 
-    public HeartbeatHandler() {
+    public HeartbeatHandler(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
         // 启动定时任务：每 5 秒向所有连接推送心跳
         scheduler.scheduleAtFixedRate(
             this::broadcastHeartbeat,
@@ -78,11 +83,7 @@ public class HeartbeatHandler extends TextWebSocketHandler {
             return;
         }
         
-        String heartbeat = String.format(
-            "{\"type\":\"heartbeat\",\"timestamp\":\"%s\",\"connections\":%d}",
-            Instant.now().toString(),
-            sessions.size()
-        );
+        String heartbeat = buildHeartbeatJson(sessions.size());
         
         sessions.forEach((id, session) -> {
             try {
@@ -104,14 +105,32 @@ public class HeartbeatHandler extends TextWebSocketHandler {
     private void sendHeartbeat(WebSocketSession session) {
         try {
             if (session.isOpen()) {
-                String heartbeat = String.format(
-                    "{\"type\":\"heartbeat\",\"timestamp\":\"%s\"}",
-                    Instant.now().toString()
-                );
+                String heartbeat = buildHeartbeatJson(null);
                 session.sendMessage(new TextMessage(heartbeat));
             }
         } catch (IOException e) {
             log.warn("[WebSocket] 发送心跳失败", e);
+        }
+    }
+
+    /**
+     * 构建心跳 JSON 报文（使用 Jackson 序列化，避免手拼 JSON 字符串）。
+     *
+     * @param connections 当前连接数；为 null 时不携带该字段（单播场景）
+     */
+    private String buildHeartbeatJson(Integer connections) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "heartbeat");
+        payload.put("timestamp", Instant.now().toString());
+        if (connections != null) {
+            payload.put("connections", connections);
+        }
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (JsonProcessingException e) {
+            // 理论不会发生（payload 全为基本类型）；降级返回最小报文，保证前端仍能收到心跳
+            log.warn("[WebSocket] 心跳报文序列化失败，降级返回最小报文", e);
+            return "{\"type\":\"heartbeat\"}";
         }
     }
 
