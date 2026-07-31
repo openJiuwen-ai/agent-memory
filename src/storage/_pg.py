@@ -142,10 +142,14 @@ class PgStoreBase:
         connect_timeout: float,
         application_name: str,
         auto_create_schema: bool,
+        ssl_verify: bool = False,
+        ssl_ca_cert: str | None = None,
     ) -> None:
         self._dsn = dsn
         self._schema = schema
         self._table = table
+        self._ssl_verify = ssl_verify
+        self._ssl_ca_cert = ssl_ca_cert
         self._pool_min_size = pool_min_size
         self._pool_max_size = pool_max_size
         self._connect_timeout = connect_timeout
@@ -172,14 +176,21 @@ class PgStoreBase:
                     "psycopg client not installed (pip install 'psycopg[binary,pool]')"
                 ) from exc
 
+            connect_kwargs: dict[str, Any] = {
+                "application_name": self._application_name,
+                "connect_timeout": max(1, int(self._connect_timeout)),
+            }
+            if self._ssl_verify:
+                # libpq 把 kwargs 合并进 conninfo 且优先级高于 dsn 中的同名项，
+                # 故此处设定即为最终生效值。verify-full 同时校验证书链与主机名；
+                # 若须用 IP 直连（证书 CN 为域名），改在 dsn 里写 sslmode=verify-ca。
+                connect_kwargs["sslmode"] = "verify-full"
+                connect_kwargs["sslrootcert"] = self._ssl_ca_cert
             pool = ConnectionPool(
                 conninfo=self._dsn,
                 min_size=self._pool_min_size,
                 max_size=self._pool_max_size,
-                kwargs={
-                    "application_name": self._application_name,
-                    "connect_timeout": max(1, int(self._connect_timeout)),
-                },
+                kwargs=connect_kwargs,
                 open=False,
             )
             try:

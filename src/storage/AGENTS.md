@@ -73,6 +73,11 @@
    分别是前两者的逻辑否定。后端原生字段若不区分单值与数组，必须写入内部派生标记恢复
    该语义，不得把 `EQ` 与 `CONTAINS` 编译成无差别查询。
 
+10. **SSL 开启后不得静默降级**
+   `ssl_verify=true` 意味着实际必须校验服务端证书。缺 `ssl_ca_cert`、连接串仍为明文
+   scheme、或连接串自带会覆盖本设置的 TLS 参数，一律在**装配阶段**报错，不得放行到
+   运行期——调用方以为受保护而实际未校验，比明文更危险。
+
 ## 与其他子目录的边界
 
 **本模块管**：
@@ -98,3 +103,8 @@
 6. FusionStore 的 `FusionRecord` 可部分字段为 None（如只写向量不写文本）。
 7. `EncryptedKVStore` 的 `raw_kv_store` 不能指向自身；未配置 raw 依赖时必须在装配阶段报错。
 8. `KVStore.mget` 是 `get` 的批量互补：返回与 `keys` 下标一一对应的 `list[bytes]`、任一 key 缺失即抛 `NotFoundError`（与 `get` 一致，不静默省略）、**不去重**、支持重复 key（各下标独立返回，语义同 Redis `MGET`，重复 key 去重由调用方如 `UnitReader.load` 负责，不下沉到本接口）；`encrypted` 的 `mget` 委托 raw 取密文（raw 缺失即抛 `NotFoundError`）后须逐项解密（AAD 绑 key，不可批量统一解密）。
+9. 接外部后端的实现统一接受 `ssl_verify` / `ssl_ca_cert`（默认关闭），经 `_support.read_ssl_config`
+   读取后由各 builder 自行翻译为客户端参数：redis `ssl_ca_certs`、elasticsearch `ca_certs`、
+   postgres/pgvector `sslrootcert`（配 `sslmode=verify-full`）、milvus `server_pem_path`（配
+   `secure=True`）。不做跨后端的 TLS 参数抽象层——各客户端语义切分不同，详见
+   [F04-storage-ssl.md](../../docs/features/storage/F04-storage-ssl.md)。

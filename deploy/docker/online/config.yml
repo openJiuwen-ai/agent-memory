@@ -57,6 +57,11 @@ memory_api:
       target: redis
       params:
         url: "${REDIS_URL:-redis://redis:6379/0}"
+        # SSL：ssl_verify 只管**是否校验服务端证书**，加密开关在 url 的 scheme 上——
+        # 接云端实例须把 url 换成 rediss://，否则 ssl_verify=true 会在装配阶段报错。
+        # ssl_ca_cert 为云厂商控制台下载的 CA 证书路径（容器内可读），开启时必填。
+        ssl_verify: "${REDIS_SSL_VERIFY:-false}"
+        ssl_ca_cert: "${REDIS_SSL_CA:-}"
   fulltext_store:
     default:
       target: elasticsearch
@@ -72,6 +77,10 @@ memory_api:
         #   或置空回退 standard（英文不词干化、中文按单字切分，即本参数引入前的行为）
         # 注意：仅索引创建时生效，变更后需删除旧索引重建才能应用。
         text_analyzer: "${ES_TEXT_ANALYZER:-english}"
+        # SSL：加密开关在 hosts 的 scheme 上（须为 https://）；证书只能走本参数——
+        # elasticsearch-py 解析 hosts 时不读 query，写进 URL 会被静默丢弃。
+        ssl_verify: "${ES_SSL_VERIFY:-false}"
+        ssl_ca_cert: "${ES_SSL_CA:-}"
     # L0/L1 与 L2 使用同一 ES 后端和 analyzer，但分别落独立 index。
     # 三层同通道分数统一按「越大越相关」归并。
     layers_l0:
@@ -80,12 +89,16 @@ memory_api:
         hosts: "${ES_HOSTS:-http://elasticsearch:9200}"
         index: "${ES_INDEX_L0:-agent_memory_fulltext_l0}"
         text_analyzer: "${ES_TEXT_ANALYZER:-english}"
+        ssl_verify: "${ES_SSL_VERIFY:-false}"
+        ssl_ca_cert: "${ES_SSL_CA:-}"
     layers_l1:
       target: elasticsearch
       params:
         hosts: "${ES_HOSTS:-http://elasticsearch:9200}"
         index: "${ES_INDEX_L1:-agent_memory_fulltext_l1}"
         text_analyzer: "${ES_TEXT_ANALYZER:-english}"
+        ssl_verify: "${ES_SSL_VERIFY:-false}"
+        ssl_ca_cert: "${ES_SSL_CA:-}"
   vector_store:
     default:
       target: milvus
@@ -94,6 +107,10 @@ memory_api:
         collection: "${MILVUS_COLLECTION:-agent_memory_vectors}"
         dim: 1024
         metric_type: COSINE
+        # SSL：milvus 的开关是参数形态（内部置 secure=True），uri 用 http/https 皆可。
+        # 单向 TLS 的证书最终落到 server_pem_path，见 milvus_vector._build。
+        ssl_verify: "${MILVUS_SSL_VERIFY:-false}"
+        ssl_ca_cert: "${MILVUS_SSL_CA:-}"
     # L0/L1 与 L2 使用同一 embedding 维度与 COSINE 度量，分别落独立 collection。
     layers_l0:
       target: milvus
@@ -102,6 +119,10 @@ memory_api:
         collection: "${MILVUS_COLLECTION_L0:-agent_memory_vectors_l0}"
         dim: 1024
         metric_type: COSINE
+        # SSL：milvus 的开关是参数形态（内部置 secure=True），uri 用 http/https 皆可。
+        # 单向 TLS 的证书最终落到 server_pem_path，见 milvus_vector._build。
+        ssl_verify: "${MILVUS_SSL_VERIFY:-false}"
+        ssl_ca_cert: "${MILVUS_SSL_CA:-}"
     layers_l1:
       target: milvus
       params:
@@ -109,6 +130,10 @@ memory_api:
         collection: "${MILVUS_COLLECTION_L1:-agent_memory_vectors_l1}"
         dim: 1024
         metric_type: COSINE
+        # SSL：milvus 的开关是参数形态（内部置 secure=True），uri 用 http/https 皆可。
+        # 单向 TLS 的证书最终落到 server_pem_path，见 milvus_vector._build。
+        ssl_verify: "${MILVUS_SSL_VERIFY:-false}"
+        ssl_ca_cert: "${MILVUS_SSL_CA:-}"
 
   # Keep query text unchanged: the chat LLM is not used for query rewriting.
   query_parser:
