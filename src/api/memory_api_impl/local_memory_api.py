@@ -495,9 +495,7 @@ class LocalMemoryAPI(MemoryAPI):
                 "permission_reason": "permission check disabled",
                 **_context_detail(effective_context),
             }
-        if not self._perm.check(
-            identity, target, action, context=effective_context, auth=auth
-        ):
+        if not self._perm.check(identity, target, action, context=effective_context, auth=auth):
             self._record_audit(
                 identity,
                 audit_action,

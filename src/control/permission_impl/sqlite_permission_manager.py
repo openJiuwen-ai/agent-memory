@@ -115,7 +115,7 @@ def _owner_scope_covers(
             if parent_value != child_value:
                 return False
             continue
-        if any(getattr(parent, later) for later in order[index + 1:]):
+        if any(getattr(parent, later) for later in order[index + 1 :]):
             return False
         return True
     return True
@@ -162,9 +162,7 @@ def _management_plane_denies(
 _DELEGATABLE_ACTIONS = frozenset({Action.READ, Action.WRITE, Action.UPDATE, Action.DELETE})
 
 
-def _delegation_covers(
-    auth: AuthContext | None, target: Scope, action: Action
-) -> bool:
+def _delegation_covers(auth: AuthContext | None, target: Scope, action: Action) -> bool:
     """§4.3 路径 1：用户授权 Agent 代操作。
 
     条件全部取自服务端的认证产物，**没有一项来自请求体**--否则调用方自己声明

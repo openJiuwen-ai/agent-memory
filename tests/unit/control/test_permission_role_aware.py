@@ -236,9 +236,7 @@ def test_routing_passes_auth_through_to_delegate(tmp_path) -> None:
             return super().check(actor, target, action, context, auth=auth)
 
     delegate = _Spy(str(tmp_path / "permission.db"))
-    router = RoutingPermissionManager(
-        policies={"strict": delegate}, routes={}, fallback="strict"
-    )
+    router = RoutingPermissionManager(policies={"strict": delegate}, routes={}, fallback="strict")
     ctx = AuthContext(actor=_ALICE, role=Role.ROOT)
 
     assert router.check(_ALICE, _BOB, Action.READ, auth=ctx) is True
