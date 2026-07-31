@@ -254,3 +254,7 @@ images/
 *.txt
 *.bin
 *.sqlite3
+
+# Vite auto-generated files (unplugin-vue-components & unplugin-auto-import)
+agent-memory-platform/server/components.d.ts
+agent-memory-platform/server/auto-imports.d.ts

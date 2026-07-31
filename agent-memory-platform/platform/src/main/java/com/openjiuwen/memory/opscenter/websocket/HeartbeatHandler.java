@@ -1,3 +1,18 @@
+/*
+ * Copyright 2024 OpenJiuWen
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package com.openjiuwen.memory.opscenter.websocket;
 
 import org.slf4j.Logger;
@@ -9,29 +24,38 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
-import java.time.Duration;
 import java.time.Instant;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 /**
- * WebSocket 心跳处理器 - 向前端实时推送后端健康状态。
+ * WebSocket 连接健康监控处理器
+ * 负责维护前端与后端的实时连接状态检测
  * 
- * 工作原理：
- * 1. 前端建立 WebSocket 连接后，后端每 5 秒推送一次心跳包
- * 2. 前端收到心跳包说明后端在线，超过 10 秒未收到说明后端断开
- * 3. 前端据此自动退出登录并跳转到登录页
+ * 核心机制：
+ * - 建立连接时自动记录会话信息
+ * - 定期向所有活跃连接发送心跳信号
+ * - 连接关闭时自动清理资源
+ * - 异常情况下及时释放会话对象
  */
 @Component
 public class HeartbeatHandler extends TextWebSocketHandler {
-
-    private static final Logger log = LoggerFactory.getLogger(HeartbeatHandler.class);
-    private static final long HEARTBEAT_INTERVAL_MS = 5000; // 5 秒推送一次
     
+    private static final Logger log = LoggerFactory.getLogger(HeartbeatHandler.class);
+    /** 心跳间隔（毫秒）- 5 秒一次 */
+    private static final long HEARTBEAT_INTERVAL_MS = 5000L;
+    /** 会话存储容器 */
     private final ConcurrentHashMap<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
+    /** 定时任务调度器 */
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    /** 定时任务引用 */
+    private ScheduledFuture<?> heartbeatTask;
+    /** 心跳消息模板 */
+    private static final String HEARTBEAT_MESSAGE = "{\"event\":\"heartbeat\",\"ts\":%d}";
 
     public HeartbeatHandler() {
         // 启动定时任务：每 5 秒向所有连接推送心跳
