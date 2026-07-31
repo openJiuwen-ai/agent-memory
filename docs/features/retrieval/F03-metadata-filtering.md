@@ -225,7 +225,8 @@ Store.search(scope, query)
 - `EQ` / `IN` 的正向匹配只命中标量，`CONTAINS` 只命中数组成员；
 - `NE` / `NOT_IN` 分别是 `EQ` / `IN` 的逻辑否定，因此数组和缺失字段不满足正向
   标量谓词时满足其否定；
-- 标量 `CONTAINS` 不退化为等值或字符串子串，数组 `EQ` / `IN` 不退化为成员匹配。
+- 标量 `CONTAINS` 不退化为等值或字符串子串，数组 `EQ` / `IN` 不退化为成员匹配；
+- 范围算子只作用于标量：数组字段不满足任何范围谓词，不按「任一成员命中」判定。
 
 因此同一个业务 key 的类型稳定性由调用方负责。当前不引入独立
 `metadata_schema`，也不在查询时猜测 `"8"` 应解释为字符串还是数字，避免静默改变
@@ -233,9 +234,11 @@ Store.search(scope, query)
 
 Elasticsearch 的倒排字段本身不区分单值与数组，因此文档写入时额外生成内部
 `metadata_array_fields` 字段记录数组 key，查询编译器据此区分 `EQ` 与 `CONTAINS`。
-该字段不进入公开 `Document.metadata`。为已有索引增加 mapping 不会回填历史文档，
-启用严格语义后需重建旧索引。PostgreSQL/pgvector 直接通过 JSONB 值和
-`jsonb_typeof(...)= 'array'` 区分标量等值与数组成员，不需要额外 schema。
+该字段不进入公开 `Document.metadata`。范围算子同样受该标记约束——Lucene 的 range
+对多值字段是「任一成员命中即匹配」，不加约束会比真源复核和 PostgreSQL 宽松。
+为已有索引增加 mapping 不会回填历史文档，启用严格语义后需重建旧索引。
+PostgreSQL/pgvector 直接通过 JSONB 值、`jsonb_typeof(...)= 'array'` 与
+`jsonb_typeof(...)= 'number'` 区分标量等值、数组成员与数值范围，不需要额外 schema。
 
 ### 8. valid-time 开放区间使用索引哨兵
 

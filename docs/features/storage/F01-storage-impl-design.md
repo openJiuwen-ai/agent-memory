@@ -41,7 +41,7 @@
 | `memory` | `InMemoryKVStore` | 进程内 dict | — | — | scope 折五段命名空间键 | `ttl` 过期在 get/exists/scan 时**惰性清除**；`list` 使用公共 MemoryUnit 过滤/计数/分页 |
 | `sqlite` | `SQLiteKVStore` | 标准库 `sqlite3` 落盘 | — | `db_path`(`agent_memory.db`) | scope 五维各落一列，主键 `(org,space,user,agent,session,key)` | 跨进程/重启保留；`check_same_thread=False` + 一把锁串行化（HTTP 多线程）；过期行读时过滤 + 惰性删；`":memory:"` 为进程内；旧表迁移到空 `space` |
 | `redis` | `RedisKVStore` | Redis（`redis-py` 惰性导入） | `url` | `host`/`port`(6379)/`db`(0)/`password` | key 前缀 `org:space:user:agent:session:<key>` | `insert`=`SET NX`（已存在→`ConflictError`）、`update`=`SET XX`（不存在→`NotFoundError`）；`ttl`→`px` 毫秒；`scopes()` 扫 `*` 还原五段 |
-| `postgres` | `PostgresKVStore` | PostgreSQL（`psycopg` 3 + 每实例连接池，惰性导入） | `dsn` | `schema`(`public`)/`table`(`agent_memory_kv`)/池大小/`auto_create_schema` | scope 五维各落一列，复合主键 | 条件式 `ON CONFLICT` 原子区分活跃冲突与过期覆盖；TTL 用库侧 Unix 秒，读取过滤过期行；`list` 用 `starts_with` 做字面前缀 |
+| `postgres` | `PostgresKVStore` | PostgreSQL（`psycopg` 3 + 每实例连接池，惰性导入） | `dsn` | `schema`(`public`)/`table`(`agent_memory_kv`)/池大小/`auto_create_schema` | scope 五维各落一列，复合主键 | 条件式 `ON CONFLICT` 原子区分活跃冲突与过期覆盖；TTL 用库侧 Unix 秒，读取过滤过期行；`scan` 用 `starts_with` 做字面前缀；`list` 使用公共 MemoryUnit 过滤/计数/分页 |
 
 > 四者同实现 `KVStore` 契约 + 同一字节编码；`list` 当前都使用公共兼容路径完成
 > MemoryUnit 过滤、精确计数、稳定排序和分页，装配替换后上层语义不变。
