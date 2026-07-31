@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS scope_registry (
     scope_id    VARCHAR(64) NOT NULL UNIQUE,
     scope_name  VARCHAR(128),
     description TEXT,
+    scope_key   VARCHAR(256),
+    max_memories INTEGER DEFAULT 0,
     status      VARCHAR(32) DEFAULT 'unassigned',
     assigned_to_tenant_id VARCHAR(64),
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

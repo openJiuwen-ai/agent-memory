@@ -55,4 +55,14 @@ public interface ScopeRegistryService extends IService<ScopeRegistry> {
      * 获取指定 Scope 的统计信息（包含绑定租户状态）
      */
     ScopeStatsDTO getScopeStats(String scopeId);
+    
+    /**
+     * 检查 scope_id 是否已存在
+     */
+    boolean existsByScopeId(String scopeId);
+    
+    /**
+     * 根据 scope_id 查询 Scope
+     */
+    ScopeRegistry getByScopeId(String scopeId);
 }

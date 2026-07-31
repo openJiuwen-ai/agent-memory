@@ -36,6 +36,16 @@ public class ScopeRegistry {
     private String description;
     
     /**
+     * Scope Key（加密存储，仅注册时明文返回一次）
+     */
+    private String scopeKey;
+    
+    /**
+     * 最大记忆数量配额（0=不限）
+     */
+    private Integer maxMemories;
+    
+    /**
      * 状态：unassigned/assigned
      */
     private String status;

@@ -138,4 +138,22 @@ public class ScopeRegistryServiceImpl extends ServiceImpl<ScopeRegistryMapper, S
                 .tenantName(tenantName)
                 .build();
     }
+    
+    /**
+     * 检查 scope_id 是否已存在
+     */
+    public boolean existsByScopeId(String scopeId) {
+        LambdaQueryWrapper<ScopeRegistry> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(ScopeRegistry::getScopeId, scopeId);
+        return count(wrapper) > 0;
+    }
+    
+    /**
+     * 根据 scope_id 查询 Scope
+     */
+    public ScopeRegistry getByScopeId(String scopeId) {
+        LambdaQueryWrapper<ScopeRegistry> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(ScopeRegistry::getScopeId, scopeId);
+        return getOne(wrapper);
+    }
 }

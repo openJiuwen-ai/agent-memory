@@ -94,24 +94,43 @@ public class ScopeRegistryController {
     @PostMapping
     public ApiResponse<ScopeRegistry> createScope(@RequestBody Map<String, String> request) {
         try {
-            ScopeRegistry scope = new ScopeRegistry();
-            scope.setId(UUID.randomUUID().toString().replace("-", ""));
-                
-            // scope_id: 如果未提供则随机生成
+            // V3-DEFECT-003 修复：检查 scope_id 唯一性
             String scopeId = request.get("scopeId");
             if (scopeId == null || scopeId.trim().isEmpty()) {
                 scopeId = "scope_" + UUID.randomUUID().toString().substring(0, 8);
             }
+            
+            // 检查是否已存在
+            if (scopeRegistryService.existsByScopeId(scopeId)) {
+                return ApiResponse.fail(40900, String.format("Scope '%s' 已存在，请勿重复注册", scopeId));
+            }
+            
+            ScopeRegistry scope = new ScopeRegistry();
+            scope.setId(UUID.randomUUID().toString().replace("-", ""));
             scope.setScopeId(scopeId);
                 
             scope.setScopeName(request.get("scopeName"));
             scope.setDescription(request.get("description"));
+            
+            // V3-DEFECT-004 修复：生成并存储 scope_key（仅本次明文返回）
+            String scopeKey = generateScopeKey();
+            scope.setScopeKey(scopeKey);
+            
+            // 设置默认配额（0=不限）
+            String maxMemoriesStr = request.get("maxMemories");
+            if (maxMemoriesStr != null && !maxMemoriesStr.trim().isEmpty()) {
+                scope.setMaxMemories(Integer.parseInt(maxMemoriesStr));
+            } else {
+                scope.setMaxMemories(0);
+            }
+            
             scope.setStatus("unassigned");
             scope.setCreatedAt(LocalDateTime.now());
             scope.setUpdatedAt(LocalDateTime.now());
                 
             boolean success = scopeRegistryService.save(scope);
             if (success) {
+                // 明文 scope_key 仅本次响应返回
                 return ApiResponse.ok(scope);
             } else {
                 return ApiResponse.fail(50000, "Scope 创建失败");
@@ -119,6 +138,14 @@ public class ScopeRegistryController {
         } catch (Exception e) {
             return ApiResponse.fail(50000, "Scope 创建失败：" + e.getMessage());
         }
+    }
+    
+    /**
+     * 生成 Scope Key（随机字符串）
+     */
+    private String generateScopeKey() {
+        return "sk_" + UUID.randomUUID().toString().replace("-", "") + 
+               "_" + System.currentTimeMillis();
     }
     
     /**
@@ -198,5 +225,41 @@ public class ScopeRegistryController {
             return ApiResponse.fail(40401, "Scope 不存在");
         }
         return ApiResponse.ok(stats);
+    }
+    
+    /**
+     * V3-DEFECT-008 修复：获取 Scope 配额使用情况
+     */
+    @GetMapping("/{scopeId}/quota")
+    public ApiResponse<Map<String, Object>> getScopeQuota(@PathVariable String scopeId) {
+        try {
+            ScopeRegistry scope = scopeRegistryService.getByScopeId(scopeId);
+            if (scope == null) {
+                return ApiResponse.fail(40401, "Scope 不存在");
+            }
+            
+            // 从后端表获取配额信息
+            int maxMemories = scope.getMaxMemories() != null ? scope.getMaxMemories() : 0;
+            
+            // TODO: 后续可集成内核 API 获取实际使用量
+            // 当前暂时返回 0，因为后端不直接管理记忆数量
+            int used = 0;
+            
+            double usagePercent = 0.0;
+            if (maxMemories > 0) {
+                usagePercent = (double) used / maxMemories * 100;
+            }
+            
+            Map<String, Object> quotaInfo = Map.of(
+                "scopeId", scopeId,
+                "used", used,
+                "max", maxMemories,
+                "usagePercent", usagePercent
+            );
+            
+            return ApiResponse.ok(quotaInfo);
+        } catch (Exception e) {
+            return ApiResponse.fail(50000, "查询配额失败：" + e.getMessage());
+        }
     }
 }
