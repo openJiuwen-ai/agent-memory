@@ -5,6 +5,7 @@ import com.openjiuwen.memory.common.client.MemoryEngineClient;
 import com.openjiuwen.memory.common.exception.BizException;
 import com.openjiuwen.memory.common.ResultCode;
 import com.openjiuwen.memory.common.spi.PermissionChecker;
+import com.openjiuwen.memory.common.util.PathValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
@@ -163,9 +164,8 @@ public class RuntimeLogController {
             @RequestParam(name = "source", defaultValue = "kernel") String source) throws java.io.IOException {
         log.info("[RuntimeLogController] downloadLog 入口 filename={} source={}", filename, source);
         permissionChecker.require("log:read");
-        if (filename == null || filename.isBlank()) {
-            throw new BizException(ResultCode.BAD_REQUEST, "filename 参数不能为空");
-        }
+        // 路径遍历防护：对所有 source 生效
+        PathValidator.validate(filename);
         if ("platform".equalsIgnoreCase(source)) {
             return downloadPlatformLog(filename);
         }

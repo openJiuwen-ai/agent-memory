@@ -1,8 +1,10 @@
 package com.openjiuwen.memory.scopecenter.controller;
 
 import com.openjiuwen.memory.common.ApiResponse;
+import com.openjiuwen.memory.common.CommonResult;
 import com.openjiuwen.memory.common.exception.BizException;
 import com.openjiuwen.memory.common.ResultCode;
+import com.openjiuwen.memory.common.util.ScopeIdValidator;
 import com.openjiuwen.memory.scopecenter.domain.ScopeRegistry;
 import com.openjiuwen.memory.scopecenter.dto.ScopeStatsDTO;
 import com.openjiuwen.memory.scopecenter.service.ScopeRegistryService;
@@ -99,21 +101,19 @@ public class ScopeRegistryController {
             if (scopeId == null || scopeId.trim().isEmpty()) {
                 scopeId = "scope_" + UUID.randomUUID().toString().substring(0, 8);
             }
-            
-            // V3-DEFECT-063 修复：scope_id 格式校验（3-128 字符，以字母开头，仅包含字母数字下划线/连字符）
-            if (!scopeId.matches("^[a-zA-Z][a-zA-Z0-9_-]{2,127}$")) {
-                return ApiResponse.fail(40002, "scope_id 必须是 3-128 个字符，以字母开头，仅包含字母、数字、下划线或连字符");
-            }
-            
+
+            // scope_id 格式校验（与内核 _validate_id 规则一致）
+            ScopeIdValidator.validate(scopeId);
+
             // 检查是否已存在
             if (scopeRegistryService.existsByScopeId(scopeId)) {
                 return ApiResponse.fail(40900, String.format("Scope '%s' 已存在，请勿重复注册", scopeId));
             }
-            
+
             ScopeRegistry scope = new ScopeRegistry();
             scope.setId(UUID.randomUUID().toString().replace("-", ""));
             scope.setScopeId(scopeId);
-                
+
             scope.setScopeName(request.get("scopeName"));
             scope.setDescription(request.get("description"));
             
@@ -144,7 +144,7 @@ public class ScopeRegistryController {
             scope.setStatus("unassigned");
             scope.setCreatedAt(LocalDateTime.now());
             scope.setUpdatedAt(LocalDateTime.now());
-                
+
             boolean success = scopeRegistryService.save(scope);
             if (success) {
                 // 明文 scope_key 仅本次响应返回
@@ -152,6 +152,8 @@ public class ScopeRegistryController {
             } else {
                 return ApiResponse.fail(50000, "Scope 创建失败");
             }
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+            return CommonResult.error(409, "scope_id 已存在");
         } catch (Exception e) {
             return ApiResponse.fail(50000, "Scope 创建失败：" + e.getMessage());
         }
@@ -180,7 +182,19 @@ public class ScopeRegistryController {
             if (scope == null) {
                 return ApiResponse.fail(40401, "Scope 不存在");
             }
-                
+
+            // max_memories 校验（如果提供，内核 KR-SCOPE-02 配额）
+            if (request.containsKey("max_memories")) {
+                try {
+                    int maxMemories = Integer.parseInt(request.get("max_memories"));
+                    if (maxMemories < 0) {
+                        return CommonResult.error(422, "max_memories 不能为负数");
+                    }
+                } catch (NumberFormatException e) {
+                    return CommonResult.error(422, "max_memories 格式无效，必须为非负整数");
+                }
+            }
+
             // 更新字段
             if (request.containsKey("scopeName")) {
                 scope.setScopeName(request.get("scopeName"));

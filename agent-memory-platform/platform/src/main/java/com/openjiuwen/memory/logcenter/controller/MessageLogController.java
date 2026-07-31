@@ -69,7 +69,7 @@ public class MessageLogController {
     public ApiResponse<IPage<MessageLogEntity>> queryLogs(
             @RequestParam(name = "admin_user_id", required = false) String adminUserId,
             @RequestParam(name = "user_id", required = false) String userId,
-            @RequestParam(name = "scope_name", required = false) String scopeName,
+            @RequestParam(name = "scope_id") String scopeId,
             @RequestParam(name = "success_only", required = false) Boolean successOnly,
             @RequestParam(name = "start", required = false) String startTime,
             @RequestParam(name = "end", required = false) String endTime,
@@ -79,7 +79,7 @@ public class MessageLogController {
         Instant start = parseInstant(startTime);
         Instant end = parseInstant(endTime);
         IPage<MessageLogEntity> result = messageLogService.queryLogs(
-                adminUserId, userId, scopeName, successOnly, start, end, page, size);
+                adminUserId, userId, scopeId, successOnly, start, end, page, size);
         return ApiResponse.ok(result);
     }
 
@@ -92,7 +92,10 @@ public class MessageLogController {
         permissionChecker.require("log:read");
         String adminUserId = body.get("admin_user_id") != null ? String.valueOf(body.get("admin_user_id")) : null;
         String userId = body.get("user_id") != null ? String.valueOf(body.get("user_id")) : null;
-        String scopeName = body.get("scope_name") != null ? String.valueOf(body.get("scope_name")) : null;
+        String scopeId = body.get("scope_id") != null ? String.valueOf(body.get("scope_id")) : null;
+        if (scopeId == null || scopeId.isBlank()) {
+            throw new BizException(ResultCode.BAD_REQUEST, "scope_id 不能为空");
+        }
         Boolean successOnly = body.get("success_only") instanceof Boolean b ? b : null;
         String startTime = body.get("start") != null ? String.valueOf(body.get("start")) : null;
         String endTime = body.get("end") != null ? String.valueOf(body.get("end")) : null;
@@ -101,7 +104,7 @@ public class MessageLogController {
         Instant start = parseInstant(startTime);
         Instant end = parseInstant(endTime);
         IPage<MessageLogEntity> result = messageLogService.queryLogs(
-                adminUserId, userId, scopeName, successOnly, start, end, page, size);
+                adminUserId, userId, scopeId, successOnly, start, end, page, size);
         return ApiResponse.ok(result);
     }
 
@@ -141,7 +144,7 @@ public class MessageLogController {
     public ResponseEntity<ByteArrayResource> exportToCsv(
             @RequestParam(name = "admin_user_id", required = false) String adminUserId,
             @RequestParam(name = "user_id", required = false) String userId,
-            @RequestParam(name = "scope_name", required = false) String scopeName,
+            @RequestParam(name = "scope_id") String scopeId,
             @RequestParam(name = "success_only", required = false) Boolean successOnly,
             @RequestParam(name = "start") String startTime,
             @RequestParam(name = "end") String endTime) {
@@ -161,7 +164,7 @@ public class MessageLogController {
             throw new BizException(ResultCode.BAD_REQUEST, "导出范围不能超过7天");
         }
         String csv = messageLogService.exportToCsv(
-                adminUserId, userId, scopeName, successOnly, start, end);
+                adminUserId, userId, scopeId, successOnly, start, end);
         byte[] bytes = csv.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         String filename = "message-logs-" + java.time.LocalDate.now() + ".csv";
         return ResponseEntity.ok()

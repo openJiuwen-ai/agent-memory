@@ -27,7 +27,7 @@ import java.util.Map;
  * LogCollectAsyncService）零改动。
  * <p>
  * 字段映射（内核 item → MessageLogEntity）：
- *   message_id→id/requestId, user_id→userId, scope_id→scopeName,
+ *   message_id→id/requestId, user_id→userId, scope_id→scopeId,
  *   role→messageRoles, timestamp→createdAt, apiPath 常量化 "/add_messages/"。
  * V2 专有的请求级字段（responseStatus/responseTimeMs/memoryGenerated/clientIp 等）
  * 在内核消息模型中不存在，一律留空。
@@ -47,12 +47,12 @@ public class MessageLogServiceImpl implements MessageLogService {
     }
 
     @Override
-    public IPage<MessageLogEntity> queryLogs(String adminUserId, String userId, String scopeName,
+    public IPage<MessageLogEntity> queryLogs(String adminUserId, String userId, String scopeId,
                                              Boolean successOnly, Instant startTime, Instant endTime,
                                              int page, int size) {
         Map<String, Object> filter = new LinkedHashMap<>();
         if (userId != null && !userId.isBlank()) filter.put("user_id", userId);
-        if (scopeName != null && !scopeName.isBlank()) filter.put("scope_id", scopeName);
+        if (scopeId != null && !scopeId.isBlank()) filter.put("scope_id", scopeId);
         if (startTime != null) filter.put("start_time", startTime.toString());
         if (endTime != null) filter.put("end_time", endTime.toString());
         filter.put("page_idx", Math.max(1, page));
@@ -60,7 +60,7 @@ public class MessageLogServiceImpl implements MessageLogService {
         // successOnly 是 V2 请求日志概念（HTTP 状态），内核消息无此维度，忽略。
         // 内核侧过滤中间记忆产物（scope_id=middle_term_memory），非真实用户消息。
         // 仅当未显式查询 middle_term_memory 时才排除（用户想看中间产物时不排除）。
-        if (!MIDDLE_TERM_MEMORY_SCOPE.equals(scopeName)) {
+        if (!MIDDLE_TERM_MEMORY_SCOPE.equals(scopeId)) {
             filter.put("exclude_scopes", List.of(MIDDLE_TERM_MEMORY_SCOPE));
         }
 
@@ -98,13 +98,13 @@ public class MessageLogServiceImpl implements MessageLogService {
 
     @Override
     public List<Map<String, Object>> statsByScope(String adminUserId, Instant startTime, Instant endTime) {
-        // 同上：内核无 by-scope 聚合端点，以总量近似保持形状 [{scope_name, count}]。
+        // 同上：内核无 by-scope 聚合端点，以总量近似保持形状 [{scope_id, count}]。
         Map<String, Object> body = memoryEngineClient.statsKernelMessages(
                 null, null, null,
                 startTime == null ? null : startTime.toString(),
                 endTime == null ? null : endTime.toString());
         Map<String, Object> row = new LinkedHashMap<>();
-        row.put("scope_name", "__all__");
+        row.put("scope_id", "__all__");
         row.put("count", asLong(body.get("total")));
         return List.of(row);
     }
@@ -132,10 +132,10 @@ public class MessageLogServiceImpl implements MessageLogService {
     }
 
     @Override
-    public String exportToCsv(String adminUserId, String userId, String scopeName,
+    public String exportToCsv(String adminUserId, String userId, String scopeId,
                               Boolean successOnly, Instant startTime, Instant endTime) {
         byte[] bytes = memoryEngineClient.exportKernelMessages(
-                scopeName, userId, null,
+                scopeId, userId, null,
                 startTime == null ? null : startTime.toString(),
                 endTime == null ? null : endTime.toString(),
                 20000);
@@ -153,7 +153,7 @@ public class MessageLogServiceImpl implements MessageLogService {
         e.setId(messageId);
         e.setRequestId(messageId);
         e.setUserId(asString(m.get("user_id")));
-        e.setScopeName(asString(m.get("scope_id")));
+        e.setScopeId(asString(m.get("scope_id")));
         e.setApiPath("/add_messages/");
         e.setApiMethod("POST");
         e.setMessageCount(1);

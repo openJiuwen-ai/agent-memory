@@ -149,13 +149,8 @@ public class PlatformLogReader {
      * @throws IOException       文件不存在
      */
     public Path resolveDownload(String filename) throws SecurityException, IOException {
-        if (filename == null || filename.isBlank()) {
-            throw new IllegalArgumentException("filename 参数不能为空");
-        }
-        Path target = logDir.resolve(filename).toAbsolutePath().normalize();
-        if (!target.startsWith(logDir)) {
-            throw new SecurityException("filename '" + filename + "' is outside platform log directory");
-        }
+        // 白名单 + 归一化 + 目录归属校验（统一委托 PathValidator）
+        Path target = com.openjiuwen.memory.common.util.PathValidator.validate(filename, logDir);
         String name = target.getFileName().toString();
         if (!(name.endsWith(".log") || name.contains(".log."))) {
             throw new SecurityException("filename '" + filename + "' is not a valid log file");
