@@ -332,6 +332,7 @@ def test_previous_schema_last_seq_backfilled_on_migrate(tmp_path) -> None:
     # 紧邻旧 schema：有 head_hmac 但 DROP 重建缺 last_seq
     conn = sqlite3.connect(db)
     conn.execute("DROP TABLE audit_chain_head")
+    conn.execute("PRAGMA user_version = 0")  # 模拟真正的旧库
     conn.execute(
         "CREATE TABLE audit_chain_head (id INTEGER PRIMARY KEY CHECK (id = 0),"
         ' head_hmac TEXT NOT NULL DEFAULT "")'
@@ -399,7 +400,9 @@ def test_legacy_signed_db_migrates_chain_head(tmp_path) -> None:
     """审计 P1-1：旧版签名库（有事件无 chain-head 表）升级时安全迁移。
 
     旧库有合法 _hmac 事件但无 chain-head 表（上一版 schema）。新版启动时验证旧链
-    后初始化 head 为最后一条 _hmac，后续写入不断链。
+    后初始化 head 为最后一条 _hmac，后续写入不断链。真正的旧库没有设置当前版本的
+    ``PRAGMA user_version=2``，因此 fixture 必须显式保留旧版标记 ``user_version=0``；
+    当前版本库直接丢失 head 表属于损坏，不能借此测试模拟。
     """
     import sqlite3
 
@@ -408,12 +411,14 @@ def test_legacy_signed_db_migrates_chain_head(tmp_path) -> None:
 
     db = str(tmp_path / "audit.sqlite3")
     key = derive_audit_key(_hmac_key())
-    # 旧版：写两条，然后删 chain-head 表模拟旧 schema
+    # 先借当前实现生成两条合法签名事件，再移除新版 head 元数据并重置数据库版本，
+    # 得到「有合法签名事件、从未迁移 chain-head schema」的旧库 fixture。
     old = HmacAuditLogger(SqliteAuditLogger(db), hmac_key=key, verify_on_start=False)
     old.record(_event("1"))
     old.record(_event("2"))
     conn = sqlite3.connect(db)
     conn.execute("DROP TABLE audit_chain_head")
+    conn.execute("PRAGMA user_version = 0")
     conn.commit()
     conn.close()
 
@@ -421,6 +426,39 @@ def test_legacy_signed_db_migrates_chain_head(tmp_path) -> None:
     new = HmacAuditLogger(SqliteAuditLogger(db), hmac_key=key)
     new.record(_event("3"))
     assert new.verify_integrity().status == "clean"
+
+
+def test_current_schema_recreated_as_legacy_shape_is_rejected(tmp_path) -> None:
+    """审计 P1-2：当前库不能靠重建旧形态 head 表降级成迁移态。
+
+    ``user_version=2`` 是当前 schema 的权威标记。即使攻击者把 head 表重建为缺少
+    ``last_seq/schema_version`` 的旧形态，也必须按当前库损坏拒绝，不能自动把数据库
+    版本降成 1 后重建 head。
+    """
+    import sqlite3
+
+    from common.audit.audit_impl.sqlite_audit_logger import SqliteAuditLogger
+    from security.audit_hmac import HmacAuditLogger, derive_audit_key
+
+    db = str(tmp_path / "audit.sqlite3")
+    key = derive_audit_key(_hmac_key())
+    current = HmacAuditLogger(SqliteAuditLogger(db), hmac_key=key, verify_on_start=False)
+    current.record(_event("1"))
+    current.record(_event("2"))
+
+    conn = sqlite3.connect(db)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    conn.execute("DROP TABLE audit_chain_head")
+    conn.execute(
+        "CREATE TABLE audit_chain_head ("
+        "id INTEGER PRIMARY KEY CHECK (id = 0),"
+        " head_hmac TEXT NOT NULL DEFAULT '')"
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(ValidationError):
+        HmacAuditLogger(SqliteAuditLogger(db), hmac_key=key)
 
 
 def test_legacy_unsigned_db_rejected_on_migrate(tmp_path) -> None:
