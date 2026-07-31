@@ -122,37 +122,50 @@ class HmacAuditLogger(AuditLogger):
             self._verify_on_start()
 
     def _recover_chain_head(self) -> str:
-        """恢复链头，含旧库迁移与 head 一致性校验（审计 P1-1/P1-2）。
+        """恢复链头，含旧库迁移与 head 一致性校验（审计 P1-1/P1-2/P2-1）。
 
-        用 ``get_chain_state`` 稳定快照（同一锁内读 head + 最后事件，审计 P1-2b），
-        避免两次独立读取间被并发追加插入不一致状态。
+        用 ``get_chain_state`` 稳定快照（单条 SQL，审计 P1），避免两次独立读取间被
+        并发追加插入不一致状态。``schema_version`` 区分迁移态 vs 篡改态（审计 P2-1）：
 
-        三种情况：
         1. 全新库（无事件）：head 空，正常。
-        2. 旧版库（有事件、chain-head 行不存在或缺 last_seq）：验证旧链后，初始化 head
-           为最后一条 _hmac + 真实 seq（迁移回填 last_seq，审计 P1-2a）。未签名/验证失败
-           拒绝迁移。
-        3. 新版库（有事件、chain-head 完整）：比对 head_hmac == last_event_hmac 且
-           head_last_seq == last_event_seq（审计 P1-2），不一致拒绝启动。
+        2. 旧版迁移（schema_version < 2）：验证旧链后，初始化 head 为最后一条 _hmac +
+           真实 seq。未签名/验证失败拒绝迁移。
+        3. 新版库（schema_version >= 2）：比对 head_hmac == last_event_hmac 且
+           head_last_seq == last_event_seq，不一致拒绝启动。last_seq=0 在新 schema 下
+           是损坏（非迁移），拒绝而非自动修复。
         """
-        head_hmac, head_last_seq, last_seq, last_hmac = self._delegate.get_chain_state()
+        head_hmac, head_last_seq, last_seq, last_hmac, schema_version = (
+            self._delegate.get_chain_state()
+        )
+        # 全新空库：四个维度都为空/零（审计 P1-1）
+        if last_seq == 0 and not last_hmac and not head_hmac and head_last_seq == 0:
+            return head_hmac
+        # 无事件但 head 非空/非零：损坏/篡改（审计 P1-1）
         if last_seq == 0 and not last_hmac:
-            return head_hmac  # 全新库或内存后端无历史
-        # 旧库迁移：chain-head 行不存在（head_hmac 空）或 last_seq 缺失（紧邻上一版 schema）
-        if not head_hmac or head_last_seq == 0:
+            raise ValidationError(
+                f"audit 链损坏：无事件但 chain-head 非空/非零 "
+                f"(head_hmac={head_hmac[:20] if head_hmac else 'empty'}..., "
+                f"head_last_seq={head_last_seq})。拒绝启动。"
+            )
+        # 旧版迁移（schema_version < 2）：验证旧链后初始化 head
+        if schema_version < 2:
             if not last_hmac:
                 return head_hmac  # 有事件但无 _hmac = 未签名库，_verify_on_start 会拒
-            # 验证旧链完整后才初始化 head（回填真实 last_seq，审计 P1-2a）
             result = self.verify_integrity()
             if result.status == "tampered":
                 raise ValidationError(
-                    f"旧库迁移失败：检测到 {len(result.tampered_indices)} 行篡改，"
-                    "拒绝初始化 chain-head。"
+                    f"旧库迁移失败：检测到 {result.tampered_count} 行篡改，拒绝初始化 chain-head。"
                 )
             if hasattr(self._delegate, "init_chain_head"):
                 self._delegate.init_chain_head(last_hmac, last_seq)
             return last_hmac
-        # head 一致性校验（P1-2）：head 与最后事件的 seq + HMAC 都须一致
+        # 新版库（schema_version >= 2）：head 行不存在视为损坏（审计 P1-2）
+        if not head_hmac and head_last_seq == 0:
+            raise ValidationError(
+                f"audit 链损坏：当前 schema (version={schema_version}) 但 chain-head 行不存在。"
+                "这不是旧库迁移，是 head 行被删除或损坏。拒绝启动。"
+            )
+        # 新版库：head 与最后事件的 seq + HMAC 都须一致（P1-2）
         if head_hmac != last_hmac or head_last_seq != last_seq:
             raise ValidationError(
                 "audit chain-head 与最后事件不一致（head_hmac/last_seq vs 事件）："
@@ -278,7 +291,14 @@ class HmacAuditLogger(AuditLogger):
             if len(page) < page_size:
                 break
         status = "tampered" if tampered_count else "clean"
-        return AuditIntegrityResult(status=status, tampered_indices=tampered, checked=True)
+        samples_truncated = tampered_count > len(tampered)
+        return AuditIntegrityResult(
+            status=status,
+            tampered_indices=tampered,
+            tampered_count=tampered_count,
+            samples_truncated=samples_truncated,
+            checked=True,
+        )
 
 
 @AuditProducer.register("hmac")

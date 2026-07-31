@@ -52,13 +52,14 @@ class InMemoryAuditLogger(AuditLogger):
         self.events.append(event)
         return event.detail.get("_hmac", "")
 
-    def get_chain_state(self) -> tuple[str, int, int, str]:
+    def get_chain_state(self) -> tuple[str, int, int, str, int]:
         """内存后端链状态（单进程，head 即最后事件 _hmac）。"""
         if not self.events:
-            return ("", 0, 0, "")
+            return ("", 0, 0, "", 2)
         last = self.events[-1]
         hmac_val = last.detail.get("_hmac", "")
-        return (hmac_val, len(self.events), len(self.events), hmac_val)
+        n = len(self.events)
+        return (hmac_val, n, n, hmac_val, 2)
 
 
 # -- 注册到 AuditProducer（实现自注册，新增无需改 producer/make_plugins） ------ #

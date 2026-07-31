@@ -97,26 +97,82 @@ class SqliteAuditLogger(AuditLogger):
             # chain-head 表（审计 PR③ P1-1）：单行存当前链头 HMAC + last_seq，供事务 CAS。
             # 多实例/多连接写同一库时，BEGIN IMMEDIATE + head(seq+HMAC)比较-并-交换保证链
             # 不分叉。last_seq 同时用于启动一致性校验（head 必须与最后事件一致，审计 P1-2）。
+
+            # 读取当前 user_version（在检查表之前，审计 P1-2）
+            current_version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+
+            # 检查表是否存在（审计 P1-2：区分表被 DROP 重建 vs 表一直存在）
+            table_existed = (
+                self._conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='audit_chain_head'"
+                ).fetchone()
+                is not None
+            )
+
             self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS audit_chain_head (
                     id INTEGER PRIMARY KEY CHECK (id = 0),
                     head_hmac TEXT NOT NULL DEFAULT '',
-                    last_seq INTEGER NOT NULL DEFAULT 0
+                    last_seq INTEGER NOT NULL DEFAULT 0,
+                    schema_version INTEGER NOT NULL DEFAULT 2
                 )
                 """
             )
-            # 旧库迁移（审计 P1-1）：表已存在但缺 last_seq 列（上一版 schema）-> 加列。
+
+            # 如果表刚刚被创建（之前不存在），检查是全新库还是表被 DROP（审计 P1-2）
+            if not table_existed:
+                event_count = self._conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+
+                if event_count > 0 and current_version >= 2:
+                    # 有事件 + user_version >= 2 = 当前库 DROP 表（损坏，审计 P1-2）
+                    # 严格规则：版本 2 的任何 head schema 缺失都是损坏，不降级！
+                    # 保持 version >= 2，让恢复逻辑按当前 schema 缺 head 拒绝
+                    pass
+                elif event_count == 0 and current_version == 0:
+                    # 全新空库：表刚创建、无事件、user_version=0，设置为当前版本
+                    self._conn.execute("PRAGMA user_version = 2")
+                    current_version = 2
+                elif event_count > 0 and current_version == 0:
+                    # 有事件 + user_version=0 = 真正的旧库（从未有过 head 表）
+                    # 不设置版本，等待列迁移逻辑处理
+                    pass
+
+            # 旧库迁移（审计 P1-1/P2-1）：表已存在但缺列
+            # 严格规则（审计 P1-2）：只有 user_version < 2 才允许迁移，>= 2 则拒绝
             head_cols = {
                 row["name"]
                 for row in self._conn.execute("PRAGMA table_info(audit_chain_head)").fetchall()
             }
-            if "last_seq" not in head_cols:
-                self._conn.execute(
-                    "ALTER TABLE audit_chain_head ADD COLUMN last_seq INTEGER NOT NULL DEFAULT 0"
-                )
-            # 不在此插空行--head 初始化由 HmacAuditLogger._recover_chain_head 负责
-            # （它有 key 能验证旧链后才填，避免旧签名库 head 被空初始化断链，审计 P1-1）。
+            migration_needed = False
+
+            if current_version < 2:
+                # 只有旧版才允许添加列
+                if "last_seq" not in head_cols:
+                    self._conn.execute(
+                        "ALTER TABLE audit_chain_head ADD COLUMN last_seq "
+                        "INTEGER NOT NULL DEFAULT 0"
+                    )
+                    migration_needed = True
+                if "schema_version" not in head_cols:
+                    # 缺 schema_version = 旧版表迁移而来（审计 P2-1：区分迁移态 vs 篡改态）
+                    self._conn.execute(
+                        "ALTER TABLE audit_chain_head ADD COLUMN schema_version "
+                        "INTEGER NOT NULL DEFAULT 1"
+                    )
+                    migration_needed = True
+
+                # 如果执行了列迁移，设置 user_version=1（审计 P1-2）
+                if migration_needed:
+                    self._conn.execute("PRAGMA user_version = 1")
+                elif current_version == 0:
+                    # 表结构完整但 user_version=0：旧库场景（表被 DROP 重建），标记为迁移态
+                    self._conn.execute("PRAGMA user_version = 1")
+            else:
+                # current_version >= 2：当前版本，不允许任何列迁移
+                # 如果列不完整，保持 version >= 2，让恢复逻辑拒绝（审计 P1-2）
+                pass
+            # 不在此插空行--head 初始化由 HmacAuditLogger._recover_chain_head 负责。
 
     def record_chained(self, event: AuditEvent, expected_head: str) -> str:
         """事务 CAS 追加链式事件（审计 PR③ P1-1）。
@@ -168,17 +224,20 @@ class SqliteAuditLogger(AuditLogger):
             return row["head_hmac"] if row else ""
 
     def init_chain_head(self, hmac: str, last_seq: int) -> None:
-        """初始化/迁移 chain-head（审计 P1-1）：旧库升级时由 HmacAuditLogger 调用。
+        """初始化/迁移 chain-head（审计 P1-1/P2-1）：旧库升级时由 HmacAuditLogger 调用。
 
-        验证旧链后，把 head 设为最后一条事件的 _hmac + seq。INSERT OR REPLACE
-        覆盖空行（_init_schema 不插空行，首条 record_chained 或迁移在此初始化）。
+        验证旧链后，把 head 设为最后一条事件的 _hmac + seq，并升级 schema_version=2
+        （标记迁移完成，审计 P2-1）。同时设置 PRAGMA user_version=2（审计 P1-2：
+        独立版本元数据，不可被行删除破坏）。INSERT OR REPLACE 覆盖整行。
         """
         with self._lock, self._conn:
             self._conn.execute(
                 "INSERT OR REPLACE INTO audit_chain_head"
-                " (id, head_hmac, last_seq) VALUES (0, ?, ?)",
+                " (id, head_hmac, last_seq, schema_version) VALUES (0, ?, ?, 2)",
                 (hmac, last_seq),
             )
+            # 迁移完成：升级 user_version 到 2（审计 P1-2）
+            self._conn.execute("PRAGMA user_version = 2")
 
     def get_last_event(self) -> AuditEvent | None:
         """最后一条事件（O(1)，供启动一致性校验比对 head，审计 P1-2）。"""
@@ -188,29 +247,77 @@ class SqliteAuditLogger(AuditLogger):
             ).fetchone()
         return _row_to_event(row) if row else None
 
-    def get_chain_state(self) -> tuple[str, int, int, str]:
-        """在同一锁内返回 ``(head_hmac, head_last_seq, last_event_seq, last_event_hmac)``。
+    def get_chain_state(self) -> tuple[str, int, int, str, int]:
+        """跨连接一致的链状态快照（审计 P1）：单条 SQL 同时读 head + last_event。
 
-        稳定快照（审计 P1-2b）：避免 ``get_chain_head`` 与 ``get_last_event`` 两次独立
-        读取之间被并发追加插入不一致状态。调用方据此比对 head 与最后事件是否一致。
+        返回 ``(head_hmac, head_last_seq, last_event_seq, last_event_hmac, schema_version)``。
+        SQLite 单条 statement 自带一致快照，不受其他连接的并发写入影响。
+
+        schema_version 从 PRAGMA user_version 读取（审计 P1-2）：独立元数据，不受
+        head 行删除影响。``< 2`` 表示旧版迁移态（允许回填 last_seq），审计 P2-1。
+
+        使用 singleton CTE 锚点确保查询永远返回一行（审计 P1-1），避免 head 行不存在时
+        退回两次查询导致并发窗口。
+
+        当前 schema 表结构不完整时（审计 P1-2），用 db_version >= 2 标识损坏，恢复逻辑
+        会拒绝启动。
         """
-        with self._lock:
-            head_row = self._conn.execute(
-                "SELECT head_hmac, last_seq FROM audit_chain_head WHERE id = 0"
-            ).fetchone()
-            last_row = self._conn.execute(
-                "SELECT seq, detail_json FROM audit_events ORDER BY seq DESC LIMIT 1"
-            ).fetchone()
-        head_hmac = head_row["head_hmac"] if head_row else ""
-        head_last_seq = head_row["last_seq"] if head_row else 0
-        last_seq = last_row["seq"] if last_row else 0
-        last_hmac = ""
-        if last_row:
-            import json as _json
+        import json as _json
 
-            detail = _json.loads(last_row["detail_json"])
+        with self._lock:
+            # 读取 user_version（独立元数据，不受行删除影响，审计 P1-2）
+            db_version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+
+            # 检查列是否存在（审计 P1-2：当前库表结构不完整时保护性读取）
+            head_cols = {
+                row["name"]
+                for row in self._conn.execute("PRAGMA table_info(audit_chain_head)").fetchall()
+            }
+            has_last_seq = "last_seq" in head_cols
+            has_schema_version = "schema_version" in head_cols
+
+            # 构建动态 SQL：只读取存在的列
+            if has_last_seq and has_schema_version:
+                # 完整结构
+                select_clause = """
+                    h.head_hmac AS head_hmac,
+                    h.last_seq AS head_last_seq,
+                    e.seq AS last_event_seq,
+                    e.detail_json AS last_event_detail,
+                    h.schema_version AS schema_version
+                """
+            else:
+                # 不完整结构（当前库损坏，审计 P1-2）
+                select_clause = """
+                    h.head_hmac AS head_hmac,
+                    0 AS head_last_seq,
+                    e.seq AS last_event_seq,
+                    e.detail_json AS last_event_detail,
+                    1 AS schema_version
+                """
+
+            # 单 SQL 永远返回一行（审计 P1-1）：用 singleton CTE 锚点 LEFT JOIN
+            row = self._conn.execute(
+                f"""
+                WITH anchor AS (SELECT 1 AS placeholder)
+                SELECT {select_clause}
+                FROM anchor
+                LEFT JOIN audit_chain_head h ON h.id = 0
+                LEFT JOIN audit_events e ON e.seq = (SELECT MAX(seq) FROM audit_events)
+                """
+            ).fetchone()
+
+        # row 永远非 None，但列可能为 NULL
+        head_hmac = row["head_hmac"] or ""
+        head_last_seq = row["head_last_seq"] or 0
+        last_seq = row["last_event_seq"] or 0
+        last_hmac = ""
+        if row["last_event_detail"]:
+            detail = _json.loads(row["last_event_detail"])
             last_hmac = detail.get("_hmac", "")
-        return (head_hmac, head_last_seq, last_seq, last_hmac)
+        # 优先使用 db_version（防止表列被篡改）
+        schema_version = db_version if db_version > 0 else (row["schema_version"] or 1)
+        return (head_hmac, head_last_seq, last_seq, last_hmac, schema_version)
 
     def _insert_sql(self, event: AuditEvent):
         """单条 INSERT 的 SQL + params（record_chained 复用）。"""

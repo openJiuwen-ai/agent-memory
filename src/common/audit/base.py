@@ -28,13 +28,22 @@ class AuditIntegrityResult:
       ``tampered``（检出篡改）。
     - ``tampered_indices``：篡改行索引（按写入序，去重，上限采样）。
     - ``checked``：是否实际执行了校验（unsupported 时 False）。
+    - ``tampered_count``：实际篡改总数（审计 P3）。
+    - ``samples_truncated``：采样是否被截断（实际篡改数 > indices 长度，审计 P3）。
 
     调用方据此区分「已验证且干净」与「根本没有完整性保护」，不再以空列表表示成功。
+    采样上限防止大量篡改耗尽内存，``tampered_count`` 和 ``samples_truncated`` 让调用方
+    了解真实损坏规模（100 个索引可能对应 100 个或数百万个篡改）。
+
+    **位置参数兼容性（审计 P2-2）**：``checked`` 保持在第三位（原位置），新字段追加在后，
+    保证 ``AuditIntegrityResult("clean", [], True)`` 等旧式调用仍然有效。
     """
 
     status: str  # unsupported / clean / tampered
     tampered_indices: list[int] = field(default_factory=list)
     checked: bool = False
+    tampered_count: int = 0
+    samples_truncated: bool = False
 
 
 class AuditProducer(Factory):
@@ -87,19 +96,18 @@ class AuditLogger(ABC):
         last = self.tail(1)
         return last[-1].detail.get("_hmac", "") if last else ""
 
-    def get_chain_state(self) -> tuple[str, int, int, str]:
-        """稳定快照：返回 ``(head_hmac, head_last_seq, last_event_seq, last_event_hmac)``。
+    def get_chain_state(self) -> tuple[str, int, int, str, int]:
+        """稳定快照：返回 ``(head_hmac, head_last_seq, last_event_seq, last_event_hmac,
+        schema_version)``。
 
         默认实现走 :meth:`get_chain_head` + :meth:`tail`（两次读取，非原子）。持久化后端
-        应 override 成同一事务/锁内读取（审计 P1-2b），避免并发追加期间不一致。
-        默认 head_last_seq 与 last_event_seq 一致（内存后端无独立 chain-head 表，
-        不触发迁移或一致性校验）。
+        应 override 成同一 SQL 事务内读取（审计 P1），避免并发追加期间不一致。
+        默认 schema_version=2（内存后端无迁移概念）。
         """
         head = self.get_chain_head()
         last = self.tail(1)
         last_hmac = last[-1].detail.get("_hmac", "") if last else ""
-        # 默认实现：head 与 last_hmac 相同（都来自最后事件），seq 不适用（返回一致值）
-        return (head, 1, 1, last_hmac)
+        return (head, 1, 1, last_hmac, 2)
 
     def iter_chain(self, after_seq: int = 0, limit: int = 1000) -> list[tuple[int, AuditEvent]]:
         """从 ``after_seq`` 之后取 ``limit`` 条 ``(seq, event)``（keyset 分页，审计 P2-1）。
