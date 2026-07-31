@@ -152,7 +152,8 @@ class HmacAuditLogger(AuditLogger):
             self._delegate.get_chain_state()
         )
         # 全新空库：四个维度都为空/零（审计 P1-1）
-        if last_seq == 0 and not last_hmac and not head_hmac and head_last_seq == 0:
+        is_empty_db = last_seq == 0 and not last_hmac and not head_hmac and head_last_seq == 0
+        if is_empty_db:
             return head_hmac
         # 无事件但 head 非空/非零：损坏/篡改（审计 P1-1）
         if last_seq == 0 and not last_hmac:
