@@ -847,11 +847,11 @@ def test_tampered_count_and_samples_truncated(tmp_path) -> None:
     assert result.samples_truncated is True  # 截断标志
 
 
-def test_cte_concurrent_write_during_chain_state_read(tmp_path) -> None:
-    """审计 P2-1：CTE 单 SQL 快照在读取期间保持一致性。
+def test_get_chain_state_snapshot_consistency(tmp_path) -> None:
+    """审计 P2-1：get_chain_state() 单次调用快照内部一致性。
 
-    验证 get_chain_state() 使用单条 SQL 读取 head + last_event 时，
-    查询返回的 head 和 last_event 在同一快照内一致。
+    验证 get_chain_state() 返回的 head_last_seq 和 last_event_seq 在同一快照内一致。
+    SQLite 实现用单条 SQL CTE 查询保证查询结果来自同一事务快照。
     """
     from common.audit.audit_impl.sqlite_audit_logger import SqliteAuditLogger
     from security.audit_hmac import HmacAuditLogger, derive_audit_key

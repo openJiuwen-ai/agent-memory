@@ -4,10 +4,12 @@
 中间行内容篡改，但**不**检出删除尾部或回滚到旧快照（剩余记录 HMAC 仍自洽）--
 完整防篡改需外部可信锚点，不在本期（负责人批准范围降级，见 F03 遗留 1）。
 
-**实现方式：装饰器**。``HmacAuditLogger`` 包住任意 :class:`~common.audit.base.AuditLogger`，
-在 ``record`` 时算链式 HMAC 塞进 ``event.detail`` 再委托给被包的 logger；``verify_integrity``
-流式校验返回被篡改的行索引。装饰器通过 ``record_chained`` / ``get_chain_head`` 让持久化
-后端做事务 CAS（多实例不分叉），普通后端降级为单实例锁。
+**实现方式：装饰器**。``HmacAuditLogger`` 包装声明支持链式 CAS 的
+:class:`~common.audit.base.AuditLogger`（``supports_chain_cas() == True``），
+在 ``record`` 时算链式 HMAC 塞进 ``event.detail`` 再委托给被包的 logger；
+``verify_integrity`` 流式校验返回被篡改的行索引。构造时检查后端 CAS capability，
+不支持则 fail closed（审计 P1-1）。装饰器通过 ``record_chained`` / ``get_chain_head``
+让持久化后端做事务 CAS（多实例不分叉）。
 
 **key 来源**：从 :class:`LocalKeyProvider` 的 Encryption Root Key 经 HKDF 派生
 （``derive_audit_key``，context=``audit``）。派生 ``info`` 是公开常量，不构成安全门槛--
@@ -90,11 +92,14 @@ def _scope_dict(scope) -> dict[str, str]:
 
 
 class HmacAuditLogger(AuditLogger):
-    """给任意 :class:`AuditLogger` 加链式 HMAC 完整性保护。
+    """给声明支持链式 CAS 的 :class:`AuditLogger` 加 HMAC 完整性保护（审计 P1-1）。
 
     ``record`` 算出本条的 HMAC（含前一条的 HMAC）后写入 ``event.detail["_hmac"]`` 与
     ``["prev_hmac"]``，再委托给被包的 logger。``verify_integrity`` 流式重算比对，
     返回被篡改的行索引。
+
+    构造时检查 ``delegate.supports_chain_cas()``，不支持 CAS 的后端会被拒绝（fail closed），
+    防止多实例写入时链确定性分叉。
 
     链状态（``_prev_hmac``）是实例级。构造时从持久化后端读最后一条的 ``_hmac`` 作为
     初值（见 ``_recover_chain_head``），进程重启后续接旧链而非从空开始。

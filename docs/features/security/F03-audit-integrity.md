@@ -17,32 +17,34 @@
 
 ## 方案
 
-在 `security/audit_hmac.py` 引入 `HmacAuditLogger` 装饰器，包住现有 `AuditLogger`，`record`
-时计算链式 HMAC 并存入 `event.detail["_hmac"]` / `["prev_hmac"]`，`verify_integrity` 时重算
-并比对。HMAC key 从 `LocalKeyProvider` 的加密根密钥派生（HKDF），与加密功能同源但派生隔离。
+在 `security/audit_hmac.py` 引入 `HmacAuditLogger` 装饰器，包装声明支持链式 CAS 的 `AuditLogger`
+（`supports_chain_cas() == True`），`record` 时计算链式 HMAC 并存入 `event.detail["_hmac"]` /
+`["prev_hmac"]`，`verify_integrity` 时重算并比对。构造时检查后端 CAS capability，不支持则
+fail closed（审计 P1-1）。HMAC key 从 `LocalKeyProvider` 的加密根密钥派生（HKDF），与加密功能同源但派生隔离。
 
 完整性逻辑住 `security/audit_hmac.py`，并发保护、事务 CAS、O(1) head 恢复、流式验证需要
 后端原生支持，故扩展 `common/audit` 的 `AuditLogger` ABC 与 `SqliteAuditLogger`：
 - 新增 `audit_chain_head` 表（`id=0` 单行），存 `head_hmac` / `last_seq` / `schema_version`
 - 新增方法：`tail`（尾查询）、`record_chained`（CAS 链式写）、`get_chain_head`（O(1) 读链头）、
-  `get_chain_state`（原子快照）、`init_chain_head`（旧库迁移初始化）、`get_last_event`
-  （启动校验）、`iter_chain`（keyset 分页）、`verify_integrity`（流式校验，返回
-  `AuditIntegrityResult` 结构化状态）
+  `supports_chain_cas`（声明 CAS capability）、`get_chain_state`（原子快照）、`init_chain_head`
+  （旧库迁移初始化）、`get_last_event`（启动校验）、`iter_chain`（keyset 分页）、
+  `verify_integrity`（流式校验，返回 `AuditIntegrityResult` 结构化状态）
 - 均有默认实现或空实现，普通后端不破坏
 
 ## 决策
 
 ### 决策 1：装饰器为主，扩展 common/audit 接口
 
-`HmacAuditLogger(AuditLogger)` 包住任意 `AuditLogger`，`record` 时算链式 HMAC 塞进
-`event.detail["_hmac"]` / `["prev_hmac"]` 再委托，`verify_integrity()` 流式校验返回篡改行。
+`HmacAuditLogger(AuditLogger)` 包装声明支持链式 CAS 的 `AuditLogger`（`supports_chain_cas() == True`），
+`record` 时算链式 HMAC 塞进 `event.detail["_hmac"]` / `["prev_hmac"]` 再委托，`verify_integrity()`
+流式校验返回篡改行。构造时检查后端 CAS capability，不支持则 fail closed（审计 P1-1）。
 
 完整性逻辑住 `security/audit_hmac.py`，但多实例事务 CAS、O(1) head 恢复、流式验证需要
 后端原生支持，故**扩展了** `common/audit` 的 `AuditLogger` ABC（加 `tail` / `record_chained` /
-`get_chain_head` / `verify_integrity`，均有默认实现，普通后端不破坏）与 `SqliteAuditLogger`
-（加 `audit_chain_head` 表 + `BEGIN IMMEDIATE` 事务 CAS + `tail` DESC LIMIT + `query` offset）。
-`InMemoryAuditLogger` override `tail`/`query` offset。这是与加密装饰器（`EncryptedKVStore`）
-的同构设计--装饰器管完整性逻辑，后端管持久化原子性。
+`get_chain_head` / `supports_chain_cas` / `verify_integrity`，均有默认实现，普通后端不破坏）与
+`SqliteAuditLogger`（加 `audit_chain_head` 表 + `BEGIN IMMEDIATE` 事务 CAS + `tail` DESC LIMIT +
+`query` offset）。`InMemoryAuditLogger` 实现线程级 CAS（锁保护 expected_head 检查）。
+这是与加密装饰器（`EncryptedKVStore`）的同构设计--装饰器管完整性逻辑，后端管持久化原子性。
 
 ### 决策 2：只填 detail，不提升为一等字段
 

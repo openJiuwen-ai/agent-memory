@@ -135,9 +135,10 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 | `record` | `(event: AuditEvent) -> None` | 写入一条审计事件 |
 | `query` | `(filters: dict[str, str], limit=100, *, offset=0) -> list[AuditEvent]` | 按 `action` / `layer` / `decision` / `target_id` / `actor_*` / `target_*` / `occurred_after` / `occurred_before` 检索；`offset` 分页流式（审计 P2-1） |
 | `tail` | `(limit=1) -> list[AuditEvent]` | 最近 `limit` 条事件（O(1)，持久化后端 override 成 DESC LIMIT；默认全量取最后） |
-| `record_chained` | `(event, expected_head) -> str` | 链式 CAS 追加（持久化后端 override 成事务 CAS；默认降级为 record，不检查 expected_head） |
+| `record_chained` | `(event, expected_head) -> str` | 链式 CAS 追加。持久化后端 override 成事务 CAS；**默认实现仅提供兼容默认值，不具备 CAS capability，不能被 HMAC 安全包装**（审计 P1-1） |
 | `get_chain_head` | `() -> str` | 当前链头 HMAC（O(1)，持久化后端读 chain-head 表；默认走 tail） |
-| `get_chain_state` | `() -> tuple[str, int, int, str, int]` | 原子快照读取（head_hmac, head_last_seq, last_event_seq, last_event_hmac, schema_version）；SQLite 后端私有扩展，用单条 CTE 查询实现（审计 P1） |
+| `supports_chain_cas` | `() -> bool` | 声明后端是否支持链式 CAS 原子性。默认 `False`；`True` 表示 `record_chained` 对同一后端状态提供原子 compare-and-swap。`HmacAuditLogger` 只接受该 capability 为真的后端。InMemory 的保证范围是同一后端对象、单进程多线程；SQLite 的保证范围是同一数据库文件、多连接事务 CAS（审计 P1-1） |
+| `get_chain_state` | `() -> tuple[str, int, int, str, int]` | 原子快照读取（head_hmac, head_last_seq, last_event_seq, last_event_hmac, schema_version）。**默认实现**由 `get_chain_head()` + `tail()` 两次读取组成，不提供跨调用原子性。CAS-capable 持久化后端必须 override 为稳定快照：SQLite 用单条 CTE 查询实现（审计 P1） |
 | `iter_chain` | `(after_seq=0, limit=1000) -> list[tuple[int, AuditEvent]]` | keyset 分页遍历（`WHERE seq > ?`，审计 P2-1；默认降级为 query offset） |
 | `verify_integrity` | `() -> AuditIntegrityResult` | 校验完整性，返回结构化状态（`unsupported`/`clean`/`tampered`，审计 P2-2；默认 `unsupported`） |
 

@@ -91,21 +91,31 @@
    - 不一致 → `ValidationError` 拒绝启动（除旧库迁移 `schema_version < 2`）
 
 2. **严格 schema 版本控制**（审计 P1-2）：
-   - SQLite `PRAGMA user_version` 是权威版本标识（数据库级元数据，不受 DROP TABLE 影响）
-   - `user_version >= 2` 时，任何 head schema 缺失/降级都是攻击/损坏，一律拒绝启动
+   - SQLite `PRAGMA user_version` 是 schema 迁移判别标记，非抗篡改安全锚点（审计 P2-2）
+   - `user_version >= 2` 时，任何 head schema 缺失/降级都是攻击/损坏，一律拒绝启动（审计 P2-3）
    - 只有 `user_version < 2` 的真正旧库才允许列迁移（添加 `last_seq` / `schema_version`）
    - 迁移后 `PRAGMA user_version = 2` 锁定，后续 DROP/DELETE/不完整重建都被检出
+   - **已知局限**：拥有 SQLite 写权限的攻击者可执行 `PRAGMA user_version=0` 降级版本号，
+     启动时会把剩余合法前缀当旧库迁移。这与「尾删/回滚无法检测」属于同一已知局限，
+     真正的防回滚/尾删仍依赖外部可信锚点（见 F03 遗留 1）
 
-3. **并发写入保护**（审计 P1-1）：
+3. **CAS capability 约束**（审计 P1-1）：
+   - `HmacAuditLogger` 构造时检查 `delegate.supports_chain_cas()`，不支持则 fail closed
+   - `SqliteAuditLogger` 声明支持事务级 CAS（多实例/多连接写同一 .db 文件不分叉）
+   - `InMemoryAuditLogger` 声明支持线程级 CAS（同一后端对象单进程多线程不分叉，
+     但多实例仍会分叉，仅用于单实例场景或测试）
+   - 基类 `AuditLogger.supports_chain_cas()` 默认返回 `False`，不可被 HMAC 安全包装
+
+4. **并发写入保护**（审计 P1-1）：
    - `HmacAuditLogger.record` 用锁覆盖完整的「读链头 → 算 HMAC → 委托追加 → 更新链头」区间
    - `SqliteAuditLogger.record_chained` 用 `BEGIN IMMEDIATE` 事务 + CAS 语义
    - 后端写入失败不推进链头（捕获异常后不调 `_update_chain_head`）
 
-4. **重启恢复**（审计 P1-2）：
+5. **重启恢复**（审计 P1-2）：
    - 构造时 `_recover_chain_head` 从持久化后端读最后事件 HMAC 作为 `_prev_hmac` 初值
    - 正常滚动发布/崩溃恢复/机器重启续接旧链，不误判篡改
 
-5. **启动约束**（F03 决策 6）：
+6. **启动约束**（F03 决策 6）：
    - 真文件持久化（audit target=sqlite 且 db_path 非 `:memory:`/空）+ 未包 HMAC → **拒绝启动**
    - DEV + 内存审计（in_memory 或 sqlite `:memory:`）→ 允许无 HMAC
    - `build_kernel` 装配前调 `_enforce_audit_integrity` 检查策略
