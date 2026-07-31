@@ -446,4 +446,45 @@ public class DefaultMemoryEngineClient implements MemoryEngineClient {
         }
         return Collections.emptyList();
     }
+    
+    /**
+     * V3-DEFECT-058: 获取记忆完整元数据
+     */
+    @Override
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> getMemoryWithMetadata(String userId, String scopeId, String memId) {
+        if (memId == null || memId.isBlank()) {
+            return Collections.emptyMap();
+        }
+        try {
+            // 通过内核的 /admin/messages/detail/{msgId} 间接获取
+            return restClient.get().uri("/admin/messages/detail/" + memId)
+                    .retrieve()
+                    .body(Map.class);
+        } catch (org.springframework.web.client.ResourceAccessException e) {
+            return Collections.emptyMap();
+        } catch (Exception e) {
+            return Collections.emptyMap();
+        }
+    }
+    
+    /**
+     * V3-DEFECT-059: 按角色统计用户消息数量
+     */
+    @Override
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> countMessagesByRole(String userId, String scopeId, String sessionId) {
+        try {
+            // 通过内核的 /admin/messages/stats 获取统计数据
+            return restClient.get().uri(uriBuilder -> {
+                uriBuilder.path("/admin/messages/stats");
+                if (userId != null && !userId.isBlank()) uriBuilder.queryParam("user_id", userId);
+                if (scopeId != null && !scopeId.isBlank()) uriBuilder.queryParam("scope_id", scopeId);
+                if (sessionId != null && !sessionId.isBlank()) uriBuilder.queryParam("session_id", sessionId);
+                return uriBuilder.build();
+            }).retrieve().body(Map.class);
+        } catch (Exception e) {
+            return Collections.emptyMap();
+        }
+    }
 }

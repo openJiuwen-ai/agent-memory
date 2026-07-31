@@ -7,6 +7,7 @@ import com.openjiuwen.memory.common.client.MemoryEngineClient;
 import com.openjiuwen.memory.common.exception.BizException;
 import com.openjiuwen.memory.common.spi.PermissionChecker;
 import com.openjiuwen.memory.logcenter.domain.MessageLogEntity;
+import com.openjiuwen.memory.logcenter.dto.MemoryWithMetadataDTO;
 import com.openjiuwen.memory.logcenter.service.MessageLogService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -197,6 +198,38 @@ public class MessageLogController {
         }
         
         return ApiResponse.ok(detail);
+    }
+    
+    /**
+     * V3-DEFECT-058: 获取记忆完整元数据
+     */
+    @GetMapping("/metadata/{memId}")
+    public ApiResponse<MemoryWithMetadataDTO> getWithMetadata(
+            @PathVariable String memId,
+            @RequestParam(name = "user_id", required = false) String userId,
+            @RequestParam(name = "scope_id", required = false) String scopeId,
+            @RequestParam(name = "session_id", required = false) String sessionId) {
+        
+        permissionChecker.require("log:read");
+        
+        // 通过内核 API 获取元数据
+        Map<String, Object> metadataMap = memoryEngineClient.getMemoryWithMetadata(userId, scopeId, memId);
+        
+        if (metadataMap == null || metadataMap.isEmpty()) {
+            return ApiResponse.fail(50000, "无法获取记忆元数据");
+        }
+        
+        MemoryWithMetadataDTO metadata = MemoryWithMetadataDTO.builder()
+                .messageId(String.valueOf(metadataMap.getOrDefault("message_id", memId)))
+                .userId(String.valueOf(metadataMap.getOrDefault("user_id", userId != null ? userId : "__default__")))
+                .scopeId(String.valueOf(metadataMap.getOrDefault("scope_id", scopeId != null ? scopeId : "__default__")))
+                .sessionId(String.valueOf(metadataMap.getOrDefault("session_id", "")))
+                .role(String.valueOf(metadataMap.getOrDefault("role", "")))
+                .content(String.valueOf(metadataMap.getOrDefault("content", "")))
+                .timestamp(String.valueOf(metadataMap.getOrDefault("timestamp", "")))
+                .build();
+        
+        return ApiResponse.ok(metadata);
     }
 
     // ==================== L1: 文件 tail（调内核 HTTP） ====================
