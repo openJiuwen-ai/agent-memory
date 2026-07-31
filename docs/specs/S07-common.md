@@ -137,6 +137,9 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 | `tail` | `(limit=1) -> list[AuditEvent]` | 最近 `limit` 条事件（O(1)，持久化后端 override 成 DESC LIMIT；默认全量取最后） |
 | `record_chained` | `(event, expected_head) -> str` | 链式 CAS 追加（持久化后端 override 成事务 CAS；默认降级为 record，不检查 expected_head） |
 | `get_chain_head` | `() -> str` | 当前链头 HMAC（O(1)，持久化后端读 chain-head 表；默认走 tail） |
+| `get_chain_state` | `() -> tuple[str, int, int, str, int]` | 原子快照读取（head_hmac, head_last_seq, last_event_seq, last_event_hmac, schema_version）；持久化后端 override 成单条 SQL CTE 查询；默认走 tail + get_chain_head 组合（审计 P1） |
+| `init_chain_head` | `(last_seq, last_hmac) -> None` | 旧库迁移初始化链头；持久化后端 override 成 INSERT chain-head 行；默认空操作（审计 P1-2） |
+| `get_last_event` | `() -> AuditEvent \| None` | 读取最后事件（用于启动验证）；持久化后端 override 成 MAX(seq) 查询；默认走 tail（审计 P1-2） |
 | `iter_chain` | `(after_seq=0, limit=1000) -> list[tuple[int, AuditEvent]]` | keyset 分页遍历（`WHERE seq > ?`，审计 P2-1；默认降级为 query offset） |
 | `verify_integrity` | `() -> AuditIntegrityResult` | 校验完整性，返回结构化状态（`unsupported`/`clean`/`tampered`，审计 P2-2；默认 `unsupported`） |
 

@@ -1,25 +1,37 @@
-# F03 - 审计链式 HMAC 完整性保护
+# F03: 审计链式 HMAC 完整性保护
 
-## 元信息
+| 元数据         | 内容                                      |
+|----------------|-------------------------------------------|
+| **功能编号**   | F03                                       |
+| **标题**       | 审计链式 HMAC 完整性保护                  |
+| **状态**       | ✅ 已实现                                 |
+| **创建日期**   | 2026-01-26                                |
+| **更新日期**   | 2026-01-31                                |
+| **负责人**     | MisterKnah                                |
+| **关联 spec**  | S07（审计通用）                            |
+| **实现 commit**| 130f96f（feat），258c84f（test）          |
+| **文档 commit**| 本次                                      |
 
-| 项 | 值 |
-|---|---|
-| 日期 | 2026-07-30 |
-| 影响范围 | **新增**：`src/security/audit_hmac.py`（`HmacAuditLogger` + `derive_audit_key` + `hmac` 注册）、`tests/unit/security/test_audit_hmac.py`、`tests/unit/api/test_audit_security_fields.py`<br>**修改**：`src/common/audit/base.py`（ABC 加 `tail`/`record_chained`/`get_chain_head`/`verify_integrity` + `query` offset）、`src/common/audit/audit_impl/sqlite_audit_logger.py`（`audit_chain_head` 表 + 事务 CAS + `tail` DESC + `query` offset + `init_chain_head`/`get_last_event`）、`src/common/audit/audit_impl/in_memory_audit_logger.py`（`tail` + `query` offset）、`src/common/factory/factory.py`（`_building` 依赖环检测）、`src/common/type_def/auth.py`（`AuthContext` 加 `auth_mode`）、`src/security/authenticator_impl/{api_key,dev,trusted}_authenticator.py`（填 `auth_mode`）、`src/security/key_store_impl/memory_key_store.py`（resolve 填 `auth_mode`）、`src/security/bootstrap.py`（import `audit_hmac`）、`src/api/memory_api_impl/assembly.py`（`_enforce_audit_integrity` 启动约束 + import audit_hmac）、`src/api/memory_api_impl/local_memory_api.py`（`_record_audit` 填四字段） |
-| 测试基线 | 改动前 `15 failed, 884 passed, 1 skipped`；改动后 `15 failed, 897 passed, 1 skipped`。15 个失败为同一组环境依赖项 |
-| 依据 | [`docs/features/common/F04-security-interfaces-and-encryption.md`](../common/F04-security-interfaces-and-encryption.md) §7.2 必须记录的事件、§7.3 日志记录的完整性保护 |
+## 问题
 
-> **行文简称**：下文里的 **security.md** 一律指上表「依据」那份文档（详见 F01 同名说明）。
-> PR①/② 落地了认证与授权，本期补审计完整性--三份文档是同一根线的三段。
+§7.2「安全审计」要求：「审计日志写入 SQLite（或集中审计服务）后，除追加外不可修改，防篡改。」
+当前 `common/audit` 实现与 governor server 已落地审计记录但未防篡改--攻击者拿到 `audit.db`
+磁盘访问后可直接修改行内容、删除行、或回滚到旧快照。
 
-## 背景
+## 方案
 
-security.md §7.3 要求审计日志不能被篡改，链式 HMAC 让「改一行 = 破坏该行及后续所有行
-的 HMAC」。§7.2 要求审计记录 `acting_user` / `role` / `key_fp` / `auth_mode` 四样认证
-元数据。一期两者都未做（`AuditEvent.detail` 注释已登记「安全层另加四个」）。
+在 `security/audit_hmac.py` 引入 `HmacAuditLogger` 装饰器，包住现有 `AuditLogger`，`record`
+时计算链式 HMAC 并存入 `event.detail["_hmac"]` / `["prev_hmac"]`，`verify_integrity` 时重算
+并比对。HMAC key 从 `LocalKeyProvider` 的加密根密钥派生（HKDF），与加密功能同源但派生隔离。
 
-第三次验收 PR③ 收口事项明确要求：HMAC 必须覆盖稳定规范化后的全部字段、不能用一种序列化
-签名又用另一种验证、需定义并发写入/重启/轮换规则、要覆盖攻击成功与拒绝路径。
+完整性逻辑住 `security/audit_hmac.py`，并发保护、事务 CAS、O(1) head 恢复、流式验证需要
+后端原生支持，故扩展 `common/audit` 的 `AuditLogger` ABC 与 `SqliteAuditLogger`：
+- 新增 `audit_chain_head` 表（`id=0` 单行），存 `head_hmac` / `last_seq` / `schema_version`
+- 新增方法：`tail`（尾查询）、`record_chained`（CAS 链式写）、`get_chain_head`（O(1) 读链头）、
+  `get_chain_state`（原子快照）、`init_chain_head`（旧库迁移初始化）、`get_last_event`
+  （启动校验）、`iter_chain`（keyset 分页）、`verify_integrity`（流式校验，返回
+  `AuditIntegrityResult` 结构化状态）
+- 均有默认实现或空实现，普通后端不破坏
 
 ## 决策
 
@@ -109,6 +121,80 @@ resolve）都填上。
 - **进程重启**：构造时从持久化后端读最后一条的 `_hmac` 作为 `_prev_hmac` 初值
   （`_recover_chain_head`，审计 P1-2），续接旧链而非从空开始。正常滚动发布/崩溃恢复/
   机器重启不再被误判篡改。
+- **原子快照**（审计 P1，第七次复验修复）：`get_chain_state()` 用单条 SQL 同时读取
+  chain-head 和最后事件，使用 CTE 锚点确保查询永远返回一行。避免 head 行不存在时
+  退回两次查询导致并发窗口（健康首次写入可插在中间）。
+
+## 严格 schema 版本控制（审计 P1-2，第七次复验修复）
+
+使用 SQLite `PRAGMA user_version` 作为权威版本标识（数据库级元数据，不受表操作影响）：
+
+| user_version | head 表状态 | 判断 | 处理 |
+|--------------|-------------|------|------|
+| 0 | 缺失/不完整 | 真正旧库 | 添加列 → 迁移 |
+| 1 | 迁移中 | 迁移中 | 继续迁移 |
+| 2 | 完整存在 | 当前版本 | 正常运行 |
+| 2 | 行被删除 | 损坏 | 拒绝启动 |
+| 2 | 表被 DROP | 损坏 | 拒绝启动 |
+| 2 | 列不完整 | 损坏 | 拒绝启动 |
+
+**严格规则**：`user_version >= 2` 时，任何 head schema 缺失/降级都是攻击/损坏，一律拒绝。
+只有 `user_version < 2` 的真正旧库才允许列迁移。
+
+**防御效果**：攻击者无法通过以下手段绕过检测：
+- DELETE head 行 → `user_version` 保持 2 → head 行不存在 → 拒绝
+- DROP head 表 → `user_version` 保持 2 → 表缺失 → 拒绝
+- DROP 后不完整重建 → `user_version` 保持 2 → 列不完整 → 拒绝
+- 篡改 last_seq/head_hmac → `user_version` 保持 2 → 不一致检查 → 拒绝
+
+`user_version` 作为数据库级元数据，不受 DROP TABLE 或 DELETE 影响，是可靠的版本标识。
+
+## get_chain_state 原子快照（审计 P1，第七次复验修复）
+
+`get_chain_state()` 返回 `(head_hmac, head_last_seq, last_event_seq, last_event_hmac, schema_version)`，
+用于启动一致性校验和旧库迁移判断。
+
+**单条 SQL 原子快照**：
+```sql
+WITH anchor AS (SELECT 1 AS placeholder)
+SELECT h.head_hmac, h.last_seq, e.seq, e.detail_json, h.schema_version
+FROM anchor
+LEFT JOIN audit_chain_head h ON h.id = 0
+LEFT JOIN audit_events e ON e.seq = (SELECT MAX(seq) FROM audit_events)
+```
+
+**关键设计**：
+- `FROM anchor` 确保查询**永远返回一行**，即使 head 和 events 都为空
+- 双 LEFT JOIN 同时读取 head 和最后事件
+- 列可能为 NULL，但 `row is None` 永远不会发生
+- 消除了 head 行不存在时的 fallback 查询分支（避免并发窗口）
+
+**并发保护**：健康首次写入可以插在两次查询之间，使用 CTE 单 SQL 后不再有并发窗口。
+
+## AuditIntegrityResult 结构化状态（审计 P2-2）
+
+`verify_integrity()` 返回 `AuditIntegrityResult` 对象而非裸列表：
+
+```python
+@dataclass(frozen=True)
+class AuditIntegrityResult:
+    status: str  # unsupported / clean / tampered
+    tampered_indices: list[int] = field(default_factory=list)
+    checked: bool = False  # 第三位（位置参数兼容）
+    tampered_count: int = 0  # 实际篡改总数（审计 P3）
+    samples_truncated: bool = False  # 采样是否被截断
+```
+
+**调用方据此区分**「已验证且干净」与「根本没有完整性保护」：
+- `status="clean" + checked=True`：已验证无篡改
+- `status="unsupported" + checked=False`：后端无完整性保护
+- `status="tampered"`：检出篡改，`tampered_count` 是真实总数，`samples_truncated` 表示是否超过采样上限
+
+采样上限（默认 100）防止大量篡改耗尽内存，`tampered_count` 和 `samples_truncated` 让调用方
+了解真实损坏规模（100 个索引可能对应 100 个或数百万个篡改）。
+
+**位置参数兼容性**：`checked` 保持在第三位（原位置），新字段追加在后，保证
+`AuditIntegrityResult("clean", [], True)` 等旧式调用仍然有效。
 
 ## 已知局限：尾删与回滚不可检测（审计 P1-3）
 
@@ -128,11 +214,14 @@ is_known_limitation` 钉住此行为，未来引入外部锚点后该测试应�
 
 ## 测试
 
-- `tests/unit/security/test_audit_hmac.py`（34 条）：链式链接、改行不重算检出、重算后
+- `tests/unit/security/test_audit_hmac.py`（35 条）：链式链接、改行不重算检出、重算后
   后续链断、伪造 prev_hmac 检出、干净链空、key 派生确定且隔离、错 key 全链判篡改、
   query 透明、包 SqliteAuditLogger、factory 装配、factory 要求 inner、factory 自引用拒、
   **并发不分叉**、**后端失败不推进链头**、**重启恢复链头**、**SQLite 跨实例续链**、
-  **尾删已知局限**。
+  **尾删已知局限**、**旧库迁移成功**（version 0 → 添加列 → version 2）、
+  **当前库 DROP 表拒绝**（version 2 保持 → 拒绝）、**当前库不完整重建拒绝**（version 2 保持 → 拒绝）、
+  **空事件 + 悬空 head 拒绝**、**last_seq 篡改拒绝**、**head_hmac 篡改拒绝**、
+  **采样总数和截断标志**。
 - `tests/unit/api/test_audit_security_fields.py`（3 条）：有 AuthContext 填四字段、无
   AuthContext 不填、ROOT+DEV 模式。
 - `tests/unit/api/test_build_kernel_config.py`（5 条约束）：真文件 sqlite 无 hmac 拒、
@@ -156,10 +245,34 @@ PR③ 本期只交付：**单 key、多实例（事务 CAS）、本地中间行�
 
 ## 遗留
 
-1. **外部可信锚点**（审计 P1-3）：尾删/回滚检测，需 WORM/远端/KMS 检查点架构，不在本期（见范围降级）。
-2. **key 轮换与 epoch**（审计 P2-3）：每条/每段记 `key_id`/`epoch`，保留历史 key 验证旧链，
-   独立 audit key/KMS 生命周期。当前 root key 泄漏即可重算链，轮换让历史不可验证。
-3. **verify 生产入口**（审计 P1-2 余下）：启动验证已实现（坏库/未签名库拒启动）；`verify_integrity`
-   已提升为 `AuditLogger` 接口（返回 `AuditIntegrityResult` 结构化状态，默认 `unsupported`，
-   审计 P2-2）；`iter_chain` keyset 分页已实现（审计 P2-1）；运行期入口（Governor/CLI/告警）待落地。
-4. 四字段提升为 `AuditEvent` 一等字段（独立结构整洁度需求）。
+1. **verify 生产可达入口**：
+   - 当前 `verify_integrity` 只在单测调用，缺 Governor/CLI/告警路径。启动验证已闭环
+     「坏库拒启动」，但运行期主动验证（完整性巡检）无入口。
+   - 需要：新 API endpoint `POST /system/audit/verify`（需 ROOT）、Governor 选项卡、
+     CLI `agent-memory audit verify`、定期自动验证 + 告警。
+   - 时机：独立安全功能增强任务。
+
+2. **key 轮换与 epoch**：
+   - 当前单 key，root key 轮换后旧链无法验证；缺 `key_id` / `epoch` / 历史 key 管理。
+   - 需要：`AuditEvent.detail` 加 `key_id`，`HmacAuditLogger` 维护 `key_registry`，
+     `verify_integrity` 根据 `key_id` 选 key。root key 轮换后保留旧 key 派生产物于内存/
+     KMS，并记 epoch 边界。
+   - 时机：root key 轮换机制成熟后。
+
+3. **外部可信锚点**：
+   - 本地链式 HMAC 无法检测尾删和回滚（见「已知局限」）。
+   - 需要：周期性把 `(seq, chain_head, key_id, epoch)` 推送至 WORM / 远端 append-only
+     审计服务 / KMS 签名后写入独立存储；启动时比对本地 head 与外部锚点，检出被回滚。
+   - 时机：独立安全架构工程，需外部依赖评估 + 部署方案。
+
+4. **流式验证内存优化**：
+   - 当前 `verify_integrity` 返回全部篡改行索引（采样上限 100）。百万行 audit.db 中若
+     前 50 万行全坏，内存占用仍然有限（只采样 100）。
+   - 优化：改为生成器 `yield` 逐个篡改行，调用方流式处理或累积。当前已够用。
+   - 时机：生产出现超大 audit.db + 验证耗时/OOM 场景。
+
+5. **跨实例并发写保护**：
+   - 当前 `record_chained` 用 SQLite 事务 + `BEGIN IMMEDIATE`，单机多线程安全，多实例
+     写同一 SQLite 文件的锁竞争窗口极小但存在。
+   - 优化：若部署需多实例共享 `audit.db`，改用集中审计服务（S3/Kafka/远端 RDBMS）。
+   - 时机：部署架构确认需多实例写同一 SQLite 文件。当前架构不需要。

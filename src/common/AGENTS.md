@@ -79,3 +79,33 @@
 5. 两级命名空间配置驱动装配：每个 Producer 声明全局唯一 `TOP_NAME`（占配置顶层段），其下是若干具名实例（`target` 指定实现名、`params` 传参、`new_instance` 控制是否共享）。`_build(config)` 里用 `XProducer.dep(config, param_name=None, default=...)` 取子依赖（引用名→共享 / 内联 dict→匿名 / 缺省→默认匿名）。
 6. LLM 的厂商扩展参数必须由对应 Provider Adapter 注入；构建、检索等内核业务调用点不得硬编码 `extra_body` 等传输层字段。
 7. SecurityProvider 与 AuditLogger 一样是横切组件，不继承 `Plugin`、不进入 `PluginType`；实现仍通过独立 Producer 与 `*_impl` 自注册。
+
+## 安全不变量（审计 PR③）
+
+### 审计链完整性（F03）
+
+1. **链头一致性**（审计 P1-2）：
+   - `SqliteAuditLogger` 的 `audit_chain_head` 表（`id=0` 单行）是链头权威来源
+   - `get_chain_state()` 用单条 SQL CTE 原子快照读取 head + 最后事件，避免并发窗口
+   - 启动时 `_recover_chain_head` 校验 `head_hmac` / `head_last_seq` / `last_event_hmac` / `last_event_seq` 四者一致性
+   - 不一致 → `ValidationError` 拒绝启动（除旧库迁移 `schema_version < 2`）
+
+2. **严格 schema 版本控制**（审计 P1-2）：
+   - SQLite `PRAGMA user_version` 是权威版本标识（数据库级元数据，不受 DROP TABLE 影响）
+   - `user_version >= 2` 时，任何 head schema 缺失/降级都是攻击/损坏，一律拒绝启动
+   - 只有 `user_version < 2` 的真正旧库才允许列迁移（添加 `last_seq` / `schema_version`）
+   - 迁移后 `PRAGMA user_version = 2` 锁定，后续 DROP/DELETE/不完整重建都被检出
+
+3. **并发写入保护**（审计 P1-1）：
+   - `HmacAuditLogger.record` 用锁覆盖完整的「读链头 → 算 HMAC → 委托追加 → 更新链头」区间
+   - `SqliteAuditLogger.record_chained` 用 `BEGIN IMMEDIATE` 事务 + CAS 语义
+   - 后端写入失败不推进链头（捕获异常后不调 `_update_chain_head`）
+
+4. **重启恢复**（审计 P1-2）：
+   - 构造时 `_recover_chain_head` 从持久化后端读最后事件 HMAC 作为 `_prev_hmac` 初值
+   - 正常滚动发布/崩溃恢复/机器重启续接旧链，不误判篡改
+
+5. **启动约束**（F03 决策 6）：
+   - 真文件持久化（audit target=sqlite 且 db_path 非 `:memory:`/空）+ 未包 HMAC → **拒绝启动**
+   - DEV + 内存审计（in_memory 或 sqlite `:memory:`）→ 允许无 HMAC
+   - `build_kernel` 装配前调 `_enforce_audit_integrity` 检查策略
