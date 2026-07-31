@@ -8,6 +8,7 @@ background 演进（Scheduler）。接入/构建/检索算子与真源 Store 由
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import uuid
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from common.type_def import (
     MEMORY_KEY_PREFIX,
     FilterExpr,
     LifecycleState,
+    MemoryTier,
     MemoryUnit,
     Modality,
     RawPayload,
@@ -35,6 +37,7 @@ from construction.index_builder import IndexBuilder, IndexBuilderProducer
 from control.base import ControlOperatorType
 from control.engine import EngineProducer, MemoryEngine
 from control.engine_impl.list_support import list_page
+from control.jobs import JobFactory, JobFactoryProducer, JobType
 from control.lifecycle import LifecycleManager, LifecycleProducer
 from control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
 from control.scheduler import Scheduler, SchedulerProducer
@@ -202,6 +205,8 @@ class InMemoryEngine(MemoryEngine):
         lifecycle: LifecycleManager,
         classifier: Classifier | None = None,
         pipeline: MemoryPipeline | None = None,
+        job_factory: JobFactory | None = None,
+        middle_interval: int = 50,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
@@ -214,6 +219,8 @@ class InMemoryEngine(MemoryEngine):
         # classifier 可选：infer=false（默认路径）时给原文打 tier+tags；
         # None 时跳过（原文 tier 保持 EPISODIC 默认，向后兼容）。
         self._classifier = classifier
+        self._job_factory = job_factory
+        self._middle_interval = middle_interval
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
@@ -248,6 +255,8 @@ class InMemoryEngine(MemoryEngine):
         #   1 条 PROCEDURAL 执行历史，落 /memory/ 建索引；不走去重、不收集 context。
         # - infer=true：同步抽取——原文落 /messages/（不建索引），evolver 收集最近10条原文
         #   （指代消解/语境）+ 召回10条相关记忆（去重提示），调 extractor 抽派生落 /memory/。
+        # - infer=true + middle=true：中期缓冲子路径——原文落 /memory/ + tier=WORKING +
+        #   建索引 + 提交 MiddleToLongJob 定时转长期。
         # - 缺省：原始落 /memory/ + 建索引，不自动提交演进（由调用方显式 evolve() 触发）。
         # 开关按字符串判定（兼容 "true" 与 Python True），业务值保持原生类型落库——
         # 整体 str 化会让数值/布尔在索引里变成 keyword，range 退化为字典序。
@@ -258,6 +267,11 @@ class InMemoryEngine(MemoryEngine):
 
         procedural = _is_true("procedural")
         infer = _is_true("infer")
+        middle = _is_true("middle")  # 二级开关（仅在 infer=true 下生效）
+        if middle and not infer and not procedural:
+            raise ValueError(
+                "metadata.middle=true requires infer=true (middle 是 infer 下的二级开关)"
+            )
 
         payload = RawPayload(
             id=str(uuid.uuid4()),
@@ -273,30 +287,48 @@ class InMemoryEngine(MemoryEngine):
             if assets and unit.segments:  # write 入参的 assets 归到首段（接入产出的单段投影）
                 unit.segments[0].assets = list(assets)
             unit.tags = list(tags or [])
+            if middle:  # 中期缓冲标记——MiddleToLongJob 据此过滤候选
+                unit.metadata["middle"] = "true"
+            if "session_id" in meta:
+                unit.metadata["session_id"] = meta["session_id"]
 
         binding = self._write_binding(units)
         evolver = binding.evolver if binding is not None else self._evolver
         index_builder = binding.index_builder if binding is not None else self._index
         classifier = binding.classifier if binding is not None else self._classifier
 
-        if procedural or infer:
-            # 同步抽取路径（procedural / infer 共用）：原文不进默认落盘，直接喂 Evolver(EXTRACT)。
-            # evolver 据单元 metadata 区分模式：
-            # - procedural：原文不落 KV，产 1 条 PROCEDURAL 落 /memory/，跳过 context/dedup。
-            # - infer：原文落 /messages/（不建索引，供后续轮指代消解/语境）
-            #   + 收集 context；legacy Evolver 走 dedup，DynamicEvolver 走
-            #   consolidate → reflect，
-            #   派生落 /memory/。evolver 还负责 /messages/ 的最近 10 条淘汰。
-            # procedural 与 infer 互斥，若两者同传按 procedural 语义（原文不落）。
+        # procedural 优先（与现 procedural > infer 互斥逻辑一致）
+        if procedural:
             if evolver is None:
                 raise RuntimeError(
-                    "Engine.write procedural/infer=True requires an Evolver (装配未注入 evolver)"
+                    "Engine.write procedural=True requires an Evolver (装配未注入 evolver)"
                 )
-            result = evolver.evolve(units, EvolveMode.EXTRACT)
+            result = await asyncio.to_thread(
+                evolver.evolve, units, EvolveMode.EXTRACT
+            )
             derived = [self._load(scope, uid) for uid in result.created_ids]
             logger.info(
-                "Engine.write %s: %d originals, %d derived added, scope=%s",
-                "procedural=True" if procedural else "infer=True",
+                "Engine.write procedural=True: %d originals, %d derived added, scope=%s",
+                len(units),
+                len(derived), scope,
+            )
+            return derived
+
+        # infer=true 下按 middle 二级分流
+        if infer:
+            if middle:
+                return await self._write_middle_path(units, scope, index_builder, evolver)
+            # 既有 infer=true 同步抽取路径，不动
+            if evolver is None:
+                raise RuntimeError(
+                    "Engine.write infer=True requires an Evolver (装配未注入 evolver)"
+                )
+            result = await asyncio.to_thread(
+                evolver.evolve, units, EvolveMode.EXTRACT
+            )
+            derived = [self._load(scope, uid) for uid in result.created_ids]
+            logger.info(
+                "Engine.write infer=True: %d originals, %d derived added, scope=%s",
                 len(units),
                 len(derived), scope,
             )
@@ -306,10 +338,61 @@ class InMemoryEngine(MemoryEngine):
         # classifier 为 None 时跳过（tier 保持 EPISODIC 默认，向后兼容）。
         if classifier is not None:
             classifier.classify(units)
+        await asyncio.to_thread(self._write_default_to_kv, scope, units)
+        await asyncio.to_thread(index_builder.build, units)  # hot 轻量索引
+        return units
+
+    # ---- 中期缓冲子路径 ----
+
+    async def _write_middle_path(
+        self,
+        units: list[MemoryUnit],
+        scope: Scope,
+        index_builder: IndexBuilder,
+        evolver: Evolver,
+    ) -> list[MemoryUnit]:
+        """中期缓冲子路径：原文落 /memory/ + 建索引 + tier=WORKING + 提交定时 MiddleToLongJob。"""
+        if self._job_factory is None:
+            raise RuntimeError(
+                "middle path requires job_factory, please configure "
+                "engine.default.job_factory"
+            )
+        if evolver is None:
+            raise RuntimeError(
+                "Engine.write middle=true requires an Evolver (装配未注入 evolver)"
+            )
+
+        for unit in units:
+            unit.tier = MemoryTier.WORKING
+            unit.metadata["middle"] = "true"
+        await asyncio.to_thread(self._write_middle_to_kv, scope, units)
+        await asyncio.to_thread(index_builder.build, units)
+
+        job = self._job_factory.get_job(
+            JobType.MIDDLE_TO_LONG,
+            scope=scope,
+            interval=self._middle_interval,
+            evolver=evolver,
+            index=index_builder,
+        )
+        await self._scheduler.submit(job, channel=Channel.BACKGROUND)
+        logger.info(
+            "Engine.write middle=True: %d originals buffered, scope=%s interval=%s",
+            len(units),
+            scope,
+            self._middle_interval,
+        )
+        return units
+
+    def _write_middle_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
+        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
         for unit in units:
             self._kv.insert(scope, memory_key(unit.id), dumps(unit))
-        index_builder.build(units)                        # hot 轻量索引
-        return units
+
+    def _write_default_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
+        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
+        for unit in units:
+            self._kv.insert(scope, memory_key(unit.id), dumps(unit))
 
     async def batch_write(
         self,
@@ -647,7 +730,13 @@ class InMemoryEngine(MemoryEngine):
         self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
     ) -> str:
         _ensure_local_scope(scope)
-        job_id = self._scheduler.submit(scope, mode, channel)
+        if self._job_factory is None:
+            raise RuntimeError(
+                "evolve requires job_factory, please configure "
+                "engine.default.job_factory"
+            )
+        job = self._job_factory.get_job(JobType.EVOLVE, scope=scope, mode=mode)
+        job_id = await self._scheduler.submit(job, channel)
         logger.info(
             "Engine.evolve submitted: job_id=%s scope=%s mode=%s channel=%s",
             job_id,
@@ -696,6 +785,19 @@ def _build(config):
             return None
         return PipelineProducer.build_named("default", ctx)
 
+    # JobFactory 可选注入——config 声明了 job_factory 命名空间具名实例则注入，
+    # None 时 evolve/middle 路径报错（向后兼容——纯默认配置不走演进）。
+    def _opt_job_factory():
+        ctx = config.ctx
+        ns = ctx.namespaces.get(JobFactoryProducer.TOP_NAME, {})
+        if "default" not in ns:
+            return None
+        import control.jobs_impl as _ji  # noqa: F401
+        _ = _ji
+        return JobFactoryProducer.build_named("default", ctx)
+
+    middle_interval = int(config.get("middle_interval", 50))
+
     return InMemoryEngine(
         IngestorProducer.dep(config, default="simple"),
         IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
@@ -706,4 +808,6 @@ def _build(config):
         LifecycleProducer.dep(config, default="kv"),
         classifier=_opt_classifier(),
         pipeline=_opt_pipeline(),
+        job_factory=_opt_job_factory(),
+        middle_interval=middle_interval,
     )

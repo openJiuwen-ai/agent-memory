@@ -8,5 +8,6 @@ from importlib import import_module
 from control.scheduler import SchedulerProducer
 
 import_module(".in_process_scheduler", __name__)
+import_module(".async_timer_scheduler", __name__)
 
 __all__ = ["SchedulerProducer"]

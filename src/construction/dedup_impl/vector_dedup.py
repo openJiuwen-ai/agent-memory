@@ -109,6 +109,11 @@ class VectorDedup(Dedup):
             # 跳过候选自身
             if unit.id == candidate.id:
                 continue
+            # 跳过中期记忆原文——派生必然与源原文语义接近，让原文参与对照会触发
+            # LLM dedup 判 NOOP 丢派生。Engine.write middle=true 时给原文打
+            # metadata.middle=true 标记，dedup 按此过滤。
+            if unit.metadata.get("middle") == "true":
+                continue
             # dict MaxP 聚合
             if unit.id not in aggregated or scored_id.score > aggregated[unit.id][1]:
                 aggregated[unit.id] = (unit, scored_id.score)

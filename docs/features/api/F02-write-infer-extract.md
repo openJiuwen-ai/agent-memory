@@ -221,6 +221,20 @@ InProcess 模式 `list_semantic` 同步对齐：去掉 `tier==SEMANTIC` 过滤�
 
 工具经 HTTP `/v1/add`（metadata 透传 procedural=true）或 InProcess `write_async` 都触发 procedural 分支。需配 `extractor:llm` 才真汇总（默认 keyword 降级为原文原样存 1 条 PROCEDURAL）。
 
+### 决策12：`infer=true + middle=true` 中期缓冲子路径
+
+`write` 的 `infer=true` 分支下按 `middle` 二级开关再分流。`middle=true` 触发中期缓冲子路径，落地细节见 [`F06-middle-term-memory`](../control/F06-middle-term-memory.md)，这里只列与 write 路径决策相关的部分：
+
+- 原文落 `/memory/{id}`（与建索引记忆同前缀，不走 `/messages/`）+ 建索引（原文立即可检索）+ 打 `tier=WORKING` 与 `metadata["middle"]="true"` 标记。
+- 提交 `MiddleToLongJob` 给 Scheduler——`interval=self._middle_interval`（编排周期，属 Engine 编排职责，故留 Engine 而非 JobFactory）。Scheduler 把它注册到 per scope TimerWheel，Timer 协程周期生成实例入队，每个实例跑一次 `run()` 即返回。
+- MiddleToLongJob 内做：list 候选（`tier=WORKING + lifecycle=ACTIVE + metadata["middle"]="true"`）→ 连续性检测切批 → `evolver.evolve(batch, EXTRACT)` → 原文归档（`lifecycle.transition(ARCHIVED) + index.remove`）。
+
+**为何 middle 是 infer 的二级开关**：middle 路径要原文立即可检索（落 `/memory/` + 建索引），与 infer=true 同步抽取语义冲突（infer 原文不建索引、走 `/messages/`）。故 middle=true 必须在 infer=true 下生效，且走自己的子分支——分支内不再调 infer 的同步抽取，原文只落 KV 不抽取，抽取由后台 MiddleToLongJob 周期触发。
+
+**为何不与 procedural 合并**：procedural=true 原文不落 KV（直接喂 extractor 产 1 条 PROCEDURAL），middle=true 原文必须落 KV 建索引（要可检索 + 可归档）。两者原文处置方式互斥，不可合并到一个开关。
+
+`CloudEngine._write_middle_path` 多 profile 适配：按 `message_type` 选 binding，通过 `JobFactory.get_job` 的运行时覆盖入参 `evolver=` / `index=` 注入 binding 的（替代早期 `job._evolver = evolver` 直接赋值方案），保证 Job 内部的 evolver/index 与原文落盘时一致。详见 [`F06`](../control/F06-middle-term-memory.md) 决策 4。
+
 ## 增量测试基线
 
 `pytest tests/unit tests/integration` 全绿（378 passed, 54 skipped）。新增/适配：

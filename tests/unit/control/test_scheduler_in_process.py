@@ -1,14 +1,52 @@
+"""InProcessScheduler 同步调度：``submit`` 入口的状态流与错误处理。
+
+迁移自旧 ``submit(scope, mode, channel)`` 接口——本类现在只接收 Job 调
+``job.run()``，task 内容由 Job 定义（``EvolveJob`` 或测试用的 fake Job）。
+"""
+
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
+
+import pytest
 
 from common.type_def import MemoryUnit, Scope, Segment, memory_key
 from common.type_def.memory_codec import dumps
-from construction import EvolveMode, Evolver, EvolveResult
+from construction import EvolveMode, EvolveResult, Evolver
 from construction.base import OperatorType
+from control.jobs import Job
+from control.jobs_impl.evolve_job import EvolveJob
 from control.scheduler_impl.in_process_scheduler import InProcessScheduler
 from control.types import Channel, JobInfo, JobStatus
 from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+
+pytestmark = pytest.mark.unit
+
+
+class _StubJob(Job):
+    """最简 fake Job——记录 run 是否被调、可选注入返回的 JobInfo 或异常。
+
+    用于聚焦 Scheduler 的状态流测试，不依赖 EvolveJob 的真实拉数据逻辑。
+    """
+
+    def __init__(
+        self,
+        scope: Scope,
+        *,
+        detail: dict[str, str] | None = None,
+        exc: Exception | None = None,
+    ) -> None:
+        super().__init__(scope=scope, interval=0)
+        self._detail = detail or {}
+        self._exc = exc
+        self.run_called = False
+
+    async def run(self) -> JobInfo:
+        self.run_called = True
+        if self._exc is not None:
+            raise self._exc
+        return JobInfo(scope=self.scope, status=JobStatus.SUCCEEDED, detail=self._detail)
 
 
 class RecordingEvolver(Evolver):
@@ -31,47 +69,47 @@ class RecordingEvolver(Evolver):
         )
 
 
-def test_submit_runs_job_to_success_with_sync_state_flow() -> None:
-    class RecordingScheduler(InProcessScheduler):
-        def __init__(self) -> None:
-            super().__init__()
-            self.seen_statuses: list[JobStatus] = []
+def test_submit_runs_to_success_with_sync_state_flow() -> None:
+    """submit → PENDING→RUNNING→SUCCEEDED，detail 含 started_at/finished_at。"""
+    scheduler = InProcessScheduler()
+    scope = Scope(user="u1")
+    job = _StubJob(scope, detail={"created_ids": "x"})
 
-        def _execute_task(self, job: JobInfo) -> None:
-            self.seen_statuses.append(job.status)
+    job_id = asyncio.run(scheduler.submit(job, Channel.HOT))
 
-    scheduler = RecordingScheduler()
-
-    job_id = scheduler.submit(Scope(user="u1"), EvolveMode.EXTRACT, Channel.HOT)
-
-    job = scheduler.status(job_id)
-    assert scheduler.seen_statuses == [JobStatus.RUNNING]
-    assert job.status == JobStatus.SUCCEEDED
-    assert job.detail["started_at"]
-    assert job.detail["finished_at"]
-    assert datetime.fromisoformat(job.detail["started_at"]) <= datetime.fromisoformat(
-        job.detail["finished_at"]
+    info = scheduler.status(job_id)
+    assert job.run_called
+    assert info.status == JobStatus.SUCCEEDED
+    assert info.detail["started_at"]
+    assert info.detail["finished_at"]
+    assert (
+        datetime.fromisoformat(info.detail["started_at"])
+        <= datetime.fromisoformat(info.detail["finished_at"])
     )
+    assert info.detail["created_ids"] == "x"
 
 
-def test_submit_records_failed_job_and_returns_job_id_when_execution_raises() -> None:
-    class FailingScheduler(InProcessScheduler):
-        def _execute_task(self, job: JobInfo) -> None:
-            raise RuntimeError("scheduler boom")
+def test_submit_records_failed_job_when_run_raises() -> None:
+    """run 抛异常 → FAILED + detail 含 error_type/error。"""
+    scheduler = InProcessScheduler()
+    scope = Scope(user="u1")
+    job = _StubJob(scope, exc=RuntimeError("scheduler boom"))
 
-    scheduler = FailingScheduler()
+    job_id = asyncio.run(scheduler.submit(job, Channel.BACKGROUND))
 
-    job_id = scheduler.submit(Scope(user="u1"), EvolveMode.CONSOLIDATE, Channel.BACKGROUND)
-
-    job = scheduler.status(job_id)
-    assert job.status == JobStatus.FAILED
-    assert job.detail["error_type"] == "RuntimeError"
-    assert job.detail["error"] == "scheduler boom"
-    assert job.detail["started_at"]
-    assert job.detail["finished_at"]
+    info = scheduler.status(job_id)
+    assert info.status == JobStatus.FAILED
+    assert info.detail["error_type"] == "RuntimeError"
+    assert info.detail["error"] == "scheduler boom"
+    assert info.detail["started_at"]
+    assert info.detail["finished_at"]
 
 
-def test_submit_executes_evolver_with_units_from_scope_and_records_result() -> None:
+def test_submit_runs_evolve_job_with_units_from_scope() -> None:
+    """真 EvolveJob：list scope 全部 MemoryUnit + 调 evolver.evolve + 记 detail。
+
+    验证 EvolveJob + InProcessScheduler 端到端：mode 由构造参数传入。
+    """
     scope = Scope(user="u1")
     other_scope = Scope(user="u2")
     kv = InMemoryKVStore()
@@ -88,28 +126,38 @@ def test_submit_executes_evolver_with_units_from_scope_and_records_result() -> N
     kv.insert(
         other_scope,
         memory_key("other-unit"),
-        dumps(MemoryUnit(id="other-unit", scope=other_scope, segments=[Segment(content="other")])),
+        dumps(
+            MemoryUnit(
+                id="other-unit", scope=other_scope, segments=[Segment(content="other")]
+            )
+        ),
     )
     evolver = RecordingEvolver()
-    scheduler = InProcessScheduler(kv=kv, evolver=evolver)
+    scheduler = InProcessScheduler()
 
-    job_id = scheduler.submit(scope, EvolveMode.ASSOCIATE, Channel.BACKGROUND)
+    job = EvolveJob(scope=scope, kv=kv, evolver=evolver, mode=EvolveMode.ASSOCIATE)
+    job_id = asyncio.run(scheduler.submit(job, Channel.BACKGROUND))
 
-    job = scheduler.status(job_id)
-    assert job.status == JobStatus.SUCCEEDED
+    info = scheduler.status(job_id)
+    assert info.status == JobStatus.SUCCEEDED
     assert len(evolver.calls) == 1
     units, mode = evolver.calls[0]
     assert mode == EvolveMode.ASSOCIATE
-    assert {unit.id for unit in units} == {"unit-1", "unit-2"}
-    assert job.detail["created_ids"] == "created-1"
-    assert job.detail["updated_ids"] == "updated-1"
-    assert job.detail["superseded_ids"] == "old-1"
-    assert job.detail["forgotten_ids"] == "forgotten-1"
+    assert {u.id for u in units} == {"unit-1", "unit-2"}
+    assert info.detail["created_ids"] == "created-1"
+    assert info.detail["updated_ids"] == "updated-1"
+    assert info.detail["superseded_ids"] == "old-1"
+    assert info.detail["forgotten_ids"] == "forgotten-1"
 
 
 def test_cancel_is_idempotent_and_does_not_change_completed_jobs() -> None:
+    """cancel 幂等——已完成任务不被改状态，缺失 job 不抛错。
+
+    InProcessScheduler 同步执行：submit 后已 SUCCEEDED，cancel 无效。
+    """
     scheduler = InProcessScheduler()
-    job_id = scheduler.submit(Scope(user="u1"), EvolveMode.EXTRACT, Channel.BACKGROUND)
+    scope = Scope(user="u1")
+    job_id = asyncio.run(scheduler.submit(_StubJob(scope), Channel.BACKGROUND))
 
     scheduler.cancel(job_id)
     scheduler.cancel("missing-job")

@@ -2,7 +2,12 @@
 
 控制层驱动构建层自演进的调度面：hot 通道做低时延的在线轻量更新，
 background 通道异步做重的抽取/升华/重索引，不阻塞主链路。
-控制模式（agent_control / static_control / both）决定由谁触发提交。
+
+Scheduler 只调度，不决定 task 内容——task 内容由 :class:`~control.jobs.Job`
+封装（"做什么 + 怎么找数据 + 怎么调 evolver + 怎么后处理"）：
+
+- ``interval=0``：一次性任务，submit 时直接入 per scope FIFO 队列
+- ``interval>0``：定时任务声明，submit 时注册到 per scope TimerWheel
 """
 
 from __future__ import annotations
@@ -10,10 +15,9 @@ from __future__ import annotations
 from abc import abstractmethod
 
 from common.factory.factory import Factory
-from common.type_def import Scope
-from construction import EvolveMode
 
 from .base import ControlOperator
+from .jobs import Job
 from .types import Channel, JobInfo
 
 
@@ -29,8 +33,16 @@ class SchedulerProducer(Factory):
 
 class Scheduler(ControlOperator):
     @abstractmethod
-    def submit(self, scope: Scope, mode: EvolveMode, channel: Channel) -> str:
-        """提交一次演进任务（指定阶段与通道），返回任务 id。"""
+    async def submit(self, job: Job, channel: Channel) -> str:
+        """提交一次任务（指定通道），返回 job_id。
+
+        - ``job.interval=0``：一次性任务，直接入 per scope FIFO 队列
+        - ``job.interval>0``：定时任务声明，注册到 per scope TimerWheel
+
+        ``async`` 签名——让调用方(Engine.write/evolve)在事件循环内 ``await submit``,
+        submit 内部可 ``await job.run()`` 直接执行(InProcessScheduler)或
+        ``asyncio.create_task`` 排程(AsyncTimerScheduler)。
+        """
 
     @abstractmethod
     def status(self, job_id: str) -> JobInfo:
