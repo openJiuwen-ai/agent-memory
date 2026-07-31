@@ -16,6 +16,8 @@ import com.openjiuwen.memory.common.exception.BizException;
 import com.openjiuwen.memory.common.spi.AuditRecorder;
 import com.openjiuwen.memory.common.spi.PermissionChecker;
 import com.openjiuwen.memory.common.spi.TenantContextProvider;
+import com.openjiuwen.memory.authcenter.domain.User;
+import com.openjiuwen.memory.authcenter.mapper.UserMapper;
 import com.openjiuwen.memory.opscenter.domain.MemoryChangeLogSnapshotEntity;
 import com.openjiuwen.memory.opscenter.mapper.MemoryChangeLogSnapshotMapper;
 import com.openjiuwen.memory.opscenter.service.FeatureFlagService;
@@ -26,6 +28,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -43,6 +46,7 @@ public class MemoryManageServiceImpl implements MemoryManageService {
     private final AuditRecorder auditRecorder;
     private final TenantContextProvider tenantContextProvider;
     private final ObjectMapper objectMapper;
+    private final UserMapper userMapper;
 
     public MemoryManageServiceImpl(MemoryEngineClient client,
                                    FeatureFlagService featureFlagService,
@@ -50,7 +54,8 @@ public class MemoryManageServiceImpl implements MemoryManageService {
                                    PermissionChecker permissionChecker,
                                    AuditRecorder auditRecorder,
                                    TenantContextProvider tenantContextProvider,
-                                   ObjectMapper objectMapper) {
+                                   ObjectMapper objectMapper,
+                                   UserMapper userMapper) {
         this.client = client;
         this.featureFlagService = featureFlagService;
         this.changeLogMapper = changeLogMapper;
@@ -58,11 +63,14 @@ public class MemoryManageServiceImpl implements MemoryManageService {
         this.auditRecorder = auditRecorder;
         this.tenantContextProvider = tenantContextProvider;
         this.objectMapper = objectMapper;
+        this.userMapper = userMapper;
     }
 
     @Override
     public PageResult<MemoryItem> list(String userId, String scopeId, String memoryType, int pageIdx, int pageSize) {
         permissionChecker.check("memory:read");
+        // V3-DEFECT-035 修复：校验租户级角色的 Scope 访问权限
+        validateScopeAccess(scopeId);
 
         // scopeId 为空时降级到 __default__（listScopes 未实现，listAcrossAllScopes 最终也降级到 __default__）
         String effScope = (scopeId == null || scopeId.isBlank()) ? "__default__" : scopeId;
@@ -91,6 +99,8 @@ public class MemoryManageServiceImpl implements MemoryManageService {
     @Override
     public MemoryItem detail(String memId, String userId, String scopeId) {
         permissionChecker.check("memory:read");
+        // V3-DEFECT-035 修复：校验租户级角色的 Scope 访问权限
+        validateScopeAccess(scopeId);
         // :8516 无 get_mem_by_id；多页翻页定位（降级，待记忆服务补端点）
         int pageSize = 100;
         int maxPages = 10;
@@ -120,6 +130,8 @@ public class MemoryManageServiceImpl implements MemoryManageService {
     public Object create(String userId, String scopeId, List<Map<String, String>> messages,
                          List<MemVariable> memVariables, String operator, String reason) {
         permissionChecker.check("memory:write");
+        // V3-DEFECT-035 修复：校验租户级角色的 Scope 访问权限
+        validateScopeAccess(scopeId);
         // enable_* 由特性配置注入，不由调用方传
         AddMessagesRequest req = featureFlagService.resolve(scopeId);
         req.setUserId(userId);
@@ -152,6 +164,8 @@ public class MemoryManageServiceImpl implements MemoryManageService {
     @Override
     public Object update(String memId, String memory, String oldContent, String userId, String scopeId, String operator, String reason) {
         permissionChecker.check("memory:write");
+        // V3-DEFECT-035 修复：校验租户级角色的 Scope 访问权限
+        validateScopeAccess(scopeId);
         // 前端传入旧 content，无需翻页查找
         saveSnapshot(memId, "UPDATE", oldContent, memory, operator, reason);
 
@@ -168,6 +182,8 @@ public class MemoryManageServiceImpl implements MemoryManageService {
     @Override
     public Object deleteOne(String memId, String userId, String scopeId, String oldContent, String operator, String reason) {
         permissionChecker.check("memory:delete");
+        // V3-DEFECT-035 修复：校验租户级角色的 Scope 访问权限
+        validateScopeAccess(scopeId);
         // 前端传入旧 content，无需翻页查找
         saveSnapshot(memId, "DELETE", oldContent, null, operator, reason);
         var result = client.deleteMemById(memId, userId, scopeId);
@@ -178,6 +194,8 @@ public class MemoryManageServiceImpl implements MemoryManageService {
     @Override
     public Object deleteByScope(String scopeId, String confirmToken, String operator, String reason) {
         permissionChecker.check("memory:delete");
+        // V3-DEFECT-035 修复：校验租户级角色的 Scope 访问权限
+        validateScopeAccess(scopeId);
         // confirmToken 由 OpsToolService.purgeScopePreview 签发；此处校验（简化：非空即放行，待接入 TokenService）
         if (confirmToken == null || confirmToken.isBlank()) {
             throw new BizException(ResultCode.CONFIRM_TOKEN_INVALID, "清空 scope 需 confirmToken 二次确认");
@@ -193,6 +211,8 @@ public class MemoryManageServiceImpl implements MemoryManageService {
     @Override
     public Object batchDelete(List<String> memIds, String userId, String scopeId, String operator, String reason) {
         permissionChecker.check("memory:delete");
+        // V3-DEFECT-035 修复：校验租户级角色的 Scope 访问权限
+        validateScopeAccess(scopeId);
         if (memIds == null || memIds.isEmpty()) {
             throw new BizException(ResultCode.BAD_REQUEST, "mem_ids 不能为空");
         }
@@ -208,6 +228,8 @@ public class MemoryManageServiceImpl implements MemoryManageService {
     @Override
     public Map<String, String> getVariables(String userId, String scopeId, List<String> names) {
         permissionChecker.check("memory:read");
+        // V3-DEFECT-035 修复：校验租户级角色的 Scope 访问权限
+        validateScopeAccess(scopeId);
         GetVariablesRequest req = new GetVariablesRequest();
         req.setUserId(userId);
         req.setScopeId(scopeId);
@@ -218,6 +240,8 @@ public class MemoryManageServiceImpl implements MemoryManageService {
     @Override
     public Object updateVariables(String userId, String scopeId, Map<String, String> variables, String operator) {
         permissionChecker.check("memory:write");
+        // V3-DEFECT-035 修复：校验租户级角色的 Scope 访问权限
+        validateScopeAccess(scopeId);
         UpdateVariablesRequest req = new UpdateVariablesRequest();
         req.setUserId(userId);
         req.setScopeId(scopeId);
@@ -230,6 +254,8 @@ public class MemoryManageServiceImpl implements MemoryManageService {
     @Override
     public Object deleteVariables(String userId, String scopeId, List<String> names, String operator) {
         permissionChecker.check("memory:delete");
+        // V3-DEFECT-035 修复：校验租户级角色的 Scope 访问权限
+        validateScopeAccess(scopeId);
         DeleteVariablesRequest req = new DeleteVariablesRequest();
         req.setUserId(userId);
         req.setScopeId(scopeId);
@@ -237,6 +263,56 @@ public class MemoryManageServiceImpl implements MemoryManageService {
         var result = client.deleteVariables(req);
         auditRecorder.record(new AuditRecorder.AuditEvent(operator, "DELETE", "/ops/memory/variables", "success", null, null));
         return result;
+    }
+
+    /**
+     * V3-DEFECT-035 修复：校验租户级角色的 Scope 访问权限
+     * <p>
+     * 平台级角色（SUPER_ADMIN/PLATFORM_ADMIN/SECURITY_ADMIN）可访问所有 Scope；
+     * 租户级角色（SCOPE_ADMIN/READ_ONLY/VIEWER）只能访问自己绑定的 Scope。
+     *
+     * @param scopeId 请求访问的 Scope ID
+     * @throws BizException 当租户级角色尝试访问未绑定的 Scope 时抛出
+     */
+    private void validateScopeAccess(String scopeId) {
+        // scopeId 为空或默认值时跳过校验
+        if (scopeId == null || scopeId.isBlank() || "__default__".equals(scopeId)) {
+            return;
+        }
+
+        // 获取当前用户上下文
+        TenantContextProvider.TenantContext ctx = tenantContextProvider.current();
+        if (ctx == null || ctx.userId() == null) {
+            return;
+        }
+
+        String role = ctx.role();
+        // 平台级角色直接放行
+        if ("SUPER_ADMIN".equals(role) || "PLATFORM_ADMIN".equals(role) || "SECURITY_ADMIN".equals(role)) {
+            return;
+        }
+
+        // 租户级角色需要校验 Scope 绑定关系
+        User user = userMapper.selectById(ctx.userId());
+        if (user == null || user.getScopeIds() == null || user.getScopeIds().isBlank()) {
+            throw new BizException(ResultCode.FORBIDDEN, "当前用户未绑定任何 Scope，无权访问：" + scopeId);
+        }
+
+        // 解析 scopeIds（JSON 数组格式，如 ["scope_01","scope_02"]）
+        String scopeIdsStr = user.getScopeIds().trim();
+        if (scopeIdsStr.startsWith("[") && scopeIdsStr.endsWith("]")) {
+            scopeIdsStr = scopeIdsStr.substring(1, scopeIdsStr.length() - 1);
+        }
+        List<String> boundScopeIds = Arrays.asList(scopeIdsStr.split(","));
+        boolean hasAccess = boundScopeIds.stream()
+                .map(String::trim)
+                .map(s -> s.replace("\"", ""))
+                .anyMatch(s -> s.equals(scopeId));
+
+        if (!hasAccess) {
+            throw new BizException(ResultCode.FORBIDDEN,
+                    String.format("当前角色 %s 无权访问 Scope：%s（仅可访问已绑定的 Scope）", role, scopeId));
+        }
     }
 
     private void saveSnapshot(String memId, String type, String oldContent, String newContent, String operator, String reason) {
