@@ -49,8 +49,9 @@ def credentials_from_headers(headers: Mapping[str, Any], peer_address: str = "")
 
     api_key = ""
     auth = normalized.get("authorization", "")
-    if auth[: len(_BEARER)].lower() == _BEARER:
-        api_key = auth[len(_BEARER) :].strip()
+    bearer_len = len(_BEARER)
+    if auth[:bearer_len].lower() == _BEARER:
+        api_key = auth[bearer_len:].strip()
     if not api_key:
         api_key = normalized.get("x-api-key", "").strip()
 

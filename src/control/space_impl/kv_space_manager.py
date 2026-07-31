@@ -284,7 +284,8 @@ class KVSpaceManager(SpaceManager):
                 continue
             spaces[(info.org, info.space)] = info
         ordered = [spaces[key] for key in sorted(spaces)]
-        return ordered[offset : offset + limit]
+        page_end = offset + limit
+        return ordered[offset:page_end]
 
     def update(self, org: str, space: str, patch: SpacePatch) -> SpaceInfo:
         info = self.get(org, space)

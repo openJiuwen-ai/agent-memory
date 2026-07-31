@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+# These tests intentionally exercise the HTTP adapter's private server helpers.
+# pylint: disable=protected-access
 import importlib
 import socket
 import sys

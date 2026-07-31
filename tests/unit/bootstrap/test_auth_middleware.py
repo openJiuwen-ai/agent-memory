@@ -18,7 +18,7 @@ _CORE_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "bootstrap", "core")
 )
 if _CORE_DIR not in sys.path:
-    sys.path.insert(0, _CORE_DIR)
+    sys.path.append(_CORE_DIR)
 
 from auth_middleware import authenticated, credentials_from_headers  # noqa: E402
 
@@ -180,18 +180,22 @@ class _CountingAuth(DevAuthenticator):
 class _Blocked:
     """恒拒绝的限流器。"""
 
-    def allow(self, peer):
+    @staticmethod
+    def allow(peer):
         return False
 
-    def health(self) -> None:
+    @staticmethod
+    def health() -> None:
         return None
 
 
 class _Open:
-    def allow(self, peer):
+    @staticmethod
+    def allow(peer):
         return True
 
-    def health(self) -> None:
+    @staticmethod
+    def health() -> None:
         return None
 
 
@@ -248,7 +252,8 @@ def test_rate_limit_denial_is_audited_distinctly() -> None:
     recorded = []
 
     class _Recorder:
-        def record(self, event):
+        @staticmethod
+        def record(event):
             recorded.append(event)
 
     with pytest.raises(RateLimitedError):
@@ -269,7 +274,8 @@ def test_rate_limit_audit_carries_no_bucket_state() -> None:
     recorded = []
 
     class _Recorder:
-        def record(self, event):
+        @staticmethod
+        def record(event):
             recorded.append(event)
 
     with pytest.raises(RateLimitedError):
@@ -290,7 +296,8 @@ def test_audit_backend_failure_does_not_mask_429() -> None:
     """审计写失败不该把 429 变成 500——与 401 同样的取舍。"""
 
     class _Exploding:
-        def record(self, event):
+        @staticmethod
+        def record(event):
             raise RuntimeError("audit backend down")
 
     with pytest.raises(RateLimitedError):
@@ -304,7 +311,8 @@ def test_audit_backend_failure_does_not_mask_401(key_store) -> None:
     """审计写失败不该把 401 变成 500——认证结论优先于可观测性。"""
 
     class _Exploding:
-        def record(self, event):
+        @staticmethod
+        def record(event):
             raise RuntimeError("audit backend down")
 
     auth = ApiKeyAuthenticator(key_store=key_store, root_api_key="")
@@ -341,7 +349,8 @@ def test_argon2_guard_release_on_auth_failure() -> None:
     class _Fail:
         mode = DevAuthenticator().mode
 
-        def authenticate(self, credentials):
+        @staticmethod
+        def authenticate(credentials):
             raise AuthenticationError("nope")
 
     with pytest.raises(AuthenticationError):
@@ -436,7 +445,8 @@ def test_argon2_guard_concurrency_is_actually_bounded() -> None:
     class _Blocking:
         mode = DevAuthenticator().mode
 
-        def authenticate(self, credentials):
+        @staticmethod
+        def authenticate(credentials):
             nonlocal in_flight, peak
             with lock:
                 in_flight += 1

@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+# Boundary and TOCTOU tests intentionally replace private decorator internals.
+# pylint: disable=protected-access
 import io
 import json
 
@@ -65,12 +67,14 @@ class _FakeSecurity(SecurityProvider):
                 return ciphertext
             raise RuntimeError("missing encrypted envelope")
         offset = len(_PREFIX)
-        aad_len = int.from_bytes(ciphertext[offset : offset + 4], "big")
-        offset += 4
-        embedded_aad = ciphertext[offset : offset + aad_len]
+        aad_size_end = offset + 4
+        aad_len = int.from_bytes(ciphertext[offset:aad_size_end], "big")
+        offset = aad_size_end
+        aad_end = offset + aad_len
+        embedded_aad = ciphertext[offset:aad_end]
         if embedded_aad != aad:
             raise RuntimeError("aad mismatch")
-        return ciphertext[offset + aad_len :][::-1]
+        return ciphertext[aad_end:][::-1]
 
 
 @SecurityProducer.register("fake_encrypted_fs")
@@ -376,7 +380,8 @@ def test_encrypted_fs_store_toctou_stat_get_mismatch_still_bounded(tmp_path) -> 
         def __getattr__(self, name):
             return getattr(self._inner, name)
 
-        def stat(self, scope, ref):
+        @staticmethod
+        def stat(scope, ref):
             from storage.types import FileStat
 
             return FileStat(ref=ref, size=1)
