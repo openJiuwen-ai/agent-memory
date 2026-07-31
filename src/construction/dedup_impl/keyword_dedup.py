@@ -15,7 +15,7 @@ from typing import List, Tuple
 from common.log import get_logger
 from common.type_def import LifecycleState, MemoryUnit
 from construction.base import OperatorType
-from construction.dedup import Dedup, DedupProducer, same_scope
+from construction.dedup import Dedup, DedupProducer, dedup_text, same_scope
 from storage.fulltext import FulltextProducer, FulltextStore
 from storage.kv import KvProducer, KVStore
 from storage.types import TextQuery
@@ -53,7 +53,7 @@ class KeywordDedup(Dedup):
 
     def recall(self, candidate: MemoryUnit) -> List[Tuple[MemoryUnit, float]]:
         # 召回已有相似记忆：用候选 content 做关键词检索
-        query = TextQuery(text=candidate.content, top_k=self._top_k)
+        query = TextQuery(text=dedup_text(candidate), top_k=self._top_k)
         scope = candidate.scope
         try:
             hits = self._fulltext.search(scope, query)
@@ -92,8 +92,6 @@ class KeywordDedup(Dedup):
 
 
 # -- 注册到 DedupProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
-
-
 
 @DedupProducer.register("keyword")
 def _build(config):

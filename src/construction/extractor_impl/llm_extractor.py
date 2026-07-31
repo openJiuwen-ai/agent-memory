@@ -18,10 +18,10 @@ tier 与 tags 均由 LLM 在抽取时一并产出（同一 prompt，不另调 LL
 L0/L1 分层标注不由本算子负责——由 Evolver 在抽取后委托
 :class:`~construction.layer_annotator.LayerAnnotator` 生成（见 F01-memory-layer）。
 
-prompt 只允许把同一 source 内**同一实体、同一关系或同一事件**的子事实合并成一条
-自包含陈述（如同一个人的咖啡偏好：早上美式/下午拿铁/不加糖），不同人物、记录、动作
-或事件保持独立。跨次 write 的重复仍由 Evolver ``_dedup_batch`` 兜底（向量召回判定
-NOOP/UPDATE）。
+prompt 只允许合并**同一实体的同一关系或同一事件**，并要求保留关系槽位、状态、计数、
+标识符等高价值细节。表格行与可复用产物分别产 ``structured_record`` / ``artifact``，避免
+“同主题合并”把不同人、不同动作或完整交付物压成模糊摘要。跨次 write 的重复仍由
+Evolver ``_dedup_batch`` 兜底（向量召回判定 NOOP/UPDATE）。
 
 纯函数：不落盘、不标记、不检索。幂等性依赖 LLM temperature=0。
 """
@@ -29,15 +29,17 @@ NOOP/UPDATE）。
 from __future__ import annotations
 
 import json
+import math
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 
 from common.llm.base import LLM, LlmProducer
 from common.log import get_logger
 from common.type_def import (
+    ChatMessage,
     Entity,
     LifecycleState,
     MemoryTier,
@@ -53,17 +55,117 @@ from ..extractor import Extractor, ExtractorProducer
 logger = get_logger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# 内部类型（实现层，不暴露到 __init__.py）
-# ---------------------------------------------------------------------------
-
-
 class InvalidExtractionJSONError(ValueError):
-    """LLM 抽取结果不是合法 JSON；与模型明确返回 ``[]`` 区分。"""
+    """The extractor LLM returned malformed JSON rather than a valid empty result."""
+
+
+class ExtractionFailureError(RuntimeError):
+    """The extractor could not complete a source batch."""
 
 
 class InvalidExtractionCandidateError(ValueError):
-    """LLM 抽取候选不满足最小结构契约。"""
+    """A dynamic extractor candidate does not satisfy the legacy helper contract."""
+
+
+def _normalize_whitespace(text: str) -> str:
+    """Normalize layout while preserving the source's word sequence."""
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+_CJK_DATE_RE = re.compile(r"(?P<year>\d{4})\s*年\s*(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*日")
+_PENDING_CUE_RE = re.compile(
+    r"\b(?:still\s+need(?:s)?\s+to|need(?:s)?\s+to|must|should|"
+    r"haven't|hasn't|have\s+not|has\s+not|not\s+yet)\b",
+    re.IGNORECASE,
+)
+_PENDING_ACTION_RE = re.compile(
+    r"\b(?P<verb>return(?:ed|ing)?|"
+    r"pick(?:ed|ing)?(?:\s+(?!up\b)[A-Za-z0-9'_-]+){0,5}\s+up|"
+    r"collect(?:ed|ing)?|"
+    r"drop(?:ped|ping)?(?:\s+(?!off\b)[A-Za-z0-9'_-]+){0,5}\s+off)\b",
+    re.IGNORECASE,
+)
+_SENTENCE_RE = re.compile(r"[^.!?\n]+(?:[.!?]+|$)")
+
+
+class _CandidateLanguageGroundingError(ValueError):
+    """One candidate cannot be made source-language and source-grounded."""
+
+
+def _language_family(text: str) -> str | None:
+    """Coarsely distinguish English/Latin text from CJK text."""
+    cjk_count = len(_CJK_RE.findall(text))
+    latin_count = sum(char.isascii() and char.isalpha() for char in text)
+    if cjk_count >= 4 and cjk_count * 4 >= latin_count:
+        return "cjk"
+    if latin_count >= 12 and latin_count > cjk_count * 2:
+        return "latin"
+    return None
+
+
+def _source_language_statement(
+    content: str,
+    evidence: str,
+    source: str,
+) -> tuple[str, bool]:
+    """Keep extracted statements in the source language without another LLM call.
+
+    If the model translates an otherwise valid item, its required verbatim
+    evidence is the safest information-preserving repair.  We only use it when
+    it is actually present in the source and has the source's language family.
+    """
+    source_text = _normalize_whitespace(source)
+    evidence_text = _normalize_whitespace(evidence)
+    source_language = _language_family(source_text)
+    repaired = False
+    if source_language == "latin" and not _CJK_RE.search(source_text):
+        normalized_content = _CJK_DATE_RE.sub(
+            lambda match: (
+                f"{match.group('year')}-{int(match.group('month')):02d}-"
+                f"{int(match.group('day')):02d}"
+            ),
+            content,
+        )
+        repaired = normalized_content != content
+        content = normalized_content
+    content_language = _language_family(content)
+    evidence_is_grounded = bool(
+        evidence_text and evidence_text.casefold() in source_text.casefold()
+    )
+    evidence_language = _language_family(evidence_text)
+
+    # A mixed-language source may legitimately contain an English table row in
+    # an otherwise Chinese document (or vice versa).  The item's verbatim
+    # evidence is more precise than the whole document's majority language.
+    if (
+        evidence_is_grounded
+        and evidence_language
+        and content_language == evidence_language
+        and not (source_language == "latin" and _CJK_RE.search(content))
+    ):
+        return content, repaired
+    if source_language == "latin" and _CJK_RE.search(content):
+        if not evidence_is_grounded or evidence_language != "latin":
+            raise _CandidateLanguageGroundingError(
+                "extractor candidate contains non-English text for an English source "
+                "and has no English verbatim evidence"
+            )
+        return evidence_text, True
+    if not source_language or not content_language or source_language == content_language:
+        return content, repaired
+
+    if not evidence_is_grounded or evidence_language not in (None, source_language):
+        raise _CandidateLanguageGroundingError(
+            "extractor candidate language differs from source and has no "
+            "same-language verbatim evidence"
+        )
+    return evidence_text, True
+
+
+# ---------------------------------------------------------------------------
+# 内部类型（实现层，不暴露到 __init__.py）
+# ---------------------------------------------------------------------------
 
 
 class ExtractionTarget(str, Enum):
@@ -95,25 +197,97 @@ class ExtractionCandidate:
     metadata: dict[str, str] = field(default_factory=dict)
 
 
+def _pending_action_key(verb: str) -> str:
+    normalized = re.sub(r"\s+", " ", verb.strip().lower())
+    if normalized.startswith("return"):
+        return "return"
+    if normalized.startswith("pick"):
+        return "pick up"
+    if normalized.startswith("collect"):
+        return "collect"
+    return "drop off"
+
+
+def _atomize_pending_actions(
+    candidate: ExtractionCandidate,
+) -> list[ExtractionCandidate]:
+    """Split multiple pending count-changing actions into independent items."""
+    evidence = _normalize_whitespace(candidate.evidence)
+    if not evidence or not _PENDING_CUE_RE.search(evidence):
+        return [candidate]
+
+    actions: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for sentence_match in _SENTENCE_RE.finditer(evidence):
+        sentence = sentence_match.group(0).strip()
+        if not _PENDING_CUE_RE.search(sentence):
+            continue
+        for action_match in _PENDING_ACTION_RE.finditer(sentence):
+            action = _pending_action_key(action_match.group("verb"))
+            key = (action, sentence.casefold())
+            if key not in seen:
+                seen.add(key)
+                actions.append((action, sentence))
+
+    if len({action for action, _ in actions}) < 2:
+        return [candidate]
+
+    atomized: list[ExtractionCandidate] = []
+    for action, sentence in actions:
+        atomized.append(
+            ExtractionCandidate(
+                target=ExtractionTarget.EVENT,
+                content=f"Pending action ({action}): {sentence}",
+                source_unit_id=candidate.source_unit_id,
+                confidence=candidate.confidence,
+                evidence=sentence,
+                event_date=candidate.event_date,
+                tier=MemoryTier.EPISODIC,
+                tags=["pending-action", action],
+                metadata=candidate.metadata
+                | {
+                    "action_atomized": "true",
+                    "action_type": action,
+                },
+            )
+        )
+    return atomized
+
+
 # ---------------------------------------------------------------------------
 # LLM prompt — 批量提取，每条 unit 带 [ID: uuid] 标记，LLM 输出裸 uuid 作 source_id
 # ---------------------------------------------------------------------------
 
 _EXTRACT_SYSTEM_PROMPT = """\
-Extract facts, events, preferences, and context from the source memories below.
+Extract durable information and reusable outputs from the source memories below.
 Output ONLY a JSON array. No explanation, no markdown fences.
 
 Rules:
 - Extract only what is explicitly stated. Do not infer or speculate.
+- Treat both user messages and assistant messages as evidence-bearing source text. Preserve useful
+  assistant-produced tables, schedules, code, configuration, checklists, and decisions.
 - Each item must be self-contained (understandable without source context).
-- MERGE facts only when they describe the SAME entity and SAME relationship, or the SAME event.
-  Never merge different people, objects, actions, table rows, or events just because they
-  share a topic.
-- Preserve exact names, identifiers, numbers, dates, times, counts, negation, and action state.
-- For a table or schedule, emit one "structured_record" per independent row or relationship.
-- For reusable code, configuration, checklists, decision records, or complete plans, emit an
-  "artifact" and retain the reusable content rather than only saying that it was created.
-- For "evidence", copy the smallest complete verbatim source span that proves the item.
+- MERGE facts only when they describe the SAME entity and SAME relationship, or belong to the
+  SAME event. Never merge distinct people, objects, actions, rows, or events merely because they
+  share a topic. When merging repeated values, preserve the exact count and every distinct value.
+  GOOD: "Alice prefers an Americano in the morning, a latte in the afternoon, and no sugar"
+  (one item, full topic).
+  BAD:  merge Alice's preference with Bob's preference, or merge multiple schedule rows into one.
+- Preserve relation closure whenever present: subject, action/relation, object, place, time, amount,
+  and tool. Preserve state and modality (planned, attempted, completed, failed, cancelled).
+- Copy exact identifiers, names, numbers, dates, times, counts, old/new values, units, and negation.
+  Never replace a precise value with a vague category and never collapse multiple values to one.
+- Emit each distinct action as an independent item when it can change a count or future action.
+  "Return the old boots and pick up the replacement boots" is TWO pending actions, not one generic
+  exchange event. Keep action state and object identity in both content and evidence.
+- For "evidence", copy the smallest complete verbatim source span that proves the item; it is
+  REQUIRED.
+  It must include every distinct action, object, number, state, negation, and time represented by
+  content. Do not paraphrase evidence and do not return a fragment that changes its meaning.
+- For a table or schedule, emit one "structured_record" per row or independent relationship.
+  Example: a row Sunday | Admon | 8am-4pm becomes one record retaining all three fields.
+- For a reusable assistant deliverable (code, config, checklist, decision record, complete plan),
+  emit an "artifact" that preserves the usable content rather than only describing its topic.
 - "source_id": the bare id of the source memory the item was extracted from.
   Use the UUID value shown inside the [ID: ...] marker — WITHOUT the "[ID: ]" wrapper,
   WITHOUT quotes around the marker, and WITHOUT any leading/trailing whitespace.
@@ -121,7 +295,7 @@ Rules:
   "source_id": "32049cd0-5f7c-419f-928f-503b24318f7c". Every item MUST include a valid source_id.
   Only merge facts that share the same source_id; never merge across different sources.
 - Language: write each extracted statement in the SAME language as its source text
-  (Chinese source → Chinese statement; English source → English statement). Never
+  (French source -> French statement; English source -> English statement). Never
   translate the extracted content to another language.
 - "confidence": 1.0 = directly stated, 0.7 = clearly implied, 0.5 = weakly implied.
   Do not extract below 0.5.
@@ -132,7 +306,7 @@ Rules:
   Write the absolute date/time into the content text AND output an "event_date" field in
   ISO 8601 format (e.g. "2025-06-09T09:00:00"). If the item has no time component, omit
   event_date (or output empty string). Example: observation_date=2025-06-10, source
-  "Alice attended a basketball game yesterday at 9 a.m." →
+  "Alice attended a basketball game yesterday at 9 a.m." ->
   content="Alice attended a basketball game on 2025-06-09 at 9 a.m.",
   event_date="2025-06-09T09:00:00".
 - "tier": the cognitive role of the extracted memory, one of:
@@ -143,7 +317,7 @@ Rules:
 - "tags": 1 to 3 short labels summarizing this memory's topic, for later filtering/retrieval.
   Rules: lowercase; drop articles/stopwords; same language as the content; do NOT duplicate
   words already central to the content; keep each tag to 1-3 words. Example: content
-  "Alice prefers an Americano in the morning and a latte in the afternoon" →
+  "Alice prefers an Americano in the morning and a latte in the afternoon" ->
   tags: ["coffee", "preference"].
 - If nothing worth extracting, return [].
 
@@ -153,8 +327,8 @@ Target types:
 - "preference": the user likes/dislikes/prefers/wants something
 - "context": any other durable information that may be useful for future conversations
   (e.g., project background, ongoing tasks, skills demonstrated, topics discussed)
-- "structured_record": one independent row or relationship from a table, schedule, or list
-- "artifact": reusable assistant output such as code, configuration, checklist, or plan
+- "structured_record": one complete row or independent relationship from a table/schedule/list
+- "artifact": a reusable assistant-produced deliverable such as code, config, checklist, or plan
 
 Output schema:
 [{
@@ -162,7 +336,7 @@ Output schema:
   "target": "fact" | "event" | "preference" | "context" | "structured_record" | "artifact",
   "tier": "episodic" | "semantic" | "procedural",
   "content": "self-contained statement (one topic, merged if multiple sub-facts)",
-  "evidence": "smallest complete verbatim source span",
+  "evidence": "complete verbatim span copied from the source",
   "tags": ["tag1", "tag2"],
   "confidence": 0.5~1.0,
   "event_date": "2025-06-09T09:00:00"  // optional, only if time is resolved
@@ -178,7 +352,7 @@ Output ONLY a JSON object (no array, no markdown fences). Schema:
 {
   "content": "one self-contained statement summarizing what was done in this turn: \
 the goal/task, the key steps taken, and the outcome/result. Structured but as a single \
-coherent statement (can use inline markers like Goal:/Steps:/Outcome:). In the SAME language \
+coherent statement (can use inline markers like Goal:/Steps:/Result:). In the SAME language \
 as the source text. Cover the whole turn, not just one fact."
 }
 
@@ -202,10 +376,10 @@ _SOURCE_PREFIX = """\
 # 匹配 LLM 误带 [ID: ...] 外壳的 source_id（prompt 已要求裸 uuid，此处为防御性兜底）
 _SOURCE_ID_SHELL_RE = re.compile(r"^\s*\[ID:\s*(?P<id>[^\]]+)\]\s*$", re.IGNORECASE)
 
-# 批量提取的子批大小：把 accepted 拆成若干子批，每子批独立一次 LLM 调用。
-# 单个子批失败与其它子批隔离；仅当整次抽取没有产生任何可用候选时向上抛错，
-# 避免把完全失败伪装成模型明确返回的正常空抽取。
+# 批量提取的子批大小。子批仅限制单次 prompt 规模；坏子批与其他子批隔离，
+# 只有整次 extract 没有任何可用候选时才向上抛出第一个失败。
 _EXTRACT_BATCH_SIZE = 8
+_INVALID_JSON_FALLBACK_CHARS = 512
 
 
 def _strip_source_id_shell(raw: str) -> str:
@@ -271,8 +445,7 @@ def _format_context_block(context: ExtractContext | None) -> str:
             parts.append(
                 "## Recent conversation context "
                 "(for coreference / pronoun resolution only — do NOT extract from these, "
-                "do NOT point source_id at these):\n"
-                + "\n".join(lines)
+                "do NOT point source_id at these):\n" + "\n".join(lines)
             )
     if context.related_memories:
         lines = [f"- {u.content}" for u in context.related_memories if u.content]
@@ -303,11 +476,15 @@ class ExtractorImpl(Extractor):
         min_confidence: float = 0.5,
         retry_max_retries: int = 3,
         retry_backoff_ms: int = 1000,
+        l2_min_source_ratio: float = 0.3,
+        l2_min_evidence_chars: int = 256,
     ) -> None:
         self._llm = llm
         self._min_confidence = min_confidence
         self._retry_max_retries = retry_max_retries
         self._retry_backoff_ms = retry_backoff_ms
+        self._l2_min_source_ratio = min(1.0, max(0.0, l2_min_source_ratio))
+        self._l2_min_evidence_chars = max(0, l2_min_evidence_chars)
 
     def operator_type(self) -> OperatorType:
         return OperatorType.EXTRACTOR
@@ -344,7 +521,7 @@ class ExtractorImpl(Extractor):
             return self._extract_procedural(units)
 
         # Phase 1: 预处理
-        accepted = self.preprocess(units)
+        accepted = self._preprocess(units)
         logger.info(
             "Extractor: received %d units, %d accepted after preprocessing",
             len(units),
@@ -353,60 +530,129 @@ class ExtractorImpl(Extractor):
         if not accepted:
             return []
 
-        # Phase 2: LLM 提取（按子批拼 prompt 逐批调用）。
-        # 子批之间隔离失败；若仍有合法候选则保留部分成功，否则显式抛出首个错误，
-        # 不能把完全失败伪装成模型明确返回 []。
+        # Phase 2: LLM 提取（按子批拼 prompt 逐批调用，坏子批独立隔离）
         # tier 与 tags 由 LLM 在此一并产出（同一 prompt），不再走 FeatureExtractor 富化。
         all_candidates: list[ExtractionCandidate] = []
-        successful_batches = 0
-        failed_batches: list[tuple[int, int, Exception]] = []
+        failures: list[Exception] = []
         for start in range(0, len(accepted), _EXTRACT_BATCH_SIZE):
-            sub_batch = accepted[start:start + _EXTRACT_BATCH_SIZE]
+            sub_batch = accepted[start : start + _EXTRACT_BATCH_SIZE]
             try:
-                batch_candidates = self._llm_extract_batch(sub_batch, context=context)
-            except Exception as exc:
-                failed_batches.append((start, len(sub_batch), exc))
+                all_candidates.extend(self._llm_extract_batch(sub_batch, context=context))
+            except InvalidExtractionJSONError:
                 logger.warning(
-                    "Extractor: sub-batch failed and was skipped "
-                    "(offset=%d, units=%d, error=%s: %s)",
-                    start,
+                    "Extractor: invalid LLM JSON for sub-batch of %d units (offset=%d); "
+                    "retrying source text as chunks of at most %d chars",
                     len(sub_batch),
-                    type(exc).__name__,
+                    start,
+                    _INVALID_JSON_FALLBACK_CHARS,
+                )
+                try:
+                    all_candidates.extend(
+                        self._retry_invalid_json_as_source_chunks(
+                            sub_batch,
+                            context=context,
+                        )
+                    )
+                except Exception as fallback_exc:
+                    logger.error(
+                        "Extractor: source fallback failed after splitting to at most %d chars "
+                        "(offset=%d): %s",
+                        _INVALID_JSON_FALLBACK_CHARS,
+                        start,
+                        fallback_exc,
+                    )
+                    failures.append(fallback_exc)
+            except Exception as exc:
+                source_ids = ",".join(unit.id for unit in sub_batch)
+                logger.error(
+                    "Extractor: LLM extract failed for sub-batch of %d units "
+                    "(offset=%d, source_ids=%s); isolating failed sub-batch: %s",
+                    len(sub_batch),
+                    start,
+                    source_ids,
                     exc,
                 )
-                continue
-            successful_batches += 1
-            all_candidates.extend(batch_candidates)
-
-        if failed_batches and not all_candidates:
-            first_error = failed_batches[0][2]
-            logger.error(
-                "Extractor: no usable candidates after %d successful and %d failed "
-                "sub-batches; re-raising first error %s: %s",
-                successful_batches,
-                len(failed_batches),
-                type(first_error).__name__,
-                first_error,
-            )
-            raise first_error
-        if failed_batches:
-            logger.warning(
-                "Extractor: completed with partial success: candidates=%d, "
-                "successful_sub_batches=%d, failed_sub_batches=%d",
-                len(all_candidates),
-                successful_batches,
-                len(failed_batches),
-            )
+                if isinstance(exc, InvalidExtractionCandidateError):
+                    failures.append(exc)
+                else:
+                    failures.append(
+                        ExtractionFailureError(
+                            "extractor sub-batch failed at "
+                            f"offset={start}, source_ids={source_ids}: {exc}"
+                        )
+                    )
 
         logger.info(
             "Extractor: extracted %d candidates from %d units", len(all_candidates), len(accepted)
         )
+        if not all_candidates and failures:
+            raise failures[0]
+        if failures:
+            logger.warning(
+                "Extractor: preserved %d candidates while isolating %d failed sub-batches",
+                len(all_candidates),
+                len(failures),
+            )
         if not all_candidates:
             return []
 
         # Phase 3: 构建 MemoryUnit（tier/tags 取自 candidate，由 LLM 在 Phase 2 产出）
         # L0/L1 分层标注不由本算子负责——由 Evolver 抽取后委托 LayerAnnotator 生成。
-        return self.build_units(all_candidates, accepted)
+        return self._build_units(all_candidates, accepted)
+
+    @staticmethod
+    def _split_source_text(text: str, max_chars: int) -> list[str]:
+        """Split source text at whitespace without rewriting or dropping characters."""
+        remaining = str(text or "")
+        chunks: list[str] = []
+        while len(remaining) > max_chars:
+            split_at = remaining.rfind(" ", max_chars // 2, max_chars + 1)
+            if split_at <= 0:
+                split_at = max_chars
+            chunks.append(remaining[:split_at])
+            remaining = remaining[split_at:]
+        if remaining:
+            chunks.append(remaining)
+        return chunks
+
+    def _retry_invalid_json_as_source_chunks(
+        self,
+        units: list[MemoryUnit],
+        *,
+        context: ExtractContext | None,
+    ) -> list[ExtractionCandidate]:
+        """Retry a truncated/malformed extraction on unchanged 512-char source slices.
+
+        This fallback is deliberately entered only after the normal full-source response
+        and its bounded JSON repairs all failed. Each temporary unit keeps the original
+        source id and metadata, so Phase 3 still binds candidates to the original L2 source.
+        """
+        candidates: list[ExtractionCandidate] = []
+        for unit in units:
+            chunks = self._split_source_text(
+                unit.content,
+                _INVALID_JSON_FALLBACK_CHARS,
+            )
+            logger.warning(
+                "Extractor: retrying source=%s as %d chunks of size <= %d",
+                unit.id[:8],
+                len(chunks),
+                _INVALID_JSON_FALLBACK_CHARS,
+            )
+            for index, chunk in enumerate(chunks):
+                chunk_unit = replace(
+                    unit,
+                    segments=[Segment(content=chunk, source=unit.source)],
+                )
+                logger.info(
+                    "Extractor: fallback source=%s chunk=%d/%d chars=%d",
+                    unit.id[:8],
+                    index + 1,
+                    len(chunks),
+                    len(chunk),
+                )
+                candidates.extend(self._llm_extract_batch([chunk_unit], context=context))
+        return candidates
 
     # ------------------------------------------------------------------
     # 过程记忆抽取（procedural=true：1 条结构化执行历史汇总）
@@ -415,9 +661,7 @@ class ExtractorImpl(Extractor):
     @staticmethod
     def _is_procedural(units: list[MemoryUnit]) -> bool:
         """本轮是否走过程记忆抽取（metadata["procedural"]=="true"）。"""
-        return any(
-            str(u.metadata.get("procedural", "")).strip().lower() == "true" for u in units
-        )
+        return any(str(u.metadata.get("procedural", "")).strip().lower() == "true" for u in units)
 
     def _extract_procedural(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         """把本轮汇总成 1 条 PROCEDURAL 执行历史 MemoryUnit。
@@ -438,10 +682,10 @@ class ExtractorImpl(Extractor):
             ChatMessage(role="user", content=source_text),
         ]
         try:
-            response = self.call_llm_with_retry(messages)
+            response = self._call_llm_with_retry(messages)
         except Exception as exc:
-            logger.warning("Extractor._extract_procedural: LLM call failed, return []: %s", exc)
-            return []
+            logger.error("Extractor._extract_procedural: LLM call failed: %s", exc)
+            raise ExtractionFailureError("procedural extraction LLM call failed") from exc
 
         content = self._parse_procedural_response(response)
         if not content:
@@ -485,7 +729,9 @@ class ExtractorImpl(Extractor):
         )
         logger.info(
             "Extractor._extract_procedural: built 1 PROCEDURAL unit id=%s provenance=%s content=%s",
-            unit.id[:8], unit.provenance, unit.content[:200],
+            unit.id[:8],
+            unit.provenance,
+            unit.content[:200],
         )
         return [unit]
 
@@ -512,7 +758,7 @@ class ExtractorImpl(Extractor):
     # Phase 1: 预处理
     # ------------------------------------------------------------------
 
-    def preprocess(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
+    def _preprocess(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         """过滤 lifecycle≠ACTIVE / 空 content / 派生单元（provenance 非空）。"""
         accepted = []
         skipped_reasons: dict[str, int] = {}
@@ -546,6 +792,7 @@ class ExtractorImpl(Extractor):
         units: list[MemoryUnit],
         *,
         context: ExtractContext | None = None,
+        _language_retry: bool = False,
     ) -> list[ExtractionCandidate]:
         """对一批 unit 调一次 LLM 提取——每条 unit 带 [ID: ...] 标识，
         LLM 在每个候选里输出 ``source_id`` 回指来源；解析时校验 source_id 存在。
@@ -562,8 +809,11 @@ class ExtractorImpl(Extractor):
         # 基准时间 observation_date（经 metadata 下推）：LLM 据此把相对时间解析成绝对时间。
         # 取首个含 observation_date 的 unit（同批通常一致）；未传则以当前时间为基准。
         observation_date = next(
-            (str(u.metadata.get("observation_date", "")).strip() for u in units
-             if u.metadata.get("observation_date")),
+            (
+                str(u.metadata.get("observation_date", "")).strip()
+                for u in units
+                if u.metadata.get("observation_date")
+            ),
             "",
         )
         if not observation_date:
@@ -571,39 +821,42 @@ class ExtractorImpl(Extractor):
         user_text = (
             f"observation_date: {observation_date}\n"
             f"(Use this as the reference point to resolve relative time expressions "
-            f"like \"yesterday\"/\"last week\"/\"tomorrow\" into absolute dates in content "
-            f"and event_date.)\n\n"
-            + user_text
+            f'like "yesterday"/"昨天"/"上周" into absolute dates in content '
+            f"and event_date.)\n\n" + user_text
         )
         # 追加 context 参考段（仅本轮 units 作提取来源，context 只供 LLM 参考）
         context_block = _format_context_block(context)
         if context_block:
             user_text = user_text + "\n" + context_block
+        if _language_retry:
+            user_text = (
+                user_text + "\n\nRETRY REQUIREMENT: Your previous extraction changed the source "
+                "language. Keep every content and evidence field in the same language "
+                "as its [ID] source. Evidence must be copied verbatim from that source. "
+                "Do not translate, summarize in another language, or use context as "
+                "evidence. Return the complete JSON array again."
+            )
         messages = [
             ChatMessage(role="system", content=_EXTRACT_SYSTEM_PROMPT),
             ChatMessage(role="user", content=user_text),
         ]
 
-        # 调用 LLM（含重试）
-        response = self.call_llm_with_retry(messages)
+        # 调用 LLM 并校验 JSON。传输错误与格式错误分别有限重试；
+        # 格式重试会把坏响应原样回给模型要求只修 JSON，不重新解释原文。
+        items = self._call_and_parse_json_with_retry(messages)
 
-        # 解析 JSON
-        items = self.parse_llm_response(response)
-        return self.build_candidates(items, units)
-
-    def build_candidates(
-        self,
-        items: list[dict],
-        units: list[MemoryUnit],
-    ) -> list[ExtractionCandidate]:
-        """校验已解析的候选，并绑定到本批 source units。"""
         # 建立 id → unit 索引，用于校验 + 绑定 source
         unit_map = {u.id: u for u in units}
 
-        # 过滤 confidence < min_confidence，按 source_id 绑定到对应 unit
+        # 过滤 confidence < min_confidence，按 source_id 绑定到对应 unit。
+        # 单条候选的结构错误不得抹掉同一响应里已经合法的候选。
         candidates: list[ExtractionCandidate] = []
-        unmatched = 0
         invalid_reasons: list[str] = []
+        unmatched = 0
+        language_grounding_skipped = 0
+        high_confidence_by_source: dict[str, int] = {}
+        language_skipped_by_source: dict[str, int] = {}
+        accepted_by_source: dict[str, int] = {}
         for item_index, item in enumerate(items):
             if not isinstance(item, dict):
                 invalid_reasons.append(f"item {item_index} is not an object")
@@ -616,22 +869,57 @@ class ExtractorImpl(Extractor):
             except (TypeError, ValueError):
                 invalid_reasons.append(f"item {item_index} has invalid confidence")
                 continue
-            if not 0.0 <= confidence <= 1.0:
-                invalid_reasons.append(f"item {item_index} confidence is outside [0, 1]")
+            if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+                invalid_reasons.append(
+                    f"item {item_index} confidence is outside finite [0, 1]"
+                )
+                continue
+            if confidence < self._min_confidence:
                 continue
 
             source_id = _strip_source_id_shell(str(item.get("source_id", "")))
             if source_id not in unit_map:
                 unmatched += 1
                 invalid_reasons.append(
-                    f"item {item_index} source_id {source_id!r} is not in the batch"
+                    f"item {item_index} source_id {source_id!r} is not in batch"
                 )
                 continue
+            high_confidence_by_source[source_id] = high_confidence_by_source.get(source_id, 0) + 1
 
-            content = item.get("content")
-            if not isinstance(content, str) or not content.strip():
+            content_value = item.get("content")
+            if not isinstance(content_value, str) or not content_value.strip():
                 invalid_reasons.append(f"item {item_index} has empty content")
                 continue
+            content = content_value.strip()
+            evidence_value = item.get("evidence", "")
+            if not isinstance(evidence_value, str):
+                invalid_reasons.append(f"item {item_index} has non-string evidence")
+                continue
+            evidence = evidence_value
+            try:
+                content, language_repaired = _source_language_statement(
+                    content,
+                    evidence,
+                    unit_map[source_id].content,
+                )
+            except _CandidateLanguageGroundingError as exc:
+                language_grounding_skipped += 1
+                language_skipped_by_source[source_id] = (
+                    language_skipped_by_source.get(source_id, 0) + 1
+                )
+                logger.warning(
+                    "Extractor: skipping ungrounded cross-language candidate "
+                    "source=%s target=%s reason=%s",
+                    source_id[:8],
+                    item.get("target", "fact"),
+                    exc,
+                )
+                continue
+            if language_repaired:
+                logger.warning(
+                    "Extractor: repaired cross-language statement from grounded evidence source=%s",
+                    source_id[:8],
+                )
 
             target_str = item.get("target", "fact")
             try:
@@ -643,26 +931,23 @@ class ExtractorImpl(Extractor):
             tier = _parse_tier(item.get("tier"))
 
             # tags 由 LLM 抽，清洗 + 去重 + 截断到 ≤3
-            tags = parse_tags(item.get("tags"))
-
-            evidence = item.get("evidence", "")
-            if not isinstance(evidence, str):
-                invalid_reasons.append(f"item {item_index} has non-string evidence")
-                continue
-            if confidence < self._min_confidence:
-                continue
+            tags = [] if language_repaired else parse_tags(item.get("tags"))
 
             event_date = str(item.get("event_date", "") or "").strip()
-            candidates.append(ExtractionCandidate(
-                target=target,
-                content=content.strip(),
-                source_unit_id=source_id,
-                confidence=confidence,
-                evidence=evidence,
-                event_date=event_date,
-                tier=tier,
-                tags=tags,
-            ))
+            candidates.append(
+                ExtractionCandidate(
+                    target=target,
+                    content=content,
+                    source_unit_id=source_id,
+                    confidence=confidence,
+                    evidence=evidence,
+                    event_date=event_date,
+                    tier=tier,
+                    tags=tags,
+                    metadata={"language_repaired": "true"} if language_repaired else {},
+                )
+            )
+            accepted_by_source[source_id] = accepted_by_source.get(source_id, 0) + 1
             ev_str = f", evidence={evidence[:100]}" if evidence else ""
             ed_str = f", event_date={event_date}" if event_date else ""
             logger.info(
@@ -673,36 +958,106 @@ class ExtractorImpl(Extractor):
                 tier.value,
                 tags,
                 confidence,
-                item.get("content", "")[:200],
+                content[:200],
                 ev_str,
                 ed_str,
             )
+
+        atomized_candidates: list[ExtractionCandidate] = []
+        atomized_sources = 0
+        atomized_seen: set[tuple[str, str, str]] = set()
+        for candidate in candidates:
+            expanded = _atomize_pending_actions(candidate)
+            if len(expanded) > 1:
+                atomized_sources += 1
+                logger.info(
+                    "Extractor: atomized %d pending actions from source=%s actions=%s",
+                    len(expanded),
+                    candidate.source_unit_id[:8],
+                    [item.metadata.get("action_type") for item in expanded],
+                )
+            for item in expanded:
+                action_type = item.metadata.get("action_type")
+                if action_type:
+                    atom_key = (
+                        item.source_unit_id,
+                        action_type,
+                        _normalize_whitespace(item.evidence).casefold(),
+                    )
+                    if atom_key in atomized_seen:
+                        logger.info(
+                            "Extractor: removed duplicate pending action source=%s action=%s",
+                            item.source_unit_id[:8],
+                            action_type,
+                        )
+                        continue
+                    atomized_seen.add(atom_key)
+                atomized_candidates.append(item)
+
+        logger.info(
+            "Extractor: from batch of %d units extracted %d candidates "
+            "(raw LLM items=%d, unmatched=%d, language_grounding_skipped=%d, "
+            "action_atomized_sources=%d)",
+            len(units),
+            len(atomized_candidates),
+            len(items),
+            unmatched,
+            language_grounding_skipped,
+            atomized_sources,
+        )
+
+        # A valid empty array means the model found no durable memory.  It is not
+        # equivalent to a non-empty response whose every candidate for a source was
+        # discarded only because the model translated it.  The latter used to turn a
+        # whole evidence-bearing source into a silent zero-MemoryUnit write.  Retry
+        # only the affected source(s), preserving valid candidates from other sources.
+        language_drift_sources = [
+            source_id
+            for source_id, raw_count in high_confidence_by_source.items()
+            if raw_count > 0
+            and language_skipped_by_source.get(source_id, 0) == raw_count
+            and accepted_by_source.get(source_id, 0) == 0
+        ]
+        if language_drift_sources:
+            source_ids = ",".join(source_id[:8] for source_id in language_drift_sources)
+            if _language_retry:
+                raise ExtractionFailureError(
+                    "extractor candidates remained ungrounded after source-language "
+                    f"retry: source_ids={source_ids}"
+                )
+            logger.warning(
+                "Extractor: all high-confidence candidates changed source language; "
+                "retrying affected sources independently source_ids=%s",
+                source_ids,
+            )
+            for source_id in language_drift_sources:
+                retried = self._llm_extract_batch(
+                    [unit_map[source_id]],
+                    context=context,
+                    _language_retry=True,
+                )
+                if not retried:
+                    raise ExtractionFailureError(
+                        "extractor source-language retry returned no candidates after "
+                        f"a non-empty rejected response: source_id={source_id[:8]}"
+                    )
+                atomized_candidates.extend(retried)
 
         if invalid_reasons:
             details = "; ".join(invalid_reasons[:8])
             if len(invalid_reasons) > 8:
                 details += f"; +{len(invalid_reasons) - 8} more"
-            if not candidates:
+            if not atomized_candidates:
                 raise InvalidExtractionCandidateError(details)
             logger.warning(
-                "Extractor: skipped %d invalid candidates while preserving %d valid "
-                "candidates: %s",
+                "Extractor: skipped %d invalid candidates while preserving %d: %s",
                 len(invalid_reasons),
-                len(candidates),
+                len(atomized_candidates),
                 details,
             )
+        return atomized_candidates
 
-        logger.info(
-            "Extractor: from batch of %d units extracted %d candidates "
-            "(raw LLM items=%d, unmatched=%d)",
-            len(units),
-            len(candidates),
-            len(items),
-            unmatched,
-        )
-        return candidates
-
-    def call_llm_with_retry(self, messages: list, max_tokens: int = 8192) -> str:
+    def _call_llm_with_retry(self, messages: list, max_tokens: int = 8192) -> str:
         """调用 LLM.chat()，含重试逻辑。"""
         import time
 
@@ -712,6 +1067,16 @@ class ExtractorImpl(Extractor):
                 return self._llm.chat(messages, temperature=0, max_tokens=max_tokens)
             except Exception as exc:
                 last_exc = exc
+                status_code = getattr(exc, "status_code", None)
+                if status_code is None:
+                    response = getattr(exc, "response", None)
+                    status_code = getattr(response, "status_code", None)
+                if status_code in {400, 401, 403, 404, 422}:
+                    logger.error(
+                        "Extractor: permanent LLM HTTP %s; refusing pointless retry",
+                        status_code,
+                    )
+                    raise
                 if attempt < self._retry_max_retries - 1:
                     wait = self._retry_backoff_ms * (2**attempt) / 1000.0
                     logger.warning(
@@ -725,8 +1090,47 @@ class ExtractorImpl(Extractor):
             raise RuntimeError("LLM 调用未执行：retry_max_retries 必须 >= 1")
         raise last_exc
 
-    def parse_llm_response(self, response: str) -> list[dict]:
-        """解析抽取 JSON；非法载荷显式失败，合法 ``[]`` 原样返回。"""
+    def _call_and_parse_json_with_retry(
+        self,
+        messages: list[ChatMessage],
+        max_tokens: int = 8192,
+    ) -> list[dict]:
+        """Retry malformed model output as a JSON correction, then fail explicitly."""
+        original_messages = list(messages)
+        repair_messages = original_messages
+        last_exc: InvalidExtractionJSONError | None = None
+        attempts = max(1, self._retry_max_retries)
+        for attempt in range(attempts):
+            response = self._call_llm_with_retry(repair_messages, max_tokens=max_tokens)
+            try:
+                return self._parse_llm_response(response)
+            except InvalidExtractionJSONError as exc:
+                last_exc = exc
+                if attempt >= attempts - 1:
+                    break
+                logger.warning(
+                    "Extractor: malformed JSON (attempt %d/%d); requesting format-only repair",
+                    attempt + 1,
+                    attempts,
+                )
+                repair_messages = original_messages + [
+                    ChatMessage(role="assistant", content=response),
+                    ChatMessage(
+                        role="user",
+                        content=(
+                            "Your previous response is not valid JSON. Return the same "
+                            "extracted items again as one syntactically valid JSON array "
+                            "matching the required schema. Preserve every item and value. "
+                            "Output JSON only, with all quotes and control characters "
+                            "properly escaped."
+                        ),
+                    ),
+                ]
+        assert last_exc is not None
+        raise last_exc
+
+    def _parse_llm_response(self, response: str) -> list[dict]:
+        """解析 LLM 返回的 JSON。"""
         # 尝试直接解析
         try:
             parsed = json.loads(response)
@@ -747,11 +1151,9 @@ class ExtractorImpl(Extractor):
             if isinstance(parsed, dict):
                 return [parsed]
         except json.JSONDecodeError as exc:
-            logger.warning("Extractor: LLM response is not valid JSON")
-            raise InvalidExtractionJSONError("extractor response is not valid JSON") from exc
-        raise InvalidExtractionJSONError(
-            f"extractor response must be a JSON array or object, got {type(parsed).__name__}"
-        )
+            logger.warning("Extractor: LLM response not valid JSON")
+            raise InvalidExtractionJSONError("extractor LLM response is not valid JSON") from exc
+        return []
 
     @staticmethod
     def _strip_non_json(text: str) -> str:
@@ -772,7 +1174,7 @@ class ExtractorImpl(Extractor):
     # Phase 3: 构建 MemoryUnit
     # ------------------------------------------------------------------
 
-    def build_units(
+    def _build_units(
         self,
         candidates: list[ExtractionCandidate],
         source_units: list[MemoryUnit],
@@ -797,24 +1199,27 @@ class ExtractorImpl(Extractor):
                 )
                 continue
 
+            duplicate_key = (source.id, _normalize_whitespace(c.content).casefold())
+            if duplicate_key in seen:
+                logger.info(
+                    "Extractor: removed duplicate candidate source=%s content=%s",
+                    source.id[:8],
+                    c.content[:120],
+                )
+                continue
+            seen.add(duplicate_key)
+
             # tags = LLM 抽的标签 + extracted 兜底（标记派生来源，便于后续过滤/避免反复提取）
             tags = list(c.tags)
             if "extracted" not in tags:
                 tags.append("extracted")
 
-            statement = c.content.strip()
-            if not statement:
-                continue
-            dedup_key = (source.id, " ".join(statement.split()).casefold())
-            if dedup_key in seen:
-                continue
-            seen.add(dedup_key)
-
+            l2_content, retained_evidence, coverage = self._compose_l2(c, source)
             unit = MemoryUnit(
                 id=str(uuid.uuid4()),
                 scope=source.scope,
                 tier=c.tier,
-                segments=[Segment(content=statement, source=source.source)],
+                segments=[Segment(content=l2_content, source=source.source)],
                 source_ref=source.id,
                 temporal=Temporal(
                     t_event=_parse_event_date(c.event_date) or source.temporal.t_event,
@@ -825,8 +1230,9 @@ class ExtractorImpl(Extractor):
                 metadata={
                     "confidence": str(c.confidence),
                     "target": c.target.value,
-                    "evidence": c.evidence,
-                    "extracted_statement": statement,
+                    "evidence": retained_evidence,
+                    "extracted_statement": c.content,
+                    "l2_source_coverage": f"{coverage:.4f}",
                 }
                 | c.metadata,
                 lifecycle=LifecycleState.ACTIVE,
@@ -842,11 +1248,150 @@ class ExtractorImpl(Extractor):
             )
 
         logger.info(
-            "Extractor: build_units produced %d MemoryUnits from %d candidates",
+            "Extractor: _build_units produced %d MemoryUnits from %d candidates",
             len(result),
             len(candidates),
         )
         return result
+
+    def _compose_l2(
+        self,
+        candidate: ExtractionCandidate,
+        source: MemoryUnit,
+    ) -> tuple[str, str, float]:
+        """Build a source-grounded L2 instead of persisting an opaque summary.
+
+        The extracted statement remains a compact semantic header.  The body is
+        a normalized verbatim window from the source that contains the model's
+        evidence and is expanded to the configured minimum source coverage.
+        Missing or unverifiable evidence falls back to the complete source.
+        """
+        source_text = _normalize_whitespace(source.content)
+        evidence = _normalize_whitespace(candidate.evidence)
+        if not source_text:
+            return candidate.content.strip(), "", 0.0
+
+        evidence_start = source_text.casefold().find(evidence.casefold()) if evidence else -1
+        if evidence_start < 0:
+            retained = source_text
+        else:
+            target_chars = max(
+                len(evidence),
+                self._l2_min_evidence_chars,
+                math.ceil(len(source_text) * self._l2_min_source_ratio),
+            )
+            target_chars = min(len(source_text), target_chars)
+            spare = target_chars - len(evidence)
+            start = max(0, evidence_start - spare // 2)
+            end = min(len(source_text), start + target_chars)
+            start = max(0, end - target_chars)
+            retained = source_text[start:end].strip()
+
+        coverage = min(1.0, len(retained) / max(1, len(source_text)))
+        statement = candidate.content.strip()
+        # Keep L2 in the source language.  English section labels would make a
+        # short Chinese source look cross-language to the layer integrity gate.
+        l2 = f"{statement}\n\n{retained}"
+        logger.info(
+            "Extractor: L2 source grounding source=%s evidence_valid=%s coverage=%.3f "
+            "source_chars=%d retained_chars=%d",
+            source.id[:8],
+            evidence_start >= 0,
+            coverage,
+            len(source_text),
+            len(retained),
+        )
+        return l2, retained, coverage
+
+    # Compatibility surface used by DynamicLLMExtractor.  The evaluated LLM
+    # extractor uses the private R4 pipeline above; dynamic strategies keep
+    # their existing helper contract and candidate-isolation semantics.
+    def preprocess(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
+        return self._preprocess(units)
+
+    def call_llm_with_retry(self, messages: list, max_tokens: int = 8192) -> str:
+        return self._call_llm_with_retry(messages, max_tokens=max_tokens)
+
+    def parse_llm_response(self, response: str) -> list[dict]:
+        return self._parse_llm_response(response)
+
+    def build_candidates(
+        self,
+        items: list[dict],
+        units: list[MemoryUnit],
+    ) -> list[ExtractionCandidate]:
+        unit_map = {unit.id: unit for unit in units}
+        candidates: list[ExtractionCandidate] = []
+        invalid_reasons: list[str] = []
+        for item_index, item in enumerate(items):
+            if not isinstance(item, dict):
+                invalid_reasons.append(f"item {item_index} is not an object")
+                continue
+            if "confidence" not in item:
+                invalid_reasons.append(f"item {item_index} is missing confidence")
+                continue
+            try:
+                confidence = float(item["confidence"])
+            except (TypeError, ValueError):
+                invalid_reasons.append(f"item {item_index} has invalid confidence")
+                continue
+            if not 0.0 <= confidence <= 1.0:
+                invalid_reasons.append(f"item {item_index} confidence is outside [0, 1]")
+                continue
+            if confidence < self._min_confidence:
+                continue
+
+            source_id = _strip_source_id_shell(str(item.get("source_id", "")))
+            if source_id not in unit_map:
+                invalid_reasons.append(
+                    f"item {item_index} source_id {source_id!r} is not in the batch"
+                )
+                continue
+            content = item.get("content")
+            if not isinstance(content, str) or not content.strip():
+                invalid_reasons.append(f"item {item_index} has empty content")
+                continue
+            evidence = item.get("evidence", "")
+            if not isinstance(evidence, str):
+                invalid_reasons.append(f"item {item_index} has non-string evidence")
+                continue
+            try:
+                target = ExtractionTarget(item.get("target", "fact"))
+            except ValueError:
+                target = ExtractionTarget.FACT
+            candidates.append(
+                ExtractionCandidate(
+                    target=target,
+                    content=content.strip(),
+                    source_unit_id=source_id,
+                    confidence=confidence,
+                    evidence=evidence,
+                    event_date=str(item.get("event_date", "") or "").strip(),
+                    tier=_parse_tier(item.get("tier")),
+                    tags=parse_tags(item.get("tags")),
+                )
+            )
+
+        if invalid_reasons:
+            details = "; ".join(invalid_reasons[:8])
+            if len(invalid_reasons) > 8:
+                details += f"; +{len(invalid_reasons) - 8} more"
+            if not candidates:
+                raise InvalidExtractionCandidateError(details)
+            logger.warning(
+                "Extractor: skipped %d invalid dynamic candidates while preserving %d: %s",
+                len(invalid_reasons),
+                len(candidates),
+                details,
+            )
+        return candidates
+
+    def build_units(
+        self,
+        candidates: list[ExtractionCandidate],
+        source_units: list[MemoryUnit],
+    ) -> list[MemoryUnit]:
+        return self._build_units(candidates, source_units)
 
 
 # -- 注册到 ExtractorProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
@@ -859,4 +1404,6 @@ def _build(config):
         min_confidence=config.get("extractor_min_confidence", 0.5),
         retry_max_retries=config.get("extractor_retry_max", 3),
         retry_backoff_ms=config.get("extractor_retry_backoff", 1000),
+        l2_min_source_ratio=config.get("extractor_l2_min_source_ratio", 0.3),
+        l2_min_evidence_chars=config.get("extractor_l2_min_evidence_chars", 256),
     )

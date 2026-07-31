@@ -12,6 +12,7 @@ VectorRecord.id 采用 ``{unit.id}-{chunk.id}`` 拼接格式，在记录所属 S
 from __future__ import annotations
 
 import json
+
 from common.chunker.base import Chunker, ChunkerProducer
 from common.embedder.base import Embedder, EmbedderProducer
 from common.log import get_logger
@@ -90,6 +91,7 @@ class VectorIndexBuilder(IndexBuilder):
         embedder: Embedder,
         vector_l0: VectorStore | None = None,
         vector_l1: VectorStore | None = None,
+        fail_on_error: bool = False,
     ) -> None:
         self._vector_store = vector_store
         self._kv_store = kv_store
@@ -98,6 +100,7 @@ class VectorIndexBuilder(IndexBuilder):
         # L0/L1 分层 store：None 表示不构建该层索引（向后兼容 + 配置降级）。
         self._vector_l0 = vector_l0
         self._vector_l1 = vector_l1
+        self._fail_on_error = fail_on_error
 
     @property
     def vector_l0(self) -> VectorStore | None:
@@ -156,6 +159,8 @@ class VectorIndexBuilder(IndexBuilder):
                     unit.id[:8],
                     exc,
                 )
+                if self._fail_on_error:
+                    raise
                 continue
 
             # 构建 VectorRecord；record id 只要求在当前 Scope 内唯一。
@@ -199,6 +204,8 @@ class VectorIndexBuilder(IndexBuilder):
                         key,
                         exc2,
                     )
+                    if self._fail_on_error:
+                        raise
 
         # chunk_id 跟踪写入 KVStore
         for scope, unit_id, chunk_ids in chunk_tracking:
@@ -214,6 +221,8 @@ class VectorIndexBuilder(IndexBuilder):
                     kv_key,
                     exc,
                 )
+                if self._fail_on_error:
+                    raise
 
     def update(self, units: list[MemoryUnit]) -> None:
         """增量更新向量索引：先删旧 chunk + 旧 L0/L1 record → 再建新。
@@ -325,6 +334,8 @@ class VectorIndexBuilder(IndexBuilder):
             vectors = self._embedder.embed([t for _, t in pending])
         except Exception as exc:
             logger.warning("VectorIndexBuilder: layers %s embed failed: %s", layer, exc)
+            if self._fail_on_error:
+                raise
             return
 
         # 按 scope 分组写入对应 store
@@ -354,6 +365,8 @@ class VectorIndexBuilder(IndexBuilder):
                         "VectorIndexBuilder: layers %s update also failed for scope %s: %s",
                         layer, key, exc2,
                     )
+                    if self._fail_on_error:
+                        raise
 
     def _delete_layer_records(self, unit_id: str, scope: Scope) -> None:
         """删除该 unit 的 L0/L1 分层 record（幂等）。store 非空才删对应层。"""
@@ -402,4 +415,5 @@ def _build(config):
         embedder=EmbedderProducer.dep(config, default="hashing"),
         vector_l0=_opt_dep(VectorProducer, "layers_l0"),
         vector_l1=_opt_dep(VectorProducer, "layers_l1"),
+        fail_on_error=bool(config.get("fail_on_error", False)),
     )

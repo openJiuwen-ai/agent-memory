@@ -199,11 +199,15 @@ class MilvusVectorStore(VectorStore):
         if fc.op in _CMP_OPS:
             return f"{field} {_CMP_OPS[fc.op]} {_lit(fc.value)}"
         if fc.op == FilterOp.IN:
-            items = ", ".join(_lit(v) for v in fc.value)
-            return f"{field} in [{items}]"
+            values = list(fc.value)
+            if not values:
+                return "false"
+            return "(" + " || ".join(f"{field} == {_lit(value)}" for value in values) + ")"
         if fc.op == FilterOp.NOT_IN:
-            items = ", ".join(_lit(v) for v in fc.value)
-            return f"{field} not in [{items}]"
+            values = list(fc.value)
+            if not values:
+                return "true"
+            return "(" + " && ".join(f"{field} != {_lit(value)}" for value in values) + ")"
         if fc.op == FilterOp.CONTAINS:  # metadata 为 JSON，数组包含用 json_contains
             return f"json_contains({field}, {_lit(fc.value)})"
         raise ValidationError(f"unsupported filter op for vector: {fc.op}")
