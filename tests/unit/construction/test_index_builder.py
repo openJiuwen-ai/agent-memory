@@ -181,6 +181,44 @@ def test_vector_build_basic():
     assert len(hits) >= 1
 
 
+def test_vector_builder_strict_mode_raises_embedding_failure():
+    stores = create_test_stores()
+    plugins = create_test_plugins()
+
+    def fail_embed(_texts):
+        raise RuntimeError("embedding unavailable")
+
+    plugins["embedder"].embed = fail_embed
+    builder = VectorIndexBuilder(
+        vector_store=stores["vector"],
+        kv_store=stores["kv"],
+        chunker=plugins["chunker"],
+        embedder=plugins["embedder"],
+        fail_on_error=True,
+    )
+
+    with pytest.raises(RuntimeError, match="embedding unavailable"):
+        builder.build([create_test_unit("u1", "must be indexed")])
+
+
+def test_vector_builder_default_keeps_best_effort_compatibility():
+    stores = create_test_stores()
+    plugins = create_test_plugins()
+
+    def fail_embed(_texts):
+        raise RuntimeError("embedding unavailable")
+
+    plugins["embedder"].embed = fail_embed
+    builder = VectorIndexBuilder(
+        vector_store=stores["vector"],
+        kv_store=stores["kv"],
+        chunker=plugins["chunker"],
+        embedder=plugins["embedder"],
+    )
+
+    builder.build([create_test_unit("u1", "best effort")])
+
+
 def test_index_builders_project_user_metadata_for_filtering():
     scope = Scope(org="test", user="alice")
     unit = create_test_unit("u1", "metadata projection", scope=scope)

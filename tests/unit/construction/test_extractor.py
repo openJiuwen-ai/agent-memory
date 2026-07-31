@@ -26,12 +26,16 @@ from tests.unit.construction.fixtures import (
 # ---------------------------------------------------------------------------
 
 
-def _make_extractor(llm_responses: list[str] | None = None) -> ExtractorImpl:
+def _make_extractor(
+    llm_responses: list[str] | None = None,
+    *,
+    retry_max_retries: int = 3,
+) -> ExtractorImpl:
     """创建测试用 ExtractorImpl。"""
     return ExtractorImpl(
         llm=MockLLM(responses=llm_responses),
         min_confidence=0.5,
-        retry_max_retries=3,
+        retry_max_retries=retry_max_retries,
         retry_backoff_ms=1000,
     )
 
@@ -475,8 +479,8 @@ def test_extract_merged_topic_produces_one_unit():
     assert "不加糖" in result[0].content
 
 
-def test_extract_l2_is_compact_statement_with_source_reference():
-    """派生 L2 只保存紧凑陈述，通过 source_ref/provenance 回指来源。"""
+def test_extract_l2_retains_statement_and_grounded_source():
+    """派生 L2 保留紧凑陈述与可定位的原文证据。"""
     source = "Alice owns two red bicycles and one blue bicycle."
     statement = "Alice owns three bicycles."
     extractor = _make_extractor([
@@ -491,7 +495,8 @@ def test_extract_l2_is_compact_statement_with_source_reference():
 
     result = extractor.extract([create_test_unit("u1", source)])
 
-    assert result[0].content == statement
+    assert result[0].content.startswith(statement)
+    assert source in result[0].content
     assert "Source:" not in result[0].content
     assert result[0].source_ref == "u1"
     assert result[0].provenance == ["u1"]
@@ -519,7 +524,8 @@ def test_extract_skips_invalid_candidate_and_preserves_valid_candidate():
     result = extractor.extract([create_test_unit("u1", "source")])
 
     assert len(result) == 1
-    assert result[0].content == "valid statement"
+    assert result[0].content.startswith("valid statement")
+    assert "source" in result[0].content
     assert result[0].provenance == ["u1"]
 
 
@@ -541,6 +547,7 @@ def test_extract_rejects_missing_or_invalid_confidence(item):
 def test_extract_continues_after_one_sub_batch_fails():
     extractor = _make_extractor([
         "not valid JSON",
+        "still not valid JSON",
         json.dumps([
             {
                 "source_id": "u9",
@@ -549,22 +556,97 @@ def test_extract_continues_after_one_sub_batch_fails():
                 "confidence": 1.0,
             }
         ]),
-    ])
+    ], retry_max_retries=1)
     units = [create_test_unit(f"u{i}", f"source {i}") for i in range(1, 10)]
 
     result = extractor.extract(units)
 
     assert len(result) == 1
-    assert result[0].content == "valid statement from the second sub-batch"
+    assert result[0].content.startswith("valid statement from the second sub-batch")
     assert result[0].provenance == ["u9"]
 
 
 def test_extract_does_not_hide_failed_sub_batch_as_empty_result():
-    extractor = _make_extractor(["not valid JSON", "[]"])
+    extractor = _make_extractor(
+        ["not valid JSON", "still not valid JSON", "[]"],
+        retry_max_retries=1,
+    )
     units = [create_test_unit(f"u{i}", f"source {i}") for i in range(1, 10)]
 
     with pytest.raises(InvalidExtractionJSONError):
         extractor.extract(units)
+
+
+def test_extract_l2_keeps_minimum_source_coverage():
+    evidence = "I still need to pick up my navy blazer from the dry cleaner."
+    source = ("background " * 80) + evidence + (" trailing" * 80)
+    extractor = ExtractorImpl(
+        llm=MockLLM(responses=[json.dumps([{
+            "source_id": "u1",
+            "target": "event",
+            "content": "One pending clothing pickup remains.",
+            "evidence": evidence,
+            "confidence": 1.0,
+        }])]),
+        l2_min_source_ratio=0.3,
+        l2_min_evidence_chars=0,
+    )
+
+    result = extractor.extract([create_test_unit("u1", source)])
+
+    assert evidence in result[0].content
+    assert float(result[0].metadata["l2_source_coverage"]) >= 0.3
+
+
+def test_extract_l2_unverifiable_evidence_falls_back_to_complete_source():
+    source = "The user must return old boots and pick up replacement boots tomorrow."
+    extractor = _make_extractor([json.dumps([{
+        "source_id": "u1",
+        "target": "event",
+        "content": "The user has pending boot errands.",
+        "evidence": "This sentence does not occur in the source.",
+        "confidence": 1.0,
+    }])])
+
+    result = extractor.extract([create_test_unit("u1", source)])
+
+    assert source in result[0].content
+    assert result[0].metadata["l2_source_coverage"] == "1.0000"
+
+
+def test_extract_repairs_cross_language_statement_from_grounded_evidence():
+    source = "I still need to pick up my navy blazer from the dry cleaner."
+    extractor = _make_extractor([json.dumps([{
+        "source_id": "u1",
+        "target": "event",
+        "content": "用户仍需从干洗店领取海军蓝西装外套。",
+        "evidence": source,
+        "tags": ["服装", "待办"],
+        "confidence": 1.0,
+    }])])
+
+    result = extractor.extract([create_test_unit("u1", source)])
+
+    assert result[0].metadata["extracted_statement"] == source
+    assert result[0].metadata["language_repaired"] == "true"
+    assert result[0].tags == ["extracted"]
+
+
+def test_extract_atomizes_distinct_pending_actions():
+    evidence = "I need to return the old boots to Zara. I haven't picked them up yet."
+    extractor = _make_extractor([json.dumps([{
+        "source_id": "u1",
+        "target": "event",
+        "content": "The user has a pending Zara boot exchange.",
+        "evidence": evidence,
+        "confidence": 1.0,
+    }])])
+
+    result = extractor.extract([create_test_unit("u1", evidence)])
+
+    assert len(result) == 2
+    assert {unit.metadata["action_type"] for unit in result} == {"return", "pick up"}
+    assert all(unit.metadata["action_atomized"] == "true" for unit in result)
 
 
 def test_extract_deduplicates_same_statement_within_source():

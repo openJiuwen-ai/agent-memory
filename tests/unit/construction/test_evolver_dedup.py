@@ -31,6 +31,7 @@ from common.type_def.memory_codec import dumps, loads
 from construction.abstractor import Abstractor
 from construction.associator import Associator
 from construction.base import OperatorType
+from construction.dedup import dedup_text
 from construction.evolver import EvolveMode
 from construction.evolver_impl.orchestrating_evolver import OrchestratingEvolver
 from construction.extractor import Extractor
@@ -800,3 +801,10 @@ class TestDedupEvolveExtract:
         assert len(result.created_ids) == 2
         assert "ext-1" in result.created_ids
         assert "ext-2" in result.created_ids
+
+
+def test_dedup_text_prefers_compact_extracted_statement():
+    unit = _make_unit("u1", "compact statement\n\nvery long retained source evidence")
+    unit.metadata["extracted_statement"] = "compact statement"
+
+    assert dedup_text(unit) == "compact statement"

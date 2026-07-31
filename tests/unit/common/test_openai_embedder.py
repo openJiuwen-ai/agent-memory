@@ -143,6 +143,30 @@ def test_health_failure():
         embedder.health()
 
 
+def test_full_embeddings_endpoint_is_normalized_to_sdk_base_url():
+    embedder = OpenAIEmbedder(
+        model_name="bge-m3",
+        base_url="https://api.modelarts-maas.com/v1/embeddings",
+        api_key="mock-key",
+        dimension=1024,
+    )
+
+    assert str(getattr(embedder, "_client").base_url) == "https://api.modelarts-maas.com/v1/"
+
+
+def test_ssl_verify_accepts_false_environment_string():
+    embedder = OpenAIEmbedder(
+        model_name="bge-m3",
+        base_url="https://api.modelarts-maas.com/v1",
+        api_key="mock-key",
+        dimension=1024,
+        ssl_verify="false",
+    )
+
+    assert getattr(embedder, "_ssl_verify") is False
+    assert getattr(embedder, "_http_client") is not None
+
+
 # ---------------------------------------------------------------------------
 # Producer tests
 # ---------------------------------------------------------------------------
