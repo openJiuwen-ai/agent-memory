@@ -38,3 +38,7 @@ deploy/docker/.venv-modelscope/
 .idea/
 .vscode/
 CLAUDE.md
+
+# 安全模块
+# 开发子plan
+/security-plans

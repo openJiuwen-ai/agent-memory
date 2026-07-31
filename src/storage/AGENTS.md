@@ -23,7 +23,7 @@
 | `graph_impl/` | GraphStore 实现目录（memory） |
 | `fulltext_impl/` | FulltextStore 实现目录（memory） |
 | `fusion_impl/` | FusionStore 实现目录（memory） |
-| `fs_impl/` | FSStore 实现目录（local） |
+| `fs_impl/` | FSStore 实现目录（local / encrypted） |
 | `bootstrap.py` | 统一触发所有存储后端注册 |
 
 ## 统一 CRUD 动词
@@ -62,10 +62,34 @@
 7. **后端不可用统一抛 BackendError**
    连接失败/超时/服务不可用等非预期失败统一抛 `BackendError`（不抛泛化的 Exception）。
 
-8. **EncryptedKVStore 只做装饰，不做算法**
-   `encrypted` KV target 必须显式包装一个 raw KVStore，并调用 `common.security.SecurityProvider`
-   做 value 加解密；`list` 必须在解密后执行 MemoryUnit 过滤，不能把过滤下推到密文 raw KV。
-   真实加密算法不放在 storage 层。
+8. **加密装饰器只做装饰，不做算法**
+   `encrypted` KV / FS target 必须显式包装一个 raw Store，并调用
+   `common.security.SecurityProvider` 做加解密；KV 的 `list` 必须在解密后执行
+   MemoryUnit 过滤，不能把过滤下推到密文 raw KV。真实加密算法不放在 storage 层。
+
+9. **加密装饰器的写路径永远加密**
+   兼容明文读（迁移期读加密上线前写入的老数据）由 `security` 组件的
+   `allow_plaintext` 参数控制，且**只影响读**。它若顺带放松了写，迁移期写进去的
+   数据会永远是明文，而调用方看不出任何区别。
+
+## 加密装饰器（第③道防线的接线）
+
+`kv_impl/encrypted_kv_store.py` 与 `fs_impl/encrypted_fs_store.py` 是**装饰器**：
+包住任意一个同类 Store，写前加密、读后解密，对上仍是一个普通 `KVStore` / `FSStore`。
+
+- **依赖方向是 `storage → common.security`（单向）**。密码学一行都不在 storage 里，
+  全在 `common.security.security_impl`；这两个文件只构造 `SecurityContext` / AAD 并转发。
+  反向依赖不存在，security 不认识 Store。
+- **KV 只加密 `value`**。`key` 明文是必须的（加密它就没法 `list(prefix=...)`、
+  没法点查）；`ttl` 明文是必须的（它是后端的原生能力，加密它等于放弃过期功能）。
+- **FS 加密整个文件内容**，`ref` 与 scope 保持明文（路径要能寻址），`ref` 进 AAD。
+  代价是 `get` 必须读全文件到内存才能解密（AES-GCM 整块认证的直接后果），且
+  `FileStat.size` 返回的是密文长度（修正需先解密才知道明文长度，代价荒谬）。
+- **AAD 绑满五维 scope + 定位信息**（KV 是 `key`，FS 是 `ref`）。存储层的 scope
+  隔离是访问控制、可以被绕过（直接写底层、备份恢复串了）；AAD 是密码学的，绕不过。
+- **`cryptography` 缺失时在装配期抛 `BackendError`，绝不回落明文存储**——回落
+  会让「以为加密了」的部署实际裸奔，比不加密更危险。
+- 默认关闭：不配 `target: encrypted` 就没有任何加密行为，现有部署零影响。
 
 ## 与其他子目录的边界
 
@@ -75,12 +99,14 @@
 - 文件系统存储（FSStore）
 - 统一 CRUD 动词
 - scope 原生隔离
+- 静态加密的**接线**（两个装饰器 + 它们的注册），密码学本身归 `security`
 
 **不管**：
 - 鉴权（归 `api`）
 - 检索编排（归 `retrieval`）
 - 索引构建逻辑（归 `construction`）
 - 具体后端选型决策（由装配层配置）
+- 信封格式、密钥派生与包装、AES-GCM/HKDF（归 `common/security/`）
 
 ## 本地约束
 
@@ -90,4 +116,5 @@
 4. KVStore 的 `ttl` 单位为秒（float），`0` 表示永不过期。
 5. GraphStore 的 `seed_ids` 用于图召回时定位入口节点，匹配语义由后端定义（允许实现差异）。
 6. FusionStore 的 `FusionRecord` 可部分字段为 None（如只写向量不写文本）。
-7. `EncryptedKVStore` 的 `raw_kv_store` 不能指向自身；未配置 raw 依赖时必须在装配阶段报错。
+7. `EncryptedKVStore` 的 `raw_kv_store` / `EncryptedFSStore` 的 `inner` 不能指向自身；
+   未配置该依赖时必须在装配阶段报错（给默认值只会把数据写到调用方没预期的地方）。

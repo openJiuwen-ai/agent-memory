@@ -29,3 +29,8 @@ class AuditEvent:
     target: Scope = field(default_factory=Scope)  # 操作目标 scope；无具体目标时为空
     # 常见约定：permission_check、permission_reason、job_id、
     # before_unit_id / after_unit_id、before_unit_ids / after_unit_ids
+    # 安全层（src/security）另加四个：acting_user、role、key_fp、auth_mode。
+    # security.md §7.2 要求审计记录这四样，但它们是**认证元数据**，与本结构
+    # 承载的「谁对什么做了什么」不同层；塞 detail 而非提升为一等字段，是因为
+    # 改本结构要同时动 common / control / 两个 AuditLogger 实现 +
+    # handler._event_view。若这些键稳定使用，第二期应提升为一等字段。

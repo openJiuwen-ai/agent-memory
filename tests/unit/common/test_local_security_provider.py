@@ -76,6 +76,18 @@ def test_local_security_provider_can_reject_plaintext_in_strict_mode() -> None:
         provider.decrypt(b"legacy plaintext", context=_context())
 
 
+def test_local_security_provider_defaults_to_strict_not_plaintext() -> None:
+    """审计 P2-3：默认 fail-closed，不静默放行明文。
+
+    默认 True 时，拥有底层存储写权限的攻击者可用任意明文替换密文，绕过 AES-GCM
+    tag 与 AAD。迁移期读旧明文须显式 opt-in（allow_plaintext=true）。
+    """
+    provider = LocalEnvelopeSecurityProvider(LocalKeyProvider(key_hex=_KEY_HEX))
+
+    with pytest.raises(InvalidMagicError):
+        provider.decrypt(b"legacy plaintext", context=_context())
+
+
 def test_local_security_provider_rejects_aad_or_context_mismatch() -> None:
     provider = _provider_from_hex()
     ciphertext = provider.encrypt(b"secret payload", context=_context(user="alice"), aad=b"kv:a")

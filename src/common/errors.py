@@ -48,6 +48,33 @@ class PermissionDeniedError(AgentMemoryError):
         super().__init__(message or f"permission denied: {action or 'action'}")
 
 
+class AuthenticationError(AgentMemoryError):
+    """
+    凭据缺失、格式非法或校验不通过：认证层（``src/security``）产出。
+
+    与 :class:`PermissionDeniedError` 的区别是「不知道你是谁」（401）对
+    「知道你是谁但不许做」（403）——两者必须可分，否则 HTTP 层无法映射
+    正确状态码，调用方也无法区分「该带凭据」与「该申请授权」。
+
+    对外错误消息一律笼统，不区分「主体不存在」与「凭据错误」：区分了就
+    成为主体枚举的侧信道。具体原因写进审计事件的 ``detail``。
+    """
+
+
+class RateLimitedError(AgentMemoryError):
+    """
+    调用方超出速率上限：安全层限流（``src/security/rate_limit.py``）产出。
+
+    与 :class:`AuthenticationError` 必须可分（429 对 401）：限流发生在认证
+    **之前**，此时还不知道凭据对不对——把它报成 401 会让「你被限流了」和
+    「你的 key 错了」混在一起，运维排障时无法区分，客户端也不知道该重试
+    还是该换凭据。
+
+    对外消息同样笼统：不透露桶容量、剩余令牌、已计数的请求数——那些都能
+    用来反推限流参数并贴着阈值发请求。
+    """
+
+
 class ValidationError(AgentMemoryError):
     """
     入参非法或不满足约束：如 ``DeleteSelector`` 未给任何条件、参数越界、

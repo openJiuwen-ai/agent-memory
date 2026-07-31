@@ -1,6 +1,14 @@
 """跨层共用的结构体定义。"""
 
 from .audit import AuditEvent
+from .auth import (
+    ROLE_RANK,
+    AuthContext,
+    Role,
+    get_current,
+    reset_current,
+    set_current,
+)
 from .chat import ChatMessage
 from .chunk import Chunk
 from .context import EXT_MAX_TOKENS, Context
@@ -59,6 +67,12 @@ __all__ = [
     "FeatureSet",
     "ChatMessage",
     "AuditEvent",
+    "AuthContext",
+    "Role",
+    "ROLE_RANK",
+    "set_current",
+    "reset_current",
+    "get_current",
     "FilterClause",
     "FilterOp",
     "FilterLogic",

@@ -5,6 +5,10 @@
 **每个子模块的 `AGENTS.md` 文件开头都链接了对应的 spec 规约文档**，便于快速跳转查看详细接口规范。
 
 
+### security/ - 横切安全层
+
+认证（`Authenticator` 三模式：dev / trusted / api_key）+ `PrincipalKeyStore`（Argon2id 校验的 API Key 注册表）+ 速率限制（`RateLimiter`）+ DEV 模式绑定 guard（`check_dev_binding`）。`AuthContext` 落在 `common/type_def/auth.py`（横切结构）。不属模型能力插件，单独成一类横切组件；不进 `build_kernel`，由 `bootstrap` 的 surface 在请求作用域装配。
+
 ## 模块地图
 
 ```
@@ -16,6 +20,7 @@ src/
 ├── control/        # 编排层：MemoryEngine 跨层编排中枢 + Scheduler/Permission/Policy/Governance/Space
 ├── ingest/         # 接入层：多模态 → 文本投影 + MemoryUnit，不落盘
 ├── retrieval/      # 检索层：scope 过滤 → 多路召回 → 融合重排 → 渐进式披露
+├── security/       # 横切安全层：认证（dev/trusted/api_key）+ Argon2id key 注册表 + 速率限制 + DEV 绑定 guard
 └── storage/        # 存储层：统一 CRUD + search，scope 原生隔离（vector/graph/fulltext/kv/fs/fusion）
 ```
 

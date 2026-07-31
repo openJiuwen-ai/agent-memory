@@ -184,8 +184,11 @@ class LocalEnvelopeSecurityProvider(SecurityProvider):
         self,
         key_provider: LocalKeyProvider,
         *,
-        allow_plaintext: bool = True,
+        allow_plaintext: bool = False,
     ) -> None:
+        # allow_plaintext 默认 False（fail-closed，审计 P2-3）：否则拥有底层存储写
+        # 权限的攻击者可用任意明文替换密文，绕过 AES-GCM tag 与 AAD 校验。迁移期
+        # 读旧明文数据须显式 opt-in（allow_plaintext=true），迁移完成后应关闭。
         _ensure_crypto()
         self._key_provider = key_provider
         self._allow_plaintext = allow_plaintext
@@ -286,12 +289,15 @@ def _parse_envelope(ciphertext: bytes) -> _Envelope:
     if len(ciphertext) < offset + body_len:
         raise CorruptedCiphertextError("ENC1 envelope length is incomplete")
 
-    encrypted_key = ciphertext[offset: offset + key_len]
-    offset += key_len
-    key_nonce = ciphertext[offset: offset + key_nonce_len]
-    offset += key_nonce_len
-    data_nonce = ciphertext[offset: offset + data_nonce_len]
-    offset += data_nonce_len
+    encrypted_key_end = offset + key_len
+    encrypted_key = ciphertext[offset:encrypted_key_end]
+    offset = encrypted_key_end
+    key_nonce_end = offset + key_nonce_len
+    key_nonce = ciphertext[offset:key_nonce_end]
+    offset = key_nonce_end
+    data_nonce_end = offset + data_nonce_len
+    data_nonce = ciphertext[offset:data_nonce_end]
+    offset = data_nonce_end
     encrypted_content = ciphertext[offset:]
     if not encrypted_content:
         raise CorruptedCiphertextError("ENC1 envelope has no encrypted content")
@@ -407,9 +413,7 @@ def _decode_b64_key(value: str, *, source: str) -> bytes:
 
 def _validate_root_key(key: bytes, *, source: str) -> bytes:
     if len(key) != DATA_KEY_SIZE:
-        raise ValidationError(
-            f"encryption root key from {source} must be {DATA_KEY_SIZE} bytes"
-        )
+        raise ValidationError(f"encryption root key from {source} must be {DATA_KEY_SIZE} bytes")
     return key
 
 
@@ -448,7 +452,7 @@ def _build(config):
             ),
         ),
         allow_plaintext=_as_bool(
-            Factory.cfg_get(config, "allow_plaintext", True),
-            default=True,
+            Factory.cfg_get(config, "allow_plaintext", False),
+            default=False,
         ),
     )

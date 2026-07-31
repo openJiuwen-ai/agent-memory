@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import List
 
 from common.type_def import Scope
+from common.type_def.auth import AuthContext
 from control.base import ControlOperatorType
 from control.permission import PermissionManager, PermissionProducer
 from control.types import Action, Grant, PermissionContext
@@ -42,7 +43,11 @@ class AllowAllPermissionManager(PermissionManager):
         target: Scope,
         action: Action,
         context: PermissionContext | None = None,
+        *,
+        auth: AuthContext | None = None,
     ) -> bool:
+        # 恒放行是本实现的**全部**语义，``auth`` 一并忽略：它是 dev-only 的装配件，
+        # 掺进角色闸门只会让「allow_all 就是不鉴权」这个前提变得需要逐条确认。
         return True
 
 

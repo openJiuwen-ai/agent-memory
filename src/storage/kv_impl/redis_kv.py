@@ -53,14 +53,10 @@ class RedisKVStore(KVStore):
             try:
                 import redis
             except ImportError as exc:  # 依赖缺失归一为后端不可用
-                raise BackendError(
-                    "redis client not installed (pip install redis)"
-                ) from exc
+                raise BackendError("redis client not installed (pip install redis)") from exc
             with wrap_backend("redis connect"):
                 if self._url:
-                    self._client = redis.Redis.from_url(
-                        self._url, decode_responses=False
-                    )
+                    self._client = redis.Redis.from_url(self._url, decode_responses=False)
                 else:
                     self._client = redis.Redis(decode_responses=False, **self._conn)
         return self._client
@@ -119,11 +115,12 @@ class RedisKVStore(KVStore):
             keys = list(self.client.scan_iter(match=f"{ns}{prefix}*"))
             values = self.client.mget(keys) if keys else []
         out: list[tuple[str, bytes]] = []
+        prefix_len = len(ns)
         for raw, value in zip(keys, values):
             if value is None:  # scan 与 mget 之间过期/删除
                 continue
             k = raw.decode("utf-8") if isinstance(raw, bytes) else raw
-            out.append((k[len(ns):], value))  # 去掉命名空间前缀还原逻辑 key
+            out.append((k[prefix_len:], value))  # 去掉命名空间前缀还原逻辑 key
         return out
 
     def list(

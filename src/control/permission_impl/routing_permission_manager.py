@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from common.errors import ValidationError
 from common.type_def import Scope
+from common.type_def.auth import AuthContext
 from control.base import ControlOperatorType
 from control.permission import PermissionManager, PermissionProducer
 from control.types import Action, Grant, PermissionContext
@@ -85,14 +86,18 @@ class RoutingPermissionManager(PermissionManager):
         target: Scope,
         action: Action,
         context: PermissionContext | None = None,
+        *,
+        auth: AuthContext | None = None,
     ) -> bool:
         # S03「PermissionManager」约束「routing 不改变授权语义，只选择 delegate」——
         # 此处只做选择并委托：
         # 不额外 deny、不对多个 policy 求交集，root / owner-cover / Grant 等基础规则
         # 全部由被选中的 delegate 按 S03 的 check 规则判定。路由值未解析时按 _select
         # 落到 fallback（S03 示例即如此定义），不在路由层加码。
+        # ``auth`` 同理**原样透传**：在这里吞掉它，角色闸门与代操作委托会在路由型
+        # 部署下静默失效——一个只在某种装配形态下出现、且没有任何症状的授权漏洞。
         policy = self._select(context)
-        return policy.check(actor, target, action, context=context)
+        return policy.check(actor, target, action, context=context, auth=auth)
 
     def _select(self, context: PermissionContext | None) -> PermissionManager:
         value = _context_value(context, self._route_key)
@@ -134,9 +139,7 @@ def _build(config):
     route_key = config.get("route_key", "memory_type")
     fallback = str(config.get("fallback", "")).strip()
     if not fallback:
-        raise ValidationError(
-            "permission.routing params.fallback 必须指向一个具名 permission"
-        )
+        raise ValidationError("permission.routing params.fallback 必须指向一个具名 permission")
     if fallback == config.name:
         raise ValidationError("permission.routing params.fallback 不能指向 routing 自身")
     routes_raw = config.get("routes", {})

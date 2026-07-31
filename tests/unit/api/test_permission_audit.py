@@ -74,15 +74,19 @@ def test_evolve_audit_records_job_id_not_unit_id() -> None:
 
 
 def test_configured_sqlite_audit_persists_through_api_audit(tmp_path) -> None:
+    from security.bootstrap import register_security
+
+    register_security()  # hmac 装饰器注册（PR③ 完整性保护）
     db_path = tmp_path / "audit.sqlite3"
     cfg = Config.from_dict(
         {
             "permission": {"default": "sqlite"},
             "audit": {
+                "raw": {"target": "sqlite", "params": {"db_path": str(db_path)}},
                 "default": {
-                    "target": "sqlite",
-                    "params": {"db_path": str(db_path)},
-                }
+                    "target": "hmac",
+                    "params": {"inner": "raw", "key_hex": "00" * 32},
+                },
             },
         }
     )

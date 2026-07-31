@@ -5,8 +5,8 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | src/common/ |
-| 最近一次修订日期 | 2026-07-30 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md |
+| 最近一次修订日期 | 2026-07-31 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/security/F01-authentication-kernel.md，docs/features/security/F03-audit-integrity.md |
 
 ## 范围 / 边界
 
@@ -37,6 +37,10 @@
 8. **标识唯一性分层**：非空 Space id 全局唯一；`MemoryUnit.id` 只要求在完整 Scope 内唯一。
 9. **Scope 位置参数兼容**：`space` 可为空但只能按关键字传入；旧位置参数顺序保持
    `Scope(org, user, agent, session)`。
+10. **Scope 是 frozen value object**（安全加固，F01 决策 16）：`@dataclass(frozen=True)`，
+    身份/隔离值不可变是跨模块安全不变量。改某维用 `dataclasses.replace(scope, org=...)`
+    返回新值，禁止原地 `scope.x = ...`（抛 `FrozenInstanceError`）。frozen 同时使 Scope
+    可哈希。防的是「签发 key 后改原 actor 的 org 让已签发身份跟着变」的越权。
 
 ## 接口契约
 
@@ -124,14 +128,23 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 
 ### AuditLogger（`audit/base.py`）
 
-审计日志。
+审计日志。完整性保护（HMAC）方法有默认实现，普通后端不破坏（审计 PR③ F03）。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
 | `record` | `(event: AuditEvent) -> None` | 写入一条审计事件 |
-| `query` | `(filters: dict[str, str], limit=100) -> list[AuditEvent]` | 按 `action` / `layer` / `decision` / `target_id` / `actor_org` / `actor_space` / `actor_user` / `actor_agent` / `actor_session` / `target_org` / `target_space` / `target_user` / `target_agent` / `target_session` / `occurred_after` / `occurred_before` 检索审计留痕 |
+| `query` | `(filters: dict[str, str], limit=100, *, offset=0) -> list[AuditEvent]` | 按 `action` / `layer` / `decision` / `target_id` / `actor_*` / `target_*` / `occurred_after` / `occurred_before` 检索；`offset` 分页流式（审计 P2-1） |
+| `tail` | `(limit=1) -> list[AuditEvent]` | 最近 `limit` 条事件（O(1)，持久化后端 override 成 DESC LIMIT；默认全量取最后） |
+| `record_chained` | `(event, expected_head) -> str` | 链式 CAS 追加。持久化后端 override 成事务 CAS；**默认实现仅提供兼容默认值，不具备 CAS capability，不能被 HMAC 安全包装**（审计 P1-1） |
+| `get_chain_head` | `() -> str` | 当前链头 HMAC（O(1)，持久化后端读 chain-head 表；默认走 tail） |
+| `supports_chain_cas` | `() -> bool` | 声明后端是否支持链式 CAS 原子性。默认 `False`；`True` 表示 `record_chained` 对同一后端状态提供原子 compare-and-swap。`HmacAuditLogger` 只接受该 capability 为真的后端。InMemory 的保证范围是同一后端对象、单进程多线程；SQLite 的保证范围是同一数据库文件、多连接事务 CAS（审计 P1-1） |
+| `get_chain_state` | `() -> tuple[str, int, int, str, int]` | 原子快照读取（head_hmac, head_last_seq, last_event_seq, last_event_hmac, schema_version）。**默认实现**由 `get_chain_head()` + `tail()` 两次读取组成，不提供跨调用原子性。CAS-capable 持久化后端必须 override 为稳定快照：SQLite 用单条 CTE 查询实现（审计 P1） |
+| `iter_chain` | `(after_seq=0, limit=1000) -> list[tuple[int, AuditEvent]]` | keyset 分页遍历（`WHERE seq > ?`，审计 P2-1；默认降级为 query offset） |
+| `verify_integrity` | `() -> AuditIntegrityResult` | 校验完整性，返回结构化状态（`unsupported`/`clean`/`tampered`，审计 P2-2；默认 `unsupported`） |
 
-治理层通过 `Governor.audit(filters, limit)` 提供对外查询入口；`AuditLogger.query(...)` 是控制层消费审计后端的内部接口，不直接暴露为用户 API。
+**SQLite 后端私有扩展**：`SqliteAuditLogger` 额外提供 `init_chain_head(hmac, last_seq)` 和 `get_last_event()` 用于旧库迁移和启动验证，`HmacAuditLogger` 通过 `hasattr` 检测并调用。这些不是公共 `AuditLogger` 契约的一部分。
+
+治理层通过 `Governor.audit(filters, limit)` 提供对外查询入口；`AuditLogger.query(...)` 是控制层消费审计后端的内部接口，不直接暴露为用户 API。完整性保护由 `HmacAuditLogger` 装饰器（`security/audit_hmac.py`）提供，详见 F03。
 
 ### SecurityProvider（`security/security.py`）
 
@@ -158,7 +171,7 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 | `Segment` | type / content / asset_ref / metadata | 内容段 |
 | `Temporal` | t_event / t_ingest / t_valid / t_invalid | 时间字段 |
 | `Relation` | id / source_id / target_id / relation / weight / metadata | 关联关系 |
-| `Scope` | org / space / user / agent / session | 作用域；非空 `space` 是全局唯一逻辑隔离标识，空值为兼容域且该字段为 keyword-only |
+| `Scope` | org / space / user / agent / session | 作用域（frozen value object，`frozen=True`）；非空 `space` 是全局唯一逻辑隔离标识，空值为兼容域且该字段为 keyword-only。改维度用 `dataclasses.replace`，不可原地修改（见不变量 10） |
 | `Context` | scope / max_tokens / extensions | 检索上下文 |
 | `Entity` | text / type / confidence | 实体 |
 | `FeatureSet` | keywords / entities / tags | 特征集合 |
@@ -169,7 +182,8 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 | `FilterGroup` | logic / children | AND / OR / NOT 逻辑节点 |
 | `FilterExpr` | FilterClause \| FilterGroup | 跨 API、检索和存储层的过滤树 |
 | `matches_memory_unit` | `(MemoryUnit, FilterExpr \| None) -> bool` | retrieval 真源复核和 KV list 共用的 MemoryUnit 字段投影与过滤求值 |
-| `AuditEvent` | id / timestamp / actor / target / action / target_id / layer / detail | 审计事件；`actor` 与 `target` 均为 Scope，支持 actor_* 与 target_* 字段过滤 |
+| `AuditEvent` | id / timestamp / actor / target / action / target_id / layer / detail | 审计事件；`actor` 与 `target` 均为 Scope，支持 actor_* 与 target_* 字段过滤。`detail` 承载安全层四字段（`acting_user`/`role`/`key_fp`/`auth_mode`，§7.2）与 HMAC（`_hmac`/`prev_hmac`，§7.3） |
+| `AuthContext` | actor / acting_user / role / from_oauth / authorizing_key_fp / auth_mode | 认证层产出的请求级安全上下文（`frozen=True`，`common/type_def/auth.py`）；ContextVar 传播（`set_current`/`reset_current`/`get_current`，未认证返回 `None`）。`auth_mode` 由 authenticator 填（dev/trusted/api_key）。详见 F01 / F03 |
 | `SecurityContext` | scope / purpose / metadata | 一次加密/解密调用的安全上下文 |
 
 ### 枚举（`type_def/memory.py`）

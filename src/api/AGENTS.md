@@ -56,11 +56,36 @@
 ```
 MemoryAPI.method(scope=target, identity=caller)
   → 构造 PermissionContext（write/recall/list 请求条件来自入参；list 实际 unit 与 get/update/delete 来自 Engine 真源元数据）
-  → PermissionManager.check(actor=identity, target=scope, action=<对应动作>, context=...)
+  → 从 ContextVar 取 AuthContext（未认证为 None）
+  → PermissionManager.check(actor=identity, target=scope, action=<对应动作>, context=..., auth=...)
     → 通过 → 委托 Engine/Governor/PolicyManager（仅传 scope，不传 identity）
     → 拒绝 → 抛 PermissionDeniedError
   → 落审计事件（含 identity + action + target_id + 时间）
 ```
+
+`AuthContext` 只在这一处取，取完透传——`PermissionManager` 不得自行读 ContextVar
+（PDP 应当是其入参的纯函数）。它携带 `identity` 这个 Scope 推不出来的两样东西：
+`role`（§3.1）与 `acting_user`（§4.3 Agent 代操作）。`auth` 非 `None` 时 PDP 会先
+校验 `auth.actor == identity`，不等即拒——这条把「`identity` 是谁说了算」钉死在认证层。
+
+管理面方法（`admin_*` / 全局 `audit`）除以根 scope 为 target 外，还须携带
+`resource_type`（`admin` / `audit`），使「这是系统级操作」显式可读，而不是从
+「target 恰好是空 scope」反推。
+
+### `AuthContext` 与 `auth=None` 的兼容线
+
+`_authorize` 从 ContextVar 取 `AuthContext` 透传给 PDP；取不到时为 `None`，
+PDP 退回纯 ACL（空 `Scope()` 仍视为 platform admin）。这条兼容线承载三类**非请求**
+场景：`build_kernel` 直连、后台 evolve job、单测--它们没有认证中间件，`None` 是
+它们的合法形态而非缺失。
+
+**服务请求路径必须建立非空 `AuthContext`**：HTTP / MCP / CLI 三个 surface 都用
+`bootstrap.core.auth_middleware.authenticated` 上下文管理器包裹 dispatch，由它在
+请求作用域 `set_current`、退出时 `reset_current`。新增 surface 必须沿用同一中间件，
+不得让 dispatch 在无 `AuthContext` 时跑--那是把请求降级成无认证。这条保证目前只
+存在于已接好的三个 surface（代码事实），未作为 `PermissionManager.check` 的入参
+契约强制；若要让 PDP 自己也守住（`auth=None` 即拒），需在决策 1 之外加显式配置
+开关，是独立的破坏性变更（审计 P2-1 的待议项，不在本期）。
 
 ## 与其他子目录的边界
 

@@ -15,12 +15,13 @@
 | `errors.py` | 自定义异常（ConflictError/NotFoundError/PermissionDeniedError/BackendError 等） |
 | `type_def/` | 核心数据类型定义目录 |
 | `type_def/memory.py` | MemoryUnit/Relation/Segment/Temporal/ContentLayers 等；MemoryUnit id 在完整 Scope 内唯一；KV key 前缀 `MEMORY_KEY_PREFIX`/`memory_key`（建索引记忆 `/memory/{id}`）。`ContentLayers`(l0/l1) 为分层披露标注，由 LayerAnnotator 对超阈 content 产出 |
-| `type_def/scope.py` | Scope：`org/space/user/agent/session` 五维归属；非空 `space` 是全局唯一的逻辑隔离标识且为 keyword-only，旧位置参数保持 `org/user/agent/session` 顺序 |
+| `type_def/scope.py` | Scope：`org/space/user/agent/session` 五维归属；非空 `space` 是全局唯一的逻辑隔离标识且为 keyword-only，旧位置参数保持 `org/user/agent/session` 顺序。**frozen value object**（`@dataclass(frozen=True)`）：身份/隔离不可变是跨模块安全不变量，改某维用 `dataclasses.replace(scope, org=...)` 返回新值，禁止原地 `scope.x = ...`（抛 `FrozenInstanceError`）。详见 S07 不变量与 F01 决策 16 |
 | `type_def/filter.py` | FilterClause/FilterGroup/FilterExpr 及 normalize/evaluate；统一 API、检索和存储的树形过滤契约 |
 | `type_def/memory_filter.py` | MemoryUnit 字段投影与 FilterExpr 公共求值；供 retrieval 真源复核和 KV list 兼容实现共用 |
 | `type_def/memory_codec.py` | `MemoryUnit` ↔ bytes 编解码（`dumps`/`loads`）；当前 `_v=3`，序列化 `layers`({l0,l1}) 与五段 scope，缺失取默认容错老数据，详见 F01-memory-layer / F03-scope-space-isolation |
 | `type_def/raw.py` | RawPayload；KV key 前缀 `MESSAGES_KEY_PREFIX`/`messages_key`（未建索引 infer 原文 `/messages/{id}`） |
 | `type_def/audit.py` | AuditEvent：记录 actor scope、target scope、action、decision、target_id 与 detail |
+| `type_def/auth.py` | AuthContext（frozen）：认证层产出的请求级安全上下文（`actor`/`acting_user`/`role`/`from_oauth`/`authorizing_key_fp`/`auth_mode`），ContextVar 传播（`set_current`/`reset_current`/`get_current`，未认证返回 `None`）；`Role` 枚举（USER/ADMIN/ROOT）。横切结构，故落 `common` 而非 `security` 私有 |
 | `factory/factory.py` | Factory 基类：`TOP_NAME` 注册 + 三接口 `build`/`build_named`/`dep`（配置数据结构 `ComponentConfig`/`AssemblyContext`/`RawSpec` 在 `config/context.py`） |
 | `embedder/` | Embedder 插件目录（接口 + 实现） |
 | `chunker/` | Chunker 插件目录 |
@@ -78,3 +79,43 @@
 5. 两级命名空间配置驱动装配：每个 Producer 声明全局唯一 `TOP_NAME`（占配置顶层段），其下是若干具名实例（`target` 指定实现名、`params` 传参、`new_instance` 控制是否共享）。`_build(config)` 里用 `XProducer.dep(config, param_name=None, default=...)` 取子依赖（引用名→共享 / 内联 dict→匿名 / 缺省→默认匿名）。
 6. LLM 的厂商扩展参数必须由对应 Provider Adapter 注入；构建、检索等内核业务调用点不得硬编码 `extra_body` 等传输层字段。
 7. SecurityProvider 与 AuditLogger 一样是横切组件，不继承 `Plugin`、不进入 `PluginType`；实现仍通过独立 Producer 与 `*_impl` 自注册。
+
+## 安全不变量（审计 PR③）
+
+### 审计链完整性（F03）
+
+1. **链头一致性**（审计 P1-2）：
+   - `SqliteAuditLogger` 的 `audit_chain_head` 表（`id=0` 单行）是链头权威来源
+   - `get_chain_state()` 用单条 SQL CTE 原子快照读取 head + 最后事件，避免并发窗口
+   - 启动时 `_recover_chain_head` 校验 `head_hmac` / `head_last_seq` / `last_event_hmac` / `last_event_seq` 四者一致性
+   - 不一致 → `ValidationError` 拒绝启动（除旧库迁移 `schema_version < 2`）
+
+2. **严格 schema 版本控制**（审计 P1-2）：
+   - SQLite `PRAGMA user_version` 是 schema 迁移判别标记，非抗篡改安全锚点（审计 P2-2）
+   - `user_version >= 2` 时，任何 head schema 缺失/降级都是攻击/损坏，一律拒绝启动（审计 P2-3）
+   - 只有 `user_version < 2` 的真正旧库才允许列迁移（添加 `last_seq` / `schema_version`）
+   - 迁移后 `PRAGMA user_version = 2` 锁定，后续 DROP/DELETE/不完整重建都被检出
+   - **已知局限**：拥有 SQLite 写权限的攻击者可执行 `PRAGMA user_version=0` 降级版本号，
+     启动时会把剩余合法前缀当旧库迁移。这与「尾删/回滚无法检测」属于同一已知局限，
+     真正的防回滚/尾删仍依赖外部可信锚点（见 F03 遗留 1）
+
+3. **CAS capability 约束**（审计 P1-1）：
+   - `HmacAuditLogger` 构造时检查 `delegate.supports_chain_cas()`，不支持则 fail closed
+   - `SqliteAuditLogger` 声明支持事务级 CAS（多实例/多连接写同一 .db 文件不分叉）
+   - `InMemoryAuditLogger` 声明支持线程级 CAS（同一后端对象可由多个 wrapper/线程安全共享；
+     不同 InMemory 对象是相互独立的日志，不提供跨进程共享状态）
+   - 基类 `AuditLogger.supports_chain_cas()` 默认返回 `False`，不可被 HMAC 安全包装
+
+4. **并发写入保护**（审计 P1-1）：
+   - `HmacAuditLogger.record` 用锁覆盖完整的「读链头 → 算 HMAC → 委托追加 → 更新链头」区间
+   - `SqliteAuditLogger.record_chained` 用 `BEGIN IMMEDIATE` 事务 + CAS 语义
+   - 后端写入失败不推进链头（捕获异常后不调 `_update_chain_head`）
+
+5. **重启恢复**（审计 P1-2）：
+   - 构造时 `_recover_chain_head` 从持久化后端读最后事件 HMAC 作为 `_prev_hmac` 初值
+   - 正常滚动发布/崩溃恢复/机器重启续接旧链，不误判篡改
+
+6. **启动约束**（F03 决策 6）：
+   - 真文件持久化（audit target=sqlite 且 db_path 非 `:memory:`/空）+ 未包 HMAC → **拒绝启动**
+   - DEV + 内存审计（in_memory 或 sqlite `:memory:`）→ 允许无 HMAC
+   - `build_kernel` 装配前调 `_enforce_audit_integrity` 检查策略
