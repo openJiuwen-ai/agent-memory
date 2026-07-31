@@ -23,12 +23,12 @@ from datetime import datetime
 from typing import Any
 
 from common.factory.factory import Factory
-from common.type_def import MemoryUnit, Modality, Scope
+from common.type_def import FilterExpr, MemoryUnit, Modality, Scope
 from construction import EvolveMode
 from retrieval import RetrievalQuery, RetrievalResult
 
 from .base import ControlOperator
-from .types import Channel, DeleteSelector, MemoryPatch, PermissionContext
+from .types import Channel, DeleteSelector, MemoryListResult, MemoryPatch, PermissionContext
 
 
 class EngineProducer(Factory):
@@ -74,7 +74,9 @@ class MemoryEngine(ControlOperator):
         offset: int = 0,
         limit: int = 100,
         memory_types: list[str] | None = None,
-    ) -> list[MemoryUnit]:
+        extensions: dict[str, str] | None = None,
+        filters: FilterExpr | None = None,
+    ) -> MemoryListResult:
         """列出 ``scope`` 下已建索引的记忆单元。
 
         只返回真源中 ``/memory/`` 前缀的 MemoryUnit，不包含 ``/messages/`` 下的
@@ -100,7 +102,9 @@ class MemoryEngine(ControlOperator):
         offset: int = 0,
         limit: int = 100,
         memory_types: list[str] | None = None,
-    ) -> tuple[list[MemoryUnit], list[PermissionContext]]:
+        extensions: dict[str, str] | None = None,
+        filters: FilterExpr | None = None,
+    ) -> tuple[MemoryListResult, list[PermissionContext]]:
         """一次读取 list 当前分页及其逐项权限上下文，供 API 鉴权后返回。"""
 
     @abstractmethod

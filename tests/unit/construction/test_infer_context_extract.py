@@ -94,9 +94,12 @@ class _MemoryKVStore(KVStore):
     def exists(self, scope, key):
         return key in self._data.get(self._sk(scope), {})
 
-    def list(self, scope, prefix=""):
+    def scan(self, scope, prefix=""):
         b = self._data.get(self._sk(scope), {})
         return [(k, v) for k, v in b.items() if k.startswith(prefix)]
+
+    def list(self, scope, **kwargs):
+        raise NotImplementedError
 
     def scopes(self):
         result = []
@@ -510,7 +513,7 @@ class TestEngineInferPersist:
         ))
 
         # /messages/ 下应有 1 条 MemoryUnit（规约后字节，由 evolver 落盘）
-        msgs = stores["kv"].list(_DEFAULT_SCOPE, prefix=MESSAGES_KEY_PREFIX)
+        msgs = stores["kv"].scan(_DEFAULT_SCOPE, prefix=MESSAGES_KEY_PREFIX)
         assert len(msgs) == 1, f"/messages/ 应有 1 条原文，实际 {len(msgs)}"
         unit = loads(msgs[0][1])
         assert unit is not None
@@ -629,7 +632,7 @@ class TestProceduralExtract:
         # procedural 原文不落 KV → source_ref 不指向任何记录，保持默认空串（不误导溯源）
         assert derived[0].source_ref == ""
         # 原文不落 KV：/messages/ 与 /memory/ 都无 cur 原文（只有派生 proc 在 /memory/）
-        msgs = stores["kv"].list(_DEFAULT_SCOPE, prefix=MESSAGES_KEY_PREFIX)
+        msgs = stores["kv"].scan(_DEFAULT_SCOPE, prefix=MESSAGES_KEY_PREFIX)
         assert msgs == [], "procedural 原文不应落 /messages/"
 
 
@@ -686,7 +689,7 @@ class TestProceduralExtract:
         ))
 
         # procedural 优先：原文不落 /messages/（即使 infer=true）
-        msgs = stores["kv"].list(_DEFAULT_SCOPE, prefix=MESSAGES_KEY_PREFIX)
+        msgs = stores["kv"].scan(_DEFAULT_SCOPE, prefix=MESSAGES_KEY_PREFIX)
         assert msgs == [], "procedural+infer 同传时原文仍不应落 /messages/"
 
 

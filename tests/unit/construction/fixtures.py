@@ -91,10 +91,13 @@ class MemoryKVStore(KVStore):
         bucket = self._data.get(sk, {})
         return key in bucket
 
-    def list(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
+    def scan(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
         sk = self._scope_key(scope)
         bucket = self._data.get(sk, {})
         return [(k, v) for k, v in bucket.items() if k.startswith(prefix)]
+
+    def list(self, scope: Scope, **kwargs):
+        raise NotImplementedError
 
     def scopes(self) -> list[Scope]:
         result = []

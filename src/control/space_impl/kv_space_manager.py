@@ -323,7 +323,7 @@ class KVSpaceManager(SpaceManager):
         if not target_scopes:
             target_scopes = [_scope(org, space)]
         for scope in target_scopes:
-            for key, _ in list(self._kv.list(scope)):
+            for key, _ in list(self._kv.scan(scope)):
                 if key.startswith(MEMORY_KEY_PREFIX):
                     counts["memory"] += 1
                 elif key.startswith(MESSAGES_KEY_PREFIX):
@@ -364,7 +364,7 @@ class KVSpaceManager(SpaceManager):
         for scope in self._kv.scopes():
             if scope.org != org or scope.space != space:
                 continue
-            for key, value in self._kv.list(scope):
+            for key, value in self._kv.scan(scope):
                 usage.storage_bytes += len(value)
                 if key.startswith(MEMORY_KEY_PREFIX):
                     usage.memory_count += 1
@@ -387,7 +387,7 @@ class KVSpaceManager(SpaceManager):
         self.get(org, space)
         members = [
             _member_from_bytes(raw)
-            for _, raw in self._kv.list(_scope(org, space), prefix=_MEMBER_PREFIX)
+            for _, raw in self._kv.scan(_scope(org, space), prefix=_MEMBER_PREFIX)
         ]
         members.sort(
             key=lambda member: (

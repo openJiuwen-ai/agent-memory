@@ -1,7 +1,7 @@
 """最小实现：:class:`~storage.kv.KVStore` 的纯内存键值存储。
 
-按 scope 原生隔离（scope 折成命名空间键），支持统一 CRUD + ``list`` 范围枚举。
-``ttl`` 以秒计、``0`` 永不过期；过期键在访问（get/exists/list）时惰性清除。
+按 scope 原生隔离（scope 折成命名空间键），支持统一 CRUD + ``scan`` 范围枚举。
+``ttl`` 以秒计、``0`` 永不过期；过期键在访问（get/exists/scan）时惰性清除。
 无外部依赖。
 """
 
@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
 
 from common.errors import ConflictError, NotFoundError
-from common.type_def import Scope
+from common.type_def import MEMORY_KEY_PREFIX, FilterExpr, Scope
 from storage.base import StoreType
 from storage.kv import KvProducer, KVStore
+from storage.types import KVMemoryListResult
 
-_ScopeKey = Tuple[str, str, str, str, str]
+from .memory_list import list_memory_entries
+
+_ScopeKey = tuple[str, str, str, str, str]
 
 
 def _skey(scope: Scope) -> _ScopeKey:
@@ -28,7 +30,7 @@ class InMemoryKVStore(KVStore):
     """纯内存键值存储：``{scope: {key: (value, expires_at)}}``，按 scope 隔离。"""
 
     def __init__(self) -> None:
-        self._data: Dict[_ScopeKey, Dict[str, Tuple[bytes, Optional[float]]]] = (
+        self._data: dict[_ScopeKey, dict[str, tuple[bytes, float | None]]] = (
             defaultdict(dict)
         )
 
@@ -38,7 +40,7 @@ class InMemoryKVStore(KVStore):
     def health(self) -> None:
         return None
 
-    def _live(self, sk: _ScopeKey, key: str) -> Optional[bytes]:
+    def _live(self, sk: _ScopeKey, key: str) -> bytes | None:
         """返回未过期的值；已过期则惰性删除并返回 None。"""
         rec = self._data[sk].get(key)
         if rec is None:
@@ -73,16 +75,35 @@ class InMemoryKVStore(KVStore):
     def exists(self, scope: Scope, key: str) -> bool:
         return self._live(_skey(scope), key) is not None
 
-    def list(self, scope: Scope, prefix: str = "") -> List[Tuple[str, bytes]]:
+    def scan(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
         sk = _skey(scope)
-        out: List[Tuple[str, bytes]] = []
+        out: list[tuple[str, bytes]] = []
         for key in list(self._data[sk].keys()):  # list(...) 固化键，便于惰性删除
             value = self._live(sk, key)
             if value is not None and key.startswith(prefix):
                 out.append((key, value))
         return out
 
-    def scopes(self) -> List[Scope]:
+    def list(
+        self,
+        scope: Scope,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        memory_types: list[str] | None = None,
+        filters: FilterExpr | None = None,
+        extensions: dict[str, str] | None = None,
+    ) -> KVMemoryListResult:
+        return list_memory_entries(
+            self.scan(scope, MEMORY_KEY_PREFIX),
+            offset=offset,
+            limit=limit,
+            memory_types=memory_types,
+            filters=filters,
+            extensions=extensions,
+        )
+
+    def scopes(self) -> list[Scope]:
         return [
             Scope(org=k[0], space=k[1], user=k[2], agent=k[3], session=k[4])
             for k in self._data

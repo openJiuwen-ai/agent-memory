@@ -44,6 +44,7 @@ from .memory import (
     Temporal,
     memory_key,
 )
+from .memory_filter import matches_memory_unit
 from .raw import MESSAGES_KEY_PREFIX, RawPayload, messages_key
 from .scope import Scope
 
@@ -93,4 +94,5 @@ __all__ = [
     "MESSAGES_KEY_PREFIX",
     "memory_key",
     "messages_key",
+    "matches_memory_unit",
 ]

@@ -21,15 +21,11 @@ from datetime import datetime, timezone
 
 from common.errors import NotFoundError
 from common.type_def import (
-    T_INVALID_OPEN,
-    FilterClause,
     FilterExpr,
-    FilterOp,
     LifecycleState,
     MemoryUnit,
     Scope,
-    evaluate,
-    filter_field_metadata_key,
+    matches_memory_unit,
     memory_key,
 )
 from common.type_def.memory_codec import loads
@@ -93,97 +89,11 @@ def matches_filters(unit: MemoryUnit, expr: FilterExpr | None) -> bool:
     """调用方显式 ``filters`` 的后置评估（完整 AND/OR/NOT 表达式）。
 
     内核只接受规范化后的 :data:`FilterExpr`（旧式 list / dict 由查询对象边界的
-    ``normalize`` 收口，内部链路不再出现旧列表分支）。树遍历/短路复用
-    :func:`~common.type_def.evaluate`，叶子比较沿用 :func:`_matches`（字段映射、
-    集合字段、缺值语义、时间 epoch 转换保持不变）。``None`` → 全通过。
+    ``normalize`` 收口，内部链路不再出现旧列表分支）。字段投影、树遍历和叶子比较
+    统一委托 :func:`~common.type_def.matches_memory_unit`，与 KV list 使用同一语义。
+    ``None`` → 全通过。
     """
-    return evaluate(expr, lambda clause: _matches(unit, clause))
-
-
-def _epoch_ms(dt: datetime | None) -> int | None:
-    return None if dt is None else int(dt.timestamp() * 1000)
-
-
-def _field_value(unit: MemoryUnit, field: str):
-    """把 FilterClause.field 映射到 MemoryUnit 上的可过滤字段（契约 §2 字段表）。
-
-    系统字段（tags/tier/lifecycle/时间等）在下方提前 return；其余落到 metadata，
-    ``metadata`` 值为 JSON 标量原生类型，直接返回参与比较——真源与索引写入的是同
-    一个对象，两侧判定不会分叉。
-    """
-    if field == "tags":
-        return unit.tags
-    if field == "tier":
-        return unit.tier.value
-    if field == "source":
-        return unit.source.value
-    if field == "lifecycle":
-        return unit.lifecycle.value
-    if field in ("unit_id", "id"):
-        return unit.id
-    if field == "t_event":
-        return _epoch_ms(unit.temporal.t_event)
-    if field == "t_valid":
-        return _epoch_ms(unit.temporal.t_valid)
-    if field == "t_invalid":
-        # 与索引投影同值：空（永久有效）在索引里落 T_INVALID_OPEN，此处若返回 None，
-        # 调用方显式的 t_invalid 谓词会被下推放行、被本函数按缺值砍掉。本函数与
-        # construction 的 _index_metadata 是同一层投影，须共用哨兵约定。
-        # valid_at 不走这里，仍按真源 None 判「永久有效」。
-        t = _epoch_ms(unit.temporal.t_invalid)
-        return T_INVALID_OPEN if t is None else t
-    return unit.metadata.get(filter_field_metadata_key(field))  # 其余按 metadata 键取
-
-
-def _matches(unit: MemoryUnit, clause: FilterClause) -> bool:
-    val = _field_value(unit, clause.field)
-    op, target = clause.op, clause.value
-
-    if isinstance(val, (list, tuple, set)):  # 集合字段（如 tags）
-        members = set(val)
-        if op in (FilterOp.CONTAINS, FilterOp.EQ):
-            return target in members
-        if op == FilterOp.NE:
-            return target not in members
-        if op == FilterOp.IN:
-            return bool(members & set(target or []))
-        if op == FilterOp.NOT_IN:
-            return not (members & set(target or []))
-        # 范围算子对集合无意义：判否，与下方标量不可比时的 TypeError 分支同答案。
-        # 放行会让该谓词失效——UnitReader 是正确性边界，不可判定的组合不能当作不约束。
-        return False
-
-    if val is None:  # 缺值：仅否定类算子成立（避免 over-drop 非该类约束）
-        return op in (FilterOp.NE, FilterOp.NOT_IN)
-
-    if op == FilterOp.EQ:
-        return val == target
-    if op == FilterOp.NE:
-        return val != target
-    if op == FilterOp.IN:
-        return val in (target or [])
-    if op == FilterOp.NOT_IN:
-        return val not in (target or [])
-    if op == FilterOp.CONTAINS:
-        # 标量上退化为等值，与 ES 编译器一致（CONTAINS 与 EQ 同走 term）。子串匹配会
-        # 与两个后端的下推语义分叉：图通道不下推、只经本函数复核，同一查询将因命中
-        # 通道不同而给出不同结果。数组成员包含由上方集合分支承担。
-        return val == target
-    try:
-        if op == FilterOp.GT:
-            return val > target
-        if op == FilterOp.GTE:
-            return val >= target
-        if op == FilterOp.LT:
-            return val < target
-        if op == FilterOp.LTE:
-            return val <= target
-    except TypeError:
-        # 真源值与谓词类型不可比（该 key 存的是字符串、谓词是数值等）：判否而非让
-        # TypeError 中断整次检索。与 Milvus JSON 字段同语义——类型严格、不隐式转换，
-        # 不匹配的记录跳过而非报错。
-        return False
-    return True
+    return matches_memory_unit(unit, expr)
 
 
 class UnitReader:

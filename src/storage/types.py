@@ -23,6 +23,14 @@ class ScoredID:
     score: float  # 相关性得分（越大越相关）
 
 
+@dataclass
+class KVMemoryListResult:
+    """KVStore.list 的结果：当前页原始条目与分页前匹配总数。"""
+
+    entries: list[tuple[str, bytes]] = field(default_factory=list)
+    count: int = 0
+
+
 # --------------------------------------------------------------------------- #
 # vector
 # --------------------------------------------------------------------------- #

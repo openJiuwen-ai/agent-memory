@@ -4,12 +4,13 @@
 forgotten），不物理删除。``sweep`` 扫描到期（``t_invalid`` 已过）的 active 单元
 和 superseded 旧版本，标记 FORGOTTEN，返回被处理的 id。真源读注入的
 :class:`~storage.kv.KVStore`
-（``scopes()`` + ``list()`` 跨 scope 扫描，字节经 memory_codec 编解码）。
+（``scopes()`` + ``scan()`` 跨 scope 扫描，字节经 memory_codec 编解码）。
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
+
 from common.errors import NotFoundError, PolicyError, ValidationError
 from common.log import get_logger
 from common.type_def import (
@@ -113,7 +114,7 @@ class KVLifecycleManager(LifecycleManager):
     ) -> None:
         wanted = {memory_key(unit_id) for unit_id in unit_ids}
         matches: list[tuple[Scope, str, MemoryUnit]] = []
-        for key, raw in self._kv.list(scope, MEMORY_KEY_PREFIX):
+        for key, raw in self._kv.scan(scope, MEMORY_KEY_PREFIX):
             unit = loads(raw)
             if unit is None or key not in wanted:
                 continue
@@ -132,7 +133,7 @@ class KVLifecycleManager(LifecycleManager):
 
     def supersede(self, scope: Scope, unit_id: str, invalid_at: datetime) -> MemoryUnit:
         dst_key = memory_key(unit_id)
-        for key, raw in self._kv.list(scope, MEMORY_KEY_PREFIX):
+        for key, raw in self._kv.scan(scope, MEMORY_KEY_PREFIX):
             if key != dst_key:
                 continue
             unit = loads(raw)
@@ -156,7 +157,7 @@ class KVLifecycleManager(LifecycleManager):
         now = datetime.now(timezone.utc)
         swept: list[str] = []
         for scope in self._kv.scopes():
-            for key, raw in self._kv.list(scope, MEMORY_KEY_PREFIX):
+            for key, raw in self._kv.scan(scope, MEMORY_KEY_PREFIX):
                 unit = loads(raw)
                 if unit is None:
                     continue

@@ -59,8 +59,8 @@ def test_kv_space_manager_crud_policy_members_usage_and_delete() -> None:
     result = manager.delete("acme", "coding")
     assert result.status == SpaceStatus.DELETED
     assert result.deleted_counts["kv"] >= 4
-    assert not kv.list(Scope(org="acme", space="coding"))
-    assert not kv.list(Scope(org="acme", space="coding", user="alice"))
+    assert not kv.scan(Scope(org="acme", space="coding"))
+    assert not kv.scan(Scope(org="acme", space="coding", user="alice"))
 
 
 def test_kv_space_manager_validates_and_reports_conflicts() -> None:

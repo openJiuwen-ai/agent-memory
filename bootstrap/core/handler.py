@@ -111,6 +111,16 @@ def _parse_string_list(value: Any) -> list[str] | None:
     return [item for item in items if item]
 
 
+def _parse_extensions(value: Any) -> dict[str, str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValidationError("extensions must be a dict")
+    if any(not isinstance(key, str) for key in value):
+        raise ValidationError("extensions keys must be strings")
+    return {key: str(item) for key, item in value.items()}
+
+
 def _space_value(payload: Body, *, prefix: str = "") -> str:
     raw = payload.get(f"{prefix}space", payload.get(f"{prefix}space_id", ""))
     return "" if raw is None else str(raw)
@@ -418,18 +428,23 @@ def _list(srv, payload: Body) -> Body:
     memory_types = _parse_string_list(
         payload.get("memory_types", payload.get("mem_types", payload.get("memory_type")))
     )
-    units = srv.api.list(
+    if "filters" in payload and "filter" in payload:
+        raise ValidationError("filters and filter cannot both be provided")
+    filters = payload.get("filters", payload.get("filter"))
+    result = srv.api.list(
         scope,
         identity=actor,
         offset=offset,
         limit=limit,
         memory_types=memory_types,
+        extensions=_parse_extensions(payload.get("extensions")),
+        filters=filters,
     )
     return {
         "ok": True,
         "op": "list",
-        "items": [_unit_view(unit) for unit in units],
-        "count": len(units),
+        "items": [_unit_view(unit) for unit in result.items],
+        "count": result.count,
         "offset": offset,
         "limit": limit,
     }
