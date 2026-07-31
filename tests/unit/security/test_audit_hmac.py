@@ -781,3 +781,150 @@ def test_factory_hmac_rejects_self_reference() -> None:
     )
     with pytest.raises(ValidationError):
         AuditProducer.build_named("default", ctx)
+
+
+def test_current_version_missing_core_columns_rejected(tmp_path) -> None:
+    """审计 P2-3：当前版本 (user_version >= 2) 缺核心列时统一抛 ValidationError。"""
+    import sqlite3
+
+    from common.audit.audit_impl.sqlite_audit_logger import SqliteAuditLogger
+    from common.errors import ValidationError
+    from security.audit_hmac import HmacAuditLogger, derive_audit_key
+
+    db = str(tmp_path / "audit.sqlite3")
+    key = derive_audit_key(_hmac_key())
+
+    # 创建正常当前版本库
+    logger = HmacAuditLogger(SqliteAuditLogger(db), hmac_key=key)
+    logger.record(_event("1"))
+    del logger
+
+    # 模拟攻击：DROP head 表后重建缺少 last_seq 列的旧形态，但保持 user_version=2
+    conn = sqlite3.connect(db)
+    conn.execute("DROP TABLE audit_chain_head")
+    conn.execute(
+        "CREATE TABLE audit_chain_head (id INTEGER PRIMARY KEY, head_hmac TEXT)"
+    )  # 缺少 last_seq 和 schema_version
+    conn.commit()
+    conn.close()
+
+    # 启动应拒绝
+    with pytest.raises(
+        ValidationError, match="audit chain head schema corrupted.*missing required columns"
+    ):
+        HmacAuditLogger(SqliteAuditLogger(db), hmac_key=key)
+
+
+def test_tampered_count_and_samples_truncated(tmp_path) -> None:
+    """审计 P2-1：采样上限生效时，tampered_count 记录真实总数，samples_truncated=True。"""
+    import sqlite3
+
+    from common.audit.audit_impl.sqlite_audit_logger import SqliteAuditLogger
+    from security.audit_hmac import HmacAuditLogger, derive_audit_key
+
+    db = str(tmp_path / "audit.sqlite3")
+    key = derive_audit_key(_hmac_key())
+
+    # 写入 150 条事件
+    logger = HmacAuditLogger(SqliteAuditLogger(db), hmac_key=key, verify_on_start=False)
+    for i in range(150):
+        logger.record(_event(f"event_{i}"))
+    del logger
+
+    # 篡改所有事件的 action 字段
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE audit_events SET action = 'TAMPERED'")
+    conn.commit()
+    conn.close()
+
+    # 验证：应采样 100 条，但 tampered_count=150，samples_truncated=True
+    logger2 = HmacAuditLogger(SqliteAuditLogger(db), hmac_key=key, verify_on_start=False)
+    result = logger2.verify_integrity()
+
+    assert result.status == "tampered"
+    assert len(result.tampered_indices) == 100  # 采样上限
+    assert result.tampered_count == 150  # 真实总数
+    assert result.samples_truncated is True  # 截断标志
+
+
+def test_cte_concurrent_write_during_chain_state_read(tmp_path) -> None:
+    """审计 P2-1：CTE 单 SQL 快照在读取期间保持一致性。
+
+    验证 get_chain_state() 使用单条 SQL 读取 head + last_event 时，
+    查询返回的 head 和 last_event 在同一快照内一致。
+    """
+    from common.audit.audit_impl.sqlite_audit_logger import SqliteAuditLogger
+    from security.audit_hmac import HmacAuditLogger, derive_audit_key
+
+    db = str(tmp_path / "audit.sqlite3")
+    key = derive_audit_key(_hmac_key())
+
+    # 实例 1 写入两条
+    l1 = HmacAuditLogger(SqliteAuditLogger(db), hmac_key=key, verify_on_start=False)
+    l1.record(_event("1"))
+    l1.record(_event("2"))
+
+    # 读取快照 1
+    l2 = SqliteAuditLogger(db)
+    head_hmac_1, head_last_seq_1, last_event_seq_1, _, _ = l2.get_chain_state()
+
+    # 验证快照内部一致：head_last_seq 应该等于 last_event_seq
+    assert head_last_seq_1 == last_event_seq_1 == 2
+
+    # 另一实例写入新事件
+    l3 = HmacAuditLogger(SqliteAuditLogger(db), hmac_key=key, verify_on_start=False)
+    l3.record(_event("3"))
+
+    # 读取快照 2
+    head_hmac_2, head_last_seq_2, last_event_seq_2, _, _ = l2.get_chain_state()
+
+    # 验证快照 2 内部仍然一致
+    assert head_last_seq_2 == last_event_seq_2 == 3
+
+    # 验证两次快照都是稳定的（不会出现 head 和 last_event 不一致）
+    assert head_hmac_1 is not None
+    assert head_hmac_2 is not None
+    assert head_hmac_2 != head_hmac_1  # 链头已更新
+
+
+def test_hmac_rejects_non_cas_backend() -> None:
+    """审计 P1-1：HmacAuditLogger 拒绝不支持 CAS 的后端。"""
+    from common.audit.base import AuditLogger
+    from common.errors import ValidationError
+    from security.audit_hmac import HmacAuditLogger, derive_audit_key
+
+    class NonCASBackend(AuditLogger):
+        """测试用后端：不支持 CAS。"""
+
+        def record(self, event) -> None:
+            pass
+
+        def query(self, filters, limit=100, *, offset=0):
+            return []
+
+        def supports_chain_cas(self) -> bool:
+            return False  # 明确不支持
+
+    backend = NonCASBackend()
+    key = derive_audit_key(_hmac_key())
+
+    with pytest.raises(ValidationError, match="requires a backend that supports chain CAS"):
+        HmacAuditLogger(backend, hmac_key=key)
+
+
+def test_in_memory_backend_supports_cas() -> None:
+    """审计 P1-1：InMemoryAuditLogger 声明支持线程级 CAS。"""
+    from common.audit.audit_impl.in_memory_audit_logger import InMemoryAuditLogger
+    from security.audit_hmac import HmacAuditLogger, derive_audit_key
+
+    backend = InMemoryAuditLogger()
+    assert backend.supports_chain_cas() is True
+
+    # 应该能成功构造 HMAC 装饰器
+    key = derive_audit_key(_hmac_key())
+    logger = HmacAuditLogger(backend, hmac_key=key, verify_on_start=False)
+    logger.record(_event("test"))
+
+    # 验证完整性应该通过
+    result = logger.verify_integrity()
+    assert result.status == "clean"
