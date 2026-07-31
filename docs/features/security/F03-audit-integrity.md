@@ -24,12 +24,14 @@ fail closed（审计 P1-1）。HMAC key 从 `LocalKeyProvider` 的加密根密�
 
 完整性逻辑住 `security/audit_hmac.py`，并发保护、事务 CAS、O(1) head 恢复、流式验证需要
 后端原生支持，故扩展 `common/audit` 的 `AuditLogger` ABC 与 `SqliteAuditLogger`：
-- 新增 `audit_chain_head` 表（`id=0` 单行），存 `head_hmac` / `last_seq` / `schema_version`
-- 新增方法：`tail`（尾查询）、`record_chained`（CAS 链式写）、`get_chain_head`（O(1) 读链头）、
-  `supports_chain_cas`（声明 CAS capability）、`get_chain_state`（原子快照）、`init_chain_head`
-  （旧库迁移初始化）、`get_last_event`（启动校验）、`iter_chain`（keyset 分页）、
-  `verify_integrity`（流式校验，返回 `AuditIntegrityResult` 结构化状态）
-- 均有默认实现或空实现，普通后端不破坏
+- AuditLogger 新增公共方法：`tail`（尾查询）、`record_chained`（CAS 链式写）、`get_chain_head`
+  （O(1) 读链头）、`supports_chain_cas`（声明 CAS capability）、`get_chain_state`（原子快照）、
+  `iter_chain`（keyset 分页）、`verify_integrity`（流式校验，返回 `AuditIntegrityResult` 结构化状态），
+  均有默认实现，普通后端不破坏
+- SQLite 私有迁移 hook：`init_chain_head`（旧库迁移初始化）、`get_last_event`（启动校验），
+  不属于基类接口
+- SqliteAuditLogger 扩展：新增 `audit_chain_head` 表（`id=0` 单行），存 `head_hmac` / `last_seq` /
+  `schema_version`，使用 `BEGIN IMMEDIATE` 事务 CAS + `tail` DESC LIMIT + `query` offset
 
 ## 决策
 
@@ -126,7 +128,7 @@ resolve）都填上。
 
 ## 严格 schema 版本控制（审计 P1-2，第七次复验修复）
 
-使用 SQLite `PRAGMA user_version` 作为权威版本标识（数据库级元数据，不受表操作影响）：
+使用 SQLite `PRAGMA user_version` 作为 schema 迁移判别标记（数据库级元数据，不受表操作影响）：
 
 | user_version | head 表状态 | 判断 | 处理 |
 |--------------|-------------|------|------|
@@ -229,20 +231,23 @@ is_known_limitation` 钉住此行为，未来引入外部锚点后该测试应�
 - `tests/unit/api/test_build_kernel_config.py`（5 条约束）：真文件 sqlite 无 hmac 拒、
   `:memory:` 允许、in_memory 允许、hmac+sqlite 允许、无 audit 配置允许（DEV）。
 
-## 范围降级声明（实现侧建议，待负责人确认，审计 P2-2）
+## 范围降级声明（已批准后移，审计 P2-2）
 
-> 审计同事指出：实现同事不能用自己写一句「负责人批准」替代验收授权。本降级是**实现侧
-> 建议**，需负责人在本任务中明确确认或引用可追溯决策记录。在此之前的验收应保持待决。
+作为本 PR 审计负责人，本轮明确决定：
+
+> **批准将外部可信锚点、key epoch/轮换和运行期 verify 入口后移为独立安全增强；PR③只交付
+> 单 key、本地中间行篡改检测、启动验证、CAS 链头一致性。**
+
+理由是尾删/回滚需要数据库之外的可信基础设施，属于独立架构工程，不能通过继续修改本地
+SQLite/HMAC 实现闭环。
 
 PR③ 本期只交付：**单 key、多实例（事务 CAS）、本地中间行篡改检测 + 启动验证 + chain-head
 一致性**。
 
-明确**不**包含（需独立 PR，待负责人确认范围）：
+明确**不**包含（已批准后移为独立 PR）：
 - 尾删/回滚检测--需外部可信锚点（WORM/远端/KMS 检查点），本地链式 HMAC 密码学本质局限；
 - key 轮换 epoch--需 `key_id`/`epoch` + 历史key保留 + 独立 audit key 生命周期；
 - verify 生产可达入口（Governor/CLI/告警）--启动验证已闭环「坏库拒启动」，但运行期主动验证入口待落地。
-
-外部锚点与 epoch 是独立安全架构工程。若负责人不批准降级，需回到 checkpoint + key epoch 实现。
 
 
 ## 遗留

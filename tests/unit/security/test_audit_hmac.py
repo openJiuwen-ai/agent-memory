@@ -1,6 +1,6 @@
 """审计链式 HMAC 完整性保护（security.md §7.3 / 审计第三次 PR③ 收口）。
 
-PR③ 用 ``HmacAuditLogger`` 装饰器包任意 ``AuditLogger``：record 时算链式 HMAC
+PR③ 用 ``HmacAuditLogger`` 装饰器包装 CAS-capable ``AuditLogger``：record 时算链式 HMAC
 （每条含前一条的 HMAC）塞进 ``event.detail``，``verify_integrity`` 全量校验返回
 篡改行。改一行 = 破坏该行及后续所有行的 HMAC。
 

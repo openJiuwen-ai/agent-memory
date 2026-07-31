@@ -102,8 +102,8 @@
 3. **CAS capability 约束**（审计 P1-1）：
    - `HmacAuditLogger` 构造时检查 `delegate.supports_chain_cas()`，不支持则 fail closed
    - `SqliteAuditLogger` 声明支持事务级 CAS（多实例/多连接写同一 .db 文件不分叉）
-   - `InMemoryAuditLogger` 声明支持线程级 CAS（同一后端对象单进程多线程不分叉，
-     但多实例仍会分叉，仅用于单实例场景或测试）
+   - `InMemoryAuditLogger` 声明支持线程级 CAS（同一后端对象可由多个 wrapper/线程安全共享；
+     不同 InMemory 对象是相互独立的日志，不提供跨进程共享状态）
    - 基类 `AuditLogger.supports_chain_cas()` 默认返回 `False`，不可被 HMAC 安全包装
 
 4. **并发写入保护**（审计 P1-1）：

@@ -84,9 +84,9 @@ class AuditLogger(ABC):
         """链式追加：验证期望链头、写入事件、返回新链头。
 
         持久化后端应 override 成事务 CAS（``BEGIN IMMEDIATE`` + chain-head 表，
-        审计 PR③ P1-1），保证多实例/多连接写同一库时链不分叉。默认实现无事务
-        原子性（仅 :meth:`record` + :meth:`tail`），适用于单实例内存后端--
-        :class:`HmacAuditLogger` 的实例锁在此覆盖单实例并发。
+        审计 PR③ P1-1），保证多实例/多连接写同一库时链不分叉。默认实现仅提供接口兼容，
+        不检查 ``expected_head``，不具备 CAS capability，不能被
+        :class:`~security.audit_hmac.HmacAuditLogger` 安全包装。
         """
         self.record(event)
         return event.detail.get("_hmac", "")
