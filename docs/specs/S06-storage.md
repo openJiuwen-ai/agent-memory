@@ -38,8 +38,9 @@
 10. **metadata 原生类型入库**：Document / VectorRecord 的 metadata 保留 JSON 标量
     原生类型，不统一字符串化；不同类型之间不做隐式比较转换。
 11. **metadata 过滤区分标量与数组**：`EQ` / `IN` 的正向匹配只命中标量，
-    `CONTAINS` 只命中数组成员；`NE` / `NOT_IN` 是对应正向谓词的逻辑否定。后端若
-    原生不保留单值/数组形态，必须用内部派生字段恢复语义。
+    `CONTAINS` 只命中数组成员；`NE` / `NOT_IN` 是对应正向谓词的逻辑否定；范围算子
+    只作用于标量，数组字段不按「任一成员命中」判定。后端若原生不保留单值/数组形态，
+    必须用内部派生字段恢复语义。
 12. **所有 Store 必须实现 `store_type()` 和 `health()`**：继承自 `BaseStore`。
 13. **多租户隔离默认依赖逻辑 scope 边界**：当前不要求物理分库/分 collection，但要求同一逻辑 key/id 在不同 scope 下严格命名空间隔离。
 14. **EncryptedKVStore 只装饰 KV，不实现算法**：写前加密、读后解密通过注入的 `SecurityProvider` 完成；`list` 在解密后执行 MemoryUnit 过滤，不能把过滤下推到密文 raw KV。

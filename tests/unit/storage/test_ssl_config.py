@@ -298,10 +298,12 @@ class _FakePool:
     def __init__(self, **kwargs: Any) -> None:
         type(self).recorded = dict(kwargs)
 
-    def open(self, **_: Any) -> None:
+    @staticmethod
+    def open(**_: Any) -> None:
         raise _Recorded
 
-    def close(self) -> None:
+    @staticmethod
+    def close() -> None:
         pass
 
 

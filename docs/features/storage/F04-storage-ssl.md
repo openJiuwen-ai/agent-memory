@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-07-31 |
 | 影响范围 | `src/storage/_support.py`、redis / elasticsearch / milvus / postgres / pgvector 五个 builder、`deploy/docker/online/`、`deploy/docker/postgres/` |
-| 测试基线 | `tests/unit/storage` 109 passed, 2 skipped |
+| 测试基线 | `tests/unit/storage` 117 passed, 2 skipped |
 | Refs | [S06-storage.md](../../specs/S06-storage.md) 不变量 17 |
 
 ## 背景

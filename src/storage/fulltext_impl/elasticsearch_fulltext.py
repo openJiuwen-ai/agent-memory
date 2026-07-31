@@ -237,7 +237,10 @@ class ElasticsearchFulltextStore(FulltextStore):
                 }
             }
         if fc.op in _RANGE_OPS:
-            return {"range": {field: {_RANGE_OPS[fc.op]: fc.value}}}
+            # Lucene 的 range 对多值字段是「任一成员命中即匹配」，会让数组字段被范围
+            # 谓词选中；真源复核与 pg 编译器都判否（pg 用 jsonb_typeof='number' 守卫）。
+            # 此处同样限定标量，避免同一谓词在不同后端给出不同候选集。
+            return cls._scalar_match(key, {"range": {field: {_RANGE_OPS[fc.op]: fc.value}}})
         raise ValidationError(f"unsupported filter op for fulltext: {fc.op}")
 
     @classmethod

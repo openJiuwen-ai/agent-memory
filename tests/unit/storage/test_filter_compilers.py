@@ -133,7 +133,10 @@ def test_elasticsearch_compiles_complete_boolean_tree() -> None:
                                 "metadata.project",
                                 {"terms": {"metadata.project": ["alpha", "beta"]}},
                             ),
-                            {"range": {"metadata.priority": {"gte": 8}}},
+                            _es_scalar_match(
+                                "metadata.priority",
+                                {"range": {"metadata.priority": {"gte": 8}}},
+                            ),
                         ],
                         "minimum_should_match": 1,
                     }
@@ -234,6 +237,20 @@ def test_elasticsearch_distinguishes_scalar_equality_from_array_membership() -> 
             ]
         }
     }
+
+
+def test_elasticsearch_range_excludes_array_fields() -> None:
+    """Lucene 的 range 对多值字段任一成员命中即匹配，须限定标量。
+
+    真源复核对数组 + 范围算子判否，pg 用 ``jsonb_typeof='number'`` 守卫；ES 若放行
+    会比另两处宽松，同一谓词给出不同候选集。
+    """
+    compiled = _elasticsearch_filter(FilterClause("score", FilterOp.GT, 5))
+
+    assert compiled == _es_scalar_match(
+        "metadata.score",
+        {"range": {"metadata.score": {"gt": 5}}},
+    )
 
 
 def test_postgres_compiles_complete_boolean_tree_with_parameters() -> None:
