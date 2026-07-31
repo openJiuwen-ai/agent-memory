@@ -11,7 +11,7 @@ from common.type_def import FilterExpr, Scope
 from storage.vector import VectorProducer
 
 from .._pg import PgStoreBase, compile_pg_filter, pg_scope_clause
-from .._support import wrap_backend
+from .._support import read_ssl_config, wrap_backend
 from ..base import StoreType
 from ..types import ScoredID, VectorQuery, VectorRecord
 from ..vector import VectorStore
@@ -59,6 +59,8 @@ class PgVectorStore(PgStoreBase, VectorStore):
         application_name: str = "agent_memory",
         auto_create_schema: bool = True,
         create_extension: bool = True,
+        ssl_verify: bool = False,
+        ssl_ca_cert: str | None = None,
     ) -> None:
         if dim <= 0:
             raise ValidationError("pgvector store requires positive 'dim'")
@@ -83,6 +85,8 @@ class PgVectorStore(PgStoreBase, VectorStore):
             connect_timeout=connect_timeout,
             application_name=application_name,
             auto_create_schema=auto_create_schema,
+            ssl_verify=ssl_verify,
+            ssl_ca_cert=ssl_ca_cert,
         )
         self._dim = dim
         self._metric = metric
@@ -388,8 +392,12 @@ class PgVectorStore(PgStoreBase, VectorStore):
 
 @VectorProducer.register("pgvector")
 def _build(config):
+    # sslmode 是参数形态的真开关，无须校验 dsn scheme（见 _pg.PgStoreBase.pool）。
+    ssl = read_ssl_config(config, backend="pgvector")
     return PgVectorStore(
         dsn=Factory.require_param(config, "dsn", backend="pgvector"),
+        ssl_verify=ssl.verify,
+        ssl_ca_cert=ssl.ca_cert,
         schema=Factory.cfg_get(config, "schema", "public"),
         table=Factory.cfg_get(config, "table", "agent_memory_vectors"),
         dim=Factory.cfg_get(config, "dim", Factory.cfg_get(config, "embedder_dim", 0)),

@@ -10,7 +10,7 @@ from common.type_def import MEMORY_KEY_PREFIX, FilterExpr, Scope
 from storage.kv import KvProducer
 
 from .._pg import PgStoreBase, pg_scope_clause
-from .._support import wrap_backend
+from .._support import read_ssl_config, wrap_backend
 from ..base import StoreType
 from ..kv import KVStore
 from ..types import KVMemoryListResult
@@ -31,6 +31,8 @@ class PostgresKVStore(PgStoreBase, KVStore):
         connect_timeout: float = 10.0,
         application_name: str = "agent_memory",
         auto_create_schema: bool = True,
+        ssl_verify: bool = False,
+        ssl_ca_cert: str | None = None,
     ) -> None:
         super().__init__(
             dsn=dsn,
@@ -41,6 +43,8 @@ class PostgresKVStore(PgStoreBase, KVStore):
             connect_timeout=connect_timeout,
             application_name=application_name,
             auto_create_schema=auto_create_schema,
+            ssl_verify=ssl_verify,
+            ssl_ca_cert=ssl_ca_cert,
         )
 
     def _ensure_schema(self, pool: Any) -> None:
@@ -241,8 +245,12 @@ class PostgresKVStore(PgStoreBase, KVStore):
 
 @KvProducer.register("postgres")
 def _build(config):
+    # sslmode 是参数形态的真开关，无须校验 dsn scheme（见 _pg.PgStoreBase.pool）。
+    ssl = read_ssl_config(config, backend="postgres KV")
     return PostgresKVStore(
         dsn=Factory.require_param(config, "dsn", backend="postgres KV"),
+        ssl_verify=ssl.verify,
+        ssl_ca_cert=ssl.ca_cert,
         schema=Factory.cfg_get(config, "schema", "public"),
         table=Factory.cfg_get(config, "table", "agent_memory_kv"),
         pool_min_size=Factory.cfg_get(config, "pool_min_size", 1),

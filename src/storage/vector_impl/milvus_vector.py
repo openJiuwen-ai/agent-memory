@@ -34,7 +34,7 @@ from common.type_def import (
 )
 from storage.vector import VectorProducer
 
-from .._support import scope_dims, scope_segments, wrap_backend
+from .._support import read_ssl_config, scope_dims, scope_segments, wrap_backend
 from ..base import StoreType
 from ..types import ScoredID, VectorQuery, VectorRecord
 from ..vector import VectorStore
@@ -326,6 +326,14 @@ class MilvusVectorStore(VectorStore):
 def _build(config):
     # 三方库后端：uri 必填；dim 取本组件 params.dim，回退到内核共享的 embedder_dim。
     # 其余构造参数（host/port/一致性/字段长度等）均有默认值，可经 params 覆盖。
+    ssl = read_ssl_config(config, backend="milvus vector")
+    options: dict[str, Any] = {}
+    if ssl.verify:
+        # secure 是真开关，无须校验 uri scheme（https:// 亦会置位，两者等价）。
+        # 单向 TLS 用 server_pem_path：ca_pem_path 属双向认证分支，须与客户端证书
+        # 和私钥同时提供才生效，单独配置会静默失效。
+        options["secure"] = True
+        options["server_pem_path"] = ssl.ca_cert
     return MilvusVectorStore(
         uri=Factory.require_param(config, "uri", backend="milvus vector"),
         host=Factory.cfg_get(config, "host", "localhost"),
@@ -337,4 +345,5 @@ def _build(config):
         consistency_level=Factory.cfg_get(config, "consistency_level", "Strong"),
         scope_field_max_length=Factory.cfg_get(config, "scope_field_max_length", 256),
         id_max_length=Factory.cfg_get(config, "id_max_length", 512),
+        **options,
     )

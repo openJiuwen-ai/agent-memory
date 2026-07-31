@@ -48,6 +48,10 @@ memory_api:
         schema: "${PG_SCHEMA:-public}"
         table: "${PG_KV_TABLE:-agent_memory_kv}"
         auto_create_schema: false
+        # SSL：pg 的开关是参数形态，开启后内部置 sslmode=verify-full 并覆盖 dsn 中的同名项。
+        # 若须用 IP 直连（证书 CN 为域名），改在 dsn 里写 sslmode=verify-ca 并留空本开关。
+        ssl_verify: "${PG_SSL_VERIFY:-false}"
+        ssl_ca_cert: "${PG_SSL_CA:-}"
 
   fulltext_store:
     default:
@@ -56,18 +60,24 @@ memory_api:
         hosts: "${ES_HOSTS:-http://elasticsearch:9200}"
         index: "${ES_INDEX:-agent_memory_fulltext}"
         text_analyzer: "${ES_TEXT_ANALYZER:-english}"
+        ssl_verify: "${ES_SSL_VERIFY:-false}"
+        ssl_ca_cert: "${ES_SSL_CA:-}"
     layers_l0:
       target: elasticsearch
       params:
         hosts: "${ES_HOSTS:-http://elasticsearch:9200}"
         index: "${ES_INDEX_L0:-agent_memory_fulltext_l0}"
         text_analyzer: "${ES_TEXT_ANALYZER:-english}"
+        ssl_verify: "${ES_SSL_VERIFY:-false}"
+        ssl_ca_cert: "${ES_SSL_CA:-}"
     layers_l1:
       target: elasticsearch
       params:
         hosts: "${ES_HOSTS:-http://elasticsearch:9200}"
         index: "${ES_INDEX_L1:-agent_memory_fulltext_l1}"
         text_analyzer: "${ES_TEXT_ANALYZER:-english}"
+        ssl_verify: "${ES_SSL_VERIFY:-false}"
+        ssl_ca_cert: "${ES_SSL_CA:-}"
 
   vector_store:
     default:
@@ -80,6 +90,8 @@ memory_api:
         metric_type: COSINE
         auto_create_schema: false
         create_extension: false
+        ssl_verify: "${PG_SSL_VERIFY:-false}"
+        ssl_ca_cert: "${PG_SSL_CA:-}"
     layers_l0:
       target: pgvector
       params:
@@ -90,6 +102,8 @@ memory_api:
         metric_type: COSINE
         auto_create_schema: false
         create_extension: false
+        ssl_verify: "${PG_SSL_VERIFY:-false}"
+        ssl_ca_cert: "${PG_SSL_CA:-}"
     layers_l1:
       target: pgvector
       params:
@@ -100,6 +114,8 @@ memory_api:
         metric_type: COSINE
         auto_create_schema: false
         create_extension: false
+        ssl_verify: "${PG_SSL_VERIFY:-false}"
+        ssl_ca_cert: "${PG_SSL_CA:-}"
 
   query_parser:
     default:

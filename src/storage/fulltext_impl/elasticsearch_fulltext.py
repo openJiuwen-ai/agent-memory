@@ -32,7 +32,13 @@ from common.type_def import (
 )
 from storage.fulltext import FulltextProducer
 
-from .._support import scope_dims, scope_segments, wrap_backend
+from .._support import (
+    read_ssl_config,
+    require_tls_scheme,
+    scope_dims,
+    scope_segments,
+    wrap_backend,
+)
 from ..base import StoreType
 from ..fulltext import FulltextStore
 from ..types import Document, ScoredID, TextQuery
@@ -370,8 +376,15 @@ class ElasticsearchFulltextStore(FulltextStore):
 @FulltextProducer.register("elasticsearch")
 def _build(config):
     # 三方库后端：hosts 必填，未配置即在 build 阶段报错；其余构造参数有默认值，可经 params 覆盖。
+    hosts = Factory.require_param(config, "hosts", backend="elasticsearch fulltext")
+    ssl = read_ssl_config(config, backend="elasticsearch fulltext")
+    options: dict[str, Any] = {}
+    if ssl.verify:
+        # hosts 只承载地址：elasticsearch-py 解析 URL 时不读 query，证书只能走构造参数。
+        require_tls_scheme(hosts, expected="https", backend="elasticsearch fulltext", param="hosts")
+        options["ca_certs"] = ssl.ca_cert
     return ElasticsearchFulltextStore(
-        hosts=Factory.require_param(config, "hosts", backend="elasticsearch fulltext"),
+        hosts=hosts,
         index=Factory.cfg_get(config, "index", "agent_memory_fulltext"),
         username=Factory.cfg_get(config, "username"),
         password=Factory.cfg_get(config, "password"),
@@ -379,4 +392,5 @@ def _build(config):
         text_field=Factory.cfg_get(config, "text_field", "text"),
         text_analyzer=Factory.cfg_get(config, "text_analyzer"),
         refresh=Factory.cfg_get(config, "refresh", "false"),
+        **options,
     )

@@ -73,6 +73,11 @@
    分别是前两者的逻辑否定。后端原生字段若不区分单值与数组，必须写入内部派生标记恢复
    该语义，不得把 `EQ` 与 `CONTAINS` 编译成无差别查询。
 
+9. **SSL 开启后不得静默降级**
+   `ssl_verify=true` 意味着实际必须校验服务端证书。缺 `ssl_ca_cert`、连接串仍为明文
+   scheme、或连接串自带会覆盖本设置的 TLS 参数，一律在**装配阶段**报错，不得放行到
+   运行期——调用方以为受保护而实际未校验，比明文更危险。
+
 ## 与其他子目录的边界
 
 **本模块管**：
@@ -97,3 +102,8 @@
 5. GraphStore 的 `seed_ids` 用于图召回时定位入口节点，匹配语义由后端定义（允许实现差异）。
 6. FusionStore 的 `FusionRecord` 可部分字段为 None（如只写向量不写文本）。
 7. `EncryptedKVStore` 的 `raw_kv_store` 不能指向自身；未配置 raw 依赖时必须在装配阶段报错。
+8. 接外部后端的实现统一接受 `ssl_verify` / `ssl_ca_cert`（默认关闭），经 `_support.read_ssl_config`
+   读取后由各 builder 自行翻译为客户端参数：redis `ssl_ca_certs`、elasticsearch `ca_certs`、
+   postgres/pgvector `sslrootcert`（配 `sslmode=verify-full`）、milvus `server_pem_path`（配
+   `secure=True`）。不做跨后端的 TLS 参数抽象层——各客户端语义切分不同，详见
+   [F04-storage-ssl.md](../../docs/features/storage/F04-storage-ssl.md)。
