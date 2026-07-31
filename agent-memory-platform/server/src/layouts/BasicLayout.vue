@@ -7,19 +7,13 @@
       </div>
       <el-menu :default-active="activeMenu" :collapse="isCollapse" :collapse-transition="false" router class="side-menu">
         <!-- 平台概览分组 -->
-        <el-menu-item-group>
-          <template #title>平台概览</template>
-          <el-menu-item index="/dashboard">
-            <el-icon><HomeFilled /></el-icon>
-            <template #title>仪表盘</template>
-          </el-menu-item>
-        </el-menu-item-group>
+
         
         <!-- 记忆系统管理分组 -->
         <el-menu-item-group v-if="userStore.hasPermission('config:read') || userStore.hasPermission('ops:read') || userStore.hasPermission('log:read') || userStore.hasPermission('memory:read')">
           <template #title>记忆系统管理</template>
           <el-menu-item v-if="userStore.hasPermission('config:read')" index="/config">
-            <el-icon><Setting /></el-icon>
+            <el-icon><HomeFilled /></el-icon>
             <template #title>配置中心</template>
           </el-menu-item>
           <!-- 运维中心：包含记忆列表、记忆检索、任务管理 -->
