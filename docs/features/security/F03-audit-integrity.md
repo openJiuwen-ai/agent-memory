@@ -5,12 +5,9 @@
 | **功能编号**   | F03                                       |
 | **标题**       | 审计链式 HMAC 完整性保护                  |
 | **状态**       | ✅ 已实现                                 |
-| **创建日期**   | 2026-01-26                                |
-| **更新日期**   | 2026-01-31                                |
+| **日期**       | 2026-07-30                                |
 | **负责人**     | MisterKnah                                |
 | **关联 spec**  | S07（审计通用）                            |
-| **实现 commit**| 130f96f（feat），258c84f（test）          |
-| **文档 commit**| 本次                                      |
 
 ## 问题
 
@@ -141,13 +138,16 @@ resolve）都填上。
 **严格规则**：`user_version >= 2` 时，任何 head schema 缺失/降级都是攻击/损坏，一律拒绝。
 只有 `user_version < 2` 的真正旧库才允许列迁移。
 
-**防御效果**：攻击者无法通过以下手段绕过检测：
+**防御效果**：能发现未同时修改版本标记的表损坏：
 - DELETE head 行 → `user_version` 保持 2 → head 行不存在 → 拒绝
 - DROP head 表 → `user_version` 保持 2 → 表缺失 → 拒绝
 - DROP 后不完整重建 → `user_version` 保持 2 → 列不完整 → 拒绝
 - 篡改 last_seq/head_hmac → `user_version` 保持 2 → 不一致检查 → 拒绝
 
-`user_version` 作为数据库级元数据，不受 DROP TABLE 或 DELETE 影响，是可靠的版本标识。
+**局限**：`user_version` 是 schema 迁移判别标记，但**不是抗篡改安全锚点**。拥有 SQLite 写权限
+的攻击者可以执行 `PRAGMA user_version=0`，然后删除尾事件、DROP head 表，启动时会把剩余
+合法前缀当旧库迁移。这与「尾删/回滚无法检测」属于同一已知局限（见下文），真正的防回滚/尾删
+仍依赖外部可信锚点。
 
 ## get_chain_state 原子快照（审计 P1，第七次复验修复）
 
