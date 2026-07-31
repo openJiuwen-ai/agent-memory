@@ -170,7 +170,9 @@ def main() -> int:
             try:
                 check_dev_binding(os.environ.get("MCP_HOST", "127.0.0.1"))
             except ValidationError as exc:
-                print(f"FATAL: {exc}", file=sys.stderr)
+                import logging
+
+                logging.error("FATAL: %s", exc)
                 return 1
         mcp.run(transport="streamable-http")  # host/port 已在 FastMCP(...) 设好
     else:

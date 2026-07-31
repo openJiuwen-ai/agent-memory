@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import importlib
 import socket
 import sys
 import threading
@@ -17,8 +18,6 @@ pytestmark = pytest.mark.unit
 for _p in ("bootstrap/http_server", "bootstrap/core", "src"):
     if _p not in sys.path:
         sys.path.append(_p)
-
-import importlib  # noqa: E402
 
 _mod = importlib.import_module("bootstrap.http_server.__main__")  # noqa: E402
 
