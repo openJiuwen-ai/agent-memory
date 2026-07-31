@@ -34,7 +34,7 @@ from common.type_def import AuditEvent
 # 派生 audit HMAC key 的 HKDF info。与 org KEK 的 info 前缀区分，确保派生密钥隔离。
 _AUDIT_KEY_INFO = b"agent-memory:security:audit-hmac:v1"
 # 链式 HMAC 的算法。SHA256 足够，且与 key 派生同族。
-_HMAC_ALGO = hashlib.sha256
+_hmac_algorithm = hashlib.sha256
 
 
 def derive_audit_key(root_key: bytes) -> bytes:
@@ -209,7 +209,7 @@ class HmacAuditLogger(AuditLogger):
                 expected = hmac.new(
                     self._key,
                     stored_prev.encode("utf-8") + _canonical_event_bytes(event),
-                    _HMAC_ALGO,
+                    _hmac_algorithm,
                 ).hexdigest()
                 if not hmac.compare_digest(stored_hmac, expected):
                     raise ValidationError(
@@ -235,7 +235,7 @@ class HmacAuditLogger(AuditLogger):
                 digest = hmac.new(
                     self._key,
                     prev.encode("utf-8") + _canonical_event_bytes(event),
-                    _HMAC_ALGO,
+                    _hmac_algorithm,
                 ).hexdigest()
                 enriched = dict(event.detail)
                 enriched["prev_hmac"] = prev
@@ -292,7 +292,7 @@ class HmacAuditLogger(AuditLogger):
                 expected = hmac.new(
                     self._key,
                     stored_prev.encode("utf-8") + _canonical_event_bytes(event),
-                    _HMAC_ALGO,
+                    _hmac_algorithm,
                 ).hexdigest()
                 if not hmac.compare_digest(stored_hmac, expected):
                     bad = True

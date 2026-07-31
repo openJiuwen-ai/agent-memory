@@ -187,11 +187,11 @@ def test_failed_delegate_write_does_not_advance_head() -> None:
 
     inner = _FailingDelegate()
     logger = HmacAuditLogger(inner, hmac_key=derive_audit_key(_hmac_key()))
-    head_before = logger._prev_hmac
+    head_before = inner.get_chain_head()
     with pytest.raises(RuntimeError):
         logger.record(_event("1"))
     # 链头未推进
-    assert logger._prev_hmac == head_before
+    assert inner.get_chain_head() == head_before
 
 
 def test_restart_recovers_chain_head_from_persistent_backend() -> None:
@@ -207,7 +207,6 @@ def test_restart_recovers_chain_head_from_persistent_backend() -> None:
 
     # 模拟重启：新实例，同一 inner（持久化后端）
     logger2 = HmacAuditLogger(inner, hmac_key=key)
-    assert logger2._prev_hmac == last_hmac  # 恢复了旧链头
     logger2.record(_event("3"))
     # 新事件 prev_hmac 续接旧链
     assert inner.events[-1].detail["prev_hmac"] == last_hmac
@@ -328,7 +327,7 @@ def test_previous_schema_last_seq_backfilled_on_migrate(tmp_path) -> None:
     old = HmacAuditLogger(SqliteAuditLogger(db), hmac_key=key, verify_on_start=False)
     old.record(_event("1"))
     old.record(_event("2"))
-    real_head = old._prev_hmac
+    real_head = SqliteAuditLogger(db).get_chain_head()
     # 紧邻旧 schema：有 head_hmac 但 DROP 重建缺 last_seq
     conn = sqlite3.connect(db)
     conn.execute("DROP TABLE audit_chain_head")
@@ -463,10 +462,7 @@ def test_current_schema_recreated_as_legacy_shape_is_rejected(tmp_path) -> None:
 
 def test_legacy_unsigned_db_rejected_on_migrate(tmp_path) -> None:
     """审计 P1-1：旧库有未签名事件（无 _hmac），迁移验证失败拒绝启动。"""
-    from datetime import datetime, timezone
-
     from common.audit.audit_impl.sqlite_audit_logger import SqliteAuditLogger
-    from common.type_def import AuditEvent
     from security.audit_hmac import HmacAuditLogger, derive_audit_key
 
     db = str(tmp_path / "audit.sqlite3")
@@ -570,10 +566,7 @@ def test_unsigned_database_rejected_on_start(tmp_path) -> None:
 
     避免历史未签名行被当正常链继续追加。
     """
-    from datetime import datetime, timezone
-
     from common.audit.audit_impl.sqlite_audit_logger import SqliteAuditLogger
-    from common.type_def import AuditEvent
     from security.audit_hmac import HmacAuditLogger, derive_audit_key
 
     db = str(tmp_path / "audit.sqlite3")
@@ -620,8 +613,6 @@ def test_verify_on_start_false_skips_check(tmp_path) -> None:
 
 def test_verify_integrity_is_on_audit_logger_interface() -> None:
     """审计 P1-2：verify_integrity 是 AuditLogger 接口，普通后端默认返回空。"""
-    from common.audit.audit_impl.in_memory_audit_logger import InMemoryAuditLogger
-
     bare = InMemoryAuditLogger()
     assert bare.verify_integrity().status == "unsupported"  # 无完整性保护，不报篡改
 
@@ -765,7 +756,6 @@ def test_factory_hmac_requires_inner() -> None:
 def test_factory_hmac_rejects_self_reference() -> None:
     """审计 P3-3：inner 指向自身时装配期拒绝，不 RecursionError。"""
     from common.audit.base import AuditProducer
-    from common.errors import ValidationError
     from common.factory.factory import Factory
     from config.context import AssemblyContext
     from security.bootstrap import register_security
@@ -788,7 +778,6 @@ def test_current_version_missing_core_columns_rejected(tmp_path) -> None:
     import sqlite3
 
     from common.audit.audit_impl.sqlite_audit_logger import SqliteAuditLogger
-    from common.errors import ValidationError
     from security.audit_hmac import HmacAuditLogger, derive_audit_key
 
     db = str(tmp_path / "audit.sqlite3")
@@ -890,7 +879,6 @@ def test_get_chain_state_snapshot_consistency(tmp_path) -> None:
 def test_hmac_rejects_non_cas_backend() -> None:
     """审计 P1-1：HmacAuditLogger 拒绝不支持 CAS 的后端。"""
     from common.audit.base import AuditLogger
-    from common.errors import ValidationError
     from security.audit_hmac import HmacAuditLogger, derive_audit_key
 
     class NonCASBackend(AuditLogger):
@@ -914,7 +902,6 @@ def test_hmac_rejects_non_cas_backend() -> None:
 
 def test_in_memory_backend_supports_cas() -> None:
     """审计 P1-1：InMemoryAuditLogger 声明支持线程级 CAS。"""
-    from common.audit.audit_impl.in_memory_audit_logger import InMemoryAuditLogger
     from security.audit_hmac import HmacAuditLogger, derive_audit_key
 
     backend = InMemoryAuditLogger()
