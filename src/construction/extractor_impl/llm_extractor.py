@@ -18,10 +18,11 @@ tier 与 tags 均由 LLM 在抽取时一并产出（同一 prompt，不另调 LL
 L0/L1 分层标注不由本算子负责——由 Evolver 在抽取后委托
 :class:`~construction.layer_annotator.LayerAnnotator` 生成（见 F01-memory-layer）。
 
-prompt 只允许合并**同一实体的同一关系或同一事件**，并要求保留关系槽位、状态、计数、
-标识符等高价值细节。表格行与可复用产物分别产 ``structured_record`` / ``artifact``，避免
-“同主题合并”把不同人、不同动作或完整交付物压成模糊摘要。跨次 write 的重复仍由
-Evolver ``_dedup_batch`` 兜底（向量召回判定 NOOP/UPDATE）。
+The prompt merges only the same relation or event for the same entity and preserves relation
+slots, state, counts, identifiers, and other high-value details. Table rows and reusable payloads
+become ``structured_record`` / ``artifact`` items so topic-level merging cannot blur distinct
+people, actions, or complete artifacts. Evolver ``_dedup_batch`` still handles duplicates across
+writes through vector-backed NOOP/UPDATE decisions.
 
 纯函数：不落盘、不标记、不检索。幂等性依赖 LLM temperature=0。
 """
@@ -73,7 +74,10 @@ def _normalize_whitespace(text: str) -> str:
 
 
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
-_CJK_DATE_RE = re.compile(r"(?P<year>\d{4})\s*年\s*(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*日")
+_CJK_DATE_RE = re.compile(
+    r"(?P<year>\d{4})\s*\u5e74\s*(?P<month>\d{1,2})\s*\u6708\s*"
+    r"(?P<day>\d{1,2})\s*\u65e5"
+)
 _PENDING_CUE_RE = re.compile(
     r"\b(?:still\s+need(?:s)?\s+to|need(?:s)?\s+to|must|should|"
     r"haven't|hasn't|have\s+not|has\s+not|not\s+yet)\b",
@@ -138,11 +142,14 @@ def _source_language_statement(
     # A mixed-language source may legitimately contain an English table row in
     # an otherwise Chinese document (or vice versa).  The item's verbatim
     # evidence is more precise than the whole document's majority language.
+    evidence_matches_content = bool(
+        evidence_language and content_language == evidence_language
+    )
+    unexpected_cjk = source_language == "latin" and bool(_CJK_RE.search(content))
     if (
         evidence_is_grounded
-        and evidence_language
-        and content_language == evidence_language
-        and not (source_language == "latin" and _CJK_RE.search(content))
+        and evidence_matches_content
+        and not unexpected_cjk
     ):
         return content, repaired
     if source_language == "latin" and _CJK_RE.search(content):
@@ -535,7 +542,7 @@ class ExtractorImpl(Extractor):
         all_candidates: list[ExtractionCandidate] = []
         failures: list[Exception] = []
         for start in range(0, len(accepted), _EXTRACT_BATCH_SIZE):
-            sub_batch = accepted[start : start + _EXTRACT_BATCH_SIZE]
+            sub_batch = accepted[start:start + _EXTRACT_BATCH_SIZE]
             try:
                 all_candidates.extend(self._llm_extract_batch(sub_batch, context=context))
             except InvalidExtractionJSONError:
@@ -669,8 +676,6 @@ class ExtractorImpl(Extractor):
         不走走重、不收 context。LLM 产 1 条结构化「目标/步骤/结果」汇总，
         provenance 回指本轮 unit（多源合并到一条，provenance 列全部本轮 unit id）。
         """
-        from common.type_def import ChatMessage
-
         # 拼本轮原文（多 unit 合并成一段，作为单个执行历史源）
         source_text = "\n".join(u.content for u in units if u.content).strip()
         if not source_text:
@@ -801,8 +806,6 @@ class ExtractorImpl(Extractor):
         - Recent conversation context：做指代/代词消解与语境，不从中提取、不作 source_id。
         - Existing related memories：已有事实，本轮不要重复产出。
         """
-        from common.type_def import ChatMessage
-
         # 拼 user prompt：每条 unit 带 [ID: unit.id] 前缀
         parts = [_SOURCE_PREFIX.format(unit_id=u.id, unit_content=u.content) for u in units]
         user_text = "\n".join(parts)
@@ -820,9 +823,9 @@ class ExtractorImpl(Extractor):
             observation_date = datetime.now(timezone.utc).isoformat()
         user_text = (
             f"observation_date: {observation_date}\n"
-            f"(Use this as the reference point to resolve relative time expressions "
-            f'like "yesterday"/"昨天"/"上周" into absolute dates in content '
-            f"and event_date.)\n\n" + user_text
+            "(Use this as the reference point to resolve relative-date expressions in the "
+            "source language into absolute dates in content and event_date.)\n\n"
+            + user_text
         )
         # 追加 context 参考段（仅本轮 units 作提取来源，context 只供 LLM 参考）
         context_block = _format_context_block(context)
@@ -1011,13 +1014,15 @@ class ExtractorImpl(Extractor):
         # discarded only because the model translated it.  The latter used to turn a
         # whole evidence-bearing source into a silent zero-MemoryUnit write.  Retry
         # only the affected source(s), preserving valid candidates from other sources.
-        language_drift_sources = [
-            source_id
-            for source_id, raw_count in high_confidence_by_source.items()
-            if raw_count > 0
-            and language_skipped_by_source.get(source_id, 0) == raw_count
-            and accepted_by_source.get(source_id, 0) == 0
-        ]
+        language_drift_sources = []
+        for source_id, raw_count in high_confidence_by_source.items():
+            if raw_count <= 0:
+                continue
+            if language_skipped_by_source.get(source_id, 0) != raw_count:
+                continue
+            if accepted_by_source.get(source_id, 0) != 0:
+                continue
+            language_drift_sources.append(source_id)
         if language_drift_sources:
             source_ids = ",".join(source_id[:8] for source_id in language_drift_sources)
             if _language_retry:
@@ -1126,11 +1131,14 @@ class ExtractorImpl(Extractor):
                         ),
                     ),
                 ]
-        assert last_exc is not None
+        if last_exc is None:
+            raise ExtractionFailureError(
+                "invalid extraction JSON retry exhausted without a parse error"
+            )
         raise last_exc
 
     def _parse_llm_response(self, response: str) -> list[dict]:
-        """解析 LLM 返回的 JSON。"""
+        """Parse the JSON returned by the extractor LLM."""
         # 尝试直接解析
         try:
             parsed = json.loads(response)

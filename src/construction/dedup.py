@@ -31,7 +31,7 @@ logger = get_logger(__name__)
 
 
 def dedup_text(unit: MemoryUnit) -> str:
-    """返回用于构建期去重的紧凑抽取陈述。"""
+    """Return the compact extracted statement used for construction deduplication."""
     statement = str(unit.metadata.get("extracted_statement", "")).strip()
     return statement or unit.content
 

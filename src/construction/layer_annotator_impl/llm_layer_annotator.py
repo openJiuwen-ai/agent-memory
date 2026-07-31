@@ -3,9 +3,9 @@
 对超阈 content 的 unit 批量调 LLM 生成 L0/L1，回填 ``unit.layers``。任务单一
 （仅生成摘要+要点）、prompt 精简，避免 L0/L1 指令混入主抽取 prompt 导致输出超限。
 
-仅对 ``len(content) > layers_threshold`` 的 unit 标注，短 content 留空。LLM 批量输出先做
-完整性校验，再一次性回填；失败时逐条重试，仍失败则生成严格短于 L2 的确定性提取式层，
-避免错位摘要污染记忆或让 L1 与 L2 等长。
+Only units satisfying ``len(content) > layers_threshold`` are annotated. Batch output is fully
+validated before atomic assignment. Failed batches retry item by item, and items that still fail
+receive deterministic extractive layers that remain strictly shorter than L2.
 """
 
 from __future__ import annotations
@@ -141,7 +141,7 @@ def _parse_json_array(text: str) -> list[dict] | None:
 
 
 def _language_family(text: str) -> str | None:
-    """粗粒度识别中英文；代码、标识符等不明显文本返回 None。"""
+    """Coarsely classify CJK or Latin text; return ``None`` when neither dominates."""
     cjk_count = len(_CJK_RE.findall(text))
     latin_count = sum(char.isascii() and char.isalpha() for char in text)
     # 中英文技术文本常含较长产品名；只要中文仍占可观比例，就按中文处理。
@@ -153,14 +153,14 @@ def _language_family(text: str) -> str | None:
 
 
 def _semantic_anchors(text: str) -> set[str]:
-    """提取用于防串位的轻量词法锚点，不承担语义相似度判断。"""
+    """Extract lexical anchors used only to prevent cross-item assignment."""
     anchors = {
         token.lower()
         for token in _WORD_RE.findall(text)
         if len(token) >= 3 and token.lower() not in _EN_STOPWORDS
     }
     for run in _CJK_RUN_RE.findall(text):
-        anchors.update(run[index : index + 2] for index in range(len(run) - 1))
+        anchors.update(run[index:index + 2] for index in range(len(run) - 1))
     return anchors
 
 
@@ -190,7 +190,7 @@ def _clip_layer(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     prefix = text[:limit].rstrip()
-    boundary = max(prefix.rfind(". "), prefix.rfind("。"), prefix.rfind("; "))
+    boundary = max(prefix.rfind(". "), prefix.rfind("\u3002"), prefix.rfind("; "))
     if boundary >= max(1, limit // 2):
         prefix = prefix[: boundary + 1].rstrip()
     return prefix
@@ -249,7 +249,7 @@ class LLMLayerAnnotator(LayerAnnotator):
 
         # 按 _LAYERS_BATCH_SIZE 分批，逐批调 LLM
         for start in range(0, len(long_units), _LAYERS_BATCH_SIZE):
-            batch = long_units[start : start + _LAYERS_BATCH_SIZE]
+            batch = long_units[start:start + _LAYERS_BATCH_SIZE]
             try:
                 self._annotate_batch(batch)
             except Exception as exc:
@@ -283,7 +283,7 @@ class LLMLayerAnnotator(LayerAnnotator):
         return units
 
     def _annotate_batch(self, units: list[MemoryUnit]) -> None:
-        """生成并原子回填一批 L0/L1；任何完整性问题都会使整批失败。"""
+        """Generate and atomically assign one batch of fully validated L0/L1 layers."""
         from common.type_def import ChatMessage
 
         # 每条 unit 用数字索引标记 [ID: N]，LLM 在输出里用 "id": N 回指
