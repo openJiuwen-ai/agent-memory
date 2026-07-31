@@ -8,8 +8,6 @@ CREATE TABLE IF NOT EXISTS scope_registry (
     scope_id VARCHAR(64) NOT NULL UNIQUE,
     scope_name VARCHAR(128),
     description TEXT,
-    scope_key VARCHAR(256),
-    max_memories INTEGER DEFAULT 0,
     status VARCHAR(32) DEFAULT 'unassigned',
     assigned_to_tenant_id VARCHAR(64),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -27,8 +25,6 @@ COMMENT ON COLUMN scope_registry.id IS '主键（UUID）';
 COMMENT ON COLUMN scope_registry.scope_id IS 'Scope ID（全局唯一）';
 COMMENT ON COLUMN scope_registry.scope_name IS 'Scope名称';
 COMMENT ON COLUMN scope_registry.description IS 'Scope描述';
-COMMENT ON COLUMN scope_registry.scope_key IS 'Scope Key（加密存储，仅注册时明文返回一次）';
-COMMENT ON COLUMN scope_registry.max_memories IS '最大记忆数量配额（0=不限）';
 COMMENT ON COLUMN scope_registry.status IS '状态：unassigned/assigned';
 COMMENT ON COLUMN scope_registry.assigned_to_tenant_id IS '分配给的租户ID';
 
