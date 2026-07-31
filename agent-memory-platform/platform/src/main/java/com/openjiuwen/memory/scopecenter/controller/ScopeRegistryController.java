@@ -116,12 +116,24 @@ public class ScopeRegistryController {
             String scopeKey = generateScopeKey();
             scope.setScopeKey(scopeKey);
             
-            // 设置默认配额（0=不限）
+            // V3-DEFECT-074 修复：max_memories 负数校验
             String maxMemoriesStr = request.get("maxMemories");
+            Integer maxMemories = 0; // 默认不限（0）
             if (maxMemoriesStr != null && !maxMemoriesStr.trim().isEmpty()) {
-                scope.setMaxMemories(Integer.parseInt(maxMemoriesStr));
-            } else {
-                scope.setMaxMemories(0);
+                try {
+                    maxMemories = Integer.parseInt(maxMemoriesStr);
+                    if (maxMemories < 0) {
+                        return ApiResponse.fail(40000, "max_memories 不能为负数，请输入>=0 的值或留空表示不限");
+                    }
+                } catch (NumberFormatException e) {
+                    return ApiResponse.fail(40000, "max_memories 必须是有效的整数");
+                }
+            }
+            scope.setMaxMemories(maxMemories);
+            
+            // V3-DEFECT-075 修复：禁止注册__default__Scope
+            if ("__default__".equals(scopeId)) {
+                return ApiResponse.fail(40001, "scope_id 不能为'__default__'，该保留名称由内核系统管理");
             }
             
             scope.setStatus("unassigned");
