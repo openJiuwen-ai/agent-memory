@@ -193,9 +193,9 @@ provenance 扩展和 Space 清理必须携带完整 Scope 或带 Scope 的 Memor
 `InMemoryEngine` 只处理 `space=""`；非空 Space 的数据面读写、生命周期和 offboarding 由
 `CloudEngine` 处理。Space 管理仍由 API 与 SpaceManager 承担，Engine 只提供数据清理原语。
 
-`MemoryAPI.list` 在请求级鉴权后，通过 `list_with_permission_contexts` 一次读取当前分页和
-每个实际 unit 的真源权限上下文并逐条鉴权。上下文与内容不得来自两次独立分页，也不能把未指定
-`memory_types` 解释为 fallback profile 已授权全部实际资源。
+`MemoryAPI.list` 在请求级鉴权后，通过 `list_with_permission_contexts` 一次读取当前页、
+分页前总数和每个实际 unit 的真源权限上下文并逐条鉴权。上下文、内容和 count 不得来自
+独立查询，也不能把未指定 `memory_types` 解释为 fallback profile 已授权全部实际资源。
 
 ### 决策 8：迁移与 offboarding 顺序必须保留 Scope 语义
 

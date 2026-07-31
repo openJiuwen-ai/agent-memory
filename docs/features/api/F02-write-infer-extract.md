@@ -135,7 +135,7 @@ Ingestor.ingest → 补 assets/tags → Classifier.classify → KVStore.insert�
 
 unit 真源在 KVStore 里的 key 由裸 `{unit.id}` 改为带前缀，按「是否建索引」二分：
 
-- `/messages/{id}` — 未建索引的 infer=true 原始消息（engine infer 分支落盘、不调 `IndexBuilder.build`）。拉取做指代消解/语境时用 `list(scope, prefix="/messages/")` 直取。
+- `/messages/{id}` — 未建索引的 infer=true 原始消息（engine infer 分支落盘、不调 `IndexBuilder.build`）。拉取做指代消解/语境时用 `scan(scope, prefix="/messages/")` 直取。
 - `/memory/{id}` — 所有建索引的记忆：infer=true 派生（evolver 落盘 + 建索引）+ 默认路径原文（engine 默认分支落盘 + 建索引）+ update SUPERSEDE 新版 + 过程记忆。dedup/retrieve 回查命中必在此前缀下。
 
 前缀常量与 helper 下沉到结构定义层（与 MemoryUnit/RawPayload 同处）：
@@ -146,9 +146,9 @@ unit 真源在 KVStore 里的 key 由裸 `{unit.id}` 改为带前缀，按「是
 **适配点**（全库扫查）：
 - 落盘：engine.write（infer→`/messages/`、默认→`/memory/`）、evolver `_persist`/`_apply_decision`/FORGET（派生→`/memory/`）、engine.update（OVERWRITE/SUPERSEDE→`/memory/`）。
 - 回查：engine `_load`/`_list_units`、dedup `_load_unit`、unit_reader `load`、governor `_find`（只查 `/memory/{id}`，inspect 语义是建索引记忆）。
-- 按 key 匹配 id：lifecycle transition/supersede 改用带前缀 key 直接比对（`memory_key(unit_id)` 构造 dst_key，`list(scope, MEMORY_KEY_PREFIX)` 限定）。
+- 按 key 匹配 id：lifecycle transition/supersede 改用带前缀 key 直接比对（`memory_key(unit_id)` 构造 dst_key，`scan(scope, MEMORY_KEY_PREFIX)` 限定）。
 - delete 扫描保持全扫（按 `unit.id` 匹配 raw 内 unit，不依赖 key 前缀；PURGE/DOWNWEIGHT 回写用扫描到的带前缀原 key）。
-- scheduler background EXTRACT 的 `kv.list(scope, prefix=MEMORY_KEY_PREFIX)` 只扫 `/memory/`（loads 过滤非 unit，喂 evolver 的是建索引记忆；`/messages/` 的 infer 原文已同步抽取，background 不重扫）。
+- scheduler background EXTRACT 的 `kv.scan(scope, prefix=MEMORY_KEY_PREFIX)` 只扫 `/memory/`（loads 过滤非 unit，喂 evolver 的是建索引记忆；`/messages/` 的 infer 原文已同步抽取，background 不重扫）。
 
 ### 决策7：infer=true 上下文增强抽取（原文做指代消解、召回记忆做去重）
 
@@ -165,7 +165,7 @@ infer=true 同步抽取时，**evolver 内部**收集两类上下文参考项（
 
 `recent_originals` 不参与去重——原文与派生事实语义粒度不同，按相似度判重复易误删（如原文"我喜欢猫"和派生"用户喜欢猫"）。原文"防重复"由 extractor"只从本轮提取"的语义 + `_dedup_batch` 全库向量去重兜底覆盖。
 
-**收集逻辑放 evolver**（非 engine）：`_maybe_collect_extract_context` 检测 `metadata["infer"]=="true"` → `_recent_infer_originals`（`list(/messages/)` + 按 `t_ingest` 降序取 10，排除本轮自身）+ `_related_memories`（`dedup.recall` 召回，复用去重向量空间，返回完整 MemoryUnit）。任一步失败降级为空列表，不阻断。
+**收集逻辑放 evolver**（非 engine）：`_maybe_collect_extract_context` 检测 `metadata["infer"]=="true"` → `_recent_infer_originals`（`scan(/messages/)` + 按 `t_ingest` 降序取 10，排除本轮自身）+ `_related_memories`（`dedup.recall` 召回，复用去重向量空间，返回完整 MemoryUnit）。任一步失败降级为空列表，不阻断。
 
 **extracted 为空跳过 dedup**：`extractor.extract` 返回空时，evolver 直接返回空 `EvolveResult()`，不调 `_dedup_batch`（空列表走去重无意义、省一次召回）。CONSOLIDATE 同理。
 
@@ -202,9 +202,12 @@ procedural 与 infer 互斥：procedural=true 时 even 不走 infer 的原文落
 
 ### 决策10：/v1/list 收窄到 /memory/ 全部
 
-handler `_list` 的返回范围由全扫 `kv.list(scope)` + loads 过滤，收窄为只返 `/memory/` 下的建索引 Memory 记忆，不再返 `/messages/` 下的 infer 原文（未建索引）和 `/index/chunks/` 簿记。
+handler `_list` 的返回范围由全扫 `kv.scan(scope)` + loads 过滤，收窄为只返 `/memory/` 下的建索引 Memory 记忆，不再返 `/messages/` 下的 infer 原文（未建索引）和 `/index/chunks/` 簿记。
 
-后续 F01 的 list 决策已将 `list` 上收为正式 `MemoryAPI.list -> MemoryEngine.list` 数据面接口；当前 handler `_list` 不再直连 KV，而是委托 API。`MemoryEngine.list` 内部使用 `prefix=MEMORY_KEY_PREFIX` 直取 `/memory/`，并补齐 offset/limit 分页与 `memory_types` 过滤。
+后续 F01 的 list 决策已将 `list` 上收为正式
+`MemoryAPI.list -> MemoryEngine.list -> KVStore.list` 数据面接口；handler `_list`
+不再直连 KV。`KVStore.list` 只查询 `/memory/`，并在存储适配器内完成过滤、精确计数、
+稳定排序和分页。
 
 InProcess 模式 `list_semantic` 同步对齐：去掉 `tier==SEMANTIC` 过滤，改用 `prefix=MEMORY_KEY_PREFIX` 直取，返 `/memory/` 全部（与 HTTP `_list` 一致）。两条链路返回范围统一。返回结构差异保留（HTTP 经 `_unit_view` 返完整字段，InProcess 返 `{content, item_id, score}`——provider 客户端协议既有差异，`agent_memory_profile` 只取 content，兼容）。
 
@@ -232,4 +235,4 @@ InProcess 模式 `list_semantic` 同步对齐：去掉 `tier==SEMANTIC` 过滤�
 
 5. **`_related_memories` 用 dedup.recall 召回**：复用去重向量空间，但 dedup.recall 的 `min_similarity`/`tier_filter` 配置影响召回质量。infer 场景本轮是 EPISODIC、相关记忆是 SEMANTIC——若 `tier_filter=True` 会跨 tier 失配。装配默认 `tier_filter=False`（允许跨层去重），故 infer context 召回正常；改 `tier_filter=True` 时需复核。
 
-6. **拉原文性能**：`list(scope, prefix="/messages/")` 只取未建索引原文，但仍需 loads 全部原文 + 按 `t_ingest` 排序取前 10。scope 内原文量大时有开销。当前同步 infer 场景（已接受 LLM 时延）且原文量远小于全库 unit 量，可忽略。若成瓶颈，可维护最近 N 条原文的 ring buffer。
+6. **拉原文性能**：`scan(scope, prefix="/messages/")` 只取未建索引原文，但仍需 loads 全部原文 + 按 `t_ingest` 排序取前 10。scope 内原文量大时有开销。当前同步 infer 场景（已接受 LLM 时延）且原文量远小于全库 unit 量，可忽略。若成瓶颈，可维护最近 N 条原文的 ring buffer。

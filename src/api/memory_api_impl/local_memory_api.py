@@ -40,6 +40,7 @@ from common.type_def import (
     extract_required_equality,
     filter_field_metadata_key,
     iter_clauses,
+    normalize,
 )
 from construction import EvolveMode
 from control.engine import MemoryEngine
@@ -55,6 +56,7 @@ from control.types import (
     DeleteSelector,
     Grant,
     JobInfo,
+    MemoryListResult,
     MemoryPatch,
     PermissionContext,
     SpaceDeleteResult,
@@ -237,7 +239,14 @@ def _recall_permission_context(
 def _list_permission_contexts(
     scope: Scope,
     memory_types: list[str] | None,
+    filters: FilterExpr | None,
+    extensions: dict[str, str],
 ) -> list[PermissionContext]:
+    routed_metadata = _required_filter_metadata(filters)
+    for key, override in extensions.items():
+        effective = str(override).strip()
+        if effective:
+            routed_metadata[key] = effective
     cleaned: list[str] = []
     seen: set[str] = set()
     for raw_memory_type in memory_types or []:
@@ -247,7 +256,15 @@ def _list_permission_contexts(
         cleaned.append(memory_type)
         seen.add(memory_type)
     if not cleaned:
-        return [PermissionContext(resource_type="memory_list", scope=scope)]
+        return [
+            PermissionContext(
+                resource_type="memory_list",
+                memory_type=routed_metadata.get("memory_type", ""),
+                pipeline=routed_metadata.get("pipeline", ""),
+                scope=scope,
+                metadata=dict(routed_metadata),
+            )
+        ]
     joined = ",".join(cleaned)
     contexts: list[PermissionContext] = []
     for memory_type in cleaned:
@@ -255,11 +272,57 @@ def _list_permission_contexts(
             PermissionContext(
                 resource_type="memory_list",
                 memory_type=memory_type,
+                pipeline=routed_metadata.get("pipeline", ""),
                 scope=scope,
-                metadata={"memory_types": joined},
+                metadata={**routed_metadata, "memory_types": joined},
             )
         )
     return contexts
+
+
+def _normalize_list_extensions(raw: dict[str, str] | None) -> dict[str, str]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValidationError("extensions must be a dict")
+    normalized: dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str):
+            raise ValidationError("extensions keys must be strings")
+        normalized[key] = str(value)
+    return normalized
+
+
+def _permission_route_value(context: PermissionContext, field: str) -> str:
+    if field == "memory_type":
+        return context.memory_type
+    if field == "pipeline":
+        return context.pipeline
+    if field == "resource_type":
+        return context.resource_type
+    return str(context.metadata.get(field, "")).strip()
+
+
+def _list_routing_clauses(
+    contexts: list[PermissionContext],
+    routing_fields: tuple[str, ...],
+    memory_types: list[str] | None,
+) -> list[FilterClause]:
+    has_memory_types = any(str(value).strip() for value in memory_types or ())
+    clauses: list[FilterClause] = []
+    for field in routing_fields:
+        if field == "memory_type" and has_memory_types:
+            continue
+        values: set[str] = set()
+        for context in contexts:
+            value = _permission_route_value(context, field)
+            if value:
+                values.add(value)
+        if len(values) == 1:
+            clauses.append(
+                FilterClause(canonical_filter_field(field), FilterOp.EQ, values.pop())
+            )
+    return clauses
 
 
 def _selector_permission_context(selector: DeleteSelector, scope: Scope) -> PermissionContext:
@@ -584,8 +647,17 @@ class LocalMemoryAPI(MemoryAPI):
         offset: int = 0,
         limit: int = 100,
         memory_types: list[str] | None = None,
-    ) -> list[MemoryUnit]:
-        permission_contexts = _list_permission_contexts(scope, memory_types)
+        extensions: dict[str, str] | None = None,
+        filters: FilterExpr | list[FilterClause] | dict | None = None,
+    ) -> MemoryListResult:
+        normalized_extensions = _normalize_list_extensions(extensions)
+        normalized_filters = normalize(filters)
+        permission_contexts = _list_permission_contexts(
+            scope,
+            memory_types,
+            normalized_filters,
+            normalized_extensions,
+        )
         auth: dict[str, str] = {}
         for permission_context in permission_contexts:
             auth = self._authorize(
@@ -595,12 +667,20 @@ class LocalMemoryAPI(MemoryAPI):
                 "list",
                 context=permission_context,
             )
-        units, unit_contexts = asyncio.run(
+        routing_clauses = _list_routing_clauses(
+            permission_contexts,
+            self._perm.routing_fields(),
+            memory_types,
+        )
+        effective_filters = and_merge(normalized_filters, routing_clauses)
+        result, unit_contexts = asyncio.run(
             self._engine.list_with_permission_contexts(
                 scope,
                 offset=offset,
                 limit=limit,
                 memory_types=memory_types,
+                extensions=normalized_extensions,
+                filters=effective_filters,
             )
         )
         for permission_context in unit_contexts:
@@ -616,8 +696,17 @@ class LocalMemoryAPI(MemoryAPI):
             auth["permission_memory_types"] = ",".join(
                 context.memory_type for context in permission_contexts
             )
-        self._log(identity, "list", target_scope=scope, detail={**auth, "count": str(len(units))})
-        return units
+        self._log(
+            identity,
+            "list",
+            target_scope=scope,
+            detail={
+                **auth,
+                "count": str(result.count),
+                "page_count": str(len(result.items)),
+            },
+        )
+        return result
 
     def get(
         self, unit_id: str, scope: Scope, *, identity: Scope, as_of: datetime | None = None

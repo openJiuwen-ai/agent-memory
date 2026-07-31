@@ -169,7 +169,7 @@ RawPayload
 
 ```text
 CloudEngine
-  -> KVStore.insert/update/get/list
+  -> KVStore.insert/update/get/list/scan
   -> EncryptedKVStore
   -> Raw KVStore
 ```

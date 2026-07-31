@@ -17,12 +17,14 @@ from common.errors import (
     NotFoundError,
 )
 from common.factory.factory import Factory
-from common.type_def import Scope
+from common.type_def import MEMORY_KEY_PREFIX, FilterExpr, Scope
 from storage.kv import KvProducer
 
 from .._support import scope_segments, wrap_backend
 from ..base import StoreType
 from ..kv import KVStore
+from ..types import KVMemoryListResult
+from .memory_list import list_memory_entries
 
 
 def _decode_scope_segment(segment: str) -> str:
@@ -111,9 +113,9 @@ class RedisKVStore(KVStore):
         with wrap_backend(f"redis exists {key!r}"):
             return self.client.exists(self._namespaced(scope, key)) > 0
 
-    def list(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
+    def scan(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
         ns = ":".join(scope_segments(scope)) + ":"  # 该 scope 的命名空间前缀
-        with wrap_backend(f"redis list {prefix!r}"):
+        with wrap_backend(f"redis scan {prefix!r}"):
             keys = list(self.client.scan_iter(match=f"{ns}{prefix}*"))
             values = self.client.mget(keys) if keys else []
         out: list[tuple[str, bytes]] = []
@@ -123,6 +125,25 @@ class RedisKVStore(KVStore):
             k = raw.decode("utf-8") if isinstance(raw, bytes) else raw
             out.append((k[len(ns):], value))  # 去掉命名空间前缀还原逻辑 key
         return out
+
+    def list(
+        self,
+        scope: Scope,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        memory_types: list[str] | None = None,
+        filters: FilterExpr | None = None,
+        extensions: dict[str, str] | None = None,
+    ) -> KVMemoryListResult:
+        return list_memory_entries(
+            self.scan(scope, MEMORY_KEY_PREFIX),
+            offset=offset,
+            limit=limit,
+            memory_types=memory_types,
+            filters=filters,
+            extensions=extensions,
+        )
 
     def scopes(self) -> list[Scope]:
         seen: set[tuple[str, str, str, str, str]] = set()

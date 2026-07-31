@@ -6,11 +6,21 @@ from datetime import datetime, timezone
 import pytest
 
 from common.errors import ValidationError
-from common.type_def import MemoryUnit, Modality, RawPayload, Scope, Segment, Temporal, memory_key
+from common.type_def import (
+    FilterClause,
+    FilterOp,
+    MemoryUnit,
+    Modality,
+    RawPayload,
+    Scope,
+    Segment,
+    Temporal,
+    memory_key,
+)
 from common.type_def.memory_codec import dumps
 from construction.base import OperatorType
 from construction.classifier import Classifier
-from construction.evolver import EvolveMode, EvolveResult, Evolver
+from construction.evolver import EvolveMode, Evolver, EvolveResult
 from construction.index_builder import IndexBuilder
 from control.base import ControlOperatorType
 from control.engine_impl.cloud_engine import CloudEngine
@@ -22,7 +32,7 @@ from ingest.base import IngestOperatorType
 from ingest.ingestor import Ingestor
 from retrieval.base import RetrievalOperatorType
 from retrieval.retriever import Retriever
-from retrieval.types import RetrievedItem, RetrievalQuery, RetrievalResult
+from retrieval.types import RetrievalQuery, RetrievalResult, RetrievedItem
 from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 
 pytestmark = pytest.mark.unit
@@ -149,6 +159,16 @@ class _RecordingEvolver(Evolver):
         return EvolveResult(created_ids=created_ids)
 
 
+class _RecordingKVStore(InMemoryKVStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.list_calls = []
+
+    def list(self, scope, **kwargs):
+        self.list_calls.append((scope, kwargs))
+        return super().list(scope, **kwargs)
+
+
 class _NoopLifecycle(LifecycleManager):
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.LIFECYCLE
@@ -186,7 +206,7 @@ class _MessageTypePipeline(MemoryPipeline):
 
 
 def _engine():
-    kv = InMemoryKVStore()
+    kv = _RecordingKVStore()
     chat_index = _RecordingIndexBuilder("chat")
     coding_index = _RecordingIndexBuilder("coding")
     chat_classifier = _RecordingClassifier("chat")
@@ -289,6 +309,56 @@ def test_cloud_engine_recall_routes_by_message_type_extension() -> None:
     assert [item.unit_id for item in result.items] == ["coding"]
     assert records["coding_retriever"].queries == ["coding"]
     assert records["chat_retriever"].queries == []
+
+
+def test_cloud_engine_list_forwards_query_and_returns_total_count() -> None:
+    engine, records = _engine()
+    scope = Scope(org="acme", space="coding", user="alice")
+    first = asyncio.run(
+        engine.write(
+            "first alpha memory",
+            scope,
+            metadata={"memory_type": "coding", "project": "alpha"},
+        )
+    )[0]
+    second = asyncio.run(
+        engine.write(
+            "second alpha memory",
+            scope,
+            metadata={"memory_type": "coding", "project": "alpha"},
+        )
+    )[0]
+    asyncio.run(
+        engine.write(
+            "beta memory",
+            scope,
+            metadata={"memory_type": "coding", "project": "beta"},
+        )
+    )
+    filters = FilterClause("metadata.project", FilterOp.EQ, "alpha")
+    extensions = {"vendor_mode": "strict"}
+
+    result = asyncio.run(
+        engine.list(
+            scope,
+            offset=1,
+            limit=1,
+            memory_types=["coding"],
+            filters=filters,
+            extensions=extensions,
+        )
+    )
+
+    assert result.count == 2
+    assert len(result.items) == 1
+    assert result.items[0].id in {first.id, second.id}
+    call_scope, call_options = records["kv"].list_calls[0]
+    assert call_scope == scope
+    assert call_options["offset"] == 1
+    assert call_options["limit"] == 1
+    assert call_options["memory_types"] == ["coding"]
+    assert call_options["filters"] is filters
+    assert call_options["extensions"] is extensions
 
 
 def test_cloud_engine_infer_uses_profile_evolver_and_returns_derived_units() -> None:

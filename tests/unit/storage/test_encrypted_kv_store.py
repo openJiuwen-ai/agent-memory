@@ -107,7 +107,7 @@ def test_encrypted_kv_store_list_decrypts_every_value_with_each_key_aad() -> Non
     kv.insert(scope, memory_key("u1"), b"one")
     kv.insert(scope, f"{MESSAGES_KEY_PREFIX}m1", b"two")
 
-    listed = dict(kv.list(scope))
+    listed = dict(kv.scan(scope))
 
     assert listed[memory_key("u1")] == b"one"
     assert listed[f"{MESSAGES_KEY_PREFIX}m1"] == b"two"

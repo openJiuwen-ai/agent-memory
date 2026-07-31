@@ -13,9 +13,12 @@ from typing import Any
 
 from common.errors import BackendError, ValidationError
 from common.security import SecurityContext, SecurityProducer, SecurityProvider
-from common.type_def import MEMORY_KEY_PREFIX, MESSAGES_KEY_PREFIX, Scope
+from common.type_def import MEMORY_KEY_PREFIX, MESSAGES_KEY_PREFIX, FilterExpr, Scope
 from storage.base import StoreType
-from storage.kv import KVStore, KvProducer
+from storage.kv import KvProducer, KVStore
+from storage.types import KVMemoryListResult
+
+from .memory_list import list_memory_entries
 
 _AAD_VERSION = 1
 _PURPOSE_MEMORY_UNIT = "memory_unit"
@@ -91,11 +94,30 @@ class EncryptedKVStore(KVStore):
     def exists(self, scope: Scope, key: str) -> bool:
         return self._raw.exists(scope, key)
 
-    def list(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
+    def scan(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
         return [
             (key, self._decrypt(scope, key, value))
-            for key, value in self._raw.list(scope, prefix=prefix)
+            for key, value in self._raw.scan(scope, prefix=prefix)
         ]
+
+    def list(
+        self,
+        scope: Scope,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        memory_types: list[str] | None = None,
+        filters: FilterExpr | None = None,
+        extensions: dict[str, str] | None = None,
+    ) -> KVMemoryListResult:
+        return list_memory_entries(
+            self.scan(scope, MEMORY_KEY_PREFIX),
+            offset=offset,
+            limit=limit,
+            memory_types=memory_types,
+            filters=filters,
+            extensions=extensions,
+        )
 
     def scopes(self) -> list[Scope]:
         return self._raw.scopes()

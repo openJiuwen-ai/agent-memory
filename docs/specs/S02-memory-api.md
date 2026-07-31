@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/api/ |
-| 最近一次修订日期 | 2026-07-29 |
+| 最近一次修订日期 | 2026-07-30 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md |
 ## 范围 / 边界
 
@@ -37,7 +37,8 @@
    B 类型数据」。系统谓词与用户 `filters` 以外层 `AND` 合并。
 10. **space 是租户隔离单元**：`Scope.space` 参与鉴权、存储命名空间、索引过滤和审计 actor/target 过滤；`scope.require_space=true` 时，具体 target scope 缺少 `space` 的数据/治理操作在 API 层拒绝。org 级 `create_space/list_spaces` 使用 `Scope(org=...)` 做管理面鉴权，不受该策略拦截。
 11. **space policy 在 API 边界生效**：已创建 space 的 `principal_path` 由 `SpaceManager.get_policy` 提供，API 在调用 `PermissionManager.check` 前写入 `PermissionContext.metadata["principal_path"]`；调用级 metadata 不能覆盖 space policy。
-12. **list 按实际资源二次鉴权**：请求显式给出的 `memory_types` 先做类型级鉴权；Engine 再以当前分页实际命中的 MemoryUnit 真源元数据返回权限上下文，API 逐条 READ 鉴权，全部通过后才返回内容。
+12. **list 按实际资源二次鉴权**：请求显式给出的 `memory_types` 先做类型级鉴权；Engine 再以当前分页实际命中的 MemoryUnit 真源元数据返回权限上下文，API 逐条 READ 鉴权，全部通过后才返回内容。参与权限路由的 extensions 值必须作为系统过滤条件回注。
+13. **list 过滤和计数在 KV 内完成**：API 复制 `extensions`、规范化 `filters` 后完整下推；返回 `MemoryListResult.items` 当前页和分页前精确 `count`，不以 `len(items)` 代替总数。
 
 ## 接口契约
 
@@ -50,7 +51,7 @@
 | `write` | `(content, scope, source=TEXT, *, identity, assets, tags, metadata, occurred_at) -> list[MemoryUnit]` | 同步写入：鉴权 WRITE→委托 Engine→阻塞至 hot path 完成。infer/procedural 触发时返回 `created_ids` 对应的派生单元（可空），否则返回原始单元 |
 | `write_async` | `async (同签名) -> list[MemoryUnit]` | 异步写入：直通 Engine 协程，供事件循环形态使用 |
 | `recall` | `(query, context: Context, *, identity, filters, as_of, top_k, disclosure, with_trajectory) -> RetrievalResult` | 混合检索：鉴权 READ→拆 Context→装配 RetrievalQuery→委托 Engine |
-| `list` | `(scope, *, identity, offset=0, limit=100, memory_types=None) -> list[MemoryUnit]` | 列出已建索引记忆：鉴权 READ→委托 Engine；支持 `offset`/`limit` 分页与 `memory_types` 过滤，只返回 `/memory/` 真源记录，不包含 `/messages/` infer 原文缓存 |
+| `list` | `(scope, *, identity, offset=0, limit=100, memory_types=None, extensions=None, filters=None) -> MemoryListResult` | 列出已建索引记忆：支持类型/FilterExpr 过滤、自定义参数透传和分页前精确总数；只返回 `/memory/` 真源记录 |
 | `get` | `(unit_id, scope, *, identity, as_of=None) -> MemoryUnit` | 真源点读：鉴权 READ→委托 Engine |
 | `update` | `(unit_id, scope, patch: MemoryPatch, *, identity) -> MemoryUnit` | 修正记忆：鉴权 UPDATE→委托 Engine |
 | `delete` | `(selector: DeleteSelector, *, identity) -> list[str]` | 删除/归档/降权：鉴权 DELETE→委托 Engine |
@@ -64,9 +65,13 @@
 `list` 的 `memory_types` 用于数据过滤，也参与权限路由：显式传一个或多个类型时，API 层为每个
 类型分别构造 `PermissionContext(memory_type=<type>)` 并逐个执行 READ 鉴权；未传类型时先按
 普通 `resource_type="memory_list"` 鉴权。两种路径随后都调用
-`MemoryEngine.list_with_permission_contexts`，一次取得当前分页 MemoryUnit 及其真源
+`MemoryEngine.list_with_permission_contexts`，一次取得当前页、分页前总数及 MemoryUnit 真源
 `memory_type/pipeline/tags/metadata` 权限上下文并逐条二次鉴权，避免未传过滤条件时落入
 宽松 fallback，也避免权限上下文与内容来自两次分页读取。
+
+`extensions` 为 `dict[str, str]`，API 防御性复制并把值规范为字符串；未知 key 原样透传。
+`filters` 与 recall 共用 FilterExpr/旧 list/dict DSL 规范化语义，`memory_types` 与 filters
+取 AND。`org/space/user/agent/session` 属于 Scope 隔离轴，不得出现在 filters。
 
 #### infer 开关（write 的同步抽取语义）
 
@@ -111,7 +116,10 @@
 - **infer=true 时 evolver 内部收集上下文**（evolve 接口不变）：`recent_originals`（最近 10 条 infer 原文，做指代消解/语境，不参与去重）+ `related_memories`（`dedup.recall` 召回 10 条相关记忆，做去重提示）。两类参考项只拼进 extractor prompt，不进提取来源；最终判定由所选 Evolver 完成：`OrchestratingEvolver` 走 `_dedup_batch`，`DynamicEvolver` 走 consolidate → reflect → 落盘。详见 F02 决策7。
 - **KV key 前缀分离**：真源 key 按「是否建索引」带前缀——`/memory/{id}`（建索引记忆）、`/messages/{id}`（未建索引 infer 原文）。前缀常量与 helper 在 `common.type_def.memory`/`raw`。详见 F02 决策6。
 - **engine.write infer=false 调 classify**：默认路径调 `classifier.classify` 给原文打 tier+tags（纯 LLM 抽取 episodic/semantic/procedural + tags）；infer=true 不经 classifier（extractor 产派生时自定）。详见 F02 决策9。
-- **`/v1/list` 收窄并上收为 API 契约**：handler `_list` 不再直扫 KV，而是委托 `MemoryAPI.list(scope, identity=..., offset, limit, memory_types)`；`MemoryEngine.list` 内部用 `prefix="/memory/"` 直取，只返建索引的 Memory 记忆。详见 F02 决策10 与 F01 的 list 决策。
+- **`/v1/list` 收窄并上收为 API 契约**：handler `_list` 委托
+  `MemoryAPI.list(scope, identity=..., offset, limit, memory_types, extensions, filters)`；
+  `KVStore.list` 只查询 `/memory/` 记忆并返回当前页与分页前总数。详见 F02 决策10与
+  F01 的 list 决策。
 
 > 开关由来与"为何默认不同步、为何经 Evolver 而非独立 Extractor"的取舍见 [`docs/features/api/F02-write-infer-extract.md`](../features/api/F02-write-infer-extract.md)；write 路径流程见 [`S03-control.md`](S03-control.md)。
 
@@ -228,6 +236,11 @@
 scope 不走 filters。metadata 比较严格保留类型：number、string、boolean 不互相转换；
 `int` / 有限 `float` 属于同一数值类别。当前不维护中央 metadata schema，同一业务 key
 的写入和查询类型应由调用方保持一致。
+
+### MemoryListResult（list 返回，`control/types.py`）
+
+- `items: list[MemoryUnit]`：当前分页结果。
+- `count: int`：同一 Scope 和过滤条件下的分页前精确总数，不受 offset/limit 影响。
 
 ### DisclosureLevel / RetrievalResult（recall 返回，`retrieval/types.py`）
 

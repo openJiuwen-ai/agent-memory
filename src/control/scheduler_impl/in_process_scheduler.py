@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Dict
 
 from common.errors import NotFoundError
 from common.log import get_logger
-from common.type_def import Scope, MEMORY_KEY_PREFIX
+from common.type_def import MEMORY_KEY_PREFIX, Scope
 from common.type_def.memory_codec import loads
 from construction import EvolveMode, Evolver, EvolveResult
 from construction.evolver import EvolverProducer
@@ -28,7 +27,7 @@ class InProcessScheduler(Scheduler):
     """同步调度：任务提交后立即执行（演进在第一阶段里为 no-op）。"""
 
     def __init__(self, kv: KVStore | None = None, evolver: Evolver | None = None) -> None:
-        self._jobs: Dict[str, JobInfo] = {}
+        self._jobs: dict[str, JobInfo] = {}
         self._kv = kv
         self._evolver = evolver
 
@@ -101,8 +100,11 @@ class InProcessScheduler(Scheduler):
         if self._kv is None or self._evolver is None:
             logger.debug("Scheduler.execute skipped: job_id=%s reason=no_executor", job.id)
             return
-        # loads 对非 MemoryUnit 记录返回 None，自然过滤
-        units = [u for u in (loads(raw) for _, raw in self._kv.list(job.scope, MEMORY_KEY_PREFIX)) if u is not None]
+        units = []
+        for _, raw in self._kv.scan(job.scope, MEMORY_KEY_PREFIX):
+            unit = loads(raw)
+            if unit is not None:
+                units.append(unit)
         logger.info(
             "Scheduler.execute: job_id=%s mode=%s units=%d",
             job.id,

@@ -11,14 +11,14 @@
 | 文件 | 职责 |
 |---|---|
 | `base.py` | BaseStore 基类：所有存储后端的自描述契约（store_type / health） |
-| `types.py` | 存储层数据类型：VectorRecord/Document/Node/Edge/FusionRecord/FileStat 等 |
-| `kv.py` | KVStore 接口：键值存储，统一 CRUD + 范围枚举（list / scopes） |
+| `types.py` | 存储层数据类型：KVMemoryListResult/VectorRecord/Document/Node/Edge/FusionRecord/FileStat 等 |
+| `kv.py` | KVStore 接口：键值存储，统一 CRUD + MemoryUnit 列表查询 + 范围枚举 |
 | `vector.py` | VectorStore 接口：向量存储，统一 CRUD + ANN 检索 |
 | `graph.py` | GraphStore 接口：属性图存储，节点与边统一 CRUD + 邻域遍历 |
 | `fulltext.py` | FulltextStore 接口：全文倒排索引存储，统一 CRUD + 关键词检索（BM25） |
 | `fusion.py` | FusionStore 接口：融合存储（向量+倒排+正排一体） |
 | `fs.py` | FSStore 接口：文件系统存储（原始负载/二进制资产） |
-| `kv_impl/` | KVStore 实现目录（memory / sqlite / redis / encrypted） |
+| `kv_impl/` | KVStore 实现目录（memory / sqlite / redis / encrypted）及共用的 `memory_list.py` 兼容逻辑 |
 | `vector_impl/` | VectorStore 实现目录（memory） |
 | `graph_impl/` | GraphStore 实现目录（memory） |
 | `fulltext_impl/` | FulltextStore 实现目录（memory） |
@@ -35,7 +35,8 @@
 | `update` | 改：修改已有记录（id 不存在时抛 NotFoundError） |
 | `get` | 查：按 id 点查（点查单条不存在时抛 NotFoundError；批量查缺失的 id 省略） |
 
-检索型存储额外提供 `search` 查询；kv 提供 `exists` / `list` / `scopes`；fs 提供 `stat`。
+检索型存储额外提供 `search` 查询；kv 提供 MemoryUnit 专用 `list` 和通用
+`exists` / `scan` / `scopes`；fs 提供 `stat`。
 
 ## 行为铁律
 
@@ -49,16 +50,22 @@
    `VectorRecord` / `Document` / `Node` / `FusionRecord` 等结构体不含 `scope` 字段（scope 是方法入参，不混进记录/查询结构体，也不编进 `metadata` / `filters`）。
 
 4. **kv/fs 对 key/路径做命名空间隔离**  
-   同一逻辑 key 在不同 scope 下是相互隔离的不同物理键。`KVStore.list(scope, prefix)` 物理约束在该 scope 内，不跨 scope。
+   同一逻辑 key 在不同 scope 下是相互隔离的不同物理键。`KVStore.scan(scope, prefix)` 物理约束在该 scope 内，不跨 scope。
 
-5. **检索型 Store 的 search 物理约束在 scope 内**  
+5. **KV list 先过滤再分页**
+   `KVStore.list` 只查询 `/memory/` MemoryUnit；在完整 Scope 内依次执行
+   `memory_types AND filters`、精确计数、稳定排序和分页。`count` 不受 offset/limit 影响。
+
+6. **检索型 Store 的 search 物理约束在 scope 内**
    `FulltextStore.search(scope, query)` / `VectorStore.search(scope, query)` / `GraphStore.search(scope, query)` 绝不跨 scope 返回。
 
-6. **后端不可用统一抛 BackendError**  
+7. **后端不可用统一抛 BackendError**
    连接失败/超时/服务不可用等非预期失败统一抛 `BackendError`（不抛泛化的 Exception）。
 
-7. **EncryptedKVStore 只做装饰，不做算法**
-   `encrypted` KV target 必须显式包装一个 raw KVStore，并调用 `common.security.SecurityProvider` 做 value 加解密；真实加密算法不放在 storage 层。
+8. **EncryptedKVStore 只做装饰，不做算法**
+   `encrypted` KV target 必须显式包装一个 raw KVStore，并调用 `common.security.SecurityProvider`
+   做 value 加解密；`list` 必须在解密后执行 MemoryUnit 过滤，不能把过滤下推到密文 raw KV。
+   真实加密算法不放在 storage 层。
 
 ## 与其他子目录的边界
 

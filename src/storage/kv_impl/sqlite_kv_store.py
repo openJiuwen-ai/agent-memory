@@ -2,7 +2,7 @@
 
 一张表承载所有 scope 的键值：``(org,space,user,agent,session,key)`` 为主键、``value`` 为
 BLOB、``expires_at`` 为过期 Unix 秒（NULL 永不过期）。scope 各维落列做原生隔离，
-``list`` / ``scopes`` 即带 ``WHERE`` / ``DISTINCT`` 的查询，过期行读时过滤并惰性清除。
+``scan`` / ``scopes`` 即带 ``WHERE`` / ``DISTINCT`` 的查询，过期行读时过滤并惰性清除。
 
 数据真正落磁盘（``db_path`` 指向文件；``":memory:"`` 为进程内 SQLite），跨进程/重启
 保留。与 :class:`~storage.kv_impl.in_memory_kv_store.InMemoryKVStore` 实现同一 ``KVStore`` 契约 +
@@ -16,13 +16,15 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
-from typing import List, Tuple
 
 from common.errors import ConflictError, NotFoundError
 from common.factory.factory import Factory
-from common.type_def import Scope
+from common.type_def import MEMORY_KEY_PREFIX, FilterExpr, Scope
 from storage.base import StoreType
 from storage.kv import KvProducer, KVStore
+from storage.types import KVMemoryListResult
+
+from .memory_list import list_memory_entries
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS kv (
@@ -153,7 +155,7 @@ class SQLiteKVStore(KVStore):
         with self._lock:
             return self._live_value(scope, key) is not None
 
-    def list(self, scope: Scope, prefix: str = "") -> List[Tuple[str, bytes]]:
+    def scan(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
         now = time.time()
         with self._lock:
             rows = self._conn.execute(
@@ -164,7 +166,26 @@ class SQLiteKVStore(KVStore):
             ).fetchall()
         return [(key, bytes(value)) for key, value in rows]
 
-    def scopes(self) -> List[Scope]:
+    def list(
+        self,
+        scope: Scope,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        memory_types: list[str] | None = None,
+        filters: FilterExpr | None = None,
+        extensions: dict[str, str] | None = None,
+    ) -> KVMemoryListResult:
+        return list_memory_entries(
+            self.scan(scope, MEMORY_KEY_PREFIX),
+            offset=offset,
+            limit=limit,
+            memory_types=memory_types,
+            filters=filters,
+            extensions=extensions,
+        )
+
+    def scopes(self) -> list[Scope]:
         with self._lock:
             rows = self._conn.execute(
                 'SELECT DISTINCT org, space, "user", agent, session FROM kv'

@@ -17,6 +17,7 @@ from common.errors import NotFoundError, ValidationError
 from common.log import get_logger
 from common.type_def import (
     MEMORY_KEY_PREFIX,
+    FilterExpr,
     LifecycleState,
     MemoryUnit,
     Modality,
@@ -32,6 +33,7 @@ from construction.evolver import Evolver, EvolverProducer
 from construction.index_builder import IndexBuilder, IndexBuilderProducer
 from control.base import ControlOperatorType
 from control.engine import EngineProducer, MemoryEngine
+from control.engine_impl.list_support import list_page
 from control.lifecycle import LifecycleManager, LifecycleProducer
 from control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
 from control.scheduler import Scheduler, SchedulerProducer
@@ -39,6 +41,7 @@ from control.types import (
     Channel,
     DeleteMode,
     DeleteSelector,
+    MemoryListResult,
     MemoryPatch,
     PermissionContext,
     UpdateMode,
@@ -110,14 +113,6 @@ def _downweight_importance(unit: MemoryUnit) -> None:
     except ValueError:
         value = 1.0
     unit.metadata["importance"] = f"{max(0.0, value * 0.5):g}"
-
-
-def _unit_memory_type(unit: MemoryUnit) -> str:
-    return str(unit.metadata.get("memory_type", "")).strip() or unit.tier.value
-
-
-def _unit_sort_key(unit: MemoryUnit) -> tuple[datetime, str]:
-    return (unit.temporal.t_ingest or datetime.min.replace(tzinfo=timezone.utc), unit.id)
 
 
 @dataclass(frozen=True)
@@ -305,36 +300,18 @@ class CloudEngine(MemoryEngine):
         offset: int = 0,
         limit: int = 100,
         memory_types: list[str] | None = None,
-    ) -> list[MemoryUnit]:
-        return self._list_page(
+        extensions: dict[str, str] | None = None,
+        filters: FilterExpr | None = None,
+    ) -> MemoryListResult:
+        return list_page(
+            self._kv,
             scope,
             offset=offset,
             limit=limit,
             memory_types=memory_types,
+            extensions=extensions,
+            filters=filters,
         )
-
-    def _list_page(
-        self,
-        scope: Scope,
-        *,
-        offset: int,
-        limit: int,
-        memory_types: list[str] | None,
-    ) -> list[MemoryUnit]:
-        if offset < 0:
-            raise ValidationError("offset must be >= 0")
-        if limit <= 0:
-            raise ValidationError("limit must be > 0")
-        wanted: set[str] = set()
-        for raw_memory_type in memory_types or []:
-            memory_type = str(raw_memory_type).strip()
-            if memory_type:
-                wanted.add(memory_type)
-        units = self._list_units(scope)
-        if wanted:
-            units = [unit for unit in units if _unit_memory_type(unit) in wanted]
-        units.sort(key=_unit_sort_key, reverse=True)
-        return units[offset: offset + limit]
 
     async def permission_context_for_unit(
         self, unit_id: str, scope: Scope
@@ -348,14 +325,19 @@ class CloudEngine(MemoryEngine):
         offset: int = 0,
         limit: int = 100,
         memory_types: list[str] | None = None,
-    ) -> tuple[list[MemoryUnit], list[PermissionContext]]:
-        units = self._list_page(
+        extensions: dict[str, str] | None = None,
+        filters: FilterExpr | None = None,
+    ) -> tuple[MemoryListResult, list[PermissionContext]]:
+        result = await self.list(
             scope,
             offset=offset,
             limit=limit,
             memory_types=memory_types,
+            extensions=extensions,
+            filters=filters,
         )
-        return units, [_permission_context_from_unit(unit) for unit in units]
+        contexts = [_permission_context_from_unit(unit) for unit in result.items]
+        return result, contexts
 
     async def permission_contexts_for_delete(
         self, selector: DeleteSelector
@@ -445,7 +427,7 @@ class CloudEngine(MemoryEngine):
 
         scanned: list[tuple[Scope, str, MemoryUnit]] = []
         for scope in scopes:
-            for key, raw in self._kv.list(scope, MEMORY_KEY_PREFIX):
+            for key, raw in self._kv.scan(scope, MEMORY_KEY_PREFIX):
                 unit = loads(raw)
                 if unit is None:
                     continue
@@ -638,7 +620,7 @@ class CloudEngine(MemoryEngine):
 
     def _list_units(self, scope: Scope) -> list[MemoryUnit]:
         units: list[MemoryUnit] = []
-        for _, raw in self._kv.list(scope, MEMORY_KEY_PREFIX):
+        for _, raw in self._kv.scan(scope, MEMORY_KEY_PREFIX):
             unit = loads(raw)
             if unit is None:
                 continue

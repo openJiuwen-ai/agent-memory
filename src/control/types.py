@@ -7,7 +7,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from common.type_def import MemoryTier, Scope
+from common.type_def import MemoryTier, MemoryUnit, Scope
 
 
 class Action(str, Enum):
@@ -124,6 +124,14 @@ class SpaceDeleteResult:
     deleted_counts: dict[str, int] = field(default_factory=dict)
     status: SpaceStatus = SpaceStatus.DELETED
     audit_event_id: str = ""
+
+
+@dataclass
+class MemoryListResult:
+    """List 数据面结果：当前页 MemoryUnit 与分页前匹配总数。"""
+
+    items: list[MemoryUnit] = field(default_factory=list)
+    count: int = 0
 
 
 @dataclass(frozen=True)
