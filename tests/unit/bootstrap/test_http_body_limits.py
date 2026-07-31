@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+# These tests intentionally exercise the HTTP adapter's private admission primitives.
+# pylint: disable=protected-access
 import importlib
 import io
 import json
@@ -149,8 +151,6 @@ def test_http_concurrency_limit_rejects_excess() -> None:
     # 用小额度 server 避免开几百连接
     class _TinyServer(http_mod._BoundedThreadingHTTPServer):
         def __init__(self, *a, **kw):
-            import threading
-
             super().__init__(*a, **kw)
             self._slots = threading.BoundedSemaphore(2)
 
@@ -161,13 +161,14 @@ def test_http_concurrency_limit_rejects_excess() -> None:
 
     # 用阻塞的 do_POST 占住槽
     class _Block(handler):
-        def do_POST(self):
+        def handle_blocked_post(self):
             gate.wait(timeout=3)
             self.send_response(200)
             self.end_headers()
 
     # 替换 handler 为阻塞版
-    httpd.RequestHandlerClass = _Block
+    setattr(_Block, "do_POST", _Block.handle_blocked_post)
+    setattr(httpd, "RequestHandlerClass", _Block)
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
 

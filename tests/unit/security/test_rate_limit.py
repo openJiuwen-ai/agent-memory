@@ -7,6 +7,8 @@ sleep 会让测试又慢又 flaky。
 
 from __future__ import annotations
 
+# The bounded-table assertions are intentional white-box checks of the LRU state.
+# pylint: disable=protected-access
 import threading
 
 import pytest

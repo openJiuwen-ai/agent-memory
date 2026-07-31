@@ -190,8 +190,11 @@ def test_management_resource_denied_even_within_own_scope(mgr) -> None:
 
 
 def test_space_lifecycle_requires_root(mgr) -> None:
-    """§3.2「创建/删除租户」→ ROOT。``create_space`` / ``delete_space`` 已在传
-    ``resource_type="space"``，只需在 check 里对写类动作要求 ROOT。"""
+    """§3.2「创建/删除租户」要求 ROOT。
+
+    ``create_space`` / ``delete_space`` 已在传 ``resource_type="space"``，
+    只需在 check 里对写类动作要求 ROOT。
+    """
     user_ctx = AuthContext(actor=_ALICE, role=Role.USER)
     root_ctx = AuthContext(actor=_ALICE, role=Role.ROOT)
     context = PermissionContext(resource_type="space")
@@ -203,8 +206,10 @@ def test_space_lifecycle_requires_root(mgr) -> None:
 
 
 def test_space_read_is_not_gated_by_role(mgr) -> None:
-    """读 space 元数据不是「创建/删除租户」，不该被 ROOT 闸挡住——
-    否则普通用户连自己所在 space 的名字都拿不到。"""
+    """读 space 元数据不受 ROOT 角色闸门限制。
+
+    读取并非「创建/删除租户」，否则普通用户连自己所在 space 的名字都拿不到。
+    """
     user_ctx = AuthContext(actor=_ALICE, role=Role.USER)
     context = PermissionContext(resource_type="space_list")
 
@@ -224,8 +229,11 @@ def test_allow_all_stays_all_allow_with_auth() -> None:
 
 
 def test_routing_passes_auth_through_to_delegate(tmp_path) -> None:
-    """S03「routing 不改变授权语义，只选择 delegate」——``auth`` 必须原样透传，
-    否则路由型部署下角色闸门与委托会**静默失效**。"""
+    """Routing 必须把 ``auth`` 原样透传给 delegate。
+
+    S03 约定 routing 不改变授权语义、只选择 delegate；否则路由型部署下角色闸门与
+    委托会静默失效。
+    """
     from control.permission_impl.routing_permission_manager import RoutingPermissionManager
 
     seen: list[AuthContext | None] = []

@@ -24,7 +24,7 @@ import pytest
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _CORE_DIR = os.path.join(_ROOT, "bootstrap", "core")
 if _CORE_DIR not in sys.path:
-    sys.path.insert(0, _CORE_DIR)
+    sys.path.append(_CORE_DIR)
 
 from common.errors import AuthenticationError  # noqa: E402
 from common.type_def.auth import Role, reset_current, set_current  # noqa: E402

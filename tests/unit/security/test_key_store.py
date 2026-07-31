@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+# The plaintext-retention assertion must inspect the in-memory registry directly.
+# pylint: disable=protected-access
 import json
 import time
 from statistics import median

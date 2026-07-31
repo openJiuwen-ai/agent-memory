@@ -115,7 +115,8 @@ def _owner_scope_covers(
             if parent_value != child_value:
                 return False
             continue
-        if any(getattr(parent, later) for later in order[index + 1 :]):
+        later_start = index + 1
+        if any(getattr(parent, later) for later in order[later_start:]):
             return False
         return True
     return True
