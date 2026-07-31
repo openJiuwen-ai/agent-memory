@@ -100,6 +100,11 @@ public class ScopeRegistryController {
                 scopeId = "scope_" + UUID.randomUUID().toString().substring(0, 8);
             }
             
+            // V3-DEFECT-063 修复：scope_id 格式校验（3-128 字符，以字母开头，仅包含字母数字下划线/连字符）
+            if (!scopeId.matches("^[a-zA-Z][a-zA-Z0-9_-]{2,127}$")) {
+                return ApiResponse.fail(40002, "scope_id 必须是 3-128 个字符，以字母开头，仅包含字母、数字、下划线或连字符");
+            }
+            
             // 检查是否已存在
             if (scopeRegistryService.existsByScopeId(scopeId)) {
                 return ApiResponse.fail(40900, String.format("Scope '%s' 已存在，请勿重复注册", scopeId));
