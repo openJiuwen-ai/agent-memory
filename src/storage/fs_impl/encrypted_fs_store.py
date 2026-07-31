@@ -67,11 +67,8 @@ def _read_bounded_stream(stream: BinaryIO, limit: int, *, ref: str) -> bytes:
             break
         buffer.extend(chunk)
     if len(buffer) > limit:
-        raise ValidationError(
-            f"fs encrypted: 内容超过单文件上限 {limit}B（ref={ref!r}）"
-        )
+        raise ValidationError(f"fs encrypted: 内容超过单文件上限 {limit}B（ref={ref!r}）")
     return bytes(buffer)
-
 
 
 def _scope_payload(scope: Scope) -> dict[str, str]:
@@ -123,8 +120,7 @@ class EncryptedFSStore(FSStore):
         # 可显式配置覆盖。不硬编码某个 provider 的精确开销--SecurityProvider 的 ABC
         # 不暴露 ciphertext bound，硬编码 128 会随 provider 实现变化失准（验收复验 P2-FS）。
         self._max_ciphertext_bytes = (
-            max_ciphertext_bytes
-            or max_plaintext_bytes + _DEFAULT_CIPHERTEXT_OVERHEAD
+            max_ciphertext_bytes or max_plaintext_bytes + _DEFAULT_CIPHERTEXT_OVERHEAD
         )
 
     def store_type(self) -> StoreType:
@@ -229,9 +225,7 @@ def _build(config):
         raise ValidationError(
             f"fs_store.encrypted params.max_plaintext_bytes 须 >= 1，得到 {max_plaintext_bytes}"
         )
-    max_ciphertext_bytes = int(
-        config.params.get("max_ciphertext_bytes", 0)
-    )
+    max_ciphertext_bytes = int(config.params.get("max_ciphertext_bytes", 0))
     if max_ciphertext_bytes < 0:
         raise ValidationError(
             f"fs_store.encrypted params.max_ciphertext_bytes 须 >= 0，得到 {max_ciphertext_bytes}"

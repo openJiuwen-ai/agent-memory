@@ -331,9 +331,7 @@ class MemoryAPI(ABC):
         """替换 space 级 policy。"""
 
     @abstractmethod
-    def list_space_members(
-        self, org: str, space: str, *, identity: Scope
-    ) -> list[SpaceMember]:
+    def list_space_members(self, org: str, space: str, *, identity: Scope) -> list[SpaceMember]:
         """列出 space 成员。"""
 
     @abstractmethod
@@ -343,7 +341,5 @@ class MemoryAPI(ABC):
         """添加或更新 space 成员角色。"""
 
     @abstractmethod
-    def remove_space_member(
-        self, org: str, space: str, member: Scope, *, identity: Scope
-    ) -> None:
+    def remove_space_member(self, org: str, space: str, member: Scope, *, identity: Scope) -> None:
         """移除 space 成员。"""

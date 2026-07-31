@@ -129,9 +129,7 @@ class EncryptedKVStore(KVStore):
         try:
             return self._security.encrypt(plaintext, context=context, aad=aad)
         except Exception as exc:
-            raise BackendError(
-                f"kv encryption failed: key={key!r} purpose={purpose!r}"
-            ) from exc
+            raise BackendError(f"kv encryption failed: key={key!r} purpose={purpose!r}") from exc
 
     def _decrypt(self, scope: Scope, key: str, ciphertext: bytes) -> bytes:
         purpose = _purpose_for_key(key)
@@ -140,9 +138,7 @@ class EncryptedKVStore(KVStore):
         try:
             return self._security.decrypt(ciphertext, context=context, aad=aad)
         except Exception as exc:
-            raise BackendError(
-                f"kv decryption failed: key={key!r} purpose={purpose!r}"
-            ) from exc
+            raise BackendError(f"kv decryption failed: key={key!r} purpose={purpose!r}") from exc
 
 
 def _raw_kv_store(config: Any) -> KVStore:

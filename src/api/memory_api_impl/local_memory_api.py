@@ -319,9 +319,7 @@ def _list_routing_clauses(
             if value:
                 values.add(value)
         if len(values) == 1:
-            clauses.append(
-                FilterClause(canonical_filter_field(field), FilterOp.EQ, values.pop())
-            )
+            clauses.append(FilterClause(canonical_filter_field(field), FilterOp.EQ, values.pop()))
     return clauses
 
 
@@ -773,9 +771,7 @@ class LocalMemoryAPI(MemoryAPI):
         return unit
 
     def delete(self, selector: DeleteSelector, *, identity: Scope) -> list[str]:
-        selector_is_empty = (
-            not selector.unit_ids and not selector.tags and selector.before is None
-        )
+        selector_is_empty = not selector.unit_ids and not selector.tags and selector.before is None
         if selector_is_empty:
             raise ValidationError("DeleteSelector requires unit_ids, tags, or before")
         # 按 selector 的目标 scope 鉴权 DELETE；未限定 scope（如纯按 id/标签的
@@ -872,9 +868,7 @@ class LocalMemoryAPI(MemoryAPI):
 
     # -- 治理（直达 Governor） ---------------------------------------------- #
 
-    def inspect(
-        self, unit_ids: list[str], scope: Scope, *, identity: Scope
-    ) -> list[MemoryUnit]:
+    def inspect(self, unit_ids: list[str], scope: Scope, *, identity: Scope) -> list[MemoryUnit]:
         auth = self._authorize(identity, scope, Action.READ, "inspect")
         self._log(identity, "inspect", target_scope=scope, detail=auth)
         return self._governor.inspect(unit_ids, scope)
@@ -1129,9 +1123,7 @@ class LocalMemoryAPI(MemoryAPI):
         )
         return updated
 
-    def list_space_members(
-        self, org: str, space: str, *, identity: Scope
-    ) -> list[SpaceMember]:
+    def list_space_members(self, org: str, space: str, *, identity: Scope) -> list[SpaceMember]:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
@@ -1174,9 +1166,7 @@ class LocalMemoryAPI(MemoryAPI):
             detail={**auth, "member_role": member.role},
         )
 
-    def remove_space_member(
-        self, org: str, space: str, member: Scope, *, identity: Scope
-    ) -> None:
+    def remove_space_member(self, org: str, space: str, member: Scope, *, identity: Scope) -> None:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(

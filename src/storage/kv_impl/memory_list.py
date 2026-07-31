@@ -47,7 +47,7 @@ def list_memory_entries(
         matches.append((key, raw, unit))
     matches.sort(key=lambda item: _sort_key(item[2]), reverse=True)
     count = len(matches)
-    page = matches[offset:offset + limit]
+    page = matches[offset : offset + limit]
     return KVMemoryListResult(
         entries=[(key, raw) for key, raw, _ in page],
         count=count,

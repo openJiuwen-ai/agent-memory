@@ -58,12 +58,12 @@ class Kernel:
 
 def _register_all() -> None:
     """组装前按层触发自注册（句柄在接口、注册靠 import 实现；各 bootstrap 幂等）。"""
-    register_plugins()       # common 共享插件
-    register_backends()      # storage
-    register_operators()     # retrieval
-    register_ingestors()     # ingest
+    register_plugins()  # common 共享插件
+    register_backends()  # storage
+    register_operators()  # retrieval
+    register_ingestors()  # ingest
     register_constructors()  # construction
-    register_controllers()   # control
+    register_controllers()  # control
 
 
 def build_kernel(

@@ -199,9 +199,7 @@ def test_dispatch_audit_keeps_actor_agent_as_query_filter() -> None:
     srv = _Srv()
 
     with _as(_OWNER):
-        status, _ = handler.dispatch(
-            srv, "audit", {"actor_agent": "bot", "actor_session": "s1"}
-        )
+        status, _ = handler.dispatch(srv, "audit", {"actor_agent": "bot", "actor_session": "s1"})
 
     assert status == 200
     assert srv.api.filters == {"actor_agent": "bot", "actor_session": "s1"}
