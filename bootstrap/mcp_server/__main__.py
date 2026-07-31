@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from importlib import import_module
@@ -52,10 +53,10 @@ AuthMode = import_module("security.types").AuthMode
 
 try:
     FastMCP = import_module("mcp.server.fastmcp").FastMCP
-except ImportError as exc:  # pragma: no cover
+except ImportError as import_error:  # pragma: no cover
     raise RuntimeError(
         'MCP surface 需要 mcp SDK：pip install ".[mcp]"（或 pip install mcp）'
-    ) from exc
+    ) from import_error
 
 # --- 内核：进程内装配一次，跨工具调用共享 --- #
 _SRV = Server.build(load_config([OFFLINE] + [load_layer(p) for p in sys.argv[1:]]))
@@ -77,10 +78,11 @@ def _call(verb: str, payload: dict) -> dict:
     try:
         with authenticated(_SRV.authenticator, Credentials(), _SRV.audit):
             status, body = _SRV.dispatch(verb, {k: v for k, v in payload.items() if v is not None})
-    except AuthenticationError as exc:
+    except AuthenticationError as auth_error:
         raise RuntimeError(
-            f"{type(exc).__name__}: {exc}（MCP surface 尚未支持凭据传递，仅可在 DEV 模式下使用）"
-        ) from exc
+            f"{type(auth_error).__name__}: {auth_error}"
+            "（MCP surface 尚未支持凭据传递，仅可在 DEV 模式下使用）"
+        ) from auth_error
     if status >= 400:
         raise RuntimeError(f"{body.get('error', 'Error')}: {body.get('message', '')}")
     return body
@@ -169,10 +171,8 @@ def main() -> int:
         if _SRV.authenticator.mode() is AuthMode.DEV:
             try:
                 check_dev_binding(os.environ.get("MCP_HOST", "127.0.0.1"))
-            except ValidationError as exc:
-                import logging
-
-                logging.error("FATAL: %s", exc)
+            except ValidationError as validation_error:
+                logging.error("FATAL: %s", validation_error)
                 return 1
         mcp.run(transport="streamable-http")  # host/port 已在 FastMCP(...) 设好
     else:

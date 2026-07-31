@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import import_module
 
@@ -90,8 +92,6 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        import threading
-
         self._slots = threading.BoundedSemaphore(_MAX_CONCURRENT_REQUESTS)
 
     def process_request(self, request, client_address):
@@ -105,7 +105,6 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
         # 不在这里 release：ThreadingHTTPServer.process_request 会 spawn 线程后立即
         # 返回，若在这里 release 等于没限。release 下移到 process_request_thread
         # （处理线程真正结束时）。
-        threading = __import__("threading")
         t = threading.Thread(target=self._process_and_release, args=(request, client_address))
         t.daemon = self.daemon_threads
         t.start()
@@ -255,8 +254,6 @@ def main(argv: list[str] | None = None) -> int:
         try:
             check_dev_binding(args.host)
         except ValidationError as exc:
-            import logging
-
             logging.error("FATAL: %s", exc)
             return 1
 
