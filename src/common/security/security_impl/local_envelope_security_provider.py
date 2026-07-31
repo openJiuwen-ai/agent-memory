@@ -289,11 +289,11 @@ def _parse_envelope(ciphertext: bytes) -> _Envelope:
     if len(ciphertext) < offset + body_len:
         raise CorruptedCiphertextError("ENC1 envelope length is incomplete")
 
-    encrypted_key = ciphertext[offset: offset + key_len]
+    encrypted_key = ciphertext[offset : offset + key_len]
     offset += key_len
-    key_nonce = ciphertext[offset: offset + key_nonce_len]
+    key_nonce = ciphertext[offset : offset + key_nonce_len]
     offset += key_nonce_len
-    data_nonce = ciphertext[offset: offset + data_nonce_len]
+    data_nonce = ciphertext[offset : offset + data_nonce_len]
     offset += data_nonce_len
     encrypted_content = ciphertext[offset:]
     if not encrypted_content:
@@ -410,9 +410,7 @@ def _decode_b64_key(value: str, *, source: str) -> bytes:
 
 def _validate_root_key(key: bytes, *, source: str) -> bytes:
     if len(key) != DATA_KEY_SIZE:
-        raise ValidationError(
-            f"encryption root key from {source} must be {DATA_KEY_SIZE} bytes"
-        )
+        raise ValidationError(f"encryption root key from {source} must be {DATA_KEY_SIZE} bytes")
     return key
 
 

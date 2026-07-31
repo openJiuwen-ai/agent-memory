@@ -170,9 +170,7 @@ def _build_argon2_guard(kernel_config: Any, authenticator: Any):
     if authenticator.mode() is not AuthMode.API_KEY:
         return None
     settings = (
-        kernel_config.settings.get("argon2", {})
-        if hasattr(kernel_config, "settings")
-        else {}
+        kernel_config.settings.get("argon2", {}) if hasattr(kernel_config, "settings") else {}
     )
     max_concurrent = int(settings.get("max_concurrent", 4)) if settings else 4
     _guard_mod = import_module("security.concurrency_guard")

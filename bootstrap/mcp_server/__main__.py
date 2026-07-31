@@ -76,13 +76,10 @@ def _call(verb: str, payload: dict) -> dict:
     """
     try:
         with authenticated(_SRV.authenticator, Credentials(), _SRV.audit):
-            status, body = _SRV.dispatch(
-                verb, {k: v for k, v in payload.items() if v is not None}
-            )
+            status, body = _SRV.dispatch(verb, {k: v for k, v in payload.items() if v is not None})
     except AuthenticationError as exc:
         raise RuntimeError(
-            f"{type(exc).__name__}: {exc}（MCP surface 尚未支持凭据传递，"
-            f"仅可在 DEV 模式下使用）"
+            f"{type(exc).__name__}: {exc}（MCP surface 尚未支持凭据传递，仅可在 DEV 模式下使用）"
         ) from exc
     if status >= 400:
         raise RuntimeError(f"{body.get('error', 'Error')}: {body.get('message', '')}")

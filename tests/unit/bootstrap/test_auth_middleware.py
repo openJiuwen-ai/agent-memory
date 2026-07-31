@@ -274,8 +274,10 @@ def test_rate_limit_audit_carries_no_bucket_state() -> None:
 
     with pytest.raises(RateLimitedError):
         with authenticated(
-            DevAuthenticator(), Credentials(api_key="secret-key", peer_address="10.0.0.7"),
-            _Recorder(), _Blocked(),
+            DevAuthenticator(),
+            Credentials(api_key="secret-key", peer_address="10.0.0.7"),
+            _Recorder(),
+            _Blocked(),
         ):
             pass  # pragma: no cover
 
@@ -334,11 +336,14 @@ def test_argon2_guard_release_on_auth_failure() -> None:
     from security.concurrency_guard import Argon2Guard
 
     guard = Argon2Guard(max_concurrent=1)
+
     # 用一个恒失败的 auth：走认证失败路径，验证 guard 在 finally 释放
     class _Fail:
         mode = DevAuthenticator().mode
+
         def authenticate(self, credentials):
             raise AuthenticationError("nope")
+
     with pytest.raises(AuthenticationError):
         with authenticated(_Fail(), Credentials(), None, None, argon2_guard=guard):
             pass  # pragma: no cover
@@ -386,6 +391,7 @@ def test_argon2_guard_none_means_unlimited() -> None:
 def test_argon2_guard_rejects_zero_max_concurrent() -> None:
     """max_concurrent=0 是非法，装配期炸，不用 or 吞成默认（审计验收 P2-guard）。"""
     from security.concurrency_guard import Argon2Guard, reset_guard
+
     reset_guard()
     with pytest.raises(ValueError):
         Argon2Guard(max_concurrent=0)
@@ -395,6 +401,7 @@ def test_argon2_guard_rejects_zero_max_concurrent() -> None:
 def test_argon2_guard_conflicting_config_raises() -> None:
     """同进程重复装配不同 max_concurrent 报错，不静默忽略（审计验收 P2-guard）。"""
     from security.concurrency_guard import default_argon2_guard, reset_guard
+
     reset_guard()
     default_argon2_guard(max_concurrent=2)
     with pytest.raises(ValueError):

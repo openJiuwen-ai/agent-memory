@@ -65,12 +65,12 @@ class _FakeSecurity(SecurityProvider):
                 return ciphertext
             raise RuntimeError("missing encrypted envelope")
         offset = len(_PREFIX)
-        aad_len = int.from_bytes(ciphertext[offset: offset + 4], "big")
+        aad_len = int.from_bytes(ciphertext[offset : offset + 4], "big")
         offset += 4
-        embedded_aad = ciphertext[offset: offset + aad_len]
+        embedded_aad = ciphertext[offset : offset + aad_len]
         if embedded_aad != aad:
             raise RuntimeError("aad mismatch")
-        return ciphertext[offset + aad_len:][::-1]
+        return ciphertext[offset + aad_len :][::-1]
 
 
 @SecurityProducer.register("fake_encrypted_fs")
@@ -253,9 +253,7 @@ def test_encrypted_fs_store_factory_requires_inner_dependency() -> None:
     ctx = AssemblyContext.from_dict(
         {
             "security": {"default": "fake_encrypted_fs"},
-            "fs_store": {
-                "default": {"target": "encrypted", "params": {"security": "default"}}
-            },
+            "fs_store": {"default": {"target": "encrypted", "params": {"security": "default"}}},
         }
     )
 
@@ -274,9 +272,6 @@ def test_encrypted_fs_is_registered_by_storage_bootstrap() -> None:
     register_backends()
 
     assert "encrypted" in FsProducer.known()
-
-
-
 
 
 def test_encrypted_fs_store_rejects_oversized_plaintext(tmp_path) -> None:
@@ -320,9 +315,7 @@ def test_encrypted_fs_store_rejects_oversized_ciphertext_on_read(tmp_path) -> No
     """
     inner = LocalFSStore(root=str(tmp_path / "files"))
     fake = _FakeSecurity()
-    fs = EncryptedFSStore(
-        inner, fake, max_plaintext_bytes=4, max_ciphertext_bytes=8
-    )
+    fs = EncryptedFSStore(inner, fake, max_plaintext_bytes=4, max_ciphertext_bytes=8)
     big_ciphertext = b"x" * 1024
     ref = inner.insert(_ALICE, "big.enc", io.BytesIO(big_ciphertext))
     with pytest.raises(ValidationError):
@@ -394,9 +387,7 @@ def test_encrypted_fs_store_toctou_stat_get_mismatch_still_bounded(tmp_path) -> 
 
     inner = LocalFSStore(root=str(tmp_path / "files"))
     fake = _FakeSecurity()
-    fs = EncryptedFSStore(
-        inner, fake, max_plaintext_bytes=4, max_ciphertext_bytes=8
-    )
+    fs = EncryptedFSStore(inner, fake, max_plaintext_bytes=4, max_ciphertext_bytes=8)
     lying = _LyingStat(inner)
     fs._inner = lying
     ref = "fake-ref"
@@ -435,7 +426,6 @@ def test_encrypted_fs_store_rejects_oversized_plaintext_after_decrypt(tmp_path) 
     # 读取时解密返回 100 字节，应被解密后复核拒
     with pytest.raises(ValidationError):
         fs.get(_ALICE, ref)
-
 
 
 def test_encrypted_fs_store_byte_by_byte_stream_does_not_amplify_memory(tmp_path) -> None:

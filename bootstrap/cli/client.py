@@ -40,11 +40,9 @@ if _CORE_DIR not in sys.path:
 class EngineClient(Protocol):
     """A backend the CLI can drive: turn a (verb, payload) into (status, body)."""
 
-    def call(self, verb: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-        ...
+    def call(self, verb: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]: ...
 
-    def healthz(self) -> tuple[int, dict[str, Any]]:
-        ...
+    def healthz(self) -> tuple[int, dict[str, Any]]: ...
 
 
 class InProcessClient:

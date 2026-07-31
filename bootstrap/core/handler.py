@@ -67,7 +67,7 @@ Body = dict[str, Any]
 
 _STATUS = {
     NotFoundError: 404,
-    AuthenticationError: 401,    # 不知道你是谁
+    AuthenticationError: 401,  # 不知道你是谁
     PermissionDeniedError: 403,  # 知道你是谁，但不许
     ConflictError: 409,
     ValidationError: 400,
@@ -266,9 +266,7 @@ def _space_policy(payload: Body) -> SpacePolicy:
     return SpacePolicy(
         require_space=_bool_value(raw.get("require_space"), default=False),
         principal_path=_enum_value(PrincipalPath, principal_path, name="principal_path"),
-        storage_isolation_strategy=str(
-            raw.get("storage_isolation_strategy", "metadata_filter")
-        ),
+        storage_isolation_strategy=str(raw.get("storage_isolation_strategy", "metadata_filter")),
         retention=_string_map(raw.get("retention")),
         quotas=_string_map(raw.get("quotas")),
         index_profiles=_string_map(raw.get("index_profiles", raw.get("indexes"))),
@@ -369,8 +367,13 @@ def _add(srv, payload: Body) -> Body:
     # 此时不伪造 item_id，
     # 如实返回 deduped 语义；非空则照常取首条返回。
     if not units:
-        return {"ok": True, "op": "add", "item_id": None, "item": None,
-                "skipped": "all derived memories deduped (update/noop)"}
+        return {
+            "ok": True,
+            "op": "add",
+            "item_id": None,
+            "item": None,
+            "skipped": "all derived memories deduped (update/noop)",
+        }
     unit = units[0]
     return {"ok": True, "op": "add", "item_id": unit.id, "item": _unit_view(unit)}
 
@@ -466,9 +469,7 @@ def _update(srv, payload: Body) -> Body:
 def _delete(srv, payload: Body) -> Body:
     scope, actor = _target_scope(payload), _identity()
     mode = DeleteMode.PURGE if payload.get("hard") else DeleteMode.FORGET
-    selector = DeleteSelector(
-        unit_ids=[_require(payload, "item_id")], scope=scope, mode=mode
-    )
+    selector = DeleteSelector(unit_ids=[_require(payload, "item_id")], scope=scope, mode=mode)
     deleted = srv.api.delete(selector, identity=actor)
     return {"ok": True, "op": "delete", "item_id": payload["item_id"], "deleted": deleted}
 
@@ -807,9 +808,7 @@ def dispatch(srv, verb: str, payload: Body) -> tuple[int, Body]:
         _reject_claimed_identity(payload, allow=_AUDIT_FILTER_KEYS if verb == "audit" else ())
         return 200, handler(srv, payload)
     except AgentMemoryError as exc:
-        status = next(
-            (code for cls, code in _STATUS.items() if isinstance(exc, cls)), 400
-        )
+        status = next((code for cls, code in _STATUS.items() if isinstance(exc, cls)), 400)
         return status, {"error": type(exc).__name__, "message": str(exc)}
     except Exception as exc:  # surface unexpected failures as 500
         return 500, {"error": "InternalError", "message": str(exc)}

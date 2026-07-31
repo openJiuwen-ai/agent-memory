@@ -198,7 +198,8 @@ class InMemoryKeyStore(PrincipalKeyStore):
             # 但重算使「先 revoke ADMIN 再 revoke USER」等顺序无关。无剩余 key 则清空。
             key = self._role_key(record.actor)
             remaining = [
-                r for r in self._records.values()
+                r
+                for r in self._records.values()
                 if not r.revoked and self._role_key(r.actor) == key
             ]
             if remaining:

@@ -229,6 +229,4 @@ def test_trusted_build_requires_gateway_key_by_default() -> None:
     built = AuthProducer.build("trusted", {"allow_no_gateway_key": True}, ctx)
     assert built.mode() is AuthMode.TRUSTED
     # 配了 gateway_key 自然可装配
-    assert (
-        AuthProducer.build("trusted", {"gateway_key": "k"}, ctx).mode() is AuthMode.TRUSTED
-    )
+    assert AuthProducer.build("trusted", {"gateway_key": "k"}, ctx).mode() is AuthMode.TRUSTED

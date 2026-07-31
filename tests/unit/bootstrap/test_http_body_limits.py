@@ -129,9 +129,7 @@ def test_http_rejects_invalid_length() -> None:
 def test_http_accepts_normal_request() -> None:
     httpd, port = _start_server()
     try:
-        code, _ = _post(
-            port, json.dumps({"scope": {"org": "acme", "user": "alice"}}).encode()
-        )
+        code, _ = _post(port, json.dumps({"scope": {"org": "acme", "user": "alice"}}).encode())
         assert code == 200
     finally:
         httpd.shutdown()
@@ -152,6 +150,7 @@ def test_http_concurrency_limit_rejects_excess() -> None:
     class _TinyServer(http_mod._BoundedThreadingHTTPServer):
         def __init__(self, *a, **kw):
             import threading
+
             super().__init__(*a, **kw)
             self._slots = threading.BoundedSemaphore(2)
 
@@ -173,12 +172,11 @@ def test_http_concurrency_limit_rejects_excess() -> None:
     t.start()
 
     results = []
+
     def fire():
         try:
             s = socket.create_connection(("127.0.0.1", port), timeout=3)
-            s.sendall(
-                b"POST /v1/x HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n"
-            )
+            s.sendall(b"POST /v1/x HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
             data = s.recv(256)
             results.append(int(data.split()[1]))
             s.close()

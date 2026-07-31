@@ -41,16 +41,25 @@ def build_parser() -> argparse.ArgumentParser:
         description="agent-memory memory engine CLI",
     )
     parser.add_argument(
-        "--server", "--base-url", dest="server",
-        metavar="URL", default=os.environ.get("AGENT_MEMORY_SERVER"),
+        "--server",
+        "--base-url",
+        dest="server",
+        metavar="URL",
+        default=os.environ.get("AGENT_MEMORY_SERVER"),
         help="drive a running server over HTTP (Mem0 --base-url; default: in-process)",
     )
     parser.add_argument(
-        "--config", action="append", default=[], metavar="PATH",
+        "--config",
+        action="append",
+        default=[],
+        metavar="PATH",
         help="JSON config layer stacked on OFFLINE (in-process only; repeatable)",
     )
     parser.add_argument(
-        "--api-key", dest="api_key", metavar="KEY", default=None,
+        "--api-key",
+        dest="api_key",
+        metavar="KEY",
+        default=None,
         help="API key for --server mode (default: $AGENT_MEMORY_API_KEY)",
     )
 

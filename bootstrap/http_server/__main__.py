@@ -91,6 +91,7 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         import threading
+
         self._slots = threading.BoundedSemaphore(_MAX_CONCURRENT_REQUESTS)
 
     def process_request(self, request, client_address):
@@ -105,9 +106,7 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
         # 返回，若在这里 release 等于没限。release 下移到 process_request_thread
         # （处理线程真正结束时）。
         threading = __import__("threading")
-        t = threading.Thread(
-            target=self._process_and_release, args=(request, client_address)
-        )
+        t = threading.Thread(target=self._process_and_release, args=(request, client_address))
         t.daemon = self.daemon_threads
         t.start()
 
@@ -125,9 +124,15 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
         body = b'{"error":"ServiceUnavailable","message":"too many connections"}'
         crlf = bytes([13, 10])
         request.sendall(
-            b"HTTP/1.0 503 Service Unavailable" + crlf
-            + b"Content-Length: " + str(len(body)).encode() + crlf
-            + b"Content-Type: application/json" + crlf + crlf + body
+            b"HTTP/1.0 503 Service Unavailable"
+            + crlf
+            + b"Content-Length: "
+            + str(len(body)).encode()
+            + crlf
+            + b"Content-Type: application/json"
+            + crlf
+            + crlf
+            + body
         )
 
 
@@ -171,10 +176,13 @@ class HttpServer(Server):
                 # 3) 通过后才按已校验长度读 body。
                 status, length = _parse_content_length(self.headers)
                 if status == 413:
-                    self._send(413, {
-                        "error": "PayloadTooLarge",
-                        "message": f"body exceeds {_MAX_BODY_BYTES}B limit",
-                    })
+                    self._send(
+                        413,
+                        {
+                            "error": "PayloadTooLarge",
+                            "message": f"body exceeds {_MAX_BODY_BYTES}B limit",
+                        },
+                    )
                     return
                 if status == 400:
                     self._send(400, {"error": "BadRequest", "message": "invalid Content-Length"})
@@ -184,7 +192,10 @@ class HttpServer(Server):
                     # 认证在读 body 之前：未认证/被限流的请求不占读 body 的内存预算。
                     # 中间件负责退出时 reset ContextVar。
                     with authenticated(
-                        srv.authenticator, creds, srv.audit, srv.rate_limiter,
+                        srv.authenticator,
+                        creds,
+                        srv.audit,
+                        srv.rate_limiter,
                         argon2_guard=srv.argon2_guard,
                     ):
                         raw = _read_body(self.rfile, length)
