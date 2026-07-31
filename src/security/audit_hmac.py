@@ -105,6 +105,15 @@ class HmacAuditLogger(AuditLogger):
     ) -> None:
         if not hmac_key:
             raise ValueError("hmac_key 不可为空")
+
+        # 检查后端 CAS 能力（审计 P1-1）
+        if not delegate.supports_chain_cas():
+            raise ValidationError(
+                f"HmacAuditLogger requires a backend that supports chain CAS. "
+                f"{type(delegate).__name__} reports supports_chain_cas()=False. "
+                f"Use SqliteAuditLogger or another CAS-capable backend for HMAC integrity."
+            )
+
         self._delegate = delegate
         self._key = hmac_key
         # 链头锁：覆盖「读链头 -> 算 HMAC -> 委托追加 -> 更新链头」完整区间（审计 P1-1）。

@@ -96,6 +96,17 @@ class AuditLogger(ABC):
         last = self.tail(1)
         return last[-1].detail.get("_hmac", "") if last else ""
 
+    def supports_chain_cas(self) -> bool:
+        """声明后端是否支持链式 CAS 原子性（审计 P1-1）。
+
+        返回 ``True`` 表示 :meth:`record_chained` 提供事务级 CAS 保证（多实例/多连接
+        写同一后端时链不分叉）。返回 ``False`` 表示默认实现（无事务保护）。
+
+        :class:`~security.audit_hmac.HmacAuditLogger` 装饰器据此决定是否可安全包装：
+        不支持 CAS 的后端在多实例场景下会确定性分叉，装饰器构造时拒绝（fail closed）。
+        """
+        return False  # 默认不支持
+
     def get_chain_state(self) -> tuple[str, int, int, str, int]:
         """稳定快照：返回 ``(head_hmac, head_last_seq, last_event_seq, last_event_hmac,
         schema_version)``。

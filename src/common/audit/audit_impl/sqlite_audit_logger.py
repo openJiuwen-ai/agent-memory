@@ -10,6 +10,7 @@ from threading import RLock
 from typing import Iterable, NamedTuple
 
 from common.audit.base import AuditLogger, AuditProducer
+from common.errors import ValidationError
 from common.type_def import AuditEvent, Scope
 
 
@@ -223,6 +224,10 @@ class SqliteAuditLogger(AuditLogger):
             ).fetchone()
             return row["head_hmac"] if row else ""
 
+    def supports_chain_cas(self) -> bool:
+        """SQLite 后端支持链式 CAS 原子性（审计 P1-1）。"""
+        return True
+
     def init_chain_head(self, hmac: str, last_seq: int) -> None:
         """初始化/迁移 chain-head（审计 P1-1/P2-1）：旧库升级时由 HmacAuditLogger 调用。
 
@@ -273,10 +278,20 @@ class SqliteAuditLogger(AuditLogger):
                 row["name"]
                 for row in self._conn.execute("PRAGMA table_info(audit_chain_head)").fetchall()
             }
+
+            # 当前版本必须有完整列集（审计 P2-3）
+            required_cols = {"id", "head_hmac", "last_seq", "schema_version"}
+            if db_version >= 2 and not required_cols.issubset(head_cols):
+                missing = required_cols - head_cols
+                raise ValidationError(
+                    f"audit chain head schema corrupted: current version "
+                    f"(user_version={db_version}) missing required columns {missing}"
+                )
+
             has_last_seq = "last_seq" in head_cols
             has_schema_version = "schema_version" in head_cols
 
-            # 构建动态 SQL：只读取存在的列
+            # 构建动态 SQL：只读取存在的列（仅用于旧版迁移）
             if has_last_seq and has_schema_version:
                 # 完整结构
                 select_clause = """

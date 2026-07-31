@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from threading import RLock
 from typing import List
 
 from common.audit.base import AuditLogger, AuditProducer
+from common.errors import ConflictError
 from common.type_def import AuditEvent
 
 
@@ -17,49 +19,62 @@ class InMemoryAuditLogger(AuditLogger):
 
     def __init__(self) -> None:
         self.events: List[AuditEvent] = []
+        self._lock = RLock()  # 保护并发访问（审计 P1-1）
 
     def record(self, event: AuditEvent) -> None:
-        self.events.append(event)
+        with self._lock:
+            self.events.append(event)
 
     def query(
         self, filters: dict[str, str], limit: int = 100, *, offset: int = 0
     ) -> list[AuditEvent]:
-        out: list[AuditEvent] = []
-        skipped = 0
-        for event in self.events:
-            if not _matches(event, filters):
-                continue
-            if skipped < offset:
-                skipped += 1
-                continue
-            out.append(event)
-            if len(out) >= limit:
-                break
-        return out
+        with self._lock:
+            out: list[AuditEvent] = []
+            skipped = 0
+            for event in self.events:
+                if not _matches(event, filters):
+                    continue
+                if skipped < offset:
+                    skipped += 1
+                    continue
+                out.append(event)
+                if len(out) >= limit:
+                    break
+            return out
 
     def tail(self, limit: int = 1) -> list[AuditEvent]:
         # list 切片 O(k)，避免默认实现的全量 query
-        return self.events[-limit:] if limit else list(self.events)
+        with self._lock:
+            return self.events[-limit:] if limit else list(self.events)
 
     def record_chained(self, event: AuditEvent, expected_head: str) -> str:
-        """单进程链式追加（审计 P2-2 capability）。
+        """单实例线程安全链式追加（审计 P1-1 capability）。
 
-        InMemoryAuditLogger 不支持跨进程事务 CAS--expected_head 在此**不检查**
-        （单进程内由 HmacAuditLogger 的实例锁保证链头一致）。多进程/多实例场景
-        必须用持久化后端（SqliteAuditLogger 的事务 CAS）。本实现显式标明此边界，
-        不静默伪装具备 CAS 能力。
+        InMemoryAuditLogger 用锁保护 CAS 检查：expected_head 不匹配时抛
+        ConflictError。单实例多线程场景安全；多实例场景仍需持久化后端。
         """
-        self.events.append(event)
-        return event.detail.get("_hmac", "")
+        with self._lock:
+            current_head = self.events[-1].detail.get("_hmac", "") if self.events else ""
+            if current_head != expected_head:
+                raise ConflictError(
+                    f"audit chain CAS conflict: expected {expected_head}, got {current_head}"
+                )
+            self.events.append(event)
+            return event.detail.get("_hmac", "")
+
+    def supports_chain_cas(self) -> bool:
+        """InMemory 后端支持单实例线程级 CAS（审计 P1-1）。"""
+        return True
 
     def get_chain_state(self) -> tuple[str, int, int, str, int]:
         """内存后端链状态（单进程，head 即最后事件 _hmac）。"""
-        if not self.events:
-            return ("", 0, 0, "", 2)
-        last = self.events[-1]
-        hmac_val = last.detail.get("_hmac", "")
-        n = len(self.events)
-        return (hmac_val, n, n, hmac_val, 2)
+        with self._lock:
+            if not self.events:
+                return ("", 0, 0, "", 2)
+            last = self.events[-1]
+            hmac_val = last.detail.get("_hmac", "")
+            n = len(self.events)
+            return (hmac_val, n, n, hmac_val, 2)
 
 
 # -- 注册到 AuditProducer（实现自注册，新增无需改 producer/make_plugins） ------ #
