@@ -255,7 +255,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             check_dev_binding(args.host)
         except ValidationError as exc:
-            print(f"FATAL: {exc}", file=sys.stderr)
+            import logging
+
+            logging.error("FATAL: %s", exc)
             return 1
 
     srv.serve(args.host, args.port)
