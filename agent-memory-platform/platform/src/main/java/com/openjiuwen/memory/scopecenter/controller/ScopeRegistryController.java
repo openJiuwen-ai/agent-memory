@@ -1,9 +1,6 @@
 package com.openjiuwen.memory.scopecenter.controller;
 
 import com.openjiuwen.memory.common.ApiResponse;
-import com.openjiuwen.memory.common.CommonResult;
-import com.openjiuwen.memory.common.exception.BizException;
-import com.openjiuwen.memory.common.ResultCode;
 import com.openjiuwen.memory.common.util.ScopeIdValidator;
 import com.openjiuwen.memory.scopecenter.domain.ScopeRegistry;
 import com.openjiuwen.memory.scopecenter.dto.ScopeStatsDTO;
@@ -153,7 +150,7 @@ public class ScopeRegistryController {
                 return ApiResponse.fail(50000, "Scope 创建失败");
             }
         } catch (org.springframework.dao.DuplicateKeyException e) {
-            return CommonResult.error(409, "scope_id 已存在");
+            return ApiResponse.fail(409, "scope_id 已存在");
         } catch (Exception e) {
             return ApiResponse.fail(50000, "Scope 创建失败：" + e.getMessage());
         }
@@ -188,10 +185,10 @@ public class ScopeRegistryController {
                 try {
                     int maxMemories = Integer.parseInt(request.get("max_memories"));
                     if (maxMemories < 0) {
-                        return CommonResult.error(422, "max_memories 不能为负数");
+                        return ApiResponse.fail(422, "max_memories 不能为负数");
                     }
                 } catch (NumberFormatException e) {
-                    return CommonResult.error(422, "max_memories 格式无效，必须为非负整数");
+                    return ApiResponse.fail(422, "max_memories 格式无效，必须为非负整数");
                 }
             }
 
