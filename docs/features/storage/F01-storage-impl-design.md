@@ -44,6 +44,7 @@
 
 > 三者同实现 `KVStore` 契约 + 同一字节编码；`list` 当前都使用公共兼容路径完成
 > MemoryUnit 过滤、精确计数、稳定排序和分页，装配替换后上层语义不变。
+> **`mget` 落地差异**（批量点读，返回与 `keys` 下标一一对应的 `list[bytes]`，不去重、支持重复 key；任一 key 缺失即抛 `NotFoundError`，与 `get` 一致）：`memory` 逐 key 走 `_live`，缺失即报（无往返开销）；`sqlite` 单条 `IN` 查询召回命中 → 按位置组装，缺失报错（`WHERE` 过滤已过期行，与 `list` 同款，惰性删仍走单 key 的 `_live_value`/`get`）；`redis` 原生 `MGET` 一次往返，redis 返回的 `None` 位归一为 `NotFoundError`（省逐条 `get` 网络往返）；`encrypted` 委托 raw `mget` 取密文（raw 已保证全命中）后逐项解密（AAD 绑 key，不能批量解）。
 
 ### VectorStore（`storage/vector.py` · `VectorProducer` · TOP_NAME=`vector_store`）
 
@@ -103,6 +104,9 @@
 - **必填连接参数（url/uri/hosts/root/working_dir）惰性校验**：被拒。改为 `Factory.require_param` 在 **build 阶段**即报错，而非拖到首次连接才暴露。
 - **Milvus 默认 Bounded 一致性**：被拒。记忆库需读己之写，固定 `consistency_level="Strong"`，让 get/search 立刻看到刚写入/删除的结果。
 - **ES `metadata.*` 走默认 text 映射**：被拒。text 分析器拆词小写化会让 `"Red Hat"` 之类等值/集合过滤匹配不上；改用 dynamic_template 把 metadata 字符串映射为 keyword，数值/布尔仍动态推断以支持 range。
+- **`mget` 返回 `dict[str, bytes]`（缺失 key 省略）**：被拒。`dict` 天然去重（重复 key 只占一项），与 Redis `MGET` 的位置返回不匹配——Redis 实现需把位置列表再转 `dict`，丢失「重复 key 各位置独立」的能力。改用 `list[bytes]` 位置对应：与 Redis `MGET` 同形、零转换，且显式表达「不去重」契约。
+- **`mget` 内部做去重**：被拒。`mget` 是通用批量点读原语，去重是调用方语义（不同调用方策略可能不同），混进接口会让契约语义不纯——去重留在调用方（如 `UnitReader.load`），不下沉到 `mget`。
+- **`mget` 缺失静默省略（返回 `list[bytes | None]`、缺失位 `None`）**：被拒。这会让 `mget` 缺失语义与单条 `get` 分叉——同一事实（key 不存在）在 `get` 报错、在 `mget` 却静默，调用方须记两套规则；且把「索引↔真源短暂不一致」的兜底职责偷偷下沉进存储接口，违背「存储接口语义纯、调用方自担容忍度」。改为缺失即抛 `NotFoundError`（与 `get` 一致），缺失兜底由需要它的调用方自己承担。
 
 ---
 

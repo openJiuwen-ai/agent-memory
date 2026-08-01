@@ -89,7 +89,7 @@
 | 件 | 文件 | 职责 |
 |---|---|---|
 | `build_system_filters` | `predicate_builder.py` | 把检索策略（lifecycle × as_of / event-time 窗 / include_archived）翻译成 `FilterClause`，召回前并入 `ParsedQuery.scalar_filters` 下推到各 Store，使「先排除什么」在索引级生效 |
-| `UnitReader` + `passes` / `in_event_window` / `matches_filters` | `unit_reader.py` | 融合截断后把候选 id 点读真源物化为 `MemoryUnit`，再做三道**后置复核**（lifecycle×valid-time / event-time 窗 / 调用方 `FilterExpr`）；序列化反序列化（`loads`）只在此处发生。`FilterExpr` 支持 AND/OR/NOT 嵌套，生产向量/全文 Store 须在 top-k 前完整下推，UnitReader 只做纵深防御，详见 `F03-metadata-filtering.md` |
+| `UnitReader` + `passes` / `in_event_window` / `matches_filters` | `unit_reader.py` | 融合截断后把候选 id 点读真源物化为 `MemoryUnit`，再做三道**后置复核**（lifecycle×valid-time / event-time 窗 / 调用方 `FilterExpr`）；序列化反序列化（`loads`）只在此处发生。`load` 先对 `unit_ids` 去重再一次性 `KVStore.mget`（按位置返回 `list[bytes]`、缺失即抛 `NotFoundError` 与 `get` 一致）召回真源字节，省逐条 `get` 的 kv 接口往返；缺失时回退逐条兜底（去重 + 缺失兜底均留在 `load`、不下沉到 `mget`）。`FilterExpr` 支持 AND/OR/NOT 嵌套，生产向量/全文 Store 须在 top-k 前完整下推，UnitReader 只做纵深防御，详见 `F03-metadata-filtering.md` |
 | chunk → unit MaxP 归并 | `unit_aggregation.py` | 各通道命中按 `metadata['unit_id']` 折叠到 unit 粒度取最高分；`metadata` 缺 `unit_id` 时回退记录 id |
 | `parse_time` | `time_parse.py` | 文本时间约束 → event-time 窗（规则版，LLM 钩子可选） |
 
@@ -101,7 +101,7 @@
 4. **并行多路召回**：每路超采样 `recall_k = min(max(top_k × over_fetch_factor, over_fetch_floor), recall_max)`（撒宽网补偿后续过滤/重排损耗；`recall_max` 硬上限防超大 `top_k` 放大压垮后端，0=不限）。向量通道可选前置阈值 `min_similarity`（相似度低于此值的命中先丢；仅适用「分越大越相关」语义，方向由 `VectorStore.score_higher_is_better()` 契约声明，距离型度量装配期拒绝）。
 5. **融合**：`fuser` 跨路合并排序。
 6. **截断精排预算**：取融合结果前 `budget_n = max(rerank_max, top_k)` 作候选预算（召回宽度与精排成本解耦；`top_k` 大于 `rerank_max` 时自动扩展，不静默欠召）。
-7. **点读 + 后置过滤**：`UnitReader` 物化真源 `MemoryUnit`，`passes` / `in_event_window` / `matches_filters` 做纵深防御过滤。
+7. **点读 + 后置过滤**：`UnitReader.load` 先去重再一次性 `mget` 物化真源 `MemoryUnit`，`passes` / `in_event_window` / `matches_filters` 做纵深防御过滤。
 8. **（可选）重排**：注入 `reranker` 时对存活候选 `rerank`；记 `reranked` 标志（即阈值阶段的 `calibrated`）。
 9. **相关性阈值**：`apply_threshold` 统一裁剪——先丢非正分，再按阈值取降序前缀（绝对 `min_score` 仅在校准/已精排路径生效；相对阈值分路取 `min_score_ratio`（校准）/ `min_score_ratio_uncalibrated`（未校准），出厂默认均为 0（关闭，见 F04）），`min_results` 从正分候选回填到下限（夹到 ≤ `top_k`）。
 10. **截断 `top_k`**。
@@ -120,6 +120,7 @@
 - **全量重排**：被拒。召回宽度与精排成本解耦——各召回路超采样到 `max(top_k × over_fetch_factor, over_fetch_floor)` 撒宽网，融合后按 `max(rerank_max, top_k)` 截断精排预算，平衡召回率与重排成本。
 - **关键词通道加绝对前置阈值**：被拒。BM25/重叠比未校准（ES `_score` 无界、内存重叠比非相关性分），绝对阈值跨 query 行为不稳定；语义前置阈值仅用于已校准的 cosine 通道，关键词降噪交由融合 + 重排 + 相关性阈值兜住。
 - **用 ScoreFuser 校准融合分做阈值**：被拒（搁置）。默认装配重排恒开，相关性阈值作用在 reranker 校准分上即可；ScoreFuser 对「有重排」链路几无增量，留作「不重排」降级路径的备选。
+- **`load` 缺失时不兜底、直接抛错给调用方**：被拒。`mget` 缺失即抛 `NotFoundError`（与 `get` 一致），但 `pipeline_retriever` 用 `unit_id in units` 跳过缺失、依赖「缺失省略」语义；若 `load` 在有缺失时整体抛错，会丢掉所有命中候选、破坏纵深防御链路。故 `load` 自己兜底：常态全命中走 `mget` 批量、缺失时回退逐条 `get` 仅跳过不存在的 id（去重与缺失兜底均留在 `load`、不下沉到 `mget`）。
 
 ---
 

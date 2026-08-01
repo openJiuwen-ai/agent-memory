@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from common.errors import BackendError, ValidationError
+from common.errors import BackendError, NotFoundError, ValidationError
 from common.factory.factory import Factory
 from common.security import SecurityContext, SecurityProducer, SecurityProvider
 from common.type_def import MESSAGES_KEY_PREFIX, Scope, memory_key
@@ -116,6 +116,33 @@ def test_encrypted_kv_store_list_decrypts_every_value_with_each_key_aad() -> Non
         for _, aad, _ in security.decrypt_calls
     ]
     assert purposes == ["memory_unit", "raw_message"]
+
+
+def test_encrypted_kv_store_mget_decrypts_each_value_with_its_own_aad() -> None:
+    # mget 委托 raw 一次性批量取密文（raw 缺失即抛 NotFoundError），再逐项解密；
+    # AAD 绑定 key+purpose，各 key 的 AAD 不同（memory_unit vs raw_message），
+    # 不能批量统一解密，须逐项用各自 AAD 解密。
+    kv, _, security = _kv()
+    scope = Scope(org="acme", user="alice")
+
+    kv.insert(scope, memory_key("u1"), b"one")
+    kv.insert(scope, f"{MESSAGES_KEY_PREFIX}m1", b"two")
+
+    out = kv.mget(scope, [memory_key("u1"), f"{MESSAGES_KEY_PREFIX}m1"])
+
+    assert out == [b"one", b"two"]
+    purposes = [_aad_payload(aad)["purpose"] for _, aad, _ in security.decrypt_calls]
+    assert purposes == ["memory_unit", "raw_message"]
+
+
+def test_encrypted_kv_store_mget_missing_raises_not_found() -> None:
+    # raw mget 缺失即抛 NotFoundError（与 get 一致），encrypted 不静默省略。
+    kv, _, _ = _kv()
+    scope = Scope(org="acme", user="alice")
+    kv.insert(scope, memory_key("u1"), b"one")
+
+    with pytest.raises(NotFoundError):
+        kv.mget(scope, [memory_key("u1"), memory_key("ghost")])
 
 
 def test_encrypted_kv_store_passes_through_exists_delete_and_scopes() -> None:

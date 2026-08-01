@@ -151,6 +151,30 @@ class SQLiteKVStore(KVStore):
             raise NotFoundError("kv", key)
         return value
 
+    def mget(self, scope: Scope, keys: List[str]) -> list[bytes]:
+        # 一次 IN 查询召回命中 key → 按 keys 下标一一对应组装；任一缺失报
+        # NotFoundError（与 get 一致）。与 list 同款「WHERE 过滤已过期行」语义；
+        # 惰性删仍走单 key 的 _live_value/get。不去重：keys 透传。
+        if not keys:
+            return []
+        placeholders = ",".join("?" for _ in keys)
+        now = time.time()
+        with self._lock:
+            rows = self._conn.execute(
+                f'SELECT key, value FROM kv WHERE org=? AND space=? AND "user"=? '
+                "AND agent=? AND session=? AND key IN "
+                f"({placeholders}) AND (expires_at IS NULL OR expires_at > ?)",
+                (scope.org, scope.space, scope.user, scope.agent, scope.session, *keys, now),
+            ).fetchall()
+        hits = {key: bytes(value) for key, value in rows}
+        out: list[bytes] = []
+        for key in keys:
+            value = hits.get(key)
+            if value is None:
+                raise NotFoundError("kv", key)
+            out.append(value)
+        return out
+
     def exists(self, scope: Scope, key: str) -> bool:
         with self._lock:
             return self._live_value(scope, key) is not None

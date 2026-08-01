@@ -131,6 +131,21 @@ def test_kv_binary_and_empty_and_large_values(kv):
         assert store.get(scope, key) == val
 
 
+def test_kv_mget_returns_values_positionally_and_raises_on_missing(kv):
+    store, scope = kv
+    store.insert(scope, "k1", b"v1")
+    store.insert(scope, "k2", b"v2")
+
+    out = store.mget(scope, ["k1", "k2"])
+
+    assert out == [b"v1", b"v2"]
+    # 重复 key 各下标独立返回
+    assert store.mget(scope, ["k1", "k1"]) == [b"v1", b"v1"]
+    # 缺失即报错，与 get 一致
+    with pytest.raises(NotFoundError):
+        store.mget(scope, ["k1", "ghost"])
+
+
 def test_kv_ttl_expires(kv):
     store, scope = kv
     store.insert(scope, "ephemeral", b"x", ttl=1.0)

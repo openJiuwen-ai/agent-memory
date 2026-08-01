@@ -29,7 +29,7 @@
 2. **记录 id 在 scope 内唯一**：`insert` 冲突 / `update` 缺失按 `(scope, id)` 判定；后端可用 `scope + id` 生成物理主键，保证同一逻辑 id 在不同 space 下互不冲突。
 3. **统一 CRUD 动词**：insert（增）/ delete（删）/ update（改）/ get（查），各存储接口保持同一命名。
 4. **检索型存储额外提供 search**：fulltext / vector / graph / fusion 在 CRUD 之上再提供 `search` 查询。
-5. **kv 区分 list 与 scan**：`list` 是 `/memory/` MemoryUnit 的过滤、计数、排序和分页查询；`scan` 是无业务语义的 scope 内原始 key-value 扫描；`scopes` 枚举已有 scope。
+5. **kv 区分 list 与 scan**：`list` 是 `/memory/` MemoryUnit 的过滤、计数、排序和分页查询；`scan` 是无业务语义的 scope 内原始 key-value 扫描；`scopes` 枚举已有 scope。`mget` 是 `get` 的批量互补：一次召回多条、省逐条 `get` 的接口往返。返回与 `keys` 下标一一对应的 `list[bytes]`，**不去重、按位置返回**（调用方可传重复 key、各下标独立返回，语义同 Redis `MGET`）；缺失语义与 `get` 一致——任一 key 不存在即抛 `NotFoundError`，不静默省略（「索引↔真源短暂不一致」的兜底由调用方负责）。重复 key 的去重亦由调用方（如 `UnitReader.load`）负责，不下沉到本接口。
 6. **fs 提供 stat**：stat（文件元信息查询）。
 7. **scope 对 key/路径做命名空间隔离**：kv / fs 是通用原语，`scope` 入参用于对 key / 路径做命名空间隔离（同一逻辑 key 在不同 scope 下是相互隔离的不同物理键）。
 8. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
@@ -67,6 +67,7 @@ class BaseStore(ABC):
 | `update` | `(scope, key, value: bytes, ttl=0.0) -> None` | 覆写 scope 下已有 key；不存在时报缺失 |
 | `delete` | `(scope, key) -> None` | 删除 scope 下的 key（幂等） |
 | `get` | `(scope, key) -> bytes` | 读取 scope 下 key 的值；不存在时报缺失 |
+| `mget` | `(scope, keys: list[str]) -> list[bytes]` | 批量读取 scope 下多个 key 的值；返回与 `keys` **按下标一一对应**。缺失语义与 `get` 一致：任一 key 不存在即抛 `NotFoundError`，不静默省略。一次召回省去逐条 `get` 的接口往返。**不去重、按位置返回**：调用方可传重复 key，各下标独立返回该 key 的值（语义同 Redis `MGET`）；重复 key 的去重由调用方负责，本接口不做 |
 | `exists` | `(scope, key) -> bool` | 返回 scope 下 key 是否存在 |
 | `list` | `(scope, *, offset=0, limit=100, memory_types=None, filters=None, extensions=None) -> KVMemoryListResult` | 查询 `/memory/` MemoryUnit；先执行 `memory_types AND filters`，再精确计数、稳定排序和分页 |
 | `scan` | `(scope, prefix="") -> list[tuple[str, bytes]]` | 扫描 scope 下的全部 (key, value)（可选只取 prefix 开头的 key）；顺序由实现定义 |
@@ -81,7 +82,7 @@ class BaseStore(ABC):
 | 方法 | 行为 |
 |------|------|
 | `insert` / `update` | 构造 `SecurityContext(scope, purpose, metadata)` 与 AAD，调用 `SecurityProvider.encrypt` 后写入 raw KV |
-| `get` / `scan` | 从 raw KV 读取密文字节，调用 `SecurityProvider.decrypt` 后返回明文字节；任一解密失败抛 `BackendError`，不跳过坏数据 |
+| `get` / `scan` / `mget` | 从 raw KV 读取密文字节，调用 `SecurityProvider.decrypt` 后返回明文字节；任一解密失败抛 `BackendError`，不跳过坏数据。`mget` 委托 raw 一次性批量取密文（raw 缺失即抛 `NotFoundError`）后**逐项解密**——AAD 绑定 scope+key+purpose，各 key AAD 不同，不能批量统一解密 |
 | `list` | 扫描目标 Scope 的 `/memory/` 密文并逐条解密，再执行统一过滤、计数、排序和分页；不调用 raw KV 的 `list` |
 | `exists` / `delete` / `scopes` | 直接委托 raw KV，不读取或改写 value |
 

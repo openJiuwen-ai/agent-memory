@@ -35,7 +35,7 @@
 | `update` | 改：修改已有记录（id 不存在时抛 NotFoundError） |
 | `get` | 查：按 id 点查（点查单条不存在时抛 NotFoundError；批量查缺失的 id 省略） |
 
-检索型存储额外提供 `search` 查询；kv 提供 MemoryUnit 专用 `list` 和通用
+检索型存储额外提供 `search` 查询；kv 提供 MemoryUnit 专用 `list` 和通用 `mget` /
 `exists` / `scan` / `scopes`；fs 提供 `stat`。
 
 ## 行为铁律
@@ -91,3 +91,4 @@
 5. GraphStore 的 `seed_ids` 用于图召回时定位入口节点，匹配语义由后端定义（允许实现差异）。
 6. FusionStore 的 `FusionRecord` 可部分字段为 None（如只写向量不写文本）。
 7. `EncryptedKVStore` 的 `raw_kv_store` 不能指向自身；未配置 raw 依赖时必须在装配阶段报错。
+8. `KVStore.mget` 是 `get` 的批量互补：返回与 `keys` 下标一一对应的 `list[bytes]`、任一 key 缺失即抛 `NotFoundError`（与 `get` 一致，不静默省略）、**不去重**、支持重复 key（各下标独立返回，语义同 Redis `MGET`，重复 key 去重由调用方如 `UnitReader.load` 负责，不下沉到本接口）；`encrypted` 的 `mget` 委托 raw 取密文（raw 缺失即抛 `NotFoundError`）后须逐项解密（AAD 绑 key，不可批量统一解密）。
