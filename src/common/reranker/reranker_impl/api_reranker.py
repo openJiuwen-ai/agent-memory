@@ -18,6 +18,12 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List
 
+from common._support import (
+    outbound_verify,
+    read_outbound_ssl,
+    require_ca_file,
+    require_https,
+)
 from common.base import PluginType
 from common.errors import BackendError, HealthCheckError, ValidationError
 from common.log import get_logger
@@ -70,6 +76,8 @@ class APIReranker(Reranker):
         timeout: float = 30.0,
         dialect: str = "cohere",
         client: object = None,
+        ssl_verify: bool = False,
+        ssl_ca_cert: str | None = None,
     ) -> None:
         dialect = (dialect or "cohere").lower()
         if dialect not in _DIALECTS:
@@ -89,7 +97,12 @@ class APIReranker(Reranker):
                 import httpx
             except ImportError as exc:  # pragma: no cover - 依赖缺失路径
                 raise ImportError("APIReranker 需要 `pip install httpx`") from exc
-            self._client = httpx.Client(timeout=timeout)
+            # ssl_verify 关闭时不干预（保持 httpx 默认）；开启时按 ssl_ca_cert 覆盖
+            # 信任锚，缺证书回落系统 CA（公网端点走公共 CA，属正常状态）。
+            client_kwargs: dict = {"timeout": timeout}
+            if ssl_verify:
+                client_kwargs["verify"] = outbound_verify(ssl_ca_cert)
+            self._client = httpx.Client(**client_kwargs)
 
     def plugin_type(self) -> PluginType:
         return PluginType.RERANKER
@@ -132,10 +145,17 @@ class APIReranker(Reranker):
 
 @RerankerProducer.register("api")
 def _build(config):
+    base_url = config.get("reranker_base_url", "")
+    ssl = read_outbound_ssl(config, "reranker")
+    if ssl.verify:
+        require_https(base_url, component="api reranker", param="reranker")
+        require_ca_file(ssl.ca_cert, component="api reranker", param="reranker")
     return APIReranker(
         model_name=config.get("reranker_model") or "rerank",
-        base_url=config.get("reranker_base_url", ""),
+        base_url=base_url,
         api_key=config.get("reranker_api_key", ""),
         timeout=config.get("reranker_timeout", 30.0),
         dialect=config.get("reranker_dialect", "cohere"),
+        ssl_verify=ssl.verify,
+        ssl_ca_cert=ssl.ca_cert,
     )

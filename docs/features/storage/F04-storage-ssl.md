@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-31 |
-| 影响范围 | `src/storage/_support.py`、redis / elasticsearch / milvus / postgres / pgvector 五个 builder、`deploy/docker/online/`、`deploy/docker/postgres/` |
-| 测试基线 | `tests/unit/storage` 117 passed, 2 skipped |
-| Refs | [S06-storage.md](../../specs/S06-storage.md) 不变量 17 |
+| 影响范围 | `src/common/_support.py`（共用件）、`src/storage/_support.py`、redis / elasticsearch / milvus / postgres / pgvector 五个 builder、`deploy/docker/online/`、`deploy/docker/postgres/` |
+| 测试基线 | `tests/unit/storage` 118 passed, 2 skipped |
+| Refs | [S06-storage.md](../../specs/S06-storage.md) 不变量 17、[F05-model-service-ssl.md](../common/F05-model-service-ssl.md) |
 
 ## 背景
 
@@ -27,7 +27,7 @@ params:
   ssl_ca_cert: "${X_SSL_CA:-}"           # CA 证书路径
 ```
 
-读取逻辑收在 `_support.read_ssl_config`，**翻译留在各 builder**：
+读取逻辑收在 `storage/_support.read_ssl_config`，**翻译留在各 builder**：
 
 | 后端 | `ssl_verify=true` → | `ssl_ca_cert` → |
 |---|---|---|
@@ -69,6 +69,19 @@ redis-py 的 `from_url` 让 URL query **覆盖** kwargs（实测），故
 现有部署全部是容器内明文互联，默认开启会让它们在装配阶段直接报错。
 `ssl_verify=false` 时不组装任何 TLS 参数、不做任何校验，行为与本特性引入前一致，
 同时保留"把 TLS 完全交给连接串自理"的逃生舱。
+
+### 六、公共件下沉到 common，storage 只保留自有策略
+
+出站模型服务（见 [F05](../common/F05-model-service-ssl.md)）需要同一套归一与校验逻辑，
+故公共部分下沉，避免两处各写一份：
+
+| 住在 `common/_support.py` | 住在 `storage/_support.py` |
+|---|---|
+| `as_bool`、`SslConfig`、`build_ssl_config` | `read_ssl_config`（含缺证书即报错这条自有策略） |
+| `require_tls_scheme`（支持地址列表与 `allow_empty`） | `reject_url_tls_params`（redis-py 特有的 URL query 覆盖问题） |
+
+`reject_url_tls_params` 不下沉：它针对的是 redis-py「URL query 覆盖 kwargs」这一独有
+行为，其余客户端不存在该风险。
 
 ## 拒绝的方案
 

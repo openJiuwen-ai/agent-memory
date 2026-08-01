@@ -13,6 +13,7 @@
 | `base.py` | Plugin 基类：所有共享插件的自描述契约 |
 | `bootstrap.py` | 统一触发各插件注册（per-layer bootstrap） |
 | `errors.py` | 自定义异常（ConflictError/NotFoundError/PermissionDeniedError/BackendError 等） |
+| `_support.py` | 跨层共用的小工具：配置值布尔归一（`as_bool`）、SSL 配置读取与装配期校验（`SslConfig`/`build_ssl_config`/`require_tls_scheme`/`require_ca_file`/`outbound_verify`）；storage 与出站客户端共用，避免各写一份 |
 | `type_def/` | 核心数据类型定义目录 |
 | `type_def/memory.py` | MemoryUnit/Relation/Segment/Temporal/ContentLayers 等；MemoryUnit id 在完整 Scope 内唯一；KV key 前缀 `MEMORY_KEY_PREFIX`/`memory_key`（建索引记忆 `/memory/{id}`）。`ContentLayers`(l0/l1) 为分层披露标注，由 LayerAnnotator 对超阈 content 产出 |
 | `type_def/scope.py` | Scope：`org/space/user/agent/session` 五维归属；非空 `space` 是全局唯一的逻辑隔离标识且为 keyword-only，旧位置参数保持 `org/user/agent/session` 顺序 |
@@ -79,3 +80,14 @@
 5. 两级命名空间配置驱动装配：每个 Producer 声明全局唯一 `TOP_NAME`（占配置顶层段），其下是若干具名实例（`target` 指定实现名、`params` 传参、`new_instance` 控制是否共享）。`_build(config)` 里用 `XProducer.dep(config, param_name=None, default=...)` 取子依赖（引用名→共享 / 内联 dict→匿名 / 缺省→默认匿名）。
 6. LLM 的厂商扩展参数必须由对应 Provider Adapter 注入；构建、检索等内核业务调用点不得硬编码 `extra_body` 等传输层字段。
 7. SecurityProvider 与 AuditLogger 一样是横切组件，不继承 `Plugin`、不进入 `PluginType`；实现仍通过独立 Producer 与 `*_impl` 自注册。
+8. 出站 HTTP 客户端（LLM / Embedder / Reranker）统一接受 `<prefix>_ssl_verify` /
+   `<prefix>_ssl_ca_cert`（默认关闭），经 `_support.read_outbound_ssl` 读取。开启时须调
+   `require_https` 与 `require_ca_file` 在装配期拦截明文 scheme 和缺失证书，并只在此时
+   注入 `http_client`。OpenAI SDK 相关实现必须使用 `openai.DefaultHttpxClient`，不得用
+   裸 `httpx.Client` 覆盖 SDK 的长读取超时、连接池与重定向等默认值。`verify` 取值统一经
+   `outbound_verify` 翻译，不在各实现里内联。缺证书回落系统 CA 而非报错，这是与
+   storage 侧唯一的差异，详见
+   [F05-model-service-ssl.md](../../docs/features/common/F05-model-service-ssl.md)。
+9. SSL 相关的公共件只在 `_support.py` 实现一份：`as_bool` / `SslConfig` /
+   `build_ssl_config` / `require_tls_scheme` / `require_ca_file` / `outbound_verify`。
+   storage 层与 security 层均从此处引用，新增出站客户端不得再各写一份归一或校验逻辑。

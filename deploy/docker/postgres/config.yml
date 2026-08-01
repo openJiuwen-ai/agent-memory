@@ -13,17 +13,26 @@ memory_api:
     llm_base_url: "${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}"
     llm_api_key: "${LLM_API_KEY}"
     llm_temperature: 0.0
+    # SSL：ssl_verify 只控制是否接管信任锚，加密开关在 base_url 的 scheme。
+    # 关闭（默认）时不干预——http:// 明文直连便于开发自测；开启后 base_url 必须
+    # 是 https://。公网端点留空 ssl_ca_cert，私有部署自签时给出容器内证书路径。
+    llm_ssl_verify: "${LLM_SSL_VERIFY:-false}"
+    llm_ssl_ca_cert: "${LLM_SSL_CA:-}"
 
     embedder_model: "${EMBEDDER_MODEL:-bge-m3}"
     embedder_base_url: "${EMBEDDER_BASE_URL}"
     embedder_api_key: "${MODEL_API_TOKEN}"
     embedder_max_batch: 16
+    embedder_ssl_verify: "${EMBEDDER_SSL_VERIFY:-false}"
+    embedder_ssl_ca_cert: "${EMBEDDER_SSL_CA:-}"
 
     reranker_model: "${RERANKER_MODEL:-bge-reranker-v2-m3}"
     reranker_base_url: "${RERANKER_BASE_URL}"
     reranker_api_key: "${MODEL_API_TOKEN}"
     reranker_dialect: "${RERANKER_DIALECT:-cohere}"
     reranker_timeout: 120.0
+    reranker_ssl_verify: "${RERANKER_SSL_VERIFY:-false}"
+    reranker_ssl_ca_cert: "${RERANKER_SSL_CA:-}"
 
     policies:
       rerank.enabled: "true"

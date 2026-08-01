@@ -384,7 +384,12 @@ def _build(config):
     options: dict[str, Any] = {}
     if ssl.verify:
         # hosts 只承载地址：elasticsearch-py 解析 URL 时不读 query，证书只能走构造参数。
-        require_tls_scheme(hosts, expected="https", backend="elasticsearch fulltext", param="hosts")
+        require_tls_scheme(
+            hosts,
+            expected="https",
+            component="elasticsearch fulltext",
+            param="params.hosts",
+        )
         options["ca_certs"] = ssl.ca_cert
     return ElasticsearchFulltextStore(
         hosts=hosts,

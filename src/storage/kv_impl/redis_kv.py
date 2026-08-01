@@ -203,7 +203,9 @@ def _build(config):
     ssl = read_ssl_config(config, backend="redis KV")
     options: dict[str, Any] = {}
     if ssl.verify:
-        require_tls_scheme(url, expected="rediss", backend="redis KV", param="url")
+        require_tls_scheme(
+            url, expected="rediss", component="redis KV", param="params.url"
+        )
         reject_url_tls_params(url, backend="redis KV", param="url")
         options["ssl_ca_certs"] = ssl.ca_cert
     return RedisKVStore(

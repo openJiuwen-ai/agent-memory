@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Any, Iterator, NamedTuple
+from typing import Any, Iterator
 from urllib.parse import parse_qs, urlparse
 
+from common._support import (  # noqa: F401  部分为向后兼容的再导出
+    SslConfig,
+    as_bool,
+    build_ssl_config,
+    require_tls_scheme,
+)
 from common.errors import AgentMemoryError, BackendError, ValidationError
 from common.factory.factory import Factory
 from common.type_def import Scope
@@ -60,32 +66,6 @@ def scope_segments(scope: Scope) -> list[str]:
 # -- SSL：统一配置读取，各后端自行翻译成客户端参数 ------------------------------ #
 
 
-class SslConfig(NamedTuple):
-    """``ssl_verify`` 开关与 ``ssl_ca_cert`` 证书路径的读取结果。"""
-
-    verify: bool
-    ca_cert: str | None
-
-
-def as_bool(value: Any, *, default: bool) -> bool:
-    """把配置值归一为布尔。
-
-    配置经 ``${VAR:-false}`` 展开后是**字符串** ``"false"``，直接 ``if`` 判定为真，
-    故必须显式归一。取值集合与 common.security 层保持一致。
-    """
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off"}:
-            return False
-    return bool(value)
-
-
 def read_ssl_config(config, *, backend: str) -> SslConfig:
     """读本组件的 ``ssl_verify`` / ``ssl_ca_cert``。
 
@@ -96,33 +76,14 @@ def read_ssl_config(config, *, backend: str) -> SslConfig:
     证书即在**装配阶段**报错——云厂商多为自签 CA，缺证书时客户端会拿系统 CA 去校验并
     失败，那个报错指向证书链、看不出是配置漏项，故在此提前拦截。
     """
-    verify = as_bool(Factory.cfg_get(config, "ssl_verify"), default=False)
-    ca_cert = (Factory.cfg_get(config, "ssl_ca_cert") or "").strip() or None
-    if verify and not ca_cert:
+    ssl = build_ssl_config(
+        Factory.cfg_get(config, "ssl_verify"), Factory.cfg_get(config, "ssl_ca_cert")
+    )
+    if ssl.verify and not ssl.ca_cert:
         raise ValidationError(
             f"{backend} 配置了 ssl_verify=true，必须同时提供 params.ssl_ca_cert"
         )
-    return SslConfig(verify=verify, ca_cert=ca_cert)
-
-
-def require_tls_scheme(value: Any, *, expected: str, backend: str, param: str) -> None:
-    """校验连接串已声明 TLS scheme，否则装配阶段报错。
-
-    redis 与 elasticsearch 的加密开关**只存在于 scheme**（实测：redis-py 的
-    ``ssl=True`` 不生效，仅 ``rediss://`` 会切到 SSLConnection；elasticsearch-py 8.x
-    已移除 ``use_ssl``）。若此处放行，证书参数会被传入却不生效，连接以明文建立而
-    调用方以为已加密——静默失败比报错危险，故拦在装配期。
-
-    ``value`` 可为单个地址或地址列表（elasticsearch 的 ``hosts`` 支持多节点），
-    列表逐个校验——整体转字符串会把合法的多节点配置一并判错。
-    """
-    candidates = value if isinstance(value, (list, tuple)) else [value]
-    for item in candidates:
-        if not str(item).startswith(f"{expected}://"):
-            raise ValidationError(
-                f"{backend} 配置了 ssl_verify=true，params.{param} 必须使用 "
-                f"{expected}:// scheme（当前值 {item!r}）"
-            )
+    return ssl
 
 
 def reject_url_tls_params(value: Any, *, backend: str, param: str) -> None:

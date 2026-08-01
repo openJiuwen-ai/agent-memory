@@ -12,6 +12,12 @@ from __future__ import annotations
 
 import openai
 
+from common._support import (
+    outbound_verify,
+    read_outbound_ssl,
+    require_ca_file,
+    require_https,
+)
 from common.base import PluginType
 from common.embedder.base import EmbedderProducer
 from common.errors import HealthCheckError
@@ -41,6 +47,8 @@ class OpenAIEmbedder(Embedder):
         api_key: str = "",
         dimension: int = 1536,
         max_batch_size: int = 2048,
+        ssl_verify: bool = False,
+        ssl_ca_cert: str | None = None,
     ) -> None:
         self._model_name = model_name
         self._dimension = dimension
@@ -49,6 +57,12 @@ class OpenAIEmbedder(Embedder):
         client_kwargs: dict = {"api_key": api_key}
         if base_url is not None:
             client_kwargs["base_url"] = base_url
+        if ssl_verify:
+            # 使用 SDK 提供的默认客户端，在注入信任锚的同时保留其
+            # 长读取超时、连接池和重定向等默认参数。
+            client_kwargs["http_client"] = openai.DefaultHttpxClient(
+                verify=outbound_verify(ssl_ca_cert)
+            )
         self._client = openai.OpenAI(**client_kwargs)
 
     def plugin_type(self) -> PluginType:
@@ -150,10 +164,17 @@ class OpenAIEmbedder(Embedder):
 
 @EmbedderProducer.register("openai")
 def _build(config):
+    base_url = config.get("embedder_base_url", "")
+    ssl = read_outbound_ssl(config, "embedder")
+    if ssl.verify:
+        require_https(base_url, component="openai embedder", param="embedder")
+        require_ca_file(ssl.ca_cert, component="openai embedder", param="embedder")
     return OpenAIEmbedder(
         model_name=config.get("embedder_model") or "text-embedding-3-small",
-        base_url=config.get("embedder_base_url", ""),
+        base_url=base_url,
         api_key=config.get("embedder_api_key") or "",
         dimension=config.get("embedder_dim", 64),
         max_batch_size=config.get("embedder_max_batch") or 2048,
+        ssl_verify=ssl.verify,
+        ssl_ca_cert=ssl.ca_cert,
     )

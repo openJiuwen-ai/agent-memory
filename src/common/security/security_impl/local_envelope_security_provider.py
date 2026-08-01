@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from common._support import as_bool
 from common.errors import BackendError, ValidationError
 from common.factory.factory import Factory
 from common.security import (
@@ -420,19 +421,6 @@ def _restrict_file_mode(path: Path) -> None:
         raise BackendError(f"failed to set key file permissions: {path}") from exc
 
 
-def _as_bool(value: Any, *, default: bool) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off"}:
-            return False
-    return bool(value)
-
 
 @SecurityProducer.register("local")
 def _build(config):
@@ -442,12 +430,12 @@ def _build(config):
             key_hex=Factory.cfg_get(config, "key_hex", ""),
             key_b64=Factory.cfg_get(config, "key_b64", ""),
             key_env=Factory.cfg_get(config, "key_env", _DEFAULT_KEY_ENV),
-            create_key_file=_as_bool(
+            create_key_file=as_bool(
                 Factory.cfg_get(config, "create_key_file", True),
                 default=True,
             ),
         ),
-        allow_plaintext=_as_bool(
+        allow_plaintext=as_bool(
             Factory.cfg_get(config, "allow_plaintext", True),
             default=True,
         ),
