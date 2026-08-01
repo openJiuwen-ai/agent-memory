@@ -30,6 +30,12 @@ from .base import ConstructionOperator
 logger = get_logger(__name__)
 
 
+def dedup_text(unit: MemoryUnit) -> str:
+    """Return the compact extracted statement used for construction deduplication."""
+    statement = str(unit.metadata.get("extracted_statement", "")).strip()
+    return statement or unit.content
+
+
 class DedupProducer(Factory):
     """Dedup 的注册式工厂（与契约同处接口层，消费方只依赖接口即可取实例）。
 

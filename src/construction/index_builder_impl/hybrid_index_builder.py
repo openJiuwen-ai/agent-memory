@@ -41,6 +41,7 @@ class HybridIndexBuilder(IndexBuilder):
         fulltext_l1: FulltextStore | None = None,
         vector_l0: VectorStore | None = None,
         vector_l1: VectorStore | None = None,
+        fail_on_vector_error: bool = False,
     ) -> None:
         self._fulltext_builder = FulltextIndexBuilder(
             fulltext,
@@ -54,6 +55,7 @@ class HybridIndexBuilder(IndexBuilder):
             embedder,
             vector_l0=vector_l0,
             vector_l1=vector_l1,
+            fail_on_error=fail_on_vector_error,
         )
 
     def operator_type(self) -> OperatorType:
@@ -92,10 +94,6 @@ class HybridIndexBuilder(IndexBuilder):
 
 
 # -- 注册到 IndexBuilderProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
-
-
-
-
 @IndexBuilderProducer.register("hybrid")
 def _build(config):
     # 全文/向量 Store 与召回侧共享同一实例；embedder 与查询侧共享 → 同一向量空间。
@@ -129,4 +127,5 @@ def _build(config):
         fulltext_l1=_opt_dep(FulltextProducer, "layers_l1"),
         vector_l0=_opt_dep(VectorProducer, "layers_l0"),
         vector_l1=_opt_dep(VectorProducer, "layers_l1"),
+        fail_on_vector_error=bool(config.get("fail_on_vector_error", False)),
     )

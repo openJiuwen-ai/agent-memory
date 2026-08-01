@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/construction/ |
-| 最近一次修订日期 | 2026-07-29 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/retrieval/F03-metadata-filtering.md |
+| 最近一次修订日期 | 2026-07-31 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-grounded-evidence-recall.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/retrieval/F03-metadata-filtering.md |
 
 ## 范围 / 边界
 
@@ -79,9 +79,12 @@ class ConstructionOperator(ABC):
 派生单元的 `tier`/`tags` 由 LLM 在抽取时产出。`layers`（L0/L1 分层标注）不由 Extractor
 产出——由 Evolver 抽取后委托 `LayerAnnotator` 生成（见下文 LayerAnnotator 节 + F01-memory-layer）。
 
-LLM 抽取只合并同一实体同一关系或同一事件。派生单元的 L2 只保存紧凑抽取陈述，
-通过 `source_ref`、`provenance` 和模型返回的 `metadata["evidence"]` 回指来源（兼容
-自定义 prompt，允许 evidence 为空）。表格独立记录使用 `structured_record`，可复用助手
+LLM 抽取只合并同一实体同一关系或同一事件。派生单元的 L2 以紧凑抽取陈述为
+语义头，附加包含模型 evidence 的原文证据窗；默认至少覆盖来源文本的 30% 且不少于
+256 字符。evidence 无法在原文定位时回退为完整来源，不使用未验证的模型片段。
+`source_ref`/`provenance` 保留血缘，`metadata["extracted_statement"]`、`evidence` 与
+`l2_source_coverage` 分别保留紧凑去重文本、实际证据窗与覆盖率。表格独立记录使用
+`structured_record`，可复用助手
 产物使用 `artifact`。非法 JSON 作为子批失败显式记录；候选结构逐条校验并隔离坏候选，
 同批合法候选继续保留。单个子批失败不阻断其它子批；仅当整次抽取没有产生任何可用候选
 时向上抛出首个错误，以区别于模型明确返回合法 `[]`。
@@ -158,7 +161,8 @@ Extractor。
 
 按 `layer_annotator_threshold`（默认 512）筛选：仅对 `len(content) > threshold` 的 unit
 标注，短 content 留空。LLM 批量结果必须以合法、唯一的 ID 完整覆盖输入；重复、越界或
-遗漏 ID 时整批不写。每条结果应满足 `0 < len(L0) < len(L1) < len(L2)`，仅长度不合法的
+遗漏 ID 时整批不写并逐条重试；单条调用仍无法解析时使用严格短于 L2 的确定性
+原文摘录回退。每条结果应满足 `0 < len(L0) < len(L1) < len(L2)`，仅文本或长度不合法的
 条目单独跳过，其余条目在结构校验完成后写入。Evolver 在 EXTRACT/CONSOLIDATE 抽取
 （升华）后、去重落盘前调用。
 
@@ -172,6 +176,9 @@ Extractor。
 | `update` | `(units: list[MemoryUnit]) -> None` | 记忆变更后增量更新对应索引条目 |
 | `remove` | `(units: list[MemoryUnit]) -> None` | 按每个 MemoryUnit 自带 Scope 删除对应索引条目（幂等） |
 | `rebuild` | `() -> None` | 从真源全量重建索引（删索引不丢数据的保障） |
+
+向量索引默认保留 best-effort 兼容语义；需要保证向量召回真实可用的调用方可显式
+启用 strict/fail-on-error 配置，使向量化、写入或 chunk tracking 失败向上抛出。
 
 **build 路径**（按配置启用的索引类型，各实现独立构建）：
 ```

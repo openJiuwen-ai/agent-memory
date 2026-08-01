@@ -88,7 +88,7 @@ def test_milvus_compiles_complete_boolean_tree() -> None:
     compiled = _milvus_filter(_tree())
 
     assert 'metadata["memory_type"] == "coding"' in compiled
-    assert 'metadata["project"] in ["alpha", "beta"]' in compiled
+    assert '(metadata["project"] == "alpha" || metadata["project"] == "beta")' in compiled
     assert 'metadata["priority"] >= 8' in compiled
     assert " || " in compiled
     assert '(not (metadata["status"] == "archived"))' in compiled
@@ -137,8 +137,8 @@ def test_elasticsearch_compiles_complete_boolean_tree() -> None:
     [
         (FilterOp.EQ, "x", 'metadata["f"] == "x"'),
         (FilterOp.NE, "x", 'metadata["f"] != "x"'),
-        (FilterOp.IN, ["x", "y"], 'metadata["f"] in ["x", "y"]'),
-        (FilterOp.NOT_IN, ["x"], 'metadata["f"] not in ["x"]'),
+        (FilterOp.IN, ["x", "y"], '(metadata["f"] == "x" || metadata["f"] == "y")'),
+        (FilterOp.NOT_IN, ["x"], '(metadata["f"] != "x")'),
         (FilterOp.GT, 1, 'metadata["f"] > 1'),
         (FilterOp.GTE, 1, 'metadata["f"] >= 1'),
         (FilterOp.LT, 1, 'metadata["f"] < 1'),

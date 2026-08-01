@@ -45,7 +45,7 @@ from common.type_def.memory_codec import dumps, loads
 from construction.abstractor import Abstractor, AbstractorProducer
 from construction.associator import Associator, AssociatorProducer
 from construction.base import ExtractContext, OperatorType
-from construction.dedup import Dedup, DedupProducer
+from construction.dedup import Dedup, DedupProducer, dedup_text
 from construction.evolver import EvolveMode, Evolver, EvolveResult, EvolverProducer
 from construction.extractor import Extractor, ExtractorProducer
 from construction.index_builder import IndexBuilder, IndexBuilderProducer
@@ -448,7 +448,7 @@ class OrchestratingEvolver(Evolver):
         for unit, score in hits[:3]:  # 只取 top-3 减少上下文消耗
             existing_texts.append(
                 f"[Memory ID: {unit.id}]\n"
-                f"Content: {unit.content}\n"
+                f"Content: {dedup_text(unit)}\n"
                 f"Tier: {unit.tier.value}\n"
                 f"Similarity: {score:.3f}"
             )
@@ -456,7 +456,7 @@ class OrchestratingEvolver(Evolver):
         user_prompt = (
             f"Candidate memory to check:\n"
             f"[Memory ID: {candidate.id}]\n"
-            f"Content: {candidate.content}\n"
+            f"Content: {dedup_text(candidate)}\n"
             f"Tier: {candidate.tier.value}\n\n"
             f"Existing similar memories:\n"
             + "\n\n".join(existing_texts)
@@ -514,9 +514,9 @@ class OrchestratingEvolver(Evolver):
         # 构建紧凑批量 prompt
         blocks: List[str] = []
         for cand, hits in items:
-            cand_block = f"[{cand.id}]: {cand.content}"
+            cand_block = f"[{cand.id}]: {dedup_text(cand)}"
             for unit, score in hits[:3]:
-                cand_block += f"\n  e|{unit.id}|{score:.3f}: {unit.content}"
+                cand_block += f"\n  e|{unit.id}|{score:.3f}: {dedup_text(unit)}"
             blocks.append(cand_block)
         user_prompt = "\n---\n".join(blocks)
 

@@ -8,7 +8,6 @@
 """
 
 import json
-from unittest.mock import patch
 
 import pytest
 
@@ -36,6 +35,9 @@ _LONG_CONTENT = (
     "关于性能监控，她要求所有核心接口接入 Prometheus 指标采集，并配置 Grafana 告警面板。"
     "她认为可观测性是生产系统的底线，没有监控的服务不允许上线。"
 )
+
+_VALID_L0 = "Alice 负责 BlinkMem 项目后端"
+_VALID_L1 = "Alice 负责 BlinkMem 后端架构、自动化测试和性能优化。"
 
 
 def _long_unit(uid: str = "u1") -> MemoryUnit:
@@ -128,13 +130,13 @@ def _llm_annotator(responses: list[str]) -> LLMLayerAnnotator:
 def test_llm_annotate_long_content():
     """超阈 content → LLM 批量回填 L0/L1。"""
     ann = _llm_annotator([
-        json.dumps([{"id": 0, "l0": "概要文本", "l1": "overview 文本"}])
+        json.dumps([{"id": 0, "l0": _VALID_L0, "l1": _VALID_L1}])
     ])
     unit = _long_unit()
     ann.annotate([unit])
 
-    assert unit.layers.l0 == "概要文本"
-    assert unit.layers.l1 == "overview 文本"
+    assert unit.layers.l0 == _VALID_L0
+    assert unit.layers.l1 == _VALID_L1
 
 
 def test_llm_annotate_short_content_skipped():
@@ -147,49 +149,44 @@ def test_llm_annotate_short_content_skipped():
     assert unit.layers.l1 == ""
 
 
-def test_llm_annotate_failure_leaves_empty():
-    """LLM 返回非 JSON → layers 留空，不阻断（best effort）。"""
+def test_llm_annotate_failure_uses_source_bound_fallback():
+    """LLM 返回非 JSON → 用严格递减的原文摘录回退，不阻断。"""
     ann = _llm_annotator(["not a json"])
     unit = _long_unit()
-    with patch(
-        "construction.layer_annotator_impl.llm_layer_annotator.logger.warning"
-    ) as warning:
-        ann.annotate([unit])  # 不抛异常
+    ann.annotate([unit])
 
-    assert unit.layers.l0 == ""
-    assert unit.layers.l1 == ""
-    message, offset, size, exc = warning.call_args.args
-    assert message.endswith("skipping: %s")
-    assert (offset, size) == (0, 1)
-    assert isinstance(exc, ValueError)
-    assert str(exc) == "layer response is not valid JSON"
+    assert unit.layers.l0
+    assert unit.layers.l1
+    assert _LONG_CONTENT.startswith(unit.layers.l1)
+    assert unit.layers.l1.startswith(unit.layers.l0)
+    assert len(unit.layers.l0) < len(unit.layers.l1) < len(_LONG_CONTENT)
 
 
 def test_llm_annotate_batch_multiple():
     """多条超阈候选 → 一次 LLM 调用按 id 回填各条。"""
     ann = _llm_annotator([
         json.dumps([
-            {"id": 0, "l0": "概要0", "l1": "overview0"},
-            {"id": 1, "l0": "概要1", "l1": "overview1"},
+            {"id": 0, "l0": _VALID_L0, "l1": _VALID_L1},
+            {"id": 1, "l0": _VALID_L0, "l1": _VALID_L1},
         ])
     ])
     u0, u1 = _long_unit("u0"), _long_unit("u1")
     ann.annotate([u0, u1])
 
-    assert u0.layers.l0 == "概要0"
-    assert u1.layers.l0 == "概要1"
+    assert u0.layers.l0 == _VALID_L0
+    assert u1.layers.l0 == _VALID_L0
 
 
 def test_llm_annotate_mixed_long_short():
     """长短混合 → 只对超阈的调 LLM，短的留空。"""
     ann = _llm_annotator([
-        json.dumps([{"id": 0, "l0": "概要", "l1": "overview"}])
+        json.dumps([{"id": 0, "l0": _VALID_L0, "l1": _VALID_L1}])
     ])
     long_u = _long_unit("u0")
     short_u = create_test_unit("u1", "短")
     ann.annotate([long_u, short_u])
 
-    assert long_u.layers.l0 == "概要"
+    assert long_u.layers.l0 == _VALID_L0
     assert short_u.layers.l0 == ""
 
 
@@ -204,8 +201,8 @@ def test_llm_duplicate_ids_do_not_partially_mutate_batch():
 
     ann.annotate([u0, u1])
 
-    assert u0.layers.l0 == ""
-    assert u1.layers.l0 == ""
+    assert u0.layers.l0 and u0.layers.l1
+    assert u1.layers.l0 and u1.layers.l1
 
 
 @pytest.mark.parametrize("invalid_id", [True, 0.9])
@@ -217,8 +214,8 @@ def test_llm_rejects_non_integer_ids(invalid_id):
 
     ann.annotate([unit])
 
-    assert unit.layers.l0 == ""
-    assert unit.layers.l1 == ""
+    assert unit.layers.l0 and unit.layers.l1
+    assert len(unit.layers.l0) < len(unit.layers.l1) < len(unit.content)
 
 
 def test_llm_missing_id_does_not_partially_mutate_batch():
@@ -235,7 +232,7 @@ def test_llm_missing_id_does_not_partially_mutate_batch():
 
 def test_llm_non_monotonic_layers_are_rejected():
     ann = _llm_annotator([
-        json.dumps([{"id": 0, "l0": "long summary", "l1": "short"}])
+        json.dumps([{"id": 0, "l0": _VALID_L0, "l1": "Alice"}])
     ])
     unit = _long_unit()
 
@@ -249,8 +246,8 @@ def test_llm_invalid_length_skips_only_that_item():
     """单条长度不合法不应抹掉同批其他合法分层。"""
     ann = _llm_annotator([
         json.dumps([
-            {"id": 0, "l0": "long summary", "l1": "short"},
-            {"id": 1, "l0": "summary", "l1": "a valid detailed overview"},
+                {"id": 0, "l0": _VALID_L0, "l1": "Alice"},
+                {"id": 1, "l0": _VALID_L0, "l1": _VALID_L1},
         ])
     ])
     invalid, valid = _long_unit("u0"), _long_unit("u1")
@@ -259,5 +256,5 @@ def test_llm_invalid_length_skips_only_that_item():
 
     assert invalid.layers.l0 == ""
     assert invalid.layers.l1 == ""
-    assert valid.layers.l0 == "summary"
-    assert valid.layers.l1 == "a valid detailed overview"
+    assert valid.layers.l0 == _VALID_L0
+    assert valid.layers.l1 == _VALID_L1

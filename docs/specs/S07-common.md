@@ -5,8 +5,8 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | src/common/ |
-| 最近一次修订日期 | 2026-07-30 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md |
+| 最近一次修订日期 | 2026-07-31 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-grounded-evidence-recall.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md |
 
 ## 范围 / 边界
 
@@ -60,6 +60,10 @@ class Plugin(ABC):
 | `embed` | `(texts: list[str]) -> list[list[float]]` | 批量向量化：每条输入产出一个向量 |
 | `dimension` | `() -> int` | 返回输出向量维度（须与目标向量索引一致） |
 | `embed_query` | `(text: str) -> list[float]` | 单条便捷方法 |
+
+OpenAI 兼容 Embedder 的 `base_url` 可传 API root 或完整 `/embeddings` endpoint，
+实现会归一化为 SDK 所需 root。`embedder_ssl_verify` 接受布尔值及常用环境变量
+布尔字符串；默认开启 TLS 校验，关闭时必须显式配置且记录警告。
 
 ### Chunker（`chunker/base.py`）
 

@@ -13,7 +13,7 @@ from common.embedder.base import Embedder, EmbedderProducer
 from common.log import get_logger
 from common.type_def import FilterClause, FilterOp, LifecycleState, MemoryUnit
 from construction.base import OperatorType
-from construction.dedup import Dedup, DedupProducer, same_scope
+from construction.dedup import Dedup, DedupProducer, dedup_text, same_scope
 from storage.kv import KvProducer, KVStore
 from storage.types import VectorQuery
 from storage.vector import VectorProducer, VectorStore
@@ -64,7 +64,7 @@ class VectorDedup(Dedup):
     def recall(self, candidate: MemoryUnit) -> List[Tuple[MemoryUnit, float]]:
         # Step A: 向量化候选
         try:
-            candidate_vector = self._embedder.embed([candidate.content])[0]
+            candidate_vector = self._embedder.embed([dedup_text(candidate)])[0]
         except Exception as exc:
             logger.warning(
                 "VectorDedup: Embedder failed for %s, recall empty: %s",
@@ -118,10 +118,6 @@ class VectorDedup(Dedup):
 
 
 # -- 注册到 DedupProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
-
-
-
-
 @DedupProducer.register("vector")
 def _build(config):
     return VectorDedup(

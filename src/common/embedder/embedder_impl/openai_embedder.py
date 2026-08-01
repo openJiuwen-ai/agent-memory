@@ -22,6 +22,27 @@ from ..base import Embedder
 logger = get_logger(__name__)
 
 
+def _normalize_base_url(base_url: str | None) -> str | None:
+    """Accept either an OpenAI API root or the full ``/embeddings`` endpoint."""
+    if base_url is None:
+        return None
+    normalized = base_url.strip().rstrip("/")
+    if normalized.endswith("/embeddings"):
+        normalized = normalized[: -len("/embeddings")]
+    return normalized or None
+
+
+def _coerce_ssl_verify(value: bool | str) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"embedder_ssl_verify must be a boolean, got {value!r}")
+
+
 class OpenAIEmbedder(Embedder):
     """OpenAI 兼容 Embeddings API 实现。
 
@@ -41,14 +62,22 @@ class OpenAIEmbedder(Embedder):
         api_key: str = "",
         dimension: int = 1536,
         max_batch_size: int = 2048,
+        ssl_verify: bool | str = True,
     ) -> None:
         self._model_name = model_name
         self._dimension = dimension
         self._max_batch_size = max_batch_size
+        self._ssl_verify = _coerce_ssl_verify(ssl_verify)
+        self._http_client = None
 
         client_kwargs: dict = {"api_key": api_key}
-        if base_url is not None:
-            client_kwargs["base_url"] = base_url
+        normalized_base_url = _normalize_base_url(base_url)
+        if normalized_base_url is not None:
+            client_kwargs["base_url"] = normalized_base_url
+        if not self._ssl_verify:
+            logger.warning("OpenAIEmbedder: TLS certificate verification is disabled")
+            self._http_client = openai.DefaultHttpxClient(verify=False)
+            client_kwargs["http_client"] = self._http_client
         self._client = openai.OpenAI(**client_kwargs)
 
     def plugin_type(self) -> PluginType:
@@ -156,4 +185,5 @@ def _build(config):
         api_key=config.get("embedder_api_key") or "",
         dimension=config.get("embedder_dim", 64),
         max_batch_size=config.get("embedder_max_batch") or 2048,
+        ssl_verify=config.get("embedder_ssl_verify", True),
     )
