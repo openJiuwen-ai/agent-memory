@@ -25,8 +25,11 @@ from dataclasses import dataclass
 
 from common.audit.base import AuditProducer
 from common.bootstrap import register_plugins
+from common.errors import ValidationError
 from common.factory.factory import Factory
 from common.log import setup_logging
+from common.security import SecurityProducer, SecurityProvider
+from common.security.security_impl import SecurityProducer as _SecImpl  # noqa: F401 触发自注册
 from config import Config
 from config.context import ComponentConfig
 from config.defaults import KV_DEFAULT_NAME, ROOT_PARAMS, default_context
@@ -42,6 +45,7 @@ from ingest.bootstrap import register_ingestors
 from retrieval.bootstrap import register_operators
 from storage.bootstrap import register_backends
 from storage.kv import KvProducer, KVStore
+from storage.kv_impl.encrypted_kv_store import EncryptedKVStore
 
 from .local_memory_api import LocalMemoryAPI
 
@@ -91,6 +95,18 @@ def build_kernel(
     # 根组件（LocalMemoryAPI）经 ROOT_PARAMS 引用各命名空间下的 default 实例。
     root = ComponentConfig(params=dict(ROOT_PARAMS), ctx=ctx, target="local", name="memory_api")
     setup_logging(root)  # 初始化 agent-memory 根 logger（按 globals 的 log_* 配置；幂等）
+
+    # 强制 KV 加密：不管配置里 kv_store.default 指向 memory/sqlite/redis，
+    # 装配出来的 KV 一定是 EncryptedKVStore，security provider 从 security 命名空间取。
+    raw_kv = KvProducer.dep(root, default="memory")
+    if not isinstance(raw_kv, EncryptedKVStore):
+        security = SecurityProducer.dep(root, default="local")
+        if not isinstance(security, SecurityProvider):
+            raise ValidationError(
+                f"security 命名空间装配结果不是 SecurityProvider: {type(security).__name__}"
+            )
+        raw_kv = EncryptedKVStore(raw=raw_kv, security=security)
+        KvProducer.put(KV_DEFAULT_NAME, raw_kv)
 
     api = LocalMemoryAPI(
         engine=EngineProducer.dep(root, default="in_memory"),
