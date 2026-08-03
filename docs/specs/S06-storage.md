@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/storage/ |
-| 最近一次修订日期 | 2026-07-30 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md |
+| 最近一次修订日期 | 2026-07-31 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -33,16 +33,20 @@
 6. **fs 提供 stat**：stat（文件元信息查询）。
 7. **scope 对 key/路径做命名空间隔离**：kv / fs 是通用原语，`scope` 入参用于对 key / 路径做命名空间隔离（同一逻辑 key 在不同 scope 下是相互隔离的不同物理键）。
 8. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
-9. **生产过滤先于截断**：Milvus VectorStore 与 Elasticsearch FulltextStore 对
-   `FilterExpr` 完整编译，并在 `limit/top_k` 前执行；不允许依赖检索层后置过滤替代
-   生产下推。
+9. **生产过滤先于截断**：生产检索后端必须完整编译所支持的 `FilterExpr`，并在
+   `limit/top_k` 前执行；不允许依赖检索层后置过滤替代生产下推。
 10. **metadata 原生类型入库**：Document / VectorRecord 的 metadata 保留 JSON 标量
     原生类型，不统一字符串化；不同类型之间不做隐式比较转换。
-11. **所有 Store 必须实现 `store_type()` 和 `health()`**：继承自 `BaseStore`。
-12. **多租户隔离默认依赖逻辑 scope 边界**：当前不要求物理分库/分 collection，但要求同一逻辑 key/id 在不同 scope 下严格命名空间隔离。
-13. **EncryptedKVStore 只装饰 KV，不实现算法**：写前加密、读后解密通过注入的 `SecurityProvider` 完成；`list` 在解密后执行 MemoryUnit 过滤，不能把过滤下推到密文 raw KV。
-14. **space 是 scope 的硬分区维度**：`scope_segments(scope)` 使用 `org/space/user/agent/session` 五段；`scope_dims(scope)` 在 `org` 非空时即使 `space==""` 也下推 `space == ""`，避免空 space 查询跨到非空 space。
-15. **标识唯一性分层**：非空 Space id 在 Space 资源注册表中全局唯一；MemoryUnit 与各 Store 记录 id 只要求在完整 Scope 内唯一。
+11. **metadata 过滤区分标量与数组**：`EQ` / `IN` 的正向匹配只命中标量，
+    `CONTAINS` 只命中数组成员；`NE` / `NOT_IN` 是对应正向谓词的逻辑否定；范围算子
+    只作用于标量，数组字段不按「任一成员命中」判定。后端若原生不保留单值/数组形态，
+    必须用内部派生字段恢复语义。
+12. **所有 Store 必须实现 `store_type()` 和 `health()`**：继承自 `BaseStore`。
+13. **多租户隔离默认依赖逻辑 scope 边界**：当前不要求物理分库/分 collection，但要求同一逻辑 key/id 在不同 scope 下严格命名空间隔离。
+14. **EncryptedKVStore 只装饰 KV，不实现算法**：写前加密、读后解密通过注入的 `SecurityProvider` 完成；`list` 在解密后执行 MemoryUnit 过滤，不能把过滤下推到密文 raw KV。
+15. **space 是 scope 的硬分区维度**：`scope_segments(scope)` 使用 `org/space/user/agent/session` 五段；`scope_dims(scope)` 在 `org` 非空时即使 `space==""` 也下推 `space == ""`，避免空 space 查询跨到非空 space。
+16. **标识唯一性分层**：非空 Space id 在 Space 资源注册表中全局唯一；MemoryUnit 与各 Store 记录 id 只要求在完整 Scope 内唯一。
+17. **SSL 声明即生效**：接外部后端的实现统一接受 `ssl_verify` / `ssl_ca_cert` 两个装配参数（默认关闭）。`ssl_verify` 只表示**是否校验服务端证书**，不负责开启加密——加密开关落在连接串上（`rediss://` / `https://` / `sslmode=`）。开启后不得静默降级：缺证书、连接串仍为明文、或连接串自带会覆盖本设置的 TLS 参数，一律在**装配阶段**报错。
 
 ## 接口契约
 

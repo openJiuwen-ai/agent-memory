@@ -1,11 +1,19 @@
-"""具体后端实现共用的小工具：异常归一与 scope 派生。"""
+"""具体后端实现共用的小工具：异常归一、scope 派生与 SSL 配置读取。"""
 
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Iterator
+from typing import Any, Iterator
+from urllib.parse import parse_qs, urlparse
 
-from common.errors import AgentMemoryError, BackendError
+from common._support import (  # noqa: F401  部分为向后兼容的再导出
+    SslConfig,
+    as_bool,
+    build_ssl_config,
+    require_tls_scheme,
+)
+from common.errors import AgentMemoryError, BackendError, ValidationError
+from common.factory.factory import Factory
 from common.type_def import Scope
 
 _DIMS = ("org", "space", "user", "agent", "session")
@@ -53,3 +61,48 @@ def scope_segments(scope: Scope) -> list[str]:
     错位拼接）；各段把路径分隔符替换掉以防越界。
     """
     return [(getattr(scope, dim) or "_").replace("/", "_").replace(":", "_") for dim in _DIMS]
+
+
+# -- SSL：统一配置读取，各后端自行翻译成客户端参数 ------------------------------ #
+
+
+def read_ssl_config(config, *, backend: str) -> SslConfig:
+    """读本组件的 ``ssl_verify`` / ``ssl_ca_cert``。
+
+    ``ssl_verify`` 只管**是否校验服务端证书**，不负责开启加密——加密开关落在连接串
+    上（``rediss://`` / ``https://`` / ``sslmode=``），各后端形式不同，见各 builder。
+
+    默认关闭：不配置时行为与引入本参数前完全一致，现有明文部署不受影响。开启但未给
+    证书即在**装配阶段**报错——云厂商多为自签 CA，缺证书时客户端会拿系统 CA 去校验并
+    失败，那个报错指向证书链、看不出是配置漏项，故在此提前拦截。
+    """
+    ssl = build_ssl_config(
+        Factory.cfg_get(config, "ssl_verify"), Factory.cfg_get(config, "ssl_ca_cert")
+    )
+    if ssl.verify and not ssl.ca_cert:
+        raise ValidationError(
+            f"{backend} 配置了 ssl_verify=true，必须同时提供 params.ssl_ca_cert"
+        )
+    return ssl
+
+
+def reject_url_tls_params(value: Any, *, backend: str, param: str) -> None:
+    """``ssl_verify`` 为真时，连接串不得自带 ``ssl_*`` 查询参数。
+
+    redis-py 的 ``from_url`` 让 URL query **覆盖** kwargs（实测），故连接串里的
+    ``?ssl_cert_reqs=none`` / ``?ssl_check_hostname=false`` 会静默关掉校验，而配置
+    仍声称 ssl_verify=true——调用方以为受保护、实际未校验对端身份，比明文更危险。
+    显式回传 ``ssl_cert_reqs="required"`` 也压不住（同样被 URL 覆盖），只能拒绝。
+
+    ``ssl_verify=false`` 时不调用本函数：那是把 TLS 完全交给连接串自理的逃生舱。
+    """
+    candidates = value if isinstance(value, (list, tuple)) else [value]
+    for item in candidates:
+        query = urlparse(str(item)).query
+        conflicts = sorted(key for key in parse_qs(query) if key.startswith("ssl_"))
+        if conflicts:
+            raise ValidationError(
+                f"{backend} 配置了 ssl_verify=true，params.{param} 不得再带 TLS 查询参数 "
+                f"{conflicts}——URL 参数会覆盖此处设置并可能关闭校验；"
+                f"请改用 ssl_verify / ssl_ca_cert，或置 ssl_verify=false 由 URL 全权负责"
+            )

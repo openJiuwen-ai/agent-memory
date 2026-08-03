@@ -30,16 +30,16 @@ from common.errors import ValidationError
 class FilterOp(str, Enum):
     """过滤算子。"""
 
-    EQ = "eq"  # 等于
-    NE = "ne"  # 不等于
-    IN = "in"  # 属于集合（value 为 list）
-    NOT_IN = "not_in"  # 不属于集合（value 为 list）
+    EQ = "eq"  # 标量等于；数组字段不按成员命中
+    NE = "ne"  # EQ 的逻辑否定
+    IN = "in"  # 标量属于查询集合（value 为 list）
+    NOT_IN = "not_in"  # IN 的逻辑否定
     GT = "gt"  # 大于
     GTE = "gte"  # 大于等于
     LT = "lt"  # 小于
     LTE = "lte"  # 小于等于
     # 数组成员包含（如 tags 含某标签）。语义仅限「数组含该元素」，不表示字符串子串——
-    # 生产后端（ES term / Milvus json_contains）都按成员包含编译，标量子串无法下推。
+    # 生产后端都按成员包含编译；标量既不做等值退化，也不做字符串子串匹配。
     CONTAINS = "contains"
 
 

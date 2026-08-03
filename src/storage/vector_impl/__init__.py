@@ -9,5 +9,6 @@ from storage.vector import VectorProducer
 
 import_module(".in_memory_vector_store", __name__)
 import_module(".milvus_vector", __name__)
+import_module(".pgvector_vector", __name__)
 
 __all__ = ["VectorProducer"]

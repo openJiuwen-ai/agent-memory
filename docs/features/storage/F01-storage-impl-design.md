@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-06-24 |
 | 影响范围 | src/storage/{kv,vector,fulltext,fusion,graph,fs}_impl/，docs/specs/S06-storage.md（如有） |
-| 测试基线 | `pytest tests/unit/storage tests/integration/storage` 全绿（真实后端 redis/milvus/es/nano-graphrag 未连通时按约定 skip） |
+| 测试基线 | `pytest tests/unit/storage tests/integration/storage` 全绿（真实后端 redis/milvus/es/nano-graphrag/postgres 未配置或不可达时按约定 skip；PostgreSQL 真库由 `AGENT_MEMORY_TEST_PG_DSN` 启用） |
 | Refs | —（如有 issue 补 `Refs: #<n>`） |
 
 > 本文档归档**存储层各后端实现的规约**：每个 `*_impl/` 实现对应哪个接口契约、注册名（`target`）、必填/可选参数、scope 隔离方式、CRUD/search 语义与各自取舍。接口契约本身（方法签名、错误语义、不变量）归 `docs/specs/S06-storage.md`；本文聚焦「当前有哪几种后端、各自怎么落地、为什么这样选」。
@@ -41,10 +41,11 @@
 | `memory` | `InMemoryKVStore` | 进程内 dict | — | — | scope 折五段命名空间键 | `ttl` 过期在 get/exists/scan 时**惰性清除**；`list` 使用公共 MemoryUnit 过滤/计数/分页 |
 | `sqlite` | `SQLiteKVStore` | 标准库 `sqlite3` 落盘 | — | `db_path`(`agent_memory.db`) | scope 五维各落一列，主键 `(org,space,user,agent,session,key)` | 跨进程/重启保留；`check_same_thread=False` + 一把锁串行化（HTTP 多线程）；过期行读时过滤 + 惰性删；`":memory:"` 为进程内；旧表迁移到空 `space` |
 | `redis` | `RedisKVStore` | Redis（`redis-py` 惰性导入） | `url` | `host`/`port`(6379)/`db`(0)/`password` | key 前缀 `org:space:user:agent:session:<key>` | `insert`=`SET NX`（已存在→`ConflictError`）、`update`=`SET XX`（不存在→`NotFoundError`）；`ttl`→`px` 毫秒；`scopes()` 扫 `*` 还原五段 |
+| `postgres` | `PostgresKVStore` | PostgreSQL（`psycopg` 3 + 每实例连接池，惰性导入） | `dsn` | `schema`(`public`)/`table`(`agent_memory_kv`)/池大小/`auto_create_schema` | scope 五维各落一列，复合主键 | 条件式 `ON CONFLICT` 原子区分活跃冲突与过期覆盖；TTL 用库侧 Unix 秒，读取过滤过期行；`scan` 用 `starts_with` 做字面前缀；`list` 使用公共 MemoryUnit 过滤/计数/分页 |
 
-> 三者同实现 `KVStore` 契约 + 同一字节编码；`list` 当前都使用公共兼容路径完成
+> 上述四个真源后端与 `encrypted` 装饰器同实现 `KVStore` 契约 + 同一字节编码；`list` 当前都使用公共兼容路径完成
 > MemoryUnit 过滤、精确计数、稳定排序和分页，装配替换后上层语义不变。
-> **`mget` 落地差异**（批量点读，返回与 `keys` 下标一一对应的 `list[bytes]`，不去重、支持重复 key；任一 key 缺失即抛 `NotFoundError`，与 `get` 一致）：`memory` 逐 key 走 `_live`，缺失即报（无往返开销）；`sqlite` 单条 `IN` 查询召回命中 → 按位置组装，缺失报错（`WHERE` 过滤已过期行，与 `list` 同款，惰性删仍走单 key 的 `_live_value`/`get`）；`redis` 原生 `MGET` 一次往返，redis 返回的 `None` 位归一为 `NotFoundError`（省逐条 `get` 网络往返）；`encrypted` 委托 raw `mget` 取密文（raw 已保证全命中）后逐项解密（AAD 绑 key，不能批量解）。
+> **`mget` 落地差异**（批量点读，返回与 `keys` 下标一一对应的 `list[bytes]`，不去重、支持重复 key；任一 key 缺失即抛 `NotFoundError`，与 `get` 一致）：`memory` 逐 key 走 `_live`，缺失即报（无往返开销）；`sqlite` 单条 `IN` 查询召回命中 → 按位置组装，缺失报错（`WHERE` 过滤已过期行，与 `list` 同款，惰性删仍走单 key 的 `_live_value`/`get`）；`redis` 原生 `MGET` 一次往返，redis 返回的 `None` 位归一为 `NotFoundError`（省逐条 `get` 网络往返）；`postgres` 单条 `ANY` 查询召回命中后按输入位置组装，过期或缺失 key 统一报错；`encrypted` 委托 raw `mget` 取密文（raw 已保证全命中）后逐项解密（AAD 绑 key，不能批量解）。
 
 ### VectorStore（`storage/vector.py` · `VectorProducer` · TOP_NAME=`vector_store`）
 
@@ -54,6 +55,7 @@
 |---|---|---|---|---|---|---|
 | `memory` | `InMemoryVectorStore` | 进程内暴力余弦 | — | — | scope 折五段命名空间键 | `search` 暴力算余弦、过滤 `score>0`、降序 top-k；维度一致性由调用方（同一 Embedder）保证 |
 | `milvus` | `MilvusVectorStore` | Milvus（`pymilvus` 2.4+ `MilvusClient` 惰性导入） | `uri`、`dim`（>0，回退 `globals.embedder_dim`） | `host`/`port`(19530)/`token`/`collection`(`agent_memory_vectors`)/`metric_type`(`COSINE`)/`consistency_level`(`Strong`)/`scope_field_max_length`(256)/`id_max_length`(512) | scope 五维落标量字段，表达式 `scope_x == v` 约束 | 首次连接 `_ensure_collection`（建 schema：id/vector/5×scope/metadata-JSON + AUTOINDEX）；**Strong 一致性**保证 read-after-write；`insert` 先 query 查重→`ConflictError`，`update` 查缺→`NotFoundError` 后 `upsert`；`score`=Milvus distance（COSINE/IP 越大越近、L2 越小越近） |
+| `pgvector` | `PgVectorStore` | PostgreSQL 16 + pgvector ≥0.8.0（`psycopg` 惰性导入） | `dsn`、`dim` | `schema`/`table`/`metric_type`/`index_type`/HNSW 与池参数/`auto_create_schema` | scope 五维与逻辑 id 组成复合主键，search 按 scope 维度过滤 | HNSW + iterative scan；COSINE/L2/IP 均转为高分优先；FilterExpr 在 top-k 前编译为参数化 jsonb SQL；`update` 不改 scope；`index_type=none` 在事务内禁用 index scan 做精确搜索 |
 
 > `dim` 必须 >0，构造期即校验（缺失或回退后仍为 0 → `ValidationError`）。
 

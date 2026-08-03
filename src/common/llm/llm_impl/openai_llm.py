@@ -13,6 +13,12 @@ from collections.abc import Mapping
 
 import openai
 
+from common._support import (
+    outbound_verify,
+    read_outbound_ssl,
+    require_ca_file,
+    require_https,
+)
 from common.base import PluginType
 from common.errors import HealthCheckError
 from common.llm.base import LlmProducer
@@ -43,12 +49,18 @@ class OpenAILLM(LLM):
         api_key: str = "",
         default_temperature: float = 0.0,
         default_max_tokens: int = 4096,
+        ssl_verify: bool = False,
+        ssl_ca_cert: str | None = None,
     ) -> None:
         self._model_name = model_name
         self._default_temperature = default_temperature
         self._default_max_tokens = default_max_tokens
         self._api_key = api_key
         self._base_url = base_url or None  # 空串视作未配置 → 用官方端点
+        # ssl_verify 只决定是否接管信任锚：关闭时完全不干预（http 明文直连、https
+        # 仍走 SDK 默认的公共 CA 校验）；开启时按 ssl_ca_cert 覆盖，缺省回落系统 CA。
+        self._ssl_verify = ssl_verify
+        self._ssl_ca_cert = (ssl_ca_cert or "").strip() or None
         self._client = None  # 惰性创建（见 client 属性）
 
     @property
@@ -61,6 +73,12 @@ class OpenAILLM(LLM):
             client_kwargs: dict = {"api_key": self._api_key}
             if self._base_url:
                 client_kwargs["base_url"] = self._base_url
+            if self._ssl_verify:
+                # 使用 SDK 提供的默认客户端，在注入信任锚的同时保留其
+                # 长读取超时、连接池和重定向等默认参数。
+                client_kwargs["http_client"] = openai.DefaultHttpxClient(
+                    verify=outbound_verify(self._ssl_ca_cert)
+                )
             self._client = openai.OpenAI(**client_kwargs)
         return self._client
 
@@ -147,10 +165,17 @@ class OpenAILLM(LLM):
 
 @LlmProducer.register("openai")
 def _build(config):
+    base_url = config.get("llm_base_url", "")
+    ssl = read_outbound_ssl(config, "llm")
+    if ssl.verify:
+        require_https(base_url, component="openai LLM", param="llm")
+        require_ca_file(ssl.ca_cert, component="openai LLM", param="llm")
     return OpenAILLM(
         model_name=config.get("llm_model") or "gpt-4o",
-        base_url=config.get("llm_base_url", ""),
+        base_url=base_url,
         api_key=config.get("llm_api_key") or "",
         default_temperature=config.get("llm_temperature", 0.0),
         default_max_tokens=config.get("llm_max_tokens", 4096),
+        ssl_verify=ssl.verify,
+        ssl_ca_cert=ssl.ca_cert,
     )

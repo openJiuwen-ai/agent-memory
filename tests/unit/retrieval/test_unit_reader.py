@@ -250,17 +250,29 @@ def test_filter_range_op_on_set_field_is_false(unit_factory) -> None:
     assert matches_filters(unit, FilterClause("tags", FilterOp.CONTAINS, "work"))
 
 
-def test_filter_contains_on_scalar_is_equality_not_substring(unit_factory) -> None:
-    """标量 CONTAINS 退化为等值，与 ES 编译器一致（CONTAINS 与 EQ 同走 term）。
-
-    子串匹配会与下推语义分叉：向量/倒排通道下推等值不召回 "homework"，图通道不下推、
-    经本函数子串匹配却召回——同一查询因命中通道不同给出不同结果。
-    """
+def test_filter_contains_rejects_scalar_even_on_exact_value(unit_factory) -> None:
     unit = unit_factory("a", "x")
     unit.metadata["project"] = "homework"
 
-    assert matches_filters(unit, FilterClause("metadata.project", FilterOp.CONTAINS, "homework"))
+    assert not matches_filters(
+        unit, FilterClause("metadata.project", FilterOp.CONTAINS, "homework")
+    )
     assert not matches_filters(unit, FilterClause("metadata.project", FilterOp.CONTAINS, "work"))
+
+
+def test_filter_scalar_ops_do_not_treat_array_as_scalar(unit_factory) -> None:
+    unit = unit_factory("a", "x")
+    unit.metadata["project"] = ["alpha", "beta"]
+
+    assert matches_filters(unit, FilterClause("metadata.project", FilterOp.CONTAINS, "alpha"))
+    assert not matches_filters(unit, FilterClause("metadata.project", FilterOp.EQ, "alpha"))
+    assert matches_filters(unit, FilterClause("metadata.project", FilterOp.NE, "alpha"))
+    assert not matches_filters(
+        unit, FilterClause("metadata.project", FilterOp.IN, ["alpha", "gamma"])
+    )
+    assert matches_filters(
+        unit, FilterClause("metadata.project", FilterOp.NOT_IN, ["alpha", "gamma"])
+    )
 
 
 def test_current_query_excludes_expired_active(unit_factory) -> None:

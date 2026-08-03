@@ -1,10 +1,11 @@
-"""Milvus / Elasticsearch 完整 FilterExpr 编译器测试。"""
+"""Milvus / Elasticsearch / PostgreSQL 完整 FilterExpr 编译器测试。"""
 
 from __future__ import annotations
 
 import pytest
 
 from common.type_def import FilterClause, FilterGroup, FilterLogic, FilterOp, Scope, normalize
+from storage._pg import compile_pg_filter, pg_scope_clause
 from storage.fulltext_impl.elasticsearch_fulltext import ElasticsearchFulltextStore
 from storage.types import TextQuery, VectorQuery
 from storage.vector_impl.milvus_vector import MilvusVectorStore
@@ -84,6 +85,16 @@ def _elasticsearch_filter(filters):
     return store.recording_client.last_query["bool"]["filter"][0]
 
 
+def _es_scalar_match(field: str, value_query: dict) -> dict:
+    key = field.removeprefix("metadata.")
+    return {
+        "bool": {
+            "filter": [value_query],
+            "must_not": [{"term": {"metadata_array_fields": key}}],
+        }
+    }
+
+
 def test_milvus_compiles_complete_boolean_tree() -> None:
     compiled = _milvus_filter(_tree())
 
@@ -111,22 +122,43 @@ def test_elasticsearch_compiles_complete_boolean_tree() -> None:
     assert compiled == {
         "bool": {
             "filter": [
-                {"term": {"metadata.memory_type": "coding"}},
+                _es_scalar_match(
+                    "metadata.memory_type",
+                    {"term": {"metadata.memory_type": "coding"}},
+                ),
                 {
                     "bool": {
                         "should": [
-                            {"terms": {"metadata.project": ["alpha", "beta"]}},
-                            {"range": {"metadata.priority": {"gte": 8}}},
+                            _es_scalar_match(
+                                "metadata.project",
+                                {"terms": {"metadata.project": ["alpha", "beta"]}},
+                            ),
+                            _es_scalar_match(
+                                "metadata.priority",
+                                {"range": {"metadata.priority": {"gte": 8}}},
+                            ),
                         ],
                         "minimum_should_match": 1,
                     }
                 },
                 {
                     "bool": {
-                        "must_not": [{"term": {"metadata.status": "archived"}}],
+                        "must_not": [
+                            _es_scalar_match(
+                                "metadata.status",
+                                {"term": {"metadata.status": "archived"}},
+                            )
+                        ],
                     }
                 },
-                {"term": {"metadata.tags": "work"}},
+                {
+                    "bool": {
+                        "filter": [
+                            {"term": {"metadata.tags": "work"}},
+                            {"term": {"metadata_array_fields": "tags"}},
+                        ]
+                    }
+                },
             ]
         }
     }
@@ -172,8 +204,14 @@ def test_elasticsearch_compiles_nested_not_group() -> None:
                 {
                     "bool": {
                         "should": [
-                            {"term": {"metadata.project": "alpha"}},
-                            {"term": {"metadata.project": "beta"}},
+                            _es_scalar_match(
+                                "metadata.project",
+                                {"term": {"metadata.project": "alpha"}},
+                            ),
+                            _es_scalar_match(
+                                "metadata.project",
+                                {"term": {"metadata.project": "beta"}},
+                            ),
                         ],
                         "minimum_should_match": 1,
                     }
@@ -181,3 +219,118 @@ def test_elasticsearch_compiles_nested_not_group() -> None:
             ]
         }
     }
+
+
+def test_elasticsearch_distinguishes_scalar_equality_from_array_membership() -> None:
+    eq = _elasticsearch_filter(FilterClause("field", FilterOp.EQ, "x"))
+    contains = _elasticsearch_filter(FilterClause("field", FilterOp.CONTAINS, "x"))
+
+    assert eq == _es_scalar_match(
+        "metadata.field",
+        {"term": {"metadata.field": "x"}},
+    )
+    assert contains == {
+        "bool": {
+            "filter": [
+                {"term": {"metadata.field": "x"}},
+                {"term": {"metadata_array_fields": "field"}},
+            ]
+        }
+    }
+
+
+def test_elasticsearch_range_excludes_array_fields() -> None:
+    """Lucene 的 range 对多值字段任一成员命中即匹配，须限定标量。
+
+    真源复核对数组 + 范围算子判否，pg 用 ``jsonb_typeof='number'`` 守卫；ES 若放行
+    会比另两处宽松，同一谓词给出不同候选集。
+    """
+    compiled = _elasticsearch_filter(FilterClause("score", FilterOp.GT, 5))
+
+    assert compiled == _es_scalar_match(
+        "metadata.score",
+        {"range": {"metadata.score": {"gt": 5}}},
+    )
+
+
+def test_postgres_compiles_complete_boolean_tree_with_parameters() -> None:
+    fragment, params = compile_pg_filter(_tree())
+
+    assert "metadata @> jsonb_build_object(%s::text" in fragment
+    assert "::numeric >= %s::numeric" in fragment
+    assert " OR " in fragment
+    assert "NOT COALESCE" in fragment
+    assert "memory_type" in params
+    assert "metadata.memory_type" not in params
+    assert {"coding", "alpha", "beta", 8, "archived", "work"} <= set(params)
+
+
+@pytest.mark.parametrize(
+    "op,value,expected",
+    [
+        (FilterOp.EQ, "x", "COALESCE"),
+        (FilterOp.NE, "x", "NOT COALESCE"),
+        (FilterOp.IN, ["x", "y"], " OR "),
+        (FilterOp.NOT_IN, ["x"], "NOT COALESCE"),
+        (FilterOp.GT, 1, "::numeric > %s::numeric"),
+        (FilterOp.GTE, 1, "::numeric >= %s::numeric"),
+        (FilterOp.LT, 1, "::numeric < %s::numeric"),
+        (FilterOp.LTE, 1, "::numeric <= %s::numeric"),
+        (FilterOp.CONTAINS, "x", "jsonb_build_array"),
+    ],
+)
+def test_postgres_compiles_every_leaf_operator(
+    op: FilterOp, value, expected: str
+) -> None:
+    fragment, params = compile_pg_filter(normalize(FilterClause("f", op, value)))
+
+    assert expected in fragment
+    assert "f" in params
+
+
+def test_postgres_distinguishes_scalar_equality_from_array_membership() -> None:
+    eq_fragment, eq_params = compile_pg_filter(FilterClause("f", FilterOp.EQ, "x"))
+    contains_fragment, contains_params = compile_pg_filter(
+        FilterClause("f", FilterOp.CONTAINS, "x")
+    )
+    in_fragment, _ = compile_pg_filter(FilterClause("f", FilterOp.IN, ["x", "y"]))
+
+    assert "jsonb_build_array" not in eq_fragment
+    assert "jsonb_typeof" not in eq_fragment
+    assert eq_params == ["f", "x"]
+    assert "jsonb_typeof(metadata->%s) = 'array'" in contains_fragment
+    assert "jsonb_build_array" in contains_fragment
+    assert contains_params == ["f", "f", "x"]
+    assert "jsonb_build_array" not in in_fragment
+
+
+def test_postgres_filter_values_never_enter_sql_text() -> None:
+    hostile = "x'); DROP TABLE memories; --"
+    fragment, params = compile_pg_filter(
+        normalize(FilterClause("metadata.hostile", FilterOp.EQ, hostile))
+    )
+
+    assert hostile not in fragment
+    assert "hostile" not in fragment
+    assert hostile in params
+    assert "hostile" in params
+
+
+def test_postgres_scope_clause_uses_five_dimensions_for_exact_crud() -> None:
+    fragment, params = pg_scope_clause(
+        Scope(org="acme", space="prod", user="alice", agent="bot", session="s1"),
+        exact=True,
+    )
+
+    assert fragment == (
+        "scope_org = %s AND scope_space = %s AND scope_user = %s "
+        "AND scope_agent = %s AND scope_session = %s"
+    )
+    assert params == ["acme", "prod", "alice", "bot", "s1"]
+
+
+def test_postgres_hierarchical_scope_keeps_empty_space_boundary() -> None:
+    fragment, params = pg_scope_clause(Scope(org="acme"), exact=False)
+
+    assert fragment == "scope_org = %s AND scope_space = %s"
+    assert params == ["acme", ""]

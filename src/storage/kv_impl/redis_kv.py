@@ -20,7 +20,13 @@ from common.factory.factory import Factory
 from common.type_def import MEMORY_KEY_PREFIX, FilterExpr, Scope
 from storage.kv import KvProducer
 
-from .._support import scope_segments, wrap_backend
+from .._support import (
+    read_ssl_config,
+    reject_url_tls_params,
+    require_tls_scheme,
+    scope_segments,
+    wrap_backend,
+)
 from ..base import StoreType
 from ..kv import KVStore
 from ..types import KVMemoryListResult
@@ -43,6 +49,8 @@ class RedisKVStore(KVStore):
         **options: Any,
     ) -> None:
         self._url = url
+        # url 分支走 from_url，不读 _conn，故 options 需单独留一份透传（见 client）。
+        self._options = dict(options)
         self._conn = dict(host=host, port=port, db=db, password=password, **options)
         self._client: Any = None
 
@@ -58,8 +66,9 @@ class RedisKVStore(KVStore):
                 ) from exc
             with wrap_backend("redis connect"):
                 if self._url:
+                    # url 里的 query 参数优先级高于此处 kwargs（redis-py 解析顺序所致）。
                     self._client = redis.Redis.from_url(
-                        self._url, decode_responses=False
+                        self._url, decode_responses=False, **self._options
                     )
                 else:
                     self._client = redis.Redis(decode_responses=False, **self._conn)
@@ -191,10 +200,19 @@ class RedisKVStore(KVStore):
 def _build(config):
     # 三方库后端：url 必填，未配置即在 build 阶段报错（而非惰性连接时才暴露）。
     url = Factory.require_param(config, "url", backend="redis KV")
+    ssl = read_ssl_config(config, backend="redis KV")
+    options: dict[str, Any] = {}
+    if ssl.verify:
+        require_tls_scheme(
+            url, expected="rediss", component="redis KV", param="params.url"
+        )
+        reject_url_tls_params(url, backend="redis KV", param="url")
+        options["ssl_ca_certs"] = ssl.ca_cert
     return RedisKVStore(
         url=url,
         host=Factory.cfg_get(config, "host", "localhost"),
         port=Factory.cfg_get(config, "port", 6379),
         db=Factory.cfg_get(config, "db", 0),
         password=Factory.cfg_get(config, "password"),
+        **options,
     )
