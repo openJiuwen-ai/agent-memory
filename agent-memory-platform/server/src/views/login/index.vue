@@ -128,7 +128,7 @@ async function handleLogin() {
       }
 
       ElMessage.success('登录成功')
-      router.push('/dashboard')
+      router.push('/ops')
     } catch {
       // 错误已由响应拦截器处理
     } finally {
