@@ -13,7 +13,7 @@
 | `base.py` | Plugin 基类：所有共享插件的自描述契约 |
 | `bootstrap.py` | 统一触发各插件注册（per-layer bootstrap） |
 | `errors.py` | 自定义异常（ConflictError/NotFoundError/PermissionDeniedError/BackendError 等） |
-| `_support.py` | 跨层共用的小工具：配置值布尔归一（`as_bool`）、SSL 配置读取与装配期校验（`SslConfig`/`build_ssl_config`/`require_tls_scheme`/`require_ca_file`/`outbound_verify`）；storage 与出站客户端共用，避免各写一份 |
+| `_support.py` | 跨层共用的小工具：配置值布尔归一（`as_bool`）、SSL 配置读取与装配期校验（`SslConfig`/`build_ssl_config`/`require_tls_scheme`/`require_ca_file`/`outbound_verify`/`read_ssl_config`/`reject_url_tls_params`）、scope 命名空间渲染（`SCOPE_DIMS`/`scope_segments`）、后端异常归一（`wrap_backend`）；storage、lock 与出站客户端共用，避免各写一份 |
 | `type_def/` | 核心数据类型定义目录 |
 | `type_def/memory.py` | MemoryUnit/Relation/Segment/Temporal/ContentLayers 等；MemoryUnit id 在完整 Scope 内唯一；KV key 前缀 `MEMORY_KEY_PREFIX`/`memory_key`（建索引记忆 `/memory/{id}`）。`ContentLayers`(l0/l1) 为分层披露标注，由 LayerAnnotator 对超阈 content 产出 |
 | `type_def/scope.py` | Scope：`org/space/user/agent/session` 五维归属；非空 `space` 是全局唯一的逻辑隔离标识且为 keyword-only，旧位置参数保持 `org/user/agent/session` 顺序 |
@@ -32,11 +32,13 @@
 | `reranker/` | Reranker 插件目录 |
 | `audit/` | AuditLogger 插件目录 |
 | `security/` | SecurityProvider 横切接口目录（接口 + `local` ENC1 AES-GCM 实现） |
+| `lock/` | LockProvider 横切接口目录：跨实例互斥原语（接口 + `redis` / `memory` 实现）。**common 层唯一的异步契约**，只交付原语、不在业务路径加锁，见 [F06-distributed-lock.md](../../docs/features/common/F06-distributed-lock.md) |
 
 ## 行为铁律
 
 1. **插件接口与实现严格分离**
    接口模块（`<plugin>/base.py`）定义抽象契约 + Producer 工厂类，零依赖实现。实现模块（`<plugin>/<plugin>_impl/*.py`）具体实现 + 尾部 `@XxxProducer.register("name")` 自注册。消费方只 import 接口层，不触达 `*_impl`。
+   唯一例外是 `LockProvider`：`acquire`/`release`/`guard` 在接口层落实现，只抽象后端原语。重入记账与 guard 组合是契约级行为而非后端细节，下沉会在两个实现里分叉。新增组件不得援引此例外，除非同样能论证「行为属于契约本身」。
 
 2. **工厂随契约（住在接口层）**
    每个插件的 Producer 工厂定义在其接口模块（`base.py`）中，与抽象契约同处一地。
@@ -61,7 +63,7 @@
 - 共享插件接口定义与注册式工厂
 - 核心数据类型（MemoryUnit/Scope/Context/Relation/Chunk/AuditEvent 等）
 - 工厂注册基础设施（Factory 基类 + `TOP_NAME` 命名空间 + `build`/`build_named`/`dep` 三接口）
-- 横切接口（AuditLogger / SecurityProvider）
+- 横切接口（AuditLogger / SecurityProvider / LockProvider）
 - 错误类型
 - 工具函数
 
@@ -79,7 +81,7 @@
 4. 重依赖实现在 `*_impl/__init__.py` 中用 `try/except ImportError` 包裹。
 5. 两级命名空间配置驱动装配：每个 Producer 声明全局唯一 `TOP_NAME`（占配置顶层段），其下是若干具名实例（`target` 指定实现名、`params` 传参、`new_instance` 控制是否共享）。`_build(config)` 里用 `XProducer.dep(config, param_name=None, default=...)` 取子依赖（引用名→共享 / 内联 dict→匿名 / 缺省→默认匿名）。
 6. LLM 的厂商扩展参数必须由对应 Provider Adapter 注入；构建、检索等内核业务调用点不得硬编码 `extra_body` 等传输层字段。
-7. SecurityProvider 与 AuditLogger 一样是横切组件，不继承 `Plugin`、不进入 `PluginType`；实现仍通过独立 Producer 与 `*_impl` 自注册。
+7. SecurityProvider、AuditLogger 与 LockProvider 都是横切组件，不继承 `Plugin`、不进入 `PluginType`；实现仍通过独立 Producer 与 `*_impl` 自注册。横切组件的接口文件命名为 `<name>/<name>.py`（不是插件的 `base.py`）。
 8. 出站 HTTP 客户端（LLM / Embedder / Reranker）统一接受 `<prefix>_ssl_verify` /
    `<prefix>_ssl_ca_cert`（默认关闭），经 `_support.read_outbound_ssl` 读取。开启时须调
    `require_https` 与 `require_ca_file` 在装配期拦截明文 scheme 和缺失证书，并只在此时
@@ -89,5 +91,11 @@
    storage 侧唯一的差异，详见
    [F05-model-service-ssl.md](../../docs/features/common/F05-model-service-ssl.md)。
 9. SSL 相关的公共件只在 `_support.py` 实现一份：`as_bool` / `SslConfig` /
-   `build_ssl_config` / `require_tls_scheme` / `require_ca_file` / `outbound_verify`。
-   storage 层与 security 层均从此处引用，新增出站客户端不得再各写一份归一或校验逻辑。
+   `build_ssl_config` / `require_tls_scheme` / `require_ca_file` / `outbound_verify` /
+   `read_ssl_config` / `reject_url_tls_params`。storage 层、lock 与 security 层均从此处
+   引用，新增出站客户端不得再各写一份归一或校验逻辑。同理，scope 命名空间渲染
+   （`SCOPE_DIMS` / `scope_segments`）与后端异常归一（`wrap_backend`）也只此一份，
+   `storage/_support.py` 是再导出而非第二实现。
+10. LockProvider 的契约是异步的，`health()` 随之异步——这是 common 层唯一的异步组件。
+    锁只交付原语，本层不在任何业务路径上加锁；在哪些临界区取锁由各消费方自行论证。
+    锁是基于租约的协调机制而非共识算法，依赖方必须能容忍偶发互斥失效或自备第二道防线。
