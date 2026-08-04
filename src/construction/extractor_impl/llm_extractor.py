@@ -13,7 +13,8 @@ LLM 在每个候选里输出裸 ``source_id`` 回指来源。解析时校验 sou
 tier 与 tags 均由 LLM 在抽取时一并产出（同一 prompt，不另调 LLM、不走 FeatureExtractor）：
 - ``tier``：候选认知角色，限定 ``episodic`` / ``semantic`` / ``procedural`` 三选一
   （WORKING/ARCHIVAL 不由抽取产出，CORE 留给 Abstractor 升华）。
-- ``tags``：1-3 个简短主题标签，供后续过滤/检索。
+- ``tags``：1-3 个简短主题标签；构建派生 unit 时与源 unit 的 write tags 合并，再追加
+  ``extracted``（或 procedural 路径的 ``procedural``）系统标记。
 
 L0/L1 分层标注不由本算子负责——由 Evolver 在抽取后委托
 :class:`~construction.layer_annotator.LayerAnnotator` 生成（见 F01-memory-layer）。
@@ -60,7 +61,7 @@ from common.type_def import (
 )
 
 from ..base import ExtractContext, OperatorType
-from ..common import parse_tags
+from ..common import merge_unit_tags, parse_tags
 from ..extractor import Extractor, ExtractorProducer
 
 logger = get_logger(__name__)
@@ -498,7 +499,8 @@ class ExtractorImpl(Extractor):
         # 构建 1 条 PROCEDURAL MemoryUnit，provenance 回指全部本轮 unit
         now = datetime.now(timezone.utc)
         source = units[0]
-        tags = ["procedural"]
+        # 合并 write tags（engine 已写到源 unit）+ 系统标记 procedural
+        tags = merge_unit_tags(source.tags, ["procedural"])
         unit = MemoryUnit(
             id=str(uuid.uuid4()),
             scope=source.scope,
@@ -835,9 +837,10 @@ class ExtractorImpl(Extractor):
     ) -> list[MemoryUnit]:
         """将 ExtractionCandidate 转换为 MemoryUnit。
 
-        tier 与 tags 取自 candidate（由 LLM 在 Phase 2 产出）；不再走 FeatureExtractor 富化。
-        tags 仍兜底追加 ``extracted`` 标记派生来源（与 keyword_extractor 一致，便于后续
-        过滤/避免反复提取）。
+        tier 取自 candidate（由 LLM 在 Phase 2 产出）；不再走 FeatureExtractor 富化。
+        tags = write tags（source.tags）∪ LLM 主题 tags ∪ ``extracted`` 派生来源标记
+        （与 keyword_extractor / 默认路径 classifier 合并策略对齐，保证 write(tags=...)
+        在 infer 派生 unit 上可检索过滤）。
         """
         # 建立 source_unit_id → source_unit 的索引
         source_map = {u.id: u for u in source_units}
@@ -853,10 +856,8 @@ class ExtractorImpl(Extractor):
                 )
                 continue
 
-            # tags = LLM 抽的标签 + extracted 兜底（标记派生来源，便于后续过滤/避免反复提取）
-            tags = list(c.tags)
-            if "extracted" not in tags:
-                tags.append("extracted")
+            # write tags 优先，再并 LLM 主题 tags，最后补 extracted 标记
+            tags = merge_unit_tags(source.tags, c.tags, ["extracted"])
 
             statement = c.content.strip()
             if not statement:

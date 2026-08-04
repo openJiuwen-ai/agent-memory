@@ -18,6 +18,7 @@ from common.chunker.base import Chunker, ChunkerProducer
 from common.log import get_logger
 from common.type_def import LifecycleState, MemoryTier, MemoryUnit, Segment, Temporal
 from construction.base import ExtractContext, OperatorType
+from construction.common import merge_unit_tags
 from construction.extractor import Extractor, ExtractorProducer
 
 logger = get_logger(__name__)
@@ -113,7 +114,8 @@ class KeywordExtractor(Extractor):
                 t_valid=now,
             ),
             provenance=[u.id for u in units],
-            tags=["procedural"],
+            # 合并 write tags（engine 已写到源 unit）+ 系统标记 procedural
+            tags=merge_unit_tags(source.tags, ["procedural"]),
             metadata={"procedural": "true"},
             lifecycle=LifecycleState.ACTIVE,
         )

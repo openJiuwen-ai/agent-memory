@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/construction/ |
-| 最近一次修订日期 | 2026-07-29 |
+| 最近一次修订日期 | 2026-08-04 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/retrieval/F03-metadata-filtering.md |
 
 ## 范围 / 边界
@@ -76,7 +76,8 @@ class ConstructionOperator(ABC):
 |------|------|------|
 | `extract` | `(units: list[MemoryUnit], *, context: ExtractContext \| None = None) -> list[MemoryUnit]` | 从一批原始记忆单元中提取零或多条低抽象粒度的派生单元；context 只作 prompt 参考 |
 
-派生单元的 `tier`/`tags` 由 LLM 在抽取时产出。`layers`（L0/L1 分层标注）不由 Extractor
+派生单元的 `tier` 由 LLM 在抽取时产出；`tags` 为源 unit 的 write tags ∪ LLM 主题
+tags ∪ 系统标记（`extracted` / `procedural`）。`layers`（L0/L1 分层标注）不由 Extractor
 产出——由 Evolver 抽取后委托 `LayerAnnotator` 生成（见下文 LayerAnnotator 节 + F01-memory-layer）。
 
 LLM 抽取只合并同一实体同一关系或同一事件。派生单元的 L2 只保存紧凑抽取陈述，
