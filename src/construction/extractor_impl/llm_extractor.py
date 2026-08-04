@@ -866,6 +866,7 @@ class ExtractorImpl(Extractor):
                 continue
             seen.add(dedup_key)
 
+            now = datetime.now(timezone.utc)
             unit = MemoryUnit(
                 id=str(uuid.uuid4()),
                 scope=source.scope,
@@ -874,7 +875,8 @@ class ExtractorImpl(Extractor):
                 source_ref=source.id,
                 temporal=Temporal(
                     t_event=_parse_event_date(c.event_date) or source.temporal.t_event,
-                    t_ingest=datetime.now(timezone.utc),
+                    t_ingest=now,
+                    t_valid=now,
                 ),
                 provenance=[source.id],
                 tags=tags,
