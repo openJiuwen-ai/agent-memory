@@ -10,7 +10,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（write/recall/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
+| `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（write/batch_write/recall/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
 | `memory_api_impl/assembly.py` | 装配入口：`build_kernel(config)` 递归构建 MemoryAPI 实例 |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI：委托 Engine/Governor/Scheduler/PermissionManager/SpaceManager + PEP 鉴权 |
@@ -32,8 +32,8 @@
 4. **admin_* 不经 Engine**  
    `admin_get/set/all` 直达 `PolicyManager`，不经过 `MemoryEngine`（Engine 中对应方法抛 NotImplementedError）。
 
-5. **write/write_async 分离**  
-   `write` 是同步桥接（内部 `asyncio.run(write_async)`），供 CLI/脚本使用；`write_async` 直通 Engine 协程，供事件循环形态使用。
+5. **写入同步/异步桥接**
+   `write` / `batch_write` 分别桥接对应协程入口；batch 在本层逐项归一化、鉴权、space 校验和审计后委托 Engine，默认按输入顺序返回 partial-success outcomes。
 
 6. **space 必须在 API 边界执行策略校验**
    `scope.require_space=true` 时，具体 target scope 缺少 `space` 的数据面/治理面操作必须在 `LocalMemoryAPI._authorize` 拒绝并记录 deny audit；`Scope()` 根管理面与 org 级 `list_spaces/create_space` 鉴权目标不受此策略影响。
@@ -80,6 +80,6 @@ MemoryAPI.method(scope=target, identity=caller)
 ## 本地约束
 
 1. `identity` 为必填 keyword-only 参数，与 `scope` 同为 Scope 类型，强制具名传入防止位置传反。
-2. 所有数据面方法（write/recall/list/get/update/delete/evolve）都需要鉴权，治理面（inspect/trace/audit）也需要鉴权。
+2. 所有数据面方法（write/batch_write/recall/list/get/update/delete/evolve）都需要鉴权，治理面（inspect/trace/audit）也需要鉴权。
 3. 装配由 `assembly.build_kernel(config)` 完成，递归调用各 Producer.create_from(spec)。
 4. 实现类（LocalMemoryAPI）不对外暴露，外部只依赖 `MemoryAPI` 抽象接口。
