@@ -7,12 +7,15 @@
   （本实例 params 回退 globals + ctx 句柄）。
 - :class:`RawSpec`：一个具名实例的纯数据。
 - :func:`default_context`：内置默认装配上下文（离线进程内栈，复刻共享拓扑）。
+- :class:`ConfigSource` / :class:`ConfigSourceProducer`：运行时晚绑定配置来源
+  （S08；默认 yaml_defaults，见 ``config_source_impl/``）。
 
 「装哪些、怎么串、共享谁」由各 ``Producer`` 经 ``build_named`` / ``dep`` 顺着引用落地
-（见 ``api.build_kernel``）。
+（见 ``api.build_kernel``）。业务配置运行时取值走 ConfigSource，不经 write/recall 入参。
 """
 
 from .config import Config
+from .config_source import ConfigSource, ConfigSourceProducer
 from .context import AssemblyContext, ComponentConfig, RawSpec
 from .defaults import default_context
 
@@ -22,4 +25,6 @@ __all__ = [
     "ComponentConfig",
     "RawSpec",
     "default_context",
+    "ConfigSource",
+    "ConfigSourceProducer",
 ]

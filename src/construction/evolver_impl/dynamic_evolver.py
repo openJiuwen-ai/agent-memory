@@ -375,8 +375,14 @@ def _build(config):
         return LayerAnnotatorProducer.build_named("default", ctx)
 
     prompts_data = config.get("prompts")
+    from config.config_source import ConfigSourceProducer
+
+    # 与 build_kernel 注入的 default ConfigSource 共享，使 prompts.* 可运行时切换
+    config_source = ConfigSourceProducer.get_cached("default")
     registry = (
-        PromptRegistry.from_dict(prompts_data) if prompts_data else PromptRegistry()
+        PromptRegistry.from_dict(prompts_data, config_source=config_source)
+        if prompts_data
+        else PromptRegistry(config_source=config_source)
     )
 
     return DynamicEvolver(
