@@ -51,6 +51,9 @@ class ElasticsearchStoreHarness(ElasticsearchFulltextStore):
     def client(self):
         return self.recording_client
 
+    def _analyze_query(self, text: str) -> list[str]:
+        return [text]
+
 
 def _tree():
     return normalize(
