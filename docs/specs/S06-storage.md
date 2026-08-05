@@ -155,6 +155,25 @@ AAD 版本当前为 `1`，绑定 `scope(org/space/user/agent/session)`、KV `key
 | `get` | `(scope, ref) -> BinaryIO` | 打开 scope 下 ref 处的文件用于读取，由调用方负责关闭 |
 | `stat` | `(scope, ref) -> FileStat` | 返回 scope 下 ref 处文件的元信息 |
 
+#### 加密 FS 装饰器契约
+
+`encrypted` FS target 包装任意 inner FSStore，写入时整体加密文件内容，读取时有界读完整
+密文后整体解密；`delete` 与 `stat` 委托 inner。`ref` 与 Scope 保持可寻址的明文，但二者
+必须进入 AAD。`FileStat.size` 表示 inner 中的密文长度，不承诺等于明文长度。
+
+装配参数：
+
+| 参数 | 语义 |
+|------|------|
+| `inner` | 必填，指向被装饰的 FSStore 具名实例或内联配置；不得指向当前实例自身 |
+| `encryption` | 必填，指向 EncryptionProvider 具名实例或内联配置 |
+| `max_plaintext_bytes` | 单文件明文硬上限，必须大于等于 1 |
+| `max_ciphertext_bytes` | 密文读取上限；`0` 表示按明文上限加 provider 无关的安全余量计算，负数非法 |
+
+大小检查必须同时覆盖：写入时循环有界读取明文、读取前按 `stat` 快速早拒、真正读取时
+循环有界读取密文，以及解密后再次校验明文。`stat` 不能作为唯一边界，因为它与随后
+`get` 之间存在 TOCTOU 窗口。
+
 ## 数据结构
 
 ### KV（`types.py`）

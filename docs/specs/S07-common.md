@@ -29,8 +29,10 @@
 
 1. **共享插件必须双侧同一**：Embedder/Tokenizer/FeatureExtractor 等必须在构建侧与检索侧使用同一实现/同一配置，保证同词表/同向量空间。
 2. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
-3. **所有插件必须实现 `plugin_type()` 和 `health()`**：继承自 `Plugin` 基类。
-4. **types.py 零依赖其他文件**：纯数据定义，被全局共享依赖。
+3. **模型插件遵循 `Plugin` 契约**：继承 `Plugin` 的模型插件实现 `plugin_type()` 和
+   `health()`；认证、准入、加密、审计等横切能力只实现各自 `base.py` 的接口。
+4. **type_def 不依赖能力实现**：`type_def/*.py` 可在目录内引用基础数据类型，但不得
+   import authentication、audit、storage 等能力实现。
 5. **工厂注册发生在 import 时**：实现文件尾部 `@XxxProducer.register("name")` 绑定构建函数，`__init__.py` 导入实现文件触发注册。
 6. **LLM Provider 参数不上浮到业务层**：厂商专属请求字段只能由对应 Adapter 生成；消费 `LLM` 的算子只传递通用生成选项。
 7. **EncryptionProvider 是字节级横切接口**：调用方在持久化字节写入前加密、读取后解密；接口不绑定 `MemoryUnit` 或存储后端，是否启用由装配配置决定。
@@ -173,7 +175,8 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 | `FilterGroup` | logic / children | AND / OR / NOT 逻辑节点 |
 | `FilterExpr` | FilterClause \| FilterGroup | 跨 API、检索和存储层的过滤树 |
 | `matches_memory_unit` | `(MemoryUnit, FilterExpr \| None) -> bool` | retrieval 真源复核和 KV list 共用的 MemoryUnit 字段投影与过滤求值 |
-| `AuditEvent` | id / timestamp / actor / target / action / target_id / layer / detail | 审计事件；`actor` 与 `target` 均为 Scope，支持 actor_* 与 target_* 字段过滤 |
+| `AuditEvent` | id / actor / target / action / target_id / layer / decision / occurred_at / detail | 审计事件；`actor` 与 `target` 均为 Scope，支持 actor_* 与 target_* 字段过滤；`detail` 可承载 `acting_user` / `role` / `key_fp` / `auth_mode` 等认证审计字段 |
+| `AuthContext` | actor / acting_user / role / from_oauth / authorizing_key_fp | 认证层产出的请求级可信上下文（`frozen=True`）；通过 `set_current` / `reset_current` / `get_current` 传播，未认证返回 `None`。详见 F01 |
 | `EncryptionContext` | scope / purpose / metadata | 一次加密/解密调用的安全上下文 |
 
 ### 枚举（`type_def/memory.py`）
@@ -306,4 +309,5 @@ src/common/<组件>/
 | S04-retrieval | 检索层消费 Embedder/Tokenizer/FeatureExtractor/LLM/Reranker |
 | S05-construction | 构建层消费 Chunker/Embedder/Tokenizer/FeatureExtractor/LLM |
 | S06-storage | 存储层依赖本层的数据类型定义（Scope/FilterClause 等） |
+| S08-security | 约束认证 capability、配置选择与启动安全不变量 |
 | architecture.md 全文 | 本层承载全局共享的数据类型与工具 |

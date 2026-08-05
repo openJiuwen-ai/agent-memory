@@ -7,17 +7,25 @@
 | 日期 | 2026-07-27 |
 | 影响范围 | `src/common/encryption/`、`src/storage/kv_impl/`、`src/control/engine_impl/`、`docs/specs/S07-common.md`、`docs/specs/S06-storage.md` |
 | 测试基线 | `local` EncryptionProvider 直接行为校验通过，`EncryptedKVStore` 单测函数直接执行通过；当前环境缺少 pytest/ruff runner |
+| Refs | — |
 
-本文由原 `docs/security/security.md` 迁入 common 特性归档，作为认证、授权、隔离、加密与审计的安全设计基线。后续 `common/encryption` 接口、`EncryptedKVStore`、`cloud_engine` 读写编排与安全配置均以本文为设计入口。
+> **归档性质**：本文由早期 `docs/security/security.md` 迁入，保留威胁模型、方案取舍和
+> 历史设计草图；其中接口签名、伪代码与 YAML 片段均非现行契约。当前公共契约以
+> S03 / S06 / S07 / S08 为准，当前实现地图以各 `src/*/AGENTS.md` 为准。本文与代码冲突时
+> 不得据此反向修改代码，应先按上述 spec 核对并更新本文的状态注记。
 
-当前落地状态（2026-07-27）：`common/encryption` 接口已提供 `EncryptionProvider` /
+本文由原 `docs/security/security.md` 迁入 common 特性归档，作为认证、授权、隔离、加密与审计的历史设计输入；现行接口与配置入口以 S03 / S06 / S07 / S08 为准。
+
+当前落地状态（2026-08-05）：`common/encryption` 接口已提供 `EncryptionProvider` /
 `EncryptionProducer`，`storage/kv_impl/encrypted_kv_store.py` 已提供 KV 加密装饰器；
 `encryption_impl/local_envelope.py` 已提供 `local` ENC1 AES-GCM
 真实加解密 provider。KMS / Vault provider 仍未实现。
 
 ---
 
-## 1. 安全模型总览
+## 背景
+
+### 1. 安全模型总览
 
 ### 1.1 三道防线
 
@@ -56,17 +64,20 @@
 
 ---
 
-## 2. 认证（Authentication）
+## 决策
+
+### 2. 认证（Authentication）
 
 > **关联设计文档**：认证的执行点（PEP, Policy Enforcement Point）落在接口层——每个 API 方法先 `check(identity, scope, action)`、落带 identity 的入口审计，通过后才委托业务。详见 [`design/architecture.md` §9 记忆接口层](../../design/architecture.md)。
 
 ### 2.1 设计原则
 
-1. **可插拔认证模式**：框架应支持多种认证模式，在启动时由配置决定，不要硬编码。
+1. **可插拔认证模式**：框架通过 Producer 选择实现，通过 capability 决定 loopback 与
+   重型校验保护；核心不按封闭 `AuthMode` 枚举分支。未知实现默认仅 loopback 且启用并发 guard。
 2. **每个请求必须过认证**：没有任何 endpoint 能绕过认证层（健康检查可例外）。
 3. **单次验证、上下文传播**：认证中间件只验证一次身份，结果注入请求上下文，后续流程不再重复校验身份。
 4. **常时间比较（timing-safe）**：所有密钥比对必须使用 `hmac.compare_digest` 或等价的常时间函数。
-5. **可插拔算子用注册式工厂（Factory + Producer）**：`agent-memory` mem2.0 的所有核心抽象（PermissionManager / AuditLogger / Governor / Engine / KVStore 等）用 `XxxProducer(Factory)` + `@Producer.register("name")` 自注册，装配时 `Producer.dep(root, default="name")` 按名取实例。安全模块的认证/权限/审计算子同样遵循此模式。
+5. **可插拔算子用注册式工厂（Factory + Producer）**：`agent-memory` mem2.0 的核心抽象通过注册式工厂装配。安全模块的认证、限流与加密 provider 同样遵循此模式；FSStore 虽可独立装配，但当前主 `build_kernel` 尚无资产消费者，不能据此宣称已自动接入主链路。当前契约见 S08。
 6. **应用层 bootstrap 已生成**：`bootstrap/` 下有 CLI / HTTP server / MCP server / SDK 四种接入形态的薄封装，安全模块通过 bootstrap 挂载。`deploy/` 下有 Docker / local 部署方案。
 
 ### 2.2 三种认证模式
@@ -524,7 +535,7 @@ def get_ctx() -> AuthContext:
 
 ---
 
-## 3. 授权（Authorization）
+### 3. 授权（Authorization）
 
 > **关联设计文档**：本框架的授权以 `org > user = agent > session` scope 模型为载体——user 与 agent 是同级主体，检索/写入默认限制在各自主体 scope 内，跨主体访问需显式授权。授权检查在接口层以 `identity`（调用方）与 `scope`（目标）分离的形式执行，见 [`design/architecture.md` §3.2 作用域与多租户](../../design/architecture.md) 与 [`design/architecture.md` §9 记忆接口层](../../design/architecture.md)。
 
@@ -697,7 +708,7 @@ T=3: ROOT 通过 PUT .../role 可把某个 user 或 agent 提升为 ROOT
 
 ---
 
-## 4. 多租户隔离（Isolation）
+### 4. 多租户隔离（Isolation）
 
 > **关联设计文档**：本框架的路径前缀注入是项目 scope 模型的存储层落地。scope 层级为 `org > space > user/agent > session`：`space` 是 org 下的逻辑隔离单元；`user` 与 `agent` 在 space 内的归属顺序由 `principal_path` 决定。跨主体或跨 space 访问必须经显式授权。详见 [`design/architecture.md` §3.2 作用域与多租户](../../design/architecture.md)。
 
@@ -858,7 +869,7 @@ def get_search_roots(context_type, ctx):
 
 ---
 
-## 5. 数据加密（Encryption at Rest）
+### 5. 数据加密（Encryption at Rest）
 
 > **关联设计文档**：存储加密是「端侧数据不出端、传输/存储加密」原则的落地。端云协同场景下，热/私有记忆留端、冷/共享上云，选择性同步需加密传输——见 [`design/vision.md` §4 支柱四 端云协同](../../design/vision.md) 与 [`design/architecture.md` §11 部署架构](../../design/architecture.md)。可插拔存储后端（SQLite/PostgreSQL/Milvus 等）的加密生效边界见 [`design/architecture.md` §5.2 存储抽象](../../design/architecture.md)。
 >
@@ -1295,7 +1306,7 @@ FileEncryptor.decrypt(data, org_id)      ← ★ 解密
 
 ### 5.4 配置
 
-当前落地的 KV 加密通过组合 `security` provider 与 `kv_store` 装饰器启用；不存在全局
+当前落地的 KV 加密通过组合 `encryption` provider 与 `kv_store` 装饰器启用；不存在全局
 `encryption.enabled` 开关。未把业务 KV 指向 `target: encrypted` 时，存储仍按 raw KV
 后端的原始行为运行。
 
@@ -1317,7 +1328,7 @@ kv_store:
     target: encrypted
     params:
       raw_kv_store: raw
-      security: default
+      encryption: default
 ```
 
 **默认不启用加密包装**，因为加密增加复杂度：随机读必须全量解密、grep 必须应用层解密、append 必须读全重写。部署者在确认需要 before storage encryption at rest 场景（如文件磁盘 on laptop、S3 bucket）时才把业务 KV 指向 encrypted wrapper。
@@ -1351,7 +1362,7 @@ class KeyMismatchError(EncryptionError):
 
 ---
 
-## 6. Key 管理与分发
+### 6. Key 管理与分发
 
 本章管理的是**认证凭据**，即第 2 章的 API Key；它不管理第 5 章用于静态数据加密的 Encryption Root Key。两者必须使用独立随机值、独立配置项和独立轮换流程，禁止复用。
 
@@ -1517,7 +1528,7 @@ def verify_token(token_value: str) -> Token | None:
 
 ---
 
-## 7. 审计日志（Audit Logging）
+### 7. 审计日志（Audit Logging）
 
 > **关联设计文档**：审计是「可治理」原则（可检视/编辑/审计/回溯/遗忘）的一环。记忆的 `lifecycle` 用「标记失效」而非物理删除（非破坏式更新），`delete` 支持 `purge` 合规删除（物理删除真源与全部派生索引，仅留审计记录）——这两种删除都需审计留痕。见 [`design/architecture.md` §3.1 记忆单元](../../design/architecture.md)、[`design/architecture.md` §12 横切关注点](../../design/architecture.md)、[`design/architecture.md` §14 关键数据流](../../design/architecture.md)（写入路径含审计落点）、[`design/vision.md` §3 设计原则](../../design/vision.md)。
 
@@ -1541,15 +1552,17 @@ def verify_token(token_value: str) -> Token | None:
 | `role: str` | 服务端角色注册表或已验证 claim | ROOT/org_admin/user 等特权闸门与审计 |
 | `from_oauth: bool` | 认证分流器 | 区分 OAuth 与 API Key 路径，阻止 OAuth 凭据签发新的 OAuth 状态 |
 | `authorizing_key_fp: str` | 签发 token/session 时绑定的 Principal API Key fingerprint | key 轮换后的 token/session 级联失效与审计追责 |
+| `auth_mode: str` | authenticator（dev/trusted/api_key/oauth） | 认证路径，供审计（§7.2）。由 authenticator 填，不来自请求 |
 
 ```python
-@dataclass
+@dataclass(frozen=True)
 class AuthContext:
     actor: Scope
     acting_user: str = ""
     from_oauth: bool = False
     role: str = "user"
     authorizing_key_fp: str = ""
+    auth_mode: str = ""
 ```
 
 中间件构造 `AuthContext` 后，应通过显式参数或 `ContextVar` 在单次请求内传播，并在请求结束时可靠 reset。任何 handler、LLM tool_call 或业务参数都不能覆盖其中字段。
@@ -1670,7 +1683,7 @@ class AuditLogger:
 
 ---
 
-## 8. 附加攻击面指引
+### 8. 附加攻击面指引
 
 > **关联设计文档**：分层记忆结构（L0 摘要 / L1 片段 / L2 全文，原始数据为唯一真源）与检索层（scope 为独立轴、各 Store 查询的专用 `scope` 字段做原生隔离）共同决定了索引层攻击面。向量库的明文 abstract 列、各 Store 的索引，需与内容层分开评估访问控制。见 [`design/architecture.md` §4 分层记忆结构](../../design/architecture.md)、[`design/architecture.md` §7 记忆检索层](../../design/architecture.md)、[`design/vision.md` §4 支柱二](../../design/vision.md)。
 
@@ -1722,7 +1735,7 @@ class RateLimiter:
 
 ---
 
-## 9. 安全开发 7 条铁律（Checklist）
+### 9. 安全开发 7 条铁律（Checklist）
 
 写完代码后，对照检查每条：
 
@@ -1838,3 +1851,26 @@ def read_file(uri: str, target: Scope, ctx: AuthContext):
 ```
 
 **自查**：加密通常只覆盖「文件/对象存储」这一层。向量库的 `abstract` 列、embedding queue 的 sqlite、缓存层的 kv 存储，**往往不在加密范围内**。不要认为「文件加密了」等于「全链路安全了」。你的威胁模型里，索引层和内容层应该分开评估，并分别配置访问控制。
+
+## 拒绝的方案
+
+- 由客户端 payload 声明可信身份：无法阻止调用方伪造 actor。
+- 把认证模式、限流或持久化审计后端写成核心枚举/名称白名单：新增 target 必须修改核心，
+  且容易让未知实现绕过安全默认值。
+- 缺少加密依赖或密钥时回退明文：部署会在无明显信号的情况下裸存数据。
+- 在每个 Store 或业务入口重复密码学逻辑：新增路径容易漏加密，轮换和 AAD 规则也会漂移。
+
+当前分支的认证与加密取舍分别归档在 security/F01 与 storage/F02；角色授权和审计完整性
+由后续特性提交分别归档。
+
+## 验证
+
+本文是历史设计输入，不单独维护一套可能漂移的测试总数。当前认证/授权/审计/加密验证
+基线见对应 feature 文档；跨模块接口以 S03 / S06 / S07 / S08 和镜像单测为准。
+
+## 已知遗留
+
+- OAuth/MCP 凭据通道仍待独立设计；当前 MCP 非 DEV 调用使用空凭据并失败关闭。
+- 外部插件尚无自动 entry-point 发现，宿主应用必须在配置解析前显式 import 注册入口。
+- FSStore 可独立装配加密装饰器，但 `build_kernel` 主业务链路尚无资产消费者。
+- KMS/Vault/HSM、根密钥版本轮换以及审计防尾删/回滚的外部可信锚点仍未落地。

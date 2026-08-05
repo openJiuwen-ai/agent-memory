@@ -29,6 +29,10 @@
 每个能力目录的 `base.py` 定义抽象接口和 Producer，`*_impl/` 中的实现通过
 `@Producer.register("target")` 注册，`common.bootstrap.register_plugins()` 在配置解析前统一触发。
 
+实现模块必须在配置解析前由 `common.bootstrap.register_plugins()` 或应用自己的注册入口
+import，注册装饰器才会生效。当前核心不自动发现任意外部 Python 包；外部插件应由宿主应用
+在 `Server.build` / `build_kernel` 前显式加载。
+
 ```yaml
 authenticator:
   default:
@@ -56,4 +60,8 @@ encryption:
 
 - Authenticator、PrincipalKeyStore、RateLimiter、EncryptionProvider 均可通过 Producer 注册扩展。
 - Server 按 capability 决策绑定和并发保护，不按封闭枚举分支。
+- 认证根装配消费一个最终实例；需要多认证串联时，应注册组合 target，由该 target 通过
+  `Producer.dep()` 引用多个具名实例，而不是让 YAML 隐式并行执行。
 - EncryptedKVStore/EncryptedFSStore 只负责存储边界接线，密码学实现归 `common/encryption`。
+- `FsProducer` 已能独立装配 FSStore，但当前 `build_kernel` 主业务链路没有 FSStore 消费点；
+  仅写 YAML 不会自动让记忆资产经过 FS 加密，接入前须先定义资产写入/读取消费者和 API 契约。

@@ -8,6 +8,7 @@
 | 影响范围 | `src/common/authentication/`、`src/common/credential_store/`、`src/common/admission/`、`src/common/type_def/auth.py`、`bootstrap/core/auth_middleware.py`、对应镜像测试目录与各 surface 装配入口 |
 | 测试基线 | 改动前 `2 failed, 656 passed, 60 skipped`；改动后 `2 failed, 788 passed, 60 skipped`。**两个失败是同一对**（`test_bge_m3_embedder.py` 的 `torch` 未安装，`embed` extra 未装），与本改动无关 |
 | 依据 | [`docs/features/common/F04-security-interfaces-and-encryption.md`](../common/F04-security-interfaces-and-encryption.md) §1.1 核心不变量、§2 认证、§3 授权角色、§7 审计、§8.1 速率限制、§9 铁律 #1 |
+| Refs | — |
 
 > **行文简称**：下文（及本模块所有代码注释）里的 **security.md** 一律指上表「依据」
 > 那份文档。它原在 `docs/security/security.md`，上游 `c76eb90` 把它迁进了
@@ -169,11 +170,11 @@ security.md §8.1 的草图按 `key_fp` 分桶。那防的是「单个合法 key
 进程内直连与 MCP stdio 没有网络对端，没有可收敛的攻击面，限流只会把本地 CLI
 卡住。所以 `Server.build` 只在 HTTP surface 传 limiter，其余 surface 传 `None`。
 
-### 决策 10：默认按认证模式分岔，非 DEV 默认**开**
+### 决策 10：默认按认证 capability 分岔，远程可达实现默认**开**
 
-限流保护的具体对象——Argon2id verify——只在 API_KEY 模式下存在；DEV 模式已被
-强制绑定 localhost（决策 6），没有远端攻击面，此时限流只会把本地压测和调试脚本
-卡住。
+默认选择不按封闭 `AuthMode` 分支，而读 `requires_loopback_binding()`：仅限 loopback
+的实现默认 `unlimited`，显式声明可远程暴露的实现默认 `token_bucket`。这允许业务新增
+认证 target 而不修改 Server 枚举分支；网关后部署可显式选择 `unlimited` 把限流交给网关。
 
 非 DEV 默认开而不是默认关：默认关等于「必须读过 §8.1 才知道要配」，而没配的
 后果是一个能打挂进程的可用性漏洞。默认开的代价是运维可能撞上 429，但那会伴随
@@ -193,12 +194,14 @@ security.md §8.1 的草图按 `key_fp` 分桶。那防的是「单个合法 key
 
 IP 令牌桶限的是「单地址的请求速率」，限不住「同时在跑的 Argon2 verify 数」--
 后者才是 CPU/内存耗尽向量：单 IP 30 个并发错误 key = 30 × 128 MiB 同时驻留 ≈
-3.75 GiB。新增 `security/concurrency_guard.py` 的 `Argon2Guard`（进程级
-`BoundedSemaphore`），在 `auth_middleware.authenticated` 里 limiter 之后、
+3.75 GiB。新增 `common/admission/concurrency_guard.py` 的 `Argon2Guard`（进程级
+`BoundedSemaphore`），
+在 `auth_middleware.authenticated` 里 limiter 之后、
 authenticate 之前 acquire，耗尽即 429（非阻塞，不排队--排队会让线程无界堆积）。
 acquire 成功后用 `finally` 释放。默认上限 4（按「给认证留 512 MiB」算），由
-`argon2.max_concurrent` 配置。**只装配到 `AuthMode.API_KEY`**（验收修正：TRUSTED
-不跑 Argon2，装上会让受信网关高并发无端收 429）；DEV 亦不装。不进 Factory：
+`argon2.max_concurrent` 配置。是否装配由认证实现的
+`requires_concurrency_guard()` capability 决定：API_KEY 需要，TRUSTED/DEV 不需要，
+未知第三方实现默认需要（fail closed）。Argon2Guard 不进 Factory：
 进程级状态按配置实例化多份没有意义，用 `default_argon2_guard()` 取单例。同进程
 重复装配不同 `max_concurrent` 报错（不静默忽略）；`max_concurrent=0` 装配期炸
 （不用 `or` 吞成默认）。
@@ -256,74 +259,17 @@ FS 短读修复（验收第三次 P2-2）：`_read_bounded_stream` 改用 `bytea
 `list[bytes]` + `join`--恶意 1-byte 短读会让 list 长出百万级元素，8 MiB 内容放大到
 ~700 MiB。bytearray 是连续缓冲区，内存与字节数成正比，不随分片数放大。
 
-## 需要增加的接口
+## 落地范围与现行契约索引
 
-### `common.type_def.auth`（横切结构，不属安全层私有）
+本特性落地了请求级 `AuthContext`、认证/凭据/准入三个 capability、DEV 绑定 guard 与
+统一认证中间件。接口签名和错误语义不在 feature 文档重复维护：
 
-| 名称 | 签名 / 字段 | 说明 |
-|---|---|---|
-| `Role` | `USER` / `ADMIN` / `ROOT`（继承 `str, Enum`） | 三级角色（§3.1）；继承 `str` 使其可直接进 `AuditEvent.detail` |
-| `ROLE_RANK` | `dict[Role, int]` | 角色偏序，供降级检测：签发方不得签出高于自身的角色 |
-| `AuthContext` | `actor: Scope`（**无默认值**）、`acting_user: str`、`role: Role`、`from_oauth: bool`、`authorizing_key_fp: str`；`frozen=True` | 认证层产出的**可信**请求级上下文 |
-| `set_current(ctx) -> Token` | | 请求入口设置 |
-| `reset_current(token) -> None` | | **必须在 `finally`** 中调用 |
-| `get_current() -> AuthContext \| None` | | 未认证返回 `None`，**不返回默认上下文** |
+- 认证上下文、Authenticator capability、YAML 选择与启动不变量：S08；
+- `AuthContext`、Factory 与公共类型：S07；
+- 角色授权与 agent 代操作：S03；
+- 当前实现文件、注册 target 和本地行为铁律：`src/common/AGENTS.md`。
 
-### `security.types`
-
-| 名称 | 字段 | 说明 |
-|---|---|---|
-| `AuthMode` | `DEV` / `TRUSTED` / `API_KEY` | 刻意**不定义** `OAUTH`——第二期加它时是纯新增 |
-| `Credentials` | `api_key: str`、`headers: Mapping[str, str]`（键已归一小写）、`peer_address: str`；`frozen=True` | 认证层不认识 HTTP；只保留认证需要的三样 |
-
-### `common.authentication.base`
-
-| 方法 | 签名 | 契约 |
-|---|---|---|
-| `authenticate` | `(credentials: Credentials) -> AuthContext` | **不返回 None**；失败抛 `AuthenticationError`，消息一律笼统 |
-| `mode` | `() -> AuthMode` | 供启动期 guard 与审计 |
-| `health` | `() -> None` | 与 `ControlOperator` 同构 |
-
-工厂：`AuthProducer(Factory)`，`TOP_NAME = "authenticator"`。
-
-### `common.credential_store.base`
-
-| 方法 | 签名 | 契约 |
-|---|---|---|
-| `issue` | `(actor: Scope, role: Role) -> str` | 返回**一次性明文**；`role=ROOT` 抛 `PermissionDeniedError`（§3.2 禁止自签发 ROOT）；`actor` 必须且只能指定 `user` 或 `agent` 之一 |
-| `resolve` | `(api_key: str) -> AuthContext \| None` | **允许返回 None**（查表未命中的事实陈述，非 fail-open）；三条路径各恰好一次 Argon2 verify |
-| `revoke` | `(key_fp: str) -> None` | 幂等 |
-| `get_role` | `(actor: Scope) -> Role \| None` | TRUSTED 模式据此实现「role 不从 header 读」 |
-| `health` | `() -> None` | |
-
-模块级函数：`fingerprint(api_key)`（sha256 十六进制，确定性查找键）、
-`key_prefix(api_key)`（前 8 字符，前缀索引）、`generate_api_key()`
-（`secrets.token_urlsafe(32)`，256 bit 熵）。
-
-工厂：`KeyStoreProducer(Factory)`，`TOP_NAME = "key_store"`。
-
-### `common.authentication.binding`
-
-`check_dev_binding(hosts) -> None` —— 非 localhost 抛 `ValidationError`。
-纯函数、**不 `sys.exit`**：exit 语义留在进程入口，本函数可被单测直接断言。
-
-### `bootstrap.core.auth_middleware`
-
-| 名称 | 签名 |
-|---|---|
-| `credentials_from_headers` | `(headers, peer_address="") -> Credentials`；header 名归一小写；`Authorization: Bearer` 优先，回落 `X-Api-Key` |
-| `authenticated` | `@contextmanager (authenticator, credentials, audit=None, limiter=None) -> Iterator[AuthContext]`；限流在 `authenticate` **之前**；reset 在 `finally` |
-
-### `common.admission.base`
-
-| 方法 | 签名 | 契约 |
-|---|---|---|
-| `allow` | `(peer: str) -> bool` | 有额度则消耗一个返 `True`，否则 `False`；**必须并发安全**（`ThreadingHTTPServer` 每请求一线程，「读余量 → 减一 → 写回」在 GIL 下不是原子的）；`peer` 为空串放行 |
-| `health` | `() -> None` | 与其他安全组件同构 |
-
-工厂：`RateLimitProducer(Factory)`，`TOP_NAME = "rate_limiter"`（新增顶层配置段）。
-实现：`token_bucket`（`capacity` 管突发、`refill_per_sec` 管持续速率、
-`max_tracked` 管桶表上界）与 `unlimited`（恒放行）。
+这一分工避免 feature 中的历史设计草案被误当成现行公共 API。
 
 ## 配置草案
 
@@ -395,7 +341,7 @@ rate_limiter:
 出口 IP，会被当成同一个 peer。这种部署应显式配 `target: unlimited` 把限流交给
 网关，或按聚合流量调大 `capacity`。
 
-## 验证计划
+## 验证
 
 | 文件 | 覆盖 | 结果 |
 |---|---|---|
@@ -405,10 +351,11 @@ rate_limiter:
 | `tests/unit/common/authentication/test_authentication_impl.py` | 三实现的正反路径 / 错误消息一致 | passed |
 | `tests/unit/common/authentication/test_binding.py` | DEV localhost guard 的各类拒绝 | passed |
 | `tests/unit/common/admission/test_rate_limit.py` | 突发/补充/并发/LRU/空 peer/装配期参数校验 | 16 passed |
-| `tests/unit/bootstrap/test_auth_middleware.py` | header 归一 / bearer 提取 / **reset 保证** / 限流接线 | 20 passed |
+| `tests/unit/bootstrap/test_auth_middleware.py` | header 归一 / bearer 提取 / **reset 保证** / 限流接线 | 28 collected |
 | `tests/integration/test_identity_forgery_rejected.py` | **端到端伪造身份被拒** | 5 passed |
 
-`tests/unit/common/{authentication,credential_store,admission}/` 共 80 passed。
+`tests/unit/common/{authentication,credential_store,admission}/` 当前共 92 collected；
+`tests/unit/bootstrap/test_server_security_config.py` 另有 4 条配置歧义与开放 target 回归。
 
 限流侧的关键断言：
 
@@ -508,8 +455,8 @@ fail-open。中间件漏挂时请求会带着默认身份跑完，而且**没有
 3. **MCP 在非 DEV 模式下全部工具调用失败**。§2.5 的凭据传递待第二期设计。
    见决策 4。
 4. **限流是进程内的，多副本各算各的**：N 个副本 = N 倍实际额度。真正的多副本
-   限流要 Redis 之类的共享计数器，届时在 `rate_limit_impl/` 下新增一个实现，
-   中间件不用改（契约已留在 `rate_limit.py`）。
+   限流要 Redis 之类的共享计数器，届时在 `admission/admission_impl/` 下新增一个实现，
+   中间件不用改（契约已留在 `common/admission/base.py`）。
 5. **按地址分桶挡不住僵尸网络**：来源足够分散时每个 IP 都拿到一个新满桶。能
    收敛这种攻击的是**对 Argon2 verify 本身做并发上限**（一个信号量，把同时
    进行的 verify 数压到内存能承受的范围）--已由决策 12 的 `Argon2Guard` 实现。

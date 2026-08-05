@@ -79,7 +79,7 @@
 
 - **依赖方向是 `storage → common.encryption`（单向）**。密码学一行都不在 storage 里，
   全在 `common.encryption.encryption_impl`；这两个文件只构造 `EncryptionContext` / AAD 并转发。
-  反向依赖不存在，security 不认识 Store。
+  反向依赖不存在，encryption 不认识 Store。
 - **KV 只加密 `value`**。`key` 明文是必须的（加密它就没法 `list(prefix=...)`、
   没法点查）；`ttl` 明文是必须的（它是后端的原生能力，加密它等于放弃过期功能）。
 - **FS 加密整个文件内容**，`ref` 与 scope 保持明文（路径要能寻址），`ref` 进 AAD。
@@ -90,6 +90,8 @@
 - **`cryptography` 缺失时在装配期抛 `BackendError`，绝不回落明文存储**——回落
   会让「以为加密了」的部署实际裸奔，比不加密更危险。
 - 默认关闭：不配 `target: encrypted` 就没有任何加密行为，现有部署零影响。
+- `FsProducer` 可独立装配 encrypted FSStore，但当前 `build_kernel` 业务主链路没有
+  FSStore 消费点；仅写 YAML 不会自动让记忆资产经过 FS 加密，接入前必须先定义资产 API。
 
 ## 与其他子目录的边界
 

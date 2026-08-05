@@ -1,6 +1,7 @@
 # Agent Memory Common（公共组件层）
 
-**规约文档**：[S07-common.md](../../docs/specs/S07-common.md)
+**规约文档**：[S07-common.md](../../docs/specs/S07-common.md)；安全横切契约见
+[S08-security.md](../../docs/specs/S08-security.md)
 
 > 本文档只记录相对稳定的模块本地规约（职责边界、行为铁律、本地约束）。特性设计与方案取舍记录在 `docs/features/` 下。
 
@@ -47,8 +48,9 @@
 3. **注册靠 import 触发**
    实现文件尾部 `@XxxProducer.register("name")` 注册 _build 函数，`*_impl/__init__.py` import 各实现模块触发注册，`bootstrap.py::register_plugins()` 在装配前统一触发。
 
-4. **types.py 零依赖其他文件**
-   `type_def/*.py` 是纯数据定义，不 import 本层其他文件，被全局共享依赖。
+4. **type_def 不依赖能力实现**
+   `type_def/*.py` 只定义跨层数据与 ContextVar，可在 `type_def` 内部引用基础类型
+   （如 `auth.py` 引用 `scope.py`），不得 import authentication/audit/storage 等能力实现。
 
 5. **共享插件必须双侧同一**
    Embedder/Tokenizer/FeatureExtractor 必须在构建侧与检索侧使用同一实现/同一配置，保证同词表/同向量空间。靠配置里「具名 + 引用」显式表达共享：双侧 `dep` 引用同一具名实例 → `build_named` 命中同一缓存键 → 同一实例。
@@ -75,11 +77,15 @@
 
 ## 本地约束
 
-1. 所有插件必须实现 `plugin_type()` 和 `health()`（继承自 `Plugin` 基类）。
+1. 继承 `Plugin` 的模型插件必须实现 `plugin_type()` 和 `health()`；横切能力不继承
+   `Plugin`，只实现各自 `base.py` 的契约（例如 Authenticator 有 `health()`，AuditLogger
+   没有 `plugin_type()`）。
 2. 实现通过 `@XxxProducer.register("name")` 自注册。
 3. 新增插件实现：在 `<plugin>_impl/` 下新建文件 → 实现接口 → 尾部注册 → 在 `__init__.py` 添加 import。
 4. 重依赖实现在 `*_impl/__init__.py` 中用 `try/except ImportError` 包裹。
 5. 两级命名空间配置驱动装配：每个 Producer 声明全局唯一 `TOP_NAME`（占配置顶层段），其下是若干具名实例（`target` 指定实现名、`params` 传参、`new_instance` 控制是否共享）。`_build(config)` 里用 `XProducer.dep(config, param_name=None, default=...)` 取子依赖（引用名→共享 / 内联 dict→匿名 / 缺省→默认匿名）。
 6. LLM 的厂商扩展参数必须由对应 Provider Adapter 注入；构建、检索等内核业务调用点不得硬编码 `extra_body` 等传输层字段。
-7. 横切能力不继承 `Plugin`、不进入 `PluginType`；接口统一在能力目录的 `base.py`，
-   实现统一在同级 `*_impl/`，YAML 只能选择已经注册的 target 并传递 params。
+7. 横切能力（Authenticator / PrincipalKeyStore / RateLimiter / EncryptionProvider /
+   AuditLogger）不继承 `Plugin`、不进入 `PluginType`；接口统一在能力目录的 `base.py`，
+   实现统一在同级 `*_impl/`，YAML 只能选择已经注册的 target 并传递 params。当前不从
+   YAML import Python 类，也不自动发现未被应用启动代码 import 的外部包。
