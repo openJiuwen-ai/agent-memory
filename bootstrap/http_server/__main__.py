@@ -40,6 +40,7 @@ authenticated = _auth_middleware.authenticated
 credentials_from_headers = _auth_middleware.credentials_from_headers
 
 # ``server`` / ``auth_middleware`` 导入时已把仓库 src/ 追加进 sys.path。
+Surface = import_module("common.security.types").Surface
 _errors = import_module("common.errors")
 AuthenticationError = _errors.AuthenticationError
 RateLimitedError = _errors.RateLimitedError
@@ -193,14 +194,15 @@ class HttpServer(Server):
                         srv.audit,
                         srv.rate_limiter,
                         workload_guard=srv.workload_guard,
-                    ):
+                        surface=Surface.HTTP,
+                    ) as security:
                         raw = _read_body(self.rfile, length)
                         try:
                             payload = json.loads(raw) if raw else {}
                         except ValueError as exc:
                             self._send(400, {"error": "BadRequest", "message": str(exc)})
                             return
-                        status, body = srv.dispatch(verb, payload)
+                        status, body = srv.dispatch(verb, payload, security)
                 except AuthenticationError as exc:
                     status, body = 401, {"error": type(exc).__name__, "message": str(exc)}
                 except RateLimitedError as exc:

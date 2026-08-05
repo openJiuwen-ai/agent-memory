@@ -170,9 +170,6 @@ class InMemoryKeyStore(PrincipalKeyStore):
                         continue
                     return AuthContext(
                         actor=current.actor,
-                        # user 主体自操作；agent 主体的 actor.user 为空--未经 OAuth
-                        # 授权时无委托目标，正是想要的。
-                        acting_user=current.actor.user,
                         role=current.role,
                         credential_type=_CREDENTIAL,
                         credential_id=record.key_fp,

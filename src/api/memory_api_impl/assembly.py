@@ -25,8 +25,11 @@ from dataclasses import dataclass
 
 from common.audit.base import AuditLogger, AuditProducer
 from common.bootstrap import register_plugins
+from common.errors import ValidationError
 from common.factory.factory import Factory
 from common.log import setup_logging
+from common.security.authorization import AuthorizationProducer, Authorizer
+from common.security.bootstrap import register_security
 from config import Config
 from config.context import ComponentConfig
 from config.defaults import KV_DEFAULT_NAME, ROOT_PARAMS, default_context
@@ -59,11 +62,31 @@ class Kernel:
 def _register_all() -> None:
     """组装前按层触发自注册（句柄在接口、注册靠 import 实现；各 bootstrap 幂等）。"""
     register_plugins()  # common 共享插件
+    register_security()  # common.security（认证/授权/密码学/防护）
     register_backends()  # storage
     register_operators()  # retrieval
     register_ingestors()  # ingest
     register_constructors()  # construction
     register_controllers()  # control
+
+
+def _build_authorizer(root: ComponentConfig) -> Authorizer:
+    """装配 Authorizer，并挡住把仅测试实现配进生产的装配。
+
+    判据是 :meth:`Authorizer.is_test_only` 这个 capability，不是 ``target == "allow_all"``
+    ——第三方注册的恒放行实现同样要被拦住，而核心不认识它的 target 名（S08 不变量 7）。
+    单测要用 allow_all 就显式把 ``globals.allow_test_only_security`` 打开，让「这次装配
+    不做真实授权」在配置里留下痕迹。
+    """
+    authorizer = AuthorizationProducer.dep(root, default="standard")
+    if not isinstance(authorizer, Authorizer):
+        raise ValidationError("authorizer 必须是 Authorizer 实现")
+    if authorizer.is_test_only() and not root.get("allow_test_only_security", False):
+        raise ValidationError(
+            "当前 authorizer 是仅测试实现（恒放行）；生产装配拒绝启动。"
+            "确需在测试中使用时显式配置 globals.allow_test_only_security=true"
+        )
+    return authorizer
 
 
 def build_kernel(
@@ -99,6 +122,7 @@ def build_kernel(
     api = LocalMemoryAPI(
         engine=EngineProducer.dep(root, default="in_memory"),
         permission=PermissionProducer.dep(root, default="sqlite"),
+        authorizer=_build_authorizer(root),
         scheduler=SchedulerProducer.dep(root, default="in_process"),
         policy=PolicyProducer.dep(root, default="dict"),
         governor=GovernorProducer.dep(root, default="in_memory"),

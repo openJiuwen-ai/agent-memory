@@ -21,6 +21,7 @@ def register_security() -> None:
         return
     import_module("common.security.runtime")  # SecurityRuntimeProducer + standard
     import_module("common.security.authentication.authentication_impl")
+    import_module("common.security.authorization.authorization_impl")
     import_module("common.security.protection.protection_impl")
     import_module("common.security.cryptography.cryptography_impl")
     _REGISTERED = True

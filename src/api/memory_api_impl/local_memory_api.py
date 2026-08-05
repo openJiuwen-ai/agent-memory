@@ -1,11 +1,20 @@
 """:class:`~api.memory_api.MemoryAPI` 的单进程实现（``LocalMemoryAPI``）+ 装配。
 
-``LocalMemoryAPI`` 是鉴权与审计的执行点（PEP）：每个涉及租户数据/治理的
-方法先构造权限上下文并调用 ``PermissionManager.check(..., context=...)``，
-不通过抛 :class:`~common.errors.PermissionDeniedError`，通过后落入口审计并把
-已鉴权的 target scope 透传到引擎/各控制算子（identity 不下沉）。同步方法以
+``LocalMemoryAPI`` 是鉴权与审计的执行点（PEP），且是**唯一的业务 PEP**：每个
+涉及租户数据/治理的方法把 verb 映射为封闭的
+:class:`~common.security.types.Action`、从真源构造
+:class:`~common.security.types.ResourceDescriptor`、从
+:class:`~common.security.types.RequestSecurityContext` 派生
+:class:`~common.security.types.AuthorizationEnvironment`，再调用
+:class:`~common.security.authorization.Authorizer`（PDP）。不通过抛
+:class:`~common.errors.PermissionDeniedError`，通过后落带 actor 与稳定决策标识
+（``rule`` / :class:`~common.security.types.DenyReason`）的入口审计，并把已鉴权的
+target scope 透传到引擎/各控制算子（调用方身份不下沉）。同步方法以
 ``asyncio.run`` 桥接引擎的异步协程，供 CLI/脚本使用。各控制算子按其
 抽象基类型注入。
+
+安全输入只有 ``security`` 一个：actor 取自 ``security.auth.actor``，不从
+ContextVar 取、也不从业务 payload 取（F05 §显式上下文优于环境权限）。
 
 :func:`build_kernel` / :func:`assemble` 把各层具体实现串成一个可直接
 调用的内核——是「把整个项目串起来」的落点；生产装配只需在此换成
@@ -24,6 +33,13 @@ from typing import Any
 from api.memory_api import MemoryAPI
 from common.audit import AuditLogger
 from common.errors import NotFoundError, PermissionDeniedError, PolicyError, ValidationError
+from common.security.authorization import Authorizer
+from common.security.types import (
+    Action,
+    AuthorizationEnvironment,
+    RequestSecurityContext,
+    ResourceDescriptor,
+)
 from common.type_def import (
     EXT_MAX_TOKENS,
     RESERVED_METADATA_KEYS,
@@ -42,7 +58,6 @@ from common.type_def import (
     iter_clauses,
     normalize,
 )
-from common.security.types import get_current
 from construction import EvolveMode
 from control.engine import MemoryEngine
 from control.governance import Governor
@@ -51,7 +66,6 @@ from control.policy import PolicyManager
 from control.scheduler import Scheduler
 from control.space import SpaceManager
 from control.types import (
-    Action,
     Channel,
     DeleteMode,
     DeleteSelector,
@@ -358,10 +372,32 @@ def _management_permission_context(resource_type: str) -> PermissionContext:
 
     这些操作的鉴权 target 是 ``_ROOT``，但「它是管理操作」这件事此前只能从
     「target 恰好是空 scope」间接读出来。显式写成 ``resource_type`` 后，
-    PDP 不必再从数据形状反推语义（见 `SQLitePermissionManager` 的
-    ``_management_plane_denies``）。
+    PDP 不必再从数据形状反推语义。
     """
     return PermissionContext(resource_type=resource_type, scope=_ROOT)
+
+
+def _descriptor_attributes(context: PermissionContext | None) -> dict[str, str]:
+    """把权限上下文摊平成 :class:`ResourceDescriptor` 的属性映射。
+
+    ``PermissionContext`` 仍是 Engine 侧的契约（``permission_context_for_unit`` /
+    ``list_with_permission_contexts`` / ``permission_contexts_for_delete`` 都返回它），
+    转换点收在 PEP 这一处：Authorizer 只认 descriptor，不认控制层类型。
+
+    ``metadata`` 先铺、具名字段后覆盖：``memory_type`` 这类字段对已有资源来自真源，
+    不能被同名 metadata 项盖掉（F05 §ResourceDescriptor：安全 metadata 来自真源）。
+    """
+    if context is None:
+        return {}
+    attributes = {str(key): str(value) for key, value in context.metadata.items()}
+    if context.memory_type:
+        attributes["memory_type"] = context.memory_type
+    if context.pipeline:
+        attributes["pipeline"] = context.pipeline
+    if context.tags:
+        attributes["tags"] = ",".join(context.tags)
+    return attributes
+
 
 
 class LocalMemoryAPI(MemoryAPI):
@@ -371,6 +407,7 @@ class LocalMemoryAPI(MemoryAPI):
         self,
         engine: MemoryEngine,
         permission: PermissionManager,
+        authorizer: Authorizer,
         scheduler: Scheduler,
         policy: PolicyManager,
         governor: Governor,
@@ -378,7 +415,11 @@ class LocalMemoryAPI(MemoryAPI):
         space: SpaceManager,
     ) -> None:
         self._engine = engine
+        # 授权判定归 authorizer（PDP）；permission 在本 PR 只剩 grant/revoke 的授权
+        # **记录**写入通道——判定与记录的迁移分属两个 PR（迁移计划 §6.2 第 10 项把
+        # 「删除 control 下旧 PermissionManager 安全所有权」划在 PR3）。
         self._perm = permission
+        self._authorizer = authorizer
         self._scheduler = scheduler
         self._policy = policy
         self._governor = governor
@@ -413,7 +454,7 @@ class LocalMemoryAPI(MemoryAPI):
 
     def _record_audit(
         self,
-        identity: Scope,
+        actor: Scope,
         action: str,
         *,
         target_id: str = "",
@@ -426,7 +467,7 @@ class LocalMemoryAPI(MemoryAPI):
         self._audit.record(
             AuditEvent(
                 id=str(uuid.uuid4()),
-                actor=identity,
+                actor=actor,
                 action=action,
                 target_id=target_id,
                 layer="api",
@@ -460,24 +501,27 @@ class LocalMemoryAPI(MemoryAPI):
 
     def _authorize(
         self,
-        identity: Scope,
+        security: RequestSecurityContext,
         target: Scope,
         action: Action,
         audit_action: str,
         target_id: str = "",
         *,
+        resource_type: str = "",
         context: PermissionContext | None = None,
-        check_permission: bool = True,
         require_space: bool = True,
     ) -> dict[str, str]:
+        """本层唯一的鉴权点：构造 descriptor + environment，调 Authorizer，落审计。
+
+        ``context`` 是 Engine 侧真源上下文（可为空），在此摊平成 descriptor 属性。
+        ``resource_type`` 显式给出时优先——verb 到资源类型的映射归 PEP，不从
+        context 的形状反推。
+        """
+        actor = security.actor
         effective_context = self._apply_space_policy_context(target, context)
-        # 认证上下文在 PEP 这一处取，取完透传进 PDP——不让 PermissionManager 自己去读
-        # ContextVar（见 `PermissionManager.check` 的契约）。无认证上下文时为 None，
-        # PDP 退回纯 ACL，后台 job 与直连 build_kernel 的路径不受影响。
-        auth = get_current()
         if _missing_required_space(self._policy, target, require_space):
             self._record_audit(
-                identity,
+                actor,
                 audit_action,
                 target_id=target_id,
                 target_scope=target,
@@ -489,22 +533,33 @@ class LocalMemoryAPI(MemoryAPI):
                 },
             )
             raise ValidationError("scope.space is required")
-        if not check_permission:
-            return {
-                "permission_check": "disabled",
-                "permission_reason": "permission check disabled",
-                **_context_detail(effective_context),
-            }
-        if not self._perm.check(identity, target, action, context=effective_context, auth=auth):
+        resource = ResourceDescriptor(
+            action=action,
+            resource_type=resource_type
+            or (effective_context.resource_type if effective_context else ""),
+            scope=target,
+            resource_id=target_id,
+            attributes=_descriptor_attributes(effective_context),
+        )
+        environment = AuthorizationEnvironment.from_request(
+            security, now=datetime.now(timezone.utc)
+        )
+        decision = self._authorizer.authorize(
+            auth=security.auth, resource=resource, environment=environment
+        )
+        if not decision.allowed:
+            # reason 是稳定 code（DenyReason），rule 标明哪条规则做的判定——两者一起
+            # 才能从审计里读出「为什么拒」而不只是「拒了」（F05 §可观测性）。
             self._record_audit(
-                identity,
+                actor,
                 audit_action,
                 target_id=target_id,
                 target_scope=target,
                 decision="deny",
                 detail={
                     "permission_check": "enabled",
-                    "permission_reason": f"permission denied for action={action.value}",
+                    "permission_reason": decision.reason.value if decision.reason else "",
+                    "permission_rule": decision.rule,
                     **_context_detail(effective_context),
                 },
             )
@@ -512,12 +567,13 @@ class LocalMemoryAPI(MemoryAPI):
         return {
             "permission_check": "enabled",
             "permission_reason": "permission check passed",
+            "permission_rule": decision.rule,
             **_context_detail(effective_context),
         }
 
     def _log(
         self,
-        identity: Scope,
+        security: RequestSecurityContext,
         action: str,
         target_id: str = "",
         *,
@@ -526,7 +582,7 @@ class LocalMemoryAPI(MemoryAPI):
         detail: dict[str, str] | None = None,
     ) -> None:
         self._record_audit(
-            identity,
+            security.actor,
             action,
             target_id=target_id,
             target_scope=target_scope,
@@ -542,7 +598,7 @@ class LocalMemoryAPI(MemoryAPI):
         scope: Scope,
         source: Modality = Modality.TEXT,
         *,
-        identity: Scope,
+        security: RequestSecurityContext,
         assets: list[str] | None = None,
         tags: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
@@ -553,7 +609,7 @@ class LocalMemoryAPI(MemoryAPI):
                 content,
                 scope,
                 source,
-                identity=identity,
+                security=security,
                 assets=assets,
                 tags=tags,
                 metadata=metadata,
@@ -567,7 +623,7 @@ class LocalMemoryAPI(MemoryAPI):
         scope: Scope,
         source: Modality = Modality.TEXT,
         *,
-        identity: Scope,
+        security: RequestSecurityContext,
         assets: list[str] | None = None,
         tags: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
@@ -577,7 +633,7 @@ class LocalMemoryAPI(MemoryAPI):
         _reject_non_scalar_metadata(metadata)
         permission_context = _write_permission_context(scope, tags, metadata)
         auth = self._authorize(
-            identity,
+            security,
             scope,
             Action.WRITE,
             "write",
@@ -593,7 +649,7 @@ class LocalMemoryAPI(MemoryAPI):
             metadata=metadata,
             occurred_at=occurred_at,
         )
-        self._log(identity, "write", target_scope=scope, detail=auth)
+        self._log(security, "write", target_scope=scope, detail=auth)
         return units
 
     def recall(
@@ -601,7 +657,7 @@ class LocalMemoryAPI(MemoryAPI):
         query: str,
         context: Context,
         *,
-        identity: Scope,
+        security: RequestSecurityContext,
         filters: FilterExpr | list[FilterClause] | dict | None = None,
         as_of: datetime | None = None,
         top_k: int = 10,
@@ -629,7 +685,7 @@ class LocalMemoryAPI(MemoryAPI):
         # 权限上下文与 RetrievalQuery 共用同一规范化后的 FilterExpr（不重复转换）。
         permission_context = _recall_permission_context(context, rq.filters)
         auth = self._authorize(
-            identity,
+            security,
             context.scope,
             Action.READ,
             "recall",
@@ -641,7 +697,7 @@ class LocalMemoryAPI(MemoryAPI):
         # 策略保护的数据，即可用 A 的钥匙开 B 的门。用户表达式作整体 child 并入外层 AND
         # （与 lifecycle/时间谓词同一机制），不会被其内部的 OR 稀释。
         routing_clauses: list[FilterClause] = []
-        for field in self._perm.routing_fields():
+        for field in self._authorizer.routing_fields():
             routed = permission_context.metadata.get(field, "").strip()
             if routed:
                 routing_clauses.append(
@@ -650,14 +706,14 @@ class LocalMemoryAPI(MemoryAPI):
         if routing_clauses:
             rq.filters = and_merge(rq.filters, routing_clauses)
         result = asyncio.run(self._engine.recall(context.scope, rq))
-        self._log(identity, "recall", target_scope=context.scope, detail=auth)
+        self._log(security, "recall", target_scope=context.scope, detail=auth)
         return result
 
     def list(
         self,
         scope: Scope,
         *,
-        identity: Scope,
+        security: RequestSecurityContext,
         offset: int = 0,
         limit: int = 100,
         memory_types: list[str] | None = None,
@@ -675,7 +731,7 @@ class LocalMemoryAPI(MemoryAPI):
         auth: dict[str, str] = {}
         for permission_context in permission_contexts:
             auth = self._authorize(
-                identity,
+                security,
                 scope,
                 Action.READ,
                 "list",
@@ -683,7 +739,7 @@ class LocalMemoryAPI(MemoryAPI):
             )
         routing_clauses = _list_routing_clauses(
             permission_contexts,
-            self._perm.routing_fields(),
+            self._authorizer.routing_fields(),
             memory_types,
         )
         effective_filters = and_merge(normalized_filters, routing_clauses)
@@ -699,7 +755,7 @@ class LocalMemoryAPI(MemoryAPI):
         )
         for permission_context in unit_contexts:
             auth = self._authorize(
-                identity,
+                security,
                 permission_context.scope,
                 Action.READ,
                 "list",
@@ -711,7 +767,7 @@ class LocalMemoryAPI(MemoryAPI):
                 context.memory_type for context in permission_contexts
             )
         self._log(
-            identity,
+            security,
             "list",
             target_scope=scope,
             detail={
@@ -723,10 +779,15 @@ class LocalMemoryAPI(MemoryAPI):
         return result
 
     def get(
-        self, unit_id: str, scope: Scope, *, identity: Scope, as_of: datetime | None = None
+        self,
+        unit_id: str,
+        scope: Scope,
+        *,
+        security: RequestSecurityContext,
+        as_of: datetime | None = None,
     ) -> MemoryUnit:
         self._authorize(
-            identity,
+            security,
             scope,
             Action.READ,
             "get",
@@ -735,7 +796,7 @@ class LocalMemoryAPI(MemoryAPI):
         )
         permission_context = asyncio.run(self._engine.permission_context_for_unit(unit_id, scope))
         auth = self._authorize(
-            identity,
+            security,
             scope,
             Action.READ,
             "get",
@@ -744,7 +805,7 @@ class LocalMemoryAPI(MemoryAPI):
         )
         unit = asyncio.run(self._engine.get(unit_id, scope, as_of))
         self._log(
-            identity,
+            security,
             "get",
             unit_id,
             target_scope=scope,
@@ -753,12 +814,12 @@ class LocalMemoryAPI(MemoryAPI):
         return unit
 
     def update(
-        self, unit_id: str, scope: Scope, patch: MemoryPatch, *, identity: Scope
+        self, unit_id: str, scope: Scope, patch: MemoryPatch, *, security: RequestSecurityContext
     ) -> MemoryUnit:
         _reject_reserved_metadata(patch.metadata)
         _reject_non_scalar_metadata(patch.metadata)
         self._authorize(
-            identity,
+            security,
             scope,
             Action.UPDATE,
             "update",
@@ -767,7 +828,7 @@ class LocalMemoryAPI(MemoryAPI):
         )
         permission_context = asyncio.run(self._engine.permission_context_for_unit(unit_id, scope))
         auth = self._authorize(
-            identity,
+            security,
             scope,
             Action.UPDATE,
             "update",
@@ -778,7 +839,7 @@ class LocalMemoryAPI(MemoryAPI):
         before = asyncio.run(self._engine.get(unit_id, scope, None))
         unit = asyncio.run(self._engine.update(unit_id, scope, patch))
         self._log(
-            identity,
+            security,
             "update",
             unit_id,
             target_scope=scope,
@@ -786,7 +847,7 @@ class LocalMemoryAPI(MemoryAPI):
         )
         return unit
 
-    def delete(self, selector: DeleteSelector, *, identity: Scope) -> list[str]:
+    def delete(self, selector: DeleteSelector, *, security: RequestSecurityContext) -> list[str]:
         selector_is_empty = not selector.unit_ids and not selector.tags and selector.before is None
         if selector_is_empty:
             raise ValidationError("DeleteSelector requires unit_ids, tags, or before")
@@ -796,7 +857,7 @@ class LocalMemoryAPI(MemoryAPI):
         selector_context = _selector_permission_context(selector, target)
         if selector.scope is not None or not selector.unit_ids:
             self._authorize(
-                identity,
+                security,
                 target,
                 Action.DELETE,
                 "delete",
@@ -805,7 +866,7 @@ class LocalMemoryAPI(MemoryAPI):
         contexts = asyncio.run(self._engine.permission_contexts_for_delete(selector))
         if not contexts:
             auth = self._authorize(
-                identity,
+                security,
                 target,
                 Action.DELETE,
                 "delete",
@@ -815,7 +876,7 @@ class LocalMemoryAPI(MemoryAPI):
             auth = {"permission_check": "enabled", "permission_reason": "permission check passed"}
             for permission_context in contexts:
                 unit_auth = self._authorize(
-                    identity,
+                    security,
                     permission_context.scope,
                     Action.DELETE,
                     "delete",
@@ -825,7 +886,7 @@ class LocalMemoryAPI(MemoryAPI):
                 auth.update(unit_auth)
         deleted = asyncio.run(self._engine.delete(selector))
         self._log(
-            identity,
+            security,
             "delete",
             target_scope=target,
             detail={**auth, "before_unit_ids": json.dumps(deleted, ensure_ascii=False)},
@@ -838,132 +899,154 @@ class LocalMemoryAPI(MemoryAPI):
         mode: EvolveMode,
         channel: Channel = Channel.BACKGROUND,
         *,
-        identity: Scope,
+        security: RequestSecurityContext,
     ) -> str:
-        auth = self._authorize(identity, scope, Action.WRITE, "evolve")
+        auth = self._authorize(
+            security, scope, Action.WRITE, "evolve", resource_type="evolve_request"
+        )
         self._ensure_space_writable(scope)
         job_id = asyncio.run(self._engine.evolve(scope, mode, channel))
-        self._log(identity, "evolve", target_scope=scope, detail={**auth, "job_id": job_id})
+        self._log(security, "evolve", target_scope=scope, detail={**auth, "job_id": job_id})
         return job_id
 
     # -- 任务调度（直达 Scheduler） ----------------------------------------- #
 
-    def job_status(self, job_id: str, *, identity: Scope) -> JobInfo:
-        # 先取任务（含其 scope），再据 identity 对该 scope 的 READ 权放行
+    def job_status(self, job_id: str, *, security: RequestSecurityContext) -> JobInfo:
+        # 先取任务（含其 scope），再据 actor 对该 scope 的 READ 权放行
         # （仅可查自身/已授权范围的任务）；status 为只读查询，先取后判权
-        # 不产生副作用。
+        # 不产生副作用。任务 scope 来自 Scheduler 这个真源，不是调用方声明的。
         info = self._scheduler.status(job_id)
-        auth = self._authorize(identity, info.scope, Action.READ, "job_status", job_id)
-        self._log(identity, "job_status", job_id, target_scope=info.scope, detail=auth)
+        auth = self._authorize(
+            security, info.scope, Action.READ, "job_status", job_id, resource_type="job"
+        )
+        self._log(security, "job_status", job_id, target_scope=info.scope, detail=auth)
         return info
 
-    def job_cancel(self, job_id: str, *, identity: Scope) -> None:
+    def job_cancel(self, job_id: str, *, security: RequestSecurityContext) -> None:
         # 取消即对该任务范围的写动作，按其 scope 鉴权 WRITE
         # （与 evolve 触发一致）。
         info = self._scheduler.status(job_id)
-        auth = self._authorize(identity, info.scope, Action.WRITE, "job_cancel", job_id)
-        self._log(identity, "job_cancel", job_id, target_scope=info.scope, detail=auth)
+        auth = self._authorize(
+            security, info.scope, Action.WRITE, "job_cancel", job_id, resource_type="job"
+        )
+        self._log(security, "job_cancel", job_id, target_scope=info.scope, detail=auth)
         self._scheduler.cancel(job_id)
 
     # -- admin（直达 PolicyManager；管理面闸门 = 根 scope 鉴权） ------------- #
 
-    def admin_get(self, key: str, *, identity: Scope) -> str:
+    def admin_get(self, key: str, *, security: RequestSecurityContext) -> str:
         auth = self._authorize(
-            identity,
+            security,
             _ROOT,
-            Action.READ,
+            Action.MANAGE_POLICY,
             "admin_get",
             key,
             context=_management_permission_context("admin"),
         )
-        self._log(identity, "admin_get", key, target_scope=_ROOT, detail=auth)
+        self._log(security, "admin_get", key, target_scope=_ROOT, detail=auth)
         return self._policy.get(key)
 
-    def admin_set(self, key: str, value: str, *, identity: Scope) -> None:
+    def admin_set(self, key: str, value: str, *, security: RequestSecurityContext) -> None:
         auth = self._authorize(
-            identity,
+            security,
             _ROOT,
-            Action.WRITE,
+            Action.MANAGE_POLICY,
             "admin_set",
             key,
             context=_management_permission_context("admin"),
         )
-        self._log(identity, "admin_set", key, target_scope=_ROOT, detail=auth)
+        self._log(security, "admin_set", key, target_scope=_ROOT, detail=auth)
         self._policy.set(key, value)
 
-    def admin_all(self, *, identity: Scope) -> dict[str, str]:
+    def admin_all(self, *, security: RequestSecurityContext) -> dict[str, str]:
         auth = self._authorize(
-            identity,
+            security,
             _ROOT,
-            Action.READ,
+            Action.MANAGE_POLICY,
             "admin_all",
             context=_management_permission_context("admin"),
         )
-        self._log(identity, "admin_all", target_scope=_ROOT, detail=auth)
+        self._log(security, "admin_all", target_scope=_ROOT, detail=auth)
         return self._policy.all()
 
     # -- 治理（直达 Governor） ---------------------------------------------- #
 
-    def inspect(self, unit_ids: list[str], scope: Scope, *, identity: Scope) -> list[MemoryUnit]:
-        auth = self._authorize(identity, scope, Action.READ, "inspect")
-        self._log(identity, "inspect", target_scope=scope, detail=auth)
+    def inspect(
+        self, unit_ids: list[str], scope: Scope, *, security: RequestSecurityContext
+    ) -> list[MemoryUnit]:
+        auth = self._authorize(
+            security, scope, Action.READ, "inspect", resource_type="memory_unit"
+        )
+        self._log(security, "inspect", target_scope=scope, detail=auth)
         return self._governor.inspect(unit_ids, scope)
 
-    def trace(self, unit_id: str, scope: Scope, *, identity: Scope) -> list[MemoryUnit]:
-        auth = self._authorize(identity, scope, Action.READ, "trace", unit_id)
-        self._log(identity, "trace", unit_id, target_scope=scope, detail=auth)
+    def trace(
+        self, unit_id: str, scope: Scope, *, security: RequestSecurityContext
+    ) -> list[MemoryUnit]:
+        auth = self._authorize(
+            security, scope, Action.READ, "trace", unit_id, resource_type="memory_unit"
+        )
+        self._log(security, "trace", unit_id, target_scope=scope, detail=auth)
         return self._governor.trace(unit_id, scope)
 
     def audit(
-        self, filters: dict[str, str], *, identity: Scope, limit: int = 100
+        self, filters: dict[str, str], *, security: RequestSecurityContext, limit: int = 100
     ) -> list[AuditEvent]:
         # 审计查询跨 scope，按管理面闸门（根 scope READ）鉴权；
         # 查询本身亦留痕。
         auth = self._authorize(
-            identity,
+            security,
             _ROOT,
-            Action.READ,
+            Action.READ_AUDIT,
             "audit",
             context=_management_permission_context("audit"),
         )
-        self._log(identity, "audit", target_scope=_ROOT, detail=auth)
+        self._log(security, "audit", target_scope=_ROOT, detail=auth)
         return self._governor.audit(filters, limit)
 
     # -- 跨 scope 授权（直达 PermissionManager） ---------------------------- #
 
-    def grant(self, grant: Grant, *, identity: Scope) -> None:
-        auth = self._authorize(identity, grant.grantor, Action.SHARE, "grant")
-        self._log(identity, "grant", target_scope=grant.grantor, detail=auth)
+    def grant(self, grant: Grant, *, security: RequestSecurityContext) -> None:
+        auth = self._authorize(
+            security, grant.grantor, Action.SHARE, "grant", resource_type="grant"
+        )
+        self._log(security, "grant", target_scope=grant.grantor, detail=auth)
         self._perm.grant(grant)
 
-    def revoke(self, grant: Grant, *, identity: Scope) -> None:
-        auth = self._authorize(identity, grant.grantor, Action.SHARE, "revoke")
-        self._log(identity, "revoke", target_scope=grant.grantor, detail=auth)
+    def revoke(self, grant: Grant, *, security: RequestSecurityContext) -> None:
+        auth = self._authorize(
+            security,
+            grant.grantor,
+            Action.REVOKE_SHARE,
+            "revoke",
+            resource_type="grant",
+        )
+        self._log(security, "revoke", target_scope=grant.grantor, detail=auth)
         self._perm.revoke(grant)
 
     # -- Space 管理（直达 SpaceManager） ------------------------------------ #
 
-    def create_space(self, spec: SpaceSpec, *, identity: Scope) -> SpaceInfo:
+    def create_space(self, spec: SpaceSpec, *, security: RequestSecurityContext) -> SpaceInfo:
         target = _space_scope(spec.org, spec.space)
         target_id = _space_target_id(spec.org, spec.space)
         auth = self._authorize(
-            identity,
+            security,
             Scope(org=spec.org),
-            Action.WRITE,
+            Action.MANAGE_SPACE,
             "create_space",
             target_id,
             context=_space_permission_context("space", target),
             require_space=False,
         )
         info = self._space.create(spec)
-        self._log(identity, "create_space", target_id, target_scope=target, detail=auth)
+        self._log(security, "create_space", target_id, target_scope=target, detail=auth)
         return info
 
-    def get_space(self, org: str, space: str, *, identity: Scope) -> SpaceInfo:
+    def get_space(self, org: str, space: str, *, security: RequestSecurityContext) -> SpaceInfo:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
             Action.READ,
             "get_space",
@@ -971,21 +1054,21 @@ class LocalMemoryAPI(MemoryAPI):
             context=_space_permission_context("space", target),
         )
         info = self._space.get(org, space)
-        self._log(identity, "get_space", target_id, target_scope=target, detail=auth)
+        self._log(security, "get_space", target_id, target_scope=target, detail=auth)
         return info
 
     def list_spaces(
         self,
         org: str,
         *,
-        identity: Scope,
+        security: RequestSecurityContext,
         status: SpaceStatus | None = None,
         limit: int = 100,
         cursor: str | None = None,
     ) -> list[SpaceInfo]:
         target = Scope(org=org)
         auth = self._authorize(
-            identity,
+            security,
             target,
             Action.READ,
             "list_spaces",
@@ -995,7 +1078,7 @@ class LocalMemoryAPI(MemoryAPI):
         )
         spaces = self._space.list(org, status=status, limit=limit, cursor=cursor)
         self._log(
-            identity,
+            security,
             "list_spaces",
             org,
             target_scope=target,
@@ -1004,35 +1087,35 @@ class LocalMemoryAPI(MemoryAPI):
         return spaces
 
     def update_space(
-        self, org: str, space: str, patch: SpacePatch, *, identity: Scope
+        self, org: str, space: str, patch: SpacePatch, *, security: RequestSecurityContext
     ) -> SpaceInfo:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
-            Action.UPDATE,
+            Action.MANAGE_SPACE,
             "update_space",
             target_id,
             context=_space_permission_context("space", target),
         )
         info = self._space.update(org, space, patch)
-        self._log(identity, "update_space", target_id, target_scope=target, detail=auth)
+        self._log(security, "update_space", target_id, target_scope=target, detail=auth)
         return info
 
-    def archive_space(self, org: str, space: str, *, identity: Scope) -> SpaceInfo:
+    def archive_space(self, org: str, space: str, *, security: RequestSecurityContext) -> SpaceInfo:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
-            Action.UPDATE,
+            Action.MANAGE_SPACE,
             "archive_space",
             target_id,
             context=_space_permission_context("space", target),
         )
         info = self._space.archive(org, space)
-        self._log(identity, "archive_space", target_id, target_scope=target, detail=auth)
+        self._log(security, "archive_space", target_id, target_scope=target, detail=auth)
         return info
 
     def delete_space(
@@ -1040,7 +1123,7 @@ class LocalMemoryAPI(MemoryAPI):
         org: str,
         space: str,
         *,
-        identity: Scope,
+        security: RequestSecurityContext,
         mode: DeleteMode = DeleteMode.PURGE,
     ) -> SpaceDeleteResult:
         if mode != DeleteMode.PURGE:
@@ -1048,9 +1131,9 @@ class LocalMemoryAPI(MemoryAPI):
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
-            Action.DELETE,
+            Action.MANAGE_SPACE,
             "delete_space",
             target_id,
             context=_space_permission_context("space", target),
@@ -1061,7 +1144,7 @@ class LocalMemoryAPI(MemoryAPI):
         result.deleted_counts["index"] = result.deleted_counts.get("index", 0) + len(purged)
         result.deleted_counts["kv"] = result.deleted_counts.get("kv", 0) + len(purged)
         self._log(
-            identity,
+            security,
             "delete_space",
             target_id,
             target_scope=target,
@@ -1078,13 +1161,13 @@ class LocalMemoryAPI(MemoryAPI):
         org: str,
         space: str,
         *,
-        identity: Scope,
+        security: RequestSecurityContext,
         include_audit: bool = True,
     ) -> str:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
             Action.READ,
             "export_space",
@@ -1093,7 +1176,7 @@ class LocalMemoryAPI(MemoryAPI):
         )
         export_id = self._space.export(org, space, include_audit=include_audit)
         self._log(
-            identity,
+            security,
             "export_space",
             target_id,
             target_scope=target,
@@ -1101,11 +1184,11 @@ class LocalMemoryAPI(MemoryAPI):
         )
         return export_id
 
-    def space_usage(self, org: str, space: str, *, identity: Scope) -> SpaceUsage:
+    def space_usage(self, org: str, space: str, *, security: RequestSecurityContext) -> SpaceUsage:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
             Action.READ,
             "space_usage",
@@ -1114,7 +1197,7 @@ class LocalMemoryAPI(MemoryAPI):
         )
         usage = self._space.usage(org, space)
         self._log(
-            identity,
+            security,
             "space_usage",
             target_id,
             target_scope=target,
@@ -1127,11 +1210,13 @@ class LocalMemoryAPI(MemoryAPI):
         )
         return usage
 
-    def get_space_policy(self, org: str, space: str, *, identity: Scope) -> SpacePolicy:
+    def get_space_policy(
+        self, org: str, space: str, *, security: RequestSecurityContext
+    ) -> SpacePolicy:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
             Action.READ,
             "get_space_policy",
@@ -1139,25 +1224,25 @@ class LocalMemoryAPI(MemoryAPI):
             context=_space_permission_context("space_policy", target),
         )
         policy = self._space.get_policy(org, space)
-        self._log(identity, "get_space_policy", target_id, target_scope=target, detail=auth)
+        self._log(security, "get_space_policy", target_id, target_scope=target, detail=auth)
         return policy
 
     def set_space_policy(
-        self, org: str, space: str, policy: SpacePolicy, *, identity: Scope
+        self, org: str, space: str, policy: SpacePolicy, *, security: RequestSecurityContext
     ) -> SpacePolicy:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
-            Action.UPDATE,
+            Action.MANAGE_SPACE,
             "set_space_policy",
             target_id,
             context=_space_permission_context("space_policy", target),
         )
         updated = self._space.set_policy(org, space, policy)
         self._log(
-            identity,
+            security,
             "set_space_policy",
             target_id,
             target_scope=target,
@@ -1165,11 +1250,13 @@ class LocalMemoryAPI(MemoryAPI):
         )
         return updated
 
-    def list_space_members(self, org: str, space: str, *, identity: Scope) -> list[SpaceMember]:
+    def list_space_members(
+        self, org: str, space: str, *, security: RequestSecurityContext
+    ) -> list[SpaceMember]:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
             Action.READ,
             "list_space_members",
@@ -1178,7 +1265,7 @@ class LocalMemoryAPI(MemoryAPI):
         )
         members = self._space.list_members(org, space)
         self._log(
-            identity,
+            security,
             "list_space_members",
             target_id,
             target_scope=target,
@@ -1187,37 +1274,39 @@ class LocalMemoryAPI(MemoryAPI):
         return members
 
     def add_space_member(
-        self, org: str, space: str, member: SpaceMember, *, identity: Scope
+        self, org: str, space: str, member: SpaceMember, *, security: RequestSecurityContext
     ) -> None:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
-            Action.SHARE,
+            Action.MANAGE_SPACE,
             "add_space_member",
             target_id,
             context=_space_permission_context("space_member", target),
         )
         self._space.add_member(org, space, member)
         self._log(
-            identity,
+            security,
             "add_space_member",
             target_id,
             target_scope=target,
             detail={**auth, "member_role": member.role},
         )
 
-    def remove_space_member(self, org: str, space: str, member: Scope, *, identity: Scope) -> None:
+    def remove_space_member(
+        self, org: str, space: str, member: Scope, *, security: RequestSecurityContext
+    ) -> None:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
-            Action.SHARE,
+            Action.MANAGE_SPACE,
             "remove_space_member",
             target_id,
             context=_space_permission_context("space_member", target),
         )
         self._space.remove_member(org, space, member)
-        self._log(identity, "remove_space_member", target_id, target_scope=target, detail=auth)
+        self._log(security, "remove_space_member", target_id, target_scope=target, detail=auth)

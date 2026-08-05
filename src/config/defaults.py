@@ -211,6 +211,17 @@ def default_config_dict() -> dict[str, Any]:
         "policy": {_D: "dict"},
         "governor": {_D: {"target": "in_memory", "params": {"audit": _D, "kv_store": _D}}},
         "permission": {_D: {"target": "sqlite", "params": {"db_path": ":memory:"}}},
+        # 授权（F05 §Authorization / 迁移计划 §7.1）：策略在 authorizer，记录的存取在
+        # grant_store / delegation_store。两个 Store 在 authorizer.standard 的 _build
+        # 里**无默认**，故必须在这里显式具名——「忘了配授权存储」要在装配期就报错。
+        "grant_store": {_D: "memory"},
+        "delegation_store": {_D: "memory"},
+        "authorizer": {
+            _D: {
+                "target": "standard",
+                "params": {"grant_store": _D, "delegation_store": _D},
+            }
+        },
         "space": {_D: {"target": "kv", "params": {"kv_store": _D}}},
     }
 
@@ -219,6 +230,7 @@ def default_config_dict() -> dict[str, Any]:
 ROOT_PARAMS: dict[str, str] = {
     "engine": _D,
     "permission": _D,
+    "authorizer": _D,
     "scheduler": _D,
     "policy": _D,
     "governor": _D,

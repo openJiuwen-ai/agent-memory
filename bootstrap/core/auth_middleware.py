@@ -1,11 +1,15 @@
-"""请求作用域的认证上下文——凭据提取 + ContextVar 建立/清理。
+"""请求作用域的安全上下文——凭据提取 + ``RequestSecurityContext`` 构造。
 
 各 surface（HTTP / MCP / CLI 直连）用同一条中间件：把本形态的凭据材料归一成
 :class:`~common.security.types.Credentials`，交给装配好的 ``Authenticator``，把产出的
-``AuthContext`` 挂进 ContextVar 供 ``handler.dispatch`` 读取。
+``AuthContext`` 包成 :class:`~common.security.types.RequestSecurityContext` 交给
+``handler.dispatch``——这是 ``MemoryAPI`` 的唯一显式安全输入（迁移计划 §5.2 第 7 项）。
 
 **本模块不决定认证策略**——模式（dev / trusted / api_key）由配置在装配期选定，
 这里只负责「在正确的时机调用它、并保证退出时清理干净」。
+
+上下文经**参数**下传，不经 ContextVar：ContextVar 在本模块仍会设置，但已降级为
+日志/trace 的辅助传播（迁移计划 §5.2 第 10 项），授权判定不得依赖它存在。
 """
 
 from __future__ import annotations
@@ -26,6 +30,12 @@ _security_types = import_module("common.security.types")
 reset_current = _security_types.reset_current
 set_current = _security_types.set_current
 Credentials = _security_types.Credentials
+Surface = _security_types.Surface
+
+# RequestSecurityContext 的构造规则（服务端生成 request_id、服务端时钟、attributes
+# 只由系统组件写）收在 common.security.request_context 一处，本模块只提供本形态的
+# surface 与 peer。
+new_request_context = import_module("common.security.request_context").new_request_context
 
 Scope = import_module("common.type_def").Scope
 AuditEvent = import_module("common.type_def").AuditEvent
@@ -60,9 +70,18 @@ def credentials_from_headers(headers: Mapping[str, Any], peer_address: str = "")
 
 @contextmanager
 def authenticated(
-    authenticator, credentials, audit=None, limiter=None, *, workload_guard=None
+    authenticator,
+    credentials,
+    audit=None,
+    limiter=None,
+    *,
+    workload_guard=None,
+    surface=None,
 ) -> Iterator[Any]:
-    """在请求作用域内建立可信认证上下文；退出时**必定** reset。
+    """在请求作用域内建立可信 :class:`RequestSecurityContext`；退出时**必定** reset。
+
+    产出的上下文由调用方**显式**传给 ``dispatch``——它是 ``MemoryAPI`` 的唯一安全
+    输入。ContextVar 仍在这里设置，但只供日志/trace 关联，授权不读它。
 
     reset 放 ``finally`` 是硬性要求：``ThreadingHTTPServer`` 每请求一线程，
     但线程可能被池化复用；漏 reset 会让下一个请求继承上一个请求的身份——
@@ -81,6 +100,9 @@ def authenticated(
     而不是排队——无界排队只是把资源耗尽从 CPU/内存转移到线程和请求队列。在 limiter
     之后、authenticate 之前执行；acquire 成功后用 ``finally`` 释放。``None`` 表示
     该认证实现声明不需要预算保护（见 ``Authenticator.requires_concurrency_guard``）。
+
+    ``surface`` 由适配层写入（迁移计划 §5.2 第 7 项），调用方不能经 payload 声明；
+    缺省 ``INTERNAL`` 对应进程内装配。
     """
     if limiter is not None and not limiter.allow(credentials.peer_address):
         _record_denial(audit, authenticator, credentials, "rate_limit")
@@ -102,11 +124,30 @@ def authenticated(
         if guard_acquired:
             workload_guard.release()
 
+    security = new_request_context(
+        ctx,
+        surface=surface if surface is not None else Surface.INTERNAL,
+        peer=_normalized_peer(credentials),
+        # attributes 留空：本层没有可写入的系统属性，而业务 payload 一律不得注入
+        # （迁移计划 §5.2 第 7 项）。将来要加（如可信代理链、mTLS 主体）只能由
+        # 服务端组件在此处写。
+    )
+
     token = set_current(ctx)
     try:
-        yield ctx
+        yield security
     finally:
         reset_current(token)
+
+
+def _normalized_peer(credentials) -> str:
+    """规范化连接来源：只采信传输层对端地址。
+
+    刻意**不读** ``X-Forwarded-For`` / ``X-Real-IP``：没有可信代理白名单时采信这类
+    header，等于让调用方自述来源——限流分桶、审计溯源和将来基于 peer 的策略会同时
+    被绕过。要支持反向代理部署，得先有「哪些前置跳是可信的」这项配置，那是独立设计。
+    """
+    return str(credentials.peer_address or "").strip()
 
 
 def _record_denial(audit, authenticator, credentials, action) -> None:

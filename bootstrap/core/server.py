@@ -115,11 +115,17 @@ class Server:
         security = _build_security(kernel_config)
         return cls(config, kernel, security)
 
-    def dispatch(self, verb: str, payload: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
-        """Route a ``(verb, payload)`` through the shared handler."""
+    def dispatch(
+        self, verb: str, payload: Dict[str, Any], security: Any = None
+    ) -> Tuple[int, Dict[str, Any]]:
+        """Route a ``(verb, payload)`` through the shared handler.
+
+        ``security`` 是中间件产出的 ``RequestSecurityContext``；缺失时 handler 返回
+        401（fail-closed），本层不代为构造。
+        """
         from handler import dispatch as _dispatch
 
-        return _dispatch(self, verb, payload)
+        return _dispatch(self, verb, payload, security)
 
 
 def _build_security(kernel_config: Any):

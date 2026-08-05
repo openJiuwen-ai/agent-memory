@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from api.memory_api_impl import build_kernel
+from common.security import internal_context
 from common.type_def import Context
 from config.config import Config
 
@@ -26,6 +27,9 @@ class EvalHarness:
     def __init__(self, config: Optional[Config] = None) -> None:
         self._kernel = build_kernel(config=config)
         self._api = self._kernel.api
+        # 评测走 MemoryAPI 公共面，安全契约与外部请求相同（F05 §进程内调用）：
+        # 身份由认证能力产出，数据集里的 scope 只表达资源归属。
+        self._security = internal_context()
         self._key2ids: Dict[str, List[str]] = {}
 
     def ingest(self, seeds: List[MemorySeed]) -> None:
@@ -34,7 +38,7 @@ class EvalHarness:
             units = self._api.write(
                 seed.content,
                 seed.scope,
-                identity=seed.scope,
+                security=self._security,
                 tags=list(seed.tags),
                 metadata=dict(seed.metadata),
                 occurred_at=seed.occurred_at,
@@ -46,7 +50,7 @@ class EvalHarness:
         result = self._api.recall(
             case.text,
             Context(case.scope),
-            identity=case.scope,
+            security=self._security,
             filters=list(case.filters) or None,
             as_of=case.as_of,
             top_k=case.top_k,

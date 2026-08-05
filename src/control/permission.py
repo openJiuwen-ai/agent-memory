@@ -50,9 +50,11 @@ class PermissionManager(ControlOperator):
         """校验 ``actor`` 是否可对 ``target`` scope 执行 ``action``。
 
         ``auth`` 是认证层产出的可信上下文（由 PEP 从 ContextVar 取出后透传），
-        携带 ``actor`` 之外的两样判定依据：``role``（§3.1 三级角色）与
-        ``acting_user``（§4.3 用户授权 Agent 代操作）。二者都**不可**从 ``actor``
-        这个 Scope 推断出来，故必须单独传入。
+        携带 ``role``（§3.1 三级角色）这个 ``actor`` 推不出来的判定依据。
+
+        代操作（原 ``acting_user``）已不在这里判：委托关系必须来自服务端记录，由
+        ``common.security.authorization`` 的 Authorizer 按 ``delegation_id`` 回
+        ``DelegationStore`` 复核（F05 §从 header 直接产生 Delegation）。
 
         ``auth`` 为 ``None`` 时行为退回纯 ACL——即认证接入前的语义。这条兼容线
         承载后台 job、单测与 ``build_kernel`` 直连等非请求场景：它们没有认证上下文，

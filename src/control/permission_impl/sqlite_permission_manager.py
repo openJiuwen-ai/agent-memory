@@ -12,7 +12,7 @@
 
 1. ``auth.actor`` 与 ``actor`` 不一致 → 拒；
 2. 管理面资源（``resource_type`` 为 admin/audit，或 space 的写/删）要求 ROOT；
-3. ROOT 按 **role** 判定，代操作按 ``acting_user`` 判定（§3.5 / §4.3）。
+3. ROOT 按 **role** 判定（§3.5）。
 
 此时空 `Scope()` **不再**自动等于 platform admin：特权必须来自认证层的显式结论。
 """
@@ -156,39 +156,11 @@ def _management_plane_denies(
     return context.resource_type == "space" and action in _SPACE_LIFECYCLE_ACTIONS
 
 
-# 委托允许的动作（§4.3 agent 代 user 操作）：只覆盖记忆 CRUD，**不含 SHARE**。
-# 委托是请求级的「替这个 user 读写」，不是「替这个 user 把权限送给别人」--后者会把
-# 一次性委托升级成永久 Grant（审计 P1-1）。用显式 allowlist 而非「非管理面即允许」，
-# 是因为新增 Action 时默认落入「委托可做」是危险的默认值。
-_DELEGATABLE_ACTIONS = frozenset({Action.READ, Action.WRITE, Action.UPDATE, Action.DELETE})
-
-
-def _delegation_covers(auth: AuthContext | None, target: Scope, action: Action) -> bool:
-    """§4.3 路径 1：用户授权 Agent 代操作。
-
-    条件全部取自服务端的认证产物，**没有一项来自请求体**--否则调用方自己声明
-    `acting_user` 就等于自助提权。
-
-    动作必须落在 ``_DELEGATABLE_ACTIONS`` 里：委托可代 user 读写记忆，但不可代发
-    授权（``SHARE``）。否则 agent 拿到一次请求级委托后，可对 ``acting_user`` 的
-    scope 发 ``SHARE``，给自己（或同伙）写长期 Grant，把临时委托升级成永久访问
-    （审计 P1-1）。
-    """
-    if action not in _DELEGATABLE_ACTIONS:
-        return False
-    if auth is None or not auth.acting_user:
-        return False
-    delegate = auth.actor
-    if not delegate.agent:
-        # §4.3 只定义了 agent 代 user 这一个方向，反向不成立。
-        return False
-    if delegate.org != target.org or delegate.space != target.space:
-        # org 是硬边界（§4.2）；space 同理--同名 user 在别的 space 不是同一份数据。
-        return False
-    if target.user != auth.acting_user:
-        return False
-    # 代 user 操作的目标是该 user 的分支，不是它名下另一个 agent 的分支。
-    return not target.agent
+# agent 代 user 操作的判定路径已删除。它依赖网关 header 送来的 ``acting_user``，而
+# header 只能证明网关声称某个 user，证明不了该 user 真的授权了这个 agent（F05
+# §从 header 直接产生 Delegation）。代操作现在走 ``DelegationStore`` 里的服务端记录，
+# 由 ``StandardAuthorizer`` 按 ``delegation_id`` 复核；可委托动作的 allowlist 迁到
+# ``common.security.types.DELEGATABLE_ACTIONS``。
 
 
 def _row_scope(row: sqlite3.Row | tuple, prefix: str) -> Scope:
@@ -341,9 +313,6 @@ class SQLitePermissionManager(PermissionManager):
             return True
 
         if _owner_scope_covers(actor, target, context):
-            return True
-
-        if _delegation_covers(auth, target, action):
             return True
 
         if actor.org != target.org:

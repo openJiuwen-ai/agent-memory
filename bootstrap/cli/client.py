@@ -80,18 +80,27 @@ class InProcessClient:
         from handler import dispatch
 
         from common.errors import AuthenticationError
-        from common.security.types import Credentials
+        from common.security.types import Credentials, Surface
 
         # 进程内直连没有 HTTP header，故过一个空 Credentials。DEV 模式下得到
         # ROOT，与现状一致（CLI 一直是全权限的）；API_KEY 模式下会认证失败——
         # 这是**正确的**：没有凭据就不该有权限。要在 API_KEY 模式下用 CLI，
         # 走 HttpClient 带 --api-key。
         #
+        # 走的是与 HTTP 完全相同的中间件与 dispatch 签名（迁移计划 §5.4「HTTP、
+        # MCP、CLI、SDK 和进程内调用使用相同安全契约」）——差别只在 surface 标识
+        # 和「没有网络对端故不限流」。
+        #
         # 认证失败转成 (401, body) 而非抛出：本方法的契约是返回状态码，
         # 与 HttpClient.call 一致。
         try:
-            with authenticated(self._srv.authenticator, Credentials(), self._srv.audit):
-                return dispatch(self._srv, verb, payload)
+            with authenticated(
+                self._srv.authenticator,
+                Credentials(),
+                self._srv.audit,
+                surface=Surface.CLI,
+            ) as security:
+                return dispatch(self._srv, verb, payload, security)
         except AuthenticationError as exc:
             return 401, {"error": type(exc).__name__, "message": str(exc)}
 

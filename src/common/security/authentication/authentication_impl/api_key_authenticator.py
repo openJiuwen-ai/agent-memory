@@ -28,6 +28,10 @@ _ROOT_CREDENTIAL = "root_api_key"
 
 _FAILED = "authentication failed"
 
+# Root Key 对应的主体。**不是空 ``Scope()``**：F05 §授权不变量 1 要求 ROOT 由 ``role``
+# 表达，actor 只表达「是谁」。空 actor 在 ``StandardAuthorizer`` 是 deny 而非放行。
+_ROOT_ACTOR = Scope(org="system", user="root")
+
 
 class ApiKeyAuthenticator(Authenticator):
     """Root Key 常时间比对 + 主体注册表查询。"""
@@ -58,7 +62,7 @@ class ApiKeyAuthenticator(Authenticator):
             self._root_key.encode("utf-8"), api_key.encode("utf-8")
         ):
             return AuthContext(
-                actor=Scope(),
+                actor=_ROOT_ACTOR,
                 role=Role.ROOT,
                 credential_type=_ROOT_CREDENTIAL,
                 credential_id=self._root_key_fp,

@@ -47,7 +47,9 @@ _auth_middleware = import_module("auth_middleware")
 authenticated = _auth_middleware.authenticated
 AuthenticationError = import_module("common.errors").AuthenticationError
 ValidationError = import_module("common.errors").ValidationError
-Credentials = import_module("common.security.types").Credentials
+_security_types = import_module("common.security.types")
+Credentials = _security_types.Credentials
+Surface = _security_types.Surface
 
 try:
     FastMCP = import_module("mcp.server.fastmcp").FastMCP
@@ -74,8 +76,12 @@ def _call(verb: str, payload: dict) -> dict:
     docstring 的第一期限制）。DEV 模式下得到 ROOT，非 DEV 模式下这里就会抛认证失败。
     """
     try:
-        with authenticated(_SRV.authenticator, Credentials(), _SRV.audit):
-            status, body = _SRV.dispatch(verb, {k: v for k, v in payload.items() if v is not None})
+        with authenticated(
+            _SRV.authenticator, Credentials(), _SRV.audit, surface=Surface.MCP
+        ) as security:
+            status, body = _SRV.dispatch(
+                verb, {k: v for k, v in payload.items() if v is not None}, security
+            )
     except AuthenticationError as auth_error:
         raise RuntimeError(
             f"{type(auth_error).__name__}: {auth_error}"
