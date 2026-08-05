@@ -9,7 +9,7 @@ import pytest
 
 from common.type_def import Scope
 from storage.fulltext_impl.elasticsearch_fulltext import ElasticsearchFulltextStore
-from storage.types import Document
+from storage.types import Document, TextQuery
 
 pytestmark = pytest.mark.unit
 
@@ -19,6 +19,8 @@ class _FakeIndices:
         self._exists = exists
         self.created: dict | None = None
         self.updated: dict | None = None
+        self.analyzed: dict | None = None
+        self.analyze_tokens: list[str] = []
 
     def exists(self, *, index: str) -> bool:
         return self._exists
@@ -29,11 +31,16 @@ class _FakeIndices:
     def put_mapping(self, **kwargs) -> None:
         self.updated = kwargs
 
+    def analyze(self, **kwargs) -> dict:
+        self.analyzed = kwargs
+        return {"tokens": [{"token": token} for token in self.analyze_tokens]}
+
 
 class _FakeClient:
     def __init__(self, *, index_exists: bool = False) -> None:
         self.indices = _FakeIndices(exists=index_exists)
         self.documents: dict[str, dict] = {}
+        self.searches: list[dict] = []
 
     def bulk(self, *, operations: list[dict], refresh: str) -> dict:
         for offset in range(0, len(operations), 2):
@@ -52,6 +59,10 @@ class _FakeClient:
                 for doc_id in ids
             ]
         }
+
+    def search(self, **kwargs) -> dict:
+        self.searches.append(kwargs)
+        return {"hits": {"hits": []}}
 
 
 def test_text_analyzer_is_written_to_index_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -117,3 +128,58 @@ def test_source_records_array_metadata_keys_without_exposing_them_as_metadata(
     assert source["metadata"] == metadata
     assert source["metadata_array_fields"] == ["tags"]
     assert store.get(scope, ["a"])[0].metadata == metadata
+
+
+def test_search_filters_stopwords_from_es_analyzed_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeClient()
+    client.indices.analyze_tokens = ["这", "本书", "是", "讲", "什么", "的"]
+
+    def create_client(*_args: object, **_kwargs: object) -> _FakeClient:
+        return client
+
+    elasticsearch = ModuleType("elasticsearch")
+    setattr(elasticsearch, "Elasticsearch", create_client)
+    monkeypatch.setitem(sys.modules, "elasticsearch", elasticsearch)
+
+    store = ElasticsearchFulltextStore(index="memory_zh")
+    result = store.search(Scope(org="acme"), TextQuery(text="这本书是讲什么的"))
+
+    assert result == []
+    assert client.indices.analyzed == {
+        "index": "memory_zh",
+        "field": "text",
+        "text": "这本书是讲什么的",
+    }
+    keyword_query = client.searches[0]["query"]["bool"]["must"][0]
+    assert keyword_query == {
+        "bool": {
+            "should": [
+                {"term": {"text": "本书"}},
+                {"term": {"text": "讲"}},
+                {"term": {"text": "什么"}},
+            ],
+            "minimum_should_match": 1,
+        }
+    }
+
+
+def test_search_returns_empty_when_query_contains_only_stopwords(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeClient()
+    client.indices.analyze_tokens = ["这", "是", "的"]
+
+    def create_client(*_args: object, **_kwargs: object) -> _FakeClient:
+        return client
+
+    elasticsearch = ModuleType("elasticsearch")
+    setattr(elasticsearch, "Elasticsearch", create_client)
+    monkeypatch.setitem(sys.modules, "elasticsearch", elasticsearch)
+
+    store = ElasticsearchFulltextStore(index="memory_zh")
+    result = store.search(Scope(org="acme"), TextQuery(text="这是的"))
+
+    assert result == []
+    assert client.searches == []

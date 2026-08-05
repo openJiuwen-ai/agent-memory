@@ -42,6 +42,7 @@ from .._support import (
 from ..base import StoreType
 from ..fulltext import FulltextStore
 from ..types import Document, ScoredID, TextQuery
+from .retrieval_stopwords import RETRIEVAL_STOPWORDS
 
 _RANGE_OPS = {FilterOp.GT: "gt", FilterOp.GTE: "gte", FilterOp.LT: "lt", FilterOp.LTE: "lte"}
 _METADATA_ARRAY_FIELDS = "metadata_array_fields"
@@ -350,12 +351,44 @@ class ElasticsearchFulltextStore(FulltextStore):
                 out.append(self._to_document(d["_id"], src))
         return out
 
+    def _analyze_query(self, text: str) -> list[str]:
+        """用索引字段的实际 analyzer 分词，并过滤内部中文停用词。"""
+        with wrap_backend("elasticsearch analyze query"):
+            response = self.client.indices.analyze(
+                index=self._index,
+                field=self._text_field,
+                text=text,
+            )
+        tokens = (
+            str(item.get("token", "")).strip()
+            for item in response.get("tokens", [])
+        )
+        return list(
+            dict.fromkeys(
+                token
+                for token in tokens
+                if token and token not in RETRIEVAL_STOPWORDS
+            )
+        )
+
     def search(self, scope: Scope, query: TextQuery) -> list[ScoredID]:
+        tokens = self._analyze_query(query.text)
+        if not tokens:
+            return []
         filters = self._scope_filters(scope)
         compiled = self._compile_filter(query.filters)
         if compiled is not None:
             filters.append(compiled)
-        bool_query = {"must": [{"match": {self._text_field: query.text}}], "filter": filters}
+        keyword_query = {
+            "bool": {
+                "should": [
+                    {"term": {self._text_field: token}}
+                    for token in tokens
+                ],
+                "minimum_should_match": 1,
+            }
+        }
+        bool_query = {"must": [keyword_query], "filter": filters}
         with wrap_backend("elasticsearch search"):
             resp = self.client.search(
                 index=self._index, query={"bool": bool_query}, size=query.top_k
