@@ -332,6 +332,7 @@ SpacePolicy 中的 `require_space`、`pipeline_profiles`、`index_profiles`、
   content 的端到端 recall 集成测试。
 - `common/security` 接口、`local` SecurityProvider 和 `EncryptedKVStore` wrapper 已落地；CloudEngine 仍需补开启 `EncryptedKVStore` 后的端到端静态加密集成测试。
 - 现有 `Scheduler` 接口没有 job context；当前 `CloudEngine.evolve(scope, mode)` 仍委托注入的 Scheduler，profile-aware evolve 需要新增 cloud executor 或扩展 Scheduler 规约。
+  - **增量（2026-07，[`F06`](F06-middle-term-memory.md)）**：`Scheduler.submit` 改为 `async def submit(job, channel)`——task 内容由 `Job` 封装，不再持 mode/state，Scheduler 只调度。`CloudEngine.evolve` 经 `JobFactory.get_job(JobType.EVOLVE, scope, mode=mode)` 取实例 + `await scheduler.submit(job, channel)` 提交。**注意 profile-aware evolve 当前未解决**：`EvolveJobSpec.with_scope` 仍只持 default Evolver，未支持运行时覆盖入参 `evolver=`——多 profile evolve 场景下 Job 仍用 default evolver，是已知遗留（见 F06 已知遗留）。`write` 路径 `infer=true + middle=true` 子分支同款经 JobFactory 取 `MiddleToLongJob` 实例 + 经 `AsyncTimerScheduler` per scope TimerWheel 周期触发；多 profile 适配时 CloudEngine 通过 `get_job(evolver=, index=)` 运行时覆盖入参注入 binding 的（保证 Job 内部的 evolver/index 与原文落盘时一致），详见 F06 决策 4。
 - 索引层仍可能保存明文摘要、文本、向量或图节点属性。KV 加密只能保护真源与 KV value，不等于全链路加密。
 - `message_type` 是否升为公开 API 字段，需要在 `S02-memory-api` 中单独固化；第一阶段可以通过 metadata 兼容落地。
 - Space 管理面接口、space policy 存储、用量统计和 offboarding 不是 CloudEngine 的职责，已由 `SpaceManager` 控制算子承接；CloudEngine 只消费已解析后的 target scope 与 pipeline/profile 配置。

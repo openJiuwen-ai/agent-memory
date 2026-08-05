@@ -204,12 +204,32 @@ def default_config_dict() -> dict[str, Any]:
                     "scheduler": _D,
                     "evolver": _D,
                     "lifecycle": _D,
+                    "job_factory": _D,
+                    "middle_interval": 50,
                 },
             }
         },
-        "scheduler": {
-            _D: {"target": "in_process", "params": {"kv_store": _D, "evolver": _D}}
+        # JobFactory 顶层命名空间：装配期把各 Job 类型的 Spec 注册到 JobFactory。
+        "job_factory": {
+            _D: {
+                "target": "default",
+                "params": {
+                    # 依赖引用——与 engine.default.params 同名指向同一具名实例缓存，
+                    # 保证 Job 内部用的 kv/evolver 与 Engine 持有的同一个。
+                    "kv_store": _D,
+                    "evolver": _D,
+                    "lifecycle": _D,
+                    "index_builder": _D,
+                    "llm": _D,
+                    # MiddleToLongJob 业务参数
+                    "middle_max_fetch": 100,    # _list_working_units 取最近 N 条
+                    "middle_batch_size": 10,    # 连续性切批上限
+                    "middle_concurrency": 4,    # 批间并发（1=串行）
+                },
+            }
         },
+        # scheduler 只接收 Job（Job 自带数据源），无 params。
+        "scheduler": {_D: {"target": "in_process", "params": {}}},
         "lifecycle": {_D: {"target": "kv", "params": {"kv_store": _D, "policy": _D}}},
         "policy": {_D: "dict"},
         "governor": {_D: {"target": "in_memory", "params": {"audit": _D, "kv_store": _D}}},

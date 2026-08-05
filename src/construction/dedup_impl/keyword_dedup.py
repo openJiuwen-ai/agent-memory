@@ -83,6 +83,10 @@ class KeywordDedup(Dedup):
             # scope_filter: 只保留与候选同 scope 的 unit
             if self._scope_filter and not same_scope(unit.scope, candidate.scope):
                 continue
+            # 跳过中期记忆原文——派生必然与源原文语义接近，让原文参与对照会
+            # 触发 NOOP 丢派生。dedup 只查"派生是否与已沉淀长期记忆重复"。
+            if unit.metadata.get("middle") == "true":
+                continue
             # dict MaxP 聚合
             if unit.id not in aggregated or scored_id.score > aggregated[unit.id][1]:
                 aggregated[unit.id] = (unit, scored_id.score)

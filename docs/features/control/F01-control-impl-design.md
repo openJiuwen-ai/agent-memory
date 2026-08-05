@@ -111,6 +111,8 @@
 - 即便同步执行，也保留 job id、状态、时间戳、执行结果详情，API 和 UI 可以先依赖稳定的任务查询契约。
 - 缺少 KV/Evolver 时执行体空转并成功返回，用于极简装配；完整装配中通过 Producer 依赖默认注入 `KvProducer.dep(..., default="memory")` 与 `EvolverProducer.dep(..., default="orchestrating")`。
 
+> **增量（2026-07，[`F06`](F06-middle-term-memory.md)）**：`Scheduler.submit` 改为 `async def submit(self, job: Job, channel: Channel) -> str`——task 内容由 `Job` 封装，Scheduler 不再决定 mode；InProcessScheduler 不再持 KV/Evolver，签名 `def __init__(self) -> None`，直接 `await job.run()` 执行。原 `_execute_task` 逻辑外提为 `EvolveJob`（`jobs_impl/evolve_job.py`）。`AsyncTimerScheduler` 作为真异步调度实现注册为 `async_timer`，见 F06 决策 2。
+
 ### 决策 6：Policy 第一版是已知键内存表
 
 **选了什么**：当前 `DictPolicyManager` 注册为 `policy: dict`。策略存内存 dict，`get/set` 仅允许访问已存在 key，未知 key 抛 `PolicyError`。默认策略：
@@ -134,11 +136,12 @@
 
 | 算子 | Producer TOP_NAME | target | 实现类 | 主要依赖 | 语义摘要 |
 |---|---|---|---|---|---|
-| MemoryEngine | `engine` | `in_memory` | `InMemoryEngine` | ingestor / classifier / index_builder / retriever / kv / scheduler / evolver / lifecycle | 编排 API 数据面主语义 |
+| MemoryEngine | `engine` | `in_memory` | `InMemoryEngine` | ingestor / classifier / index_builder / retriever / kv / scheduler / evolver / lifecycle / job_factory | 编排 API 数据面主语义 |
 | LifecycleManager | `lifecycle` | `kv` | `KVLifecycleManager` | kv / policy | KV 真源上的非破坏式状态流转与清扫 |
 | Governor | `governor` | `in_memory` | `InMemoryGovernor` | kv / audit logger events | 治理检视、血缘回溯、审计过滤 |
 | PermissionManager | `permission` | `allow_all` | `AllowAllPermissionManager` | — | 本地放行占位，记录 Grant |
-| Scheduler | `scheduler` | `in_process` | `InProcessScheduler` | kv / evolver | 进程内同步执行 Evolver，维护 JobInfo |
+| Scheduler | `scheduler` | `in_process` | `InProcessScheduler` | — | 进程内同步执行 Job（`await job.run()`），维护 JobInfo |
+| Scheduler | `scheduler` | `async_timer` | `AsyncTimerScheduler` | — | 异步 + 定时调度：per scope FIFO 队列 + 单 drain Task + per scope TimerWheel（见 [`F06`](F06-middle-term-memory.md)） |
 | PolicyManager | `policy` | `dict` | `DictPolicyManager` | policies 参数 | 已知键内存策略表 |
 
 ### 注册与装配
@@ -229,7 +232,7 @@ scheduler:
 
 1. **Permission 仍是 allow-all**：当前只适合本地 demo/单租户测试。真实多租户部署必须实现 scope 包含、Grant 匹配、过期校验、逐 action revoke 与审计。
 
-2. **Scheduler 不是真异步**：`InProcessScheduler.submit` 在当前进程同步执行 Evolver。若 Evolver 连接真实 LLM 或重索引，write 后提交的 background EXTRACT 仍可能拖慢调用链。生产需替换成线程池/队列/worker 实现。
+2. **Scheduler 不是真异步**（**部分解决，仍有遗留**，见 [`F06`](F06-middle-term-memory.md)）：原 `InProcessScheduler.submit` 在当前进程同步执行 Evolver，write 后提交的 background EXTRACT 仍可能拖慢调用链。`F06` 新增 `AsyncTimerScheduler`（target=`async_timer`）作为异步 + 定时调度器，per scope FIFO 队列 + 单 drain Task + per scope TimerWheel，Job 提交后不再阻塞 write 路径。**但有两处遗留**：(a) `defaults.py` 默认装配仍配 `in_process`——需用户显式覆盖为 `async_timer` 才走异步；(b) `AsyncTimerScheduler` 依赖长生命周期事件循环，与同步 `LocalMemoryAPI.write` 内的 `asyncio.run` 桥接不兼容（同步 API 返回后临时循环关闭、Timer 协程被取消）——生产部署需配独立 Scheduler Runtime 或改用 `write_async` 全链路 await。详见 F06 已知遗留。
 
 3. **Policy 未持久化、未审计**：`DictPolicyManager` 只存在于进程内，重启丢失；`set` 也未直接产生日志/审计事件。后续应接持久化后端并补 admin 审计。
 

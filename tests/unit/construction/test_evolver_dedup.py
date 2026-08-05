@@ -756,6 +756,127 @@ class TestDedupSelfFilter:
         assert existing is None
 
 
+class TestDedupMiddleFilter:
+    """中期记忆过滤：dedup.recall 不召回 metadata.middle=true 的命中 unit。
+
+    场景：Engine.write middle=true 把原文落 /memory/ + tier=WORKING + 立即建索引
+    （让原文可召回）。后续 evolver EXTRACT 派生 candidate 走 _dedup_batch，
+    dedup.recall 会召回与派生语义接近的中期原文——派生本就是从原文抽取的
+    事实陈述，语义必然接近 → LLM dedup 判 NOOP → 派生丢失。
+
+    修复：dedup.recall 聚合阶段过滤 metadata.middle=true 命中——中期原文是
+    "待 MiddleToLongJob 处理的缓冲态输入"，不进 dedup 对照池，dedup 只查
+    "派生是否与已沉淀长期记忆重复"。
+    """
+
+    @staticmethod
+    def test_middle_marked_unit_not_in_recall_hits():
+        """中期原文（metadata.middle=true）不应进 dedup.recall 的命中列表。"""
+        from construction.dedup_impl.vector_dedup import VectorDedup
+
+        stores = _create_stores()
+        embedder = _HashEmbedder()
+        dedup = VectorDedup(
+            vector_store=stores["vector"],
+            embedder=embedder,
+            kv=stores["kv"],
+            min_similarity=0.0,  # 不过滤低分，便于断言中期原文是否被召回
+            top_k=10,
+            tier_filter=False,
+            scope_filter=False,
+        )
+
+        # 中期原文（被打了 middle=true 标记——Engine.write middle 路径的行为）
+        middle_unit = _make_unit("mid-1", "dave enjoys hiking on weekends")
+        middle_unit.metadata["middle"] = "true"
+        _index_unit(middle_unit, stores["kv"], stores["vector"], embedder)
+
+        # 派生 candidate——语义接近中期原文（同人物 + 同事件）
+        # 真实 LLM extractor 从原文抽取派生，措辞必然高度重叠
+        candidate = _make_unit("c1", "Dave likes to go hiking on weekends.")
+
+        hits = dedup.recall(candidate)
+
+        # 关键断言：中期原文 mid-1 不应出现在 hits 里——被 metadata.middle=true 过滤
+        hit_ids = {u.id for u, _ in hits}
+        assert "mid-1" not in hit_ids, (
+            f"中期原文 mid-1 不应进 dedup 命中——派生与其源原文不应判重，"
+            f"got hits={hit_ids}"
+        )
+
+    @staticmethod
+    def test_long_term_unit_still_in_recall_hits():
+        """长期记忆（无 middle 标记）仍应正常进 dedup.recall 命中——修复不应误伤。"""
+        from construction.dedup_impl.vector_dedup import VectorDedup
+
+        stores = _create_stores()
+        embedder = _HashEmbedder()
+        dedup = VectorDedup(
+            vector_store=stores["vector"],
+            embedder=embedder,
+            kv=stores["kv"],
+            min_similarity=0.0,
+            top_k=10,
+            tier_filter=False,
+            scope_filter=False,
+        )
+
+        # 长期记忆（无 middle 标记——已沉淀的派生记忆）
+        long_unit = _make_unit("long-1", "Dave likes to go hiking on weekends.")
+        _index_unit(long_unit, stores["kv"], stores["vector"], embedder)
+
+        # 派生 candidate——与长期记忆文本完全相同 → 应触发 NOOP（这才是真重复）
+        candidate = _make_unit("c1", "Dave likes to go hiking on weekends.")
+        hits = dedup.recall(candidate)
+
+        hit_ids = {u.id for u, _ in hits}
+        assert "long-1" in hit_ids, (
+            f"长期记忆 long-1 应正常进 dedup 命中——这才是要查的真重复，"
+            f"got hits={hit_ids}"
+        )
+
+    @staticmethod
+    def test_keyword_dedup_filters_middle_marked_unit():
+        """KeywordDedup 同样应过滤中期记忆——与 VectorDedup 行为一致。"""
+        from common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
+            WhitespaceTokenizer,
+        )
+        from construction.dedup_impl.keyword_dedup import KeywordDedup
+        from storage.fulltext_impl.in_memory_fulltext_store import (
+            InMemoryFulltextStore,
+        )
+        from storage.types import Document
+
+        kv = _MemoryKVStore()
+        fulltext = InMemoryFulltextStore(tokenizer=WhitespaceTokenizer())
+        dedup = KeywordDedup(
+            fulltext=fulltext,
+            kv=kv,
+            min_similarity=0.0,
+            top_k=10,
+            tier_filter=False,
+            scope_filter=False,
+        )
+
+        # 中期原文
+        middle_unit = _make_unit("mid-1", "dave enjoys hiking on weekends")
+        middle_unit.metadata["middle"] = "true"
+        kv.insert(middle_unit.scope, memory_key(middle_unit.id), dumps(middle_unit))
+        fulltext.insert(
+            middle_unit.scope,
+            [Document(id=middle_unit.id, text=middle_unit.content)],
+        )
+
+        # 派生 candidate
+        candidate = _make_unit("c1", "Dave likes to go hiking on weekends.")
+        hits = dedup.recall(candidate)
+
+        hit_ids = {u.id for u, _ in hits}
+        assert "mid-1" not in hit_ids, (
+            f"KeywordDedup 也应过滤中期原文 mid-1，got hits={hit_ids}"
+        )
+
+
 class TestDedupEvolveExtract:
     """EXTRACT 模式集成：Extractor 产出 → 去重 → EvolveResult。"""
 
