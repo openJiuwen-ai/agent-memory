@@ -1884,8 +1884,8 @@ def read_file(uri: str, target: Scope, ctx: AuthContext):
 - 缺少加密依赖或密钥时回退明文：部署会在无明显信号的情况下裸存数据。
 - 在每个 Store 或业务入口重复密码学逻辑：新增路径容易漏加密，轮换和 AAD 规则也会漂移。
 
-当前分支的认证与加密取舍分别归档在 security/F01 与 storage/F02；角色授权和审计完整性
-由后续特性提交分别归档。
+当前分支的认证、角色授权与加密取舍分别归档在 security/F01、security/F02 与
+storage/F02；审计完整性由后续特性提交归档。
 
 ## 验证
 

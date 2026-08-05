@@ -6,8 +6,9 @@
 |---|---|
 | 日期 | 2026-07-29 |
 | 影响范围 | **修改**：`src/control/permission.py`、`src/control/permission_impl/sqlite_permission_manager.py`、`src/control/permission_impl/allow_all_permission_manager.py`、`src/control/permission_impl/routing_permission_manager.py`、`src/api/memory_api_impl/local_memory_api.py`、`src/common/authentication/authentication_impl/trusted_authenticator.py`、`src/common/type_def/auth.py`、`docs/specs/S03-control.md`、`src/api/AGENTS.md`、`tests/unit/api/test_build_kernel_config.py`<br>**新增**：`tests/unit/control/test_permission_role_aware.py`、`tests/unit/api/test_authorization_with_auth_context.py`；**补充**：`tests/unit/common/authentication/test_authentication_impl.py`（委托用例） |
-| 测试基线 | 改动前 `15 failed, 657 passed, 60 skipped`；改动后 `15 failed, 710 passed, 60 skipped`。**15 个失败是同一组**（`test_jieba_tokenizer.py` 的 `jieba` 未装、`test_bge_m3_embedder.py` 的 `torch` 未装、`test_local_security_provider.py` 的 Windows 临时文件时序），与本改动无关 |
+| 测试基线 | 改动前 `15 failed, 657 passed, 60 skipped`；改动后 `15 failed, 710 passed, 60 skipped`。**15 个失败是同一组**（`test_jieba_tokenizer.py` 的 `jieba` 未装、`test_bge_m3_embedder.py` 的 `torch` 未装、`test_local_encryption_provider_encrypts_enc1_and_round_trips` 的 Windows POSIX 权限位限制），与本改动无关 |
 | 依据 | [`docs/features/common/F04-security-interfaces-and-encryption.md`](../common/F04-security-interfaces-and-encryption.md) §3.1 角色、§3.2 操作与角色映射、§3.5 ROOT 等价性、§4.3 路径 1（Agent 代操作）、§9 铁律 #3（fail-closed） |
+| Refs | — |
 
 > **行文简称**：下文里的 **security.md** 一律指上表「依据」那份文档（详见
 > F01 的同名说明）。F01 造出了 `AuthContext` 的 `role` 与 `acting_user` 两个字段，
@@ -118,7 +119,7 @@ grant 记录。
 > 包住 dispatch。故真实请求路径里 ContextVar 会被填充，`get_current()` 在 PEP 拿得到值。
 > 这条在实现时专门核过--它正是「看起来通了、真请求时没通」那一类坑。
 
-## 不做什么
+## 拒绝的方案
 
 | 不做 | 为什么 |
 |---|---|
@@ -128,9 +129,9 @@ grant 记录。
 这两项不是遗漏，是**诚实的范围**：PR② 接通已存在的接口所需要的东西，不造没有消费方的
 接口。
 
-## 接口变更
+## 落地影响（现行契约见 S03 / S08）
 
-`PermissionManager.check` 增加 keyword-only `auth` 参数，三个实现各自对齐：
+授权调用新增可信认证上下文输入，三个 PermissionManager 实现各自对齐：
 
 - `SQLitePermissionManager`：决策 2~5 的全部判定；
 - `AllowAllPermissionManager`：忽略 `auth`，恒 `True`（它的全部语义就是「不鉴权」，掺进角色逻辑只会让这个前提变得需要逐条确认）；
@@ -140,11 +141,11 @@ grant 记录。
 它自己（与改造前逐字一致）；agent 主体读该 header。`_acting_user` 的 docstring 记了
 「为什么这个 header 可信」与「为什么它和 `role` 不同处理」的对照。
 
-## 测试
+## 验证
 
-- `tests/unit/control/test_permission_role_aware.py`：PDP 自身的 21 条判定（角色闸门、
+- `tests/unit/control/test_permission_role_aware.py`：PDP 自身当前 22 条判定（角色闸门、
   委托边界、管理面、向后兼容、另外两个实现的透传）。
-- `tests/unit/api/test_authorization_with_auth_context.py`：PEP 接线 7 条（认证上下文
+- `tests/unit/api/test_authorization_with_auth_context.py`：PEP 接线当前 8 条（认证上下文
   确实穿过 API 抵达 PDP，含提升式 ROOT 用管理面、agent 代 user 读写、identity 与
   auth.actor 不一致被拒）。
 - `tests/unit/common/authentication/test_authentication_impl.py`：`acting_user` 生产方 3 条（user 主体
@@ -152,3 +153,10 @@ grant 记录。
 
 向后兼容由 `test_no_auth_context_preserves_every_legacy_rule` 与既有 permission 测试
 逐字不变地撑着：`auth=None` 时回到纯 ACL。
+
+## 已知遗留
+
+- `auth=None` 兼容线仍服务于内核直连、后台任务和既有测试；服务 surface 必须通过认证
+  中间件建立 AuthContext。若未来要求 PDP 自身拒绝 `auth=None`，需要独立的破坏性配置。
+- ADMIN 的租户管理接口尚未落地，因此本特性不凭空增加 ADMIN 管理面权限；对应接口出现时
+  需扩展 S03 与角色门槛测试。
