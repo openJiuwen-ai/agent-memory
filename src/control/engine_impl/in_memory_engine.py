@@ -330,13 +330,16 @@ class InMemoryEngine(MemoryEngine):
                     occurred_at=item.occurred_at,
                 )
                 outcomes.append(BatchWriteOutcome(index=index, item=item, units=units))
-            except AgentMemoryError as exc:
+            except Exception as exc:
+                is_domain_error = isinstance(exc, AgentMemoryError)
+                if not is_domain_error:
+                    logger.exception("unexpected batch write failure at item %s", index)
                 outcomes.append(
                     BatchWriteOutcome(
                         index=index,
                         item=item,
-                        error=str(exc),
-                        error_type=type(exc).__name__,
+                        error=str(exc) if is_domain_error else "unexpected batch write failure",
+                        error_type=type(exc).__name__ if is_domain_error else "InternalError",
                     )
                 )
                 if not continue_on_error:
@@ -347,7 +350,7 @@ class InMemoryEngine(MemoryEngine):
                             error="skipped after previous item failed",
                             error_type="Skipped",
                         )
-                        for skipped_index, skipped_item in enumerate(items[index + 1 :], index + 1)
+                        for skipped_index, skipped_item in enumerate(items[index + 1:], index + 1)
                     )
                     break
         return BatchWriteResult(outcomes=outcomes)

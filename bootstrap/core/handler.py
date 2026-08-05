@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime
 from importlib import import_module
 from typing import Any, Callable
 
@@ -141,7 +142,7 @@ def _scope_from_payload(payload: Body, base: Scope | None = None) -> Scope:
     """Parse an optional batch item scope override over a default target scope."""
     base = base or Scope()
     return Scope(
-        org=str(payload.get("tenant_id", base.org or "default")) or "default",
+        org=str(payload.get("tenant_id") or base.org or "default"),
         space=_space_value(payload) if "space" in payload or "space_id" in payload else base.space,
         user=str(payload.get("scope", base.user)),
         agent=str(payload.get("agent", base.agent)),
@@ -225,6 +226,19 @@ def _batch_item_view(item: BatchWriteItem) -> Body:
         "sequence": item.sequence,
         "idempotency_key": item.idempotency_key,
     }
+
+
+def _parse_occurred_at(value: Any, *, name: str) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str):
+        raise ValidationError(f"{name} must be an ISO 8601 datetime")
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        raise ValidationError(f"{name} must be an ISO 8601 datetime") from None
 
 
 def _scope_view(scope: Scope) -> Body:
@@ -415,6 +429,9 @@ def _batch_add(srv, payload: Body) -> Body:
         default_source = Modality(defaults.get("source", defaults.get("modality", "text")))
     except (TypeError, ValueError) as exc:
         raise ValidationError(f"invalid batch_add default source: {exc}") from exc
+    default_occurred_at = _parse_occurred_at(
+        defaults.get("occurred_at"), name="batch_add defaults.occurred_at"
+    )
 
     items: list[BatchWriteItem | object] = []
     for raw_item in raw_items:
@@ -430,7 +447,15 @@ def _batch_add(srv, payload: Body) -> Body:
         try:
             item_source = Modality(raw_source) if raw_source is not None else None
         except (TypeError, ValueError):
-            item_source = raw_source
+            items.append(raw_item)
+            continue
+        try:
+            item_occurred_at = _parse_occurred_at(
+                raw_item.get("occurred_at"), name="batch_add item occurred_at"
+            )
+        except ValidationError:
+            items.append(raw_item)
+            continue
         items.append(
             BatchWriteItem(
                 content=raw_item.get("content"),
@@ -439,6 +464,7 @@ def _batch_add(srv, payload: Body) -> Body:
                 assets=raw_item.get("assets"),
                 tags=raw_item.get("tags"),
                 metadata=raw_item.get("metadata"),
+                occurred_at=item_occurred_at,
                 stream_id=raw_item.get("stream_id", ""),
                 sequence=raw_item.get("sequence"),
                 idempotency_key=raw_item.get("idempotency_key", ""),
@@ -452,6 +478,7 @@ def _batch_add(srv, payload: Body) -> Body:
         identity=_actor_scope(defaults),
         tags=default_tags,
         metadata=raw_metadata,
+        occurred_at=default_occurred_at,
         stream_id=defaults.get("stream_id", ""),
         continue_on_error=payload.get("continue_on_error", True),
     )
