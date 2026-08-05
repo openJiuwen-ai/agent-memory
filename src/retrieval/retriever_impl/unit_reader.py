@@ -70,13 +70,17 @@ def in_event_window(
 ) -> bool:
     """event-time 窗过滤（半开区间 ``[time_from, time_to)``，对 ``t_event``）。
 
-    **宽松兜底**：单元缺 ``t_event`` 时不据此丢弃（t_event 可能尚未 populated，且索引
-    侧才是主过滤口；本函数只剔除「明确落窗外」的，避免 over-drop 伤召回）。
+    **宽松兜底**：单元缺 ``t_event``、或 ``t_event`` 为 naive datetime（写入路径未做
+    UTC 归一化，issue #91）时均不据此丢弃——前者 t_event 可能尚未 populated，后者
+    与 aware 窗口比较会抛 TypeError；索引侧才是主过滤口，本函数只剔除「明确落窗外」的，
+    避免 over-drop 伤召回。
     """
     if time_from is None and time_to is None:
         return True
     te = unit.temporal.t_event
     if te is None:
+        return True
+    if te.tzinfo is None:
         return True
     if time_from is not None and te < time_from:
         return False
