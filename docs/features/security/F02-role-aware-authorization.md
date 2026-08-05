@@ -156,7 +156,26 @@ grant 记录。
 
 ## 已知遗留
 
-- `auth=None` 兼容线仍服务于内核直连、后台任务和既有测试；服务 surface 必须通过认证
-  中间件建立 AuthContext。若未来要求 PDP 自身拒绝 `auth=None`，需要独立的破坏性配置。
+- ~~`auth=None` 兼容线仍服务于内核直连、后台任务和既有测试~~——已在 F05 迁移中删除，
+  见下节。
 - ADMIN 的租户管理接口尚未落地，因此本特性不凭空增加 ADMIN 管理面权限；对应接口出现时
   需扩展 S03 与角色门槛测试。
+
+## 后续演进（F05 Common Security 迁移，2026-08-05）
+
+本文档记录的是**当期**（2026-07-29）的落地事实，保留原貌以备追溯。F05 把安全收敛成
+横切能力域后，下列描述**已被取代**，现行契约以 [S08](../../specs/S08-security.md) 为准：
+
+| 本文档中的描述 | 现状 |
+|---|---|
+| PDP 是 `control.permission.PermissionManager.check`，返回 `bool` | PDP 是 `common.security.authorization.Authorizer.authorize`，返回带 `reason` code 与 `rule` 的 `AuthorizationDecision`。`PermissionManager` 只剩 grant/revoke 的记录写入通道 |
+| `auth: AuthContext \| None`，`None` 时退回纯 ACL | 输入封闭为 `AuthContext + ResourceDescriptor + AuthorizationEnvironment`，无 `None` 分支 |
+| 空 `Scope()` 是 platform admin（`auth is None` 时） | 空 actor 直接拒（`CONTEXT_MISMATCH` / `empty_actor`）；ROOT 只由 `role` 表达，dev/root 主体改为具名的 `system/dev`、`system/root` |
+| `AuthContext.acting_user` 表达代操作 | 该字段已删除。委托只来自服务端 `DelegationStore`，由 Authorizer 按 `delegation_id` 复核；可委托动作见 `DELEGATABLE_ACTIONS`（不含 SHARE 与管理动作） |
+| PEP 从 ContextVar 取 `AuthContext` 后透传 | 调用方显式传 `security: RequestSecurityContext`；ContextVar 降级为日志/trace 辅助传播，授权不依赖它 |
+| `MemoryAPI.method(..., identity=caller)` | `MemoryAPI.method(..., security=RequestSecurityContext)`，必填 keyword-only |
+| 管理面一律要求 ROOT | 按动作分级：`MANAGE_*` / `READ_AUDIT` 要 ADMIN 及以上（止于本 org），`VERIFY_AUDIT` / `ADMINISTER_SYSTEM` 与无 org 归属的系统级资源要 ROOT |
+| 验证用例路径 `tests/unit/control/`、`tests/unit/common/authentication/` | 安全单测镜像到 `tests/unit/common/security/<能力域>/` |
+
+`TrustedAuthenticator` 的 `X-Acting-User` 读取随 `acting_user` 字段一并移除——代操作
+不再由请求 header 声明。

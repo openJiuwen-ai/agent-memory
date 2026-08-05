@@ -10,21 +10,22 @@
 
 ## 范围 / 边界
 
-本规约定义请求认证、主体凭据存储、资源保护（限流 / 并发预算 / 绑定策略）、静态加密
-配置与安全运行期装配的不变量。授权角色与身份一致性将在角色授权特性落地时由 S03 扩展；
-审计完整性由对应审计特性扩展。
+本规约定义请求认证、主体凭据存储、授权判定、资源保护（限流 / 并发预算 / 绑定策略）、
+静态加密配置与安全运行期装配的不变量。审计完整性由对应审计特性扩展。
 
 安全能力统一归属 `src/common/security/`，按能力域分子包：
 
 | 子包 | 承载 |
 |---|---|
 | `authentication/` | `Authenticator`、`PrincipalKeyStore` 与三个内置实现 |
+| `authorization/` | `Authorizer`（PDP）、`GrantStore`、`DelegationStore`、`scope_rules` |
 | `cryptography/` | `CryptographyProvider`、`KeyProvider`、ENC1 本地信封实现 |
 | `protection/` | `RateLimiter`、`WorkloadGuard`、`BindingPolicy` |
-| `types.py` | `AuthContext`、`RequestSecurityContext`、`CryptoContext`、`Role`、`Surface`、`Credentials` |
+| `types.py` | `AuthContext`、`RequestSecurityContext`、`CryptoContext`、`Role`、`Surface`、`Credentials`、`Action`、`ResourceDescriptor`、`AuthorizationEnvironment`、`DenyReason` |
+| `request_context.py` | `RequestSecurityContext` 的受控构造入口：`new_request_context` / `internal_context` |
 | `runtime.py` | `SecurityRuntime`：持有能力引用、启动期健康检查、统一生命周期 |
 
-`authorization/` 与 `audit_integrity/` 分别由后续 PR 补齐。
+`audit_integrity/` 由后续 PR 补齐。
 
 > 历史状态：这些能力此前平铺在 `src/common/authentication/`、`credential_store/`、
 > `admission/`、`encryption/` 与 `type_def/auth.py`。那是迁移前的目录形态，不再作为
@@ -88,10 +89,48 @@
 
 ### 授权
 
-21. ROOT 权限只由可信 `AuthContext.role` 判定，不能由空 actor 或请求参数隐式推导。
+21. ROOT 权限只由可信 `AuthContext.role` 判定，不能由空 actor 或请求参数隐式推导。空
+    `Scope()` actor 是「上下文不完整」的信号，PDP 对它直接拒绝。
 22. agent 代操作必须同时满足同 org、明确的委托目标与授权侧委托规则；不得覆盖其他 user
-    或 agent 分支。
+    或 agent 分支。委托关系只来自服务端 `DelegationStore`，请求里带的委托声明不可信。
 23. 授权判定的调用形态演进必须保持 fail-closed 兼容，路由实现不得丢失角色上下文。
+24. **PDP 输入封闭**：`Authorizer.authorize` 固定接收 `AuthContext + ResourceDescriptor +
+    AuthorizationEnvironment` 三个 keyword-only 参数，**不读 ContextVar**，也不读存储真源。
+    资源的安全 metadata 由 PEP 从真源解析后摊平成 `ResourceDescriptor`，请求 metadata
+    不能覆盖它。
+25. **PDP 不抛异常表达拒绝**：返回 `AuthorizationDecision`（`allowed` + 稳定 `reason` code
+    + `rule`），allow 与 deny 两侧都必须标明是哪条规则做的判定。存储不可用等真实故障仍然
+    抛——不能把故障静默成 deny，PEP 需要区分 403 与 503。
+26. **唯一 PEP**：授权执行点只有 `api.MemoryAPI`，其所有公开 verb 经同一个 `_authorize`。
+    不存在第二条能绕开它的授权入口，`SecurityRuntime` 也不代为转发。
+27. **没有安全上下文就进不了 API**：`security: RequestSecurityContext` 是所有公开 verb 的
+    必填参数。不存在 `auth=None` 分支，不存在空 `Scope()` 自动管理员，业务 payload 不接受
+    `actor` / `role` / `acting_user`。
+28. **默认拒绝**：未被 owner 覆盖、Delegation、Grant 或角色闸门覆盖的动作一律拒绝
+    （`reason=NOT_COVERED`）。新增 `Action` 在写出对应规则前默认落在拒绝侧。
+29. **委托是显式 allowlist**：可委托动作见 `common.security.types.DELEGATABLE_ACTIONS`，
+    不含 `SHARE` 与管理动作——否则一次临时委托可升级成永久 Grant。
+30. **管理面按角色分级**：`MANAGE_PRINCIPAL` / `MANAGE_SPACE` / `MANAGE_POLICY` /
+    `READ_AUDIT` 要求 ADMIN 及以上，`VERIFY_AUDIT` / `ADMINISTER_SYSTEM` 要求 ROOT。
+    ADMIN 的管辖止于本 org；无 org 归属的系统级资源（全局治理策略、跨 org 审计）只有
+    ROOT 能碰，且其拒绝原因是 `ROLE_REQUIRED` 而非 `CROSS_ORG`——reason code 是审计与
+    告警的匹配依据，指错方向会把排查引向配置而非权限。
+31. **恒放行实现按 capability 拦截**：`Authorizer.is_test_only()` 为真的实现在生产装配被
+    拒绝启动，要用必须显式打开 `globals.allow_test_only_security`。判据是 capability 而非
+    `target == "allow_all"`（不变量 7）。
+
+### RequestSecurityContext 的构造
+
+32. `RequestSecurityContext` 只能由 `common.security.request_context` 的两个入口构造：
+    `request_id` 由服务端生成（不接受调用方传入）、`started_at` 取服务端时钟、`surface`
+    无默认值必须由适配层显式写入、`peer` 经可信代理规则规范化（无可信代理白名单时只采信
+    传输层地址，不读 `X-Forwarded-For`）、`attributes` 只由系统组件写入。
+33. **进程内调用与外部请求使用同一契约**：进程内直连调用方走 `internal_context()`，身份仍
+    由 authenticator 产出，调用方不能自行声明身份。不允许把传入的 `Scope` 直接包装成已认证
+    actor。
+34. ContextVar（`common.security.types` 的 `set_current` / `get_current` / `reset_current`）
+    降级为日志与 trace 的辅助传播：`Authorizer` 与 PEP 均不得依赖其存在，缺失它不改变任何
+    授权结论。
 
 ## 注册与配置
 
@@ -102,8 +141,9 @@
 import，注册装饰器才会生效。当前核心不自动发现任意外部 Python 包；外部插件应由宿主应用
 在 `Server.build` / `build_kernel` 前显式加载。
 
-顶层段名：`security`、`authenticator`、`key_store`、`rate_limiter`、`workload_guard`、
-`binding_policy`、`cryptography`、`key_provider`。
+顶层段名：`security`、`authenticator`、`key_store`、`authorizer`、`grant_store`、
+`delegation_store`、`rate_limiter`、`workload_guard`、`binding_policy`、`cryptography`、
+`key_provider`。
 
 ```yaml
 security:
@@ -111,6 +151,7 @@ security:
     target: standard
     params:
       authenticator: default          # 必填，无默认实现
+      authorizer: default             # 省略时引用具名实例 authorizer.default
       rate_limiter: default
       workload_guard: shared_budget   # 具名引用 = 跨 surface 共享同一份预算
       binding_policy: loopback        # 省略时按 target 名取默认实现
@@ -122,6 +163,18 @@ authenticator:
       key_store: default
       root_api_key: ${ROOT_API_KEY}
 key_store:
+  default:
+    target: memory
+authorizer:
+  default:
+    target: standard
+    params:
+      grant_store: default            # 两个 Store 都无默认实现
+      delegation_store: default
+grant_store:
+  default:
+    target: memory
+delegation_store:
   default:
     target: memory
 rate_limiter:
@@ -150,7 +203,14 @@ key_provider:
 ```
 
 `security.params.authenticator` 无默认：给认证一个默认会让「忘了配认证」静默变成某种可用
-配置。其余能力的默认取保守侧，且默认值本身由 capability 决定而非 target 名——认证声明
+配置。`authorizer` 的默认是**具名实例** `authorizer.default`（不是匿名新建）——内核装配
+`api.memory_api_impl.build_kernel` 已经建过它并注入了 PEP，Factory 的具名缓存类级共享，
+故 `SecurityRuntime` 命中的是同一个实例。健康检查若检查的是另一份持有另一套
+Grant/DelegationStore 的 authorizer，给出的是虚假保证。代价是**装配顺序**：
+`SecurityRuntime` 必须在 `build_kernel` 之后建；独立装配（如单测）须在 `security.params`
+里显式给出 `authorizer`。
+
+其余能力的默认取保守侧，且默认值本身由 capability 决定而非 target 名——认证声明
 `requires_loopback_binding()` 时限流默认 `unlimited`（无远端攻击面），否则默认 `token_bucket`。
 
 未配置 `security` 段时回落 DEV 并告警。回落到 DEV 而非拒绝启动是刻意的：它把「无认证」
@@ -158,8 +218,12 @@ key_provider:
 
 ## 当前扩展边界
 
-- `Authenticator`、`PrincipalKeyStore`、`RateLimiter`、`WorkloadGuard`、`BindingPolicy`、
+- `Authenticator`、`PrincipalKeyStore`、`Authorizer`、`GrantStore`、`DelegationStore`、
+  `RateLimiter`、`WorkloadGuard`、`BindingPolicy`、
   `CryptographyProvider`、`KeyProvider` 均可通过 Producer 注册扩展。
+- `GrantStore` 与 `DelegationStore` 是两个独立 Producer：授权记录与委托记录的生命周期、
+  撤销语义与保留期都不同，共用一个后端会让「撤销一次委托」和「回收一条永久授权」走同一
+  条代码路径。
 - `KeyProvider` 是独立 Producer：换 KMS / Vault 不必改加密实现。
 - Server 按 capability 决策绑定和并发保护，不按封闭枚举分支。
 - 认证根装配消费一个最终实例；需要多认证串联时，应注册组合 target，由该 target 通过

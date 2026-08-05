@@ -30,7 +30,7 @@
 | `feature_extractor/` | FeatureExtractor 插件目录 |
 | `llm/` | LLM 插件目录（`echo` / `openai` / `dashscope`） |
 | `reranker/` | Reranker 插件目录 |
-| `security/` | 安全能力的唯一归属地（F05）：`types.py`（AuthContext/RequestSecurityContext/CryptoContext/Role/Surface/Credentials，ContextVar 传播）、`runtime.py`（SecurityRuntime）、`authentication/`（Authenticator + PrincipalKeyStore + CredentialStatusRegistry，内置 dev/trusted/api_key + memory Argon2id；`PrincipalKeyStore.is_revoked` 供 PEP 在线复核撤销，`CredentialStatusRegistry` 由 PEP 持有按 credential_type 路由撤销查询，不放 Authorizer）、`protection/`（RateLimiter/WorkloadGuard/BindingPolicy，内置 token_bucket/unlimited/semaphore/loopback）、`cryptography/`（CryptographyProvider + KeyProvider（含 `rotate` 轮换契约），内置 `local` ENC1 AES-GCM）。注册入口 `security/bootstrap.py::register_security()` |
+| `security/` | 安全能力的唯一归属地（F05）：`types.py`（AuthContext/RequestSecurityContext/CryptoContext/Role/Surface/Credentials/ResourceDescriptor/AuthorizationEnvironment，ContextVar 只作日志-trace 传播）、`request_context.py`（`RequestSecurityContext` 的受控构造入口：`new_request_context` / `internal_context`）、`runtime.py`（SecurityRuntime）、`authentication/`（Authenticator + PrincipalKeyStore + CredentialStatusRegistry，内置 dev/trusted/api_key + memory Argon2id；`PrincipalKeyStore.is_revoked` 供 PEP 在线复核撤销，`CredentialStatusRegistry` 由 PEP 持有按 credential_type 路由撤销查询，不放 Authorizer）、`authorization/`（Authorizer + GrantStore + DelegationStore，内置 standard/allow_all + memory/sqlite 存储）、`protection/`（RateLimiter/WorkloadGuard/BindingPolicy，内置 token_bucket/unlimited/semaphore/loopback）、`cryptography/`（CryptographyProvider + KeyProvider（含 `rotate` 轮换契约），内置 `local` ENC1 AES-GCM）。注册入口 `security/bootstrap.py::register_security()` |
 | `audit/` | AuditLogger 插件目录 |
 
 ## 行为铁律
@@ -71,7 +71,7 @@
 - 具体算子实现（归各层 `*_impl/`）
 - 存储后端实现
 - 业务编排逻辑
-- 授权策略与业务权限判断（归 `control`）
+- 授权的**执行点**（PEP 是 `api/MemoryAPI`）与业务权限语义的编排；授权**判定**（PDP）本身归 `common/security/authorization/`
 
 ## 本地约束
 
@@ -83,7 +83,8 @@
 4. 重依赖实现在 `*_impl/__init__.py` 中用 `try/except ImportError` 包裹。
 5. 两级命名空间配置驱动装配：每个 Producer 声明全局唯一 `TOP_NAME`（占配置顶层段），其下是若干具名实例（`target` 指定实现名、`params` 传参、`new_instance` 控制是否共享）。`_build(config)` 里用 `XProducer.dep(config, param_name=None, default=...)` 取子依赖（引用名→共享 / 内联 dict→匿名 / 缺省→默认匿名）。
 6. LLM 的厂商扩展参数必须由对应 Provider Adapter 注入；构建、检索等内核业务调用点不得硬编码 `extra_body` 等传输层字段。
-7. 横切能力（Authenticator / PrincipalKeyStore / RateLimiter / WorkloadGuard /
+7. 横切能力（Authenticator / PrincipalKeyStore / Authorizer / GrantStore /
+   DelegationStore / RateLimiter / WorkloadGuard /
    BindingPolicy / CryptographyProvider / KeyProvider / AuditLogger）不继承 `Plugin`、
    不进入 `PluginType`；接口统一在能力目录的 `base.py`（安全域为
    `security/<能力域>/`），实现统一在同级 `*_impl/`，YAML 只能选择已经注册的 target
@@ -91,4 +92,9 @@
    import 的外部包。
 8. 安全能力一律落 `security/<能力域>/`，不新开顶层目录。核心不得按 target 名或
    `mode()` 字符串分支——需要区分的行为差异由 capability 方法（如
-   `requires_loopback_binding()`）显式声明，详见 S08。
+   `requires_loopback_binding()`、`is_test_only()`）显式声明，详见 S08。
+9. `RequestSecurityContext` 只能由 `security/request_context.py` 的两个入口构造：
+   `request_id` 由服务端生成、`started_at` 取服务端时钟、`attributes` 只由系统组件
+   写入、`surface` 无默认值必须由适配层写入。进程内直连调用方走 `internal_context()`，
+   身份仍由 authenticator 产出——不存在 `auth=None`，也不存在把传入 Scope 直接当成
+   已认证 actor 的旁路（F05 §进程内调用）。

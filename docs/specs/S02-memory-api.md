@@ -5,13 +5,13 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/api/ |
-| 最近一次修订日期 | 2026-07-30 |
+| 最近一次修订日期 | 2026-08-05 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md |
 ## 范围 / 边界
 
 **管什么**：
 - 统一对外 Core API（形态无关）：所有接入形态（SDK/CLI/Skill/MCP/HTTP·gRPC）最终映射到 `MemoryAPI`
-- 鉴权执行点（PEP）：调用 `PermissionManager.check(identity, scope, action)` 做入口鉴权
+- 鉴权执行点（PEP，唯一）：调用 `Authorizer.authorize(auth, resource, environment)` 做入口鉴权
 - 入口审计：写审计事件到 `AuditLogger`
 - 参数装配：将调用侧参数装配为控制层可消费的内部结构
 - 同步/异步桥接：为同步形态桥接引擎异步协程
@@ -24,9 +24,9 @@
 
 ## 不变量
 
-1. **本层是薄封装 + PEP**：数据面委托 `MemoryEngine`，治理面委托 `Governor`，授权面委托 `PermissionManager`，调度面委托 `Scheduler`，策略面直达 `PolicyManager`。
-2. **`identity` 不下沉**：鉴权通过后只透传已鉴权的 target `scope`，`identity` 不传入控制层。
-3. **`identity` 为必填 keyword-only 参数**：与 target `scope` 同为 `Scope` 类型，强制具名传入防止位置传反。
+1. **本层是薄封装 + PEP**：数据面委托 `MemoryEngine`，治理面委托 `Governor`，授权判定委托 `common.security.authorization.Authorizer`（PDP），调度面委托 `Scheduler`，策略面直达 `PolicyManager`。
+2. **`security` 不下沉**：鉴权通过后只透传已鉴权的 target `scope`，`security` 不传入控制层。
+3. **`security` 为必填 keyword-only 参数**：类型是 `RequestSecurityContext`（不是 `Scope`），由认证中间件或 `common.security.request_context` 的受控入口产出。调用方不能自行声明身份，也不存在 `auth=None` 或空 `Scope()` 自动管理员的旁路（见 [S08](S08-security.md)）。
 4. **recall 参数拆分**：`context: Context` 在本层边界拆开——`context.scope` 作独立轴穿透，`context.extensions` 写入调用级 options；约定 key `context.extensions["max_tokens"]` 由 API 边界解析为 int 后写入 `RetrievalQuery.max_tokens`，并从透传 extensions 中移除；`Context` 对象本身不进控制层。
 5. **admin 不经 Engine**：admin_get/set/all 直达 PolicyManager。
 6. **管理面闸门 = 根 scope**：无具体 target scope 的方法（admin_*、全局 audit）以根 scope `Scope()` 为鉴权目标——「能对根 scope 行权」即管理员闸门；租户数据/治理方法仍按各自 target scope 鉴权。
@@ -48,19 +48,19 @@
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `write` | `(content, scope, source=TEXT, *, identity, assets, tags, metadata, occurred_at) -> list[MemoryUnit]` | 同步写入：鉴权 WRITE→委托 Engine→阻塞至 hot path 完成。infer/procedural 触发时返回 `created_ids` 对应的派生单元（可空），否则返回原始单元 |
+| `write` | `(content, scope, source=TEXT, *, security, assets, tags, metadata, occurred_at) -> list[MemoryUnit]` | 同步写入：鉴权 WRITE→委托 Engine→阻塞至 hot path 完成。infer/procedural 触发时返回 `created_ids` 对应的派生单元（可空），否则返回原始单元 |
 | `write_async` | `async (同签名) -> list[MemoryUnit]` | 异步写入：直通 Engine 协程，供事件循环形态使用 |
-| `recall` | `(query, context: Context, *, identity, filters, as_of, top_k, disclosure, with_trajectory) -> RetrievalResult` | 混合检索：鉴权 READ→拆 Context→装配 RetrievalQuery→委托 Engine |
-| `list` | `(scope, *, identity, offset=0, limit=100, memory_types=None, extensions=None, filters=None) -> MemoryListResult` | 列出已建索引记忆：支持类型/FilterExpr 过滤、自定义参数透传和分页前精确总数；只返回 `/memory/` 真源记录 |
-| `get` | `(unit_id, scope, *, identity, as_of=None) -> MemoryUnit` | 真源点读：鉴权 READ→委托 Engine |
-| `update` | `(unit_id, scope, patch: MemoryPatch, *, identity) -> MemoryUnit` | 修正记忆：鉴权 UPDATE→委托 Engine |
-| `delete` | `(selector: DeleteSelector, *, identity) -> list[str]` | 删除/归档/降权：鉴权 DELETE→委托 Engine |
-| `evolve` | `(scope, mode: EvolveMode, channel=BACKGROUND, *, identity) -> str` | 触发演进：鉴权→委托 Engine→返回 job_id |
-| `job_status` | `(job_id, *, identity) -> JobInfo` | 查询任务状态（委托 Scheduler） |
-| `job_cancel` | `(job_id, *, identity) -> None` | 取消任务（委托 Scheduler） |
-| `admin_get` | `(key, *, identity) -> str` | 读策略（直达 PolicyManager） |
-| `admin_set` | `(key, value, *, identity) -> None` | 写策略（直达 PolicyManager） |
-| `admin_all` | `(*, identity) -> dict[str, str]` | 列全部策略（直达 PolicyManager） |
+| `recall` | `(query, context: Context, *, security, filters, as_of, top_k, disclosure, with_trajectory) -> RetrievalResult` | 混合检索：鉴权 READ→拆 Context→装配 RetrievalQuery→委托 Engine |
+| `list` | `(scope, *, security, offset=0, limit=100, memory_types=None, extensions=None, filters=None) -> MemoryListResult` | 列出已建索引记忆：支持类型/FilterExpr 过滤、自定义参数透传和分页前精确总数；只返回 `/memory/` 真源记录 |
+| `get` | `(unit_id, scope, *, security, as_of=None) -> MemoryUnit` | 真源点读：鉴权 READ→委托 Engine |
+| `update` | `(unit_id, scope, patch: MemoryPatch, *, security) -> MemoryUnit` | 修正记忆：鉴权 UPDATE→委托 Engine |
+| `delete` | `(selector: DeleteSelector, *, security) -> list[str]` | 删除/归档/降权：鉴权 DELETE→委托 Engine |
+| `evolve` | `(scope, mode: EvolveMode, channel=BACKGROUND, *, security) -> str` | 触发演进：鉴权→委托 Engine→返回 job_id |
+| `job_status` | `(job_id, *, security) -> JobInfo` | 查询任务状态（委托 Scheduler） |
+| `job_cancel` | `(job_id, *, security) -> None` | 取消任务（委托 Scheduler） |
+| `admin_get` | `(key, *, security) -> str` | 读策略（直达 PolicyManager） |
+| `admin_set` | `(key, value, *, security) -> None` | 写策略（直达 PolicyManager） |
+| `admin_all` | `(*, security) -> dict[str, str]` | 列全部策略（直达 PolicyManager） |
 
 `list` 的 `memory_types` 用于数据过滤，也参与权限路由：显式传一个或多个类型时，API 层为每个
 类型分别构造 `PermissionContext(memory_type=<type>)` 并逐个执行 READ 鉴权；未传类型时先按
@@ -117,7 +117,7 @@
 - **KV key 前缀分离**：真源 key 按「是否建索引」带前缀——`/memory/{id}`（建索引记忆）、`/messages/{id}`（未建索引 infer 原文）。前缀常量与 helper 在 `common.type_def.memory`/`raw`。详见 F02 决策6。
 - **engine.write infer=false 调 classify**：默认路径调 `classifier.classify` 给原文打 tier+tags（纯 LLM 抽取 episodic/semantic/procedural + tags）；infer=true 不经 classifier（extractor 产派生时自定）。详见 F02 决策9。
 - **`/v1/list` 收窄并上收为 API 契约**：handler `_list` 委托
-  `MemoryAPI.list(scope, identity=..., offset, limit, memory_types, extensions, filters)`；
+  `MemoryAPI.list(scope, security=..., offset, limit, memory_types, extensions, filters)`；
   `KVStore.list` 只查询 `/memory/` 记忆并返回当前页与分页前总数。详见 F02 决策10与
   F01 的 list 决策。
 
@@ -127,34 +127,34 @@
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `inspect` | `(unit_ids, scope, *, identity) -> list[MemoryUnit]` | 检视完整内容与治理字段（含已失效版本） |
-| `trace` | `(unit_id, scope, *, identity) -> list[MemoryUnit]` | 沿 provenance 追溯演进来源链 |
-| `audit` | `(filters: dict[str, str], *, identity, limit=100) -> list[AuditEvent]` | 按条件检索审计留痕 |
+| `inspect` | `(unit_ids, scope, *, security) -> list[MemoryUnit]` | 检视完整内容与治理字段（含已失效版本） |
+| `trace` | `(unit_id, scope, *, security) -> list[MemoryUnit]` | 沿 provenance 追溯演进来源链 |
+| `audit` | `(filters: dict[str, str], *, security, limit=100) -> list[AuditEvent]` | 按条件检索审计留痕 |
 
 #### 授权面（委托 PermissionManager）
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `grant` | `(grant: Grant, *, identity) -> None` | 新增跨 scope 授权 |
-| `revoke` | `(grant: Grant, *, identity) -> None` | 回收授权（幂等） |
+| `grant` | `(grant: Grant, *, security) -> None` | 新增跨 scope 授权 |
+| `revoke` | `(grant: Grant, *, security) -> None` | 回收授权（幂等） |
 
 #### Space 管理面（委托 SpaceManager）
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `create_space` | `(spec: SpaceSpec, *, identity) -> SpaceInfo` | 创建全局唯一 space id；以 `Scope(org=spec.org)` 做 WRITE 鉴权，成功后记录目标 space 审计 |
-| `get_space` | `(org, space, *, identity) -> SpaceInfo` | 读取单个 space 的基础信息与策略 |
-| `list_spaces` | `(org, *, identity, status=None, limit=100, cursor=None) -> list[SpaceInfo]` | 列出 org 下 spaces；以 `Scope(org=org)` 做 READ 鉴权 |
-| `update_space` | `(org, space, patch: SpacePatch, *, identity) -> SpaceInfo` | 修改 display name、status、principal_path、policy 或 metadata |
-| `archive_space` | `(org, space, *, identity) -> SpaceInfo` | 归档 space；已归档 space 的 `write/update/evolve` 会被拒绝 |
-| `delete_space` | `(org, space, *, identity, mode=PURGE) -> SpaceDeleteResult` | 删除 space；当前只支持 PURGE，API 先经 Engine 清该 `org + space` 下全部 user/agent/session 子 Scope 的 `/memory/` 真源与索引，再委托 SpaceManager 清 KV/messages/metadata |
-| `export_space` | `(org, space, *, identity, include_audit=True) -> str` | 创建导出记录并返回 export id |
-| `space_usage` | `(org, space, *, identity) -> SpaceUsage` | 查询 space 级 memory/message/KV bytes 用量 |
-| `get_space_policy` | `(org, space, *, identity) -> SpacePolicy` | 读取 space policy |
-| `set_space_policy` | `(org, space, policy: SpacePolicy, *, identity) -> SpacePolicy` | 替换 space policy，并同步主体路径 |
-| `list_space_members` | `(org, space, *, identity) -> list[SpaceMember]` | 列出 space 成员与角色 |
-| `add_space_member` | `(org, space, member: SpaceMember, *, identity) -> None` | 添加或更新成员角色 |
-| `remove_space_member` | `(org, space, member: Scope, *, identity) -> None` | 移除成员 |
+| `create_space` | `(spec: SpaceSpec, *, security) -> SpaceInfo` | 创建全局唯一 space id；以 `Scope(org=spec.org)` 做 WRITE 鉴权，成功后记录目标 space 审计 |
+| `get_space` | `(org, space, *, security) -> SpaceInfo` | 读取单个 space 的基础信息与策略 |
+| `list_spaces` | `(org, *, security, status=None, limit=100, cursor=None) -> list[SpaceInfo]` | 列出 org 下 spaces；以 `Scope(org=org)` 做 READ 鉴权 |
+| `update_space` | `(org, space, patch: SpacePatch, *, security) -> SpaceInfo` | 修改 display name、status、principal_path、policy 或 metadata |
+| `archive_space` | `(org, space, *, security) -> SpaceInfo` | 归档 space；已归档 space 的 `write/update/evolve` 会被拒绝 |
+| `delete_space` | `(org, space, *, security, mode=PURGE) -> SpaceDeleteResult` | 删除 space；当前只支持 PURGE，API 先经 Engine 清该 `org + space` 下全部 user/agent/session 子 Scope 的 `/memory/` 真源与索引，再委托 SpaceManager 清 KV/messages/metadata |
+| `export_space` | `(org, space, *, security, include_audit=True) -> str` | 创建导出记录并返回 export id |
+| `space_usage` | `(org, space, *, security) -> SpaceUsage` | 查询 space 级 memory/message/KV bytes 用量 |
+| `get_space_policy` | `(org, space, *, security) -> SpacePolicy` | 读取 space policy |
+| `set_space_policy` | `(org, space, policy: SpacePolicy, *, security) -> SpacePolicy` | 替换 space policy，并同步主体路径 |
+| `list_space_members` | `(org, space, *, security) -> list[SpaceMember]` | 列出 space 成员与角色 |
+| `add_space_member` | `(org, space, member: SpaceMember, *, security) -> None` | 添加或更新成员角色 |
+| `remove_space_member` | `(org, space, member: Scope, *, security) -> None` | 移除成员 |
 
 ## 数据结构
 
@@ -163,7 +163,7 @@
 `org > space > user/agent > session` 五维归属，同时支撑隔离与共享。各维默认 `""`。API 里 `Scope` 出现在两个**不同语义**的位置（均为 `Scope` 类型，勿混淆）：
 
 - **目标范围（target）**：操作作用于「谁的」记忆——`scope` 参数（或 `Context.scope` / `DeleteSelector.scope`）。
-- **调用方身份（identity）**：「谁」在发起调用——`identity` 参数（必填 keyword-only）。
+- **调用方身份**：「谁」在发起调用——**不由 `Scope` 表达**。它在 `security: RequestSecurityContext` 里，actor 由认证层产出；业务参数里的 `Scope` 一律是目标范围。
 
 `space` 是全局唯一的逻辑隔离标识，`org` 表示其归属组织并继续参与权限边界；不同 org
 不能创建相同的非空 space id。空 `space` 只表示兼容旧数据/单租户默认域，不参与 Space
@@ -288,7 +288,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 
 | 异常 | 触发场景 |
 |------|----------|
-| `PermissionDeniedError` | 鉴权不通过（identity 对 target scope 无相应 Action 权限） |
+| `PermissionDeniedError` | 鉴权不通过（`security.actor` 对 target scope 无相应 Action 权限） |
 | `NotFoundError` | `get` 等按 id 读取但记忆不存在 |
 | `ValidationError` | 入参非法（如 `recall` 的 `top_k <= 0`） |
 | `PolicyError` | `admin_set` 的键未知或为不可变配置 |
@@ -298,12 +298,14 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 ## 鉴权流程
 
 ```
-调用方 → MemoryAPI.method(scope=target, identity=caller)
-  → PermissionManager.check(actor=identity, target=scope, action=<对应动作>, context=...)
-    # list/get/update/delete/inspect/trace 的已有资源上下文来自真源和已鉴权 target scope
-    → 通过 → 委托 Engine/Governor/PolicyManager（仅传 scope，不传 identity）
-    → 拒绝 → 抛 PermissionDeniedError
-  → 落审计事件（含 identity + action + target_id + 时间）
+调用方 → MemoryAPI.method(scope=target, security=RequestSecurityContext)
+  → 构造 ResourceDescriptor（action + resource_type + scope + resource_id + attributes）
+    # list/get/update/delete/inspect/trace 的已有资源属性来自真源，请求 metadata 不能覆盖
+  → 由 security 派生 AuthorizationEnvironment.from_request(security, now=<服务端时钟>)
+  → Authorizer.authorize(auth=security.auth, resource=..., environment=...)
+    → allow → 委托 Engine/Governor/PolicyManager（仅传 scope，不传 security）
+    → deny  → 抛 PermissionDeniedError，并落 deny audit（含 DenyReason code + rule）
+  → 落审计事件（含 security.actor + action + target_id + 时间）
 ```
 
 ## 实现注册机制

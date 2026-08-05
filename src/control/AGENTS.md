@@ -41,7 +41,7 @@
 
 1. **引擎不实现具体算法能力**：`MemoryEngine` 只编排，Ingestor/构建算子/Retriever/Store 全部由装配注入。Engine 可通过注入的 `KVStore` 完成接口语义要求的真源落盘/点读/删除，但禁止绕过 Store 抽象绑定具体后端或在 engine 内调用 LLM。
 2. **引擎方法一律异步协程**：同步调用由 `api/` 层自行桥接（`asyncio.run`），engine 内不做同步阻塞。
-3. **鉴权不在本层执行**：`PermissionManager.check` 由 `api/MemoryAPI` 在入口调用，engine 信任传入的 scope 已鉴权。Engine 提供 `permission_context_for_unit`、`list_with_permission_contexts` 和 `permission_contexts_for_delete`，供 API 使用真源 metadata 做类型化鉴权；list 的 items、count 与 contexts 必须来自同一次 KV 列表查询。禁止在 engine 内部重复 check。
+3. **鉴权不在本层执行**：授权判定由 `api/MemoryAPI` 这个唯一 PEP 在入口调用 `common.security.authorization` 的 `Authorizer`（PDP），engine 信任传入的 scope 已鉴权。Engine 提供 `permission_context_for_unit`、`list_with_permission_contexts` 和 `permission_contexts_for_delete`，供 API 使用真源 metadata 做类型化鉴权；list 的 items、count 与 contexts 必须来自同一次 KV 列表查询。禁止在 engine 内部重复鉴权。
 4. **LifecycleManager 只做 Scope 内非破坏式标记**：`transition` / `supersede` 必须接收完整 Scope，只标记该 Scope 下的目标 id，绝不物理删除。物理删除（purge）走 engine 的 `delete` 路径 + `DeleteMode.PURGE`。
 5. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。`*_impl/` 通过 producer 工厂被外部装配消费，不被顶层接口引用。
 6. **Pipeline 只做 profile 选择**：`MemoryPipeline` 选择一组已装配的 `IndexBuilder` / `Evolver` / `Retriever` / `Classifier` 绑定，不实现抽取、巩固、索引、检索算法，不让 construction/retrieval 反向依赖 control。
@@ -49,11 +49,11 @@
 8. **权限路由与数据范围绑定**：RoutingPermissionManager 只按 PermissionContext 选择
    delegate；API 必须把授权所依据的路由字段回注为系统过滤谓词。未知路由值和直接
    policy 名落最小权限 fallback，fallback 不得配置为 allow_all。
-9. **space 是权限硬边界**：`PermissionManager.check` 先按 `org + space` 判断 owner-cover；同 org 跨 space 默认拒绝，只有 `Scope()` 或显式 grant 可跨 space。owner-cover 的主体路径由 `PermissionContext.metadata["principal_path"]` 选择（默认 `user_agent`，可选 `agent_user`）。
+9. **space 是权限硬边界**：`StandardAuthorizer` 先按 `org + space` 判断 owner-cover；同 org 跨 space 默认拒绝，只有 ROOT 角色或显式 Grant 可跨 space。owner-cover 的主体路径由 `PermissionContext.metadata["principal_path"]` 选择（默认 `user_agent`，可选 `agent_user`），经 API 摊平为 `ResourceDescriptor.attributes` 传入。
 10. **space policy 是主体路径来源**：`LocalMemoryAPI` 在鉴权前读取目标 space policy，并用其中的 `principal_path` 覆盖 `PermissionContext.metadata["principal_path"]`；调用级 metadata 不能临时改变已有 space 的主体路径。
 11. **Space id 全局唯一**：`KVSpaceManager` 在根 Scope 维护全局 Space 注册键；不同 org 创建同一非空 Space id 必须报 `ConflictError`。
-12. **治理读取按已鉴权 Scope 定位**
-13. **`PermissionManager.check` 是 role-aware 且接收认证上下文**：`auth: AuthContext | None`（keyword-only，PEP 从 ContextVar 取后透传，PDP 不自读 ContextVar）。`auth.actor != actor` 即拒（fail-closed）；ROOT 按 `role` 判定（`auth is None` 时空 `Scope()` 才是 platform admin）；管理面资源（`resource_type` 为 admin/audit，或 space 的写/删）要求 ROOT；agent 持 `acting_user` 可代 user 读写其 scope（§4.3），但委托只覆盖记忆 CRUD（`_DELEGATABLE_ACTIONS`），**不含 SHARE**--否则临时委托可升级成永久 Grant（审计 P1-1）。`RoutingPermissionManager` 原样透传 `auth`，`AllowAllPermissionManager` 忽略它。：Governor 的 `inspect` / `trace` 必须接收 API 已鉴权 target Scope，不得仅按 unit id 跨 Scope 扫描。
+12. **治理读取按已鉴权 Scope 定位**：Governor 的 `inspect` / `trace` 必须接收 API 已鉴权 target Scope，不得仅按 unit id 跨 Scope 扫描。
+13. **授权判定归 `common.security.authorization`，本层不再持有安全所有权**：PDP 是 `Authorizer.authorize(auth, resource, environment)`，输入固定为 `AuthContext + ResourceDescriptor + AuthorizationEnvironment`，**不读 ContextVar**。`auth.actor != resource` 所依据的调用方即拒（fail-closed），空 `Scope()` actor 直接拒（它是「上下文不完整」的信号，不是 platform admin）；ROOT 只按 `role` 判定；管理面资源（`resource_type` 为 admin/audit，或 space 的写/删）要求 ADMIN 及以上，其中无 org 归属的系统级资源要求 ROOT。代操作不在请求里表达：委托关系必须来自服务端的 `DelegationStore`，由 Authorizer 按 `delegation_id` 复核，可委托动作的 allowlist 见 `common.security.types.DELEGATABLE_ACTIONS`（不含 SHARE 与管理动作——否则临时委托可升级成永久 Grant，审计 P1-1）。本层的 `PermissionManager` 在 PR2 只剩 grant/revoke 的授权**记录**写入通道，判定已不经过它；移除它的安全所有权是 PR3 的事（迁移计划 §6.2 第 10 项）。
 
 ## 双通道调度机制
 
