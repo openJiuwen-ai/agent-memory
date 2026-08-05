@@ -48,8 +48,9 @@ _HANLP_ENTITY_TYPE_MAP: dict[str, str] = {
 }
 
 # HanLP POS tag → 是否作为关键词
+# PKU 小写 + CTB 大写（与 CTB9_POS_* 对齐）+ 英文 Penn；同语义标签并存，不改变原有小写/英文过滤意图。
 _HANLP_KEYWORD_POS: set[str] = {
-    # HanLP 中文词性标签
+    # PKU / 小写风格
     "n",     # 名词
     "nr",    # 人名
     "ns",    # 地名
@@ -64,11 +65,21 @@ _HANLP_KEYWORD_POS: set[str] = {
     "d",     # 副词（部分）
     "i",     # 成语
     "j",     # 简略词
-    # 英文 POS
-    "NN", "NNS", "NNP", "NNPS",     # 名词
+    # CTB 大写（CTB9_POS_ELECTRA_SMALL 等）；与上表语义对应
+    "NR",    # 人名 ≈ nr
+    "NS",    # 地名 ≈ ns
+    "NT",    # 机构名 ≈ nt
+    "NZ",    # 其他专名 ≈ nz
+    "NN",    # 普通名词（亦见英文段）
+    "VV",    # 动词 ≈ v
+    "VA",    # 形容词性谓词 ≈ a
+    "JJ",    # 形容词（亦见英文段）
+    "AD",    # 副词 ≈ d
+    # 英文 Penn Treebank
+    "NNS", "NNP", "NNPS",          # 名词（NN 已在 CTB 段）
     "VB", "VBD", "VBG", "VBN",     # 动词
     "VBP", "VBZ",
-    "JJ", "JJR", "JJS",            # 形容词
+    "JJR", "JJS",                  # 形容词（JJ 已在 CTB 段）
     "RB", "RBR", "RBS",            # 副词
 }
 
@@ -97,13 +108,16 @@ class HanlpFeatureExtractor(FeatureExtractor):
 
     def __init__(
         self,
-        task_name: str = "CTB9_POS_ERNIE_1.0",
-        ner_task_name: str = "MSRA_NER_BERT_ELECTRA_SMALL",
+        tok_task_name: str = "FINE_ELECTRA_SMALL_ZH",
+        task_name: str = "CTB9_POS_ELECTRA_SMALL",
+        ner_task_name: str = "MSRA_NER_ELECTRA_SMALL_ZH",
         fallback_to_tokenizer: bool = True,
     ) -> None:
+        self._tok_task_name = tok_task_name
         self._task_name = task_name
         self._ner_task_name = ner_task_name
         self._fallback_to_tokenizer = fallback_to_tokenizer
+        self._tok_task = None
         self._pos_task = None
         self._ner_task = None
         self._available = False
@@ -111,11 +125,26 @@ class HanlpFeatureExtractor(FeatureExtractor):
         self._init_hanlp()
 
     def _init_hanlp(self) -> None:
-        """尝试加载 HanLP 模型；失败时标记为不可用。"""
+        """尝试加载 HanLP 模型；失败时标记为不可用。
+
+        HanLP 2.x STL 调用契约：``tok(text) -> list[str]``，再以 tokens 调用
+        ``pos(tokens)`` / ``ner(tokens)``。直接对原文调用 pos/ner 会得到字符级
+        嵌套结果，因此 tok 必须可用，否则视为不可用并走 fallback。
+        """
         try:
             import hanlp
 
-            # 加载 POS 分词+词性标注任务
+            # 加载分词任务（STL 上游必需）
+            try:
+                self._tok_task = hanlp.load(self._tok_task_name)
+            except Exception as exc:
+                logger.warning(
+                    "HanlpFeatureExtractor: tok task '%s' failed to load: %s",
+                    self._tok_task_name, exc,
+                )
+                self._tok_task = None
+
+            # 加载 POS 词性标注任务
             try:
                 self._pos_task = hanlp.load(self._task_name)
             except Exception as exc:
@@ -135,13 +164,16 @@ class HanlpFeatureExtractor(FeatureExtractor):
                 )
                 self._ner_task = None
 
-            # 至少有一个任务可用
-            self._available = self._pos_task is not None or self._ner_task is not None
+            # tok 必须可用；pos / ner 至少一个可用
+            self._available = (
+                self._tok_task is not None
+                and (self._pos_task is not None or self._ner_task is not None)
+            )
 
             if not self._available:
                 logger.warning(
-                    "HanlpFeatureExtractor: neither POS nor NER task loaded, "
-                    "falling back to simple tokenization"
+                    "HanlpFeatureExtractor: tok unavailable or both POS/NER "
+                    "missing, falling back to simple tokenization"
                 )
 
         except ImportError:
@@ -150,6 +182,7 @@ class HanlpFeatureExtractor(FeatureExtractor):
                 "falling back to simple tokenization if enabled"
             )
             self._available = False
+            self._tok_task = None
             self._pos_task = None
             self._ner_task = None
 
@@ -174,19 +207,38 @@ class HanlpFeatureExtractor(FeatureExtractor):
             return FeatureSet()
 
     def _extract_with_hanlp(self, text: str) -> FeatureSet:
-        """HanLP pipeline 提取：POS 关键词 + NER 实体 + 标签推断。"""
+        """HanLP pipeline 提取：POS 关键词 + NER 实体 + 标签推断。
+
+        STL 调用契约：``tok(text)`` → ``pos(tokens)`` / ``ner(tokens)``，
+        其中 ``pos`` 返回与 tokens 对齐的 ``list[str]``，``ner`` 返回
+        ``[(span, type, start, end), ...]`` 四元组列表。
+        """
         keywords: list[str] = []
         entities: list[Entity] = []
         seen_keywords: set[str] = set()
 
-        # --- POS 分词 + 词性标注 ---
-        pos_tokens: list[tuple[str, str]] = []
-        if self._pos_task is not None:
+        # --- 分词（STL 上游必需） ---
+        tokens: list[str] = []
+        if self._tok_task is not None:
             try:
-                # HanLP POS 任务返回 list of (word, pos) tuples 或类似结构
-                result = self._pos_task(text)
-                # HanLP POS 输出格式：[(word, pos), ...] 或 [word/pos, ...]
-                pos_tokens = self._parse_pos_result(result)
+                tok_out = self._tok_task(text)
+                if isinstance(tok_out, list):
+                    tokens = [str(t) for t in tok_out]
+            except Exception:
+                logger.warning("HanlpFeatureExtractor: tok task failed, using empty tokens")
+
+        # --- POS 词性标注 ---
+        pos_tokens: list[tuple[str, str]] = []
+        if self._pos_task is not None and tokens:
+            try:
+                tags = self._pos_task(tokens)
+                if isinstance(tags, list) and len(tags) == len(tokens):
+                    pos_tokens = list(zip(tokens, [str(t) for t in tags]))
+                else:
+                    logger.warning(
+                        "HanlpFeatureExtractor: POS returned unexpected shape, "
+                        "expected list aligned with tokens"
+                    )
             except Exception:
                 logger.warning("HanlpFeatureExtractor: POS task failed, using empty pos_tokens")
 
@@ -212,9 +264,9 @@ class HanlpFeatureExtractor(FeatureExtractor):
                     keywords.append(word_stripped)
 
         # --- NER 实体识别 ---
-        if self._ner_task is not None:
+        if self._ner_task is not None and tokens:
             try:
-                ner_result = self._ner_task(text)
+                ner_result = self._ner_task(tokens)
                 entities = self._parse_ner_result(ner_result, text)
             except Exception:
                 logger.warning("HanlpFeatureExtractor: NER task failed, using empty entities")
@@ -223,38 +275,6 @@ class HanlpFeatureExtractor(FeatureExtractor):
         labels = self._infer_labels(text, keywords, entities)
 
         return FeatureSet(keywords=keywords, entities=entities, labels=labels)
-
-    def _parse_pos_result(self, result) -> list[tuple[str, str]]:
-        """解析 HanLP POS 输出，统一为 [(word, pos), ...] 格式。"""
-        tokens: list[tuple[str, str]] = []
-
-        if result is None:
-            return tokens
-
-        # HanLP POS 可能返回多种格式：
-        # 1. list of tuples: [(word, pos), ...]
-        # 2. list of strings: ["word/pos", ...]
-        # 3. HanLP Token 对象
-        if isinstance(result, list):
-            for item in result:
-                if isinstance(item, tuple) and len(item) >= 2:
-                    # (word, pos) 格式
-                    tokens.append((str(item[0]), str(item[1])))
-                elif isinstance(item, str):
-                    # "word/pos" 格式
-                    parts = item.split("/", 1)
-                    if len(parts) == 2:
-                        tokens.append((parts[0], parts[1]))
-                    else:
-                        tokens.append((item, ""))
-                elif hasattr(item, "word") and hasattr(item, "pos"):
-                    # HanLP Token 对象
-                    tokens.append((str(item.word), str(item.pos)))
-                elif isinstance(item, (list, tuple)) and len(item) >= 2:
-                    # 嵌套结构
-                    tokens.append((str(item[0]), str(item[1])))
-
-        return tokens
 
     def _parse_ner_result(self, result, text: str) -> list[Entity]:
         """解析 HanLP NER 输出，转换为 Entity 列表。"""
@@ -371,7 +391,8 @@ class HanlpFeatureExtractor(FeatureExtractor):
 @FeatureExtractorProducer.register("hanlp")
 def _build(config):
     return HanlpFeatureExtractor(
-        task_name=config.get("feature_extractor_hanlp_task", "CTB9_POS_ERNIE_1.0"),
-        ner_task_name=config.get("feature_extractor_hanlp_ner_task", "MSRA_NER_BERT_ELECTRA_SMALL"),
+        tok_task_name=config.get("feature_extractor_hanlp_tok_task", "FINE_ELECTRA_SMALL_ZH"),
+        task_name=config.get("feature_extractor_hanlp_task", "CTB9_POS_ELECTRA_SMALL"),
+        ner_task_name=config.get("feature_extractor_hanlp_ner_task", "MSRA_NER_ELECTRA_SMALL_ZH"),
         fallback_to_tokenizer=config.get("feature_extractor_hanlp_fallback", True),
     )
