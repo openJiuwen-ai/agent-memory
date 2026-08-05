@@ -5,9 +5,25 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-27（KV 侧）；2026-07-29（FS 侧补入） |
-| 影响范围 | src/storage/kv_impl/encrypted_kv_store.py，src/storage/kv_impl/__init__.py，src/storage/fs_impl/encrypted_fs_store.py，src/storage/fs_impl/__init__.py，src/common/encryption/，docs/specs/S06-storage.md，docs/features/common/F04-security-interfaces-and-encryption.md |
+| 影响范围 | src/storage/kv_impl/encrypted_kv_store.py，src/storage/kv_impl/__init__.py，src/storage/fs_impl/encrypted_fs_store.py，src/storage/fs_impl/__init__.py，src/common/security/cryptography/，docs/specs/S06-storage.md，docs/features/common/F04-security-interfaces-and-encryption.md |
 | 测试基线 | KV 侧：`tests/unit/storage/test_encrypted_kv_store.py` 覆盖加密写入、读后解密、scan 解密、透传操作、工厂装配与失败关闭。FS 侧：`tests/unit/storage/test_encrypted_fs_store.py` 13 条全绿；单元全量 `15 failed, 814 passed, 1 skipped`，15 个失败全为预存在的环境失败（14 个 `test_jieba_tokenizer.py` 缺 `nlp` extra，1 个上游 `test_local_envelope.py` 断言 `0o600` 权限位、Windows `os.chmod` 设不出来，已在纯上游代码上复现）。相关模块测试、ruff 与 `git diff --check` 已通过 |
 | Refs | — |
+
+> **2026-08-05 F05 迁移后记。** 本文记录的是 2026-07 的决策过程，正文保留原貌。
+> 三处已被 F05 Common Security 推翻或改名，以下述为准：
+>
+> 1. **`EncryptionProvider` → `CryptographyProvider`**，落点从 `src/common/encryption/`
+>    迁到 `src/common/security/cryptography/`；`EncryptionContext` → `CryptoContext`，
+>    对象标识与格式版本提为专有字段 `object_id` / `format_version`，不再塞 `metadata`。
+>    配置顶层段名与装配参数名均由 `encryption` 改为 `cryptography`。
+> 2. **决策 11 与 `allow_plaintext` 已作废**（F05 §明文策略）。不再有任何明文回退开关：
+>    不是合法信封就拒绝读取，解密失败绝不返回原始 bytes。是否允许未加密存储，由上层
+>    选 `encrypted` 还是 raw target 表达。相应的明文兼容测试已删除。
+> 3. **「无根密钥轮换接缝」已部分补上**：信封升级到 v2，头部自述 key id 与 key epoch，
+>    根密钥改由独立的 `KeyProvider` 提供（`TOP_NAME` 为 `key_provider`），换 KMS/Vault
+>    不必改加密实现。写出一律 v2、v1 只读兼容；跨代 keyring 轮换仍未实现。
+>
+> 决策 1–10、12 与其余「拒绝的方案」不受影响。
 
 ## 背景
 
@@ -54,12 +70,17 @@ KVStore 是 `MemoryUnit` 内容、原始消息与部分控制数据的真源字�
    推荐把 raw KV 作为内部实例声明，再把默认 KV 指向 `encrypted`：
 
    ```yaml
-   encryption:
+   cryptography:
+     default:
+       target: local
+       params:
+         key_provider: default
+
+   key_provider:
      default:
        target: local
        params:
          key_file: ~/.agent-memory/security/master.key
-         allow_plaintext: false
 
    kv_store:
      raw:
@@ -71,7 +92,7 @@ KVStore 是 `MemoryUnit` 内容、原始消息与部分控制数据的真源字�
        target: encrypted
        params:
          raw_kv_store: raw
-         encryption: default
+         cryptography: default
    ```
 
    其他模块继续依赖 `kv_store.default` 时，读写路径自然经过加密包装；`kv_store.raw` 只作为加密装饰器的内部依赖，不应暴露给业务读写入口。
@@ -140,12 +161,17 @@ KVStore 是 `MemoryUnit` 内容、原始消息与部分控制数据的真源字�
 FS 侧配置形态：
 
 ```yaml
-encryption:
+cryptography:
   main_sec:
     target: local
     params:
+      key_provider: main_key
+
+key_provider:
+  main_key:
+    target: local
+    params:
       key_file: /etc/agent-memory/master.key
-      allow_plaintext: true       # 迁移完成后改 false
 
 fs_store:
   raw_fs:
@@ -155,7 +181,7 @@ fs_store:
     target: encrypted
     params:
       inner: raw_fs
-      encryption: main_sec
+      cryptography: main_sec
 ```
 
 ## 拒绝的方案
@@ -198,8 +224,8 @@ git diff --check
 | 空文件 roundtrip | `test_encrypted_fs_store_roundtrips_empty_file` |
 | `stat.size` 是密文长度（已知代价，显式钉住） | `test_encrypted_fs_store_stat_reports_ciphertext_size` |
 | `get`/`delete` 的 NotFound 与幂等语义不被加密改变 | `test_encrypted_fs_store_passes_through_missing_and_delete` |
-| 迁移期明文可读（provider 允许时） | `test_encrypted_fs_store_supports_plaintext_compatibility_via_provider` |
-| 明文兼容开着时写路径**仍然**加密 | `test_encrypted_fs_store_write_always_encrypts_even_when_plaintext_allowed` |
+| ~~迁移期明文可读（provider 允许时）~~ | ~~`test_encrypted_fs_store_supports_plaintext_compatibility_via_provider`~~（F05 §明文策略作废，用例已删） |
+| ~~明文兼容开着时写路径**仍然**加密~~ | ~~`test_encrypted_fs_store_write_always_encrypts_even_when_plaintext_allowed`~~（同上） |
 | 解密失败 fail-closed 成 `BackendError` | `test_encrypted_fs_store_decryption_failure_is_fail_closed` |
 | 具名依赖装配 / 缺 `inner` 报错 | `test_encrypted_fs_store_factory_*` |
 | `encrypted` 在只调 `register_backends()` 时已注册 | `test_encrypted_fs_is_registered_by_storage_bootstrap` |
@@ -211,8 +237,12 @@ git diff --check
 - key、ref、scope 维度、TTL 与 raw 后端中的记录数量仍对后端可见。
 - **`FSStore.get` 必须读全文件到内存**才能解密（见「拒绝的方案」里的 chunked encryption）。大文件（视频、模型权重）会吃内存。
 - **`FileStat.size` 返回密文长度**，比明文长（信封头 + 包装后的数据密钥 + 两个 nonce + 两个 16B GCM tag）。不修正——修正需要先解密才能知道明文长度，代价荒谬。调用方拿它分配缓冲区只会偏大，不影响正确性。
-- **无根密钥轮换接缝**：ENC1 信封头 11 字节（`!4sBBHHH`）里没有 `key_id`，密文无法自述「我是用哪把根密钥加密的」，因此轮换根密钥后所有历史密文立刻不可解——只能停机全量重加密或双写。补法是在头里加一个 `KeyIdLen(1B)` + 变长体最前面一段 `key_id`，轮换即退化成一次配置文件编辑（keyring 保留旧 key、`current_key_id` 指向新 key）。这是信封格式的改动，属于 `common/encryption/` 的面。
+- ~~**无根密钥轮换接缝**~~：已在 F05 迁移中补上。信封升级到 v2，头部自述 key id 与
+  key epoch，根密钥由独立的 `KeyProvider` 提供。**跨代轮换仍未实现**——keyring 保留旧
+  epoch、按信封自述的 key ref 选密钥这一步还没有，换根密钥依旧要重加密历史密文。
 - **`LocalKeyProvider` 的根密钥是磁盘上的明文文件**。生产应走 KMS/Vault。
-- **根密钥文件权限在 Windows 上设不出 `0o600`**，`test_local_encryption_provider_encrypts_enc1_and_round_trips` 因此在 Windows 开发机上恒红。不影响 Linux 部署。
-- KMS/Vault provider、密钥轮换、密钥版本迁移、批量重加密仍需在 `common/encryption` 与运维流程中补齐。
-- cloud engine 与 encrypted KV 的端到端集成测试、space 删除后的密文清理验证、严格关闭明文兼容后的迁移验证仍需补充。
+- **根密钥文件权限在 Windows 上设不出 `0o600`**，对应断言已加 `os.name != "nt"` 守卫，
+  只在 POSIX 上校验。不影响 Linux 部署。
+- KMS/Vault KeyProvider、跨代密钥轮换、密钥版本迁移、批量重加密仍需在
+  `common/security/cryptography/` 与运维流程中补齐。
+- cloud engine 与 encrypted KV 的端到端集成测试、space 删除后的密文清理验证仍需补充。

@@ -22,7 +22,6 @@
 | `type_def/memory_codec.py` | `MemoryUnit` ↔ bytes 编解码（`dumps`/`loads`）；当前 `_v=3`，序列化 `layers`({l0,l1}) 与五段 scope，缺失取默认容错老数据，详见 F01-memory-layer / F03-scope-space-isolation |
 | `type_def/raw.py` | RawPayload；KV key 前缀 `MESSAGES_KEY_PREFIX`/`messages_key`（未建索引 infer 原文 `/messages/{id}`） |
 | `type_def/audit.py` | AuditEvent：记录 actor scope、target scope、action、decision、target_id 与 detail |
-| `type_def/auth.py` | AuthContext（frozen）：认证层产出的请求级安全上下文（`actor`/`acting_user`/`role`/`from_oauth`/`authorizing_key_fp`），ContextVar 传播（`set_current`/`reset_current`/`get_current`，未认证返回 `None`）；`Role` 枚举（USER/ADMIN/ROOT）。横切结构，故落 `common` 而非 `security` 私有 |
 | `factory/factory.py` | Factory 基类：`TOP_NAME` 注册 + 三接口 `build`/`build_named`/`dep`（配置数据结构 `ComponentConfig`/`AssemblyContext`/`RawSpec` 在 `config/context.py`） |
 | `embedder/` | Embedder 插件目录（接口 + 实现） |
 | `chunker/` | Chunker 插件目录 |
@@ -31,10 +30,7 @@
 | `feature_extractor/` | FeatureExtractor 插件目录 |
 | `llm/` | LLM 插件目录（`echo` / `openai` / `dashscope`） |
 | `reranker/` | Reranker 插件目录 |
-| `authentication/` | Authenticator 契约、Credentials/AuthMode、DEV 绑定 guard；内置 dev/trusted/api_key |
-| `credential_store/` | PrincipalKeyStore 契约；内置 memory Argon2id 注册表 |
-| `admission/` | RateLimiter 契约与 Argon2 并发 guard；内置 token_bucket/unlimited |
-| `encryption/` | EncryptionProvider 契约；内置 `local` ENC1 AES-GCM 实现 |
+| `security/` | 安全能力的唯一归属地（F05）：`types.py`（AuthContext/RequestSecurityContext/CryptoContext/Role/Surface/Credentials，ContextVar 传播）、`runtime.py`（SecurityRuntime）、`authentication/`（Authenticator + PrincipalKeyStore，内置 dev/trusted/api_key + memory Argon2id）、`protection/`（RateLimiter/WorkloadGuard/BindingPolicy，内置 token_bucket/unlimited/semaphore/loopback）、`cryptography/`（CryptographyProvider + KeyProvider，内置 `local` ENC1 AES-GCM）。注册入口 `security/bootstrap.py::register_security()` |
 | `audit/` | AuditLogger 插件目录 |
 
 ## 行为铁律
@@ -46,11 +42,13 @@
    每个插件的 Producer 工厂定义在其接口模块（`base.py`）中，与抽象契约同处一地。
 
 3. **注册靠 import 触发**
-   实现文件尾部 `@XxxProducer.register("name")` 注册 _build 函数，`*_impl/__init__.py` import 各实现模块触发注册，`bootstrap.py::register_plugins()` 在装配前统一触发。
+   实现文件尾部 `@XxxProducer.register("name")` 注册 _build 函数，`*_impl/__init__.py` import 各实现模块触发注册，`bootstrap.py::register_plugins()` 在装配前统一触发（安全域转交 `security/bootstrap.py::register_security()`）。
 
 4. **type_def 不依赖能力实现**
    `type_def/*.py` 只定义跨层数据与 ContextVar，可在 `type_def` 内部引用基础类型
-   （如 `auth.py` 引用 `scope.py`），不得 import authentication/audit/storage 等能力实现。
+   （如 `audit.py` 引用 `scope.py`），不得 import security/audit/storage 等能力实现。
+   安全类型住 `security/types.py` 而非 `type_def/`：`type_def` 被所有层 import，身份
+   类型放进去会让「谁能构造/改写身份」的边界消失。
 
 5. **共享插件必须双侧同一**
    Embedder/Tokenizer/FeatureExtractor 必须在构建侧与检索侧使用同一实现/同一配置，保证同词表/同向量空间。靠配置里「具名 + 引用」显式表达共享：双侧 `dep` 引用同一具名实例 → `build_named` 命中同一缓存键 → 同一实例。
@@ -65,7 +63,7 @@
 - 共享插件接口定义与注册式工厂
 - 核心数据类型（MemoryUnit/Scope/Context/Relation/Chunk/AuditEvent 等）
 - 工厂注册基础设施（Factory 基类 + `TOP_NAME` 命名空间 + `build`/`build_named`/`dep` 三接口）
-- 横切接口（Authenticator / PrincipalKeyStore / RateLimiter / EncryptionProvider / AuditLogger）
+- 横切接口（Authenticator / PrincipalKeyStore / RateLimiter / WorkloadGuard / BindingPolicy / CryptographyProvider / KeyProvider / AuditLogger）
 - 错误类型
 - 工具函数
 
@@ -85,7 +83,12 @@
 4. 重依赖实现在 `*_impl/__init__.py` 中用 `try/except ImportError` 包裹。
 5. 两级命名空间配置驱动装配：每个 Producer 声明全局唯一 `TOP_NAME`（占配置顶层段），其下是若干具名实例（`target` 指定实现名、`params` 传参、`new_instance` 控制是否共享）。`_build(config)` 里用 `XProducer.dep(config, param_name=None, default=...)` 取子依赖（引用名→共享 / 内联 dict→匿名 / 缺省→默认匿名）。
 6. LLM 的厂商扩展参数必须由对应 Provider Adapter 注入；构建、检索等内核业务调用点不得硬编码 `extra_body` 等传输层字段。
-7. 横切能力（Authenticator / PrincipalKeyStore / RateLimiter / EncryptionProvider /
-   AuditLogger）不继承 `Plugin`、不进入 `PluginType`；接口统一在能力目录的 `base.py`，
-   实现统一在同级 `*_impl/`，YAML 只能选择已经注册的 target 并传递 params。当前不从
-   YAML import Python 类，也不自动发现未被应用启动代码 import 的外部包。
+7. 横切能力（Authenticator / PrincipalKeyStore / RateLimiter / WorkloadGuard /
+   BindingPolicy / CryptographyProvider / KeyProvider / AuditLogger）不继承 `Plugin`、
+   不进入 `PluginType`；接口统一在能力目录的 `base.py`（安全域为
+   `security/<能力域>/`），实现统一在同级 `*_impl/`，YAML 只能选择已经注册的 target
+   并传递 params。当前不从 YAML import Python 类，也不自动发现未被应用启动代码
+   import 的外部包。
+8. 安全能力一律落 `security/<能力域>/`，不新开顶层目录。核心不得按 target 名或
+   `mode()` 字符串分支——需要区分的行为差异由 capability 方法（如
+   `requires_loopback_binding()`）显式声明，详见 S08。

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-27 |
-| 影响范围 | `src/common/encryption/`、`src/storage/kv_impl/`、`src/control/engine_impl/`、`docs/specs/S07-common.md`、`docs/specs/S06-storage.md` |
+| 影响范围 | `src/common/security/cryptography/`、`src/storage/kv_impl/`、`src/control/engine_impl/`、`docs/specs/S07-common.md`、`docs/specs/S06-storage.md` |
 | 测试基线 | `local` EncryptionProvider 直接行为校验通过，`EncryptedKVStore` 单测函数直接执行通过；当前环境缺少 pytest/ruff runner |
 | Refs | — |
 
@@ -16,10 +16,20 @@
 
 本文由原 `docs/security/security.md` 迁入 common 特性归档，作为认证、授权、隔离、加密与审计的历史设计输入；现行接口与配置入口以 S03 / S06 / S07 / S08 为准。
 
-当前落地状态（2026-08-05）：`common/encryption` 接口已提供 `EncryptionProvider` /
-`EncryptionProducer`，`storage/kv_impl/encrypted_kv_store.py` 已提供 KV 加密装饰器；
-`encryption_impl/local_envelope.py` 已提供 `local` ENC1 AES-GCM
-真实加解密 provider。KMS / Vault provider 仍未实现。
+当前落地状态（2026-08-05，F05 Common Security 迁移后）：全部安全能力归
+`src/common/security/`。`security/cryptography/` 提供 `CryptographyProvider` /
+`CryptographyProducer`（原 `common/encryption` 的 `EncryptionProvider` /
+`EncryptionProducer`），并已拆出独立的 `KeyProvider` 抽象；
+`cryptography_impl/local_envelope.py` 提供 `local` ENC1 AES-GCM 真实加解密 provider
+与 `local` KeyProvider；`storage/kv_impl/encrypted_kv_store.py` 与
+`storage/fs_impl/encrypted_fs_store.py` 提供加密装饰器。信封已升级到 v2（自述 key id
+与 key epoch，v1 只读兼容），**不再有任何明文回退开关**。KMS / Vault KeyProvider 与
+跨代密钥轮换仍未实现。
+
+本文以下正文是历史设计输入，其中的路径与类名多为迁移前形态；凡「实现注记」引用块
+已更新到现行落点。旧平铺路径（`common/encryption`、`common/authentication`、
+`common/credential_store`、`common/admission`、`type_def/auth.py`）只是历史状态，
+不再作为新代码的约束。
 
 ---
 
@@ -130,7 +140,7 @@ if auth_mode == AuthMode.DEV:
 > `Scope(org="*")`。`SQLitePermissionManager.check` 的第一条规则是
 > `actor == Scope() → True`（platform admin 全局放行），而 `org="*"` 会先撞上
 > 「跨 org 一律拒绝」规则——用 `org="*"` 的 ROOT 反而寸步难行。
-> 见 `src/common/authentication/authentication_impl/dev_authenticator.py`。
+> 见 `src/common/security/authentication/authentication_impl/dev_authenticator.py`。
 
 **约束**：DEV 模式只允许监听 localhost。启动时如果检测到非 localhost 绑定，应当 `sys.exit(1)` 并打印错误消息。**注意覆盖容器化场景下 `0.0.0.0` 这种最危险的情况**：
 
@@ -160,10 +170,12 @@ def enforce_dev_localhost_binding(bind_host):
 
 > DEV 模式唯一正确的用途：本地开发、单机调试。**永远不要**在非 localhost 上 DEV 模式运行。容器化场景下，即使绑了 `127.0.0.1`，也要保证 Docker/K8s 的网络配置不会把端口转发出去——这一层 guard 无法替你检查。生产部署必须显式配 `auth_mode: api_key` 或 `trusted`。
 
-> **主干实现注记**（F01）：主干把这段拆成两半——`common.authentication.binding.check_dev_binding(hosts)`
+> **主干实现注记**（F01，路径经 F05 迁移更新）：主干把这段拆成两半——绑定校验现由
+> `common.security.protection.binding_policy.BindingPolicy.check(hosts, *, requires_loopback)`
+> 表达（内置 `loopback` 实现，是否强制由 `Authenticator.requires_loopback_binding()` capability 决定），
 > 是**纯函数**，非 localhost 抛 `ValidationError`，容器场景走 `logging.warning`；
 > `sys.exit(1)` 与 stderr 上的 `FATAL:` 留在 `bootstrap/http_server/__main__.py:main`。
-> 这样 guard 本身可被单测直接断言（`tests/unit/common/authentication/test_binding.py`），
+> 这样 guard 本身可被单测直接断言（`tests/unit/common/security/protection/test_binding_policy.py`），
 > 而不必在测试里捕获 `SystemExit`。
 
 #### 2.2.2 TRUSTED 模式
@@ -230,7 +242,7 @@ if auth_mode == AuthMode.API_KEY:
 > 成 **bytes** 再比。str 版本在参数含非 ASCII 字符时抛 `TypeError`，那会让一次
 > 认证失败变成 500 而不是 401——把「凭据错误」暴露成「服务器错误」，
 > 且绕过了统一的失败审计路径。见
-> `src/common/authentication/authentication_impl/api_key_authenticator.py`。
+> `src/common/security/authentication/authentication_impl/api_key_authenticator.py`。
 
 ### 2.3 API Key 系统
 
@@ -913,7 +925,7 @@ EFK长度(2B) | KeyIV长度(2B) | DataIV长度(2B) |         ← 12B 定长头
 密文自描述——头里记录 provider 类型，解密时按头里的 provider 类型走对应路径。
 
 > **实现注记（主干与本节的偏离）**：信封实现在
-> `src/common/encryption/encryption_impl/local_envelope.py`，头是
+> `src/common/security/cryptography/cryptography_impl/local_envelope.py`，头是
 > **11 字节**（`!4sBBHHH`），比下方代码块里的 `HEADER_SIZE = 12` 少一字节——
 > `4+1+1+2+2+2 = 11`，12 是把 struct 的对齐算进去了。字段构成与本节一致。
 >
@@ -921,7 +933,7 @@ EFK长度(2B) | KeyIV长度(2B) | DataIV长度(2B) |         ← 12B 定长头
 > 密钥后所有历史密文立刻不可解——只能停机全量重加密或双写。补法是在头里加一个
 > `KeyIdLen(1B)` + 变长体最前面一段 `key_id`，轮换即退化成一次配置文件编辑
 > （keyring 保留旧 key、`current_key_id` 指向新 key）。这是信封格式的改动，属于
-> `common/encryption/` 的面，记在
+> `common/security/cryptography/` 的面，记在
 > [storage/F02 已知遗留](../storage/F02-encrypted-storage.md)。
 
 ```python
@@ -1093,11 +1105,13 @@ class KeyProvider(ABC):
         ...
 ```
 
-> **实现注记（主干与本节的偏离）**：主干没有独立的 `KeyProvider` 顶层抽象——
-> 对外的策略接口是 `common.encryption.EncryptionProvider`
-> （`encrypt(plaintext, *, context, aad)` / `decrypt(...)` / `health()`），密钥托管
-> 方式是它的实现细节（`LocalEnvelopeEncryptionProvider` 内部持有一个
-> `LocalKeyProvider` 做 HKDF 派生与 data key 包装）。两处具体偏离：
+> **实现注记（F05 迁移后已落地）**：本节设想的独立 `KeyProvider` 顶层抽象**已经存在**
+> ——`common.security.cryptography.key_provider.KeyProvider`，独立 Producer
+> （`TOP_NAME` 为 `key_provider`），换 KMS / Vault 不必改加密实现。策略接口是
+> `common.security.cryptography.CryptographyProvider`
+> （`encrypt(plaintext, *, context, aad)` / `decrypt(...)` / `health()`），它经
+> `KeyProvider` 取密钥，**不得自己读环境变量或配置文件里的根密钥**（F05 §KeyProvider）。
+> 内置 `LocalKeyProvider` 做 HKDF 派生与 data key 包装。仍有一处偏离：
 >
 > 1. **接口是同步的，不是 `async def`**。`KVStore` / `FSStore` 的方法全是同步的
 >    （`get(scope, key) -> bytes`）。异步 provider 会逼着同步的 `get` 内部调
@@ -1567,17 +1581,27 @@ class AuthContext:
 
 中间件构造 `AuthContext` 后，应通过显式参数或 `ContextVar` 在单次请求内传播，并在请求结束时可靠 reset。任何 handler、LLM tool_call 或业务参数都不能覆盖其中字段。
 
-> **主干实现注记**（F01）：主干实现在 `src/common/type_def/auth.py`
-> （横切结构，故落在 `common` 而非 `security` 私有），与上表有三处差异：
+> **主干实现注记**（F01，落点经 F05 迁移更新）：主干实现在
+> `src/common/security/types.py`——安全类型归安全域，**不再住 `type_def/`**：
+> `type_def` 被所有层 import，身份类型放进去会让「谁能构造/改写身份」的边界消失。
+> 与上表有三处差异：
 > `role` 是 **`Role` 枚举**（`USER` / `ADMIN` / `ROOT`，继承 `str, Enum` 以便直接
 > 进 `AuditEvent.detail`）而非裸 `str`，且**无默认值**——「忘了传 role」不该
 > 静默得到 `user`；dataclass 是 **`frozen=True`**，落实「任何 handler 都不能覆盖
 > 其中字段」；`actor` 同样**不给默认值**，否则漏传会得到空 `Scope()`
 > 即 platform-admin 全局权限，是最糟的 fail-open 形态。
-> 传播用 `ContextVar`：`set_current` / `reset_current` / `get_current`，
+> 传播用 `ContextVar`，承载的是 `RequestSecurityContext`（`auth` + `request_id` /
+> `peer` / `surface` / `started_at`）而非裸 `AuthContext`：`set_current` /
+> `reset_current` / `get_current`，
 > **reset 必须在 `finally`**（`ThreadingHTTPServer` 复用线程，泄漏的 ContextVar
 > 会让下一个请求继承上一个的身份）；`get_current()` 未认证时返回 `None`，
 > **不返回默认上下文**。
+>
+> 下表的候选字段中，`authenticated_at` / `credential_type` / `credential_id` /
+> `expires_at` / `delegation_id` 已在 F05 迁移中落地，`auth_method` 取代了
+> `auth_mode`；`from_oauth` 与 `authorizing_key_fp` 已删除——布尔式的
+> `from_oauth` 被开放的 `credential_type` 取代，`authorizing_key_fp` 更名为
+> 更中性的 `credential_id`。
 
 未来可按审计和协议演进增加以下字段：
 

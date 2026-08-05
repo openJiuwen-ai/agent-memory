@@ -5,10 +5,30 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-29 |
-| 影响范围 | `src/common/authentication/`、`src/common/credential_store/`、`src/common/admission/`、`src/common/type_def/auth.py`、`bootstrap/core/auth_middleware.py`、对应镜像测试目录与各 surface 装配入口 |
+| 影响范围 | `src/common/security/authentication/`、`src/common/security/protection/`、`src/common/security/types.py`、`bootstrap/core/auth_middleware.py`、对应镜像测试目录与各 surface 装配入口 |
 | 测试基线 | 改动前 `2 failed, 656 passed, 60 skipped`；改动后 `2 failed, 788 passed, 60 skipped`。**两个失败是同一对**（`test_bge_m3_embedder.py` 的 `torch` 未安装，`embed` extra 未装），与本改动无关 |
 | 依据 | [`docs/features/common/F04-security-interfaces-and-encryption.md`](../common/F04-security-interfaces-and-encryption.md) §1.1 核心不变量、§2 认证、§3 授权角色、§7 审计、§8.1 速率限制、§9 铁律 #1 |
 | Refs | — |
+
+> **2026-08-05 F05 迁移后记。** 本文记录的是 2026-07-29 的决策过程，正文保留原貌。
+> 落点与若干细节已随 F05 Common Security 改变，以下述为准：
+>
+> - **目录**：`common/authentication/` + `credential_store/` + `admission/` + `type_def/auth.py`
+>   收敛为 `common/security/{authentication,protection,cryptography}/` 与 `security/types.py`。
+>   旧平铺路径只是历史状态，不再作为约束。
+> - **`AuthMode` 枚举已删除**（决策 3 的"三档模式"仍在，但不再由封闭枚举表达）：
+>   `mode()` 返回开放字符串，核心不得按其分支，行为差异一律由 capability 方法声明。
+> - **`Argon2Guard` → `WorkloadGuard`**（决策 12）：从"Argon2 专用"泛化为"昂贵安全操作的
+>   并发预算"，进 Factory（`TOP_NAME` 为 `workload_guard`），内置实现 `semaphore`。
+>   `default_argon2_guard()` 全局单例与"重复装配报错"随之取消——共享改由**具名实例**
+>   显式表达，同一个 `workload_guard.shared_budget` 被谁引用从配置里就能读出来。
+> - **决策 13 的 `allow_plaintext` 已彻底删除**，不再是"默认 False"而是不存在该开关
+>   （F05 §明文策略）。
+> - **装配面收敛**：`Server.build` 不再逐个 `_build_authenticator` / `_build_rate_limiter`，
+>   改为装配一个 `SecurityRuntime`（`TOP_NAME` 为 `security`），由它持有全部能力引用
+>   并在启动期统一健康检查。详见 [S08](../../specs/S08-security.md)。
+>
+> 决策 1–11、14+ 的实质结论不受影响，只是落点改名。
 
 > **行文简称**：下文（及本模块所有代码注释）里的 **security.md** 一律指上表「依据」
 > 那份文档。它原在 `docs/security/security.md`，上游 `c76eb90` 把它迁进了
@@ -107,7 +127,7 @@ security.md §2.2.1 的示例写 `Scope(org="*")`。在本仓这**不能用**：
 内核形态无关。放进 `build_kernel` 会让 `LocalMemoryAPI` 同时承担 AuthN 与
 AuthZ 两件事。
 
-落点：`src/common/authentication/`、`credential_store/`、`admission/` 提供契约与实现，`Server.build`（bootstrap 层）装配
+落点：`src/common/security/{authentication,protection}/` 提供契约与实现，`Server.build`（bootstrap 层）装配
 authenticator，`auth_middleware` 在各 surface 的请求入口调用。内核只接收
 已认证的 `identity`。
 
@@ -273,6 +293,10 @@ FS 短读修复（验收第三次 P2-2）：`_read_bounded_stream` 改用 `bytea
 
 ## 配置草案
 
+> 以下是 2026-07-29 的草案形态（顶层嵌在 `memory_api` 下）。**现行配置形态见
+> [S08 §注册与配置](../../specs/S08-security.md)**：安全能力由顶层 `security` 段组合，
+> 各能力段与本草案的 target 名一致，但不再嵌套在 `memory_api` 下。
+
 ```yaml
 memory_api:
   authenticator:
@@ -345,16 +369,17 @@ rate_limiter:
 
 | 文件 | 覆盖 | 结果 |
 |---|---|---|
-| `tests/unit/common/test_auth.py` | `AuthContext` frozen / `actor` 无默认 / ContextVar 线程隔离与 reset | 11 passed |
-| `tests/unit/common/authentication/test_authenticator.py` | ABC 契约 / Producer 注册 / bootstrap 幂等 | passed |
-| `tests/unit/common/credential_store/test_key_store.py` | issue / resolve / revoke / ROOT 禁签 / **timing pad** / 不存明文 | passed |
-| `tests/unit/common/authentication/test_authentication_impl.py` | 三实现的正反路径 / 错误消息一致 | passed |
-| `tests/unit/common/authentication/test_binding.py` | DEV localhost guard 的各类拒绝 | passed |
-| `tests/unit/common/admission/test_rate_limit.py` | 突发/补充/并发/LRU/空 peer/装配期参数校验 | 16 passed |
+| `tests/unit/common/security/test_types.py` | `AuthContext` frozen / `actor` 无默认 / ContextVar 线程隔离与 reset | 11 passed |
+| `tests/unit/common/security/authentication/test_authenticator.py` | ABC 契约 / Producer 注册 / bootstrap 幂等 | passed |
+| `tests/unit/common/security/authentication/test_key_store.py` | issue / resolve / revoke / ROOT 禁签 / **timing pad** / 不存明文 | passed |
+| `tests/unit/common/security/authentication/test_authentication_impl.py` | 三实现的正反路径 / 错误消息一致 | passed |
+| `tests/unit/common/security/protection/test_binding_policy.py` | loopback 绑定策略的各类拒绝 | passed |
+| `tests/unit/common/security/protection/test_rate_limit.py` | 突发/补充/并发/LRU/空 peer/装配期参数校验 | 16 passed |
 | `tests/unit/bootstrap/test_auth_middleware.py` | header 归一 / bearer 提取 / **reset 保证** / 限流接线 | 28 collected |
 | `tests/integration/test_identity_forgery_rejected.py` | **端到端伪造身份被拒** | 5 passed |
 
-`tests/unit/common/{authentication,credential_store,admission}/` 当前共 92 collected；
+`tests/unit/common/security/` 当前共 169 passed（F05 迁移后含 `test_runtime.py`
+与密码学子目录）；
 `tests/unit/bootstrap/test_server_security_config.py` 另有 4 条配置歧义与开放 target 回归。
 
 限流侧的关键断言：
@@ -455,11 +480,11 @@ fail-open。中间件漏挂时请求会带着默认身份跑完，而且**没有
 3. **MCP 在非 DEV 模式下全部工具调用失败**。§2.5 的凭据传递待第二期设计。
    见决策 4。
 4. **限流是进程内的，多副本各算各的**：N 个副本 = N 倍实际额度。真正的多副本
-   限流要 Redis 之类的共享计数器，届时在 `admission/admission_impl/` 下新增一个实现，
-   中间件不用改（契约已留在 `common/admission/base.py`）。
+   限流要 Redis 之类的共享计数器，届时在 `security/protection/protection_impl/` 下新增一个实现，
+   中间件不用改（契约已留在 `common/security/protection/rate_limit.py`）。
 5. **按地址分桶挡不住僵尸网络**：来源足够分散时每个 IP 都拿到一个新满桶。能
    收敛这种攻击的是**对 Argon2 verify 本身做并发上限**（一个信号量，把同时
-   进行的 verify 数压到内存能承受的范围）--已由决策 12 的 `Argon2Guard` 实现。
+   进行的 verify 数压到内存能承受的范围）--已由决策 12 的 `WorkloadGuard` 实现。
 6. **无按 key 的配额公平**。§8.1 草图里的 `key_fp` 分桶防的是「单个合法 key
    打爆配额」，与本期防的攻击不是一件事（决策 7）。它是独立需求。
 7. **审计无链式 HMAC 完整性保护**。§7.3，第二期。
