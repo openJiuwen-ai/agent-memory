@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from common.errors import NotFoundError, ValidationError
+from common.errors import AgentMemoryError, NotFoundError, ValidationError
 from common.log import get_logger
 from common.type_def import (
     MEMORY_KEY_PREFIX,
@@ -39,6 +39,9 @@ from control.lifecycle import LifecycleManager, LifecycleProducer
 from control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
 from control.scheduler import Scheduler, SchedulerProducer
 from control.types import (
+    BatchWriteItem,
+    BatchWriteOutcome,
+    BatchWriteResult,
     Channel,
     DeleteMode,
     DeleteSelector,
@@ -307,6 +310,50 @@ class InMemoryEngine(MemoryEngine):
             self._kv.insert(scope, memory_key(unit.id), dumps(unit))
         index_builder.build(units)                        # hot 轻量索引
         return units
+
+    async def batch_write(
+        self,
+        items: list[BatchWriteItem],
+        *,
+        continue_on_error: bool = True,
+    ) -> BatchWriteResult:
+        outcomes: list[BatchWriteOutcome] = []
+        for index, item in enumerate(items):
+            try:
+                units = await self.write(
+                    item.content,
+                    item.scope,
+                    item.source,
+                    assets=item.assets,
+                    tags=item.tags,
+                    metadata=item.metadata,
+                    occurred_at=item.occurred_at,
+                )
+                outcomes.append(BatchWriteOutcome(index=index, item=item, units=units))
+            except Exception as exc:
+                is_domain_error = isinstance(exc, AgentMemoryError)
+                if not is_domain_error:
+                    logger.exception("unexpected batch write failure at item %s", index)
+                outcomes.append(
+                    BatchWriteOutcome(
+                        index=index,
+                        item=item,
+                        error=str(exc) if is_domain_error else "unexpected batch write failure",
+                        error_type=type(exc).__name__ if is_domain_error else "InternalError",
+                    )
+                )
+                if not continue_on_error:
+                    outcomes.extend(
+                        BatchWriteOutcome(
+                            index=skipped_index,
+                            item=skipped_item,
+                            error="skipped after previous item failed",
+                            error_type="Skipped",
+                        )
+                        for skipped_index, skipped_item in enumerate(items[index + 1:], index + 1)
+                    )
+                    break
+        return BatchWriteResult(outcomes=outcomes)
 
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         _ensure_local_scope(scope)

@@ -27,7 +27,7 @@ from control.engine_impl.cloud_engine import CloudEngine
 from control.lifecycle import LifecycleManager
 from control.pipeline import MemoryPipeline, PipelineBinding
 from control.scheduler_impl.in_process_scheduler import InProcessScheduler
-from control.types import DeleteSelector, MemoryPatch, UpdateMode
+from control.types import BatchWriteItem, DeleteSelector, MemoryPatch, UpdateMode
 from ingest.base import IngestOperatorType
 from ingest.ingestor import Ingestor
 from retrieval.base import RetrievalOperatorType
@@ -296,6 +296,49 @@ def test_cloud_engine_write_defaults_to_chat_message_type() -> None:
     assert records["coding_index"].built == []
     assert units[0].metadata["message_type"] == "chat"
     assert units[0].metadata["pipeline"] == "chat"
+
+
+def test_cloud_engine_batch_write_preserves_order_and_routes_each_item() -> None:
+    engine, records = _engine()
+    scope = Scope(org="acme", user="alice")
+
+    result = asyncio.run(
+        engine.batch_write(
+            [
+                BatchWriteItem(content="chat note", scope=scope, source=Modality.TEXT),
+                BatchWriteItem(
+                    content="coding note",
+                    scope=scope,
+                    source=Modality.CODE,
+                    metadata={"message_type": "coding"},
+                ),
+            ]
+        )
+    )
+
+    assert [outcome.units[0].content for outcome in result.outcomes] == ["chat note", "coding note"]
+    assert records["chat_index"].built == ["chat note"]
+    assert records["coding_index"].built == ["coding note"]
+    assert result.outcomes[1].units[0].metadata["pipeline"] == "coding"
+
+
+def test_cloud_engine_batch_write_collects_unexpected_error_and_skips_after_failure() -> None:
+    engine, _ = _engine()
+    scope = Scope(org="acme", user="alice")
+
+    async def _raise_unexpected(*_args, **_kwargs):
+        raise RuntimeError("unavailable dependency")
+
+    engine.write = _raise_unexpected  # type: ignore[method-assign]
+    result = asyncio.run(
+        engine.batch_write(
+            [BatchWriteItem(content="first", scope=scope), BatchWriteItem(content="second", scope=scope)],
+            continue_on_error=False,
+        )
+    )
+
+    assert [outcome.error_type for outcome in result.outcomes] == ["InternalError", "Skipped"]
+    assert result.outcomes[0].error == "unexpected batch write failure"
 
 
 def test_cloud_engine_recall_routes_by_message_type_extension() -> None:

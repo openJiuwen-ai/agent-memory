@@ -51,6 +51,9 @@ from control.scheduler import Scheduler
 from control.space import SpaceManager
 from control.types import (
     Action,
+    BatchWriteItem,
+    BatchWriteOutcome,
+    BatchWriteResult,
     Channel,
     DeleteMode,
     DeleteSelector,
@@ -581,6 +584,278 @@ class LocalMemoryAPI(MemoryAPI):
         )
         self._log(identity, "write", target_scope=scope, detail=auth)
         return units
+
+    @staticmethod
+    def _batch_error_item(item: object) -> BatchWriteItem:
+        if isinstance(item, BatchWriteItem):
+            return item
+        return BatchWriteItem(content="")
+
+    @staticmethod
+    def _merge_batch_tags(
+        defaults: list[str] | None, item_tags: list[str] | None
+    ) -> list[str] | None:
+        if defaults is None and item_tags is None:
+            return None
+        merged: list[str] = []
+        for tag in [*(defaults or []), *(item_tags or [])]:
+            if tag not in merged:
+                merged.append(tag)
+        return merged
+
+    @classmethod
+    def _normalize_batch_item(
+        cls,
+        item: object,
+        *,
+        scope: Scope | None,
+        source: Modality,
+        tags: list[str] | None,
+        metadata: dict[str, Any] | None,
+        occurred_at: datetime | None,
+        stream_id: str,
+    ) -> BatchWriteItem:
+        if not isinstance(item, BatchWriteItem):
+            raise ValidationError("batch item must be BatchWriteItem")
+        if not isinstance(item.content, str):
+            raise ValidationError("batch item content must be str")
+        target_scope = item.scope if item.scope is not None else scope
+        if not isinstance(target_scope, Scope):
+            raise ValidationError("batch item scope is required")
+        item_source = item.source if item.source is not None else source
+        if not isinstance(item_source, Modality):
+            raise ValidationError("batch item source must be Modality")
+        if item.assets is not None and (
+            not isinstance(item.assets, list)
+            or any(not isinstance(asset, str) for asset in item.assets)
+        ):
+            raise ValidationError("batch item assets must be list[str]")
+        for values, name in ((tags, "tags"), (item.tags, "item tags")):
+            if values is not None and (
+                not isinstance(values, list) or any(not isinstance(value, str) for value in values)
+            ):
+                raise ValidationError(f"batch {name} must be list[str]")
+        if item.metadata is not None and not isinstance(item.metadata, dict):
+            raise ValidationError("batch item metadata must be dict")
+        if item.occurred_at is not None and not isinstance(item.occurred_at, datetime):
+            raise ValidationError("batch item occurred_at must be datetime")
+        merged_metadata = {**(metadata or {}), **(item.metadata or {})}
+        _reject_reserved_metadata(merged_metadata)
+        _reject_non_scalar_metadata(merged_metadata)
+        if item.stream_id and not isinstance(item.stream_id, str):
+            raise ValidationError("batch item stream_id must be str")
+        if item.sequence is not None and not isinstance(item.sequence, int):
+            raise ValidationError("batch item sequence must be int")
+        if not isinstance(item.idempotency_key, str):
+            raise ValidationError("batch item idempotency_key must be str")
+        return BatchWriteItem(
+            content=item.content,
+            scope=target_scope,
+            source=item_source,
+            assets=list(item.assets) if item.assets is not None else None,
+            tags=cls._merge_batch_tags(tags, item.tags),
+            metadata=merged_metadata or None,
+            occurred_at=item.occurred_at if item.occurred_at is not None else occurred_at,
+            stream_id=item.stream_id or stream_id,
+            sequence=item.sequence,
+            idempotency_key=item.idempotency_key,
+        )
+
+    @staticmethod
+    def _batch_outcome(
+        index: int, item: object, error: Exception, *, error_type: str | None = None
+    ) -> BatchWriteOutcome:
+        return BatchWriteOutcome(
+            index=index,
+            item=LocalMemoryAPI._batch_error_item(item),
+            error=str(error),
+            error_type=error_type or type(error).__name__,
+        )
+
+    def batch_write(
+        self,
+        items: list[BatchWriteItem],
+        scope: Scope | None = None,
+        source: Modality = Modality.TEXT,
+        *,
+        identity: Scope,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        occurred_at: datetime | None = None,
+        stream_id: str = "",
+        continue_on_error: bool = True,
+    ) -> BatchWriteResult:
+        return asyncio.run(
+            self.batch_write_async(
+                items,
+                scope,
+                source,
+                identity=identity,
+                tags=tags,
+                metadata=metadata,
+                occurred_at=occurred_at,
+                stream_id=stream_id,
+                continue_on_error=continue_on_error,
+            )
+        )
+
+    async def batch_write_async(
+        self,
+        items: list[BatchWriteItem],
+        scope: Scope | None = None,
+        source: Modality = Modality.TEXT,
+        *,
+        identity: Scope,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        occurred_at: datetime | None = None,
+        stream_id: str = "",
+        continue_on_error: bool = True,
+    ) -> BatchWriteResult:
+        if not isinstance(items, list) or not items:
+            raise ValidationError("batch items must be a non-empty list")
+        if scope is not None and not isinstance(scope, Scope):
+            raise ValidationError("batch scope must be Scope")
+        if not isinstance(source, Modality):
+            raise ValidationError("batch source must be Modality")
+        if tags is not None and (
+            not isinstance(tags, list) or any(not isinstance(value, str) for value in tags)
+        ):
+            raise ValidationError("batch tags must be list[str]")
+        if metadata is not None and not isinstance(metadata, dict):
+            raise ValidationError("batch metadata must be dict")
+        if not isinstance(stream_id, str):
+            raise ValidationError("batch stream_id must be str")
+        if occurred_at is not None and not isinstance(occurred_at, datetime):
+            raise ValidationError("batch occurred_at must be datetime")
+        _reject_reserved_metadata(metadata)
+        _reject_non_scalar_metadata(metadata)
+
+        outcomes: dict[int, BatchWriteOutcome] = {}
+        ready: list[tuple[int, BatchWriteItem]] = []
+        seen_sequences: set[tuple[str, str, str, str, str, str, int]] = set()
+        stopped_index: int | None = None
+
+        for index, raw_item in enumerate(items):
+            try:
+                item = self._normalize_batch_item(
+                    raw_item,
+                    scope=scope,
+                    source=source,
+                    tags=tags,
+                    metadata=metadata,
+                    occurred_at=occurred_at,
+                    stream_id=stream_id,
+                )
+                if item.sequence is not None:
+                    sequence_key = (
+                        item.scope.org,
+                        item.scope.space,
+                        item.scope.user,
+                        item.scope.agent,
+                        item.scope.session,
+                        item.stream_id,
+                        item.sequence,
+                    )
+                    if sequence_key in seen_sequences:
+                        raise ValidationError(
+                            "duplicate sequence within the same scope and stream"
+                        )
+                    seen_sequences.add(sequence_key)
+                ready.append((index, item))
+            except Exception as exc:
+                if not isinstance(exc, (ValidationError, PermissionDeniedError, PolicyError)):
+                    raise
+                outcomes[index] = self._batch_outcome(index, raw_item, exc)
+                error_scope = (
+                    raw_item.scope
+                    if isinstance(raw_item, BatchWriteItem) and isinstance(raw_item.scope, Scope)
+                    else scope
+                )
+                self._log(
+                    identity,
+                    "write",
+                    target_scope=error_scope,
+                    decision="error",
+                    detail={"error": str(exc), "error_type": type(exc).__name__},
+                )
+                if not continue_on_error:
+                    stopped_index = index
+                    break
+
+        if stopped_index is not None:
+            for index in range(stopped_index + 1, len(items)):
+                outcomes[index] = BatchWriteOutcome(
+                    index=index,
+                    item=self._batch_error_item(items[index]),
+                    error="skipped after previous item failed",
+                    error_type="Skipped",
+                )
+
+        authorized: list[tuple[int, BatchWriteItem, dict[str, str]]] = []
+        for index, item in ready:
+            permission_context = _write_permission_context(item.scope, item.tags, item.metadata)
+            try:
+                auth = self._authorize(
+                    identity,
+                    item.scope,
+                    Action.WRITE,
+                    "write",
+                    context=permission_context,
+                )
+                self._ensure_space_writable(item.scope)
+                authorized.append((index, item, auth))
+            except (PermissionDeniedError, ValidationError, PolicyError) as exc:
+                outcomes[index] = self._batch_outcome(index, item, exc)
+                if not isinstance(exc, PermissionDeniedError):
+                    self._log(
+                        identity,
+                        "write",
+                        target_scope=item.scope,
+                        decision="error",
+                        detail={"error": str(exc), "error_type": type(exc).__name__},
+                    )
+                if not continue_on_error:
+                    stopped_index = index
+                    break
+
+        if stopped_index is not None:
+            for index in range(stopped_index + 1, len(items)):
+                outcomes.setdefault(
+                    index,
+                    BatchWriteOutcome(
+                        index=index,
+                        item=self._batch_error_item(items[index]),
+                        error="skipped after previous item failed",
+                        error_type="Skipped",
+                    ),
+                )
+            authorized = [entry for entry in authorized if entry[0] < stopped_index]
+
+        if authorized:
+            engine_result = await self._engine.batch_write(
+                [item for _, item, _ in authorized],
+                continue_on_error=continue_on_error,
+            )
+            for engine_outcome, (index, item, auth) in zip(engine_result.outcomes, authorized):
+                engine_outcome.index = index
+                engine_outcome.item = item
+                outcomes[index] = engine_outcome
+                self._log(
+                    identity,
+                    "write",
+                    target_scope=item.scope,
+                    decision="allow" if not engine_outcome.error else "error",
+                    detail={
+                        **auth,
+                        "error": engine_outcome.error,
+                        "error_type": engine_outcome.error_type,
+                    },
+                )
+
+        return BatchWriteResult(
+            outcomes=[outcomes[index] for index in range(len(items))]
+        )
 
     def recall(
         self,

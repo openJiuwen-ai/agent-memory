@@ -37,4 +37,5 @@ deploy/docker/.venv-modelscope/
 .DS_Store
 .idea/
 .vscode/
+.claude/skills/gitcode-config.json
 CLAUDE.md

@@ -11,6 +11,9 @@ from .scheduler import Scheduler
 from .space import SpaceManager
 from .types import (
     Action,
+    BatchWriteItem,
+    BatchWriteOutcome,
+    BatchWriteResult,
     Channel,
     DeleteMode,
     DeleteSelector,
@@ -60,6 +63,9 @@ __all__ = [
     "JobInfo",
     "MemoryPatch",
     "MemoryListResult",
+    "BatchWriteItem",
+    "BatchWriteOutcome",
+    "BatchWriteResult",
     "PermissionContext",
     "UpdateMode",
     "DeleteMode",
