@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/control/ |
-| 最近一次修订日期 | 2026-07-30 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md |
+| 最近一次修订日期 | 2026-08-05 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/security/F02-role-aware-authorization.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -195,20 +195,29 @@ active → archived → forgotten
 |------|------|------|
 | `grant` | `(grant: Grant) -> None` | 新增跨 scope 授权 |
 | `revoke` | `(grant: Grant) -> None` | 回收授权（幂等） |
-| `check` | `(actor: Scope, target: Scope, action: Action, context: PermissionContext \| None = None) -> bool` | 校验 actor 对 target 是否可执行 action；context 为资源类型、memory_type、pipeline、unit_id、tags 等可选上下文 |
+| `check` | `(actor: Scope, target: Scope, action: Action, context: PermissionContext \| None = None, *, auth: AuthContext \| None = None) -> bool` | 校验 actor 对 target 是否可执行 action；context 为资源类型、memory_type、pipeline、unit_id、tags 等可选上下文；`auth` 为认证层产出的上下文，携带 `actor` 推不出来的 `role` 与 `acting_user` |
 | `routing_fields` | `() -> tuple[str, ...]` | 返回本实现鉴权路由所依据的 metadata 字段；非路由实现返回空元组 |
 
-**check 规则**：
-1. `actor == Scope()`（platform admin）→ 全局通过
+**check 规则**（`auth` 为 `None` 时只有 1~5，即认证接入前的语义）：
+0. `auth is not None` 时先过三道前置闸：
+   - `auth.actor != actor` → 拒绝（两个身份来源不一致，fail-closed）
+   - 管理面资源（`context.resource_type` 为 `admin` / `audit`，或 `space` 的 `WRITE` / `DELETE`）要求 `role == ROOT`
+   - `role == ROOT` → 全局通过（§3.5「提升式 ROOT」与「声明式 ROOT」等价）；否则空 `actor` **不再**视为 platform admin
+1. `actor == Scope()`（platform admin）→ 全局通过（**仅 `auth is None` 时**）
 2. actor owner-cover target → 通过：先要求同 `org + space`，再按 `PermissionContext.metadata["principal_path"]`（`user_agent` / `agent_user`，默认 `user_agent`）判断 actor scope 是否为 target scope 的合法前缀；空字段不能跳过中间层
+2.5. `auth.acting_user` 委托覆盖 target → 通过（§4.3 用户授权 Agent 代操作）：要求 `auth.actor.agent` 非空、`acting_user` 非空、同 `org + space`、`target.user == acting_user`、`target.agent` 为空
 3. `actor.org != target.org` 且 actor 非 root → 拒绝；跨 org grant 不属于默认授权契约
 4. 存在匹配 Grant（未过期 + action 在授权集合内 + grantee 覆盖 actor + grantor 覆盖 target）→ 通过；grantor/grantee 都持久化 `space`，显式 grant 可跨 space
 5. 否则 → 拒绝
 
+`auth` 由 PEP（`LocalMemoryAPI._authorize`）从 ContextVar 取出后透传，实现**不得**
+自行读取 ContextVar——PDP 应当是其入参的纯函数。`grant` / `revoke` **不**走管理面
+闸门：规则 3 已挡住跨 org 授权，而对自有 scope 发 grant 是 Grant 模型的主用途。
+
 权限后端由配置选择；无具体 target scope 的管理面方法（`admin_get` / `admin_set` /
-`admin_all` / 全局 `audit`）统一以根 scope `Scope()` 作为鉴权目标，普通租户
-scope 不默认具备管理面访问权；`grant` / `revoke` 则以 grantor scope 为 target
-做 `Action.SHARE` 校验。
+`admin_all` / 全局 `audit`）统一以根 scope `Scope()` 作为鉴权目标并携带
+`resource_type`（`admin` / `audit`），普通租户 scope 不默认具备管理面访问权；
+`grant` / `revoke` 则以 grantor scope 为 target 做 `Action.SHARE` 校验。
 
 `routing` 权限后端按 `PermissionContext` 分派到不同具名 permission policy。示例：
 

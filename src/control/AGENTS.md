@@ -52,7 +52,8 @@
 9. **space 是权限硬边界**：`PermissionManager.check` 先按 `org + space` 判断 owner-cover；同 org 跨 space 默认拒绝，只有 `Scope()` 或显式 grant 可跨 space。owner-cover 的主体路径由 `PermissionContext.metadata["principal_path"]` 选择（默认 `user_agent`，可选 `agent_user`）。
 10. **space policy 是主体路径来源**：`LocalMemoryAPI` 在鉴权前读取目标 space policy，并用其中的 `principal_path` 覆盖 `PermissionContext.metadata["principal_path"]`；调用级 metadata 不能临时改变已有 space 的主体路径。
 11. **Space id 全局唯一**：`KVSpaceManager` 在根 Scope 维护全局 Space 注册键；不同 org 创建同一非空 Space id 必须报 `ConflictError`。
-12. **治理读取按已鉴权 Scope 定位**：Governor 的 `inspect` / `trace` 必须接收 API 已鉴权 target Scope，不得仅按 unit id 跨 Scope 扫描。
+12. **治理读取按已鉴权 Scope 定位**
+13. **`PermissionManager.check` 是 role-aware 且接收认证上下文**：`auth: AuthContext | None`（keyword-only，PEP 从 ContextVar 取后透传，PDP 不自读 ContextVar）。`auth.actor != actor` 即拒（fail-closed）；ROOT 按 `role` 判定（`auth is None` 时空 `Scope()` 才是 platform admin）；管理面资源（`resource_type` 为 admin/audit，或 space 的写/删）要求 ROOT；agent 持 `acting_user` 可代 user 读写其 scope（§4.3），但委托只覆盖记忆 CRUD（`_DELEGATABLE_ACTIONS`），**不含 SHARE**--否则临时委托可升级成永久 Grant（审计 P1-1）。`RoutingPermissionManager` 原样透传 `auth`，`AllowAllPermissionManager` 忽略它。：Governor 的 `inspect` / `trace` 必须接收 API 已鉴权 target Scope，不得仅按 unit id 跨 Scope 扫描。
 
 ## 双通道调度机制
 

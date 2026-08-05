@@ -6,7 +6,7 @@
 |---|---|
 | 关联模块 | `src/common/security/`、`bootstrap/`、`src/api/`、`src/storage/` |
 | 最近一次修订日期 | 2026-08-05 |
-| 关联特性文档 | `docs/features/security/F01-authentication-kernel.md`，`docs/features/common/F04-security-interfaces-and-encryption.md` |
+| 关联特性文档 | `docs/features/security/F01-authentication-kernel.md`，`docs/features/security/F02-role-aware-authorization.md`，`docs/features/common/F04-security-interfaces-and-encryption.md` |
 
 ## 范围 / 边界
 
@@ -85,6 +85,13 @@
 19. `SecurityRuntime` 不为后续 PR 预留恒为 `None` 的占位字段——那会诱导消费方写
     `if runtime.authorizer:` 的 fail-open 分支。
 20. 健康检查不泄露 key、token 或主体存在性。
+
+### 授权
+
+21. ROOT 权限只由可信 `AuthContext.role` 判定，不能由空 actor 或请求参数隐式推导。
+22. agent 代操作必须同时满足同 org、明确的委托目标与授权侧委托规则；不得覆盖其他 user
+    或 agent 分支。
+23. 授权判定的调用形态演进必须保持 fail-closed 兼容，路由实现不得丢失角色上下文。
 
 ## 注册与配置
 
