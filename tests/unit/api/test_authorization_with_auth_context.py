@@ -15,7 +15,7 @@ import pytest
 from api.memory_api_impl import build_kernel
 from common.errors import PermissionDeniedError
 from common.type_def import Scope
-from common.type_def.auth import AuthContext, Role, reset_current, set_current
+from common.security.types import AuthContext, Role, reset_current, set_current
 from config import Config
 from control.types import Action, Grant
 

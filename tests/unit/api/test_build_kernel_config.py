@@ -15,7 +15,7 @@ from common.audit.base import AuditProducer
 from common.errors import PermissionDeniedError, ValidationError
 from common.factory.factory import Factory
 from common.type_def import Context, Scope
-from common.type_def.auth import AuthContext
+from common.security.types import AuthContext
 from config import Config
 from config.context import AssemblyContext
 from config.defaults import default_config_dict

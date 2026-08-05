@@ -10,7 +10,7 @@ from abc import abstractmethod
 
 from common.factory.factory import Factory
 from common.type_def import Scope
-from common.type_def.auth import AuthContext
+from common.security.types import AuthContext
 
 from .base import ControlOperator
 from .types import Action, Grant, PermissionContext

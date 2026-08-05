@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from common.type_def import Scope
-from common.type_def.auth import AuthContext, Role
+from common.security.types import AuthContext, Role
 from control.base import ControlOperatorType
 from control.permission import PermissionManager, PermissionProducer
 from control.types import Action, Grant, PermissionContext

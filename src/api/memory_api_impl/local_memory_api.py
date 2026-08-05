@@ -42,7 +42,7 @@ from common.type_def import (
     iter_clauses,
     normalize,
 )
-from common.type_def.auth import get_current
+from common.security.types import get_current
 from construction import EvolveMode
 from control.engine import MemoryEngine
 from control.governance import Governor

@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from common.type_def import Scope
-from common.type_def.auth import AuthContext, Role
+from common.security.types import AuthContext, Role
 from control.permission_impl.allow_all_permission_manager import AllowAllPermissionManager
 from control.permission_impl.sqlite_permission_manager import SQLitePermissionManager
 from control.types import Action, PermissionContext

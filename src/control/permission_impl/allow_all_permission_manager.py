@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import List
 
 from common.type_def import Scope
-from common.type_def.auth import AuthContext
+from common.security.types import AuthContext
 from control.base import ControlOperatorType
 from control.permission import PermissionManager, PermissionProducer
 from control.types import Action, Grant, PermissionContext
