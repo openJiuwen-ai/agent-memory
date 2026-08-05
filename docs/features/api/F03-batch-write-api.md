@@ -300,6 +300,9 @@ HTTP 面建议新增独立 verb，而不是让 `/v1/add` 同时接受 object/lis
 handler 负责把 `defaults` 解析为 `batch_write` 顶层默认参数，把每个 item 解析为
 `BatchWriteItem`，并沿用现有 actor override 规则生成统一 `identity`。item 级范围覆盖使用
 `target_scope` 嵌套对象，按 `tenant_id` / `space` / `scope` / `agent` / `session` 覆盖 defaults。
+`occurred_at` 在 HTTP 中接受 ISO 8601 字符串，defaults 作为顶层默认值、item 可逐项覆盖；
+非法 defaults 属于顶层 payload 校验并返回 HTTP 400，非法 item 则保留为结构化失败 outcome。
+`target_scope.tenant_id` 为 `null` 或空值时继承 defaults，避免把 JSON null 解释为字符串 `"None"`。
 响应固定为 HTTP 200 的 `{ok, op: "batch_add", outcomes}`：每项包含原始 `input`、归一化
 `item`、`items`（MemoryUnit view）、`ok`、`error` 和 `error_type`；部分失败不使用 HTTP 207。
 如果未来需要每个 item 不同 actor，应另开管理接口，不在普通 batch 写入里混用。
@@ -354,6 +357,8 @@ handler 负责把 `defaults` 解析为 `batch_write` 顶层默认参数，把每
 11. CloudEngine 下 `message_type` routing 逐 item 生效，并固化 `metadata["pipeline"]`。
 12. 同一 stream 的多条 `infer=true` 按输入顺序执行，后项可看到前项 `/messages/` 上下文。
 13. HTTP `/v1/batch_add` malformed item 返回结构化错误，不产生 HTTP 500。
+14. Engine 运行期非领域异常同样归集为 `InternalError` outcome，并记录异常；单条 `write`
+    的异常语义不变。
 
 ## 已知遗留
 
