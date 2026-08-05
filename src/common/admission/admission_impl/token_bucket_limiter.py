@@ -26,8 +26,8 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 
+from common.admission.base import RateLimiter, RateLimitProducer
 from common.errors import ValidationError
-from security.rate_limit import RateLimiter, RateLimitProducer
 
 # 默认值面向「交互式使用不该被限流，脚本化枚举必须被限流」这条线：
 # 30 个突发够任何人工操作和常规客户端启动时的几次探测；持续 5 QPS 远低于

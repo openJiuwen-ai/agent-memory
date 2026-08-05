@@ -44,9 +44,7 @@ _errors = import_module("common.errors")
 AuthenticationError = _errors.AuthenticationError
 RateLimitedError = _errors.RateLimitedError
 ValidationError = _errors.ValidationError
-_security = import_module("security")
-AuthMode = _security.AuthMode
-check_dev_binding = _security.check_dev_binding
+check_dev_binding = import_module("common.authentication.binding").check_dev_binding
 
 # 请求体大小硬上限（审计 P2-4）：无上限意味着超大或慢速上传能吃满内存与线程。
 # 4 MiB 覆盖任何合理的记忆写入请求；超大资产本就该走 FS + 分片而非塞进单次 POST。
@@ -219,6 +217,10 @@ class HttpServer(Server):
         return Handler
 
     def serve(self, host: str, port: int) -> None:
+        # 绑定 guard 必须位于公开 serve() 内，而不是只放 CLI main()：嵌入式调用方
+        # 直接调用 serve() 也不能把 DEV/未知认证实现暴露到非 loopback 网络。
+        if self.authenticator is None or self.authenticator.requires_loopback_binding():
+            check_dev_binding(host)
         httpd = _BoundedThreadingHTTPServer((host, port), self._handler_cls())
         # daemon_threads：serve_forever 退出时（KeyboardInterrupt）不等待慢请求线程，
         # 否则一个挂住的连接能让进程退不掉（审计 P2-4）。并发上限由
@@ -248,16 +250,11 @@ def main(argv: list[str] | None = None) -> int:
         layers.append(load_layer(path))
     srv = HttpServer.build(load_config(layers))  # 基类 build → HttpServer 实例
 
-    # DEV 模式无认证：绑非 loopback 地址等于把全权限接口暴露给整个网络。
-    # 拒绝启动而非警告——警告会被忽略，而这个错配的后果是全部数据。
-    if srv.authenticator.mode() is AuthMode.DEV:
-        try:
-            check_dev_binding(args.host)
-        except ValidationError as exc:
-            logging.error("FATAL: %s", exc)
-            return 1
-
-    srv.serve(args.host, args.port)
+    try:
+        srv.serve(args.host, args.port)
+    except ValidationError as exc:
+        logging.error("FATAL: %s", exc)
+        return 1
     return 0
 
 

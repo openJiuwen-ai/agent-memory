@@ -1,7 +1,7 @@
-"""PrincipalKeyStore — 主体 API Key 注册表（security.md §2.3）。
+"""主体 API Key 凭据存储契约（security.md §2.3）。
 
 只负责「key ↔ 主体身份」的映射：签发、解析、撤销、查角色。不做认证分流
-（那是 :class:`~security.authenticator.Authenticator` 的事），也不管 Root API
+（那是 :class:`~common.authentication.base.Authenticator` 的事），也不管 Root API
 Key——它不入注册表，由 api_key authenticator 单独 ``compare_digest`` 比对
 （§2.3.1）。
 """
@@ -23,8 +23,8 @@ _KEY_BYTES = 32  # 256 bit
 class KeyStoreProducer(Factory):
     """PrincipalKeyStore 的注册式工厂（与契约同处接口层）。
 
-    各实现在 ``key_store_impl`` 下以 ``@KeyStoreProducer.register("<后端>")``
-    自注册，由 :func:`security.bootstrap.register_security` 统一触发。
+    各实现在 ``credential_store_impl`` 下以 ``@KeyStoreProducer.register("<后端>")``
+    自注册，由 :func:`common.credential_store.bootstrap.register_credential_store` 统一触发。
     """
 
     TOP_NAME = "key_store"
@@ -84,7 +84,7 @@ class PrincipalKeyStore(ABC):
     def resolve(self, api_key: str) -> AuthContext | None:
         """按明文 key 反查主体身份；未命中返回 ``None``。
 
-        **本方法允许返回 None**，与 :meth:`~security.authenticator.Authenticator.
+        **本方法允许返回 None**，与 :meth:`~common.authentication.base.Authenticator.
         authenticate` 不同：它是「查表未命中」的事实陈述，由调用方翻译成
         ``AuthenticationError``。这不构成 fail-open——调用方拿到 None 唯一能做的
         就是拒绝。

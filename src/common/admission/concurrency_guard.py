@@ -6,7 +6,7 @@ IP 令牌桶限的是「单地址的请求速率」，限不住「同时在跑�
 耗尽即拒（返回 429），是 IP 桶之上的第一层。
 
 **不进 Factory / Producer**：进程级状态按配置实例化多份没有意义--一个进程只有
-一份「正在跑的 verify 数」计数器。装配在 :func:`security.bootstrap.register_security`
+一份「正在跑的 verify 数」计数器。装配在 ``common`` 能力注册完成后
 里算一次默认上限（见 ``default_argon2_guard``），``auth_middleware`` 取它用。
 
 DEV 模式不跑 Argon2（恒返回 ROOT），不需要 guard。

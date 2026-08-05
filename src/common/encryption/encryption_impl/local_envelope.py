@@ -1,6 +1,6 @@
-"""Local ENC1 SecurityProvider implementation.
+"""Local ENC1 EncryptionProvider implementation.
 
-This module keeps the cryptographic implementation in common.security, away from
+This module keeps the cryptographic implementation in common.encryption, away from
 storage decorators. It uses envelope encryption:
 
 root key -> HKDF(org) -> org key -> AES-GCM wraps per-value data key
@@ -18,17 +18,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from common.errors import BackendError, ValidationError
-from common.factory.factory import Factory
-from common.security import (
+from common.encryption import (
     AuthenticationFailedError,
     CorruptedCiphertextError,
+    EncryptionContext,
+    EncryptionProducer,
+    EncryptionProvider,
     InvalidMagicError,
     KeyMismatchError,
-    SecurityContext,
-    SecurityProducer,
-    SecurityProvider,
 )
+from common.errors import BackendError, ValidationError
+from common.factory.factory import Factory
 
 try:
     from cryptography.exceptions import InvalidTag
@@ -177,7 +177,7 @@ class LocalKeyProvider:
         return key
 
 
-class LocalEnvelopeSecurityProvider(SecurityProvider):
+class LocalEnvelopeEncryptionProvider(EncryptionProvider):
     """ENC1 AES-256-GCM provider using a local encryption root key."""
 
     def __init__(
@@ -197,7 +197,7 @@ class LocalEnvelopeSecurityProvider(SecurityProvider):
         self,
         plaintext: bytes,
         *,
-        context: SecurityContext | None = None,
+        context: EncryptionContext | None = None,
         aad: bytes = b"",
     ) -> bytes:
         data_key = secrets.token_bytes(DATA_KEY_SIZE)
@@ -222,7 +222,7 @@ class LocalEnvelopeSecurityProvider(SecurityProvider):
         self,
         ciphertext: bytes,
         *,
-        context: SecurityContext | None = None,
+        context: EncryptionContext | None = None,
         aad: bytes = b"",
     ) -> bytes:
         if not ciphertext.startswith(ENVELOPE_MAGIC):
@@ -351,7 +351,7 @@ def _is_invalid_tag(exc: Exception) -> bool:
     return InvalidTag is not None and isinstance(exc, InvalidTag)
 
 
-def _effective_aad(context: SecurityContext | None, aad: bytes) -> bytes:
+def _effective_aad(context: EncryptionContext | None, aad: bytes) -> bytes:
     context_bytes = json.dumps(
         _context_payload(context),
         sort_keys=True,
@@ -360,7 +360,7 @@ def _effective_aad(context: SecurityContext | None, aad: bytes) -> bytes:
     return b"AMSEC-AAD1" + len(context_bytes).to_bytes(4, "big") + context_bytes + aad
 
 
-def _context_payload(context: SecurityContext | None) -> dict[str, Any]:
+def _context_payload(context: EncryptionContext | None) -> dict[str, Any]:
     scope = context.scope if context is not None else None
     metadata = context.metadata if context is not None else {}
     return {
@@ -376,7 +376,7 @@ def _context_payload(context: SecurityContext | None) -> dict[str, Any]:
     }
 
 
-def _org_id(context: SecurityContext | None) -> str:
+def _org_id(context: EncryptionContext | None) -> str:
     if context is None:
         return ""
     return context.scope.org
@@ -438,9 +438,9 @@ def _as_bool(value: Any, *, default: bool) -> bool:
     return bool(value)
 
 
-@SecurityProducer.register("local")
+@EncryptionProducer.register("local")
 def _build(config):
-    return LocalEnvelopeSecurityProvider(
+    return LocalEnvelopeEncryptionProvider(
         LocalKeyProvider(
             key_file=Factory.cfg_get(config, "key_file", _DEFAULT_KEY_FILE),
             key_hex=Factory.cfg_get(config, "key_hex", ""),

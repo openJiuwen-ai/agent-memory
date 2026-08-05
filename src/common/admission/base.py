@@ -1,4 +1,4 @@
-"""RateLimiter — 按调用方地址的请求限流（security.md §8.1）。
+"""准入控制契约：按调用方地址执行请求限流。
 
 限流挂在**认证之前**：认证本身就是要保护的资源。API_KEY 模式下每次
 ``authenticate`` 都跑一次 Argon2id verify（128 MiB × time_cost=4，约
@@ -26,8 +26,8 @@ from common.factory.factory import Factory
 class RateLimitProducer(Factory):
     """RateLimiter 的注册式工厂（与契约同处接口层）。
 
-    各实现在 ``rate_limit_impl`` 下以 ``@RateLimitProducer.register("<后端>")``
-    自注册，由 :func:`security.bootstrap.register_security` 统一触发。
+    各实现在 ``admission_impl`` 下以 ``@RateLimitProducer.register("<后端>")``
+    自注册，由 :func:`common.admission.bootstrap.register_admission` 统一触发。
     """
 
     TOP_NAME = "rate_limiter"
@@ -42,7 +42,7 @@ class RateLimiter(ABC):
 
         **返回 bool 而非抛异常**：限流是「事实陈述」，翻译成 HTTP 状态码是
         调用方（``auth_middleware``）的事。这与
-        :meth:`~security.key_store.PrincipalKeyStore.resolve` 返回 ``None``
+        :meth:`~common.credential_store.base.PrincipalKeyStore.resolve` 返回 ``None``
         同理，且不构成 fail-open——调用方拿到 ``False`` 唯一能做的就是拒绝。
 
         实现必须是**并发安全**的：``ThreadingHTTPServer`` 每请求一线程，

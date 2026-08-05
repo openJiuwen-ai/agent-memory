@@ -50,7 +50,7 @@ class PermissionDeniedError(AgentMemoryError):
 
 class AuthenticationError(AgentMemoryError):
     """
-    凭据缺失、格式非法或校验不通过：认证层（``src/security``）产出。
+    凭据缺失、格式非法或校验不通过：认证能力（``src/common/authentication``）产出。
 
     与 :class:`PermissionDeniedError` 的区别是「不知道你是谁」（401）对
     「知道你是谁但不许做」（403）——两者必须可分，否则 HTTP 层无法映射
@@ -63,7 +63,7 @@ class AuthenticationError(AgentMemoryError):
 
 class RateLimitedError(AgentMemoryError):
     """
-    调用方超出速率上限：安全层限流（``src/security/rate_limit.py``）产出。
+    调用方超出速率上限：准入控制（``src/common/admission/base.py``）产出。
 
     与 :class:`AuthenticationError` 必须可分（429 对 401）：限流发生在认证
     **之前**，此时还不知道凭据对不对——把它报成 401 会让「你被限流了」和

@@ -1,4 +1,4 @@
-"""DEV 模式的绑定地址校验（security.md §2.2.1）。
+"""DEV 认证模式的绑定地址校验（security.md §2.2.1）。
 
 DEV 模式恒返回 ROOT 身份，绑到非 localhost 就是把全权限暴露给整个网络。
 本模块是纯函数、抛异常，**不 ``sys.exit``**：exit 语义留在真正的进程入口

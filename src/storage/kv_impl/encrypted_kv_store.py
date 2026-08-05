@@ -1,8 +1,8 @@
 """EncryptedKVStore — KVStore 加密装饰器。
 
 该实现不包含具体加解密算法，只在 KV 边界统一构造
-``SecurityContext`` / AAD，并委托注入的 ``SecurityProvider``。真实算法位于
-``common.security.security_impl``；本类只负责把所有 KV value 的写前加密、读后解密
+``EncryptionContext`` / AAD，并委托注入的 ``EncryptionProvider``。真实算法位于
+``common.encryption.encryption_impl``；本类只负责把所有 KV value 的写前加密、读后解密
 收敛到同一个存储装饰器。
 """
 
@@ -11,8 +11,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from common.encryption import EncryptionContext, EncryptionProducer, EncryptionProvider
 from common.errors import BackendError, ValidationError
-from common.security import SecurityContext, SecurityProducer, SecurityProvider
 from common.type_def import MEMORY_KEY_PREFIX, MESSAGES_KEY_PREFIX, FilterExpr, Scope
 from storage.base import StoreType
 from storage.kv import KvProducer, KVStore
@@ -54,8 +54,8 @@ def _aad(scope: Scope, key: str, purpose: str) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def _security_context(scope: Scope, key: str, purpose: str) -> SecurityContext:
-    return SecurityContext(
+def _encryption_context(scope: Scope, key: str, purpose: str) -> EncryptionContext:
+    return EncryptionContext(
         scope=scope,
         purpose=purpose,
         metadata={
@@ -68,16 +68,16 @@ def _security_context(scope: Scope, key: str, purpose: str) -> SecurityContext:
 class EncryptedKVStore(KVStore):
     """对任意 KVStore 做透明加解密的装饰器。"""
 
-    def __init__(self, raw: KVStore, security: SecurityProvider) -> None:
+    def __init__(self, raw: KVStore, encryption: EncryptionProvider) -> None:
         self._raw = raw
-        self._security = security
+        self._encryption = encryption
 
     def store_type(self) -> StoreType:
         return StoreType.KV
 
     def health(self) -> None:
         self._raw.health()
-        self._security.health()
+        self._encryption.health()
 
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
         self._raw.insert(scope, key, self._encrypt(scope, key, value), ttl=ttl)
@@ -124,19 +124,19 @@ class EncryptedKVStore(KVStore):
 
     def _encrypt(self, scope: Scope, key: str, plaintext: bytes) -> bytes:
         purpose = _purpose_for_key(key)
-        context = _security_context(scope, key, purpose)
+        context = _encryption_context(scope, key, purpose)
         aad = _aad(scope, key, purpose)
         try:
-            return self._security.encrypt(plaintext, context=context, aad=aad)
+            return self._encryption.encrypt(plaintext, context=context, aad=aad)
         except Exception as exc:
             raise BackendError(f"kv encryption failed: key={key!r} purpose={purpose!r}") from exc
 
     def _decrypt(self, scope: Scope, key: str, ciphertext: bytes) -> bytes:
         purpose = _purpose_for_key(key)
-        context = _security_context(scope, key, purpose)
+        context = _encryption_context(scope, key, purpose)
         aad = _aad(scope, key, purpose)
         try:
-            return self._security.decrypt(ciphertext, context=context, aad=aad)
+            return self._encryption.decrypt(ciphertext, context=context, aad=aad)
         except Exception as exc:
             raise BackendError(f"kv decryption failed: key={key!r} purpose={purpose!r}") from exc
 
@@ -154,5 +154,5 @@ def _raw_kv_store(config: Any) -> KVStore:
 def _build(config):
     return EncryptedKVStore(
         raw=_raw_kv_store(config),
-        security=SecurityProducer.dep(config),
+        encryption=EncryptionProducer.dep(config),
     )

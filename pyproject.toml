@@ -42,9 +42,9 @@ mcp = [
     "mcp>=1.2",
     "pyyaml>=6",
 ]
-# 认证层（src/security）：API Key 的 Argon2id 哈希。标准库无 Argon2id；缺依赖时在
+# 认证能力（src/common/credential_store）：API Key 的 Argon2id 哈希。标准库无 Argon2id；缺依赖时在
 # 装配期抛 ValidationError，绝不降级为明文比对。
-# 静态加密所需的 cryptography 已在主依赖里（common.security 用）。
+# 静态加密所需的 cryptography 已在主依赖里（common.encryption 用）。
 security = [
     "argon2-cffi>=23.1",
 ]

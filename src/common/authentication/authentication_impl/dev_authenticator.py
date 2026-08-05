@@ -1,16 +1,16 @@
 """DEV 认证：无条件返回 ROOT（security.md §2.2.1）。
 
 **只用于本地开发。** 配套的 localhost 强制绑定在
-:func:`security.binding.check_dev_binding`，由 HTTP surface 在启动时调用——
+:func:`common.authentication.binding.check_dev_binding`，由 HTTP surface 在启动时调用——
 本类不知道服务器绑了哪个地址，也不该在一个可被单测 import 的类里 ``sys.exit``。
 """
 
 from __future__ import annotations
 
+from common.authentication.base import Authenticator, AuthProducer
+from common.authentication.types import AuthMode, Credentials
 from common.type_def.auth import AuthContext, Role
 from common.type_def.scope import Scope
-from security.authenticator import Authenticator, AuthProducer
-from security.types import AuthMode, Credentials
 
 
 class DevAuthenticator(Authenticator):
@@ -28,6 +28,9 @@ class DevAuthenticator(Authenticator):
 
     def mode(self) -> AuthMode:
         return AuthMode.DEV
+
+    def requires_concurrency_guard(self) -> bool:
+        return False
 
     def health(self) -> None:
         return None

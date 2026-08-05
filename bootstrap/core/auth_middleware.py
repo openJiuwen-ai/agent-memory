@@ -1,7 +1,7 @@
 """请求作用域的认证上下文——凭据提取 + ContextVar 建立/清理。
 
 各 surface（HTTP / MCP / CLI 直连）用同一条中间件：把本形态的凭据材料归一成
-:class:`~security.types.Credentials`，交给装配好的 ``Authenticator``，把产出的
+:class:`~common.authentication.types.Credentials`，交给装配好的 ``Authenticator``，把产出的
 ``AuthContext`` 挂进 ContextVar 供 ``handler.dispatch`` 读取。
 
 **本模块不决定认证策略**——模式（dev / trusted / api_key）由配置在装配期选定，
@@ -31,7 +31,7 @@ AuditEvent = import_module("common.type_def").AuditEvent
 _errors = import_module("common.errors")
 AuthenticationError = _errors.AuthenticationError
 RateLimitedError = _errors.RateLimitedError
-Credentials = import_module("security.types").Credentials
+Credentials = import_module("common.authentication.types").Credentials
 
 _BEARER = "bearer "
 
@@ -127,6 +127,7 @@ def _record_denial(audit, authenticator, credentials, action) -> None:
     if audit is None:
         return
     try:
+        mode = authenticator.mode()
         audit.record(
             AuditEvent(
                 actor=Scope(),
@@ -134,7 +135,7 @@ def _record_denial(audit, authenticator, credentials, action) -> None:
                 decision="deny",
                 layer="security",
                 detail={
-                    "mode": authenticator.mode().value,
+                    "mode": str(getattr(mode, "value", mode)),
                     "peer": credentials.peer_address,
                 },
             )

@@ -39,12 +39,10 @@ Kernel = _api_module.Kernel
 build_kernel = _api_module.build_kernel
 KernelConfig = import_module("config").Config
 Factory = import_module("common.factory.factory").Factory
-
-_security_module = import_module("security")
-AuthMode = _security_module.AuthMode
-AuthProducer = _security_module.AuthProducer
-RateLimitProducer = _security_module.RateLimitProducer
-register_security = _security_module.register_security
+AuthProducer = import_module("common.authentication.base").AuthProducer
+RateLimitProducer = import_module("common.admission.base").RateLimitProducer
+register_plugins = import_module("common.bootstrap").register_plugins
+ValidationError = import_module("common.errors").ValidationError
 
 _LOG = logging.getLogger(__name__)
 
@@ -80,7 +78,7 @@ class Server:
         return self.kernel.audit
 
     # ``rate_limiter`` 只在有网络对端的 surface（HTTP）传给中间件：进程内直连与
-    # MCP stdio 没有远端，限流无对象可分桶，见 :meth:`security.RateLimiter.allow`。
+    # MCP stdio 没有远端，限流无对象可分桶，见 ``common.admission.RateLimiter.allow``。
 
     @classmethod
     def build(cls, config: Config, spaces: Any = None) -> "Server":
@@ -95,7 +93,7 @@ class Server:
         """
         # 必须在 from_dict 之前：authenticator / key_store 两个顶层段名要先进
         # Factory.known_top_names()，否则配置解析期会把它们当未知段拒掉。
-        register_security()
+        register_plugins()
         kernel_config = KernelConfig.from_dict(config.settings.get("memory_api"))
         kernel = build_kernel(policies=config.policies or None, config=kernel_config)
         authenticator = _build_authenticator(kernel_config)
@@ -115,7 +113,7 @@ def _build_authenticator(kernel_config: Any):
 
     回落到 DEV（而非拒绝启动）是刻意的：不打断任何人的本地开发。第一期只是把
     「无认证」从**隐式且不可改**变成**显式、可切换、且非 localhost 时拒绝启动**
-    （DEV 的绑定 guard 见 :func:`security.check_dev_binding`）。
+    （DEV 的绑定 guard 见 ``common.authentication.check_dev_binding``）。
     """
     ctx = kernel_config.context(known_top_names=Factory.known_top_names())
     names = sorted(ctx.namespaces.get(AuthProducer.TOP_NAME, {}))
@@ -125,17 +123,17 @@ def _build_authenticator(kernel_config: Any):
             "生产部署须显式配置 authenticator.default.target 为 api_key 或 trusted。"
         )
         return AuthProducer.build("dev", {}, ctx)
-    # 与 ROOT_PARAMS 的引用惯例一致：具名实例，多个时取 "default"，否则取唯一那个。
-    name = "default" if "default" in names else names[0]
+    name = _select_configured_instance(AuthProducer.TOP_NAME, names)
     return AuthProducer.build_named(name, ctx)
 
 
 def _build_rate_limiter(kernel_config: Any, authenticator: Any):
-    """按配置的 ``rate_limiter`` 段装配限流器；无该段时按认证模式给默认。
+    """按配置的 ``rate_limiter`` 段装配限流器；无该段时按认证 capability 给默认。
 
-    **默认按模式分岔**（§8.1）：DEV 模式不限流，其余模式默认开 ``token_bucket``。
+    **默认按 capability 分岔**（§8.1）：仅限 loopback 的实现不限流，其余实现默认开
+    ``token_bucket``。
     理由是限流保护的具体对象——Argon2id verify——只在 API_KEY 模式下存在；DEV
-    模式已被强制绑定 localhost（:func:`security.check_dev_binding`），没有远端
+    模式已被强制绑定 localhost（``common.authentication.check_dev_binding``），没有远端
     攻击面，此时限流只会把本地压测和调试脚本卡住，是纯粹的开发阻碍。
 
     非 DEV 默认**开**而不是默认关：默认关等于「必须读过 §8.1 才知道要配」，
@@ -149,32 +147,42 @@ def _build_rate_limiter(kernel_config: Any, authenticator: Any):
     ctx = kernel_config.context(known_top_names=Factory.known_top_names())
     names = sorted(ctx.namespaces.get(RateLimitProducer.TOP_NAME, {}))
     if names:
-        name = "default" if "default" in names else names[0]
+        name = _select_configured_instance(RateLimitProducer.TOP_NAME, names)
         return RateLimitProducer.build_named(name, ctx)
 
-    if authenticator.mode() is AuthMode.DEV:
+    if authenticator.requires_loopback_binding():
         return RateLimitProducer.build("unlimited", {}, ctx)
     return RateLimitProducer.build("token_bucket", {}, ctx)
 
 
 def _build_argon2_guard(kernel_config: Any, authenticator: Any):
-    """进程级 Argon2 verify 并发上限（审计 P1-3）。
+    """认证重型校验的进程级并发上限（当前实现为 Argon2 guard）。
 
-    只装配到 **API_KEY** 模式：只有它每次 ``authenticate`` 跑 Argon2id verify
-    （128 MiB × time_cost=4）。TRUSTED 只做 header/HMAC/字典角色查询，不跑 Argon2，
-    装上 guard 只会让受信网关的高并发流量无端收到 429（审计验收 P2-guard）。
-    DEV 不跑 Argon2，亦不装。
+    是否装配由 ``Authenticator.requires_concurrency_guard`` 声明，不再按封闭枚举分支。
+    API_KEY 返回 True；TRUSTED/DEV 返回 False；第三方实现默认 True（fail closed）。
 
     上限由 ``argon2.max_concurrent`` 配置（默认 4，按 512 MiB / 128 MiB 算）。
     """
-    if authenticator.mode() is not AuthMode.API_KEY:
+    if not authenticator.requires_concurrency_guard():
         return None
     settings = (
         kernel_config.settings.get("argon2", {}) if hasattr(kernel_config, "settings") else {}
     )
     max_concurrent = int(settings.get("max_concurrent", 4)) if settings else 4
-    _guard_mod = import_module("security.concurrency_guard")
+    _guard_mod = import_module("common.admission.concurrency_guard")
     return _guard_mod.default_argon2_guard(max_concurrent=max_concurrent)
+
+
+def _select_configured_instance(top_name: str, names: list[str]) -> str:
+    """选定安全组件实例；多实例无 ``default`` 时拒绝歧义配置。"""
+    if "default" in names:
+        return "default"
+    if len(names) == 1:
+        return names[0]
+    raise ValidationError(
+        f"{top_name} 定义了多个具名实例 {names!r}，但未定义 'default'；"
+        "安全组件选择存在歧义，拒绝启动。"
+    )
 
 
 def default_spaces() -> Dict[str, Any]:

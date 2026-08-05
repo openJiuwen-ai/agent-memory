@@ -1,4 +1,4 @@
-"""SecurityProvider — 数据保护横切接口。
+"""EncryptionProvider — 字节级加密横切接口。
 
 安全能力不是无状态模型插件，不继承 :class:`common.base.Plugin`，但仍使用
 ``Factory`` 提供注册式装配。调用方以字节为边界调用本接口：
@@ -17,8 +17,8 @@ from ..type_def import Scope
 
 
 @dataclass(frozen=True)
-class SecurityContext:
-    """一次安全处理的上下文。
+class EncryptionContext:
+    """一次加密或解密处理的上下文。
 
     ``scope`` 用于表达租户/主体隔离边界，``purpose`` 用于区分调用场景
     （如 ``"memory_unit_content"``），``metadata`` 透传实现所需的非敏感标签。
@@ -29,21 +29,17 @@ class SecurityContext:
     metadata: dict[str, str] = field(default_factory=dict)
 
 
-class SecurityProducer(Factory):
-    """SecurityProvider 的注册式工厂。
+class EncryptionProducer(Factory):
+    """EncryptionProvider 的注册式工厂。
 
-    各实现在 ``security_impl`` 下以 ``@SecurityProducer.register("<名>")`` 自注册。
-    当前 ``security_impl`` 注册 ``local`` ENC1 AES-GCM 实现。
+    各实现在 ``encryption_impl`` 下以 ``@EncryptionProducer.register("<名>")`` 自注册。
+    当前 ``encryption_impl`` 注册 ``local`` ENC1 AES-GCM 实现。
     """
 
-    TOP_NAME = "security"
+    TOP_NAME = "encryption"
 
 
-class SecurityError(AgentMemoryError):
-    """所有安全横切处理异常的基类。"""
-
-
-class EncryptionError(SecurityError):
+class EncryptionError(AgentMemoryError):
     """加密或解密处理失败。"""
 
 
@@ -63,7 +59,7 @@ class KeyMismatchError(EncryptionError):
     """包裹的数据密钥无法用当前租户密钥解开。"""
 
 
-class SecurityProvider(ABC):
+class EncryptionProvider(ABC):
     """字节级数据保护能力。"""
 
     @abstractmethod
@@ -71,7 +67,7 @@ class SecurityProvider(ABC):
         self,
         plaintext: bytes,
         *,
-        context: SecurityContext | None = None,
+        context: EncryptionContext | None = None,
         aad: bytes = b"",
     ) -> bytes:
         """加密明文字节。
@@ -84,7 +80,7 @@ class SecurityProvider(ABC):
         self,
         ciphertext: bytes,
         *,
-        context: SecurityContext | None = None,
+        context: EncryptionContext | None = None,
         aad: bytes = b"",
     ) -> bytes:
         """解密密文字节并校验完整性。"""

@@ -10,12 +10,12 @@ from __future__ import annotations
 import hmac
 import logging
 
+from common.authentication.base import Authenticator, AuthProducer
+from common.authentication.types import AuthMode, Credentials
+from common.credential_store.base import KeyStoreProducer, PrincipalKeyStore
 from common.errors import AuthenticationError, ValidationError
 from common.type_def.auth import AuthContext
 from common.type_def.scope import Scope
-from security.authenticator import Authenticator, AuthProducer
-from security.key_store import KeyStoreProducer, PrincipalKeyStore
-from security.types import AuthMode, Credentials
 
 _LOG = logging.getLogger(__name__)
 
@@ -28,7 +28,6 @@ _LOG = logging.getLogger(__name__)
 _H_ORG = "x-org-id"
 _H_TYPE = "x-principal-type"
 _H_ID = "x-principal-id"
-
 _PRINCIPAL_TYPES = frozenset({"user", "agent"})
 
 _FAILED = "authentication failed"
@@ -65,10 +64,20 @@ class TrustedAuthenticator(Authenticator):
             # 未注册主体一律拒绝，不默认给 USER 放行——fail-closed。
             raise AuthenticationError(_FAILED)
 
-        return AuthContext(actor=actor, acting_user=actor.user, role=role)
+        return AuthContext(
+            actor=actor,
+            acting_user=actor.user,
+            role=role,
+        )
 
     def mode(self) -> AuthMode:
         return AuthMode.TRUSTED
+
+    def requires_loopback_binding(self) -> bool:
+        return False
+
+    def requires_concurrency_guard(self) -> bool:
+        return False
 
     def health(self) -> None:
         self._key_store.health()

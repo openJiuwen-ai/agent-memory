@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from security.rate_limit import RateLimiter, RateLimitProducer
+from common.admission.base import RateLimiter, RateLimitProducer
 
 
 class NoRateLimit(RateLimiter):

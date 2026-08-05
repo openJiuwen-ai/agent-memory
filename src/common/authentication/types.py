@@ -1,4 +1,4 @@
-"""安全层数据类型：认证模式与凭据材料（security.md §2.2）。
+"""认证数据类型：认证模式与凭据材料（security.md §2.2）。
 
 纯数据定义，不依赖本层其他文件——与 ``control/types.py`` 的地位一致。
 """
@@ -28,7 +28,7 @@ class Credentials:
     """一次请求携带的原始凭据材料，由各 surface（HTTP / MCP / CLI）归一后传入。
 
     认证层不认识 HTTP：若直接把 ``http.client.HTTPMessage`` 传进
-    :class:`~security.authenticator.Authenticator`，实现里就会出现传输层耦合，
+    :class:`~common.authentication.base.Authenticator`，实现里就会出现传输层耦合，
     MCP / CLI 无法复用。这里只保留认证需要的三样东西。
 
     ``headers`` 仍保留，因为 TRUSTED 模式的语义就是「读网关注入的 header」

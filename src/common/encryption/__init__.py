@@ -1,25 +1,23 @@
-"""安全横切接口：加密/解密等数据保护能力。"""
+"""字节级加密能力的抽象接口。"""
 
-from .security import (
+from .base import (
     AuthenticationFailedError,
     CorruptedCiphertextError,
+    EncryptionContext,
     EncryptionError,
+    EncryptionProducer,
+    EncryptionProvider,
     InvalidMagicError,
     KeyMismatchError,
-    SecurityContext,
-    SecurityError,
-    SecurityProducer,
-    SecurityProvider,
 )
 
 __all__ = [
     "AuthenticationFailedError",
     "CorruptedCiphertextError",
+    "EncryptionContext",
     "EncryptionError",
+    "EncryptionProducer",
+    "EncryptionProvider",
     "InvalidMagicError",
     "KeyMismatchError",
-    "SecurityContext",
-    "SecurityError",
-    "SecurityProducer",
-    "SecurityProvider",
 ]

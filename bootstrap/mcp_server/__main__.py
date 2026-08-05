@@ -47,9 +47,8 @@ _auth_middleware = import_module("auth_middleware")
 authenticated = _auth_middleware.authenticated
 AuthenticationError = import_module("common.errors").AuthenticationError
 ValidationError = import_module("common.errors").ValidationError
-Credentials = import_module("security.types").Credentials
-check_dev_binding = import_module("security").check_dev_binding
-AuthMode = import_module("security.types").AuthMode
+Credentials = import_module("common.authentication.types").Credentials
+check_dev_binding = import_module("common.authentication.binding").check_dev_binding
 
 try:
     FastMCP = import_module("mcp.server.fastmcp").FastMCP
@@ -168,7 +167,7 @@ def main() -> int:
         # MCP 尚无凭据通道（见模块 docstring）：DEV 模式下空凭据即 ROOT，绑非
         # loopback 等于把 ROOT 级记忆工具暴露给整个网络。与 HTTP surface 同一道
         # 闸（审计 P1-4：此前 MCP HTTP 启动没调 check_dev_binding）。
-        if _SRV.authenticator.mode() is AuthMode.DEV:
+        if _SRV.authenticator.requires_loopback_binding():
             try:
                 check_dev_binding(os.environ.get("MCP_HOST", "127.0.0.1"))
             except ValidationError as validation_error:

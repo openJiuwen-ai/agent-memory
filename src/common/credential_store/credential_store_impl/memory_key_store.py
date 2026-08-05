@@ -1,4 +1,4 @@
-"""进程内 :class:`~security.key_store.PrincipalKeyStore`，Argon2id 校验。
+"""进程内 :class:`~common.credential_store.base.PrincipalKeyStore`，Argon2id 校验。
 
 **已知限制（两条，均在归档文档「已知遗留」列明）**：
 
@@ -19,16 +19,16 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
-from common.errors import PermissionDeniedError, ValidationError
-from common.type_def.auth import AuthContext, Role
-from common.type_def.scope import Scope
-from security.key_store import (
+from common.credential_store.base import (
     KeyStoreProducer,
     PrincipalKeyStore,
     fingerprint,
     generate_api_key,
     key_prefix,
 )
+from common.errors import PermissionDeniedError, ValidationError
+from common.type_def.auth import AuthContext, Role
+from common.type_def.scope import Scope
 
 # Argon2id 参数（OWASP 2024+，security.md §2.3.1）。
 # 显式指定全部五项，不用库默认——argon2-cffi 的默认 memory_cost 是 64 MiB，
@@ -57,7 +57,7 @@ class InMemoryKeyStore(PrincipalKeyStore):
     """进程内注册表 + Argon2id 校验。
 
     ``hasher`` 与异常类型由 ``_build`` 注入：argon2-cffi 是可选依赖，模块顶层
-    import 会让缺依赖的环境连 DEV 模式都起不来（``register_security()`` 无差别
+    import 会让缺依赖的环境连 DEV 模式都起不来（``register_plugins()`` 无差别
     import 全部实现包）。见 ``_build``。
     """
 
@@ -222,7 +222,7 @@ class InMemoryKeyStore(PrincipalKeyStore):
 def _build(config):
     """装配 InMemoryKeyStore。
 
-    argon2-cffi 的 import 在**这里**而非模块顶层：``register_security()`` 会
+    argon2-cffi 的 import 在**这里**而非模块顶层：``register_plugins()`` 会
     无差别 import 整个 ``key_store_impl`` 包，顶层 import 会让缺依赖的环境连
     DEV 模式都起不来。挪进 builder 后，注册总能成功，只有真正装配本实现时才
     要求依赖，且失败是装配期的清晰 ``ValidationError``。

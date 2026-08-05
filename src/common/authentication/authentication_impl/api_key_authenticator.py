@@ -9,12 +9,12 @@ from __future__ import annotations
 import hmac
 import logging
 
+from common.authentication.base import Authenticator, AuthProducer
+from common.authentication.types import AuthMode, Credentials
+from common.credential_store.base import KeyStoreProducer, PrincipalKeyStore
 from common.errors import AuthenticationError
 from common.type_def.auth import AuthContext, Role
 from common.type_def.scope import Scope
-from security.authenticator import Authenticator, AuthProducer
-from security.key_store import KeyStoreProducer, PrincipalKeyStore
-from security.types import AuthMode, Credentials
 
 _LOG = logging.getLogger(__name__)
 
@@ -51,6 +51,9 @@ class ApiKeyAuthenticator(Authenticator):
 
     def mode(self) -> AuthMode:
         return AuthMode.API_KEY
+
+    def requires_loopback_binding(self) -> bool:
+        return False
 
     def health(self) -> None:
         self._key_store.health()
