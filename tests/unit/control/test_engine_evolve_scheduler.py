@@ -7,7 +7,7 @@ from construction import EvolveMode, EvolveResult, Evolver
 from construction.base import OperatorType
 from api.memory_api_impl import build_kernel
 from control.engine_impl.in_memory_engine import InMemoryEngine
-from control.types import Channel, JobStatus
+from control.types import BatchWriteItem, Channel, JobStatus
 from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 
 
@@ -48,6 +48,37 @@ def test_engine_evolve_only_submits_scheduler_job() -> None:
 
     assert job_id == "job-1"
     assert scheduler.calls == [(scope, EvolveMode.CONSOLIDATE, Channel.HOT)]
+
+
+def test_in_memory_batch_write_collects_unexpected_error_and_continues() -> None:
+    scope = Scope(user="u1")
+    engine = InMemoryEngine(
+        ingestor=None,
+        index_builder=None,
+        retriever=None,
+        kv=InMemoryKVStore(),
+        scheduler=None,
+        evolver=None,
+        lifecycle=None,
+    )
+    attempted: list[str] = []
+
+    async def _write(content, *_args, **_kwargs):
+        attempted.append(content)
+        if content == "bad":
+            raise RuntimeError("unavailable dependency")
+        return []
+
+    engine.write = _write  # type: ignore[method-assign]
+    result = asyncio.run(
+        engine.batch_write(
+            [BatchWriteItem(content="bad", scope=scope), BatchWriteItem(content="good", scope=scope)]
+        )
+    )
+
+    assert attempted == ["bad", "good"]
+    assert result.outcomes[0].error_type == "InternalError"
+    assert not result.outcomes[1].error
 
 
 def test_api_evolve_returns_completed_scheduler_job_with_evolve_result_detail() -> None:

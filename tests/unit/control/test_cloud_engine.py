@@ -322,6 +322,25 @@ def test_cloud_engine_batch_write_preserves_order_and_routes_each_item() -> None
     assert result.outcomes[1].units[0].metadata["pipeline"] == "coding"
 
 
+def test_cloud_engine_batch_write_collects_unexpected_error_and_skips_after_failure() -> None:
+    engine, _ = _engine()
+    scope = Scope(org="acme", user="alice")
+
+    async def _raise_unexpected(*_args, **_kwargs):
+        raise RuntimeError("unavailable dependency")
+
+    engine.write = _raise_unexpected  # type: ignore[method-assign]
+    result = asyncio.run(
+        engine.batch_write(
+            [BatchWriteItem(content="first", scope=scope), BatchWriteItem(content="second", scope=scope)],
+            continue_on_error=False,
+        )
+    )
+
+    assert [outcome.error_type for outcome in result.outcomes] == ["InternalError", "Skipped"]
+    assert result.outcomes[0].error == "unexpected batch write failure"
+
+
 def test_cloud_engine_recall_routes_by_message_type_extension() -> None:
     engine, records = _engine()
     scope = Scope(org="acme", user="alice")
