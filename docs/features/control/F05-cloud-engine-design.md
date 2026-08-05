@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-27 |
-| 影响范围 | `src/control/engine_impl/cloud_engine.py`、`src/control/engine_impl/__init__.py`、`src/control/pipeline.py`、`src/construction/`、`src/common/security/`、`src/storage/kv_impl/`、`docs/specs/S03-control.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md` |
+| 影响范围 | `src/control/engine_impl/cloud_engine.py`、`src/control/engine_impl/__init__.py`、`src/control/pipeline.py`、`src/construction/`、`src/common/encryption/`、`src/storage/kv_impl/`、`docs/specs/S03-control.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md` |
 | 测试基线 | 已新增 `tests/unit/control/test_cloud_engine.py`；本地无 pytest，使用 `runpy` 显式调用测试函数通过 |
 
 ## 背景
@@ -188,16 +188,16 @@ CloudEngine
 只能看到 `ENC1` 密文字节；若加密关闭，装配层直接使用原始 KVStore。系统没有“空实现
 encryptor”，避免配置声称启用加密但实际透传明文。
 
-### 决策 6：安全接口放 `common/security`，KV 装饰器放 `storage/kv_impl`
+### 决策 6：安全接口放 `common/encryption`，KV 装饰器放 `storage/kv_impl`
 
 云侧安全能力拆成两层：
 
 | 层 | 位置 | 职责 |
 |---|---|---|
-| 安全接口与加密实现 | `src/common/security/` | `SecurityProvider`、`SecurityContext`、本地密钥实现、`ENC1` envelope、加密错误 |
+| 安全接口与加密实现 | `src/common/encryption/` | `EncryptionProvider`、`EncryptionContext`、本地密钥实现、`ENC1` envelope、加密错误 |
 | KV 加密装饰器 | `src/storage/kv_impl/encrypted_kv_store.py` | 实现 `KVStore`，写前加密、读后解密、明文兼容、fail-closed |
 
-`SecurityContext` 与显式 AAD 至少绑定：
+`EncryptionContext` 与显式 AAD 至少绑定：
 
 - `org`
 - `space`
@@ -289,7 +289,7 @@ SpacePolicy 中的 `require_space`、`pipeline_profiles`、`index_profiles`、
 
 拒绝直接修改 `InMemoryEngine` 承载云侧能力。这样会把本地最小实现和云侧强隔离、安全合规、profile-aware evolve 绑在一起，破坏旧路径的简单性。
 
-拒绝让 `CloudEngine` 直接调用 `SecurityProvider.encrypt/decrypt`。加密是所有 KV 路径的
+拒绝让 `CloudEngine` 直接调用 `EncryptionProvider.encrypt/decrypt`。加密是所有 KV 路径的
 横切能力，应该由 `EncryptedKVStore` 统一保证，否则治理、生命周期、evolver 上下文等路径
 容易漏加密。
 
@@ -330,7 +330,7 @@ SpacePolicy 中的 `require_space`、`pipeline_profiles`、`index_profiles`、
 - `Scope.space`、storage scope key、API payload、PermissionManager owner-cover、CloudEngine
   按完整 Scope 的 get/update/delete/lifecycle/index 清理已落地；仍需补不同 `space` 下相同
   content 的端到端 recall 集成测试。
-- `common/security` 接口、`local` SecurityProvider 和 `EncryptedKVStore` wrapper 已落地；CloudEngine 仍需补开启 `EncryptedKVStore` 后的端到端静态加密集成测试。
+- `common/encryption` 接口、`local` EncryptionProvider 和 `EncryptedKVStore` wrapper 已落地；CloudEngine 仍需补开启 `EncryptedKVStore` 后的端到端静态加密集成测试。
 - 现有 `Scheduler` 接口没有 job context；当前 `CloudEngine.evolve(scope, mode)` 仍委托注入的 Scheduler，profile-aware evolve 需要新增 cloud executor 或扩展 Scheduler 规约。
 - 索引层仍可能保存明文摘要、文本、向量或图节点属性。KV 加密只能保护真源与 KV value，不等于全链路加密。
 - `message_type` 是否升为公开 API 字段，需要在 `S02-memory-api` 中单独固化；第一阶段可以通过 metadata 兼容落地。

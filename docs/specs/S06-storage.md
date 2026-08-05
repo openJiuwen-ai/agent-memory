@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/storage/ |
-| 最近一次修订日期 | 2026-07-30 |
+| 最近一次修订日期 | 2026-08-05 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md |
 ## 范围 / 边界
 
@@ -40,7 +40,7 @@
     原生类型，不统一字符串化；不同类型之间不做隐式比较转换。
 11. **所有 Store 必须实现 `store_type()` 和 `health()`**：继承自 `BaseStore`。
 12. **多租户隔离默认依赖逻辑 scope 边界**：当前不要求物理分库/分 collection，但要求同一逻辑 key/id 在不同 scope 下严格命名空间隔离。
-13. **EncryptedKVStore 只装饰 KV，不实现算法**：写前加密、读后解密通过注入的 `SecurityProvider` 完成；`list` 在解密后执行 MemoryUnit 过滤，不能把过滤下推到密文 raw KV。
+13. **EncryptedKVStore 只装饰 KV，不实现算法**：写前加密、读后解密通过注入的 `EncryptionProvider` 完成；`list` 在解密后执行 MemoryUnit 过滤，不能把过滤下推到密文 raw KV。
 14. **space 是 scope 的硬分区维度**：`scope_segments(scope)` 使用 `org/space/user/agent/session` 五段；`scope_dims(scope)` 在 `org` 非空时即使 `space==""` 也下推 `space == ""`，避免空 space 查询跨到非空 space。
 15. **标识唯一性分层**：非空 Space id 在 Space 资源注册表中全局唯一；MemoryUnit 与各 Store 记录 id 只要求在完整 Scope 内唯一。
 
@@ -80,8 +80,8 @@ class BaseStore(ABC):
 
 | 方法 | 行为 |
 |------|------|
-| `insert` / `update` | 构造 `SecurityContext(scope, purpose, metadata)` 与 AAD，调用 `SecurityProvider.encrypt` 后写入 raw KV |
-| `get` / `scan` | 从 raw KV 读取密文字节，调用 `SecurityProvider.decrypt` 后返回明文字节；任一解密失败抛 `BackendError`，不跳过坏数据 |
+| `insert` / `update` | 构造 `EncryptionContext(scope, purpose, metadata)` 与 AAD，调用 `EncryptionProvider.encrypt` 后写入 raw KV |
+| `get` / `scan` | 从 raw KV 读取密文字节，调用 `EncryptionProvider.decrypt` 后返回明文字节；任一解密失败抛 `BackendError`，不跳过坏数据 |
 | `list` | 扫描目标 Scope 的 `/memory/` 密文并逐条解密，再执行统一过滤、计数、排序和分页；不调用 raw KV 的 `list` |
 | `exists` / `delete` / `scopes` | 直接委托 raw KV，不读取或改写 value |
 
@@ -90,7 +90,7 @@ class BaseStore(ABC):
 | 参数 | 语义 |
 |------|------|
 | `raw_kv_store` | 必填，指向被装饰的 raw KVStore 具名实例或内联配置；不得指向当前 encrypted 实例自身 |
-| `security` | 必填，指向 `common.security.SecurityProvider` 具名实例或内联配置 |
+| `encryption` | 必填，指向 `common.encryption.EncryptionProvider` 具名实例或内联配置 |
 
 AAD 版本当前为 `1`，绑定 `scope(org/space/user/agent/session)`、KV `key` 与 `purpose`。`purpose` 由 key 前缀推导：`/memory/` 为 `memory_unit`，`/messages/` 为 `raw_message`，其他为 `kv_value`。
 

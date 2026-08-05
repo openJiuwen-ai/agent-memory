@@ -5,22 +5,17 @@
 **每个子模块的 `AGENTS.md` 文件开头都链接了对应的 spec 规约文档**，便于快速跳转查看详细接口规范。
 
 
-### security/ - 横切安全层
-
-认证（`Authenticator` 三模式：dev / trusted / api_key）+ `PrincipalKeyStore`（Argon2id 校验的 API Key 注册表）+ 速率限制（`RateLimiter`）+ DEV 模式绑定 guard（`check_dev_binding`）。`AuthContext` 落在 `common/type_def/auth.py`（横切结构）。不属模型能力插件，单独成一类横切组件；不进 `build_kernel`，由 `bootstrap` 的 surface 在请求作用域装配。
-
 ## 模块地图
 
 ```
 src/
 ├── api/            # 接口层：统一 Core API（write/recall/get/update/delete/evolve/admin），形态无关
-├── common/         # 跨层共享插件（Tokenizer/Chunker/Embedder/FeatureExtractor/LLM/Normalizer/Reranker）+ type_def/
+├── common/         # 跨层共享插件、认证/准入/凭据/加密/审计能力 + type_def/
 ├── config/         # 配置加载与校验（待实现）
 ├── construction/   # 构建层：落盘 + 多形式索引构建 + 自演进闭环
 ├── control/        # 编排层：MemoryEngine 跨层编排中枢 + Scheduler/Permission/Policy/Governance/Space
 ├── ingest/         # 接入层：多模态 → 文本投影 + MemoryUnit，不落盘
 ├── retrieval/      # 检索层：scope 过滤 → 多路召回 → 融合重排 → 渐进式披露
-├── security/       # 横切安全层：认证（dev/trusted/api_key）+ Argon2id key 注册表 + 速率限制 + DEV 绑定 guard
 └── storage/        # 存储层：统一 CRUD + search，scope 原生隔离（vector/graph/fulltext/kv/fs/fusion）
 ```
 
@@ -67,7 +62,9 @@ src/
 
 ### common/ — 共享插件 + 类型
 
-七个无状态插件协议（构建侧与检索侧必须共用同一实例）。`type_def/` 定义跨层数据类型：`MemoryUnit`（原子载体）、`Scope`（隔离模型）、`FilterClause`、`AuditEvent` 等。`errors.py` 统一异常体系。
+共享插件协议与横切能力均采用 `base.py + *_impl + Producer`：认证、凭据存储、准入控制、
+加密与审计由 YAML 选择已注册 target。`type_def/` 定义 `MemoryUnit`、`Scope`、
+`AuthContext`、`AuditEvent` 等跨层类型，`errors.py` 统一异常体系。
 
 ## 架构铁律
 

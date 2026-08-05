@@ -5,14 +5,14 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-27 |
-| 影响范围 | `src/common/security/`、`src/storage/kv_impl/`、`src/control/engine_impl/`、`docs/specs/S07-common.md`、`docs/specs/S06-storage.md` |
-| 测试基线 | `local` SecurityProvider 直接行为校验通过，`EncryptedKVStore` 单测函数直接执行通过；当前环境缺少 pytest/ruff runner |
+| 影响范围 | `src/common/encryption/`、`src/storage/kv_impl/`、`src/control/engine_impl/`、`docs/specs/S07-common.md`、`docs/specs/S06-storage.md` |
+| 测试基线 | `local` EncryptionProvider 直接行为校验通过，`EncryptedKVStore` 单测函数直接执行通过；当前环境缺少 pytest/ruff runner |
 
-本文由原 `docs/security/security.md` 迁入 common 特性归档，作为认证、授权、隔离、加密与审计的安全设计基线。后续 `common/security` 接口、`EncryptedKVStore`、`cloud_engine` 读写编排与安全配置均以本文为设计入口。
+本文由原 `docs/security/security.md` 迁入 common 特性归档，作为认证、授权、隔离、加密与审计的安全设计基线。后续 `common/encryption` 接口、`EncryptedKVStore`、`cloud_engine` 读写编排与安全配置均以本文为设计入口。
 
-当前落地状态（2026-07-27）：`common/security` 接口已提供 `SecurityProvider` /
-`SecurityProducer`，`storage/kv_impl/encrypted_kv_store.py` 已提供 KV 加密装饰器；
-`security_impl/local_envelope_security_provider.py` 已提供 `local` ENC1 AES-GCM
+当前落地状态（2026-07-27）：`common/encryption` 接口已提供 `EncryptionProvider` /
+`EncryptionProducer`，`storage/kv_impl/encrypted_kv_store.py` 已提供 KV 加密装饰器；
+`encryption_impl/local_envelope.py` 已提供 `local` ENC1 AES-GCM
 真实加解密 provider。KMS / Vault provider 仍未实现。
 
 ---
@@ -119,7 +119,7 @@ if auth_mode == AuthMode.DEV:
 > `Scope(org="*")`。`SQLitePermissionManager.check` 的第一条规则是
 > `actor == Scope() → True`（platform admin 全局放行），而 `org="*"` 会先撞上
 > 「跨 org 一律拒绝」规则——用 `org="*"` 的 ROOT 反而寸步难行。
-> 见 `src/security/authenticator_impl/dev_authenticator.py`。
+> 见 `src/common/authentication/authentication_impl/dev_authenticator.py`。
 
 **约束**：DEV 模式只允许监听 localhost。启动时如果检测到非 localhost 绑定，应当 `sys.exit(1)` 并打印错误消息。**注意覆盖容器化场景下 `0.0.0.0` 这种最危险的情况**：
 
@@ -149,10 +149,10 @@ def enforce_dev_localhost_binding(bind_host):
 
 > DEV 模式唯一正确的用途：本地开发、单机调试。**永远不要**在非 localhost 上 DEV 模式运行。容器化场景下，即使绑了 `127.0.0.1`，也要保证 Docker/K8s 的网络配置不会把端口转发出去——这一层 guard 无法替你检查。生产部署必须显式配 `auth_mode: api_key` 或 `trusted`。
 
-> **主干实现注记**（F01）：主干把这段拆成两半——`security.binding.check_dev_binding(hosts)`
+> **主干实现注记**（F01）：主干把这段拆成两半——`common.authentication.binding.check_dev_binding(hosts)`
 > 是**纯函数**，非 localhost 抛 `ValidationError`，容器场景走 `logging.warning`；
 > `sys.exit(1)` 与 stderr 上的 `FATAL:` 留在 `bootstrap/http_server/__main__.py:main`。
-> 这样 guard 本身可被单测直接断言（`tests/unit/security/test_binding.py`），
+> 这样 guard 本身可被单测直接断言（`tests/unit/common/authentication/test_binding.py`），
 > 而不必在测试里捕获 `SystemExit`。
 
 #### 2.2.2 TRUSTED 模式
@@ -219,7 +219,7 @@ if auth_mode == AuthMode.API_KEY:
 > 成 **bytes** 再比。str 版本在参数含非 ASCII 字符时抛 `TypeError`，那会让一次
 > 认证失败变成 500 而不是 401——把「凭据错误」暴露成「服务器错误」，
 > 且绕过了统一的失败审计路径。见
-> `src/security/authenticator_impl/api_key_authenticator.py`。
+> `src/common/authentication/authentication_impl/api_key_authenticator.py`。
 
 ### 2.3 API Key 系统
 
@@ -902,7 +902,7 @@ EFK长度(2B) | KeyIV长度(2B) | DataIV长度(2B) |         ← 12B 定长头
 密文自描述——头里记录 provider 类型，解密时按头里的 provider 类型走对应路径。
 
 > **实现注记（主干与本节的偏离）**：信封实现在
-> `src/common/security/security_impl/local_envelope_security_provider.py`，头是
+> `src/common/encryption/encryption_impl/local_envelope.py`，头是
 > **11 字节**（`!4sBBHHH`），比下方代码块里的 `HEADER_SIZE = 12` 少一字节——
 > `4+1+1+2+2+2 = 11`，12 是把 struct 的对齐算进去了。字段构成与本节一致。
 >
@@ -910,7 +910,7 @@ EFK长度(2B) | KeyIV长度(2B) | DataIV长度(2B) |         ← 12B 定长头
 > 密钥后所有历史密文立刻不可解——只能停机全量重加密或双写。补法是在头里加一个
 > `KeyIdLen(1B)` + 变长体最前面一段 `key_id`，轮换即退化成一次配置文件编辑
 > （keyring 保留旧 key、`current_key_id` 指向新 key）。这是信封格式的改动，属于
-> `common/security/` 的面，记在
+> `common/encryption/` 的面，记在
 > [storage/F02 已知遗留](../storage/F02-encrypted-storage.md)。
 
 ```python
@@ -1030,7 +1030,7 @@ async def decrypt(self, org_id: str, raw: bytes) -> bytes:
 ```
 
 > **实现注记（主干把它做成了开关，且落在 provider 上）**：
-> `LocalEnvelopeSecurityProvider` 有 `allow_plaintext` 参数（默认 `True`，即本节
+> `LocalEnvelopeEncryptionProvider` 有 `allow_plaintext` 参数（默认 `True`，即本节
 > 描述的行为）。加个开关的理由是这条兼容规则在两个部署阶段的正确答案相反：
 >
 > - **迁移期**必须宽松。加密层上线时，库里全是加密前写的明文；一律拒绝就等于
@@ -1083,9 +1083,9 @@ class KeyProvider(ABC):
 ```
 
 > **实现注记（主干与本节的偏离）**：主干没有独立的 `KeyProvider` 顶层抽象——
-> 对外的策略接口是 `common.security.SecurityProvider`
+> 对外的策略接口是 `common.encryption.EncryptionProvider`
 > （`encrypt(plaintext, *, context, aad)` / `decrypt(...)` / `health()`），密钥托管
-> 方式是它的实现细节（`LocalEnvelopeSecurityProvider` 内部持有一个
+> 方式是它的实现细节（`LocalEnvelopeEncryptionProvider` 内部持有一个
 > `LocalKeyProvider` 做 HKDF 派生与 data key 包装）。两处具体偏离：
 >
 > 1. **接口是同步的，不是 `async def`**。`KVStore` / `FSStore` 的方法全是同步的
@@ -1095,7 +1095,7 @@ class KeyProvider(ABC):
 >    也就是说，在真实的 ASGI 部署下必炸。要么整个存储层改异步（远超本期范围），
 >    要么 provider 同步。选后者。远程 provider（Vault/KMS）用同步 HTTP 客户端实现，
 >    这是它们的库都支持的形态。
-> 2. **`get_encryption_root_key()` 不在对外接口上**。`SecurityProvider` 只暴露
+> 2. **`get_encryption_root_key()` 不在对外接口上**。`EncryptionProvider` 只暴露
 >    `encrypt` / `decrypt` / `health`，根密钥不跨接口边界。这是收紧不是缺失：把根
 >    密钥交出接口边界，就等于要求每个调用方都正确处理它的生命周期（不落日志、
 >    不进异常、用完清零）——而 KMS/HSM 类 provider **根本交不出来**，根密钥永远
@@ -1300,7 +1300,7 @@ FileEncryptor.decrypt(data, org_id)      ← ★ 解密
 后端的原始行为运行。
 
 ```yaml
-security:
+encryption:
   default:
     target: local
     params:

@@ -64,11 +64,11 @@
 
 8. **加密装饰器只做装饰，不做算法**
    `encrypted` KV / FS target 必须显式包装一个 raw Store，并调用
-   `common.security.SecurityProvider` 做加解密；KV 的 `list` 必须在解密后执行
+   `common.encryption.EncryptionProvider` 做加解密；KV 的 `list` 必须在解密后执行
    MemoryUnit 过滤，不能把过滤下推到密文 raw KV。真实加密算法不放在 storage 层。
 
 9. **加密装饰器的写路径永远加密**
-   兼容明文读（迁移期读加密上线前写入的老数据）由 `security` 组件的
+   兼容明文读（迁移期读加密上线前写入的老数据）由 `encryption` 组件的
    `allow_plaintext` 参数控制，且**只影响读**。它若顺带放松了写，迁移期写进去的
    数据会永远是明文，而调用方看不出任何区别。
 
@@ -77,8 +77,8 @@
 `kv_impl/encrypted_kv_store.py` 与 `fs_impl/encrypted_fs_store.py` 是**装饰器**：
 包住任意一个同类 Store，写前加密、读后解密，对上仍是一个普通 `KVStore` / `FSStore`。
 
-- **依赖方向是 `storage → common.security`（单向）**。密码学一行都不在 storage 里，
-  全在 `common.security.security_impl`；这两个文件只构造 `SecurityContext` / AAD 并转发。
+- **依赖方向是 `storage → common.encryption`（单向）**。密码学一行都不在 storage 里，
+  全在 `common.encryption.encryption_impl`；这两个文件只构造 `EncryptionContext` / AAD 并转发。
   反向依赖不存在，security 不认识 Store。
 - **KV 只加密 `value`**。`key` 明文是必须的（加密它就没法 `list(prefix=...)`、
   没法点查）；`ttl` 明文是必须的（它是后端的原生能力，加密它等于放弃过期功能）。
@@ -99,14 +99,14 @@
 - 文件系统存储（FSStore）
 - 统一 CRUD 动词
 - scope 原生隔离
-- 静态加密的**接线**（两个装饰器 + 它们的注册），密码学本身归 `security`
+- 静态加密的**接线**（两个装饰器 + 它们的注册），密码学本身归 `encryption`
 
 **不管**：
 - 鉴权（归 `api`）
 - 检索编排（归 `retrieval`）
 - 索引构建逻辑（归 `construction`）
 - 具体后端选型决策（由装配层配置）
-- 信封格式、密钥派生与包装、AES-GCM/HKDF（归 `common/security/`）
+- 信封格式、密钥派生与包装、AES-GCM/HKDF（归 `common/encryption/`）
 
 ## 本地约束
 
