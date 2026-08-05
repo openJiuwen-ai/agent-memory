@@ -210,6 +210,15 @@ class InMemoryKeyStore(PrincipalKeyStore):
             else:
                 self._roles.pop(key, None)
 
+    def is_revoked(self, credential_id: str) -> bool:
+        # credential_id 即 issue 时算的 key 指纹；空串（未走可撤销凭据的认证路径）
+        # 直接返回 False，不查表。
+        if not credential_id:
+            return False
+        with self._lock:
+            record = self._records.get(credential_id)
+            return record is not None and record.revoked
+
     def get_role(self, actor: Scope) -> Role | None:
         with self._lock:
             return self._roles.get(self._role_key(actor))

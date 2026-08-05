@@ -61,6 +61,17 @@ class KeyProvider(ABC):
         """当前用于**加密**的密钥标识。解密按密文自带的 ref 走，不用这个。"""
 
     @abstractmethod
+    def rotate(self) -> KeyRef:
+        """轮换到新一代活动密钥，返回新的 :class:`KeyRef`（F05 §KeyProvider）。
+
+        轮换后 :meth:`active_key` 与新 :meth:`wrap` 都落到新 epoch；旧 epoch 密文仍按
+        自带 ref 解开，前提是实现保留了历史 epoch 的验证材料。能否安全轮换是
+        KeyProvider 的契约能力，而不只是 ``active_key`` 之外的一个可选项--只有 epoch
+        字段、没有轮换入口的实现不满足 F05。实现必须真正推进 epoch（或更换 key_id），
+        不得永远抛错冒充 fail-closed。
+        """
+
+    @abstractmethod
     def wrap(self, data_key: bytes, *, purpose: str, org: str) -> WrappedKey:
         """用当前活动密钥包裹一把数据密钥。
 

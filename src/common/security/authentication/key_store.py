@@ -98,6 +98,20 @@ class PrincipalKeyStore(ABC):
     def revoke(self, key_fp: str) -> None:
         """按指纹撤销一把 key（幂等）。撤销后 :meth:`resolve` 立即不再命中。"""
 
+    def is_revoked(self, credential_id: str) -> bool:
+        """凭据是否已撤销（供 PEP 在线复核缓存的 AuthContext，F05 §认证不变量 6）。
+
+        ``credential_id`` 即 :meth:`resolve` 写进 ``AuthContext`` 的指纹。撤销后返回
+        ``True``；未撤销或本注册表不认识该指纹返回 ``False``。
+
+        非 abstract：支持撤销的后端（如 :class:`~...memory_key_store.InMemoryKeyStore`）
+        覆盖之；不跟踪撤销状态的后端继承本默认实现，在被查询时 fail-closed 抛错，
+        而不是静默返回「未撤销」把撤销后凭据放行。``ApiKeyAuthenticator`` 在认证期
+        校验本方法已被覆盖，第三方缺实现会在签发上下文前就失败，而非首个授权请求
+        500。
+        """
+        raise NotImplementedError(f"{type(self).__name__} 不支持凭据撤销查询")
+
     @abstractmethod
     def get_role(self, actor: Scope) -> Role | None:
         """查主体的服务端注册角色；未注册返回 ``None``。

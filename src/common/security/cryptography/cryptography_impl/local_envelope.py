@@ -100,10 +100,10 @@ def _private_file_opener(path: str, flags: int) -> int:
 class LocalKeyProvider(KeyProvider):
     """本地根密钥的 KeyProvider：单机或开发部署。
 
-    **单代密钥**：本实现只持有当前根密钥，不保留历史 epoch 的验证材料。故
-    :meth:`unwrap` 遇到不同 key id/epoch 时**拒绝**而不是拿活动密钥去试——试解
-    成功会让 epoch 绑定形同虚设，失败则退化成一个难以诊断的 tag 校验错误。需要
-    跨代验证的部署应换 KMS/Vault 实现。
+    **多代轮换**：:meth:`rotate` 生成新随机根密钥并推进 epoch，旧 epoch 的根密钥
+    保留在进程内字典供 :meth:`unwrap` 解开历史信封。新根密钥**不持久化**--进程重启
+    后回到配置声明的初始密钥，轮换后写入的信封在重启后不可读。需要跨重启保留轮换
+    状态的部署应换 KMS/Vault 实现，由其管理历史 epoch 的验证材料。
     """
 
     def __init__(
@@ -127,6 +127,8 @@ class LocalKeyProvider(KeyProvider):
         self._key_epoch = key_epoch
         self._root_key: bytes | None = None
         self._key_id: str = ""
+        # 历史 epoch 的根密钥：rotate 时把旧代根密钥保留于此，供 unwrap 解开历史信封。
+        self._keys: dict[int, bytes] = {}
 
     # -- KeyProvider 契约 -------------------------------------------------- #
 
@@ -145,19 +147,30 @@ class LocalKeyProvider(KeyProvider):
         return WrappedKey(ciphertext=ciphertext, nonce=nonce, ref=ref)
 
     def unwrap(self, wrapped: WrappedKey, *, purpose: str, org: str) -> bytes:
-        active = self.active_key()
-        if wrapped.ref.key_id != active.key_id or wrapped.ref.epoch != active.epoch:
-            # 本实现不保留历史代验证材料，不拿活动密钥试解——见类 docstring。
+        root_key = self._root_key_for_epoch(wrapped.ref)
+        if root_key is None:
+            # 找不到该 epoch 的保留材料即拒，不拿活动密钥试解--试解成功会让 epoch
+            # 绑定形同虚设，失败则退化成难以诊断的 tag 校验错误。
             raise KeyMismatchError(
                 "data key was wrapped by a different key generation "
-                f"(epoch {wrapped.ref.epoch}); this provider only holds the active key"
+                f"(epoch {wrapped.ref.epoch}); no retained key material for it"
             )
-        wrapping_key = self._derive_wrapping_key(purpose=purpose, org=org)
+        wrapping_key = self._derive_wrapping_key(purpose=purpose, org=org, root_key=root_key)
         return self._unwrap_with(
             wrapping_key,
             wrapped,
             _key_aad(purpose=purpose, org=org, ref=wrapped.ref),
         )
+
+    def rotate(self) -> KeyRef:
+        # 保留当前 epoch 的根密钥供历史信封解密，再生成新随机根密钥推进 epoch。
+        # 新根密钥**不持久化**（见类 docstring）：进程重启回到配置声明的初始密钥，
+        # 轮换后写入的信封在重启后不可读。需要跨重启保留轮换状态应换 KMS/Vault。
+        self._keys[self._key_epoch] = self._load_root_key()
+        self._root_key = secrets.token_bytes(DATA_KEY_SIZE)
+        self._key_epoch += 1
+        self._key_id = ""  # 活动密钥指纹需重算
+        return self.active_key()
 
     def health(self) -> None:
         self._load_root_key()
@@ -197,7 +210,9 @@ class LocalKeyProvider(KeyProvider):
             self._key_id = digest.hex()[:_KEY_ID_CHARS]
         return self._key_id
 
-    def _derive_wrapping_key(self, *, purpose: str, org: str) -> bytes:
+    def _derive_wrapping_key(
+        self, *, purpose: str, org: str, root_key: bytes | None = None
+    ) -> bytes:
         """按 (purpose, org) 派生包裹密钥——用途隔离 + 租户隔离（F05 §密钥隔离）。
 
         长度前缀防歧义：``purpose="a" org="b:c"`` 与 ``purpose="a:b" org="c"``
@@ -212,7 +227,7 @@ class LocalKeyProvider(KeyProvider):
             + len(org_bytes).to_bytes(4, "big")
             + org_bytes
         )
-        return self._hkdf(info=info, length=DATA_KEY_SIZE)
+        return self._hkdf(info=info, length=DATA_KEY_SIZE, root_key=root_key)
 
     def _derive_org_key_v1(self, org_id: str) -> bytes:
         """v1 的按 org 派生（无 purpose）。只用于读旧信封。"""
@@ -221,7 +236,7 @@ class LocalKeyProvider(KeyProvider):
             length=DATA_KEY_SIZE,
         )
 
-    def _hkdf(self, *, info: bytes, length: int) -> bytes:
+    def _hkdf(self, *, info: bytes, length: int, root_key: bytes | None = None) -> bytes:
         hkdf_type = HKDF
         hashes_module = hashes
         if hkdf_type is None or hashes_module is None:
@@ -233,12 +248,23 @@ class LocalKeyProvider(KeyProvider):
             salt=_HKDF_SALT,
             info=info,
         )
-        return hkdf.derive(self._load_root_key())
+        return hkdf.derive(root_key if root_key is not None else self._load_root_key())
 
     def _load_root_key(self) -> bytes:
         if self._root_key is None:
             self._root_key = self._load_or_create_root_key()
         return self._root_key
+
+    def _root_key_for_epoch(self, ref: KeyRef) -> bytes | None:
+        """取某 epoch 的根密钥：活动 epoch 用 ``_load_root_key``，旧 epoch 用 ``_keys``。
+
+        ``key_id`` 不在此单独校验--旧 epoch 的 AAD 含 ``ref``（key_id+epoch），
+        拿错材料派生的 wrapping_key 会被 AES-GCM 的 AAD 校验拒绝，表现为
+        :class:`KeyMismatchError`。
+        """
+        if ref.epoch == self._key_epoch:
+            return self._load_root_key()
+        return self._keys.get(ref.epoch)
 
     def _load_or_create_root_key(self) -> bytes:
         if self._key_hex:

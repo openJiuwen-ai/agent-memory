@@ -141,6 +141,29 @@ class AuthContext:
 _EMPTY_ATTRIBUTES: Mapping[str, str] = MappingProxyType({})
 
 
+def _empty_attributes() -> Mapping[str, str]:
+    """只读空映射的工厂。
+
+    不能写成 ``field(default=_EMPTY_ATTRIBUTES)``：dataclass 以
+    ``default.__class__.__hash__ is None`` 判定「可变默认值」，而 ``mappingproxy``
+    在 Python 3.11 正是不可哈希的，import 阶段就会抛
+    ``ValueError: mutable default ... use default_factory``（3.12 给它补了
+    ``__hash__``，所以该阻断只在 3.11 暴露，而 3.11 是本项目的目标下限）。
+    工厂每次都返回同一个只读常量，语义与 default 完全一致。
+    """
+    return _EMPTY_ATTRIBUTES
+
+
+# RequestSecurityContext 的受控来源标记。只有受控构造入口（PR2 的
+# ``new_request_context`` / ``internal_context``）构造时传 ``_TRUSTED``；直接
+# ``RequestSecurityContext(...)`` 为 ``_UNTRUSTED``。PEP（PR2 起）校验
+# ``_origin is _TRUSTED``，使「补齐 request_id/started_at 即可伪造上下文」不成立
+# --字段形状完整不等于来自认证边界。sentinel 刻意不导出：增加绕过难度，且测试
+# 用例直接构造不传 ``_origin`` 即被判为未受控。
+_TRUSTED = object()
+_UNTRUSTED = object()
+
+
 @dataclass(frozen=True)
 class RequestSecurityContext:
     """一次请求内供 API 安全边界使用的完整上下文（F05 §RequestSecurityContext）。
@@ -159,7 +182,8 @@ class RequestSecurityContext:
     peer: str = ""  # 规范化后的连接来源
     surface: Surface = Surface.INTERNAL
     started_at: datetime | None = None
-    attributes: Mapping[str, str] = field(default=_EMPTY_ATTRIBUTES)
+    attributes: Mapping[str, str] = field(default_factory=_empty_attributes)
+    _origin: object = field(default=_UNTRUSTED, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.attributes, MappingProxyType):

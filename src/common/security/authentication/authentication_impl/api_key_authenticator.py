@@ -11,7 +11,7 @@ import logging
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from common.errors import AuthenticationError
+from common.errors import AuthenticationError, ValidationError
 from common.security.authentication.base import Authenticator, AuthProducer
 from common.security.authentication.key_store import (
     KeyStoreProducer,
@@ -39,6 +39,11 @@ class ApiKeyAuthenticator(Authenticator):
         # sha256。指纹不可逆，进 AuthContext 与审计都是安全的。
         self._root_key_fp = fingerprint(root_api_key) if root_api_key else ""
 
+    @property
+    def key_store(self) -> PrincipalKeyStore:
+        """本认证器持有的主体注册表（供 PEP 的 CredentialStatusRegistry 注册共享）。"""
+        return self._key_store
+
     def authenticate(self, credentials: Credentials) -> AuthContext:
         api_key = credentials.api_key
         if not api_key:
@@ -62,6 +67,13 @@ class ApiKeyAuthenticator(Authenticator):
             )
 
         # Step 2: 主体注册表（内部已做常时间比对与 dummy pad）。
+        # 先校验 key_store 实现了 is_revoked：第三方 PrincipalKeyStore 漏实现时，在
+        # 认证期就失败，而非让 PEP 在首个授权请求才发现 NotImplementedError（500）--
+        # F05 §装配不变量「不健康能力启动期拒绝」在认证边界这一侧的落地。
+        if type(self._key_store).is_revoked is PrincipalKeyStore.is_revoked:
+            raise ValidationError(
+                "api_key 认证要求 key_store 实现 is_revoked 以支持凭据在线撤销复核"
+            )
         identity = self._key_store.resolve(api_key)
         if identity is None:
             raise AuthenticationError(_FAILED)
