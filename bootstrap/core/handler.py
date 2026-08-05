@@ -46,7 +46,7 @@ MEMORY_KEY_PREFIX = _type_def_module.MEMORY_KEY_PREFIX
 MemoryUnit = _type_def_module.MemoryUnit
 Modality = _type_def_module.Modality
 Scope = _type_def_module.Scope
-get_current = _type_def_module.get_current
+get_current = import_module("common.security.types").get_current
 EvolveMode = import_module("construction").EvolveMode
 
 _control_types_module = import_module("control.types")

@@ -39,8 +39,7 @@ Kernel = _api_module.Kernel
 build_kernel = _api_module.build_kernel
 KernelConfig = import_module("config").Config
 Factory = import_module("common.factory.factory").Factory
-AuthProducer = import_module("common.authentication.base").AuthProducer
-RateLimitProducer = import_module("common.admission.base").RateLimitProducer
+SecurityRuntimeProducer = import_module("common.security.runtime").SecurityRuntimeProducer
 register_plugins = import_module("common.bootstrap").register_plugins
 ValidationError = import_module("common.errors").ValidationError
 
@@ -54,15 +53,11 @@ class Server:
         self,
         config: Config,
         kernel: Kernel,
-        authenticator: Any = None,
-        rate_limiter: Any = None,
-        argon2_guard: Any = None,
+        security: Any = None,
     ) -> None:
         self.config = config
         self.kernel = kernel
-        self.authenticator = authenticator
-        self.rate_limiter = rate_limiter
-        self.argon2_guard = argon2_guard
+        self.security = security
 
     @property
     def api(self):
@@ -77,8 +72,29 @@ class Server:
         """装配好的审计器（可能为 None）——认证中间件记入口事件用。"""
         return self.kernel.audit
 
+    @property
+    def authenticator(self):
+        return self.security.authenticator if self.security is not None else None
+
+    @property
+    def rate_limiter(self):
+        return self.security.rate_limiter if self.security is not None else None
+
+    @property
+    def workload_guard(self):
+        """昂贵认证操作的并发预算；认证实现声明不需要时为 ``None``。"""
+        if self.security is None:
+            return None
+        if not self.security.authenticator.requires_concurrency_guard():
+            return None
+        return self.security.workload_guard
+
+    @property
+    def binding_policy(self):
+        return self.security.binding_policy if self.security is not None else None
+
     # ``rate_limiter`` 只在有网络对端的 surface（HTTP）传给中间件：进程内直连与
-    # MCP stdio 没有远端，限流无对象可分桶，见 ``common.admission.RateLimiter.allow``。
+    # MCP stdio 没有远端，限流无对象可分桶，见 ``common.security.protection.RateLimiter.allow``。
 
     @classmethod
     def build(cls, config: Config, spaces: Any = None) -> "Server":
@@ -91,15 +107,13 @@ class Server:
         ``profile`` / ``policies`` 撞上新配置解析期的顶层段名校验而报错。无该段时（纯
         ``OFFLINE`` 档）``from_dict(None)`` 返回空配置，回落进程内默认实现，与原行为一致。
         """
-        # 必须在 from_dict 之前：authenticator / key_store 两个顶层段名要先进
+        # 必须在 from_dict 之前：security / authenticator / key_store 等顶层段名要先进
         # Factory.known_top_names()，否则配置解析期会把它们当未知段拒掉。
         register_plugins()
         kernel_config = KernelConfig.from_dict(config.settings.get("memory_api"))
         kernel = build_kernel(policies=config.policies or None, config=kernel_config)
-        authenticator = _build_authenticator(kernel_config)
-        rate_limiter = _build_rate_limiter(kernel_config, authenticator)
-        argon2_guard = _build_argon2_guard(kernel_config, authenticator)
-        return cls(config, kernel, authenticator, rate_limiter, argon2_guard)
+        security = _build_security(kernel_config)
+        return cls(config, kernel, security)
 
     def dispatch(self, verb: str, payload: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
         """Route a ``(verb, payload)`` through the shared handler."""
@@ -108,69 +122,32 @@ class Server:
         return _dispatch(self, verb, payload)
 
 
-def _build_authenticator(kernel_config: Any):
-    """按配置的 ``authenticator`` 段装配认证器；无该段时回落 DEV 并警告。
+def _build_security(kernel_config: Any):
+    """按配置的 ``security`` 段装配 :class:`SecurityRuntime`；无该段时回落 DEV 并警告。
 
-    回落到 DEV（而非拒绝启动）是刻意的：不打断任何人的本地开发。第一期只是把
-    「无认证」从**隐式且不可改**变成**显式、可切换、且非 localhost 时拒绝启动**
-    （DEV 的绑定 guard 见 ``common.authentication.check_dev_binding``）。
+    回落到 DEV（而非拒绝启动）是刻意的：不打断任何人的本地开发。它把「无认证」
+    从**隐式且不可改**变成**显式、可切换、且非 loopback 时拒绝启动**——DEV 的绑定
+    约束由 Runtime 的 ``binding_policy`` 在 socket 绑定前执行（F05 §Protection
+    §BindingPolicy）。
+
+    装配完成后立刻 ``health()``：能力不健康必须在启动期拒绝，不能等到第一个请求
+    打进来才在 500 里暴露（F05 §默认拒绝）。
     """
     ctx = kernel_config.context(known_top_names=Factory.known_top_names())
-    names = sorted(ctx.namespaces.get(AuthProducer.TOP_NAME, {}))
+    names = sorted(ctx.namespaces.get(SecurityRuntimeProducer.TOP_NAME, {}))
     if not names:
         _LOG.warning(
-            "未配置 authenticator 段，回落 DEV 模式：所有请求以 ROOT 身份放行。"
-            "生产部署须显式配置 authenticator.default.target 为 api_key 或 trusted。"
+            "未配置 security 段，回落 DEV 模式：所有请求以 ROOT 身份放行。"
+            "生产部署须显式配置 security.default 并把 authenticator 指向 api_key 或 trusted。"
         )
-        return AuthProducer.build("dev", {}, ctx)
-    name = _select_configured_instance(AuthProducer.TOP_NAME, names)
-    return AuthProducer.build_named(name, ctx)
-
-
-def _build_rate_limiter(kernel_config: Any, authenticator: Any):
-    """按配置的 ``rate_limiter`` 段装配限流器；无该段时按认证 capability 给默认。
-
-    **默认按 capability 分岔**（§8.1）：仅限 loopback 的实现不限流，其余实现默认开
-    ``token_bucket``。
-    理由是限流保护的具体对象——Argon2id verify——只在 API_KEY 模式下存在；DEV
-    模式已被强制绑定 localhost（``common.authentication.check_dev_binding``），没有远端
-    攻击面，此时限流只会把本地压测和调试脚本卡住，是纯粹的开发阻碍。
-
-    非 DEV 默认**开**而不是默认关：默认关等于「必须读过 §8.1 才知道要配」，
-    而没配的后果是一个能打挂进程的可用性漏洞。默认开的代价是运维可能撞上 429，
-    但那会伴随一个明确的状态码和一个明确的配置项；默认关的代价是没有信号。
-
-    网关后部署（TRUSTED 模式的常见形态）所有请求共用网关出口 IP，会被当成
-    同一个 peer——这种部署应显式配 ``target: unlimited`` 把限流交给网关，
-    或按聚合流量调大 ``capacity``。见 F01 归档文档的「破坏性变更」。
-    """
-    ctx = kernel_config.context(known_top_names=Factory.known_top_names())
-    names = sorted(ctx.namespaces.get(RateLimitProducer.TOP_NAME, {}))
-    if names:
-        name = _select_configured_instance(RateLimitProducer.TOP_NAME, names)
-        return RateLimitProducer.build_named(name, ctx)
-
-    if authenticator.requires_loopback_binding():
-        return RateLimitProducer.build("unlimited", {}, ctx)
-    return RateLimitProducer.build("token_bucket", {}, ctx)
-
-
-def _build_argon2_guard(kernel_config: Any, authenticator: Any):
-    """认证重型校验的进程级并发上限（当前实现为 Argon2 guard）。
-
-    是否装配由 ``Authenticator.requires_concurrency_guard`` 声明，不再按封闭枚举分支。
-    API_KEY 返回 True；TRUSTED/DEV 返回 False；第三方实现默认 True（fail closed）。
-
-    上限由 ``argon2.max_concurrent`` 配置（默认 4，按 512 MiB / 128 MiB 算）。
-    """
-    if not authenticator.requires_concurrency_guard():
-        return None
-    settings = (
-        kernel_config.settings.get("argon2", {}) if hasattr(kernel_config, "settings") else {}
-    )
-    max_concurrent = int(settings.get("max_concurrent", 4)) if settings else 4
-    _guard_mod = import_module("common.admission.concurrency_guard")
-    return _guard_mod.default_argon2_guard(max_concurrent=max_concurrent)
+        runtime = SecurityRuntimeProducer.build(
+            "standard", {"authenticator": {"target": "dev"}}, ctx
+        )
+    else:
+        name = _select_configured_instance(SecurityRuntimeProducer.TOP_NAME, names)
+        runtime = SecurityRuntimeProducer.build_named(name, ctx)
+    runtime.health()
+    return runtime
 
 
 def _select_configured_instance(top_name: str, names: list[str]) -> str:

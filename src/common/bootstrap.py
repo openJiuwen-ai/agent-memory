@@ -25,8 +25,5 @@ def register_plugins() -> None:
     import_module("common.reranker.reranker_impl")
     import_module("common.llm.llm_impl")
     import_module("common.audit.audit_impl")
-    import_module("common.authentication.authentication_impl")
-    import_module("common.credential_store.credential_store_impl")
-    import_module("common.admission.admission_impl")
-    import_module("common.encryption.encryption_impl")
+    import_module("common.security.bootstrap").register_security()
     _REGISTERED = True

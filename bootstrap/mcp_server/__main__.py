@@ -47,8 +47,7 @@ _auth_middleware = import_module("auth_middleware")
 authenticated = _auth_middleware.authenticated
 AuthenticationError = import_module("common.errors").AuthenticationError
 ValidationError = import_module("common.errors").ValidationError
-Credentials = import_module("common.authentication.types").Credentials
-check_dev_binding = import_module("common.authentication.binding").check_dev_binding
+Credentials = import_module("common.security.types").Credentials
 
 try:
     FastMCP = import_module("mcp.server.fastmcp").FastMCP
@@ -165,14 +164,16 @@ def main() -> int:
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
     if transport in ("http", "streamable-http"):
         # MCP 尚无凭据通道（见模块 docstring）：DEV 模式下空凭据即 ROOT，绑非
-        # loopback 等于把 ROOT 级记忆工具暴露给整个网络。与 HTTP surface 同一道
-        # 闸（审计 P1-4：此前 MCP HTTP 启动没调 check_dev_binding）。
-        if _SRV.authenticator.requires_loopback_binding():
-            try:
-                check_dev_binding(os.environ.get("MCP_HOST", "127.0.0.1"))
-            except ValidationError as validation_error:
-                logging.error("FATAL: %s", validation_error)
-                return 1
+        # loopback 等于把 ROOT 级记忆工具暴露给整个网络。与 HTTP surface 走同一条
+        # BindingPolicy（F05 §Protection §BindingPolicy）。
+        try:
+            _SRV.binding_policy.check(
+                os.environ.get("MCP_HOST", "127.0.0.1"),
+                requires_loopback=_SRV.authenticator.requires_loopback_binding(),
+            )
+        except ValidationError as validation_error:
+            logging.error("FATAL: %s", validation_error)
+            return 1
         mcp.run(transport="streamable-http")  # host/port 已在 FastMCP(...) 设好
     else:
         mcp.run()  # stdio（默认）——Claude Desktop / Claude Code 直接挂载

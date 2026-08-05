@@ -1,8 +1,8 @@
 """EncryptedFSStore — FSStore 加密装饰器。
 
 与 ``EncryptedKVStore`` 同构：不含任何加解密算法，只在 FS 边界统一构造
-``EncryptionContext`` / AAD，并委托注入的 ``EncryptionProvider``。真实算法位于
-``common.encryption.encryption_impl``。
+``CryptoContext`` / AAD，并委托注入的 ``CryptographyProvider``。真实算法位于
+``common.security.cryptography.cryptography_impl``。
 
 文件内容整体加密成一个信封再落盘，``ref`` / ``scope`` 保持明文（路径要能寻址），
 ``ref`` 进 AAD。
@@ -16,8 +16,8 @@
    + 包装后的数据密钥 + 两个 nonce + 两个 16B 的 GCM tag）。不修正——修正需要先
    解密才能知道明文长度，代价荒谬。调用方拿它去分配缓冲区只会偏大，不影响正确性。
 
-迁移期兼容明文读由 ``encryption`` 组件的 ``allow_plaintext`` 参数控制（provider 层
-统一开关，KV / FS 共用），本装饰器不再重复提供同语义的旋钮。
+**不存在明文回退**（F05 §明文策略）：不是合法信封的内容一律拒绝读取。是否允许
+未加密存储由配置选用不同的 FSStore 适配器表达，不由本装饰器或 provider 的开关表达。
 """
 
 from __future__ import annotations
@@ -26,8 +26,9 @@ import io
 import json
 from typing import Any, BinaryIO
 
-from common.encryption import EncryptionContext, EncryptionProducer, EncryptionProvider
 from common.errors import BackendError, ValidationError
+from common.security.cryptography import CryptographyProducer, CryptographyProvider
+from common.security.types import CryptoContext
 from common.type_def import Scope
 from storage.base import StoreType
 from storage.fs import FsProducer, FSStore
@@ -42,7 +43,7 @@ _PURPOSE_FS_OBJECT = "fs_object"
 # memory 系统。chunked 加密（第一期不做）落地后可放宽。
 _DEFAULT_MAX_PLAINTEXT_BYTES = 64 * 1024 * 1024
 
-# 密文上限的默认安全余量（加在明文上限上）。EncryptionProvider 的 ABC 不暴露密文
+# 密文上限的默认安全余量（加在明文上限上）。CryptographyProvider 的 ABC 不暴露密文
 # overhead，故不硬编码某个 provider 的精确值--用宽松余量覆盖 ENC1 信封固定开销
 # （header + 加密 data key + nonce + GCM tag ≈ 100），宁可拒偏大也不读入超大密文。
 # 需要精确控制时显式配 max_ciphertext_bytes（验收复验 P2-FS）。
@@ -91,14 +92,13 @@ def _aad(scope: Scope, ref: str) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def _encryption_context(scope: Scope, ref: str) -> EncryptionContext:
-    return EncryptionContext(
+def _crypto_context(scope: Scope, ref: str) -> CryptoContext:
+    """对象标识与格式版本走专有字段，理由同 ``EncryptedKVStore._crypto_context``。"""
+    return CryptoContext(
         scope=scope,
         purpose=_PURPOSE_FS_OBJECT,
-        metadata={
-            "ref": ref,
-            "aad_version": str(_AAD_VERSION),
-        },
+        object_id=ref,
+        format_version=_AAD_VERSION,
     )
 
 
@@ -108,7 +108,7 @@ class EncryptedFSStore(FSStore):
     def __init__(
         self,
         inner: FSStore,
-        encryption: EncryptionProvider,
+        encryption: CryptographyProvider,
         *,
         max_plaintext_bytes: int,
         max_ciphertext_bytes: int = 0,
@@ -117,7 +117,7 @@ class EncryptedFSStore(FSStore):
         self._encryption = encryption
         self._max_plaintext_bytes = max_plaintext_bytes
         # 密文上限：默认按明文上限 + 安全余量（覆盖 ENC1 信封固定开销 + 一点 buffer），
-        # 可显式配置覆盖。不硬编码某个 provider 的精确开销--EncryptionProvider 的 ABC
+        # 可显式配置覆盖。不硬编码某个 provider 的精确开销--CryptographyProvider 的 ABC
         # 不暴露 ciphertext bound，硬编码 128 会随 provider 实现变化失准（验收复验 P2-FS）。
         self._max_ciphertext_bytes = (
             max_ciphertext_bytes or max_plaintext_bytes + _DEFAULT_CIPHERTEXT_OVERHEAD
@@ -187,7 +187,7 @@ class EncryptedFSStore(FSStore):
         try:
             return self._encryption.encrypt(
                 plaintext,
-                context=_encryption_context(scope, ref),
+                context=_crypto_context(scope, ref),
                 aad=_aad(scope, ref),
             )
         except Exception as exc:
@@ -197,7 +197,7 @@ class EncryptedFSStore(FSStore):
         try:
             return self._encryption.decrypt(
                 ciphertext,
-                context=_encryption_context(scope, ref),
+                context=_crypto_context(scope, ref),
                 aad=_aad(scope, ref),
             )
         except Exception as exc:
@@ -232,7 +232,7 @@ def _build(config):
         )
     return EncryptedFSStore(
         inner=_inner_store(config),
-        encryption=EncryptionProducer.dep(config),
+        encryption=CryptographyProducer.dep(config),
         max_plaintext_bytes=max_plaintext_bytes,
         max_ciphertext_bytes=max_ciphertext_bytes,
     )

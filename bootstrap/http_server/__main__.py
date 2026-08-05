@@ -44,7 +44,6 @@ _errors = import_module("common.errors")
 AuthenticationError = _errors.AuthenticationError
 RateLimitedError = _errors.RateLimitedError
 ValidationError = _errors.ValidationError
-check_dev_binding = import_module("common.authentication.binding").check_dev_binding
 
 # 请求体大小硬上限（审计 P2-4）：无上限意味着超大或慢速上传能吃满内存与线程。
 # 4 MiB 覆盖任何合理的记忆写入请求；超大资产本就该走 FS + 分片而非塞进单次 POST。
@@ -193,7 +192,7 @@ class HttpServer(Server):
                         creds,
                         srv.audit,
                         srv.rate_limiter,
-                        argon2_guard=srv.argon2_guard,
+                        workload_guard=srv.workload_guard,
                     ):
                         raw = _read_body(self.rfile, length)
                         try:
@@ -217,10 +216,23 @@ class HttpServer(Server):
         return Handler
 
     def serve(self, host: str, port: int) -> None:
-        # 绑定 guard 必须位于公开 serve() 内，而不是只放 CLI main()：嵌入式调用方
-        # 直接调用 serve() 也不能把 DEV/未知认证实现暴露到非 loopback 网络。
-        if self.authenticator is None or self.authenticator.requires_loopback_binding():
-            check_dev_binding(host)
+        # 绑定校验必须位于公开 serve() 内，而不是只放 CLI main()：嵌入式调用方
+        # 直接调用 serve() 也不能把 DEV/未知认证实现暴露到非 loopback 网络
+        # （F05 §Protection §BindingPolicy）。requires_loopback 是认证实现自己声明的
+        # capability，不按 target 名推断。
+        #
+        # 没有 SecurityRuntime 就没有绑定策略可执行——此时**拒绝监听**而不是放行：
+        # 缺少安全能力时开一个不设防的端口，正是 F05 §默认拒绝要排除的情况。
+        if self.binding_policy is None:
+            raise ValidationError(
+                "HTTP surface 未装配 SecurityRuntime，无法执行绑定策略，拒绝监听。"
+            )
+        self.binding_policy.check(
+            host,
+            requires_loopback=(
+                self.authenticator is None or self.authenticator.requires_loopback_binding()
+            ),
+        )
         httpd = _BoundedThreadingHTTPServer((host, port), self._handler_cls())
         # daemon_threads：serve_forever 退出时（KeyboardInterrupt）不等待慢请求线程，
         # 否则一个挂住的连接能让进程退不掉（审计 P2-4）。并发上限由

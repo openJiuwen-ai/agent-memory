@@ -1,7 +1,7 @@
 """请求作用域的认证上下文——凭据提取 + ContextVar 建立/清理。
 
 各 surface（HTTP / MCP / CLI 直连）用同一条中间件：把本形态的凭据材料归一成
-:class:`~common.authentication.types.Credentials`，交给装配好的 ``Authenticator``，把产出的
+:class:`~common.security.types.Credentials`，交给装配好的 ``Authenticator``，把产出的
 ``AuthContext`` 挂进 ContextVar 供 ``handler.dispatch`` 读取。
 
 **本模块不决定认证策略**——模式（dev / trusted / api_key）由配置在装配期选定，
@@ -22,16 +22,16 @@ _SRC = os.path.join(
 if _SRC not in sys.path:
     sys.path.append(_SRC)
 
-_auth_module = import_module("common.type_def.auth")
-reset_current = _auth_module.reset_current
-set_current = _auth_module.set_current
+_security_types = import_module("common.security.types")
+reset_current = _security_types.reset_current
+set_current = _security_types.set_current
+Credentials = _security_types.Credentials
 
 Scope = import_module("common.type_def").Scope
 AuditEvent = import_module("common.type_def").AuditEvent
 _errors = import_module("common.errors")
 AuthenticationError = _errors.AuthenticationError
 RateLimitedError = _errors.RateLimitedError
-Credentials = import_module("common.authentication.types").Credentials
 
 _BEARER = "bearer "
 
@@ -60,7 +60,7 @@ def credentials_from_headers(headers: Mapping[str, Any], peer_address: str = "")
 
 @contextmanager
 def authenticated(
-    authenticator, credentials, audit=None, limiter=None, *, argon2_guard=None
+    authenticator, credentials, audit=None, limiter=None, *, workload_guard=None
 ) -> Iterator[Any]:
     """在请求作用域内建立可信认证上下文；退出时**必定** reset。
 
@@ -71,24 +71,25 @@ def authenticated(
     ``authenticate`` 故意放在 ``try`` 之外：认证失败时没有 token 可 reset，
     放进 try 会需要一个 ``token = None`` 的分支判断，反而更容易写错。
 
-    ``limiter`` 在 ``authenticate`` **之前**执行（§8.1）：认证本身就是要保护的
-    资源——API_KEY 模式下每次 authenticate 跑一次 Argon2id verify（128 MiB ×
+    ``limiter`` 在 ``authenticate`` **之前**执行（F05 §请求执行流程）：认证本身就是
+    要保护的资源——API_KEY 模式下每次 authenticate 跑一次 Argon2id verify（128 MiB ×
     time_cost=4），放在认证之后限流就等于「先让攻击者把 CPU 用掉，再告诉他
     超限了」。``limiter=None`` 表示不限流（进程内直连 / MCP stdio 无网络对端）。
 
-    ``argon2_guard`` 是进程级并发上限（审计 P1-3）：IP 桶限请求速率，限不住
-    「同时在跑的 Argon2 verify 数」。耗尽即 429，在 limiter 之后、authenticate
-    之前执行。acquire 成功后用 ``finally`` 释放；``None`` 表示不限（DEV 模式或
-    调用方确信不跑 Argon2）。
+    ``workload_guard`` 是昂贵操作的全局并发预算（F05 §Protection §WorkloadGuard）：
+    IP 桶限请求速率，限不住「同时在跑的 Argon2 verify 数」。耗尽即快速拒绝（429）
+    而不是排队——无界排队只是把资源耗尽从 CPU/内存转移到线程和请求队列。在 limiter
+    之后、authenticate 之前执行；acquire 成功后用 ``finally`` 释放。``None`` 表示
+    该认证实现声明不需要预算保护（见 ``Authenticator.requires_concurrency_guard``）。
     """
     if limiter is not None and not limiter.allow(credentials.peer_address):
         _record_denial(audit, authenticator, credentials, "rate_limit")
         raise RateLimitedError(_RATE_LIMITED)
 
     guard_acquired = False
-    if argon2_guard is not None:
-        if not argon2_guard.acquire():
-            _record_denial(audit, authenticator, credentials, "argon2_concurrency")
+    if workload_guard is not None:
+        if not workload_guard.acquire():
+            _record_denial(audit, authenticator, credentials, "workload_budget")
             raise RateLimitedError(_RATE_LIMITED)
         guard_acquired = True
 
@@ -99,7 +100,7 @@ def authenticated(
         raise
     finally:
         if guard_acquired:
-            argon2_guard.release()
+            workload_guard.release()
 
     token = set_current(ctx)
     try:

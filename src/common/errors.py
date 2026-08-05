@@ -63,7 +63,7 @@ class AuthenticationError(AgentMemoryError):
 
 class RateLimitedError(AgentMemoryError):
     """
-    调用方超出速率上限：准入控制（``src/common/admission/base.py``）产出。
+    调用方超出速率上限：资源保护（``src/common/security/protection/``）产出。
 
     与 :class:`AuthenticationError` 必须可分（429 对 401）：限流发生在认证
     **之前**，此时还不知道凭据对不对——把它报成 401 会让「你被限流了」和

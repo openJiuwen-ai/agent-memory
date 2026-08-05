@@ -79,8 +79,8 @@ class InProcessClient:
         from auth_middleware import authenticated
         from handler import dispatch
 
-        from common.authentication.types import Credentials
         from common.errors import AuthenticationError
+        from common.security.types import Credentials
 
         # 进程内直连没有 HTTP header，故过一个空 Credentials。DEV 模式下得到
         # ROOT，与现状一致（CLI 一直是全权限的）；API_KEY 模式下会认证失败——
