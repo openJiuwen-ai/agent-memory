@@ -165,6 +165,62 @@ def test_api_key_works_without_root_key(key_store, alice_key) -> None:
         auth.authenticate(Credentials(api_key=_ROOT_KEY))
 
 
+class _StoreWithoutRevocation(PrincipalKeyStore):
+    """可插拔 Store 漏实现 is_revoked 的最小桩（继承默认 NotImplementedError）。"""
+
+    def issue(self, actor: Scope, role: Role) -> str:
+        raise NotImplementedError
+
+    def resolve(self, api_key: str) -> AuthContext | None:
+        return None
+
+    def revoke(self, key_fp: str) -> None:
+        return None
+
+    def get_role(self, actor: Scope) -> Role | None:
+        return Role.USER
+
+    def health(self) -> None:
+        return None
+
+
+def test_api_key_rejects_store_without_revocation_query() -> None:
+    """可插拔 KeyStore 缺 is_revoked 时，认证期就拒绝（P1-3）。
+
+    不让 PEP 在首个授权请求才发现 NotImplementedError（500）--F05 §装配不变量
+    「不健康能力启动期拒绝」在认证边界的落地。
+    """
+    auth = ApiKeyAuthenticator(_StoreWithoutRevocation())
+    with pytest.raises(ValidationError):
+        auth.authenticate(Credentials(api_key="any-key"))
+
+
+def test_api_key_store_is_revoked_drives_revocation(key_store) -> None:
+    """InMemoryKeyStore 覆盖 is_revoked：撤销前 False、撤销后 True（P1-3 在线复核基础）。"""
+    fresh = key_store.issue(Scope(org="acme", user="carol"), Role.USER)
+    auth = ApiKeyAuthenticator(key_store=key_store, root_api_key=_ROOT_KEY)
+    ctx = auth.authenticate(Credentials(api_key=fresh))
+    assert key_store.is_revoked(ctx.credential_id) is False
+    key_store.revoke(ctx.credential_id)
+    assert key_store.is_revoked(ctx.credential_id) is True
+
+
+def test_trusted_credential_id_changes_with_gateway_key(key_store) -> None:
+    """网关凭据轮换后，同主体得到不同 credential_id（P2-1）。
+
+    credential_id 含 gateway_key 指纹：旧凭据绑定的委托不能迁移到新凭据。
+    """
+    headers = _gateway_headers()
+    before = TrustedAuthenticator(key_store=key_store, gateway_key="gw-v1").authenticate(
+        Credentials(api_key="gw-v1", headers=headers)
+    )
+    after = TrustedAuthenticator(key_store=key_store, gateway_key="gw-v2").authenticate(
+        Credentials(api_key="gw-v2", headers=headers)
+    )
+    assert before.credential_id
+    assert before.credential_id != after.credential_id
+
+
 # -- 跨实现的一致性 ---------------------------------------------------------- #
 
 

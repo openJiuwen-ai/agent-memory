@@ -201,7 +201,7 @@ def test_wrap_unwrap_round_trip() -> None:
 
 
 def test_unwrap_rejects_other_key_generation() -> None:
-    """单代实现不拿活动密钥试解另一代：试成功等于 epoch 绑定失效。"""
+    """未保留材料的 epoch 不拿活动密钥试解：试成功等于 epoch 绑定失效。"""
     provider = LocalKeyProvider(key_hex=_KEY_HEX)
     wrapped = provider.wrap(b"\x02" * 32, purpose="memory_unit", org="acme")
     forged = type(wrapped)(
@@ -212,6 +212,32 @@ def test_unwrap_rejects_other_key_generation() -> None:
 
     with pytest.raises(KeyMismatchError):
         provider.unwrap(forged, purpose="memory_unit", org="acme")
+
+
+def test_rotate_advances_epoch_and_keeps_old_epoch_readable() -> None:
+    """rotate 推进 epoch，且旧 epoch 信封仍可解（F05 §KeyProvider 轮换契约）。"""
+    provider = LocalKeyProvider(key_hex=_KEY_HEX)
+    data_key = b"\x02" * 32
+    wrapped = provider.wrap(data_key, purpose="memory_unit", org="acme")
+    before = provider.active_key()
+
+    after = provider.rotate()
+
+    assert after.epoch > before.epoch
+    # 旧 epoch 信封仍可解（rotate 保留了旧代根密钥）
+    assert provider.unwrap(wrapped, purpose="memory_unit", org="acme") == data_key
+    # 新 epoch 写入用新 ref，且可解
+    wrapped_new = provider.wrap(data_key, purpose="memory_unit", org="acme")
+    assert wrapped_new.ref.epoch == after.epoch
+    assert provider.unwrap(wrapped_new, purpose="memory_unit", org="acme") == data_key
+
+
+def test_rotate_changes_key_id() -> None:
+    """新 epoch 用新随机根密钥，key_id 随之改变。"""
+    provider = LocalKeyProvider(key_hex=_KEY_HEX)
+    before = provider.active_key()
+    after = provider.rotate()
+    assert after.key_id != before.key_id
 
 
 def test_key_id_does_not_leak_root_key() -> None:
