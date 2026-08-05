@@ -27,9 +27,9 @@ if _CORE_DIR not in sys.path:
     sys.path.append(_CORE_DIR)
 
 from common.bootstrap import register_plugins  # noqa: E402
-from common.credential_store.base import KeyStoreProducer  # noqa: E402
 from common.errors import AuthenticationError  # noqa: E402
-from common.type_def.auth import Role, reset_current, set_current  # noqa: E402
+from common.security.authentication.key_store import KeyStoreProducer  # noqa: E402
+from common.security.types import Role, reset_current, set_current  # noqa: E402
 from common.type_def.scope import Scope  # noqa: E402
 from config.context import AssemblyContext  # noqa: E402
 
@@ -132,8 +132,10 @@ def test_api_key_binds_identity_end_to_end(srv) -> None:
     401 说明认证没过（key 无效），403 说明认证过了但授权拒了。
     这条要的是后者——证明 key → AuthContext → PermissionManager 整条链通了。
     """
-    from common.authentication.authentication_impl.api_key_authenticator import ApiKeyAuthenticator
-    from common.authentication.types import Credentials
+    from common.security.authentication.authentication_impl.api_key_authenticator import (
+        ApiKeyAuthenticator,
+    )
+    from common.security.types import Credentials
 
     register_plugins()
     store = KeyStoreProducer.build("memory", {}, AssemblyContext())
@@ -170,8 +172,10 @@ def test_context_is_reset_after_failed_authentication(srv) -> None:
     """
     from auth_middleware import authenticated
 
-    from common.authentication.authentication_impl.api_key_authenticator import ApiKeyAuthenticator
-    from common.authentication.types import Credentials
+    from common.security.authentication.authentication_impl.api_key_authenticator import (
+        ApiKeyAuthenticator,
+    )
+    from common.security.types import Credentials
 
     register_plugins()
     store = KeyStoreProducer.build("memory", {}, AssemblyContext())
@@ -192,6 +196,6 @@ def test_context_is_reset_after_failed_authentication(srv) -> None:
 
 
 def _make_ctx(actor: Scope):
-    from common.type_def.auth import AuthContext
+    from common.security.types import AuthContext
 
     return AuthContext(actor=actor, acting_user=actor.user, role=Role.USER)

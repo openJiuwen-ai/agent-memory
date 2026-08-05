@@ -1,18 +1,23 @@
-"""common.authentication.authentication_impl: 三个实现的正反路径与错误消息一致性。"""
+"""common.security.authentication.authentication_impl: 三个实现的正反路径与错误消息一致性。"""
 
 from __future__ import annotations
 
 import pytest
 
-from common.authentication.authentication_impl.api_key_authenticator import ApiKeyAuthenticator
-from common.authentication.authentication_impl.dev_authenticator import DevAuthenticator
-from common.authentication.authentication_impl.trusted_authenticator import TrustedAuthenticator
-from common.authentication.base import AuthProducer
-from common.authentication.types import AuthMode, Credentials
 from common.bootstrap import register_plugins
-from common.credential_store.base import KeyStoreProducer, PrincipalKeyStore
 from common.errors import AuthenticationError, ValidationError
-from common.type_def.auth import AuthContext, Role
+from common.security.authentication.authentication_impl.api_key_authenticator import (
+    ApiKeyAuthenticator,
+)
+from common.security.authentication.authentication_impl.dev_authenticator import (
+    DevAuthenticator,
+)
+from common.security.authentication.authentication_impl.trusted_authenticator import (
+    TrustedAuthenticator,
+)
+from common.security.authentication.base import AuthProducer
+from common.security.authentication.key_store import KeyStoreProducer, PrincipalKeyStore
+from common.security.types import AuthContext, Credentials, Role
 from common.type_def.scope import Scope
 from config.context import AssemblyContext
 
@@ -49,7 +54,7 @@ def test_dev_returns_root_with_empty_scope() -> None:
 def test_dev_ignores_all_credentials() -> None:
     dev = DevAuthenticator()
     assert dev.authenticate(Credentials(api_key="anything")).role is Role.ROOT
-    assert dev.mode() is AuthMode.DEV
+    assert dev.mode() == "dev"
     assert dev.health() is None
 
 
@@ -71,7 +76,7 @@ def test_trusted_accepts_registered_principal(key_store, alice_key) -> None:
     ctx = auth.authenticate(Credentials(headers=_gateway_headers()))
     assert ctx.actor == Scope(org="acme", user="alice")
     assert ctx.role is Role.USER
-    assert auth.mode() is AuthMode.TRUSTED
+    assert auth.mode() == "trusted"
 
 
 def test_trusted_ignores_role_header(key_store, alice_key) -> None:
@@ -134,7 +139,7 @@ def test_api_key_root_returns_empty_scope(key_store) -> None:
     ctx = auth.authenticate(Credentials(api_key=_ROOT_KEY))
     assert ctx.actor == Scope()
     assert ctx.role is Role.ROOT
-    assert auth.mode() is AuthMode.API_KEY
+    assert auth.mode() == "api_key"
 
 
 def test_api_key_resolves_principal(key_store, alice_key) -> None:
@@ -205,13 +210,13 @@ def test_authenticate_never_returns_none(key_store, alice_key) -> None:
 def test_producer_builds_each_mode() -> None:
     register_plugins()
     ctx = AssemblyContext()
-    assert AuthProducer.build("dev", {}, ctx).mode() is AuthMode.DEV
+    assert AuthProducer.build("dev", {}, ctx).mode() == "dev"
     assert (
         AuthProducer.build("trusted", {"allow_no_gateway_key": True}, ctx).mode()
-        is AuthMode.TRUSTED
+        == "trusted"
     )
     assert (
-        AuthProducer.build("api_key", {"root_api_key": _ROOT_KEY}, ctx).mode() is AuthMode.API_KEY
+        AuthProducer.build("api_key", {"root_api_key": _ROOT_KEY}, ctx).mode() == "api_key"
     )
 
 
@@ -227,6 +232,6 @@ def test_trusted_build_requires_gateway_key_by_default() -> None:
         AuthProducer.build("trusted", {}, ctx)
     # 显式 opt-in 后可装配
     built = AuthProducer.build("trusted", {"allow_no_gateway_key": True}, ctx)
-    assert built.mode() is AuthMode.TRUSTED
+    assert built.mode() == "trusted"
     # 配了 gateway_key 自然可装配
-    assert AuthProducer.build("trusted", {"gateway_key": "k"}, ctx).mode() is AuthMode.TRUSTED
+    assert AuthProducer.build("trusted", {"gateway_key": "k"}, ctx).mode() == "trusted"

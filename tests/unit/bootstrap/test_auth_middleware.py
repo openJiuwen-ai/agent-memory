@@ -24,20 +24,22 @@ if _CORE_DIR not in sys.path:
 
 from auth_middleware import authenticated, credentials_from_headers  # noqa: E402
 
-from common.authentication.authentication_impl.api_key_authenticator import (
+from common.bootstrap import register_plugins  # noqa: E402
+from common.errors import AuthenticationError, RateLimitedError  # noqa: E402
+from common.security.authentication.authentication_impl.api_key_authenticator import (
     ApiKeyAuthenticator,  # noqa: E402
 )
-from common.authentication.authentication_impl.dev_authenticator import (
+from common.security.authentication.authentication_impl.dev_authenticator import (
     DevAuthenticator,  # noqa: E402
 )
-from common.authentication.authentication_impl.trusted_authenticator import (
+from common.security.authentication.authentication_impl.trusted_authenticator import (
     TrustedAuthenticator,  # noqa: E402
 )
-from common.authentication.types import Credentials  # noqa: E402
-from common.bootstrap import register_plugins  # noqa: E402
-from common.credential_store.base import KeyStoreProducer  # noqa: E402
-from common.errors import AuthenticationError, RateLimitedError  # noqa: E402
-from common.type_def.auth import Role, get_current  # noqa: E402
+from common.security.authentication.key_store import KeyStoreProducer  # noqa: E402
+from common.security.protection.protection_impl.semaphore_guard import (
+    SemaphoreWorkloadGuard,  # noqa: E402
+)
+from common.security.types import Credentials, Role, get_current  # noqa: E402
 from common.type_def.scope import Scope  # noqa: E402
 from config.context import AssemblyContext  # noqa: E402
 
@@ -330,16 +332,14 @@ def test_audit_backend_failure_does_not_mask_401(key_store) -> None:
     assert get_current() is None
 
 
-# -- Argon2 并发上限（审计 P1-3） ------------------------------------------- #
+# -- 昂贵操作的并发预算（审计 P1-3；F05 §Protection §WorkloadGuard）---------- #
 
 
-def test_argon2_guard_release_on_success() -> None:
+def test_workload_guard_release_on_success() -> None:
     """guard 在认证成功后必须释放，否则槽位泄漏把后续请求也堵死。"""
-    from common.admission.concurrency_guard import Argon2Guard
-
-    guard = Argon2Guard(max_concurrent=1)
+    guard = SemaphoreWorkloadGuard(1)
     auth = _CountingAuth()
-    with authenticated(auth, Credentials(), None, None, argon2_guard=guard):
+    with authenticated(auth, Credentials(), None, None, workload_guard=guard):
         pass
     # 认证后槽位已释放，能再 acquire
     assert guard.acquire() is True
@@ -347,11 +347,9 @@ def test_argon2_guard_release_on_success() -> None:
     assert auth.calls == 1
 
 
-def test_argon2_guard_release_on_auth_failure() -> None:
+def test_workload_guard_release_on_auth_failure() -> None:
     """认证失败也要释放（finally）。"""
-    from common.admission.concurrency_guard import Argon2Guard
-
-    guard = Argon2Guard(max_concurrent=1)
+    guard = SemaphoreWorkloadGuard(1)
 
     # 用一个恒失败的 auth：走认证失败路径，验证 guard 在 finally 释放
     class _Fail:
@@ -362,41 +360,37 @@ def test_argon2_guard_release_on_auth_failure() -> None:
             raise AuthenticationError("nope")
 
     with pytest.raises(AuthenticationError):
-        with authenticated(_Fail(), Credentials(), None, None, argon2_guard=guard):
+        with authenticated(_Fail(), Credentials(), None, None, workload_guard=guard):
             pass  # pragma: no cover
     assert guard.acquire() is True
     guard.release()
 
 
-def test_argon2_guard_blocks_when_slots_exhausted() -> None:
+def test_workload_guard_blocks_when_slots_exhausted() -> None:
     """耗尽并发槽返回 429，不进入 authenticate。"""
-    from common.admission.concurrency_guard import Argon2Guard
-
-    guard = Argon2Guard(max_concurrent=1)
+    guard = SemaphoreWorkloadGuard(1)
     # 占满唯一槽位
     assert guard.acquire() is True
     auth = _CountingAuth()
     with pytest.raises(RateLimitedError):
-        with authenticated(auth, Credentials(), None, None, argon2_guard=guard):
+        with authenticated(auth, Credentials(), None, None, workload_guard=guard):
             pass  # pragma: no cover
     assert auth.calls == 0
     guard.release()
 
 
-def test_argon2_guard_released_on_rate_limit_before_it() -> None:
+def test_workload_guard_released_on_rate_limit_before_it() -> None:
     """IP 桶先挡住时 guard 不该 acquire（两层独立）。"""
-    from common.admission.concurrency_guard import Argon2Guard
-
-    guard = Argon2Guard(max_concurrent=1)
+    guard = SemaphoreWorkloadGuard(1)
     with pytest.raises(RateLimitedError):
-        with authenticated(DevAuthenticator(), _peer(), None, _Blocked(), argon2_guard=guard):
+        with authenticated(DevAuthenticator(), _peer(), None, _Blocked(), workload_guard=guard):
             pass  # pragma: no cover
     # guard 没被占
     assert guard.acquire() is True
     guard.release()
 
 
-def test_argon2_guard_none_means_unlimited() -> None:
+def test_workload_guard_none_means_unlimited() -> None:
     """None 表示不限（DEV / 进程内直连），与一期行为一致。"""
     auth = _CountingAuth()
     for _ in range(10):
@@ -405,30 +399,13 @@ def test_argon2_guard_none_means_unlimited() -> None:
     assert auth.calls == 10
 
 
-def test_argon2_guard_rejects_zero_max_concurrent() -> None:
+def test_workload_guard_rejects_zero_max_concurrent() -> None:
     """max_concurrent=0 是非法，装配期炸，不用 or 吞成默认（审计验收 P2-guard）。"""
-    from common.admission.concurrency_guard import Argon2Guard, reset_guard
-
-    reset_guard()
     with pytest.raises(ValueError):
-        Argon2Guard(max_concurrent=0)
-    reset_guard()
+        SemaphoreWorkloadGuard(0)
 
 
-def test_argon2_guard_conflicting_config_raises() -> None:
-    """同进程重复装配不同 max_concurrent 报错，不静默忽略（审计验收 P2-guard）。"""
-    from common.admission.concurrency_guard import default_argon2_guard, reset_guard
-
-    reset_guard()
-    default_argon2_guard(max_concurrent=2)
-    with pytest.raises(ValueError):
-        default_argon2_guard(max_concurrent=4)
-    # 相同配置不报错
-    default_argon2_guard(max_concurrent=2)
-    reset_guard()
-
-
-def test_argon2_guard_concurrency_is_actually_bounded() -> None:
+def test_workload_guard_concurrency_is_actually_bounded() -> None:
     """真实并发测试：同时进入 authenticate 的数 <= max_concurrent。
 
     复验 P3：此前 gate.set() 没等前两个确定占住槽，调度型竞态导致偶发
@@ -439,9 +416,7 @@ def test_argon2_guard_concurrency_is_actually_bounded() -> None:
     """
     import threading
 
-    from common.admission.concurrency_guard import Argon2Guard
-
-    guard = Argon2Guard(max_concurrent=2)
+    guard = SemaphoreWorkloadGuard(2)
     in_flight = 0
     peak = 0
     lock = threading.Lock()
@@ -472,7 +447,7 @@ def test_argon2_guard_concurrency_is_actually_bounded() -> None:
 
     def fire(i, results):
         try:
-            with authenticated(_Blocking(), Credentials(), None, None, argon2_guard=guard):
+            with authenticated(_Blocking(), Credentials(), None, None, workload_guard=guard):
                 results.append(i)
         except RateLimitedError:
             results.append(f"blocked-{i}")

@@ -19,8 +19,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from common.security.types import AuthContext, Role, reset_current, set_current
 from common.type_def import Segment
-from common.type_def.auth import AuthContext, Role, reset_current, set_current
 from common.type_def.scope import Scope
 
 pytestmark = pytest.mark.unit

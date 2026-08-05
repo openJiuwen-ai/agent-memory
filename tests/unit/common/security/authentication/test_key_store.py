@@ -1,4 +1,4 @@
-"""common.credential_store.base: 签发、解析、撤销、常时间与「不存明文」回归防线。"""
+"""common.security.authentication.key_store: 签发、解析、撤销、常时间与「不存明文」回归防线。"""
 
 from __future__ import annotations
 
@@ -11,9 +11,13 @@ from statistics import median
 import pytest
 
 from common.bootstrap import register_plugins
-from common.credential_store.base import KeyStoreProducer, fingerprint, generate_api_key
 from common.errors import PermissionDeniedError, ValidationError
-from common.type_def.auth import Role
+from common.security.authentication.key_store import (
+    KeyStoreProducer,
+    fingerprint,
+    generate_api_key,
+)
+from common.security.types import Role
 from common.type_def.scope import Scope
 from config.context import AssemblyContext
 
@@ -68,7 +72,7 @@ def test_resolve_returns_bound_identity(store) -> None:
     assert ctx is not None
     assert ctx.actor == Scope(org="acme", user="alice")
     assert ctx.role is Role.ADMIN
-    assert ctx.authorizing_key_fp == fingerprint(key)
+    assert ctx.credential_id == fingerprint(key)
     assert ctx.acting_user == "alice"
 
 

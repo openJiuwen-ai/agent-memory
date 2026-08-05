@@ -1,4 +1,4 @@
-"""common.authentication.base: 抽象契约与工厂注册。"""
+"""common.security.authentication.base / key_store: 抽象契约与工厂注册。"""
 
 from __future__ import annotations
 
@@ -6,11 +6,12 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from common.authentication.base import Authenticator, AuthProducer
-from common.authentication.types import AuthMode, Credentials
 from common.bootstrap import register_plugins
-from common.credential_store.base import KeyStoreProducer, PrincipalKeyStore
 from common.factory.factory import Factory
+from common.security.authentication.base import Authenticator, AuthProducer
+from common.security.authentication.key_store import KeyStoreProducer, PrincipalKeyStore
+from common.security.types import Credentials
+from config.context import AssemblyContext
 
 pytestmark = pytest.mark.unit
 
@@ -45,6 +46,29 @@ def test_abstract_contract_cannot_be_partially_implemented() -> None:
         Incomplete()  # type: ignore[abstract]
 
 
+def test_capability_declarations_default_to_fail_closed() -> None:
+    """未覆写的 capability 取保守侧：第三方实现不声明就不享受放宽。
+
+    ``requires_loopback_binding`` 默认 True——没声明具备远程暴露保护的实现不许
+    绑非本机地址；``requires_concurrency_guard`` 默认 True——没声明成本模型的
+    校验器不许绕过并发预算。两处默认反过来都是 fail-open。
+    """
+
+    class Minimal(Authenticator):
+        def authenticate(self, credentials: Credentials):
+            raise NotImplementedError
+
+        def mode(self) -> str:
+            return "minimal"
+
+        def health(self) -> None:
+            return None
+
+    minimal = Minimal()
+    assert minimal.requires_loopback_binding() is True
+    assert minimal.requires_concurrency_guard() is True
+
+
 def test_key_store_abstract_contract() -> None:
     class Incomplete(PrincipalKeyStore):
         def issue(self, actor, role):
@@ -67,9 +91,17 @@ def test_credentials_defaults_are_empty() -> None:
     assert creds.peer_address == ""
 
 
-def test_oauth_mode_not_defined() -> None:
-    """OAuth 是第二期：定义一个没有实现的枚举值只会让配置错误变成间接报错。"""
-    assert {m.value for m in AuthMode} == {"dev", "trusted", "api_key"}
+def test_credentials_repr_hides_secrets() -> None:
+    """凭据会进日志与异常回溯：明文 key 不能出现在 repr 里（F05 §Credentials）。"""
+    assert "super-secret" not in repr(Credentials(api_key="super-secret"))
+
+
+def test_mode_is_an_open_string_not_a_closed_enum() -> None:
+    """F05 拒绝以封闭枚举驱动核心分支：第三方实现不改核心即可声明自己的模式名。"""
+    register_plugins()
+    mode = AuthProducer.build("dev", {}, AssemblyContext()).mode()
+    assert isinstance(mode, str)
+    assert mode == "dev"
 
 
 def test_interface_module_does_not_import_impl() -> None:
@@ -79,8 +111,8 @@ def test_interface_module_does_not_import_impl() -> None:
     """
     import ast
 
-    import common.authentication.base as auth_mod
-    import common.credential_store.base as ks_mod
+    import common.security.authentication.base as auth_mod
+    import common.security.authentication.key_store as ks_mod
 
     for mod in (auth_mod, ks_mod):
         tree = ast.parse(open(mod.__file__, encoding="utf-8").read())

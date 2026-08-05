@@ -1,17 +1,20 @@
-"""auth: AuthContext 不可变性、actor 必填、ContextVar 传播与线程隔离。"""
+"""common.security.types: 值对象不可变性、actor 必填、ContextVar 传播与线程隔离。"""
 
 from __future__ import annotations
 
 import threading
 from dataclasses import FrozenInstanceError
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from common.errors import AgentMemoryError, AuthenticationError, PermissionDeniedError
-from common.type_def.auth import (
+from common.security.types import (
     ROLE_RANK,
     AuthContext,
+    RequestSecurityContext,
     Role,
+    Surface,
     get_current,
     reset_current,
     set_current,
@@ -39,8 +42,9 @@ def test_defaults_are_least_privilege() -> None:
     ctx = AuthContext(actor=Scope(org="acme", user="alice"))
     assert ctx.role is Role.USER
     assert ctx.acting_user == ""
-    assert ctx.from_oauth is False
-    assert ctx.authorizing_key_fp == ""
+    assert ctx.delegation_id == ""
+    assert ctx.credential_id == ""
+    assert ctx.expires_at is None
 
 
 def test_role_is_str_for_audit_detail() -> None:
@@ -57,6 +61,61 @@ def test_unknown_role_rejected_at_construction() -> None:
     """拼错的角色名在构造点就炸，而不是在权限判断时静默走 else 分支。"""
     with pytest.raises(ValueError):
         Role("superuser")
+
+
+# --- 过期判定 ---
+
+
+def test_no_expiry_never_expires() -> None:
+    """``expires_at=None`` 表示不随上下文过期，不能被读成「已过期」。"""
+    assert AuthContext(actor=Scope(org="acme", user="alice")).is_expired() is False
+
+
+def test_expiry_boundary_is_inclusive() -> None:
+    """到点即失效：``now == expires_at`` 判过期，不留一个刚好等于的放行缝。"""
+    moment = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    ctx = AuthContext(actor=Scope(org="acme", user="alice"), expires_at=moment)
+    assert ctx.is_expired(now=moment) is True
+    assert ctx.is_expired(now=moment - timedelta(seconds=1)) is False
+
+
+# --- RequestSecurityContext ---
+
+
+def test_request_context_attributes_are_read_only() -> None:
+    """``attributes`` 参与 PR2 的授权环境：构造后不能再被任何持有者改写。"""
+    ctx = RequestSecurityContext(
+        auth=AuthContext(actor=Scope(org="acme", user="alice")),
+        attributes={"tenant_tier": "gold"},
+    )
+    with pytest.raises(TypeError):
+        ctx.attributes["tenant_tier"] = "platinum"  # type: ignore[index]
+
+
+def test_request_context_copies_the_source_mapping() -> None:
+    """传入的 dict 事后被改，不能影响已建立的请求上下文。"""
+    source = {"tenant_tier": "gold"}
+    ctx = RequestSecurityContext(
+        auth=AuthContext(actor=Scope(org="acme", user="alice")),
+        attributes=source,
+    )
+    source["tenant_tier"] = "platinum"
+    assert ctx.attributes["tenant_tier"] == "gold"
+
+
+def test_request_context_actor_comes_from_auth() -> None:
+    """actor 只能来自认证产出，不是请求上下文自带的可写字段。"""
+    auth = AuthContext(actor=Scope(org="acme", user="alice"))
+    ctx = RequestSecurityContext(auth=auth, surface=Surface.HTTP)
+    assert ctx.actor == Scope(org="acme", user="alice")
+    with pytest.raises(AttributeError):
+        ctx.actor = Scope(org="evil")  # type: ignore[misc]
+
+
+def test_request_context_surface_defaults_to_internal() -> None:
+    """未声明接入形态时按进程内算，不猜成某个网络 surface。"""
+    ctx = RequestSecurityContext(auth=AuthContext(actor=Scope()))
+    assert ctx.surface is Surface.INTERNAL
 
 
 # --- ContextVar 传播 ---

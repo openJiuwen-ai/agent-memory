@@ -2,7 +2,7 @@
 
 与 ``test_encrypted_kv_store.py`` 同构（同一个假 provider 套路），断言的核心是
 两句：**上层看不出区别，内层看到的全是密文**；以及**装饰器交给 provider 的
-``EncryptionContext`` / AAD 到底绑了什么**——后者是加密能否抵抗「密文搬家」的唯一
+``CryptoContext`` / AAD 到底绑了什么**——后者是加密能否抵抗「密文搬家」的唯一
 依据，只测 roundtrip 的话完全不加密也是绿的。
 
 明文兼容（迁移期读加密上线前的老数据）由 provider 的 ``allow_plaintext`` 控制，
@@ -18,9 +18,10 @@ import json
 
 import pytest
 
-from common.encryption import EncryptionContext, EncryptionProducer, EncryptionProvider
 from common.errors import BackendError, NotFoundError, ValidationError
 from common.factory.factory import Factory
+from common.security.cryptography import CryptographyProducer, CryptographyProvider
+from common.security.types import CryptoContext
 from common.type_def import Scope
 from config.context import AssemblyContext
 from storage.fs import FsProducer
@@ -33,20 +34,20 @@ _PREFIX = b"fake1:"
 _ALICE = Scope(org="acme", space="product", user="alice")
 
 
-class _FakeSecurity(EncryptionProvider):
+class _FakeSecurity(CryptographyProvider):
     """把 AAD 编进密文的假 provider：AAD 对不上就解不开，与真信封同性质。"""
 
     def __init__(self, *, allow_plaintext: bool = True) -> None:
         self.allow_plaintext = allow_plaintext
         self.fail_decrypt = False
-        self.encrypt_calls: list[tuple[EncryptionContext | None, bytes, bytes]] = []
-        self.decrypt_calls: list[tuple[EncryptionContext | None, bytes, bytes]] = []
+        self.encrypt_calls: list[tuple[CryptoContext | None, bytes, bytes]] = []
+        self.decrypt_calls: list[tuple[CryptoContext | None, bytes, bytes]] = []
 
     def encrypt(
         self,
         plaintext: bytes,
         *,
-        context: EncryptionContext | None = None,
+        context: CryptoContext | None = None,
         aad: bytes = b"",
     ) -> bytes:
         self.encrypt_calls.append((context, aad, plaintext))
@@ -56,7 +57,7 @@ class _FakeSecurity(EncryptionProvider):
         self,
         ciphertext: bytes,
         *,
-        context: EncryptionContext | None = None,
+        context: CryptoContext | None = None,
         aad: bytes = b"",
     ) -> bytes:
         self.decrypt_calls.append((context, aad, ciphertext))
@@ -77,7 +78,7 @@ class _FakeSecurity(EncryptionProvider):
         return ciphertext[aad_end:][::-1]
 
 
-@EncryptionProducer.register("fake_encrypted_fs")
+@CryptographyProducer.register("fake_encrypted_fs")
 def _build_fake_security(config):
     return _FakeSecurity(allow_plaintext=bool(config.get("allow_plaintext", True)))
 
@@ -111,7 +112,7 @@ def test_encrypted_fs_store_encrypts_content_and_decrypts_get(tmp_path) -> None:
     assert context is not None
     assert context.scope == _ALICE
     assert context.purpose == "fs_object"
-    assert context.metadata["ref"] == "a/b/x.bin"
+    assert context.object_id == "a/b/x.bin"  # 对象标识是专有字段，不塞 metadata
 
 
 def test_encrypted_fs_store_aad_binds_all_five_scope_dimensions(tmp_path) -> None:
@@ -230,12 +231,12 @@ def test_encrypted_fs_store_factory_builds_wrapper_from_named_dependencies(tmp_p
     Factory.reset_all()
     ctx = AssemblyContext.from_dict(
         {
-            "encryption": {"default": "fake_encrypted_fs"},
+            "cryptography": {"default": "fake_encrypted_fs"},
             "fs_store": {
                 "raw": {"target": "local", "params": {"root": str(tmp_path / "files")}},
                 "default": {
                     "target": "encrypted",
-                    "params": {"inner": "raw", "encryption": "default"},
+                    "params": {"inner": "raw", "cryptography": "default"},
                 },
             },
         }
@@ -256,8 +257,8 @@ def test_encrypted_fs_store_factory_requires_inner_dependency() -> None:
     Factory.reset_all()
     ctx = AssemblyContext.from_dict(
         {
-            "encryption": {"default": "fake_encrypted_fs"},
-            "fs_store": {"default": {"target": "encrypted", "params": {"encryption": "default"}}},
+            "cryptography": {"default": "fake_encrypted_fs"},
+            "fs_store": {"default": {"target": "encrypted", "params": {"cryptography": "default"}}},
         }
     )
 
@@ -467,12 +468,12 @@ def test_encrypted_fs_store_factory_accepts_max_plaintext_bytes(tmp_path) -> Non
     Factory.reset_all()
     ctx = AssemblyContext.from_dict(
         {
-            "encryption": {"default": "fake_encrypted_fs"},
+            "cryptography": {"default": "fake_encrypted_fs"},
             "fs_store": {
                 "raw": {"target": "local", "params": {"root": str(tmp_path / "files")}},
                 "default": {
                     "target": "encrypted",
-                    "params": {"inner": "raw", "encryption": "default", "max_plaintext_bytes": 8},
+                    "params": {"inner": "raw", "cryptography": "default", "max_plaintext_bytes": 8},
                 },
             },
         }
@@ -485,11 +486,11 @@ def test_encrypted_fs_store_factory_accepts_max_plaintext_bytes(tmp_path) -> Non
     Factory.reset_all()
     ctx_bad = AssemblyContext.from_dict(
         {
-            "encryption": {"default": "fake_encrypted_fs"},
+            "cryptography": {"default": "fake_encrypted_fs"},
             "fs_store": {
                 "default": {
                     "target": "encrypted",
-                    "params": {"encryption": "default", "max_plaintext_bytes": 0},
+                    "params": {"cryptography": "default", "max_plaintext_bytes": 0},
                 }
             },
         }
