@@ -40,6 +40,12 @@
 4. `Authenticator.mode()` 返回**开放字符串**而非封闭枚举。核心不得按该值分支——需要
    分支的行为差异必须由 capability 方法显式声明，第三方实现无需改核心即可接入。
 
+- **凭据在线复核**：`PrincipalKeyStore.is_revoked` 是可撤销凭据的契约方法；
+  `ApiKeyAuthenticator` 在认证期校验其已覆盖（第三方缺实现即时失败，不等到首个授权请求
+  500）。PEP 持有 `CredentialStatusRegistry`，按 `credential_type` 路由到发证 Store，在每次
+  授权前复核 `AuthContext` 未撤销--撤销前缓存的上下文撤销后立即失效。`AuthContext` 保持纯
+  数据值对象，撤销复核不进值对象（F05 §认证不变量 6、§决策顺序 1）。
+
 ### 依据 capability 做安全决策
 
 5. `Authenticator.requires_loopback_binding()` 默认返回 `True`。只有实现显式声明可远程
@@ -154,5 +160,7 @@ key_provider:
 - EncryptedKVStore / EncryptedFSStore 只负责存储边界接线，密码学实现归 `common/security/cryptography`。
 - `FsProducer` 已能独立装配 FSStore，但当前 `build_kernel` 主业务链路没有 FSStore 消费点；
   仅写 YAML 不会自动让记忆资产经过 FS 加密，接入前须先定义资产写入/读取消费者和 API 契约。
-- 内置 `LocalKeyProvider` 是单代实现：写出一律 v2 信封，v1 只读兼容。跨代轮换（keyring 保留
-  旧 epoch、按信封自述的 key ref 选密钥）尚未实现。
+- 内置 `LocalKeyProvider` 支持多代轮换：`rotate()` 生成新随机根密钥并推进 epoch，旧 epoch
+  根密钥保留在进程内字典供 `unwrap` 解开历史信封（写出一律 v2 信封，v1 只读兼容）。新根
+  密钥**不持久化**--进程重启回到配置声明的初始密钥，轮换后写入的信封在重启后不可读；
+  需要跨重启保留轮换状态应换 KMS/Vault，由其管理历史 epoch 验证材料。

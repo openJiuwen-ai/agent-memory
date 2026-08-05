@@ -30,7 +30,7 @@
 | `feature_extractor/` | FeatureExtractor 插件目录 |
 | `llm/` | LLM 插件目录（`echo` / `openai` / `dashscope`） |
 | `reranker/` | Reranker 插件目录 |
-| `security/` | 安全能力的唯一归属地（F05）：`types.py`（AuthContext/RequestSecurityContext/CryptoContext/Role/Surface/Credentials，ContextVar 传播）、`runtime.py`（SecurityRuntime）、`authentication/`（Authenticator + PrincipalKeyStore，内置 dev/trusted/api_key + memory Argon2id）、`protection/`（RateLimiter/WorkloadGuard/BindingPolicy，内置 token_bucket/unlimited/semaphore/loopback）、`cryptography/`（CryptographyProvider + KeyProvider，内置 `local` ENC1 AES-GCM）。注册入口 `security/bootstrap.py::register_security()` |
+| `security/` | 安全能力的唯一归属地（F05）：`types.py`（AuthContext/RequestSecurityContext/CryptoContext/Role/Surface/Credentials，ContextVar 传播）、`runtime.py`（SecurityRuntime）、`authentication/`（Authenticator + PrincipalKeyStore + CredentialStatusRegistry，内置 dev/trusted/api_key + memory Argon2id；`PrincipalKeyStore.is_revoked` 供 PEP 在线复核撤销，`CredentialStatusRegistry` 由 PEP 持有按 credential_type 路由撤销查询，不放 Authorizer）、`protection/`（RateLimiter/WorkloadGuard/BindingPolicy，内置 token_bucket/unlimited/semaphore/loopback）、`cryptography/`（CryptographyProvider + KeyProvider（含 `rotate` 轮换契约），内置 `local` ENC1 AES-GCM）。注册入口 `security/bootstrap.py::register_security()` |
 | `audit/` | AuditLogger 插件目录 |
 
 ## 行为铁律
