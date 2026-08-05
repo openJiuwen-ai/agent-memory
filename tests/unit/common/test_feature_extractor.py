@@ -90,8 +90,9 @@ def _make_hanlp_extractor():
     )
 
     return HanlpFeatureExtractor(
-        task_name="CTB9_POS_ERNIE_1.0",
-        ner_task_name="MSRA_NER_BERT_ELECTRA_SMALL",
+        tok_task_name="FINE_ELECTRA_SMALL_ZH",
+        task_name="CTB9_POS_ELECTRA_SMALL",
+        ner_task_name="MSRA_NER_ELECTRA_SMALL_ZH",
         fallback_to_tokenizer=True,
     )
 
@@ -102,8 +103,9 @@ def _make_hanlp_extractor_no_fallback():
     )
 
     return HanlpFeatureExtractor(
-        task_name="CTB9_POS_ERNIE_1.0",
-        ner_task_name="MSRA_NER_BERT_ELECTRA_SMALL",
+        tok_task_name="FINE_ELECTRA_SMALL_ZH",
+        task_name="CTB9_POS_ELECTRA_SMALL",
+        ner_task_name="MSRA_NER_ELECTRA_SMALL_ZH",
         fallback_to_tokenizer=False,
     )
 
