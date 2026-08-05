@@ -88,6 +88,30 @@ def _start_server():
     return httpd, port
 
 
+def test_public_serve_rejects_non_loopback_before_socket_bind(monkeypatch) -> None:
+    """直接调用公开 serve() 也必须执行 DEV 绑定 guard。"""
+    profiles = importlib.import_module("profiles")
+    http_mod = importlib.import_module("bootstrap.http_server.__main__")
+    srv = http_mod.HttpServer.build(profiles.load_config([profiles.OFFLINE]))
+
+    def unexpected_bind(*_args, **_kwargs):
+        raise AssertionError("guard 必须在构造监听 socket 前执行")
+
+    monkeypatch.setattr(http_mod, "_BoundedThreadingHTTPServer", unexpected_bind)
+    with pytest.raises(importlib.import_module("common.errors").ValidationError):
+        srv.serve("0.0.0.0", 0)
+
+
+def test_public_serve_allows_real_loopback_bind(monkeypatch) -> None:
+    """安全地址仍走真实 socket bind；仅跳过阻塞的 serve_forever。"""
+    profiles = importlib.import_module("profiles")
+    http_mod = importlib.import_module("bootstrap.http_server.__main__")
+    srv = http_mod.HttpServer.build(profiles.load_config([profiles.OFFLINE]))
+    monkeypatch.setattr(http_mod._BoundedThreadingHTTPServer, "serve_forever", lambda _self: None)
+
+    srv.serve("127.0.0.1", 0)
+
+
 def _post(port: int, body: bytes, content_length: str | None = None) -> tuple[int, dict]:
     s = socket.create_connection(("127.0.0.1", port), timeout=5)
     try:

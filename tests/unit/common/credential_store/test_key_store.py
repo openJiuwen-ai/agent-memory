@@ -1,4 +1,4 @@
-"""security.key_store: 签发、解析、撤销、常时间与「不存明文」回归防线。"""
+"""common.credential_store.base: 签发、解析、撤销、常时间与「不存明文」回归防线。"""
 
 from __future__ import annotations
 
@@ -10,12 +10,12 @@ from statistics import median
 
 import pytest
 
+from common.bootstrap import register_plugins
+from common.credential_store.base import KeyStoreProducer, fingerprint, generate_api_key
 from common.errors import PermissionDeniedError, ValidationError
 from common.type_def.auth import Role
 from common.type_def.scope import Scope
 from config.context import AssemblyContext
-from security.bootstrap import register_security
-from security.key_store import KeyStoreProducer, fingerprint, generate_api_key
 
 pytestmark = pytest.mark.unit
 
@@ -23,7 +23,7 @@ pytestmark = pytest.mark.unit
 @pytest.fixture(scope="module")
 def store():
     """module 作用域：Argon2 的 dummy hash 每次构造约 200ms，不必每条测试重算。"""
-    register_security()
+    register_plugins()
     return KeyStoreProducer.build("memory", {}, AssemblyContext())
 
 

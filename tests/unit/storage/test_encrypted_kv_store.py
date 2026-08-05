@@ -4,9 +4,9 @@ import json
 
 import pytest
 
+from common.encryption import EncryptionContext, EncryptionProducer, EncryptionProvider
 from common.errors import BackendError, ValidationError
 from common.factory.factory import Factory
-from common.security import SecurityContext, SecurityProducer, SecurityProvider
 from common.type_def import MESSAGES_KEY_PREFIX, Scope, memory_key
 from config.context import AssemblyContext
 from storage.kv import KvProducer
@@ -18,18 +18,18 @@ _PREFIX = b"fake1:"
 pytestmark = pytest.mark.unit
 
 
-class _FakeSecurity(SecurityProvider):
+class _FakeSecurity(EncryptionProvider):
     def __init__(self, *, allow_plaintext: bool = True) -> None:
         self.allow_plaintext = allow_plaintext
         self.fail_decrypt = False
-        self.encrypt_calls: list[tuple[SecurityContext | None, bytes, bytes]] = []
-        self.decrypt_calls: list[tuple[SecurityContext | None, bytes, bytes]] = []
+        self.encrypt_calls: list[tuple[EncryptionContext | None, bytes, bytes]] = []
+        self.decrypt_calls: list[tuple[EncryptionContext | None, bytes, bytes]] = []
 
     def encrypt(
         self,
         plaintext: bytes,
         *,
-        context: SecurityContext | None = None,
+        context: EncryptionContext | None = None,
         aad: bytes = b"",
     ) -> bytes:
         self.encrypt_calls.append((context, aad, plaintext))
@@ -39,7 +39,7 @@ class _FakeSecurity(SecurityProvider):
         self,
         ciphertext: bytes,
         *,
-        context: SecurityContext | None = None,
+        context: EncryptionContext | None = None,
         aad: bytes = b"",
     ) -> bytes:
         self.decrypt_calls.append((context, aad, ciphertext))
@@ -50,24 +50,24 @@ class _FakeSecurity(SecurityProvider):
                 return ciphertext
             raise RuntimeError("missing encrypted envelope")
         offset = len(_PREFIX)
-        aad_len = int.from_bytes(ciphertext[offset: offset + 4], "big")
+        aad_len = int.from_bytes(ciphertext[offset : offset + 4], "big")
         offset += 4
-        embedded_aad = ciphertext[offset: offset + aad_len]
+        embedded_aad = ciphertext[offset : offset + aad_len]
         if embedded_aad != aad:
             raise RuntimeError("aad mismatch")
-        return ciphertext[offset + aad_len:][::-1]
+        return ciphertext[offset + aad_len :][::-1]
 
 
-@SecurityProducer.register("fake_encrypted_kv")
+@EncryptionProducer.register("fake_encrypted_kv")
 def _build_fake_security(config):
     return _FakeSecurity(allow_plaintext=bool(config.get("allow_plaintext", True)))
 
 
 def _kv(
-    security: _FakeSecurity | None = None,
+    encryption: _FakeSecurity | None = None,
 ) -> tuple[EncryptedKVStore, InMemoryKVStore, _FakeSecurity]:
     raw = InMemoryKVStore()
-    fake = security or _FakeSecurity()
+    fake = encryption or _FakeSecurity()
     return EncryptedKVStore(raw, fake), raw, fake
 
 
@@ -76,7 +76,7 @@ def _aad_payload(aad: bytes) -> dict:
 
 
 def test_encrypted_kv_store_encrypts_raw_value_and_decrypts_get() -> None:
-    kv, raw, security = _kv()
+    kv, raw, encryption = _kv()
     scope = Scope(org="acme", user="alice")
     key = memory_key("unit-1")
 
@@ -87,7 +87,7 @@ def test_encrypted_kv_store_encrypts_raw_value_and_decrypts_get() -> None:
     assert b"secret memory" not in raw_value
     assert kv.get(scope, key) == b"secret memory"
 
-    context, aad, plaintext = security.encrypt_calls[0]
+    context, aad, plaintext = encryption.encrypt_calls[0]
     assert plaintext == b"secret memory"
     assert context is not None
     assert context.scope == scope
@@ -101,7 +101,7 @@ def test_encrypted_kv_store_encrypts_raw_value_and_decrypts_get() -> None:
 
 
 def test_encrypted_kv_store_list_decrypts_every_value_with_each_key_aad() -> None:
-    kv, _, security = _kv()
+    kv, _, encryption = _kv()
     scope = Scope(org="acme", user="alice")
 
     kv.insert(scope, memory_key("u1"), b"one")
@@ -111,15 +111,12 @@ def test_encrypted_kv_store_list_decrypts_every_value_with_each_key_aad() -> Non
 
     assert listed[memory_key("u1")] == b"one"
     assert listed[f"{MESSAGES_KEY_PREFIX}m1"] == b"two"
-    purposes = [
-        _aad_payload(aad)["purpose"]
-        for _, aad, _ in security.decrypt_calls
-    ]
+    purposes = [_aad_payload(aad)["purpose"] for _, aad, _ in encryption.decrypt_calls]
     assert purposes == ["memory_unit", "raw_message"]
 
 
 def test_encrypted_kv_store_passes_through_exists_delete_and_scopes() -> None:
-    kv, _, security = _kv()
+    kv, _, encryption = _kv()
     scope = Scope(org="acme", user="alice")
     key = "plain-key"
 
@@ -130,13 +127,13 @@ def test_encrypted_kv_store_passes_through_exists_delete_and_scopes() -> None:
     kv.delete(scope, key)
 
     assert not kv.exists(scope, key)
-    assert len(security.encrypt_calls) == 1
-    assert not security.decrypt_calls
+    assert len(encryption.encrypt_calls) == 1
+    assert not encryption.decrypt_calls
 
 
 def test_encrypted_kv_store_supports_plaintext_compatibility_via_provider() -> None:
-    security = _FakeSecurity(allow_plaintext=True)
-    kv, raw, _ = _kv(security)
+    encryption = _FakeSecurity(allow_plaintext=True)
+    kv, raw, _ = _kv(encryption)
     scope = Scope(org="acme", user="alice")
 
     raw.insert(scope, "legacy", b"legacy plaintext")
@@ -145,10 +142,10 @@ def test_encrypted_kv_store_supports_plaintext_compatibility_via_provider() -> N
 
 
 def test_encrypted_kv_store_decryption_failure_is_fail_closed() -> None:
-    kv, _, security = _kv()
+    kv, _, encryption = _kv()
     scope = Scope(org="acme", user="alice")
     kv.insert(scope, "key", b"value")
-    security.fail_decrypt = True
+    encryption.fail_decrypt = True
 
     try:
         kv.get(scope, "key")
@@ -161,14 +158,14 @@ def test_encrypted_kv_store_factory_builds_wrapper_from_named_dependencies() -> 
     Factory.reset_all()
     ctx = AssemblyContext.from_dict(
         {
-            "security": {"default": "fake_encrypted_kv"},
+            "encryption": {"default": "fake_encrypted_kv"},
             "kv_store": {
                 "raw": "memory",
                 "default": {
                     "target": "encrypted",
                     "params": {
                         "raw_kv_store": "raw",
-                        "security": "default",
+                        "encryption": "default",
                     },
                 },
             },
@@ -187,11 +184,11 @@ def test_encrypted_kv_store_factory_requires_raw_dependency() -> None:
     Factory.reset_all()
     ctx = AssemblyContext.from_dict(
         {
-            "security": {"default": "fake_encrypted_kv"},
+            "encryption": {"default": "fake_encrypted_kv"},
             "kv_store": {
                 "default": {
                     "target": "encrypted",
-                    "params": {"security": "default"},
+                    "params": {"encryption": "default"},
                 }
             },
         }

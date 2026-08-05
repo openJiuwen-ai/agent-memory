@@ -1,4 +1,4 @@
-"""security.rate_limit：令牌桶限流（§8.1）。
+"""common.admission.base：令牌桶限流（§8.1）。
 
 测的是行为而非内部状态：桶的 tokens 字段是实现细节，「第 N 个请求被拒、
 等一会儿又能过」才是契约。时间相关的断言全部注入假时钟，不用 sleep——
@@ -13,20 +13,20 @@ import threading
 
 import pytest
 
+from common.admission.admission_impl.token_bucket_limiter import TokenBucketLimiter
+from common.admission.base import RateLimitProducer
+from common.bootstrap import register_plugins
 from common.errors import ValidationError
 from config.context import AssemblyContext
-from security.bootstrap import register_security
-from security.rate_limit import RateLimitProducer
-from security.rate_limit_impl.token_bucket_limiter import TokenBucketLimiter
 
 pytestmark = pytest.mark.unit
 
-_MONOTONIC = "security.rate_limit_impl.token_bucket_limiter.time.monotonic"
+_MONOTONIC = "common.admission.admission_impl.token_bucket_limiter.time.monotonic"
 
 
 @pytest.fixture(autouse=True, scope="module")
 def _registered():
-    register_security()
+    register_plugins()
 
 
 def _limiter(capacity=3, refill_per_sec=1.0, max_tracked=100) -> TokenBucketLimiter:

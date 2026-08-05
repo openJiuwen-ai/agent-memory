@@ -6,6 +6,8 @@
 被调用过。
 """
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import os
@@ -22,16 +24,22 @@ if _CORE_DIR not in sys.path:
 
 from auth_middleware import authenticated, credentials_from_headers  # noqa: E402
 
+from common.authentication.authentication_impl.api_key_authenticator import (
+    ApiKeyAuthenticator,  # noqa: E402
+)
+from common.authentication.authentication_impl.dev_authenticator import (
+    DevAuthenticator,  # noqa: E402
+)
+from common.authentication.authentication_impl.trusted_authenticator import (
+    TrustedAuthenticator,  # noqa: E402
+)
+from common.authentication.types import Credentials  # noqa: E402
+from common.bootstrap import register_plugins  # noqa: E402
+from common.credential_store.base import KeyStoreProducer  # noqa: E402
 from common.errors import AuthenticationError, RateLimitedError  # noqa: E402
 from common.type_def.auth import Role, get_current  # noqa: E402
 from common.type_def.scope import Scope  # noqa: E402
 from config.context import AssemblyContext  # noqa: E402
-from security.authenticator_impl.api_key_authenticator import ApiKeyAuthenticator  # noqa: E402
-from security.authenticator_impl.dev_authenticator import DevAuthenticator  # noqa: E402
-from security.authenticator_impl.trusted_authenticator import TrustedAuthenticator  # noqa: E402
-from security.bootstrap import register_security  # noqa: E402
-from security.key_store import KeyStoreProducer  # noqa: E402
-from security.types import Credentials  # noqa: E402
 
 pytestmark = pytest.mark.unit
 
@@ -40,7 +48,7 @@ _ALICE = Scope(org="acme", user="alice")
 
 @pytest.fixture(scope="module")
 def key_store():
-    register_security()
+    register_plugins()
     return KeyStoreProducer.build("memory", {}, AssemblyContext())
 
 
@@ -327,7 +335,7 @@ def test_audit_backend_failure_does_not_mask_401(key_store) -> None:
 
 def test_argon2_guard_release_on_success() -> None:
     """guard 在认证成功后必须释放，否则槽位泄漏把后续请求也堵死。"""
-    from security.concurrency_guard import Argon2Guard
+    from common.admission.concurrency_guard import Argon2Guard
 
     guard = Argon2Guard(max_concurrent=1)
     auth = _CountingAuth()
@@ -341,7 +349,7 @@ def test_argon2_guard_release_on_success() -> None:
 
 def test_argon2_guard_release_on_auth_failure() -> None:
     """认证失败也要释放（finally）。"""
-    from security.concurrency_guard import Argon2Guard
+    from common.admission.concurrency_guard import Argon2Guard
 
     guard = Argon2Guard(max_concurrent=1)
 
@@ -362,7 +370,7 @@ def test_argon2_guard_release_on_auth_failure() -> None:
 
 def test_argon2_guard_blocks_when_slots_exhausted() -> None:
     """耗尽并发槽返回 429，不进入 authenticate。"""
-    from security.concurrency_guard import Argon2Guard
+    from common.admission.concurrency_guard import Argon2Guard
 
     guard = Argon2Guard(max_concurrent=1)
     # 占满唯一槽位
@@ -377,7 +385,7 @@ def test_argon2_guard_blocks_when_slots_exhausted() -> None:
 
 def test_argon2_guard_released_on_rate_limit_before_it() -> None:
     """IP 桶先挡住时 guard 不该 acquire（两层独立）。"""
-    from security.concurrency_guard import Argon2Guard
+    from common.admission.concurrency_guard import Argon2Guard
 
     guard = Argon2Guard(max_concurrent=1)
     with pytest.raises(RateLimitedError):
@@ -399,7 +407,7 @@ def test_argon2_guard_none_means_unlimited() -> None:
 
 def test_argon2_guard_rejects_zero_max_concurrent() -> None:
     """max_concurrent=0 是非法，装配期炸，不用 or 吞成默认（审计验收 P2-guard）。"""
-    from security.concurrency_guard import Argon2Guard, reset_guard
+    from common.admission.concurrency_guard import Argon2Guard, reset_guard
 
     reset_guard()
     with pytest.raises(ValueError):
@@ -409,7 +417,7 @@ def test_argon2_guard_rejects_zero_max_concurrent() -> None:
 
 def test_argon2_guard_conflicting_config_raises() -> None:
     """同进程重复装配不同 max_concurrent 报错，不静默忽略（审计验收 P2-guard）。"""
-    from security.concurrency_guard import default_argon2_guard, reset_guard
+    from common.admission.concurrency_guard import default_argon2_guard, reset_guard
 
     reset_guard()
     default_argon2_guard(max_concurrent=2)
@@ -431,7 +439,7 @@ def test_argon2_guard_concurrency_is_actually_bounded() -> None:
     """
     import threading
 
-    from security.concurrency_guard import Argon2Guard
+    from common.admission.concurrency_guard import Argon2Guard
 
     guard = Argon2Guard(max_concurrent=2)
     in_flight = 0

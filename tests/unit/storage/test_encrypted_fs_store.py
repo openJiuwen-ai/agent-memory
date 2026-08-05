@@ -2,7 +2,7 @@
 
 与 ``test_encrypted_kv_store.py`` 同构（同一个假 provider 套路），断言的核心是
 两句：**上层看不出区别，内层看到的全是密文**；以及**装饰器交给 provider 的
-``SecurityContext`` / AAD 到底绑了什么**——后者是加密能否抵抗「密文搬家」的唯一
+``EncryptionContext`` / AAD 到底绑了什么**——后者是加密能否抵抗「密文搬家」的唯一
 依据，只测 roundtrip 的话完全不加密也是绿的。
 
 明文兼容（迁移期读加密上线前的老数据）由 provider 的 ``allow_plaintext`` 控制，
@@ -18,9 +18,9 @@ import json
 
 import pytest
 
+from common.encryption import EncryptionContext, EncryptionProducer, EncryptionProvider
 from common.errors import BackendError, NotFoundError, ValidationError
 from common.factory.factory import Factory
-from common.security import SecurityContext, SecurityProducer, SecurityProvider
 from common.type_def import Scope
 from config.context import AssemblyContext
 from storage.fs import FsProducer
@@ -33,20 +33,20 @@ _PREFIX = b"fake1:"
 _ALICE = Scope(org="acme", space="product", user="alice")
 
 
-class _FakeSecurity(SecurityProvider):
+class _FakeSecurity(EncryptionProvider):
     """把 AAD 编进密文的假 provider：AAD 对不上就解不开，与真信封同性质。"""
 
     def __init__(self, *, allow_plaintext: bool = True) -> None:
         self.allow_plaintext = allow_plaintext
         self.fail_decrypt = False
-        self.encrypt_calls: list[tuple[SecurityContext | None, bytes, bytes]] = []
-        self.decrypt_calls: list[tuple[SecurityContext | None, bytes, bytes]] = []
+        self.encrypt_calls: list[tuple[EncryptionContext | None, bytes, bytes]] = []
+        self.decrypt_calls: list[tuple[EncryptionContext | None, bytes, bytes]] = []
 
     def encrypt(
         self,
         plaintext: bytes,
         *,
-        context: SecurityContext | None = None,
+        context: EncryptionContext | None = None,
         aad: bytes = b"",
     ) -> bytes:
         self.encrypt_calls.append((context, aad, plaintext))
@@ -56,7 +56,7 @@ class _FakeSecurity(SecurityProvider):
         self,
         ciphertext: bytes,
         *,
-        context: SecurityContext | None = None,
+        context: EncryptionContext | None = None,
         aad: bytes = b"",
     ) -> bytes:
         self.decrypt_calls.append((context, aad, ciphertext))
@@ -77,16 +77,16 @@ class _FakeSecurity(SecurityProvider):
         return ciphertext[aad_end:][::-1]
 
 
-@SecurityProducer.register("fake_encrypted_fs")
+@EncryptionProducer.register("fake_encrypted_fs")
 def _build_fake_security(config):
     return _FakeSecurity(allow_plaintext=bool(config.get("allow_plaintext", True)))
 
 
 def _fs(
-    tmp_path, security: _FakeSecurity | None = None
+    tmp_path, encryption: _FakeSecurity | None = None
 ) -> tuple[EncryptedFSStore, LocalFSStore, _FakeSecurity]:
     inner = LocalFSStore(root=str(tmp_path / "files"))
-    fake = security or _FakeSecurity()
+    fake = encryption or _FakeSecurity()
     return EncryptedFSStore(inner, fake, max_plaintext_bytes=64 * 1024 * 1024), inner, fake
 
 
@@ -95,7 +95,7 @@ def _aad_payload(aad: bytes) -> dict:
 
 
 def test_encrypted_fs_store_encrypts_content_and_decrypts_get(tmp_path) -> None:
-    fs, inner, security = _fs(tmp_path)
+    fs, inner, encryption = _fs(tmp_path)
 
     ref = fs.insert(_ALICE, "a/b/x.bin", io.BytesIO(b"secret payload"))
 
@@ -106,7 +106,7 @@ def test_encrypted_fs_store_encrypts_content_and_decrypts_get(tmp_path) -> None:
     with fs.get(_ALICE, ref) as fh:
         assert fh.read() == b"secret payload"
 
-    context, aad, plaintext = security.encrypt_calls[0]
+    context, aad, plaintext = encryption.encrypt_calls[0]
     assert plaintext == b"secret payload"
     assert context is not None
     assert context.scope == _ALICE
@@ -121,12 +121,12 @@ def test_encrypted_fs_store_aad_binds_all_five_scope_dimensions(tmp_path) -> Non
     AAD 是密码学的，绕不过——前提是它真的绑满了。``space`` 是 ``Scope`` 五维化时
     新加的维度，漏了它同 org 下的两个 space 就能互读。
     """
-    fs, _, security = _fs(tmp_path)
+    fs, _, encryption = _fs(tmp_path)
     scope = Scope(org="acme", space="product", user="alice", agent="bot", session="s1")
 
     fs.insert(scope, "x.bin", io.BytesIO(b"v"))
 
-    payload = _aad_payload(security.encrypt_calls[0][1])
+    payload = _aad_payload(encryption.encrypt_calls[0][1])
     assert payload["scope"] == {
         "org": "acme",
         "space": "product",
@@ -185,7 +185,7 @@ def test_encrypted_fs_store_stat_reports_ciphertext_size(tmp_path) -> None:
 
 
 def test_encrypted_fs_store_passes_through_missing_and_delete(tmp_path) -> None:
-    fs, _, security = _fs(tmp_path)
+    fs, _, encryption = _fs(tmp_path)
 
     with pytest.raises(NotFoundError):
         fs.get(_ALICE, "nope")
@@ -194,7 +194,7 @@ def test_encrypted_fs_store_passes_through_missing_and_delete(tmp_path) -> None:
     fs.delete(_ALICE, "x.bin")  # 幂等
     with pytest.raises(NotFoundError):
         fs.get(_ALICE, "x.bin")
-    assert not security.decrypt_calls  # delete 不经加解密
+    assert not encryption.decrypt_calls  # delete 不经加解密
 
 
 def test_encrypted_fs_store_supports_plaintext_compatibility_via_provider(tmp_path) -> None:
@@ -218,9 +218,9 @@ def test_encrypted_fs_store_write_always_encrypts_even_when_plaintext_allowed(tm
 
 
 def test_encrypted_fs_store_decryption_failure_is_fail_closed(tmp_path) -> None:
-    fs, _, security = _fs(tmp_path)
+    fs, _, encryption = _fs(tmp_path)
     fs.insert(_ALICE, "x.bin", io.BytesIO(b"v"))
-    security.fail_decrypt = True
+    encryption.fail_decrypt = True
 
     with pytest.raises(BackendError):
         fs.get(_ALICE, "x.bin")
@@ -230,12 +230,12 @@ def test_encrypted_fs_store_factory_builds_wrapper_from_named_dependencies(tmp_p
     Factory.reset_all()
     ctx = AssemblyContext.from_dict(
         {
-            "security": {"default": "fake_encrypted_fs"},
+            "encryption": {"default": "fake_encrypted_fs"},
             "fs_store": {
                 "raw": {"target": "local", "params": {"root": str(tmp_path / "files")}},
                 "default": {
                     "target": "encrypted",
-                    "params": {"inner": "raw", "security": "default"},
+                    "params": {"inner": "raw", "encryption": "default"},
                 },
             },
         }
@@ -256,8 +256,8 @@ def test_encrypted_fs_store_factory_requires_inner_dependency() -> None:
     Factory.reset_all()
     ctx = AssemblyContext.from_dict(
         {
-            "security": {"default": "fake_encrypted_fs"},
-            "fs_store": {"default": {"target": "encrypted", "params": {"security": "default"}}},
+            "encryption": {"default": "fake_encrypted_fs"},
+            "fs_store": {"default": {"target": "encrypted", "params": {"encryption": "default"}}},
         }
     )
 
@@ -266,7 +266,7 @@ def test_encrypted_fs_store_factory_requires_inner_dependency() -> None:
 
 
 def test_encrypted_fs_is_registered_by_storage_bootstrap() -> None:
-    """``api.build_kernel`` 只调 ``register_backends()``，从不调 ``register_security()``。
+    """``api.build_kernel`` 只调 ``register_backends()``，从不调 ``register_plugins()``。
 
     装饰器住在 storage 下就是为了这个：注册若挂在别处，不经该装配路径会得到
     「未注册的实现 'encrypted'」——一个只在部分入口出现的故障。
@@ -424,7 +424,7 @@ def test_encrypted_fs_store_rejects_oversized_plaintext_after_decrypt(tmp_path) 
         def decrypt(self, ciphertext, *, context=None, aad=b""):
             return b"y" * 100  # 远超 max_plaintext_bytes=4
 
-    fs, inner, fake = _fs(tmp_path, security=_InflatingSecurity())
+    fs, inner, fake = _fs(tmp_path, encryption=_InflatingSecurity())
     fs._max_plaintext_bytes = 4
     # 先正常写入一个小文件
     ref = fs.insert(_ALICE, "ok.bin", io.BytesIO(b"ok"))
@@ -467,12 +467,12 @@ def test_encrypted_fs_store_factory_accepts_max_plaintext_bytes(tmp_path) -> Non
     Factory.reset_all()
     ctx = AssemblyContext.from_dict(
         {
-            "security": {"default": "fake_encrypted_fs"},
+            "encryption": {"default": "fake_encrypted_fs"},
             "fs_store": {
                 "raw": {"target": "local", "params": {"root": str(tmp_path / "files")}},
                 "default": {
                     "target": "encrypted",
-                    "params": {"inner": "raw", "security": "default", "max_plaintext_bytes": 8},
+                    "params": {"inner": "raw", "encryption": "default", "max_plaintext_bytes": 8},
                 },
             },
         }
@@ -485,11 +485,11 @@ def test_encrypted_fs_store_factory_accepts_max_plaintext_bytes(tmp_path) -> Non
     Factory.reset_all()
     ctx_bad = AssemblyContext.from_dict(
         {
-            "security": {"default": "fake_encrypted_fs"},
+            "encryption": {"default": "fake_encrypted_fs"},
             "fs_store": {
                 "default": {
                     "target": "encrypted",
-                    "params": {"security": "default", "max_plaintext_bytes": 0},
+                    "params": {"encryption": "default", "max_plaintext_bytes": 0},
                 }
             },
         }

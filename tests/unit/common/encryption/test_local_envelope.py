@@ -4,21 +4,21 @@ import stat
 
 import pytest
 
-import common.security.security_impl
-from common.factory.factory import Factory
-from common.security import (
+import common.encryption.encryption_impl
+from common.encryption import (
     AuthenticationFailedError,
     CorruptedCiphertextError,
+    EncryptionContext,
+    EncryptionProducer,
     InvalidMagicError,
     KeyMismatchError,
-    SecurityContext,
-    SecurityProducer,
 )
-from common.security.security_impl.local_envelope_security_provider import (
+from common.encryption.encryption_impl.local_envelope import (
     ENVELOPE_MAGIC,
-    LocalEnvelopeSecurityProvider,
+    LocalEnvelopeEncryptionProvider,
     LocalKeyProvider,
 )
+from common.factory.factory import Factory
 from common.type_def import Scope
 from config import AssemblyContext
 
@@ -32,16 +32,16 @@ def _context(
     org: str = "acme",
     user: str = "alice",
     purpose: str = "memory_unit",
-) -> SecurityContext:
-    return SecurityContext(
+) -> EncryptionContext:
+    return EncryptionContext(
         scope=Scope(org=org, user=user),
         purpose=purpose,
         metadata={"key": "/memory/u1"},
     )
 
 
-def _provider_from_hex(*, allow_plaintext: bool = True) -> LocalEnvelopeSecurityProvider:
-    return LocalEnvelopeSecurityProvider(
+def _provider_from_hex(*, allow_plaintext: bool = True) -> LocalEnvelopeEncryptionProvider:
+    return LocalEnvelopeEncryptionProvider(
         LocalKeyProvider(key_hex=_KEY_HEX),
         allow_plaintext=allow_plaintext,
     )
@@ -49,7 +49,7 @@ def _provider_from_hex(*, allow_plaintext: bool = True) -> LocalEnvelopeSecurity
 
 def test_local_security_provider_encrypts_enc1_and_round_trips(tmp_path) -> None:
     key_file = tmp_path / "master.key"
-    provider = LocalEnvelopeSecurityProvider(LocalKeyProvider(key_file=str(key_file)))
+    provider = LocalEnvelopeEncryptionProvider(LocalKeyProvider(key_file=str(key_file)))
     context = _context()
 
     ciphertext = provider.encrypt(b"secret payload", context=context, aad=b"kv:a")
@@ -82,7 +82,7 @@ def test_local_security_provider_defaults_to_strict_not_plaintext() -> None:
     默认 True 时，拥有底层存储写权限的攻击者可用任意明文替换密文，绕过 AES-GCM
     tag 与 AAD。迁移期读旧明文须显式 opt-in（allow_plaintext=true）。
     """
-    provider = LocalEnvelopeSecurityProvider(LocalKeyProvider(key_hex=_KEY_HEX))
+    provider = LocalEnvelopeEncryptionProvider(LocalKeyProvider(key_hex=_KEY_HEX))
 
     with pytest.raises(InvalidMagicError):
         provider.decrypt(b"legacy plaintext", context=_context())
@@ -114,12 +114,12 @@ def test_local_security_provider_rejects_corrupted_envelope() -> None:
 
 
 def test_security_producer_builds_local_provider_from_config(tmp_path) -> None:
-    assert common.security.security_impl.SecurityProducer is SecurityProducer
+    assert common.encryption.encryption_impl.EncryptionProducer is EncryptionProducer
     Factory.reset_all()
     key_file = tmp_path / "configured.key"
     ctx = AssemblyContext.from_dict(
         {
-            "security": {
+            "encryption": {
                 "default": {
                     "target": "local",
                     "params": {"key_file": str(key_file)},
@@ -128,10 +128,10 @@ def test_security_producer_builds_local_provider_from_config(tmp_path) -> None:
         }
     )
 
-    provider = SecurityProducer.build_named("default", ctx)
+    provider = EncryptionProducer.build_named("default", ctx)
     context = _context()
     ciphertext = provider.encrypt(b"value", context=context, aad=b"kv:a")
 
-    assert isinstance(provider, LocalEnvelopeSecurityProvider)
+    assert isinstance(provider, LocalEnvelopeEncryptionProvider)
     assert provider.decrypt(ciphertext, context=context, aad=b"kv:a") == b"value"
     assert key_file.exists()

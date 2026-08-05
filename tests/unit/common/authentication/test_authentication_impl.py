@@ -1,20 +1,20 @@
-"""security.authenticator_impl: 三个实现的正反路径与错误消息一致性。"""
+"""common.authentication.authentication_impl: 三个实现的正反路径与错误消息一致性。"""
 
 from __future__ import annotations
 
 import pytest
 
+from common.authentication.authentication_impl.api_key_authenticator import ApiKeyAuthenticator
+from common.authentication.authentication_impl.dev_authenticator import DevAuthenticator
+from common.authentication.authentication_impl.trusted_authenticator import TrustedAuthenticator
+from common.authentication.base import AuthProducer
+from common.authentication.types import AuthMode, Credentials
+from common.bootstrap import register_plugins
+from common.credential_store.base import KeyStoreProducer, PrincipalKeyStore
 from common.errors import AuthenticationError, ValidationError
 from common.type_def.auth import AuthContext, Role
 from common.type_def.scope import Scope
 from config.context import AssemblyContext
-from security.authenticator import AuthProducer
-from security.authenticator_impl.api_key_authenticator import ApiKeyAuthenticator
-from security.authenticator_impl.dev_authenticator import DevAuthenticator
-from security.authenticator_impl.trusted_authenticator import TrustedAuthenticator
-from security.bootstrap import register_security
-from security.key_store import KeyStoreProducer, PrincipalKeyStore
-from security.types import AuthMode, Credentials
 
 pytestmark = pytest.mark.unit
 
@@ -23,7 +23,7 @@ _ROOT_KEY = "root-key-for-tests"
 
 @pytest.fixture(scope="module")
 def key_store() -> PrincipalKeyStore:
-    register_security()
+    register_plugins()
     return KeyStoreProducer.build("memory", {}, AssemblyContext())
 
 
@@ -203,7 +203,7 @@ def test_authenticate_never_returns_none(key_store, alice_key) -> None:
 
 
 def test_producer_builds_each_mode() -> None:
-    register_security()
+    register_plugins()
     ctx = AssemblyContext()
     assert AuthProducer.build("dev", {}, ctx).mode() is AuthMode.DEV
     assert (
@@ -221,7 +221,7 @@ def test_trusted_build_requires_gateway_key_by_default() -> None:
     未配置时全部身份 header 可被任意调用方伪造；让它默认启动等于把信任边界
     留给「配没配网关」这个隐含假设。显式 opt-in 才放行。
     """
-    register_security()
+    register_plugins()
     ctx = AssemblyContext()
     with pytest.raises(ValidationError):
         AuthProducer.build("trusted", {}, ctx)

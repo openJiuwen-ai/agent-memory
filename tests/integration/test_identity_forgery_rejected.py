@@ -26,12 +26,12 @@ _CORE_DIR = os.path.join(_ROOT, "bootstrap", "core")
 if _CORE_DIR not in sys.path:
     sys.path.append(_CORE_DIR)
 
+from common.bootstrap import register_plugins  # noqa: E402
+from common.credential_store.base import KeyStoreProducer  # noqa: E402
 from common.errors import AuthenticationError  # noqa: E402
 from common.type_def.auth import Role, reset_current, set_current  # noqa: E402
 from common.type_def.scope import Scope  # noqa: E402
 from config.context import AssemblyContext  # noqa: E402
-from security.bootstrap import register_security  # noqa: E402
-from security.key_store import KeyStoreProducer  # noqa: E402
 
 pytestmark = pytest.mark.integration
 
@@ -132,10 +132,10 @@ def test_api_key_binds_identity_end_to_end(srv) -> None:
     401 说明认证没过（key 无效），403 说明认证过了但授权拒了。
     这条要的是后者——证明 key → AuthContext → PermissionManager 整条链通了。
     """
-    from security.authenticator_impl.api_key_authenticator import ApiKeyAuthenticator
-    from security.types import Credentials
+    from common.authentication.authentication_impl.api_key_authenticator import ApiKeyAuthenticator
+    from common.authentication.types import Credentials
 
-    register_security()
+    register_plugins()
     store = KeyStoreProducer.build("memory", {}, AssemblyContext())
     alice_key = store.issue(_ALICE, Role.USER)
     mallory_key = store.issue(_MALLORY, Role.USER)
@@ -170,10 +170,10 @@ def test_context_is_reset_after_failed_authentication(srv) -> None:
     """
     from auth_middleware import authenticated
 
-    from security.authenticator_impl.api_key_authenticator import ApiKeyAuthenticator
-    from security.types import Credentials
+    from common.authentication.authentication_impl.api_key_authenticator import ApiKeyAuthenticator
+    from common.authentication.types import Credentials
 
-    register_security()
+    register_plugins()
     store = KeyStoreProducer.build("memory", {}, AssemblyContext())
     alice_key = store.issue(_ALICE, Role.USER)
     auth = ApiKeyAuthenticator(key_store=store, root_api_key="")

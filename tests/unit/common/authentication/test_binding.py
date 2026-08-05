@@ -1,11 +1,11 @@
-"""security.binding: DEV 模式的 localhost 强制绑定。"""
+"""common.authentication.binding: DEV 模式的 localhost 强制绑定。"""
 
 from __future__ import annotations
 
 import pytest
 
+from common.authentication.binding import check_dev_binding
 from common.errors import ValidationError
-from security.binding import check_dev_binding
 
 pytestmark = pytest.mark.unit
 

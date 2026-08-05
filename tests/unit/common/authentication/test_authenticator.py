@@ -1,4 +1,4 @@
-"""security.authenticator: 抽象契约与工厂注册。"""
+"""common.authentication.base: 抽象契约与工厂注册。"""
 
 from __future__ import annotations
 
@@ -6,31 +6,31 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+from common.authentication.base import Authenticator, AuthProducer
+from common.authentication.types import AuthMode, Credentials
+from common.bootstrap import register_plugins
+from common.credential_store.base import KeyStoreProducer, PrincipalKeyStore
 from common.factory.factory import Factory
-from security.authenticator import Authenticator, AuthProducer
-from security.bootstrap import register_security
-from security.key_store import KeyStoreProducer, PrincipalKeyStore
-from security.types import AuthMode, Credentials
 
 pytestmark = pytest.mark.unit
 
 
 def test_registration_is_idempotent() -> None:
-    register_security()
+    register_plugins()
     first = AuthProducer.known()
-    register_security()
+    register_plugins()
     assert AuthProducer.known() == first
 
 
 def test_all_three_modes_registered() -> None:
-    register_security()
+    register_plugins()
     assert AuthProducer.known() == ["api_key", "dev", "trusted"]
     assert KeyStoreProducer.known() == ["memory"]
 
 
 def test_top_names_enter_config_validation() -> None:
     """顶层段名要进 Factory.known_top_names()，否则配置解析期会拒掉这两段。"""
-    register_security()
+    register_plugins()
     tops = Factory.known_top_names()
     assert "authenticator" in tops
     assert "key_store" in tops
@@ -79,8 +79,8 @@ def test_interface_module_does_not_import_impl() -> None:
     """
     import ast
 
-    import security.authenticator as auth_mod
-    import security.key_store as ks_mod
+    import common.authentication.base as auth_mod
+    import common.credential_store.base as ks_mod
 
     for mod in (auth_mod, ks_mod):
         tree = ast.parse(open(mod.__file__, encoding="utf-8").read())

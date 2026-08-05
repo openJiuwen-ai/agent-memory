@@ -5,7 +5,7 @@ from fnmatch import fnmatch
 
 import pytest
 
-from common.security import SecurityProvider
+from common.encryption import EncryptionProvider
 from common.type_def import (
     FilterClause,
     FilterGroup,
@@ -70,7 +70,7 @@ class _FakeRedisKVStore(RedisKVStore):
         return self.fake_client
 
 
-class _ReverseSecurity(SecurityProvider):
+class _ReverseSecurity(EncryptionProvider):
     def encrypt(self, plaintext, *, context=None, aad=b""):
         _ = context, aad
         return plaintext[::-1]
