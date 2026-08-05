@@ -9,6 +9,7 @@ from common.type_def import LifecycleState, MemoryUnit
 from common.type_def.memory_codec import dumps, loads
 from control.base import ControlOperatorType
 from control.lifecycle import LifecycleManager
+from tests.conftest import sec
 
 
 class RecordingLifecycle(LifecycleManager):
@@ -49,16 +50,16 @@ def test_supersede_sets_version_chain_and_invalidates_old_version() -> None:
     actor = scope
     kernel = build_kernel()
 
-    old = kernel.api.write("home is Shanghai", scope, identity=actor)[0]
+    old = kernel.api.write("home is Shanghai", scope, security=sec(actor))[0]
 
     new = kernel.api.update(
         old.id,
         scope,
         MemoryPatch(content="home is Beijing"),
-        identity=actor,
+        security=sec(actor),
     )
 
-    stored_old = kernel.api.get(old.id, scope, identity=actor)
+    stored_old = kernel.api.get(old.id, scope, security=sec(actor))
     assert new.id != old.id
     assert new.supersedes == old.id
     assert new.temporal.t_valid is not None
@@ -72,15 +73,15 @@ def test_supersede_uses_patch_valid_time_as_new_version_boundary() -> None:
     kernel = build_kernel()
     valid_from = datetime(2026, 6, 17, 11, 0, tzinfo=timezone.utc)
 
-    old = kernel.api.write("home is Shanghai", scope, identity=actor)[0]
+    old = kernel.api.write("home is Shanghai", scope, security=sec(actor))[0]
     new = kernel.api.update(
         old.id,
         scope,
         MemoryPatch(content="home is Beijing", t_valid=valid_from),
-        identity=actor,
+        security=sec(actor),
     )
 
-    stored_old = kernel.api.get(old.id, scope, identity=actor)
+    stored_old = kernel.api.get(old.id, scope, security=sec(actor))
     assert new.temporal.t_valid == valid_from
     assert stored_old.temporal.t_invalid == valid_from
 
@@ -93,16 +94,16 @@ def test_update_supersede_delegates_old_version_lifecycle_to_manager() -> None:
     setattr(getattr(kernel.api, "_engine"), "_lifecycle", lifecycle)
     valid_from = datetime(2026, 6, 17, 11, 0, tzinfo=timezone.utc)
 
-    old = kernel.api.write("home is Shanghai", scope, identity=actor)[0]
+    old = kernel.api.write("home is Shanghai", scope, security=sec(actor))[0]
     new = kernel.api.update(
         old.id,
         scope,
         MemoryPatch(content="home is Beijing", t_valid=valid_from),
-        identity=actor,
+        security=sec(actor),
     )
 
     assert lifecycle.supersede_calls == [(scope, old.id, valid_from)]
-    stored_old = kernel.api.get(old.id, scope, identity=actor)
+    stored_old = kernel.api.get(old.id, scope, security=sec(actor))
     assert stored_old.lifecycle == LifecycleState.SUPERSEDED
     assert stored_old.temporal.t_invalid == valid_from
     assert new.supersedes == old.id

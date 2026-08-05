@@ -1,4 +1,4 @@
-"""handler 的「身份 / 目标」分离——身份来自认证上下文，目标来自 payload。
+"""handler 的「身份 / 目标」分离——身份来自安全上下文，目标来自 payload。
 
 本文件原先测的是 ``_actor_scope(payload)``：身份从 ``actor_tenant_id`` /
 ``actor_scope`` 读、缺省回落成目标 scope。那正是 security.md §9 铁律 #1 要堵的
@@ -6,7 +6,7 @@
 一并改写。
 
 与集成测试的分工：那边验端到端的授权结果（200/403），这边用 recording API
-验**传给 API 边界的 identity 到底是哪个值**——集成测试看不到这一层。
+验**传给 API 边界的 actor 到底是哪个值**——集成测试看不到这一层。
 """
 
 from __future__ import annotations
@@ -14,14 +14,13 @@ from __future__ import annotations
 import importlib
 import os
 import sys
-from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
 
-from common.security.types import AuthContext, Role, reset_current, set_current
 from common.type_def import Segment
 from common.type_def.scope import Scope
+from tests.conftest import sec
 
 pytestmark = pytest.mark.unit
 
@@ -38,16 +37,6 @@ handler = importlib.import_module("handler")
 _ALICE = Scope(org="acme", user="alice")
 
 
-@contextmanager
-def _as(actor: Scope):
-    """以 ``actor`` 的身份发起请求（等价于中间件认证通过后的状态）。"""
-    token = set_current(AuthContext(actor=actor, role=Role.USER))
-    try:
-        yield
-    finally:
-        reset_current(token)
-
-
 class _RecordingApi:
     def __init__(self) -> None:
         self.write_calls = []
@@ -59,20 +48,20 @@ class _RecordingApi:
         scope,
         modality,
         *,
-        identity,
+        security,
         tags=None,
         assets=None,
         metadata=None,
     ):
-        self.write_calls.append({"scope": scope, "identity": identity})
+        self.write_calls.append({"scope": scope, "actor": security.auth.actor})
         return [handler.MemoryUnit(id="unit-1", scope=scope, segments=[Segment(content=content)])]
 
-    def recall(self, query, context, *, identity, filters=None, **options):
+    def recall(self, query, context, *, security, filters=None, **options):
         self.recall_calls.append(
             {
                 "query": query,
                 "context": context,
-                "identity": identity,
+                "actor": security.auth.actor,
                 "filters": filters,
                 "options": options,
             }
@@ -87,7 +76,7 @@ class _RecordingServer:
 
 def _dispatch_add(payload: dict) -> dict:
     srv = _RecordingServer()
-    status, body = handler.dispatch(srv, "add", {"content": "hello", **payload})
+    status, body = handler.dispatch(srv, "add", {"content": "hello", **payload}, sec(_ALICE))
 
     assert status == 200, body
     return srv.api.write_calls[0]
@@ -96,25 +85,23 @@ def _dispatch_add(payload: dict) -> dict:
 def test_identity_comes_from_context_target_from_payload() -> None:
     """同一次请求里两者可以不同：alice 往 owner 的 scope 写。
 
-    能不能写由 PermissionManager 判（这里的 API 是 recording stub，不判）；
+    能不能写由 Authorizer 判（这里的 API 是 recording stub，不判）；
     handler 的职责只是**把两个值从各自的来源取对**。
     """
-    with _as(_ALICE):
-        call = _dispatch_add({"tenant_id": "acme", "space": "product", "scope": "owner"})
+    call = _dispatch_add({"tenant_id": "acme", "space": "product", "scope": "owner"})
 
-    assert call["identity"] == _ALICE
+    assert call["actor"] == _ALICE
     assert call["scope"] == Scope(org="acme", space="product", user="owner")
 
 
 def test_identity_is_never_derived_from_target_scope() -> None:
-    """payload 完全不给身份线索时，identity 仍是上下文里的那个。
+    """payload 完全不给身份线索时，actor 仍是安全上下文里的那个。
 
     旧实现在这种情况下让 identity 回落成 target scope——等于「谁访问谁就是主人」。
     """
-    with _as(_ALICE):
-        call = _dispatch_add({})
+    call = _dispatch_add({})
 
-    assert call["identity"] == _ALICE
+    assert call["actor"] == _ALICE
     assert call["scope"] == Scope(org="default", user="")
 
 
@@ -124,12 +111,12 @@ def test_payload_identity_claims_are_rejected_not_ignored() -> None:
     静默忽略会让调用方以为它仍然生效，写出错误的安全认知。
     """
     srv = _RecordingServer()
-    with _as(_ALICE):
-        status, body = handler.dispatch(
-            srv,
-            "add",
-            {"content": "hello", "tenant_id": "acme", "scope": "owner", "actor_scope": "auditor"},
-        )
+    status, body = handler.dispatch(
+        srv,
+        "add",
+        {"content": "hello", "tenant_id": "acme", "scope": "owner", "actor_scope": "auditor"},
+        sec(_ALICE),
+    )
 
     assert status == 400, body
     assert body["error"] == "ValidationError"
@@ -148,10 +135,9 @@ def test_space_dimension_identity_claims_are_rejected() -> None:
     """
     srv = _RecordingServer()
     for key in ("actor_space", "actor_space_id"):
-        with _as(_ALICE):
-            status, body = handler.dispatch(
-                srv, "add", {"content": "hello", "tenant_id": "acme", key: "product"}
-            )
+        status, body = handler.dispatch(
+            srv, "add", {"content": "hello", "tenant_id": "acme", key: "product"}, sec(_ALICE)
+        )
 
         assert status == 400, body
         assert body["error"] == "ValidationError"
@@ -178,12 +164,12 @@ def test_search_forwards_filter_dsl_to_api_boundary() -> None:
         ]
     }
 
-    with _as(_ALICE):
-        status, body = handler.dispatch(
-            srv,
-            "search",
-            {"query": "pytest", "tenant_id": "acme", "scope": "alice", "filters": filters},
-        )
+    status, body = handler.dispatch(
+        srv,
+        "search",
+        {"query": "pytest", "tenant_id": "acme", "scope": "alice", "filters": filters},
+        sec(_ALICE),
+    )
 
     assert status == 200, body
     assert srv.api.recall_calls[0]["filters"] == filters

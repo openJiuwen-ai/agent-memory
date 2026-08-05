@@ -13,6 +13,7 @@ from common.errors import ValidationError
 from common.type_def import RESERVED_METADATA_KEYS, Modality, Scope
 from config import Config
 from control.types import MemoryPatch
+from tests.conftest import sec
 
 pytestmark = pytest.mark.unit
 
@@ -30,7 +31,9 @@ def test_write_rejects_reserved_metadata_key(key: str) -> None:
     api = _api()
 
     with pytest.raises(ValidationError):
-        api.write(_TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR, metadata={key: "custom"})
+        api.write(
+            _TEXT, _SCOPE, source=Modality.TEXT, security=sec(_ACTOR), metadata={key: "custom"}
+        )
 
 
 def test_write_allows_normal_metadata() -> None:
@@ -40,7 +43,7 @@ def test_write_allows_normal_metadata() -> None:
         _TEXT,
         _SCOPE,
         source=Modality.TEXT,
-        identity=_ACTOR,
+        security=sec(_ACTOR),
         metadata={"memory_type": "coding", "project": "alpha"},
     )
 
@@ -49,10 +52,12 @@ def test_write_allows_normal_metadata() -> None:
 
 def test_update_rejects_reserved_metadata_key() -> None:
     api = _api()
-    unit = api.write(_TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR)[0]
+    unit = api.write(_TEXT, _SCOPE, source=Modality.TEXT, security=sec(_ACTOR))[0]
 
     with pytest.raises(ValidationError):
-        api.update(unit.id, _SCOPE, MemoryPatch(metadata={"lifecycle": "custom"}), identity=_ACTOR)
+        api.update(
+            unit.id, _SCOPE, MemoryPatch(metadata={"lifecycle": "custom"}), security=sec(_ACTOR)
+        )
 
 
 def test_write_preserves_scalar_types_end_to_end() -> None:
@@ -68,7 +73,7 @@ def test_write_preserves_scalar_types_end_to_end() -> None:
         _TEXT,
         _SCOPE,
         source=Modality.TEXT,
-        identity=_ACTOR,
+        security=sec(_ACTOR),
         metadata={"priority": 8, "score": 9.5, "archived": False, "project": "alpha"},
     )
 
@@ -84,7 +89,7 @@ def test_write_switch_accepts_native_bool() -> None:
     api = _api()
 
     units = api.write(
-        _TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR, metadata={"procedural": True}
+        _TEXT, _SCOPE, source=Modality.TEXT, security=sec(_ACTOR), metadata={"procedural": True}
     )
 
     assert units  # 开关被识别、写入成功；未被识别时走的是另一条落库路径
@@ -96,7 +101,7 @@ def test_write_rejects_non_scalar_metadata(value) -> None:
     api = _api()
 
     with pytest.raises(ValidationError):
-        api.write(_TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR, metadata={"x": value})
+        api.write(_TEXT, _SCOPE, source=Modality.TEXT, security=sec(_ACTOR), metadata={"x": value})
 
 
 def test_write_allows_string_array_metadata() -> None:
@@ -104,7 +109,7 @@ def test_write_allows_string_array_metadata() -> None:
     api = _api()
 
     units = api.write(
-        _TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR, metadata={"langs": ["py", "go"]}
+        _TEXT, _SCOPE, source=Modality.TEXT, security=sec(_ACTOR), metadata={"langs": ["py", "go"]}
     )
 
     assert units[0].metadata["langs"] == ["py", "go"]

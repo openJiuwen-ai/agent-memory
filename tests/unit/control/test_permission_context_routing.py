@@ -22,25 +22,34 @@ from common.errors import PermissionDeniedError, ValidationError
 from common.type_def import Context, Scope
 from config import Config
 from control.types import DeleteMode, DeleteSelector
+from tests.conftest import root_sec, sec
 
 pytestmark = pytest.mark.unit
 
 
 def _routing_config() -> Config:
-    """coding 受 strict 保护、episodic 显式放宽；fallback 取最小权限。"""
+    """coding 受 strict 保护、episodic 显式放宽；fallback 取最小权限。
+
+    配的是 ``authorizer`` 段而不是旧的 ``permission`` 段：授权判定已收敛到
+    ``common.security.authorization``，``permission`` 只剩 grant/revoke 的记录通道，
+    往它上面配路由不再影响任何判定。
+    """
     return Config.from_dict(
         {
-            "permission": {
+            "authorizer": {
                 "default": {
                     "target": "routing",
                     "params": {
                         "route_key": "memory_type",
                         "fallback": "strict",
-                        "routes": {"coding": "strict", "episodic": "standard"},
+                        "routes": {"coding": "strict", "episodic": "lenient"},
                     },
                 },
-                "standard": "allow_all",
-                "strict": "sqlite",
+                "lenient": "allow_all",
+                "strict": {
+                    "target": "standard",
+                    "params": {"grant_store": "default", "delegation_store": "default"},
+                },
             }
         }
     )
@@ -50,17 +59,20 @@ def test_permissive_fallback_rejected_at_assembly() -> None:
     """fallback 承接路由值缺失的请求（调用方不写 filters 即可触发），不得是 allow_all。"""
     cfg = Config.from_dict(
         {
-            "permission": {
+            "authorizer": {
                 "default": {
                     "target": "routing",
                     "params": {
                         "route_key": "memory_type",
-                        "fallback": "standard",
+                        "fallback": "lenient",
                         "routes": {"coding": "strict"},
                     },
                 },
-                "standard": "allow_all",
-                "strict": "sqlite",
+                "lenient": "allow_all",
+                "strict": {
+                    "target": "standard",
+                    "params": {"grant_store": "default", "delegation_store": "default"},
+                },
             }
         }
     )
@@ -78,11 +90,11 @@ def test_policy_name_is_not_accepted_as_route_value() -> None:
     api = build_kernel(config=_routing_config()).api
     outsider, victim = Scope(org="evil", user="x"), Scope(org="acme", user="owner")
 
-    # episodic 是显式声明的宽松路由，standard 只是它背后的 policy 名
-    api.write("ok", victim, identity=outsider, metadata={"memory_type": "episodic"})
+    # episodic 是显式声明的宽松路由，lenient 只是它背后的 policy 名
+    api.write("ok", victim, security=sec(outsider), metadata={"memory_type": "episodic"})
 
     with pytest.raises(PermissionDeniedError):
-        api.write("secret", victim, identity=outsider, metadata={"memory_type": "standard"})
+        api.write("secret", victim, security=sec(outsider), metadata={"memory_type": "lenient"})
 
 
 def test_write_permission_routes_by_memory_type() -> None:
@@ -90,13 +102,13 @@ def test_write_permission_routes_by_memory_type() -> None:
     actor = Scope(org="acme", user="reader")
     target = Scope(org="acme", user="owner")
 
-    api.write("general note", target, identity=actor, metadata={"memory_type": "episodic"})
+    api.write("general note", target, security=sec(actor), metadata={"memory_type": "episodic"})
 
     with pytest.raises(PermissionDeniedError):
         api.write(
             "repo must use pytest",
             target,
-            identity=actor,
+            security=sec(actor),
             metadata={"memory_type": "coding"},
         )
 
@@ -110,7 +122,7 @@ def test_recall_permission_routes_by_metadata_memory_type_filter() -> None:
         api.recall(
             "repo",
             Context(scope=target),
-            identity=actor,
+            security=sec(actor),
             filters={"metadata.memory_type": "coding"},
         )
 
@@ -124,7 +136,7 @@ def test_recall_permission_routes_to_lenient_policy_for_declared_type() -> None:
     api.recall(
         "general",
         Context(scope=target),
-        identity=actor,
+        security=sec(actor),
         filters={"metadata.memory_type": "episodic"},
     )
 
@@ -133,7 +145,9 @@ def test_recall_permission_routes_to_lenient_policy_for_declared_type() -> None:
 
 
 def _seed(api, owner: Scope) -> None:
-    api.write("repo must use pytest", owner, identity=owner, metadata={"memory_type": "coding"})
+    api.write(
+        "repo must use pytest", owner, security=sec(owner), metadata={"memory_type": "coding"}
+    )
 
 
 def test_escalation_1_unknown_extensions_value_falls_to_strict_fallback() -> None:
@@ -146,7 +160,7 @@ def test_escalation_1_unknown_extensions_value_falls_to_strict_fallback() -> Non
         api.recall(
             "repo must use pytest",
             Context(scope=owner, extensions={"memory_type": "unknown"}),
-            identity=reader,
+            security=sec(reader),
             filters={"metadata.memory_type": "coding"},
         )
 
@@ -158,7 +172,7 @@ def test_escalation_2_missing_route_value_falls_to_strict_fallback() -> None:
     _seed(api, owner)
 
     with pytest.raises(PermissionDeniedError):
-        api.recall("repo must use pytest", Context(scope=owner), identity=reader)
+        api.recall("repo must use pytest", Context(scope=owner), security=sec(reader))
 
 
 def test_escalation_3_ambiguous_or_filter_falls_to_strict_fallback() -> None:
@@ -171,7 +185,7 @@ def test_escalation_3_ambiguous_or_filter_falls_to_strict_fallback() -> None:
         api.recall(
             "repo must use pytest",
             Context(scope=owner),
-            identity=reader,
+            security=sec(reader),
             filters={
                 "OR": [
                     {"metadata.memory_type": "coding"},
@@ -194,7 +208,7 @@ def test_escalation_4_lenient_route_cannot_read_protected_data() -> None:
     result = api.recall(
         "repo must use pytest",
         Context(scope=owner, extensions={"memory_type": "episodic"}),
-        identity=reader,
+        security=sec(reader),
         filters={"metadata.memory_type": "coding"},
         top_k=10,
     )
@@ -206,12 +220,14 @@ def test_route_value_injection_still_returns_own_type_data() -> None:
     """回注谓词不得误伤：按 episodic 授权时，episodic 的数据必须照常可读。"""
     api = build_kernel(config=_routing_config()).api
     owner, reader = Scope(org="acme", user="owner"), Scope(org="acme", user="reader")
-    api.write("lunch plan tomorrow", owner, identity=owner, metadata={"memory_type": "episodic"})
+    api.write(
+        "lunch plan tomorrow", owner, security=sec(owner), metadata={"memory_type": "episodic"}
+    )
 
     result = api.recall(
         "lunch plan tomorrow",
         Context(scope=owner, extensions={"memory_type": "episodic"}),
-        identity=reader,
+        security=sec(reader),
         top_k=10,
     )
 
@@ -229,14 +245,15 @@ def test_unresolved_route_keeps_owner_base_rule() -> None:
     api = build_kernel(config=_routing_config()).api
     owner = Scope(org="acme", user="owner")
 
-    api.recall("general", Context(scope=owner), identity=owner)  # 未限定 memory_type
+    api.recall("general", Context(scope=owner), security=sec(owner))  # 未限定 memory_type
 
 
 def test_unresolved_route_keeps_root_base_rule() -> None:
+    """ROOT 同理：ROOT 由 ``role`` 表达，不由空 ``Scope()`` 表达（空 actor 现在直接拒）。"""
     api = build_kernel(config=_routing_config()).api
-    owner, root = Scope(org="acme", user="owner"), Scope()
+    owner = Scope(org="acme", user="owner")
 
-    api.recall("general", Context(scope=owner), identity=root)
+    api.recall("general", Context(scope=owner), security=root_sec())
 
 
 # -- 已有 unit 的操作按真源元数据鉴权 ------------------------------------------ #
@@ -249,12 +266,12 @@ def test_get_permission_uses_stored_memory_type_context() -> None:
     unit = api.write(
         "repo must use pytest",
         owner,
-        identity=owner,
+        security=sec(owner),
         metadata={"memory_type": "coding"},
     )[0]
 
     with pytest.raises(PermissionDeniedError):
-        api.get(unit.id, owner, identity=reader)
+        api.get(unit.id, owner, security=sec(reader))
 
 
 def test_delete_permission_checks_each_matched_unit_context() -> None:
@@ -264,7 +281,7 @@ def test_delete_permission_checks_each_matched_unit_context() -> None:
     unit = api.write(
         "repo must use pytest",
         owner,
-        identity=owner,
+        security=sec(owner),
         tags=["repo"],
         metadata={"memory_type": "coding"},
     )[0]
@@ -272,5 +289,5 @@ def test_delete_permission_checks_each_matched_unit_context() -> None:
     with pytest.raises(PermissionDeniedError):
         api.delete(
             DeleteSelector(unit_ids=[unit.id], scope=owner, mode=DeleteMode.FORGET),
-            identity=reader,
+            security=sec(reader),
         )

@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from common.type_def import Scope
 from common.security.types import AuthContext, Role
+from common.type_def import Scope
 from control.permission_impl.allow_all_permission_manager import AllowAllPermissionManager
 from control.permission_impl.sqlite_permission_manager import SQLitePermissionManager
 from control.types import Action, PermissionContext
@@ -212,7 +212,7 @@ def test_no_auth_context_preserves_every_legacy_rule(mgr) -> None:
     """``auth=None`` 时逐字回到今天的纯 ACL 行为。
 
     这条撑着三件事同时成立：33 处既有 ``_authorize`` 调用点不改也能跑、
-    ``AllowAllPermissionManager`` 语义不动、直接调 ``api.write(identity=...)``
+    ``AllowAllPermissionManager`` 语义不动、直接调 ``api.write(security=sec(...))``
     的测试与 ``examples/quickstart.py`` 不受影响。
     """
     assert mgr.check(Scope(), _ALICE, Action.READ) is True  # platform admin

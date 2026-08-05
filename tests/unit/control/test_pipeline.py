@@ -8,6 +8,7 @@ from construction.index_builder import IndexBuilder, IndexBuilderProducer
 from retrieval.base import RetrievalOperatorType
 from retrieval.retriever import Retriever, RetrieverProducer
 from retrieval.types import RetrievalQuery, RetrievalResult, RetrievedItem
+from tests.conftest import sec
 
 _INDEX_BUILDERS: dict[str, "RecordingIndexBuilder"] = {}
 
@@ -111,7 +112,7 @@ def test_engine_write_uses_pipeline_profile_from_memory_type() -> None:
     kernel.api.write(
         "use pytest for this repo",
         scope,
-        identity=scope,
+        security=sec(scope),
         metadata={"memory_type": "coding"},
     )
 
@@ -126,7 +127,7 @@ def test_engine_recall_uses_pipeline_profile_from_context_extensions() -> None:
     result = kernel.api.recall(
         "test strategy",
         Context(scope=scope, extensions={"memory_type": "coding"}),
-        identity=scope,
+        security=sec(scope),
     )
 
     assert [item.unit_id for item in result.items] == ["coding"]
@@ -139,7 +140,7 @@ def test_engine_recall_uses_pipeline_profile_from_metadata_memory_type_filter() 
     result = kernel.api.recall(
         "test strategy",
         Context(scope=scope),
-        identity=scope,
+        security=sec(scope),
         filters={"metadata.memory_type": "coding"},
     )
 
@@ -153,7 +154,7 @@ def test_engine_recall_canonicalizes_legacy_memory_type_filter_name() -> None:
     result = kernel.api.recall(
         "test strategy",
         Context(scope=scope),
-        identity=scope,
+        security=sec(scope),
         filters={"memory_type": "coding"},
     )
 

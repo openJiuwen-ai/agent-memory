@@ -17,6 +17,7 @@ import pytest
 from common.base import PluginType
 from common.tokenizer.tokenizer_impl import TokenizerProducer
 from common.tokenizer.tokenizer_impl.jieba_tokenizer import JiebaTokenizer
+from tests.conftest import sec
 
 # ---------------------------------------------------------------------------
 # Tests: Core interface
@@ -195,7 +196,7 @@ def test_assemble_with_jieba():
     scope = Scope(org="test", user="alice", agent="a1", session="s1")
     actor = Scope(org="test", user="alice")
     # write → jieba 分词建索引 → recall
-    units = api.write("用户偏好简洁回答", scope, source=Modality.TEXT, identity=actor)
+    units = api.write("用户偏好简洁回答", scope, source=Modality.TEXT, security=sec(actor))
     assert len(units) == 1
-    result = api.recall("偏好", Context(scope), identity=actor, top_k=10)
+    result = api.recall("偏好", Context(scope), security=sec(actor), top_k=10)
     assert len(result.items) > 0

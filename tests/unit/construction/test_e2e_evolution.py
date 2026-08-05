@@ -14,6 +14,7 @@ from api.memory_api_impl import assemble
 from common.type_def import Context, MemoryTier, Modality, Scope
 from config import Config
 from construction import EvolveMode
+from tests.conftest import sec
 
 DEFAULT_SCOPE = Scope(org="test", user="alice", agent="a1", session="s1")
 DEFAULT_ACTOR = Scope(org="test", user="alice")
@@ -41,7 +42,7 @@ class TestE2EWritePath:
             "用户偏好简洁回答风格",
             DEFAULT_SCOPE,
             source=Modality.TEXT,
-            identity=DEFAULT_ACTOR,
+            security=sec(DEFAULT_ACTOR),
         )
         assert len(units) == 1
         # write 不调 classify：tier 保持 MemoryUnit 默认 EPISODIC，无 classify metadata
@@ -52,7 +53,7 @@ class TestE2EWritePath:
         result = llm_api.recall(
             "简洁",
             Context(DEFAULT_SCOPE),
-            identity=DEFAULT_ACTOR,
+            security=sec(DEFAULT_ACTOR),
             top_k=10,
         )
         assert len(result.items) > 0
@@ -81,7 +82,7 @@ class TestE2EBackgroundExtract:
             "用户偏好简洁回答",
             DEFAULT_SCOPE,
             source=Modality.TEXT,
-            identity=DEFAULT_ACTOR,
+            security=sec(DEFAULT_ACTOR),
         )
         # write() 内 scheduler.submit(EXTRACT, BACKGROUND) → InProcessScheduler 同步执行
         # EchoLLM 返回原文（非 JSON），LLMExtractor 降级为空 list
@@ -92,7 +93,7 @@ class TestE2EBackgroundExtract:
         result = llm_api.recall(
             "偏好",
             Context(DEFAULT_SCOPE),
-            identity=DEFAULT_ACTOR,
+            security=sec(DEFAULT_ACTOR),
             top_k=10,
         )
         assert len(result.items) > 0
@@ -104,13 +105,13 @@ class TestE2EBackgroundExtract:
             "用户讨论了架构设计",
             DEFAULT_SCOPE,
             source=Modality.TEXT,
-            identity=DEFAULT_ACTOR,
+            security=sec(DEFAULT_ACTOR),
         )
         # 手动触发演进
         job_id = llm_api.evolve(
             DEFAULT_SCOPE,
             EvolveMode.EXTRACT,
-            identity=DEFAULT_ACTOR,
+            security=sec(DEFAULT_ACTOR),
         )
         assert job_id  # 返回 job_id
 
@@ -130,14 +131,14 @@ class TestE2EOfflineProfile:
             "测试内容",
             DEFAULT_SCOPE,
             source=Modality.TEXT,
-            identity=DEFAULT_ACTOR,
+            security=sec(DEFAULT_ACTOR),
         )
         assert len(units) == 1
 
         result = offline_api.recall(
             "测试",
             Context(DEFAULT_SCOPE),
-            identity=DEFAULT_ACTOR,
+            security=sec(DEFAULT_ACTOR),
             top_k=5,
         )
         assert len(result.items) > 0
@@ -149,14 +150,14 @@ class TestE2EOfflineProfile:
             "测试内容",
             DEFAULT_SCOPE,
             source=Modality.TEXT,
-            identity=DEFAULT_ACTOR,
+            security=sec(DEFAULT_ACTOR),
         )
         # background EXTRACT 自动触发（keyword extractor 产出 chunk 类派生 unit）
         # 验证不崩溃即可
         result = offline_api.recall(
             "测试",
             Context(DEFAULT_SCOPE),
-            identity=DEFAULT_ACTOR,
+            security=sec(DEFAULT_ACTOR),
             top_k=5,
         )
         assert len(result.items) > 0

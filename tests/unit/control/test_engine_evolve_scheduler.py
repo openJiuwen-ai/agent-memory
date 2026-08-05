@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 
-from common.type_def import Scope
-from construction import EvolveMode, EvolveResult, Evolver
-from construction.base import OperatorType
 from api.memory_api_impl import build_kernel
+from common.type_def import Scope
+from construction import EvolveMode, Evolver, EvolveResult
+from construction.base import OperatorType
 from control.engine_impl.in_memory_engine import InMemoryEngine
 from control.types import Channel, JobStatus
 from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from tests.conftest import sec
 
 
 class RaisingEvolver(Evolver):
@@ -53,11 +54,11 @@ def test_engine_evolve_only_submits_scheduler_job() -> None:
 def test_api_evolve_returns_completed_scheduler_job_with_evolve_result_detail() -> None:
     kernel = build_kernel()
     scope = Scope(user="u1")
-    kernel.api.write("Alice likes tea", scope, identity=scope)
+    kernel.api.write("Alice likes tea", scope, security=sec(scope))
 
-    job_id = kernel.api.evolve(scope, EvolveMode.EXTRACT, identity=scope)
+    job_id = kernel.api.evolve(scope, EvolveMode.EXTRACT, security=sec(scope))
 
-    job = kernel.api.job_status(job_id, identity=scope)
+    job = kernel.api.job_status(job_id, security=sec(scope))
     assert job.status == JobStatus.SUCCEEDED
     assert job.detail["created_ids"] is not None
     assert job.detail["updated_ids"] == ""
