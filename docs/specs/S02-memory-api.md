@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/api/ |
-| 最近一次修订日期 | 2026-08-05 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md |
+| 最近一次修订日期 | 2026-07-30 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/F02-wikimem-compat.md，docs/features/construction/F04-wikimem-compat.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -50,8 +50,6 @@
 |------|------|------|
 | `write` | `(content, scope, source=TEXT, *, identity, assets, tags, metadata, occurred_at) -> list[MemoryUnit]` | 同步写入：鉴权 WRITE→委托 Engine→阻塞至 hot path 完成。infer/procedural 触发时返回 `created_ids` 对应的派生单元（可空），否则返回原始单元 |
 | `write_async` | `async (同签名) -> list[MemoryUnit]` | 异步写入：直通 Engine 协程，供事件循环形态使用 |
-| `batch_write` | `(items: list[BatchWriteItem], scope=None, source=TEXT, *, identity, tags, metadata, occurred_at, stream_id="", continue_on_error=True) -> BatchWriteResult` | 同步桥接批量写入；逐项归一化、WRITE 鉴权、space 校验与审计，结果始终按输入索引对齐 |
-| `batch_write_async` | `async (同签名) -> BatchWriteResult` | 串行保序批量写入；默认归集单项错误，`continue_on_error=False` 时后续项为 `Skipped` |
 | `recall` | `(query, context: Context, *, identity, filters, as_of, top_k, disclosure, with_trajectory) -> RetrievalResult` | 混合检索：鉴权 READ→拆 Context→装配 RetrievalQuery→委托 Engine |
 | `list` | `(scope, *, identity, offset=0, limit=100, memory_types=None, extensions=None, filters=None) -> MemoryListResult` | 列出已建索引记忆：支持类型/FilterExpr 过滤、自定义参数透传和分页前精确总数；只返回 `/memory/` 真源记录 |
 | `get` | `(unit_id, scope, *, identity, as_of=None) -> MemoryUnit` | 真源点读：鉴权 READ→委托 Engine |
@@ -243,12 +241,6 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 
 - `items: list[MemoryUnit]`：当前分页结果。
 - `count: int`：同一 Scope 和过滤条件下的分页前精确总数，不受 offset/limit 影响。
-
-### BatchWriteItem / BatchWriteOutcome / BatchWriteResult（batch_write，`control/types.py`）
-
-- `BatchWriteItem` 表达单项内容与可选 scope/source/tags/metadata/occurred_at 覆盖；`stream_id`、`sequence`、`idempotency_key` 首版仅用于调度和回显，不写入真源。
-- `BatchWriteOutcome` 包含输入索引、归一化 item、该项产生的 `units` 与可归集的 `error` / `error_type`；成功且 units 为空仍是成功。Engine 的非领域异常也必须归集为 `InternalError`，不能使整批 HTTP 请求退化为 500。
-- `BatchWriteResult.outcomes` 与输入严格一一对应。相同 `(Scope, stream_id)` 的非空 `sequence` 不得重复；接口不自动重排。
 
 ### DisclosureLevel / RetrievalResult（recall 返回，`retrieval/types.py`）
 

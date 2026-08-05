@@ -1,4 +1,4 @@
-# cc_memory 系统架构、接口与评测报告
+# wikimem 系统架构、接口与评测报告
 
 ## 元信息
 
@@ -6,12 +6,12 @@
 |---|---|
 | 系统范围 | 记忆写入、基线记忆、Markdown 目录检索、团队记忆同步、retained evaluation |
 | 日期 | 2026-07-22 |
-| 关联模块 | `agent_plugin/cc_memory`、`src/construction`、`src/retrieval`、`evaluation/cc_memory` |
+| 关联模块 | `agent_plugin/wikimem`、`src/construction`、`src/retrieval`、`evaluation/wikimem` |
 | 适用调用面 | `MemoryAPI`、构建算子、Recaller、评测运行器、团队同步 adapter |
 
 ## 1. 系统目标和边界
 
-cc_memory 是建立在统一 `MemoryAPI` 之上的结构化记忆系统。它支持把对话中的显式记忆指令转成可演进记录，把本地 Markdown 记忆目录接入 DOCUMENT 召回通道，并提供可追踪的多阶段检索评测。
+wikimem 是建立在统一 `MemoryAPI` 之上的结构化记忆系统。它支持把对话中的显式记忆指令转成可演进记录，把本地 Markdown 记忆目录接入 DOCUMENT 召回通道，并提供可追踪的多阶段检索评测。
 
 系统不把数据集专用字段放进通用 `RetrievalQuery`，不在 `recall` 中执行网络同步，也不改变现有 `MemoryAPI`、`Retriever`、`Recaller` 的必填参数。
 
@@ -33,14 +33,14 @@ flowchart TB
     end
 
     subgraph Baseline[基线记忆构建]
-        B1[CcMemoryBaselineExtractor<br/>remember / forget / key-value]
-        B2[CcMemoryBaselineEvolver<br/>upsert / supersede / forget]
+        B1[WikimemBaselineExtractor<br/>remember / forget / key-value]
+        B2[WikimemBaselineEvolver<br/>upsert / supersede / forget]
         B3[MemoryUnit records]
     end
 
     subgraph Retrieval[Markdown 目录检索]
-        R1[parse_cc_memory_options]
-        R2[CcMemoryMemdirRecaller<br/>DOCUMENT channel]
+        R1[parse_wikimem_options]
+        R2[WikimemMemdirRecaller<br/>DOCUMENT channel]
         R3[header selection]
         R4[body fallback]
         R5[entrypoint loading]
@@ -77,11 +77,11 @@ flowchart TB
 
 | 层 | 组件 | 职责 | 不负责 |
 |---|---|---|---|
-| 入口 | `MemoryAPI` | 权限检查、审计、write/recall/evolve 统一入口 | 解释 cc_memory 专用配置 |
-| 构建 | `CcMemoryBaselineExtractor` | 识别 remember、forget、`key: value`、范围提示、潜在 secret | 直接覆盖既有记录 |
-| 构建 | `CcMemoryBaselineEvolver` | 将候选转为记录；last-write-wins；标记 superseded / forgotten | 数据集评测 |
-| 检索 | `CcMemoryMemdirRecaller` | 将 Markdown 目录映射到 DOCUMENT 通道的 `ScoredUnit` | 修改底层存储或调用网络 |
-| 评测 | `evaluation/cc_memory` | 构建 workspace、阶段检索、独立标签计分、诊断产物 | 修改通用 API 类型 |
+| 入口 | `MemoryAPI` | 权限检查、审计、write/recall/evolve 统一入口 | 解释 wikimem 专用配置 |
+| 构建 | `WikimemBaselineExtractor` | 识别 remember、forget、`key: value`、范围提示、潜在 secret | 直接覆盖既有记录 |
+| 构建 | `WikimemBaselineEvolver` | 将候选转为记录；last-write-wins；标记 superseded / forgotten | 数据集评测 |
+| 检索 | `WikimemMemdirRecaller` | 将 Markdown 目录映射到 DOCUMENT 通道的 `ScoredUnit` | 修改底层存储或调用网络 |
+| 评测 | `evaluation/wikimem` | 构建 workspace、阶段检索、独立标签计分、诊断产物 | 修改通用 API 类型 |
 | 同步 | `team_sync` | team memory 的 pull/push、checksum、冲突重试、路径与 secret 防护 | 普通 recall 的同步副作用 |
 
 ## 3. 公共接口
@@ -121,18 +121,18 @@ api.evolve(
 
 `scope` 是目标记忆范围，`identity` 是调用方身份；二者必须显式传入。`Context.extensions` 只能携带字符串配置，经过 API 边界后进入 `RetrievalQuery.extensions` 与 `ParsedQuery.extensions`。
 
-### 3.2 cc_memory 检索配置
+### 3.2 wikimem 检索配置
 
 | extension key | 值 | 默认 | 作用 |
 |---|---|---:|---|
-| `cc_memory.memory_dirs` | JSON array | `[]` | Markdown 目录声明，每项含 `scope=auto/team` 与 `path` |
-| `cc_memory.recent_tools` | JSON string array | `[]` | 降低纯工具文档的优先级 |
-| `cc_memory.already_surfaced_file_paths` | JSON string array | `[]` | 避免本轮重复展示已返回文件 |
-| `cc_memory.include_entrypoints` | `"true"` / `"false"` | `false` | 是否追加目录 `MEMORY.md` |
-| `cc_memory.profile` | string | `""` | 调用方选择的兼容 profile 名称 |
-| `cc_memory.selector_model` | string | `""` | header selector 名称 |
-| `cc_memory.selector_fallback_model` | string | `""` | selector 不可用时的替代名称 |
-| `cc_memory.memory_parallelism` | integer string | unset | 目录扫描并行度，最小为 1 |
+| `wikimem.memory_dirs` | JSON array | `[]` | Markdown 目录声明，每项含 `scope=auto/team` 与 `path` |
+| `wikimem.recent_tools` | JSON string array | `[]` | 降低纯工具文档的优先级 |
+| `wikimem.already_surfaced_file_paths` | JSON string array | `[]` | 避免本轮重复展示已返回文件 |
+| `wikimem.include_entrypoints` | `"true"` / `"false"` | `false` | 是否追加目录 `MEMORY.md` |
+| `wikimem.profile` | string | `""` | 调用方选择的兼容 profile 名称 |
+| `wikimem.selector_model` | string | `""` | header selector 名称 |
+| `wikimem.selector_fallback_model` | string | `""` | selector 不可用时的替代名称 |
+| `wikimem.memory_parallelism` | integer string | unset | 目录扫描并行度，最小为 1 |
 
 示例：
 
@@ -142,11 +142,11 @@ result = api.recall(
     context=Context(
         scope=Scope(namespace="project"),
         extensions={
-            "cc_memory.memory_dirs": (
+            "wikimem.memory_dirs": (
                 '[{"scope":"team","path":"./team-memory"}]'
             ),
-            "cc_memory.include_entrypoints": "true",
-            "cc_memory.already_surfaced_file_paths": "[]",
+            "wikimem.include_entrypoints": "true",
+            "wikimem.already_surfaced_file_paths": "[]",
         },
     ),
     identity=Scope(namespace="project"),
@@ -155,7 +155,7 @@ result = api.recall(
 )
 ```
 
-无效 JSON、未知目录 scope、空路径或非法布尔值必须在 `parse_cc_memory_options` 抛出 `ValidationError`，不得静默忽略。
+无效 JSON、未知目录 scope、空路径或非法布尔值必须在 `parse_wikimem_options` 抛出 `ValidationError`，不得静默忽略。
 
 ## 4. 基线记忆生命周期
 
@@ -185,7 +185,7 @@ sequenceDiagram
 | 同 key 新值 | `upsert` | 旧 active record 标记 `SUPERSEDED`，新记录成为 active |
 | 潜在 secret | skip | 写入 skip 原因，不生成可同步记录 |
 
-记录使用 `MemoryUnit` 表示，关键 metadata 包括：`cc_memory.key`、`cc_memory.value`、`cc_memory.action`、`cc_memory.memory_type`、`cc_memory.preferred_scope`、`cc_memory.observed_at_ms`、`cc_memory.score`。
+记录使用 `MemoryUnit` 表示，关键 metadata 包括：`wikimem.key`、`wikimem.value`、`wikimem.action`、`wikimem.memory_type`、`wikimem.preferred_scope`、`wikimem.observed_at_ms`、`wikimem.score`。
 
 ## 5. Markdown memory directory 检索
 
@@ -204,7 +204,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    D[cc_memory.memory_dirs] --> S[扫描安全 Markdown 文件]
+    D[wikimem.memory_dirs] --> S[扫描安全 Markdown 文件]
     S --> H[解析 header / frontmatter]
     H --> F[过滤 daily log、entrypoint、secret、recent tool、已展示路径]
     F --> HS{header score 达标?}
@@ -227,7 +227,7 @@ flowchart LR
 | `MAX_MEMORY_LINES` / bytes | 200 / 4096 | topic 正文截断预算 |
 | `MAX_ENTRYPOINT_LINES` / bytes | 200 / 25000 | `MEMORY.md` 截断预算 |
 
-`CcMemoryMemdirRecaller` 使用稳定 SHA-256 派生 unit id，并通过 DOCUMENT channel 返回 `ScoredUnit`；后续仍由既有的 Fuser、UnitReader、Discloser 处理。
+`WikimemMemdirRecaller` 使用稳定 SHA-256 派生 unit id，并通过 DOCUMENT channel 返回 `ScoredUnit`；后续仍由既有的 Fuser、UnitReader、Discloser 处理。
 
 ## 6. 团队记忆同步
 
@@ -310,7 +310,7 @@ flowchart LR
 1. LoCoMo 和 LongMemEval 在检索完成后才读取标签计分。
 2. MemGallery 的 `source_session_ids` 仅为元数据，不参与排序。
 3. case 中的 `baseline_retrieved_*`、`final_retrieved_*`、`ranked_clues`、`retrieved_file_paths` 默认拒绝。
-4. 文件系统评测只读取有 `producer=mem2.0.cc_memory.python`、匹配 dataset name 和 schema version 的 workspace retrieval JSON。
+4. 文件系统评测只读取有 `producer=mem2.0.wikimem.python`、匹配 dataset name 和 schema version 的 workspace retrieval JSON。
 5. provenance 是输入来源检查，不是密码学签名；面对主动伪造输入时，调用方仍必须控制 workspace 的写入权限。
 
 ## 9. 全量数据集 Recall 测试结果
@@ -320,7 +320,7 @@ flowchart LR
 | `LoCoMo`<br>纯文本长程对话情景记忆检索基准 | `recall_macro` | `0.9413` | Python retained `qmd_consensus` | `locomo10.json`；`1986 cases`；`top_k=24`；`wiki_mode=text`；远程全量运行（2026-07-16） |
 | `LoCoMo_refined`<br>带图像证据的多模态长程对话情景记忆检索基准 | `recall_macro` | `0.9556` | Python retained + multimodal adjunct | `1382 cases`；`top_k=24`；adjunct `top_k=6`；`wiki_mode=multimodal`；远程全量运行（2026-07-16） |
 | `LongMemEval`<br>长程对话记忆检索基准 | `turn/session recall_any/all@5,@10,@30` | `turn @5 any 0.9212 / all 0.8115；@10 any 0.9642 / all 0.8926；@30 any 0.9833 / all 0.9379`<br>`session @5 any 0.9308 / all 0.7947；@10 any 0.9690 / all 0.8807；@30 any 0.9857 / all 0.9332` | Python retained `qmd_consensus` | `longmemeval_s_cleaned.json`；`500 cases`；`419 evaluated`；`top_k=100`；`threads=4`；`wiki_mode=text` |
-| `AMA-Bench`<br>自主 agent 轨迹记忆检索基准 | `proxy_recall@112` | `0.9142` | Python `cc_memory_qmd_ama` retrieval-only | `208 episodes`；`2496 questions`；`top_k=112`；`methods=["cc_memory_qmd_ama"]`；`wiki_mode=text`；远程全量运行（2026-07-16） |
+| `AMA-Bench`<br>自主 agent 轨迹记忆检索基准 | `proxy_recall@112` | `0.9142` | Python `wikimem_qmd_ama` retrieval-only | `208 episodes`；`2496 questions`；`top_k=112`；`methods=["wikimem_qmd_ama"]`；`wiki_mode=text`；远程全量运行（2026-07-16） |
 
 ## 10. 验收要求
 

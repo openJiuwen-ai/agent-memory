@@ -1,6 +1,6 @@
-# cc-memory 与 LLM wiki 的三项关键差异
+# wikimem 与 LLM wiki 的三项关键差异
 
-下面的流程图将文本 wiki 基线与 cc-memory 的多模态、qmd 多视图融合和 agent 轨迹链路并置展示。黄色节点为差异增强点。
+下面的流程图将文本 wiki 基线与 wikimem 的多模态、qmd 多视图融合和 agent 轨迹链路并置展示。黄色节点为差异增强点。
 
 ```mermaid
 flowchart TB
@@ -16,7 +16,7 @@ flowchart TB
 
     input --> capture
 
-    subgraph build["cc-memory 构建：保留 wiki，并增加三条增强链路"]
+    subgraph build["wikimem 构建：保留 wiki，并增加三条增强链路"]
         normalize["PreparedSample 归一化<br/>records / sessions / questions / raw"]
         text_views["多视图文本 wiki<br/>source / turn / observation / event / entity / topic"]
         snapshot["MemorySnapshot<br/>轻量 lexical root recall"]
@@ -38,7 +38,7 @@ flowchart TB
     mm_download -."未启用或下载失败：保留 URL 与状态".-> mm_artifact
     mm_vision -."未配置 vision：text / caption / query 仍可检索".-> mm_artifact
 
-    subgraph query["cc-memory 查询：多阶段、可诊断"]
+    subgraph query["wikimem 查询：多阶段、可诊断"]
         question["问题 / agent 子任务"]
         profile["QuestionProfile<br/>tokens / fuzzy / entities / temporal / relation"]
         root["Root retrieval<br/>snapshot keyword + root header"]
