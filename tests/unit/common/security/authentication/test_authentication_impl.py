@@ -37,6 +37,11 @@ def alice_key(key_store) -> str:
     return key_store.issue(Scope(org="acme", user="alice"), Role.USER)
 
 
+@pytest.fixture(scope="module")
+def agent_key(key_store) -> str:
+    return key_store.issue(Scope(org="acme", agent="assistant"), Role.USER)
+
+
 # -- DevAuthenticator ------------------------------------------------------- #
 
 
@@ -129,6 +134,36 @@ def test_trusted_gateway_key_survives_non_ascii(key_store, alice_key) -> None:
     auth = TrustedAuthenticator(key_store=key_store, gateway_key="shared-secret")
     with pytest.raises(AuthenticationError):
         auth.authenticate(Credentials(api_key="密钥", headers=_gateway_headers()))
+
+
+def test_trusted_user_principal_carries_itself_as_acting_user(key_store, alice_key) -> None:
+    auth = TrustedAuthenticator(key_store=key_store)
+    ctx = auth.authenticate(Credentials(headers=_gateway_headers()))
+    assert ctx.acting_user == "alice"
+
+
+def test_trusted_agent_without_acting_user_header_has_empty_acting_user(
+    key_store, agent_key
+) -> None:
+    auth = TrustedAuthenticator(key_store=key_store)
+    headers = _gateway_headers(**{"x-principal-type": "agent", "x-principal-id": "assistant"})
+    ctx = auth.authenticate(Credentials(headers=headers))
+    assert ctx.actor == Scope(org="acme", agent="assistant")
+    assert ctx.acting_user == ""
+
+
+def test_trusted_agent_carries_declared_acting_user(key_store, agent_key) -> None:
+    auth = TrustedAuthenticator(key_store=key_store)
+    headers = _gateway_headers(
+        **{
+            "x-principal-type": "agent",
+            "x-principal-id": "assistant",
+            "x-acting-user": "alice",
+        }
+    )
+    ctx = auth.authenticate(Credentials(headers=headers))
+    assert ctx.actor == Scope(org="acme", agent="assistant")
+    assert ctx.acting_user == "alice"
 
 
 # -- ApiKeyAuthenticator ---------------------------------------------------- #
