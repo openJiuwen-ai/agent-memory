@@ -73,14 +73,17 @@ def test_resolve_returns_bound_identity(store) -> None:
     assert ctx.actor == Scope(org="acme", user="alice")
     assert ctx.role is Role.ADMIN
     assert ctx.credential_id == fingerprint(key)
-    assert ctx.acting_user == "alice"
 
 
-def test_agent_principal_has_no_acting_user(store) -> None:
-    """agent 主体未经 OAuth 授权时无委托目标，acting_user 应为空。"""
+def test_api_key_auth_carries_no_delegation(store) -> None:
+    """API key 证明的是「这把 key 属于谁」，不含任何代操作关系。
+
+    委托只能来自 DelegationStore 里的服务端记录（F05 §Delegation）。
+    """
     key = store.issue(Scope(org="acme", agent="bot1"), Role.USER)
     ctx = store.resolve(key)
-    assert ctx.acting_user == ""
+    assert ctx is not None
+    assert ctx.delegation_id == ""
 
 
 def test_resolve_misses_on_wrong_key(store) -> None:

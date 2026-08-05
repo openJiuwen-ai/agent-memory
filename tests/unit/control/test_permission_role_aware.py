@@ -1,8 +1,9 @@
-"""角色感知授权与 agent 代操作委托（security.md §3.2 / §3.5 / §4.3）。
+"""角色感知授权（security.md §3.2 / §3.5）。
 
-PR① 造出了 ``AuthContext``，但 ``role`` 与 ``acting_user`` 两个字段至今没有消费方：
-认证层算出来、进审计 detail、然后在授权边界被丢掉。本文件覆盖把它们接进 PDP 之后
-的行为，以及「没有认证上下文时行为逐字不变」这条向后兼容线。
+覆盖把 ``AuthContext.role`` 接进旧 PDP 之后的行为，以及「没有认证上下文时行为逐字
+不变」这条向后兼容线。
+
+代操作（原 §4.3）的覆盖已随 ``acting_user`` 判定路径一起移出本文件，见下方注释。
 """
 
 from __future__ import annotations
@@ -80,74 +81,27 @@ def test_auth_actor_mismatch_is_denied(mgr) -> None:
     assert mgr.check(_BOB, _ALICE, Action.READ, auth=alice_ctx) is False
 
 
-# -- agent 代 user 操作（§4.3 路径 1） ------------------------------------- #
+# -- agent 代 user 操作 ---------------------------------------------------- #
+#
+# 这一节原有 7 条用例，覆盖 header 送来的 ``acting_user`` 触发的代操作判定。整节随
+# 该判定路径一起删除：header 只能证明网关声称某个 user，证明不了那个 user 真的授权了
+# 这个 agent（F05 §从 header 直接产生 Delegation）。
+#
+# 等价覆盖迁到 ``tests/unit/common/security/authorization/test_standard_authorizer.py``
+# 的 Delegation 一节，并且更严——那里的委托来自 ``DelegationStore``，还额外覆盖了
+# 伪造 id、过期、撤销、绑定凭据与 allowed_spaces。
 
 
-def test_agent_acting_for_user_may_access_that_user(mgr) -> None:
-    """认证层产出 ``actor=agent`` + ``acting_user=alice`` 时，目标 alice 的 scope 放行。
+def test_agent_cannot_reach_a_user_scope(mgr) -> None:
+    """agent 主体够不到 user 的 scope——这条 PDP 不再有任何代操作放行路径。
 
-    今天 ``_owner_scope_covers(Scope(agent=...), Scope(user=...))`` 恒 False
-    （primary 维不等），grants 表里也没有这条——代操作必然 403。
+    ``_owner_scope_covers(Scope(agent=...), Scope(user=...))`` 恒 False（primary 维
+    不等），grants 表里也没有这条。留着这条断言是为了钉住「删掉委托路径之后确实是拒」，
+    而不是被别的规则顺带放过。
     """
-    delegated = AuthContext(actor=_AGENT, acting_user="alice", role=Role.USER)
-
-    assert mgr.check(_AGENT, _ALICE, Action.READ, auth=delegated) is True
-    assert mgr.check(_AGENT, _ALICE, Action.WRITE, auth=delegated) is True
-
-
-def test_delegation_cannot_share_on_behalf_of_user(mgr) -> None:
-    """审计 P1-1：委托只覆盖记忆 CRUD，不含 SHARE。
-
-    否则 agent 拿到一次请求级委托后，可对 acting_user 的 scope 发 SHARE，给
-    自己（或同伙）写长期 Grant，把临时委托升级成永久访问。
-    """
-    delegated = AuthContext(actor=_AGENT, acting_user="alice", role=Role.USER)
-    assert mgr.check(_AGENT, _ALICE, Action.SHARE, auth=delegated) is False
-
-
-def test_agent_without_acting_user_is_still_denied(mgr) -> None:
-    """证明放行来自委托本身，而不是别的规则顺带放过的。"""
     bare = AuthContext(actor=_AGENT, role=Role.USER)
 
     assert mgr.check(_AGENT, _ALICE, Action.READ, auth=bare) is False
-
-
-def test_delegation_does_not_reach_other_users(mgr) -> None:
-    """委托目标只能是 ``acting_user`` 本人。"""
-    delegated = AuthContext(actor=_AGENT, acting_user="alice", role=Role.USER)
-
-    assert mgr.check(_AGENT, _BOB, Action.READ, auth=delegated) is False
-
-
-def test_delegation_does_not_cross_org(mgr) -> None:
-    """org 是硬边界（§4.2）：同名 user 在别的 org 不是同一个人。"""
-    delegated = AuthContext(actor=_AGENT, acting_user="alice", role=Role.USER)
-    other_org_alice = Scope(org="other", space="product", user="alice")
-
-    assert mgr.check(_AGENT, other_org_alice, Action.READ, auth=delegated) is False
-
-
-def test_delegation_does_not_cross_space(mgr) -> None:
-    """space 同理：授权发生在某个 space 内，不外溢到同 org 的别的 space。"""
-    delegated = AuthContext(actor=_AGENT, acting_user="alice", role=Role.USER)
-    other_space_alice = Scope(org="acme", space="coding", user="alice")
-
-    assert mgr.check(_AGENT, other_space_alice, Action.READ, auth=delegated) is False
-
-
-def test_delegation_does_not_reach_another_agent_branch(mgr) -> None:
-    """代 user 操作的目标是 user 分支，不是另一个 agent 的分支。"""
-    delegated = AuthContext(actor=_AGENT, acting_user="alice", role=Role.USER)
-    alice_other_agent = Scope(org="acme", space="product", user="alice", agent="other-bot")
-
-    assert mgr.check(_AGENT, alice_other_agent, Action.READ, auth=delegated) is False
-
-
-def test_user_cannot_claim_delegation_toward_an_agent(mgr) -> None:
-    """§4.3 只定义了 agent 代 user 一个方向，反向不成立。"""
-    reversed_ctx = AuthContext(actor=_ALICE, acting_user="alice", role=Role.USER)
-
-    assert mgr.check(_ALICE, _AGENT, Action.READ, auth=reversed_ctx) is False
 
 
 # -- 管理面闸门（§3.2 后四行里有接口的那三行） ------------------------------ #

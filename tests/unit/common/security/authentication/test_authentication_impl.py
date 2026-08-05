@@ -45,14 +45,15 @@ def agent_key(key_store) -> str:
 # -- DevAuthenticator ------------------------------------------------------- #
 
 
-def test_dev_returns_root_with_empty_scope() -> None:
-    """ROOT 的 actor 必须是空 Scope()。
+def test_dev_root_is_a_named_principal_not_an_empty_scope() -> None:
+    """ROOT 由 ``role`` 表达，不由 actor 的形状表达（F05 §授权不变量 1）。
 
-    security.md §2.2.1 示例写 Scope(org="*")，那在本主干会被
-    SQLitePermissionManager.check 的「跨 org 拒绝」规则挡住——ROOT 反而寸步难行。
+    旧行为是「空 ``Scope()`` 即管理员」：授权侧只要漏判一次 actor 就等于放行，且审计
+    里所有 ROOT 动作都记成同一个无名主体、追不到人。现在 dev 是具名的
+    ``system/dev``，权限完全来自 ``role is Role.ROOT``。
     """
     ctx = DevAuthenticator().authenticate(Credentials())
-    assert ctx.actor == Scope()
+    assert ctx.actor == Scope(org="system", user="dev")
     assert ctx.role is Role.ROOT
 
 
@@ -136,23 +137,12 @@ def test_trusted_gateway_key_survives_non_ascii(key_store, alice_key) -> None:
         auth.authenticate(Credentials(api_key="密钥", headers=_gateway_headers()))
 
 
-def test_trusted_user_principal_carries_itself_as_acting_user(key_store, alice_key) -> None:
-    auth = TrustedAuthenticator(key_store=key_store)
-    ctx = auth.authenticate(Credentials(headers=_gateway_headers()))
-    assert ctx.acting_user == "alice"
+def test_trusted_does_not_accept_acting_user_header(key_store, agent_key) -> None:
+    """``X-Acting-User`` 不再产生任何跨主体授权（F05 §从 header 直接产生 Delegation）。
 
-
-def test_trusted_agent_without_acting_user_header_has_empty_acting_user(
-    key_store, agent_key
-) -> None:
-    auth = TrustedAuthenticator(key_store=key_store)
-    headers = _gateway_headers(**{"x-principal-type": "agent", "x-principal-id": "assistant"})
-    ctx = auth.authenticate(Credentials(headers=headers))
-    assert ctx.actor == Scope(org="acme", agent="assistant")
-    assert ctx.acting_user == ""
-
-
-def test_trusted_agent_carries_declared_acting_user(key_store, agent_key) -> None:
+    这个 header 曾直接写进 ``AuthContext.acting_user``，旧 PermissionManager 据此放行
+    agent 代 user 的读写。网关的一句声明就成了跨主体授权结论，中间没有服务端事实。
+    """
     auth = TrustedAuthenticator(key_store=key_store)
     headers = _gateway_headers(
         **{
@@ -163,16 +153,41 @@ def test_trusted_agent_carries_declared_acting_user(key_store, agent_key) -> Non
     )
     ctx = auth.authenticate(Credentials(headers=headers))
     assert ctx.actor == Scope(org="acme", agent="assistant")
-    assert ctx.acting_user == "alice"
+    assert not hasattr(ctx, "acting_user")
+    assert ctx.delegation_id == ""
+
+
+def test_trusted_carries_delegation_id_without_validating_it(key_store, agent_key) -> None:
+    """``X-Delegation-Id`` 只是原样带过来的**标识**，认证层不作任何有效性判断。
+
+    有效性（存在、未撤销、未过期、覆盖本次动作）由 Authorizer 回 DelegationStore 复核。
+    认证层这里放行一个查无此据的 id 是对的——伪造 id 的拒绝发生在授权层，且与
+    「已撤销」「已过期」共用同一个 reason，不构成委托枚举侧信道。
+    """
+    auth = TrustedAuthenticator(key_store=key_store)
+    headers = _gateway_headers(
+        **{
+            "x-principal-type": "agent",
+            "x-principal-id": "assistant",
+            "x-delegation-id": "  d-42  ",
+        }
+    )
+    ctx = auth.authenticate(Credentials(headers=headers))
+    assert ctx.delegation_id == "d-42"
 
 
 # -- ApiKeyAuthenticator ---------------------------------------------------- #
 
 
-def test_api_key_root_returns_empty_scope(key_store) -> None:
+def test_api_key_root_is_a_named_principal(key_store) -> None:
+    """root key 换到的同样是具名主体 + ROOT 角色，不是空 Scope 管理员。
+
+    ``StandardAuthorizer`` 第 2 步对 ``actor == Scope()`` 直接 deny：空 actor 现在
+    是「上下文不完整」的信号，不再是任何一种权限。
+    """
     auth = ApiKeyAuthenticator(key_store=key_store, root_api_key=_ROOT_KEY)
     ctx = auth.authenticate(Credentials(api_key=_ROOT_KEY))
-    assert ctx.actor == Scope()
+    assert ctx.actor == Scope(org="system", user="root")
     assert ctx.role is Role.ROOT
     assert auth.mode() == "api_key"
 

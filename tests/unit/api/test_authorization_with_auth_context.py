@@ -68,22 +68,21 @@ def test_admin_role_is_not_enough_for_admin_plane(api) -> None:
             api.admin_set("rerank.enabled", "false", identity=_ALICE)
 
 
-def test_agent_writes_and_reads_on_behalf_of_user(api) -> None:
-    """§4.3 路径 1 的端到端形态：agent 拿着 `acting_user` 读写目标 user 的 scope。"""
+def test_agent_cannot_reach_a_user_scope(api) -> None:
+    """agent 够不到 user 的 scope——代操作不再由认证产物直接表达。
+
+    这里原有三条用例，钉的是 ``AuthContext.acting_user`` 触发的端到端代操作：agent
+    带着一个 user 名就能读写那个 user 的 scope。该字段与判定路径已删除，因为 header
+    里的一个 user 名证明不了那个 user 真的授权过（F05 §从 header 直接产生 Delegation）。
+
+    委托的端到端形态会在 MemoryAPI 切换到 ``RequestSecurityContext`` 时重建，届时
+    ``delegation_id`` 由 ``DelegationStore`` 复核。此刻的正确行为就是拒。
+    """
     agent = Scope(org="acme", agent="assistant")
-    delegated = AuthContext(actor=agent, acting_user="alice", role=Role.USER)
 
-    with _as(delegated):
-        units = api.write("代 alice 记下的内容", _ALICE, identity=agent)
-        assert units
-        assert api.get(units[0].id, _ALICE, identity=agent) is not None
-
-
-def test_agent_cannot_reach_a_user_it_does_not_act_for(api) -> None:
-    agent = Scope(org="acme", agent="assistant")
-    delegated = AuthContext(actor=agent, acting_user="alice", role=Role.USER)
-
-    with _as(delegated):
+    with _as(AuthContext(actor=agent, role=Role.USER)):
+        with pytest.raises(PermissionDeniedError):
+            api.write("代 alice 记下的内容", _ALICE, identity=agent)
         with pytest.raises(PermissionDeniedError):
             api.write("越权写 bob", _BOB, identity=agent)
 
@@ -100,23 +99,23 @@ def test_identity_must_match_the_authenticated_actor(api) -> None:
             api.write("借 bob 的 ROOT 冒充 alice", _ALICE, identity=_ALICE)
 
 
-def test_delegated_agent_cannot_grant_on_behalf_of_user(api) -> None:
-    """审计 P1-1：委托不可代发授权，否则临时委托升级成永久 Grant。
+def test_agent_cannot_grant_on_another_principals_behalf(api) -> None:
+    """agent 对 alice 的 scope 发 SHARE 应 403，且不产生任何授权记录。
 
-    agent 持 alice 的委托对 alice 的 scope 发 SHARE 应 403，且不产生任何
-    授权记录--否则 eve 会凭空拿到 alice 的长期读权限。
+    否则 eve 会凭空拿到 alice 的长期读权限。原用例走的是「持 alice 委托的 agent」，
+    委托来源换成 DelegationStore 之后这条断言仍然成立，且理由更简单：agent 根本够不到
+    alice 的 scope。
     """
     agent = Scope(org="acme", agent="assistant")
-    delegated = AuthContext(actor=agent, acting_user="alice", role=Role.USER)
     grant = Grant(
         grantor=_ALICE,
         grantee=Scope(org="acme", user="eve"),
         actions=[Action.READ],
     )
-    with _as(delegated):
+    with _as(AuthContext(actor=agent, role=Role.USER)):
         with pytest.raises(PermissionDeniedError):
             api.grant(grant, identity=agent)
-    # 委托被拒、grant 未执行：eve 拿不到 alice 的任何权限
+    # grant 未执行：eve 拿不到 alice 的任何权限
     with _as(AuthContext(actor=Scope(org="acme", user="eve"), role=Role.USER)):
         with pytest.raises(PermissionDeniedError):
             api.get("anything", _ALICE, identity=Scope(org="acme", user="eve"))

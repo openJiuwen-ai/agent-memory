@@ -43,7 +43,7 @@ _OWNER = Scope(org="acme", user="owner")
 @contextmanager
 def _as(actor: Scope, role: Role = Role.USER):
     """以 ``actor`` 的身份发起请求（等价于中间件认证通过后的状态）。"""
-    token = set_current(AuthContext(actor=actor, acting_user=actor.user, role=role))
+    token = set_current(AuthContext(actor=actor, role=role))
     try:
         yield
     finally:

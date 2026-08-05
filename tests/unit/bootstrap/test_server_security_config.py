@@ -24,6 +24,9 @@ Config = importlib.import_module("config").Config  # noqa: E402
 ValidationError = importlib.import_module("common.errors").ValidationError  # noqa: E402
 register_plugins = importlib.import_module("common.bootstrap").register_plugins  # noqa: E402
 Factory = importlib.import_module("common.factory.factory").Factory  # noqa: E402
+AssemblyContext = importlib.import_module("config.context").AssemblyContext  # noqa: E402
+_authz = importlib.import_module("common.security.authorization")  # noqa: E402
+AuthorizationProducer = _authz.AuthorizationProducer  # noqa: E402
 _auth = importlib.import_module("common.security.authentication")  # noqa: E402
 Authenticator = _auth.Authenticator  # noqa: E402
 AuthProducer = _auth.AuthProducer  # noqa: E402
@@ -33,8 +36,23 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture(autouse=True)
 def _fresh_instances():
-    """每个用例独立装配：具名实例缓存会让同名 ``security.only`` 跨用例复用。"""
+    """每个用例独立装配：具名实例缓存会让同名 ``security.only`` 跨用例复用。
+
+    清空后预置 ``authorizer.default``：生产路径上它由 ``build_kernel`` 建立，
+    ``_build_security`` 按具名引用命中的是**同一个实例**（见 ``runtime._authorizer``）。
+    这里摆上那一步的产物而不建整个内核，也不给各用例塞内联 authorizer——内联会新建
+    另一份，等于让用例悄悄绕过它依赖的那条共享契约。
+    """
     Factory.reset_all()
+    register_plugins()
+    AuthorizationProducer.put(
+        "default",
+        AuthorizationProducer.build(
+            "standard",
+            {"grant_store": {"target": "memory"}, "delegation_store": {"target": "memory"}},
+            AssemblyContext(),
+        ),
+    )
     yield
     Factory.reset_all()
 

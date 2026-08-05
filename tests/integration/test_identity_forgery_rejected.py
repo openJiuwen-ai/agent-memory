@@ -198,4 +198,4 @@ def test_context_is_reset_after_failed_authentication(srv) -> None:
 def _make_ctx(actor: Scope):
     from common.security.types import AuthContext
 
-    return AuthContext(actor=actor, acting_user=actor.user, role=Role.USER)
+    return AuthContext(actor=actor, role=Role.USER)

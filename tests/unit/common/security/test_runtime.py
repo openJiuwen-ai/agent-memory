@@ -22,10 +22,18 @@ def _registered():
     register_plugins()
 
 
+_AUTHORIZER = {
+    "target": "standard",
+    "params": {"grant_store": {"target": "memory"}, "delegation_store": {"target": "memory"}},
+}
+"""内联 authorizer：Runtime 的默认引用是具名实例 ``authorizer.default``，那由内核装配
+建立。单测不建内核，故显式给出——这也是 ``_authorizer`` 重抛的那条错误指的做法。"""
+
+
 def _build(params: dict | None = None) -> SecurityRuntime:
     return SecurityRuntimeProducer.build(
         "standard",
-        {"authenticator": {"target": "dev"}, **(params or {})},
+        {"authenticator": {"target": "dev"}, "authorizer": _AUTHORIZER, **(params or {})},
         AssemblyContext(),
     )
 
@@ -44,9 +52,10 @@ def test_authenticator_is_required_without_default() -> None:
 
 
 def test_all_request_path_capabilities_are_populated() -> None:
-    """四条请求路径能力缺一不可：缺一项就意味着某条边界没人把守。"""
+    """五条请求路径能力缺一不可：缺一项就意味着某条边界没人把守。"""
     runtime = _build()
     assert runtime.authenticator is not None
+    assert runtime.authorizer is not None
     assert runtime.rate_limiter is not None
     assert runtime.workload_guard is not None
     assert runtime.binding_policy is not None
@@ -60,10 +69,76 @@ def test_runtime_is_frozen() -> None:
 
 
 def test_no_placeholder_fields_for_later_prs() -> None:
-    """恒为 ``None`` 的 ``authorizer`` 会诱导消费方写 ``if runtime.authorizer:`` 的
-    fail-open 分支。PR2/PR3 补齐时再加字段。"""
-    assert not hasattr(_build(), "authorizer")
+    """恒为 ``None`` 的字段会诱导消费方写 ``if runtime.x:`` 的 fail-open 分支。
+
+    ``audit_integrity_provider`` 是 F05 目标态成员，由 PR3 连同实现一起加。
+    """
     assert not hasattr(_build(), "audit_integrity_provider")
+
+
+# -- Authorizer 装配 --------------------------------------------------------- #
+
+
+def test_missing_named_authorizer_names_the_assembly_order() -> None:
+    """默认引用的 ``authorizer.default`` 由内核装配建立，装配顺序反了要说清楚。
+
+    Factory 原始错误说的是「配置里没有 authorizer.default」，会把人引向配置文件；
+    真正要改的是装配顺序或显式给出 authorizer。
+    """
+    with pytest.raises(ValidationError) as exc:
+        SecurityRuntimeProducer.build(
+            "standard", {"authenticator": {"target": "dev"}}, AssemblyContext()
+        )
+    assert "build_kernel" in str(exc.value)
+
+
+def test_authorizer_is_the_same_instance_the_pep_uses() -> None:
+    """Runtime 健康检查的必须是 PEP 实际在用的那一个。
+
+    匿名新建会得到另一份持有另一套 Grant/Delegation 存储的 authorizer——那比不检查
+    更糟，它给出的是虚假保证。
+    """
+    ctx = AssemblyContext.from_dict(
+        {
+            "security": {"default": {"target": "standard", "params": {"authenticator": "a"}}},
+            "authenticator": {"a": {"target": "dev"}},
+            "authorizer": {
+                "default": {
+                    "target": "standard",
+                    "params": {"grant_store": "g", "delegation_store": "d"},
+                }
+            },
+            "grant_store": {"g": {"target": "memory"}},
+            "delegation_store": {"d": {"target": "memory"}},
+        }
+    )
+    # 模拟内核装配：先建具名 authorizer.default，Runtime 随后必须命中同一个。
+    from common.security.authorization.base import AuthorizationProducer
+
+    pep_authorizer = AuthorizationProducer.build_named("default", ctx)
+    runtime = SecurityRuntimeProducer.build_named("default", ctx)
+    assert runtime.authorizer is pep_authorizer
+
+
+def test_test_only_authorizer_is_rejected_by_capability_not_by_name() -> None:
+    """判据是 ``is_test_only()``，不是 ``target == "allow_all"``（S08 不变量 7）。"""
+    with pytest.raises(ValidationError) as exc:
+        _build({"authorizer": {"target": "allow_all"}})
+    assert "allow_test_only_security" in str(exc.value)
+
+
+def test_test_only_authorizer_needs_an_explicit_opt_in() -> None:
+    """要用恒放行实现得让「这次装配不做真实授权」在配置里留下痕迹。"""
+    runtime = SecurityRuntimeProducer.build(
+        "standard",
+        {
+            "authenticator": {"target": "dev"},
+            "authorizer": {"target": "allow_all"},
+            "allow_test_only_security": True,
+        },
+        AssemblyContext(),
+    )
+    assert runtime.authorizer.is_test_only() is True
 
 
 # -- 默认值取保守侧 ---------------------------------------------------------- #
@@ -84,7 +159,13 @@ def test_remote_capable_authenticator_defaults_to_token_bucket() -> None:
     """声明可远程暴露的认证有攻击面，默认必须是限流的那个。"""
     runtime = SecurityRuntimeProducer.build(
         "standard",
-        {"authenticator": {"target": "api_key", "params": {"root_api_key": "root-key-for-tests"}}},
+        {
+            "authenticator": {
+                "target": "api_key",
+                "params": {"root_api_key": "root-key-for-tests"},
+            },
+            "authorizer": _AUTHORIZER,
+        },
         AssemblyContext(),
     )
     assert runtime.authenticator.requires_loopback_binding() is False
@@ -153,6 +234,7 @@ def test_health_rejects_when_any_capability_is_unhealthy() -> None:
     runtime = _build()
     broken = SecurityRuntime(
         authenticator=runtime.authenticator,
+        authorizer=runtime.authorizer,
         rate_limiter=runtime.rate_limiter,
         workload_guard=runtime.workload_guard,
         binding_policy=runtime.binding_policy,
@@ -167,6 +249,7 @@ def test_health_error_names_the_capability_not_the_secret() -> None:
     runtime = _build()
     broken = SecurityRuntime(
         authenticator=runtime.authenticator,
+        authorizer=runtime.authorizer,
         rate_limiter=runtime.rate_limiter,
         workload_guard=runtime.workload_guard,
         binding_policy=runtime.binding_policy,
@@ -203,6 +286,7 @@ def test_close_continues_past_a_failing_capability() -> None:
     runtime = _build()
     combined = SecurityRuntime(
         authenticator=_Failing(),  # type: ignore[arg-type]
+        authorizer=runtime.authorizer,
         rate_limiter=runtime.rate_limiter,
         workload_guard=runtime.workload_guard,
         binding_policy=runtime.binding_policy,
@@ -224,11 +308,20 @@ def test_named_capabilities_are_shared_across_surfaces() -> None:
                     "target": "standard",
                     "params": {
                         "authenticator": "shared_auth",
+                        "authorizer": "shared_authz",
                         "workload_guard": "shared_budget",
                     },
                 }
             },
             "authenticator": {"shared_auth": {"target": "dev"}},
+            "authorizer": {
+                "shared_authz": {
+                    "target": "standard",
+                    "params": {"grant_store": "shared_grants", "delegation_store": "shared_dlg"},
+                }
+            },
+            "grant_store": {"shared_grants": {"target": "memory"}},
+            "delegation_store": {"shared_dlg": {"target": "memory"}},
             "workload_guard": {
                 "shared_budget": {"target": "semaphore", "params": {"max_concurrent": 1}}
             },

@@ -1,9 +1,13 @@
-"""bootstrap/core/auth_middleware：凭据归一 + ContextVar 生命周期。
+"""bootstrap/core/auth_middleware：凭据归一 + RequestSecurityContext 构造 + 清理。
 
-中间件本身不含认证策略（模式由配置在装配期选定），故这里测的只有两件事：
-**凭据材料被正确归一**，以及**上下文一定被清理**。后者是 05 最容易出的 bug，
-测法是验证行为后果（``get_current()`` 是否干净），不是验证 ``reset_current``
-被调用过。
+中间件本身不含认证策略（模式由配置在装配期选定），故这里测三件事：
+**凭据材料被正确归一**、**产出的 RequestSecurityContext 各字段由服务端决定**，以及
+**辅助 ContextVar 一定被清理**。最后一项的测法是验证行为后果（``get_current()``
+是否干净），不是验证 ``reset_current`` 被调用过。
+
+``authenticated`` yield 的是 :class:`RequestSecurityContext` 而非 ``AuthContext``
+（迁移计划 §5.2 第 7 项）——它是 ``MemoryAPI`` 的唯一显式安全输入，由调用方显式传给
+``dispatch``。ContextVar 里仍放 ``AuthContext``，但只供日志/trace 关联。
 """
 
 # ruff: noqa: E402
@@ -39,7 +43,7 @@ from common.security.authentication.key_store import KeyStoreProducer  # noqa: E
 from common.security.protection.protection_impl.semaphore_guard import (
     SemaphoreWorkloadGuard,  # noqa: E402
 )
-from common.security.types import Credentials, Role, get_current  # noqa: E402
+from common.security.types import Credentials, Role, Surface, get_current  # noqa: E402
 from common.type_def.scope import Scope  # noqa: E402
 from config.context import AssemblyContext  # noqa: E402
 
@@ -116,9 +120,11 @@ def test_surrounding_whitespace_is_stripped() -> None:
 
 def test_context_is_set_inside_and_cleared_outside() -> None:
     assert get_current() is None
-    with authenticated(DevAuthenticator(), Credentials()) as ctx:
-        assert get_current() is ctx
-        assert ctx.role is Role.ROOT
+    with authenticated(DevAuthenticator(), Credentials()) as security:
+        # ContextVar 里是 AuthContext（日志/trace 用），yield 出来的是完整的
+        # RequestSecurityContext（授权用）——两者不是同一个对象。
+        assert get_current() is security.auth
+        assert security.auth.role is Role.ROOT
     assert get_current() is None
 
 
@@ -146,8 +152,8 @@ def test_consecutive_requests_do_not_inherit_identity(key_store, alice_key) -> N
     """
     auth = ApiKeyAuthenticator(key_store=key_store, root_api_key="")
 
-    with authenticated(auth, Credentials(api_key=alice_key)) as ctx:
-        assert ctx.actor == _ALICE
+    with authenticated(auth, Credentials(api_key=alice_key)) as security:
+        assert security.actor == _ALICE
     assert get_current() is None
 
     with pytest.raises(AuthenticationError):
@@ -168,9 +174,57 @@ def test_normalized_headers_authenticate_under_trusted(key_store) -> None:
     creds = credentials_from_headers(
         {"X-Org-ID": "acme", "X-Principal-Type": "User", "X-PRINCIPAL-ID": "alice"}
     )
-    with authenticated(auth, creds) as ctx:
-        assert ctx.actor == _ALICE
-        assert ctx.role is Role.USER
+    with authenticated(auth, creds) as security:
+        assert security.actor == _ALICE
+        assert security.auth.role is Role.USER
+
+
+# -- RequestSecurityContext 的构造（迁移计划 §5.2 第 7 项）--------------------- #
+
+
+def test_request_id_is_server_generated_and_unique() -> None:
+    """request_id 进审计与授权环境，可被调用方指定就等于让它给自己贴任意标签、
+    或与他人的记录撞号。故服务端生成，且每次请求不同。"""
+    seen = set()
+    for _ in range(3):
+        with authenticated(DevAuthenticator(), Credentials()) as security:
+            assert security.request_id
+            seen.add(security.request_id)
+    assert len(seen) == 3
+
+
+def test_surface_comes_from_the_adapter_not_the_caller() -> None:
+    """surface 由适配层写入；缺省 INTERNAL 对应进程内装配。"""
+    with authenticated(DevAuthenticator(), Credentials(), surface=Surface.HTTP) as security:
+        assert security.surface is Surface.HTTP
+    with authenticated(DevAuthenticator(), Credentials()) as security:
+        assert security.surface is Surface.INTERNAL
+
+
+def test_peer_is_the_transport_address_not_a_forwarded_header() -> None:
+    """不采信 X-Forwarded-For：没有可信代理白名单时读它，等于让调用方自述来源，
+    限流分桶与审计溯源会同时被绕过。"""
+    creds = credentials_from_headers(
+        {"X-Forwarded-For": "1.2.3.4", "X-Real-IP": "5.6.7.8"}, "10.0.0.7"
+    )
+    with authenticated(DevAuthenticator(), creds) as security:
+        assert security.peer == "10.0.0.7"
+
+
+def test_attributes_are_empty_and_read_only() -> None:
+    """attributes 参与 AuthorizationEnvironment；本层没有可写入的系统属性，
+    业务 payload 一律不得注入。"""
+    with authenticated(DevAuthenticator(), Credentials()) as security:
+        assert dict(security.attributes) == {}
+        with pytest.raises(TypeError):
+            security.attributes["injected"] = "root"  # type: ignore[index]
+
+
+def test_started_at_is_server_clock() -> None:
+    """授权的时效判定用它派生的 now，必须是服务端时钟且带时区。"""
+    with authenticated(DevAuthenticator(), Credentials()) as security:
+        assert security.started_at is not None
+        assert security.started_at.tzinfo is not None
 
 
 # -- 限流（§8.1） ------------------------------------------------------------- #
@@ -252,8 +306,8 @@ def test_no_limiter_means_no_limiting() -> None:
 
 
 def test_passing_limiter_does_not_change_the_allowed_path() -> None:
-    with authenticated(DevAuthenticator(), _peer(), None, _Open()) as ctx:
-        assert ctx.role is Role.ROOT
+    with authenticated(DevAuthenticator(), _peer(), None, _Open()) as security:
+        assert security.auth.role is Role.ROOT
     assert get_current() is None
 
 

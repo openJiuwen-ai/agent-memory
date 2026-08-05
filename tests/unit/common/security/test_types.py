@@ -41,7 +41,6 @@ def test_context_is_frozen() -> None:
 def test_defaults_are_least_privilege() -> None:
     ctx = AuthContext(actor=Scope(org="acme", user="alice"))
     assert ctx.role is Role.USER
-    assert ctx.acting_user == ""
     assert ctx.delegation_id == ""
     assert ctx.credential_id == ""
     assert ctx.expires_at is None
