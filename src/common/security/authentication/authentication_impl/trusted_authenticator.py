@@ -33,6 +33,7 @@ _LOG = logging.getLogger(__name__)
 _H_ORG = "x-org-id"
 _H_TYPE = "x-principal-type"
 _H_ID = "x-principal-id"
+_H_ACTING_USER = "x-acting-user"
 _PRINCIPAL_TYPES = frozenset({"user", "agent"})
 
 _METHOD = "trusted"  # 开放字符串而非封闭枚举（F05 拒绝以模式名驱动核心分支）
@@ -52,6 +53,13 @@ def _credential_id(gateway_key: str, org: str, principal_type: str, principal_id
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 _FAILED = "authentication failed"
+
+
+def _acting_user(actor: Scope, headers) -> str:
+    """返回本次操作对应的 user；agent 主体可携带受信网关的代操作声明。"""
+    if not actor.agent:
+        return actor.user
+    return str(headers.get(_H_ACTING_USER, "")).strip()
 
 
 class TrustedAuthenticator(Authenticator):
@@ -87,7 +95,7 @@ class TrustedAuthenticator(Authenticator):
 
         return AuthContext(
             actor=actor,
-            acting_user=actor.user,
+            acting_user=_acting_user(actor, headers),
             role=role,
             credential_type=_CREDENTIAL,
             credential_id=_credential_id(self._gateway_key, org, principal_type, principal_id),
