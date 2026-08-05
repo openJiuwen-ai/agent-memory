@@ -9,5 +9,6 @@ from construction.evolver import EvolverProducer
 
 import_module(".orchestrating_evolver", __name__)
 import_module(".dynamic_evolver", __name__)
+import_module(".wikimem_baseline_evolver", __name__)
 
 __all__ = ["EvolverProducer"]
