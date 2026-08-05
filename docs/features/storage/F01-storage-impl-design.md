@@ -49,13 +49,15 @@
 
 ### VectorStore（`storage/vector.py` · `VectorProducer` · TOP_NAME=`vector_store`）
 
-向量 ANN 索引 + 按 id 正排。`insert/update/delete/get` 走主键 CRUD，`search` 走近邻检索；`id` 是 scope 内逻辑主键，外部后端可用 `scope + id` 生成物理主键，`metadata` 承载标量、`filters` 为 scope 之外的谓词。
+向量 ANN 索引 + 按 id 正排。`insert/update/delete/get` 走主键 CRUD，`search` 走近邻检索，`recall` 在召回请求内按需回带命中行 payload（`metadata`）；`id` 是 scope 内逻辑主键，外部后端可用 `scope + id` 生成物理主键，`metadata` 承载标量、`filters` 为 scope 之外的谓词。
+
+> **`recall` 与 `search` 的取舍**：`search` 仅返回 `ScoredID`（id+score），是 vector/fulltext/fusion 三类 search 的共用纯净契约，不承载 payload；`recall` 是可选能力，基类默认抛 `NotImplementedError`，子类按需 override。远端后端（milvus / pgvector）override 后把"召回 + 取 metadata"合并为一次请求，省掉调用方再发一次 `get` 的 RTT；未 override 的后端由调用方 `VectorRecaller` 捕获异常回退到 `search + get` 两段式。`output_fields` 当前仅认 `"metadata"`，其余值忽略并记日志。
 
 | target | 类 | 后端 | 必填参数 | 可选参数（默认） | 隔离 | 关键语义 |
 |---|---|---|---|---|---|---|
-| `memory` | `InMemoryVectorStore` | 进程内暴力余弦 | — | — | scope 折五段命名空间键 | `search` 暴力算余弦、过滤 `score>0`、降序 top-k；维度一致性由调用方（同一 Embedder）保证 |
-| `milvus` | `MilvusVectorStore` | Milvus（`pymilvus` 2.4+ `MilvusClient` 惰性导入） | `uri`、`dim`（>0，回退 `globals.embedder_dim`） | `host`/`port`(19530)/`token`/`collection`(`agent_memory_vectors`)/`metric_type`(`COSINE`)/`consistency_level`(`Strong`)/`scope_field_max_length`(256)/`id_max_length`(512) | scope 五维落标量字段，表达式 `scope_x == v` 约束 | 首次连接 `_ensure_collection`（建 schema：id/vector/5×scope/metadata-JSON + AUTOINDEX）；**Strong 一致性**保证 read-after-write；`insert` 先 query 查重→`ConflictError`，`update` 查缺→`NotFoundError` 后 `upsert`；`score`=Milvus distance（COSINE/IP 越大越近、L2 越小越近） |
-| `pgvector` | `PgVectorStore` | PostgreSQL 16 + pgvector ≥0.8.0（`psycopg` 惰性导入） | `dsn`、`dim` | `schema`/`table`/`metric_type`/`index_type`/HNSW 与池参数/`auto_create_schema` | scope 五维与逻辑 id 组成复合主键，search 按 scope 维度过滤 | HNSW + iterative scan；COSINE/L2/IP 均转为高分优先；FilterExpr 在 top-k 前编译为参数化 jsonb SQL；`update` 不改 scope；`index_type=none` 在事务内禁用 index scan 做精确搜索 |
+| `memory` | `InMemoryVectorStore` | 进程内暴力余弦 | — | — | scope 折五段命名空间键 | `search` 暴力算余弦、过滤 `score>0`、降序 top-k；维度一致性由调用方（同一 Embedder）保证；**`recall` override**：search 的薄包装，单次遍历内按 `output_fields=["metadata"]` 回带 metadata（内存零 RTT，仅为与远端后端契约对齐） |
+| `milvus` | `MilvusVectorStore` | Milvus（`pymilvus` 2.4+ `MilvusClient` 惰性导入） | `uri`、`dim`（>0，回退 `globals.embedder_dim`） | `host`/`port`(19530)/`token`/`collection`(`agent_memory_vectors`)/`metric_type`(`COSINE`)/`consistency_level`(`Strong`)/`scope_field_max_length`(256)/`id_max_length`(512) | scope 五维落标量字段，表达式 `scope_x == v` 约束 | 首次连接 `_ensure_collection`（建 schema：id/vector/5×scope/metadata-JSON + AUTOINDEX）；**Strong 一致性**保证 read-after-write；`insert` 先 query 查重→`ConflictError`，`update` 查缺→`NotFoundError` 后 `upsert`；`score`=Milvus distance（COSINE/IP 越大越近、L2 越小越近）；**`recall` override**：`output_fields` 含 `metadata` 时把 search 的 `output_fields` 扩为 `["logical_id","metadata"]`，一次请求回带 metadata（省去再 `get` 的 RTT 与 vector/scope 字段无效回传） |
+| `pgvector` | `PgVectorStore` | PostgreSQL 16 + pgvector ≥0.8.0（`psycopg` 惰性导入） | `dsn`、`dim` | `schema`/`table`/`metric_type`/`index_type`/HNSW 与池参数/`auto_create_schema` | scope 五维与逻辑 id 组成复合主键，search 按 scope 维度过滤 | HNSW + iterative scan；COSINE/L2/IP 均转为高分优先；FilterExpr 在 top-k 前编译为参数化 jsonb SQL；`update` 不改 scope；`index_type=none` 在事务内禁用 index scan 做精确搜索；**`recall` override**：与 `search` 共用同条 KNN SELECT，仅在 SELECT 列追加 `metadata` 一次回带（pgvector 本就一条 SELECT，比 milvus 合并请求更直接），省去再 `get` 的往返 |
 
 > `dim` 必须 >0，构造期即校验（缺失或回退后仍为 0 → `ValidationError`）。
 
