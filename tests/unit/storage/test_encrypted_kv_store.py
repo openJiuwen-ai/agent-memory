@@ -51,12 +51,12 @@ class _FakeSecurity(CryptographyProvider):
                 return ciphertext
             raise RuntimeError("missing encrypted envelope")
         offset = len(_PREFIX)
-        aad_len = int.from_bytes(ciphertext[offset : offset + 4], "big")
+        aad_len = int.from_bytes(ciphertext[offset:offset + 4], "big")
         offset += 4
-        embedded_aad = ciphertext[offset : offset + aad_len]
+        embedded_aad = ciphertext[offset:offset + aad_len]
         if embedded_aad != aad:
             raise RuntimeError("aad mismatch")
-        return ciphertext[offset + aad_len :][::-1]
+        return ciphertext[offset + aad_len:][::-1]
 
 
 @CryptographyProducer.register("fake_encrypted_kv")

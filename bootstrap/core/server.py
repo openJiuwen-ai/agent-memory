@@ -112,7 +112,7 @@ class Server:
         register_plugins()
         kernel_config = KernelConfig.from_dict(config.settings.get("memory_api"))
         kernel = build_kernel(policies=config.policies or None, config=kernel_config)
-        security = _build_security(kernel_config)
+        security = build_security_runtime(kernel_config)
         return cls(config, kernel, security)
 
     def dispatch(
@@ -128,7 +128,7 @@ class Server:
         return _dispatch(self, verb, payload, security)
 
 
-def _build_security(kernel_config: Any):
+def build_security_runtime(kernel_config: Any):
     """按配置的 ``security`` 段装配 :class:`SecurityRuntime`；无该段时回落 DEV 并警告。
 
     回落到 DEV（而非拒绝启动）是刻意的：不打断任何人的本地开发。它把「无认证」

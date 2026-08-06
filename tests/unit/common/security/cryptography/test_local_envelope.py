@@ -22,19 +22,20 @@ from common.security.cryptography import (
 from common.security.cryptography.cryptography_impl.local_envelope import (
     ENVELOPE_MAGIC,
     ENVELOPE_VERSION,
-    ENVELOPE_VERSION_V1,
-    LOCAL_ALGORITHM_ID,
-    NONCE_SIZE,
     LocalEnvelopeCryptographyProvider,
     LocalKeyProvider,
-    _aes_encrypt,
-    _key_aad_v1,
 )
 from common.security.types import CryptoContext
 from common.type_def import Scope
 from config import AssemblyContext
 
 _KEY_HEX = "11" * 32
+_LEGACY_V1_ENVELOPE = bytes.fromhex(
+    "454e433101010030000c000cb76369ad7e6142f97d74bae917899876cd25dcc762"
+    "c74ecb09ed4f6f75418e2c7c997b7190a303fa251f0fdd4dcac238040404040404"
+    "0404040404040505050505050505050505057a47b805d1a53731cb77a66cb2835c"
+    "c4a1131152146fc6b52e2a3c95c6cb"
+)
 
 pytestmark = pytest.mark.unit
 
@@ -165,7 +166,7 @@ def test_key_ref_in_header_cannot_be_swapped() -> None:
 
     # header 尾部 4 字节是 key_epoch（!4sBBHHHBI）。改掉它而不动其余任何字节。
     epoch_offset = struct.calcsize("!4sBBHHHB")
-    ciphertext[epoch_offset : epoch_offset + 4] = (9).to_bytes(4, "big")
+    ciphertext[epoch_offset:epoch_offset + 4] = (9).to_bytes(4, "big")
 
     with pytest.raises(KeyMismatchError):
         provider.decrypt(bytes(ciphertext), context=_context())
@@ -293,48 +294,23 @@ def test_missing_key_file_is_not_silently_created() -> None:
 # -- v1 只读兼容 ------------------------------------------------------------- #
 
 
-def _build_v1_envelope(key_provider: LocalKeyProvider, plaintext: bytes, *, org: str) -> bytes:
-    """按 v1 布局手工构造一个信封：模拟迁移前已落盘的密文。"""
-    data_key = b"\x03" * 32
-    key_nonce = b"\x04" * NONCE_SIZE
-    data_nonce = b"\x05" * NONCE_SIZE
-    wrapping_key = key_provider._derive_org_key_v1(org)  # noqa: SLF001 - 复刻旧派生
-    wrapped = _aes_encrypt(wrapping_key, key_nonce, data_key, _key_aad_v1(org))
-    context = CryptoContext(scope=Scope(org=org, user="alice"), purpose="memory_unit")
-    from common.security.cryptography.cryptography_impl.local_envelope import _content_aad_v1
-
-    content = _aes_encrypt(data_key, data_nonce, plaintext, _content_aad_v1(context, b""))
-    header = struct.pack(
-        "!4sBBHHH",
-        ENVELOPE_MAGIC,
-        ENVELOPE_VERSION_V1,
-        LOCAL_ALGORITHM_ID,
-        len(wrapped),
-        len(key_nonce),
-        len(data_nonce),
-    )
-    return header + wrapped + key_nonce + data_nonce + content
-
-
 def test_v1_envelope_still_readable() -> None:
     """迁移前落盘的密文不能因为格式升级就读不出来。"""
     key_provider = LocalKeyProvider(key_hex=_KEY_HEX)
     provider = LocalEnvelopeCryptographyProvider(key_provider)
-    legacy = _build_v1_envelope(key_provider, b"legacy payload", org="acme")
 
     context = CryptoContext(scope=Scope(org="acme", user="alice"), purpose="memory_unit")
-    assert provider.decrypt(legacy, context=context) == b"legacy payload"
+    assert provider.decrypt(_LEGACY_V1_ENVELOPE, context=context) == b"legacy payload"
 
 
 def test_v1_envelope_still_enforces_tenant_isolation() -> None:
     """只读兼容不等于放宽校验：跨 org 读旧密文照样拒绝。"""
     key_provider = LocalKeyProvider(key_hex=_KEY_HEX)
     provider = LocalEnvelopeCryptographyProvider(key_provider)
-    legacy = _build_v1_envelope(key_provider, b"legacy payload", org="acme")
 
     context = CryptoContext(scope=Scope(org="other", user="alice"), purpose="memory_unit")
     with pytest.raises(KeyMismatchError):
-        provider.decrypt(legacy, context=context)
+        provider.decrypt(_LEGACY_V1_ENVELOPE, context=context)
 
 
 # -- 装配 -------------------------------------------------------------------- #

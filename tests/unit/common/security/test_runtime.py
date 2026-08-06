@@ -221,7 +221,8 @@ def test_cryptography_is_wired_when_configured(tmp_path) -> None:
 class _Unhealthy:
     """只在 health() 上失败的探针，用来断言 Runtime 的传播行为。"""
 
-    def health(self) -> None:
+    @staticmethod
+    def health() -> None:
         raise RuntimeError("backend unreachable: token=s3cret")
 
 
@@ -270,17 +271,21 @@ def test_close_continues_past_a_failing_capability() -> None:
     closed: list[str] = []
 
     class _Failing:
-        def health(self) -> None:
+        @staticmethod
+        def health() -> None:
             return None
 
-        def close(self) -> None:
+        @staticmethod
+        def close() -> None:
             raise RuntimeError("close failed")
 
     class _Recording:
-        def health(self) -> None:
+        @staticmethod
+        def health() -> None:
             return None
 
-        def close(self) -> None:
+        @staticmethod
+        def close() -> None:
             closed.append("recorded")
 
     runtime = _build()

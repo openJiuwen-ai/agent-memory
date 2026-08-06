@@ -1,7 +1,7 @@
 """Server 安全装配的 fail-closed 选择规则。
 
 装配面从三个独立的 ``_build_authenticator`` / ``_build_rate_limiter`` /
-``_build_argon2_guard`` 收敛成一个 ``_build_security``（返回 ``SecurityRuntime``）后，
+``_build_argon2_guard`` 收敛成一个 ``build_security_runtime``（返回 ``SecurityRuntime``）后，
 这里测的仍是同三件事：**多实例无 default 拒绝启动**、**能力默认取保守侧**、
 **分岔由 capability 决定而非认证 target 名**。
 """
@@ -39,7 +39,7 @@ def _fresh_instances():
     """每个用例独立装配：具名实例缓存会让同名 ``security.only`` 跨用例复用。
 
     清空后预置 ``authorizer.default``：生产路径上它由 ``build_kernel`` 建立，
-    ``_build_security`` 按具名引用命中的是**同一个实例**（见 ``runtime._authorizer``）。
+    ``build_security_runtime`` 按具名引用命中的是**同一个实例**。
     这里摆上那一步的产物而不建整个内核，也不给各用例塞内联 authorizer——内联会新建
     另一份，等于让用例悄悄绕过它依赖的那条共享契约。
     """
@@ -98,7 +98,7 @@ def test_multiple_security_instances_without_default_are_rejected() -> None:
     )
 
     with pytest.raises(ValidationError, match="多个具名实例"):
-        server._build_security(config)
+        server.build_security_runtime(config)
 
 
 def test_default_wins_when_multiple_security_instances_exist() -> None:
@@ -122,7 +122,7 @@ def test_default_wins_when_multiple_security_instances_exist() -> None:
         }
     )
 
-    assert server._build_security(config).authenticator.mode() == "dev"
+    assert server.build_security_runtime(config).authenticator.mode() == "dev"
 
 
 def test_single_unnamed_instance_is_used_without_default() -> None:
@@ -134,7 +134,7 @@ def test_single_unnamed_instance_is_used_without_default() -> None:
         }
     )
 
-    assert server._build_security(config).authenticator.mode() == "dev"
+    assert server.build_security_runtime(config).authenticator.mode() == "dev"
 
 
 # -- 无 security 段回落 DEV（显式、可切换，非隐式不可改）--------------------- #
@@ -145,7 +145,7 @@ def test_missing_security_section_falls_back_to_dev_with_a_warning(caplog) -> No
     config = _config({})
 
     with caplog.at_level("WARNING"):
-        runtime = server._build_security(config)
+        runtime = server.build_security_runtime(config)
 
     assert runtime.authenticator.mode() == "dev"
     assert any("security" in r.message for r in caplog.records)
@@ -153,7 +153,7 @@ def test_missing_security_section_falls_back_to_dev_with_a_warning(caplog) -> No
 
 def test_dev_fallback_still_enforces_loopback_binding() -> None:
     """回落 DEV 不等于放开绑定：非 loopback 由 binding_policy 在绑定前拒绝。"""
-    runtime = server._build_security(_config({}))
+    runtime = server.build_security_runtime(_config({}))
 
     runtime.binding_policy.check(
         "127.0.0.1", requires_loopback=runtime.authenticator.requires_loopback_binding()
@@ -181,19 +181,20 @@ def test_custom_authenticator_does_not_require_a_target_name_branch() -> None:
                 }
             }
         )
-        runtime = server._build_security(config)
+        runtime = server.build_security_runtime(config)
 
         assert runtime.authenticator.mode() == "custom_remote"
         # 声明可远程暴露 -> 默认限流；声明不需要预算 -> Server 不把预算传给中间件。
         assert type(runtime.rate_limiter).__name__ == "TokenBucketLimiter"
         assert server.Server(config, None, runtime).workload_guard is None
     finally:
-        AuthProducer._registry.pop("custom_remote_test", None)
+        # Producer 注册表没有运行期卸载语义；测试只需恢复本次临时注册。
+        vars(AuthProducer)["_registry"].pop("custom_remote_test", None)
 
 
 def test_loopback_only_authenticator_defaults_to_no_rate_limit() -> None:
     """dev 声明 requires_loopback_binding：无远端攻击面，默认限流只会卡住本地调试。"""
-    runtime = server._build_security(_config({}))
+    runtime = server.build_security_runtime(_config({}))
 
     assert runtime.authenticator.requires_loopback_binding() is True
     assert type(runtime.rate_limiter).__name__ == "NoRateLimit"
@@ -220,11 +221,11 @@ def test_workload_guard_is_withheld_when_the_authenticator_declares_no_need() ->
             }
         }
     )
-    expensive = server._build_security(api_key_config)
+    expensive = server.build_security_runtime(api_key_config)
     assert expensive.authenticator.requires_concurrency_guard() is True
     assert server.Server(api_key_config, None, expensive).workload_guard is not None
 
     dev_config = _config({})
-    cheap = server._build_security(dev_config)
+    cheap = server.build_security_runtime(dev_config)
     assert cheap.authenticator.requires_concurrency_guard() is False
     assert server.Server(dev_config, None, cheap).workload_guard is None
