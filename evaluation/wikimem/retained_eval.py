@@ -11,16 +11,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 from common.llm.base import LLM
-
+from evaluation.wikimem.llm_semantics import SemanticSource
 from evaluation.wikimem.qmd_consensus import (
     RetrievedMemoryFile,
     normalize_memory_path,
     score_line,
 )
 from evaluation.wikimem.retrieval_profile import retrieve_qmd_consensus_files
-from evaluation.wikimem.llm_semantics import SemanticSource
 from evaluation.wikimem.wiki_builder import WikiBuilder, WikiBuilderMode
-
 
 WikiMode = Literal["text", "multimodal"]
 
@@ -337,11 +335,17 @@ def extract_conversation_records(
 
     records: list[ConversationRecord] = []
     for number, turns in sessions:
-        for turn in turns:
+        for turn_index, turn in enumerate(turns, start=1):
             if not isinstance(turn, dict):
                 raise ValueError(f"session_{number} contains a non-object dialogue turn")
             speaker = turn.get("speaker")
             dia_id = turn.get("dia_id")
+            if dia_id is None:
+                # Some LoCoMo-compatible payloads omit the Rust evidence id.
+                # The dataset convention is one-based dialogue ordinals within
+                # each session, so recover the same stable id before building
+                # the wiki and evaluation cases.
+                dia_id = f"D{number}:{turn_index}"
             text_value = turn.get("text")
             if not isinstance(speaker, str) or not isinstance(dia_id, str) or not isinstance(
                 text_value, str
@@ -374,21 +378,22 @@ def extract_conversation_records(
                 # when it trims to an empty string.  Keep that text-only path
                 # unchanged; refined samples use the branch above.
                 text = f"{text} [caption: {caption.strip()}]"
+            metadata = {}
+            raw_metadata = {
+                "blip_caption": caption or "",
+                "query": query,
+                "img_url": ",".join(images),
+            }
+            for key, value in raw_metadata.items():
+                if value:
+                    metadata[key] = value
             records.append(
                 ConversationRecord(
                     dia_id=dia_id,
                     session_id=f"D{number}",
                     speaker=speaker,
                     text=text,
-                    metadata={
-                        key: value
-                        for key, value in {
-                            "blip_caption": caption or "",
-                            "query": query,
-                            "img_url": ",".join(images),
-                        }.items()
-                        if value
-                    },
+                    metadata=metadata,
                 )
             )
     return records
@@ -477,7 +482,7 @@ def summarize_scores_by_locomo_category(scores: list[CaseScore]) -> list[Categor
         label = _locomo_category_label(category)
         if label is None:
             continue
-        bucket = grouped[category]
+        bucket = grouped.get(category, [])
         cases_with_evidence = sum(1 for score in bucket if score.expected_evidence)
         full_hit_cases = sum(1 for score in bucket if score.full_evidence_hit)
         summaries.append(
@@ -574,15 +579,16 @@ def run_retained_qmd_eval(
             )
             profiler.record_elapsed("qmd_consensus_retrieve", retrieve_started)
             expected = _normalize_expected_evidence(question.evidence)
-            retrieved = _ordered_unique(
-                evidence_id
-                for file in result.files
-                for evidence_id in _extract_retrieved_evidence_ids(
-                    file,
-                    question.question,
-                    result.profile,
+            retrieved_ids = []
+            for file in result.files:
+                retrieved_ids.extend(
+                    _extract_retrieved_evidence_ids(
+                        file,
+                        question.question,
+                        result.profile,
+                    )
                 )
-            )
+            retrieved = _ordered_unique(retrieved_ids)
             hits = [evidence_id for evidence_id in retrieved if evidence_id in set(expected)]
             scores.append(
                 CaseScore(
@@ -691,7 +697,7 @@ def build_retained_memory_files(
     sample: PreparedSample,
     sample_root: str | Path,
     include_multiview: bool = True,
-    wiki_mode: WikiMode = "text",
+    wiki_mode: WikiMode = "multimodal",
 ) -> list[RetrievedMemoryFile]:
     """Materialize the retained wiki in text or multimodal mode.
 
@@ -1041,12 +1047,12 @@ def _assign_rust_scaffold_mtimes(
 
     def matching(prefix: str) -> list[RetrievedMemoryFile]:
         prefix_key = normalize_memory_path(prefix)
-        return [
-            file
-            for file in files
-            if normalize_memory_path(file.file_path).startswith(prefix_key)
-            and normalize_memory_path(file.file_path) not in seen
-        ]
+        matches = []
+        for file in files:
+            normalized_path = normalize_memory_path(file.file_path)
+            if normalized_path.startswith(prefix_key) and normalized_path not in seen:
+                matches.append(file)
+        return matches
 
     source_files = matching(f"{root}/wiki/sources/")
     source_files.sort(
@@ -1074,13 +1080,16 @@ def _assign_rust_scaffold_mtimes(
         session_match = re.search(r"session_(\d+)_observations\.md$", topic.file_path)
         session_number = int(session_match.group(1)) if session_match else 0
         take(topic.file_path)
-        observation_files = [
-            file
-            for file in matching(f"{root}/wiki/observations/")
-            if (match := re.search(r"_obs_(\d+)\.md$", file.file_path))
-            and (prefix_match := re.search(r"(D\d+)_", Path(file.file_path).name))
-            and int(prefix_match.group(1)[1:]) == session_number
-        ]
+        observation_files = []
+        for file in matching(f"{root}/wiki/observations/"):
+            match = re.search(r"_obs_(\d+)\.md$", file.file_path)
+            prefix_match = re.search(r"(D\d+)_", Path(file.file_path).name)
+            if (
+                match is not None
+                and prefix_match is not None
+                and int(prefix_match.group(1)[1:]) == session_number
+            ):
+                observation_files.append(file)
         observation_files.sort(
             key=lambda file: int(re.search(r"_obs_(\d+)\.md$", file.file_path).group(1))
         )
@@ -1098,12 +1107,11 @@ def _assign_rust_scaffold_mtimes(
         session_match = re.search(r"session_(\d+)_events\.md$", topic.file_path)
         session_number = int(session_match.group(1)) if session_match else 0
         take(topic.file_path)
-        event_files = [
-            file
-            for file in matching(f"{root}/wiki/events/")
-            if (match := re.search(r"session_(\d+)_event_(\d+)\.md$", file.file_path))
-            and int(match.group(1)) == session_number
-        ]
+        event_files = []
+        for file in matching(f"{root}/wiki/events/"):
+            match = re.search(r"session_(\d+)_event_(\d+)\.md$", file.file_path)
+            if match is not None and int(match.group(1)) == session_number:
+                event_files.append(file)
         event_files.sort(
             key=lambda file: int(re.search(r"_event_(\d+)\.md$", file.file_path).group(1))
         )
@@ -1219,9 +1227,12 @@ def _parse_questions(raw_questions: list[dict[str, Any]]) -> list[LoCoMoQuestion
         if not isinstance(evidence, list) or not all(isinstance(item, str) for item in evidence):
             raise ValueError("LoCoMo evidence must be an array of strings")
         category = raw.get("category")
-        if category is not None and (
-            not isinstance(category, int) or isinstance(category, bool) or category < 0
-        ):
+        invalid_category = (
+            category is not None and not isinstance(category, int)
+        ) or isinstance(category, bool) or (
+            isinstance(category, int) and category < 0
+        )
+        if invalid_category:
             raise ValueError("LoCoMo category must be a non-negative integer or null")
         questions.append(
             LoCoMoQuestion(
@@ -1263,12 +1274,7 @@ def _parse_session_summaries(raw: dict[str, str]) -> dict[int, str]:
 def _parse_event_summaries(raw: dict[str, Any]) -> dict[int, SessionEvents]:
     result: dict[int, SessionEvents] = {}
     for key, value in raw.items():
-        number = (
-            int(key.removeprefix("events_session_"))
-            if key.startswith("events_session_")
-            and key.removeprefix("events_session_").isdigit()
-            else None
-        )
+        number = _session_number(key)
         if number is None or not isinstance(value, dict):
             continue
         date_value = value.get("date")
@@ -1289,8 +1295,7 @@ def _parse_event_summaries(raw: dict[str, Any]) -> dict[int, SessionEvents]:
 def _parse_observations(raw: dict[str, Any]) -> dict[int, list[ObservationNote]]:
     result: dict[int, list[ObservationNote]] = {}
     for key, value in raw.items():
-        suffix = key.removeprefix("session_").removesuffix("_observation")
-        number = int(suffix) if key.startswith("session_") and suffix.isdigit() else None
+        number = _session_number(key)
         if number is None or not isinstance(value, dict):
             continue
         notes: list[ObservationNote] = []
@@ -1300,12 +1305,11 @@ def _parse_observations(raw: dict[str, Any]) -> dict[int, list[ObservationNote]]
             if not isinstance(entries, list):
                 continue
             for entry in entries:
-                if (
-                    isinstance(entry, list)
-                    and len(entry) >= 2
-                    and isinstance(entry[0], str)
-                    and isinstance(entry[1], str)
-                ):
+                is_pair = isinstance(entry, list) and len(entry) >= 2
+                is_string_pair = (
+                    is_pair and isinstance(entry[0], str) and isinstance(entry[1], str)
+                )
+                if is_string_pair:
                     notes.append(
                         ObservationNote(
                             speaker=str(speaker),
@@ -1313,6 +1317,17 @@ def _parse_observations(raw: dict[str, Any]) -> dict[int, list[ObservationNote]]
                             text=str(entry[0]),
                         )
                     )
+                elif isinstance(entry, dict):
+                    evidence_id = entry.get("evidence_id")
+                    text = entry.get("text")
+                    if isinstance(evidence_id, str) and isinstance(text, str):
+                        notes.append(
+                            ObservationNote(
+                                speaker=str(speaker),
+                                evidence_id=evidence_id,
+                                text=text,
+                            )
+                        )
         if notes:
             result[number] = notes
     return dict(sorted(result.items()))
@@ -1360,11 +1375,12 @@ def _iter_multimodal_turns(sample: PreparedSample) -> list[dict[str, Any]]:
     if not isinstance(conversation, dict):
         return []
     turns: list[dict[str, Any]] = []
-    for session_number in sorted(
-        number
-        for key in conversation
-        if (number := _session_number(str(key))) is not None
-    ):
+    session_numbers = []
+    for key in conversation:
+        number = _session_number(str(key))
+        if number is not None:
+            session_numbers.append(number)
+    for session_number in sorted(session_numbers):
         session = conversation.get(f"session_{session_number}")
         if not isinstance(session, list):
             continue
@@ -1628,11 +1644,28 @@ def _extract_retrieved_evidence_ids(
     question: str,
     profile: Any,
 ) -> list[str]:
-    # Rust's retained evaluator extracts every evidence id from every selected
-    # file (and its description), without applying a question-dependent line
-    # filter.  Keep the Python scorer identical so recall is determined solely
-    # by retrieval, not by a Python-only post-processing rule.
-    values = _extract_evidence_ids(file.content)
+    # Entity pages can contain several turns.  Keep all family-related turns,
+    # but for ordinary questions only count evidence attached to the most
+    # question-relevant lines.  This prevents an unrelated turn in the same
+    # selected page from inflating recall while preserving the Rust-compatible
+    # family context behaviour.
+    if _is_family_entity_question(question):
+        values = _extract_evidence_ids(file.content)
+    else:
+        scored_lines = []
+        for line in file.content.splitlines():
+            evidence_ids = _extract_evidence_ids(line)
+            if evidence_ids:
+                scored_lines.append((score_line(line, profile, question), evidence_ids))
+        scored_lines = [(score, ids) for score, ids in scored_lines if ids]
+        if scored_lines:
+            best_score = max(score for score, _ in scored_lines)
+            values = []
+            for score, ids in scored_lines:
+                if score == best_score:
+                    values.extend(ids)
+        else:
+            values = _extract_evidence_ids(file.content)
     if file.description:
         values.extend(_extract_evidence_ids(file.description))
     return _ordered_unique(values)

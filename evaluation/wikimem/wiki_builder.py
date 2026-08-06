@@ -19,7 +19,6 @@ from typing import Iterable, Literal
 
 from common.llm.base import LLM
 from common.type_def.chat import ChatMessage
-
 from evaluation.wikimem.llm_semantics import (
     MEMORY_KINDS,
     SemanticEntity,
@@ -29,7 +28,6 @@ from evaluation.wikimem.llm_semantics import (
     extract_semantic_memories,
 )
 from evaluation.wikimem.qmd_consensus import RetrievedMemoryFile
-
 
 WikiBuilderMode = Literal["deterministic", "llm"]
 
@@ -121,13 +119,14 @@ class EntityResolver:
         slug = re.sub(r"[^\w-]+", "-", value.casefold(), flags=re.UNICODE).strip("-")[:80]
         if slug:
             return slug
-        return f"unknown-{hashlib.sha1(value.encode('utf-8')).hexdigest()[:12]}"
+        return f"unknown-{hashlib.sha256(value.encode('utf-8')).hexdigest()[:12]}"
 
 
 class MemoryConsolidator:
     """Merge duplicate semantic records and optionally synthesize summaries."""
 
-    def consolidate(self, memories: Iterable[SemanticMemory]) -> list[SemanticMemory]:
+    @staticmethod
+    def consolidate(memories: Iterable[SemanticMemory]) -> list[SemanticMemory]:
         merged: dict[tuple[str, str], SemanticMemory] = {}
         for memory in memories:
             entity_key = ",".join(sorted(entity.name for entity in memory.entities))
@@ -154,12 +153,13 @@ class MemoryConsolidator:
 class TemplateExtractor:
     """Deterministic source-to-memory extractor kept for regression fallback."""
 
-    def extract(self, sources: Iterable[SemanticSource]) -> list[SemanticMemory]:
+    @staticmethod
+    def extract(sources: Iterable[SemanticSource]) -> list[SemanticMemory]:
         result: list[SemanticMemory] = []
         for source in sources:
             if not source.text.strip():
                 continue
-            digest = hashlib.sha1(
+            digest = hashlib.sha256(
                 f"{source.source_id}:{source.text}".encode("utf-8")
             ).hexdigest()[:16]
             result.append(
@@ -578,7 +578,7 @@ class WikiBuilder:
     @staticmethod
     def _slug(value: str) -> str:
         slug = re.sub(r"[^\w-]+", "-", value, flags=re.UNICODE).strip("-")[:100]
-        return slug or f"memory-{hashlib.sha1(value.encode('utf-8')).hexdigest()[:12]}"
+        return slug or f"memory-{hashlib.sha256(value.encode('utf-8')).hexdigest()[:12]}"
 
     @staticmethod
     def _session_number(value: str) -> int | None:

@@ -143,13 +143,13 @@ def _parse_explicit_memory_instruction(
     raw_value = ""
     for prefix in prefixes:
         if lower.startswith(prefix):
-            raw_value = text[len(prefix) :].strip()
+            raw_value = text[len(prefix):].strip()
             break
     if not raw_value:
         if text.startswith("请记住"):
-            raw_value = text[len("请记住") :].strip()
+            raw_value = text[len("请记住"):].strip()
         elif text.startswith("记住"):
-            raw_value = text[len("记住") :].strip()
+            raw_value = text[len("记住"):].strip()
         else:
             return None
 
@@ -180,13 +180,13 @@ def _parse_explicit_forget_instruction(
     raw_target = ""
     for prefix in prefixes:
         if lower.startswith(prefix):
-            raw_target = text[len(prefix) :].strip()
+            raw_target = text[len(prefix):].strip()
             break
     if not raw_target:
         if text.startswith("请忘记"):
-            raw_target = text[len("请忘记") :].strip()
+            raw_target = text[len("请忘记"):].strip()
         elif text.startswith("忘记"):
-            raw_target = text[len("忘记") :].strip()
+            raw_target = text[len("忘记"):].strip()
         else:
             return None
 
@@ -252,7 +252,7 @@ def _extract_scope_hint(text: str) -> tuple[str, str]:
     lower = trimmed.lower()
     for prefix, scope in _SCOPE_PREFIXES:
         if lower.startswith(prefix):
-            return scope, trimmed[len(prefix) :].lstrip(":, \t").strip()
+            return scope, trimmed[len(prefix):].lstrip(":, \t").strip()
     return "", trimmed
 
 
@@ -264,7 +264,7 @@ def _strip_forget_article(target: str) -> str:
     lower = target.lower()
     for prefix in ("the ", "this "):
         if lower.startswith(prefix):
-            return target[len(prefix) :].strip()
+            return target[len(prefix):].strip()
     return target
 
 
@@ -284,20 +284,24 @@ def _infer_memory_type(key: str, value: str) -> str:
     normalized_value = value.lower()
     if normalized_key in {"user", "role", "experience", "knowledge"}:
         return "user"
-    if (
-        normalized_key in {"feedback", "preference", "preferences", "rule"}
-        or "prefer" in normalized_value
-        or "don't" in normalized_value
-        or "must" in normalized_value
-    ):
+    feedback_key = normalized_key in {"feedback", "preference", "preferences", "rule"}
+    feedback_language = any(
+        marker in normalized_value for marker in ("prefer", "don't", "must")
+    )
+    if feedback_key or feedback_language:
         return "feedback"
-    if (
-        normalized_key in {"reference", "dashboard", "linear", "slack", "grafana", "url"}
-        or "http" in normalized_value
-        or "grafana" in normalized_value
-        or "linear" in normalized_value
-        or "slack" in normalized_value
-    ):
+    reference_key = normalized_key in {
+        "reference",
+        "dashboard",
+        "linear",
+        "slack",
+        "grafana",
+        "url",
+    }
+    reference_language = any(
+        marker in normalized_value for marker in ("http", "grafana", "linear", "slack")
+    )
+    if reference_key or reference_language:
         return "reference"
     return "project"
 

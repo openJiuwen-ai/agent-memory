@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from evaluation.wikimem.qmd_consensus import (
     CandidateFile,
     RetrievedMemoryFile,
@@ -72,7 +74,10 @@ def test_score_line_uses_exact_fuzzy_phrase_and_soft_overlap() -> None:
     profile = build_question_profile("What musical activities did Alice pursue?", ["Alice"])
 
     assert score_line("Alice pursued musicals at the academy.", profile, profile.question) > 6.0
-    assert score_line("Unrelated weather note.", profile, profile.question) == 0.0
+    assert math.isclose(
+        score_line("Unrelated weather note.", profile, profile.question),
+        0.0,
+    )
 
 
 def test_candidate_query_hits_counts_token_and_fuzzy_overlap() -> None:

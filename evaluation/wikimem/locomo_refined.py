@@ -104,6 +104,18 @@ class _VisionSummary:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class _DownloadAttempt:
+    opener: Any
+    url: str
+    strategy: str
+    browser_headers: bool
+    force_identity: bool
+    local_path: Path
+    source_url: str
+    timeout_secs: int
+
+
 def build_multimodal_memory_artifacts(
     sample: PreparedSample,
     kb_root: str | Path,
@@ -457,16 +469,15 @@ def _build_download_source_report(workspace_root: Path) -> dict[str, Any]:
                 error = str(item.get("error") or "unknown_error")
                 if error not in entry["example_errors"] and len(entry["example_errors"]) < 3:
                     entry["example_errors"].append(error)
-    successful_domains = [
-        {"domain": domain, "downloaded_count": count}
-        for domain, count in sorted(successful.items(), key=lambda pair: (-pair[1], pair[0]))
-    ]
-    failed_domains = [
-        {"domain": domain, **value}
-        for domain, value in sorted(
-            failed.items(), key=lambda pair: (-pair[1]["failed_count"], pair[0])
-        )
-    ]
+    successful_domains = []
+    for domain, count in sorted(successful.items(), key=lambda pair: (-pair[1], pair[0])):
+        successful_domains.append({"domain": domain, "downloaded_count": count})
+    failed_domains = []
+    failed_items = sorted(
+        failed.items(), key=lambda pair: (-pair[1]["failed_count"], pair[0])
+    )
+    for domain, value in failed_items:
+        failed_domains.append({"domain": domain, **value})
     return {
         "total_downloaded_images": sum(successful.values()),
         "total_failed_images": sum(item["failed_count"] for item in failed.values()),
@@ -683,15 +694,12 @@ def _collect_multimodal_turns(raw_sample: dict[str, Any]) -> list[dict[str, Any]
     conversation = raw_sample.get("conversation")
     if not isinstance(conversation, dict):
         raise ValueError("raw_sample.conversation must be an object")
-    sessions = sorted(
-        (
-            int(key.removeprefix("session_")),
-            value,
-        )
-        for key, value in conversation.items()
-        if key.startswith("session_")
-        and key.removeprefix("session_").isdigit()
-    )
+    sessions = []
+    for key, value in conversation.items():
+        session_suffix = key.removeprefix("session_")
+        if key.startswith("session_") and session_suffix.isdigit():
+            sessions.append((int(session_suffix), value))
+    sessions.sort()
     turns: list[dict[str, Any]] = []
     for session_number, messages in sessions:
         if not isinstance(messages, list):
@@ -803,14 +811,16 @@ def _materialize_image_assets(
             last_strategy, last_url = strategy, url
             try:
                 mime, resolved = _execute_download_attempt(
-                    opener,
-                    url,
-                    strategy,
-                    browser_headers,
-                    identity,
-                    local_path,
-                    source_url,
-                    options.request_timeout_secs,
+                    _DownloadAttempt(
+                        opener=opener,
+                        url=url,
+                        strategy=strategy,
+                        browser_headers=browser_headers,
+                        force_identity=identity,
+                        local_path=local_path,
+                        source_url=source_url,
+                        timeout_secs=options.request_timeout_secs,
+                    )
                 )
                 assets.append(
                     _DownloadedImageAsset(
@@ -859,11 +869,33 @@ def _build_download_attempt_plans(source_url: str) -> list[tuple[str, str, bool,
     ]
     parsed = urllib.parse.urlparse(source_url)
     if parsed.scheme == "http":
-        candidates.append((urllib.parse.urlunparse(parsed._replace(scheme="https")), "scheme_swap_browser_identity", True, True))
+        candidates.append(
+            (
+                urllib.parse.urlunparse(parsed._replace(scheme="https")),
+                "scheme_swap_browser_identity",
+                True,
+                True,
+            )
+        )
     if parsed.hostname and parsed.hostname.lower() == "imgur.com":
-        candidates.append((urllib.parse.urlunparse(parsed._replace(netloc="i.imgur.com")), "normalized_direct_browser_identity", True, True))
+        candidates.append(
+            (
+                urllib.parse.urlunparse(parsed._replace(netloc="i.imgur.com")),
+                "normalized_direct_browser_identity",
+                True,
+                True,
+            )
+        )
     if parsed.hostname and parsed.hostname.lower() == "i.redd.it":
-        candidates.append(("https://www.reddit.com/media?url=" + urllib.parse.quote(source_url, safe=""), "reddit_media_browser_identity", True, True))
+        candidates.append(
+            (
+                "https://www.reddit.com/media?url="
+                + urllib.parse.quote(source_url, safe=""),
+                "reddit_media_browser_identity",
+                True,
+                True,
+            )
+        )
     seen: set[tuple[str, bool, bool]] = set()
     for item in candidates:
         key = (item[0], item[2], item[3])
@@ -873,29 +905,23 @@ def _build_download_attempt_plans(source_url: str) -> list[tuple[str, str, bool,
     return plans
 
 
-def _execute_download_attempt(
-    opener: Any,
-    url: str,
-    strategy: str,
-    browser_headers: bool,
-    force_identity: bool,
-    local_path: Path,
-    source_url: str,
-    timeout_secs: int,
-) -> tuple[str | None, str]:
+def _execute_download_attempt(attempt: _DownloadAttempt) -> tuple[str | None, str]:
+    opener = attempt.opener
+    url = attempt.url
+    local_path = attempt.local_path
     headers = {}
-    if browser_headers:
+    if attempt.browser_headers:
         headers.update(
             {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/135.0 Safari/537.36",
                 "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-                "Referer": _derive_referer(source_url),
+                "Referer": _derive_referer(attempt.source_url),
             }
         )
-    if force_identity:
+    if attempt.force_identity:
         headers["Accept-Encoding"] = "identity"
     request = urllib.request.Request(url, headers=headers)
-    with opener.open(request, timeout=max(timeout_secs, 1)) as response:
+    with opener.open(request, timeout=max(attempt.timeout_secs, 1)) as response:
         status = getattr(response, "status", response.getcode())
         if status < 200 or status >= 300:
             raise RuntimeError(f"http {status}")
@@ -1117,7 +1143,10 @@ def _render_memory_page(
             f"attributes: {', '.join(vision.attributes) or '(none)'}\n"
             f"keywords: {', '.join(vision.keywords) or '(none)'}\n"
         )
-    quote = lambda value: str(value).replace('"', '\\"')
+
+    def quote(value: object) -> str:
+        return str(value).replace('"', '\\"')
+
     sources = ", ".join(f'"{quote(item)}"' for item in manifest["sources"])
     topics = ", ".join(f'"{quote(item)}"' for item in manifest["linked_topics"])
     return (

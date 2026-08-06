@@ -1101,7 +1101,7 @@ def test_run_filesystem_proxy_eval_reuses_workspace_read_for_same_root(tmp_path,
         encoding="utf-8",
     )
     calls = []
-    original = example_eval._read_workspace_files
+    original = getattr(example_eval, "_read_workspace_files")
 
     def counted(root, *, include_retrieval_json=False):
         calls.append(root)
@@ -1318,23 +1318,23 @@ def test_evermem_retrieval_adds_same_group_neighbors() -> None:
             "group": "Group 1",
         },
     ]
-    files = [
-        RetrievedMemoryFile(
-            filename=f"{index}.md",
-            file_path=f"/{index}.md",
-            mtime_ms=index,
-            content=content,
+    files = []
+    contents = ["CPU setup marker.", "The value was 65 percent.", "Unrelated distractor."]
+    for index, content in enumerate(contents, start=1):
+        files.append(
+            RetrievedMemoryFile(
+                filename=f"{index}.md",
+                file_path=f"/{index}.md",
+                mtime_ms=index,
+                content=content,
+            )
         )
-        for index, content in enumerate(
-            ["CPU setup marker.", "The value was 65 percent.", "Unrelated distractor."],
-            start=1,
-        )
-    ]
     evidence_by_path = {
         file.file_path: row["evidence_id"] for file, row in zip(files, rows)
     }
 
-    retrieved, _ = example_eval._retrieve_evermem_evidence(
+    retrieve_evermem_evidence = getattr(example_eval, "_retrieve_evermem_evidence")
+    retrieved, _ = retrieve_evermem_evidence(
         "What followed the CPU setup marker?",
         files=files,
         evidence_by_path=evidence_by_path,

@@ -227,11 +227,11 @@ def run_python_wikimem_qmd_retrieval(
         entity_names=_candidate_entity_names(episode, question),
         top_k=top_k,
     )
-    retrieved_turn_ids = [
-        turn_id
-        for file in result.files
-        if (turn_id := _extract_turn_id_from_path(file.file_path)) is not None
-    ]
+    retrieved_turn_ids = []
+    for file in result.files:
+        turn_id = _extract_turn_id_from_path(file.file_path)
+        if turn_id is not None:
+            retrieved_turn_ids.append(turn_id)
     metrics = score_ama_retrieval_proxy(episode, question, retrieved_turn_ids)
     return AmaMethodQuestionResult(
         method_name=method_name,

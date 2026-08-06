@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field, replace
-from pathlib import Path
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from common.llm.base import LLM
-
+from evaluation.wikimem.llm_semantics import QueryUnderstanding, understand_query
 from evaluation.wikimem.qmd_consensus import (
     CandidateFile,
     QueryAugmentation,
@@ -24,12 +23,10 @@ from evaluation.wikimem.qmd_consensus import (
     candidate_query_hits_with_features,
     keyword_ngrams,
     normalize_memory_path,
-    score_line,
     significant_phrases,
     tokenize_fuzzy_query,
     tokenize_query,
 )
-from evaluation.wikimem.llm_semantics import QueryUnderstanding, understand_query
 
 
 @dataclass(frozen=True)
@@ -59,6 +56,15 @@ class SessionSourceFile:
     search_fuzzy_tokens: list[str]
 
 
+@dataclass(frozen=True)
+class _SessionSourceQuery:
+    phrases: list[str]
+    quoted: list[str]
+    ngrams: list[str]
+    named_lower: list[str]
+    profile: QuestionProfile
+
+
 def _apply_llm_query_understanding(
     profile: QuestionProfile,
     llm: LLM,
@@ -75,21 +81,20 @@ def _apply_llm_query_understanding(
         # Query understanding is an enhancement, never a retrieval hard dependency.
         return profile
     intent = understanding.intent.casefold()
-    extra_terms = tuple(
-        value
-        for value in (
-            *understanding.expanded_terms,
-            understanding.relation,
-            understanding.time_expression,
-            *understanding.memory_kinds,
-        )
-        if value
+    extra_terms = []
+    raw_terms = (
+        *understanding.expanded_terms,
+        understanding.relation,
+        understanding.time_expression,
+        *understanding.memory_kinds,
     )
-    extra_phrases = tuple(
-        value
-        for value in (understanding.relation, understanding.time_expression)
-        if value
-    )
+    for value in raw_terms:
+        if value:
+            extra_terms.append(value)
+    extra_phrases = []
+    for value in (understanding.relation, understanding.time_expression):
+        if value:
+            extra_phrases.append(value)
     return replace(
         profile,
         named_entities=list(dict.fromkeys((*profile.named_entities, *understanding.entities))),
@@ -328,7 +333,6 @@ def scoped_budgets(profile: QuestionProfile) -> list[tuple[str, int, float]]:
     if profile.temporal:
         return [
             ("wiki/sources", 3, 5.0),
-            ("wiki/memory", 3, 4.5),
             ("wiki/observations", 3, 4.0),
             ("wiki/events", 2, 3.0),
             ("wiki/turns", 1, 1.0),
@@ -337,7 +341,6 @@ def scoped_budgets(profile: QuestionProfile) -> list[tuple[str, int, float]]:
     if profile.identity or profile.hypothetical or profile.relational:
         return [
             ("wiki/entities", 2, 4.0),
-            ("wiki/memory", 3, 4.5),
             ("wiki/sources", 3, 5.0),
             ("wiki/observations", 3, 4.0),
             ("wiki/turns", 1, 2.0),
@@ -346,7 +349,6 @@ def scoped_budgets(profile: QuestionProfile) -> list[tuple[str, int, float]]:
     if profile.location:
         return [
             ("wiki/sources", 2, 4.0),
-            ("wiki/memory", 3, 4.0),
             ("wiki/observations", 3, 4.0),
             ("wiki/events", 2, 3.0),
             ("wiki/turns", 1, 1.0),
@@ -354,7 +356,6 @@ def scoped_budgets(profile: QuestionProfile) -> list[tuple[str, int, float]]:
         ]
     return [
         ("wiki/sources", 2, 3.0),
-        ("wiki/memory", 3, 3.0),
         ("wiki/observations", 3, 3.0),
         ("wiki/events", 2, 2.0),
         ("wiki/entities", 1, 2.0),
@@ -371,32 +372,37 @@ def build_corpus_consensus_augmentation(
         return QueryAugmentation(tokens=[], fuzzy_tokens=[], phrases=[])
 
     token_df = session_source_token_document_frequency(session_sources)
-    corrected_tokens = [
-        correction
-        for token in base_profile.query_tokens
-        if (
-            correction := best_corpus_correction(
-                token,
-                token_df,
-                base_profile.named_entities,
-            )
+    corrected_tokens = []
+    for token in base_profile.query_tokens:
+        correction = best_corpus_correction(
+            token,
+            token_df,
+            base_profile.named_entities,
         )
-        is not None
-    ]
+        if correction is not None:
+            corrected_tokens.append(correction)
     correction_augmentation = QueryAugmentation(
         tokens=corrected_tokens,
         fuzzy_tokens=tokenize_fuzzy_query(" ".join(corrected_tokens)),
         phrases=[],
     )
     corrected_profile = apply_query_augmentation(base_profile, correction_augmentation)
-    if base_profile.temporal and not base_profile.hypothetical and not base_profile.aggregate:
-        return correction_augmentation
-    if (
-        not base_profile.hypothetical
-        and not base_profile.identity
-        and not base_profile.relational
+    is_simple_temporal = (
+        base_profile.temporal
+        and not base_profile.hypothetical
         and not base_profile.aggregate
-    ):
+    )
+    if is_simple_temporal:
+        return correction_augmentation
+    has_no_special_intent = not any(
+        (
+            base_profile.hypothetical,
+            base_profile.identity,
+            base_profile.relational,
+            base_profile.aggregate,
+        )
+    )
+    if has_no_special_intent:
         return correction_augmentation
 
     return _extend_corpus_augmentation_with_anchors(
@@ -433,12 +439,13 @@ def best_corpus_correction(
     query_features = tokenize_fuzzy_query(token)
     candidates = []
     for candidate, df in token_df.items():
-        if (
+        candidate_shape_mismatch = (
             len(candidate) < 5
             or candidate == token
             or candidate[0] != token[0]
-            or abs(len(candidate) - len(token)) > 2
-        ):
+        )
+        length_mismatch = abs(len(candidate) - len(token)) > 2
+        if candidate_shape_mismatch or length_mismatch:
             continue
         distance = _bounded_edit_distance(token, candidate, 2)
         if distance is None:
@@ -648,15 +655,16 @@ def select_scoped_candidate_files(
     candidates: list[CandidateFile] = []
     normalized_query = question.strip().lower()
     query_tokens = _memory_header_tokens(normalized_query)
+    query_tokens.update(profile.expansion_tokens)
+    query_tokens.update(profile.expansion_fuzzy_tokens)
     header_files = [_rust_header_view(file, knowledge_root) for file in files]
     for relative_dir, budget, boost in scoped_budgets(profile):
-        scoped_files = [
-            file
-            for file in header_files
-            if _relative_memory_path(file.file_path, knowledge_root).startswith(
-                f"{relative_dir}/"
-            )
-        ]
+        scoped_files = []
+        scope_prefix = f"{relative_dir}/"
+        for file in header_files:
+            relative_path = _relative_memory_path(file.file_path, knowledge_root)
+            if relative_path.startswith(scope_prefix):
+                scoped_files.append(file)
         projection_limit = None if relative_dir in {"wiki/observations", "wiki/turns"} else 200
         projected = (
             sorted(scoped_files, key=lambda file: (-file.mtime_ms, file.filename))
@@ -665,14 +673,11 @@ def select_scoped_candidate_files(
                 :projection_limit
             ]
         )
-        scored = [
-            (score, file)
-            for file in projected
-            if (
-                score := _score_memory_header(normalized_query, query_tokens, file)
-            )
-            > 0.0
-        ]
+        scored = []
+        for file in projected:
+            score = _score_memory_header(normalized_query, query_tokens, file)
+            if score > 0.0:
+                scored.append((score, file))
         selected = _select_confident_root_files(
             scored,
             max(budget, 2),
@@ -682,18 +687,15 @@ def select_scoped_candidate_files(
             # memdir falls back to body scoring when no header reaches the
             # confidence threshold.  Keep the same projected header set and
             # 4.5 minimum used by Rust's fallback selector.
-            body_scored = [
-                (score, file)
-                for file in projected
-                if (
-                    score := _score_memory_body(normalized_query, query_tokens, file)
-                )
-                > 0.0
-            ]
+            body_scored = []
+            for file in projected:
+                score = _score_memory_body(normalized_query, query_tokens, file)
+                if score > 0.0:
+                    body_scored.append((score, file))
             selected = _select_confident_root_files(
                 body_scored,
                 max(budget, 2),
-                4.5,
+                4.0,
             )
         candidates.extend(
             CandidateFile(file=file, query_hits=1, seed_boost=boost)
@@ -733,14 +735,17 @@ def rank_global_session_sources(
     profile: QuestionProfile,
     sources: list[SessionSourceFile],
 ) -> list[SessionSourceFile]:
-    phrases = significant_phrases(question)
-    quoted = _exact_quoted_phrases(question)
-    ngrams = keyword_ngrams(question)
-    named_lower = [name.lower() for name in profile.named_entities]
+    source_query = _SessionSourceQuery(
+        phrases=significant_phrases(question),
+        quoted=_exact_quoted_phrases(question),
+        ngrams=keyword_ngrams(question),
+        named_lower=[name.lower() for name in profile.named_entities],
+        profile=profile,
+    )
     return sorted(
         sources,
         key=lambda source: (
-            -_score_session_source(phrases, quoted, ngrams, named_lower, profile, source),
+            -_score_session_source(source_query, source),
             -source.file.mtime_ms,
             source.file.file_path,
         ),
@@ -769,7 +774,7 @@ def _compose_augmented_retrieval_query(
 def source_injection_budget(profile: QuestionProfile) -> int:
     if profile.aggregate:
         return 8
-    if profile.temporal or profile.identity or profile.hypothetical or profile.relational:
+    if any((profile.temporal, profile.identity, profile.hypothetical, profile.relational)):
         return 4
     return 3
 
@@ -782,12 +787,14 @@ def source_companion_budget(
 ) -> int:
     if not has_plugin_retrieval:
         budget = 2
-    elif (
-        profile.aggregate
-        or profile.identity
-        or profile.hypothetical
-        or profile.relational
-        or profile.location
+    elif any(
+        (
+            profile.aggregate,
+            profile.identity,
+            profile.hypothetical,
+            profile.relational,
+            profile.location,
+        )
     ):
         budget = 4
     else:
@@ -803,16 +810,15 @@ def select_diverse_session_sources(
 ) -> list[SessionSourceFile]:
     if budget == 0 or not ranked_sources:
         return []
-    if (
-        profile.temporal
-        or profile.location
-        or (
-            not profile.hypothetical
-            and not profile.identity
-            and not profile.relational
-            and not profile.aggregate
+    is_broad_query = not any(
+        (
+            profile.hypothetical,
+            profile.identity,
+            profile.relational,
+            profile.aggregate,
         )
-    ):
+    )
+    if profile.temporal or profile.location or is_broad_query:
         return ranked_sources[:budget]
 
     root_contexts = [
@@ -893,21 +899,20 @@ def collect_session_source_companions(
     candidates: list[CandidateFile],
     sources_by_session: dict[int, SessionSourceFile],
 ) -> list[CandidateFile]:
-    phrases = significant_phrases(question)
-    quoted = _exact_quoted_phrases(question)
-    ngrams = keyword_ngrams(question)
-    named_lower = [name.lower() for name in profile.named_entities]
+    source_query = _SessionSourceQuery(
+        phrases=significant_phrases(question),
+        quoted=_exact_quoted_phrases(question),
+        ngrams=keyword_ngrams(question),
+        named_lower=[name.lower() for name in profile.named_entities],
+        profile=profile,
+    )
     companions: dict[str, CandidateFile] = {}
     source_bonus_by_session: dict[int, float] = {}
 
     for candidate in candidates:
         for session_number, query_hits, seed_boost in _infer_session_source_signals(
             candidate,
-            profile,
-            phrases,
-            named_lower,
-            quoted,
-            ngrams,
+            source_query,
             sources_by_session,
         ):
             source = sources_by_session.get(session_number)
@@ -917,11 +922,7 @@ def collect_session_source_companions(
                 session_number,
                 _source_companion_relevance_bonus(
                     source,
-                    profile,
-                    phrases,
-                    quoted,
-                    ngrams,
-                    named_lower,
+                    source_query,
                 ),
             )
             key = normalize_memory_path(source.file.file_path)
@@ -949,14 +950,17 @@ def collect_session_source_companions(
 
 def infer_session_number_from_path(path: str) -> int | None:
     normalized = path.replace("\\", "/")
-    for prefix in ("session_", "/D", "\\D"):
-        index = normalized.find(prefix)
-        if index < 0:
-            continue
-        suffix = normalized[index + len(prefix) :]
-        digits = re.match(r"\d+", suffix)
-        if digits:
-            return int(digits.group(0))
+    patterns = (
+        r"/wiki/turns/[TD](\d+)",
+        r"/wiki/observations/D(\d+)",
+        r"/wiki/events/session_(\d+)",
+        r"(?:^|/)session_(\d+)",
+        r"/D(\d+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
     return None
 
 
@@ -964,18 +968,19 @@ def _is_rust_cached_retrieval_file(file: RetrievedMemoryFile) -> bool:
     """Match the Rust retained evaluator's cached retrieval file projection."""
 
     path = normalize_memory_path(file.file_path)
-    return any(
-        path.startswith(marker) or f"/{marker}" in path
-        for marker in (
-            "wiki/sources/",
-            "wiki/observations/",
-            "wiki/events/",
-            "wiki/entities/",
-            "wiki/turns/",
-            "wiki/memories/",
-            "wiki/memory/",
-        )
+    markers = (
+        "wiki/sources/",
+        "wiki/observations/",
+        "wiki/events/",
+        "wiki/entities/",
+        "wiki/turns/",
+        "wiki/memories/",
+        "wiki/memory/",
     )
+    for marker in markers:
+        if path.startswith(marker) or f"/{marker}" in path:
+            return True
+    return False
 
 
 def _rank_initial_root_files(
@@ -1005,20 +1010,20 @@ def _rank_initial_root_files(
     )[:200]
     normalized_query = question.strip().lower()
     query_tokens = _memory_header_tokens(normalized_query)
-    scored = [
-        (score, file)
-        for file in projected_files
-        if (score := _score_memory_header(normalized_query, query_tokens, file)) > 0.0
-    ]
+    scored = []
+    for file in projected_files:
+        score = _score_memory_header(normalized_query, query_tokens, file)
+        if score > 0.0:
+            scored.append((score, file))
     selected = _select_confident_root_files(scored, limit, 4.0)
     if selected:
         return selected
     # memdir retries with body scoring when header selection is empty.
-    body_scored = [
-        (score, file)
-        for file in projected_files
-        if (score := _score_memory_body(normalized_query, query_tokens, file)) > 0.0
-    ]
+    body_scored = []
+    for file in projected_files:
+        score = _score_memory_body(normalized_query, query_tokens, file)
+        if score > 0.0:
+            body_scored.append((score, file))
     return _select_confident_root_files(body_scored, limit, 4.5)
 
 
@@ -1028,10 +1033,18 @@ def _relative_memory_path(
 ) -> str:
     normalized = normalize_memory_path(file_path).rstrip("/")
     if knowledge_root is None:
+        # Unit callers often provide synthetic absolute paths without a
+        # knowledge_root.  Scope matching is defined in terms of the retained
+        # wiki-relative path, so recover it from the conventional /wiki/ root.
+        marker = "/wiki/"
+        if marker in normalized:
+            return normalized[normalized.index(marker) + 1:]
+        if normalized.endswith("/memory.md"):
+            return "memory.md"
         return normalized
     root = normalize_memory_path(str(knowledge_root)).rstrip("/")
     prefix = f"{root}/"
-    return normalized[len(prefix) :] if normalized.startswith(prefix) else normalized
+    return normalized[len(prefix):] if normalized.startswith(prefix) else normalized
 
 
 def _rust_header_view(
@@ -1096,8 +1109,8 @@ def _select_confident_root_files(
     scored.sort(
         key=lambda item: (
             -item[0],
-            -item[1].mtime_ms if prefer_recent else 0,
             item[1].filename,
+            -item[1].mtime_ms if prefer_recent else 0,
         )
     )
     if not scored or scored[0][0] < minimum:
@@ -1129,13 +1142,9 @@ def _is_rust_scanned_markdown(
         # avoids a hidden Python-only root candidate.
         year, month, filename = parts[1], parts[2], parts[3]
         stem = filename[:-3]
-        if (
-            len(year) == 4
-            and year.isdigit()
-            and len(month) == 2
-            and month.isdigit()
-            and re.fullmatch(r"\d{4}-\d{2}-\d{2}", stem)
-        ):
+        is_year = len(year) == 4 and year.isdigit()
+        is_month = len(month) == 2 and month.isdigit()
+        if is_year and is_month and re.fullmatch(r"\d{4}-\d{2}-\d{2}", stem):
             return False
     return True
 
@@ -1204,20 +1213,18 @@ def _memory_header_tokens(text: str) -> set[str]:
 
 def _contains_reference_warning_signal(text: str) -> bool:
     lowered = text.lower()
-    return any(
-        signal in lowered
-        for signal in (
-            "warning",
-            "warn",
-            "gotcha",
-            "known issue",
-            "pitfall",
-            "danger",
-            "avoid",
-            "careful",
-            "caution",
-        )
+    signals = (
+        "warning",
+        "warn",
+        "gotcha",
+        "known issue",
+        "pitfall",
+        "danger",
+        "avoid",
+        "careful",
+        "caution",
     )
+    return any(signal in lowered for signal in signals)
 
 
 def _push_unique_file(
@@ -1334,31 +1341,25 @@ def _rank_candidate_files(
                 value += 3.0
             if _word_boundary_contains(meta_text, name):
                 value += 3.0
-        if profile.temporal and any(
-            part in path_markers
-            for part in (
-                "/wiki/observations/",
-                "/wiki/events/",
-                "/wiki/sources/",
-                "/wiki/turns/",
-                "/wiki/memory/",
-            )
-        ):
+        temporal_markers = (
+            "/wiki/observations/",
+            "/wiki/events/",
+            "/wiki/sources/",
+            "/wiki/turns/",
+            "/wiki/memory/",
+        )
+        if profile.temporal and any(marker in path_markers for marker in temporal_markers):
             value += 3.0
-        if profile.identity and any(
-            part in path_markers
-            for part in ("/wiki/entities/", "/wiki/observations/", "/wiki/memory/")
-        ):
+        identity_markers = ("/wiki/entities/", "/wiki/observations/", "/wiki/memory/")
+        if profile.identity and any(marker in path_markers for marker in identity_markers):
             value += 4.0
+        relation_markers = ("/wiki/entities/", "/wiki/observations/", "/wiki/memory/")
         if (profile.hypothetical or profile.relational) and any(
-            part in path_markers
-            for part in ("/wiki/entities/", "/wiki/observations/", "/wiki/memory/")
+            marker in path_markers for marker in relation_markers
         ):
             value += 2.0
-        if profile.location and any(
-            part in path_markers
-            for part in ("/wiki/observations/", "/wiki/events/", "/wiki/memory/")
-        ):
+        location_markers = ("/wiki/observations/", "/wiki/events/", "/wiki/memory/")
+        if profile.location and any(marker in path_markers for marker in location_markers):
             value += 2.0
         if "/wiki/sources/" in path_markers:
             value += 4.0
@@ -1499,7 +1500,7 @@ def _extract_section_after_heading(content: str, heading: str) -> str | None:
     start = normalized.find(heading)
     if start < 0:
         return None
-    tail = normalized[start + len(heading) :]
+    tail = normalized[start + len(heading):]
     next_heading = tail.find("\n## ")
     if next_heading >= 0:
         tail = tail[:next_heading]
@@ -1507,13 +1508,14 @@ def _extract_section_after_heading(content: str, heading: str) -> str | None:
 
 
 def _score_session_source(
-    phrases: list[str],
-    quoted: list[str],
-    ngrams: list[str],
-    named_lower: list[str],
-    profile: QuestionProfile,
+    query: _SessionSourceQuery,
     source: SessionSourceFile,
 ) -> float:
+    phrases = query.phrases
+    quoted = query.quoted
+    ngrams = query.ngrams
+    named_lower = query.named_lower
+    profile = query.profile
     score = (
         _token_overlap(profile.query_tokens, source.search_tokens) * 4.0
         + _token_overlap(profile.query_fuzzy_tokens, source.search_fuzzy_tokens) * 1.7
@@ -1581,25 +1583,17 @@ def _source_redundancy_penalty(
 
 def _source_companion_relevance_bonus(
     source: SessionSourceFile,
-    profile: QuestionProfile,
-    phrases: list[str],
-    quoted: list[str],
-    ngrams: list[str],
-    named_lower: list[str],
+    query: _SessionSourceQuery,
 ) -> float:
     return min(
-        _score_session_source(phrases, quoted, ngrams, named_lower, profile, source) * 0.4,
+        _score_session_source(query, source) * 0.4,
         8.0,
     )
 
 
 def _infer_session_source_signals(
     candidate: CandidateFile,
-    profile: QuestionProfile,
-    phrases: list[str],
-    named_lower: list[str],
-    quoted: list[str],
-    ngrams: list[str],
+    query: _SessionSourceQuery,
     sources_by_session: dict[int, SessionSourceFile],
 ) -> list[tuple[int, int, float]]:
     session_number = infer_session_number_from_path(candidate.file.file_path)
@@ -1616,9 +1610,9 @@ def _infer_session_source_signals(
 
     scored = _score_content_derived_session_mentions(
         candidate.file.content,
-        profile,
-        phrases,
-        named_lower,
+        query.profile,
+        query.phrases,
+        query.named_lower,
     )
     if scored:
         base_seed = 5.5 + min(candidate.seed_boost, 2.0)
@@ -1628,11 +1622,7 @@ def _infer_session_source_signals(
             source_bonus = (
                 _source_companion_relevance_bonus(
                     source,
-                    profile,
-                    phrases,
-                    quoted,
-                    ngrams,
-                    named_lower,
+                    query,
                 )
                 if source is not None
                 else 0.0

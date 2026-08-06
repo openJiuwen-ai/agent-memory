@@ -144,6 +144,27 @@ class QmdConsensusFileMetrics:
 
 
 @dataclass(frozen=True)
+class _CachedQmdFiles:
+    files: dict[str, RetrievedMemoryFile]
+    features: dict[str, CachedFileLexicalFeatures]
+
+
+@dataclass(frozen=True)
+class _BridgeProposalConfig:
+    significant: list[str]
+    max_candidates: int
+    min_target_score: float
+
+
+@dataclass(frozen=True)
+class _QmdScoreContext:
+    profile: QuestionProfile
+    significant: list[str]
+    ngrams: list[str]
+    named_entities_lower: list[str]
+
+
+@dataclass(frozen=True)
 class CandidateProposal:
     file_path: str
     query_hits: int
@@ -290,37 +311,32 @@ def build_qmd_consensus_augmentation(
                 phrase_scores[phrase] = phrase_scores.get(phrase, 0.0) + weighted_score
                 phrase_support.setdefault(phrase, set()).add(normalized_path)
 
-    tokens = [
-        token
-        for token, _ in sorted(
-            (
-                (token, score)
-                for token, score in token_scores.items()
-                if len(token_support.get(token, set())) >= 2 or score >= 7.0
-            ),
-            key=lambda item: (
-                -len(token_support.get(item[0], set())),
-                -item[1],
-                item[0],
-            ),
-        )[:6]
-    ]
-    phrases = [
-        phrase
-        for phrase, _ in sorted(
-            (
-                (phrase, score)
-                for phrase, score in phrase_scores.items()
-                if (len(phrase_support.get(phrase, set())) >= 1 and score >= 6.0)
-                or len(phrase_support.get(phrase, set())) >= 2
-            ),
-            key=lambda item: (
-                -len(phrase_support.get(item[0], set())),
-                -item[1],
-                item[0],
-            ),
-        )[:4]
-    ]
+    ranked_tokens = []
+    for token, score in token_scores.items():
+        support_count = len(token_support.get(token, set()))
+        if support_count >= 2 or score >= 7.0:
+            ranked_tokens.append((token, score))
+    ranked_tokens.sort(
+        key=lambda item: (
+            -len(token_support.get(item[0], set())),
+            -item[1],
+            item[0],
+        )
+    )
+    tokens = [token for token, _ in ranked_tokens[:6]]
+    ranked_phrases = []
+    for phrase, score in phrase_scores.items():
+        support_count = len(phrase_support.get(phrase, set()))
+        if (support_count >= 1 and score >= 6.0) or support_count >= 2:
+            ranked_phrases.append((phrase, score))
+    ranked_phrases.sort(
+        key=lambda item: (
+            -len(phrase_support.get(item[0], set())),
+            -item[1],
+            item[0],
+        )
+    )
+    phrases = [phrase for phrase, _ in ranked_phrases[:4]]
     return QueryAugmentation(
         tokens=tokens,
         fuzzy_tokens=tokenize_fuzzy_query(" ".join(tokens)),
@@ -365,21 +381,11 @@ def build_qmd_consensus_candidate_proposals(
         if kind is None:
             continue
         features = cached_features[normalized_path]
-        metrics = _metrics_for(
-            metrics_cache,
-            normalized_path,
-            file,
-            features,
-            focused,
-            significant,
-        )
+        metrics = _metrics_for(metrics_cache, normalized_path, features, focused, significant)
         score = _score_cached_file_with_metrics(
             features,
             normalized_path,
-            focused,
-            significant,
-            ngrams,
-            named_lower,
+            _QmdScoreContext(focused, significant, ngrams, named_lower),
             metrics,
         )
         if kind == "source":
@@ -398,20 +404,22 @@ def build_qmd_consensus_candidate_proposals(
     _sort_qmd_ranked_items(source_view)
     _sort_qmd_ranked_items(anchor_view)
     linked_view = _build_qmd_linked_candidate_view(
-        question,
         focused,
-        cached_files,
-        cached_features,
+        _CachedQmdFiles(cached_files, cached_features),
         source_view,
         anchor_view,
+        significant,
     )
-    return [
-        CandidateProposal(file_path=path, query_hits=query_hits, seed_boost=boost)
-        for path, query_hits, boost in _fuse_ranked_views(
-            [(2.0, source_view), (1.5, anchor_view), (1.0, linked_view)],
-            12,
+    proposals = []
+    fused = _fuse_ranked_views(
+        [(2.0, source_view), (1.5, anchor_view), (1.0, linked_view)],
+        12,
+    )
+    for path, query_hits, boost in fused:
+        proposals.append(
+            CandidateProposal(file_path=path, query_hits=query_hits, seed_boost=boost)
         )
-    ]
+    return proposals
 
 
 def build_qmd_consensus_rerank_proposals(
@@ -435,14 +443,7 @@ def build_qmd_consensus_rerank_proposals(
         features = cached_features.get(normalized_path)
         if features is None:
             continue
-        metrics = _metrics_for(
-            metrics_cache,
-            normalized_path,
-            candidate.file,
-            features,
-            focused,
-            significant,
-        )
+        metrics = _metrics_for(metrics_cache, normalized_path, features, focused, significant)
         item = (
             normalized_path,
             max(candidate.query_hits, 1),
@@ -458,25 +459,27 @@ def build_qmd_consensus_rerank_proposals(
     source_view = source_view[:6]
     anchor_view = anchor_view[:6]
     seed_files = [candidate.file for candidate in ranked_candidates[:6]]
-    linked_view = [
-        (proposal.file_path, max(proposal.query_hits, 1), proposal.seed_boost)
-        for proposal in _build_bridge_proposals(
-            question,
-            focused,
-            seed_files,
-            cached_files,
-            cached_features,
-            8,
-            4.2,
-        )
-    ]
-    return [
-        RerankProposal(file_path=path, query_hits=query_hits, seed_boost=boost)
-        for path, query_hits, boost in _fuse_ranked_views(
-            [(2.0, source_view), (1.5, anchor_view), (1.0, linked_view)],
-            12,
-        )
-    ]
+    linked_view = []
+    bridge_config = _BridgeProposalConfig(
+        significant=significant_phrases(question),
+        max_candidates=8,
+        min_target_score=4.2,
+    )
+    for proposal in _build_bridge_proposals(
+        focused,
+        seed_files,
+        _CachedQmdFiles(cached_files, cached_features),
+        bridge_config,
+    ):
+        linked_view.append((proposal.file_path, max(proposal.query_hits, 1), proposal.seed_boost))
+    proposals = []
+    fused = _fuse_ranked_views(
+        [(2.0, source_view), (1.5, anchor_view), (1.0, linked_view)],
+        12,
+    )
+    for path, query_hits, boost in fused:
+        proposals.append(RerankProposal(file_path=path, query_hits=query_hits, seed_boost=boost))
+    return proposals
 
 
 def build_qmd_consensus_late_bridge_proposals(
@@ -491,13 +494,14 @@ def build_qmd_consensus_late_bridge_proposals(
     cached_files, cached_features = _cache_files(files)
     focused = _qmd_focus_profile(profile)
     return _build_bridge_proposals(
-        question,
         focused,
         seed_files,
-        cached_files,
-        cached_features,
-        8,
-        4.2,
+        _CachedQmdFiles(cached_files, cached_features),
+        _BridgeProposalConfig(
+            significant=significant_phrases(question),
+            max_candidates=8,
+            min_target_score=4.2,
+        ),
     )
 
 
@@ -549,7 +553,7 @@ def keyword_ngrams(question: str) -> list[str]:
     ngrams = []
     for size in (2, 3):
         for index in range(0, max(0, len(tokens) - size + 1)):
-            phrase = " ".join(tokens[index : index + size])
+            phrase = " ".join(tokens[index:index + size])
             if phrase not in seen:
                 ngrams.append(phrase)
                 seen.add(phrase)
@@ -616,7 +620,6 @@ def _qmd_keeps_focus_token(token: str, named_entities: list[str]) -> bool:
 def _metrics_for(
     metrics_cache: dict[str, QmdConsensusFileMetrics],
     normalized_path: str,
-    _file: RetrievedMemoryFile,
     features: CachedFileLexicalFeatures,
     profile: QuestionProfile,
     significant: list[str],
@@ -638,18 +641,18 @@ def _metrics_for(
 def _score_cached_file_with_metrics(
     features: CachedFileLexicalFeatures,
     normalized_path: str,
-    profile: QuestionProfile,
-    significant: list[str],
-    ngrams: list[str],
-    named_entities_lower: list[str],
+    context: _QmdScoreContext,
     metrics: QmdConsensusFileMetrics,
 ) -> float:
+    profile = context.profile
     score = metrics.best_line_score
     score += _candidate_path_weight(normalized_path) * 1.8
     score += _token_overlap_with_set(profile.query_tokens, features.path_token_set) * 1.8
-    score += sum(2.3 for phrase in significant if phrase in features.lower_content)
-    score += sum(1.2 for phrase in ngrams if phrase in features.lower_content)
-    score += sum(1.5 for entity in named_entities_lower if entity in features.lower_content)
+    score += sum(2.3 for phrase in context.significant if phrase in features.lower_content)
+    score += sum(1.2 for phrase in context.ngrams if phrase in features.lower_content)
+    score += sum(
+        1.5 for entity in context.named_entities_lower if entity in features.lower_content
+    )
     if features.has_session_marker:
         score += 1.0
     if features.has_evidence_marker:
@@ -658,14 +661,14 @@ def _score_cached_file_with_metrics(
 
 
 def _build_qmd_linked_candidate_view(
-    question: str,
     profile: QuestionProfile,
-    cached_files: dict[str, RetrievedMemoryFile],
-    cached_features: dict[str, CachedFileLexicalFeatures],
+    corpus: _CachedQmdFiles,
     source_view: list[tuple[str, int, float]],
     anchor_view: list[tuple[str, int, float]],
+    significant: list[str],
 ) -> list[tuple[str, int, float]]:
-    significant = significant_phrases(question)
+    cached_files = corpus.files
+    cached_features = corpus.features
     metrics_cache: dict[str, QmdConsensusFileMetrics] = {}
     direct_atomic: list[tuple[str, int, float]] = []
     for normalized_path, file in cached_files.items():
@@ -676,14 +679,7 @@ def _build_qmd_linked_candidate_view(
         ):
             continue
         features = cached_features[normalized_path]
-        metrics = _metrics_for(
-            metrics_cache,
-            normalized_path,
-            file,
-            features,
-            profile,
-            significant,
-        )
+        metrics = _metrics_for(metrics_cache, normalized_path, features, profile, significant)
         direct_score = (
             metrics.best_line_score * 1.15
             + metrics.support_density * 0.2
@@ -720,7 +716,6 @@ def _build_qmd_linked_candidate_view(
             metrics = _metrics_for(
                 metrics_cache,
                 normalized_target,
-                target,
                 target_features,
                 profile,
                 significant,
@@ -771,15 +766,14 @@ def _build_qmd_linked_candidate_view(
 
 
 def _build_bridge_proposals(
-    question: str,
     profile: QuestionProfile,
     seed_files: list[RetrievedMemoryFile],
-    cached_files: dict[str, RetrievedMemoryFile],
-    cached_features: dict[str, CachedFileLexicalFeatures],
-    max_candidates: int,
-    min_target_score: float,
+    corpus: _CachedQmdFiles,
+    config: _BridgeProposalConfig,
 ) -> list[RerankProposal]:
-    significant = significant_phrases(question)
+    cached_files = corpus.files
+    cached_features = corpus.features
+    significant = config.significant
     proposals: dict[str, RerankProposal] = {}
     for seed in _preferred_seed_files(seed_files):
         normalized_seed = normalize_memory_path(seed.file_path)
@@ -804,7 +798,7 @@ def _build_bridge_proposals(
             if target_features is None:
                 continue
             score = _score_file_lines_with_features(target_features, profile, significant)
-            if score < min_target_score:
+            if score < config.min_target_score:
                 continue
             query_hits = max(candidate_query_hits_with_features(target_features, profile), 1)
             proposal = RerankProposal(
@@ -822,7 +816,7 @@ def _build_bridge_proposals(
     return sorted(
         proposals.values(),
         key=lambda proposal: (-proposal.seed_boost, -proposal.query_hits, proposal.file_path),
-    )[:max_candidates]
+    )[:config.max_candidates]
 
 
 def _score_file_lines_with_features(
@@ -945,13 +939,14 @@ def _sort_qmd_ranked_items(ranked: list[tuple[str, int, float]]) -> None:
 def _qmd_candidate_view_kind(path: str) -> str | None:
     if "/wiki/sources/" in path:
         return "source"
-    if (
-        "/wiki/entities/" in path
-        or "/wiki/events/" in path
-        or "/wiki/observations/" in path
-        or "/wiki/memories/" in path
-        or "/wiki/memory/" in path
-    ):
+    anchor_markers = (
+        "/wiki/entities/",
+        "/wiki/events/",
+        "/wiki/observations/",
+        "/wiki/memories/",
+        "/wiki/memory/",
+    )
+    if any(marker in path for marker in anchor_markers):
         return "anchor"
     return None
 
@@ -969,20 +964,18 @@ def _qmd_allows_same_session_source_target(
 
 
 def _preferred_seed_files(files: list[RetrievedMemoryFile]) -> list[RetrievedMemoryFile]:
-    preferred = [
-        file
-        for file in files
-        if any(
-            part in normalize_memory_path(file.file_path)
-            for part in (
-                "/wiki/entities/",
-                "/wiki/topics/",
-                "/wiki/sources/",
-                "/wiki/memories/",
-                "/wiki/memory/",
-            )
-        )
-    ]
+    preferred = []
+    markers = (
+        "/wiki/entities/",
+        "/wiki/topics/",
+        "/wiki/sources/",
+        "/wiki/memories/",
+        "/wiki/memory/",
+    )
+    for file in files:
+        normalized_path = normalize_memory_path(file.file_path)
+        if any(marker in normalized_path for marker in markers):
+            preferred.append(file)
     return (preferred or files)[:6]
 
 
@@ -1022,15 +1015,13 @@ def _resolve_relative_target(base_path: str, target: str) -> str | None:
 
 def _is_bridge_target_path(path: str) -> bool:
     normalized = normalize_memory_path(path)
-    return any(
-        part in normalized
-        for part in (
-            "/wiki/observations/",
-            "/wiki/turns/",
-            "/wiki/events/",
-            "/wiki/memory/",
-        )
+    markers = (
+        "/wiki/observations/",
+        "/wiki/turns/",
+        "/wiki/events/",
+        "/wiki/memory/",
     )
+    return any(marker in normalized for marker in markers)
 
 
 def _infer_session_number(path: str) -> int | None:

@@ -17,7 +17,6 @@ from typing import Any, Iterable
 from common.llm.base import LLM
 from common.type_def.chat import ChatMessage
 
-
 MEMORY_KINDS = (
     "entity",
     "fact",
@@ -127,7 +126,7 @@ def extract_semantic_memories(
     materialized = [source for source in sources if source.text.strip()]
     result: list[SemanticMemory] = []
     for start in range(0, len(materialized), max(1, batch_size)):
-        batch = materialized[start : start + max(1, batch_size)]
+        batch = materialized[start:start + max(1, batch_size)]
         source_text = "\n".join(
             "---\n"
             f"source_id: {source.source_id}\n"
@@ -213,7 +212,7 @@ def _parse_memory_item(item: Any, valid_ids: set[str]) -> SemanticMemory | None:
     relations = tuple(value for value in relations if value is not None)
     stable_key = f"{source_id}:{kind}:{content}".encode("utf-8")
     memory_id = _clean_scalar(item.get("memory_id")) or (
-        f"{source_id}:{kind}:{hashlib.sha1(stable_key).hexdigest()[:16]}"
+        f"{source_id}:{kind}:{hashlib.sha256(stable_key).hexdigest()[:16]}"
     )
     return SemanticMemory(
         memory_id=memory_id,

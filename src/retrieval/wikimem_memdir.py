@@ -189,11 +189,11 @@ def select_relevant_memory_files(
 ) -> list[MemoryFileHeader]:
     """Select high-confidence memories from headers."""
 
-    scored = [
-        (score, memory.mtime_ms, memory)
-        for memory in memories
-        if (score := _score_header(query, memory)) is not None
-    ]
+    scored = []
+    for memory in memories:
+        score = _score_header(query, memory)
+        if score is not None:
+            scored.append((score, memory.mtime_ms, memory))
     return [memory for _, _, memory in _select_confident(scored, top_k, MIN_HEADER_SELECTION_SCORE)]
 
 
@@ -205,11 +205,11 @@ def recall_relevant_memory_files_from_headers(
 ) -> list[RecalledMemoryFile]:
     """Select preloaded headers without rescanning directories."""
 
-    scored = [
-        (score, memory.mtime_ms, memory)
-        for memory in memories
-        if (score := _score_header(query, memory)) is not None
-    ]
+    scored = []
+    for memory in memories:
+        score = _score_header(query, memory)
+        if score is not None:
+            scored.append((score, memory.mtime_ms, memory))
     return [
         _recalled_from_header(memory, scope, score)
         for score, _, memory in _select_confident(scored, top_k, MIN_HEADER_SELECTION_SCORE)
@@ -355,14 +355,16 @@ def _collect_candidates(
         root = Path(directory.path)
         headers = scan_memory_directory(root)
         if directory.scope == "auto" and explicit_team_roots:
-            headers = [
-                header
-                for header in headers
-                if not any(
-                    _path_starts_with(header.file_path, team_root)
-                    for team_root in explicit_team_roots
-                )
-            ]
+            filtered_headers = []
+            for header in headers:
+                is_team_header = False
+                for team_root in explicit_team_roots:
+                    if _path_starts_with(header.file_path, team_root):
+                        is_team_header = True
+                        break
+                if not is_team_header:
+                    filtered_headers.append(header)
+            headers = filtered_headers
         for header in headers:
             if _normalize_file_path(header.file_path) in surfaced:
                 continue

@@ -414,11 +414,14 @@ def hash_content(content: str) -> str:
 
 
 def validate_relative_team_memory_key(key: str) -> str:
-    if "\0" in key or "\\" in key or key.startswith("/") or _has_windows_prefix(key):
+    has_unsafe_character = "\0" in key or "\\" in key
+    has_absolute_prefix = key.startswith("/") or _has_windows_prefix(key)
+    if has_unsafe_character or has_absolute_prefix:
         raise ValueError(f"Invalid team memory key: {key}")
 
     decoded = urllib.parse.unquote(key)
-    if decoded != key and (".." in decoded or "/" in decoded or "\\" in decoded):
+    has_encoded_traversal = ".." in decoded or "/" in decoded or "\\" in decoded
+    if decoded != key and has_encoded_traversal:
         raise ValueError(f"Invalid team memory key: {key}")
 
     parts = key.split("/")

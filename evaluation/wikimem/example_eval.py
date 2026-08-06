@@ -319,7 +319,10 @@ def _meta_crag_samples_from_row(
             "turn_index": index,
             "query": query,
             "search_query": searches[index] if index < len(searches) else query,
-            "answer": (answers[index] if index < len(answers) else "") or (full_answers[index] if index < len(full_answers) else ""),
+            "answer": (
+                (answers[index] if index < len(answers) else "")
+                or (full_answers[index] if index < len(full_answers) else "")
+            ),
         }
         for index, query in enumerate(queries)
     ]
@@ -467,7 +470,9 @@ def _meta_crag_answer_supported(answer: str, artifact: dict[str, Any]) -> bool:
     normalized_answer = _normalize_support_text(answer)
     text = _normalize_support_text(f"{artifact['title']}\n{artifact['text']}")
     answer_tokens = _support_tokens(answer)
-    return bool(normalized_answer and normalized_answer in text) or _support_tokens_match(answer_tokens, _support_tokens(text))
+    return bool(normalized_answer and normalized_answer in text) or _support_tokens_match(
+        answer_tokens, _support_tokens(text)
+    )
 
 
 def _meta_crag_support_proxy_score(sample: dict[str, Any], artifact: dict[str, Any]) -> int:
@@ -585,12 +590,20 @@ def _write_mem_gallery_python_workspace(
             / f"{evidence_slug}_obs_{_observation_suffix(turn['clue_id'])}.md"
         )
         observation_path.write_text(
-            f"# Observation {turn['clue_id']}\nEvidence: {turn['clue_id']}\nSession: {turn['session_id']}\n\n{searchable}\n",
+            (
+                f"# Observation {turn['clue_id']}\n"
+                f"Evidence: {turn['clue_id']}\nSession: {turn['session_id']}\n\n"
+                f"{searchable}\n"
+            ),
             encoding="utf-8",
         )
         memory_path = root / "wiki" / "memories" / f"clue-summary-{evidence_slug}.md"
         memory_path.write_text(
-            f"# Clue summary {turn['clue_id']}\nEvidence: {turn['clue_id']}\nSession: {turn['session_id']}\n\n{clue_summary}\n",
+            (
+                f"# Clue summary {turn['clue_id']}\n"
+                f"Evidence: {turn['clue_id']}\nSession: {turn['session_id']}\n\n"
+                f"{clue_summary}\n"
+            ),
             encoding="utf-8",
         )
         retrieval_path = root / ".kb-research" / "retrieval" / f"{evidence_slug}.json"
@@ -1066,7 +1079,10 @@ def _meta_crag_ids_for_paths(
     for path in paths:
         normalized = path.replace("\\", "/")
         evidence_id = evidence_by_path.get(path) or evidence_by_path.get(normalized) or ""
-        if "example/meta-crag/" in normalized and "/wiki/memories/" not in normalized and "/.kb-research/" not in normalized:
+        is_meta_crag = "example/meta-crag/" in normalized
+        is_memory_page = "/wiki/memories/" in normalized
+        is_retrieval_artifact = "/.kb-research/" in normalized
+        if is_meta_crag and not is_memory_page and not is_retrieval_artifact:
             evidence_id = _rust_stable_path_id(_rust_relative_meta_crag_path(normalized))
         selected.append(evidence_id)
     return _ordered_unique(selected)
@@ -1089,12 +1105,13 @@ def _retrieve_mem_gallery_artifact_ids(
     }
     if not query_tokens:
         return []
-    candidates = [
-        file
-        for file in files
-        if "/.kb-research/retrieval/" in file.file_path.replace("\\", "/")
-        and _is_mem_gallery_clue_id(evidence_by_path.get(file.file_path, ""))
-    ]
+    candidates = []
+    for file in files:
+        normalized_path = file.file_path.replace("\\", "/")
+        is_retrieval_artifact = "/.kb-research/retrieval/" in normalized_path
+        is_clue = _is_mem_gallery_clue_id(evidence_by_path.get(file.file_path, ""))
+        if is_retrieval_artifact and is_clue:
+            candidates.append(file)
     token_by_path = {
         file.file_path: set(_cached_content_keywords(file.content))
         for file in candidates
@@ -1164,7 +1181,7 @@ def _rust_stable_path_id(path: str) -> str:
 
     end = len(data) - (len(data) % 8)
     for offset in range(0, end, 8):
-        chunk = int.from_bytes(data[offset : offset + 8], "little")
+        chunk = int.from_bytes(data[offset:offset + 8], "little")
         v3 ^= chunk
         sip_round()
         v0 ^= chunk
@@ -1259,13 +1276,12 @@ def _retrieve_evermem_evidence(
                 candidate_scores.get(row["evidence_id"], 0.0),
                 score * 0.45,
             )
-    selected = [
-        evidence_id
-        for evidence_id, _ in sorted(
-            candidate_scores.items(),
-            key=lambda item: (-item[1], item[0]),
-        )[: max(top_k, 1)]
-    ]
+    selected = []
+    ranked_candidates = sorted(
+        candidate_scores.items(), key=lambda item: (-item[1], item[0])
+    )
+    for evidence_id, _ in ranked_candidates[: max(top_k, 1)]:
+        selected.append(evidence_id)
     paths = [
         file_by_id[evidence_id].file_path
         for evidence_id in selected

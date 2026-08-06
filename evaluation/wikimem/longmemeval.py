@@ -181,13 +181,11 @@ def adapt_longmemeval_to_locomo_samples(
                     ]
                 },
             )
-            session_turn_ids = [
-                f"{session_id}_{index + 1}"
-                for index, turn in enumerate(
-                    _get_index(sample.get("haystack_sessions", []), session_index) or []
-                )
-                if str(turn.get("role", "")).lower() == "user"
-            ]
+            session_turn_ids = []
+            session_turns = _get_index(sample.get("haystack_sessions", []), session_index) or []
+            for index, turn in enumerate(session_turns):
+                if str(turn.get("role", "")).lower() == "user":
+                    session_turn_ids.append(f"{session_id}_{index + 1}")
             session_support = {"turn_ids": session_turn_ids, "session_ids": [session_id]}
             support_by_path[f"wiki/sources/session_{session_number}.md"] = session_support
             support_by_path[
@@ -196,7 +194,7 @@ def adapt_longmemeval_to_locomo_samples(
             support_by_path[f"wiki/topics/session_{session_number}_events.md"] = session_support
             for ordinal, note in enumerate(observations.get(session_number, []), start=1):
                 turn_support = {
-                    "turn_ids": session_turn_ids[ordinal - 1 : ordinal],
+                    "turn_ids": session_turn_ids[ordinal - 1:ordinal],
                     "session_ids": [session_id],
                 }
                 support_by_path[
@@ -233,20 +231,28 @@ def adapt_longmemeval_to_locomo_samples(
                         category=None,
                     )
                 ],
-                session_datetimes={
-                    session_number_by_id[session_id]: str(date)
-                    for session_id, date in zip(
-                        sample.get("haystack_session_ids", []),
-                        sample.get("haystack_dates", []),
-                    )
-                    if session_id in session_number_by_id
-                },
+                session_datetimes=_session_datetimes_from_longmemeval_sample(
+                    sample, session_number_by_id
+                ),
                 session_summaries=session_summaries,
                 event_summaries=session_events,
                 observations=observations,
             )
         )
     return prepared
+
+
+def _session_datetimes_from_longmemeval_sample(
+    sample: dict[str, Any],
+    session_number_by_id: dict[str, int],
+) -> dict[int, str]:
+    values: dict[int, str] = {}
+    session_ids = sample.get("haystack_session_ids", [])
+    dates = sample.get("haystack_dates", [])
+    for session_id, date in zip(session_ids, dates):
+        if session_id in session_number_by_id:
+            values[session_number_by_id[session_id]] = str(date)
+    return values
 
 
 def convert_retained_output_to_longmemeval(
@@ -471,7 +477,7 @@ def _relative_retrieved_path(path: str, knowledge_root: str) -> str:
     normalized = path.replace("\\", "/")
     root = knowledge_root.replace("\\", "/").rstrip("/")
     prefix = f"{root}/"
-    return normalized[len(prefix) :] if normalized.startswith(prefix) else normalized.lstrip("/")
+    return normalized[len(prefix):] if normalized.startswith(prefix) else normalized.lstrip("/")
 
 
 def _page_support_metrics(
