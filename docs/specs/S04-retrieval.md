@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/retrieval/ |
-| 最近一次修订日期 | 2026-08-04 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md |
+| 最近一次修订日期 | 2026-08-06 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/F02-wikimem-compat.md、docs/features/construction/F04-wikimem-compat.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/config/F01-config-source.md |
 
 ## 范围 / 边界
 

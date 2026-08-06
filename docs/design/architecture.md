@@ -663,7 +663,7 @@ agent-memory/
 
 
 - **三类统一契约**：接口代码落地为「算子 + 插件 + 存储」三类自描述契约——各层算子（`IngestOperator`/`ConstructionOperator`/`RetrievalOperator`/`ControlOperator`）、共享能力插件（`Plugin`）、存储后端（`BaseStore`），均为「类型枚举方法（`operatorType`/`pluginType`/`storeType`）+ `health()` 探活」，路由按类型不按实现名。
-- **兼容报告单独归档**：跨层 legacy 兼容（例如 `rust/cc_memory` 的 `MemoryIngestor`/`MemoryRetriever`、`memdir`、`retained_eval`）不塞进单层接口；统一归 `docs/features/construction/F04-cc-memory-compat.md`，再映射回 `src/api` / `src/retrieval` / `evaluation` / `agent_plugin`。
+- **兼容报告单独归档**：跨层 legacy 兼容（例如 `rust/wikimem` 的 `MemoryIngestor`/`MemoryRetriever`、`memdir`、`retained_eval`）不塞进单层接口；统一归 `docs/features/F02-wikimem-compat.md` 与 `docs/features/construction/F04-wikimem-compat.md`，再映射回 `src/api` / `src/retrieval` / `evaluation` / `agent_plugin`。
 - **写入边界**：`ingest` 只做规约与转换（RawPayload → MemoryUnit），**不落盘**；`construction` 负责把 MemoryUnit 写入真源、在其上挖掘分层记忆并构建索引。构建层**没有编排 service**，六个算子（extractor/abstractor/associator/classifier/index_builder/evolver）由上层/控制层驱动。
 - **索引「构建」与「持久化」分离**：`src/construction/index_builder` 负责构建/更新索引（逻辑），`src/storage` 负责持久化驱动（后端），经 Store 抽象解耦；统一 CRUD 动词为 `insert`（增，冲突抛 `ConflictError`）/ `delete`（删，幂等）/ `update`（改，缺失抛 `NotFoundError`）/ `get`（查，按 id 点读）。检索型 Store 的记录/查询带一等 `scope` 字段，按 scope **原生隔离**（kv/fs 为通用键值/二进制原语，不引入 scope）。
 - **共享插件保证两侧一致**：分词/切分/向量化/特征抽取/LLM/规约/重排抽到 `src/common`，构建侧与检索侧（以及重建/演进路径）注入**同一实现**——同词表、同向量空间、同切分规则、同规约器，是「派生可重建」与召回对齐的前提。

@@ -10,5 +10,6 @@ from retrieval.recaller import RecallerProducer
 import_module(".graph_recaller", __name__)
 import_module(".keyword_recaller", __name__)
 import_module(".vector_recaller", __name__)
+import_module(".wikimem_memdir_recaller", __name__)
 
 __all__ = ["RecallerProducer"]
