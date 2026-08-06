@@ -199,6 +199,17 @@ def test_grant_store_health_passes(grant_store: GrantStore) -> None:
     assert grant_store.health() is None
 
 
+def test_revoked_grant_cannot_be_resurrected_by_replay(grant_store: GrantStore) -> None:
+    """撤销后用同 id 重放旧创建请求不得复活授权（P1-4）。
+
+    两个后端必须同语义：memory 不复活，sqlite 的 upsert 也不动 revoked_at。
+    """
+    grant_store.add(_grant())
+    grant_store.revoke("g1")
+    grant_store.add(_grant())  # 模拟重放旧 create
+    assert _find(grant_store) == []
+
+
 # ====================================================================== #
 # DelegationStore
 # ====================================================================== #
@@ -296,6 +307,18 @@ def test_expired_delegation_round_trips_as_inactive(delegation_store: Delegation
 
 def test_delegation_store_health_passes(delegation_store: DelegationStore) -> None:
     assert delegation_store.health() is None
+
+
+def test_revoked_delegation_cannot_be_resurrected_by_replay(
+    delegation_store: DelegationStore,
+) -> None:
+    """撤销后用同 id 重放旧创建请求不得恢复代操作关系（P1-4，同 Grant 语义）。"""
+    delegation_store.add(_delegation())
+    delegation_store.revoke("d1")
+    delegation_store.add(_delegation())  # 模拟重放旧 create
+    loaded = delegation_store.get("d1")
+    assert loaded is not None
+    assert loaded.revoked is True
 
 
 # ====================================================================== #

@@ -345,6 +345,15 @@ def test_delegation_allows_agent_to_act_for_user() -> None:
     assert decision.rule == "delegation"
 
 
+def test_user_to_user_delegation_is_denied() -> None:
+    """F05 只允许 user 委托 agent/service；user -> user 是第二套 Grant，必须拒（P1-5）。"""
+    delegation = _delegation(delegate=BOB)
+    auth = _auth(actor=BOB, delegation_id="d1")
+    decision = _decide(_authorizer(delegations=[delegation]), auth, _resource(scope=ALICE))
+    assert not decision.allowed
+    assert decision.reason is DenyReason.DELEGATION_INVALID
+
+
 def test_forged_delegation_id_is_denied() -> None:
     """``AuthContext`` 里编一个 id 不管用——内容一律回真源读。"""
     auth = _auth(actor=ALICE_AGENT, delegation_id="forged")
