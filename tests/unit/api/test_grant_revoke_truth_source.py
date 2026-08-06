@@ -88,5 +88,5 @@ def test_structurally_complete_but_forged_context_is_rejected() -> None:
         request_id="attacker-chosen-id",
         started_at=datetime.now(timezone.utc),
     )
-    with pytest.raises(ValidationError):
+    with pytest.raises(PermissionDeniedError):
         api.write("forged-context", OWNER, security=forged)

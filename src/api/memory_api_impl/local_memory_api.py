@@ -36,11 +36,11 @@ from common.errors import NotFoundError, PermissionDeniedError, PolicyError, Val
 from common.security.authentication.credential_registry import CredentialStatusRegistry
 from common.security.authorization import Authorizer, GrantStore
 from common.security.types import (
-    _TRUSTED,
     Action,
     AuthorizationEnvironment,
     RequestSecurityContext,
     ResourceDescriptor,
+    _bind_origin,
 )
 from common.security.types import (
     Grant as SecurityGrant,
@@ -422,7 +422,15 @@ class LocalMemoryAPI(MemoryAPI):
         # 跨主体授权的唯一真源：grant()/revoke() 写 self._grant_store，与 Authorizer
         # 判定读取同一实例（装配侧由 authorizer.management_grant_store() 注入）。
         # credential_registry 由 PEP 持有，每次授权前在线复核凭据未撤销。
+        # P1-4：路由场景下 Authorizer 可能持有多个 Store，公共 grant/revoke 须写入
+        # 全部 Store 以统一真源。_grant_store 保留单 Store 兼容性（主 Store），
+        # _grant_stores 是完整列表（包含 _grant_store）。
         self._grant_store = grant_store
+        self._grant_stores = authorizer.management_grant_stores()
+        if not self._grant_stores:
+            # 无 Store 的 Authorizer（如 allow_all）：_grant_stores 空，grant/revoke 无写目标。
+            # _grant_store 仍需非空（旧代码兼容），用外部注入的 grant_store（通常也是空实现）。
+            self._grant_stores = [grant_store] if grant_store else []
         self._authorizer = authorizer
         self._credential_registry = credential_registry
         self._scheduler = scheduler
@@ -523,11 +531,13 @@ class LocalMemoryAPI(MemoryAPI):
         context 的形状反推。
         """
         actor = security.actor
-        if security._origin is not _TRUSTED:
+        if security._origin != _bind_origin(security.auth, security):
             # 上下文必须经 new_request_context / internal_context 受控构造：直接构造
             # RequestSecurityContext 即便补齐 request_id/started_at，也未经认证边界。
-            # _origin 受控标记只有那两个入口能设 _TRUSTED（types.py 模块私有 sentinel）。
-            raise ValidationError("security context 未经受控构造：来源不可信")
+            # _origin 用 HMAC-SHA256 密码绑定 auth 全字段及完整安全上下文（attributes、
+            # surface、peer 等）到进程随机密钥（types.py），只有受控入口能计算正确的
+            # 绑定值——攻击者无法通过 replace() 伪造上下文或注入 attributes 提权。
+            raise PermissionDeniedError("security context origin binding invalid")
         if self._credential_registry.is_revoked(security.auth):
             # 凭据已撤销：缓存的 RequestSecurityContext 不会自动失效，PEP 在线复核
             # CredentialStatusRegistry（F05 §认证不变量 6、§决策顺序 1）。Registry 与
@@ -1026,15 +1036,16 @@ class LocalMemoryAPI(MemoryAPI):
         self._log(security, "grant", target_scope=grant.grantor, detail=auth)
         # 公开签名收 control.types.Grant（选择子，无 id）；真源 common.security.types.Grant
         # 需 grant_id 与 frozenset 动作，在此摊平。grant_id 服务端生成：撤销/审计按 id 定位。
-        self._grant_store.add(
-            SecurityGrant(
-                grant_id=uuid.uuid4().hex,
-                grantor=grant.grantor,
-                grantee=grant.grantee,
-                actions=frozenset(Action(a.value) for a in grant.actions),
-                expires_at=grant.expires_at,
-            )
+        # P1-4：路由场景下写入**全部** Store，确保后续请求无论路由到哪个 policy 都能读到授权。
+        security_grant = SecurityGrant(
+            grant_id=uuid.uuid4().hex,
+            grantor=grant.grantor,
+            grantee=grant.grantee,
+            actions=frozenset(Action(a.value) for a in grant.actions),
+            expires_at=grant.expires_at,
         )
+        for store in self._grant_stores:
+            store.add(security_grant)
 
     def revoke(self, grant: Grant, *, security: RequestSecurityContext) -> None:
         auth = self._authorize(
@@ -1048,16 +1059,25 @@ class LocalMemoryAPI(MemoryAPI):
         # 公开 revoke 按 (grantor, grantee, action) 选择子匹配，真源按 id 撤销：用
         # find_active 取候选（已滤撤销/过期），再按精确 grantor+grantee 收窄，逐条按 id
         # 撤销。幂等--无匹配或已撤销都不报错。
+        # P1-4：路由场景下从**全部** Store 查找并撤销。同一 grant_id 可能在多个 Store
+        # 中（grant() 写入所有 Store），全部撤销确保无论路由到哪个 policy 都看不到。
         now = datetime.now(timezone.utc)
         for action in grant.actions:
-            for candidate in self._grant_store.find_active(
-                grantee=grant.grantee,
-                grantor_org=grant.grantor.org,
-                action=Action(action.value),
-                now=now,
-            ):
-                if candidate.grantor == grant.grantor and candidate.grantee == grant.grantee:
-                    self._grant_store.revoke(candidate.grant_id)
+            # 从所有 Store 收集候选，按 grant_id 去重（同一 grant 可能在多个 Store）。
+            candidates_by_id: dict[str, SecurityGrant] = {}
+            for store in self._grant_stores:
+                for candidate in store.find_active(
+                    grantee=grant.grantee,
+                    grantor_org=grant.grantor.org,
+                    action=Action(action.value),
+                    now=now,
+                ):
+                    if candidate.grantor == grant.grantor and candidate.grantee == grant.grantee:
+                        candidates_by_id[candidate.grant_id] = candidate
+            # 从所有 Store 撤销匹配的 grant_id（幂等--Store 中不存在或已撤销都不报错）。
+            for grant_id in candidates_by_id:
+                for store in self._grant_stores:
+                    store.revoke(grant_id)
 
     # -- Space 管理（直达 SpaceManager） ------------------------------------ #
 
