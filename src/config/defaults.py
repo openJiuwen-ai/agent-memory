@@ -229,7 +229,6 @@ def default_config_dict() -> dict[str, Any]:
 # 根组件（LocalMemoryAPI）对各顶层组件的引用——全部指向各命名空间下的 default 实例。
 ROOT_PARAMS: dict[str, str] = {
     "engine": _D,
-    "permission": _D,
     "authorizer": _D,
     "scheduler": _D,
     "policy": _D,

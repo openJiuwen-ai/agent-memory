@@ -33,12 +33,17 @@ from typing import Any
 from api.memory_api import MemoryAPI
 from common.audit import AuditLogger
 from common.errors import NotFoundError, PermissionDeniedError, PolicyError, ValidationError
-from common.security.authorization import Authorizer
+from common.security.authentication.credential_registry import CredentialStatusRegistry
+from common.security.authorization import Authorizer, GrantStore
 from common.security.types import (
+    _TRUSTED,
     Action,
     AuthorizationEnvironment,
     RequestSecurityContext,
     ResourceDescriptor,
+)
+from common.security.types import (
+    Grant as SecurityGrant,
 )
 from common.type_def import (
     EXT_MAX_TOKENS,
@@ -61,7 +66,6 @@ from common.type_def import (
 from construction import EvolveMode
 from control.engine import MemoryEngine
 from control.governance import Governor
-from control.permission import PermissionManager
 from control.policy import PolicyManager
 from control.scheduler import Scheduler
 from control.space import SpaceManager
@@ -399,15 +403,15 @@ def _descriptor_attributes(context: PermissionContext | None) -> dict[str, str]:
     return attributes
 
 
-
 class LocalMemoryAPI(MemoryAPI):
     """单进程装配下的统一记忆接口实现（鉴权 + 审计 + 委派）。"""
 
     def __init__(
         self,
         engine: MemoryEngine,
-        permission: PermissionManager,
+        grant_store: GrantStore,
         authorizer: Authorizer,
+        credential_registry: CredentialStatusRegistry,
         scheduler: Scheduler,
         policy: PolicyManager,
         governor: Governor,
@@ -415,11 +419,12 @@ class LocalMemoryAPI(MemoryAPI):
         space: SpaceManager,
     ) -> None:
         self._engine = engine
-        # 授权判定归 authorizer（PDP）；permission 在本 PR 只剩 grant/revoke 的授权
-        # **记录**写入通道——判定与记录的迁移分属两个 PR（迁移计划 §6.2 第 10 项把
-        # 「删除 control 下旧 PermissionManager 安全所有权」划在 PR3）。
-        self._perm = permission
+        # 跨主体授权的唯一真源：grant()/revoke() 写 self._grant_store，与 Authorizer
+        # 判定读取同一实例（装配侧由 authorizer.management_grant_store() 注入）。
+        # credential_registry 由 PEP 持有，每次授权前在线复核凭据未撤销。
+        self._grant_store = grant_store
         self._authorizer = authorizer
+        self._credential_registry = credential_registry
         self._scheduler = scheduler
         self._policy = policy
         self._governor = governor
@@ -518,6 +523,16 @@ class LocalMemoryAPI(MemoryAPI):
         context 的形状反推。
         """
         actor = security.actor
+        if security._origin is not _TRUSTED:
+            # 上下文必须经 new_request_context / internal_context 受控构造：直接构造
+            # RequestSecurityContext 即便补齐 request_id/started_at，也未经认证边界。
+            # _origin 受控标记只有那两个入口能设 _TRUSTED（types.py 模块私有 sentinel）。
+            raise ValidationError("security context 未经受控构造：来源不可信")
+        if self._credential_registry.is_revoked(security.auth):
+            # 凭据已撤销：缓存的 RequestSecurityContext 不会自动失效，PEP 在线复核
+            # CredentialStatusRegistry（F05 §认证不变量 6、§决策顺序 1）。Registry 与
+            # Authenticator 共享同一具名 Store，撤销后立即生效。
+            raise PermissionDeniedError("credential revoked")
         effective_context = self._apply_space_policy_context(target, context)
         if _missing_required_space(self._policy, target, require_space):
             self._record_audit(
@@ -974,9 +989,7 @@ class LocalMemoryAPI(MemoryAPI):
     def inspect(
         self, unit_ids: list[str], scope: Scope, *, security: RequestSecurityContext
     ) -> list[MemoryUnit]:
-        auth = self._authorize(
-            security, scope, Action.READ, "inspect", resource_type="memory_unit"
-        )
+        auth = self._authorize(security, scope, Action.READ, "inspect", resource_type="memory_unit")
         self._log(security, "inspect", target_scope=scope, detail=auth)
         return self._governor.inspect(unit_ids, scope)
 
@@ -1004,14 +1017,24 @@ class LocalMemoryAPI(MemoryAPI):
         self._log(security, "audit", target_scope=_ROOT, detail=auth)
         return self._governor.audit(filters, limit)
 
-    # -- 跨 scope 授权（直达 PermissionManager） ---------------------------- #
+    # -- 跨 scope 授权（写入 Authorizer 读取的 GrantStore） ----------------- #
 
     def grant(self, grant: Grant, *, security: RequestSecurityContext) -> None:
         auth = self._authorize(
             security, grant.grantor, Action.SHARE, "grant", resource_type="grant"
         )
         self._log(security, "grant", target_scope=grant.grantor, detail=auth)
-        self._perm.grant(grant)
+        # 公开签名收 control.types.Grant（选择子，无 id）；真源 common.security.types.Grant
+        # 需 grant_id 与 frozenset 动作，在此摊平。grant_id 服务端生成：撤销/审计按 id 定位。
+        self._grant_store.add(
+            SecurityGrant(
+                grant_id=uuid.uuid4().hex,
+                grantor=grant.grantor,
+                grantee=grant.grantee,
+                actions=frozenset(Action(a.value) for a in grant.actions),
+                expires_at=grant.expires_at,
+            )
+        )
 
     def revoke(self, grant: Grant, *, security: RequestSecurityContext) -> None:
         auth = self._authorize(
@@ -1022,7 +1045,19 @@ class LocalMemoryAPI(MemoryAPI):
             resource_type="grant",
         )
         self._log(security, "revoke", target_scope=grant.grantor, detail=auth)
-        self._perm.revoke(grant)
+        # 公开 revoke 按 (grantor, grantee, action) 选择子匹配，真源按 id 撤销：用
+        # find_active 取候选（已滤撤销/过期），再按精确 grantor+grantee 收窄，逐条按 id
+        # 撤销。幂等--无匹配或已撤销都不报错。
+        now = datetime.now(timezone.utc)
+        for action in grant.actions:
+            for candidate in self._grant_store.find_active(
+                grantee=grant.grantee,
+                grantor_org=grant.grantor.org,
+                action=Action(action.value),
+                now=now,
+            ):
+                if candidate.grantor == grant.grantor and candidate.grantee == grant.grantee:
+                    self._grant_store.revoke(candidate.grant_id)
 
     # -- Space 管理（直达 SpaceManager） ------------------------------------ #
 

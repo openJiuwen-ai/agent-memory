@@ -16,6 +16,9 @@ import os
 
 from api import assemble
 from common.security import internal_context
+from common.security.authentication.authentication_impl.dev_authenticator import (
+    DevAuthenticator,
+)
 from common.type_def import Context, Scope
 from config import Config
 from construction import EvolveMode
@@ -43,7 +46,7 @@ def main() -> None:
     scope = Scope(org="acme", user="alice", agent="assistant", session="s1")
     # 身份由认证能力产出，不由脚本声明（F05 §进程内调用）：`scope` 只说「操作哪个
     # 范围」，`security` 才说「谁在操作」。进程内直连缺省是 dev 认证（恒 ROOT）。
-    security = internal_context()
+    security = internal_context(DevAuthenticator())
 
     # 1) write ---------------------------------------------------------------
     facts = [

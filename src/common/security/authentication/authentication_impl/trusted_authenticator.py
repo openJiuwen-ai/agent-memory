@@ -58,6 +58,7 @@ def _credential_id(gateway_key: str, org: str, principal_type: str, principal_id
     material = f"{fingerprint(gateway_key)}:{org}:{principal_type}:{principal_id}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
+
 _FAILED = "authentication failed"
 
 

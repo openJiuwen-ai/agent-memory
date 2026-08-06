@@ -38,6 +38,13 @@ class InMemoryGrantStore(GrantStore):
 
     def add(self, grant: Grant) -> None:
         with self._lock:
+            existing = self._grants.get(grant.grant_id)
+            if existing is not None and existing.revoked:
+                # 撤销单调：同 id 的写入不得把 revoked 翻回 False。队列重投或网络重试
+                # 会把撤销前的那份创建请求再送一次，无条件覆盖等于给攻击者一条「重放
+                # 旧报文即可复活权限」的路径。SQLite 实现的 upsert 不动 revoked_at，
+                # 语义一致。
+                return
             self._grants[grant.grant_id] = grant
 
     def revoke(self, grant_id: str) -> None:
@@ -90,6 +97,9 @@ class InMemoryDelegationStore(DelegationStore):
 
     def add(self, delegation: Delegation) -> None:
         with self._lock:
+            existing = self._delegations.get(delegation.delegation_id)
+            if existing is not None and existing.revoked:
+                return  # 撤销单调，同 InMemoryGrantStore.add
             self._delegations[delegation.delegation_id] = delegation
 
     def revoke(self, delegation_id: str) -> None:

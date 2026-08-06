@@ -59,6 +59,11 @@ class RoutingAuthorizer(Authorizer):
         for policy in self._policies.values():
             policy.health()
 
+    def management_grant_store(self):
+        # 管理写透传到 fallback delegate 的 Store：fallback 承接路由值缺失的请求，是
+        # 最小权限策略，公共 grant/revoke 写它的真源与其他请求的判定一致。
+        return self._policies[self._fallback].management_grant_store()
+
     def authorize(
         self,
         *,

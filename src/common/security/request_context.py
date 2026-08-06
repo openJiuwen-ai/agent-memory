@@ -19,6 +19,7 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 
 from common.security.types import (
+    _TRUSTED,
     AuthContext,
     Credentials,
     RequestSecurityContext,
@@ -51,33 +52,25 @@ def new_request_context(
         surface=surface,
         started_at=datetime.now(timezone.utc),
         attributes=attributes or {},
+        _origin=_TRUSTED,
     )
 
 
-def internal_context(authenticator=None) -> RequestSecurityContext:
+def internal_context(authenticator) -> RequestSecurityContext:
     """进程内直连调用方的受控上下文入口（F05 §进程内调用）。
 
-    身份仍**由 authenticator 产出**，不由调用方声明——这正是 F05 拒绝 ``auth=None``
+    身份仍**由 authenticator 产出**，不由调用方声明--这正是 F05 拒绝 ``auth=None``
     与「传入 Scope 直接当已认证 actor」的那条线（迁移计划 §5.3）。调用方要操作哪个
     Scope，照旧走业务参数；它决定不了自己是谁。
 
-    ``authenticator`` 缺省是 ``DevAuthenticator``（恒 ROOT，具名主体 ``system/dev``）。
-    这与进程内直连的实际信任模型一致：调用方**在同一个进程里自己装配了内核**，能直接
-    碰 KV 与 Engine，授权拦不住也不该假装拦得住。把它写成显式的一次调用，是为了让这
-    份信任在代码里看得见——而不是像旧的 ``auth=None`` 那样，散落在每个调用点上。
+    ``authenticator`` **必填**：无参领取 ROOT 已不再允许。进程内直连确实信任内核装配
+    方，但这份信任必须是一次显式传入（如 ``internal_context(DevAuthenticator())``），
+    让「这里拿到了 ROOT」在调用点看得见，而不是像旧的 ``authenticator=None`` 默认那样
+    谁都不写就悄悄得到一个超管身份。
 
     **不可用于有网络对端的场景。** 网络接入必须走 ``auth_middleware.authenticated``：
-    那里有真实凭据校验、限流、并发预算和入口审计，这里一样都没有。要用别的身份就把
-    装配好的 authenticator 传进来（例如 service credential 的 ``api_key`` 实现）。
+    那里有真实凭据校验、限流、并发预算和入口审计，这里一样都没有。
     """
-    if authenticator is None:
-        # 延迟 import：本模块被 surface 与进程内调用方共用，顶层拉 authentication_impl
-        # 会让只用 new_request_context 的路径也付一次实现包的 import 代价。
-        from common.security.authentication.authentication_impl.dev_authenticator import (
-            DevAuthenticator,
-        )
-
-        authenticator = DevAuthenticator()
     return new_request_context(
         authenticator.authenticate(Credentials()),
         surface=Surface.INTERNAL,

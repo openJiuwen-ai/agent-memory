@@ -42,7 +42,12 @@ class GrantStore(ABC):
 
     @abstractmethod
     def add(self, grant: Grant) -> None:
-        """写入一条授权（按 ``grant_id`` 幂等）。"""
+        """写入一条授权（按 ``grant_id`` 幂等）。
+
+        **撤销单调**：若同 ``grant_id`` 的记录已撤销，本次写入必须不生效，不得把
+        ``revoked`` 翻回 ``False``。队列重投与网络重试会把撤销前的那份创建请求再送
+        一次，无条件覆盖即一条复活权限的路径。
+        """
 
     @abstractmethod
     def revoke(self, grant_id: str) -> None:
@@ -86,7 +91,11 @@ class DelegationStore(ABC):
 
     @abstractmethod
     def add(self, delegation: Delegation) -> None:
-        """写入一条委托（按 ``delegation_id`` 幂等）。"""
+        """写入一条委托（按 ``delegation_id`` 幂等）。
+
+        与 :meth:`GrantStore.add` 同样要求**撤销单调**：已撤销的委托不得被同 id 的
+        重放写回有效。
+        """
 
     @abstractmethod
     def revoke(self, delegation_id: str) -> None:

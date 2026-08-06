@@ -170,6 +170,7 @@ class SQLiteGrantStore(_SQLiteBacked, GrantStore):
                 ON CONFLICT(grant_id) DO UPDATE SET
                     actions=excluded.actions,
                     expires_at=excluded.expires_at
+                WHERE auth_grants.revoked_at IS NULL
                 """,
                 (
                     grant.grant_id,
@@ -250,6 +251,7 @@ class SQLiteDelegationStore(_SQLiteBacked, DelegationStore):
                     expires_at=excluded.expires_at,
                     not_before=excluded.not_before,
                     allowed_spaces=excluded.allowed_spaces
+                WHERE auth_delegations.revoked_at IS NULL
                 """,
                 (
                     delegation.delegation_id,

@@ -15,6 +15,9 @@ from typing import Dict, List, Optional
 
 from api.memory_api_impl import build_kernel
 from common.security import internal_context
+from common.security.authentication.authentication_impl.dev_authenticator import (
+    DevAuthenticator,
+)
 from common.type_def import Context
 from config.config import Config
 
@@ -29,7 +32,7 @@ class EvalHarness:
         self._api = self._kernel.api
         # 评测走 MemoryAPI 公共面，安全契约与外部请求相同（F05 §进程内调用）：
         # 身份由认证能力产出，数据集里的 scope 只表达资源归属。
-        self._security = internal_context()
+        self._security = internal_context(DevAuthenticator())
         self._key2ids: Dict[str, List[str]] = {}
 
     def ingest(self, seeds: List[MemorySeed]) -> None:

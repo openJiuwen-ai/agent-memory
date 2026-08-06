@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from common.factory.factory import Factory
 from common.security.types import (
@@ -27,6 +28,9 @@ from common.security.types import (
     DenyReason,
     ResourceDescriptor,
 )
+
+if TYPE_CHECKING:
+    from common.security.authorization.store import GrantStore
 
 
 class AuthorizationProducer(Factory):
@@ -115,6 +119,16 @@ class Authorizer(ABC):
         而不是「你是不是那个叫 routing 的实现」（S08 不变量 7）。
         """
         return ()
+
+    def management_grant_store(self) -> GrantStore | None:
+        """本 Authorizer 判定时实际查询的 GrantStore（供 PEP 的 grant/revoke 共享真源）。
+
+        默认 ``None``：不基于 GrantStore 的实现（如 allow_all）没有管理写真源。基于
+        GrantStore 的实现（StandardAuthorizer）覆盖之，返回其 ``find_active`` 所读的
+        Store。PEP 的公共 grant/revoke 写这里，与 PDP 读取的同一实例--具名 YAML 令
+        Authorizer 引用别的 Store 时，公共 grant 也写入同一 Store，不再双真源。
+        """
+        return None
 
     @abstractmethod
     def health(self) -> None:

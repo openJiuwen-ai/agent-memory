@@ -632,6 +632,9 @@ class _InProcessClient(_AgentMemoryClient):
     def __init__(self, config_path: str | None) -> None:
         from api import build_kernel
         from common.security import internal_context
+        from common.security.authentication.authentication_impl.dev_authenticator import (
+            DevAuthenticator,
+        )
         from config.config import Config
 
         config = None
@@ -648,7 +651,7 @@ class _InProcessClient(_AgentMemoryClient):
         self._kv = kernel.kv
         # 身份由认证能力产出，不由调用方传入的 scope 充当（F05 §进程内调用）：
         # scope 说「操作哪个范围」，security 说「谁在操作」。
-        self._security = internal_context()
+        self._security = internal_context(DevAuthenticator())
 
     @staticmethod
     def _to_api_scope(scope):

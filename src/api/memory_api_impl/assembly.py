@@ -28,6 +28,8 @@ from common.bootstrap import register_plugins
 from common.errors import ValidationError
 from common.factory.factory import Factory
 from common.log import setup_logging
+from common.security.authentication.credential_registry import CredentialStatusRegistry
+from common.security.authentication.key_store import KeyStoreProducer
 from common.security.authorization import AuthorizationProducer, Authorizer
 from common.security.bootstrap import register_security
 from config import Config
@@ -37,7 +39,6 @@ from construction.bootstrap import register_constructors
 from control.bootstrap import register_controllers
 from control.engine import EngineProducer
 from control.governance import GovernorProducer
-from control.permission import PermissionProducer
 from control.policy import PolicyProducer
 from control.scheduler import SchedulerProducer
 from control.space import SpaceManager, SpaceProducer
@@ -89,6 +90,21 @@ def _build_authorizer(root: ComponentConfig) -> Authorizer:
     return authorizer
 
 
+def _build_credential_registry(root: ComponentConfig) -> CredentialStatusRegistry:
+    """装配凭据撤销复核注册表（PEP 持有，F05 §认证不变量 6、§决策顺序 1）。
+
+    若配置声明了 ``key_store`` 命名空间，注册其 ``default`` 具名实例供 PEP 在线复核
+    ``api_key`` 凭据撤销。与 surface 的 :class:`ApiKeyAuthenticator` 经 Factory 具名缓存
+    共享同一实例（两者都引用 ``key_store.default``），故认证签发与撤销复核读同一份事实，
+    撤销后 PEP 立即看到。未配 ``key_store`` 时 Registry 空--进程内 Dev 部署不走可撤销
+    凭据，不参与在线撤销复核。
+    """
+    registry = CredentialStatusRegistry()
+    if "key_store" in (root.ctx.namespaces or {}):
+        registry.register("api_key", KeyStoreProducer.build_named("default", root.ctx))
+    return registry
+
+
 def build_kernel(
     policies: dict[str, str] | None = None,
     kv: KVStore | None = None,
@@ -119,10 +135,12 @@ def build_kernel(
     # audit logger 装配一次、两处共用：API 内部记业务事件，Kernel.audit 暴露给
     # surface 记入口事件（认证失败等发生在 API 之外，拿不到 API 的私有引用）。
     audit_logger = AuditProducer.dep(root, default="sqlite")
+    authorizer = _build_authorizer(root)
     api = LocalMemoryAPI(
         engine=EngineProducer.dep(root, default="in_memory"),
-        permission=PermissionProducer.dep(root, default="sqlite"),
-        authorizer=_build_authorizer(root),
+        grant_store=authorizer.management_grant_store(),
+        authorizer=authorizer,
+        credential_registry=_build_credential_registry(root),
         scheduler=SchedulerProducer.dep(root, default="in_process"),
         policy=PolicyProducer.dep(root, default="dict"),
         governor=GovernorProducer.dep(root, default="in_memory"),

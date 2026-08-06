@@ -309,7 +309,7 @@ class ResourceDescriptor:
     resource_type: str  # write_input / query / memory_unit / admin / job ...
     scope: Scope  # 资源真实归属（真源）
     resource_id: str = ""  # 已存在资源的 id；新建操作为空
-    attributes: Mapping[str, str] = field(default=_EMPTY_ATTRIBUTES)
+    attributes: Mapping[str, str] = field(default_factory=_empty_attributes)
 
     def __post_init__(self) -> None:
         if not isinstance(self.attributes, MappingProxyType):
@@ -341,7 +341,7 @@ class AuthorizationEnvironment:
     surface: Surface = Surface.INTERNAL
     request_id: str = ""
     peer: str = ""
-    attributes: Mapping[str, str] = field(default=_EMPTY_ATTRIBUTES)
+    attributes: Mapping[str, str] = field(default_factory=_empty_attributes)
 
     def __post_init__(self) -> None:
         if not isinstance(self.attributes, MappingProxyType):

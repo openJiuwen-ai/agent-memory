@@ -79,6 +79,19 @@ def _principal_path(resource: ResourceDescriptor) -> PrincipalPath:
         return PrincipalPath.USER_AGENT
 
 
+def _delegate_is_machine_principal(delegation: Delegation) -> bool:
+    """被委托方是否是 agent/service 这类**非人主体**（F05 §Delegation）。
+
+    F05 把 Delegation 定义为「user 对 agent 或 service 的有限期代操作授权」。不校验
+    主体种类的话，user -> user 的委托能通过判定，Delegation 就成了第二套 Grant：
+    绕过 SHARE 动作的授权路径、绕过 grant/revoke 的管理面记录，而两者的撤销与治理
+    接口完全不同。``Scope`` 目前只建模了 user 与 agent（service identity 待补），故
+    判据是「delegate 必须带 agent 维」，同时要求 delegator 是 user：委托只能由人发起，
+    agent 再委托 agent 等于让委托关系自我复制，撤销就追不上了。
+    """
+    return bool(delegation.delegate.agent) and bool(delegation.delegator.user)
+
+
 class StandardAuthorizer(Authorizer):
     """F05 决策顺序的实现。
 
@@ -94,6 +107,11 @@ class StandardAuthorizer(Authorizer):
     def health(self) -> None:
         self._grants.health()
         self._delegations.health()
+
+    def management_grant_store(self) -> GrantStore:
+        # PEP 的公共 grant/revoke 写这里：与 authorize 第 6 步 find_active 读同一实例，
+        # 具名 YAML 令本 Authorizer 引用别的 Store 时，公共 grant 也写入同一 Store。
+        return self._grants
 
     def authorize(
         self,
@@ -213,6 +231,8 @@ class StandardAuthorizer(Authorizer):
         if delegation is None or not delegation.is_active(now=now):
             # 不存在、已撤销、已过期归同一个 reason：区分它们是委托枚举侧信道。
             return AuthorizationDecision.deny(DenyReason.DELEGATION_INVALID, "delegation_lookup")
+        if not _delegate_is_machine_principal(delegation):
+            return AuthorizationDecision.deny(DenyReason.DELEGATION_INVALID, "delegation_principal")
         if not delegation.permits(resource.action):
             return AuthorizationDecision.deny(DenyReason.DELEGATION_ACTION, "delegation_action")
         if not self._delegation_binds(delegation, auth, resource, path=path):
@@ -295,7 +315,5 @@ def _build(config) -> StandardAuthorizer:
     if not isinstance(grant_store, GrantStore):
         raise ValidationError("authorizer.standard params.grant_store 必须是 GrantStore")
     if not isinstance(delegation_store, DelegationStore):
-        raise ValidationError(
-            "authorizer.standard params.delegation_store 必须是 DelegationStore"
-        )
+        raise ValidationError("authorizer.standard params.delegation_store 必须是 DelegationStore")
     return StandardAuthorizer(grant_store=grant_store, delegation_store=delegation_store)
