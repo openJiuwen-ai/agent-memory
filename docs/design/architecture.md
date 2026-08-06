@@ -456,13 +456,16 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 配置自上而下分层，**就近覆盖**（下层覆盖上层）：
 
 ```
- 全局默认（内置）
-   └─▶ 部署 Profile（edge/cloud/hybrid，见 §11 / bootstrap）
-         └─▶ 租户/scope 级（org/space 及其 principal path 可各自不同策略）
-               └─▶ 调用级 options（recall/write/evolve 的逐次参数）
+ 全局默认（内置 defaults.py）
+   └─▶ 部署 Profile / 用户 YAML（装配期合并）
+         └─▶ ConfigSource（可插拔来源；默认=上述合并快照，产品可换配置中心）
+               └─▶ 租户/scope 级策略（org/space policy、principal_path 等）
+                     └─▶ 调用级 options（recall/write/evolve 的逐次业务参数）
 ```
 
 - 这样既能用一个 Profile 一键起步，也能对特定 scope 或单次调用做精细化覆盖。
+- **装配拓扑**（选哪些实现类、预装哪些具名实例）在 `build_kernel` 确定；**晚绑定值**（能力开关、prompt 文本、模型名/API Key/URL、Store 连接）经 `ConfigSource.fetch` 在运行中读取。同实现多套 model/key/url/hosts **优先**走晚绑定；`*.active` 多具名实例仅用于异质实现互切。
+- 六类商用可配项的抽象与边界见 `docs/features/config/F01-config-source.md` 与 `docs/specs/S08-config.md`；**不**通过 write/recall/evolve 入参写入这些配置。
 
 ### 13.3 开箱即用的场景预设（Presets）
 
@@ -481,10 +484,10 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 ### 13.4 实现落点
 
-- **`config/settings.py`**：配置 schema 与校验（各维度的取值与默认）。
+- **`src/config/`**：`Config` / `defaults` / `AssemblyContext` 负责装配期合并；**`ConfigSource`** 负责可插拔配置来源（默认对齐 YAML/defaults，产品可注入配置中心实现）。契约见 `docs/specs/S08-config.md`。
 - **`bootstrap/core/profiles.py`**：把维度组合成 `edge/cloud/hybrid` 与上述场景 Preset，装配对应组件与后端。
-- **`admin_get/set/all`（§6）**：运行时查询/调整可变配置（如启停某索引、切换演进模式）。
-- 不可变/重型配置（真源形态、后端选型）在实例初始化时确定；可变策略（检索/演进开关）支持运行时调整。
+- **`admin_get/set/all`（§6）**：运行时查询/调整 **PolicyManager** 已知策略键（如 lifecycle 目标、`scope.require_space`）；**不是**六类模型/prompt/store 配置的主通道。
+- **两层动态性**：换 ConfigSource 实现或增减预装配组件 → 重建内核；已注入来源上的值（开关/prompt/凭证/连接）→ 运行中 `fetch`（首选）；异质实例选用 → `*.active`（次选）。注册在仓内的多种实现 ≠ 默认已全部预装。
 
 ---
 
@@ -654,7 +657,7 @@ agent-memory/
 | `src/construction/`                 | E 记忆构建层 / 分层记忆结构（§4/§9.1/§9.2/§9.3）：**负责 MemoryUnit 落盘**与多形式索引构建、自演进 |
 | `src/storage/`                      | F 记忆存储层（§10）：六种 Store（kv/fulltext/vector/graph/fusion/fs），统一 CRUD 动词 |
 | `src/common/`                       | 跨层共享：能力插件（Plugin：tokenizer/chunker/embedder/feature_extractor/llm/normalizer/reranker）+ 通用结构体（type_def，含 §3 数据模型）+ 横切组件（audit） |
-| `src/config/`                       | 配置：真源形态 / 索引策略 / 部署 profile（§13，部署 §11）——不可变/重型配置；运行时可变策略归 `src/control/policy` |
+| `src/config/`                       | 配置（§13）：装配合并（YAML/defaults）+ 可插拔 `ConfigSource`（晚绑定六类配置）；少量策略键仍归 `src/control/policy` |
 | `evaluation/`                       | 测评（对接 VISION §7：benchmark / metrics / scripts / smoke_test） |
 | `deploy/`、`docs/`、`examples/`      | 部署物料 / 文档 / 示例      |
 

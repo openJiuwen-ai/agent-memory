@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/retrieval/ |
-| 最近一次修订日期 | 2026-07-30 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/F02-wikimem-compat.md、docs/features/construction/F04-wikimem-compat.md |
+| 最近一次修订日期 | 2026-08-06 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/F02-wikimem-compat.md、docs/features/construction/F04-wikimem-compat.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/config/F01-config-source.md |
 
 ## 范围 / 边界
 
@@ -209,4 +209,5 @@ src/retrieval/<算子>_impl/
 | S05-construction | 本层消费构建层产出的索引（向量/全文/图） |
 | S06-storage | Recaller 经注入的 Store 召回候选 |
 | S07-common | 复用 Tokenizer/Embedder/FeatureExtractor/LLM/Reranker |
+| S08-config | 能力开关与 rerank/embedder 晚绑定经 ConfigSource |
 | architecture.md §8 | 检索链路设计 |

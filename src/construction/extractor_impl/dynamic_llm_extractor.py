@@ -65,9 +65,11 @@ class DynamicLLMExtractor(Extractor):
         )
 
     def operator_type(self) -> OperatorType:
+        """返回算子类型 ``EXTRACTOR``。"""
         return OperatorType.EXTRACTOR
 
     def health(self) -> None:
+        """探活：检查 LLM 与 fallback Extractor。"""
         self._llm.health()
         self._fallback.health()
 
@@ -77,6 +79,7 @@ class DynamicLLMExtractor(Extractor):
         *,
         context: ExtractContext | None = None,
     ) -> list[MemoryUnit]:
+        """按 metadata 中的 prompt 策略抽取；无策略时委托 fallback。"""
         prompts: list[tuple[str, str]] = []
         for unit in units:
             prompts.extend(parse_prompt_strategies(unit.metadata, EXTRACT_PROMPT_PREFIX))
@@ -176,9 +179,15 @@ class DynamicLLMExtractor(Extractor):
 
 @ExtractorProducer.register("dynamic_llm")
 def _build(config):
+    """装配 DynamicLLMExtractor；PromptRegistry 挂接共享 ConfigSource 以支持 prompt 晚绑定。"""
     prompts_data = config.get("prompts")
+    from config.config_source import ConfigSourceProducer
+
+    config_source = ConfigSourceProducer.get_cached("default")
     registry = (
-        PromptRegistry.from_dict(prompts_data) if prompts_data else PromptRegistry()
+        PromptRegistry.from_dict(prompts_data, config_source=config_source)
+        if prompts_data
+        else PromptRegistry(config_source=config_source)
     )
     return DynamicLLMExtractor(
         llm=LlmProducer.dep(config, default="echo"),
