@@ -20,6 +20,9 @@ HTTP header。
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import os
 from collections.abc import Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
@@ -114,6 +117,10 @@ class AuthContext:
     ``DelegationStore`` 复核。这里刻意**没有** ``acting_user`` 之类的字段：一个 user 名
     只能表达「调用方声称在代谁操作」，表达不了「那个 user 真的授权过」（F05
     §从 header 直接产生 Delegation）。
+
+    Round4 P1-4: 新增 ``credential_issuer`` 字段，用于 Registry 撤销路由。
+    ``auth_method`` 保留协议/认证方法语义（"api_key" / "trusted" / "dev"），
+    ``credential_issuer`` 携带具名实例名称（"primary_auth" / "partner_auth"）。
     """
 
     actor: Scope  # 已认证的操作执行者
@@ -121,6 +128,7 @@ class AuthContext:
     credential_type: str = ""  # 本次使用的凭据类型（api_key / gateway / dev）
     credential_id: str = ""  # 凭据的不可逆标识（指纹），供撤销与审计；绝不是明文
     auth_method: str = ""  # 认证实现声明的方法标识（dev / trusted / api_key / ...）
+    credential_issuer: str = ""  # Round4: 凭据签发者标识（具名 Authenticator 实例名）
     authenticated_at: datetime | None = None  # 服务端完成认证的时间
     expires_at: datetime | None = None  # 本次上下文的失效时间；None = 不随上下文过期
     delegation_id: str = ""  # 已验证的委托标识；由 DelegationStore 复核
@@ -153,14 +161,73 @@ def _empty_attributes() -> Mapping[str, str]:
     return _EMPTY_ATTRIBUTES
 
 
-# RequestSecurityContext 的受控来源标记。只有受控构造入口（PR2 的
-# ``new_request_context`` / ``internal_context``）构造时传 ``_TRUSTED``；直接
-# ``RequestSecurityContext(...)`` 为 ``_UNTRUSTED``。PEP（PR2 起）校验
-# ``_origin is _TRUSTED``，使「补齐 request_id/started_at 即可伪造上下文」不成立
-# --字段形状完整不等于来自认证边界。sentinel 刻意不导出：增加绕过难度，且测试
-# 用例直接构造不传 ``_origin`` 即被判为未受控。
-_TRUSTED = object()
-_UNTRUSTED = object()
+# RequestSecurityContext 的受控来源证明：绑定 auth 安全字段的 HMAC。
+# 只有受控构造入口（new_request_context / internal_context）构造时计算并写入 _origin；
+# PEP 校验 _origin == _bind_origin(security.auth)。dataclasses.replace 换 auth 但复制
+# 旧 _origin -> HMAC 不匹配新 auth -> 拒。直接构造不传 _origin -> 空串 -> 拒。
+# _ORIGIN_KEY 进程随机：进程外/跨进程无法伪造 HMAC。
+_ORIGIN_KEY = os.urandom(32)
+
+
+def _bind_origin(auth: AuthContext, context: "RequestSecurityContext | None" = None) -> str:
+    """计算 auth 及完整安全上下文的来源绑定 token（HMAC-SHA256）。
+
+    绑定 actor 五维 + role + credential 字段 + auth 字段，以及完整 RequestSecurityContext
+    的安全字段（attributes、surface、peer 等）。replace 换掉其中任一字段后，旧 _origin
+    与新上下文不匹配，PEP 拒。
+
+    **威胁边界**：此 HMAC 方案仅防止跨进程伪造（_ORIGIN_KEY 是进程内随机密钥）。
+    同进程代码可以调用 :func:`new_request_context` 构造任意 AuthContext 并获得有效签名，
+    因此**无法防御恶意同进程组件**（业务插件、agent adapter、被注入的第三方代码）。
+    若同进程代码不可信，需要进程隔离或 capability-based 设计。
+
+    Round3: 绑定完整 RequestSecurityContext 安全字段，防止通过 replace(attributes=...)
+    注入服务端安全 attributes 提权。
+
+    Round4: 使用 NUL 分隔符明确边界，避免 attributes 序列化结构碰撞。
+    Round4 P1-4: 绑定 credential_issuer 字段。
+
+    Round5: 在每对 k-v 之后也添加额外 NUL 分隔符，防止通过 value 中嵌入 NUL 字符绕过。
+
+    Round7 P1-1: 改用 Canonical JSON 序列化，彻底消除手写分隔符的结构歧义。
+    JSON 的结构化编码天然防止 {"a": "b\\0\\0c\\0d"} 和 {"a": "b", "c": "d"} 碰撞。
+    """
+    import json
+
+    # 构造结构化签名材料
+    payload = {
+        "auth": {
+            "actor": {
+                "org": auth.actor.org,
+                "space": auth.actor.space,
+                "user": auth.actor.user,
+                "agent": auth.actor.agent,
+                "session": auth.actor.session,
+            },
+            "role": auth.role.value,
+            "credential_type": auth.credential_type,
+            "credential_id": auth.credential_id,
+            "auth_method": auth.auth_method,
+            "credential_issuer": auth.credential_issuer,
+            "authenticated_at": auth.authenticated_at.isoformat() if auth.authenticated_at else "",
+            "delegation_id": auth.delegation_id,
+        }
+    }
+
+    # Round3: 绑定完整安全上下文字段（若提供）
+    if context is not None:
+        payload["context"] = {
+            "surface": context.surface.value if context.surface else "",
+            "peer": context.peer or "",
+            "request_id": context.request_id,
+            "started_at": context.started_at.isoformat() if context.started_at else "",
+            "attributes": dict(sorted(context.attributes.items())),
+        }
+
+    # Canonical JSON: sort_keys 保证顺序，separators 消除空格，ensure_ascii=False 保留 Unicode
+    material = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+    return hmac.new(_ORIGIN_KEY, material.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -183,7 +250,7 @@ class RequestSecurityContext:
     surface: Surface = Surface.INTERNAL
     started_at: datetime | None = None
     attributes: Mapping[str, str] = field(default_factory=_empty_attributes)
-    _origin: object = field(default=_UNTRUSTED, repr=False, compare=False)
+    _origin: str = field(default="", repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.attributes, MappingProxyType):

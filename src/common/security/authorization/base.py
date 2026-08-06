@@ -127,8 +127,23 @@ class Authorizer(ABC):
         GrantStore 的实现（StandardAuthorizer）覆盖之，返回其 ``find_active`` 所读的
         Store。PEP 的公共 grant/revoke 写这里，与 PDP 读取的同一实例--具名 YAML 令
         Authorizer 引用别的 Store 时，公共 grant 也写入同一 Store，不再双真源。
+
+        **路由场景已弃用本方法**：RoutingAuthorizer 覆盖 :meth:`management_grant_stores`
+        返回全部 policy Store，PEP 写入所有 Store 以统一真源（P1-4）。非路由实现仍可
+        只覆盖本方法，PEP 向下兼容。
         """
         return None
+
+    def management_grant_stores(self) -> list[GrantStore]:
+        """本 Authorizer 判定时可能查询的全部 GrantStore（路由场景真源统一，P1-4）。
+
+        默认实现：单 Store 情况返回 ``[management_grant_store()]``（向下兼容），无 Store
+        返回空列表。RoutingAuthorizer 覆盖之，返回全部 delegate policy 的 Store 去重后
+        列表。PEP 的公共 grant/revoke 写入返回的**所有** Store，确保路由命中任一 policy
+        时都能读到授权——单 Store 时行为不变，路由时统一真源。
+        """
+        store = self.management_grant_store()
+        return [store] if store is not None else []
 
     @abstractmethod
     def health(self) -> None:

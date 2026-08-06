@@ -46,6 +46,33 @@ class RoutingAuthorizer(Authorizer):
                 f"RoutingAuthorizer fallback {fallback!r} 不得是仅测试实现："
                 "路由值缺失的请求全部落在 fallback，它必须是最小权限策略"
             )
+
+        # Round4 P1-3: 装配期检查所有 policy 是否共享同一 GrantStore（真源统一）
+        # 多 Store 顺序写入无原子性：第二个 Store 失败时第一个已提交，造成部分授权。
+        # 要么全部 policy 共享同一 Store（通过具名引用），要么拒绝启动。
+        all_stores = []
+        for policy_name, policy in policies.items():
+            stores = policy.management_grant_stores()
+            if stores:
+                all_stores.extend((policy_name, id(store)) for store in stores)
+
+        if all_stores:
+            # 检查所有 policy 的 Store 是否为同一实例（按 id 判断）
+            unique_store_ids = {store_id for _, store_id in all_stores}
+            if len(unique_store_ids) > 1:
+                store_owners = {}
+                for policy_name, store_id in all_stores:
+                    store_owners.setdefault(store_id, []).append(policy_name)
+                detail = "; ".join(
+                    f"Store#{i + 1} 被 {', '.join(sorted(owners))} 使用"
+                    for i, owners in enumerate(store_owners.values())
+                )
+                raise ValidationError(
+                    f"RoutingAuthorizer 的所有 policy 必须共享同一个 GrantStore（真源统一）。"
+                    f"当前配置了 {len(unique_store_ids)} 个不同 Store，grant/revoke 会部分提交。"
+                    f"请在配置中让所有 policy 引用同一具名 grant_store。详情：{detail}"
+                )
+
         self._policies = policies
         self._routes = dict(routes)
         self._fallback = fallback
@@ -62,7 +89,22 @@ class RoutingAuthorizer(Authorizer):
     def management_grant_store(self):
         # 管理写透传到 fallback delegate 的 Store：fallback 承接路由值缺失的请求，是
         # 最小权限策略，公共 grant/revoke 写它的真源与其他请求的判定一致。
+        # **已弃用**：路由场景应调用 management_grant_stores()（P1-4 真源统一）。
         return self._policies[self._fallback].management_grant_store()
+
+    def management_grant_stores(self):
+        # P1-4：路由场景下公共 grant 须写入**全部** policy 的 Store，否则「grant 时按
+        # fallback 判定、实际访问时路由到别的 policy」就读不到授权——两次判定看不同真源。
+        # 去重：多个 policy 可能共享同一 Store（装配期通过具名引用同一实例）。
+        stores = []
+        seen_ids = set()
+        for policy in self._policies.values():
+            for store in policy.management_grant_stores():
+                store_id = id(store)
+                if store_id not in seen_ids:
+                    stores.append(store)
+                    seen_ids.add(store_id)
+        return stores
 
     def authorize(
         self,

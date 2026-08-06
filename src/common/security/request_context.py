@@ -19,11 +19,11 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 
 from common.security.types import (
-    _TRUSTED,
     AuthContext,
     Credentials,
     RequestSecurityContext,
     Surface,
+    _bind_origin,
 )
 
 
@@ -44,16 +44,23 @@ def new_request_context(
 
     ``attributes`` 只允许系统组件写入（可信代理链、mTLS 主体一类）。业务 payload 一律
     不得注入：它参与授权环境，可注入就等于把授权输入交给了调用方。
+
+    Round3: _origin 绑定完整 RequestSecurityContext 安全字段，防止 replace(attributes=...) 提权。
     """
-    return RequestSecurityContext(
+    # 先构造上下文（_origin 用占位符）
+    context = RequestSecurityContext(
         auth=auth,
         request_id=uuid.uuid4().hex,
         peer=peer,
         surface=surface,
         started_at=datetime.now(timezone.utc),
         attributes=attributes or {},
-        _origin=_TRUSTED,
+        _origin="",  # 占位符
     )
+    # Round3: 用完整上下文计算绑定值，然后替换 _origin
+    # 使用 object.__setattr__ 绕过 frozen dataclass 限制
+    object.__setattr__(context, "_origin", _bind_origin(auth, context))
+    return context
 
 
 def internal_context(authenticator) -> RequestSecurityContext:

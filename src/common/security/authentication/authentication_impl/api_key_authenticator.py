@@ -36,12 +36,17 @@ _ROOT_ACTOR = Scope(org="system", user="root")
 class ApiKeyAuthenticator(Authenticator):
     """Root Key 常时间比对 + 主体注册表查询。"""
 
-    def __init__(self, key_store: PrincipalKeyStore, root_api_key: str = "") -> None:
+    def __init__(
+        self, key_store: PrincipalKeyStore, root_api_key: str = "", name: str = "default"
+    ) -> None:
         self._key_store = key_store
         self._root_key = root_api_key
         # Root Key 指纹装配期算一次：认证路径上不再碰明文，也避免每请求做一次
         # sha256。指纹不可逆，进 AuthContext 与审计都是安全的。
         self._root_key_fp = fingerprint(root_api_key) if root_api_key else ""
+        # Round3: 存储具名实例名称，用于 Registry 复合键
+        # Round4 P1-4: 具名实例名称用于 credential_issuer，不再覆盖 auth_method
+        self._name = name
 
     @property
     def key_store(self) -> PrincipalKeyStore:
@@ -66,7 +71,8 @@ class ApiKeyAuthenticator(Authenticator):
                 role=Role.ROOT,
                 credential_type=_ROOT_CREDENTIAL,
                 credential_id=self._root_key_fp,
-                auth_method=_METHOD,
+                auth_method=_METHOD,  # Round4 P1-4: 保留协议标识语义
+                credential_issuer=self._name,  # Round4 P1-4: 具名实例名称
                 authenticated_at=datetime.now(timezone.utc),
             )
 
@@ -83,9 +89,11 @@ class ApiKeyAuthenticator(Authenticator):
             raise AuthenticationError(_FAILED)
         # 注册表只知道「凭据是什么」（credential_type / credential_id），认证方法名
         # 由认证实现补齐——同一个 key_store 可被别的认证实现复用。
+        # Round4 P1-4: auth_method 保留协议标识，credential_issuer 携带具名实例名称。
         return replace(
             identity,
             auth_method=_METHOD,
+            credential_issuer=self._name,
             authenticated_at=datetime.now(timezone.utc),
         )
 
@@ -110,4 +118,5 @@ def _build(config):
             "若这是有意的（root key 已轮换），可忽略本警告。"
         )
     key_store = KeyStoreProducer.dep(config, "key_store", default="memory")
-    return ApiKeyAuthenticator(key_store=key_store, root_api_key=root_key)
+    # Round3: 传递具名实例名称，用于 Registry 复合键和 AuthContext.auth_method
+    return ApiKeyAuthenticator(key_store=key_store, root_api_key=root_key, name=config.name)

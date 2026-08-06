@@ -28,8 +28,8 @@ from common.bootstrap import register_plugins
 from common.errors import ValidationError
 from common.factory.factory import Factory
 from common.log import setup_logging
+from common.security.authentication.base import AuthProducer
 from common.security.authentication.credential_registry import CredentialStatusRegistry
-from common.security.authentication.key_store import KeyStoreProducer
 from common.security.authorization import AuthorizationProducer, Authorizer
 from common.security.bootstrap import register_security
 from config import Config
@@ -93,15 +93,62 @@ def _build_authorizer(root: ComponentConfig) -> Authorizer:
 def _build_credential_registry(root: ComponentConfig) -> CredentialStatusRegistry:
     """装配凭据撤销复核注册表（PEP 持有，F05 §认证不变量 6、§决策顺序 1）。
 
-    若配置声明了 ``key_store`` 命名空间，注册其 ``default`` 具名实例供 PEP 在线复核
-    ``api_key`` 凭据撤销。与 surface 的 :class:`ApiKeyAuthenticator` 经 Factory 具名缓存
-    共享同一实例（两者都引用 ``key_store.default``），故认证签发与撤销复核读同一份事实，
-    撤销后 PEP 立即看到。未配 ``key_store`` 时 Registry 空--进程内 Dev 部署不走可撤销
-    凭据，不参与在线撤销复核。
+    从实际装配的 Authenticator 实例提取 credential_type → KeyStore 映射（P1-1 真源
+    统一）：Registry 与 Authenticator 共享同一具名 KeyStore 实例（经 Factory 缓存），
+    撤销后 PEP 立即看到。装配时调用所有 KeyStore 的 health() 检查撤销复核 capability
+    （P1-2 装配健全性）：第三方 KeyStore 未实现 is_revoked 时启动期拒绝，而非运行期
+    500。未配 Authenticator 或全是无 KeyStore 的实现（如 dev）时 Registry 空。
+
+    Round3: 任何已声明 Authenticator 装配失败都拒绝启动（fail-closed），不能静默跳过。
+    Round3: 使用 (credential_type, authenticator_name) 复合键，支持平行 Authenticator。
+    Round4: 扫描实际装配图，而非仅配置命名空间。从 SecurityRuntime 实例中提取内联
+    Authenticator，确保 surface 实际使用的认证器都被注册（P1-2 内联装配支持）。
     """
+    from common.security.runtime import SecurityRuntimeProducer
+
     registry = CredentialStatusRegistry()
-    if "key_store" in (root.ctx.namespaces or {}):
-        registry.register("api_key", KeyStoreProducer.build_named("default", root.ctx))
+    registered: set[tuple[str, str]] = set()  # 避免重复注册同一 (type, name)
+
+    # 第一步：扫描顶层 authenticator 命名空间（独立声明的 Authenticator）
+    authenticator_ns = (root.ctx.namespaces or {}).get("authenticator", {})
+    for name in authenticator_ns:
+        authenticator = AuthProducer.build_named(name, root.ctx)
+        if hasattr(authenticator, "key_store"):
+            credential_type = authenticator.mode()
+            key = (credential_type, name)
+            if key not in registered:
+                registry.register(credential_type, name, authenticator.key_store)
+                registered.add(key)
+
+    # Round4 第二步：扫描所有 SecurityRuntime，提取内联 Authenticator
+    # SecurityRuntime 可能在 params.authenticator 中内联 target，这些 Authenticator
+    # 不会出现在 authenticator 命名空间，但会被 surface 实际使用。
+    security_ns = (root.ctx.namespaces or {}).get("security", {})
+    for runtime_name in security_ns:
+        # Round5: 移除 try/except，任何装配失败都应该传播（fail-closed）。
+        # 配置错误（target 不存在、参数错误）必须在启动期暴露，不能静默跳过。
+        runtime = SecurityRuntimeProducer.build_named(runtime_name, root.ctx)
+        authenticator = runtime.authenticator
+        if hasattr(authenticator, "key_store"):
+            credential_type = authenticator.mode()
+            # Round5: 内联 Authenticator 的 _name 通常是空字符串（Factory.dep 传递 name=""）
+            # 如果是空字符串或 "default"，说明是匿名内联创建的，用 runtime 名称替换。
+            auth_name = getattr(authenticator, "_name", "")
+            if not auth_name or auth_name == "default":
+                # 内联 Authenticator，使用 runtime 名称确保唯一
+                auth_name = f"runtime:{runtime_name}"
+                # Round5: 修改 Authenticator 的 _name，让它签发的 AuthContext 携带正确 issuer
+                if hasattr(authenticator, "_name"):
+                    object.__setattr__(authenticator, "_name", auth_name)
+            key = (credential_type, auth_name)
+            if key not in registered:
+                registry.register(credential_type, auth_name, authenticator.key_store)
+                registered.add(key)
+
+    # P1-2：装配期健全性检查。Registry.health() 内部调用所有已注册 KeyStore 的
+    # health()，确认它们实现了 is_revoked。第三方 Store 漏实现时在此失败，不会等到
+    # 首次授权请求才抛 NotImplementedError（F05 §装配不变量「不健康能力启动期拒绝」）。
+    registry.health()
     return registry
 
 

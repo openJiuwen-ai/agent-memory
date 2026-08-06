@@ -143,6 +143,20 @@ def _build(config) -> SecurityRuntime:
     这个 **capability** 决定，不看 target 名（F05 §依据 capability 做安全决策）。
     """
     authenticator = AuthProducer.dep(config, "authenticator")
+
+    # Round5: 如果 Authenticator 是内联创建的（_name 为空字符串或 "default"），
+    # 用 runtime 名称替换，确保平行内联 Authenticator 有不同 issuer
+    if hasattr(authenticator, "_name"):
+        runtime_name = getattr(config, "name", "unknown")
+        current_name = authenticator._name
+        # 内联 Authenticator 的 _name 通常是空字符串（Factory.dep 传递 name=""）
+        is_inline = not current_name or current_name == "default"
+        has_runtime_name = runtime_name and runtime_name != "unknown"
+        if is_inline and has_runtime_name:
+            # 内联 Authenticator，使用 runtime 名称确保唯一性
+            issuer_name = f"runtime:{runtime_name}"
+            object.__setattr__(authenticator, "_name", issuer_name)
+
     rate_limiter_default = (
         "unlimited" if authenticator.requires_loopback_binding() else "token_bucket"
     )
