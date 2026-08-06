@@ -49,6 +49,15 @@ def create_async_engine_from_env() -> AsyncEngine:
     """根据 DB_URL（或默认 SQLite 路径）创建一个 AsyncEngine。
 
     KV(db 模式) 与 DB store 共用同一个 engine，避免重复建立连接池。
+
+    SQLite 并发必备配置（长稳缺陷修复）：
+    - ``connect_args={"timeout": 30, ...}``：覆盖 aiosqlite 默认 5s busy_timeout，
+      写者等锁上限提到 30s，避免长事务期间 ``database is locked`` → 500。
+    - ``PRAGMA journal_mode=WAL``：读写不互斥，KV 读路径不被写事务阻塞。
+    - ``PRAGMA busy_timeout=30000``：与 ``timeout`` 对齐，给底层 sqlite3 连接也兜底。
+    PRAGMA 走 ``connect`` 事件而非一次性 ``engine.connect()`` 设置：aiosqlite 连接池
+    每条新连接都需这套 PRAGMA，否则换连接后又退回 rollback journal。
+    非 sqlite（gaussdb 等）保持 QueuePool 原行为。
     """
     data_directory = _data_dir()
     db_url = os.getenv("DB_URL", "").strip()
@@ -62,11 +71,39 @@ def create_async_engine_from_env() -> AsyncEngine:
         import jiuwen_memory.foundation.store.db.gauss_dialect  # noqa: F401
 
     memory_logger.info("Using DB engine url=%s", db_url)
-    return create_async_engine(
-        db_url,
-        pool_pre_ping=True,
-        echo=False,
-    )
+
+    is_sqlite = db_url.startswith("sqlite")
+    connect_args: dict = {}
+    engine_kwargs: dict = {
+        "pool_pre_ping": True,
+        "echo": False,
+    }
+    if is_sqlite:
+        # timeout = busy_timeout（秒）；aiosqlite 把它透传给底层 sqlite3 Connection。
+        # check_same_thread=False：aiosqlite 自身已在不同线程跑连接，必须关掉
+        # sqlite3 的线程校验，否则跨线程 execute 报 ProgrammingError。
+        connect_args = {"timeout": 30, "check_same_thread": False}
+        from sqlalchemy import pool
+        engine_kwargs["poolclass"] = pool.NullPool
+
+    engine_kwargs["connect_args"] = connect_args
+    engine = create_async_engine(db_url, **engine_kwargs)
+
+    if is_sqlite:
+        from sqlalchemy import event
+
+        @event.listens_for(engine.sync_engine, "connect")
+        def _set_sqlite_pragma(dbapi_conn, _record):
+            """每条新连接生效：WAL（读写不互斥）+ synchronous=NORMAL（WAL 下安全且更快）
+            + busy_timeout（与 connect_args.timeout 对齐，覆盖默认 5s）。
+            """
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.close()
+
+    return engine
 
 
 def create_kv_store(engine: AsyncEngine) -> BaseKVStore:

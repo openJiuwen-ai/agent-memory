@@ -184,6 +184,8 @@ class _Engine:
                     # 是否校验 LLM API 的 TLS 证书；默认不校验，设为 true 时开启
                     verify_ssl=os.getenv("MODEL_SSL_VERIFY", "false").strip().lower() == "true",
                 ),
+                # 是否启用中期记忆；默认不启用，设为 true 时开启
+                enable_middle_memory=os.getenv("MEMORY_ENABLE_MIDDLE_MEMORY", "false").strip().lower() == "true",
             )
         )
         # Stash the few types we need at call time.

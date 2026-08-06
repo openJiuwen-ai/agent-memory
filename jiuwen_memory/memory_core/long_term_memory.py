@@ -5,7 +5,7 @@ import json
 import asyncio
 import time
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Callable, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Optional, Tuple
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
@@ -93,6 +93,7 @@ class MemInfo(BaseModel):
     content: str = Field(default="", description="memory content")
     type: MemoryType = Field(default=MemoryType.USER_PROFILE, description="memory type")
     timestamp: datetime | None = Field(default=None, description="memory timestamp")
+    source_id: str | None = Field(default=None, description="source message id")
 
 
 class MemResult(BaseModel):
@@ -537,7 +538,7 @@ class LongTermMemory(metaclass=Singleton):
         middle_managers = {MemoryType.MIDDLE_TERM_MEMORY.value: self.middle_mem_manager}
         self.fragment_type = [MemoryType.USER_PROFILE.value, MemoryType.EPISODIC_MEMORY.value,
                               MemoryType.SEMANTIC_MEMORY.value]
-        self.write_manager = WriteManager(managers, self.memory_index)
+        self.write_manager = WriteManager(managers, self.memory_index, middle_manager=self.middle_mem_manager)
         self.middle_write_manager = WriteManager(middle_managers, self.memory_index)
 
         self.search_manager = SearchManager(
@@ -973,14 +974,50 @@ class LongTermMemory(metaclass=Singleton):
                 error_msg="invalid scope_id format",
             )
         scope_user_data = await self.scope_user_mapping_manager.get_by_scope_id(scope_id=scope_id) or []
-        user_ids = [scope_user["user_id"] for scope_user in scope_user_data]
-        if self.write_manager:
-            for user_id in user_ids:
-                lock = DistributedLock(self.kv_store, f"user/{user_id}")
-                async with lock:
+        user_ids = list(dict.fromkeys(
+            scope_user["user_id"]
+            for scope_user in scope_user_data
+            if scope_user.get("user_id")
+        ))
+
+        middle_semantic_store = None
+        if self.middle_write_manager and self.vector_store:
+            middle_semantic_store = await self._create_semantic_store_with_embedding(scope_id)
+
+        for user_id in user_ids:
+            worker_key = (scope_id, user_id)
+            middle_task = self._middle_memory_tasks.pop(worker_key, None)
+            if middle_task is not None and not middle_task.done():
+                middle_task.cancel()
+                await asyncio.gather(middle_task, return_exceptions=True)
+
+            lock = DistributedLock(self.kv_store, f"user/{user_id}")
+            async with lock:
+                if self.write_manager:
                     await self.write_manager.delete_mem_by_user_id(
                         scope_id=scope_id,
                         user_id=user_id
+                    )
+
+                    await self._cleanup_forgetting_traces(
+                        scope_id=scope_id, user_id=user_id,
+                    )
+
+                if self.middle_write_manager and middle_semantic_store:
+                    await self.middle_write_manager.delete_mem_by_user_id(
+                        scope_id=scope_id,
+                        user_id=user_id,
+                        semantic_store=middle_semantic_store,
+                    )
+
+                if self.message_manager:
+                    await self.message_manager.delete_by_user_and_scope(
+                        user_id=user_id,
+                        scope_id=scope_id,
+                    )
+                    await self.message_manager.delete_by_user_and_scope(
+                        user_id=user_id,
+                        scope_id=f"middle_term_memory:{scope_id}:{user_id}",
                     )
         await self.scope_user_mapping_manager.delete_by_scope_id(scope_id=scope_id)
         memory_logger.debug(
@@ -1485,6 +1522,7 @@ class LongTermMemory(metaclass=Singleton):
                 error_msg="invalid scope_id format",
             )
         lock = DistributedLock(self.kv_store, f"user/{user_id}")
+        semantic_store = await self._create_semantic_store_with_embedding(scope_id)
         async with lock:
             if not self.write_manager:
                 raise build_error(
@@ -1495,38 +1533,59 @@ class LongTermMemory(metaclass=Singleton):
             await self.write_manager.delete_mem_by_id(
                 user_id=user_id,
                 scope_id=scope_id,
-                mem_id=mem_id
+                mem_id=mem_id,
+                semantic_store=semantic_store
             )
-            # Step 8a: synchronously clean up the Ebbinghaus forgetting
-            # traces for this mem_id so a later recall/re-add does not
-            # pick up stale state. Both KV writes are best-effort —
-            # missing key is NOT an error.
             await self._cleanup_forgetting_traces(
                 scope_id=scope_id, user_id=user_id, mem_id=mem_id,
             )
 
     async def _cleanup_forgetting_traces(
-        self, *, scope_id: str, user_id: str, mem_id: str,
+        self, *, scope_id: str, user_id: str,
+        mem_id: Optional[str] = None,
     ) -> None:
-        """Drop retrieve_history KV key for a deleted mem_id.
+        """Drop retrieve_history KV traces for a delete operation.
 
-        Called from delete_mem_by_id after the doc is removed from the
-        vector store. All errors are logged and swallowed — main delete
-        flow already succeeded; this is housekeeping.
+        - ``mem_id`` given  → drop the single ``retrieve_history/{user}/
+          {scope}/{mem_id}`` key (per-mem delete path).
+        - ``mem_id`` is None → drop every ``retrieve_history/{user}/`` key
+          via ``delete_by_prefix`` (batch delete path; covers all scopes
+          for that user).
+
+        Called from delete_mem_by_id / delete_mem_by_user_id /
+        delete_mem_by_scope after the doc(s) are removed from the store.
+        All errors are logged and swallowed — the main delete flow already
+        succeeded; this is housekeeping.
         """
         if not self.kv_store:
             return
-        # retrieve_history KV key
-        rh_key = self._retrieve_history_key(user_id, scope_id, mem_id)
-        try:
-            await self.kv_store.delete(rh_key)
-        except Exception as exc:
-            memory_logger.warning(
-                "cleanup_forgetting_traces: delete retrieve_history failed: %s",
-                str(exc),
-                event_type=LogEventType.MEMORY_PROCESS,
-                user_id=user_id, scope_id=scope_id, mem_id=mem_id,
+        if mem_id:
+            # Per-mem: exact key drop.
+            rh_key = self._retrieve_history_key(user_id, scope_id, mem_id)
+            try:
+                await self.kv_store.delete(rh_key)
+            except Exception as exc:
+                memory_logger.warning(
+                    "cleanup_forgetting_traces: delete retrieve_history failed: %s",
+                    str(exc),
+                    event_type=LogEventType.MEMORY_PROCESS,
+                    user_id=user_id, scope_id=scope_id, mem_id=mem_id,
+                )
+        else:
+            # Batch: prefix sweep over the user's retrieve_history keys.
+            rh_prefix = (
+                f"{RETRIEVE_HISTORY_PREFIX}{VariableManager.SEPARATOR}"
+                f"{user_id}{VariableManager.SEPARATOR}"
             )
+            try:
+                await self.kv_store.delete_by_prefix(rh_prefix)
+            except Exception as exc:
+                memory_logger.warning(
+                    "cleanup_forgetting_traces: delete retrieve_history prefix failed: %s",
+                    str(exc),
+                    event_type=LogEventType.MEMORY_PROCESS,
+                    user_id=user_id, scope_id=scope_id,
+                )
 
     # ---------------------------------------------------------------- recall path
 
@@ -1662,6 +1721,9 @@ class LongTermMemory(metaclass=Singleton):
                 user_id=user_id,
                 scope_id=scope_id
             )
+            await self._cleanup_forgetting_traces(
+                scope_id=scope_id, user_id=user_id,
+            )
 
     async def update_mem_by_id(self,
                                mem_id: str,
@@ -1697,10 +1759,24 @@ class LongTermMemory(metaclass=Singleton):
                     StatusCode.MEMORY_UPDATE_MEMORY_EXECUTION_ERROR,
                     memory_type="all",
                     error_msg=f"write manager is not initialized",
-                )
+            )
             await self._apply_scope_embedding(scope_id)
-            await self.write_manager.update_mem_by_id(user_id=user_id, scope_id=scope_id,
-                                                      mem_id=mem_id, memory=memory)
+            semantic_store = await self._create_semantic_store_with_embedding(scope_id)
+            updated = await self.write_manager.update_mem_by_id(
+                user_id=user_id,
+                scope_id=scope_id,
+                mem_id=mem_id,
+                memory=memory,
+                semantic_store=semantic_store,
+            )
+            if updated:
+                return
+
+            raise build_error(
+                StatusCode.MEMORY_UPDATE_MEMORY_EXECUTION_ERROR,
+                memory_type="all",
+                error_msg=f"memory {mem_id} not found",
+            )
 
     async def get_variables(self,
                             names: list[str] | str | None = None,
@@ -2119,6 +2195,68 @@ class LongTermMemory(metaclass=Singleton):
                                                                   scope_id=scope_id)
         return len(search_data)
 
+    async def get_user_mem_by_page_with_total(self,
+                                               user_id: str = DEFAULT_VALUE,
+                                               scope_id: str = DEFAULT_VALUE,
+                                               page_size: int = 10,
+                                               page_idx: int = 1,
+                                               memory_type: MemoryType = MemoryType.UNKNOWN,
+                                               *,
+                                               filters: "FilterGroup | None" = None) -> tuple[list[MemInfo], int]:
+        """Like ``get_user_mem_by_page`` but also returns the global total count.
+
+        Uses the KV scan path (not vector pushdown) to ensure correct total.
+        """
+        if not self._validate_id(event_type=LogEventType.MEMORY_RETRIEVE, scope_id=scope_id):
+            memory_logger.error(
+                "Invalid scope_id format.",
+                event_type=LogEventType.MEMORY_RETRIEVE,
+                user_id=user_id,
+                scope_id=scope_id,
+            )
+            raise build_error(
+                StatusCode.MEMORY_GET_MEMORY_EXECUTION_ERROR,
+                memory_type="all",
+                error_msg="invalid scope_id format",
+            )
+        if not self.search_manager:
+            raise build_error(
+                StatusCode.MEMORY_GET_MEMORY_EXECUTION_ERROR,
+                memory_type="all",
+                error_msg=f"search manager is not initialized",
+            )
+
+        if memory_type == MemoryType.UNKNOWN:
+            search_memory_type = None
+        else:
+            search_memory_type = memory_type.value
+        search_data = await self.search_manager.list_user_mem_with_total(
+            user_id=user_id, scope_id=scope_id,
+            nums=page_size, pages=page_idx,
+            mem_type=search_memory_type,
+            filters=filters)
+
+        if not search_data:
+            return [], 0
+
+        search_result, total = search_data
+        if not search_result:
+            return [], total
+
+        mem_results: list[MemInfo] = []
+        for item in search_result:
+            mem_type = item.get("mem_type", MemoryType.UNKNOWN.value)
+            mem_results.append(
+                MemInfo(
+                    mem_id=item["id"],
+                    content=item["mem"],
+                    type=mem_type,
+                    timestamp=item.get("timestamp"),
+                    source_id=item.get("source_id"),
+                )
+            )
+        return mem_results, total
+
     async def get_user_mem_by_page(self,
                                    user_id: str = DEFAULT_VALUE,
                                    scope_id: str = DEFAULT_VALUE,
@@ -2161,25 +2299,42 @@ class LongTermMemory(metaclass=Singleton):
                 memory_type="all",
                 error_msg="invalid scope_id format",
             )
+        if memory_type == MemoryType.MIDDLE_TERM_MEMORY:
+            return await self._list_middle_memories_by_page(
+                user_id=user_id,
+                scope_id=scope_id,
+                page_size=page_size,
+                page_idx=page_idx,
+            )
         if not self.search_manager:
             raise build_error(
                 StatusCode.MEMORY_GET_MEMORY_EXECUTION_ERROR,
                 memory_type="all",
                 error_msg=f"search manager is not initialized",
             )
+        if memory_type != MemoryType.UNKNOWN:
+            search_data = await self.search_manager.list_user_mem(user_id=user_id, scope_id=scope_id,
+                                                                  nums=page_size, pages=page_idx,
+                                                                  mem_type=memory_type.value,
+                                                                  filters=filters)
+            return self._build_mem_info_list(search_data)
 
-        if memory_type == MemoryType.UNKNOWN:
-            search_memory_type = None
-        else:
-            search_memory_type = memory_type.value
+        start_idx = page_size * (page_idx - 1)
+        fetch_size = start_idx + page_size
         search_data = await self.search_manager.list_user_mem(user_id=user_id, scope_id=scope_id,
-                                                              nums=page_size, pages=page_idx,
-                                                              mem_type=search_memory_type,
+                                                              nums=fetch_size, pages=1,
+                                                              mem_type=None,
                                                               filters=filters)
+        mem_results = self._build_mem_info_list(search_data)
+        mem_results.extend(await self._list_middle_memories(user_id=user_id, scope_id=scope_id,
+                                                            limit=fetch_size))
+        mem_results.sort(key=self._mem_info_timestamp_sort_key)
+        return mem_results[start_idx:start_idx + page_size]
 
+    @staticmethod
+    def _build_mem_info_list(search_data: list[dict] | None) -> list[MemInfo]:
         if not search_data:
             return []
-
         mem_results: list[MemInfo] = []
         for item in search_data:
             mem_type = item.get("mem_type", MemoryType.UNKNOWN.value)
@@ -2192,6 +2347,45 @@ class LongTermMemory(metaclass=Singleton):
                 )
             )
         return mem_results
+
+    @staticmethod
+    def _mem_info_timestamp_sort_key(mem_info: MemInfo) -> float:
+        if mem_info.timestamp is None:
+            return 0.0
+        if mem_info.timestamp.tzinfo is None:
+            return mem_info.timestamp.replace(tzinfo=timezone.utc).timestamp()
+        return mem_info.timestamp.timestamp()
+
+    async def _list_middle_memories_by_page(
+            self,
+            user_id: str,
+            scope_id: str,
+            page_size: int,
+            page_idx: int,
+    ) -> list[MemInfo]:
+        start_idx = page_size * (page_idx - 1)
+        fetch_size = start_idx + page_size
+        mem_results = await self._list_middle_memories(user_id=user_id, scope_id=scope_id, limit=fetch_size)
+        return mem_results[start_idx:start_idx + page_size]
+
+    async def _list_middle_memories(self, user_id: str, scope_id: str, limit: int) -> list[MemInfo]:
+        if limit <= 0 or not self.message_manager:
+            return []
+        middle_scope_id = f"middle_term_memory:{scope_id}:{user_id}"
+        middle_messages = await self.message_manager.get(
+            user_id=user_id,
+            scope_id=middle_scope_id,
+            message_len=limit,
+        )
+        return [
+            MemInfo(
+                mem_id=msg_id,
+                content=message.content,
+                type=MemoryType.MIDDLE_TERM_MEMORY,
+                timestamp=timestamp,
+            )
+            for message, timestamp, msg_id in middle_messages
+        ]
 
     async def update_variables(self,
                                    variables: dict[str, str],
@@ -2530,6 +2724,17 @@ class LongTermMemory(metaclass=Singleton):
             user_id=user_id, scope_id=scope_id,
         )
         return orch
+
+    @property
+    def dreaming_orchestrators(self) -> dict[tuple[str, str], "DreamingOrchestrator"]:
+        """Public read-only accessor for the dreaming orchestrator registry.
+
+        External callers (e.g. status endpoints) must use this property instead
+        of accessing the underscore-prefixed ``_dreaming_orchestrators`` to
+        comply with G.CLS.11 (avoid accessing protected members from outside
+        the class).
+        """
+        return dict(self._dreaming_orchestrators)
 
     async def stop_dreaming(self, scope_id: str | None = None, user_id: str | None = None) -> None:
         """

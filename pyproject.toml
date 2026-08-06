@@ -36,6 +36,7 @@ dependencies = [
     "pymilvus>=2.6.2,<2.6.10",
     # Encryption
     "pycryptodome>=3.23.0",
+    "gmssl>=3.2.2",
     # Utilities
     "pyyaml>=6.0",
     "tqdm>=4.0",
@@ -62,7 +63,7 @@ sqlite = ["aiosqlite>=0.22.1", "greenlet>=3.1.1"]
 redis = ["redis>=7.1.0"]
 mem0 = ["mem0ai>=1.0.0"]
 agentarts = ["agentarts-sdk>=0.1.2,<0.2"]
-server = ["uvicorn>=0.30.0", "fastapi>=0.110.0", "python-dotenv>=1.2.1", "mcp>=1.2.0"]
+server = ["uvicorn>=0.30.0", "fastapi>=0.110.0", "python-dotenv>=1.2.1", "mcp>=1.2.0,<2.0.0"]
 all-storage = ["JiuwenMemory[sqlite,postgres,mysql,gaussdb,redis]"]
 all-vector = ["JiuwenMemory[chromadb,gaussvector,elasticsearch,qdrant]"]
 file-index = ["sqlite-vec>=0.1.9", "watchdog>=4.0", "jieba>=0.42.1"]

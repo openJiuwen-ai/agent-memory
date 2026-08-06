@@ -1,0 +1,22 @@
+# 前端 .dockerignore：node_modules / dist / 构建缓存不入 build context
+node_modules/
+dist/
+.vite/
+.next/
+.nuxt/
+coverage/
+.idea/
+.vscode/
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+.git/
+.gitignore
+Dockerfile
+.dockerignore
+# 本地测试脚本不进镜像
+test-api.js
+pnpm-lock.yaml
+pnpm-workspace.yaml

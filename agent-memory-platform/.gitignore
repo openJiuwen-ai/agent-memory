@@ -1,0 +1,70 @@
+# ===== Java / Maven =====
+target/
+*.class
+# 构建产物里的 jar/war（不提交二进制；如需保留 lib，单独放 repo 内 lib/ 并显式 !lib/*.jar）
+build/
+out/
+# Maven 依赖本地缓存（一般不进 repo，但含有时可忽略）
+.mvn/wrapper/maven-wrapper.jar
+!**/wrapper/maven-wrapper.jar
+
+# ===== IDE =====
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+*.swp
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 日志 =====
+*.log
+logs/
+# 日志采集临时打包文件（位于 logs/log-collects/ 下）
+log-collects/
+hs_err_pid*.log
+replay_pid*.log
+
+# ===== 数据库 / 运行时数据 =====
+# 本地 SQLite 库文件及其 WAL/SHM/journal
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-journal
+# 运行时数据目录内容（保留目录结构，忽略里面的文件）
+data/*
+!data/.gitkeep
+
+# ===== 前端（web/，预留） =====
+node_modules/
+dist/
+.vite/
+.next/
+.nuxt/
+coverage/
+# 前端依赖锁定文件是否入库按团队习惯，默认不忽略：
+# package-lock.json
+# pnpm-lock.yaml
+
+# ===== 环境变量 / 密钥 =====
+.env
+.env.*
+*.local
+!.env.example
+
+# ===== 临时 / 备份 =====
+*.tmp
+*.bak
+*.orig
+*.rej
+test-self/

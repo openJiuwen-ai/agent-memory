@@ -1,0 +1,66 @@
+# agent-memory-platform: platform + server
+# 启动：docker compose up -d --build
+# 停止：docker compose down
+#
+# 说明：
+#   - platform: Spring Boot 后端，:9000，SQLite 文件库挂载到 ./platform/data
+#   - server:    Vue 前端 (nginx 托管)，宿主 :5173 → 容器 :80，/api/ 反代到 platform:9000
+#   - 记忆服务:  不在此 compose 内，默认 http://host.docker.internal:8000（宿主跑即可），
+#                可用环境变量 MEMORY_SERVICE_BASE_URL 覆盖。
+#
+# 生产部署若要切 MySQL/GaussDB，改 platform 环境变量 SPRING_PROFILES_ACTIVE=mysql
+# 并注入 MYSQL_URL / MYSQL_USER / MYSQL_PASSWORD。
+
+services:
+  platform:
+    build:
+      context: ./platform
+      dockerfile: Dockerfile
+    image: agent-memory-platform:platform-latest
+    container_name: agent-memory-platform
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    environment:
+      # 默认 sqlite，单文件库挂载到 ./platform/data/platform.db
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-sqlite}
+      # 记忆服务配置：对应代码里 platform.memory-service.{base-url, api-key}
+      # 注意 api-key 不要带 "Bearer " 前缀，代码在 WebClientConfig.java:54 会自动补
+      # 强制由 .env 注入（见 .env.example），未配置即报错，避免静默用过时地址/空密钥导致 401
+      PLATFORM_MEMORY_SERVICE_BASE_URL: ${PLATFORM_MEMORY_SERVICE_BASE_URL:?set in .env, see .env.example}
+      PLATFORM_MEMORY_SERVICE_API_KEY: ${PLATFORM_MEMORY_SERVICE_API_KEY:?set in .env, see .env.example}
+      # Tomcat access log 落到容器 /app/logs，与 volume 对应
+      LOG_DIR: /app/logs
+      # JVM 参数可在 .env / 启动命令覆盖
+      JAVA_OPTS: ${JAVA_OPTS:--Dfile.encoding=UTF-8}
+    volumes:
+      - ./platform/data:/app/data
+      - ./logs:/app/logs
+    healthcheck:
+      # /api/v1/roles 需要登录，未鉴权会 401；这里直接探测 9000 端口 TCP 是否监听
+      test: ["CMD-SHELL", "bash -lc 'exec 3<>/dev/tcp/127.0.0.1/9000' 2>/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    networks:
+      - agent-memory-net
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    image: agent-memory-platform:server-latest
+    container_name: agent-memory-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      platform:
+        condition: service_healthy
+    networks:
+      - agent-memory-net
+
+networks:
+  agent-memory-net:
+    driver: bridge

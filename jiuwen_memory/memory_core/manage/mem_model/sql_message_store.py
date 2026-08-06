@@ -153,14 +153,78 @@ class SqlMessageStore(BaseMessageStore):
                 reason=f"Message with id {message_id} not found")
         
         message_data = messages[0]
-        
+        return self._row_to_message(message_data)
+
+    @staticmethod
+    def _parse_ts(value: Any) -> Optional[datetime]:
+        """Parse ISO-8601 string / epoch seconds / datetime into an aware datetime.
+
+        Returns None when the value cannot be interpreted (caller then ignores the
+        time bound instead of failing the whole query).
+        """
+        if value is None or isinstance(value, datetime):
+            return value
+        if isinstance(value, (int, float)):
+            try:
+                return datetime.fromtimestamp(value, tz=timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                return None
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            if text.endswith(('Z', 'z')):
+                text = text[:-1] + '+00:00'
+            try:
+                parsed = datetime.fromisoformat(text)
+            except ValueError:
+                return None
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        return None
+
+    def _build_message_where(self, message_filter: Dict[str, Any], table) -> list:
+        """Build SQLAlchemy WHERE clauses from message_filter.
+
+        Supports equality filters (user_id/scope_id/session_id) plus optional
+        start_time/end_time range bounds on the timestamp column (KR-MSG-01/02).
+        Also supports exclude_scopes: a list of scope_id values to exclude
+        (e.g. ['middle_term_memory'] to filter out intermediate products).
+        """
+        clauses = []
+        if message_filter.get('user_id'):
+            clauses.append(table.c.user_id == message_filter['user_id'])
+        if message_filter.get('scope_id'):
+            clauses.append(table.c.scope_id == message_filter['scope_id'])
+        if message_filter.get('session_id') is not None:
+            clauses.append(table.c.session_id == message_filter['session_id'])
+        # Exclude specified scopes (e.g. middle_term_memory intermediate products),
+        # only when the caller has not explicitly queried that scope.
+        exclude_scopes = message_filter.get('exclude_scopes')
+        if exclude_scopes:
+            clauses.append(table.c.scope_id.notin_(exclude_scopes))
+        # NOTE: the timestamp column is String(32), storing str(aware_datetime)
+        # output (space-separated, with timezone, e.g. '2026-01-01 00:01:00+00:00').
+        # Comparisons must use the same string format, otherwise lexicographic
+        # ordering breaks (space 0x20 < 'T' 0x54 would incorrectly exclude the
+        # lower bound). Therefore _parse_ts datetime results are normalized via
+        # str() to match the stored representation before binding.
+        start_time = self._parse_ts(message_filter.get('start_time'))
+        if start_time is not None:
+            clauses.append(table.c.timestamp >= str(start_time))
+        end_time = self._parse_ts(message_filter.get('end_time'))
+        if end_time is not None:
+            clauses.append(table.c.timestamp <= str(end_time))
+        return clauses
+
+    def _row_to_message(self, message_data: Dict[str, Any]) -> Tuple[BaseMessage, MessageMetadata]:
+        """Decode one user_message row into (BaseMessage, MessageMetadata)."""
         content = self._codec.decode(message_data['content'])
-        
         base_msg = BaseMessage(
             content=content,
             role=message_data.get('role', '')
         )
-        
         metadata = MessageMetadata(
             message_id=message_data['message_id'],
             user_id=message_data['user_id'],
@@ -169,97 +233,115 @@ class SqlMessageStore(BaseMessageStore):
             timestamp=message_data['timestamp'],
             message_type=message_data.get('role', '')
         )
-        
         return base_msg, metadata
-    
+
     async def get_messages(
         self,
         message_filter: Dict[str, Any],
         limit: int = 10,
         order_by: str = "timestamp",
         order_direction: str = "desc",
+        offset: int = 0,
     ) -> List[Tuple[BaseMessage, MessageMetadata]]:
         """
         Get messages by filter with pagination
 
         Args:
-            message_filter: Dict with filter conditions
+            message_filter: Dict with filter conditions. Optional keys
+                user_id/scope_id/session_id (equality) plus start_time/end_time
+                (ISO-8601 string, epoch seconds, or datetime) for timestamp range.
             limit: Maximum number of results
             order_by: Field to sort by
             order_direction: Sort direction ("asc" or "desc")
+            offset: Pagination offset (KR-MSG-01); default 0 keeps legacy behavior
 
         Returns:
             List[Tuple[BaseMessage, MessageMetadata]]: List of (message object, message metadata) tuples
         """
-        filters = {}
-        if message_filter.get('user_id'):
-            filters['user_id'] = message_filter['user_id']
-        if message_filter.get('scope_id'):
-            filters['scope_id'] = message_filter['scope_id']
-        if message_filter.get('session_id') is not None:
-            filters['session_id'] = message_filter['session_id']
-
-        messages = await self.sql_db_store.get_with_sort(
-            table=self.table_name,
-            filters=filters,
-            sort_by=order_by,
-            order=order_direction.upper(),
-            limit=limit
+        # Fast path: no time-range filter, no offset, and no exclude_scopes ->
+        # keep the original equality-only code path so data-plane callers are untouched.
+        # exclude_scopes requires a NOT IN condition, which get_with_sort
+        # does not support — must take the range path.
+        has_time_filter = (
+            self._parse_ts(message_filter.get('start_time')) is not None
+            or self._parse_ts(message_filter.get('end_time')) is not None
         )
-        
-        result = []
-        for message_data in messages:
-            content = self._codec.decode(message_data['content'])
-            
-            base_msg = BaseMessage(
-                content=content,
-                role=message_data.get('role', '')
+        has_exclude = bool(message_filter.get('exclude_scopes'))
+        if not has_time_filter and offset <= 0 and not has_exclude:
+            filters = {}
+            if message_filter.get('user_id'):
+                filters['user_id'] = message_filter['user_id']
+            if message_filter.get('scope_id'):
+                filters['scope_id'] = message_filter['scope_id']
+            if message_filter.get('session_id') is not None:
+                filters['session_id'] = message_filter['session_id']
+
+            messages = await self.sql_db_store.get_with_sort(
+                table=self.table_name,
+                filters=filters,
+                sort_by=order_by,
+                order=order_direction.upper(),
+                limit=limit
             )
-            
-            metadata = MessageMetadata(
-                message_id=message_data['message_id'],
-                user_id=message_data['user_id'],
-                scope_id=message_data['scope_id'],
-                session_id=message_data['session_id'],
-                timestamp=message_data['timestamp'],
-                message_type=message_data.get('role', '')
+            return [self._row_to_message(m) for m in messages]
+
+        # Range/pagination path (KR-MSG-01): build the query directly so we can
+        # apply timestamp bounds and OFFSET, which get_with_sort does not support.
+        from sqlalchemy import select, and_, asc, desc
+
+        table = await self.sql_db_store.get_table(self.table_name)
+        if order_by not in table.c:
+            raise build_error(
+                StatusCode.MEMORY_GET_MEMORY_EXECUTION_ERROR,
+                reason=f"sort column '{order_by}' does not exist in table '{self.table_name}'",
             )
-            
-            result.append((base_msg, metadata))
-        
-        return result
-    
+        clauses = self._build_message_where(message_filter, table)
+        stmt = select(table)
+        if clauses:
+            stmt = stmt.where(and_(*clauses))
+        order_col = table.c[order_by]
+        stmt = stmt.order_by(desc(order_col) if order_direction.lower() == "desc" else asc(order_col))
+        if offset > 0:
+            stmt = stmt.offset(offset)
+        stmt = stmt.limit(limit)
+
+        async with self.sql_db_store.async_session() as session:
+            async with session.begin():
+                execute_result = await session.execute(stmt)
+                rows = execute_result.mappings().fetchall()
+        return [self._row_to_message(dict(row)) for row in rows]
+
     async def update_message(self, message_id: str, content: Union[str, List[Union[str, dict]]]) -> bool:
         """
         Update message content
-        
+
         Args:
             message_id: Message ID
             content: New message content
-            
+
         Returns:
             bool: Whether the update was successful
         """
         encrypted_content = self._codec.encode(content)
-        
+
         conditions = {'message_id': message_id}
         data = {'content': encrypted_content}
-        
+
         return await self.sql_db_store.update(self.table_name, conditions, data)
-    
+
     async def delete_message_by_id(self, message_id: str) -> bool:
         """
         Delete a single message by message ID
-        
+
         Args:
             message_id: Message ID
-            
+
         Returns:
             bool: Whether the deletion was successful
         """
         conditions = {'message_id': message_id}
         return await self.sql_db_store.delete(self.table_name, conditions)
-    
+
     async def delete_messages(self, message_filter: Dict[str, Any]) -> int:
         """
         Delete messages matching the filter
@@ -289,28 +371,58 @@ class SqlMessageStore(BaseMessageStore):
         Count messages matching the filter
 
         Args:
-            message_filter: Dict with filter conditions
+            message_filter: Dict with filter conditions. Optional keys
+                user_id/scope_id/session_id (equality) plus start_time/end_time
+                for timestamp range (KR-MSG-02).
 
         Returns:
             int: Number of messages
         """
-        filters = {}
-        if message_filter.get('user_id'):
-            filters['user_id'] = message_filter['user_id']
-        if message_filter.get('scope_id'):
-            filters['scope_id'] = message_filter['scope_id']
-        if message_filter.get('session_id'):
-            filters['session_id'] = message_filter['session_id']
+        # FIX-001A: Unified SELECT COUNT(*) path for all cases.
+        # Previously, when no time-range filter and no exclude_scopes were present,
+        # a "fast path" loaded up to COUNT_QUERY_LIMIT (1,000,000) full rows via
+        # get_with_sort() + len() — causing severe performance degradation on
+        # large tables (37.5万行 >30s, ~4GB memory peak). The range path already
+        # uses SELECT COUNT(*) which is optimal for counting. _build_message_where
+        # handles user_id/scope_id/session_id equality filters, so unifying all
+        # paths to SELECT COUNT(*) is both correct and performant.
+        from sqlalchemy import select, func, and_
 
-        messages = await self.sql_db_store.get_with_sort(
-            table=self.table_name,
-            filters=filters,
-            sort_by="timestamp",
-            order="ASC",
-            limit=COUNT_QUERY_LIMIT
-        )
+        table = await self.sql_db_store.get_table(self.table_name)
+        clauses = self._build_message_where(message_filter, table)
+        stmt = select(func.count()).select_from(table)
+        if clauses:
+            stmt = stmt.where(and_(*clauses))
 
-        return len(messages)
+        async with self.sql_db_store.async_session() as session:
+            async with session.begin():
+                execute_result = await session.execute(stmt)
+                return int(execute_result.scalar() or 0)
+
+    async def count_by_role(self, message_filter: Dict[str, Any]) -> Dict[str, int]:
+        """Count messages grouped by role (KR-MSG-02).
+
+        Args:
+            message_filter: Same filter semantics as count_messages().
+
+        Returns:
+            Dict mapping role -> count, e.g. {"user": 12, "assistant": 12}.
+        """
+        from sqlalchemy import select, func, and_
+
+        table = await self.sql_db_store.get_table(self.table_name)
+        clauses = self._build_message_where(message_filter, table)
+        stmt = select(table.c.role, func.count()).select_from(table)
+        if clauses:
+            stmt = stmt.where(and_(*clauses))
+        stmt = stmt.group_by(table.c.role)
+
+        async with self.sql_db_store.async_session() as session:
+            async with session.begin():
+                execute_result = await session.execute(stmt)
+                rows = execute_result.all()
+
+        return {(role if role else "unknown"): int(count) for role, count in rows}
 
     async def get_schema_version(self) -> int | None:
         """

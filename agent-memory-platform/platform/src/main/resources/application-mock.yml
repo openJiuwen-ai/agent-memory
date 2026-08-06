@@ -1,0 +1,21 @@
+# 【可删除】mock 演示 profile——不调 :8516，由 MockMemoryEngineClient 返回内存假数据。
+# 启动：mvn spring-boot:run -Dspring-boot.run.profiles=mock  或 IDEA Run Config active profiles=mock
+# 本地运维中心自有库仍用 sqlite（feature_flag/command_execution_log 等真实存），仅 :8516 调用被 mock。
+spring:
+  datasource:
+    url: jdbc:sqlite:./data/platform.db
+    driver-class-name: org.sqlite.JDBC
+    username: sa
+    password: ""
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:db/migration/V1__ops_center_init_sqlite.sql
+
+platform:
+  memory-service:
+    mode: mock                      # ★ 触发 MockMemoryEngineClient，跳过真实 WebClientConfig
+    base-url: http://localhost:8516 # 占位，mock 模式不实际调用
+    api-key: mock                   # 占位
+    connect-timeout: 5s
+    read-timeout: 30s

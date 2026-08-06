@@ -1,0 +1,57 @@
+# GaussDB 数据库配置示例
+# 请根据实际环境修改以下配置
+
+spring:
+  datasource:
+    # GaussDB 连接 URL
+    #url: jdbc:gaussdb://<host>:<port>/<database>
+    url: jdbc:gaussdb://xxx:xxx/xxx
+    # 数据库用户名
+    
+    #username: <your_username>
+    username: xxx
+    # 数据库密码
+    #password: <your_password>
+    password: xxx
+    # GaussDB JDBC 驱动类
+    driver-class-name: com.huawei.gaussdb.jdbc.Driver
+    
+    # 连接池配置（HikariCP）
+    hikari:
+      # 最小空闲连接数
+      minimum-idle: 5
+      # 最大连接池大小
+      maximum-pool-size: 20
+      # 连接超时时间（毫秒）
+      connection-timeout: 30000
+      # 空闲连接超时时间（毫秒）
+      idle-timeout: 600000
+      # 连接最大生命周期（毫秒）
+      max-lifetime: 1800000
+
+  sql:
+    init:
+      mode: always                                   # 启动时执行建表（IF NOT EXISTS，幂等）
+      schema-locations:
+        - classpath:db/migration/V1__ops_center_init_gaussdb.sql
+        - classpath:db/migration/V2__governance_init_gaussdb.sql
+        - classpath:db/migration/V3__config_center_init_gaussdb.sql
+        - classpath:db/migration/V4__log_center_init_gaussdb.sql
+        - classpath:db/migration/V5__task_registry_init_gaussdb.sql
+        - classpath:db/migration/V6__tenant_user_init_gaussdb.sql
+        - classpath:db/migration/V7__scope_registry_init_gaussdb.sql
+        - classpath:db/migration/V9__auth_kernel_restart_perm_gaussdb.sql
+        - classpath:db/migration/V10__log_collect_records_gaussdb.sql
+        - classpath:db/migration/V11__token_blacklist_init_gaussdb.sql
+
+# MyBatis-Plus 配置
+mybatis-plus:
+  # Mapper XML 文件位置
+  mapper-locations: classpath*:/mapper/**/*.xml
+  # 实体类扫描包
+  type-aliases-package: com.huawei.tenantcenter.domain,com.huawei.authcenter.domain
+  configuration:
+    # 开启驼峰命名转换
+    map-underscore-to-camel-case: true
+    # 打印 SQL 日志（开发环境）
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl

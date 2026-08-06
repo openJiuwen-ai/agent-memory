@@ -29,6 +29,7 @@ pure-Python cosine fallback when sqlite-vec is unavailable.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import math
 import os
@@ -38,7 +39,7 @@ import struct
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 from jiuwen_memory.common.logging import store_logger
 from jiuwen_memory.common.logging.events import LogEventType
@@ -49,12 +50,13 @@ from jiuwen_memory.foundation.store.index.file_index._chunk_parser import (
     hash_text,
     parse_blocks,
 )
+from jiuwen_memory.foundation.store.filter_dsl import FilterGroup, FilterLogic
 
 if TYPE_CHECKING:
     pass
 
-VECTOR_WEIGHT = 0.7
-FTS_WEIGHT = 0.3
+VECTOR_WEIGHT = 0.9
+FTS_WEIGHT = 0.1
 _OVERFETCH_MULTIPLIER = 2
 _FTS_QUERY_MAX_TOKENS = 10
 
@@ -83,6 +85,25 @@ class ChunkLocation:
     path: str = ""
     start_line: int = 0
     end_line: int = 0
+
+
+@dataclass(frozen=True)
+class SearchConstraints:
+    """``VectorIndex.search`` 的内容侧约束——把可选的召回过滤器打包成
+    一个具名结构体，避免 ``search`` 的形参列表超过 G.FNM.03 的 5 个上限。
+
+    All fields optional with safe defaults so callers can construct a
+    partial constraints object. ``mem_types`` / ``query_text`` /
+    ``filters`` are all content-side filters applied post-KNN (vec0 KNN
+    forbids auxiliary-column WHERE); ``top_k`` lives on the positional
+    args of :meth:`VectorIndex.search` because it changes per call and
+    every caller already threads it.
+    """
+
+    mem_types: Optional[list[str]] = None
+    query_text: str = ""
+    filters: Optional["FilterGroup"] = None
+
 
 # 分隔符用于把 (user_id, scope_id) 组合成 vec0 的 partition_key。
 # 用 \x1f (Unit Separator) 避免与 user_id/scope_id 自身的字符冲突。
@@ -134,12 +155,19 @@ class VectorIndex:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._embedding_model = embedding_model
         self._codec: StorageCodec | None = codec
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30.0)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
+        # busy_timeout 与 store_factory.py 对齐：sqlite3.connect 默认 timeout=5.0
+        # （即 busy_timeout=5000），to_thread 线程池并发写时 5s 等锁远低于 aiosqlite
+        # engine 的 30s，长事务下易触发 database is locked → 500。显式提到 30000ms，
+        # 与 connect(timeout=30.0) 双保险（PRAGMA 对老连接/复用场景兜底）。
+        self._conn.execute("PRAGMA busy_timeout=30000")
         self._vec_available = False
         self._dims: int | None = None
         self._fts_available = False
+
+        self._conn_lock = asyncio.Lock()
         self._ensure_schema()
         self._try_load_vec()
         self._recover_dims_if_exists()
@@ -227,9 +255,22 @@ class VectorIndex:
                 hash TEXT,
                 text TEXT,
                 embedding BLOB,
-                updated_at TEXT
+                updated_at TEXT,
+                blacklisted INTEGER DEFAULT 0,
+                is_important INTEGER DEFAULT 0
             )
         """)
+        # Idempotent migration for DBs created before the Ebbinghaus
+        # forgetting columns existed. ``ALTER TABLE ADD COLUMN`` is a
+        # no-op once the column is present (guarded by PRAGMA table_info);
+        # without it, existing on-disk indexes would raise
+        # ``table chunks has no column named blacklisted`` on first upsert.
+        self._migrate_add_column_if_missing(
+            "chunks", "blacklisted", "INTEGER DEFAULT 0"
+        )
+        self._migrate_add_column_if_missing(
+            "chunks", "is_important", "INTEGER DEFAULT 0"
+        )
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_chunks_user_scope ON chunks(user_id, scope_id)"
         )
@@ -264,6 +305,33 @@ class VectorIndex:
                 exception=str(e),
             )
         self._conn.commit()
+
+    def _migrate_add_column_if_missing(
+        self, table: str, column: str, decl: str
+    ) -> None:
+        """Add ``column`` to ``table`` if absent; no-op if already present.
+
+        SQLite has no ``ADD COLUMN IF NOT EXISTS``; PRAGMA table_info is
+        the portable way to probe. Used for the Ebbinghaus forgetting
+        scalar columns on pre-existing ``chunks`` tables created before
+        those columns existed. Runs inside ``_ensure_schema`` so a fresh
+        init and a legacy-DB reopen both end up with the same schema.
+        """
+        existing = {
+            r[1]
+            for r in self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in existing:
+            try:
+                self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {decl}"
+                )
+            except sqlite3.Error as e:
+                store_logger.warning(
+                    "Failed to add column %s to %s during migration: %s",
+                    column, table, e,
+                    event_type=LogEventType.STORE_RETRIEVE,
+                )
 
     def _try_load_vec(self) -> None:
         try:
@@ -390,9 +458,14 @@ class VectorIndex:
         name = type(model).__name__ if model is not None else "none"
         return name, name
 
-    async def _get_embedding(self, text: str) -> list[float]:
-        if self._embedding_model is None:
-            raise RuntimeError("embedding model not initialized")
+    def _get_cached_embedding_sync(self, text: str) -> list[float] | None:
+        """同步查 embedding_cache —— 命中则返回向量，未命中返回 None。
+
+        拆自 ``_get_embedding``：cache 查询是同步 sqlite3 调用，跑在线程池
+        而非事件循环，避免阻塞 uvicorn worker（长稳缺陷修复）。未命中时
+        调用方（``_get_embedding``）走 ``embed_documents`` 真实网络调用，
+        再用 ``_cache_embedding_sync`` 回写。
+        """
         h = hash_text(text)
         provider, model = self._provider_key()
         row = self._conn.execute(
@@ -401,17 +474,36 @@ class VectorIndex:
         ).fetchone()
         if row and row[0]:
             return self._blob_to_vector(row[0])
+        return None
+
+    def _cache_embedding_sync(self, text: str, vec: list[float]) -> None:
+        """同步回写 embedding_cache —— 写库 + commit。"""
+        h = hash_text(text)
+        provider, model = self._provider_key()
+        self._conn.execute(
+            "INSERT OR REPLACE INTO embedding_cache(provider, model, hash, embedding, dims, updated_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (provider, model, h, self._vector_to_blob(vec), len(vec),
+             datetime.now(timezone.utc).astimezone().isoformat()),
+        )
+        self._conn.commit()
+
+    async def _get_embedding(self, text: str) -> list[float]:
+        if self._embedding_model is None:
+            raise RuntimeError("embedding model not initialized")
+        # cache 命中查询走线程池 + _conn_lock 串行化（与其他 to_thread 的 _conn 访问隔离）
+        async with self._conn_lock:
+            cached = await asyncio.to_thread(self._get_cached_embedding_sync, text)
+        if cached is not None:
+            return cached
+        # 未命中：embed_documents 是网络 IO，留在 async 侧 await
         vec = await self._embedding_model.embed_documents([text])
         if not vec:
             return []
         v = vec[0]
-        self._conn.execute(
-            "INSERT OR REPLACE INTO embedding_cache(provider, model, hash, embedding, dims, updated_at) "
-            "VALUES(?,?,?,?,?,?)",
-            (provider, model, h, self._vector_to_blob(v), len(v),
-             datetime.now(timezone.utc).astimezone().isoformat()),
-        )
-        self._conn.commit()
+
+        async with self._conn_lock:
+            await asyncio.to_thread(self._cache_embedding_sync, text, v)
         return v
 
     # ------------------------------------------------------------------
@@ -432,12 +524,37 @@ class VectorIndex:
             location: Chunk's physical location in its ``{Type}.md`` file.
                 ``None`` defaults to an empty location (path/lines unset).
         """
+        text = doc.text
+        vec = await self._get_embedding(text)
+        # 同步 DB 操作段（建表 + INSERT chunks + chunks_vec/chunks_fts 维护 + commit）
+        # 收拢到 _upsert_sync，在线程池执行，避免阻塞事件循环（长稳缺陷修复）。
+        # _get_embedding 已是 async（含网络调用），不在 _upsert_sync 内重复。
+        # tenant/location 直接透传结构体（G.FNM.03：参数 ≤5），_upsert_sync 内部解包。
+
+        async with self._conn_lock:
+            await asyncio.to_thread(
+                self._upsert_sync, doc, tenant, location, text, vec,
+            )
+
+    def _upsert_sync(
+        self,
+        doc: MemoryDoc,
+        tenant: TenantScope,
+        location: ChunkLocation | None,
+        text: str,
+        vec: list[float],
+    ) -> None:
+        """upsert 的同步 DB 段 —— 由 upsert 经 to_thread 调用。
+
+        建表（_ensure_vec_table）、INSERT chunks（含 Ebbinghaus forgetting flags）、
+        chunks_vec/chunks_fts 维护、commit 全在此。caller 已 await _get_embedding
+        拿到 vec。tenant/location 在此解包为标量，避免 caller 提前拆解
+        8 个散参（G.FNM.03：函数参数 ≤5）。
+        """
         user_id, scope_id = tenant.user_id, tenant.scope_id
         path = location.path if location else ""
         start_line = location.start_line if location else 0
         end_line = location.end_line if location else 0
-        text = doc.text
-        vec = await self._get_embedding(text)
         if vec:
             self._ensure_vec_table(len(vec))
             if self._dims is None:
@@ -445,17 +562,25 @@ class VectorIndex:
         h = hash_text(text)
         blob = self._vector_to_blob(vec) if vec else None
         ts = (doc.timestamp or datetime.now(timezone.utc).astimezone()).isoformat()
+        # Ebbinghaus forgetting flags: persisted to the chunks table so
+        # list_chunks_meta can render a FilterGroup to a SQL WHERE clause
+        # without re-reading the .md file, and search can post-filter
+        # KNN candidates the same way (vec0 KNN forbids auxiliary-column
+        # WHERE, so search filters after rowid retrieval — see _search_vec).
+        bl = 1 if getattr(doc, "blacklisted", False) else 0
+        imp = 1 if getattr(doc, "is_important", False) else 0
         self._conn.execute(
             "INSERT INTO chunks(mem_id, path, user_id, scope_id, type, start_line, end_line, "
-            "hash, text, embedding, updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+            "hash, text, embedding, updated_at, blacklisted, is_important) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(mem_id) DO UPDATE SET "
             "path=excluded.path, user_id=excluded.user_id, scope_id=excluded.scope_id, "
             "type=excluded.type, start_line=excluded.start_line, end_line=excluded.end_line, "
             "hash=excluded.hash, text=excluded.text, embedding=excluded.embedding, "
-            "updated_at=excluded.updated_at",
+            "updated_at=excluded.updated_at, "
+            "blacklisted=excluded.blacklisted, is_important=excluded.is_important",
             (doc.id, path, user_id, scope_id, doc.type, start_line, end_line,
-             h, text, blob, ts),
+             h, text, blob, ts, bl, imp),
         )
         rowid = self._conn.execute(
             "SELECT rowid FROM chunks WHERE mem_id=?", (doc.id,)
@@ -532,6 +657,7 @@ class VectorIndex:
         user_id: str,
         scope_id: str,
         mem_types: list[str] | None = None,
+        filters: Optional["FilterGroup"] = None,
     ) -> list[tuple[str, str]]:
         """Return ``(mem_id, path)`` tuples for chunks matching the filter, newest first.
 
@@ -539,6 +665,15 @@ class VectorIndex:
         layer's ``list_memories``) don't reach into ``_conn`` directly. Used to
         order memories by ``updated_at DESC`` for pagination; content is then
         read from the ``.md`` files for freshness.
+
+        Args:
+            filters: Optional FilterGroup DSL predicate. Only ``EQ`` / ``NE``
+                on ``blacklisted`` / ``is_important`` translate to SQL (same
+                subset SimpleMemoryIndex pushes down to its vector scalar
+                schema). Any other field / operator is ignored at the SQL
+                layer and the caller is responsible for re-evaluating the
+                full FilterGroup in Python against the returned MemoryDoc
+                set (see FileMemoryIndex.list_memories).
         """
         where_sql = "user_id=? AND scope_id=?"
         params: list = [user_id, scope_id]
@@ -546,6 +681,10 @@ class VectorIndex:
             placeholders = ",".join("?" for _ in mem_types)
             where_sql += f" AND type IN ({placeholders})"
             params.extend(mem_types)
+        sql_filter, sql_params = self._render_filter_group_to_sql(filters)
+        if sql_filter:
+            where_sql += f" AND ({sql_filter})"
+            params.extend(sql_params)
         try:
             rows = self._conn.execute(
                 f"SELECT mem_id, path FROM chunks WHERE {where_sql} ORDER BY updated_at DESC",
@@ -554,6 +693,109 @@ class VectorIndex:
         except Exception:
             return []
         return [(r[0], r[1]) for r in rows if r[0]]
+
+    def update_chunk_scalars(
+        self,
+        mem_id: str,
+        scalars: dict[str, Any],
+    ) -> None:
+        """In-place UPDATE of scalar columns on the chunks row for *mem_id*.
+
+        Used by :meth:`FileMemoryIndex.update_mem_by_id` to persist
+        ``blacklisted`` / ``is_important`` flips without a re-embedding
+        roundtrip. ``sync_file`` only re-upserts text-changed blocks
+        (it classifies by body hash), so a pure-scalar flip would
+        otherwise be lost from the chunks table between syncs — this
+        direct UPDATE keeps the SQL index in sync immediately.
+
+        Only ``blacklisted`` / ``is_important`` are accepted; other
+        keys are ignored (arbitrary user fields live in the .md
+        frontmatter ``fields:`` map, not the chunks schema).
+        """
+        if not scalars or not mem_id:
+            return
+        assignments: list[str] = []
+        params: list = []
+        for name, value in scalars.items():
+            if name == "blacklisted":
+                assignments.append("blacklisted=?")
+                params.append(1 if bool(value) else 0)
+            elif name == "is_important":
+                assignments.append("is_important=?")
+                params.append(1 if bool(value) else 0)
+        if not assignments:
+            return
+        # Refresh updated_at so list_chunks_meta's ORDER BY updated_at DESC
+        # surfaces recently-touched memories at the top of pagination.
+        assignments.append("updated_at=?")
+        params.append(datetime.now(timezone.utc).astimezone().isoformat())
+        params.append(mem_id)
+        try:
+            self._conn.execute(
+                f"UPDATE chunks SET {', '.join(assignments)} WHERE mem_id=?",
+                params,
+            )
+            self._conn.commit()
+        except sqlite3.Error as e:
+            store_logger.warning(
+                "Failed to update chunk scalars for %s: %s", mem_id, e,
+                event_type=LogEventType.STORE_RETRIEVE,
+            )
+
+    # ------------------------------------------------------------------
+    # FilterGroup → SQL rendering (EQ/NE on blacklisted / is_important only)
+    # ------------------------------------------------------------------
+
+    #: Fields eligible for SQL pushdown. Matches SimpleMemoryIndex's
+    #: ``_VECTOR_PUSHDOWN_FIELDS`` so the two backends honour the same
+    #: subset of the FilterGroup DSL on the same fields.
+    _SQL_PUSHDOWN_FIELDS = frozenset({"blacklisted", "is_important"})
+
+    def _render_filter_group_to_sql(
+        self, group: Optional["FilterGroup"],
+    ) -> tuple[str, list]:
+        """Render a FilterGroup to a SQL WHERE fragment + bound params.
+
+        Returns ``("", [])`` when ``group`` is ``None`` or empty. Only
+        ``EQ`` / ``NE`` conditions on ``blacklisted`` / ``is_important``
+        are translated — the same subset SimpleMemoryIndex pushes down
+        to its vector scalar schema. Any condition on another field is
+        silently dropped here (callers must re-evaluate the full
+        FilterGroup in Python if they need completeness); this mirrors
+        SimpleMemoryIndex's "mixed group falls back to app layer" stance
+        and keeps the SQL layer a pure optimisation, not a correctness
+        surface.
+
+        Booleans are stored in SQLite as 0/1 (INTEGER), so EQ/NE values
+        are coerced via ``int(bool(...))``. Non-boolean scalars (str /
+        int / float / None) are passed through unchanged.
+        """
+        if group is None:
+            return "", []
+        if not isinstance(group, FilterGroup) or not group.conditions:
+            return "", []
+        parts: list[str] = []
+        params: list = []
+        for cond in group.conditions:
+            if isinstance(cond, FilterGroup):
+                sub_sql, sub_params = self._render_filter_group_to_sql(cond)
+                if sub_sql:
+                    parts.append(f"({sub_sql})")
+                    params.extend(sub_params)
+                continue
+            if cond.field not in self._SQL_PUSHDOWN_FIELDS:
+                # Non-pushable field — caller re-evaluates in Python.
+                continue
+            value = cond.value
+            if isinstance(value, bool):
+                value = 1 if value else 0
+            op_sql = "=" if cond.op.value == "eq" else "!="
+            parts.append(f"{cond.field} {op_sql} ?")
+            params.append(value)
+        if not parts:
+            return "", []
+        joiner = " AND " if group.logic == FilterLogic.AND else " OR "
+        return joiner.join(parts), params
 
     def delete(self, mem_id: str) -> None:
         rowid = self._conn.execute(
@@ -580,7 +822,7 @@ class VectorIndex:
                 )
         self._conn.commit()
 
-    def delete_by_path(self, path: str) -> None:
+    async def delete_by_path(self, path: str) -> None:
         """Delete all chunks belonging to a ``{Type}.md`` file, plus its
         ``files`` table entry.
 
@@ -588,7 +830,10 @@ class VectorIndex:
         is removed, or the user deletes the file). Encapsulates chunks_vec /
         chunks_fts cleanup so callers don't reach into the connection.
         """
+        async with self._conn_lock:
+            await asyncio.to_thread(self._delete_by_path_sync, path)
 
+    def _delete_by_path_sync(self, path: str) -> None:
         sql = "SELECT rowid FROM chunks WHERE path=?"
         cur = self._conn.execute(sql, (path,))
         rowids = [r[0] for r in cur.fetchall()]
@@ -601,7 +846,11 @@ class VectorIndex:
     # batch delete
     # ------------------------------------------------------------------
 
-    def delete_by_user(self, user_id: str) -> None:
+    async def delete_by_user(self, user_id: str) -> None:
+        async with self._conn_lock:
+            await asyncio.to_thread(self._delete_by_user_sync, user_id)
+
+    def _delete_by_user_sync(self, user_id: str) -> None:
         sql = "SELECT rowid FROM chunks WHERE user_id=?"
         cur = self._conn.execute(sql, (user_id,))
         rowids = [r[0] for r in cur.fetchall()]
@@ -614,7 +863,11 @@ class VectorIndex:
         )
         self._conn.commit()
 
-    def delete_by_scope(self, scope_id: str) -> None:
+    async def delete_by_scope(self, scope_id: str) -> None:
+        async with self._conn_lock:
+            await asyncio.to_thread(self._delete_by_scope_sync, scope_id)
+
+    def _delete_by_scope_sync(self, scope_id: str) -> None:
         sql = "SELECT rowid FROM chunks WHERE scope_id=?"
         cur = self._conn.execute(sql, (scope_id,))
         rowids = [r[0] for r in cur.fetchall()]
@@ -626,7 +879,11 @@ class VectorIndex:
         )
         self._conn.commit()
 
-    def delete_by_user_and_scope(self, user_id: str, scope_id: str) -> None:
+    async def delete_by_user_and_scope(self, user_id: str, scope_id: str) -> None:
+        async with self._conn_lock:
+            await asyncio.to_thread(self._delete_by_user_and_scope_sync, user_id, scope_id)
+
+    def _delete_by_user_and_scope_sync(self, user_id: str, scope_id: str) -> None:
         sql = "SELECT rowid FROM chunks WHERE user_id=? AND scope_id=?"
         cur = self._conn.execute(sql, (user_id, scope_id))
         rowids = [r[0] for r in cur.fetchall()]
@@ -714,7 +971,64 @@ class VectorIndex:
             file_blocks = parse_blocks(file_content)
         file_map: dict[str, Block] = {b.mem_id: b for b in file_blocks}
 
-        # 2. Query current DB state for this path
+        # 2-3. Query DB state + classify（SELECT + 内存分类）走线程池 + _conn_lock 串行化。
+        #      返回 (to_upsert, to_reline, to_delete, short_circuit_flag)。
+        async with self._conn_lock:
+            to_upsert, to_reline, to_delete, short_circuited = await asyncio.to_thread(
+                self._classify_sync, path, file_map
+            )
+
+        # Short-circuit if nothing changed
+        if short_circuited:
+            # Still update files table (mtime/size may have changed, hash unchanged)
+            async with self._conn_lock:
+                await asyncio.to_thread(self._upsert_file_record, path, file_content)
+                await asyncio.to_thread(self._conn.commit)
+            return
+
+        # 4. Execute deletions（同步 delete 收拢到线程池，加写锁串行化）
+        if to_delete:
+            async with self._conn_lock:
+                await asyncio.to_thread(self._delete_many_sync, to_delete)
+
+        # 5. Execute upserts (only changed/new blocks get fresh embeddings)
+        #    upsert 内部已自持 _conn_lock（每 block 一次），不在此持锁以避免死锁。
+        for block in to_upsert:
+            doc = MemoryDoc(
+                id=block.mem_id,
+                text=block.text,
+                type=block.type,
+                fields=block.fields,
+                blacklisted=block.blacklisted,
+                is_important=block.is_important,
+            )
+            await self.upsert(
+                doc,
+                tenant=tenant,
+                location=ChunkLocation(
+                    path=path,
+                    start_line=block.start_line,
+                    end_line=block.end_line,
+                ),
+            )
+
+        # 6-7. Fix line numbers（reline UPDATE）+ Update files table + commit，
+        #      收拢到线程池，加写锁串行化。
+        async with self._conn_lock:
+            await asyncio.to_thread(
+                self._reline_and_finalize_sync, path, file_content, to_reline
+            )
+
+    def _classify_sync(
+        self,
+        path: str,
+        file_map: dict[str, Block],
+    ) -> tuple[list[Block], list[Block], list[str], bool]:
+        """sync_file 的查询+分类段（同步 DB） —— 由 sync_file 经 to_thread 调用。
+
+        返回 (to_upsert, to_reline, to_delete, short_circuited)。short_circuited=True
+        表示三类全空，调用方走 short-circuit 分支（仅更新 files 表 + commit）。
+        """
         db_rows = self._conn.execute(
             "SELECT mem_id, hash, start_line, end_line FROM chunks WHERE path=?",
             (path,),
@@ -725,7 +1039,6 @@ class VectorIndex:
         db_ids = set(db_map.keys())
         file_ids = set(file_map.keys())
 
-        # 3. Classify
         to_upsert: list[Block] = []        # new or text-changed blocks → re-embed
         to_reline: list[Block] = []        # unchanged text but line numbers shifted
         to_delete: list[str] = []
@@ -749,35 +1062,20 @@ class VectorIndex:
                 # Removed from file
                 to_delete.append(bid)
 
-        # Short-circuit if nothing changed
-        if not to_upsert and not to_reline and not to_delete:
-            # Still update files table (mtime/size may have changed, hash unchanged)
-            self._upsert_file_record(path, file_content)
-            self._conn.commit()
-            return
+        return to_upsert, to_reline, to_delete, (not to_upsert and not to_reline and not to_delete)
 
-        # 4. Execute deletions
-        for mem_id in to_delete:
+    def _delete_many_sync(self, mem_ids: list[str]) -> None:
+        """sync_file 执行段的删除 —— 同步 self.delete(mem_id) 批量。"""
+        for mem_id in mem_ids:
             self.delete(mem_id)
 
-        # 5. Execute upserts (only changed/new blocks get fresh embeddings)
-        for block in to_upsert:
-            doc = MemoryDoc(
-                id=block.mem_id,
-                text=block.text,
-                type=block.type,
-                fields=block.fields,
-            )
-            await self.upsert(
-                doc,
-                tenant=tenant,
-                location=ChunkLocation(
-                    path=path,
-                    start_line=block.start_line,
-                    end_line=block.end_line,
-                ),
-            )
-
+    def _reline_and_finalize_sync(
+        self,
+        path: str,
+        file_content: str,
+        to_reline: list[Block],
+    ) -> None:
+        """sync_file 执行段尾部：reline UPDATE + files 表更新 + commit（同步）。"""
         # 6. Fix line numbers for unchanged-text blocks whose position drifted.
         #    This is the line-number rebase:
         #    instead of a delta-offset over trailing blocks, we directly write
@@ -884,50 +1182,67 @@ class VectorIndex:
         return m / (1.0 + m)
 
     def _search_vec(self, tenant: TenantScope, query_vec: list[float],
-                    mem_types: list[str] | None, top_k: int) -> list[tuple[str, float]]:
+                    mem_types: list[str] | None, top_k: int,
+                    filters: Optional["FilterGroup"] = None) -> list[tuple[str, float]]:
         # KNN 在 (user_id, scope_id) 分区内执行：partition_key 等值约束让
         # sqlite-vec 只在目标租户的向量集合上做近邻搜索，避免 overfetch-
         # then-filter 在多租户场景下漏召回。embedding MATCH ? + k=? 触发 vec0
         # 的 ANN 路径，distance 列此时才有值（无 MATCH 时 distance 恒为 0 →
-        # 分数全 1.0 的 bug）。mem_types 是可选多值过滤，后置在 chunks 上。
+        # 分数全 1.0 的 bug）。mem_types / FilterGroup 后置在 chunks 上。
+        #
+        # vec0 KNN 不允许对辅助列（如 blacklisted）加 WHERE，所以 scalar
+        # 过滤只能落在 chunks 表的 rowid join 上。filter 召回不足时升级 k
+        # 重试一次：NE(blacklisted, True) 在重度遗忘的 scope 里可能丢弃大
+        # 半候选，单次 overfetch 给不齐 top_k。
         user_id, scope_id = tenant.user_id, tenant.scope_id
         query_blob = self._vector_to_blob(query_vec)
         pkey = _partition_key(user_id, scope_id)
-        knn_rows = self._conn.execute(
-            "SELECT rowid, distance FROM chunks_vec "
-            "WHERE embedding MATCH ? AND k=? AND partition_key=? "
-            "ORDER BY distance",
-            (query_blob, top_k, pkey),
-        ).fetchall()
-        if not knn_rows:
-            return []
-        rowid_to_dist = {r[0]: float(r[1] or 0.0) for r in knn_rows}
 
-        # mem_types 后置过滤：候选集已收敛到目标 user/scope 的近邻，成本可忽略。
-        where_sql = "user_id=? AND scope_id=?"
-        params: list = [user_id, scope_id]
-        if mem_types:
-            placeholders = ",".join("?" for _ in mem_types)
-            where_sql += f" AND type IN ({placeholders})"
-            params.extend(mem_types)
-        where_sql += f" AND rowid IN ({','.join('?' for _ in rowid_to_dist)})"
-        params.extend(rowid_to_dist.keys())
-        rows = self._conn.execute(
-            f"SELECT mem_id, rowid FROM chunks WHERE {where_sql}",
-            params,
-        ).fetchall()
+        sql_filter, sql_params = self._render_filter_group_to_sql(filters)
 
-        results = []
-        for mem_id, rowid in rows:
-            dist = rowid_to_dist.get(rowid, 2.0)
-            # cosine distance ∈ [0, 2] → score ∈ [0, 1]
-            score = max(0.0, 1.0 - dist / 2.0)
-            results.append((mem_id, score))
-        results.sort(key=lambda x: x[1], reverse=True)
+        for attempt_k in (top_k, top_k * 4):
+            knn_rows = self._conn.execute(
+                "SELECT rowid, distance FROM chunks_vec "
+                "WHERE embedding MATCH ? AND k=? AND partition_key=? "
+                "ORDER BY distance",
+                (query_blob, attempt_k, pkey),
+            ).fetchall()
+            if not knn_rows:
+                return []
+            rowid_to_dist = {r[0]: float(r[1] or 0.0) for r in knn_rows}
+
+            # mem_types / scalar filters 后置：候选集已收敛到目标 user/scope
+            # 的近邻，成本可忽略。
+            where_sql = "user_id=? AND scope_id=?"
+            params: list = [user_id, scope_id]
+            if mem_types:
+                placeholders = ",".join("?" for _ in mem_types)
+                where_sql += f" AND type IN ({placeholders})"
+                params.extend(mem_types)
+            if sql_filter:
+                where_sql += f" AND ({sql_filter})"
+                params.extend(sql_params)
+            where_sql += f" AND rowid IN ({','.join('?' for _ in rowid_to_dist)})"
+            params.extend(rowid_to_dist.keys())
+            rows = self._conn.execute(
+                f"SELECT mem_id, rowid FROM chunks WHERE {where_sql}",
+                params,
+            ).fetchall()
+
+            results = []
+            for mem_id, rowid in rows:
+                dist = rowid_to_dist.get(rowid, 2.0)
+                # cosine distance ∈ [0, 2] → score ∈ [0, 1]
+                score = max(0.0, 1.0 - dist / 2.0)
+                results.append((mem_id, score))
+            results.sort(key=lambda x: x[1], reverse=True)
+            if len(results) >= top_k or attempt_k == top_k * 4:
+                return results
         return results
 
     def _search_fallback(self, tenant: TenantScope, query_vec: list[float],
-                         mem_types: list[str] | None, top_k: int) -> list[tuple[str, float]]:
+                         mem_types: list[str] | None, top_k: int,
+                         filters: Optional["FilterGroup"] = None) -> list[tuple[str, float]]:
         # 空 query_vec（embedding 缺失降级路径）短路返回空：否则会对所有存量向量
         # 算 cosine（_cosine 长度不等返 0），返回全 0 分结果污染 merged —— 让
         # 无向量命中也以 0 分挤进结果集。降级时向量召回本就无意义，直接返回空
@@ -941,6 +1256,10 @@ class VectorIndex:
             placeholders = ",".join("?" for _ in mem_types)
             where_sql += f" AND type IN ({placeholders})"
             params.extend(mem_types)
+        sql_filter, sql_params = self._render_filter_group_to_sql(filters)
+        if sql_filter:
+            where_sql += f" AND ({sql_filter})"
+            params.extend(sql_params)
         rows = self._conn.execute(
             f"SELECT mem_id, embedding FROM chunks WHERE {where_sql}",
             params,
@@ -953,7 +1272,8 @@ class VectorIndex:
         return scored[:top_k]
 
     def _search_fts(self, tenant: TenantScope, query: str,
-                    mem_types: list[str] | None, top_k: int) -> list[tuple[str, float]]:
+                    mem_types: list[str] | None, top_k: int,
+                    filters: Optional["FilterGroup"] = None) -> list[tuple[str, float]]:
         if not self._fts_available:
             return []
         fts_query = self.build_fts_query(query)
@@ -966,6 +1286,10 @@ class VectorIndex:
             placeholders = ",".join("?" for _ in mem_types)
             where_sql += f" AND type IN ({placeholders})"
             params.extend(mem_types)
+        sql_filter, sql_params = self._render_filter_group_to_sql(filters)
+        if sql_filter:
+            where_sql += f" AND ({sql_filter})"
+            params.extend(sql_params)
         try:
             cand = self._conn.execute(
                 f"SELECT rowid, mem_id FROM chunks WHERE {where_sql}", params
@@ -973,9 +1297,13 @@ class VectorIndex:
             if not cand:
                 return []
             rowid_to_mem = {r[0]: r[1] for r in cand}
+            # Over-fetch FTS hits to compensate for post-join scalar filtering
+            # (FTS LIMIT=top_k would under-return when some top-ranked FTS
+            # rows belong to blacklisted memories).
+            fts_limit = top_k * 4 if sql_filter else top_k
             fts_rows = self._conn.execute(
                 "SELECT rowid, rank FROM chunks_fts WHERE chunks_fts MATCH ? ORDER BY rank LIMIT ?",
-                (fts_query, top_k),
+                (fts_query, fts_limit),
             ).fetchall()
             results = []
             for rowid, rank in fts_rows:
@@ -993,14 +1321,41 @@ class VectorIndex:
             return []
 
     async def search(self, tenant: TenantScope, query_vec: list[float],
-                     mem_types: list[str] | None = None, top_k: int = 10,
-                     query_text: str = "") -> list[tuple[str, float]]:
+                     top_k: int = 10,
+                     constraints: Optional[SearchConstraints] = None,
+                     ) -> list[tuple[str, float]]:
+        """Hybrid vector + FTS5 search, scoped to one tenant.
+
+        Args:
+            tenant: owner scope (user_id + scope_id) — vec0 partition_key.
+            query_vec: query embedding; ``[]`` degrades to FTS-only.
+            top_k: max results to return after merge + sort.
+            constraints: optional content-side filters packed as a
+                :class:`SearchConstraints` (mem_types / query_text /
+                filters). ``None`` is equivalent to "no mem_types, empty
+                query_text, no filters" — the unconstrained path.
+        """
+        c = constraints or SearchConstraints()
         overfetch = max(top_k * _OVERFETCH_MULTIPLIER, 20)
+        # 三个 _search_* 是同步 sqlite3 查询（全表/分区扫描），跑在线程池 + _conn_lock
+        # 串行化以避免与并发写共享同一 sqlite3 连接。merge/sort 是纯内存，留 async 侧。
         if self._vec_available and self._dims == len(query_vec):
-            vec_hits = self._search_vec(tenant, query_vec, mem_types, overfetch)
+            async with self._conn_lock:
+                vec_hits = await asyncio.to_thread(
+                    self._search_vec, tenant, query_vec, c.mem_types, overfetch, c.filters
+                )
         else:
-            vec_hits = self._search_fallback(tenant, query_vec, mem_types, overfetch)
-        fts_hits = self._search_fts(tenant, query_text, mem_types, overfetch) if self._fts_available else []
+            async with self._conn_lock:
+                vec_hits = await asyncio.to_thread(
+                    self._search_fallback, tenant, query_vec, c.mem_types, overfetch, c.filters
+                )
+        if self._fts_available:
+            async with self._conn_lock:
+                fts_hits = await asyncio.to_thread(
+                    self._search_fts, tenant, c.query_text, c.mem_types, overfetch, c.filters
+                )
+        else:
+            fts_hits = []
         merged: dict[str, float] = {}
         for mid, s in vec_hits:
             merged[mid] = merged.get(mid, 0.0) + VECTOR_WEIGHT * s

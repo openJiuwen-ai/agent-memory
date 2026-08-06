@@ -591,6 +591,27 @@ class SimpleMemoryIndex(BaseMemoryIndex):
             user_id, scope_id, offset, limit, mem_types, filters=filters
         )
 
+    async def list_memories_with_total(
+        self,
+        user_id: str,
+        scope_id: str,
+        offset: int = 0,
+        limit: int = 100,
+        mem_types: list[str] | None = None,
+        *,
+        filters: Optional[FilterGroup] = None,
+    ) -> tuple[list[MemoryDoc], int]:
+        """Like ``list_memories`` but also returns the total count of all
+        matching documents (before pagination).
+
+        Loads all matching docs via KV scan (no query-level limit), then
+        paginates locally. Always uses KV scan path for correct global total.
+        """
+        all_docs = await self._list_memories_via_kv_scan(
+            user_id, scope_id, 0, 10 ** 9, mem_types, filters=filters
+        )
+        return all_docs[offset:offset + limit], len(all_docs)
+
     async def _list_memories_via_vector_pushdown(
         self,
         user_id: str,
@@ -646,6 +667,8 @@ class SimpleMemoryIndex(BaseMemoryIndex):
         if mem_types:
             type_order = {mt: i for i, mt in enumerate(mem_types)}
             docs.sort(key=lambda d: (type_order.get(d.type, len(type_order)), -d.timestamp.timestamp()))
+        else:
+            docs.sort(key=lambda d: d.timestamp, reverse=True)
         return docs[offset:offset + limit]
 
     async def _list_memories_via_kv_scan(
@@ -686,6 +709,8 @@ class SimpleMemoryIndex(BaseMemoryIndex):
         if mem_types:
             type_order = {mt: i for i, mt in enumerate(mem_types)}
             docs.sort(key=lambda d: (type_order.get(d.type, len(type_order)), -d.timestamp.timestamp()))
+        else:
+            docs.sort(key=lambda d: d.timestamp, reverse=True)
         if filters is not None:
             docs = [d for d in docs if _apply_filter_group(d, filters)]
         return docs[offset:offset + limit]

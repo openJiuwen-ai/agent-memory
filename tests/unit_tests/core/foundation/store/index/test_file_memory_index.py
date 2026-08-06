@@ -14,6 +14,11 @@ import asyncio
 import pytest
 
 from jiuwen_memory.foundation.store.base_memory_index import MemoryDoc
+from jiuwen_memory.foundation.store.filter_dsl import (
+    FilterCondition,
+    FilterGroup,
+    FilterOperator,
+)
 from jiuwen_memory.foundation.store.index.file_index._chunk_parser import (
     Block,
     blocks_to_markdown,
@@ -21,7 +26,11 @@ from jiuwen_memory.foundation.store.index.file_index._chunk_parser import (
 )
 from jiuwen_memory.foundation.store.index.file_index._file_watcher import MemoryFileWatcher
 from jiuwen_memory.foundation.store.index.file_index._md_store import MarkdownStore
-from jiuwen_memory.foundation.store.index.file_index._vector_index import TenantScope, VectorIndex
+from jiuwen_memory.foundation.store.index.file_index._vector_index import (
+    SearchConstraints,
+    TenantScope,
+    VectorIndex,
+)
 from jiuwen_memory.foundation.store.index.file_index.file_memory_index import FileMemoryIndex
 
 
@@ -232,7 +241,7 @@ def test_delete_by_path_clears_chunks_vec_fts_and_files(vi, tmp_path):
         assert vi.get_text("m1") is not None
         assert vi.get_file_hash_from_db(rel) is not None
 
-        vi.delete_by_path(rel)
+        await vi.delete_by_path(rel)
         assert vi.get_text("m1") is None
         assert vi.get_text("m2") is None
         assert vi.get_file_hash_from_db(rel) is None
@@ -262,7 +271,10 @@ async def test_v2_search_pure_python_fallback(vi):
         qv = await vi.embedding_model.embed_query("hello world")
 
         # ① 召回相关记忆（u1/s1 下有 a/b/c 三条）
-        hits = await vi.search(TenantScope("u1", "s1"), qv, mem_types=None, top_k=5, query_text="hello world")
+        hits = await vi.search(
+            TenantScope("u1", "s1"), qv, top_k=5,
+            constraints=SearchConstraints(query_text="hello world"),
+        )
         assert len(hits) >= 1
         hit_ids = {h[0] for h in hits}
         assert "a" in hit_ids
@@ -271,7 +283,10 @@ async def test_v2_search_pure_python_fallback(vi):
         assert "d" not in hit_ids
 
         # ③ mem_types 过滤：只取 note，排除 profile(c)
-        hits_note = await vi.search(TenantScope("u1", "s1"), qv, mem_types=["note"], top_k=5, query_text="hello world")
+        hits_note = await vi.search(
+            TenantScope("u1", "s1"), qv, top_k=5,
+            constraints=SearchConstraints(mem_types=["note"], query_text="hello world"),
+        )
         note_ids = {h[0] for h in hits_note}
         assert "c" not in note_ids
         assert "a" in note_ids
@@ -675,7 +690,10 @@ async def test_dims_recovered_on_restart_no_vector_loss(tmp_path):
 
     # 存量向量仍可被 search 召回（验证不只是 count 对，向量真在用）
     qv = await vi2.embedding_model.embed_query("memory 0")
-    hits = await vi2.search(tenant, qv, top_k=5, query_text="memory 0")
+    hits = await vi2.search(
+        tenant, qv, top_k=5,
+        constraints=SearchConstraints(query_text="memory 0"),
+    )
     hit_ids = {h[0] for h in hits}
     assert "m0" in hit_ids, "pre-restart memory m0 not recalled — its vector was lost"
     vi2.close()
@@ -725,7 +743,10 @@ async def test_recovery_failure_does_not_drop_chunks_vec(tmp_path, monkeypatch):
 
     # 存量向量仍可被 search 召回
     qv = await vi2.embedding_model.embed_query("memory 0")
-    hits = await vi2.search(tenant, qv, top_k=5, query_text="memory 0")
+    hits = await vi2.search(
+        tenant, qv, top_k=5,
+        constraints=SearchConstraints(query_text="memory 0"),
+    )
     hit_ids = {h[0] for h in hits}
     assert "m0" in hit_ids, "pre-restart memory m0 not recalled — its vector was lost"
     vi2.close()
@@ -865,7 +886,7 @@ def test_delete_by_path_tolerates_corrupt_chunks_vec(vi, tmp_path):
         # 触发 DELETE FROM chunks_vec 抛 OperationalError 的真实场景。
 
         # 修复前：此调用抛 sqlite3.OperationalError；修复后：记 warning，不抛
-        vi.delete_by_path(rel)
+        await vi.delete_by_path(rel)
 
         # chunks 主表和 files 表应正常清理完成（不被 vec 异常中断）
         assert vi.get_text("m1") is None
@@ -892,7 +913,7 @@ def test_delete_by_user_and_scope_tolerates_corrupt_chunks_vec(vi, tmp_path):
         vi.conn.execute("DROP TABLE IF EXISTS chunks_vec")
 
         # 批量 delete 路径，vec 损坏不应抛
-        vi.delete_by_user_and_scope("u1", "s1")
+        await vi.delete_by_user_and_scope("u1", "s1")
         assert vi.get_text("m1") is None
         assert vi.get_text("m2") is None
 
@@ -1269,3 +1290,302 @@ async def test_update_with_concurrent_add_no_loss(index, monkeypatch):
     got2 = await index.get_by_id("u1", "s1", "u2")
     assert got1 is not None and got1.text == "u1 updated", "u1 update lost"
     assert got2 is not None and got2.text == "u2 new", "concurrent add u2 lost"
+
+
+# ===========================================================================
+# Ebbinghaus forgetting: blacklisted / is_important persistence + filters
+# ===========================================================================
+#
+# These tests pin the regression reported in the test handoff: FileMemoryIndex
+# search / list_memories accepted no filters kwarg →上层硬传 filters 时
+# TypeError → MEMORY_GET_MEMORY_EXECUTION_ERROR. The fix adds:
+#   1) blacklisted / is_important as top-level Block + MemoryDoc fields
+#   2) the columns on the chunks table + a direct UPDATE path so
+#      update_mem_by_id scalar flips don't get dropped by sync_file
+#   3) *, filters: Optional[FilterGroup] = None on search / list_memories,
+#      with SQL pushdown for EQ/NE on blacklisted/is_important
+
+
+def _eq_blacklisted() -> FilterGroup:
+    return FilterGroup(
+        conditions=[FilterCondition(field="blacklisted",
+                                    op=FilterOperator.EQ, value=True)]
+    )
+
+
+def _ne_blacklisted() -> FilterGroup:
+    return FilterGroup(
+        conditions=[FilterCondition(field="blacklisted",
+                                    op=FilterOperator.NE, value=True)]
+    )
+
+
+@pytest.mark.asyncio
+async def test_doc_to_block_to_doc_round_trips_blacklisted_and_is_important(index):
+    """The .md frontmatter must round-trip the forgetting flags as top-level
+    keys — exercised end-to-end via the public add_memories + get_by_id
+    surface, without touching ``_doc_to_block`` / ``_block_to_doc`` directly
+    (those are protected helpers; this test keeps the access pattern honest
+    by mirroring what callers actually do).
+    """
+    # Build a Block with both flags set and serialise to .md frontmatter.
+    block = Block(
+        mem_id="m1", type="note", text="hello",
+        blacklisted=True, is_important=True,
+    )
+    md = blocks_to_markdown([block])
+    parsed = parse_blocks(md)
+    assert parsed[0].blacklisted is True, "blacklisted dropped on .md round-trip"
+    assert parsed[0].is_important is True, "is_important dropped on .md round-trip"
+
+    # End-to-end through the public FileMemoryIndex API: the write path
+    # (add_memories) and read path (get_by_id) must both preserve the flags
+    # without any caller-level protected-member access.
+    doc = MemoryDoc(
+        id="m1", text="hello", type="note",
+        blacklisted=True, is_important=True,
+    )
+    await index.add_memories("u1", "s1", [doc])
+    fetched = await index.get_by_id("u1", "s1", "m1")
+    assert fetched is not None
+    assert fetched.blacklisted is True, "blacklisted lost across add+get"
+    assert fetched.is_important is True, "is_important lost across add+get"
+
+
+@pytest.mark.asyncio
+async def test_search_accepts_filters_kwarg_and_returns_results(index):
+    """Reproduces the reported TypeError: default search with filters=None
+    on FileMemoryIndex used to crash because the signature lacked the
+    ``filters`` kwarg entirely.
+    """
+    await index.add_memories(
+        "u1", "s1",
+        [MemoryDoc(id="m1", text="hello world", type="note")],
+    )
+    # Default search (filters=None) must not raise.
+    hits = await index.search("u1", "s1", "hello", top_k=5)
+    assert len(hits) == 1
+    assert hits[0][0].id == "m1"
+
+
+@pytest.mark.asyncio
+async def test_list_memories_accepts_filters_kwarg_default_excludes_nothing(index):
+    """list_memories with filters=None returns all memories — the
+    search_manager entrypoint is responsible for injecting the default
+    NE(blacklisted, True); FileMemoryIndex itself stays neutral.
+    """
+    await index.add_memories(
+        "u1", "s1",
+        [
+            MemoryDoc(id="m1", text="alpha", type="note"),
+            MemoryDoc(id="m2", text="beta", type="note", blacklisted=True),
+        ],
+    )
+    listed = await index.list_memories("u1", "s1", 0, 100)
+    assert {d.id for d in listed} == {"m1", "m2"}
+
+
+@pytest.mark.asyncio
+async def test_list_memories_ne_blacklisted_excludes_forgotten(index):
+    """The default-injected NE(blacklisted, True) FilterGroup must hide
+    blacklisted memories on the list path.
+    """
+    await index.add_memories(
+        "u1", "s1",
+        [
+            MemoryDoc(id="m1", text="alpha", type="note"),
+            MemoryDoc(id="m2", text="beta", type="note", blacklisted=True),
+        ],
+    )
+    listed = await index.list_memories(
+        "u1", "s1", 0, 100, filters=_ne_blacklisted(),
+    )
+    assert [d.id for d in listed] == ["m1"]
+
+
+@pytest.mark.asyncio
+async def test_list_memories_eq_blacklisted_returns_only_forgotten(index):
+    """EQ(blacklisted, True) is the recall path: surface blacklisted
+    memories only.
+    """
+    await index.add_memories(
+        "u1", "s1",
+        [
+            MemoryDoc(id="m1", text="alpha", type="note"),
+            MemoryDoc(id="m2", text="beta", type="note", blacklisted=True),
+        ],
+    )
+    listed = await index.list_memories(
+        "u1", "s1", 0, 100, filters=_eq_blacklisted(),
+    )
+    assert [d.id for d in listed] == ["m2"]
+
+
+@pytest.mark.asyncio
+async def test_update_mem_by_id_blacklisted_flip_persists_across_syncs(index):
+    """update_mem_by_id(blacklisted=True) must persist to BOTH the .md
+    frontmatter AND the chunks table — otherwise the next sync_file
+    (which only re-upserts text-changed blocks) would clobber the flag.
+
+    Mirrors what the Ebbinghaus forget pipeline does via
+    LongTermMemory._mark_blacklisted.
+    """
+    await index.add_memories(
+        "u1", "s1",
+        [MemoryDoc(id="m1", text="hello world", type="note")],
+    )
+    # Flip blacklisted=True via the scalar update path (no re-embedding).
+    await index.update_mem_by_id("u1", "s1", "m1", {"blacklisted": True})
+
+    # 1) .md frontmatter round-trip: the flag is now a top-level key.
+    listed = await index.list_memories("u1", "s1", 0, 100)
+    doc = next(d for d in listed if d.id == "m1")
+    assert doc.blacklisted is True, "blacklisted flag lost in .md round-trip"
+
+    # 2) chunks table scalar: a fresh index over the same root_dir must
+    #    surface the flag without re-syncing, so EQ(blacklisted, True)
+    #    list_memories (the recall path) returns it.
+    recall = await index.list_memories(
+        "u1", "s1", 0, 100, filters=_eq_blacklisted(),
+    )
+    assert [d.id for d in recall] == ["m1"]
+
+    # 3) Default path (NE(blacklisted, True)) now hides it.
+    active = await index.list_memories(
+        "u1", "s1", 0, 100, filters=_ne_blacklisted(),
+    )
+    assert active == [], "blacklisted memory leaked into default list path"
+
+
+@pytest.mark.asyncio
+async def test_search_ne_blacklisted_excludes_forgotten(index):
+    """Search with the default NE(blacklisted, True) must hide blacklisted
+    memories from the KNN candidate set.
+    """
+    await index.add_memories(
+        "u1", "s1",
+        [
+            MemoryDoc(id="m1", text="alpha beta gamma", type="note"),
+            MemoryDoc(id="m2", text="alpha beta gamma", type="note", blacklisted=True),
+        ],
+    )
+    # Default search: NE(blacklisted, True) hides the blacklisted copy.
+    hits = await index.search("u1", "s1", "alpha", top_k=5, filters=_ne_blacklisted())
+    ids = [h[0].id for h in hits]
+    assert "m2" not in ids, "blacklisted memory leaked into default search"
+    assert "m1" in ids
+
+    # Recall search: EQ(blacklisted, True) surfaces only the forgotten one.
+    recall_hits = await index.search("u1", "s1", "alpha", top_k=5, filters=_eq_blacklisted())
+    recall_ids = [h[0].id for h in recall_hits]
+    assert recall_ids == ["m2"], f"recall path missing blacklisted mem, got {recall_ids}"
+
+
+@pytest.mark.asyncio
+async def test_search_non_pushdown_field_filter_excludes_in_python(index):
+    """Non-SQL-pushable conditions (anything outside blacklisted /
+    is_important) must be re-evaluated in Python after the MemoryDoc
+    lookup in ``search`` — same fallback ``list_memories`` uses.
+
+    Without the Python re-evaluation, ``_vec_index.search`` only pushes
+    EQ/NE on blacklisted/is_important to SQL and silently drops the
+    ``type`` condition, so the two read paths return inconsistent
+    results for the same ``filters``.
+    """
+    await index.add_memories(
+        "u1", "s1",
+        [
+            MemoryDoc(id="m1", text="alpha beta gamma", type="note"),
+            MemoryDoc(id="m2", text="alpha beta gamma", type="private"),
+        ],
+    )
+    # NE(type, "private") is NOT SQL-pushable (type is not in
+    # _SQL_PUSHDOWN_FIELDS), so the SQL layer returns both rows and
+    # the Python fallback in ``search`` must drop m2.
+    hits = await index.search(
+        "u1", "s1", "alpha", top_k=5,
+        filters=FilterGroup(
+            conditions=[FilterCondition(field="type",
+                                       op=FilterOperator.NE, value="private")],
+        ),
+    )
+    ids = [h[0].id for h in hits]
+    assert "m2" not in ids, "non-pushable condition dropped by search"
+    assert "m1" in ids
+
+    # Cross-check: list_memories (which already had the Python fallback)
+    # must agree with search on the same filters.
+    listed = await index.list_memories(
+        "u1", "s1", 0, 100,
+        filters=FilterGroup(
+            conditions=[FilterCondition(field="type",
+                                        op=FilterOperator.NE, value="private")],
+        ),
+    )
+    assert [d.id for d in listed] == ids, (
+        "search and list_memories disagree on non-pushable filters"
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_default_path_no_filters_does_not_crash(index):
+    """Even with zero memories and no filters, search must not raise
+    MEMORY_GET_MEMORY_EXECUTION_ERROR — that's the original symptom
+    from the report (no forgotten memories yet, default search).
+    """
+    hits = await index.search("u1", "s1", "anything", top_k=5)
+    assert hits == []
+    listed = await index.list_memories("u1", "s1", 0, 10)
+    assert listed == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_db_without_blacklisted_column_migrates(tmp_path):
+    """A pre-Ebbinghaus chunks table (no blacklisted/is_important columns)
+    must be migrated in place on reopen. Without the ALTER TABLE guard,
+    upsert would raise 'table chunks has no column named blacklisted'.
+    """
+    # 1) Create a fresh VectorIndex so the schema is laid down.
+    db_path = str(tmp_path / "memory.db")
+    vi1 = VectorIndex(db_path=db_path, embedding_model=FakeEmbedding())
+    # 2) Simulate a pre-Ebbinghaus schema by dropping the new columns.
+    #    SQLite doesn't support DROP COLUMN before 3.35; rebuild the
+    #    table without them by renaming + CREATE + INSERT SELECT + DROP.
+    vi1.conn.execute("CREATE TABLE chunks_old AS SELECT mem_id, path, user_id, "
+                     "scope_id, type, start_line, end_line, hash, text, embedding, "
+                     "updated_at FROM chunks")
+    vi1.conn.execute("DROP TABLE chunks")
+    vi1.conn.execute("""
+        CREATE TABLE chunks (
+            mem_id TEXT PRIMARY KEY,
+            path TEXT,
+            user_id TEXT,
+            scope_id TEXT,
+            type TEXT,
+            start_line INTEGER DEFAULT 0,
+            end_line INTEGER DEFAULT 0,
+            hash TEXT,
+            text TEXT,
+            embedding BLOB,
+            updated_at TEXT
+        )
+    """)
+    vi1.conn.execute("INSERT INTO chunks SELECT * FROM chunks_old")
+    vi1.conn.execute("DROP TABLE chunks_old")
+    vi1.conn.commit()
+    vi1.close()
+
+    # 3) Reopen. _ensure_schema's _migrate_add_column_if_missing must add
+    #    the two columns back; a subsequent upsert must not raise.
+    vi2 = VectorIndex(db_path=db_path, embedding_model=FakeEmbedding())
+    await vi2.upsert(
+        MemoryDoc(id="m1", text="hello", type="note", blacklisted=True),
+        tenant=TenantScope("u1", "s1"),
+    )
+    # Column was added and the value round-trips.
+    row = vi2.conn.execute(
+        "SELECT blacklisted, is_important FROM chunks WHERE mem_id=?", ("m1",)
+    ).fetchone()
+    assert row is not None
+    assert row[0] == 1
+    assert row[1] == 0

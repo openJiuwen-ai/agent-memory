@@ -76,8 +76,12 @@ def register_storage_codec(name: str, codec: StorageCodec) -> None:
 
     SM4 (single-param, built at registration)::
 
-        from jiuwen_memory.foundation.codec import register_storage_codec
+        from jiuwen_memory.foundation.codec import register_storage_codec, SM4StorageCodec
+        
+        sm4_key = b'0123456789abcdef'  # Must be 16 bytes (128-bit)
         register_storage_codec("sm4", SM4StorageCodec(key=sm4_key))
+        
+        config = MemoryEngineConfig(crypto_key=b"", codec="sm4")
 
     HSM (multi-param — constructed by the caller, engine never calls a ctor)::
 

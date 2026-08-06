@@ -222,6 +222,8 @@ class MarkdownStore:
                 end_line=0,
                 fields=b.fields,
                 timestamp=b.timestamp,
+                blacklisted=b.blacklisted,
+                is_important=b.is_important,
                 hash=b.hash,
             )
             for b in blocks

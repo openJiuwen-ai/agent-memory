@@ -1,0 +1,23 @@
+# 生产：MySQL。连接信息可用环境变量覆盖，无需改文件。
+# 启动方式：-Dspring.profiles.active=mysql  （或环境变量 SPRING_PROFILES_ACTIVE=mysql）
+spring:
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/platform?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:}
+  sql:
+    init:
+      mode: always                                   # 首次部署建表；稳定后可改 never
+      schema-locations:
+        - classpath:db/migration/V1__ops_center_init_mysql.sql
+        - classpath:db/migration/V2__governance_init_mysql.sql
+        - classpath:db/migration/V3__config_center_init_mysql.sql
+        - classpath:db/migration/V4__log_center_init_mysql.sql
+        - classpath:db/migration/V5__task_registry_init_mysql.sql
+        - classpath:db/migration/V6__tenant_user_init_mysql.sql
+        - classpath:db/migration/V7__scope_registry_init_mysql.sql
+        - classpath:db/migration/V9__auth_kernel_restart_perm_mysql.sql
+        - classpath:db/migration/V10__log_collect_records_mysql.sql
+        - classpath:db/migration/V11__token_blacklist_init_mysql.sql
+
