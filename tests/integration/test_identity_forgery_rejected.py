@@ -51,6 +51,39 @@ def srv():
     return server.build(load_config([OFFLINE]))
 
 
+@pytest.fixture
+def api_key_srv():
+    """API Key Runtime 与内核撤销注册表共享同一装配图。"""
+    import server
+    from profiles import OFFLINE, load_config
+
+    return server.build(
+        load_config(
+            [
+                OFFLINE,
+                {
+                    "memory_api": {
+                        "security": {
+                            "default": {
+                                "target": "standard",
+                                "params": {
+                                    "authenticator": {
+                                        "target": "api_key",
+                                        "params": {
+                                            "root_api_key": "",
+                                            "key_store": {"target": "memory"},
+                                        },
+                                    }
+                                },
+                            }
+                        }
+                    }
+                },
+            ]
+        )
+    )
+
+
 def _dispatch(srv, verb, payload, security=None):
     from handler import dispatch
 
@@ -116,29 +149,25 @@ def test_no_context_fails_closed(srv) -> None:
 # -- 认证与授权确实串起来了 --------------------------------------------------- #
 
 
-def test_api_key_binds_identity_end_to_end(srv) -> None:
+def test_api_key_binds_identity_end_to_end(api_key_srv) -> None:
     """用 A 主体的 key 去读 B 主体的数据 → 403（不是 200，也不是 401）。
 
     401 说明认证没过（key 无效），403 说明认证过了但授权拒了。
     这条要的是后者——证明 key → AuthContext → RequestSecurityContext → Authorizer
     整条链通了。``authenticated`` yield 的正是要传给 dispatch 的那个上下文。
     """
-    from common.security.authentication.authentication_impl.api_key_authenticator import (
-        ApiKeyAuthenticator,
-    )
     from common.security.types import Credentials
 
-    register_plugins()
-    store = KeyStoreProducer.build("memory", {}, AssemblyContext())
+    auth = api_key_srv.security.authenticator
+    store = auth.key_store
     alice_key = store.issue(_ALICE, Role.USER)
     mallory_key = store.issue(_MALLORY, Role.USER)
-    auth = ApiKeyAuthenticator(key_store=store, root_api_key="")
 
     from auth_middleware import authenticated
 
     with authenticated(auth, Credentials(api_key=alice_key)) as security:
         status, body = _dispatch(
-            srv,
+            api_key_srv,
             "add",
             {"tenant_id": "acme", "scope": "alice", "content": "key-bound secret"},
             security,
@@ -149,10 +178,10 @@ def test_api_key_binds_identity_end_to_end(srv) -> None:
     payload = {"tenant_id": "acme", "scope": "alice", "item_id": item_id}
 
     with authenticated(auth, Credentials(api_key=alice_key)) as security:
-        assert _dispatch(srv, "get", payload, security)[0] == 200
+        assert _dispatch(api_key_srv, "get", payload, security)[0] == 200
 
     with authenticated(auth, Credentials(api_key=mallory_key)) as security:
-        assert _dispatch(srv, "get", payload, security)[0] == 403
+        assert _dispatch(api_key_srv, "get", payload, security)[0] == 403
 
     with pytest.raises(AuthenticationError):
         with authenticated(auth, Credentials(api_key="not-a-real-key")):
