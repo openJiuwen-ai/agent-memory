@@ -4,12 +4,16 @@
 
 > 本文档只记录相对稳定的模块本地规约（职责边界、行为铁律、本地约束）。特性设计与方案取舍记录在 `docs/features/` 下。
 
-统一 CRUD 动词（insert/delete/update/get）+ 检索型 `search`。六种后端：`VectorStore`（向量）/ `GraphStore`（图）/ `FulltextStore`（全文）/ `KVStore`（键值）/ `FSStore`（文件系统）/ `FusionStore`（向量+倒排+正排融合）。**scope 隔离是存储层的原生职责**。
+`Storage` 为上层提供 MemoryUnit 领域操作与能力发现，`CompositeStorage` 组合六类标准
+Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/delete/update/get）和检索型
+`search`。**scope 隔离是存储层的原生职责**。
 
 ## 模块地图
 
 | 文件 | 职责 |
 |---|---|
+| `storage.py` | Storage 统一契约：MemoryUnit 领域操作、能力发现、底层端口与检索适配入口 |
+| `security.py` | StorageSecurity 通用授权与 StoreSecurity 数据保护能力标识 |
 | `base.py` | BaseStore 基类：所有存储后端的自描述契约（store_type / health） |
 | `types.py` | 存储层数据类型：KVMemoryListResult/VectorRecord/Document/Node/Edge/FusionRecord/FileStat 等 |
 | `kv.py` | KVStore 接口：键值存储，统一 CRUD + MemoryUnit 列表查询 + 范围枚举 |
@@ -26,6 +30,7 @@
 | `fulltext_impl/` | FulltextStore 实现目录（memory） |
 | `fusion_impl/` | FusionStore 实现目录（memory） |
 | `fs_impl/` | FSStore 实现目录（local） |
+| `storage_impl/` | Storage 实现目录；当前默认实现为 CompositeStorage |
 | `bootstrap.py` | 统一触发所有存储后端注册 |
 
 ## 统一 CRUD 动词
@@ -80,17 +85,28 @@
    scheme、或连接串自带会覆盖本设置的 TLS 参数，一律在**装配阶段**报错，不得放行到
    运行期——调用方以为受保护而实际未校验，比明文更危险。
 
+11. **Storage capability 是端口能力的唯一事实来源**
+   capability 只包含 KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS。`has_*()` 必须由不可变集合推导；
+   未声明端口直接访问时抛 `UnsupportedStorageCapabilityError`。
+
+12. **统一授权覆盖领域接口和暴露端口**
+   Storage 顶层操作与 `storage.vector.get()` 等端口调用先经 `StorageSecurity`；默认
+   `AllowAllStorageSecurity` 允许省略 access。各 Store 同时暴露自身 `security`，未启用数据
+   保护时返回 passthrough，`EncryptedKVStore` 明确声明已启用。
+
 ## 与其他子目录的边界
 
 **本模块管**：
 - 可配置真源（KVStore）
 - 多后端索引存储（Vector/Fulltext/Graph/Fusion）
 - 文件系统存储（FSStore）
+- MemoryUnit 领域 CRUD/list、能力发现和底层 Store 端口统一暴露
+- Storage 数据面授权与 Store 数据保护能力边界
 - 统一 CRUD 动词
 - scope 原生隔离
 
 **不管**：
-- 鉴权（归 `api`）
+- grant/revoke、授权策略生命周期与业务权限模型
 - 检索编排（归 `retrieval`）
 - 索引构建逻辑（归 `construction`）
 - 具体后端选型决策（由装配层配置）
@@ -112,3 +128,5 @@
    [F04-storage-ssl.md](../../docs/features/storage/F04-storage-ssl.md)。
    `SslConfig`、归一（`build_ssl_config`）与 scheme 校验（`require_tls_scheme`）住在
    `common._support`，与出站客户端共用；storage 侧只保留缺证书即报错这条自有策略。
+10. `CompositeStorage` 的默认首选检索路径是 `RECALL_GET_RANK`；首选路径是实例级稳定值，
+    不随请求或健康状态切换，也不加入 Store capability 集合。

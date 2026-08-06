@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List
 
-from common.type_def import MemoryUnit
+from common.type_def import MemoryUnit, ScoredCandidate
 from retrieval.base import RetrievalOperatorType
 from retrieval.discloser import Discloser, DiscloserProducer
-from retrieval.types import DisclosureLevel, ParsedQuery, RetrievedItem, ScoredUnit
+from retrieval.types import DisclosureLevel, ParsedQuery, RetrievedItem
 
 _L0_LIMIT = 120
 _L1_LIMIT = 260
@@ -18,7 +17,7 @@ _L2_CONFIDENCE_MARGIN = 1.5
 
 @dataclass
 class _DisclosureVariant:
-    scored: ScoredUnit
+    scored: ScoredCandidate
     unit: MemoryUnit
     content_by_level: dict[DisclosureLevel, str]
     actual_level_by_level: dict[DisclosureLevel, DisclosureLevel]
@@ -41,15 +40,15 @@ class StructuredDiscloser(Discloser):
     def disclose(
         self,
         query: ParsedQuery,
-        candidates: List[ScoredUnit],
-        units: Dict[str, MemoryUnit],
+        candidates: list[ScoredCandidate],
+        units: dict[str, MemoryUnit],
         level: DisclosureLevel,
         max_tokens: int | None = None,
-    ) -> List[RetrievedItem]:
+    ) -> list[RetrievedItem]:
         if level == DisclosureLevel.ADAPTIVE:
             return self._adaptive_disclose(query, candidates, units, max_tokens)
 
-        items: List[RetrievedItem] = []
+        items: list[RetrievedItem] = []
         keywords = self._keywords(query)
         for su in candidates:
             unit = units.get(su.unit_id)
@@ -73,10 +72,10 @@ class StructuredDiscloser(Discloser):
     def _adaptive_disclose(
         self,
         query: ParsedQuery,
-        candidates: List[ScoredUnit],
-        units: Dict[str, MemoryUnit],
+        candidates: list[ScoredCandidate],
+        units: dict[str, MemoryUnit],
         max_tokens: int | None,
-    ) -> List[RetrievedItem]:
+    ) -> list[RetrievedItem]:
         keywords = self._keywords(query)
         variants = []
         for scored_unit in candidates:
@@ -97,7 +96,7 @@ class StructuredDiscloser(Discloser):
             for idx in range(1, len(variants)):
                 self._try_upgrade(selected_levels, variants, idx, DisclosureLevel.L1, budget)
 
-        items: List[RetrievedItem] = []
+        items: list[RetrievedItem] = []
         for idx, variant in enumerate(variants):
             requested_level = selected_levels[idx]
             actual_level = variant.actual_level_by_level[requested_level]
@@ -118,7 +117,7 @@ class StructuredDiscloser(Discloser):
         return items
 
     def _variants(
-        self, scored: ScoredUnit, unit: MemoryUnit, keywords: List[str]
+        self, scored: ScoredCandidate, unit: MemoryUnit, keywords: list[str]
     ) -> _DisclosureVariant:
         content_by_level: dict[DisclosureLevel, str] = {}
         actual_level_by_level: dict[DisclosureLevel, DisclosureLevel] = {}
@@ -130,8 +129,8 @@ class StructuredDiscloser(Discloser):
 
     def _try_upgrade(
         self,
-        selected_levels: List[DisclosureLevel],
-        variants: List[_DisclosureVariant],
+        selected_levels: list[DisclosureLevel],
+        variants: list[_DisclosureVariant],
         idx: int,
         target_level: DisclosureLevel,
         budget: int | None,
@@ -145,7 +144,7 @@ class StructuredDiscloser(Discloser):
         if budget is None or self._total_tokens(variants, proposed) <= budget:
             selected_levels[idx] = target_level
 
-    def _can_upgrade_top_to_l2(self, variants: List[_DisclosureVariant]) -> bool:
+    def _can_upgrade_top_to_l2(self, variants: list[_DisclosureVariant]) -> bool:
         if not variants:
             return False
         if len(variants) == 1:
@@ -158,8 +157,8 @@ class StructuredDiscloser(Discloser):
 
     def _total_tokens(
         self,
-        variants: List[_DisclosureVariant],
-        levels: List[DisclosureLevel],
+        variants: list[_DisclosureVariant],
+        levels: list[DisclosureLevel],
     ) -> int:
         return sum(
             self._estimate_tokens(variant.content_by_level[level])
@@ -168,10 +167,10 @@ class StructuredDiscloser(Discloser):
 
     def _render(
         self,
-        scored: ScoredUnit,
+        scored: ScoredCandidate,
         unit: MemoryUnit,
         level: DisclosureLevel,
-        keywords: List[str],
+        keywords: list[str],
     ) -> tuple[str, DisclosureLevel]:
         if level == DisclosureLevel.L2:
             return "[full]\n" + unit.content, DisclosureLevel.L2
@@ -197,7 +196,7 @@ class StructuredDiscloser(Discloser):
             return f"[abstract]\n{unit.layers.l0}", DisclosureLevel.L0
         return self._l0_card(scored, unit), DisclosureLevel.L0
 
-    def _l0_card(self, scored: ScoredUnit, unit: MemoryUnit) -> str:
+    def _l0_card(self, scored: ScoredCandidate, unit: MemoryUnit) -> str:
         return "\n".join(
             [
                 f"[summary] {self._summary(unit)}",
@@ -222,9 +221,9 @@ class StructuredDiscloser(Discloser):
         summary = content[: sentence_end + 1] if sentence_end < len(content) else content
         return self._truncate(summary, _L0_LIMIT)
 
-    def _best_snippet(self, content: str, keywords: List[str]) -> tuple[str, List[str]]:
+    def _best_snippet(self, content: str, keywords: list[str]) -> tuple[str, list[str]]:
         lowered = content.lower()
-        candidates: List[tuple[int, int]] = []
+        candidates: list[tuple[int, int]] = []
         for keyword in keywords:
             idx = lowered.find(keyword.lower())
             if idx >= 0:
@@ -235,7 +234,7 @@ class StructuredDiscloser(Discloser):
         best_idx = len(content)
         best_start = 0
         best_score = -1
-        best_matched: List[str] = []
+        best_matched: list[str] = []
         for idx, start in candidates:
             end = min(len(content), start + _L1_LIMIT)
             window = lowered[start:end]
@@ -255,8 +254,8 @@ class StructuredDiscloser(Discloser):
             snippet = snippet.rstrip() + "..."
         return snippet, list(dict.fromkeys(best_matched))
 
-    def _keywords(self, query: ParsedQuery) -> List[str]:
-        keywords: List[str] = []
+    def _keywords(self, query: ParsedQuery) -> list[str]:
+        keywords: list[str] = []
         seen: set[str] = set()
         for token in list(query.keywords) + list(query.tokens):
             normalized = token.strip()
@@ -266,7 +265,7 @@ class StructuredDiscloser(Discloser):
                 seen.add(key)
         return keywords
 
-    def _why(self, scored: ScoredUnit) -> str:
+    def _why(self, scored: ScoredCandidate) -> str:
         if not scored.evidence:
             return f"score={scored.score:.4g}"
         parts = []

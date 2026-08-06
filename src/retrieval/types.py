@@ -6,7 +6,30 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
-from common.type_def import Entity, FilterExpr, normalize
+from common.type_def import (
+    ChannelError,
+    ChannelEvidence,
+    FilterExpr,
+    ParsedQuery,
+    RecallChannel,
+    ScoredMemoryUnit,
+    ScoredUnit,
+    normalize,
+)
+
+__all__ = [
+    "ChannelError",
+    "ChannelEvidence",
+    "DisclosureLevel",
+    "ParsedQuery",
+    "RecallChannel",
+    "RetrievalQuery",
+    "RetrievalResult",
+    "RetrievedItem",
+    "ScoredMemoryUnit",
+    "ScoredUnit",
+    "TrajectoryStep",
+]
 
 
 class DisclosureLevel(str, Enum):
@@ -16,33 +39,6 @@ class DisclosureLevel(str, Enum):
     L1 = "l1"  # 片段
     L2 = "l2"  # 全文
     ADAPTIVE = "adaptive"  # 自适应：按预算自动选择实际 L0/L1/L2
-
-
-class RecallChannel(str, Enum):
-    """召回通道——**逻辑**召回路（§6.2）+ 时序过滤。
-
-    通道到物理 Store 的映射由检索层装配内部决定，非 1:1：一路可对应一个
-    Store，多路也可合到一个 Store（如同时请求 KEYWORD+VECTOR 时走
-    FusionStore 一次召回），TEMPORAL 通常是叠加在其他通道上的时间过滤而非
-    独立 Store。因此「某通道没有专属 Store」不是缺口。
-    """
-
-    DOCUMENT = "document"  # 文档定位：路径/章节式
-    KEYWORD = "keyword"  # 关键词/全文 BM25
-    VECTOR = "vector"  # 向量语义相似
-    GRAPH = "graph"  # 图：实体-关系多跳遍历
-    TEMPORAL = "temporal"  # 时序过滤：有效期/时间点（双时间模型，多叠加在其他通道上）
-
-
-@dataclass
-class ChannelEvidence:
-    """单条结果在某召回通道内的融合证据。"""
-
-    channel: RecallChannel = RecallChannel.VECTOR  # 来源通道
-    rank: int = 0  # 通道内名次（0-based）
-    score: float = 0.0  # 通道原始分
-    weight: float = 1.0  # 融合时使用的通道权重
-    contribution: float = 0.0  # 对最终融合分的贡献
 
 
 @dataclass
@@ -73,44 +69,6 @@ class RetrievalQuery:
     def __post_init__(self) -> None:
         # 查询对象边界规范化：外部兼容旧输入，内部只保留 FilterExpr | None。
         self.filters = normalize(self.filters)
-
-
-@dataclass
-class ParsedQuery:
-    """查询理解的产出：结构化的查询表示，供各召回通道直接消费。
-
-    软召回信号（tokens/keywords/entities/vector，模糊打分）与硬前置过滤
-    （scalar_filters，索引级门槛）分开承载：前者决定「召回什么」，后者
-    决定「先排除什么」，不能互相折叠。as_of（valid-time）与 time_from/
-    time_to（event-time）也是两条独立时间轴，见各字段说明。
-    """
-
-    raw: str = ""  # 原始 query
-    rewritten: str = ""  # LLM 改写/补全后的 query
-    intent: str = ""  # 意图标签
-    tokens: list[str] = field(default_factory=list)  # 分词结果（关键词通道用）
-    keywords: list[str] = field(default_factory=list)  # 抽取的关键词
-    entities: list[Entity] = field(default_factory=list)  # 实体（图通道用）
-    vector: list[float] = field(default_factory=list)  # query 向量（向量通道用）
-    # 硬前置过滤谓词（源自 RetrievalQuery.filters，已规范化为 FilterExpr），下推各 Store。
-    scalar_filters: FilterExpr | None = None
-    # valid-time 回溯点：过滤 [t_valid, t_invalid]，问「T 时刻哪个版本有效」。
-    as_of: datetime | None = None
-    time_from: datetime | None = None  # 事件时间下界（event-time）：从 query 文本解析，过滤 t_event
-    time_to: datetime | None = None  # 事件时间上界（event-time）
-    channels: list[RecallChannel] = field(default_factory=list)  # 建议启用的通道
-    # 透传自 RetrievalQuery.extensions，供自定义 Recaller 按约定 key 读取（内核核心不解释）。
-    extensions: dict[str, str] = field(default_factory=dict)
-
-
-@dataclass
-class ScoredUnit:
-    """单路召回的候选：记忆单元 id + 得分 + 来源通道。"""
-
-    unit_id: str = ""  # 记忆单元 id
-    score: float = 0.0  # 本通道内的召回得分
-    channel: RecallChannel = RecallChannel.VECTOR  # 来源通道
-    evidence: list[ChannelEvidence] = field(default_factory=list)  # 融合证据明细
 
 
 @dataclass
@@ -150,3 +108,4 @@ class RetrievalResult:
     trajectory: list[TrajectoryStep] = field(
         default_factory=list
     )  # 检索轨迹（with_trajectory 时返回）
+    errors: list[ChannelError] = field(default_factory=list)  # 部分通道失败，不依赖轨迹开关

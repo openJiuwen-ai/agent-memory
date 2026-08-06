@@ -38,6 +38,27 @@ from .memory import (
 )
 from .memory_filter import matches_memory_unit
 from .raw import MESSAGES_KEY_PREFIX, RawPayload, messages_key
+from .retrieval import (
+    CandidateFuser,
+    ChannelError,
+    ChannelEvidence,
+    ParsedQuery,
+    RankedStorageResult,
+    RecallBatch,
+    RecallChannel,
+    RecallResult,
+    RetrievalPipeline,
+    ScoredCandidate,
+    ScoredMemoryUnit,
+    ScoredUnit,
+)
+from .retrieval_filter import (
+    in_event_window,
+    is_retrieval_candidate,
+    matches_retrieval_filters,
+    passes_lifecycle,
+    valid_at,
+)
 from .scope import Scope
 
 __all__ = [
@@ -81,4 +102,21 @@ __all__ = [
     "memory_key",
     "messages_key",
     "matches_memory_unit",
+    "RecallChannel",
+    "ParsedQuery",
+    "ChannelEvidence",
+    "ScoredUnit",
+    "ScoredMemoryUnit",
+    "ScoredCandidate",
+    "RecallBatch",
+    "RecallResult",
+    "ChannelError",
+    "RankedStorageResult",
+    "RetrievalPipeline",
+    "CandidateFuser",
+    "valid_at",
+    "passes_lifecycle",
+    "in_event_window",
+    "matches_retrieval_filters",
+    "is_retrieval_candidate",
 ]

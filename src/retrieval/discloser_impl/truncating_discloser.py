@@ -8,12 +8,10 @@
 
 from __future__ import annotations
 
-from typing import Dict, List
-
-from common.type_def import MemoryUnit
+from common.type_def import MemoryUnit, ScoredCandidate
 from retrieval.base import RetrievalOperatorType
 from retrieval.discloser import Discloser, DiscloserProducer
-from retrieval.types import DisclosureLevel, ParsedQuery, RetrievedItem, ScoredUnit
+from retrieval.types import DisclosureLevel, ParsedQuery, RetrievedItem
 
 _LIMIT = {DisclosureLevel.L0: 80, DisclosureLevel.L1: 240}
 
@@ -35,7 +33,7 @@ class TruncatingDiscloser(Discloser):
         limit = _LIMIT[DisclosureLevel.L0]
         return content if len(content) <= limit else content[:limit].rstrip() + "…"
 
-    def _l1(self, unit: MemoryUnit, keywords: List[str]) -> str:
+    def _l1(self, unit: MemoryUnit, keywords: list[str]) -> str:
         # 优先预生成 l1；空则围绕关键词取窗兜底
         if unit.layers.l1:
             return unit.layers.l1
@@ -53,12 +51,12 @@ class TruncatingDiscloser(Discloser):
     def disclose(
         self,
         query: ParsedQuery,
-        candidates: List[ScoredUnit],
-        units: Dict[str, MemoryUnit],
+        candidates: list[ScoredCandidate],
+        units: dict[str, MemoryUnit],
         level: DisclosureLevel,
         max_tokens: int | None = None,
-    ) -> List[RetrievedItem]:
-        items: List[RetrievedItem] = []
+    ) -> list[RetrievedItem]:
+        items: list[RetrievedItem] = []
         effective_level = DisclosureLevel.L0 if level == DisclosureLevel.ADAPTIVE else level
         for su in candidates:
             unit = units.get(su.unit_id)

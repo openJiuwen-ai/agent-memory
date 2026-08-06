@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/retrieval/ |
-| 最近一次修订日期 | 2026-08-04 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md |
+| 最近一次修订日期 | 2026-08-06 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md |
 
 ## 范围 / 边界
 
@@ -42,6 +42,10 @@
     不能补回已被截断的候选。
 11. **系统谓词不可被用户逻辑稀释**：lifecycle / valid-time / event-time 谓词与用户
     `filters` 以外层 `AND` 合并，用户表达式内部的 `OR` / `NOT` 不能绕过系统约束。
+12. **rank 只包含 Fuser**：Fuser 在物化候选上做分层归并和跨通道融合；Reranker 保持后续
+    独立阶段，不下沉到 Storage 的 retrieve 入口。
+13. **部分失败显式返回**：部分召回入口失败时继续处理成功候选并返回 `ChannelError`；全部选中
+    入口失败抛 `StorageRetrievalError`。显式空 channels 是无效输入。
 
 ## 接口契约
 
@@ -68,12 +72,13 @@ class RetrievalOperator(ABC):
 ```
 QueryParser.parse(query) → ParsedQuery
 → 若 ParsedQuery.raw 为空则短路返回空结果
-→ 并行 Recaller[i].recall(scope, parsed_query, recall_k) → list[list[ScoredUnit]]（超采样）
-→ Fuser.fuse(parsed_query, candidates) → list[ScoredUnit]
-→ 截断精排预算 → UnitReader 批量点读 MemoryUnit（mget 一次召回 + 去重/缺失兜底在 load）→ 真源复核（lifecycle/valid-time/event-time/filters）
+→ 按 Storage.preferred_retrieval_pipeline 选择 recall→get、recall_and_get 或 retrieve
+→ Fuser 前物化候选并完成 lifecycle/valid-time/event-time/filters 真源复核
+→ Fuser.fuse(parsed_query, candidates) → list[ScoredMemoryUnit]
+→ 截断精排预算
 → 可选 Reranker 精排 → 相关性阈值过滤（结果数可 < top_k）→ 截断 top_k
 → Discloser.disclose(parsed_query, candidates, units, level, max_tokens) → list[RetrievedItem]
-→ 组装 RetrievalResult（items + trajectory）
+→ 组装 RetrievalResult（items + trajectory + errors）
 ```
 
 ### QueryParser（`query_parser.py`）
@@ -121,7 +126,7 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `fuse` | `(query: ParsedQuery, candidates: list[list[ScoredUnit]]) -> list[ScoredUnit]` | 融合多路候选，返回统一排序后的 top 候选 |
+| `fuse` | `(query: ParsedQuery, candidates: list[list[ScoredMemoryUnit]]) -> list[ScoredMemoryUnit]` | 融合已物化的分入口候选，保持 MemoryUnit 与 evidence |
 
 ### Discloser（`discloser.py`）
 
@@ -166,10 +171,12 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 | `entities` | list[Entity] | 实体（图通道用） |
 | `vector` | list[float] | query 向量 |
 | `scalar_filters` | FilterExpr \| None | 已规范化的硬前置过滤谓词 |
+| `recheck_filters` | FilterExpr \| None | 用户原始硬过滤谓词，供物化后的真源复核 |
 | `as_of` | datetime \| None | valid-time 回溯 |
 | `time_from` | datetime \| None | event-time 下界 |
 | `time_to` | datetime \| None | event-time 上界 |
 | `channels` | list[RecallChannel] | 建议启用的通道 |
+| `include_archived` | bool | 当前态真源复核是否允许 archived |
 | `extensions` | dict[str, str] | 透传配置 |
 
 ### 结果结构
@@ -180,7 +187,9 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 | `ChannelEvidence` | channel / rank / score / weight / contribution |
 | `RetrievedItem` | unit_id / score / content / level: DisclosureLevel |
 | `TrajectoryStep` | stage / channel / candidate_count / cost_ms / detail |
-| `RetrievalResult` | items: list[RetrievedItem] / trajectory: list[TrajectoryStep] |
+| `ScoredMemoryUnit` | unit: MemoryUnit / score / channel / evidence |
+| `ChannelError` | channel / source / error_type / message |
+| `RetrievalResult` | items / trajectory / errors: list[ChannelError] |
 
 ### 枚举
 

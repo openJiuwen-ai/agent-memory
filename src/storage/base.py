@@ -35,6 +35,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from enum import Enum
 
+from .security import PASSTHROUGH_STORE_SECURITY, StoreSecurity
+
 
 class StoreType(str, Enum):
     KV = "kv"
@@ -55,3 +57,8 @@ class BaseStore(ABC):
     @abstractmethod
     def health(self) -> None:
         """存活探测：健康时返回 ``None``，否则抛 :class:`~common.errors.HealthCheckError`。"""
+
+    @property
+    def security(self) -> StoreSecurity:
+        """返回本 Store 的数据保护模块；默认明确表示未启用保护。"""
+        return PASSTHROUGH_STORE_SECURITY

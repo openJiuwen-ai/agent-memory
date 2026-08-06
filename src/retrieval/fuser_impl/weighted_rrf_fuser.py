@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Mapping
 
+from common.type_def import ScoredCandidate
 from retrieval.base import RetrievalOperatorType
 from retrieval.fuser import Fuser, FuserProducer
-from retrieval.types import ChannelEvidence, ParsedQuery, RecallChannel, ScoredUnit
+from retrieval.types import ChannelEvidence, ParsedQuery, RecallChannel
 
 from .layered_merge import merge_layered_channels
 
@@ -45,11 +47,12 @@ class WeightedRRFFuser(Fuser):
         }
 
     def fuse(
-        self, query: ParsedQuery, candidates: list[list[ScoredUnit]]
-    ) -> list[ScoredUnit]:
+        self, query: ParsedQuery, candidates: list[list[ScoredCandidate]]
+    ) -> list[ScoredCandidate]:
         scores: dict[str, float] = {}
         channel: dict[str, RecallChannel] = {}
         evidence: dict[str, list[ChannelEvidence]] = {}
+        representatives: dict[str, ScoredCandidate] = {}
         # 分层召回下同通道有多路（L2/L0/L1），先归并再计分（见 layered_merge）。
         for one_channel in merge_layered_channels(candidates):
             for rank, su in enumerate(one_channel):
@@ -57,6 +60,7 @@ class WeightedRRFFuser(Fuser):
                 contribution = weight / (self._k + rank + 1)
                 scores[su.unit_id] = scores.get(su.unit_id, 0.0) + contribution
                 channel.setdefault(su.unit_id, su.channel)
+                representatives.setdefault(su.unit_id, su)
                 evidence.setdefault(su.unit_id, []).append(
                     ChannelEvidence(
                         channel=su.channel,
@@ -66,15 +70,19 @@ class WeightedRRFFuser(Fuser):
                         contribution=contribution,
                     )
                 )
-        fused = [
-            ScoredUnit(
-                unit_id=uid,
-                score=score,
-                channel=channel.get(uid, RecallChannel.KEYWORD),
-                evidence=evidence.get(uid, []),
+        fused: list[ScoredCandidate] = []
+        for uid, score in scores.items():
+            representative = representatives.get(uid)
+            if representative is None:
+                raise KeyError(uid)
+            fused.append(
+                replace(
+                    representative,
+                    score=score,
+                    channel=channel.get(uid, RecallChannel.KEYWORD),
+                    evidence=evidence.get(uid, []),
+                )
             )
-            for uid, score in scores.items()
-        ]
         fused.sort(key=lambda s: s.score, reverse=True)
         return fused
 
