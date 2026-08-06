@@ -75,14 +75,15 @@ class InMemoryGrantStore(GrantStore):
             candidates = list(self._grants.values())
         # 时效与撤销在存储层就滤掉（契约要求）。scope 覆盖不在这里判——那是策略，
         # 归 Authorizer；这里只按能索引的维度收窄候选集。
-        return [
-            grant
-            for grant in candidates
-            if action in grant.actions
-            and grant.grantor.org == grantor_org
-            and grant.grantee.org == grantee.org
-            and grant.is_active(now=now)
-        ]
+        active = []
+        for grant in candidates:
+            if action not in grant.actions:
+                continue
+            if grant.grantor.org != grantor_org or grant.grantee.org != grantee.org:
+                continue
+            if grant.is_active(now=now):
+                active.append(grant)
+        return active
 
     def health(self) -> None:
         return None

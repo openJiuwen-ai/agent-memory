@@ -31,13 +31,13 @@ from common.type_def import (
 )
 from construction import EvolveMode
 from control import (
+    BatchWriteItem,
+    BatchWriteResult,
     Channel,
     DeleteMode,
     DeleteSelector,
     Grant,
     JobInfo,
-    BatchWriteItem,
-    BatchWriteResult,
     MemoryListResult,
     MemoryPatch,
     SpaceDeleteResult,
@@ -118,7 +118,7 @@ class MemoryAPI(ABC):
         scope: Scope | None = None,
         source: Modality = Modality.TEXT,
         *,
-        identity: Scope,
+        security: RequestSecurityContext,
         tags: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
         occurred_at: datetime | None = None,
@@ -134,7 +134,7 @@ class MemoryAPI(ABC):
         scope: Scope | None = None,
         source: Modality = Modality.TEXT,
         *,
-        identity: Scope,
+        security: RequestSecurityContext,
         tags: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
         occurred_at: datetime | None = None,

@@ -265,6 +265,10 @@ class RequestSecurityContext:
         """已认证主体。授权的 actor 只能来自这里，不来自业务参数。"""
         return self.auth.actor
 
+    def has_valid_origin(self) -> bool:
+        """上下文安全字段是否仍与受控构造入口签发的来源证明一致。"""
+        return hmac.compare_digest(self._origin, _bind_origin(self.auth, self))
+
 
 # ====================================================================== #
 # 授权：动作

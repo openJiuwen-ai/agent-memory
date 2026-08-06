@@ -103,6 +103,11 @@ class ApiKeyAuthenticator(Authenticator):
     def requires_loopback_binding(self) -> bool:
         return False
 
+    def bind_instance_name(self, name: str) -> None:
+        """为未具名的内联实例补上稳定 issuer，不覆盖显式具名配置。"""
+        if not self._name or self._name == "default":
+            self._name = name
+
     def health(self) -> None:
         self._key_store.health()
 

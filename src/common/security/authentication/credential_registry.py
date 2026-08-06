@@ -77,8 +77,6 @@ class CredentialStatusRegistry:
         store = self._stores.get(key)
         if store is None:
             # Round7 P1-3: fail-closed，未注册的 issuer 必须拒绝
-            from common.errors import ValidationError
-
             raise ValidationError(
                 f"credential_issuer {auth.credential_issuer!r} (type={auth.credential_type}) "
                 f"未注册到 CredentialStatusRegistry，无法复核撤销状态。"

@@ -75,5 +75,5 @@ def scope_covers(
                 return False
             continue
         # parent 在本维留空 → 更内层也必须全空，否则是上面说的「空洞」形状。
-        return not any(getattr(parent, later) for later in order[index + 1 :])
+        return not any(getattr(parent, later) for later in order[index + 1:])
     return True

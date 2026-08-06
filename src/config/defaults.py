@@ -43,9 +43,9 @@ def default_config_dict() -> dict[str, Any]:
         "prompts": _PROMPTS_DEFAULT,
         # -- 存储（有状态，必须对象共享）-------------------------------------- #
         "kv_store": {_D: "memory"},
-        # 安全 provider：默认用 local 信封加密（AES-256-GCM）。
-        # 生产装配覆盖为同事实现的自注册 target（@SecurityProducer.register("xxx")）。
-        "security": {_D: "local"},
+        # 密码学 provider：默认用 local 信封加密（AES-256-GCM）。
+        # 生产装配可覆盖为自注册 target（@CryptographyProducer.register("xxx")）。
+        "cryptography": {_D: "local"},
         "vector_store": {
             _D: "memory",
             # L0/L1 分表（与构建侧同命名 layers_l0/l1；同后端不同 collection）

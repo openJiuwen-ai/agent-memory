@@ -64,6 +64,15 @@ class Authenticator(ABC):
         """
         return True
 
+    def bind_instance_name(self, name: str) -> None:
+        """把装配期实例名绑定到认证器；不需要实例身份的实现可忽略。
+
+        可撤销凭据实现应覆写此方法，把名称写入签发的 ``credential_issuer``，供
+        PEP 将凭据路由到同一实例的撤销真源。默认不做任何事，避免要求 dev/trusted
+        等不依赖在线撤销的实现维护无意义状态。
+        """
+        return None
+
     @abstractmethod
     def health(self) -> None:
         """存活探测：健康时返回 ``None``，否则抛出异常。与 ``ControlOperator`` 同构。"""
