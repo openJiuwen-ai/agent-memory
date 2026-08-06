@@ -4,6 +4,7 @@
 """
 
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -495,6 +496,90 @@ def test_extract_llm_non_json():
         extractor.extract(units)
 
     assert isinstance(exc_info.value.__cause__, json.JSONDecodeError)
+
+
+def test_extract_llm_trailing_text_logs_raw_response():
+    response = (
+        '[{"source_id":"u1","target":"fact","content":"user prefers Python",'
+        '"confidence":1.0}]!'
+    )
+    extractor = _make_extractor([response])
+    units = [create_test_unit("u1", "user prefers Python")]
+
+    with patch("construction.extractor_impl.llm_extractor.logger.warning") as warning:
+        result = extractor.extract(units)
+
+    assert len(result) == 1
+    assert result[0].content == "user prefers Python"
+    warning.assert_called_once_with(
+        "Extractor: ignored trailing LLM text after JSON root: %r",
+        "!",
+    )
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        (
+            "Here is the extraction:\n"
+            '[{"source_id":"u1","target":"fact","content":"user prefers Python",'
+            '"confidence":1.0}]'
+        ),
+        (
+            "Template syntax is {placeholder}.\n"
+            '[{"source_id":"u1","target":"fact","content":"user prefers Python",'
+            '"confidence":1.0}]'
+        ),
+    ],
+)
+def test_extract_recovers_json_after_text_prefix(response):
+    extractor = _make_extractor([response])
+
+    result = extractor.extract([create_test_unit("u1", "user prefers Python")])
+
+    assert len(result) == 1
+    assert result[0].content == "user prefers Python"
+
+
+def test_extract_recovers_the_complete_array_after_text_prefix():
+    response = (
+        "Here is the extraction:\n"
+        "["
+        '{"source_id":"u1","target":"fact","content":"first memory","confidence":1.0},'
+        '{"source_id":"u2","target":"fact","content":"second memory","confidence":1.0}'
+        "]"
+    )
+    extractor = _make_extractor([response])
+
+    result = extractor.extract(
+        [
+            create_test_unit("u1", "first source"),
+            create_test_unit("u2", "second source"),
+        ]
+    )
+
+    assert [unit.content for unit in result] == ["first memory", "second memory"]
+
+
+@pytest.mark.parametrize("response", ["{}", "No memories were extracted: []"])
+def test_extract_treats_empty_json_as_empty_result(response):
+    extractor = _make_extractor([response])
+
+    assert extractor.extract([create_test_unit("u1", "source")]) == []
+
+
+def test_extract_continues_past_empty_json_to_non_empty_json():
+    response = (
+        "[]\n"
+        '[{"source_id":"u1","target":"fact","content":"user prefers Python",'
+        '"confidence":1.0}]'
+    )
+    extractor = _make_extractor([response])
+
+    result = extractor.extract([create_test_unit("u1", "user prefers Python")])
+
+    assert len(result) == 1
+    assert result[0].content == "user prefers Python"
 
 
 # ---------------------------------------------------------------------------

@@ -635,7 +635,7 @@ class ExtractorImpl(Extractor):
         # 调用 LLM（含重试）
         response = self._call_llm_with_retry(messages)
 
-        # 解析 JSON
+        # 解析 JSON。
         items = self.parse_llm_response(response)
         return self.build_candidates(items, units)
 
@@ -777,32 +777,55 @@ class ExtractorImpl(Extractor):
         raise last_exc
 
     def parse_llm_response(self, response: str) -> list[dict]:
-        """解析抽取 JSON；非法载荷显式失败，合法 ``[]`` 原样返回。"""
-        # 尝试直接解析
-        try:
-            parsed = json.loads(response)
-            if isinstance(parsed, list):
-                return parsed
-            # 单条包装为 list
-            if isinstance(parsed, dict):
-                return [parsed]
-        except json.JSONDecodeError:
-            logger.debug("Extractor: direct JSON parse failed, trying stripped JSON")
-
-        # 解析失败：尝试提取 JSON 部分（去除 markdown fences 等噪声）
+        """从响应中恢复最靠左的非空 JSON 对象或数组。"""
         cleaned = self._strip_non_json(response)
-        try:
-            parsed = json.loads(cleaned)
+        decoder = json.JSONDecoder()
+        empty_json_seen = False
+        start = 0
+
+        while True:
+            array_start = cleaned.find("[", start)
+            object_start = cleaned.find("{", start)
+            starts = [position for position in (array_start, object_start) if position >= 0]
+            if not starts:
+                break
+
+            start = min(starts)
+            try:
+                parsed, end = decoder.raw_decode(cleaned, start)
+            except json.JSONDecodeError:
+                start += 1
+                continue
+
             if isinstance(parsed, list):
-                return parsed
-            if isinstance(parsed, dict):
-                return [parsed]
+                if parsed:
+                    self._log_trailing_json_text(cleaned, end)
+                    return parsed
+                empty_json_seen = True
+            elif isinstance(parsed, dict):
+                if parsed:
+                    self._log_trailing_json_text(cleaned, end)
+                    return [parsed]
+                empty_json_seen = True
+            start += 1
+
+        if empty_json_seen:
+            return []
+
+        try:
+            parsed, _ = decoder.raw_decode(cleaned)
         except json.JSONDecodeError as exc:
-            logger.warning("Extractor: LLM response is not valid JSON")
+            logger.warning("Extractor: LLM response is not valid JSON; raw_response=%r", response)
             raise InvalidExtractionJSONError("extractor response is not valid JSON") from exc
         raise InvalidExtractionJSONError(
             f"extractor response must be a JSON array or object, got {type(parsed).__name__}"
         )
+
+    @staticmethod
+    def _log_trailing_json_text(text: str, end: int) -> None:
+        trailing = text[end:].strip()
+        if trailing:
+            logger.warning("Extractor: ignored trailing LLM text after JSON root: %r", trailing)
 
     @staticmethod
     def _strip_non_json(text: str) -> str:
