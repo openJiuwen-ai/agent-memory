@@ -265,20 +265,21 @@ class MemoryAPI(ABC):
         """审计查询：按条件（actor/action/layer/时间段等）检索审计留痕；
         本层据 ``security`` 鉴权 ``READ_AUDIT``。"""
 
-    # -- 跨 scope 授权（委托 PermissionManager，架构 §3.2） ------------------- #
+    # -- 跨 scope 授权（写入 Authorizer 读取的 GrantStore） ------------------- #
 
     @abstractmethod
     def grant(self, grant: Grant, *, security: RequestSecurityContext) -> None:
         """
         新增一条跨 scope 授权（共享池等）；本层据 ``security`` 鉴权 SHARE
-        （须有权再授权 ``grant.grantor`` 范围）。
+        （须有权再授权 ``grant.grantor`` 范围），通过后写入 Authorizer 判定读取的
+        ``GrantStore``（经 ``authorizer.management_grant_store()`` 共享同一真源）。
         """
 
     @abstractmethod
     def revoke(self, grant: Grant, *, security: RequestSecurityContext) -> None:
         """
-        回收一条授权（幂等）；本层据 ``security`` 鉴权 ``REVOKE_SHARE``。匹配
-        哪条既有授权由具体实现定义。
+        回收一条授权（幂等）；本层据 ``security`` 鉴权 ``REVOKE_SHARE``，按
+        (grantor, grantee, action) 选择子定位真源记录、按 ``grant_id`` 撤销。
         """
 
     # -- Space 管理（委托 SpaceManager） ------------------------------------ #

@@ -203,8 +203,8 @@ active → archived → forgotten
 `AuthContext + ResourceDescriptor + AuthorizationEnvironment`，**不读 ContextVar**，
 也不存在 `auth=None` 退回纯 ACL、空 `Scope()` 即 platform admin 这两条旧兼容线——
 它们在 PR2 已删除。判定顺序与 truth table 见 [S08](S08-security.md)。本层的
-`PermissionManager` 在当前主干只承担 grant/revoke 的授权**记录**写入；移除它的安全
-所有权是后续 PR 的事。
+`PermissionManager` 在当前主干已不再是 grant/revoke 的写入通道--API 的 grant/revoke
+改写 Authorizer 读取的 `GrantStore`；`PermissionManager` 仅作后续 PR 待删除的遗留。
 
 权限/授权后端由配置选择；无具体 target scope 的管理面方法（`admin_get` / `admin_set` /
 `admin_all` / 全局 `audit`）统一以根 scope `Scope()` 作为鉴权目标并携带

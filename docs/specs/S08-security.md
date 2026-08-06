@@ -47,6 +47,12 @@
   授权前复核 `AuthContext` 未撤销--撤销前缓存的上下文撤销后立即失效。`AuthContext` 保持纯
   数据值对象，撤销复核不进值对象（F05 §认证不变量 6、§决策顺序 1）。
 
+- **请求上下文受控构造**：`RequestSecurityContext` 带 `_origin` 受控来源标记，只有
+  `new_request_context` / `internal_context` 构造时设 `_TRUSTED`，直接 `RequestSecurityContext(...)`
+  为 `_UNTRUSTED`。PEP 校验 `_origin is _TRUSTED`，使「补齐 request_id/started_at 即可伪造
+  上下文」不成立--字段形状完整不等于来自认证边界。`surface` 在受控入口必填（keyword-only），
+  dataclass 的默认值仅服务于「不传即未受控」的检测。
+
 ### 依据 capability 做安全决策
 
 5. `Authenticator.requires_loopback_binding()` 默认返回 `True`。只有实现显式声明可远程

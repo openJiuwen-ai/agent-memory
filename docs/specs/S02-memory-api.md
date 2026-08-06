@@ -131,7 +131,7 @@
 | `trace` | `(unit_id, scope, *, security) -> list[MemoryUnit]` | 沿 provenance 追溯演进来源链 |
 | `audit` | `(filters: dict[str, str], *, security, limit=100) -> list[AuditEvent]` | 按条件检索审计留痕 |
 
-#### 授权面（委托 PermissionManager）
+#### 授权面（写入 Authorizer 读取的 GrantStore）
 
 | 方法 | 签名 | 语义 |
 |------|------|------|

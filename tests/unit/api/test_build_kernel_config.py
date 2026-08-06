@@ -2,9 +2,9 @@
 
 验证：默认（无 config）走离线进程内缺省；config 覆盖某具名实例的 target 时改用该实现；未注册的
 target 在 build 阶段报错；顶层段名拼错在解析期报错；具名实例经 ``build_named`` 共享单例。
-以安全层 authorizer + 存储层 vector_store 作可观测点——授权判定已从 ``control.permission``
-迁到 ``common.security.authorization``，``permission`` 段现在只喂 grant/revoke 的记录通道，
-覆盖它观测不到任何判定变化。
+以安全层 authorizer + 存储层 vector_store 作可观测点--授权判定与 grant/revoke 真源都已
+迁到 ``common.security.authorization``（Authorizer 经 ``management_grant_store()`` 向 PEP
+共享 ``GrantStore``），``permission`` 段不再被 PEP 引用，覆盖它观测不到判定或授权变化。
 """
 
 from __future__ import annotations
