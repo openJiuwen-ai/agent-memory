@@ -29,14 +29,42 @@ from ..types import FileStat
 
 
 class LocalFSStore(FSStore):
-    def __init__(self, *, root: str, create_root: bool = True) -> None:
-        self._root = Path(root).resolve()
+    """本地文件系统存储；``root`` 可经 ConfigSource ``fs_store.root`` 晚绑定。"""
+
+    def __init__(
+        self,
+        *,
+        root: str,
+        create_root: bool = True,
+        config_source=None,
+        config_namespace: str = "fs_store",
+    ) -> None:
+        self._fallback_root = root
+        self._create_root = create_root
+        self._config_source = config_source
+        self._config_namespace = config_namespace
+        # 构造期确保回落 root 存在，便于开箱可用
+        path = Path(root).resolve()
         if create_root:
-            self._root.mkdir(parents=True, exist_ok=True)
+            path.mkdir(parents=True, exist_ok=True)
+
+    def _resolved_root(self) -> Path:
+        from config.binding import resolve_connection_url
+
+        live = resolve_connection_url(
+            self._config_source,
+            namespace=self._config_namespace,
+            field="root",
+            fallback=self._fallback_root,
+        )
+        root = Path(live or self._fallback_root).resolve()
+        if self._create_root:
+            root.mkdir(parents=True, exist_ok=True)
+        return root
 
     def _path(self, scope: Scope, ref: str) -> Path:
         """把 ``(scope, ref)`` 解析为 ``root`` 下的绝对路径，并阻断目录穿越。"""
-        base = self._root.joinpath(*scope_segments(scope))
+        base = self._resolved_root().joinpath(*scope_segments(scope))
         target = (base / ref).resolve()
         if target != base and base.resolve() not in target.parents:
             raise ValidationError(f"ref escapes scope root: {ref!r}")
@@ -46,8 +74,9 @@ class LocalFSStore(FSStore):
         return StoreType.FS
 
     def health(self) -> None:
-        if not self._root.is_dir():
-            raise HealthCheckError(f"storage root not a directory: {self._root}")
+        root = self._resolved_root()
+        if not root.is_dir():
+            raise HealthCheckError(f"storage root not a directory: {root}")
 
     def insert(self, scope: Scope, key: str, data: BinaryIO) -> str:
         path = self._path(scope, key)
@@ -102,7 +131,10 @@ class LocalFSStore(FSStore):
 @FsProducer.register("local")
 def _build(config):
     # root 在构造器中无默认值 → 必填，build 阶段校验；create_root 有默认值，可覆盖。
+    from config.config_source import ConfigSourceProducer
+
     return LocalFSStore(
         root=Factory.require_param(config, "root", backend="local FS"),
         create_root=Factory.cfg_get(config, "create_root", True),
+        config_source=ConfigSourceProducer.get_cached("default"),
     )

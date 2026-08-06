@@ -23,13 +23,13 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
 | `fusion.py` | FusionStore 接口：融合存储（向量+倒排+正排一体） |
 | `fs.py` | FSStore 接口：文件系统存储（原始负载/二进制资产） |
 | `_support.py` | 后端实现共用：异常归一（`wrap_backend`）、scope 派生（`scope_dims`/`scope_segments`）、SSL 配置读取（`read_ssl_config`）；`SslConfig` 与 scheme 校验复用 `common._support` |
-| `_pg.py` | PostgreSQL 后端共享的惰性连接池、schema 工具与 FilterExpr SQL 编译 |
-| `kv_impl/` | KVStore 实现目录（memory / sqlite / redis / encrypted / postgres）及共用的 `memory_list.py` 兼容逻辑 |
-| `vector_impl/` | VectorStore 实现目录（memory / milvus / pgvector） |
-| `graph_impl/` | GraphStore 实现目录（memory） |
-| `fulltext_impl/` | FulltextStore 实现目录（memory） |
-| `fusion_impl/` | FusionStore 实现目录（memory） |
-| `fs_impl/` | FSStore 实现目录（local） |
+| `_pg.py` | PostgreSQL 后端共享的惰性连接池、schema 工具与 FilterExpr SQL 编译；`dsn` 支持 ConfigSource 晚绑定 |
+| `kv_impl/` | KVStore 实现目录（memory / sqlite / redis / encrypted / postgres）及共用的 `memory_list.py` 兼容逻辑；连接型后端支持 `kv_store.*` 晚绑定 |
+| `vector_impl/` | VectorStore 实现目录（memory / milvus / pgvector）；`uri`/`dsn` 晚绑定 |
+| `graph_impl/` | GraphStore 实现目录（memory / nano_graphrag）；`working_dir` 晚绑定 |
+| `fulltext_impl/` | FulltextStore 实现目录（memory / elasticsearch）；`hosts` 晚绑定 |
+| `fusion_impl/` | FusionStore 实现目录（memory / milvus_graph）；`uri`/`working_dir` 晚绑定 |
+| `fs_impl/` | FSStore 实现目录（local）；`root` 晚绑定 |
 | `storage_impl/` | Storage 实现目录；`CompositeStorage` 以 `composite` target 自注册 |
 | `bootstrap.py` | 统一触发六类 Store 后端与 Storage 实现注册 |
 
@@ -136,3 +136,8 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
 12. `Storage.scopes()` 枚举 MemoryUnit 真源已有 Scope；分层索引通过
     `has_*_port(name)` / `*_port(name)` 访问命名端口，Construction、Retrieval、Control 不得直接
     调用 Store Producer 解析具名后端。
+13. 连接型后端须支持 ConfigSource 晚绑定（S08 / F01 §2.1.4）：在取客户端/连接路径
+    `fetch` 对应 key，值变化则重建连接（同实现换 Redis URL / db_path 走此路径，不必多实例）。
+    异质 `*.active` 切换由 `config.routing.Routing*Store`
+    门面承担（产品手工注入，不改默认拓扑）。
+

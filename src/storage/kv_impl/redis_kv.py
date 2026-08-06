@@ -41,7 +41,7 @@ def _decode_scope_segment(segment: str) -> str:
 
 
 class RedisKVStore(KVStore):
-    """Redis KV 后端；支持构造期 url/host 与运行时 ``kv_store.url`` 晚绑定。"""
+    """Redis KV 后端；支持构造期 url/host 与运行时 ``kv_store.*`` 晚绑定。"""
 
     def __init__(
         self,
@@ -55,15 +55,18 @@ class RedisKVStore(KVStore):
         config_namespace: str = "kv_store",
         **options: Any,
     ) -> None:
-        # 构造期 url 为 ConfigSource 缺失时的回落
+        # 构造期字段为 ConfigSource 缺失时的回落
         self._fallback_url = url
+        self._fallback_host = host
+        self._fallback_port = int(port)
+        self._fallback_db = int(db)
+        self._fallback_password = password
         self._config_source = config_source
         self._config_namespace = config_namespace
-        # url 分支走 from_url，不读 _conn，故 options 需单独留一份透传（见 client）。
+        # url 分支走 from_url，不读 host 指纹，故 options 需单独留一份透传（见 client）。
         self._options = dict(options)
-        self._conn = dict(host=host, port=port, db=db, password=password, **options)
         self._client: Any = None
-        self._client_url: str | None = None  # 与当前 client 对应的已解析 url
+        self._client_fingerprint: object | None = None
 
     def _resolved_url(self) -> str | None:
         """解析当前应连接的 Redis URL（ConfigSource ``kv_store.url`` 优先）。"""
@@ -76,14 +79,65 @@ class RedisKVStore(KVStore):
             fallback=self._fallback_url,
         )
 
+    def _resolved_host_conn(self) -> dict[str, Any]:
+        """无 url 时解析 host/port/db/password（ConfigSource 晚绑定）。"""
+        from config.active import resolve_bound_value
+
+        host = resolve_bound_value(
+            self._config_source,
+            namespace=self._config_namespace,
+            field="host",
+            fallback=self._fallback_host,
+        ) or self._fallback_host
+        port_raw = resolve_bound_value(
+            self._config_source,
+            namespace=self._config_namespace,
+            field="port",
+            fallback=str(self._fallback_port),
+        )
+        db_raw = resolve_bound_value(
+            self._config_source,
+            namespace=self._config_namespace,
+            field="db",
+            fallback=str(self._fallback_db),
+        )
+        password = resolve_bound_value(
+            self._config_source,
+            namespace=self._config_namespace,
+            field="password",
+            fallback=self._fallback_password,
+        )
+        return {
+            "host": host,
+            "port": int(port_raw) if port_raw is not None else self._fallback_port,
+            "db": int(db_raw) if db_raw is not None else self._fallback_db,
+            "password": password if password not in (None, "") else self._fallback_password,
+            **self._options,
+        }
+
+    def _client_key(self) -> object:
+        """当前连接指纹：有 url 用 url；否则用 host 四元组。"""
+        url = self._resolved_url()
+        if url:
+            return ("url", url)
+        conn = self._resolved_host_conn()
+        return (
+            "host",
+            conn["host"],
+            conn["port"],
+            conn["db"],
+            conn.get("password"),
+        )
+
     @property
     def client(self) -> Any:
         """惰性创建 Redis 客户端（``decode_responses=False``，值以 bytes 收发）。
 
-        ``kv_store.url`` 经 ConfigSource 晚绑定；URL 变化时重建客户端。
+        ``kv_store.url`` 或 ``host``/``port``/``db``/``password`` 经 ConfigSource
+        晚绑定；指纹变化时重建客户端。
         """
-        url = self._resolved_url()
-        if self._client is not None and self._client_url == url:
+        key = self._client_key()
+        if self._client is not None and self._client_fingerprint == key:
             return self._client
         try:
             import redis
@@ -92,14 +146,15 @@ class RedisKVStore(KVStore):
                 "redis client not installed (pip install redis)"
             ) from exc
         with wrap_backend("redis connect"):
-            if url:
+            if key[0] == "url":
                 # url 里的 query 参数优先级高于此处 kwargs（redis-py 解析顺序所致）。
                 self._client = redis.Redis.from_url(
-                    url, decode_responses=False, **self._options
+                    key[1], decode_responses=False, **self._options
                 )
             else:
-                self._client = redis.Redis(decode_responses=False, **self._conn)
-        self._client_url = url
+                conn = self._resolved_host_conn()
+                self._client = redis.Redis(decode_responses=False, **conn)
+        self._client_fingerprint = key
         return self._client
 
     @staticmethod

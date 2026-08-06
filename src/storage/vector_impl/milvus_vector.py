@@ -37,7 +37,7 @@ from storage.vector import VectorProducer
 
 from .._support import read_ssl_config, scope_dims, scope_segments, wrap_backend
 from ..base import StoreType
-from ..types import ScoredID, ScoredHit, VectorQuery, VectorRecord
+from ..types import ScoredHit, ScoredID, VectorQuery, VectorRecord
 from ..vector import VectorStore
 
 _SCOPE_FIELDS = (
@@ -106,11 +106,15 @@ class MilvusVectorStore(VectorStore):
         consistency_level: str = "Strong",
         scope_field_max_length: int = 256,
         id_max_length: int = 512,
+        config_source=None,
+        config_namespace: str = "vector_store",
         **options: Any,
     ) -> None:
         if dim <= 0:
             raise ValidationError("milvus vector store requires positive 'dim'")
-        self._uri = uri or f"http://{host}:{port}"
+        self._fallback_uri = uri or f"http://{host}:{port}"
+        self._config_source = config_source
+        self._config_namespace = config_namespace
         self._token = token
         self._collection = collection
         self._dim = dim
@@ -123,22 +127,38 @@ class MilvusVectorStore(VectorStore):
         self._physical_id_len = id_max_length + 5 * (scope_field_max_length + 1)
         self._options = options
         self._client: Any = None
+        self._client_uri: str | None = None
+
+    def _resolved_uri(self) -> str:
+        """当前 Milvus URI（ConfigSource ``vector_store.uri`` / ``fusion_store.uri``）。"""
+        from config.binding import resolve_connection_url
+
+        live = resolve_connection_url(
+            self._config_source,
+            namespace=self._config_namespace,
+            field="uri",
+            fallback=self._fallback_uri,
+        )
+        return live or self._fallback_uri
 
     @property
     def client(self) -> Any:
-        if self._client is None:
-            try:
-                from pymilvus import MilvusClient
-            except ImportError as exc:
-                raise BackendError(
-                    "pymilvus client not installed (pip install pymilvus)"
-                ) from exc
-            with wrap_backend("milvus connect"):
-                kwargs: dict[str, Any] = dict(self._options)
-                if self._token:
-                    kwargs["token"] = self._token
-                self._client = MilvusClient(uri=self._uri, **kwargs)
-                self._ensure_collection()
+        uri = self._resolved_uri()
+        if self._client is not None and self._client_uri == uri:
+            return self._client
+        try:
+            from pymilvus import MilvusClient
+        except ImportError as exc:
+            raise BackendError(
+                "pymilvus client not installed (pip install pymilvus)"
+            ) from exc
+        with wrap_backend("milvus connect"):
+            kwargs: dict[str, Any] = dict(self._options)
+            if self._token:
+                kwargs["token"] = self._token
+            self._client = MilvusClient(uri=uri, **kwargs)
+            self._client_uri = uri
+            self._ensure_collection()
         return self._client
 
     def _ensure_collection(self) -> None:
@@ -373,6 +393,8 @@ class MilvusVectorStore(VectorStore):
 def _build(config):
     # 三方库后端：uri 必填；dim 取本组件 params.dim，回退到内核共享的 embedder_dim。
     # 其余构造参数（host/port/一致性/字段长度等）均有默认值，可经 params 覆盖。
+    from config.config_source import ConfigSourceProducer
+
     ssl = read_ssl_config(config, backend="milvus vector")
     options: dict[str, Any] = {}
     if ssl.verify:
@@ -392,5 +414,6 @@ def _build(config):
         consistency_level=Factory.cfg_get(config, "consistency_level", "Strong"),
         scope_field_max_length=Factory.cfg_get(config, "scope_field_max_length", 256),
         id_max_length=Factory.cfg_get(config, "id_max_length", 512),
+        config_source=ConfigSourceProducer.get_cached("default"),
         **options,
     )

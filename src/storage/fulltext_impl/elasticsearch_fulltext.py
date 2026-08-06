@@ -60,9 +60,13 @@ class ElasticsearchFulltextStore(FulltextStore):
         text_field: str = "text",
         text_analyzer: str | None = None,
         refresh: str = "false",
+        config_source=None,
+        config_namespace: str = "fulltext_store",
         **options: Any,
     ) -> None:
-        self._hosts = hosts or "http://localhost:9200"
+        self._fallback_hosts = hosts or "http://localhost:9200"
+        self._config_source = config_source
+        self._config_namespace = config_namespace
         self._index = index
         self._text_field = text_field
         # 建索引期分析器，按记忆主语言选（查询侧自动同规则）：
@@ -75,24 +79,53 @@ class ElasticsearchFulltextStore(FulltextStore):
         self._auth = dict(username=username, password=password, api_key=api_key)
         self._options = options
         self._client: Any = None
+        self._client_hosts: object | None = None
+
+    def _resolved_hosts(self) -> list[str] | str:
+        """当前 ES hosts（ConfigSource ``fulltext_store.hosts``）。"""
+        from config.binding import resolve_connection_url
+
+        live = resolve_connection_url(
+            self._config_source,
+            namespace=self._config_namespace,
+            field="hosts",
+            fallback=(
+                self._fallback_hosts
+                if isinstance(self._fallback_hosts, str)
+                else ",".join(self._fallback_hosts)
+            ),
+        )
+        if live is None:
+            return self._fallback_hosts
+        # 投影多为逗号分隔串；单 host 保持 str，多 host 拆成 list 供 ES 客户端
+        parts = [p.strip() for p in str(live).split(",") if p.strip()]
+        if len(parts) <= 1:
+            return parts[0] if parts else self._fallback_hosts
+        return parts
 
     @property
     def client(self) -> Any:
-        if self._client is None:
-            try:
-                from elasticsearch import Elasticsearch
-            except ImportError as exc:
-                raise BackendError(
-                    "elasticsearch client not installed (pip install elasticsearch)"
-                ) from exc
-            opts: dict[str, Any] = dict(self._options)
-            if self._auth["api_key"]:
-                opts["api_key"] = self._auth["api_key"]
-            elif self._auth["username"]:
-                opts["basic_auth"] = (self._auth["username"], self._auth["password"])
-            with wrap_backend("elasticsearch connect"):
-                self._client = Elasticsearch(self._hosts, **opts)
-                self._ensure_index()
+        hosts = self._resolved_hosts()
+        fingerprint: object = (
+            tuple(hosts) if isinstance(hosts, list) else hosts
+        )
+        if self._client is not None and self._client_hosts == fingerprint:
+            return self._client
+        try:
+            from elasticsearch import Elasticsearch
+        except ImportError as exc:
+            raise BackendError(
+                "elasticsearch client not installed (pip install elasticsearch)"
+            ) from exc
+        opts: dict[str, Any] = dict(self._options)
+        if self._auth["api_key"]:
+            opts["api_key"] = self._auth["api_key"]
+        elif self._auth["username"]:
+            opts["basic_auth"] = (self._auth["username"], self._auth["password"])
+        with wrap_backend("elasticsearch connect"):
+            self._client = Elasticsearch(hosts, **opts)
+            self._client_hosts = fingerprint
+            self._ensure_index()
         return self._client
 
     def _ensure_index(self) -> None:
@@ -412,6 +445,8 @@ class ElasticsearchFulltextStore(FulltextStore):
 @FulltextProducer.register("elasticsearch")
 def _build(config):
     # 三方库后端：hosts 必填，未配置即在 build 阶段报错；其余构造参数有默认值，可经 params 覆盖。
+    from config.config_source import ConfigSourceProducer
+
     hosts = Factory.require_param(config, "hosts", backend="elasticsearch fulltext")
     ssl = read_ssl_config(config, backend="elasticsearch fulltext")
     options: dict[str, Any] = {}
@@ -433,5 +468,6 @@ def _build(config):
         text_field=Factory.cfg_get(config, "text_field", "text"),
         text_analyzer=Factory.cfg_get(config, "text_analyzer"),
         refresh=Factory.cfg_get(config, "refresh", "false"),
+        config_source=ConfigSourceProducer.get_cached("default"),
         **options,
     )

@@ -91,15 +91,35 @@ class NanoGraphRAGGraphStore(GraphStore):
         working_dir: str,
         namespace_prefix: str = "agent_memory_graph",
         create_root: bool = True,
+        config_source=None,
+        config_namespace: str = "graph_store",
         **options: Any,
     ) -> None:
-        self._working_dir = str(Path(working_dir).resolve())
+        self._fallback_working_dir = str(Path(working_dir).resolve())
+        self._config_source = config_source
+        self._config_namespace = config_namespace
         self._prefix = namespace_prefix
+        self._create_root = create_root
         self._options = options
         self._storages: dict[str, Any] = {}  # namespace -> NetworkXStorage
+        self._active_working_dir: str | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         if create_root:
-            Path(self._working_dir).mkdir(parents=True, exist_ok=True)
+            Path(self._fallback_working_dir).mkdir(parents=True, exist_ok=True)
+
+    def _resolved_working_dir(self) -> str:
+        from config.binding import resolve_connection_url
+
+        live = resolve_connection_url(
+            self._config_source,
+            namespace=self._config_namespace,
+            field="working_dir",
+            fallback=self._fallback_working_dir,
+        )
+        path = str(Path(live or self._fallback_working_dir).resolve())
+        if self._create_root:
+            Path(path).mkdir(parents=True, exist_ok=True)
+        return path
 
     # ------------------------------------------------------------ 基础设施
     def _run(self, coro: Any) -> Any:
@@ -111,12 +131,17 @@ class NanoGraphRAGGraphStore(GraphStore):
         return f"{self._prefix}-" + "_".join(scope_segments(scope))
 
     def _store(self, scope: Scope) -> Any:
+        working_dir = self._resolved_working_dir()
+        if self._active_working_dir != working_dir:
+            # working_dir 切换：丢弃旧 scope 缓存（旧图文件仍在旧目录，不迁移）
+            self._storages.clear()
+            self._active_working_dir = working_dir
         ns = self._namespace(scope)
         storage = self._storages.get(ns)
         if storage is None:
             cls = _networkx_storage_cls()
             with wrap_backend("nano-graphrag open"):
-                storage = cls(namespace=ns, global_config={"working_dir": self._working_dir})
+                storage = cls(namespace=ns, global_config={"working_dir": working_dir})
             self._storages[ns] = storage
         return storage
 
@@ -157,8 +182,10 @@ class NanoGraphRAGGraphStore(GraphStore):
             _networkx_storage_cls()
         except BackendError as exc:
             raise HealthCheckError(str(exc)) from exc
-        if not Path(self._working_dir).is_dir():
-            raise HealthCheckError(f"graph working_dir not a directory: {self._working_dir}")
+        if not Path(self._resolved_working_dir()).is_dir():
+            raise HealthCheckError(
+                f"graph working_dir not a directory: {self._resolved_working_dir()}"
+            )
 
     def seed_ids(self, scope: Scope, tokens: set[str]) -> list[str]:
         if not tokens:
@@ -312,8 +339,11 @@ class NanoGraphRAGGraphStore(GraphStore):
 @GraphProducer.register("nano_graphrag")
 def _build(config):
     # working_dir 在构造器中无默认值 → 必填；namespace_prefix/create_root 有默认值，可覆盖。
+    from config.config_source import ConfigSourceProducer
+
     return NanoGraphRAGGraphStore(
         working_dir=Factory.require_param(config, "working_dir", backend="nano_graphrag graph"),
         namespace_prefix=Factory.cfg_get(config, "namespace_prefix", "agent_memory_graph"),
         create_root=Factory.cfg_get(config, "create_root", True),
+        config_source=ConfigSourceProducer.get_cached("default"),
     )

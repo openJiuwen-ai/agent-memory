@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `src/config/` |
-| 最近一次修订日期 | 2026-08-07 |
+| 最近一次修订日期 | 2026-08-09 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md` |
 
 ## 范围 / 边界
@@ -24,6 +24,7 @@
 - 不承载调用级业务 options（见 S02 `Context.extensions` / 方法参数）
 - 不做 Store 数据迁移、向量索引重建
 - 不规定产品配置中心的推送/TTL/缓存失效运维接口（实现方可自管缓存，首版契约不要求 invalidate）
+- **不**提供 `storage.active` / 运行时拆换整个 `CompositeStorage`（整包拓扑热切换）；异质切换落在各 `*_store.active` + `Routing*Store`（方案 A），详见 F01 §2.1.5
 
 ## 不变量
 
@@ -113,6 +114,17 @@ ConfigSource
     → 仅允许解析为已存在的具名实例名
     → 未知 active → ValidationError，禁止静默落到错误实例
 ```
+
+### 与统一 Storage（CompositeStorage）的关系
+
+- `storage.default`（通常 `composite`）是 Kernel / Retriever 共享的统一门面；下层端口引用
+  `kv_store` / `vector_store` / … 具名实例。
+- ConfigSource 的 Store 改值 / `*_store.active` 作用于**端口背后的 Store**（含产品注入的
+  `Routing*Store`），不是 `storage.active`。
+- `build_kernel` 强制：`kv_store.default` 若非已加密则外包 `EncryptedKVStore`；故
+  `RoutingKVStore` 须作为 **raw** 被包在加密层之内。
+- 接线真值表、用户 A（同实例改 `kv_store.url` + `pgvector→milvus` Routing）装配示意见
+  `docs/features/config/F01-config-source.md` 决策 2.1.5；同实现换 Redis **不**走 `RoutingKVStore`。
 
 ### 与业务 API 的关系
 

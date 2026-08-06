@@ -33,6 +33,8 @@ class PostgresKVStore(PgStoreBase, KVStore):
         auto_create_schema: bool = True,
         ssl_verify: bool = False,
         ssl_ca_cert: str | None = None,
+        config_source=None,
+        config_namespace: str = "kv_store",
     ) -> None:
         super().__init__(
             dsn=dsn,
@@ -45,6 +47,9 @@ class PostgresKVStore(PgStoreBase, KVStore):
             auto_create_schema=auto_create_schema,
             ssl_verify=ssl_verify,
             ssl_ca_cert=ssl_ca_cert,
+            config_source=config_source,
+            config_namespace=config_namespace,
+            config_dsn_field="dsn",
         )
 
     def _ensure_schema(self, pool: Any) -> None:
@@ -268,6 +273,8 @@ class PostgresKVStore(PgStoreBase, KVStore):
 @KvProducer.register("postgres")
 def _build(config):
     # sslmode 是参数形态的真开关，无须校验 dsn scheme（见 _pg.PgStoreBase.pool）。
+    from config.config_source import ConfigSourceProducer
+
     ssl = read_ssl_config(config, backend="postgres KV")
     return PostgresKVStore(
         dsn=Factory.require_param(config, "dsn", backend="postgres KV"),
@@ -280,4 +287,5 @@ def _build(config):
         connect_timeout=Factory.cfg_get(config, "connect_timeout", 10.0),
         application_name=Factory.cfg_get(config, "application_name", "agent_memory"),
         auto_create_schema=Factory.cfg_get(config, "auto_create_schema", True),
+        config_source=ConfigSourceProducer.get_cached("default"),
     )

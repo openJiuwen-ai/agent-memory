@@ -19,7 +19,7 @@
 | `project.py` | `AssemblyContext` → 扁平 key→str 投影 |
 | `active.py` | `resolve_active_name` / `resolve_bound_value` |
 | `binding.py` | 调用路径晚绑定：`resolve_endpoint` / `resolve_connection_url` |
-| `routing.py` | `ActiveRouter` + `RoutingEmbedder`/`RoutingLLM`/`RoutingReranker`（异质实例次选） |
+| `routing.py` | `ActiveRouter` + `RoutingEmbedder`/`RoutingLLM`/`RoutingReranker` + `RoutingKVStore`/`RoutingVectorStore`/`RoutingFulltextStore`/`RoutingGraphStore`/`RoutingFusionStore`/`RoutingFSStore`（异质实例次选；Store 门面方案 A 手工注入） |
 
 ## 行为铁律
 
@@ -28,6 +28,7 @@
 
 2. **同实现凭证优先晚绑定**  
    model/api_key/base_url/url 在 Embedder/LLM/Reranker/Store 调用或取连接路径 `fetch`；`*.active` 仅用于异质实现互切。
+   **禁止**为同实现换 Redis URL / sqlite `db_path` 预装 `Redis_1`/`Redis_2` 等多具名实例再切 `kv_store.active`（装配期猜集群数；后来的集群应 `put(kv_store.url)`）。
 
 3. **A/B 分离**  
    换 ConfigSource 实现或增减预装实例 = 装配/重建（A）；已注入来源上 `fetch` / 改 `*.active` = 运行时（B）。
@@ -45,11 +46,15 @@
    `storage.default` 选择统一 Storage 实现；Retriever 与 Kernel 都引用该名称。CompositeStorage
    的 `kv_store` / `vector_store` / `fulltext_store` / `graph_store` 等参数只引用下层具名 Store，
    不复制连接配置。Construction、Retrieval、Control 的组件参数只引用 `storage`，不得再直接
-   引用下层 Store 命名空间。
+   引用下层 Store 命名空间。**不**提供 `storage.active` / 整颗 CompositeStorage 热切换。
 
 8. **安全提供者必须经根引用装配**
    `ROOT_PARAMS["security"]` 指向 `security.default`；`build_kernel` 创建加密 KV 时必须通过该
    具名引用取 provider，确保用户的 `security` 参数可覆盖默认配置。
+
+9. **RoutingKV 须在 Encrypted 之内**
+   产品注入 `RoutingKVStore` 时挂在 `kv_store.default` 的 raw；`build_kernel` 再外包
+   `EncryptedKVStore`。禁止把 Routing 包在加密层外面（见 F01 §2.1.5 / S08）。
 
 ## 与其他子目录的边界
 
