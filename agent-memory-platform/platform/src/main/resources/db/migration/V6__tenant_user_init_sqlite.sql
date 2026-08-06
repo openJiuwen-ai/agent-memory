@@ -85,7 +85,7 @@ INSERT OR IGNORE INTO role_permissions (id, role, permission) VALUES ('rp_042', 
 INSERT OR IGNORE INTO role_permissions (id, role, permission) VALUES ('rp_043', 'SECURITY_ADMIN', 'trace:read');
 INSERT OR IGNORE INTO role_permissions (id, role, permission) VALUES ('rp_044', 'SECURITY_ADMIN', 'template:read');
 
--- SCOPE_ADMIN（10 项）
+-- SCOPE_ADMIN（13 项）
 INSERT OR IGNORE INTO role_permissions (id, role, permission) VALUES ('rp_045', 'SCOPE_ADMIN', 'memory:read');
 INSERT OR IGNORE INTO role_permissions (id, role, permission) VALUES ('rp_046', 'SCOPE_ADMIN', 'memory:write');
 INSERT OR IGNORE INTO role_permissions (id, role, permission) VALUES ('rp_047', 'SCOPE_ADMIN', 'memory:delete');
@@ -96,6 +96,10 @@ INSERT OR IGNORE INTO role_permissions (id, role, permission) VALUES ('rp_051', 
 INSERT OR IGNORE INTO role_permissions (id, role, permission) VALUES ('rp_052', 'SCOPE_ADMIN', 'governance:read');
 INSERT OR IGNORE INTO role_permissions (id, role, permission) VALUES ('rp_053', 'SCOPE_ADMIN', 'governance:write');
 INSERT OR IGNORE INTO role_permissions (id, role, permission) VALUES ('rp_054', 'SCOPE_ADMIN', 'trace:read');
+INSERT OR IGNORE INTO role_permissions (id, role, permission) VALUES ('rp_064', 'SCOPE_ADMIN', 'config:read');
+INSERT OR IGNORE INTO role_permissions (id, role, permission) VALUES ('rp_065', 'SCOPE_ADMIN', 'config:write');
+INSERT OR IGNORE INTO role_permissions (id, role, permission) VALUES ('rp_066', 'SCOPE_ADMIN', 'log:read');
+INSERT OR IGNORE INTO role_permissions (id, role, permission) VALUES ('rp_067', 'SCOPE_ADMIN', 'tenant:read');
 
 -- READ_ONLY（7 项）
 INSERT OR IGNORE INTO role_permissions (id, role, permission) VALUES ('rp_055', 'READ_ONLY', 'tenant:read');

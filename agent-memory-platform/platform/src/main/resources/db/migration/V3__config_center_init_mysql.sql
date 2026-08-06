@@ -74,18 +74,19 @@ CREATE TABLE IF NOT EXISTS config_versions (
 
 CREATE TABLE IF NOT EXISTS config_audit_logs (
     id              VARCHAR(64)  NOT NULL,
-    admin_user_id   VARCHAR(64)  NOT NULL,
-    scope_name      VARCHAR(128),
-    operator_id     VARCHAR(64)  NOT NULL,
-    operation       VARCHAR(32)  NOT NULL,
-    before_config   LONGTEXT,
-    after_config    LONGTEXT,
-    template_id     VARCHAR(64),
+    operator_id     VARCHAR(64)  NOT NULL,                -- 操作人
+    tenant_id       TEXT,                                   -- 涉及租户 (NULL=平台级)
+    template_id     VARCHAR(64),                           -- 涉及模板
+    instance_id     VARCHAR(64) NOT NULL DEFAULT 'default',
+    operation       VARCHAR(64)  NOT NULL,
+    before_value    LONGTEXT,                               -- before JSON
+    after_value     LONGTEXT,                               -- after JSON
     success         TINYINT(1)   NOT NULL,
     error_message   TEXT,
     operated_at     TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+    reason          TEXT                                    -- 操作原因
     PRIMARY KEY (id),
-    INDEX idx_cfg_audit_admin_time (admin_user_id, operated_at)
+    INDEX idx_cfg_audit_tenant_time (tenant_id, operated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- -----------------------------------------------------

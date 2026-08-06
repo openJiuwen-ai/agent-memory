@@ -2,6 +2,7 @@ package com.openjiuwen.memory.scopecenter.service;
 
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.openjiuwen.memory.scopecenter.domain.ScopeRegistry;
+import com.openjiuwen.memory.scopecenter.dto.ScopeStatsDTO;
 
 import java.util.List;
 
@@ -46,7 +47,22 @@ public interface ScopeRegistryService extends IService<ScopeRegistry> {
     void batchAssignScopesToTenant(List<String> scopeIds, String tenantId);
     
     /**
-     * 批量释放Scope
+     * 批量释放 Scope
      */
     void batchReleaseScopes(List<String> scopeIds);
+    
+    /**
+     * 获取指定 Scope 的统计信息（包含绑定租户状态）
+     */
+    ScopeStatsDTO getScopeStats(String scopeId);
+    
+    /**
+     * 检查 scope_id 是否已存在
+     */
+    boolean existsByScopeId(String scopeId);
+    
+    /**
+     * 根据 scope_id 查询 Scope
+     */
+    ScopeRegistry getByScopeId(String scopeId);
 }

@@ -236,6 +236,26 @@ public interface MemoryEngineClient {
         throw new GapException("用户消息详情 API 未由 :8516 暴露，待记忆服务补 GET /admin/messages/detail/{msgId}");
     }
 
+    // —— V3-DEFECT-058/059 修复：新增内核调用方法 ——
+    
+    /**
+     * V3-DEFECT-058: 获取记忆完整元数据
+     * 调用 Python 内核的 message_manager.get_with_metadata() 或对应方法
+     * @return 内核原始响应 {found, mem_id, content, type, timestamp, fields{...}}
+     */
+    default Map<String, Object> getMemoryWithMetadata(String userId, String scopeId, String memId) {
+        throw new GapException("get_memory_with_metadata 未由 :8516 暴露，待记忆服务补内核实现");
+    }
+    
+    /**
+     * V3-DEFECT-059: 按角色统计用户消息数量
+     * 调用 Python 内核的 sql_message_store.count_by_role() 方法
+     * @return 内核原始响应 {by_role:{user:N,assistant:N}, total:N}
+     */
+    default Map<String, Object> countMessagesByRole(String userId, String scopeId, String sessionId) {
+        throw new GapException("count_messages_by_role 未由 :8516 暴露，待记忆服务补内核实现");
+    }
+
     default Object startDreaming(Object config) {
         throw new GapException("start_dreaming 未由 :8516 暴露，待记忆服务补 /ops/dreaming/start");
     }

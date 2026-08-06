@@ -319,14 +319,30 @@ function handlePageChange() {
   fetchMemories()
 }
 
-// 拉取平台 Scope 列表，自动选第一个并查询
+// 拉取平台 Scope 列表，根据用户角色显示对应的 Scope
 async function fetchScopes() {
   try {
-    scopeOptions.value = await getAllScopes()
+    const allScopes = await getAllScopes()
+    
+    // 全局角色（SUPER_ADMIN/PLATFORM_ADMIN/SECURITY_ADMIN）显示所有 Scope
+    if (userStore.isSuperAdmin || userStore.isPlatformAdmin || userStore.isSecurityAdmin) {
+      scopeOptions.value = allScopes
+    } else {
+      // 租户绑定角色（SCOPE_ADMIN/READ_ONLY/VIEWER）只显示绑定的 Scope
+      scopeOptions.value = allScopes.filter(s => 
+        userStore.scopeIds.includes(s.scopeId)
+      )
+    }
+    
     if (scopeOptions.value.length > 0) {
       filter.scopeId = scopeOptions.value[0].scopeId
       varFilter.scopeId = filter.scopeId
       fetchMemories()
+    } else {
+      // 如果没有 Scope，清空筛选条件
+      filter.scopeId = ''
+      varFilter.scopeId = ''
+      console.log('[Scope 过滤] 当前用户未绑定任何 Scope')
     }
   } catch (e) {
     // request 拦截器已提示

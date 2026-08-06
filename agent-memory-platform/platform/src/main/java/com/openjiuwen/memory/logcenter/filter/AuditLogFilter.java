@@ -147,7 +147,16 @@ public class AuditLogFilter extends OncePerRequestFilter {
             if ("POST".equalsIgnoreCase(method)) return "CONFIG_CREATE";
             if ("PUT".equalsIgnoreCase(method)) return "CONFIG_UPDATE";
         }
-        
+
+        // 租户 Scope 配置操作（/api/v1/tenant-scope-configs）
+        // POST /{tenantId}/sync-from-template 语义为"同步回模板"→ CONFIG_UPDATE
+        if (path.contains("/tenant-scope-configs")) {
+            if ("DELETE".equalsIgnoreCase(method)) return "CONFIG_DELETE";
+            if (path.contains("/sync-from-template")) return "CONFIG_UPDATE";
+            if ("POST".equalsIgnoreCase(method)) return "CONFIG_CREATE";
+            if ("PUT".equalsIgnoreCase(method)) return "CONFIG_UPDATE";
+        }
+
         // 记忆相关操作
         if (path.contains("/memories")) {
             if ("DELETE".equalsIgnoreCase(method)) return "MEMORY_DELETE";
@@ -184,6 +193,8 @@ public class AuditLogFilter extends OncePerRequestFilter {
             return "TEMPLATE";
         if (path.contains("/config/kernel"))
             return "KERNEL";
+        if (path.contains("/tenant-scope-configs"))
+            return "TENANT_CONFIG";
         if (path.contains("/memories"))
             return "MEMORY";
         if (path.contains("/variables"))
@@ -217,7 +228,8 @@ public class AuditLogFilter extends OncePerRequestFilter {
         String last = segments.get(segments.size() - 1);
         // 跳过操作性路径段，取倒数第二段
         if (last.equals("rollback") || last.equals("apply") || last.equals("versions")
-                || last.equals("start") || last.equals("stop") || last.equals("batch-delete")) {
+                || last.equals("start") || last.equals("stop") || last.equals("batch-delete")
+                || last.equals("sync-from-template")) {
             if (segments.size() > 1) {
                 return segments.get(segments.size() - 2);
             }

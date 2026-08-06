@@ -5,6 +5,7 @@ import com.openjiuwen.memory.configcenter.dto.ApplyTemplateRequest;
 import com.openjiuwen.memory.configcenter.dto.ConfigTemplateListItemDTO;
 import com.openjiuwen.memory.configcenter.dto.CreateTemplateRequest;
 import com.openjiuwen.memory.configcenter.dto.TemplateApplyResultDTO;
+import com.openjiuwen.memory.configcenter.dto.TemplateDeleteResultDTO;
 import com.openjiuwen.memory.configcenter.dto.UpdateTemplateRequest;
 
 import java.util.List;
@@ -31,8 +32,17 @@ public interface ConfigTemplateService {
     /** 修改模板参数（预置不可改） */
     ConfigTemplateEntity update(String id, UpdateTemplateRequest request, String operator);
 
-    /** 删除模板（预置不可删 + 无应用记录） */
-    void delete(String id, String operator);
+    /**
+     * 删除模板（预置不可删）。
+     * <p>
+     * 若模板被租户绑定，会级联清理：
+     * <ul>
+     *   <li>内核：调用 delete_scope_config 删除每个绑定租户的 scope 配置</li>
+     *   <li>DB：删除 tenant_scope_configs 绑定记录</li>
+     * </ul>
+     * 返回受影响的 scope 清理详情，供前端展示。
+     */
+    TemplateDeleteResultDTO delete(String id, String operator);
 
     /** 应用模板到租户（SCOPE 必填 targetTenantIds，INSTANCE 自动全局） */
     TemplateApplyResultDTO apply(ApplyTemplateRequest request, String operator);

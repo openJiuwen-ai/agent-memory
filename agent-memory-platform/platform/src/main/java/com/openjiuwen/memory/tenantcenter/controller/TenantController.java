@@ -1,14 +1,17 @@
 package com.openjiuwen.memory.tenantcenter.controller;
 
 
+import com.openjiuwen.memory.authcenter.service.UserService;
 import com.openjiuwen.memory.common.CommonResult;
 import com.openjiuwen.memory.configcenter.domain.ConfigTemplateEntity;
 import com.openjiuwen.memory.configcenter.domain.TenantScopeConfigEntity;
 import com.openjiuwen.memory.configcenter.mapper.ConfigTemplateMapper;
 import com.openjiuwen.memory.configcenter.mapper.TenantScopeConfigMapper;
+import com.openjiuwen.memory.scopecenter.domain.ScopeRegistry;
 import com.openjiuwen.memory.scopecenter.service.ScopeRegistryService;
 import com.openjiuwen.memory.tenantcenter.domain.Tenant;
 import com.openjiuwen.memory.tenantcenter.service.TenantService;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -40,6 +44,9 @@ public class TenantController {
     
     @Autowired
     private ScopeRegistryService scopeRegistryService;
+    
+    @Autowired
+    private UserService userService;
     
     private final ObjectMapper objectMapper = new ObjectMapper();
     
@@ -166,15 +173,26 @@ public class TenantController {
                 scopeRegistryService.batchReleaseScopes(oldScopeIds);
             }
             
-            // 分配新scope
+            // 分配新 scope
             if (newScopeIds != null && !newScopeIds.isEmpty()) {
                 existingTenant.setScopeIds(objectMapper.writeValueAsString(newScopeIds));
                 scopeRegistryService.batchAssignScopesToTenant(newScopeIds, tenantId);
             } else {
-                existingTenant.setScopeIds(null);
+                // 清除租户的 scope 绑定，设置为空字符串而不是 null
+                existingTenant.setScopeIds("[]");
+                // 显式释放 Scope（更新到 unassigned 状态）
+                for (String oldScopeId : oldScopeIds) {
+                    scopeRegistryService.lambdaUpdate()
+                        .eq(ScopeRegistry::getScopeId, oldScopeId)
+                        .set(ScopeRegistry::getStatus, "unassigned")
+                        .update();
+                }
             }
-            
+                        
             boolean success = tenantService.updateById(existingTenant);
+            if (!success) {
+                System.err.println("【租户更新失败】Tenant ID: " + tenantId + ", Updated scopeIds: " + existingTenant.getScopeIds());
+            }
             if (success) {
                 return CommonResult.success(existingTenant);
             } else {
@@ -187,30 +205,85 @@ public class TenantController {
     
     /**
      * 删除租户
+     * 删除前会：
+     * 1. 查询该租户绑定的模板信息（用于前端提示）
+     * 2. 查询该租户下的用户数量（用于前端提示）
+     * 3. 删除该租户下的所有用户
+     * 4. 清除 tenant_scope_config 表中的绑定记录
+     * 5. 释放 Scope
+     * 6. 删除租户
      */
     @DeleteMapping("/{tenantId}")
     @Transactional(rollbackFor = Exception.class)
-    public CommonResult<Void> delete(@PathVariable String tenantId) {
+    public CommonResult<Map<String, Object>> delete(@PathVariable String tenantId) {
         try {
             // 保护默认租户不被删除
             if ("tenant_001".equals(tenantId) || "tenant_default".equals(tenantId)) {
                 return CommonResult.error("默认租户不允许删除");
             }
-            
+                
             Tenant tenant = tenantService.getById(tenantId);
             if (tenant == null) {
                 return CommonResult.error("租户不存在");
             }
+                
+            // 查询该租户绑定的模板信息（用于前端提示）
+            String scopeName = null;
+            String templateName = null;
+            int userCount = 0;
+                
+            // 查询该租户下的用户数量
+            QueryWrapper<com.openjiuwen.memory.authcenter.domain.User> userWrapper = new QueryWrapper<>();
+            userWrapper.eq("tenant_id", tenantId);
+            userCount = (int) userService.count(userWrapper);
             
-            // 释放租户的所有scope
+            // 删除该租户下的所有用户
+            if (userCount > 0) {
+                userService.remove(userWrapper);
+            }
+                
+            // 获取 Scope 名称
+            if (tenant.getScopeIds() != null && !tenant.getScopeIds().isEmpty()) {
+                List<String> scopeIds = objectMapper.readValue(tenant.getScopeIds(), new TypeReference<List<String>>(){});
+                if (!scopeIds.isEmpty()) {
+                    // 按 scopeId 字段查询，而不是主键 id
+                    QueryWrapper<ScopeRegistry> scopeWrapper = new QueryWrapper<>();
+                    scopeWrapper.eq("scope_id", scopeIds.get(0));
+                    ScopeRegistry scope = scopeRegistryService.getOne(scopeWrapper);
+                    if (scope != null) {
+                        scopeName = scope.getScopeName();
+                    }
+                }
+            }
+                
+            // 查询该租户在 tenant_scope_config 中的记录，获取模板名称
+            QueryWrapper<TenantScopeConfigEntity> configWrapper = new QueryWrapper<>();
+            configWrapper.eq("tenant_id", tenantId);
+            TenantScopeConfigEntity config = tenantScopeConfigMapper.selectOne(configWrapper);
+            if (config != null && config.getTemplateId() != null) {
+                ConfigTemplateEntity template = configTemplateMapper.selectById(config.getTemplateId());
+                if (template != null) {
+                    templateName = template.getTemplateName();
+                }
+                // 清除模板中的租户绑定记录
+                tenantScopeConfigMapper.delete(configWrapper);
+            }
+                
+            // 释放租户的所有 scope
             if (tenant.getScopeIds() != null && !tenant.getScopeIds().isEmpty()) {
                 List<String> scopeIds = objectMapper.readValue(tenant.getScopeIds(), new TypeReference<List<String>>(){});
                 scopeRegistryService.batchReleaseScopes(scopeIds);
             }
-            
+                
+            // 删除租户
             boolean success = tenantService.removeById(tenantId);
             if (success) {
-                return CommonResult.success();
+                // 返回删除结果，包含模板、Scope 和用户信息（用于前端提示）
+                Map<String, Object> result = new HashMap<>();
+                result.put("scopeName", scopeName);
+                result.put("templateName", templateName);
+                result.put("userCount", userCount);
+                return CommonResult.success(result);
             } else {
                 return CommonResult.error("删除租户失败");
             }

@@ -6,7 +6,7 @@ import type { Permission } from '@/types/permission'
 const routes = [
   { path: '/login', name: 'Login', component: () => import('@/views/login/index.vue'), meta: { requiresAuth: false, title: '登录' } },
   {
-    path: '/', component: () => import('@/layouts/BasicLayout.vue'), redirect: '/dashboard', meta: { requiresAuth: true },
+    path: '/', component: () => import('@/layouts/BasicLayout.vue'), redirect: '/ops', meta: { requiresAuth: true },
     children: [
       { path: 'dashboard', name: 'Dashboard', component: () => import('@/views/dashboard/index.vue'), meta: { title: '首页' } },
       { path: 'memory', name: 'Memory', component: () => import('@/views/memory/index.vue'), meta: { title: '记忆管理', permission: 'memory:read' } },
@@ -51,7 +51,7 @@ router.beforeEach((to: RouteLocationNormalized, _from: RouteLocationNormalized, 
   document.title = to.meta.title ? `${to.meta.title} - 记忆管理平台` : '记忆管理平台'
 
   if (!to.meta.requiresAuth) {
-    if (to.path === '/login' && userStore.isLoggedIn) next('/dashboard')
+    if (to.path === '/login' && userStore.isLoggedIn) next('/ops')
     else next()
   } else {
     if (!userStore.isLoggedIn) { next('/login'); return }

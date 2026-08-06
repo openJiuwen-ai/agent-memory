@@ -4,7 +4,7 @@
       <!-- 标题区域 -->
       <div class="login-header">
         <div class="login-logo">
-          <el-icon :size="40" color="#6366F1"><Coin /></el-icon>
+          <el-icon :size="40" color="#FFFFFF"><Coin /></el-icon>
         </div>
         <h1 class="login-title">记忆管理平台</h1>
         <p class="login-subtitle">Memory Management Platform</p>
@@ -128,7 +128,7 @@ async function handleLogin() {
       }
 
       ElMessage.success('登录成功')
-      router.push('/dashboard')
+      router.push('/ops')
     } catch {
       // 错误已由响应拦截器处理
     } finally {
@@ -152,93 +152,142 @@ if (remembered) {
   align-items: center;
   justify-content: center;
   min-height: 100vh;
-  background: #F8F9FA;
+  /* 蓝紫色渐变背景 */
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   position: relative;
-}
-
-/* 添加科技感背景装饰 */
-.login-container::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: 
-    radial-gradient(circle at 20% 50%, rgba(99, 102, 241, 0.03) 0%, transparent 50%),
-    radial-gradient(circle at 80% 80%, rgba(99, 102, 241, 0.03) 0%, transparent 50%);
-  pointer-events: none;
 }
 
 .login-card {
   width: 420px;
-  padding: 40px 36px;
-  background: #FFFFFF;
-  border-radius: 12px;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-  border: 1px solid #E5E7EB;
+  padding: 48px 40px;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
   position: relative;
   z-index: 1;
 }
 
 .login-header {
   text-align: center;
-  margin-bottom: 32px;
+  margin-bottom: 36px;
 }
 
 .login-logo {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 72px;
-  height: 72px;
-  margin: 0 auto 16px;
-  background: #EEF2FF;
+  width: 80px;
+  height: 80px;
+  margin: 0 auto 20px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   border-radius: 50%;
+  box-shadow: 0 8px 24px rgba(102, 126, 234, 0.4);
 }
 
 .login-title {
-  font-size: 24px;
-  font-weight: 600;
-  color: #1F2937;
-  margin-bottom: 4px;
+  font-size: 26px;
+  font-weight: 700;
+  color: #333;
+  margin-bottom: 6px;
+  letter-spacing: 2px;
 }
 
 .login-subtitle {
-  font-size: 13px;
-  color: #6B7280;
-  letter-spacing: 1px;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.5);
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.login-slogan {
+  font-size: 15px;
+  color: #667eea;
+  font-weight: 600;
+  font-style: italic;
 }
 
 .login-options {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 20px;
+  margin-bottom: 24px;
+}
+
+/* 输入框样式 */
+.login-card :deep(.el-input__wrapper) {
+  transition: all 0.3s ease;
+  box-shadow: 0 0 0 1px #ddd inset !important;
+  background: #fff !important;
+}
+
+.login-card :deep(.el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px #667eea inset !important;
+}
+
+.login-card :deep(.el-input__wrapper.is-focus) {
+  box-shadow: 0 0 0 2px #667eea inset !important;
+}
+
+.login-card :deep(.el-input__inner::placeholder) {
+  color: #999;
+}
+
+.login-card :deep(.el-input__inner) {
+  color: #333;
 }
 
 .login-btn {
   width: 100%;
-  height: 44px;
+  height: 48px;
   font-size: 16px;
-  letter-spacing: 4px;
-  background-color: #6366F1 !important;
-  border-color: #6366F1 !important;
+  font-weight: 600;
+  letter-spacing: 8px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+  border: none !important;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4) !important;
+  transition: all 0.3s ease !important;
+  color: #fff !important;
 }
 
 .login-btn:hover {
-  background-color: #4F46E5 !important;
-  border-color: #4F46E5 !important;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(102, 126, 234, 0.5) !important;
+}
+
+.login-btn:active {
+  transform: translateY(0);
 }
 
 .login-tip {
-  margin-top: 20px;
+  margin-top: 24px;
 }
 
+/* 底部波浪装饰 */
 .login-footer {
   position: absolute;
-  bottom: 20px;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 20px;
+  text-align: center;
   font-size: 12px;
-  color: #9CA3AF;
+  color: rgba(255, 255, 255, 0.7);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.1), transparent);
+}
+
+.login-footer::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.3),
+    transparent
+  );
 }
 </style>

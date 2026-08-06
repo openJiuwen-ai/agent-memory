@@ -14,7 +14,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useUserStore } from '@/stores/user'
 import TenantList from './TenantList.vue'
 import ScopeManagement from './ScopeManagement.vue'
@@ -27,7 +27,7 @@ function getDefaultTab(): string {
   if (userStore.hasPermission('tenant:read')) {
     return 'tenants'
   }
-  // 否则如果有 scope:read 权限，默认显示Scope管理
+  // 否则如果有 scope:read 权限，默认显示 Scope 管理
   if (userStore.hasPermission('scope:read')) {
     return 'scopes'
   }
@@ -36,6 +36,14 @@ function getDefaultTab(): string {
 }
 
 const activeTab = ref(getDefaultTab())
+
+// 监听标签页切换，当切换到 scopes 时，触发父组件刷新数据
+watch(activeTab, (newTab) => {
+  if (newTab === 'scopes') {
+    // 通过自定义事件通知子组件刷新
+    window.dispatchEvent(new CustomEvent('refreshScopesOnSwitch'))
+  }
+})
 </script>
 
 <style scoped>

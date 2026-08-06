@@ -378,34 +378,14 @@ class SqlMessageStore(BaseMessageStore):
         Returns:
             int: Number of messages
         """
-        # Fast path: no time-range filter and no exclude_scopes -> use the
-        # original get_with_sort code path (avoids building a raw SQL query
-        # for the common data-plane case).
-        has_time_filter = (
-            self._parse_ts(message_filter.get('start_time')) is not None
-            or self._parse_ts(message_filter.get('end_time')) is not None
-        )
-        has_exclude = bool(message_filter.get('exclude_scopes'))
-        if not has_time_filter and not has_exclude:
-            filters = {}
-            if message_filter.get('user_id'):
-                filters['user_id'] = message_filter['user_id']
-            if message_filter.get('scope_id'):
-                filters['scope_id'] = message_filter['scope_id']
-            if message_filter.get('session_id') is not None:
-                filters['session_id'] = message_filter['session_id']
-
-            messages = await self.sql_db_store.get_with_sort(
-                table=self.table_name,
-                filters=filters,
-                sort_by="timestamp",
-                order="ASC",
-                limit=COUNT_QUERY_LIMIT
-            )
-            return len(messages)
-
-        # Range path (KR-MSG-02): build the query directly so we can apply
-        # timestamp bounds and exclude_scopes, which get_with_sort does not support.
+        # FIX-001A: Unified SELECT COUNT(*) path for all cases.
+        # Previously, when no time-range filter and no exclude_scopes were present,
+        # a "fast path" loaded up to COUNT_QUERY_LIMIT (1,000,000) full rows via
+        # get_with_sort() + len() — causing severe performance degradation on
+        # large tables (37.5万行 >30s, ~4GB memory peak). The range path already
+        # uses SELECT COUNT(*) which is optimal for counting. _build_message_where
+        # handles user_id/scope_id/session_id equality filters, so unifying all
+        # paths to SELECT COUNT(*) is both correct and performant.
         from sqlalchemy import select, func, and_
 
         table = await self.sql_db_store.get_table(self.table_name)

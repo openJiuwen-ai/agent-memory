@@ -43,16 +43,16 @@ export const useUserStore = defineStore('user', () => {
     token.value = result.token
     username.value = result.user.username
     role.value = result.user.role
-    tenantId.value = result.user.tenant_id
-    scopeIds.value = result.user.scope_ids || []
+    tenantId.value = result.user.tenant_id || result.user.tenantId
+    scopeIds.value = result.user.scopeIds || result.user.scope_ids || []
     // 根据角色获取权限列表
     permissions.value = getPermissionsByRole(result.user.role)
 
     localStorage.setItem('token', result.token)
     localStorage.setItem('username', result.user.username)
     localStorage.setItem('role', result.user.role)
-    localStorage.setItem('tenantId', result.user.tenant_id)
-    localStorage.setItem('scopeIds', JSON.stringify(result.user.scope_ids || []))
+    localStorage.setItem('tenantId', result.user.tenant_id || result.user.tenantId || '')
+    localStorage.setItem('scopeIds', JSON.stringify(result.user.scopeIds || []))
     localStorage.setItem('permissions', JSON.stringify(permissions.value))
     return result
   }

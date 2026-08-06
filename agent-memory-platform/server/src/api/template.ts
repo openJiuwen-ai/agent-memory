@@ -7,6 +7,7 @@ import type {
   Template,
   TemplateType,
   TemplateApplyResult,
+  TemplateDeleteResult,
 } from '@/types/config'
 import type { ApplyTemplateRequest, UpdateTemplateRequest } from '@/types/template'
 
@@ -120,9 +121,24 @@ export function updateTemplate(
   })
 }
 
-/** 删除模板（预置不可删 + 无应用记录） */
-export function deleteTemplate(id: string): Promise<void> {
-  return api.delete<void>(`/api/v1/config/templates/${id}`)
+/** 删除模板（预置不可删；有绑定时级联清理内核 scope 配置 + DB 绑定记录） */
+export function deleteTemplate(id: string): Promise<TemplateDeleteResult> {
+  return api.delete<any>(`/api/v1/config/templates/${id}`).then((raw: any) => ({
+    templateId: raw.template_id ?? raw.templateId ?? '',
+    templateName: raw.template_name ?? raw.templateName,
+    cleanedScopes: Array.isArray(raw.cleaned_scopes ?? raw.cleanedScopes)
+      ? (raw.cleaned_scopes ?? raw.cleanedScopes).map((item: any) => ({
+          tenantId: item.tenant_id ?? item.tenantId ?? '',
+          tenantName: item.tenant_name ?? item.tenantName,
+          scopeId: item.scope_id ?? item.scopeId,
+          kernelDeleted: item.kernel_deleted ?? item.kernelDeleted ?? false,
+          dbBindingDeleted: item.db_binding_deleted ?? item.dbBindingDeleted ?? false,
+          errorMessage: item.error_message ?? item.errorMessage,
+        }))
+      : [],
+    kernelSuccessCount: raw.kernel_success_count ?? raw.kernelSuccessCount ?? 0,
+    kernelFailCount: raw.kernel_fail_count ?? raw.kernelFailCount ?? 0,
+  }))
 }
 
 /** 应用模板到租户（SCOPE 必填 targetTenantIds，INSTANCE 支持 restart） */

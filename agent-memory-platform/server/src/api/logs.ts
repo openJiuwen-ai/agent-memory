@@ -143,7 +143,7 @@ export interface MessageLogRow {
   request_id: string
   admin_user_id: string
   user_id: string | null
-  scope_name: string | null
+  scope_id: string | null
   api_path: string | null
   api_method: string | null
   message_count: number | null
@@ -161,7 +161,7 @@ export interface MessageLogPage {
 export function queryMessageLogs(params: {
   admin_user_id?: string
   user_id?: string
-  scope_name?: string
+  scope_id: string
   success_only?: boolean
   start?: string
   end?: string
@@ -174,7 +174,7 @@ export function queryMessageLogs(params: {
 export function exportMessageLogs(params: {
   admin_user_id?: string
   user_id?: string
-  scope_name?: string
+  scope_id: string
   success_only?: boolean
   start: string
   end: string

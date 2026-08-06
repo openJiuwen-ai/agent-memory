@@ -1,6 +1,7 @@
 package com.openjiuwen.memory.authcenter.filter;
 
 import com.openjiuwen.memory.authcenter.config.JwtTokenProvider;
+import com.openjiuwen.memory.authcenter.service.TokenBlacklistService;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -25,6 +26,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     @Autowired
     private JwtTokenProvider jwtTokenProvider;
     
+    @Autowired
+    private TokenBlacklistService tokenBlacklistService;
+    
     @Override
     protected void doFilterInternal(HttpServletRequest request, 
                                    HttpServletResponse response, 
@@ -32,7 +36,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         try {
             String token = getTokenFromRequest(request);
             
-            if (StringUtils.hasText(token) && jwtTokenProvider.validateToken(token)) {
+            if (StringUtils.hasText(token) && jwtTokenProvider.validateToken(token)
+                    && !tokenBlacklistService.isBlacklisted(jwtTokenProvider.getJtiFromToken(token))) {
                 String userId = jwtTokenProvider.getUserIdFromToken(token);
                 String username = jwtTokenProvider.getUsernameFromToken(token);
                 String role = jwtTokenProvider.getRoleFromToken(token);

@@ -15,7 +15,7 @@ public interface MessageLogService {
     /**
      * 分页查询用户消息日志。
      */
-    IPage<MessageLogEntity> queryLogs(String adminUserId, String userId, String scopeName,
+    IPage<MessageLogEntity> queryLogs(String adminUserId, String userId, String scopeId,
                                       Boolean successOnly, Instant startTime, Instant endTime,
                                       int page, int size);
 
@@ -48,6 +48,6 @@ public interface MessageLogService {
      * 导出消息日志为 CSV（§6.4.3 L2）。
      * 按过滤条件查询全量记录（不分页），转成 CSV 字符串（UTF-8 BOM）。
      */
-    String exportToCsv(String adminUserId, String userId, String scopeName,
+    String exportToCsv(String adminUserId, String userId, String scopeId,
                        Boolean successOnly, Instant startTime, Instant endTime);
 }

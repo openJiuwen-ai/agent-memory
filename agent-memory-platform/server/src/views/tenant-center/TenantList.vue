@@ -31,8 +31,8 @@
         <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
             <el-button type="primary" link @click="handleViewDetail(row)">详情</el-button>
-            <el-button type="warning" link @click="handleEdit(row)" :disabled="!userStore.hasPermission('tenant:write')">编辑</el-button>
-            <el-button type="danger" link @click="handleDelete(row)" :disabled="!userStore.hasPermission('tenant:write')">删除</el-button>
+            <el-button type="warning" link @click="handleEdit(row)">编辑</el-button>
+            <el-button type="danger" link @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -119,6 +119,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { getTenantList, createTenant, updateTenant, deleteTenant } from '@/api/tenant'
 import { getAvailableScopes, getAllScopes } from '@/api/scope'
+import { getUserList } from '@/api/users'
 import { useUserStore } from '@/stores/user'
 import type { Tenant } from '@/types/tenant'
 import type { ScopeRegistry } from '@/types/scope'
@@ -250,12 +251,59 @@ async function handleSave() {
 
 async function handleDelete(row: Tenant) {
   try {
-    await ElMessageBox.confirm(`确定要删除租户 "${row.name}" 吗？`, '提示', { type: 'warning' })
+    const hasScope = row.scopeIds && row.scopeIds.length > 0
+    const scopeLabelText = hasScope ? scopeLabel(row.scopeIds[0]) : null
+    const templateName = (row as any).currentTemplateName
+    
+    // 查询该租户下的用户数量（用于提示）
+    let userCount = 0
+    try {
+      const users = await getUserList()
+      userCount = users.filter((u: any) => u.tenantId === row.id).length
+    } catch (e) {
+      console.error('[handleDelete] 查询用户列表失败:', e)
+    }
+    
+    // 构建 HTML 内容的操作列表
+    const operationsHTML: string[] = []
+    
+    if (userCount > 0) {
+      operationsHTML.push(`🗑️ <strong>用户清理：</strong>该租户下的 ${userCount} 个用户将被删除`)
+    }
+    
+    if (templateName) {
+      operationsHTML.push(`⚙️ <strong>模板解绑：</strong>配置中心 - 自定义模板「${templateName}」中该租户的绑定信息将被清除`)
+    }
+    
+    if (scopeLabelText) {
+      operationsHTML.push(`🔄 <strong>Scope 释放：</strong>Scope「${scopeLabelText}」将恢复为未分配状态`)
+    }
+    
+    // 组合完整的 HTML 内容
+    const message = `
+      <div><strong>确定要删除租户「${row.name}」吗？</strong></div>
+      <br/>
+      <div style="color: #e6a23c; margin-top: 8px;">⚠️ 删除后以下操作将执行：</div>
+      ${operationsHTML.map(op => `<div style="margin-top: 8px">${op}</div>`).join('\n')}
+    `
+    
+    await ElMessageBox.confirm(message, '提示', {
+      type: 'warning',
+      confirmButtonText: '确认删除',
+      cancelButtonText: '取消',
+      customClass: 'delete-confirmation-dialog',
+      dangerouslyUseHTMLString: true, // 允许 HTML 格式
+    })
+    
     await deleteTenant(row.id)
     ElMessage.success('租户删除成功')
     fetchTenants()
-  } catch {
-    // 取消删除
+  } catch (e) {
+    // 用户取消删除或弹窗被取消，不记录错误
+    if (e === 'cancel' || e?.message === 'cancel') {
+      return
+    }
+    console.error('[handleDelete] 错误:', e)
   }
 }
 
@@ -274,5 +322,28 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+/* 删除确认对话框样式优化 */
+deep(.el-message-box) {
+  max-width: 600px;
+  word-wrap: break-word;
+}
+
+deep(.el-message-box__header) {
+  padding-bottom: 12px;
+}
+
+deep(.el-message-box__content) {
+  padding-top: 8px;
+  line-height: 1.8; /* 增加行高，让每行之间有空隙 */
+  white-space: pre-line; /* 保留并渲染换行符和空格 */
+  font-size: 14px;
+}
+
+/* 删除确认对话框特定样式 */
+deep(.delete-confirmation-dialog .el-message-box__content) {
+  white-space: pre-line; /* 强制渲染换行符 */
+  line-height: 1.7;
 }
 </style>

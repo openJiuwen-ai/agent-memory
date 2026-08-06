@@ -40,16 +40,23 @@
             >
               编辑
             </el-button>
-            <!-- 删除按钮：只有 scope:write 权限且 Scope 未分配的用户可见 -->
-            <el-button 
-              v-if="userStore.hasPermission('scope:write') && canDeleteScope(row)" 
-              type="danger" 
-              link 
-              @click="handleDelete(row)"
-              :disabled="row.status === 'assigned'"
+            
+            <!-- 删除按钮：始终显示，但已分配的 Scope 会禁用并显示提示信息 -->
+            <el-tooltip 
+              v-if="userStore.hasPermission('scope:write')" 
+              :content="getDeleteTooltipContent(row)" 
+              :disabled="row.status === 'unassigned'" 
+              placement="top"
             >
-              删除
-            </el-button>
+              <el-button 
+                :type="row.status === 'assigned' ? 'danger' : 'danger'" 
+                :disabled="row.status === 'assigned'" 
+                link 
+                @click="handleDelete(row)"
+              >
+                删除
+              </el-button>
+            </el-tooltip>
           </template>
         </el-table-column>
       </el-table>
@@ -86,7 +93,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, reactive, computed } from 'vue'
+import { onMounted, ref, reactive, computed, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { getAllScopes, createScope, updateScope, deleteScope } from '@/api/scope'
@@ -111,13 +118,13 @@ const form = reactive({
 
 const dialogTitle = computed(() => isEdit.value ? '编辑Scope' : '创建Scope')
 
-// 检查用户是否可以编辑该Scope
+// 检查用户是否可以编辑该 Scope
 function canEditScope(row: ScopeRegistry): boolean {
-  // SUPER_ADMIN 可以编辑所有Scope
+  // SUPER_ADMIN 可以编辑所有 Scope
   if (userStore.isSuperAdmin) {
     return true
   }
-  // SCOPE_ADMIN 只能编辑分配给自己的Scope
+  // SCOPE_ADMIN 只能编辑分配给自己的 Scope
   if (userStore.isScopeAdmin) {
     return userStore.scopeIds.includes(row.scopeId)
   }
@@ -125,10 +132,12 @@ function canEditScope(row: ScopeRegistry): boolean {
   return false
 }
 
-// 检查用户是否可以删除该Scope
-function canDeleteScope(row: ScopeRegistry): boolean {
-  // 只能删除未分配的Scope
-  return row.status === 'unassigned' && canEditScope(row)
+// 获取删除按钮的 tooltip 内容
+function getDeleteTooltipContent(row: ScopeRegistry): string {
+  if (row.status === 'assigned' && row.assignedToTenantId) {
+    return `该 Scope 已绑定给租户「${row.assignedToTenantId}」，需要先解除绑定后才能删除`
+  }
+  return '该 Scope 已分配，无法删除'
 }
 
 async function fetchScopes() {
@@ -199,15 +208,32 @@ async function handleDelete(row: ScopeRegistry) {
     )
     
     await deleteScope(row.scopeId)
-    ElMessage.success('Scope删除成功')
+    ElMessage.success('Scope 删除成功')
     fetchScopes()
-  } catch {
-    // 取消删除
+  } catch (e: any) {
+    // 如果是用户取消删除或已经是未分配状态（按钮消失），静默处理
+    if (!e?.response && e?.message === '取消删除') {
+      return
+    }
+    // 其他错误（如已分配）已在 request.ts 中自动提示，这里不再重复
+    console.log('[Scope 删除] 错误详情:', e)
   }
 }
 
 onMounted(() => {
   fetchScopes()
+  
+  // 监听标签页切换事件（当从租户列表切换到 Scope 管理时刷新数据）
+  const handleRefreshScopes = () => {
+    fetchScopes()
+  }
+  
+  window.addEventListener('refreshScopesOnSwitch', handleRefreshScopes)
+  
+  // 组件卸载时移除监听
+  onUnmounted(() => {
+    window.removeEventListener('refreshScopesOnSwitch', handleRefreshScopes)
+  })
 })
 </script>
 

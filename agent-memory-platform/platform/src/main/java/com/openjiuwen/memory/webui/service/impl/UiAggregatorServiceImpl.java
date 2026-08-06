@@ -11,10 +11,8 @@ import com.openjiuwen.memory.configcenter.service.KernelConfigService;
 import com.openjiuwen.memory.configcenter.service.TenantScopeConfigService;
 import com.openjiuwen.memory.logcenter.service.MessageLogService;
 import com.openjiuwen.memory.logcenter.service.OperationLogService;
-import com.openjiuwen.memory.opscenter.dto.MemoryStatsDTO;
 import com.openjiuwen.memory.opscenter.service.GovernanceService;
 import com.openjiuwen.memory.opscenter.service.MemoryManageService;
-import com.openjiuwen.memory.opscenter.service.MemoryStatsService;
 import com.openjiuwen.memory.opscenter.service.OpsToolService;
 import com.openjiuwen.memory.opscenter.service.TaskService;
 import com.openjiuwen.memory.opscenter.service.TraceService;
@@ -50,7 +48,6 @@ public class UiAggregatorServiceImpl implements UiAggregatorService {
     private static final String DEFAULT_VECTOR_STORE = "chroma";
     private static final String HEALTH_STATUS_HEALTHY = "healthy";
     private static final String HEALTH_STATUS_UNAVAILABLE = "unavailable";
-    private static final String HEALTH_STATUS_UNKNOWN = "unknown";
     private static final String KERNEL_CONFIG_SOURCE = "kernel .env";
     private static final String LOG_TAB_OPERATIONS = "operations";
     private static final String LOG_TAB_RUNTIME = "runtime";
@@ -65,7 +62,6 @@ public class UiAggregatorServiceImpl implements UiAggregatorService {
             MemoryType.MIDDLE_TERM_MEMORY
     );
 
-    private final MemoryStatsService memoryStatsService;
     private final MemoryManageService memoryManageService;
     private final OpsToolService opsToolService;
     private final TaskService taskService;
@@ -78,8 +74,7 @@ public class UiAggregatorServiceImpl implements UiAggregatorService {
     private final OperationLogService operationLogService;
     private final MessageLogService messageLogService;
 
-    public UiAggregatorServiceImpl(MemoryStatsService memoryStatsService,
-                                   MemoryManageService memoryManageService,
+    public UiAggregatorServiceImpl(MemoryManageService memoryManageService,
                                    OpsToolService opsToolService,
                                    TaskService taskService,
                                    TraceService traceService,
@@ -90,7 +85,6 @@ public class UiAggregatorServiceImpl implements UiAggregatorService {
                                    TenantScopeConfigService tenantScopeConfigService,
                                    OperationLogService operationLogService,
                                    MessageLogService messageLogService) {
-        this.memoryStatsService = memoryStatsService;
         this.memoryManageService = memoryManageService;
         this.opsToolService = opsToolService;
         this.taskService = taskService;
@@ -102,84 +96,6 @@ public class UiAggregatorServiceImpl implements UiAggregatorService {
         this.tenantScopeConfigService = tenantScopeConfigService;
         this.operationLogService = operationLogService;
         this.messageLogService = messageLogService;
-    }
-
-    // —— §8.2.1 仪表盘 ——
-
-    @Override
-    public Map<String, Object> buildDashboard(String adminUserId, String scopeId, String userId) {
-        Map<String, Object> data = new LinkedHashMap<>();
-
-        // 系统状态
-        try {
-            Map<String, Object> health = opsToolService.healthProbe();
-            data.put("system_status", health == null ? HEALTH_STATUS_UNKNOWN : health.getOrDefault("status", HEALTH_STATUS_UNKNOWN));
-        } catch (Exception e) {
-            log.warn("Dashboard: healthProbe failed, adminUserId={}", adminUserId, e);
-            data.put("system_status", HEALTH_STATUS_UNAVAILABLE);
-        }
-
-        // 记忆统计
-        try {
-            MemoryStatsDTO stats = memoryStatsService.getMemoryStats(adminUserId, scopeId, userId);
-            if (stats.getSummary() != null) {
-                data.put("total_memories", stats.getSummary().getTotalMemories());
-            }
-            data.put("memory_trend", stats.getGrowthTrend() != null ? stats.getGrowthTrend() : Collections.emptyList());
-        } catch (Exception e) {
-            log.warn("Dashboard: getMemoryStats failed, adminUserId={}, scopeId={}", adminUserId, scopeId, e);
-            data.put("total_memories", 0);
-            data.put("memory_trend", Collections.emptyList());
-        }
-
-        // 活跃任务
-        try {
-            data.put("active_tasks", taskService.listTasks(adminUserId).size());
-        } catch (Exception e) {
-            log.warn("Dashboard: listTasks failed, adminUserId={}", adminUserId, e);
-            data.put("active_tasks", 0);
-        }
-
-        // 最近错误（运行日志不入库 §6.3.2，改用操作审计日志的 errorRate 近似）
-        try {
-            Instant weekAgo = Instant.now().minus(Duration.ofDays(7));
-            double opErrorRate = operationLogService.errorRate(adminUserId, weekAgo, null);
-            long recentErrors = (long) opErrorRate;
-            data.put("recent_errors", recentErrors);
-
-            // 错误趋势（简化：返回最近7天错误数）
-            List<Map<String, Object>> errorTrend = new ArrayList<>();
-            Map<String, Object> todayEntry = new LinkedHashMap<>();
-            todayEntry.put("date", Instant.now().toString().substring(0, 10));
-            todayEntry.put("count", recentErrors);
-            errorTrend.add(todayEntry);
-            data.put("error_trend", errorTrend);
-        } catch (Exception e) {
-            log.warn("Dashboard: errorRate failed, adminUserId={}", adminUserId, e);
-            data.put("recent_errors", 0);
-            data.put("error_trend", Collections.emptyList());
-        }
-
-        // 存储类型（从内核配置提取）
-        try {
-            Map<String, Object> kernelConfig = kernelConfigService.getKernelConfig();
-            if (kernelConfig != null && kernelConfig.containsKey("storage")) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> storage = (Map<String, Object>) kernelConfig.get("storage");
-                data.put("store_types", Map.of(
-                        "kv", storage.getOrDefault("kv_store_type", DEFAULT_KV_STORE),
-                        "db", storage.getOrDefault("db_store_type", DEFAULT_DB_STORE),
-                        "vector", storage.getOrDefault("vector_store_type", DEFAULT_VECTOR_STORE)
-                ));
-            } else {
-                data.put("store_types", defaultStoreTypes());
-            }
-        } catch (Exception e) {
-            log.warn("Dashboard: getKernelConfig failed for store types", e);
-            data.put("store_types", defaultStoreTypes());
-        }
-
-        return data;
     }
 
     // —— §8.2.2 记忆浏览页 ——

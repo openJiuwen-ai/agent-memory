@@ -178,7 +178,7 @@ class LogCenterE2eTest extends E2eTestBase {
         void userMessageLogQueryAndStatsWorkflow() throws Exception {
             // Step 1: 查询用户消息日志
             ResponseEntity<String> queryResp = getWithToken(
-                    "/api/v1/logs/messages?scope_name=" + SEED_SCOPE_01
+                    "/api/v1/logs/messages?scope_id=" + SEED_SCOPE_01
                             + "&page=0&size=10",
                     superAdminToken());
 
@@ -195,7 +195,7 @@ class LogCenterE2eTest extends E2eTestBase {
 
             // Step 2: 查询统计
             ResponseEntity<String> statsResp = getWithToken(
-                    "/api/v1/logs/messages/stats/by-user?scope_name=" + SEED_SCOPE_01,
+                    "/api/v1/logs/messages/stats/by-user?scope_id=" + SEED_SCOPE_01,
                     superAdminToken());
 
             if (statsResp.getStatusCode() == HttpStatus.OK) {
@@ -212,7 +212,7 @@ class LogCenterE2eTest extends E2eTestBase {
         @DisplayName("WF-LOG-05: 用户消息日志导出工作流 — 查询→导出→验证格式")
         void userMessageLogExportWorkflow() throws Exception {
             ResponseEntity<String> exportResp = getWithToken(
-                    "/api/v1/logs/messages/export?scope_name=" + SEED_SCOPE_01
+                    "/api/v1/logs/messages/export?scope_id=" + SEED_SCOPE_01
                             + "&start=" + recentStart() + "&end=" + recentEnd(),
                     superAdminToken());
 
@@ -287,7 +287,7 @@ class LogCenterE2eTest extends E2eTestBase {
         @DisplayName("[BUG-LOG-02] 用户消息日志查询端点返回 501 — MockMemoryEngineClient 未实现内核消息 API")
         void userMessageLogQueryNotImplemented() throws Exception {
             ResponseEntity<String> resp = getWithToken(
-                    "/api/v1/logs/messages?scope_name=" + SEED_SCOPE_01 + "&page=0&size=10",
+                    "/api/v1/logs/messages?scope_id=" + SEED_SCOPE_01 + "&page=0&size=10",
                     superAdminToken());
 
             if (resp.getStatusCode() == HttpStatus.NOT_IMPLEMENTED) {
@@ -306,7 +306,7 @@ class LogCenterE2eTest extends E2eTestBase {
         @DisplayName("[BUG-LOG-03] 用户消息日志统计端点返回 501")
         void userMessageLogStatsNotImplemented() throws Exception {
             ResponseEntity<String> resp = getWithToken(
-                    "/api/v1/logs/messages/stats/by-user?scope_name=" + SEED_SCOPE_01,
+                    "/api/v1/logs/messages/stats/by-user?scope_id=" + SEED_SCOPE_01,
                     superAdminToken());
 
             if (resp.getStatusCode() == HttpStatus.NOT_IMPLEMENTED) {
@@ -323,7 +323,7 @@ class LogCenterE2eTest extends E2eTestBase {
         @DisplayName("[BUG-LOG-04] 用户消息日志导出端点返回 501")
         void userMessageLogExportNotImplemented() throws Exception {
             ResponseEntity<String> resp = getWithToken(
-                    "/api/v1/logs/messages/export?scope_name=" + SEED_SCOPE_01
+                    "/api/v1/logs/messages/export?scope_id=" + SEED_SCOPE_01
                             + "&start=" + recentStart() + "&end=" + recentEnd(),
                     superAdminToken());
 
@@ -459,7 +459,7 @@ class LogCenterE2eTest extends E2eTestBase {
 
             // 验证 GET 能工作
             ResponseEntity<String> getResp = getWithToken(
-                    "/api/v1/logs/messages?scope_name=" + SEED_SCOPE_01 + "&page=0&size=10",
+                    "/api/v1/logs/messages?scope_id=" + SEED_SCOPE_01 + "&page=0&size=10",
                     superAdminToken());
 
             // 验证 POST 不工作（V3 设计规格要求 POST）
@@ -660,7 +660,7 @@ class LogCenterE2eTest extends E2eTestBase {
             String end = Instant.now().toString();
 
             ResponseEntity<String> resp = getWithToken(
-                    "/api/v1/logs/messages/export?scope_name=" + SEED_SCOPE_01
+                    "/api/v1/logs/messages/export?scope_id=" + SEED_SCOPE_01
                             + "&start=" + start + "&end=" + end,
                     superAdminToken());
 

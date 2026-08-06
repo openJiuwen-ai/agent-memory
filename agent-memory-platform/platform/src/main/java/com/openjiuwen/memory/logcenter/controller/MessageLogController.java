@@ -7,6 +7,7 @@ import com.openjiuwen.memory.common.client.MemoryEngineClient;
 import com.openjiuwen.memory.common.exception.BizException;
 import com.openjiuwen.memory.common.spi.PermissionChecker;
 import com.openjiuwen.memory.logcenter.domain.MessageLogEntity;
+import com.openjiuwen.memory.logcenter.dto.MemoryWithMetadataDTO;
 import com.openjiuwen.memory.logcenter.service.MessageLogService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -68,7 +69,7 @@ public class MessageLogController {
     public ApiResponse<IPage<MessageLogEntity>> queryLogs(
             @RequestParam(name = "admin_user_id", required = false) String adminUserId,
             @RequestParam(name = "user_id", required = false) String userId,
-            @RequestParam(name = "scope_name", required = false) String scopeName,
+            @RequestParam(name = "scope_id") String scopeId,
             @RequestParam(name = "success_only", required = false) Boolean successOnly,
             @RequestParam(name = "start", required = false) String startTime,
             @RequestParam(name = "end", required = false) String endTime,
@@ -78,7 +79,7 @@ public class MessageLogController {
         Instant start = parseInstant(startTime);
         Instant end = parseInstant(endTime);
         IPage<MessageLogEntity> result = messageLogService.queryLogs(
-                adminUserId, userId, scopeName, successOnly, start, end, page, size);
+                adminUserId, userId, scopeId, successOnly, start, end, page, size);
         return ApiResponse.ok(result);
     }
 
@@ -91,7 +92,10 @@ public class MessageLogController {
         permissionChecker.require("log:read");
         String adminUserId = body.get("admin_user_id") != null ? String.valueOf(body.get("admin_user_id")) : null;
         String userId = body.get("user_id") != null ? String.valueOf(body.get("user_id")) : null;
-        String scopeName = body.get("scope_name") != null ? String.valueOf(body.get("scope_name")) : null;
+        String scopeId = body.get("scope_id") != null ? String.valueOf(body.get("scope_id")) : null;
+        if (scopeId == null || scopeId.isBlank()) {
+            throw new BizException(ResultCode.BAD_REQUEST, "scope_id 不能为空");
+        }
         Boolean successOnly = body.get("success_only") instanceof Boolean b ? b : null;
         String startTime = body.get("start") != null ? String.valueOf(body.get("start")) : null;
         String endTime = body.get("end") != null ? String.valueOf(body.get("end")) : null;
@@ -100,7 +104,7 @@ public class MessageLogController {
         Instant start = parseInstant(startTime);
         Instant end = parseInstant(endTime);
         IPage<MessageLogEntity> result = messageLogService.queryLogs(
-                adminUserId, userId, scopeName, successOnly, start, end, page, size);
+                adminUserId, userId, scopeId, successOnly, start, end, page, size);
         return ApiResponse.ok(result);
     }
 
@@ -140,7 +144,7 @@ public class MessageLogController {
     public ResponseEntity<ByteArrayResource> exportToCsv(
             @RequestParam(name = "admin_user_id", required = false) String adminUserId,
             @RequestParam(name = "user_id", required = false) String userId,
-            @RequestParam(name = "scope_name", required = false) String scopeName,
+            @RequestParam(name = "scope_id") String scopeId,
             @RequestParam(name = "success_only", required = false) Boolean successOnly,
             @RequestParam(name = "start") String startTime,
             @RequestParam(name = "end") String endTime) {
@@ -160,7 +164,7 @@ public class MessageLogController {
             throw new BizException(ResultCode.BAD_REQUEST, "导出范围不能超过7天");
         }
         String csv = messageLogService.exportToCsv(
-                adminUserId, userId, scopeName, successOnly, start, end);
+                adminUserId, userId, scopeId, successOnly, start, end);
         byte[] bytes = csv.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         String filename = "message-logs-" + java.time.LocalDate.now() + ".csv";
         return ResponseEntity.ok()
@@ -176,14 +180,59 @@ public class MessageLogController {
     @GetMapping("/{msgId}")
     public ApiResponse<Map<String, Object>> getMessageDetail(@PathVariable String msgId) {
         permissionChecker.require("log:read");
-        Map<String, Object> detail = memoryEngineClient.getKernelMessageDetail(msgId);
-        if (detail == null) {
-            detail = new LinkedHashMap<>();
-            detail.put("message_id", msgId);
-            detail.put("found", false);
-            detail.put("message", "消息不存在");
+        
+        // 校验 msgId 有效性
+        if (msgId == null || msgId.isBlank()) {
+            throw new BizException(ResultCode.BAD_REQUEST, "消息 ID 不能为空");
         }
+        
+        Map<String, Object> detail = memoryEngineClient.getKernelMessageDetail(msgId);
+        
+        // V3-DEFECT-047: 区分"资源不存在"和"系统错误"
+        if (detail == null) {
+            // 消息不存在 → 返回 404
+            throw new BizException(ResultCode.NOT_FOUND, "消息不存在：" + msgId);
+        }
+        
+        Boolean found = (Boolean) detail.get("found");
+        if (Boolean.FALSE.equals(found)) {
+            // 明确告知消息不存在
+            throw new BizException(ResultCode.NOT_FOUND, "消息不存在：" + msgId);
+        }
+        
         return ApiResponse.ok(detail);
+    }
+    
+    /**
+     * V3-DEFECT-058: 获取记忆完整元数据
+     */
+    @GetMapping("/metadata/{memId}")
+    public ApiResponse<MemoryWithMetadataDTO> getWithMetadata(
+            @PathVariable String memId,
+            @RequestParam(name = "user_id", required = false) String userId,
+            @RequestParam(name = "scope_id", required = false) String scopeId,
+            @RequestParam(name = "session_id", required = false) String sessionId) {
+        
+        permissionChecker.require("log:read");
+        
+        // 通过内核 API 获取元数据
+        Map<String, Object> metadataMap = memoryEngineClient.getMemoryWithMetadata(userId, scopeId, memId);
+        
+        if (metadataMap == null || metadataMap.isEmpty()) {
+            return ApiResponse.fail(50000, "无法获取记忆元数据");
+        }
+        
+        MemoryWithMetadataDTO metadata = MemoryWithMetadataDTO.builder()
+                .messageId(String.valueOf(metadataMap.getOrDefault("message_id", memId)))
+                .userId(String.valueOf(metadataMap.getOrDefault("user_id", userId != null ? userId : "__default__")))
+                .scopeId(String.valueOf(metadataMap.getOrDefault("scope_id", scopeId != null ? scopeId : "__default__")))
+                .sessionId(String.valueOf(metadataMap.getOrDefault("session_id", "")))
+                .role(String.valueOf(metadataMap.getOrDefault("role", "")))
+                .content(String.valueOf(metadataMap.getOrDefault("content", "")))
+                .timestamp(String.valueOf(metadataMap.getOrDefault("timestamp", "")))
+                .build();
+        
+        return ApiResponse.ok(metadata);
     }
 
     // ==================== L1: 文件 tail（调内核 HTTP） ====================
@@ -223,7 +272,9 @@ public class MessageLogController {
         try {
             return Instant.parse(iso);
         } catch (Exception e) {
-            return null;
+            // V3-DEFECT-046: 严格验证时间格式，不再静默忽略
+            throw new BizException(ResultCode.BAD_REQUEST, 
+                String.format("时间格式无效，请使用 ISO 8601 格式 (如 2026-01-01T00:00:00Z): %s", iso));
         }
     }
 }

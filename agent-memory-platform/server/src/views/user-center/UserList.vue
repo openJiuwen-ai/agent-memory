@@ -210,7 +210,7 @@ async function fetchUsers() {
 
 async function fetchTenants() {
   const result = await getTenantList()
-  tenants.value = result.list  // ✅ 取 list 属性
+  tenants.value = result.list
 }
 
 // 根据租户ID获取租户名称
@@ -261,14 +261,14 @@ function handleOwnPasswordSwitchChange(val: boolean) {
 }
 
 function handleTenantChange() {
-  // 当选择租户时，自动设置该租户对应的Scope
+  // 当选择租户时，自动设置该租户对应的 Scope
   const selectedTenant = tenants.value.find(t => t.id === editForm.tenantId)
   
   if (selectedTenant && selectedTenant.scopeIds && selectedTenant.scopeIds.length > 0) {
-    // 租户与Scope是一对一关系，直接取第一个Scope
+    // 租户与 Scope 是一对一关系，直接取第一个 Scope
     editForm.scopeIds = [selectedTenant.scopeIds[0]]
   } else {
-    // 租户没有分配Scope
+    // 租户没有分配 Scope
     editForm.scopeIds = []
   }
 }
@@ -311,12 +311,25 @@ async function handleSave() {
     ElMessage.warning('请输入密码')
     return
   }
+  // 密码长度校验：至少 6 位
+  if (isCreate.value && editForm.password && editForm.password.length < 6) {
+    ElMessage.warning('密码长度不能少于 6 位')
+    return
+  }
+  
+  console.log('[用户创建] 准备保存，form data:', {
+    username: editForm.username,
+    role: editForm.role,
+    tenantId: editForm.tenantId,
+    scopeIds: editForm.scopeIds,
+  })
+  
   saving.value = true
   try {
     if (isCreate.value) {
-      // 根据角色决定是否传递tenant_id
+      // 根据角色决定是否传递 tenant_id
       const isGlobalRole = editForm.role === 'PLATFORM_ADMIN' || editForm.role === 'SECURITY_ADMIN'
-      
+        
       await createUser({
         username: editForm.username,
         password: editForm.password,
@@ -345,7 +358,12 @@ async function handleSave() {
         await changeMyPassword(editForm.id, oldPassword.value, editForm.password)
         ElMessage.success('密码修改成功')
       } else if (isResetPassword.value && editForm.password) {
-        // 管理员重置其他用户密码：不需要原密码
+        // 管理员重置其他用户密码：至少 6 位
+        if (editForm.password.length < 6) {
+          ElMessage.warning('密码长度不能少于 6 位')
+          saving.value = false
+          return
+        }
         await resetUserPassword(editForm.id, editForm.password)
         ElMessage.success('用户信息已更新，密码已重置')
       } else {

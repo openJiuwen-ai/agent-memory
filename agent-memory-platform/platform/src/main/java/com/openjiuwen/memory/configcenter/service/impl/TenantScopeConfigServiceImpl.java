@@ -2,6 +2,7 @@ package com.openjiuwen.memory.configcenter.service.impl;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.openjiuwen.memory.configcenter.dto.TenantScopeConfigDeleteResultDTO;
 import com.openjiuwen.memory.configcenter.dto.TenantScopeConfigListItemDTO;
 import com.openjiuwen.memory.common.client.MemoryEngineClient;
 import com.openjiuwen.memory.common.exception.BizException;
@@ -87,10 +88,81 @@ public class TenantScopeConfigServiceImpl implements TenantScopeConfigService {
         return toDTO(entity);
     }
 
+    /**
+     * 清除租户的 Scope 配置：删除内核 KV 中的 scope 配置 + DB 绑定记录，
+     * 使该租户回退到默认配置。租户本身不删除。
+     * <p>
+     * 流程：
+     * 1. 查 DB 绑定记录（tenant_scope_configs），不存在则返回 404
+     * 2. 解析 scope_id（权威来源 = tenants 表 scope_ids）
+     * 3. 调内核 deleteScopeConfig(scopeId) 删除 KV key + 清缓存
+     * 4. 删除 DB 绑定行
+     * 5. 记录审计日志
+     */
     @Override
-    public void delete(String tenantId, String operator) {
-        // 实际不允许删除（租户是身份）
-        throw new BizException(ResultCode.FORBIDDEN, "租户配置不能单独删除（请走租户删除流程）");
+    @Transactional
+    public TenantScopeConfigDeleteResultDTO delete(String tenantId, String operator) {
+        TenantScopeConfigEntity entity = tenantScopeConfigMapper.findByTenantId(tenantId);
+        if (entity == null) {
+            throw new BizException(ResultCode.NOT_FOUND, "租户 Scope 配置不存在: " + tenantId);
+        }
+
+        // 解析 scope_id（权威来源 = tenants 表 scope_ids）
+        String scopeId;
+        try {
+            scopeId = resolveScopeId(tenantId);
+        } catch (BizException e) {
+            // 租户未绑定 scope_id：仍可删除 DB 绑定记录，但内核无 scope 可删
+            scopeId = null;
+        }
+
+        String tenantName = entity.getTenantName();
+        String beforeConfig = entity.getConfigJson();
+        boolean kernelDeleted = false;
+        boolean dbBindingDeleted = false;
+        String errorMessage = null;
+
+        // 1. 删除内核 scope 配置（KV key + 缓存）
+        if (scopeId != null) {
+            try {
+                memoryEngineClient.deleteScopeConfig(scopeId);
+                kernelDeleted = true;
+            } catch (Exception e) {
+                log.warn("清除租户内核 scope 配置失败: tenantId={}, scopeId={}, error={}",
+                    tenantId, scopeId, e.getMessage(), e);
+                errorMessage = "内核配置删除失败: " + e.getMessage();
+            }
+        } else {
+            // 无 scope_id 绑定，内核无需清理
+            kernelDeleted = true;
+        }
+
+        // 2. 删除 DB 绑定记录
+        try {
+            tenantScopeConfigMapper.deleteById(tenantId);
+            dbBindingDeleted = true;
+        } catch (Exception e) {
+            log.warn("删除租户 DB 绑定记录失败: tenantId={}, error={}", tenantId, e.getMessage(), e);
+            if (errorMessage == null) {
+                errorMessage = "DB 绑定记录删除失败: " + e.getMessage();
+            } else {
+                errorMessage += "; DB 绑定记录删除失败: " + e.getMessage();
+            }
+        }
+
+        // 3. 记录审计日志
+        recordAudit(operator, tenantId, "TENANT_SCOPE_CONFIG_DELETE",
+            beforeConfig, null, kernelDeleted && dbBindingDeleted, errorMessage,
+            "清除租户 Scope 配置，回退到默认配置");
+
+        return TenantScopeConfigDeleteResultDTO.builder()
+            .tenantId(tenantId)
+            .tenantName(tenantName)
+            .scopeId(scopeId)
+            .kernelDeleted(kernelDeleted)
+            .dbBindingDeleted(dbBindingDeleted)
+            .errorMessage(errorMessage)
+            .build();
     }
 
     @Override

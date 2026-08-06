@@ -91,7 +91,7 @@
         <div class="filter-bar">
           <el-date-picker v-model="msgFilter.dateRange" type="datetimerange" range-separator="至" start-placeholder="开始" end-placeholder="结束" format="YYYY-MM-DDTHH:mm:ss" value-format="YYYY-MM-DDTHH:mm:ss[Z]" style="width: 380px" />
           <el-input v-model="msgFilter.user_id" placeholder="用户ID" clearable style="width: 140px" />
-          <el-input v-model="msgFilter.scope_name" placeholder="Scope" clearable style="width: 140px" />
+          <el-input v-model="msgFilter.scope_id" placeholder="Scope" clearable style="width: 140px" />
           <el-switch v-model="msgFilter.success_only" active-text="仅成功" />
           <el-button type="primary" @click="fetchMsgLogs">查询</el-button>
           <el-button @click="handleExportMsg">导出 CSV</el-button>
@@ -100,7 +100,7 @@
           <el-table-column prop="created_at" label="时间" width="180" />
           <el-table-column prop="request_id" label="Request ID" width="170" show-overflow-tooltip />
           <el-table-column prop="user_id" label="用户" width="110" />
-          <el-table-column prop="scope_name" label="Scope" width="130" />
+          <el-table-column prop="scope_id" label="Scope" width="130" />
           <el-table-column prop="api_path" label="API路径" min-width="180" show-overflow-tooltip />
           <el-table-column prop="message_count" label="消息数" width="80" />
         </el-table>
@@ -275,12 +275,12 @@ async function handleExportOp() {
 }
 
 // ---------- 消息日志 ----------
-const msgFilter = reactive({ dateRange: null as [string,string]|null, user_id: '', scope_name: '', success_only: false, page: 1, size: 20 })
+const msgFilter = reactive({ dateRange: null as [string,string]|null, user_id: '', scope_id: '', success_only: false, page: 1, size: 20 })
 const msgLogs = ref<MessageLogRow[]>([]); const msgTotal = ref(0)
 async function fetchMsgLogs() {
   try {
     const r: MessageLogPage = await queryMessageLogs({
-      user_id: msgFilter.user_id || undefined, scope_name: msgFilter.scope_name || undefined,
+      user_id: msgFilter.user_id || undefined, scope_id: msgFilter.scope_id || undefined,
       success_only: msgFilter.success_only || undefined,
       start: msgFilter.dateRange?.[0] || undefined, end: msgFilter.dateRange?.[1] || undefined,
       page: msgFilter.page, size: msgFilter.size,
@@ -294,7 +294,7 @@ async function handleExportMsg() {
   }
   try {
     const blob = await exportMessageLogs({
-      user_id: msgFilter.user_id || undefined, scope_name: msgFilter.scope_name || undefined,
+      user_id: msgFilter.user_id || undefined, scope_id: msgFilter.scope_id || undefined,
       success_only: msgFilter.success_only || undefined,
       start: msgFilter.dateRange[0], end: msgFilter.dateRange[1],
     })

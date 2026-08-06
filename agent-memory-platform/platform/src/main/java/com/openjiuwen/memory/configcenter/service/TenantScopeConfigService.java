@@ -2,6 +2,7 @@ package com.openjiuwen.memory.configcenter.service;
 
 import com.openjiuwen.memory.configcenter.domain.TenantScopeConfigEntity;
 import com.openjiuwen.memory.configcenter.dto.TenantScopeConfigDTO;
+import com.openjiuwen.memory.configcenter.dto.TenantScopeConfigDeleteResultDTO;
 import com.openjiuwen.memory.configcenter.dto.TenantScopeConfigListItemDTO;
 
 import java.util.List;
@@ -19,8 +20,11 @@ public interface TenantScopeConfigService {
     /** 租户修改自己的参数（不影响其他租户） */
     TenantScopeConfigDTO update(String tenantId, String configJson, String operator);
 
-    /** 删除租户快照（实际不会执行，租户不能脱离租户身份） */
-    void delete(String tenantId, String operator);
+    /**
+     * 清除租户的 Scope 配置：删除内核 KV 中的 scope 配置 + DB 绑定记录，
+     * 使该租户回退到默认配置。租户本身不删除。
+     */
+    TenantScopeConfigDeleteResultDTO delete(String tenantId, String operator);
 
     /** 列出所有租户的快照（平台管理员视图，列表项不含 config_json） */
     List<TenantScopeConfigListItemDTO> listAll();

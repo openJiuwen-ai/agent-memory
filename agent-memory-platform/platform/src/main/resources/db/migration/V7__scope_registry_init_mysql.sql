@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS scope_registry (
     scope_id VARCHAR(64) NOT NULL UNIQUE,
     scope_name VARCHAR(128),
     description TEXT COMMENT 'Scope描述',
+    scope_key VARCHAR(256) COMMENT 'Scope Key（加密存储，仅注册时明文返回一次）',
+ 	max_memories INTEGER DEFAULT 0 COMMENT '最大记忆数量配额（0=不限）',
     status VARCHAR(32) DEFAULT 'unassigned',
     assigned_to_tenant_id VARCHAR(64),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

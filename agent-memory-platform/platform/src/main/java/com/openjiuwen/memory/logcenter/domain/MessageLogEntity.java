@@ -18,7 +18,7 @@ public class MessageLogEntity {
     private String requestId;
     private String adminUserId;
     private String userId;
-    private String scopeName;
+    private String scopeId;
     private String apiPath;
     private String apiMethod;
     /** 消息数量(add_messages时) */

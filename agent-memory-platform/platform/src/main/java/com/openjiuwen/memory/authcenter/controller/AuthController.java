@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openjiuwen.memory.authcenter.domain.User;
 import com.openjiuwen.memory.authcenter.dto.ChangePasswordRequest;
 import com.openjiuwen.memory.authcenter.dto.CreateUserRequest;
+import com.openjiuwen.memory.authcenter.dto.UserVO;
 import com.openjiuwen.memory.authcenter.service.RolePermissionService;
 import com.openjiuwen.memory.authcenter.service.UserService;
 import com.openjiuwen.memory.common.CommonResult;
@@ -34,6 +35,9 @@ public class AuthController {
     @Autowired
     private com.openjiuwen.memory.authcenter.config.JwtTokenProvider jwtTokenProvider;
     
+    @Autowired
+    private com.openjiuwen.memory.authcenter.service.TokenBlacklistService tokenBlacklistService;
+    
     /**
      * 用户登录
      */
@@ -50,7 +54,7 @@ public class AuthController {
             return CommonResult.error("用户名或密码错误");
         }
         
-        // 生成 JWT Token
+        // 生成 JWT Token（30分钟有效期）
         String token = jwtTokenProvider.generateToken(user.getId(), user.getUsername(), user.getRole());
 
         // 不向登录响应透传密码哈希
@@ -58,16 +62,17 @@ public class AuthController {
 
         LoginResponse response = new LoginResponse();
         response.setToken(token);
-        response.setUser(user);
+        response.setUser(UserVO.fromUser(user));
 
         return CommonResult.success(response);
     }
     
     /**
      * 获取当前用户信息（从 JWT 解析 userId 查 DB）。
+     * 使用 UserVO 避免泄露 password 字段
      */
     @GetMapping("/auth/info")
-    public CommonResult<User> userInfo(jakarta.servlet.http.HttpServletRequest request) {
+    public CommonResult<UserVO> userInfo(jakarta.servlet.http.HttpServletRequest request) {
         String bearerToken = request.getHeader("Authorization");
         if (bearerToken == null || !bearerToken.startsWith("Bearer ")) {
             return CommonResult.error("未登录");
@@ -81,27 +86,42 @@ public class AuthController {
         if (user == null) {
             return CommonResult.error("用户不存在");
         }
-        // 不返回密码哈希
-        user.setPassword(null);
-        return CommonResult.success(user);
+        // 使用 VO 对象，不返回 password 字段
+        return CommonResult.success(UserVO.fromUser(user));
     }
 
     /**
-     * 退出登录（JWT 无状态，前端清 token 即可；此端点用于审计记录）。
+     * 退出登录：将当前 Token 加入黑名单，服务端立即失效。
      */
     @PostMapping("/auth/logout")
-    public CommonResult<Void> logout() {
-        // JWT 无状态，服务端无需维护会话；前端清除本地 token 即完成登出
+    public CommonResult<Void> logout(jakarta.servlet.http.HttpServletRequest request) {
+        String bearerToken = request.getHeader("Authorization");
+        if (bearerToken != null && bearerToken.startsWith("Bearer ")) {
+            String token = bearerToken.substring(7);
+            String jti = jwtTokenProvider.getJtiFromToken(token);
+            if (jti != null) {
+                String username = jwtTokenProvider.getUsernameFromToken(token);
+                java.util.Date expiration = jwtTokenProvider.getExpirationFromToken(token);
+                java.time.LocalDateTime expiresAt = expiration != null
+                        ? java.time.LocalDateTime.ofInstant(expiration.toInstant(), java.time.ZoneId.systemDefault())
+                        : java.time.LocalDateTime.now().plusMinutes(30);
+                tokenBlacklistService.addToBlacklist(jti, token, username, expiresAt);
+            }
+        }
         return CommonResult.success(null);
     }
     
     /**
      * 获取用户列表
+     * 使用 UserVO 避免泄露 password 字段
      */
     @GetMapping("/users")
-    public CommonResult<List<User>> listUsers() {
+    public CommonResult<List<UserVO>> listUsers() {
         List<User> users = userService.list();
-        return CommonResult.success(users);
+        List<UserVO> userVOs = users.stream()
+            .map(UserVO::fromUser)
+            .collect(java.util.stream.Collectors.toList());
+        return CommonResult.success(userVOs);
     }
     
     /**
@@ -173,11 +193,12 @@ public class AuthController {
     
     /**
      * 更新用户（支持scopeIds的JSON序列化）
+     * 使用 UserVO 返回，避免泄露 password 字段
      */
     @PutMapping("/users/{userId}")
-    public CommonResult<User> updateUser(@PathVariable String userId, @RequestBody User user) {
+    public CommonResult<UserVO> updateUser(@PathVariable String userId, @RequestBody User user) {
         try {
-            // 如果传入了新密码，进行合法性校验并加密
+            // 如果传入新密码，进行合法性校验并加密
             if (user.getPassword() != null && !user.getPassword().isEmpty()) {
                 if (user.getPassword().length() < 6) {
                     return CommonResult.error("密码长度至少6位");
@@ -194,7 +215,7 @@ public class AuthController {
                     user.setPassword(existingUser.getPassword());
                 }
             }
-            
+                
             // 处理scopeIds的JSON序列化（如果scopeIds是List类型）
             if (user.getScopeIds() != null && !user.getScopeIds().isEmpty()) {
                 ObjectMapper objectMapper = new ObjectMapper();
@@ -207,13 +228,14 @@ public class AuthController {
                     user.setScopeIds(user.getScopeIds());
                 }
             }
-            
+                
             user.setId(userId);
             user.setUpdatedAt(LocalDateTime.now());
-            
+                
             boolean success = userService.updateById(user);
             if (success) {
-                return CommonResult.success(user);
+                // 使用 VO 对象返回，不泄露 password
+                return CommonResult.success(UserVO.fromUser(user));
             } else {
                 return CommonResult.error("更新用户失败");
             }
@@ -267,7 +289,7 @@ public class AuthController {
      */
     public static class LoginResponse {
         private String token;
-        private User user;
+        private UserVO user;
         
         public String getToken() {
             return token;
@@ -277,11 +299,11 @@ public class AuthController {
             this.token = token;
         }
         
-        public User getUser() {
+        public UserVO getUser() {
             return user;
         }
         
-        public void setUser(User user) {
+        public void setUser(UserVO user) {
             this.user = user;
         }
     }

@@ -56,11 +56,11 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         if (!canCreateRole(currentUserRole, request.getRole())) {
             throw new RuntimeException("无权限创建该角色：" + request.getRole());
         }
-        
-        // 2. 校验Scope分配权限
+            
+        // 2. 校验 Scope 分配权限
         if (request.getScopeIds() != null && !request.getScopeIds().isEmpty()) {
             if (!canAssignScopes(currentUserRole, currentUserScopeIds, request.getScopeIds())) {
-                throw new RuntimeException("无权限分配这些Scope");
+                throw new RuntimeException("无权限分配这些 Scope");
             }
         }
         

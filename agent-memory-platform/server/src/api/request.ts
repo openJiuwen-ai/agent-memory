@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import router from '@/router'
+import { useUserStore } from '@/stores/user'
 
 // 后端统一响应格式
 export interface ApiResponse<T = any> {
@@ -8,6 +9,9 @@ export interface ApiResponse<T = any> {
   message: string
   data: T
 }
+
+// 后端断开标志（已废弃，WebSocket心跳监控已接管断连检测）
+let isBackendDisconnected = false
 
 const request = axios.create({
   baseURL: '', // API 路径直接写在每个调用中,通过 Vite 代理转发
@@ -73,17 +77,36 @@ request.interceptors.response.use(
 
       if (status === 401) {
         ElMessage.error('登录已过期，请重新登录')
+        
+        // 清除 localStorage
         localStorage.removeItem('token')
         localStorage.removeItem('username')
         localStorage.removeItem('role')
         localStorage.removeItem('tenantId')
         localStorage.removeItem('scopeIds')
         localStorage.removeItem('permissions')
+        
+        // 清除 Pinia store（关键！否则路由守卫会拦截跳转）
+        const userStore = useUserStore()
+        userStore.token = ''
+        userStore.username = ''
+        userStore.role = ''
+        userStore.tenantId = ''
+        userStore.scopeIds = []
+        userStore.permissions = []
+        
         router.push('/login')
       } else if (status === 404) {
         ElMessage.error('请求的接口不存在，请检查API路径')
       } else if (status === 500) {
-        ElMessage.error(message || '服务器内部错误')
+        // 500 错误：仅提示，不清除登录状态
+        // WebSocket 心跳监控会自动检测后端断开并处理退出登录
+        console.error('500 错误详情:', {
+          message,
+          error_code: error.code,
+          error_message: error.message
+        })
+        ElMessage.error('后端服务异常，请检查后端是否正常运行')
       } else if (status === 400) {
         // 400 业务校验错误：不自动弹 toast，把 message 挂到 error 上，
         // 由页面自行决定展示方式（如 ElMessageBox 弹框），避免瞬时 toast 不易阅读。
@@ -93,7 +116,19 @@ request.interceptors.response.use(
       }
     } else if (error.request) {
       // 请求已发送但没有收到响应(后端断开/网络错误)
-      ElMessage.error('网络错误,请检查后端服务是否启动')
+      // 仅提示错误，不清除登录状态
+      // WebSocket 心跳监控会自动检测后端断开并处理退出登录
+      console.error('后端服务连接失败:', error)
+      
+      if (!isBackendDisconnected) {
+        isBackendDisconnected = true
+        ElMessage.error('后端服务已断开，请检查后端是否正常运行')
+        
+        // 3秒后重置标志，避免频繁提示
+        setTimeout(() => {
+          isBackendDisconnected = false
+        }, 3000)
+      }
     } else {
       // 其他错误
       ElMessage.error(error.message || '请求失败')

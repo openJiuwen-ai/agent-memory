@@ -76,19 +76,21 @@ CREATE INDEX IF NOT EXISTS idx_cfg_ver_admin_scope ON config_versions(admin_user
 
 CREATE TABLE IF NOT EXISTS config_audit_logs (
     id              VARCHAR(64)  NOT NULL,
-    admin_user_id   VARCHAR(64)  NOT NULL,
-    scope_name      VARCHAR(128),
-    operator_id     VARCHAR(64)  NOT NULL,
-    operation       VARCHAR(32)  NOT NULL,
-    before_config   TEXT,
-    after_config    TEXT,
-    template_id     VARCHAR(64),
+    operator_id     VARCHAR(64)  NOT NULL,                -- 操作人
+    tenant_id       TEXT,                                   -- 涉及租户 (NULL=平台级)
+    template_id     VARCHAR(64),                           -- 涉及模板
+    instance_id     VARCHAR(64) NOT NULL DEFAULT 'default',
+    operation       VARCHAR(64)  NOT NULL,
+    before_value    TEXT,                                   -- before JSON
+    after_value     TEXT,                                   -- after JSON
     success         BOOLEAN      NOT NULL,
     error_message   TEXT,
     operated_at     TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+    reason          TEXT                                    -- 操作原因
+    ,
     PRIMARY KEY (id)
 );
-CREATE INDEX IF NOT EXISTS idx_cfg_audit_admin_time ON config_audit_logs(admin_user_id, operated_at);
+CREATE INDEX IF NOT EXISTS idx_cfg_audit_tenant_time ON config_audit_logs(tenant_id, operated_at);
 
 -- -----------------------------------------------------
 -- 6. 预置数据：3 个 SCOPE 模板 + 2 个 INSTANCE 模板
