@@ -1,8 +1,8 @@
 """存储后端注册（各 *Producer）与可离线验证的后端（LocalFSStore + 惰性连接语义）测试。
 
-redis/elasticsearch/milvus 的真实读写需要起后端服务，属集成测试范畴，这里只覆盖：
-各组件 producer 是否登记了真实后端、``LocalFSStore`` 全链路、以及第三方库缺失时
-的惰性 ``BackendError`` 语义。
+redis/postgres/elasticsearch/milvus 的真实读写需要起后端服务，属集成测试范畴，
+这里只覆盖各组件 producer 是否登记了真实后端、``LocalFSStore`` 全链路，以及
+第三方库缺失时的惰性 ``BackendError`` 语义。
 """
 
 from __future__ import annotations
@@ -28,9 +28,12 @@ from storage.fulltext import FulltextProducer
 from storage.fusion import FusionProducer
 from storage.graph import GraphProducer
 from storage.kv import KvProducer
+from storage.kv_impl.postgres_kv import PostgresKVStore
 from storage.kv_impl.redis_kv import RedisKVStore
+from storage.types import VectorRecord
 from storage.vector import VectorProducer
 from storage.vector_impl.milvus_vector import MilvusVectorStore
+from storage.vector_impl.pgvector_vector import PgVectorStore
 
 register_backends()  # 经接口拿到的 Producer，注册靠 import 实现——测试里显式触发一次
 register_plugins()   # in_memory 全文/融合 store 依赖 tokenizer，需插件也注册齐
@@ -45,8 +48,10 @@ def _build_store(producer, target, params=None):
 def test_real_backends_registered() -> None:
     """各组件 producer 都登记了对应真实后端（导入 *_impl 即自注册）。"""
     assert "redis" in KvProducer.known()
+    assert "postgres" in KvProducer.known()
     assert "elasticsearch" in FulltextProducer.known()
     assert "milvus" in VectorProducer.known()
+    assert "pgvector" in VectorProducer.known()
     assert "nano_graphrag" in GraphProducer.known()
     assert "local" in FsProducer.known()
     assert "milvus_graph" in FusionProducer.known()
@@ -82,6 +87,58 @@ def test_elasticsearch_builder_requires_hosts() -> None:
 def test_milvus_builder_requires_uri() -> None:
     with pytest.raises(ValidationError, match="uri"):
         _build_store(VectorProducer, "milvus", {"dim": 8})
+
+
+def test_postgres_builders_require_dsn() -> None:
+    with pytest.raises(ValidationError, match="dsn"):
+        _build_store(KvProducer, "postgres")
+    with pytest.raises(ValidationError, match="dsn"):
+        _build_store(VectorProducer, "pgvector", {"dim": 8})
+
+
+def test_postgres_builders_read_params_without_connecting() -> None:
+    kv = _build_store(
+        KvProducer,
+        "postgres",
+        {"dsn": "postgresql://example.invalid/db", "table": "custom_kv"},
+    )
+    vector = _build_store(
+        VectorProducer,
+        "pgvector",
+        {
+            "dsn": "postgresql://example.invalid/db",
+            "dim": 8,
+            "table": "custom_vectors",
+            "index_type": "none",
+        },
+    )
+
+    assert isinstance(kv, PostgresKVStore)
+    assert isinstance(vector, PgVectorStore)
+
+
+def test_pgvector_validates_dim_metric_and_index() -> None:
+    with pytest.raises(ValidationError, match="positive"):
+        PgVectorStore(dsn="postgresql://example.invalid/db", dim=0)
+    with pytest.raises(ValidationError, match="metric_type"):
+        PgVectorStore(
+            dsn="postgresql://example.invalid/db",
+            dim=8,
+            metric_type="manhattan",
+        )
+    with pytest.raises(ValidationError, match="index_type"):
+        PgVectorStore(
+            dsn="postgresql://example.invalid/db",
+            dim=8,
+            index_type="ivfflat",
+        )
+
+
+def test_pgvector_rejects_record_dimension_before_connecting() -> None:
+    store = PgVectorStore(dsn="postgresql://example.invalid/db", dim=2)
+
+    with pytest.raises(ValidationError, match="dimension mismatch"):
+        store.insert(SCOPE, [VectorRecord(id="bad", vector=[1.0])])
 
 
 def test_sqlite_builder_reads_db_path(tmp_path) -> None:
@@ -184,3 +241,15 @@ def test_redis_backend_error_when_lib_missing() -> None:
             kv.get(SCOPE, "k")
     else:
         pytest.skip("redis installed; lazy-missing path not exercised")
+
+
+def test_postgres_backend_error_when_lib_missing() -> None:
+    try:
+        import_module("psycopg")
+        import_module("psycopg_pool")
+    except ImportError:
+        kv = PostgresKVStore(dsn="postgresql://example.invalid/db")
+        with pytest.raises(BackendError, match="psycopg"):
+            kv.get(SCOPE, "k")
+    else:
+        pytest.skip("psycopg installed; lazy-missing path not exercised")

@@ -48,6 +48,17 @@ class KVStore(BaseStore):
         """读取 ``scope`` 下 ``key`` 的值；不存在时报缺失。"""
 
     @abstractmethod
+    def mget(self, scope: Scope, keys: list[str]) -> list[bytes]:
+        """批量读取 ``scope`` 下多个 ``key`` 的值。
+
+        返回 ``list[bytes]`` 与 ``keys`` **按下标一一对应**；不去重，调用方可传重复
+        key，各下标独立返回该 key 的值（语义同 Redis ``MGET``）。缺失语义与
+        :meth:`get` 一致：任一 key 不存在即抛 :class:`~common.errors.NotFoundError`，
+        不静默省略——批量点读不承担「索引↔真源短暂不一致」的兜底职责。省逐条 ``get``
+        的接口往返是唯一目的；去重（如有需要）由调用方负责，不下沉到本接口。
+        """
+
+    @abstractmethod
     def exists(self, scope: Scope, key: str) -> bool:
         """返回 ``scope`` 下 ``key`` 是否存在。"""
 

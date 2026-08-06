@@ -32,12 +32,20 @@ from common.type_def import (
 )
 from storage.fulltext import FulltextProducer
 
-from .._support import scope_dims, scope_segments, wrap_backend
+from .._support import (
+    read_ssl_config,
+    require_tls_scheme,
+    scope_dims,
+    scope_segments,
+    wrap_backend,
+)
 from ..base import StoreType
 from ..fulltext import FulltextStore
 from ..types import Document, ScoredID, TextQuery
+from .retrieval_stopwords import RETRIEVAL_STOPWORDS
 
 _RANGE_OPS = {FilterOp.GT: "gt", FilterOp.GTE: "gte", FilterOp.LT: "lt", FilterOp.LTE: "lte"}
+_METADATA_ARRAY_FIELDS = "metadata_array_fields"
 
 
 class ElasticsearchFulltextStore(FulltextStore):
@@ -142,9 +150,20 @@ class ElasticsearchFulltextStore(FulltextStore):
                             }
                         },
                         "metadata": {"type": "object"},
+                        # ES 的倒排字段不区分单值与数组。记录数组 key，供 EQ 与
+                        # CONTAINS 编译器恢复公共过滤契约里的形态语义；该字段不暴露
+                        # 给 Document。
+                        _METADATA_ARRAY_FIELDS: {"type": "keyword"},
                     },
                 },
             )
+            return
+        # mapping 可原地增加，但历史文档没有派生标记，仍需重建索引后才能获得
+        # 严格的 EQ / CONTAINS 语义。
+        self._client.indices.put_mapping(
+            index=self._index,
+            properties={_METADATA_ARRAY_FIELDS: {"type": "keyword"}},
+        )
 
     # --------------------------------------------------------------- 序列化
     @staticmethod
@@ -172,6 +191,9 @@ class ElasticsearchFulltextStore(FulltextStore):
             self._text_field: doc.text,
             "scope": self._scope_dict(scope),
             "metadata": doc.metadata,
+            _METADATA_ARRAY_FIELDS: [
+                key for key, value in doc.metadata.items() if isinstance(value, list)
+            ],
         }
 
     def _to_document(self, doc_id: str, src: dict[str, Any]) -> Document:
@@ -182,18 +204,44 @@ class ElasticsearchFulltextStore(FulltextStore):
         )
 
     @staticmethod
-    def _filter_clause(fc: FilterClause) -> dict[str, Any]:
-        field = f"metadata.{filter_field_metadata_key(fc.field)}"
-        if fc.op in (FilterOp.EQ, FilterOp.CONTAINS):
-            return {"term": {field: fc.value}}
+    def _array_marker(key: str) -> dict[str, Any]:
+        return {"term": {_METADATA_ARRAY_FIELDS: key}}
+
+    @classmethod
+    def _scalar_match(cls, key: str, query: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "bool": {
+                "filter": [query],
+                "must_not": [cls._array_marker(key)],
+            }
+        }
+
+    @classmethod
+    def _filter_clause(cls, fc: FilterClause) -> dict[str, Any]:
+        key = filter_field_metadata_key(fc.field)
+        field = f"metadata.{key}"
+        if fc.op == FilterOp.EQ:
+            return cls._scalar_match(key, {"term": {field: fc.value}})
         if fc.op == FilterOp.NE:
-            return {"bool": {"must_not": {"term": {field: fc.value}}}}
+            return {"bool": {"must_not": [cls._scalar_match(key, {"term": {field: fc.value}})]}}
         if fc.op == FilterOp.IN:
-            return {"terms": {field: fc.value}}
+            return cls._scalar_match(key, {"terms": {field: fc.value}})
         if fc.op == FilterOp.NOT_IN:
-            return {"bool": {"must_not": {"terms": {field: fc.value}}}}
+            return {"bool": {"must_not": [cls._scalar_match(key, {"terms": {field: fc.value}})]}}
+        if fc.op == FilterOp.CONTAINS:
+            return {
+                "bool": {
+                    "filter": [
+                        {"term": {field: fc.value}},
+                        cls._array_marker(key),
+                    ]
+                }
+            }
         if fc.op in _RANGE_OPS:
-            return {"range": {field: {_RANGE_OPS[fc.op]: fc.value}}}
+            # Lucene 的 range 对多值字段是「任一成员命中即匹配」，会让数组字段被范围
+            # 谓词选中；真源复核与 pg 编译器都判否（pg 用 jsonb_typeof='number' 守卫）。
+            # 此处同样限定标量，避免同一谓词在不同后端给出不同候选集。
+            return cls._scalar_match(key, {"range": {field: {_RANGE_OPS[fc.op]: fc.value}}})
         raise ValidationError(f"unsupported filter op for fulltext: {fc.op}")
 
     @classmethod
@@ -303,12 +351,44 @@ class ElasticsearchFulltextStore(FulltextStore):
                 out.append(self._to_document(d["_id"], src))
         return out
 
+    def _analyze_query(self, text: str) -> list[str]:
+        """用索引字段的实际 analyzer 分词，并过滤内部中文停用词。"""
+        with wrap_backend("elasticsearch analyze query"):
+            response = self.client.indices.analyze(
+                index=self._index,
+                field=self._text_field,
+                text=text,
+            )
+        tokens = (
+            str(item.get("token", "")).strip()
+            for item in response.get("tokens", [])
+        )
+        return list(
+            dict.fromkeys(
+                token
+                for token in tokens
+                if token and token not in RETRIEVAL_STOPWORDS
+            )
+        )
+
     def search(self, scope: Scope, query: TextQuery) -> list[ScoredID]:
+        tokens = self._analyze_query(query.text)
+        if not tokens:
+            return []
         filters = self._scope_filters(scope)
         compiled = self._compile_filter(query.filters)
         if compiled is not None:
             filters.append(compiled)
-        bool_query = {"must": [{"match": {self._text_field: query.text}}], "filter": filters}
+        keyword_query = {
+            "bool": {
+                "should": [
+                    {"term": {self._text_field: token}}
+                    for token in tokens
+                ],
+                "minimum_should_match": 1,
+            }
+        }
+        bool_query = {"must": [keyword_query], "filter": filters}
         with wrap_backend("elasticsearch search"):
             resp = self.client.search(
                 index=self._index, query={"bool": bool_query}, size=query.top_k
@@ -332,8 +412,20 @@ class ElasticsearchFulltextStore(FulltextStore):
 @FulltextProducer.register("elasticsearch")
 def _build(config):
     # 三方库后端：hosts 必填，未配置即在 build 阶段报错；其余构造参数有默认值，可经 params 覆盖。
+    hosts = Factory.require_param(config, "hosts", backend="elasticsearch fulltext")
+    ssl = read_ssl_config(config, backend="elasticsearch fulltext")
+    options: dict[str, Any] = {}
+    if ssl.verify:
+        # hosts 只承载地址：elasticsearch-py 解析 URL 时不读 query，证书只能走构造参数。
+        require_tls_scheme(
+            hosts,
+            expected="https",
+            component="elasticsearch fulltext",
+            param="params.hosts",
+        )
+        options["ca_certs"] = ssl.ca_cert
     return ElasticsearchFulltextStore(
-        hosts=Factory.require_param(config, "hosts", backend="elasticsearch fulltext"),
+        hosts=hosts,
         index=Factory.cfg_get(config, "index", "agent_memory_fulltext"),
         username=Factory.cfg_get(config, "username"),
         password=Factory.cfg_get(config, "password"),
@@ -341,4 +433,5 @@ def _build(config):
         text_field=Factory.cfg_get(config, "text_field", "text"),
         text_analyzer=Factory.cfg_get(config, "text_analyzer"),
         refresh=Factory.cfg_get(config, "refresh", "false"),
+        **options,
     )

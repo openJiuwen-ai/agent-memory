@@ -2,12 +2,13 @@
 
 使用 docker compose 将 agent-memory 接入真实后端，作为常驻 HTTP 服务运行。
 
-本目录维护两套部署文件：
+本目录维护三套相互独立的部署文件：
 
 | 模式 | Compose | 镜像 | 配置 | 环境变量示例 |
 |---|---|---|---|---|
 | 在线模型 | `online/docker-compose.yml` | `online/Dockerfile` | `online/config.yml` | `online/.env.example` |
 | 本地模型 | `local/docker-compose.yml` | `local/Dockerfile` | `local/config.yml` | `local/.env.example` |
+| PostgreSQL | `postgres/docker-compose.yml` | `postgres/Dockerfile` | `postgres/config.yml` | `postgres/.env.example` |
 
 ## 选型
 
@@ -16,9 +17,9 @@
 | LLM | DashScope OpenAI-compatible API（默认关闭思考） | 外部，凭 `LLM_API_KEY` |
 | 嵌入 | `bge-m3`（1024 维） | 在线模型：HTTP `/v1/embeddings`；本地模型：进程内 FlagEmbedding |
 | 精排 | `bge-reranker-v2-m3` | 在线模型：HTTP `/rerank`；本地模型：进程内 FlagEmbedding |
-| 向量召回 | Milvus（etcd + MinIO + standalone） | 容器 |
+| 向量召回 | Milvus；PostgreSQL profile 改用 pgvector | 容器 |
 | 关键词召回 | Elasticsearch（BM25） | 容器 |
-| 真源 | Redis | 容器 |
+| 真源 | Redis；PostgreSQL profile 改用 PostgreSQL KVStore | 容器 |
 
 召回采用「向量 + 关键词」双通道，图召回关闭。对外暴露 `POST /v1/<verb>` 的 HTTP 接口，
 单个内核实例随进程生命周期常驻，跨请求保持状态。
@@ -30,6 +31,8 @@
   全栈常驻约占用 13–18 GB。
 - 网络可达：拉取镜像、访问云端 LLM 端点；在线模型模式还需能访问 `EMBEDDER_BASE_URL` /
   `RERANKER_BASE_URL`。
+- PostgreSQL 模式会拉取 PostgreSQL 16 + pgvector 0.8.3 镜像，并在首次创建数据卷时自动执行
+  [`scripts/pg_schema.sql`](../../scripts/pg_schema.sql)。
 - 本地模型模式需通过 ModelScope 下载 bge 模型（约 4 GB，详见「预下载模型」）。
 - 无 GPU：本地模型模式下嵌入/精排走 CPU 推理，功能可用，但批量写入与高并发场景下吞吐受限。
 
@@ -73,6 +76,26 @@ docker compose up -d --build
 LLM 默认使用 `target: dashscope`。`LLM_ENABLE_THINKING=false` 会通过 DashScope
 Adapter 发送 `extra_body.enable_thinking=false`；设为 `true` 可开启思考，设为
 `null` 则完全不发送该厂商字段。
+
+### PostgreSQL 模式
+
+该模式保留在线模型 API 与 Elasticsearch，只把 Redis KV、默认 Vector、L0 Vector、
+L1 Vector 替换为同一个 PostgreSQL 实例中的四张独立表。Compose 会启动
+`pgvector/pgvector:0.8.3-pg16`，不再启动 Redis、Milvus、etcd 或 MinIO：
+
+```bash
+cd deploy/docker/postgres
+cp .env.example .env
+# 编辑 .env，至少填写模型凭据和模型端点；生产环境还应修改数据库密码
+docker compose config
+docker compose up -d --build
+```
+
+PostgreSQL 健康后应用才启动。扩展和四张表由 `/docker-entrypoint-initdb.d/10-agent-memory.sql`
+在空数据卷的第一次启动时创建，配置因此固定 `auto_create_schema: false` /
+`create_extension: false`。默认 DDL 是 `public` schema、1024 维、COSINE/HNSW；调整
+schema、表名或向量维度时，应在首次启动前同步修改 `.env`、`config.yml` 和初始化脚本。
+初始化脚本不会在已有数据卷上重复执行。
 
 ### 本地模型模式
 
@@ -121,6 +144,7 @@ curl -X POST http://localhost:8137/v1/search \
 | agent-memory | 8137 | HTTP API |
 | elasticsearch | 9200 | ES REST |
 | milvus | 19530 / 9091 | SDK / healthz |
+| PostgreSQL（PostgreSQL profile） | `${POSTGRES_PORT:-5432}` | 数据库连接 / 排障 |
 
 ## 常见调整
 
@@ -189,5 +213,8 @@ command: ["python", "bootstrap/http_server/__main__.py",
 
 ```bash
 docker compose down           # 停止服务，保留数据卷
-docker compose down -v        # 停止服务并删除 Redis / ES / Milvus 等数据卷
+docker compose down -v        # 停止服务并删除当前 profile 声明的本地数据卷
 ```
+
+在 `postgres` profile 中执行 `down -v` 会同时删除 Elasticsearch 与 PostgreSQL 数据卷，
+包括所有 KV 和向量数据；仅停止服务请使用不带 `-v` 的命令。

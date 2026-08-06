@@ -30,11 +30,12 @@ embed = [
     # transformers 5.x 移除了 FlagReranker 仍调用的 prepare_for_model，会令 bge reranker 崩；固定在 4.x。
     "transformers>=4.39,<5",
 ]
-# 接真后端部署所需的客户端库（Milvus / Elasticsearch / Redis）+ YAML 配置解析。
+# 接真后端部署所需的客户端库（Milvus / Elasticsearch / Redis / PostgreSQL）+ YAML 配置解析。
 deploy = [
     "pymilvus>=2.4",
     "elasticsearch>=8,<9",
     "redis>=5",
+    "psycopg[binary,pool]>=3.1",
     "pyyaml>=6",
 ]
 # MCP surface（bootstrap/mcp_server）：把记忆动词暴露为 Model Context Protocol 工具。

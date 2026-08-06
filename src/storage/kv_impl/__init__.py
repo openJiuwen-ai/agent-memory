@@ -12,5 +12,6 @@ import_module(".in_memory_kv_store", __name__)
 import_module(".sqlite_kv_store", __name__)
 import_module(".redis_kv", __name__)
 import_module(".encrypted_kv_store", __name__)
+import_module(".postgres_kv", __name__)
 
 __all__ = ["KvProducer"]

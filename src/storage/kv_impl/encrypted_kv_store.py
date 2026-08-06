@@ -95,6 +95,15 @@ class EncryptedKVStore(KVStore):
     def get(self, scope: Scope, key: str) -> bytes:
         return self._decrypt(scope, key, self._raw.get(scope, key))
 
+    def mget(self, scope: Scope, keys: list[str]) -> list[bytes]:
+        # 委托 raw KV 一次性批量取密文（raw 已保证全命中、缺失即抛 NotFoundError），
+        # 再逐项解密——AAD 绑定 scope+key+purpose，各 key AAD 不同，不能批量统一
+        # 解密（与 list 同款逐项解密）。
+        return [
+            self._decrypt(scope, key, raw)
+            for key, raw in zip(keys, self._raw.mget(scope, keys))
+        ]
+
     def exists(self, scope: Scope, key: str) -> bool:
         return self._raw.exists(scope, key)
 

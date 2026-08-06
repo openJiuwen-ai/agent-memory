@@ -33,6 +33,8 @@ from common.security.authentication.credential_registry import CredentialStatusR
 from common.security.authorization import AuthorizationProducer, Authorizer
 from common.security.bootstrap import register_security
 from config import Config
+from config.config_source import ConfigSource, ConfigSourceProducer
+from config.config_source_impl import register_config_sources
 from config.context import ComponentConfig
 from config.defaults import KV_DEFAULT_NAME, ROOT_PARAMS, default_context
 from construction.bootstrap import register_constructors
@@ -46,18 +48,27 @@ from ingest.bootstrap import register_ingestors
 from retrieval.bootstrap import register_operators
 from storage.bootstrap import register_backends
 from storage.kv import KvProducer, KVStore
+from storage.kv_impl.encrypted_kv_store import EncryptedKVStore
 
 from .local_memory_api import LocalMemoryAPI
 
 
 @dataclass
 class Kernel:
-    """一次装配的产物：对外 ``MemoryAPI`` + 真源 kv 句柄（供测试/特殊装配观测真源）。"""
+    """一次装配的产物：对外 ``MemoryAPI`` + 真源 kv（默认已 Encrypted 包装）+ ConfigSource。
+
+    Attributes:
+        api: 形态无关的 MemoryAPI 入口
+        kv: 真源 KV（``build_kernel`` 默认强制为 EncryptedKVStore）
+        space: SpaceManager（若装配）
+        config_source: 运行时晚绑定配置来源（默认 YamlDefaultsConfigSource）
+    """
 
     api: LocalMemoryAPI
     kv: KVStore
     space: SpaceManager | None = None
     audit: AuditLogger | None = None  # 装配好的审计器；surface 侧记认证失败等入口事件
+    config_source: ConfigSource | None = None
 
 
 def _register_all() -> None:
@@ -69,6 +80,7 @@ def _register_all() -> None:
     register_ingestors()  # ingest
     register_constructors()  # construction
     register_controllers()  # control
+    register_config_sources()  # config_source
 
 
 def _build_authorizer(root: ComponentConfig) -> Authorizer:
@@ -179,10 +191,19 @@ def build_kernel(
     root = ComponentConfig(params=dict(ROOT_PARAMS), ctx=ctx, target="local", name="memory_api")
     setup_logging(root)  # 初始化 agent-memory 根 logger（按 globals 的 log_* 配置；幂等）
 
+    # ConfigSource 须先于 engine/evolver 装配，供 PromptRegistry / 插件晚绑定共享。
+    config_source = ConfigSourceProducer.dep(root, default="yaml_defaults")
+    if not isinstance(config_source, ConfigSource):
+        raise ValidationError(
+            f"config_source 装配结果不是 ConfigSource: {type(config_source).__name__}"
+        )
+    ConfigSourceProducer.put("default", config_source)
+
     # audit logger 装配一次、两处共用：API 内部记业务事件，Kernel.audit 暴露给
     # surface 记入口事件（认证失败等发生在 API 之外，拿不到 API 的私有引用）。
     audit_logger = AuditProducer.dep(root, default="sqlite")
     authorizer = _build_authorizer(root)
+
     api = LocalMemoryAPI(
         engine=EngineProducer.dep(root, default="in_memory"),
         grant_store=authorizer.management_grant_store(),
@@ -199,6 +220,7 @@ def build_kernel(
         kv=KvProducer.dep(root, default="memory"),
         space=api.space_manager,
         audit=audit_logger,
+        config_source=config_source,
     )
 
 

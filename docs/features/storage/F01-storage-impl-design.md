@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-06-24 |
 | 影响范围 | src/storage/{kv,vector,fulltext,fusion,graph,fs}_impl/，docs/specs/S06-storage.md（如有） |
-| 测试基线 | `pytest tests/unit/storage tests/integration/storage` 全绿（真实后端 redis/milvus/es/nano-graphrag 未连通时按约定 skip） |
+| 测试基线 | `pytest tests/unit/storage tests/integration/storage` 全绿（真实后端 redis/milvus/es/nano-graphrag/postgres 未配置或不可达时按约定 skip；PostgreSQL 真库由 `AGENT_MEMORY_TEST_PG_DSN` 启用） |
 | Refs | —（如有 issue 补 `Refs: #<n>`） |
 
 > 本文档归档**存储层各后端实现的规约**：每个 `*_impl/` 实现对应哪个接口契约、注册名（`target`）、必填/可选参数、scope 隔离方式、CRUD/search 语义与各自取舍。接口契约本身（方法签名、错误语义、不变量）归 `docs/specs/S06-storage.md`；本文聚焦「当前有哪几种后端、各自怎么落地、为什么这样选」。
@@ -41,18 +41,23 @@
 | `memory` | `InMemoryKVStore` | 进程内 dict | — | — | scope 折五段命名空间键 | `ttl` 过期在 get/exists/scan 时**惰性清除**；`list` 使用公共 MemoryUnit 过滤/计数/分页 |
 | `sqlite` | `SQLiteKVStore` | 标准库 `sqlite3` 落盘 | — | `db_path`(`agent_memory.db`) | scope 五维各落一列，主键 `(org,space,user,agent,session,key)` | 跨进程/重启保留；`check_same_thread=False` + 一把锁串行化（HTTP 多线程）；过期行读时过滤 + 惰性删；`":memory:"` 为进程内；旧表迁移到空 `space` |
 | `redis` | `RedisKVStore` | Redis（`redis-py` 惰性导入） | `url` | `host`/`port`(6379)/`db`(0)/`password` | key 前缀 `org:space:user:agent:session:<key>` | `insert`=`SET NX`（已存在→`ConflictError`）、`update`=`SET XX`（不存在→`NotFoundError`）；`ttl`→`px` 毫秒；`scopes()` 扫 `*` 还原五段 |
+| `postgres` | `PostgresKVStore` | PostgreSQL（`psycopg` 3 + 每实例连接池，惰性导入） | `dsn` | `schema`(`public`)/`table`(`agent_memory_kv`)/池大小/`auto_create_schema` | scope 五维各落一列，复合主键 | 条件式 `ON CONFLICT` 原子区分活跃冲突与过期覆盖；TTL 用库侧 Unix 秒，读取过滤过期行；`scan` 用 `starts_with` 做字面前缀；`list` 使用公共 MemoryUnit 过滤/计数/分页 |
 
-> 三者同实现 `KVStore` 契约 + 同一字节编码；`list` 当前都使用公共兼容路径完成
+> 上述四个真源后端与 `encrypted` 装饰器同实现 `KVStore` 契约 + 同一字节编码；`list` 当前都使用公共兼容路径完成
 > MemoryUnit 过滤、精确计数、稳定排序和分页，装配替换后上层语义不变。
+> **`mget` 落地差异**（批量点读，返回与 `keys` 下标一一对应的 `list[bytes]`，不去重、支持重复 key；任一 key 缺失即抛 `NotFoundError`，与 `get` 一致）：`memory` 逐 key 走 `_live`，缺失即报（无往返开销）；`sqlite` 单条 `IN` 查询召回命中 → 按位置组装，缺失报错（`WHERE` 过滤已过期行，与 `list` 同款，惰性删仍走单 key 的 `_live_value`/`get`）；`redis` 原生 `MGET` 一次往返，redis 返回的 `None` 位归一为 `NotFoundError`（省逐条 `get` 网络往返）；`postgres` 单条 `ANY` 查询召回命中后按输入位置组装，过期或缺失 key 统一报错；`encrypted` 委托 raw `mget` 取密文（raw 已保证全命中）后逐项解密（AAD 绑 key，不能批量解）。
 
 ### VectorStore（`storage/vector.py` · `VectorProducer` · TOP_NAME=`vector_store`）
 
-向量 ANN 索引 + 按 id 正排。`insert/update/delete/get` 走主键 CRUD，`search` 走近邻检索；`id` 是 scope 内逻辑主键，外部后端可用 `scope + id` 生成物理主键，`metadata` 承载标量、`filters` 为 scope 之外的谓词。
+向量 ANN 索引 + 按 id 正排。`insert/update/delete/get` 走主键 CRUD，`search` 走近邻检索，`recall` 在召回请求内按需回带命中行 payload（`metadata`）；`id` 是 scope 内逻辑主键，外部后端可用 `scope + id` 生成物理主键，`metadata` 承载标量、`filters` 为 scope 之外的谓词。
+
+> **`recall` 与 `search` 的取舍**：`search` 仅返回 `ScoredID`（id+score），是 vector/fulltext/fusion 三类 search 的共用纯净契约，不承载 payload；`recall` 是可选能力，基类默认抛 `NotImplementedError`，子类按需 override。远端后端（milvus / pgvector）override 后把"召回 + 取 metadata"合并为一次请求，省掉调用方再发一次 `get` 的 RTT；未 override 的后端由调用方 `VectorRecaller` 捕获异常回退到 `search + get` 两段式。`output_fields` 当前仅认 `"metadata"`，其余值忽略并记日志。
 
 | target | 类 | 后端 | 必填参数 | 可选参数（默认） | 隔离 | 关键语义 |
 |---|---|---|---|---|---|---|
-| `memory` | `InMemoryVectorStore` | 进程内暴力余弦 | — | — | scope 折五段命名空间键 | `search` 暴力算余弦、过滤 `score>0`、降序 top-k；维度一致性由调用方（同一 Embedder）保证 |
-| `milvus` | `MilvusVectorStore` | Milvus（`pymilvus` 2.4+ `MilvusClient` 惰性导入） | `uri`、`dim`（>0，回退 `globals.embedder_dim`） | `host`/`port`(19530)/`token`/`collection`(`agent_memory_vectors`)/`metric_type`(`COSINE`)/`consistency_level`(`Strong`)/`scope_field_max_length`(256)/`id_max_length`(512) | scope 五维落标量字段，表达式 `scope_x == v` 约束 | 首次连接 `_ensure_collection`（建 schema：id/vector/5×scope/metadata-JSON + AUTOINDEX）；**Strong 一致性**保证 read-after-write；`insert` 先 query 查重→`ConflictError`，`update` 查缺→`NotFoundError` 后 `upsert`；`score`=Milvus distance（COSINE/IP 越大越近、L2 越小越近） |
+| `memory` | `InMemoryVectorStore` | 进程内暴力余弦 | — | — | scope 折五段命名空间键 | `search` 暴力算余弦、过滤 `score>0`、降序 top-k；维度一致性由调用方（同一 Embedder）保证；**`recall` override**：search 的薄包装，单次遍历内按 `output_fields=["metadata"]` 回带 metadata（内存零 RTT，仅为与远端后端契约对齐） |
+| `milvus` | `MilvusVectorStore` | Milvus（`pymilvus` 2.4+ `MilvusClient` 惰性导入） | `uri`、`dim`（>0，回退 `globals.embedder_dim`） | `host`/`port`(19530)/`token`/`collection`(`agent_memory_vectors`)/`metric_type`(`COSINE`)/`consistency_level`(`Strong`)/`scope_field_max_length`(256)/`id_max_length`(512) | scope 五维落标量字段，表达式 `scope_x == v` 约束 | 首次连接 `_ensure_collection`（建 schema：id/vector/5×scope/metadata-JSON + AUTOINDEX）；**Strong 一致性**保证 read-after-write；`insert` 先 query 查重→`ConflictError`，`update` 查缺→`NotFoundError` 后 `upsert`；`score`=Milvus distance（COSINE/IP 越大越近、L2 越小越近）；**`recall` override**：`output_fields` 含 `metadata` 时把 search 的 `output_fields` 扩为 `["logical_id","metadata"]`，一次请求回带 metadata（省去再 `get` 的 RTT 与 vector/scope 字段无效回传） |
+| `pgvector` | `PgVectorStore` | PostgreSQL 16 + pgvector ≥0.8.0（`psycopg` 惰性导入） | `dsn`、`dim` | `schema`/`table`/`metric_type`/`index_type`/HNSW 与池参数/`auto_create_schema` | scope 五维与逻辑 id 组成复合主键，search 按 scope 维度过滤 | HNSW + iterative scan；COSINE/L2/IP 均转为高分优先；FilterExpr 在 top-k 前编译为参数化 jsonb SQL；`update` 不改 scope；`index_type=none` 在事务内禁用 index scan 做精确搜索；**`recall` override**：与 `search` 共用同条 KNN SELECT，仅在 SELECT 列追加 `metadata` 一次回带（pgvector 本就一条 SELECT，比 milvus 合并请求更直接），省去再 `get` 的往返 |
 
 > `dim` 必须 >0，构造期即校验（缺失或回退后仍为 0 → `ValidationError`）。
 
@@ -103,6 +108,9 @@
 - **必填连接参数（url/uri/hosts/root/working_dir）惰性校验**：被拒。改为 `Factory.require_param` 在 **build 阶段**即报错，而非拖到首次连接才暴露。
 - **Milvus 默认 Bounded 一致性**：被拒。记忆库需读己之写，固定 `consistency_level="Strong"`，让 get/search 立刻看到刚写入/删除的结果。
 - **ES `metadata.*` 走默认 text 映射**：被拒。text 分析器拆词小写化会让 `"Red Hat"` 之类等值/集合过滤匹配不上；改用 dynamic_template 把 metadata 字符串映射为 keyword，数值/布尔仍动态推断以支持 range。
+- **`mget` 返回 `dict[str, bytes]`（缺失 key 省略）**：被拒。`dict` 天然去重（重复 key 只占一项），与 Redis `MGET` 的位置返回不匹配——Redis 实现需把位置列表再转 `dict`，丢失「重复 key 各位置独立」的能力。改用 `list[bytes]` 位置对应：与 Redis `MGET` 同形、零转换，且显式表达「不去重」契约。
+- **`mget` 内部做去重**：被拒。`mget` 是通用批量点读原语，去重是调用方语义（不同调用方策略可能不同），混进接口会让契约语义不纯——去重留在调用方（如 `UnitReader.load`），不下沉到 `mget`。
+- **`mget` 缺失静默省略（返回 `list[bytes | None]`、缺失位 `None`）**：被拒。这会让 `mget` 缺失语义与单条 `get` 分叉——同一事实（key 不存在）在 `get` 报错、在 `mget` 却静默，调用方须记两套规则；且把「索引↔真源短暂不一致」的兜底职责偷偷下沉进存储接口，违背「存储接口语义纯、调用方自担容忍度」。改为缺失即抛 `NotFoundError`（与 `get` 一致），缺失兜底由需要它的调用方自己承担。
 
 ---
 

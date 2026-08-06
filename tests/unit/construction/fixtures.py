@@ -86,6 +86,16 @@ class MemoryKVStore(KVStore):
             raise NotFoundError("kv", key, f"key {key!r} not found in scope {sk}")
         return bucket[key]
 
+    def mget(self, scope: Scope, keys: list[str]) -> list[bytes | None]:
+        sk = self._scope_key(scope)
+        bucket = self._data.get(sk, {})
+        out: list[bytes] = []
+        for key in keys:
+            if key not in bucket:
+                raise NotFoundError("kv", key)
+            out.append(bucket[key])
+        return out
+
     def exists(self, scope: Scope, key: str) -> bool:
         sk = self._scope_key(scope)
         bucket = self._data.get(sk, {})

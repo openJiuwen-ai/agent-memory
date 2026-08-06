@@ -78,6 +78,14 @@ def test_event_window_lenient_when_no_t_event(unit_factory) -> None:
     assert in_event_window(unit_factory("n", "x"), NOW - timedelta(days=1), NOW + timedelta(days=1))
 
 
+def test_event_window_lenient_when_naive_t_event(unit_factory) -> None:
+    # t_event 为 naive datetime（写入路径未做 UTC 归一化，issue #91）：与 aware 窗口
+    # 比较会抛 TypeError，按宽松不丢弃返回 True，避免 over-drop 伤召回。
+    unit = unit_factory("naive", "x", t_event=datetime(2026, 6, 16))
+    assert unit.temporal.t_event.tzinfo is None
+    assert in_event_window(unit, NOW - timedelta(days=1), NOW + timedelta(days=1))
+
+
 def test_event_window_noop_without_constraint(unit_factory) -> None:
     assert in_event_window(unit_factory("a", "x", t_event=NOW), None, None)
 
@@ -250,17 +258,29 @@ def test_filter_range_op_on_set_field_is_false(unit_factory) -> None:
     assert matches_filters(unit, FilterClause("tags", FilterOp.CONTAINS, "work"))
 
 
-def test_filter_contains_on_scalar_is_equality_not_substring(unit_factory) -> None:
-    """标量 CONTAINS 退化为等值，与 ES 编译器一致（CONTAINS 与 EQ 同走 term）。
-
-    子串匹配会与下推语义分叉：向量/倒排通道下推等值不召回 "homework"，图通道不下推、
-    经本函数子串匹配却召回——同一查询因命中通道不同给出不同结果。
-    """
+def test_filter_contains_rejects_scalar_even_on_exact_value(unit_factory) -> None:
     unit = unit_factory("a", "x")
     unit.metadata["project"] = "homework"
 
-    assert matches_filters(unit, FilterClause("metadata.project", FilterOp.CONTAINS, "homework"))
+    assert not matches_filters(
+        unit, FilterClause("metadata.project", FilterOp.CONTAINS, "homework")
+    )
     assert not matches_filters(unit, FilterClause("metadata.project", FilterOp.CONTAINS, "work"))
+
+
+def test_filter_scalar_ops_do_not_treat_array_as_scalar(unit_factory) -> None:
+    unit = unit_factory("a", "x")
+    unit.metadata["project"] = ["alpha", "beta"]
+
+    assert matches_filters(unit, FilterClause("metadata.project", FilterOp.CONTAINS, "alpha"))
+    assert not matches_filters(unit, FilterClause("metadata.project", FilterOp.EQ, "alpha"))
+    assert matches_filters(unit, FilterClause("metadata.project", FilterOp.NE, "alpha"))
+    assert not matches_filters(
+        unit, FilterClause("metadata.project", FilterOp.IN, ["alpha", "gamma"])
+    )
+    assert matches_filters(
+        unit, FilterClause("metadata.project", FilterOp.NOT_IN, ["alpha", "gamma"])
+    )
 
 
 def test_current_query_excludes_expired_active(unit_factory) -> None:
@@ -383,3 +403,37 @@ def test_unit_reader_loads_by_id_in_scope(scope, unit_factory) -> None:
 
     assert set(loaded) == {"u1"}
     assert loaded["u1"].content == "hello"
+
+
+def test_unit_reader_load_batch_omits_missing(scope, unit_factory) -> None:
+    # load 一次性 mget 召回：批量命中省逐条 get 往返，缺失 id 省略。
+    kv = InMemoryKVStore()
+    kv.insert(scope, memory_key("u1"), dumps(unit_factory("u1", "one")))
+    kv.insert(scope, memory_key("u2"), dumps(unit_factory("u2", "two")))
+    reader = UnitReader(kv)
+
+    loaded = reader.load(scope, ["u1", "u2", "missing"])
+
+    assert set(loaded) == {"u1", "u2"}
+    assert loaded["u1"].content == "one"
+    assert loaded["u2"].content == "two"
+
+
+def test_unit_reader_load_dedups_repeated_ids(scope, unit_factory) -> None:
+    # 重复 uid 的去重留在 load（不下沉到 mget）：同一 uid 传多次只点读一次。
+    kv = InMemoryKVStore()
+    kv.insert(scope, memory_key("u1"), dumps(unit_factory("u1", "x")))
+    reader = UnitReader(kv)
+
+    loaded = reader.load(scope, ["u1", "u1", "u1"])
+
+    assert set(loaded) == {"u1"}
+    assert loaded["u1"].content == "x"
+
+
+def test_unit_reader_load_empty_ids_returns_empty(scope) -> None:
+    assert UnitReader(InMemoryKVStore()).load(scope, []) == {}
+
+
+def test_unit_reader_load_all_missing_returns_empty(scope) -> None:
+    assert UnitReader(InMemoryKVStore()).load(scope, ["ghost"]) == {}

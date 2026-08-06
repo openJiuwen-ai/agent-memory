@@ -266,7 +266,8 @@ class DynamicEvolver(OrchestratingEvolver):
         existing: Optional[MemoryUnit],
         similarity: float,
         result: EvolveResult,
-    ) -> None:
+    ) -> int:
+        """执行单条决策，返回 noop 计数（0 或 1，与父类签名一致）。"""
         if decision == DedupDecision.ADD or (
             decision in {DedupDecision.UPDATE, DedupDecision.SUPERSEDE}
             and existing is None
@@ -274,9 +275,9 @@ class DynamicEvolver(OrchestratingEvolver):
             self._kv.insert(candidate.scope, memory_key(candidate.id), dumps(candidate))
             self._index.build([candidate])
             result.created_ids.append(candidate.id)
-            return
+            return 0
         if decision == DedupDecision.NOOP:
-            return
+            return 1
         if decision == DedupDecision.UPDATE:
             if existing is None:
                 raise ValueError("UPDATE 决策必须提供 existing memory")
@@ -299,7 +300,7 @@ class DynamicEvolver(OrchestratingEvolver):
             self._kv.update(existing.scope, memory_key(existing.id), dumps(existing))
             self._index.update([existing])
             result.updated_ids.append(existing.id)
-            return
+            return 0
         if existing is None:
             raise ValueError("SUPERSEDE 决策必须提供 existing memory")
         candidate.supersedes = existing.id
@@ -319,6 +320,7 @@ class DynamicEvolver(OrchestratingEvolver):
         self._index.update([existing])
         result.created_ids.append(candidate.id)
         result.superseded_ids.append(existing.id)
+        return 0
 
     def _merge_content(self, old: MemoryUnit, new: MemoryUnit) -> str:
         user_prompt = f"Old:\n{old.content}\n\nNew:\n{new.content}"
@@ -373,8 +375,14 @@ def _build(config):
         return LayerAnnotatorProducer.build_named("default", ctx)
 
     prompts_data = config.get("prompts")
+    from config.config_source import ConfigSourceProducer
+
+    # 与 build_kernel 注入的 default ConfigSource 共享，使 prompts.* 可运行时切换
+    config_source = ConfigSourceProducer.get_cached("default")
     registry = (
-        PromptRegistry.from_dict(prompts_data) if prompts_data else PromptRegistry()
+        PromptRegistry.from_dict(prompts_data, config_source=config_source)
+        if prompts_data
+        else PromptRegistry(config_source=config_source)
     )
 
     return DynamicEvolver(

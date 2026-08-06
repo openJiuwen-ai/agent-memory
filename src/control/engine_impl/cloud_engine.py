@@ -8,17 +8,19 @@ KVStore / control 算子，不在 engine 内拼 prompt、选模型或执行鉴�
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from common.errors import NotFoundError, ValidationError
+from common.errors import AgentMemoryError, NotFoundError, ValidationError
 from common.log import get_logger
 from common.type_def import (
     MEMORY_KEY_PREFIX,
     FilterExpr,
     LifecycleState,
+    MemoryTier,
     MemoryUnit,
     Modality,
     RawPayload,
@@ -34,10 +36,14 @@ from construction.index_builder import IndexBuilder, IndexBuilderProducer
 from control.base import ControlOperatorType
 from control.engine import EngineProducer, MemoryEngine
 from control.engine_impl.list_support import list_page
+from control.jobs import JobFactory, JobFactoryProducer, JobType
 from control.lifecycle import LifecycleManager, LifecycleProducer
 from control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
 from control.scheduler import Scheduler, SchedulerProducer
 from control.types import (
+    BatchWriteItem,
+    BatchWriteOutcome,
+    BatchWriteResult,
     Channel,
     DeleteMode,
     DeleteSelector,
@@ -205,6 +211,8 @@ class CloudEngine(MemoryEngine):
         message_type_key: str = "message_type",
         default_message_type: str = "chat",
         default_pipeline_name: str = "default",
+        job_factory: JobFactory | None = None,
+        middle_interval: int = 50,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
@@ -220,6 +228,8 @@ class CloudEngine(MemoryEngine):
             raise ValidationError("CloudEngine message_type_key must not be empty")
         self._default_message_type = default_message_type.strip()
         self._default_pipeline_name = default_pipeline_name.strip()
+        self._job_factory = job_factory
+        self._middle_interval = middle_interval
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
@@ -260,12 +270,24 @@ class CloudEngine(MemoryEngine):
 
         procedural = _truthy(meta, "procedural")
         infer = _truthy(meta, "infer")
-        if procedural or infer:
-            result = evolver.evolve(units, EvolveMode.EXTRACT)
+        middle = _truthy(meta, "middle")  # 二级开关（仅在 infer=true 下生效）
+        if middle and not infer and not procedural:
+            raise ValueError(
+                "metadata.middle=true requires infer=true (middle 是 infer 下的二级开关)"
+            )
+
+        # procedural 优先（与 InMemoryEngine 三路分流一致）
+        if procedural:
+            if evolver is None:
+                raise RuntimeError(
+                    "CloudEngine.write procedural=True requires an Evolver (装配未注入 evolver)"
+                )
+            result = await asyncio.to_thread(
+                evolver.evolve, units, EvolveMode.EXTRACT
+            )
             derived = [self._load(scope, unit_id) for unit_id in result.created_ids]
             logger.info(
-                "CloudEngine.write %s: originals=%d derived=%d scope=%s pipeline=%s",
-                "procedural=True" if procedural else "infer=True",
+                "CloudEngine.write procedural=True: originals=%d derived=%d scope=%s pipeline=%s",
                 len(units),
                 len(derived),
                 scope,
@@ -273,11 +295,35 @@ class CloudEngine(MemoryEngine):
             )
             return derived
 
+        # infer=true 下按 middle 二级分流
+        if infer:
+            if middle:
+                return await self._write_middle_path(
+                    units, scope, index_builder, evolver, pipeline_name
+                )
+            # 既有同步抽取路径，不动
+            if evolver is None:
+                raise RuntimeError(
+                    "CloudEngine.write infer=True requires an Evolver (装配未注入 evolver)"
+                )
+            result = await asyncio.to_thread(
+                evolver.evolve, units, EvolveMode.EXTRACT
+            )
+            derived = [self._load(scope, unit_id) for unit_id in result.created_ids]
+            logger.info(
+                "CloudEngine.write infer=True: originals=%d derived=%d scope=%s pipeline=%s",
+                len(units),
+                len(derived),
+                scope,
+                pipeline_name,
+            )
+            return derived
+
+        # 默认路径（infer=false）：classifier 给原文打 tier+tags → 落 /memory/{id} + 建索引
         if classifier is not None:
             classifier.classify(units)
-        for unit in units:
-            self._kv.insert(scope, memory_key(unit.id), dumps(unit))
-        index_builder.build(units)
+        await asyncio.to_thread(self._write_default_to_kv, scope, units)
+        await asyncio.to_thread(index_builder.build, units)
         logger.info(
             "CloudEngine.write raw_indexed: units=%d scope=%s message_type=%s pipeline=%s",
             len(units),
@@ -286,6 +332,115 @@ class CloudEngine(MemoryEngine):
             pipeline_name,
         )
         return units
+
+    async def batch_write(
+        self,
+        items: list[BatchWriteItem],
+        *,
+        continue_on_error: bool = True,
+    ) -> BatchWriteResult:
+        outcomes: list[BatchWriteOutcome] = []
+        for index, item in enumerate(items):
+            try:
+                units = await self.write(
+                    item.content,
+                    item.scope,
+                    item.source,
+                    assets=item.assets,
+                    tags=item.tags,
+                    metadata=item.metadata,
+                    occurred_at=item.occurred_at,
+                )
+                outcomes.append(BatchWriteOutcome(index=index, item=item, units=units))
+            except Exception as exc:
+                is_domain_error = isinstance(exc, AgentMemoryError)
+                if not is_domain_error:
+                    logger.exception("unexpected batch write failure at item %s", index)
+                outcomes.append(
+                    BatchWriteOutcome(
+                        index=index,
+                        item=item,
+                        error=str(exc) if is_domain_error else "unexpected batch write failure",
+                        error_type=type(exc).__name__ if is_domain_error else "InternalError",
+                    )
+                )
+                if not continue_on_error:
+                    outcomes.extend(
+                        BatchWriteOutcome(
+                            index=skipped_index,
+                            item=skipped_item,
+                            error="skipped after previous item failed",
+                            error_type="Skipped",
+                        )
+                        for skipped_index, skipped_item in enumerate(items[index + 1:], index + 1)
+                    )
+                    break
+        return BatchWriteResult(outcomes=outcomes)
+
+    # ---- 中期缓冲子路径 ----
+
+    async def _write_middle_path(
+        self,
+        units: list[MemoryUnit],
+        scope: Scope,
+        index_builder: IndexBuilder,
+        evolver: Evolver,
+        pipeline_name: str,
+    ) -> list[MemoryUnit]:
+        """中期缓冲子路径：原文落 /memory/ + 建索引 + tier=WORKING + 提交定时 MiddleToLongJob。
+
+        多 profile 适配：CloudEngine 按 message_type 选 binding，每个 profile 有自己的
+        evolver/index。JobFactory Spec 装配期固化的是 default evolver/index——若直接
+        用 Spec 的，原文用 chat_index 建索引但归档时调 default_index.remove，原文
+        索引不会被正确清理。故此处通过 ``get_job`` 的运行时覆盖入参
+        ``evolver=`` / ``index=`` 注入 binding 的——保证 Job 内部的 evolver/index 与原文
+        落盘时一致。
+        """
+        if self._job_factory is None:
+            raise RuntimeError(
+                "middle path requires job_factory, please configure "
+                "engine.default.job_factory"
+            )
+        if evolver is None:
+            raise RuntimeError(
+                "CloudEngine.write middle=true requires an Evolver (装配未注入 evolver)"
+            )
+
+        for unit in units:
+            unit.tier = MemoryTier.WORKING
+            unit.metadata["middle"] = "true"
+        await asyncio.to_thread(self._write_middle_to_kv, scope, units)
+        await asyncio.to_thread(index_builder.build, units)
+
+        # 通过 JobFactory.get_job 的运行时覆盖入参注入 binding 的 evolver/index，
+        # 保证归档时 index.remove 用对正确的 index。
+        job = self._job_factory.get_job(
+            JobType.MIDDLE_TO_LONG,
+            scope=scope,
+            interval=self._middle_interval,
+            evolver=evolver,
+            index=index_builder,
+        )
+        await self._scheduler.submit(job, channel=Channel.BACKGROUND)
+        logger.info(
+            "CloudEngine.write middle=True: %d originals buffered, scope=%s "
+            "pipeline=%s interval=%s",
+            len(units),
+            scope,
+            pipeline_name,
+            self._middle_interval,
+        )
+        return units
+
+    def _write_middle_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
+        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
+        for unit in units:
+            self._kv.insert(scope, memory_key(unit.id), dumps(unit))
+
+    def _write_default_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
+        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
+        for unit in units:
+            self._kv.insert(scope, memory_key(unit.id), dumps(unit))
 
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         routed_query = self._normalized_query(query)
@@ -509,9 +664,16 @@ class CloudEngine(MemoryEngine):
     async def evolve(
         self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
     ) -> str:
-        job_id = self._scheduler.submit(scope, mode, channel)
+        """提交 EvolveJob 到 Scheduler——mode 经构造参数流入 EvolveJob（运行时参数，不进 Spec）。"""
+        if self._job_factory is None:
+            raise RuntimeError(
+                "evolve requires job_factory, please configure "
+                "engine.default.job_factory"
+            )
+        job = self._job_factory.get_job(JobType.EVOLVE, scope=scope, mode=mode)
+        job_id = await self._scheduler.submit(job, channel)
         logger.info(
-            "CloudEngine.evolve delegated to scheduler: job_id=%s scope=%s mode=%s channel=%s",
+            "CloudEngine.evolve submitted: job_id=%s scope=%s mode=%s channel=%s",
             job_id,
             scope,
             mode.value,
@@ -674,6 +836,18 @@ def _optional_pipeline(config) -> MemoryPipeline | None:
     return PipelineProducer.build_named("default", config.ctx)
 
 
+def _optional_job_factory(config) -> JobFactory | None:
+    """与 InMemoryEngine._opt_job_factory 一致——具名实例则注入，None 时
+    evolve/middle 路径报错（向后兼容）。"""
+    ctx = config.ctx
+    ns = ctx.namespaces.get(JobFactoryProducer.TOP_NAME, {})
+    if "default" not in ns:
+        return None
+    import control.jobs_impl as _ji  # noqa: F401
+    _ = _ji
+    return JobFactoryProducer.build_named("default", ctx)
+
+
 @EngineProducer.register("cloud")
 def _build(config):
     ib_default = "hybrid" if config.get("vector_enabled", True) else "fulltext"
@@ -690,4 +864,6 @@ def _build(config):
         message_type_key=str(config.get("message_type_key", "message_type")),
         default_message_type=str(config.get("default_message_type", "chat")),
         default_pipeline_name=str(config.get("default_pipeline_name", "default")),
+        job_factory=_optional_job_factory(config),
+        middle_interval=int(config.get("middle_interval", 50)),
     )

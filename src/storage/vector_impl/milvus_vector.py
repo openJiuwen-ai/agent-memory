@@ -24,6 +24,7 @@ from common.errors import (
     ValidationError,
 )
 from common.factory.factory import Factory
+from common.log import get_logger
 from common.type_def import (
     FilterClause,
     FilterExpr,
@@ -34,9 +35,9 @@ from common.type_def import (
 )
 from storage.vector import VectorProducer
 
-from .._support import scope_dims, scope_segments, wrap_backend
+from .._support import read_ssl_config, scope_dims, scope_segments, wrap_backend
 from ..base import StoreType
-from ..types import ScoredID, VectorQuery, VectorRecord
+from ..types import ScoredID, ScoredHit, VectorQuery, VectorRecord
 from ..vector import VectorStore
 
 _SCOPE_FIELDS = (
@@ -46,6 +47,8 @@ _SCOPE_FIELDS = (
     "scope_agent",
     "scope_session",
 )
+
+logger = get_logger(__name__)
 _CMP_OPS = {
     FilterOp.EQ: "==",
     FilterOp.NE: "!=",
@@ -314,6 +317,50 @@ class MilvusVectorStore(VectorStore):
         hits = results[0] if results else []
         return [ScoredID(id=_hit_id(hit), score=float(hit["distance"])) for hit in hits]
 
+    def recall(
+        self,
+        scope: Scope,
+        query: VectorQuery,
+        output_fields: list[str] | None = None,
+    ) -> list[ScoredHit]:
+        # 把"召回 + 取 metadata"合并为一次 Milvus search 请求，省掉调用方再发
+        # 一次 get 的网络 RTT 与服务端 id 匹配开销。output_fields 仅认 "metadata"
+        # （归并所需的 unit_id 即在其中），其余值忽略并记日志。
+        fetch_meta = bool(output_fields) and "metadata" in output_fields
+        if output_fields:
+            unknown = [f for f in output_fields if f != "metadata"]
+            if unknown:
+                logger.info("MilvusVectorStore.recall: output_fields only supports 'metadata', ignoring %s", unknown)
+        expr = self._expr(scope, query.filters)
+        milvus_out = ["logical_id", "metadata"] if fetch_meta else ["logical_id"]
+        with wrap_backend("milvus recall"):
+            results = self.client.search(
+                self._collection,
+                data=[query.vector],
+                limit=query.top_k,
+                filter=expr,
+                output_fields=milvus_out,
+                search_params={"metric_type": self._metric_type},
+                consistency_level=self._consistency,
+            )
+        hits = results[0] if results else []
+        out: list[ScoredHit] = []
+        for hit in hits:
+            meta: dict[str, Any] = {}
+            if fetch_meta:
+                entity = hit.get("entity") or {}
+                raw = entity.get("metadata")
+                if isinstance(raw, dict):
+                    meta = raw
+            out.append(
+                ScoredHit(
+                    id=_hit_id(hit),
+                    score=float(hit["distance"]),
+                    metadata=meta,
+                )
+            )
+        return out
+
     def score_higher_is_better(self) -> bool:
         # 分数方向随 metric_type：COSINE/IP 越大越相关；L2 等距离型越小越相关。
         return str(self._metric_type).upper() in ("COSINE", "IP")
@@ -326,6 +373,14 @@ class MilvusVectorStore(VectorStore):
 def _build(config):
     # 三方库后端：uri 必填；dim 取本组件 params.dim，回退到内核共享的 embedder_dim。
     # 其余构造参数（host/port/一致性/字段长度等）均有默认值，可经 params 覆盖。
+    ssl = read_ssl_config(config, backend="milvus vector")
+    options: dict[str, Any] = {}
+    if ssl.verify:
+        # secure 是真开关，无须校验 uri scheme（https:// 亦会置位，两者等价）。
+        # 单向 TLS 用 server_pem_path：ca_pem_path 属双向认证分支，须与客户端证书
+        # 和私钥同时提供才生效，单独配置会静默失效。
+        options["secure"] = True
+        options["server_pem_path"] = ssl.ca_cert
     return MilvusVectorStore(
         uri=Factory.require_param(config, "uri", backend="milvus vector"),
         host=Factory.cfg_get(config, "host", "localhost"),
@@ -337,4 +392,5 @@ def _build(config):
         consistency_level=Factory.cfg_get(config, "consistency_level", "Strong"),
         scope_field_max_length=Factory.cfg_get(config, "scope_field_max_length", 256),
         id_max_length=Factory.cfg_get(config, "id_max_length", 512),
+        **options,
     )

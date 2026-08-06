@@ -70,6 +70,18 @@ class InMemoryKVStore(KVStore):
             raise NotFoundError("kv", key)
         return value
 
+    def mget(self, scope: Scope, keys: List[str]) -> List[bytes]:
+        # 按下标一一对应；不去重，重复 key 各下标独立返回。任一缺失即报
+        # NotFoundError（与 get 一致），不在批量点读里静默省略。
+        sk = _skey(scope)
+        out: List[bytes] = []
+        for key in keys:
+            value = self._live(sk, key)
+            if value is None:
+                raise NotFoundError("kv", key)
+            out.append(value)
+        return out
+
     def exists(self, scope: Scope, key: str) -> bool:
         return self._live(_skey(scope), key) is not None
 

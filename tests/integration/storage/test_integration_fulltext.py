@@ -219,6 +219,24 @@ def test_ft_metadata_filters(ft):
     assert query_ids(tree) == {"r1"}
 
 
+def test_ft_distinguishes_scalar_equality_from_array_membership(ft):
+    store, scope = ft
+    store.insert(
+        scope,
+        [
+            Document(id="scalar", text="doc", metadata={"kind": "work"}),
+            Document(id="array", text="doc", metadata={"kind": ["work"]}),
+        ],
+    )
+
+    def query_ids(op):
+        filters = [FilterClause("kind", op, "work")]
+        return _ids(store.search(scope, TextQuery(text="doc", top_k=10, filters=filters)))
+
+    assert query_ids(FilterOp.EQ) == {"scalar"}
+    assert query_ids(FilterOp.CONTAINS) == {"array"}
+
+
 def test_ft_exact_match_multiword_keyword(ft):
     """多词/大小写敏感的精确等值（依赖 metadata 字符串映射为 keyword）。"""
     store, scope = ft

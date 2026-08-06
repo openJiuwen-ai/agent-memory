@@ -9,6 +9,8 @@ from common.errors import ValidationError
 from common.type_def import (
     FilterClause,
     FilterOp,
+    LifecycleState,
+    MemoryTier,
     MemoryUnit,
     Modality,
     RawPayload,
@@ -17,17 +19,20 @@ from common.type_def import (
     Temporal,
     memory_key,
 )
-from common.type_def.memory_codec import dumps
+from common.type_def.memory_codec import dumps, loads
 from construction.base import OperatorType
 from construction.classifier import Classifier
 from construction.evolver import EvolveMode, Evolver, EvolveResult
 from construction.index_builder import IndexBuilder
 from control.base import ControlOperatorType
 from control.engine_impl.cloud_engine import CloudEngine
+from control.jobs import Job, JobFactory, JobType
+from control.jobs_impl.evolve_job import EvolveJobSpec
+from control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
 from control.lifecycle import LifecycleManager
 from control.pipeline import MemoryPipeline, PipelineBinding
 from control.scheduler_impl.in_process_scheduler import InProcessScheduler
-from control.types import DeleteSelector, MemoryPatch, UpdateMode
+from control.types import BatchWriteItem, Channel, DeleteSelector, JobStatus, MemoryPatch, UpdateMode
 from ingest.base import IngestOperatorType
 from ingest.ingestor import Ingestor
 from retrieval.base import RetrievalOperatorType
@@ -186,6 +191,65 @@ class _NoopLifecycle(LifecycleManager):
         return []
 
 
+class _RecordingScheduler(InProcessScheduler):
+    """记录 submit 入参的 Scheduler 替身（不实际执行 Job）。
+
+    继承 InProcessScheduler 保留 status/cancel，但 submit 不调 job.run——
+    让测试断言 Job 字段后无副作用。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[tuple[Job, Channel]] = []
+
+    async def submit(self, job: Job, channel: Channel) -> str:
+        self.calls.append((job, channel))
+        return "job-1"
+
+
+def _build_test_job_factory(
+    kv, evolver, lifecycle, index, *, llm=None
+) -> JobFactory:
+    """构造测试用 JobFactory——注册 MiddleToLongJob + EvolveJob 的 Spec builder。
+
+    与 InMemoryEngine 测试同模式——Spec 装配期固化依赖与业务参数，
+    运行时 get_job 补 scope + 运行时参数生成完整 Job 实例。
+    """
+    from common.llm.base import LLM
+    from common.base import PluginType
+    from common.type_def.chat import ChatMessage
+
+    class _EchoLLM(LLM):
+        def plugin_type(self) -> PluginType:
+            return PluginType.LLM
+
+        def health(self) -> None:
+            return None
+
+        def chat(self, messages: list[ChatMessage], **options: object) -> str:
+            return messages[-1].content if messages else ""
+
+    factory = JobFactory()
+    factory.register(
+        JobType.MIDDLE_TO_LONG,
+        MiddleToLongJobSpec(
+            kv=kv,
+            evolver=evolver,
+            lifecycle=lifecycle,
+            index=index,
+            llm=llm or _EchoLLM(),
+            max_fetch=100,
+            batch_size=10,
+            concurrency=1,
+        ).with_scope,
+    )
+    factory.register(
+        JobType.EVOLVE,
+        EvolveJobSpec(kv=kv, evolver=evolver).with_scope,
+    )
+    return factory
+
+
 class _MessageTypePipeline(MemoryPipeline):
     def __init__(self, profiles: dict[str, PipelineBinding]) -> None:
         self.profiles = profiles
@@ -296,6 +360,49 @@ def test_cloud_engine_write_defaults_to_chat_message_type() -> None:
     assert records["coding_index"].built == []
     assert units[0].metadata["message_type"] == "chat"
     assert units[0].metadata["pipeline"] == "chat"
+
+
+def test_cloud_engine_batch_write_preserves_order_and_routes_each_item() -> None:
+    engine, records = _engine()
+    scope = Scope(org="acme", user="alice")
+
+    result = asyncio.run(
+        engine.batch_write(
+            [
+                BatchWriteItem(content="chat note", scope=scope, source=Modality.TEXT),
+                BatchWriteItem(
+                    content="coding note",
+                    scope=scope,
+                    source=Modality.CODE,
+                    metadata={"message_type": "coding"},
+                ),
+            ]
+        )
+    )
+
+    assert [outcome.units[0].content for outcome in result.outcomes] == ["chat note", "coding note"]
+    assert records["chat_index"].built == ["chat note"]
+    assert records["coding_index"].built == ["coding note"]
+    assert result.outcomes[1].units[0].metadata["pipeline"] == "coding"
+
+
+def test_cloud_engine_batch_write_collects_unexpected_error_and_skips_after_failure() -> None:
+    engine, _ = _engine()
+    scope = Scope(org="acme", user="alice")
+
+    async def _raise_unexpected(*_args, **_kwargs):
+        raise RuntimeError("unavailable dependency")
+
+    engine.write = _raise_unexpected  # type: ignore[method-assign]
+    result = asyncio.run(
+        engine.batch_write(
+            [BatchWriteItem(content="first", scope=scope), BatchWriteItem(content="second", scope=scope)],
+            continue_on_error=False,
+        )
+    )
+
+    assert [outcome.error_type for outcome in result.outcomes] == ["InternalError", "Skipped"]
+    assert result.outcomes[0].error == "unexpected batch write failure"
 
 
 def test_cloud_engine_recall_routes_by_message_type_extension() -> None:
@@ -414,3 +521,175 @@ def test_cloud_engine_delete_rejects_empty_selector() -> None:
         return
     else:
         raise AssertionError("empty selector should raise ValidationError")
+
+
+# ---- mem2.0：middle 路径 + evolve 走 JobFactory ----
+
+
+def _engine_with_job_factory(
+    *,
+    middle_interval: int = 50,
+    with_job_factory: bool = True,
+):
+    """构造带 JobFactory 的 CloudEngine——多 profile binding（chat/coding）。
+
+    注册 MiddleToLongJob + EvolveJob 的 Spec builder，Spec 装配期固化的 evolver
+    是 chat_evolver（default）。CloudEngine _write_middle_path 内会覆盖
+    job._evolver / job._index 为 binding 选的——这是测试要验证的关键点。
+    """
+    kv = InMemoryKVStore()
+    chat_index = _RecordingIndexBuilder("chat")
+    coding_index = _RecordingIndexBuilder("coding")
+    chat_evolver = _RecordingEvolver("chat", kv)
+    coding_evolver = _RecordingEvolver("coding", kv)
+    lifecycle = _NoopLifecycle()
+    scheduler = _RecordingScheduler()
+    profiles = {
+        "chat": PipelineBinding(
+            name="chat",
+            index_builder=chat_index,
+            retriever=_RecordingRetriever("chat"),
+            evolver=chat_evolver,
+            classifier=_RecordingClassifier("chat"),
+        ),
+        "coding": PipelineBinding(
+            name="coding",
+            index_builder=coding_index,
+            retriever=_RecordingRetriever("coding"),
+            evolver=coding_evolver,
+            classifier=_RecordingClassifier("coding"),
+        ),
+    }
+    factory = _build_test_job_factory(kv, chat_evolver, lifecycle, chat_index) if with_job_factory else None
+    engine = CloudEngine(
+        ingestor=_RecordingIngestor(),
+        index_builder=chat_index,
+        retriever=_RecordingRetriever("chat"),
+        kv=kv,
+        scheduler=scheduler,
+        evolver=chat_evolver,
+        lifecycle=lifecycle,
+        classifier=_RecordingClassifier("chat"),
+        pipeline=_MessageTypePipeline(profiles),
+        default_message_type="chat",
+        default_pipeline_name="chat",
+        job_factory=factory,
+        middle_interval=middle_interval,
+    )
+    return engine, scheduler, {
+        "kv": kv,
+        "chat_index": chat_index,
+        "coding_index": coding_index,
+        "chat_evolver": chat_evolver,
+        "coding_evolver": coding_evolver,
+        "lifecycle": lifecycle,
+    }
+
+
+def test_cloud_engine_write_middle_submits_middle_to_long_job() -> None:
+    """infer=true + middle=true → _write_middle_path：提交 MiddleToLongJob 到 scheduler。
+
+    验证：
+    - scheduler 收到 MiddleToLongJob（type 名匹配）；
+    - job.scope == scope；
+    - job.interval == middle_interval（50）；
+    - 原文落盘 tier=WORKING + metadata.middle=true；
+    - 立即建索引（index.build 已调）；
+    - job._evolver / job._index 被 binding 选的覆盖（coding profile）。
+    """
+    engine, scheduler, records = _engine_with_job_factory()
+    scope = Scope(org="acme", user="alice")
+
+    units = asyncio.run(
+        engine.write(
+            "alice likes tea",
+            scope,
+            metadata={"message_type": "coding", "infer": "true", "middle": "true"},
+        )
+    )
+
+    # scheduler 收到 1 个 MiddleToLongJob
+    assert len(scheduler.calls) == 1
+    job, channel = scheduler.calls[0]
+    assert channel == Channel.BACKGROUND
+    assert job.scope == scope
+    assert job.interval == 50
+    # 原文落盘 + tier=WORKING + metadata.middle=true
+    assert len(units) >= 1
+    persisted = loads(records["kv"].get(scope, memory_key(units[0].id)))
+    assert persisted.tier == MemoryTier.WORKING
+    assert persisted.metadata.get("middle") == "true"
+    # 立即建索引（coding_index 收到 build）
+    assert records["coding_index"].built == ["alice likes tea"]
+    # job._evolver / job._index 被 binding 的覆盖——
+    # Spec 装配期固化的 evolver 是 chat_evolver（_engine_with_job_factory 内），
+    # 但 binding 选了 coding profile，故 job._evolver 应为 coding_evolver。
+    assert job._evolver is records["coding_evolver"]  # pylint: disable=protected-access
+    assert job._index is records["coding_index"]  # pylint: disable=protected-access
+
+
+def test_cloud_engine_write_middle_raises_when_job_factory_is_none() -> None:
+    """_write_middle_path 无 job_factory → RuntimeError（middle 路径必须装配 JobFactory）。"""
+    engine, scheduler, _ = _engine_with_job_factory(with_job_factory=False)
+    scope = Scope(org="acme", user="alice")
+
+    with pytest.raises(RuntimeError, match="middle path requires job_factory"):
+        asyncio.run(
+            engine.write(
+                "x",
+                scope,
+                metadata={"message_type": "chat", "infer": "true", "middle": "true"},
+            )
+        )
+
+
+def test_cloud_engine_procedural_takes_precedence_over_middle() -> None:
+    """procedural=true 优先——即使 middle=true，也走 procedural 路径（不提交 MiddleToLongJob）。
+
+    与 InMemoryEngine 同模式——procedural > infer 互斥逻辑里 procedural 优先，
+    middle 是 infer 下的二级开关，procedural=true 时 middle 标记被忽略。
+    """
+    engine, scheduler, records = _engine_with_job_factory()
+    scope = Scope(org="acme", user="alice")
+
+    units = asyncio.run(
+        engine.write(
+            "alice likes tea",
+            scope,
+            metadata={"message_type": "chat", "procedural": "true", "middle": "true"},
+        )
+    )
+
+    # procedural 路径：不提交 MiddleToLongJob
+    assert scheduler.calls == []
+    # 派生结果而非原文
+    assert all(u.id.startswith("chat-derived-") for u in units)
+
+
+def test_cloud_engine_evolve_submits_evolve_job_via_job_factory() -> None:
+    """evolve 经 JobFactory 取 EvolveJob(mode=mode) 提交——修复原 submit(scope, mode, channel) bug。
+
+    Scheduler 已统一为 submit(job, channel)——原 CloudEngine.evolve 调
+    submit(scope, mode, channel) 必报 TypeError。重构后走 JobFactory 统一创建路径。
+    """
+    engine, scheduler, _ = _engine_with_job_factory()
+    scope = Scope(org="acme", user="alice")
+
+    job_id = asyncio.run(engine.evolve(scope, EvolveMode.CONSOLIDATE, Channel.HOT))
+
+    assert job_id == "job-1"
+    assert len(scheduler.calls) == 1
+    job, channel = scheduler.calls[0]
+    assert channel == Channel.HOT
+    assert job.scope == scope
+    assert job.interval == 0  # EvolveJob 是一次性任务
+    assert job._mode == EvolveMode.CONSOLIDATE  # mode 经构造参数流入  # pylint: disable=protected-access
+
+
+def test_cloud_engine_evolve_raises_when_job_factory_is_none() -> None:
+    """evolve 无 job_factory → RuntimeError（原 submit(scope, mode, channel) bug 修复路径）。"""
+    engine, scheduler, _ = _engine_with_job_factory(with_job_factory=False)
+    scope = Scope(org="acme", user="alice")
+
+    with pytest.raises(RuntimeError, match="evolve requires job_factory"):
+        asyncio.run(engine.evolve(scope, EvolveMode.EXTRACT, Channel.HOT))

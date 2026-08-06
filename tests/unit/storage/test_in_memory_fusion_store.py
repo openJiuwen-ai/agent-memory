@@ -19,7 +19,11 @@ def _store() -> InMemoryFusionStore:
     store.insert(
         SCOPE,
         [
-            FusionRecord(id="r1", vector=[1.0, 0.0], scalars={"project": "alpha", "priority": 8}),
+            FusionRecord(
+                id="r1",
+                vector=[1.0, 0.0],
+                scalars={"project": "alpha", "priority": 8, "tags": ["work"]},
+            ),
             FusionRecord(id="r2", vector=[1.0, 0.0], scalars={"project": "beta", "priority": 3}),
             FusionRecord(id="r3", vector=[1.0, 0.0], scalars={"project": "gamma", "priority": 9}),
         ],
@@ -64,3 +68,11 @@ def test_fusion_none_filter_returns_all() -> None:
     store = _store()
 
     assert _search_ids(store, None) == {"r1", "r2", "r3"}, "无过滤 → 全命中"
+
+
+def test_fusion_distinguishes_scalar_equality_from_array_membership() -> None:
+    store = _store()
+
+    assert _search_ids(store, FilterClause("tags", FilterOp.CONTAINS, "work")) == {"r1"}
+    assert _search_ids(store, FilterClause("tags", FilterOp.EQ, "work")) == set()
+    assert _search_ids(store, FilterClause("project", FilterOp.CONTAINS, "alpha")) == set()

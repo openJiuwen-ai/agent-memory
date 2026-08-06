@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
@@ -48,9 +49,9 @@ from construction.base import ExtractContext, OperatorType
 from construction.dedup import Dedup, DedupProducer
 from construction.evolver import EvolveMode, Evolver, EvolveResult, EvolverProducer
 from construction.extractor import Extractor, ExtractorProducer
+from construction.prompt_strategy import copy_consolidation_prompts
 from construction.index_builder import IndexBuilder, IndexBuilderProducer
 from construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
-from construction.prompt_strategy import copy_consolidation_prompts
 from storage.graph import GraphProducer, GraphStore
 from storage.kv import KvProducer, KVStore
 from storage.types import Edge, Node
@@ -108,15 +109,17 @@ more complete/accurate/recent).
 Judge each candidate independently against its OWN listed existing memories. If unsure, prefer \
 "add"."""
 
-_CONTENT_MERGE_SYSTEM_PROMPT = """You are a memory content merger. Merge the old and new memory \
-contents
-into a single coherent statement that preserves all information from both versions.
+_CONTENT_MERGE_SYSTEM_PROMPT = """Combine the old and new memory content into one self-contained
+statement. Output ONLY that statement as plain text. No explanation, no labels, no JSON.
 
-Output ONLY the merged content as plain text. No explanation, no labels, no JSON.
-Rules:
-- Preserve all facts/details from both versions.
-- If conflicting, prefer the newer version (the second input).
-- Keep the result concise and self-contained."""
+- Keep every named entity, quantity, descriptive attribute and date from either version;
+  length is no constraint, dropping one to shorten is the failure here.
+- Conflict = two different values for the SAME attribute; only there take the newer version
+  (the second input). Same value at different precision - keep the precise form. Details that
+  merely differ are no conflict; keep both.
+- If the two describe different matters, state both - losing either is worse than one item
+  covering two.
+- Write in the input's language."""
 
 # ---------------------------------------------------------------------------
 # 辅助函数

@@ -8,7 +8,10 @@ from construction.extractor_impl.llm_extractor import (
     _PROCEDURAL_SYSTEM_PROMPT,
 )
 
+_CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+
 
 def test_english_prompts_do_not_contain_chinese_examples():
-    prompts = _EXTRACT_SYSTEM_PROMPT + _PROCEDURAL_SYSTEM_PROMPT + _CLASSIFY_SYSTEM_PROMPT
-    assert re.search(r"[\u3400-\u4dbf\u4e00-\u9fff]", prompts) is None
+    assert _CJK.search(_PROCEDURAL_SYSTEM_PROMPT) is None
+    assert _CJK.search(_CLASSIFY_SYSTEM_PROMPT) is None
+    assert _CJK.search(_EXTRACT_SYSTEM_PROMPT) is None

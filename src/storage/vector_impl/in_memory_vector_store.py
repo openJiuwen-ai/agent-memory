@@ -11,10 +11,13 @@ from collections import defaultdict
 from typing import Dict, List, Tuple
 
 from common.errors import ConflictError, NotFoundError
+from common.log import get_logger
 from common.type_def import Scope
 from storage.base import StoreType
-from storage.types import ScoredID, VectorQuery, VectorRecord
+from storage.types import ScoredHit, ScoredID, VectorQuery, VectorRecord
 from storage.vector import VectorProducer, VectorStore
+
+logger = get_logger(__name__)
 
 _ScopeKey = Tuple[str, str, str, str, str]
 
@@ -68,11 +71,48 @@ class InMemoryVectorStore(VectorStore):
         return [bucket[i] for i in ids if i in bucket]
 
     def search(self, scope: Scope, query: VectorQuery) -> List[ScoredID]:
+        bucket = self._data[_skey(scope)]
         scored = [
-            ScoredID(id=rec.id, score=_cosine(query.vector, rec.vector))
-            for rec in self._data[_skey(scope)].values()
+            ScoredID(
+                id=rec.id,
+                score=_cosine(query.vector, rec.vector),
+                metadata=dict(rec.metadata) if query.return_metadata else None,
+            )
+            for rec in bucket.values()
         ]
         scored = [s for s in scored if s.score > 0.0]
+        scored.sort(key=lambda s: s.score, reverse=True)
+        return scored[: query.top_k]
+
+    def recall(
+        self,
+        scope: Scope,
+        query: VectorQuery,
+        output_fields: list[str] | None = None,
+    ) -> List[ScoredHit]:
+        # 内存后端无 RTT，recall 即 search 的薄包装：output_fields 只认 "metadata"
+        # （归并所需的 unit_id 即在其中），其余值忽略并记日志；空列表/None 不回带。
+        fetch_meta = bool(output_fields) and "metadata" in output_fields
+        if output_fields:
+            unknown = [f for f in output_fields if f != "metadata"]
+            if unknown:
+                logger.info(
+                    "InMemoryVectorStore.recall: output_fields only supports 'metadata', ignoring %s",
+                    unknown,
+                )
+        bucket = self._data[_skey(scope)]
+        scored: list[ScoredHit] = []
+        for rec in bucket.values():
+            sim = _cosine(query.vector, rec.vector)
+            if sim <= 0.0:
+                continue
+            scored.append(
+                ScoredHit(
+                    id=rec.id,
+                    score=sim,
+                    metadata=dict(rec.metadata) if fetch_meta else {},
+                )
+            )
         scored.sort(key=lambda s: s.score, reverse=True)
         return scored[: query.top_k]
 

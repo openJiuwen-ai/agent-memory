@@ -13,15 +13,29 @@ LLM 在每个候选里输出裸 ``source_id`` 回指来源。解析时校验 sou
 tier 与 tags 均由 LLM 在抽取时一并产出（同一 prompt，不另调 LLM、不走 FeatureExtractor）：
 - ``tier``：候选认知角色，限定 ``episodic`` / ``semantic`` / ``procedural`` 三选一
   （WORKING/ARCHIVAL 不由抽取产出，CORE 留给 Abstractor 升华）。
-- ``tags``：1-3 个简短主题标签，供后续过滤/检索。
+- ``tags``：1-3 个简短主题标签；构建派生 unit 时与源 unit 的 write tags 合并，再追加
+  ``extracted``（或 procedural 路径的 ``procedural``）系统标记。
 
 L0/L1 分层标注不由本算子负责——由 Evolver 在抽取后委托
 :class:`~construction.layer_annotator.LayerAnnotator` 生成（见 F01-memory-layer）。
 
-prompt 只允许把同一 source 内**同一实体、同一关系或同一事件**的子事实合并成一条
-自包含陈述（如同一个人的咖啡偏好：早上美式/下午拿铁/不加糖），不同人物、记录、动作
-或事件保持独立。跨次 write 的重复仍由 Evolver ``_dedup_batch`` 兜底（向量召回判定
+粒度策略：事实边界按「该行提出的一件事」划分，而非按从句划分——一个主张连同说话人为它
+给出的理由/属性属于同一件事，不拆成并列条目。该约束是双向的：既不把一件事拆成并列碎片，
+也不允许第二件事在合并中消失。只写单向（「不要拆」）会让模型一路收敛到零产出，是漏抽的
+直接成因。这不改变抽象层级：跨 source 合并与抽象升华仍由 Abstractor 负责，本算子只产低
+抽象粒度的派生单元。跨次 write 的重复由 Evolver ``_dedup_batch`` 兜底（向量召回判定
 NOOP/UPDATE）。
+
+时间信息的落点由检索面决定：条目被召回后，读者只看得到 ``content`` 文本，``event_date``
+是过滤字段、不进阅读面。因此使条目在时间上可定位的信息必须写进文本；是否需要时间由该条
+自身有无时间维度决定，不按事实类别预设。
+
+言语行为：该行若在建议/请求/承诺/拒绝/回答提问，条目须写出该行为及其对象；只保留命题会
+丢掉该行的用途。裸转述壳（"A said that ..."）不属于事实本身。社交外壳（寒暄、致谢、赞美、
+道别）与信息内容在同一行内并存，判定该行有无内容须在剥离外壳之后。
+
+语境取自 ``ExtractContext.recent_originals``：上文不作提取来源、不改 ``source_id``，但
+省略式应答（承接上一行、单独不成命题）允许据上文补全为独立条目。
 
 纯函数：不落盘、不标记、不检索。幂等性依赖 LLM temperature=0。
 """
@@ -47,7 +61,7 @@ from common.type_def import (
 )
 
 from ..base import ExtractContext, OperatorType
-from ..common import parse_tags
+from ..common import merge_unit_tags, parse_tags
 from ..extractor import Extractor, ExtractorProducer
 
 logger = get_logger(__name__)
@@ -100,72 +114,96 @@ class ExtractionCandidate:
 # ---------------------------------------------------------------------------
 
 _EXTRACT_SYSTEM_PROMPT = """\
-Extract facts, events, preferences, and context from the source memories below.
 Output ONLY a JSON array. No explanation, no markdown fences.
 
-Rules:
-- Extract only what is explicitly stated. Do not infer or speculate.
-- Each item must be self-contained (understandable without source context).
-- MERGE facts only when they describe the SAME entity and SAME relationship, or the SAME event.
-  Never merge different people, objects, actions, table rows, or events just because they
-  share a topic.
-- Preserve exact names, identifiers, numbers, dates, times, counts, negation, and action state.
-- For a table or schedule, emit one "structured_record" per independent row or relationship.
-- For reusable code, configuration, checklists, decision records, or complete plans, emit an
-  "artifact" and retain the reusable content rather than only saying that it was created.
-- For "evidence", copy the smallest complete verbatim source span that proves the item.
-- "source_id": the bare id of the source memory the item was extracted from.
-  Use the UUID value shown inside the [ID: ...] marker — WITHOUT the "[ID: ]" wrapper,
-  WITHOUT quotes around the marker, and WITHOUT any leading/trailing whitespace.
-  Example: for "--- [ID: 32049cd0-5f7c-419f-928f-503b24318f7c] ---", output
-  "source_id": "32049cd0-5f7c-419f-928f-503b24318f7c". Every item MUST include a valid source_id.
-  Only merge facts that share the same source_id; never merge across different sources.
-- Language: write each extracted statement in the SAME language as its source text
-  (Chinese source → Chinese statement; English source → English statement). Never
-  translate the extracted content to another language.
-- "confidence": 1.0 = directly stated, 0.7 = clearly implied, 0.5 = weakly implied.
-  Do not extract below 0.5.
-- Relative time resolution: if the user message contains relative time expressions
-  (e.g. "yesterday", "last week", "tomorrow at 9 a.m.", "last Wednesday"),
-  resolve them to ABSOLUTE
-  dates/times using the observation_date given in the user prompt as the reference point.
-  Write the absolute date/time into the content text AND output an "event_date" field in
-  ISO 8601 format (e.g. "2025-06-09T09:00:00"). If the item has no time component, omit
-  event_date (or output empty string). Example: observation_date=2025-06-10, source
-  "Alice attended a basketball game yesterday at 9 a.m." →
-  content="Alice attended a basketball game on 2025-06-09 at 9 a.m.",
-  event_date="2025-06-09T09:00:00".
-- "tier": the cognitive role of the extracted memory, one of:
-  - "episodic": something that happened at a point in time (an event/experience).
-  - "semantic": a stated fact / concept / preference (what is known or liked).
-  - "procedural": how-to / skill / process / pattern (how something is done).
-  Choose based on the NATURE of the content, not the target field. When unsure, use "semantic".
-- "tags": 1 to 3 short labels summarizing this memory's topic, for later filtering/retrieval.
-  Rules: lowercase; drop articles/stopwords; same language as the content; do NOT duplicate
-  words already central to the content; keep each tag to 1-3 words. Example: content
-  "Alice prefers an Americano in the morning and a latte in the afternoon" →
-  tags: ["coffee", "preference"].
-- If nothing worth extracting, return [].
+For each source line: resolve speaker and pronouns, resolve time against the observation
+date, decide what the line does, then extract items.
 
-Target types:
-- "fact": a stated truth or piece of information about the user or world
-- "event": something that happened at a point in time
-- "preference": the user likes/dislikes/prefers/wants something
-- "context": any other durable information that may be useful for future conversations
-  (e.g., project background, ongoing tasks, skills demonstrated, topics discussed)
-- "structured_record": one independent row or relationship from a table, schedule, or list
-- "artifact": reusable assistant output such as code, configuration, checklist, or plan
+Rules:
+
+- Extract what the line states, plus what follows from it in one direct step. Never
+  speculate.
+
+- Keep every specific: every named entity, quantity and descriptive attribute must
+  survive in the source's own wording, never replaced by the category it belongs to.
+  GOOD "A's flight to Lisbon was delayed by two hours."  BAD "A's travel was disrupted."
+
+- Granularity follows the information, not the length: one matter per item, and every
+  matter the line raises becomes an item. A claim plus the reasons or attributes offered
+  for it is ONE matter - one point backed by three attributes yields ONE item, not four.
+  Do not split one matter into parallel fragments; do not let a second matter vanish into
+  the first. Never generalise, raise abstraction, or combine across source lines.
+
+- Write what the line DOES. Test the verb: if the proposition holds whether or not it was
+  uttered, the verb is a reporting wrapper (said, stated, mentioned, noted) - drop it and
+  state the fact directly. If the utterance is itself what creates the fact - a
+  suggestion, request, promise, refusal, agreement or answer - keep that verb and name
+  whom it addresses; an item left with only the proposition loses what the line was for.
+  Keep a reporting wrapper only where who said it, or when, is itself the point.
+  GOOD "On 2026-03-14, asked by B where to hold the workshop, A proposed the riverside
+        centre - walkable from the station, rooms for forty."
+  BAD  "A mentioned that the deadline is Friday."  ->  "The deadline is Friday."
+
+- Self-containment: each item stands alone, carrying whatever time, place, party or
+  occasion gives the fact its meaning. "A met a former colleague" is incomplete;
+  "During A's conference trip to Berlin, A met a former colleague" is not.
+
+- Speaker attribution: a leading speaker marker names who is talking. "I/me/my/we" are
+  that speaker, "you/your" whoever is addressed. Write every item in the third person
+  with an explicit subject, naming each party as the source labels them, and resolve
+  every pronoun. Never assert of the addressee what the speaker only urged, asked or
+  assumed: a line marked A reading "I renewed my licence, and you should renew yours"
+  yields "A renewed their licence" and "A urged B to renew B's licence" - never "B
+  renewed their licence".
+
+- Time. The user message opens with "observation_date: YYYY-MM-DD" - the date the lines
+  were said and the reference for every time expression; the lines carry no date.
+  (a) Whatever places the item in time belongs in the CONTENT TEXT. A reader of the item
+      sees only that text, so a time left in "event_date" alone is invisible and does not
+      count. The observation date is that time unless the source gives another. A fact
+      that holds without reference to any time needs none: "On 2026-03-14, A moved to the
+      Lisbon office." but "A prefers written handovers over verbal ones."
+  (b) Resolve every relative expression ("yesterday", "a year ago") against that date and
+      REMOVE the original wording - never keep both. This holds for standing facts too:
+      "A has preferred written handovers since 2025."
+  (c) Never state a precision the source lacks: a named day stays a day, "last month"
+      becomes a month, "last week" a range; do not invent an hour. The observation date
+      is known at day precision.
+  (d) "event_date": ISO 8601, omitted when the item has no time component. At month or
+      range precision, put the first day here and keep the content text coarser.
+
+- Language: write each statement in the same language as its source. Never translate.
+
+- A line that answers or continues the one before it may be elliptical on its own.
+  Complete it from the recent context into a standalone item; the item is still this
+  line's and keeps its source_id.
+  GOOD context "C proposes rewriting the parser in Rust; D asks where to start"
+       line "[C]: The lexer first."  ->  "C plans to start the rewrite with the lexer."
+
+- Social framing - greeting, thanks, praise, sign-off - is not content, and it also does
+  not make the rest of the line disappear. Judge what the line adds once that framing is
+  set aside; return [] only when nothing is left.
+
+Fields:
+- "source_id": the bare UUID from the "[ID: ...]" marker, no wrapper or quotes - the line
+  the item is about. Context may supply a referent or what an elliptical line answers, and
+  never changes this id; a matter only the context raises is not an item.
+- "confidence": 1.0 stated outright, 0.7 directly entailed, 0.5 weakly suggested. Never
+  emit below 0.5.
+- "tier": "episodic" happened at a point in time; "semantic" a fact, concept or
+  preference; "procedural" how something is done. When unsure, "semantic".
+- "tags": 1-3 short lowercase labels for the topic, in the content's language, not
+  repeating words already central to the content.
 
 Output schema:
 [{
   "source_id": "32049cd0-5f7c-419f-928f-503b24318f7c",
   "target": "fact" | "event" | "preference" | "context" | "structured_record" | "artifact",
   "tier": "episodic" | "semantic" | "procedural",
-  "content": "self-contained statement (one topic, merged if multiple sub-facts)",
-  "evidence": "smallest complete verbatim source span",
+  "content": "one self-contained statement, every specific kept",
   "tags": ["tag1", "tag2"],
   "confidence": 0.5~1.0,
-  "event_date": "2025-06-09T09:00:00"  // optional, only if time is resolved
+  "event_date": "2026-03-14"
 }]
 """
 
@@ -178,8 +216,9 @@ Output ONLY a JSON object (no array, no markdown fences). Schema:
 {
   "content": "one self-contained statement summarizing what was done in this turn: \
 the goal/task, the key steps taken, and the outcome/result. Structured but as a single \
-coherent statement (can use inline markers like Goal:/Steps:/Outcome:). In the SAME language \
-as the source text. Cover the whole turn, not just one fact."
+coherent statement; inline markers such as Goal:/Steps:/Result: are optional, and must be \
+written in the source's language when used. Write the whole statement in the SAME \
+language as the source text. Cover the whole turn, not just one fact."
 }
 
 Rules:
@@ -344,7 +383,7 @@ class ExtractorImpl(Extractor):
             return self._extract_procedural(units)
 
         # Phase 1: 预处理
-        accepted = self.preprocess(units)
+        accepted = self._preprocess(units)
         logger.info(
             "Extractor: received %d units, %d accepted after preprocessing",
             len(units),
@@ -406,7 +445,7 @@ class ExtractorImpl(Extractor):
 
         # Phase 3: 构建 MemoryUnit（tier/tags 取自 candidate，由 LLM 在 Phase 2 产出）
         # L0/L1 分层标注不由本算子负责——由 Evolver 抽取后委托 LayerAnnotator 生成。
-        return self.build_units(all_candidates, accepted)
+        return self._build_units(all_candidates, accepted)
 
     # ------------------------------------------------------------------
     # 过程记忆抽取（procedural=true：1 条结构化执行历史汇总）
@@ -438,7 +477,7 @@ class ExtractorImpl(Extractor):
             ChatMessage(role="user", content=source_text),
         ]
         try:
-            response = self.call_llm_with_retry(messages)
+            response = self._call_llm_with_retry(messages)
         except Exception as exc:
             logger.warning("Extractor._extract_procedural: LLM call failed, return []: %s", exc)
             return []
@@ -460,7 +499,8 @@ class ExtractorImpl(Extractor):
         # 构建 1 条 PROCEDURAL MemoryUnit，provenance 回指全部本轮 unit
         now = datetime.now(timezone.utc)
         source = units[0]
-        tags = ["procedural"]
+        # 合并 write tags（engine 已写到源 unit）+ 系统标记 procedural
+        tags = merge_unit_tags(source.tags, ["procedural"])
         unit = MemoryUnit(
             id=str(uuid.uuid4()),
             scope=source.scope,
@@ -513,6 +553,9 @@ class ExtractorImpl(Extractor):
     # ------------------------------------------------------------------
 
     def preprocess(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
+        return self._preprocess(units)
+
+    def _preprocess(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         """过滤 lifecycle≠ACTIVE / 空 content / 派生单元（provenance 非空）。"""
         accepted = []
         skipped_reasons: dict[str, int] = {}
@@ -567,7 +610,12 @@ class ExtractorImpl(Extractor):
             "",
         )
         if not observation_date:
-            observation_date = datetime.now(timezone.utc).isoformat()
+            observation_date = datetime.now(timezone.utc).date().isoformat()
+        # prompt 声明该行形如 "observation_date: YYYY-MM-DD"，且据此把观测日期按日精度写进
+        # content。调用方可能下推完整时间戳，故统一截到日——否则 prompt 的日精度约定不成立，
+        # LLM 会把时分秒当作源文本给出的精度照抄进条目。
+        elif "T" in observation_date:
+            observation_date = observation_date.split("T", 1)[0]
         user_text = (
             f"observation_date: {observation_date}\n"
             f"(Use this as the reference point to resolve relative time expressions "
@@ -585,9 +633,9 @@ class ExtractorImpl(Extractor):
         ]
 
         # 调用 LLM（含重试）
-        response = self.call_llm_with_retry(messages)
+        response = self._call_llm_with_retry(messages)
 
-        # 解析 JSON
+        # 解析 JSON。
         items = self.parse_llm_response(response)
         return self.build_candidates(items, units)
 
@@ -703,6 +751,9 @@ class ExtractorImpl(Extractor):
         return candidates
 
     def call_llm_with_retry(self, messages: list, max_tokens: int = 8192) -> str:
+        return self._call_llm_with_retry(messages, max_tokens=max_tokens)
+
+    def _call_llm_with_retry(self, messages: list, max_tokens: int = 8192) -> str:
         """调用 LLM.chat()，含重试逻辑。"""
         import time
 
@@ -726,32 +777,55 @@ class ExtractorImpl(Extractor):
         raise last_exc
 
     def parse_llm_response(self, response: str) -> list[dict]:
-        """解析抽取 JSON；非法载荷显式失败，合法 ``[]`` 原样返回。"""
-        # 尝试直接解析
-        try:
-            parsed = json.loads(response)
-            if isinstance(parsed, list):
-                return parsed
-            # 单条包装为 list
-            if isinstance(parsed, dict):
-                return [parsed]
-        except json.JSONDecodeError:
-            logger.debug("Extractor: direct JSON parse failed, trying stripped JSON")
-
-        # 解析失败：尝试提取 JSON 部分（去除 markdown fences 等噪声）
+        """从响应中恢复最靠左的非空 JSON 对象或数组。"""
         cleaned = self._strip_non_json(response)
-        try:
-            parsed = json.loads(cleaned)
+        decoder = json.JSONDecoder()
+        empty_json_seen = False
+        start = 0
+
+        while True:
+            array_start = cleaned.find("[", start)
+            object_start = cleaned.find("{", start)
+            starts = [position for position in (array_start, object_start) if position >= 0]
+            if not starts:
+                break
+
+            start = min(starts)
+            try:
+                parsed, end = decoder.raw_decode(cleaned, start)
+            except json.JSONDecodeError:
+                start += 1
+                continue
+
             if isinstance(parsed, list):
-                return parsed
-            if isinstance(parsed, dict):
-                return [parsed]
+                if parsed:
+                    self._log_trailing_json_text(cleaned, end)
+                    return parsed
+                empty_json_seen = True
+            elif isinstance(parsed, dict):
+                if parsed:
+                    self._log_trailing_json_text(cleaned, end)
+                    return [parsed]
+                empty_json_seen = True
+            start += 1
+
+        if empty_json_seen:
+            return []
+
+        try:
+            parsed, _ = decoder.raw_decode(cleaned)
         except json.JSONDecodeError as exc:
-            logger.warning("Extractor: LLM response is not valid JSON")
+            logger.warning("Extractor: LLM response is not valid JSON; raw_response=%r", response)
             raise InvalidExtractionJSONError("extractor response is not valid JSON") from exc
         raise InvalidExtractionJSONError(
             f"extractor response must be a JSON array or object, got {type(parsed).__name__}"
         )
+
+    @staticmethod
+    def _log_trailing_json_text(text: str, end: int) -> None:
+        trailing = text[end:].strip()
+        if trailing:
+            logger.warning("Extractor: ignored trailing LLM text after JSON root: %r", trailing)
 
     @staticmethod
     def _strip_non_json(text: str) -> str:
@@ -777,11 +851,19 @@ class ExtractorImpl(Extractor):
         candidates: list[ExtractionCandidate],
         source_units: list[MemoryUnit],
     ) -> list[MemoryUnit]:
+        return self._build_units(candidates, source_units)
+
+    def _build_units(
+        self,
+        candidates: list[ExtractionCandidate],
+        source_units: list[MemoryUnit],
+    ) -> list[MemoryUnit]:
         """将 ExtractionCandidate 转换为 MemoryUnit。
 
-        tier 与 tags 取自 candidate（由 LLM 在 Phase 2 产出）；不再走 FeatureExtractor 富化。
-        tags 仍兜底追加 ``extracted`` 标记派生来源（与 keyword_extractor 一致，便于后续
-        过滤/避免反复提取）。
+        tier 取自 candidate（由 LLM 在 Phase 2 产出）；不再走 FeatureExtractor 富化。
+        tags = write tags（source.tags）∪ LLM 主题 tags ∪ ``extracted`` 派生来源标记
+        （与 keyword_extractor / 默认路径 classifier 合并策略对齐，保证 write(tags=...)
+        在 infer 派生 unit 上可检索过滤）。
         """
         # 建立 source_unit_id → source_unit 的索引
         source_map = {u.id: u for u in source_units}
@@ -797,10 +879,8 @@ class ExtractorImpl(Extractor):
                 )
                 continue
 
-            # tags = LLM 抽的标签 + extracted 兜底（标记派生来源，便于后续过滤/避免反复提取）
-            tags = list(c.tags)
-            if "extracted" not in tags:
-                tags.append("extracted")
+            # write tags 优先，再并 LLM 主题 tags，最后补 extracted 标记
+            tags = merge_unit_tags(source.tags, c.tags, ["extracted"])
 
             statement = c.content.strip()
             if not statement:
@@ -810,6 +890,7 @@ class ExtractorImpl(Extractor):
                 continue
             seen.add(dedup_key)
 
+            now = datetime.now(timezone.utc)
             unit = MemoryUnit(
                 id=str(uuid.uuid4()),
                 scope=source.scope,
@@ -818,7 +899,8 @@ class ExtractorImpl(Extractor):
                 source_ref=source.id,
                 temporal=Temporal(
                     t_event=_parse_event_date(c.event_date) or source.temporal.t_event,
-                    t_ingest=datetime.now(timezone.utc),
+                    t_ingest=now,
+                    t_valid=now,
                 ),
                 provenance=[source.id],
                 tags=tags,
@@ -842,7 +924,7 @@ class ExtractorImpl(Extractor):
             )
 
         logger.info(
-            "Extractor: build_units produced %d MemoryUnits from %d candidates",
+            "Extractor: _build_units produced %d MemoryUnits from %d candidates",
             len(result),
             len(candidates),
         )

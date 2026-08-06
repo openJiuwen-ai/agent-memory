@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from common._support import read_outbound_ssl, require_ca_file, require_https
 from common.errors import ValidationError
 from common.llm.base import LlmProducer
 
@@ -33,7 +34,13 @@ def _parse_enable_thinking(value: object) -> bool | None:
 
 
 class DashScopeLLM(OpenAILLM):
-    """DashScope Adapter：默认关闭思考模式。"""
+    """DashScope Adapter：默认关闭思考模式；继承 OpenAILLM 的 ConfigSource 晚绑定。
+
+    额外参数：
+        enable_thinking: 是否在请求里带 ``extra_body.enable_thinking``；
+                         ``None`` 表示完全不发送该厂商字段。
+        config_source / config_namespace: 与父类相同，走 ``llm.*`` 晚绑定 key。
+    """
 
     def __init__(
         self,
@@ -43,6 +50,10 @@ class DashScopeLLM(OpenAILLM):
         default_temperature: float = 0.0,
         default_max_tokens: int = 4096,
         enable_thinking: bool | None = False,
+        ssl_verify: bool = False,
+        ssl_ca_cert: str | None = None,
+        config_source=None,
+        config_namespace: str = "llm",
     ) -> None:
         super().__init__(
             model_name=model_name,
@@ -50,6 +61,10 @@ class DashScopeLLM(OpenAILLM):
             api_key=api_key,
             default_temperature=default_temperature,
             default_max_tokens=default_max_tokens,
+            ssl_verify=ssl_verify,
+            ssl_ca_cert=ssl_ca_cert,
+            config_source=config_source,
+            config_namespace=config_namespace,
         )
         self._enable_thinking = enable_thinking
 
@@ -61,12 +76,24 @@ class DashScopeLLM(OpenAILLM):
 
 @LlmProducer.register("dashscope")
 def _build(config):
+    """装配 DashScope LLM，并挂接内核共享 ConfigSource（若已装配）。"""
+    from config.config_source import ConfigSourceProducer
+
+    base_url = (
+        config.get("llm_base_url") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    )
+    ssl = read_outbound_ssl(config, "llm")
+    if ssl.verify:
+        require_https(base_url, component="dashscope LLM", param="llm")
+        require_ca_file(ssl.ca_cert, component="dashscope LLM", param="llm")
     return DashScopeLLM(
         model_name=config.get("llm_model") or "qwen-plus",
-        base_url=config.get("llm_base_url")
-        or "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        base_url=base_url,
         api_key=config.get("llm_api_key") or "",
         default_temperature=config.get("llm_temperature", 0.0),
         default_max_tokens=config.get("llm_max_tokens", 4096),
         enable_thinking=_parse_enable_thinking(config.get("enable_thinking", False)),
+        ssl_verify=ssl.verify,
+        ssl_ca_cert=ssl.ca_cert,
+        config_source=ConfigSourceProducer.get_cached("default"),
     )

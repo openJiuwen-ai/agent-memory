@@ -1,31 +1,25 @@
-"""具体后端实现共用的小工具：异常归一与 scope 派生。"""
+"""具体后端实现共用的小工具：scope 过滤派生，及从 common 再导出的公共件。
+
+异常归一（``wrap_backend``）、scope 命名空间渲染（``scope_segments``）与 SSL 配置
+读取校验（``read_ssl_config`` / ``reject_url_tls_params``）已下沉到
+``common/_support.py``——``common/lock`` 也要用，而 common 不能反向依赖 storage。
+此处保留再导出，各后端 import 路径不变。
+"""
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from typing import Iterator
-
-from common.errors import AgentMemoryError, BackendError
+from common._support import (  # noqa: F401  向后兼容的再导出
+    SCOPE_DIMS,
+    SslConfig,
+    as_bool,
+    build_ssl_config,
+    read_ssl_config,
+    reject_url_tls_params,
+    require_tls_scheme,
+    scope_segments,
+    wrap_backend,
+)
 from common.type_def import Scope
-
-_DIMS = ("org", "space", "user", "agent", "session")
-
-
-@contextmanager
-def wrap_backend(action: str) -> Iterator[None]:
-    """把后端 I/O 中的非预期异常归一为 :class:`~common.errors.BackendError`。
-
-    本系统的业务异常（``ConflictError`` / ``NotFoundError`` 等，均为
-    :class:`~common.errors.AgentMemoryError` 子类）原样透传——它们是接口契约的一部分，
-    由实现按语义主动抛出；其余一切（网络、IO、客户端库内部错误、依赖缺失等）
-    统一包成 ``BackendError``，让调用方跨后端用同一套捕获。
-    """
-    try:
-        yield
-    except AgentMemoryError:
-        raise
-    except Exception as exc:  # 适配层刻意兜底所有后端异常
-        raise BackendError(f"{action}: {exc}") from exc
 
 
 def scope_dims(scope: Scope) -> list[tuple[str, str]]:
@@ -36,20 +30,14 @@ def scope_dims(scope: Scope) -> list[tuple[str, str]]:
     ``org`` 已给出，即便 ``space`` 为空也会下推 ``space == ""``，避免空
     space 请求跨到其他 space。从而 ``scope`` 越具体、
     检索范围越窄，实现原生的多租户隔离与层级包含。
+
+    与 ``scope_segments`` 的区别：本函数是检索侧的过滤构造（只约束非空维度），
+    前者是存储侧的命名空间渲染（定长五段、空维度占位），两者不可互换。
     """
     out: list[tuple[str, str]] = []
-    for dim in _DIMS:
+    for dim in SCOPE_DIMS:
         value = getattr(scope, dim)
         include_dimension = bool(value) or (dim == "space" and bool(scope.org))
         if include_dimension:
             out.append((dim, value))
     return out
-
-
-def scope_segments(scope: Scope) -> list[str]:
-    """把 scope 渲染为定长五段（空维度用 ``_`` 占位），供 kv/fs 做命名空间隔离。
-
-    定长且占位可避免不同 scope 折叠到同一命名空间（如 ``org`` 空与 ``user`` 空
-    错位拼接）；各段把路径分隔符替换掉以防越界。
-    """
-    return [(getattr(scope, dim) or "_").replace("/", "_").replace(":", "_") for dim in _DIMS]

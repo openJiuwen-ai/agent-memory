@@ -7,7 +7,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from common.type_def import MemoryTier, MemoryUnit, Scope
+from common.type_def import MemoryTier, MemoryUnit, Modality, Scope
 
 
 class Action(str, Enum):
@@ -132,6 +132,40 @@ class MemoryListResult:
 
     items: list[MemoryUnit] = field(default_factory=list)
     count: int = 0
+
+
+@dataclass
+class BatchWriteItem:
+    """一条批量写入输入；API 归一化后再交给 Engine。"""
+
+    content: str
+    scope: Scope | None = None
+    source: Modality | None = None
+    assets: list[str] | None = None
+    tags: list[str] | None = None
+    metadata: dict[str, Any] | None = None
+    occurred_at: datetime | None = None
+    stream_id: str = ""
+    sequence: int | None = None
+    idempotency_key: str = ""
+
+
+@dataclass
+class BatchWriteOutcome:
+    """批量写入的逐项结果。"""
+
+    index: int
+    item: BatchWriteItem
+    units: list[MemoryUnit] = field(default_factory=list)
+    error: str = ""
+    error_type: str = ""
+
+
+@dataclass
+class BatchWriteResult:
+    """与输入顺序对齐的批量写入结果。"""
+
+    outcomes: list[BatchWriteOutcome] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
