@@ -31,6 +31,8 @@ from common.log import setup_logging
 from common.security import SecurityProducer, SecurityProvider
 from common.security.security_impl import SecurityProducer as _SecImpl  # noqa: F401 触发自注册
 from config import Config
+from config.config_source import ConfigSource, ConfigSourceProducer
+from config.config_source_impl import register_config_sources
 from config.context import ComponentConfig
 from config.defaults import KV_DEFAULT_NAME, ROOT_PARAMS, default_context
 from construction.bootstrap import register_constructors
@@ -52,11 +54,19 @@ from .local_memory_api import LocalMemoryAPI
 
 @dataclass
 class Kernel:
-    """一次装配的产物：对外 ``MemoryAPI`` + 真源 kv 句柄（供测试/特殊装配观测真源）。"""
+    """一次装配的产物：对外 ``MemoryAPI`` + 真源 kv（默认已 Encrypted 包装）+ ConfigSource。
+
+    Attributes:
+        api: 形态无关的 MemoryAPI 入口
+        kv: 真源 KV（``build_kernel`` 默认强制为 EncryptedKVStore）
+        space: SpaceManager（若装配）
+        config_source: 运行时晚绑定配置来源（默认 YamlDefaultsConfigSource）
+    """
 
     api: LocalMemoryAPI
     kv: KVStore
     space: SpaceManager | None = None
+    config_source: ConfigSource | None = None
 
 
 def _register_all() -> None:
@@ -67,6 +77,7 @@ def _register_all() -> None:
     register_ingestors()     # ingest
     register_constructors()  # construction
     register_controllers()   # control
+    register_config_sources()  # ConfigSource：yaml_defaults / dict / overlay
 
 
 def build_kernel(
@@ -96,6 +107,15 @@ def build_kernel(
     root = ComponentConfig(params=dict(ROOT_PARAMS), ctx=ctx, target="local", name="memory_api")
     setup_logging(root)  # 初始化 agent-memory 根 logger（按 globals 的 log_* 配置；幂等）
 
+    # ConfigSource 须先于 engine/evolver 装配，供 PromptRegistry / 插件晚绑定共享。
+    # 顺序：ConfigSource →（强制）EncryptedKV 包装 → LocalMemoryAPI/engine。
+    config_source = ConfigSourceProducer.dep(root, default="yaml_defaults")
+    if not isinstance(config_source, ConfigSource):
+        raise ValidationError(
+            f"config_source 装配结果不是 ConfigSource: {type(config_source).__name__}"
+        )
+    ConfigSourceProducer.put("default", config_source)
+
     # 强制 KV 加密：不管配置里 kv_store.default 指向 memory/sqlite/redis，
     # 装配出来的 KV 一定是 EncryptedKVStore，security provider 从 security 命名空间取。
     raw_kv = KvProducer.dep(root, default="memory")
@@ -117,7 +137,12 @@ def build_kernel(
         audit_logger=AuditProducer.dep(root, default="sqlite"),
         space=SpaceProducer.dep(root, default="kv"),
     )
-    return Kernel(api=api, kv=KvProducer.dep(root, default="memory"), space=api.space_manager)
+    return Kernel(
+        api=api,
+        kv=KvProducer.dep(root, default="memory"),
+        space=api.space_manager,
+        config_source=config_source,
+    )
 
 
 def assemble(

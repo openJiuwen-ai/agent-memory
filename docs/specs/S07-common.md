@@ -5,8 +5,8 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | src/common/ |
-| 最近一次修订日期 | 2026-08-03 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md |
+| 最近一次修订日期 | 2026-08-05 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md |
 
 ## 范围 / 边界
 
@@ -334,4 +334,5 @@ src/common/<组件>/
 | S04-retrieval | 检索层消费 Embedder/Tokenizer/FeatureExtractor/LLM/Reranker |
 | S05-construction | 构建层消费 Chunker/Embedder/Tokenizer/FeatureExtractor/LLM |
 | S06-storage | 存储层依赖本层的数据类型定义（Scope/FilterClause 等） |
+| S08-config | 插件晚绑定 model/api_key/url 等由 ConfigSource 提供；装配拓扑仍走 Factory |
 | architecture.md 全文 | 本层承载全局共享的数据类型与工具 |

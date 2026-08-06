@@ -4,6 +4,9 @@
 时，仍可 ``import storage`` 与注册工厂；只有真正访问后端才会触发 ``BackendError``。
 ``scope`` 入参对 Redis key 做命名空间隔离（``org:space:user:agent:session:<key>``），同一
 逻辑 ``key`` 在不同 scope 下互不可见。``ttl`` 为秒（float），``0`` 表示永不过期。
+
+连接串 ``url`` 可经 :class:`~config.config_source.ConfigSource` 晚绑定（key
+``kv_store.url``，S08）；URL 变化时丢弃旧客户端并重连。旧库数据不自动迁移。
 """
 
 from __future__ import annotations
@@ -38,6 +41,8 @@ def _decode_scope_segment(segment: str) -> str:
 
 
 class RedisKVStore(KVStore):
+    """Redis KV 后端；支持构造期 url/host 与运行时 ``kv_store.url`` 晚绑定。"""
+
     def __init__(
         self,
         *,
@@ -46,32 +51,55 @@ class RedisKVStore(KVStore):
         port: int = 6379,
         db: int = 0,
         password: str | None = None,
+        config_source=None,
+        config_namespace: str = "kv_store",
         **options: Any,
     ) -> None:
-        self._url = url
+        # 构造期 url 为 ConfigSource 缺失时的回落
+        self._fallback_url = url
+        self._config_source = config_source
+        self._config_namespace = config_namespace
         # url 分支走 from_url，不读 _conn，故 options 需单独留一份透传（见 client）。
         self._options = dict(options)
         self._conn = dict(host=host, port=port, db=db, password=password, **options)
         self._client: Any = None
+        self._client_url: str | None = None  # 与当前 client 对应的已解析 url
+
+    def _resolved_url(self) -> str | None:
+        """解析当前应连接的 Redis URL（ConfigSource ``kv_store.url`` 优先）。"""
+        from config.binding import resolve_connection_url
+
+        return resolve_connection_url(
+            self._config_source,
+            namespace=self._config_namespace,
+            field="url",
+            fallback=self._fallback_url,
+        )
 
     @property
     def client(self) -> Any:
-        """惰性创建 Redis 客户端（``decode_responses=False``，值以 bytes 收发）。"""
-        if self._client is None:
-            try:
-                import redis
-            except ImportError as exc:  # 依赖缺失归一为后端不可用
-                raise BackendError(
-                    "redis client not installed (pip install redis)"
-                ) from exc
-            with wrap_backend("redis connect"):
-                if self._url:
-                    # url 里的 query 参数优先级高于此处 kwargs（redis-py 解析顺序所致）。
-                    self._client = redis.Redis.from_url(
-                        self._url, decode_responses=False, **self._options
-                    )
-                else:
-                    self._client = redis.Redis(decode_responses=False, **self._conn)
+        """惰性创建 Redis 客户端（``decode_responses=False``，值以 bytes 收发）。
+
+        ``kv_store.url`` 经 ConfigSource 晚绑定；URL 变化时重建客户端。
+        """
+        url = self._resolved_url()
+        if self._client is not None and self._client_url == url:
+            return self._client
+        try:
+            import redis
+        except ImportError as exc:  # 依赖缺失归一为后端不可用
+            raise BackendError(
+                "redis client not installed (pip install redis)"
+            ) from exc
+        with wrap_backend("redis connect"):
+            if url:
+                # url 里的 query 参数优先级高于此处 kwargs（redis-py 解析顺序所致）。
+                self._client = redis.Redis.from_url(
+                    url, decode_responses=False, **self._options
+                )
+            else:
+                self._client = redis.Redis(decode_responses=False, **self._conn)
+        self._client_url = url
         return self._client
 
     @staticmethod
@@ -83,9 +111,11 @@ class RedisKVStore(KVStore):
         return int(ttl * 1000) if ttl and ttl > 0 else None
 
     def store_type(self) -> StoreType:
+        """返回存储类型 ``KV``。"""
         return StoreType.KV
 
     def health(self) -> None:
+        """对 Redis 执行 ``PING``；失败抛 :class:`HealthCheckError`。"""
         try:
             ok = self.client.ping()
         except Exception as exc:
@@ -94,6 +124,7 @@ class RedisKVStore(KVStore):
             raise HealthCheckError("redis ping returned falsy")
 
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
+        """在 ``scope`` 下新建 ``key``；已存在时报冲突。"""
         nk = self._namespaced(scope, key)
         with wrap_backend(f"redis insert {key!r}"):
             ok = self.client.set(nk, value, nx=True, px=self._px(ttl))
@@ -101,6 +132,7 @@ class RedisKVStore(KVStore):
             raise ConflictError(entity="key", key=key)
 
     def update(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
+        """覆写 ``scope`` 下已有 ``key``；不存在时报缺失。"""
         nk = self._namespaced(scope, key)
         with wrap_backend(f"redis update {key!r}"):
             ok = self.client.set(nk, value, xx=True, px=self._px(ttl))
@@ -108,10 +140,12 @@ class RedisKVStore(KVStore):
             raise NotFoundError(entity="key", key=key)
 
     def delete(self, scope: Scope, key: str) -> None:
+        """删除 ``scope`` 下的 ``key``（幂等）。"""
         with wrap_backend(f"redis delete {key!r}"):
             self.client.delete(self._namespaced(scope, key))  # 幂等
 
     def get(self, scope: Scope, key: str) -> bytes:
+        """读取 ``scope`` 下 ``key`` 的值；不存在时报缺失。"""
         with wrap_backend(f"redis get {key!r}"):
             value = self.client.get(self._namespaced(scope, key))
         if value is None:
@@ -119,6 +153,7 @@ class RedisKVStore(KVStore):
         return value
 
     def mget(self, scope: Scope, keys: list[str]) -> list[bytes]:
+        """批量读取 ``scope`` 下多个 ``key``；返回与 ``keys`` 下标一一对应。"""
         # 原生 MGET 一次往返召回，返回与 keys 下标一一对应；天然支持重复 key。
         # 缺失位 redis 返回 None，归一为 NotFoundError（与 get 一致）。
         if not keys:
@@ -134,10 +169,12 @@ class RedisKVStore(KVStore):
         return out
 
     def exists(self, scope: Scope, key: str) -> bool:
+        """返回 ``scope`` 下 ``key`` 是否存在。"""
         with wrap_backend(f"redis exists {key!r}"):
             return self.client.exists(self._namespaced(scope, key)) > 0
 
     def scan(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
+        """扫描 ``scope`` 下全部 ``(key, value)``（可选 ``prefix`` 过滤）。"""
         ns = ":".join(scope_segments(scope)) + ":"  # 该 scope 的命名空间前缀
         with wrap_backend(f"redis scan {prefix!r}"):
             keys = list(self.client.scan_iter(match=f"{ns}{prefix}*"))
@@ -160,6 +197,7 @@ class RedisKVStore(KVStore):
         filters: FilterExpr | None = None,
         extensions: dict[str, str] | None = None,
     ) -> KVMemoryListResult:
+        """按记忆列表协议分页枚举 ``scope`` 下条目。"""
         return list_memory_entries(
             self.scan(scope, MEMORY_KEY_PREFIX),
             offset=offset,
@@ -170,6 +208,7 @@ class RedisKVStore(KVStore):
         )
 
     def scopes(self) -> list[Scope]:
+        """枚举本存储中已用过的全部 scope（命名空间）。"""
         seen: set[tuple[str, str, str, str, str]] = set()
         with wrap_backend("redis scopes"):
             for raw in self.client.scan_iter(match="*"):
@@ -198,7 +237,12 @@ class RedisKVStore(KVStore):
 
 @KvProducer.register("redis")
 def _build(config):
-    # 三方库后端：url 必填，未配置即在 build 阶段报错（而非惰性连接时才暴露）。
+    """装配 Redis KV；注入 default ConfigSource 以便运行时晚绑定 ``kv_store.url``。
+
+    三方库后端：url 必填，未配置即在 build 阶段报错（而非惰性连接时才暴露）。
+    """
+    from config.config_source import ConfigSourceProducer
+
     url = Factory.require_param(config, "url", backend="redis KV")
     ssl = read_ssl_config(config, backend="redis KV")
     options: dict[str, Any] = {}
@@ -214,5 +258,6 @@ def _build(config):
         port=Factory.cfg_get(config, "port", 6379),
         db=Factory.cfg_get(config, "db", 0),
         password=Factory.cfg_get(config, "password"),
+        config_source=ConfigSourceProducer.get_cached("default"),
         **options,
     )

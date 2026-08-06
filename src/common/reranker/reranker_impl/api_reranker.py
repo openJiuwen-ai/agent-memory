@@ -12,6 +12,10 @@ rerank 无统一标准，各厂商请求/响应形态不一。本实现用 ``dia
 两套的结果项都用 ``{index, relevance_score}``，故方言只差「端点 + body 拼装 + results
 取法」三处，打分还原逻辑共用。换 ``dialect``/base_url/model 即可切厂商。rerank 无官方
 SDK，故走 httpx——**懒加载**（未装时给明确提示），不在模块导入期连坐其余实现。
+
+``model`` / ``api_key`` / ``base_url`` 优先经 ConfigSource 在每次 ``rerank`` 路径晚绑定
+（S08）；构造参数为回落默认。注入的 ``client``（测试用）不会因 URL 变化而重建，
+但仍使用晚绑定后的 URL / Bearer / model 发请求。
 """
 
 from __future__ import annotations
@@ -66,6 +70,7 @@ class APIReranker(Reranker):
         timeout: 单次请求超时（秒）
         dialect: ``"cohere"`` | ``"dashscope"``
         client: 可注入的 httpx.Client（测试/复用连接用）；``None`` 则懒建
+        config_source: 可选；每次 rerank 晚绑定 model/api_key/base_url
     """
 
     def __init__(
@@ -78,6 +83,8 @@ class APIReranker(Reranker):
         client: object = None,
         ssl_verify: bool = False,
         ssl_ca_cert: str | None = None,
+        config_source=None,
+        config_namespace: str = "reranker",
     ) -> None:
         dialect = (dialect or "cohere").lower()
         if dialect not in _DIALECTS:
@@ -86,10 +93,15 @@ class APIReranker(Reranker):
             )
         self._dialect = dialect
         self._spec = _DIALECTS[dialect]
-        self._model = model_name
-        self._url = base_url.rstrip("/") + self._spec["path"]
-        self._api_key = api_key
+        self._fallback_model = model_name
+        self._fallback_base_url = base_url
+        self._fallback_api_key = api_key
         self._timeout = timeout
+        self._ssl_verify = ssl_verify
+        self._ssl_ca_cert = ssl_ca_cert
+        self._config_source = config_source
+        self._config_namespace = config_namespace
+        self._injected_client = client is not None
         if client is not None:
             self._client = client
         else:
@@ -104,7 +116,20 @@ class APIReranker(Reranker):
                 client_kwargs["verify"] = outbound_verify(ssl_ca_cert)
             self._client = httpx.Client(**client_kwargs)
 
+    def _endpoint(self):
+        """解析当前应生效的 model / api_key / base_url（ConfigSource 优先）。"""
+        from config.binding import resolve_endpoint
+
+        return resolve_endpoint(
+            self._config_source,
+            namespace=self._config_namespace,
+            fallback_model=self._fallback_model,
+            fallback_api_key=self._fallback_api_key,
+            fallback_base_url=self._fallback_base_url,
+        )
+
     def plugin_type(self) -> PluginType:
+        """返回插件类型 ``RERANKER``。"""
         return PluginType.RERANKER
 
     def health(self) -> None:
@@ -115,15 +140,21 @@ class APIReranker(Reranker):
             raise HealthCheckError(f"Reranker health check failed: {exc}") from exc
 
     def rerank(self, query: str, texts: List[str]) -> List[float]:
+        """对候选文本打相关性分，返回与 ``texts`` 等长、同序的分数列表。
+
+        每次调用按 ConfigSource 解析 model/api_key/base_url，再按方言拼端点与 body。
+        """
         if not texts:
             return []
+        ep = self._endpoint()
+        url = (ep.base_url or self._fallback_base_url).rstrip("/") + self._spec["path"]
         build_body: Callable = self._spec["body"]
         extract: Callable = self._spec["results"]
         try:
             resp = self._client.post(
-                self._url,
-                headers={"Authorization": f"Bearer {self._api_key}"},
-                json=build_body(self._model, query, list(texts)),
+                url,
+                headers={"Authorization": f"Bearer {ep.api_key}"},
+                json=build_body(ep.model, query, list(texts)),
             )
             resp.raise_for_status()
             data = resp.json()
@@ -145,11 +176,14 @@ class APIReranker(Reranker):
 
 @RerankerProducer.register("api")
 def _build(config):
+    """从装配 ComponentConfig 构造；注入内核共享的 default ConfigSource（若已装配）。"""
     base_url = config.get("reranker_base_url", "")
     ssl = read_outbound_ssl(config, "reranker")
     if ssl.verify:
         require_https(base_url, component="api reranker", param="reranker")
         require_ca_file(ssl.ca_cert, component="api reranker", param="reranker")
+    from config.config_source import ConfigSourceProducer
+
     return APIReranker(
         model_name=config.get("reranker_model") or "rerank",
         base_url=base_url,
@@ -158,4 +192,5 @@ def _build(config):
         dialect=config.get("reranker_dialect", "cohere"),
         ssl_verify=ssl.verify,
         ssl_ca_cert=ssl.ca_cert,
+        config_source=ConfigSourceProducer.get_cached("default"),
     )

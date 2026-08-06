@@ -119,7 +119,7 @@ Extractor。
 
 **procedural 路径**：`_evolve_extract` 检测到 procedural=true 时 `super()._evolve_extract(units)` 走父类行为（不收集 context、不判定、直接落盘）——procedural 语义是"记成一条 how-to"，无需动态判定。
 
-**PromptRegistry**（`prompt_registry.py`）：从 yml 顶层 `prompts` 段加载的命名 prompt 文本，按 `phase + key` 查询。metadata 只写 prompt 的 **key**（引用 yml 命名 prompt），运行时按 key 查真实文本。extract 步的 registry 由 `ExtractorProducer._build` 注入 `DynamicLLMExtractor`；consolidate 步的 registry 由 `DynamicEvolver._build` 注入。reflect key 当前只透传给候选，默认实现不查询 registry，子类可按 `PHASE_REFLECT` 扩展。两个 builder 都从 `ctx.globals["prompts"]` 加载，共享同一份 yml `prompts` 段而非同一 registry 实例。
+**PromptRegistry**（`prompt_registry.py`）：按 `phase + key` 查询命名 prompt 文本。metadata 只写 prompt 的 **key**，不写全文。装配列以 yml 顶层 `prompts` / `globals["prompts"]` 为默认数据；引入 `ConfigSource`（S08）后，查询路径应能经 `fetch("prompts.<phase>.<name>")` 晚绑定，而不要求业务 API 传入 prompt 全文。extract 步的 registry 由 `ExtractorProducer._build` 注入 `DynamicLLMExtractor`；consolidate 步的 registry 由 `DynamicEvolver._build` 注入。reflect key 当前只透传给候选，默认实现不查询 registry，子类可按 `PHASE_REFLECT` 扩展。
 
 **prompt key 透传**：源 unit 的 `_consolidation_prompt_<strategy>` / `_reflect_prompt_<strategy>` 由 `copy_consolidation_prompts` / `copy_reflect_prompts` 透传给派生候选，供后续步骤按 key 查 PromptRegistry。`_extract_prompt_<strategy>` 由调用方在 write 时直接传入，extract 步就地消费。
 
@@ -296,4 +296,5 @@ src/construction/<算子>_impl/
 | S04-retrieval | 检索层消费本层构建的索引 |
 | S06-storage | 本层通过注入的 Store 抽象做真源与索引持久化 |
 | S07-common | 本层消费 Chunker/Tokenizer/Embedder/FeatureExtractor/LLM/Reranker 共享插件 |
+| S08-config | Prompt 文本与模型晚绑定经 ConfigSource；业务入参只传 prompt key |
 | architecture.md §4/§6/§8 | 分层记忆结构 / 多形式索引 / 记忆自演进 |
