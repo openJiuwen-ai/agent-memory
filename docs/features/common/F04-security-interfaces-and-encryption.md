@@ -1776,7 +1776,11 @@ def read_file(uri: str, target: Scope, ctx: AuthContext):
     path = f"{scope_namespace(target)}/{normalize_uri_parts(uri)}"
 ```
 
-**自查**：代码里的 org、user/agent、role、`acting_user` 是从认证中间件的 `AuthContext` 取的，还是从 request body / URL parameter / 未验证 header 读的？如果是后者，攻击者就能在单次请求里声明身份或伪造委托。`MemoryAPI` 用 `identity: Scope`（keyword-only）作为调用方身份参数，`PermissionManager.check(identity, scope, action)` 在接口层执行；Agent 代 user 的补充委托只从可信 `AuthContext` 读取，identity/AuthContext 均不下沉到 Engine。
+**自查**：代码里的 org、user/agent、role 是从认证中间件产出的
+`RequestSecurityContext.auth` 取的，还是从 request body / URL parameter / 未验证 header 读的？
+如果是后者，攻击者就能在单次请求里声明身份或伪造委托。现行 `MemoryAPI` 用必填
+`security: RequestSecurityContext`（keyword-only）作为唯一安全输入，并由 Authorizer 在接口层
+判定；委托只从服务端 `DelegationStore` 复核，`security` 不下沉到 Engine。现行契约以 S08 为准。
 
 ### 2. 所有加密比对都是常时间的
 

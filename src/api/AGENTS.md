@@ -10,7 +10,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（write/recall/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
+| `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（write/batch_write/recall/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
 | `memory_api_impl/assembly.py` | 装配入口：`build_kernel(config)` 递归构建 MemoryAPI 实例 |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI：委托 Engine/Governor/Scheduler/SpaceManager + PEP 鉴权（调 `common.security.authorization` 的 Authorizer 作 PDP） |
@@ -34,6 +34,9 @@
 
 5. **write/write_async 分离**  
    `write` 是同步桥接（内部 `asyncio.run(write_async)`），供 CLI/脚本使用；`write_async` 直通 Engine 协程，供事件循环形态使用。
+
+   `batch_write` / `batch_write_async` 同样只保留一套异步实现；每个归一化 item 独立经过
+   PEP，随后只把已鉴权的 `BatchWriteItem` 交给 Engine，`security` 不下沉。
 
 6. **space 必须在 API 边界执行策略校验**
    `scope.require_space=true` 时，具体 target scope 缺少 `space` 的数据面/治理面操作必须在 `LocalMemoryAPI._authorize` 拒绝并记录 deny audit；`Scope()` 根管理面与 org 级 `list_spaces/create_space` 鉴权目标不受此策略影响。
@@ -87,9 +90,8 @@ actor 一致性，空 `Scope()` 直接拒（它是「上下文不完整」的信
 契约**，通过 `common.security.request_context` 的受控入口取得上下文：
 
 - `new_request_context(auth, *, surface, peer, attributes)`——给已完成认证的 surface；
-- `internal_context(authenticator=None)`——给进程内直连调用方，身份仍由 authenticator
-  产出（缺省 `DevAuthenticator`，具名主体 `system/dev` + ROOT 角色），调用方**不能自
-  行声明身份**。
+- `internal_context(authenticator)`——给进程内直连调用方，authenticator 必填，身份仍由
+  它产出；调用方**不能自行声明身份**，也不存在无参领取 ROOT 的隐式默认。
 
 构造规则收在这一处：`request_id` 由服务端生成、`started_at` 取服务端时钟、
 `attributes` 只由系统组件写入（业务 payload 一律不得注入）、`surface` 无默认值必须由
@@ -116,6 +118,6 @@ surface 必须沿用同一中间件——它同时承载凭据归一、限流、
 ## 本地约束
 
 1. `security` 为必填 keyword-only 参数，类型是 `RequestSecurityContext`（不是 `Scope`）——与 target `scope` 类型不同，位置传反会在类型层暴露。
-2. 所有数据面方法（write/recall/list/get/update/delete/evolve）都需要鉴权，治理面（inspect/trace/audit）也需要鉴权。
+2. 所有数据面方法（write/batch_write/recall/list/get/update/delete/evolve）都需要鉴权，治理面（inspect/trace/audit）也需要鉴权。
 3. 装配由 `assembly.build_kernel(config)` 完成，递归调用各 Producer.create_from(spec)。
 4. 实现类（LocalMemoryAPI）不对外暴露，外部只依赖 `MemoryAPI` 抽象接口。

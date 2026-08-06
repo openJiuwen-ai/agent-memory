@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/control/ |
-| 最近一次修订日期 | 2026-08-05 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/security/F02-role-aware-authorization.md |
+| 最近一次修订日期 | 2026-08-06 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/security/F02-role-aware-authorization.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -31,7 +31,8 @@
 
 1. **引擎不实现具体算法能力**：`MemoryEngine` 只编排，Ingestor/构建算子/Retriever/Store 全部由装配注入；可通过 Store 抽象完成真源语义，但不得绑定具体后端或直接调用 LLM。
 2. **引擎方法一律异步协程**：同步调用由 `src/api` 层自行桥接（`asyncio.run`），engine 内不做同步阻塞。
-3. **鉴权不在本层执行**：`PermissionManager.check` 由 `src/api/MemoryAPI` 在入口调用，engine 信任传入的 scope 已鉴权。禁止在 engine 内部重复 check。
+3. **鉴权不在本层执行**：`src/api/MemoryAPI` 作为唯一 PEP 调用 `Authorizer`，engine
+   信任传入的 scope 或 `BatchWriteItem.scope` 已逐项鉴权。禁止在 engine 内部重复判权。
 4. **LifecycleManager 只做非破坏式标记**：`transition` 标记状态（superseded/archived/forgotten），绝不物理删除。物理删除（purge）走 Engine 的 `delete` 路径 + `DeleteMode.PURGE`。
 5. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。`*_impl/` 通过 Producer 自注册后被外部装配消费，不被顶层接口引用。
 6. **types.py 零依赖本层其他文件**：纯数据定义，被本层各接口和 `src/api/` 共同依赖。
@@ -43,8 +44,8 @@
 12. **Pipeline 只做跨层 profile 选择**：`MemoryPipeline` 可以选择不同的构建/查询组件绑定，但不得实现抽取、索引、检索算法；construction/retrieval 不反向依赖 control。
 13. **权限上下文由 API/Engine 解析，不信任调用方声明**：write/recall/list 的请求条件可由 API 构造 `PermissionContext`；list 当前分页实际命中的 unit 以及 get/update/delete 这类已有 unit 操作必须由 Engine 从真源元数据解析 memory_type/tags 后再鉴权。
 14. **权限路由与执行路由同源但职责独立**：两者对 recall 都使用
-    extensions 优先、FilterExpr 强制唯一等值兜底的取值规则；PermissionManager 选择
-    授权策略，MemoryPipeline 选择执行组件，互不代替。
+    extensions 优先、FilterExpr 强制唯一等值兜底的取值规则；Authorizer 选择授权策略，
+    MemoryPipeline 选择执行组件，互不代替。
 15. **路由授权绑定数据范围**：路由型权限根据某字段授权后，API 必须把同一值回注为
     系统过滤谓词；routing fallback 必须是最小权限策略，不得使用 `allow_all`。
 16. **目标操作使用完整 Scope**：MemoryUnit id 仅在 Scope 内唯一。LifecycleManager、Governor 与 IndexBuilder 的目标修改/读取/删除不得依赖全局 `id -> scope` 猜测，调用方必须显式提供 Scope 或携带 Scope 的 MemoryUnit。
@@ -70,6 +71,7 @@ class ControlOperator(ABC):
 | 方法 | 签名 | 语义 |
 |------|------|------|
 | `write` | `async (content, scope, source, *, assets, tags, metadata: dict[str, Any] \| None, occurred_at) -> list[MemoryUnit]` | 规约→可选抽取/分类→落盘+建索引；`infer=true` 时返回 `created_ids` 对应的派生结果，否则处理原始单元（直写不去重） |
+| `batch_write` | `async (items: list[BatchWriteItem], *, continue_on_error=True) -> BatchWriteResult` | 接收 API 已归一化、逐项鉴权的 item，按输入顺序执行并返回逐项 outcome；不接收 `security` |
 | `recall` | `async (scope, query: RetrievalQuery) -> RetrievalResult` | 委托 Retriever 完整检索链路 |
 | `list` | `async (scope, *, offset=0, limit=100, memory_types=None, extensions=None, filters=None) -> MemoryListResult` | 校验分页参数并完整委托 `KVStore.list`；返回当前页和分页前匹配总数 |
 | `permission_context_for_unit` | `async (unit_id, scope) -> PermissionContext` | 读取已有记忆的权限上下文，只返回 memory_type/tags/metadata 等鉴权元数据，不返回 content/assets |

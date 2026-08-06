@@ -129,7 +129,7 @@ api.batch_write(
         ),
     ],
     Scope(org="acme", space="prod", user="alice"),
-    identity=Scope(org="acme", space="prod", user="alice"),
+    security=request_security_context,
     metadata={"infer": "true"},
     stream_id="session-1",
 )
@@ -153,7 +153,7 @@ def batch_write(
     scope: Scope | None = None,
     source: Modality = Modality.TEXT,
     *,
-    identity: Scope,
+    security: RequestSecurityContext,
     tags: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
     occurred_at: datetime | None = None,
@@ -167,7 +167,7 @@ async def batch_write_async(
     scope: Scope | None = None,
     source: Modality = Modality.TEXT,
     *,
-    identity: Scope,
+    security: RequestSecurityContext,
     tags: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
     occurred_at: datetime | None = None,
@@ -184,8 +184,8 @@ def batch_write(...):
 ```
 
 每个归一化 item 的字段语义与 `write` 完全一致。顶层 `scope/source/tags/metadata/occurred_at`
-表达批量默认值；item 仍可覆盖，支持同一批导入多个 scope。`identity` 仍是整个 batch 的
-调用方身份，不进入 item。
+表达批量默认值；item 仍可覆盖，支持同一批导入多个 scope。`security` 是整个 batch 的
+唯一调用方安全上下文，不进入 item，也不由 payload 声明。
 
 ### 3. 鉴权、空间状态和审计按 item 粒度执行
 
@@ -196,7 +196,7 @@ def batch_write(...):
 归一化顶层默认参数 + item
 → 校验 metadata
 → 构造 write PermissionContext
-→ PermissionManager.check(identity, item.scope, WRITE, context)
+→ Authorizer.authorize(security.auth, item resource, request environment)
 → _ensure_space_writable(item.scope)
 → 委托 Engine 写入
 → 记录 item 级 audit
@@ -263,7 +263,7 @@ async def batch_write(self, items: list[BatchWriteItem]) -> BatchWriteResult
 API 入口。
 
 API 层仍负责归一化、鉴权、空间状态和审计；Engine 只接收已鉴权、已归一化的 target item，
-不接收 identity。
+不接收 `security`。
 
 ### 8. HTTP handler 增加 `/v1/batch_add`
 
@@ -298,14 +298,15 @@ HTTP 面建议新增独立 verb，而不是让 `/v1/add` 同时接受 object/lis
 ```
 
 handler 负责把 `defaults` 解析为 `batch_write` 顶层默认参数，把每个 item 解析为
-`BatchWriteItem`，并沿用现有 actor override 规则生成统一 `identity`。item 级范围覆盖使用
+`BatchWriteItem`，并把认证中间件产出的统一 `security` 原样传给 API。item 级范围覆盖使用
 `target_scope` 嵌套对象，按 `tenant_id` / `space` / `scope` / `agent` / `session` 覆盖 defaults。
 `occurred_at` 在 HTTP 中接受 ISO 8601 字符串，defaults 作为顶层默认值、item 可逐项覆盖；
 非法 defaults 属于顶层 payload 校验并返回 HTTP 400，非法 item 则保留为结构化失败 outcome。
 `target_scope.tenant_id` 为 `null` 或空值时继承 defaults，避免把 JSON null 解释为字符串 `"None"`。
 响应固定为 HTTP 200 的 `{ok, op: "batch_add", outcomes}`：每项包含原始 `input`、归一化
 `item`、`items`（MemoryUnit view）、`ok`、`error` 和 `error_type`；部分失败不使用 HTTP 207。
-如果未来需要每个 item 不同 actor，应另开管理接口，不在普通 batch 写入里混用。
+payload 中的 actor override 一律拒绝。如果未来需要每个 item 不同 actor，应另开管理接口，
+不在普通 batch 写入里混用。
 
 ## 拒绝的方案
 
@@ -370,5 +371,5 @@ handler 负责把 `defaults` 解析为 `batch_write` 顶层默认参数，把每
    后续再评估 `insert_many`、`build_many` 或 extractor 批量 prompt。
 4. **跨 item 事务暂不做**：批量写入不是 all-or-nothing 事务。需要事务语义的导入任务应在
    更高层维护 staging 和补偿。
-5. **HTTP actor 逐项变化暂不做**：普通 batch 共享同一个 `identity`。多 actor 批处理属于
+5. **HTTP actor 逐项变化暂不做**：普通 batch 共享同一个 `security`。多 actor 批处理属于
    管理面导入能力，应另行设计。

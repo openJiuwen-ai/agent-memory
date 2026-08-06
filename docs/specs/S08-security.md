@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `src/common/security/`、`bootstrap/`、`src/api/`、`src/storage/` |
-| 最近一次修订日期 | 2026-08-05 |
+| 最近一次修订日期 | 2026-08-06 |
 | 关联特性文档 | `docs/features/security/F01-authentication-kernel.md`，`docs/features/security/F02-role-aware-authorization.md`，`docs/features/common/F04-security-interfaces-and-encryption.md` |
 
 ## 范围 / 边界
@@ -43,15 +43,17 @@
 
 - **凭据在线复核**：`PrincipalKeyStore.is_revoked` 是可撤销凭据的契约方法；
   `ApiKeyAuthenticator` 在认证期校验其已覆盖（第三方缺实现即时失败，不等到首个授权请求
-  500）。PEP 持有 `CredentialStatusRegistry`，按 `credential_type` 路由到发证 Store，在每次
-  授权前复核 `AuthContext` 未撤销--撤销前缓存的上下文撤销后立即失效。`AuthContext` 保持纯
-  数据值对象，撤销复核不进值对象（F05 §认证不变量 6、§决策顺序 1）。
+  500）。PEP 持有 `CredentialStatusRegistry`，按 `(credential_type, credential_issuer)`
+  复合键路由到发证 Store，在每次授权前复核 `AuthContext` 未撤销--撤销前缓存的上下文撤销后
+  立即失效。内联认证器由 `Authenticator.bind_instance_name()` 接收 Runtime 派生的稳定 issuer；
+  显式具名认证器保留其配置名。有 `credential_id` 但 issuer 未注册时必须 fail-closed；
+  `AuthContext` 保持纯数据值对象，撤销复核不进值对象。
 
-- **请求上下文受控构造**：`RequestSecurityContext` 带 `_origin` 受控来源标记，只有
-  `new_request_context` / `internal_context` 构造时设 `_TRUSTED`，直接 `RequestSecurityContext(...)`
-  为 `_UNTRUSTED`。PEP 校验 `_origin is _TRUSTED`，使「补齐 request_id/started_at 即可伪造
-  上下文」不成立--字段形状完整不等于来自认证边界。`surface` 在受控入口必填（keyword-only），
-  dataclass 的默认值仅服务于「不传即未受控」的检测。
+- **请求上下文受控构造**：`RequestSecurityContext` 的 `_origin` 是进程随机密钥签发的
+  HMAC-SHA256 来源证明，Canonical JSON 绑定完整 `AuthContext` 及 request id、surface、peer、
+  started_at、attributes。PEP 调 `has_valid_origin()` 校验；直接构造或经 `dataclasses.replace`
+  改任一安全字段都会失配。该机制只防跨进程伪造，不承诺抵御可调用受控入口的恶意同进程代码；
+  不可信插件必须用进程隔离或 capability 边界处理。
 
 ### 依据 capability 做安全决策
 
@@ -131,9 +133,9 @@
     `request_id` 由服务端生成（不接受调用方传入）、`started_at` 取服务端时钟、`surface`
     无默认值必须由适配层显式写入、`peer` 经可信代理规则规范化（无可信代理白名单时只采信
     传输层地址，不读 `X-Forwarded-For`）、`attributes` 只由系统组件写入。
-33. **进程内调用与外部请求使用同一契约**：进程内直连调用方走 `internal_context()`，身份仍
-    由 authenticator 产出，调用方不能自行声明身份。不允许把传入的 `Scope` 直接包装成已认证
-    actor。
+33. **进程内调用与外部请求使用同一契约**：进程内直连调用方走
+    `internal_context(authenticator)`，authenticator 必填且身份仍由它产出，调用方不能自行
+    声明身份。不允许把传入的 `Scope` 直接包装成已认证 actor，也不允许无参领取 ROOT。
 34. ContextVar（`common.security.types` 的 `set_current` / `get_current` / `reset_current`）
     降级为日志与 trace 的辅助传播：`Authorizer` 与 PEP 均不得依赖其存在，缺失它不改变任何
     授权结论。

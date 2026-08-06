@@ -30,7 +30,7 @@
 | `feature_extractor/` | FeatureExtractor 插件目录 |
 | `llm/` | LLM 插件目录（`echo` / `openai` / `dashscope`） |
 | `reranker/` | Reranker 插件目录 |
-| `security/` | 安全能力的唯一归属地（F05）：`types.py`（AuthContext/RequestSecurityContext/CryptoContext/Role/Surface/Credentials/ResourceDescriptor/AuthorizationEnvironment，ContextVar 只作日志-trace 传播）、`request_context.py`（`RequestSecurityContext` 的受控构造入口：`new_request_context` / `internal_context`）、`runtime.py`（SecurityRuntime）、`authentication/`（Authenticator + PrincipalKeyStore + CredentialStatusRegistry，内置 dev/trusted/api_key + memory Argon2id；`PrincipalKeyStore.is_revoked` 供 PEP 在线复核撤销，`CredentialStatusRegistry` 由 PEP 持有按 credential_type 路由撤销查询，不放 Authorizer）、`authorization/`（Authorizer + GrantStore + DelegationStore，内置 standard/allow_all + memory/sqlite 存储）、`protection/`（RateLimiter/WorkloadGuard/BindingPolicy，内置 token_bucket/unlimited/semaphore/loopback）、`cryptography/`（CryptographyProvider + KeyProvider（含 `rotate` 轮换契约），内置 `local` ENC1 AES-GCM）。注册入口 `security/bootstrap.py::register_security()` |
+| `security/` | 安全能力的唯一归属地（F05）：`types.py`（AuthContext/RequestSecurityContext/CryptoContext/Role/Surface/Credentials/ResourceDescriptor/AuthorizationEnvironment，ContextVar 只作日志-trace 传播）、`request_context.py`（`RequestSecurityContext` 的受控构造入口：`new_request_context` / `internal_context`）、`runtime.py`（SecurityRuntime）、`authentication/`（Authenticator + PrincipalKeyStore + CredentialStatusRegistry，内置 dev/trusted/api_key + memory Argon2id；`PrincipalKeyStore.is_revoked` 供 PEP 在线复核撤销，`CredentialStatusRegistry` 由 PEP 持有按 `(credential_type, credential_issuer)` 路由撤销查询，不放 Authorizer）、`authorization/`（Authorizer + GrantStore + DelegationStore，内置 standard/allow_all + memory/sqlite 存储）、`protection/`（RateLimiter/WorkloadGuard/BindingPolicy，内置 token_bucket/unlimited/semaphore/loopback）、`cryptography/`（CryptographyProvider + KeyProvider（含 `rotate` 轮换契约），内置 `local` ENC1 AES-GCM）。注册入口 `security/bootstrap.py::register_security()` |
 | `audit/` | AuditLogger 插件目录 |
 
 ## 行为铁律
@@ -92,9 +92,9 @@
    import 的外部包。
 8. 安全能力一律落 `security/<能力域>/`，不新开顶层目录。核心不得按 target 名或
    `mode()` 字符串分支——需要区分的行为差异由 capability 方法（如
-   `requires_loopback_binding()`、`is_test_only()`）显式声明，详见 S08。
+   `requires_loopback_binding()`、`bind_instance_name()`、`is_test_only()`）显式声明，详见 S08。
 9. `RequestSecurityContext` 只能由 `security/request_context.py` 的两个入口构造：
    `request_id` 由服务端生成、`started_at` 取服务端时钟、`attributes` 只由系统组件
-   写入、`surface` 无默认值必须由适配层写入。进程内直连调用方走 `internal_context()`，
+   写入、`surface` 无默认值必须由适配层写入。进程内直连调用方走 `internal_context(authenticator)`，
    身份仍由 authenticator 产出——不存在 `auth=None`，也不存在把传入 Scope 直接当成
    已认证 actor 的旁路（F05 §进程内调用）。
