@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -361,9 +362,10 @@ def test_sqlite_store_ignores_unknown_actions(tmp_path) -> None:
     store = SQLiteGrantStore(db)
     try:
         store.add(_grant(actions=frozenset({Action.READ})))
-        store._conn.execute(  # noqa: SLF001 — 造脏数据只能绕过写入路径
-            "UPDATE auth_grants SET actions=? WHERE grant_id=?", ("read,teleport", "g1")
-        )
+        with sqlite3.connect(db) as connection:
+            connection.execute(
+                "UPDATE auth_grants SET actions=? WHERE grant_id=?", ("read,teleport", "g1")
+            )
         found = _find(store)
         assert len(found) == 1
         assert found[0].actions == frozenset({Action.READ})

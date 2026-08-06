@@ -183,8 +183,7 @@ def test_normalized_headers_authenticate_under_trusted(key_store) -> None:
 
 
 def test_request_id_is_server_generated_and_unique() -> None:
-    """request_id 进审计与授权环境，可被调用方指定就等于让它给自己贴任意标签、
-    或与他人的记录撞号。故服务端生成，且每次请求不同。"""
+    """request_id 由服务端生成且每次不同，调用方不能伪造审计关联标识。"""
     seen = set()
     for _ in range(3):
         with authenticated(DevAuthenticator(), Credentials()) as security:
@@ -202,8 +201,7 @@ def test_surface_comes_from_the_adapter_not_the_caller() -> None:
 
 
 def test_peer_is_the_transport_address_not_a_forwarded_header() -> None:
-    """不采信 X-Forwarded-For：没有可信代理白名单时读它，等于让调用方自述来源，
-    限流分桶与审计溯源会同时被绕过。"""
+    """不采信未经可信代理校验的转发头，避免伪造限流分桶与审计来源。"""
     creds = credentials_from_headers(
         {"X-Forwarded-For": "1.2.3.4", "X-Real-IP": "5.6.7.8"}, "10.0.0.7"
     )
@@ -212,8 +210,7 @@ def test_peer_is_the_transport_address_not_a_forwarded_header() -> None:
 
 
 def test_attributes_are_empty_and_read_only() -> None:
-    """attributes 参与 AuthorizationEnvironment；本层没有可写入的系统属性，
-    业务 payload 一律不得注入。"""
+    """本层没有可信系统属性，业务 payload 不能向只读 attributes 注入值。"""
     with authenticated(DevAuthenticator(), Credentials()) as security:
         assert dict(security.attributes) == {}
         with pytest.raises(TypeError):

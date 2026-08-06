@@ -28,8 +28,7 @@ NOW = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
 
 
 def test_allow_decision_carries_the_rule_that_permitted_it() -> None:
-    """allow 侧也必须记规则：只记 deny 的原因，审计里就看不出一次放行是
-    「owner 访问自己的数据」还是「某条快过期的 Grant 兜住了」。"""
+    """allow 侧也必须记录放行规则，供审计区分 owner 与 Grant 路径。"""
     decision = AuthorizationDecision.allow("owner_cover")
     assert decision.allowed
     assert decision.rule == "owner_cover"

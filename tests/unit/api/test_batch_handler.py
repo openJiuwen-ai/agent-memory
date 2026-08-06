@@ -9,6 +9,7 @@ import pytest
 from api.memory_api_impl import build_kernel
 from bootstrap.core import handler
 from control import BatchWriteItem, BatchWriteOutcome, BatchWriteResult
+from tests.conftest import sec
 
 pytestmark = pytest.mark.unit
 
@@ -41,6 +42,7 @@ class _Server:
 
 def test_batch_add_maps_defaults_item_scope_and_actor() -> None:
     srv = _Server()
+    security = sec(handler.Scope(org="acme", space="product", user="writer"))
 
     status, body = handler.dispatch(
         srv,
@@ -54,7 +56,6 @@ def test_batch_add_maps_defaults_item_scope_and_actor() -> None:
                 "stream_id": "session-1",
                 "occurred_at": "2026-08-05T10:00:00+00:00",
             },
-            "actor_scope": "writer",
             "items": [
                 {"content": "first", "sequence": 1},
                 {
@@ -66,13 +67,14 @@ def test_batch_add_maps_defaults_item_scope_and_actor() -> None:
                 },
             ],
         },
+        security,
     )
 
     assert status == 200, body
     assert body["ok"] is True
     assert [outcome["input"]["content"] for outcome in body["outcomes"]] == ["first", "second"]
     call = srv.api.calls[0]
-    assert call["identity"] == handler.Scope(org="acme", space="product", user="writer")
+    assert call["security"] is security
     assert call["items"][0].scope == handler.Scope(org="acme", space="product", user="alice")
     assert call["items"][1].scope == handler.Scope(org="acme", space="product", user="bob")
     assert call["items"][1].source == handler.Modality.CODE
@@ -91,6 +93,7 @@ def test_batch_add_null_item_tenant_inherits_default_scope() -> None:
             "defaults": {"tenant_id": "acme", "scope": "alice"},
             "items": [{"content": "remember", "target_scope": {"tenant_id": None}}],
         },
+        sec(handler.Scope(org="acme", user="alice")),
     )
 
     assert status == 200, body
@@ -102,6 +105,7 @@ def test_batch_add_returns_structured_outcome_for_malformed_item() -> None:
         _Server(),
         "batch_add",
         {"defaults": {"tenant_id": "acme"}, "items": ["invalid"]},
+        sec(handler.Scope(org="acme", user="alice")),
     )
 
     assert status == 200, body
@@ -121,6 +125,7 @@ def test_batch_add_malformed_item_does_not_raise_internal_error() -> None:
             "defaults": {"tenant_id": "acme", "scope": "alice"},
             "items": ["invalid", {"content": "valid"}],
         },
+        sec(handler.Scope(org="acme", user="alice")),
     )
 
     assert status == 200, body
@@ -147,6 +152,7 @@ def test_batch_add_invalid_item_fields_return_structured_outcome(item: dict[str,
             "defaults": {"tenant_id": "acme", "scope": "alice"},
             "items": [item, {"content": "valid"}],
         },
+        sec(handler.Scope(org="acme", user="alice")),
     )
 
     assert status == 200, body
@@ -162,6 +168,7 @@ def test_batch_add_invalid_default_occurred_at_returns_validation_error() -> Non
             "defaults": {"tenant_id": "acme", "occurred_at": "not-a-datetime"},
             "items": [{"content": "remember"}],
         },
+        sec(handler.Scope(org="acme", user="alice")),
     )
 
     assert status == 400
