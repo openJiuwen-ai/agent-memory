@@ -7,14 +7,28 @@
 | 原始编号 | security/F02（已迁移到 common/F08） |
 | 日期 | 2026-07-29 |
 | 实施阶段 | 授权与上下文期（对应 [F04](F04-security-interfaces-and-encryption.md) §术语说明中的"授权与上下文期"） |
-| 影响范围 | **修改**：`src/control/permission.py`、`src/control/permission_impl/sqlite_permission_manager.py`、`src/control/permission_impl/allow_all_permission_manager.py`、`src/control/permission_impl/routing_permission_manager.py`、`src/api/memory_api_impl/local_memory_api.py`、`src/common/authentication/authentication_impl/trusted_authenticator.py`、`src/common/type_def/auth.py`、`docs/specs/S03-control.md`、`src/api/AGENTS.md`、`tests/unit/api/test_build_kernel_config.py`<br>**新增**：`tests/unit/control/test_permission_role_aware.py`、`tests/unit/api/test_authorization_with_auth_context.py`；**补充**：`tests/unit/common/authentication/test_authentication_impl.py`（委托用例） |
+| 现行影响范围 | `src/common/security/authorization/`、`src/common/security/{types.py,request_context.py,runtime.py}`、`src/api/memory_api_impl/`、`bootstrap/`、`tests/unit/common/security/authorization/`、`tests/unit/api/` |
+| 当期历史落点 | `src/control/permission*.py`、`src/api/memory_api_impl/local_memory_api.py`、旧 `src/common/{authentication,type_def}/` 与对应测试；均已由 F05 / PR2 迁移或取代 |
 | 测试基线 | 改动前 `15 failed, 657 passed, 60 skipped`；改动后 `15 failed, 710 passed, 60 skipped`。**15 个失败是同一组**（`test_jieba_tokenizer.py` 的 `jieba` 未装、`test_bge_m3_embedder.py` 的 `torch` 未装、`test_local_encryption_provider_encrypts_enc1_and_round_trips` 的 Windows POSIX 权限位限制），与本改动无关 |
-| 依据 | [`docs/features/common/F04-security-interfaces-and-encryption.md`](../common/F04-security-interfaces-and-encryption.md) §3.1 角色、§3.2 操作与角色映射、§3.5 ROOT 等价性、§4.3 路径 1（Agent 代操作）、§9 铁律 #3（fail-closed） |
+| 依据 | [F04 安全架构总纲](F04-security-interfaces-and-encryption.md) §3.1 角色、§3.2 操作与角色映射、§3.5 ROOT 等价性、§4.3 路径 1（Agent 代操作）、§9 铁律 #3（fail-closed） |
+| 规范契约 | [S09 安全横切契约](../../specs/S09-security.md) |
 | Refs | — |
 
-> **行文简称**：下文里的 **security.md** 一律指上表「依据」那份文档（详见
-> F01 的同名说明）。F01 造出了 `AuthContext` 的 `role` 与 `acting_user` 两个字段，
-> 本期把它们接进授权判定--两份文档是同一根线的前后两段。
+> **2026-08-07 现行落点。** 本文正文保留 PR2 早期基于 `PermissionManager + acting_user`
+> 的问题分析与取舍过程；该实现已在 F05 迁移中被最终方案取代。当前事实如下：
+>
+> - PDP 是 `common.security.authorization.Authorizer`，输入封闭为 `AuthContext +
+>   ResourceDescriptor + AuthorizationEnvironment`，输出 `AuthorizationDecision`。
+> - 唯一 PEP 是 `MemoryAPI`；公开 verb 的 `security: RequestSecurityContext` 为必填
+>   keyword-only 参数，缺失或来源证明无效时 fail-closed。
+> - ROOT 只由 `AuthContext.role` 表达；空 actor 不再是管理员兼容入口。
+> - 委托只由 `DelegationStore` 按 `delegation_id` 复核，`AuthContext.acting_user` 与
+>   `X-Acting-User` 已删除；可委托动作使用 `DELEGATABLE_ACTIONS` 显式白名单。
+> - 授权记录与委托记录分别由 `GrantStore` / `DelegationStore` 管理，内置 memory / sqlite；
+>   standard / routing / allow_all Authorizer 均通过 Producer 注册，allow_all 仅供测试。
+> - ContextVar 只用于日志与 trace，PDP 和 PEP 均不读取它决定权限。
+>
+> 下文至“后续演进”之前是被取代的当期方案，不是现行 API 说明；当前契约以 S09 为准。
 
 ## 背景
 

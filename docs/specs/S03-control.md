@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/control/ |
-| 最近一次修订日期 | 2026-08-06 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/security/F02-role-aware-authorization.md |
+| 最近一次修订日期 | 2026-08-07 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-authorization-context.md，docs/features/retrieval/F03-metadata-filtering.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -197,14 +197,14 @@ active → archived → forgotten
 |------|------|------|
 | `grant` | `(grant: Grant) -> None` | 新增跨 scope 授权**记录** |
 | `revoke` | `(grant: Grant) -> None` | 回收授权记录（幂等） |
-| `check` | `(actor: Scope, target: Scope, action: Action, context: PermissionContext \| None = None, *, auth: AuthContext \| None = None) -> bool` | **已不在请求路径上**：授权判定归 `common.security.authorization.Authorizer`（见 S08），本方法只剩历史实现与既有回归覆盖 |
+| `check` | `(actor: Scope, target: Scope, action: Action, context: PermissionContext \| None = None, *, auth: AuthContext \| None = None) -> bool` | **已不在请求路径上**：授权判定归 `common.security.authorization.Authorizer`（见 S09），本方法只剩历史实现与既有回归覆盖 |
 | `routing_fields` | `() -> tuple[str, ...]` | 返回本实现鉴权路由所依据的 metadata 字段；非路由实现返回空元组 |
 
 **授权判定不在本层**。`LocalMemoryAPI._authorize` 这个唯一 PEP 调的是
 `Authorizer.authorize(auth=..., resource=..., environment=...)`，输入固定为
 `AuthContext + ResourceDescriptor + AuthorizationEnvironment`，**不读 ContextVar**，
 也不存在 `auth=None` 退回纯 ACL、空 `Scope()` 即 platform admin 这两条旧兼容线——
-它们在 PR2 已删除。判定顺序与 truth table 见 [S08](S08-security.md)。本层的
+它们在 PR2 已删除。判定顺序与 truth table 见 [S09](S09-security.md)。本层的
 `PermissionManager` 在当前主干已不再是 grant/revoke 的写入通道--API 的 grant/revoke
 改写 Authorizer 读取的 `GrantStore`；`PermissionManager` 仅作后续 PR 待删除的遗留。
 

@@ -15,7 +15,7 @@
 > **后续演进（F05，2026-08-05）**：本文中以 `identity: Scope` 和
 > `PermissionManager.check` 描述的鉴权形态是当期历史设计，已由必填
 > `security: RequestSecurityContext` + `common.security.authorization.Authorizer` 取代；
-> 当前接口与 PEP 契约以 S02/S08 为准，`security` 同样不下沉到 Engine。
+> 当前接口与 PEP 契约以 S02/S09 为准，`security` 同样不下沉到 Engine。
 
 ---
 

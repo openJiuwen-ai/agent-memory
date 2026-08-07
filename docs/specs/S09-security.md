@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `src/common/security/`、`bootstrap/`、`src/api/`、`src/storage/` |
-| 最近一次修订日期 | 2026-08-06 |
+| 最近一次修订日期 | 2026-08-07 |
 | 关联特性文档 | `docs/features/common/F04-security-interfaces-and-encryption.md`，`docs/features/common/F07-authentication-kernel.md`，`docs/features/common/F08-authorization-context.md` |
 
 ## 范围 / 边界
@@ -24,6 +24,7 @@
 | `types.py` | `AuthContext`、`RequestSecurityContext`、`CryptoContext`、`Role`、`Surface`、`Credentials`、`Action`、`ResourceDescriptor`、`AuthorizationEnvironment`、`DenyReason` |
 | `request_context.py` | `RequestSecurityContext` 的受控构造入口：`new_request_context` / `internal_context` |
 | `runtime.py` | `SecurityRuntime`：持有能力引用、启动期健康检查、统一生命周期 |
+| `key_source.py` | 外部密钥源的兼容抽象接缝；当前不进入 `KeyProviderProducer` 注册装配链 |
 
 `audit_integrity/` 由后续 PR 补齐。
 

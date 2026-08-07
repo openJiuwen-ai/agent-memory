@@ -1,7 +1,7 @@
 # Agent Memory Common（公共组件层）
 
 **规约文档**：[S07-common.md](../../docs/specs/S07-common.md)；安全横切契约见
-[S08-security.md](../../docs/specs/S08-security.md)
+[S09-security.md](../../docs/specs/S09-security.md)
 
 > 本文档只记录相对稳定的模块本地规约（职责边界、行为铁律、本地约束）。特性设计与方案取舍记录在 `docs/features/` 下。
 
@@ -92,7 +92,7 @@
    import 的外部包。
 8. 安全能力一律落 `security/<能力域>/`，不新开顶层目录。核心不得按 target 名或
    `mode()` 字符串分支——需要区分的行为差异由 capability 方法（如
-   `requires_loopback_binding()`、`bind_instance_name()`、`is_test_only()`）显式声明，详见 S08。
+   `requires_loopback_binding()`、`bind_instance_name()`、`is_test_only()`）显式声明，详见 S09。
 9. `RequestSecurityContext` 只能由 `security/request_context.py` 的两个入口构造：
    `request_id` 由服务端生成、`started_at` 取服务端时钟、`attributes` 只由系统组件
    写入、`surface` 无默认值必须由适配层写入。进程内直连调用方走 `internal_context(authenticator)`，

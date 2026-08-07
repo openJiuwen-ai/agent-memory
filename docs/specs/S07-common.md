@@ -5,8 +5,8 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | src/common/ |
-| 最近一次修订日期 | 2026-08-05 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/security/F01-authentication-kernel.md，docs/features/security/F02-role-aware-authorization.md |
+| 最近一次修订日期 | 2026-08-07 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F07-authentication-kernel.md，docs/features/common/F08-authorization-context.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md |
 
 ## 范围 / 边界
 
@@ -15,7 +15,7 @@
 - 核心数据类型定义（MemoryUnit/Scope/Context/Relation 等）
 - 工厂注册机制（Factory/Producer 基础设施）
 - 审计日志（AuditLogger）
-- 数据保护横切接口（CryptographyProvider，归 `common/security/cryptography/`）
+- 安全横切能力（认证、授权判定、资源保护与密码学，归 `common/security/`）
 - 错误类型（自定义异常）
 - 工具函数（ID 生成/时间解析等）
 
@@ -23,7 +23,7 @@
 - 不做具体算子实现（算子由各层 `*_impl/` 实现）
 - 不做存储后端实现
 - 不做业务编排逻辑
-- 不做鉴权/策略管理
+- 不承载授权执行点（PEP）或业务权限编排；PEP 归 `api/MemoryAPI`，本层只提供 PDP 与安全能力接口
 
 ## 不变量
 
@@ -31,7 +31,7 @@
 2. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
 3. **模型插件遵循 `Plugin` 契约**：继承 `Plugin` 的模型插件实现 `plugin_type()` 和
    `health()`；审计能力实现自己 `base.py` 的接口；认证、资源保护、密码学等安全能力
-   统一归 `common/security/`，实现各自能力域的契约（见 S08）。
+   统一归 `common/security/`，实现各自能力域的契约（见 S09）。
 4. **type_def 不依赖能力实现**：`type_def/*.py` 可在目录内引用基础数据类型，但不得
    import security、audit、storage 等能力实现。
 5. **工厂注册发生在 import 时**：实现文件尾部 `@XxxProducer.register("name")` 绑定构建函数，`__init__.py` 导入实现文件触发注册。
@@ -157,7 +157,7 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 
 `CryptographyProducer.TOP_NAME` 为 `cryptography`。具体 provider 的实现列表、target 名与
 私有配置参数归 `src/common/AGENTS.md` 与对应 feature 文档记录；本 spec 只固化
-接口、上下文和错误语义，安全侧的装配不变量见 S08。
+接口、上下文和错误语义，安全侧的装配不变量见 S09。
 
 ## 数据结构
 
@@ -186,15 +186,18 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 ### 安全类型（`security/types.py`）
 
 请求身份与加密上下文归安全域，不再住 `type_def/`——`type_def` 是被所有层 import 的
-基础类型，安全类型放进去会让「谁能改身份」的边界消失。字段语义与不变量见 S08。
+基础类型，安全类型放进去会让「谁能改身份」的边界消失。字段语义与不变量见 S09。
 
 | 类型 | 关键字段 | 语义 |
 |------|----------|------|
-| `AuthContext` | actor / role / credential_type / credential_id / auth_method / authenticated_at / expires_at / delegation_id | 认证层产出的可信身份（`frozen=True`）；`credential_id` 是不可逆指纹，绝不是明文凭据 |
-| `RequestSecurityContext` | auth / request_id / peer / surface / started_at / attributes | 一次请求的完整安全上下文；通过 `set_current` / `reset_current` / `get_current` 传播，未认证返回 `None` |
+| `AuthContext` | actor / role / credential_type / credential_id / auth_method / credential_issuer / authenticated_at / expires_at / delegation_id | 认证层产出的可信身份（`frozen=True`）；`credential_id` 是不可逆指纹，绝不是明文凭据 |
+| `RequestSecurityContext` | auth / request_id / peer / surface / started_at / attributes | 一次请求的显式安全输入；由受控入口构造并逐层传到 PEP，ContextVar 不参与授权 |
 | `CryptoContext` | scope / purpose / object_id / format_version / metadata | 一次加解密调用的安全上下文；前四项进 AAD |
 | `Credentials` | api_key / headers / peer_address | 认证输入的原始凭据材料（`repr` 不打印敏感字段） |
-| `Role` / `Surface` | 见 S08 | 服务端角色注册表与接入形态枚举 |
+| `Role` / `Surface` | 见 S09 | 服务端角色注册表与接入形态枚举 |
+| `Action` / `DenyReason` | 见 S09 | 封闭安全动作与稳定拒绝原因码 |
+| `ResourceDescriptor` / `AuthorizationEnvironment` | target/type/id/attributes；request_id/surface/peer/now/attributes | PDP 的显式资源与环境输入 |
+| `Grant` / `Delegation` / `AuthorizationDecision` | 授权记录、委托记录、判定结果 | 授权真源记录与可审计 PDP 输出 |
 
 ### 枚举（`type_def/memory.py`）
 
@@ -227,7 +230,7 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 | `IndexBuilderProducer` / `RecallerProducer` | `constructor` / `recaller` |
 | `NormalizerProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` | `normalizer` / `feature_extractor` / `llm` / `reranker` |
 | `AuditProducer` | `audit` |
-| 安全域各 Producer（`SecurityRuntimeProducer` / `AuthProducer` / `KeyStoreProducer` / `RateLimitProducer` / `WorkloadGuardProducer` / `BindingPolicyProducer` / `CryptographyProducer` / `KeyProviderProducer`） | 见 S08 |
+| 安全域各 Producer（`SecurityRuntimeProducer` / `AuthProducer` / `KeyStoreProducer` / `AuthorizationProducer` / `GrantStoreProducer` / `DelegationStoreProducer` / `RateLimitProducer` / `WorkloadGuardProducer` / `BindingPolicyProducer` / `CryptographyProducer` / `KeyProviderProducer`） | 见 S09 |
 
 #### Factory 基类
 
@@ -288,7 +291,7 @@ def _build(config: ComponentConfig) -> Embedder:
 - `reset_all()` 清空缓存（隔离多次装配 / 测试隔离）
 
 各 Producer 继承 `Factory`：
-- `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` / `NormalizerProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditProducer`，以及 `common/security/` 下的安全域 Producer（见 S08）
+- `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` / `NormalizerProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditProducer`，以及 `common/security/` 下的安全域 Producer（见 S09）
 
 ## 错误类型（`errors.py` / `security/cryptography/base.py`）
 
@@ -331,5 +334,5 @@ CryptographyProvider 与 `local` KeyProvider。
 | S04-retrieval | 检索层消费 Embedder/Tokenizer/FeatureExtractor/LLM/Reranker |
 | S05-construction | 构建层消费 Chunker/Embedder/Tokenizer/FeatureExtractor/LLM |
 | S06-storage | 存储层依赖本层的数据类型定义（Scope/FilterClause 等） |
-| S08-security | 约束认证 capability、配置选择与启动安全不变量 |
+| S09-security | 约束认证、授权、保护、密码学 capability，配置选择与启动安全不变量 |
 | architecture.md 全文 | 本层承载全局共享的数据类型与工具 |

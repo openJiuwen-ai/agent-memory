@@ -1,4 +1,4 @@
-﻿# F07 — 认证内核、三档认证模式与速率限制
+﻿# F07 — 认证、凭据保护与静态加密
 
 ## 元信息
 
@@ -7,31 +7,40 @@
 | 原始编号 | security/F01（已迁移到 common/F07） |
 | 日期 | 2026-07-29 |
 | 实施阶段 | 认证与加密期（对应 [F04](F04-security-interfaces-and-encryption.md) §术语说明中的"认证与加密期"） |
-| 影响范围 | `src/common/security/authentication/`、`src/common/security/protection/`、`src/common/security/types.py`、`bootstrap/core/auth_middleware.py`、对应镜像测试目录与各 surface 装配入口 |
+| 影响范围 | `src/common/security/authentication/`、`src/common/security/cryptography/`、`src/common/security/protection/`、`src/common/security/types.py`、`src/storage/{kv_impl,fs_impl}/`、`bootstrap/core/auth_middleware.py`、对应镜像测试目录与各 surface 装配入口 |
 | 测试基线 | 改动前 `2 failed, 656 passed, 60 skipped`；改动后 `2 failed, 788 passed, 60 skipped`。**两个失败是同一对**（`test_bge_m3_embedder.py` 的 `torch` 未安装，`embed` extra 未装），与本改动无关 |
 | 依据 | [F04 安全架构总纲](F04-security-interfaces-and-encryption.md) §1.1 核心不变量、§2 认证、§3 授权角色、§7 审计、§8.1 速率限制、§9 铁律 #1 |
 | 规范契约 | [S09 安全横切契约](../../specs/S09-security.md) |
 | Refs | — |
 
-> **2026-08-05 F05 迁移后记。** 本文记录的是 2026-07-29 的决策过程，正文保留原貌。
-> 落点与若干细节已随 F05 Common Security 改变，以下述为准：
+> **2026-08-07 现行落点。** 本文正文记录 2026-07-29 的第一版认证设计，保留原貌用于
+> 追溯；下列现行结论与 [S09](../../specs/S09-security.md) 优先于正文：
 >
 > - **目录**：`common/authentication/` + `credential_store/` + `admission/` + `type_def/auth.py`
 >   收敛为 `common/security/{authentication,protection,cryptography}/` 与 `security/types.py`。
 >   旧平铺路径只是历史状态，不再作为约束。
-> - **`AuthMode` 枚举已删除**（决策 3 的"三档模式"仍在，但不再由封闭枚举表达）：
->   `mode()` 返回开放字符串，核心不得按其分支，行为差异一律由 capability 方法声明。
-> - **`Argon2Guard` → `WorkloadGuard`**（决策 12）：从"Argon2 专用"泛化为"昂贵安全操作的
->   并发预算"，进 Factory（`TOP_NAME` 为 `workload_guard`），内置实现 `semaphore`。
->   `default_argon2_guard()` 全局单例与"重复装配报错"随之取消——共享改由**具名实例**
->   显式表达，同一个 `workload_guard.shared_budget` 被谁引用从配置里就能读出来。
-> - **决策 13 的 `allow_plaintext` 已彻底删除**，不再是"默认 False"而是不存在该开关
->   （F05 §明文策略）。
-> - **装配面收敛**：`Server.build` 不再逐个 `_build_authenticator` / `_build_rate_limiter`，
->   改为装配一个 `SecurityRuntime`（`TOP_NAME` 为 `security`），由它持有全部能力引用
->   并在启动期统一健康检查。详见 [S09](../../specs/S09-security.md)。
+> - **开放认证实现**：内置 dev / api_key / trusted 是三个已注册 target；`mode()` 返回
+>   开放字符串，核心不按 target 或 mode 分支，差异由 capability 声明。
+> - **ROOT 不靠 actor 形状**：dev 与 Root API Key 分别产出具名 actor `system/dev`、
+>   `system/root`，权限仅由 `role=ROOT` 表达；空 `Scope()` 在现行 PDP 中拒绝。正文决策 1
+>   及相关 `PermissionManager` 描述属于迁移前状态。
+> - **上下文与撤销**：`AuthContext` 是 frozen 纯数据；可撤销 API Key 由 PEP 持有的
+>   `CredentialStatusRegistry` 按 `(credential_type, credential_issuer)` 在线复核，不在
+>   `AuthContext` 中放 Callable 或 Store 引用。PR2 的公开 API 显式接收
+>   `RequestSecurityContext`，授权不读取 ContextVar。
+> - **PR2 已知接线缺口**：`TrustedAuthenticator` 当前会产出非空 gateway
+>   `credential_id`，但没有写 `credential_issuer`，装配也不会把它的 Store 注册到撤销
+>   Registry；因此该上下文进入 PEP 在线复核时按 fail-closed 规则被拒。修复前不能把
+>   trusted 描述为端到端可用的 PR2 数据面认证方式。
+> - **资源保护**：`Argon2Guard` 已泛化为 `WorkloadGuard`；内置 `semaphore`，共享通过
+>   具名实例显式表达，不靠模块级单例。
+> - **静态加密**：`CryptographyProvider` 与 `KeyProvider` 是两个独立 Producer；内置
+>   `local` 写 ENC1 v2（key id / epoch）、读兼容 v1，且不存在 `allow_plaintext`。本地
+>   `rotate()` 只保留进程内多代状态；跨重启轮换需外部 KMS / Vault。
+> - **装配面收敛**：`Server.build` 装配一个 `SecurityRuntime`，由它持有能力引用并统一
+>   健康检查；真正授权仍只在 `MemoryAPI` PEP 执行。
 >
-> 决策 1–11、14+ 的实质结论不受影响，只是落点改名。
+> 因此，正文各“决策”是当期 why / why-not 的归档，不是当前 API、路径或配置参考。
 
 > **行文简称**：下文（及本模块所有代码注释）里的 **security.md** 一律指上表「依据」
 > 那份文档（现为 [F04 安全架构总纲](F04-security-interfaces-and-encryption.md)）。

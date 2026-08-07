@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/api/ |
-| 最近一次修订日期 | 2026-08-06 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/security/F02-role-aware-authorization.md |
+| 最近一次修订日期 | 2026-08-07 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-authorization-context.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -26,7 +26,7 @@
 
 1. **本层是薄封装 + PEP**：数据面委托 `MemoryEngine`，治理面委托 `Governor`，授权判定委托 `common.security.authorization.Authorizer`（PDP），调度面委托 `Scheduler`，策略面直达 `PolicyManager`。
 2. **`security` 不下沉**：鉴权通过后只透传已鉴权的 target `scope`，`security` 不传入控制层。
-3. **`security` 为必填 keyword-only 参数**：类型是 `RequestSecurityContext`（不是 `Scope`），由认证中间件或 `common.security.request_context` 的受控入口产出。调用方不能自行声明身份，也不存在 `auth=None` 或空 `Scope()` 自动管理员的旁路（见 [S08](S08-security.md)）。
+3. **`security` 为必填 keyword-only 参数**：类型是 `RequestSecurityContext`（不是 `Scope`），由认证中间件或 `common.security.request_context` 的受控入口产出。调用方不能自行声明身份，也不存在 `auth=None` 或空 `Scope()` 自动管理员的旁路（见 [S09](S09-security.md)）。
 4. **recall 参数拆分**：`context: Context` 在本层边界拆开——`context.scope` 作独立轴穿透，`context.extensions` 写入调用级 options；约定 key `context.extensions["max_tokens"]` 由 API 边界解析为 int 后写入 `RetrievalQuery.max_tokens`，并从透传 extensions 中移除；`Context` 对象本身不进控制层。
 5. **admin 不经 Engine**：admin_get/set/all 直达 PolicyManager。
 6. **管理面闸门 = 根 scope**：无具体 target scope 的方法（admin_*、全局 audit）以根 scope `Scope()` 为鉴权目标——「能对根 scope 行权」即管理员闸门；租户数据/治理方法仍按各自 target scope 鉴权。
