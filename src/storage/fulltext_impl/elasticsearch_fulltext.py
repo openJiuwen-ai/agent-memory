@@ -149,7 +149,14 @@ class ElasticsearchFulltextStore(FulltextStore):
                                 "session": {"type": "keyword"},
                             }
                         },
-                        "metadata": {"type": "object"},
+                        "metadata": {
+                            "type": "object",
+                            # tags 是业务定义的字符串数组。必须显式锁定为 keyword：
+                            # ES 的 date_detection 会在 dynamic_templates 匹配前把
+                            # "2025-12-31" 这类标签识别为 date，导致同一字段的
+                            # keyword/date mapping 冲突。
+                            "properties": {"tags": {"type": "keyword"}},
+                        },
                         # ES 的倒排字段不区分单值与数组。记录数组 key，供 EQ 与
                         # CONTAINS 编译器恢复公共过滤契约里的形态语义；该字段不暴露
                         # 给 Document。
@@ -162,7 +169,10 @@ class ElasticsearchFulltextStore(FulltextStore):
         # 严格的 EQ / CONTAINS 语义。
         self._client.indices.put_mapping(
             index=self._index,
-            properties={_METADATA_ARRAY_FIELDS: {"type": "keyword"}},
+            properties={
+                _METADATA_ARRAY_FIELDS: {"type": "keyword"},
+                "metadata": {"properties": {"tags": {"type": "keyword"}}},
+            },
         )
 
     # --------------------------------------------------------------- 序列化
