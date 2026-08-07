@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/control/ |
-| 最近一次修订日期 | 2026-08-05 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md |
+| 最近一次修订日期 | 2026-08-07 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-authorization-context.md，docs/features/retrieval/F03-metadata-filtering.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -31,7 +31,8 @@
 
 1. **引擎不实现具体算法能力**：`MemoryEngine` 只编排，Ingestor/构建算子/Retriever/Store 全部由装配注入；可通过 Store 抽象完成真源语义，但不得绑定具体后端或直接调用 LLM。
 2. **引擎方法一律异步协程**：同步调用由 `src/api` 层自行桥接（`asyncio.run`），engine 内不做同步阻塞。
-3. **鉴权不在本层执行**：`PermissionManager.check` 由 `src/api/MemoryAPI` 在入口调用，engine 信任传入的 scope 已鉴权。禁止在 engine 内部重复 check。
+3. **鉴权不在本层执行**：`src/api/MemoryAPI` 作为唯一 PEP 调用 `Authorizer`，engine
+   信任传入的 scope 或 `BatchWriteItem.scope` 已逐项鉴权。禁止在 engine 内部重复判权。
 4. **LifecycleManager 只做非破坏式标记**：`transition` 标记状态（superseded/archived/forgotten），绝不物理删除。物理删除（purge）走 Engine 的 `delete` 路径 + `DeleteMode.PURGE`。
 5. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。`*_impl/` 通过 Producer 自注册后被外部装配消费，不被顶层接口引用。
 6. **types.py 零依赖本层其他文件**：纯数据定义，被本层各接口和 `src/api/` 共同依赖。
@@ -43,8 +44,8 @@
 12. **Pipeline 只做跨层 profile 选择**：`MemoryPipeline` 可以选择不同的构建/查询组件绑定，但不得实现抽取、索引、检索算法；construction/retrieval 不反向依赖 control。
 13. **权限上下文由 API/Engine 解析，不信任调用方声明**：write/recall/list 的请求条件可由 API 构造 `PermissionContext`；list 当前分页实际命中的 unit 以及 get/update/delete 这类已有 unit 操作必须由 Engine 从真源元数据解析 memory_type/tags 后再鉴权。
 14. **权限路由与执行路由同源但职责独立**：两者对 recall 都使用
-    extensions 优先、FilterExpr 强制唯一等值兜底的取值规则；PermissionManager 选择
-    授权策略，MemoryPipeline 选择执行组件，互不代替。
+    extensions 优先、FilterExpr 强制唯一等值兜底的取值规则；Authorizer 选择授权策略，
+    MemoryPipeline 选择执行组件，互不代替。
 15. **路由授权绑定数据范围**：路由型权限根据某字段授权后，API 必须把同一值回注为
     系统过滤谓词；routing fallback 必须是最小权限策略，不得使用 `allow_all`。
 16. **目标操作使用完整 Scope**：MemoryUnit id 仅在 Scope 内唯一。LifecycleManager、Governor 与 IndexBuilder 的目标修改/读取/删除不得依赖全局 `id -> scope` 猜测，调用方必须显式提供 Scope 或携带 Scope 的 MemoryUnit。
@@ -70,7 +71,7 @@ class ControlOperator(ABC):
 | 方法 | 签名 | 语义 |
 |------|------|------|
 | `write` | `async (content, scope, source, *, assets, tags, metadata: dict[str, Any] \| None, occurred_at) -> list[MemoryUnit]` | 规约→可选抽取/分类→落盘+建索引；`infer=true` 时返回 `created_ids` 对应的派生结果，否则处理原始单元（直写不去重） |
-| `batch_write` | `async (items: list[BatchWriteItem], *, continue_on_error=True) -> BatchWriteResult` | 只接收 API 已归一化并完成鉴权/space 前置校验的项；按输入顺序复用 `write`，归集领域异常及非领域异常（后者为 `InternalError`）；fail-fast 时填充 `Skipped` outcomes |
+| `batch_write` | `async (items: list[BatchWriteItem], *, continue_on_error=True) -> BatchWriteResult` | 接收 API 已归一化、逐项鉴权的 item，按输入顺序执行并返回逐项 outcome；不接收 `security` |
 | `recall` | `async (scope, query: RetrievalQuery) -> RetrievalResult` | 委托 Retriever 完整检索链路 |
 | `list` | `async (scope, *, offset=0, limit=100, memory_types=None, extensions=None, filters=None) -> MemoryListResult` | 校验分页参数并完整委托 `KVStore.list`；返回当前页和分页前匹配总数 |
 | `permission_context_for_unit` | `async (unit_id, scope) -> PermissionContext` | 读取已有记忆的权限上下文，只返回 memory_type/tags/metadata 等鉴权元数据，不返回 content/assets |
@@ -194,22 +195,25 @@ active → archived → forgotten
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `grant` | `(grant: Grant) -> None` | 新增跨 scope 授权 |
-| `revoke` | `(grant: Grant) -> None` | 回收授权（幂等） |
-| `check` | `(actor: Scope, target: Scope, action: Action, context: PermissionContext \| None = None) -> bool` | 校验 actor 对 target 是否可执行 action；context 为资源类型、memory_type、pipeline、unit_id、tags 等可选上下文 |
+| `grant` | `(grant: Grant) -> None` | 新增跨 scope 授权**记录** |
+| `revoke` | `(grant: Grant) -> None` | 回收授权记录（幂等） |
+| `check` | `(actor: Scope, target: Scope, action: Action, context: PermissionContext \| None = None, *, auth: AuthContext \| None = None) -> bool` | **已不在请求路径上**：授权判定归 `common.security.authorization.Authorizer`（见 S09），本方法只剩历史实现与既有回归覆盖 |
 | `routing_fields` | `() -> tuple[str, ...]` | 返回本实现鉴权路由所依据的 metadata 字段；非路由实现返回空元组 |
 
-**check 规则**：
-1. `actor == Scope()`（platform admin）→ 全局通过
-2. actor owner-cover target → 通过：先要求同 `org + space`，再按 `PermissionContext.metadata["principal_path"]`（`user_agent` / `agent_user`，默认 `user_agent`）判断 actor scope 是否为 target scope 的合法前缀；空字段不能跳过中间层
-3. `actor.org != target.org` 且 actor 非 root → 拒绝；跨 org grant 不属于默认授权契约
-4. 存在匹配 Grant（未过期 + action 在授权集合内 + grantee 覆盖 actor + grantor 覆盖 target）→ 通过；grantor/grantee 都持久化 `space`，显式 grant 可跨 space
-5. 否则 → 拒绝
+**授权判定不在本层**。`LocalMemoryAPI._authorize` 这个唯一 PEP 调的是
+`Authorizer.authorize(auth=..., resource=..., environment=...)`，输入固定为
+`AuthContext + ResourceDescriptor + AuthorizationEnvironment`，**不读 ContextVar**，
+也不存在 `auth=None` 退回纯 ACL、空 `Scope()` 即 platform admin 这两条旧兼容线——
+它们在 PR2 已删除。判定顺序与 truth table 见 [S09](S09-security.md)。本层的
+`PermissionManager` 在当前主干已不再是 grant/revoke 的写入通道--API 的 grant/revoke
+改写 Authorizer 读取的 `GrantStore`；`PermissionManager` 仅作后续 PR 待删除的遗留。
 
-权限后端由配置选择；无具体 target scope 的管理面方法（`admin_get` / `admin_set` /
-`admin_all` / 全局 `audit`）统一以根 scope `Scope()` 作为鉴权目标，普通租户
-scope 不默认具备管理面访问权；`grant` / `revoke` 则以 grantor scope 为 target
-做 `Action.SHARE` 校验。
+权限/授权后端由配置选择；无具体 target scope 的管理面方法（`admin_get` / `admin_set` /
+`admin_all` / 全局 `audit`）统一以根 scope `Scope()` 作为鉴权目标并携带
+`resource_type`（`admin` / `audit`），普通租户 scope 不默认具备管理面访问权；
+`grant` / `revoke` 则以 grantor scope 为 target 做 `Action.SHARE` 校验。管理面资源
+中无 org 归属的（全局治理策略、跨 org 审计）要求 ROOT，带 org 的（space、主体）
+ADMIN 可管但止于本 org。
 
 `routing` 权限后端按 `PermissionContext` 分派到不同具名 permission policy。示例：
 
@@ -253,8 +257,6 @@ recall 完成权限检查后，API 读取 `PermissionManager.routing_fields()`�
 | `get` | `(key: str) -> str` | 读取一项运行时策略 |
 | `set` | `(key: str, value: str) -> None` | 调整策略（未知键/不可变配置抛 `PolicyError`） |
 | `all` | `() -> dict[str, str]` | 列出全部运行时策略及当前值 |
-
-> **与 ConfigSource 的边界（S08）**：PolicyManager 只管理少量**已知策略键**（如 lifecycle 清扫目标、`scope.require_space`、既有 `rerank.enabled` 占位键）。能力开关/prompt 全文/模型凭证/Store 端点与 `*.active` 等六类动态配置走 `ConfigSource.fetch`，不通过 `admin_set` 扩展为任意配置树。
 
 ### SpaceManager（`space.py`）
 
@@ -337,5 +339,4 @@ src/control/<算子>_impl/
 | architecture.md §8 | 演进调度（EvolveMode / Channel）映射到 Scheduler 双通道 + Evolver 四阶段 |
 | architecture.md §9 | `src/api/MemoryAPI` 是控制层的薄封装 + PEP；数据面委托 Engine，管理面直达各算子 |
 | architecture.md §12 | 横切可观测/治理——Governor.audit 消费 `common/audit/AuditLogger` 记录的审计事件 |
-| architecture.md §13.4 | PolicyManager 是少量已知策略键的 admin 落点；六类动态配置见 S08 ConfigSource |
-| S08-config | ConfigSource 与 PolicyManager 分工 |
+| architecture.md §13.4 | PolicyManager 是运行时可变策略的 admin 落点 |

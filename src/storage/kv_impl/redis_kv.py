@@ -88,9 +88,7 @@ class RedisKVStore(KVStore):
         try:
             import redis
         except ImportError as exc:  # 依赖缺失归一为后端不可用
-            raise BackendError(
-                "redis client not installed (pip install redis)"
-            ) from exc
+            raise BackendError("redis client not installed (pip install redis)") from exc
         with wrap_backend("redis connect"):
             if url:
                 # url 里的 query 参数优先级高于此处 kwargs（redis-py 解析顺序所致）。
@@ -111,11 +109,9 @@ class RedisKVStore(KVStore):
         return int(ttl * 1000) if ttl and ttl > 0 else None
 
     def store_type(self) -> StoreType:
-        """返回存储类型 ``KV``。"""
         return StoreType.KV
 
     def health(self) -> None:
-        """对 Redis 执行 ``PING``；失败抛 :class:`HealthCheckError`。"""
         try:
             ok = self.client.ping()
         except Exception as exc:
@@ -124,7 +120,6 @@ class RedisKVStore(KVStore):
             raise HealthCheckError("redis ping returned falsy")
 
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
-        """在 ``scope`` 下新建 ``key``；已存在时报冲突。"""
         nk = self._namespaced(scope, key)
         with wrap_backend(f"redis insert {key!r}"):
             ok = self.client.set(nk, value, nx=True, px=self._px(ttl))
@@ -132,7 +127,6 @@ class RedisKVStore(KVStore):
             raise ConflictError(entity="key", key=key)
 
     def update(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
-        """覆写 ``scope`` 下已有 ``key``；不存在时报缺失。"""
         nk = self._namespaced(scope, key)
         with wrap_backend(f"redis update {key!r}"):
             ok = self.client.set(nk, value, xx=True, px=self._px(ttl))
@@ -140,12 +134,10 @@ class RedisKVStore(KVStore):
             raise NotFoundError(entity="key", key=key)
 
     def delete(self, scope: Scope, key: str) -> None:
-        """删除 ``scope`` 下的 ``key``（幂等）。"""
         with wrap_backend(f"redis delete {key!r}"):
             self.client.delete(self._namespaced(scope, key))  # 幂等
 
     def get(self, scope: Scope, key: str) -> bytes:
-        """读取 ``scope`` 下 ``key`` 的值；不存在时报缺失。"""
         with wrap_backend(f"redis get {key!r}"):
             value = self.client.get(self._namespaced(scope, key))
         if value is None:
@@ -169,22 +161,21 @@ class RedisKVStore(KVStore):
         return out
 
     def exists(self, scope: Scope, key: str) -> bool:
-        """返回 ``scope`` 下 ``key`` 是否存在。"""
         with wrap_backend(f"redis exists {key!r}"):
             return self.client.exists(self._namespaced(scope, key)) > 0
 
     def scan(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
-        """扫描 ``scope`` 下全部 ``(key, value)``（可选 ``prefix`` 过滤）。"""
         ns = ":".join(scope_segments(scope)) + ":"  # 该 scope 的命名空间前缀
         with wrap_backend(f"redis scan {prefix!r}"):
             keys = list(self.client.scan_iter(match=f"{ns}{prefix}*"))
             values = self.client.mget(keys) if keys else []
         out: list[tuple[str, bytes]] = []
+        prefix_len = len(ns)
         for raw, value in zip(keys, values):
             if value is None:  # scan 与 mget 之间过期/删除
                 continue
             k = raw.decode("utf-8") if isinstance(raw, bytes) else raw
-            out.append((k[len(ns):], value))  # 去掉命名空间前缀还原逻辑 key
+            out.append((k[prefix_len:], value))  # 去掉命名空间前缀还原逻辑 key
         return out
 
     def list(
@@ -197,7 +188,6 @@ class RedisKVStore(KVStore):
         filters: FilterExpr | None = None,
         extensions: dict[str, str] | None = None,
     ) -> KVMemoryListResult:
-        """按记忆列表协议分页枚举 ``scope`` 下条目。"""
         return list_memory_entries(
             self.scan(scope, MEMORY_KEY_PREFIX),
             offset=offset,
@@ -208,7 +198,6 @@ class RedisKVStore(KVStore):
         )
 
     def scopes(self) -> list[Scope]:
-        """枚举本存储中已用过的全部 scope（命名空间）。"""
         seen: set[tuple[str, str, str, str, str]] = set()
         with wrap_backend("redis scopes"):
             for raw in self.client.scan_iter(match="*"):
@@ -247,9 +236,7 @@ def _build(config):
     ssl = read_ssl_config(config, backend="redis KV")
     options: dict[str, Any] = {}
     if ssl.verify:
-        require_tls_scheme(
-            url, expected="rediss", component="redis KV", param="params.url"
-        )
+        require_tls_scheme(url, expected="rediss", component="redis KV", param="params.url")
         reject_url_tls_params(url, backend="redis KV", param="url")
         options["ssl_ca_certs"] = ssl.ca_cert
     return RedisKVStore(

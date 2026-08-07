@@ -12,6 +12,11 @@
 > 本文档归档**记忆接口层实现的设计与取舍**：`MemoryAPI` 的单进程实现 `LocalMemoryAPI`（鉴权/审计执行点）与装配落点 `assembly.py`（`build_kernel`/`assemble`/`Kernel`）。
 > `MemoryAPI` 的**公开方法签名 / 参数语义 / 返回类型**以接口 `src/api/memory_api.py` 为准（归 spec/接口源码），本文不重复罗列签名，只记录「为什么这样实现」。
 
+> **后续演进（F05，2026-08-05）**：本文中以 `identity: Scope` 和
+> `PermissionManager.check` 描述的鉴权形态是当期历史设计，已由必填
+> `security: RequestSecurityContext` + `common.security.authorization.Authorizer` 取代；
+> 当前接口与 PEP 契约以 S02/S09 为准，`security` 同样不下沉到 Engine。
+
 ---
 
 ## 背景

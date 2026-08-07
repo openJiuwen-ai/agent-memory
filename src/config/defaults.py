@@ -43,9 +43,9 @@ def default_config_dict() -> dict[str, Any]:
         "prompts": _PROMPTS_DEFAULT,
         # -- 存储（有状态，必须对象共享）-------------------------------------- #
         "kv_store": {_D: "memory"},
-        # 安全 provider：默认用 local 信封加密（AES-256-GCM）。
-        # 生产装配覆盖为同事实现的自注册 target（@SecurityProducer.register("xxx")）。
-        "security": {_D: "local"},
+        # 密码学 provider：默认用 local 信封加密（AES-256-GCM）。
+        # 生产装配可覆盖为自注册 target（@CryptographyProducer.register("xxx")）。
+        "cryptography": {_D: "local"},
         "vector_store": {
             _D: "memory",
             # L0/L1 分表（与构建侧同命名 layers_l0/l1；同后端不同 collection）
@@ -234,6 +234,17 @@ def default_config_dict() -> dict[str, Any]:
         "policy": {_D: "dict"},
         "governor": {_D: {"target": "in_memory", "params": {"audit": _D, "kv_store": _D}}},
         "permission": {_D: {"target": "sqlite", "params": {"db_path": ":memory:"}}},
+        # 授权（F05 §Authorization / 迁移计划 §7.1）：策略在 authorizer，记录的存取在
+        # grant_store / delegation_store。两个 Store 在 authorizer.standard 的 _build
+        # 里**无默认**，故必须在这里显式具名——「忘了配授权存储」要在装配期就报错。
+        "grant_store": {_D: "memory"},
+        "delegation_store": {_D: "memory"},
+        "authorizer": {
+            _D: {
+                "target": "standard",
+                "params": {"grant_store": _D, "delegation_store": _D},
+            }
+        },
         "space": {_D: {"target": "kv", "params": {"kv_store": _D}}},
         # 可插拔配置来源：默认装配快照；产品可覆盖为 dict/overlay/自研 target
         "config_source": {_D: "yaml_defaults"},
@@ -243,7 +254,7 @@ def default_config_dict() -> dict[str, Any]:
 # 根组件（LocalMemoryAPI）对各顶层组件的引用——全部指向各命名空间下的 default 实例。
 ROOT_PARAMS: dict[str, str] = {
     "engine": _D,
-    "permission": _D,
+    "authorizer": _D,
     "scheduler": _D,
     "policy": _D,
     "governor": _D,

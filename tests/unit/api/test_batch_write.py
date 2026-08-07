@@ -8,6 +8,7 @@ from api.memory_api_impl import build_kernel
 from common.type_def import Modality, Scope
 from config import Config
 from control import BatchWriteItem
+from tests.conftest import sec
 
 pytestmark = pytest.mark.unit
 
@@ -28,7 +29,7 @@ def test_batch_write_normalizes_defaults_and_preserves_input_order() -> None:
             ),
         ],
         scope,
-        identity=scope,
+        security=sec(scope),
         tags=["shared"],
         metadata={"project": "batch", "priority": 1},
         stream_id="import-1",
@@ -52,7 +53,7 @@ def test_batch_write_collects_item_validation_errors_and_continues() -> None:
             BatchWriteItem(content="valid"),
         ],
         scope,
-        identity=scope,
+        security=sec(scope),
     )
 
     assert result.outcomes[0].error_type == "ValidationError"
@@ -70,7 +71,7 @@ def test_batch_write_fail_fast_marks_remaining_items_skipped() -> None:
             BatchWriteItem(content="not-written"),
         ],
         scope,
-        identity=scope,
+        security=sec(scope),
         continue_on_error=False,
     )
 
@@ -85,7 +86,7 @@ def test_batch_write_rejects_duplicate_sequence_within_scope_and_stream() -> Non
     result = api.batch_write(
         [BatchWriteItem(content="first", sequence=1), BatchWriteItem(content="second", sequence=1)],
         scope,
-        identity=scope,
+        security=sec(scope),
         stream_id="import-1",
     )
 
@@ -103,7 +104,7 @@ def test_batch_write_authorizes_each_item_without_blocking_later_owner_item() ->
             BatchWriteItem(content="denied", scope=owner),
             BatchWriteItem(content="allowed", scope=reader),
         ],
-        identity=reader,
+        security=sec(reader),
     )
 
     assert result.outcomes[0].error_type == "PermissionDeniedError"
@@ -115,7 +116,7 @@ def test_batch_write_async_matches_synchronous_result_shape() -> None:
     scope = Scope(org="acme", user="alice")
 
     result = asyncio.run(
-        api.batch_write_async([BatchWriteItem(content="async")], scope, identity=scope)
+        api.batch_write_async([BatchWriteItem(content="async")], scope, security=sec(scope))
     )
 
     assert len(result.outcomes) == 1

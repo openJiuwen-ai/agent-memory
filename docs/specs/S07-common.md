@@ -5,8 +5,8 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | src/common/ |
-| 最近一次修订日期 | 2026-08-05 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md |
+| 最近一次修订日期 | 2026-08-07 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F07-authentication-kernel.md，docs/features/common/F08-authorization-context.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md |
 
 ## 范围 / 边界
 
@@ -15,8 +15,7 @@
 - 核心数据类型定义（MemoryUnit/Scope/Context/Relation 等）
 - 工厂注册机制（Factory/Producer 基础设施）
 - 审计日志（AuditLogger）
-- 数据保护横切接口（SecurityProvider）
-- 跨实例互斥横切接口（LockProvider）
+- 安全横切能力（认证、授权判定、资源保护与密码学，归 `common/security/`）
 - 错误类型（自定义异常）
 - 工具函数（ID 生成/时间解析等）
 
@@ -24,31 +23,27 @@
 - 不做具体算子实现（算子由各层 `*_impl/` 实现）
 - 不做存储后端实现
 - 不做业务编排逻辑
-- 不做鉴权/策略管理
+- 不承载授权执行点（PEP）或业务权限编排；PEP 归 `api/MemoryAPI`，本层只提供 PDP 与安全能力接口
 
 ## 不变量
 
 1. **共享插件必须双侧同一**：Embedder/Tokenizer/FeatureExtractor 等必须在构建侧与检索侧使用同一实现/同一配置，保证同词表/同向量空间。
 2. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
-3. **所有插件必须实现 `plugin_type()` 和 `health()`**：继承自 `Plugin` 基类。
-4. **types.py 零依赖其他文件**：纯数据定义，被全局共享依赖。
+3. **模型插件遵循 `Plugin` 契约**：继承 `Plugin` 的模型插件实现 `plugin_type()` 和
+   `health()`；审计能力实现自己 `base.py` 的接口；认证、资源保护、密码学等安全能力
+   统一归 `common/security/`，实现各自能力域的契约（见 S09）。
+4. **type_def 不依赖能力实现**：`type_def/*.py` 可在目录内引用基础数据类型，但不得
+   import security、audit、storage 等能力实现。
 5. **工厂注册发生在 import 时**：实现文件尾部 `@XxxProducer.register("name")` 绑定构建函数，`__init__.py` 导入实现文件触发注册。
 6. **LLM Provider 参数不上浮到业务层**：厂商专属请求字段只能由对应 Adapter 生成；消费 `LLM` 的算子只传递通用生成选项。
-7. **SecurityProvider 是字节级横切接口**：调用方在持久化字节写入前加密、读取后解密；接口不绑定 `MemoryUnit` 或存储后端，是否启用由装配配置决定。
+7. **CryptographyProvider 是字节级横切接口**：调用方在持久化字节写入前加密、读取后解密；接口不绑定 `MemoryUnit` 或存储后端，也不决定数据是否应该加密——是否启用由上层选择不同的存储适配器表达。
 8. **标识唯一性分层**：非空 Space id 全局唯一；`MemoryUnit.id` 只要求在完整 Scope 内唯一。
 9. **Scope 位置参数兼容**：`space` 可为空但只能按关键字传入；旧位置参数顺序保持
    `Scope(org, user, agent, session)`。
-10. **出站客户端 SSL 声明即生效**：LLM / Embedder / Reranker 统一接受
-    `<prefix>_ssl_verify` / `<prefix>_ssl_ca_cert`（默认关闭）。`ssl_verify` 只决定是否
-    接管信任锚，不负责开启加密——加密开关在 `base_url` 的 scheme。关闭时完全不干预
-    客户端（`http://` 明文直连、`https://` 仍走 SDK 默认校验）；开启后 `base_url` 必须是
-    `https://`、证书文件必须存在，否则在**装配阶段**报错。缺证书不报错而回落系统 CA，
-    这是与 storage 侧唯一的矩阵差异（公网端点走公共 CA 属正常状态）。
-11. **LockProvider 是基于租约的协调机制，不是共识算法**：租约到期、进程停顿超过租约、
-    Redis 主从切换丢失未同步写入都会导致短暂双持。依赖方必须能容忍偶发互斥失效，或自备
-    第二道防线（幂等键、唯一约束、乐观并发控制）。重入以 `asyncio.current_task()` 为身份
-    边界，`create_task` 派生的子任务不视为重入；重入记账与租约有效性正交，持有权状态一律
-    以 `LockHandle.lost` 为准。后端不可用时 fail-closed 抛 `BackendError`，不静默降级为无锁。
+10. **Scope 是 frozen value object**（安全加固，F01 决策 16）：`@dataclass(frozen=True)`，
+    身份/隔离值不可变是跨模块安全不变量。改某维用 `dataclasses.replace(scope, org=...)`
+    返回新值，禁止原地 `scope.x = ...`（抛 `FrozenInstanceError`）。frozen 同时使 Scope
+    可哈希。防的是「签发 key 后改原 actor 的 org 让已签发身份跟着变」的越权。
 
 ## 接口契约
 
@@ -145,36 +140,24 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 
 治理层通过 `Governor.audit(filters, limit)` 提供对外查询入口；`AuditLogger.query(...)` 是控制层消费审计后端的内部接口，不直接暴露为用户 API。
 
-### SecurityProvider（`security/security.py`）
+### CryptographyProvider（`security/cryptography/base.py`）
 
-数据保护横切接口。调用方以 bytes 为边界接入：写入持久化字节前调用 `encrypt`，读取持久化字节后调用 `decrypt`。接口只表达数据保护能力，不绑定 `MemoryUnit` 序列化、不绑定 KV 后端、不决定是否默认启用加密。
+数据保护横切接口。调用方以 bytes 为边界接入：写入持久化字节前调用 `encrypt`，读取持久化字节后调用 `decrypt`。接口只表达数据保护能力，不绑定 `MemoryUnit` 序列化、不绑定 KV 后端、不决定是否启用加密。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `encrypt` | `(plaintext: bytes, *, context: SecurityContext | None = None, aad: bytes = b"") -> bytes` | 加密明文字节，可结合 scope / purpose / metadata 与 AAD 做租户隔离和完整性保护 |
-| `decrypt` | `(ciphertext: bytes, *, context: SecurityContext | None = None, aad: bytes = b"") -> bytes` | 解密密文字节并校验完整性 |
+| `encrypt` | `(plaintext: bytes, *, context: CryptoContext, aad: bytes = b"") -> bytes` | 加密明文字节，结合 scope / purpose / object_id / 格式版本与 AAD 做租户隔离和完整性保护 |
+| `decrypt` | `(ciphertext: bytes, *, context: CryptoContext, aad: bytes = b"") -> bytes` | 解密密文字节并校验完整性；失败一律抛错，绝不返回原始 bytes |
 | `health` | `() -> None` | 存活探测；默认返回 `None`，具体实现可覆盖并抛出健康检查异常 |
 
-`SecurityProducer.TOP_NAME` 为 `security`。具体 provider 的实现列表、target 名与
+`context` 是**必填 keyword 参数**：AAD 绑定的隔离维度不能靠调用方"忘了传"退化成无绑定。
+
+密钥一律经 `KeyProvider`（`security/cryptography/key_provider.py`，`TOP_NAME` 为
+`key_provider`）取得，实现不得自己读环境变量或配置文件里的根密钥。
+
+`CryptographyProducer.TOP_NAME` 为 `cryptography`。具体 provider 的实现列表、target 名与
 私有配置参数归 `src/common/AGENTS.md` 与对应 feature 文档记录；本 spec 只固化
-接口、上下文和错误语义。
-
-### LockProvider（`lock/lock.py`）
-
-跨实例互斥横切接口，**本层唯一的异步契约**。只交付互斥原语，不在任何业务路径上加锁；
-在哪些临界区取锁、锁多大范围由各消费方自行论证。
-
-| 方法 | 签名 | 语义 |
-|------|------|------|
-| `build_key` | `(scope: Scope, name: str) -> str` | 拼锁键 `am:lock:v1:{五段 scope}:{name}`；`name` 为空报 `ValidationError` |
-| `acquire` | `(scope, name, *, lease_ms=None, wait_timeout_ms=None) -> LockHandle` | 有界等待获取；超时抛 `LockTimeoutError`，`wait_timeout_ms=0` 表示只试一次 |
-| `release` | `(handle: LockHandle) -> None` | 按 token 做 CAS 释放；重入时只递减计数 |
-| `renew` | `(handle, *, lease_ms=None) -> bool` | 按 token 做 CAS 续期；`False` 表示已失去持有权 |
-| `guard` | `(scope, name, **kwargs) -> AsyncContextManager[LockHandle]` | 获取 / 自动续期 / 释放的组合，推荐入口 |
-| `health` | `() -> None` | 存活探测；异步，与其余组件的同步 `health()` 不一致 |
-
-`LockProducer.TOP_NAME` 为 `lock`，**不设默认实现**——消费方必须显式配置，避免漏配时
-静默退化成不跨实例的单机锁。
+接口、上下文和错误语义，安全侧的装配不变量见 S09。
 
 ## 数据结构
 
@@ -187,19 +170,34 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 | `Segment` | type / content / asset_ref / metadata | 内容段 |
 | `Temporal` | t_event / t_ingest / t_valid / t_invalid | 时间字段 |
 | `Relation` | id / source_id / target_id / relation / weight / metadata | 关联关系 |
-| `Scope` | org / space / user / agent / session | 作用域；非空 `space` 是全局唯一逻辑隔离标识，空值为兼容域且该字段为 keyword-only |
+| `Scope` | org / space / user / agent / session | 作用域（frozen value object，`frozen=True`）；非空 `space` 是全局唯一逻辑隔离标识，空值为兼容域且该字段为 keyword-only。改维度用 `dataclasses.replace`，不可原地修改（见不变量 10） |
 | `Context` | scope / max_tokens / extensions | 检索上下文 |
 | `Entity` | text / type / confidence | 实体 |
 | `FeatureSet` | keywords / entities / tags | 特征集合 |
 | `Chunk` | id / text / unit_id / metadata | 切分块 |
 | `ChatMessage` | role / content | LLM 对话消息 |
 | `RawPayload` | id / scope / modality / data / uri / metadata / occurred_at | 原始负载 |
-| `FilterClause` | field / op / value | 原子过滤谓词；`EQ` / `IN` 正向匹配标量，`CONTAINS` 匹配数组成员，`NE` / `NOT_IN` 分别取反 |
+| `FilterClause` | field / op / value | 原子过滤谓词 |
 | `FilterGroup` | logic / children | AND / OR / NOT 逻辑节点 |
 | `FilterExpr` | FilterClause \| FilterGroup | 跨 API、检索和存储层的过滤树 |
 | `matches_memory_unit` | `(MemoryUnit, FilterExpr \| None) -> bool` | retrieval 真源复核和 KV list 共用的 MemoryUnit 字段投影与过滤求值 |
-| `AuditEvent` | id / timestamp / actor / target / action / target_id / layer / detail | 审计事件；`actor` 与 `target` 均为 Scope，支持 actor_* 与 target_* 字段过滤 |
-| `SecurityContext` | scope / purpose / metadata | 一次加密/解密调用的安全上下文 |
+| `AuditEvent` | id / actor / target / action / target_id / layer / decision / occurred_at / detail | 审计事件；`actor` 与 `target` 均为 Scope，支持 actor_* 与 target_* 字段过滤；`detail` 可承载 `acting_user` / `role` / `credential_id` / `auth_method` 等认证审计字段 |
+
+### 安全类型（`security/types.py`）
+
+请求身份与加密上下文归安全域，不再住 `type_def/`——`type_def` 是被所有层 import 的
+基础类型，安全类型放进去会让「谁能改身份」的边界消失。字段语义与不变量见 S09。
+
+| 类型 | 关键字段 | 语义 |
+|------|----------|------|
+| `AuthContext` | actor / role / credential_type / credential_id / auth_method / credential_issuer / authenticated_at / expires_at / delegation_id | 认证层产出的可信身份（`frozen=True`）；`credential_id` 是不可逆指纹，绝不是明文凭据 |
+| `RequestSecurityContext` | auth / request_id / peer / surface / started_at / attributes | 一次请求的显式安全输入；由受控入口构造并逐层传到 PEP，ContextVar 不参与授权 |
+| `CryptoContext` | scope / purpose / object_id / format_version / metadata | 一次加解密调用的安全上下文；前四项进 AAD |
+| `Credentials` | api_key / headers / peer_address | 认证输入的原始凭据材料（`repr` 不打印敏感字段） |
+| `Role` / `Surface` | 见 S09 | 服务端角色注册表与接入形态枚举 |
+| `Action` / `DenyReason` | 见 S09 | 封闭安全动作与稳定拒绝原因码 |
+| `ResourceDescriptor` / `AuthorizationEnvironment` | target/type/id/attributes；request_id/surface/peer/now/attributes | PDP 的显式资源与环境输入 |
+| `Grant` / `Delegation` / `AuthorizationDecision` | 授权记录、委托记录、判定结果 | 授权真源记录与可审计 PDP 输出 |
 
 ### 枚举（`type_def/memory.py`）
 
@@ -231,7 +229,8 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 | `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` | `embedder` / `chunker` / `tokenizer` |
 | `IndexBuilderProducer` / `RecallerProducer` | `constructor` / `recaller` |
 | `NormalizerProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` | `normalizer` / `feature_extractor` / `llm` / `reranker` |
-| `AuditProducer` / `SecurityProducer` / `LockProducer` | `audit` / `security` / `lock` |
+| `AuditProducer` | `audit` |
+| 安全域各 Producer（`SecurityRuntimeProducer` / `AuthProducer` / `KeyStoreProducer` / `AuthorizationProducer` / `GrantStoreProducer` / `DelegationStoreProducer` / `RateLimitProducer` / `WorkloadGuardProducer` / `BindingPolicyProducer` / `CryptographyProducer` / `KeyProviderProducer`） | 见 S09 |
 
 #### Factory 基类
 
@@ -292,9 +291,9 @@ def _build(config: ComponentConfig) -> Embedder:
 - `reset_all()` 清空缓存（隔离多次装配 / 测试隔离）
 
 各 Producer 继承 `Factory`：
-- `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` / `NormalizerProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditProducer` / `SecurityProducer`
+- `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` / `NormalizerProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditProducer`，以及 `common/security/` 下的安全域 Producer（见 S09）
 
-## 错误类型（`errors.py` / `security.py` / `lock.py`）
+## 错误类型（`errors.py` / `security/cryptography/base.py`）
 
 | 异常 | 含义 |
 |------|------|
@@ -304,10 +303,7 @@ def _build(config: ComponentConfig) -> Embedder:
 | `PolicyError` | 策略错误（未知键/不可变配置） |
 | `BackendError` | 后端不可用 |
 | `HealthCheckError` | 健康检查失败 |
-| `SecurityError` / `EncryptionError` | 安全横切处理失败的基类 |
-| `LockError` | 锁相关异常的基类 |
-| `LockTimeoutError` | 有界等待耗尽仍未获得锁 |
-| `LockLostError` | 租约续期失败、持有权已失效（由消费方按需抛出） |
+| `CryptographyError` | 加密或解密处理失败的基类 |
 | `InvalidMagicError` | 密文字节不符合当前 provider 期望的信封魔数 |
 | `CorruptedCiphertextError` | 密文信封结构损坏、版本不支持或长度不完整 |
 | `AuthenticationFailedError` | AES-GCM tag 校验失败，通常表示 AAD 不匹配或内容被篡改 |
@@ -317,13 +313,17 @@ def _build(config: ComponentConfig) -> Embedder:
 
 ```
 src/common/<组件>/
-    base.py | <name>.py     # 接口 + Producer（横切组件用 <name>.py，如 security.py / lock.py）
+    base.py                 # 接口 + Producer
     <组件>_impl/
         __init__.py         # 重导出实现类
         <impl_class_snake>.py   # 具体实现 + 尾部 @XxxProducer.register("name")
 ```
 
-注册由 `common.bootstrap.register_plugins` 统一触发。`security_impl/` 当前注册 `local` SecurityProvider 实现，`lock_impl/` 注册 `redis` 与 `memory` 两个 LockProvider 实现。
+安全能力多一层能力域：`src/common/security/<能力域>/{base.py, <能力域>_impl/}`。
+
+注册由 `common.bootstrap.register_plugins` 统一触发（安全域的注册入口是
+`common.security.bootstrap.register_security`）。`cryptography_impl/` 当前注册 `local`
+CryptographyProvider 与 `local` KeyProvider。
 
 ## 与其它 spec 的关系
 
@@ -334,5 +334,5 @@ src/common/<组件>/
 | S04-retrieval | 检索层消费 Embedder/Tokenizer/FeatureExtractor/LLM/Reranker |
 | S05-construction | 构建层消费 Chunker/Embedder/Tokenizer/FeatureExtractor/LLM |
 | S06-storage | 存储层依赖本层的数据类型定义（Scope/FilterClause 等） |
-| S08-config | 插件晚绑定 model/api_key/url 等由 ConfigSource 提供；装配拓扑仍走 Factory |
+| S09-security | 约束认证、授权、保护、密码学 capability，配置选择与启动安全不变量 |
 | architecture.md 全文 | 本层承载全局共享的数据类型与工具 |

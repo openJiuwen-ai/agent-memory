@@ -631,6 +631,10 @@ class _InProcessClient(_AgentMemoryClient):
 
     def __init__(self, config_path: str | None) -> None:
         from api import build_kernel
+        from common.security import internal_context
+        from common.security.authentication.authentication_impl.dev_authenticator import (
+            DevAuthenticator,
+        )
         from config.config import Config
 
         config = None
@@ -645,6 +649,9 @@ class _InProcessClient(_AgentMemoryClient):
         kernel = build_kernel(config=config)
         self._api = kernel.api
         self._kv = kernel.kv
+        # 身份由认证能力产出，不由调用方传入的 scope 充当（F05 §进程内调用）：
+        # scope 说「操作哪个范围」，security 说「谁在操作」。
+        self._security = internal_context(DevAuthenticator())
 
     @staticmethod
     def _to_api_scope(scope):
@@ -663,7 +670,7 @@ class _InProcessClient(_AgentMemoryClient):
 
         units = await self._api.write_async(
             content, api_scope,
-            source=Modality.TEXT, identity=api_scope,
+            source=Modality.TEXT, security=self._security,
             tags=tags, metadata=metadata,
         )
         return units[0].id if units else None
@@ -680,7 +687,7 @@ class _InProcessClient(_AgentMemoryClient):
             self._api.recall,
             query,
             Context(scope=api_scope),
-            identity=api_scope,
+            security=self._security,
             filters=filters,
             top_k=top_k,
             disclosure=DisclosureLevel.L2,
@@ -712,7 +719,11 @@ class _InProcessClient(_AgentMemoryClient):
 
         # evolve 是同步+asyncio.run，必须 to_thread
         await asyncio.to_thread(
-            self._api.evolve, api_scope, EvolveMode.EXTRACT, Channel.BACKGROUND, identity=api_scope
+            self._api.evolve,
+            api_scope,
+            EvolveMode.EXTRACT,
+            Channel.BACKGROUND,
+            security=self._security,
         )
 
     async def close(self) -> None:

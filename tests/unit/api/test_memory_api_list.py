@@ -15,24 +15,29 @@ from common.type_def import (
 )
 from common.type_def.memory_codec import dumps
 from config import Config
+from tests.conftest import sec
 
 pytestmark = pytest.mark.unit
 
 
 def _routing_config() -> Config:
+    """配 ``authorizer`` 段：判定已收敛到 PDP，``permission`` 只剩 grant/revoke 记录通道。"""
     return Config.from_dict(
         {
-            "permission": {
+            "authorizer": {
                 "default": {
                     "target": "routing",
                     "params": {
                         "route_key": "memory_type",
                         "fallback": "strict",
-                        "routes": {"coding": "strict", "episodic": "standard"},
+                        "routes": {"coding": "strict", "episodic": "lenient"},
                     },
                 },
-                "standard": "allow_all",
-                "strict": "sqlite",
+                "lenient": "allow_all",
+                "strict": {
+                    "target": "standard",
+                    "params": {"grant_store": "default", "delegation_store": "default"},
+                },
             }
         }
     )
@@ -45,25 +50,25 @@ def test_memory_api_list_supports_pagination_and_memory_type_filter() -> None:
     episodic = api.write(
         "alice joined the sprint planning",
         scope,
-        identity=scope,
+        security=sec(scope),
         metadata={"memory_type": "episodic"},
     )[0]
     coding = api.write(
         "repo uses pytest for unit tests",
         scope,
-        identity=scope,
+        security=sec(scope),
         metadata={"memory_type": "coding"},
     )[0]
     semantic = api.write(
         "alice prefers concise summaries",
         scope,
-        identity=scope,
+        security=sec(scope),
         metadata={"memory_type": "semantic"},
     )[0]
 
-    coding_result = api.list(scope, identity=scope, memory_types=["coding"])
-    all_result = api.list(scope, identity=scope)
-    second_page = api.list(scope, identity=scope, offset=1, limit=1)
+    coding_result = api.list(scope, security=sec(scope), memory_types=["coding"])
+    all_result = api.list(scope, security=sec(scope))
+    second_page = api.list(scope, security=sec(scope), offset=1, limit=1)
 
     assert [unit.id for unit in coding_result.items] == [coding.id]
     assert coding_result.count == 1
@@ -79,7 +84,7 @@ def test_memory_api_list_is_scope_bound_and_ignores_message_prefix_records() -> 
     owner = Scope(org="acme", user="owner")
     other = Scope(org="acme", user="other")
 
-    visible = api.write("visible indexed memory", owner, identity=owner)[0]
+    visible = api.write("visible indexed memory", owner, security=sec(owner))[0]
     hidden = MemoryUnit(
         id="raw-message",
         scope=owner,
@@ -87,9 +92,9 @@ def test_memory_api_list_is_scope_bound_and_ignores_message_prefix_records() -> 
         temporal=Temporal(t_ingest=visible.temporal.t_ingest),
     )
     kernel.kv.insert(owner, messages_key(hidden.id), dumps(hidden))
-    api.write("other tenant memory", other, identity=other)
+    api.write("other tenant memory", other, security=sec(other))
 
-    listed = api.list(owner, identity=owner)
+    listed = api.list(owner, security=sec(owner))
 
     assert [unit.id for unit in listed.items] == [visible.id]
     assert listed.count == 1
@@ -102,25 +107,25 @@ def test_memory_api_list_filters_before_pagination_and_preserves_total_count() -
     first = api.write(
         "first alpha memory",
         scope,
-        identity=scope,
+        security=sec(scope),
         metadata={"memory_type": "coding", "project": "alpha", "priority": 1},
     )[0]
     second = api.write(
         "second alpha memory",
         scope,
-        identity=scope,
+        security=sec(scope),
         metadata={"memory_type": "coding", "project": "alpha", "priority": 2},
     )[0]
     api.write(
         "beta memory",
         scope,
-        identity=scope,
+        security=sec(scope),
         metadata={"memory_type": "coding", "project": "beta", "priority": 3},
     )
 
     result = api.list(
         scope,
-        identity=scope,
+        security=sec(scope),
         offset=1,
         limit=1,
         memory_types=["coding"],
@@ -144,7 +149,7 @@ def test_memory_api_list_copies_extensions_and_forwards_normalized_filters() -> 
     api.write(
         "alpha memory",
         scope,
-        identity=scope,
+        security=sec(scope),
         metadata={"project": "alpha"},
     )
     extensions = {"vendor_mode": 7}
@@ -160,7 +165,7 @@ def test_memory_api_list_copies_extensions_and_forwards_normalized_filters() -> 
 
     result = api.list(
         scope,
-        identity=scope,
+        security=sec(scope),
         extensions=extensions,
         filters=filters,
     )
@@ -178,9 +183,9 @@ def test_memory_api_list_rejects_invalid_extensions_and_scope_filter() -> None:
     scope = Scope(org="acme", user="owner")
 
     with pytest.raises(ValidationError):
-        api.list(scope, identity=scope, extensions=["invalid"])
+        api.list(scope, security=sec(scope), extensions=["invalid"])
     with pytest.raises(ValidationError):
-        api.list(scope, identity=scope, filters={"space": "other"})
+        api.list(scope, security=sec(scope), filters={"space": "other"})
 
 
 def test_memory_api_list_validates_pagination() -> None:
@@ -188,9 +193,9 @@ def test_memory_api_list_validates_pagination() -> None:
     scope = Scope(org="acme", user="owner")
 
     with pytest.raises(ValidationError):
-        api.list(scope, identity=scope, offset=-1)
+        api.list(scope, security=sec(scope), offset=-1)
     with pytest.raises(ValidationError):
-        api.list(scope, identity=scope, limit=0)
+        api.list(scope, security=sec(scope), limit=0)
 
 
 def test_memory_api_list_permission_routes_by_memory_type() -> None:
@@ -198,11 +203,11 @@ def test_memory_api_list_permission_routes_by_memory_type() -> None:
     owner = Scope(org="acme", user="owner")
     reader = Scope(org="acme", user="reader")
 
-    api.list(owner, identity=reader, memory_types=["episodic"])
+    api.list(owner, security=sec(reader), memory_types=["episodic"])
     with pytest.raises(PermissionDeniedError):
-        api.list(owner, identity=reader, memory_types=["coding"])
+        api.list(owner, security=sec(reader), memory_types=["coding"])
     with pytest.raises(PermissionDeniedError):
-        api.list(owner, identity=reader, memory_types=["episodic", "coding"])
+        api.list(owner, security=sec(reader), memory_types=["episodic", "coding"])
 
 
 def test_memory_api_unfiltered_list_uses_strict_fallback() -> None:
@@ -212,12 +217,12 @@ def test_memory_api_unfiltered_list_uses_strict_fallback() -> None:
     api.write(
         "private coding memory",
         owner,
-        identity=owner,
+        security=sec(owner),
         metadata={"memory_type": "coding"},
     )
 
     with pytest.raises(PermissionDeniedError):
-        api.list(owner, identity=reader)
+        api.list(owner, security=sec(reader))
 
 
 def test_memory_api_list_binds_extension_permission_route_to_filter() -> None:
@@ -227,19 +232,19 @@ def test_memory_api_list_binds_extension_permission_route_to_filter() -> None:
     episodic = api.write(
         "shareable episodic memory",
         owner,
-        identity=owner,
+        security=sec(owner),
         metadata={"memory_type": "episodic"},
     )[0]
     api.write(
         "private coding memory",
         owner,
-        identity=owner,
+        security=sec(owner),
         metadata={"memory_type": "coding"},
     )
 
     result = api.list(
         owner,
-        identity=reader,
+        security=sec(reader),
         extensions={"memory_type": "episodic"},
     )
 

@@ -9,6 +9,7 @@ from api.memory_api_impl import build_kernel
 from common.errors import NotFoundError
 from common.type_def import MemoryTier, MemoryUnit, Modality, Segment, Temporal, memory_key
 from common.type_def.memory_codec import dumps
+from tests.conftest import sec
 
 
 def test_get_as_of_returns_version_valid_at_that_time() -> None:
@@ -38,13 +39,13 @@ def test_get_as_of_returns_version_valid_at_that_time() -> None:
     before_update = kernel.api.get(
         new.id,
         scope,
-        identity=actor,
+        security=sec(actor),
         as_of=datetime(2026, 6, 17, 10, 30, tzinfo=timezone.utc),
     )
     after_update = kernel.api.get(
         old.id,
         scope,
-        identity=actor,
+        security=sec(actor),
         as_of=datetime(2026, 6, 17, 11, 30, tzinfo=timezone.utc),
     )
 
@@ -59,7 +60,7 @@ def test_get_as_of_handles_historical_update_before_original_write_time() -> Non
     actor = scope
     kernel = build_kernel()
 
-    old = kernel.api.write("home is Shanghai", scope, identity=actor)[0]
+    old = kernel.api.write("home is Shanghai", scope, security=sec(actor))[0]
     new = kernel.api.update(
         old.id,
         scope,
@@ -67,19 +68,19 @@ def test_get_as_of_handles_historical_update_before_original_write_time() -> Non
             content="home is Beijing",
             t_valid=datetime(2026, 6, 17, 11, 0, tzinfo=timezone.utc),
         ),
-        identity=actor,
+        security=sec(actor),
     )
 
     before_update = kernel.api.get(
         new.id,
         scope,
-        identity=actor,
+        security=sec(actor),
         as_of=datetime(2026, 6, 17, 10, 30, tzinfo=timezone.utc),
     )
     after_update = kernel.api.get(
         old.id,
         scope,
-        identity=actor,
+        security=sec(actor),
         as_of=datetime(2026, 6, 17, 11, 30, tzinfo=timezone.utc),
     )
 
@@ -115,13 +116,13 @@ def test_get_as_of_does_not_return_forgotten_version() -> None:
     kernel.kv.insert(scope, memory_key(new.id), dumps(new))
     kernel.api.delete(
         DeleteSelector(unit_ids=[old.id], scope=scope, mode=DeleteMode.FORGET),
-        identity=actor,
+        security=sec(actor),
     )
 
     with pytest.raises(NotFoundError):
         kernel.api.get(
             new.id,
             scope,
-            identity=actor,
+            security=sec(actor),
             as_of=datetime(2026, 6, 17, 10, 30, tzinfo=timezone.utc),
         )

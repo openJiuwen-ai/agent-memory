@@ -64,9 +64,7 @@ class SQLiteKVStore(KVStore):
         return time.time() + ttl if ttl else None
 
     def _migrate_schema(self) -> None:
-        columns = {
-            row[1] for row in self._conn.execute("PRAGMA table_info(kv)").fetchall()
-        }
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(kv)").fetchall()}
         if not columns or "space" in columns:
             return
         self._conn.execute("ALTER TABLE kv RENAME TO kv_legacy")

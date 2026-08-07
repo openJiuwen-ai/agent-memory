@@ -30,9 +30,7 @@ class InMemoryKVStore(KVStore):
     """纯内存键值存储：``{scope: {key: (value, expires_at)}}``，按 scope 隔离。"""
 
     def __init__(self) -> None:
-        self._data: dict[_ScopeKey, dict[str, tuple[bytes, float | None]]] = (
-            defaultdict(dict)
-        )
+        self._data: dict[_ScopeKey, dict[str, tuple[bytes, float | None]]] = defaultdict(dict)
 
     def store_type(self) -> StoreType:
         return StoreType.KV
@@ -117,8 +115,7 @@ class InMemoryKVStore(KVStore):
 
     def scopes(self) -> list[Scope]:
         return [
-            Scope(org=k[0], space=k[1], user=k[2], agent=k[3], session=k[4])
-            for k in self._data
+            Scope(org=k[0], space=k[1], user=k[2], agent=k[3], session=k[4]) for k in self._data
         ]
 
 

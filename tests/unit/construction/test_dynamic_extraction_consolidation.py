@@ -34,6 +34,7 @@ from construction.prompt_registry import (
 )
 from storage.graph_impl.in_memory_graph_store import InMemoryGraphStore
 from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from tests.conftest import sec
 
 
 class _ScriptedLLM(LLM):
@@ -498,8 +499,8 @@ def test_default_engine_writes_through_without_consolidator():
     kernel = build_kernel()
     scope = Scope(org="org", user="user")
 
-    first = kernel.api.write("完全相同的记忆", scope, identity=scope)
-    second = kernel.api.write("完全相同的记忆", scope, identity=scope)
+    first = kernel.api.write("完全相同的记忆", scope, security=sec(scope))
+    second = kernel.api.write("完全相同的记忆", scope, security=sec(scope))
 
     # 默认直写路径：两次都落盘，不去重（去重交给显式 evolve）
     assert len(first) == 1

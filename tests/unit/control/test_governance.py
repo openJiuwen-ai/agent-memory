@@ -9,6 +9,7 @@ from common.errors import BackendError
 from common.type_def import AuditEvent, MemoryUnit, Segment, memory_key
 from common.type_def.memory_codec import dumps
 from control.governance_impl.in_memory_governor import InMemoryGovernor
+from tests.conftest import sec
 
 pytestmark = pytest.mark.unit
 
@@ -49,7 +50,7 @@ def test_trace_follows_provenance_sources_depth_first() -> None:
     for unit in [source, direct, nested]:
         kernel.kv.insert(scope, memory_key(unit.id), dumps(unit))
 
-    assert [unit.id for unit in kernel.api.trace("nested", scope, identity=scope)] == [
+    assert [unit.id for unit in kernel.api.trace("nested", scope, security=sec(scope))] == [
         "nested",
         "direct",
         "source",
@@ -64,7 +65,7 @@ def test_trace_stops_on_provenance_cycles() -> None:
     for unit in [a, b]:
         kernel.kv.insert(scope, memory_key(unit.id), dumps(unit))
 
-    assert [unit.id for unit in kernel.api.trace("a", scope, identity=scope)] == ["a", "b"]
+    assert [unit.id for unit in kernel.api.trace("a", scope, security=sec(scope))] == ["a", "b"]
 
 
 def test_inspect_is_bound_to_the_authorized_scope() -> None:
@@ -84,7 +85,7 @@ def test_inspect_is_bound_to_the_authorized_scope() -> None:
     kernel.kv.insert(scope_a, memory_key(unit_a.id), dumps(unit_a))
     kernel.kv.insert(scope_b, memory_key(unit_b.id), dumps(unit_b))
 
-    inspected = kernel.api.inspect([unit_b.id], scope_b, identity=scope_b)
+    inspected = kernel.api.inspect([unit_b.id], scope_b, security=sec(scope_b))
 
     assert [unit.content for unit in inspected] == ["space B content"]
 

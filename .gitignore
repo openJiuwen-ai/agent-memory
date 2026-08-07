@@ -39,3 +39,7 @@ deploy/docker/.venv-modelscope/
 .vscode/
 .claude/skills/gitcode-config.json
 CLAUDE.md
+
+# 安全模块
+# 开发子plan
+/security-plans

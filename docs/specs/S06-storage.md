@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/storage/ |
-| 最近一次修订日期 | 2026-08-04 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md |
+| 最近一次修订日期 | 2026-08-05 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -29,25 +29,20 @@
 2. **记录 id 在 scope 内唯一**：`insert` 冲突 / `update` 缺失按 `(scope, id)` 判定；后端可用 `scope + id` 生成物理主键，保证同一逻辑 id 在不同 space 下互不冲突。
 3. **统一 CRUD 动词**：insert（增）/ delete（删）/ update（改）/ get（查），各存储接口保持同一命名。
 4. **检索型存储额外提供 search**：fulltext / vector / graph / fusion 在 CRUD 之上再提供 `search` 查询。
-5. **vector 的 recall 为可选能力**：`VectorStore.recall` 在 `search` 之上按需回带命中行 payload（`metadata`），基类默认抛 `NotImplementedError`，**不强制**每个后端实现；未实现者由调用方（`VectorRecaller`）捕获后回退 `search + get` 两段式，功能不退化。`search`/`get` 返回 `ScoredID`/`VectorRecord` 的契约不变。
-6. **kv 区分 list 与 scan**：`list` 是 `/memory/` MemoryUnit 的过滤、计数、排序和分页查询；`scan` 是无业务语义的 scope 内原始 key-value 扫描；`scopes` 枚举已有 scope。`mget` 是 `get` 的批量互补：一次召回多条、省逐条 `get` 的接口往返。返回与 `keys` 下标一一对应的 `list[bytes]`，**不去重、按位置返回**（调用方可传重复 key、各下标独立返回，语义同 Redis `MGET`）；缺失语义与 `get` 一致——任一 key 不存在即抛 `NotFoundError`，不静默省略（「索引↔真源短暂不一致」的兜底由调用方负责）。重复 key 的去重亦由调用方（如 `UnitReader.load`）负责，不下沉到本接口。
-7. **fs 提供 stat**：stat（文件元信息查询）。
-8. **scope 对 key/路径做命名空间隔离**：kv / fs 是通用原语，`scope` 入参用于对 key / 路径做命名空间隔离（同一逻辑 key 在不同 scope 下是相互隔离的不同物理键）。
-9. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
-10. **生产过滤先于截断**：生产检索后端必须完整编译所支持的 `FilterExpr`，并在
-   `limit/top_k` 前执行；不允许依赖检索层后置过滤替代生产下推。
-11. **metadata 原生类型入库**：Document / VectorRecord 的 metadata 保留 JSON 标量
+5. **kv 区分 list 与 scan**：`list` 是 `/memory/` MemoryUnit 的过滤、计数、排序和分页查询；`scan` 是无业务语义的 scope 内原始 key-value 扫描；`scopes` 枚举已有 scope。
+6. **fs 提供 stat**：stat（文件元信息查询）。
+7. **scope 对 key/路径做命名空间隔离**：kv / fs 是通用原语，`scope` 入参用于对 key / 路径做命名空间隔离（同一逻辑 key 在不同 scope 下是相互隔离的不同物理键）。
+8. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
+9. **生产过滤先于截断**：Milvus VectorStore 与 Elasticsearch FulltextStore 对
+   `FilterExpr` 完整编译，并在 `limit/top_k` 前执行；不允许依赖检索层后置过滤替代
+   生产下推。
+10. **metadata 原生类型入库**：Document / VectorRecord 的 metadata 保留 JSON 标量
     原生类型，不统一字符串化；不同类型之间不做隐式比较转换。
-12. **metadata 过滤区分标量与数组**：`EQ` / `IN` 的正向匹配只命中标量，
-    `CONTAINS` 只命中数组成员；`NE` / `NOT_IN` 是对应正向谓词的逻辑否定；范围算子
-    只作用于标量，数组字段不按「任一成员命中」判定。后端若原生不保留单值/数组形态，
-    必须用内部派生字段恢复语义。
-13. **所有 Store 必须实现 `store_type()` 和 `health()`**：继承自 `BaseStore`。
-14. **多租户隔离默认依赖逻辑 scope 边界**：当前不要求物理分库/分 collection，但要求同一逻辑 key/id 在不同 scope 下严格命名空间隔离。
-15. **EncryptedKVStore 只装饰 KV，不实现算法**：写前加密、读后解密通过注入的 `SecurityProvider` 完成；`list` 在解密后执行 MemoryUnit 过滤，不能把过滤下推到密文 raw KV。
-16. **space 是 scope 的硬分区维度**：`scope_segments(scope)` 使用 `org/space/user/agent/session` 五段；`scope_dims(scope)` 在 `org` 非空时即使 `space==""` 也下推 `space == ""`，避免空 space 查询跨到非空 space。
-17. **标识唯一性分层**：非空 Space id 在 Space 资源注册表中全局唯一；MemoryUnit 与各 Store 记录 id 只要求在完整 Scope 内唯一。
-18. **SSL 声明即生效**：接外部后端的实现统一接受 `ssl_verify` / `ssl_ca_cert` 两个装配参数（默认关闭）。`ssl_verify` 只表示**是否校验服务端证书**，不负责开启加密——加密开关落在连接串上（`rediss://` / `https://` / `sslmode=`）。开启后不得静默降级：缺证书、连接串仍为明文、或连接串自带会覆盖本设置的 TLS 参数，一律在**装配阶段**报错。
+11. **所有 Store 必须实现 `store_type()` 和 `health()`**：继承自 `BaseStore`。
+12. **多租户隔离默认依赖逻辑 scope 边界**：当前不要求物理分库/分 collection，但要求同一逻辑 key/id 在不同 scope 下严格命名空间隔离。
+13. **EncryptedKVStore 只装饰 KV，不实现算法**：写前加密、读后解密通过注入的 `CryptographyProvider` 完成；`list` 在解密后执行 MemoryUnit 过滤，不能把过滤下推到密文 raw KV。
+14. **space 是 scope 的硬分区维度**：`scope_segments(scope)` 使用 `org/space/user/agent/session` 五段；`scope_dims(scope)` 在 `org` 非空时即使 `space==""` 也下推 `space == ""`，避免空 space 查询跨到非空 space。
+15. **标识唯一性分层**：非空 Space id 在 Space 资源注册表中全局唯一；MemoryUnit 与各 Store 记录 id 只要求在完整 Scope 内唯一。
 
 ## 接口契约
 
@@ -72,7 +67,6 @@ class BaseStore(ABC):
 | `update` | `(scope, key, value: bytes, ttl=0.0) -> None` | 覆写 scope 下已有 key；不存在时报缺失 |
 | `delete` | `(scope, key) -> None` | 删除 scope 下的 key（幂等） |
 | `get` | `(scope, key) -> bytes` | 读取 scope 下 key 的值；不存在时报缺失 |
-| `mget` | `(scope, keys: list[str]) -> list[bytes]` | 批量读取 scope 下多个 key 的值；返回与 `keys` **按下标一一对应**。缺失语义与 `get` 一致：任一 key 不存在即抛 `NotFoundError`，不静默省略。一次召回省去逐条 `get` 的接口往返。**不去重、按位置返回**：调用方可传重复 key，各下标独立返回该 key 的值（语义同 Redis `MGET`）；重复 key 的去重由调用方负责，本接口不做 |
 | `exists` | `(scope, key) -> bool` | 返回 scope 下 key 是否存在 |
 | `list` | `(scope, *, offset=0, limit=100, memory_types=None, filters=None, extensions=None) -> KVMemoryListResult` | 查询 `/memory/` MemoryUnit；先执行 `memory_types AND filters`，再精确计数、稳定排序和分页 |
 | `scan` | `(scope, prefix="") -> list[tuple[str, bytes]]` | 扫描 scope 下的全部 (key, value)（可选只取 prefix 开头的 key）；顺序由实现定义 |
@@ -86,8 +80,8 @@ class BaseStore(ABC):
 
 | 方法 | 行为 |
 |------|------|
-| `insert` / `update` | 构造 `SecurityContext(scope, purpose, metadata)` 与 AAD，调用 `SecurityProvider.encrypt` 后写入 raw KV |
-| `get` / `scan` / `mget` | 从 raw KV 读取密文字节，调用 `SecurityProvider.decrypt` 后返回明文字节；任一解密失败抛 `BackendError`，不跳过坏数据。`mget` 委托 raw 一次性批量取密文（raw 缺失即抛 `NotFoundError`）后**逐项解密**——AAD 绑定 scope+key+purpose，各 key AAD 不同，不能批量统一解密 |
+| `insert` / `update` | 构造 `CryptoContext(scope, purpose, object_id, format_version)` 与 AAD，调用 `CryptographyProvider.encrypt` 后写入 raw KV |
+| `get` / `scan` | 从 raw KV 读取密文字节，调用 `CryptographyProvider.decrypt` 后返回明文字节；任一解密失败抛 `BackendError`，不跳过坏数据 |
 | `list` | 扫描目标 Scope 的 `/memory/` 密文并逐条解密，再执行统一过滤、计数、排序和分页；不调用 raw KV 的 `list` |
 | `exists` / `delete` / `scopes` | 直接委托 raw KV，不读取或改写 value |
 
@@ -96,7 +90,7 @@ class BaseStore(ABC):
 | 参数 | 语义 |
 |------|------|
 | `raw_kv_store` | 必填，指向被装饰的 raw KVStore 具名实例或内联配置；不得指向当前 encrypted 实例自身 |
-| `security` | 必填，指向 `common.security.SecurityProvider` 具名实例或内联配置 |
+| `cryptography` | 必填，指向 `common.security.cryptography.CryptographyProvider` 具名实例或内联配置 |
 
 AAD 版本当前为 `1`，绑定 `scope(org/space/user/agent/session)`、KV `key` 与 `purpose`。`purpose` 由 key 前缀推导：`/memory/` 为 `memory_unit`，`/messages/` 为 `raw_message`，其他为 `kv_value`。
 
@@ -123,7 +117,6 @@ AAD 版本当前为 `1`，绑定 `scope(org/space/user/agent/session)`、KV `key
 | `delete` | `(scope, ids: list[str]) -> None` | 在 scope 内按 id 删除向量行（幂等） |
 | `get` | `(scope, ids: list[str]) -> list[VectorRecord]` | 在 scope 内按 id 点查向量行；缺失的 id 从结果中省略 |
 | `search` | `(scope, query: VectorQuery) -> list[ScoredID]` | 在 scope 内做 ANN 近邻检索，按相似度返回 top-k |
-| `recall` | `(scope, query: VectorQuery, output_fields: list[str]\|None=None) -> list[ScoredHit]` | 在 scope 内做 ANN 近邻检索，并按需在同一次请求内回带命中行 payload（当前仅认 `metadata`）；**可选能力**，基类默认抛 `NotImplementedError`，子类按需 override；未实现时调用方回退 `search + get` |
 
 ### GraphStore（`graph.py`）
 
@@ -161,6 +154,25 @@ AAD 版本当前为 `1`，绑定 `scope(org/space/user/agent/session)`、KV `key
 | `delete` | `(scope, ref) -> None` | 删除 scope 下 ref 处的文件（幂等） |
 | `get` | `(scope, ref) -> BinaryIO` | 打开 scope 下 ref 处的文件用于读取，由调用方负责关闭 |
 | `stat` | `(scope, ref) -> FileStat` | 返回 scope 下 ref 处文件的元信息 |
+
+#### 加密 FS 装饰器契约
+
+`encrypted` FS target 包装任意 inner FSStore，写入时整体加密文件内容，读取时有界读完整
+密文后整体解密；`delete` 与 `stat` 委托 inner。`ref` 与 Scope 保持可寻址的明文，但二者
+必须进入 AAD。`FileStat.size` 表示 inner 中的密文长度，不承诺等于明文长度。
+
+装配参数：
+
+| 参数 | 语义 |
+|------|------|
+| `inner` | 必填，指向被装饰的 FSStore 具名实例或内联配置；不得指向当前实例自身 |
+| `cryptography` | 必填，指向 CryptographyProvider 具名实例或内联配置 |
+| `max_plaintext_bytes` | 单文件明文硬上限，必须大于等于 1 |
+| `max_ciphertext_bytes` | 密文读取上限；`0` 表示按明文上限加 provider 无关的安全余量计算，负数非法 |
+
+大小检查必须同时覆盖：写入时循环有界读取明文、读取前按 `stat` 快速早拒、真正读取时
+循环有界读取密文，以及解密后再次校验明文。`stat` 不能作为唯一边界，因为它与随后
+`get` 之间存在 TOCTOU 窗口。
 
 ## 数据结构
 
@@ -210,7 +222,6 @@ AAD 版本当前为 `1`，绑定 `scope(org/space/user/agent/session)`、KV `key
 | 类型 | 关键字段 |
 |------|----------|
 | `ScoredID` | id / score |
-| `ScoredHit` | id / score / metadata |
 
 **注**：所有 `metadata` / `filters` / `scalar_filters` 只承载 scope 之外的额外谓词，scope 作为显式第一入参，不混进这些结构体。
 
@@ -235,5 +246,4 @@ Store 抽象、跨后端不变量与注册机制。
 | S03-control | Engine 通过 KVStore 读写真源；目标生命周期/治理操作按显式 Scope 定位，全局 sweep/offboarding 才跨 Scope 枚举 |
 | S04-retrieval | 检索层各 Recaller 消费本层索引 Store |
 | S05-construction | 构建层通过本层抽象做真源与索引持久化 |
-| S08-config | Store 连接参数与 `*.active` 可由 ConfigSource 晚绑定；切换后端不包含数据迁移 |
 | architecture.md §5 | 可配置真源形态（文档/结构化）与多后端 |

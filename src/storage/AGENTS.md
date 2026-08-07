@@ -18,14 +18,12 @@
 | `fulltext.py` | FulltextStore 接口：全文倒排索引存储，统一 CRUD + 关键词检索（BM25） |
 | `fusion.py` | FusionStore 接口：融合存储（向量+倒排+正排一体） |
 | `fs.py` | FSStore 接口：文件系统存储（原始负载/二进制资产） |
-| `_support.py` | 后端实现共用：异常归一（`wrap_backend`）、scope 派生（`scope_dims`/`scope_segments`）、SSL 配置读取（`read_ssl_config`）；`SslConfig` 与 scheme 校验复用 `common._support` |
-| `_pg.py` | PostgreSQL 后端共享的惰性连接池、schema 工具与 FilterExpr SQL 编译 |
-| `kv_impl/` | KVStore 实现目录（memory / sqlite / redis / encrypted / postgres）及共用的 `memory_list.py` 兼容逻辑 |
-| `vector_impl/` | VectorStore 实现目录（memory / milvus / pgvector） |
+| `kv_impl/` | KVStore 实现目录（memory / sqlite / redis / encrypted）及共用的 `memory_list.py` 兼容逻辑 |
+| `vector_impl/` | VectorStore 实现目录（memory） |
 | `graph_impl/` | GraphStore 实现目录（memory） |
 | `fulltext_impl/` | FulltextStore 实现目录（memory） |
 | `fusion_impl/` | FusionStore 实现目录（memory） |
-| `fs_impl/` | FSStore 实现目录（local） |
+| `fs_impl/` | FSStore 实现目录（local / encrypted） |
 | `bootstrap.py` | 统一触发所有存储后端注册 |
 
 ## 统一 CRUD 动词
@@ -37,7 +35,7 @@
 | `update` | 改：修改已有记录（id 不存在时抛 NotFoundError） |
 | `get` | 查：按 id 点查（点查单条不存在时抛 NotFoundError；批量查缺失的 id 省略） |
 
-检索型存储额外提供 `search` 查询；kv 提供 MemoryUnit 专用 `list` 和通用 `mget` /
+检索型存储额外提供 `search` 查询；kv 提供 MemoryUnit 专用 `list` 和通用
 `exists` / `scan` / `scopes`；fs 提供 `stat`。
 
 ## 行为铁律
@@ -64,21 +62,37 @@
 7. **后端不可用统一抛 BackendError**
    连接失败/超时/服务不可用等非预期失败统一抛 `BackendError`（不抛泛化的 Exception）。
 
-8. **EncryptedKVStore 只做装饰，不做算法**
-   `encrypted` KV target 必须显式包装一个 raw KVStore，并调用 `common.security.SecurityProvider`
-   做 value 加解密；`list` 必须在解密后执行 MemoryUnit 过滤，不能把过滤下推到密文 raw KV。
-   真实加密算法不放在 storage 层。
+8. **加密装饰器只做装饰，不做算法**
+   `encrypted` KV / FS target 必须显式包装一个 raw Store，并调用
+   `common.security.cryptography.CryptographyProvider` 做加解密；KV 的 `list` 必须在
+   解密后执行 MemoryUnit 过滤，不能把过滤下推到密文 raw KV。真实加密算法不放在 storage 层。
 
-9. **过滤保持 metadata 形态语义**
-   `EQ` / `IN` 的正向匹配只命中标量，`CONTAINS` 只命中数组成员；`NE` / `NOT_IN`
-   分别是前两者的逻辑否定；范围算子只作用于标量。后端原生字段若不区分单值与数组，
-   必须写入内部派生标记恢复该语义，不得把 `EQ` 与 `CONTAINS` 编译成无差别查询，
-   也不得让数组字段被范围谓词按「任一成员命中」选中。
+9. **没有明文回落**
+   不是合法信封就拒绝读取，解密失败一律抛错，绝不返回原始 bytes。加密适配器内部
+   不存在 `allow_plaintext` 这类降级开关——是否允许未加密存储，由上层选 `encrypted`
+   还是 raw target 显式表达（F05 §明文策略）。一个能读明文的"加密"存储，让「以为
+   加密了」的部署实际裸奔，而调用方看不出任何区别。
 
-10. **SSL 开启后不得静默降级**
-   `ssl_verify=true` 意味着实际必须校验服务端证书。缺 `ssl_ca_cert`、连接串仍为明文
-   scheme、或连接串自带会覆盖本设置的 TLS 参数，一律在**装配阶段**报错，不得放行到
-   运行期——调用方以为受保护而实际未校验，比明文更危险。
+## 加密装饰器（第③道防线的接线）
+
+`kv_impl/encrypted_kv_store.py` 与 `fs_impl/encrypted_fs_store.py` 是**装饰器**：
+包住任意一个同类 Store，写前加密、读后解密，对上仍是一个普通 `KVStore` / `FSStore`。
+
+- **依赖方向是 `storage → common.security.cryptography`（单向）**。密码学一行都不在
+  storage 里，全在 `common.security.cryptography.cryptography_impl`；这两个文件只构造
+  `CryptoContext` / AAD 并转发。反向依赖不存在，cryptography 不认识 Store。
+- **KV 只加密 `value`**。`key` 明文是必须的（加密它就没法 `list(prefix=...)`、
+  没法点查）；`ttl` 明文是必须的（它是后端的原生能力，加密它等于放弃过期功能）。
+- **FS 加密整个文件内容**，`ref` 与 scope 保持明文（路径要能寻址），`ref` 进 AAD。
+  代价是 `get` 必须读全文件到内存才能解密（AES-GCM 整块认证的直接后果），且
+  `FileStat.size` 返回的是密文长度（修正需先解密才知道明文长度，代价荒谬）。
+- **AAD 绑满五维 scope + 定位信息**（KV 是 `key`，FS 是 `ref`）。存储层的 scope
+  隔离是访问控制、可以被绕过（直接写底层、备份恢复串了）；AAD 是密码学的，绕不过。
+- **`cryptography` 缺失时在装配期抛 `BackendError`，绝不回落明文存储**——回落
+  会让「以为加密了」的部署实际裸奔，比不加密更危险。
+- 默认关闭：不配 `target: encrypted` 就没有任何加密行为，现有部署零影响。
+- `FsProducer` 可独立装配 encrypted FSStore，但当前 `build_kernel` 业务主链路没有
+  FSStore 消费点；仅写 YAML 不会自动让记忆资产经过 FS 加密，接入前必须先定义资产 API。
 
 ## 与其他子目录的边界
 
@@ -88,12 +102,14 @@
 - 文件系统存储（FSStore）
 - 统一 CRUD 动词
 - scope 原生隔离
+- 静态加密的**接线**（两个装饰器 + 它们的注册），密码学本身归 `common/security/cryptography/`
 
 **不管**：
 - 鉴权（归 `api`）
 - 检索编排（归 `retrieval`）
 - 索引构建逻辑（归 `construction`）
 - 具体后端选型决策（由装配层配置）
+- 信封格式、密钥派生与包装、AES-GCM/HKDF、根密钥获取（归 `common/security/cryptography/`）
 
 ## 本地约束
 
@@ -103,12 +119,5 @@
 4. KVStore 的 `ttl` 单位为秒（float），`0` 表示永不过期。
 5. GraphStore 的 `seed_ids` 用于图召回时定位入口节点，匹配语义由后端定义（允许实现差异）。
 6. FusionStore 的 `FusionRecord` 可部分字段为 None（如只写向量不写文本）。
-7. `EncryptedKVStore` 的 `raw_kv_store` 不能指向自身；未配置 raw 依赖时必须在装配阶段报错。
-8. `KVStore.mget` 是 `get` 的批量互补：返回与 `keys` 下标一一对应的 `list[bytes]`、任一 key 缺失即抛 `NotFoundError`（与 `get` 一致，不静默省略）、**不去重**、支持重复 key（各下标独立返回，语义同 Redis `MGET`，重复 key 去重由调用方如 `UnitReader.load` 负责，不下沉到本接口）；`encrypted` 的 `mget` 委托 raw 取密文（raw 缺失即抛 `NotFoundError`）后须逐项解密（AAD 绑 key，不可批量统一解密）。
-9. 接外部后端的实现统一接受 `ssl_verify` / `ssl_ca_cert`（默认关闭），经 `_support.read_ssl_config`
-   读取后由各 builder 自行翻译为客户端参数：redis `ssl_ca_certs`、elasticsearch `ca_certs`、
-   postgres/pgvector `sslrootcert`（配 `sslmode=verify-full`）、milvus `server_pem_path`（配
-   `secure=True`）。不做跨后端的 TLS 参数抽象层——各客户端语义切分不同，详见
-   [F04-storage-ssl.md](../../docs/features/storage/F04-storage-ssl.md)。
-   `SslConfig`、归一（`build_ssl_config`）与 scheme 校验（`require_tls_scheme`）住在
-   `common._support`，与出站客户端共用；storage 侧只保留缺证书即报错这条自有策略。
+7. `EncryptedKVStore` 的 `raw_kv_store` / `EncryptedFSStore` 的 `inner` 不能指向自身；
+   未配置该依赖时必须在装配阶段报错（给默认值只会把数据写到调用方没预期的地方）。

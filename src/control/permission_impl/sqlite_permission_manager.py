@@ -2,11 +2,19 @@
 
 第一期真实 ACL 实现：
 
-- `Scope()` 视为 platform admin，全局放行；
+- `Scope()` 视为 platform admin，全局放行（**仅在无认证上下文时**，见下）；
 - owner 访问自己的 scope（含 agent/session 子 scope）默认放行；
 - 跨 org 默认拒绝，同 org 跨 space 默认拒绝；
 - grant 持久化到 SQLite，按 action 单行存储；
 - revoke 采用软撤销（`revoked_at`）。
+
+传入 ``auth``（认证层产出的 ``AuthContext``）时另加三条，判定顺序即代码顺序：
+
+1. ``auth.actor`` 与 ``actor`` 不一致 → 拒；
+2. 管理面资源（``resource_type`` 为 admin/audit，或 space 的写/删）要求 ROOT；
+3. ROOT 按 **role** 判定（§3.5）。
+
+此时空 `Scope()` **不再**自动等于 platform admin：特权必须来自认证层的显式结论。
 """
 
 from __future__ import annotations
@@ -17,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from common.type_def import Scope
+from common.security.types import AuthContext, Role
 from control.base import ControlOperatorType
 from control.permission import PermissionManager, PermissionProducer
 from control.types import Action, Grant, PermissionContext
@@ -106,10 +115,52 @@ def _owner_scope_covers(
             if parent_value != child_value:
                 return False
             continue
-        if any(getattr(parent, later) for later in order[index + 1:]):
+        later_start = index + 1
+        if any(getattr(parent, later) for later in order[later_start:]):
             return False
         return True
     return True
+
+
+_MANAGEMENT_RESOURCES = frozenset({"admin", "audit"})
+_SPACE_LIFECYCLE_ACTIONS = frozenset({Action.WRITE, Action.DELETE})
+
+
+def _management_plane_denies(
+    auth: AuthContext | None,
+    action: Action,
+    context: PermissionContext | None,
+) -> bool:
+    """管理面（§3.2 的 ROOT 行）要求 ROOT，非 ROOT 一律拒。
+
+    「这是不是管理操作」由 ``PermissionContext.resource_type`` 说了算，而不是由
+    「target 恰好是空 Scope」间接表达。后者是**靠数据形状表达语义**：把 target
+    填成自己的 scope 就绕过去了，而调用方是能控制 target 的。
+
+    ``grant`` / ``revoke`` **不在**这张表里。§3.2 那行说的是「**跨租户**修改权限」，
+    而跨 org 的 grant 今天已被 ``actor.org != target.org`` 挡住；对自己 scope 发
+    grant 是 Grant 模型的主用途，把它闸进 ROOT 会废掉正常共享。
+
+    ``auth`` 为 ``None`` 时不闸——那是没有认证上下文的场景（后台 job / 单测 /
+    ``build_kernel`` 直连），此时无从判定角色，沿用旧的 ACL 判定。
+    """
+    if auth is None or context is None:
+        return False
+    if auth.role is Role.ROOT:
+        return False
+    if context.resource_type in _MANAGEMENT_RESOURCES:
+        return True
+    # 创建/删除租户属 ROOT（§3.2）。同为 resource_type="space" 的 get/update/archive
+    # 走 READ/UPDATE，不在此列——§3.2 只点名了「创建/删除」，读 space 元数据若也要
+    # ROOT，普通用户连自己所在 space 的名字都拿不到。
+    return context.resource_type == "space" and action in _SPACE_LIFECYCLE_ACTIONS
+
+
+# agent 代 user 操作的判定路径已删除。它依赖网关 header 送来的 ``acting_user``，而
+# header 只能证明网关声称某个 user，证明不了该 user 真的授权了这个 agent（F05
+# §从 header 直接产生 Delegation）。代操作现在走 ``DelegationStore`` 里的服务端记录，
+# 由 ``StandardAuthorizer`` 按 ``delegation_id`` 复核；可委托动作的 allowlist 迁到
+# ``common.security.types.DELEGATABLE_ACTIONS``。
 
 
 def _row_scope(row: sqlite3.Row | tuple, prefix: str) -> Scope:
@@ -234,8 +285,31 @@ class SQLitePermissionManager(PermissionManager):
         target: Scope,
         action: Action,
         context: PermissionContext | None = None,
+        *,
+        auth: AuthContext | None = None,
     ) -> bool:
-        if actor == Scope():
+        if auth is not None and auth.actor != actor:
+            # 两个身份来源不一致：要么是接线错误，要么是拿 A 的凭据去问 B 的权限。
+            # 两种都拒（fail-closed，铁律 #3）。返回 False 而非抛异常——check 的契约
+            # 是给出布尔判定，异常留给 PEP 去翻译成 403。
+            return False
+
+        if _management_plane_denies(auth, action, context):
+            return False
+
+        if auth is not None:
+            if auth.role is Role.ROOT:
+                return True
+            if actor == Scope():
+                # 有认证上下文、role 又不是 ROOT：空 actor 只是一个**没填内容的
+                # 身份**，不是特权形态。这里必须显式拒，否则它会命中下方
+                # `_owner_scope_covers` 顶部的「parent 为空即覆盖一切」通配分支——
+                # 那个分支是给 grant 行匹配用的，不该被 actor 借道。
+                return False
+        elif actor == Scope():
+            # 无认证上下文时保留旧的 platform-admin 规则。有认证上下文时**不**保留：
+            # 见下方 _management_plane_denies 上面的说明，特权必须来自认证层的显式
+            # 结论，不能来自「actor 恰好是空 Scope」这个数据形状的巧合。
             return True
 
         if _owner_scope_covers(actor, target, context):
