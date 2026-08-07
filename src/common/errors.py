@@ -11,6 +11,29 @@
 
 from __future__ import annotations
 
+import re
+
+_ERROR_CREDENTIAL_RE = re.compile(r"//[^:/@\s]*:[^@\s]+@")
+_ERROR_AUTH_HEADER_RE = re.compile(
+    r"(?i)(\bauthorization\b['\"]?\s*[:=]\s*['\"]?(?:bearer|basic)\s+)[^'\",\s;&]+"
+)
+_ERROR_AUTH_VALUE_RE = re.compile(
+    r"(?i)(\bauthorization\b['\"]?\s*[:=]\s*['\"]?)(?!(?:bearer|basic)\s+)[^'\",\s;&]+"
+)
+_ERROR_SECRET_RE = re.compile(
+    r"(?i)\b(password|passwd|pwd|token|api[_-]?key|secret)\b\s*[:=]\s*[^,;&]+"
+)
+
+
+def safe_error_message(exc: Exception, *, limit: int = 200) -> str:
+    """规范化并脱敏可进入日志或结构化错误的异常文本。"""
+    text = " ".join(str(exc).split())
+    text = _ERROR_CREDENTIAL_RE.sub("//<redacted>:<redacted>@", text)
+    text = _ERROR_AUTH_HEADER_RE.sub(lambda match: f"{match.group(1)}<redacted>", text)
+    text = _ERROR_AUTH_VALUE_RE.sub(lambda match: f"{match.group(1)}<redacted>", text)
+    text = _ERROR_SECRET_RE.sub(lambda match: f"{match.group(1)}=<redacted>", text)
+    return text[:limit]
+
 
 class AgentMemoryError(Exception):
     """所有记忆系统异常的根类（便于调用方统一兜底）。"""
@@ -71,3 +94,15 @@ class BackendError(AgentMemoryError):
     底层存储/插件后端的非预期失败（网络、IO、远端报错等），区别于上述
     可预期的业务异常。
     """
+
+
+class UnsupportedStorageCapabilityError(AgentMemoryError):
+    """Storage 未声明调用方请求的底层端口能力。"""
+
+
+class StorageRetrievalError(AgentMemoryError):
+    """所有选中召回入口均失败。"""
+
+    def __init__(self, errors: list[object]) -> None:
+        self.errors = errors
+        super().__init__(f"all selected retrieval sources failed: {len(errors)} error(s)")

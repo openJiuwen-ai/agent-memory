@@ -5,11 +5,14 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/storage/ |
-| 最近一次修订日期 | 2026-08-04 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md |
+| 最近一次修订日期 | 2026-08-06 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md |
 ## 范围 / 边界
 
 **管什么**：
+- 统一 Storage 契约、CompositeStorage 默认组合实现与底层能力发现
+- MemoryUnit 领域 add/update/delete/get/list
+- StorageSecurity 数据面授权和 StoreSecurity 数据保护能力边界
 - 可配置真源（文档/结构化）的 KV 存储抽象
 - KV 加密装饰器（EncryptedKVStore）
 - 多后端索引存储抽象：向量（VectorStore）、全文（FulltextStore）、图（GraphStore）、融合（FusionStore）、文件系统（FSStore）
@@ -18,7 +21,7 @@
 - scope 原生隔离（scope 为显式第一入参，物理约束在该 scope 内）
 
 **不管什么**：
-- 不做鉴权（由 `src/api` 层负责）
+- 不管理 grant/revoke、授权策略生命周期或业务权限模型
 - 不做检索编排（由 `src/retrieval` 层负责）
 - 不做索引构建逻辑（由 `src/construction` 层负责）
 - 不实现具体后端（实现在 `*_impl/` 下，通过 Producer 注册）
@@ -48,8 +51,27 @@
 16. **space 是 scope 的硬分区维度**：`scope_segments(scope)` 使用 `org/space/user/agent/session` 五段；`scope_dims(scope)` 在 `org` 非空时即使 `space==""` 也下推 `space == ""`，避免空 space 查询跨到非空 space。
 17. **标识唯一性分层**：非空 Space id 在 Space 资源注册表中全局唯一；MemoryUnit 与各 Store 记录 id 只要求在完整 Scope 内唯一。
 18. **SSL 声明即生效**：接外部后端的实现统一接受 `ssl_verify` / `ssl_ca_cert` 两个装配参数（默认关闭）。`ssl_verify` 只表示**是否校验服务端证书**，不负责开启加密——加密开关落在连接串上（`rediss://` / `https://` / `sslmode=`）。开启后不得静默降级：缺证书、连接串仍为明文、或连接串自带会覆盖本设置的 TLS 参数，一律在**装配阶段**报错。
+19. **Storage capability 唯一来源**：能力集合只包含 KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS；
+    `has_*()` 由集合推导，未声明端口访问抛 `UnsupportedStorageCapabilityError`。
+20. **检索路径独立于 capability**：Storage 提供 recall/recall_and_get/retrieve，并以全局稳定的
+    `preferred_retrieval_pipeline()` 选择首选入口；路径值不加入 capability。
+21. **统一授权不可绕过**：MemoryUnit 领域接口和 Storage 暴露的 Store 代理端口都先执行
+    `StorageSecurity.authorize`；默认 AllowAll 可省略 access。Store 自身 `security` 表示数据保护。
 
 ## 接口契约
+
+### Storage（统一门面，`storage.py`）
+
+| 类别 | 接口 | 语义 |
+|---|---|---|
+| 领域操作 | `add/update/delete/get/list(scope, ..., access=None)` | 操作 scope 内 MemoryUnit 真源；get 保序并省略缺失，list 返回 items 与 count |
+| 能力 | `capabilities()` / `has_kv()` 等 | 返回不可变标准 Store 端口能力 |
+| 端口 | `kv/vector/fulltext/graph/fusion/fs` | 暴露经过统一授权代理的完整 Store 契约；未声明能力时报错 |
+| 检索适配 | `preferred_retrieval_pipeline()` / `recall` / `recall_and_get` / `retrieve` | 供 Retriever 选择 recall/get/rank 三步的组合位置 |
+| 横切 | `security` / `health()` | 统一授权入口并聚合声明能力的健康检查 |
+
+`CompositeStorage` 是默认实现。一体化实现可以只实现 Storage 的领域和首选检索入口；只有完整
+提供某个标准 Store 契约时才声明对应 capability。
 
 ### BaseStore（基类，`base.py`）
 
@@ -60,6 +82,8 @@ class StoreType(str, Enum):
 class BaseStore(ABC):
     def store_type(self) -> StoreType  # 自描述
     def health(self) -> None            # 存活探测：健康返回 None，否则抛 HealthCheckError
+    @property
+    def security(self) -> StoreSecurity # 后端数据保护模块；默认 passthrough
 ```
 
 ### KVStore（`kv.py`）

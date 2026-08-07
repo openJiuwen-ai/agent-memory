@@ -20,10 +20,13 @@ L0/L1 分层召回下，同一通道存在多个 recall 实例（L2 content / L0
 
 from __future__ import annotations
 
-from retrieval.types import RecallChannel, ScoredUnit
+from common.type_def import ScoredCandidate
+from retrieval.types import RecallChannel
 
 
-def merge_layered_channels(candidates: list[list[ScoredUnit]]) -> list[list[ScoredUnit]]:
+def merge_layered_channels(
+    candidates: list[list[ScoredCandidate]],
+) -> list[list[ScoredCandidate]]:
     """把同一通道的多路分层召回结果归并为一路（同 unit 取最高分）。
 
     :param candidates: 各 recall 实例的候选列表；分层下同一通道占多个列表。
@@ -31,7 +34,7 @@ def merge_layered_channels(candidates: list[list[ScoredUnit]]) -> list[list[Scor
 
     空列表不产生通道（与融合侧"仅在场通道参与计分"的口径一致）。
     """
-    buckets: dict[RecallChannel, dict[str, ScoredUnit]] = {}
+    buckets: dict[RecallChannel, dict[str, ScoredCandidate]] = {}
     for one_channel in candidates:
         if not one_channel:
             continue
