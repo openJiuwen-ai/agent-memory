@@ -41,6 +41,16 @@
 6. **与 PolicyManager 边界**  
    lifecycle / `scope.require_space` 等已知策略键仍走 `PolicyManager`；六类动态配置走 `ConfigSource`。
 
+7. **统一 Storage 使用具名共享实例**
+   `storage.default` 选择统一 Storage 实现；Retriever 与 Kernel 都引用该名称。CompositeStorage
+   的 `kv_store` / `vector_store` / `fulltext_store` / `graph_store` 等参数只引用下层具名 Store，
+   不复制连接配置。Construction、Retrieval、Control 的组件参数只引用 `storage`，不得再直接
+   引用下层 Store 命名空间。
+
+8. **安全提供者必须经根引用装配**
+   `ROOT_PARAMS["security"]` 指向 `security.default`；`build_kernel` 创建加密 KV 时必须通过该
+   具名引用取 provider，确保用户的 `security` 参数可覆盖默认配置。
+
 ## 与其他子目录的边界
 
 **本模块管**：装配合并、ConfigSource 契约与默认实现、active/晚绑定解析辅助、多实例路由门面。

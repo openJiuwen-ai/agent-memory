@@ -8,9 +8,11 @@ import pytest
 
 from common.errors import PermissionDeniedError, UnsupportedStorageCapabilityError, ValidationError
 from common.type_def import MemoryUnit, Scope, Segment
+from config import AssemblyContext
+from storage.bootstrap import register_backends
 from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from storage.security import StorageAccessContext, StorageAction, StorageSecurity
-from storage.storage import StorageCapability
+from storage.storage import StorageCapability, StorageProducer
 from storage.storage_impl import CompositeStorage
 from storage.types import KVMemoryListResult
 
@@ -105,3 +107,38 @@ def test_health_checks_storage_security_and_declared_store() -> None:
     storage = CompositeStorage(kv=InMemoryKVStore())
 
     assert storage.health() is None
+
+
+def test_storage_producer_builds_named_composite_with_configured_ports() -> None:
+    register_backends()
+    context = AssemblyContext.from_dict(
+        {
+            "kv_store": {"truth": "memory"},
+            "vector_store": {"semantic": "memory"},
+            "storage": {
+                "main": {
+                    "target": "composite",
+                    "params": {"kv_store": "truth", "vector_store": "semantic"},
+                }
+            },
+        }
+    )
+
+    storage = StorageProducer.build_named("main", context)
+
+    assert isinstance(storage, CompositeStorage)
+    assert storage.capabilities() == frozenset(
+        {StorageCapability.KV, StorageCapability.VECTOR}
+    )
+    assert StorageProducer.build_named("main", context) is storage
+
+
+def test_storage_producer_rejects_unknown_retrieval_pipeline() -> None:
+    register_backends()
+
+    with pytest.raises(ValidationError, match="preferred_retrieval_pipeline"):
+        StorageProducer.build(
+            "composite",
+            {"preferred_retrieval_pipeline": "unknown"},
+            AssemblyContext(),
+        )

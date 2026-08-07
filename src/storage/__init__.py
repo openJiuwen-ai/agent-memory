@@ -8,7 +8,7 @@ from .fulltext import FulltextStore
 from .fusion import FusionStore
 from .graph import GraphStore
 from .kv import KVStore
-from .storage import Storage, StorageCapability
+from .storage import Storage, StorageCapability, StorageProducer
 from .storage_impl import CompositeStorage
 from .types import (
     Document,
@@ -64,5 +64,6 @@ __all__ = [
     "FileStat",
     "Storage",
     "StorageCapability",
+    "StorageProducer",
     "CompositeStorage",
 ]

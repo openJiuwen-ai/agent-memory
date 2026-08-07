@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import asyncio
 
-from common.type_def import Scope
-from construction import EvolveMode, EvolveResult, Evolver
-from construction.base import OperatorType
 from api.memory_api_impl import build_kernel
+from common.type_def import Scope
 from config.config import Config
+from construction import EvolveMode, Evolver, EvolveResult
+from construction.base import OperatorType
 from control.engine_impl.in_memory_engine import InMemoryEngine
 from control.jobs import Job, JobFactory, JobType
 from control.jobs_impl.evolve_job import EvolveJobSpec
-from control.types import Channel, JobStatus
 from control.types import BatchWriteItem, Channel, JobStatus
 from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from storage.storage_impl.composite_storage import CompositeStorage
+
+_TEST_KEY_HEX = "00" * 32
 
 
 class RaisingEvolver(Evolver):
@@ -54,7 +56,7 @@ def _build_test_job_factory(evolver) -> JobFactory:
     factory = JobFactory()
     factory.register(
         JobType.EVOLVE,
-        EvolveJobSpec(kv=None, evolver=evolver).with_scope,
+        EvolveJobSpec(storage=CompositeStorage(kv=InMemoryKVStore()), evolver=evolver).with_scope,
     )
     return factory
 
@@ -68,7 +70,7 @@ def test_engine_evolve_only_submits_scheduler_job() -> None:
         ingestor=None,
         index_builder=None,
         retriever=None,
-        kv=InMemoryKVStore(),
+        storage=CompositeStorage(kv=InMemoryKVStore()),
         scheduler=scheduler,
         evolver=evolver,
         lifecycle=None,
@@ -93,7 +95,7 @@ def test_in_memory_batch_write_collects_unexpected_error_and_continues() -> None
         ingestor=None,
         index_builder=None,
         retriever=None,
-        kv=InMemoryKVStore(),
+        storage=CompositeStorage(kv=InMemoryKVStore()),
         scheduler=None,
         evolver=None,
         lifecycle=None,
@@ -109,7 +111,10 @@ def test_in_memory_batch_write_collects_unexpected_error_and_continues() -> None
     engine.write = _write  # type: ignore[method-assign]
     result = asyncio.run(
         engine.batch_write(
-            [BatchWriteItem(content="bad", scope=scope), BatchWriteItem(content="good", scope=scope)]
+            [
+                BatchWriteItem(content="bad", scope=scope),
+                BatchWriteItem(content="good", scope=scope),
+            ]
         )
     )
 
@@ -123,7 +128,12 @@ def test_api_evolve_returns_completed_scheduler_job_with_evolve_result_detail() 
     # 不验证 AsyncTimerScheduler 的异步调度行为（后者由阶段 5 集成测试覆盖）。
     # AsyncTimerScheduler 需事件循环驱动，submit 后不立即完成，与同步断言不兼容。
     config = Config.from_dict(
-        {"scheduler": {"default": {"target": "in_process", "params": {}}}}
+        {
+            "scheduler": {"default": {"target": "in_process", "params": {}}},
+            "security": {
+                "default": {"target": "local", "params": {"key_hex": _TEST_KEY_HEX}}
+            },
+        }
     )
     kernel = build_kernel(config=config)
     scope = Scope(user="u1")

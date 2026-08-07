@@ -7,19 +7,17 @@
 from __future__ import annotations
 
 from common.audit.base import AuditLogger, AuditProducer
-from common.errors import NotFoundError
-from common.type_def import AuditEvent, MemoryUnit, Scope, memory_key
-from common.type_def.memory_codec import loads
+from common.type_def import AuditEvent, MemoryUnit, Scope
 from control.base import ControlOperatorType
 from control.governance import Governor, GovernorProducer
-from storage.kv import KvProducer, KVStore
+from storage.storage import Storage, StorageProducer
 
 
 class InMemoryGovernor(Governor):
     """治理「看」侧：按目标 scope 检视 / 沿 provenance 回溯 / 审计过滤查询。"""
 
-    def __init__(self, kv: KVStore, audit_logger: AuditLogger) -> None:
-        self._kv = kv
+    def __init__(self, storage: Storage, audit_logger: AuditLogger) -> None:
+        self._storage = storage
         self._audit = audit_logger
 
     def operator_type(self) -> ControlOperatorType:
@@ -29,10 +27,8 @@ class InMemoryGovernor(Governor):
         return None
 
     def _find(self, unit_id: str, scope: Scope) -> MemoryUnit | None:
-        try:
-            return loads(self._kv.get(scope, memory_key(unit_id)))
-        except NotFoundError:
-            return None
+        units = self._storage.get(scope, [unit_id])
+        return units[0] if units else None
 
     def inspect(self, unit_ids: list[str], scope: Scope) -> list[MemoryUnit]:
         found = [self._find(uid, scope) for uid in unit_ids]
@@ -67,4 +63,4 @@ class InMemoryGovernor(Governor):
 def _build(config):
     # 与对外 API 注入的 audit_logger 共享同一实例（缓存键 "audit"）→ 治理读到同一审计事件流。
     audit = AuditProducer.dep(config, default="sqlite")
-    return InMemoryGovernor(KvProducer.dep(config, default="memory"), audit)
+    return InMemoryGovernor(StorageProducer.resolve(config), audit)

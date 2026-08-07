@@ -5,12 +5,13 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/storage/ |
-| 最近一次修订日期 | 2026-08-06 |
+| 最近一次修订日期 | 2026-08-07 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md |
 ## 范围 / 边界
 
 **管什么**：
 - 统一 Storage 契约、CompositeStorage 默认组合实现与底层能力发现
+- StorageProducer 注册与 `storage` 配置命名空间
 - MemoryUnit 领域 add/update/delete/get/list
 - StorageSecurity 数据面授权和 StoreSecurity 数据保护能力边界
 - 可配置真源（文档/结构化）的 KV 存储抽象
@@ -53,9 +54,12 @@
 18. **SSL 声明即生效**：接外部后端的实现统一接受 `ssl_verify` / `ssl_ca_cert` 两个装配参数（默认关闭）。`ssl_verify` 只表示**是否校验服务端证书**，不负责开启加密——加密开关落在连接串上（`rediss://` / `https://` / `sslmode=`）。开启后不得静默降级：缺证书、连接串仍为明文、或连接串自带会覆盖本设置的 TLS 参数，一律在**装配阶段**报错。
 19. **Storage capability 唯一来源**：能力集合只包含 KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS；
     `has_*()` 由集合推导，未声明端口访问抛 `UnsupportedStorageCapabilityError`。
-20. **检索路径独立于 capability**：Storage 提供 recall/recall_and_get/retrieve，并以全局稳定的
+20. **命名端口仍受 Storage 管控**：`has_vector_port(name)` 与 `vector_port(name)` 等成对使用；
+    默认端口名为 `default`，分层索引可使用 `layers_l0` / `layers_l1`，上层不得绕过
+    StorageProducer 直接解析 Store 具名实例。
+21. **检索路径独立于 capability**：Storage 提供 recall/recall_and_get/retrieve，并以全局稳定的
     `preferred_retrieval_pipeline()` 选择首选入口；路径值不加入 capability。
-21. **统一授权不可绕过**：MemoryUnit 领域接口和 Storage 暴露的 Store 代理端口都先执行
+22. **统一授权不可绕过**：MemoryUnit 领域接口和 Storage 暴露的 Store 代理端口都先执行
     `StorageSecurity.authorize`；默认 AllowAll 可省略 access。Store 自身 `security` 表示数据保护。
 
 ## 接口契约
@@ -64,14 +68,18 @@
 
 | 类别 | 接口 | 语义 |
 |---|---|---|
-| 领域操作 | `add/update/delete/get/list(scope, ..., access=None)` | 操作 scope 内 MemoryUnit 真源；get 保序并省略缺失，list 返回 items 与 count |
+| 领域操作 | `add/update/delete/get/list/scopes(..., access=None)` | 操作或枚举 MemoryUnit 真源；get 保序并省略缺失，list 返回 items 与 count |
 | 能力 | `capabilities()` / `has_kv()` 等 | 返回不可变标准 Store 端口能力 |
-| 端口 | `kv/vector/fulltext/graph/fusion/fs` | 暴露经过统一授权代理的完整 Store 契约；未声明能力时报错 |
+| 端口 | `kv/vector/fulltext/graph/fusion/fs` 及 `*_port(name)` | 暴露经过统一授权代理的完整 Store 契约；命名端口通过 `has_*_port(name)` 判断，未声明能力时报错 |
 | 检索适配 | `preferred_retrieval_pipeline()` / `recall` / `recall_and_get` / `retrieve` | 供 Retriever 选择 recall/get/rank 三步的组合位置 |
 | 横切 | `security` / `health()` | 统一授权入口并聚合声明能力的健康检查 |
 
 `CompositeStorage` 是默认实现。一体化实现可以只实现 Storage 的领域和首选检索入口；只有完整
 提供某个标准 Store 契约时才声明对应 capability。
+
+`StorageProducer.TOP_NAME = "storage"`。统一 Storage 实现以 target 自注册；默认
+`CompositeStorage` target 为 `composite`。具名引用必须复用同一 Storage 实例，使 Kernel、
+Retriever 及后续迁移的 Construction/Control 不重复装配底层 Store。
 
 ### BaseStore（基类，`base.py`）
 
@@ -246,7 +254,8 @@ src/storage/<store>_impl/
     <impl_class_snake>.py   # 具体实现 + 尾部 @XxxProducer.register("name")
 ```
 
-各 Producer：`KvProducer` / `FulltextProducer` / `VectorProducer` / `GraphProducer` / `FusionProducer` / `FsProducer`。
+各 Producer：`StorageProducer` / `KvProducer` / `FulltextProducer` / `VectorProducer` /
+`GraphProducer` / `FusionProducer` / `FsProducer`。
 注册由 `storage.bootstrap.register_backends` 统一触发。
 
 具体 Store target 名与实现文件列表归 `src/storage/AGENTS.md` 维护；本 spec 只固化
@@ -257,7 +266,7 @@ Store 抽象、跨后端不变量与注册机制。
 | 关联 spec | 关系 |
 |-----------|------|
 | S03-control | Engine 通过 KVStore 读写真源；目标生命周期/治理操作按显式 Scope 定位，全局 sweep/offboarding 才跨 Scope 枚举 |
-| S04-retrieval | 检索层各 Recaller 消费本层索引 Store |
+| S04-retrieval | Retriever 经 StorageProducer 获取统一 Storage；CompositeStorage 的兼容 Recaller 在检索装配期绑定 |
 | S05-construction | 构建层通过本层抽象做真源与索引持久化 |
 | S08-config | Store 连接参数与 `*.active` 可由 ConfigSource 晚绑定；切换后端不包含数据迁移 |
 | architecture.md §5 | 可配置真源形态（文档/结构化）与多后端 |

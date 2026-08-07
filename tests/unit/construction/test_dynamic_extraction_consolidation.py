@@ -17,6 +17,7 @@ from common.type_def import (
     memory_key,
 )
 from common.type_def.memory_codec import dumps, loads
+from config.config import Config
 from construction.base import OperatorType
 from construction.evolver import EvolveMode, EvolverProducer
 from construction.evolver_impl.dynamic_evolver import DynamicEvolver
@@ -34,6 +35,10 @@ from construction.prompt_registry import (
 )
 from storage.graph_impl.in_memory_graph_store import InMemoryGraphStore
 from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from storage.storage_impl.composite_storage import CompositeStorage
+
+
+_TEST_KEY_HEX = "00" * 32
 
 
 class _ScriptedLLM(LLM):
@@ -163,8 +168,7 @@ def _make_evolver(
         abstractor=object(),  # EXTRACT 路径不触发 abstractor
         associator=object(),  # EXTRACT 路径不触发 associator
         index_builder=index,
-        kv=kv,
-        graph=InMemoryGraphStore(),
+        storage=CompositeStorage(kv=kv, graph=InMemoryGraphStore()),
         dedup=dedup,
         llm=llm or _ScriptedLLM(),
         layer_annotator=None,
@@ -424,8 +428,7 @@ def test_dynamic_evolver_supersedes_existing_via_llm_judge():
         abstractor=object(),
         associator=object(),
         index_builder=index,
-        kv=kv,
-        graph=InMemoryGraphStore(),
+        storage=CompositeStorage(kv=kv, graph=InMemoryGraphStore()),
         dedup=dedup,
         llm=llm,
         layer_annotator=None,
@@ -495,7 +498,15 @@ def test_dynamic_evolver_procedural_falls_back_to_parent():
 def test_default_engine_writes_through_without_consolidator():
     from api.memory_api_impl import build_kernel
 
-    kernel = build_kernel()
+    kernel = build_kernel(
+        config=Config.from_dict(
+            {
+                "security": {
+                    "default": {"target": "local", "params": {"key_hex": _TEST_KEY_HEX}}
+                }
+            }
+        )
+    )
     scope = Scope(org="org", user="user")
 
     first = kernel.api.write("完全相同的记忆", scope, identity=scope)

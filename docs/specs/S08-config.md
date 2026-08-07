@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `src/config/` |
-| 最近一次修订日期 | 2026-08-05 |
+| 最近一次修订日期 | 2026-08-07 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md` |
 
 ## 范围 / 边界
@@ -30,11 +30,15 @@
 1. **默认可运行**：未注入自定义 `ConfigSource` 时，行为等价于当前 `defaults.py` + 可选用户 YAML 合并后的装配结果。
 2. **A/B 两层分离**：更换 `ConfigSource` 实现类或增减预装配组件属于装配/重建（A）；在已注入来源上 `fetch` 取值属于运行时（B）。
 3. **注册 ≠ 预装配**：Producer 已注册的 target 不等于进程内已有实例；运行时 `*.active` 只能指向装配期已创建的具名实例。
-4. **同实现多套凭证优先晚绑定**：同一 LLM/Embedder/Reranker/Store 实现上切换 model/api_key/base_url/url/hosts/uri，须在调用/取连接路径 `fetch` 对应 key；**不得**把同构多 Key/URL 的首选做成多具名实例 + `*.active`。`*.active` 仅用于异质实现互切或产品明确要求的实例隔离。
-5. **配置不进业务入参**：prompt 全文、模型名、API Key、base_url、Store 连接串、全局能力开关的写入路径不得解释自 `write`/`recall`/`evolve`/`list` 的调用参数；调用侧最多传 prompt **key**（含本轮 extract/consolidate/reflect 策略选用，见 F01 决策 2.2）、`memory_type`/pipeline 等业务选择子。
-6. **key 稳定、值为传输安全字符串**：`fetch` 返回的值以 `str` 为主契约；布尔/数字由消费方解析。缺失 key 的语义由方法约定（返回 `None` 或抛错），实现须文档化且默认源与自定义源一致。
-7. **双侧同配置**：Embedder/Tokenizer 等构建侧与检索侧必须观察到同一 `ConfigSource` 快照语义，避免两侧模型或开关不一致。
-8. **与 PolicyManager 边界**：lifecycle / `scope.require_space` 等已有策略键仍走 `PolicyManager`；六类动态配置（能力开关、prompt、模型凭证、store 端点/`active`）走 `ConfigSource`。
+4. **统一 Storage 具名共享**：`storage.default` 选择统一 Storage 实现；其下层 Store 参数使用
+   对应命名空间的具名引用。Kernel 与 Retriever 必须复用该 Storage 实例。
+   `security.default` 同样必须从根组件显式引用，使用户的安全参数覆盖实际作用于
+   `EncryptedKVStore`，不得静默退回默认密钥文件。
+5. **同实现多套凭证优先晚绑定**：同一 LLM/Embedder/Reranker/Store 实现上切换 model/api_key/base_url/url/hosts/uri，须在调用/取连接路径 `fetch` 对应 key；**不得**把同构多 Key/URL 的首选做成多具名实例 + `*.active`。`*.active` 仅用于异质实现互切或产品明确要求的实例隔离。
+6. **配置不进业务入参**：prompt 全文、模型名、API Key、base_url、Store 连接串、全局能力开关的写入路径不得解释自 `write`/`recall`/`evolve`/`list` 的调用参数；调用侧最多传 prompt **key**（含本轮 extract/consolidate/reflect 策略选用，见 F01 决策 2.2）、`memory_type`/pipeline 等业务选择子。
+7. **key 稳定、值为传输安全字符串**：`fetch` 返回的值以 `str` 为主契约；布尔/数字由消费方解析。缺失 key 的语义由方法约定（返回 `None` 或抛错），实现须文档化且默认源与自定义源一致。
+8. **双侧同配置**：Embedder/Tokenizer 等构建侧与检索侧必须观察到同一 `ConfigSource` 快照语义，避免两侧模型或开关不一致。
+9. **与 PolicyManager 边界**：lifecycle / `scope.require_space` 等已有策略键仍走 `PolicyManager`；六类动态配置（能力开关、prompt、模型凭证、store 端点/`active`）走 `ConfigSource`。
 
 ## 接口契约
 
@@ -138,6 +142,6 @@ ConfigSource
 | S03-control | PolicyManager 与 ConfigSource 分工 |
 | S05-construction | PromptRegistry / Evolver / IndexBuilder 消费 fetch |
 | S04-retrieval | 能力开关与 rerank/embedder 晚绑定 |
-| S06-storage | Store 连接/`active` 晚绑定；不做迁移 |
+| S06-storage | `storage` 选择统一实现，Store 命名空间配置其下层端口；连接/`active` 晚绑定不做迁移 |
 | S07-common | 插件实现与 Factory 注册；配置数据在 `src/config` |
 | architecture.md §13 | 可配置化分层与落点 |

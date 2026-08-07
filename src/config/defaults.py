@@ -59,6 +59,18 @@ def default_config_dict() -> dict[str, Any]:
             "layers_l0": {"target": "memory", "params": {"tokenizer": _D}},
             "layers_l1": {"target": "memory", "params": {"tokenizer": _D}},
         },
+        "storage": {
+            _D: {
+                "target": "composite",
+                "params": {
+                    "kv_store": _D,
+                    "vector_store": _D,
+                    "fulltext_store": _D,
+                    "graph_store": _D,
+                    "preferred_retrieval_pipeline": "recall_get_rank",
+                },
+            }
+        },
         # -- 共享插件 -------------------------------------------------------- #
         "tokenizer": {_D: "whitespace"},
         "embedder": {_D: {"target": "hashing", "params": {"tokenizer": _D}}},
@@ -70,16 +82,16 @@ def default_config_dict() -> dict[str, Any]:
         "audit": {_D: {"target": "sqlite", "params": {"db_path": ":memory:"}}},
         # -- 检索 ------------------------------------------------------------ #
         "recaller": {
-            "keyword": {"target": "keyword", "params": {"fulltext_store": _D}},
+            "keyword": {"target": "keyword", "params": {"storage": _D}},
             "keyword_l0": {"target": "keyword_l0"},
             "keyword_l1": {"target": "keyword_l1"},
             "vector": {
                 "target": "vector",
-                "params": {"vector_store": _D, "min_similarity": 0.0},
+                "params": {"storage": _D, "min_similarity": 0.0},
             },
             "vector_l0": {"target": "vector_l0"},
             "vector_l1": {"target": "vector_l1"},
-            "graph": {"target": "graph", "params": {"graph_store": _D}},
+            "graph": {"target": "graph", "params": {"storage": _D}},
         },
         "query_parser": {
             _D: {
@@ -113,7 +125,7 @@ def default_config_dict() -> dict[str, Any]:
                     "query_parser": _D,
                     "fuser": _D,
                     "discloser": _D,
-                    "kv_store": _D,
+                    "storage": _D,
                     # 召回超采样 + 精排预算 + 相关性阈值（本算子私有调参，非跨切面）
                     "over_fetch_factor": 4,
                     "over_fetch_floor": 60,
@@ -145,10 +157,7 @@ def default_config_dict() -> dict[str, Any]:
             _D: {
                 "target": "hybrid",
                 "params": {
-                    "fulltext_store": _D,
-                    "vector_store": _D,
-                    # L0/L1 分表（构建侧经 build_named 取 layers_l0/l1 具名实例，非 params 字段）
-                    "kv_store": _D,
+                    "storage": _D,
                     "chunker": _D,
                     "embedder": _D,
                 },
@@ -157,7 +166,7 @@ def default_config_dict() -> dict[str, Any]:
         "dedup": {
             _D: {
                 "target": "vector",
-                "params": {"vector_store": _D, "embedder": _D, "kv_store": _D},
+                "params": {"storage": _D, "embedder": _D},
             }
         },
         "evolver": {
@@ -168,8 +177,7 @@ def default_config_dict() -> dict[str, Any]:
                     "abstractor": _D,
                     "associator": _D,
                     "index_builder": _D,
-                    "kv_store": _D,
-                    "graph_store": _D,
+                    "storage": _D,
                     "dedup": _D,
                     "llm": _D,
                 },
@@ -183,8 +191,7 @@ def default_config_dict() -> dict[str, Any]:
                     "abstractor": _D,
                     "associator": _D,
                     "index_builder": _D,
-                    "kv_store": _D,
-                    "graph_store": _D,
+                    "storage": _D,
                     "dedup": _D,
                     "llm": _D,
                 },
@@ -200,7 +207,7 @@ def default_config_dict() -> dict[str, Any]:
                     "ingestor": _D,
                     "index_builder": _D,
                     "retriever": _D,
-                    "kv_store": _D,
+                    "storage": _D,
                     "scheduler": _D,
                     "evolver": _D,
                     "lifecycle": _D,
@@ -214,9 +221,8 @@ def default_config_dict() -> dict[str, Any]:
             _D: {
                 "target": "default",
                 "params": {
-                    # 依赖引用——与 engine.default.params 同名指向同一具名实例缓存，
-                    # 保证 Job 内部用的 kv/evolver 与 Engine 持有的同一个。
-                    "kv_store": _D,
+                    # 与 engine.default 共享统一 Storage 具名实例。
+                    "storage": _D,
                     "evolver": _D,
                     "lifecycle": _D,
                     "index_builder": _D,
@@ -230,11 +236,11 @@ def default_config_dict() -> dict[str, Any]:
         },
         # scheduler 只接收 Job（Job 自带数据源），无 params。
         "scheduler": {_D: {"target": "in_process", "params": {}}},
-        "lifecycle": {_D: {"target": "kv", "params": {"kv_store": _D, "policy": _D}}},
+        "lifecycle": {_D: {"target": "kv", "params": {"storage": _D, "policy": _D}}},
         "policy": {_D: "dict"},
-        "governor": {_D: {"target": "in_memory", "params": {"audit": _D, "kv_store": _D}}},
+        "governor": {_D: {"target": "in_memory", "params": {"audit": _D, "storage": _D}}},
         "permission": {_D: {"target": "sqlite", "params": {"db_path": ":memory:"}}},
-        "space": {_D: {"target": "kv", "params": {"kv_store": _D}}},
+        "space": {_D: {"target": "kv", "params": {"storage": _D}}},
         # 可插拔配置来源：默认装配快照；产品可覆盖为 dict/overlay/自研 target
         "config_source": {_D: "yaml_defaults"},
     }
@@ -249,6 +255,8 @@ ROOT_PARAMS: dict[str, str] = {
     "governor": _D,
     "audit": _D,
     "kv_store": _D,
+    "security": _D,
+    "storage": _D,
     "space": _D,
     "config_source": _D,
 }

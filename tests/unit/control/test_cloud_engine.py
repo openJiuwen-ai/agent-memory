@@ -9,7 +9,6 @@ from common.errors import ValidationError
 from common.type_def import (
     FilterClause,
     FilterOp,
-    LifecycleState,
     MemoryTier,
     MemoryUnit,
     Modality,
@@ -32,13 +31,20 @@ from control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
 from control.lifecycle import LifecycleManager
 from control.pipeline import MemoryPipeline, PipelineBinding
 from control.scheduler_impl.in_process_scheduler import InProcessScheduler
-from control.types import BatchWriteItem, Channel, DeleteSelector, JobStatus, MemoryPatch, UpdateMode
+from control.types import (
+    BatchWriteItem,
+    Channel,
+    DeleteSelector,
+    MemoryPatch,
+    UpdateMode,
+)
 from ingest.base import IngestOperatorType
 from ingest.ingestor import Ingestor
 from retrieval.base import RetrievalOperatorType
 from retrieval.retriever import Retriever
 from retrieval.types import RetrievalQuery, RetrievalResult, RetrievedItem
 from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
 
@@ -215,8 +221,8 @@ def _build_test_job_factory(
     与 InMemoryEngine 测试同模式——Spec 装配期固化依赖与业务参数，
     运行时 get_job 补 scope + 运行时参数生成完整 Job 实例。
     """
-    from common.llm.base import LLM
     from common.base import PluginType
+    from common.llm.base import LLM
     from common.type_def.chat import ChatMessage
 
     class _EchoLLM(LLM):
@@ -233,7 +239,7 @@ def _build_test_job_factory(
     factory.register(
         JobType.MIDDLE_TO_LONG,
         MiddleToLongJobSpec(
-            kv=kv,
+            storage=CompositeStorage(kv=kv),
             evolver=evolver,
             lifecycle=lifecycle,
             index=index,
@@ -245,7 +251,7 @@ def _build_test_job_factory(
     )
     factory.register(
         JobType.EVOLVE,
-        EvolveJobSpec(kv=kv, evolver=evolver).with_scope,
+        EvolveJobSpec(storage=CompositeStorage(kv=kv), evolver=evolver).with_scope,
     )
     return factory
 
@@ -300,7 +306,7 @@ def _engine():
             ingestor=_RecordingIngestor(),
             index_builder=chat_index,
             retriever=chat_retriever,
-            kv=kv,
+            storage=CompositeStorage(kv=kv),
             scheduler=InProcessScheduler(),
             evolver=chat_evolver,
             lifecycle=_NoopLifecycle(),
@@ -565,7 +571,7 @@ def _engine_with_job_factory(
         ingestor=_RecordingIngestor(),
         index_builder=chat_index,
         retriever=_RecordingRetriever("chat"),
-        kv=kv,
+        storage=CompositeStorage(kv=kv),
         scheduler=scheduler,
         evolver=chat_evolver,
         lifecycle=lifecycle,

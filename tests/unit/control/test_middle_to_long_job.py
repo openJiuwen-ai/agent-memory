@@ -16,27 +16,28 @@ from datetime import datetime, timezone
 
 import pytest
 
+from common.base import PluginType
+from common.llm.base import LLM
 from common.type_def import (
     LifecycleState,
     MemoryTier,
     MemoryUnit,
-    Segment,
     Scope,
+    Segment,
     Temporal,
     memory_key,
 )
+from common.type_def.chat import ChatMessage
 from common.type_def.memory_codec import dumps
-from construction import EvolveMode, EvolveResult, Evolver
+from construction import EvolveMode, Evolver, EvolveResult
 from construction.base import OperatorType
 from construction.index_builder import IndexBuilder
-from common.base import PluginType
-from common.llm.base import LLM
-from common.type_def.chat import ChatMessage
 from control.base import ControlOperatorType
 from control.jobs_impl.middle_to_long_job import MiddleToLongJob
 from control.lifecycle import LifecycleManager
 from control.types import JobStatus
 from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
 
@@ -192,7 +193,7 @@ def _build_job(
     llm = llm or _ScriptedLLM([])
     job = MiddleToLongJob(
         scope=scope,
-        kv=kv,
+        storage=CompositeStorage(kv=kv),
         evolver=evolver,
         lifecycle=lifecycle,
         index=index,

@@ -12,15 +12,16 @@ VectorRecord.id 采用 ``{unit.id}-{chunk.id}`` 拼接格式，在记录所属 S
 from __future__ import annotations
 
 import json
+
 from common.chunker.base import Chunker, ChunkerProducer
 from common.embedder.base import Embedder, EmbedderProducer
 from common.log import get_logger
 from common.type_def import T_INVALID_OPEN, MemoryUnit, Scope
 from construction.base import OperatorType
 from construction.index_builder import IndexBuilder, IndexBuilderProducer
-from storage.kv import KvProducer, KVStore
+from storage.storage import Storage, StorageProducer
 from storage.types import VectorRecord
-from storage.vector import VectorProducer, VectorStore
+from storage.vector import VectorStore
 
 logger = get_logger(__name__)
 
@@ -84,20 +85,19 @@ class VectorIndexBuilder(IndexBuilder):
 
     def __init__(
         self,
-        vector_store: VectorStore,
-        kv_store: KVStore,
+        storage: Storage,
         chunker: Chunker,
         embedder: Embedder,
-        vector_l0: VectorStore | None = None,
-        vector_l1: VectorStore | None = None,
+        *,
+        layers_enabled: bool = True,
     ) -> None:
-        self._vector_store = vector_store
-        self._kv_store = kv_store
+        self._vector_store = storage.vector if storage.has_vector() else None
+        self._kv_store = storage.kv if storage.has_kv() else None
         self._chunker = chunker
         self._embedder = embedder
         # L0/L1 分层 store：None 表示不构建该层索引（向后兼容 + 配置降级）。
-        self._vector_l0 = vector_l0
-        self._vector_l1 = vector_l1
+        self._vector_l0 = _vector_port(storage, "layers_l0", layers_enabled)
+        self._vector_l1 = _vector_port(storage, "layers_l1", layers_enabled)
 
     @property
     def vector_l0(self) -> VectorStore | None:
@@ -127,6 +127,9 @@ class VectorIndexBuilder(IndexBuilder):
     def build(self, units: list[MemoryUnit]) -> None:
         """为一批记忆单元构建向量索引。"""
         logger.info("VectorIndexBuilder: building index for %d units", len(units))
+        if self._vector_store is None:
+            self._build_layers(units)
+            return
         scope_groups: dict[_ScopeKey, list[VectorRecord]] = {}
         chunk_tracking: list[tuple[Scope, str, list[str]]] = []
 
@@ -201,6 +204,8 @@ class VectorIndexBuilder(IndexBuilder):
                     )
 
         # chunk_id 跟踪写入 KVStore
+        if self._kv_store is None:
+            return
         for scope, unit_id, chunk_ids in chunk_tracking:
             kv_key = self._chunk_tracking_key(unit_id)
             try:
@@ -222,6 +227,11 @@ class VectorIndexBuilder(IndexBuilder):
         必须先删旧 record（store 非空才删），再由 build 按新 layers 决定是否重建——否则
         旧 L0/L1 残留。
         """
+        if self._vector_store is None or self._kv_store is None:
+            for unit in units:
+                self._delete_layer_records(unit.id, unit.scope)
+            self._build_layers(units)
+            return
         for unit in units:
             kv_key = self._chunk_tracking_key(unit.id)
             try:
@@ -259,6 +269,9 @@ class VectorIndexBuilder(IndexBuilder):
 
     def _remove_by_scope(self, unit_id: str, scope: Scope) -> None:
         """删除单个 unit 的向量索引条目 + chunk tracking + L0/L1 record。"""
+        if self._vector_store is None or self._kv_store is None:
+            self._delete_layer_records(unit_id, scope)
+            return
         kv_key = self._chunk_tracking_key(unit_id)
         try:
             raw = self._kv_store.get(scope, kv_key)
@@ -374,32 +387,15 @@ class VectorIndexBuilder(IndexBuilder):
 
 @IndexBuilderProducer.register("vector")
 def _build(config):
-    # 向量/真源 Store 与召回侧共享同一实例；embedder/chunker 与查询、构建侧共享。
-    # L0/L1 分层索引：layers_index_enabled（默认 true）开时，取 vector_store 的
-    # layers_l0/l1 具名实例（指向不同 collection = 分表）注入；未配置则该层传 None，
-    # builder 跳过该层（向后兼容 + 配置降级）。与 HybridIndexBuilder._build 一致。
-    layers_enabled = config.get("layers_index_enabled", True)
-
-    def _opt_dep(producer_cls, name):
-        """取具名实例；未配置则返回 None（不报错，builder 跳过该层）。
-
-        直接走 ``build_named``（从 ctx.namespaces 按名取具名实例），不走 ``dep``——
-        ``dep`` 从当前组件 params 取字段，而 layers_l0 是 store 命名空间下的具名实例名，
-        不在 index_builder 的 params 里。
-        """
-        if not layers_enabled:
-            return None
-        ctx = config.ctx
-        ns = ctx.namespaces.get(producer_cls.TOP_NAME, {})
-        if name not in ns:
-            return None  # 该层具名实例未声明，跳过
-        return producer_cls.build_named(name, ctx)
-
     return VectorIndexBuilder(
-        vector_store=VectorProducer.dep(config, default="memory"),
-        kv_store=KvProducer.dep(config, default="memory"),
+        storage=StorageProducer.resolve(config),
         chunker=ChunkerProducer.dep(config, default="fixed_window"),
         embedder=EmbedderProducer.dep(config, default="hashing"),
-        vector_l0=_opt_dep(VectorProducer, "layers_l0"),
-        vector_l1=_opt_dep(VectorProducer, "layers_l1"),
+        layers_enabled=config.get("layers_index_enabled", True),
     )
+
+
+def _vector_port(storage: Storage, name: str, enabled: bool) -> VectorStore | None:
+    if not enabled or not storage.has_vector_port(name):
+        return None
+    return storage.vector_port(name)

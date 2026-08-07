@@ -17,7 +17,6 @@ from datetime import datetime, timezone
 from common.errors import AgentMemoryError, NotFoundError, ValidationError
 from common.log import get_logger
 from common.type_def import (
-    MEMORY_KEY_PREFIX,
     FilterExpr,
     LifecycleState,
     MemoryTier,
@@ -26,9 +25,7 @@ from common.type_def import (
     RawPayload,
     Scope,
     Segment,
-    memory_key,
 )
-from common.type_def.memory_codec import dumps, loads
 from construction import EvolveMode
 from construction.classifier import Classifier, ClassifierProducer
 from construction.evolver import Evolver, EvolverProducer
@@ -55,7 +52,7 @@ from control.types import (
 from ingest.ingestor import Ingestor, IngestorProducer
 from retrieval.retriever import Retriever, RetrieverProducer
 from retrieval.types import RetrievalQuery, RetrievalResult
-from storage.kv import KvProducer, KVStore
+from storage.storage import Storage, StorageProducer
 
 logger = get_logger(__name__)
 
@@ -201,7 +198,7 @@ class CloudEngine(MemoryEngine):
         ingestor: Ingestor,
         index_builder: IndexBuilder,
         retriever: Retriever,
-        kv: KVStore,
+        storage: Storage,
         scheduler: Scheduler,
         evolver: Evolver,
         lifecycle: LifecycleManager,
@@ -217,7 +214,7 @@ class CloudEngine(MemoryEngine):
         self._ingestor = ingestor
         self._index = index_builder
         self._retriever = retriever
-        self._kv = kv
+        self._storage = storage
         self._scheduler = scheduler
         self._evolver = evolver
         self._lifecycle = lifecycle
@@ -434,13 +431,11 @@ class CloudEngine(MemoryEngine):
 
     def _write_middle_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
         """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
-        for unit in units:
-            self._kv.insert(scope, memory_key(unit.id), dumps(unit))
+        self._storage.add(scope, units)
 
     def _write_default_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
         """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
-        for unit in units:
-            self._kv.insert(scope, memory_key(unit.id), dumps(unit))
+        self._storage.add(scope, units)
 
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         routed_query = self._normalized_query(query)
@@ -459,7 +454,7 @@ class CloudEngine(MemoryEngine):
         filters: FilterExpr | None = None,
     ) -> MemoryListResult:
         return list_page(
-            self._kv,
+            self._storage,
             scope,
             offset=offset,
             limit=limit,
@@ -497,7 +492,7 @@ class CloudEngine(MemoryEngine):
     async def permission_contexts_for_delete(
         self, selector: DeleteSelector
     ) -> list[PermissionContext]:
-        scopes = [selector.scope] if selector.scope is not None else self._kv.scopes()
+        scopes = [selector.scope] if selector.scope is not None else self._storage.scopes()
         if not scopes:
             scopes = [Scope()]
         contexts: list[PermissionContext] = []
@@ -536,7 +531,7 @@ class CloudEngine(MemoryEngine):
 
         if patch.mode == UpdateMode.OVERWRITE:
             new.id = old.id
-            self._kv.update(scope, memory_key(new.id), dumps(new))
+            self._storage.update(scope, [new])
             old_index = self._index_for_unit(old)
             if old_index is new_index:
                 new_index.update([new])
@@ -556,7 +551,7 @@ class CloudEngine(MemoryEngine):
         new.lifecycle = LifecycleState.ACTIVE
         if patch.t_valid is None:
             new.temporal.t_valid = _now()
-        self._kv.insert(scope, memory_key(new.id), dumps(new))
+        self._storage.add(scope, [new])
         old = self._lifecycle.supersede(scope, old.id, new.temporal.t_valid)
         self._update_indexes([old])
         new_index.build([new])
@@ -576,18 +571,15 @@ class CloudEngine(MemoryEngine):
         if selector_is_empty:
             raise ValidationError("DeleteSelector requires unit_ids, tags, or before")
 
-        scopes = [selector.scope] if selector.scope is not None else self._kv.scopes()
+        scopes = [selector.scope] if selector.scope is not None else self._storage.scopes()
         if not scopes:
             scopes = [Scope()]
 
         scanned: list[tuple[Scope, str, MemoryUnit]] = []
         for scope in scopes:
-            for key, raw in self._kv.scan(scope, MEMORY_KEY_PREFIX):
-                unit = loads(raw)
-                if unit is None:
-                    continue
+            for unit in self._list_units(scope):
                 self._ensure_unit_scope(unit, scope)
-                scanned.append((scope, key, unit))
+                scanned.append((scope, unit.id, unit))
 
         matches = [
             (scope, key, unit)
@@ -604,18 +596,18 @@ class CloudEngine(MemoryEngine):
                 {_scoped_unit_id(scope, unit.id) for scope, _, unit in matches},
             )
             purged_units: list[MemoryUnit] = []
-            for scope, key, unit in scanned:
+            for scope, _, unit in scanned:
                 if _scoped_unit_id(scope, unit.id) in purge_ids:
-                    self._kv.delete(scope, key)
+                    self._storage.delete(scope, [unit.id])
                     purged_units.append(unit)
             self._remove_indexes(purged_units)
             return [unit.id for unit in purged_units]
 
         if selector.mode == DeleteMode.DOWNWEIGHT:
             update_units: list[MemoryUnit] = []
-            for scope, key, unit in matches:
+            for scope, _, unit in matches:
                 _downweight_importance(unit)
-                self._kv.update(scope, key, dumps(unit))
+                self._storage.update(scope, [unit])
                 update_units.append(unit)
             self._update_indexes(update_units)
             return affected
@@ -644,7 +636,7 @@ class CloudEngine(MemoryEngine):
         purged: list[str] = []
         for scope in [
             candidate
-            for candidate in self._kv.scopes()
+            for candidate in self._storage.scopes()
             if candidate.org == org and candidate.space == space
         ]:
             units = self._list_units(scope)
@@ -770,24 +762,17 @@ class CloudEngine(MemoryEngine):
             group.builder.update(group.units)
 
     def _load(self, scope: Scope, unit_id: str) -> MemoryUnit:
-        try:
-            raw = self._kv.get(scope, memory_key(unit_id))
-        except NotFoundError:
-            raise NotFoundError("memory_unit", unit_id) from None
-        unit = loads(raw)
-        if unit is None:
+        units = self._storage.get(scope, [unit_id])
+        if not units:
             raise NotFoundError("memory_unit", unit_id)
+        unit = units[0]
         self._ensure_unit_scope(unit, scope)
         return unit
 
     def _list_units(self, scope: Scope) -> list[MemoryUnit]:
-        units: list[MemoryUnit] = []
-        for _, raw in self._kv.scan(scope, MEMORY_KEY_PREFIX):
-            unit = loads(raw)
-            if unit is None:
-                continue
+        units = self._storage.list(scope, limit=1_000_000).items
+        for unit in units:
             self._ensure_unit_scope(unit, scope)
-            units.append(unit)
         return units
 
     def _version_family(self, scope: Scope, unit_id: str) -> list[MemoryUnit]:
@@ -855,7 +840,7 @@ def _build(config):
         IngestorProducer.dep(config, default="simple"),
         IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
         RetrieverProducer.dep(config, default="pipeline"),
-        KvProducer.dep(config, default="memory"),
+        StorageProducer.resolve(config),
         SchedulerProducer.dep(config, default="in_process"),
         EvolverProducer.dep(config, default="orchestrating"),
         LifecycleProducer.dep(config, default="kv"),

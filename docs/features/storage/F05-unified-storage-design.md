@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-08-06 |
-| 影响范围 | 规划中的 `src/storage` 统一门面，以及 `src/construction`、`src/retrieval`、`src/control` 对存储层的依赖方式 |
-| 测试基线 | `tests/unit/storage/test_composite_storage.py`；storage/retrieval 单测通过 |
+| 影响范围 | `src/storage` 统一门面，以及 `src/construction`、`src/retrieval`、`src/control` 对存储层的依赖方式 |
+| 测试基线 | Storage、Construction、Retrieval 与 Control 的目标单测通过；默认加密路径需要可写的本地密钥目录 |
 | Refs | —（如有 issue 补 `Refs: #<n>`） |
 
 > 本文档记录统一 Storage 的设计及首版实现。当前已落地统一存储门面、
@@ -154,6 +154,10 @@ if storage.has_vector():
 统一抛出 `UnsupportedStorageCapabilityError`，不返回 `None`，使已完成能力判断的调用代码
 保持确定的非空类型。
 
+分层索引使用同一能力的命名端口，例如 `vector_port("layers_l0")` 与
+`fulltext_port("layers_l1")`。`has_vector_port(name)` 等方法与端口成对使用；默认端口名为
+`default`。命名端口是同一 Storage 的装配细节，不要求上层再从 Store Producer 解析具名实例。
+
 该集合不加入 `RECALL`、`RECALL_AND_GET`、`RETRIEVE`。检索路径不是底层端口 capability，
 而由 Storage 单独提供的全局首选 pipeline 表达；具体选择规则归 Retrieval 特性文档。
 
@@ -273,6 +277,16 @@ CompositeStorage 长期持有的反向依赖。
 上层可以知道自己需要“向量能力”或“通用 KV 能力”，但不能知道这些能力由哪个具体后端、
 连接参数或共享实例提供。
 
+### 十、统一装配入口
+
+`StorageProducer` 使用 `storage` 顶层命名空间。默认 `storage.default` 选择 `composite`，
+并通过具名引用复用已经装配的 KV、Vector、Fulltext、Graph 等 Store。`build_kernel` 先完成
+真源 KV 的安全包装，再构建统一 Storage，因此 `CompositeStorage.kv` 与 Engine 使用同一真源。
+
+Retriever 通过 `StorageProducer` 获取该具名实例。一体化平台只需注册新的 Storage target 并
+把 `storage.default` 指向它，不需要修改 Retriever 的实现选择。现有 Recaller 仍是默认组合
+实现的兼容适配器，由 Retriever 在装配阶段绑定；该绑定不让 storage 包导入 retrieval。
+
 ---
 
 ## 拒绝的方案
@@ -349,8 +363,11 @@ Storage 同时暴露领域接口和细粒度 Store 端口，依赖调用纪律�
 
 - Retrieval 的三条 pipeline、首选路径和返回结构见
   [F05-storage-retrieval-pipelines.md](../retrieval/F05-storage-retrieval-pipelines.md)。
-- 首版 `CompositeStorage` 已接入 Retriever；Construction 与 Control 仍有直接依赖各 Store
-  的路径，后续按模块迁移到同一个 Storage 装配实例。
+- Construction、Retrieval、Control 已统一通过 `StorageProducer.resolve()` 获得同一个
+  `storage.default`。MemoryUnit 真源操作优先使用 Storage 领域接口；Space 注册表、原始消息
+  缓冲和按原始 key 的清理仍经 `storage.kv` 端口完成。
+- `StorageProducer`、`composite` target、默认 `storage.default` 与 Kernel 句柄已经落地；
+  Kernel、Construction、Retrieval 与 Control 共享同一具名 Storage 实例。
 - 首版只提供 `CompositeStorage`；不暴露底层端口的一体化 Storage 适配器尚未实现。
 - `recall_and_get` 首版以 `recall + get` 组合实现，底层原生回带 MemoryUnit 的通道适配待补。
 - Memory API `write -> add`、API `recall -> search`、Store `search -> recall` 的改名由第三阶段设计确定。

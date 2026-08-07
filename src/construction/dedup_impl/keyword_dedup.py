@@ -10,14 +10,11 @@ unit_id，无需解析 chunk 复合 id。``InMemoryFulltextStore.search`` 不消
 
 from __future__ import annotations
 
-from typing import List, Tuple
-
 from common.log import get_logger
 from common.type_def import LifecycleState, MemoryUnit
 from construction.base import OperatorType
 from construction.dedup import Dedup, DedupProducer, same_scope
-from storage.fulltext import FulltextProducer, FulltextStore
-from storage.kv import KvProducer, KVStore
+from storage.storage import Storage, StorageProducer
 from storage.types import TextQuery
 
 logger = get_logger(__name__)
@@ -28,8 +25,7 @@ class KeywordDedup(Dedup):
 
     def __init__(
         self,
-        fulltext: FulltextStore,
-        kv: KVStore,
+        storage: Storage,
         *,
         min_similarity: float = 0.5,
         top_k: int = 5,
@@ -37,13 +33,13 @@ class KeywordDedup(Dedup):
         scope_filter: bool = True,
     ) -> None:
         super().__init__(
-            kv,
+            storage,
             min_similarity=min_similarity,
             top_k=top_k,
             tier_filter=tier_filter,
             scope_filter=scope_filter,
         )
-        self._fulltext = fulltext
+        self._fulltext = storage.fulltext
 
     def operator_type(self) -> OperatorType:
         return OperatorType.EVOLVER
@@ -51,7 +47,7 @@ class KeywordDedup(Dedup):
     def health(self) -> None:
         return None
 
-    def recall(self, candidate: MemoryUnit) -> List[Tuple[MemoryUnit, float]]:
+    def recall(self, candidate: MemoryUnit) -> list[tuple[MemoryUnit, float]]:
         # 召回已有相似记忆：用候选 content 做关键词检索
         query = TextQuery(text=candidate.content, top_k=self._top_k)
         scope = candidate.scope
@@ -70,7 +66,7 @@ class KeywordDedup(Dedup):
             return []
 
         # 加载 unit → dict 聚合取 MaxP（O(1) 查找/更新，替代旧 O(n²) 列表扫描）
-        aggregated: dict[str, Tuple[MemoryUnit, float]] = {}
+        aggregated: dict[str, tuple[MemoryUnit, float]] = {}
         for scored_id in hits:
             if scored_id.score < self._min_similarity:
                 continue
@@ -102,8 +98,7 @@ class KeywordDedup(Dedup):
 @DedupProducer.register("keyword")
 def _build(config):
     return KeywordDedup(
-        fulltext=FulltextProducer.dep(config, default="memory"),
-        kv=KvProducer.dep(config, default="memory"),
+        storage=StorageProducer.resolve(config),
         min_similarity=config.get("dedup_min_similarity", 0.5),
         top_k=config.get("dedup_top_k", 5),
         tier_filter=config.get("dedup_tier_filter", False),

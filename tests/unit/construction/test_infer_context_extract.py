@@ -44,6 +44,7 @@ from construction.evolver_impl.orchestrating_evolver import OrchestratingEvolver
 from construction.extractor import Extractor
 from storage.base import StoreType
 from storage.kv import KVStore
+from storage.storage_impl.composite_storage import CompositeStorage
 from storage.types import ScoredID, VectorRecord
 from storage.vector import VectorStore
 
@@ -292,14 +293,14 @@ def _index_related(unit: MemoryUnit, kv: KVStore, vector_store: VectorStore, emb
 
 def _make_evolver(kv, vector_store, embedder, llm, extractor) -> OrchestratingEvolver:
     # tier_filter=False：让 EPISODIC 本轮 unit 能召回 SEMANTIC 相关记忆（跨 tier）
-    dedup = VectorDedup(vector_store=vector_store, embedder=embedder, kv=kv, tier_filter=False)
+    storage = CompositeStorage(kv=kv, vector=vector_store)
+    dedup = VectorDedup(storage=storage, embedder=embedder, tier_filter=False)
     return OrchestratingEvolver(
         extractor=extractor,
         abstractor=None,  # EXTRACT 不用
         associator=None,
         index_builder=_NoopIndexBuilder(),
-        kv=kv,
-        graph=None,
+        storage=storage,
         dedup=dedup,
         llm=llm,
     )
@@ -483,13 +484,12 @@ class TestEngineInferPersist:
         from ingest.ingestor_impl.simple_ingestor import SimpleIngestor
 
         stores = {"kv": _MemoryKVStore(), "vector": _MemoryVectorStore()}
-        dedup = VectorDedup(
-            vector_store=stores["vector"], embedder=_HashEmbedder(), kv=stores["kv"], tier_filter=False
-        )
+        storage = CompositeStorage(kv=stores["kv"], vector=stores["vector"])
+        dedup = VectorDedup(storage=storage, embedder=_HashEmbedder(), tier_filter=False)
         extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=50, overlap_chars=10))
         evolver = OrchestratingEvolver(
             extractor=extractor, abstractor=None, associator=None,
-            index_builder=_NoopIndexBuilder(), kv=stores["kv"], graph=None,
+            index_builder=_NoopIndexBuilder(), storage=storage,
             dedup=dedup, llm=_MockLLM(),
         )
 
@@ -510,7 +510,7 @@ class TestEngineInferPersist:
             ingestor=SimpleIngestor(PassthroughNormalizer()),
             index_builder=_NoopIndex(),
             retriever=None,
-            kv=stores["kv"],
+            storage=CompositeStorage(kv=stores["kv"], vector=stores["vector"]),
             scheduler=None,
             evolver=evolver,
             lifecycle=None,
@@ -596,14 +596,13 @@ class TestProceduralExtract:
         from common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
         from construction.extractor_impl.keyword_extractor import KeywordExtractor
 
-        dedup = VectorDedup(
-            vector_store=stores["vector"], embedder=_HashEmbedder(), kv=stores["kv"], tier_filter=False
-        )
+        storage = CompositeStorage(kv=stores["kv"], vector=stores["vector"])
+        dedup = VectorDedup(storage=storage, embedder=_HashEmbedder(), tier_filter=False)
         extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=50, overlap_chars=10))
         # keyword_extractor 构造需 chunker + normalizer？看签名——只 chunker
         evolver = OrchestratingEvolver(
             extractor=extractor, abstractor=None, associator=None,
-            index_builder=_NoopIndexBuilder(), kv=stores["kv"], graph=None,
+            index_builder=_NoopIndexBuilder(), storage=storage,
             dedup=dedup, llm=_MockLLM(),
         )
 
@@ -624,7 +623,7 @@ class TestProceduralExtract:
             ingestor=SimpleIngestor(PassthroughNormalizer()),
             index_builder=_NoopIndex(),
             retriever=None,
-            kv=stores["kv"],
+            storage=CompositeStorage(kv=stores["kv"], vector=stores["vector"]),
             scheduler=None,
             evolver=evolver,
             lifecycle=None,
@@ -659,13 +658,12 @@ class TestProceduralExtract:
         from ingest.ingestor_impl.simple_ingestor import SimpleIngestor
 
         stores = {"kv": _MemoryKVStore(), "vector": _MemoryVectorStore()}
-        dedup = VectorDedup(
-            vector_store=stores["vector"], embedder=_HashEmbedder(), kv=stores["kv"], tier_filter=False
-        )
+        storage = CompositeStorage(kv=stores["kv"], vector=stores["vector"])
+        dedup = VectorDedup(storage=storage, embedder=_HashEmbedder(), tier_filter=False)
         extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=50, overlap_chars=10))
         evolver = OrchestratingEvolver(
             extractor=extractor, abstractor=None, associator=None,
-            index_builder=_NoopIndexBuilder(), kv=stores["kv"], graph=None,
+            index_builder=_NoopIndexBuilder(), storage=storage,
             dedup=dedup, llm=_MockLLM(),
         )
 
@@ -686,7 +684,7 @@ class TestProceduralExtract:
             ingestor=SimpleIngestor(PassthroughNormalizer()),
             index_builder=_NoopIndex(),
             retriever=None,
-            kv=stores["kv"],
+            storage=CompositeStorage(kv=stores["kv"], vector=stores["vector"]),
             scheduler=None,
             evolver=evolver,
             lifecycle=None,

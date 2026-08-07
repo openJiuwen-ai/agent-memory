@@ -48,23 +48,26 @@ from retrieval.bootstrap import register_operators
 from storage.bootstrap import register_backends
 from storage.kv import KvProducer, KVStore
 from storage.kv_impl.encrypted_kv_store import EncryptedKVStore
+from storage.storage import Storage, StorageProducer
 
 from .local_memory_api import LocalMemoryAPI
 
 
 @dataclass
 class Kernel:
-    """一次装配的产物：对外 ``MemoryAPI`` + 真源 kv（默认已 Encrypted 包装）+ ConfigSource。
+    """一次装配的产物：对外 API、统一 Storage、兼容 KV 句柄与配置来源。
 
     Attributes:
         api: 形态无关的 MemoryAPI 入口
         kv: 真源 KV（``build_kernel`` 默认强制为 EncryptedKVStore）
+        storage: 上层统一使用的 Storage（默认 CompositeStorage）
         space: SpaceManager（若装配）
         config_source: 运行时晚绑定配置来源（默认 YamlDefaultsConfigSource）
     """
 
     api: LocalMemoryAPI
     kv: KVStore
+    storage: Storage
     space: SpaceManager | None = None
     config_source: ConfigSource | None = None
 
@@ -128,6 +131,12 @@ def build_kernel(
         raw_kv = EncryptedKVStore(raw=raw_kv, security=security)
         KvProducer.put(KV_DEFAULT_NAME, raw_kv)
 
+    storage = StorageProducer.dep(root, default="composite")
+    if not isinstance(storage, Storage):
+        raise ValidationError(
+            f"storage namespace assembled a non-Storage value: {type(storage).__name__}"
+        )
+
     api = LocalMemoryAPI(
         engine=EngineProducer.dep(root, default="in_memory"),
         permission=PermissionProducer.dep(root, default="sqlite"),
@@ -140,6 +149,7 @@ def build_kernel(
     return Kernel(
         api=api,
         kv=KvProducer.dep(root, default="memory"),
+        storage=storage,
         space=api.space_manager,
         config_source=config_source,
     )

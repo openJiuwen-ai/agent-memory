@@ -12,7 +12,7 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
 
 | 文件 | 职责 |
 |---|---|
-| `storage.py` | Storage 统一契约：MemoryUnit 领域操作、能力发现、底层端口与检索适配入口 |
+| `storage.py` | Storage 统一契约与 StorageProducer：MemoryUnit 领域操作、能力发现、底层端口与检索适配入口 |
 | `security.py` | StorageSecurity 通用授权与 StoreSecurity 数据保护能力标识 |
 | `base.py` | BaseStore 基类：所有存储后端的自描述契约（store_type / health） |
 | `types.py` | 存储层数据类型：KVMemoryListResult/VectorRecord/Document/Node/Edge/FusionRecord/FileStat 等 |
@@ -30,8 +30,8 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
 | `fulltext_impl/` | FulltextStore 实现目录（memory） |
 | `fusion_impl/` | FusionStore 实现目录（memory） |
 | `fs_impl/` | FSStore 实现目录（local） |
-| `storage_impl/` | Storage 实现目录；当前默认实现为 CompositeStorage |
-| `bootstrap.py` | 统一触发所有存储后端注册 |
+| `storage_impl/` | Storage 实现目录；`CompositeStorage` 以 `composite` target 自注册 |
+| `bootstrap.py` | 统一触发六类 Store 后端与 Storage 实现注册 |
 
 ## 统一 CRUD 动词
 
@@ -130,3 +130,9 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
    `common._support`，与出站客户端共用；storage 侧只保留缺证书即报错这条自有策略。
 10. `CompositeStorage` 的默认首选检索路径是 `RECALL_GET_RANK`；首选路径是实例级稳定值，
     不随请求或健康状态切换，也不加入 Store capability 集合。
+11. `StorageProducer.TOP_NAME` 固定为 `storage`；默认具名实例为 `storage.default`，
+    `CompositeStorage` 只装配配置中声明的 Store 端口。兼容 Recaller 由 Retriever 在装配期绑定，
+    storage 包不得导入 retrieval。
+12. `Storage.scopes()` 枚举 MemoryUnit 真源已有 Scope；分层索引通过
+    `has_*_port(name)` / `*_port(name)` 访问命名端口，Construction、Retrieval、Control 不得直接
+    调用 Store Producer 解析具名后端。

@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
@@ -37,7 +36,6 @@ from common.type_def import (
     LifecycleState,
     MemoryUnit,
     Relation,
-    memory_key,
     messages_key,
 )
 from common.type_def.chat import ChatMessage
@@ -49,11 +47,10 @@ from construction.base import ExtractContext, OperatorType
 from construction.dedup import Dedup, DedupProducer
 from construction.evolver import EvolveMode, Evolver, EvolveResult, EvolverProducer
 from construction.extractor import Extractor, ExtractorProducer
-from construction.prompt_strategy import copy_consolidation_prompts
 from construction.index_builder import IndexBuilder, IndexBuilderProducer
 from construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
-from storage.graph import GraphProducer, GraphStore
-from storage.kv import KvProducer, KVStore
+from construction.prompt_strategy import copy_consolidation_prompts
+from storage.storage import Storage, StorageProducer
 from storage.types import Edge, Node
 
 logger = get_logger(__name__)
@@ -154,8 +151,7 @@ class OrchestratingEvolver(Evolver):
         abstractor: Abstractor,
         associator: Associator,
         index_builder: IndexBuilder,
-        kv: KVStore,
-        graph: GraphStore,
+        storage: Storage,
         dedup: Dedup,
         llm: LLM,
         layer_annotator: LayerAnnotator | None = None,
@@ -167,8 +163,9 @@ class OrchestratingEvolver(Evolver):
         self._abstractor = abstractor
         self._associator = associator
         self._index = index_builder
-        self._kv = kv
-        self._graph = graph
+        self._storage = storage
+        self._kv = storage.kv
+        self._graph = storage.graph if storage.has_graph() else None
         self._dedup = dedup
         self._llm = llm
         # 分层标注算子：None 表示不标注（向后兼容）；非 None 时在抽取/升华后标注 L0/L1。
@@ -199,14 +196,13 @@ class OrchestratingEvolver(Evolver):
 
     def _persist(self, units: List[MemoryUnit]) -> List[str]:
         for u in units:
-            # 派生产物都建索引 → /memory/{id}
-            self._kv.insert(u.scope, memory_key(u.id), dumps(u))
+            self._storage.add(u.scope, [u])
             self._index.build([u])
         return [u.id for u in units]
 
     def _persist_graph(self, units: List[MemoryUnit], relations: List[Relation]) -> None:
         """为涉及关联的单元建节点（幂等）、为每条关联建一条边。"""
-        if not units:
+        if not units or self._graph is None:
             return
         scope = units[0].scope
         for u in units:
@@ -337,7 +333,7 @@ class OrchestratingEvolver(Evolver):
                     "Evolver._dedup: %s without existing_unit for %s, fallback ADD",
                     decision.value, candidate.id[:8],
                 )
-            self._kv.insert(candidate.scope, memory_key(candidate.id), dumps(candidate))
+            self._storage.add(candidate.scope, [candidate])
             self._index.build([candidate])
             result.created_ids.append(candidate.id)
 
@@ -358,10 +354,8 @@ class OrchestratingEvolver(Evolver):
             existing_unit.metadata["dedup_decision"] = "update"
             existing_unit.metadata["dedup_similarity"] = str(similarity)
             existing_unit.metadata["dedup_merged_from"] = candidate.id
-            # existing_unit 是建索引记忆（dedup.recall 从 /memory/ 加载），回写用 memory_key
-            self._kv.update(
-                existing_unit.scope, memory_key(existing_unit.id), dumps(existing_unit)
-            )
+            # existing_unit 是已建索引的记忆，统一通过 Storage 回写真源。
+            self._storage.update(existing_unit.scope, [existing_unit])
             self._index.update([existing_unit])
             result.updated_ids.append(existing_unit.id)
 
@@ -374,14 +368,12 @@ class OrchestratingEvolver(Evolver):
             candidate.metadata["dedup_decision"] = "supersede"
             candidate.metadata["dedup_similarity"] = str(similarity)
             candidate.metadata["dedup_superseded"] = existing_unit.id
-            self._kv.insert(candidate.scope, memory_key(candidate.id), dumps(candidate))
+            self._storage.add(candidate.scope, [candidate])
             self._index.build([candidate])
             # 旧版标记 SUPERSEDED（直接通过 KVStore，不依赖 LifecycleManager）
             existing_unit.lifecycle = LifecycleState.SUPERSEDED
             existing_unit.temporal.t_invalid = _now()
-            self._kv.update(
-                existing_unit.scope, memory_key(existing_unit.id), dumps(existing_unit)
-            )
+            self._storage.update(existing_unit.scope, [existing_unit])
             self._index.update([existing_unit])
             result.created_ids.append(candidate.id)
             result.superseded_ids.append(existing_unit.id)
@@ -887,7 +879,7 @@ class OrchestratingEvolver(Evolver):
             if u.lifecycle == LifecycleState.SUPERSEDED:
                 u.lifecycle = LifecycleState.FORGOTTEN
                 # FORGET 作用于 SUPERSEDED 旧版（建索引记忆，在 /memory/）
-                self._kv.update(u.scope, memory_key(u.id), dumps(u))
+                self._storage.update(u.scope, [u])
                 self._index.remove([u])
                 forgotten.append(u.id)
         logger.info("Evolver: FORGET marked %d units as forgotten", len(forgotten))
@@ -928,8 +920,7 @@ def _build(config):
         abstractor=AbstractorProducer.dep(config, default="concat"),
         associator=AssociatorProducer.dep(config, default="keyword"),
         index_builder=IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
-        kv=KvProducer.dep(config, default="memory"),
-        graph=GraphProducer.dep(config, default="memory"),
+        storage=StorageProducer.resolve(config),
         dedup=DedupProducer.dep(config, default=dr_default),
         llm=LlmProducer.dep(config, default="echo"),
         layer_annotator=_opt_annotator(),

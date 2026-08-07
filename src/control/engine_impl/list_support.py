@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from common.errors import ValidationError
 from common.type_def import FilterExpr, Scope
-from common.type_def.memory_codec import loads
 from control.types import MemoryListResult
-from storage.kv import KVStore
+from storage.storage import Storage
 
 
 def list_page(
-    kv: KVStore,
+    storage: Storage,
     scope: Scope,
     *,
     offset: int,
@@ -24,7 +23,7 @@ def list_page(
         raise ValidationError("offset must be >= 0")
     if limit <= 0:
         raise ValidationError("limit must be > 0")
-    stored = kv.list(
+    stored = storage.list(
         scope,
         offset=offset,
         limit=limit,
@@ -32,9 +31,4 @@ def list_page(
         filters=filters,
         extensions=extensions,
     )
-    items = []
-    for _, raw in stored.entries:
-        unit = loads(raw)
-        if unit is not None:
-            items.append(unit)
-    return MemoryListResult(items=items, count=stored.count)
+    return MemoryListResult(items=stored.items, count=stored.count)

@@ -12,7 +12,7 @@
 |---|---|
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（write/batch_write/recall/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
-| `memory_api_impl/assembly.py` | 装配入口：`build_kernel(config)` 递归构建 MemoryAPI 实例 |
+| `memory_api_impl/assembly.py` | 装配入口：`build_kernel(config)` 构建并暴露 MemoryAPI、Storage、兼容 KV 与控制面句柄 |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI：委托 Engine/Governor/Scheduler/PermissionManager/SpaceManager + PEP 鉴权 |
 
 ## 行为铁律
@@ -81,5 +81,6 @@ MemoryAPI.method(scope=target, identity=caller)
 
 1. `identity` 为必填 keyword-only 参数，与 `scope` 同为 Scope 类型，强制具名传入防止位置传反。
 2. 所有数据面方法（write/batch_write/recall/list/get/update/delete/evolve）都需要鉴权，治理面（inspect/trace/audit）也需要鉴权。
-3. 装配由 `assembly.build_kernel(config)` 完成，递归调用各 Producer.create_from(spec)。
+3. 装配由 `assembly.build_kernel(config)` 完成，经各 Producer 的 `dep/build_named/build` 组装；
+   `Kernel.storage` 与 Retriever 引用同一个 `storage.default` 实例。
 4. 实现类（LocalMemoryAPI）不对外暴露，外部只依赖 `MemoryAPI` 抽象接口。
