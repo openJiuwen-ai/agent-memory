@@ -83,6 +83,9 @@ def test_text_analyzer_is_written_to_index_mapping(monkeypatch: pytest.MonkeyPat
     assert text_mapping == {"type": "text", "analyzer": "english"}
     array_marker = client.indices.created["mappings"]["properties"]["metadata_array_fields"]
     assert array_marker == {"type": "keyword"}
+    metadata_mapping = client.indices.created["mappings"]["properties"]["metadata"]
+    tags_mapping = metadata_mapping["properties"]["tags"]
+    assert tags_mapping == {"type": "keyword"}
 
 
 def test_existing_index_gets_array_marker_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -100,7 +103,10 @@ def test_existing_index_gets_array_marker_mapping(monkeypatch: pytest.MonkeyPatc
     assert client.indices.created is None
     assert client.indices.updated == {
         "index": "memory_l0",
-        "properties": {"metadata_array_fields": {"type": "keyword"}},
+        "properties": {
+            "metadata_array_fields": {"type": "keyword"},
+            "metadata": {"properties": {"tags": {"type": "keyword"}}},
+        },
     }
 
 
