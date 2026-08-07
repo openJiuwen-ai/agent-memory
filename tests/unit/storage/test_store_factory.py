@@ -30,6 +30,7 @@ from storage.graph import GraphProducer
 from storage.kv import KvProducer
 from storage.kv_impl.postgres_kv import PostgresKVStore
 from storage.kv_impl.redis_kv import RedisKVStore
+from storage.storage import StorageProducer
 from storage.types import VectorRecord
 from storage.vector import VectorProducer
 from storage.vector_impl.milvus_vector import MilvusVectorStore
@@ -55,6 +56,7 @@ def test_real_backends_registered() -> None:
     assert "nano_graphrag" in GraphProducer.known()
     assert "local" in FsProducer.known()
     assert "milvus_graph" in FusionProducer.known()
+    assert "composite" in StorageProducer.known()
 
 
 def test_producer_unknown_backend_raises() -> None:

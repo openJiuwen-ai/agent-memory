@@ -14,25 +14,21 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
-from typing import Any
 
 import pytest
 
-from common.errors import NotFoundError
-from common.llm.base import LLM
 from common.base import PluginType
+from common.llm.base import LLM
 from common.type_def import (
     LifecycleState,
     MemoryTier,
     MemoryUnit,
-    Modality,
     Scope,
     memory_key,
 )
 from common.type_def.chat import ChatMessage
 from common.type_def.memory_codec import dumps, loads
-from construction import EvolveMode, EvolveResult, Evolver
+from construction import EvolveMode, Evolver, EvolveResult
 from construction.base import OperatorType
 from construction.index_builder import IndexBuilder
 from control.base import ControlOperatorType
@@ -42,6 +38,7 @@ from control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
 from control.lifecycle import LifecycleManager
 from control.types import Channel, JobStatus
 from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
 
@@ -170,10 +167,10 @@ def _build_engine(
     ``with_scope`` 方法注册为 builder——运行时 ``get_job`` 取 MiddleToLongJob 实例。
     ``llm=_UNSET`` 是哨兵：区分"显式传 None"（验证 RuntimeError）与"未传"（用 EchoLLM 默认）。
     """
-    from ingest.ingestor_impl.simple_ingestor import SimpleIngestor
     from common.normalizer.normalizer_impl.passthrough_normalizer import (
         PassthroughNormalizer,
     )
+    from ingest.ingestor_impl.simple_ingestor import SimpleIngestor
 
     kv = InMemoryKVStore()
     index = _RecordingIndex()
@@ -191,7 +188,7 @@ def _build_engine(
     factory.register(
         JobType.MIDDLE_TO_LONG,
         MiddleToLongJobSpec(
-            kv=kv,
+            storage=CompositeStorage(kv=kv),
             evolver=evolver,
             lifecycle=lifecycle,
             index=index,
@@ -207,7 +204,7 @@ def _build_engine(
         ingestor=ingestor,
         index_builder=index,
         retriever=None,
-        kv=kv,
+        storage=CompositeStorage(kv=kv),
         scheduler=scheduler,
         evolver=evolver,
         lifecycle=lifecycle,

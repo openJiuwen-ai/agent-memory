@@ -16,24 +16,24 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
 
 import pytest
 
 from common.base import PluginType
 from common.llm.base import LLM
+from common.normalizer.normalizer_impl.passthrough_normalizer import (
+    PassthroughNormalizer,
+)
 from common.type_def import (
     LifecycleState,
     MemoryTier,
     MemoryUnit,
-    Modality,
     Scope,
-    Segment,
     memory_key,
 )
 from common.type_def.chat import ChatMessage
 from common.type_def.memory_codec import dumps, loads
-from construction import EvolveMode, EvolveResult, Evolver
+from construction import EvolveMode, Evolver, EvolveResult
 from construction.base import OperatorType
 from construction.index_builder import IndexBuilder
 from control.base import ControlOperatorType
@@ -44,10 +44,8 @@ from control.lifecycle import LifecycleManager
 from control.scheduler_impl.async_timer_scheduler import AsyncTimerScheduler
 from control.types import JobStatus
 from ingest.ingestor_impl.simple_ingestor import SimpleIngestor
-from common.normalizer.normalizer_impl.passthrough_normalizer import (
-    PassthroughNormalizer,
-)
 from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
 
@@ -181,7 +179,7 @@ def _build_engine(
     factory.register(
         JobType.MIDDLE_TO_LONG,
         MiddleToLongJobSpec(
-            kv=kv,
+            storage=CompositeStorage(kv=kv),
             evolver=evolver,
             lifecycle=lifecycle,
             index=index,
@@ -196,7 +194,7 @@ def _build_engine(
         ingestor=ingestor,
         index_builder=index,
         retriever=None,  # write 路径不依赖 retriever
-        kv=kv,
+        storage=CompositeStorage(kv=kv),
         scheduler=scheduler,
         evolver=evolver,
         lifecycle=lifecycle,

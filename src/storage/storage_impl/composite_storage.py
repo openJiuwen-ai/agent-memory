@@ -12,6 +12,7 @@ from common.errors import (
     ValidationError,
     safe_error_message,
 )
+from common.factory.factory import Factory
 from common.type_def import (
     CandidateFuser,
     ChannelError,
@@ -30,20 +31,20 @@ from common.type_def import (
     memory_key,
 )
 from common.type_def.memory_codec import dumps, loads
-from storage.fs import FSStore
-from storage.fulltext import FulltextStore
-from storage.fusion import FusionStore
-from storage.graph import GraphStore
-from storage.kv import KVStore
+from storage.fs import FsProducer, FSStore
+from storage.fulltext import FulltextProducer, FulltextStore
+from storage.fusion import FusionProducer, FusionStore
+from storage.graph import GraphProducer, GraphStore
+from storage.kv import KvProducer, KVStore
 from storage.security import (
     AllowAllStorageSecurity,
     StorageAccessContext,
     StorageAction,
     StorageSecurity,
 )
-from storage.storage import Storage, StorageCapability
+from storage.storage import Storage, StorageCapability, StorageProducer
 from storage.types import MemoryListResult
-from storage.vector import VectorStore
+from storage.vector import VectorProducer, VectorStore
 
 
 class _AuthorizedStoreProxy:
@@ -93,6 +94,12 @@ class CompositeStorage(Storage):
         graph: GraphStore | None = None,
         fusion: FusionStore | None = None,
         fs: FSStore | None = None,
+        kv_ports: dict[str, KVStore] | None = None,
+        vector_ports: dict[str, VectorStore] | None = None,
+        fulltext_ports: dict[str, FulltextStore] | None = None,
+        graph_ports: dict[str, GraphStore] | None = None,
+        fusion_ports: dict[str, FusionStore] | None = None,
+        fs_ports: dict[str, FSStore] | None = None,
         recallers: list[Any] | None = None,
         preferred_pipeline: RetrievalPipeline = RetrievalPipeline.RECALL_GET_RANK,
         security: StorageSecurity | None = None,
@@ -108,14 +115,40 @@ class CompositeStorage(Storage):
         self._capabilities = frozenset(
             capability for capability, store in self._stores.items() if store is not None
         )
+        configured_ports = {
+            StorageCapability.KV: kv_ports,
+            StorageCapability.VECTOR: vector_ports,
+            StorageCapability.FULLTEXT: fulltext_ports,
+            StorageCapability.GRAPH: graph_ports,
+            StorageCapability.FUSION: fusion_ports,
+            StorageCapability.FS: fs_ports,
+        }
+        self._named_stores: dict[StorageCapability, dict[str, Any]] = {}
+        for capability, store in self._stores.items():
+            ports = dict(configured_ports.get(capability) or {})
+            if store is not None:
+                ports["default"] = store
+            self._named_stores[capability] = ports
         self._recallers = list(recallers or [])
         self._preferred_pipeline = preferred_pipeline
         self._security = security or AllowAllStorageSecurity()
         self._proxies = {
-            capability: _AuthorizedStoreProxy(store, self._security, capability.value)
-            for capability, store in self._stores.items()
-            if store is not None
+            capability: {
+                name: _AuthorizedStoreProxy(store, self._security, capability.value)
+                for name, store in ports.items()
+            }
+            for capability, ports in self._named_stores.items()
         }
+
+    def bind_recallers(self, recallers: list[Any]) -> None:
+        """在装配阶段绑定检索适配器；同一 Storage 不允许绑定两套不同实例。"""
+        bound = list(recallers)
+        same_binding = len(self._recallers) == len(bound) and all(
+            current is candidate for current, candidate in zip(self._recallers, bound)
+        )
+        if self._recallers and not same_binding:
+            raise ValidationError("CompositeStorage cannot be rebound to different recallers")
+        self._recallers = bound
 
     @property
     def security(self) -> StorageSecurity:
@@ -124,13 +157,34 @@ class CompositeStorage(Storage):
     def capabilities(self) -> frozenset[StorageCapability]:
         return self._capabilities
 
-    def _port(self, capability: StorageCapability) -> Any:
+    def _port(self, capability: StorageCapability, name: str = "default") -> Any:
         try:
-            return self._proxies[capability]
+            return self._proxies[capability][name]
         except KeyError as exc:
             raise UnsupportedStorageCapabilityError(
-                f"storage capability is not available: {capability.value}"
+                f"storage capability is not available: {capability.value}.{name}"
             ) from exc
+
+    def _has_port(self, capability: StorageCapability, name: str) -> bool:
+        return name in self._named_stores[capability]
+
+    def has_kv_port(self, name: str = "default") -> bool:
+        return self._has_port(StorageCapability.KV, name)
+
+    def has_vector_port(self, name: str = "default") -> bool:
+        return self._has_port(StorageCapability.VECTOR, name)
+
+    def has_fulltext_port(self, name: str = "default") -> bool:
+        return self._has_port(StorageCapability.FULLTEXT, name)
+
+    def has_graph_port(self, name: str = "default") -> bool:
+        return self._has_port(StorageCapability.GRAPH, name)
+
+    def has_fusion_port(self, name: str = "default") -> bool:
+        return self._has_port(StorageCapability.FUSION, name)
+
+    def has_fs_port(self, name: str = "default") -> bool:
+        return self._has_port(StorageCapability.FS, name)
 
     @property
     def kv(self) -> KVStore:
@@ -156,8 +210,29 @@ class CompositeStorage(Storage):
     def fs(self) -> FSStore:
         return cast(FSStore, self._port(StorageCapability.FS))
 
+    def kv_port(self, name: str = "default") -> KVStore:
+        return cast(KVStore, self._port(StorageCapability.KV, name))
+
+    def vector_port(self, name: str = "default") -> VectorStore:
+        return cast(VectorStore, self._port(StorageCapability.VECTOR, name))
+
+    def fulltext_port(self, name: str = "default") -> FulltextStore:
+        return cast(FulltextStore, self._port(StorageCapability.FULLTEXT, name))
+
+    def graph_port(self, name: str = "default") -> GraphStore:
+        return cast(GraphStore, self._port(StorageCapability.GRAPH, name))
+
+    def fusion_port(self, name: str = "default") -> FusionStore:
+        return cast(FusionStore, self._port(StorageCapability.FUSION, name))
+
+    def fs_port(self, name: str = "default") -> FSStore:
+        return cast(FSStore, self._port(StorageCapability.FS, name))
+
     def preferred_retrieval_pipeline(self) -> RetrievalPipeline:
         return self._preferred_pipeline
+
+    def scopes(self) -> list[Scope]:
+        return self._raw_kv().scopes()
 
     def _authorize(
         self,
@@ -406,9 +481,12 @@ class CompositeStorage(Storage):
 
     def health(self) -> None:
         self._security.health()
-        for capability in self._capabilities:
-            store = self._stores[capability]
-            if store is not None:
+        checked: set[int] = set()
+        for ports in self._named_stores.values():
+            for store in ports.values():
+                if id(store) in checked:
+                    continue
+                checked.add(id(store))
                 store.security.health()
                 store.health()
 
@@ -429,3 +507,61 @@ def _recaller_source(recaller: Any) -> str:
     if layer:
         return f"{recaller.channel().value}_{layer}"
     return type(recaller).__name__
+
+
+def _optional_store(
+    producer: type[Factory], config: Any, field: str, *, include_default: bool = False
+) -> Any | None:
+    if field not in config.params:
+        return producer.build("memory", {}, config.ctx) if include_default else None
+    return producer.dep(config, field)
+
+
+def _named_ports(producer: type[Factory], config: Any) -> dict[str, Any]:
+    namespace = config.ctx.namespaces.get(producer.TOP_NAME, {})
+    return {
+        name: producer.build_named(name, config.ctx)
+        for name in ("layers_l0", "layers_l1")
+        if name in namespace
+    }
+
+
+@StorageProducer.register("composite")
+def _build(config):
+    pipeline_value = config.get(
+        "preferred_retrieval_pipeline", RetrievalPipeline.RECALL_GET_RANK.value
+    )
+    try:
+        preferred_pipeline = RetrievalPipeline(pipeline_value)
+    except ValueError as exc:
+        supported = [pipeline.value for pipeline in RetrievalPipeline]
+        raise ValidationError(
+            f"Unsupported preferred_retrieval_pipeline {pipeline_value!r}; "
+            f"expected one of {supported}"
+        ) from exc
+    return CompositeStorage(
+        kv=KvProducer.dep(config, default="memory"),
+        vector=_optional_store(
+            VectorProducer,
+            config,
+            "vector_store",
+            include_default=config.get("__default_capabilities", False),
+        ),
+        fulltext=_optional_store(
+            FulltextProducer,
+            config,
+            "fulltext_store",
+            include_default=config.get("__default_capabilities", False),
+        ),
+        graph=_optional_store(
+            GraphProducer,
+            config,
+            "graph_store",
+            include_default=config.get("__default_capabilities", False),
+        ),
+        fusion=_optional_store(FusionProducer, config, "fusion_store"),
+        fs=_optional_store(FsProducer, config, "fs_store"),
+        vector_ports=_named_ports(VectorProducer, config),
+        fulltext_ports=_named_ports(FulltextProducer, config),
+        preferred_pipeline=preferred_pipeline,
+    )

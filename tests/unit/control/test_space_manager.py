@@ -7,13 +7,14 @@ from common.type_def import Scope
 from control import PrincipalPath, SpaceMember, SpacePatch, SpacePolicy, SpaceSpec, SpaceStatus
 from control.space_impl.kv_space_manager import KVSpaceManager
 from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
 
 
 def test_kv_space_manager_crud_policy_members_usage_and_delete() -> None:
     kv = InMemoryKVStore()
-    manager = KVSpaceManager(kv)
+    manager = KVSpaceManager(CompositeStorage(kv=kv))
 
     info = manager.create(
         SpaceSpec(
@@ -64,7 +65,7 @@ def test_kv_space_manager_crud_policy_members_usage_and_delete() -> None:
 
 
 def test_kv_space_manager_validates_and_reports_conflicts() -> None:
-    manager = KVSpaceManager(InMemoryKVStore())
+    manager = KVSpaceManager(CompositeStorage(kv=InMemoryKVStore()))
 
     with pytest.raises(ValidationError):
         manager.create(SpaceSpec(org="acme"))

@@ -22,7 +22,7 @@
 | `recaller_impl/` | Recaller 实现目录（keyword / keyword_l0/l1 / vector / vector_l0/l1 / graph） |
 | `fuser_impl/` | Fuser 实现目录（rrf【默认】/ weighted_rrf / score_max）+ `layered_merge` 分层归并前处理 |
 | `discloser_impl/` | Discloser 实现目录（structured / truncating） |
-| `retriever_impl/` | Retriever 实现目录 |
+| `retriever_impl/` | Retriever 实现目录；pipeline 实现通过 StorageProducer 获取统一 Storage |
 | `bootstrap.py` | 统一触发所有检索算子注册 |
 
 ## 检索链路
@@ -122,3 +122,5 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
    `ChannelError`，全部选中通道失败抛 `StorageRetrievalError`。
 7. Fuser 接受物化候选并保持 MemoryUnit 与 evidence；读取前只允许对 id 去重，不得合并
    多通道候选。Fuser 不执行 Reranker。
+8. `PipelineRetriever` 的生产装配必须通过 `StorageProducer` 获取 Storage；默认
+   `CompositeStorage` 的兼容 Recaller 只允许在装配阶段绑定，不得在 storage 层构建检索算子。

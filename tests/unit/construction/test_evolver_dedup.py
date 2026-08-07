@@ -38,6 +38,7 @@ from construction.index_builder import IndexBuilder
 from storage.base import StoreType
 from storage.graph import GraphStore
 from storage.kv import KVStore
+from storage.storage_impl.composite_storage import CompositeStorage
 from storage.types import ScoredID, VectorRecord
 from storage.vector import VectorStore
 
@@ -334,19 +335,14 @@ def _make_evolver(
         for k in ("dedup_medium_similarity", "dedup_high_similarity")
         if k in dedup_kwargs
     }
-    dedup = VectorDedup(
-        vector_store=vector_store,
-        embedder=embedder,
-        kv=kv,
-        **recaller_kwargs,
-    )
+    storage = CompositeStorage(kv=kv, vector=vector_store, graph=NoopGraphStore())
+    dedup = VectorDedup(storage=storage, embedder=embedder, **recaller_kwargs)
     return OrchestratingEvolver(
         extractor=NoopExtractor(),
         abstractor=NoopAbstractor(),
         associator=NoopAssociator(),
         index_builder=NoopIndexBuilder(),
-        kv=kv,
-        graph=NoopGraphStore(),
+        storage=storage,
         dedup=dedup,
         llm=llm,
         **evolver_kwargs,
@@ -777,9 +773,8 @@ class TestDedupMiddleFilter:
         stores = _create_stores()
         embedder = _HashEmbedder()
         dedup = VectorDedup(
-            vector_store=stores["vector"],
+            storage=CompositeStorage(kv=stores["kv"], vector=stores["vector"]),
             embedder=embedder,
-            kv=stores["kv"],
             min_similarity=0.0,  # 不过滤低分，便于断言中期原文是否被召回
             top_k=10,
             tier_filter=False,
@@ -812,9 +807,8 @@ class TestDedupMiddleFilter:
         stores = _create_stores()
         embedder = _HashEmbedder()
         dedup = VectorDedup(
-            vector_store=stores["vector"],
+            storage=CompositeStorage(kv=stores["kv"], vector=stores["vector"]),
             embedder=embedder,
-            kv=stores["kv"],
             min_similarity=0.0,
             top_k=10,
             tier_filter=False,
@@ -850,8 +844,7 @@ class TestDedupMiddleFilter:
         kv = _MemoryKVStore()
         fulltext = InMemoryFulltextStore(tokenizer=WhitespaceTokenizer())
         dedup = KeywordDedup(
-            fulltext=fulltext,
-            kv=kv,
+            storage=CompositeStorage(kv=kv, fulltext=fulltext),
             min_similarity=0.0,
             top_k=10,
             tier_filter=False,
@@ -903,17 +896,18 @@ class TestDedupEvolveExtract:
         from construction.dedup_impl.vector_dedup import VectorDedup
 
         dedup = VectorDedup(
-            vector_store=stores["vector"],
+            storage=CompositeStorage(kv=stores["kv"], vector=stores["vector"]),
             embedder=plugins["embedder"],
-            kv=stores["kv"],
+        )
+        storage = CompositeStorage(
+            kv=stores["kv"], vector=stores["vector"], graph=NoopGraphStore()
         )
         evolver = OrchestratingEvolver(
             extractor=SimpleExtractor(),
             abstractor=NoopAbstractor(),
             associator=NoopAssociator(),
             index_builder=NoopIndexBuilder(),
-            kv=stores["kv"],
-            graph=NoopGraphStore(),
+            storage=storage,
             dedup=dedup,
             llm=plugins["llm"],
         )

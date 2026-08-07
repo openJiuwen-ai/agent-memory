@@ -10,7 +10,8 @@ from common.log import get_logger
 from common.type_def import T_INVALID_OPEN, MemoryUnit, Scope
 from construction.base import OperatorType
 from construction.index_builder import IndexBuilder, IndexBuilderProducer
-from storage.fulltext import FulltextProducer, FulltextStore
+from storage.fulltext import FulltextStore
+from storage.storage import Storage, StorageProducer
 from storage.types import Document
 
 logger = get_logger(__name__)
@@ -58,14 +59,13 @@ class FulltextIndexBuilder(IndexBuilder):
 
     def __init__(
         self,
-        store: FulltextStore,
-        fulltext_l0: FulltextStore | None = None,
-        fulltext_l1: FulltextStore | None = None,
+        storage: Storage,
+        *,
+        layers_enabled: bool = True,
     ) -> None:
-        self._store = store
-        # L0/L1 分层 store：None 表示不构建该层索引（向后兼容 + 配置降级）。
-        self._fulltext_l0 = fulltext_l0
-        self._fulltext_l1 = fulltext_l1
+        self._store = storage.fulltext if storage.has_fulltext() else None
+        self._fulltext_l0 = _fulltext_port(storage, "layers_l0", layers_enabled)
+        self._fulltext_l1 = _fulltext_port(storage, "layers_l1", layers_enabled)
 
     @property
     def fulltext_l0(self) -> FulltextStore | None:
@@ -102,17 +102,24 @@ class FulltextIndexBuilder(IndexBuilder):
     def build(self, units: list[MemoryUnit]) -> None:
         logger.info("FulltextIndexBuilder: building index for %d units", len(units))
         for unit in units:
-            doc = self._doc(unit)
-            logger.info("FulltextIndexBuilder: indexing unit id=%s tier=%s tags=%s content=%s",
-                         unit.id[:8], unit.tier.value, unit.tags, unit.content[:200])
-            self._store.insert(unit.scope, [doc])
+            if self._store is not None:
+                doc = self._doc(unit)
+                logger.info(
+                    "FulltextIndexBuilder: indexing unit id=%s tier=%s tags=%s content=%s",
+                    unit.id[:8],
+                    unit.tier.value,
+                    unit.tags,
+                    unit.content[:200],
+                )
+                self._store.insert(unit.scope, [doc])
             # L0/L1 分层：store 非空且 layers 非空才写独立 store（分表）
             self._build_layers(unit)
 
     def update(self, units: list[MemoryUnit]) -> None:
         logger.info("FulltextIndexBuilder: updating index for %d units", len(units))
         for unit in units:
-            self._store.update(unit.scope, [self._doc(unit)])
+            if self._store is not None:
+                self._store.update(unit.scope, [self._doc(unit)])
             # L0/L1：先删旧 record（store 非空才删），再按新 layers 重建——避免旧分层残留
             self._delete_layer_records(unit.id, unit.scope)
             self._build_layers(unit)
@@ -120,7 +127,8 @@ class FulltextIndexBuilder(IndexBuilder):
     def remove(self, units: list[MemoryUnit]) -> None:
         logger.info("FulltextIndexBuilder: removing %d units from index", len(units))
         for unit in units:
-            self._store.delete(unit.scope, [unit.id])
+            if self._store is not None:
+                self._store.delete(unit.scope, [unit.id])
             self._delete_layer_records(unit.id, unit.scope)
 
     def rebuild(self) -> None:
@@ -175,28 +183,13 @@ class FulltextIndexBuilder(IndexBuilder):
 
 @IndexBuilderProducer.register("fulltext")
 def _build(config):
-    # L0/L1 分层索引：layers_index_enabled（默认 true）开时，取 fulltext_store 的
-    # layers_l0/l1 具名实例（指向不同 index = 分表）注入；未配置则该层传 None，
-    # builder 跳过该层（向后兼容 + 配置降级）。与 HybridIndexBuilder._build 一致。
-    layers_enabled = config.get("layers_index_enabled", True)
-
-    def _opt_dep(producer_cls, name):
-        """取具名实例；未配置则返回 None（不报错，builder 跳过该层）。
-
-        直接走 ``build_named``（从 ctx.namespaces 按名取具名实例），不走 ``dep``——
-        ``dep`` 从当前组件 params 取字段，而 layers_l0 是 store 命名空间下的具名实例名，
-        不在 index_builder 的 params 里。
-        """
-        if not layers_enabled:
-            return None
-        ctx = config.ctx
-        ns = ctx.namespaces.get(producer_cls.TOP_NAME, {})
-        if name not in ns:
-            return None  # 该层具名实例未声明，跳过
-        return producer_cls.build_named(name, ctx)
-
     return FulltextIndexBuilder(
-        FulltextProducer.dep(config, default="memory"),
-        fulltext_l0=_opt_dep(FulltextProducer, "layers_l0"),
-        fulltext_l1=_opt_dep(FulltextProducer, "layers_l1"),
+        StorageProducer.resolve(config),
+        layers_enabled=config.get("layers_index_enabled", True),
     )
+
+
+def _fulltext_port(storage: Storage, name: str, enabled: bool) -> FulltextStore | None:
+    if not enabled or not storage.has_fulltext_port(name):
+        return None
+    return storage.fulltext_port(name)

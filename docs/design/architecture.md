@@ -404,8 +404,9 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | 全文索引 | SQLite FTS5 | 专用全文引擎 | — |
 | 融合存储 | 本地组合实现 | 一体化检索平台 | — |
 
-> 当前首版已落地 `Storage`、`CompositeStorage`、能力与安全模型，并完成 Retriever 对统一
-> Storage 的接入；Construction 与 Control 仍保留部分直接 Store 依赖，后续按模块迁移。
+> 当前首版已落地 `Storage`、`StorageProducer`、`CompositeStorage`、能力与安全模型；
+> `storage.default` 可选择组合或一体化实现，Kernel 与 Retriever 共享同一具名实例。
+> Construction 与 Control 仍保留部分直接 Store 依赖，后续按模块迁移。
 > `IntegratedStorage` 是已定义的实现方向，尚未提供仓内实现。精确契约见
 > [S06-storage.md](../specs/S06-storage.md)，设计取舍见
 > [F05-unified-storage-design.md](../features/storage/F05-unified-storage-design.md)。

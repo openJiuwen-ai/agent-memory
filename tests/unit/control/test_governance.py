@@ -8,9 +8,25 @@ from common.audit.base import AuditLogger
 from common.errors import BackendError
 from common.type_def import AuditEvent, MemoryUnit, Segment, memory_key
 from common.type_def.memory_codec import dumps
+from config.config import Config
 from control.governance_impl.in_memory_governor import InMemoryGovernor
+from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
+
+_TEST_KEY_HEX = "00" * 32
+
+
+def _test_kernel():
+    config = Config.from_dict(
+        {
+            "security": {
+                "default": {"target": "local", "params": {"key_hex": _TEST_KEY_HEX}}
+            }
+        }
+    )
+    return build_kernel(kv=InMemoryKVStore(), config=config)
 
 
 class _QueryOnlyAuditLogger(AuditLogger):
@@ -32,7 +48,7 @@ class _FailingKV:
 
 def test_trace_follows_provenance_sources_depth_first() -> None:
     scope = Scope(user="u1")
-    kernel = build_kernel()
+    kernel = _test_kernel()
     source = MemoryUnit(id="source", scope=scope, segments=[Segment(content="source")])
     direct = MemoryUnit(
         id="direct",
@@ -58,7 +74,7 @@ def test_trace_follows_provenance_sources_depth_first() -> None:
 
 def test_trace_stops_on_provenance_cycles() -> None:
     scope = Scope(user="u1")
-    kernel = build_kernel()
+    kernel = _test_kernel()
     a = MemoryUnit(id="a", scope=scope, segments=[Segment(content="a")], provenance=["b"])
     b = MemoryUnit(id="b", scope=scope, segments=[Segment(content="b")], provenance=["a"])
     for unit in [a, b]:
@@ -68,7 +84,7 @@ def test_trace_stops_on_provenance_cycles() -> None:
 
 
 def test_inspect_is_bound_to_the_authorized_scope() -> None:
-    kernel = build_kernel()
+    kernel = _test_kernel()
     scope_a = Scope(org="acme", space="space-a", user="alice")
     scope_b = Scope(org="acme", space="space-b", user="alice")
     unit_a = MemoryUnit(
@@ -90,15 +106,15 @@ def test_inspect_is_bound_to_the_authorized_scope() -> None:
 
 
 def test_inspect_does_not_hide_storage_failures() -> None:
-    governor = InMemoryGovernor(_FailingKV(), _QueryOnlyAuditLogger([]))
+    governor = InMemoryGovernor(CompositeStorage(kv=_FailingKV()), _QueryOnlyAuditLogger([]))
 
     with pytest.raises(BackendError, match="storage unavailable"):
         governor.inspect(["unit-id"], Scope(org="acme"))
 
 
 def test_audit_uses_logger_query_interface() -> None:
-    kernel = build_kernel()
+    kernel = _test_kernel()
     event = AuditEvent(action="write", layer="api")
-    governor = InMemoryGovernor(kernel.kv, _QueryOnlyAuditLogger([event]))
+    governor = InMemoryGovernor(kernel.storage, _QueryOnlyAuditLogger([event]))
 
     assert governor.audit({"action": "write"}, limit=10) == [event]

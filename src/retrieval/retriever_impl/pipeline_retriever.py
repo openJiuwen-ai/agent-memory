@@ -42,8 +42,7 @@ from retrieval.types import (
     RetrievalResult,
     TrajectoryStep,
 )
-from storage.kv import KvProducer
-from storage.storage import Storage
+from storage.storage import Storage, StorageProducer
 from storage.storage_impl import CompositeStorage
 
 from .predicate_builder import build_system_filters
@@ -61,7 +60,7 @@ class PipelineRetriever(Retriever):
         recallers: list[Recaller],
         fuser: Fuser,
         discloser: Discloser,
-        unit_reader: UnitReader,
+        unit_reader: UnitReader | None,
         reranker: Reranker | None = None,
         over_fetch_factor: int = 4,
         over_fetch_floor: int = 60,
@@ -79,7 +78,13 @@ class PipelineRetriever(Retriever):
         self._fuser = fuser
         self._discloser = discloser
         self._reader = unit_reader
-        self._storage = storage or CompositeStorage(kv=unit_reader.kv, recallers=recallers)
+        if storage is None:
+            if unit_reader is None:
+                raise ValidationError("PipelineRetriever requires storage or unit_reader")
+            storage = CompositeStorage(kv=unit_reader.kv, recallers=recallers)
+        elif isinstance(storage, CompositeStorage):
+            storage.bind_recallers(recallers)
+        self._storage = storage
         self._reranker = reranker
         # 召回超采样：每路取 max(top_k*factor, floor)，撒宽网喂融合。
         self._over_fetch_factor = max(1, int(over_fetch_factor))
@@ -106,6 +111,11 @@ class PipelineRetriever(Retriever):
     def recallers(self) -> list[Recaller]:
         """已接入的 recaller 列表（只读视图；外部不应原地修改）。"""
         return self._recallers
+
+    @property
+    def storage(self) -> Storage:
+        """当前 Retriever 使用的统一 Storage 实例。"""
+        return self._storage
 
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.RETRIEVER
@@ -371,6 +381,7 @@ class PipelineRetriever(Retriever):
 
 @RetrieverProducer.register("pipeline")
 def _build(config):
+    storage = StorageProducer.resolve(config)
     # 召回路按能力开关启用；每路 recaller 自取其 Store，可被 config 各自覆盖。
     recallers = [RecallerProducer.dep(config, "keyword_recaller", default="keyword")]
     if config.get("vector_enabled", True):
@@ -395,12 +406,14 @@ def _build(config):
         if config.get("rerank_enabled", True)
         else None
     )
+    if isinstance(storage, CompositeStorage):
+        storage.bind_recallers(recallers)
     return PipelineRetriever(
         QueryParserProducer.dep(config, default="simple"),
         recallers,
         FuserProducer.dep(config, default="rrf"),
         DiscloserProducer.dep(config, default="truncating"),
-        UnitReader(KvProducer.dep(config, default="memory")),
+        UnitReader(storage.kv) if storage.has_kv() else None,
         reranker,
         over_fetch_factor=int(Factory.cfg_get(config, "over_fetch_factor", 4)),
         over_fetch_floor=int(Factory.cfg_get(config, "over_fetch_floor", 60)),
@@ -414,6 +427,7 @@ def _build(config):
             Factory.cfg_get(config, "min_score_ratio_uncalibrated", 0.0)
         ),
         min_results=int(Factory.cfg_get(config, "min_results", 0)),
+        storage=storage,
     )
 
 

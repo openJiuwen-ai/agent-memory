@@ -23,7 +23,7 @@ from control.types import (
     SpaceStatus,
     SpaceUsage,
 )
-from storage.kv import KvProducer, KVStore
+from storage.storage import Storage, StorageProducer
 
 _INFO_KEY = "/space/info"
 _MEMBER_PREFIX = "/space/members/"
@@ -206,8 +206,9 @@ def _normalize_member_scope(org: str, space: str, member: Scope) -> Scope:
 class KVSpaceManager(SpaceManager):
     """SpaceManager backed by KVStore."""
 
-    def __init__(self, kv: KVStore) -> None:
-        self._kv = kv
+    def __init__(self, storage: Storage) -> None:
+        self._storage = storage
+        self._kv = storage.kv
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.SPACE
@@ -419,4 +420,4 @@ class KVSpaceManager(SpaceManager):
 
 @SpaceProducer.register("kv")
 def _build(config):
-    return KVSpaceManager(KvProducer.dep(config, default="memory"))
+    return KVSpaceManager(StorageProducer.resolve(config))

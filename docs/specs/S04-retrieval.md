@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/retrieval/ |
-| 最近一次修订日期 | 2026-08-06 |
+| 最近一次修订日期 | 2026-08-07 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md |
 
 ## 范围 / 边界
@@ -216,7 +216,7 @@ src/retrieval/<算子>_impl/
 | S02-memory_api | MemoryAPI.recall → Engine → 本层 Retriever |
 | S03-control | Engine.recall 委托本层 Retriever |
 | S05-construction | 本层消费构建层产出的索引（向量/全文/图） |
-| S06-storage | Recaller 经注入的 Store 召回候选 |
+| S06-storage | Retriever 经 StorageProducer 获取统一 Storage；现有 Recaller 作为 CompositeStorage 的兼容检索适配器 |
 | S07-common | 复用 Tokenizer/Embedder/FeatureExtractor/LLM/Reranker |
 | S08-config | 能力开关与 rerank/embedder 晚绑定经 ConfigSource |
 | architecture.md §8 | 检索链路设计 |

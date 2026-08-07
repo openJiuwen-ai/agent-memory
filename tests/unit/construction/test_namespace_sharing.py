@@ -32,11 +32,17 @@ def _bootstrap():
 
 def test_reference_shares_vector_store():
     ctx = AssemblyContext.from_dict(
-        {
-            "vector_store": {"shared_vec": {"target": "memory"}},
-            "constructor": {"ib": {"target": "vector", "params": {"vector_store": "shared_vec"}}},
-            "recaller": {"rec": {"target": "vector", "params": {"vector_store": "shared_vec"}}},
-        }
+            {
+                "vector_store": {"shared_vec": {"target": "memory"}},
+                "storage": {
+                    "shared": {
+                        "target": "composite",
+                        "params": {"vector_store": "shared_vec"},
+                    }
+                },
+                "constructor": {"ib": {"target": "vector", "params": {"storage": "shared"}}},
+                "recaller": {"rec": {"target": "vector", "params": {"storage": "shared"}}},
+            }
     )
     ib = IndexBuilderProducer.build_named("ib", ctx)
     rec = RecallerProducer.build_named("rec", ctx)

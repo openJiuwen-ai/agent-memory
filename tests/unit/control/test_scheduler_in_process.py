@@ -13,13 +13,14 @@ import pytest
 
 from common.type_def import MemoryUnit, Scope, Segment, memory_key
 from common.type_def.memory_codec import dumps
-from construction import EvolveMode, EvolveResult, Evolver
+from construction import EvolveMode, Evolver, EvolveResult
 from construction.base import OperatorType
 from control.jobs import Job
 from control.jobs_impl.evolve_job import EvolveJob
 from control.scheduler_impl.in_process_scheduler import InProcessScheduler
 from control.types import Channel, JobInfo, JobStatus
 from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
 
@@ -135,7 +136,12 @@ def test_submit_runs_evolve_job_with_units_from_scope() -> None:
     evolver = RecordingEvolver()
     scheduler = InProcessScheduler()
 
-    job = EvolveJob(scope=scope, kv=kv, evolver=evolver, mode=EvolveMode.ASSOCIATE)
+    job = EvolveJob(
+        scope=scope,
+        storage=CompositeStorage(kv=kv),
+        evolver=evolver,
+        mode=EvolveMode.ASSOCIATE,
+    )
     job_id = asyncio.run(scheduler.submit(job, Channel.BACKGROUND))
 
     info = scheduler.status(job_id)

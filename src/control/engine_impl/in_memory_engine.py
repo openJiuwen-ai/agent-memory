@@ -18,7 +18,6 @@ from typing import Any
 from common.errors import AgentMemoryError, NotFoundError, ValidationError
 from common.log import get_logger
 from common.type_def import (
-    MEMORY_KEY_PREFIX,
     FilterExpr,
     LifecycleState,
     MemoryTier,
@@ -27,9 +26,7 @@ from common.type_def import (
     RawPayload,
     Scope,
     Segment,
-    memory_key,
 )
-from common.type_def.memory_codec import dumps, loads
 from construction import EvolveMode
 from construction.classifier import Classifier, ClassifierProducer
 from construction.evolver import Evolver, EvolverProducer
@@ -56,7 +53,7 @@ from control.types import (
 from ingest.ingestor import Ingestor, IngestorProducer
 from retrieval.retriever import Retriever, RetrieverProducer
 from retrieval.types import RetrievalQuery, RetrievalResult
-from storage.kv import KvProducer, KVStore
+from storage.storage import Storage, StorageProducer
 
 logger = get_logger(__name__)
 
@@ -199,7 +196,7 @@ class InMemoryEngine(MemoryEngine):
         ingestor: Ingestor,
         index_builder: IndexBuilder,
         retriever: Retriever,
-        kv: KVStore,
+        storage: Storage,
         scheduler: Scheduler,
         evolver: Evolver,
         lifecycle: LifecycleManager,
@@ -211,7 +208,7 @@ class InMemoryEngine(MemoryEngine):
         self._ingestor = ingestor
         self._index = index_builder
         self._retriever = retriever
-        self._kv = kv  # 真源：裸 kv 存序列化字节
+        self._storage = storage
         self._scheduler = scheduler
         self._evolver = evolver
         self._lifecycle = lifecycle
@@ -386,13 +383,11 @@ class InMemoryEngine(MemoryEngine):
 
     def _write_middle_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
         """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
-        for unit in units:
-            self._kv.insert(scope, memory_key(unit.id), dumps(unit))
+        self._storage.add(scope, units)
 
     def _write_default_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
         """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
-        for unit in units:
-            self._kv.insert(scope, memory_key(unit.id), dumps(unit))
+        self._storage.add(scope, units)
 
     async def batch_write(
         self,
@@ -456,7 +451,7 @@ class InMemoryEngine(MemoryEngine):
     ) -> MemoryListResult:
         _ensure_local_scope(scope)
         return list_page(
-            self._kv,
+            self._storage,
             scope,
             offset=offset,
             limit=limit,
@@ -500,7 +495,7 @@ class InMemoryEngine(MemoryEngine):
         scopes = (
             [selector.scope]
             if selector.scope is not None
-            else [scope for scope in self._kv.scopes() if not scope.space]
+            else [scope for scope in self._storage.scopes() if not scope.space]
         )
         if not scopes:
             scopes = [Scope()]
@@ -513,24 +508,15 @@ class InMemoryEngine(MemoryEngine):
 
     def _load(self, scope: Scope, unit_id: str) -> MemoryUnit:
         """从真源读字节并反序列化（产出结果的边界点）。"""
-        try:
-            raw = self._kv.get(scope, memory_key(unit_id))
-        except NotFoundError:
-            raise NotFoundError("memory_unit", unit_id) from None
-        unit = loads(raw)
-        if unit is None:
+        units = self._storage.get(scope, [unit_id])
+        if not units:
             raise NotFoundError("memory_unit", unit_id)
-        return unit
+        return units[0]
 
     def _list_units(self, scope: Scope) -> list[MemoryUnit]:
         # 只列建索引记忆（/memory/ 前缀）。loads 对非 MemoryUnit 记录返回 None，自然过滤。
         # 版本链（SUPERSEDE/supersedes）只在建索引记忆间；原文 /messages/ 无版本链。
-        units = []
-        for _, raw in self._kv.scan(scope, prefix=MEMORY_KEY_PREFIX):
-            unit = loads(raw)
-            if unit is not None:
-                units.append(unit)
-        return units
+        return self._storage.list(scope, limit=1_000_000).items
 
     def _version_family(self, scope: Scope, unit_id: str) -> list[MemoryUnit]:
         units_by_id = {unit.id: unit for unit in self._list_units(scope)}
@@ -592,7 +578,7 @@ class InMemoryEngine(MemoryEngine):
         new = _apply_patch(old, patch)
         if patch.mode == UpdateMode.OVERWRITE:
             new.id = old.id
-            self._kv.update(scope, memory_key(new.id), dumps(new))
+            self._storage.update(scope, [new])
             self._index.update([new])
             logger.info("Engine.update overwrite: unit_id=%s scope=%s", new.id, scope)
         else:  # SUPERSEDE：新 id、记版本链，旧版标记 superseded
@@ -601,7 +587,7 @@ class InMemoryEngine(MemoryEngine):
             new.lifecycle = LifecycleState.ACTIVE
             if patch.t_valid is None:
                 new.temporal.t_valid = _now()
-            self._kv.insert(scope, memory_key(new.id), dumps(new))
+            self._storage.add(scope, [new])
             old = self._lifecycle.supersede(scope, old.id, new.temporal.t_valid)
             self._index.update([old])
             self._index.build([new])
@@ -627,16 +613,13 @@ class InMemoryEngine(MemoryEngine):
         scopes = (
             [selector.scope]
             if selector.scope is not None
-            else [scope for scope in self._kv.scopes() if not scope.space]
+            else [scope for scope in self._storage.scopes() if not scope.space]
         )
         if not scopes:
             scopes = [Scope()]
         scanned: list[tuple[Scope, str, MemoryUnit]] = []
         for scope in scopes:
-            for unit_id, raw in self._kv.scan(scope):
-                unit = loads(raw)
-                if unit is not None:
-                    scanned.append((scope, unit_id, unit))
+            scanned.extend((scope, unit.id, unit) for unit in self._list_units(scope))
 
         matches = [
             (scope, unit_id, unit)
@@ -658,9 +641,9 @@ class InMemoryEngine(MemoryEngine):
                 {_scoped_unit_id(scope, unit.id) for scope, _, unit in matches},
             )
             purged_units: list[MemoryUnit] = []
-            for scope, unit_id, unit in scanned:
+            for scope, _, unit in scanned:
                 if _scoped_unit_id(scope, unit.id) in purge_ids:
-                    self._kv.delete(scope, unit_id)
+                    self._storage.delete(scope, [unit.id])
                     purged_units.append(unit)
             self._index.remove(purged_units)
             logger.info(
@@ -672,9 +655,9 @@ class InMemoryEngine(MemoryEngine):
 
         if selector.mode == DeleteMode.DOWNWEIGHT:
             update_index: list[MemoryUnit] = []
-            for scope, unit_id, unit in matches:
+            for scope, _, unit in matches:
                 _downweight_importance(unit)
-                self._kv.update(scope, unit_id, dumps(unit))
+                self._storage.update(scope, [unit])
                 update_index.append(unit)
             self._index.update(update_index)
             logger.info(
@@ -716,12 +699,11 @@ class InMemoryEngine(MemoryEngine):
         purged_units: list[MemoryUnit] = []
         for scope in [
             candidate
-            for candidate in self._kv.scopes()
+            for candidate in self._storage.scopes()
             if candidate.org == org and candidate.space == space
         ]:
             units = self._list_units(scope)
-            for unit in units:
-                self._kv.delete(scope, memory_key(unit.id))
+            self._storage.delete(scope, [unit.id for unit in units])
             purged_units.extend(units)
         self._index.remove(purged_units)
         return [unit.id for unit in purged_units]
@@ -802,7 +784,7 @@ def _build(config):
         IngestorProducer.dep(config, default="simple"),
         IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
         RetrieverProducer.dep(config, default="pipeline"),
-        KvProducer.dep(config, default="memory"),
+        StorageProducer.resolve(config),
         SchedulerProducer.dep(config, default="in_process"),
         EvolverProducer.dep(config, default="orchestrating"),
         LifecycleProducer.dep(config, default="kv"),

@@ -18,24 +18,22 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from common.log import get_logger
 from common.llm.base import LLM, LlmProducer
+from common.log import get_logger
 from common.type_def import (
-    MEMORY_KEY_PREFIX,
     LifecycleState,
     MemoryTier,
     MemoryUnit,
     Scope,
 )
 from common.type_def.chat import ChatMessage
-from common.type_def.memory_codec import loads
 from construction import EvolveMode, Evolver
 from construction.evolver import EvolverProducer
 from construction.index_builder import IndexBuilder, IndexBuilderProducer
 from control.jobs import Job, JobFactory, JobFactoryProducer, JobType
 from control.lifecycle import LifecycleManager, LifecycleProducer
 from control.types import JobInfo, JobStatus
-from storage.kv import KvProducer, KVStore
+from storage.storage import Storage, StorageProducer
 
 logger = get_logger(__name__)
 
@@ -73,7 +71,7 @@ class MiddleToLongJob(Job):
     def __init__(
         self,
         scope: Scope,
-        kv,
+        storage: Storage,
         evolver: Evolver,
         lifecycle: LifecycleManager,
         index: IndexBuilder,
@@ -84,7 +82,7 @@ class MiddleToLongJob(Job):
         interval: int = 50,
     ) -> None:
         super().__init__(scope=scope, interval=interval)
-        self._kv = kv
+        self._storage = storage
         self._evolver = evolver
         self._lifecycle = lifecycle
         self._index = index
@@ -238,10 +236,8 @@ class MiddleToLongJob(Job):
 
         ``kv.scan`` 是同步阻塞 IO，推到独立线程跑避免阻塞事件循环。
         """
-        pairs = await asyncio.to_thread(
-            self._kv.scan, self.scope, MEMORY_KEY_PREFIX
-        )
-        units = [u for u in (loads(raw) for _, raw in pairs) if u is not None]
+        page = await asyncio.to_thread(self._storage.list, self.scope, limit=1_000_000)
+        units = page.items
         candidates = []
         for u in units:
             if u.tier != MemoryTier.WORKING:
@@ -252,8 +248,10 @@ class MiddleToLongJob(Job):
                 continue
             candidates.append(u)
         candidates.sort(
-            key=lambda u: u.temporal.t_ingest
-            or datetime.min.replace(tzinfo=timezone.utc)
+            key=lambda unit: (
+                unit.temporal.t_ingest or datetime.min.replace(tzinfo=timezone.utc),
+                unit.id,
+            )
         )
         return candidates[: self._max_fetch]
 
@@ -301,7 +299,7 @@ class MiddleToLongJobSpec:
     运行时 :meth:`with_scope` 补 scope + interval 生成完整 Job 实例。
     """
 
-    kv: KVStore
+    storage: Storage
     evolver: Evolver
     lifecycle: LifecycleManager
     index: IndexBuilder
@@ -322,7 +320,7 @@ class MiddleToLongJobSpec:
         index = kwargs.pop("index", self.index)
         return MiddleToLongJob(
             scope=scope,
-            kv=self.kv,
+            storage=self.storage,
             evolver=evolver,
             lifecycle=self.lifecycle,
             index=index,
@@ -339,7 +337,7 @@ def _build_middle_to_long_job_spec(config) -> MiddleToLongJobSpec:
     vector_on = config.get("vector_enabled", True)
     ib_default = "hybrid" if vector_on else "fulltext"
     return MiddleToLongJobSpec(
-        kv=KvProducer.dep(config, default="memory"),
+        storage=StorageProducer.resolve(config),
         evolver=EvolverProducer.dep(config, default="orchestrating"),
         lifecycle=LifecycleProducer.dep(config, default="kv"),
         index=IndexBuilderProducer.dep(config, "index_builder", default=ib_default),

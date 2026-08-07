@@ -99,7 +99,9 @@ admin（运行时策略）与全局 audit 查询**没有具体 target scope**，
 - **policies 便捷覆盖**：`policies` 折进 `globals["policies"]`。
 - **真源 kv 注入**：`kv` 入参经 `KvProducer.put(KV_DEFAULT_NAME, kv)` 预置进缓存，**覆盖配置的 kv_store 选择并被各处共享**（如传 `SQLiteKVStore` 即落盘）。
 - **多次装配隔离**：组装前 `_register_all()`（各层 bootstrap 幂等自注册）+ `Factory.reset_all()` 清空具名实例缓存。
-- **Kernel 多暴露 kv/space 句柄**：`build_kernel` 返回 `Kernel{api, kv, space}`，比 `assemble`（只返回 api）多给真源 kv 与 SpaceManager 句柄，供测试、特殊装配或调试场景观测真源；接入 surface 的普通数据面能力应走 `MemoryAPI`，例如 list 已由 `MemoryAPI.list` 承接。
+- **Kernel 暴露统一 Storage 与控制句柄**：`build_kernel` 返回
+  `Kernel{api, storage, kv, space, config_source}`，其中 `storage` 是上层统一依赖，`kv` 是迁移期
+  的真源兼容句柄；`assemble` 仍只返回 api。普通数据面能力应走 `MemoryAPI`。
 
 ```python
 from api import assemble, build_kernel

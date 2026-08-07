@@ -11,14 +11,12 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
-from common.type_def import MEMORY_KEY_PREFIX, Scope
-from common.type_def.memory_codec import loads
+from common.type_def import Scope
 from construction import EvolveMode, Evolver
 from construction.evolver import EvolverProducer
-from storage.kv import KvProducer, KVStore
-
 from control.jobs import Job
 from control.types import JobInfo, JobStatus
+from storage.storage import Storage, StorageProducer
 
 
 class EvolveJob(Job):
@@ -31,25 +29,22 @@ class EvolveJob(Job):
     def __init__(
         self,
         scope: Scope,
-        kv: KVStore,
+        storage: Storage,
         evolver: Evolver,
         mode: EvolveMode = EvolveMode.EXTRACT,
         interval: int = 0,
     ) -> None:
         super().__init__(scope=scope, interval=interval)
-        self._kv = kv
+        self._storage = storage
         self._evolver = evolver
         self._mode = mode
 
     async def run(self) -> JobInfo:
         # 排除中期记忆：middle 路径写入的 unit 由 MiddleToLongJob 专门处理，
         # 避免同一原文被两次处理。
-        pairs = await asyncio.to_thread(
-            self._kv.scan, self.scope, MEMORY_KEY_PREFIX
-        )
+        page = await asyncio.to_thread(self._storage.list, self.scope, limit=1_000_000)
         units = [
-            u for u in (loads(raw) for _, raw in pairs)
-            if u is not None and u.metadata.get("middle") != "true"
+            unit for unit in page.items if unit.metadata.get("middle") != "true"
         ]
         result = await asyncio.to_thread(self._evolver.evolve, units, self._mode)
         return JobInfo(
@@ -75,17 +70,17 @@ class EvolveJobSpec:
     ``mode`` 是运行时参数（每次 evolve 入参不同），不进 Spec。
     """
 
-    kv: KVStore
+    storage: Storage
     evolver: Evolver
 
     def with_scope(self, scope: Scope, **kwargs) -> EvolveJob:
         """生成完整 Job 实例——``kwargs`` 透传运行时参数（``mode`` 等）。"""
-        return EvolveJob(scope=scope, kv=self.kv, evolver=self.evolver, **kwargs)
+        return EvolveJob(scope=scope, storage=self.storage, evolver=self.evolver, **kwargs)
 
 
 def _build_evolve_job_spec(config) -> EvolveJobSpec:
     """装配期固化 EvolveJob 的依赖——返回 Spec dataclass。"""
     return EvolveJobSpec(
-        kv=KvProducer.dep(config, default="memory"),
+        storage=StorageProducer.resolve(config),
         evolver=EvolverProducer.dep(config, default="orchestrating"),
     )

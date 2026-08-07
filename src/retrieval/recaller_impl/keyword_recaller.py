@@ -12,14 +12,13 @@ Retriever/Fuser 负责，本通道不感知其他通道。
 
 from __future__ import annotations
 
-from typing import List
-
 from common.log import get_logger
 from common.type_def import Scope
 from retrieval.base import RetrievalOperatorType
 from retrieval.recaller import Recaller, RecallerProducer
 from retrieval.types import ParsedQuery, RecallChannel, ScoredUnit
-from storage.fulltext import FulltextProducer, FulltextStore
+from storage.fulltext import FulltextStore
+from storage.storage import Storage, StorageProducer
 from storage.types import TextQuery
 
 from .unit_aggregation import aggregate_to_units
@@ -30,8 +29,11 @@ logger = get_logger(__name__)
 class KeywordRecaller(Recaller):
     """关键词/全文召回路（包一个 FulltextStore，支持 content/L0/L1 分层）。"""
 
-    def __init__(self, fulltext: FulltextStore | None, *, layer: str = "l2") -> None:
-        self._fulltext = fulltext
+    def __init__(self, storage: Storage, *, layer: str = "l2") -> None:
+        port_name = "default" if layer == "l2" else f"layers_{layer}"
+        self._fulltext = (
+            storage.fulltext_port(port_name) if storage.has_fulltext_port(port_name) else None
+        )
         self._layer = layer  # "l2"(content) | "l0" | "l1"
 
     def operator_type(self) -> RetrievalOperatorType:
@@ -53,7 +55,7 @@ class KeywordRecaller(Recaller):
     def channel(self) -> RecallChannel:
         return RecallChannel.KEYWORD
 
-    def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> List[ScoredUnit]:
+    def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]:
         if self._fulltext is None:
             return []  # store 未注入（该层未配）→ 跳过
         tq = TextQuery(
@@ -76,32 +78,25 @@ class KeywordRecaller(Recaller):
 
 @RecallerProducer.register("keyword")
 def _build(config):
-    return KeywordRecaller(FulltextProducer.dep(config, default="memory"), layer="l2")
+    return KeywordRecaller(StorageProducer.resolve(config), layer="l2")
 
 
 @RecallerProducer.register("keyword_l0")
 def _build_l0(config):
-    # L0 分表 store：与构建侧同命名（layers_l0），经 FulltextProducer build_named 取具名实例。
-    # layers_index_enabled 默认 true（与构建侧对齐：默认建默认查）；未配 layers_l0 → store=None
-    # （recall 返空，不破坏其他路）。
+    # layers_index_enabled 默认 true；未配置命名端口时该层返回空结果。
     if not config.get("layers_index_enabled", True):
-        return KeywordRecaller(None, layer="l0")
-    ctx = config.ctx
-    ns = ctx.namespaces.get(FulltextProducer.TOP_NAME, {})
-    store = FulltextProducer.build_named("layers_l0", ctx) if "layers_l0" in ns else None
-    if store is None:
+        return KeywordRecaller(StorageProducer.resolve(config), layer="l0")
+    recaller = KeywordRecaller(StorageProducer.resolve(config), layer="l0")
+    if recaller.fulltext_store is None:
         logger.info("KeywordRecaller(keyword_l0): store 未注入，recall 将返空")
-    return KeywordRecaller(store, layer="l0")
+    return recaller
 
 
 @RecallerProducer.register("keyword_l1")
 def _build_l1(config):
     if not config.get("layers_index_enabled", True):
-        return KeywordRecaller(None, layer="l1")
-    ctx = config.ctx
-    ns = ctx.namespaces.get(FulltextProducer.TOP_NAME, {})
-    store = FulltextProducer.build_named("layers_l1", ctx) if "layers_l1" in ns else None
-    if store is None:
+        return KeywordRecaller(StorageProducer.resolve(config), layer="l1")
+    recaller = KeywordRecaller(StorageProducer.resolve(config), layer="l1")
+    if recaller.fulltext_store is None:
         logger.info("KeywordRecaller(keyword_l1): store 未注入，recall 将返空")
-    return KeywordRecaller(store, layer="l1")
-
+    return recaller

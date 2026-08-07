@@ -16,7 +16,7 @@ src/
 ├── control/        # 编排层：MemoryEngine 跨层编排中枢 + Scheduler/Permission/Policy/Governance/Space
 ├── ingest/         # 接入层：多模态 → 文本投影 + MemoryUnit，不落盘
 ├── retrieval/      # 检索层：scope 过滤 → 多路召回 → 融合重排 → 渐进式披露
-└── storage/        # 存储层：统一 CRUD + search，scope 原生隔离（vector/graph/fulltext/kv/fs/fusion）
+└── storage/        # 存储层：统一 Storage 门面 + 六类 Store，scope 原生隔离
 ```
 
 ## 数据流
@@ -29,7 +29,7 @@ src/
   control/MemoryEngine ─── 跨层编排中枢
        │
        ├─ write ──→ ingest/Ingestor（规约）→ construction/（落盘 + 索引）→ storage/*Store
-       ├─ recall ─→ retrieval/Retriever → storage/*Store.search
+       ├─ recall ─→ retrieval/Retriever → storage/Storage → storage/*Store.search
        ├─ evolve ─→ control/Scheduler → construction/Evolver → storage/*Store
        └─ get/update/delete ──→ storage/*Store（点读 + 非破坏式修正）
 ```
@@ -58,7 +58,9 @@ src/
 
 ### storage/ — 存储层
 
-统一 CRUD 动词（insert/delete/update/get）+ 检索型 `search`。六种后端：`VectorStore` / `GraphStore` / `FulltextStore` / `KVStore` / `FSStore` / `FusionStore`。scope 隔离是存储层原生职责。
+`Storage` 提供 MemoryUnit 领域操作、能力发现与检索适配入口，默认 `CompositeStorage` 组合
+六类 Store；底层 Store 统一 CRUD 动词（insert/delete/update/get），检索型 Store 额外提供
+`search`。scope 隔离是存储层原生职责。
 
 ### common/ — 共享插件 + 类型
 

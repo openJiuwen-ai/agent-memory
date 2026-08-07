@@ -13,18 +13,11 @@ from datetime import datetime, timezone
 
 from common.errors import NotFoundError, PolicyError, ValidationError
 from common.log import get_logger
-from common.type_def import (
-    MEMORY_KEY_PREFIX,
-    LifecycleState,
-    MemoryUnit,
-    Scope,
-    memory_key,
-)
-from common.type_def.memory_codec import dumps, loads
+from common.type_def import LifecycleState, MemoryUnit, Scope
 from control.base import ControlOperatorType
 from control.lifecycle import LifecycleManager, LifecycleProducer
 from control.policy import PolicyManager, PolicyProducer
-from storage.kv import KvProducer, KVStore
+from storage.storage import Storage, StorageProducer
 
 logger = get_logger(__name__)
 
@@ -99,8 +92,8 @@ def _sweep_target(
 class KVLifecycleManager(LifecycleManager):
     """在 kv 真源上做非破坏式状态流转与到期清扫。"""
 
-    def __init__(self, kv: KVStore, policy: PolicyManager | None = None) -> None:
-        self._kv = kv
+    def __init__(self, storage: Storage, policy: PolicyManager | None = None) -> None:
+        self._storage = storage
         self._policy = policy
 
     def operator_type(self) -> ControlOperatorType:
@@ -112,37 +105,27 @@ class KVLifecycleManager(LifecycleManager):
     def transition(
         self, scope: Scope, unit_ids: list[str], target: LifecycleState
     ) -> None:
-        wanted = {memory_key(unit_id) for unit_id in unit_ids}
-        matches: list[tuple[Scope, str, MemoryUnit]] = []
-        for key, raw in self._kv.scan(scope, MEMORY_KEY_PREFIX):
-            unit = loads(raw)
-            if unit is None or key not in wanted:
-                continue
-            _ensure_transition_allowed(unit.lifecycle, target, key)
-            matches.append((scope, key, unit))
-        for matched_scope, key, unit in matches:
+        matches = self._storage.get(scope, unit_ids)
+        for unit in matches:
+            _ensure_transition_allowed(unit.lifecycle, target, unit.id)
             unit.lifecycle = target
-            self._kv.update(matched_scope, key, dumps(unit))
+        if matches:
+            self._storage.update(scope, matches)
         logger.info(
             "Lifecycle.transition: scope=%s target=%s requested=%d matched=%d",
             scope,
             target.value,
-            len(wanted),
+            len(unit_ids),
             len(matches),
         )
 
     def supersede(self, scope: Scope, unit_id: str, invalid_at: datetime) -> MemoryUnit:
-        dst_key = memory_key(unit_id)
-        for key, raw in self._kv.scan(scope, MEMORY_KEY_PREFIX):
-            if key != dst_key:
-                continue
-            unit = loads(raw)
-            if unit is None:
-                continue
-            _ensure_transition_allowed(unit.lifecycle, LifecycleState.SUPERSEDED, key)
+        units = self._storage.get(scope, [unit_id])
+        for unit in units:
+            _ensure_transition_allowed(unit.lifecycle, LifecycleState.SUPERSEDED, unit.id)
             unit.lifecycle = LifecycleState.SUPERSEDED
             unit.temporal.t_invalid = invalid_at
-            self._kv.update(scope, key, dumps(unit))
+            self._storage.update(scope, [unit])
             logger.info(
                 "Lifecycle.supersede: unit_id=%s scope=%s invalid_at=%s",
                 unit_id,
@@ -156,16 +139,15 @@ class KVLifecycleManager(LifecycleManager):
     def sweep(self) -> list[str]:
         now = datetime.now(timezone.utc)
         swept: list[str] = []
-        for scope in self._kv.scopes():
-            for key, raw in self._kv.scan(scope, MEMORY_KEY_PREFIX):
-                unit = loads(raw)
-                if unit is None:
-                    continue
+        for scope in self._storage.scopes():
+            units = self._storage.list(scope, limit=1_000_000).items
+            for unit in units:
                 target = _sweep_target(unit, now, self._policy)
                 if target is not None:
                     unit.lifecycle = target
-                    self._kv.update(scope, key, dumps(unit))
+                    self._storage.update(scope, [unit])
                     swept.append(unit.id)
+        swept.sort()
         logger.info("Lifecycle.sweep: swept=%d", len(swept))
         return swept
 
@@ -176,6 +158,6 @@ class KVLifecycleManager(LifecycleManager):
 @LifecycleProducer.register("kv")
 def _build(config):
     return KVLifecycleManager(
-        KvProducer.dep(config, default="memory"),
+        StorageProducer.resolve(config),
         PolicyProducer.dep(config, default="dict"),
     )

@@ -28,10 +28,8 @@ from common.type_def import (
     LifecycleState,
     MemoryUnit,
     Segment,
-    memory_key,
 )
 from common.type_def.chat import ChatMessage
-from common.type_def.memory_codec import dumps
 from construction.abstractor import AbstractorProducer
 from construction.associator import AssociatorProducer
 from construction.base import ExtractContext
@@ -51,8 +49,7 @@ from construction.prompt_strategy import (
     copy_reflect_prompts,
     parse_prompt_strategies,
 )
-from storage.graph import GraphProducer
-from storage.kv import KvProducer
+from storage.storage import StorageProducer
 
 logger = get_logger(__name__)
 
@@ -272,7 +269,7 @@ class DynamicEvolver(OrchestratingEvolver):
             decision in {DedupDecision.UPDATE, DedupDecision.SUPERSEDE}
             and existing is None
         ):
-            self._kv.insert(candidate.scope, memory_key(candidate.id), dumps(candidate))
+            self._storage.add(candidate.scope, [candidate])
             self._index.build([candidate])
             result.created_ids.append(candidate.id)
             return 0
@@ -297,7 +294,7 @@ class DynamicEvolver(OrchestratingEvolver):
                     "dedup_merged_from": candidate.id,
                 }
             )
-            self._kv.update(existing.scope, memory_key(existing.id), dumps(existing))
+            self._storage.update(existing.scope, [existing])
             self._index.update([existing])
             result.updated_ids.append(existing.id)
             return 0
@@ -312,11 +309,11 @@ class DynamicEvolver(OrchestratingEvolver):
                 "dedup_superseded": existing.id,
             }
         )
-        self._kv.insert(candidate.scope, memory_key(candidate.id), dumps(candidate))
+        self._storage.add(candidate.scope, [candidate])
         self._index.build([candidate])
         existing.lifecycle = LifecycleState.SUPERSEDED
         existing.temporal.t_invalid = datetime.now(timezone.utc)
-        self._kv.update(existing.scope, memory_key(existing.id), dumps(existing))
+        self._storage.update(existing.scope, [existing])
         self._index.update([existing])
         result.created_ids.append(candidate.id)
         result.superseded_ids.append(existing.id)
@@ -390,8 +387,7 @@ def _build(config):
         abstractor=AbstractorProducer.dep(config, default="concat"),
         associator=AssociatorProducer.dep(config, default="keyword"),
         index_builder=IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
-        kv=KvProducer.dep(config, default="memory"),
-        graph=GraphProducer.dep(config, default="memory"),
+        storage=StorageProducer.resolve(config),
         dedup=DedupProducer.dep(config, default=dr_default),
         llm=LlmProducer.dep(config, default="echo"),
         layer_annotator=_opt_annotator(),
