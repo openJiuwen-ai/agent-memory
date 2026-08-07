@@ -5,9 +5,22 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-27 |
-| 影响范围 | `src/common/security/cryptography/`、`src/storage/kv_impl/`、`src/control/engine_impl/`、`docs/specs/S07-common.md`、`docs/specs/S06-storage.md` |
-| 测试基线 | `local` EncryptionProvider 直接行为校验通过，`EncryptedKVStore` 单测函数直接执行通过；当前环境缺少 pytest/ruff runner |
+| 最近更新 | 2026-08-07 |
+| 影响范围 | `src/common/security/`（认证、授权、加密、防护子模块）、`src/storage/kv_impl/`、`src/storage/fs_impl/`、`docs/specs/S03-control.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md`、`docs/specs/S09-security.md` |
+| 测试基线 | `local` CryptographyProvider 直接行为校验通过，`EncryptedKVStore` 与 `EncryptedFSStore` 单测通过；认证、授权与防护模块镜像测试通过 |
+| 关联特性文档 | [F07 认证内核](F07-authentication-kernel.md)、[F08 授权上下文](F08-authorization-context.md) |
+| 规范契约 | [S09 安全横切契约](../../specs/S09-security.md) |
 | Refs | — |
+
+## 术语说明
+
+本文档作为安全架构总纲，定义以下实施阶段术语，供关联特性文档引用：
+
+- **认证与加密期**：security 基础能力建立阶段，包括认证内核（dev/api_key/trusted 三档认证模式）、凭据管理、速率限制、加密 provider、信封加密与 key 管理。对应 [F07 认证内核](F07-authentication-kernel.md) 所记录的工作。
+  
+- **授权与上下文期**：角色感知授权与上下文传播阶段，包括角色体系（USER/ADMIN/ROOT）、授权判定接入 `AuthContext.role`、Agent 代 User 委托、`RequestSecurityContext` 统一安全输入。对应 [F08 授权上下文](F08-authorization-context.md) 所记录的工作。
+
+这些阶段在时间上有先后依赖（授权期依赖认证期产出的 `AuthContext`），但在代码组织上均归属 `src/common/security/` 统一模块。
 
 > **归档性质**：本文由早期 `docs/security/security.md` 迁入，保留威胁模型、方案取舍和
 > 历史设计草图；其中接口签名、伪代码与 YAML 片段均非现行契约。当前公共契约以
@@ -16,20 +29,18 @@
 
 本文由原 `docs/security/security.md` 迁入 common 特性归档，作为认证、授权、隔离、加密与审计的历史设计输入；现行接口与配置入口以 S03 / S06 / S07 / S09 为准。
 
-当前落地状态（2026-08-05，F05 Common Security 迁移后）：全部安全能力归
-`src/common/security/`。`security/cryptography/` 提供 `CryptographyProvider` /
-`CryptographyProducer`（原 `common/encryption` 的 `EncryptionProvider` /
-`EncryptionProducer`），并已拆出独立的 `KeyProvider` 抽象；
-`cryptography_impl/local_envelope.py` 提供 `local` ENC1 AES-GCM 真实加解密 provider
-与 `local` KeyProvider；`storage/kv_impl/encrypted_kv_store.py` 与
-`storage/fs_impl/encrypted_fs_store.py` 提供加密装饰器。信封已升级到 v2（自述 key id
-与 key epoch，v1 只读兼容），**不再有任何明文回退开关**。KMS / Vault KeyProvider 与
-跨代密钥轮换仍未实现。
+当前落地状态（2026-08-07）：全部安全能力归 `src/common/security/`，按能力域分子包：
 
-本文以下正文是历史设计输入，其中的路径与类名多为迁移前形态；凡「实现注记」引用块
-已更新到现行落点。旧平铺路径（`common/encryption`、`common/authentication`、
-`common/credential_store`、`common/admission`、`type_def/auth.py`）只是历史状态，
-不再作为新代码的约束。
+- `authentication/`：认证内核，提供 `Authenticator` 抽象与三档实现（`dev_authenticator`、`api_key_authenticator`、`trusted_authenticator`）；`authentication_impl/memory_key_store.py` 提供凭据存储。
+- `authorization/`：授权判定，提供 `Authorizer` 抽象与基于 scope 规则的实现（`scope_rules.py`）；`request_context.py` 提供 `RequestSecurityContext` 统一安全输入。
+- `cryptography/`：加密能力，提供 `CryptographyProvider` / `CryptographyProducer`（原 `common/encryption` 的 `EncryptionProvider` / `EncryptionProducer`），并已拆出独立的 `KeyProvider` 抽象；`cryptography_impl/local_envelope.py` 提供 `local` ENC1 AES-GCM 真实加解密 provider 与 `local` KeyProvider。
+- `protection/`：防护策略，包括 `binding_policy.py`（绑定地址校验）、`rate_limiter.py`（速率限制）、`workload_guard.py`（并发预算）。
+- `runtime.py`：`SecurityRuntime` 统一持有上述能力引用，在启动期健康检查，并提供装配入口。
+- `types.py`：公共类型定义（`AuthContext`、`Role`、`Scope` 等）。
+
+信封已升级到 v2（自述 key id 与 key epoch，v1 只读兼容），不再有任何明文回退开关。`storage/kv_impl/encrypted_kv_store.py` 与 `storage/fs_impl/encrypted_fs_store.py` 提供加密装饰器。KMS / Vault KeyProvider 与跨代密钥轮换仍未实现。
+
+本文以下正文是历史设计输入，其中的路径与类名多为迁移前形态；凡「实现注记」引用块已更新到现行落点。旧平铺路径（`common/encryption`、`common/authentication`、`common/credential_store`、`common/admission`、`type_def/auth.py`）只是历史状态，不再作为新代码的约束。
 
 ---
 
@@ -1888,8 +1899,7 @@ def read_file(uri: str, target: Scope, ctx: AuthContext):
 - 缺少加密依赖或密钥时回退明文：部署会在无明显信号的情况下裸存数据。
 - 在每个 Store 或业务入口重复密码学逻辑：新增路径容易漏加密，轮换和 AAD 规则也会漂移。
 
-当前分支的认证、角色授权与加密取舍分别归档在 security/F01、security/F02 与
-storage/F02；审计完整性由后续特性提交归档。
+当前分支的认证、授权与加密取舍分别归档在 [F07 认证内核](F07-authentication-kernel.md)、[F08 授权上下文](F08-authorization-context.md) 与 storage/F02（加密）；审计完整性由后续特性提交归档。
 
 ## 验证
 
