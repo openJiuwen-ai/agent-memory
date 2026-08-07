@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/api/ |
-| 最近一次修订日期 | 2026-08-05 |
+| 最近一次修订日期 | 2026-08-07 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md |
 ## 范围 / 边界
 
@@ -299,7 +299,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 |------|----------|
 | `PermissionDeniedError` | 鉴权不通过（identity 对 target scope 无相应 Action 权限） |
 | `NotFoundError` | `get` 等按 id 读取但记忆不存在 |
-| `ValidationError` | 入参非法（如 `recall` 的 `top_k <= 0`） |
+| `ValidationError` | 入参非法（如 `recall` 的 `top_k <= 0`；`write`/`batch_write` 的 `content` 非 `str`、空串或纯空白） |
 | `PolicyError` | `admin_set` 的键未知或为不可变配置 |
 | `ConflictError` | 写入冲突（如 id 重复） |
 | `BackendError` / `HealthCheckError` | 后端故障 / 健康探测失败 |

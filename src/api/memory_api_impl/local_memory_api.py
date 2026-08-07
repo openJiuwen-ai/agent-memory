@@ -138,6 +138,19 @@ def _required_filter_metadata(filters: FilterExpr | None) -> dict[str, Any]:
     return routed
 
 
+def _reject_invalid_content(content: object) -> None:
+    """写入边界拒绝非 str / 空 / 纯空白 content。
+
+    单条 write 曾把校验漏到 engine ``content.encode`` 与 Normalizer：``None`` 变
+    ``AttributeError``，``""`` 靠 ``b""`` 假值副作用才成 ValidationError，``"   "``
+    则静默落盘。与 batch 路径统一在 API 入口失败响亮。
+    """
+    if not isinstance(content, str):
+        raise ValidationError(f"content must be str, got {type(content).__name__}")
+    if not content.strip():
+        raise ValidationError("content must be a non-empty str")
+
+
 def _reject_reserved_metadata(metadata: dict[str, Any] | None) -> None:
     """写入/更新边界拒绝系统保留 key。
 
@@ -562,6 +575,7 @@ class LocalMemoryAPI(MemoryAPI):
         metadata: dict[str, Any] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
+        _reject_invalid_content(content)
         _reject_reserved_metadata(metadata)
         _reject_non_scalar_metadata(metadata)
         permission_context = _write_permission_context(scope, tags, metadata)
@@ -617,8 +631,7 @@ class LocalMemoryAPI(MemoryAPI):
     ) -> BatchWriteItem:
         if not isinstance(item, BatchWriteItem):
             raise ValidationError("batch item must be BatchWriteItem")
-        if not isinstance(item.content, str):
-            raise ValidationError("batch item content must be str")
+        _reject_invalid_content(item.content)
         target_scope = item.scope if item.scope is not None else scope
         if not isinstance(target_scope, Scope):
             raise ValidationError("batch item scope is required")
