@@ -11,10 +11,10 @@
 
 > **归档性质**：本文由早期 `docs/security/security.md` 迁入，保留威胁模型、方案取舍和
 > 历史设计草图；其中接口签名、伪代码与 YAML 片段均非现行契约。当前公共契约以
-> S03 / S06 / S07 / S08 为准，当前实现地图以各 `src/*/AGENTS.md` 为准。本文与代码冲突时
+> S03 / S06 / S07 / S09 为准，当前实现地图以各 `src/*/AGENTS.md` 为准。本文与代码冲突时
 > 不得据此反向修改代码，应先按上述 spec 核对并更新本文的状态注记。
 
-本文由原 `docs/security/security.md` 迁入 common 特性归档，作为认证、授权、隔离、加密与审计的历史设计输入；现行接口与配置入口以 S03 / S06 / S07 / S08 为准。
+本文由原 `docs/security/security.md` 迁入 common 特性归档，作为认证、授权、隔离、加密与审计的历史设计输入；现行接口与配置入口以 S03 / S06 / S07 / S09 为准。
 
 当前落地状态（2026-08-05，F05 Common Security 迁移后）：全部安全能力归
 `src/common/security/`。`security/cryptography/` 提供 `CryptographyProvider` /
@@ -87,7 +87,7 @@
 2. **每个请求必须过认证**：没有任何 endpoint 能绕过认证层（健康检查可例外）。
 3. **单次验证、上下文传播**：认证中间件只验证一次身份，结果注入请求上下文，后续流程不再重复校验身份。
 4. **常时间比较（timing-safe）**：所有密钥比对必须使用 `hmac.compare_digest` 或等价的常时间函数。
-5. **可插拔算子用注册式工厂（Factory + Producer）**：`agent-memory` mem2.0 的核心抽象通过注册式工厂装配。安全模块的认证、限流与加密 provider 同样遵循此模式；FSStore 虽可独立装配，但当前主 `build_kernel` 尚无资产消费者，不能据此宣称已自动接入主链路。当前契约见 S08。
+5. **可插拔算子用注册式工厂（Factory + Producer）**：`agent-memory` mem2.0 的核心抽象通过注册式工厂装配。安全模块的认证、限流与加密 provider 同样遵循此模式；FSStore 虽可独立装配，但当前主 `build_kernel` 尚无资产消费者，不能据此宣称已自动接入主链路。当前契约见 S09。
 6. **应用层 bootstrap 已生成**：`bootstrap/` 下有 CLI / HTTP server / MCP server / SDK 四种接入形态的薄封装，安全模块通过 bootstrap 挂载。`deploy/` 下有 Docker / local 部署方案。
 
 ### 2.2 三种认证模式
@@ -1780,7 +1780,7 @@ def read_file(uri: str, target: Scope, ctx: AuthContext):
 `RequestSecurityContext.auth` 取的，还是从 request body / URL parameter / 未验证 header 读的？
 如果是后者，攻击者就能在单次请求里声明身份或伪造委托。现行 `MemoryAPI` 用必填
 `security: RequestSecurityContext`（keyword-only）作为唯一安全输入，并由 Authorizer 在接口层
-判定；委托只从服务端 `DelegationStore` 复核，`security` 不下沉到 Engine。现行契约以 S08 为准。
+判定；委托只从服务端 `DelegationStore` 复核，`security` 不下沉到 Engine。现行契约以 S09 为准。
 
 ### 2. 所有加密比对都是常时间的
 
@@ -1894,7 +1894,7 @@ storage/F02；审计完整性由后续特性提交归档。
 ## 验证
 
 本文是历史设计输入，不单独维护一套可能漂移的测试总数。当前认证/授权/审计/加密验证
-基线见对应 feature 文档；跨模块接口以 S03 / S06 / S07 / S08 和镜像单测为准。
+基线见对应 feature 文档；跨模块接口以 S03 / S06 / S07 / S09 和镜像单测为准。
 
 ## 已知遗留
 

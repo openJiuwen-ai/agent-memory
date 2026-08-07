@@ -1,4 +1,4 @@
-# S08 — 安全横切契约（Security）
+# S09 — 安全横切契约（Security）
 
 ## 元信息
 
@@ -6,7 +6,7 @@
 |---|---|
 | 关联模块 | `src/common/security/`、`bootstrap/`、`src/api/`、`src/storage/` |
 | 最近一次修订日期 | 2026-08-06 |
-| 关联特性文档 | `docs/features/security/F01-authentication-kernel.md`，`docs/features/security/F02-role-aware-authorization.md`，`docs/features/common/F04-security-interfaces-and-encryption.md` |
+| 关联特性文档 | `docs/features/common/F04-security-interfaces-and-encryption.md`，`docs/features/common/F07-authentication-kernel.md`，`docs/features/common/F08-authorization-context.md` |
 
 ## 范围 / 边界
 
