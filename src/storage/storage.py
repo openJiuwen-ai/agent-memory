@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from enum import Enum
 
+from common.errors import UnsupportedStorageCapabilityError
 from common.factory.factory import Factory
 from common.type_def import (
     CandidateFuser,
@@ -147,32 +148,40 @@ class Storage(ABC):
     def kv_port(self, name: str = "default") -> KVStore:
         if name == "default":
             return self.kv
-        raise NotImplementedError(f"named KV port is not available: {name}")
+        raise UnsupportedStorageCapabilityError(f"storage capability is not available: kv.{name}")
 
     def vector_port(self, name: str = "default") -> VectorStore:
         if name == "default":
             return self.vector
-        raise NotImplementedError(f"named vector port is not available: {name}")
+        raise UnsupportedStorageCapabilityError(
+            f"storage capability is not available: vector.{name}"
+        )
 
     def fulltext_port(self, name: str = "default") -> FulltextStore:
         if name == "default":
             return self.fulltext
-        raise NotImplementedError(f"named fulltext port is not available: {name}")
+        raise UnsupportedStorageCapabilityError(
+            f"storage capability is not available: fulltext.{name}"
+        )
 
     def graph_port(self, name: str = "default") -> GraphStore:
         if name == "default":
             return self.graph
-        raise NotImplementedError(f"named graph port is not available: {name}")
+        raise UnsupportedStorageCapabilityError(
+            f"storage capability is not available: graph.{name}"
+        )
 
     def fusion_port(self, name: str = "default") -> FusionStore:
         if name == "default":
             return self.fusion
-        raise NotImplementedError(f"named fusion port is not available: {name}")
+        raise UnsupportedStorageCapabilityError(
+            f"storage capability is not available: fusion.{name}"
+        )
 
     def fs_port(self, name: str = "default") -> FSStore:
         if name == "default":
             return self.fs
-        raise NotImplementedError(f"named FS port is not available: {name}")
+        raise UnsupportedStorageCapabilityError(f"storage capability is not available: fs.{name}")
 
     @abstractmethod
     def preferred_retrieval_pipeline(self) -> RetrievalPipeline:
