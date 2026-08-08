@@ -10,10 +10,13 @@ from __future__ import annotations
 import pytest
 
 from api import assemble
-from api.memory_api_impl import assembly
+from api.memory_api_impl import assembly, build_kernel
 from common.audit.base import AuditProducer
-from common.errors import PermissionDeniedError, ValidationError
+from common.errors import BackendError, PermissionDeniedError, ValidationError
 from common.factory.factory import Factory
+from common.security.security_impl.local_envelope_security_provider import (
+    LocalEnvelopeSecurityProvider,
+)
 from common.type_def import Context, Scope
 from config import Config
 from config.context import AssemblyContext
@@ -101,6 +104,34 @@ def test_assembly_audit_fallback_matches_sqlite_default(monkeypatch) -> None:
 
     assert seen_defaults
     assert set(seen_defaults) == {"sqlite"}
+
+
+def test_security_namespace_params_apply_on_forced_kv_wrap() -> None:
+    """security.default.params 经强制 EncryptedKV 包装生效（allow_plaintext/key_hex）。"""
+    key_hex = "a" * 64
+    cfg = Config.from_dict(
+        {
+            "security": {
+                "default": {
+                    "target": "local",
+                    "params": {
+                        "allow_plaintext": False,
+                        "key_hex": key_hex,
+                        "create_key_file": False,
+                    },
+                }
+            }
+        }
+    )
+    kernel = build_kernel(config=cfg)
+    security = getattr(kernel.kv, "_security")
+    assert isinstance(security, LocalEnvelopeSecurityProvider)
+    assert getattr(security, "_allow_plaintext") is False
+    assert getattr(getattr(security, "_key_provider"), "_key_hex") == key_hex
+
+    getattr(kernel.kv, "_raw").insert(SCOPE, "plain_key", b"hello-plaintext")
+    with pytest.raises(BackendError):
+        kernel.kv.get(SCOPE, "plain_key")
 
 
 def test_config_overrides_control_operator() -> None:

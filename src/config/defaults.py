@@ -255,6 +255,7 @@ ROOT_PARAMS: dict[str, str] = {
     "governor": _D,
     "audit": _D,
     "kv_store": _D,
+    # 强制 EncryptedKV 包装经 root.dep 取 security.default（含 allow_plaintext/key_*）
     "security": _D,
     "storage": _D,
     "space": _D,
