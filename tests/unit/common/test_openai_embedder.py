@@ -62,7 +62,11 @@ def _make_mock_embedder(dim: int = 8, max_batch_size: int = 2048) -> OpenAIEmbed
     mock_create = MagicMock(
         side_effect=lambda **kwargs: MockEmbeddingResponse(kwargs["input"], dim=dim)
     )
-    getattr(embedder, "_client").embeddings.create = mock_create
+    mock_client = MagicMock()
+    mock_client.embeddings.create = mock_create
+    # 惰性 client 无公共注入入口；用 setattr 字符串写入（G.CLS.11 / protected-access）。
+    setattr(embedder, "_client", mock_client)
+    setattr(embedder, "_client_fingerprint", ("mock-key", None, False, None))
     return embedder
 
 

@@ -30,9 +30,9 @@ from retrieval.retriever_impl.unit_reader import UnitReader
 from retrieval.types import RecallChannel, RetrievalQuery
 from storage.fulltext_impl.in_memory_fulltext_store import InMemoryFulltextStore
 from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from storage.storage_impl.composite_storage import CompositeStorage
 from storage.vector_impl.in_memory_vector_store import InMemoryVectorStore
-
-from tests.conftest import DEFAULT_SCOPE, make_unit
+from tests.conftest import make_unit
 
 pytestmark = pytest.mark.integration
 
@@ -48,15 +48,17 @@ def indexed_via_builder():
     fulltext = InMemoryFulltextStore(tokenizer)
     # size 调小，强制把内容切成多个 chunk，覆盖「同 unit 多 chunk → MaxP 折叠」
     chunker = FixedWindowChunker(size=20)
-    index_builder = HybridIndexBuilder(fulltext, vector, kv, chunker, embedder)
+    storage = CompositeStorage(kv=kv, vector=vector, fulltext=fulltext)
+    index_builder = HybridIndexBuilder(storage, chunker, embedder)
 
     parser = SimpleQueryParser(tokenizer, embedder, feature_extractor=features)
     retriever = PipelineRetriever(
         parser,
-        [KeywordRecaller(fulltext), VectorRecaller(vector)],
+        [KeywordRecaller(storage), VectorRecaller(storage)],
         RRFFuser(),
         TruncatingDiscloser(),
         UnitReader(kv),
+        storage=storage,
     )
 
     unit = make_unit("u_long", "alice loves iced americano coffee every single morning before work")

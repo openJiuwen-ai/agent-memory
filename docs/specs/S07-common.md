@@ -5,8 +5,8 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | src/common/ |
-| 最近一次修订日期 | 2026-08-01 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md |
+| 最近一次修订日期 | 2026-08-05 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md |
 
 ## 范围 / 边界
 
@@ -16,6 +16,7 @@
 - 工厂注册机制（Factory/Producer 基础设施）
 - 审计日志（AuditLogger）
 - 数据保护横切接口（SecurityProvider）
+- 跨实例互斥横切接口（LockProvider）
 - 错误类型（自定义异常）
 - 工具函数（ID 生成/时间解析等）
 
@@ -43,6 +44,11 @@
     客户端（`http://` 明文直连、`https://` 仍走 SDK 默认校验）；开启后 `base_url` 必须是
     `https://`、证书文件必须存在，否则在**装配阶段**报错。缺证书不报错而回落系统 CA，
     这是与 storage 侧唯一的矩阵差异（公网端点走公共 CA 属正常状态）。
+11. **LockProvider 是基于租约的协调机制，不是共识算法**：租约到期、进程停顿超过租约、
+    Redis 主从切换丢失未同步写入都会导致短暂双持。依赖方必须能容忍偶发互斥失效，或自备
+    第二道防线（幂等键、唯一约束、乐观并发控制）。重入以 `asyncio.current_task()` 为身份
+    边界，`create_task` 派生的子任务不视为重入；重入记账与租约有效性正交，持有权状态一律
+    以 `LockHandle.lost` 为准。后端不可用时 fail-closed 抛 `BackendError`，不静默降级为无锁。
 
 ## 接口契约
 
@@ -153,6 +159,23 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 私有配置参数归 `src/common/AGENTS.md` 与对应 feature 文档记录；本 spec 只固化
 接口、上下文和错误语义。
 
+### LockProvider（`lock/lock.py`）
+
+跨实例互斥横切接口，**本层唯一的异步契约**。只交付互斥原语，不在任何业务路径上加锁；
+在哪些临界区取锁、锁多大范围由各消费方自行论证。
+
+| 方法 | 签名 | 语义 |
+|------|------|------|
+| `build_key` | `(scope: Scope, name: str) -> str` | 拼锁键 `am:lock:v1:{五段 scope}:{name}`；`name` 为空报 `ValidationError` |
+| `acquire` | `(scope, name, *, lease_ms=None, wait_timeout_ms=None) -> LockHandle` | 有界等待获取；超时抛 `LockTimeoutError`，`wait_timeout_ms=0` 表示只试一次 |
+| `release` | `(handle: LockHandle) -> None` | 按 token 做 CAS 释放；重入时只递减计数 |
+| `renew` | `(handle, *, lease_ms=None) -> bool` | 按 token 做 CAS 续期；`False` 表示已失去持有权 |
+| `guard` | `(scope, name, **kwargs) -> AsyncContextManager[LockHandle]` | 获取 / 自动续期 / 释放的组合，推荐入口 |
+| `health` | `() -> None` | 存活探测；异步，与其余组件的同步 `health()` 不一致 |
+
+`LockProducer.TOP_NAME` 为 `lock`，**不设默认实现**——消费方必须显式配置，避免漏配时
+静默退化成不跨实例的单机锁。
+
 ## 数据结构
 
 ### 核心类型（`type_def/memory.py`）
@@ -208,7 +231,7 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 | `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` | `embedder` / `chunker` / `tokenizer` |
 | `IndexBuilderProducer` / `RecallerProducer` | `constructor` / `recaller` |
 | `NormalizerProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` | `normalizer` / `feature_extractor` / `llm` / `reranker` |
-| `AuditProducer` / `SecurityProducer` | `audit` / `security` |
+| `AuditProducer` / `SecurityProducer` / `LockProducer` | `audit` / `security` / `lock` |
 
 #### Factory 基类
 
@@ -271,7 +294,7 @@ def _build(config: ComponentConfig) -> Embedder:
 各 Producer 继承 `Factory`：
 - `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` / `NormalizerProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditProducer` / `SecurityProducer`
 
-## 错误类型（`errors.py` / `security.py`）
+## 错误类型（`errors.py` / `security.py` / `lock.py`）
 
 | 异常 | 含义 |
 |------|------|
@@ -282,6 +305,9 @@ def _build(config: ComponentConfig) -> Embedder:
 | `BackendError` | 后端不可用 |
 | `HealthCheckError` | 健康检查失败 |
 | `SecurityError` / `EncryptionError` | 安全横切处理失败的基类 |
+| `LockError` | 锁相关异常的基类 |
+| `LockTimeoutError` | 有界等待耗尽仍未获得锁 |
+| `LockLostError` | 租约续期失败、持有权已失效（由消费方按需抛出） |
 | `InvalidMagicError` | 密文字节不符合当前 provider 期望的信封魔数 |
 | `CorruptedCiphertextError` | 密文信封结构损坏、版本不支持或长度不完整 |
 | `AuthenticationFailedError` | AES-GCM tag 校验失败，通常表示 AAD 不匹配或内容被篡改 |
@@ -291,13 +317,13 @@ def _build(config: ComponentConfig) -> Embedder:
 
 ```
 src/common/<组件>/
-    base.py | security.py   # 接口 + Producer
+    base.py | <name>.py     # 接口 + Producer（横切组件用 <name>.py，如 security.py / lock.py）
     <组件>_impl/
         __init__.py         # 重导出实现类
         <impl_class_snake>.py   # 具体实现 + 尾部 @XxxProducer.register("name")
 ```
 
-注册由 `common.bootstrap.register_plugins` 统一触发。`security_impl/` 当前注册 `local` SecurityProvider 实现。
+注册由 `common.bootstrap.register_plugins` 统一触发。`security_impl/` 当前注册 `local` SecurityProvider 实现，`lock_impl/` 注册 `redis` 与 `memory` 两个 LockProvider 实现。
 
 ## 与其它 spec 的关系
 
@@ -308,4 +334,5 @@ src/common/<组件>/
 | S04-retrieval | 检索层消费 Embedder/Tokenizer/FeatureExtractor/LLM/Reranker |
 | S05-construction | 构建层消费 Chunker/Embedder/Tokenizer/FeatureExtractor/LLM |
 | S06-storage | 存储层依赖本层的数据类型定义（Scope/FilterClause 等） |
+| S08-config | 插件晚绑定 model/api_key/url 等由 ConfigSource 提供；装配拓扑仍走 Factory |
 | architecture.md 全文 | 本层承载全局共享的数据类型与工具 |

@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/control/ |
-| 最近一次修订日期 | 2026-07-30 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md |
+| 最近一次修订日期 | 2026-08-05 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md |
 ## 范围 / 边界
 
 **管什么**：
@@ -70,6 +70,7 @@ class ControlOperator(ABC):
 | 方法 | 签名 | 语义 |
 |------|------|------|
 | `write` | `async (content, scope, source, *, assets, tags, metadata: dict[str, Any] \| None, occurred_at) -> list[MemoryUnit]` | 规约→可选抽取/分类→落盘+建索引；`infer=true` 时返回 `created_ids` 对应的派生结果，否则处理原始单元（直写不去重） |
+| `batch_write` | `async (items: list[BatchWriteItem], *, continue_on_error=True) -> BatchWriteResult` | 只接收 API 已归一化并完成鉴权/space 前置校验的项；按输入顺序复用 `write`，归集领域异常及非领域异常（后者为 `InternalError`）；fail-fast 时填充 `Skipped` outcomes |
 | `recall` | `async (scope, query: RetrievalQuery) -> RetrievalResult` | 委托 Retriever 完整检索链路 |
 | `list` | `async (scope, *, offset=0, limit=100, memory_types=None, extensions=None, filters=None) -> MemoryListResult` | 校验分页参数并完整委托 `KVStore.list`；返回当前页和分页前匹配总数 |
 | `permission_context_for_unit` | `async (unit_id, scope) -> PermissionContext` | 读取已有记忆的权限上下文，只返回 memory_type/tags/metadata 等鉴权元数据，不返回 content/assets |
@@ -253,6 +254,8 @@ recall 完成权限检查后，API 读取 `PermissionManager.routing_fields()`�
 | `set` | `(key: str, value: str) -> None` | 调整策略（未知键/不可变配置抛 `PolicyError`） |
 | `all` | `() -> dict[str, str]` | 列出全部运行时策略及当前值 |
 
+> **与 ConfigSource 的边界（S08）**：PolicyManager 只管理少量**已知策略键**（如 lifecycle 清扫目标、`scope.require_space`、既有 `rerank.enabled` 占位键）。能力开关/prompt 全文/模型凭证/Store 端点与 `*.active` 等六类动态配置走 `ConfigSource.fetch`，不通过 `admin_set` 扩展为任意配置树。
+
 ### SpaceManager（`space.py`）
 
 space 是 `org` 下的逻辑隔离单元。API 层负责鉴权与审计，`SpaceManager` 负责
@@ -334,4 +337,5 @@ src/control/<算子>_impl/
 | architecture.md §8 | 演进调度（EvolveMode / Channel）映射到 Scheduler 双通道 + Evolver 四阶段 |
 | architecture.md §9 | `src/api/MemoryAPI` 是控制层的薄封装 + PEP；数据面委托 Engine，管理面直达各算子 |
 | architecture.md §12 | 横切可观测/治理——Governor.audit 消费 `common/audit/AuditLogger` 记录的审计事件 |
-| architecture.md §13.4 | PolicyManager 是运行时可变策略的 admin 落点 |
+| architecture.md §13.4 | PolicyManager 是少量已知策略键的 admin 落点；六类动态配置见 S08 ConfigSource |
+| S08-config | ConfigSource 与 PolicyManager 分工 |

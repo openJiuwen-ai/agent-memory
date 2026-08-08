@@ -8,26 +8,25 @@ background 演进（Scheduler）。接入/构建/检索算子与真源 Store 由
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from common.errors import NotFoundError, ValidationError
+from common.errors import AgentMemoryError, NotFoundError, ValidationError
 from common.log import get_logger
 from common.type_def import (
-    MEMORY_KEY_PREFIX,
     FilterExpr,
     LifecycleState,
+    MemoryTier,
     MemoryUnit,
     Modality,
     RawPayload,
     Scope,
     Segment,
-    memory_key,
 )
-from common.type_def.memory_codec import dumps, loads
 from construction import EvolveMode
 from construction.classifier import Classifier, ClassifierProducer
 from construction.evolver import Evolver, EvolverProducer
@@ -35,10 +34,14 @@ from construction.index_builder import IndexBuilder, IndexBuilderProducer
 from control.base import ControlOperatorType
 from control.engine import EngineProducer, MemoryEngine
 from control.engine_impl.list_support import list_page
+from control.jobs import JobFactory, JobFactoryProducer, JobType
 from control.lifecycle import LifecycleManager, LifecycleProducer
 from control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
 from control.scheduler import Scheduler, SchedulerProducer
 from control.types import (
+    BatchWriteItem,
+    BatchWriteOutcome,
+    BatchWriteResult,
     Channel,
     DeleteMode,
     DeleteSelector,
@@ -50,7 +53,7 @@ from control.types import (
 from ingest.ingestor import Ingestor, IngestorProducer
 from retrieval.retriever import Retriever, RetrieverProducer
 from retrieval.types import RetrievalQuery, RetrievalResult
-from storage.kv import KvProducer, KVStore
+from storage.storage import Storage, StorageProducer
 
 logger = get_logger(__name__)
 
@@ -193,17 +196,19 @@ class InMemoryEngine(MemoryEngine):
         ingestor: Ingestor,
         index_builder: IndexBuilder,
         retriever: Retriever,
-        kv: KVStore,
+        storage: Storage,
         scheduler: Scheduler,
         evolver: Evolver,
         lifecycle: LifecycleManager,
         classifier: Classifier | None = None,
         pipeline: MemoryPipeline | None = None,
+        job_factory: JobFactory | None = None,
+        middle_interval: int = 50,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
         self._retriever = retriever
-        self._kv = kv  # 真源：裸 kv 存序列化字节
+        self._storage = storage
         self._scheduler = scheduler
         self._evolver = evolver
         self._lifecycle = lifecycle
@@ -211,6 +216,8 @@ class InMemoryEngine(MemoryEngine):
         # classifier 可选：infer=false（默认路径）时给原文打 tier+tags；
         # None 时跳过（原文 tier 保持 EPISODIC 默认，向后兼容）。
         self._classifier = classifier
+        self._job_factory = job_factory
+        self._middle_interval = middle_interval
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
@@ -245,6 +252,8 @@ class InMemoryEngine(MemoryEngine):
         #   1 条 PROCEDURAL 执行历史，落 /memory/ 建索引；不走去重、不收集 context。
         # - infer=true：同步抽取——原文落 /messages/（不建索引），evolver 收集最近10条原文
         #   （指代消解/语境）+ 召回10条相关记忆（去重提示），调 extractor 抽派生落 /memory/。
+        # - infer=true + middle=true：中期缓冲子路径——原文落 /memory/ + tier=WORKING +
+        #   建索引 + 提交 MiddleToLongJob 定时转长期。
         # - 缺省：原始落 /memory/ + 建索引，不自动提交演进（由调用方显式 evolve() 触发）。
         # 开关按字符串判定（兼容 "true" 与 Python True），业务值保持原生类型落库——
         # 整体 str 化会让数值/布尔在索引里变成 keyword，range 退化为字典序。
@@ -255,6 +264,11 @@ class InMemoryEngine(MemoryEngine):
 
         procedural = _is_true("procedural")
         infer = _is_true("infer")
+        middle = _is_true("middle")  # 二级开关（仅在 infer=true 下生效）
+        if middle and not infer and not procedural:
+            raise ValueError(
+                "metadata.middle=true requires infer=true (middle 是 infer 下的二级开关)"
+            )
 
         payload = RawPayload(
             id=str(uuid.uuid4()),
@@ -270,30 +284,48 @@ class InMemoryEngine(MemoryEngine):
             if assets and unit.segments:  # write 入参的 assets 归到首段（接入产出的单段投影）
                 unit.segments[0].assets = list(assets)
             unit.tags = list(tags or [])
+            if middle:  # 中期缓冲标记——MiddleToLongJob 据此过滤候选
+                unit.metadata["middle"] = "true"
+            if "session_id" in meta:
+                unit.metadata["session_id"] = meta["session_id"]
 
         binding = self._write_binding(units)
         evolver = binding.evolver if binding is not None else self._evolver
         index_builder = binding.index_builder if binding is not None else self._index
         classifier = binding.classifier if binding is not None else self._classifier
 
-        if procedural or infer:
-            # 同步抽取路径（procedural / infer 共用）：原文不进默认落盘，直接喂 Evolver(EXTRACT)。
-            # evolver 据单元 metadata 区分模式：
-            # - procedural：原文不落 KV，产 1 条 PROCEDURAL 落 /memory/，跳过 context/dedup。
-            # - infer：原文落 /messages/（不建索引，供后续轮指代消解/语境）
-            #   + 收集 context；legacy Evolver 走 dedup，DynamicEvolver 走
-            #   consolidate → reflect，
-            #   派生落 /memory/。evolver 还负责 /messages/ 的最近 10 条淘汰。
-            # procedural 与 infer 互斥，若两者同传按 procedural 语义（原文不落）。
+        # procedural 优先（与现 procedural > infer 互斥逻辑一致）
+        if procedural:
             if evolver is None:
                 raise RuntimeError(
-                    "Engine.write procedural/infer=True requires an Evolver (装配未注入 evolver)"
+                    "Engine.write procedural=True requires an Evolver (装配未注入 evolver)"
                 )
-            result = evolver.evolve(units, EvolveMode.EXTRACT)
+            result = await asyncio.to_thread(
+                evolver.evolve, units, EvolveMode.EXTRACT
+            )
             derived = [self._load(scope, uid) for uid in result.created_ids]
             logger.info(
-                "Engine.write %s: %d originals, %d derived added, scope=%s",
-                "procedural=True" if procedural else "infer=True",
+                "Engine.write procedural=True: %d originals, %d derived added, scope=%s",
+                len(units),
+                len(derived), scope,
+            )
+            return derived
+
+        # infer=true 下按 middle 二级分流
+        if infer:
+            if middle:
+                return await self._write_middle_path(units, scope, index_builder, evolver)
+            # 既有 infer=true 同步抽取路径，不动
+            if evolver is None:
+                raise RuntimeError(
+                    "Engine.write infer=True requires an Evolver (装配未注入 evolver)"
+                )
+            result = await asyncio.to_thread(
+                evolver.evolve, units, EvolveMode.EXTRACT
+            )
+            derived = [self._load(scope, uid) for uid in result.created_ids]
+            logger.info(
+                "Engine.write infer=True: %d originals, %d derived added, scope=%s",
                 len(units),
                 len(derived), scope,
             )
@@ -303,10 +335,103 @@ class InMemoryEngine(MemoryEngine):
         # classifier 为 None 时跳过（tier 保持 EPISODIC 默认，向后兼容）。
         if classifier is not None:
             classifier.classify(units)
-        for unit in units:
-            self._kv.insert(scope, memory_key(unit.id), dumps(unit))
-        index_builder.build(units)                        # hot 轻量索引
+        await asyncio.to_thread(self._write_default_to_kv, scope, units)
+        await asyncio.to_thread(index_builder.build, units)  # hot 轻量索引
         return units
+
+    # ---- 中期缓冲子路径 ----
+
+    async def _write_middle_path(
+        self,
+        units: list[MemoryUnit],
+        scope: Scope,
+        index_builder: IndexBuilder,
+        evolver: Evolver,
+    ) -> list[MemoryUnit]:
+        """中期缓冲子路径：原文落 /memory/ + 建索引 + tier=WORKING + 提交定时 MiddleToLongJob。"""
+        if self._job_factory is None:
+            raise RuntimeError(
+                "middle path requires job_factory, please configure "
+                "engine.default.job_factory"
+            )
+        if evolver is None:
+            raise RuntimeError(
+                "Engine.write middle=true requires an Evolver (装配未注入 evolver)"
+            )
+
+        for unit in units:
+            unit.tier = MemoryTier.WORKING
+            unit.metadata["middle"] = "true"
+        await asyncio.to_thread(self._write_middle_to_kv, scope, units)
+        await asyncio.to_thread(index_builder.build, units)
+
+        job = self._job_factory.get_job(
+            JobType.MIDDLE_TO_LONG,
+            scope=scope,
+            interval=self._middle_interval,
+            evolver=evolver,
+            index=index_builder,
+        )
+        await self._scheduler.submit(job, channel=Channel.BACKGROUND)
+        logger.info(
+            "Engine.write middle=True: %d originals buffered, scope=%s interval=%s",
+            len(units),
+            scope,
+            self._middle_interval,
+        )
+        return units
+
+    def _write_middle_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
+        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
+        self._storage.add(scope, units)
+
+    def _write_default_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
+        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
+        self._storage.add(scope, units)
+
+    async def batch_write(
+        self,
+        items: list[BatchWriteItem],
+        *,
+        continue_on_error: bool = True,
+    ) -> BatchWriteResult:
+        outcomes: list[BatchWriteOutcome] = []
+        for index, item in enumerate(items):
+            try:
+                units = await self.write(
+                    item.content,
+                    item.scope,
+                    item.source,
+                    assets=item.assets,
+                    tags=item.tags,
+                    metadata=item.metadata,
+                    occurred_at=item.occurred_at,
+                )
+                outcomes.append(BatchWriteOutcome(index=index, item=item, units=units))
+            except Exception as exc:
+                is_domain_error = isinstance(exc, AgentMemoryError)
+                if not is_domain_error:
+                    logger.exception("unexpected batch write failure at item %s", index)
+                outcomes.append(
+                    BatchWriteOutcome(
+                        index=index,
+                        item=item,
+                        error=str(exc) if is_domain_error else "unexpected batch write failure",
+                        error_type=type(exc).__name__ if is_domain_error else "InternalError",
+                    )
+                )
+                if not continue_on_error:
+                    outcomes.extend(
+                        BatchWriteOutcome(
+                            index=skipped_index,
+                            item=skipped_item,
+                            error="skipped after previous item failed",
+                            error_type="Skipped",
+                        )
+                        for skipped_index, skipped_item in enumerate(items[index + 1:], index + 1)
+                    )
+                    break
+        return BatchWriteResult(outcomes=outcomes)
 
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         _ensure_local_scope(scope)
@@ -326,7 +451,7 @@ class InMemoryEngine(MemoryEngine):
     ) -> MemoryListResult:
         _ensure_local_scope(scope)
         return list_page(
-            self._kv,
+            self._storage,
             scope,
             offset=offset,
             limit=limit,
@@ -370,7 +495,7 @@ class InMemoryEngine(MemoryEngine):
         scopes = (
             [selector.scope]
             if selector.scope is not None
-            else [scope for scope in self._kv.scopes() if not scope.space]
+            else [scope for scope in self._storage.scopes() if not scope.space]
         )
         if not scopes:
             scopes = [Scope()]
@@ -383,24 +508,15 @@ class InMemoryEngine(MemoryEngine):
 
     def _load(self, scope: Scope, unit_id: str) -> MemoryUnit:
         """从真源读字节并反序列化（产出结果的边界点）。"""
-        try:
-            raw = self._kv.get(scope, memory_key(unit_id))
-        except NotFoundError:
-            raise NotFoundError("memory_unit", unit_id) from None
-        unit = loads(raw)
-        if unit is None:
+        units = self._storage.get(scope, [unit_id])
+        if not units:
             raise NotFoundError("memory_unit", unit_id)
-        return unit
+        return units[0]
 
     def _list_units(self, scope: Scope) -> list[MemoryUnit]:
         # 只列建索引记忆（/memory/ 前缀）。loads 对非 MemoryUnit 记录返回 None，自然过滤。
         # 版本链（SUPERSEDE/supersedes）只在建索引记忆间；原文 /messages/ 无版本链。
-        units = []
-        for _, raw in self._kv.scan(scope, prefix=MEMORY_KEY_PREFIX):
-            unit = loads(raw)
-            if unit is not None:
-                units.append(unit)
-        return units
+        return self._storage.list(scope, limit=1_000_000).items
 
     def _version_family(self, scope: Scope, unit_id: str) -> list[MemoryUnit]:
         units_by_id = {unit.id: unit for unit in self._list_units(scope)}
@@ -462,7 +578,7 @@ class InMemoryEngine(MemoryEngine):
         new = _apply_patch(old, patch)
         if patch.mode == UpdateMode.OVERWRITE:
             new.id = old.id
-            self._kv.update(scope, memory_key(new.id), dumps(new))
+            self._storage.update(scope, [new])
             self._index.update([new])
             logger.info("Engine.update overwrite: unit_id=%s scope=%s", new.id, scope)
         else:  # SUPERSEDE：新 id、记版本链，旧版标记 superseded
@@ -471,7 +587,7 @@ class InMemoryEngine(MemoryEngine):
             new.lifecycle = LifecycleState.ACTIVE
             if patch.t_valid is None:
                 new.temporal.t_valid = _now()
-            self._kv.insert(scope, memory_key(new.id), dumps(new))
+            self._storage.add(scope, [new])
             old = self._lifecycle.supersede(scope, old.id, new.temporal.t_valid)
             self._index.update([old])
             self._index.build([new])
@@ -497,16 +613,13 @@ class InMemoryEngine(MemoryEngine):
         scopes = (
             [selector.scope]
             if selector.scope is not None
-            else [scope for scope in self._kv.scopes() if not scope.space]
+            else [scope for scope in self._storage.scopes() if not scope.space]
         )
         if not scopes:
             scopes = [Scope()]
         scanned: list[tuple[Scope, str, MemoryUnit]] = []
         for scope in scopes:
-            for unit_id, raw in self._kv.scan(scope):
-                unit = loads(raw)
-                if unit is not None:
-                    scanned.append((scope, unit_id, unit))
+            scanned.extend((scope, unit.id, unit) for unit in self._list_units(scope))
 
         matches = [
             (scope, unit_id, unit)
@@ -528,9 +641,9 @@ class InMemoryEngine(MemoryEngine):
                 {_scoped_unit_id(scope, unit.id) for scope, _, unit in matches},
             )
             purged_units: list[MemoryUnit] = []
-            for scope, unit_id, unit in scanned:
+            for scope, _, unit in scanned:
                 if _scoped_unit_id(scope, unit.id) in purge_ids:
-                    self._kv.delete(scope, unit_id)
+                    self._storage.delete(scope, [unit.id])
                     purged_units.append(unit)
             self._index.remove(purged_units)
             logger.info(
@@ -542,9 +655,9 @@ class InMemoryEngine(MemoryEngine):
 
         if selector.mode == DeleteMode.DOWNWEIGHT:
             update_index: list[MemoryUnit] = []
-            for scope, unit_id, unit in matches:
+            for scope, _, unit in matches:
                 _downweight_importance(unit)
-                self._kv.update(scope, unit_id, dumps(unit))
+                self._storage.update(scope, [unit])
                 update_index.append(unit)
             self._index.update(update_index)
             logger.info(
@@ -586,12 +699,11 @@ class InMemoryEngine(MemoryEngine):
         purged_units: list[MemoryUnit] = []
         for scope in [
             candidate
-            for candidate in self._kv.scopes()
+            for candidate in self._storage.scopes()
             if candidate.org == org and candidate.space == space
         ]:
             units = self._list_units(scope)
-            for unit in units:
-                self._kv.delete(scope, memory_key(unit.id))
+            self._storage.delete(scope, [unit.id for unit in units])
             purged_units.extend(units)
         self._index.remove(purged_units)
         return [unit.id for unit in purged_units]
@@ -600,7 +712,13 @@ class InMemoryEngine(MemoryEngine):
         self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
     ) -> str:
         _ensure_local_scope(scope)
-        job_id = self._scheduler.submit(scope, mode, channel)
+        if self._job_factory is None:
+            raise RuntimeError(
+                "evolve requires job_factory, please configure "
+                "engine.default.job_factory"
+            )
+        job = self._job_factory.get_job(JobType.EVOLVE, scope=scope, mode=mode)
+        job_id = await self._scheduler.submit(job, channel)
         logger.info(
             "Engine.evolve submitted: job_id=%s scope=%s mode=%s channel=%s",
             job_id,
@@ -649,14 +767,29 @@ def _build(config):
             return None
         return PipelineProducer.build_named("default", ctx)
 
+    # JobFactory 可选注入——config 声明了 job_factory 命名空间具名实例则注入，
+    # None 时 evolve/middle 路径报错（向后兼容——纯默认配置不走演进）。
+    def _opt_job_factory():
+        ctx = config.ctx
+        ns = ctx.namespaces.get(JobFactoryProducer.TOP_NAME, {})
+        if "default" not in ns:
+            return None
+        import control.jobs_impl as _ji  # noqa: F401
+        _ = _ji
+        return JobFactoryProducer.build_named("default", ctx)
+
+    middle_interval = int(config.get("middle_interval", 50))
+
     return InMemoryEngine(
         IngestorProducer.dep(config, default="simple"),
         IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
         RetrieverProducer.dep(config, default="pipeline"),
-        KvProducer.dep(config, default="memory"),
+        StorageProducer.resolve(config),
         SchedulerProducer.dep(config, default="in_process"),
         EvolverProducer.dep(config, default="orchestrating"),
         LifecycleProducer.dep(config, default="kv"),
         classifier=_opt_classifier(),
         pipeline=_opt_pipeline(),
+        job_factory=_opt_job_factory(),
+        middle_interval=middle_interval,
     )

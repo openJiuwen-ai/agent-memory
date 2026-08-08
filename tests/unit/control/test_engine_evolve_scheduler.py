@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import asyncio
 
-from common.type_def import Scope
-from construction import EvolveMode, EvolveResult, Evolver
-from construction.base import OperatorType
 from api.memory_api_impl import build_kernel
+from common.type_def import Scope
+from config.config import Config
+from construction import EvolveMode, Evolver, EvolveResult
+from construction.base import OperatorType
 from control.engine_impl.in_memory_engine import InMemoryEngine
-from control.types import Channel, JobStatus
+from control.jobs import Job, JobFactory, JobType
+from control.jobs_impl.evolve_job import EvolveJobSpec
+from control.types import BatchWriteItem, Channel, JobStatus
 from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from storage.storage_impl.composite_storage import CompositeStorage
+
+_TEST_KEY_HEX = "00" * 32
 
 
 class RaisingEvolver(Evolver):
@@ -23,35 +29,113 @@ class RaisingEvolver(Evolver):
 
 
 class RecordingScheduler:
-    def __init__(self) -> None:
-        self.calls: list[tuple[Scope, EvolveMode, Channel]] = []
+    """记录 submit 调用入参的 Scheduler 替身（不实际执行 Job）。"""
 
-    def submit(self, scope: Scope, mode: EvolveMode, channel: Channel) -> str:
-        self.calls.append((scope, mode, channel))
+    def __init__(self) -> None:
+        self.calls: list[tuple[Job, Channel]] = []
+
+    async def submit(self, job: Job, channel: Channel) -> str:
+        self.calls.append((job, channel))
         return "job-1"
+
+    @staticmethod
+    def status(job_id: str):
+        ...
+
+    @staticmethod
+    def cancel(job_id: str) -> None:
+        ...
+
+
+def _build_test_job_factory(evolver) -> JobFactory:
+    """构造测试用 JobFactory——注册 EvolveJob 的 Spec builder。
+
+    Engine.evolve 经 JobFactory.get_job(JobType.EVOLVE, scope, mode=mode)
+    取 EvolveJob 实例——Engine 不再直接 new EvolveJob（统一 Job 创建路径）。
+    """
+    factory = JobFactory()
+    factory.register(
+        JobType.EVOLVE,
+        EvolveJobSpec(storage=CompositeStorage(kv=InMemoryKVStore()), evolver=evolver).with_scope,
+    )
+    return factory
 
 
 def test_engine_evolve_only_submits_scheduler_job() -> None:
+    """Engine.evolve 经 JobFactory 取 EvolveJob(mode=mode) 提交，不实际执行 evolver。"""
     scope = Scope(user="u1")
     scheduler = RecordingScheduler()
+    evolver = RaisingEvolver()
     engine = InMemoryEngine(
         ingestor=None,
         index_builder=None,
         retriever=None,
-        kv=InMemoryKVStore(),
+        storage=CompositeStorage(kv=InMemoryKVStore()),
         scheduler=scheduler,
-        evolver=RaisingEvolver(),
+        evolver=evolver,
         lifecycle=None,
+        job_factory=_build_test_job_factory(evolver),
     )
 
     job_id = asyncio.run(engine.evolve(scope, EvolveMode.CONSOLIDATE, Channel.HOT))
 
     assert job_id == "job-1"
-    assert scheduler.calls == [(scope, EvolveMode.CONSOLIDATE, Channel.HOT)]
+    assert len(scheduler.calls) == 1
+    job, channel = scheduler.calls[0]
+    assert channel == Channel.HOT
+    assert job.scope == scope
+    assert job.interval == 0
+    # mode 经 EvolveJob 构造参数流入——不该由 Scheduler 看到或硬编码
+    assert job._mode == EvolveMode.CONSOLIDATE  # pylint: disable=protected-access
+
+
+def test_in_memory_batch_write_collects_unexpected_error_and_continues() -> None:
+    scope = Scope(user="u1")
+    engine = InMemoryEngine(
+        ingestor=None,
+        index_builder=None,
+        retriever=None,
+        storage=CompositeStorage(kv=InMemoryKVStore()),
+        scheduler=None,
+        evolver=None,
+        lifecycle=None,
+    )
+    attempted: list[str] = []
+
+    async def _write(content, *_args, **_kwargs):
+        attempted.append(content)
+        if content == "bad":
+            raise RuntimeError("unavailable dependency")
+        return []
+
+    engine.write = _write  # type: ignore[method-assign]
+    result = asyncio.run(
+        engine.batch_write(
+            [
+                BatchWriteItem(content="bad", scope=scope),
+                BatchWriteItem(content="good", scope=scope),
+            ]
+        )
+    )
+
+    assert attempted == ["bad", "good"]
+    assert result.outcomes[0].error_type == "InternalError"
+    assert not result.outcomes[1].error
 
 
 def test_api_evolve_returns_completed_scheduler_job_with_evolve_result_detail() -> None:
-    kernel = build_kernel()
+    # 显式覆盖 scheduler=in_process——本测试验证 evolve 语义（同步 SUCCEEDED），
+    # 不验证 AsyncTimerScheduler 的异步调度行为（后者由阶段 5 集成测试覆盖）。
+    # AsyncTimerScheduler 需事件循环驱动，submit 后不立即完成，与同步断言不兼容。
+    config = Config.from_dict(
+        {
+            "scheduler": {"default": {"target": "in_process", "params": {}}},
+            "security": {
+                "default": {"target": "local", "params": {"key_hex": _TEST_KEY_HEX}}
+            },
+        }
+    )
+    kernel = build_kernel(config=config)
     scope = Scope(user="u1")
     kernel.api.write("Alice likes tea", scope, identity=scope)
 

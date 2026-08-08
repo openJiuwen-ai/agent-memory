@@ -12,7 +12,7 @@ from common.factory.factory import Factory
 from common.type_def import Scope
 
 from .base import BaseStore
-from .types import ScoredID, VectorQuery, VectorRecord
+from .types import ScoredID, ScoredHit, VectorQuery, VectorRecord
 
 
 class VectorProducer(Factory):
@@ -46,6 +46,28 @@ class VectorStore(BaseStore):
     @abstractmethod
     def search(self, scope: Scope, query: VectorQuery) -> list[ScoredID]:
         """在 ``scope`` 内做 ANN 近邻检索，按相似度返回 top-k。"""
+
+    def recall(
+        self,
+        scope: Scope,
+        query: VectorQuery,
+        output_fields: list[str] | None = None,
+    ) -> list[ScoredHit]:
+        """在 ``scope`` 内做 ANN 近邻检索，并按需在同一次请求内回带命中行 payload。
+
+        :param output_fields: 需回带的非 id 字段名；当前仅认 ``"metadata"``，
+            其余值忽略并记日志。``None`` 或空列表 ≡ 不回带（返回的
+            :class:`ScoredHit` 其 ``metadata`` 为空 dict）。
+        :return: 命中列表（按相似度降序），每项为 :class:`ScoredHit`。
+        :raises NotImplementedError: 本后端未实现该方法时由基类抛出，调用方
+            （``VectorRecaller``）捕获后回退到 ``search`` + ``get`` 两段式。
+            故本方法为**可选能力**：子类按需 override，未实现者保持默认即可，
+            不会被抽象方法强制。
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement recall (search with payload); "
+            "falling back to search + get"
+        )
 
     def score_higher_is_better(self) -> bool:
         """``search`` 返回分数的方向语义：True=分越大越相关（cosine/IP 类）。

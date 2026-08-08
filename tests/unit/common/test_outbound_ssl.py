@@ -212,8 +212,8 @@ def test_openai_components_keep_sdk_default_http_client(
         },
         AssemblyContext(),
     )
-    if producer is LlmProducer:
-        component.client
+    # LLM / Embedder 均惰性建连；访问 .client 才触发 DefaultHttpxClient
+    component.client
 
     assert recorded["http_client_kwargs"] == {"verify": True}
     assert recorded["openai_kwargs"]["http_client"] is sdk_http_client

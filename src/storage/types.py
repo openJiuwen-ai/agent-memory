@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from common.type_def import FilterExpr, normalize
+from common.type_def import FilterExpr, MemoryUnit, normalize
 
 
 @dataclass
@@ -30,6 +30,23 @@ class KVMemoryListResult:
 
     entries: list[tuple[str, bytes]] = field(default_factory=list)
     count: int = 0
+
+
+@dataclass
+class MemoryListResult:
+    """Storage.list 的领域结果。"""
+
+    items: list[MemoryUnit] = field(default_factory=list)
+    count: int = 0
+
+
+@dataclass
+class ScoredHit:
+    """检索命中项：id + 相关性得分 + 按需回带的元数据 payload。"""
+
+    id: str  # 记录 id（与 ScoredID.id 同义：scope 内逻辑主键）
+    score: float  # 相关性得分（越大越相关，与 ScoredID.score 同口径）
+    metadata: dict[str, Any] = field(default_factory=dict)  # 命中行按需回带的元数据
 
 
 # --------------------------------------------------------------------------- #
@@ -53,7 +70,8 @@ class VectorQuery:
     vector: list[float]  # 查询向量
     top_k: int = 10  # 返回条数
     filters: FilterExpr | None = None  # scope 之外的元数据谓词（AND/OR/NOT 树；None 表示无过滤）
-    return_metadata: bool = False  # True 时支持的后端在 ANN 命中同时回带记录 metadata（填入 ScoredID.metadata）
+    # True 时支持的后端在 ANN 命中同时回带记录 metadata（填入 ScoredID.metadata）。
+    return_metadata: bool = False
 
     def __post_init__(self) -> None:
         self.filters = normalize(self.filters)  # 边界规范化：兼容旧 list，内部统一 FilterExpr

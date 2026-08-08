@@ -4,6 +4,7 @@
 """
 
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -377,6 +378,82 @@ def test_extract_tags_sanitized_and_capped():
     assert tags.count("Python") == 1
 
 
+def test_extract_inherits_write_tags():
+    """派生 unit 合并源 unit 的 write tags，且不丢 LLM tags / extracted。"""
+    extractor = _make_extractor(
+        [
+            json.dumps(
+                [
+                    {
+                        "source_id": "u1",
+                        "target": "fact",
+                        "tier": "semantic",
+                        "content": "用户名叫张明",
+                        "tags": ["name", "identity"],
+                        "confidence": 1.0,
+                    }
+                ]
+            )
+        ]
+    )
+    source = create_test_unit("u1", "我叫张明")
+    source.tags = ["profile"]
+    result = extractor.extract([source])
+
+    assert len(result) == 1
+    tags = result[0].tags
+    assert tags[0] == "profile", "write tags 应优先保留在前"
+    assert "name" in tags
+    assert "identity" in tags
+    assert "extracted" in tags
+    assert tags.count("profile") == 1
+
+
+def test_extract_write_tags_dedup_with_extracted_marker():
+    """源已含 extracted 时合并后不重复追加。"""
+    extractor = _make_extractor(
+        [
+            json.dumps(
+                [
+                    {
+                        "source_id": "u1",
+                        "target": "fact",
+                        "tier": "semantic",
+                        "content": "用户喜欢苹果",
+                        "tags": ["food"],
+                        "confidence": 1.0,
+                    }
+                ]
+            )
+        ]
+    )
+    source = create_test_unit("u1", "喜欢苹果")
+    source.tags = ["profile", "Extracted"]
+    result = extractor.extract([source])
+
+    assert len(result) == 1
+    tags = result[0].tags
+    assert "profile" in tags
+    assert "food" in tags
+    # 大小写不敏感去重：保留首次出现的写法
+    assert sum(1 for t in tags if t.lower() == "extracted") == 1
+
+
+def test_procedural_inherits_write_tags():
+    """procedural 路径合并源 write tags + procedural 标记。"""
+    extractor = _make_extractor(
+        [json.dumps({"content": "目标:构建;步骤:npm run build;结果:成功"})]
+    )
+    source = create_test_unit("u1", "执行了 npm run build")
+    source.tags = ["devops"]
+    source.metadata = {"procedural": "true"}
+    result = extractor.extract([source])
+
+    assert len(result) == 1
+    tags = result[0].tags
+    assert tags == ["devops", "procedural"]
+
+
 # ---------------------------------------------------------------------------
 # T-E-10: confidence 过滤
 # ---------------------------------------------------------------------------
@@ -419,6 +496,90 @@ def test_extract_llm_non_json():
         extractor.extract(units)
 
     assert isinstance(exc_info.value.__cause__, json.JSONDecodeError)
+
+
+def test_extract_llm_trailing_text_logs_raw_response():
+    response = (
+        '[{"source_id":"u1","target":"fact","content":"user prefers Python",'
+        '"confidence":1.0}]!'
+    )
+    extractor = _make_extractor([response])
+    units = [create_test_unit("u1", "user prefers Python")]
+
+    with patch("construction.extractor_impl.llm_extractor.logger.warning") as warning:
+        result = extractor.extract(units)
+
+    assert len(result) == 1
+    assert result[0].content == "user prefers Python"
+    warning.assert_called_once_with(
+        "Extractor: ignored trailing LLM text after JSON root: %r",
+        "!",
+    )
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        (
+            "Here is the extraction:\n"
+            '[{"source_id":"u1","target":"fact","content":"user prefers Python",'
+            '"confidence":1.0}]'
+        ),
+        (
+            "Template syntax is {placeholder}.\n"
+            '[{"source_id":"u1","target":"fact","content":"user prefers Python",'
+            '"confidence":1.0}]'
+        ),
+    ],
+)
+def test_extract_recovers_json_after_text_prefix(response):
+    extractor = _make_extractor([response])
+
+    result = extractor.extract([create_test_unit("u1", "user prefers Python")])
+
+    assert len(result) == 1
+    assert result[0].content == "user prefers Python"
+
+
+def test_extract_recovers_the_complete_array_after_text_prefix():
+    response = (
+        "Here is the extraction:\n"
+        "["
+        '{"source_id":"u1","target":"fact","content":"first memory","confidence":1.0},'
+        '{"source_id":"u2","target":"fact","content":"second memory","confidence":1.0}'
+        "]"
+    )
+    extractor = _make_extractor([response])
+
+    result = extractor.extract(
+        [
+            create_test_unit("u1", "first source"),
+            create_test_unit("u2", "second source"),
+        ]
+    )
+
+    assert [unit.content for unit in result] == ["first memory", "second memory"]
+
+
+@pytest.mark.parametrize("response", ["{}", "No memories were extracted: []"])
+def test_extract_treats_empty_json_as_empty_result(response):
+    extractor = _make_extractor([response])
+
+    assert extractor.extract([create_test_unit("u1", "source")]) == []
+
+
+def test_extract_continues_past_empty_json_to_non_empty_json():
+    response = (
+        "[]\n"
+        '[{"source_id":"u1","target":"fact","content":"user prefers Python",'
+        '"confidence":1.0}]'
+    )
+    extractor = _make_extractor([response])
+
+    result = extractor.extract([create_test_unit("u1", "user prefers Python")])
+
+    assert len(result) == 1
+    assert result[0].content == "user prefers Python"
 
 
 # ---------------------------------------------------------------------------
@@ -595,3 +756,18 @@ def test_extract_preserves_structured_record_target():
     result = extractor.extract([create_test_unit("u1", "Sunday | Admon | 8am-4pm")])
 
     assert result[0].metadata["target"] == "structured_record"
+
+
+def test_keyword_procedural_inherits_write_tags():
+    """keyword procedural 降级路径同样合并 write tags。"""
+    from common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
+    from construction.extractor_impl.keyword_extractor import KeywordExtractor
+
+    extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=200, overlap_chars=0))
+    source = create_test_unit("u1", "执行了 npm run build")
+    source.tags = ["devops"]
+    source.metadata = {"procedural": "true"}
+    result = extractor.extract([source])
+
+    assert len(result) == 1
+    assert result[0].tags == ["devops", "procedural"]

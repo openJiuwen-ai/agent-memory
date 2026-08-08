@@ -18,11 +18,13 @@ CombMAX 与 CombSUM/CombMNZ 同出 Fox & Shaw (TREC-2, 1994)；后者在"多系�
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Mapping
 
+from common.type_def import ScoredCandidate
 from retrieval.base import RetrievalOperatorType
 from retrieval.fuser import Fuser, FuserProducer
-from retrieval.types import ChannelEvidence, ParsedQuery, RecallChannel, ScoredUnit
+from retrieval.types import ChannelEvidence, ParsedQuery, RecallChannel
 
 from .layered_merge import merge_layered_channels
 
@@ -59,8 +61,8 @@ class ScoreMaxFuser(Fuser):
         }
 
     def fuse(
-        self, query: ParsedQuery, candidates: list[list[ScoredUnit]]
-    ) -> list[ScoredUnit]:
+        self, query: ParsedQuery, candidates: list[list[ScoredCandidate]]
+    ) -> list[ScoredCandidate]:
         # 分层召回下同通道有多路（L2/L0/L1），必须先归并再归一化——否则各层按各自
         # 最高分取基准，候选少的层会把弱命中抬到与主层最强候选同级（见 layered_merge）。
         merged = merge_layered_channels(candidates)
@@ -68,6 +70,7 @@ class ScoreMaxFuser(Fuser):
         best: dict[str, float] = {}
         channel: dict[str, RecallChannel] = {}
         evidence: dict[str, list[ChannelEvidence]] = {}
+        representatives: dict[str, ScoredCandidate] = {}
         for one_channel in merged:
             ch = one_channel[0].channel
             weight = self._channel_weights.get(ch, 1.0)
@@ -86,19 +89,24 @@ class ScoreMaxFuser(Fuser):
                         contribution=contribution,
                     )
                 )
+                representatives.setdefault(su.unit_id, su)
                 if contribution > best.get(su.unit_id, -1.0):
                     best[su.unit_id] = contribution
                     channel[su.unit_id] = ch
 
-        fused = [
-            ScoredUnit(
-                unit_id=uid,
-                score=score,
-                channel=channel.get(uid, RecallChannel.KEYWORD),
-                evidence=evidence.get(uid, []),
+        fused: list[ScoredCandidate] = []
+        for uid, score in best.items():
+            representative = representatives.get(uid)
+            if representative is None:
+                raise KeyError(uid)
+            fused.append(
+                replace(
+                    representative,
+                    score=score,
+                    channel=channel.get(uid, RecallChannel.KEYWORD),
+                    evidence=evidence.get(uid, []),
+                )
             )
-            for uid, score in best.items()
-        ]
         fused.sort(key=lambda su: su.score, reverse=True)
         return fused
 

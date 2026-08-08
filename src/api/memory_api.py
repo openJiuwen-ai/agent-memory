@@ -34,6 +34,8 @@ from control import (
     DeleteSelector,
     Grant,
     JobInfo,
+    BatchWriteItem,
+    BatchWriteResult,
     MemoryListResult,
     MemoryPatch,
     SpaceDeleteResult,
@@ -99,6 +101,38 @@ class MemoryAPI(ABC):
         """异步（协程）写入记忆：语义与 :meth:`write` 一致（同样以
         ``scope``/``identity`` 鉴权），同样返回插入的记忆单元；直通引擎的异步
         write，供事件循环/高并发接入形态（HTTP/MCP）非阻塞调用。"""
+
+    @abstractmethod
+    def batch_write(
+        self,
+        items: list[BatchWriteItem],
+        scope: Scope | None = None,
+        source: Modality = Modality.TEXT,
+        *,
+        identity: Scope,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        occurred_at: datetime | None = None,
+        stream_id: str = "",
+        continue_on_error: bool = True,
+    ) -> BatchWriteResult:
+        """同步批量写入；结果按输入顺序逐项对齐。"""
+
+    @abstractmethod
+    async def batch_write_async(
+        self,
+        items: list[BatchWriteItem],
+        scope: Scope | None = None,
+        source: Modality = Modality.TEXT,
+        *,
+        identity: Scope,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        occurred_at: datetime | None = None,
+        stream_id: str = "",
+        continue_on_error: bool = True,
+    ) -> BatchWriteResult:
+        """异步批量写入；语义与 :meth:`batch_write` 一致。"""
 
     @abstractmethod
     def recall(

@@ -7,16 +7,13 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple
-
 from common.embedder.base import Embedder, EmbedderProducer
 from common.log import get_logger
 from common.type_def import FilterClause, FilterOp, LifecycleState, MemoryUnit
 from construction.base import OperatorType
 from construction.dedup import Dedup, DedupProducer, same_scope
-from storage.kv import KvProducer, KVStore
+from storage.storage import Storage, StorageProducer
 from storage.types import VectorQuery
-from storage.vector import VectorProducer, VectorStore
 
 logger = get_logger(__name__)
 
@@ -36,9 +33,8 @@ class VectorDedup(Dedup):
 
     def __init__(
         self,
-        vector_store: VectorStore,
+        storage: Storage,
         embedder: Embedder,
-        kv: KVStore,
         *,
         min_similarity: float = 0.5,
         top_k: int = 5,
@@ -46,13 +42,13 @@ class VectorDedup(Dedup):
         scope_filter: bool = True,
     ) -> None:
         super().__init__(
-            kv,
+            storage,
             min_similarity=min_similarity,
             top_k=top_k,
             tier_filter=tier_filter,
             scope_filter=scope_filter,
         )
-        self._vector_store = vector_store
+        self._vector_store = storage.vector
         self._embedder = embedder
 
     def operator_type(self) -> OperatorType:
@@ -61,7 +57,7 @@ class VectorDedup(Dedup):
     def health(self) -> None:
         return None
 
-    def recall(self, candidate: MemoryUnit) -> List[Tuple[MemoryUnit, float]]:
+    def recall(self, candidate: MemoryUnit) -> list[tuple[MemoryUnit, float]]:
         # Step A: 向量化候选
         try:
             candidate_vector = self._embedder.embed([candidate.content])[0]
@@ -95,7 +91,7 @@ class VectorDedup(Dedup):
             return []
 
         # 加载 unit → dict 聚合取 MaxP（O(1) 查找/更新，替代旧 O(n²) 列表扫描）
-        aggregated: dict[str, Tuple[MemoryUnit, float]] = {}
+        aggregated: dict[str, tuple[MemoryUnit, float]] = {}
         for scored_id in hits:
             if scored_id.score < self._min_similarity:
                 continue
@@ -108,6 +104,11 @@ class VectorDedup(Dedup):
                 continue
             # 跳过候选自身
             if unit.id == candidate.id:
+                continue
+            # 跳过中期记忆原文——派生必然与源原文语义接近，让原文参与对照会触发
+            # LLM dedup 判 NOOP 丢派生。Engine.write middle=true 时给原文打
+            # metadata.middle=true 标记，dedup 按此过滤。
+            if unit.metadata.get("middle") == "true":
                 continue
             # dict MaxP 聚合
             if unit.id not in aggregated or scored_id.score > aggregated[unit.id][1]:
@@ -125,9 +126,8 @@ class VectorDedup(Dedup):
 @DedupProducer.register("vector")
 def _build(config):
     return VectorDedup(
-        vector_store=VectorProducer.dep(config, default="memory"),
+        storage=StorageProducer.resolve(config),
         embedder=EmbedderProducer.dep(config, default="hashing"),
-        kv=KvProducer.dep(config, default="memory"),
         min_similarity=config.get("dedup_min_similarity", 0.5),
         top_k=config.get("dedup_top_k", 5),
         tier_filter=config.get("dedup_tier_filter", False),

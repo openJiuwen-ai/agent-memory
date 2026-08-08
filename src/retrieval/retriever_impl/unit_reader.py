@@ -17,29 +17,32 @@ Option B 下，点读与复核从 Discloser 上移到 Retriever 阶段：Retriev
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from common.errors import NotFoundError
 from common.type_def import (
     FilterExpr,
-    LifecycleState,
     MemoryUnit,
     Scope,
-    matches_memory_unit,
     memory_key,
 )
 from common.type_def.memory_codec import loads
+from common.type_def.retrieval_filter import (
+    in_event_window as _in_event_window,
+)
+from common.type_def.retrieval_filter import (
+    matches_retrieval_filters,
+    passes_lifecycle,
+)
+from common.type_def.retrieval_filter import (
+    valid_at as _valid_at,
+)
 from storage.kv import KVStore
 
 
 def valid_at(unit: MemoryUnit, as_of: datetime) -> bool:
     """valid-time 判定：``as_of`` 是否落在 ``[t_valid, t_invalid)``。"""
-    t = unit.temporal
-    if t.t_valid is not None and as_of < t.t_valid:
-        return False
-    if t.t_invalid is not None and as_of >= t.t_invalid:
-        return False
-    return True
+    return _valid_at(unit, as_of)
 
 
 def passes(unit: MemoryUnit, as_of: datetime | None, include_archived: bool = False) -> bool:
@@ -53,16 +56,7 @@ def passes(unit: MemoryUnit, as_of: datetime | None, include_archived: bool = Fa
     - 时间点回溯（``as_of`` 给定）：FORGOTTEN 永不披露（合规遗忘）；其余按
       valid-time 区间判定，使「当时有效」的旧版本可被回溯。
     """
-    if as_of is None:
-        allowed = {LifecycleState.ACTIVE}
-        if include_archived:
-            allowed.add(LifecycleState.ARCHIVED)
-        if unit.lifecycle not in allowed:
-            return False
-        return valid_at(unit, datetime.now(timezone.utc))
-    if unit.lifecycle == LifecycleState.FORGOTTEN:
-        return False
-    return valid_at(unit, as_of)
+    return passes_lifecycle(unit, as_of, include_archived)
 
 
 def in_event_window(
@@ -70,19 +64,12 @@ def in_event_window(
 ) -> bool:
     """event-time 窗过滤（半开区间 ``[time_from, time_to)``，对 ``t_event``）。
 
-    **宽松兜底**：单元缺 ``t_event`` 时不据此丢弃（t_event 可能尚未 populated，且索引
-    侧才是主过滤口；本函数只剔除「明确落窗外」的，避免 over-drop 伤召回）。
+    **宽松兜底**：单元缺 ``t_event``、或 ``t_event`` 为 naive datetime（写入路径未做
+    UTC 归一化，issue #91）时均不据此丢弃——前者 t_event 可能尚未 populated，后者
+    与 aware 窗口比较会抛 TypeError；索引侧才是主过滤口，本函数只剔除「明确落窗外」的，
+    避免 over-drop 伤召回。
     """
-    if time_from is None and time_to is None:
-        return True
-    te = unit.temporal.t_event
-    if te is None:
-        return True
-    if time_from is not None and te < time_from:
-        return False
-    if time_to is not None and te >= time_to:
-        return False
-    return True
+    return _in_event_window(unit, time_from, time_to)
 
 
 def matches_filters(unit: MemoryUnit, expr: FilterExpr | None) -> bool:
@@ -93,7 +80,7 @@ def matches_filters(unit: MemoryUnit, expr: FilterExpr | None) -> bool:
     统一委托 :func:`~common.type_def.matches_memory_unit`，与 KV list 使用同一语义。
     ``None`` → 全通过。
     """
-    return matches_memory_unit(unit, expr)
+    return matches_retrieval_filters(unit, expr)
 
 
 class UnitReader:
@@ -106,6 +93,11 @@ class UnitReader:
 
     def __init__(self, kv: KVStore) -> None:
         self._kv = kv
+
+    @property
+    def kv(self) -> KVStore:
+        """供统一 Storage 装配复用同一真源实例。"""
+        return self._kv
 
     def load(self, scope: Scope, unit_ids: list[str]) -> dict[str, MemoryUnit]:
         """

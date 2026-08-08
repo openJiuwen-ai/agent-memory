@@ -11,6 +11,7 @@ from .security import (
     SecurityProducer,
     SecurityProvider,
 )
+from .key_source import KeySource
 
 __all__ = [
     "AuthenticationFailedError",
@@ -22,4 +23,5 @@ __all__ = [
     "SecurityError",
     "SecurityProducer",
     "SecurityProvider",
+    "KeySource",
 ]

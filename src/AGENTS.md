@@ -11,12 +11,12 @@
 src/
 ├── api/            # 接口层：统一 Core API（write/recall/get/update/delete/evolve/admin），形态无关
 ├── common/         # 跨层共享插件（Tokenizer/Chunker/Embedder/FeatureExtractor/LLM/Normalizer/Reranker）+ type_def/
-├── config/         # 配置加载与校验（待实现）
+├── config/         # 配置加载/合并 + ConfigSource 晚绑定（见 S08）
 ├── construction/   # 构建层：落盘 + 多形式索引构建 + 自演进闭环
 ├── control/        # 编排层：MemoryEngine 跨层编排中枢 + Scheduler/Permission/Policy/Governance/Space
 ├── ingest/         # 接入层：多模态 → 文本投影 + MemoryUnit，不落盘
 ├── retrieval/      # 检索层：scope 过滤 → 多路召回 → 融合重排 → 渐进式披露
-└── storage/        # 存储层：统一 CRUD + search，scope 原生隔离（vector/graph/fulltext/kv/fs/fusion）
+└── storage/        # 存储层：统一 Storage 门面 + 六类 Store，scope 原生隔离
 ```
 
 ## 数据流
@@ -29,7 +29,7 @@ src/
   control/MemoryEngine ─── 跨层编排中枢
        │
        ├─ write ──→ ingest/Ingestor（规约）→ construction/（落盘 + 索引）→ storage/*Store
-       ├─ recall ─→ retrieval/Retriever → storage/*Store.search
+       ├─ recall ─→ retrieval/Retriever → storage/Storage → storage/*Store.search
        ├─ evolve ─→ control/Scheduler → construction/Evolver → storage/*Store
        └─ get/update/delete ──→ storage/*Store（点读 + 非破坏式修正）
 ```
@@ -58,11 +58,17 @@ src/
 
 ### storage/ — 存储层
 
-统一 CRUD 动词（insert/delete/update/get）+ 检索型 `search`。六种后端：`VectorStore` / `GraphStore` / `FulltextStore` / `KVStore` / `FSStore` / `FusionStore`。scope 隔离是存储层原生职责。
+`Storage` 提供 MemoryUnit 领域操作、能力发现与检索适配入口，默认 `CompositeStorage` 组合
+六类 Store；底层 Store 统一 CRUD 动词（insert/delete/update/get），检索型 Store 额外提供
+`search`。scope 隔离是存储层原生职责。
 
 ### common/ — 共享插件 + 类型
 
 七个无状态插件协议（构建侧与检索侧必须共用同一实例）。`type_def/` 定义跨层数据类型：`MemoryUnit`（原子载体）、`Scope`（隔离模型）、`FilterClause`、`AuditEvent` 等。`errors.py` 统一异常体系。
+
+### config/ — 配置层
+
+装配配置（`Config` / `defaults` / `AssemblyContext`）与运行时晚绑定来源 `ConfigSource`（默认 yaml_defaults；可换 dict/overlay）。`*.active` 多实例切换与 prompt 晚绑定走 ConfigSource；已知策略键仍走 `PolicyManager`。
 
 ## 架构铁律
 

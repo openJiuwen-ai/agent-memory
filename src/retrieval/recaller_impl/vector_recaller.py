@@ -20,8 +20,9 @@ from common.type_def import Scope
 from retrieval.base import RetrievalOperatorType
 from retrieval.recaller import Recaller, RecallerProducer
 from retrieval.types import ParsedQuery, RecallChannel, ScoredUnit
+from storage.storage import Storage, StorageProducer
 from storage.types import VectorQuery
-from storage.vector import VectorProducer, VectorStore
+from storage.vector import VectorStore
 
 from .unit_aggregation import aggregate_to_units
 
@@ -33,19 +34,22 @@ class VectorRecaller(Recaller):
 
     def __init__(
         self,
-        vector_store: VectorStore | None,
+        storage: Storage,
         min_similarity: float = 0.0,
         *,
         layer: str = "l2",
     ) -> None:
-        self._vector = vector_store
+        port_name = "default" if layer == "l2" else f"layers_{layer}"
+        self._vector = (
+            storage.vector_port(port_name) if storage.has_vector_port(port_name) else None
+        )
         # 语义前置阈值：相似度低于此值的命中直接丢弃（默认 0 关闭）。
         self._min_similarity = float(min_similarity)
         self._layer = layer  # "l2"(content) | "l0" | "l1"
         # 召回后的 chunk→unit MaxP、分层 MaxP 与融合排序统一采用「分越大越相关」
         # 语义。距离型度量（如 L2，越小越相关）即使关闭 min_similarity，也会在
         # MaxP/降序排序时反转相关性，因此装配期统一拒绝。
-        if self._vector is not None and not vector_store.score_higher_is_better():
+        if self._vector is not None and not self._vector.score_higher_is_better():
             raise ValidationError(
                 "向量召回链路要求「分越大越相关」的度量（cosine/IP）；"
                 "当前向量库声明为距离型（越小越相关，如 L2），"
@@ -75,14 +79,30 @@ class VectorRecaller(Recaller):
         if self._vector is None or not query.vector:
             return []  # store 未注入（该层未配）或无 query 向量 → 跳过
         vq = VectorQuery(vector=query.vector, top_k=top_k, filters=query.scalar_filters)
-        hits = self._vector.search(scope, vq)
-        # 语义前置阈值：融合前先砍掉明显不相关的语义命中，省下游 recheck/rerank 预算。
+        # 优先走 store.recall：在召回请求内一并回带 metadata，省掉再发一次 get 的
+        # 网络 RTT 与服务端 id 匹配开销（远端后端如 milvus 收益显著）。store 未实现
+        # recall 时抛 NotImplementedError，回退到 search + get 两段式（内存后端零成本）。
+        try:
+            hits = self._vector.recall(scope, vq, output_fields=["metadata"])
+        except NotImplementedError:
+            scored = self._vector.search(scope, vq)
+            # 语义前置阈值：融合前先砍掉明显不相关的语义命中，省下游 recheck/rerank 预算。
+            if self._min_similarity > 0.0:
+                scored = [s for s in scored if s.score >= self._min_similarity]
+            # 命中 id 为 chunk 复合 id（L2）或 {unit_id}-l0/l1（L0/L1）；点读记录拿回
+            # metadata['unit_id']，归并到 unit 粒度（同 unit 多 record 取 MaxP）。
+            records = self._vector.get(scope, [s.id for s in scored])
+            result = aggregate_to_units(scored, records, RecallChannel.VECTOR)
+            logger.info(
+                "VectorRecaller(fallback search+get): layer=%s scope=%s "
+                "top_k=%d hits=%d units=%d",
+                self._layer, scope, top_k, len(scored), len(result),
+            )
+            return result
+        # recall 路径下 metadata 已在 hits 内，records 即 hits 自身。
         if self._min_similarity > 0.0:
             hits = [h for h in hits if h.score >= self._min_similarity]
-        # 命中 id 为 chunk 复合 id（L2）或 {unit_id}-l0/l1（L0/L1）；点读记录拿回
-        # metadata['unit_id']，归并到 unit 粒度（同 unit 多 record 取 MaxP）。
-        records = self._vector.get(scope, [h.id for h in hits])
-        result = aggregate_to_units(hits, records, RecallChannel.VECTOR)
+        result = aggregate_to_units(hits, hits, RecallChannel.VECTOR)
         logger.info(
             "VectorRecaller: layer=%s scope=%s top_k=%d hits=%d units=%d",
             self._layer, scope, top_k, len(hits), len(result),
@@ -95,9 +115,8 @@ class VectorRecaller(Recaller):
 
 @RecallerProducer.register("vector")
 def _build(config):
-    # VectorStore 经 VectorProducer 自取（缺省 memory），与索引侧共享同一实例。
     return VectorRecaller(
-        VectorProducer.dep(config, default="memory"),
+        StorageProducer.resolve(config),
         min_similarity=float(Factory.cfg_get(config, "min_similarity", 0.0)),
         layer="l2",
     )
@@ -105,26 +124,20 @@ def _build(config):
 
 @RecallerProducer.register("vector_l0")
 def _build_l0(config):
-    # L0 分表 store：与构建侧同命名（layers_l0），经 VectorProducer build_named 取具名实例。
-    # layers_index_enabled 默认 true（与构建侧对齐：默认建默认查）；未配 layers_l0 → store=None
-    # （recall 返空，不破坏其他路）。
+    # layers_index_enabled 默认 true；未配置命名端口时该层返回空结果。
     if not config.get("layers_index_enabled", True):
-        return VectorRecaller(None, layer="l0")
-    ctx = config.ctx
-    ns = ctx.namespaces.get(VectorProducer.TOP_NAME, {})
-    store = VectorProducer.build_named("layers_l0", ctx) if "layers_l0" in ns else None
-    if store is None:
+        return VectorRecaller(StorageProducer.resolve(config), layer="l0")
+    recaller = VectorRecaller(StorageProducer.resolve(config), layer="l0")
+    if recaller.vector_store is None:
         logger.info("VectorRecaller(vector_l0): store 未注入，recall 将返空")
-    return VectorRecaller(store, layer="l0")
+    return recaller
 
 
 @RecallerProducer.register("vector_l1")
 def _build_l1(config):
     if not config.get("layers_index_enabled", True):
-        return VectorRecaller(None, layer="l1")
-    ctx = config.ctx
-    ns = ctx.namespaces.get(VectorProducer.TOP_NAME, {})
-    store = VectorProducer.build_named("layers_l1", ctx) if "layers_l1" in ns else None
-    if store is None:
+        return VectorRecaller(StorageProducer.resolve(config), layer="l1")
+    recaller = VectorRecaller(StorageProducer.resolve(config), layer="l1")
+    if recaller.vector_store is None:
         logger.info("VectorRecaller(vector_l1): store 未注入，recall 将返空")
-    return VectorRecaller(store, layer="l1")
+    return recaller

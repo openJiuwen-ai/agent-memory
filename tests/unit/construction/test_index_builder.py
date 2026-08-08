@@ -22,6 +22,7 @@ from construction.index_builder_impl.fulltext_index_builder import FulltextIndex
 from construction.index_builder_impl.hybrid_index_builder import HybridIndexBuilder
 from construction.index_builder_impl.vector_index_builder import VectorIndexBuilder
 from storage.bootstrap import register_backends
+from storage.storage_impl.composite_storage import CompositeStorage
 from storage.types import TextQuery, VectorQuery
 from tests.unit.construction.fixtures import (
     create_test_plugins,
@@ -41,7 +42,7 @@ def _make_fulltext_builder() -> tuple[FulltextIndexBuilder, dict, dict]:
     """创建测试用 FulltextIndexBuilder 及其依赖。"""
     stores = create_test_stores()
     plugins = create_test_plugins()
-    builder = FulltextIndexBuilder(stores["fulltext"])
+    builder = FulltextIndexBuilder(CompositeStorage(fulltext=stores["fulltext"]))
     return builder, stores, plugins
 
 
@@ -50,8 +51,7 @@ def _make_vector_builder() -> tuple[VectorIndexBuilder, dict, dict]:
     stores = create_test_stores()
     plugins = create_test_plugins()
     builder = VectorIndexBuilder(
-        vector_store=stores["vector"],
-        kv_store=stores["kv"],
+        CompositeStorage(kv=stores["kv"], vector=stores["vector"]),
         chunker=plugins["chunker"],
         embedder=plugins["embedder"],
     )
@@ -63,9 +63,9 @@ def _make_hybrid_builder() -> tuple[HybridIndexBuilder, dict, dict]:
     stores = create_test_stores()
     plugins = create_test_plugins()
     builder = HybridIndexBuilder(
-        fulltext=stores["fulltext"],
-        vector=stores["vector"],
-        kv=stores["kv"],
+        CompositeStorage(
+            kv=stores["kv"], vector=stores["vector"], fulltext=stores["fulltext"]
+        ),
         chunker=plugins["chunker"],
         embedder=plugins["embedder"],
     )
@@ -613,12 +613,13 @@ def test_build_layers_runs_even_when_no_content_chunks():
     stores = create_test_stores()
     plugins = create_test_plugins()
     builder = VectorIndexBuilder(
-        vector_store=content_store,
-        kv_store=stores["kv"],
+        CompositeStorage(
+            kv=stores["kv"],
+            vector=content_store,
+            vector_ports={"layers_l0": vector_l0, "layers_l1": vector_l1},
+        ),
         chunker=plugins["chunker"],
         embedder=plugins["embedder"],
-        vector_l0=vector_l0,
-        vector_l1=vector_l1,
     )
 
     builder.build([unit])

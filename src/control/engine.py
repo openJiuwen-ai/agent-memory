@@ -28,7 +28,15 @@ from construction import EvolveMode
 from retrieval import RetrievalQuery, RetrievalResult
 
 from .base import ControlOperator
-from .types import Channel, DeleteSelector, MemoryListResult, MemoryPatch, PermissionContext
+from .types import (
+    BatchWriteItem,
+    BatchWriteResult,
+    Channel,
+    DeleteSelector,
+    MemoryListResult,
+    MemoryPatch,
+    PermissionContext,
+)
 
 
 class EngineProducer(Factory):
@@ -83,6 +91,15 @@ class MemoryEngine(ControlOperator):
         infer 原文缓存。``offset``/``limit`` 语义参考 mem1.0 的 list_memories；
         ``memory_types`` 为空或 ``None`` 时不过滤。
         """
+
+    @abstractmethod
+    async def batch_write(
+        self,
+        items: list[BatchWriteItem],
+        *,
+        continue_on_error: bool = True,
+    ) -> BatchWriteResult:
+        """按输入顺序执行已通过 API 前置校验的批量写入。"""
 
     @abstractmethod
     async def permission_context_for_unit(

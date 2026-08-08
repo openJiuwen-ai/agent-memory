@@ -1,9 +1,9 @@
 # agent-memory架构设计（Architecture）
 
-> 文档性质：架构设计（探索/设计阶段产出，概念与结构层面，非实现承诺）
-> 版本：v0.1 ｜ 日期：2026-05
-> 关联文档：[愿景 VISION](./VISION.md) ｜ [竞品调研](./competitor_analysis.md) ｜ [Benchmark 调研](./memory_benchmarks.md)
-> 说明：本文将 VISION 的方向落到「分层、组件、数据流、接口」层面，作为后续 `/opsx-propose` 立项与拆解 change 的基础。
+> 文档性质：总体架构设计（概念、分层、组件与依赖方向）
+> 版本：v0.2 ｜ 日期：2026-08-06
+> 关联文档：[愿景 VISION](./VISION.md) ｜ [统一 Storage](../features/storage/F05-unified-storage-design.md) ｜ [Storage 检索 Pipeline](../features/retrieval/F05-storage-retrieval-pipelines.md) ｜ [Benchmark 调研](./memory_benchmarks.md)
+> 说明：本文描述系统级架构方向；精确接口契约以 `docs/specs/` 为准，特性取舍与首版实现边界以 `docs/features/` 为准。
 
 ---
 
@@ -40,22 +40,22 @@
 ├──────────────────────────────────────────────────────────────────────────┤
 │  C. 记忆管理层 Manage         生命周期 · 治理(检视/编辑/审计/遗忘) · 权限 · 配置/策略 │
 ├──────────────────────────────────────────────────────────────────────────┤
-│  D. 记忆检索层 Retrieve       混合召回 · 重排 · 渐进式披露（消费记忆构建层） │
+│  D. 记忆检索层 Retrieve       查询解析 · Storage 检索内核适配 · 重排 · 渐进披露│
 ├──────────────────────────────────────────────────────────────────────────┤
 │  E. 记忆构建层 Build          分层记忆结构（皆可从原始数据重建）：           │
 │     (Layered Memory)          从原始数据提取 → 抽象精炼/关联分析 → 多抽象粒度 │
 │                               记忆 ＋ 多形式索引(文档·关键词·向量·图)；       │
 │                               由记忆自演进(§9.3)持续构建与维护                 │
 ├──────────────────────────────────────────────────────────────────────────┤
-│  F. 记忆存储层 Storage        可配置真源: 文档(Markdown,影子索引) / 结构化   │
-│                               后端: 向量库·图库·KV/全文·文件系统·审计日志    │
+│  F. 记忆存储层 Storage        统一领域操作·能力发现·安全边界·检索适配入口    │
+│                               后端端口: KV·向量·全文·图·融合·文件系统       │
 ├──────────────────────────────────────────────────────────────────────────┤
 │  G. 数据层 Data               用户记忆数据 · Agent 记忆数据（原始数据，真源） │
 └──────────────────────────────────────────────────────────────────────────┘
    横切：端/云/端云协同部署(§11) · 可观测(检索轨迹) · 多租户隔离 · 安全合规
 ```
 
-> 从下往上看：**数据层（G）持久化原始数据 → 记忆构建层（E）从原始数据提取、经抽象精炼/关联分析挖掘多粒度记忆并构建多形式索引（皆可重建） → 记忆检索层（D）消费记忆构建层 → 记忆管理层（C）做生命周期/治理/权限/配置 → 记忆接口层（B）→ 调用与数据接入层（A）**。记忆存储层（F）提供可配置真源与多后端；端/云/端云协同为部署维度（§11）。
+> 从下往上看：**数据层（G）持久化原始数据 → 记忆构建层（E）从原始数据提取、经抽象精炼/关联分析挖掘多粒度记忆并构建多形式索引（皆可重建） → 记忆检索层（D）通过统一 Storage 选择检索内核并完成重排与披露 → 记忆管理层（C）做生命周期/治理/权限/配置 → 记忆接口层（B）→ 调用与数据接入层（A）**。记忆存储层（F）以统一 `Storage` 契约屏蔽物理装配，同时按能力暴露标准底层端口；端/云/端云协同为部署维度（§11）。
 >
 > **记忆管理层（C）总览**：C 层是管理面，负责生命周期、权限、治理、调度与运行时策略的统一编排；职责总览见 §7。
 
@@ -203,8 +203,8 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | --------------------------------------------- | ----------------------------------------------- |
 | `write(content, scope, source, *, identity, assets=…, tags=…, metadata=…, occurred_at=…) -> list[MemoryUnit]` | **同步**写入记忆：`content` 文本/结构投影 + 可选 `assets` 原模态资产引用；阻塞至 hot path 完成（落盘 + 轻量索引）后返回**本次插入的记忆单元列表**（规约/切分可产生多条），重演进走 background 通道；实现上桥接引擎的异步 write，供 CLI/脚本等同步形态 |
 | `write_async(…)`（协程，签名/返回值同 `write`）   | **异步**写入记忆：直通引擎的异步 write，供事件循环/高并发接入形态（HTTP/MCP）非阻塞调用 |
-| `recall(query, context, *, identity, filters=…, as_of=…, top_k=…, disclosure=…, with_trajectory=…) -> RetrievalResult` | 混合检索召回；`context.scope` 为目标范围，`filters` 为结构化 `FilterExpr`（叶子谓词 + AND/OR/NOT 树），`as_of` **时间点回溯（valid-time）**，`disclosure` 渐进式披露层级，`with_trajectory` 返回检索轨迹 |
-| `list(scope, *, identity, offset=0, limit=100, memory_types=None) -> list[MemoryUnit]` | 列出 scope 下已建索引记忆；支持分页与记忆类型过滤，只返回 `/memory/` 真源记录，不返回 `/messages/` infer 原文缓存 |
+| `recall(query, context, *, identity, filters=…, as_of=…, top_k=…, disclosure=…, with_trajectory=…) -> RetrievalResult` | 混合检索召回；`context.scope` 为目标范围，`filters` 为结构化 `FilterExpr`（叶子谓词 + AND/OR/NOT 树），`as_of` **时间点回溯（valid-time）**；结果包含命中项、可选轨迹和始终可见的通道错误 |
+| `list(scope, *, identity, offset=0, limit=100, memory_types=None, extensions=None, filters=None) -> MemoryListResult` | 列出 scope 下已建索引记忆；支持类型/结构化过滤、自定义透传与分页，返回当前页 `items` 和分页前匹配总数 `count`；只返回 `/memory/` 真源记录 |
 | `get(unit_id, scope, *, identity, as_of=None) -> MemoryUnit`      | 按 id 读取记忆单元；`as_of` 非空时沿 `supersedes` 版本链返回当时有效版本；不存在抛 `NotFoundError` |
 | `update(unit_id, scope, patch: MemoryPatch, *, identity) -> MemoryUnit` | 修正记忆（仅非 None 字段生效）：`patch.mode` = **SUPERSEDE**（默认、非破坏式：生成新 id 版本、旧版标记 superseded、新版 `supersedes` 记链）/ **OVERWRITE**（同 id 原地覆写、旧内容仅留审计）；返回结果记忆单元 |
 | `delete(selector: DeleteSelector, *, identity) -> list[str]` | 删除：按选择器（id / scope / 标签 / 时间，条件取「与」）批量执行；`mode` = forget 遗忘 / archive 归档 / downweight 降权（均非破坏式）/ **purge 完全删除**（物理删除真源与全部派生索引，合规删除、不可恢复、仅留审计记录）；返回命中的 id |
@@ -227,7 +227,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | `admin_get(key, *, identity)` / `admin_set(key, value, *, identity)` / `admin_all(*, identity)` | admin：运行时可变策略的查询与调整（委托 PolicyManager；键未知/不可变配置抛 `PolicyError`） |
 
 
-> - **鉴权与审计执行点（PEP）在接口层**：`identity`（调用方）与 `scope`（目标 target）分离，本层 `check(identity, scope, action)` 不通过抛 `PermissionDeniedError` 并落入口审计；通过后只把已鉴权的 target scope 下沉，identity 不下沉。`identity` 设为必填 keyword-only，杜绝与 `scope`（同为 Scope 类型）位置传反致越权。
+> - **接口层 PEP 与 Storage 数据面授权是两道边界**：公开 API 仍以 `identity`（调用方）和 `scope`（目标 target）执行鉴权与入口审计，`identity` 不自动下沉。统一 Storage 另提供可选的 `StorageAccessContext`，供嵌入式直调或需要纵深防御的装配显式传入；默认 `AllowAllStorageSecurity` 不增加授权限制。两者不能互相替代，当前 API 链路也不宣称已自动传播 Storage 授权上下文。
 > - **表面 = 数据面 + 管理面**：数据面委托 `MemoryEngine`，管理面查询（job/inspect/trace/audit/grant/revoke/space 管理）直达 Scheduler/Governor/PermissionManager/SpaceManager；调用层只依赖 `src/api` 即可触达全部对外能力。
 > - **薄封装 + 引擎编排**：`MemoryAPI` 不含业务逻辑；接入/落盘/索引/检索/调度的编排全部在 `MemoryEngine`（`src/control`）。引擎内核只保留**一条异步写链路**（`async def write`），接口层的同步 `write` 由其自行桥接（如 `asyncio.run`）。
 > - 接口形态无关：不论真源是文档还是结构化、运行在端还是云，调用方语义一致。
@@ -256,27 +256,32 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 ## 8. 记忆检索层（Retrieve）
 
 ```
- query ─▶ ① 查询理解/去噪（清洗为空则短路返回）
-        ─▶ ② scope/标签/时间前置过滤
-        ─▶ ③ 并行多路召回  ┌ 向量(语义)
-                            ├ 全文(BM25)
-                            ├ 图遍历(关联/多跳)
-                            └ 时序过滤(有效期/时间点)
-        ─▶ ④ 融合 + 重排 + 相关性阈值 (RRF / Reranker / min_score·ratio)
-        ─▶ ⑤ 渐进式披露 (L0 摘要 → L1 片段 → L2 全文，按需加载省 token)
-        ─▶ ⑥ 返回 + 检索轨迹 (trajectory，可观测可调试)
+ query ─▶ ① QueryParser：查询理解/去噪（清洗为空则短路返回）
+        ─▶ ② 合并 scope/标签/时间等系统谓词与用户过滤
+        ─▶ ③ Retriever 按 Storage 的全局首选值选择检索内核
+              ├ recall ─▶ 读取 id 去重 ─▶ get ─▶ 恢复分通道证据 ─▶ Fuser
+              ├ recall_and_get ──────────────────────────────────▶ Fuser
+              └ retrieve(parsed_query, fuser) ─▶ Storage 内完成上述三步
+        ─▶ ④ Reranker ─▶ 相关性阈值 ─▶ 最终 top_k
+        ─▶ ⑤ 渐进式披露 (L0 摘要 → L1 片段 → L2 全文)
+        ─▶ ⑥ 返回 items + errors + 可选 trajectory
 ```
 
-- **混合召回 + 重排**：对齐 Mem0 v3 / Zep 的混合检索，并通过实测验证差异化收益。
+- **检索内核只含三步**：Storage 适配的边界仅为 `recall`、`get`、`rank`，其中 `rank` 只指 Fuser 的分层归并与跨通道融合；Reranker、阈值、最终 `top_k` 和 Discloser 始终留在 Retriever。
+- **三条等价 Pipeline**：组合后端使用 `recall -> get -> rank`；可直接回带 MemoryUnit 的后端使用 `recall_and_get -> rank`；一体化平台使用 `retrieve`。Storage 通过稳定的 `preferred_retrieval_pipeline()` 声明首选路径，Retriever 不按请求动态探测或失败后静默切换。
+- **共享候选契约**：索引候选使用 `ScoredUnit`，物化候选使用 `ScoredMemoryUnit`；`ParsedQuery`、候选、分批结果、通道错误及 Fuser 最小协议位于 `src/common/type_def`，避免 Storage 反向依赖 Retrieval 实现。
+- **读取去重不丢证据**：第一条 pipeline 只对批量 `get` 的 id 去重；读取完成后恢复每个召回入口的 score、channel 和 evidence，再交给 Fuser，保证同一 MemoryUnit 的多通道命中仍参与融合。
+- **分层索引不是新通道**：L0/L1/L2 可以是同一 Vector 或 Fulltext 通道的多个物理入口；Fuser 先按同一 channel、同一 unit 做 MaxP，再做跨通道融合，避免层数更多的 MemoryUnit 被重复加权。
+- **部分失败可返回**：部分通道失败时保留成功候选，并通过 `RetrievalResult.errors` 返回结构化 `ChannelError`；全部选中通道失败时抛 `StorageRetrievalError`。错误可见性不依赖 `with_trajectory`。
 - **渐进式披露**：吸收 OpenViking 的 L0/L1/L2 分层加载，控制 token。
 - **检索轨迹**：吸收 OpenViking 的可观测性，每步召回/排序可追溯，非黑盒。
 - **query 去噪与空查询短路**：`QueryParser` 先剥除上游包装噪声并产出结构化查询；清洗后无有效文本时，`Retriever` 在召回前直接返回空结果，避免噪声触发无意义召回。
-- **scope 是独立轴、显式串参**：检索范围作为首参贯穿 `Retriever.retrieve(scope, query)` → `Recaller.recall(scope, …)`（query 是「找什么」、scope 是「在谁的范围内找」），并落到各 Store 查询的专用 `scope` 字段做**原生隔离**——不随查询对象携带、也不混进过滤条件。Store 层必须以 `org + space` 作为硬隔离键；`agent/user/session` 只在 space 内按 `principal_path` 参与归属与过滤。
+- **scope 是独立轴、显式串参**：检索范围作为首参贯穿 `Retriever.retrieve(scope, query)` → `Storage` 检索入口 → 底层 Store（query 是「找什么」、scope 是「在谁的范围内找」），不随查询对象携带、也不混进过滤条件。Store 层必须以 `org + space` 作为硬隔离键；`agent/user/session` 只在 space 内按 `principal_path` 参与归属与过滤。
 - **前置过滤结构化**：`filters` 为 `FilterExpr`（`FilterClause` 叶子 +
   `FilterGroup` 的 AND/OR/NOT 树），由检索层与系统谓词做外层 AND 后下推。生产
-  Milvus/Elasticsearch 在 top-k 前完整执行，UnitReader 点读真源后再做纵深复核。
+  Milvus/Elasticsearch 在通道截断前完整执行，物化后再用共享纯函数复核真源。
 - **两条时间轴**：`as_of` 是系统相信时间（valid-time，回溯「T 时刻哪个版本有效」），与从 query 文本解析出的事件时间约束（event-time，`time_from/time_to`，过滤 `t_event`）分开，互不折叠。
-- **通道↔Store 非 1:1**：`RecallChannel` 是逻辑召回路，到物理 Store 的映射由检索层装配内部决定（一路对一 Store，多路也可合到 FusionStore 一次召回；TEMPORAL 多为叠加在其他通道上的时间过滤）。
+- **通道↔Store 非 1:1**：`RecallChannel` 是逻辑召回路，到物理 Store 的映射由 Storage 装配内部决定（一路对一 Store，多路也可合到 FusionStore 一次召回；TEMPORAL 多为叠加在其他通道上的时间过滤）。未指定通道表示调用全部已配置通道，显式空列表是无效输入。
 
 ---
 
@@ -347,8 +352,8 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 ```
  ┌────────── 文档形式 (Document-as-source) ──────────┐   ┌──── 结构化形式 (Structured-as-source) ────┐
- │ 真源 = Markdown / 文件                            │   │ 真源 = DB 记录 / 向量 / 图               │
- │ 派生 = 影子索引(可重建)                           │   │ 派生 = 在真源之上的附加索引              │
+ │ 真源 = Markdown / 文件                            │   │ 真源 = DB / KV 中的 MemoryUnit 记录       │
+ │ 派生 = 影子索引(可重建)                           │   │ 派生 = 向量 / 全文 / 图等附加索引         │
  │ 优势: 人可读·可编辑·可 git·可审计·删索引不丢数据  │   │ 优势: 高并发·强检索·规模化·多租户弹性    │
  │ 适配: 编码 Agent / 跨工具复用 / 端侧轻量          │   │ 适配: 高并发个性化 / 大规模多租户        │
  └───────────────────────────────────────────────────┘   └──────────────────────────────────────────┘
@@ -365,20 +370,46 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 ### 10.2 存储抽象（Pluggable Backends）
 
-统一的 `StorageProvider` 抽象，按部署形态选型；真源与各派生索引可落在不同后端：
+上层统一依赖 `Storage`，不感知底层 Store 的选择、组合和实例共享；需要索引数据模型的组件
+仍可通过标准端口访问完整底层契约。一体化存储或召回平台可以直接实现 `Storage`，不必先拆成
+多个物理 Store 再让上层重新装配。
 
+```text
+        Construction / Retrieval / Control
+                         |
+                      Storage
+       领域操作 · 能力发现 · Security · 检索适配入口
+                         |
+             +-----------+-----------+
+             |                       |
+      CompositeStorage         IntegratedStorage
+             |                       |
+   KV / Vector / Fulltext /     一体化存储或召回平台
+    Graph / Fusion / FS
+```
 
-| 抽象          | 端侧默认                   | 云侧默认        | 备选                         |
-| ----------- | ---------------------- | ----------- | -------------------------- |
-| 真源（文档）      | 本地文件系统 / Markdown      | 对象存储 / 文件服务 | Git 仓库                     |
-| 真源（结构化）/ KV | SQLite                 | PostgreSQL  | —                          |
-| 向量索引        | 轻量本地向量（如内嵌）            | Milvus      | pgvector / Qdrant / Chroma / GuassVector |
-| 图/关联索引      | 内嵌图（如 SQLite 关系表/Kuzu） | Neo4j       | FalkorDB / Kuzu            |
-| 全文索引        | SQLite FTS5            | 专用全文引擎      | —                          |
-| 审计日志        | SQLite                 | 关系库 / 日志系统  | —                          |
+- **领域操作**：顶层 `add/update/delete/get/list` 面向 `MemoryUnit`；`add` 只保存上层已经形成的真源记录，不负责接入、抽取、演进或生成索引投影。
+- **标准端口**：`storage.kv/vector/fulltext/graph/fusion/fs` 暴露对应 Store 的完整抽象接口，而非 Redis、Milvus 等具体实现；端口访问仍经过 Storage 的统一授权代理。
+- **能力模型**：`capabilities()` 是全局、不可变的唯一事实来源，`has_kv()`、`has_vector()` 等由其推导。未声明端口被访问时抛 `UnsupportedStorageCapabilityError`。检索 pipeline 不属于 capability，由 `preferred_retrieval_pipeline()` 单独表达。
+- **组合与一体化实现**：`CompositeStorage` 复用已装配的 Store 并提供默认组合能力；`IntegratedStorage` 是面向一体化平台的扩展形态，不要求物理暴露平台内部使用的每一种索引技术。
+- **两级安全边界**：`Storage.security` 负责可插拔的通用数据面授权，默认 allow-all；各 `Store.security` 负责适配自身数据模型的数据保护，未启用时必须明确为 passthrough。固定调用顺序为 Storage 授权、选择/调用 Store、Store 数据保护、访问后端。
+- **健康检查**：`Storage.health()` 检查其声明的能力、统一 Security 和 Store Security；能力集合不会随单次健康状态动态变化。
 
+| 抽象 | 端侧实现示例 | 云侧实现示例 | 备选 |
+| --- | --- | --- | --- |
+| 真源（文档/二进制） | 本地文件系统 / Markdown | 对象存储 / 文件服务 | Git 仓库 |
+| 真源（结构化）/ KV | SQLite | PostgreSQL / Redis | — |
+| 向量索引 | 轻量本地向量 | Milvus | pgvector / Qdrant / Chroma / GuassVector |
+| 图/关联索引 | SQLite 关系表 / Kuzu | Neo4j | FalkorDB / Kuzu |
+| 全文索引 | SQLite FTS5 | 专用全文引擎 | — |
+| 融合存储 | 本地组合实现 | 一体化检索平台 | — |
 
-> 端侧强调「轻量、可离线、低资源」；云侧强调「强检索、可扩缩」。同一逻辑模型，不同物理实现。
+> 当前首版已落地 `Storage`、`StorageProducer`、`CompositeStorage`、能力与安全模型；
+> `storage.default` 可选择组合或一体化实现，Kernel 与 Retriever 共享同一具名实例。
+> Construction 与 Control 仍保留部分直接 Store 依赖，后续按模块迁移。
+> `IntegratedStorage` 是已定义的实现方向，尚未提供仓内实现。精确契约见
+> [S06-storage.md](../specs/S06-storage.md)，设计取舍见
+> [F05-unified-storage-design.md](../features/storage/F05-unified-storage-design.md)。
 
 ---
 
@@ -425,7 +456,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | ---- | ------------------------------------ |
 | 可观测性 | 检索轨迹、演进事件、指标（检索 token、p50/p95 时延、容量） |
 | 可治理  | 记忆可检视/编辑/审计/回溯/遗忘；演进血缘可追溯            |
-| 安全合规 | scope 权限、端侧数据不出端、传输/存储加密、可遗忘（合规删除）   |
+| 安全合规 | 接口层 PEP、Storage 可插拔授权、Store 数据保护、scope 隔离、传输/存储加密、可遗忘（合规删除） |
 | 多租户  | `org + space` 硬隔离；space 内支持 `user -> agent` 或 `agent -> user` 主体路径；跨 space 受控共享 |
 | 可插拔  | embedding、向量库、图库、LLM 抽取器、重排器均为可替换组件  |
 
@@ -442,12 +473,12 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | --- | --- | --- | --- |
 | **真源形态**（§10.1） | 文档 / 结构化 | 按 profile | 切轻量真源降存储与运维 |
 | **索引类型**（§9.2） | 文档 / 关键词 / 向量 / 图 各自开关 | 关键词+向量（图/文档按需启用） | 关图/向量大幅降写入与存储成本 |
-| **检索策略**（§8） | 召回通道、重排 on/off、渐进披露层级、`as_of` | 混合+重排 | 关重排/单通道降时延 |
+| **检索策略**（§8） | Storage 首选 pipeline、召回通道、重排 on/off、渐进披露层级、`as_of` | 按 Storage 实现选择 + 混合召回 | 关重排/单通道降时延 |
 | **自演进**（§9.3） | 总开关、阶段（extract/associate/consolidate/forget）、hot/background、控制模式 | 全闭环+双通道 | 仅 extract 或纯离线，降在线时延与 LLM 成本 |
 | **双时间**（§3.1） | 启用 / 关闭（仅留最新版本） | 启用 | 关闭省时序维护，适合无回溯需求 |
 | **多模态规约**（§5.1） | 启用的规约器、是否留原模态资产、投影粒度 | 文本+按需图像 | 仅文本，去掉 ASR/OCR/caption 依赖 |
 | **scope / 共享**（§3.2） | `org + space` 隔离粒度、space 级 `principal_path`、共享池、跨 scope 授权策略 | space 隔离 + `user_agent` 默认 | 单租户简化 |
-| **存储后端**（§10.2） | 向量/图/全文/KV 各自选型（extras 选装） | 端 SQLite / 云 PG+专用库 | 端侧仅 SQLite，去重依赖 |
+| **存储后端**（§10.2） | Storage 实现、KV/向量/全文/图/融合/FS 端口选型（extras 选装） | CompositeStorage；端 SQLite / 云 PG+专用库 | 一体化 Storage 或端侧精简能力 |
 | **部署 profile**（§11） | edge / cloud / hybrid | 按场景 | — |
 | **模型**（§12 可插拔） | embedding / LLM 抽取器 / reranker；端侧降级策略 | 可插拔 | 端侧用小模型或规则降级 |
 
@@ -456,13 +487,16 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 配置自上而下分层，**就近覆盖**（下层覆盖上层）：
 
 ```
- 全局默认（内置）
-   └─▶ 部署 Profile（edge/cloud/hybrid，见 §11 / bootstrap）
-         └─▶ 租户/scope 级（org/space 及其 principal path 可各自不同策略）
-               └─▶ 调用级 options（recall/write/evolve 的逐次参数）
+ 全局默认（内置 defaults.py）
+   └─▶ 部署 Profile / 用户 YAML（装配期合并）
+         └─▶ ConfigSource（可插拔来源；默认=上述合并快照，产品可换配置中心）
+               └─▶ 租户/scope 级策略（org/space policy、principal_path 等）
+                     └─▶ 调用级 options（recall/write/evolve 的逐次业务参数）
 ```
 
 - 这样既能用一个 Profile 一键起步，也能对特定 scope 或单次调用做精细化覆盖。
+- **装配拓扑**（选哪些实现类、预装哪些具名实例）在 `build_kernel` 确定；**晚绑定值**（能力开关、prompt 文本、模型名/API Key/URL、Store 连接）经 `ConfigSource.fetch` 在运行中读取。同实现多套 model/key/url/hosts **优先**走晚绑定；`*.active` 多具名实例仅用于异质实现互切。
+- 六类商用可配项的抽象与边界见 `docs/features/config/F01-config-source.md` 与 `docs/specs/S08-config.md`；**不**通过 write/recall/evolve 入参写入这些配置。
 
 ### 13.3 开箱即用的场景预设（Presets）
 
@@ -481,10 +515,10 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 ### 13.4 实现落点
 
-- **`config/settings.py`**：配置 schema 与校验（各维度的取值与默认）。
+- **`src/config/`**：`Config` / `defaults` / `AssemblyContext` 负责装配期合并；**`ConfigSource`** 负责可插拔配置来源（默认对齐 YAML/defaults，产品可注入配置中心实现）。契约见 `docs/specs/S08-config.md`。
 - **`bootstrap/core/profiles.py`**：把维度组合成 `edge/cloud/hybrid` 与上述场景 Preset，装配对应组件与后端。
-- **`admin_get/set/all`（§6）**：运行时查询/调整可变配置（如启停某索引、切换演进模式）。
-- 不可变/重型配置（真源形态、后端选型）在实例初始化时确定；可变策略（检索/演进开关）支持运行时调整。
+- **`admin_get/set/all`（§6）**：运行时查询/调整 **PolicyManager** 已知策略键（如 lifecycle 目标、`scope.require_space`）；**不是**六类模型/prompt/store 配置的主通道。
+- **两层动态性**：换 ConfigSource 实现或增减预装配组件 → 重建内核；已注入来源上的值（开关/prompt/凭证/连接）→ 运行中 `fetch`（首选）；异质实例选用 → `*.active`（次选）。注册在仓内的多种实现 ≠ 默认已全部预装。
 
 ---
 
@@ -493,15 +527,22 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 **写入路径（Write）**
 
 ```
-write() → 持久化到数据层(G层,原始数据) → [hot] 轻量索引/即时事实
-                                       → [background] 自演进: 提取→抽象精炼→关联→消解→重建多粒度记忆与索引
-                                       → 审计日志(横切)
+write() → 接入/构建形成 MemoryUnit → Storage.add() 写真源
+                                ├─▶ [hot] IndexBuilder 生成投影并写 Storage 标准端口
+                                ├─▶ [background] 自演进: 提取→抽象精炼→关联→消解→重建多粒度记忆与索引
+                                └─▶ 审计日志(横切)
 ```
+
+`Storage.add()` 成功只表示 MemoryUnit 真源可读，不表示所有派生索引均已完成；索引投影仍由
+Construction 负责。一体化 Storage 可在内部自动建索引，但不能改变这一对上语义。
 
 **读取路径（Read）**
 
 ```
-recall() → 查询理解/去噪 → 空查询短路 → scope/标签/时间过滤 → 多路召回(向量/全文/图/时序) → 融合重排 → 相关性阈值 → 渐进式披露 → 结果 + 轨迹
+recall() → 查询理解/去噪 → 空查询短路 → 合并过滤
+         → Retriever 按 Storage 首选值执行 recall/get/Fuser 三步内核
+         → Reranker → 相关性阈值 → top_k → 渐进式披露
+         → items + errors + 可选 trajectory
 ```
 
 **演进路径（Evolve）**
@@ -578,9 +619,9 @@ agent-memory/
     ├── common/                     # 跨层共享：能力插件 + 通用结构体 + 异常 + 横切组件
     │   ├── base.py                 #   Plugin 插件契约（pluginType/health）+ PluginType 枚举
     │   ├── errors.py               #   异常类型：AgentMemoryError 根 + NotFound/Conflict/PermissionDenied/Validation/Policy/HealthCheck/Backend
-    │   ├── type_def/               #   通用结构体：Scope / MemoryUnit（tier·双时间·provenance血缘·supersedes版本链·生命周期）/
-    │   │                           #   RawPayload / Chunk / Entity·Relation·FeatureSet / ChatMessage / AuditEvent /
-    │   │                           #   FilterClause·FilterOp（结构化前置过滤谓词）
+    │   ├── type_def/               #   通用结构体：Scope / MemoryUnit / FilterExpr / RawPayload / AuditEvent；
+    │   │                           #   Storage 与 Retrieval 共用的 ParsedQuery / ScoredUnit / ScoredMemoryUnit /
+    │   │                           #   RecallBatch / ChannelError / CandidateFuser
     │   ├── tokenizer/              #   分词：构建建倒排 ↔ 检索 query 分词（须同一分词器）
     │   ├── chunker/                #   切分：写入切 chunk ↔ 重索引按同一规则重切
     │   ├── embedder/               #   向量化：chunk 向量 ↔ query 向量（须同模型同维度）
@@ -609,18 +650,22 @@ agent-memory/
     │   ├── index_builder.py        #   多形式索引构建：build / update / remove / rebuild（记录落 unit.scope）
     │   └── evolver.py              #   自演进：EvolveMode（extract/associate/consolidate/forget；索引维护非演进模式）
     │
-    ├── retrieval/                  # D 记忆检索层（§8）：①查询理解→②过滤→③多路召回→④融合重排→⑤相关性阈值→⑥披露→⑦轨迹
+    ├── retrieval/                  # D 记忆检索层（§8）：查询解析→Storage pipeline→Reranker→阈值→披露
     │   ├── base.py                 #   RetrievalOperator 算子契约
-    │   ├── types.py                #   RetrievalQuery（filters=FilterExpr·as_of valid-time）/ ParsedQuery（scalar_filters·as_of·time_from/to event-time）/ ScoredUnit / RetrievedItem / 轨迹
+    │   ├── types.py                #   RetrievalQuery / RetrievalResult / RetrievedItem / 轨迹；重导出共享候选类型
     │   ├── query_parser.py         #   查询理解：去噪 / 改写 / 分词 / 实体 / 向量化 / 时间约束解析
-    │   ├── recaller.py             #   单路召回：recall(scope, …) 组装 Store 查询；RecallChannel（逻辑路，→Store 非 1:1）
-    │   ├── fuser.py                #   多路融合排序（RRF；重排由 common Reranker 独立阶段承担）
+    │   ├── recaller.py             #   单路召回接口：RecallChannel 是逻辑路，物理 Store 映射由 Storage 装配
+    │   ├── fuser.py                #   物化候选融合（分层 MaxP + 跨通道融合；不含 Reranker）
     │   ├── discloser.py            #   渐进式披露：disclose(query, …) L0 摘要 → L1 片段 → L2 全文
-    │   └── retriever.py            #   检索入口：retrieve(scope, query) 编排整条链路，接口层 recall 映射到它
+    │   ├── retriever.py            #   检索入口接口：retrieve(scope, query)
+    │   └── retriever_impl/         #   PipelineRetriever：按 Storage 首选值编排三条 pipeline
     │
-    ├── storage/                    # F 记忆存储层（§10）：统一 CRUD 动词（insert/delete/update/get）
-    │   ├── base.py                 #   BaseStore（storeType/health）+ StoreType 枚举；检索型 Store 原生按 scope 隔离
-    │   ├── types.py                #   各 Store 的记录与查询结构（scope 独立入参 + filters=FilterExpr）
+    ├── storage/                    # F 记忆存储层（§10）：统一 Storage 门面 + 六类标准 Store
+    │   ├── storage.py              #   Storage：MemoryUnit 领域操作、能力发现、端口与检索适配入口
+    │   ├── security.py             #   StorageSecurity 通用授权 + StoreSecurity 数据保护边界
+    │   ├── storage_impl/           #   CompositeStorage 默认组合实现
+    │   ├── base.py                 #   BaseStore（storeType/health/security）+ StoreType 枚举
+    │   ├── types.py                #   Storage/Store 数据类型（scope 独立入参 + filters=FilterExpr）
     │   ├── kv.py                   #   KVStore（+exists）
     │   ├── fulltext.py             #   FulltextStore 全文倒排（+search）
     │   ├── vector.py               #   VectorStore 向量 ANN（+search）
@@ -650,26 +695,28 @@ agent-memory/
 | `src/ingest/`                       | A 数据接入（§5/§5.1）：信息源接入 + 模态规约 + 转换为 MemoryUnit（**不落盘**） |
 | `src/api/`                          | B 记忆接口层（§6）：`MemoryAPI` 统一 Core API，`MemoryEngine` 的薄封装 |
 | `src/control/`                      | C 控制层：记忆引擎编排（§6 语义的执行中枢）/ 生命周期（§3.1）/ 治理审计（§12）/ scope 权限（§3.2）/ 演进调度（§9.3）/ 运行时策略（§13.4） |
-| `src/retrieval/`                    | D 记忆检索层（§8）：查询理解 + 多路召回 + 融合重排 + 相关性阈值 + 渐进披露 + 轨迹 |
+| `src/retrieval/`                    | D 记忆检索层（§8）：查询理解 + Storage pipeline 选择 + Fuser + Reranker + 相关性阈值 + 渐进披露 + 轨迹/错误 |
 | `src/construction/`                 | E 记忆构建层 / 分层记忆结构（§4/§9.1/§9.2/§9.3）：**负责 MemoryUnit 落盘**与多形式索引构建、自演进 |
-| `src/storage/`                      | F 记忆存储层（§10）：六种 Store（kv/fulltext/vector/graph/fusion/fs），统一 CRUD 动词 |
+| `src/storage/`                      | F 记忆存储层（§10）：统一 Storage 领域契约、能力/安全/检索适配，以及六种 Store（kv/fulltext/vector/graph/fusion/fs） |
 | `src/common/`                       | 跨层共享：能力插件（Plugin：tokenizer/chunker/embedder/feature_extractor/llm/normalizer/reranker）+ 通用结构体（type_def，含 §3 数据模型）+ 横切组件（audit） |
-| `src/config/`                       | 配置：真源形态 / 索引策略 / 部署 profile（§13，部署 §11）——不可变/重型配置；运行时可变策略归 `src/control/policy` |
+| `src/config/`                       | 配置（§13）：装配合并（YAML/defaults）+ 可插拔 `ConfigSource`（晚绑定六类配置）；少量策略键仍归 `src/control/policy` |
 | `evaluation/`                       | 测评（对接 VISION §7：benchmark / metrics / scripts / smoke_test） |
 | `deploy/`、`docs/`、`examples/`      | 部署物料 / 文档 / 示例      |
 
 
-- **三类统一契约**：接口代码落地为「算子 + 插件 + 存储」三类自描述契约——各层算子（`IngestOperator`/`ConstructionOperator`/`RetrievalOperator`/`ControlOperator`）、共享能力插件（`Plugin`）、存储后端（`BaseStore`），均为「类型枚举方法（`operatorType`/`pluginType`/`storeType`）+ `health()` 探活」，路由按类型不按实现名。
+- **三类基础契约**：接口代码落地为「算子 + 插件 + 存储」三类契约——各层算子、共享能力插件，以及存储层的统一 `Storage` 与底层 `BaseStore`。`Storage` 以 capability 和标准端口描述组合能力，`BaseStore` 继续以 `storeType()` 和 `health()` 描述单一后端。
 - **兼容报告单独归档**：跨层 legacy 兼容（例如 `rust/cc_memory` 的 `MemoryIngestor`/`MemoryRetriever`、`memdir`、`retained_eval`）不塞进单层接口；统一归 `docs/features/construction/F04-cc-memory-compat.md`，再映射回 `src/api` / `src/retrieval` / `evaluation` / `agent_plugin`。
 - **写入边界**：`ingest` 只做规约与转换（RawPayload → MemoryUnit），**不落盘**；`construction` 负责把 MemoryUnit 写入真源、在其上挖掘分层记忆并构建索引。构建层**没有编排 service**，六个算子（extractor/abstractor/associator/classifier/index_builder/evolver）由上层/控制层驱动。
-- **索引「构建」与「持久化」分离**：`src/construction/index_builder` 负责构建/更新索引（逻辑），`src/storage` 负责持久化驱动（后端），经 Store 抽象解耦；统一 CRUD 动词为 `insert`（增，冲突抛 `ConflictError`）/ `delete`（删，幂等）/ `update`（改，缺失抛 `NotFoundError`）/ `get`（查，按 id 点读）。检索型 Store 的记录/查询带一等 `scope` 字段，按 scope **原生隔离**（kv/fs 为通用键值/二进制原语，不引入 scope）。
+- **索引「构建」与「持久化」分离**：`src/construction/index_builder` 负责生成/维护索引投影，`src/storage` 负责真源与索引的持久化。MemoryUnit 优先走 `Storage.add/update/delete/get/list`，索引投影走所需标准端口；底层 Store 的 CRUD 仍为 `insert/delete/update/get`。所有 Storage/Store 操作显式携带 scope 并由存储层原生隔离。
 - **共享插件保证两侧一致**：分词/切分/向量化/特征抽取/LLM/规约/重排抽到 `src/common`，构建侧与检索侧（以及重建/演进路径）注入**同一实现**——同词表、同向量空间、同切分规则、同规约器，是「派生可重建」与召回对齐的前提。
-- **依赖方向**：各层只依赖 `src/common`，互不 import；例外集中在编排侧——`control/scheduler` 与 `control/engine` 引用 `construction.EvolveMode`（控制层驱动构建层演进），`control/engine` 引用 `retrieval` 的查询/结果类型（引擎编排检索链路），`src/api` 依赖 `control`/`retrieval`/`construction`（薄封装的委托与类型重导出）。
-- **鉴权/隔离/异常的统一落点**：① **PEP 在接口层**——`MemoryAPI` 每方法分离 `identity`（调用方，必填 keyword-only）与 `scope`（目标 target），`check` + 入口审计在此完成，identity 不下沉、下游信任 target；② **scope 原生隔离**——scope 作为 Store 专用入参，过滤条件用结构化 `FilterExpr` 由上层组装，不靠 `dict` 透传；③ **统一异常**——`common/errors`（`AgentMemoryError` 根）作为跨层错误契约；④ **版本模型**——`update` 经 `UpdateMode`（SUPERSEDE 新 id / OVERWRITE 同 id）区分，版本链走 `supersedes`、演进血缘走 `provenance`。
+- **依赖方向**：`src/common` 承载跨层数据契约与插件；`src/storage` 只依赖 common，不反向依赖 Retrieval。Retrieval 依赖统一 Storage 和 common，QueryParser/Fuser 等算法仍归 Retrieval。Construction/Control 的目标依赖也是 Storage 契约，但首版仍有直接 Store 依赖待迁移；API 继续作为 control/retrieval/construction 的薄封装。
+- **鉴权/隔离/异常的统一落点**：① `MemoryAPI` 是公开接口 PEP，分离 `identity` 与 target `scope`；② `StorageSecurity` 是可插拔的数据面授权边界，默认 allow-all，各 Store Security 负责后端数据保护；③ scope 作为 Storage/Store 专用入参做原生隔离，`FilterExpr` 不承载 scope；④ `common/errors` 提供跨层异常契约；⑤版本链走 `supersedes`，演进血缘走 `provenance`。
 - **一个内核，多形态接入**：`bootstrap/*` 与 `agent_plugin/*` 依赖内核、仅做协议/参数转换后调用 `src/api`，不含业务逻辑。`bootstrap/core` 是各 surface 共享的应用核（内核装配 + 共享 `dispatch` + profile/配置加载）；其上 `http_server`（HTTP/REST）与 `mcp_server`（MCP）作为独立服务对外提供、`sdk` 作为库嵌入、`cli` 作为命令行——四个 surface 彼此解耦，共用同一 `core` 与 `src/api`。
 - **端/云/混合**靠 `src/config` 的部署 profile 装配不同后端组合（端侧 SQLite+轻向量，云侧 PG+Milvus+Neo4j），逻辑模型不变。
 
-> 说明：`src/` 各层接口（含 `src/api` 与 `src/control/engine`）已按此布局生成（仅接口定义，无实现）；`src/config`、`bootstrap/`、`agent_plugin/` 等待生成。实际签名以 `src/` 代码为准。
+> 当前状态：主要接口与默认实现已存在。本轮统一 Storage 首版已完成 Retriever 接入；
+> Construction/Control 迁移和一体化 `Storage` 实现仍待后续迭代。实际签名与行为以
+> `src/`、`docs/specs/` 和对应 features 文档为准。
 
 ---
 

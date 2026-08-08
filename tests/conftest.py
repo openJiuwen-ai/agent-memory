@@ -14,6 +14,7 @@ from common.feature_extractor.feature_extractor_impl.keyword_feature_extractor i
 )
 from common.reranker.reranker_impl.overlap_reranker import OverlapReranker
 from common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
+from common.type_def import memory_key
 from common.type_def.memory import (
     LifecycleState,
     MemoryTier,
@@ -22,7 +23,6 @@ from common.type_def.memory import (
     Segment,
     Temporal,
 )
-from common.type_def import memory_key
 from common.type_def.memory_codec import dumps
 from common.type_def.scope import Scope
 from retrieval.discloser_impl.truncating_discloser import TruncatingDiscloser
@@ -34,6 +34,7 @@ from retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
 from retrieval.retriever_impl.unit_reader import UnitReader
 from storage.fulltext_impl.in_memory_fulltext_store import InMemoryFulltextStore
 from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from storage.storage_impl.composite_storage import CompositeStorage
 from storage.types import Document, VectorRecord
 from storage.vector_impl.in_memory_vector_store import InMemoryVectorStore
 
@@ -64,14 +65,21 @@ def make_world(rerank: bool = False) -> RetrievalWorld:
     kv = InMemoryKVStore()
     vector = InMemoryVectorStore()
     fulltext = InMemoryFulltextStore(tokenizer)
+    storage = CompositeStorage(kv=kv, vector=vector, fulltext=fulltext)
     parser = SimpleQueryParser(tokenizer, embedder, feature_extractor=features)
-    keyword = KeywordRecaller(fulltext)
-    vector_recaller = VectorRecaller(vector)
+    keyword = KeywordRecaller(storage)
+    vector_recaller = VectorRecaller(storage)
     discloser = TruncatingDiscloser()
     unit_reader = UnitReader(kv)
     reranker = OverlapReranker(tokenizer) if rerank else None
     retriever = PipelineRetriever(
-        parser, [keyword, vector_recaller], RRFFuser(), discloser, unit_reader, reranker
+        parser,
+        [keyword, vector_recaller],
+        RRFFuser(),
+        discloser,
+        unit_reader,
+        reranker,
+        storage=storage,
     )
     return RetrievalWorld(
         tokenizer,

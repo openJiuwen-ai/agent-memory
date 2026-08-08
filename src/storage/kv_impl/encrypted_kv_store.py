@@ -16,6 +16,7 @@ from common.security import SecurityContext, SecurityProducer, SecurityProvider
 from common.type_def import MEMORY_KEY_PREFIX, MESSAGES_KEY_PREFIX, FilterExpr, Scope
 from storage.base import StoreType
 from storage.kv import KvProducer, KVStore
+from storage.security import EnabledStoreSecurity, StoreSecurity
 from storage.types import KVMemoryListResult
 
 from .memory_list import list_memory_entries
@@ -71,6 +72,11 @@ class EncryptedKVStore(KVStore):
     def __init__(self, raw: KVStore, security: SecurityProvider) -> None:
         self._raw = raw
         self._security = security
+        self._store_security = EnabledStoreSecurity(security.health)
+
+    @property
+    def security(self) -> StoreSecurity:
+        return self._store_security
 
     def store_type(self) -> StoreType:
         return StoreType.KV

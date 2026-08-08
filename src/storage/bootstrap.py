@@ -27,4 +27,5 @@ def register_backends() -> None:
     import_module("storage.fulltext_impl")
     import_module("storage.fusion_impl")
     import_module("storage.fs_impl")
+    import_module("storage.storage_impl")
     _REGISTERED = True

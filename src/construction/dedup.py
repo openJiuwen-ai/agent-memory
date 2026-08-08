@@ -17,13 +17,11 @@ Evolver 的 EXTRACT/CONSOLIDATE 模式需判定候选是否与已有记忆重复
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Optional
 
-from common.errors import NotFoundError
 from common.factory.factory import Factory
 from common.log import get_logger
-from common.type_def import MemoryUnit, Scope, memory_key
-from storage.kv import KVStore
+from common.type_def import MemoryUnit, Scope
+from storage.storage import Storage
 
 from .base import ConstructionOperator
 
@@ -52,14 +50,14 @@ class Dedup(ConstructionOperator):
 
     def __init__(
         self,
-        kv: KVStore,
+        storage: Storage,
         *,
         min_similarity: float = 0.5,
         top_k: int = 5,
         tier_filter: bool = False,
         scope_filter: bool = True,
     ) -> None:
-        self._kv = kv
+        self._storage = storage
         self._min_similarity = min_similarity
         self._top_k = top_k
         self._tier_filter = tier_filter
@@ -75,32 +73,20 @@ class Dedup(ConstructionOperator):
         """
 
     # -- 共享：从真源按 unit_id 加载 MemoryUnit（跨 scope 回退） ---------------- #
-    def _load_unit(self, unit_id: str, scope: Scope) -> Optional[MemoryUnit]:
-        """从 KVStore 按 unit_id 读取 MemoryUnit；缺失/损坏返回 None。
-
-        召回命中的是建索引记忆，落 ``/memory/{id}``（见 memory.py），故用 memory_key。
-        优先在候选 scope 读；缺失则回退到全 scope 扫描（unit 可能落在别的 scope）。
-        """
+    def _load_unit(self, unit_id: str, scope: Scope) -> MemoryUnit | None:
+        """从统一 Storage 读取 MemoryUnit；缺失时跨作用域回退。"""
         try:
-            return _loads(self._kv.get(scope, memory_key(unit_id)))
-        except NotFoundError:
-            for s in self._kv.scopes():
-                try:
-                    unit = _loads(self._kv.get(s, memory_key(unit_id)))
-                    if unit is not None:
-                        return unit
-                except NotFoundError:
-                    continue
+            units = self._storage.get(scope, [unit_id])
+            if units:
+                return units[0]
+            for candidate_scope in self._storage.scopes():
+                units = self._storage.get(candidate_scope, [unit_id])
+                if units:
+                    return units[0]
             return None
         except Exception:
             logger.warning("Dedup._load_unit: failed to load unit %s", unit_id)
             return None
-
-
-def _loads(raw: bytes) -> Optional[MemoryUnit]:
-    from common.type_def.memory_codec import loads
-
-    return loads(raw)
 
 
 def same_scope(a, b) -> bool:

@@ -30,6 +30,18 @@ globals:
 # reranker:
 #   default: { target: bge_reranker, params: { reranker_bge_model: BAAI/bge-reranker-v2-m3 } }
 
+# ---- 跨实例分布式锁（横切原语，当前无消费方，配了也只在有人 dep 时才实例化）----
+# 不设默认实现：要用就必须显式配，避免「忘了配 Redis」静默退化成不跨实例的单机锁。
+# memory 实现只供单测与本地开发，不提供跨实例互斥；生产一律用 redis。
+# ssl_verify 只管是否校验服务端证书，加密开关在 url 的 scheme 上（须 rediss://）。
+# lock:
+#   default:
+#     target: redis
+#     params:
+#       url: "redis://localhost:6379/1"   # 与 kv_store 分库，便于单独观测与清理
+#       lease_ms: 30000                   # 租约；guard 以 lease_ms/3 为周期自动续期
+#       wait_timeout_ms: 10000            # 有界等待上限，超时抛 LockTimeoutError
+
 # ---- 多实例 + 引用共享示例：构建侧与召回侧共享同一具名 vector_store ----
 # vector_store:
 #   shared_vec: { target: milvus, params: { uri: "http://localhost:19530" } }

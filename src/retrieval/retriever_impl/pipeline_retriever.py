@@ -9,16 +9,26 @@ scope 作显式首参贯穿下推到各召回路；各子算子由装配注入�
 from __future__ import annotations
 
 import logging
-import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from time import perf_counter
 from uuid import uuid4
 
-from common.errors import ValidationError
+from common.errors import ValidationError, safe_error_message
 from common.factory.factory import Factory
 from common.log import get_logger
 from common.reranker.base import Reranker, RerankerProducer
-from common.type_def import MemoryUnit, Scope, and_merge
+from common.type_def import (
+    ChannelError,
+    RecallBatch,
+    RecallResult,
+    RetrievalPipeline,
+    Scope,
+    ScoredCandidate,
+    ScoredMemoryUnit,
+    ScoredUnit,
+    and_merge,
+    is_retrieval_candidate,
+)
 from retrieval.base import RetrievalOperatorType
 from retrieval.discloser import Discloser, DiscloserProducer
 from retrieval.fuser import Fuser, FuserProducer
@@ -30,26 +40,15 @@ from retrieval.types import (
     RecallChannel,
     RetrievalQuery,
     RetrievalResult,
-    ScoredUnit,
     TrajectoryStep,
 )
-from storage.kv import KvProducer
+from storage.storage import Storage, StorageProducer
+from storage.storage_impl import CompositeStorage
 
 from .predicate_builder import build_system_filters
-from .unit_reader import UnitReader, in_event_window, matches_filters, passes
+from .unit_reader import UnitReader
 
 logger = get_logger(__name__)
-
-_ERROR_CREDENTIAL_RE = re.compile(r"//[^:/@\s]*:[^@\s]+@")
-_ERROR_AUTH_HEADER_RE = re.compile(
-    r"(?i)(\bauthorization\b['\"]?\s*[:=]\s*['\"]?(?:bearer|basic)\s+)[^'\",\s;&]+"
-)
-_ERROR_AUTH_VALUE_RE = re.compile(
-    r"(?i)(\bauthorization\b['\"]?\s*[:=]\s*['\"]?)(?!(?:bearer|basic)\s+)[^'\",\s;&]+"
-)
-_ERROR_SECRET_RE = re.compile(
-    r"(?i)\b(password|passwd|pwd|token|api[_-]?key|secret)\b\s*[:=]\s*[^,;&]+"
-)
 
 
 class PipelineRetriever(Retriever):
@@ -61,7 +60,7 @@ class PipelineRetriever(Retriever):
         recallers: list[Recaller],
         fuser: Fuser,
         discloser: Discloser,
-        unit_reader: UnitReader,
+        unit_reader: UnitReader | None,
         reranker: Reranker | None = None,
         over_fetch_factor: int = 4,
         over_fetch_floor: int = 60,
@@ -72,12 +71,20 @@ class PipelineRetriever(Retriever):
         min_score_ratio: float = 0.0,
         min_score_ratio_uncalibrated: float = 0.0,
         min_results: int = 0,
+        storage: Storage | None = None,
     ) -> None:
         self._parser = parser
         self._recallers = recallers
         self._fuser = fuser
         self._discloser = discloser
         self._reader = unit_reader
+        if storage is None:
+            if unit_reader is None:
+                raise ValidationError("PipelineRetriever requires storage or unit_reader")
+            storage = CompositeStorage(kv=unit_reader.kv, recallers=recallers)
+        elif isinstance(storage, CompositeStorage):
+            storage.bind_recallers(recallers)
+        self._storage = storage
         self._reranker = reranker
         # 召回超采样：每路取 max(top_k*factor, floor)，撒宽网喂融合。
         self._over_fetch_factor = max(1, int(over_fetch_factor))
@@ -104,6 +111,11 @@ class PipelineRetriever(Retriever):
     def recallers(self) -> list[Recaller]:
         """已接入的 recaller 列表（只读视图；外部不应原地修改）。"""
         return self._recallers
+
+    @property
+    def storage(self) -> Storage:
+        """当前 Retriever 使用的统一 Storage 实例。"""
+        return self._storage
 
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.RETRIEVER
@@ -197,8 +209,12 @@ class PipelineRetriever(Retriever):
         user_filters = parsed.scalar_filters  # parser 已 normalize 的用户表达式（供 §6 复核）
         parsed.scalar_filters = and_merge(user_filters, sys_filters)
 
-        # 通道选择：调用级 query.channels 覆盖 parser 建议
-        enabled = query.channels if query.channels is not None else parsed.channels
+        # 通道选择：调用级 query.channels 覆盖 parser 建议；显式空列表不是“全部”。
+        if query.channels == []:
+            raise ValidationError("channels must be omitted or contain at least one channel")
+        enabled = query.channels if query.channels is not None else (parsed.channels or None)
+        parsed.include_archived = query.include_archived
+        parsed.recheck_filters = user_filters
         # 召回超采样（撒宽网）与精排预算（控成本）解耦：
         #   recall_k = max(top_k*factor, floor)  —— 每路召回宽度
         #   budget_n = max(rerank_max, top_k)    —— recheck+rerank 封顶，永不欠 top_k
@@ -207,98 +223,96 @@ class PipelineRetriever(Retriever):
             recall_k = min(recall_k, self._recall_max)  # 硬上限：封顶后端召回压力
         budget_n = max(self._rerank_max, query.top_k)
 
-        # [3b] 并行多路召回：每通道失败隔离——单路异常降级为空集并记轨迹。
-        selected_recallers = [
-            recaller for recaller in self._recallers if not enabled or recaller.channel() in enabled
-        ]
-        if not selected_recallers:
+        # [3b-6] Storage 的全局首选值选择三条 recall/get/rank 路径。
+        pipeline = self._storage.preferred_retrieval_pipeline()
+        t0 = perf_counter()
+        errors: list[ChannelError]
+        if pipeline == RetrievalPipeline.RECALL_GET_RANK:
+            recalled = self._storage.recall(
+                scope, parsed, channels=enabled, recall_limit=recall_k
+            )
+            materialized = _materialize_recalled(self._storage, scope, recalled, parsed)
+            fused = self._fuser.fuse(
+                parsed, [batch.candidates for batch in materialized.batches]
+            )
+            errors = materialized.errors
+        elif pipeline == RetrievalPipeline.RECALL_AND_GET_RANK:
+            materialized = self._storage.recall_and_get(
+                scope, parsed, channels=enabled, recall_limit=recall_k
+            )
+            materialized = _filter_materialized(materialized, parsed)
+            fused = self._fuser.fuse(
+                parsed, [batch.candidates for batch in materialized.batches]
+            )
+            errors = materialized.errors
+        else:
+            ranked = self._storage.retrieve(
+                scope,
+                parsed,
+                self._fuser,
+                channels=enabled,
+                recall_limit=recall_k,
+                rank_limit=budget_n,
+            )
+            fused = ranked.candidates
+            errors = ranked.errors
+
+        for error in errors:
             logger.warning(
-                "Retriever.retrieve no recallers: trace_id=%s scope_dims=%s "
-                "enabled_channels=%s",
+                "Retriever.recall degraded: trace_id=%s scope_dims=%s channel=%s "
+                "source=%s error_type=%s error=%s",
                 trace_id,
                 scope_dims,
-                _format_channels(enabled, auto_label="all"),
+                error.channel.value,
+                error.source,
+                error.error_type,
+                error.message,
             )
-        per_channel: list[list[ScoredUnit]] = []
-        recall_results: dict[int, list[ScoredUnit]] = {}
-        recall_steps: dict[int, tuple[float, int, RecallChannel, dict[str, str]]] = {}
-        if selected_recallers:
-            with ThreadPoolExecutor(max_workers=len(selected_recallers)) as executor:
-                futures = {}
-                for idx, recaller in enumerate(selected_recallers):
-                    t0 = perf_counter()
-                    future = executor.submit(recaller.recall, scope, parsed, recall_k)
-                    futures[future] = (idx, recaller, t0)
+        recall_cost_ms = (perf_counter() - t0) * 1000.0
+        if pipeline == RetrievalPipeline.RETRIEVE:
+            record_step(
+                "recall",
+                recall_cost_ms,
+                len(fused),
+                detail={"pipeline": pipeline.value, "errors": str(len(errors))},
+            )
+        else:
+            for batch in materialized.batches:
+                record_step(
+                    "recall",
+                    recall_cost_ms,
+                    len(batch.candidates),
+                    batch.channel,
+                    {"source": batch.source, "pipeline": pipeline.value},
+                )
+            for error in errors:
+                record_step(
+                    "recall",
+                    recall_cost_ms,
+                    channel=error.channel,
+                    detail={
+                        "source": error.source,
+                        "degraded": error.error_type,
+                        "error": error.message,
+                    },
+                )
 
-                for future in as_completed(futures):
-                    idx, recaller, t0 = futures[future]
-                    try:
-                        cands = future.result()
-                        detail: dict[str, str] = {}
-                    except Exception as exc:  # 通道隔离：任何后端故障不中断其他通道
-                        cands = []
-                        error = _safe_error(exc)
-                        detail = {
-                            "degraded": type(exc).__name__,
-                            "error": error,
-                        }
-                        logger.warning(
-                            "Retriever.recall degraded: trace_id=%s scope_dims=%s channel=%s "
-                            "error_type=%s error=%s",
-                            trace_id,
-                            scope_dims,
-                            recaller.channel().value,
-                            type(exc).__name__,
-                            error,
-                        )
-                    recall_results[idx] = cands
-                    recall_steps[idx] = (
-                        (perf_counter() - t0) * 1000.0,
-                        len(cands),
-                        recaller.channel(),
-                        detail,
-                    )
-
-        for idx, _ in enumerate(selected_recallers):
-            cands = recall_results.get(idx, [])
-            if cands:
-                per_channel.append(cands)
-            if idx in recall_steps:
-                cost_ms, count, channel, detail = recall_steps[idx]
-                record_step("recall", cost_ms, count, channel, detail)
-
-        # [4] 融合
-        t0 = perf_counter()
-        fused = self._fuser.fuse(parsed, per_channel)
         explain_fusion = getattr(self._fuser, "explain", None)
         fusion_detail = explain_fusion() if callable(explain_fusion) else {}
-        step("fuse", t0, n=len(fused), detail=fusion_detail)
+        record_step("fuse", 0.0, n=len(fused), detail=fusion_detail)
 
-        # [5] 截断到精排预算；top_k 大于 rerank_max 时自动扩展，避免静默欠召。
-        budget = fused[:budget_n]
-
-        # [6] 点读真源（查询 scope 内）+ 后置过滤（纵深防御）：
-        #     lifecycle×as_of 有效性 + event-time 窗 + 调用方显式 filters。
-        t0 = perf_counter()
-        units: dict[str, MemoryUnit] = self._reader.load(scope, [su.unit_id for su in budget])
-
-        def _keep(u: MemoryUnit) -> bool:
-            return (
-                passes(u, parsed.as_of, query.include_archived)
-                and in_event_window(u, parsed.time_from, parsed.time_to)
-                and matches_filters(u, user_filters)
-            )
-
-        survivors = [su for su in budget if su.unit_id in units and _keep(units[su.unit_id])]
-        recheck_dropped = len(budget) - len(survivors)
-        step("recheck", t0, n=len(survivors), detail={"dropped": str(recheck_dropped)})
+        # Fuser 后再限制精排预算；Storage.retrieve 已在入口内应用同一个上限。
+        survivors = list(fused[:budget_n])
+        units = {candidate.unit_id: candidate.unit for candidate in survivors}
+        recheck_dropped = 0
+        record_step("recheck", 0.0, n=len(survivors), detail={"dropped": "0"})
         if recheck_dropped:
             logger.debug(
                 "Retriever.recheck dropped: trace_id=%s scope_dims=%s dropped=%d budget=%d",
                 trace_id,
                 scope_dims,
                 recheck_dropped,
-                len(budget),
+                len(survivors),
             )
 
         # [7] 可选重排：内容已物化，按与 query 的相关性精排
@@ -310,15 +324,7 @@ class PipelineRetriever(Retriever):
                 parsed.raw, [units[su.unit_id].content for su in survivors]
             )
             order = sorted(range(len(survivors)), key=lambda i: scores[i], reverse=True)
-            survivors = [
-                ScoredUnit(
-                    survivors[i].unit_id,
-                    scores[i],
-                    survivors[i].channel,
-                    evidence=survivors[i].evidence,
-                )
-                for i in order
-            ]
+            survivors = [replace(survivors[i], score=scores[i]) for i in order]
             step("rerank", t0, n=len(survivors))
             reranked = True
         elif do_rerank and self._reranker is None:
@@ -368,13 +374,14 @@ class PipelineRetriever(Retriever):
             len(items),
             (perf_counter() - started_at) * 1000.0,
         )
-        return RetrievalResult(items=items, trajectory=traj)
+        return RetrievalResult(items=items, trajectory=traj, errors=errors)
 
 # -- 注册到 RetrieverProducer（实现自注册，新增无需改 producer/装配入口） -------- #
 
 
 @RetrieverProducer.register("pipeline")
 def _build(config):
+    storage = StorageProducer.resolve(config)
     # 召回路按能力开关启用；每路 recaller 自取其 Store，可被 config 各自覆盖。
     recallers = [RecallerProducer.dep(config, "keyword_recaller", default="keyword")]
     if config.get("vector_enabled", True):
@@ -399,12 +406,14 @@ def _build(config):
         if config.get("rerank_enabled", True)
         else None
     )
+    if isinstance(storage, CompositeStorage):
+        storage.bind_recallers(recallers)
     return PipelineRetriever(
         QueryParserProducer.dep(config, default="simple"),
         recallers,
         FuserProducer.dep(config, default="rrf"),
         DiscloserProducer.dep(config, default="truncating"),
-        UnitReader(KvProducer.dep(config, default="memory")),
+        UnitReader(storage.kv) if storage.has_kv() else None,
         reranker,
         over_fetch_factor=int(Factory.cfg_get(config, "over_fetch_factor", 4)),
         over_fetch_floor=int(Factory.cfg_get(config, "over_fetch_floor", 60)),
@@ -418,6 +427,7 @@ def _build(config):
             Factory.cfg_get(config, "min_score_ratio_uncalibrated", 0.0)
         ),
         min_results=int(Factory.cfg_get(config, "min_results", 0)),
+        storage=storage,
     )
 
 
@@ -428,7 +438,7 @@ def _estimate_tokens(text: str) -> int:
 
 
 def apply_threshold(
-    survivors: list[ScoredUnit],
+    survivors: list[ScoredCandidate],
     top_k: int,
     *,
     calibrated: bool,
@@ -436,7 +446,7 @@ def apply_threshold(
     min_score_ratio: float = 0.0,
     min_score_ratio_uncalibrated: float = 0.0,
     min_results: int = 0,
-) -> tuple[list[ScoredUnit], dict[str, str]]:
+) -> tuple[list[ScoredCandidate], dict[str, str]]:
     """应用统一相关性阈值，返回保留候选与轨迹明细。"""
     n_in = len(survivors)
     positive = sorted(
@@ -517,9 +527,69 @@ def _scope_log_dims(scope: Scope) -> str:
 
 
 def _safe_error(exc: Exception) -> str:
-    text = " ".join(str(exc).split())
-    text = _ERROR_CREDENTIAL_RE.sub("//<redacted>:<redacted>@", text)
-    text = _ERROR_AUTH_HEADER_RE.sub(lambda match: f"{match.group(1)}<redacted>", text)
-    text = _ERROR_AUTH_VALUE_RE.sub(lambda match: f"{match.group(1)}<redacted>", text)
-    text = _ERROR_SECRET_RE.sub(lambda match: f"{match.group(1)}=<redacted>", text)
-    return text[:200]
+    return safe_error_message(exc)
+
+
+def _materialize_recalled(
+    storage: Storage,
+    scope: Scope,
+    recalled: RecallResult[ScoredUnit],
+    query,
+) -> RecallResult[ScoredMemoryUnit]:
+    """读取 id 仅去重 IO，随后恢复每个物理入口的全部候选证据。"""
+    unit_ids: list[str] = []
+    seen: set[str] = set()
+    for batch in recalled.batches:
+        for candidate in batch.candidates:
+            if candidate.unit_id not in seen:
+                seen.add(candidate.unit_id)
+                unit_ids.append(candidate.unit_id)
+    units = {unit.id: unit for unit in storage.get(scope, unit_ids)}
+    batches: list[RecallBatch[ScoredMemoryUnit]] = []
+    errors = list(recalled.errors)
+    for batch in recalled.batches:
+        materialized: list[ScoredMemoryUnit] = []
+        for candidate in batch.candidates:
+            unit = units.get(candidate.unit_id)
+            if unit is None:
+                errors.append(
+                    ChannelError(
+                        batch.channel,
+                        batch.source,
+                        "MissingMemoryUnit",
+                        f"MemoryUnit not found: {candidate.unit_id}",
+                    )
+                )
+                continue
+            scored = ScoredMemoryUnit(
+                unit, candidate.score, candidate.channel, candidate.evidence
+            )
+            if _passes_recheck(scored, query):
+                materialized.append(scored)
+        batches.append(RecallBatch(batch.channel, batch.source, materialized))
+    return RecallResult(batches=batches, errors=errors)
+
+
+def _filter_materialized(
+    result: RecallResult[ScoredMemoryUnit], query
+) -> RecallResult[ScoredMemoryUnit]:
+    batches: list[RecallBatch[ScoredMemoryUnit]] = []
+    for batch in result.batches:
+        candidates = [
+            candidate
+            for candidate in batch.candidates
+            if _passes_recheck(candidate, query)
+        ]
+        batches.append(RecallBatch(batch.channel, batch.source, candidates))
+    return RecallResult(batches=batches, errors=result.errors)
+
+
+def _passes_recheck(candidate: ScoredMemoryUnit, query) -> bool:
+    return is_retrieval_candidate(
+        candidate.unit,
+        as_of=query.as_of,
+        time_from=query.time_from,
+        time_to=query.time_to,
+        filters=query.recheck_filters,
+        include_archived=query.include_archived,
+    )

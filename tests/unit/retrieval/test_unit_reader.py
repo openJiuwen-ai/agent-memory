@@ -78,6 +78,14 @@ def test_event_window_lenient_when_no_t_event(unit_factory) -> None:
     assert in_event_window(unit_factory("n", "x"), NOW - timedelta(days=1), NOW + timedelta(days=1))
 
 
+def test_event_window_lenient_when_naive_t_event(unit_factory) -> None:
+    # t_event 为 naive datetime（写入路径未做 UTC 归一化，issue #91）：与 aware 窗口
+    # 比较会抛 TypeError，按宽松不丢弃返回 True，避免 over-drop 伤召回。
+    unit = unit_factory("naive", "x", t_event=datetime(2026, 6, 16))
+    assert unit.temporal.t_event.tzinfo is None
+    assert in_event_window(unit, NOW - timedelta(days=1), NOW + timedelta(days=1))
+
+
 def test_event_window_noop_without_constraint(unit_factory) -> None:
     assert in_event_window(unit_factory("a", "x", t_event=NOW), None, None)
 

@@ -7,14 +7,12 @@
 
 from __future__ import annotations
 
-from typing import Dict, List
-
 from common.factory.factory import Factory
 from common.type_def import Scope
 from retrieval.base import RetrievalOperatorType
 from retrieval.recaller import Recaller, RecallerProducer
 from retrieval.types import ParsedQuery, RecallChannel, ScoredUnit
-from storage.graph import GraphProducer, GraphStore
+from storage.storage import Storage, StorageProducer
 from storage.types import GraphQuery
 
 
@@ -24,8 +22,8 @@ class GraphRecaller(Recaller):
     :class:`~storage.graph.GraphStore`（``seed_ids`` + ``search``），不绑定具体后端。
     """
 
-    def __init__(self, graph: GraphStore, depth: int = 1) -> None:
-        self._graph = graph
+    def __init__(self, storage: Storage, depth: int = 1) -> None:
+        self._graph = storage.graph
         self._depth = depth
 
     def operator_type(self) -> RetrievalOperatorType:
@@ -37,11 +35,11 @@ class GraphRecaller(Recaller):
     def channel(self) -> RecallChannel:
         return RecallChannel.GRAPH
 
-    def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> List[ScoredUnit]:
+    def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]:
         # 种子词项 = 关键词 ∪ 实体文本（实体更精准地定位图入口）。
         terms = set(query.keywords) | {e.text for e in query.entities if e.text}
         seeds = self._graph.seed_ids(scope, terms)
-        scores: Dict[str, float] = {}
+        scores: dict[str, float] = {}
         for seed in seeds:
             for node in self._graph.search(
                 scope, GraphQuery(start_id=seed, depth=self._depth, limit=top_k)
@@ -56,8 +54,7 @@ class GraphRecaller(Recaller):
 
 @RecallerProducer.register("graph")
 def _build(config):
-    # GraphStore 经 GraphProducer 自取并共享同一实例；遍历跳数 depth 可经 params 覆盖。
     return GraphRecaller(
-        GraphProducer.dep(config, default="memory"),
+        StorageProducer.resolve(config),
         depth=Factory.cfg_get(config, "depth", 1),
     )

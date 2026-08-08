@@ -1,18 +1,29 @@
-"""跨插件共用的小工具：配置值归一与出站 HTTP 客户端的 TLS 配置读取。
+"""跨层共用的小工具：配置值归一、TLS 配置读取与校验、scope 命名空间渲染、异常归一。
 
 出站客户端（LLM / Embedder / Reranker）连的是 HTTP API，与 storage 连托管实例的
 情形不同：公网端点由公共 CA 签发，系统 CA 即可校验；私有部署多为自签，须显式给出
 CA 路径。故 ``ssl_verify=true`` 时**不强制**要求证书——缺证书回落系统 CA，而
 storage 侧缺证书直接报错（云厂商一律私有 CA，缺证书必然失败）。两处矩阵的差异见
 docs/features/common/F05-model-service-ssl.md。
+
+``SCOPE_DIMS`` / ``scope_segments`` / ``wrap_backend`` / ``read_ssl_config`` /
+``reject_url_tls_params`` 原在 ``storage/_support.py``，因 ``common`` 不能反向依赖
+``storage`` 而下沉至此（``common/lock`` 与各存储后端共用）；``storage/_support.py``
+继续再导出，原有 import 路径不变。
 """
 
 from __future__ import annotations
 
 import os
-from typing import Any, NamedTuple
+from contextlib import contextmanager
+from typing import Any, Iterator, NamedTuple
+from urllib.parse import parse_qs, urlparse
 
-from common.errors import ValidationError
+from common.errors import AgentMemoryError, BackendError, ValidationError
+from common.factory.factory import Factory
+from common.type_def import Scope
+
+SCOPE_DIMS = ("org", "space", "user", "agent", "session")
 
 
 def as_bool(value: Any, *, default: bool) -> bool:
@@ -134,3 +145,77 @@ def outbound_verify(ca_cert: str | None) -> bool | str:
     这是正常状态，不视作配置缺失。入参接受原始配置值（可能是未归一的空串）。
     """
     return (ca_cert or "").strip() or True
+
+
+def read_ssl_config(config: Any, *, backend: str) -> SslConfig:
+    """读本组件 ``params`` 下的 ``ssl_verify`` / ``ssl_ca_cert``。
+
+    ``ssl_verify`` 只管**是否校验服务端证书**，不负责开启加密——加密开关落在连接串
+    上（``rediss://`` / ``https://`` / ``sslmode=``），各后端形式不同，见各 builder。
+
+    默认关闭：不配置时行为与引入本参数前完全一致，现有明文部署不受影响。开启但未给
+    证书即在**装配阶段**报错——云厂商多为自签 CA，缺证书时客户端会拿系统 CA 去校验并
+    失败，那个报错指向证书链、看不出是配置漏项，故在此提前拦截。
+
+    这是与出站 HTTP 客户端（:func:`read_outbound_ssl`）的唯一矩阵差异：后者缺证书
+    回落系统 CA 而非报错。
+    """
+    ssl = build_ssl_config(
+        Factory.cfg_get(config, "ssl_verify"), Factory.cfg_get(config, "ssl_ca_cert")
+    )
+    if ssl.verify and not ssl.ca_cert:
+        raise ValidationError(
+            f"{backend} 配置了 ssl_verify=true，必须同时提供 params.ssl_ca_cert"
+        )
+    return ssl
+
+
+def reject_url_tls_params(value: Any, *, backend: str, param: str) -> None:
+    """``ssl_verify`` 为真时，连接串不得自带 ``ssl_*`` 查询参数。
+
+    redis-py 的 ``from_url`` 让 URL query **覆盖** kwargs（实测），故连接串里的
+    ``?ssl_cert_reqs=none`` / ``?ssl_check_hostname=false`` 会静默关掉校验，而配置
+    仍声称 ssl_verify=true——调用方以为受保护、实际未校验对端身份，比明文更危险。
+    显式回传 ``ssl_cert_reqs="required"`` 也压不住（同样被 URL 覆盖），只能拒绝。
+
+    ``ssl_verify=false`` 时不调用本函数：那是把 TLS 完全交给连接串自理的逃生舱。
+    """
+    candidates = value if isinstance(value, (list, tuple)) else [value]
+    for item in candidates:
+        query = urlparse(str(item)).query
+        conflicts = sorted(key for key in parse_qs(query) if key.startswith("ssl_"))
+        if conflicts:
+            raise ValidationError(
+                f"{backend} 配置了 ssl_verify=true，params.{param} 不得再带 TLS 查询参数 "
+                f"{conflicts}——URL 参数会覆盖此处设置并可能关闭校验；"
+                f"请改用 ssl_verify / ssl_ca_cert，或置 ssl_verify=false 由 URL 全权负责"
+            )
+
+
+# -- scope 命名空间与后端异常归一 ------------------------------------------------ #
+
+
+def scope_segments(scope: Scope) -> list[str]:
+    """把 scope 渲染为定长五段（空维度用 ``_`` 占位），供 kv/fs/lock 做命名空间隔离。
+
+    定长且占位可避免不同 scope 折叠到同一命名空间（如 ``org`` 空与 ``user`` 空
+    错位拼接）；各段把路径分隔符替换掉以防越界。
+    """
+    return [(getattr(scope, dim) or "_").replace("/", "_").replace(":", "_") for dim in SCOPE_DIMS]
+
+
+@contextmanager
+def wrap_backend(action: str) -> Iterator[None]:
+    """把后端 I/O 中的非预期异常归一为 :class:`~common.errors.BackendError`。
+
+    本系统的业务异常（``ConflictError`` / ``NotFoundError`` 等，均为
+    :class:`~common.errors.AgentMemoryError` 子类）原样透传——它们是接口契约的一部分，
+    由实现按语义主动抛出；其余一切（网络、IO、客户端库内部错误、依赖缺失等）
+    统一包成 ``BackendError``，让调用方跨后端用同一套捕获。
+    """
+    try:
+        yield
+    except AgentMemoryError:
+        raise
+    except Exception as exc:  # 适配层刻意兜底所有后端异常
+        raise BackendError(f"{action}: {exc}") from exc

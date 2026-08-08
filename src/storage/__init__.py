@@ -8,6 +8,8 @@ from .fulltext import FulltextStore
 from .fusion import FusionStore
 from .graph import GraphStore
 from .kv import KVStore
+from .storage import Storage, StorageCapability, StorageProducer
+from .storage_impl import CompositeStorage
 from .types import (
     Document,
     Edge,
@@ -17,6 +19,7 @@ from .types import (
     GraphQuery,
     KVMemoryListResult,
     Node,
+    ScoredHit,
     ScoredID,
     TextQuery,
     VectorQuery,
@@ -47,6 +50,7 @@ __all__ = [
     "FusionStore",
     "FSStore",
     "ScoredID",
+    "ScoredHit",
     "Document",
     "TextQuery",
     "VectorRecord",
@@ -58,4 +62,8 @@ __all__ = [
     "FusionRecord",
     "FusionQuery",
     "FileStat",
+    "Storage",
+    "StorageCapability",
+    "StorageProducer",
+    "CompositeStorage",
 ]

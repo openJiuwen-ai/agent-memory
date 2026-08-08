@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime
 from importlib import import_module
 from typing import Any, Callable
 
@@ -50,6 +51,7 @@ DeleteMode = _control_types_module.DeleteMode
 DeleteSelector = _control_types_module.DeleteSelector
 Grant = _control_types_module.Grant
 MemoryPatch = _control_types_module.MemoryPatch
+BatchWriteItem = _control_types_module.BatchWriteItem
 PrincipalPath = _control_types_module.PrincipalPath
 SpaceMember = _control_types_module.SpaceMember
 SpacePatch = _control_types_module.SpacePatch
@@ -136,6 +138,18 @@ def _target_scope(payload: Body) -> Scope:
     )
 
 
+def _scope_from_payload(payload: Body, base: Scope | None = None) -> Scope:
+    """Parse an optional batch item scope override over a default target scope."""
+    base = base or Scope()
+    return Scope(
+        org=str(payload.get("tenant_id") or base.org or "default"),
+        space=_space_value(payload) if "space" in payload or "space_id" in payload else base.space,
+        user=str(payload.get("scope", base.user)),
+        agent=str(payload.get("agent", base.agent)),
+        session=str(payload.get("session", base.session)),
+    )
+
+
 def _actor_scope(payload: Body) -> Scope:
     """Claimed actor scope; defaults to payload scope, with optional explicit override."""
     has_actor_override = False
@@ -191,6 +205,40 @@ def _unit_view(unit: MemoryUnit) -> Body:
         "lifecycle": unit.lifecycle.value,
         "assets": list(unit.assets),
     }
+
+
+def _batch_item_view(item: BatchWriteItem) -> Body:
+    return {
+        "content": item.content,
+        "scope": {
+            "tenant_id": item.scope.org if item.scope else "",
+            "space": item.scope.space if item.scope else "",
+            "scope": item.scope.user if item.scope else "",
+            "agent": item.scope.agent if item.scope else "",
+            "session": item.scope.session if item.scope else "",
+        },
+        "source": item.source.value if isinstance(item.source, Modality) else item.source,
+        "assets": item.assets,
+        "tags": item.tags,
+        "metadata": item.metadata,
+        "occurred_at": item.occurred_at.isoformat() if item.occurred_at else None,
+        "stream_id": item.stream_id,
+        "sequence": item.sequence,
+        "idempotency_key": item.idempotency_key,
+    }
+
+
+def _parse_occurred_at(value: Any, *, name: str) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str):
+        raise ValidationError(f"{name} must be an ISO 8601 datetime")
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        raise ValidationError(f"{name} must be an ISO 8601 datetime") from None
 
 
 def _scope_view(scope: Scope) -> Body:
@@ -356,6 +404,102 @@ def _add(srv, payload: Body) -> Body:
                 "skipped": "all derived memories deduped (update/noop)"}
     unit = units[0]
     return {"ok": True, "op": "add", "item_id": unit.id, "item": _unit_view(unit)}
+
+
+def _batch_add(srv, payload: Body) -> Body:
+    raw_defaults = payload.get("defaults", {})
+    if not isinstance(raw_defaults, dict):
+        raise ValidationError("batch_add defaults must be an object")
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list) or not raw_items:
+        raise ValidationError("batch_add items must be a non-empty list")
+    if not isinstance(payload.get("continue_on_error", True), bool):
+        raise ValidationError("batch_add continue_on_error must be boolean")
+
+    defaults = {key: value for key, value in payload.items() if key not in {"defaults", "items"}}
+    defaults.update(raw_defaults)
+    default_scope = _scope_from_payload(defaults)
+    raw_metadata = defaults.get("metadata")
+    if raw_metadata is not None and not isinstance(raw_metadata, dict):
+        raise ValidationError("batch_add defaults.metadata must be an object")
+    default_tags = defaults.get("tags")
+    if default_tags is not None and not isinstance(default_tags, list):
+        raise ValidationError("batch_add defaults.tags must be an array")
+    try:
+        default_source = Modality(defaults.get("source", defaults.get("modality", "text")))
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"invalid batch_add default source: {exc}") from exc
+    default_occurred_at = _parse_occurred_at(
+        defaults.get("occurred_at"), name="batch_add defaults.occurred_at"
+    )
+
+    items: list[BatchWriteItem | object] = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            items.append(raw_item)
+            continue
+        raw_scope = raw_item.get("target_scope", {})
+        if not isinstance(raw_scope, dict):
+            items.append(raw_item)
+            continue
+        item_scope = _scope_from_payload(raw_scope, default_scope)
+        raw_source = raw_item.get("source", raw_item.get("modality"))
+        try:
+            item_source = Modality(raw_source) if raw_source is not None else None
+        except (TypeError, ValueError):
+            items.append(raw_item)
+            continue
+        try:
+            item_occurred_at = _parse_occurred_at(
+                raw_item.get("occurred_at"), name="batch_add item occurred_at"
+            )
+        except ValidationError:
+            items.append(raw_item)
+            continue
+        items.append(
+            BatchWriteItem(
+                content=raw_item.get("content"),
+                scope=item_scope,
+                source=item_source,
+                assets=raw_item.get("assets"),
+                tags=raw_item.get("tags"),
+                metadata=raw_item.get("metadata"),
+                occurred_at=item_occurred_at,
+                stream_id=raw_item.get("stream_id", ""),
+                sequence=raw_item.get("sequence"),
+                idempotency_key=raw_item.get("idempotency_key", ""),
+            )
+        )
+
+    result = srv.api.batch_write(
+        items,
+        default_scope,
+        default_source,
+        identity=_actor_scope(defaults),
+        tags=default_tags,
+        metadata=raw_metadata,
+        occurred_at=default_occurred_at,
+        stream_id=defaults.get("stream_id", ""),
+        continue_on_error=payload.get("continue_on_error", True),
+    )
+    outcomes = []
+    for raw_item, outcome in zip(raw_items, result.outcomes):
+        outcomes.append(
+            {
+                "index": outcome.index,
+                "input": raw_item,
+                "item": _batch_item_view(outcome.item),
+                "items": [_unit_view(unit) for unit in outcome.units],
+                "ok": not outcome.error,
+                "error": outcome.error,
+                "error_type": outcome.error_type,
+            }
+        )
+    return {
+        "ok": all(outcome["ok"] for outcome in outcomes),
+        "op": "batch_add",
+        "outcomes": outcomes,
+    }
 
 
 def _search(srv, payload: Body) -> Body:
@@ -751,6 +895,7 @@ def _remove_space_member(srv, payload: Body) -> Body:
 
 _ROUTES: dict[str, Callable[[Any, Body], Body]] = {
     "add": _add,
+    "batch_add": _batch_add,
     "search": _search,
     "list": _list,
     "get": _get,
