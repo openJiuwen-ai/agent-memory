@@ -120,6 +120,11 @@ class MemoryUnit:
     tags: list[str] = field(default_factory=list)  # 标签（检索前置过滤用）
     metadata: dict[str, Any] = field(default_factory=dict)  # 其他元数据（置信度/重要度等）
     lifecycle: LifecycleState = LifecycleState.ACTIVE  # 生命周期状态
+    # L2 记忆里由大模型抽取得到的实体文本（明文）。entity linker 建反向索引时
+    # 只消费本字段构造 EntityMention（display_name=实体文本，normalized_name 走
+    # normalizer 归一化）；为空时该 unit 不入实体索引（已砍 spaCy 兜底，实体完全
+    # 由 LLM 在写入前抽取填充此字段）。
+    entities: list[str] = field(default_factory=list)
 
     @property
     def content(self) -> str:

@@ -11,5 +11,6 @@ import_module(".fulltext_index_builder", __name__)
 import_module(".vector_index_builder", __name__)
 import_module(".hybrid_index_builder", __name__)
 import_module(".unified_index_builder", __name__)
+import_module(".entity_index_builder", __name__)  # entity 子 builder（被 HybridIndexBuilder 组合，不自注册）
 
 __all__ = ["IndexBuilderProducer"]

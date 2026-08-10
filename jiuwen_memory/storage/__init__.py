@@ -3,6 +3,7 @@
 from importlib import import_module
 
 from .base import BaseStore, StoreType
+from .entity_store import EntityStore, EntityStoreProducer
 from .fs import FSStore
 from .fulltext import FulltextStore
 from .fusion import FusionStore
@@ -37,6 +38,7 @@ for _module_name in (
     "graph_impl",
     "kv_impl",
     "vector_impl",
+    "entity_impl",
 ):
     import_module(f"{__name__}.{_module_name}")
 
@@ -49,6 +51,8 @@ __all__ = [
     "GraphStore",
     "FusionStore",
     "FSStore",
+    "EntityStore",
+    "EntityStoreProducer",
     "ScoredID",
     "ScoredHit",
     "Document",

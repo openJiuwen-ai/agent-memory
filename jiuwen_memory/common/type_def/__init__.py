@@ -4,6 +4,17 @@ from .audit import AuditEvent
 from .chat import ChatMessage
 from .chunk import Chunk
 from .context import EXT_MAX_TOKENS, Context
+from .entity import (
+    EntityBatchResult,
+    EntityLinkResult,
+    EntityMention,
+    EntityOperation,
+    EntityOpType,
+    EntityRecord,
+    EntityStoreFilters,
+    EntityType,
+    hash_entity_text,
+)
 from .feature import Entity, FeatureSet, Relation
 from .filter import (
     MEMORY_TYPE_FILTER_FIELD,
@@ -22,6 +33,8 @@ from .filter import (
     normalize,
     validate,
 )
+from .memory_filter import matches_memory_unit
+from .normalizer import EntityNormalizer
 from .memory import (
     MEMORY_KEY_PREFIX,
     RESERVED_METADATA_KEYS,
@@ -60,10 +73,11 @@ from .retrieval_filter import (
     passes_lifecycle,
     valid_at,
 )
-from .scope import Scope
+from .scope import Scope, space_id_from_scope
 
 __all__ = [
     "Scope",
+    "space_id_from_scope",
     "Context",
     "EXT_MAX_TOKENS",
     "Modality",
@@ -77,6 +91,16 @@ __all__ = [
     "RawPayload",
     "Chunk",
     "Entity",
+    "EntityType",
+    "EntityMention",
+    "EntityStoreFilters",
+    "EntityRecord",
+    "EntityLinkResult",
+    "EntityOpType",
+    "EntityOperation",
+    "EntityBatchResult",
+    "hash_entity_text",
+    "EntityNormalizer",
     "Relation",
     "FeatureSet",
     "ChatMessage",
