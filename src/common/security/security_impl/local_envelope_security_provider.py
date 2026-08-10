@@ -82,7 +82,7 @@ class LocalKeyProvider:
         key_hex: str = "",
         key_b64: str = "",
         key_env: str = _DEFAULT_KEY_ENV,
-        create_key_file: bool = True,
+        create_key_file: bool = False,
     ) -> None:
         _ensure_crypto()
         self._key_file = Path(key_file).expanduser() if key_file else None
@@ -140,7 +140,7 @@ class LocalKeyProvider:
             return _decode_key_string(env_value, source=f"env {self._key_env}")
 
         if self._key_file is None:
-            raise BackendError("local security requires key_hex, key_b64, key_env, or key_file")
+            raise self._missing_key_error()
         if self._key_file.exists():
             _restrict_file_mode(self._key_file)
             return _decode_hex_key(
@@ -148,8 +148,52 @@ class LocalKeyProvider:
                 source=str(self._key_file),
             )
         if not self._create_key_file_enabled:
-            raise BackendError(f"local security key file does not exist: {self._key_file}")
+            raise self._missing_key_error()
         return self._create_key_file()
+
+    def validate_key_source_or_raise(self) -> None:
+        """装配期预检：密钥源缺失或解码失败时立即 fail-closed（F04 §5）。
+
+        尝试解码已配置的 ``key_hex``/``key_b64``/``key_env``——解码失败抛
+        :class:`ValidationError`（携带源标识）。``key_file`` 内容的解码推迟到
+        """
+        if self._root_key is not None:
+            return
+        if self._key_hex:
+            _decode_hex_key(self._key_hex, source="key_hex")
+            return
+        if self._key_b64:
+            _decode_b64_key(self._key_b64, source="key_b64")
+            return
+        env_value = os.environ.get(self._key_env) if self._key_env else None
+        if env_value:
+            _decode_key_string(env_value, source=f"env {self._key_env}")
+            return
+        if self._key_file and self._key_file.exists():
+            return
+        if self._create_key_file_enabled:
+            return
+        raise self._missing_key_error()
+
+    def _missing_key_error(self) -> BackendError:
+        sources: list[str] = []
+        if self._key_env:
+            sources.append(f"env {self._key_env} (unset)")
+        if self._key_file:
+            sources.append(f"key_file={self._key_file} (does not exist)")
+
+        checked = ", ".join(sources) if sources else "no source configured"
+        return BackendError(
+            "local security provider has no encryption root key source. "
+            f"Checked: {checked}. Provide one of: "
+            "(1) security.default.params.key_hex=<64-hex-chars>; "
+            "(2) security.default.params.key_b64=<base64-32-bytes>; "
+            "(3) security.default.params.key_env=<ENV_VAR_NAME> and set the env var; "
+            "(4) security.default.params.key_file=<path> to existing file; "
+            "(5) security.default.params.create_key_file=true for dev/single-node auto-generation. "
+            "Generate a key with: openssl rand -hex 32. "
+            "Refusing to assemble: encryption cannot proceed without a key (fail-closed per F04 §5)."
+        )
 
     def _create_key_file(self) -> bytes:
         key_file = self._key_file
@@ -190,6 +234,8 @@ class LocalEnvelopeSecurityProvider(SecurityProvider):
         _ensure_crypto()
         self._key_provider = key_provider
         self._allow_plaintext = allow_plaintext
+        # 装配期 fail-fast：未配置任何密钥源时立即抛错（F04 §5 fail-closed）。
+        key_provider.validate_key_source_or_raise()
 
     def encrypt(
         self,
@@ -431,8 +477,8 @@ def _build(config):
             key_b64=Factory.cfg_get(config, "key_b64", ""),
             key_env=Factory.cfg_get(config, "key_env", _DEFAULT_KEY_ENV),
             create_key_file=as_bool(
-                Factory.cfg_get(config, "create_key_file", True),
-                default=True,
+                Factory.cfg_get(config, "create_key_file", False),
+                default=False,
             ),
         ),
         allow_plaintext=as_bool(
