@@ -64,6 +64,8 @@ class PgVectorStore(PgStoreBase, VectorStore):
         create_extension: bool = True,
         ssl_verify: bool = False,
         ssl_ca_cert: str | None = None,
+        config_source=None,
+        config_namespace: str = "vector_store",
     ) -> None:
         if dim <= 0:
             raise ValidationError("pgvector store requires positive 'dim'")
@@ -90,6 +92,9 @@ class PgVectorStore(PgStoreBase, VectorStore):
             auto_create_schema=auto_create_schema,
             ssl_verify=ssl_verify,
             ssl_ca_cert=ssl_ca_cert,
+            config_source=config_source,
+            config_namespace=config_namespace,
+            config_dsn_field="dsn",
         )
         self._dim = dim
         self._metric = metric
@@ -454,6 +459,8 @@ class PgVectorStore(PgStoreBase, VectorStore):
 @VectorProducer.register("pgvector")
 def _build(config):
     # sslmode 是参数形态的真开关，无须校验 dsn scheme（见 _pg.PgStoreBase.pool）。
+    from config.config_source import ConfigSourceProducer
+
     ssl = read_ssl_config(config, backend="pgvector")
     return PgVectorStore(
         dsn=Factory.require_param(config, "dsn", backend="pgvector"),
@@ -475,4 +482,5 @@ def _build(config):
         application_name=Factory.cfg_get(config, "application_name", "agent_memory"),
         auto_create_schema=Factory.cfg_get(config, "auto_create_schema", True),
         create_extension=Factory.cfg_get(config, "create_extension", True),
+        config_source=ConfigSourceProducer.get_cached("default"),
     )

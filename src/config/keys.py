@@ -20,6 +20,8 @@ NS_KV_STORE = "kv_store"
 NS_VECTOR_STORE = "vector_store"
 NS_FULLTEXT_STORE = "fulltext_store"
 NS_GRAPH_STORE = "graph_store"
+NS_FUSION_STORE = "fusion_store"
+NS_FS_STORE = "fs_store"
 
 # 晚绑定字段名
 FIELD_ACTIVE = "active"

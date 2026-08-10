@@ -58,6 +58,8 @@ class MilvusGraphFusionStore(FusionStore):
         neighbor_depth: int = 1,
         neighbor_decay: float = 0.5,
         neighbor_relation: str = "linked",
+        config_source=None,
+        config_namespace: str = "fusion_store",
         **options: Any,
     ) -> None:
         import asyncio  # 仅桥接异步图存储用
@@ -65,10 +67,17 @@ class MilvusGraphFusionStore(FusionStore):
         mcfg = dict(milvus or {})
         mcfg.setdefault("collection", collection)
         mcfg.setdefault("metric_type", metric_type)
-        # 向量 + 正排存储复用 Milvus 适配器（它负责 scope 隔离/冲突/缺失语义）。
-        self._vec = MilvusVectorStore(dim=dim, **mcfg)
+        # 向量 + 正排：内嵌 Milvus 读 fusion_store.uri（与顶层 fusion 命名空间对齐）
+        self._vec = MilvusVectorStore(
+            dim=dim,
+            config_source=config_source,
+            config_namespace=config_namespace,
+            **mcfg,
+        )
 
-        self._workdir = working_dir
+        self._fallback_workdir = working_dir
+        self._config_source = config_source
+        self._config_namespace = config_namespace
         self._prefix = namespace_prefix
         self._link_field = link_field
         self._depth = neighbor_depth
@@ -76,10 +85,26 @@ class MilvusGraphFusionStore(FusionStore):
         self._relation = neighbor_relation
         self._options = options
         self._graphs: dict[str, Any] = {}  # namespace -> NetworkXStorage
+        self._active_working_dir: str | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         from pathlib import Path
 
-        Path(self._workdir).mkdir(parents=True, exist_ok=True)
+        Path(self._fallback_workdir).mkdir(parents=True, exist_ok=True)
+
+    def _resolved_working_dir(self) -> str:
+        from pathlib import Path
+
+        from config.binding import resolve_connection_url
+
+        live = resolve_connection_url(
+            self._config_source,
+            namespace=self._config_namespace,
+            field="working_dir",
+            fallback=self._fallback_workdir,
+        )
+        path = str(Path(live or self._fallback_workdir).resolve())
+        Path(path).mkdir(parents=True, exist_ok=True)
+        return path
 
     # ------------------------------------------------------------ 图基础设施
     def _run(self, coro: Any) -> Any:
@@ -90,12 +115,16 @@ class MilvusGraphFusionStore(FusionStore):
         return self._loop.run_until_complete(coro)
 
     def _graph(self, scope: Scope) -> Any:
+        working_dir = self._resolved_working_dir()
+        if self._active_working_dir != working_dir:
+            self._graphs.clear()
+            self._active_working_dir = working_dir
         ns = f"{self._prefix}-" + "_".join(scope_segments(scope))
         storage = self._graphs.get(ns)
         if storage is None:
             cls = _networkx_storage_cls()
             with wrap_backend("fusion graph open"):
-                storage = cls(namespace=ns, global_config={"working_dir": self._workdir})
+                storage = cls(namespace=ns, global_config={"working_dir": working_dir})
             self._graphs[ns] = storage
         return storage
 
@@ -240,6 +269,8 @@ class MilvusGraphFusionStore(FusionStore):
 def _build(config):
     # 三方库 + 本地图：uri/working_dir 必填；dim 取 params.dim，回退内核共享的 embedder_dim。
     # 其余有默认值的构造参数均可经 params 覆盖。
+    from config.config_source import ConfigSourceProducer
+
     uri = Factory.require_param(config, "uri", backend="milvus_graph fusion")
     return MilvusGraphFusionStore(
         working_dir=Factory.require_param(config, "working_dir", backend="milvus_graph fusion"),
@@ -252,4 +283,5 @@ def _build(config):
         neighbor_depth=Factory.cfg_get(config, "neighbor_depth", 1),
         neighbor_decay=Factory.cfg_get(config, "neighbor_decay", 0.5),
         neighbor_relation=Factory.cfg_get(config, "neighbor_relation", "linked"),
+        config_source=ConfigSourceProducer.get_cached("default"),
     )

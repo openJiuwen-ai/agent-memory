@@ -3,21 +3,46 @@
 **次选路径**（S08）：同实现多套 model/key/url 应优先走调用路径晚绑定
 （:mod:`config.binding`），不要为此拆多套同构具名实例。
 
-本模块用于异质实现互切（如 hashing ↔ openai）或产品明确要求的实例隔离：
-装配期注入多套实现；运行期只改 ``embedder.active`` / ``llm.active`` 等，不经业务 API。
+本模块用于异质实现互切（如 hashing ↔ openai、memory ↔ redis）或产品明确要求的
+实例隔离：装配期注入多套实现；运行期只改 ``*.active``，不经业务 API。
+
+Store 门面（``RoutingKVStore`` 等）为方案 A：不注册 YAML ``target: routing``；
+产品手工注入建索引/召回依赖。默认拓扑不预装多后端。
 """
 
 from __future__ import annotations
 
-from typing import Generic, TypeVar
+from typing import BinaryIO, Generic, TypeVar
 
 from common.base import PluginType
 from common.embedder.base import Embedder
 from common.llm.base import LLM
 from common.reranker.base import Reranker
-from common.type_def import ChatMessage
+from common.type_def import ChatMessage, FilterExpr, Scope
 from config.active import resolve_active_name
 from config.config_source import ConfigSource
+from storage.base import StoreType
+from storage.fs import FSStore
+from storage.fulltext import FulltextStore
+from storage.fusion import FusionStore
+from storage.graph import GraphStore
+from storage.kv import KVStore
+from storage.types import (
+    Document,
+    Edge,
+    FileStat,
+    FusionQuery,
+    FusionRecord,
+    GraphQuery,
+    KVMemoryListResult,
+    Node,
+    ScoredHit,
+    ScoredID,
+    TextQuery,
+    VectorQuery,
+    VectorRecord,
+)
+from storage.vector import VectorStore
 
 T = TypeVar("T")
 
@@ -132,3 +157,229 @@ class RoutingReranker(Reranker):
     def rerank(self, query: str, texts: list[str]) -> list[float]:
         """委托当前 active Reranker 打分。"""
         return self._router.get().rerank(query, texts)
+
+
+class RoutingKVStore(KVStore):
+    """KVStore 门面：每次 CRUD / list / scan 委托当前 ``kv_store.active`` 实例。"""
+
+    def __init__(self, router: ActiveRouter[KVStore]) -> None:
+        self._router = router
+
+    def store_type(self) -> StoreType:
+        return self._router.get().store_type()
+
+    def health(self) -> None:
+        self._router.get().health()
+
+    def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
+        self._router.get().insert(scope, key, value, ttl)
+
+    def update(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
+        self._router.get().update(scope, key, value, ttl)
+
+    def delete(self, scope: Scope, key: str) -> None:
+        self._router.get().delete(scope, key)
+
+    def get(self, scope: Scope, key: str) -> bytes:
+        return self._router.get().get(scope, key)
+
+    def mget(self, scope: Scope, keys: list[str]) -> list[bytes]:
+        return self._router.get().mget(scope, keys)
+
+    def exists(self, scope: Scope, key: str) -> bool:
+        return self._router.get().exists(scope, key)
+
+    def scan(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
+        return self._router.get().scan(scope, prefix)
+
+    def list(
+        self,
+        scope: Scope,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        memory_types: list[str] | None = None,
+        filters: FilterExpr | None = None,
+        extensions: dict[str, str] | None = None,
+    ) -> KVMemoryListResult:
+        return self._router.get().list(
+            scope,
+            offset=offset,
+            limit=limit,
+            memory_types=memory_types,
+            filters=filters,
+            extensions=extensions,
+        )
+
+    def scopes(self) -> list[Scope]:
+        return self._router.get().scopes()
+
+
+class RoutingVectorStore(VectorStore):
+    """VectorStore 门面：每次 CRUD / search / recall 委托当前 ``vector_store.active``。"""
+
+    def __init__(self, router: ActiveRouter[VectorStore]) -> None:
+        self._router = router
+
+    def store_type(self) -> StoreType:
+        return self._router.get().store_type()
+
+    def health(self) -> None:
+        self._router.get().health()
+
+    def insert(self, scope: Scope, records: list[VectorRecord]) -> None:
+        self._router.get().insert(scope, records)
+
+    def update(self, scope: Scope, records: list[VectorRecord]) -> None:
+        self._router.get().update(scope, records)
+
+    def delete(self, scope: Scope, ids: list[str]) -> None:
+        self._router.get().delete(scope, ids)
+
+    def get(self, scope: Scope, ids: list[str]) -> list[VectorRecord]:
+        return self._router.get().get(scope, ids)
+
+    def search(self, scope: Scope, query: VectorQuery) -> list[ScoredID]:
+        return self._router.get().search(scope, query)
+
+    def recall(
+        self,
+        scope: Scope,
+        query: VectorQuery,
+        output_fields: list[str] | None = None,
+    ) -> list[ScoredHit]:
+        return self._router.get().recall(scope, query, output_fields=output_fields)
+
+    def score_higher_is_better(self) -> bool:
+        return self._router.get().score_higher_is_better()
+
+
+class RoutingFulltextStore(FulltextStore):
+    """FulltextStore 门面：委托当前 ``fulltext_store.active`` 实例。"""
+
+    def __init__(self, router: ActiveRouter[FulltextStore]) -> None:
+        self._router = router
+
+    def store_type(self) -> StoreType:
+        return self._router.get().store_type()
+
+    def health(self) -> None:
+        self._router.get().health()
+
+    def insert(self, scope: Scope, docs: list[Document]) -> None:
+        self._router.get().insert(scope, docs)
+
+    def update(self, scope: Scope, docs: list[Document]) -> None:
+        self._router.get().update(scope, docs)
+
+    def delete(self, scope: Scope, ids: list[str]) -> None:
+        self._router.get().delete(scope, ids)
+
+    def get(self, scope: Scope, ids: list[str]) -> list[Document]:
+        return self._router.get().get(scope, ids)
+
+    def search(self, scope: Scope, query: TextQuery) -> list[ScoredID]:
+        return self._router.get().search(scope, query)
+
+
+class RoutingGraphStore(GraphStore):
+    """GraphStore 门面：委托当前 ``graph_store.active`` 实例。"""
+
+    def __init__(self, router: ActiveRouter[GraphStore]) -> None:
+        self._router = router
+
+    def store_type(self) -> StoreType:
+        return self._router.get().store_type()
+
+    def health(self) -> None:
+        self._router.get().health()
+
+    def seed_ids(self, scope: Scope, tokens: set[str]) -> list[str]:
+        return self._router.get().seed_ids(scope, tokens)
+
+    def insert(
+        self,
+        scope: Scope,
+        nodes: list[Node] | None = None,
+        edges: list[Edge] | None = None,
+    ) -> None:
+        self._router.get().insert(scope, nodes=nodes, edges=edges)
+
+    def update(
+        self,
+        scope: Scope,
+        nodes: list[Node] | None = None,
+        edges: list[Edge] | None = None,
+    ) -> None:
+        self._router.get().update(scope, nodes=nodes, edges=edges)
+
+    def delete(
+        self,
+        scope: Scope,
+        node_ids: list[str] | None = None,
+        edge_ids: list[str] | None = None,
+    ) -> None:
+        self._router.get().delete(scope, node_ids=node_ids, edge_ids=edge_ids)
+
+    def get(self, scope: Scope, node_ids: list[str]) -> list[Node]:
+        return self._router.get().get(scope, node_ids)
+
+    def search(self, scope: Scope, query: GraphQuery) -> list[Node]:
+        return self._router.get().search(scope, query)
+
+
+class RoutingFusionStore(FusionStore):
+    """FusionStore 门面：委托当前 ``fusion_store.active`` 实例。"""
+
+    def __init__(self, router: ActiveRouter[FusionStore]) -> None:
+        self._router = router
+
+    def store_type(self) -> StoreType:
+        return self._router.get().store_type()
+
+    def health(self) -> None:
+        self._router.get().health()
+
+    def insert(self, scope: Scope, records: list[FusionRecord]) -> None:
+        self._router.get().insert(scope, records)
+
+    def update(self, scope: Scope, records: list[FusionRecord]) -> None:
+        self._router.get().update(scope, records)
+
+    def delete(self, scope: Scope, ids: list[str]) -> None:
+        self._router.get().delete(scope, ids)
+
+    def get(self, scope: Scope, ids: list[str]) -> list[FusionRecord]:
+        return self._router.get().get(scope, ids)
+
+    def search(self, scope: Scope, query: FusionQuery) -> list[ScoredID]:
+        return self._router.get().search(scope, query)
+
+
+class RoutingFSStore(FSStore):
+    """FSStore 门面：委托当前 ``fs_store.active`` 实例。"""
+
+    def __init__(self, router: ActiveRouter[FSStore]) -> None:
+        self._router = router
+
+    def store_type(self) -> StoreType:
+        return self._router.get().store_type()
+
+    def health(self) -> None:
+        self._router.get().health()
+
+    def insert(self, scope: Scope, key: str, data: BinaryIO) -> str:
+        return self._router.get().insert(scope, key, data)
+
+    def update(self, scope: Scope, ref: str, data: BinaryIO) -> str:
+        return self._router.get().update(scope, ref, data)
+
+    def delete(self, scope: Scope, ref: str) -> None:
+        self._router.get().delete(scope, ref)
+
+    def get(self, scope: Scope, ref: str) -> BinaryIO:
+        return self._router.get().get(scope, ref)
+
+    def stat(self, scope: Scope, ref: str) -> FileStat:
+        return self._router.get().stat(scope, ref)
+

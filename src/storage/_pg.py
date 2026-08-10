@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import threading
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from common.errors import AgentMemoryError, BackendError, HealthCheckError, ValidationError
 from common.type_def import (
@@ -129,7 +132,11 @@ def _version_tuple(version: str) -> tuple[int, ...]:
 
 
 class PgStoreBase:
-    """每个 Store 实例自有的惰性 ``psycopg_pool.ConnectionPool``。"""
+    """每个 Store 实例自有的惰性 ``psycopg_pool.ConnectionPool``。
+
+    ``dsn`` 可经 ConfigSource 晚绑定（如 ``kv_store.dsn`` / ``vector_store.dsn``）；
+    DSN 变化时关闭旧池并按新值重建。旧库数据不自动迁移。
+    """
 
     def __init__(
         self,
@@ -144,8 +151,14 @@ class PgStoreBase:
         auto_create_schema: bool,
         ssl_verify: bool = False,
         ssl_ca_cert: str | None = None,
+        config_source: Any = None,
+        config_namespace: str = "kv_store",
+        config_dsn_field: str = "dsn",
     ) -> None:
-        self._dsn = dsn
+        self._fallback_dsn = dsn
+        self._config_source = config_source
+        self._config_namespace = config_namespace
+        self._config_dsn_field = config_dsn_field
         self._schema = schema
         self._table = table
         self._ssl_verify = ssl_verify
@@ -156,17 +169,44 @@ class PgStoreBase:
         self._application_name = application_name
         self._auto_create_schema = auto_create_schema
         self._pool: Any = None
+        self._pool_dsn: str | None = None
         self._sql: Any = None
         self._jsonb: Any = None
         self._init_lock = threading.Lock()
 
+    def _resolved_dsn(self) -> str:
+        """当前应使用的 DSN（ConfigSource 优先，否则构造期回落）。"""
+        from config.binding import resolve_connection_url
+
+        live = resolve_connection_url(
+            self._config_source,
+            namespace=self._config_namespace,
+            field=self._config_dsn_field,
+            fallback=self._fallback_dsn,
+        )
+        return live or self._fallback_dsn
+
+    def _close_pool_unlocked(self) -> None:
+        if self._pool is None:
+            return
+        try:
+            self._pool.close()
+        except Exception as exc:
+            # 重连路径上的尽力关闭；池可能已损坏，仍须丢弃句柄以便重建。
+            logger.debug("postgres pool close during reconnect: %s", exc)
+        self._pool = None
+        self._pool_dsn = None
+
     @property
     def pool(self) -> Any:
-        if self._pool is not None:
+        dsn = self._resolved_dsn()
+        if self._pool is not None and self._pool_dsn == dsn:
             return self._pool
         with self._init_lock:
-            if self._pool is not None:
+            dsn = self._resolved_dsn()
+            if self._pool is not None and self._pool_dsn == dsn:
                 return self._pool
+            self._close_pool_unlocked()
             try:
                 from psycopg import sql
                 from psycopg.types.json import Jsonb
@@ -187,7 +227,7 @@ class PgStoreBase:
                 connect_kwargs["sslmode"] = "verify-full"
                 connect_kwargs["sslrootcert"] = self._ssl_ca_cert
             pool = ConnectionPool(
-                conninfo=self._dsn,
+                conninfo=dsn,
                 min_size=self._pool_min_size,
                 max_size=self._pool_max_size,
                 kwargs=connect_kwargs,
@@ -196,16 +236,19 @@ class PgStoreBase:
             try:
                 pool.open(wait=True, timeout=self._connect_timeout)
                 self._pool = pool
+                self._pool_dsn = dsn
                 self._sql = sql
                 self._jsonb = Jsonb
                 self._ensure_schema(pool)
             except AgentMemoryError:
                 pool.close()
                 self._pool = None
+                self._pool_dsn = None
                 raise
             except Exception as exc:
                 pool.close()
                 self._pool = None
+                self._pool_dsn = None
                 raise BackendError(f"postgres connect: {exc}") from exc
         return self._pool
 
