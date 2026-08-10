@@ -43,8 +43,10 @@ def default_config_dict() -> dict[str, Any]:
         "prompts": _PROMPTS_DEFAULT,
         # -- 存储（有状态，必须对象共享）-------------------------------------- #
         "kv_store": {_D: "memory"},
-        # 安全 provider：默认用 local 信封加密（AES-256-GCM）。
-        # 生产装配覆盖为同事实现的自注册 target（@SecurityProducer.register("xxx")）。
+        # 安全 provider：默认声明为 local 信封加密（AES-256-GCM），仅供 opt-in encrypted KV 引用。
+        # F04 §5.4：默认装配不强制包装 EncryptedKVStore；用户配 kv_store.default.target=encrypted
+        # 时由 @KvProducer.register("encrypted") builder 经 SecurityProducer.dep(config) 取此实例。
+        # local provider 的 create_key_file 默认 False：未注入密钥源且 key_file 不存在时装配 fail-closed。
         "security": {_D: "local"},
         "vector_store": {
             _D: "memory",

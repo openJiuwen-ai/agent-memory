@@ -10,10 +10,13 @@ from __future__ import annotations
 import pytest
 
 from api import assemble
-from api.memory_api_impl import assembly
+from api.memory_api_impl import assembly, build_kernel
 from common.audit.base import AuditProducer
-from common.errors import PermissionDeniedError, ValidationError
+from common.errors import BackendError, PermissionDeniedError, ValidationError
 from common.factory.factory import Factory
+from common.security.security_impl.local_envelope_security_provider import (
+    LocalEnvelopeSecurityProvider,
+)
 from common.type_def import Context, Scope
 from config import Config
 from config.context import AssemblyContext
@@ -21,6 +24,7 @@ from config.defaults import default_config_dict
 from control.base import ControlOperatorType
 from control.permission import PermissionManager, PermissionProducer
 from control.types import Action, Grant, PermissionContext
+from storage.kv_impl.encrypted_kv_store import EncryptedKVStore
 from storage.vector import VectorProducer
 
 SCOPE = Scope(org="o", user="u")
@@ -143,3 +147,44 @@ def test_build_named_shares_single_instance() -> None:
     b = VectorProducer.build_named("main", ctx)
     assert a is b
     assert len(_VEC_BUILT) == 1
+
+
+def test_default_assembly_does_not_wrap_kv() -> None:
+    """F04 §5.4：默认装配不强制包装 EncryptedKVStore。"""
+    kernel = build_kernel()
+    assert not isinstance(kernel.kv, EncryptedKVStore)
+
+
+def test_security_namespace_params_apply_on_encrypted_kv_target() -> None:
+    """security.default.params 经 opt-in encrypted KV target 生效（allow_plaintext/key_hex）。"""
+    key_hex = "a" * 64
+    cfg = Config.from_dict(
+        {
+            "security": {
+                "default": {
+                    "target": "local",
+                    "params": {
+                        "allow_plaintext": False,
+                        "key_hex": key_hex,
+                        "create_key_file": False,
+                    },
+                }
+            },
+            "kv_store": {
+                "raw": {"target": "sqlite", "params": {"db_path": ":memory:"}},
+                "default": {
+                    "target": "encrypted",
+                    "params": {"raw_kv_store": "raw", "security": "default"},
+                },
+            },
+        }
+    )
+    kernel = build_kernel(config=cfg)
+    security = getattr(kernel.kv, "_security")
+    assert isinstance(security, LocalEnvelopeSecurityProvider)
+    assert getattr(security, "_allow_plaintext") is False
+    assert getattr(getattr(security, "_key_provider"), "_key_hex") == key_hex
+
+    getattr(kernel.kv, "_raw").insert(SCOPE, "plain_key", b"hello-plaintext")
+    with pytest.raises(BackendError):
+        kernel.kv.get(SCOPE, "plain_key")

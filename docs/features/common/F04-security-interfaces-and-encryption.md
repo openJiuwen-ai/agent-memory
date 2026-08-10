@@ -1072,6 +1072,12 @@ class LocalProvider(KeyProvider):
         return await aes_gcm_decrypt(org_key, iv, ciphertext)
 ```
 
+> **`create_key_file` 默认值**：当前 `agent-memory` mem2.0 的 `LocalKeyProvider`（`src/common/security/security_impl/local_envelope_security_provider.py`）
+> 把 `create_key_file` 默认值设为 `False`。未注入 `key_hex`/`key_b64`/`key_env` 且 `key_file` 不存在时，
+> `LocalEnvelopeSecurityProvider.__init__` 末尾的预检即抛 `BackendError`，装配阶段 fail-closed，不再静默生成。
+> Dev/单机用户显式 `security.default.params.create_key_file: true` 启用自动生成路径。生成新密钥用 `openssl rand -hex 32`。
+```
+
 **安全性**：LocalProvider 的 Encryption Root Key 以明文存在磁盘（仅靠文件权限 0600）。**只适合开发/单机**，生产环境应使用 Vault 或云厂商 KMS。
 
 #### 5.2.2 VaultProvider（HashiCorp Vault）

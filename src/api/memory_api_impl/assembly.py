@@ -28,8 +28,6 @@ from common.bootstrap import register_plugins
 from common.errors import ValidationError
 from common.factory.factory import Factory
 from common.log import setup_logging
-from common.security import SecurityProducer, SecurityProvider
-from common.security.security_impl import SecurityProducer as _SecImpl  # noqa: F401 触发自注册
 from config import Config
 from config.config_source import ConfigSource, ConfigSourceProducer
 from config.config_source_impl import register_config_sources
@@ -47,7 +45,6 @@ from ingest.bootstrap import register_ingestors
 from retrieval.bootstrap import register_operators
 from storage.bootstrap import register_backends
 from storage.kv import KvProducer, KVStore
-from storage.kv_impl.encrypted_kv_store import EncryptedKVStore
 from storage.storage import Storage, StorageProducer
 
 from .local_memory_api import LocalMemoryAPI
@@ -59,7 +56,7 @@ class Kernel:
 
     Attributes:
         api: 形态无关的 MemoryAPI 入口
-        kv: 真源 KV（``build_kernel`` 默认强制为 EncryptedKVStore）
+        kv: 真源 KV（按 ``kv_store.default`` 装配；F04 §5.4 默认 raw，opt-in encrypted target 才包装）
         storage: 上层统一使用的 Storage（默认 CompositeStorage）
         space: SpaceManager（若装配）
         config_source: 运行时晚绑定配置来源（默认 YamlDefaultsConfigSource）
@@ -111,25 +108,12 @@ def build_kernel(
     setup_logging(root)  # 初始化 agent-memory 根 logger（按 globals 的 log_* 配置；幂等）
 
     # ConfigSource 须先于 engine/evolver 装配，供 PromptRegistry / 插件晚绑定共享。
-    # 顺序：ConfigSource →（强制）EncryptedKV 包装 → LocalMemoryAPI/engine。
     config_source = ConfigSourceProducer.dep(root, default="yaml_defaults")
     if not isinstance(config_source, ConfigSource):
         raise ValidationError(
             f"config_source 装配结果不是 ConfigSource: {type(config_source).__name__}"
         )
     ConfigSourceProducer.put("default", config_source)
-
-    # 强制 KV 加密：不管配置里 kv_store.default 指向 memory/sqlite/redis，
-    # 装配出来的 KV 一定是 EncryptedKVStore，security provider 从 security 命名空间取。
-    raw_kv = KvProducer.dep(root, default="memory")
-    if not isinstance(raw_kv, EncryptedKVStore):
-        security = SecurityProducer.dep(root, default="local")
-        if not isinstance(security, SecurityProvider):
-            raise ValidationError(
-                f"security 命名空间装配结果不是 SecurityProvider: {type(security).__name__}"
-            )
-        raw_kv = EncryptedKVStore(raw=raw_kv, security=security)
-        KvProducer.put(KV_DEFAULT_NAME, raw_kv)
 
     storage = StorageProducer.dep(root, default="composite")
     if not isinstance(storage, Storage):

@@ -110,7 +110,7 @@ git diff --check
 
 ## 已知遗留
 
-- ~~默认配置不会自动切到 encrypted KV~~ **已更新**：`build_kernel`（`assembly.py`）现已强制加密——无论配置里 `kv_store.default` 指向 memory/sqlite/redis，装配出来的 KV 一定是 `EncryptedKVStore`，security provider 从 `security` 命名空间取 `local`（AES-256-GCM）。要关闭加密需修改 `assembly.py` 的强制包装逻辑。
+- 默认配置不会自动切到 encrypted KV。
 - 当前只保护 KV value；vector/fulltext/fusion/graph/fs 中的索引字段、文本、向量、图边、文件资产不在该装饰器保护范围内。
 - key、scope 维度、TTL 与 raw 后端中的记录数量仍对后端可见。
 - KMS/Vault provider、密钥轮换、密钥版本迁移、批量重加密仍需在 `common/security` 与运维流程中补齐。
