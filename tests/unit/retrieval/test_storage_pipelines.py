@@ -93,13 +93,19 @@ class SimpleDiscloser(Discloser):
 
 
 class CountingKVStore(InMemoryKVStore):
+    """统计真源读取量：点读与批读合并计 key 数，不绑定具体读取方法。"""
+
     def __init__(self) -> None:
         super().__init__()
-        self.get_calls = 0
+        self.read_keys = 0
 
     def get(self, scope: Scope, key: str) -> bytes:
-        self.get_calls += 1
+        self.read_keys += 1
         return super().get(scope, key)
+
+    def mget(self, scope: Scope, keys: list[str]) -> list[bytes]:
+        self.read_keys += len(keys)
+        return super().mget(scope, keys)
 
 
 def _build_retriever(
@@ -114,7 +120,7 @@ def _build_retriever(
         preferred_pipeline=pipeline,
     )
     storage.add(scope, [MemoryUnit(id="u1", scope=scope, segments=[Segment(content="one")])])
-    kv.get_calls = 0
+    kv.read_keys = 0
     retriever = PipelineRetriever(
         StaticParser(),
         recallers,
@@ -141,7 +147,7 @@ def test_all_storage_pipelines_return_equivalent_materialized_results(
 
     assert [item.unit_id for item in result.items] == ["u1"]
     assert len(result.errors) == 0
-    assert kv.get_calls == 1, "跨通道重复 id 应只读取一次真源"
+    assert kv.read_keys == 1, "跨通道重复 id 应只读取一次真源"
 
 
 def test_partial_channel_failure_returns_items_and_structured_error() -> None:

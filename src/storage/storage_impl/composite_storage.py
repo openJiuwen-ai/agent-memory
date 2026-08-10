@@ -304,16 +304,30 @@ class CompositeStorage(Storage):
         return self._get_units(scope, unit_ids)
 
     def _get_units(self, scope: Scope, unit_ids: list[str]) -> list[MemoryUnit]:
+        """批量点读真源：按输入顺序返回，缺失 id 省略，重复 id 各自返回。
+
+        ``mget`` 不去重且任一 key 缺失即抛 ``NotFoundError``（见 :meth:`KVStore.mget`），
+        故去重与「索引↔真源短暂不一致」的兜底都由本方法承担。
+        """
+        if not unit_ids:
+            return []
         kv = self._raw_kv()
-        units: list[MemoryUnit] = []
-        for unit_id in unit_ids:
-            try:
-                unit = loads(kv.get(scope, memory_key(unit_id)))
-            except NotFoundError:
-                continue
+        unique = list(dict.fromkeys(unit_ids))
+        try:
+            loaded = list(zip(unique, kv.mget(scope, [memory_key(uid) for uid in unique])))
+        except NotFoundError:
+            loaded = []
+            for unit_id in unique:
+                try:
+                    loaded.append((unit_id, kv.get(scope, memory_key(unit_id))))
+                except NotFoundError:
+                    continue
+        by_id: dict[str, MemoryUnit] = {}
+        for unit_id, raw in loaded:
+            unit = loads(raw)
             if unit is not None:
-                units.append(unit)
-        return units
+                by_id[unit_id] = unit
+        return [by_id[unit_id] for unit_id in unit_ids if unit_id in by_id]
 
     def list(
         self,

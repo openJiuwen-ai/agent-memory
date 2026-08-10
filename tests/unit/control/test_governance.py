@@ -45,6 +45,10 @@ class _FailingKV:
     def get(scope: Scope, key: str) -> bytes:
         raise BackendError("storage unavailable")
 
+    @staticmethod
+    def mget(scope: Scope, keys: list[str]) -> list[bytes]:
+        raise BackendError("storage unavailable")
+
 
 def test_trace_follows_provenance_sources_depth_first() -> None:
     scope = Scope(user="u1")
