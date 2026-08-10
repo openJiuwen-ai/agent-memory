@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import uuid
+from typing import Any
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -25,6 +26,7 @@ from common.type_def import (
     RawPayload,
     Scope,
     Segment,
+    TRANSIENT_METADATA_KEYS,
 )
 from construction import EvolveMode
 from construction.classifier import Classifier, ClassifierProducer
@@ -82,7 +84,10 @@ def _apply_patch(old: MemoryUnit, patch: MemoryPatch) -> MemoryUnit:
     if patch.tags is not None:
         new.tags = list(patch.tags)
     if patch.metadata is not None:
-        new.metadata.update({key: str(value) for key, value in patch.metadata.items()})
+        new.metadata.update({
+            key: value if key in TRANSIENT_METADATA_KEYS else str(value)
+            for key, value in patch.metadata.items()
+        })
     if patch.t_valid is not None:
         new.temporal.t_valid = patch.t_valid
     if patch.t_invalid is not None:
@@ -475,7 +480,7 @@ class CloudEngine(MemoryEngine):
         offset: int = 0,
         limit: int = 100,
         memory_types: list[str] | None = None,
-        extensions: dict[str, str] | None = None,
+        extensions: dict[str, Any] | None = None,
         filters: FilterExpr | None = None,
     ) -> tuple[MemoryListResult, list[PermissionContext]]:
         result = await self.list(
@@ -682,15 +687,27 @@ class CloudEngine(MemoryEngine):
     async def admin_all(self) -> dict[str, str]:
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")
 
-    def _normalized_metadata(self, metadata: dict[str, str] | None) -> dict[str, str]:
-        meta = {key: str(value) for key, value in (metadata or {}).items()}
+    def _normalized_metadata(self, metadata: dict[str, Any] | None) -> dict[str, str]:
+        meta = {}
+        for key, value in (metadata or {}).items():
+            # 瞬态 key 保留原始对象（透传到 storage 层消费，不落盘）
+            if key in TRANSIENT_METADATA_KEYS:
+                meta[key] = value
+            else:
+                meta[key] = str(value)
         message_type = meta.get(self._message_type_key, "").strip() or self._default_message_type
         if message_type:
             meta[self._message_type_key] = message_type
         return meta
 
     def _normalize_unit_metadata(self, unit: MemoryUnit) -> None:
-        meta = {key: str(value) for key, value in unit.metadata.items()}
+        meta = {}
+        for key, value in unit.metadata.items():
+            # 瞬态 key 保留原始对象（透传到 storage 层消费，不落盘）
+            if key in TRANSIENT_METADATA_KEYS:
+                meta[key] = value
+            else:
+                meta[key] = str(value)
         message_type = meta.get(self._message_type_key, "").strip() or self._default_message_type
         if message_type:
             meta[self._message_type_key] = message_type
@@ -700,7 +717,15 @@ class CloudEngine(MemoryEngine):
         value = str(query.extensions.get(self._message_type_key, "")).strip()
         if value or not self._default_message_type:
             return query
+        # 瞬态 key（db_query_service / encryption_port 等）的值可能是不可深拷贝的对象，
+        # 深拷贝前临时剥离，拷贝后原样装回。
+        transient = {k: v for k, v in query.extensions.items() if k in TRANSIENT_METADATA_KEYS}
+        if transient:
+            query.extensions = {k: v for k, v in query.extensions.items() if k not in TRANSIENT_METADATA_KEYS}
         routed = copy.deepcopy(query)
+        if transient:
+            query.extensions.update(transient)
+            routed.extensions.update(transient)
         routed.extensions[self._message_type_key] = self._default_message_type
         return routed
 

@@ -144,6 +144,11 @@ class MemoryUnit:
 
 MEMORY_KEY_PREFIX = "/memory/"
 
+# 瞬态 key（transient keys）：在 metadata / extensions 中携带、透传到 storage 层消费，
+# 但不落盘。存储层在写入前（KV insert/update）必须从 MemoryUnit.metadata 中移除这些 key。
+# 新增瞬态 key 需同步加入此集合。
+TRANSIENT_METADATA_KEYS = frozenset({"db_query_service", "encryption_port"})
+
 # 索引投影用真源系统字段覆盖同名用户 metadata（见 construction 的 _index_metadata），
 # 而 UnitReader 复核 ``metadata.<key>`` 时读的是用户值——同名会让两侧语义相反、静默错筛。
 # 故这些 key 在写入边界即拒绝，用户元数据不得占用。

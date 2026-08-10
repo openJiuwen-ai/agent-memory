@@ -19,6 +19,7 @@ int 后写入 ``RetrievalQuery`` 对应槽位；无此 key（或空串）时披�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from .scope import Scope
 
@@ -31,4 +32,4 @@ EXT_MAX_TOKENS = "max_tokens"
 class Context:
     scope: Scope = field(default_factory=Scope)  # 操作/检索的目标范围（多租户隔离）
     # 调用级透传配置；内核核心不解释，值须传输安全（str）。约定 key 见 EXT_MAX_TOKENS。
-    extensions: dict[str, str] = field(default_factory=dict)
+    extensions: dict[str, Any] = field(default_factory=dict)

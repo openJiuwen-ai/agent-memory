@@ -24,6 +24,7 @@ from .memory import (
     Modality,
     Segment,
     Temporal,
+    TRANSIENT_METADATA_KEYS,
 )
 from .scope import Scope
 
@@ -78,7 +79,7 @@ def dumps(unit: MemoryUnit) -> bytes:
             "provenance": list(unit.provenance),
             "supersedes": unit.supersedes,
             "tags": list(unit.tags),
-            "metadata": dict(unit.metadata),
+            "metadata": {k: v for k, v in unit.metadata.items() if k not in TRANSIENT_METADATA_KEYS},
             "lifecycle": unit.lifecycle.value,
         },
         ensure_ascii=False,

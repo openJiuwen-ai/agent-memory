@@ -27,6 +27,7 @@ from common.errors import NotFoundError, PermissionDeniedError, PolicyError, Val
 from common.type_def import (
     EXT_MAX_TOKENS,
     RESERVED_METADATA_KEYS,
+    TRANSIENT_METADATA_KEYS,
     AuditEvent,
     Context,
     FilterClause,
@@ -171,10 +172,15 @@ def _reject_non_scalar_metadata(metadata: dict[str, Any] | None) -> None:
     另建 mapping，Milvus 的 JSON 字段能存但过滤算子对其未定义，UnitReader 又会把
     list 当集合字段走成员语义。三方各行其是且无一致契约，因此在入口挡住。
     字符串数组是例外——tags 类用法有明确的成员包含语义（``json_contains`` / ``term``）。
+    瞬态 key（``TRANSIENT_METADATA_KEYS``）是例外——它们透传原始对象到 storage 层消费，
+    不落盘，因此允许任意类型。
     """
     if not metadata:
         return
     for key, value in metadata.items():
+        # 瞬态 key 允许任意类型（对象透传，不落盘）
+        if key in TRANSIENT_METADATA_KEYS:
+            continue
         if isinstance(value, (str, int, float, bool)) or value is None:
             continue
         if isinstance(value, list) and all(isinstance(item, str) for item in value):
@@ -211,7 +217,13 @@ def _write_permission_context(
     tags: list[str] | None,
     metadata: dict[str, Any] | None,
 ) -> PermissionContext:
-    meta = {key: str(value) for key, value in (metadata or {}).items()}
+    meta = {}
+    for key, value in (metadata or {}).items():
+        # 瞬态 key 保留原始对象（透传到 storage 层消费，不落盘）
+        if key in TRANSIENT_METADATA_KEYS:
+            meta[key] = value
+        else:
+            meta[key] = str(value)
     return PermissionContext(
         resource_type="write_input",
         memory_type=meta.get("memory_type", "").strip(),
@@ -240,6 +252,10 @@ def _recall_permission_context(
     routed_metadata = _required_filter_metadata(filters)
     # S03「MemoryPipeline 路由规则」——extensions 优先。
     for key, override in context.extensions.items():
+        # 瞬态 key 透传原值，不 str 化
+        if key in TRANSIENT_METADATA_KEYS:
+            routed_metadata[key] = override
+            continue
         effective = str(override).strip()
         if effective:
             routed_metadata[key] = effective
@@ -256,10 +272,14 @@ def _list_permission_contexts(
     scope: Scope,
     memory_types: list[str] | None,
     filters: FilterExpr | None,
-    extensions: dict[str, str],
+    extensions: dict[str, Any],
 ) -> list[PermissionContext]:
     routed_metadata = _required_filter_metadata(filters)
     for key, override in extensions.items():
+        # 瞬态 key 透传原值，不 str 化
+        if key in TRANSIENT_METADATA_KEYS:
+            routed_metadata[key] = override
+            continue
         effective = str(override).strip()
         if effective:
             routed_metadata[key] = effective
@@ -296,16 +316,20 @@ def _list_permission_contexts(
     return contexts
 
 
-def _normalize_list_extensions(raw: dict[str, str] | None) -> dict[str, str]:
+def _normalize_list_extensions(raw: dict[str, Any] | None) -> dict[str, Any]:
     if raw is None:
         return {}
     if not isinstance(raw, dict):
         raise ValidationError("extensions must be a dict")
-    normalized: dict[str, str] = {}
+    normalized: dict[str, Any] = {}
     for key, value in raw.items():
         if not isinstance(key, str):
             raise ValidationError("extensions keys must be strings")
-        normalized[key] = str(value)
+        # 瞬态 key 保留原始对象（如 db_query_service / encryption_port），不强制 str 化
+        if key in TRANSIENT_METADATA_KEYS:
+            normalized[key] = value
+        else:
+            normalized[key] = str(value)
     return normalized
 
 
@@ -935,7 +959,7 @@ class LocalMemoryAPI(MemoryAPI):
         offset: int = 0,
         limit: int = 100,
         memory_types: list[str] | None = None,
-        extensions: dict[str, str] | None = None,
+        extensions: dict[str, Any] | None = None,
         filters: FilterExpr | list[FilterClause] | dict | None = None,
     ) -> MemoryListResult:
         normalized_extensions = _normalize_list_extensions(extensions)

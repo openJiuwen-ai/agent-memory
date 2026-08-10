@@ -167,7 +167,7 @@ class MemoryAPI(ABC):
         offset: int = 0,
         limit: int = 100,
         memory_types: list[str] | None = None,
-        extensions: dict[str, str] | None = None,
+        extensions: dict[str, Any] | None = None,
         filters: FilterExpr | list[FilterClause] | dict | None = None,
     ) -> MemoryListResult:
         """列出目标 ``scope`` 下已建索引的记忆单元。
