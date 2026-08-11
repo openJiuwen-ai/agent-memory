@@ -272,5 +272,5 @@ class DeleteSelector:
     unit_ids: list[str] = field(default_factory=list)  # 按 id 指定
     scope: Scope | None = None  # 限定归属 scope
     tags: list[str] = field(default_factory=list)  # 命中任一标签
-    before: datetime | None = None  # 仅命中 t_event 早于此时间的
+    before: datetime | None = None  # 仅命中 t_message 早于此时间的
     mode: DeleteMode = DeleteMode.FORGET  # 删除语义

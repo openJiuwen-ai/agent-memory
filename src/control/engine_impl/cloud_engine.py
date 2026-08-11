@@ -151,8 +151,8 @@ def _matches_delete_selector(unit: MemoryUnit, selector: DeleteSelector) -> bool
     if wanted_tags and not wanted_tags.intersection(unit.tags):
         return False
     if selector.before is not None:
-        t_event = unit.temporal.t_event
-        if t_event is None or t_event >= selector.before:
+        t_message = unit.temporal.t_message
+        if t_message is None or t_message >= selector.before:
             return False
     return True
 

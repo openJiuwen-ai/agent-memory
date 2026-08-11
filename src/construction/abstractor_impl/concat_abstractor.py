@@ -55,7 +55,12 @@ class ConcatAbstractor(Abstractor):
                 segments=[Segment(content=f"画像综合（{len(sources)} 条）：{summary}")],
                 provenance=[u.id for u in sources],
                 tags=["profile"],
-                temporal=Temporal(t_event=now, t_ingest=now, t_valid=now),
+                temporal=Temporal(
+                    t_event=now,
+                    t_ingest=now,
+                    t_valid=now,
+                    t_message=sources[0].temporal.t_message,
+                ),
             )
         ]
         for r in result:

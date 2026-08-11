@@ -105,6 +105,7 @@ def make_unit(
     t_event: Optional[datetime] = None,
     t_valid: Optional[datetime] = None,
     t_invalid: Optional[datetime] = None,
+    t_message: Optional[datetime] = None,
     supersedes: str = "",
     tags: Optional[list[str]] = None,
 ) -> MemoryUnit:
@@ -113,7 +114,9 @@ def make_unit(
         scope=scope,
         tier=MemoryTier.SEMANTIC,
         segments=[Segment(content=content, source=Modality.TEXT)],
-        temporal=Temporal(t_event=t_event, t_valid=t_valid, t_invalid=t_invalid),
+        temporal=Temporal(
+            t_event=t_event, t_valid=t_valid, t_invalid=t_invalid, t_message=t_message
+        ),
         supersedes=supersedes,
         tags=list(tags or []),
         lifecycle=lifecycle,

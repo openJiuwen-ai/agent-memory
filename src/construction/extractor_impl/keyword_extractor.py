@@ -109,9 +109,10 @@ class KeywordExtractor(Extractor):
             # 不设 source_ref：procedural 原文不落 KV，source.id 指向不存在的记录，
             # 设了反而误导溯源。provenance 仍记本轮 unit id（血缘列表，可指向未落盘源）。
             temporal=Temporal(
-                t_event=source.temporal.t_event or now,
+                t_event=None,
                 t_ingest=now,
                 t_valid=now,
+                t_message=source.temporal.t_message,
             ),
             provenance=[u.id for u in units],
             # 合并 write tags（engine 已写到源 unit）+ 系统标记 procedural

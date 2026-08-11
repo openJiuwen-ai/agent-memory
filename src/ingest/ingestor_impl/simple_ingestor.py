@@ -50,9 +50,10 @@ class SimpleIngestor(Ingestor):
                     ],
                     source_ref=payload.id,
                     temporal=Temporal(
-                        t_event=payload.occurred_at or now,
+                        t_event=None,
                         t_ingest=now,
                         t_valid=now,
+                        t_message=payload.occurred_at,
                     ),
                     metadata=dict(payload.metadata),
                 )
