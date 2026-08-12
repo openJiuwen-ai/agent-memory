@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import pytest
 
-from api.memory_api_impl import assemble, build_kernel
-from common.errors import ValidationError
-from common.type_def import Modality, Scope
-from config import Config
-from control import BatchWriteItem
+from jiuwen_memory.api.memory_api_impl import assemble, build_kernel
+from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.type_def import Modality, Scope
+from jiuwen_memory.config import Config
+from jiuwen_memory.control import BatchWriteItem
 
 pytestmark = pytest.mark.unit
 

@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from common.errors import ValidationError
-from common.type_def import (
+from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterOp,
     MemoryTier,
@@ -18,33 +18,33 @@ from common.type_def import (
     Temporal,
     memory_key,
 )
-from common.type_def.memory_codec import dumps, loads
-from construction.base import OperatorType
-from construction.classifier import Classifier
-from construction.evolver import EvolveMode, Evolver, EvolveResult
-from construction.index_builder import IndexBuilder
-from control.base import ControlOperatorType
-from control.engine_impl.cloud_engine import CloudEngine
-from control.jobs import Job, JobFactory, JobType
-from control.jobs_impl.evolve_job import EvolveJobSpec
-from control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
-from control.lifecycle import LifecycleManager
-from control.pipeline import MemoryPipeline, PipelineBinding
-from control.scheduler_impl.in_process_scheduler import InProcessScheduler
-from control.types import (
+from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.classifier import Classifier
+from jiuwen_memory.construction.evolver import EvolveMode, Evolver, EvolveResult
+from jiuwen_memory.construction.index_builder import IndexBuilder
+from jiuwen_memory.control.base import ControlOperatorType
+from jiuwen_memory.control.engine_impl.cloud_engine import CloudEngine
+from jiuwen_memory.control.jobs import Job, JobFactory, JobType
+from jiuwen_memory.control.jobs_impl.evolve_job import EvolveJobSpec
+from jiuwen_memory.control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
+from jiuwen_memory.control.lifecycle import LifecycleManager
+from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding
+from jiuwen_memory.control.scheduler_impl.in_process_scheduler import InProcessScheduler
+from jiuwen_memory.control.types import (
     BatchWriteItem,
     Channel,
     DeleteSelector,
     MemoryPatch,
     UpdateMode,
 )
-from ingest.base import IngestOperatorType
-from ingest.ingestor import Ingestor
-from retrieval.base import RetrievalOperatorType
-from retrieval.retriever import Retriever
-from retrieval.types import RetrievalQuery, RetrievalResult, RetrievedItem
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.ingest.base import IngestOperatorType
+from jiuwen_memory.ingest.ingestor import Ingestor
+from jiuwen_memory.retrieval.base import RetrievalOperatorType
+from jiuwen_memory.retrieval.retriever import Retriever
+from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult, RetrievedItem
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
 
@@ -221,9 +221,9 @@ def _build_test_job_factory(
     与 InMemoryEngine 测试同模式——Spec 装配期固化依赖与业务参数，
     运行时 get_job 补 scope + 运行时参数生成完整 Job 实例。
     """
-    from common.base import PluginType
-    from common.llm.base import LLM
-    from common.type_def.chat import ChatMessage
+    from jiuwen_memory.common.base import PluginType
+    from jiuwen_memory.common.llm.base import LLM
+    from jiuwen_memory.common.type_def.chat import ChatMessage
 
     class _EchoLLM(LLM):
         def plugin_type(self) -> PluginType:

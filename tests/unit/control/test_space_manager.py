@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from common.errors import ConflictError, NotFoundError, ValidationError
-from common.type_def import Scope
-from control import PrincipalPath, SpaceMember, SpacePatch, SpacePolicy, SpaceSpec, SpaceStatus
-from control.space_impl.kv_space_manager import KVSpaceManager
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.common.errors import ConflictError, NotFoundError, ValidationError
+from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.control import PrincipalPath, SpaceMember, SpacePatch, SpacePolicy, SpaceSpec, SpaceStatus
+from jiuwen_memory.control.space_impl.kv_space_manager import KVSpaceManager
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
 

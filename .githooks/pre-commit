@@ -36,7 +36,7 @@ if [ -z "$staged_code" ]; then
 fi
 
 # 提取变更的模块路径
-changed_modules=$(echo "$staged_code" | grep '^src/' | cut -d'/' -f1-2 | sort -u || true)
+changed_modules=$(echo "$staged_code" | grep '^jiuwen_memory/' | cut -d'/' -f1-2 | sort -u || true)
 
 # 检查是否有文档一起提交
 staged_docs=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '(^docs/|AGENTS\.md$)' || true)

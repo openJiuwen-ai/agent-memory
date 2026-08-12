@@ -17,12 +17,12 @@ import uuid
 
 import pytest
 
-from common.errors import ConflictError, NotFoundError
-from common.type_def import T_INVALID_OPEN, FilterClause, FilterGroup, FilterLogic, FilterOp, Scope
-from storage._support import scope_segments
-from storage.kv_impl.redis_kv import RedisKVStore
-from storage.types import VectorQuery, VectorRecord
-from storage.vector_impl.milvus_vector import MilvusVectorStore
+from jiuwen_memory.common.errors import ConflictError, NotFoundError
+from jiuwen_memory.common.type_def import T_INVALID_OPEN, FilterClause, FilterGroup, FilterLogic, FilterOp, Scope
+from jiuwen_memory.storage._support import scope_segments
+from jiuwen_memory.storage.kv_impl.redis_kv import RedisKVStore
+from jiuwen_memory.storage.types import VectorQuery, VectorRecord
+from jiuwen_memory.storage.vector_impl.milvus_vector import MilvusVectorStore
 
 REDIS_PORT = int(os.getenv("AGENT_MEMORY_TEST_REDIS_PORT", "6300"))
 MILVUS_URI = os.getenv("AGENT_MEMORY_TEST_MILVUS_URI", "http://localhost:19530")

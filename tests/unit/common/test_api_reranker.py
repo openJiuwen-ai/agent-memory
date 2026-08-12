@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from common.errors import BackendError, ValidationError
-from common.reranker.reranker_impl.api_reranker import APIReranker
+from jiuwen_memory.common.errors import BackendError, ValidationError
+from jiuwen_memory.common.reranker.reranker_impl.api_reranker import APIReranker
 
 pytestmark = pytest.mark.unit
 
@@ -99,7 +99,7 @@ def test_backend_error_on_http_failure() -> None:
 
 
 def test_registered_in_producer() -> None:
-    from common.reranker.reranker_impl import RerankerProducer
+    from jiuwen_memory.common.reranker.reranker_impl import RerankerProducer
 
     assert "api" in RerankerProducer.known()
 

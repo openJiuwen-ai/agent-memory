@@ -16,11 +16,10 @@ import sys
 from importlib import import_module
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-for _p in (os.path.join(_ROOT, "src"), _ROOT):
-    if _p not in sys.path:
-        sys.path.append(_p)
+if _ROOT not in sys.path:
+    sys.path.append(_ROOT)
 
-Config = import_module("config.config").Config
+Config = import_module("jiuwen_memory.config.config").Config
 JsonlDataset = import_module("evaluation.benchmark.jsonl_dataset").JsonlDataset
 _report_module = import_module("evaluation.core.report")
 to_json = _report_module.to_json

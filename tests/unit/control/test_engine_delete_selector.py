@@ -4,11 +4,11 @@ from datetime import datetime, timezone
 
 import pytest
 
-from api import DeleteMode, DeleteSelector, Scope
-from api.memory_api_impl import build_kernel
-from common.errors import NotFoundError, ValidationError
-from common.type_def import LifecycleState, MemoryUnit, Segment, memory_key
-from common.type_def.memory_codec import dumps
+from jiuwen_memory.api import DeleteMode, DeleteSelector, Scope
+from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.common.errors import NotFoundError, ValidationError
+from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit, Segment, memory_key
+from jiuwen_memory.common.type_def.memory_codec import dumps
 
 
 def test_delete_selector_matches_tags_within_scope() -> None:

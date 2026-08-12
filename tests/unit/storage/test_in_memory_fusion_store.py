@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
-from common.type_def import FilterClause, FilterGroup, FilterLogic, FilterOp, Scope
-from storage.fusion_impl.in_memory_fusion_store import InMemoryFusionStore
-from storage.types import FusionQuery, FusionRecord
+from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
+from jiuwen_memory.common.type_def import FilterClause, FilterGroup, FilterLogic, FilterOp, Scope
+from jiuwen_memory.storage.fusion_impl.in_memory_fusion_store import InMemoryFusionStore
+from jiuwen_memory.storage.types import FusionQuery, FusionRecord
 
 pytestmark = pytest.mark.unit
 

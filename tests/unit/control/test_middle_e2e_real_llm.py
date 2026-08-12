@@ -47,13 +47,13 @@ from dotenv import load_dotenv
 # .env 在 .gitignore 内已忽略，不会误提交；缺失也不报错（仅本次测试 skip）。
 load_dotenv()
 
-from api.memory_api_impl import build_kernel
-from common.log import get_logger
-from common.type_def import Context, LifecycleState, MemoryTier, Scope, memory_key
-from common.type_def.memory_codec import loads
+from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.type_def import Context, LifecycleState, MemoryTier, Scope, memory_key
+from jiuwen_memory.common.type_def.memory_codec import loads
 
 logger = get_logger(__name__)
-from config.config import Config
+from jiuwen_memory.config.config import Config
 
 pytestmark = [
     pytest.mark.unit,
@@ -196,7 +196,7 @@ async def _recall_async(kernel, query: str, ctx: Context, *, top_k: int = 30):
     embedding/retrieval，但省去切换开销，且与 Timer 协程在同循环协作调度（recall
     await 时 Timer 协程可继续 sleep，不会因切换延迟错过窗口）。
     """
-    from retrieval.types import RetrievalQuery
+    from jiuwen_memory.retrieval.types import RetrievalQuery
     rq = RetrievalQuery(text=query, top_k=top_k, extensions=dict(ctx.extensions))
     return await kernel.api._engine.recall(ctx.scope, rq)
 

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from common.type_def import Segment
+from jiuwen_memory.common.type_def import Segment
 
 pytestmark = pytest.mark.unit
 

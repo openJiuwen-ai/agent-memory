@@ -14,12 +14,12 @@ from contextlib import suppress
 
 import pytest
 
-from common.errors import ConflictError, NotFoundError, ValidationError
-from common.type_def import FilterClause, FilterOp, Scope
-from storage import StoreType
-from storage.fusion import FusionProducer
-from storage.fusion_impl.milvus_graph_fusion import MilvusGraphFusionStore
-from storage.types import FusionQuery, FusionRecord
+from jiuwen_memory.common.errors import ConflictError, NotFoundError, ValidationError
+from jiuwen_memory.common.type_def import FilterClause, FilterOp, Scope
+from jiuwen_memory.storage import StoreType
+from jiuwen_memory.storage.fusion import FusionProducer
+from jiuwen_memory.storage.fusion_impl.milvus_graph_fusion import MilvusGraphFusionStore
+from jiuwen_memory.storage.types import FusionQuery, FusionRecord
 
 MILVUS_URI = os.getenv("AGENT_MEMORY_TEST_MILVUS_URI", "http://localhost:19530")
 DIM = 4

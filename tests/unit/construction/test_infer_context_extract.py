@@ -20,11 +20,11 @@ import math
 
 import pytest
 
-from common.base import PluginType
-from common.embedder.base import Embedder
-from common.errors import ConflictError, NotFoundError
-from common.llm.base import LLM
-from common.type_def import (
+from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.embedder.base import Embedder
+from jiuwen_memory.common.errors import ConflictError, NotFoundError
+from jiuwen_memory.common.llm.base import LLM
+from jiuwen_memory.common.type_def import (
     MESSAGES_KEY_PREFIX,
     LifecycleState,
     MemoryTier,
@@ -36,17 +36,17 @@ from common.type_def import (
     memory_key,
     messages_key,
 )
-from common.type_def.memory_codec import dumps, loads
-from construction.base import OperatorType
-from construction.dedup_impl.vector_dedup import VectorDedup
-from construction.evolver import EvolveMode
-from construction.evolver_impl.orchestrating_evolver import OrchestratingEvolver
-from construction.extractor import Extractor
-from storage.base import StoreType
-from storage.kv import KVStore
-from storage.storage_impl.composite_storage import CompositeStorage
-from storage.types import ScoredID, VectorRecord
-from storage.vector import VectorStore
+from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.dedup_impl.vector_dedup import VectorDedup
+from jiuwen_memory.construction.evolver import EvolveMode
+from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import OrchestratingEvolver
+from jiuwen_memory.construction.extractor import Extractor
+from jiuwen_memory.storage.base import StoreType
+from jiuwen_memory.storage.kv import KVStore
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.types import ScoredID, VectorRecord
+from jiuwen_memory.storage.vector import VectorStore
 
 pytestmark = pytest.mark.unit
 
@@ -477,11 +477,11 @@ class TestEngineInferPersist:
 
         原文落盘在 evolver 内部（_persist_and_maintain_messages），故用真实 OrchestratingEvolver。
         """
-        from common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
-        from common.normalizer.normalizer_impl.passthrough_normalizer import PassthroughNormalizer
-        from construction.extractor_impl.keyword_extractor import KeywordExtractor
-        from control.engine_impl.in_memory_engine import InMemoryEngine
-        from ingest.ingestor_impl.simple_ingestor import SimpleIngestor
+        from jiuwen_memory.common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
+        from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer import PassthroughNormalizer
+        from jiuwen_memory.construction.extractor_impl.keyword_extractor import KeywordExtractor
+        from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
+        from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
 
         stores = {"kv": _MemoryKVStore(), "vector": _MemoryVectorStore()}
         storage = CompositeStorage(kv=stores["kv"], vector=stores["vector"])
@@ -586,15 +586,15 @@ class TestProceduralExtract:
     @staticmethod
     def test_procedural_original_not_in_kv():
         """procedural 原文不落 KV（/messages/ 和 /memory/ 都无原文）。"""
-        from common.normalizer.normalizer_impl.passthrough_normalizer import PassthroughNormalizer
-        from control.engine_impl.in_memory_engine import InMemoryEngine
-        from ingest.ingestor_impl.simple_ingestor import SimpleIngestor
+        from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer import PassthroughNormalizer
+        from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
+        from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
 
         stores = {"kv": _MemoryKVStore(), "vector": _MemoryVectorStore()}
 
         # evolver 用 keyword_extractor（procedural 降级产 1 条原文 PROCEDURAL）
-        from common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
-        from construction.extractor_impl.keyword_extractor import KeywordExtractor
+        from jiuwen_memory.common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
+        from jiuwen_memory.construction.extractor_impl.keyword_extractor import KeywordExtractor
 
         storage = CompositeStorage(kv=stores["kv"], vector=stores["vector"])
         dedup = VectorDedup(storage=storage, embedder=_HashEmbedder(), tier_filter=False)
@@ -651,11 +651,11 @@ class TestProceduralExtract:
         评审 P2：原实现 `if infer:` 落 /messages/，procedural+infer 同传时违反
         「procedural 原文不落 KV」契约。修正为 `if infer and not procedural:`。
         """
-        from common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
-        from common.normalizer.normalizer_impl.passthrough_normalizer import PassthroughNormalizer
-        from construction.extractor_impl.keyword_extractor import KeywordExtractor
-        from control.engine_impl.in_memory_engine import InMemoryEngine
-        from ingest.ingestor_impl.simple_ingestor import SimpleIngestor
+        from jiuwen_memory.common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
+        from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer import PassthroughNormalizer
+        from jiuwen_memory.construction.extractor_impl.keyword_extractor import KeywordExtractor
+        from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
+        from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
 
         stores = {"kv": _MemoryKVStore(), "vector": _MemoryVectorStore()}
         storage = CompositeStorage(kv=stores["kv"], vector=stores["vector"])
@@ -708,7 +708,7 @@ class TestProceduralSourceRef:
         """llm_extractor 的 procedural 产出 source_ref 为空（与 keyword 对齐）。"""
         import json as _json
 
-        from construction.extractor_impl.llm_extractor import ExtractorImpl
+        from jiuwen_memory.construction.extractor_impl.llm_extractor import ExtractorImpl
 
         # MockLLM 返回 procedural JSON（content 字段）
         class _ProcLLM(LLM):

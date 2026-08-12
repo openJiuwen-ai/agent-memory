@@ -19,9 +19,8 @@ import sys
 from importlib import import_module
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-for _p in (os.path.join(_ROOT, "src"), _ROOT):
-    if _p not in sys.path:
-        sys.path.append(_p)
+if _ROOT not in sys.path:
+    sys.path.append(_ROOT)
 
 to_markdown = import_module("evaluation.core.report").to_markdown
 Runner = import_module("evaluation.core.runner").Runner

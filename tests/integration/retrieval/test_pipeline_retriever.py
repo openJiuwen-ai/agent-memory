@@ -8,44 +8,44 @@ from typing import List
 
 import pytest
 
-from common.base import PluginType
-from common.bootstrap import register_plugins
-from common.embedder.base import EmbedderProducer
-from common.errors import BackendError, ValidationError
-from common.factory.factory import Factory
-from common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (
+from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.bootstrap import register_plugins
+from jiuwen_memory.common.embedder.base import EmbedderProducer
+from jiuwen_memory.common.errors import BackendError, ValidationError
+from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (
     KeywordFeatureExtractor,
 )
-from common.reranker.base import Reranker
-from common.reranker.reranker_impl.overlap_reranker import OverlapReranker
-from common.type_def import FilterClause, FilterOp, memory_key
-from common.type_def.memory import LifecycleState
-from common.type_def.memory_codec import dumps
-from common.type_def.scope import Scope
-from config.context import AssemblyContext
-from config.defaults import default_config_dict
-from retrieval.base import RetrievalOperatorType
-from retrieval.bootstrap import register_operators
-from retrieval.discloser_impl.structured_discloser import StructuredDiscloser
-from retrieval.fuser_impl.rrf_fuser import RRFFuser
-from retrieval.fuser_impl.weighted_rrf_fuser import WeightedRRFFuser
-from retrieval.query_parser_impl.simple_query_parser import SimpleQueryParser
-from retrieval.recaller import Recaller, RecallerProducer
-from retrieval.recaller_impl.keyword_recaller import KeywordRecaller
-from retrieval.recaller_impl.vector_recaller import VectorRecaller
-from retrieval.retriever import RetrieverProducer
-from retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
-from retrieval.types import (
+from jiuwen_memory.common.reranker.base import Reranker
+from jiuwen_memory.common.reranker.reranker_impl.overlap_reranker import OverlapReranker
+from jiuwen_memory.common.type_def import FilterClause, FilterOp, memory_key
+from jiuwen_memory.common.type_def.memory import LifecycleState
+from jiuwen_memory.common.type_def.memory_codec import dumps
+from jiuwen_memory.common.type_def.scope import Scope
+from jiuwen_memory.config.context import AssemblyContext
+from jiuwen_memory.config.defaults import default_config_dict
+from jiuwen_memory.retrieval.base import RetrievalOperatorType
+from jiuwen_memory.retrieval.bootstrap import register_operators
+from jiuwen_memory.retrieval.discloser_impl.structured_discloser import StructuredDiscloser
+from jiuwen_memory.retrieval.fuser_impl.rrf_fuser import RRFFuser
+from jiuwen_memory.retrieval.fuser_impl.weighted_rrf_fuser import WeightedRRFFuser
+from jiuwen_memory.retrieval.query_parser_impl.simple_query_parser import SimpleQueryParser
+from jiuwen_memory.retrieval.recaller import Recaller, RecallerProducer
+from jiuwen_memory.retrieval.recaller_impl.keyword_recaller import KeywordRecaller
+from jiuwen_memory.retrieval.recaller_impl.vector_recaller import VectorRecaller
+from jiuwen_memory.retrieval.retriever import RetrieverProducer
+from jiuwen_memory.retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
+from jiuwen_memory.retrieval.types import (
     DisclosureLevel,
     ParsedQuery,
     RecallChannel,
     RetrievalQuery,
     ScoredUnit,
 )
-from storage.bootstrap import register_backends
-from storage.fulltext import FulltextProducer
-from storage.kv import KvProducer
-from storage.vector import VectorProducer
+from jiuwen_memory.storage.bootstrap import register_backends
+from jiuwen_memory.storage.fulltext import FulltextProducer
+from jiuwen_memory.storage.kv import KvProducer
+from jiuwen_memory.storage.vector import VectorProducer
 from tests.conftest import DEFAULT_SCOPE, index_unit, make_unit, make_world
 
 pytestmark = pytest.mark.integration
@@ -777,7 +777,7 @@ def test_rerank_requested_without_reranker_records_skip() -> None:
 def test_recall_max_below_floor_warns(monkeypatch) -> None:
     # recall_max 压过 over_fetch_floor 属于矛盾配置：上限赢，但装配期必须告警可见。
     # 直接桩掉模块 logger.warning——不依赖全局日志传播配置（setup_logging 会关 propagate）。
-    import retrieval.retriever_impl.pipeline_retriever as pr_module
+    import jiuwen_memory.retrieval.retriever_impl.pipeline_retriever as pr_module
 
     warnings: list[str] = []
     monkeypatch.setattr(

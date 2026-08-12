@@ -9,8 +9,8 @@
 - 长文本多 chunk 分组
 """
 
-from common.base import PluginType
-from common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
+from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
 
 # ---------------------------------------------------------------------------
 # 通用 helper

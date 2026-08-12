@@ -12,29 +12,29 @@ from importlib import import_module
 
 import pytest
 
-from common.bootstrap import register_plugins
-from common.errors import (
+from jiuwen_memory.common.bootstrap import register_plugins
+from jiuwen_memory.common.errors import (
     BackendError,
     ConflictError,
     NotFoundError,
     ValidationError,
 )
-from common.type_def import Scope
-from config import AssemblyContext
-from storage.bootstrap import register_backends
-from storage.fs import FsProducer
-from storage.fs_impl.local_fs import LocalFSStore
-from storage.fulltext import FulltextProducer
-from storage.fusion import FusionProducer
-from storage.graph import GraphProducer
-from storage.kv import KvProducer
-from storage.kv_impl.postgres_kv import PostgresKVStore
-from storage.kv_impl.redis_kv import RedisKVStore
-from storage.storage import StorageProducer
-from storage.types import VectorRecord
-from storage.vector import VectorProducer
-from storage.vector_impl.milvus_vector import MilvusVectorStore
-from storage.vector_impl.pgvector_vector import PgVectorStore
+from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.config import AssemblyContext
+from jiuwen_memory.storage.bootstrap import register_backends
+from jiuwen_memory.storage.fs import FsProducer
+from jiuwen_memory.storage.fs_impl.local_fs import LocalFSStore
+from jiuwen_memory.storage.fulltext import FulltextProducer
+from jiuwen_memory.storage.fusion import FusionProducer
+from jiuwen_memory.storage.graph import GraphProducer
+from jiuwen_memory.storage.kv import KvProducer
+from jiuwen_memory.storage.kv_impl.postgres_kv import PostgresKVStore
+from jiuwen_memory.storage.kv_impl.redis_kv import RedisKVStore
+from jiuwen_memory.storage.storage import StorageProducer
+from jiuwen_memory.storage.types import VectorRecord
+from jiuwen_memory.storage.vector import VectorProducer
+from jiuwen_memory.storage.vector_impl.milvus_vector import MilvusVectorStore
+from jiuwen_memory.storage.vector_impl.pgvector_vector import PgVectorStore
 
 register_backends()  # 经接口拿到的 Producer，注册靠 import 实现——测试里显式触发一次
 register_plugins()   # in_memory 全文/融合 store 依赖 tokenizer，需插件也注册齐

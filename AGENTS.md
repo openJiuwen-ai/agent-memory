@@ -6,11 +6,11 @@
 
 ```
 .
-├── src/                # 内核源码（接口/接入/构建/检索/编排/存储/共享插件）
-├── tests/              # 测试（unit / integration，路径镜像 src/）
-├── bootstrap/          # 接入形态实现（CLI 客户端 / SDK / MCP Server）
+├── jiuwen_memory/      # 内核源码（接口/接入/构建/检索/编排/存储/共享插件）
+├── tests/              # 测试（unit / integration，路径镜像 jiuwen_memory/）
+├── bootstrap/          # 接入形态（CLI / HTTP / MCP / SDK；whl 独立顶层）
 ├── docs/               # 设计文档归档（design / specs / features）
-├── agent_plugin/       # 外部 agent 插件适配（codex / hermes / openclaw / JiwenSwarm）
+├── agent_plugin/       # 外部 agent 插件适配（whl 独立顶层）
 ├── deploy/             # 部署配置（docker / local）
 ├── evaluation/         # 评测框架（benchmark / metrics / smoke_test）
 ├── examples/           # 使用示例与快速上手
@@ -23,23 +23,23 @@
 ## AGENTS.md 层级
 
 ```
-AGENTS.md              ← 本文件：项目入口，目录结构 + 测试/代码风格/归档/提交约定
-src/AGENTS.md          ← 内核总览：模块地图 + 数据流 + 架构铁律 + 子模块 AGENTS.md 创建规则
-src/<subdir>/AGENTS.md ← 模块本地：代码目录结构、文件关系、入口、行为铁律、本地约束
-docs/AGENTS.md         ← 文档归档规约：文档目录结构、命名规则、文档骨架、提交约定
+AGENTS.md                        ← 本文件：项目入口，目录结构 + 测试/代码风格/归档/提交约定
+jiuwen_memory/AGENTS.md          ← 内核总览：模块地图 + 数据流 + 架构铁律 + 子模块 AGENTS.md 创建规则
+jiuwen_memory/<subdir>/AGENTS.md ← 模块本地：代码目录结构、文件关系、入口、行为铁律、本地约束
+docs/AGENTS.md                   ← 文档归档规约：文档目录结构、命名规则、文档骨架、提交约定
 ```
 
 职责边界：
 - **本文件**：新人入口，描述项目是什么、怎么构建、代码风格、提交规范
-- **`src/AGENTS.md`**：内核开发者入口，描述模块间关系和数据流走向
-- **`src/<subdir>/AGENTS.md`**：模块本地规约，只写相对稳定的结构性约束（模块职责边界、行为铁律、本地约束、文件关系），不写会频繁变化的特性设计
+- **`jiuwen_memory/AGENTS.md`**：内核开发者入口，描述模块间关系和数据流走向
+- **`jiuwen_memory/<subdir>/AGENTS.md`**：模块本地规约，只写相对稳定的结构性约束（模块职责边界、行为铁律、本地约束、文件关系），不写会频繁变化的特性设计
 - **`docs/specs/`**：跨模块接口规约（接口契约、协议、不变量、公共 API），相对稳定
 - **`docs/features/`**：特性设计文档（决策、方案取舍、验证基线、已知遗留），承载会变化的特性层面内容
 - **`docs/AGENTS.md`**：只讲归档结构与命名规约，不重复模块设计内容
 
 ## 测试
 
-- 单测路径镜像源码：`src/retrieval/retriever.py` → `tests/unit/retrieval/test_retriever.py`
+- 单测路径镜像源码：`jiuwen_memory/retrieval/retriever.py` → `tests/unit/retrieval/test_retriever.py`
 - 集成测试放 `tests/integration/<模块>/`，验证跨层链路。
 - 存储后端用内存实现（各 Store 的 in-memory 变体）做单测，避免依赖外部服务。
 - `pytest` 纯函数风格；不使用 `print`，断言失败信息写在 `assert ... , "msg"` 里。
@@ -54,10 +54,10 @@ docs/AGENTS.md         ← 文档归档规约：文档目录结构、命名规�
 
 ## 设计文档归档与双向同步
 
-把 **`src/` 下的代码和 `AGENTS.md` + `docs/specs/` + `docs/features/`** 当作一个一致性单元维护。
+把 **`jiuwen_memory/` 下的代码和 `AGENTS.md` + `docs/specs/` + `docs/features/`** 当作一个一致性单元维护。
 
 **文档范畴**：
-- **`src/<subdir>/AGENTS.md`**：模块本地规约，只写相对稳定的结构性约束（模块地图、行为铁律、本地约束、与其他模块的边界）。这些是模块的"不变量"——除非重构否则不会变。
+- **`jiuwen_memory/<subdir>/AGENTS.md`**：模块本地规约，只写相对稳定的结构性约束（模块地图、行为铁律、本地约束、与其他模块的边界）。这些是模块的"不变量"——除非重构否则不会变。
 - **`docs/specs/SNN-*.md`**：跨模块接口规约（接口契约、协议、公共 API、架构铁律）。这些是"系统层契约"——变化需要跨模块协调。
 - **`docs/features/FNN-*.md`**：特性设计文档（决策上下文、方案取舍、验证基线、已知遗留）。这些是"会演进的设计"——承载特性层面的变化和历史。
 
@@ -80,7 +80,7 @@ docs/AGENTS.md         ← 文档归档规约：文档目录结构、命名规�
 - spec 头部"最近一次修订日期"字段在每次修订该 spec 时填当天日期（`YYYY-MM-DD`）；features 文档用
   头部"日期"字段记录归档当天，不设独立修订字段。**不要在元信息里写 commit hash**——避免"提交后
   回填"的来回反复。
-- 子模块自身的本地约定继续放各 `src/<subdir>/AGENTS.md`；跨子模块的设计规约一律落到 `docs/specs/`，
+- 子模块自身的本地约定继续放各 `jiuwen_memory/<subdir>/AGENTS.md`；跨子模块的设计规约一律落到 `docs/specs/`，
   不要塞进单一子目录的 AGENTS.md。
 - **`CLAUDE.md` 是只读壳，不要编辑它**：本模块每个子目录的 `CLAUDE.md` 仅含 `@AGENTS.md` 一行，
   编辑 `CLAUDE.md` 的修改不会被保留在任何有效文档里。需要更新文档时，直接编辑 `AGENTS.md`。

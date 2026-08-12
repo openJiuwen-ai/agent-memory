@@ -8,8 +8,8 @@ import re
 import sys
 from importlib import import_module
 
-from common.base import PluginType
-from common.type_def import FeatureSet
+from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.type_def import FeatureSet
 
 # ---------------------------------------------------------------------------
 # 检查 spaCy / HanLP 是否可用
@@ -52,7 +52,7 @@ class SimpleTokenizer:
 
 
 def _make_keyword_extractor():
-    from common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (
+    from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (
         KeywordFeatureExtractor,
     )
 
@@ -60,7 +60,7 @@ def _make_keyword_extractor():
 
 
 def _make_spacy_extractor(model_name="zh_core_web_sm"):
-    from common.feature_extractor.feature_extractor_impl.spacy_feature_extractor import (
+    from jiuwen_memory.common.feature_extractor.feature_extractor_impl.spacy_feature_extractor import (
         SpacyFeatureExtractor,
     )
 
@@ -68,7 +68,7 @@ def _make_spacy_extractor(model_name="zh_core_web_sm"):
 
 
 def _make_spacy_extractor_no_fallback(model_name="zh_core_web_sm"):
-    from common.feature_extractor.feature_extractor_impl.spacy_feature_extractor import (
+    from jiuwen_memory.common.feature_extractor.feature_extractor_impl.spacy_feature_extractor import (
         SpacyFeatureExtractor,
     )
 
@@ -85,7 +85,7 @@ def _install_fake_spacy_without_model(monkeypatch):
 
 
 def _make_hanlp_extractor():
-    from common.feature_extractor.feature_extractor_impl.hanlp_feature_extractor import (
+    from jiuwen_memory.common.feature_extractor.feature_extractor_impl.hanlp_feature_extractor import (
         HanlpFeatureExtractor,
     )
 
@@ -98,7 +98,7 @@ def _make_hanlp_extractor():
 
 
 def _make_hanlp_extractor_no_fallback():
-    from common.feature_extractor.feature_extractor_impl.hanlp_feature_extractor import (
+    from jiuwen_memory.common.feature_extractor.feature_extractor_impl.hanlp_feature_extractor import (
         HanlpFeatureExtractor,
     )
 
@@ -219,7 +219,7 @@ def test_spacy_no_fallback_health_fails():
     """SpacyFeatureExtractor 无降级：spaCy 模型不可用时 health() 抛异常。"""
     fe = _make_spacy_extractor_no_fallback()
     if not SPACY_MODEL_AVAILABLE:
-        from common.errors import HealthCheckError
+        from jiuwen_memory.common.errors import HealthCheckError
 
         try:
             fe.health()
@@ -240,7 +240,7 @@ def test_spacy_no_fallback_extract_empty_result():
 
 def test_spacy_factory_registration():
     """SpacyFeatureExtractor 通过工厂注册。"""
-    from common.feature_extractor.feature_extractor_impl import FeatureExtractorProducer
+    from jiuwen_memory.common.feature_extractor.feature_extractor_impl import FeatureExtractorProducer
 
     assert "spacy" in FeatureExtractorProducer.known()
 
@@ -336,7 +336,7 @@ def test_hanlp_no_fallback_health_fails():
     """HanlpFeatureExtractor 无降级：HanLP 不可用时 health() 抛异常。"""
     fe = _make_hanlp_extractor_no_fallback()
     if not HANLP_AVAILABLE:
-        from common.errors import HealthCheckError
+        from jiuwen_memory.common.errors import HealthCheckError
 
         try:
             fe.health()
@@ -355,7 +355,7 @@ def test_hanlp_no_fallback_extract_empty_result():
 
 def test_hanlp_factory_registration():
     """HanlpFeatureExtractor 通过工厂注册。"""
-    from common.feature_extractor.feature_extractor_impl import FeatureExtractorProducer
+    from jiuwen_memory.common.feature_extractor.feature_extractor_impl import FeatureExtractorProducer
 
     assert "hanlp" in FeatureExtractorProducer.known()
 
@@ -392,7 +392,7 @@ def test_hanlp_health_ok_when_available():
 
 def test_producer_all_known():
     """FeatureExtractorProducer 已注册 keyword + spacy + hanlp。"""
-    from common.feature_extractor.feature_extractor_impl import FeatureExtractorProducer
+    from jiuwen_memory.common.feature_extractor.feature_extractor_impl import FeatureExtractorProducer
 
     known = FeatureExtractorProducer.known()
     assert "keyword" in known
@@ -402,11 +402,11 @@ def test_producer_all_known():
 
 def test_producer_create_keyword():
     """FeatureExtractorProducer.create("keyword") 返回 KeywordFeatureExtractor。"""
-    from common.feature_extractor.feature_extractor_impl import FeatureExtractorProducer
-    from common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (
+    from jiuwen_memory.common.feature_extractor.feature_extractor_impl import FeatureExtractorProducer
+    from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (
         KeywordFeatureExtractor,
     )
-    from config import AssemblyContext
+    from jiuwen_memory.config import AssemblyContext
 
     fe = FeatureExtractorProducer.build("keyword", {}, AssemblyContext())
     assert isinstance(fe, KeywordFeatureExtractor)
@@ -414,11 +414,11 @@ def test_producer_create_keyword():
 
 def test_producer_create_spacy():
     """FeatureExtractorProducer.create("spacy") 返回 SpacyFeatureExtractor。"""
-    from common.feature_extractor.feature_extractor_impl import FeatureExtractorProducer
-    from common.feature_extractor.feature_extractor_impl.spacy_feature_extractor import (
+    from jiuwen_memory.common.feature_extractor.feature_extractor_impl import FeatureExtractorProducer
+    from jiuwen_memory.common.feature_extractor.feature_extractor_impl.spacy_feature_extractor import (
         SpacyFeatureExtractor,
     )
-    from config import AssemblyContext
+    from jiuwen_memory.config import AssemblyContext
 
     fe = FeatureExtractorProducer.build("spacy", {}, AssemblyContext())
     assert isinstance(fe, SpacyFeatureExtractor)
@@ -426,11 +426,11 @@ def test_producer_create_spacy():
 
 def test_producer_create_hanlp():
     """FeatureExtractorProducer.create("hanlp") 返回 HanlpFeatureExtractor。"""
-    from common.feature_extractor.feature_extractor_impl import FeatureExtractorProducer
-    from common.feature_extractor.feature_extractor_impl.hanlp_feature_extractor import (
+    from jiuwen_memory.common.feature_extractor.feature_extractor_impl import FeatureExtractorProducer
+    from jiuwen_memory.common.feature_extractor.feature_extractor_impl.hanlp_feature_extractor import (
         HanlpFeatureExtractor,
     )
-    from config import AssemblyContext
+    from jiuwen_memory.config import AssemblyContext
 
     fe = FeatureExtractorProducer.build("hanlp", {}, AssemblyContext())
     assert isinstance(fe, HanlpFeatureExtractor)

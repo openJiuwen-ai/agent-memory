@@ -9,21 +9,21 @@ from datetime import datetime, timezone
 
 import pytest
 
-from common.bootstrap import register_plugins
-from common.factory.factory import Factory
-from common.type_def import (
+from jiuwen_memory.common.bootstrap import register_plugins
+from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.type_def import (
     T_INVALID_OPEN,
     Scope,
 )
-from config.context import AssemblyContext
-from construction.bootstrap import register_constructors
-from construction.index_builder import IndexBuilderProducer
-from construction.index_builder_impl.fulltext_index_builder import FulltextIndexBuilder
-from construction.index_builder_impl.hybrid_index_builder import HybridIndexBuilder
-from construction.index_builder_impl.vector_index_builder import VectorIndexBuilder
-from storage.bootstrap import register_backends
-from storage.storage_impl.composite_storage import CompositeStorage
-from storage.types import TextQuery, VectorQuery
+from jiuwen_memory.config.context import AssemblyContext
+from jiuwen_memory.construction.bootstrap import register_constructors
+from jiuwen_memory.construction.index_builder import IndexBuilderProducer
+from jiuwen_memory.construction.index_builder_impl.fulltext_index_builder import FulltextIndexBuilder
+from jiuwen_memory.construction.index_builder_impl.hybrid_index_builder import HybridIndexBuilder
+from jiuwen_memory.construction.index_builder_impl.vector_index_builder import VectorIndexBuilder
+from jiuwen_memory.storage.bootstrap import register_backends
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.types import TextQuery, VectorQuery
 from tests.unit.construction.fixtures import (
     create_test_plugins,
     create_test_stores,
@@ -452,7 +452,7 @@ def test_empty_content_unit():
     builder.build(units)
 
     # vector 无写入（空 content → Chunker 返回空 list → 无 chunk tracking）
-    from common.errors import NotFoundError
+    from jiuwen_memory.common.errors import NotFoundError
     try:
         stores["kv"].get(scope, "/index/chunks/u1")
         assert False, "chunk tracking should not exist for empty content"
@@ -595,7 +595,7 @@ def test_fulltext_factory_skips_layers_when_disabled():
 
 def test_build_layers_runs_even_when_no_content_chunks():
     """content 全空（无 chunk）但 layers.l0/l1 非空 → 分层 store 仍应有 L0/L1 record。"""
-    from common.type_def import ContentLayers, MemoryUnit, Modality, Segment
+    from jiuwen_memory.common.type_def import ContentLayers, MemoryUnit, Modality, Segment
     from tests.unit.construction.fixtures import MemoryVectorStore
 
     scope = Scope(org="test", user="alice")

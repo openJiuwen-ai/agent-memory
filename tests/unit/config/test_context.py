@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from common.errors import ValidationError
-from config.context import AssemblyContext, ComponentConfig, RawSpec
+from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.config.context import AssemblyContext, ComponentConfig, RawSpec
 
 
 def test_parse_shorthand_and_inline():

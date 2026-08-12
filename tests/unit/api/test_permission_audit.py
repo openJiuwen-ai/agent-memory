@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from api.memory_api_impl import build_kernel
-from common.errors import PermissionDeniedError, ValidationError
-from common.type_def import Scope
-from config import Config
-from construction import EvolveMode
+from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
+from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.config import Config
+from jiuwen_memory.construction import EvolveMode
 
 pytestmark = pytest.mark.unit
 

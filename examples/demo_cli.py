@@ -122,14 +122,14 @@ def _aux_components() -> None:
     """直接演示不在默认装配里的可选/辅助组件（src 路径已由 client.py 接好）。"""
     from datetime import datetime, timezone
 
-    from common.embedder.embedder_impl.hashing_embedder import HashingEmbedder
-    from common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
-    from common.type_def import FilterClause, FilterOp, Scope
-    from ingest.source_impl.text_source import TextSource
-    from storage.fs_impl.in_memory_fs_store import InMemoryFSStore
-    from storage.fusion_impl.in_memory_fusion_store import InMemoryFusionStore
-    from storage.kv_impl.sqlite_kv_store import SQLiteKVStore
-    from storage.types import FusionQuery, FusionRecord
+    from jiuwen_memory.common.embedder.embedder_impl.hashing_embedder import HashingEmbedder
+    from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
+    from jiuwen_memory.common.type_def import FilterClause, FilterOp, Scope
+    from jiuwen_memory.ingest.source_impl.text_source import TextSource
+    from jiuwen_memory.storage.fs_impl.in_memory_fs_store import InMemoryFSStore
+    from jiuwen_memory.storage.fusion_impl.in_memory_fusion_store import InMemoryFusionStore
+    from jiuwen_memory.storage.kv_impl.sqlite_kv_store import SQLiteKVStore
+    from jiuwen_memory.storage.types import FusionQuery, FusionRecord
 
     sc = Scope(org="default", user="alice")
     tok = WhitespaceTokenizer()

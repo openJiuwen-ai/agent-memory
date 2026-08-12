@@ -17,7 +17,7 @@ import json
 import os
 from typing import List, Optional, Sequence
 
-from common.type_def import Scope
+from jiuwen_memory.common.type_def import Scope
 from evaluation.core.types import Dataset, MemorySeed, QueryCase
 
 _DEFAULT_SCOPE = Scope(org="eval", user="u1")

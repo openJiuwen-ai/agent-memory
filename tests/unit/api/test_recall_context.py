@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from api.memory_api_impl import assemble
-from common.type_def import EXT_MAX_TOKENS, Context, Modality, Scope
-from config import Config
-from retrieval.types import DisclosureLevel
+from jiuwen_memory.api.memory_api_impl import assemble
+from jiuwen_memory.common.type_def import EXT_MAX_TOKENS, Context, Modality, Scope
+from jiuwen_memory.config import Config
+from jiuwen_memory.retrieval.types import DisclosureLevel
 
 # discloser 用结构化披露（自适应分级）
 _CONFIG = {"discloser": {"default": "structured"}}

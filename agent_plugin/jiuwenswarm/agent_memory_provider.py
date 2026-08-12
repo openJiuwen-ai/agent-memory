@@ -29,8 +29,8 @@ from typing import Any
 
 from openjiuwen.core.memory.external.provider import MemoryProvider
 
-from common.type_def import MEMORY_KEY_PREFIX
-from common.type_def.memory_codec import loads
+from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX
+from jiuwen_memory.common.type_def.memory_codec import loads
 
 # [本地修改 2026-06-29] provider 通过 PYTHONPATH 以顶层模块 agent_memory_provider 被 import，
 # __name__="agent_memory_provider" 不在 jiuwenswarm/openjiuwen 的 logger 树下，INFO 默认不落文件。
@@ -485,7 +485,7 @@ def _build_client(base_url: str, config_path: str | None) -> _AgentMemoryClient:
 
 def _semantic_filter():
     """tier == semantic 的过滤子句（进程内 search 用）。"""
-    from api import FilterClause, FilterOp
+    from jiuwen_memory.api import FilterClause, FilterOp
 
     return FilterClause(field="tier", op=FilterOp.EQ, value="semantic")
 
@@ -630,8 +630,8 @@ class _InProcessClient(_AgentMemoryClient):
     """
 
     def __init__(self, config_path: str | None) -> None:
-        from api import build_kernel
-        from config.config import Config
+        from jiuwen_memory.api import build_kernel
+        from jiuwen_memory.config.config import Config
 
         config = None
         if config_path:
@@ -649,7 +649,7 @@ class _InProcessClient(_AgentMemoryClient):
     @staticmethod
     def _to_api_scope(scope):
         """_Scope（轻量）→ api.Scope（进程内 AgentMemory API 期望的类型）。"""
-        from api import Scope as _ApiScope
+        from jiuwen_memory.api import Scope as _ApiScope
         return _ApiScope(
             org=getattr(scope, "org", ""),
             user=getattr(scope, "user", ""),
@@ -658,7 +658,7 @@ class _InProcessClient(_AgentMemoryClient):
         )
 
     async def add(self, content, scope, *, tags=None, metadata=None) -> str | None:
-        from api import Modality
+        from jiuwen_memory.api import Modality
         api_scope = self._to_api_scope(scope)
 
         units = await self._api.add_async(
@@ -671,7 +671,7 @@ class _InProcessClient(_AgentMemoryClient):
     async def search(
         self, query, scope, *, top_k=10
     ) -> list[dict[str, Any]]:
-        from api import Context, DisclosureLevel
+        from jiuwen_memory.api import Context, DisclosureLevel
 
         api_scope = self._to_api_scope(scope)
         # 进程内模式经 search 的 tier filter 下推过滤 semantic。
@@ -707,7 +707,7 @@ class _InProcessClient(_AgentMemoryClient):
         return items
 
     async def evolve_extract(self, scope) -> None:
-        from api import Channel, EvolveMode
+        from jiuwen_memory.api import Channel, EvolveMode
         api_scope = self._to_api_scope(scope)
 
         # evolve 是同步+asyncio.run，必须 to_thread

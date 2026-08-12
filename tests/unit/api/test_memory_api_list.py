@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from api.memory_api_impl import build_kernel
-from common.errors import PermissionDeniedError, ValidationError
-from common.type_def import (
+from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
+from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterOp,
     MemoryUnit,
@@ -13,8 +13,8 @@ from common.type_def import (
     Temporal,
     messages_key,
 )
-from common.type_def.memory_codec import dumps
-from config import Config
+from jiuwen_memory.common.type_def.memory_codec import dumps
+from jiuwen_memory.config import Config
 
 pytestmark = pytest.mark.unit
 

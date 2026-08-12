@@ -18,9 +18,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # 依赖 + 本地包安装：用 BuildKit pip 缓存挂载。项目用 editable 安装，site-packages
-# 只保留指向 /app/src 的链接；compose 挂载 src 后会被同一个链接读取。
+# 只保留指向 /app/jiuwen_memory 的链接；compose 挂载 jiuwen_memory 后会被同一个链接读取。
 COPY pyproject.toml ./
-COPY src ./src
+COPY jiuwen_memory ./jiuwen_memory
 # 先从 PyTorch CPU 索引装 CPU 版 torch（x86_64/aarch64 均有 +cpu wheel），避免默认拉 CUDA
 # 版 torch 连带 nvidia(~2.9G)+triton(~652M) 等 GPU 库——本服务为纯 CPU 推理，这些用不上。
 # torch 满足后，下面 .[embed,deploy] 不会再装 CUDA 变体。CPU 约束只落在部署镜像：pyproject

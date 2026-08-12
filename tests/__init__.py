@@ -1,7 +1,7 @@
-"""检索层测试包。
+"""测试包引导。
 
-零外部依赖（标准库 unittest）。导入本包时把 ``src/`` 挂上 sys.path，使
-``python3 -m unittest discover -s tests`` 可直接跑，无需安装或设 PYTHONPATH。
+导入本包时把仓库根挂上 sys.path，使 ``python3 -m unittest discover -s tests``
+可直接跑（与 ``pytest`` 的 ``pythonpath = ["."]`` 一致）。
 """
 
 from __future__ import annotations
@@ -9,6 +9,6 @@ from __future__ import annotations
 import os
 import sys
 
-_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
-if _SRC not in sys.path:
-    sys.path.append(_SRC)
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.append(_ROOT)

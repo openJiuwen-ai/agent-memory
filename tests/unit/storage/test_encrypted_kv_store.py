@@ -4,14 +4,14 @@ import json
 
 import pytest
 
-from common.errors import BackendError, NotFoundError, ValidationError
-from common.factory.factory import Factory
-from common.security import SecurityContext, SecurityProducer, SecurityProvider
-from common.type_def import MESSAGES_KEY_PREFIX, Scope, memory_key
-from config.context import AssemblyContext
-from storage.kv import KvProducer
-from storage.kv_impl.encrypted_kv_store import EncryptedKVStore
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.common.errors import BackendError, NotFoundError, ValidationError
+from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.security import SecurityContext, SecurityProducer, SecurityProvider
+from jiuwen_memory.common.type_def import MESSAGES_KEY_PREFIX, Scope, memory_key
+from jiuwen_memory.config.context import AssemblyContext
+from jiuwen_memory.storage.kv import KvProducer
+from jiuwen_memory.storage.kv_impl.encrypted_kv_store import EncryptedKVStore
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 
 _PREFIX = b"fake1:"
 

@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import pytest
 
-from common.bootstrap import register_plugins
-from common.factory.factory import Factory
-from config import AssemblyContext
-from config.defaults import default_context
-from retrieval.bootstrap import register_operators
-from retrieval.retriever import RetrieverProducer
-from retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
-from storage.bootstrap import register_backends
-from storage.storage import StorageProducer
-from storage.storage_impl import CompositeStorage
+from jiuwen_memory.common.bootstrap import register_plugins
+from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.config import AssemblyContext
+from jiuwen_memory.config.defaults import default_context
+from jiuwen_memory.retrieval.bootstrap import register_operators
+from jiuwen_memory.retrieval.retriever import RetrieverProducer
+from jiuwen_memory.retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
+from jiuwen_memory.storage.bootstrap import register_backends
+from jiuwen_memory.storage.storage import StorageProducer
+from jiuwen_memory.storage.storage_impl import CompositeStorage
 
 pytestmark = pytest.mark.unit
 

@@ -18,13 +18,13 @@ from typing import Any
 
 import pytest
 
-from common.errors import BackendError, ValidationError
-from config import AssemblyContext
-from storage._support import as_bool, read_ssl_config
-from storage.bootstrap import register_backends
-from storage.fulltext import FulltextProducer
-from storage.kv import KvProducer
-from storage.vector import VectorProducer
+from jiuwen_memory.common.errors import BackendError, ValidationError
+from jiuwen_memory.config import AssemblyContext
+from jiuwen_memory.storage._support import as_bool, read_ssl_config
+from jiuwen_memory.storage.bootstrap import register_backends
+from jiuwen_memory.storage.fulltext import FulltextProducer
+from jiuwen_memory.storage.kv import KvProducer
+from jiuwen_memory.storage.vector import VectorProducer
 
 pytestmark = pytest.mark.unit
 

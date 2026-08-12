@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import os
 import stat
 
 import pytest
 
-import common.security.security_impl
-from common.errors import BackendError, ValidationError
-from common.factory.factory import Factory
-from common.security import (
+import jiuwen_memory.common.security.security_impl
+from jiuwen_memory.common.errors import BackendError, ValidationError
+from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.security import (
     AuthenticationFailedError,
     CorruptedCiphertextError,
     InvalidMagicError,
@@ -15,13 +16,13 @@ from common.security import (
     SecurityContext,
     SecurityProducer,
 )
-from common.security.security_impl.local_envelope_security_provider import (
+from jiuwen_memory.common.security.security_impl.local_envelope_security_provider import (
     ENVELOPE_MAGIC,
     LocalEnvelopeSecurityProvider,
     LocalKeyProvider,
 )
-from common.type_def import Scope
-from config import AssemblyContext
+from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.config import AssemblyContext
 
 _KEY_HEX = "11" * 32
 
@@ -63,7 +64,8 @@ def test_local_security_provider_encrypts_enc1_and_round_trips(tmp_path) -> None
     assert ciphertext != second_ciphertext
     assert provider.decrypt(ciphertext, context=context, aad=b"kv:a") == b"secret payload"
     assert key_file.exists()
-    assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
 
 
 def test_local_security_provider_supports_plaintext_compatibility() -> None:
@@ -105,7 +107,7 @@ def test_local_security_provider_rejects_corrupted_envelope() -> None:
 
 
 def test_security_producer_builds_local_provider_from_config(tmp_path) -> None:
-    assert common.security.security_impl.SecurityProducer is SecurityProducer
+    assert jiuwen_memory.common.security.security_impl.SecurityProducer is SecurityProducer
     Factory.reset_all()
     key_file = tmp_path / "configured.key"
     ctx = AssemblyContext.from_dict(

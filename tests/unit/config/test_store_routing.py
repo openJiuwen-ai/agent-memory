@@ -7,10 +7,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from common.errors import ValidationError
-from common.type_def import Scope
-from config.config_source_impl.dict_config_source import DictConfigSource
-from config.routing import (
+from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
+from jiuwen_memory.config.routing import (
     ActiveRouter,
     RoutingFSStore,
     RoutingFulltextStore,
@@ -19,8 +19,8 @@ from config.routing import (
     RoutingKVStore,
     RoutingVectorStore,
 )
-from storage.base import StoreType
-from storage.types import (
+from jiuwen_memory.storage.base import StoreType
+from jiuwen_memory.storage.types import (
     Document,
     FusionQuery,
     FusionRecord,

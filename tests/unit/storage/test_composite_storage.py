@@ -6,15 +6,15 @@ from typing import Any
 
 import pytest
 
-from common.errors import PermissionDeniedError, UnsupportedStorageCapabilityError, ValidationError
-from common.type_def import MemoryUnit, Scope, Segment, memory_key
-from config import AssemblyContext
-from storage.bootstrap import register_backends
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.security import StorageAccessContext, StorageAction, StorageSecurity
-from storage.storage import StorageCapability, StorageProducer
-from storage.storage_impl import CompositeStorage
-from storage.types import KVMemoryListResult
+from jiuwen_memory.common.errors import PermissionDeniedError, UnsupportedStorageCapabilityError, ValidationError
+from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment, memory_key
+from jiuwen_memory.config import AssemblyContext
+from jiuwen_memory.storage.bootstrap import register_backends
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.security import StorageAccessContext, StorageAction, StorageSecurity
+from jiuwen_memory.storage.storage import StorageCapability, StorageProducer
+from jiuwen_memory.storage.storage_impl import CompositeStorage
+from jiuwen_memory.storage.types import KVMemoryListResult
 
 pytestmark = pytest.mark.unit
 

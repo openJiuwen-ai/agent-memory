@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import pytest
 
-from common.bootstrap import register_plugins
-from common.factory.factory import Factory
-from config.context import AssemblyContext
-from construction.bootstrap import register_constructors
-from construction.index_builder import IndexBuilderProducer
-from retrieval.bootstrap import register_operators
-from retrieval.recaller import RecallerProducer
-from storage.bootstrap import register_backends
+from jiuwen_memory.common.bootstrap import register_plugins
+from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.config.context import AssemblyContext
+from jiuwen_memory.construction.bootstrap import register_constructors
+from jiuwen_memory.construction.index_builder import IndexBuilderProducer
+from jiuwen_memory.retrieval.bootstrap import register_operators
+from jiuwen_memory.retrieval.recaller import RecallerProducer
+from jiuwen_memory.storage.bootstrap import register_backends
 
 
 @pytest.fixture(autouse=True)

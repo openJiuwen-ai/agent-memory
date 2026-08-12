@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Sequence, Set
 
-from common.type_def import FilterClause, Scope
+from jiuwen_memory.common.type_def import FilterClause, Scope
 
 
 @dataclass

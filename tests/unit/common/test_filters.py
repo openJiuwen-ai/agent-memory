@@ -6,8 +6,8 @@ from typing import Callable
 
 import pytest
 
-from common.errors import ValidationError
-from common.type_def import (
+from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterGroup,
     FilterLogic,

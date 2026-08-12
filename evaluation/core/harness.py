@@ -13,9 +13,9 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from api.memory_api_impl import build_kernel
-from common.type_def import Context
-from config.config import Config
+from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.common.type_def import Context
+from jiuwen_memory.config.config import Config
 
 from .types import CaseOutcome, Dataset, MemorySeed, QueryCase
 

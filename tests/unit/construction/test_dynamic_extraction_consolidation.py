@@ -6,9 +6,9 @@ from xml.etree import ElementTree
 
 import pytest
 
-from common.base import PluginType
-from common.llm.base import LLM
-from common.type_def import (
+from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.llm.base import LLM
+from jiuwen_memory.common.type_def import (
     MemoryTier,
     MemoryUnit,
     Modality,
@@ -16,26 +16,26 @@ from common.type_def import (
     Segment,
     memory_key,
 )
-from common.type_def.memory_codec import dumps, loads
-from config.config import Config
-from construction.base import OperatorType
-from construction.evolver import EvolveMode, EvolverProducer
-from construction.evolver_impl.dynamic_evolver import DynamicEvolver
-from construction.extractor import Extractor
-from construction.extractor_impl.dynamic_llm_extractor import DynamicLLMExtractor
-from construction.extractor_impl.llm_extractor import (
+from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.config.config import Config
+from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.evolver import EvolveMode, EvolverProducer
+from jiuwen_memory.construction.evolver_impl.dynamic_evolver import DynamicEvolver
+from jiuwen_memory.construction.extractor import Extractor
+from jiuwen_memory.construction.extractor_impl.dynamic_llm_extractor import DynamicLLMExtractor
+from jiuwen_memory.construction.extractor_impl.llm_extractor import (
     InvalidExtractionCandidateError,
     InvalidExtractionJSONError,
 )
-from construction.prompt_registry import (
+from jiuwen_memory.construction.prompt_registry import (
     PHASE_CONSOLIDATE,
     PHASE_EXTRACT,
     PHASE_REFLECT,
     PromptRegistry,
 )
-from storage.graph_impl.in_memory_graph_store import InMemoryGraphStore
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.graph_impl.in_memory_graph_store import InMemoryGraphStore
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 
 
 _TEST_KEY_HEX = "00" * 32
@@ -496,7 +496,7 @@ def test_dynamic_evolver_procedural_falls_back_to_parent():
 
 @pytest.mark.unit
 def test_default_engine_writes_through_without_consolidator():
-    from api.memory_api_impl import build_kernel
+    from jiuwen_memory.api.memory_api_impl import build_kernel
 
     kernel = build_kernel(
         config=Config.from_dict(
@@ -524,7 +524,7 @@ def test_default_engine_writes_through_without_consolidator():
 
 @pytest.mark.unit
 def test_evolver_producer_registers_dynamic():
-    from construction import bootstrap
+    from jiuwen_memory.construction import bootstrap
 
     bootstrap.register_constructors()
 

@@ -36,7 +36,7 @@ shapes argv ergonomics.
 `server.py`、`handler.py`、`profiles.py` 是共享目录 `bootstrap/core/` 下的
 flat import root。如果 `bootstrap/` 排在 `bootstrap/core/` 前面，`import server`
 就可能被同名模块遮蔽。因此 CLI 仍以脚本方式启动（不用 `python3 -m`），并由
-`scripts/run-cli.sh` 把 `bootstrap/core` 与 `src` 前置到 `PYTHONPATH`，确保
+`scripts/run-cli.sh` 把仓库根与 `bootstrap/core` 前置到 `PYTHONPATH`，确保
 `import server` 解析到 `core/server.py`（所有 surface 复用的共享应用核），同时
 避免在运行时把路径强插到 `sys.path` 最前。
 

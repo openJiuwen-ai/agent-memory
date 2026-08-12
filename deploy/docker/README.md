@@ -172,7 +172,7 @@ volumes:
 ```
 
 配置是**两级命名空间**且会**合并覆盖内置默认**（纯内存离线栈），故配置文件只需写「与默认不同」
-的部分（详见 [online/config.yml](online/config.yml)、[local/config.yml](local/config.yml) 与 `src/config`）。
+的部分（详见 [online/config.yml](online/config.yml)、[local/config.yml](local/config.yml) 与 `jiuwen_memory/config`）。
 
 ### 新增并启用一个配置文件
 

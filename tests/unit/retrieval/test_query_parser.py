@@ -6,10 +6,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
-from common.type_def.filter import FilterClause, FilterOp
-from retrieval.query_parser_impl.simple_query_parser import SimpleQueryParser
-from retrieval.types import RecallChannel, RetrievalQuery
+from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
+from jiuwen_memory.common.type_def.filter import FilterClause, FilterOp
+from jiuwen_memory.retrieval.query_parser_impl.simple_query_parser import SimpleQueryParser
+from jiuwen_memory.retrieval.types import RecallChannel, RetrievalQuery
 
 pytestmark = pytest.mark.unit
 

@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import pytest
 
-from common.base import PluginType
-from common.embedder.base import Embedder
-from common.errors import ValidationError
-from common.factory.factory import Factory
-from config import Config
-from config.active import resolve_active_name, resolve_bound_value
-from config.config_source import ConfigSource, ConfigSourceProducer
-from config.defaults import default_context
-from config.project import project_assembly_values
-from config.routing import ActiveRouter, RoutingEmbedder
-from construction.prompt_registry import PHASE_EXTRACT, PromptRegistry
+from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.embedder.base import Embedder
+from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.config import Config
+from jiuwen_memory.config.active import resolve_active_name, resolve_bound_value
+from jiuwen_memory.config.config_source import ConfigSource, ConfigSourceProducer
+from jiuwen_memory.config.defaults import default_context
+from jiuwen_memory.config.project import project_assembly_values
+from jiuwen_memory.config.routing import ActiveRouter, RoutingEmbedder
+from jiuwen_memory.construction.prompt_registry import PHASE_EXTRACT, PromptRegistry
 
 
 def test_project_assembly_values_includes_globals_and_prompts() -> None:
@@ -27,7 +27,7 @@ def test_project_assembly_values_includes_globals_and_prompts() -> None:
 
 
 def test_yaml_defaults_config_source_fetch_roundtrip() -> None:
-    from config.config_source_impl.yaml_defaults_config_source import YamlDefaultsConfigSource
+    from jiuwen_memory.config.config_source_impl.yaml_defaults_config_source import YamlDefaultsConfigSource
 
     src = YamlDefaultsConfigSource({"globals.rerank_enabled": "true", "llm.model": "gpt-4o"})
     assert src.fetch("globals.rerank_enabled") == "true"
@@ -37,7 +37,7 @@ def test_yaml_defaults_config_source_fetch_roundtrip() -> None:
 
 
 def test_dict_config_source_supports_runtime_update() -> None:
-    from config.config_source_impl.dict_config_source import DictConfigSource
+    from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
 
     src = DictConfigSource({"embedder.active": "main"})
     assert src.fetch("embedder.active") == "main"
@@ -46,9 +46,9 @@ def test_dict_config_source_supports_runtime_update() -> None:
 
 
 def test_overlay_prefers_primary_then_fallback() -> None:
-    from config.config_source_impl.dict_config_source import DictConfigSource
-    from config.config_source_impl.overlay_config_source import OverlayConfigSource
-    from config.config_source_impl.yaml_defaults_config_source import YamlDefaultsConfigSource
+    from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
+    from jiuwen_memory.config.config_source_impl.overlay_config_source import OverlayConfigSource
+    from jiuwen_memory.config.config_source_impl.yaml_defaults_config_source import YamlDefaultsConfigSource
 
     base = YamlDefaultsConfigSource({"llm.model": "from-yaml-defaults", "llm.api_key": "k1"})
     overlay = DictConfigSource({"llm.model": "from-overlay"})
@@ -58,7 +58,7 @@ def test_overlay_prefers_primary_then_fallback() -> None:
 
 
 def test_resolve_active_name_rejects_unknown_instance() -> None:
-    from config.config_source_impl.dict_config_source import DictConfigSource
+    from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
 
     src = DictConfigSource({"embedder.active": "ghost"})
     with pytest.raises(ValidationError, match="ghost"):
@@ -71,7 +71,7 @@ def test_resolve_active_name_rejects_unknown_instance() -> None:
 
 
 def test_resolve_active_name_uses_default_when_unset() -> None:
-    from config.config_source_impl.dict_config_source import DictConfigSource
+    from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
 
     src = DictConfigSource({})
     assert (
@@ -86,7 +86,7 @@ def test_resolve_active_name_uses_default_when_unset() -> None:
 
 
 def test_resolve_bound_value_prefers_live_then_fallback() -> None:
-    from config.config_source_impl.dict_config_source import DictConfigSource
+    from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
 
     src = DictConfigSource({"llm.model": "gpt-4o"})
     assert (
@@ -119,7 +119,7 @@ class _StubEmbedder(Embedder):
 
 
 def test_routing_embedder_switches_by_active() -> None:
-    from config.config_source_impl.dict_config_source import DictConfigSource
+    from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
 
     cfg = DictConfigSource({"embedder.active": "hashing"})
     router = ActiveRouter(
@@ -135,7 +135,7 @@ def test_routing_embedder_switches_by_active() -> None:
 
 
 def test_prompt_registry_prefers_config_source() -> None:
-    from config.config_source_impl.dict_config_source import DictConfigSource
+    from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
 
     cfg = DictConfigSource({"prompts.extract.episodic": "来自 ConfigSource"})
     registry = PromptRegistry(
@@ -148,8 +148,8 @@ def test_prompt_registry_prefers_config_source() -> None:
 
 
 def test_build_kernel_exposes_default_config_source() -> None:
-    from api.memory_api_impl.assembly import build_kernel
-    from config.config_source_impl.yaml_defaults_config_source import YamlDefaultsConfigSource
+    from jiuwen_memory.api.memory_api_impl.assembly import build_kernel
+    from jiuwen_memory.config.config_source_impl.yaml_defaults_config_source import YamlDefaultsConfigSource
 
     Factory.reset_all()
     kernel = build_kernel()
@@ -161,7 +161,7 @@ def test_build_kernel_exposes_default_config_source() -> None:
 
 
 def test_build_kernel_can_inject_dict_config_source() -> None:
-    from api.memory_api_impl.assembly import build_kernel
+    from jiuwen_memory.api.memory_api_impl.assembly import build_kernel
 
     Factory.reset_all()
     cfg = Config.from_dict(
@@ -184,7 +184,7 @@ def test_build_kernel_can_inject_dict_config_source() -> None:
 
 
 def test_config_source_producer_registers_yaml_defaults_and_dict() -> None:
-    from config.config_source_impl import register_config_sources
+    from jiuwen_memory.config.config_source_impl import register_config_sources
 
     register_config_sources()
     assert "yaml_defaults" in ConfigSourceProducer.known()

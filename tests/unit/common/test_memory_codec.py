@@ -7,10 +7,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from common.type_def import MemoryUnit, Segment
-from common.type_def.memory import LifecycleState, MemoryTier, Modality
-from common.type_def.memory_codec import dumps, loads
-from common.type_def.scope import Scope
+from jiuwen_memory.common.type_def import MemoryUnit, Segment
+from jiuwen_memory.common.type_def.memory import LifecycleState, MemoryTier, Modality
+from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.common.type_def.scope import Scope
 
 pytestmark = pytest.mark.unit
 

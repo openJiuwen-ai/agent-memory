@@ -10,11 +10,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from common.type_def import Scope
-from config.config_source_impl.dict_config_source import DictConfigSource
-from storage.fs_impl.local_fs import LocalFSStore
-from storage.kv_impl.redis_kv import RedisKVStore
-from storage.kv_impl.sqlite_kv_store import SQLiteKVStore
+from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
+from jiuwen_memory.storage.fs_impl.local_fs import LocalFSStore
+from jiuwen_memory.storage.kv_impl.redis_kv import RedisKVStore
+from jiuwen_memory.storage.kv_impl.sqlite_kv_store import SQLiteKVStore
 
 pytestmark = pytest.mark.unit
 
@@ -96,7 +96,7 @@ def test_local_fs_late_binds_root(tmp_path: Path) -> None:
 
 
 def test_milvus_late_binds_uri(monkeypatch: pytest.MonkeyPatch) -> None:
-    from storage.vector_impl.milvus_vector import MilvusVectorStore
+    from jiuwen_memory.storage.vector_impl.milvus_vector import MilvusVectorStore
 
     cfg = DictConfigSource({"vector_store.uri": "http://milvus-a:19530"})
     store = MilvusVectorStore(
@@ -130,7 +130,7 @@ def test_milvus_late_binds_uri(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_elasticsearch_late_binds_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
-    from storage.fulltext_impl.elasticsearch_fulltext import ElasticsearchFulltextStore
+    from jiuwen_memory.storage.fulltext_impl.elasticsearch_fulltext import ElasticsearchFulltextStore
 
     cfg = DictConfigSource({"fulltext_store.hosts": "http://es-a:9200"})
     store = ElasticsearchFulltextStore(hosts="http://fallback:9200", config_source=cfg)
@@ -166,7 +166,7 @@ def test_elasticsearch_late_binds_hosts(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_pg_store_base_late_binds_dsn(monkeypatch: pytest.MonkeyPatch) -> None:
-    from storage._pg import PgStoreBase
+    from jiuwen_memory.storage._pg import PgStoreBase
 
     class _Tiny(PgStoreBase):
         def _ensure_schema(self, pool) -> None:
@@ -224,7 +224,7 @@ def test_pg_store_base_late_binds_dsn(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_nano_graph_late_binds_working_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from storage.graph_impl import nano_graphrag_graph as mod
+    from jiuwen_memory.storage.graph_impl import nano_graphrag_graph as mod
 
     dir_a = tmp_path / "ga"
     dir_b = tmp_path / "gb"
@@ -250,7 +250,7 @@ def test_nano_graph_late_binds_working_dir(tmp_path: Path, monkeypatch: pytest.M
 def test_fusion_late_binds_uri_and_working_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from storage.fusion_impl.milvus_graph_fusion import MilvusGraphFusionStore
+    from jiuwen_memory.storage.fusion_impl.milvus_graph_fusion import MilvusGraphFusionStore
 
     cfg = DictConfigSource(
         {
@@ -281,7 +281,7 @@ def test_fusion_late_binds_uri_and_working_dir(
             self.working_dir = global_config["working_dir"]
 
     monkeypatch.setattr(
-        "storage.fusion_impl.milvus_graph_fusion._networkx_storage_cls",
+        "jiuwen_memory.storage.fusion_impl.milvus_graph_fusion._networkx_storage_cls",
         lambda: _FakeStorage,
     )
 

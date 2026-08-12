@@ -11,15 +11,15 @@ import json
 import math
 import re
 
-from common.audit.base import AuditLogger
-from common.chunker.base import Chunker
-from common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
-from common.embedder.base import Embedder
-from common.errors import ConflictError, NotFoundError
-from common.feature_extractor.base import FeatureExtractor
-from common.llm.base import LLM
-from common.tokenizer.base import Tokenizer
-from common.type_def import (
+from jiuwen_memory.common.audit.base import AuditLogger
+from jiuwen_memory.common.chunker.base import Chunker
+from jiuwen_memory.common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
+from jiuwen_memory.common.embedder.base import Embedder
+from jiuwen_memory.common.errors import ConflictError, NotFoundError
+from jiuwen_memory.common.feature_extractor.base import FeatureExtractor
+from jiuwen_memory.common.llm.base import LLM
+from jiuwen_memory.common.tokenizer.base import Tokenizer
+from jiuwen_memory.common.type_def import (
     ChatMessage,
     Chunk,
     Entity,
@@ -32,12 +32,12 @@ from common.type_def import (
     Segment,
     Temporal,
 )
-from common.type_def.audit import AuditEvent
-from storage.base import StoreType
-from storage.fulltext import FulltextStore
-from storage.kv import KVStore
-from storage.types import Document, ScoredID, TextQuery, VectorQuery, VectorRecord
-from storage.vector import VectorStore
+from jiuwen_memory.common.type_def.audit import AuditEvent
+from jiuwen_memory.storage.base import StoreType
+from jiuwen_memory.storage.fulltext import FulltextStore
+from jiuwen_memory.storage.kv import KVStore
+from jiuwen_memory.storage.types import Document, ScoredID, TextQuery, VectorQuery, VectorRecord
+from jiuwen_memory.storage.vector import VectorStore
 
 # ---------------------------------------------------------------------------
 # In-Memory Stores
@@ -296,7 +296,7 @@ class MockLLM(LLM):
         self._call_count = 0
 
     def plugin_type(self):
-        from common.base import PluginType
+        from jiuwen_memory.common.base import PluginType
 
         return PluginType.LLM
 
@@ -313,7 +313,7 @@ class SimpleTokenizer(Tokenizer):
     """SimpleTokenizer：按空格和标点分词。"""
 
     def plugin_type(self):
-        from common.base import PluginType
+        from jiuwen_memory.common.base import PluginType
 
         return PluginType.TOKENIZER
 
@@ -333,7 +333,7 @@ class FixedSizeChunker(Chunker):
         self._overlap = overlap
 
     def plugin_type(self):
-        from common.base import PluginType
+        from jiuwen_memory.common.base import PluginType
 
         return PluginType.CHUNKER
 
@@ -386,7 +386,7 @@ class HashEmbedder(Embedder):
         self._dim = dim
 
     def plugin_type(self):
-        from common.base import PluginType
+        from jiuwen_memory.common.base import PluginType
 
         return PluginType.EMBEDDER
 
@@ -419,7 +419,7 @@ class RuleFeatureExtractor(FeatureExtractor):
     """RuleFeatureExtractor：正则关键词 + 简单实体检测。"""
 
     def plugin_type(self):
-        from common.base import PluginType
+        from jiuwen_memory.common.base import PluginType
 
         return PluginType.FEATURE_EXTRACTOR
 
