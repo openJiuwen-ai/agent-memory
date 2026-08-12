@@ -73,6 +73,7 @@ def dumps(unit: MemoryUnit) -> bytes:
                 _dt(unit.temporal.t_ingest),
                 _dt(unit.temporal.t_valid),
                 _dt(unit.temporal.t_invalid),
+                _dt(unit.temporal.t_message),
             ],
             "provenance": list(unit.provenance),
             "supersedes": unit.supersedes,
@@ -102,7 +103,7 @@ def loads(raw: bytes) -> MemoryUnit | None:
     version = payload.get("_v", 1)  # 据此分流破坏性变更
     raw_scope = list(payload.get("scope") or [])
     padded_scope = (raw_scope + ["", "", "", "", ""])[:5]
-    tm = (list(payload.get("temporal") or []) + [None, None, None, None])[:4]
+    tm = (list(payload.get("temporal") or []) + [None, None, None, None, None])[:5]
     if version >= 2:
         segments = []
         for segment_payload in payload.get("segments") or []:
@@ -150,7 +151,11 @@ def loads(raw: bytes) -> MemoryUnit | None:
         segments=segments,
         source_ref=payload.get("source_ref", ""),
         temporal=Temporal(
-            t_event=_pt(tm[0]), t_ingest=_pt(tm[1]), t_valid=_pt(tm[2]), t_invalid=_pt(tm[3])
+            t_event=_pt(tm[0]),
+            t_ingest=_pt(tm[1]),
+            t_valid=_pt(tm[2]),
+            t_invalid=_pt(tm[3]),
+            t_message=_pt(tm[4]) if len(tm) > 4 else None,
         ),
         provenance=list(payload.get("provenance") or []),
         supersedes=payload.get("supersedes", ""),

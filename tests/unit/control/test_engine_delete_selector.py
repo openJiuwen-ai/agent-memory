@@ -67,7 +67,7 @@ def test_delete_selector_matches_before_event_time() -> None:
     assert old.id in affected
     assert new.id not in affected
     assert all(
-        kernel.api.get(unit_id, scope, identity=actor).temporal.t_event < cutoff
+        kernel.api.get(unit_id, scope, identity=actor).temporal.t_message < cutoff
         for unit_id in affected
     )
     assert all(
@@ -123,7 +123,7 @@ def test_delete_selector_combines_conditions_with_and() -> None:
         for unit_id in affected
     )
     assert all(
-        kernel.api.get(unit_id, scope, identity=actor).temporal.t_event < cutoff
+        kernel.api.get(unit_id, scope, identity=actor).temporal.t_message < cutoff
         for unit_id in affected
     )
     assert all(

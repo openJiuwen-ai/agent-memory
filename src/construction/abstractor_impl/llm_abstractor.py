@@ -613,6 +613,7 @@ class LLMAbstractor(Abstractor):
                 temporal=Temporal(
                     t_event=primary_source.temporal.t_event,
                     t_ingest=datetime.now(timezone.utc),
+                    t_message=primary_source.temporal.t_message,
                 ),
                 provenance=valid_source_ids,
                 tags=c.keywords,

@@ -63,12 +63,13 @@ class DedupDecision(str, Enum):
 
 @dataclass
 class Temporal:
-    """双时间模型：发生/摄入/有效期，支持时间点回溯（as_of）。"""
+    """双时间模型：消息/事件/摄入/有效期，支持时间点回溯（as_of）。"""
 
-    t_event: datetime | None = None  # 事件时间：现实中发生/成立的时间
-    t_ingest: datetime | None = None  # 摄入时间：系统记下它的时间
+    t_event: datetime | None = None  # 事件时间：内容描述的事件发生时间
+    t_ingest: datetime | None = None  # 摄入时间：系统记录时间
     t_valid: datetime | None = None  # 生效时间：系统从何时起认为它为真
     t_invalid: datetime | None = None  # 失效时间：不再认为为真；None 表示仍有效
+    t_message: datetime | None = None  # 消息时间：消息/对话发生时间
 
 
 @dataclass
@@ -157,6 +158,7 @@ RESERVED_METADATA_KEYS = frozenset(
         "t_event",
         "t_valid",
         "t_invalid",
+        "t_message",
         "seq",
     }
 )

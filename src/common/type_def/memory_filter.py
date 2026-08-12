@@ -30,6 +30,8 @@ def _field_value(unit: MemoryUnit, field: str):
     if field == "t_invalid":
         value = _epoch_ms(unit.temporal.t_invalid)
         return T_INVALID_OPEN if value is None else value
+    if field == "t_message":
+        return _epoch_ms(unit.temporal.t_message)
     return unit.metadata.get(filter_field_metadata_key(field))
 
 

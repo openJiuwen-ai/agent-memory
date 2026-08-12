@@ -115,4 +115,4 @@ def test_reserved_keys_cover_index_projection_fields() -> None:
     assert {"unit_id", "tier", "lifecycle", "tags", "source", "content_layer"} <= (
         RESERVED_METADATA_KEYS
     )
-    assert {"t_event", "t_valid", "t_invalid", "seq"} <= RESERVED_METADATA_KEYS
+    assert {"t_event", "t_valid", "t_invalid", "t_message", "seq"} <= RESERVED_METADATA_KEYS
