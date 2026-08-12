@@ -9,7 +9,7 @@
 
 ```
 src/
-├── api/            # 接口层：统一 Core API（write/recall/get/update/delete/evolve/admin），形态无关
+├── api/            # 接口层：统一 Core API（add/search/get/update/delete/evolve/admin），形态无关
 ├── common/         # 跨层共享插件（Tokenizer/Chunker/Embedder/FeatureExtractor/LLM/Normalizer/Reranker）+ type_def/
 ├── config/         # 配置加载/合并 + ConfigSource 晚绑定（见 S08）
 ├── construction/   # 构建层：落盘 + 多形式索引构建 + 自演进闭环

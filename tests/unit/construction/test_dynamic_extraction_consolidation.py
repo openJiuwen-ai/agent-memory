@@ -509,8 +509,8 @@ def test_default_engine_writes_through_without_consolidator():
     )
     scope = Scope(org="org", user="user")
 
-    first = kernel.api.write("完全相同的记忆", scope, identity=scope)
-    second = kernel.api.write("完全相同的记忆", scope, identity=scope)
+    first = kernel.api.add("完全相同的记忆", scope, identity=scope)
+    second = kernel.api.add("完全相同的记忆", scope, identity=scope)
 
     # 默认直写路径：两次都落盘，不去重（去重交给显式 evolve）
     assert len(first) == 1

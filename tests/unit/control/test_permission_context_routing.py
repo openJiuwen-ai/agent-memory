@@ -79,21 +79,21 @@ def test_policy_name_is_not_accepted_as_route_value() -> None:
     outsider, victim = Scope(org="evil", user="x"), Scope(org="acme", user="owner")
 
     # episodic 是显式声明的宽松路由，standard 只是它背后的 policy 名
-    api.write("ok", victim, identity=outsider, metadata={"memory_type": "episodic"})
+    api.add("ok", victim, identity=outsider, metadata={"memory_type": "episodic"})
 
     with pytest.raises(PermissionDeniedError):
-        api.write("secret", victim, identity=outsider, metadata={"memory_type": "standard"})
+        api.add("secret", victim, identity=outsider, metadata={"memory_type": "standard"})
 
 
-def test_write_permission_routes_by_memory_type() -> None:
+def test_add_permission_routes_by_memory_type() -> None:
     api = build_kernel(config=_routing_config()).api
     actor = Scope(org="acme", user="reader")
     target = Scope(org="acme", user="owner")
 
-    api.write("general note", target, identity=actor, metadata={"memory_type": "episodic"})
+    api.add("general note", target, identity=actor, metadata={"memory_type": "episodic"})
 
     with pytest.raises(PermissionDeniedError):
-        api.write(
+        api.add(
             "repo must use pytest",
             target,
             identity=actor,
@@ -101,13 +101,13 @@ def test_write_permission_routes_by_memory_type() -> None:
         )
 
 
-def test_recall_permission_routes_by_metadata_memory_type_filter() -> None:
+def test_search_permission_routes_by_metadata_memory_type_filter() -> None:
     api = build_kernel(config=_routing_config()).api
     actor = Scope(org="acme", user="reader")
     target = Scope(org="acme", user="owner")
 
     with pytest.raises(PermissionDeniedError):
-        api.recall(
+        api.search(
             "repo",
             Context(scope=target),
             identity=actor,
@@ -115,13 +115,13 @@ def test_recall_permission_routes_by_metadata_memory_type_filter() -> None:
         )
 
 
-def test_recall_permission_routes_to_lenient_policy_for_declared_type() -> None:
+def test_search_permission_routes_to_lenient_policy_for_declared_type() -> None:
     """显式声明为宽松策略的类型照常放行（routing 只选 delegate，不额外加码）。"""
     api = build_kernel(config=_routing_config()).api
     actor = Scope(org="acme", user="reader")
     target = Scope(org="acme", user="owner")
 
-    api.recall(
+    api.search(
         "general",
         Context(scope=target),
         identity=actor,
@@ -133,7 +133,7 @@ def test_recall_permission_routes_to_lenient_policy_for_declared_type() -> None:
 
 
 def _seed(api, owner: Scope) -> None:
-    api.write("repo must use pytest", owner, identity=owner, metadata={"memory_type": "coding"})
+    api.add("repo must use pytest", owner, identity=owner, metadata={"memory_type": "coding"})
 
 
 def test_escalation_1_unknown_extensions_value_falls_to_strict_fallback() -> None:
@@ -143,7 +143,7 @@ def test_escalation_1_unknown_extensions_value_falls_to_strict_fallback() -> Non
     _seed(api, owner)
 
     with pytest.raises(PermissionDeniedError):
-        api.recall(
+        api.search(
             "repo must use pytest",
             Context(scope=owner, extensions={"memory_type": "unknown"}),
             identity=reader,
@@ -158,7 +158,7 @@ def test_escalation_2_missing_route_value_falls_to_strict_fallback() -> None:
     _seed(api, owner)
 
     with pytest.raises(PermissionDeniedError):
-        api.recall("repo must use pytest", Context(scope=owner), identity=reader)
+        api.search("repo must use pytest", Context(scope=owner), identity=reader)
 
 
 def test_escalation_3_ambiguous_or_filter_falls_to_strict_fallback() -> None:
@@ -168,7 +168,7 @@ def test_escalation_3_ambiguous_or_filter_falls_to_strict_fallback() -> None:
     _seed(api, owner)
 
     with pytest.raises(PermissionDeniedError):
-        api.recall(
+        api.search(
             "repo must use pytest",
             Context(scope=owner),
             identity=reader,
@@ -191,7 +191,7 @@ def test_escalation_4_lenient_route_cannot_read_protected_data() -> None:
     owner, reader = Scope(org="acme", user="owner"), Scope(org="acme", user="reader")
     _seed(api, owner)
 
-    result = api.recall(
+    result = api.search(
         "repo must use pytest",
         Context(scope=owner, extensions={"memory_type": "episodic"}),
         identity=reader,
@@ -206,9 +206,9 @@ def test_route_value_injection_still_returns_own_type_data() -> None:
     """回注谓词不得误伤：按 episodic 授权时，episodic 的数据必须照常可读。"""
     api = build_kernel(config=_routing_config()).api
     owner, reader = Scope(org="acme", user="owner"), Scope(org="acme", user="reader")
-    api.write("lunch plan tomorrow", owner, identity=owner, metadata={"memory_type": "episodic"})
+    api.add("lunch plan tomorrow", owner, identity=owner, metadata={"memory_type": "episodic"})
 
-    result = api.recall(
+    result = api.search(
         "lunch plan tomorrow",
         Context(scope=owner, extensions={"memory_type": "episodic"}),
         identity=reader,
@@ -229,14 +229,14 @@ def test_unresolved_route_keeps_owner_base_rule() -> None:
     api = build_kernel(config=_routing_config()).api
     owner = Scope(org="acme", user="owner")
 
-    api.recall("general", Context(scope=owner), identity=owner)  # 未限定 memory_type
+    api.search("general", Context(scope=owner), identity=owner)  # 未限定 memory_type
 
 
 def test_unresolved_route_keeps_root_base_rule() -> None:
     api = build_kernel(config=_routing_config()).api
     owner, root = Scope(org="acme", user="owner"), Scope()
 
-    api.recall("general", Context(scope=owner), identity=root)
+    api.search("general", Context(scope=owner), identity=root)
 
 
 # -- 已有 unit 的操作按真源元数据鉴权 ------------------------------------------ #
@@ -246,7 +246,7 @@ def test_get_permission_uses_stored_memory_type_context() -> None:
     api = build_kernel(config=_routing_config()).api
     owner = Scope(org="acme", user="owner")
     reader = Scope(org="acme", user="reader")
-    unit = api.write(
+    unit = api.add(
         "repo must use pytest",
         owner,
         identity=owner,
@@ -261,7 +261,7 @@ def test_delete_permission_checks_each_matched_unit_context() -> None:
     api = build_kernel(config=_routing_config()).api
     owner = Scope(org="acme", user="owner")
     reader = Scope(org="acme", user="reader")
-    unit = api.write(
+    unit = api.add(
         "repo must use pytest",
         owner,
         identity=owner,

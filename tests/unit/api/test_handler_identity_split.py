@@ -24,10 +24,10 @@ handler = importlib.import_module("handler")
 
 class _RecordingApi:
     def __init__(self) -> None:
-        self.write_calls = []
-        self.recall_calls = []
+        self.add_calls = []
+        self.search_calls = []
 
-    def write(
+    def add(
         self,
         content,
         scope,
@@ -38,11 +38,11 @@ class _RecordingApi:
         assets=None,
         metadata=None,
     ):
-        self.write_calls.append({"scope": scope, "identity": identity})
+        self.add_calls.append({"scope": scope, "identity": identity})
         return [handler.MemoryUnit(id="unit-1", scope=scope, segments=[Segment(content=content)])]
 
-    def recall(self, query, context, *, identity, filters=None, **options):
-        self.recall_calls.append(
+    def search(self, query, context, *, identity, filters=None, **options):
+        self.search_calls.append(
             {
                 "query": query,
                 "context": context,
@@ -64,7 +64,7 @@ def _dispatch_add(payload: dict) -> dict:
     status, body = handler.dispatch(srv, "add", {"content": "hello", **payload})
 
     assert status == 200, body
-    return srv.api.write_calls[0]
+    return srv.api.add_calls[0]
 
 
 def test_actor_scope_and_target_scope_match_when_actor_fields_are_omitted() -> None:
@@ -113,7 +113,7 @@ def test_search_forwards_filter_dsl_to_api_boundary() -> None:
     )
 
     assert status == 200, body
-    assert srv.api.recall_calls[0]["filters"] == filters
+    assert srv.api.search_calls[0]["filters"] == filters
 
 
 def test_actor_space_override_can_differ_from_target_space() -> None:

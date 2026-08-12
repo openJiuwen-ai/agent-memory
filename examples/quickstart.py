@@ -1,4 +1,4 @@
-"""最小功能集端到端演示：write → recall → get（+ update / 治理 / admin）。
+"""最小功能集端到端演示：add → search → get（+ update / 治理 / admin）。
 
 运行：``PYTHONPATH=src python3 examples/quickstart.py``
 
@@ -42,7 +42,7 @@ def main() -> None:
     scope = Scope(org="acme", user="alice", agent="assistant", session="s1")
     actor = scope  # 本人操作自己的 scope
 
-    # 1) write ---------------------------------------------------------------
+    # 1) add -----------------------------------------------------------------
     facts = [
         "Alice 喜欢在早上喝美式咖啡，不加糖。",
         "项目 agent-memory 的目标是给 AI agent 提供独立记忆子系统。",
@@ -50,13 +50,13 @@ def main() -> None:
     ]
     written_ids = []
     for f in facts:
-        units = api.write(f, scope, identity=actor, tags=["demo"])
+        units = api.add(f, scope, identity=actor, tags=["demo"])
         written_ids.append(units[0].id)
-        logger.info("[write] %s  <%s...>", units[0].id[:8], f[:24])
+        logger.info("[add] %s  <%s...>", units[0].id[:8], f[:24])
 
-    # 2) recall --------------------------------------------------------------
-    logger.info("\n[recall] query='咖啡 早上'")
-    res = api.recall("咖啡 早上", Context(scope), identity=actor, top_k=3, with_trajectory=True)
+    # 2) search --------------------------------------------------------------
+    logger.info("\n[search] query='咖啡 早上'")
+    res = api.search("咖啡 早上", Context(scope), identity=actor, top_k=3, with_trajectory=True)
     for item in res.items:
         logger.info("  score=%.3f  %s  %s", item.score, item.unit_id[:8], item.content)
     logger.info("  trajectory: %s", [(s.stage, s.candidate_count) for s in res.trajectory])
@@ -84,22 +84,22 @@ def main() -> None:
 
     # 4.5) evolve（构建层闭环：抽取低抽象事实 / 升华画像 / 遗忘被取代的旧版） --
     q = "咖啡 项目 评审"
-    before = len(api.recall(q, Context(scope), identity=actor, top_k=20).items)
+    before = len(api.search(q, Context(scope), identity=actor, top_k=20).items)
     api.evolve(scope, EvolveMode.EXTRACT, identity=actor)  # Extractor：派生事实(记血缘)
     api.evolve(scope, EvolveMode.CONSOLIDATE, identity=actor)  # Abstractor：升华 CORE 画像
     api.evolve(scope, EvolveMode.ASSOCIATE, identity=actor)  # Associator：发现关联
     api.evolve(scope, EvolveMode.FORGET, identity=actor)  # 清理 superseded 旧版
-    after = len(api.recall(q, Context(scope), identity=actor, top_k=20).items)
+    after = len(api.search(q, Context(scope), identity=actor, top_k=20).items)
     logger.info(
         "\n[evolve] 召回命中 %s -> %s（extract 派生 + consolidate 画像入索引）", before, after
     )
-    prof = api.recall("画像综合", Context(scope), identity=actor, top_k=1).items
+    prof = api.search("画像综合", Context(scope), identity=actor, top_k=1).items
     if prof:
         logger.info("  consolidate 画像 %s: <%s...>", prof[0].unit_id[:8], prof[0].content[:36])
 
     # 5) admin + audit -------------------------------------------------------
     logger.info("\n[admin] policies: %s", api.admin_all(identity=actor))
-    logger.info("[audit] write 事件数: %s", len(api.audit({"action": "write"}, identity=actor)))
+    logger.info("[audit] add 事件数: %s", len(api.audit({"action": "add"}, identity=actor)))
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 
 单次 :meth:`retrieve` 驱动：查询理解 → 并行多路召回（按配置启用的
 通道）→ 融合 + 重排 → 渐进式披露 → 返回结果与检索轨迹。
-记忆接口层的 ``recall`` 映射到本接口；QueryParser / Recaller / Fuser /
+记忆接口层的 ``search`` 映射到本接口；QueryParser / Recaller / Fuser /
 Discloser 由装配注入。
 """
 
@@ -21,7 +21,8 @@ class RetrieverProducer(Factory):
     """Retriever 的注册式工厂（与契约同处接口层，消费方只依赖接口即可取实例）。
 
     ``name`` 即实现名。各实现在 ``retriever_impl`` 下以 ``@RetrieverProducer.register("<名>")``
-    自注册——注册发生在 import 实现模块时，由 :func:`retrieval.bootstrap.register_operators` 统一触发。
+    自注册——注册发生在 import 实现模块时，
+    由 :func:`retrieval.bootstrap.register_operators` 统一触发。
     """
 
     TOP_NAME = "retriever"

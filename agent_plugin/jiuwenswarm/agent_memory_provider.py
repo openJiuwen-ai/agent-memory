@@ -15,7 +15,7 @@
 - 双模式：``base_url`` 非空 → HTTP（路径 B，全 async，推荐生产）；否则进程内 ``assemble()``（路径 A）
 - ``prefetch`` 返 Markdown 字符串（Rail 包 ``<memory-context>`` 注入）
 - ``handle_tool_call`` 返 JSON 字符串（Rail ``json.loads``）
-- ``sync_turn`` 只 ``write`` 存原文，EXTRACT 推迟到 ``on_session_end`` 抑制每轮风暴（§4.1.2）
+- ``sync_turn`` 只 ``add`` 存原文，EXTRACT 推迟到 ``on_session_end`` 抑制每轮风暴（§4.1.2）
 - 隔离轴：Rail 的 ``user_id``/``agent_id``/``session_id``/``scope_id`` → AgentMemory ``Scope``
 """
 
@@ -234,9 +234,9 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 conclusion = args.get("conclusion", "")
                 if not conclusion:
                     return json.dumps({"error": "Missing required parameter: conclusion"})
-                # 原样存（对齐 mem0 infer=False）；write_async 会自动触发 background
+                # 原样存（对齐 mem0 infer=False）；add_async 会自动触发 background
                 # EXTRACT，但默认占位空转（§4.1.1），需配 extractor:llm 才真抽取。
-                await self._client.write(conclusion, scope, tags=["conclude"])
+                await self._client.add(conclusion, scope, tags=["conclude"])
                 logger.info("[AgentMemoryMemoryProvider] agent_memory_conclude stored=%r", conclusion[:300])
                 return json.dumps({"result": "Fact stored."})
 
@@ -244,18 +244,18 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 content = args.get("content", "")
                 if not content:
                     return json.dumps({"error": "Missing required parameter: content"})
-                # 过程记忆：经 write(procedural=true) 触发 engine 的 procedural 分支——
+                # 过程记忆：经 add(procedural=true) 触发 engine 的 procedural 分支——
                 # 原文不落 KV，evolver 让 extractor 把本轮汇总成 1 条 PROCEDURAL 执行历史，
                 # 落 /memory/ 建索引；不走去重、不收集 context（见 F02「过程记忆抽取」）。
                 # 需配 extractor:llm 才真汇总（默认 keyword 降级为原文原样存 1 条 PROCEDURAL）。
-                item_id = await self._client.write(
+                item_id = await self._client.add(
                     content, scope, metadata={"procedural": "true"}
                 )
                 logger.info(
                     "[AgentMemoryMemoryProvider] agent_memory_procedural summarized=%r item_id=%s",
                     content[:300], item_id,
                 )
-                # write 返回 None：extractor 产空（LLM 返回不可解析/未产出候选）→ 未持久化任何记忆。
+                # add 返回 None：extractor 产空（LLM 返回不可解析/未产出候选）→ 未持久化任何记忆。
                 # 不可报成功（false success）——evolver 吞掉 LLM 失败返回空 EvolveResult，
                 # engine/handler 返回 item_id=None，需如实告知调用方。content 已在上文校验非空。
                 if not item_id:
@@ -346,7 +346,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
     ) -> None:
         """存本轮对话原文并**同步抽取事实**（对齐 mem0 ``add(infer=True)``）。
 
-        传 ``metadata={"infer": "true"}`` 给 AgentMemory ``write``：hot path 同步调
+        传 ``metadata={"infer": "true"}`` 给 AgentMemory ``add``：hot path 同步调
         Extractor 从 ``user: ...\\nassistant: ...`` 抽取派生事实并建索引，**原文
         落 KV 真源但不建索引**，且**不再提交 background EXTRACT**（已同步抽取，
         避免每轮全量重扫+逐条 LLM 的 EXTRACT 风暴，§4.1.2）。故 ``on_session_end``
@@ -360,17 +360,17 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             return
         content = f"user: {user_msg}\nassistant: {assistant_msg}"
         logger.info(
-            "[AgentMemoryMemoryProvider] sync_turn write(infer=true) scope=%s content_len=%d",
+            "[AgentMemoryMemoryProvider] sync_turn add(infer=true) scope=%s content_len=%d",
             self._scope(), len(content),
         )
         try:
-            await self._client.write(
+            await self._client.add(
                 content, self._scope(),
                 tags=["conversation"], metadata={"infer": "true"},
             )
-            logger.info("[AgentMemoryMemoryProvider] sync_turn write(infer=true) done")
+            logger.info("[AgentMemoryMemoryProvider] sync_turn add(infer=true) done")
         except Exception as exc:
-            logger.warning("[AgentMemoryMemoryProvider] sync_turn write failed: %s", exc)
+            logger.warning("[AgentMemoryMemoryProvider] sync_turn add failed: %s", exc)
 
     # -- MemoryProvider: 静态提示词 + 生命周期（非抽象，有默认） -------------- #
 
@@ -448,7 +448,7 @@ class _Scope:
 class _AgentMemoryClient:
     """AgentMemory 记忆操作的 async 客户端协议。"""
 
-    async def write(
+    async def add(
         self,
         content: str,
         scope,
@@ -484,7 +484,7 @@ def _build_client(base_url: str, config_path: str | None) -> _AgentMemoryClient:
 
 
 def _semantic_filter():
-    """tier == semantic 的过滤子句（进程内 recall 用）。"""
+    """tier == semantic 的过滤子句（进程内 search 用）。"""
     from api import FilterClause, FilterOp
 
     return FilterClause(field="tier", op=FilterOp.EQ, value="semantic")
@@ -508,7 +508,7 @@ class _HttpClient(_AgentMemoryClient):
     def __init__(self, base_url: str) -> None:
         import httpx
 
-        # write 触发 AgentMemory 的 background EXTRACT（含 LLM 抽取 + dedup，可能 60-90s），
+        # add 触发 AgentMemory 的 background EXTRACT（含 LLM 抽取 + dedup，可能 60-90s），
         # 故 add 用长超时；search/read 用短超时。用 httpx.Timeout 分操作设置。
         self._http = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -533,7 +533,7 @@ class _HttpClient(_AgentMemoryClient):
                 f"non-JSON response from {path} (status {r.status_code}): {r.text[:200]}"
             ) from exc
 
-    async def write(self, content, scope, *, tags=None, metadata=None) -> str | None:
+    async def add(self, content, scope, *, tags=None, metadata=None) -> str | None:
         payload = self._scope_payload(scope) | {
             "content": content,
             "tags": tags or [],
@@ -615,18 +615,18 @@ class _HttpClient(_AgentMemoryClient):
 
 
 # --------------------------------------------------------------------------- #
-# 进程内客户端（路径 A —— 低延迟，但 recall/evolve 是同步，须 to_thread 包）
+# 进程内客户端（路径 A —— 低延迟，但 search/evolve 是同步，须 to_thread 包）
 # --------------------------------------------------------------------------- #
 
 
 class _InProcessClient(_AgentMemoryClient):
     """直接持有 ``LocalMemoryAPI`` 的进程内客户端。
 
-    注意（§4.6）：``MemoryAPI`` 的 ``recall``/``get``/``update``/``delete``/``evolve``
+    注意（§4.6）：``MemoryAPI`` 的 ``search``/``get``/``update``/``delete``/``evolve``
     是同步方法（内部 ``asyncio.run`` 桥接），**不能在已有事件循环里直接调**
     （会抛 ``RuntimeError: cannot be called from a running event loop``）。
     故用 ``asyncio.to_thread`` 包同步方法到线程执行。唯一可直接 ``await`` 的是
-    ``write_async``。
+    ``add_async``。
     """
 
     def __init__(self, config_path: str | None) -> None:
@@ -657,11 +657,11 @@ class _InProcessClient(_AgentMemoryClient):
             session=getattr(scope, "session", ""),
         )
 
-    async def write(self, content, scope, *, tags=None, metadata=None) -> str | None:
+    async def add(self, content, scope, *, tags=None, metadata=None) -> str | None:
         from api import Modality
         api_scope = self._to_api_scope(scope)
 
-        units = await self._api.write_async(
+        units = await self._api.add_async(
             content, api_scope,
             source=Modality.TEXT, identity=api_scope,
             tags=tags, metadata=metadata,
@@ -674,10 +674,10 @@ class _InProcessClient(_AgentMemoryClient):
         from api import Context, DisclosureLevel
 
         api_scope = self._to_api_scope(scope)
-        # 进程内模式经 recall 的 tier filter 下推过滤 semantic。
+        # 进程内模式经 search 的 tier filter 下推过滤 semantic。
         filters = [_semantic_filter()]
         result = await asyncio.to_thread(
-            self._api.recall,
+            self._api.search,
             query,
             Context(scope=api_scope),
             identity=api_scope,

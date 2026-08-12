@@ -26,17 +26,17 @@ def _api():
 
 
 @pytest.mark.parametrize("key", ["lifecycle", "tier", "source", "tags", "unit_id"])
-def test_write_rejects_reserved_metadata_key(key: str) -> None:
+def test_add_rejects_reserved_metadata_key(key: str) -> None:
     api = _api()
 
     with pytest.raises(ValidationError):
-        api.write(_TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR, metadata={key: "custom"})
+        api.add(_TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR, metadata={key: "custom"})
 
 
-def test_write_allows_normal_metadata() -> None:
+def test_add_allows_normal_metadata() -> None:
     api = _api()
 
-    units = api.write(
+    units = api.add(
         _TEXT,
         _SCOPE,
         source=Modality.TEXT,
@@ -49,14 +49,14 @@ def test_write_allows_normal_metadata() -> None:
 
 def test_update_rejects_reserved_metadata_key() -> None:
     api = _api()
-    unit = api.write(_TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR)[0]
+    unit = api.add(_TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR)[0]
 
     with pytest.raises(ValidationError):
         api.update(unit.id, _SCOPE, MemoryPatch(metadata={"lifecycle": "custom"}), identity=_ACTOR)
 
 
-def test_write_preserves_scalar_types_end_to_end() -> None:
-    """经完整写入路径（api.write → engine → RawPayload → Ingestor）后类型不被改写。
+def test_add_preserves_scalar_types_end_to_end() -> None:
+    """经完整写入路径（api.add → engine → RawPayload → Ingestor）后类型不被改写。
 
     回归护栏：engine.write 曾对整个 metadata 做 ``{k: str(v)}``，把数值/布尔拍成
     字符串——索引因此建成 keyword，range 退化为字典序（"10" < "9"），而这一层
@@ -64,7 +64,7 @@ def test_write_preserves_scalar_types_end_to_end() -> None:
     """
     api = _api()
 
-    units = api.write(
+    units = api.add(
         _TEXT,
         _SCOPE,
         source=Modality.TEXT,
@@ -79,11 +79,11 @@ def test_write_preserves_scalar_types_end_to_end() -> None:
     assert meta["project"] == "alpha"
 
 
-def test_write_switch_accepts_native_bool() -> None:
+def test_add_switch_accepts_native_bool() -> None:
     """调用级开关按字符串判定，传 Python True 与 "true" 等效。"""
     api = _api()
 
-    units = api.write(
+    units = api.add(
         _TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR, metadata={"procedural": True}
     )
 
@@ -91,19 +91,19 @@ def test_write_switch_accepts_native_bool() -> None:
 
 
 @pytest.mark.parametrize("value", [{"nested": "dict"}, [1, 2, 3], ["mixed", 1]])
-def test_write_rejects_non_scalar_metadata(value) -> None:
+def test_add_rejects_non_scalar_metadata(value) -> None:
     """嵌套 dict / 非字符串数组在三个后端语义不一，入口挡住。"""
     api = _api()
 
     with pytest.raises(ValidationError):
-        api.write(_TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR, metadata={"x": value})
+        api.add(_TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR, metadata={"x": value})
 
 
-def test_write_allows_string_array_metadata() -> None:
+def test_add_allows_string_array_metadata() -> None:
     """字符串数组是例外：有明确的成员包含语义（json_contains / term）。"""
     api = _api()
 
-    units = api.write(
+    units = api.add(
         _TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR, metadata={"langs": ["py", "go"]}
     )
 

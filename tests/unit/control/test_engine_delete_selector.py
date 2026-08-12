@@ -15,8 +15,8 @@ def test_delete_selector_matches_tags_within_scope() -> None:
     scope = Scope(org="acme", user="u1", agent="a1", session="s1")
     actor = scope
     kernel = build_kernel()
-    stale = kernel.api.write("old temporary note", scope, identity=actor, tags=["temp"])[0]
-    keep = kernel.api.write("fresh durable note", scope, identity=actor, tags=["durable"])[0]
+    stale = kernel.api.add("old temporary note", scope, identity=actor, tags=["temp"])[0]
+    keep = kernel.api.add("fresh durable note", scope, identity=actor, tags=["durable"])[0]
 
     affected = kernel.api.delete(
         DeleteSelector(scope=scope, tags=["temp"], mode=DeleteMode.ARCHIVE),
@@ -41,13 +41,13 @@ def test_delete_selector_matches_before_event_time() -> None:
     scope = Scope(org="acme", user="u1", agent="a1", session="s1")
     actor = scope
     kernel = build_kernel()
-    old = kernel.api.write(
+    old = kernel.api.add(
         "old event",
         scope,
         identity=actor,
         occurred_at=datetime(2026, 6, 17, 9, 0, tzinfo=timezone.utc),
     )[0]
-    new = kernel.api.write(
+    new = kernel.api.add(
         "new event",
         scope,
         identity=actor,
@@ -82,21 +82,21 @@ def test_delete_selector_combines_conditions_with_and() -> None:
     scope = Scope(org="acme", user="u1", agent="a1", session="s1")
     actor = scope
     kernel = build_kernel()
-    matching = kernel.api.write(
+    matching = kernel.api.add(
         "old temp",
         scope,
         identity=actor,
         tags=["temp"],
         occurred_at=datetime(2026, 6, 17, 9, 0, tzinfo=timezone.utc),
     )[0]
-    wrong_tag = kernel.api.write(
+    wrong_tag = kernel.api.add(
         "old durable",
         scope,
         identity=actor,
         tags=["durable"],
         occurred_at=datetime(2026, 6, 17, 9, 0, tzinfo=timezone.utc),
     )[0]
-    too_new = kernel.api.write(
+    too_new = kernel.api.add(
         "new temp",
         scope,
         identity=actor,
@@ -146,7 +146,7 @@ def test_delete_downweight_updates_importance_without_changing_lifecycle() -> No
     scope = Scope(org="acme", user="u1", agent="a1", session="s1")
     actor = scope
     kernel = build_kernel()
-    unit = kernel.api.write(
+    unit = kernel.api.add(
         "lower priority",
         scope,
         identity=actor,
@@ -168,7 +168,7 @@ def test_delete_purge_removes_memory_unit_from_truth_store() -> None:
     scope = Scope(org="acme", user="u1", agent="a1", session="s1")
     actor = scope
     kernel = build_kernel()
-    unit = kernel.api.write("remove permanently", scope, identity=actor)[0]
+    unit = kernel.api.add("remove permanently", scope, identity=actor)[0]
 
     affected = kernel.api.delete(
         DeleteSelector(unit_ids=[unit.id], scope=scope, mode=DeleteMode.PURGE),

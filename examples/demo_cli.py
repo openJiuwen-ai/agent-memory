@@ -96,7 +96,7 @@ def main() -> int:
     )
 
     hr("audit — 审计留痕（按动作过滤）")
-    for action in ("write", "evolve", "update"):
+    for action in ("add", "evolve", "update"):
         logger.info("  %-7s: %s 条", action, call("audit", action=action)["count"])
 
     hr("admin — 运行时策略（PolicyManager）")

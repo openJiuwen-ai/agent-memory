@@ -25,7 +25,7 @@ class DictConfigSource(ConfigSource):
     def put(self, key: str, value: str) -> None:
         """运行时更新一个配置键（立即对后续 fetch 可见）。
 
-        供产品/配置中心侧写入；**不属于** MemoryAPI ``write``/``recall`` 业务入参路径。
+        供产品/配置中心侧写入；**不属于** MemoryAPI ``add``/``search`` 业务入参路径。
         """
         self._values[str(key)] = str(value)
 

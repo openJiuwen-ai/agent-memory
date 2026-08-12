@@ -35,7 +35,7 @@
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  A. 调用与数据接入层          CLI·Skill·SDK(Python)·HTTP/gRPC·MCP           │
 │     Access & Ingest           ＋ 多模态信息源(对话/文档/代码/工具轨迹/图像/音视频)接入│
-│  B. （记忆接口） Memory API    write(同步/异步) · recall · get · update ·     │
+│  B. （记忆接口） Memory API    add(同步/异步) · search · get · update ·       │
 │                              delete · evolve · admin（形态无关）            │
 ├──────────────────────────────────────────────────────────────────────────┤
 │  C. 记忆管理层 Manage         生命周期 · 治理(检视/编辑/审计/遗忘) · 权限 · 配置/策略 │
@@ -196,14 +196,14 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 ## 6. 记忆接口层（Memory API）
 
-所有接入形态最终映射到同一组语义。接口已落地为 `src/api/memory_api.py` 的 `MemoryAPI`（统一 Core API，形态无关）。它是**控制层的薄封装且为鉴权/审计执行点（PEP）**：数据面（write/recall/list/get/update/delete/evolve/admin）委托 `src/control/engine.py` 的 `MemoryEngine`（编排中枢），管理面查询（任务状态、治理、授权、space 管理）直达对应控制算子（Scheduler/Governor/PermissionManager/SpaceManager）。每个涉及租户数据/治理的方法都收 `scope`（目标范围 target）与 `identity`（调用方身份，**必填 keyword-only**）——本层先 `check(identity, scope, action)`、落带 identity 的入口审计，通过后才委托，下游只收已鉴权的 target scope（签名以代码为准）。Space 管理接口已由 `SpaceManager` 承接：
+所有接入形态最终映射到同一组语义。接口已落地为 `src/api/memory_api.py` 的 `MemoryAPI`（统一 Core API，形态无关）。它是**控制层的薄封装且为鉴权/审计执行点（PEP）**：数据面（add/search/list/get/update/delete/evolve/admin）委托 `src/control/engine.py` 的 `MemoryEngine`（编排中枢），管理面查询（任务状态、治理、授权、space 管理）直达对应控制算子（Scheduler/Governor/PermissionManager/SpaceManager）。每个涉及租户数据/治理的方法都收 `scope`（目标范围 target）与 `identity`（调用方身份，**必填 keyword-only**）——本层先 `check(identity, scope, action)`、落带 identity 的入口审计，通过后才委托，下游只收已鉴权的 target scope（签名以代码为准）。Space 管理接口已由 `SpaceManager` 承接：
 
 
 | 方法                                            | 语义                                              |
 | --------------------------------------------- | ----------------------------------------------- |
-| `write(content, scope, source, *, identity, assets=…, tags=…, metadata=…, occurred_at=…) -> list[MemoryUnit]` | **同步**写入记忆：`content` 文本/结构投影 + 可选 `assets` 原模态资产引用；阻塞至 hot path 完成（落盘 + 轻量索引）后返回**本次插入的记忆单元列表**（规约/切分可产生多条），重演进走 background 通道；实现上桥接引擎的异步 write，供 CLI/脚本等同步形态 |
-| `write_async(…)`（协程，签名/返回值同 `write`）   | **异步**写入记忆：直通引擎的异步 write，供事件循环/高并发接入形态（HTTP/MCP）非阻塞调用 |
-| `recall(query, context, *, identity, filters=…, as_of=…, top_k=…, disclosure=…, with_trajectory=…) -> RetrievalResult` | 混合检索召回；`context.scope` 为目标范围，`filters` 为结构化 `FilterExpr`（叶子谓词 + AND/OR/NOT 树），`as_of` **时间点回溯（valid-time）**；结果包含命中项、可选轨迹和始终可见的通道错误 |
+| `add(content, scope, source, *, identity, assets=…, tags=…, metadata=…, occurred_at=…) -> list[MemoryUnit]` | **同步**写入记忆：`content` 文本/结构投影 + 可选 `assets` 原模态资产引用；阻塞至 hot path 完成（落盘 + 轻量索引）后返回**本次插入的记忆单元列表**（规约/切分可产生多条），重演进走 background 通道；实现上桥接引擎的异步 `write`，供 CLI/脚本等同步形态 |
+| `add_async(…)`（协程，签名/返回值同 `add`）   | **异步**写入记忆：直通引擎的异步 `write`，供事件循环/高并发接入形态（HTTP/MCP）非阻塞调用 |
+| `search(query, context, *, identity, filters=…, as_of=…, top_k=…, disclosure=…, with_trajectory=…) -> RetrievalResult` | 混合检索召回；`context.scope` 为目标范围，`filters` 为结构化 `FilterExpr`（叶子谓词 + AND/OR/NOT 树），`as_of` **时间点回溯（valid-time）**；结果包含命中项、可选轨迹和始终可见的通道错误 |
 | `list(scope, *, identity, offset=0, limit=100, memory_types=None, extensions=None, filters=None) -> MemoryListResult` | 列出 scope 下已建索引记忆；支持类型/结构化过滤、自定义透传与分页，返回当前页 `items` 和分页前匹配总数 `count`；只返回 `/memory/` 真源记录 |
 | `get(unit_id, scope, *, identity, as_of=None) -> MemoryUnit`      | 按 id 读取记忆单元；`as_of` 非空时沿 `supersedes` 版本链返回当时有效版本；不存在抛 `NotFoundError` |
 | `update(unit_id, scope, patch: MemoryPatch, *, identity) -> MemoryUnit` | 修正记忆（仅非 None 字段生效）：`patch.mode` = **SUPERSEDE**（默认、非破坏式：生成新 id 版本、旧版标记 superseded、新版 `supersedes` 记链）/ **OVERWRITE**（同 id 原地覆写、旧内容仅留审计）；返回结果记忆单元 |
@@ -229,9 +229,9 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 > - **接口层 PEP 与 Storage 数据面授权是两道边界**：公开 API 仍以 `identity`（调用方）和 `scope`（目标 target）执行鉴权与入口审计，`identity` 不自动下沉。统一 Storage 另提供可选的 `StorageAccessContext`，供嵌入式直调或需要纵深防御的装配显式传入；默认 `AllowAllStorageSecurity` 不增加授权限制。两者不能互相替代，当前 API 链路也不宣称已自动传播 Storage 授权上下文。
 > - **表面 = 数据面 + 管理面**：数据面委托 `MemoryEngine`，管理面查询（job/inspect/trace/audit/grant/revoke/space 管理）直达 Scheduler/Governor/PermissionManager/SpaceManager；调用层只依赖 `src/api` 即可触达全部对外能力。
-> - **薄封装 + 引擎编排**：`MemoryAPI` 不含业务逻辑；接入/落盘/索引/检索/调度的编排全部在 `MemoryEngine`（`src/control`）。引擎内核只保留**一条异步写链路**（`async def write`），接口层的同步 `write` 由其自行桥接（如 `asyncio.run`）。
+> - **薄封装 + 引擎编排**：`MemoryAPI` 不含业务逻辑；接入/落盘/索引/检索/调度的编排全部在 `MemoryEngine`（`src/control`）。引擎内核只保留**一条异步写链路**（`async def write`），接口层的同步 `add` 由其自行桥接（如 `asyncio.run`）。
 > - 接口形态无关：不论真源是文档还是结构化、运行在端还是云，调用方语义一致。
-> - **双时间一等暴露**：`recall`/`get` 的 `as_of`（valid-time）直接消费 §3.1 的双时间模型，支持「按当时状态」的时间点查询与历史回溯，与 query 文本里解析出的事件时间（event-time）分轴（对应 §15 吸收 Zep 的落点）。
+> - **双时间一等暴露**：`search`/`get` 的 `as_of`（valid-time）直接消费 §3.1 的双时间模型，支持「按当时状态」的时间点查询与历史回溯，与 query 文本里解析出的事件时间（event-time）分轴（对应 §15 吸收 Zep 的落点）。
 > - **统一异常契约**：错误由 `common/errors`（根 `AgentMemoryError`）的类型承载——`NotFoundError`/`ConflictError`/`PermissionDeniedError`/`ValidationError`/`PolicyError`/`HealthCheckError`/`BackendError`，调用方跨后端/跨层用同一套捕获，不依赖具体实现自带异常。
 > - **控制模式**：`evolve` 与自动触发对应 §9.3 的 `agent_control / static_control / both`。
 > - **不设 `link` 接口**：记忆/实体关联不对外暴露为接口语义，由构建层 Associator 在演进（§9.3）中自动维护（`Relation` 结构供图索引内部使用）。
@@ -491,12 +491,12 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
    └─▶ 部署 Profile / 用户 YAML（装配期合并）
          └─▶ ConfigSource（可插拔来源；默认=上述合并快照，产品可换配置中心）
                └─▶ 租户/scope 级策略（org/space policy、principal_path 等）
-                     └─▶ 调用级 options（recall/write/evolve 的逐次业务参数）
+                     └─▶ 调用级 options（search/add/evolve 的逐次业务参数）
 ```
 
 - 这样既能用一个 Profile 一键起步，也能对特定 scope 或单次调用做精细化覆盖。
 - **装配拓扑**（选哪些实现类、预装哪些具名实例）在 `build_kernel` 确定；**晚绑定值**（能力开关、prompt 文本、模型名/API Key/URL、Store 连接）经 `ConfigSource.fetch` 在运行中读取。同实现多套 model/key/url/hosts **优先**走晚绑定；`*.active` 多具名实例仅用于异质实现互切。
-- 六类商用可配项的抽象与边界见 `docs/features/config/F01-config-source.md` 与 `docs/specs/S08-config.md`；**不**通过 write/recall/evolve 入参写入这些配置。
+- 六类商用可配项的抽象与边界见 `docs/features/config/F01-config-source.md` 与 `docs/specs/S08-config.md`；**不**通过 add/search/evolve 入参写入这些配置。
 
 ### 13.3 开箱即用的场景预设（Presets）
 
@@ -527,7 +527,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 **写入路径（Write）**
 
 ```
-write() → 接入/构建形成 MemoryUnit → Storage.add() 写真源
+add() → 接入/构建形成 MemoryUnit → Storage.add() 写真源
                                 ├─▶ [hot] IndexBuilder 生成投影并写 Storage 标准端口
                                 ├─▶ [background] 自演进: 提取→抽象精炼→关联→消解→重建多粒度记忆与索引
                                 └─▶ 审计日志(横切)
@@ -539,7 +539,7 @@ Construction 负责。一体化 Storage 可在内部自动建索引，但不能�
 **读取路径（Read）**
 
 ```
-recall() → 查询理解/去噪 → 空查询短路 → 合并过滤
+search() → 查询理解/去噪 → 空查询短路 → 合并过滤
          → Retriever 按 Storage 首选值执行 recall/get/Fuser 三步内核
          → Reranker → 相关性阈值 → top_k → 渐进式披露
          → items + errors + 可选 trajectory

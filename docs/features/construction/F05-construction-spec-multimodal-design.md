@@ -25,14 +25,14 @@ CLM 组成的事件级摘要。两级结果统一构建为 mem2.0 原生 `Memory
 视频请求
   -> Bootstrap 接口适配
   -> Control 创建后台任务
-  -> MemoryAPI.write()
+  -> MemoryAPI.add()
   -> Ingest 视频规约
   -> Construction 构建 CLM/ELM
   -> 原生 KVStore 与 IndexBuilder
-  -> MemoryAPI.recall()
+  -> MemoryAPI.search()
 ```
 
-后台任务只异步执行一次 `MemoryAPI.write()`。视频处理和 CLM/ELM 构建位于原生 write
+后台任务只异步执行一次 `MemoryAPI.add()`。视频处理和 CLM/ELM 构建位于原生 Engine write
 链路内部，普通文本请求不进入视频分支。
 
 ## 模块实现
@@ -64,7 +64,7 @@ submission = srv.ingest_jobs.submit(
     payload_id=payload_id,
     source_ref=uri,
     scope=scope,
-    task=lambda: srv.api.write(
+    task=lambda: srv.api.add(
         uri,
         scope,
         Modality.VIDEO,
@@ -151,7 +151,7 @@ result = self._dedup_batch(extracted)
 
 `metadata.infer=true` 时，`MemoryEngine.write()` 在 Ingest 后调用
 `evolver.evolve(units, EvolveMode.EXTRACT)`。因此一次视频提交只调用一次
-`MemoryAPI.write()`，CLM/ELM 不逐条重新进入 write。
+`MemoryAPI.add()`，CLM/ELM 不逐条重新进入 Engine write。
 
 ### 5. 存储与索引
 
@@ -172,7 +172,7 @@ IndexBuilder 建立索引。系统不新增多模态 Store，原始视频不复�
 **输入输出**：输入自然语言 query、scope 和返回数量；输出原生文本记忆、相关视频片段
 记忆和事件记忆的融合结果。用户不需要提供 `video_id`。
 
-**职责**：检索仍统一通过 `MemoryAPI.recall()`，不新增多模态检索接口。`MultimodalRetriever` 判断
+**职责**：检索仍统一通过 `MemoryAPI.search()`，不新增多模态检索接口。`MultimodalRetriever` 判断
 当前 scope 是否存在有效多模态记忆，再选择原生检索或多分支检索：
 
 - 未构建多模态记忆：只调用原生 Retriever。
@@ -182,7 +182,7 @@ IndexBuilder 建立索引。系统不新增多模态 Store，原始视频不复�
 目标链路：
 
 ```text
-MemoryAPI.recall(query, scope)
+MemoryAPI.search(query, scope)
   -> MultimodalRetriever 判断 scope 是否存在有效多模态记忆
      -> false：原生 Retriever -> top_k
      -> true：

@@ -12,7 +12,7 @@
 
 控制层已有 `PermissionManager.check(actor, target, action)`，只能表达 scope 和动作级别的权限。多记忆类型 pipeline 引入后，权限策略也需要按资源上下文区分，例如 coding 记忆要求更严格的同 owner 访问，而普通情景记忆可以使用较宽松的 grant 或 dev 策略。
 
-仅靠调用方传 `memory_type` 不够安全：write/recall 的 `memory_type` 来自请求本身，可以直接用于入口鉴权；get/update/delete 作用于已有 unit，必须以真源中保存的 metadata 为准，不能信任调用方声明。
+仅靠调用方传 `memory_type` 不够安全：add/search 的 `memory_type` 来自请求本身，可以直接用于入口鉴权；get/update/delete 作用于已有 unit，必须以真源中保存的 metadata 为准，不能信任调用方声明。
 
 ## 决策
 
@@ -32,9 +32,9 @@ def check(
 
 API 层的上下文来源：
 
-1. `write`：从入参 `metadata["memory_type"]`、`metadata["pipeline"]`、`tags` 构造；
+1. `add`：从入参 `metadata["memory_type"]`、`metadata["pipeline"]`、`tags` 构造；
    业务 metadata 在真源中保留原生类型，进入 PermissionContext 的路由值才规范为字符串。
-2. `recall`：先从规范化 `FilterExpr` 提取逻辑上强制的唯一等值，再由
+2. `search`：先从规范化 `FilterExpr` 提取逻辑上强制的唯一等值，再由
    `Context.extensions[route_key]` 的非空值覆盖。OR 多值、NOT、AND 冲突不产生路由值。
    该取值规则与执行侧 `MemoryPipeline` 一致。
 3. `list`：从入参 `memory_types` 构造；显式传多个类型时逐个 memory_type 做 READ 权限检查，全部通过后才枚举。
@@ -47,7 +47,7 @@ API 层的上下文来源：
 自行挑选审查策略。`fallback` 承接路由值缺失的请求，装配期禁止配置为
 `allow_all`，必须是最小权限策略。`grant` / `revoke` 广播给全部 delegate。
 
-对 recall，仅选对 delegate 仍不足以防越权：API 会通过
+对 search，仅选对 delegate 仍不足以防越权：API 会通过
 `PermissionManager.routing_fields()` 获取授权所依据的字段，把该路由值作为系统
 `FilterClause(EQ)` 回注 `RetrievalQuery.filters`，并与用户表达式做外层 `AND`。
 因此按 `memory_type=episodic` 获得的授权只能读取同类型数据，不能再用另一组 filters
@@ -65,8 +65,8 @@ API 层的上下文来源：
 
 新增 `tests/unit/control/test_permission_context_routing.py`：
 
-- `write` 按请求 metadata 的 `memory_type` 路由。
-- `recall` 的 extensions 与等值 filter 使用同一优先级解析，并把授权路由值回注数据过滤。
+- `add` 按请求 metadata 的 `memory_type` 路由。
+- `search` 的 extensions 与等值 filter 使用同一优先级解析，并把授权路由值回注数据过滤。
 - `list` 按请求 `memory_types` 路由，显式多类型请求逐类型鉴权。
 - 未声明、未知路由值和直接 policy 名均落最小权限 fallback。
 - `allow_all` 作为 routing fallback 在装配期失败。

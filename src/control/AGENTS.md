@@ -45,7 +45,7 @@
 4. **LifecycleManager 只做 Scope 内非破坏式标记**：`transition` / `supersede` 必须接收完整 Scope，只标记该 Scope 下的目标 id，绝不物理删除。物理删除（purge）走 engine 的 `delete` 路径 + `DeleteMode.PURGE`。
 5. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。`*_impl/` 通过 producer 工厂被外部装配消费，不被顶层接口引用。
 6. **Pipeline 只做 profile 选择**：`MemoryPipeline` 选择一组已装配的 `IndexBuilder` / `Evolver` / `Retriever` / `Classifier` 绑定，不实现抽取、巩固、索引、检索算法，不让 construction/retrieval 反向依赖 control。
-7. **PermissionContext 由可信边界构造**：write/recall/list 的请求 context 来自 API 入参；list 当前页实际 unit 与 get/update/delete 的已有 unit context 必须由 Engine 从真源元数据解析，不能信任调用方声明 memory_type。
+7. **PermissionContext 由可信边界构造**：add/search/list 的请求 context 来自 API 入参；list 当前页实际 unit 与 get/update/delete 的已有 unit context 必须由 Engine 从真源元数据解析，不能信任调用方声明 memory_type。
 8. **权限路由与数据范围绑定**：RoutingPermissionManager 只按 PermissionContext 选择
    delegate；API 必须把授权所依据的路由字段回注为系统过滤谓词。未知路由值和直接
    policy 名落最小权限 fallback，fallback 不得配置为 allow_all。

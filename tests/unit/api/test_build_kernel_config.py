@@ -74,18 +74,18 @@ def _build_deny(config) -> _DenyAllPermission:
 def test_default_assembly_allows_write() -> None:
     """无 config：内置默认 owner-only sqlite ACL，owner 写入放行、可召回。"""
     api = assemble()
-    units = api.write("hello", SCOPE, identity=SCOPE)
-    assert units and api.recall("hello", Context(SCOPE), identity=SCOPE).items
+    units = api.add("hello", SCOPE, identity=SCOPE)
+    assert units and api.search("hello", Context(SCOPE), identity=SCOPE).items
 
 
 def test_default_audit_config_uses_in_memory_sqlite() -> None:
     audit_config = default_config_dict()["audit"]["default"]
     api = assemble()
-    api.write("audit default smoke", SCOPE, identity=SCOPE)
+    api.add("audit default smoke", SCOPE, identity=SCOPE)
 
     assert audit_config == {"target": "sqlite", "params": {"db_path": ":memory:"}}
-    events = api.audit({"action": "write"}, identity=Scope())
-    assert any(event.action == "write" for event in events)
+    events = api.audit({"action": "add"}, identity=Scope())
+    assert any(event.action == "add" for event in events)
 
 
 def test_assembly_audit_fallback_matches_sqlite_default(monkeypatch) -> None:
@@ -112,7 +112,7 @@ def test_config_overrides_control_operator() -> None:
     cfg = Config.from_dict({"permission": {"default": "deny_all_test"}})
     api = assemble(config=cfg)
     with pytest.raises(PermissionDeniedError):
-        api.write("hello", SCOPE, identity=SCOPE)
+        api.add("hello", SCOPE, identity=SCOPE)
 
 
 def test_unknown_operator_target_raises() -> None:

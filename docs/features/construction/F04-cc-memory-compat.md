@@ -13,7 +13,7 @@
 
 cc_memory 是建立在统一 `MemoryAPI` 之上的结构化记忆系统。它支持把对话中的显式记忆指令转成可演进记录，把本地 Markdown 记忆目录接入 DOCUMENT 召回通道，并提供可追踪的多阶段检索评测。
 
-系统不把数据集专用字段放进通用 `RetrievalQuery`，不在 `recall` 中执行网络同步，也不改变现有 `MemoryAPI`、`Retriever`、`Recaller` 的必填参数。
+系统不把数据集专用字段放进通用 `RetrievalQuery`，不在 `search` 中执行网络同步，也不改变现有 `MemoryAPI`、`Retriever`、`Recaller` 的必填参数。
 
 ## 2. 总体架构
 
@@ -26,8 +26,8 @@ flowchart TB
     end
 
     subgraph API[统一接口层]
-        A1[MemoryAPI.write]
-        A2[MemoryAPI.recall]
+        A1[MemoryAPI.add]
+        A2[MemoryAPI.search]
         A3[MemoryAPI.evolve]
         CTX[Context<br/>scope + extensions]
     end
@@ -77,19 +77,19 @@ flowchart TB
 
 | 层 | 组件 | 职责 | 不负责 |
 |---|---|---|---|
-| 入口 | `MemoryAPI` | 权限检查、审计、write/recall/evolve 统一入口 | 解释 cc_memory 专用配置 |
+| 入口 | `MemoryAPI` | 权限检查、审计、add/search/evolve 统一入口 | 解释 cc_memory 专用配置 |
 | 构建 | `CcMemoryBaselineExtractor` | 识别 remember、forget、`key: value`、范围提示、潜在 secret | 直接覆盖既有记录 |
 | 构建 | `CcMemoryBaselineEvolver` | 将候选转为记录；last-write-wins；标记 superseded / forgotten | 数据集评测 |
 | 检索 | `CcMemoryMemdirRecaller` | 将 Markdown 目录映射到 DOCUMENT 通道的 `ScoredUnit` | 修改底层存储或调用网络 |
 | 评测 | `evaluation/cc_memory` | 构建 workspace、阶段检索、独立标签计分、诊断产物 | 修改通用 API 类型 |
-| 同步 | `team_sync` | team memory 的 pull/push、checksum、冲突重试、路径与 secret 防护 | 普通 recall 的同步副作用 |
+| 同步 | `team_sync` | team memory 的 pull/push、checksum、冲突重试、路径与 secret 防护 | 普通 search 的同步副作用 |
 
 ## 3. 公共接口
 
 ### 3.1 统一记忆接口
 
 ```python
-api.write(
+api.add(
     content: str,
     scope: Scope,
     *,
@@ -99,7 +99,7 @@ api.write(
     metadata: dict[str, str] | None = None,
 ) -> list[MemoryUnit]
 
-api.recall(
+api.search(
     query: str,
     context: Context,
     *,
@@ -137,7 +137,7 @@ api.evolve(
 示例：
 
 ```python
-result = api.recall(
+result = api.search(
     query="上次团队约定的发布回滚步骤是什么？",
     context=Context(
         scope=Scope(namespace="project"),
@@ -169,7 +169,7 @@ sequenceDiagram
     participant E as BaselineEvolver
     participant M as MemoryUnit
 
-    U->>A: write(content, scope, identity)
+    U->>A: add(content, scope, identity)
     A->>X: 提取显式记忆候选
     X-->>E: upsert / forget candidate
     E->>M: 创建 record 或标记旧 record
@@ -250,7 +250,7 @@ async def push_team_memory(remote, state, team_memory_root, repo_slug) -> PushOu
 | key 校验 | 只接受安全相对路径 | 拒绝 NUL、反斜杠、绝对路径、`..`、百分号编码逃逸和 Windows drive prefix |
 | secret 检测 | 跳过并记录 `SkippedSecretFile` | 不把潜在凭据上传到远端 |
 
-同步是独立 adapter：它把数据写到 team memory 目录，但 `MemoryAPI.recall` 本身不触发 pull 或 push。
+同步是独立 adapter：它把数据写到 team memory 目录，但 `MemoryAPI.search` 本身不触发 pull 或 push。
 
 ## 7. retained evaluation 引擎
 

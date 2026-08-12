@@ -538,7 +538,7 @@ class LocalMemoryAPI(MemoryAPI):
 
     # -- 数据面 ------------------------------------------------------------- #
 
-    def write(
+    def add(
         self,
         content: str,
         scope: Scope,
@@ -551,7 +551,7 @@ class LocalMemoryAPI(MemoryAPI):
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
         return asyncio.run(
-            self.write_async(
+            self.add_async(
                 content,
                 scope,
                 source,
@@ -563,7 +563,7 @@ class LocalMemoryAPI(MemoryAPI):
             )
         )
 
-    async def write_async(
+    async def add_async(
         self,
         content: str,
         scope: Scope,
@@ -583,7 +583,7 @@ class LocalMemoryAPI(MemoryAPI):
             identity,
             scope,
             Action.WRITE,
-            "write",
+            "add",
             context=permission_context,
         )
         self._ensure_space_writable(scope)
@@ -596,7 +596,7 @@ class LocalMemoryAPI(MemoryAPI):
             metadata=metadata,
             occurred_at=occurred_at,
         )
-        self._log(identity, "write", target_scope=scope, detail=auth)
+        self._log(identity, "add", target_scope=scope, detail=auth)
         return units
 
     @staticmethod
@@ -685,7 +685,7 @@ class LocalMemoryAPI(MemoryAPI):
             error_type=error_type or type(error).__name__,
         )
 
-    def batch_write(
+    def batch_add(
         self,
         items: list[BatchWriteItem],
         scope: Scope | None = None,
@@ -699,7 +699,7 @@ class LocalMemoryAPI(MemoryAPI):
         continue_on_error: bool = True,
     ) -> BatchWriteResult:
         return asyncio.run(
-            self.batch_write_async(
+            self.batch_add_async(
                 items,
                 scope,
                 source,
@@ -712,7 +712,7 @@ class LocalMemoryAPI(MemoryAPI):
             )
         )
 
-    async def batch_write_async(
+    async def batch_add_async(
         self,
         items: list[BatchWriteItem],
         scope: Scope | None = None,
@@ -787,7 +787,7 @@ class LocalMemoryAPI(MemoryAPI):
                 )
                 self._log(
                     identity,
-                    "write",
+                    "add",
                     target_scope=error_scope,
                     decision="error",
                     detail={"error": str(exc), "error_type": type(exc).__name__},
@@ -813,7 +813,7 @@ class LocalMemoryAPI(MemoryAPI):
                     identity,
                     item.scope,
                     Action.WRITE,
-                    "write",
+                    "add",
                     context=permission_context,
                 )
                 self._ensure_space_writable(item.scope)
@@ -823,7 +823,7 @@ class LocalMemoryAPI(MemoryAPI):
                 if not isinstance(exc, PermissionDeniedError):
                     self._log(
                         identity,
-                        "write",
+                        "add",
                         target_scope=item.scope,
                         decision="error",
                         detail={"error": str(exc), "error_type": type(exc).__name__},
@@ -856,7 +856,7 @@ class LocalMemoryAPI(MemoryAPI):
                 outcomes[index] = engine_outcome
                 self._log(
                     identity,
-                    "write",
+                    "add",
                     target_scope=item.scope,
                     decision="allow" if not engine_outcome.error else "error",
                     detail={
@@ -870,7 +870,7 @@ class LocalMemoryAPI(MemoryAPI):
             outcomes=[outcomes[index] for index in range(len(items))]
         )
 
-    def recall(
+    def search(
         self,
         query: str,
         context: Context,
@@ -906,7 +906,7 @@ class LocalMemoryAPI(MemoryAPI):
             identity,
             context.scope,
             Action.READ,
-            "recall",
+            "search",
             context=permission_context,
         )
         # 把**授权所依据的路由值**回注为系统谓词：按 memory_type=notes 授的权，这次查询
@@ -924,7 +924,7 @@ class LocalMemoryAPI(MemoryAPI):
         if routing_clauses:
             rq.filters = and_merge(rq.filters, routing_clauses)
         result = asyncio.run(self._engine.recall(context.scope, rq))
-        self._log(identity, "recall", target_scope=context.scope, detail=auth)
+        self._log(identity, "search", target_scope=context.scope, detail=auth)
         return result
 
     def list(

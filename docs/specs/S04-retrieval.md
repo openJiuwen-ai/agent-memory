@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/retrieval/ |
-| 最近一次修订日期 | 2026-08-07 |
+| 最近一次修订日期 | 2026-08-12 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md |
 
 ## 范围 / 边界
@@ -213,7 +213,7 @@ src/retrieval/<算子>_impl/
 
 | 关联 spec | 关系 |
 |-----------|------|
-| S02-memory_api | MemoryAPI.recall → Engine → 本层 Retriever |
+| S02-memory_api | MemoryAPI.search → Engine → 本层 Retriever |
 | S03-control | Engine.recall 委托本层 Retriever |
 | S05-construction | 本层消费构建层产出的索引（向量/全文/图） |
 | S06-storage | Retriever 经 StorageProducer 获取统一 Storage；现有 Recaller 作为 CompositeStorage 的兼容检索适配器 |

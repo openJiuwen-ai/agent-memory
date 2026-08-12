@@ -1,4 +1,4 @@
-"""recall 的 Context 契约：max_tokens 经 Context.extensions 下达自适应披露。"""
+"""search 的 Context 契约：max_tokens 经 Context.extensions 下达自适应披露。"""
 
 from __future__ import annotations
 
@@ -25,9 +25,9 @@ def _api():
 
 def test_context_max_tokens_reaches_adaptive_disclosure() -> None:
     api = _api()
-    api.write(_TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR)
+    api.add(_TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR)
 
-    res = api.recall(
+    res = api.search(
         "coffee",
         Context(_SCOPE, extensions={EXT_MAX_TOKENS: "300"}),
         identity=_ACTOR,
@@ -41,9 +41,9 @@ def test_context_max_tokens_reaches_adaptive_disclosure() -> None:
 
 def test_context_without_max_tokens_uses_default() -> None:
     api = _api()
-    api.write(_TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR)
+    api.add(_TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR)
 
-    res = api.recall(
+    res = api.search(
         "coffee",
         Context(_SCOPE),  # 不给预算 → max_tokens=None
         identity=_ACTOR,

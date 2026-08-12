@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `src/config/` |
-| 最近一次修订日期 | 2026-08-09 |
+| 最近一次修订日期 | 2026-08-12 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md` |
 
 ## 范围 / 边界
@@ -19,7 +19,7 @@
 
 **不管什么**：
 
-- 不负责业务编排（write/recall/evolve）
+- 不负责业务编排（add/search/evolve）
 - 不替代 `PolicyManager` 的少量已知运行时策略键（见 S03）
 - 不承载调用级业务 options（见 S02 `Context.extensions` / 方法参数）
 - 不做 Store 数据迁移、向量索引重建
@@ -36,7 +36,7 @@
    `security.default` 同样必须从根组件显式引用，使用户的安全参数覆盖实际作用于
    `EncryptedKVStore`，不得静默退回默认密钥文件。
 5. **同实现多套凭证优先晚绑定**：同一 LLM/Embedder/Reranker/Store 实现上切换 model/api_key/base_url/url/hosts/uri，须在调用/取连接路径 `fetch` 对应 key；**不得**把同构多 Key/URL 的首选做成多具名实例 + `*.active`。`*.active` 仅用于异质实现互切或产品明确要求的实例隔离。
-6. **配置不进业务入参**：prompt 全文、模型名、API Key、base_url、Store 连接串、全局能力开关的写入路径不得解释自 `write`/`recall`/`evolve`/`list` 的调用参数；调用侧最多传 prompt **key**（含本轮 extract/consolidate/reflect 策略选用，见 F01 决策 2.2）、`memory_type`/pipeline 等业务选择子。
+6. **配置不进业务入参**：prompt 全文、模型名、API Key、base_url、Store 连接串、全局能力开关的写入路径不得解释自 `add`/`search`/`evolve`/`list` 的调用参数；调用侧最多传 prompt **key**（含本轮 extract/consolidate/reflect 策略选用，见 F01 决策 2.2）、`memory_type`/pipeline 等业务选择子。
 7. **key 稳定、值为传输安全字符串**：`fetch` 返回的值以 `str` 为主契约；布尔/数字由消费方解析。缺失 key 的语义由方法约定（返回 `None` 或抛错），实现须文档化且默认源与自定义源一致。
 8. **双侧同配置**：Embedder/Tokenizer 等构建侧与检索侧必须观察到同一 `ConfigSource` 快照语义，避免两侧模型或开关不一致。
 9. **与 PolicyManager 边界**：lifecycle / `scope.require_space` 等已有策略键仍走 `PolicyManager`；六类动态配置（能力开关、prompt、模型凭证、store 端点/`active`）走 `ConfigSource`。
@@ -132,7 +132,7 @@ ConfigSource
 |---|---|
 | `ConfigSource.fetch` | 六类配置值的唯一读取路径（相对业务 API） |
 | `admin_get/set/all` | 仅既有 PolicyManager 键 |
-| `write`/`recall`/`evolve`/`list` | 业务数据与单次 options；可含 prompt **key**、memory_type 等，不含配置机密与 prompt 全文 |
+| `add`/`search`/`evolve`/`list` | 业务数据与单次 options；可含 prompt **key**、memory_type 等，不含配置机密与 prompt 全文 |
 
 ## 数据结构
 

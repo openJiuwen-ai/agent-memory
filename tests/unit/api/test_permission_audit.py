@@ -50,13 +50,13 @@ def test_audit_event_view_includes_actor_decision_and_detail_fields() -> None:
     root = Scope()
     scope = Scope(org="acme", user="owner")
 
-    api.write("audit event view", scope, identity=scope)
-    events = api.audit({"action": "write"}, identity=root, limit=10)
+    api.add("audit event view", scope, identity=scope)
+    events = api.audit({"action": "add"}, identity=root, limit=10)
 
-    write_event = next(event for event in events if event.action == "write")
-    assert write_event.actor == scope
-    assert write_event.decision == "allow"
-    assert write_event.detail["permission_check"] == "enabled"
+    add_event = next(event for event in events if event.action == "add")
+    assert add_event.actor == scope
+    assert add_event.decision == "allow"
+    assert add_event.detail["permission_check"] == "enabled"
 
 
 def test_evolve_audit_records_job_id_not_unit_id() -> None:
@@ -90,12 +90,12 @@ def test_configured_sqlite_audit_persists_through_api_audit(tmp_path) -> None:
     root = Scope()
 
     first = build_kernel(config=cfg).api
-    first.write("persisted audit event", scope, identity=scope)
+    first.add("persisted audit event", scope, identity=scope)
 
     second = build_kernel(config=cfg).api
-    events = second.audit({"action": "write"}, identity=root, limit=10)
+    events = second.audit({"action": "add"}, identity=root, limit=10)
 
-    assert any(event.action == "write" and event.actor == scope for event in events)
+    assert any(event.action == "add" and event.actor == scope for event in events)
 
 
 def test_configured_sqlite_audit_memory_database_is_queryable() -> None:
@@ -114,10 +114,10 @@ def test_configured_sqlite_audit_memory_database_is_queryable() -> None:
     root = Scope()
     api = build_kernel(config=cfg).api
 
-    api.write("in-memory sqlite audit event", scope, identity=scope)
-    events = api.audit({"action": "write"}, identity=root, limit=10)
+    api.add("in-memory sqlite audit event", scope, identity=scope)
+    events = api.audit({"action": "add"}, identity=root, limit=10)
 
-    assert any(event.action == "write" and event.actor == scope for event in events)
+    assert any(event.action == "add" and event.actor == scope for event in events)
 
 
 def test_require_space_policy_rejects_empty_space_and_audits_denial() -> None:
@@ -143,11 +143,11 @@ def test_require_space_policy_rejects_empty_space_and_audits_denial() -> None:
     scope = Scope(org="acme", user="owner")
 
     with pytest.raises(ValidationError):
-        api.write("missing space", scope, identity=scope)
+        api.add("missing space", scope, identity=scope)
 
     denied = [
         event
-        for event in api.audit({"action": "write"}, identity=Scope(), limit=10)
+        for event in api.audit({"action": "add"}, identity=Scope(), limit=10)
         if event.decision == "deny"
     ]
     assert denied

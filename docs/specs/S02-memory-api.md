@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/api/ |
-| 最近一次修订日期 | 2026-08-07 |
+| 最近一次修订日期 | 2026-08-12 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md |
 ## 范围 / 边界
 
@@ -27,10 +27,10 @@
 1. **本层是薄封装 + PEP**：数据面委托 `MemoryEngine`，治理面委托 `Governor`，授权面委托 `PermissionManager`，调度面委托 `Scheduler`，策略面直达 `PolicyManager`。
 2. **`identity` 不下沉**：鉴权通过后只透传已鉴权的 target `scope`，`identity` 不传入控制层。
 3. **`identity` 为必填 keyword-only 参数**：与 target `scope` 同为 `Scope` 类型，强制具名传入防止位置传反。
-4. **recall 参数拆分**：`context: Context` 在本层边界拆开——`context.scope` 作独立轴穿透，`context.extensions` 写入调用级 options；约定 key `context.extensions["max_tokens"]` 由 API 边界解析为 int 后写入 `RetrievalQuery.max_tokens`，并从透传 extensions 中移除；`Context` 对象本身不进控制层。
+4. **search 参数拆分**：`context: Context` 在本层边界拆开——`context.scope` 作独立轴穿透，`context.extensions` 写入调用级 options；约定 key `context.extensions["max_tokens"]` 由 API 边界解析为 int 后写入 `RetrievalQuery.max_tokens`，并从透传 extensions 中移除；`Context` 对象本身不进控制层。
 5. **admin 不经 Engine**：admin_get/set/all 直达 PolicyManager。
 6. **管理面闸门 = 根 scope**：无具体 target scope 的方法（admin_*、全局 audit）以根 scope `Scope()` 为鉴权目标——「能对根 scope 行权」即管理员闸门；租户数据/治理方法仍按各自 target scope 鉴权。
-7. **`as_of` = valid-time 回溯点**：`recall`/`get` 的 `as_of` 沿系统相信时间轴回溯，返回「那时被认为有效」的版本（`get` 沿 `supersedes` 版本链定位）；`None` 表示当前态。
+7. **`as_of` = valid-time 回溯点**：`search`/`get` 的 `as_of` 沿系统相信时间轴回溯，返回「那时被认为有效」的版本（`get` 沿 `supersedes` 版本链定位）；`None` 表示当前态。
 8. **target scope 兜底**：`delete` 等以 `selector.scope or 根 scope` 为鉴权目标——未限定 scope 的跨范围操作退到根闸门，要求更高权限。
 9. **路由鉴权绑定数据范围**：路由型 PermissionManager 依据请求中的字段选择策略时，
    API 必须把同一个授权路由值作为系统过滤谓词回注查询，避免「按 A 类型授权、读取
@@ -39,7 +39,7 @@
 11. **space policy 在 API 边界生效**：已创建 space 的 `principal_path` 由 `SpaceManager.get_policy` 提供，API 在调用 `PermissionManager.check` 前写入 `PermissionContext.metadata["principal_path"]`；调用级 metadata 不能覆盖 space policy。
 12. **list 按实际资源二次鉴权**：请求显式给出的 `memory_types` 先做类型级鉴权；Engine 再以当前分页实际命中的 MemoryUnit 真源元数据返回权限上下文，API 逐条 READ 鉴权，全部通过后才返回内容。参与权限路由的 extensions 值必须作为系统过滤条件回注。
 13. **list 过滤和计数在 KV 内完成**：API 复制 `extensions`、规范化 `filters` 后完整下推；返回 `MemoryListResult.items` 当前页和分页前精确 `count`，不以 `len(items)` 代替总数。
-14. **六类动态配置不走业务入参**：能力开关、prompt 全文、LLM/Embedder/Reranker 的 model/api_key/url、Store 连接或 `*.active` 等由 `ConfigSource.fetch` 提供（见 S08）；`write`/`recall`/`evolve`/`list` 不得把上述值解释为配置写入。调用侧可传 prompt **key**、`memory_type`/pipeline 等业务选择子。
+14. **六类动态配置不走业务入参**：能力开关、prompt 全文、LLM/Embedder/Reranker 的 model/api_key/url、Store 连接或 `*.active` 等由 `ConfigSource.fetch` 提供（见 S08）；`add`/`search`/`evolve`/`list` 不得把上述值解释为配置写入。调用侧可传 prompt **key**、`memory_type`/pipeline 等业务选择子。
 
 ## 接口契约
 
@@ -49,11 +49,11 @@
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `write` | `(content, scope, source=TEXT, *, identity, assets, tags, metadata, occurred_at) -> list[MemoryUnit]` | 同步写入：鉴权 WRITE→委托 Engine→阻塞至 hot path 完成。infer/procedural 触发时返回 `created_ids` 对应的派生单元（可空），否则返回原始单元 |
-| `write_async` | `async (同签名) -> list[MemoryUnit]` | 异步写入：直通 Engine 协程，供事件循环形态使用 |
-| `batch_write` | `(items: list[BatchWriteItem], scope=None, source=TEXT, *, identity, tags, metadata, occurred_at, stream_id="", continue_on_error=True) -> BatchWriteResult` | 同步桥接批量写入；逐项归一化、WRITE 鉴权、space 校验与审计，结果始终按输入索引对齐 |
-| `batch_write_async` | `async (同签名) -> BatchWriteResult` | 串行保序批量写入；默认归集单项错误，`continue_on_error=False` 时后续项为 `Skipped` |
-| `recall` | `(query, context: Context, *, identity, filters, as_of, top_k, disclosure, with_trajectory) -> RetrievalResult` | 混合检索：鉴权 READ→拆 Context→装配 RetrievalQuery→委托 Engine |
+| `add` | `(content, scope, source=TEXT, *, identity, assets, tags, metadata, occurred_at) -> list[MemoryUnit]` | 同步写入：鉴权 WRITE→委托 Engine→阻塞至 hot path 完成。infer/procedural 触发时返回 `created_ids` 对应的派生单元（可空），否则返回原始单元 |
+| `add_async` | `async (同签名) -> list[MemoryUnit]` | 异步写入：直通 Engine 协程，供事件循环形态使用 |
+| `batch_add` | `(items: list[BatchWriteItem], scope=None, source=TEXT, *, identity, tags, metadata, occurred_at, stream_id="", continue_on_error=True) -> BatchWriteResult` | 同步桥接批量写入；逐项归一化、WRITE 鉴权、space 校验与审计，结果始终按输入索引对齐 |
+| `batch_add_async` | `async (同签名) -> BatchWriteResult` | 串行保序批量写入；默认归集单项错误，`continue_on_error=False` 时后续项为 `Skipped` |
+| `search` | `(query, context: Context, *, identity, filters, as_of, top_k, disclosure, with_trajectory) -> RetrievalResult` | 混合检索：鉴权 READ→拆 Context→装配 RetrievalQuery→委托 Engine |
 | `list` | `(scope, *, identity, offset=0, limit=100, memory_types=None, extensions=None, filters=None) -> MemoryListResult` | 列出已建索引记忆：支持类型/FilterExpr 过滤、自定义参数透传和分页前精确总数；只返回 `/memory/` 真源记录 |
 | `get` | `(unit_id, scope, *, identity, as_of=None) -> MemoryUnit` | 真源点读：鉴权 READ→委托 Engine |
 | `update` | `(unit_id, scope, patch: MemoryPatch, *, identity) -> MemoryUnit` | 修正记忆：鉴权 UPDATE→委托 Engine |
@@ -73,12 +73,12 @@
 宽松 fallback，也避免权限上下文与内容来自两次分页读取。
 
 `extensions` 为 `dict[str, str]`，API 防御性复制并把值规范为字符串；未知 key 原样透传。
-`filters` 与 recall 共用 FilterExpr/旧 list/dict DSL 规范化语义，`memory_types` 与 filters
+`filters` 与 search 共用 FilterExpr/旧 list/dict DSL 规范化语义，`memory_types` 与 filters
 取 AND。`org/space/user/agent/session` 属于 Scope 隔离轴，不得出现在 filters。
 
-#### infer 开关（write 的同步抽取语义）
+#### infer 开关（add 的同步抽取语义）
 
-`write` 的 `metadata["infer"]` 是调用级开关，控制写入时是否同步抽取派生记忆（对齐 mem0 `add(infer=True)`）：
+`add` 的 `metadata["infer"]` 是调用级开关，控制写入时是否同步抽取派生记忆（对齐 mem0 `add(infer=True)`）：
 
 - **真值判定**：`str(metadata.get("infer", "")).strip().lower() == "true"`——大小写/
   空白不敏感，字符串 `"true"` 和布尔值 `True` 均会触发；`"false"`/`False`/缺省/
@@ -92,9 +92,9 @@
 - **缺省 / 非 `"true"`（infer=false）**：原文经 `classifier.classify` 打 tier+tags（纯 LLM 抽取 episodic/semantic/procedural + 1-3 个 tags）→ 落盘 `/memory/{id}` + 建索引。classifier 未注入时跳过（tier 保持 EPISODIC 默认，向后兼容）。返回原始单元列表。
 - **evolver 缺失**：`infer="true"` 但装配未注入 `Evolver` 时 Engine 抛 `RuntimeError`——装配问题暴露而非静默降级。默认装配 `evolver: orchestrating` 总是注入。
 
-#### procedural 开关（write 的过程记忆抽取）
+#### procedural 开关（add 的过程记忆抽取）
 
-`write` 的 `metadata["procedural"]` 是独立于 infer 的调用级开关（详见 F02 决策8）：
+`add` 的 `metadata["procedural"]` 是独立于 infer 的调用级开关（详见 F02 决策8）：
 
 - **`procedural="true"`**：原文**不落 KV**；喂 `Evolver.evolve(units, EXTRACT)`。extractor 把本轮汇总成一条 PROCEDURAL 执行历史，再由 Evolver 落盘（`DynamicEvolver` 也走父类 procedural 路径，不判定）。
 - procedural 与 infer 同传时按 procedural 语义：原文不落 `/messages/`、不收集
@@ -106,7 +106,7 @@
   `str(value).strip()` 解释为 prompt key。调用方使用
   `metadata["_extract_prompt_<strategy>"] = prompt_key` 或 `metadata.update(...)`
   传值；不存在 `metadata.append()`。
-- 在 `write` 的普通同步抽取路径中，`_extract_prompt_<strategy>` 随 `infer=true`
+- 在 `add` 的普通同步抽取路径中，`_extract_prompt_<strategy>` 随 `infer=true`
   进入 EXTRACT；procedural 或显式 `evolve(EXTRACT)` 同样进入 Evolver 的 EXTRACT
   路径，Extractor 本身不校验 infer。支持任意非空 strategy，每个策略调用一次；
   无动态 prompt 时回退旧 Extractor。
@@ -124,7 +124,7 @@
   `KVStore.list` 只查询 `/memory/` 记忆并返回当前页与分页前总数。详见 F02 决策10与
   F01 的 list 决策。
 
-> 开关由来与"为何默认不同步、为何经 Evolver 而非独立 Extractor"的取舍见 [`docs/features/api/F02-write-infer-extract.md`](../features/api/F02-write-infer-extract.md)；write 路径流程见 [`S03-control.md`](S03-control.md)。
+> 开关由来与"为何默认不同步、为何经 Evolver 而非独立 Extractor"的取舍见 [`docs/features/api/F02-write-infer-extract.md`](../features/api/F02-write-infer-extract.md)；add 路径流程见 [`S03-control.md`](S03-control.md)。
 
 #### 治理面（委托 Governor）
 
@@ -149,7 +149,7 @@
 | `get_space` | `(org, space, *, identity) -> SpaceInfo` | 读取单个 space 的基础信息与策略 |
 | `list_spaces` | `(org, *, identity, status=None, limit=100, cursor=None) -> list[SpaceInfo]` | 列出 org 下 spaces；以 `Scope(org=org)` 做 READ 鉴权 |
 | `update_space` | `(org, space, patch: SpacePatch, *, identity) -> SpaceInfo` | 修改 display name、status、principal_path、policy 或 metadata |
-| `archive_space` | `(org, space, *, identity) -> SpaceInfo` | 归档 space；已归档 space 的 `write/update/evolve` 会被拒绝 |
+| `archive_space` | `(org, space, *, identity) -> SpaceInfo` | 归档 space；已归档 space 的 `add/update/evolve` 会被拒绝 |
 | `delete_space` | `(org, space, *, identity, mode=PURGE) -> SpaceDeleteResult` | 删除 space；当前只支持 PURGE，API 先经 Engine 清该 `org + space` 下全部 user/agent/session 子 Scope 的 `/memory/` 真源与索引，再委托 SpaceManager 清 KV/messages/metadata |
 | `export_space` | `(org, space, *, identity, include_audit=True) -> str` | 创建导出记录并返回 export id |
 | `space_usage` | `(org, space, *, identity) -> SpaceUsage` | 查询 space 级 memory/message/KV bytes 用量 |
@@ -219,7 +219,7 @@
 
 `DeleteMode`：`FORGET`（标记遗忘，可恢复，默认）/ `ARCHIVE`（归档转冷）/ `DOWNWEIGHT`（保持 active 仅降权）/ `PURGE`（物理删真源与索引，合规硬删，不可恢复）。
 
-### FilterExpr / FilterClause / FilterGroup（recall 前置过滤，`common/type_def`）
+### FilterExpr / FilterClause / FilterGroup（search 前置过滤，`common/type_def`）
 
 `FilterExpr = FilterClause | FilterGroup`。单条 `FilterClause` 表示字段比较；
 `FilterGroup` 用 `AND` / `OR` / `NOT` 递归组合子表达式。旧
@@ -245,13 +245,13 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 - `items: list[MemoryUnit]`：当前分页结果。
 - `count: int`：同一 Scope 和过滤条件下的分页前精确总数，不受 offset/limit 影响。
 
-### BatchWriteItem / BatchWriteOutcome / BatchWriteResult（batch_write，`control/types.py`）
+### BatchWriteItem / BatchWriteOutcome / BatchWriteResult（batch_add，`control/types.py`）
 
 - `BatchWriteItem` 表达单项内容与可选 scope/source/tags/metadata/occurred_at 覆盖；`stream_id`、`sequence`、`idempotency_key` 首版仅用于调度和回显，不写入真源。
 - `BatchWriteOutcome` 包含输入索引、归一化 item、该项产生的 `units` 与可归集的 `error` / `error_type`；成功且 units 为空仍是成功。Engine 的非领域异常也必须归集为 `InternalError`，不能使整批 HTTP 请求退化为 500。
 - `BatchWriteResult.outcomes` 与输入严格一一对应。相同 `(Scope, stream_id)` 的非空 `sequence` 不得重复；接口不自动重排。
 
-### DisclosureLevel / RetrievalResult（recall 返回，`retrieval/types.py`）
+### DisclosureLevel / RetrievalResult（search 返回，`retrieval/types.py`）
 
 `DisclosureLevel`：`L0`（摘要）/ `L1`（片段）/ `L2`（全文）/ `ADAPTIVE`（按 `max_tokens` 预算自动选层级）。
 
@@ -299,7 +299,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 |------|----------|
 | `PermissionDeniedError` | 鉴权不通过（identity 对 target scope 无相应 Action 权限） |
 | `NotFoundError` | `get` 等按 id 读取但记忆不存在 |
-| `ValidationError` | 入参非法（如 `recall` 的 `top_k <= 0`；`write`/`batch_write` 的 `content` 非 `str`、空串或纯空白） |
+| `ValidationError` | 入参非法（如 `search` 的 `top_k <= 0`；`add`/`batch_add` 的 `content` 非 `str`、空串或纯空白） |
 | `PolicyError` | `admin_set` 的键未知或为不可变配置 |
 | `ConflictError` | 写入冲突（如 id 重复） |
 | `BackendError` / `HealthCheckError` | 后端故障 / 健康探测失败 |
@@ -326,8 +326,8 @@ src/api/memory_api_impl/
 
 | 关联 spec | 关系 |
 |-----------|------|
-| S01-ingest_access | write 路径中 Engine 内部调用 Ingestor |
+| S01-ingest_access | add 路径中 Engine 内部调用 Ingestor |
 | S03-control | 数据面委托 MemoryEngine，治理/授权/调度面委托对应算子 |
-| S04-retrieval | recall 路径中 Engine 委托 Retriever |
+| S04-retrieval | search 路径中 Engine 委托 Retriever |
 | S08-config | 六类动态配置经 ConfigSource；不经本层业务入参写入 |
 | architecture.md §9 | 记忆接口层语义定义 |

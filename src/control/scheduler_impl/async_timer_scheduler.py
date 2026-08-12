@@ -228,7 +228,7 @@ class AsyncTimerScheduler(Scheduler):
                     entry.is_done = False
                     # was_done=True（之前已退出）→ 重置 next_run_at = now + interval；
                     # was_done=False（定时器还在跑）→ 不动 next_run_at，保持首次
-                    # submit 设定的周期节拍，避免连续 write_async 把 next_run_at
+                    # submit 设定的周期节拍，避免连续 add_async 把 next_run_at
                     # 一直往后推导致 Timer 永不触发。
                     if was_done:
                         entry.next_run_at = int(time.monotonic()) + job.interval
