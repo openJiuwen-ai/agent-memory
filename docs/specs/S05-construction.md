@@ -4,14 +4,14 @@
 
 | 项 | 值 |
 |---|---|
-| 关联模块 | src/construction/ |
-| 最近一次修订日期 | 2026-08-04 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/retrieval/F03-metadata-filtering.md |
+| 关联模块 | jiuwen_memory/construction/ |
+| 最近一次修订日期 | 2026-08-13 |
+| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F06-unified-index-builder.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/retrieval/F03-metadata-filtering.md |
 
 ## 范围 / 边界
 
 **管什么**：
-- 真源落盘（调用 KVStore 写入记忆单元序列化）
+- 真源落盘（调用 Storage 写入记忆单元）
 - 信息提取（低抽象粒度：事实/事件/偏好）
 - 抽象与精炼/升华（高抽象粒度：画像/长期偏好/可复用技能）
 - 关联分析（实体共指/因果链/引用关系）
@@ -21,14 +21,14 @@
 - 记忆自演进（抽取 → 关联 → 冲突消解 → 升华 → 遗忘/降权）
 
 **不管什么**：
-- 不做鉴权（由 `src/api` 层负责）
-- 不做检索（由 `src/retrieval` 层负责）
+- 不做鉴权（由 `jiuwen_memory/api` 层负责）
+- 不做检索（由 `jiuwen_memory/retrieval` 层负责）
 - 不实现存储后端（通过注入的 Store 抽象间接调用）
-- 不实现共享插件（Chunker/Tokenizer/Embedder/FeatureExtractor/LLM 由 `src/common` 注入；Reranker 不被本层使用——去重 LLM 直接判定）
+- 不实现共享插件（Chunker/Tokenizer/Embedder/FeatureExtractor/LLM 由 `jiuwen_memory/common` 注入；Reranker 不被本层使用——去重 LLM 直接判定）
 
 ## 不变量
 
-1. **落盘由本层负责**：接入层产出 MemoryUnit 后，真源写入由本层调用 KVStore 完成。
+1. **落盘由本层负责**：接入层产出 MemoryUnit 后，真源写入由本层调用 Storage 完成。
 2. **索引是可重建派生**：索引全部可从真源重建，IndexBuilder.rebuild() 是非破坏式保障。
 3. **provenance 回指来源**：派生记忆单元的 `provenance` 字段记录由哪些 unit 演进而来。
 4. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
@@ -192,7 +192,8 @@ MemoryUnit
 ├─ 图路（Evolver ASSOCIATE 模式编排）：
 │   → FeatureExtractor → Node → GraphStore.insert
 │   → Associator.associate → Edge → GraphStore.insert
-└─ HybridIndexBuilder：组合 fulltext + vector 两个子 builder（默认实现）
+├─ HybridIndexBuilder：组合 fulltext + vector 两个子 builder（默认实现）
+└─ 统一存储直写路：无派生检索索引时，调用方可按 Scope 委托 Storage 的记忆单元写接口
 ```
 
 > 注：文档索引（path → unit_id 映射）与 FusionStore 融合索引不属于本文已固化的构建接口契约，属设计预留。
@@ -277,7 +278,7 @@ MemoryUnit
 ## 实现注册机制
 
 ```
-src/construction/<算子>_impl/
+jiuwen_memory/construction/<算子>_impl/
     __init__.py             # 重导出实现类
     <impl_class_snake>.py   # 具体实现 + 尾部 @XxxProducer.register("name")
 ```
@@ -285,7 +286,7 @@ src/construction/<算子>_impl/
 各 Producer：`ExtractorProducer` / `AbstractorProducer` / `AssociatorProducer` / `ClassifierProducer` / `IndexBuilderProducer` / `DedupProducer` / `EvolverProducer`。
 注册由 `construction.bootstrap.register_constructors` 统一触发。
 
-> 当前有哪些实现、文件职责、行为铁律归 [`src/construction/AGENTS.md`](../../src/construction/AGENTS.md)，本 spec 只列契约。
+> 当前有哪些实现、文件职责、行为铁律归 [`jiuwen_memory/construction/AGENTS.md`](../../jiuwen_memory/construction/AGENTS.md)，本 spec 只列契约。
 
 ## 与其它 spec 的关系
 

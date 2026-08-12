@@ -18,8 +18,11 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.config.context import AssemblyContext
 from jiuwen_memory.construction.bootstrap import register_constructors
 from jiuwen_memory.construction.index_builder import IndexBuilderProducer
-from jiuwen_memory.construction.index_builder_impl.fulltext_index_builder import FulltextIndexBuilder
+from jiuwen_memory.construction.index_builder_impl.fulltext_index_builder import (
+    FulltextIndexBuilder,
+)
 from jiuwen_memory.construction.index_builder_impl.hybrid_index_builder import HybridIndexBuilder
+from jiuwen_memory.construction.index_builder_impl.unified_index_builder import UnifiedIndexBuilder
 from jiuwen_memory.construction.index_builder_impl.vector_index_builder import VectorIndexBuilder
 from jiuwen_memory.storage.bootstrap import register_backends
 from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
@@ -70,6 +73,15 @@ def _make_hybrid_builder() -> tuple[HybridIndexBuilder, dict, dict]:
         embedder=plugins["embedder"],
     )
     return builder, stores, plugins
+
+
+def _make_unified_builder() -> tuple[UnifiedIndexBuilder, CompositeStorage, dict, dict]:
+    """创建测试用 UnifiedIndexBuilder 及其统一 Storage。"""
+    stores = create_test_stores()
+    plugins = create_test_plugins()
+    storage = CompositeStorage(kv=stores["kv"])
+    builder = UnifiedIndexBuilder(storage)
+    return builder, storage, stores, plugins
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +156,36 @@ def test_keyword_remove_is_bound_to_each_units_scope():
 
     assert stores["fulltext"].get(scope_a, [unit_a.id])
     assert stores["fulltext"].get(scope_b, [unit_b.id]) == []
+
+
+# ---------------------------------------------------------------------------
+# T-I-03a: unified 直写统一 Storage
+# ---------------------------------------------------------------------------
+
+
+def test_unified_builder_delegates_lifecycle_to_storage_by_scope():
+    """unified 按 Scope 批量委托 add/update/delete，不派生检索索引。"""
+    builder, storage, _, _ = _make_unified_builder()
+    scope_a = Scope(org="test", space="space-a", user="alice")
+    scope_b = Scope(org="test", space="space-b", user="alice")
+    unit_a = create_test_unit("shared-id", "first version", scope=scope_a)
+    unit_b = create_test_unit("shared-id", "other scope", scope=scope_b)
+
+    builder.build([unit_a, unit_b])
+
+    assert storage.get(scope_a, [unit_a.id]) == [unit_a]
+    assert storage.get(scope_b, [unit_b.id]) == [unit_b]
+
+    updated_a = create_test_unit("shared-id", "updated version", scope=scope_a)
+    builder.update([updated_a])
+
+    assert storage.get(scope_a, [updated_a.id])[0].content == "updated version"
+
+    builder.remove([updated_a])
+
+    assert storage.get(scope_a, [updated_a.id]) == []
+    assert storage.get(scope_b, [unit_b.id]) == [unit_b]
+    assert builder.rebuild() is None
 
 
 # ---------------------------------------------------------------------------
@@ -580,6 +622,17 @@ def test_fulltext_factory_skips_layers_when_disabled():
         builder = IndexBuilderProducer.build_named("fb", ctx)
         assert builder.fulltext_l0 is None
         assert builder.fulltext_l1 is None
+    finally:
+        teardown()
+
+
+def test_unified_factory_resolves_storage_dependency():
+    """注册名 unified 可经 IndexBuilderProducer 装配统一 Storage。"""
+    teardown = _bootstrap_factories()
+    try:
+        ctx = AssemblyContext.from_dict({"constructor": {"ub": "unified"}})
+        builder = IndexBuilderProducer.build_named("ub", ctx)
+        assert isinstance(builder, UnifiedIndexBuilder)
     finally:
         teardown()
 
