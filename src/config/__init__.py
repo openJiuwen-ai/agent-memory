@@ -11,7 +11,7 @@
   （S08；默认 yaml_defaults，见 ``config_source_impl/``）。
 
 「装哪些、怎么串、共享谁」由各 ``Producer`` 经 ``build_named`` / ``dep`` 顺着引用落地
-（见 ``api.build_kernel``）。业务配置运行时取值走 ConfigSource，不经 write/recall 入参。
+（见 ``api.build_kernel``）。业务配置运行时取值走 ConfigSource，不经 add/search 入参。
 """
 
 from .config import Config

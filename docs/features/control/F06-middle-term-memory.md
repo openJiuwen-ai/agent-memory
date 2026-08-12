@@ -6,10 +6,10 @@
 |---|---|
 | 日期 | 2026-07-31 |
 | 影响范围 | `src/control/jobs.py`、`src/control/jobs_impl/`、`src/control/scheduler.py`、`src/control/scheduler_impl/async_timer_scheduler.py`、`src/control/scheduler_impl/in_process_scheduler.py`、`src/control/engine_impl/in_memory_engine.py`、`src/control/engine_impl/cloud_engine.py`、`src/control/bootstrap.py`、`src/construction/dedup_impl/keyword_dedup.py`、`src/construction/dedup_impl/vector_dedup.py`、`src/config/defaults.py` |
-| 测试基线 | `pytest tests/unit/control tests/unit/construction` 全绿（307 passed）；`test_middle_e2e_real_llm.py` 4 个 e2e 用例**默认 skip**（依赖外部 LLM 凭证，已用模块级 `pytest.mark.skip` 写死；取消 skip 并配齐 `.env` 中 `OPENAI_API_KEY`/`OPENAI_BASE_URL`/`OPENAI_MODEL` 后可跑通 write→Timer 触发→MiddleToLongJob→归档 全链路）|
+| 测试基线 | `pytest tests/unit/control tests/unit/construction` 全绿（307 passed）；`test_middle_e2e_real_llm.py` 4 个 e2e 用例**默认 skip**（依赖外部 LLM 凭证，已用模块级 `pytest.mark.skip` 写死；取消 skip 并配齐 `.env` 中 `OPENAI_API_KEY`/`OPENAI_BASE_URL`/`OPENAI_MODEL` 后可跑通 add→Timer 触发→MiddleToLongJob→归档 全链路）|
 | Refs | [`F02-write-infer-extract`](../api/F02-write-infer-extract.md)、[`F01-control-impl-design`](F01-control-impl-design.md)、[`F05-cloud-engine-design`](F05-cloud-engine-design.md) |
 
-> 本文档归档 **中期记忆（mem2.0）落地的设计与实现规约**：在 write 路径新增 `middle=true` 子分支作为中期缓冲，配合 `Job` 抽象 + `AsyncTimerScheduler` 周期触发 + `MiddleToLongJob` 做连续性切批抽取与归档，替代 mem1.0 自带的 `_middle_memory_loop`。
+> 本文档归档 **中期记忆（mem2.0）落地的设计与实现规约**：在 add 路径新增 `middle=true` 子分支作为中期缓冲，配合 `Job` 抽象 + `AsyncTimerScheduler` 周期触发 + `MiddleToLongJob` 做连续性切批抽取与归档，替代 mem1.0 自带的 `_middle_memory_loop`。
 
 ---
 
@@ -183,7 +183,7 @@ mem2.0 把这件事拆回控制层标准范式：
 
 | 场景 | 验证方式 | 结果 |
 |------|---------|------|
-| 连续 write_async 不推 next_run_at | `test_submit_timer_update_preserves_next_run_at_when_not_done` | ✅ |
+| 连续 add_async 不推 next_run_at | `test_submit_timer_update_preserves_next_run_at_when_not_done` | ✅ |
 | run 时长 > interval 不堆积实例 | `test_timer_loop_skips_tick_when_same_kind_already_queued` | ✅ |
 | 候选转完后 Timer 自然退出 | `test_wheel_all_done_exits_timer` | ✅ |
 | 事件循环关闭时 Job 状态正确 | `test_drain_queue_handles_cancelled_error` | ✅ |
@@ -205,7 +205,7 @@ mem2.0 把这件事拆回控制层标准范式：
 
 6. **`JobFactory` 自注册靠显式 import**：`bootstrap.register_controllers` 不 import `jobs_impl`；`Engine._opt_job_factory` 内显式 `import control.jobs_impl as _ji` 触发 `@JobFactoryProducer.register("default")` 装饰器执行。若调用方未配 `job_factory` 命名空间，`_opt_job_factory` 返回 None，evolve/middle 路径报错——向后兼容但容易让人误以为"配了 job_factory 就能用"。
 
-7. **`AsyncTimerScheduler` 与同步 API `asyncio.run` 桥接不兼容**（架构债）：`LocalMemoryAPI.write` 同步桥接用 `asyncio.run(write_async(...))`，临时事件循环关闭后 Timer 协程被取消——同步 API 路径提交的 middle Job 永远不会转换为长期记忆。**触发条件**：用户显式配 `scheduler=async_timer` + 用同步 `api.write(...)`。**默认配置无影响**（默认 `in_process`，submit 即跑完 Job，原文立即 ARCHIVED）。**目标终态**：Kernel 级长生命周期 `AsyncRuntime` + 生产形态独立持久化 Worker——已单独立 issue 跟进，不在本次 PR 范围。**当前可用方式**：(a) 用默认 `in_process` scheduler（同步执行，与 mem1.0 行为等价）；(b) 用 `write_async` 全链路 await + 长生命周期事件循环。
+7. **`AsyncTimerScheduler` 与同步 API `asyncio.run` 桥接不兼容**（架构债）：`LocalMemoryAPI.add` 同步桥接用 `asyncio.run(add_async(...))`，临时事件循环关闭后 Timer 协程被取消——同步 API 路径提交的 middle Job 永远不会转换为长期记忆。**触发条件**：用户显式配 `scheduler=async_timer` + 用同步 `api.add(...)`。**默认配置无影响**（默认 `in_process`，submit 即跑完 Job，原文立即 ARCHIVED）。**目标终态**：Kernel 级长生命周期 `AsyncRuntime` + 生产形态独立持久化 Worker——已单独立 issue 跟进，不在本次 PR 范围。**当前可用方式**：(a) 用默认 `in_process` scheduler（同步执行，与 mem1.0 行为等价）；(b) 用 `add_async` 全链路 await + 长生命周期事件循环。
 
 8. **`InProcessScheduler` 不支持 `interval > 0` 周期语义**（架构债）：`submit` 不读 `job.interval`，直接 `await job.run()` 一次性执行——周期 Job 被静默退化为同步立即执行。**当前影响**：默认配置下 middle write 同步执行 evolver + 归档，与 mem1.0 同步抽取派生行为等价，无功能丢失。**目标终态**：Scheduler capability 声明（`supports_periodic` / `supports_background`）+ 装配期 fail fast 校验——单独立 issue 跟进。
 

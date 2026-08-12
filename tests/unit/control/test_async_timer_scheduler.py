@@ -212,7 +212,7 @@ def test_submit_timer_same_kind_updates_existing_entry() -> None:
 def test_submit_timer_update_preserves_next_run_at_when_not_done() -> None:
     """同 kind 非 done 状态 update → 不重置 next_run_at（避免 debounce 永不触发）。
 
-    连续 write_async middle=true 时,Engine 每次都 submit MiddleToLongJob——
+    连续 add_async middle=true 时,Engine 每次都 submit MiddleToLongJob——
     Scheduler update 分支若每次都重置 next_run_at = now + interval,会变成
     debounce 语义:用户在 interval 内连续说话时 Timer 永远到不了 next_run_at,
     MiddleToLongJob 永不触发。
@@ -238,7 +238,7 @@ def test_submit_timer_update_preserves_next_run_at_when_not_done() -> None:
         # 不应被重置——保持首次 submit 设定的周期节拍
         assert next_run_at_after_second == next_run_at_after_first, (
             "update 分支 was_done=False 时不应重置 next_run_at——"
-            "连续 write_async 会变成 debounce 语义导致 Timer 永不触发"
+            "连续 add_async 会变成 debounce 语义导致 Timer 永不触发"
         )
 
     asyncio.run(_run())

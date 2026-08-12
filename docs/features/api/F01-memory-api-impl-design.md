@@ -24,8 +24,8 @@ from api import (
     Scope, Context, Modality,          # 调用上下文
     MemoryPatch, UpdateMode,           # update
     DeleteSelector, DeleteMode,        # delete
-    FilterClause, FilterOp,            # recall 前置过滤
-    DisclosureLevel, EvolveMode,       # recall / evolve
+    FilterClause, FilterOp,            # search 前置过滤
+    DisclosureLevel, EvolveMode,       # search / evolve
     Grant, Action, Channel,            # 授权 / 演进通道
     SpaceSpec, SpaceInfo, SpacePolicy, # space 管理
 )
@@ -38,7 +38,7 @@ from api import (
 | `local_memory_api.py` · `LocalMemoryAPI` | 单进程下的 `MemoryAPI` 实现——**鉴权（PEP）+ 入口审计 + 委派**，自身不含编排逻辑 |
 | `assembly.py` · `build_kernel`/`assemble`/`Kernel` | 把各层具体实现经 Producer 串成一个可直接调用的内核——「把整个项目串起来」的落点 |
 
-接口层是控制层（`src/control`）的**薄封装**：数据面（write/recall/list/get/update/delete/evolve）委托 `MemoryEngine`，管理面（任务/治理/授权/admin/space 管理）直达对应控制算子；本层只做**参数装配 + 鉴权 + 入口审计**，编排逻辑全在控制层。
+接口层是控制层（`src/control`）的**薄封装**：数据面（add/search/list/get/update/delete/evolve）委托 `MemoryEngine`，管理面（任务/治理/授权/admin/space 管理）直达对应控制算子；本层只做**参数装配 + 鉴权 + 入口审计**，编排逻辑全在控制层。
 
 ---
 
@@ -59,7 +59,7 @@ from api import (
 
 ### 3. Context 只活在接口层，边界处拆包
 
-`recall` 收到的 `Context` 在边界即被拆开，**Context 对象本身不进内核**：
+`search` 收到的 `Context` 在边界即被拆开，**Context 对象本身不进内核**：
 
 - `context.scope` → 照旧作独立轴下推（先鉴权、再作检索隔离轴）；
 - `context.extensions["max_tokens"]` → API 边界解析为 int 后写入 `RetrievalQuery.max_tokens` 由披露阶段消费；
@@ -69,11 +69,11 @@ from api import (
 
 ### 4. 异步内核 + 同步桥接
 
-引擎是异步的。`write_async` 是**直通引擎的真协程**，供事件循环/高并发接入形态（HTTP/MCP）非阻塞调用；同步 `write`（及 recall/list/get/update/delete/evolve）是它的**同步桥接**——内部 `asyncio.run(...)` 包一层，供 CLI/脚本直接调用。一套语义两个入口，避免同步/异步双实现漂移。
+引擎是异步的。`add_async` 是**直通引擎的真协程**，供事件循环/高并发接入形态（HTTP/MCP）非阻塞调用；同步 `add`（及 search/list/get/update/delete/evolve）是它的**同步桥接**——内部 `asyncio.run(...)` 包一层，供 CLI/脚本直接调用。一套语义两个入口，避免同步/异步双实现漂移。
 
 ### 5. 数据面委托引擎，管理面直达控制算子
 
-- **数据面** write/recall/list/get/update/delete/evolve → `MemoryEngine`；
+- **数据面** add/search/list/get/update/delete/evolve → `MemoryEngine`；
 - **管理面** job_status/job_cancel → `Scheduler`，admin_* → `PolicyManager`，inspect/trace/audit → `Governor`，grant/revoke → `PermissionManager`，create/get/list/update/archive/delete/export/usage/policy/member space 管理 → `SpaceManager`。
 
 接口层不替管理面做编排，直达对应控制算子，职责清晰。
@@ -177,7 +177,7 @@ bootstrap payload 兼容：
 拒绝的方案：
 
 - **handler 继续直扫 KV**：绕开 API 鉴权/审计，也会让 SDK/MCP/HTTP 的 list 语义分裂。
-- **复用 recall 返回全量**：会混淆“相关性检索”和“范围枚举”，并受到召回通道、top_k、阈值和披露策略影响。
+- **复用 search 返回全量**：会混淆“相关性检索”和“范围枚举”，并受到召回通道、top_k、阈值和披露策略影响。
 - **list 支持跨 scope**：枚举多个 scope 属于治理/管理能力，不放进普通数据面读接口。
 - **只用 tier 命名过滤参数**：mem1.0 是 `mem_types`，本层选择更中性的 `memory_types`；
   handler 接受 `mem_types` 与 `memory_type` 作为兼容别名。
@@ -215,7 +215,7 @@ def list(
     ...
 ```
 
-Python API 使用 `filters` 作为规范参数名，与 `recall` 保持一致；bootstrap payload 以
+Python API 使用 `filters` 作为规范参数名，与 `search` 保持一致；bootstrap payload 以
 `filters` 为规范字段，同时兼容调用方使用单数 `filter`。两者同时出现时拒绝请求，避免
 静默选择其中一份条件。
 
@@ -227,7 +227,7 @@ Python API 使用 `filters` 作为规范参数名，与 `recall` 保持一致；
   `MemoryAPI -> MemoryEngine -> KVStore.list` 完整透传；自定义 Engine 或 KV
   后端可按约定消费，未知 key 不报错。
 - `extensions` 不得改变 `scope`、绕过权限或覆盖系统过滤谓词。若某个扩展值参与权限路由，
-  API 必须像 recall 一样把对应路由值回注为系统等值过滤条件，并与用户 filters 做外层
+  API 必须像 search 一样把对应路由值回注为系统等值过滤条件，并与用户 filters 做外层
   `AND`，确保“按什么条件授权，就只列出什么范围的数据”。
 - `None` 与空字典都表示没有自定义参数。非字典输入在 API/handler 边界抛
   `ValidationError`，不静默丢弃。
@@ -363,7 +363,7 @@ MemoryAPI
 count；实际资源二次鉴权未通过时整个请求失败，不返回部分 items 或可推断未授权数据规模的
 count。
 
-这一阶段继续以 KV 真源查询保证语义正确，不复用 recall：list 是确定性范围枚举，不应受
+这一阶段继续以 KV 真源查询保证语义正确，不复用 search：list 是确定性范围枚举，不应受
 相关性、召回通道、阈值、top-k 或披露策略影响。简单 KV 后端的兼容回退仍需扫描 Scope
 下全部 `/memory/` 记录，复杂度为 O(N)，但扫描职责封装在 KV 适配器内，Engine 始终使用
 同一个 `list` 契约。生产后端应在分页前完整下推 FilterExpr 并使用原生 count；
@@ -380,7 +380,7 @@ count。
   执行职责仍完整下推 KV 层。
 - **Engine 全量读取后自行过滤**：能实现功能但 extensions 到不了自定义 KV，生产后端也
   无法使用原生 metadata filter/count，且所有 Engine 都会重复扫描逻辑。
-- **复用 recall 实现过滤 List**：会把确定性枚举错误地绑定到相关性检索语义。
+- **复用 search 实现过滤 List**：会把确定性枚举错误地绑定到相关性检索语义。
 
 验证覆盖：
 
@@ -404,7 +404,7 @@ count。
 
 - **`identity` 作为位置参数**：被拒。与 target `scope` 同为 `Scope`，位置传反即静默越权；强制 keyword-only 把错误挡在调用处。
 - **Context 对象下沉进内核**：被拒。Context 是接口层的打包容器，下沉会让内核耦合「调用形态」；改为边界拆包，scope 独立下推，extensions 中的约定 key 由 API 边界解释，其余 extensions 透传。
-- **接口层承担编排**：被拒。api 层只做 PEP + 参数装配 + 审计，所有编排（write 的规约/索引、recall 的多路召回/融合/披露、evolve 的阶段调度）留在 `src/control` 与各算子层，保证入口薄、可替换接入形态。
+- **接口层承担编排**：被拒。api 层只做 PEP + 参数装配 + 审计，所有编排（add 的规约/索引、search 的多路召回/融合/披露、evolve 的阶段调度）留在 `src/control` 与各算子层，保证入口薄、可替换接入形态。
 - **管理面也走 MemoryEngine**：被拒。engine 聚焦数据面；任务/策略/治理/授权直达对应控制算子，避免 engine 变成「什么都转发」的上帝对象。
 - **同步实现整套内核**：被拒。内核选异步（适配 HTTP/MCP 高并发），同步入口用 `asyncio.run` 桥接；避免维护同步/异步两份实现导致语义漂移。
 - **admin/全局 audit 按调用方自身 scope 鉴权**：被拒。这类操作无具体 target scope，按自身 scope 判权会让任意用户都「对自己有权」从而绕过管理面；改用根 scope 闸门统一表达管理员权限。
@@ -416,7 +416,7 @@ count。
 
 - 历史基线：`pytest tests/unit/api` 全绿（exit 0）。
   - `test_build_kernel_config`：装配路径——默认上下文、用户 config 合并覆盖、`build_named` 具名共享、顶层名校验、kv 注入。
-  - `test_recall_context`：Context 边界拆包（scope、extensions 约定 key、其余 extensions）与 recall 端到端。
+  - `test_search_context`：Context 边界拆包（scope、extensions 约定 key、其余 extensions）与 search 端到端。
 - 鉴权/审计语义随控制层 `tests/unit/control/` 一并回归（PEP 在接口层，闸门行为在 `allow_all` 与真实 PermissionManager 下分别覆盖）。
 - list 增量：API、handler、CloudEngine、四个 KV 实现、公共过滤求值相关单测通过；
   ruff、compileall 与 `git diff --check` 通过。
@@ -425,7 +425,7 @@ count。
 
 ## 已知遗留
 
-- **同步方法不可在运行中的事件循环内调用**：`write`/`recall`/… 内部 `asyncio.run`，在已有 event loop 的环境（如 async 框架内）须改用 `write_async` 等协程入口，否则 `asyncio.run` 报错。
+- **同步方法不可在运行中的事件循环内调用**：`add`/`search`/… 内部 `asyncio.run`，在已有 event loop 的环境（如 async 框架内）须改用 `add_async` 等协程入口，否则 `asyncio.run` 报错。
 - **identity 不下沉 = 下游信任 target**：鉴权只在接口层做一次，下游算子信任传入的 target scope；若未来出现「下游需二次校验」的场景，需要显式传递鉴权上下文。
 - **默认装配是本地 SQLite owner-only ACL**：`assemble()` 默认 `permission=sqlite(db_path=":memory:")`，owner 访问自己的 target scope 默认放行，同租户跨 scope 默认拒绝；测试或开发若要完全放行需显式装配 `allow_all`。
 - **管理面闸门粒度粗**：admin/全局 audit 统一走根 scope，尚无更细的「按策略键/按 layer」分权；待真实 RBAC 后端细化。

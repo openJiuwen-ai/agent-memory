@@ -1,4 +1,4 @@
-# F03 — batch_write / batch_write_async 批量写入接口设计
+# F03 — batch_add / batch_add_async 批量写入接口设计
 
 ## 元信息
 
@@ -9,20 +9,20 @@
 | 测试基线 | `tests/unit/api/test_batch_write.py`、`test_batch_handler.py`、`tests/unit/control/test_cloud_engine.py` |
 | Refs | — |
 
-> 本文归档 `batch_write` / `batch_write_async` 的第一版设计。目标是提供批量提交入口，
-> 但不改变单条 `write` 的语义、权限边界、审计粒度、`infer=true` 上下文语义和
+> 本文归档 `batch_add` / `batch_add_async` 的第一版设计。目标是提供批量提交入口，
+> 但不改变单条 `add` 的语义、权限边界、审计粒度、`infer=true` 上下文语义和
 > `procedural=true` 过程记忆语义。
 
 ---
 
 ## 背景
 
-当前 `MemoryAPI.write` / `write_async` 一次只表达一条内容写入。调用方做批量导入、
+当前 `MemoryAPI.add` / `add_async` 一次只表达一条内容写入。调用方做批量导入、
 会话回放、离线迁移或多段对话同步时，只能在外层自行循环调用：
 
 ```python
 for item in items:
-    api.write(...)
+    api.add(...)
 ```
 
 这会带来三个问题：
@@ -30,8 +30,8 @@ for item in items:
 1. **调用方重复实现错误处理和结果对齐**：每条输入可能产生多条 `MemoryUnit`，也可能在
    `infer=true` 下因 dedup 返回空。外层循环需要自己维护 input index、成功/失败、
    空结果和异常归因。
-2. **同步/异步入口语义容易漂移**：同步场景用 `write` 循环，异步场景可能直接
-   `asyncio.gather(write_async(...))`，但同一 stream 的 `infer=true` 写入依赖最近
+2. **同步/异步入口语义容易漂移**：同步场景用 `add` 循环，异步场景可能直接
+   `asyncio.gather(add_async(...))`，但同一 stream 的 `infer=true` 写入依赖最近
    `/messages/` 上下文与去重召回，盲目并发会破坏顺序语义。
 3. **后续优化缺少稳定接口**：真正的批量优化可能发生在 Ingestor、Classifier、
    IndexBuilder、KVStore 或 Evolver 层。没有批量 API 时，只能在调用方侧并发，无法由内核
@@ -48,12 +48,12 @@ for item in items:
 `control` 共同引用，避免用松散 dict 穿过层边界。
 
 批量接口采用“API 顶层默认参数 + item override”模型：多个 item 之间高度重复的字段沿用
-`write` 的参数风格放在 `batch_write(...)` 形参上，每个 `BatchWriteItem` 只写差异。归一化后
-再按单条 `write` 语义执行。这样避免额外引入 `BatchWriteOptions` 这种单条 write 不存在的封装。
+`add` 的参数风格放在 `batch_add(...)` 形参上，每个 `BatchWriteItem` 只写差异。归一化后
+再按单条 `add` 语义执行。这样避免额外引入 `BatchWriteOptions` 这种单条 add 不存在的封装。
 
-因此 `BatchWriteItem` 表达的是“这一条 message 自己的字段”，而 `batch_write(...)` 的顶层参数
+因此 `BatchWriteItem` 表达的是“这一条 message 自己的字段”，而 `batch_add(...)` 的顶层参数
 表达的是“这一批 message 共享的默认写入字段”。两者不是两套语义：item 缺省字段由顶层参数补齐，
-补齐后的每条 item 都必须能等价转换为一次单条 `write(content, scope, source, *,
+补齐后的每条 item 都必须能等价转换为一次单条 `add(content, scope, source, *,
 tags, metadata, occurred_at)` 调用。
 
 ```python
@@ -90,13 +90,13 @@ class BatchWriteResult:
 | 字段 | 语义 | 外提判断 |
 |---|---|---|
 | `content` | 本条写入的文本/结构化投影，进入 `RawPayload.data`，再成为 `MemoryUnit.content` | 不外提，必须逐 item |
-| `scope` | 目标记忆范围，参与权限、space 隔离和存储命名空间 | 常重复，可由 `batch_write(..., scope=...)` 提供默认值 |
-| `source` | 来源模态/类型：text、image、audio、video、code、document | 常重复，可由 `batch_write(..., source=...)` 提供默认值 |
+| `scope` | 目标记忆范围，参与权限、space 隔离和存储命名空间 | 常重复，可由 `batch_add(..., scope=...)` 提供默认值 |
+| `source` | 来源模态/类型：text、image、audio、video、code、document | 常重复，可由 `batch_add(..., source=...)` 提供默认值 |
 | `assets` | 本条原始资产引用列表，例如图片 URL、音频路径、PDF 对象存储地址 | 通常逐 item，不默认外提 |
 | `tags` | 标签，参与过滤、权限上下文和治理 | 可由顶层公共 tags 与 item tags 合并 |
 | `metadata` | 调用级/记忆级元数据，包含 `infer`、`procedural`、`memory_type`、`message_type`、动态 prompt key 等 | 可由顶层公共 metadata 与 item metadata 合并 |
-| `occurred_at` | 事件发生时间，进入 `RawPayload.occurred_at` / `Temporal.t_event` | 可由 `batch_write(..., occurred_at=...)` 提供默认值 |
-| `stream_id` | 一组必须保序的写入流，例如会话、回放或导入任务 | 常重复，可由 `batch_write(..., stream_id=...)` 提供默认值 |
+| `occurred_at` | 事件发生时间，进入 `RawPayload.occurred_at` / `Temporal.t_event` | 可由 `batch_add(..., occurred_at=...)` 提供默认值 |
+| `stream_id` | 一组必须保序的写入流，例如会话、回放或导入任务 | 常重复，可由 `batch_add(..., stream_id=...)` 提供默认值 |
 | `sequence` | stream 内顺序号 | 不外提，必须逐 item |
 | `idempotency_key` | 单条写入幂等键 | 不外提，必须逐 item |
 
@@ -109,8 +109,8 @@ class BatchWriteResult:
 
 - `scope`：item 有值用 item，否则用顶层 `scope`；最终必须非空。
 - `source`：item 有值用 item，否则用顶层 `source`。
-- `tags`：`batch_write(..., tags=...) + item.tags`，允许去重但必须保持首见顺序。
-- `metadata`：`{**batch_write(..., metadata=...), **item.metadata}`，item 覆盖顶层默认值。
+- `tags`：`batch_add(..., tags=...) + item.tags`，允许去重但必须保持首见顺序。
+- `metadata`：`{**batch_add(..., metadata=...), **item.metadata}`，item 覆盖顶层默认值。
 - `occurred_at`：item 有值用 item，否则用顶层 `occurred_at`。
 - `stream_id`：item 有值用 item，否则用顶层 `stream_id`。
 - `sequence` / `idempotency_key`：只接受 item 级值，不从顶层参数继承。
@@ -118,7 +118,7 @@ class BatchWriteResult:
 例如：
 
 ```python
-api.batch_write(
+api.batch_add(
     [
         BatchWriteItem(content="Alice likes tea", sequence=1),
         BatchWriteItem(
@@ -135,19 +135,19 @@ api.batch_write(
 )
 ```
 
-归一化后等价于按顺序执行两次单条 `write`：第一条继承顶层 `scope/source/metadata/stream_id`；
+归一化后等价于按顺序执行两次单条 `add`：第一条继承顶层 `scope/source/metadata/stream_id`；
 第二条继承顶层 `scope/metadata/stream_id`，但使用 item 自己的 `source=IMAGE` 和 `assets`。
 
 `outcomes` 必须与输入顺序一一对应。单条成功但返回空列表仍是成功结果，表示这条写入被
 dedup 判为 UPDATE/NOOP 或抽取无新增，不等于失败。`BatchWriteOutcome.item` 建议保存归一化后的
 item，方便调用方确认实际执行参数。
 
-### 2. API 暴露同步 / 异步两个入口，语义与 write 保持一致
+### 2. API 暴露同步 / 异步两个入口，语义与 add 保持一致
 
 新增：
 
 ```python
-def batch_write(
+def batch_add(
     self,
     items: list[BatchWriteItem],
     scope: Scope | None = None,
@@ -161,7 +161,7 @@ def batch_write(
     continue_on_error: bool = True,
 ) -> BatchWriteResult
 
-async def batch_write_async(
+async def batch_add_async(
     self,
     items: list[BatchWriteItem],
     scope: Scope | None = None,
@@ -179,23 +179,23 @@ async def batch_write_async(
 同步入口只桥接异步入口，不维护第二套实现：
 
 ```python
-def batch_write(...):
-    return asyncio.run(self.batch_write_async(...))
+def batch_add(...):
+    return asyncio.run(self.batch_add_async(...))
 ```
 
-每个归一化 item 的字段语义与 `write` 完全一致。顶层 `scope/source/tags/metadata/occurred_at`
+每个归一化 item 的字段语义与 `add` 完全一致。顶层 `scope/source/tags/metadata/occurred_at`
 表达批量默认值；item 仍可覆盖，支持同一批导入多个 scope。`identity` 仍是整个 batch 的
 调用方身份，不进入 item。
 
 ### 3. 鉴权、空间状态和审计按 item 粒度执行
 
 批量接口不能把整批请求做成一次粗粒度 WRITE 鉴权。每个归一化后的 `BatchWriteItem` 都必须
-复用单条 write 的边界逻辑：
+复用单条 add 的边界逻辑：
 
 ```text
 归一化顶层默认参数 + item
 → 校验 metadata
-→ 构造 write PermissionContext
+→ 构造 add PermissionContext
 → PermissionManager.check(identity, item.scope, WRITE, context)
 → _ensure_space_writable(item.scope)
 → 委托 Engine 写入
@@ -208,7 +208,7 @@ override 同时存在，鉴权必须以归一化后的最终 `item.scope` 为准
 
 ### 4. 第一版默认串行保序，不默认 asyncio.gather
 
-`batch_write_async` 虽然是协程入口，但第一版内部默认按输入顺序逐条 `await engine.write(...)`。
+`batch_add_async` 虽然是协程入口，但第一版内部默认按输入顺序逐条 `await engine.write(...)`。
 
 原因：
 
@@ -216,7 +216,7 @@ override 同时存在，鉴权必须以归一化后的最终 `item.scope` 为准
   或让前一条写入尚未进入上下文窗口。
 - dedup、UPDATE、SUPERSEDE 依赖当前真源状态；同一事实流并发可能产生重复 ADD 或错误 NOOP。
 - 当前 engine 的 Ingestor、Classifier、KV、IndexBuilder、Evolver 多数仍是同步实现，
-  `write_async` 是协程入口，不等价于内部非阻塞 IO。
+  `add_async` 是协程入口，不等价于内部非阻塞 IO。
 
 后续若要并发，只能在明确排序边界后开启：不同 `(scope, stream_id)` 之间可以并发；同一
 `(scope, stream_id)` 内必须按 `sequence > occurred_at > 输入顺序` 串行提交。
@@ -250,15 +250,16 @@ metadata 错误也按 outcome 归集。
 返回 `error_type="Skipped"` 或直接不生成 outcome 二选一。建议选择“所有输入都有 outcome”，
 保持结果与输入一一对应。
 
-### 7. Engine 层新增 batch_write，但第一版可以是安全循环
+### 7. API 映射到 Engine.batch_write，第一版可以是安全循环
 
-为了维持 API 层薄封装，控制层应新增：
+为了维持 API 层薄封装，公开 `batch_add` 只负责归一化、鉴权、空间状态和审计，随后委托
+控制层既有内部契约：
 
 ```python
 async def batch_write(self, items: list[BatchWriteItem]) -> BatchWriteResult
 ```
 
-第一版 engine 实现可以只是保序循环调用现有 `write`。这样公开契约先稳定下来，后续再把优化
+第一版 engine 实现可以只是保序循环调用现有 `write`。这样公开 API 契约先稳定下来，后续再把优化
 下沉到 Ingestor 批处理、KV 批量写、IndexBuilder 批量建索引或 Evolver 批量抽取，不需要再改
 API 入口。
 
@@ -297,7 +298,7 @@ HTTP 面建议新增独立 verb，而不是让 `/v1/add` 同时接受 object/lis
 }
 ```
 
-handler 负责把 `defaults` 解析为 `batch_write` 顶层默认参数，把每个 item 解析为
+handler 负责把 `defaults` 解析为 `batch_add` 顶层默认参数，把每个 item 解析为
 `BatchWriteItem`，并沿用现有 actor override 规则生成统一 `identity`。item 级范围覆盖使用
 `target_scope` 嵌套对象，按 `tenant_id` / `space` / `scope` / `agent` / `session` 覆盖 defaults。
 `occurred_at` 在 HTTP 中接受 ISO 8601 字符串，defaults 作为顶层默认值、item 可逐项覆盖；
@@ -309,7 +310,7 @@ handler 负责把 `defaults` 解析为 `batch_write` 顶层默认参数，把每
 
 ## 拒绝的方案
 
-### 方案 A：调用方自己 `asyncio.gather(write_async(...))`
+### 方案 A：调用方自己 `asyncio.gather(add_async(...))`
 
 拒绝原因：
 
@@ -317,7 +318,7 @@ handler 负责把 `defaults` 解析为 `batch_write` 顶层默认参数，把每
 - 同一 stream 的 `infer=true` 会破坏上下文顺序和去重判定。
 - 并发策略应该由内核根据 scope/stream/后端能力控制，不能交给所有调用方各自猜。
 
-### 方案 B：batch_write 返回扁平 `list[MemoryUnit]`
+### 方案 B：batch_add 返回扁平 `list[MemoryUnit]`
 
 拒绝原因：
 
@@ -336,7 +337,7 @@ handler 负责把 `defaults` 解析为 `batch_write` 顶层默认参数，把每
 
 拒绝原因：
 
-- 当前单条 write 已有 `infer`、`procedural`、pipeline routing、CloudEngine metadata 固化、
+- 当前单条 add 已有 `infer`、`procedural`、pipeline routing、CloudEngine metadata 固化、
   Space 策略、审计等分支。直接下沉优化容易改变单条语义。
 - 先稳定批量接口和结果模型，再分阶段优化内部执行，可以降低回归面。
 
@@ -344,7 +345,7 @@ handler 负责把 `defaults` 解析为 `batch_write` 顶层默认参数，把每
 
 第一版实现应至少覆盖：
 
-1. `batch_write` 是 `batch_write_async` 的同步桥接。
+1. `batch_add` 是 `batch_add_async` 的同步桥接。
 2. `outcomes` 与输入顺序一一对应。
 3. 顶层默认参数与 item override 按归一化规则合并。
 4. `source` 只表示模态，`assets` 保留原始资产引用，二者按段进入 `MemoryUnit.segments`。
@@ -353,11 +354,11 @@ handler 负责把 `defaults` 解析为 `batch_write` 顶层默认参数，把每
 7. `continue_on_error=False` 时失败后后续项标记 skipped。
 8. 每个 item 独立执行 WRITE 鉴权，跨 scope 无授权项不能借整批通过。
 9. `scope.require_space=true` 时缺少 space 的 item 被拒绝，不影响其他合法 item。
-10. `metadata` 保留 key 和非标量校验复用单条 write。
+10. `metadata` 保留 key 和非标量校验复用单条 add。
 11. CloudEngine 下 `message_type` routing 逐 item 生效，并固化 `metadata["pipeline"]`。
 12. 同一 stream 的多条 `infer=true` 按输入顺序执行，后项可看到前项 `/messages/` 上下文。
 13. HTTP `/v1/batch_add` malformed item 返回结构化错误，不产生 HTTP 500。
-14. Engine 运行期非领域异常同样归集为 `InternalError` outcome，并记录异常；单条 `write`
+14. Engine 运行期非领域异常同样归集为 `InternalError` outcome，并记录异常；单条 `add`
     的异常语义不变。
 
 ## 已知遗留

@@ -36,20 +36,20 @@ class TestE2EWritePath:
 
     @staticmethod
     def test_write_recall_returns_written_unit(llm_api):
-        """write → 落盘建索引 → recall 可召回原始 unit（write 不再调 classify，tier 保持默认）。"""
-        units = llm_api.write(
+        """add → 落盘建索引 → search 可召回原始 unit（add 不再调 classify，tier 保持默认）。"""
+        units = llm_api.add(
             "用户偏好简洁回答风格",
             DEFAULT_SCOPE,
             source=Modality.TEXT,
             identity=DEFAULT_ACTOR,
         )
         assert len(units) == 1
-        # write 不调 classify：tier 保持 MemoryUnit 默认 EPISODIC，无 classify metadata
+        # add 不调 classify：tier 保持 MemoryUnit 默认 EPISODIC，无 classify metadata
         assert units[0].tier == MemoryTier.EPISODIC
         assert "classify_source" not in units[0].metadata
 
         # recall 可召回
-        result = llm_api.recall(
+        result = llm_api.search(
             "简洁",
             Context(DEFAULT_SCOPE),
             identity=DEFAULT_ACTOR,
@@ -77,7 +77,7 @@ class TestE2EBackgroundExtract:
     @staticmethod
     def test_background_extract_trigger(llm_api):
         """write 后 background EXTRACT 自动触发——Scheduler 应执行 Evolver。"""
-        units = llm_api.write(
+        units = llm_api.add(
             "用户偏好简洁回答",
             DEFAULT_SCOPE,
             source=Modality.TEXT,
@@ -89,7 +89,7 @@ class TestE2EBackgroundExtract:
         assert len(units) == 1
 
         # recall 原始 unit 仍可召回
-        result = llm_api.recall(
+        result = llm_api.search(
             "偏好",
             Context(DEFAULT_SCOPE),
             identity=DEFAULT_ACTOR,
@@ -100,7 +100,7 @@ class TestE2EBackgroundExtract:
     @staticmethod
     def test_explicit_evolve_extract(llm_api):
         """手动调 evolve(EXTRACT) — API 层接口验证。"""
-        llm_api.write(
+        llm_api.add(
             "用户讨论了架构设计",
             DEFAULT_SCOPE,
             source=Modality.TEXT,
@@ -125,8 +125,8 @@ class TestE2EOfflineProfile:
 
     @staticmethod
     def test_offline_write_and_recall(offline_api):
-        """默认 Config: keyword 算子 + echo LLM → write + recall 可运行。"""
-        units = offline_api.write(
+        """默认 Config: keyword 算子 + echo LLM → add + search 可运行。"""
+        units = offline_api.add(
             "测试内容",
             DEFAULT_SCOPE,
             source=Modality.TEXT,
@@ -134,7 +134,7 @@ class TestE2EOfflineProfile:
         )
         assert len(units) == 1
 
-        result = offline_api.recall(
+        result = offline_api.search(
             "测试",
             Context(DEFAULT_SCOPE),
             identity=DEFAULT_ACTOR,
@@ -145,7 +145,7 @@ class TestE2EOfflineProfile:
     @staticmethod
     def test_offline_evolve_noop(offline_api):
         """默认 Config: keyword Extractor → evolve(EXTRACT) 不崩溃。"""
-        offline_api.write(
+        offline_api.add(
             "测试内容",
             DEFAULT_SCOPE,
             source=Modality.TEXT,
@@ -153,7 +153,7 @@ class TestE2EOfflineProfile:
         )
         # background EXTRACT 自动触发（keyword extractor 产出 chunk 类派生 unit）
         # 验证不崩溃即可
-        result = offline_api.recall(
+        result = offline_api.search(
             "测试",
             Context(DEFAULT_SCOPE),
             identity=DEFAULT_ACTOR,

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/control/ |
-| 最近一次修订日期 | 2026-08-05 |
+| 最近一次修订日期 | 2026-08-12 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md |
 ## 范围 / 边界
 
@@ -41,7 +41,7 @@
 10. **所有算子必须实现 `operator_type()` 和 `health()`**：继承自 `ControlOperator`，自描述 + 存活探测。
 11. **自演进由控制层调度、构建层执行**：控制层只提交任务、管理通道和任务状态；抽取、升华、关联、冲突消解与索引维护逻辑归构建层。
 12. **Pipeline 只做跨层 profile 选择**：`MemoryPipeline` 可以选择不同的构建/查询组件绑定，但不得实现抽取、索引、检索算法；construction/retrieval 不反向依赖 control。
-13. **权限上下文由 API/Engine 解析，不信任调用方声明**：write/recall/list 的请求条件可由 API 构造 `PermissionContext`；list 当前分页实际命中的 unit 以及 get/update/delete 这类已有 unit 操作必须由 Engine 从真源元数据解析 memory_type/tags 后再鉴权。
+13. **权限上下文由 API/Engine 解析，不信任调用方声明**：add/search/list 的请求条件可由 API 构造 `PermissionContext`；list 当前分页实际命中的 unit 以及 get/update/delete 这类已有 unit 操作必须由 Engine 从真源元数据解析 memory_type/tags 后再鉴权。
 14. **权限路由与执行路由同源但职责独立**：两者对 recall 都使用
     extensions 优先、FilterExpr 强制唯一等值兜底的取值规则；PermissionManager 选择
     授权策略，MemoryPipeline 选择执行组件，互不代替。
@@ -267,7 +267,7 @@ space 元数据、space policy、成员、用量与 offboarding 状态管理。
 | `get` | `(org: str, space: str) -> SpaceInfo` | 读取单个 space |
 | `list` | `(org: str, *, status=None, limit=100, cursor=None) -> list[SpaceInfo]` | 列出 org 下 spaces；`cursor` 是由实现解释的分页游标，调用方不得解析其内部格式 |
 | `update` | `(org: str, space: str, patch: SpacePatch) -> SpaceInfo` | 修改 display name、status、principal_path、policy 或 metadata |
-| `archive` | `(org: str, space: str) -> SpaceInfo` | 归档 space；API 层会拒绝已归档 space 的 write/update/evolve |
+| `archive` | `(org: str, space: str) -> SpaceInfo` | 归档 space；API 层会拒绝已归档 space 的 add/update/evolve |
 | `delete` | `(org: str, space: str) -> SpaceDeleteResult` | 删除该 `org + space` 下 KV 真源、messages、space metadata；API 层在调用前先经 Engine purge memory 并清理索引 |
 | `export` | `(org: str, space: str, *, include_audit=True) -> str` | 创建导出记录并返回 export id |
 | `usage` | `(org: str, space: str) -> SpaceUsage` | 统计 memory/message 数量与 KV bytes；index/audit 计数由后续专用后端补齐 |

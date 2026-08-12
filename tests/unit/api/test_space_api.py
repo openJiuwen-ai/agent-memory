@@ -54,7 +54,7 @@ def test_memory_api_space_lifecycle_usage_members_and_delete() -> None:
     )
     assert api.list_space_members("acme", "coding", identity=space_admin)[0].scope == unit_scope
 
-    unit = api.write("space scoped memory", unit_scope, identity=unit_scope)[0]
+    unit = api.add("space scoped memory", unit_scope, identity=unit_scope)[0]
     usage = api.space_usage("acme", "coding", identity=space_admin)
     assert usage.memory_count == 1
     assert usage.storage_bytes > 0
@@ -79,7 +79,7 @@ def test_memory_api_rejects_writes_after_space_archive() -> None:
     api.archive_space("acme", "coding", identity=space_admin)
 
     with pytest.raises(ValidationError):
-        api.write("blocked after archive", unit_scope, identity=unit_scope)
+        api.add("blocked after archive", unit_scope, identity=unit_scope)
 
 
 def test_space_policy_principal_path_drives_api_authorization() -> None:
@@ -97,13 +97,13 @@ def test_space_policy_principal_path_drives_api_authorization() -> None:
         identity=org_admin,
     )
 
-    api.write(
+    api.add(
         "agent owns user memory in this space",
         target,
         identity=Scope(org="acme", space="coding", agent="agent-a"),
     )
     with pytest.raises(PermissionDeniedError):
-        api.write(
+        api.add(
             "user is not the parent in this space",
             target,
             identity=Scope(org="acme", space="coding", user="alice"),
@@ -115,4 +115,4 @@ def test_in_memory_engine_rejects_non_empty_space() -> None:
     scope = Scope(org="acme", space="cloud-space", user="alice")
 
     with pytest.raises(ValidationError, match="InMemoryEngine"):
-        api.write("cloud scoped memory", scope, identity=scope)
+        api.add("cloud scoped memory", scope, identity=scope)

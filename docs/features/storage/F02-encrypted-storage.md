@@ -11,7 +11,7 @@
 
 ## 背景
 
-KVStore 是 `MemoryUnit` 内容、原始消息与部分控制数据的真源字节存储。未加密时，落盘后端或远端 KV 后端可以直接看到 value 明文；但如果把加解密逻辑分散到 `write`、`recall`、`get` 等上层接口，会导致每条读写路径都要重复处理开关、密钥、AAD 与错误语义，也容易让新增入口绕过加密。
+KVStore 是 `MemoryUnit` 内容、原始消息与部分控制数据的真源字节存储。未加密时，落盘后端或远端 KV 后端可以直接看到 value 明文；但如果把加解密逻辑分散到 `add`、`search`、`get` 等上层接口，会导致每条读写路径都要重复处理开关、密钥、AAD 与错误语义，也容易让新增入口绕过加密。
 
 因此加密能力需要落在 KV 边界：对调用方保持 `KVStore` 合同不变，对底层后端只写入密文。算法、密钥来源、明文兼容策略不归 storage 层管理，而是由 `src/common/security/` 的 `SecurityProvider` 提供。
 
@@ -84,7 +84,7 @@ KVStore 是 `MemoryUnit` 内容、原始消息与部分控制数据的真源字�
 
 ## 拒绝的方案
 
-- **在 MemoryAPI/write/recall/get 中分别调用 security**：被拒。上层入口太多，且未来新增 engine 或批处理入口时容易遗漏；KV 装饰器可以把加密收敛到单一边界。
+- **在 MemoryAPI/add/search/get 中分别调用 security**：被拒。上层入口太多，且未来新增 engine 或批处理入口时容易遗漏；KV 装饰器可以把加密收敛到单一边界。
 - **每个 raw KV 后端各自实现加密**：被拒。memory/sqlite/redis 会重复实现 AAD、失败关闭与明文兼容策略，后续增加后端时也会复制安全逻辑。
 - **storage 层直接实现加密算法和密钥管理**：被拒。storage 只负责存取语义，不应持有算法选择、密钥加载、KMS/Vault 访问、轮换策略等安全治理能力。
 - **同时加密 key 和 scope 命名空间**：本阶段拒绝。完全隐藏 key/scope 会破坏 scan、exists、delete、TTL、space 清理与审计定位。后续如需隐藏元数据，应单独设计 opaque key 或索引加密方案。

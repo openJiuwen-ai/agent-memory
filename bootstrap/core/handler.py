@@ -386,7 +386,7 @@ def _add(srv, payload: Body) -> Body:
     if not isinstance(raw_meta, dict):
         raw_meta = {}
     metadata = dict(raw_meta)
-    units = srv.api.write(
+    units = srv.api.add(
         _require(payload, "content"),
         scope,
         modality,
@@ -471,7 +471,7 @@ def _batch_add(srv, payload: Body) -> Body:
             )
         )
 
-    result = srv.api.batch_write(
+    result = srv.api.batch_add(
         items,
         default_scope,
         default_source,
@@ -518,7 +518,7 @@ def _search(srv, payload: Body) -> Body:
     if max_tokens is not None:
         extensions[EXT_MAX_TOKENS] = str(max_tokens)
     trace = bool(payload.get("trace"))
-    res = srv.api.recall(
+    res = srv.api.search(
         _require(payload, "query"),
         Context(scope, extensions=extensions),
         identity=actor,

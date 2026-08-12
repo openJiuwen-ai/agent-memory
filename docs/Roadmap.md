@@ -24,7 +24,7 @@
 
 ### 1. 统一记忆接口（Memory API）
 
-- 形态无关 Core API：`write` / `recall` / `get` / `update` / `delete` / `evolve`
+- 形态无关 Core API：`add` / `search` / `get` / `update` / `delete` / `evolve`
 
 ### 2. 编排与生命周期（Control）
 
@@ -155,5 +155,4 @@
 | 日期         | 说明                     |
 | ---------- | ---------------------- |
 | 2026-08-03 | 按照当日代码及与各团队对其的情况进行初稿规划 |
-
 

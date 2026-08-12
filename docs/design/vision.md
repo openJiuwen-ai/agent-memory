@@ -88,12 +88,12 @@ agent-memory 致力于成为智能体世界的「记忆底座」：
                                           ▼
                           ┌───────────────────────────────┐
                           │      agent-memory 内核        │
-                          │  (记忆接口层: write/recall      │
+                          │  (记忆接口层: add/search         │
                           │   /update/delete/evolve ...)   │
                           └───────────────────────────────┘
 ```
 
-- **CLI**：`agent-memory write/recall/...`，适合脚本、调试、端侧工具与编码 Agent（对齐 Codex/Claude Code/memSearch 的 CLI 习惯）。
+- **CLI**：`agent-memory add/search/...`，适合脚本、调试、端侧工具与编码 Agent（对齐 Codex/Claude Code/memSearch 的 CLI 习惯）。
 - **Skill**：以「技能包」形式被 OpenClaw 等 Agent 生态加载。
 - **SDK**：**以 Python 为主**（首发与一等支持），后续按生态需求评估其他语言；提供 in-process 嵌入。
 - **API**：HTTP/gRPC 远程服务，供任意语言/分布式系统调用。
@@ -209,7 +209,7 @@ agent-memory 致力于成为智能体世界的「记忆底座」：
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  调用与数据接入层   CLI·Skill·SDK(Python)·HTTP/gRPC·MCP ＋ 多模态信息源接入  │
-│  （记忆接口）         write · recall · update · delete · link · evolve        │
+│  （记忆接口）         add · search · update · delete · link · evolve           │
 ├──────────────────────────────────────────────────────────────────────────┤
 │  记忆管理层         生命周期 · 治理(检视/编辑/审计/遗忘) · 权限 · 配置/策略   │
 ├──────────────────────────────────────────────────────────────────────────┤

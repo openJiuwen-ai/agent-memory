@@ -17,7 +17,7 @@ pytestmark = pytest.mark.unit
 class _RecordingBatchApi:
     calls: list[dict[str, Any]] = field(default_factory=list)
 
-    def batch_write(self, items, scope, source, **kwargs):
+    def batch_add(self, items, scope, source, **kwargs):
         self.calls.append({"items": items, "scope": scope, "source": source, **kwargs})
         return BatchWriteResult(
             outcomes=[

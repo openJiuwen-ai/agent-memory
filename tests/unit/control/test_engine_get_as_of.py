@@ -59,7 +59,7 @@ def test_get_as_of_handles_historical_update_before_original_write_time() -> Non
     actor = scope
     kernel = build_kernel()
 
-    old = kernel.api.write("home is Shanghai", scope, identity=actor)[0]
+    old = kernel.api.add("home is Shanghai", scope, identity=actor)[0]
     new = kernel.api.update(
         old.id,
         scope,

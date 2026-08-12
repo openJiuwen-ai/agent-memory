@@ -108,7 +108,7 @@ def test_engine_write_uses_pipeline_profile_from_memory_type() -> None:
     kernel = build_kernel(config=_kernel_config())
     scope = Scope(user="u1")
 
-    kernel.api.write(
+    kernel.api.add(
         "use pytest for this repo",
         scope,
         identity=scope,
@@ -123,7 +123,7 @@ def test_engine_recall_uses_pipeline_profile_from_context_extensions() -> None:
     kernel = build_kernel(config=_kernel_config())
     scope = Scope(user="u1")
 
-    result = kernel.api.recall(
+    result = kernel.api.search(
         "test strategy",
         Context(scope=scope, extensions={"memory_type": "coding"}),
         identity=scope,
@@ -136,7 +136,7 @@ def test_engine_recall_uses_pipeline_profile_from_metadata_memory_type_filter() 
     kernel = build_kernel(config=_kernel_config())
     scope = Scope(user="u1")
 
-    result = kernel.api.recall(
+    result = kernel.api.search(
         "test strategy",
         Context(scope=scope),
         identity=scope,
@@ -150,7 +150,7 @@ def test_engine_recall_canonicalizes_legacy_memory_type_filter_name() -> None:
     kernel = build_kernel(config=_kernel_config())
     scope = Scope(user="u1")
 
-    result = kernel.api.recall(
+    result = kernel.api.search(
         "test strategy",
         Context(scope=scope),
         identity=scope,

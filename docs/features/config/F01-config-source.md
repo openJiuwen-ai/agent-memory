@@ -22,7 +22,7 @@
 5. LLM 模型及相关凭证
 6. Store 存储组件（连接或已预装后端选用）
 
-当前能力主要靠 **YAML +** `defaults.py` **装配期合并** 固化进组件实例字段；`PolicyManager` 只覆盖少量策略键；`write`/`recall`/`evolve` 的调用级参数表达业务意图，不适合承载模型名、API Key、连接串或 prompt 全文。
+当前能力主要靠 **YAML +** `defaults.py` **装配期合并** 固化进组件实例字段；`PolicyManager` 只覆盖少量策略键；`add`/`search`/`evolve` 的调用级参数表达业务意图，不适合承载模型名、API Key、连接串或 prompt 全文。
 
 密钥侧已出现同类模式：抽象「从哪取值」的接口、默认实现保证开箱可用、装配期注入、预留运行中按名取值。本特性将同一模式推广到上述六类**业务配置**，形成统一的 `ConfigSource`。
 
@@ -36,7 +36,7 @@
 
 - **默认实现**：`YamlDefaultsConfigSource`——合并 `defaults.py` 与用户 YAML/字典后的投影，**不配也能跑**，行为对齐今天的装配结果；Producer target 为 `yaml_defaults`。
 - **产品实现**：HTTP/DB/配置中心等，在 `build_kernel` 装配期注入。
-- **消费方**：需要晚绑定值时调用 `fetch(key)`（或等价方法），不从 `write`/`recall`/`evolve` 入参读取这些配置。
+- **消费方**：需要晚绑定值时调用 `fetch(key)`（或等价方法），不从 `add`/`search`/`evolve` 入参读取这些配置。
 
 这对应两层能力（与密钥抽象同构）：
 
@@ -276,7 +276,7 @@ Store 切换后旧库数据不自动迁移。`memory` 等无连接串的后端�
 #### 行为（与当前代码对齐）
 
 1. **YAML** `prompts.extract`：登记可用策略名 → 文本（目录）。例：同时存在 `episodic`、`preference`、`procedural` 三条文本，**并不等于**默认三选都跑。
-2. **write / evolve 入参 metadata**（已实现，`construction/prompt_strategy.py`）：
+2. **add / evolve 入参 metadata**（已实现，`construction/prompt_strategy.py`）：
   - `_extract_prompt_episodic: episodic` → 本轮跑 extract 策略 `episodic`，文本取自 `prompts.extract.episodic`（经 PromptRegistry，可再经 ConfigSource 晚绑定）。
   - 关闭 preference、开启 procedural：本轮**不要**写 `_extract_prompt_preference`，改写 `_extract_prompt_procedural: procedural`（可与 episodic 并存）。
 3. **无任何** `_extract_prompt_`*：`DynamicLLMExtractor` 回退旧 Extractor（非「按 YAML 目录全开」）。
@@ -287,7 +287,7 @@ Store 切换后旧库数据不自动迁移。`memory` 等无连接串的后端�
 #### 与决策 3 的关系
 
 - **允许**入参：策略名对应的 prompt **key**（metadata 前缀键）。
-- **禁止**入参：prompt **全文**、以及把「全局默认启用策略表」伪装进 write/recall。
+- **禁止**入参：prompt **全文**、以及把「全局默认启用策略表」伪装进 add/search。
 
 产品若要在 UI 上「默认勾选 episodic+preference」，应在**产品层**生成每次请求的 metadata；内核保持「请求写什么策略就跑什么」，避免与 ConfigSource 六类全局配置混淆。
 
@@ -297,7 +297,7 @@ Store 切换后旧库数据不自动迁移。`memory` 等无连接串的后端�
 
 ### 决策 3：配置不走业务 API 入参
 
-`write` / `recall` / `evolve` / `list` 等：
+`add` / `search` / `evolve` / `list` 等：
 
 - **可以**传业务选择信息：prompt 的 **key**（含 extract/consolidate/reflect 的 `_extract_prompt_`* / `_consolidation_prompt_*` / `_reflect_prompt_*`）、`memory_type` / pipeline 名、top_k、filters 等。
 - **不可以**传：prompt 全文、模型名、API Key、base_url、Store 连接串、能力开关的「全局覆盖伪装」。
@@ -346,7 +346,7 @@ Store 切换后旧库数据不自动迁移。`memory` 等无连接串的后端�
 
 PolicyManager 是少量已知键的策略表，不适合 prompt 长文本、连接串、多租户配置树和模型凭证。
 
-### 拒绝：通过 `write`/`recall`/`evolve` 传入配置
+### 拒绝：通过 `add`/`search`/`evolve` 传入配置
 
 安全风险高、难审计、与现有 key→registry 模型冲突，且无法统一 Store/模型切换。
 
@@ -364,7 +364,7 @@ PolicyManager 是少量已知键的策略表，不适合 prompt 长文本、连�
 
 ### 能力开关
 
-产品改配置中心 `globals.rerank_enabled=false` → 下次 recall 前 `fetch` → 跳过精排。目标通道须在装配期已存在。
+产品改配置中心 `globals.rerank_enabled=false` → 下次 search 前 `fetch` → 跳过精排。目标通道须在装配期已存在。
 
 ### prompt
 

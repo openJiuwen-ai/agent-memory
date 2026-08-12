@@ -59,7 +59,7 @@ Ingestor.ingest → 补 assets/tags → Classifier.classify → KVStore.insert�
 ### 3. HTTP handler `/v1/add` 透传 metadata
 
 `bootstrap/core/handler.py` 的 `_add`：
-- 校验 `payload["metadata"]` 必须是对象后按原生类型透传给 `api.write`；API 写入边界只
+- 校验 `payload["metadata"]` 必须是对象后按原生类型透传给 `api.add`；API 写入边界只
   接受 JSON 标量或字符串数组，并拒绝系统保留 key。业务 metadata 不再统一
   string 化，`RawPayload` / `MemoryUnit` / 索引投影保持同一值类型。
 - `infer=true` 下 engine 可能合法返回空列表（派生记忆全部被 dedup 判为 update/noop，`created_ids` 为空）。此时**不伪造 item_id**，如实返回 `{"ok": True, "op": "add", "item_id": None, "item": None, "skipped": "all derived memories deduped (update/noop)"}`——让调用方知道"写入被去重吸收"而非误以为"新建了一条"。
@@ -105,7 +105,7 @@ Ingestor.ingest → 补 assets/tags → Classifier.classify → KVStore.insert�
 ### 端到端验证
 
 - `agent_plugin/JiwenSwarm/_e2e_real.py` — provider ↔ 服务(8137) 全链路：conclude / sync_turn(infer=true) / on_session_end / prefetch / search / profile
-- `examples/quickstart*.py` — write → recall → get → update → evolve 全链路
+- `examples/quickstart*.py` — add → search → get → update → evolve 全链路
 
 ### 关键场景验证
 
@@ -216,14 +216,14 @@ InProcess 模式 `list_semantic` 同步对齐：去掉 `tier==SEMANTIC` 过滤�
 `agent_plugin/jiuwenswarm/agent_memory_provider.py` 新增第 4 个工具 `agent_memory_procedural`：
 
 - `PROCEDURAL_SCHEMA`：参数 `content`（要汇总的本轮内容），description 说明"汇总成 1 条 procedural 记录、原文不存、不去重不检索"。
-- `handle_tool_call` 分支：调 `self._client.write(content, scope, metadata={"procedural": "true"})` → 经 engine procedural 分支。返回 `{result, item_id}`。
+- `handle_tool_call` 分支：调 `self._client.add(content, scope, metadata={"procedural": "true"})` → 经 engine procedural 分支。返回 `{result, item_id}`。
 - `get_tool_schemas` 加入它；`system_prompt_block` 补引导语。
 
-工具经 HTTP `/v1/add`（metadata 透传 procedural=true）或 InProcess `write_async` 都触发 procedural 分支。需配 `extractor:llm` 才真汇总（默认 keyword 降级为原文原样存 1 条 PROCEDURAL）。
+工具经 HTTP `/v1/add`（metadata 透传 procedural=true）或 InProcess `add_async` 都触发 procedural 分支。需配 `extractor:llm` 才真汇总（默认 keyword 降级为原文原样存 1 条 PROCEDURAL）。
 
 ### 决策12：`infer=true + middle=true` 中期缓冲子路径
 
-`write` 的 `infer=true` 分支下按 `middle` 二级开关再分流。`middle=true` 触发中期缓冲子路径，落地细节见 [`F06-middle-term-memory`](../control/F06-middle-term-memory.md)，这里只列与 write 路径决策相关的部分：
+`add` 的 `infer=true` 分支下按 `middle` 二级开关再分流。`middle=true` 触发中期缓冲子路径，落地细节见 [`F06-middle-term-memory`](../control/F06-middle-term-memory.md)，这里只列与 write 路径决策相关的部分：
 
 - 原文落 `/memory/{id}`（与建索引记忆同前缀，不走 `/messages/`）+ 建索引（原文立即可检索）+ 打 `tier=WORKING` 与 `metadata["middle"]="true"` 标记。
 - 提交 `MiddleToLongJob` 给 Scheduler——`interval=self._middle_interval`（编排周期，属 Engine 编排职责，故留 Engine 而非 JobFactory）。Scheduler 把它注册到 per scope TimerWheel，Timer 协程周期生成实例入队，每个实例跑一次 `run()` 即返回。

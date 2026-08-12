@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/ingest/ |
-| 最近一次修订日期 | 2026-07-27 |
+| 最近一次修订日期 | 2026-08-12 |
 
 | 关联特性文档 | docs/features/F01-system-spec-design.md |
 ## 范围 / 边界
@@ -101,7 +101,7 @@ src/ingest/source_impl/
 
 | 关联 spec | 关系 |
 |-----------|------|
-| S02-memory_api | MemoryAPI.write 触发控制层→本层的 Ingestor.ingest |
+| S02-memory_api | MemoryAPI.add 触发控制层→本层的 Ingestor.ingest |
 | S05-construction | 构建层接收本层产出的 MemoryUnit 做落盘+索引+演进 |
 | S07-common | Normalizer/Tokenizer 等共享插件由本层消费 |
 | architecture.md §10 | 多模态信息源接入与规约投影 |

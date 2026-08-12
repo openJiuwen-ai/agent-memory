@@ -49,7 +49,7 @@ def test_supersede_sets_version_chain_and_invalidates_old_version() -> None:
     actor = scope
     kernel = build_kernel()
 
-    old = kernel.api.write("home is Shanghai", scope, identity=actor)[0]
+    old = kernel.api.add("home is Shanghai", scope, identity=actor)[0]
 
     new = kernel.api.update(
         old.id,
@@ -72,7 +72,7 @@ def test_supersede_uses_patch_valid_time_as_new_version_boundary() -> None:
     kernel = build_kernel()
     valid_from = datetime(2026, 6, 17, 11, 0, tzinfo=timezone.utc)
 
-    old = kernel.api.write("home is Shanghai", scope, identity=actor)[0]
+    old = kernel.api.add("home is Shanghai", scope, identity=actor)[0]
     new = kernel.api.update(
         old.id,
         scope,
@@ -93,7 +93,7 @@ def test_update_supersede_delegates_old_version_lifecycle_to_manager() -> None:
     setattr(getattr(kernel.api, "_engine"), "_lifecycle", lifecycle)
     valid_from = datetime(2026, 6, 17, 11, 0, tzinfo=timezone.utc)
 
-    old = kernel.api.write("home is Shanghai", scope, identity=actor)[0]
+    old = kernel.api.add("home is Shanghai", scope, identity=actor)[0]
     new = kernel.api.update(
         old.id,
         scope,

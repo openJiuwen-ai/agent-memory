@@ -10,7 +10,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（write/batch_write/recall/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
+| `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
 | `memory_api_impl/assembly.py` | 装配入口：`build_kernel(config)` 构建并暴露 MemoryAPI、Storage、兼容 KV 与控制面句柄 |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI：委托 Engine/Governor/Scheduler/PermissionManager/SpaceManager + PEP 鉴权 |
@@ -18,13 +18,13 @@
 ## 行为铁律
 
 1. **本层不做编排**  
-   `MemoryAPI` 只做三件事：鉴权（PEP）、参数装配、委托。编排逻辑（write 路径、recall/list 路径、evolve 调度）全部在 `control/MemoryEngine`，禁止在本层堆业务逻辑。
+   `MemoryAPI` 只做三件事：鉴权（PEP）、参数装配、委托。编排逻辑（add 路径、search/list 路径、evolve 调度）全部在 `control/MemoryEngine`，禁止在本层堆业务逻辑。
 
 2. **identity 不下沉**  
    鉴权通过后只透传已鉴权的 target `scope`，`identity` 参数不传入控制层/检索层/构建层/存储层。
 
-3. **recall 参数拆分在本层边界**  
-   `recall(query, context, *, identity, ...)` 中的 `context: Context` 在本层拆开：
+3. **search 参数拆分在本层边界**
+   `search(query, context, *, identity, ...)` 中的 `context: Context` 在本层拆开：
    - `context.scope` 作独立轴穿透到 Engine
    - `context.extensions["max_tokens"]` 由 API 边界解析为 `RetrievalQuery.max_tokens`
    - 其余 `context.extensions` 写入 `RetrievalQuery.extensions`
@@ -33,7 +33,7 @@
    `admin_get/set/all` 直达 `PolicyManager`，不经过 `MemoryEngine`（Engine 中对应方法抛 NotImplementedError）。
 
 5. **写入同步/异步桥接**
-   `write` / `batch_write` 分别桥接对应协程入口；batch 在本层逐项归一化、鉴权、space 校验和审计后委托 Engine，默认按输入顺序返回 partial-success outcomes。
+   `add` / `batch_add` 分别桥接对应协程入口；batch 在本层逐项归一化、鉴权、space 校验和审计后委托 Engine，默认按输入顺序返回 partial-success outcomes。
 
 6. **space 必须在 API 边界执行策略校验**
    `scope.require_space=true` 时，具体 target scope 缺少 `space` 的数据面/治理面操作必须在 `LocalMemoryAPI._authorize` 拒绝并记录 deny audit；`Scope()` 根管理面与 org 级 `list_spaces/create_space` 鉴权目标不受此策略影响。
@@ -55,7 +55,7 @@
 
 ```
 MemoryAPI.method(scope=target, identity=caller)
-  → 构造 PermissionContext（write/recall/list 请求条件来自入参；list 实际 unit 与 get/update/delete 来自 Engine 真源元数据）
+  → 构造 PermissionContext（add/search/list 请求条件来自入参；list 实际 unit 与 get/update/delete 来自 Engine 真源元数据）
   → PermissionManager.check(actor=identity, target=scope, action=<对应动作>, context=...)
     → 通过 → 委托 Engine/Governor/PolicyManager（仅传 scope，不传 identity）
     → 拒绝 → 抛 PermissionDeniedError
@@ -80,7 +80,7 @@ MemoryAPI.method(scope=target, identity=caller)
 ## 本地约束
 
 1. `identity` 为必填 keyword-only 参数，与 `scope` 同为 Scope 类型，强制具名传入防止位置传反。
-2. 所有数据面方法（write/batch_write/recall/list/get/update/delete/evolve）都需要鉴权，治理面（inspect/trace/audit）也需要鉴权。
+2. 所有数据面方法（add/batch_add/search/list/get/update/delete/evolve）都需要鉴权，治理面（inspect/trace/audit）也需要鉴权。
 3. 装配由 `assembly.build_kernel(config)` 完成，经各 Producer 的 `dep/build_named/build` 组装；
    `Kernel.storage` 与 Retriever 引用同一个 `storage.default` 实例。顺序铁律：
    ConfigSource → `kv_store.default`（非已加密则外包 `EncryptedKVStore`）→ `storage.default`

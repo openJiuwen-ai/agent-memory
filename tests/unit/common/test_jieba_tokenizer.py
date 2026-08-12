@@ -194,8 +194,8 @@ def test_assemble_with_jieba():
     api = assemble(config=config)
     scope = Scope(org="test", user="alice", agent="a1", session="s1")
     actor = Scope(org="test", user="alice")
-    # write → jieba 分词建索引 → recall
-    units = api.write("用户偏好简洁回答", scope, source=Modality.TEXT, identity=actor)
+    # add → jieba 分词建索引 → search
+    units = api.add("用户偏好简洁回答", scope, source=Modality.TEXT, identity=actor)
     assert len(units) == 1
-    result = api.recall("偏好", Context(scope), identity=actor, top_k=10)
+    result = api.search("偏好", Context(scope), identity=actor, top_k=10)
     assert len(result.items) > 0

@@ -8,10 +8,10 @@
 
 每个用例按 4 步骤写记忆，每步用不同人物主语 + 不同事件主题（便于 recall 时按主语区分）：
 
-1. **sync write middle=false**（``api.write`` 同步方法）→ evolver 同步 EXTRACT 派生。
-2. **sync write middle=true**（``api.write`` 同步方法）→ 提交 MiddleToLongJob 到 scheduler。
-3. **await write_async middle=false** → 与 step 1 同构（同步 EXTRACT 派生）。
-4. **await write_async middle=true** → 提交 MiddleToLongJob 到 scheduler，期望后台提取。
+1. **sync write middle=false**（``api.add`` 同步方法）→ evolver 同步 EXTRACT 派生。
+2. **sync write middle=true**（``api.add`` 同步方法）→ 提交 MiddleToLongJob 到 scheduler。
+3. **await add_async middle=false** → 与 step 1 同构（同步 EXTRACT 派生）。
+4. **await add_async middle=true** → 提交 MiddleToLongJob 到 scheduler，期望后台提取。
 
 **关键差异——scheduler 行为**：
 - **InProcessScheduler**：``submit`` 是 async + 内部 ``await job.run()``——submit 即跑完 Job。
@@ -24,7 +24,7 @@
 启动长期 Timer 协程——依赖事件循环存活。``asyncio.run`` 包一层会关循环，Timer 协程被取消。
 pytest-asyncio 提供贯穿测试函数全程的事件循环。
 
-**同步 API 调用推到独立线程**：``api.write`` / ``api.list`` / ``api.recall`` 是同步方法（内部
+**同步 API 调用推到独立线程**：``api.add`` / ``api.list`` / ``api.search`` 是同步方法（内部
 ``asyncio.run(self._engine.xxx)``）——在已运行的事件循环里直接调会 RuntimeError。用
 ``asyncio.to_thread`` 推到独立线程（线程没事件循环，内部 asyncio.run 能跑）——主事件循环不阻塞，
 Timer 协程继续转。
@@ -183,14 +183,14 @@ def _list_via_thread(api, scope: Scope = SCOPE, *, identity: Scope = SCOPE):
 
 
 def _recall_via_thread(api, query: str, ctx: Context, *, identity: Scope = SCOPE, top_k: int = 30):
-    """在 async 测试函数里调同步 api.recall——同 _list_via_thread。"""
-    return asyncio.to_thread(api.recall, query, ctx, identity=identity, top_k=top_k)
+    """在 async 测试函数里调同步 api.search——同 _list_via_thread。"""
+    return asyncio.to_thread(api.search, query, ctx, identity=identity, top_k=top_k)
 
 
 async def _recall_async(kernel, query: str, ctx: Context, *, top_k: int = 30):
-    """直接 await engine.recall——跳过 api.recall 的 to_thread + asyncio.run 双重开销。
+    """直接 await engine.recall——跳过 api.search 的 to_thread + asyncio.run 双重开销。
 
-    step 4 立即 recall（middle=true 路径）需在 Timer 触发前完成。api.recall 内部
+    step 4 立即 recall（middle=true 路径）需在 Timer 触发前完成。api.search 内部
     ``asyncio.run(engine.recall)`` 在子线程跑——双重事件循环切换 + LLM 调用累积 10s+
     延迟，常被 Timer 抢先归档原文。直接 await engine.recall 在主循环跑——仍走 LLM
     embedding/retrieval，但省去切换开销，且与 Timer 协程在同循环协作调度（recall
@@ -202,7 +202,7 @@ async def _recall_async(kernel, query: str, ctx: Context, *, top_k: int = 30):
 
 
 def _sync_write_via_thread(api, content: str, *, middle: bool, identity: Scope = SCOPE):
-    """在 async 测试函数里调同步 api.write——推到独立线程避免 RuntimeError。
+    """在 async 测试函数里调同步 api.add——推到独立线程避免 RuntimeError。
 
     step 1 / step 2 用 sync write 验证同步 API 路径。
     """
@@ -213,7 +213,7 @@ def _sync_write_via_thread(api, content: str, *, middle: bool, identity: Scope =
     if middle:
         metadata["middle"] = "true"
     return asyncio.to_thread(
-        api.write,
+        api.add,
         content,
         SCOPE,
         identity=identity,
@@ -222,10 +222,10 @@ def _sync_write_via_thread(api, content: str, *, middle: bool, identity: Scope =
 
 
 async def _async_write(api, content: str, *, middle: bool, identity: Scope = SCOPE):
-    """step 3 / step 4 用 async write_async——直接 await。
+    """step 3 / step 4 用 async add_async——直接 await。
 
-    与 _sync_write_via_thread 行为应一致（write 同步方法内部就是 asyncio.run(write_async)），
-    但在 async 测试函数里直接 await write_async 避免推到线程。
+    与 _sync_write_via_thread 行为应一致（add 同步方法内部就是 asyncio.run(add_async)），
+    但在 async 测试函数里直接 await add_async 避免推到线程。
     """
     metadata = {
         "infer": "true",
@@ -233,7 +233,7 @@ async def _async_write(api, content: str, *, middle: bool, identity: Scope = SCO
     }
     if middle:
         metadata["middle"] = "true"
-    return await api.write_async(
+    return await api.add_async(
         content,
         SCOPE,
         identity=identity,
@@ -357,7 +357,7 @@ async def test_in_memory_in_process() -> None:
         assert any("bob" in u.content.lower() or "kyoto" in u.content.lower()
                    for u in list_after_s2.items), "step 2 后 list 应有 bob 派生"
 
-        # ---- step 3: await write_async middle=false（carol + python） ----
+        # ---- step 3: await add_async middle=false（carol + python） ----
         units_s3 = await _async_write(api, _STEP3_CONTENT, middle=False)
         assert len(units_s3) >= 1
         logger.info(f"\n[step 3] carol write")
@@ -375,7 +375,7 @@ async def test_in_memory_in_process() -> None:
         assert any("carol" in u.content.lower() or "python" in u.content.lower()
                    for u in list_after_s3.items), "step 3 后 list 应有 carol 派生"
 
-        # ---- step 4: await write_async middle=true（dave + hiking） ----
+        # ---- step 4: await add_async middle=true（dave + hiking） ----
         units_s4 = await _async_write(api, _STEP4_CONTENT, middle=True)
         assert len(units_s4) == 1
         dave_original_id = units_s4[0].id
@@ -436,12 +436,12 @@ async def test_in_memory_async_timer() -> None:
 
     AsyncTimerScheduler.submit 入队 + 起 Timer 协程——Job 不立即跑。
 
-    **sync write 的隐藏限制**：step 2 用 sync write（``api.write``）内部
-    ``asyncio.run(write_async)`` 在子线程建临时循环跑——AsyncTimerScheduler.submit
+    **sync write 的隐藏限制**：step 2 用 sync write（``api.add``）内部
+    ``asyncio.run(add_async)`` 在子线程建临时循环跑——AsyncTimerScheduler.submit
     注册的 Timer 协程被绑到子线程临时循环；临时循环关 → Timer 被取消。
     故 step 2 写入后立即查 bob 原文仍 ACTIVE——Timer 已死，尚未触发 Job。
 
-    step 4 用 ``await api.write_async`` 在主循环驱动——``_submit_timer`` 的 update
+    step 4 用 ``await api.add_async`` 在主循环驱动——``_submit_timer`` 的 update
     分支检测 ``wheel.task.done()`` 后通过 ``_ensure_timer_task`` 重启 Timer
     （bugfix 修复——修复前此处不重启，导致 middle=true Job 永不执行）。
     Timer 在 ``middle_interval`` 秒后触发 MiddleToLongJob.run——Job 列出所有
@@ -478,7 +478,7 @@ async def test_in_memory_async_timer() -> None:
                    for u in list_after_s1.items), "step 1 后 list 应有 alice 派生"
 
         # ---- step 2: sync write middle=true（bob + kyoto） ----
-        # sync write 在子线程建临时循环跑 write_async——Timer 协程被绑到临时循环，
+        # sync write 在子线程建临时循环跑 add_async——Timer 协程被绑到临时循环，
         # 临时循环关后 Timer 被取消。step 2 立即查原文仍 ACTIVE。
         units_s2 = await _sync_write_via_thread(api, _STEP2_CONTENT, middle=True)
         assert len(units_s2) == 1
@@ -504,7 +504,7 @@ async def test_in_memory_async_timer() -> None:
             f"step 2 立即 recall 应能召回 bob 原文，got {recall_s2.items}"
         )
 
-        # ---- step 3: await write_async middle=false（carol + python） ----
+        # ---- step 3: await add_async middle=false（carol + python） ----
         units_s3 = await _async_write(api, _STEP3_CONTENT, middle=False)
         assert len(units_s3) >= 1
         logger.info(f"\n[step 3] carol write")
@@ -520,7 +520,7 @@ async def test_in_memory_async_timer() -> None:
         assert any("carol" in u.content.lower() or "python" in u.content.lower()
                    for u in list_after_s3.items), "step 3 后 list 应有 carol 派生"
 
-        # ---- step 4: await write_async middle=true（dave + hiking） ----
+        # ---- step 4: await add_async middle=true（dave + hiking） ----
         # async write 在主循环驱动——update 分支重启 Timer（bugfix），Timer 在
         # middle_interval 秒后触发 MiddleToLongJob.run → 归档 bob + dave 原文。
         units_s4 = await _async_write(api, _STEP4_CONTENT, middle=True)
@@ -678,7 +678,7 @@ async def test_cloud_in_process() -> None:
         assert any("bob" in i.content.lower() or "kyoto" in i.content.lower()
                    for i in recall_s2.items), "step 2 后 recall 应有 bob 派生"
 
-        # ---- step 3: await write_async middle=false（carol + python） ----
+        # ---- step 3: await add_async middle=false（carol + python） ----
         units_s3 = await _async_write(api, _STEP3_CONTENT, middle=False)
         assert len(units_s3) >= 1
         logger.info(f"\n[step 3] carol write")
@@ -694,7 +694,7 @@ async def test_cloud_in_process() -> None:
         assert any("carol" in u.content.lower() or "python" in u.content.lower()
                    for u in list_after_s3.items), "step 3 后 list 应有 carol 派生"
 
-        # ---- step 4: await write_async middle=true（dave + hiking） ----
+        # ---- step 4: await add_async middle=true（dave + hiking） ----
         units_s4 = await _async_write(api, _STEP4_CONTENT, middle=True)
         assert len(units_s4) == 1
         dave_original_id = units_s4[0].id
@@ -812,7 +812,7 @@ async def test_cloud_async_timer() -> None:
             f"step 2 立即 recall 应能召回 bob 原文，got {recall_s2.items}"
         )
 
-        # ---- step 3: await write_async middle=false（carol + python） ----
+        # ---- step 3: await add_async middle=false（carol + python） ----
         units_s3 = await _async_write(api, _STEP3_CONTENT, middle=False)
         assert len(units_s3) >= 1
         logger.info(f"\n[step 3] carol write")
@@ -828,7 +828,7 @@ async def test_cloud_async_timer() -> None:
         assert any("carol" in u.content.lower() or "python" in u.content.lower()
                    for u in list_after_s3.items), "step 3 后 list 应有 carol 派生"
 
-        # ---- step 4: await write_async middle=true（dave + hiking） ----
+        # ---- step 4: await add_async middle=true（dave + hiking） ----
         units_s4 = await _async_write(api, _STEP4_CONTENT, middle=True)
         assert len(units_s4) == 1
         dave_original_id = units_s4[0].id

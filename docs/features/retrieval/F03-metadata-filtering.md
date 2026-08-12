@@ -31,7 +31,7 @@
 
 同时，现有代码已经把 scope 作为独立入参向下传递：
 
-- `MemoryAPI.recall(..., context=Context(scope=...))`
+- `MemoryAPI.search(..., context=Context(scope=...))`
 - `Retriever.retrieve(scope, query)`
 - `Store.search(scope, query)`
 

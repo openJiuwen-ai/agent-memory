@@ -137,7 +137,7 @@ def test_api_evolve_returns_completed_scheduler_job_with_evolve_result_detail() 
     )
     kernel = build_kernel(config=config)
     scope = Scope(user="u1")
-    kernel.api.write("Alice likes tea", scope, identity=scope)
+    kernel.api.add("Alice likes tea", scope, identity=scope)
 
     job_id = kernel.api.evolve(scope, EvolveMode.EXTRACT, identity=scope)
 

@@ -19,7 +19,7 @@
 
 第一版实现需要解决三件事：
 
-1. **让 `MemoryAPI` 有可跑的编排中枢**：`write/recall/get/update/delete/evolve` 要能端到端串起 ingest、construction、retrieval、storage，形成最小闭环。
+1. **让 `MemoryAPI` 有可跑的编排中枢**：`add/search/get/update/delete/evolve` 要能端到端串起 ingest、construction、retrieval、storage，形成最小闭环。
 2. **保住治理语义**：更新默认非破坏式版本化，删除默认标记遗忘/归档/降权，合规硬删必须显式 `PURGE`，治理侧能 inspect/trace/audit。
 3. **为真实后端留插拔点**：当前实现以纯内存/进程内为主，但顶层接口必须保持抽象，实现通过 Producer 自注册，后续可替换成异步队列、真实 ACL、持久化 policy 后端等。
 
@@ -223,8 +223,8 @@ scheduler:
 
 ### 端到端覆盖
 
-- `tests/unit/api/test_recall_context.py` 间接覆盖 API → Engine → Retriever 的 recall 边界。
-- `examples/quickstart.py` 类示例覆盖 write → recall → get/update/delete → evolve → admin/audit 主链路。
+- `tests/unit/api/test_recall_context.py` 间接覆盖 API → Engine → Retriever 的 search 边界。
+- `examples/quickstart.py` 类示例覆盖 add → search → get/update/delete → evolve → admin/audit 主链路。
 
 ---
 
@@ -232,7 +232,7 @@ scheduler:
 
 1. **Permission 仍是 allow-all**：当前只适合本地 demo/单租户测试。真实多租户部署必须实现 scope 包含、Grant 匹配、过期校验、逐 action revoke 与审计。
 
-2. **Scheduler 不是真异步**（**部分解决，仍有遗留**，见 [`F06`](F06-middle-term-memory.md)）：原 `InProcessScheduler.submit` 在当前进程同步执行 Evolver，write 后提交的 background EXTRACT 仍可能拖慢调用链。`F06` 新增 `AsyncTimerScheduler`（target=`async_timer`）作为异步 + 定时调度器，per scope FIFO 队列 + 单 drain Task + per scope TimerWheel，Job 提交后不再阻塞 write 路径。**但有两处遗留**：(a) `defaults.py` 默认装配仍配 `in_process`——需用户显式覆盖为 `async_timer` 才走异步；(b) `AsyncTimerScheduler` 依赖长生命周期事件循环，与同步 `LocalMemoryAPI.write` 内的 `asyncio.run` 桥接不兼容（同步 API 返回后临时循环关闭、Timer 协程被取消）——生产部署需配独立 Scheduler Runtime 或改用 `write_async` 全链路 await。详见 F06 已知遗留。
+2. **Scheduler 不是真异步**（**部分解决，仍有遗留**，见 [`F06`](F06-middle-term-memory.md)）：原 `InProcessScheduler.submit` 在当前进程同步执行 Evolver，add 后提交的 background EXTRACT 仍可能拖慢调用链。`F06` 新增 `AsyncTimerScheduler`（target=`async_timer`）作为异步 + 定时调度器，per scope FIFO 队列 + 单 drain Task + per scope TimerWheel，Job 提交后不再阻塞 add 路径。**但有两处遗留**：(a) `defaults.py` 默认装配仍配 `in_process`——需用户显式覆盖为 `async_timer` 才走异步；(b) `AsyncTimerScheduler` 依赖长生命周期事件循环，与同步 `LocalMemoryAPI.add` 内的 `asyncio.run` 桥接不兼容（同步 API 返回后临时循环关闭、Timer 协程被取消）——生产部署需配独立 Scheduler Runtime 或改用 `add_async` 全链路 await。详见 F06 已知遗留。
 
 3. **Policy 未持久化、未审计**：`DictPolicyManager` 只存在于进程内，重启丢失；`set` 也未直接产生日志/审计事件。后续应接持久化后端并补 admin 审计。
 
