@@ -27,7 +27,7 @@
 | `abstractor_impl/` | Abstractor 实现目录（concat / llm） |
 | `associator_impl/` | Associator 实现目录（keyword / llm） |
 | `classifier_impl/` | Classifier 实现目录（keyword / llm） |
-| `index_builder_impl/` | IndexBuilder 实现目录（fulltext / hybrid / vector）；vector/fulltext 各扩展 L0/L1 分层索引（独立 store 分表，store None 跳过），详见 F01-memory-layer |
+| `index_builder_impl/` | IndexBuilder 实现目录（fulltext / hybrid / unified / vector）；`unified` 仅按 Scope 直调统一 Storage 的 add/update/delete，不派生检索索引，调用方不得预先写入同一 unit；vector/fulltext 各扩展 L0/L1 分层索引（独立 store 分表，store None 跳过），详见 F01-memory-layer |
 | `layer_annotator_impl/` | LayerAnnotator 实现目录（keyword / llm）；evolver 抽取后调用，对超阈 content 标注 L0/L1 |
 | `dedup_impl/` | Dedup 实现目录（vector / keyword） |
 | `evolver_impl/` | Evolver 实现目录（orchestrating=legacy / dynamic=动态 prompt 四步） |
@@ -40,7 +40,7 @@
   ↓
 1. Classifier.classify(units) → 打上 tier/主题/重要度标签
   ↓
-2. KVStore.insert(scope, unit.id, dumps(unit)) → 真源落盘
+2. Storage.add(scope, units) → 真源落盘
   ↓
 3. IndexBuilder.build(units) → 构建多形式索引
      │
@@ -64,7 +64,7 @@
 ## 行为铁律
 
 1. **落盘由本层负责**
-   接入层产出 `MemoryUnit` 后，真源写入由本层调用 `KVStore.insert` 完成。接入层禁止落盘。
+   接入层产出 `MemoryUnit` 后，真源写入由本层调用 Storage 的写接口完成。接入层禁止落盘。
 
 2. **索引是可重建派生**
    索引（向量/关键词/图/文档）全部可从真源（KVStore 中的 MemoryUnit）重建。`IndexBuilder.rebuild()` 是非破坏式保障——删索引不丢数据。
@@ -149,7 +149,7 @@
 
 1. 所有 Operator 必须实现 `operator_type()` 和 `health()`（继承自 `ConstructionOperator`）。
 2. 算子实现通过 `@XxxProducer.register("name")` 自注册。
-3. IndexBuilder 必须实现四个方法：`build`（新建）/ `update`（更新）/ `remove(units)`（按 MemoryUnit 自带 Scope 删除）/ `rebuild`（全量重建）；不得维护仅按 unit id 的单值 Scope 缓存。
+3. IndexBuilder 必须实现四个方法：`build`（新建）/ `update`（更新）/ `remove(units)`（按 MemoryUnit 自带 Scope 删除）/ `rebuild`（全量重建）；不得维护仅按 unit id 的单值 Scope 缓存。`unified` 实现须按 Scope 分组，分别直调 Storage 的 `add` / `update` / `delete`，只可由未预先写入同一 unit 的调用方使用；当前 InMemoryEngine/CloudEngine 标准路径会先写 Storage，不能直接将其 profile 替换为 `unified`。
 4. Evolver 返回 `EvolveResult`（created_ids / updated_ids / superseded_ids / forgotten_ids）。
 5. Dedup 必须实现 `recall(candidate) -> list[(MemoryUnit, score)]`；实现内部异常吞掉返回空列表，不阻断演进。
 6. 算子内部调用共享插件（Chunker/Embedder/Tokenizer/FeatureExtractor/LLM）必须使用注入的实例，不自行构造。

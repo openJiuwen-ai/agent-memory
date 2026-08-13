@@ -10,5 +10,6 @@ from jiuwen_memory.construction.index_builder import IndexBuilderProducer
 import_module(".fulltext_index_builder", __name__)
 import_module(".vector_index_builder", __name__)
 import_module(".hybrid_index_builder", __name__)
+import_module(".unified_index_builder", __name__)
 
 __all__ = ["IndexBuilderProducer"]
