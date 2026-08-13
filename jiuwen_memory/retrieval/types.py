@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from typing import Any
 
 from jiuwen_memory.common.type_def import (
     ChannelError,
@@ -64,7 +65,7 @@ class RetrievalQuery:
     include_archived: bool = False  # 当前态查询是否纳入 archived 记忆
     # 调用方自定义透传配置（源自 Context.extensions）；内核核心不解释，
     # 顺 parser 进 ParsedQuery 供自定义检索模块按约定 key 读取。
-    extensions: dict[str, str] = field(default_factory=dict)
+    extensions: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # 查询对象边界规范化：外部兼容旧输入，内部只保留 FilterExpr | None。

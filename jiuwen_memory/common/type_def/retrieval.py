@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Generic, Protocol, TypeVar
+from typing import Any, Generic, Protocol, TypeVar
 
 from .feature import Entity
 from .filter import FilterExpr
@@ -51,7 +51,7 @@ class ParsedQuery:
     time_to: datetime | None = None
     channels: list[RecallChannel] = field(default_factory=list)
     include_archived: bool = False
-    extensions: dict[str, str] = field(default_factory=dict)
+    extensions: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
