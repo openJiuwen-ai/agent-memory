@@ -6,9 +6,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from common.type_def import T_INVALID_OPEN
-from common.type_def.filter import FilterOp
-from retrieval.retriever_impl.predicate_builder import build_system_filters
+from jiuwen_memory.common.type_def import T_INVALID_OPEN
+from jiuwen_memory.common.type_def.filter import FilterOp
+from jiuwen_memory.retrieval.retriever_impl.predicate_builder import build_system_filters
 
 pytestmark = pytest.mark.unit
 

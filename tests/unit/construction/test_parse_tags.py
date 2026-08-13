@@ -4,7 +4,7 @@
 纯数字过滤、大小写不敏感去重、截断到 ≤MAX_TAGS。
 """
 
-from construction.common import MAX_TAGS, parse_tags
+from jiuwen_memory.construction.common import MAX_TAGS, parse_tags
 
 
 def test_non_list_returns_empty():

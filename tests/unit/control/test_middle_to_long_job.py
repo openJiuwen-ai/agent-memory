@@ -16,9 +16,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from common.base import PluginType
-from common.llm.base import LLM
-from common.type_def import (
+from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.llm.base import LLM
+from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryTier,
     MemoryUnit,
@@ -27,17 +27,17 @@ from common.type_def import (
     Temporal,
     memory_key,
 )
-from common.type_def.chat import ChatMessage
-from common.type_def.memory_codec import dumps
-from construction import EvolveMode, Evolver, EvolveResult
-from construction.base import OperatorType
-from construction.index_builder import IndexBuilder
-from control.base import ControlOperatorType
-from control.jobs_impl.middle_to_long_job import MiddleToLongJob
-from control.lifecycle import LifecycleManager
-from control.types import JobStatus
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.common.type_def.chat import ChatMessage
+from jiuwen_memory.common.type_def.memory_codec import dumps
+from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
+from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.index_builder import IndexBuilder
+from jiuwen_memory.control.base import ControlOperatorType
+from jiuwen_memory.control.jobs_impl.middle_to_long_job import MiddleToLongJob
+from jiuwen_memory.control.lifecycle import LifecycleManager
+from jiuwen_memory.control.types import JobStatus
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
 
@@ -569,8 +569,8 @@ def test_in_process_scheduler_runs_middle_to_long_job_concurrent_path() -> None:
     改造后:submit/job.run 均 async,直接 await asyncio.gather。本测试断言
     该路径不再崩溃 + 并发分支真实跑通(evolver 收 2 批 + 原文被归档)。
     """
-    from control.scheduler_impl.in_process_scheduler import InProcessScheduler
-    from control.types import Channel
+    from jiuwen_memory.control.scheduler_impl.in_process_scheduler import InProcessScheduler
+    from jiuwen_memory.control.types import Channel
 
     scope = Scope(user="u1")
     kv = InMemoryKVStore()
@@ -602,8 +602,8 @@ def test_in_process_scheduler_runs_middle_to_long_job_serial_path() -> None:
     (to_thread 在 asyncio.run 创建的循环里能正常工作),但 SUCCEEDED 状态
     流需验证。
     """
-    from control.scheduler_impl.in_process_scheduler import InProcessScheduler
-    from control.types import Channel
+    from jiuwen_memory.control.scheduler_impl.in_process_scheduler import InProcessScheduler
+    from jiuwen_memory.control.types import Channel
 
     scope = Scope(user="u1")
     kv = InMemoryKVStore()
@@ -633,8 +633,8 @@ def test_in_process_scheduler_runs_middle_to_long_job_no_candidates() -> None:
     detail 含 is_done=true。这是原崩溃路径 ① 的边界面——空候选时 job.run
     早返回,不触发 gather,但状态流仍需正确。
     """
-    from control.scheduler_impl.in_process_scheduler import InProcessScheduler
-    from control.types import Channel
+    from jiuwen_memory.control.scheduler_impl.in_process_scheduler import InProcessScheduler
+    from jiuwen_memory.control.types import Channel
 
     scope = Scope(user="u1")
     kv = InMemoryKVStore()  # 空 KV

@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from common.errors import ValidationError
-from retrieval.recaller_impl.graph_recaller import GraphRecaller
-from retrieval.recaller_impl.keyword_recaller import KeywordRecaller
-from retrieval.recaller_impl.vector_recaller import VectorRecaller
-from retrieval.types import ParsedQuery, RetrievalQuery
-from storage.graph_impl.in_memory_graph_store import InMemoryGraphStore
-from storage.storage_impl.composite_storage import CompositeStorage
-from storage.types import Edge, Node
+from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.retrieval.recaller_impl.graph_recaller import GraphRecaller
+from jiuwen_memory.retrieval.recaller_impl.keyword_recaller import KeywordRecaller
+from jiuwen_memory.retrieval.recaller_impl.vector_recaller import VectorRecaller
+from jiuwen_memory.retrieval.types import ParsedQuery, RetrievalQuery
+from jiuwen_memory.storage.graph_impl.in_memory_graph_store import InMemoryGraphStore
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.types import Edge, Node
 
 pytestmark = pytest.mark.unit
 

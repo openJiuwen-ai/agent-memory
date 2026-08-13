@@ -11,7 +11,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./
-COPY src ./src
+COPY jiuwen_memory ./jiuwen_memory
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip \

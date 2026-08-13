@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from common.errors import StorageRetrievalError, ValidationError
-from common.type_def import (
+from jiuwen_memory.common.errors import StorageRetrievalError, ValidationError
+from jiuwen_memory.common.type_def import (
     MemoryUnit,
     ParsedQuery,
     RetrievalPipeline,
@@ -14,22 +14,22 @@ from common.type_def import (
     ScoredMemoryUnit,
     Segment,
 )
-from retrieval.base import RetrievalOperatorType
-from retrieval.discloser import Discloser
-from retrieval.fuser_impl.rrf_fuser import RRFFuser
-from retrieval.query_parser import QueryParser
-from retrieval.recaller import Recaller
-from retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
-from retrieval.retriever_impl.unit_reader import UnitReader
-from retrieval.types import (
+from jiuwen_memory.retrieval.base import RetrievalOperatorType
+from jiuwen_memory.retrieval.discloser import Discloser
+from jiuwen_memory.retrieval.fuser_impl.rrf_fuser import RRFFuser
+from jiuwen_memory.retrieval.query_parser import QueryParser
+from jiuwen_memory.retrieval.recaller import Recaller
+from jiuwen_memory.retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
+from jiuwen_memory.retrieval.retriever_impl.unit_reader import UnitReader
+from jiuwen_memory.retrieval.types import (
     DisclosureLevel,
     RecallChannel,
     RetrievalQuery,
     RetrievedItem,
     ScoredUnit,
 )
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.storage_impl import CompositeStorage
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.storage_impl import CompositeStorage
 
 pytestmark = pytest.mark.unit
 

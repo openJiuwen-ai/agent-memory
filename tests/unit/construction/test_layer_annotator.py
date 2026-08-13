@@ -12,9 +12,9 @@ from unittest.mock import patch
 
 import pytest
 
-from common.type_def import MemoryUnit
-from construction.layer_annotator_impl.keyword_layer_annotator import KeywordLayerAnnotator
-from construction.layer_annotator_impl.llm_layer_annotator import LLMLayerAnnotator
+from jiuwen_memory.common.type_def import MemoryUnit
+from jiuwen_memory.construction.layer_annotator_impl.keyword_layer_annotator import KeywordLayerAnnotator
+from jiuwen_memory.construction.layer_annotator_impl.llm_layer_annotator import LLMLayerAnnotator
 from tests.unit.construction.fixtures import (
     MockLLM,
     create_test_unit,
@@ -152,7 +152,7 @@ def test_llm_annotate_failure_leaves_empty():
     ann = _llm_annotator(["not a json"])
     unit = _long_unit()
     with patch(
-        "construction.layer_annotator_impl.llm_layer_annotator.logger.warning"
+        "jiuwen_memory.construction.layer_annotator_impl.llm_layer_annotator.logger.warning"
     ) as warning:
         ann.annotate([unit])  # 不抛异常
 

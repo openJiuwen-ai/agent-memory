@@ -2,8 +2,8 @@
 
 import re
 
-from construction.classifier_impl.llm_classifier import _CLASSIFY_SYSTEM_PROMPT
-from construction.extractor_impl.llm_extractor import (
+from jiuwen_memory.construction.classifier_impl.llm_classifier import _CLASSIFY_SYSTEM_PROMPT
+from jiuwen_memory.construction.extractor_impl.llm_extractor import (
     _EXTRACT_SYSTEM_PROMPT,
     _PROCEDURAL_SYSTEM_PROMPT,
 )

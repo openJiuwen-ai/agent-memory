@@ -8,11 +8,11 @@ import uuid
 
 import pytest
 
-from common.errors import ConflictError, NotFoundError
-from common.type_def import FilterClause, FilterGroup, FilterLogic, FilterOp, Scope
-from storage.kv_impl.postgres_kv import PostgresKVStore
-from storage.types import VectorQuery, VectorRecord
-from storage.vector_impl.pgvector_vector import PgVectorStore
+from jiuwen_memory.common.errors import ConflictError, NotFoundError
+from jiuwen_memory.common.type_def import FilterClause, FilterGroup, FilterLogic, FilterOp, Scope
+from jiuwen_memory.storage.kv_impl.postgres_kv import PostgresKVStore
+from jiuwen_memory.storage.types import VectorQuery, VectorRecord
+from jiuwen_memory.storage.vector_impl.pgvector_vector import PgVectorStore
 
 pytestmark = pytest.mark.integration
 

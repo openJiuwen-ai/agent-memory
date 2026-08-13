@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import pytest
 
-from common.errors import NotFoundError
-from common.type_def import Scope, memory_key
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.kv_impl.sqlite_kv_store import SQLiteKVStore
+from jiuwen_memory.common.errors import NotFoundError
+from jiuwen_memory.common.type_def import Scope, memory_key
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.kv_impl.sqlite_kv_store import SQLiteKVStore
 
 pytestmark = pytest.mark.unit
 

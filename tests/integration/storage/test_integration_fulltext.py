@@ -17,10 +17,10 @@ import uuid
 
 import pytest
 
-from common.errors import ConflictError, NotFoundError
-from common.type_def import T_INVALID_OPEN, FilterClause, FilterGroup, FilterLogic, FilterOp, Scope
-from storage.fulltext_impl.elasticsearch_fulltext import ElasticsearchFulltextStore
-from storage.types import Document, TextQuery
+from jiuwen_memory.common.errors import ConflictError, NotFoundError
+from jiuwen_memory.common.type_def import T_INVALID_OPEN, FilterClause, FilterGroup, FilterLogic, FilterOp, Scope
+from jiuwen_memory.storage.fulltext_impl.elasticsearch_fulltext import ElasticsearchFulltextStore
+from jiuwen_memory.storage.types import Document, TextQuery
 
 ES_HOSTS = os.getenv("AGENT_MEMORY_TEST_ES_HOSTS", "http://localhost:9200")
 SCOPE = Scope(org="itest", user="u1")

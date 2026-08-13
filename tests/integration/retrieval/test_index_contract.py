@@ -11,27 +11,27 @@ from __future__ import annotations
 
 import pytest
 
-from common.chunker.chunker_impl.fixed_window_chunker import FixedWindowChunker
-from common.embedder.embedder_impl.hashing_embedder import HashingEmbedder
-from common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (
+from jiuwen_memory.common.chunker.chunker_impl.fixed_window_chunker import FixedWindowChunker
+from jiuwen_memory.common.embedder.embedder_impl.hashing_embedder import HashingEmbedder
+from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (
     KeywordFeatureExtractor,
 )
-from common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
-from common.type_def import memory_key
-from common.type_def.memory_codec import dumps
-from construction.index_builder_impl.hybrid_index_builder import HybridIndexBuilder
-from retrieval.discloser_impl.truncating_discloser import TruncatingDiscloser
-from retrieval.fuser_impl.rrf_fuser import RRFFuser
-from retrieval.query_parser_impl.simple_query_parser import SimpleQueryParser
-from retrieval.recaller_impl.keyword_recaller import KeywordRecaller
-from retrieval.recaller_impl.vector_recaller import VectorRecaller
-from retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
-from retrieval.retriever_impl.unit_reader import UnitReader
-from retrieval.types import RecallChannel, RetrievalQuery
-from storage.fulltext_impl.in_memory_fulltext_store import InMemoryFulltextStore
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.storage_impl.composite_storage import CompositeStorage
-from storage.vector_impl.in_memory_vector_store import InMemoryVectorStore
+from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
+from jiuwen_memory.common.type_def import memory_key
+from jiuwen_memory.common.type_def.memory_codec import dumps
+from jiuwen_memory.construction.index_builder_impl.hybrid_index_builder import HybridIndexBuilder
+from jiuwen_memory.retrieval.discloser_impl.truncating_discloser import TruncatingDiscloser
+from jiuwen_memory.retrieval.fuser_impl.rrf_fuser import RRFFuser
+from jiuwen_memory.retrieval.query_parser_impl.simple_query_parser import SimpleQueryParser
+from jiuwen_memory.retrieval.recaller_impl.keyword_recaller import KeywordRecaller
+from jiuwen_memory.retrieval.recaller_impl.vector_recaller import VectorRecaller
+from jiuwen_memory.retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
+from jiuwen_memory.retrieval.retriever_impl.unit_reader import UnitReader
+from jiuwen_memory.retrieval.types import RecallChannel, RetrievalQuery
+from jiuwen_memory.storage.fulltext_impl.in_memory_fulltext_store import InMemoryFulltextStore
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.vector_impl.in_memory_vector_store import InMemoryVectorStore
 from tests.conftest import make_unit
 
 pytestmark = pytest.mark.integration

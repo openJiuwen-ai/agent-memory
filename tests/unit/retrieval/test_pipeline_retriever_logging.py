@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from common.type_def import Scope
-from retrieval.retriever_impl.pipeline_retriever import (
+from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.retrieval.retriever_impl.pipeline_retriever import (
     _format_channels,
     _safe_error,
     _scope_log_dims,
 )
-from retrieval.types import RecallChannel
+from jiuwen_memory.retrieval.types import RecallChannel
 
 pytestmark = pytest.mark.unit
 

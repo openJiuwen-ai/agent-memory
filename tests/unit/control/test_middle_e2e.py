@@ -19,33 +19,33 @@ import asyncio
 
 import pytest
 
-from common.base import PluginType
-from common.llm.base import LLM
-from common.normalizer.normalizer_impl.passthrough_normalizer import (
+from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.llm.base import LLM
+from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer import (
     PassthroughNormalizer,
 )
-from common.type_def import (
+from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryTier,
     MemoryUnit,
     Scope,
     memory_key,
 )
-from common.type_def.chat import ChatMessage
-from common.type_def.memory_codec import dumps, loads
-from construction import EvolveMode, Evolver, EvolveResult
-from construction.base import OperatorType
-from construction.index_builder import IndexBuilder
-from control.base import ControlOperatorType
-from control.engine_impl.in_memory_engine import InMemoryEngine
-from control.jobs import JobFactory, JobType
-from control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
-from control.lifecycle import LifecycleManager
-from control.scheduler_impl.async_timer_scheduler import AsyncTimerScheduler
-from control.types import JobStatus
-from ingest.ingestor_impl.simple_ingestor import SimpleIngestor
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.common.type_def.chat import ChatMessage
+from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
+from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.index_builder import IndexBuilder
+from jiuwen_memory.control.base import ControlOperatorType
+from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
+from jiuwen_memory.control.jobs import JobFactory, JobType
+from jiuwen_memory.control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
+from jiuwen_memory.control.lifecycle import LifecycleManager
+from jiuwen_memory.control.scheduler_impl.async_timer_scheduler import AsyncTimerScheduler
+from jiuwen_memory.control.types import JobStatus
+from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
 

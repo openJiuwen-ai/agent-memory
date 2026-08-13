@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from common.errors import UnsupportedStorageCapabilityError
-from common.type_def import (
+from jiuwen_memory.common.errors import UnsupportedStorageCapabilityError
+from jiuwen_memory.common.type_def import (
     MemoryUnit,
     RankedStorageResult,
     RecallResult,
@@ -15,9 +15,9 @@ from common.type_def import (
     Scope,
     Segment,
 )
-from storage.security import AllowAllStorageSecurity, StorageSecurity
-from storage.storage import Storage, StorageCapability
-from storage.types import MemoryListResult
+from jiuwen_memory.storage.security import AllowAllStorageSecurity, StorageSecurity
+from jiuwen_memory.storage.storage import Storage, StorageCapability
+from jiuwen_memory.storage.types import MemoryListResult
 
 pytestmark = pytest.mark.unit
 

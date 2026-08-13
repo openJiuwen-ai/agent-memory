@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import Callable, List, Optional, Sequence
 
-from config.config import Config
-from config.defaults import default_context
+from jiuwen_memory.config.config import Config
+from jiuwen_memory.config.defaults import default_context
 
 from .harness import EvalHarness
 from .types import CaseOutcome, Dataset, MetricResult, RunResult

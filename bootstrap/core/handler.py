@@ -22,12 +22,13 @@ from importlib import import_module
 from typing import Any, Callable
 
 _SRC = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "src"
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
 )
 if _SRC not in sys.path:
+    # 仓库根兜底，供 ``jiuwen_memory.*`` 解析（scripts 已设 PYTHONPATH 时为幂等）。
     sys.path.append(_SRC)
 
-_errors_module = import_module("common.errors")
+_errors_module = import_module("jiuwen_memory.common.errors")
 AgentMemoryError = _errors_module.AgentMemoryError
 ConflictError = _errors_module.ConflictError
 NotFoundError = _errors_module.NotFoundError
@@ -35,7 +36,7 @@ PermissionDeniedError = _errors_module.PermissionDeniedError
 PolicyError = _errors_module.PolicyError
 ValidationError = _errors_module.ValidationError
 
-_type_def_module = import_module("common.type_def")
+_type_def_module = import_module("jiuwen_memory.common.type_def")
 AuditEvent = _type_def_module.AuditEvent
 Context = _type_def_module.Context
 EXT_MAX_TOKENS = _type_def_module.EXT_MAX_TOKENS
@@ -43,9 +44,9 @@ MEMORY_KEY_PREFIX = _type_def_module.MEMORY_KEY_PREFIX
 MemoryUnit = _type_def_module.MemoryUnit
 Modality = _type_def_module.Modality
 Scope = _type_def_module.Scope
-EvolveMode = import_module("construction").EvolveMode
+EvolveMode = import_module("jiuwen_memory.construction").EvolveMode
 
-_control_types_module = import_module("control.types")
+_control_types_module = import_module("jiuwen_memory.control.types")
 Action = _control_types_module.Action
 DeleteMode = _control_types_module.DeleteMode
 DeleteSelector = _control_types_module.DeleteSelector
@@ -58,7 +59,7 @@ SpacePatch = _control_types_module.SpacePatch
 SpacePolicy = _control_types_module.SpacePolicy
 SpaceSpec = _control_types_module.SpaceSpec
 SpaceStatus = _control_types_module.SpaceStatus
-DisclosureLevel = import_module("retrieval.types").DisclosureLevel
+DisclosureLevel = import_module("jiuwen_memory.retrieval.types").DisclosureLevel
 
 Body = dict[str, Any]
 

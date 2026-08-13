@@ -12,11 +12,11 @@ import math
 
 import pytest
 
-from common.base import PluginType
-from common.embedder.base import Embedder
-from common.errors import ConflictError, NotFoundError
-from common.llm.base import LLM
-from common.type_def import (
+from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.embedder.base import Embedder
+from jiuwen_memory.common.errors import ConflictError, NotFoundError
+from jiuwen_memory.common.llm.base import LLM
+from jiuwen_memory.common.type_def import (
     DedupDecision,
     LifecycleState,
     MemoryTier,
@@ -27,20 +27,20 @@ from common.type_def import (
     Temporal,
     memory_key,
 )
-from common.type_def.memory_codec import dumps, loads
-from construction.abstractor import Abstractor
-from construction.associator import Associator
-from construction.base import OperatorType
-from construction.evolver import EvolveMode
-from construction.evolver_impl.orchestrating_evolver import OrchestratingEvolver
-from construction.extractor import Extractor
-from construction.index_builder import IndexBuilder
-from storage.base import StoreType
-from storage.graph import GraphStore
-from storage.kv import KVStore
-from storage.storage_impl.composite_storage import CompositeStorage
-from storage.types import ScoredID, VectorRecord
-from storage.vector import VectorStore
+from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.construction.abstractor import Abstractor
+from jiuwen_memory.construction.associator import Associator
+from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.evolver import EvolveMode
+from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import OrchestratingEvolver
+from jiuwen_memory.construction.extractor import Extractor
+from jiuwen_memory.construction.index_builder import IndexBuilder
+from jiuwen_memory.storage.base import StoreType
+from jiuwen_memory.storage.graph import GraphStore
+from jiuwen_memory.storage.kv import KVStore
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.types import ScoredID, VectorRecord
+from jiuwen_memory.storage.vector import VectorStore
 
 pytestmark = pytest.mark.unit
 
@@ -322,7 +322,7 @@ def _make_evolver(
     去重召回侧由 VectorDedup 承担（向量召回），阈值拆分：min/top_k/tier/scope
     下沉 recaller，medium/high 留 evolver。
     """
-    from construction.dedup_impl.vector_dedup import VectorDedup
+    from jiuwen_memory.construction.dedup_impl.vector_dedup import VectorDedup
 
     recaller_kwargs = {
         "min_similarity": dedup_kwargs.get("dedup_min_similarity", 0.5),
@@ -414,7 +414,7 @@ class TestDedupAdd:
 
         assert decision == DedupDecision.ADD
         assert existing is None
-        assert similarity == 0.0
+        assert similarity == pytest.approx(0.0)
 
     @staticmethod
     def test_low_similarity_returns_add():
@@ -636,7 +636,7 @@ class TestDedupDegradation:
 
         decision, existing, similarity = getattr(evolver, "_dedup_single")(candidate)
         assert decision == DedupDecision.ADD
-        assert similarity == 0.0
+        assert similarity == pytest.approx(0.0)
 
     @staticmethod
     def test_vector_store_failure_fallback_add():
@@ -768,7 +768,7 @@ class TestDedupMiddleFilter:
     @staticmethod
     def test_middle_marked_unit_not_in_recall_hits():
         """中期原文（metadata.middle=true）不应进 dedup.recall 的命中列表。"""
-        from construction.dedup_impl.vector_dedup import VectorDedup
+        from jiuwen_memory.construction.dedup_impl.vector_dedup import VectorDedup
 
         stores = _create_stores()
         embedder = _HashEmbedder()
@@ -802,7 +802,7 @@ class TestDedupMiddleFilter:
     @staticmethod
     def test_long_term_unit_still_in_recall_hits():
         """长期记忆（无 middle 标记）仍应正常进 dedup.recall 命中——修复不应误伤。"""
-        from construction.dedup_impl.vector_dedup import VectorDedup
+        from jiuwen_memory.construction.dedup_impl.vector_dedup import VectorDedup
 
         stores = _create_stores()
         embedder = _HashEmbedder()
@@ -832,14 +832,14 @@ class TestDedupMiddleFilter:
     @staticmethod
     def test_keyword_dedup_filters_middle_marked_unit():
         """KeywordDedup 同样应过滤中期记忆——与 VectorDedup 行为一致。"""
-        from common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
+        from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
             WhitespaceTokenizer,
         )
-        from construction.dedup_impl.keyword_dedup import KeywordDedup
-        from storage.fulltext_impl.in_memory_fulltext_store import (
+        from jiuwen_memory.construction.dedup_impl.keyword_dedup import KeywordDedup
+        from jiuwen_memory.storage.fulltext_impl.in_memory_fulltext_store import (
             InMemoryFulltextStore,
         )
-        from storage.types import Document
+        from jiuwen_memory.storage.types import Document
 
         kv = _MemoryKVStore()
         fulltext = InMemoryFulltextStore(tokenizer=WhitespaceTokenizer())
@@ -893,7 +893,7 @@ class TestDedupEvolveExtract:
                     _make_unit("ext-2", "Python 的 GIL 机制"),
                 ]
 
-        from construction.dedup_impl.vector_dedup import VectorDedup
+        from jiuwen_memory.construction.dedup_impl.vector_dedup import VectorDedup
 
         dedup = VectorDedup(
             storage=CompositeStorage(kv=stores["kv"], vector=stores["vector"]),

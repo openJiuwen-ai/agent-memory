@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import pytest
 
-from common.base import PluginType
-from common.tokenizer.tokenizer_impl import TokenizerProducer
-from common.tokenizer.tokenizer_impl.jieba_tokenizer import JiebaTokenizer
+from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.tokenizer.tokenizer_impl import TokenizerProducer
+from jiuwen_memory.common.tokenizer.tokenizer_impl.jieba_tokenizer import JiebaTokenizer
 
 # ---------------------------------------------------------------------------
 # Tests: Core interface
@@ -32,8 +32,7 @@ def test_plugin_type():
 def test_health():
     """T-JB-02: health 正常时返回 None（也触发词典加载）。"""
     t = JiebaTokenizer()
-    result = t.health()
-    assert result is None
+    assert t.health() is None
 
 
 def test_tokenize_chinese_search_mode():
@@ -150,7 +149,7 @@ def test_producer_known():
 
 def test_producer_create():
     """T-JB-P02: TokenizerProducer.create("jieba") 返回 JiebaTokenizer 实例。"""
-    from config import AssemblyContext
+    from jiuwen_memory.config import AssemblyContext
 
     tokenizer = TokenizerProducer.build("jieba", {}, AssemblyContext())
     assert isinstance(tokenizer, JiebaTokenizer)
@@ -161,7 +160,7 @@ def test_producer_create():
 
 def test_producer_create_custom_config():
     """T-JB-P03: Config 自定义 jieba 参数。"""
-    from config import AssemblyContext
+    from jiuwen_memory.config import AssemblyContext
 
     tokenizer = TokenizerProducer.build(
         "jieba",
@@ -175,8 +174,8 @@ def test_producer_create_custom_config():
 
 def test_producer_unknown_type():
     """T-JB-P04: 不支持的 tokenizer_type 抛 ValidationError。"""
-    from common.errors import ValidationError
-    from config import AssemblyContext
+    from jiuwen_memory.common.errors import ValidationError
+    from jiuwen_memory.config import AssemblyContext
 
     with pytest.raises(ValidationError):
         TokenizerProducer.build("unknown", {}, AssemblyContext())
@@ -184,9 +183,9 @@ def test_producer_unknown_type():
 
 def test_assemble_with_jieba():
     """T-JB-P05: assemble(config) 使用 jieba tokenizer 全链路可运行。"""
-    from api.memory_api_impl import assemble
-    from common.type_def import Context, Modality, Scope
-    from config import Config
+    from jiuwen_memory.api.memory_api_impl import assemble
+    from jiuwen_memory.common.type_def import Context, Modality, Scope
+    from jiuwen_memory.config import Config
 
     # 两级命名空间：覆盖 tokenizer 顶层的 default 实例为 jieba；embedder 沿用默认 hashing，
     # 其 tokenizer 依赖经 default 引用同样取到 jieba → 全链路 jieba。

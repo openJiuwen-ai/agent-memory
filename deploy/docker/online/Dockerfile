@@ -16,7 +16,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./
-COPY src ./src
+COPY jiuwen_memory ./jiuwen_memory
 
 # [deploy] provides Milvus / Elasticsearch / Redis / YAML clients.
 # httpx is required by common.reranker.reranker_impl.api_reranker.

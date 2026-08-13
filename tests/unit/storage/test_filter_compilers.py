@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from common.type_def import FilterClause, FilterGroup, FilterLogic, FilterOp, Scope, normalize
-from storage._pg import compile_pg_filter, pg_scope_clause
-from storage.fulltext_impl.elasticsearch_fulltext import ElasticsearchFulltextStore
-from storage.types import TextQuery, VectorQuery
-from storage.vector_impl.milvus_vector import MilvusVectorStore
+from jiuwen_memory.common.type_def import FilterClause, FilterGroup, FilterLogic, FilterOp, Scope, normalize
+from jiuwen_memory.storage._pg import compile_pg_filter, pg_scope_clause
+from jiuwen_memory.storage.fulltext_impl.elasticsearch_fulltext import ElasticsearchFulltextStore
+from jiuwen_memory.storage.types import TextQuery, VectorQuery
+from jiuwen_memory.storage.vector_impl.milvus_vector import MilvusVectorStore
 
 pytestmark = pytest.mark.unit
 

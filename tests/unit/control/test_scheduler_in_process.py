@@ -11,16 +11,16 @@ from datetime import datetime
 
 import pytest
 
-from common.type_def import MemoryUnit, Scope, Segment, memory_key
-from common.type_def.memory_codec import dumps
-from construction import EvolveMode, Evolver, EvolveResult
-from construction.base import OperatorType
-from control.jobs import Job
-from control.jobs_impl.evolve_job import EvolveJob
-from control.scheduler_impl.in_process_scheduler import InProcessScheduler
-from control.types import Channel, JobInfo, JobStatus
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment, memory_key
+from jiuwen_memory.common.type_def.memory_codec import dumps
+from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
+from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.control.jobs import Job
+from jiuwen_memory.control.jobs_impl.evolve_job import EvolveJob
+from jiuwen_memory.control.scheduler_impl.in_process_scheduler import InProcessScheduler
+from jiuwen_memory.control.types import Channel, JobInfo, JobStatus
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
 

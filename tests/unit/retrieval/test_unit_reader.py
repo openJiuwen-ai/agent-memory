@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from common.type_def import (
+from jiuwen_memory.common.type_def import (
     T_INVALID_OPEN,
     FilterClause,
     FilterGroup,
@@ -15,16 +15,16 @@ from common.type_def import (
     memory_key,
     normalize,
 )
-from common.type_def.memory import LifecycleState
-from common.type_def.memory_codec import dumps
-from retrieval.retriever_impl.unit_reader import (
+from jiuwen_memory.common.type_def.memory import LifecycleState
+from jiuwen_memory.common.type_def.memory_codec import dumps
+from jiuwen_memory.retrieval.retriever_impl.unit_reader import (
     UnitReader,
     in_event_window,
     matches_filters,
     passes,
     valid_at,
 )
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 
 pytestmark = pytest.mark.unit
 

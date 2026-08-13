@@ -7,9 +7,9 @@ from types import ModuleType
 
 import pytest
 
-from common.type_def import Scope
-from storage.fulltext_impl.elasticsearch_fulltext import ElasticsearchFulltextStore
-from storage.types import Document, TextQuery
+from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.storage.fulltext_impl.elasticsearch_fulltext import ElasticsearchFulltextStore
+from jiuwen_memory.storage.types import Document, TextQuery
 
 pytestmark = pytest.mark.unit
 

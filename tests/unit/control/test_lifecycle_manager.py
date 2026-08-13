@@ -4,16 +4,16 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from api import Scope
-from api.memory_api_impl import build_kernel
-from common.errors import NotFoundError, PolicyError, ValidationError
-from common.type_def import LifecycleState, memory_key
-from common.type_def.memory_codec import dumps, loads
-from config.config import Config
-from control.lifecycle_impl.kv_lifecycle_manager import KVLifecycleManager
-from control.policy_impl.dict_policy_manager import DictPolicyManager
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.api import Scope
+from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.common.errors import NotFoundError, PolicyError, ValidationError
+from jiuwen_memory.common.type_def import LifecycleState, memory_key
+from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.config.config import Config
+from jiuwen_memory.control.lifecycle_impl.kv_lifecycle_manager import KVLifecycleManager
+from jiuwen_memory.control.policy_impl.dict_policy_manager import DictPolicyManager
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
 

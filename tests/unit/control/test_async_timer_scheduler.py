@@ -12,15 +12,15 @@ import time
 
 import pytest
 
-from common.errors import NotFoundError
-from common.type_def import Scope
-from control.jobs import Job
-from control.scheduler_impl.async_timer_scheduler import (
+from jiuwen_memory.common.errors import NotFoundError
+from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.control.jobs import Job
+from jiuwen_memory.control.scheduler_impl.async_timer_scheduler import (
     AsyncTimerScheduler,
     TimerEntry,
     TimerWheel,
 )
-from control.types import Channel, JobInfo, JobStatus
+from jiuwen_memory.control.types import Channel, JobInfo, JobStatus
 
 pytestmark = pytest.mark.unit
 

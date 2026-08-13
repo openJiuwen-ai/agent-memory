@@ -6,7 +6,7 @@ adds a socket: ``POST /v1/<verb>`` with a JSON body, ``GET /healthz``. The
 and one assembled kernel is held for the server's lifetime so state persists
 across requests.
 
-通过启动脚本运行，以便把 ``src`` 与 ``bootstrap/core`` 放入 ``PYTHONPATH``::
+通过启动脚本运行，以便把仓库根与 ``bootstrap/core`` 放入 ``PYTHONPATH``::
 
     scripts/run-server.sh --port 8137
     scripts/run-server.sh [--host H] [--port P] [config.json ...]

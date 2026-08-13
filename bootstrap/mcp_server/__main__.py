@@ -24,7 +24,8 @@ from importlib import import_module
 # 这里 append 仅作为直接运行本文件时的兜底。
 _BOOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _REPO = os.path.dirname(_BOOT)
-for _p in (os.path.join(_BOOT, "core"), os.path.join(_REPO, "src")):
+for _p in (os.path.join(_BOOT, "core"), _REPO):
+
     if _p not in sys.path:
         sys.path.append(_p)
 

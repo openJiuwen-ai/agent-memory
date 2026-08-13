@@ -6,8 +6,8 @@ import sys
 
 import pytest
 
-from common.type_def import Segment
-from control import MemoryListResult, PrincipalPath, SpaceInfo, SpaceStatus
+from jiuwen_memory.common.type_def import Segment
+from jiuwen_memory.control import MemoryListResult, PrincipalPath, SpaceInfo, SpaceStatus
 
 pytestmark = pytest.mark.unit
 

@@ -17,28 +17,28 @@ import asyncio
 
 import pytest
 
-from common.base import PluginType
-from common.llm.base import LLM
-from common.type_def import (
+from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.llm.base import LLM
+from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryTier,
     MemoryUnit,
     Scope,
     memory_key,
 )
-from common.type_def.chat import ChatMessage
-from common.type_def.memory_codec import dumps, loads
-from construction import EvolveMode, Evolver, EvolveResult
-from construction.base import OperatorType
-from construction.index_builder import IndexBuilder
-from control.base import ControlOperatorType
-from control.engine_impl.in_memory_engine import InMemoryEngine
-from control.jobs import Job, JobFactory, JobType
-from control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
-from control.lifecycle import LifecycleManager
-from control.types import Channel, JobStatus
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.common.type_def.chat import ChatMessage
+from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
+from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.index_builder import IndexBuilder
+from jiuwen_memory.control.base import ControlOperatorType
+from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
+from jiuwen_memory.control.jobs import Job, JobFactory, JobType
+from jiuwen_memory.control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
+from jiuwen_memory.control.lifecycle import LifecycleManager
+from jiuwen_memory.control.types import Channel, JobStatus
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
 
@@ -167,10 +167,10 @@ def _build_engine(
     ``with_scope`` 方法注册为 builder——运行时 ``get_job`` 取 MiddleToLongJob 实例。
     ``llm=_UNSET`` 是哨兵：区分"显式传 None"（验证 RuntimeError）与"未传"（用 EchoLLM 默认）。
     """
-    from common.normalizer.normalizer_impl.passthrough_normalizer import (
+    from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer import (
         PassthroughNormalizer,
     )
-    from ingest.ingestor_impl.simple_ingestor import SimpleIngestor
+    from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
 
     kv = InMemoryKVStore()
     index = _RecordingIndex()
@@ -425,7 +425,7 @@ def test_write_middle_with_in_process_scheduler_runs_job_to_completion() -> None
     `await scheduler.submit` → TypeError: object str can't be used in 'await'。
     修复后:submit 改 async,Engine 直接 await,Job 真实跑完返回 SUCCEEDED。
     """
-    from control.scheduler_impl.in_process_scheduler import InProcessScheduler
+    from jiuwen_memory.control.scheduler_impl.in_process_scheduler import InProcessScheduler
 
     # 用真实 InProcessScheduler,不用 _RecordingScheduler
     scheduler = InProcessScheduler()
@@ -459,7 +459,7 @@ def test_write_middle_with_in_process_scheduler_preserves_originals_on_failure()
     路径 ③ 边界:evolver 全失败时,_archive_originals 不被调,原文保留 ACTIVE+WORKING,
     下轮 MiddleToLongJob 重试。验证 InProcessScheduler 链路下失败传播正确。
     """
-    from control.scheduler_impl.in_process_scheduler import InProcessScheduler
+    from jiuwen_memory.control.scheduler_impl.in_process_scheduler import InProcessScheduler
 
     class _FailingEvolver(_NoopEvolver):
         def evolve(self, units, mode):

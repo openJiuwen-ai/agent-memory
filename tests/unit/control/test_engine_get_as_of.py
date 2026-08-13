@@ -4,11 +4,11 @@ from datetime import datetime, timezone
 
 import pytest
 
-from api import DeleteMode, DeleteSelector, MemoryPatch, Scope
-from api.memory_api_impl import build_kernel
-from common.errors import NotFoundError
-from common.type_def import MemoryTier, MemoryUnit, Modality, Segment, Temporal, memory_key
-from common.type_def.memory_codec import dumps
+from jiuwen_memory.api import DeleteMode, DeleteSelector, MemoryPatch, Scope
+from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.common.errors import NotFoundError
+from jiuwen_memory.common.type_def import MemoryTier, MemoryUnit, Modality, Segment, Temporal, memory_key
+from jiuwen_memory.common.type_def.memory_codec import dumps
 
 
 def test_get_as_of_returns_version_valid_at_that_time() -> None:

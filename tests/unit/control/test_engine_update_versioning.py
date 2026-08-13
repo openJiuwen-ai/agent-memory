@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from api import MemoryPatch, Scope
-from api.memory_api_impl import build_kernel
-from common.errors import ValidationError
-from common.type_def import LifecycleState, MemoryUnit
-from common.type_def.memory_codec import dumps, loads
-from control.base import ControlOperatorType
-from control.lifecycle import LifecycleManager
+from jiuwen_memory.api import MemoryPatch, Scope
+from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit
+from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.control.base import ControlOperatorType
+from jiuwen_memory.control.lifecycle import LifecycleManager
 
 
 class RecordingLifecycle(LifecycleManager):

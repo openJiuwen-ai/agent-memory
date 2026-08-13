@@ -8,11 +8,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from common.base import PluginType
-from common.errors import HealthCheckError
-from common.llm.llm_impl import LlmProducer
-from common.llm.llm_impl.openai_llm import OpenAILLM
-from common.type_def import ChatMessage
+from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.errors import HealthCheckError
+from jiuwen_memory.common.llm.llm_impl import LlmProducer
+from jiuwen_memory.common.llm.llm_impl.openai_llm import OpenAILLM
+from jiuwen_memory.common.type_def import ChatMessage
 
 # ---------------------------------------------------------------------------
 # Helper: Mock openai client
@@ -133,8 +133,7 @@ def test_generate():
 def test_health():
     """T-L-07: health 正常时返回 None。"""
     llm = _make_mock_llm()
-    result = llm.health()
-    assert result is None
+    assert llm.health() is None
     assert "extra_body" not in llm.client.chat.completions.create.call_args.kwargs
 
 
@@ -160,8 +159,8 @@ def test_producer_known():
 
 def test_producer_unknown_type():
     """T-P-02: 不支持的 llm_type 抛 ValidationError。"""
-    from common.errors import ValidationError
-    from config import AssemblyContext
+    from jiuwen_memory.common.errors import ValidationError
+    from jiuwen_memory.config import AssemblyContext
 
     with pytest.raises(ValidationError):
         LlmProducer.build("unknown", {}, AssemblyContext())

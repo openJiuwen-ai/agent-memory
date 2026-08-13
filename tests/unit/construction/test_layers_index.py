@@ -8,10 +8,10 @@
 - remove 幂等删 L0/L1 record。
 """
 
-from common.type_def import ContentLayers, Scope
-from construction.index_builder_impl.fulltext_index_builder import FulltextIndexBuilder
-from construction.index_builder_impl.vector_index_builder import VectorIndexBuilder
-from storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.common.type_def import ContentLayers, Scope
+from jiuwen_memory.construction.index_builder_impl.fulltext_index_builder import FulltextIndexBuilder
+from jiuwen_memory.construction.index_builder_impl.vector_index_builder import VectorIndexBuilder
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 from tests.unit.construction.fixtures import (
     MemoryFulltextStore,
     MemoryVectorStore,

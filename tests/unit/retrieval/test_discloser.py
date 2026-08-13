@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from config import AssemblyContext
-from retrieval.discloser_impl import DiscloserProducer
-from retrieval.discloser_impl.structured_discloser import StructuredDiscloser
-from retrieval.discloser_impl.truncating_discloser import TruncatingDiscloser
-from retrieval.types import (
+from jiuwen_memory.config import AssemblyContext
+from jiuwen_memory.retrieval.discloser_impl import DiscloserProducer
+from jiuwen_memory.retrieval.discloser_impl.structured_discloser import StructuredDiscloser
+from jiuwen_memory.retrieval.discloser_impl.truncating_discloser import TruncatingDiscloser
+from jiuwen_memory.retrieval.types import (
     ChannelEvidence,
     DisclosureLevel,
     ParsedQuery,

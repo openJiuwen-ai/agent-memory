@@ -9,23 +9,23 @@ from __future__ import annotations
 
 import pytest
 
-from api import assemble
-from api.memory_api_impl import assembly, build_kernel
-from common.audit.base import AuditProducer
-from common.errors import BackendError, PermissionDeniedError, ValidationError
-from common.factory.factory import Factory
-from common.security.security_impl.local_envelope_security_provider import (
+from jiuwen_memory.api import assemble
+from jiuwen_memory.api.memory_api_impl import assembly, build_kernel
+from jiuwen_memory.common.audit.base import AuditProducer
+from jiuwen_memory.common.errors import BackendError, PermissionDeniedError, ValidationError
+from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.security.security_impl.local_envelope_security_provider import (
     LocalEnvelopeSecurityProvider,
 )
-from common.type_def import Context, Scope
-from config import Config
-from config.context import AssemblyContext
-from config.defaults import default_config_dict
-from control.base import ControlOperatorType
-from control.permission import PermissionManager, PermissionProducer
-from control.types import Action, Grant, PermissionContext
-from storage.kv_impl.encrypted_kv_store import EncryptedKVStore
-from storage.vector import VectorProducer
+from jiuwen_memory.common.type_def import Context, Scope
+from jiuwen_memory.config import Config
+from jiuwen_memory.config.context import AssemblyContext
+from jiuwen_memory.config.defaults import default_config_dict
+from jiuwen_memory.control.base import ControlOperatorType
+from jiuwen_memory.control.permission import PermissionManager, PermissionProducer
+from jiuwen_memory.control.types import Action, Grant, PermissionContext
+from jiuwen_memory.storage.kv_impl.encrypted_kv_store import EncryptedKVStore
+from jiuwen_memory.storage.vector import VectorProducer
 
 SCOPE = Scope(org="o", user="u")
 
@@ -34,7 +34,7 @@ _VEC_BUILT: list = []
 
 @VectorProducer.register("counting_test")
 def _build_counting_vector(config):
-    from storage.vector_impl.in_memory_vector_store import InMemoryVectorStore
+    from jiuwen_memory.storage.vector_impl.in_memory_vector_store import InMemoryVectorStore
 
     store = InMemoryVectorStore()
     _VEC_BUILT.append(store)

@@ -8,11 +8,11 @@ from unittest.mock import patch
 
 import pytest
 
-from common.type_def import (
+from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryTier,
 )
-from construction.extractor_impl.llm_extractor import (
+from jiuwen_memory.construction.extractor_impl.llm_extractor import (
     ExtractorImpl,
     InvalidExtractionCandidateError,
     InvalidExtractionJSONError,
@@ -506,7 +506,7 @@ def test_extract_llm_trailing_text_logs_raw_response():
     extractor = _make_extractor([response])
     units = [create_test_unit("u1", "user prefers Python")]
 
-    with patch("construction.extractor_impl.llm_extractor.logger.warning") as warning:
+    with patch("jiuwen_memory.construction.extractor_impl.llm_extractor.logger.warning") as warning:
         result = extractor.extract(units)
 
     assert len(result) == 1
@@ -590,7 +590,7 @@ def test_extract_continues_past_empty_json_to_non_empty_json():
 def test_extractor_operator_type_and_health():
     """T-E-12: operator_type 返回 EXTRACTOR, health 返回 None。"""
     extractor = _make_extractor(["[]"])
-    from construction.base import OperatorType
+    from jiuwen_memory.construction.base import OperatorType
 
     assert extractor.operator_type() == OperatorType.EXTRACTOR
     assert extractor.health() is None
@@ -603,7 +603,7 @@ def test_extractor_operator_type_and_health():
 
 def test_extract_prompt_includes_merge_rule():
     """T-E-13a: prompt 约束粒度双向——一 matter 不拆成碎片、二 matter 不在合并中消失。"""
-    from construction.extractor_impl.llm_extractor import _EXTRACT_SYSTEM_PROMPT
+    from jiuwen_memory.construction.extractor_impl.llm_extractor import _EXTRACT_SYSTEM_PROMPT
 
     # 粒度双向约束：既不拆一件事成并列碎片，也不让第二件事消失进第一件
     assert "one matter per item" in _EXTRACT_SYSTEM_PROMPT
@@ -760,8 +760,8 @@ def test_extract_preserves_structured_record_target():
 
 def test_keyword_procedural_inherits_write_tags():
     """keyword procedural 降级路径同样合并 write tags。"""
-    from common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
-    from construction.extractor_impl.keyword_extractor import KeywordExtractor
+    from jiuwen_memory.common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
+    from jiuwen_memory.construction.extractor_impl.keyword_extractor import KeywordExtractor
 
     extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=200, overlap_chars=0))
     source = create_test_unit("u1", "执行了 npm run build")

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from retrieval.query_parser_impl.time_parse import parse_time
+from jiuwen_memory.retrieval.query_parser_impl.time_parse import parse_time
 
 pytestmark = pytest.mark.unit
 

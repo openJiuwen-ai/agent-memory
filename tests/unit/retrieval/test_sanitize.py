@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from retrieval.query_parser_impl.sanitize import sanitize_query
+from jiuwen_memory.retrieval.query_parser_impl.sanitize import sanitize_query
 
 pytestmark = pytest.mark.unit
 

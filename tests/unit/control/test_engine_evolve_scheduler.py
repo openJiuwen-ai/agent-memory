@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import asyncio
 
-from api.memory_api_impl import build_kernel
-from common.type_def import Scope
-from config.config import Config
-from construction import EvolveMode, Evolver, EvolveResult
-from construction.base import OperatorType
-from control.engine_impl.in_memory_engine import InMemoryEngine
-from control.jobs import Job, JobFactory, JobType
-from control.jobs_impl.evolve_job import EvolveJobSpec
-from control.types import BatchWriteItem, Channel, JobStatus
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.config.config import Config
+from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
+from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
+from jiuwen_memory.control.jobs import Job, JobFactory, JobType
+from jiuwen_memory.control.jobs_impl.evolve_job import EvolveJobSpec
+from jiuwen_memory.control.types import BatchWriteItem, Channel, JobStatus
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 
 _TEST_KEY_HEX = "00" * 32
 

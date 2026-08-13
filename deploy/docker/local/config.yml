@@ -3,7 +3,7 @@
 # 选型：LLM 云端（OpenAI 兼容）+ 本地 bge 嵌入/精排（进程内）+ Milvus 向量召回 +
 # Elasticsearch 关键词召回 + Redis 真源。召回走「向量 + 关键词」双路，关闭图。
 #
-# 配置模型为**两级命名空间**（见 src/config）：顶层 = 各组件（Producer 的 TOP_NAME），
+# 配置模型为**两级命名空间**（见 jiuwen_memory/config）：顶层 = 各组件（Producer 的 TOP_NAME），
 # 其下 = 具名实例（target/params）。用户配置会**合并覆盖**到内置默认（纯内存离线栈）之上，
 # 故此处只写要改动的部分：globals 跨切面参数 + 把各 default 实例换成真后端实现。其余拓扑
 # （recaller / constructor / evolver / scheduler 等）沿用默认并经具名引用自动指向这些真后端。

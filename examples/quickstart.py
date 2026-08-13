@@ -1,6 +1,6 @@
 """最小功能集端到端演示：add → search → get（+ update / 治理 / admin）。
 
-运行：``PYTHONPATH=src python3 examples/quickstart.py``
+运行：``PYTHONPATH=. python3 examples/quickstart.py``（或先 ``pip install -e .``）
 
 **配置从 YAML 读、合并到内置默认后装配**：``Config.from_yaml(examples/config.yml)`` 解析成
 两级命名空间（``AssemblyContext``）→ ``assemble`` 把它合并覆盖到内置默认上，各组件级 Producer
@@ -14,11 +14,11 @@ from __future__ import annotations
 import logging
 import os
 
-from api import assemble
-from common.type_def import Context, Scope
-from config import Config
-from construction import EvolveMode
-from control.types import MemoryPatch
+from jiuwen_memory.api import assemble
+from jiuwen_memory.common.type_def import Context, Scope
+from jiuwen_memory.config import Config
+from jiuwen_memory.construction import EvolveMode
+from jiuwen_memory.control.types import MemoryPatch
 
 logger = logging.getLogger(__name__)
 

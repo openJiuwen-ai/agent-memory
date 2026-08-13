@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from api.memory_api_impl import build_kernel
-from common.type_def import Context, Scope
-from config import Config
-from construction.base import OperatorType
-from construction.index_builder import IndexBuilder, IndexBuilderProducer
-from retrieval.base import RetrievalOperatorType
-from retrieval.retriever import Retriever, RetrieverProducer
-from retrieval.types import RetrievalQuery, RetrievalResult, RetrievedItem
+from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.common.type_def import Context, Scope
+from jiuwen_memory.config import Config
+from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
+from jiuwen_memory.retrieval.base import RetrievalOperatorType
+from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
+from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult, RetrievedItem
 
 _INDEX_BUILDERS: dict[str, "RecordingIndexBuilder"] = {}
 

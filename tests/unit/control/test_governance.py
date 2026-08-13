@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import pytest
 
-from api import Scope
-from api.memory_api_impl import build_kernel
-from common.audit.base import AuditLogger
-from common.errors import BackendError
-from common.type_def import AuditEvent, MemoryUnit, Segment, memory_key
-from common.type_def.memory_codec import dumps
-from config.config import Config
-from control.governance_impl.in_memory_governor import InMemoryGovernor
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.api import Scope
+from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.common.audit.base import AuditLogger
+from jiuwen_memory.common.errors import BackendError
+from jiuwen_memory.common.type_def import AuditEvent, MemoryUnit, Segment, memory_key
+from jiuwen_memory.common.type_def.memory_codec import dumps
+from jiuwen_memory.config.config import Config
+from jiuwen_memory.control.governance_impl.in_memory_governor import InMemoryGovernor
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
 

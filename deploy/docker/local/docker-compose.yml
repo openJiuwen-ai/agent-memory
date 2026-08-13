@@ -115,7 +115,7 @@ services:
       - ./config.yml:/config/config.yml:ro
       - ../models:/models-local:ro   # 预下载的本地模型（ModelScope，离线加载）：.env 默认指向这里
       - hf-models:/models        # HF 缓存卷：仅当把 EMBED_MODEL 改回 HF repo id 时的回退路径
-      - ../../../src:/app/src:ro    # 挂载源码：改 src 免重镜像（镜像用 editable 安装指向 /app/src）
+      - ../../../jiuwen_memory:/app/jiuwen_memory:ro    # 挂载源码：改 jiuwen_memory 免重镜像（editable 指向 /app/jiuwen_memory）
       - ../../../bootstrap:/app/bootstrap:ro   # 挂载 HTTP 服务面：改 handler/server 免重镜像
     ports:
       - "8137:8137"

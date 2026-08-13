@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import pytest
 
-from api.memory_api_impl import assemble
-from common.type_def import Context, MemoryTier, Modality, Scope
-from config import Config
-from construction import EvolveMode
+from jiuwen_memory.api.memory_api_impl import assemble
+from jiuwen_memory.common.type_def import Context, MemoryTier, Modality, Scope
+from jiuwen_memory.config import Config
+from jiuwen_memory.construction import EvolveMode
 
 DEFAULT_SCOPE = Scope(org="test", user="alice", agent="a1", session="s1")
 DEFAULT_ACTOR = Scope(org="test", user="alice")

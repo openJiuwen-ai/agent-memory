@@ -4,17 +4,17 @@ from io import BytesIO
 
 import pytest
 
-from common.errors import NotFoundError
-from common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
-from common.type_def import Scope
-from storage.fs_impl.in_memory_fs_store import InMemoryFSStore
-from storage._support import scope_dims, scope_segments
-from storage.fulltext_impl.in_memory_fulltext_store import InMemoryFulltextStore
-from storage.fusion_impl.in_memory_fusion_store import InMemoryFusionStore
-from storage.graph_impl.in_memory_graph_store import InMemoryGraphStore
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.kv_impl.sqlite_kv_store import SQLiteKVStore
-from storage.types import (
+from jiuwen_memory.common.errors import NotFoundError
+from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
+from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.storage.fs_impl.in_memory_fs_store import InMemoryFSStore
+from jiuwen_memory.storage._support import scope_dims, scope_segments
+from jiuwen_memory.storage.fulltext_impl.in_memory_fulltext_store import InMemoryFulltextStore
+from jiuwen_memory.storage.fusion_impl.in_memory_fusion_store import InMemoryFusionStore
+from jiuwen_memory.storage.graph_impl.in_memory_graph_store import InMemoryGraphStore
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.kv_impl.sqlite_kv_store import SQLiteKVStore
+from jiuwen_memory.storage.types import (
     Document,
     Edge,
     FusionQuery,
@@ -25,7 +25,7 @@ from storage.types import (
     VectorQuery,
     VectorRecord,
 )
-from storage.vector_impl.in_memory_vector_store import InMemoryVectorStore
+from jiuwen_memory.storage.vector_impl.in_memory_vector_store import InMemoryVectorStore
 
 pytestmark = pytest.mark.unit
 
