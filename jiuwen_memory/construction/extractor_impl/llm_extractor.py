@@ -207,6 +207,22 @@ Output schema:
 }]
 """
 
+# Optional, call-scoped extraction guard used by LongMemEval.  The default prompt above
+# remains byte-for-byte equivalent to the baseline path; callers must opt in through
+# ``metadata["extraction_fidelity_mode"]`` on a current source unit.
+_EXTRACTION_FIDELITY_SUFFIX = """\
+Additional fidelity contract for this write only:
+
+- Do not merge independent matters from different source lines into one item.
+- A normal answer or confirmation becomes the resolved proposition it contributes; do
+  not also emit a duplicate "answered that ..." wrapper.
+- Complete an informative CURRENT elliptical line from only the immediately relevant
+  context, copying the minimum missing subject, predicate, object, unit or time. Never
+  emit a fact that belongs only to context.
+- Before returning, verify that every durable entity, value, date, negation, update and
+  choice contributed by each current source line appears exactly once.
+"""
+
 # 过程记忆抽取 prompt：把本轮对话汇总成 1 条结构化执行历史（PROCEDURAL tier）。
 # 不抽离散事实、不产多条，只产 1 条自包含的「目标→步骤→结果」式汇总。
 _PROCEDURAL_SYSTEM_PROMPT = """\
@@ -628,8 +644,16 @@ class ExtractorImpl(Extractor):
         context_block = _format_context_block(context)
         if context_block:
             user_text = user_text + "\n" + context_block
+        fidelity_mode = any(
+            str(unit.metadata.get("extraction_fidelity_mode", "false")).strip().lower()
+            in {"true", "1", "yes", "on"}
+            for unit in units
+        )
+        system_prompt = _EXTRACT_SYSTEM_PROMPT
+        if fidelity_mode:
+            system_prompt = system_prompt + "\n\n" + _EXTRACTION_FIDELITY_SUFFIX
         messages = [
-            ChatMessage(role="system", content=_EXTRACT_SYSTEM_PROMPT),
+            ChatMessage(role="system", content=system_prompt),
             ChatMessage(role="user", content=user_text),
         ]
 
