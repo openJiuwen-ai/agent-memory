@@ -6,7 +6,7 @@
 | 项    | 值                                                                                                                                                                                                       |
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 日期   | 2026-08-09                                                                                                                                                                                              |
-| 影响范围 | `src/config/`、`src/api/memory_api_impl/assembly.py`、消费配置的 LLM/Embedder/Reranker/Store/PromptRegistry/检索开关路径；`docs/specs/S08-config.md`、`docs/design/architecture.md` §13、`docs/specs/S02-memory-api.md` |
+| 影响范围 | `jiuwen_memory/config/`、`jiuwen_memory/api/memory_api_impl/assembly.py`、消费配置的 LLM/Embedder/Reranker/Store/PromptRegistry/检索开关路径；`docs/specs/S08-config.md`、`docs/design/architecture.md` §13、`docs/specs/S02-memory-api.md`；Storage 实例动态配置见 F02 |
 | 测试基线 | 见文末「验证」；完整 key 清单见决策 2.1                                                                                                                                                                                |
 | Refs | 借鉴密钥侧 `KeySource` 抽象模式（外部可插来源 + 默认 local/YAML）                                                                                                                                                          |
 
@@ -184,9 +184,10 @@
 | `graph_store.active`    | 已接线（`RoutingGraphStore`） | 已预装 Graph 具名实例名                   |
 | `fusion_store.active`   | 已接线（`RoutingFusionStore`） | 已预装 Fusion 具名实例名                  |
 | `fs_store.active`       | 已接线（`RoutingFSStore`） | 已预装 FS 具名实例名                      |
+| `storage.active`        | 已接线（`RoutingStorage`） | 已预装完整 `Storage` 实例名（见 F02） |
 
 
-Store 切换后旧库数据不自动迁移。`memory` 等无连接串的后端忽略连接类改值 key。
+Store / Storage 切换后旧库数据不自动迁移。`memory` 等无连接串的后端忽略连接类改值 key。
 
 #### 2.1.5 CompositeStorage 下的接线真值表（与 Storage 抽象对齐）
 
@@ -194,16 +195,18 @@ Store 切换后旧库数据不自动迁移。`memory` 等无连接串的后端�
 **统一 `Storage` 端口**，不再各自直接 `VectorProducer.dep`。ConfigSource 晚绑定与
 `Routing*Store` 仍挂在**端口背后的 Store 实例**上，不挂在 `CompositeStorage` 外壳上。
 
-**装配顺序（`build_kernel`）**
+**装配顺序（`build_kernel`，与 `258f398` / 当前 `assembly.py` 对齐）**
 
 ```text
 1. ConfigSourceProducer.dep → put("default")     # 必须最先，供 Store builder get_cached
-2. KvProducer.dep(kv_store.default)
-   → 若非 EncryptedKVStore，再包一层 EncryptedKVStore → put("default")
-3. StorageProducer.dep(storage.default=composite)
+2. StorageProducer.dep(storage.default=composite|RoutingStorage|…)
    → composite 再 dep：kv_store / vector_store / fulltext_store / graph_store / …
-4. Engine / Retriever / … → StorageProducer.resolve（共享同一 Storage）
+3. Engine / Retriever / … → 共享同一 Storage；Kernel.kv = KvProducer.dep(kv_store.default)
 ```
+
+**EncryptedKV（F04）**：默认 **不**强制外包。产品以 `encrypted` target（或等价）opt-in；
+启用时 `RoutingKVStore` 必须作为 raw 在加密层之内。未启用时 raw `RedisKVStore` /
+`RoutingKVStore` 可直接作为 `kv_store.default`（demo 场景 P/2 即此路径）。
 
 **谁 `dep` Storage（真值）**
 
@@ -211,27 +214,27 @@ Store 切换后旧库数据不自动迁移。`memory` 等无连接串的后端�
 | 消费者 | 依赖 | 是否握死 Store 引用 |
 | --- | --- | --- |
 | `InMemoryEngine` / `CloudEngine` | `StorageProducer` | 握 `Storage`；CRUD 走端口 |
-| `PipelineRetriever` 与各 Recaller | `storage` 参数 / `Storage.recall*` | Recaller 在构造时取 `vector_port` 等**固定引用** |
-| `VectorIndexBuilder` / `FulltextIndexBuilder` / `HybridIndexBuilder` | `Storage` 端口 | 同上，构造期取端口 |
-| `EncryptedKVStore` | 包在 `kv_store.default` 外 | 与 Routing 组合见下 |
+| `PipelineRetriever` 与各 Recaller | `storage` 参数 / `Storage.recall*` | Recaller 常在构造时取 `vector_port` 等引用；若 `storage.default` 为 `RoutingStorage`，须靠惰性端口或按次解析，才能跟随 `storage.active` |
+| `VectorIndexBuilder` / `FulltextIndexBuilder` / `HybridIndexBuilder` | `Storage` | 同上 |
+| `EncryptedKVStore` | 可选；包在 `kv_store` raw 外（F04 opt-in） | 与 Routing 组合见下 |
 
 **`Routing*` 挂哪一层（方案 A）**
 
 
 | 目标 | 正确挂载点 | 错误挂载点 |
 | --- | --- | --- |
-| 异质向量切换（pgvector↔milvus） | `vector_store.default` = `RoutingVectorStore`（产品 `@VectorProducer.register` 或等价预装），再被 composite 的 `vector_store` 参数引用 | 仅 YAML 声明两个 vector 实例、无 Routing 门面；或试图加 `storage.active` |
+| 异质向量切换（pgvector↔milvus） | `vector_store.default` = `RoutingVectorStore`（产品 `@VectorProducer.register` 或等价预装），再被 composite 的 `vector_store` 参数引用 | 仅 YAML 声明两个 vector 实例、未注入 Routing；或把「只换向量实现」误做成 `storage.active`（Storage 实例切换见 F02） |
+| Storage 实例动态配置（Composite↔一体化 Storage 等） | **不在本特性**；见 [F02-routing-storage.md](./F02-routing-storage.md)：`storage.default` = `RoutingStorage` + `storage.active` | 未使用 `RoutingStorage` 时，原地改同一 `CompositeStorage` 内部端口集合 |
 | 同实现换 Redis / 换库（**优先、主路径**） | **不必** Routing：单套 `RedisKVStore`（或 `SQLiteKVStore`）+ 运行时改 `kv_store.url` / `db_path`；惰性客户端按新值重连 | 为「换 URL」预装 `Redis_1`/`Redis_2` 两套具名实例再切 `kv_store.active`（装配期猜集群数；后来的 Redis_3 还要重装内核） |
-| 异质 KV 或双活并存（次选） | 仅当需要 **不同实现并存**（如 redis↔sqlite）或 **两套热实例同时保留、各自独立连接** 时，才 `RoutingKVStore` + `kv_store.active`，并被 **EncryptedKVStore 包在外层** | 把 Routing 包在 Encrypted 外面；或 Routing 内两套 Redis 再共用同一 `kv_store.url` 晚绑定键（双实例一起变，等于没拆） |
+| 异质 KV 或双活并存（次选） | 仅当需要 **不同实现并存**（如 redis↔sqlite）或 **两套热实例同时保留、各自独立连接** 时，才 `RoutingKVStore` + `kv_store.active`；若启用 Encrypted，则 Routing 须在加密层 **之内** | 把 Routing 包在 Encrypted 外面；或 Routing 内两套 Redis 再共用同一 `kv_store.url` 晚绑定键（双实例一起变，等于没拆） |
 
 **为何「换 Redis URL」不用 Routing**：`Routing*` 的具名表在装配期固定。只改连接串属于同实例晚绑定——以后上线 Redis_3 只需配置中心 `put(kv_store.url, …)`，无需事先知道会有几套、也不用改 `instances={…}`。Routing 解决的是「实现类/槽位切换」，不是「同实现换连接」。
 
 ```text
 推荐（用户 A：换 Redis URL + pgvector→milvus）：
 
-  kv_store.default → EncryptedKVStore(
-                        raw=RedisKVStore(config_source=…)   # 同实例；active 不用
-                     )
+  kv_store.default → RedisKVStore(config_source=…)   # 同实例；active 不用
+                     # 若产品 opt-in 加密：EncryptedKVStore(raw=上式)
   vector_store.default → RoutingVectorStore(
                             {pgvector_1, milvus_1}          # 异质；active=vector_store.active
                          )
@@ -246,9 +249,9 @@ Store 切换后旧库数据不自动迁移。`memory` 等无连接串的后端�
 样例：`examples/config_source_embedder_routing_demo.py` 场景 **P（产品主路径）**
 （离线 demo：单套 `RedisKVStore`+按 url 分桶的假客户端；vector 用内存 Store 占位；产品换成真实 Redis / pgvector / milvus 即可）。
 
-**明确不做（本特性范围外，除非另开特性）**
+**明确不做（本特性范围外）**
 
-- **`storage.active` / 运行时拆换整个 `CompositeStorage`**：一次替换整包拓扑（多端口同时换、引用重建、迁移语义）超出六类 Store 命名空间契约；产品若需完全不同拓扑，应装配期重建内核或每租户一内核，而不是热替换 `Storage` 外壳。
+- **禁止在未使用 `RoutingStorage` 时，原地拆换同一 `CompositeStorage` 内部端口拓扑**（多端口同时改、引用重建、隐含迁移）。多套完整 `Storage` 实例间的动态选用由 **F02 `RoutingStorage` + `storage.active`** 承接，与本特性 Store 级 Routing 分层共存（见 F02 决策 2 / 6）。
 - 默认拓扑 **不** 预装多后端，**不** 注册 YAML `target: routing`；`Routing*Store` 由产品手工注入（方案 A）。
 - **不**把同实现换连接伪装成 `*.active` 多实例（避免装配期枚举未来集群）。
 
@@ -323,7 +326,7 @@ Store 切换后旧库数据不自动迁移。`memory` 等无连接串的后端�
 - **PromptRegistry**：优先 `ConfigSource.fetch("prompts.<phase>.<name>")`，缺失回落构造快照。
 - **LLM / Embedder / Reranker（OpenAI 兼容与 API 类）**：在 **每次** `chat` / `embed` / `rerank`（及 health）路径上 `fetch` `model` / `api_key` / `base_url`；凭证变化时重建客户端。hashing/overlap 等无凭证实现忽略这些 key。
 - **Store（连接型后端）**：在惰性取客户端/连接路径上 `fetch` `url` / `hosts` / `uri` 等；连接串变化时丢弃旧客户端并按新值重连。旧库数据不自动迁移。
-- `*.active` **路由门面**：仅当需要在**不同实现类**或产品明确要求多实例隔离时使用；不得作为同构多 Key/URL 的首选。
+- `*.active` **路由选用**：仅当需要在**不同实现类**或产品明确要求多实例隔离时使用；不得作为同构多 Key/URL 的首选。
 - **能力开关**：使用可选能力前读取开关；未预装通道仅改开关不够，须预装配或重建。
 
 
@@ -376,7 +379,7 @@ PolicyManager 是少量已知键的策略表，不适合 prompt 长文本、连�
 ### Embedder / Reranker / LLM（额度用尽换 B）
 
 - **首选——同实例晚绑定**：只预装一套 openai（或 api reranker）实例；改 `embedder.api_key` / `llm.model` / `reranker.base_url` → 下次调用 `fetch` 即走新凭证/模型/端点。
-- **次选——已预装异质实例**：hashing↔openai 等才改 `*.active` 门面选用。
+- **次选——已预装异质实例**：hashing↔openai 等才改 `*.active` 选用。
 - **从未注册的实现**：协议兼容则产品新增 `@register` 薄封装或 `target: openai` + `base_url`；协议不兼容须新产品实现后重建内核（A）。
 
 换 embedding 模型后旧向量空间可能不一致；本特性不自动 reindex，由产品提示。
@@ -384,7 +387,7 @@ PolicyManager 是少量已知键的策略表，不适合 prompt 长文本、连�
 ### Store
 
 - **首选——同后端晚绑定**：改 `kv_store.url` / `vector_store.uri` 等 → 下次访问按新连接重连（旧数据仍在旧库）。换 Redis 集群（含以后的第三套）只 `put(kv_store.url)`，**不要** `RoutingKVStore({Redis_1, Redis_2})`。
-- **次选——换已预装异质后端**：改 `kv_store.active` 等（如 redis↔sqlite）；须装配期已注入 `Routing*Store`（方案 A），且 KV Routing 在 Encrypted 之内。
+- **次选——换已预装异质后端**：改 `kv_store.active` 等（如 redis↔sqlite）；须装配期已注入 `Routing*Store`（方案 A）；若启用 Encrypted，则 KV Routing 须在加密层之内。
 - **数据迁移**：产品职责，本仓不管。
 
 
@@ -407,4 +410,4 @@ PolicyManager 是少量已知键的策略表，不适合 prompt 长文本、连�
 - 多租户「每 space 一份 ConfigSource」还是「全局一份 + key 带 space 前缀」待产品隔离模型确定后补充（demo 采用进程级适配器 + 请求 `bind_identity` + 远程按身份取值）。
 - 缓存失效运维接口不在本次范围。
 - 决策 2.1.1 能力开关「约定/待接线」。
-- `storage.active` / 整颗 `CompositeStorage` 热切换不在本特性范围（见决策 2.1.5）。
+- Storage 实例动态配置（`RoutingStorage` + `storage.active`）不在本特性实现范围，设计见 [F02-routing-storage.md](./F02-routing-storage.md)；本特性仅约束 Store 级 Routing / 晚绑定（见决策 2.1.5）。
