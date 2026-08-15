@@ -9,7 +9,7 @@
 
 ## 1. 架构目标与约束
 
-承接 [VISION](./VISION.md)，架构需同时满足：
+承接 [愿景](./vision.md)，架构需同时满足：
 
 
 | 目标                                  | 架构含义                              |
@@ -72,20 +72,22 @@ MemoryUnit
 ├── id              Scope 内唯一 id
 ├── scope           归属：{ org, space, user, agent, session }（多维，用于隔离/共享）
 ├── tier            认知角色（记忆分类维度之一）：working/core/episodic/semantic/procedural/archival
-├── content         内容（可治理文本/结构化字段；多模态来源在接入时规约为此投影）
-├── assets          原模态资产引用（图像/音频/视频等，或对象存储路径；文本投影的来源）
-├── source          来源：对话/工具轨迹/文档/图像/音视频/外部导入 + 原始引用
+├── layers          ContentLayers：l0 概要 / l1 片段；L2 是 content 合并视图
+├── segments[]      Segment：每段含 content + assets[] + source
+├── source_ref      RawPayload / 会话等来源引用
 ├── temporal        时间：t_event(发生) / t_ingest(摄入) / t_valid / t_invalid
 ├── provenance      演进血缘（多→一合成）：由哪些 unit 抽取/升华/合并而来（来源可仍有效）
 ├── supersedes      版本链（一→一更替）：本版取代的上一版 id（update SUPERSEDE 模式产生；空=首版）
+├── hierarchy       HierarchyRef：跨 unit 树结构（设计目标，尚未实现）
 ├── tags/metadata   标签、命名空间、置信度、重要度等
 └── lifecycle       状态：active / superseded(被取代) / archived / forgotten
 ```
 
 - `temporal` 借鉴 Zep **双时间模型**，支持有效期与时间点回溯。
-- **`provenance` 与 `supersedes` 分离**：`provenance` 是「多→一」演进血缘（抽取/升华/合并；来源 unit 可仍有效），支撑「派生可重建 + 可审计回溯」与 `trace` 回溯；`supersedes` 是「一→一」版本链，支撑按 `as_of` 的版本回溯（`get` 沿链返回当时有效版本）。两者不再共用一个字段。
+- **内容真相是 `segments[]`**：`content/assets/source` 均为折叠后的只读兼容视图，不是与 `segments[]` 并列写入的第二份数据。`ContentLayers.l0/l1` 已实现，L2 不重复存储，直接取 `MemoryUnit.content`。
+- **`provenance`、`supersedes`、`hierarchy` 三分**：`provenance` 回答“由哪些 unit 抽取或合成”，供 `trace` 回溯；`supersedes` 回答“本版本取代谁”，供 `as_of` 版本回溯；目标 `HierarchyRef` 回答“结构上包含谁、隶属于谁”，供父子树构建与 `search(..., expand_depth>0)` 下钻。三者生命周期、遍历方向和治理动作互不替代。
 - `lifecycle` 用「标记失效」而非物理删除（非破坏式更新）。`update` 默认 **SUPERSEDE**（生成新 id 版本、旧版标记 superseded、新版 `supersedes` 记链），亦可 **OVERWRITE**（同 id 原地覆写，旧内容仅留审计——非破坏式原则的有意例外）。
-- **多模态**：`assets` 保留原模态资产（或引用）作为真源的一部分；`content` 是其**可治理文本/结构投影**（转录/OCR/caption/描述），由接入层生成。下游索引与检索统一作用在 `content` 投影上（详见 §5.1）。
+- **多模态**：每个 `Segment` 把可治理文本/结构投影、原模态资产引用与来源模态放在一起；下游索引与检索统一作用于各段合并后的 `content` 视图（详见 §5.1）。
 
 ### 3.2 作用域与多租户（Scope）
 
@@ -132,6 +134,15 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
  └────────────────────────────────────────────────────────────────────────────┘
    ▲ 长时记忆与索引皆可从原始数据重建（短时记忆为易失工作态，不必持久重建）
 ```
+
+长时记忆的“分层”由四个不能互相推导的轴组成：
+
+| 轴 | 表达载体 | 含义 |
+| --- | --- | --- |
+| 同 unit 渐进披露 | `ContentLayers` + `DisclosureLevel` | 一条 unit 的 L0/L1/L2 压缩度 |
+| 多模态构建 | `metadata.memory_level` + `provenance` | 同一媒体源产出的不同粒度 unit |
+| 认知抽象 | `MemoryTier` + evolve | unit 的认知角色与演进 |
+| 跨 unit 树结构 | `HierarchyRef` | 父摘要包含可按需展开的子证据 |
 
 - **短时记忆 vs 长时记忆**：短时记忆承载当前工作/会话上下文（近期缓冲、临时状态，易失、快速读写）；长时记忆承载可跨会话复用的事实、事件、主题关系、画像、偏好、技能与模式。
 - **抽象粒度**：低抽象贴近原始事实/片段，中抽象组织事件、实体关系与主题，高抽象沉淀画像、长期偏好、可复用技能/模式。具体构建算子见 §9.1。
@@ -203,12 +214,12 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | --------------------------------------------- | ----------------------------------------------- |
 | `add(content, scope, source, *, identity, assets=…, tags=…, metadata=…, occurred_at=…) -> list[MemoryUnit]` | **同步**写入记忆：`content` 文本/结构投影 + 可选 `assets` 原模态资产引用；阻塞至 hot path 完成（落盘 + 轻量索引）后返回**本次插入的记忆单元列表**（规约/切分可产生多条），重演进走 background 通道；实现上桥接引擎的异步 `write`，供 CLI/脚本等同步形态 |
 | `add_async(…)`（协程，签名/返回值同 `add`）   | **异步**写入记忆：直通引擎的异步 `write`，供事件循环/高并发接入形态（HTTP/MCP）非阻塞调用 |
-| `search(query, context, *, identity, filters=…, as_of=…, top_k=…, disclosure=…, with_trajectory=…) -> RetrievalResult` | 混合检索召回；`context.scope` 为目标范围，`filters` 为结构化 `FilterExpr`（叶子谓词 + AND/OR/NOT 树），`as_of` **时间点回溯（valid-time）**；结果包含命中项、可选轨迹和始终可见的通道错误 |
+| `search(query, context, *, identity, filters=…, as_of=…, top_k=…, disclosure=…, with_trajectory=…, hierarchy_kind=…, hierarchy_role=…, span_*=…, expand_depth=0, rollup=false) -> RetrievalResult` | 混合检索召回；`context.scope` 为目标范围，`filters` 为结构化 `FilterExpr`，`as_of` **时间点回溯（valid-time）**。目标扩展：可选 `hierarchy_*` / span 做结构过滤；指定父侧 role 即父优先；`expand_depth>0` 时在同一次 search 内沿命中父节点的有序 `child_ids` 展开子证据（不另设公开 `expand` 接口）。默认 `expand_depth=0` 不展开。结果含命中项、可选轨迹和通道错误 |
 | `list(scope, *, identity, offset=0, limit=100, memory_types=None, extensions=None, filters=None) -> MemoryListResult` | 列出 scope 下已建索引记忆；支持类型/结构化过滤、自定义透传与分页，返回当前页 `items` 和分页前匹配总数 `count`；只返回 `/memory/` 真源记录 |
 | `get(unit_id, scope, *, identity, as_of=None) -> MemoryUnit`      | 按 id 读取记忆单元；`as_of` 非空时沿 `supersedes` 版本链返回当时有效版本；不存在抛 `NotFoundError` |
 | `update(unit_id, scope, patch: MemoryPatch, *, identity) -> MemoryUnit` | 修正记忆（仅非 None 字段生效）：`patch.mode` = **SUPERSEDE**（默认、非破坏式：生成新 id 版本、旧版标记 superseded、新版 `supersedes` 记链）/ **OVERWRITE**（同 id 原地覆写、旧内容仅留审计）；返回结果记忆单元 |
 | `delete(selector: DeleteSelector, *, identity) -> list[str]` | 删除：按选择器（id / scope / 标签 / 时间，条件取「与」）批量执行；`mode` = forget 遗忘 / archive 归档 / downweight 降权（均非破坏式）/ **purge 完全删除**（物理删除真源与全部派生索引，合规删除、不可恢复、仅留审计记录）；返回命中的 id |
-| `evolve(scope, mode, channel=BACKGROUND, *, identity) -> job_id` | 触发演进（mode：extract / associate / consolidate / forget），经控制层 Scheduler 双通道调度，返回任务 id；索引维护不在此（随数据面操作自动跟进） |
+| `evolve(scope, mode, channel=BACKGROUND, *, identity) -> job_id` | 触发 extract / associate / consolidate / forget / hierarchy 。经控制层 Scheduler 双通道调度，返回任务 id；索引维护不在此（随数据面操作自动跟进）                                  |
 | `job_status(job_id, *, identity) -> JobInfo` / `job_cancel(job_id, *, identity)` | 查询 / 取消演进任务（委托 Scheduler） |
 | `inspect(unit_ids, scope, *, identity) -> list[MemoryUnit]` | 治理·检视：读取完整内容与治理字段（含已失效版本，委托 Governor） |
 | `trace(unit_id, scope, *, identity) -> list[MemoryUnit]` | 治理·血缘回溯：沿 `provenance` 追溯演进来源链（委托 Governor） |
@@ -246,10 +257,8 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | --- | --- | --- |
 | 生命周期 | 维护 memory 的 active / superseded / archived / forgotten 状态，并管理 space 的创建、冻结、归档、删除与 offboarding | 数据模型 §3.1；scope 模型 §3.2；自演进触发 §9.3；接口 `delete/update/inspect/delete_space` §6 |
 | 权限与隔离 | 基于 `org + space` 硬边界、space 级 `principal_path` 与 identity 做访问控制，跨 space 共享必须显式授权 | scope 模型 §3.2；接口层 PEP §6 |
-| 治理与审计 | 支持检视、编辑、血缘回溯、space 级审计查询、导出、用量统计与可观测轨迹 | 横切关注点 §12；接口 `inspect/trace/audit/export_space/space_usage` §6 |
+| 治理与审计 | 支持检视、编辑、血缘回溯、space 级审计查询、导出、用量统计与可观测轨迹 | 横切关注点 §12；接口 `inspect/trace/audit/export_space/space_usage` §6；结构轴 §4；构建 §9；`evolve(HIERARCHY)` §6 |
 | 调度与策略 | 管理 hot/background 任务、演进阶段、索引开关与运行时可变策略 | 自演进控制 §9.3；配置体系 §13 |
-
-管理层只编排和约束这些动作，不定义新的记忆结构。分层记忆的内容结构见 §4；构建算子见 §9.1/§9.2；演进触发时机与控制模式见 §9.3。
 
 ---
 
@@ -282,6 +291,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
   Milvus/Elasticsearch 在通道截断前完整执行，物化后再用共享纯函数复核真源。
 - **两条时间轴**：`as_of` 是系统相信时间（valid-time，回溯「T 时刻哪个版本有效」），与从 query 文本解析出的事件时间约束（event-time，`time_from/time_to`，过滤 `t_event`）分开，互不折叠。
 - **通道↔Store 非 1:1**：`RecallChannel` 是逻辑召回路，到物理 Store 的映射由 Storage 装配内部决定（一路对一 Store，多路也可合到 FusionStore 一次召回；TEMPORAL 多为叠加在其他通道上的时间过滤）。未指定通道表示调用全部已配置通道，显式空列表是无效输入。
+- **树结构过滤与按需展开（目标）**：当入参显式给出 `hierarchy_kind`（及可选 role/span）时，在既有流程的过滤阶段叠加结构条件；指定父侧 role 即父优先召回。`expand_depth>0` 时，在融合/重排之后沿命中父节点的有序 `child_ids` 点读子证据（单 kind），再进入既有 Discloser。叶→父分数上卷（`rollup`）默认关闭。展开与父命中共用既有 `max_tokens` 上下文预算，不另设独立树预算池。`HierarchyKind.TIME` 不等于 `RecallChannel.TEMPORAL`。
 
 ---
 
@@ -302,8 +312,10 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | **抽象与精炼** | 情景→语义、经验→技能/模式，概括出高抽象记忆    | 升华出画像、长期偏好、可复用技能/模式                                                            |
 | **关联分析**  | 实体共指、因果/引用链、跨会话/跨 Agent 关联 | 支持多跳推理、「连点成线」；构成中抽象的关系/主题结构                                                    |
 | **多维分类**  | 按主题/认知角色/来源/重要度等多维度归类      | 认知角色（working/core/episodic/semantic/procedural/archival）是其中一维，决定常驻上下文 or 按需检索 |
-| **分层披露标注** | 标注 L0 摘要 / L1 片段 / L2 全文等披露层级 | 检索层按需加载，吸收 OpenViking 分层加载以节省 token |
-| **时序组织**  | 有效期、时间点、事件先后               | 双时间模型，支持历史回溯与非破坏式更新                                                           |
+|| **同 unit 内容层标注** | `LayerAnnotator` 生成 L0 概要 / L1 片段；L2 复用全文                    | 当前已接 EXTRACT/CONSOLIDATE 派生 unit，必须在其持久化与索引前完成；普通 write 尚未接入 |
+| **时间字段**         | 有效期、时间点、事件先后                                                 | 双时间模型，支持历史回溯与非破坏式更新                                                           |
+| **树结构构建（目标）**    | `HierarchyComposer` 从权威叶生成父摘要与双向父子引用                         | 所有 kind 共享树校验、叶权威与单 kind 遍历约束 |
+| **TIME 树管线（目标）** | `TimeHierarchyPipeline` 按区间构建 snapshot/time_span/scene/event | `MemoryUnit.temporal` 提供叶事件时间，`HierarchyRef.span_*` 表示父覆盖区间 |
 
 ### 9.2 多形式索引：文档 / 关键词 / 向量 / 图
 
@@ -340,7 +352,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
   - **Hot path（在线）**：低时延的即时记忆写入与轻量更新。
   - **Background（离线）**：异步做重的抽取/升华/重索引，不阻塞主链路。
 - **控制模式**：`agent_control`（Agent 自主调用记忆工具）/ `static_control`（开发者/管线控制）/ `both`。
-- **演进阶段（EvolveMode）= 内容演进四阶段**：`extract / associate / consolidate / forget`。**索引维护不是演进模式**——它随数据面操作（write/update/delete）由 IndexBuilder 增量跟进（build/update/remove），从真源全量重建走 `IndexBuilder.rebuild()` 维护路径（上述 background「重索引」即指此类维护工作，由数据面/维护触发，而非 `evolve(mode=…)`）。
+- **演进阶段（EvolveMode）**：`extract / associate / consolidate / forget / hierarchy`。**索引维护不是演进模式**——它随数据面操作（write/update/delete）由 IndexBuilder 增量跟进（build/update/remove），从真源全量重建走 `IndexBuilder.rebuild()` 维护路径（上述 background「重索引」即指此类维护工作，由数据面/维护触发，而非 `evolve(mode=…)`）。
 
 ---
 
@@ -410,6 +422,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 > `IntegratedStorage` 是已定义的实现方向，尚未提供仓内实现。精确契约见
 > [S06-storage.md](../specs/S06-storage.md)，设计取舍见
 > [F05-unified-storage-design.md](../features/storage/F05-unified-storage-design.md)。
+> **hierarchy 存储边界（目标）**：首期 `HierarchyRef` 内嵌于 KV 真源的 `MemoryUnit`；kind/role/span 等字段投影到全文/向量索引 metadata 供前置过滤，目标索引可从 KV 重建（当前 rebuild 实现缺口见 §9.2）。GraphStore 只表达实体、因果、引用等非包含关系，不作为首期父子树真源；当同 kind 多父、丰富边属性或跨 kind 组合查询成为主路径时，再评估独立边存储。
 
 ---
 
@@ -474,8 +487,9 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | **真源形态**（§10.1） | 文档 / 结构化 | 按 profile | 切轻量真源降存储与运维 |
 | **索引类型**（§9.2） | 文档 / 关键词 / 向量 / 图 各自开关 | 关键词+向量（图/文档按需启用） | 关图/向量大幅降写入与存储成本 |
 | **检索策略**（§8） | Storage 首选 pipeline、召回通道、重排 on/off、渐进披露层级、`as_of` | 按 Storage 实现选择 + 混合召回 | 关重排/单通道降时延 |
+| **树结构**（§4/§8） | 见 [S03 PolicyManager 目标层级策略键](../specs/S03-control.md)（`hierarchy.enabled` / `auto_derive` / `ensure_on_recall` / `score_propagation` / `expand_default_depth` / `expand_top_m`）；建树装配见 [S05 HierarchyComposeProfile](../specs/S05-construction.md)；决策与取值语义见 [F08](../features/common/F08-memory-tree.md) | 默认关闭；公开 search 默认 `expand_depth=0` | 关闭建树/展开可保持 F01 基线成本 |
 | **自演进**（§9.3） | 总开关、阶段（extract/associate/consolidate/forget）、hot/background、控制模式 | 全闭环+双通道 | 仅 extract 或纯离线，降在线时延与 LLM 成本 |
-| **双时间**（§3.1） | 启用 / 关闭（仅留最新版本） | 启用 | 关闭省时序维护，适合无回溯需求 |
+| **双时间**（§3.1） | 启用 / 关闭（仅留最新版本） | 启用 | 关闭可省去历史时间维护，适合无回溯需求 |
 | **多模态规约**（§5.1） | 启用的规约器、是否留原模态资产、投影粒度 | 文本+按需图像 | 仅文本，去掉 ASR/OCR/caption 依赖 |
 | **scope / 共享**（§3.2） | `org + space` 隔离粒度、space 级 `principal_path`、共享池、跨 scope 授权策略 | space 隔离 + `user_agent` 默认 | 单租户简化 |
 | **存储后端**（§10.2） | Storage 实现、KV/向量/全文/图/融合/FS 端口选型（extras 选装） | CompositeStorage；端 SQLite / 云 PG+专用库 | 一体化 Storage 或端侧精简能力 |
@@ -504,12 +518,12 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 > ⚠️ **下表的配置取值仅为示意举例**，用于说明「同一套能力如何按场景裁剪组合」，并非推荐值或最终默认；具体每项取值以立项后的 design/spec 与实测调优为准。
 
-| 场景 Profile | 真源 | 索引 | 自演进 | 双时间 | 多模态 | 部署 | 备注 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| **编码 Agent** | 文档(Markdown) | 文档+关键词+向量 | 轻（extract，离线为主） | 可选 | 文本/代码 | 端侧/本地 | git 化、可审计、低开销 |
-| **个人助手** | 结构化/SQLite | 向量+关键词(+图) | 全闭环 | 启用 | 文本+图像 | 端云协同 | 跨设备同步、隐私留端 |
-| **企业多 Agent** | 结构化(向量+图) | 全开（含图） | 全闭环+重 background | 启用 | 按需 | 云侧 | 多租户 scope+共享池、强审计 |
-| **端侧轻量** | 文档/SQLite | 关键词+轻向量 | 降级（规则/小模型或延迟到云） | 可关 | 仅文本（音视频延迟到云） | 纯端 | 低资源、离线优先 |
+| 场景 Profile | 真源 | 索引 | 树结构（示意） | 自演进 | 双时间 | 多模态 | 部署 | 备注 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **编码 Agent** | 文档(Markdown) | 文档+关键词+向量 | 按目录层级逐层构建      | 轻（extract，离线为主） | 可选 | 文本/代码 | 端侧/本地 | git 化、可审计、低开销 |
+| **个人助手** | 结构化/SQLite | 向量+关键词(+图) | 按时间维度/主题维度逐层构建 | 全闭环 | 启用 | 文本+图像 | 端云协同 | 跨设备同步、隐私留端 |
+| **企业多 Agent** | 结构化(向量+图) | 全开（含图） | 按时间维度/主题维度逐层构建 | 全闭环+重 background | 启用 | 按需 | 云侧 | 多租户 scope+共享池、强审计 |
+| **端侧轻量** | 文档/SQLite | 关键词+轻向量 | 默认关闭树结构构建      | 降级（规则/小模型或延迟到云） | 可关 | 仅文本（音视频延迟到云） | 纯端 | 低资源、离线优先 |
 
 > 「既能全、也能轻」：关闭图/向量/演进/双时间后，可退化为接近 memSearch 的轻量形态（低写入开销）；全开则对标 Mem0/Zep 的完整能力。配置裁剪是把「广度」转化为「按场景的合适成本」的关键手段。
 
@@ -566,7 +580,7 @@ evolve()/触发器 → 读取原始数据 → LLM 提取/抽象升华 → 关联
 | ------------ | -------------------------------- | ------------------------------------- |
 | Mem0         | 抽取+更新双阶段流水线、可插拔后端、多租户 scope、混合检索 | §9.3 自演进、§10.2 存储抽象、§3.2 scope、§8 检索     |
 | OpenViking   | 统一上下文、L0/L1/L2 分层加载、检索轨迹、记忆自迭代   | §8 渐进式披露+轨迹、§9.3 演进、§10.1 文档真源           |
-| Zep/Graphiti | 双时间模型、有效期、非破坏式更新                 | §3.1 temporal、§9.1 时序组织、§14 同步冲突解决    |
+| Zep/Graphiti | 双时间模型、有效期、非破坏式更新                 | §3.1 temporal、§9.1 时间字段、§14 同步冲突解决    |
 | MemOS        | 技能记忆、memory cube 共享、异步调度         | §9.3 升华(经验→技能)、§3.2 共享、§9.3 background 通道 |
 | memSearch    | 文档为真源 + 影子索引可重建                  | §10.1 文档真源、核心信条「派生可重建」                 |
 
@@ -647,8 +661,10 @@ agent-memory/
     │   ├── abstractor.py           #   抽象与精炼/升华：→ 高抽象 unit（provenance 记血缘）
     │   ├── associator.py           #   关联分析：→ Relation（供图索引）
     │   ├── classifier.py           #   多维分类：tier / 主题 / 重要度
-    │   ├── index_builder.py        #   多形式索引构建：build / update / remove / rebuild（记录落 unit.scope）
-    │   └── evolver.py              #   自演进：EvolveMode（extract/associate/consolidate/forget；索引维护非演进模式）
+    │   ├── layer_annotator.py      #   当前：同 unit L0/L1 内容层标注
+    │   ├── index_builder.py        #   多形式索引构建：build / update / remove / rebuild（scope 显式传给 Store）
+    │   ├── evolver.py              #   自演进：EvolveMode（extract/associate/consolidate/forget/hierarchy；索引维护非演进模式）
+    │   ├── hierarchy_composer.py   #   [planned] 构建算子：通用父子树创建/重建、replace_in_span（由 evolver 在 HIERARCHY 模式调用）
     │
     ├── retrieval/                  # D 记忆检索层（§8）：查询解析→Storage pipeline→Reranker→阈值→披露
     │   ├── base.py                 #   RetrievalOperator 算子契约
@@ -658,6 +674,7 @@ agent-memory/
     │   ├── fuser.py                #   物化候选融合（分层 MaxP + 跨通道融合；不含 Reranker）
     │   ├── discloser.py            #   渐进式披露：disclose(query, …) L0 摘要 → L1 片段 → L2 全文
     │   ├── retriever.py            #   检索入口接口：retrieve(scope, query)
+    │   ├── hierarchy_expander.py   #   [planned] Retriever 内部算子：expand_depth>0 时单 kind 展开（共用 max_tokens）
     │   └── retriever_impl/         #   PipelineRetriever：按 Storage 首选值编排三条 pipeline
     │
     ├── storage/                    # F 记忆存储层（§10）：统一 Storage 门面 + 六类标准 Store
@@ -680,7 +697,7 @@ agent-memory/
         ├── engine.py               #   MemoryEngine 记忆引擎：§6 各语义的编排中枢（api 数据面委托于此；get/update 收 scope；
         │                           #   写链路仅异步 async write，返回插入的 MemoryUnit 列表）
         ├── lifecycle.py            #   生命周期：transition / sweep（非破坏式标记）
-        ├── governance.py           #   治理：inspect 检视 / trace 血缘回溯 / audit 审计查询
+        ├── governance.py           #   治理：inspect 检视 / trace 血缘回溯 / audit 审计查询（目标含树结构一致性校验）
         ├── permission.py           #   权限：grant / revoke / check（跨 scope 显式授权）
         ├── scheduler.py            #   演进调度：submit / status / cancel（双通道驱动构建层）
         └── policy.py               #   运行时可变策略（§13.4 admin 落点）
@@ -716,7 +733,7 @@ agent-memory/
 
 > 当前状态：主要接口与默认实现已存在。本轮统一 Storage 首版已完成 Retriever 接入；
 > Construction/Control 迁移和一体化 `Storage` 实现仍待后续迭代。实际签名与行为以
-> `src/`、`docs/specs/` 和对应 features 文档为准。
+> `src/`、`docs/specs/` 和对应 features 文档为准。标记 `[planned]` 的 hierarchy 条目仅表示目标落点，不声称代码已存在。
 
 ---
 
@@ -731,6 +748,9 @@ agent-memory/
 5. **多模态规约的保真边界**：§5.1 已定（保留原模态资产 + 文本投影、检索走投影），但仍待细化——投影的保真度/成本权衡、是否保留多份不同粒度投影、原模态资产的生命周期与遗忘策略。
 6. **审计后端缺口**：`common/audit` 已定义横切的 `AuditLogger` 记录接口与 `AuditEvent` 结构，但 `src/storage` 的六种 Store 中没有审计持久化后端——是新增 `AuditStore`（append-only 写入 + 按条件查询，供 `Governor.audit()` 消费），还是复用 KV/Fulltext 存储审计流水？涉及合规保留期限与查询能力的权衡。
 7. **数值元数据的类型**：`FilterClause` 已支持数值/时间范围算子（gt/lt 等），但 `MemoryUnit.metadata` 仍为 `dict[str,str]`、重要度/置信度按字符串存放。范围比较与 `LifecycleManager.sweep` 的「低价值」判断要可靠生效，需让数值类元数据以可比较类型入库，或把 `importance`/`confidence` 提升为 `MemoryUnit` 的显式数值字段；本轮暂不改，留待实现/调优阶段定。
+8. **多父与独立边存储阈值**：同一 kind 多父、边属性或跨 kind 组合查询增长到什么规模时，内嵌 `HierarchyRef` 应迁移为独立边存储？需要以查询频率、双写成本和一致性故障率量化。
+9. **父子双向更新并发语义**：并发 write、Expand、剪边与 `replace_in_span` 下，`parent_id`/`child_ids` 如何原子更新、失败回滚和修复，需结合具体后端验证。
+10. **`HierarchyRole.PROFILE` 与 TIME 树的关系**：profile 级记忆是独立 `MemoryUnit`（常建议 `MemoryTier.CORE`），**不**通过 TIME 树的 `parent_id`/`child_ids` 挂接 snapshot/time_span/scene/event；画像检索走既有召回/标签/tier，不以 TIME 结构边表达。若未来用 TOPIC/CUSTOM kind 组织 profile，须单独立项，不得把 TIME 节点挂为 profile 的结构子。
 
 > 注：原「召回通道 ↔ 存储后端一一对应」一项已结论——`RecallChannel` 是逻辑召回路，到物理 Store 的映射由检索层装配内部决定（非 1:1，详见 §8）。
 

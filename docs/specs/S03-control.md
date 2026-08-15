@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/control/ |
-| 最近一次修订日期 | 2026-08-18 |
+| 最近一次修订日期 | 2026-08-20 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md |
 ## Metadata 编排契约
 
 `MemoryEngine.write` 分别接收两个命名空。引擎控制流、pipeline 路由、权限上下文
@@ -56,6 +56,10 @@
     系统过滤谓词；routing fallback 必须是最小权限策略，不得使用 `allow_all`。
 16. **目标操作使用完整 Scope**：MemoryUnit id 仅在 Scope 内唯一。LifecycleManager、Governor 与 IndexBuilder 的目标修改/读取/删除不得依赖全局 `id -> scope` 猜测，调用方必须显式提供 Scope 或携带 Scope 的 MemoryUnit。
 17. **Engine 部署边界明确**：`InMemoryEngine` 只接受空 `space` 兼容域；具名非空 space 的数据面操作使用 `CloudEngine`。`CloudEngine` 仍兼容空 space，但生产多租户配置应开启 `scope.require_space=true`。
+18. **普通 write 默认不建树（目标）**：`hierarchy.auto_derive` 是独立、默认关闭的后台策略；显式层级 recall/evolve/update 在 `hierarchy.enabled=false` 时抛 `PolicyError`，普通非层级行为兼容。
+19. **树结构一致性（目标）**：同一 kind 的父子边必须同 `org+space`、无环、单父、双向一致且顺序稳定；`user`/`agent`/`session` 可按 compose profile 放宽（跨细粒度 scope 时边须可解析定位）；`HierarchyStatus` 只允许 ACTIVE/DISMISSED，且与 `LifecycleState` 分离。
+20. **结构与生命周期事务（目标）**：`provenance`、`supersedes` 与 `hierarchy` 分别表示演进来源、版本替换和父子包含；FORGET/PURGE 不级联删除后代内容。
+21. **重叠 span 串行化（目标）**：同一 `scope + kind` 下 span 相交的 HIERARCHY build/replace、层级 update、FORGET 和 PURGE 必须串行化，或以乐观版本条件在提交前检测冲突；replace 不得吸收未参与初始输入快照的并发叶写入。
 
 ## 接口契约
 
@@ -78,16 +82,16 @@ class ControlOperator(ABC):
 |------|------|------|
 | `write` | `async (content, scope, source, *, assets, tags, metadata: dict[str, Any] \| None, occurred_at) -> list[MemoryUnit]` | 规约→可选抽取/分类→落盘+建索引；`infer=true` 时返回 `created_ids` 对应的派生结果，否则处理原始单元（直写不去重） |
 | `batch_write` | `async (items: list[BatchWriteItem], *, continue_on_error=True) -> BatchWriteResult` | 只接收 API 已归一化并完成鉴权/space 前置校验的项；按输入顺序复用 `write`，归集领域异常及非领域异常（后者为 `InternalError`）；fail-fast 时填充 `Skipped` outcomes |
-| `recall` | `async (scope, query: RetrievalQuery) -> RetrievalResult` | 委托 Retriever 完整检索链路 |
+| `recall` | `async (scope, query: RetrievalQuery) -> RetrievalResult` | 委托 Retriever 完整检索链路（含目标 `expand_depth>0` 时的内部展开） |
 | `list` | `async (scope, *, offset=0, limit=100, memory_types=None, extensions=None, filters=None) -> MemoryListResult` | 校验分页参数并完整委托 `KVStore.list`；返回当前页和分页前匹配总数 |
 | `permission_context_for_unit` | `async (unit_id, scope) -> PermissionContext` | 读取已有记忆的权限上下文，只返回 memory_type/tags/metadata 等鉴权元数据，不返回 content/assets |
 | `list_with_permission_contexts` | `async (同 list 参数) -> tuple[MemoryListResult, list[PermissionContext]]` | 从同一次 KV 查询的当前页构造逐项真源权限上下文，items/count/context 不做二次读取 |
 | `permission_contexts_for_delete` | `async (selector: DeleteSelector) -> list[PermissionContext]` | 解析 delete selector 命中的候选 unit 权限上下文，供 API 层逐条鉴权 |
 | `get` | `async (unit_id, scope, as_of=None) -> MemoryUnit` | 真源点读；`as_of` 非空沿 supersedes 链返回当时有效版本 |
-| `update` | `async (unit_id, scope, patch: MemoryPatch) -> MemoryUnit` | SUPERSEDE 新 id 记版本链 / OVERWRITE 原地覆写 |
-| `delete` | `async (selector: DeleteSelector) -> list[str]` | PURGE 物理删 / 其他委托 LifecycleManager 非破坏式流转 |
+| `update` | `async (unit_id, scope, patch: MemoryPatch) -> MemoryUnit` | SUPERSEDE 新 id 记版本链 / OVERWRITE 原地覆写；目标层级 patch 走结构事务 |
+| `delete` | `async (selector: DeleteSelector) -> list[str]` | PURGE 物理删 / 其他委托 LifecycleManager 非破坏式流转；目标需维护受影响层级边 |
 | `purge_space` | `async (org: str, space: str) -> list[str]` | 物理删除该 Space 全部 user/agent/session 子 Scope 的 MemoryUnit 真源与索引，供 offboarding 调用 |
-| `evolve` | `async (scope, mode: EvolveMode, channel=BACKGROUND) -> str` | 提交演进任务到 Scheduler；执行逻辑由构建层 Evolver 完成，返回 job_id |
+| `evolve` | `async (scope, mode: EvolveMode, channel=BACKGROUND, *, hierarchy_options=None) -> str` | 提交演进任务到 Scheduler；执行逻辑由构建层 Evolver 完成，返回 job_id；仅目标 HIERARCHY 接受 options |
 | `admin_get/set/all` | — | 管理面语义由 API 层直达 PolicyManager，Engine 不承载策略存储 |
 
 **write 路径**：
@@ -108,6 +112,76 @@ Ingestor.ingest([RawPayload]) → list[MemoryUnit]
       选中 profile 的 IndexBuilder.build(units)
       返回 units
 ```
+
+
+### 树结构目标扩展（尚未实现）
+
+普通 write 默认不建父树。`hierarchy.auto_derive=false` 时不提交任何层级任务。启用后，write 在不可变构建配置已有 compose profile 且本批叶可确定有界 span 时，必须在成功返回后向 BACKGROUND 通道提交 HIERARCHY 任务，并固定组装 `replace_existing=true`；条件不足时不提交，并记录跳过原因。提交失败只记录任务/审计错误，不回滚已经成功的权威叶写入。auto derive 不得改成阻塞 hot path，也不得推断未配置的 kind、role 或无界 span。
+
+#### ensure_hierarchy
+
+策略名统一为 `hierarchy.ensure_on_recall`，默认 `false`。只有同时满足以下条件才允许 ensure：
+
+1. `hierarchy.enabled=true`；
+2. `hierarchy.ensure_on_recall=true`；
+3. recall 显式提供一个 `hierarchy_kind`；
+4. `span_start` 与 `span_end` 成对、有效且有界。
+
+每个可 ensure 的 kind 还必须在不可变构建配置中存在 S05 定义的 `HierarchyComposeProfile`。profile 按 kind 唯一查找，提供 `leaf_role/parent_roles` 和 stage options；请求提供 kind+span，Engine 据 profile 组装完整 `HierarchyComposeOptions`，并固定 `replace_existing=true`。缺少 profile 时抛 `PolicyError`。
+
+本规约选择**阻塞式 ensure**：Engine 在父层召回前同步提交对应 kind+span 的 HIERARCHY 构建，并等待任务进入终态。SUCCEEDED 且 `complete=true` 后才执行 recall；FAILED、CANCELLED、修复未完成或超过调度器配置的等待期限均抛 `BackendError`。功能关闭时显式层级请求抛 `PolicyError`，不得悄悄退化为无层级结果。该行为只针对明确的有界层级 recall；普通 recall 与无 span 的层级 recall 从不触发 ensure。
+
+当 `ensure_on_recall=false` 时，显式层级 recall 只查询当前已有结构，不自动构建；合法的空结果仍返回空结果。
+
+#### HierarchyPatch
+
+```python
+class HierarchyEdgeOp(str, Enum):
+    ATTACH = "attach"
+    DETACH = "detach"
+
+@dataclass
+class HierarchyEdgeChange:
+    op: HierarchyEdgeOp
+    child_id: str
+    expected_parent_id: str = ""
+
+@dataclass
+class HierarchySpanPatch:
+    span_start: datetime | None
+    span_end: datetime | None
+
+@dataclass
+class HierarchyPatch:
+    kind: HierarchyKind
+    status: HierarchyStatus | None = None
+    span: HierarchySpanPatch | None = None
+    edge_changes: list[HierarchyEdgeChange] = field(default_factory=list)
+    child_order: list[str] | None = None
+```
+
+patch 以被 update 的 `unit_id` 为父节点。`ATTACH` 把 child 挂到该父；若 child 已有父，`expected_parent_id` 必须精确匹配旧父，Engine 才能在同一事务中从旧父移除并改挂。`DETACH` 要求 child 当前父为该 unit；`expected_parent_id` 为空或等于该 unit，否则 `ConflictError`。
+
+`child_order` 若提供，必须恰好是应用全部 edge_changes 后的完整直接子集合，无重复、无缺失。未提供时保留未变子节点的相对顺序，DETACH 删除原位置，ATTACH 按请求顺序追加。TIME 结构最终按 span 起点、事件时间和稳定次序校验；其他 kind 按 `ordinal` 和领域稳定顺序校验。
+
+`span=None` 表示不修改区间；`HierarchySpanPatch(None, None)` 表示清除区间，仅非 TIME kind 允许；其他组合必须同时给出起止且起点不晚于终点。
+
+Engine 在写入前必须一次性加载所有受影响 unit 并验证：同 org+space、同 kind、单父、无环、双向一致、span 有效且 TIME 必填；跨细粒度 scope 时 `child_scopes`/`parent_scope` 可解析。调用方不得通过 `metadata`、完整 `HierarchyRef`、裸 `parent_id` 或裸 `child_ids` 绕过该接口。校验失败不写任何 unit。
+
+`UpdateMode.SUPERSEDE` 对已挂树 unit 生成新 id 后，必须在同一结构事务中把父列表中的旧 id 替换为新 id，并把直接子的 `parent_id` 改为新 id，位置不变；随后旧 unit 进入 SUPERSEDED。`OVERWRITE` 保持 id。
+
+#### delete 与层级边
+
+删除选择器先解析完整命中集，再按稳定 id 顺序处理：
+
+| DeleteMode | 生命周期/存储 | 层级边 |
+|---|---|---|
+| DOWNWEIGHT | lifecycle 保持 ACTIVE，仅降权 | 不改边 |
+| ARCHIVE | lifecycle 设 ARCHIVED | 保留边；默认召回和展开按 lifecycle 排除，显式 include_archived 可见 |
+| FORGET | lifecycle 设 FORGOTTEN | 提交前双向断开所有直接父边和子边 |
+| PURGE | 物理删除真源与索引 | 先双向断边，再删除目标 |
+
+删除父节点时，直接子仅清空指向该父的 `parent_id`，成为未挂接节点；不删除、归档或遗忘子。删除子节点时，从父 `child_ids` 移除并保持其余顺序。一个 selector 同时命中父子时先计算最终存活边，再一次提交。空父默认保留；任何 PURGE 都不得沿 hierarchy 级联删除权威叶。
 
 ### MemoryPipeline（`pipeline.py`）
 
@@ -177,7 +251,9 @@ pipeline:
 |------|------|------|
 | `transition` | `(scope: Scope, unit_ids: list[str], target: LifecycleState) -> None` | 在指定 Scope 内批量非破坏式状态标记 |
 | `supersede` | `(scope: Scope, unit_id: str, invalid_at: datetime) -> MemoryUnit` | 在指定 Scope 内将旧版本标记 SUPERSEDED，并把 valid-time 失效边界设为 `invalid_at` |
-| `sweep` | `() -> list[str]` | 扫描到期（`t_invalid` 已过）的 active 单元，标记 FORGOTTEN |
+| `sweep` | `() -> list[str]` | 扫描到期（`t_invalid` 已过）的 active 单元，标记 FORGOTTEN；目标挂树 unit 必须走与 FORGET 相同的断边编排 |
+
+LifecycleManager 不修改 `HierarchyStatus`。结构 status 的 ACTIVE 不会覆盖 ARCHIVED/FORGOTTEN 等生命周期过滤。
 
 **状态机**：
 ```
@@ -247,11 +323,13 @@ recall 完成权限检查后，API 读取 `PermissionManager.routing_fields()`�
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `submit` | `(scope: Scope, mode: EvolveMode, channel: Channel) -> str` | 提交演进任务，返回 job_id |
+| `submit` | `(scope: Scope, mode: EvolveMode, channel: Channel, *, hierarchy_options: HierarchyComposeOptions | None = None) -> str` | 提交演进任务，返回 job_id；仅 HIERARCHY 接受 options（目标） |
 | `status` | `(job_id: str) -> JobInfo` | 查询任务状态 |
 | `cancel` | `(job_id: str) -> None` | 取消尚未完成的任务（幂等） |
 
 **双通道**：HOT（在线低时延：write 返回前完成的轻量索引）；BACKGROUND（离线异步：重的抽取/升华/重索引）。
+
+目标 HIERARCHY 任务必须在 `JobInfo.detail` 中提供稳定字符串键：`hierarchy_kind`、`span_start`/`span_end`、`trigger`（`explicit`/`ensure_on_recall`/`auto_derive`）、`created_parent_count`、`updated_child_count`、`replaced_parent_count`、`repair_required_count`、`complete`、`error`。`detail["repair_required_count"]` 等于 `HierarchyComposeResult.repair_required` 的元素数量。目标 `JobInfo` 增加 `result: EvolveResult | None = None`（结构见 S05）；`complete=false` 或非空 `repair_required` 不得标记 SUCCEEDED。ensure 等待终态；auto derive 不等待。
 
 ### PolicyManager（`policy.py`）
 
@@ -284,6 +362,19 @@ space 元数据、space policy、成员、用量与 offboarding 状态管理。
 | `add_member` | `(org: str, space: str, member: SpaceMember) -> None` | 添加或更新成员角色；成员 scope 的 org/space 归一为目标 space |
 | `remove_member` | `(org: str, space: str, member: Scope) -> None` | 移除成员 |
 
+目标层级策略键：
+
+| 键 | 类型与默认 | 语义 |
+|---|---|---|
+| `hierarchy.enabled` | bool，`false` | 层级总开关 |
+| `hierarchy.auto_derive` | bool，`false` | write 后是否后台派生 |
+| `hierarchy.ensure_on_recall` | bool，`false` | 是否对显式有界层级 recall 阻塞确保结构 |
+| `hierarchy.score_propagation` | str，默认 `maxp` | rollup 算法；当前仅接受 `maxp` |
+| `hierarchy.expand_default_depth` | int，`1` | 仅供未显式给 `expand_depth` 的内部/接入形态默认值；公开 recall 默认仍为 0 |
+| `hierarchy.expand_top_m` | int \| None，`None` | 每个父最多保留的直接子数；必须 > 0；`None` 表示不额外裁剪（仍受 depth 与 `max_tokens` 约束） |
+
+`enabled=false` 优先于其他层级键。修改策略不回写已有 unit，不触发隐式重建。未知值或越界值抛 `PolicyError`。
+
 ## 数据结构
 
 ### 控制层数据类型（`types.py`）
@@ -295,10 +386,10 @@ space 元数据、space policy、成员、用量与 offboarding 状态管理。
 | `Grant` | dataclass | grantor(Scope) / grantee(Scope) / actions(list[Action]) / expires_at |
 | `Channel` | 枚举 | HOT / BACKGROUND |
 | `JobStatus` | 枚举 | PENDING / RUNNING / SUCCEEDED / FAILED / CANCELLED |
-| `JobInfo` | dataclass | id / channel / mode / scope / status / detail |
+| `JobInfo` | dataclass | id / channel / mode / scope / status / detail；目标增加 result |
 | `MemoryListResult` | dataclass | items: list[MemoryUnit] / count: int（分页前匹配总数） |
 | `UpdateMode` | 枚举 | SUPERSEDE（默认，新 id）/ OVERWRITE（同 id） |
-| `MemoryPatch` | dataclass | content（修正后的文本投影，应用时更新对应 Segment 内容） / tier / tags / metadata / t_valid / t_invalid / mode(UpdateMode) |
+| `MemoryPatch` | dataclass | content（修正后的文本投影，应用时更新对应 Segment 内容） / tier / tags / metadata / t_valid / t_invalid / mode(UpdateMode)；目标增加 hierarchy |
 | `DeleteMode` | 枚举 | FORGET / ARCHIVE / DOWNWEIGHT / PURGE |
 | `DeleteSelector` | dataclass | unit_ids / scope / tags / before / mode(DeleteMode) |
 | `PrincipalPath` | 枚举 | USER_AGENT / AGENT_USER |
@@ -310,6 +401,18 @@ space 元数据、space policy、成员、用量与 offboarding 状态管理。
 | `SpaceMember` | dataclass | scope / role / created_at / expires_at |
 | `SpaceUsage` | dataclass | org / space / memory_count / message_count / index_count / storage_bytes / audit_count |
 | `SpaceDeleteResult` | dataclass | org / space / deleted_counts / status / audit_event_id |
+
+`DeleteSelector` 条件取 AND 且至少一项非空。`MemoryPatch` 仅非 `None` 字段生效；目标 `HierarchyPatch.edge_changes` 的空列表表示无边变更。
+
+### 三种状态/引用边界（目标）
+
+| 结构 | 允许值或作用 |
+|---|---|
+| `HierarchyStatus` | 结构节点修正状态；精确枚举见 S07 |
+| `LifecycleState` | unit 生命周期；精确枚举见 S07 |
+| `provenance` | 演进来源 |
+| `supersedes` | 版本替换 |
+| `HierarchyRef.parent_id/child_ids` | 直接父子包含 |
 
 ### 生命周期状态映射（delete 路径）
 
@@ -332,11 +435,22 @@ src/control/<算子>_impl/
 
 自注册模式：Producer 定义在对应顶层接口文件中；实现文件尾部 `@XxxProducer.register("name")` 绑定构建函数，`__init__.py` 导入实现文件触发注册，`control.bootstrap.register_controllers()` 统一 import 各 `*_impl` 包。装配层通过 Producer 按配置选取实现。
 
+## 错误语义（层级目标扩展）
+
+| 异常 | 场景 |
+|---|---|
+| `ValidationError` | 空 selector、非法 options/patch/span/顺序、跨 kind 组合 |
+| `ConflictError` | expected_parent_id 不匹配、并发版本变化或单父冲突 |
+| `NotFoundError` | 已鉴权 scope 内的目标或边端点不存在 |
+| `PolicyError` | 层级功能关闭、策略非法、ensure 前提不满足 |
+| `BackendError` | 层级事务、调度或阻塞 ensure 失败 |
+
 ## 与其它 spec 的关系
 
 | 关联 spec | 关系 |
 |-----------|------|
 | S02-memory_api | 数据面委托 MemoryEngine；治理/授权/调度/策略/space 管理面直达控制算子 |
+| S04-retrieval | Retriever 检索链路 |
 | S05-construction | Engine/Scheduler 驱动构建层 IndexBuilder/Evolver；演进逻辑由构建层执行 |
 | S06-storage | 控制层通过 KVStore 读写真源；LifecycleManager/Governor 的目标操作按显式 Scope 点查或枚举，只有 sweep/offboarding 这类全局管理任务使用 `kv.scopes()` |
 | S07-common | 控制层消费 `MemoryUnit`、`AuditEvent`、错误类型等公共结构 |

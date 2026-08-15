@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-08-18 |
+| 最近一次修订日期 | 2026-08-20 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F06-unified-index-builder.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/retrieval/F03-metadata-filtering.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F06-unified-index-builder.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
 
 ## Metadata 派生与索引契约
 
@@ -26,6 +26,7 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 - 候选落盘前巩固（ADD/UPDATE/SUPERSEDE/NOOP）
 - 多形式索引构建（文档/关键词/向量/图，按配置启用）
 - 记忆自演进（抽取 → 关联 → 冲突消解 → 升华 → 遗忘/降权）
+- 树结构派生、区间重建与双向边维护（目标契约，尚未实现）
 
 **不管什么**：
 - 不做鉴权（由 `jiuwen_memory/api` 层负责）
@@ -62,6 +63,12 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
     `T_EVENT_UNKNOWN=0`（F07 派生常为此值，避免事件窗下推按缺失字段排他），
     不改写真源。
 14. **索引删除按 MemoryUnit 定位**：`IndexBuilder.remove` 接收带 Scope 的 MemoryUnit，禁止维护仅按 unit id 的单值 Scope 缓存；同一逻辑 id 在不同 Scope 的索引互不影响。
+15. **叶权威、父可重建**（目标契约，尚未实现）：普通写入或来源转换产生的叶是权威事实；
+    `HierarchyComposer` 生成的父节点是派生物。重建父层不得删除、改写或归档权威叶内容。
+16. **层级边双向一致**（目标契约，尚未实现）：父 `child_ids` 与子 `parent_id` 必须在同一构建操作中维护，
+    并在写索引前通过同 org+space、无环、单 kind 单父、区间覆盖校验（跨细粒度 scope 时边可解析）。
+17. **父标注先于持久化和索引**（目标契约，尚未实现）：新派生父节点先经 `LayerAnnotator` best-effort 生成 L0/L1，
+    再写 KV 和索引。标注失败保留空 layers 并继续，不得因摘要失败丢失结构结果。
 
 ## 接口契约
 
@@ -70,6 +77,7 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 ```python
 class OperatorType(str, Enum):
     EXTRACTOR / ABSTRACTOR / ASSOCIATOR / CLASSIFIER / INDEX_BUILDER / EVOLVER / LAYER_ANNOTATOR
+    # 目标新增：HIERARCHY_COMPOSER
 
 class ConstructionOperator(ABC):
     def operator_type(self) -> OperatorType  # 自描述
@@ -182,21 +190,30 @@ Extractor。
 | `build` | `(units: list[MemoryUnit]) -> None` | 为一批记忆单元构建已启用的各形式索引 |
 | `update` | `(units: list[MemoryUnit]) -> None` | 记忆变更后增量更新对应索引条目 |
 | `remove` | `(units: list[MemoryUnit]) -> None` | 按每个 MemoryUnit 自带 Scope 删除对应索引条目（幂等） |
-| `rebuild` | `() -> None` | 从真源全量重建索引（删索引不丢数据的保障） |
+| `rebuild` | `() -> None` | 从真源全量重建索引（删索引不丢数据的保障）；重建时也重新投影 hierarchy metadata |
+
+目标 hierarchy metadata 重建必须实现真实的 KV `scopes()` + `list(scope)` 枚举，解码
+每个 `MemoryUnit` 后重新生成内容层与 hierarchy metadata；不得从旧索引反推。该能力
+落地前，不得把 `rebuild()` 接口存在视为“删索引不丢数据”的当前保证。
 
 **build 路径**（按配置启用的索引类型，各实现独立构建）：
 ```
 MemoryUnit
-├─ 关键词路（FulltextIndexBuilder）：unit.content 整篇不切片
-│   → Document(id=unit.id, text=unit.content, metadata={tier,tags,source})
+├─ 关键词路：unit.content 整篇不切片
+│   → Document(id=unit.id, text=unit.content,
+│              metadata={unit_id,tier,lifecycle,tags,source,content_layer="l2",...hierarchy})
 │   → FulltextStore.insert
-├─ 向量路（VectorIndexBuilder）：Chunker 切片
+├─ 向量路：Chunker 切片
 │   → Chunker.chunk(unit.content) → chunks
-│   → Embedder.embed(chunks) → VectorRecord(id={unit.id}-{chunk.id}, vector, metadata={unit_id,tier})
+│   → Embedder.embed(chunks)
+│   → VectorRecord(id={unit.id}-{chunk.id}, vector,
+│                  metadata={unit_id,tier,lifecycle,seq,content_layer="l2",...hierarchy})
 │   → VectorStore.insert + KVStore 维护 chunk_id 跟踪（供 update/remove 读旧 chunk）
-├─ L0/L1 分层路（FulltextIndexBuilder + VectorIndexBuilder 扩展）：
+├─ L0/L1 分层路：
 │   → unit.layers.l0/l1 非空且对应 store 已注入 → 整段不切片
-│   → Document/VectorRecord(id={unit.id}-l0/-l1, text/vector=layers.l0/l1, metadata={unit_id,layer})
+│   → VectorRecord.id={unit.id}-layer-l0/-layer-l1
+│   → Document.id={unit.id}:l0/:l1
+│   → metadata 保留 content_layer，并复制同一 unit 的 hierarchy metadata
 │   → 写独立 FulltextStore/VectorStore 实例（不同 collection/index = 分表，与 content 物理隔离）
 │   → store 为 None 跳过该层（向后兼容 + 配置降级）；update 先删后建，remove 幂等删
 ├─ 图路（Evolver ASSOCIATE 模式编排）：
@@ -212,10 +229,119 @@ MemoryUnit
 │   → 失败全程 try/except 吞异常，不中断 build 主链路（增强层，坏了不拖累主流程）
 ├─ HybridIndexBuilder：组合 fulltext + vector + entity 三个子 builder（默认实现；entity 子 builder 在 entity_linker=None 时跳过）
 └─ 统一存储直写路：无派生检索索引时，调用方可按 Scope 委托 Storage 的记忆单元写接口
+
 ```
 
 > 注：文档索引（path → unit_id 映射）与 FusionStore 融合索引不属于本文已固化的构建接口契约，属设计预留。
 > L0/L1 分层索引的召回接入未落地（为披露层预留），详见 F01。
+
+`layers_index_enabled` 默认 `true`；对应 L0/L1 store 未配置时仅跳过该层。L0/L1/L2
+记录均以 `unit_id` 指向同一真源 unit。记录到 unit 的折叠由单路 recaller 完成；
+不同 recaller 的结果再由融合阶段按 `unit_id` 累加贡献，IndexBuilder 不负责召回聚合。
+
+目标 hierarchy metadata 的精确键、空值和区间表示由
+[S06-storage.md](S06-storage.md) 单点定义。IndexBuilder 必须把同一 unit 的结构
+metadata 一致投影到已启用的 L0/L1/L2 索引记录；索引是派生物，必须可从 KV 中的
+`MemoryUnit` 重建。
+
+### HierarchyComposer（目标契约，尚未实现）
+
+`HierarchyComposer` 与 `Extractor` / `Abstractor` 等并列，同属 `ConstructionOperator`：
+实现建树/区间替换算法，由控制层 `evolve(..., mode=HIERARCHY)` → Evolver 调度调用；
+不自行鉴权、不自行提交后台任务，也不替代 IndexBuilder。普通 EXTRACT/CONSOLIDATE
+等模式不暗改 `HierarchyRef`。
+
+```python
+@dataclass(frozen=True)
+class HierarchyComposeProfile:
+    kind: HierarchyKind
+    leaf_role: HierarchyRole
+    parent_roles: tuple[HierarchyRole, ...]
+    stage_options: dict[str, dict[str, str]] = field(default_factory=dict)
+
+@dataclass
+class HierarchyComposeOptions:
+    kind: HierarchyKind
+    leaf_role: HierarchyRole
+    parent_roles: list[HierarchyRole]
+    span_start: datetime | None = None
+    span_end: datetime | None = None
+    replace_existing: bool = False
+    metadata: dict[str, str] = field(default_factory=dict)
+
+@dataclass
+class HierarchyComposeRequest:
+    scope: Scope
+    leaf_ids: list[str]
+    options: HierarchyComposeOptions
+
+@dataclass
+class HierarchyRepair:
+    unit_id: str
+    issue: str
+    expected_parent_id: str = ""
+    observed_parent_id: str = ""
+
+@dataclass
+class HierarchyComposeResult:
+    created_parent_ids: list[str] = field(default_factory=list)
+    updated_child_ids: list[str] = field(default_factory=list)
+    replaced_parent_ids: list[str] = field(default_factory=list)
+    repair_required: list[HierarchyRepair] = field(default_factory=list)
+    complete: bool = True
+
+class HierarchyComposer(ConstructionOperator):
+    def build(self, request: HierarchyComposeRequest) -> HierarchyComposeResult: ...
+    def replace_in_span(self, request: HierarchyComposeRequest) -> HierarchyComposeResult: ...
+```
+
+`HierarchyComposeProfile` 是装配期不可变配置，按 `kind` 唯一注册；重复 kind、
+空 `parent_roles`、重复 role、`leaf_role` 出现在父序列中、未注册 stage 或 kind
+不支持该 role 序列时拒绝装配。`stage_options` 的外层键是稳定 stage 名，内层值只允许
+字符串配置；运行时 Policy 不修改 profile。
+
+`leaf_ids` 必须非空、无重复并全部解析到 `request.scope`；其顺序是输入稳定顺序。
+`parent_roles` 必须非空，是从近叶到远叶的待构建父角色序列；不得重复，也不得包含
+`leaf_role`。
+kind/role 必须使用 S07 定义的枚举。TIME 请求必须给出成对且有效的 span；非 TIME
+可省略。`metadata` 只复制到新派生父节点，不得覆盖 id、scope、tier、temporal、
+provenance、supersedes、lifecycle 或 hierarchy 等核心字段。
+
+调用方按 `replace_existing` 确定唯一分派：`false` 调用 `build`，发现冲突旧父时整体
+失败；`true` 调用 `replace_in_span`，并要求请求具有成对且有界的 span。显式
+`evolve(HIERARCHY)` 使用调用方给出的值；S03 的 ensure 和 auto derive 固定组装为
+`replace_existing=true`，使同一区间的重复任务成为受控重建，而不是产生第二套父层。
+
+`build` 读取权威叶，在请求 span 内创建指定父角色，写入父的有序 `child_ids` 并回写
+直接子的 `parent_id`。它不得隐式替换 span 外的父节点；发现已有冲突父边时返回校验
+错误，不做部分挂接。父节点的 tier 由内容决定，不得从 role 硬推导；角色与 tier 的
+设计指导映射由 [F08-memory-tree.md](../features/common/F08-memory-tree.md)
+记录，不构成本接口的枚举等价约束。
+
+TIME 构建以 `MemoryUnit.temporal.t_event` 作为叶事件时间，以
+`HierarchyRef.span_start/span_end` 作为结构覆盖区间。父区间覆盖所有直接子区间，
+直接子按区间起点、事件时间和输入稳定顺序排序。`HierarchyKind.TIME` 不替代
+`MemoryUnit.temporal`，也不替代 `RecallChannel.TEMPORAL`。
+
+新父正文和 segments 先构造，再调用 `LayerAnnotator`；无 annotator 或标注失败时以空
+layers 降级。只有通过结构校验后，才按“KV 真源 → 内容索引”顺序持久化父与被改写的子。
+
+`replace_in_span` 仅选择与请求 span 相交、kind 匹配且角色位于 `parent_roles` 的旧派生
+父节点。它必须先计算完整替换集并验证新树，然后：
+
+1. 从旧父 `child_ids` 移除边，并清空仍指向旧父的直接子 `parent_id`；
+2. 将相交旧派生父默认转为 `LifecycleState.ARCHIVED`，并从活动内容索引移除；
+   `replace_in_span` 本身不物理 PURGE 真源，物理回收必须走 S03 的显式生命周期策略；
+3. 保留全部权威叶及其 segments、temporal、provenance 和生命周期；
+4. 写入新父，回挂双向边，再更新受影响索引；
+5. 边界切过旧父时扩大替换范围到完整旧父，或拒绝请求，不留下半父节点。
+
+期望的原子边界是同 org+space 下“旧边断开、新父写入、新边挂接、旧父退役”的一次提交
+（子叶可驻留不同 session/user Scope，由边定位）。
+支持事务的 KV 后端必须原子提交；不支持事务时必须先暂存并验证新父，按可恢复顺序写入，
+具体顺序是“写入尚未挂活动边的新父 → 按稳定顺序切换子边 → 归档旧父 → 更新索引”。
+失败后返回 `complete=false` 和逐项 `repair_required`，且不得删除权威叶。调用方不得把
+带 repair 项的结果当作成功；construction/control 负责重试或一致性修复。
 
 ### Evolver（`evolver.py`）
 
@@ -223,19 +349,54 @@ MemoryUnit
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `evolve` | `(units: list[MemoryUnit], mode: EvolveMode) -> EvolveResult` | 对一批记忆单元执行指定阶段的演进，返回变更结果 |
+| `evolve` | `(request: EvolveRequest) -> EvolveResult` | 对一批记忆单元执行指定阶段的演进，返回变更结果 |
 
 **EvolveMode**：
 - `EXTRACT` — 信息提取
 - `ASSOCIATE` — 关联分析
 - `CONSOLIDATE` — 冲突消解（近重复融合/矛盾标记失效）
 - `FORGET` — 遗忘/降权（过期/低价值记忆归档）
+- `HIERARCHY` — 显式创建或重建父节点及双向包含边（目标新增）
+
+```python
+@dataclass
+class EvolveRequest:
+    units: list[MemoryUnit]
+    mode: EvolveMode
+    metadata: dict[str, str] = field(default_factory=dict)
+    hierarchy_options: HierarchyComposeOptions | None = None
+```
+
+`metadata` 承载 correlation id、触发来源等请求级透传信息，不写回 unit 核心字段。
+仅 `HIERARCHY` 接受 `hierarchy_options`，且必须提供 kind、leaf_role、parent_roles 与
+TIME 所需 span；其他 mode 提供该 options 时拒绝。实现迁移期间可以保留
+`evolve(units, mode)` 作为兼容入口，其语义等价于构造不带 metadata/options 的请求；
+该入口不能触发 HIERARCHY。
 
 **EvolveResult**：
-- `created_ids: list[str]` — 新增记忆单元 id
-- `updated_ids: list[str]` — 更新记忆单元 id
-- `superseded_ids: list[str]` — 被取代记忆单元 id
-- `forgotten_ids: list[str]` — 被遗忘记忆单元 id
+
+```python
+@dataclass
+class EvolveResult:
+    created_ids: list[str] = field(default_factory=list)
+    updated_ids: list[str] = field(default_factory=list)
+    superseded_ids: list[str] = field(default_factory=list)
+    forgotten_ids: list[str] = field(default_factory=list)
+    hierarchy_result: HierarchyComposeResult | None = None
+```
+
+`hierarchy_result` 只在 HIERARCHY 模式返回结构结果与修复报告，其他 mode 为 `None`。
+
+各模式对 hierarchy 的行为：
+
+| 路径/模式 | hierarchy 契约 |
+|---|---|
+| 普通 `write` | 默认空；调用方提供经校验的叶字段时可保留 kind/role/span，但不得写父或子边 |
+| `EXTRACT` | 既有节点不变；新派生节点默认空，`provenance` 来源不自动成为父 |
+| `ASSOCIATE` | hierarchy 不变；关系只写 GraphStore，不写 `parent_id` |
+| `CONSOLIDATE` | 既有节点不变；新合成节点默认空，需单独建树 |
+| `FORGET` | 不改其他节点 kind/role/span；断开直接父边和全部直接子边，不级联删除父或任何子孙 |
+| `HIERARCHY` | 委托 HierarchyComposer 创建/替换父节点并一致回写直接子边 |
 
 ### Dedup（`dedup.py`）
 
@@ -272,7 +433,9 @@ MemoryUnit
 | `lifecycle` | LifecycleState | 生命周期状态 |
 | `entities` | list[str] | L2 记忆里由大模型抽取得到的实体文本（明文）。entity linker 建反向索引时只消费本字段构造 `EntityMention`，为空时直接跳过该 unit（已砍 spaCy 兜底，无回退抽取，见 [F06](../features/retrieval/F06-entity-recall-channel.md)）。默认空，向后兼容 |
 
-**注**：`MemoryUnit.content` / `assets` / `source` 是基于 segments 的只读合并视图，非独立字段。
+构建层直接消费 S07 定义的 `HierarchyRef` 和层级枚举。目标父节点复用既有
+segments、layers、tier 和 metadata 槽位，结构边只写 hierarchy；`content/assets/source`
+仍是基于 segments 的只读合并视图。精确类型与默认值见 [S07-common.md](S07-common.md)。
 
 ### Relation（`common/type_def/feature.py`）
 
