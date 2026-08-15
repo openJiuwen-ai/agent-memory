@@ -214,7 +214,6 @@ def default_config_dict() -> dict[str, Any]:
                     "evolver": _D,
                     "lifecycle": _D,
                     "job_factory": _D,
-                    "middle_interval": 50,
                 },
             }
         },

@@ -117,7 +117,7 @@ def _kernel_config(
     scheduler_target: str,
     middle_interval: int,
     tick_interval: int | None = None,
-) -> Config:
+) -> tuple[Config, int]:
     """装配真实 LLM + 指定 engine/scheduler 的 Config。
 
     合并语义：``AssemblyContext.merged`` 按 namespace/实例名**整体覆盖**
@@ -125,11 +125,20 @@ def _kernel_config(
     缺 ``scheduler/evolver/kv_store/...`` 等引用会让 ``SchedulerProducer.dep(config,
     default="in_process")`` 走 fallback。
 
+    ``middle_interval`` 不再配到 ``engine.default.params``——它是 MiddleToLongJob
+    的运行时参数，经 write metadata 透传（瞬态 key）。本函数把入参
+    ``middle_interval`` 原样返回，供测试函数传给 ``_sync_write_via_thread`` /
+    ``_async_write`` 的 ``metadata``。
+
     Args:
         engine_target: "in_memory" 或 "cloud"
         scheduler_target: "in_process" 或 "async_timer"
-        middle_interval: MiddleToLongJob.interval（秒，>= tick_interval）
+        middle_interval: MiddleToLongJob.interval（秒，>= tick_interval）——经
+            write metadata 透传到 Job，不进 engine params
         tick_interval: AsyncTimerScheduler 的 tick（仅 async_timer 用）
+
+    Returns:
+        (Config, middle_interval)——middle_interval 原样返回供 write metadata 用
     """
     _default = "default"
     config_dict = _llm_config()
@@ -153,11 +162,10 @@ def _kernel_config(
                 "evolver": _default,
                 "lifecycle": _default,
                 "job_factory": _default,
-                "middle_interval": middle_interval,
             },
         }
     }
-    return Config.from_dict(config_dict)
+    return Config.from_dict(config_dict), middle_interval
 
 
 def _cleanup_scheduler(kernel) -> None:
@@ -201,10 +209,20 @@ async def _recall_async(kernel, query: str, ctx: Context, *, top_k: int = 30):
     return await kernel.api._engine.recall(ctx.scope, rq)
 
 
-def _sync_write_via_thread(api, content: str, *, middle: bool, identity: Scope = SCOPE):
+def _sync_write_via_thread(
+    api,
+    content: str,
+    *,
+    middle: bool,
+    middle_interval: int | None = None,
+    identity: Scope = SCOPE,
+):
     """在 async 测试函数里调同步 api.add——推到独立线程避免 RuntimeError。
 
     step 1 / step 2 用 sync write 验证同步 API 路径。
+
+    ``middle_interval`` 仅在 ``middle=True`` 时透传到 metadata（瞬态 key，
+    不落盘）——engine 取出经 ``factory.get_job(interval=...)`` 注入 Job。
     """
     metadata = {
         "infer": "true",
@@ -212,6 +230,8 @@ def _sync_write_via_thread(api, content: str, *, middle: bool, identity: Scope =
     }
     if middle:
         metadata["middle"] = "true"
+        if middle_interval is not None:
+            metadata["middle_interval"] = str(middle_interval)
     return asyncio.to_thread(
         api.add,
         content,
@@ -221,7 +241,14 @@ def _sync_write_via_thread(api, content: str, *, middle: bool, identity: Scope =
     )
 
 
-async def _async_write(api, content: str, *, middle: bool, identity: Scope = SCOPE):
+async def _async_write(
+    api,
+    content: str,
+    *,
+    middle: bool,
+    middle_interval: int | None = None,
+    identity: Scope = SCOPE,
+):
     """step 3 / step 4 用 async add_async——直接 await。
 
     与 _sync_write_via_thread 行为应一致（add 同步方法内部就是 asyncio.run(add_async)），
@@ -233,6 +260,8 @@ async def _async_write(api, content: str, *, middle: bool, identity: Scope = SCO
     }
     if middle:
         metadata["middle"] = "true"
+        if middle_interval is not None:
+            metadata["middle_interval"] = str(middle_interval)
     return await api.add_async(
         content,
         SCOPE,
@@ -299,7 +328,7 @@ async def test_in_memory_in_process() -> None:
 
     debug 观测：每步 write 后都调 recall + list，打印详细——便于排查派生/原文状态。
     """
-    config = _kernel_config(
+    config, middle_interval = _kernel_config(
         engine_target="in_memory",
         scheduler_target="in_process",
         middle_interval=4,
@@ -313,9 +342,8 @@ async def test_in_memory_in_process() -> None:
         units_s1 = await _sync_write_via_thread(api, _STEP1_CONTENT, middle=False)
         assert len(units_s1) >= 1
         alice_original_id = units_s1[0].id
-        # middle=false → 原文落 /messages/，派生落 /memory/ ACTIVE+SEMANTIC
-        persisted_s1 = loads(kernel.api._engine._kv.get(SCOPE, memory_key(alice_original_id)))
-        # middle=false 原文不在 /memory/（落 /messages/），故 kv.get 应返回 None
+        # middle=false → 原文落 /messages/ 不在 /memory/，engine.get 会抛 NotFoundError；
+        # 派生落 /memory/ ACTIVE+SEMANTIC，由后续 list/recall 断言覆盖。
         logger.info(f"\n[step 1] alice write id={alice_original_id}")
         # 立即 recall + list
         list_after_s1 = await _list_via_thread(api)
@@ -332,11 +360,13 @@ async def test_in_memory_in_process() -> None:
                    for u in list_after_s1.items), "step 1 后 list 应有 alice 派生"
 
         # ---- step 2: sync write middle=true（bob + kyoto） ----
-        units_s2 = await _sync_write_via_thread(api, _STEP2_CONTENT, middle=True)
+        units_s2 = await _sync_write_via_thread(
+            api, _STEP2_CONTENT, middle=True, middle_interval=middle_interval
+        )
         assert len(units_s2) == 1  # 原文
         bob_original_id = units_s2[0].id
         # InProcessScheduler 立即跑完 Job → 原文已 ARCHIVED
-        persisted_s2 = loads(kernel.api._engine._kv.get(SCOPE, memory_key(bob_original_id)))
+        persisted_s2 = await kernel.api._engine.get(bob_original_id, SCOPE)
         assert persisted_s2.lifecycle == LifecycleState.ARCHIVED, (
             f"InProcessScheduler step 2 应立即 ARCHIVED 原文 {bob_original_id}，"
             f"got {persisted_s2.lifecycle}"
@@ -376,11 +406,13 @@ async def test_in_memory_in_process() -> None:
                    for u in list_after_s3.items), "step 3 后 list 应有 carol 派生"
 
         # ---- step 4: await add_async middle=true（dave + hiking） ----
-        units_s4 = await _async_write(api, _STEP4_CONTENT, middle=True)
+        units_s4 = await _async_write(
+            api, _STEP4_CONTENT, middle=True, middle_interval=middle_interval
+        )
         assert len(units_s4) == 1
         dave_original_id = units_s4[0].id
         # InProcessScheduler 立即跑完 Job → 原文已 ARCHIVED
-        persisted_s4 = loads(kernel.api._engine._kv.get(SCOPE, memory_key(dave_original_id)))
+        persisted_s4 = await kernel.api._engine.get(dave_original_id, SCOPE)
         assert persisted_s4.lifecycle == LifecycleState.ARCHIVED, (
             f"InProcessScheduler step 4 应立即 ARCHIVED 原文 {dave_original_id}，"
             f"got {persisted_s4.lifecycle}"
@@ -450,7 +482,7 @@ async def test_in_memory_async_timer() -> None:
 
     step 1 / step 3（middle=false）：与用例 1 同构（同步 EXTRACT 派生）。
     """
-    config = _kernel_config(
+    config, middle_interval = _kernel_config(
         engine_target="in_memory",
         scheduler_target="async_timer",
         middle_interval=_MIDDLE_INTERVAL_ASYNC_TIMER,
@@ -480,12 +512,12 @@ async def test_in_memory_async_timer() -> None:
         # ---- step 2: sync write middle=true（bob + kyoto） ----
         # sync write 在子线程建临时循环跑 add_async——Timer 协程被绑到临时循环，
         # 临时循环关后 Timer 被取消。step 2 立即查原文仍 ACTIVE。
-        units_s2 = await _sync_write_via_thread(api, _STEP2_CONTENT, middle=True)
+        units_s2 = await _sync_write_via_thread(
+            api, _STEP2_CONTENT, middle=True, middle_interval=middle_interval
+        )
         assert len(units_s2) == 1
         bob_original_id = units_s2[0].id
-        persisted_s2_immediate = loads(
-            kernel.api._engine._kv.get(SCOPE, memory_key(bob_original_id))
-        )
+        persisted_s2_immediate = await kernel.api._engine.get(bob_original_id, SCOPE)
         assert persisted_s2_immediate.lifecycle == LifecycleState.ACTIVE
         assert persisted_s2_immediate.tier == MemoryTier.WORKING
         logger.info(f"\n[step 2] bob write id={bob_original_id[:8]} "
@@ -523,12 +555,12 @@ async def test_in_memory_async_timer() -> None:
         # ---- step 4: await add_async middle=true（dave + hiking） ----
         # async write 在主循环驱动——update 分支重启 Timer（bugfix），Timer 在
         # middle_interval 秒后触发 MiddleToLongJob.run → 归档 bob + dave 原文。
-        units_s4 = await _async_write(api, _STEP4_CONTENT, middle=True)
+        units_s4 = await _async_write(
+            api, _STEP4_CONTENT, middle=True, middle_interval=middle_interval
+        )
         assert len(units_s4) == 1
         dave_original_id = units_s4[0].id
-        persisted_s4_immediate = loads(
-            kernel.api._engine._kv.get(SCOPE, memory_key(dave_original_id))
-        )
+        persisted_s4_immediate = await kernel.api._engine.get(dave_original_id, SCOPE)
         assert persisted_s4_immediate.lifecycle == LifecycleState.ACTIVE, (
             f"step 4 立即查应仍 ACTIVE，got {persisted_s4_immediate.lifecycle}"
         )
@@ -557,9 +589,7 @@ async def test_in_memory_async_timer() -> None:
         await asyncio.sleep(_TIMER_WAIT_SECONDS)
 
         # step 2 的 bob 原文——Timer 已死，仍 ACTIVE
-        persisted_bob_after = loads(
-            kernel.api._engine._kv.get(SCOPE, memory_key(bob_original_id))
-        )
+        persisted_bob_after = await kernel.api._engine.get(bob_original_id, SCOPE)
         # step 2 的 bob 原文——step 4 async write 重启 Timer 后被一并归档。
         # bugfix 前：sync write 让 Timer 死亡，step 4 async write 不重启 Timer，
         # bob 永远 ACTIVE；bugfix 后（_ensure_timer_task 在 update 分支调用）：
@@ -572,9 +602,7 @@ async def test_in_memory_async_timer() -> None:
         )
 
         # step 4 的 dave 原文——Timer 在主循环存活，触发 Job 后 ARCHIVED
-        persisted_dave_after = loads(
-            kernel.api._engine._kv.get(SCOPE, memory_key(dave_original_id))
-        )
+        persisted_dave_after = await kernel.api._engine.get(dave_original_id, SCOPE)
         assert persisted_dave_after.lifecycle == LifecycleState.ARCHIVED, (
             f"step 4 async write sleep 后原文 {dave_original_id} 应已 ARCHIVED，"
             f"got {persisted_dave_after.lifecycle}"
@@ -626,7 +654,7 @@ async def test_cloud_in_process() -> None:
     行为与 InMemoryEngine 类似。InProcessScheduler 让 submit 立即跑完 Job——
     step 2 / step 4 的原文立即 ARCHIVED（与用例 1 同构）。
     """
-    config = _kernel_config(
+    config, middle_interval = _kernel_config(
         engine_target="cloud",
         scheduler_target="in_process",
         middle_interval=4,
@@ -653,11 +681,13 @@ async def test_cloud_in_process() -> None:
                    for u in list_after_s1.items), "step 1 后 list 应有 alice 派生"
 
         # ---- step 2: sync write middle=true（bob + kyoto） ----
-        units_s2 = await _sync_write_via_thread(api, _STEP2_CONTENT, middle=True)
+        units_s2 = await _sync_write_via_thread(
+            api, _STEP2_CONTENT, middle=True, middle_interval=middle_interval
+        )
         assert len(units_s2) == 1
         bob_original_id = units_s2[0].id
         # InProcessScheduler 立即跑完 Job → 原文已 ARCHIVED
-        persisted_s2 = loads(kernel.api._engine._kv.get(SCOPE, memory_key(bob_original_id)))
+        persisted_s2 = await kernel.api._engine.get(bob_original_id, SCOPE)
         assert persisted_s2.lifecycle == LifecycleState.ARCHIVED, (
             f"CloudEngine + InProcess step 2 应立即 ARCHIVED 原文 {bob_original_id}，"
             f"got {persisted_s2.lifecycle}"
@@ -695,11 +725,13 @@ async def test_cloud_in_process() -> None:
                    for u in list_after_s3.items), "step 3 后 list 应有 carol 派生"
 
         # ---- step 4: await add_async middle=true（dave + hiking） ----
-        units_s4 = await _async_write(api, _STEP4_CONTENT, middle=True)
+        units_s4 = await _async_write(
+            api, _STEP4_CONTENT, middle=True, middle_interval=middle_interval
+        )
         assert len(units_s4) == 1
         dave_original_id = units_s4[0].id
         # InProcessScheduler 立即跑完 Job → 原文已 ARCHIVED
-        persisted_s4 = loads(kernel.api._engine._kv.get(SCOPE, memory_key(dave_original_id)))
+        persisted_s4 = await kernel.api._engine.get(dave_original_id, SCOPE)
         assert persisted_s4.lifecycle == LifecycleState.ARCHIVED, (
             f"CloudEngine + InProcess step 4 应立即 ARCHIVED 原文 {dave_original_id}，"
             f"got {persisted_s4.lifecycle}"
@@ -759,7 +791,7 @@ async def test_cloud_async_timer() -> None:
     step 4 async write 在主循环驱动，update 分支重启 Timer（bugfix 修复），
     sleep 后 bob + dave 均被 MiddleToLongJob 归档 ARCHIVED。
     """
-    config = _kernel_config(
+    config, middle_interval = _kernel_config(
         engine_target="cloud",
         scheduler_target="async_timer",
         middle_interval=_MIDDLE_INTERVAL_ASYNC_TIMER,
@@ -788,12 +820,12 @@ async def test_cloud_async_timer() -> None:
 
         # ---- step 2: sync write middle=true（bob + kyoto） ----
         # sync write 子线程临时循环——Timer 协程被取消，step 2 立即查仍 ACTIVE。
-        units_s2 = await _sync_write_via_thread(api, _STEP2_CONTENT, middle=True)
+        units_s2 = await _sync_write_via_thread(
+            api, _STEP2_CONTENT, middle=True, middle_interval=middle_interval
+        )
         assert len(units_s2) == 1
         bob_original_id = units_s2[0].id
-        persisted_s2_immediate = loads(
-            kernel.api._engine._kv.get(SCOPE, memory_key(bob_original_id))
-        )
+        persisted_s2_immediate = await kernel.api._engine.get(bob_original_id, SCOPE)
         assert persisted_s2_immediate.lifecycle == LifecycleState.ACTIVE
         assert persisted_s2_immediate.tier == MemoryTier.WORKING
         logger.info(f"\n[step 2] bob write id={bob_original_id[:8]} "
@@ -829,12 +861,12 @@ async def test_cloud_async_timer() -> None:
                    for u in list_after_s3.items), "step 3 后 list 应有 carol 派生"
 
         # ---- step 4: await add_async middle=true（dave + hiking） ----
-        units_s4 = await _async_write(api, _STEP4_CONTENT, middle=True)
+        units_s4 = await _async_write(
+            api, _STEP4_CONTENT, middle=True, middle_interval=middle_interval
+        )
         assert len(units_s4) == 1
         dave_original_id = units_s4[0].id
-        persisted_s4_immediate = loads(
-            kernel.api._engine._kv.get(SCOPE, memory_key(dave_original_id))
-        )
+        persisted_s4_immediate = await kernel.api._engine.get(dave_original_id, SCOPE)
         assert persisted_s4_immediate.lifecycle == LifecycleState.ACTIVE, (
             f"step 4 立即查应仍 ACTIVE，got {persisted_s4_immediate.lifecycle}"
         )
@@ -861,18 +893,14 @@ async def test_cloud_async_timer() -> None:
         await asyncio.sleep(_TIMER_WAIT_SECONDS)
 
         # step 2 bob 原文——step 4 重启 Timer 后被一并归档
-        persisted_bob_after = loads(
-            kernel.api._engine._kv.get(SCOPE, memory_key(bob_original_id))
-        )
+        persisted_bob_after = await kernel.api._engine.get(bob_original_id, SCOPE)
         assert persisted_bob_after.lifecycle == LifecycleState.ARCHIVED, (
             f"step 4 重启 Timer 后 bob 原文 {bob_original_id} 应已 ARCHIVED，"
             f"got {persisted_bob_after.lifecycle}"
         )
 
         # step 4 dave 原文——Timer 在主循环，sleep 后 ARCHIVED
-        persisted_dave_after = loads(
-            kernel.api._engine._kv.get(SCOPE, memory_key(dave_original_id))
-        )
+        persisted_dave_after = await kernel.api._engine.get(dave_original_id, SCOPE)
         assert persisted_dave_after.lifecycle == LifecycleState.ARCHIVED, (
             f"step 4 async write sleep 后原文 {dave_original_id} 应已 ARCHIVED，"
             f"got {persisted_dave_after.lifecycle}"

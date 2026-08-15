@@ -292,11 +292,10 @@ class MiddleToLongJob(Job):
 
 @dataclass
 class MiddleToLongJobSpec:
-    """MiddleToLongJob 装配期固化的部分——不含 scope/interval（write 时补）。
+    """MiddleToLongJob 装配期固化的部分——不含 scope（write 时补）。
 
-    依赖（kv/evolver/lifecycle/index/llm）与业务参数
-    （max_fetch/batch_size/concurrency）经 :class:`JobFactoryProducer` 装配期固化。
-    运行时 :meth:`with_scope` 补 scope + interval 生成完整 Job 实例。
+    依赖、业务参数与定时周期 interval 经 :class:`JobFactoryProducer` 装配期
+    固化。运行时 :meth:`with_scope` 补 scope 生成完整 Job 实例。
     """
 
     storage: Storage
@@ -307,17 +306,18 @@ class MiddleToLongJobSpec:
     max_fetch: int = 100
     batch_size: int = 10
     concurrency: int = 4
+    interval: int = 50
 
     def with_scope(self, scope: Scope, **kwargs) -> MiddleToLongJob:
-        """生成完整 Job 实例——``kwargs`` 透传运行时参数（``interval`` 等）。
+        """生成完整 Job 实例——``kwargs`` 透传运行时参数（``evolver`` / ``index`` / ``interval``）。
 
-        运行时覆盖：``evolver`` / ``index`` 可经 ``kwargs`` 显式传入，覆盖 Spec
-        装配期固化的默认值。``CloudEngine._write_middle_path`` 多 profile 适配时
-        用此机制把 binding 的 evolver/index 注入 Job——保证 Job 归档原文时
-        ``index.remove`` 调对正确的 index，与原文落盘时一致。
+        ``evolver`` / ``index`` 用于多 profile 适配——``CloudEngine._write_middle_path``
+        注入 binding 的，保证 Job 归档原文时 ``index.remove`` 调对正确的 index。
+        ``interval`` 经 write metadata 透传，覆盖 Spec 装配期默认。
         """
-        evolver = kwargs.pop("evolver", self.evolver)
-        index = kwargs.pop("index", self.index)
+        evolver = kwargs.pop("evolver", None) or self.evolver
+        index = kwargs.pop("index", None) or self.index
+        interval = int(kwargs.pop("interval", None) or self.interval)
         return MiddleToLongJob(
             scope=scope,
             storage=self.storage,
@@ -328,6 +328,7 @@ class MiddleToLongJobSpec:
             max_fetch=self.max_fetch,
             batch_size=self.batch_size,
             concurrency=self.concurrency,
+            interval=interval,
             **kwargs,
         )
 
@@ -345,6 +346,7 @@ def _build_middle_to_long_job_spec(config) -> MiddleToLongJobSpec:
         max_fetch=int(config.get("middle_max_fetch", 100)),
         batch_size=int(config.get("middle_batch_size", 10)),
         concurrency=int(config.get("middle_concurrency", 4)),
+        interval=int(config.get("middle_interval", 50)),
     )
 
 

@@ -534,7 +534,6 @@ def test_cloud_engine_delete_rejects_empty_selector() -> None:
 
 def _engine_with_job_factory(
     *,
-    middle_interval: int = 50,
     with_job_factory: bool = True,
 ):
     """构造带 JobFactory 的 CloudEngine——多 profile binding（chat/coding）。
@@ -580,7 +579,6 @@ def _engine_with_job_factory(
         default_message_type="chat",
         default_pipeline_name="chat",
         job_factory=factory,
-        middle_interval=middle_interval,
     )
     return engine, scheduler, {
         "kv": kv,
@@ -598,7 +596,7 @@ def test_cloud_engine_write_middle_submits_middle_to_long_job() -> None:
     验证：
     - scheduler 收到 MiddleToLongJob（type 名匹配）；
     - job.scope == scope；
-    - job.interval == middle_interval（50）；
+    - job.interval == 50（metadata 未传 middle_interval，回退 Spec 装配期默认）；
     - 原文落盘 tier=WORKING + metadata.middle=true；
     - 立即建索引（index.build 已调）；
     - job._evolver / job._index 被 binding 选的覆盖（coding profile）。
