@@ -247,11 +247,15 @@ def normalize(raw: FilterExpr | list[FilterClause] | dict | None) -> FilterExpr 
     return _normalize_expr(expr)
 
 
-def and_merge(user_expr: FilterExpr | None, sys_clauses: list[FilterClause]) -> FilterExpr | None:
-    """系统谓词（纯 AND 的 clauses）与用户表达式做 ``AND`` 外包合并。
+def and_merge(
+    user_expr: FilterExpr | None, sys_clauses: list[FilterExpr]
+) -> FilterExpr | None:
+    """系统谓词（FilterExpr 列表，可含 OR 子树）与用户表达式做 ``AND`` 外包合并。
 
     用户表达式作为**整体** child 并入外层 AND，绝不摊平——避免用户的 ``OR``
     稀释 lifecycle/valid-time 等安全谓词（召回到 SUPERSEDED/FORGOTTEN 旧版本）。
+    系统侧若需 OR 子树（如事件窗 ``OR(AND(GTE, LT), EQ 0)``），每个子树作为
+    外层 AND 的一个 child 同样不摊平——保证安全谓词不被稀释。
     """
     parts: list[FilterExpr] = list(sys_clauses)
     if user_expr is not None:

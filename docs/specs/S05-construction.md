@@ -50,7 +50,9 @@
     reflect 之后统一执行。reflect 默认 no-op；当前只有对子候选的原地修改能影响落盘。
 13. **索引投影保留业务 metadata 类型**：Vector/Fulltext IndexBuilder 先复制
     `MemoryUnit.metadata`，再用系统真源字段覆盖保留 key；时间投影为 epoch 毫秒，
-    `t_invalid=None` 仅在索引中写为 `T_INVALID_OPEN`，不改写真源。
+    `t_invalid=None` 仅在索引中写为 `T_INVALID_OPEN`，`t_event=None` 恒写为
+    `T_EVENT_UNKNOWN=0`（F07 派生常为此值，避免事件窗下推按缺失字段排他），
+    不改写真源。
 14. **索引删除按 MemoryUnit 定位**：`IndexBuilder.remove` 接收带 Scope 的 MemoryUnit，禁止维护仅按 unit id 的单值 Scope 缓存；同一逻辑 id 在不同 Scope 的索引互不影响。
 
 ## 接口契约

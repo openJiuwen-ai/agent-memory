@@ -25,6 +25,7 @@ from .filter import (
 from .memory import (
     MEMORY_KEY_PREFIX,
     RESERVED_METADATA_KEYS,
+    T_EVENT_UNKNOWN,
     T_INVALID_OPEN,
     TRANSIENT_METADATA_KEYS,
     ContentLayers,
@@ -99,6 +100,7 @@ __all__ = [
     "MEMORY_KEY_PREFIX",
     "RESERVED_METADATA_KEYS",
     "T_INVALID_OPEN",
+    "T_EVENT_UNKNOWN",
     "TRANSIENT_METADATA_KEYS",
     "MESSAGES_KEY_PREFIX",
     "memory_key",

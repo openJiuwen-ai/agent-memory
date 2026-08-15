@@ -16,7 +16,7 @@ import json
 from jiuwen_memory.common.chunker.base import Chunker, ChunkerProducer
 from jiuwen_memory.common.embedder.base import Embedder, EmbedderProducer
 from jiuwen_memory.common.log import get_logger
-from jiuwen_memory.common.type_def import T_INVALID_OPEN, MemoryUnit, Scope
+from jiuwen_memory.common.type_def import T_EVENT_UNKNOWN, T_INVALID_OPEN, MemoryUnit, Scope
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
 from jiuwen_memory.storage.storage import Storage, StorageProducer
@@ -61,9 +61,17 @@ def _index_metadata(
     if seq is not None:
         metadata["seq"] = seq
     temporal = unit.temporal
-    for field, value in (("t_event", temporal.t_event), ("t_valid", temporal.t_valid)):
-        if value is not None:
-            metadata[field] = int(value.timestamp() * 1000)
+    # t_event 恒写：空（未知事件时间，F07 派生常为此值）落哨兵，否则该字段缺失会被
+    # 事件窗下推按缺失字段排他——含时间词 query 对这批 unit 系统性空召回。
+    # 哨兵与谓词、memory_filter 三处同改（见 common.type_def.T_EVENT_UNKNOWN）。
+    metadata["t_event"] = (
+        int(temporal.t_event.timestamp() * 1000)
+        if temporal.t_event is not None
+        else T_EVENT_UNKNOWN
+    )
+    # t_valid 仍有值才写：未生效记忆本就稀疏，下推用 LTE as_of 即可，缺值放行不破。
+    if temporal.t_valid is not None:
+        metadata["t_valid"] = int(temporal.t_valid.timestamp() * 1000)
     # t_invalid 恒写：空（永久有效）落哨兵值，否则该字段缺失会被 `t_invalid > as_of`
     # 的下推按缺失字段排他——那批正是回溯查询最该命中的活跃记忆。
     metadata["t_invalid"] = (

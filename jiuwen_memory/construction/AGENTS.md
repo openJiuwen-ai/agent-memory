@@ -118,8 +118,10 @@
 
 14. **过滤索引投影与真源语义对齐**
     Vector/Fulltext IndexBuilder 原样复制业务 metadata，再由真源系统字段覆盖保留 key；
-    时间写 epoch 毫秒，开放 `t_invalid=None` 仅在索引中投影为 `T_INVALID_OPEN`。
-    真源仍保留 None，禁止为适配后端改写 MemoryUnit。
+    时间写 epoch 毫秒，开放 `t_invalid=None` 在索引中投影为 `T_INVALID_OPEN`，
+    未知事件时间 `t_event=None` 恒写哨兵 `T_EVENT_UNKNOWN=0`（F07 派生常为此值）。
+    真源仍保留 None，禁止为适配后端改写 MemoryUnit；`memory_filter._field_value`
+    对 `t_event` / `t_invalid` 的 None 同步投影为对应哨兵，使后置复核与下推不分叉。
 
 14. **抽取与分层优先保证完整性**
     派生 L2 只保存紧凑陈述，通过 `source_ref`/`provenance`/`evidence` 回指来源；坏候选

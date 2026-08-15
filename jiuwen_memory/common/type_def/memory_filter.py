@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from .filter import FilterClause, FilterExpr, FilterOp, evaluate, filter_field_metadata_key
-from .memory import T_INVALID_OPEN, MemoryUnit
+from .memory import T_EVENT_UNKNOWN, T_INVALID_OPEN, MemoryUnit
 
 
 def _epoch_ms(value: datetime | None) -> int | None:
@@ -24,7 +24,11 @@ def _field_value(unit: MemoryUnit, field: str):
     if field in ("unit_id", "id"):
         return unit.id
     if field == "t_event":
-        return _epoch_ms(unit.temporal.t_event)
+        # 与索引投影对称：真源 None → 哨兵 T_EVENT_UNKNOWN，使事件窗 OR 组的 EQ 0
+        # 分支在后置复核里同样成立（候选不被 is_retrieval_candidate 误砍）。
+        # in_event_window 仍读真源 datetime、对 None/naive 放行，与此不冲突。
+        value = _epoch_ms(unit.temporal.t_event)
+        return T_EVENT_UNKNOWN if value is None else value
     if field == "t_valid":
         return _epoch_ms(unit.temporal.t_valid)
     if field == "t_invalid":

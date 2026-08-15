@@ -12,6 +12,7 @@ import pytest
 from jiuwen_memory.common.bootstrap import register_plugins
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import (
+    T_EVENT_UNKNOWN,
     T_INVALID_OPEN,
     Scope,
 )
@@ -298,6 +299,37 @@ def test_index_builders_write_sentinel_for_open_ended_t_invalid():
 
     assert records
     assert all(record.metadata["t_invalid"] == T_INVALID_OPEN for record in records)
+
+
+def test_index_builders_write_sentinel_for_unknown_t_event():
+    """t_event 为空（F07 派生常为此值）时索引落哨兵 0，非空时落真实时间戳。
+
+    字段缺失会被事件窗下推 ``t_event GTE/LT`` 按缺失字段排他，对含时间词 query
+    系统性空召回——哨兵使 OR(AND(GTE,LT), EQ 0) 谓词的 EQ 分支成立。哨兵只在
+    索引层 + memory_filter 投影，真源 temporal.t_event 仍是 None。
+    """
+    scope = Scope(org="test", user="alice")
+    unknown_unit = create_test_unit("u_unknown", "no event date", scope=scope)
+    known_unit = create_test_unit("u_known", "has event date", scope=scope)
+    event_at = datetime(2026, 6, 16, tzinfo=timezone.utc)
+    known_unit.temporal.t_event = event_at
+
+    fulltext_builder, fulltext_stores, _ = _make_fulltext_builder()
+    fulltext_builder.build([unknown_unit, known_unit])
+    docs = {d.id: d for d in fulltext_stores["fulltext"].get(scope, ["u_unknown", "u_known"])}
+
+    assert docs["u_unknown"].metadata["t_event"] == T_EVENT_UNKNOWN
+    assert docs["u_known"].metadata["t_event"] == int(event_at.timestamp() * 1000)
+    # 真源不受影响：哨兵是索引投影的约定
+    assert unknown_unit.temporal.t_event is None
+
+    vector_builder, vector_stores, _ = _make_vector_builder()
+    vector_builder.build([unknown_unit])
+    chunk_ids = json.loads(vector_stores["kv"].get(scope, "/index/chunks/u_unknown").decode())
+    records = vector_stores["vector"].get(scope, chunk_ids)
+
+    assert records
+    assert all(record.metadata["t_event"] == T_EVENT_UNKNOWN for record in records)
 
 
 # ---------------------------------------------------------------------------

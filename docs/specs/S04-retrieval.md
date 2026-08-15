@@ -42,6 +42,9 @@
     不能补回已被截断的候选。
 11. **系统谓词不可被用户逻辑稀释**：lifecycle / valid-time / event-time 谓词与用户
     `filters` 以外层 `AND` 合并，用户表达式内部的 `OR` / `NOT` 不能绕过系统约束。
+    系统侧的事件窗以 `OR(AND(GTE from, LT to), EQ T_EVENT_UNKNOWN)` 子树表达
+    「窗内命中 OR 未知放行」，整棵 OR 子树作为外层 AND 的一个 child 不摊平——
+    安全谓词不被稀释，同时 `t_event=None` 的派生不被窗下推清空（见过滤表达式段）。
 12. **rank 只包含 Fuser**：Fuser 在物化候选上做分层归并和跨通道融合；Reranker 保持后续
     独立阶段，不下沉到 Storage 的 retrieve 入口。
 13. **部分失败显式返回**：部分召回入口失败时继续处理成功候选并返回 `ChannelError`；全部选中
@@ -112,6 +115,17 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 历史 `as_of` 查询追加 `lifecycle != forgotten`、`t_valid <= as_of`、
 `t_invalid > as_of`。开放有效期在索引中投影为 `T_INVALID_OPEN`，真源仍保持
 `t_invalid=None`；UnitReader 按真源 `[t_valid, t_invalid)` 区间复核。
+
+事件时间窗 `[time_from, time_to)` 下推为 `OR(AND(GTE from, LT to), EQ 0)` 子树：
+`AND` 子组放行窗内已知事件时间 unit，`EQ 0` 分支放行 `t_event=None` 的派生
+（F07 净化后此类派生常见）。真源 `t_event=None` 在索引投影与 `memory_filter`
+后置复核两侧都投影为哨兵 `T_EVENT_UNKNOWN=0`，使下推与复核语义不分叉。
+`in_event_window` 后置仍读真源 datetime、对 None / naive 放行，与下推的
+「窗内 OR 未知放行」意图对齐。半开边界与原扁平 GTE+LT 一致，不引入 LTE。
+
+属性问（多大/几岁/爱好/是谁/住址/名字/生日/年龄…）即便含时间词也清空
+`time_from/to` 不下推——属性问不是事件时间检索，误下推会放大 `t_event=None`
+派生的误伤。`time_parse` 入口对此类 query 直接返回 `(None, None)`。
 
 ### Recaller（`recaller.py`）
 
