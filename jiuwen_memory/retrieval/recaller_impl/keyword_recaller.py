@@ -205,19 +205,20 @@ class KeywordRecaller(Recaller):
             u.id: u
             for u in self._storage.get(scope, candidate_ids)
         }
-        eligible = [
-            (uid, raw)
-            for uid, raw in top_n
-            if uid in units
-            and is_retrieval_candidate(
+        eligible: list[tuple[str, float]] = []
+        for uid, raw in top_n:
+            if uid not in units:
+                continue
+            if not is_retrieval_candidate(
                 units[uid],
                 as_of=query.as_of,
                 time_from=query.time_from,
                 time_to=query.time_to,
                 filters=query.scalar_filters,
                 include_archived=query.include_archived,
-            )
-        ]
+            ):
+                continue
+            eligible.append((uid, raw))
         if not eligible:
             return []
 
