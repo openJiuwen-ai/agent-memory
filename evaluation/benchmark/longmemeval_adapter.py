@@ -80,6 +80,10 @@ class LongMemEvalDataset(Dataset):
 
         indices = list(samples) if samples is not None else range(len(data))
         for idx in indices:
+            # 每个 sample 恰好产出 1 条 query，故按已产出 query 数提前收敛：解析后再切
+            # 只截 queries，seeds 仍为全量——小样本试跑会等同全量摄入（数十万次写入）。
+            if max_questions is not None and len(self._queries) >= max_questions:
+                break
             self._parse_sample(data[idx])
 
         if max_questions is not None:

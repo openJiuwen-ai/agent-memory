@@ -93,6 +93,10 @@ class LoCoMoDataset(Dataset):
 
         indices = list(samples) if samples is not None else range(len(data))
         for idx in indices:
+            # 一个 sample 产出多条 query，故先按已产出数收敛到 sample 粒度，再由下方
+            # 切片截到精确条数；否则 seeds 为全量——小样本试跑会等同全量摄入。
+            if max_questions is not None and len(self._queries) >= max_questions:
+                break
             sample_id = f"sample_{idx}"
             scope = Scope(org=self._scope_org, user=sample_id)
             self._parse_sample(data[idx], sample_id, scope)
