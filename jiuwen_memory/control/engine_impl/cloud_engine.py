@@ -214,7 +214,6 @@ class CloudEngine(MemoryEngine):
         default_message_type: str = "chat",
         default_pipeline_name: str = "default",
         job_factory: JobFactory | None = None,
-        middle_interval: int = 50,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
@@ -231,7 +230,6 @@ class CloudEngine(MemoryEngine):
         self._default_message_type = default_message_type.strip()
         self._default_pipeline_name = default_pipeline_name.strip()
         self._job_factory = job_factory
-        self._middle_interval = middle_interval
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
@@ -250,7 +248,19 @@ class CloudEngine(MemoryEngine):
         metadata: dict[str, str] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
-        meta = self._normalized_metadata(metadata)
+        raw_meta = dict(metadata or {})
+        procedural = _truthy(raw_meta, "procedural")
+        infer = _truthy(raw_meta, "infer")
+        middle = _truthy(raw_meta, "middle")  # 二级开关（仅在 infer=true 下生效）
+        if middle and not infer and not procedural:
+            raise ValueError(
+                "metadata.middle=true requires infer=true (middle 是 infer 下的二级开关)"
+            )
+
+        middle_interval = raw_meta.pop("middle_interval", None)
+        raw_meta.pop("middle", None)
+
+        meta = self._normalized_metadata(raw_meta)
         payload = RawPayload(
             id=str(uuid.uuid4()),
             scope=scope,
@@ -269,14 +279,6 @@ class CloudEngine(MemoryEngine):
         evolver = binding.evolver if binding is not None else self._evolver
         index_builder = binding.index_builder if binding is not None else self._index
         classifier = binding.classifier if binding is not None else self._classifier
-
-        procedural = _truthy(meta, "procedural")
-        infer = _truthy(meta, "infer")
-        middle = _truthy(meta, "middle")  # 二级开关（仅在 infer=true 下生效）
-        if middle and not infer and not procedural:
-            raise ValueError(
-                "metadata.middle=true requires infer=true (middle 是 infer 下的二级开关)"
-            )
 
         # procedural 优先（与 InMemoryEngine 三路分流一致）
         if procedural:
@@ -301,7 +303,8 @@ class CloudEngine(MemoryEngine):
         if infer:
             if middle:
                 return await self._write_middle_path(
-                    units, scope, index_builder, evolver, pipeline_name
+                    units, scope, index_builder, evolver, pipeline_name,
+                    middle_interval=middle_interval,
                 )
             # 既有同步抽取路径，不动
             if evolver is None:
@@ -388,15 +391,17 @@ class CloudEngine(MemoryEngine):
         index_builder: IndexBuilder,
         evolver: Evolver,
         pipeline_name: str,
+        *,
+        middle_interval: Any,
     ) -> list[MemoryUnit]:
         """中期缓冲子路径：原文落 /memory/ + 建索引 + tier=WORKING + 提交定时 MiddleToLongJob。
 
-        多 profile 适配：CloudEngine 按 message_type 选 binding，每个 profile 有自己的
-        evolver/index。JobFactory Spec 装配期固化的是 default evolver/index——若直接
-        用 Spec 的，原文用 chat_index 建索引但归档时调 default_index.remove，原文
-        索引不会被正确清理。故此处通过 ``get_job`` 的运行时覆盖入参
-        ``evolver=`` / ``index=`` 注入 binding 的——保证 Job 内部的 evolver/index 与原文
-        落盘时一致。
+        多 profile 适配：此处通过 ``get_job`` 的运行时覆盖入参 ``evolver=`` / ``index=``
+        注入 binding 选的——保证 Job 内部 evolver/index 与原文落盘时一致（否则原文用
+        chat_index 建索引但归档调 default_index.remove，索引不会被正确清理）。
+
+        ``middle_interval`` 经 write metadata 透传（不落盘到 unit.metadata），``None``
+        时由 Spec 装配期默认兜底。
         """
         if self._job_factory is None:
             raise RuntimeError(
@@ -419,9 +424,9 @@ class CloudEngine(MemoryEngine):
         job = self._job_factory.get_job(
             JobType.MIDDLE_TO_LONG,
             scope=scope,
-            interval=self._middle_interval,
             evolver=evolver,
             index=index_builder,
+            interval=middle_interval,
         )
         await self._scheduler.submit(job, channel=Channel.BACKGROUND)
         logger.info(
@@ -430,7 +435,7 @@ class CloudEngine(MemoryEngine):
             len(units),
             scope,
             pipeline_name,
-            self._middle_interval,
+            middle_interval,
         )
         return units
 
@@ -875,5 +880,4 @@ def _build(config):
         default_message_type=str(config.get("default_message_type", "chat")),
         default_pipeline_name=str(config.get("default_pipeline_name", "default")),
         job_factory=_optional_job_factory(config),
-        middle_interval=int(config.get("middle_interval", 50)),
     )

@@ -82,14 +82,14 @@ mem2.0 把这件事拆回控制层标准范式：
 
 1. 给 unit 打 `tier=WORKING` + `metadata["middle"]="true"` 标记。
 2. `kv.insert` 落 `/memory/{id}`（与建索引记忆同前缀，被 `_list_working_units` 扫到）+ `index_builder.build(units)`（原文立即可检索）。
-3. `job_factory.get_job(JobType.MIDDLE_TO_LONG, scope=scope, interval=self._middle_interval)` 取实例 + `scheduler.submit(job, channel=Channel.BACKGROUND)`。
+3. `job_factory.get_job(JobType.MIDDLE_TO_LONG, scope=scope, evolver=evolver, index=index_builder, **interval_kw)` 取实例 + `scheduler.submit(job, channel=Channel.BACKGROUND)`。其中 `interval_kw` 由 write 入参 `metadata["middle_interval"]` 透传（pop 后不落盘到 unit.metadata），缺省不传由 `MiddleToLongJobSpec.interval` 装配期默认 50 兜底——与 `evolver=` / `index=` 运行时覆盖入参模式一致。
 
 `CloudEngine._write_middle_path` 多 profile 适配：按 `message_type` 选 binding，每个 profile 有自己的 evolver/index。JobFactory Spec 装配期固化的是 default evolver/index——若直接用 Spec 的，原文用 `chat_index` 建索引但归档时调 `default_index.remove`，原文索引不会被正确清理。故此处通过 `JobFactory.get_job` 的**运行时覆盖入参** `evolver=` / `index=` 注入 binding 的——`MiddleToLongJobSpec.with_scope` 从 `kwargs` 弹出 `evolver` / `index` 覆盖 Spec 装配期固化的默认值，保证 Job 内部的 evolver/index 与原文落盘时一致。
 
 **关键权衡**：
 
 - middle 是 infer=true 的二级开关：middle 路径要原文立即可检索（落 /memory/ + 建索引），与 infer=true 同步抽取语义冲突（infer 原文不建索引、走 /messages/）。故 middle=true 必须在 infer=true 下生效，且走自己的子分支。
-- interval 属编排决策（类比 `Scheduler.tick_interval`），故留 Engine 而非 JobFactory——`middle_interval` 读 engine.params，回退到 globals、最终 default 50。
+- `middle_interval` 是 MiddleToLongJob 的运行时参数，落在 `MiddleToLongJobSpec.interval`（装配期默认 50，与 `max_fetch`/`batch_size`/`concurrency` 同级）。Engine.write 不持有 interval——从入参 `metadata["middle_interval"]` 透传到 `factory.get_job(interval=...)`，缺省由 Spec 默认兜底。调用级开关（middle / middle_interval）在 write 入口从 raw_meta pop，不落盘到 unit.metadata。详见决策 4 第 3 步。
 - JobFactory 可选注入：config 声明了 `job_factory` 命名空间具名实例则注入，None 时 evolve/middle 路径报错（向后兼容——纯默认配置不走演进）。
 
 ### 决策 5：`EvolveJob` —— 通用演进入口（替代原 InProcessScheduler._execute_task）
@@ -112,6 +112,80 @@ mem2.0 把这件事拆回控制层标准范式：
 - dedup 旨在查"派生是否与已沉淀长期记忆重复"。
 - 中期原文是"待 MiddleToLongJob 处理的缓冲态输入"，语义必然接近派生（派生就是从原文抽取的事实陈述），让原文参与对照会触发 LLM dedup 判 NOOP 丢派生。
 - Engine.write middle=true 时给原文打 `metadata.middle=true` 标记，dedup 按此过滤——与 `MiddleToLongJob._list_working_units` / `EvolveJob.run` 的 middle 过滤形成一致链路。
+
+### 决策 8：中期记忆相关配置项
+
+中期记忆的可调参数分两层：**装配期**（`MiddleToLongJobSpec` 固化，经 `job_factory` 命名空间配置）与**调用级**（write metadata 透传，单次写入生效）。两层都不进 ConfigSource 晚绑定——ConfigSource 只管六类业务配置（能力开关/prompt/模型凭证/Store 连接，见 [`S08`](../../specs/S08-config.md)）；中期记忆的 JobSpec 参数是装配期固化值，与 `Scheduler.tick_interval`、`IndexBuilder` 的 batch_size 同性质。
+
+#### 8.1 装配期参数（`job_factory.default.params`）
+
+经 `JobFactoryProducer` 装配固化到 `MiddleToLongJobSpec`，运行时 `with_scope` 补 scope 生成 Job 实例。默认值定义在 `jiuwen_memory/config/defaults.py` 与 `MiddleToLongJobSpec` 字段默认。
+
+| key | 默认 | 作用 | 是否运行时覆盖 |
+|---|---|---|---|
+| `middle_max_fetch` | `100` | `_list_working_units` 单次取最近 N 条候选（按 `t_ingest` 升序） | 否 |
+| `middle_batch_size` | `10` | 连续性切批上限——连续的候选达到此值即切批送 `evolver.evolve` | 否 |
+| `middle_concurrency` | `4` | 批间并发上限（`1` = 串行）；`>1` 假设 Evolver 线程安全 | 否 |
+| `middle_interval` | `50` | TimerWheel 周期（秒）——`MiddleToLongJob` 触发间隔 | **是**（write metadata 透传，见 8.2） |
+
+装配 YAML 示例：
+
+```yaml
+job_factory:
+  default:
+    target: default
+    params:
+      storage: default
+      evolver: default
+      lifecycle: default
+      index_builder: default
+      llm: default
+      middle_max_fetch: 100
+      middle_batch_size: 10
+      middle_concurrency: 4
+      middle_interval: 50
+```
+
+**注意**：`middle_interval` 配到 `job_factory.default.params` 是**装配期默认值**，经 `_build_middle_to_long_job_spec` 固化到 `Spec.interval`。若 write metadata 不显式传 `middle_interval`，Job 用此 Spec 默认值；若 write metadata 显式传，覆盖 Spec 默认值（单次生效，不污染 Spec）。
+
+#### 8.2 调用级开关（write `metadata`）
+
+write 调用时经 `metadata` 传入，是"本次 write 如何处理"的指令，不是 unit 持久属性——engine 在 write 入口从 `raw_meta` pop 后透传到下游，不进 `unit.metadata` 落盘。
+
+| metadata key | 取值 | 作用 | 透传目标 |
+|---|---|---|---|
+| `infer` | `"true"` | 同步抽取开关——write 时立即调 `evolver.evolve(EXTRACT)` 走完整派生链路 | engine 内部判定路径分流（见 [F02-write-infer-extract](../api/F02-write-infer-extract.md)） |
+| `middle` | `"true"` | 中期缓冲二级开关——仅在 `infer=true` 下生效；走 `_write_middle_path` 子路径（原文落 `/memory/` + 建索引 + tier=WORKING + 提交 MiddleToLongJob）。**会主动写回 `unit.metadata["middle"]="true"`**——`MiddleToLongJob._list_working_units` 据此过滤候选 | engine 内部 + 写回 unit.metadata 作候选标记 |
+| `middle_interval` | `"30"` 等 | MiddleToLongJob 的运行时周期（覆盖 Spec 装配期默认） | engine 透传到 `factory.get_job(interval=...)` |
+| `procedural` | `"true"` | 程序性记忆路径开关（与 infer/middle 互斥的第三条分流） | engine 内部判定路径分流 |
+
+调用示例：
+
+```python
+await engine.write(
+    "alice likes tea",
+    scope,
+    metadata={
+        "infer": "true",          # 必须，否则 middle 不生效
+        "middle": "true",         # 中期缓冲开关
+        "middle_interval": "30",  # 可选，缺省走 Spec 装配期默认 50
+    },
+)
+```
+
+**边界与互斥**：
+
+- `middle=true` 但 `infer!=true` 且 `procedural!=true` → engine 抛 `ValueError`（middle 是 infer 的二级开关，见决策 4 关键权衡）。fail fast 而非静默退化。
+- `middle_interval` 单独传（无 `middle=true`）→ 被 engine pop 但不透传（不进 middle 路径），无副作用。
+- `middle` / `middle_interval` 不落盘到 `unit.metadata`——engine 入口 pop 剥除。`middle=true` 标记是 `_write_middle_path` 内**有意的写回**（候选过滤需要），不是入口 metadata 透传。
+
+#### 8.3 与 ConfigSource 的边界
+
+中期记忆参数**不**进 ConfigSource 晚绑定六类清单（[`S08`](../../specs/S08-config.md) 决策 2.1）：
+
+- ConfigSource 管的是"租户级运行时动态配置"——能力开关/prompt 文本/模型凭证/Store 连接。
+- 中期记忆参数是"装配期固化的 JobSpec 业务参数 + 单次写入的调用级开关"——与 ConfigSource 是正交维度。
+- Job 层不需要为 ConfigSource 做适配——Job 持的 `Storage` / `LLM` / `Evolver` 实例内部各自实现晚绑定（`storage.list` 内部按需 `fetch("kv_store.url")` 重连、`llm.chat` 内部 `fetch("llm.api_key")` 取凭证），Job 调这些实例方法时晚绑定自动生效，Job 不感知 ConfigSource。
 
 ---
 
@@ -195,7 +269,7 @@ mem2.0 把这件事拆回控制层标准范式：
 
 1. **`AsyncTimerScheduler` 不是真持久化调度**：TimerWheel / queue / JobInfo 全在进程内，进程重启全丢。生产需替换成 Redis/DB 持久化 + 多 worker 协调，但 `Scheduler.submit/status/cancel` 契约不变。
 
-2. **`middle_interval` 是 Engine 编排参数，非 Job 自描述**：MiddleToLongJob 的 `interval` 由 Engine 在 `factory.get_job` 时注入（`interval=self._middle_interval`）。若未来要让不同 scope 走不同周期，需把周期配置下沉到 Job Spec 或调用方显式传参。
+2. **`middle_interval` 已下沉到 `MiddleToLongJobSpec.interval`**（已修复）：原实现 Engine 持 `self._middle_interval` 在 `factory.get_job` 时注入，是 Engine 编排参数而非 Job 自描述。重构后 `MiddleToLongJobSpec` 装配期固化 `interval` 字段（默认 50，与 `max_fetch`/`batch_size`/`concurrency` 同级），write 入参 `metadata["middle_interval"]` 经透传覆盖 Spec 默认值（与 `evolver=` / `index=` 覆盖入参模式一致）。`middle_interval` 作为调用级开关在 write 入口从 raw_meta pop，不落盘到 unit.metadata。Engine 不再持 interval，多 scope/多调用方走不同周期直接经 metadata 传入即可。
 
 3. **连续性检测是串行依赖**：`_check_continuity` 必须串行（前一条结果影响下一条是否切批），无法 gather 并发。max_fetch=100 时最坏 99 次 LLM 调用串行——耗时与 LLM 单次延迟线性相关。若成瓶颈，可改"分块预切批 + 块内并发检测"两阶段。
 

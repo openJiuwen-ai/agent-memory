@@ -223,23 +223,30 @@ class AsyncTimerScheduler(Scheduler):
             for entry in wheel.entries:
                 if type(entry.job).__name__ == kind:
                     was_done = entry.is_done
+                    interval_changed = job.interval != entry.interval
+                    # was_done=True：复活，重置为首次 submit 语义。
+                    # was_done=False + interval 变化：next_run_at - 旧 interval + 新 interval
+                    #   （next_run_at 自身编码"基准时间 + 旧 interval"，减旧即得基准时间）。
+                    # was_done=False + interval 不变：不动 next_run_at（debounce 保护——
+                    #   连续 add_async 不应把 Timer 一直推后）。
+                    if was_done:
+                        entry.next_run_at = int(time.monotonic()) + job.interval
+                    elif interval_changed:
+                        entry.next_run_at = (
+                            entry.next_run_at - entry.interval + job.interval
+                        )
                     entry.job = job
                     entry.interval = job.interval
                     entry.is_done = False
-                    # was_done=True（之前已退出）→ 重置 next_run_at = now + interval；
-                    # was_done=False（定时器还在跑）→ 不动 next_run_at，保持首次
-                    # submit 设定的周期节拍，避免连续 add_async 把 next_run_at
-                    # 一直往后推导致 Timer 永不触发。
-                    if was_done:
-                        entry.next_run_at = int(time.monotonic()) + job.interval
                     self._ensure_timer_task(wheel)
                     logger.info(
                         "AsyncTimerScheduler: update timer scope=%s kind=%s interval=%s "
-                        "was_done=%s",
+                        "was_done=%s interval_changed=%s",
                         scope_key,
                         kind,
                         job.interval,
                         was_done,
+                        interval_changed,
                     )
                     return entry.job_id
 

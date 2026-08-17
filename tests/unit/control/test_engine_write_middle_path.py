@@ -152,7 +152,6 @@ def _build_engine(
     scheduler=None,
     evolver=None,
     llm=_UNSET,
-    middle_interval: int = 50,
     middle_max_fetch: int = 100,
     middle_batch_size: int = 10,
     middle_concurrency: int = 4,
@@ -183,7 +182,7 @@ def _build_engine(
         llm = _EchoLLM()
 
     # 构造测试 JobFactory——MiddleToLongJobSpec 固化依赖与业务参数，
-    # with_scope 在运行时补 scope+interval 生成完整 Job 实例。
+    # with_scope 在运行时补 scope 生成完整 Job 实例。
     factory = JobFactory()
     factory.register(
         JobType.MIDDLE_TO_LONG,
@@ -211,7 +210,6 @@ def _build_engine(
         classifier=None,
         pipeline=None,
         job_factory=factory,
-        middle_interval=middle_interval,
     )
     return engine, scheduler, index, kv
 
@@ -274,7 +272,7 @@ def test_write_infer_middle_submits_middle_to_long_job() -> None:
     assert channel == Channel.BACKGROUND
     # 验证 Job 字段
     assert job.scope == scope
-    assert job.interval == 50  # 默认 middle_interval
+    assert job.interval == 50  # metadata 未传 middle_interval，回退 Spec 装配期默认
     assert job._max_fetch == 100  # pylint: disable=protected-access
     assert job._batch_size == 10  # pylint: disable=protected-access
     assert job._concurrency == 4  # pylint: disable=protected-access
@@ -288,17 +286,25 @@ def test_write_infer_middle_submits_middle_to_long_job() -> None:
 
 
 def test_write_infer_middle_passes_engine_middle_params_to_job() -> None:
-    """Engine 的 middle_* 参数透传到 MiddleToLongJob。"""
-    engine, scheduler, _, _ = _build_engine(
-        middle_interval=30, middle_max_fetch=50, middle_batch_size=5, middle_concurrency=2
+    """middle_* 装配期参数 + middle_interval metadata 覆盖透传到 MiddleToLongJob。
+
+    - middle_max_fetch/batch_size/concurrency 经 JobSpec 装配期固化；
+    - middle_interval 经 write metadata 透传（瞬态 key），覆盖 Spec 装配期默认 50。
+    """
+    engine, scheduler, _, kv = _build_engine(
+        middle_max_fetch=50, middle_batch_size=5, middle_concurrency=2
     )
     scope = Scope(org="acme", user="u1")
 
-    asyncio.run(
+    units = asyncio.run(
         engine.write(
             "x",
             scope,
-            metadata={"infer": "true", "middle": "true"},
+            metadata={
+                "infer": "true",
+                "middle": "true",
+                "middle_interval": "30",  # 经 metadata 透传，覆盖 Spec 默认 50
+            },
         )
     )
 
@@ -307,6 +313,8 @@ def test_write_infer_middle_passes_engine_middle_params_to_job() -> None:
     assert job._max_fetch == 50  # pylint: disable=protected-access
     assert job._batch_size == 5  # pylint: disable=protected-access
     assert job._concurrency == 2  # pylint: disable=protected-access
+    persisted = loads(kv.get(scope, memory_key(units[0].id)))
+    assert "middle_interval" not in persisted.metadata
 
 
 def test_write_infer_without_middle_does_not_submit_job() -> None:

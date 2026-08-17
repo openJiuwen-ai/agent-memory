@@ -203,7 +203,6 @@ class InMemoryEngine(MemoryEngine):
         classifier: Classifier | None = None,
         pipeline: MemoryPipeline | None = None,
         job_factory: JobFactory | None = None,
-        middle_interval: int = 50,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
@@ -217,7 +216,6 @@ class InMemoryEngine(MemoryEngine):
         # None 时跳过（原文 tier 保持 EPISODIC 默认，向后兼容）。
         self._classifier = classifier
         self._job_factory = job_factory
-        self._middle_interval = middle_interval
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
@@ -257,10 +255,11 @@ class InMemoryEngine(MemoryEngine):
         # - 缺省：原始落 /memory/ + 建索引，不自动提交演进（由调用方显式 evolve() 触发）。
         # 开关按字符串判定（兼容 "true" 与 Python True），业务值保持原生类型落库——
         # 整体 str 化会让数值/布尔在索引里变成 keyword，range 退化为字典序。
-        meta = dict(metadata or {})
+        # middle / middle_interval 是调用级开关，不是 unit 持久属性——下面从 meta 剥除。
+        raw_meta = dict(metadata or {})
 
         def _is_true(key: str) -> bool:
-            return str(meta.get(key, "")).strip().lower() == "true"
+            return str(raw_meta.get(key, "")).strip().lower() == "true"
 
         procedural = _is_true("procedural")
         infer = _is_true("infer")
@@ -269,6 +268,11 @@ class InMemoryEngine(MemoryEngine):
             raise ValueError(
                 "metadata.middle=true requires infer=true (middle 是 infer 下的二级开关)"
             )
+        middle_interval = raw_meta.pop("middle_interval", None)
+        raw_meta.pop("middle", None)
+
+        # meta 保留原生类型落库（与 CloudEngine 不同——后者走 _normalized_metadata str 化）。
+        meta = raw_meta
 
         payload = RawPayload(
             id=str(uuid.uuid4()),
@@ -314,7 +318,9 @@ class InMemoryEngine(MemoryEngine):
         # infer=true 下按 middle 二级分流
         if infer:
             if middle:
-                return await self._write_middle_path(units, scope, index_builder, evolver)
+                return await self._write_middle_path(
+                    units, scope, index_builder, evolver, middle_interval
+                )
             # 既有 infer=true 同步抽取路径，不动
             if evolver is None:
                 raise RuntimeError(
@@ -347,8 +353,13 @@ class InMemoryEngine(MemoryEngine):
         scope: Scope,
         index_builder: IndexBuilder,
         evolver: Evolver,
+        middle_interval: Any,
     ) -> list[MemoryUnit]:
-        """中期缓冲子路径：原文落 /memory/ + 建索引 + tier=WORKING + 提交定时 MiddleToLongJob。"""
+        """中期缓冲子路径：原文落 /memory/ + 建索引 + tier=WORKING + 提交定时 MiddleToLongJob。
+
+        ``middle_interval`` 经 write metadata 透传（不落盘到 unit.metadata），``None``
+        时由 Spec 装配期默认兜底，与 ``evolver=`` / ``index=`` 覆盖入参模式一致。
+        """
         if self._job_factory is None:
             raise RuntimeError(
                 "middle path requires job_factory, please configure "
@@ -368,16 +379,16 @@ class InMemoryEngine(MemoryEngine):
         job = self._job_factory.get_job(
             JobType.MIDDLE_TO_LONG,
             scope=scope,
-            interval=self._middle_interval,
             evolver=evolver,
             index=index_builder,
+            interval=middle_interval,
         )
         await self._scheduler.submit(job, channel=Channel.BACKGROUND)
         logger.info(
             "Engine.write middle=True: %d originals buffered, scope=%s interval=%s",
             len(units),
             scope,
-            self._middle_interval,
+            middle_interval,
         )
         return units
 
@@ -778,8 +789,6 @@ def _build(config):
         _ = _ji
         return JobFactoryProducer.build_named("default", ctx)
 
-    middle_interval = int(config.get("middle_interval", 50))
-
     return InMemoryEngine(
         IngestorProducer.dep(config, default="simple"),
         IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
@@ -791,5 +800,4 @@ def _build(config):
         classifier=_opt_classifier(),
         pipeline=_opt_pipeline(),
         job_factory=_opt_job_factory(),
-        middle_interval=middle_interval,
     )

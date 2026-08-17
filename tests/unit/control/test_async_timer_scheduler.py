@@ -209,17 +209,12 @@ def test_submit_timer_same_kind_updates_existing_entry() -> None:
     assert wheel.entries[0].interval == 20  # 已更新
 
 
-def test_submit_timer_update_preserves_next_run_at_when_not_done() -> None:
-    """同 kind 非 done 状态 update → 不重置 next_run_at（避免 debounce 永不触发）。
+def test_submit_timer_same_interval_preserves_next_run_at_when_not_done() -> None:
+    """同 kind + 同 interval + 非 done 状态 update → 不重置 next_run_at（debounce 保护）。
 
-    连续 add_async middle=true 时,Engine 每次都 submit MiddleToLongJob——
-    Scheduler update 分支若每次都重置 next_run_at = now + interval,会变成
-    debounce 语义:用户在 interval 内连续说话时 Timer 永远到不了 next_run_at,
-    MiddleToLongJob 永不触发。
-
-    修复:update 分支仅在 was_done=True 时重置 next_run_at（复活已退出的定时器）,
-    was_done=False 时保持原 next_run_at 不变——首次 submit 设定的周期节拍
-    不被后续 submit 推后。后续 write 累积的 unit 由下次到点触发批量处理。
+    连续 add_async middle=true 时若 interval 不变却每次重置 next_run_at = now + interval，
+    会变成 debounce 语义——用户在 interval 内连续说话时 Timer 永远到不了 next_run_at，
+    MiddleToLongJob 永不触发。故 was_done=False + interval 不变 → 保持原 next_run_at 不动。
     """
     scheduler = AsyncTimerScheduler(tick_interval=1)
     scope = Scope(user="u1")
@@ -232,14 +227,76 @@ def test_submit_timer_update_preserves_next_run_at_when_not_done() -> None:
         scope_key = scheduler._scope_key(scope)
         wheel = scheduler._wheels[scope_key]
         next_run_at_after_first = wheel.entries[0].next_run_at
-        # 立即（was_done=False）再 submit 同 kind
+        # 立即（was_done=False，interval 不变）再 submit 同 kind
         await scheduler.submit(job2, Channel.BACKGROUND)
         next_run_at_after_second = wheel.entries[0].next_run_at
         # 不应被重置——保持首次 submit 设定的周期节拍
         assert next_run_at_after_second == next_run_at_after_first, (
-            "update 分支 was_done=False 时不应重置 next_run_at——"
+            "was_done=False + interval 不变时不应重置 next_run_at——"
             "连续 add_async 会变成 debounce 语义导致 Timer 永不触发"
         )
+
+    asyncio.run(_run())
+
+
+def test_submit_timer_changed_interval_recomputes_next_run_at_from_last_fired() -> None:
+    """同 kind + interval 变化 + 已触发过 → next_run_at = 上次触发时间 + 新 interval。
+
+    next_run_at 编码"上次触发时间 + 旧 interval"，故 next_run_at - 旧 interval + 新 interval
+    即得新 next_run_at，无需 last_fired_at 字段。
+    """
+
+    scheduler = AsyncTimerScheduler(tick_interval=1)
+    scope = Scope(user="u1")
+    job_old = _RecordingJob(scope, interval=50)
+    job_new = _RecordingJob(scope, interval=30)
+
+    async def _run():
+        await scheduler.submit(job_old, Channel.BACKGROUND)
+        scope_key = scheduler._scope_key(scope)
+        wheel = scheduler._wheels[scope_key]
+        entry = wheel.entries[0]
+        # 手工模拟"已触发过一次"状态——绕过实际 tick 等待
+        # 触发后 next_run_at = now + 旧 interval（now 是触发时刻）
+        last_fired = entry.next_run_at - 50  # 假设已到点触发过
+        entry.next_run_at = last_fired + 50  # 触发后重置：now(=last_fired) + 旧 interval
+        # submit 新 interval（was_done=False, interval 50→30 变化）
+        await scheduler.submit(job_new, Channel.BACKGROUND)
+        # next_run_at 应 = 上次触发时间 + 新 interval = last_fired + 30
+        #   = (next_run_at - 旧 interval) + 新 interval
+        assert entry.next_run_at == last_fired + 30, (
+            "interval 变化 + 已触发过: next_run_at 应 = 上次触发时间 + 新 interval"
+        )
+        assert entry.interval == 30
+
+    asyncio.run(_run())
+
+
+def test_submit_timer_changed_interval_recomputes_from_submit_time_when_never_fired() -> None:
+    """同 kind + interval 变化 + 从未触发 → next_run_at = submit_time + 新 interval。
+
+    首次 submit 后从未触发时 next_run_at = submit_time + 旧 interval，回退得 submit_time 再加新 interval。
+    """
+
+    scheduler = AsyncTimerScheduler(tick_interval=1)
+    scope = Scope(user="u1")
+    job_old = _RecordingJob(scope, interval=50)
+    job_new = _RecordingJob(scope, interval=30)
+
+    async def _run():
+        await scheduler.submit(job_old, Channel.BACKGROUND)
+        scope_key = scheduler._scope_key(scope)
+        wheel = scheduler._wheels[scope_key]
+        entry = wheel.entries[0]
+        # 从未触发——next_run_at = submit_time + 旧 interval
+        submit_time = entry.next_run_at - 50
+        # submit 新 interval（was_done=False, interval 50→30 变化, 从未触发）
+        await scheduler.submit(job_new, Channel.BACKGROUND)
+        # next_run_at 应 = submit_time + 新 interval = submit_time + 30
+        assert entry.next_run_at == submit_time + 30, (
+            "interval 变化 + 从未触发: next_run_at 应 = submit_time + 新 interval"
+        )
+        assert entry.interval == 30
 
     asyncio.run(_run())
 
