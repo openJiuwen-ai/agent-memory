@@ -35,6 +35,7 @@ from jiuwen_memory.common.type_def.normalizer import EntityNormalizer
 from jiuwen_memory.common.type_def.scope import Scope, space_id_from_scope
 from jiuwen_memory.construction.index_builder_impl.entity_index_builder import (
     EntityIndexAdmissionPolicy,
+    EntityIndexBuilder,
     EntityLinkService,
 )
 from jiuwen_memory.storage.base import BaseStore, StoreType
@@ -95,10 +96,16 @@ class InMemoryEntityStore(BaseStore):
                     break
         return out
 
-    def find_by_linked_memory_id(self, space_id: str, memory_id: str) -> list[EntityRecord]:
+    def find_by_linked_memory_id(
+        self,
+        space_id: str,
+        memory_id: str,
+        *,
+        filters: EntityStoreFilters,
+    ) -> list[EntityRecord]:
         return [
             rec for rec in self._space(space_id).values()
-            if memory_id in rec.linked_memory_ids
+            if memory_id in rec.linked_memory_ids and self._matches_filters(rec, filters)
         ]
 
     def execute_operations(
@@ -326,7 +333,7 @@ def test_unlink_update_when_other_memories_remain(store: InMemoryEntityStore) ->
     linker.link_memories([u1, u2])
 
     result = linker.unlink_memory(
-        space_id=space_id_from_scope(u1.scope), memory_id="u1",
+        scope=u1.scope, memory_id="u1",
     )
 
     assert result.updated_count == 1
@@ -343,7 +350,7 @@ def test_unlink_delete_when_no_memory_remains(store: InMemoryEntityStore) -> Non
     linker.link_memories([u1])
 
     result = linker.unlink_memory(
-        space_id=space_id_from_scope(u1.scope), memory_id="u1",
+        scope=u1.scope, memory_id="u1",
     )
 
     assert result.deleted_count == 1
@@ -357,7 +364,7 @@ def test_unlink_unknown_memory_id_is_noop(store: InMemoryEntityStore) -> None:
     linker.link_memories([u1])
 
     result = linker.unlink_memory(
-        space_id=space_id_from_scope(u1.scope), memory_id="nonexistent",
+        scope=u1.scope, memory_id="nonexistent",
     )
 
     assert result.updated_count == 0
@@ -377,7 +384,7 @@ def test_unlink_removes_only_targeted_memory_id(store: InMemoryEntityStore) -> N
     linker.link_memories([u1, u2])
 
     result = linker.unlink_memory(
-        space_id=space_id_from_scope(u1.scope), memory_id="u1",
+        scope=u1.scope, memory_id="u1",
     )
 
     # Alice 关联 u1,u2 → 删 u1 后剩 u2 → UNLINK_UPDATE
@@ -388,9 +395,213 @@ def test_unlink_removes_only_targeted_memory_id(store: InMemoryEntityStore) -> N
 
 
 # ---------------------------------------------------------------------------
+# unlink_memory 跨 user 隔离（检视意见回归）
+# ---------------------------------------------------------------------------
+
+
+def test_unlink_does_not_touch_other_user_entity(store: InMemoryEntityStore) -> None:
+    # 检视意见回归：find_by_linked_memory_id 必须带 actor_id filter，unlink 只
+    # 命中调用方 scope 所属的实体文档。构造同 space、不同 user、且 memory_id
+    # 相同（"撞 id"）的极端场景——即便 id 撞了，删 user1 的记忆也不能动
+    # user2 的实体关联（纵深防御：当前生产 unit.id 是 UUID4 不会撞，但隔离
+    # 下沉到存储层后，任何 id 体系都安全）。
+    scope_u1 = Scope(org="o1", user="alice", agent="a1", session="s1")
+    scope_u2 = Scope(org="o1", user="bob", agent="a1", session="s1")
+    # 两个 user 同 space（org 相同 → space_id 相同），memory_id 故意相同
+    unit_a = _make_unit("colliding-id", "x", entities=["Acme"], scope=scope_u1)
+    unit_b = _make_unit("colliding-id", "x", entities=["Acme"], scope=scope_u2)
+    linker = _linker(store)
+    linker.link_memories([unit_a, unit_b])
+
+    # 同 space 下应有两条 Acme 文档（per-user 隔离：find_by_entity_text_hash
+    # 带 actor_id filter，user 不同 → 各自 INSERT，不归并到同一条）
+    recs = store.records(space_id_from_scope(scope_u1))
+    assert len(recs) == 2
+    actor_ids = sorted(r.filters.actor_id for r in recs)
+    assert actor_ids == ["alice", "bob"]
+    # 两条文档的 linked_memory_ids 都含 "colliding-id"
+    assert all("colliding-id" in r.linked_memory_ids for r in recs)
+
+    # 删 user=alice 的记忆：unlink 用 scope_u1，find_by_linked_memory_id 带
+    # actor_id=alice filter，只命中 alice 的那条 → DELETE。bob 的那条必须不动。
+    result = linker.unlink_memory(scope=scope_u1, memory_id="colliding-id")
+
+    assert result.deleted_count == 1
+    assert result.updated_count == 0
+    recs_after = store.records(space_id_from_scope(scope_u1))
+    assert len(recs_after) == 1
+    survivor = recs_after[0]
+    assert survivor.filters.actor_id == "bob"
+    assert "colliding-id" in survivor.linked_memory_ids
+
+
+# ---------------------------------------------------------------------------
 # 辅助
 # ---------------------------------------------------------------------------
 
 
 def _hash(name: str) -> str:
     return hash_entity_text(EntityNormalizer.normalize(name))
+
+
+# ---------------------------------------------------------------------------
+# 查询失败不降级 INSERT（检视意见子点1 回归）
+# ---------------------------------------------------------------------------
+
+
+class _FailingLookupStore:
+    """包装 InMemoryEntityStore，让 find_by_entity_text_hash 第 N 次调用抛异常。
+
+    复现检视意见"精确查询失败后被当成实体不存在，继续 INSERT，可能制造重复
+    实体"：原 buggy 代码 catch 异常后置 existing_by_hash={}，循环误判每个实体
+    不存在 → 全 INSERT。若已存在同 hash 的 EntityRecord，会新建第二条（uuid4
+    为 _id），召回侧 find_by_entity_text_hash 命中多条，打分失真。
+    """
+
+    def __init__(self, inner: InMemoryEntityStore) -> None:
+        self._inner = inner
+        self.lookup_count = 0
+        self.fail_on_lookup: int | None = None  # 第几次调用抛异常
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def find_by_entity_text_hash(self, *args, **kwargs):
+        self.lookup_count += 1
+        if self.fail_on_lookup is not None and self.lookup_count == self.fail_on_lookup:
+            raise RuntimeError("simulated lookup failure")
+        return self._inner.find_by_entity_text_hash(*args, **kwargs)
+
+
+def test_link_lookup_failure_does_not_create_duplicates(store: InMemoryEntityStore) -> None:
+    """查询失败时不降级 INSERT：整组 abort 计 failed，不造重复实体文档。
+
+    回归检视意见子点1。场景：
+      第一次 write u1（含 Alice）→ 查询成功，INSERT 一条 Alice 文档
+      第二次 write u2（含 Alice）→ 查询失败（模拟 ES 5xx/网络抖动）
+        修复前：existing_by_hash={} → 循环误判 Alice 不存在 → INSERT 第二条
+                → 同 hash 两条文档，召回侧打分翻倍
+        修复后：整组 abort，failed_count=1，不 INSERT，不造重复
+      第三次 write u3（含 Alice）→ 查询恢复，hash 命中第一条 → LINK（自愈）
+    """
+    failing = _FailingLookupStore(store)
+    failing.fail_on_lookup = 2  # 第二次查询抛异常
+    linker = _linker(failing)
+    space_id = space_id_from_scope(_make_unit("u1", "x", entities=["Alice"]).scope)
+
+    # 第一次：查询成功，INSERT 一条 Alice
+    u1 = _make_unit("u1", "x", entities=["Alice"])
+    r1 = linker.link_memories([u1])
+    assert r1.inserted_count == 1
+    assert store.records(space_id) != [] and len(store.records(space_id)) == 1
+
+    # 第二次：查询失败，应 abort 不 INSERT
+    u2 = _make_unit("u2", "x", entities=["Alice"])
+    r2 = linker.link_memories([u2])
+    assert r2.inserted_count == 0, "查询失败时不应 INSERT（避免造重复）"
+    assert r2.updated_count == 0
+    assert r2.failed_count == 1, "查询失败应整组计 failed"
+
+    # 不造重复：仍只有一条 Alice 文档
+    recs_after = store.records(space_id)
+    assert len(recs_after) == 1, (
+        f"查询失败不应造重复文档，实际 {len(recs_after)} 条"
+    )
+    # 第一条文档不变（仍只含 u1，u2 没被 LINK 进去——失败的组没有副作用）
+    assert set(recs_after[0].linked_memory_ids) == {"u1"}
+
+    # 第三次：查询恢复，hash 命中 → LINK（自愈语义验证）
+    failing.fail_on_lookup = None
+    u3 = _make_unit("u3", "x", entities=["Alice"])
+    r3 = linker.link_memories([u3])
+    assert r3.inserted_count == 0
+    assert r3.updated_count == 1, "查询恢复后应 LINK 到已存文档（自愈）"
+    assert r3.failed_count == 0
+    recs_final = store.records(space_id)
+    assert len(recs_final) == 1, "自愈后仍只有一条文档，不造重复"
+    assert set(recs_final[0].linked_memory_ids) == {"u1", "u3"}
+
+
+def test_link_lookup_failure_counts_all_entities_in_group(
+    store: InMemoryEntityStore,
+) -> None:
+    """查询失败时整组每个实体都计 failed（不止触发失败的那条）。
+
+    一个 group 含多个实体（Alice, Bob），查询失败时全组 abort，failed_count
+    = 实体数（2），不部分 INSERT。
+    """
+    failing = _FailingLookupStore(store)
+    failing.fail_on_lookup = 1  # 第一次查询就抛
+    linker = _linker(failing)
+    space_id = space_id_from_scope(_make_unit("u1", "x", entities=["Alice"]).scope)
+
+    unit = _make_unit("u1", "x", entities=["Alice", "Bob"])
+    result = linker.link_memories([unit])
+
+    assert result.failed_count == 2, (
+        f"整组 2 个实体都应计 failed，实际 {result.failed_count}"
+    )
+    assert result.inserted_count == 0
+    assert result.updated_count == 0
+    # 一个文档都没建（查询失败，不能假设不存在就 INSERT）
+    assert store.records(space_id) == []
+
+
+# ---------------------------------------------------------------------------
+# build 失败可见不阻断（检视意见子点5 回归）
+# ---------------------------------------------------------------------------
+
+
+def test_build_swallows_failure_but_logs_error(
+    store: InMemoryEntityStore, caplog
+) -> None:
+    """link_memories 抛异常时 build 不阻断 write，但 error 级别可见。
+
+    回归检视意见子点5"异常被吞掉后没有 outbox、重试或可执行的重建入口"——
+    原代码用 logger.warning 静默吞，失败完全不可见，运维无法感知 entity 索引
+    stale。修复后：保留不阻断（entity 是增强层，fulltext/vector+真源已落盘，
+    失败可自愈），但用 error 级别让失败可见、可告警。
+    """
+    linker = _linker(store)
+    builder = EntityIndexBuilder(linker)
+    unit = _make_unit("u1", "x", entities=["Alice"])
+
+    # 让 link_memories 抛异常（模拟 ES bulk 整体不可达）
+    def _boom(_units):
+        raise RuntimeError("simulated backend down")
+    linker.link_memories = _boom  # type: ignore[method-assign]
+
+    import logging
+    with caplog.at_level(logging.ERROR, logger="jiuwen_memory.construction.index_builder_impl.entity_index_builder"):
+        # 不抛——build 不阻断
+        builder.build([unit])
+
+    # error 级别日志可见（修复前是 warning，被 caplog.at_level(ERROR) 过滤掉）
+    assert any("link_memories failed" in r.message for r in caplog.records), (
+        "build 失败应 error 级别可见，实际无 error 日志"
+    )
+
+
+def test_build_logs_partial_failure_when_failed_count_nonzero(
+    store: InMemoryEntityStore, caplog
+) -> None:
+    """link_memories 部分失败（failed_count>0，如查询超时 abort）时 error 可见。
+
+    与上一测试的区别：上一测试 link_memories 整体抛异常；本测试 link_memories
+    正常返回但 failed_count>0（查询超时整组 abort 的结果）。build 应 error 级别
+    记录部分失败，带 failed_count 便于对账。
+    """
+    failing = _FailingLookupStore(store)
+    failing.fail_on_lookup = 1  # 查询抛 → 整组 abort → failed_count=2
+    linker = _linker(failing)
+    builder = EntityIndexBuilder(linker)
+    unit = _make_unit("u1", "x", entities=["Alice", "Bob"])
+
+    import logging
+    with caplog.at_level(logging.ERROR, logger="jiuwen_memory.construction.index_builder_impl.entity_index_builder"):
+        builder.build([unit])  # 不抛，返回 EntityLinkResult(failed_count=2)
+
+    assert any("partial failure" in r.message and "failed=2" in r.message
+               for r in caplog.records), (
+        "部分失败应 error 级别带 failed_count 可见，实际无对应日志"
+    )

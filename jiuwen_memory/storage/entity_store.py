@@ -64,8 +64,20 @@ class EntityStore(BaseStore):
         """按 entity_text_hash keyword term 查询，返回命中的实体记录。"""
 
     @abstractmethod
-    def find_by_linked_memory_id(self, space_id: str, memory_id: str) -> list[EntityRecord]:
-        """反查：哪些实体关联了该 memory_id（unlink 用）。"""
+    def find_by_linked_memory_id(
+        self,
+        space_id: str,
+        memory_id: str,
+        *,
+        filters: EntityStoreFilters,
+    ) -> list[EntityRecord]:
+        """反查：哪些实体关联了该 memory_id（unlink 用）。
+
+        filters 复用写入侧的 actor_id 隔离维度——unlink 只命中调用方 scope
+        所属的实体文档，避免 space 内跨 user 的孤立误删（纵深防御：当前
+        unit.id 是 UUID4 全局唯一不会撞，但把隔离下沉到存储层后，即便未来
+        出现非 UUID 的 id 路径也安全）。
+        """
 
     @abstractmethod
     def execute_operations(

@@ -212,10 +212,20 @@ class EntityLinkService:
         )
         return result
 
-    def unlink_memory(self, *, space_id: str, memory_id: str) -> EntityLinkResult:
-        """删除记忆时清理 entity 链接。memory_id 现在是 str（unit.id）。"""
+    def unlink_memory(self, *, scope: Scope, memory_id: str) -> EntityLinkResult:
+        """删除记忆时清理 entity 链接。memory_id 是 str（unit.id）。
+
+        scope 同时提供 space_id（routing）和 actor_id（隔离 term）：反查时带
+        actor_id filter，只命中调用方 scope 所属的实体文档，避免 space 内
+        跨 user 的孤立误删（纵深防御：当前 unit.id 是 UUID4 不会撞，但隔离
+        下沉到存储层后，即便未来出现非 UUID 的 id 路径也安全）。
+        """
+        space_id = space_id_from_scope(scope)
+        filters = EntityStoreFilters.from_scope(scope)
         try:
-            entities = self._entity_store.find_by_linked_memory_id(space_id, memory_id)
+            entities = self._entity_store.find_by_linked_memory_id(
+                space_id, memory_id, filters=filters,
+            )
         except Exception:
             logger.warning("entity_unlink_lookup_failed space_id=%s memory_id=%s", space_id, memory_id, exc_info=True)
             return EntityLinkResult(failed_count=1)
@@ -296,8 +306,18 @@ class EntityLinkService:
             )
             existing_by_hash = {r.entity_text_hash: r for r in existing if r.entity_text_hash}
         except Exception:
-            logger.warning("entity_exact_lookup_failed space_id=%s", space_id, exc_info=True)
-            existing_by_hash = {}
+            # 查询失败不能降级成"全 INSERT"——查不到不等于不存在。若置
+            # existing_by_hash={} 继续走循环，每个实体会走 INSERT 分支，对已
+            # 存在的实体新建重复文档（同 hash 多条 EntityRecord，召回侧
+            # find_by_entity_text_hash 命中多条，raw_contrib 累加翻倍，打分失真）。
+            # 整组 abort + 计 failed：不造重复副作用，失败可见，下次同实体写入
+            # 时查询恢复→命中→LINK 自愈。
+            logger.error("entity_exact_lookup_failed space_id=%s entity_count=%d abort group",
+                         space_id, len(entities_by_key), exc_info=True)
+            return EntityLinkResult(
+                extracted_count=extracted_count,
+                failed_count=len(entities_by_key),
+            )
 
         # 读 + 分类（per-entity try/except，单条失败不中断全组）
         pending_ops: list[tuple[EntityOperation, str]] = []
@@ -397,11 +417,27 @@ class EntityIndexBuilder(IndexBuilder):
             return
         logger.info("EntityIndexBuilder: building entity index for %d units", len(units))
         try:
-            self._linker.link_memories(units)
+            result = self._linker.link_memories(units)
         except Exception as exc:
-            # 后置 hook 容错：memory 已落 KV，entity 失败不回滚、不中断。
-            # 下次同实体写入时 hash 精确匹配会重新命中并 LINK，有机会自愈。
-            logger.warning("EntityIndexBuilder: link_memories failed for %d units: %s", len(units), exc)
+            # entity 是增强层（fulltext/vector 已落盘、真源 KV 已在前置 write
+            # 落盘），失败不回滚、不阻断 write——与 update 路径同语义（update 的
+            # unlink/link 失败也只 log 不抛）。但失败必须可见：用 error 级别 +
+            # 带回 EntityLinkResult 的 failed_count，便于告警与对账。下次同实体
+            # 写入时 hash 精确匹配会重新命中并 LINK，有机会自愈。
+            logger.error(
+                "EntityIndexBuilder: link_memories failed for %d units (entity index "
+                "stale, will self-heal on next write): %s", len(units), exc,
+                exc_info=True,
+            )
+            return
+        if result.failed_count:
+            # 部分失败（如查询超时整组 abort）：不阻断 write，但 error 级别可见。
+            logger.error(
+                "EntityIndexBuilder: link_memories partial failure for %d units: "
+                "extracted=%d inserted=%d updated=%d deleted=%d failed=%d",
+                len(units), result.extracted_count, result.inserted_count,
+                result.updated_count, result.deleted_count, result.failed_count,
+            )
 
     def update(self, units: list[MemoryUnit]) -> None:
         """增量更新：先 unlink 旧实体链接，再按新内容 link。
@@ -417,7 +453,7 @@ class EntityIndexBuilder(IndexBuilder):
                 continue
             try:
                 self._linker.unlink_memory(
-                    space_id=space_id_from_scope(unit.scope),
+                    scope=unit.scope,
                     memory_id=unit.id,
                 )
             except Exception as exc:
@@ -434,7 +470,7 @@ class EntityIndexBuilder(IndexBuilder):
         for unit in units:
             try:
                 self._linker.unlink_memory(
-                    space_id=space_id_from_scope(unit.scope),
+                    scope=unit.scope,
                     memory_id=unit.id,
                 )
             except Exception as exc:
@@ -443,19 +479,19 @@ class EntityIndexBuilder(IndexBuilder):
     def remove_with_scope(self, unit_ids: list[str], scope: Scope) -> None:
         """已知 scope 时直接清理 entity 反向索引，避免 lookup。
 
-        与 fulltext/vector 子 builder 同名的便捷方法。unlink_memory 本就只收
-        space_id + memory_id，不需要完整 unit 对象，因此这里拿 unit_ids + scope
-        即可逐条清理。修复：原先 HybridIndexBuilder.remove_with_scope 只委托
-        fulltext/vector，漏掉 entity，会留孤立链接（entity 文档的
-        linked_memory_ids 仍指向已删 unit_id，召回侧会拉回已删记忆）。
+        与 fulltext/vector 子 builder 同名的便捷方法。unlink_memory 收
+        scope + memory_id（scope 内含 space_id routing 和 actor_id 隔离 term），
+        因此这里拿 unit_ids + scope 即可逐条清理。修复：原先
+        HybridIndexBuilder.remove_with_scope 只委托 fulltext/vector，漏掉 entity，
+        会留孤立链接（entity 文档的 linked_memory_ids 仍指向已删 unit_id，
+        召回侧会拉回已删记忆）。
         """
         if not unit_ids:
             return
         logger.info("EntityIndexBuilder: removing entity index for %d unit_ids (by scope)", len(unit_ids))
-        space_id = space_id_from_scope(scope)
         for unit_id in unit_ids:
             try:
-                self._linker.unlink_memory(space_id=space_id, memory_id=unit_id)
+                self._linker.unlink_memory(scope=scope, memory_id=unit_id)
             except Exception as exc:
                 logger.warning("EntityIndexBuilder: unlink_memory failed for unit_id %s: %s", unit_id[:8], exc)
 

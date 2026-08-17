@@ -205,20 +205,26 @@ class ElasticsearchEntityStore(EntityStore):
 
         return [self._hit_to_entity_record(hit) for hit in response["hits"]["hits"]]
 
-    def find_by_linked_memory_id(self, space_id: str, memory_id: str) -> list[EntityRecord]:
-        """反查：哪些实体关联了该 memory_id（unlink 用）。"""
+    def find_by_linked_memory_id(
+        self,
+        space_id: str,
+        memory_id: str,
+        *,
+        filters: EntityStoreFilters,
+    ) -> list[EntityRecord]:
+        """反查：哪些实体关联了该 memory_id（unlink 用）。
+
+        filter 复用 ``_build_filters``，与写入侧 ``find_by_entity_text_hash`` 对称：
+        space_id term + actor_id term（actor_id 来自调用方 scope）。把 actor 隔离
+        下沉到反查，避免 space 内跨 user 的孤立误删。
+        """
         self._require_index_ready()
+        query_filters = self._build_filters(space_id, filters)
+        query_filters.append({"term": {"linked_memory_ids": memory_id}})
         try:
             response = self._client.search(
                 index=self._index,
-                query={
-                    "bool": {
-                        "filter": [
-                            {"term": {"space_id": space_id}},
-                            {"term": {"linked_memory_ids": memory_id}},
-                        ],
-                    }
-                },
+                query={"bool": {"filter": query_filters}},
                 size=self._list_limit,
                 _source=True,
                 routing=space_id,

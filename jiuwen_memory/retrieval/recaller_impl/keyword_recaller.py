@@ -12,6 +12,8 @@ Retriever/Fuser 负责，本通道不感知其他通道。
 
 from __future__ import annotations
 
+import math
+from collections import defaultdict
 from statistics import median
 
 from jiuwen_memory.common.type_def.entity import (
@@ -19,6 +21,7 @@ from jiuwen_memory.common.type_def.entity import (
     hash_entity_text,
 )
 from jiuwen_memory.common.type_def.normalizer import EntityNormalizer
+from jiuwen_memory.common.type_def.retrieval_filter import is_retrieval_candidate
 from jiuwen_memory.common.type_def.scope import space_id_from_scope
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import Scope
@@ -34,10 +37,10 @@ from .unit_aggregation import aggregate_to_units
 
 logger = get_logger(__name__)
 
-# batch 2（实体关联扩展）候选数硬上限，防极端发散拖垮后续 fuse/点读。
-_ENTITY_EXPANSION_TOP_K = 50
-# 衰减系数：关联命中越多，单次扩展贡献越小（避免一个高频实体拉回海量低分记忆）。
-_ENTITY_DECAY_FACTOR = 0.001
+# batch 2（实体关联扩展）候选数硬上限，也是点读真源的次数上限：反查拿到
+# 的候选先按 IDF 相关性预筛到这个数，再点读做生产过滤，把 storage.get 的 IO
+# 从"反查拉回的全部 id（最坏上千）"压到 ≤ 本上限。
+_ENTITY_EXPANSION_TOP_K = 20
 
 
 class KeywordRecaller(Recaller):
@@ -56,6 +59,9 @@ class KeywordRecaller(Recaller):
         )
         self._layer = layer  # "l2"(content) | "l0" | "l1"
         self._entity_store = entity_store  # L2 实体关联扩展用；None/非 L2 时不扩展
+        # L2 实体扩展需要点读真源做生产过滤（is_retrieval_candidate）；非 L2 不用，
+        # 但持有 storage 无成本，装配期统一注入，避免 __init__ 分层条件分支。
+        self._storage = storage
 
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.RECALLER
@@ -89,12 +95,18 @@ class KeywordRecaller(Recaller):
         batch1 = aggregate_to_units(hits, records, RecallChannel.KEYWORD)
 
         # L2 实体关联扩展：从 batch 1 候选 metadata['entities'] 反查关联 unit。
-        batch2 = self._expand_by_entities(scope, records, batch1)
+        # batch1 已满足 top_k 时短路：实体扩展打分（anchor×decay ≤ batch1 中位数）
+        # 注定挤不进 top_k 高分区，反查 + 点读 + 过滤属无用功，直接跳过。
+        batch2: list[ScoredUnit] = []
+        if len(batch1) < top_k:
+            batch2 = self._expand_by_entities(scope, query, records, batch1)
 
-        result = self._merge_maxp(batch1, batch2)
+        result = self._merge_maxp(batch1, batch2)[:top_k]
         logger.info(
-            "KeywordRecaller: layer=%s scope=%s top_k=%d hits=%d units=%d batch2=%d merged=%d",
-            self._layer, scope, top_k, len(hits), len(batch1), len(batch2), len(result),
+            "KeywordRecaller: layer=%s scope=%s top_k=%d hits=%d units=%d batch2=%d merged=%d returned=%d%s",
+            self._layer, scope, top_k, len(hits), len(batch1), len(batch2),
+            len(batch1) + len(batch2), len(result),
+            " (short-circuit: batch1>=top_k)" if not batch2 and len(batch1) >= top_k else "",
         )
         return result
 
@@ -105,14 +117,31 @@ class KeywordRecaller(Recaller):
     def _expand_by_entities(
         self,
         scope: Scope,
+        query: ParsedQuery,
         records: list,
         batch1: list[ScoredUnit],
     ) -> list[ScoredUnit]:
         """从 batch 1 候选的 entities metadata 反查关联 unit，返回 batch 2 候选。
 
         不抽 query 实体（零 spaCy）：种子明文来自写入侧 LLM 抽取并落进 L2 文档
-        metadata['entities']。打分用中位数锚定 + 衰减，保证关联记忆分不会过低
-        也不会压过 batch 1 原生命中。
+        metadata['entities']。打分用中位数锚定 + IDF 抑制高频泛化实体 + cap 软封顶，
+        保证关联记忆分不会过低也不会压过 batch 1 原生命中。
+
+        打分量 = Σ_{e∈E_u} idf(df_e)，df_e = len(er.linked_memory_ids) 是该实体
+        关联的记忆数（真正的文档频率，user-scope 内）。方向修正：多实体命中 →
+        Σ 累加 → 提权（原 decay 用查询命中数 qh 反向衰减是错的）；高频泛化实体
+        df 大 → idf 小 → 抑制（检视者例子：A 关联 1000 条，单实体 idf≈0.145）。
+        idf(df)=1/log(1+df)。
+
+        生产过滤先于 top_k（S04:40 不变量）：entity_store 只存 unit_id，无
+        lifecycle/time/scalar，无法反查时下推过滤。但点读真源可后移——先按 IDF
+        相关性预筛到 _ENTITY_EXPANSION_TOP_K（纯内存，无 IO），再点读这 ≤N 个
+        真源做 is_retrieval_candidate 过滤。预筛的是相关性、非有效性；有效性过滤
+        仍守在召回契约 top_k 之前。反查拉回的全部 id（最坏上千）→ 点读压到 ≤N。
+
+        无效候选（SUPERSEDED/expired/不满足 scalar_filters）若挤进预筛 N，过滤
+        后被剔，名单缩水但仍守 top_k 契约——这是容量与假阴性的折中：N=20 让
+        高频实体的海量候选先被 IDF 压相关分排到 N 外，再点读，IO 与召回质量平衡。
         """
         if self._entity_store is None or self._layer != "l2" or not batch1:
             return []
@@ -138,34 +167,70 @@ class KeywordRecaller(Recaller):
             logger.warning("entity_expansion_lookup_failed space_id=%s", space_id, exc_info=True)
             return []
 
-        # 关联 unit_id → 命中次数（同一 unit 被多个 entity 关联，count 越多衰减越快）
-        linked_counts: dict[str, int] = {}
+        # 聚合：unit_id → Σ idf(df_e)。df 用 EntityRecord.linked_memory_ids 全长
+        # （实体固有属性，不因 batch1 命中浮动）。batch1 已命中 id 不扩展（MaxP 归并）。
         batch1_ids = {u.unit_id for u in batch1}
+        raw_contrib: dict[str, float] = defaultdict(float)
         for er in entity_records:
+            df = len(er.linked_memory_ids)
+            if df <= 0:
+                continue
+            weight = 1.0 / math.log(1.0 + df)  # idf(df): df=1→1.44, df=10→0.42, df=1000→0.145
             for uid in er.linked_memory_ids:
                 if uid in batch1_ids:
-                    continue  # batch 1 已命中，不再扩展（避免重复）
-                linked_counts[uid] = linked_counts.get(uid, 0) + 1
-        if not linked_counts:
+                    continue
+                raw_contrib[uid] += weight
+        if not raw_contrib:
             return []
 
-        # 中位数锚定打分（rank-based，与 RRF 口径一致——fuser 只看 rank 不看绝对分）
+        # 中位数锚定（rank-based，与 RRF 口径一致——fuser 只看 rank 不看绝对分）。
         scores = [u.score for u in batch1]
         if len(scores) >= 3:
             anchor = median(scores)
         else:
             anchor = (max(scores) if scores else 0.0) * 0.5  # batch1<3 fallback
+        if anchor <= 0.0:
+            return []
+        # cap = max/anchor ≥ 1：保证 score=anchor×min(raw,cap) ≤ anchor×cap = max(batch1)，
+        # 严格不压过 batch1 最高分。max==anchor（batch1<3 时 max×0.5=anchor）退化为 cap=2.0。
+        cap = (max(scores) / anchor) if scores and anchor > 0 else 1.0
+
+        # 按 raw 相关分预筛到 _ENTITY_EXPANSION_TOP_K（纯内存，无 IO），再点读真源
+        # 做生产过滤。点读量从"反查全部 id"压到 ≤ N=20。
+        ranked = sorted(raw_contrib.items(), key=lambda kv: kv[1], reverse=True)
+        top_n = ranked[:_ENTITY_EXPANSION_TOP_K]
+        candidate_ids = [uid for uid, _ in top_n]
+
+        units = {
+            u.id: u
+            for u in self._storage.get(scope, candidate_ids)
+        }
+        eligible = [
+            (uid, raw)
+            for uid, raw in top_n
+            if uid in units
+            and is_retrieval_candidate(
+                units[uid],
+                as_of=query.as_of,
+                time_from=query.time_from,
+                time_to=query.time_to,
+                filters=query.scalar_filters,
+                include_archived=query.include_archived,
+            )
+        ]
+        if not eligible:
+            return []
 
         batch2: list[ScoredUnit] = []
-        for uid, count in linked_counts.items():
-            decay = 1.0 / (1.0 + _ENTITY_DECAY_FACTOR * (count - 1) ** 2)
+        for uid, raw in eligible:
+            boost = min(raw, cap)
             batch2.append(ScoredUnit(
                 unit_id=uid,
-                score=anchor * decay,
+                score=anchor * boost,
                 channel=RecallChannel.KEYWORD,
             ))
         batch2.sort(key=lambda u: u.score, reverse=True)
-        return batch2[:_ENTITY_EXPANSION_TOP_K]
+        return batch2
 
     @staticmethod
     def _entity_list_limit(hash_count: int) -> int:
@@ -174,7 +239,10 @@ class KeywordRecaller(Recaller):
 
     @staticmethod
     def _merge_maxp(batch1: list[ScoredUnit], batch2: list[ScoredUnit]) -> list[ScoredUnit]:
-        """同 unit_id 取 MaxP，按分降序。batch 1 已排除 batch 2 的重复 id，直接拼。"""
+        """同 unit_id 取 MaxP，按分降序合并 batch 1/2。不负责 top_k 截断——
+        截断是 recall 对 ``Recaller.recall`` 契约（≤ top_k）的承诺，在 recall
+        里切。batch 1 已排除 batch 2 的重复 id，直接拼即可保证 MaxP。
+        """
         merged = list(batch1) + list(batch2)
         merged.sort(key=lambda u: u.score, reverse=True)
         return merged
