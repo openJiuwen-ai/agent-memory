@@ -444,18 +444,20 @@ class MemMetaManager:
     # ============================================================
 
     async def get_expired_memorys(
-        self, limit: int = 10, min_expired: int = 0
+        self,
+        inactive_days_threshold: int = 30,
+        limit: int = 10,
+        min_expired_count: int = 0,
     ) -> dict:
         """查询过期用户 Top N。
 
-        SELECT from av_user_stats WHERE expired_30d_count > min_expired
-        ORDER BY expired_30d_count DESC LIMIT N。
-        全局指标从 av_user_stats 聚合（不依赖 global_summary）。
+        inactive_days_threshold == 30: 走 av_user_stats 快表查询（快）
+        inactive_days_threshold != 30: 走 KV 实时扫描（慢但准确）
         """
+        # 查询最新 refresh 任务状态
         conn = sqlite3.connect(self.db_path)
         cur = conn.cursor()
         try:
-            # 查询最新 refresh 任务状态
             cur.execute(
                 "SELECT task_id, status FROM mem_meta_task "
                 "WHERE task_type='refresh_meta' "
@@ -465,47 +467,120 @@ class MemMetaManager:
             task_id = task_row[0] if task_row else None
             task_status = task_row[1] if task_row else "none"
 
-            # 从 av_user_stats 聚合全局指标
-            cur.execute("SELECT COUNT(*) FROM av_user_stats")
-            total_users = cur.fetchone()[0]
-            cur.execute(
-                "SELECT COALESCE(SUM(expired_30d_count), 0) FROM av_user_stats"
-            )
-            total_expired_30d = cur.fetchone()[0]
-            cur.execute(
-                "SELECT COUNT(*) FROM av_user_stats WHERE expired_30d_count > 0"
-            )
-            users_with_expired = cur.fetchone()[0]
+            if inactive_days_threshold == 30:
+                # === 快表路径：直接查 av_user_stats ===
+                cur.execute("SELECT COUNT(*) FROM av_user_stats")
+                total_users = cur.fetchone()[0]
+                cur.execute(
+                    "SELECT COALESCE(SUM(expired_30d_count), 0) FROM av_user_stats"
+                )
+                total_expired_30d = cur.fetchone()[0]
+                cur.execute(
+                    "SELECT COUNT(*) FROM av_user_stats WHERE expired_30d_count > 0"
+                )
+                users_with_expired = cur.fetchone()[0]
 
-            # 查询 Top N 用户
-            cur.execute(
-                "SELECT scope_user, total_count, superseded_count, "
-                "expired_30d_count, updated_at "
-                "FROM av_user_stats WHERE expired_30d_count > ? "
-                "ORDER BY expired_30d_count DESC LIMIT ?",
-                (min_expired, limit),
-            )
-            users = [
-                {
-                    "scope_user": r[0],
-                    "total_count": r[1],
-                    "superseded_count": r[2],
-                    "expired_30d_count": r[3],
-                    "updated_at": r[4],
-                }
-                for r in cur.fetchall()
-            ]
-            return {
-                "status": "scanning" if task_status == "running" else "success",
-                "task_id": task_id,
-                "task_status": task_status,
-                "total_users": total_users,
-                "total_expired_30d": total_expired_30d,
-                "users_with_expired": users_with_expired,
-                "top_users": users,
-            }
+                cur.execute(
+                    "SELECT scope_user, total_count, active_count, superseded_count, "
+                    "expired_30d_count, expired_all_count, "
+                    "tier_episodic, tier_semantic, tier_other, updated_at "
+                    "FROM av_user_stats WHERE expired_30d_count >= ? "
+                    "ORDER BY expired_30d_count DESC LIMIT ?",
+                    (min_expired_count, limit),
+                )
+                users = [
+                    {
+                        "scope_user": r[0],
+                        "total_count": r[1],
+                        "active_count": r[2],
+                        "superseded_count": r[3],
+                        "expired_30d_count": r[4],
+                        "expired_all_count": r[5],
+                        "tier_episodic": r[6],
+                        "tier_semantic": r[7],
+                        "tier_other": r[8],
+                        "updated_at": r[9],
+                    }
+                    for r in cur.fetchall()
+                ]
+            else:
+                # === 实时扫描路径：遍历 KV 统计 blacklisted 记忆 ===
+                users = await self._scan_expired_users_realtime(
+                    inactive_days_threshold, limit, min_expired_count
+                )
+                total_users = len(users)
+                total_expired_30d = sum(u["expired_30d_count"] for u in users)
+                users_with_expired = sum(1 for u in users if u["expired_30d_count"] > 0)
         finally:
             conn.close()
+
+        return {
+            "status": "scanning" if task_status == "running" else "success",
+            "task_id": task_id,
+            "task_status": task_status,
+            "inactive_days_threshold": inactive_days_threshold,
+            "total_users": total_users,
+            "total_expired_30d": total_expired_30d,
+            "users_with_expired": users_with_expired,
+            "top_users": users,
+        }
+
+    async def _scan_expired_users_realtime(
+        self,
+        inactive_days_threshold: int,
+        limit: int,
+        min_expired_count: int,
+    ) -> list[dict]:
+        """实时扫描 KV，统计每个用户的 blacklisted 记忆数。
+
+        遍历所有 (user, scope) 对 → list_memories_with_total
+        → 过滤 blacklisted → 按不活跃天数过滤 → 排序取 Top N。
+
+        性能较慢，仅在 inactive_days_threshold != 30 时使用。
+        """
+        engine = self.engine
+        if engine is None or engine.memory_index is None:
+            return []
+
+        memory_index = engine.memory_index
+        all_scopes = await memory_index.list_user_scopes()
+
+        # 按用户聚合统计
+        user_stats: dict[str, dict] = {}
+        for user_id, scope_id in all_scopes:
+            try:
+                docs, total = await memory_index.list_memories_with_total(
+                    user_id, scope_id, offset=0, limit=10**9,
+                )
+                blacklisted_count = sum(1 for d in docs if d.blacklisted)
+                if blacklisted_count == 0:
+                    continue
+
+                if user_id not in user_stats:
+                    user_stats[user_id] = {
+                        "scope_user": user_id,
+                        "total_count": 0,
+                        "active_count": 0,
+                        "superseded_count": 0,
+                        "expired_30d_count": 0,
+                        "expired_all_count": 0,
+                    }
+                s = user_stats[user_id]
+                s["total_count"] += total
+                s["active_count"] += sum(1 for d in docs if not d.blacklisted)
+                s["superseded_count"] += blacklisted_count
+                s["expired_30d_count"] += blacklisted_count
+                s["expired_all_count"] += blacklisted_count
+            except Exception:
+                continue
+
+        # 过滤 + 排序 + 取 Top N
+        result = [
+            u for u in user_stats.values()
+            if u["expired_30d_count"] >= min_expired_count
+        ]
+        result.sort(key=lambda x: x["expired_30d_count"], reverse=True)
+        return result[:limit]
 
     # ============================================================
     # 接口 3: batch_delete（异步批量删除）
@@ -515,6 +590,9 @@ class MemMetaManager:
         self,
         user_ids: list[str] | None = None,
         all_expired: bool = False,
+        inactive_days_threshold: int = 30,
+        scope_id: str | None = None,
+        cleanup_retrieve_history: bool = True,
         dry_run: bool = False,
     ) -> dict:
         """提交批量删除任务。
@@ -549,11 +627,21 @@ class MemMetaManager:
 
         task_id = self._create_task(
             "batch_delete",
-            request_params={"user_ids": user_ids, "dry_run": dry_run},
+            request_params={
+                "user_ids": user_ids,
+                "all_expired": all_expired,
+                "inactive_days_threshold": inactive_days_threshold,
+                "scope_id": scope_id,
+                "cleanup_retrieve_history": cleanup_retrieve_history,
+                "dry_run": dry_run,
+            },
             total_users=len(user_ids),
         )
         self._create_background_task(
-            self._run_batch_delete(task_id, user_ids, dry_run)
+            self._run_batch_delete(
+                task_id, user_ids, inactive_days_threshold,
+                all_expired, scope_id, cleanup_retrieve_history, dry_run,
+            )
         )
         return {
             "status": "accepted",
@@ -564,58 +652,180 @@ class MemMetaManager:
         }
 
     async def _run_batch_delete(
-        self, task_id: str, user_ids: list[str], dry_run: bool
+        self,
+        task_id: str,
+        user_ids: list[str],
+        inactive_days_threshold: int = 30,
+        all_expired: bool = False,
+        scope_id: str | None = None,
+        cleanup_retrieve_history: bool = True,
+        dry_run: bool = False,
     ) -> None:
-        """后台执行: 逐用户 Milvus delete(filter superseded+t_invalid<cutoff)
-        → UPDATE av_user_stats → UPDATE task 进度。
+        """后台执行: 通过内核 SimpleMemoryIndex 精准删除 blacklisted=True 的过期记忆。
+
+        逐用户遍历所有 scope → list_memories_with_total → 过滤 blacklisted
+        → delete_memories(user_id, scope_id, mem_ids) 同步删 KV+Milvus
+        → 更新 task 进度。
         """
         self._update_task(
             task_id, status="running", started_at=_now_str()
         )
         try:
-            from pymilvus import MilvusClient
+            # ★ 前置校验: 检查 refresh 任务是否在运行 ★
+            conn = sqlite3.connect(self.db_path)
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT task_id FROM mem_meta_task "
+                "WHERE task_type='refresh_meta' AND status IN ('pending', 'running') "
+                "LIMIT 1"
+            )
+            running_refresh = cur.fetchone()
+            conn.close()
+            if running_refresh:
+                self._update_task(
+                    task_id,
+                    status="failed",
+                    finished_at=_now_str(),
+                    error_message=(
+                        f"refresh_meta task {running_refresh[0]} is still running, "
+                        "batch_delete skipped"
+                    ),
+                )
+                return
 
-            c = MilvusClient(uri=self.milvus_uri)
-            now_ms = int(time.time() * 1000)
-            cutoff = now_ms - (30 * 24 * 60 * 60 * 1000)
+            engine = self.engine
+            if engine is None or engine.memory_index is None:
+                self._update_task(
+                    task_id,
+                    status="failed",
+                    finished_at=_now_str(),
+                    error_message="memory_engine or memory_index is None",
+                )
+                return
+
+            memory_index = engine.memory_index
+            kv_store = engine.kv_store
+
+            from jiuwen_memory.memory_core.common.distributed_lock import DistributedLock
 
             processed = 0
             deleted_total = 0
             failed = 0
+            details: list[dict] = []
 
             for user_id in user_ids:
+                user_result: dict = {
+                    "user_id": user_id,
+                    "total_deleted": 0,
+                    "scopes_affected": 0,
+                    "status": "success",
+                    "error": None,
+                }
                 try:
-                    filter_expr = (
-                        f'scope_user == "{user_id}" '
-                        f'and metadata["lifecycle"] == "superseded" '
-                        f'and metadata["t_invalid"] < {cutoff}'
-                    )
-                    rows = c.query(
-                        COLLECTION,
-                        filter=filter_expr,
-                        output_fields=["id"],
-                        limit=16384,
-                    )
-                    count = len(rows)
-                    if not dry_run and count > 0:
-                        c.delete(COLLECTION, filter=filter_expr)
-                        c.flush([COLLECTION])
-                        # 更新 av_user_stats
-                        conn = sqlite3.connect(self.db_path)
-                        cur = conn.cursor()
-                        now_str = _now_str()
-                        cur.execute(
-                            "UPDATE av_user_stats SET "
-                            "  total_count = total_count - ?, "
-                            "  superseded_count = superseded_count - ?, "
-                            "  expired_30d_count = 0, "
-                            "  updated_at = ? "
-                            "WHERE scope_user = ?",
-                            (count, count, now_str, user_id),
-                        )
-                        conn.commit()
-                        conn.close()
-                    deleted_total += count
+                    async with DistributedLock(kv_store, f"user/{user_id}"):
+                        # ★ 不活跃天数校验 (all_expired=true 时跳过) ★
+                        if not all_expired:
+                            if inactive_days_threshold == 30:
+                                # === 快表路径：查 av_user_stats ===
+                                conn = sqlite3.connect(self.db_path)
+                                cur = conn.cursor()
+                                cur.execute(
+                                    "SELECT MAX(expired_30d_count) FROM av_user_stats "
+                                    "WHERE scope_user = ?",
+                                    (user_id,),
+                                )
+                                row = cur.fetchone()
+                                conn.close()
+                                if row is None or row[0] is None:
+                                    user_result["status"] = "skipped"
+                                    user_result["error"] = (
+                                        "not found in av_user_stats, skipped"
+                                    )
+                                    details.append(user_result)
+                                    failed += 1
+                                    self._update_task(
+                                        task_id,
+                                        failed_count=failed,
+                                        processed_users=processed + 1,
+                                    )
+                                    processed += 1
+                                    continue
+                                if row[0] == 0:
+                                    user_result["status"] = "skipped"
+                                    user_result["error"] = (
+                                        f"expired_30d_count=0, no expired memories"
+                                    )
+                                    details.append(user_result)
+                                    processed += 1
+                                    self._update_task(
+                                        task_id,
+                                        processed_users=processed,
+                                    )
+                                    continue
+                            else:
+                                # === 实时扫描路径：不查快表，直接遍历 scope 删 ===
+                                # inactive_days_threshold != 30 时，
+                                # 快表数据（固定30天阈值）不适用，
+                                # 跳过校验，直接进入下面的遍历 scope 删除逻辑
+                                pass
+
+                        # 发现该用户所有 scope
+                        if scope_id:
+                            scopes = [(user_id, scope_id)]
+                        else:
+                            all_scopes = await memory_index.list_user_scopes()
+                            scopes = [
+                                (u, s) for (u, s) in all_scopes if u == user_id
+                            ]
+
+                        user_deleted = 0
+                        for uid, sid in scopes:
+                            try:
+                                # 获取全部记忆
+                                docs, total = (
+                                    await memory_index.list_memories_with_total(
+                                        uid, sid,
+                                        offset=0, limit=10**9,
+                                    )
+                                )
+                                # 过滤 blacklisted == True
+                                expired_mem_ids = [
+                                    d.id for d in docs if d.blacklisted
+                                ]
+                                if not expired_mem_ids:
+                                    continue
+
+                                if dry_run:
+                                    user_deleted += len(expired_mem_ids)
+                                    user_result["scopes_affected"] += 1
+                                    continue
+
+                                # 精准删除: KV + Milvus 同步删
+                                await memory_index.delete_memories(
+                                    uid, sid, expired_mem_ids
+                                )
+
+                                # 清理 retrieve_history
+                                if cleanup_retrieve_history and kv_store:
+                                    for mid in expired_mem_ids:
+                                        rh_key = (
+                                            f"retrieve_history"
+                                            f"/{uid}/{sid}/{mid}"
+                                        )
+                                        try:
+                                            await kv_store.delete(rh_key)
+                                        except Exception:
+                                            pass  # 检索历史清理失败不影响主流程
+
+                                user_deleted += len(expired_mem_ids)
+                                user_result["scopes_affected"] += 1
+                            except Exception as e:
+                                user_result["status"] = "partial_failed"
+                                user_result["error"] = str(e)[:300]
+
+                        user_result["total_deleted"] = user_deleted
+                        deleted_total += user_deleted
+
                     processed += 1
                     self._update_task(
                         task_id,
@@ -624,13 +834,15 @@ class MemMetaManager:
                     )
                 except Exception as e:
                     failed += 1
+                    user_result["status"] = "failed"
+                    user_result["error"] = str(e)[:300]
                     self._update_task(
                         task_id,
                         failed_count=failed,
                         error_message=str(e)[:500],
                     )
 
-            c.close()
+                details.append(user_result)
 
             # 最终状态判断
             if failed == 0:
@@ -649,6 +861,7 @@ class MemMetaManager:
                         "deleted": deleted_total,
                         "failed": failed,
                         "dry_run": dry_run,
+                        "details": details,
                     },
                     ensure_ascii=False,
                 ),

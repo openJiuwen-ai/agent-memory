@@ -43,8 +43,9 @@ class ExpiredMemorysRequest(BaseModel):
     """查询过期用户 Top N 请求"""
     model_config = ConfigDict(extra="forbid")
 
+    inactive_days_threshold: int = Field(default=30, ge=1, le=365)  # 不活跃天数阈值
     limit: int = Field(default=10, ge=1, le=100)  # 返回 Top N，默认 10
-    min_expired: int = Field(default=0, ge=0)  # 最小过期数过滤
+    min_expired_count: int = Field(default=0, ge=0)  # 最小过期记忆数过滤
 
 
 class BatchDeleteRequest(BaseModel):
@@ -52,7 +53,10 @@ class BatchDeleteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     user_ids: Optional[List[str]] = None  # 指定用户列表
-    all_expired: bool = False  # true=删除所有过期用户
+    all_expired: bool = False  # true=删除所有过期用户（无视 inactive_days_threshold）
+    inactive_days_threshold: int = Field(default=30, ge=1, le=365)  # 不活跃天数阈值，删除前二次校验
+    scope_id: Optional[str] = None  # 可选，限定只处理该 scope
+    cleanup_retrieve_history: bool = True  # 是否清理检索历史
     dry_run: bool = False  # true=只统计不删除
 
 
@@ -112,7 +116,8 @@ async def refresh_meta(req: RefreshRequest):
 async def get_expired_memorys(req: ExpiredMemorysRequest):
     """2. 查询过期用户 Top N（同步查询）"""
     return await _manager.get_expired_memorys(
-        limit=req.limit, min_expired=req.min_expired
+        inactive_days_threshold=req.inactive_days_threshold,
+        limit=req.limit, min_expired_count=req.min_expired_count
     )
 
 
@@ -127,6 +132,9 @@ async def batch_delete(req: BatchDeleteRequest):
     result = await _manager.submit_batch_delete(
         user_ids=req.user_ids,
         all_expired=req.all_expired,
+        inactive_days_threshold=req.inactive_days_threshold,
+        scope_id=req.scope_id,
+        cleanup_retrieve_history=req.cleanup_retrieve_history,
         dry_run=req.dry_run,
     )
     if result.get("status") == "accepted":
