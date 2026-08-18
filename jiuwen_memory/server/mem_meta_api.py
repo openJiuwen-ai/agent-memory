@@ -12,7 +12,7 @@
 """
 import asyncio
 import json
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # 模块级 manager 引用 — 由 register_mem_meta_endpoints() 注入
 # ============================================================
 _manager = None
+_background_tasks: set = set()
 
 # ============================================================
 # APIRouter
@@ -52,7 +53,7 @@ class BatchDeleteRequest(BaseModel):
     """批量删除请求"""
     model_config = ConfigDict(extra="forbid")
 
-    user_ids: Optional[List[str]] = None  # 指定用户列表
+    user_ids: Optional[list[str]] = None  # 指定用户列表
     all_expired: bool = False  # true=删除所有过期用户（无视 inactive_days_threshold）
     inactive_days_threshold: int = Field(default=30, ge=1, le=365)  # 不活跃天数阈值，删除前二次校验
     scope_id: Optional[str] = None  # 可选，限定只处理该 scope
@@ -86,7 +87,9 @@ def register_mem_meta_endpoints(
     # 启动时清理僵尸任务（忽略事件循环不可用的情况）
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(_manager.cleanup_zombie_tasks())
+        task = loop.create_task(_manager.cleanup_zombie_tasks())
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
     except RuntimeError:
         # 无运行中事件循环时跳过
         pass
