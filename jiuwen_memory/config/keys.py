@@ -22,6 +22,8 @@ NS_FULLTEXT_STORE = "fulltext_store"
 NS_GRAPH_STORE = "graph_store"
 NS_FUSION_STORE = "fusion_store"
 NS_FS_STORE = "fs_store"
+# 统一 Storage 命名空间（F02 RoutingStorage；与底层 *_store 命名空间分层）
+NS_STORAGE = "storage"
 
 # 晚绑定字段名
 FIELD_ACTIVE = "active"

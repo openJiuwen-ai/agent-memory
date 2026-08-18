@@ -138,6 +138,13 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
     调用 Store Producer 解析具名后端。
 13. 连接型后端须支持 ConfigSource 晚绑定（S08 / F01 §2.1.4）：在取客户端/连接路径
     `fetch` 对应 key，值变化则重建连接（同实现换 Redis URL / db_path 走此路径，不必多实例）。
-    异质 `*.active` 切换由 `config.routing.Routing*Store`
-    门面承担（产品手工注入，不改默认拓扑）。
+    异质 Store 级 `*.active` 切换由 `config.routing.Routing*Store` 承担（F01）；
+    多套完整 `Storage` 实例的动态选用由 `config.routing.RoutingStorage` + `storage.active`
+    承担（F02）。二者均为产品手工注入（方案 A），不改默认拓扑、不注册内置 `target: routing`。
+
+14. **上层握共享 `Storage` 入口，勿构造期握死某一实例的裸端口**
+    Engine / Retriever / IndexBuilder / Recaller 共享的 `storage.default` 可以是
+    `RoutingStorage`。`RoutingStorage` 的 `.kv`/`.vector`/… 与 `*_port` 返回惰性代理，
+    使构造期 `self._vector = storage.vector` 仍随 `storage.active` 重解析。EncryptedKV
+    为 F04 opt-in，只包在各预装实例内部 KV（若启用），不在 `RoutingStorage` 外包一层。
 

@@ -4,9 +4,9 @@
 
 | 项 | 值 |
 |---|---|
-| 关联模块 | `src/config/` |
-| 最近一次修订日期 | 2026-08-12 |
-| 关联特性文档 | `docs/features/config/F01-config-source.md` |
+| 关联模块 | `jiuwen_memory/config/` |
+| 最近一次修订日期 | 2026-08-18 |
+| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md` |
 
 ## 范围 / 边界
 
@@ -24,7 +24,8 @@
 - 不承载调用级业务 options（见 S02 `Context.extensions` / 方法参数）
 - 不做 Store 数据迁移、向量索引重建
 - 不规定产品配置中心的推送/TTL/缓存失效运维接口（实现方可自管缓存，首版契约不要求 invalidate）
-- **不**提供 `storage.active` / 运行时拆换整个 `CompositeStorage`（整包拓扑热切换）；异质切换落在各 `*_store.active` + `Routing*Store`（方案 A），详见 F01 §2.1.5
+- **不**在未使用 `RoutingStorage` 时原地拆换同一 `CompositeStorage` 内部端口拓扑；Store 级异质切换落在各 `*_store.active` + `Routing*Store`（方案 A，F01 §2.1.5）
+- **允许**装配期预装多套完整 `Storage`，经 `RoutingStorage` + `storage.active` 动态选用（F02，已落地）；**禁止**把「同实现换连接 / 只换某一 Store」误做成多套 `Storage` + `storage.active`
 
 ## 不变量
 
@@ -53,7 +54,7 @@
 
 ### ConfigSource（新增）
 
-逻辑契约（模块路径以实现为准，建议落在 `src/config/`）：
+逻辑契约（模块路径以实现为准，落在 `jiuwen_memory/config/`）：
 
 ```text
 ConfigSource
@@ -87,6 +88,7 @@ ConfigSource
 | Graph | `graph_store.working_dir` | `graph_store.active` |
 | Fusion | `fusion_store.uri`、`fusion_store.working_dir` | `fusion_store.active` |
 | FS | `fs_store.root` | `fs_store.active` |
+| Storage 实例选用（F02） | — | `storage.active`（仅当 `storage.default` 为 `RoutingStorage`） |
 
 说明：
 
@@ -117,14 +119,16 @@ ConfigSource
 
 ### 与统一 Storage（CompositeStorage）的关系
 
-- `storage.default`（通常 `composite`）是 Kernel / Retriever 共享的统一门面；下层端口引用
-  `kv_store` / `vector_store` / … 具名实例。
-- ConfigSource 的 Store 改值 / `*_store.active` 作用于**端口背后的 Store**（含产品注入的
-  `Routing*Store`），不是 `storage.active`。
-- `build_kernel` 强制：`kv_store.default` 若非已加密则外包 `EncryptedKVStore`；故
-  `RoutingKVStore` 须作为 **raw** 被包在加密层之内。
-- 接线真值表、用户 A（同实例改 `kv_store.url` + `pgvector→milvus` Routing）装配示意见
-  `docs/features/config/F01-config-source.md` 决策 2.1.5；同实现换 Redis **不**走 `RoutingKVStore`。
+- `storage.default` 是 Kernel / Retriever 共享的统一入口：可以是单套 `composite`，也可以是
+  产品注入的 `RoutingStorage`（F02）；下层端口仍引用各预装实例内的 `kv_store` / `vector_store` / …。
+- **Store 级**：ConfigSource 的连接改值 / `*_store.active` 作用于**端口背后的 Store**（含
+  `Routing*Store`，F01）。
+- **Storage 级**：`storage.active` 仅当 `storage.default` 为 `RoutingStorage` 时，在已预装的完整
+  `Storage` 实例间选用（F02）；二者诉求不同，勿混用。
+- **EncryptedKV 为 F04 opt-in**（`258f398` 起）：`build_kernel` **不再**默认外包加密层；
+  产品以 `kv_store.*.target=encrypted`（或等价）显式启用。启用时 `RoutingKVStore` 必须作为
+  **raw** 包在 `EncryptedKVStore` 之内，禁止 Routing 包在加密层外。
+- Store 级接线真值表见 F01 §2.1.5；Storage 实例动态配置见 F02。
 
 ### 与业务 API 的关系
 
@@ -155,5 +159,5 @@ ConfigSource
 | S05-construction | PromptRegistry / Evolver / IndexBuilder 消费 fetch |
 | S04-retrieval | 能力开关与 rerank/embedder 晚绑定 |
 | S06-storage | `storage` 选择统一实现，Store 命名空间配置其下层端口；连接/`active` 晚绑定不做迁移 |
-| S07-common | 插件实现与 Factory 注册；配置数据在 `src/config` |
+| S07-common | 插件实现与 Factory 注册；配置数据在 `jiuwen_memory/config` |
 | architecture.md §13 | 可配置化分层与落点 |
