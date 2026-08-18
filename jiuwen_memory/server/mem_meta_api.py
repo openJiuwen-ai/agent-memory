@@ -58,6 +58,7 @@ class BatchDeleteRequest(BaseModel):
     scope_id: Optional[str] = None  # 可选，限定只处理该 scope
     cleanup_retrieve_history: bool = True  # 是否清理检索历史
     dry_run: bool = False  # true=只统计不删除
+    force: bool = False  # true=跳过冷却检查强制执行
 
 
 # ============================================================
@@ -136,6 +137,7 @@ async def batch_delete(req: BatchDeleteRequest):
         scope_id=req.scope_id,
         cleanup_retrieve_history=req.cleanup_retrieve_history,
         dry_run=req.dry_run,
+        force=req.force,
     )
     if result.get("status") == "accepted":
         return Response(
