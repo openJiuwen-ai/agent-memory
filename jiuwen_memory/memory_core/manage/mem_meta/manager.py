@@ -697,6 +697,7 @@ class MemMetaManager:
             processed = 0
             deleted_total = 0
             failed = 0
+            skipped = 0
             details: list[dict] = []
 
             for user_id in user_ids:
@@ -728,10 +729,12 @@ class MemMetaManager:
                                         "expired_30d_count=0, no expired memories"
                                     )
                                     details.append(user_result)
+                                    skipped += 1
                                     processed += 1
                                     await self._update_task(
                                         task_id,
                                         processed_users=processed,
+                                        failed_count=failed,
                                     )
                                     continue
                                 # row is None（用户不在快表中）或 row[0] > 0：
@@ -877,6 +880,7 @@ class MemMetaManager:
                         "processed": processed,
                         "deleted": deleted_total,
                         "failed": failed,
+                        "skipped": skipped,
                         "dry_run": dry_run,
                         "details": details,
                     },
