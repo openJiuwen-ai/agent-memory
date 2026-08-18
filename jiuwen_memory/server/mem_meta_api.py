@@ -68,23 +68,20 @@ class BatchDeleteRequest(BaseModel):
 def register_mem_meta_endpoints(
     app,
     memory_engine=None,
-    milvus_uri: str = "http://localhost:8530",
-    db_path: str = "/tmp/milvus_memory_metadata.db",
+    db_store=None,
 ):
     """注册批量删除管理端点到 FastAPI app。
 
     参数:
       app: FastAPI 应用实例
-      memory_engine: LongTermMemory 单例（可选，用于复用内核能力）
-      milvus_uri: Milvus 连接地址
-      db_path: SQLite 元数据库路径
+      memory_engine: LongTermMemory 单例（用于复用内核能力）
+      db_store: BaseDbStore 实例（适配 SQLite/GaussDB/PostgreSQL）
     """
     global _manager
     from jiuwen_memory.memory_core.manage.mem_meta.manager import MemMetaManager
     _manager = MemMetaManager(
         memory_engine=memory_engine,
-        milvus_uri=milvus_uri,
-        db_path=db_path,
+        db_store=db_store,
     )
     # 启动时清理僵尸任务（忽略事件循环不可用的情况）
     try:
