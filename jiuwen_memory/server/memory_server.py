@@ -533,6 +533,9 @@ async def startup_event():
         memory_logger.error("Error initializing memory engine: %s", str(e))
         raise
 
+    # 延迟注册批量删除管理端点（需要 db_store 已初始化）
+    _register_mem_meta()
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -794,14 +797,20 @@ register_log_center_endpoints(
     memory_engine=memory_engine,
 )
 
-# 注册批量删除管理端点
-from jiuwen_memory.server.mem_meta_api import register_mem_meta_endpoints
-register_mem_meta_endpoints(
-    app,
-    memory_engine=memory_engine,
-    milvus_uri=os.getenv("VECTOR_MILVUS_URI", "http://localhost:8530"),
-    db_path=os.getenv("MEM_META_DB_PATH", "/tmp/milvus_memory_metadata.db"),
-)
+# 批量删除管理端点延迟到 startup_event 中注册（需要 db_store 先初始化）
+_mem_meta_registered = False
+
+def _register_mem_meta():
+    global _mem_meta_registered
+    if _mem_meta_registered:
+        return
+    from jiuwen_memory.server.mem_meta_api import register_mem_meta_endpoints
+    register_mem_meta_endpoints(
+        app,
+        memory_engine=memory_engine,
+        db_store=memory_engine.db_store if memory_engine else None,
+    )
+    _mem_meta_registered = True
 
 
 @app.post("/delete_mem_by_id/")

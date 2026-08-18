@@ -1,165 +1,139 @@
 # -*- coding: UTF-8 -*-
-"""MemMetaManager — Milvus 记忆元数据管理器
+"""MemMetaManager — 记忆元数据管理器
 
 职责:
-  1. 元数据刷新（扫描 Milvus agent_memory_vectors → 填充 av_user_stats）
-  2. 批量删除（逐用户删除过期记忆 → 更新 av_user_stats）
+  1. 元数据刷新（通过内核 SimpleMemoryIndex 扫描 uid_* collection → 填充 av_user_stats）
+  2. 批量删除（逐用户删除 blacklisted 过期记忆 → 更新 av_user_stats）
   3. 任务管理（创建/查询/防重/冷却/僵尸清理）
 
+通过内核 BaseDbStore 抽象层操作数据库，适配 SQLite / GaussDB / PostgreSQL。
 不建 global_summary 表，全局指标从 av_user_stats 聚合查询。
 """
 import asyncio
-import base64
 import json
-import os
-import sqlite3
-import time
 import uuid
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+
+from sqlalchemy import (
+    Column, Integer, String, Text, Index, MetaData, Table,
+    select, insert, update, delete, func, text, and_,
+)
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 # ============================================================
 # 配置常量
 # ============================================================
 
-MILVUS_URI = "http://localhost:8530"
-COLLECTION = "agent_memory_vectors"
-SENTINEL = 253402300799000  # 9999-12-31 哨兵值（active 记录的 t_invalid）
 COOLDOWN_SECONDS = 300  # 5 分钟冷却
-DB_PATH = "/tmp/milvus_memory_metadata.db"
 
-# av_user_stats 表列（11 列）
-AV_USER_STATS_COLS = [
-    "scope_user", "total_count", "active_count", "superseded_count",
-    "expired_30d_count", "expired_all_count",
-    "tier_episodic", "tier_semantic", "tier_other",
-    "created_at", "updated_at",
-]
+# ============================================================
+# ORM 模型定义（通过 SQLAlchemy 自动适配不同数据库方言）
+# ============================================================
 
-# mem_meta_task 表列（14 列）
-MEM_META_TASK_COLS = [
-    "task_id", "task_type", "status", "request_params", "result_summary",
-    "error_message", "total_users", "processed_users", "deleted_count",
-    "failed_count", "created_at", "updated_at", "started_at", "finished_at",
-]
+_metadata = MetaData()
 
-# _create_task 插入的列子集
-_TASK_INSERT_COLS = [
-    "task_id", "task_type", "status", "request_params",
-    "total_users", "created_at", "updated_at",
-]
+av_user_stats_table = Table(
+    "av_user_stats", _metadata,
+    Column("scope_user", String, primary_key=True),
+    Column("total_count", Integer, nullable=False),
+    Column("active_count", Integer, nullable=False),
+    Column("superseded_count", Integer, nullable=False),
+    Column("expired_30d_count", Integer, nullable=False),
+    Column("expired_all_count", Integer, nullable=False),
+    Column("tier_episodic", Integer, default=0),
+    Column("tier_semantic", Integer, default=0),
+    Column("tier_other", Integer, default=0),
+    Column("created_at", String, nullable=False, default=text("datetime('now')")),
+    Column("updated_at", String, nullable=False, default=text("datetime('now')")),
+)
 
+mem_meta_task_table = Table(
+    "mem_meta_task", _metadata,
+    Column("task_id", String, primary_key=True),
+    Column("task_type", String, nullable=False),
+    Column("status", String, nullable=False, default="pending"),
+    Column("request_params", Text),
+    Column("result_summary", Text),
+    Column("error_message", Text),
+    Column("total_users", Integer, default=0),
+    Column("processed_users", Integer, default=0),
+    Column("deleted_count", Integer, default=0),
+    Column("failed_count", Integer, default=0),
+    Column("created_at", String, nullable=False, default=text("datetime('now')")),
+    Column("updated_at", String, nullable=False, default=text("datetime('now')")),
+    Column("started_at", String),
+    Column("finished_at", String),
+    Index("idx_task_status", "status"),
+    Index("idx_task_type_created", "task_type"),
+)
 
-def make_insert(table: str, columns: list[str]) -> str:
-    """程序化生成 INSERT SQL，避免占位符计数错误。
-
-    与 gen_metadata_db.py 中的辅助函数保持一致。
-    """
-    col_str = ",".join(columns)
-    ph_str = ",".join(["?"] * len(columns))
-    return f"INSERT INTO {table} ({col_str}) VALUES ({ph_str})"
-
-
-def _decode_metadata(meta: Any) -> dict:
-    """解码 Milvus metadata 字段（可能是 dict、base64 字符串或 JSON 字符串）。"""
-    if isinstance(meta, dict):
-        return meta
-    if isinstance(meta, str):
-        try:
-            return json.loads(base64.b64decode(meta).decode())
-        except Exception:
-            try:
-                return json.loads(meta)
-            except Exception:
-                return {}
-    return {}
+AV_USER_STATS_COLS = list(av_user_stats_table.columns.keys())
+MEM_META_TASK_COLS = list(mem_meta_task_table.columns.keys())
 
 
 def _now_str() -> str:
-    """返回当前 UTC 时间字符串（SQLite 兼容格式）。"""
+    """返回当前 UTC 时间字符串（数据库兼容格式）。"""
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
 
 class MemMetaManager:
-    """Milvus 记忆元数据管理器。
+    """记忆元数据管理器。
 
-    管理 SQLite 元数据库（av_user_stats + mem_meta_task），
+    通过内核 BaseDbStore 抽象层操作数据库（适配 SQLite / GaussDB / PostgreSQL），
     提供 refresh / batch_delete / task_status 等异步接口。
     """
 
     def __init__(
         self,
         memory_engine: Any = None,
-        milvus_uri: str = MILVUS_URI,
-        db_path: str = DB_PATH,
+        db_store: Any = None,
     ):
         self.engine = memory_engine
-        self.milvus_uri = milvus_uri
-        self.db_path = db_path
+        self.db_store = db_store
         # 防止 asyncio task 被 GC 回收
         self._background_tasks: set = set()
         self._init_db()
+
+    @property
+    def _engine(self) -> AsyncEngine:
+        """获取 SQLAlchemy AsyncEngine。"""
+        if self.db_store is None:
+            raise RuntimeError("db_store is None, cannot access database")
+        return self.db_store.get_async_engine()
 
     # ============================================================
     # 数据库初始化
     # ============================================================
 
     def _init_db(self) -> None:
-        """初始化 SQLite 数据库，建 2 张表（不建 global_summary）。"""
-        conn = sqlite3.connect(self.db_path)
-        cur = conn.cursor()
-        # 表1: av_user_stats（11 列）
-        cur.execute(
-            "CREATE TABLE IF NOT EXISTS av_user_stats ("
-            "  scope_user        TEXT PRIMARY KEY,"
-            "  total_count        INTEGER NOT NULL,"
-            "  active_count       INTEGER NOT NULL,"
-            "  superseded_count   INTEGER NOT NULL,"
-            "  expired_30d_count  INTEGER NOT NULL,"
-            "  expired_all_count  INTEGER NOT NULL,"
-            "  tier_episodic      INTEGER DEFAULT 0,"
-            "  tier_semantic      INTEGER DEFAULT 0,"
-            "  tier_other         INTEGER DEFAULT 0,"
-            "  created_at         TEXT NOT NULL DEFAULT (datetime('now')),"
-            "  updated_at         TEXT NOT NULL DEFAULT (datetime('now'))"
-            ")"
-        )
-        # 表2: mem_meta_task（14 列）
-        cur.execute(
-            "CREATE TABLE IF NOT EXISTS mem_meta_task ("
-            "  task_id          TEXT PRIMARY KEY,"
-            "  task_type         TEXT NOT NULL,"
-            "  status            TEXT NOT NULL DEFAULT 'pending',"
-            "  request_params    TEXT,"
-            "  result_summary    TEXT,"
-            "  error_message     TEXT,"
-            "  total_users       INTEGER DEFAULT 0,"
-            "  processed_users   INTEGER DEFAULT 0,"
-            "  deleted_count     INTEGER DEFAULT 0,"
-            "  failed_count      INTEGER DEFAULT 0,"
-            "  created_at        TEXT NOT NULL DEFAULT (datetime('now')),"
-            "  updated_at        TEXT NOT NULL DEFAULT (datetime('now')),"
-            "  started_at        TEXT,"
-            "  finished_at       TEXT"
-            ")"
-        )
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_task_status "
-            "ON mem_meta_task(status)"
-        )
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_task_type_created "
-            "ON mem_meta_task(task_type, created_at DESC)"
-        )
-        conn.commit()
-        conn.close()
+        """初始化数据库，建 2 张表。"""
+        if self.db_store is None:
+            return
+        # 同步建表（run_sync）
+        engine = self.db_store.get_async_engine()
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+            # 在运行中的事件循环里，用 create_task 延迟执行
+            loop.create_task(self._async_init_db())
+        except RuntimeError:
+            # 没有运行中的事件循环，直接同步建表
+            import sqlalchemy
+            with engine.begin() as conn:
+                _metadata.create_all(conn, checkfirst=True)
+
+    async def _async_init_db(self) -> None:
+        """异步建表。"""
+        async with self._engine.begin() as conn:
+            await conn.run_sync(_metadata.create_all, checkfirst=True)
 
     # ============================================================
     # 任务管理
     # ============================================================
 
-    def _check_task_guard(
+    async def _check_task_guard(
         self, task_type: str, force: bool = False
     ) -> dict | None:
         """防重检查：运行中任务 + 5 分钟冷却。
@@ -170,17 +144,16 @@ class MemMetaManager:
         if force:
             return None
 
-        conn = sqlite3.connect(self.db_path)
-        cur = conn.cursor()
-        try:
+        async with self._engine.begin() as conn:
             # 1. 检查运行中任务
-            cur.execute(
-                "SELECT task_id, status FROM mem_meta_task "
-                "WHERE task_type=? AND status='running' "
-                "ORDER BY created_at DESC LIMIT 1",
-                (task_type,),
+            result = await conn.execute(
+                select(mem_meta_task_table.c.task_id, mem_meta_task_table.c.status)
+                .where(mem_meta_task_table.c.task_type == task_type)
+                .where(mem_meta_task_table.c.status == "running")
+                .order_by(mem_meta_task_table.c.created_at.desc())
+                .limit(1)
             )
-            row = cur.fetchone()
+            row = result.fetchone()
             if row:
                 return {
                     "task_id": row[0],
@@ -189,12 +162,17 @@ class MemMetaManager:
                 }
 
             # 2. 检查冷却（最新任务距今 < COOLDOWN_SECONDS）
-            cur.execute(
-                "SELECT task_id, status, created_at FROM mem_meta_task "
-                "WHERE task_type=? ORDER BY created_at DESC LIMIT 1",
-                (task_type,),
+            result = await conn.execute(
+                select(
+                    mem_meta_task_table.c.task_id,
+                    mem_meta_task_table.c.status,
+                    mem_meta_task_table.c.created_at,
+                )
+                .where(mem_meta_task_table.c.task_type == task_type)
+                .order_by(mem_meta_task_table.c.created_at.desc())
+                .limit(1)
             )
-            row = cur.fetchone()
+            row = result.fetchone()
             if row:
                 task_id, status, created_at_str = row
                 try:
@@ -211,10 +189,8 @@ class MemMetaManager:
                 except ValueError:
                     pass
             return None
-        finally:
-            conn.close()
 
-    def _create_task(
+    async def _create_task(
         self,
         task_type: str,
         request_params: dict | None = None,
@@ -228,42 +204,29 @@ class MemMetaManager:
             if request_params
             else None
         )
-        conn = sqlite3.connect(self.db_path)
-        cur = conn.cursor()
-        sql = make_insert("mem_meta_task", _TASK_INSERT_COLS)
-        cur.execute(
-            sql,
-            (
-                task_id,
-                task_type,
-                "pending",
-                params_json,
-                total_users,
-                now,
-                now,
-            ),
-        )
-        conn.commit()
-        conn.close()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                insert(mem_meta_task_table).values(
+                    task_id=task_id,
+                    task_type=task_type,
+                    status="pending",
+                    request_params=params_json,
+                    total_users=total_users,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
         return task_id
 
-    def _update_task(self, task_id: str, **fields: Any) -> None:
+    async def _update_task(self, task_id: str, **fields: Any) -> None:
         """更新任务字段（UPDATE mem_meta_task）。"""
-        conn = sqlite3.connect(self.db_path)
-        cur = conn.cursor()
-        sets: list[str] = []
-        vals: list[Any] = []
-        for k, v in fields.items():
-            sets.append(f"{k}=?")
-            vals.append(v)
-        sets.append("updated_at=datetime('now')")
-        vals.append(task_id)
-        cur.execute(
-            f"UPDATE mem_meta_task SET {','.join(sets)} WHERE task_id=?",
-            vals,
-        )
-        conn.commit()
-        conn.close()
+        fields["updated_at"] = text("datetime('now')")
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                update(mem_meta_task_table)
+                .where(mem_meta_task_table.c.task_id == task_id)
+                .values(**fields)
+            )
 
     def _create_background_task(self, coro) -> asyncio.Task:
         """创建后台任务并保持引用（防 GC 回收）。"""
@@ -277,17 +240,18 @@ class MemMetaManager:
         cutoff = (
             datetime.utcnow() - timedelta(hours=1)
         ).strftime("%Y-%m-%d %H:%M:%S")
-        conn = sqlite3.connect(self.db_path)
-        cur = conn.cursor()
-        cur.execute(
-            "UPDATE mem_meta_task SET status='failed', "
-            "error_message='zombie task cleaned up on restart', "
-            "finished_at=datetime('now'), updated_at=datetime('now') "
-            "WHERE status='running' AND started_at < ?",
-            (cutoff,),
-        )
-        conn.commit()
-        conn.close()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                update(mem_meta_task_table)
+                .where(mem_meta_task_table.c.status == "running")
+                .where(mem_meta_task_table.c.started_at < cutoff)
+                .values(
+                    status="failed",
+                    error_message="zombie task cleaned up on restart",
+                    finished_at=text("datetime('now')"),
+                    updated_at=text("datetime('now')"),
+                )
+            )
 
     # ============================================================
     # 接口 1: refresh（异步刷新元数据）
@@ -299,9 +263,8 @@ class MemMetaManager:
         流程: 防重检查 → 创建任务 → asyncio.create_task 后台执行。
         返回 accepted（202）或 skipped（200）。
         """
-        existing = self._check_task_guard("refresh_meta", force=force)
+        existing = await self._check_task_guard("refresh_meta", force=force)
         if existing:
-            # 不用 **existing 展开，避免其 status 字段覆盖 "skipped"
             return {
                 "status": "skipped",
                 "task_type": "refresh_meta",
@@ -309,7 +272,7 @@ class MemMetaManager:
                 "task_status": existing.get("status"),
                 "message": existing.get("message", ""),
             }
-        task_id = self._create_task(
+        task_id = await self._create_task(
             "refresh_meta", request_params={"force": force}
         )
         self._create_background_task(self._run_refresh_meta(task_id))
@@ -328,13 +291,13 @@ class MemMetaManager:
         扫描内核真实数据（uid_{user}_gid_{scope}_mtype_* collection + KV），
         而非旧平台的 agent_memory_vectors。
         """
-        self._update_task(
+        await self._update_task(
             task_id, status="running", started_at=_now_str()
         )
         try:
             engine = self.engine
             if engine is None or engine.memory_index is None:
-                self._update_task(
+                await self._update_task(
                     task_id,
                     status="failed",
                     finished_at=_now_str(),
@@ -390,40 +353,34 @@ class MemMetaManager:
                     continue
 
             # 填充 av_user_stats
-            conn = sqlite3.connect(self.db_path)
-            cur = conn.cursor()
-            cur.execute("DELETE FROM av_user_stats")
-            av_sql = make_insert("av_user_stats", AV_USER_STATS_COLS)
-            for u, s in user_stats.items():
-                t = s["tiers"]
-                cur.execute(
-                    av_sql,
-                    (
-                        u,
-                        s["total"],
-                        s["active"],
-                        s["superseded"],
-                        s["expired_30d"],
-                        s["expired_all"],
-                        t.get("episodic_memory", 0),
-                        t.get("semantic_memory", 0),
-                        sum(
-                            v
-                            for k, v in t.items()
-                            if k not in ("episodic_memory", "semantic_memory")
-                        ),
-                        now_str,
-                        now_str,
-                    ),
-                )
-            conn.commit()
-            conn.close()
+            async with self._engine.begin() as conn:
+                await conn.execute(delete(av_user_stats_table))
+                for u, s in user_stats.items():
+                    t = s["tiers"]
+                    await conn.execute(
+                        insert(av_user_stats_table).values(
+                            scope_user=u,
+                            total_count=s["total"],
+                            active_count=s["active"],
+                            superseded_count=s["superseded"],
+                            expired_30d_count=s["expired_30d"],
+                            expired_all_count=s["expired_all"],
+                            tier_episodic=t.get("episodic_memory", 0),
+                            tier_semantic=t.get("semantic_memory", 0),
+                            tier_other=sum(
+                                v for k, v in t.items()
+                                if k not in ("episodic_memory", "semantic_memory")
+                            ),
+                            created_at=now_str,
+                            updated_at=now_str,
+                        )
+                    )
 
             # UPDATE completed
             total_expired = sum(
                 s["expired_30d"] for s in user_stats.values()
             )
-            self._update_task(
+            await self._update_task(
                 task_id,
                 status="completed",
                 finished_at=_now_str(),
@@ -437,7 +394,7 @@ class MemMetaManager:
                 ),
             )
         except Exception as e:
-            self._update_task(
+            await self._update_task(
                 task_id,
                 status="failed",
                 finished_at=_now_str(),
@@ -460,64 +417,56 @@ class MemMetaManager:
         inactive_days_threshold != 30: 走 KV 实时扫描（慢但准确）
         """
         # 查询最新 refresh 任务状态
-        conn = sqlite3.connect(self.db_path)
-        cur = conn.cursor()
-        try:
-            cur.execute(
-                "SELECT task_id, status FROM mem_meta_task "
-                "WHERE task_type='refresh_meta' "
-                "ORDER BY created_at DESC LIMIT 1"
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(mem_meta_task_table.c.task_id, mem_meta_task_table.c.status)
+                .where(mem_meta_task_table.c.task_type == "refresh_meta")
+                .order_by(mem_meta_task_table.c.created_at.desc())
+                .limit(1)
             )
-            task_row = cur.fetchone()
+            task_row = result.fetchone()
             task_id = task_row[0] if task_row else None
             task_status = task_row[1] if task_row else "none"
 
-            if inactive_days_threshold == 30:
-                # === 快表路径：直接查 av_user_stats ===
-                cur.execute("SELECT COUNT(*) FROM av_user_stats")
-                total_users = cur.fetchone()[0]
-                cur.execute(
-                    "SELECT COALESCE(SUM(expired_30d_count), 0) FROM av_user_stats"
+        if inactive_days_threshold == 30:
+            # === 快表路径：直接查 av_user_stats ===
+            async with self._engine.begin() as conn:
+                # 聚合全局指标
+                result = await conn.execute(
+                    select(func.count()).select_from(av_user_stats_table)
                 )
-                total_expired_30d = cur.fetchone()[0]
-                cur.execute(
-                    "SELECT COUNT(*) FROM av_user_stats WHERE expired_30d_count > 0"
-                )
-                users_with_expired = cur.fetchone()[0]
+                total_users = result.scalar()
 
-                cur.execute(
-                    "SELECT scope_user, total_count, active_count, superseded_count, "
-                    "expired_30d_count, expired_all_count, "
-                    "tier_episodic, tier_semantic, tier_other, updated_at "
-                    "FROM av_user_stats WHERE expired_30d_count >= ? "
-                    "ORDER BY expired_30d_count DESC LIMIT ?",
-                    (min_expired_count, limit),
+                result = await conn.execute(
+                    select(func.coalesce(func.sum(av_user_stats_table.c.expired_30d_count), 0))
                 )
-                users = [
-                    {
-                        "scope_user": r[0],
-                        "total_count": r[1],
-                        "active_count": r[2],
-                        "superseded_count": r[3],
-                        "expired_30d_count": r[4],
-                        "expired_all_count": r[5],
-                        "tier_episodic": r[6],
-                        "tier_semantic": r[7],
-                        "tier_other": r[8],
-                        "updated_at": r[9],
-                    }
-                    for r in cur.fetchall()
-                ]
-            else:
-                # === 实时扫描路径：遍历 KV 统计 blacklisted 记忆 ===
-                users = await self._scan_expired_users_realtime(
-                    inactive_days_threshold, limit, min_expired_count
+                total_expired_30d = result.scalar()
+
+                result = await conn.execute(
+                    select(func.count())
+                    .select_from(av_user_stats_table)
+                    .where(av_user_stats_table.c.expired_30d_count > 0)
                 )
-                total_users = len(users)
-                total_expired_30d = sum(u["expired_30d_count"] for u in users)
-                users_with_expired = sum(1 for u in users if u["expired_30d_count"] > 0)
-        finally:
-            conn.close()
+                users_with_expired = result.scalar()
+
+                # 查询 Top N 用户
+                result = await conn.execute(
+                    select(av_user_stats_table)
+                    .where(av_user_stats_table.c.expired_30d_count >= min_expired_count)
+                    .order_by(av_user_stats_table.c.expired_30d_count.desc())
+                    .limit(limit)
+                )
+                rows = result.fetchall()
+                col_names = av_user_stats_table.columns.keys()
+                users = [dict(zip(col_names, row)) for row in rows]
+        else:
+            # === 实时扫描路径：遍历 KV 统计 blacklisted 记忆 ===
+            users = await self._scan_expired_users_realtime(
+                inactive_days_threshold, limit, min_expired_count
+            )
+            total_users = len(users)
+            total_expired_30d = sum(u.get("expired_30d_count", 0) for u in users)
+            users_with_expired = sum(1 for u in users if u.get("expired_30d_count", 0) > 0)
 
         return {
             "status": "scanning" if task_status == "running" else "success",
@@ -606,13 +555,12 @@ class MemMetaManager:
         流程: 查 expired users → 防重 → 创建任务 → asyncio 后台执行。
         """
         if all_expired:
-            conn = sqlite3.connect(self.db_path)
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT scope_user FROM av_user_stats WHERE expired_30d_count > 0"
-            )
-            user_ids = [r[0] for r in cur.fetchall()]
-            conn.close()
+            async with self._engine.begin() as conn:
+                result = await conn.execute(
+                    select(av_user_stats_table.c.scope_user)
+                    .where(av_user_stats_table.c.expired_30d_count > 0)
+                )
+                user_ids = [r[0] for r in result.fetchall()]
 
         if not user_ids:
             return {
@@ -621,7 +569,7 @@ class MemMetaManager:
                 "total_users": 0,
             }
 
-        existing = self._check_task_guard("batch_delete", force=force)
+        existing = await self._check_task_guard("batch_delete", force=force)
         if existing:
             return {
                 "status": "skipped",
@@ -631,7 +579,7 @@ class MemMetaManager:
                 "message": existing.get("message", ""),
             }
 
-        task_id = self._create_task(
+        task_id = await self._create_task(
             "batch_delete",
             request_params={
                 "user_ids": user_ids,
@@ -673,22 +621,22 @@ class MemMetaManager:
         → delete_memories(user_id, scope_id, mem_ids) 同步删 KV+Milvus
         → 更新 task 进度。
         """
-        self._update_task(
+        await self._update_task(
             task_id, status="running", started_at=_now_str()
         )
         try:
             # ★ 前置校验: 检查 refresh 任务是否在运行 ★
-            conn = sqlite3.connect(self.db_path)
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT task_id FROM mem_meta_task "
-                "WHERE task_type='refresh_meta' AND status IN ('pending', 'running') "
-                "LIMIT 1"
-            )
-            running_refresh = cur.fetchone()
-            conn.close()
+            async with self._engine.begin() as conn:
+                result = await conn.execute(
+                    select(mem_meta_task_table.c.task_id)
+                    .where(mem_meta_task_table.c.task_type == "refresh_meta")
+                    .where(mem_meta_task_table.c.status.in_(["pending", "running"]))
+                    .limit(1)
+                )
+                running_refresh = result.fetchone()
+
             if running_refresh:
-                self._update_task(
+                await self._update_task(
                     task_id,
                     status="failed",
                     finished_at=_now_str(),
@@ -701,7 +649,7 @@ class MemMetaManager:
 
             engine = self.engine
             if engine is None or engine.memory_index is None:
-                self._update_task(
+                await self._update_task(
                     task_id,
                     status="failed",
                     finished_at=_now_str(),
@@ -733,15 +681,13 @@ class MemMetaManager:
                         if not all_expired:
                             if inactive_days_threshold == 30:
                                 # === 快表路径：查 av_user_stats ===
-                                conn = sqlite3.connect(self.db_path)
-                                cur = conn.cursor()
-                                cur.execute(
-                                    "SELECT MAX(expired_30d_count) FROM av_user_stats "
-                                    "WHERE scope_user = ?",
-                                    (user_id,),
-                                )
-                                row = cur.fetchone()
-                                conn.close()
+                                async with self._engine.begin() as conn:
+                                    result = await conn.execute(
+                                        select(func.max(av_user_stats_table.c.expired_30d_count))
+                                        .where(av_user_stats_table.c.scope_user == user_id)
+                                    )
+                                    row = result.fetchone()
+
                                 if row is None or row[0] is None:
                                     user_result["status"] = "skipped"
                                     user_result["error"] = (
@@ -749,7 +695,7 @@ class MemMetaManager:
                                     )
                                     details.append(user_result)
                                     failed += 1
-                                    self._update_task(
+                                    await self._update_task(
                                         task_id,
                                         failed_count=failed,
                                         processed_users=processed + 1,
@@ -763,16 +709,13 @@ class MemMetaManager:
                                     )
                                     details.append(user_result)
                                     processed += 1
-                                    self._update_task(
+                                    await self._update_task(
                                         task_id,
                                         processed_users=processed,
                                     )
                                     continue
                             else:
                                 # === 实时扫描路径：不查快表，直接遍历 scope 删 ===
-                                # inactive_days_threshold != 30 时，
-                                # 快表数据（固定30天阈值）不适用，
-                                # 跳过校验，直接进入下面的遍历 scope 删除逻辑
                                 pass
 
                         # 发现该用户所有 scope
@@ -833,7 +776,7 @@ class MemMetaManager:
                         deleted_total += user_deleted
 
                     processed += 1
-                    self._update_task(
+                    await self._update_task(
                         task_id,
                         processed_users=processed,
                         deleted_count=deleted_total,
@@ -842,30 +785,26 @@ class MemMetaManager:
                     # ★ 同步更新 av_user_stats：删除了多少条就减多少 ★
                     if not dry_run and user_deleted > 0:
                         try:
-                            conn = sqlite3.connect(self.db_path)
-                            cur = conn.cursor()
-                            now_str = _now_str()
-                            cur.execute(
-                                "UPDATE av_user_stats SET "
-                                "  total_count = MAX(0, total_count - ?), "
-                                "  superseded_count = MAX(0, superseded_count - ?), "
-                                "  expired_30d_count = MAX(0, expired_30d_count - ?), "
-                                "  expired_all_count = MAX(0, expired_all_count - ?), "
-                                "  updated_at = ? "
-                                "WHERE scope_user = ?",
-                                (user_deleted, user_deleted,
-                                 user_deleted, user_deleted,
-                                 now_str, user_id),
-                            )
-                            conn.commit()
-                            conn.close()
+                            async with self._engine.begin() as conn:
+                                await conn.execute(
+                                    update(av_user_stats_table)
+                                    .where(av_user_stats_table.c.scope_user == user_id)
+                                    .values(
+                                        total_count=func.max(0, av_user_stats_table.c.total_count - user_deleted),
+                                        superseded_count=func.max(0, av_user_stats_table.c.superseded_count - user_deleted),
+                                        expired_30d_count=func.max(0, av_user_stats_table.c.expired_30d_count - user_deleted),
+                                        expired_all_count=func.max(0, av_user_stats_table.c.expired_all_count - user_deleted),
+                                        updated_at=_now_str(),
+                                    )
+                                )
                         except Exception:
                             pass  # av_user_stats 更新失败不影响删除主流程
+
                 except Exception as e:
                     failed += 1
                     user_result["status"] = "failed"
                     user_result["error"] = str(e)[:300]
-                    self._update_task(
+                    await self._update_task(
                         task_id,
                         failed_count=failed,
                         error_message=str(e)[:500],
@@ -880,7 +819,7 @@ class MemMetaManager:
                 final_status = "failed"
             else:
                 final_status = "partial_failed"
-            self._update_task(
+            await self._update_task(
                 task_id,
                 status=final_status,
                 finished_at=_now_str(),
@@ -896,7 +835,7 @@ class MemMetaManager:
                 ),
             )
         except Exception as e:
-            self._update_task(
+            await self._update_task(
                 task_id,
                 status="failed",
                 finished_at=_now_str(),
@@ -913,14 +852,13 @@ class MemMetaManager:
         有 task_id: SELECT by task_id（不存在返回 not_found）。
         无 task_id: ORDER BY created_at DESC LIMIT 1（无记录返回 task=None）。
         """
-        conn = sqlite3.connect(self.db_path)
-        cur = conn.cursor()
-        try:
+        async with self._engine.begin() as conn:
             if task_id:
-                cur.execute(
-                    "SELECT * FROM mem_meta_task WHERE task_id=?", (task_id,)
+                result = await conn.execute(
+                    select(mem_meta_task_table)
+                    .where(mem_meta_task_table.c.task_id == task_id)
                 )
-                row = cur.fetchone()
+                row = result.fetchone()
                 if not row:
                     return {
                         "status": "not_found",
@@ -928,17 +866,18 @@ class MemMetaManager:
                         "message": f"任务 {task_id} 不存在",
                     }
             else:
-                cur.execute(
-                    "SELECT * FROM mem_meta_task ORDER BY created_at DESC LIMIT 1"
+                result = await conn.execute(
+                    select(mem_meta_task_table)
+                    .order_by(mem_meta_task_table.c.created_at.desc())
+                    .limit(1)
                 )
-                row = cur.fetchone()
+                row = result.fetchone()
                 if not row:
                     return {
                         "status": "success",
                         "task": None,
                         "message": "无任务记录",
                     }
-            task = dict(zip(MEM_META_TASK_COLS, row))
+            col_names = mem_meta_task_table.columns.keys()
+            task = dict(zip(col_names, row))
             return {"status": "success", "task": task}
-        finally:
-            conn.close()
