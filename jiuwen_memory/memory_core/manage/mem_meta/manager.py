@@ -14,6 +14,7 @@ import json
 import logging
 import uuid
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -42,6 +43,18 @@ def _now_str() -> str:
     使用 Python 侧时间戳，兼容 SQLite / PostgreSQL / GaussDB。
     """
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+
+@dataclass
+class BatchDeleteParams:
+    """批量删除参数封装。"""
+    user_ids: list[str] | None = None
+    all_expired: bool = False
+    inactive_days_threshold: int = 30
+    scope_id: str | None = None
+    cleanup_retrieve_history: bool = True
+    dry_run: bool = False
+    force: bool = False
 
 
 # ============================================================
@@ -95,6 +108,15 @@ class MemMetaManager:
     通过内核 BaseDbStore 抽象层操作数据库（适配 SQLite / GaussDB / PostgreSQL），
     提供 refresh / batch_delete / task_status 等异步接口。
     """
+
+    @staticmethod
+    def _is_expired(doc, now_dt: datetime, threshold: int) -> bool:
+        """判断单条记忆是否过期（blacklisted 且不活跃天数 >= threshold）。"""
+        if not doc.blacklisted:
+            return False
+        if doc.timestamp is None:
+            return True
+        return (now_dt - doc.timestamp.replace(tzinfo=None)).days >= threshold
 
     def __init__(
         self,
@@ -530,11 +552,7 @@ class MemMetaManager:
                 # 过滤 blacklisted 且满足不活跃天数阈值
                 expired_docs = [
                     d for d in docs
-                    if d.blacklisted and (
-                        d.timestamp is None
-                        or (now_dt - d.timestamp.replace(
-                            tzinfo=None)).days >= inactive_days_threshold
-                    )
+                    if self._is_expired(d, now_dt, inactive_days_threshold)
                 ]
                 expired_count = len(expired_docs)
                 if expired_count == 0:
@@ -576,34 +594,29 @@ class MemMetaManager:
 
     async def submit_batch_delete(
         self,
-        user_ids: list[str] | None = None,
-        all_expired: bool = False,
-        inactive_days_threshold: int = 30,
-        scope_id: str | None = None,
-        cleanup_retrieve_history: bool = True,
-        dry_run: bool = False,
-        force: bool = False,
+        params: BatchDeleteParams,
     ) -> dict:
         """提交批量删除任务。
 
         流程: 查 expired users → 防重 → 创建任务 → asyncio 后台执行。
         """
-        if all_expired:
+        if params.all_expired:
             async with self._engine.begin() as conn:
                 result = await conn.execute(
                     select(av_user_stats_table.c.scope_user)
                     .where(av_user_stats_table.c.expired_30d_count > 0)
                 )
-                user_ids = [r[0] for r in result.fetchall()]
+                params.user_ids = [r[0] for r in result.fetchall()]
 
-        if not user_ids:
+        if not params.user_ids:
             return {
                 "status": "success",
                 "message": "无过期用户，无需删除",
                 "total_users": 0,
             }
 
-        existing = await self._check_task_guard("batch_delete", force=force)
+        existing = await self._check_task_guard(
+            "batch_delete", force=params.force)
         if existing:
             return {
                 "status": "skipped",
@@ -616,38 +629,30 @@ class MemMetaManager:
         task_id = await self._create_task(
             "batch_delete",
             request_params={
-                "user_ids": user_ids,
-                "all_expired": all_expired,
-                "inactive_days_threshold": inactive_days_threshold,
-                "scope_id": scope_id,
-                "cleanup_retrieve_history": cleanup_retrieve_history,
-                "dry_run": dry_run,
+                "user_ids": params.user_ids,
+                "all_expired": params.all_expired,
+                "inactive_days_threshold": params.inactive_days_threshold,
+                "scope_id": params.scope_id,
+                "cleanup_retrieve_history": params.cleanup_retrieve_history,
+                "dry_run": params.dry_run,
             },
-            total_users=len(user_ids),
+            total_users=len(params.user_ids),
         )
         self._create_background_task(
-            self._run_batch_delete(
-                task_id, user_ids, inactive_days_threshold,
-                all_expired, scope_id, cleanup_retrieve_history, dry_run,
-            )
+            self._run_batch_delete(task_id, params)
         )
         return {
             "status": "accepted",
             "task_id": task_id,
             "task_type": "batch_delete",
-            "message": f"批量删除任务已提交，涉及 {len(user_ids)} 个用户",
-            "total_users": len(user_ids),
+            "message": f"批量删除任务已提交，涉及 {len(params.user_ids)} 个用户",
+            "total_users": len(params.user_ids),
         }
 
     async def _run_batch_delete(
         self,
         task_id: str,
-        user_ids: list[str],
-        inactive_days_threshold: int = 30,
-        all_expired: bool = False,
-        scope_id: str | None = None,
-        cleanup_retrieve_history: bool = True,
-        dry_run: bool = False,
+        params: BatchDeleteParams,
     ) -> None:
         """后台执行: 通过内核 SimpleMemoryIndex 精准删除 blacklisted=True 的过期记忆。
 
@@ -700,7 +705,7 @@ class MemMetaManager:
             skipped = 0
             details: list[dict] = []
 
-            for user_id in user_ids:
+            for user_id in params.user_ids:
                 user_result: dict = {
                     "user_id": user_id,
                     "total_deleted": 0,
@@ -712,8 +717,8 @@ class MemMetaManager:
                     from jiuwen_memory.memory_core.common.distributed_lock import DistributedLock
                     async with DistributedLock(kv_store, f"user/{user_id}"):
                         # ★ 不活跃天数校验 (all_expired=true 时跳过校验) ★
-                        if not all_expired:
-                            if inactive_days_threshold == 30:
+                        if not params.all_expired:
+                            if params.inactive_days_threshold == 30:
                                 # === 快表路径：查 av_user_stats ===
                                 async with self._engine.begin() as conn:
                                     result = await conn.execute(
@@ -742,8 +747,8 @@ class MemMetaManager:
                             # inactive_days_threshold != 30：直接走实时扫描删除路径
 
                         # 发现该用户所有 scope
-                        if scope_id:
-                            scopes = [(user_id, scope_id)]
+                        if params.scope_id:
+                            scopes = [(user_id, params.scope_id)]
                         else:
                             all_scopes = await memory_index.list_user_scopes()
                             scopes = [
@@ -762,24 +767,21 @@ class MemMetaManager:
                                 )
                                 # 过滤 blacklisted == True 且满足不活跃天数
                                 now_dt = datetime.utcnow()
-                                if all_expired:
+                                if params.all_expired:
                                     expired_mem_ids = [
                                         d.id for d in docs if d.blacklisted
                                     ]
                                 else:
                                     expired_mem_ids = [
                                         d.id for d in docs
-                                        if d.blacklisted and (
-                                            d.timestamp is None
-                                            or (now_dt - d.timestamp.replace(
-                                                tzinfo=None)).days
-                                            >= inactive_days_threshold
-                                        )
+                                        if self._is_expired(
+                                            d, now_dt,
+                                            params.inactive_days_threshold)
                                     ]
                                 if not expired_mem_ids:
                                     continue
 
-                                if dry_run:
+                                if params.dry_run:
                                     user_deleted += len(expired_mem_ids)
                                     user_result["scopes_affected"] += 1
                                     continue
@@ -790,7 +792,7 @@ class MemMetaManager:
                                 )
 
                                 # 清理 retrieve_history
-                                if cleanup_retrieve_history and kv_store:
+                                if params.cleanup_retrieve_history and kv_store:
                                     for mid in expired_mem_ids:
                                         rh_key = (
                                             f"retrieve_history"
@@ -821,7 +823,7 @@ class MemMetaManager:
                     )
 
                     # ★ 同步更新 av_user_stats：删除了多少条就减多少 ★
-                    if not dry_run and user_deleted > 0:
+                    if not params.dry_run and user_deleted > 0:
                         try:
                             async with self._engine.begin() as conn:
                                 await conn.execute(
@@ -867,7 +869,7 @@ class MemMetaManager:
             # 最终状态判断
             if failed == 0:
                 final_status = "completed"
-            elif failed == len(user_ids):
+            elif failed == len(params.user_ids):
                 final_status = "failed"
             else:
                 final_status = "partial_failed"
@@ -881,7 +883,7 @@ class MemMetaManager:
                         "deleted": deleted_total,
                         "failed": failed,
                         "skipped": skipped,
-                        "dry_run": dry_run,
+                        "dry_run": params.dry_run,
                         "details": details,
                     },
                     ensure_ascii=False,

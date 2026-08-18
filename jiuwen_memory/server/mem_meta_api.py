@@ -130,14 +130,17 @@ async def batch_delete(req: BatchDeleteRequest):
             status_code=422,
             detail="必须指定 user_ids 或 all_expired=true",
         )
+    from jiuwen_memory.memory_core.manage.mem_meta.manager import BatchDeleteParams
     result = await _manager.submit_batch_delete(
-        user_ids=req.user_ids,
-        all_expired=req.all_expired,
-        inactive_days_threshold=req.inactive_days_threshold,
-        scope_id=req.scope_id,
-        cleanup_retrieve_history=req.cleanup_retrieve_history,
-        dry_run=req.dry_run,
-        force=req.force,
+        BatchDeleteParams(
+            user_ids=req.user_ids,
+            all_expired=req.all_expired,
+            inactive_days_threshold=req.inactive_days_threshold,
+            scope_id=req.scope_id,
+            cleanup_retrieve_history=req.cleanup_retrieve_history,
+            dry_run=req.dry_run,
+            force=req.force,
+        )
     )
     if result.get("status") == "accepted":
         return Response(
