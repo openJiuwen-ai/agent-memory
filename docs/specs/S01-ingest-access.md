@@ -5,9 +5,15 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/ingest/ |
-| 最近一次修订日期 | 2026-08-12 |
+| 最近一次修订日期 | 2026-08-18 |
+| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 
 | 关联特性文档 | docs/features/F01-system-spec-design.md |
+## Metadata 转换契约
+
+`RawPayload` 与 `MemoryUnit` 都以 `system_metadata` / `user_metadata` 承载双命名空。
+Ingestor 必须分别复制两个 dict，不得合并、解释或在两者之间 fallback。
+
 ## 范围 / 边界
 
 **管什么**：

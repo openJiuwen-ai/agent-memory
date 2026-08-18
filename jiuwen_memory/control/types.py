@@ -5,9 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any
 
-from jiuwen_memory.common.type_def import MemoryTier, MemoryUnit, Modality, Scope
+from jiuwen_memory.common.type_def import (
+    MemoryTier,
+    MemoryUnit,
+    MetadataValueType,
+    Modality,
+    Scope,
+)
 
 
 class Action(str, Enum):
@@ -143,7 +148,8 @@ class BatchWriteItem:
     source: Modality | None = None
     assets: list[str] | None = None
     tags: list[str] | None = None
-    metadata: dict[str, Any] | None = None
+    system_metadata: dict[str, MetadataValueType] | None = None
+    user_metadata: dict[str, MetadataValueType] | None = None
     occurred_at: datetime | None = None
     stream_id: str = ""
     sequence: int | None = None
@@ -187,7 +193,7 @@ class PermissionContext:
     scope: Scope = field(default_factory=Scope)  # 资源真实归属；未知时为空 scope
     tags: tuple[str, ...] = ()
     # 路由值恒为字符串：构造点（_write/_recall_permission_context）已做 str().strip()
-    # 归一化，delegate 选择也按字符串比较。此处不随 MemoryUnit.metadata 放宽。
+    # 归一化，delegate 选择也按字符串比较。此处不随 MemoryUnit 的 metadata 值类型放宽。
     metadata: dict[str, str] = field(default_factory=dict)
 
 
@@ -250,7 +256,8 @@ class MemoryPatch:
     content: str | None = None  # 修正后的内容投影
     tier: MemoryTier | None = None  # 重新归类认知角色
     tags: list[str] | None = None  # 整体替换标签
-    metadata: dict[str, Any] | None = None  # 合并更新元数据
+    system_metadata: dict[str, MetadataValueType] | None = None  # 合并更新系统元数据
+    user_metadata: dict[str, MetadataValueType] | None = None  # 合并更新用户元数据
     t_valid: datetime | None = None  # 调整生效时间（双时间模型）
     t_invalid: datetime | None = None  # 调整失效时间
     mode: UpdateMode = UpdateMode.SUPERSEDE  # 版本语义：保留原有(新 id) / 覆盖(同 id)

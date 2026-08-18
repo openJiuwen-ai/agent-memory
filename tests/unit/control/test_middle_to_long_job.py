@@ -169,7 +169,7 @@ def _make_unit(
         lifecycle=lifecycle,
         segments=[Segment(content=content)],
         temporal=Temporal(t_ingest=t_ingest),
-        metadata=metadata,
+        system_metadata=metadata,
     )
     return unit
 

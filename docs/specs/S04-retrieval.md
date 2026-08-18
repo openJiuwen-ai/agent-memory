@@ -5,8 +5,15 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/retrieval/ |
-| 最近一次修订日期 | 2026-08-12 |
+| 最近一次修订日期 | 2026-08-18 |
+| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md |
+
+## Metadata 检索契约
+
+FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<key>` 表示
+内部系统谓词，两者不 fallback。`RetrievedItem` 返回 `user_metadata`，普通搜索结果
+不暴露 `system_metadata`。
 
 ## 范围 / 边界
 

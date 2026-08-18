@@ -12,7 +12,14 @@ from datetime import datetime, timezone
 from typing import List
 
 from jiuwen_memory.common.log import get_logger
-from jiuwen_memory.common.type_def import MemoryTier, MemoryUnit, Segment, Temporal
+from jiuwen_memory.common.type_def import (
+    MemoryTier,
+    MemoryUnit,
+    Segment,
+    Temporal,
+    inherited_system_metadata,
+    inherited_user_metadata,
+)
 from jiuwen_memory.construction.abstractor import Abstractor, AbstractorProducer
 from jiuwen_memory.construction.base import OperatorType
 
@@ -55,6 +62,8 @@ class ConcatAbstractor(Abstractor):
                 segments=[Segment(content=f"画像综合（{len(sources)} 条）：{summary}")],
                 provenance=[u.id for u in sources],
                 tags=["profile"],
+                system_metadata=inherited_system_metadata(sources),
+                user_metadata=inherited_user_metadata(sources),
                 temporal=Temporal(
                     t_event=now,
                     t_ingest=now,

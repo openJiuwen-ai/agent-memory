@@ -266,7 +266,7 @@ def _make_unit(
     *,
     scope: Scope = _DEFAULT_SCOPE,
     tier: MemoryTier = MemoryTier.EPISODIC,
-    metadata: dict | None = None,
+    system_metadata: dict | None = None,
     t_ingest=None,
 ) -> MemoryUnit:
     return MemoryUnit(
@@ -276,7 +276,7 @@ def _make_unit(
         segments=[Segment(content=content, source=Modality.TEXT)],
         lifecycle=LifecycleState.ACTIVE,
         temporal=Temporal(t_ingest=t_ingest),
-        metadata=dict(metadata or {}),
+        system_metadata=dict(system_metadata or {}),
     )
 
 
@@ -341,11 +341,11 @@ class TestInferContextCollection:
         _index_related(related, stores["kv"], stores["vector"], plugins["embedder"])
 
         # 预置一条历史 infer 原文（/messages/，规约后的 MemoryUnit）
-        hist = _make_unit("hist-1", "user: 之前聊过猫\nassistant: 嗯", metadata={"infer": "true"})
+        hist = _make_unit("hist-1", "user: 之前聊过猫\nassistant: 嗯", system_metadata={"infer": "true"})
         stores["kv"].insert(_DEFAULT_SCOPE, messages_key(hist.id), dumps(hist))
 
         # 本轮 infer unit（content 与 related 相同，便于召回）
-        cur = _make_unit("cur-1", "用户偏好 Python 编程", metadata={"infer": "true"})
+        cur = _make_unit("cur-1", "用户偏好 Python 编程", system_metadata={"infer": "true"})
         evolver.evolve([cur], EvolveMode.EXTRACT)
 
         ctx = extractor.last_context
@@ -370,12 +370,12 @@ class TestInferContextCollection:
         # 三条历史原文，不同 t_ingest
         for i, ts in enumerate([3, 1, 2]):
             u = _make_unit(
-                f"hist-{i}", f"msg-{i}", metadata={"infer": "true"},
+                f"hist-{i}", f"msg-{i}", system_metadata={"infer": "true"},
                 t_ingest=datetime(2026, 1, ts, tzinfo=timezone.utc),
             )
             stores["kv"].insert(_DEFAULT_SCOPE, messages_key(u.id), dumps(u))
 
-        cur = _make_unit("cur", "本轮", metadata={"infer": "true"})
+        cur = _make_unit("cur", "本轮", system_metadata={"infer": "true"})
         evolver.evolve([cur], EvolveMode.EXTRACT)
 
         ctx = extractor.last_context
@@ -399,7 +399,7 @@ class TestRelatedMemoriesDedup:
         related = _make_unit("rel-1", "用户偏好 Python 编程", tier=MemoryTier.SEMANTIC)
         _index_related(related, stores["kv"], stores["vector"], plugins["embedder"])
 
-        cur = _make_unit("cur-1", "用户偏好 Python 编程", metadata={"infer": "true"})
+        cur = _make_unit("cur-1", "用户偏好 Python 编程", system_metadata={"infer": "true"})
         evolver.evolve([cur], EvolveMode.EXTRACT)
 
         ctx = extractor.last_context
@@ -421,7 +421,7 @@ class TestRelatedMemoriesDedup:
         related = _make_unit("rel-1", "用户偏好 Python", tier=MemoryTier.SEMANTIC)
         _index_related(related, stores["kv"], stores["vector"], plugins["embedder"])
 
-        cur = _make_unit("cur-1", "用户偏好 Python 编程", metadata={"infer": "true"})
+        cur = _make_unit("cur-1", "用户偏好 Python 编程", system_metadata={"infer": "true"})
         result = evolver.evolve([cur], EvolveMode.EXTRACT)
 
         # 候选与 related 同文本 → _dedup_batch 召回 related（cosine=1.0 ≥ high）判 NOOP → 无新增
@@ -439,7 +439,7 @@ class TestRelatedMemoriesDedup:
         related = _make_unit("rel-1", "用户偏好 Python", tier=MemoryTier.SEMANTIC)
         _index_related(related, stores["kv"], stores["vector"], plugins["embedder"])
 
-        cur = _make_unit("cur-1", "用户在做数据库迁移", metadata={"infer": "true"})
+        cur = _make_unit("cur-1", "用户在做数据库迁移", system_metadata={"infer": "true"})
         result = evolver.evolve([cur], EvolveMode.EXTRACT)
 
         assert "c-new" in result.created_ids
@@ -458,10 +458,10 @@ class TestRelatedMemoriesDedup:
         evolver = _make_evolver(stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor)
 
         # 历史原文（/messages/，无向量索引）——不会被 dedup.recall 召回
-        hist = _make_unit("hist-1", "我喜欢猫", metadata={"infer": "true"})
+        hist = _make_unit("hist-1", "我喜欢猫", system_metadata={"infer": "true"})
         stores["kv"].insert(_DEFAULT_SCOPE, messages_key(hist.id), dumps(hist))
 
-        cur = _make_unit("cur-1", "我在养猫", metadata={"infer": "true"})
+        cur = _make_unit("cur-1", "我在养猫", system_metadata={"infer": "true"})
         result = evolver.evolve([cur], EvolveMode.EXTRACT)
 
         # 原文不参与去重 → 候选保留 → ADD 落盘
@@ -518,7 +518,7 @@ class TestEngineInferPersist:
         asyncio.run(engine.write(
             "user: 你好\nassistant: 你好",
             _DEFAULT_SCOPE,
-            metadata={"infer": "true"},
+            system_metadata={"infer": "true"},
         ))
 
         # /messages/ 下应有 1 条 MemoryUnit（规约后字节，由 evolver 落盘）
@@ -526,7 +526,7 @@ class TestEngineInferPersist:
         assert len(msgs) == 1, f"/messages/ 应有 1 条原文，实际 {len(msgs)}"
         unit = loads(msgs[0][1])
         assert unit is not None
-        assert unit.metadata.get("infer") == "true"
+        assert unit.system_metadata.get("infer") == "true"
         assert "你好" in unit.content
         # 派生记忆落 /memory/（真实抽取会产派生 chunk，这里不验派生数量）
 
@@ -573,7 +573,7 @@ class TestProceduralExtract:
         related = _make_unit("rel-1", "目标：查询订单", tier=MemoryTier.SEMANTIC)
         _index_related(related, stores["kv"], stores["vector"], plugins["embedder"])
 
-        cur = _make_unit("cur-1", "user: 查下订单\nassistant: 已返回列表", metadata={"procedural": "true"})
+        cur = _make_unit("cur-1", "user: 查下订单\nassistant: 已返回列表", system_metadata={"procedural": "true"})
         result = evolver.evolve([cur], EvolveMode.EXTRACT)
 
         # procedural 收到 context=None（不收集）
@@ -631,7 +631,7 @@ class TestProceduralExtract:
         derived = asyncio.run(engine.write(
             "user: 帮我查订单\nassistant: 已返回",
             _DEFAULT_SCOPE,
-            metadata={"procedural": "true"},
+            system_metadata={"procedural": "true"},
         ))
 
         # 产 1 条 PROCEDURAL 派生
@@ -692,7 +692,7 @@ class TestProceduralExtract:
         asyncio.run(engine.write(
             "user: 查订单\nassistant: 已返回",
             _DEFAULT_SCOPE,
-            metadata={"procedural": "true", "infer": "true"},
+            system_metadata={"procedural": "true", "infer": "true"},
         ))
 
         # procedural 优先：原文不落 /messages/（即使 infer=true）
@@ -731,7 +731,7 @@ class TestProceduralSourceRef:
             id="cur-1", scope=Scope(org="t", user="u"),
             segments=[Segment(content="user: 查单\nassistant: 已返", source=Modality.TEXT)],
             lifecycle=LifecycleState.ACTIVE, temporal=Temporal(),
-            metadata={"procedural": "true"},
+            system_metadata={"procedural": "true"},
         )
         result = extractor.extract([source])
         assert len(result) == 1

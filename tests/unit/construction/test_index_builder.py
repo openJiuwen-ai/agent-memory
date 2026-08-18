@@ -227,9 +227,9 @@ def test_vector_build_basic():
 def test_index_builders_project_user_metadata_for_filtering():
     scope = Scope(org="test", user="alice")
     unit = create_test_unit("u1", "metadata projection", scope=scope)
-    unit.metadata.update(
+    unit.system_metadata["memory_type"] = "coding"
+    unit.user_metadata.update(
         {
-            "memory_type": "coding",
             "project": "alpha",
             # 非字符串标量原样带入——后端据此建 double/boolean mapping 才能原生下推
             "priority": 8,
@@ -245,15 +245,16 @@ def test_index_builders_project_user_metadata_for_filtering():
     fulltext_builder.build([unit])
     doc = fulltext_stores["fulltext"].get(scope, ["u1"])[0]
 
-    assert doc.metadata["memory_type"] == "coding"
-    assert doc.metadata["project"] == "alpha"
+    assert doc.metadata["system_metadata.memory_type"] == "coding"
+    assert doc.metadata["user_metadata.project"] == "alpha"
     assert doc.metadata["tags"] == ["work"]
     assert doc.metadata["unit_id"] == "u1"
     assert doc.metadata["lifecycle"] == "active"
     # 类型不得在投影处被改写：字符串化会让 range 退化成字典序
-    assert doc.metadata["priority"] == 8 and not isinstance(doc.metadata["priority"], str)
-    assert doc.metadata["score"] == 9.5
-    assert doc.metadata["archived"] is False
+    assert doc.metadata["user_metadata.priority"] == 8
+    assert not isinstance(doc.metadata["user_metadata.priority"], str)
+    assert doc.metadata["user_metadata.score"] == 9.5
+    assert doc.metadata["user_metadata.archived"] is False
 
     vector_builder, vector_stores, _ = _make_vector_builder()
     vector_builder.build([unit])
@@ -261,14 +262,14 @@ def test_index_builders_project_user_metadata_for_filtering():
     records = vector_stores["vector"].get(scope, chunk_ids)
 
     assert records
-    assert all(record.metadata["memory_type"] == "coding" for record in records)
-    assert all(record.metadata["project"] == "alpha" for record in records)
+    assert all(record.metadata["system_metadata.memory_type"] == "coding" for record in records)
+    assert all(record.metadata["user_metadata.project"] == "alpha" for record in records)
     assert all(record.metadata["tags"] == ["work"] for record in records)
     assert all(record.metadata["unit_id"] == "u1" for record in records)
     assert all(record.metadata["lifecycle"] == "active" for record in records)
-    assert all(record.metadata["priority"] == 8 for record in records)
-    assert all(record.metadata["score"] == 9.5 for record in records)
-    assert all(record.metadata["archived"] is False for record in records)
+    assert all(record.metadata["user_metadata.priority"] == 8 for record in records)
+    assert all(record.metadata["user_metadata.score"] == 9.5 for record in records)
+    assert all(record.metadata["user_metadata.archived"] is False for record in records)
 
 
 def test_index_builders_write_sentinel_for_open_ended_t_invalid():

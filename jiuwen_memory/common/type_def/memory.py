@@ -10,9 +10,43 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any
 
 from .scope import Scope
+
+MetadataValueType = str | int | float | bool | None | list[str]
+_NON_PROPAGATED_SYSTEM_METADATA_KEYS = frozenset({"infer", "procedural", "middle"})
+
+
+def inherited_system_metadata(units: list[MemoryUnit]) -> dict[str, MetadataValueType]:
+    """返回派生记忆可安全继承的系统元数据交集。"""
+    if not units:
+        return {}
+    common = {
+        key: value
+        for key, value in units[0].system_metadata.items()
+        if key not in _NON_PROPAGATED_SYSTEM_METADATA_KEYS
+    }
+    for unit in units[1:]:
+        common = {
+            key: value
+            for key, value in common.items()
+            if key in unit.system_metadata and unit.system_metadata[key] == value
+        }
+    return common
+
+
+def inherited_user_metadata(units: list[MemoryUnit]) -> dict[str, MetadataValueType]:
+    """派生记忆的用户元数据：单源全量复制，多源只保留相等交集。"""
+    if not units:
+        return {}
+    common = dict(units[0].user_metadata)
+    for unit in units[1:]:
+        common = {
+            key: value
+            for key, value in common.items()
+            if key in unit.user_metadata and unit.user_metadata[key] == value
+        }
+    return common
 
 
 class Modality(str, Enum):
@@ -118,7 +152,10 @@ class MemoryUnit:
     # 版本链（一→一更替）：本版本取代的上一版 id；空表示首版
     supersedes: str = ""
     tags: list[str] = field(default_factory=list)  # 标签（检索前置过滤用）
-    metadata: dict[str, Any] = field(default_factory=dict)  # 其他元数据（置信度/重要度等）
+    # 引擎可解释的系统控制与内部状态。用户自定义字段不得写入此命名空间。
+    system_metadata: dict[str, MetadataValueType] = field(default_factory=dict)
+    # 用户自定义元数据：内核只存储、索引、过滤和返回，不解释其业务含义。
+    user_metadata: dict[str, MetadataValueType] = field(default_factory=dict)
     lifecycle: LifecycleState = LifecycleState.ACTIVE  # 生命周期状态
     # L2 记忆里由大模型抽取得到的实体文本（明文）。entity linker 建反向索引时
     # 只消费本字段构造 EntityMention（display_name=实体文本，normalized_name 走
@@ -148,30 +185,6 @@ class MemoryUnit:
 # 所有落盘/回查建索引记忆的点用 memory_key，保证同前缀读写对齐。
 
 MEMORY_KEY_PREFIX = "/memory/"
-
-# 瞬态 key（transient keys）：在 metadata / extensions 中携带、透传到 storage 层消费，
-# 但不落盘。存储层在写入前（KV insert/update）必须从 MemoryUnit.metadata 中移除这些 key。
-# 新增瞬态 key 需同步加入此集合。
-TRANSIENT_METADATA_KEYS = frozenset({"db_query_service", "encryption_port"})
-
-# 索引投影用真源系统字段覆盖同名用户 metadata（见 construction 的 _index_metadata），
-# 而 UnitReader 复核 ``metadata.<key>`` 时读的是用户值——同名会让两侧语义相反、静默错筛。
-# 故这些 key 在写入边界即拒绝，用户元数据不得占用。
-RESERVED_METADATA_KEYS = frozenset(
-    {
-        "unit_id",
-        "tier",
-        "lifecycle",
-        "tags",
-        "source",
-        "content_layer",
-        "t_event",
-        "t_valid",
-        "t_invalid",
-        "t_message",
-        "seq",
-    }
-)
 
 # 开放有效期（``Temporal.t_invalid is None``，即"仍有效"）在索引里的哨兵值：
 # 9999-12-31T23:59:59Z 的 epoch 毫秒。

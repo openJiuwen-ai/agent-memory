@@ -219,21 +219,39 @@ class ElasticsearchFulltextStore(FulltextStore):
         return parts[-1] if len(parts) == 6 else doc_id
 
     def _source(self, scope: Scope, doc: Document) -> dict[str, Any]:
+        metadata: dict[str, Any] = {}
+        for key, value in doc.metadata.items():
+            namespace, separator, nested_key = key.partition(".")
+            if separator and namespace in {"system_metadata", "user_metadata"}:
+                metadata.setdefault(namespace, {})[nested_key] = value
+            else:
+                metadata[key] = value
         return {
             "logical_id": doc.id,
             self._text_field: doc.text,
             "scope": self._scope_dict(scope),
-            "metadata": doc.metadata,
+            "metadata": metadata,
             _METADATA_ARRAY_FIELDS: [
                 key for key, value in doc.metadata.items() if isinstance(value, list)
             ],
         }
 
     def _to_document(self, doc_id: str, src: dict[str, Any]) -> Document:
+        metadata: dict[str, Any] = {}
+        for key, value in (src.get("metadata") or {}).items():
+            if key in {"system_metadata", "user_metadata"} and isinstance(value, dict):
+                metadata.update(
+                    {
+                        f"{key}.{nested_key}": nested_value
+                        for nested_key, nested_value in value.items()
+                    }
+                )
+            else:
+                metadata[key] = value
         return Document(
             id=src.get("logical_id") or self._logical_id(doc_id),
             text=src.get(self._text_field, ""),
-            metadata=src.get("metadata") or {},
+            metadata=metadata,
         )
 
     @staticmethod

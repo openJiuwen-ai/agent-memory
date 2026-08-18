@@ -58,6 +58,8 @@ from jiuwen_memory.common.type_def import (
     MemoryUnit,
     Segment,
     Temporal,
+    inherited_system_metadata,
+    inherited_user_metadata,
 )
 
 from ..base import ExtractContext, OperatorType
@@ -471,7 +473,8 @@ class ExtractorImpl(Extractor):
     def _is_procedural(units: list[MemoryUnit]) -> bool:
         """本轮是否走过程记忆抽取（metadata["procedural"]=="true"）。"""
         return any(
-            str(u.metadata.get("procedural", "")).strip().lower() == "true" for u in units
+            str(u.system_metadata.get("procedural", "")).strip().lower() == "true"
+            for u in units
         )
 
     def _extract_procedural(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
@@ -532,12 +535,13 @@ class ExtractorImpl(Extractor):
             ),
             provenance=[u.id for u in units],
             tags=tags,
-            metadata={
+            system_metadata=inherited_system_metadata(units)
+            | {
                 "confidence": str(candidate.confidence),
                 "target": candidate.target.value,
-                "procedural": "true",
             }
             | candidate.metadata,
+            user_metadata=inherited_user_metadata(units),
             lifecycle=LifecycleState.ACTIVE,
         )
         logger.info(
@@ -622,8 +626,11 @@ class ExtractorImpl(Extractor):
         # 基准时间 observation_date（经 metadata 下推）：LLM 据此把相对时间解析成绝对时间。
         # 取首个含 observation_date 的 unit（同批通常一致）；未传则以当前时间为基准。
         observation_date = next(
-            (str(u.metadata.get("observation_date", "")).strip() for u in units
-             if u.metadata.get("observation_date")),
+            (
+                str(u.system_metadata.get("observation_date", "")).strip()
+                for u in units
+                if u.system_metadata.get("observation_date")
+            ),
             "",
         )
         if not observation_date:
@@ -645,7 +652,7 @@ class ExtractorImpl(Extractor):
         if context_block:
             user_text = user_text + "\n" + context_block
         fidelity_mode = any(
-            str(unit.metadata.get("extraction_fidelity_mode", "false")).strip().lower()
+            str(unit.system_metadata.get("extraction_fidelity_mode", "false")).strip().lower()
             in {"true", "1", "yes", "on"}
             for unit in units
         )
@@ -930,13 +937,15 @@ class ExtractorImpl(Extractor):
                 ),
                 provenance=[source.id],
                 tags=tags,
-                metadata={
+                system_metadata=inherited_system_metadata([source])
+                | {
                     "confidence": str(c.confidence),
                     "target": c.target.value,
                     "evidence": c.evidence,
                     "extracted_statement": statement,
                 }
                 | c.metadata,
+                user_metadata=inherited_user_metadata([source]),
                 lifecycle=LifecycleState.ACTIVE,
             )
             result.append(unit)

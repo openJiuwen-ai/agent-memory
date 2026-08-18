@@ -28,6 +28,8 @@ from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryUnit,
     Segment,
+    inherited_system_metadata,
+    inherited_user_metadata,
 )
 from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.construction.abstractor import AbstractorProducer
@@ -177,13 +179,13 @@ class DynamicEvolver(OrchestratingEvolver):
 
     def _resolve_consolidate_prompt(self, candidate: MemoryUnit) -> Optional[str]:
         prompts = parse_prompt_strategies(
-            candidate.metadata, CONSOLIDATION_PROMPT_PREFIX
+            candidate.system_metadata, CONSOLIDATION_PROMPT_PREFIX
         )
         if not prompts:
             return None
-        extraction_strategy = candidate.metadata.get(
+        extraction_strategy = str(candidate.system_metadata.get(
             EXTRACTION_STRATEGY_KEY, ""
-        ).strip()
+        )).strip()
         if extraction_strategy:
             for _strategy, prompt_key in prompts:
                 if _strategy == extraction_strategy:
@@ -286,8 +288,9 @@ class DynamicEvolver(OrchestratingEvolver):
             existing.provenance = list(
                 set(existing.provenance) | set(candidate.provenance) | {candidate.id}
             )
-            existing.metadata.update(candidate.metadata)
-            existing.metadata.update(
+            existing.system_metadata = inherited_system_metadata([existing, candidate])
+            existing.user_metadata = inherited_user_metadata([existing, candidate])
+            existing.system_metadata.update(
                 {
                     "dedup_decision": "update",
                     "dedup_similarity": str(similarity),
@@ -302,7 +305,7 @@ class DynamicEvolver(OrchestratingEvolver):
             raise ValueError("SUPERSEDE 决策必须提供 existing memory")
         candidate.supersedes = existing.id
         candidate.provenance = list(set(candidate.provenance) | {existing.id})
-        candidate.metadata.update(
+        candidate.system_metadata.update(
             {
                 "dedup_decision": "supersede",
                 "dedup_similarity": str(similarity),

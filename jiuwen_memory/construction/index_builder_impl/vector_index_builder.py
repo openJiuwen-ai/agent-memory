@@ -47,7 +47,10 @@ def _index_metadata(
     ``metadata`` 值为 JSON 标量原生类型，后端据此在 top-k 截断前原生比较。
     UnitReader 复核读的是同一个对象，两侧判定一致。
     """
-    metadata = dict(unit.metadata)
+    metadata = {
+        **{f"system_metadata.{key}": value for key, value in unit.system_metadata.items()},
+        **{f"user_metadata.{key}": value for key, value in unit.user_metadata.items()},
+    }
     metadata.update(
         {
             "unit_id": unit.id,

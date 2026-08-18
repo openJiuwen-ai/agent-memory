@@ -112,7 +112,7 @@ def test_engine_write_uses_pipeline_profile_from_memory_type() -> None:
         "use pytest for this repo",
         scope,
         identity=scope,
-        metadata={"memory_type": "coding"},
+        system_metadata={"memory_type": "coding"},
     )
 
     assert _INDEX_BUILDERS["default"].built == []
@@ -132,7 +132,7 @@ def test_engine_recall_uses_pipeline_profile_from_context_extensions() -> None:
     assert [item.unit_id for item in result.items] == ["coding"]
 
 
-def test_engine_recall_uses_pipeline_profile_from_metadata_memory_type_filter() -> None:
+def test_engine_recall_uses_pipeline_profile_from_system_metadata_filter() -> None:
     kernel = build_kernel(config=_kernel_config())
     scope = Scope(user="u1")
 
@@ -140,7 +140,7 @@ def test_engine_recall_uses_pipeline_profile_from_metadata_memory_type_filter() 
         "test strategy",
         Context(scope=scope),
         identity=scope,
-        filters={"metadata.memory_type": "coding"},
+        filters={"system_metadata.memory_type": "coding"},
     )
 
     assert [item.unit_id for item in result.items] == ["coding"]

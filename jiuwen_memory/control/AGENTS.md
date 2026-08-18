@@ -39,6 +39,10 @@
 
 ## 行为铁律
 
+0. **系统控制只读 `system_metadata`**：Engine/Pipeline/PermissionContext 所需的
+   `infer` / `procedural` / `middle` / 路由和内部状态不得从 `user_metadata`
+   读取或 fallback。`MemoryPatch` 对两个命名空间分别 merge-update。
+
 1. **引擎不实现具体算法能力**：`MemoryEngine` 只编排，Ingestor/构建算子/Retriever/Store 全部由装配注入。Engine 可通过注入的 `KVStore` 完成接口语义要求的真源落盘/点读/删除，但禁止绕过 Store 抽象绑定具体后端或在 engine 内调用 LLM。
 2. **引擎方法一律异步协程**：同步调用由 `api/` 层自行桥接（`asyncio.run`），engine 内不做同步阻塞。
 3. **鉴权不在本层执行**：`PermissionManager.check` 由 `api/MemoryAPI` 在入口调用，engine 信任传入的 scope 已鉴权。Engine 提供 `permission_context_for_unit`、`list_with_permission_contexts` 和 `permission_contexts_for_delete`，供 API 使用真源 metadata 做类型化鉴权；list 的 items、count 与 contexts 必须来自同一次 KV 列表查询。禁止在 engine 内部重复 check。
@@ -66,7 +70,7 @@
 
 ## write 路径调用级开关（infer / procedural）
 
-`InMemoryEngine.write` 先经可选 `MemoryPipeline.select_for_write` 选择构建 profile，再据 `metadata` 下推的两个开关分三路（详见 `docs/features/api/F02-write-infer-extract.md` 决策6-8）：
+`InMemoryEngine.write` 先经可选 `MemoryPipeline.select_for_write` 选择构建 profile，再据 `system_metadata` 下推的两个开关分三路（详见 `docs/features/api/F02-write-infer-extract.md` 决策6-8）：
 
 - **`procedural="true"`**（过程记忆）：原文不落 KV；Extractor 汇总成一条 PROCEDURAL 后由 Evolver 直接落盘（`DynamicEvolver` 也走父类 procedural 路径，不判定）。
 - **`infer="true"`**（同步抽取）：原文落 `/messages/{id}` 但不建索引；Evolver 收集上下文后调用 Extractor，派生候选经 Evolver 落盘（`OrchestratingEvolver` 走 `_dedup_batch`，`DynamicEvolver` 走 consolidate→reflect→落盘）。
@@ -84,13 +88,13 @@ metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` /
 
 `MemoryPipeline` 是 control 层的跨构建/查询 profile 编排点：
 
-- 写入侧：`select_for_write(units)` 返回 `PipelineBinding`，默认 `metadata` 实现读取 `MemoryUnit.metadata[route_key]`（默认 `memory_type`）。
+- 写入侧：`select_for_write(units)` 返回 `PipelineBinding`，默认 `metadata` 实现读取 `MemoryUnit.system_metadata[route_key]`（默认 `memory_type`）。
 - 查询侧：`select_for_recall(query)` 返回 `PipelineBinding`，默认 `metadata` 实现优先
   读取 `RetrievalQuery.extensions[route_key]`，其次从规范化 FilterExpr 提取逻辑上
-  强制成立的 `metadata.<route_key>` 唯一等值（`memory_type` 裸字段仅作兼容别名）。
+  强制成立的 `system_metadata.<route_key>` 唯一等值（`memory_type` 裸字段仅作兼容别名）。
 - `PipelineBinding` 只绑定组件引用：`index_builder`、`evolver`、`retriever`、可选 `classifier`。
 - `InMemoryEngine` 仅接受 `space=""` 的本地兼容域，使用绑定后的 `index_builder/evolver/classifier` 处理 write；profile 选择 `OrchestratingEvolver` 或 `DynamicEvolver` 决定 EXTRACT 路径。recall 使用绑定后的 `retriever`；`list` 把分页、类型、过滤和 extensions 透传 `KVStore.list`，不经 pipeline。未注入 pipeline 时走原单 profile 字段。
-- `CloudEngine` 使用 `message_type`（默认 metadata key）选择构建/查询 profile，写入后固化 `metadata["message_type"]` 与 `metadata["pipeline"]`，并校验真源 unit.scope 与 target scope 一致。
+- `CloudEngine` 使用 `message_type`（默认 metadata key）选择构建/查询 profile，写入后固化 `system_metadata["message_type"]` 与 `system_metadata["pipeline"]`，并校验真源 unit.scope 与 target scope 一致。
 - 未配置 `pipeline.default` 时不启用 pipeline，行为等价旧单 pipeline；用户通过 YAML 显式声明后启用。
 
 ## 本地约束
@@ -98,7 +102,7 @@ metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` /
 - `types.py` 中 `DeleteSelector` 各条件取「与」关系，至少给出一项；Engine 收到空 selector 必须抛 `ValidationError`
 - `UpdateMode.SUPERSEDE`（默认）生成新 id，旧 id 标记 superseded——`update` 返回的记忆 id 可能与传入的 `unit_id` 不同
 - `DeleteMode.PURGE` 是唯一物理删除路径；会删除真源、移除索引，并递归删除 provenance 后代
-- `DeleteMode.DOWNWEIGHT` 不改变 lifecycle，只降低 `metadata.importance`
+- `DeleteMode.DOWNWEIGHT` 不改变 lifecycle，只降低 `system_metadata.importance`
 - 运行时策略的读写职责归 `PolicyManager`；Engine 不承载具体策略存储或策略键校验逻辑
 - space 元数据、space policy、成员和 offboarding 状态职责归 `SpaceManager`；Engine 的 `purge_space` 负责枚举目标 `org + space` 的全部子 Scope 并清理记忆真源与索引
 - `PolicyManager` 只管理运行时可变策略；未知 key 或试图新增 key 必须抛 `PolicyError`

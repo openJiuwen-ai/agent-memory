@@ -243,7 +243,7 @@ def test_write_procedural_takes_precedence_over_middle() -> None:
         engine.write(
             "hello",
             scope,
-            metadata={"procedural": "true", "middle": "true"},
+            system_metadata={"procedural": "true", "middle": "true"},
         )
     )
 
@@ -262,7 +262,7 @@ def test_write_infer_middle_submits_middle_to_long_job() -> None:
         engine.write(
             "alice likes tea",
             scope,
-            metadata={"infer": "true", "middle": "true"},
+            system_metadata={"infer": "true", "middle": "true"},
         )
     )
 
@@ -280,7 +280,7 @@ def test_write_infer_middle_submits_middle_to_long_job() -> None:
     assert len(units) >= 1
     persisted = loads(kv.get(scope, memory_key(units[0].id)))
     assert persisted.tier == MemoryTier.WORKING
-    assert persisted.metadata.get("middle") == "true"
+    assert persisted.system_metadata.get("middle") == "true"
     # 立即可检索（index.build 已调）
     assert index.built == units
 
@@ -300,7 +300,7 @@ def test_write_infer_middle_passes_engine_middle_params_to_job() -> None:
         engine.write(
             "x",
             scope,
-            metadata={
+            system_metadata={
                 "infer": "true",
                 "middle": "true",
                 "middle_interval": "30",  # 经 metadata 透传，覆盖 Spec 默认 50
@@ -314,7 +314,7 @@ def test_write_infer_middle_passes_engine_middle_params_to_job() -> None:
     assert job._batch_size == 5  # pylint: disable=protected-access
     assert job._concurrency == 2  # pylint: disable=protected-access
     persisted = loads(kv.get(scope, memory_key(units[0].id)))
-    assert "middle_interval" not in persisted.metadata
+    assert "middle_interval" not in persisted.system_metadata
 
 
 def test_write_infer_without_middle_does_not_submit_job() -> None:
@@ -335,7 +335,7 @@ def test_write_infer_without_middle_does_not_submit_job() -> None:
     scope = Scope(org="acme", user="u1")
 
     units = asyncio.run(
-        engine.write("hello", scope, metadata={"infer": "true"})
+        engine.write("hello", scope, system_metadata={"infer": "true"})
     )
 
     assert scheduler.calls == []
@@ -353,7 +353,7 @@ def test_write_default_path_persists_original_without_middle() -> None:
     assert units
     persisted = loads(kv.get(scope, memory_key(units[0].id)))
     assert persisted.tier == MemoryTier.EPISODIC
-    assert persisted.metadata.get("middle") is None
+    assert persisted.system_metadata.get("middle") is None
     assert index.built == units  # 默认路径也建索引
 
 
@@ -372,7 +372,7 @@ def test_write_middle_raises_when_job_factory_is_none() -> None:
 
     with pytest.raises(RuntimeError, match="middle path requires job_factory"):
         asyncio.run(
-            engine.write("x", scope, metadata={"infer": "true", "middle": "true"})
+            engine.write("x", scope, system_metadata={"infer": "true", "middle": "true"})
         )
 
 
@@ -384,7 +384,7 @@ def test_write_middle_raises_when_evolver_is_none() -> None:
 
     with pytest.raises(RuntimeError, match="middle=true requires an Evolver"):
         asyncio.run(
-            engine.write("x", scope, metadata={"infer": "true", "middle": "true"})
+            engine.write("x", scope, system_metadata={"infer": "true", "middle": "true"})
         )
 
 
@@ -400,8 +400,8 @@ def test_write_middle_repeated_submits_jobs_to_scheduler() -> None:
     engine, scheduler, _, _ = _build_engine()
     scope = Scope(org="acme", user="u1")
 
-    asyncio.run(engine.write("first", scope, metadata={"infer": "true", "middle": "true"}))
-    asyncio.run(engine.write("second", scope, metadata={"infer": "true", "middle": "true"}))
+    asyncio.run(engine.write("first", scope, system_metadata={"infer": "true", "middle": "true"}))
+    asyncio.run(engine.write("second", scope, system_metadata={"infer": "true", "middle": "true"}))
 
     # Engine 不感知 Scheduler 的复用语义——每次都 submit
     assert len(scheduler.calls) == 2
@@ -441,14 +441,14 @@ def test_write_middle_with_in_process_scheduler_runs_job_to_completion() -> None
     scope = Scope(org="acme", user="u1")
 
     units = asyncio.run(
-        engine.write("alice likes tea", scope, metadata={"infer": "true", "middle": "true"})
+        engine.write("alice likes tea", scope, system_metadata={"infer": "true", "middle": "true"})
     )
 
     # 原文落盘 + tier=WORKING + metadata.middle=true
     assert len(units) >= 1
     persisted = loads(kv.get(scope, memory_key(units[0].id)))
     assert persisted.tier == MemoryTier.WORKING
-    assert persisted.metadata.get("middle") == "true"
+    assert persisted.system_metadata.get("middle") == "true"
     assert index.built == units  # 立即建索引
 
     # InProcessScheduler 立即跑完 MiddleToLongJob.run——KV 只有 1 条原文
@@ -480,7 +480,7 @@ def test_write_middle_with_in_process_scheduler_preserves_originals_on_failure()
     scope = Scope(org="acme", user="u1")
 
     units = asyncio.run(
-        engine.write("alice likes tea", scope, metadata={"infer": "true", "middle": "true"})
+        engine.write("alice likes tea", scope, system_metadata={"infer": "true", "middle": "true"})
     )
 
     # Job FAILED——evolver 抛错,串行分支 try/except 吞掉 + 不归档原文

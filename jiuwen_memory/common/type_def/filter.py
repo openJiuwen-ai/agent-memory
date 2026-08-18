@@ -86,28 +86,57 @@ _SCOPE_FIELDS = frozenset({"scope", "tenant", "org", "space", "user", "agent", "
 _SET_OPS = frozenset({FilterOp.IN, FilterOp.NOT_IN})
 _RANGE_OPS = frozenset({FilterOp.GT, FilterOp.GTE, FilterOp.LT, FilterOp.LTE})
 _LOGIC_KEYS = {"AND": FilterLogic.AND, "OR": FilterLogic.OR, "NOT": FilterLogic.NOT}
-_METADATA_PREFIX = "metadata."
+_USER_METADATA_PREFIX = "user_metadata."
+_SYSTEM_METADATA_PREFIX = "system_metadata."
+_BUILTIN_FIELDS = frozenset(
+    {
+        "tags",
+        "tier",
+        "source",
+        "lifecycle",
+        "unit_id",
+        "id",
+        "t_event",
+        "t_valid",
+        "t_invalid",
+        "t_message",
+        "content_layer",
+        "seq",
+    }
+)
 
 # memory_type 的过滤字段采用唯一规范名；裸 ``memory_type`` 仅作为旧输入别名在 normalize
 # 边界转换，权限路由、Pipeline、Store 和 UnitReader 内部一律只见该规范名。
-MEMORY_TYPE_FILTER_FIELD = "metadata.memory_type"
+MEMORY_TYPE_FILTER_FIELD = "system_metadata.memory_type"
 
 
 def canonical_filter_field(name: str) -> str:
     """把兼容字段名转换为内核规范名。"""
-    return MEMORY_TYPE_FILTER_FIELD if name == "memory_type" else name
+    if name in _SCOPE_FIELDS or name.startswith("scope_"):
+        return name
+    if name == "memory_type":
+        return MEMORY_TYPE_FILTER_FIELD
+    if "." not in name and name not in _BUILTIN_FIELDS:
+        return f"user_metadata.{name}"
+    return name
 
 
 def filter_field_metadata_key(name: str) -> str:
-    """把 Filter 字段名映射为 Store/MemoryUnit ``metadata`` 中的实际 key。"""
-    return name.removeprefix(_METADATA_PREFIX)
+    """返回索引中的规范字段名。"""
+    return name
 
 
 def _check_field(name: str) -> None:
     if not isinstance(name, str) or not name or name != name.strip():
         raise ValidationError("filter 字段名必须是非空字符串")
-    if name == _METADATA_PREFIX:
+    if name.startswith("metadata.") or name == "metadata":
+        raise ValidationError("metadata 命名空间已移除；请使用 user_metadata.<key>")
+    if name in {_USER_METADATA_PREFIX, _SYSTEM_METADATA_PREFIX}:
         raise ValidationError("metadata filter 字段必须包含 key")
+    if "." in name and not name.startswith(
+        (_USER_METADATA_PREFIX, _SYSTEM_METADATA_PREFIX)
+    ):
+        raise ValidationError(f"未知的 filter 字段命名空间：{name!r}")
     if name in _SCOPE_FIELDS or name.startswith("scope_"):
         raise ValidationError(f"scope 字段不得出现在 filters：{name!r}")
 

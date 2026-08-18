@@ -19,7 +19,7 @@
 | `type_def/scope.py` | Scope：`org/space/user/agent/session` 五维归属；非空 `space` 是全局唯一的逻辑隔离标识且为 keyword-only，旧位置参数保持 `org/user/agent/session` 顺序 |
 | `type_def/filter.py` | FilterClause/FilterGroup/FilterExpr 及 normalize/evaluate；统一 API、检索和存储的树形过滤契约 |
 | `type_def/memory_filter.py` | MemoryUnit 字段投影与 FilterExpr 公共求值；供 retrieval 真源复核和 KV list 兼容实现共用 |
-| `type_def/memory_codec.py` | `MemoryUnit` ↔ bytes 编解码（`dumps`/`loads`）；当前 `_v=3`，序列化 `layers`({l0,l1}) 与五段 scope，缺失取默认容错老数据，详见 F01-memory-layer / F03-scope-space-isolation |
+| `type_def/memory_codec.py` | `MemoryUnit` ↔ bytes 编解码（`dumps`/`loads`）；当前 `_v=4`，分别序列化 `system_metadata` / `user_metadata`，拒绝未迁移的 `_v<4` MemoryUnit |
 | `type_def/raw.py` | RawPayload；KV key 前缀 `MESSAGES_KEY_PREFIX`/`messages_key`（未建索引 infer 原文 `/messages/{id}`） |
 | `type_def/audit.py` | AuditEvent：记录 actor scope、target scope、action、decision、target_id 与 detail |
 | `factory/factory.py` | Factory 基类：`TOP_NAME` 注册 + 三接口 `build`/`build_named`/`dep`（配置数据结构 `ComponentConfig`/`AssemblyContext`/`RawSpec` 在 `config/context.py`） |
@@ -52,10 +52,10 @@
 5. **共享插件必须双侧同一**
    Embedder/Tokenizer/FeatureExtractor 必须在构建侧与检索侧使用同一实现/同一配置，保证同词表/同向量空间。靠配置里「具名 + 引用」显式表达共享：双侧 `dep` 引用同一具名实例 → `build_named` 命中同一缓存键 → 同一实例。
 
-6. **业务 metadata 保留原生类型**
-   `MemoryUnit` / `RawPayload` / `Chunk` / `Relation` 的 metadata 使用 `dict[str, Any]`；
-   不在公共类型层统一 string 化。过滤只做严格类型与形态比较，不推测字符串数值的业务
-   含义；`EQ` / `IN` 匹配标量，`CONTAINS` 只做数组成员匹配。
+6. **MemoryUnit metadata 双命名空间**
+   `MemoryUnit` / `RawPayload` 只使用 `system_metadata` 和 `user_metadata`，共用
+   `MetadataValueType`；系统不解释用户命名空间。`Chunk` / `Relation` 等独立模型的
+   `metadata` 保持自身契约，不机械改名。
 
 ## 与其他子目录的边界
 

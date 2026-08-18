@@ -44,7 +44,7 @@ class EvolveJob(Job):
         # 避免同一原文被两次处理。
         page = await asyncio.to_thread(self._storage.list, self.scope, limit=1_000_000)
         units = [
-            unit for unit in page.items if unit.metadata.get("middle") != "true"
+            unit for unit in page.items if unit.system_metadata.get("middle") != "true"
         ]
         result = await asyncio.to_thread(self._evolver.evolve, units, self._mode)
         return JobInfo(

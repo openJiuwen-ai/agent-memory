@@ -11,9 +11,9 @@ from __future__ import annotations
 import asyncio
 import copy
 import uuid
-from typing import Any
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from jiuwen_memory.common.errors import AgentMemoryError, NotFoundError, ValidationError
 from jiuwen_memory.common.log import get_logger
@@ -22,11 +22,11 @@ from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryTier,
     MemoryUnit,
+    MetadataValueType,
     Modality,
     RawPayload,
     Scope,
     Segment,
-    TRANSIENT_METADATA_KEYS,
 )
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
@@ -57,6 +57,7 @@ from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
 from jiuwen_memory.storage.storage import Storage, StorageProducer
 
 logger = get_logger(__name__)
+_TRANSIENT_EXTENSION_KEYS = frozenset({"db_query_service", "encryption_port"})
 
 _LIFECYCLE_OF_DELETE = {
     DeleteMode.FORGET: LifecycleState.FORGOTTEN,
@@ -83,11 +84,10 @@ def _apply_patch(old: MemoryUnit, patch: MemoryPatch) -> MemoryUnit:
         new.tier = patch.tier
     if patch.tags is not None:
         new.tags = list(patch.tags)
-    if patch.metadata is not None:
-        new.metadata.update({
-            key: value if key in TRANSIENT_METADATA_KEYS else str(value)
-            for key, value in patch.metadata.items()
-        })
+    if patch.system_metadata is not None:
+        new.system_metadata.update(patch.system_metadata)
+    if patch.user_metadata is not None:
+        new.user_metadata.update(patch.user_metadata)
     if patch.t_valid is not None:
         new.temporal.t_valid = patch.t_valid
     if patch.t_invalid is not None:
@@ -115,12 +115,12 @@ def _valid_sort_key(unit: MemoryUnit) -> datetime:
 
 
 def _downweight_importance(unit: MemoryUnit) -> None:
-    raw = unit.metadata.get("importance")
+    raw = unit.system_metadata.get("importance")
     try:
         value = float(raw) if raw is not None else 1.0
     except ValueError:
         value = 1.0
-    unit.metadata["importance"] = f"{max(0.0, value * 0.5):g}"
+    unit.system_metadata["importance"] = f"{max(0.0, value * 0.5):g}"
 
 
 @dataclass(frozen=True)
@@ -144,8 +144,8 @@ def _scoped_unit_id(scope: Scope, unit_id: str) -> _ScopedUnitId:
     )
 
 
-def _truthy(metadata: dict[str, str], key: str) -> bool:
-    return metadata.get(key, "").strip().lower() == "true"
+def _truthy(metadata: dict[str, MetadataValueType], key: str) -> bool:
+    return str(metadata.get(key, "")).strip().lower() == "true"
 
 
 def _matches_delete_selector(unit: MemoryUnit, selector: DeleteSelector) -> bool:
@@ -186,12 +186,12 @@ def _expand_provenance_descendants(
 def _permission_context_from_unit(unit: MemoryUnit) -> PermissionContext:
     return PermissionContext(
         resource_type="memory_unit",
-        memory_type=str(unit.metadata.get("memory_type", "")).strip(),
-        pipeline=str(unit.metadata.get("pipeline", "")).strip(),
+        memory_type=str(unit.system_metadata.get("memory_type", "")).strip(),
+        pipeline=str(unit.system_metadata.get("pipeline", "")).strip(),
         unit_id=unit.id,
         scope=unit.scope,
         tags=tuple(unit.tags),
-        metadata=dict(unit.metadata),
+        metadata={key: str(value) for key, value in unit.system_metadata.items()},
     )
 
 
@@ -245,10 +245,11 @@ class CloudEngine(MemoryEngine):
         *,
         assets: list[str] | None = None,
         tags: list[str] | None = None,
-        metadata: dict[str, str] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
-        raw_meta = dict(metadata or {})
+        raw_meta = dict(system_metadata or {})
         procedural = _truthy(raw_meta, "procedural")
         infer = _truthy(raw_meta, "infer")
         middle = _truthy(raw_meta, "middle")  # 二级开关（仅在 infer=true 下生效）
@@ -266,7 +267,8 @@ class CloudEngine(MemoryEngine):
             scope=scope,
             modality=source,
             data=content.encode("utf-8"),
-            metadata=meta,
+            system_metadata=meta,
+            user_metadata=dict(user_metadata or {}),
             occurred_at=occurred_at,
         )
         units = self._ingestor.ingest([payload])
@@ -353,7 +355,8 @@ class CloudEngine(MemoryEngine):
                     item.source,
                     assets=item.assets,
                     tags=item.tags,
-                    metadata=item.metadata,
+                    system_metadata=item.system_metadata,
+                    user_metadata=item.user_metadata,
                     occurred_at=item.occurred_at,
                 )
                 outcomes.append(BatchWriteOutcome(index=index, item=item, units=units))
@@ -400,8 +403,8 @@ class CloudEngine(MemoryEngine):
         注入 binding 选的——保证 Job 内部 evolver/index 与原文落盘时一致（否则原文用
         chat_index 建索引但归档调 default_index.remove，索引不会被正确清理）。
 
-        ``middle_interval`` 经 write metadata 透传（不落盘到 unit.metadata），``None``
-        时由 Spec 装配期默认兜底。
+        ``middle_interval`` 经 write 的 ``system_metadata`` 透传，但不落盘到生成的
+        ``MemoryUnit.system_metadata``；``None`` 时由 Spec 装配期默认兜底。
         """
         if self._job_factory is None:
             raise RuntimeError(
@@ -415,7 +418,7 @@ class CloudEngine(MemoryEngine):
 
         for unit in units:
             unit.tier = MemoryTier.WORKING
-            unit.metadata["middle"] = "true"
+            unit.system_metadata["middle"] = "true"
         await asyncio.to_thread(self._write_middle_to_kv, scope, units)
         await asyncio.to_thread(index_builder.build, units)
 
@@ -536,7 +539,7 @@ class CloudEngine(MemoryEngine):
         self._normalize_unit_metadata(new)
         new_binding = self._write_binding([new])
         new_pipeline = new_binding.name if new_binding is not None else self._default_pipeline_name
-        new.metadata["pipeline"] = new_pipeline
+        new.system_metadata["pipeline"] = new_pipeline
         new_index = new_binding.index_builder if new_binding is not None else self._index
 
         if patch.mode == UpdateMode.OVERWRITE:
@@ -692,31 +695,27 @@ class CloudEngine(MemoryEngine):
     async def admin_all(self) -> dict[str, str]:
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")
 
-    def _normalized_metadata(self, metadata: dict[str, Any] | None) -> dict[str, str]:
-        meta = {}
-        for key, value in (metadata or {}).items():
-            # 瞬态 key 保留原始对象（透传到 storage 层消费，不落盘）
-            if key in TRANSIENT_METADATA_KEYS:
-                meta[key] = value
-            else:
-                meta[key] = str(value)
-        message_type = meta.get(self._message_type_key, "").strip() or self._default_message_type
+    def _normalized_metadata(
+        self, metadata: dict[str, MetadataValueType] | None
+    ) -> dict[str, MetadataValueType]:
+        meta = dict(metadata or {})
+        message_type = (
+            str(meta.get(self._message_type_key, "")).strip()
+            or self._default_message_type
+        )
         if message_type:
             meta[self._message_type_key] = message_type
         return meta
 
     def _normalize_unit_metadata(self, unit: MemoryUnit) -> None:
-        meta = {}
-        for key, value in unit.metadata.items():
-            # 瞬态 key 保留原始对象（透传到 storage 层消费，不落盘）
-            if key in TRANSIENT_METADATA_KEYS:
-                meta[key] = value
-            else:
-                meta[key] = str(value)
-        message_type = meta.get(self._message_type_key, "").strip() or self._default_message_type
+        meta = dict(unit.system_metadata)
+        message_type = (
+            str(meta.get(self._message_type_key, "")).strip()
+            or self._default_message_type
+        )
         if message_type:
             meta[self._message_type_key] = message_type
-        unit.metadata = meta
+        unit.system_metadata = meta
 
     def _normalized_query(self, query: RetrievalQuery) -> RetrievalQuery:
         value = str(query.extensions.get(self._message_type_key, "")).strip()
@@ -724,9 +723,14 @@ class CloudEngine(MemoryEngine):
             return query
         # 瞬态 key（db_query_service / encryption_port 等）的值可能是不可深拷贝的对象，
         # 深拷贝前临时剥离，拷贝后原样装回。
-        transient = {k: v for k, v in query.extensions.items() if k in TRANSIENT_METADATA_KEYS}
+        transient = {
+            k: v for k, v in query.extensions.items() if k in _TRANSIENT_EXTENSION_KEYS
+        }
         if transient:
-            query.extensions = {k: v for k, v in query.extensions.items() if k not in TRANSIENT_METADATA_KEYS}
+            query.extensions = {
+                k: v for k, v in query.extensions.items()
+                if k not in _TRANSIENT_EXTENSION_KEYS
+            }
         routed = copy.deepcopy(query)
         if transient:
             query.extensions.update(transient)
@@ -738,14 +742,14 @@ class CloudEngine(MemoryEngine):
         self,
         units: list[MemoryUnit],
         scope: Scope,
-        metadata: dict[str, str],
+        system_metadata: dict[str, MetadataValueType],
         *,
         assets: list[str] | None,
         tags: list[str] | None,
     ) -> None:
         for unit in units:
             self._ensure_unit_scope(unit, scope)
-            unit.metadata.update(metadata)
+            unit.system_metadata.update(system_metadata)
             if assets:
                 if not unit.segments:
                     unit.segments = [Segment(assets=list(assets), source=unit.source)]
@@ -757,7 +761,7 @@ class CloudEngine(MemoryEngine):
         if not pipeline_name:
             return
         for unit in units:
-            unit.metadata["pipeline"] = pipeline_name
+            unit.system_metadata["pipeline"] = pipeline_name
 
     def _write_binding(self, units: list[MemoryUnit]) -> PipelineBinding | None:
         if self._pipeline is None:

@@ -112,8 +112,8 @@ def _unit(
         scope=scope,
         segments=[Segment(content=unit_id)],
         temporal=Temporal(t_ingest=datetime(2026, 7, day, tzinfo=timezone.utc)),
-        metadata={
-            "memory_type": memory_type,
+        system_metadata={"memory_type": memory_type},
+        user_metadata={
             "project": project,
             "priority": priority,
         },
@@ -169,8 +169,8 @@ def test_kv_list_filters_counts_sorts_and_paginates(kv_store) -> None:
     filters = FilterGroup(
         FilterLogic.AND,
         [
-            FilterClause("metadata.project", FilterOp.EQ, "alpha"),
-            FilterClause("metadata.priority", FilterOp.GTE, 1),
+            FilterClause("user_metadata.project", FilterOp.EQ, "alpha"),
+            FilterClause("user_metadata.priority", FilterOp.GTE, 1),
         ],
     )
     extensions = {"vendor_mode": "strict"}

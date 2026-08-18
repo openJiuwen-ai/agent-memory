@@ -22,6 +22,7 @@ from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryTier,
     MemoryUnit,
+    MetadataValueType,
     Modality,
     RawPayload,
     Scope,
@@ -74,8 +75,10 @@ def _apply_patch(old: MemoryUnit, patch: MemoryPatch) -> MemoryUnit:
         new.tier = patch.tier
     if patch.tags is not None:
         new.tags = list(patch.tags)
-    if patch.metadata is not None:
-        new.metadata.update(patch.metadata)
+    if patch.system_metadata is not None:
+        new.system_metadata.update(patch.system_metadata)
+    if patch.user_metadata is not None:
+        new.user_metadata.update(patch.user_metadata)
     if patch.t_valid is not None:
         new.temporal.t_valid = patch.t_valid
     if patch.t_invalid is not None:
@@ -107,12 +110,12 @@ def _valid_sort_key(unit: MemoryUnit) -> datetime:
 
 
 def _downweight_importance(unit: MemoryUnit) -> None:
-    raw = unit.metadata.get("importance")
+    raw = unit.system_metadata.get("importance")
     try:
         value = float(raw) if raw is not None else 1.0
     except ValueError:
         value = 1.0
-    unit.metadata["importance"] = f"{max(0.0, value * 0.5):g}"
+    unit.system_metadata["importance"] = f"{max(0.0, value * 0.5):g}"
 
 
 @dataclass(frozen=True)
@@ -144,12 +147,12 @@ def _ensure_local_scope(scope: Scope) -> None:
 def _permission_context_from_unit(unit: MemoryUnit) -> PermissionContext:
     return PermissionContext(
         resource_type="memory_unit",
-        memory_type=str(unit.metadata.get("memory_type", "")).strip(),
-        pipeline=str(unit.metadata.get("pipeline", "")).strip(),
+        memory_type=str(unit.system_metadata.get("memory_type", "")).strip(),
+        pipeline=str(unit.system_metadata.get("pipeline", "")).strip(),
         unit_id=unit.id,
         scope=unit.scope,
         tags=tuple(unit.tags),
-        metadata=dict(unit.metadata),
+        metadata={key: str(value) for key, value in unit.system_metadata.items()},
     )
 
 
@@ -241,7 +244,8 @@ class InMemoryEngine(MemoryEngine):
         *,
         assets: list[str] | None = None,
         tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
         _ensure_local_scope(scope)
@@ -256,7 +260,7 @@ class InMemoryEngine(MemoryEngine):
         # 开关按字符串判定（兼容 "true" 与 Python True），业务值保持原生类型落库——
         # 整体 str 化会让数值/布尔在索引里变成 keyword，range 退化为字典序。
         # middle / middle_interval 是调用级开关，不是 unit 持久属性——下面从 meta 剥除。
-        raw_meta = dict(metadata or {})
+        raw_meta = dict(system_metadata or {})
 
         def _is_true(key: str) -> bool:
             return str(raw_meta.get(key, "")).strip().lower() == "true"
@@ -279,7 +283,8 @@ class InMemoryEngine(MemoryEngine):
             scope=scope,
             modality=source,
             data=content.encode("utf-8"),
-            metadata=meta,
+            system_metadata=meta,
+            user_metadata=dict(user_metadata or {}),
             occurred_at=occurred_at,
         )
         # 三条路径共用：Ingestor 规约。
@@ -289,9 +294,9 @@ class InMemoryEngine(MemoryEngine):
                 unit.segments[0].assets = list(assets)
             unit.tags = list(tags or [])
             if middle:  # 中期缓冲标记——MiddleToLongJob 据此过滤候选
-                unit.metadata["middle"] = "true"
+                unit.system_metadata["middle"] = "true"
             if "session_id" in meta:
-                unit.metadata["session_id"] = meta["session_id"]
+                unit.system_metadata["session_id"] = meta["session_id"]
 
         binding = self._write_binding(units)
         evolver = binding.evolver if binding is not None else self._evolver
@@ -357,8 +362,9 @@ class InMemoryEngine(MemoryEngine):
     ) -> list[MemoryUnit]:
         """中期缓冲子路径：原文落 /memory/ + 建索引 + tier=WORKING + 提交定时 MiddleToLongJob。
 
-        ``middle_interval`` 经 write metadata 透传（不落盘到 unit.metadata），``None``
-        时由 Spec 装配期默认兜底，与 ``evolver=`` / ``index=`` 覆盖入参模式一致。
+        ``middle_interval`` 经 write 的 ``system_metadata`` 透传，但不落盘到生成的
+        ``MemoryUnit.system_metadata``；``None`` 时由 Spec 装配期默认兜底，与
+        ``evolver=`` / ``index=`` 覆盖入参模式一致。
         """
         if self._job_factory is None:
             raise RuntimeError(
@@ -372,7 +378,7 @@ class InMemoryEngine(MemoryEngine):
 
         for unit in units:
             unit.tier = MemoryTier.WORKING
-            unit.metadata["middle"] = "true"
+            unit.system_metadata["middle"] = "true"
         await asyncio.to_thread(self._write_middle_to_kv, scope, units)
         await asyncio.to_thread(index_builder.build, units)
 
@@ -415,7 +421,8 @@ class InMemoryEngine(MemoryEngine):
                     item.source,
                     assets=item.assets,
                     tags=item.tags,
-                    metadata=item.metadata,
+                    system_metadata=item.system_metadata,
+                    user_metadata=item.user_metadata,
                     occurred_at=item.occurred_at,
                 )
                 outcomes.append(BatchWriteOutcome(index=index, item=item, units=units))

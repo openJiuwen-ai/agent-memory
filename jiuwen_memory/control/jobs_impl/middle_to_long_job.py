@@ -244,7 +244,7 @@ class MiddleToLongJob(Job):
                 continue
             if u.lifecycle != LifecycleState.ACTIVE:
                 continue
-            if u.metadata.get("middle") != "true":
+            if u.system_metadata.get("middle") != "true":
                 continue
             candidates.append(u)
         candidates.sort(

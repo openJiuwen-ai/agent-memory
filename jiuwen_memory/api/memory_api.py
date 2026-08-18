@@ -24,6 +24,7 @@ from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterExpr,
     MemoryUnit,
+    MetadataValueType,
     Modality,
     Scope,
 )
@@ -75,7 +76,8 @@ class MemoryAPI(ABC):
         identity: Scope,
         assets: list[str] | None = None,
         tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
         """同步写入记忆；阻塞至 hot path 完成并返回本次插入的记忆单元。"""
@@ -90,7 +92,8 @@ class MemoryAPI(ABC):
         identity: Scope,
         assets: list[str] | None = None,
         tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
         """异步写入记忆；语义与 :meth:`add` 一致并直通引擎协程。"""
@@ -104,7 +107,8 @@ class MemoryAPI(ABC):
         *,
         identity: Scope,
         tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
         stream_id: str = "",
         continue_on_error: bool = True,
@@ -120,7 +124,8 @@ class MemoryAPI(ABC):
         *,
         identity: Scope,
         tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
         stream_id: str = "",
         continue_on_error: bool = True,

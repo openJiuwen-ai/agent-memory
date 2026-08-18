@@ -82,7 +82,9 @@ class DynamicLLMExtractor(Extractor):
         """按 metadata 中的 prompt 策略抽取；无策略时委托 fallback。"""
         prompts: list[tuple[str, str]] = []
         for unit in units:
-            prompts.extend(parse_prompt_strategies(unit.metadata, EXTRACT_PROMPT_PREFIX))
+            prompts.extend(
+                parse_prompt_strategies(unit.system_metadata, EXTRACT_PROMPT_PREFIX)
+            )
         if not prompts:
             extracted = self._fallback.extract(units, context=context)
             copy_consolidation_prompts(units, extracted)
@@ -107,7 +109,7 @@ class DynamicLLMExtractor(Extractor):
                 continue
             successful_strategies += 1
             for unit in built:
-                unit.metadata[EXTRACTION_STRATEGY_KEY] = strategy
+                unit.system_metadata[EXTRACTION_STRATEGY_KEY] = strategy
             copy_consolidation_prompts(units, built)
             result.extend(built)
         if successful_strategies == 0 and last_error is not None:
@@ -128,9 +130,9 @@ class DynamicLLMExtractor(Extractor):
             prompt = prompt_key
         observation_date = next(
             (
-                str(unit.metadata.get("observation_date", "")).strip()
+                str(unit.system_metadata.get("observation_date", "")).strip()
                 for unit in units
-                if unit.metadata.get("observation_date")
+                if unit.system_metadata.get("observation_date")
             ),
             datetime.now(timezone.utc).isoformat(),
         )

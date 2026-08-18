@@ -33,25 +33,25 @@ from .filter import (
     normalize,
     validate,
 )
-from .memory_filter import matches_memory_unit
-from .normalizer import EntityNormalizer
 from .memory import (
     MEMORY_KEY_PREFIX,
-    RESERVED_METADATA_KEYS,
     T_EVENT_UNKNOWN,
     T_INVALID_OPEN,
-    TRANSIENT_METADATA_KEYS,
     ContentLayers,
     DedupDecision,
     LifecycleState,
     MemoryTier,
     MemoryUnit,
+    MetadataValueType,
     Modality,
     Segment,
     Temporal,
+    inherited_system_metadata,
+    inherited_user_metadata,
     memory_key,
 )
 from .memory_filter import matches_memory_unit
+from .normalizer import EntityNormalizer
 from .raw import MESSAGES_KEY_PREFIX, RawPayload, messages_key
 from .retrieval import (
     CandidateFuser,
@@ -88,7 +88,10 @@ __all__ = [
     "Temporal",
     "Segment",
     "MemoryUnit",
+    "MetadataValueType",
     "ContentLayers",
+    "inherited_system_metadata",
+    "inherited_user_metadata",
     "RawPayload",
     "Chunk",
     "Entity",
@@ -122,10 +125,8 @@ __all__ = [
     "extract_required_equality",
     "from_dict",
     "MEMORY_KEY_PREFIX",
-    "RESERVED_METADATA_KEYS",
     "T_INVALID_OPEN",
     "T_EVENT_UNKNOWN",
-    "TRANSIENT_METADATA_KEYS",
     "MESSAGES_KEY_PREFIX",
     "memory_key",
     "messages_key",

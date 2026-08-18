@@ -22,6 +22,7 @@ pytestmark = pytest.mark.unit
 def test_l0_truncates_and_l2_returns_full_content(unit_factory) -> None:
     content = "word " * 40
     unit = unit_factory("u1", content)
+    unit.user_metadata = {"project": "alpha"}
     discloser = TruncatingDiscloser()
     candidates = [ScoredUnit("u1", 1.0, RecallChannel.VECTOR)]
     units = {"u1": unit}
@@ -30,6 +31,7 @@ def test_l0_truncates_and_l2_returns_full_content(unit_factory) -> None:
     l0 = discloser.disclose(ParsedQuery(raw="x"), candidates, units, DisclosureLevel.L0)[0]
 
     assert l2.content == content  # L2 全文
+    assert l2.user_metadata == {"project": "alpha"}
     assert len(l0.abstract) < len(l2.content)  # L0 摘要比全文短
     assert l0.abstract.endswith("…")
 
@@ -76,7 +78,7 @@ def test_truncating_adaptive_falls_back_to_l0(unit_factory) -> None:
 
 def test_structured_l0_returns_memory_card(unit_factory) -> None:
     unit = unit_factory("u1", "packages/foo should use pnpm for dependency installs.", tags=["repo"])
-    unit.metadata["summary"] = "packages/foo 使用 pnpm 作为包管理器。"
+    unit.system_metadata["summary"] = "packages/foo 使用 pnpm 作为包管理器。"
     discloser = StructuredDiscloser()
     candidates = [
         ScoredUnit(

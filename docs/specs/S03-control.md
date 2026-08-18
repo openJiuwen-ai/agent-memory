@@ -5,8 +5,15 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/control/ |
-| 最近一次修订日期 | 2026-08-12 |
+| 最近一次修订日期 | 2026-08-18 |
+| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md |
+## Metadata 编排契约
+
+`MemoryEngine.write` 分别接收两个命名空。引擎控制流、pipeline 路由、权限上下文
+和内部状态只读 `system_metadata`；`user_metadata` 只透传给领域对象、索引和返回链路。
+`infer` / `procedural` / `middle` 不得从用户命名空读取。
+
 ## 范围 / 边界
 
 **管什么**：
@@ -146,10 +153,10 @@ pipeline:
 
 路由规则：
 
-- 写入侧读取 `MemoryUnit.metadata[route_key]`。
+- 写入侧读取 `MemoryUnit.system_metadata[route_key]`。
 - 查询侧优先读取 `RetrievalQuery.extensions[route_key]`，其次从规范化
-  `FilterExpr` 提取逻辑上强制成立的 `metadata.<route_key>` 唯一等值；
-  `memory_type` 裸字段仅作为 `metadata.memory_type` 的旧输入别名。
+  `FilterExpr` 提取逻辑上强制成立的 `system_metadata.<route_key>` 唯一等值；
+  `memory_type` 裸字段仅作为 `system_metadata.memory_type` 的输入别名。
 - `routes` 把路由值映射到 profile 名；未命中时若路由值本身是 profile 名则直接使用，否则退回 `fallback`。
 - 未配置 `pipeline.default` 时不启用 pipeline，行为等价旧单 pipeline；用户通过 YAML 显式声明后启用。
 

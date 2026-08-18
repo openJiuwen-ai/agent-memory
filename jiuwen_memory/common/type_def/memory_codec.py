@@ -24,7 +24,6 @@ from .memory import (
     Modality,
     Segment,
     Temporal,
-    TRANSIENT_METADATA_KEYS,
 )
 from .scope import Scope
 
@@ -33,9 +32,9 @@ from .scope import Scope
 # 含义/结构才升版本并在 loads 里按 _v 分支。
 # _v=2：内容侧由扁平 content/assets/source 改为 segments 列表（破坏性结构变更）；
 #       loads 对 _v<2 的老数据把单一 content/assets/source 读成单元素 segments。
-# _v=3：scope 由 org/user/agent/session 四段扩展为 org/space/user/agent/session 五段；
-#       loads 对 _v<3 的老数据把 space 读成空字符串。
-_V = 3
+# _v=4：metadata 破坏性拆分为 system_metadata / user_metadata。不在运行时
+#       猜测旧混合字段的归属；旧数据必须先显式迁移。
+_V = 4
 
 
 def _dt(value: datetime | None) -> str | None:
@@ -79,7 +78,8 @@ def dumps(unit: MemoryUnit) -> bytes:
             "provenance": list(unit.provenance),
             "supersedes": unit.supersedes,
             "tags": list(unit.tags),
-            "metadata": {k: v for k, v in unit.metadata.items() if k not in TRANSIENT_METADATA_KEYS},
+            "system_metadata": dict(unit.system_metadata),
+            "user_metadata": dict(unit.user_metadata),
             "lifecycle": unit.lifecycle.value,
             "entities": list(unit.entities),
         },
@@ -102,7 +102,14 @@ def loads(raw: bytes) -> MemoryUnit | None:
     payload = json.loads(raw.decode("utf-8"))
     if not isinstance(payload, dict):
         return None
+    if "id" not in payload:
+        return None
     version = payload.get("_v", 1)  # 据此分流破坏性变更
+    if version < 4:
+        raise ValueError(
+            "MemoryUnit codec version < 4 uses mixed metadata; run the explicit metadata "
+            "migration before loading it"
+        )
     raw_scope = list(payload.get("scope") or [])
     padded_scope = (raw_scope + ["", "", "", "", ""])[:5]
     tm = (list(payload.get("temporal") or []) + [None, None, None, None, None])[:5]
@@ -162,7 +169,8 @@ def loads(raw: bytes) -> MemoryUnit | None:
         provenance=list(payload.get("provenance") or []),
         supersedes=payload.get("supersedes", ""),
         tags=list(payload.get("tags") or []),
-        metadata=dict(payload.get("metadata") or {}),
+        system_metadata=dict(payload.get("system_metadata") or {}),
+        user_metadata=dict(payload.get("user_metadata") or {}),
         lifecycle=LifecycleState(payload.get("lifecycle", LifecycleState.ACTIVE.value)),
         entities=list(payload.get("entities") or []),
     )

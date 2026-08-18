@@ -103,7 +103,7 @@ class _XmlDynamicExtractor(DynamicLLMExtractor):
                     tier=MemoryTier.SEMANTIC,
                     segments=[Segment(content=content, source=source.source)],
                     provenance=[source.id],
-                    metadata={"parser_format": "xml"},
+                    system_metadata={"parser_format": "xml"},
                 )
             )
         return result
@@ -148,7 +148,7 @@ def _unit(unit_id: str, content: str, metadata=None) -> MemoryUnit:
         scope=Scope(org="org", user="user"),
         tier=MemoryTier.EPISODIC,
         segments=[Segment(content=content, source=Modality.TEXT)],
-        metadata=dict(metadata or {}),
+        system_metadata=dict(metadata or {}),
     )
 
 
@@ -208,12 +208,12 @@ def test_dynamic_extractor_runs_each_custom_strategy_and_keeps_consolidation_pro
     result = extractor.extract([source])
 
     assert len(result) == 2
-    assert [unit.metadata["_extraction_strategy"] for unit in result] == [
+    assert [unit.system_metadata["_extraction_strategy"] for unit in result] == [
         "episodic",
         "custom",
     ]
     assert all(
-        unit.metadata["_consolidation_prompt_episodic"] == "按事件时序巩固"
+        unit.system_metadata["_consolidation_prompt_episodic"] == "按事件时序巩固"
         for unit in result
     )
     assert llm.messages[0][0].content == "只抽取事件"
@@ -264,9 +264,9 @@ def test_dynamic_extractor_subclass_can_parse_xml_into_memory_units():
     assert isinstance(result[0], MemoryUnit)
     assert result[0].content == "XML抽取结果"
     assert result[0].provenance == ["source-1"]
-    assert result[0].metadata["parser_format"] == "xml"
-    assert result[0].metadata["_extraction_strategy"] == "xml"
-    assert result[0].metadata["_consolidation_prompt_xml"] == "按 XML 策略巩固"
+    assert result[0].system_metadata["parser_format"] == "xml"
+    assert result[0].system_metadata["_extraction_strategy"] == "xml"
+    assert result[0].system_metadata["_consolidation_prompt_xml"] == "按 XML 策略巩固"
     assert llm.messages[0][0].content == (
         "按 XML 格式抽取："
         '<memories><memory source_id="...">...</memory></memories>'
@@ -293,7 +293,7 @@ def test_dynamic_extractor_subclass_failure_isolated_per_strategy():
     ).extract([source])
 
     assert len(result) == 1
-    assert result[0].metadata["_extraction_strategy"] == "json"
+    assert result[0].system_metadata["_extraction_strategy"] == "json"
 
 
 @pytest.mark.unit
@@ -441,7 +441,7 @@ def test_dynamic_evolver_supersedes_existing_via_llm_judge():
     assert result.superseded_ids == ["existing"]
     assert "事件变化时替换旧记忆" in llm.messages[0][0].content
     stored = loads(kv.get(candidate.scope, memory_key(candidate.id)))
-    assert stored.metadata["dedup_decision"] == "supersede"
+    assert stored.system_metadata["dedup_decision"] == "supersede"
 
 
 @pytest.mark.unit

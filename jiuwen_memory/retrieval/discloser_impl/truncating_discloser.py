@@ -69,6 +69,7 @@ class TruncatingDiscloser(Discloser):
                     abstract=self._l0(unit),
                     overview=self._l1(unit, query.keywords),
                     content=unit.content,  # L2 全文
+                    user_metadata=dict(unit.user_metadata),
                     level=effective_level,
                 )
             )

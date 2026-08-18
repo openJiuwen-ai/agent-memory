@@ -176,7 +176,7 @@ def test_dispatch_list_delegates_to_api_with_pagination_and_type_filter() -> Non
                         id="unit-1",
                         scope=scope,
                         segments=[Segment(content="repo uses pytest")],
-                        metadata={"memory_type": "coding"},
+                            system_metadata={"memory_type": "coding"},
                     )
                 ],
                 count=7,
@@ -198,7 +198,7 @@ def test_dispatch_list_delegates_to_api_with_pagination_and_type_filter() -> Non
             "limit": "5",
             "memory_types": "coding,episodic",
             "extensions": {"vendor_mode": 3},
-            "filter": {"metadata.project": "alpha"},
+                "filter": {"user_metadata.project": "alpha"},
         },
     )
 
@@ -210,7 +210,7 @@ def test_dispatch_list_delegates_to_api_with_pagination_and_type_filter() -> Non
         "limit": 5,
         "memory_types": ["coding", "episodic"],
         "extensions": {"vendor_mode": "3"},
-        "filters": {"metadata.project": "alpha"},
+            "filters": {"user_metadata.project": "alpha"},
     }
     assert body["ok"] is True
     assert body["op"] == "list"

@@ -36,6 +36,8 @@ from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryUnit,
     Relation,
+    inherited_system_metadata,
+    inherited_user_metadata,
     messages_key,
 )
 from jiuwen_memory.common.type_def.chat import ChatMessage
@@ -350,10 +352,15 @@ class OrchestratingEvolver(Evolver):
                 set(existing_unit.provenance) | set(candidate.provenance) | {candidate.id}
             )
             # 合并 metadata
-            existing_unit.metadata.update(candidate.metadata)
-            existing_unit.metadata["dedup_decision"] = "update"
-            existing_unit.metadata["dedup_similarity"] = str(similarity)
-            existing_unit.metadata["dedup_merged_from"] = candidate.id
+            existing_unit.system_metadata = inherited_system_metadata(
+                [existing_unit, candidate]
+            )
+            existing_unit.user_metadata = inherited_user_metadata(
+                [existing_unit, candidate]
+            )
+            existing_unit.system_metadata["dedup_decision"] = "update"
+            existing_unit.system_metadata["dedup_similarity"] = str(similarity)
+            existing_unit.system_metadata["dedup_merged_from"] = candidate.id
             # existing_unit 是已建索引的记忆，统一通过 Storage 回写真源。
             self._storage.update(existing_unit.scope, [existing_unit])
             self._index.update([existing_unit])
@@ -365,9 +372,9 @@ class OrchestratingEvolver(Evolver):
             candidate.provenance = list(
                 set(candidate.provenance) | {existing_unit.id}
             )
-            candidate.metadata["dedup_decision"] = "supersede"
-            candidate.metadata["dedup_similarity"] = str(similarity)
-            candidate.metadata["dedup_superseded"] = existing_unit.id
+            candidate.system_metadata["dedup_decision"] = "supersede"
+            candidate.system_metadata["dedup_similarity"] = str(similarity)
+            candidate.system_metadata["dedup_superseded"] = existing_unit.id
             self._storage.add(candidate.scope, [candidate])
             self._index.build([candidate])
             # 旧版标记 SUPERSEDED（直接通过 KVStore，不依赖 LifecycleManager）
@@ -645,7 +652,8 @@ class OrchestratingEvolver(Evolver):
     def _is_procedural(units: List[MemoryUnit]) -> bool:
         """本轮是否走过程记忆抽取（metadata["procedural"]=="true"）。"""
         return any(
-            str(u.metadata.get("procedural", "")).strip().lower() == "true" for u in units
+            str(u.system_metadata.get("procedural", "")).strip().lower() == "true"
+            for u in units
         )
 
     def _maybe_collect_extract_context(
@@ -661,7 +669,8 @@ class OrchestratingEvolver(Evolver):
         任一步失败降级为空列表，不阻断（仍靠 prompt + _dedup_batch）。非 infer 返回 None。
         """
         infer = any(
-            str(u.metadata.get("infer", "")).strip().lower() == "true" for u in units
+            str(u.system_metadata.get("infer", "")).strip().lower() == "true"
+            for u in units
         )
         if not infer:
             return None

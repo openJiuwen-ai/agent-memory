@@ -64,6 +64,7 @@ class StructuredDiscloser(Discloser):
                     abstract=abstract,
                     overview=overview,
                     content=full,
+                    user_metadata=dict(unit.user_metadata),
                     level=level,
                 )
             )
@@ -111,6 +112,7 @@ class StructuredDiscloser(Discloser):
                     abstract=abstract,
                     overview=overview,
                     content=full,
+                    user_metadata=dict(variant.unit.user_metadata),
                     level=actual_level,
                 )
             )
@@ -209,7 +211,7 @@ class StructuredDiscloser(Discloser):
 
     def _summary(self, unit: MemoryUnit) -> str:
         # metadata 值为 JSON 标量原生类型，summary 若被写成非字符串仍需可披露。
-        explicit = str(unit.metadata.get("summary") or "").strip()
+        explicit = str(unit.system_metadata.get("summary") or "").strip()
         if explicit:
             return explicit
         content = " ".join(unit.content.split())

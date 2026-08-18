@@ -19,6 +19,10 @@
 
 ## 行为铁律
 
+0. **双 metadata 原样转换**
+   `RawPayload.system_metadata` / `user_metadata` 分别复制到 `MemoryUnit`，不合并、
+   不解释、不彼此 fallback。
+
 1. **接入层不落盘**  
    `Ingestor.ingest` 返回 `list[MemoryUnit]` 后，真源写入与索引构建全部由 `construction` 层调用 `storage` 完成。本层禁止 import storage。
 

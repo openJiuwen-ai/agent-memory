@@ -9,9 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
 
-from .memory import Modality
+from .memory import MetadataValueType, Modality
 from .scope import Scope
 
 
@@ -22,7 +21,8 @@ class RawPayload:
     modality: Modality = Modality.TEXT  # 来源模态
     data: bytes = b""  # 原始字节；与 uri 二选一
     uri: str = ""  # 原始数据的外部引用（文件路径/URL/对象存储 key）
-    metadata: dict[str, Any] = field(default_factory=dict)  # 来源附加信息
+    system_metadata: dict[str, MetadataValueType] = field(default_factory=dict)
+    user_metadata: dict[str, MetadataValueType] = field(default_factory=dict)
     occurred_at: datetime | None = None  # 发生时间（写入 temporal.t_event）
 
 

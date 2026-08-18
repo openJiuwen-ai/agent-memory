@@ -55,7 +55,8 @@ class SimpleIngestor(Ingestor):
                         t_valid=now,
                         t_message=payload.occurred_at,
                     ),
-                    metadata=dict(payload.metadata),
+                    system_metadata=dict(payload.system_metadata),
+                    user_metadata=dict(payload.user_metadata),
                 )
             )
         return units

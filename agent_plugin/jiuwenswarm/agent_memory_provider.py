@@ -249,7 +249,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 # 落 /memory/ 建索引；不走去重、不收集 context（见 F02「过程记忆抽取」）。
                 # 需配 extractor:llm 才真汇总（默认 keyword 降级为原文原样存 1 条 PROCEDURAL）。
                 item_id = await self._client.add(
-                    content, scope, metadata={"procedural": "true"}
+                    content, scope, system_metadata={"procedural": "true"}
                 )
                 logger.info(
                     "[AgentMemoryMemoryProvider] agent_memory_procedural summarized=%r item_id=%s",
@@ -346,7 +346,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
     ) -> None:
         """存本轮对话原文并**同步抽取事实**（对齐 mem0 ``add(infer=True)``）。
 
-        传 ``metadata={"infer": "true"}`` 给 AgentMemory ``add``：hot path 同步调
+        传 ``system_metadata={"infer": "true"}`` 给 AgentMemory ``add``：hot path 同步调
         Extractor 从 ``user: ...\\nassistant: ...`` 抽取派生事实并建索引，**原文
         落 KV 真源但不建索引**，且**不再提交 background EXTRACT**（已同步抽取，
         避免每轮全量重扫+逐条 LLM 的 EXTRACT 风暴，§4.1.2）。故 ``on_session_end``
@@ -366,7 +366,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         try:
             await self._client.add(
                 content, self._scope(),
-                tags=["conversation"], metadata={"infer": "true"},
+                tags=["conversation"], system_metadata={"infer": "true"},
             )
             logger.info("[AgentMemoryMemoryProvider] sync_turn add(infer=true) done")
         except Exception as exc:
@@ -454,7 +454,8 @@ class _AgentMemoryClient:
         scope,
         *,
         tags: list[str] | None = None,
-        metadata: dict[str, str] | None = None,
+        system_metadata: dict[str, str] | None = None,
+        user_metadata: dict[str, str] | None = None,
     ) -> str | None:
         raise NotImplementedError
 
@@ -533,15 +534,19 @@ class _HttpClient(_AgentMemoryClient):
                 f"non-JSON response from {path} (status {r.status_code}): {r.text[:200]}"
             ) from exc
 
-    async def add(self, content, scope, *, tags=None, metadata=None) -> str | None:
+    async def add(
+        self, content, scope, *, tags=None, system_metadata=None, user_metadata=None
+    ) -> str | None:
         payload = self._scope_payload(scope) | {
             "content": content,
             "tags": tags or [],
-            "metadata": metadata or {},
+            "system_metadata": system_metadata or {},
+            "user_metadata": user_metadata or {},
         }
         logger.info(
-            "[AgentMemoryMemoryProvider] HTTP POST /v1/add tags=%s metadata=%s content_len=%d",
-            tags, metadata, len(content),
+            "[AgentMemoryMemoryProvider] HTTP POST /v1/add tags=%s system_metadata=%s "
+            "user_metadata=%s content_len=%d",
+            tags, system_metadata, user_metadata, len(content),
         )
         data = await self._request("/v1/add", payload, timeout=180.0)
         logger.info(
@@ -657,14 +662,18 @@ class _InProcessClient(_AgentMemoryClient):
             session=getattr(scope, "session", ""),
         )
 
-    async def add(self, content, scope, *, tags=None, metadata=None) -> str | None:
+    async def add(
+        self, content, scope, *, tags=None, system_metadata=None, user_metadata=None
+    ) -> str | None:
         from jiuwen_memory.api import Modality
         api_scope = self._to_api_scope(scope)
 
         units = await self._api.add_async(
             content, api_scope,
             source=Modality.TEXT, identity=api_scope,
-            tags=tags, metadata=metadata,
+            tags=tags,
+            system_metadata=system_metadata,
+            user_metadata=user_metadata,
         )
         return units[0].id if units else None
 

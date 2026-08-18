@@ -46,7 +46,7 @@ class TestE2EWritePath:
         assert len(units) == 1
         # add 不调 classify：tier 保持 MemoryUnit 默认 EPISODIC，无 classify metadata
         assert units[0].tier == MemoryTier.EPISODIC
-        assert "classify_source" not in units[0].metadata
+        assert "classify_source" not in units[0].system_metadata
 
         # recall 可召回
         result = llm_api.search(
