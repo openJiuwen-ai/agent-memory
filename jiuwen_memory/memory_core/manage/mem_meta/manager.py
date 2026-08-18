@@ -19,11 +19,9 @@ from typing import Any
 
 from sqlalchemy import (
     Column, Integer, String, Text, Index, MetaData, Table,
-    select, insert, update, delete, func,
+    select, insert, update, delete, func, case,
 )
 from sqlalchemy.ext.asyncio import AsyncEngine
-
-from jiuwen_memory.memory_core.common.distributed_lock import DistributedLock
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +30,10 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 COOLDOWN_SECONDS = 300  # 5 分钟冷却
+MAX_QUERY_LIMIT = 10**9  # 查询全部记忆的 limit 值
+MAX_ERROR_MSG_LEN = 500  # error_message 最大存储长度
+MAX_USER_ERROR_LEN = 300  # user_result error 最大长度
+ZOMBIE_TASK_TIMEOUT_HOURS = 1  # 僵尸任务超时阈值
 
 
 def _now_str() -> str:
@@ -123,11 +125,15 @@ class MemMetaManager:
         engine = self.db_store.get_async_engine()
         try:
             loop = asyncio.get_running_loop()
-            # 在运行中的事件循环里，用 create_task 延迟执行
-            loop.create_task(self._async_init_db())
+            # 保存 task 引用防止 GC 回收
+            task = loop.create_task(self._async_init_db())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
         except RuntimeError:
-            # 没有运行中的事件循环，直接同步建表
-            with engine.begin() as conn:
+            # 没有运行中的事件循环，用同步引擎建表
+            import sqlalchemy
+            sync_engine = sqlalchemy.create_engine(engine.engine.url)
+            with sync_engine.begin() as conn:
                 _metadata.create_all(conn, checkfirst=True)
 
     async def _async_init_db(self) -> None:
@@ -192,8 +198,10 @@ class MemMetaManager:
                             "status": status,
                             "message": f"冷却期内（<{COOLDOWN_SECONDS}秒）",
                         }
-                except ValueError:
-                    pass
+                except ValueError as exc:
+                    logger.warning(
+                        "task guard: time parse failed for %s: %s",
+                        created_at_str, exc)
             return None
 
     async def _create_task(
@@ -247,7 +255,7 @@ class MemMetaManager:
     async def cleanup_zombie_tasks(self) -> None:
         """清理僵尸任务（running 超 1 小时 → failed）。"""
         cutoff = (
-            datetime.utcnow() - timedelta(hours=1)
+            datetime.utcnow() - timedelta(hours=ZOMBIE_TASK_TIMEOUT_HOURS)
         ).strftime("%Y-%m-%d %H:%M:%S")
         async with self._engine.begin() as conn:
             await conn.execute(
@@ -336,7 +344,7 @@ class MemMetaManager:
             for user_id, scope_id in all_scopes:
                 try:
                     docs, _ = await memory_index.list_memories_with_total(
-                        user_id, scope_id, offset=0, limit=10**9,
+                        user_id, scope_id, offset=0, limit=MAX_QUERY_LIMIT,
                     )
                     s = user_stats[user_id]
                     for doc in docs:
@@ -410,7 +418,7 @@ class MemMetaManager:
                 task_id,
                 status="failed",
                 finished_at=_now_str(),
-                error_message=str(e)[:500],
+                error_message=str(e)[:MAX_ERROR_MSG_LEN],
             )
 
     # ============================================================
@@ -517,7 +525,7 @@ class MemMetaManager:
         for user_id, scope_id in all_scopes:
             try:
                 docs, total = await memory_index.list_memories_with_total(
-                    user_id, scope_id, offset=0, limit=10**9,
+                    user_id, scope_id, offset=0, limit=MAX_QUERY_LIMIT,
                 )
                 # 过滤 blacklisted 且满足不活跃天数阈值
                 expired_docs = [
@@ -700,6 +708,7 @@ class MemMetaManager:
                     "error": None,
                 }
                 try:
+                    from jiuwen_memory.memory_core.common.distributed_lock import DistributedLock
                     async with DistributedLock(kv_store, f"user/{user_id}"):
                         # ★ 不活跃天数校验 (all_expired=true 时跳过校验) ★
                         if not all_expired:
@@ -745,7 +754,7 @@ class MemMetaManager:
                                 docs, _ = (
                                     await memory_index.list_memories_with_total(
                                         uid, sid,
-                                        offset=0, limit=10**9,
+                                        offset=0, limit=MAX_QUERY_LIMIT,
                                     )
                                 )
                                 # 过滤 blacklisted == True 且满足不活跃天数
@@ -796,7 +805,7 @@ class MemMetaManager:
                                 user_result["scopes_affected"] += 1
                             except Exception as e:
                                 user_result["status"] = "partial_failed"
-                                user_result["error"] = str(e)[:300]
+                                user_result["error"] = str(e)[:MAX_USER_ERROR_LEN]
 
                         user_result["total_deleted"] = user_deleted
                         deleted_total += user_deleted
@@ -816,14 +825,22 @@ class MemMetaManager:
                                     update(av_user_stats_table)
                                     .where(av_user_stats_table.c.scope_user == user_id)
                                     .values(
-                                        total_count=func.max(
-                                            0, av_user_stats_table.c.total_count - user_deleted),
-                                        superseded_count=func.max(
-                                            0, av_user_stats_table.c.superseded_count - user_deleted),
-                                        expired_30d_count=func.max(
-                                            0, av_user_stats_table.c.expired_30d_count - user_deleted),
-                                        expired_all_count=func.max(
-                                            0, av_user_stats_table.c.expired_all_count - user_deleted),
+                                        total_count=case(
+                                            (av_user_stats_table.c.total_count >= user_deleted,
+                                             av_user_stats_table.c.total_count - user_deleted),
+                                            else_=0),
+                                        superseded_count=case(
+                                            (av_user_stats_table.c.superseded_count >= user_deleted,
+                                             av_user_stats_table.c.superseded_count - user_deleted),
+                                            else_=0),
+                                        expired_30d_count=case(
+                                            (av_user_stats_table.c.expired_30d_count >= user_deleted,
+                                             av_user_stats_table.c.expired_30d_count - user_deleted),
+                                            else_=0),
+                                        expired_all_count=case(
+                                            (av_user_stats_table.c.expired_all_count >= user_deleted,
+                                             av_user_stats_table.c.expired_all_count - user_deleted),
+                                            else_=0),
                                         updated_at=_now_str(),
                                     )
                                 )
@@ -835,11 +852,11 @@ class MemMetaManager:
                 except Exception as e:
                     failed += 1
                     user_result["status"] = "failed"
-                    user_result["error"] = str(e)[:300]
+                    user_result["error"] = str(e)[:MAX_USER_ERROR_LEN]
                     await self._update_task(
                         task_id,
                         failed_count=failed,
-                        error_message=str(e)[:500],
+                        error_message=str(e)[:MAX_ERROR_MSG_LEN],
                     )
 
                 details.append(user_result)
@@ -871,7 +888,7 @@ class MemMetaManager:
                 task_id,
                 status="failed",
                 finished_at=_now_str(),
-                error_message=str(e)[:500],
+                error_message=str(e)[:MAX_ERROR_MSG_LEN],
             )
 
     # ============================================================
