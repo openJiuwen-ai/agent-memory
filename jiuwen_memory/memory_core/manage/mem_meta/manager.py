@@ -13,14 +13,16 @@ import asyncio
 import json
 import uuid
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from datetime import datetime, timedelta
+from typing import Any
 
 from sqlalchemy import (
     Column, Integer, String, Text, Index, MetaData, Table,
-    select, insert, update, delete, func, text, and_,
+    select, insert, update, delete, func, text,
 )
 from sqlalchemy.ext.asyncio import AsyncEngine
+
+from jiuwen_memory.memory_core.common.distributed_lock import DistributedLock
 
 # ============================================================
 # 配置常量
@@ -111,16 +113,13 @@ class MemMetaManager:
         """初始化数据库，建 2 张表。"""
         if self.db_store is None:
             return
-        # 同步建表（run_sync）
         engine = self.db_store.get_async_engine()
-        import asyncio
         try:
             loop = asyncio.get_running_loop()
             # 在运行中的事件循环里，用 create_task 延迟执行
             loop.create_task(self._async_init_db())
         except RuntimeError:
             # 没有运行中的事件循环，直接同步建表
-            import sqlalchemy
             with engine.begin() as conn:
                 _metadata.create_all(conn, checkfirst=True)
 
@@ -349,8 +348,8 @@ class MemMetaManager:
                                 s["expired_30d"] += 1
                         else:
                             s["active"] += 1
-                except Exception:
-                    continue
+                except Exception as e:
+                    continue  # 跳过单个 scope 的错误，继续处理其他 scope
 
             # 填充 av_user_stats
             async with self._engine.begin() as conn:
@@ -525,8 +524,8 @@ class MemMetaManager:
                 s["superseded_count"] += blacklisted_count
                 s["expired_30d_count"] += blacklisted_count
                 s["expired_all_count"] += blacklisted_count
-            except Exception:
-                continue
+            except Exception as e:
+                continue  # 跳过单个 scope 的错误，继续处理其他 scope
 
         # 过滤 + 排序 + 取 Top N
         result = [
@@ -660,8 +659,6 @@ class MemMetaManager:
             memory_index = engine.memory_index
             kv_store = engine.kv_store
 
-            from jiuwen_memory.memory_core.common.distributed_lock import DistributedLock
-
             processed = 0
             deleted_total = 0
             failed = 0
@@ -763,7 +760,7 @@ class MemMetaManager:
                                         )
                                         try:
                                             await kv_store.delete(rh_key)
-                                        except Exception:
+                                        except Exception as e:
                                             pass  # 检索历史清理失败不影响主流程
 
                                 user_deleted += len(expired_mem_ids)
@@ -797,7 +794,7 @@ class MemMetaManager:
                                         updated_at=_now_str(),
                                     )
                                 )
-                        except Exception:
+                        except Exception as e:
                             pass  # av_user_stats 更新失败不影响删除主流程
 
                 except Exception as e:
