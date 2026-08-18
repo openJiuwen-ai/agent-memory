@@ -348,8 +348,8 @@ class MemMetaManager:
                                 s["expired_30d"] += 1
                         else:
                             s["active"] += 1
-                except Exception as e:
-                    continue  # 跳过单个 scope 的错误，继续处理其他 scope
+                except Exception:
+                    continue  # 跳过单个 scope 的错误
 
             # 填充 av_user_stats
             async with self._engine.begin() as conn:
@@ -524,8 +524,8 @@ class MemMetaManager:
                 s["superseded_count"] += blacklisted_count
                 s["expired_30d_count"] += blacklisted_count
                 s["expired_all_count"] += blacklisted_count
-            except Exception as e:
-                continue  # 跳过单个 scope 的错误，继续处理其他 scope
+            except Exception:
+                continue  # 跳过单个 scope 的错误
 
         # 过滤 + 排序 + 取 Top N
         result = [
@@ -702,7 +702,7 @@ class MemMetaManager:
                                 if row[0] == 0:
                                     user_result["status"] = "skipped"
                                     user_result["error"] = (
-                                        f"expired_30d_count=0, no expired memories"
+                                        "expired_30d_count=0, no expired memories"
                                     )
                                     details.append(user_result)
                                     processed += 1
@@ -760,7 +760,7 @@ class MemMetaManager:
                                         )
                                         try:
                                             await kv_store.delete(rh_key)
-                                        except Exception as e:
+                                        except Exception:
                                             pass  # 检索历史清理失败不影响主流程
 
                                 user_deleted += len(expired_mem_ids)
@@ -787,14 +787,18 @@ class MemMetaManager:
                                     update(av_user_stats_table)
                                     .where(av_user_stats_table.c.scope_user == user_id)
                                     .values(
-                                        total_count=func.max(0, av_user_stats_table.c.total_count - user_deleted),
-                                        superseded_count=func.max(0, av_user_stats_table.c.superseded_count - user_deleted),
-                                        expired_30d_count=func.max(0, av_user_stats_table.c.expired_30d_count - user_deleted),
-                                        expired_all_count=func.max(0, av_user_stats_table.c.expired_all_count - user_deleted),
+                                        total_count=func.max(
+                                            0, av_user_stats_table.c.total_count - user_deleted),
+                                        superseded_count=func.max(
+                                            0, av_user_stats_table.c.superseded_count - user_deleted),
+                                        expired_30d_count=func.max(
+                                            0, av_user_stats_table.c.expired_30d_count - user_deleted),
+                                        expired_all_count=func.max(
+                                            0, av_user_stats_table.c.expired_all_count - user_deleted),
                                         updated_at=_now_str(),
                                     )
                                 )
-                        except Exception as e:
+                        except Exception:
                             pass  # av_user_stats 更新失败不影响删除主流程
 
                 except Exception as e:
