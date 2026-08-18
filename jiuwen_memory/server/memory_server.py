@@ -794,6 +794,15 @@ register_log_center_endpoints(
     memory_engine=memory_engine,
 )
 
+# 注册批量删除管理端点
+from jiuwen_memory.server.mem_meta_api import register_mem_meta_endpoints
+register_mem_meta_endpoints(
+    app,
+    memory_engine=memory_engine,
+    milvus_uri=os.getenv("VECTOR_MILVUS_URI", "http://localhost:8530"),
+    db_path=os.getenv("MEM_META_DB_PATH", "/tmp/milvus_memory_metadata.db"),
+)
+
 
 @app.post("/delete_mem_by_id/")
 async def delete_mem_by_id_endpoint(request: DeleteMemByIdRequest):
