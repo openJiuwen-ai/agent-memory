@@ -599,6 +599,7 @@ class MemMetaManager:
         scope_id: str | None = None,
         cleanup_retrieve_history: bool = True,
         dry_run: bool = False,
+        force: bool = False,
     ) -> dict:
         """提交批量删除任务。
 
@@ -620,7 +621,7 @@ class MemMetaManager:
                 "total_users": 0,
             }
 
-        existing = self._check_task_guard("batch_delete")
+        existing = self._check_task_guard("batch_delete", force=force)
         if existing:
             return {
                 "status": "skipped",
