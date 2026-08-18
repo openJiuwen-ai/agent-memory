@@ -10,6 +10,11 @@ memory_api:
     vector_enabled: true
     graph_enabled: false
     rerank_enabled: true
+    entity_enabled: false       # Entity-linked memory master switch: write side (HybridIndexBuilder)
+                                # builds the entity reverse index; recall side (KeywordRecaller) injects
+                                # entity_store for L2 entity expansion. Set true to enable; false skips
+                                # both (entity_store not assembled, zero overhead). Default off — full
+                                # pipeline also needs unit.entities plaintext filled (LLM extraction upstream).
 
     # bge-m3 dense dimension. Must match the Milvus collection dim.
     embedder_dim: 1024
@@ -144,6 +149,50 @@ memory_api:
         # 单向 TLS 的证书最终落到 server_pem_path，见 milvus_vector._build。
         ssl_verify: "${MILVUS_SSL_VERIFY:-false}"
         ssl_ca_cert: "${MILVUS_SSL_CA:-}"
+
+  # ---- Entity reverse index (ES; assembled when entity_enabled=true, both sides
+  # reference the same named instance). entity_store is a standalone port (not part
+  # of CompositeStorage / StoreType enum), assembled via EntityStoreProducer alone.
+  # Write-side HybridIndexBuilder._build and recall-side KeywordRecaller._build each
+  # read it from their own params.entity_store field — so both must explicitly reference
+  # the same default named instance; missing a side disables that side (silent degrade,
+  # no error). ES _build returns None when hosts unset, disabling the whole chain.
+  # entity_text plaintext is never persisted (sha256 hash only); can share the same ES
+  # cluster with fulltext_store but lands in a separate index.
+  entity_store:
+    default:
+      target: elasticsearch
+      params:
+        hosts: "${ES_HOSTS:-http://elasticsearch:9200}"
+        index: "${ES_ENTITY_INDEX:-memory_entities}"
+        # entity index uses space_id as ES routing (forces _routing.required); does not use
+        # fulltext analyzer (exact hash match, no token analysis). SSL mirrors fulltext_store.
+        ssl_verify: "${ES_SSL_VERIFY:-false}"
+        ssl_ca_cert: "${ES_SSL_CA:-}"
+
+  # constructor (index_builder): instance-level override replaces default params wholesale,
+  # so storage/chunker/embedder must all be restated; entity_store is the entry hybrid _build
+  # reads to wire up the entity chain (write side).
+  constructor:
+    default:
+      target: hybrid
+      params:
+        storage: default
+        chunker: default
+        embedder: default
+        entity_store: default      # references entity_store.default (write-side entity chain)
+
+  # recaller.keyword named instance: instance-level override replaces default recaller.keyword
+  # params wholesale, so storage must be restated; entity_store is the entry keyword _build
+  # reads to wire up the entity chain (recall side).
+  recaller:
+    keyword:
+      target: keyword
+      params:
+        storage: default
+        entity_store: default      # references entity_store.default (shares ES client with write side)
+    # keyword_l0/keyword_l1/vector* retain defaults.py defaults (not restated here to avoid
+    # wholesale-replace field loss)
 
   # Keep query text unchanged: the chat LLM is not used for query rewriting.
   query_parser:

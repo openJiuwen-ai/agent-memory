@@ -168,7 +168,7 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 | `intent` | str | 意图标签 |
 | `tokens` | list[str] | 分词结果 |
 | `keywords` | list[str] | 抽取的关键词 |
-| `entities` | list[Entity] | 实体（图通道用） |
+| `entities` | list[Entity] | 实体（FeatureExtractor NER 抽取，graph 通道召回读本字段做实体扩展；实体反向索引召回**不读本字段**——它读 fulltext L2 文档 `metadata['entities']` 明文，见 [F06](../features/retrieval/F06-entity-recall-channel.md)） |
 | `vector` | list[float] | query 向量 |
 | `scalar_filters` | FilterExpr \| None | 已规范化的硬前置过滤谓词 |
 | `recheck_filters` | FilterExpr \| None | 用户原始硬过滤谓词，供物化后的真源复核 |

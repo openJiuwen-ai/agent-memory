@@ -81,6 +81,7 @@ def dumps(unit: MemoryUnit) -> bytes:
             "tags": list(unit.tags),
             "metadata": {k: v for k, v in unit.metadata.items() if k not in TRANSIENT_METADATA_KEYS},
             "lifecycle": unit.lifecycle.value,
+            "entities": list(unit.entities),
         },
         ensure_ascii=False,
     ).encode("utf-8")
@@ -163,4 +164,5 @@ def loads(raw: bytes) -> MemoryUnit | None:
         tags=list(payload.get("tags") or []),
         metadata=dict(payload.get("metadata") or {}),
         lifecycle=LifecycleState(payload.get("lifecycle", LifecycleState.ACTIVE.value)),
+        entities=list(payload.get("entities") or []),
     )

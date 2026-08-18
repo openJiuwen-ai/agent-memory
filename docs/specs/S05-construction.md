@@ -29,7 +29,7 @@
 ## 不变量
 
 1. **落盘由本层负责**：接入层产出 MemoryUnit 后，真源写入由本层调用 Storage 完成。
-2. **索引是可重建派生**：索引全部可从真源重建，IndexBuilder.rebuild() 是非破坏式保障。
+2. **索引是可重建派生**：索引全部可从真源重建，IndexBuilder.rebuild() 是非破坏式保障。例外：实体反向索引路（EntityIndexBuilder）`rebuild()` 当前是 no-op——entity 索引不支持从 KVStore 全量重建，需重建时靠定期清理 + 重新写入累积（已知缺口，见 [F06](../features/retrieval/F06-entity-recall-channel.md)）。
 3. **provenance 回指来源**：派生记忆单元的 `provenance` 字段记录由哪些 unit 演进而来。
 4. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
 5. **所有算子必须实现 `operator_type()` 和 `health()`**：继承自 `ConstructionOperator`。
@@ -192,7 +192,15 @@ MemoryUnit
 ├─ 图路（Evolver ASSOCIATE 模式编排）：
 │   → FeatureExtractor → Node → GraphStore.insert
 │   → Associator.associate → Edge → GraphStore.insert
-├─ HybridIndexBuilder：组合 fulltext + vector 两个子 builder（默认实现）
+├─ 实体反向索引路（EntityIndexBuilder，`entity_enabled=true` 时启用）：
+│   → EntityIndexAdmissionPolicy.decide（SEMANTIC/CORE/EPISODIC 准入，WORKING/ARCHIVAL 跳过）
+│   → 消费 unit.entities 明文构造 EntityMention（type 统一 PROPER；为空跳过该 unit，无 spaCy 兜底）
+│   → EntityNormalizer.normalize + hash_entity_text（sha256，精确匹配 key）
+│   → EntityLinkService 两级归并：hash 精确命中 → LINK；未命中 → INSERT 新实体（不做向量归并）
+│   → EntityStore.execute_operations（bulk，per-item 粒度，partial failure 不抛）
+│   → update 走「unlink 旧链接 + link 新内容」；SUPERSEDED（仅 lifecycle 变）不 unlink（保留 as_of 回溯）
+│   → 失败全程 try/except 吞异常，不中断 build 主链路（增强层，坏了不拖累主流程）
+├─ HybridIndexBuilder：组合 fulltext + vector + entity 三个子 builder（默认实现；entity 子 builder 在 entity_linker=None 时跳过）
 └─ 统一存储直写路：无派生检索索引时，调用方可按 Scope 委托 Storage 的记忆单元写接口
 ```
 
@@ -252,6 +260,7 @@ MemoryUnit
 | `tags` | list[str] | 标签（检索前置过滤用） |
 | `metadata` | dict[str, Any] | 元数据（保留 JSON 标量原生类型） |
 | `lifecycle` | LifecycleState | 生命周期状态 |
+| `entities` | list[str] | L2 记忆里由大模型抽取得到的实体文本（明文）。entity linker 建反向索引时只消费本字段构造 `EntityMention`，为空时直接跳过该 unit（已砍 spaCy 兜底，无回退抽取，见 [F06](../features/retrieval/F06-entity-recall-channel.md)）。默认空，向后兼容 |
 
 **注**：`MemoryUnit.content` / `assets` / `source` 是基于 segments 的只读合并视图，非独立字段。
 

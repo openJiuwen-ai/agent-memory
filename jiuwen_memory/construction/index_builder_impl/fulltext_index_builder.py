@@ -31,6 +31,7 @@ def _index_metadata(unit: MemoryUnit, *, layer: str) -> dict[str, object]:
             # 召回下推 lifecycle 谓词需此字段（真后端按缺失字段排他）。
             "lifecycle": unit.lifecycle.value,
             "tags": list(unit.tags),  # 真数组，后端才能按成员做 term 匹配
+            "entities": list(unit.entities),  # 实体明文列表；L2 召回读出后做 hash 反查关联记忆
             "source": unit.source.value,
             "content_layer": layer,  # l2=content 全文；l0/l1 为分层文档（见 F01）
         }
