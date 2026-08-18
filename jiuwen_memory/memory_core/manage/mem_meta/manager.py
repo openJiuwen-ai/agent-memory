@@ -11,6 +11,7 @@
 """
 import asyncio
 import json
+import logging
 import uuid
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
@@ -23,6 +24,8 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from jiuwen_memory.memory_core.common.distributed_lock import DistributedLock
+
+logger = logging.getLogger(__name__)
 
 # ============================================================
 # 配置常量
@@ -332,7 +335,7 @@ class MemMetaManager:
             total_scanned = 0
             for user_id, scope_id in all_scopes:
                 try:
-                    docs, total = await memory_index.list_memories_with_total(
+                    docs, _ = await memory_index.list_memories_with_total(
                         user_id, scope_id, offset=0, limit=10**9,
                     )
                     s = user_stats[user_id]
@@ -355,8 +358,11 @@ class MemMetaManager:
                                 s["expired_30d"] += 1
                         else:
                             s["active"] += 1
-                except Exception:
-                    continue  # 跳过单个 scope 的错误
+                except Exception as exc:
+                    logger.warning(
+                        "refresh: scope (%s, %s) failed: %s",
+                        user_id, scope_id, exc)
+                    continue
 
             # 填充 av_user_stats
             async with self._engine.begin() as conn:
@@ -542,8 +548,11 @@ class MemMetaManager:
                 s["superseded_count"] += all_blacklisted
                 s["expired_30d_count"] += expired_count
                 s["expired_all_count"] += all_blacklisted
-            except Exception:
-                continue  # 跳过单个 scope 的错误
+            except Exception as exc:
+                logger.warning(
+                    "realtime scan: scope (%s, %s) failed: %s",
+                    user_id, scope_id, exc)
+                continue
 
         # 过滤 + 排序 + 取 Top N
         result = [
@@ -733,7 +742,7 @@ class MemMetaManager:
                         for uid, sid in scopes:
                             try:
                                 # 获取全部记忆
-                                docs, total = (
+                                docs, _ = (
                                     await memory_index.list_memories_with_total(
                                         uid, sid,
                                         offset=0, limit=10**9,
@@ -777,8 +786,11 @@ class MemMetaManager:
                                         )
                                         try:
                                             await kv_store.delete(rh_key)
-                                        except Exception:
-                                            pass  # 检索历史清理失败不影响主流程
+                                        except Exception as exc:
+                                            logger.debug(
+                                                "retrieve_history cleanup "
+                                                "failed for %s: %s",
+                                                rh_key, exc)
 
                                 user_deleted += len(expired_mem_ids)
                                 user_result["scopes_affected"] += 1
@@ -815,8 +827,10 @@ class MemMetaManager:
                                         updated_at=_now_str(),
                                     )
                                 )
-                        except Exception:
-                            pass  # av_user_stats 更新失败不影响删除主流程
+                        except Exception as exc:
+                            logger.debug(
+                                "av_user_stats update failed for "
+                                "user %s: %s", user_id, exc)
 
                 except Exception as e:
                     failed += 1
