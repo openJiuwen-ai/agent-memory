@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
+from jiuwen_memory.common.lock import LockProducer, LockProvider, LockTimeoutError
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
     LifecycleState,
@@ -64,6 +65,10 @@ Output Data
 
 _MAX_RETRIES = 3
 
+#: scope 级锁键末段——同 scope 任意时刻只有一个实例跑 MiddleToLongJob.run。
+#: 锁键最终形如 ``am:lock:v1:{scope 五段}:middle_to_long``。
+_LOCK_NAME = "middle_to_long"
+
 
 class MiddleToLongJob(Job):
     """中期转长期任务。"""
@@ -80,6 +85,8 @@ class MiddleToLongJob(Job):
         batch_size: int = 10,
         concurrency: int = 4,
         interval: int = 50,
+        *,
+        lock: LockProvider | None = None,
     ) -> None:
         super().__init__(scope=scope, interval=interval)
         self._storage = storage
@@ -90,10 +97,54 @@ class MiddleToLongJob(Job):
         self._max_fetch = max_fetch
         self._batch_size = batch_size
         self._concurrency = max(1, concurrency)
+        self._lock = lock
 
     # ---- 入口 ----
 
     async def run(self) -> JobInfo:
+        """执行任务。
+
+        若装配期注入了 :class:`LockProvider`，以 scope 级锁围栏临界区——多实例同
+        scope 同时触发中期记忆时，只有一个实例进入 ``_run_inner``，其余实例在
+        ``LockTimeoutError`` 路径上跳过本次 tick（返回 ``SUCCEEDED`` + ``skipped_due_to_lock``，
+        不标 ``is_done``，下个 tick 继续重试）。
+
+        ``wait_timeout_ms=0``：只试一次不等待，避免 drain 协程空等挤占 scheduler。
+        Timer 节拍本身有抖动，下一 tick 自然串行。
+
+        ``LockProvider`` 未注入（单实例 / 本地开发）时直接走原路径，无锁开销。
+        """
+        if self._lock is None:
+            return await self._run_inner()
+        try:
+            async with self._lock.guard(
+                self.scope, _LOCK_NAME,
+                wait_timeout_ms=0,
+            ) as handle:
+                if handle.lost.is_set():
+                    logger.warning(
+                        "MiddleToLongJob: lock lost at start, skip tick, scope=%s",
+                        self.scope,
+                    )
+                    return JobInfo(
+                        scope=self.scope,
+                        status=JobStatus.SUCCEEDED,
+                        detail={"skipped_due_to_lock": "true"},
+                    )
+                return await self._run_inner()
+        except LockTimeoutError:
+            logger.info(
+                "MiddleToLongJob: lock held elsewhere, skip tick, scope=%s",
+                self.scope,
+            )
+            return JobInfo(
+                scope=self.scope,
+                status=JobStatus.SUCCEEDED,
+                detail={"skipped_due_to_lock": "true"},
+            )
+
+    async def _run_inner(self) -> JobInfo:
+        """临界区主体：list 候选 → 连续性检测切批 → evolve 抽取 → 归档原文。"""
         candidates = await self._list_working_units()
         if not candidates:
             # 候选转完——通知 Scheduler 停止下一轮触发
@@ -307,6 +358,8 @@ class MiddleToLongJobSpec:
     batch_size: int = 10
     concurrency: int = 4
     interval: int = 50
+    #: 多实例部署时注入，scope 级锁围栏临界区；None（未配 ``lock`` 段）走原路径不加锁。
+    lock: LockProvider | None = None
 
     def with_scope(self, scope: Scope, **kwargs) -> MiddleToLongJob:
         """生成完整 Job 实例——``kwargs`` 透传运行时参数（``evolver`` / ``index`` / ``interval``）。
@@ -329,6 +382,7 @@ class MiddleToLongJobSpec:
             batch_size=self.batch_size,
             concurrency=self.concurrency,
             interval=interval,
+            lock=self.lock,
             **kwargs,
         )
 
@@ -337,6 +391,12 @@ def _build_middle_to_long_job_spec(config) -> MiddleToLongJobSpec:
     """装配期固化 MiddleToLongJob 的依赖与业务参数——返回 Spec dataclass。"""
     vector_on = config.get("vector_enabled", True)
     ib_default = "hybrid" if vector_on else "fulltext"
+    # lock 段未配置时不调 dep、不报错——LockProducer 不设默认实现，缺配置直接 dep 会
+    # 抛 ValidationError。这里探测后再装配，让单实例 / 本地开发无需配 lock 段。
+    # 多实例部署显式配 lock 段才生效，符合 F06「避免静默退化为单机锁」精神。
+    lock = None
+    if config.params.get("lock") is not None:
+        lock = LockProducer.dep(config)
     return MiddleToLongJobSpec(
         storage=StorageProducer.resolve(config),
         evolver=EvolverProducer.dep(config, default="orchestrating"),
@@ -347,6 +407,7 @@ def _build_middle_to_long_job_spec(config) -> MiddleToLongJobSpec:
         batch_size=int(config.get("middle_batch_size", 10)),
         concurrency=int(config.get("middle_concurrency", 4)),
         interval=int(config.get("middle_interval", 50)),
+        lock=lock,
     )
 
 
