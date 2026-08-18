@@ -184,6 +184,19 @@ RESERVED_METADATA_KEYS = frozenset(
 # 超出该范围的整数会丢精度，相邻时间戳将无法区分。
 T_INVALID_OPEN = 253402300799000
 
+# 未知事件时间（``Temporal.t_event is None``）在索引里的哨兵值：``0``。
+#
+# F07 净化后派生 unit 的 ``t_event`` 常为 None（仅内容提取不到事件时间）。真源 None
+# 让事件窗下推 ``t_event GTE / LT`` 在索引里按缺失字段排他——含时间词 query 对这批
+# unit 系统性空召回。落哨兵后，``build_system_filters`` 把事件窗构造为
+# ``OR(AND(GTE from, LT to), EQ 0)``，未知时间 unit 不再被窗下推清空。
+#
+# 哨兵存在于索引投影与后置复核（``memory_filter._field_value``），真源仍是 None；
+# ``in_event_window`` 仍读真源 datetime、对 None/naive 放行，不受影响。
+# 取 ``0``：早于任何真实 epoch（1970-01-01 起），与真实事件时间碰撞极罕见；
+# 改哨兵值须同步改索引投影、``build_system_filters`` 谓词、``memory_filter`` 三处。
+T_EVENT_UNKNOWN = 0
+
 
 def memory_key(unit_id: str) -> str:
     """建索引记忆的 KV key。"""

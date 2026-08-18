@@ -101,4 +101,12 @@ consolidate 合并多 source 时会有多个消息时间。合并后的摘要 un
 - 检索侧 `t_message` 范围过滤未落地（`predicate_builder` / `in_event_window` 当前只过滤 `t_event`），作为 follow-up 按需加。
 - 老数据 `t_event` 语义"不纯"（存的是对话时间），后续演进可逐步补 `t_message` 并清洗 `t_event`。
 - `t_event` 语义净化后，原始消息单元的 `t_event` 变为 `None`；若有下游消费方依赖原始消息单元的 `t_event` 有值，需同步适配。
+  - **已缓解**：`t_event=None` 派生原先会被事件窗下推
+    `t_event GTE/LT` 按缺失字段排他，对含时间词 query 系统性空召回。现索引投影
+    恒写 `t_event`（None → 哨兵 `T_EVENT_UNKNOWN=0`），谓词改
+    `OR(AND(GTE from, LT to), EQ 0)` 放行未知时间 unit，`memory_filter._field_value`
+    同步把真源 None 投影为 `0` 使后置复核不砍候选。详见 S04 §过滤表达式 / F03 §8。
+  - **属性问止血（同 commit）**：`time_parse` 识别属性问关键词（多大/几岁/爱好/
+    是谁/住址/名字/生日/年龄…）后清空 `time_from/to`，即便 query 含「今年/昨天」
+    也不下推事件窗——属性问本就不是事件时间检索，避免误下推杀 None 派生。
 - **`metadata["t_events"]` / `metadata["t_messages"]` 不参与检索过滤**：当前索引层（Milvus/ES/pgvector）不原生支持"数组任一元素落在 range 内"的查询，召回后置过滤（`in_event_window`）只读结构化字段 `t_event`，不读 metadata。因此聚合单元的次要事件/消息时间**无法用于时间窗过滤**——若业务有"按多事件时间过滤"的刚需，正确答案是拆分成多条 unit（每条带自己的 `t_event`），而非依赖 metadata 兜底。metadata 方案仅保证信息不丢（审计/展示可读 + 未来索引扩展有数据基础），不提供过滤能力。
