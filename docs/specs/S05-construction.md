@@ -5,8 +5,15 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-08-13 |
+| 最近一次修订日期 | 2026-08-18 |
+| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F06-unified-index-builder.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/retrieval/F03-metadata-filtering.md |
+
+## Metadata 派生与索引契约
+
+单源派生复制 `user_metadata`；多源派生只保留所有来源都存在且值相等的字段。
+`system_metadata` 只保留相等的必要上下文，`infer` / `procedural` / `middle` 不传播。
+IndexBuilder 以带命名空的逻辑路径投影两类字段。
 
 ## 范围 / 边界
 
@@ -41,15 +48,16 @@
 10. **Dedup 与 IndexBuilder 共享底层 Store**：去重召回检索的是已索引内容，`Dedup` 实现取的 `VectorStore`/`FulltextStore` 必须与 IndexBuilder 写入的是同一实例（按字段名缓存命中）。
 11. **派生 metadata 键保持类型稳定**：当前 Classifier 只更新
     `MemoryUnit.tier` / `MemoryUnit.tags`，不约定额外分类 metadata 键；
-    LLM Extractor / LLM Abstractor 写出 `metadata.confidence` 时使用浮点字符串，
+    LLM Extractor / LLM Abstractor 写出 `system_metadata.confidence` 时使用浮点字符串，
     非 LLM 实现不保证存在该键。Evolver 写回 `metadata.dedup_similarity`、
-    `DeleteMode.DOWNWEIGHT` 写回 `metadata.importance` 时也使用浮点字符串。
+    `DeleteMode.DOWNWEIGHT` 写回 `system_metadata.importance` 时也使用浮点字符串。
     查询侧不对这些键做隐式类型转换。
 12. **consolidate 只判定不落盘**：`DynamicEvolver` 的 consolidate 步只产出
     `ConsolidateDecision`（候选 + 决策 + 已有记忆 + 相似度），落盘延后到
     reflect 之后统一执行。reflect 默认 no-op；当前只有对子候选的原地修改能影响落盘。
-13. **索引投影保留业务 metadata 类型**：Vector/Fulltext IndexBuilder 先复制
-    `MemoryUnit.metadata`，再用系统真源字段覆盖保留 key；时间投影为 epoch 毫秒，
+13. **索引投影保留 metadata 命名空与类型**：Vector/Fulltext IndexBuilder
+    分别投影 `system_metadata.<key>` 和 `user_metadata.<key>`，再写入一级系统真源字段；
+    时间投影为 epoch 毫秒，
     `t_invalid=None` 仅在索引中写为 `T_INVALID_OPEN`，`t_event=None` 恒写为
     `T_EVENT_UNKNOWN=0`（F07 派生常为此值，避免事件窗下推按缺失字段排他），
     不改写真源。

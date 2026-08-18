@@ -16,7 +16,15 @@ from typing import List
 
 from jiuwen_memory.common.chunker.base import Chunker, ChunkerProducer
 from jiuwen_memory.common.log import get_logger
-from jiuwen_memory.common.type_def import LifecycleState, MemoryTier, MemoryUnit, Segment, Temporal
+from jiuwen_memory.common.type_def import (
+    LifecycleState,
+    MemoryTier,
+    MemoryUnit,
+    Segment,
+    Temporal,
+    inherited_system_metadata,
+    inherited_user_metadata,
+)
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
 from jiuwen_memory.construction.common import merge_unit_tags
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
@@ -46,7 +54,10 @@ class KeywordExtractor(Extractor):
         # （_dedup_batch 兜底）。接受参数仅为统一 Extractor 签名。
         # procedural 模式：本实现无 LLM 做结构化汇总，降级为把本轮原文原样合成 1 条
         # PROCEDURAL（provenance 回指全部本轮 unit），仍保证「1 条过程记忆」契约。
-        if any(str(u.metadata.get("procedural", "")).strip().lower() == "true" for u in units):
+        if any(
+            str(u.system_metadata.get("procedural", "")).strip().lower() == "true"
+            for u in units
+        ):
             return self._build_procedural(units)
         logger.info("KeywordExtractor: received %d units", len(units))
         derived: List[MemoryUnit] = []
@@ -74,6 +85,8 @@ class KeywordExtractor(Extractor):
                 ]
                 d.provenance = [unit.id]
                 d.supersedes = ""
+                d.system_metadata = inherited_system_metadata([unit])
+                d.user_metadata = inherited_user_metadata([unit])
                 if "extracted" not in d.tags:
                     d.tags.append("extracted")
                 derived.append(d)
@@ -117,7 +130,8 @@ class KeywordExtractor(Extractor):
             provenance=[u.id for u in units],
             # 合并 write tags（engine 已写到源 unit）+ 系统标记 procedural
             tags=merge_unit_tags(source.tags, ["procedural"]),
-            metadata={"procedural": "true"},
+            system_metadata=inherited_system_metadata(units),
+            user_metadata=inherited_user_metadata(units),
             lifecycle=LifecycleState.ACTIVE,
         )
         logger.info(

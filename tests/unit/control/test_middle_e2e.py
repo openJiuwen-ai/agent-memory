@@ -166,7 +166,7 @@ def _build_engine(
     mem2.0 重构后：llm 与 middle_* 业务参数经 JobFactory 固化到
     :class:`MiddleToLongJobSpec`——Engine 不再持 middle_interval，该参数经
     write metadata 透传。本装配构造的 JobSpec 不显式设 interval，走 Spec 默认 50；
-    各测试通过 metadata={"middle_interval": "1"} 覆盖。
+    各测试通过 system_metadata={"middle_interval": "1"} 覆盖。
     """
     kv = InMemoryKVStore()
     index = _RecordingIndex()
@@ -223,14 +223,14 @@ def test_e2e_write_middle_persists_originals_and_submits_job() -> None:
         units = await engine.write(
             "alice likes tea",
             scope,
-            metadata={"infer": "true", "middle": "true", "middle_interval": "1"},
+            system_metadata={"infer": "true", "middle": "true", "middle_interval": "1"},
         )
         # 在事件循环内存断言——Timer 还在跑
         assert len(units) == 1
         persisted = loads(kv.get(scope, memory_key(units[0].id)))
         assert persisted.tier == MemoryTier.WORKING
         assert persisted.lifecycle == LifecycleState.ACTIVE
-        assert persisted.metadata.get("middle") == "true"
+        assert persisted.system_metadata.get("middle") == "true"
         assert index.built == units
         scope_key = scheduler._scope_key(scope)  # pylint: disable=protected-access
         assert scope_key in scheduler._wheels  # pylint: disable=protected-access
@@ -259,7 +259,7 @@ def test_e2e_timer_triggers_middle_to_long_and_archives_originals() -> None:
         units = await engine.write(
             "alice likes tea",
             scope,
-            metadata={"infer": "true", "middle": "true", "middle_interval": "1"},
+            system_metadata={"infer": "true", "middle": "true", "middle_interval": "1"},
         )
         original_id = units[0].id
         # Timer 首次 tick(t=1s) 触发实例入队 + drain 跑 run()——等 t≈2.2s 让 drain 完成
@@ -293,7 +293,7 @@ def test_e2e_timer_exits_when_no_candidates_left() -> None:
         await engine.write(
             "alice likes tea",
             scope,
-            metadata={"infer": "true", "middle": "true", "middle_interval": "1"},
+            system_metadata={"infer": "true", "middle": "true", "middle_interval": "1"},
         )
         # 找到定时任务长生命 job_id（status=RUNNING 的那个，detail.parent_timer 不存在）
         for jid, info in scheduler._jobs.items():  # pylint: disable=protected-access
@@ -336,7 +336,7 @@ def test_e2e_next_write_restarts_timer_after_exit() -> None:
         await engine.write(
             "first message",
             scope,
-            metadata={"infer": "true", "middle": "true", "middle_interval": "1"},
+            system_metadata={"infer": "true", "middle": "true", "middle_interval": "1"},
         )
         # 等 first 轮跑完 + 退出（约 3.5s）
         await asyncio.sleep(3.5)
@@ -345,7 +345,7 @@ def test_e2e_next_write_restarts_timer_after_exit() -> None:
         await engine.write(
             "second message",
             scope,
-            metadata={"infer": "true", "middle": "true", "middle_interval": "1"},
+            system_metadata={"infer": "true", "middle": "true", "middle_interval": "1"},
         )
         # 第二次 write 后 wheel 应有 entry（Timer 协程重新启动）
         wheel = scheduler._wheels.get(scope_key)  # pylint: disable=protected-access
@@ -385,7 +385,7 @@ def test_e2e_failed_batch_preserves_originals_for_retry() -> None:
         units = await engine.write(
             "alice likes tea",
             scope,
-            metadata={"infer": "true", "middle": "true", "middle_interval": "2"},
+            system_metadata={"infer": "true", "middle": "true", "middle_interval": "2"},
         )
         original_id = units[0].id
         state["original_id"] = original_id
@@ -426,7 +426,7 @@ def test_e2e_recall_default_returns_active_only() -> None:
         units = await engine.write(
             "alice likes tea",
             scope,
-            metadata={"infer": "true", "middle": "true", "middle_interval": "1"},
+            system_metadata={"infer": "true", "middle": "true", "middle_interval": "1"},
         )
         original_id = units[0].id
         await asyncio.sleep(3.5)

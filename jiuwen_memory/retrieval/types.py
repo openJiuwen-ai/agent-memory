@@ -11,6 +11,7 @@ from jiuwen_memory.common.type_def import (
     ChannelError,
     ChannelEvidence,
     FilterExpr,
+    MetadataValueType,
     ParsedQuery,
     RecallChannel,
     ScoredMemoryUnit,
@@ -87,6 +88,7 @@ class RetrievedItem:
     abstract: str = ""  # L0 摘要（unit.layers.l0，50-100 字）
     overview: str = ""  # L1 片段（unit.layers.l1，200-500 字）
     content: str = ""  # L2 全文（unit.content）
+    user_metadata: dict[str, MetadataValueType] = field(default_factory=dict)
     level: DisclosureLevel = DisclosureLevel.L0  # 本次披露主层级
 
 

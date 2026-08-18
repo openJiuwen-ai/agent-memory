@@ -11,7 +11,7 @@ from ..types import KVMemoryListResult
 
 
 def _memory_type(unit: MemoryUnit) -> str:
-    return str(unit.metadata.get("memory_type", "")).strip() or unit.tier.value
+    return str(unit.system_metadata.get("memory_type", "")).strip() or unit.tier.value
 
 
 def _sort_key(unit: MemoryUnit) -> tuple[datetime, str]:

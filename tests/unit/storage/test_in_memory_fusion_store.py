@@ -22,10 +22,22 @@ def _store() -> InMemoryFusionStore:
             FusionRecord(
                 id="r1",
                 vector=[1.0, 0.0],
-                scalars={"project": "alpha", "priority": 8, "tags": ["work"]},
+                scalars={
+                    "user_metadata.project": "alpha",
+                    "user_metadata.priority": 8,
+                    "tags": ["work"],
+                },
             ),
-            FusionRecord(id="r2", vector=[1.0, 0.0], scalars={"project": "beta", "priority": 3}),
-            FusionRecord(id="r3", vector=[1.0, 0.0], scalars={"project": "gamma", "priority": 9}),
+            FusionRecord(
+                id="r2",
+                vector=[1.0, 0.0],
+                scalars={"user_metadata.project": "beta", "user_metadata.priority": 3},
+            ),
+            FusionRecord(
+                id="r3",
+                vector=[1.0, 0.0],
+                scalars={"user_metadata.project": "gamma", "user_metadata.priority": 9},
+            ),
         ],
     )
     return store
@@ -46,11 +58,11 @@ def test_fusion_and_or_combination() -> None:
             FilterGroup(
                 FilterLogic.OR,
                 [
-                    FilterClause("project", FilterOp.EQ, "alpha"),
-                    FilterClause("project", FilterOp.EQ, "beta"),
+                    FilterClause("user_metadata.project", FilterOp.EQ, "alpha"),
+                    FilterClause("user_metadata.project", FilterOp.EQ, "beta"),
                 ],
             ),
-            FilterClause("priority", FilterOp.GTE, 5),
+            FilterClause("user_metadata.priority", FilterOp.GTE, 5),
         ],
     )
 
@@ -59,7 +71,10 @@ def test_fusion_and_or_combination() -> None:
 
 def test_fusion_not_excludes() -> None:
     store = _store()
-    expr = FilterGroup(FilterLogic.NOT, [FilterClause("project", FilterOp.EQ, "beta")])
+    expr = FilterGroup(
+        FilterLogic.NOT,
+        [FilterClause("user_metadata.project", FilterOp.EQ, "beta")],
+    )
 
     assert _search_ids(store, expr) == {"r1", "r3"}, "NOT 排除 beta"
 
@@ -75,4 +90,7 @@ def test_fusion_distinguishes_scalar_equality_from_array_membership() -> None:
 
     assert _search_ids(store, FilterClause("tags", FilterOp.CONTAINS, "work")) == {"r1"}
     assert _search_ids(store, FilterClause("tags", FilterOp.EQ, "work")) == set()
-    assert _search_ids(store, FilterClause("project", FilterOp.CONTAINS, "alpha")) == set()
+    assert _search_ids(
+        store,
+        FilterClause("user_metadata.project", FilterOp.CONTAINS, "alpha"),
+    ) == set()

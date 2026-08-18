@@ -34,6 +34,8 @@ from jiuwen_memory.common.type_def import (
     MemoryUnit,
     Segment,
     Temporal,
+    inherited_system_metadata,
+    inherited_user_metadata,
 )
 from jiuwen_memory.construction.abstractor import AbstractorProducer
 
@@ -617,7 +619,13 @@ class LLMAbstractor(Abstractor):
                 ),
                 provenance=valid_source_ids,
                 tags=c.keywords,
-                metadata=metadata,
+                system_metadata=inherited_system_metadata(
+                    [source_map[source_id] for source_id in valid_source_ids]
+                )
+                | metadata,
+                user_metadata=inherited_user_metadata(
+                    [source_map[source_id] for source_id in valid_source_ids]
+                ),
                 lifecycle=LifecycleState.ACTIVE,
             )
             result.append(unit)

@@ -19,21 +19,26 @@ import json
 import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
+from math import isfinite
 from typing import Any
 
 from jiuwen_memory.api.memory_api import MemoryAPI
 from jiuwen_memory.common.audit import AuditLogger
-from jiuwen_memory.common.errors import NotFoundError, PermissionDeniedError, PolicyError, ValidationError
+from jiuwen_memory.common.errors import (
+    NotFoundError,
+    PermissionDeniedError,
+    PolicyError,
+    ValidationError,
+)
 from jiuwen_memory.common.type_def import (
     EXT_MAX_TOKENS,
-    RESERVED_METADATA_KEYS,
-    TRANSIENT_METADATA_KEYS,
     AuditEvent,
     Context,
     FilterClause,
     FilterExpr,
     FilterOp,
     MemoryUnit,
+    MetadataValueType,
     Modality,
     Scope,
     and_merge,
@@ -79,6 +84,7 @@ from jiuwen_memory.retrieval.types import DisclosureLevel, RetrievalQuery, Retri
 # 管理员闸门；在 allow_all
 # 装配下为 no-op。租户数据/治理方法仍按各自的 target scope 鉴权。
 _ROOT = Scope()
+_TRANSIENT_EXTENSION_KEYS = frozenset({"db_query_service", "encryption_port"})
 
 
 def _parse_max_tokens(raw: str | None) -> int | None:
@@ -128,7 +134,7 @@ def _required_filter_metadata(filters: FilterExpr | None) -> dict[str, Any]:
         if value is None:
             continue
         normalized = str(value).strip()
-        key = filter_field_metadata_key(field)
+        key = filter_field_metadata_key(field).removeprefix("system_metadata.")
         if not normalized or key in ambiguous:
             continue
         if key in routed and routed[key] != normalized:
@@ -152,41 +158,30 @@ def _reject_invalid_content(content: object) -> None:
         raise ValidationError("content must be a non-empty str")
 
 
-def _reject_reserved_metadata(metadata: dict[str, Any] | None) -> None:
-    """写入/更新边界拒绝系统保留 key。
-
-    索引投影会用真源系统字段覆盖同名用户 metadata，而 UnitReader 复核 ``metadata.<key>``
-    读的是用户值——同名会让 Store 与真源两侧判定相反，过滤结果静默出错。在此失败响亮。
-    """
-    if not metadata:
-        return
-    clash = sorted(set(metadata) & RESERVED_METADATA_KEYS)
-    if clash:
-        raise ValidationError(f"metadata 不得使用系统保留 key：{clash}")
-
-
-def _reject_non_scalar_metadata(metadata: dict[str, Any] | None) -> None:
+def _reject_non_scalar_metadata(
+    metadata: dict[str, MetadataValueType] | None, *, field_name: str
+) -> None:
     """写入/更新边界只接受 JSON 标量与字符串数组。
 
     嵌套 dict/混合类型数组在各后端语义不一：ES 会把嵌套对象展开成 ``metadata.a.b``
     另建 mapping，Milvus 的 JSON 字段能存但过滤算子对其未定义，UnitReader 又会把
     list 当集合字段走成员语义。三方各行其是且无一致契约，因此在入口挡住。
     字符串数组是例外——tags 类用法有明确的成员包含语义（``json_contains`` / ``term``）。
-    瞬态 key（``TRANSIENT_METADATA_KEYS``）是例外——它们透传原始对象到 storage 层消费，
-    不落盘，因此允许任意类型。
     """
     if not metadata:
         return
     for key, value in metadata.items():
-        # 瞬态 key 允许任意类型（对象透传，不落盘）
-        if key in TRANSIENT_METADATA_KEYS:
-            continue
+        if not isinstance(key, str) or not key.strip():
+            raise ValidationError(f"{field_name} key 必须是非空字符串")
+        if isinstance(value, float) and not isfinite(value):
+            raise ValidationError(f"{field_name}[{key!r}] 的浮点数必须有限")
         if isinstance(value, (str, int, float, bool)) or value is None:
             continue
         if isinstance(value, list) and all(isinstance(item, str) for item in value):
             continue
         raise ValidationError(
-            f"metadata[{key!r}] 仅支持 JSON 标量或字符串数组，收到 {type(value).__name__}"
+            f"{field_name}[{key!r}] 仅支持 JSON 标量或字符串数组，"
+            f"收到 {type(value).__name__}"
         )
 
 
@@ -215,15 +210,9 @@ def _missing_required_space(
 def _write_permission_context(
     scope: Scope,
     tags: list[str] | None,
-    metadata: dict[str, Any] | None,
+    system_metadata: dict[str, MetadataValueType] | None,
 ) -> PermissionContext:
-    meta = {}
-    for key, value in (metadata or {}).items():
-        # 瞬态 key 保留原始对象（透传到 storage 层消费，不落盘）
-        if key in TRANSIENT_METADATA_KEYS:
-            meta[key] = value
-        else:
-            meta[key] = str(value)
+    meta = {key: str(value) for key, value in (system_metadata or {}).items()}
     return PermissionContext(
         resource_type="write_input",
         memory_type=meta.get("memory_type", "").strip(),
@@ -253,7 +242,7 @@ def _recall_permission_context(
     # S03「MemoryPipeline 路由规则」——extensions 优先。
     for key, override in context.extensions.items():
         # 瞬态 key 透传原值，不 str 化
-        if key in TRANSIENT_METADATA_KEYS:
+        if key in _TRANSIENT_EXTENSION_KEYS:
             routed_metadata[key] = override
             continue
         effective = str(override).strip()
@@ -277,7 +266,7 @@ def _list_permission_contexts(
     routed_metadata = _required_filter_metadata(filters)
     for key, override in extensions.items():
         # 瞬态 key 透传原值，不 str 化
-        if key in TRANSIENT_METADATA_KEYS:
+        if key in _TRANSIENT_EXTENSION_KEYS:
             routed_metadata[key] = override
             continue
         effective = str(override).strip()
@@ -326,7 +315,7 @@ def _normalize_list_extensions(raw: dict[str, Any] | None) -> dict[str, Any]:
         if not isinstance(key, str):
             raise ValidationError("extensions keys must be strings")
         # 瞬态 key 保留原始对象（如 db_query_service / encryption_port），不强制 str 化
-        if key in TRANSIENT_METADATA_KEYS:
+        if key in _TRANSIENT_EXTENSION_KEYS:
             normalized[key] = value
         else:
             normalized[key] = str(value)
@@ -571,7 +560,8 @@ class LocalMemoryAPI(MemoryAPI):
         identity: Scope,
         assets: list[str] | None = None,
         tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
         return asyncio.run(
@@ -582,7 +572,8 @@ class LocalMemoryAPI(MemoryAPI):
                 identity=identity,
                 assets=assets,
                 tags=tags,
-                metadata=metadata,
+                system_metadata=system_metadata,
+                user_metadata=user_metadata,
                 occurred_at=occurred_at,
             )
         )
@@ -596,13 +587,14 @@ class LocalMemoryAPI(MemoryAPI):
         identity: Scope,
         assets: list[str] | None = None,
         tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
         _reject_invalid_content(content)
-        _reject_reserved_metadata(metadata)
-        _reject_non_scalar_metadata(metadata)
-        permission_context = _write_permission_context(scope, tags, metadata)
+        _reject_non_scalar_metadata(system_metadata, field_name="system_metadata")
+        _reject_non_scalar_metadata(user_metadata, field_name="user_metadata")
+        permission_context = _write_permission_context(scope, tags, system_metadata)
         auth = self._authorize(
             identity,
             scope,
@@ -617,7 +609,8 @@ class LocalMemoryAPI(MemoryAPI):
             source,
             assets=assets,
             tags=tags,
-            metadata=metadata,
+            system_metadata=system_metadata,
+            user_metadata=user_metadata,
             occurred_at=occurred_at,
         )
         self._log(identity, "add", target_scope=scope, detail=auth)
@@ -649,7 +642,8 @@ class LocalMemoryAPI(MemoryAPI):
         scope: Scope | None,
         source: Modality,
         tags: list[str] | None,
-        metadata: dict[str, Any] | None,
+        system_metadata: dict[str, MetadataValueType] | None,
+        user_metadata: dict[str, MetadataValueType] | None,
         occurred_at: datetime | None,
         stream_id: str,
     ) -> BatchWriteItem:
@@ -672,13 +666,21 @@ class LocalMemoryAPI(MemoryAPI):
                 not isinstance(values, list) or any(not isinstance(value, str) for value in values)
             ):
                 raise ValidationError(f"batch {name} must be list[str]")
-        if item.metadata is not None and not isinstance(item.metadata, dict):
-            raise ValidationError("batch item metadata must be dict")
+        if item.system_metadata is not None and not isinstance(item.system_metadata, dict):
+            raise ValidationError("batch item system_metadata must be dict")
+        if item.user_metadata is not None and not isinstance(item.user_metadata, dict):
+            raise ValidationError("batch item user_metadata must be dict")
         if item.occurred_at is not None and not isinstance(item.occurred_at, datetime):
             raise ValidationError("batch item occurred_at must be datetime")
-        merged_metadata = {**(metadata or {}), **(item.metadata or {})}
-        _reject_reserved_metadata(merged_metadata)
-        _reject_non_scalar_metadata(merged_metadata)
+        merged_system_metadata = {
+            **(system_metadata or {}),
+            **(item.system_metadata or {}),
+        }
+        merged_user_metadata = {**(user_metadata or {}), **(item.user_metadata or {})}
+        _reject_non_scalar_metadata(
+            merged_system_metadata, field_name="system_metadata"
+        )
+        _reject_non_scalar_metadata(merged_user_metadata, field_name="user_metadata")
         if item.stream_id and not isinstance(item.stream_id, str):
             raise ValidationError("batch item stream_id must be str")
         if item.sequence is not None and not isinstance(item.sequence, int):
@@ -691,7 +693,8 @@ class LocalMemoryAPI(MemoryAPI):
             source=item_source,
             assets=list(item.assets) if item.assets is not None else None,
             tags=cls._merge_batch_tags(tags, item.tags),
-            metadata=merged_metadata or None,
+            system_metadata=merged_system_metadata or None,
+            user_metadata=merged_user_metadata or None,
             occurred_at=item.occurred_at if item.occurred_at is not None else occurred_at,
             stream_id=item.stream_id or stream_id,
             sequence=item.sequence,
@@ -717,7 +720,8 @@ class LocalMemoryAPI(MemoryAPI):
         *,
         identity: Scope,
         tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
         stream_id: str = "",
         continue_on_error: bool = True,
@@ -729,7 +733,8 @@ class LocalMemoryAPI(MemoryAPI):
                 source,
                 identity=identity,
                 tags=tags,
-                metadata=metadata,
+                system_metadata=system_metadata,
+                user_metadata=user_metadata,
                 occurred_at=occurred_at,
                 stream_id=stream_id,
                 continue_on_error=continue_on_error,
@@ -744,7 +749,8 @@ class LocalMemoryAPI(MemoryAPI):
         *,
         identity: Scope,
         tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
         stream_id: str = "",
         continue_on_error: bool = True,
@@ -759,14 +765,16 @@ class LocalMemoryAPI(MemoryAPI):
             not isinstance(tags, list) or any(not isinstance(value, str) for value in tags)
         ):
             raise ValidationError("batch tags must be list[str]")
-        if metadata is not None and not isinstance(metadata, dict):
-            raise ValidationError("batch metadata must be dict")
+        if system_metadata is not None and not isinstance(system_metadata, dict):
+            raise ValidationError("batch system_metadata must be dict")
+        if user_metadata is not None and not isinstance(user_metadata, dict):
+            raise ValidationError("batch user_metadata must be dict")
         if not isinstance(stream_id, str):
             raise ValidationError("batch stream_id must be str")
         if occurred_at is not None and not isinstance(occurred_at, datetime):
             raise ValidationError("batch occurred_at must be datetime")
-        _reject_reserved_metadata(metadata)
-        _reject_non_scalar_metadata(metadata)
+        _reject_non_scalar_metadata(system_metadata, field_name="system_metadata")
+        _reject_non_scalar_metadata(user_metadata, field_name="user_metadata")
 
         outcomes: dict[int, BatchWriteOutcome] = {}
         ready: list[tuple[int, BatchWriteItem]] = []
@@ -780,7 +788,8 @@ class LocalMemoryAPI(MemoryAPI):
                     scope=scope,
                     source=source,
                     tags=tags,
-                    metadata=metadata,
+                    system_metadata=system_metadata,
+                    user_metadata=user_metadata,
                     occurred_at=occurred_at,
                     stream_id=stream_id,
                 )
@@ -831,7 +840,9 @@ class LocalMemoryAPI(MemoryAPI):
 
         authorized: list[tuple[int, BatchWriteItem, dict[str, str]]] = []
         for index, item in ready:
-            permission_context = _write_permission_context(item.scope, item.tags, item.metadata)
+            permission_context = _write_permission_context(
+                item.scope, item.tags, item.system_metadata
+            )
             try:
                 auth = self._authorize(
                     identity,
@@ -1053,8 +1064,8 @@ class LocalMemoryAPI(MemoryAPI):
     def update(
         self, unit_id: str, scope: Scope, patch: MemoryPatch, *, identity: Scope
     ) -> MemoryUnit:
-        _reject_reserved_metadata(patch.metadata)
-        _reject_non_scalar_metadata(patch.metadata)
+        _reject_non_scalar_metadata(patch.system_metadata, field_name="system_metadata")
+        _reject_non_scalar_metadata(patch.user_metadata, field_name="user_metadata")
         self._authorize(
             identity,
             scope,

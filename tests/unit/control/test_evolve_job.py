@@ -53,7 +53,7 @@ def _make_unit(uid: str, scope: Scope, content: str) -> MemoryUnit:
 def _make_middle_unit(uid: str, scope: Scope, content: str) -> MemoryUnit:
     """带 ``metadata["middle"]="true"`` 标记的中期记忆单元。"""
     return MemoryUnit(
-        id=uid, scope=scope, segments=[Segment(content=content)], metadata={"middle": "true"}
+        id=uid, scope=scope, segments=[Segment(content=content)], system_metadata={"middle": "true"}
     )
 
 

@@ -46,19 +46,19 @@ def test_memory_api_list_supports_pagination_and_memory_type_filter() -> None:
         "alice joined the sprint planning",
         scope,
         identity=scope,
-        metadata={"memory_type": "episodic"},
+        system_metadata={"memory_type": "episodic"},
     )[0]
     coding = api.add(
         "repo uses pytest for unit tests",
         scope,
         identity=scope,
-        metadata={"memory_type": "coding"},
+        system_metadata={"memory_type": "coding"},
     )[0]
     semantic = api.add(
         "alice prefers concise summaries",
         scope,
         identity=scope,
-        metadata={"memory_type": "semantic"},
+        system_metadata={"memory_type": "semantic"},
     )[0]
 
     coding_result = api.list(scope, identity=scope, memory_types=["coding"])
@@ -103,19 +103,22 @@ def test_memory_api_list_filters_before_pagination_and_preserves_total_count() -
         "first alpha memory",
         scope,
         identity=scope,
-        metadata={"memory_type": "coding", "project": "alpha", "priority": 1},
+        system_metadata={"memory_type": "coding"},
+        user_metadata={"project": "alpha", "priority": 1},
     )[0]
     second = api.add(
         "second alpha memory",
         scope,
         identity=scope,
-        metadata={"memory_type": "coding", "project": "alpha", "priority": 2},
+        system_metadata={"memory_type": "coding"},
+        user_metadata={"project": "alpha", "priority": 2},
     )[0]
     api.add(
         "beta memory",
         scope,
         identity=scope,
-        metadata={"memory_type": "coding", "project": "beta", "priority": 3},
+        system_metadata={"memory_type": "coding"},
+        user_metadata={"project": "beta", "priority": 3},
     )
 
     result = api.list(
@@ -126,8 +129,8 @@ def test_memory_api_list_filters_before_pagination_and_preserves_total_count() -
         memory_types=["coding"],
         filters={
             "AND": [
-                {"metadata.project": "alpha"},
-                {"metadata.priority": {"gte": 1}},
+                {"user_metadata.project": "alpha"},
+                {"user_metadata.priority": {"gte": 1}},
             ]
         },
     )
@@ -145,7 +148,7 @@ def test_memory_api_list_copies_extensions_and_forwards_normalized_filters() -> 
         "alpha memory",
         scope,
         identity=scope,
-        metadata={"project": "alpha"},
+        user_metadata={"project": "alpha"},
     )
     extensions = {"vendor_mode": 7}
     calls = []
@@ -156,7 +159,7 @@ def test_memory_api_list_copies_extensions_and_forwards_normalized_filters() -> 
         return original_list(target_scope, **kwargs)
 
     kernel.kv.list = recording_list
-    filters = FilterClause("metadata.project", FilterOp.EQ, "alpha")
+    filters = FilterClause("user_metadata.project", FilterOp.EQ, "alpha")
 
     result = api.list(
         scope,
@@ -213,7 +216,7 @@ def test_memory_api_unfiltered_list_uses_strict_fallback() -> None:
         "private coding memory",
         owner,
         identity=owner,
-        metadata={"memory_type": "coding"},
+        system_metadata={"memory_type": "coding"},
     )
 
     with pytest.raises(PermissionDeniedError):
@@ -228,13 +231,13 @@ def test_memory_api_list_binds_extension_permission_route_to_filter() -> None:
         "shareable episodic memory",
         owner,
         identity=owner,
-        metadata={"memory_type": "episodic"},
+        system_metadata={"memory_type": "episodic"},
     )[0]
     api.add(
         "private coding memory",
         owner,
         identity=owner,
-        metadata={"memory_type": "coding"},
+        system_metadata={"memory_type": "coding"},
     )
 
     result = api.list(

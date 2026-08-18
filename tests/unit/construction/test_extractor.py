@@ -95,7 +95,7 @@ def test_extract_fact():
     result = extractor.extract(units)
 
     assert len(result) >= 1
-    assert result[0].metadata.get("target") == "fact"
+    assert result[0].system_metadata.get("target") == "fact"
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +124,7 @@ def test_extract_event():
     result = extractor.extract(units)
 
     assert len(result) >= 1
-    assert result[0].metadata.get("target") == "event"
+    assert result[0].system_metadata.get("target") == "event"
 
 
 # ---------------------------------------------------------------------------
@@ -446,7 +446,7 @@ def test_procedural_inherits_write_tags():
     )
     source = create_test_unit("u1", "执行了 npm run build")
     source.tags = ["devops"]
-    source.metadata = {"procedural": "true"}
+    source.system_metadata = {"procedural": "true"}
     result = extractor.extract([source])
 
     assert len(result) == 1
@@ -656,7 +656,7 @@ def test_extract_l2_is_compact_statement_with_source_reference():
     assert "Source:" not in result[0].content
     assert result[0].source_ref == "u1"
     assert result[0].provenance == ["u1"]
-    assert result[0].metadata["extracted_statement"] == statement
+    assert result[0].system_metadata["extracted_statement"] == statement
 
 
 def test_extract_skips_invalid_candidate_and_preserves_valid_candidate():
@@ -755,7 +755,7 @@ def test_extract_preserves_structured_record_target():
 
     result = extractor.extract([create_test_unit("u1", "Sunday | Admon | 8am-4pm")])
 
-    assert result[0].metadata["target"] == "structured_record"
+    assert result[0].system_metadata["target"] == "structured_record"
 
 
 def test_keyword_procedural_inherits_write_tags():
@@ -766,7 +766,7 @@ def test_keyword_procedural_inherits_write_tags():
     extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=200, overlap_chars=0))
     source = create_test_unit("u1", "执行了 npm run build")
     source.tags = ["devops"]
-    source.metadata = {"procedural": "true"}
+    source.system_metadata = {"procedural": "true"}
     result = extractor.extract([source])
 
     assert len(result) == 1

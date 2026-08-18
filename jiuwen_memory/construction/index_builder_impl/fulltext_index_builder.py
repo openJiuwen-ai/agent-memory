@@ -18,12 +18,15 @@ logger = get_logger(__name__)
 
 
 def _index_metadata(unit: MemoryUnit, *, layer: str) -> dict[str, object]:
-    """构造可过滤索引投影；用户 metadata 原样带入，系统真源字段随后覆盖。
+    """构造可过滤索引投影，保留双命名空间的逻辑路径。
 
     ``metadata`` 值为 JSON 标量原生类型，后端据此建 double/boolean/keyword mapping
     并在 top-k 截断前原生下推。UnitReader 复核读的是同一个对象，两侧判定不分叉。
     """
-    metadata = dict(unit.metadata)
+    metadata = {
+        **{f"system_metadata.{key}": value for key, value in unit.system_metadata.items()},
+        **{f"user_metadata.{key}": value for key, value in unit.user_metadata.items()},
+    }
     metadata.update(
         {
             "unit_id": unit.id,

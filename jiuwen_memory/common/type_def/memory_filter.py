@@ -36,7 +36,12 @@ def _field_value(unit: MemoryUnit, field: str):
         return T_INVALID_OPEN if value is None else value
     if field == "t_message":
         return _epoch_ms(unit.temporal.t_message)
-    return unit.metadata.get(filter_field_metadata_key(field))
+    key = filter_field_metadata_key(field)
+    if key.startswith("user_metadata."):
+        return unit.user_metadata.get(key.removeprefix("user_metadata."))
+    if key.startswith("system_metadata."):
+        return unit.system_metadata.get(key.removeprefix("system_metadata."))
+    return None
 
 
 def _matches_clause(unit: MemoryUnit, clause: FilterClause) -> bool:

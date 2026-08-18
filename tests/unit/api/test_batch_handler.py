@@ -50,7 +50,7 @@ def test_batch_add_maps_defaults_item_scope_and_actor() -> None:
                 "tenant_id": "acme",
                 "space": "product",
                 "scope": "alice",
-                "metadata": {"infer": "true"},
+                "system_metadata": {"infer": "true"},
                 "stream_id": "session-1",
                 "occurred_at": "2026-08-05T10:00:00+00:00",
             },
@@ -76,6 +76,7 @@ def test_batch_add_maps_defaults_item_scope_and_actor() -> None:
     assert call["items"][0].scope == handler.Scope(org="acme", space="product", user="alice")
     assert call["items"][1].scope == handler.Scope(org="acme", space="product", user="bob")
     assert call["items"][1].source == handler.Modality.CODE
+    assert call["system_metadata"] == {"infer": "true"}
     assert call["occurred_at"] == datetime.fromisoformat("2026-08-05T10:00:00+00:00")
     assert call["items"][0].occurred_at is None
     assert call["items"][1].occurred_at == datetime.fromisoformat("2026-08-05T10:01:00+00:00")
@@ -95,6 +96,20 @@ def test_batch_add_null_item_tenant_inherits_default_scope() -> None:
 
     assert status == 200, body
     assert srv.api.calls[0]["items"][0].scope == handler.Scope(org="acme", user="alice")
+
+
+def test_batch_add_rejects_legacy_metadata_field() -> None:
+    status, body = handler.dispatch(
+        _Server(),
+        "batch_add",
+        {
+            "defaults": {"tenant_id": "acme", "metadata": {"infer": "true"}},
+            "items": [{"content": "remember"}],
+        },
+    )
+
+    assert status == 400
+    assert body["error"] == "ValidationError"
 
 
 def test_batch_add_returns_structured_outcome_for_malformed_item() -> None:

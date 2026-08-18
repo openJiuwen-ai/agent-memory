@@ -63,6 +63,10 @@
 
 ## 行为铁律
 
+0. **派生 metadata 按来源合并**：单源复制 `user_metadata`，多源只保留相等交集；
+   `infer` / `procedural` / `middle` 不传播。IndexBuilder 分别投影
+   `system_metadata.<key>` 和 `user_metadata.<key>`。
+
 1. **落盘由本层负责**
    接入层产出 `MemoryUnit` 后，真源写入由本层调用 Storage 的写接口完成。接入层禁止落盘。
 

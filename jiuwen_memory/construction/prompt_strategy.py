@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from jiuwen_memory.common.type_def import MemoryUnit
+from jiuwen_memory.common.type_def import MemoryUnit, MetadataValueType
 
 EXTRACT_PROMPT_PREFIX = "_extract_prompt_"
 CONSOLIDATION_PROMPT_PREFIX = "_consolidation_prompt_"
@@ -19,7 +19,7 @@ EXTRACTION_STRATEGY_KEY = "_extraction_strategy"
 
 
 def parse_prompt_strategies(
-    metadata: Mapping[str, str],
+    metadata: Mapping[str, MetadataValueType],
     prefix: str,
 ) -> list[tuple[str, str]]:
     """按 metadata 插入顺序解析 ``prefix + strategy`` 键，返回 ``(strategy, prompt_key)``。
@@ -45,7 +45,7 @@ def prompts_from_units(
     result: list[tuple[str, str]] = []
     seen: set[str] = set()
     for unit in units:
-        for strategy, prompt_key in parse_prompt_strategies(unit.metadata, prefix):
+        for strategy, prompt_key in parse_prompt_strategies(unit.system_metadata, prefix):
             if strategy in seen:
                 continue
             seen.add(strategy)
@@ -66,7 +66,7 @@ def copy_consolidation_prompts(
         for strategy, prompt_key in prompts
     }
     for target in targets:
-        target.metadata.update(values)
+        target.system_metadata.update(values)
 
 
 def copy_reflect_prompts(
@@ -82,4 +82,4 @@ def copy_reflect_prompts(
         for strategy, prompt_key in prompts
     }
     for target in targets:
-        target.metadata.update(values)
+        target.system_metadata.update(values)

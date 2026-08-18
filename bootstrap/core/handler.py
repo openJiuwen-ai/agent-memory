@@ -205,6 +205,8 @@ def _unit_view(unit: MemoryUnit) -> Body:
         "tier": unit.tier.value,
         "lifecycle": unit.lifecycle.value,
         "assets": list(unit.assets),
+        "system_metadata": dict(unit.system_metadata),
+        "user_metadata": dict(unit.user_metadata),
     }
 
 
@@ -221,7 +223,8 @@ def _batch_item_view(item: BatchWriteItem) -> Body:
         "source": item.source.value if isinstance(item.source, Modality) else item.source,
         "assets": item.assets,
         "tags": item.tags,
-        "metadata": item.metadata,
+        "system_metadata": item.system_metadata,
+        "user_metadata": item.user_metadata,
         "occurred_at": item.occurred_at.isoformat() if item.occurred_at else None,
         "stream_id": item.stream_id,
         "sequence": item.sequence,
@@ -376,6 +379,10 @@ def _usage_view(usage) -> Body:
 
 def _add(srv, payload: Body) -> Body:
     scope, actor = _target_scope(payload), _actor_scope(payload)
+    if "metadata" in payload:
+        raise ValidationError(
+            "metadata has been removed; use system_metadata and user_metadata"
+        )
     modality = Modality(payload.get("modality", "text"))
     # metadata 透传：infer 等调用级开关经 metadata 下推到引擎（engine.write 从
     # metadata["infer"]=="true" 判定是否同步走 evolve(EXTRACT) 抽取派生记忆）。
@@ -383,10 +390,12 @@ def _add(srv, payload: Body) -> Body:
     # double/boolean mapping 并原生下推；合法性由 API 写入边界统一校验。
     # 显式校验 dict：metadata 为 truthy 非 dict（字符串/列表等畸形 JSON）时兜底为空，
     # 避免下游 .items() 抛 AttributeError → HTTP 500。
-    raw_meta = payload.get("metadata")
-    if not isinstance(raw_meta, dict):
-        raw_meta = {}
-    metadata = dict(raw_meta)
+    raw_system_metadata = payload.get("system_metadata")
+    raw_user_metadata = payload.get("user_metadata")
+    if raw_system_metadata is not None and not isinstance(raw_system_metadata, dict):
+        raise ValidationError("system_metadata must be an object")
+    if raw_user_metadata is not None and not isinstance(raw_user_metadata, dict):
+        raise ValidationError("user_metadata must be an object")
     units = srv.api.add(
         _require(payload, "content"),
         scope,
@@ -394,7 +403,8 @@ def _add(srv, payload: Body) -> Body:
         identity=actor,
         tags=payload.get("tags"),
         assets=payload.get("assets"),
-        metadata=metadata or None,
+        system_metadata=dict(raw_system_metadata or {}) or None,
+        user_metadata=dict(raw_user_metadata or {}) or None,
     )
     # infer=True 时引擎可能合法返回空：派生记忆全部被 dedup 判为 update/noop
     # （result.created_ids 为空，见 engine.write 的 infer 分支）。
@@ -419,10 +429,17 @@ def _batch_add(srv, payload: Body) -> Body:
 
     defaults = {key: value for key, value in payload.items() if key not in {"defaults", "items"}}
     defaults.update(raw_defaults)
+    if "metadata" in defaults:
+        raise ValidationError(
+            "batch_add metadata has been removed; use system_metadata and user_metadata"
+        )
     default_scope = _scope_from_payload(defaults)
-    raw_metadata = defaults.get("metadata")
-    if raw_metadata is not None and not isinstance(raw_metadata, dict):
-        raise ValidationError("batch_add defaults.metadata must be an object")
+    raw_system_metadata = defaults.get("system_metadata")
+    raw_user_metadata = defaults.get("user_metadata")
+    if raw_system_metadata is not None and not isinstance(raw_system_metadata, dict):
+        raise ValidationError("batch_add defaults.system_metadata must be an object")
+    if raw_user_metadata is not None and not isinstance(raw_user_metadata, dict):
+        raise ValidationError("batch_add defaults.user_metadata must be an object")
     default_tags = defaults.get("tags")
     if default_tags is not None and not isinstance(default_tags, list):
         raise ValidationError("batch_add defaults.tags must be an array")
@@ -439,6 +456,10 @@ def _batch_add(srv, payload: Body) -> Body:
         if not isinstance(raw_item, dict):
             items.append(raw_item)
             continue
+        if "metadata" in raw_item:
+            raise ValidationError(
+                "batch item metadata has been removed; use system_metadata and user_metadata"
+            )
         raw_scope = raw_item.get("target_scope", {})
         if not isinstance(raw_scope, dict):
             items.append(raw_item)
@@ -464,7 +485,8 @@ def _batch_add(srv, payload: Body) -> Body:
                 source=item_source,
                 assets=raw_item.get("assets"),
                 tags=raw_item.get("tags"),
-                metadata=raw_item.get("metadata"),
+                system_metadata=raw_item.get("system_metadata"),
+                user_metadata=raw_item.get("user_metadata"),
                 occurred_at=item_occurred_at,
                 stream_id=raw_item.get("stream_id", ""),
                 sequence=raw_item.get("sequence"),
@@ -478,7 +500,8 @@ def _batch_add(srv, payload: Body) -> Body:
         default_source,
         identity=_actor_scope(defaults),
         tags=default_tags,
-        metadata=raw_metadata,
+        system_metadata=raw_system_metadata,
+        user_metadata=raw_user_metadata,
         occurred_at=default_occurred_at,
         stream_id=defaults.get("stream_id", ""),
         continue_on_error=payload.get("continue_on_error", True),
@@ -529,7 +552,12 @@ def _search(srv, payload: Body) -> Body:
         with_trajectory=trace,
     )
     hits = [
-        {"score": item.score, "item_id": item.unit_id, "content": item.content}
+        {
+            "score": item.score,
+            "item_id": item.unit_id,
+            "content": item.content,
+            "user_metadata": dict(item.user_metadata),
+        }
         for item in res.items
     ]
     body = {"ok": True, "op": "search", "hits": hits, "count": len(hits)}
@@ -586,7 +614,16 @@ def _get(srv, payload: Body) -> Body:
 
 def _update(srv, payload: Body) -> Body:
     scope, actor = _target_scope(payload), _actor_scope(payload)
-    patch = MemoryPatch(content=payload.get("content"), tags=payload.get("tags"))
+    if "metadata" in payload:
+        raise ValidationError(
+            "metadata has been removed; use system_metadata and user_metadata"
+        )
+    patch = MemoryPatch(
+        content=payload.get("content"),
+        tags=payload.get("tags"),
+        system_metadata=payload.get("system_metadata"),
+        user_metadata=payload.get("user_metadata"),
+    )
     unit = srv.api.update(_require(payload, "item_id"), scope, patch, identity=actor)
     return {"ok": True, "op": "update", "item": _unit_view(unit)}
 

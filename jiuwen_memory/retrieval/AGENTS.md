@@ -62,6 +62,10 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 
 ## 行为铁律
 
+0. **metadata 过滤不跨命名空间**：`user_metadata.<key>` 和
+   `system_metadata.<key>` 从对应真源字段复核，不 fallback。`RetrievedItem` 只附带
+   `user_metadata`。
+
 1. **scope 是独立轴**  
    `scope: Scope` 作为 `Retriever.retrieve` / `Recaller.recall` 的显式第一入参贯穿全链路，不随 `RetrievalQuery` 携带、也不混进 `filters`。query 是"找什么"，scope 是"在谁的范围内找"。
 

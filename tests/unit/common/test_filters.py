@@ -40,13 +40,16 @@ def test_normalize_list_becomes_and_group() -> None:
 
     assert isinstance(expr, FilterGroup), "list 应规范化为 FilterGroup"
     assert expr.logic is FilterLogic.AND, "多子句默认 AND 组合"
-    assert expr.children == [c1, c2], "子句顺序/内容应原样保留"
+    assert expr.children == [
+        FilterClause("user_metadata.project", FilterOp.EQ, "alpha"),
+        FilterClause("user_metadata.priority", FilterOp.GTE, 8),
+    ]
 
 
 def test_normalize_single_clause_preserves_semantics() -> None:
     c = FilterClause("project", FilterOp.EQ, "alpha")
 
-    assert normalize(c) == c, "单个 FilterClause 规范化后语义不变"
+    assert normalize(c) == FilterClause("user_metadata.project", FilterOp.EQ, "alpha")
 
 
 def test_normalize_none_and_empty_list_are_none() -> None:
@@ -55,7 +58,9 @@ def test_normalize_none_and_empty_list_are_none() -> None:
 
 
 def test_normalize_accepts_dict_dsl() -> None:
-    assert normalize({"project": "alpha"}) == FilterClause("project", FilterOp.EQ, "alpha")
+    assert normalize({"project": "alpha"}) == FilterClause(
+        "user_metadata.project", FilterOp.EQ, "alpha"
+    )
 
 
 def test_normalize_rejects_non_clause_list_element() -> None:
@@ -261,16 +266,20 @@ def test_evaluate_unknown_logic_raises_not_treated_as_not() -> None:
 
 
 def test_from_dict_field_eq_and_op() -> None:
-    assert from_dict({"project": "alpha"}) == FilterClause("project", FilterOp.EQ, "alpha")
-    assert from_dict({"priority": {"gte": 8}}) == FilterClause("priority", FilterOp.GTE, 8)
+    assert from_dict({"user_metadata.project": "alpha"}) == FilterClause(
+        "user_metadata.project", FilterOp.EQ, "alpha"
+    )
+    assert from_dict({"user_metadata.priority": {"gte": 8}}) == FilterClause(
+        "user_metadata.priority", FilterOp.GTE, 8
+    )
 
 
 def test_memory_type_is_canonicalized_to_metadata_field() -> None:
     assert from_dict({"memory_type": "coding"}) == FilterClause(
-        "metadata.memory_type", FilterOp.EQ, "coding"
+        "system_metadata.memory_type", FilterOp.EQ, "coding"
     )
     assert normalize(FilterClause("memory_type", FilterOp.EQ, "coding")) == FilterClause(
-        "metadata.memory_type", FilterOp.EQ, "coding"
+        "system_metadata.memory_type", FilterOp.EQ, "coding"
     )
 
 
@@ -279,7 +288,7 @@ def test_memory_type_aliases_share_one_required_equality_field() -> None:
         {
             "OR": [
                 {"memory_type": "coding"},
-                {"metadata.memory_type": "coding"},
+                {"system_metadata.memory_type": "coding"},
             ]
         }
     )
@@ -287,13 +296,13 @@ def test_memory_type_aliases_share_one_required_equality_field() -> None:
         {
             "AND": [
                 {"memory_type": "coding"},
-                {"metadata.memory_type": "general"},
+                {"system_metadata.memory_type": "general"},
             ]
         }
     )
 
-    assert extract_required_equality(same, "metadata.memory_type") == "coding"
-    assert extract_required_equality(conflict, "metadata.memory_type") is None
+    assert extract_required_equality(same, "system_metadata.memory_type") == "coding"
+    assert extract_required_equality(conflict, "system_metadata.memory_type") is None
 
 
 def test_from_dict_logic_tree() -> None:
@@ -321,7 +330,7 @@ def test_from_dict_top_level_multi_key_is_and() -> None:
 def test_normalize_dict_validates_and_rejects_bad_dsl() -> None:
     assert normalize({}) is None
     assert normalize({"project": {"in": ["a", "b"]}}) == FilterClause(
-        "project", FilterOp.IN, ["a", "b"]
+        "user_metadata.project", FilterOp.IN, ["a", "b"]
     )
     with pytest.raises(ValidationError):
         normalize({"AND": []})  # 空列表

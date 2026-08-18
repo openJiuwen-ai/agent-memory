@@ -150,7 +150,7 @@ def test_delete_downweight_updates_importance_without_changing_lifecycle() -> No
         "lower priority",
         scope,
         identity=actor,
-        metadata={"importance": "0.8"},
+        system_metadata={"importance": "0.8"},
     )[0]
 
     affected = kernel.api.delete(
@@ -161,7 +161,7 @@ def test_delete_downweight_updates_importance_without_changing_lifecycle() -> No
     stored = kernel.api.get(unit.id, scope, identity=actor)
     assert affected == [unit.id]
     assert stored.lifecycle == LifecycleState.ACTIVE
-    assert stored.metadata["importance"] == "0.4"
+    assert stored.system_metadata["importance"] == "0.4"
 
 
 def test_delete_purge_removes_memory_unit_from_truth_store() -> None:

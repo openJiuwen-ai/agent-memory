@@ -75,7 +75,8 @@ class _RecordingIngestor(Ingestor):
                         t_ingest=now,
                         t_valid=now,
                     ),
-                    metadata=dict(payload.metadata),
+                    system_metadata=dict(payload.system_metadata),
+                    user_metadata=dict(payload.user_metadata),
                 )
             )
         return units
@@ -120,7 +121,7 @@ class _RecordingClassifier(Classifier):
 
     def classify(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         for unit in units:
-            unit.metadata["classified_by"] = self.name
+            unit.system_metadata["classified_by"] = self.name
             self.classified.append(unit.content)
         return units
 
@@ -163,7 +164,8 @@ class _RecordingEvolver(Evolver):
                 segments=[Segment(content=f"derived:{unit.content}", source=unit.source)],
                 temporal=unit.temporal,
                 provenance=[unit.id],
-                metadata=dict(unit.metadata),
+                system_metadata=dict(unit.system_metadata),
+                user_metadata=dict(unit.user_metadata),
             )
             self.kv.insert(unit.scope, memory_key(derived.id), dumps(derived))
             created_ids.append(derived.id)
@@ -267,7 +269,7 @@ class _MessageTypePipeline(MemoryPipeline):
         return None
 
     def select_for_write(self, units: list[MemoryUnit]) -> PipelineBinding:
-        route = units[0].metadata.get("message_type", "chat")
+        route = units[0].system_metadata.get("message_type", "chat")
         return self.profiles.get(route, self.profiles["chat"])
 
     def select_for_recall(self, query: RetrievalQuery) -> PipelineBinding:
@@ -338,16 +340,16 @@ def test_cloud_engine_write_routes_by_message_type_and_stamps_metadata() -> None
             "use pytest for this repo",
             scope,
             source=Modality.CODE,
-            metadata={"message_type": "coding", "memory_type": "procedural"},
+            system_metadata={"message_type": "coding", "memory_type": "procedural"},
         )
     )
 
     assert records["chat_index"].built == []
     assert records["coding_index"].built == ["use pytest for this repo"]
     assert records["coding_classifier"].classified == ["use pytest for this repo"]
-    assert units[0].metadata["message_type"] == "coding"
-    assert units[0].metadata["pipeline"] == "coding"
-    assert units[0].metadata["classified_by"] == "coding"
+    assert units[0].system_metadata["message_type"] == "coding"
+    assert units[0].system_metadata["pipeline"] == "coding"
+    assert units[0].system_metadata["classified_by"] == "coding"
 
     context = asyncio.run(engine.permission_context_for_unit(units[0].id, scope))
 
@@ -364,8 +366,8 @@ def test_cloud_engine_write_defaults_to_chat_message_type() -> None:
 
     assert records["chat_index"].built == ["remember my meeting notes"]
     assert records["coding_index"].built == []
-    assert units[0].metadata["message_type"] == "chat"
-    assert units[0].metadata["pipeline"] == "chat"
+    assert units[0].system_metadata["message_type"] == "chat"
+    assert units[0].system_metadata["pipeline"] == "chat"
 
 
 def test_cloud_engine_batch_write_preserves_order_and_routes_each_item() -> None:
@@ -380,7 +382,7 @@ def test_cloud_engine_batch_write_preserves_order_and_routes_each_item() -> None
                     content="coding note",
                     scope=scope,
                     source=Modality.CODE,
-                    metadata={"message_type": "coding"},
+                    system_metadata={"message_type": "coding"},
                 ),
             ]
         )
@@ -389,7 +391,7 @@ def test_cloud_engine_batch_write_preserves_order_and_routes_each_item() -> None
     assert [outcome.units[0].content for outcome in result.outcomes] == ["chat note", "coding note"]
     assert records["chat_index"].built == ["chat note"]
     assert records["coding_index"].built == ["coding note"]
-    assert result.outcomes[1].units[0].metadata["pipeline"] == "coding"
+    assert result.outcomes[1].units[0].system_metadata["pipeline"] == "coding"
 
 
 def test_cloud_engine_batch_write_collects_unexpected_error_and_skips_after_failure() -> None:
@@ -431,24 +433,27 @@ def test_cloud_engine_list_forwards_query_and_returns_total_count() -> None:
         engine.write(
             "first alpha memory",
             scope,
-            metadata={"memory_type": "coding", "project": "alpha"},
+            system_metadata={"memory_type": "coding"},
+            user_metadata={"project": "alpha"},
         )
     )[0]
     second = asyncio.run(
         engine.write(
             "second alpha memory",
             scope,
-            metadata={"memory_type": "coding", "project": "alpha"},
+            system_metadata={"memory_type": "coding"},
+            user_metadata={"project": "alpha"},
         )
     )[0]
     asyncio.run(
         engine.write(
             "beta memory",
             scope,
-            metadata={"memory_type": "coding", "project": "beta"},
+            system_metadata={"memory_type": "coding"},
+            user_metadata={"project": "beta"},
         )
     )
-    filters = FilterClause("metadata.project", FilterOp.EQ, "alpha")
+    filters = FilterClause("user_metadata.project", FilterOp.EQ, "alpha")
     extensions = {"vendor_mode": "strict"}
 
     result = asyncio.run(
@@ -482,7 +487,7 @@ def test_cloud_engine_infer_uses_profile_evolver_and_returns_derived_units() -> 
         engine.write(
             "extract coding preference",
             scope,
-            metadata={"message_type": "coding", "infer": "true"},
+            system_metadata={"message_type": "coding", "infer": "true"},
         )
     )
 
@@ -490,8 +495,8 @@ def test_cloud_engine_infer_uses_profile_evolver_and_returns_derived_units() -> 
     assert records["chat_evolver"].calls == []
     assert units[0].id == "coding-derived-0"
     assert units[0].content == "derived:extract coding preference"
-    assert units[0].metadata["pipeline"] == "coding"
-    assert units[0].metadata["message_type"] == "coding"
+    assert units[0].system_metadata["pipeline"] == "coding"
+    assert units[0].system_metadata["message_type"] == "coding"
 
 
 def test_cloud_engine_overwrite_moves_unit_between_profile_indexes() -> None:
@@ -505,15 +510,15 @@ def test_cloud_engine_overwrite_moves_unit_between_profile_indexes() -> None:
             scope,
             MemoryPatch(
                 content="coding note",
-                metadata={"message_type": "coding"},
+                system_metadata={"message_type": "coding"},
                 mode=UpdateMode.OVERWRITE,
             ),
         )
     )
 
     assert updated.id == units[0].id
-    assert updated.metadata["message_type"] == "coding"
-    assert updated.metadata["pipeline"] == "coding"
+    assert updated.system_metadata["message_type"] == "coding"
+    assert updated.system_metadata["pipeline"] == "coding"
     assert records["chat_index"].removed == [units[0].id]
     assert records["coding_index"].built == ["coding note"]
 
@@ -608,7 +613,7 @@ def test_cloud_engine_write_middle_submits_middle_to_long_job() -> None:
         engine.write(
             "alice likes tea",
             scope,
-            metadata={"message_type": "coding", "infer": "true", "middle": "true"},
+            system_metadata={"message_type": "coding", "infer": "true", "middle": "true"},
         )
     )
 
@@ -622,7 +627,7 @@ def test_cloud_engine_write_middle_submits_middle_to_long_job() -> None:
     assert len(units) >= 1
     persisted = loads(records["kv"].get(scope, memory_key(units[0].id)))
     assert persisted.tier == MemoryTier.WORKING
-    assert persisted.metadata.get("middle") == "true"
+    assert persisted.system_metadata.get("middle") == "true"
     # 立即建索引（coding_index 收到 build）
     assert records["coding_index"].built == ["alice likes tea"]
     # job._evolver / job._index 被 binding 的覆盖——
@@ -642,7 +647,7 @@ def test_cloud_engine_write_middle_raises_when_job_factory_is_none() -> None:
             engine.write(
                 "x",
                 scope,
-                metadata={"message_type": "chat", "infer": "true", "middle": "true"},
+                system_metadata={"message_type": "chat", "infer": "true", "middle": "true"},
             )
         )
 
@@ -660,7 +665,7 @@ def test_cloud_engine_procedural_takes_precedence_over_middle() -> None:
         engine.write(
             "alice likes tea",
             scope,
-            metadata={"message_type": "chat", "procedural": "true", "middle": "true"},
+            system_metadata={"message_type": "chat", "procedural": "true", "middle": "true"},
         )
     )
 

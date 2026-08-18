@@ -6,7 +6,11 @@ from collections.abc import Mapping
 
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.log import get_logger
-from jiuwen_memory.common.type_def import MEMORY_TYPE_FILTER_FIELD, MemoryUnit, extract_required_equality
+from jiuwen_memory.common.type_def import (
+    MEMORY_TYPE_FILTER_FIELD,
+    MemoryUnit,
+    extract_required_equality,
+)
 from jiuwen_memory.construction.classifier import ClassifierProducer
 from jiuwen_memory.construction.evolver import EvolverProducer
 from jiuwen_memory.construction.index_builder import IndexBuilderProducer
@@ -21,9 +25,9 @@ logger = get_logger(__name__)
 class MetadataPipeline(MemoryPipeline):
     """按 ``memory_type`` 等字符串键选择 profile。
 
-    写入侧从 ``MemoryUnit.metadata[route_key]`` 读取；查询侧优先从
+    写入侧从 ``MemoryUnit.system_metadata[route_key]`` 读取；查询侧优先从
     ``RetrievalQuery.extensions[route_key]`` 读取，其次从规范字段
-    ``metadata.<route_key>`` 的等值 filters 读取。
+    ``system_metadata.<route_key>`` 的等值 filters 读取。
     """
 
     def __init__(
@@ -86,7 +90,7 @@ class MetadataPipeline(MemoryPipeline):
 
 def _route_value_from_units(units: list[MemoryUnit], route_key: str) -> str:
     for unit in units:
-        value = str(unit.metadata.get(route_key, "")).strip()
+        value = str(unit.system_metadata.get(route_key, "")).strip()
         if value:
             return value
     return ""
@@ -98,7 +102,9 @@ def _route_value_from_query(query: RetrievalQuery, route_key: str) -> str:
         return value
     # query.filters 已在 RetrievalQuery 边界规范化；memory_type 使用共享规范字段常量。
     filter_field = (
-        MEMORY_TYPE_FILTER_FIELD if route_key == "memory_type" else f"metadata.{route_key}"
+        MEMORY_TYPE_FILTER_FIELD
+        if route_key == "memory_type"
+        else f"system_metadata.{route_key}"
     )
     routed = extract_required_equality(query.filters, filter_field)
     return str(routed).strip() if routed is not None else ""

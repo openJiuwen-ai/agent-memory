@@ -5,8 +5,16 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/api/ |
-| 最近一次修订日期 | 2026-08-12 |
+| 最近一次修订日期 | 2026-08-18 |
+| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md |
+## Metadata 公共 API 契约
+
+`add` / `add_async` / `batch_add` 以及 `BatchWriteItem` 分别接收
+`system_metadata` 和 `user_metadata`，不再接收混合 `metadata`。`MemoryPatch` 对两个
+dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key>`；裸自定义
+字段仅在规范化边界作为该路径的兼容写法，`metadata.<key>` 拒绝。
+
 ## 范围 / 边界
 
 **管什么**：
@@ -78,9 +86,9 @@
 
 #### infer 开关（add 的同步抽取语义）
 
-`add` 的 `metadata["infer"]` 是调用级开关，控制写入时是否同步抽取派生记忆（对齐 mem0 `add(infer=True)`）：
+`add` 的 `system_metadata["infer"]` 是调用级开关，控制写入时是否同步抽取派生记忆（对齐 mem0 `add(infer=True)`）：
 
-- **真值判定**：`str(metadata.get("infer", "")).strip().lower() == "true"`——大小写/
+- **真值判定**：`str(system_metadata.get("infer", "")).strip().lower() == "true"`——大小写/
   空白不敏感，字符串 `"true"` 和布尔值 `True` 均会触发；`"false"`/`False`/缺省/
   空值走默认路径。
 - **`infer="true"`**：原始记忆落 `/messages/{id}` 真源但**不建索引**；hot path
@@ -94,7 +102,7 @@
 
 #### procedural 开关（add 的过程记忆抽取）
 
-`add` 的 `metadata["procedural"]` 是独立于 infer 的调用级开关（详见 F02 决策8）：
+`add` 的 `system_metadata["procedural"]` 是独立于 infer 的调用级开关（详见 F02 决策8）：
 
 - **`procedural="true"`**：原文**不落 KV**；喂 `Evolver.evolve(units, EXTRACT)`。extractor 把本轮汇总成一条 PROCEDURAL 执行历史，再由 Evolver 落盘（`DynamicEvolver` 也走父类 procedural 路径，不判定）。
 - procedural 与 infer 同传时按 procedural 语义：原文不落 `/messages/`、不收集

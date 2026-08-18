@@ -783,7 +783,7 @@ class TestDedupMiddleFilter:
 
         # 中期原文（被打了 middle=true 标记——Engine.write middle 路径的行为）
         middle_unit = _make_unit("mid-1", "dave enjoys hiking on weekends")
-        middle_unit.metadata["middle"] = "true"
+        middle_unit.system_metadata["middle"] = "true"
         _index_unit(middle_unit, stores["kv"], stores["vector"], embedder)
 
         # 派生 candidate——语义接近中期原文（同人物 + 同事件）
@@ -853,7 +853,7 @@ class TestDedupMiddleFilter:
 
         # 中期原文
         middle_unit = _make_unit("mid-1", "dave enjoys hiking on weekends")
-        middle_unit.metadata["middle"] = "true"
+        middle_unit.system_metadata["middle"] = "true"
         kv.insert(middle_unit.scope, memory_key(middle_unit.id), dumps(middle_unit))
         fulltext.insert(
             middle_unit.scope,

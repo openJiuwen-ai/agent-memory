@@ -47,6 +47,9 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
 
 ## 行为铁律
 
+0. **metadata 索引保留逻辑路径**：索引记录区分 `system_metadata.<key>` 与
+   `user_metadata.<key>`；各后端可用完整 JSON key 或对象层级实现，但 FilterExpr 语义必须一致。
+
 1. **scope 原生隔离**  
    `scope: Scope` 为每个 Store 方法的显式第一入参，物理约束在该 scope 内。写入按 scope 落库，检索/点查/删除绝不跨 scope 返回或影响。`org/space/user/agent/session` 五段 scope 必须参与命名空间或过滤；空 `space` 只匹配空 space 兼容域。隔离必须在存储层强制，上层不依赖调用纪律。
 
@@ -147,4 +150,3 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
     `RoutingStorage`。`RoutingStorage` 的 `.kv`/`.vector`/… 与 `*_port` 返回惰性代理，
     使构造期 `self._vector = storage.vector` 仍随 `storage.active` 重解析。EncryptedKV
     为 F04 opt-in，只包在各预装实例内部 KV（若启用），不在 `RoutingStorage` 外包一层。
-

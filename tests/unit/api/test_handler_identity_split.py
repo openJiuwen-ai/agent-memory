@@ -36,7 +36,8 @@ class _RecordingApi:
         identity,
         tags=None,
         assets=None,
-        metadata=None,
+        system_metadata=None,
+        user_metadata=None,
     ):
         self.add_calls.append({"scope": scope, "identity": identity})
         return [handler.MemoryUnit(id="unit-1", scope=scope, segments=[Segment(content=content)])]

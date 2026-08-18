@@ -23,14 +23,14 @@ def test_batch_add_normalizes_defaults_and_preserves_input_order() -> None:
                 content="second",
                 source=Modality.CODE,
                 tags=["shared", "second"],
-                metadata={"priority": 2},
+                user_metadata={"priority": 2},
                 sequence=2,
             ),
         ],
         scope,
         identity=scope,
         tags=["shared"],
-        metadata={"project": "batch", "priority": 1},
+        user_metadata={"project": "batch", "priority": 1},
         stream_id="import-1",
     )
 
@@ -38,7 +38,7 @@ def test_batch_add_normalizes_defaults_and_preserves_input_order() -> None:
     assert all(not outcome.error for outcome in result.outcomes)
     assert result.outcomes[0].item.tags == ["shared", "first"]
     assert result.outcomes[1].item.tags == ["shared", "second"]
-    assert result.outcomes[1].item.metadata == {"project": "batch", "priority": 2}
+    assert result.outcomes[1].item.user_metadata == {"project": "batch", "priority": 2}
     assert result.outcomes[1].item.source == Modality.CODE
 
 

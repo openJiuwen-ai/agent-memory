@@ -20,10 +20,15 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from datetime import datetime
-from typing import Any
 
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.type_def import FilterExpr, MemoryUnit, Modality, Scope
+from jiuwen_memory.common.type_def import (
+    FilterExpr,
+    MemoryUnit,
+    MetadataValueType,
+    Modality,
+    Scope,
+)
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.retrieval import RetrievalQuery, RetrievalResult
 
@@ -61,7 +66,8 @@ class MemoryEngine(ControlOperator):
         *,
         assets: list[str] | None = None,
         tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
         """异步（协程）写入：hot path 完成（真源落盘 + 轻量索引）后返回

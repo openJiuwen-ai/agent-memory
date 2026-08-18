@@ -43,7 +43,7 @@ def _create_source_unit(unit_id: str, content: str) -> MemoryUnit:
             t_ingest=now,
             t_valid=now,
         ),
-        metadata={"infer": "true"},
+        system_metadata={"infer": "true"},
     )
 
 

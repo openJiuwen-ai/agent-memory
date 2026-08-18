@@ -17,6 +17,10 @@
 
 ## 行为铁律
 
+0. **写入 metadata 明确分区**
+   add/batch/update 入口只接收 `system_metadata` 和 `user_metadata`。两者分别校验、
+   分别合并并原样委托 Engine；用户过滤规范路径为 `user_metadata.<key>`。
+
 1. **本层不做编排**  
    `MemoryAPI` 只做三件事：鉴权（PEP）、参数装配、委托。编排逻辑（add 路径、search/list 路径、evolve 调度）全部在 `control/MemoryEngine`，禁止在本层堆业务逻辑。
 

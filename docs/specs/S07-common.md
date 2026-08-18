@@ -5,8 +5,15 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | src/common/ |
-| 最近一次修订日期 | 2026-08-05 |
+| 最近一次修订日期 | 2026-08-18 |
+| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md |
+
+## Metadata 领域模型契约
+
+`MetadataValueType = str | int | float | bool | None | list[str]`。`MemoryUnit` 和
+`RawPayload` 只提供 `system_metadata` / `user_metadata`，不提供混合 `metadata`。codec `_v=4`
+分别序列化两者；`_v<4` 的 MemoryUnit 数据必须先离线迁移，运行时不猜测归属。
 
 ## 范围 / 边界
 
