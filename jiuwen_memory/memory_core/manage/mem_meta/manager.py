@@ -550,10 +550,7 @@ class MemMetaManager:
                     user_id, scope_id, offset=0, limit=MAX_QUERY_LIMIT,
                 )
                 # 过滤 blacklisted 且满足不活跃天数阈值
-                expired_docs = [
-                    d for d in docs
-                    if self._is_expired(d, now_dt, inactive_days_threshold)
-                ]
+                expired_docs = [d for d in docs if self._is_expired(d, now_dt, inactive_days_threshold)]
                 expired_count = len(expired_docs)
                 if expired_count == 0:
                     continue
@@ -772,12 +769,12 @@ class MemMetaManager:
                                         d.id for d in docs if d.blacklisted
                                     ]
                                 else:
-                                    expired_mem_ids = [
-                                        d.id for d in docs
+                                    expired_mem_ids = []
+                                    for d in docs:
                                         if self._is_expired(
-                                            d, now_dt,
-                                            params.inactive_days_threshold)
-                                    ]
+                                                d, now_dt,
+                                                params.inactive_days_threshold):
+                                            expired_mem_ids.append(d.id)
                                 if not expired_mem_ids:
                                     continue
 
