@@ -18,7 +18,7 @@ from typing import Any
 
 from sqlalchemy import (
     Column, Integer, String, Text, Index, MetaData, Table,
-    select, insert, update, delete, func, text,
+    select, insert, update, delete, func,
 )
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -29,6 +29,15 @@ from jiuwen_memory.memory_core.common.distributed_lock import DistributedLock
 # ============================================================
 
 COOLDOWN_SECONDS = 300  # 5 分钟冷却
+
+
+def _now_str() -> str:
+    """返回当前 UTC 时间字符串（数据库兼容格式）。
+
+    使用 Python 侧时间戳，兼容 SQLite / PostgreSQL / GaussDB。
+    """
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
 
 # ============================================================
 # ORM 模型定义（通过 SQLAlchemy 自动适配不同数据库方言）
@@ -47,8 +56,8 @@ av_user_stats_table = Table(
     Column("tier_episodic", Integer, default=0),
     Column("tier_semantic", Integer, default=0),
     Column("tier_other", Integer, default=0),
-    Column("created_at", String, nullable=False, default=text("datetime('now')")),
-    Column("updated_at", String, nullable=False, default=text("datetime('now')")),
+    Column("created_at", String, nullable=False, default=_now_str),
+    Column("updated_at", String, nullable=False, default=_now_str),
 )
 
 mem_meta_task_table = Table(
@@ -63,8 +72,8 @@ mem_meta_task_table = Table(
     Column("processed_users", Integer, default=0),
     Column("deleted_count", Integer, default=0),
     Column("failed_count", Integer, default=0),
-    Column("created_at", String, nullable=False, default=text("datetime('now')")),
-    Column("updated_at", String, nullable=False, default=text("datetime('now')")),
+    Column("created_at", String, nullable=False, default=_now_str),
+    Column("updated_at", String, nullable=False, default=_now_str),
     Column("started_at", String),
     Column("finished_at", String),
     Index("idx_task_status", "status"),
@@ -73,11 +82,6 @@ mem_meta_task_table = Table(
 
 AV_USER_STATS_COLS = list(av_user_stats_table.columns.keys())
 MEM_META_TASK_COLS = list(mem_meta_task_table.columns.keys())
-
-
-def _now_str() -> str:
-    """返回当前 UTC 时间字符串（数据库兼容格式）。"""
-    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
 
 class MemMetaManager:
@@ -218,8 +222,11 @@ class MemMetaManager:
         return task_id
 
     async def _update_task(self, task_id: str, **fields: Any) -> None:
-        """更新任务字段（UPDATE mem_meta_task）。"""
-        fields["updated_at"] = text("datetime('now')")
+        """更新任务字段（UPDATE mem_meta_task）。
+
+        使用 Python 侧时间戳（_now_str），兼容 SQLite / PostgreSQL / GaussDB。
+        """
+        fields["updated_at"] = _now_str()
         async with self._engine.begin() as conn:
             await conn.execute(
                 update(mem_meta_task_table)
@@ -247,8 +254,8 @@ class MemMetaManager:
                 .values(
                     status="failed",
                     error_message="zombie task cleaned up on restart",
-                    finished_at=text("datetime('now')"),
-                    updated_at=text("datetime('now')"),
+                    finished_at=_now_str(),
+                    updated_at=_now_str(),
                 )
             )
 
@@ -499,16 +506,27 @@ class MemMetaManager:
         all_scopes = await memory_index.list_user_scopes()
 
         # 按用户聚合统计
+        now_dt = datetime.utcnow()
         user_stats: dict[str, dict] = {}
         for user_id, scope_id in all_scopes:
             try:
                 docs, total = await memory_index.list_memories_with_total(
                     user_id, scope_id, offset=0, limit=10**9,
                 )
-                blacklisted_count = sum(1 for d in docs if d.blacklisted)
-                if blacklisted_count == 0:
+                # 过滤 blacklisted 且满足不活跃天数阈值
+                expired_docs = [
+                    d for d in docs
+                    if d.blacklisted and (
+                        d.timestamp is None
+                        or (now_dt - d.timestamp.replace(
+                            tzinfo=None)).days >= inactive_days_threshold
+                    )
+                ]
+                expired_count = len(expired_docs)
+                if expired_count == 0:
                     continue
 
+                all_blacklisted = sum(1 for d in docs if d.blacklisted)
                 if user_id not in user_stats:
                     user_stats[user_id] = {
                         "scope_user": user_id,
@@ -521,9 +539,9 @@ class MemMetaManager:
                 s = user_stats[user_id]
                 s["total_count"] += total
                 s["active_count"] += sum(1 for d in docs if not d.blacklisted)
-                s["superseded_count"] += blacklisted_count
-                s["expired_30d_count"] += blacklisted_count
-                s["expired_all_count"] += blacklisted_count
+                s["superseded_count"] += all_blacklisted
+                s["expired_30d_count"] += expired_count
+                s["expired_all_count"] += all_blacklisted
             except Exception:
                 continue  # 跳过单个 scope 的错误
 
@@ -674,7 +692,7 @@ class MemMetaManager:
                 }
                 try:
                     async with DistributedLock(kv_store, f"user/{user_id}"):
-                        # ★ 不活跃天数校验 (all_expired=true 时跳过) ★
+                        # ★ 不活跃天数校验 (all_expired=true 时跳过校验) ★
                         if not all_expired:
                             if inactive_days_threshold == 30:
                                 # === 快表路径：查 av_user_stats ===
@@ -685,21 +703,8 @@ class MemMetaManager:
                                     )
                                     row = result.fetchone()
 
-                                if row is None or row[0] is None:
-                                    user_result["status"] = "skipped"
-                                    user_result["error"] = (
-                                        "not found in av_user_stats, skipped"
-                                    )
-                                    details.append(user_result)
-                                    failed += 1
-                                    await self._update_task(
-                                        task_id,
-                                        failed_count=failed,
-                                        processed_users=processed + 1,
-                                    )
-                                    processed += 1
-                                    continue
-                                if row[0] == 0:
+                                if row is not None and row[0] is not None and row[0] == 0:
+                                    # 用户在快表中且无过期记忆，跳过
                                     user_result["status"] = "skipped"
                                     user_result["error"] = (
                                         "expired_30d_count=0, no expired memories"
@@ -711,9 +716,9 @@ class MemMetaManager:
                                         processed_users=processed,
                                     )
                                     continue
-                            else:
-                                # === 实时扫描路径：不查快表，直接遍历 scope 删 ===
-                                pass
+                                # row is None（用户不在快表中）或 row[0] > 0：
+                                # 继续走实时扫描删除路径，不计 failed
+                            # inactive_days_threshold != 30：直接走实时扫描删除路径
 
                         # 发现该用户所有 scope
                         if scope_id:
@@ -734,10 +739,22 @@ class MemMetaManager:
                                         offset=0, limit=10**9,
                                     )
                                 )
-                                # 过滤 blacklisted == True
-                                expired_mem_ids = [
-                                    d.id for d in docs if d.blacklisted
-                                ]
+                                # 过滤 blacklisted == True 且满足不活跃天数
+                                now_dt = datetime.utcnow()
+                                if all_expired:
+                                    expired_mem_ids = [
+                                        d.id for d in docs if d.blacklisted
+                                    ]
+                                else:
+                                    expired_mem_ids = [
+                                        d.id for d in docs
+                                        if d.blacklisted and (
+                                            d.timestamp is None
+                                            or (now_dt - d.timestamp.replace(
+                                                tzinfo=None)).days
+                                            >= inactive_days_threshold
+                                        )
+                                    ]
                                 if not expired_mem_ids:
                                     continue
 
