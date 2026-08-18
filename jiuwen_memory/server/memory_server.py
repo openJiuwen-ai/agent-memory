@@ -16,7 +16,6 @@ from jiuwen_memory.foundation.llm.schema.config import ModelClientConfig, ModelR
 from jiuwen_memory.memory_core.config.config import (
     AgentMemoryConfig,
     MemoryEngineConfig,
-    MemoryScopeConfig,
 )
 from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 from jiuwen_memory.memory_core.manage.mem_model.memory_unit import MemoryType
@@ -115,7 +114,7 @@ async def _reload_memory_engine() -> None:
     故不会真正停止旧引擎——register_store 会重新装配 stores，set_config 会重置配置。
     file watcher 需先停止再重启，避免重复 watcher 线程。
     """
-    global memory_engine, MEMORY_API_KEY
+    global MEMORY_API_KEY
     async with _reload_lock:
         _load_env()
         MEMORY_API_KEY = _env_value("MEMORY_API_KEY", "")
@@ -464,7 +463,7 @@ async def startup_event():
         # 创建配置 - 支持从.env读取加密配置
         codec_name = os.getenv("MEMORY_CODEC", "").strip().lower()
         crypto_key = b""
-        
+
         # 根据加密算法类型处理密钥
         if codec_name == "sm4":
             # SM4国密算法：需要从.env读取SM4_KEY并注册codec
@@ -502,7 +501,7 @@ async def startup_event():
             else:
                 memory_logger.warning("AES codec specified but AES_KEY not set, using empty key")
                 crypto_key = b""
-        
+
         config = MemoryEngineConfig(
             default_model_cfg=ModelRequestConfig(
                 model=os.getenv("MODEL_NAME", ""),
@@ -799,6 +798,7 @@ register_log_center_endpoints(
 
 # 批量删除管理端点延迟到 startup_event 中注册（需要 db_store 先初始化）
 _mem_meta_registered = False
+
 
 def _register_mem_meta():
     global _mem_meta_registered
