@@ -321,20 +321,34 @@ class MemMetaManager:
         }
 
     async def _run_refresh_meta(self, task_id: str) -> None:
-        """后台执行: UPDATE running → DELETE av_user_stats → 分页扫描 Milvus
-        → 解码 metadata → 聚合统计 → INSERT av_user_stats → UPDATE completed。
+        """后台执行: UPDATE running → DELETE av_user_stats
+        → 通过内核 SimpleMemoryIndex 扫描 uid_* collection
+        → 统计 blacklisted/expired → INSERT av_user_stats → UPDATE completed。
+
+        扫描内核真实数据（uid_{user}_gid_{scope}_mtype_* collection + KV），
+        而非旧平台的 agent_memory_vectors。
         """
         self._update_task(
             task_id, status="running", started_at=_now_str()
         )
         try:
-            from pymilvus import MilvusClient
+            engine = self.engine
+            if engine is None or engine.memory_index is None:
+                self._update_task(
+                    task_id,
+                    status="failed",
+                    finished_at=_now_str(),
+                    error_message="memory_engine or memory_index is None",
+                )
+                return
 
-            now_ms = int(time.time() * 1000)
-            cutoff_30d_ms = now_ms - (30 * 24 * 60 * 60 * 1000)
+            memory_index = engine.memory_index
             now_str = _now_str()
+            now = datetime.utcnow()
 
-            c = MilvusClient(uri=self.milvus_uri)
+            # 获取所有 (user_id, scope_id) 对
+            all_scopes = await memory_index.list_user_scopes()
+
             user_stats: dict = defaultdict(
                 lambda: {
                     "total": 0,
@@ -346,43 +360,34 @@ class MemMetaManager:
                 }
             )
 
-            # 分页扫描 Milvus（limit=1000）
-            offset = 0
-            batch = 1000
             total_scanned = 0
-            while True:
-                rows = c.query(
-                    COLLECTION,
-                    filter="",
-                    output_fields=["id", "scope_user", "metadata"],
-                    limit=batch,
-                    offset=offset,
-                )
-                if not rows:
-                    break
-                for r in rows:
-                    total_scanned += 1
-                    u = r.get("scope_user", "")
-                    s = user_stats[u]
-                    s["total"] += 1
-                    # 解码 metadata（base64 / dict）
-                    meta = _decode_metadata(r.get("metadata", {}))
-                    lc = meta.get("lifecycle", "")
-                    t_invalid = meta.get("t_invalid", SENTINEL)
-                    tier = meta.get("tier", "")
-                    if tier:
-                        s["tiers"][tier] += 1
-                    if lc == "active":
-                        s["active"] += 1
-                    elif lc == "superseded":
-                        s["superseded"] += 1
-                        s["expired_all"] += 1
-                        if t_invalid < cutoff_30d_ms and t_invalid < SENTINEL:
-                            s["expired_30d"] += 1
-                offset += batch
-                if len(rows) < batch:
-                    break
-            c.close()
+            for user_id, scope_id in all_scopes:
+                try:
+                    docs, total = await memory_index.list_memories_with_total(
+                        user_id, scope_id, offset=0, limit=10**9,
+                    )
+                    s = user_stats[user_id]
+                    for doc in docs:
+                        total_scanned += 1
+                        s["total"] += 1
+                        # tier 统计（按 mem_type）
+                        if doc.type:
+                            s["tiers"][doc.type] += 1
+                        # blacklisted = 过期
+                        if doc.blacklisted:
+                            s["superseded"] += 1
+                            s["expired_all"] += 1
+                            # 判断是否过期超过30天
+                            if doc.timestamp:
+                                days_ago = (now - doc.timestamp.replace(tzinfo=None)).days
+                                if days_ago >= 30:
+                                    s["expired_30d"] += 1
+                            else:
+                                s["expired_30d"] += 1
+                        else:
+                            s["active"] += 1
+                except Exception:
+                    continue
 
             # 填充 av_user_stats
             conn = sqlite3.connect(self.db_path)
@@ -400,12 +405,12 @@ class MemMetaManager:
                         s["superseded"],
                         s["expired_30d"],
                         s["expired_all"],
-                        t.get("episodic", 0),
-                        t.get("semantic", 0),
+                        t.get("episodic_memory", 0),
+                        t.get("semantic_memory", 0),
                         sum(
                             v
                             for k, v in t.items()
-                            if k not in ("episodic", "semantic")
+                            if k not in ("episodic_memory", "semantic_memory")
                         ),
                         now_str,
                         now_str,
@@ -832,6 +837,29 @@ class MemMetaManager:
                         processed_users=processed,
                         deleted_count=deleted_total,
                     )
+
+                    # ★ 同步更新 av_user_stats：删除了多少条就减多少 ★
+                    if not dry_run and user_deleted > 0:
+                        try:
+                            conn = sqlite3.connect(self.db_path)
+                            cur = conn.cursor()
+                            now_str = _now_str()
+                            cur.execute(
+                                "UPDATE av_user_stats SET "
+                                "  total_count = MAX(0, total_count - ?), "
+                                "  superseded_count = MAX(0, superseded_count - ?), "
+                                "  expired_30d_count = MAX(0, expired_30d_count - ?), "
+                                "  expired_all_count = MAX(0, expired_all_count - ?), "
+                                "  updated_at = ? "
+                                "WHERE scope_user = ?",
+                                (user_deleted, user_deleted,
+                                 user_deleted, user_deleted,
+                                 now_str, user_id),
+                            )
+                            conn.commit()
+                            conn.close()
+                        except Exception:
+                            pass  # av_user_stats 更新失败不影响删除主流程
                 except Exception as e:
                     failed += 1
                     user_result["status"] = "failed"

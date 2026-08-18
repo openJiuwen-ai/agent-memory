@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 from jiuwen_memory.common.logging import memory_logger
 from jiuwen_memory.common.logging.events import LogEventType
-from jiuwen_memory.memory_core.config.config import DreamingConfig, MemoryScopeConfig
+from jiuwen_memory.memory_core.config.config import DreamingConfig, ForgettingConfig, MemoryScopeConfig
 
 # ---------------------------------------------------------------------------
 # 配置中心常量（设计文档 §5.3.6）
@@ -434,6 +434,13 @@ async def delete_scope_config_endpoint(request: ScopeConfigRequest):
 async def start_dreaming_endpoint(request: StartDreamingRequest):
     """Start cross-session dreaming consolidation for a (scope_id, user_id)."""
     try:
+        # 从 .env 读取 forgetting 配置，构造 ForgettingConfig
+        forgetting_config = ForgettingConfig(
+            enabled=_bool_env("MEMORY_ENABLE_FORGETTING", False),
+            threshold=float(_env_value("MEMORY_FORGET_THRESHOLD", "0.15")),
+            max_evict=int(_env_value("MEMORY_FORGET_MAX_EVICT", "1000")),
+            min_retention_days=int(_env_value("MEMORY_FORGET_MIN_RETENTION_DAYS", "30")),
+        )
         config = DreamingConfig(
             enabled=request.enabled,
             interval_seconds=request.interval_seconds,
@@ -441,6 +448,7 @@ async def start_dreaming_endpoint(request: StartDreamingRequest):
             max_sessions_per_sweep=request.max_sessions_per_sweep,
             max_compress_tokens=request.max_compress_tokens,
             max_items_per_session=request.max_items_per_session,
+            forgetting=forgetting_config,
         )
         orch = await _memory_engine.start_dreaming(
             scope_id=request.scope_id,
