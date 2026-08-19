@@ -135,7 +135,8 @@ class VectorIndexBuilder(IndexBuilder):
     # IndexBuilder 契约
     # ------------------------------------------------------------------
 
-    def build(self, units: list[MemoryUnit]) -> None:
+    def build(self, units: list[MemoryUnit], *, include_forward: bool = True) -> None:
+        # 本实现只建派生索引，不交付记忆本体，include_forward 对其无作用。
         """为一批记忆单元构建向量索引。"""
         logger.info("VectorIndexBuilder: building index for %d units", len(units))
         if self._vector_store is None:
@@ -231,13 +232,16 @@ class VectorIndexBuilder(IndexBuilder):
                     exc,
                 )
 
-    def update(self, units: list[MemoryUnit]) -> None:
+    def update(self, units: list[MemoryUnit], *, only_forward: bool = False) -> None:
         """增量更新向量索引：先删旧 chunk + 旧 L0/L1 record → 再建新。
 
         SUPERSEDE/UPDATE 场景下 unit 可能从「有 layers」变「无 layers」（或反之），故 L0/L1
         必须先删旧 record（store 非空才删），再由 build 按新 layers 决定是否重建——否则
         旧 L0/L1 残留。
         """
+        # 本实现只建向量索引（派生）：调用方要求只动正排时整体跳过。
+        if only_forward:
+            return
         if self._vector_store is None or self._kv_store is None:
             for unit in units:
                 self._delete_layer_records(unit.id, unit.scope)
@@ -260,7 +264,7 @@ class VectorIndexBuilder(IndexBuilder):
 
         self.build(units)
 
-    def remove(self, units: list[MemoryUnit]) -> None:
+    def remove(self, units: list[MemoryUnit], *, include_forward: bool = True) -> None:
         """删除一批记忆单元对应的向量索引条目（幂等）。"""
         for unit in units:
             self._remove_by_scope(unit.id, unit.scope)

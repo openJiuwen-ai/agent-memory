@@ -7,7 +7,7 @@ Job 内完成：list 候选 → 连续性检测切批 → 串行/并发调
   Timer 协程周期生成实例入队，每个实例跑一次 ``run()`` 即返回；
 - 退出：``run()`` 扫到无候选时返回 ``is_done="true"``，Scheduler 标记
   parent entry ``is_done``，entries 全 ``is_done`` 时 Timer 协程退出；
-- 非破坏式归档：原文走 ``lifecycle.transition(ARCHIVED)`` + ``index.remove``。
+- 非破坏式归档：原文走 ``lifecycle.transition(ARCHIVED)`` + 派生索引退出检索。
 """
 
 from __future__ import annotations
@@ -137,7 +137,7 @@ class MiddleToLongJob(Job):
                 created_ids.extend(r.created_ids)
                 processed_units.extend(batch)
 
-        # 归档转换成功的原文（非破坏式：ARCHIVED + index.remove）
+        # 归档转换成功的原文（非破坏式：真源留 ARCHIVED，仅退出检索）
         if processed_units:
             await self._archive_originals(processed_units)
 
@@ -274,17 +274,22 @@ class MiddleToLongJob(Job):
     # ---- 原文归档 ----
 
     async def _archive_originals(self, units: list[MemoryUnit]) -> None:
-        """转换成功的原文走 ARCHIVED + index.remove——可审计可恢复。
+        """转换成功的原文走 ARCHIVED + 退出检索——可审计可恢复。
 
-        ``lifecycle.transition`` + ``index.remove`` 是同步阻塞 IO，推到独立
+        ``lifecycle.transition`` + 索引移除都是同步阻塞 IO，推到独立
         线程跑避免阻塞事件循环。两者顺序依赖，不能并行。
         """
         unit_ids = [u.id for u in units]
         await asyncio.to_thread(
             self._lifecycle.transition, self.scope, unit_ids, LifecycleState.ARCHIVED
         )
-        await asyncio.to_thread(self._index.remove, units)
+        # 非破坏式：真源留 ARCHIVED 供审计，仅退出检索。
+        await asyncio.to_thread(self._remove_from_search, units)
         logger.info("MiddleToLongJob: %d originals archived", len(units))
+
+    def _remove_from_search(self, units: list[MemoryUnit]) -> None:
+        """``asyncio.to_thread`` 只接 callable + args，关键字参数抽成同步方法包装。"""
+        self._index.remove(units, include_forward=False)
 
 
 # -- Spec + builder + Producer 注册 ---------------------------------------- #

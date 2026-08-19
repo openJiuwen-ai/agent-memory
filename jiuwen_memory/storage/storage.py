@@ -198,8 +198,17 @@ class Storage(ABC):
         scope: Scope,
         units: list[MemoryUnit],
         *,
+        include_forward: bool = True,
         access: StorageAccessContext | None = None,
     ) -> None:
+        """写入一批记忆。
+
+        覆盖范围是**实现相关**的：该实现按其能力落地——``CompositeStorage`` 无投影能力，
+        只落记忆本体；一体化后端可一次建立正排、倒排、向量、图。
+
+        ``include_forward=False`` 表示记忆本体已存在、只需补建派生索引；不具备派生索引
+        能力的实现此时为空操作。
+        """
         ...
 
     @abstractmethod
@@ -208,8 +217,14 @@ class Storage(ABC):
         scope: Scope,
         units: list[MemoryUnit],
         *,
+        only_forward: bool = False,
         access: StorageAccessContext | None = None,
     ) -> None:
+        """更新一批记忆。覆盖范围同 :meth:`add`。
+
+        ``only_forward=True`` 表示只回写记忆本体、派生索引不动。无法拆分两者的实现应
+        至少保证本体被写到——多刷新一次派生索引无害，漏写本体则丢数据。
+        """
         ...
 
     @abstractmethod
@@ -218,8 +233,14 @@ class Storage(ABC):
         scope: Scope,
         unit_ids: list[str],
         *,
+        include_forward: bool = True,
         access: StorageAccessContext | None = None,
     ) -> None:
+        """删除一批记忆。覆盖范围同 :meth:`add`。
+
+        ``include_forward=False`` 表示只移出派生索引、记忆本体保留（归档/遗忘等非破坏式
+        治理）；不具备派生索引能力的实现此时为空操作。
+        """
         ...
 
     @abstractmethod

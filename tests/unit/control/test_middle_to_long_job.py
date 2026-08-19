@@ -101,13 +101,13 @@ class _RecordingIndex(IndexBuilder):
     def health(self) -> None:
         return None
 
-    def build(self, units) -> None:
+    def build(self, units, *, include_forward: bool = True) -> None:
         return None
 
-    def update(self, units) -> None:
+    def update(self, units, *, only_forward: bool = False) -> None:
         return None
 
-    def remove(self, units) -> None:
+    def remove(self, units, *, include_forward: bool = True) -> None:
         self.removed.extend(units)
 
     def rebuild(self) -> None:

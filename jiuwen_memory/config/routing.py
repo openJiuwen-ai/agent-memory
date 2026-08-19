@@ -533,27 +533,33 @@ class RoutingStorage(Storage):
         scope: Scope,
         units: list[MemoryUnit],
         *,
+        include_forward: bool = True,
         access: StorageAccessContext | None = None,
     ) -> None:
-        self._active().add(scope, units, access=access)
+        # 意图参数原样下传：落地范围由当前 active 实例按自身能力决定，本类只做路由。
+        self._active().add(scope, units, include_forward=include_forward, access=access)
 
     def update(
         self,
         scope: Scope,
         units: list[MemoryUnit],
         *,
+        only_forward: bool = False,
         access: StorageAccessContext | None = None,
     ) -> None:
-        self._active().update(scope, units, access=access)
+        self._active().update(scope, units, only_forward=only_forward, access=access)
 
     def delete(
         self,
         scope: Scope,
         unit_ids: list[str],
         *,
+        include_forward: bool = True,
         access: StorageAccessContext | None = None,
     ) -> None:
-        self._active().delete(scope, unit_ids, access=access)
+        self._active().delete(
+            scope, unit_ids, include_forward=include_forward, access=access
+        )
 
     def get(
         self,

@@ -329,7 +329,7 @@ class CloudEngine(MemoryEngine):
         # 默认路径（infer=false）：classifier 给原文打 tier+tags → 落 /memory/{id} + 建索引
         if classifier is not None:
             classifier.classify(units)
-        await asyncio.to_thread(self._write_default_to_kv, scope, units)
+        # 记忆写入只经 IndexBuilder：交付 Storage + 建索引由其统一编排。
         await asyncio.to_thread(index_builder.build, units)
         logger.info(
             "CloudEngine.write raw_indexed: units=%d scope=%s message_type=%s pipeline=%s",
@@ -419,7 +419,6 @@ class CloudEngine(MemoryEngine):
         for unit in units:
             unit.tier = MemoryTier.WORKING
             unit.system_metadata["middle"] = "true"
-        await asyncio.to_thread(self._write_middle_to_kv, scope, units)
         await asyncio.to_thread(index_builder.build, units)
 
         # 通过 JobFactory.get_job 的运行时覆盖入参注入 binding 的 evolver/index，
@@ -441,14 +440,6 @@ class CloudEngine(MemoryEngine):
             middle_interval,
         )
         return units
-
-    def _write_middle_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
-        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
-        self._storage.add(scope, units)
-
-    def _write_default_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
-        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
-        self._storage.add(scope, units)
 
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         routed_query = self._normalized_query(query)
@@ -544,13 +535,18 @@ class CloudEngine(MemoryEngine):
 
         if patch.mode == UpdateMode.OVERWRITE:
             new.id = old.id
-            self._storage.update(scope, [new])
             old_index = self._index_for_unit(old)
             if old_index is new_index:
                 new_index.update([new])
             else:
-                old_index.remove([old])
-                new_index.build([new])
+                # 跨 pipeline 迁移：记忆本体就地更新（id 不变），派生索引从旧承载者换到
+                # 新承载者。本体全程在位——不删不重建，中途失败也不会留下指向空本体的
+                # 孤儿派生索引（而那种孤儿无法经 delete 清理：删除路径的扫描源正是正排）。
+                # 注：unified 装配下两个 include_forward=False 调用都会退化为空操作——
+                # 一体化后端的 pipeline 绑定本就不改变存储拓扑。
+                new_index.update([new], only_forward=True)
+                old_index.remove([old], include_forward=False)
+                new_index.build([new], include_forward=False)
             logger.info(
                 "CloudEngine.update overwrite: unit_id=%s scope=%s pipeline=%s",
                 new.id,
@@ -564,10 +560,10 @@ class CloudEngine(MemoryEngine):
         new.lifecycle = LifecycleState.ACTIVE
         if patch.t_valid is None:
             new.temporal.t_valid = _now()
-        self._storage.add(scope, [new])
+        # 新版先落地再废旧版：任何时刻都有一个可读版本（同 InMemoryEngine）。
+        new_index.build([new])
         old = self._lifecycle.supersede(scope, old.id, new.temporal.t_valid)
         self._update_indexes([old])
-        new_index.build([new])
         logger.info(
             "CloudEngine.update supersede: old_id=%s new_id=%s scope=%s pipeline=%s",
             old.id,
@@ -611,8 +607,8 @@ class CloudEngine(MemoryEngine):
             purged_units: list[MemoryUnit] = []
             for scope, _, unit in scanned:
                 if _scoped_unit_id(scope, unit.id) in purge_ids:
-                    self._storage.delete(scope, [unit.id])
                     purged_units.append(unit)
+            # 物理删除：记忆本体与派生索引由各 pipeline 的 IndexBuilder 一并移除。
             self._remove_indexes(purged_units)
             return [unit.id for unit in purged_units]
 
@@ -620,7 +616,6 @@ class CloudEngine(MemoryEngine):
             update_units: list[MemoryUnit] = []
             for scope, _, unit in matches:
                 _downweight_importance(unit)
-                self._storage.update(scope, [unit])
                 update_units.append(unit)
             self._update_indexes(update_units)
             return affected
@@ -642,7 +637,9 @@ class CloudEngine(MemoryEngine):
                 unit_ids,
                 _LIFECYCLE_OF_DELETE[selector.mode],
             )
-        self._remove_indexes([unit for _, _, unit in matches])
+        # 非破坏式：lifecycle 已把真源改为 ARCHIVED/FORGOTTEN 并保留，
+        # 此处仅让派生索引退出检索。
+        self._remove_indexes([unit for _, _, unit in matches], include_forward=False)
         return affected
 
     async def purge_space(self, org: str, space: str) -> list[str]:
@@ -787,9 +784,11 @@ class CloudEngine(MemoryEngine):
             groups[marker].units.append(unit)
         return list(groups.values())
 
-    def _remove_indexes(self, units: list[MemoryUnit]) -> None:
+    def _remove_indexes(
+        self, units: list[MemoryUnit], *, include_forward: bool = True
+    ) -> None:
         for group in self._group_by_index(units):
-            group.builder.remove(group.units)
+            group.builder.remove(group.units, include_forward=include_forward)
 
     def _update_indexes(self, units: list[MemoryUnit]) -> None:
         for group in self._group_by_index(units):

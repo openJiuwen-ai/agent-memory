@@ -260,9 +260,13 @@ class CompositeStorage(Storage):
         scope: Scope,
         units: list[MemoryUnit],
         *,
+        include_forward: bool = True,
         access: StorageAccessContext | None = None,
     ) -> None:
         self._authorize(access, scope, StorageAction.ADD, "memory_unit")
+        # 本实现无投影能力，落地范围仅记忆本体：调用方只要派生索引时无事可做。
+        if not include_forward:
+            return
         self._validate_units(scope, units)
         kv = self._raw_kv()
         for unit in units:
@@ -273,8 +277,10 @@ class CompositeStorage(Storage):
         scope: Scope,
         units: list[MemoryUnit],
         *,
+        only_forward: bool = False,
         access: StorageAccessContext | None = None,
     ) -> None:
+        # 本实现落地范围仅记忆本体，only_forward 的两种取值下行为相同（无派生索引可跳过）。
         self._authorize(access, scope, StorageAction.UPDATE, "memory_unit")
         self._validate_units(scope, units)
         kv = self._raw_kv()
@@ -286,9 +292,13 @@ class CompositeStorage(Storage):
         scope: Scope,
         unit_ids: list[str],
         *,
+        include_forward: bool = True,
         access: StorageAccessContext | None = None,
     ) -> None:
         self._authorize(access, scope, StorageAction.DELETE, "memory_unit")
+        # 同 add：无派生索引可单独移除，保留本体即无事可做。
+        if not include_forward:
+            return
         kv = self._raw_kv()
         for unit_id in unit_ids:
             kv.delete(scope, memory_key(unit_id))

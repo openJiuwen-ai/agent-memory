@@ -110,7 +110,7 @@ class KVLifecycleManager(LifecycleManager):
             _ensure_transition_allowed(unit.lifecycle, target, unit.id)
             unit.lifecycle = target
         if matches:
-            self._storage.update(scope, matches)
+            self._storage.update(scope, matches, only_forward=True)
         logger.info(
             "Lifecycle.transition: scope=%s target=%s requested=%d matched=%d",
             scope,
@@ -125,7 +125,7 @@ class KVLifecycleManager(LifecycleManager):
             _ensure_transition_allowed(unit.lifecycle, LifecycleState.SUPERSEDED, unit.id)
             unit.lifecycle = LifecycleState.SUPERSEDED
             unit.temporal.t_invalid = invalid_at
-            self._storage.update(scope, [unit])
+            self._storage.update(scope, [unit], only_forward=True)
             logger.info(
                 "Lifecycle.supersede: unit_id=%s scope=%s invalid_at=%s",
                 unit_id,
@@ -145,7 +145,7 @@ class KVLifecycleManager(LifecycleManager):
                 target = _sweep_target(unit, now, self._policy)
                 if target is not None:
                     unit.lifecycle = target
-                    self._storage.update(scope, [unit])
+                    self._storage.update(scope, [unit], only_forward=True)
                     swept.append(unit.id)
         swept.sort()
         logger.info("Lifecycle.sweep: swept=%d", len(swept))

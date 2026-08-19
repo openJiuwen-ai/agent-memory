@@ -180,6 +180,10 @@ def default_config_dict() -> dict[str, Any]:
                     "associator": _D,
                     "index_builder": _D,
                     "storage": _D,
+                    # 原文 store：指向 kv_store.default，与正排 KV 是同一实例
+                    # （/messages/ 与 /memory/ 靠 key 前缀分离）。要物理拆开，
+                    # 声明另一个 kv_store 具名实例并把此处改成它的名字。
+                    "message_store": _D,
                     "dedup": _D,
                     "llm": _D,
                 },
@@ -194,6 +198,10 @@ def default_config_dict() -> dict[str, Any]:
                     "associator": _D,
                     "index_builder": _D,
                     "storage": _D,
+                    # 原文 store：指向 kv_store.default，与正排 KV 是同一实例
+                    # （/messages/ 与 /memory/ 靠 key 前缀分离）。要物理拆开，
+                    # 声明另一个 kv_store 具名实例并把此处改成它的名字。
+                    "message_store": _D,
                     "dedup": _D,
                     "llm": _D,
                 },

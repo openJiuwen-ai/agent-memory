@@ -239,6 +239,11 @@ class _ScriptedExtractor(Extractor):
 
 
 class _NoopIndexBuilder:
+    """只交付 Storage 的替身：IndexBuilder 是写入口，不交付则真源为空。"""
+
+    def __init__(self, storage) -> None:
+        self._storage = storage
+
     @staticmethod
     def operator_type() -> OperatorType:
         return OperatorType.INDEX_BUILDER
@@ -247,13 +252,15 @@ class _NoopIndexBuilder:
     def health() -> None:
         return None
 
-    def build(self, units):
-        pass
+    def build(self, units, *, include_forward: bool = True):
+        for unit in units:
+            self._storage.add(unit.scope, [unit])
 
-    def update(self, units):
-        pass
+    def update(self, units, *, only_forward: bool = False):
+        for unit in units:
+            self._storage.update(unit.scope, [unit])
 
-    def remove(self, units):
+    def remove(self, units, *, include_forward: bool = True):
         pass
 
     def rebuild(self):
@@ -299,8 +306,9 @@ def _make_evolver(kv, vector_store, embedder, llm, extractor) -> OrchestratingEv
         extractor=extractor,
         abstractor=None,  # EXTRACT 不用
         associator=None,
-        index_builder=_NoopIndexBuilder(),
+        index_builder=_NoopIndexBuilder(storage),
         storage=storage,
+        message_store=storage.kv,
         dedup=dedup,
         llm=llm,
     )
@@ -489,18 +497,19 @@ class TestEngineInferPersist:
         extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=50, overlap_chars=10))
         evolver = OrchestratingEvolver(
             extractor=extractor, abstractor=None, associator=None,
-            index_builder=_NoopIndexBuilder(), storage=storage,
+            index_builder=_NoopIndexBuilder(storage), storage=storage,
+            message_store=storage.kv,
             dedup=dedup, llm=_MockLLM(),
         )
 
         class _NoopIndex:
-            def build(self, units):
+            def build(self, units, *, include_forward: bool = True):
                 pass
 
-            def update(self, units):
+            def update(self, units, *, only_forward: bool = False):
                 pass
 
-            def remove(self, units):
+            def remove(self, units, *, include_forward: bool = True):
                 pass
 
             def rebuild(self):
@@ -602,18 +611,19 @@ class TestProceduralExtract:
         # keyword_extractor 构造需 chunker + normalizer？看签名——只 chunker
         evolver = OrchestratingEvolver(
             extractor=extractor, abstractor=None, associator=None,
-            index_builder=_NoopIndexBuilder(), storage=storage,
+            index_builder=_NoopIndexBuilder(storage), storage=storage,
+            message_store=storage.kv,
             dedup=dedup, llm=_MockLLM(),
         )
 
         class _NoopIndex:
-            def build(self, units):
+            def build(self, units, *, include_forward: bool = True):
                 pass
 
-            def update(self, units):
+            def update(self, units, *, only_forward: bool = False):
                 pass
 
-            def remove(self, units):
+            def remove(self, units, *, include_forward: bool = True):
                 pass
 
             def rebuild(self):
@@ -663,18 +673,19 @@ class TestProceduralExtract:
         extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=50, overlap_chars=10))
         evolver = OrchestratingEvolver(
             extractor=extractor, abstractor=None, associator=None,
-            index_builder=_NoopIndexBuilder(), storage=storage,
+            index_builder=_NoopIndexBuilder(storage), storage=storage,
+            message_store=storage.kv,
             dedup=dedup, llm=_MockLLM(),
         )
 
         class _NoopIndex:
-            def build(self, units):
+            def build(self, units, *, include_forward: bool = True):
                 pass
 
-            def update(self, units):
+            def update(self, units, *, only_forward: bool = False):
                 pass
 
-            def remove(self, units):
+            def remove(self, units, *, include_forward: bool = True):
                 pass
 
             def rebuild(self):

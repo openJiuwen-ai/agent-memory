@@ -412,7 +412,8 @@ class EntityIndexBuilder(IndexBuilder):
     def health(self) -> None:
         return None
 
-    def build(self, units: list[MemoryUnit]) -> None:
+    def build(self, units: list[MemoryUnit], *, include_forward: bool = True) -> None:
+        # 本实现只建派生索引，不交付记忆本体，include_forward 对其无作用。
         if not units:
             return
         logger.info("EntityIndexBuilder: building entity index for %d units", len(units))
@@ -439,12 +440,15 @@ class EntityIndexBuilder(IndexBuilder):
                 result.updated_count, result.deleted_count, result.failed_count,
             )
 
-    def update(self, units: list[MemoryUnit]) -> None:
+    def update(self, units: list[MemoryUnit], *, only_forward: bool = False) -> None:
         """增量更新：先 unlink 旧实体链接，再按新内容 link。
 
         SUPERSEDE 场景下若旧 unit 已是 SUPERSEDED 状态（仅 lifecycle 变化），
         跳过 unlink，靠召回侧 lifecycle 过滤处理（保留链接支持 as_of 回溯）。
         """
+        # 本实现只建实体反向索引（派生）：调用方要求只动正排时整体跳过。
+        if only_forward:
+            return
         if not units:
             return
         logger.info("EntityIndexBuilder: updating entity index for %d units", len(units))
@@ -463,7 +467,8 @@ class EntityIndexBuilder(IndexBuilder):
         except Exception as exc:
             logger.warning("EntityIndexBuilder: link_memories failed in update for %d units: %s", len(units), exc)
 
-    def remove(self, units: list[MemoryUnit]) -> None:
+    def remove(self, units: list[MemoryUnit], *, include_forward: bool = True) -> None:
+        # 同 build：不持有记忆本体，include_forward 对其无作用。
         if not units:
             return
         logger.info("EntityIndexBuilder: removing entity index for %d units", len(units))

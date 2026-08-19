@@ -92,11 +92,15 @@ class _StubLLM(LLM):
 
 
 class _RecordingIndex(IndexBuilder):
-    """记录 build/remove 的 IndexBuilder。"""
+    """记录 build/remove 的 IndexBuilder，并交付 Storage。
 
-    def __init__(self) -> None:
+    IndexBuilder 是记忆写入的唯一入口，替身必须交付 Storage，否则真源为空。
+    """
+
+    def __init__(self, storage=None) -> None:
         self.built: list[MemoryUnit] = []
         self.removed: list[MemoryUnit] = []
+        self._storage = storage
 
     def operator_type(self) -> OperatorType:
         return OperatorType.INDEX_BUILDER
@@ -104,13 +108,18 @@ class _RecordingIndex(IndexBuilder):
     def health(self) -> None:
         return None
 
-    def build(self, units) -> None:
+    def build(self, units, *, include_forward: bool = True) -> None:
         self.built.extend(units)
+        if self._storage is not None:
+            for unit in units:
+                self._storage.add(unit.scope, [unit])
 
-    def update(self, units) -> None:
-        return None
+    def update(self, units, *, only_forward: bool = False) -> None:
+        if self._storage is not None:
+            for unit in units:
+                self._storage.update(unit.scope, [unit])
 
-    def remove(self, units) -> None:
+    def remove(self, units, *, include_forward: bool = True) -> None:
         self.removed.extend(units)
 
     def rebuild(self) -> None:
@@ -169,7 +178,8 @@ def _build_engine(
     各测试通过 system_metadata={"middle_interval": "1"} 覆盖。
     """
     kv = InMemoryKVStore()
-    index = _RecordingIndex()
+    storage = CompositeStorage(kv=kv)
+    index = _RecordingIndex(storage)
     scheduler = AsyncTimerScheduler(tick_interval=1)
     lifecycle = _KvBackedLifecycle(kv)
     evolver = evolver or _StubEvolver()
@@ -180,7 +190,7 @@ def _build_engine(
     factory.register(
         JobType.MIDDLE_TO_LONG,
         MiddleToLongJobSpec(
-            storage=CompositeStorage(kv=kv),
+            storage=storage,
             evolver=evolver,
             lifecycle=lifecycle,
             index=index,
@@ -195,7 +205,7 @@ def _build_engine(
         ingestor=ingestor,
         index_builder=index,
         retriever=None,  # write 路径不依赖 retriever
-        storage=CompositeStorage(kv=kv),
+        storage=storage,
         scheduler=scheduler,
         evolver=evolver,
         lifecycle=lifecycle,

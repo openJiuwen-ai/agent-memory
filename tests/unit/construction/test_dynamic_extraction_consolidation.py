@@ -125,15 +125,24 @@ class _Dedup:
 
 
 class _Index:
-    def __init__(self) -> None:
+    """记录调用并交付 Storage 的替身——IndexBuilder 是记忆写入的唯一入口。"""
+
+    def __init__(self, storage=None) -> None:
         self.built = []
         self.updated = []
+        self._storage = storage
 
-    def build(self, units):
+    def build(self, units, *, include_forward: bool = True):
         self.built.extend(units)
+        if self._storage is not None:
+            for unit in units:
+                self._storage.add(unit.scope, [unit])
 
-    def update(self, units):
+    def update(self, units, *, only_forward: bool = False):
         self.updated.extend(units)
+        if self._storage is not None:
+            for unit in units:
+                self._storage.update(unit.scope, [unit])
 
     def remove(self, unit_ids):
         pass
@@ -159,7 +168,8 @@ def _make_evolver(
     prompts: dict | None = None,
 ) -> tuple[DynamicEvolver, InMemoryKVStore, _Index]:
     kv = InMemoryKVStore()
-    index = _Index()
+    storage = CompositeStorage(kv=kv, graph=InMemoryGraphStore())
+    index = _Index(storage)
     extractor = _FallbackExtractor()
     dedup = _Dedup(dedup_hits)
     registry = PromptRegistry.from_dict(prompts or {})
@@ -168,7 +178,8 @@ def _make_evolver(
         abstractor=object(),  # EXTRACT 路径不触发 abstractor
         associator=object(),  # EXTRACT 路径不触发 associator
         index_builder=index,
-        storage=CompositeStorage(kv=kv, graph=InMemoryGraphStore()),
+        storage=storage,
+        message_store=storage.kv,
         dedup=dedup,
         llm=llm or _ScriptedLLM(),
         layer_annotator=None,
@@ -406,7 +417,8 @@ def test_dynamic_evolver_supersedes_existing_via_llm_judge():
     existing = _unit("existing", "旧事实")
     kv = InMemoryKVStore()
     kv.insert(existing.scope, memory_key(existing.id), dumps(existing))
-    index = _Index()
+    storage = CompositeStorage(kv=kv, graph=InMemoryGraphStore())
+    index = _Index(storage)
     extractor = _FallbackExtractor()
     dedup = _Dedup([(existing, 0.8)])
     registry = PromptRegistry.from_dict(
@@ -428,7 +440,8 @@ def test_dynamic_evolver_supersedes_existing_via_llm_judge():
         abstractor=object(),
         associator=object(),
         index_builder=index,
-        storage=CompositeStorage(kv=kv, graph=InMemoryGraphStore()),
+        storage=storage,
+        message_store=storage.kv,
         dedup=dedup,
         llm=llm,
         layer_annotator=None,

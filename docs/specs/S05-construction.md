@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-08-18 |
+| 最近一次修订日期 | 2026-08-19 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F06-unified-index-builder.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/retrieval/F03-metadata-filtering.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/retrieval/F03-metadata-filtering.md |
 
 ## Metadata 派生与索引契约
 
@@ -35,16 +35,17 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 
 ## 不变量
 
-1. **落盘由本层负责**：接入层产出 MemoryUnit 后，真源写入由本层调用 Storage 完成。
+1. **落盘由本层负责**：接入层产出 MemoryUnit 后，记忆本体的写入由本层完成——统一经 `IndexBuilder`，由其内部调用 Storage。
 2. **索引是可重建派生**：索引全部可从真源重建，IndexBuilder.rebuild() 是非破坏式保障。例外：实体反向索引路（EntityIndexBuilder）`rebuild()` 当前是 no-op——entity 索引不支持从 KVStore 全量重建，需重建时靠定期清理 + 重新写入累积（已知缺口，见 [F06](../features/retrieval/F06-entity-recall-channel.md)）。
 3. **provenance 回指来源**：派生记忆单元的 `provenance` 字段记录由哪些 unit 演进而来。
 4. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
 5. **所有算子必须实现 `operator_type()` 和 `health()`**：继承自 `ConstructionOperator`。
-6. **构建与存储解耦**：算子负责构建逻辑（生成索引投影），持久化由注入的 Store 承担。
+6. **构建与存储解耦**：算子负责构建逻辑（生成索引投影），持久化由注入的 Store 承担。正排
+   同样遵循此模式——`ForwardIndexBuilder` 生成 KV 记录投影，写入注入的 KV 端口。
 7. **scope 原生隔离**：构建索引时将来源 `MemoryUnit.scope` 作为 Store 方法的显式
    入参下推；`VectorRecord` / `Document` / `Node` 等记录结构不混入 scope 字段。
 8. **去重召回与判定分离**：去重召回（用哪个索引）由 `Dedup` 接口承担，判定（ADD/UPDATE/SUPERSEDE/NOOP）与落盘由 Evolver 实现承担——`OrchestratingEvolver._evolve_extract`（legacy，`_dedup_batch` 判定+落盘耦合）或 `DynamicEvolver._evolve_extract`（dynamic，consolidate 只判定、落盘延后到 reflect 之后）。装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`。
-9. **构建层不依赖 control**：`DynamicEvolver`/`OrchestratingEvolver` 的 SUPERSEDE 与 FORGET 直接通过 `KVStore.update` 完成，不经 `LifecycleManager`。
+9. **构建层不依赖 control**：`DynamicEvolver`/`OrchestratingEvolver` 的 SUPERSEDE 与 FORGET 经 `IndexBuilder` 完成，不经 `LifecycleManager`。
 10. **Dedup 与 IndexBuilder 共享底层 Store**：去重召回检索的是已索引内容，`Dedup` 实现取的 `VectorStore`/`FulltextStore` 必须与 IndexBuilder 写入的是同一实例（按字段名缓存命中）。
 11. **派生 metadata 键保持类型稳定**：当前 Classifier 只更新
     `MemoryUnit.tier` / `MemoryUnit.tags`，不约定额外分类 metadata 键；
@@ -62,6 +63,18 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
     `T_EVENT_UNKNOWN=0`（F07 派生常为此值，避免事件窗下推按缺失字段排他），
     不改写真源。
 14. **索引删除按 MemoryUnit 定位**：`IndexBuilder.remove` 接收带 Scope 的 MemoryUnit，禁止维护仅按 unit id 的单值 Scope 缓存；同一逻辑 id 在不同 Scope 的索引互不影响。
+15. **记忆写入只经 IndexBuilder**：Evolver 与上层调用方不得直接调用 `Storage` 的
+    `add`/`update`/`delete`；正排与各派生索引由 `IndexBuilder` 统一编排，使调用方不感知
+    底层存储拓扑。剩余的合法调用方只有 `UnifiedIndexBuilder`（转发给一体化后端）与
+    `LifecycleManager`（状态回写）。读取（`get`/`list`/`scopes`）不受此约束。
+16. **索引状态由调用方判定，构建算子不解读 `lifecycle`**：记忆处于什么状态、因而该对索引
+    做什么，由调用方判断后调对应方法；`IndexBuilder` 只执行被要求的操作。如归档/遗忘为
+    `update(only_forward=True)`（回写本体新状态）+ `remove(include_forward=False)`
+    （移出检索）两条互不重叠的指令。
+17. **一个子 builder 只负责一种索引形式，端口统一从 `Storage` 取**：写侧子 builder 与读侧
+    recaller 因此取自同一个 `Storage` 实例的同一端口，读写不分叉。
+18. **正排最先出现、最后消失**：`build`/`update` 正排在前，`remove` 正排最后。正排先删会
+    留下孤儿派生索引，而删除路径的扫描源正是正排，此后无法清理。
 
 ## 接口契约
 
@@ -125,7 +138,7 @@ Extractor。
 3. **reflect（默认 no-op）**：基类 `_reflect_step` 直接返回候选；子类可覆盖
    `_reflect_step` 在落盘前原地修正候选。当前持久化仍读取
    `ConsolidateDecision.candidate`，替换候选对象不会生效。
-4. **落盘**：按每个 `ConsolidateDecision.decision` 执行 ADD/UPDATE/SUPERSEDE/NOOP——ADD/SUPERSEDE 调 `KVStore.insert` + `IndexBuilder.build`，UPDATE 调 LLM 合并内容后 `KVStore.update` + `IndexBuilder.update`，NOOP 跳过。
+4. **落盘**：按每个 `ConsolidateDecision.decision` 执行 ADD/UPDATE/SUPERSEDE/NOOP——ADD/SUPERSEDE 调 `IndexBuilder.build`，UPDATE 调 LLM 合并内容后 `IndexBuilder.update`，NOOP 跳过。记忆本体的交付含在 IndexBuilder 内部。
 
 **procedural 路径**：`_evolve_extract` 检测到 procedural=true 时 `super()._evolve_extract(units)` 走父类行为（不收集 context、不判定、直接落盘）——procedural 语义是"记成一条 how-to"，无需动态判定。
 
@@ -177,12 +190,33 @@ Extractor。
 
 多形式索引构建与维护。
 
+**IndexBuilder 是记忆写入的唯一入口**：调用方只调本接口，正排（记忆本体）与各派生索引
+由实现内部编排；上层不得自行调用 `Storage` 的写接口（见不变量 15）。
+
+**正排是一种索引形式**，与倒排、向量、实体反向平级，由 `ForwardIndexBuilder` 承载。
+
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `build` | `(units: list[MemoryUnit]) -> None` | 为一批记忆单元构建已启用的各形式索引 |
-| `update` | `(units: list[MemoryUnit]) -> None` | 记忆变更后增量更新对应索引条目 |
-| `remove` | `(units: list[MemoryUnit]) -> None` | 按每个 MemoryUnit 自带 Scope 删除对应索引条目（幂等） |
-| `rebuild` | `() -> None` | 从真源全量重建索引（删索引不丢数据的保障） |
+| `build` | `(units, *, include_forward: bool = True) -> None` | 建立已启用的各形式索引；`include_forward=False` 表示记忆本体已存在，只补建派生索引 |
+| `update` | `(units, *, only_forward: bool = False) -> None` | 更新各形式索引；`only_forward=True` 表示只回写记忆本体，派生索引不动 |
+| `remove` | `(units, *, include_forward: bool = True) -> None` | 按每个 MemoryUnit 自带 Scope 删除索引（幂等）；`include_forward=False` 表示只移出派生索引，记忆本体保留 |
+| `rebuild` | `() -> None` | 从记忆本体全量重建派生索引（删索引不丢数据的保障） |
+
+三个参数各自只暴露有使用场景的那一半开关，不做对称冗余：
+
+| 参数 | 用途 |
+|---|---|
+| `build(include_forward=False)` | 索引迁移与部分失败后的补建——本体已在，只补派生索引 |
+| `update(only_forward=True)` | 生命周期治理——只回写本体新状态，派生索引另行处置 |
+| `remove(include_forward=False)` | 归档 / 遗忘 / 跨 pipeline 迁移——本体保留，仅退出检索 |
+
+**本层不解读 `unit.lifecycle`**：记忆处于什么状态、因而该对索引做什么，由调用方判定后
+调对应方法。如遗忘为 `update(only_forward=True)` + `remove(include_forward=False)` 两条
+互不重叠的指令（见不变量 16）。
+
+**顺序约定：正排最先出现、最后消失。** `build`/`update` 正排在前——派生写失败时本体仍在、
+索引可重建；`remove` 派生在前、正排最后——正排先删会留下孤儿派生索引，而删除路径的扫描源
+正是正排，此后再也清不掉。
 
 **build 路径**（按配置启用的索引类型，各实现独立构建）：
 ```
@@ -210,8 +244,9 @@ MemoryUnit
 │   → EntityStore.execute_operations（bulk，per-item 粒度，partial failure 不抛）
 │   → update 走「unlink 旧链接 + link 新内容」；SUPERSEDED（仅 lifecycle 变）不 unlink（保留 as_of 回溯）
 │   → 失败全程 try/except 吞异常，不中断 build 主链路（增强层，坏了不拖累主流程）
-├─ HybridIndexBuilder：组合 fulltext + vector + entity 三个子 builder（默认实现；entity 子 builder 在 entity_linker=None 时跳过）
-└─ 统一存储直写路：无派生检索索引时，调用方可按 Scope 委托 Storage 的记忆单元写接口
+├─ HybridIndexBuilder：纯编排，组合 forward / fulltext / vector / entity 四个子 builder
+│   （默认实现；entity 子 builder 在 entity_linker=None 时跳过）
+└─ 统一存储直写路：由 Storage 自身建立全部索引时，实现退化为按 Scope 转发
 ```
 
 > 注：文档索引（path → unit_id 映射）与 FusionStore 融合索引不属于本文已固化的构建接口契约，属设计预留。

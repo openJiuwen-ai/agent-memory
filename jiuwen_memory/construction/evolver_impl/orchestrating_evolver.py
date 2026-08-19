@@ -13,10 +13,11 @@
 - Step D: LLM.chat() 语义判定 → DedupDecision(ADD/UPDATE/SUPERSEDE/NOOP)
 
 不使用 Reranker——LLM 直接做最终语义判定。降级时 LLM 不可用则按 cosine 阈值规则判定。
-SUPERSEDE 标记由 Evolver 直接通过 KVStore+IndexBuilder 完成，不依赖 LifecycleManager——
+SUPERSEDE 标记由 Evolver 经 IndexBuilder 完成，不依赖 LifecycleManager——
 避免 construction 层依赖 control 层。
 
-真源/索引/图由装配注入；演进产物经 :func:`~common.type_def.memory_codec.dumps` 落 kv。
+IndexBuilder 与 Storage 由装配注入：记忆本体与各索引经 IndexBuilder 统一写入，
+原文（/messages/）不是索引形式，不经 IndexBuilder，直接落注入的 ``message_store``。
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryUnit,
     Relation,
+    Scope,
     inherited_system_metadata,
     inherited_user_metadata,
     messages_key,
@@ -52,6 +54,7 @@ from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
 from jiuwen_memory.construction.prompt_strategy import copy_consolidation_prompts
+from jiuwen_memory.storage.kv import KVStore, KvProducer
 from jiuwen_memory.storage.storage import Storage, StorageProducer
 from jiuwen_memory.storage.types import Edge, Node
 
@@ -143,8 +146,8 @@ class OrchestratingEvolver(Evolver):
 
     召回侧（向量化/Store.search/加载/过滤聚合）下沉到 :class:`Dedup`，
     由装配按 ``vector_enabled`` 选向量/倒排实现；本类只做阈值 + LLM 判定 + 执行。
-    SUPERSEDE 标记由本类直接通过 KVStore.update + IndexBuilder.update 完成，
-    不依赖 LifecycleManager（避免 construction 层依赖 control 层）。
+    SUPERSEDE 标记由本类经 IndexBuilder.update 完成，不依赖 LifecycleManager
+    （避免 construction 层依赖 control 层）。
     """
 
     def __init__(
@@ -154,6 +157,7 @@ class OrchestratingEvolver(Evolver):
         associator: Associator,
         index_builder: IndexBuilder,
         storage: Storage,
+        message_store: KVStore,
         dedup: Dedup,
         llm: LLM,
         layer_annotator: LayerAnnotator | None = None,
@@ -165,9 +169,10 @@ class OrchestratingEvolver(Evolver):
         self._abstractor = abstractor
         self._associator = associator
         self._index = index_builder
-        self._storage = storage
-        self._kv = storage.kv
+        # storage 只用于在此取图端口；MemoryUnit 的写入一律经 self._index，故不留字段。
         self._graph = storage.graph if storage.has_graph() else None
+        # 原文（/messages/）专用：不是索引形式，不经 IndexBuilder。缺省与正排 KV 同实例。
+        self._message_store = message_store
         self._dedup = dedup
         self._llm = llm
         # 分层标注算子：None 表示不标注（向后兼容）；非 None 时在抽取/升华后标注 L0/L1。
@@ -197,9 +202,8 @@ class OrchestratingEvolver(Evolver):
     # ------------------------------------------------------------------
 
     def _persist(self, units: List[MemoryUnit]) -> List[str]:
-        for u in units:
-            self._storage.add(u.scope, [u])
-            self._index.build([u])
+        # 记忆写入只经 IndexBuilder：正排与派生索引由其统一编排。
+        self._index.build(units)
         return [u.id for u in units]
 
     def _persist_graph(self, units: List[MemoryUnit], relations: List[Relation]) -> None:
@@ -335,7 +339,6 @@ class OrchestratingEvolver(Evolver):
                     "Evolver._dedup: %s without existing_unit for %s, fallback ADD",
                     decision.value, candidate.id[:8],
                 )
-            self._storage.add(candidate.scope, [candidate])
             self._index.build([candidate])
             result.created_ids.append(candidate.id)
 
@@ -361,8 +364,7 @@ class OrchestratingEvolver(Evolver):
             existing_unit.system_metadata["dedup_decision"] = "update"
             existing_unit.system_metadata["dedup_similarity"] = str(similarity)
             existing_unit.system_metadata["dedup_merged_from"] = candidate.id
-            # existing_unit 是已建索引的记忆，统一通过 Storage 回写真源。
-            self._storage.update(existing_unit.scope, [existing_unit])
+            # existing_unit 是已建索引的记忆，经 IndexBuilder 统一回写。
             self._index.update([existing_unit])
             result.updated_ids.append(existing_unit.id)
 
@@ -375,12 +377,10 @@ class OrchestratingEvolver(Evolver):
             candidate.system_metadata["dedup_decision"] = "supersede"
             candidate.system_metadata["dedup_similarity"] = str(similarity)
             candidate.system_metadata["dedup_superseded"] = existing_unit.id
-            self._storage.add(candidate.scope, [candidate])
             self._index.build([candidate])
-            # 旧版标记 SUPERSEDED（直接通过 KVStore，不依赖 LifecycleManager）
+            # 旧版标记 SUPERSEDED（不依赖 LifecycleManager）
             existing_unit.lifecycle = LifecycleState.SUPERSEDED
             existing_unit.temporal.t_invalid = _now()
-            self._storage.update(existing_unit.scope, [existing_unit])
             self._index.update([existing_unit])
             result.created_ids.append(candidate.id)
             result.superseded_ids.append(existing_unit.id)
@@ -684,16 +684,43 @@ class OrchestratingEvolver(Evolver):
         )
         return ctx
 
+    # -- 原文（/messages/）的直接 KV 读写 ---------------------------------- #
+    #
+    # 原文既非 MemoryUnit 真源也非索引：不建索引、不参与检索，仅供抽取时做指代消解与
+    # 语境补全，条数上限由本类维护。它与索引构建是两件事，故不走 IndexBuilder，也不占
+    # Storage 的领域接口，直接用注入的 KVStore。
+
+    def _add_messages(self, scope: Scope, units: List[MemoryUnit]) -> None:
+        for unit in units:
+            self._message_store.insert(scope, messages_key(unit.id), dumps(unit))
+
+    def _list_messages(self, scope: Scope) -> List[MemoryUnit]:
+        """返回 scope 内全部原文（无序；调用方自行排序）。损坏记录跳过，不阻断整批。"""
+        items: List[MemoryUnit] = []
+        for _key, raw in self._message_store.scan(scope, prefix=MESSAGES_KEY_PREFIX):
+            unit = loads(raw)
+            if unit is not None:
+                items.append(unit)
+        return items
+
+    def _delete_messages(self, scope: Scope, unit_ids: List[str]) -> None:
+        for unit_id in unit_ids:
+            self._message_store.delete(scope, messages_key(unit_id))
+
     def _persist_and_maintain_messages(
         self, units: List[MemoryUnit]
     ) -> List[MemoryUnit]:
-        """一次 scan 完成 /messages/ 的维护：取最近 N 条 → 插入本轮 → 删超出旧原文。
+        """一次扫描完成原文维护：取最近 N 条 → 写入本轮 → 淘汰超出的旧原文。
 
-        顺序（只调一次 ``kv.scan(/messages/)``）：
-        1. scan 拿全部历史原文（本轮尚未落盘，故历史中不含本轮）；
+        顺序（只扫一次 ``/messages/``）：
+        1. 读全部历史原文（本轮尚未落盘，故历史中不含本轮）；
         2. 取最近 N 条作 recent；
-        3. 插入本轮新原文到 /messages/（不建索引）；
+        3. 写入本轮新原文（原文不建索引，不参与检索）；
         4. 删除超出最近 N 条的旧原文（含本轮后总数 > N 时淘汰最早的）。
+
+        原文不是索引形式，不经 IndexBuilder；它直接落注入的 ``message_store``。该 store
+        缺省与正排 KV 是同一实例（``/messages/`` 与 ``/memory/`` 靠 key 前缀分离），
+        装配上声明独立的 ``kv_store`` 具名实例即可物理拆开。
 
         返回 recent（供 extractor prompt 做指代消解/语境）。失败降级为空列表，不阻断。
         """
@@ -701,55 +728,43 @@ class OrchestratingEvolver(Evolver):
             return []
         scope = units[0].scope
         try:
-            pairs = self._kv.scan(scope, prefix=MESSAGES_KEY_PREFIX)
+            historical = self._list_messages(scope)
         except Exception as exc:
             logger.warning(
                 "Evolver._persist_and_maintain_messages: scan failed, empty: %s",
                 exc,
             )
-            # list 失败仍落本轮原文（不维护淘汰），recent 为空
-            for u in units:
-                self._kv.insert(scope, messages_key(u.id), dumps(u))
+            # 读取失败仍落本轮原文（不维护淘汰），recent 为空
+            self._add_messages(scope, units)
             return []
-        # 1) 加载全部历史原文（不含本轮）
-        historical: List[tuple[str, MemoryUnit]] = []
-        for key, raw in pairs:
-            unit = loads(raw)
-            if unit is None:
-                continue
-            historical.append((key, unit))
-        # 2) 本轮新原文先加入 historical（不入 KV），统一排序后决定保留/删除
+        # 1) 本轮新原文并入历史（尚未落盘），统一排序后决定保留/删除
         current_ids = {u.id for u in units}
-        for u in units:
-            historical.append((messages_key(u.id), u))
-        # 3) 一次排序：按 t_ingest 降序（最新在前；本轮刚 ingest 排头部，不会被删）
-        historical.sort(
-            key=lambda ku: ku[1].temporal.t_ingest or datetime.min.replace(tzinfo=timezone.utc),
+        ordered = historical + list(units)
+        # 2) 一次排序：按 t_ingest 降序（最新在前；本轮刚 ingest 排头部，不会被删）
+        ordered.sort(
+            key=lambda u: u.temporal.t_ingest or datetime.min.replace(tzinfo=timezone.utc),
             reverse=True,
         )
-        # 4) recent = 前 N 条历史原文（排除本轮——本轮已是提取来源，不重复进 context）
+        # 3) recent = 前 N 条历史原文（排除本轮——本轮已是提取来源，不重复进 context）
         recent = [
-            u for _k, u in historical
-            if u.id not in current_ids
+            u for u in ordered if u.id not in current_ids
         ][: self._recent_originals_limit]
-        # 5) 落本轮新原文 + 删除超出 N 条的旧原文（尾部最多 len(historical)-N 条）
-        for u in units:
-            self._kv.insert(scope, messages_key(u.id), dumps(u))
-        evicted = 0
-        for key, _u in historical[self._recent_originals_limit:]:
+        # 4) 落本轮新原文 + 淘汰超出 N 条的旧原文（尾部最多 len(ordered)-N 条）
+        self._add_messages(scope, units)
+        evicted_ids = [u.id for u in ordered[self._recent_originals_limit:]]
+        if evicted_ids:
             try:
-                self._kv.delete(scope, key)
-                evicted += 1
+                self._delete_messages(scope, evicted_ids)
+                logger.info(
+                    "Evolver._persist_and_maintain_messages: %d old originals evicted "
+                    "(kept %d)",
+                    len(evicted_ids), self._recent_originals_limit,
+                )
             except Exception as exc:
                 logger.warning(
-                    "Evolver._persist_and_maintain_messages: delete %s failed: %s",
-                    key, exc,
+                    "Evolver._persist_and_maintain_messages: evict %d originals failed: %s",
+                    len(evicted_ids), exc,
                 )
-        if evicted:
-            logger.info(
-                "Evolver._persist_and_maintain_messages: %d old originals evicted (kept %d)",
-                evicted, self._recent_originals_limit,
-            )
         return recent
 
     def _related_memories(self, units: List[MemoryUnit]) -> List[MemoryUnit]:
@@ -883,20 +898,50 @@ class OrchestratingEvolver(Evolver):
         return EvolveResult(updated_ids=[relation.target_id for relation in relations])
 
     def _evolve_forget(self, units: List[MemoryUnit]) -> EvolveResult:
-        forgotten: List[str] = []
-        for u in units:
-            if u.lifecycle == LifecycleState.SUPERSEDED:
-                u.lifecycle = LifecycleState.FORGOTTEN
-                # FORGET 作用于 SUPERSEDED 旧版（建索引记忆，在 /memory/）
-                self._storage.update(u.scope, [u])
-                self._index.remove([u])
-                forgotten.append(u.id)
+        """FORGET 作用于 SUPERSEDED 旧版（建索引记忆，在 /memory/）。
+
+        非破坏式：记忆本体留 FORGOTTEN 状态供审计，仅退出检索。状态判定在本方法内完成，
+        据此对索引下两条明确指令——``update(only_forward=True)`` 只回写本体新状态，
+        ``remove(include_forward=False)`` 让它退出检索。两条指令互不重叠，派生索引不会
+        被先重建再删除。IndexBuilder 不解读 lifecycle，只执行被要求的操作。
+        """
+        targets = [u for u in units if u.lifecycle == LifecycleState.SUPERSEDED]
+        if not targets:
+            logger.info("Evolver: FORGET marked 0 units as forgotten")
+            return EvolveResult(forgotten_ids=[])
+
+        for u in targets:
+            u.lifecycle = LifecycleState.FORGOTTEN
+        self._index.update(targets, only_forward=True)      # 只回写本体 FORGOTTEN
+        self._index.remove(targets, include_forward=False)  # 派生索引移出检索
+
+        forgotten = [u.id for u in targets]
         logger.info("Evolver: FORGET marked %d units as forgotten", len(forgotten))
         return EvolveResult(forgotten_ids=forgotten)
 
 
 # -- 注册到 EvolverProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
 
+
+
+def _resolve_message_store(config) -> KVStore:
+    """取原文 store：params 声明了就按引用取，没声明则复用 ``kv_store.default`` 具名实例。
+
+    不能简单用 ``KvProducer.dep(config, "message_store", default="memory")``——``dep`` 的
+    ``default`` 分支是**匿名新建**，会造出一个与配置后端无关的进程内 KV，原文从此写进谁也
+    看不见的 dict（不落盘、重启即失、``storage.scan`` 查不到、无告警）。
+
+    而字段缺失是常态：``AssemblyContext.merged`` 按具名实例整体覆盖，用户一旦声明
+    ``evolver.default``（如 examples/config_template.yml 里启用 dynamic 的写法），内置
+    params 里的 ``message_store`` 就随之消失。
+
+    与 :meth:`StorageProducer.resolve` 同款兜底——两者都是**有状态**依赖，新建一个等于换后端。
+    """
+    if "message_store" in config.params:
+        return KvProducer.dep(config, "message_store")
+    if "default" in config.ctx.namespaces.get(KvProducer.TOP_NAME, {}):
+        return KvProducer.build_named("default", config.ctx)
+    return KvProducer.build("memory", {}, config.ctx)
 
 
 @EvolverProducer.register("orchestrating")
@@ -930,6 +975,7 @@ def _build(config):
         associator=AssociatorProducer.dep(config, default="keyword"),
         index_builder=IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
         storage=StorageProducer.resolve(config),
+        message_store=_resolve_message_store(config),
         dedup=DedupProducer.dep(config, default=dr_default),
         llm=LlmProducer.dep(config, default="echo"),
         layer_annotator=_opt_annotator(),

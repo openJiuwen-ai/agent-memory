@@ -27,7 +27,7 @@
 | `abstractor_impl/` | Abstractor 实现目录（concat / llm） |
 | `associator_impl/` | Associator 实现目录（keyword / llm） |
 | `classifier_impl/` | Classifier 实现目录（keyword / llm） |
-| `index_builder_impl/` | IndexBuilder 实现目录（fulltext / hybrid / unified / vector）；`unified` 仅按 Scope 直调统一 Storage 的 add/update/delete，不派生检索索引，调用方不得预先写入同一 unit；vector/fulltext 各扩展 L0/L1 分层索引（独立 store 分表，store None 跳过），详见 F01-memory-layer |
+| `index_builder_impl/` | IndexBuilder 实现目录（fulltext / hybrid / unified / vector）。**IndexBuilder 是记忆写入的唯一入口**：`hybrid`（默认 target）在 build/update/remove 内按 Scope 分组调 Storage 交付记忆本体，再处理倒排与向量；`unified` 全权委托 Storage（`include_forward=False` 时为空操作）；`fulltext`/`vector` 只建各自的派生索引，**不交付记忆本体**，作为独立 target 使用时写路径无人写本体。`build`/`remove` 的 `include_forward=False` 表示只操作派生索引；`update` 按 `unit.lifecycle` 决定派生索引去留（FORGOTTEN/ARCHIVED 移出，SUPERSEDED 保留）。vector/fulltext 各扩展 L0/L1 分层索引（独立 store 分表，store None 跳过），详见 F01-memory-layer |
 | `layer_annotator_impl/` | LayerAnnotator 实现目录（keyword / llm）；evolver 抽取后调用，对超阈 content 标注 L0/L1 |
 | `dedup_impl/` | Dedup 实现目录（vector / keyword） |
 | `evolver_impl/` | Evolver 实现目录（orchestrating=legacy / dynamic=动态 prompt 四步） |
@@ -40,9 +40,7 @@
   ↓
 1. Classifier.classify(units) → 打上 tier/主题/重要度标签
   ↓
-2. Storage.add(scope, units) → 真源落盘
-  ↓
-3. IndexBuilder.build(units) → 构建多形式索引
+2. IndexBuilder.build(units) → 交付记忆本体（内部调 Storage）+ 构建多形式索引
      │
      ├─ Chunker.chunk → chunks → Embedder.embed → VectorRecord → VectorStore
      ├─ Tokenizer.tokenize → Document → FulltextStore
@@ -56,7 +54,9 @@
               → [dynamic]     _evolve_extract: extract→consolidate(判定)→reflect→落盘
   CONSOLIDATE → _evolve_consolidate: abstract→annotate→_dedup_batch
   ASSOCIATE   → _evolve_associate: associate→冲突消解→图索引 Edge
-  FORGET     → _evolve_forget: 遗忘候选筛选→lifecycle 标记→IndexBuilder.remove
+  FORGET     → _evolve_forget: 遗忘候选筛选→lifecycle 置 FORGOTTEN→
+               IndexBuilder.update(only_forward=True) 回写本体 +
+               IndexBuilder.remove(include_forward=False) 移出检索
 ```
 
 `OrchestratingEvolver` 与 `DynamicEvolver` 平级（同属 `evolver` 顶层命名空间，注册名 `orchestrating` / `dynamic`）。`DynamicEvolver` 继承 `OrchestratingEvolver`，只覆盖 `_evolve_extract` 走动态 prompt 四步；其余三模式继承父类。装配或 pipeline profile 选哪个 evolver 实例即启用哪条 EXTRACT 路径。
@@ -68,16 +68,20 @@
    `system_metadata.<key>` 和 `user_metadata.<key>`。
 
 1. **落盘由本层负责**
-   接入层产出 `MemoryUnit` 后，真源写入由本层调用 Storage 的写接口完成。接入层禁止落盘。
+   接入层产出 `MemoryUnit` 后，记忆本体的写入由本层完成——统一经 `IndexBuilder`，由其内部
+   调用 Storage。**Evolver 不得直接调用 Storage 的 `add`/`update`/`delete`**（读取与原文接口不受限）。
+   接入层禁止落盘。
 
 2. **索引是可重建派生**
-   索引（向量/关键词/图/文档）全部可从真源（KVStore 中的 MemoryUnit）重建。`IndexBuilder.rebuild()` 是非破坏式保障——删索引不丢数据。
+   派生索引（向量/关键词/图/文档）全部可从记忆本体重建。`IndexBuilder.rebuild()` 是非破坏式
+   保障——删索引不丢数据。`update` 下派生索引的去留由 `unit.lifecycle` 决定（FORGOTTEN/ARCHIVED
+   移出、SUPERSEDED 保留），与调用顺序无关。
 
 3. **provenance 回指来源**
    派生记忆单元（Extractor/Abstractor 产出）的 `provenance` 字段记录由哪些 unit 演进而来，保证可重建、可审计回溯。
 
 4. **构建与存储解耦**
-   算子负责构建逻辑（生成索引投影：Chunk → VectorRecord/Document/Node），持久化由注入的 Store 承担。算子不依赖具体后端。
+   算子负责构建逻辑（生成索引投影：Chunk → VectorRecord/Document/Node，MemoryUnit → KV 记录），持久化由注入的 Store 承担。算子不依赖具体后端。正排与派生索引同此模式——`ForwardIndexBuilder` 写 `storage.kv`，与 `FulltextIndexBuilder` 写 `storage.fulltext` 同构。
 
 5. **scope 原生隔离**
    构建索引记录时把来源 `MemoryUnit.scope` 落到记录的专用 `scope` 字段（`VectorRecord.scope` / `Document.scope` / `Node.scope`），使检索得以按 scope 原生隔离。
@@ -93,8 +97,8 @@
    装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`，保证 fulltext-only 下去重仍可用。
 
 8. **构建层不依赖 control**
-   SUPERSEDE/FORGET 标记由 `OrchestratingEvolver`/`DynamicEvolver` 直接通过
-   `KVStore.update` 完成，不经 `LifecycleManager`（construction → control 严禁）。
+   SUPERSEDE/FORGET 标记由 `OrchestratingEvolver`/`DynamicEvolver` 经
+   `IndexBuilder.update` 完成，不经 `LifecycleManager`（construction → control 严禁）。
 
 9. **Dedup 与 IndexBuilder 共享底层 Store**
    去重召回检索的是已索引内容，`Dedup` 实现取的 `VectorStore`/`FulltextStore` 必须与 IndexBuilder 写入的是同一实例（按字段名缓存命中）。
@@ -136,7 +140,8 @@
 ## 与其他子目录的边界
 
 **本模块管**：
-- 真源落盘（调用 KVStore）
+- 记忆本体落盘（经 IndexBuilder 调用 Storage）
+- 原文（`/messages/`）读写（调用 Storage 的原文接口）
 - 信息提取与抽象升华（Extractor / Abstractor）
 - 关联分析（Associator）
 - 多维分类（Classifier）
@@ -155,7 +160,11 @@
 
 1. 所有 Operator 必须实现 `operator_type()` 和 `health()`（继承自 `ConstructionOperator`）。
 2. 算子实现通过 `@XxxProducer.register("name")` 自注册。
-3. IndexBuilder 必须实现四个方法：`build`（新建）/ `update`（更新）/ `remove(units)`（按 MemoryUnit 自带 Scope 删除）/ `rebuild`（全量重建）；不得维护仅按 unit id 的单值 Scope 缓存。`unified` 实现须按 Scope 分组，分别直调 Storage 的 `add` / `update` / `delete`，只可由未预先写入同一 unit 的调用方使用；当前 InMemoryEngine/CloudEngine 标准路径会先写 Storage，不能直接将其 profile 替换为 `unified`。
+3. IndexBuilder 必须实现四个方法：`build(units, *, include_forward=True)` / `update(units)` /
+   `remove(units, *, include_forward=True)`（按 MemoryUnit 自带 Scope 删除）/ `rebuild()`；
+   不得维护仅按 unit id 的单值 Scope 缓存。`include_forward=False` 表示只操作派生索引、
+   记忆本体不动（生命周期治理与索引迁移用）。`unified` 全权委托 Storage，无法单独操作派生
+   索引，`include_forward=False` 时为空操作。
 4. Evolver 返回 `EvolveResult`（created_ids / updated_ids / superseded_ids / forgotten_ids）。
 5. Dedup 必须实现 `recall(candidate) -> list[(MemoryUnit, score)]`；实现内部异常吞掉返回空列表，不阻断演进。
 6. 算子内部调用共享插件（Chunker/Embedder/Tokenizer/FeatureExtractor/LLM）必须使用注入的实例，不自行构造。

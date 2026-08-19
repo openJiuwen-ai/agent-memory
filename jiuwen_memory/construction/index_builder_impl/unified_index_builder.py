@@ -26,17 +26,26 @@ class UnifiedIndexBuilder(IndexBuilder):
     def health(self) -> None:
         return None
 
-    def build(self, units: list[MemoryUnit]) -> None:
-        for scope, scoped_units in _group_by_scope(units):
-            self._storage.add(scope, scoped_units)
+    def build(self, units: list[MemoryUnit], *, include_forward: bool = True) -> None:
+        """转发给 Storage，由其一次性建立自身支持的全部索引形式。
 
-    def update(self, units: list[MemoryUnit]) -> None:
+        ``include_forward`` 原样下传——能否只补建派生索引由该 Storage 实现按自身能力
+        决定，本类不代它判断。
+        """
         for scope, scoped_units in _group_by_scope(units):
-            self._storage.update(scope, scoped_units)
+            self._storage.add(scope, scoped_units, include_forward=include_forward)
 
-    def remove(self, units: list[MemoryUnit]) -> None:
+    def update(self, units: list[MemoryUnit], *, only_forward: bool = False) -> None:
+        """转发给 Storage；``only_forward`` 原样下传，同 :meth:`build`。"""
         for scope, scoped_units in _group_by_scope(units):
-            self._storage.delete(scope, [unit.id for unit in scoped_units])
+            self._storage.update(scope, scoped_units, only_forward=only_forward)
+
+    def remove(self, units: list[MemoryUnit], *, include_forward: bool = True) -> None:
+        """转发给 Storage；``include_forward`` 原样下传，同 :meth:`build`。"""
+        for scope, scoped_units in _group_by_scope(units):
+            self._storage.delete(
+                scope, [unit.id for unit in scoped_units], include_forward=include_forward
+            )
 
     def rebuild(self) -> None:
         # 最小实现：统一存储与真源同生命周期，无独立重建路径。
