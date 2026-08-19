@@ -4,7 +4,7 @@
 
 > 本文档只记录相对稳定的模块本地规约（职责边界、行为铁律、本地约束）。特性设计与方案取舍记录在 `docs/features/` 下。
 
-接收接入层产出的 `MemoryUnit`，调用 `storage` 落盘，在其上构建多形式索引。可插拔算子由 Extractor、Abstractor、Associator、Classifier、IndexBuilder、Dedup、LayerAnnotator 与 Evolver（两个平级实现：`OrchestratingEvolver` legacy / `DynamicEvolver` 动态四步）组成。
+接收接入层产出的 `MemoryUnit`，调用 `storage` 落盘，在其上构建多形式索引。可插拔算子由 Extractor、Abstractor、Associator、Classifier、IndexBuilder、Dedup、LayerAnnotator 与 Evolver 组成；官方实现为 `OrchestratingEvolver` / `DynamicEvolver`，Schema 可选扩展提供隔离子类。
 
 > 契约（接口签名/数据结构/不变量）见 [`docs/specs/S05-construction.md`](../../docs/specs/S05-construction.md)；设计理念与决策取舍（双通道/演进闭环/依赖关系）见 [`docs/features/construction/F01-construction-spec-design.md`](../../docs/features/construction/F01-construction-spec-design.md)。本文件只记当前实现地图与本地约束。
 
@@ -23,15 +23,16 @@
 | `dedup.py` | Dedup 接口：去重召回（向量/倒排两路）+ DedupProducer 工厂 |
 | `evolver.py` | Evolver 接口：记忆自演进（抽取/关联/巩固/遗忘）+ EvolveMode + EvolveResult |
 | `layer_annotator.py` | LayerAnnotator 接口：分层披露标注（L0/L1 写入 unit.layers）+ LayerAnnotatorProducer 工厂 |
-| `extractor_impl/` | Extractor 实现目录（keyword / llm / dynamic_llm） |
+| `extractor_impl/` | Extractor 实现目录（keyword / llm / dynamic_llm / entity_schema 可选扩展） |
 | `abstractor_impl/` | Abstractor 实现目录（concat / llm） |
 | `associator_impl/` | Associator 实现目录（keyword / llm） |
 | `classifier_impl/` | Classifier 实现目录（keyword / llm） |
 | `index_builder_impl/` | IndexBuilder 实现目录（fulltext / hybrid / unified / vector）；`unified` 仅按 Scope 直调统一 Storage 的 add/update/delete，不派生检索索引，调用方不得预先写入同一 unit；vector/fulltext 各扩展 L0/L1 分层索引（独立 store 分表，store None 跳过），详见 F01-memory-layer |
 | `layer_annotator_impl/` | LayerAnnotator 实现目录（keyword / llm）；evolver 抽取后调用，对超阈 content 标注 L0/L1 |
 | `dedup_impl/` | Dedup 实现目录（vector / keyword） |
-| `evolver_impl/` | Evolver 实现目录（orchestrating=legacy / dynamic=动态 prompt 四步） |
+| `evolver_impl/` | Evolver 实现目录（orchestrating / dynamic；可选 schema_orchestrating / schema_dynamic，并含 Entity Identity、Registry、Property Merge） |
 | `bootstrap.py` | 统一触发所有构建算子注册（含 dedup_impl） |
+| `schema_bootstrap.py` | 显式注册隔离 Schema Extractor/Evolver，不修改官方 bootstrap |
 
 ## 构建链路
 
@@ -60,6 +61,10 @@
 ```
 
 `OrchestratingEvolver` 与 `DynamicEvolver` 平级（同属 `evolver` 顶层命名空间，注册名 `orchestrating` / `dynamic`）。`DynamicEvolver` 继承 `OrchestratingEvolver`，只覆盖 `_evolve_extract` 走动态 prompt 四步；其余三模式继承父类。装配或 pipeline profile 选哪个 evolver 实例即启用哪条 EXTRACT 路径。
+
+Schema 可选扩展通过 `jiuwen_memory.schema.assemble_schema()` 注册 `entity_schema`、
+`schema_orchestrating` 和 `schema_dynamic`。Schema 非 procedural EXTRACT 先持久化 Source；
+Entity Identity 后写隐藏 Entity Registry，再由 Property Merge 处理 property MemoryUnit。
 
 ## 行为铁律
 

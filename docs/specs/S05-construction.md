@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-08-18 |
+| 最近一次修订日期 | 2026-08-19 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F06-unified-index-builder.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/retrieval/F03-metadata-filtering.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/retrieval/F03-metadata-filtering.md |
 
 ## Metadata 派生与索引契约
 
@@ -303,7 +303,9 @@ jiuwen_memory/construction/<算子>_impl/
 ```
 
 各 Producer：`ExtractorProducer` / `AbstractorProducer` / `AssociatorProducer` / `ClassifierProducer` / `IndexBuilderProducer` / `DedupProducer` / `EvolverProducer`。
-注册由 `construction.bootstrap.register_constructors` 统一触发。
+官方实现注册由 `construction.bootstrap.register_constructors` 统一触发。隔离 Schema 扩展由
+`construction.schema_bootstrap.register_schema_constructors` 显式注册，公开目标为
+`entity_schema`、`schema_orchestrating`、`schema_dynamic`；不得为启用扩展修改官方 Evolver。
 
 > 当前有哪些实现、文件职责、行为铁律归 [`jiuwen_memory/construction/AGENTS.md`](../../jiuwen_memory/construction/AGENTS.md)，本 spec 只列契约。
 

@@ -30,8 +30,9 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
 | `fulltext_impl/` | FulltextStore 实现目录（memory / elasticsearch）；`hosts` 晚绑定 |
 | `fusion_impl/` | FusionStore 实现目录（memory / milvus_graph）；`uri`/`working_dir` 晚绑定 |
 | `fs_impl/` | FSStore 实现目录（local）；`root` 晚绑定 |
-| `storage_impl/` | Storage 实现目录；`CompositeStorage` 以 `composite` target 自注册 |
+| `storage_impl/` | Storage 实现目录；`CompositeStorage` 以 `composite` target 自注册；Schema 扩展另以 `schema_composite` 装配 `schema_entities` 命名端口 |
 | `bootstrap.py` | 统一触发六类 Store 后端与 Storage 实现注册 |
+| `schema_bootstrap.py` | opt-in 注册 `schema_composite`，不修改默认 Storage bootstrap |
 
 ## 统一 CRUD 动词
 
