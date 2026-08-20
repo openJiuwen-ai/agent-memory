@@ -4,10 +4,10 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-07-31 |
-| 影响范围 | `src/control/jobs.py`、`src/control/jobs_impl/`、`src/control/scheduler.py`、`src/control/scheduler_impl/async_timer_scheduler.py`、`src/control/scheduler_impl/in_process_scheduler.py`、`src/control/engine_impl/in_memory_engine.py`、`src/control/engine_impl/cloud_engine.py`、`src/control/bootstrap.py`、`src/construction/dedup_impl/keyword_dedup.py`、`src/construction/dedup_impl/vector_dedup.py`、`src/config/defaults.py` |
-| 测试基线 | `pytest tests/unit/control tests/unit/construction` 全绿（307 passed）；`test_middle_e2e_real_llm.py` 4 个 e2e 用例**默认 skip**（依赖外部 LLM 凭证，已用模块级 `pytest.mark.skip` 写死；取消 skip 并配齐 `.env` 中 `OPENAI_API_KEY`/`OPENAI_BASE_URL`/`OPENAI_MODEL` 后可跑通 add→Timer 触发→MiddleToLongJob→归档 全链路）|
-| Refs | [`F02-write-infer-extract`](../api/F02-write-infer-extract.md)、[`F01-control-impl-design`](F01-control-impl-design.md)、[`F05-cloud-engine-design`](F05-cloud-engine-design.md) |
+| 日期 | 2026-07-31（决策 9 分布式锁接入：2026-08-17） |
+| 影响范围 | `src/control/jobs.py`、`src/control/jobs_impl/`（含 `MiddleToLongJob` 加 `lock` 字段）、`src/control/scheduler.py`、`src/control/scheduler_impl/async_timer_scheduler.py`、`src/control/scheduler_impl/in_process_scheduler.py`、`src/control/engine_impl/in_memory_engine.py`、`src/control/engine_impl/cloud_engine.py`、`src/control/bootstrap.py`、`src/construction/dedup_impl/keyword_dedup.py`、`src/construction/dedup_impl/vector_dedup.py`、`src/config/defaults.py`；决策 9 复用 [`F06-distributed-lock`](../common/F06-distributed-lock.md) 的 `LockProvider` 横切原语 |
+| 测试基线 | `pytest tests/unit/control tests/unit/construction` 全绿（307 passed）；`test_middle_e2e_real_llm.py` 4 个 e2e 用例**默认 skip**（依赖外部 LLM 凭证）；`test_middle_two_instances_e2e.py` 双实例 e2e 用例**默认 skip**（依赖真实 Redis 容器，验证跨实例互斥语义）|
+| Refs | [`F02-write-infer-extract`](../api/F02-write-infer-extract.md)、[`F01-control-impl-design`](F01-control-impl-design.md)、[`F05-cloud-engine-design`](F05-cloud-engine-design.md)、[`F06-distributed-lock`](../common/F06-distributed-lock.md) |
 
 > 本文档归档 **中期记忆（mem2.0）落地的设计与实现规约**：在 add 路径新增 `middle=true` 子分支作为中期缓冲，配合 `Job` 抽象 + `AsyncTimerScheduler` 周期触发 + `MiddleToLongJob` 做连续性切批抽取与归档，替代 mem1.0 自带的 `_middle_memory_loop`。
 
@@ -187,6 +187,101 @@ await engine.write(
 - 中期记忆参数是"装配期固化的 JobSpec 业务参数 + 单次写入的调用级开关"——与 ConfigSource 是正交维度。
 - Job 层不需要为 ConfigSource 做适配——Job 持的 `Storage` / `LLM` / `Evolver` 实例内部各自实现晚绑定（`storage.list` 内部按需 `fetch("kv_store.url")` 重连、`llm.chat` 内部 `fetch("llm.api_key")` 取凭证），Job 调这些实例方法时晚绑定自动生效，Job 不感知 ConfigSource。
 
+### 决策 9：分布式互斥——`MiddleToLongJob` 接入 scope 级锁
+
+**问题**：记忆服务多实例部署时，同一 `scope` 的 `middle=true` 候选可能被两个实例同时触发——两个 `MiddleToLongJob.run` 同时 list 同一批候选、各自跑 `evolver.evolve(EXTRACT)` 产生重复派生，再各自调 `lifecycle.transition(ARCHIVED)` 重复归档。第二道防线（`Evolver._dedup_batch` 相似度 1.0 NOOP + `lifecycle.transition(ARCHIVED)` 幂等）能容忍偶发失效，但前置互斥更省算力与存储。
+
+**落点**：`MiddleToLongJob.run()` 内部用 [`LockProvider.guard`](../../features/common/F06-distributed-lock.md) 围栏临界区。锁是 scheduler 驱动的 Job 工作的围栏，不是 write 路径的围栏——`_write_middle_path` 只 submit Job 不重复抽取，无需在 write 路径加锁。
+
+**锁键**：`am:lock:v1:{org}:{space}:{user}:{agent}:{session}:middle_to_long`——scope 级，同 scope 任意时刻只有一个实例进入临界区。粒度选择 scope 级而非 unit 级：list 路径本身无锁仍可能双读，unit 级锁需二次去重且 `to_thread` 调 sync `KV.scan` 在锁外仍存在；scope 级锁实现最简、开销最小（Job 不高频），同 scope 串行完全可接受。
+
+**注入策略**：`MiddleToLongJob.__init__` / `MiddleToLongJobSpec` 新增 `lock: LockProvider | None = None`（末位，可选）。`_build_middle_to_long_job_spec` 用 `config.params.get("lock")` 探测：有配置才调 `LockProducer.dep(config)`，无配置直接 None。**不调 `dep` 即不触发 F06 文档里 "LockProducer 不设默认实现、缺配置报错" 的强约束**——单实例 / 本地开发无需配 `lock` 段，行为与引入锁前完全一致。
+
+#### 9.1 装配 × 运行时行为矩阵
+
+`run()` 的行为由装配期是否注入 LockProvider 与运行时取锁结果两维共同决定。完整矩阵：
+
+| 装配期 `lock` | 运行时取锁 | `run()` 行为 | 返回 `JobInfo.detail` | 候选处理 | Scheduler 后续 |
+|---|---|---|---|---|---|
+| `None`（未配 `lock` 段） | 不取锁 | 直接走 `_run_inner`——list → split → evolve → archive 全跑 | `created_ids` / `is_done` 等原 `_run_inner` 返回字段 | 候选被处理 + 原文 ARCHIVED | `is_done=true` 时停止下一轮触发 |
+| 注入 LockProvider | **取锁成功** | guard 围栏进入 `_run_inner`，看门狗自动续期跑完临界区 | 同上原 `_run_inner` 返回字段 | 候选被处理 + 原文 ARCHIVED | 同上 |
+| 注入 LockProvider | **取锁失败**（`LockTimeoutError`） | 不进入 `_run_inner`——直接返回 | `{"skipped_due_to_lock": "true"}` | **不处理候选、不调 evolver / lifecycle / index** | **不标 `is_done`**——下个 tick 继续重试，候选仍在 KV 不会丢失 |
+| 注入 LockProvider | **guard 入口 `handle.lost` 已置位**（续期失败、持有权已失效） | 同上——不进入 `_run_inner`，记 warning 后返回 | `{"skipped_due_to_lock": "true"}` | 同上不处理 | 同上下个 tick 重试 |
+| 注入 LockProvider | **临界区中途 lost**（续期失败但已进 `_run_inner`） | 不主动中断临界区——持有者继续跑完，但 release 时 CAS 不符是安全空操作 | `_run_inner` 原返回字段 | 候选被处理 + 原文 ARCHIVED（无锁跑完） | 同上——偶发双持由第二道防线兜底 |
+
+#### 9.2 取锁失败为何不标 `is_done`
+
+`is_done=true` 是 `_run_inner` 在 `_list_working_units` 扫到空候选时返回的"该 scope 中期候选已全部转完"信号——Scheduler 据此标记 parent entry 停止下一轮 tick。`LockTimeoutError` 路径**没有真正 list 候选**，不知道候选是否已转完——若贸然标 `is_done`，会让另一实例正在处理的候选永远没人再扫，造成记忆积压。故 `skipped_due_to_lock=true` 与 `is_done=true` 是两个正交信号：前者表示"本次 tick 让位给其他实例"，后者表示"该 scope 真的没候选了"。
+
+#### 9.3 取锁失败为何不调 evolver
+
+`LockTimeoutError` 在 guard 入口抛出——`_run_inner` 完全未被调用，list / split / evolve / archive 全部跳过。这是有意为之：既然已有另一实例在临界区内处理这批候选，本实例重复 list + 调 LLM 连续性检测 + 调 evolver 抽取都是**纯浪费**——派生即使被 dedup NOOP 也消耗了 LLM 调用预算。让位比重复工作更省。
+
+#### 9.4 候选不会丢失
+
+被 skip 的 Job 不动 KV——原文仍是 `tier=WORKING + lifecycle=ACTIVE + metadata.middle="true"`，下个 tick 仍会被 `_list_working_units` 扫到。多实例部署下，只要有一实例的 Job 能取到锁，候选最终都会被处理。**唯一会丢失候选的场景**是所有实例的 Job 都持续取锁失败——但那意味着锁后端故障，是运维问题不是设计问题。
+
+#### 9.5 `wait_timeout_ms=0` 的取舍
+
+`guard` 入参 `wait_timeout_ms=0`——只试一次不等待。理由：
+
+1. drain 协程空等会挤占 scheduler 的 FIFO 消费——同 scope 后续 Job 实例被堵在队列后；
+2. Timer 节拍本身有抖动（tick 间隙 + `next_run_at` 错开），两实例真正同 tick 触发概率低，下个 tick 自然串行；
+3. 即使两 Job 真同时触发且都失败（`wait_timeout_ms=0` 互不退让），下个 tick 仍有概率串行——不丢数据。
+
+代价是**真同时触发的两 Job 可能都失败一次**——但下次 tick 必然有一个先取到，候选不会永久积压。
+
+#### 9.6 第二道防线
+
+F06 文档声明锁是基于租约的协调机制非共识算法，可能短暂双持。本场景下双持的后果是重复抽取 / 重复归档，由 `Evolver._dedup_batch`（相似度 1.0 NOOP）+ `lifecycle.transition(ARCHIVED)` 幂等兜底，可容忍偶发失效，不引入 fencing token。
+
+#### 9.7 配置示例
+
+**单实例 / 本地开发**（不加 `lock` 段）：
+
+```yaml
+job_factory:
+  default:
+    target: default
+    params:
+      storage: default
+      evolver: default
+      # ... 其他字段
+      # 不写 lock 字段——MiddleToLongJob 走无锁路径
+```
+
+**多实例部署**（显式配 `lock` 段）：
+
+```yaml
+lock:
+  default:
+    target: redis
+    params:
+      url: "redis://redis-host:6379/1"
+      lease_ms: 30000
+      wait_timeout_ms: 0   # 与 Job.run 入参一致——只试一次不等待
+
+job_factory:
+  default:
+    target: default
+    params:
+      storage: default
+      evolver: default
+      # ... 其他字段
+      lock: default        # ← 引用 lock.default，注入到 MiddleToLongJob
+```
+
+`lock` 段顶层声明的 `lock.default` 具名实例被 `job_factory.default.params.lock` 引用——`_build_middle_to_long_job_spec` 通过 `LockProducer.dep(config)` 装配并固化到 `MiddleToLongJobSpec.lock`。未配 `lock` 段时该字段为 None，Job 走无锁路径。
+
+**第二道防线**：F06 文档声明锁是基于租约的协调机制非共识算法，可能短暂双持。本场景下双持的后果是重复抽取 / 重复归档，由 `Evolver._dedup_batch`（相似度 1.0 NOOP）+ `lifecycle.transition(ARCHIVED)` 幂等兜底，可容忍偶发失效，不引入 fencing token。
+
+**不在本决策范围**：
+
+- `_write_middle_path` 不加锁（write 不重复抽取，只 submit Job；Job 内已有锁）
+- `EvolveJob` 不加锁（不在中期记忆场景）
+- `lock` 段默认装配（`jiuwen_memory/config/defaults.py` 不加 `lock` 顶层段，F06 文档要求消费方显式配置）
+- fencing token / 多存储写入事务性（F06 文档已声明不在范围）
+
 ---
 
 ## 拒绝的方案
@@ -243,6 +338,7 @@ await engine.write(
 | `tests/unit/control/test_engine_write_middle_path.py` | 10 | middle 标记、tier=WORKING、submit 调用、JobFactory 缺失报错 |
 | `tests/unit/control/test_engine_evolve_scheduler.py` | 2 | Engine.evolve 委托 JobFactory + Scheduler |
 | `tests/unit/control/test_middle_e2e.py` | 6 | 单元层 e2e：write→MiddleToLongJob→归档链路 |
+| `tests/unit/control/test_middle_to_long_job_lock.py` | 4 | 分布式锁接入：`lock=None` 走原路径、取锁成功跑临界区+释放、取锁失败跳过 tick 不调 evolver、同 task 重入 |
 | `tests/unit/construction/test_evolver_dedup.py` | 16 | middle 原文过滤、ADD/UPDATE/SUPERSEDE/NOOP 四态 |
 
 ### 端到端覆盖
@@ -253,6 +349,8 @@ await engine.write(
 - 4 条 ACTIVE 全部 provenance 非空（派生记忆）；
 - 2 条 ARCHIVED 是 bob/dave 两条原文（id 命中）。
 
+`tests/unit/control/test_middle_two_instances_e2e.py`（1 用例，**默认 skip**）双线程双事件循环模拟双实例部署：两个 engine 各自装配独立 `RedisLockProvider`（具名 `lock_a` / `lock_b` 避免同进程 Factory `_instances` race）连同一 Redis，同一 scope 各自 write 一条不同的 middle 原文，barrier 同步下同时调 `job.run()`。期望恰好一个 Job 跑完临界区归档两条原文（`ran_total=1`），另一个 Job 返回 `skipped_due_to_lock=true`（`skipped_total=1`），两条原文最终都 ARCHIVED——证明无重复抽取、无重复归档。依赖真实 Redis 容器（默认 6379，环境变量 `AGENT_MEMORY_TEST_REDIS_PORT` 覆盖），取消 skip 后约 15s 跑完。
+
 ### 关键场景验证
 
 | 场景 | 验证方式 | 结果 |
@@ -262,6 +360,9 @@ await engine.write(
 | 候选转完后 Timer 自然退出 | `test_wheel_all_done_exits_timer` | ✅ |
 | 事件循环关闭时 Job 状态正确 | `test_drain_queue_handles_cancelled_error` | ✅ |
 | 同步阻塞 IO 不卡事件循环 | `test_list_working_units_does_not_block_event_loop` / `test_archive_originals_does_not_block_event_loop` | ✅ |
+| 未配 lock 段时行为与引入锁前一致 | `test_lock_none_runs_inner_directly` | ✅ |
+| 取锁失败跳过本次 tick 不调 evolver | `test_lock_timeout_skips_tick_without_calling_evolver` | ✅ |
+| 双实例同 scope 真正跨进程互斥 | `test_middle_two_instances_e2e.py::test_two_instances_only_one_runs_middle_to_long`（默认 skip） | ✅ |
 
 ---
 
