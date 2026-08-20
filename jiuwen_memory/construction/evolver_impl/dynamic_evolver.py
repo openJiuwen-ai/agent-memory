@@ -51,6 +51,7 @@ from jiuwen_memory.construction.prompt_strategy import (
     copy_reflect_prompts,
     parse_prompt_strategies,
 )
+from jiuwen_memory.construction.router import optional_router
 from jiuwen_memory.storage.storage import StorageProducer
 
 logger = get_logger(__name__)
@@ -117,6 +118,11 @@ class DynamicEvolver(OrchestratingEvolver):
             return []
         copy_consolidation_prompts(units, extracted)
         copy_reflect_prompts(units, extracted)
+        # 归属判定与父类同一插入点：抽取之后、分层标注与后续判定之前。两个分支各自接线，
+        # 因为本类覆盖了 _evolve_extract，父类插入点在本路径上不经过。
+        extracted = self._route(units, extracted)
+        if not extracted:
+            return []
         self._annotate_layers(extracted)
         return extracted
 
@@ -274,6 +280,7 @@ class DynamicEvolver(OrchestratingEvolver):
             self._storage.add(candidate.scope, [candidate])
             self._index.build([candidate])
             result.created_ids.append(candidate.id)
+            result.created_units.append(candidate)
             return 0
         if decision == DedupDecision.NOOP:
             return 1
@@ -319,6 +326,7 @@ class DynamicEvolver(OrchestratingEvolver):
         self._storage.update(existing.scope, [existing])
         self._index.update([existing])
         result.created_ids.append(candidate.id)
+        result.created_units.append(candidate)
         result.superseded_ids.append(existing.id)
         return 0
 
@@ -394,6 +402,7 @@ def _build(config):
         dedup=DedupProducer.dep(config, default=dr_default),
         llm=LlmProducer.dep(config, default="echo"),
         layer_annotator=_opt_annotator(),
+        router=optional_router(config),
         prompt_registry=registry,
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
         dedup_high_similarity=config.get("dedup_high_similarity", 0.9),

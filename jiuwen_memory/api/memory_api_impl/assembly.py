@@ -34,9 +34,11 @@ from jiuwen_memory.config.config_source_impl import register_config_sources
 from jiuwen_memory.config.context import ComponentConfig
 from jiuwen_memory.config.defaults import KV_DEFAULT_NAME, ROOT_PARAMS, default_context
 from jiuwen_memory.construction.bootstrap import register_constructors
+from jiuwen_memory.construction.router import optional_router
 from jiuwen_memory.control.bootstrap import register_controllers
 from jiuwen_memory.control.engine import EngineProducer
 from jiuwen_memory.control.governance import GovernorProducer
+from jiuwen_memory.control.membership import MembershipProducer
 from jiuwen_memory.control.permission import PermissionProducer
 from jiuwen_memory.control.policy import PolicyProducer
 from jiuwen_memory.control.scheduler import SchedulerProducer
@@ -129,13 +131,40 @@ def build_kernel(
         governor=GovernorProducer.dep(root, default="in_memory"),
         audit_logger=AuditProducer.dep(root, default="sqlite"),
         space=SpaceProducer.dep(root, default="kv"),
+        # 空间授权事实的读取算子。判定实现声明不需要空间事实时鉴权点不会调用它，
+        # 因此对既有装配是零成本的多一次实例化。
+        membership=MembershipProducer.dep(root, default="kv"),
+        # 归属判定算子。未声明 router 命名空间即为 None：判定表为空、写入侧 scope 必填、
+        # 判定路径不可达，全链路行为与未启用该特性一致。构建层经各自的 _build 取同一个
+        # 具名实例，与本层共用一份判定表。
+        router=optional_router(root),
     )
+    _reject_routing_without_space_authorization(api)
     return Kernel(
         api=api,
         kv=KvProducer.dep(root, default="memory"),
         storage=storage,
         space=api.space_manager,
         config_source=config_source,
+    )
+
+
+def _reject_routing_without_space_authorization(api: LocalMemoryAPI) -> None:
+    """拒绝「判定表已配置而判定实现不读空间事实」的组合（S09「两个开关」）。
+
+    两个开关互不相关、可各自开启，四种组合里只有这一种是配置错误：内容按坐标分流进协作
+    空间，而协作空间没有任何权限边界，等于把内容写进一个组织内任意主体可读的位置。方向
+    为放行，且从调用侧看不出异常——写入成功、检索也拿得到，只是拿得到的人多了。
+
+    另一个方向（只开空间治理不开判定表）是合法部署：空间之间有权限边界，``scope`` 仍必填。
+    """
+    if not api._routing_enabled() or api._needs_space_facts():
+        return
+    raise ValidationError(
+        "a routing table is configured but the permission implementation does not read "
+        "space facts: routed writes would land in collaboration spaces that have no "
+        "authorization boundary. Configure permission.default.target = space_aware, "
+        "or remove the router namespace."
     )
 
 

@@ -6,6 +6,7 @@ import pytest
 
 from jiuwen_memory.api.memory_api_impl import assemble
 from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.security.principal import AUTHOR_AGENT, AUTHOR_PRINCIPAL
 from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterOp,
@@ -92,7 +93,14 @@ def test_update_merges_namespaces_independently() -> None:
         identity=_ACTOR,
     )
 
-    assert updated.system_metadata == {"pipeline": "default", "dreaming": True}
+    # 作者标记两个键由内核按调用方身份恒写入（S09「作者标记」），与本用例要断言的
+    # 「两个命名空间各自独立 merge」正交，一并列出以保持相等断言的强度。
+    assert updated.system_metadata == {
+        "pipeline": "default",
+        "dreaming": True,
+        AUTHOR_PRINCIPAL: "user:u",
+        AUTHOR_AGENT: "",
+    }
     assert updated.user_metadata == {"project": "beta", "owner": "alice"}
 
 

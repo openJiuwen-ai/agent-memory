@@ -1,0 +1,180 @@
+# 群体记忆装配配置（被 examples/collective_memory.py 通过 Config.from_yaml 解析）
+#
+# 与 examples/config.yml 的区别只在三处顶层命名空间：engine 取 cloud、permission 取
+# space_aware、新增 router。前两处是空间治理的前提，第三处是归属判定的判定表。
+#
+# 未声明 router 命名空间时判定路径整体不可达：判定表为空、写入侧 scope 必填、coords 不
+# 产生落点，全链路行为与未启用该特性一致。这是可灰度上线的前提。
+#
+# 反过来「声明了 router 而 permission 不取 space_aware」由装配期拒绝：内容会按坐标分流进
+# 协作空间，而协作空间没有任何权限边界。见 S09「两个开关与四种部署组合」。
+
+globals:
+  policies:
+    # fallback 空间（调用方自己的主空间）不存在时按调用方身份自动创建并登记归属。
+    # 默认开：用户零感知，首次写入直接成功。关掉即回到硬前置——接入方须在用户开通时
+    # 预建主空间，否则新主体的首次写入全部失败。
+    # 只作用于 fallback：坐标指向的协作空间不自动建，它的成员表内核产生不了。
+    space.auto_create_fallback: "true"
+
+    # 一次调用参与的空间数上限，写入侧与检索侧同取该值。缺省 8。
+    # 这是功能天花板而非性能参数：主体同时参与的空间超过它时，超出部分写入不进候选、
+    # 检索也取不到（截断记 WARNING）。按接入方的协作规模设定。
+    space.fanout_limit: "8"
+  vector_enabled: true
+  graph_enabled: false
+  rerank_enabled: false
+  embedder_dim: 64
+  chunk_size: 120
+
+# ---- 引擎：空间级落点要求 cloud，in_memory 只支持 scope.space 为空 ----
+engine:
+  default:
+    target: cloud
+    params:
+      ingestor: default
+      index_builder: default
+      retriever: default
+      kv_store: default
+      scheduler: default
+      evolver: default
+      lifecycle: default
+
+# ---- 判定实现：与 standard 互斥，同一部署不得同时装配两个 ----
+permission:
+  default:
+    target: space_aware
+    params:
+      db_path: ":memory:"
+
+# ====================================================================== #
+# 判定表：这一段决定「一条记忆归哪一类、落哪个空间、打哪些标签」
+# ====================================================================== #
+router:
+  default:
+    # 首版只交付模型实现 llm。examples/collective_memory.py 另在脚本内注册了一个按关键词
+    # 作答的演示桩 keyword_demo，使这个例子可离线运行；换成模型实现只需把 target 改回 llm
+    # 并在 llm 命名空间下配好模型。
+    target: keyword_demo
+    params:
+      # -- 归属坐标的部署声明项 ------------------------------------------ #
+      # 内核自带 user / agent / session 三项，取值以调用方身份为准、不接受覆盖；
+      # 这里声明的是接入方的产品概念，内核只作字典键透传，不得与内核三项重名。
+      coord_entities:
+        - project
+        - team
+
+      # -- 记忆类别：一个类别 = 一个归属维 + 一个空间名模板 ---------------- #
+      # 判据是「换掉哪个坐标这条记忆就不成立，那个坐标即它的归属维」。
+      memory_classes:
+        - name: user_memory
+          # description 会拼进判定 prompt，模型据它选类别，写清楚这一类是什么
+          description: 关于用户本人的事实、偏好与习惯，换一个用户就不成立
+          owner: user                    # 归属维实体名
+          space_template: "u_{user}"     # 空间名模板，必须引用该类别的 owner
+          fallback: true                 # 兜底落点，有且仅有一个，且不得 cross_user
+
+        - name: project_memory
+          description: 关于某个项目的事实、决定与约定，换一个项目就不成立
+          owner: project
+          space_template: "p_{project}"
+          cross_user: true               # 该类别的空间跨用户可见，是设计意图
+          members: 项目参与者             # cross_user 必须给出成员来源或声明 sanitized
+
+        - name: team_memory
+          description: 关于某个 agent-team 的协作方式，换一个 team 就不成立
+          owner: team
+          # record_only：不落独立空间，命中该类别的条目落 fallback 空间（调用方主空间），
+          # 归属实体 team 记成一个标签。本例取这一形态是为了把三种类别形态各演示一遍
+          # （个人类 / cross_user 协作类 / record_only 记录类），不是对 team 记忆的推荐配置。
+          #
+          # 注意这一形态下团队记忆不在团队内共享：alice 写的团队约定落进 u_alice，
+          # 同一 team 的 bob 带 team=core 检索也读不到——标签只在 alice 自己的空间内
+          # 起收窄作用，bob 无权读该空间。S09「五类空间的开通形态」把 team 列为跨用户
+          # 空间（由 agent-team 创建、逐参与用户写成员记录），改法见本段末尾。
+          record_only: true
+          tag_key: team_id               # 不写则按 <owner>_id 生成
+          # 改成落独立 team 空间的写法与三种配置的预期结果：
+          #
+          # | 配置 | 预期结果 |
+          # |---|---|
+          # | record_only: true（当前） | 落 u_alice，memory_class=team_memory，team_id=core。
+          #                              判成 team 记忆但按设计落回主空间，其他成员读不到 |
+          # | record_only: false，不加 space_template | 装配期 ValidationError：非 record_only
+          #                              类别必须声明 space_template 且模板须引用其 owner |
+          # | record_only: false + space_template: "t_{team}"，但 t_core 未预建 | 落回 u_alice，
+          #                              且 memory_class 被改写成 user_memory、team_id 不再写。
+          #                              渲染出的空间不在候选集内即回落，auto_create_fallback
+          #                              只对 fallback 空间生效，协作空间不自动建 |
+          # | record_only: false + space_template + 预建 t_core 并逐成员写成员记录 | 落 t_core，
+          #                              memory_class=team_memory，team 成员互见；team_id 不再
+          #                              写入条目——归属由空间名承载，按该标签的过滤与删除失效 |
+          #
+          # 取最后一行时本类别须同时声明 cross_user: true 与 members，与 project_memory 同理；
+          # 两者皆无时加载期拒绝（cross_user 无成员来源即对全组织敞开）。
+
+      # -- 收窄维：与类别正交，各为独立的是非题 --------------------------- #
+      # 写入时落成条目标签，检索时折算为 metadata.<tag_key> IN ["", <value>] 谓词。
+      # 全部收窄维标签键恒写入（判为否的写空串），因为集合谓词在字段缺失时判为不匹配。
+      narrow_dims:
+        - entity: agent
+          tag_key: agent_id
+          question: 这条记忆是否只对这一个代理成立？
+        - entity: session
+          tag_key: session_id
+          question: 这条记忆是否只在这一次会话内有意义？
+        - entity: project
+          tag_key: project_id
+          applies_to: [user_memory]      # 只对这些类别生效；不写则对全部类别生效
+          question: 这条记忆是否与某个具体项目相关？
+
+# ====================================================================== #
+# 几处常改配置项的预期结果（team_memory 那处的对照见上文该类别下）
+# ====================================================================== #
+#
+# | 改动 | 预期结果 |
+# |---|---|
+# | 删掉整个 router 命名空间 | 判定路径整体不可达：判定表为空、写入侧 scope 必填、coords 不
+#                             产生落点。全链路行为与未启用该特性一致 |
+# | 声明 router 但 permission 不取 space_aware | 装配期拒绝：内容会按坐标分流进协作空间，
+#                             而协作空间没有权限边界 |
+# | engine 由 cloud 改回 in_memory | 写入失败：in_memory 只支持 scope.space 为空，落不了
+#                             空间级落点 |
+# | space.auto_create_fallback 置 false | 主空间未预建时首次写入失败（fallback 空间不可写
+#                             即整体拒绝）。接入方须在用户开通时预建主空间 |
+# | space.fanout_limit 调小到小于实际参与空间数 | 超出部分写入不进候选、检索也取不到，
+#                             截断记 WARNING。这是功能天花板而非性能参数 |
+# | 某类别去掉 fallback: true（或标两个） | 装配期拒绝：兜底落点不确定。fallback 类别有且
+#                             仅有一个，且不得 cross_user、不得 record_only |
+# | 某 cross_user 类别去掉 members 且未声明 sanitized | 装配期拒绝：两者皆无即对全组织敞开 |
+# | project_id 收窄维去掉 applies_to | 该收窄维对全部类别生效：项目事实等条目也会被判是否
+#                             与项目相关并可能带上 project_id，步骤 6 换坐标后被筛掉的
+#                             条目随之变多 |
+# | 某收窄维只在部分条目上写标签（不恒写空串） | 集合谓词在字段缺失时判为不匹配，缺键的条目
+#                             在任何按标签的检索与删除下都不命中，且不报错。内核恒写空串
+#                             即为封住这一点 |
+
+# ---- 换成模型实现时的写法（与上面的 target 二选一） ----
+#
+# 本文件里不写模型凭证。examples/collective_memory.py 在读到 OPENAI_API_KEY /
+# OPENAI_BASE_URL / OPENAI_MODEL 三项环境变量（或项目根 .env）齐备时，就地把下面这段等效
+# 配置覆盖上来；缺任一项即维持 keyword_demo 离线运行。
+#
+# router:
+#   default:
+#     target: llm
+#     params:
+#       # 引用名(字符串)=共享 llm 命名空间下的具名实例；映射=就地内联匿名实例。
+#       # 脚本走内联，令线上判定不牵连抽取、分类等其余用到 llm 的算子。
+#       llm:
+#         target: openai
+#         params:
+#           llm_model: "${OPENAI_MODEL}"
+#           llm_base_url: "${OPENAI_BASE_URL}"
+#           llm_api_key: "${OPENAI_API_KEY}"
+#           llm_temperature: 0.0
+#           llm_max_tokens: 4096
+#       retry_max_retries: 3             # 重试用尽后整批回落 fallback 空间，不阻断写入
+#       coord_entities: [...]            # 判定表三项与上面相同，两种实现读同一份
+#       memory_classes: [...]
+#       narrow_dims: [...]

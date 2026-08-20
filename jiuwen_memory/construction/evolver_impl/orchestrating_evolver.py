@@ -41,7 +41,7 @@ from jiuwen_memory.common.type_def import (
     messages_key,
 )
 from jiuwen_memory.common.type_def.chat import ChatMessage
-from jiuwen_memory.common.type_def.memory import Segment
+from jiuwen_memory.common.type_def.memory import ROUTE_CTX_KEY, Segment
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.construction.abstractor import Abstractor, AbstractorProducer
 from jiuwen_memory.construction.associator import Associator, AssociatorProducer
@@ -52,6 +52,13 @@ from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
 from jiuwen_memory.construction.prompt_strategy import copy_consolidation_prompts
+from jiuwen_memory.construction.router import (
+    RouteContext,
+    Router,
+    apply_decisions,
+    optional_router,
+    route_batch,
+)
 from jiuwen_memory.storage.storage import Storage, StorageProducer
 from jiuwen_memory.storage.types import Edge, Node
 
@@ -129,6 +136,20 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _route_ctx_of(units: List[MemoryUnit]) -> RouteContext | None:
+    """取源单元携带的归属判定上下文；未携带即返回 ``None``（整段不判定）。
+
+    取第一条携带的：一次写入的源单元来自同一次调用，上下文由 API 层统一装配，各条相同。
+    取值不是 :class:`RouteContext` 时按未携带处置——该键是内核自己写的瞬态键，出现异常
+    取值只可能是调用方伪造，此时按不判定处置比按判定处置安全。
+    """
+    for unit in units:
+        ctx = (unit.system_metadata or {}).get(ROUTE_CTX_KEY)
+        if isinstance(ctx, RouteContext):
+            return ctx
+    return None
+
+
 # ---------------------------------------------------------------------------
 # OrchestratingEvolver
 # ---------------------------------------------------------------------------
@@ -157,6 +178,7 @@ class OrchestratingEvolver(Evolver):
         dedup: Dedup,
         llm: LLM,
         layer_annotator: LayerAnnotator | None = None,
+        router: Router | None = None,
         *,
         dedup_medium_similarity: float = 0.7,
         dedup_high_similarity: float = 0.9,
@@ -172,6 +194,8 @@ class OrchestratingEvolver(Evolver):
         self._llm = llm
         # 分层标注算子：None 表示不标注（向后兼容）；非 None 时在抽取/升华后标注 L0/L1。
         self._layer_annotator = layer_annotator
+        # 归属判定算子：None 表示不判定，派生单元沿用源单元的 scope（向后兼容）。
+        self._router = router
         self.relations: List[Relation] = []  # ASSOCIATE 产物（同时已落图）
 
         # 去重阈值配置（min/top_k/tier_filter/scope_filter 已下沉到 recaller；
@@ -338,6 +362,7 @@ class OrchestratingEvolver(Evolver):
             self._storage.add(candidate.scope, [candidate])
             self._index.build([candidate])
             result.created_ids.append(candidate.id)
+            result.created_units.append(candidate)
 
         elif decision == DedupDecision.UPDATE:
             # 合成新旧 content
@@ -383,6 +408,7 @@ class OrchestratingEvolver(Evolver):
             self._storage.update(existing_unit.scope, [existing_unit])
             self._index.update([existing_unit])
             result.created_ids.append(candidate.id)
+            result.created_units.append(candidate)
             result.superseded_ids.append(existing_unit.id)
 
         elif decision == DedupDecision.NOOP:
@@ -801,6 +827,37 @@ class OrchestratingEvolver(Evolver):
             )
 
     # ------------------------------------------------------------------
+    # 归属判定（抽取后、分层标注与去重之前）
+    # ------------------------------------------------------------------
+
+    def _route(
+        self, sources: List[MemoryUnit], derived: List[MemoryUnit]
+    ) -> List[MemoryUnit]:
+        """按源单元携带的判定上下文改写派生单元的落点与标签，返回保留下来的单元。
+
+        判定上下文经源单元的瞬态 metadata 键 ``route_ctx`` 传入，取不到即整段跳过——
+        后台演进通道从存储重新读取原文，反序列化后该键已不存在，因此后台路径天然不判定。
+
+        插入点在抽取之后、分层标注与去重之前：晚于去重会在源空间比对、在目标空间落盘，
+        跨空间的重复内容既查不出也拦不住。
+
+        两个落盘不变量与「落点须在候选集内」的兜底都在
+        :func:`~construction.router.route_batch` 内完成，不在本方法重写一份。
+        """
+        ctx = _route_ctx_of(sources)
+        if ctx is None or not derived:
+            return derived
+        decisions = route_batch(self._router, derived, ctx)
+        kept = apply_decisions(decisions)
+        logger.info(
+            "Evolver._route: derived=%d kept=%d spaces=%s",
+            len(derived),
+            len(kept),
+            sorted({unit.scope.space for unit in kept}),
+        )
+        return kept
+
+    # ------------------------------------------------------------------
     # Evolver 契约
     # ------------------------------------------------------------------
 
@@ -840,9 +897,12 @@ class OrchestratingEvolver(Evolver):
             if not extracted:
                 return EvolveResult()
             copy_consolidation_prompts(units, extracted)
+            extracted = self._route(units, extracted)
+            if not extracted:
+                return EvolveResult()
             self._annotate_layers(extracted)
             created = self._persist(extracted)
-            return EvolveResult(created_ids=created)
+            return EvolveResult(created_ids=created, created_units=list(extracted))
         # 非 procedural 的 EXTRACT 路径（infer 同步抽取 / background EXTRACT）：
         recent = self._persist_and_maintain_messages(units)
         context = self._maybe_collect_extract_context(units, recent)
@@ -851,10 +911,19 @@ class OrchestratingEvolver(Evolver):
         if not extracted:
             return EvolveResult()
         copy_consolidation_prompts(units, extracted)
+        extracted = self._route(units, extracted)
+        if not extracted:
+            return EvolveResult()
         self._annotate_layers(extracted)
         return self._dedup_batch(extracted)
 
     def _evolve_consolidate(self, units: List[MemoryUnit]) -> EvolveResult:
+        """整合分支：不做归属判定，与后台通道同因。
+
+        判定上下文经瞬态键 ``route_ctx`` 从写入入口传入，只在该次写入的调用链上存在；整合
+        由调度器在后台触发，取不到这个上下文。整合产物因此沿用被整合单元的落点。不要在这里
+        补判定插入点——没有可用的候选空间集合，判出的落点无从校验是否在调用方的写权范围内。
+        """
         abstracted = self._abstractor.abstract(units)
         logger.info("Evolver: CONSOLIDATE abstractor returned %d units", len(abstracted))
         if not abstracted:
@@ -933,6 +1002,7 @@ def _build(config):
         dedup=DedupProducer.dep(config, default=dr_default),
         llm=LlmProducer.dep(config, default="echo"),
         layer_annotator=_opt_annotator(),
+        router=optional_router(config),
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
         dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
     )

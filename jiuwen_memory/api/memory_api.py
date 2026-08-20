@@ -70,26 +70,47 @@ class MemoryAPI(ABC):
     def add(
         self,
         content: str,
-        scope: Scope,
+        scope: Scope | None = None,
         source: Modality = Modality.TEXT,
         *,
         identity: Scope,
+        coords: dict[str, str] | None = None,
         assets: list[str] | None = None,
         tags: list[str] | None = None,
         system_metadata: dict[str, MetadataValueType] | None = None,
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
-        """同步写入记忆；阻塞至 hot path 完成并返回本次插入的记忆单元。"""
+        """同步写入记忆；阻塞至 hot path 完成并返回本次插入的记忆单元。
+
+        条目的可读范围由所在空间的权限决定，写入侧不另设条目级的可见性声明（S09）。
+
+        ``scope`` 与 ``coords`` 是互斥的两条路径，不叠加：
+
+        | 调用形态 | 落点怎么定 | 是否启用归属判定 |
+        |---|---|---|
+        | 传了 ``scope`` | 就是它 | 否，按现有语义直写 |
+        | 省略 ``scope`` | 由 ``coords`` 推出候选空间集合，判定算子在集内选 | 是 |
+
+        传 ``scope`` 时其主体维必须为空或与身份推导值一致，不一致即拒绝——归属不由调用方
+        声明。空 ``Scope()`` 与 ``None`` 分属两条路径，序列化层不得把缺省 ``scope`` 填成
+        空 ``Scope``。未装配判定算子时省略 ``scope`` 即缺参，与改造前一致。
+
+        两者同时传入时 ``scope`` 生效，``coords`` 在写入侧整体不生效，判定标签也一概不写。
+
+        ``coords`` 是这次交互发生在什么上下文（``user`` / ``agent`` / ``session`` 三项以
+        调用方身份为准、不接受覆盖，其余键由部署声明）。
+        """
 
     @abstractmethod
     async def add_async(
         self,
         content: str,
-        scope: Scope,
+        scope: Scope | None = None,
         source: Modality = Modality.TEXT,
         *,
         identity: Scope,
+        coords: dict[str, str] | None = None,
         assets: list[str] | None = None,
         tags: list[str] | None = None,
         system_metadata: dict[str, MetadataValueType] | None = None,
@@ -106,6 +127,7 @@ class MemoryAPI(ABC):
         source: Modality = Modality.TEXT,
         *,
         identity: Scope,
+        coords: dict[str, str] | None = None,
         tags: list[str] | None = None,
         system_metadata: dict[str, MetadataValueType] | None = None,
         user_metadata: dict[str, MetadataValueType] | None = None,
@@ -123,6 +145,7 @@ class MemoryAPI(ABC):
         source: Modality = Modality.TEXT,
         *,
         identity: Scope,
+        coords: dict[str, str] | None = None,
         tags: list[str] | None = None,
         system_metadata: dict[str, MetadataValueType] | None = None,
         user_metadata: dict[str, MetadataValueType] | None = None,
@@ -139,6 +162,7 @@ class MemoryAPI(ABC):
         context: Context,
         *,
         identity: Scope,
+        coords: dict[str, str] | None = None,
         filters: FilterExpr | list[FilterClause] | dict | None = None,
         as_of: datetime | None = None,
         top_k: int = 10,
@@ -146,6 +170,32 @@ class MemoryAPI(ABC):
         with_trajectory: bool = False,
     ) -> RetrievalResult:
         """执行混合检索；由 ``context`` 指定 scope、透传 options 与披露预算。"""
+
+    @abstractmethod
+    def search_spaces(
+        self,
+        query: str,
+        context: Context,
+        *,
+        identity: Scope,
+        spaces: list[str] | None = None,
+        coords: dict[str, str] | None = None,
+        filters: FilterExpr | list[FilterClause] | dict | None = None,
+        as_of: datetime | None = None,
+        top_k: int = 10,
+        disclosure: DisclosureLevel = DisclosureLevel.L0,
+        with_trajectory: bool = False,
+    ) -> RetrievalResult:
+        """跨空间检索：在调用方可读的多个空间内并发召回后合并（S09「多空间读写」）。
+
+        五步编排，底层仍是既有的单空间召回：候选空间（``spaces`` 给了就用它，否则取主体
+        反查索引结果）→ 逐空间判权、无权的直接剔除且不报错 → 按权重把 ``top_k`` 分成配额
+        → 并发召回 → 跨空间按内容去重、截到 ``top_k``。
+
+        取同步形态与 :meth:`search` 一致：并发召回在实现内部完成，不向调用方暴露异步契约。
+
+        ``context.scope`` 只取其 ``org`` 维定组织边界，空间维由候选集给出。
+        """
 
     @abstractmethod
     def list(
