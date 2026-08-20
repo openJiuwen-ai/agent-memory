@@ -7,7 +7,7 @@
 | 日期 | 2026-08-19 |
 | 状态 | 可选扩展，Schema 抽取、Entity Identity 与 Property Merge |
 | 影响范围 | `jiuwen_memory/api/`、`jiuwen_memory/construction/`、`jiuwen_memory/storage/`、`docs/specs/S02-memory-api.md`、`S05-construction.md`、`S06-storage.md` |
-| 测试基线 | Schema 定向测试 31 passed；Storage + Construction 回归 353 passed、5 skipped |
+| 测试基线 | Schema 定向测试 33 passed；Storage + Construction 回归 355 passed、5 skipped |
 | Refs | — |
 | 代码边界 | 与同类官方实现并列的 opt-in 新增文件，不修改官方 Assembly、Evolver、Storage 与 Bootstrap |
 | 持久化模型 | 每个 property 一个版本化 MemoryUnit；原始输入一个 Source MemoryUnit |
@@ -29,7 +29,7 @@ API 装配器产生冲突。
 实现文件按项目职责放置：Extractor 位于 `construction/extractor_impl/`，Evolver 位于
 `construction/evolver_impl/`，Schema 与 Prompt 位于 `construction/`。新增的
 `register_schema_constructors()` 显式注册 `entity_schema` Extractor 和
-`schema_orchestrating` / `schema_dynamic` Evolver；`build_schema_kernel()` 再委托官方
+`schema_orchestrating` Evolver；`build_schema_kernel()` 再委托官方
 `build_kernel()` 完成
 其他组件装配。官方 bootstrap、实现包 `__init__.py` 和原 API 装配器均不修改。
 
@@ -49,14 +49,15 @@ API 装配器产生冲突。
 
 ### 3. Source-first 降级
 
-`SchemaOrchestratingEvolver` 和 `SchemaDynamicEvolver` 只覆盖官方 `_evolve_extract()`：
+`SchemaOrchestratingEvolver` 只覆盖官方 `_evolve_extract()`：
 
 ```text
 原始输入
   -> 先写 /memory/ 并建索引（memory_role=source_evidence）
   -> 再调用 Schema Extractor
        成功：追加 property MemoryUnit
-       失败：记录 schema_extract_degraded，保留 Source MemoryUnit
+       抽取失败：记录 schema_extract_degraded，保留 Source MemoryUnit
+       Entity Identity 异常：丢弃未解析派生，保留 Source MemoryUnit
 ```
 
 Source 持久化失败会直接抛错；只有 LLM/Schema 抽取失败可降级。这样 API 返回的
@@ -70,6 +71,12 @@ Property Merge 前先由 `SchemaEntityResolver` 解析实体身份：同 Scope�
 `schema_entity_id/schema_entity_key`。`SchemaEntityRegistry` 随后把 canonical Entity 写入
 `/schema/entities/`；如果 Storage 配置了独立 `schema_entities` vector/fulltext port，还会写
 `entity_id#sfN` 多向量和实体全文文档。Entity 真源与检索不依赖图存储。
+
+Merge LLM 重试耗尽时，同名候选回退 UPDATE，否则回退 CREATE；UPDATE 目标不存在时也转为
+CREATE，并在属性处理前生成正式 entity id。Resolver 实例发生非预期异常时，不把 provisional
+property 或 entity observation 交给 Property Merge/Registry，而是放弃本轮 Schema 派生；
+Source-first 已保存的原文继续可检索。显式关闭 Entity Identity 时保留原有 provisional-key
+兼容路径。
 
 Schema 扩展通过独立的 `schema_composite` Storage target 装配这些命名端口。该 target 直接
 复用官方 `CompositeStorage` 数据面，只在装配期额外识别 `schema_entities`，不修改官方
@@ -113,13 +120,17 @@ Entity 配置沿用原项目的 `schema_entity_resolution_enabled` 和
 `schema_entity_merge_decision_enabled`；早期迁移键 `schema_entity_merge_enabled` 作为后备别名。
 
 非 procedural 路径使用 Source-first。procedural 路径复制原项目行为：不额外保存 Source，
-但仍执行 Entity Identity、Entity Registry 和 Property Merge。需要动态四步 ordinary flow 时，
-配置 `schema_dynamic`，Schema property 仍绕过普通相似度 Dedup，交给 Property Merge。
+但仍执行 Entity Identity、Entity Registry 和 Property Merge。Schema property 绕过普通
+相似度 Dedup，交给 Property Merge。官方 `DynamicEvolver` 继续保留给非 Schema 普通记忆；
+本扩展不再提供重复的 `schema_dynamic` 包装器。
 
 ### 5. 与 mem2.0 数据结构兼容
 
 Schema 内部字段写 `system_metadata`，来源业务字段按 mem2.0 规则继承到
 `user_metadata`；实体明文写入 `MemoryUnit.entities`。不新增或修改官方 `MemoryUnit` 字段。
+Schema 派生构造 `system_metadata` 时只继承非 Schema 上下文，来源中的旧 `schema_*`、
+`property_merge_*`、`extraction_mode`、`target` 等内部状态先剥离，再由本轮候选重新生成，
+避免旧实体身份、事件时间和合并结果污染新事实。
 完整日/时间复用 `Temporal.t_event`；年/月精度和半开区间暂存为
 `schema_event_time_*` JSON 标量，避免修改官方 `Temporal`。
 
@@ -133,8 +144,10 @@ Property Merge 的 same-event 判断，不提供时间线查询。后续功能�
 
 ### 7. 使用方式
 
-调用方从 `jiuwen_memory.schema` 使用 `assemble_schema()`，配置默认 extractor 为
-`entity_schema`、默认 evolver 为 `schema_orchestrating`（动态四步选 `schema_dynamic`），写入时设置
+本扩展默认关闭。官方 `assemble()` 不注册 Schema target，内置默认配置仍选择
+`dynamic_llm` Extractor、`orchestrating` Evolver 和 `composite` Storage。调用方需要从
+`jiuwen_memory.schema` 使用 `assemble_schema()` 注册扩展，并显式配置默认 extractor 为
+`entity_schema`、默认 evolver 为 `schema_orchestrating`，Schema 才会进入写入链路。写入时设置
 `system_metadata={"infer": True}`。需要 Entity 独立索引时再把默认 Storage 设为
 `schema_composite` 并声明 `schema_entities` 端口。完整可运行示例见
 `examples/schema_extension_quickstart.py`。
@@ -149,9 +162,9 @@ Property Merge 中会破坏职责边界。本期只保留经过校验的内部 r
 ## 验证
 
 - `test_entity_schema_extension.py`、`test_schema_property_merge_extension.py`、
-  `test_schema_composite_storage.py`：31 passed；
+  `test_schema_composite_storage.py`：33 passed；
 - `tests/unit/storage` 与 `tests/unit/construction`（排除未被本特性修改的
-  `test_entity_linker.py`）：353 passed、5 skipped；跳过项为当前环境未安装的可选
+  `test_entity_linker.py`）：355 passed、5 skipped；跳过项为当前环境未安装的可选
   Elasticsearch/PostgreSQL 客户端及既有惰性依赖分支；
 - Ruff 检查通过；`git diff --check` 通过；
 - Git hash 对比确认官方 `assembly.py`、两个官方 Evolver、`composite_storage.py`、默认配置和

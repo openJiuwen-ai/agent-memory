@@ -58,16 +58,17 @@ class SchemaEntityRegistry:
     def rebuild(self, scope: Scope) -> list[MemoryUnit]:
         """Reconstruct the registry and its optional indexes from property MemoryUnits."""
 
-        properties = [
-            unit
-            for _key, raw in self._kv.scan(scope, "/memory/")
-            if (unit := loads(raw)) is not None and _is_schema_property(unit)
-        ]
-        existing = [
-            unit
-            for _key, raw in self._kv.scan(scope, SCHEMA_ENTITY_KEY_PREFIX)
-            if (unit := loads(raw)) is not None
-        ]
+        properties: list[MemoryUnit] = []
+        for _key, raw in self._kv.scan(scope, "/memory/"):
+            unit = loads(raw)
+            if unit is not None and _is_schema_property(unit):
+                properties.append(unit)
+
+        existing: list[MemoryUnit] = []
+        for _key, raw in self._kv.scan(scope, SCHEMA_ENTITY_KEY_PREFIX):
+            unit = loads(raw)
+            if unit is not None:
+                existing.append(unit)
         derived = self._upsert_entities(scope, properties)
         by_id = {unit.id: unit for unit in existing}
         by_id.update({unit.id: unit for unit in derived})

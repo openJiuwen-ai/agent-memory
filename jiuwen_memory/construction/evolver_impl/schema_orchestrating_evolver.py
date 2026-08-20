@@ -85,18 +85,22 @@ class SchemaEvolverMixin:
         self,
         candidates: list[MemoryUnit],
         entity_observations: list[MemoryUnit],
-    ) -> None:
+    ) -> bool:
         resolver = getattr(self, "_schema_entity_resolver", None)
         if resolver is None:
-            return
+            return True
         try:
             resolver.resolve([*candidates, *entity_observations])
         except Exception as exc:
-            logger.warning(
-                "%s: entity resolution failed; keep provisional identities: %s",
+            logger.error(
+                "%s: entity resolution failed; discard unresolved Schema derivations: %s",
                 type(self).__name__,
                 exc,
+                exc_info=True,
             )
+            self.last_schema_error = f"{type(exc).__name__}: {exc}"
+            return False
+        return True
 
     def _sync_schema_entity_registry(self, observations: list[MemoryUnit]) -> None:
         registry = getattr(self, "_schema_entity_registry", None)
@@ -147,14 +151,15 @@ class SchemaEvolverMixin:
             _partition_extracted(extracted)
         )
         candidates = [*ordinary_candidates, *schema_candidates]
-        self._resolve_schema_identities(candidates, entity_observations)
+        identities_resolved = self._resolve_schema_identities(candidates, entity_observations)
 
         result = self._dedup_batch(ordinary_candidates) if ordinary_candidates else EvolveResult()
-        if schema_candidates:
+        if schema_candidates and identities_resolved:
             schema_result = self._evolve_schema_candidates(schema_candidates)
             _merge_evolve_results(result, schema_result)
 
-        self._sync_schema_entity_registry([*candidates, *entity_observations])
+        if identities_resolved:
+            self._sync_schema_entity_registry([*candidates, *entity_observations])
         if relations:
             logger.info(
                 "%s: ignored %d relation intents; graph projection is not enabled",
@@ -198,8 +203,7 @@ class SchemaOrchestratingEvolver(SchemaEvolverMixin, OrchestratingEvolver):
             extracted = self._extractor.extract(units, context=context)
         except Exception as exc:
             logger.warning(
-                "SchemaOrchestratingEvolver.schema_extract_degraded: "
-                "source_units=%d error=%s: %s",
+                "SchemaOrchestratingEvolver.schema_extract_degraded: source_units=%d error=%s: %s",
                 len(units),
                 type(exc).__name__,
                 exc,

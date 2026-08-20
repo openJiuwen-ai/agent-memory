@@ -248,6 +248,11 @@ class SchemaEntityResolver:
                         schema_entity_key(entity_id),
                     )
                 except Exception:
+                    logger.warning(
+                        "SchemaEntityResolver: failed to load recalled entity %s",
+                        entity_id,
+                        exc_info=True,
+                    )
                     continue
                 unit = loads(raw)
                 if (
@@ -337,13 +342,16 @@ class SchemaEntityResolver:
         schema_name: str,
     ) -> list[_EntityView]:
         entity_entries = self._storage.kv.scan(scope, SCHEMA_ENTITY_KEY_PREFIX)
-        matching_entity_units = [
-            unit
-            for _key, raw in entity_entries
-            if (unit := loads(raw)) is not None
-            and unit.lifecycle is LifecycleState.ACTIVE
-            and str(unit.system_metadata.get("schema_name") or "") == schema_name
-        ]
+        matching_entity_units: list[MemoryUnit] = []
+        for _key, raw in entity_entries:
+            unit = loads(raw)
+            if unit is None:
+                continue
+            if unit.lifecycle is not LifecycleState.ACTIVE:
+                continue
+            if str(unit.system_metadata.get("schema_name") or "") != schema_name:
+                continue
+            matching_entity_units.append(unit)
         entity_views = [
             _view_from_entity_unit(unit)
             for unit in matching_entity_units[: self._kv_fallback_limit]
@@ -460,23 +468,8 @@ def _group_observations(candidates: list[MemoryUnit]) -> list[_EntityObservation
         name = str(representative.system_metadata.get("schema_entity_name") or "").strip()
         entity_type = str(representative.system_metadata.get("schema_entity_type") or "").strip()
         schema_name = str(representative.system_metadata.get("schema_name") or "").strip()
-        aliases = _dedupe_strings(
-            name
-            for unit in units
-            for name in _string_list(unit.system_metadata.get("schema_entity_aliases"))
-        )
-        descriptions = _dedupe_strings(
-            str(unit.system_metadata.get("schema_entity_description") or "").strip()
-            for unit in units
-            if str(unit.system_metadata.get("schema_entity_description") or "").strip()
-        )
-        if not descriptions:
-            descriptions = _dedupe_strings(
-                segment.content.strip()
-                for unit in units
-                for segment in unit.segments
-                if segment.content.strip()
-            )
+        aliases = _entity_aliases(units)
+        descriptions = _entity_descriptions(units)
         observations.append(
             _EntityObservation(
                 units=units,
@@ -497,23 +490,8 @@ def _view_from_units(entity_id: str, units: list[MemoryUnit]) -> _EntityView:
     representative = units[0]
     name = str(representative.system_metadata.get("schema_entity_name") or "").strip()
     entity_type = str(representative.system_metadata.get("schema_entity_type") or "").strip()
-    aliases = _dedupe_strings(
-        alias
-        for unit in units
-        for alias in _string_list(unit.system_metadata.get("schema_entity_aliases"))
-    )
-    descriptions = _dedupe_strings(
-        str(unit.system_metadata.get("schema_entity_description") or "").strip()
-        for unit in units
-        if str(unit.system_metadata.get("schema_entity_description") or "").strip()
-    )
-    if not descriptions:
-        descriptions = _dedupe_strings(
-            segment.content.strip()
-            for unit in units
-            for segment in unit.segments
-            if segment.content.strip()
-        )
+    aliases = _entity_aliases(units)
+    descriptions = _entity_descriptions(units)
     return _EntityView(
         entity_id=entity_id,
         entity_name=name,
@@ -603,29 +581,61 @@ def _fuzzy_candidate_name(
 
 
 def _observation_embedding_text(observation: _EntityObservation) -> str:
-    return " ".join(
-        part
-        for part in [
-            observation.name,
-            observation.entity_type,
-            observation.description,
-            " ".join(observation.aliases[:5]),
-        ]
-        if part
+    return _embedding_text(
+        name=observation.name,
+        entity_type=observation.entity_type,
+        description=observation.description,
+        aliases=observation.aliases,
     )
 
 
 def _view_embedding_text(view: _EntityView) -> str:
-    return " ".join(
-        part
-        for part in [
-            view.entity_name,
-            view.entity_type,
-            view.description,
-            " ".join(view.aliases[:5]),
-        ]
-        if part
+    return _embedding_text(
+        name=view.entity_name,
+        entity_type=view.entity_type,
+        description=view.description,
+        aliases=view.aliases,
     )
+
+
+def _entity_aliases(units: list[MemoryUnit]) -> list[str]:
+    aliases: list[str] = []
+    for unit in units:
+        aliases.extend(_string_list(unit.system_metadata.get("schema_entity_aliases")))
+    return _dedupe_strings(aliases)
+
+
+def _entity_descriptions(units: list[MemoryUnit]) -> list[str]:
+    descriptions: list[str] = []
+    for unit in units:
+        description = str(
+            unit.system_metadata.get("schema_entity_description") or ""
+        ).strip()
+        if description:
+            descriptions.append(description)
+    if descriptions:
+        return _dedupe_strings(descriptions)
+
+    for unit in units:
+        for segment in unit.segments:
+            content = segment.content.strip()
+            if content:
+                descriptions.append(content)
+    return _dedupe_strings(descriptions)
+
+
+def _embedding_text(
+    *,
+    name: str,
+    entity_type: str,
+    description: str,
+    aliases: list[str],
+) -> str:
+    non_empty_parts: list[str] = []
+    for part in (name, entity_type, description, " ".join(aliases[:5])):
+        if part:
+            non_empty_parts.append(part)
+    return " ".join(non_empty_parts)
 
 
 def _scope_key(scope: Scope) -> tuple[str, str, str, str, str]:

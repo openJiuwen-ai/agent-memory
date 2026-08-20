@@ -15,5 +15,4 @@ def register_schema_constructors() -> None:
         return
     import_module("jiuwen_memory.construction.extractor_impl.entity_schema_extractor")
     import_module("jiuwen_memory.construction.evolver_impl.schema_orchestrating_evolver")
-    import_module("jiuwen_memory.construction.evolver_impl.schema_dynamic_evolver")
     _REGISTERED = True

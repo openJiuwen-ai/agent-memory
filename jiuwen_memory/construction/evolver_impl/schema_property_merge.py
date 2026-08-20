@@ -516,12 +516,11 @@ class SchemaPropertyMergePlanner:
                 continue
             target = p_items.get(str(item.get("target") or ""))
             value = str(item.get("value") or "").strip()
-            if (
-                target is None
-                or not value
-                or target.id in affected_targets
-                or not _same_property_event(target, source)
-            ):
+            if target is None or not value:
+                continue
+            if target.id in affected_targets:
+                continue
+            if not _same_property_event(target, source):
                 continue
             plan.updates.append(
                 SchemaPropertyMergeUpdate(target=target, value=value, sources=[source])

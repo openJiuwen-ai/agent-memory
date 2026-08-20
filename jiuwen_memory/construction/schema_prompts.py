@@ -7,9 +7,10 @@ persistence model is MemoryUnit-based rather than MindMemOS' Entity/Property sto
 
 # ruff: noqa: E501
 
-SCHEMA_SELECTION_FOR_GENERATION_PROMPT = """You are a memory extraction schema expert. Given a dialogue, select which entity types and their dynamic properties are relevant for extracting structured memories.
-
-Dialogue:
+SCHEMA_SELECTION_FOR_GENERATION_PROMPT = (
+    "You are a memory extraction schema expert. Given a dialogue, select which entity types and their dynamic "
+    "properties are relevant for extracting structured memories.\n\n"
+    """Dialogue:
 {dialogue_text}
 
 Speaker note: Lines may be formatted as `speaker=Name: ...` for named-speaker dialogue. Treat `Name` as the real speaker of that line; first-person statements in that line belong to `Name`, not automatically to the user.
@@ -43,6 +44,7 @@ Rules:
 6. ALWAYS include "person" entity type if any person is mentioned or implied in the dialogue
 7. Focus on what information the dialogue CONTAINS, not what it might theoretically relate to
 """
+)
 
 
 ENTITY_GENERATION_PROMPT = """

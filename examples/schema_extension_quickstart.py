@@ -15,9 +15,12 @@ import json
 import os
 from pathlib import Path
 
+from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.schema import assemble_schema
+
+logger = get_logger(__name__)
 
 
 def _required_env(name: str) -> str:
@@ -92,7 +95,8 @@ def main() -> None:
         system_metadata={"infer": True},
         user_metadata={"example": "schema_extension_quickstart"},
     )
-    print(
+    logger.info(
+        "%s",
         json.dumps(
             [
                 {
@@ -107,7 +111,7 @@ def main() -> None:
             ensure_ascii=False,
             indent=2,
             default=str,
-        )
+        ),
     )
 
 

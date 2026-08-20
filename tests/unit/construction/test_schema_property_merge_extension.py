@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,7 +22,7 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.common.type_def.memory_codec import loads
 from jiuwen_memory.construction.base import OperatorType
-from jiuwen_memory.construction.evolver_impl.schema_dynamic_evolver import SchemaDynamicEvolver
+from jiuwen_memory.construction.evolver import EvolveMode
 from jiuwen_memory.construction.evolver_impl.schema_entity_registry import (
     SchemaEntityRegistry,
     schema_entity_key,
@@ -107,6 +108,53 @@ class _RecordingIndexBuilder(IndexBuilder):
         return None
 
 
+class _StaticExtractor:
+    def __init__(self, candidates: list[MemoryUnit]) -> None:
+        self.candidates = candidates
+
+    def extract(self, _units, *, context=None) -> list[MemoryUnit]:
+        del context
+        return self.candidates
+
+
+class _SchemaOrchestratingHarness(SchemaOrchestratingEvolver):
+    def __init__(
+        self,
+        *,
+        storage: CompositeStorage,
+        index_builder: IndexBuilder,
+        extractor: _StaticExtractor,
+        procedural: bool = False,
+        planner: SchemaPropertyMergePlanner | None = None,
+        executor: SchemaPropertyMergeExecutor | None = None,
+    ) -> None:
+        self.procedural = procedural
+        super().__init__(
+            extractor=extractor,
+            abstractor=SimpleNamespace(),
+            associator=SimpleNamespace(),
+            index_builder=index_builder,
+            storage=storage,
+            dedup=SimpleNamespace(),
+            llm=SimpleNamespace(),
+            schema_property_merge_planner=planner,
+            schema_property_merge_executor=executor,
+        )
+
+    def _persist_and_maintain_messages(self, _units):
+        return []
+
+    def _maybe_collect_extract_context(self, _units, _recent):
+        return None
+
+    def _is_procedural(self, _units):
+        return self.procedural
+
+    @staticmethod
+    def _annotate_layers(_units):
+        return None
+
+
 def _storage(*, vector: bool = False) -> CompositeStorage:
     return CompositeStorage(
         kv=InMemoryKVStore(),
@@ -184,11 +232,17 @@ def _persist(storage: CompositeStorage, *units: MemoryUnit) -> None:
             )
 
 
-def _planner(storage: CompositeStorage, llm: LLM) -> SchemaPropertyMergePlanner:
+def _planner(
+    storage: CompositeStorage,
+    llm: LLM,
+    *,
+    merge_enabled: bool = True,
+) -> SchemaPropertyMergePlanner:
     return SchemaPropertyMergePlanner(
         storage=storage,
         embedder=_ConstantEmbedder(),
         llm=llm,
+        merge_enabled=merge_enabled,
     )
 
 
@@ -363,23 +417,12 @@ def test_schema_evolver_routes_properties_through_merge_planner() -> None:
             }
         )
     )
-    evolver = object.__new__(SchemaOrchestratingEvolver)
-    evolver._storage = storage
-    evolver._index = index
-    evolver._extractor = type(
-        "Extractor",
-        (),
-        {"extract": staticmethod(lambda _units, *, context=None: [candidate])},
-    )()
-    evolver._persist_and_maintain_messages = lambda _units: []
-    evolver._maybe_collect_extract_context = lambda _units, _recent: None
-    evolver._is_procedural = lambda _units: False
-    evolver._annotate_layers = lambda _units: None
-    evolver._schema_entity_resolver = None
-    evolver._schema_property_merge_planner = _planner(storage, llm)
-    evolver._schema_property_merge_executor = SchemaPropertyMergeExecutor(
+    evolver = _SchemaOrchestratingHarness(
         storage=storage,
         index_builder=index,
+        extractor=_StaticExtractor([candidate]),
+        planner=_planner(storage, llm),
+        executor=SchemaPropertyMergeExecutor(storage=storage, index_builder=index),
     )
     source = MemoryUnit(
         id="source-current",
@@ -387,7 +430,7 @@ def test_schema_evolver_routes_properties_through_merge_planner() -> None:
         segments=[Segment(content="Alice changed roles")],
     )
 
-    result = evolver._evolve_extract([source])
+    result = evolver.evolve([source], EvolveMode.EXTRACT)
 
     assert result.created_ids == ["source-current", "new"]
     assert result.superseded_ids == ["old"]
@@ -700,88 +743,59 @@ class _Config:
 def test_original_property_merge_config_key_and_default_are_preserved() -> None:
     storage = _storage()
     index = _RecordingIndexBuilder()
+    old = _property("old", "Alice is an engineer")
+    candidate = _property("candidate", "Alice is a staff engineer")
+    _persist(storage, old)
+    default_llm = _QueueLLM()
+    original_key_llm = _QueueLLM()
+    alias_llm = _QueueLLM("not json")
 
     default_components = _build_schema_components(
         _Config({}),
         storage=storage,
         index_builder=index,
-        llm=_QueueLLM(),
+        llm=default_llm,
         embedder=_ConstantEmbedder(),
     )
     original_key_wins = _build_schema_components(
         _Config({"use_property_merge": False, "schema_property_merge_enabled": True}),
         storage=storage,
         index_builder=index,
-        llm=_QueueLLM(),
+        llm=original_key_llm,
         embedder=_ConstantEmbedder(),
     )
     alias_components = _build_schema_components(
         _Config({"schema_property_merge_enabled": True}),
         storage=storage,
         index_builder=index,
-        llm=_QueueLLM(),
+        llm=alias_llm,
         embedder=_ConstantEmbedder(),
     )
 
-    assert default_components.planner._merge_enabled is False
-    assert original_key_wins.planner._merge_enabled is False
-    assert alias_components.planner._merge_enabled is True
+    assert default_components.planner.plan([candidate]).additions == [candidate]
+    assert original_key_wins.planner.plan([candidate]).additions == [candidate]
+    assert alias_components.planner.plan([candidate]).additions == [candidate]
+    assert default_llm.calls == []
+    assert original_key_llm.calls == []
+    assert len(alias_llm.calls) == 1
 
 
 def test_schema_procedural_path_resolves_and_merges_without_source_copy() -> None:
     storage = _storage()
     index = _RecordingIndexBuilder()
     candidate = _property("property", "Alice is an engineer")
-    evolver = object.__new__(SchemaOrchestratingEvolver)
-    evolver._storage = storage
-    evolver._index = index
-    evolver._extractor = type(
-        "Extractor",
-        (),
-        {"extract": staticmethod(lambda _units, *, context=None: [candidate])},
-    )()
-    evolver._is_procedural = lambda _units: True
-    evolver._annotate_layers = lambda _units: None
-    evolver._schema_entity_resolver = None
-    evolver._schema_entity_registry = None
-    evolver._schema_property_merge_planner = _planner(storage, _QueueLLM())
-    evolver._schema_property_merge_planner._merge_enabled = False
-    evolver._schema_property_merge_executor = SchemaPropertyMergeExecutor(
+    evolver = _SchemaOrchestratingHarness(
         storage=storage,
         index_builder=index,
+        extractor=_StaticExtractor([candidate]),
+        procedural=True,
+        planner=_planner(storage, _QueueLLM(), merge_enabled=False),
+        executor=SchemaPropertyMergeExecutor(storage=storage, index_builder=index),
     )
     source = MemoryUnit(id="source", scope=_SCOPE, segments=[Segment(content="source")])
 
-    result = evolver._evolve_extract([source])
+    result = evolver.evolve([source], EvolveMode.EXTRACT)
 
     assert result.created_ids == ["property"]
     assert storage.get(_SCOPE, ["source"]) == []
-    assert storage.get(_SCOPE, ["property"])[0].content == "Alice is an engineer"
-
-
-def test_schema_dynamic_path_keeps_source_and_routes_property_merge() -> None:
-    storage = _storage()
-    index = _RecordingIndexBuilder()
-    candidate = _property("property", "Alice is an engineer")
-    evolver = object.__new__(SchemaDynamicEvolver)
-    evolver._storage = storage
-    evolver._index = index
-    evolver._is_procedural = lambda _units: False
-    evolver._persist_and_maintain_messages = lambda _units: []
-    evolver._maybe_collect_extract_context = lambda _units, _recent: None
-    evolver._extract_step = lambda _units, _context: [candidate]
-    evolver._schema_entity_resolver = None
-    evolver._schema_entity_registry = None
-    evolver._schema_property_merge_planner = _planner(storage, _QueueLLM())
-    evolver._schema_property_merge_planner._merge_enabled = False
-    evolver._schema_property_merge_executor = SchemaPropertyMergeExecutor(
-        storage=storage,
-        index_builder=index,
-    )
-    source = MemoryUnit(id="source", scope=_SCOPE, segments=[Segment(content="source")])
-
-    result = evolver._evolve_extract([source])
-
-    assert result.created_ids == ["source", "property"]
-    assert storage.get(_SCOPE, ["source"])[0].system_metadata["schema_source_evidence"]
     assert storage.get(_SCOPE, ["property"])[0].content == "Alice is an engineer"

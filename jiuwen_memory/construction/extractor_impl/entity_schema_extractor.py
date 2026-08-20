@@ -75,6 +75,20 @@ _GENERIC_ENTITY_NAMES = {
     "助手",
     "说话者",
 }
+_SCHEMA_INTERNAL_METADATA_KEYS = frozenset(
+    {
+        "entity_search_field",
+        "entity_search_field_index",
+        "entity_vector_owner_id",
+        "entity_vector_role",
+        "extracted_statement",
+        "extraction_mode",
+        "memory_role",
+        "record_kind",
+        "schema_source_evidence",
+        "target",
+    }
+)
 
 _SCHEMA_SELECTION_SYSTEM_PROMPT = (
     SCHEMA_SELECTION_FOR_GENERATION_PROMPT + AGENT_MEMORY_SCHEMA_SELECTION_APPENDIX
@@ -229,8 +243,7 @@ class SchemaExtractionNormalizer:
             if entity_type not in valid_types:
                 if entity_type in catalog_types:
                     errors.append(
-                        f"entity {name!r} type {entity_type!r} was not selected "
-                        "for this extraction"
+                        f"entity {name!r} type {entity_type!r} was not selected for this extraction"
                     )
                     continue
                 if not fallback_type:
@@ -673,7 +686,7 @@ class EntitySchemaExtractor(Extractor):
                 normalized_name=identity_name,
             )
             source_tags = [tag for source in source_units for tag in source.tags]
-            metadata = inherited_system_metadata(source_units)
+            metadata = _inherited_schema_system_metadata(source_units)
             metadata.update(
                 {
                     "target": "structured_record",
@@ -784,7 +797,7 @@ class EntitySchemaExtractor(Extractor):
                 ]
             )
             event_fields = _event_time_fields(relation_time)
-            relation_metadata = inherited_system_metadata(sources)
+            relation_metadata = _inherited_schema_system_metadata(sources)
             relation_metadata.update(
                 {
                     "target": "schema_relation",
@@ -870,7 +883,7 @@ class EntitySchemaExtractor(Extractor):
             )
             now = datetime.now(timezone.utc)
             description = str(entity.get("description") or name).strip()
-            entity_metadata = inherited_system_metadata(sources)
+            entity_metadata = _inherited_schema_system_metadata(sources)
             entity_metadata.update(
                 {
                     "target": "schema_entity",
@@ -1185,6 +1198,22 @@ def _schema_entity_key(
         ]
     )
     return str(uuid.uuid5(uuid.NAMESPACE_URL, material))
+
+
+def _inherited_schema_system_metadata(
+    sources: list[MemoryUnit],
+) -> dict[str, Any]:
+    """Inherit source context without carrying an earlier Schema derivation state."""
+
+    inherited = inherited_system_metadata(sources)
+    result: dict[str, Any] = {}
+    for key, value in inherited.items():
+        if key in _SCHEMA_INTERNAL_METADATA_KEYS:
+            continue
+        if key.startswith("schema_") or key.startswith("property_merge_"):
+            continue
+        result[key] = value
+    return result
 
 
 def _schema_memory_tier(entity_type: str, property_name: str) -> MemoryTier:

@@ -4,7 +4,7 @@
 
 > 本文档只记录相对稳定的模块本地规约（职责边界、行为铁律、本地约束）。特性设计与方案取舍记录在 `docs/features/` 下。
 
-接收接入层产出的 `MemoryUnit`，调用 `storage` 落盘，在其上构建多形式索引。可插拔算子由 Extractor、Abstractor、Associator、Classifier、IndexBuilder、Dedup、LayerAnnotator 与 Evolver 组成；官方实现为 `OrchestratingEvolver` / `DynamicEvolver`，Schema 可选扩展提供隔离子类。
+接收接入层产出的 `MemoryUnit`，调用 `storage` 落盘，在其上构建多形式索引。可插拔算子由 Extractor、Abstractor、Associator、Classifier、IndexBuilder、Dedup、LayerAnnotator 与 Evolver 组成；官方实现为 `OrchestratingEvolver` / `DynamicEvolver`，Schema 可选扩展提供隔离的 `SchemaOrchestratingEvolver`。
 
 > 契约（接口签名/数据结构/不变量）见 [`docs/specs/S05-construction.md`](../../docs/specs/S05-construction.md)；设计理念与决策取舍（双通道/演进闭环/依赖关系）见 [`docs/features/construction/F01-construction-spec-design.md`](../../docs/features/construction/F01-construction-spec-design.md)。本文件只记当前实现地图与本地约束。
 
@@ -30,7 +30,7 @@
 | `index_builder_impl/` | IndexBuilder 实现目录（fulltext / hybrid / unified / vector）；`unified` 仅按 Scope 直调统一 Storage 的 add/update/delete，不派生检索索引，调用方不得预先写入同一 unit；vector/fulltext 各扩展 L0/L1 分层索引（独立 store 分表，store None 跳过），详见 F01-memory-layer |
 | `layer_annotator_impl/` | LayerAnnotator 实现目录（keyword / llm）；evolver 抽取后调用，对超阈 content 标注 L0/L1 |
 | `dedup_impl/` | Dedup 实现目录（vector / keyword） |
-| `evolver_impl/` | Evolver 实现目录（orchestrating / dynamic；可选 schema_orchestrating / schema_dynamic，并含 Entity Identity、Registry、Property Merge） |
+| `evolver_impl/` | Evolver 实现目录（orchestrating / dynamic；可选 schema_orchestrating，并含 Entity Identity、Registry、Property Merge） |
 | `bootstrap.py` | 统一触发所有构建算子注册（含 dedup_impl） |
 | `schema_bootstrap.py` | 显式注册隔离 Schema Extractor/Evolver，不修改官方 bootstrap |
 
@@ -63,14 +63,16 @@
 `OrchestratingEvolver` 与 `DynamicEvolver` 平级（同属 `evolver` 顶层命名空间，注册名 `orchestrating` / `dynamic`）。`DynamicEvolver` 继承 `OrchestratingEvolver`，只覆盖 `_evolve_extract` 走动态 prompt 四步；其余三模式继承父类。装配或 pipeline profile 选哪个 evolver 实例即启用哪条 EXTRACT 路径。
 
 Schema 可选扩展通过 `jiuwen_memory.schema.assemble_schema()` 注册 `entity_schema`、
-`schema_orchestrating` 和 `schema_dynamic`。Schema 非 procedural EXTRACT 先持久化 Source；
+`schema_orchestrating`。Schema 非 procedural EXTRACT 先持久化 Source；
 Entity Identity 后写隐藏 Entity Registry，再由 Property Merge 处理 property MemoryUnit。
 
 ## 行为铁律
 
 0. **派生 metadata 按来源合并**：单源复制 `user_metadata`，多源只保留相等交集；
    `infer` / `procedural` / `middle` 不传播。IndexBuilder 分别投影
-   `system_metadata.<key>` 和 `user_metadata.<key>`。
+   `system_metadata.<key>` 和 `user_metadata.<key>`。Schema property、relation 与 entity
+   observation 额外剥离来源中的旧 `schema_*`、`property_merge_*` 和内部路由字段，再写入
+   本轮 Schema 状态；Entity Resolver 实例异常时不得持久化 provisional Schema 派生单元。
 
 1. **落盘由本层负责**
    接入层产出 `MemoryUnit` 后，真源写入由本层调用 Storage 的写接口完成。接入层禁止落盘。
