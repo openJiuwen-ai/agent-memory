@@ -35,6 +35,7 @@ class SimpleQueryParser(QueryParser):
         *,
         sanitize: bool = False,
         strip_code_fences: bool = False,
+        rewrite_enabled: bool = False,
     ) -> None:
         self._tokenizer = tokenizer
         self._embedder = embedder
@@ -42,6 +43,7 @@ class SimpleQueryParser(QueryParser):
         self._features = feature_extractor
         self._sanitize = sanitize
         self._strip_code_fences = strip_code_fences
+        self._rewrite_enabled = rewrite_enabled
 
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.QUERY_PARSER
@@ -55,7 +57,11 @@ class SimpleQueryParser(QueryParser):
             if self._sanitize
             else query.text
         )
-        rewritten = self._llm.generate(text) if self._llm is not None else text
+        rewritten = (
+            self._llm.generate(text)
+            if (self._llm is not None and self._rewrite_enabled)
+            else text
+        )
         tokens = self._tokenizer.tokenize(rewritten)
         # 关键词与图通道都靠 token/关键词驱动；向量通道需有 Embedder。
         channels = [RecallChannel.KEYWORD, RecallChannel.GRAPH]
@@ -116,4 +122,5 @@ def _build(config):
         features,
         sanitize=Factory.cfg_get(config, "sanitize_enabled", True),
         strip_code_fences=Factory.cfg_get(config, "sanitize_strip_code", False),
+        rewrite_enabled=Factory.cfg_get(config, "rewrite_enabled", False),
     )

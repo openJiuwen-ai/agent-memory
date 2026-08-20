@@ -106,6 +106,7 @@ def default_config_dict() -> dict[str, Any]:
                     "feature_extractor": _D,
                     "sanitize_enabled": True,
                     "sanitize_strip_code": False,
+                    "rewrite_enabled": False,
                 },
             }
         },
