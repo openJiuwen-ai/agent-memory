@@ -242,6 +242,9 @@ def default_config_dict() -> dict[str, Any]:
         "governor": {_D: {"target": "in_memory", "params": {"audit": _D, "storage": _D}}},
         "permission": {_D: {"target": "sqlite", "params": {"db_path": ":memory:"}}},
         "space": {_D: {"target": "kv", "params": {"storage": _D}}},
+        # 空间授权事实的读取与缓存。直取 SpaceManager 自己持有的索引，
+        # 因此 params 只需引用同一个 space 实例。
+        "membership": {_D: {"target": "kv", "params": {"space": _D}}},
         # 可插拔配置来源：默认装配快照；产品可覆盖为 dict/overlay/自研 target
         "config_source": {_D: "yaml_defaults"},
     }
@@ -259,6 +262,7 @@ ROOT_PARAMS: dict[str, str] = {
     "security": _D,
     "storage": _D,
     "space": _D,
+    "membership": _D,
     "config_source": _D,
 }
 

@@ -5,8 +5,9 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | src/common/ |
-| 最近一次修订日期 | 2026-08-18 |
+| 最近一次修订日期 | 2026-08-19 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
+| 规划中的变更 | 见 [S09-collective-memory.md](S09-collective-memory.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md |
 
 ## Metadata 领域模型契约
@@ -215,6 +216,14 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 | `Modality` | TEXT / IMAGE / AUDIO / VIDEO / CODE / DOCUMENT |
 | `LifecycleState` | ACTIVE / SUPERSEDED / ARCHIVED / FORGOTTEN |
 
+### metadata 保留键与瞬态键（`type_def/memory.py`）
+
+`KERNEL_SYSTEM_METADATA_KEYS` 是内核占用的键名清单，写入路径据此拒绝调用方经 `system_metadata` 入参使用其中任何一个；`TRANSIENT_SYSTEM_METADATA_KEYS` 中的键只在内存中传递，编解码器序列化时剥除、不落盘。两者的作用域都是 `system_metadata`——`user_metadata` 不受这两份清单约束。
+
+> S09 起：前者增五键——内核按调用方身份写入的两个作者标记键，以及三个后续阶段才写入、提前占位以防存量数据占用的溯源键；后者增判定上下文的透传键。两份清单均为扩充，条目结构与序列化版本不变。
+>
+> 其中作者主体是判定与检索谓词的判据，作者代理只是记录项。两者与全部收窄维标签键一律恒写入、取值为空也不省略键：过滤算子在字段缺失时的行为按算子而异，集合谓词判为不匹配即静默收窄，因此语义可预期的前提是键恒存在。判定标签键不是静态保留键，而是装配期由判定表配置解析得出的运行时集合。
+
 ### MemoryUnit 编解码（`type_def/memory_codec.py`）
 
 真源 KVStore 存**字节**，`MemoryUnit` 对象只在写入（`dumps`）与产出结果（`loads`）两处出现。编解码与 `MemoryUnit` 同住 `common/type_def`，纯函数、无存储后端依赖。
@@ -342,4 +351,5 @@ src/common/<组件>/
 | S05-construction | 构建层消费 Chunker/Embedder/Tokenizer/FeatureExtractor/LLM |
 | S06-storage | 存储层依赖本层的数据类型定义（Scope/FilterClause 等） |
 | S08-config | 插件晚绑定 model/api_key/url 等由 ConfigSource 提供；装配拓扑仍走 Factory |
+| S09-collective-memory | 保留键与瞬态键集合扩充（已落地）；两轴角色与身份推导落 `security/space_roles.py` 与 `security/principal.py`（已落地）；空间授权事实经安全层资源描述对象的结构化字段传入判定实现 |
 | architecture.md 全文 | 本层承载全局共享的数据类型与工具 |

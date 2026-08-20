@@ -5,15 +5,20 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/api/ |
-| 最近一次修订日期 | 2026-08-18 |
+| 最近一次修订日期 | 2026-08-19 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/F03-collective-memory-design.md |
 ## Metadata 公共 API 契约
 
 `add` / `add_async` / `batch_add` 以及 `BatchWriteItem` 分别接收
 `system_metadata` 和 `user_metadata`，不再接收混合 `metadata`。`MemoryPatch` 对两个
 dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key>`；裸自定义
 字段仅在规范化边界作为该路径的兼容写法，`metadata.<key>` 拒绝。
+
+群体记忆的内核字段（作者标记、判定命中的类别名、判定标签键）全部落 `system_metadata`：
+它们由内核写入、内核解释并参与判定与检索谓词，谓词路径为 `system_metadata.<key>`。
+`system_metadata` 同时是对外入参，因此写入与改写入口拒绝调用方占用这些键
+（`KERNEL_SYSTEM_METADATA_KEYS` 与判定表解析出的标签键集合），见 S09「写入边界校验」。
 
 ## 范围 / 边界
 
@@ -83,6 +88,26 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 `extensions` 为 `dict[str, str]`，API 防御性复制并把值规范为字符串；未知 key 原样透传。
 `filters` 与 search 共用 FilterExpr/旧 list/dict DSL 规范化语义，`memory_types` 与 filters
 取 AND。`org/space/user/agent/session` 属于 Scope 隔离轴，不得出现在 filters。
+
+#### 群体记忆带来的契约变更（S09）
+
+契约细节与判定规则见 [S09-collective-memory.md](S09-collective-memory.md)，决策与取舍见 [F03-collective-memory-design.md](../features/F03-collective-memory-design.md)。「已落地」指内核已实现；接入层改造另计。
+
+| 入口 | 变更 | 兼容性 | 状态 |
+|---|---|---|---|
+| `add` / `add_async` | `scope` 由必填转可选；新增 `coords: dict[str, str] \| None` | 向后兼容，传 `scope` 的调用方行为不变 | 已落地 |
+| `batch_add` / `batch_add_async` | 新增 `coords` 入参；两级 `scope` 皆空时转入归属判定，不再抛缺参 | 向后兼容 | 已落地 |
+| `search` | 新增 `coords` 入参，供收窄维谓词取值 | 向后兼容 | 已落地 |
+| `search_spaces` | 新增跨空间检索入口 | 新增 | 已落地 |
+| `RecallChannel` | 新增取值 `space`，标记跨空间检索里某个空间整体召回失败 | 向后兼容；穷举该枚举的调用方须容纳新取值 | 已落地 |
+| `delete` | 入参 `DeleteSelector` 新增 `filters`，空选择器判据随之纳入该字段；实体删除后的跨空间清理由接入方经本入口逐个执行 | 向后兼容 | 已落地 |
+| `list` | 不增 `coords`，但注入第一族系统谓词 | 行为变更：个体空间内不再返回不可见条目 | 已落地 |
+| `list_spaces` | `cursor` 标记废弃；`limit` 由每页条数改为返回条数上限 | 签名不变，翻页语义变更 | 已落地 |
+| `create_space` | 签名不变；入参 `SpaceSpec` 新增 `owner` 字段，供开通服务声明归属主体或显式不登记 | 向后兼容 | 已落地 |
+
+省略 `scope` 的写入路径由归属坐标推出候选空间集合，落点由判定算子在集内选择；`scope` 与 `coords` 在写入侧互斥，不叠加。条目的可读范围由所在空间的权限决定，写入侧不设条目级的可见性声明入参（S09）。身份入参不新增：随上游安全模块交付的 `security` 是唯一可信身份来源。
+
+未装配判定算子（未声明 `router` 配置命名空间）时，上述写入侧变更全部不可达：判定表为空、`scope` 仍为必填、`coords` 不产生落点，全链路行为与改造前一致。这是可灰度上线的前提。
 
 #### infer 开关（add 的同步抽取语义）
 
@@ -295,6 +320,8 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 - `SpaceUsage`：`org` / `space` / `memory_count` / `message_count` / `index_count` / `storage_bytes` / `audit_count`。
 - `SpaceDeleteResult`：`org` / `space` / `deleted_counts` / `status` / `audit_event_id`。
 
+> 规划中：`SpaceMember` 增内容轴与治理轴两个角色字段、`SpaceInfo` 增归属主体登记、`SpaceSpec` 增创建者身份，另新增空间授权事实快照类型。见 [S09-collective-memory.md](S09-collective-memory.md) 「空间数据结构变更」。
+
 ### AuditEvent（audit 返回，`common/type_def/audit.py`）
 
 `id` / `actor`（操作者 Scope）/ `target`（目标 Scope）/ `action` / `target_id` / `layer`（产生事件的层）/ `occurred_at` / `detail`。`detail` 常见约定包括 `permission_check`、`permission_reason`、`job_id`、`before_unit_id` / `after_unit_id`、`before_unit_ids` / `after_unit_ids`；其中 `before_unit_*` / `after_unit_*` 仅表示记忆单元 id，不用于调度任务 id。审计查询支持 `actor_*` 与 `target_*` scope 字段过滤。
@@ -338,4 +365,5 @@ src/api/memory_api_impl/
 | S03-control | 数据面委托 MemoryEngine，治理/授权/调度面委托对应算子 |
 | S04-retrieval | search 路径中 Engine 委托 Retriever |
 | S08-config | 六类动态配置经 ConfigSource；不经本层业务入参写入 |
+| S09-collective-memory | 本层是空间治理的鉴权点：入口到轴与动作的映射、空间事实一次读取、检索两族谓词注入、多空间读写编排均落在本层 |
 | architecture.md §9 | 记忆接口层语义定义 |

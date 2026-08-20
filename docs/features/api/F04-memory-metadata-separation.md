@@ -517,7 +517,7 @@ t_message
 - `PermissionContext.metadata`、Space metadata、Store record metadata 等其他模型按自身语义处理，不在
   本次修改中机械改名。
 
-当前 `TRANSIENT_METADATA_KEYS` 允许把任意运行时对象临时塞进 metadata，这与统一
+当前 `TRANSIENT_SYSTEM_METADATA_KEYS`（S09 起的名字，作用域为 `system_metadata`）允许把任意运行时对象临时塞进 metadata，这与统一
 `MetadataValueType` 不兼容，也不属于持久元数据语义。落地前应先核对实际调用：未使用的瞬态 key
 直接删除；仍在使用的值改走已有 extensions、依赖注入或明确参数，不能通过放宽
 `MetadataValueType` 保留对象透传。CloudEngine 当前对 metadata 的字符串归一化也应移除，两个

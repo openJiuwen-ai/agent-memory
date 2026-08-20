@@ -93,7 +93,7 @@ consolidate 合并多 source 时会有多个消息时间。合并后的摘要 un
 - `Temporal` 新增字段后 `memory_codec.py` round-trip（dumps → loads）正确，老数据（4 元素）loads 缺省补 `t_message=None`。
 - `simple_ingestor.py` 写入的原始消息单元 `t_message` = `payload.occurred_at`，`t_event` = `None`。
 - Extractor 派生 unit `t_message` 继承自 source unit。
-- `RESERVED_METADATA_KEYS` 包含 `"t_message"`。
+- `KERNEL_SYSTEM_METADATA_KEYS` 包含 `"t_message"`（该常量在 S09 取代了 `RESERVED_METADATA_KEYS`，作用域收窄至 `system_metadata`）。
 - 现有 `predicate_builder` / `in_event_window` 对 `t_event` 的过滤逻辑不变（`t_message` 过滤为 follow-up）。
 
 ## 已知遗留

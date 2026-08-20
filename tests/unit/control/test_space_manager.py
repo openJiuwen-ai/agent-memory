@@ -4,7 +4,14 @@ import pytest
 
 from jiuwen_memory.common.errors import ConflictError, NotFoundError, ValidationError
 from jiuwen_memory.common.type_def import Scope
-from jiuwen_memory.control import PrincipalPath, SpaceMember, SpacePatch, SpacePolicy, SpaceSpec, SpaceStatus
+from jiuwen_memory.control import (
+    PrincipalPath,
+    SpaceMember,
+    SpacePatch,
+    SpacePolicy,
+    SpaceSpec,
+    SpaceStatus,
+)
 from jiuwen_memory.control.space_impl.kv_space_manager import KVSpaceManager
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
@@ -43,11 +50,17 @@ def test_kv_space_manager_crud_policy_members_usage_and_delete() -> None:
     assert updated.metadata["env"] == "prod"
     assert updated.metadata["team"] == "platform"
 
-    member = SpaceMember(scope=Scope(agent="agent-a", user="alice"), role="admin")
+    # 成员记录主体维取单维（S09 不变量 12）：user 与 agent 同时非空即拒绝
+    with pytest.raises(ValidationError):
+        manager.add_member(
+            "acme", "coding", SpaceMember(scope=Scope(agent="agent-a", user="alice"))
+        )
+
+    member = SpaceMember(scope=Scope(user="alice"), role="admin")
     manager.add_member("acme", "coding", member)
     members = manager.list_members("acme", "coding")
     assert len(members) == 1
-    assert members[0].scope == Scope(org="acme", space="coding", agent="agent-a", user="alice")
+    assert members[0].scope == Scope(org="acme", space="coding", user="alice")
     assert members[0].role == "admin"
 
     kv.insert(Scope(org="acme", space="coding", user="alice"), "/memory/u1", b"memory")

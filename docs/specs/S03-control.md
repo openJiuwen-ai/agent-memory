@@ -5,8 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/control/ |
-| 最近一次修订日期 | 2026-08-18 |
+| 最近一次修订日期 | 2026-08-20 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
+| 规划中的变更 | 群体记忆与空间治理见 [S09-collective-memory.md](S09-collective-memory.md)，决策见 [F03-collective-memory-design.md](../features/F03-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md |
 ## Metadata 编排契约
 
@@ -284,6 +285,18 @@ space 元数据、space policy、成员、用量与 offboarding 状态管理。
 | `add_member` | `(org: str, space: str, member: SpaceMember) -> None` | 添加或更新成员角色；成员 scope 的 org/space 归一为目标 space |
 | `remove_member` | `(org: str, space: str, member: Scope) -> None` | 移除成员 |
 
+#### 群体记忆带来的控制层变更（S09）
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 新增算子 `MembershipResolver`（`membership.py`） | 一次读取空间授权事实（元数据 + 已滤除过期记录的成员表）并缓存，向鉴权点提供同一份快照；另提供主体到空间的反查与缓存失效 | 已落地，消费方是空间感知判定实现 |
+| 新增内部组件 `SpaceIndex` | 主体到空间的反查索引，由 `SpaceManager` 持有、不单独装配；取代 `list` 的全 keyspace 遍历 | 已落地 |
+| `SpaceManager` 改造 | 创建时按 `SpaceSpec.owner` 登记归属主体；成员表由逐成员键改单键（破坏性，须回填）；`update` 增状态机校验；拒绝主体两维同时非空的成员记录；四处索引维护 | 已落地 |
+| `types.py` 加字段 | `SpaceMember` 增两轴角色（枚举类型自安全层导入）、`SpaceInfo` 增归属登记、`SpaceSpec` 增创建者身份，另新增空间授权事实快照类型 | 已落地 |
+| `PermissionManager` | 在上游安全模块合入后退出请求授权路径，只服务兼容测试。授权判定迁至安全层的 `Authorizer` 实现，本层不再承载判定 | 规划中，随上游合入 |
+
+**两轴角色枚举、三张动作矩阵与身份推导比较函数不落本层**，落 `common/security/`：其元素类型取上游 12 值 `Action`，而本层 `types.py` 已有五值 `Action` 且 `Grant.actions` 仍在使用，同一模块内两者无法共存；更根本的是这些常量与函数的消费方跨安全层、API 层与控制层三侧，落本层即安全层反向依赖控制层。本层只消费它们作为成员记录的字段类型。
+
 ## 数据结构
 
 ### 控制层数据类型（`types.py`）
@@ -307,7 +320,7 @@ space 元数据、space policy、成员、用量与 offboarding 状态管理。
 | `SpaceSpec` | dataclass | org / space / display_name / principal_path / policy / metadata |
 | `SpaceInfo` | dataclass | org / space / display_name / status / principal_path / policy / metadata / created_at / archived_at |
 | `SpacePatch` | dataclass | display_name / status / principal_path / policy / metadata |
-| `SpaceMember` | dataclass | scope / role / created_at / expires_at |
+| `SpaceMember` | dataclass | scope / role / content_role / governance_role / created_at / expires_at（两轴角色为判定依据，`role` 保留但判定不再读取） |
 | `SpaceUsage` | dataclass | org / space / memory_count / message_count / index_count / storage_bytes / audit_count |
 | `SpaceDeleteResult` | dataclass | org / space / deleted_counts / status / audit_event_id |
 
@@ -340,6 +353,7 @@ src/control/<算子>_impl/
 | S05-construction | Engine/Scheduler 驱动构建层 IndexBuilder/Evolver；演进逻辑由构建层执行 |
 | S06-storage | 控制层通过 KVStore 读写真源；LifecycleManager/Governor 的目标操作按显式 Scope 点查或枚举，只有 sweep/offboarding 这类全局管理任务使用 `kv.scopes()` |
 | S07-common | 控制层消费 `MemoryUnit`、`AuditEvent`、错误类型等公共结构 |
+| S09-collective-memory | 两轴角色、归属登记、空间授权事实快照落本层类型；`MembershipResolver` 与 `SpaceIndex` 是本层新增算子与内部组件；授权判定迁出本层 |
 | architecture.md §3.1 | MemoryUnit 数据模型（lifecycle / temporal / supersedes / provenance）由 `common/type_def` 定义，控制层消费 |
 | architecture.md §8 | 演进调度（EvolveMode / Channel）映射到 Scheduler 双通道 + Evolver 四阶段 |
 | architecture.md §9 | `src/api/MemoryAPI` 是控制层的薄封装 + PEP；数据面委托 Engine，管理面直达各算子 |
