@@ -406,7 +406,7 @@ class EntitySchemaExtractor(Extractor):
         errors: list[Exception] = []
         successful_batches = 0
         for start in range(0, len(accepted), self._batch_size):
-            batch = accepted[start : start + self._batch_size]
+            batch = accepted[start:start + self._batch_size]
             try:
                 result.extend(self._extract_batch(batch, context=context))
                 successful_batches += 1

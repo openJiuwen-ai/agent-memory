@@ -13,7 +13,9 @@ SCHEMA_SELECTION_FOR_GENERATION_PROMPT = (
     """Dialogue:
 {dialogue_text}
 
-Speaker note: Lines may be formatted as `speaker=Name: ...` for named-speaker dialogue. Treat `Name` as the real speaker of that line; first-person statements in that line belong to `Name`, not automatically to the user.
+Speaker note: Lines may be formatted as `speaker=Name: ...` for named-speaker dialogue.
+Treat `Name` as the real speaker of that line; first-person statements in that line belong to `Name`, not
+automatically to the user.
 
 Available Entity Types and Properties:
 {entity_schema}
@@ -49,17 +51,20 @@ Rules:
 
 ENTITY_GENERATION_PROMPT = """
 # Role Definition
-You are a professional entity and relationship extraction expert, responsible for extracting comprehensive and accurate structured memory information from dialogues.
+You are a professional entity and relationship extraction expert, responsible for extracting comprehensive and
+accurate structured memory information from dialogues.
 
 # Task Description
 You will receive:
 1. Entity Schema definitions (including supported entity types and their properties)
 2. A segment of dialogue text
 
-Your goal is to extract ALL entities mentioned in the dialogue that conform to the schema, along with all their relevant properties. Be thorough - do not omit any potentially useful information.
+Your goal is to extract ALL entities mentioned in the dialogue that conform to the schema, along with all their
+relevant properties. Be thorough - do not omit any potentially useful information.
 
 # Entity Schema
-The schema defines the allowed entity types and their properties. Use these as reference, but also identify any implicit entities that can be derived from the dialogue.
+The schema defines the allowed entity types and their properties. Use these as reference, but also identify any
+implicit entities that can be derived from the dialogue.
 
 {entity_schema}
 
@@ -67,13 +72,16 @@ The schema defines the allowed entity types and their properties. Use these as r
 
 ## 0. Speaker Attribution
 - Dialogue lines may use `speaker=Name: ...` for named-speaker conversations.
-- Treat `Name` as the actual speaker of that line. First-person statements such as "I moved to Boston" belong to `Name`, not automatically to the user.
-- When converting dialogue to objective property values, use the explicit speaker name as the subject whenever available.
+- Treat `Name` as the actual speaker of that line. First-person statements such as "I moved to Boston" belong to
+`Name`, not automatically to the user.
+- When converting dialogue to objective property values, use the explicit speaker name as the subject whenever
+available.
 
 ## 1. Be Comprehensive - Do Not Miss Entities
 - Extract EVERY entity mentioned in the dialogue (people, places, organizations, events, facts, etc.)
 - If uncertain whether something should be an entity, include it anyway
-- Look for: persons, locations, organizations, events, activities, projects, products, documents, conversations, facts, etc.
+- Look for: persons, locations, organizations, events, activities, projects, products, documents, conversations,
+facts, etc.
 
 ## 2. Property Values - Keep Original Meaning & Concrete Details
 - **Preserve the original phrasing** from the dialogue as much as possible
@@ -89,40 +97,54 @@ The schema defines the allowed entity types and their properties. Use these as r
 
 ## Property Extraction Strategy: Factual Record vs Analytical Summary
 
-**IMPORTANT**: Factual completeness is ALWAYS the top priority. The analytical summary approach below is an ADDITIONAL capability for certain property types — it does NOT reduce the requirement to capture all concrete facts.
+**IMPORTANT**: Factual completeness is ALWAYS the top priority. The analytical summary approach below is an
+ADDITIONAL capability for certain property types — it does NOT reduce the requirement to capture all concrete facts.
 
 Different property types require different extraction approaches:
 
 ### Factual Record Properties (preserve full original details)
 These properties record concrete events and facts. Preserve ALL specific details verbatim:
-- `location_event`, `position_event`, `health_event`, `achievement_event`, `travel_event`, `business_event`, `education_degree`, `education_field`, `plan_event`, `reading_activity`, `social_activity`, `hobby_activity`, `experience`, `relationship_status`, `identity`, `family_plan`
+- `location_event`, `position_event`, `health_event`, `achievement_event`, `travel_event`, `business_event`,
+`education_degree`, `education_field`, `plan_event`, `reading_activity`, `social_activity`, `hobby_activity`,
+`experience`, `relationship_status`, `identity`, `family_plan`
 - **Strategy**: Keep original phrasing, exact names, dates, locations, quantities. Do not summarize or abstract.
 
 ### Analytical Summary Properties (distill key conclusions IN ADDITION to facts)
-These properties capture preferences, attitudes, opinions, and behavioral patterns. In addition to preserving concrete details, distill the DEFINITIVE CONCLUSION into a retrieval-friendly assertion:
-- `preference`, `preference_evolution`, `opinion`, `attitude_change`, `habit_event`, `mood_event`, `career_interest`, `financial_status`, `advice_given`
+These properties capture preferences, attitudes, opinions, and behavioral patterns. In addition to preserving
+concrete details, distill the DEFINITIVE CONCLUSION into a retrieval-friendly assertion:
+- `preference`, `preference_evolution`, `opinion`, `attitude_change`, `habit_event`, `mood_event`,
+`career_interest`, `financial_status`, `advice_given`
 - **Strategy**:
   - Still preserve all concrete details (specific names, items, activities mentioned)
   - Additionally, frame the value as a clear assertion: "{name} prefers/believes/likes/dislikes {specific_thing}"
   - For preference changes: explicitly state direction "changed from X to Y"
   - For opinions: state the conclusion directly "{name} believes X because Y"
   - Only record conclusions CLEARLY supported by the dialogue. Do NOT infer uncertain attitudes
-  - Include the specific subject/object (e.g., "prefers thriller novels over romance" not just "reading preferences changed")
+  - Include the specific subject/object (e.g., "prefers thriller novels over romance" not just "reading preferences
+  changed")
 
 **Examples of Analytical Summary extraction:**
-- Dialogue: "I used to love going to big concerts but honestly after COVID I just prefer intimate acoustic shows now, the energy is so much better"
-  - GOOD preference_evolution: "As of 2024-03, Alex's music preference evolved from large concerts to intimate acoustic shows, finding the energy better in smaller venues"
-  - BAD (too narrative): "As of 2024-03, Alex mentioned that after COVID they changed their mind about concerts and now like smaller ones"
-- Dialogue: "I've been really getting into index fund investing lately, moved most of my savings out of individual stocks"
+- Dialogue: "I used to love going to big concerts but honestly after COVID I just prefer intimate acoustic shows
+now, the energy is so much better"
+  - GOOD preference_evolution: "As of 2024-03, Alex's music preference evolved from large concerts to intimate
+  acoustic shows, finding the energy better in smaller venues"
+  - BAD (too narrative): "As of 2024-03, Alex mentioned that after COVID they changed their mind about concerts and
+  now like smaller ones"
+- Dialogue: "I've been really getting into index fund investing lately, moved most of my savings out of individual
+stocks"
   - GOOD financial_status: "As of 2024-03, Alex shifted investment strategy from individual stocks to index funds"
   - BAD (too vague): "As of 2024-03, Alex talked about changing their investment approach"
-- Dialogue: "Honestly I think remote work is way more productive, I get so much more done without the office distractions"
-  - GOOD opinion: "As of 2024-03, Alex believes remote work is more productive than office work due to fewer distractions"
-  - BAD (uncertain inference): "As of 2024-03, Alex might prefer working from home" — this is too weak; the dialogue clearly states a firm opinion
+- Dialogue: "Honestly I think remote work is way more productive, I get so much more done without the office
+distractions"
+  - GOOD opinion: "As of 2024-03, Alex believes remote work is more productive than office work due to fewer
+  distractions"
+  - BAD (uncertain inference): "As of 2024-03, Alex might prefer working from home" — this is too weak; the dialogue
+  clearly states a firm opinion
 
 ## 3. No Duplicate Information (Unless Necessary)
 - Each piece of information should appear in ONE property field
-- If the same information is relevant to multiple aspects, you may include it in different fields with different FOCUSES:
+- If the same information is relevant to multiple aspects, you may include it in different fields with different
+FOCUSES:
   - **description**: Brief summary of the entity (1-2 sentences)
   - **property values**: Detailed, specific information with original phrasing
 - Example:
@@ -135,39 +157,54 @@ These properties capture preferences, attitudes, opinions, and behavioral patter
 - Ensure all important details from the dialogue are captured
 - Include: who, what, when, where, why, how details
 - If dialogue mentions a detail but no suitable property exists, use the **default_property** as a catch-all
-- Every property value MUST be a **semantically complete statement** — a reader should understand the full fact without needing other properties
+- Every property value MUST be a **semantically complete statement** — a reader should understand the full fact
+without needing other properties
 
 **CRITICAL DETAIL PRESERVATION RULES**:
-- **Person Names**: Always include full names of people mentioned (e.g., "worked with Amy's colleague, Rob" not just "worked with a colleague")
-- **Special Nouns & Entities**: Preserve all proper nouns, brand names, place names, organization names exactly as mentioned
-- **Item Names**: Include specific product names, book titles, movie names, restaurant names, tattoo designs, game names, etc.
-- **Quantities & Numbers**: Record exact numbers, amounts, prices, percentages, dates, times (e.g., "ordered 3 pizzas" not "ordered pizzas")
+- **Person Names**: Always include full names of people mentioned (e.g., "worked with Amy's colleague, Rob" not just
+"worked with a colleague")
+- **Special Nouns & Entities**: Preserve all proper nouns, brand names, place names, organization names exactly as
+mentioned
+- **Item Names**: Include specific product names, book titles, movie names, restaurant names, tattoo designs, game
+names, etc.
+- **Quantities & Numbers**: Record exact numbers, amounts, prices, percentages, dates, times (e.g., "ordered 3
+pizzas" not "ordered pizzas")
 - **Specific Activities**: Use precise activity descriptions (e.g., "practiced hot yoga" not just "exercised")
 - **Time Points**: Include all specific times mentioned (e.g., "at 3:30 PM", "every Tuesday", "twice a week")
-- **Frequency Information**: Record recurring activities and their frequency (e.g., "goes to yoga class every Tuesday and Thursday")
+- **Frequency Information**: Record recurring activities and their frequency (e.g., "goes to yoga class every
+Tuesday and Thursday")
 - **Patterns & Habits**: Note patterns of behavior and habitual actions
 - **Causal Relationships**: Preserve "because", "due to", "as a result of" connections between facts
-- **Suggestions & Recommendations**: When someone suggests or recommends something (e.g., "You should try X", "I recommend Y"), extract the specific suggestion with context
+- **Suggestions & Recommendations**: When someone suggests or recommends something (e.g., "You should try X", "I
+recommend Y"), extract the specific suggestion with context
 - **Photo/Image Descriptions**: When someone describes a photo, image, or visual content, capture the described details
-- **Motivational Quotes & Cultural References**: Preserve specific quotes, catchphrases, or cultural references mentioned (e.g., a speaker quoting a famous person's catchphrase as motivation)
-- **Concrete Items & Designs**: Extract specific item descriptions (e.g., "sunflower tattoo design", "blue velvet dress", "acoustic guitar")
+- **Motivational Quotes & Cultural References**: Preserve specific quotes, catchphrases, or cultural references
+mentioned (e.g., a speaker quoting a famous person's catchphrase as motivation)
+- **Concrete Items & Designs**: Extract specific item descriptions (e.g., "sunflower tattoo design", "blue velvet
+dress", "acoustic guitar")
 
 **⚠️ IMAGE CAPTION PRESERVATION RULE (CRITICAL — MANDATORY):**
-- When a message contains image content (indicated by [Shared image: ...] or [Image context: ...] in the text), the COMPLETE original image caption MUST be preserved in the property value
+- When a message contains image content (indicated by [Shared image: ...] or [Image context: ...] in the text), the
+COMPLETE original image caption MUST be preserved in the property value
 - Format: Include the original caption in brackets: [Original caption: ...]
-- Example property value: "On 2024-03-20, Jon shared a photo of dancers performing on a stage with a red background [Original caption: a photo of a group of dancers on stage], representing his students' progress"
+- Example property value: "On 2024-03-20, Jon shared a photo of dancers performing on a stage with a red background
+[Original caption: a photo of a group of dancers on stage], representing his students' progress"
 - Do NOT paraphrase, abbreviate, or omit the original caption under any circumstances
 
 **⚠️ ALIAS / ALTERNATIVE NAME PRESERVATION RULE (CRITICAL — MANDATORY):**
-- When different names, nicknames, or alternative terms refer to the SAME entity in the conversation, ALL variants MUST be preserved using parentheses in property values, entity names, and descriptions
-- This includes: brand names vs product names, full names vs nicknames, formal names vs slang, game titles vs platform names, different language terms for the same thing
-- **Item Type Annotation**: For any named item, product, game, toy, pet, or entity whose category is not obvious from the name alone, annotate with its specific type/category in parentheses. The more specific, the better.
+- When different names, nicknames, or alternative terms refer to the SAME entity in the conversation, ALL variants
+MUST be preserved using parentheses in property values, entity names, and descriptions
+- This includes: brand names vs product names, full names vs nicknames, formal names vs slang, game titles vs
+platform names, different language terms for the same thing
+- **Item Type Annotation**: For any named item, product, game, toy, pet, or entity whose category is not obvious
+from the name alone, annotate with its specific type/category in parentheses. The more specific, the better.
   - Example: "Labubu(a PopMart designer toy)", NOT just "Labubu"
   - Example: "Toby(golden retriever puppy)", NOT just "Toby"
   - Example: "Catan(a strategy board game)", NOT just "Catan"
   - Example: "Monster Hunter: World(Nintendo Wii game)", NOT just "Monster Hunter: World"
 - Format: "primary_name(type/alias)" or "entity(alternative_description)"
-- Example: "On 2024-03-20, Alex played a PS5 game(Star Wars) with Mary" — preserve both the platform category and the specific game title
+- Example: "On 2024-03-20, Alex played a PS5 game(Star Wars) with Mary" — preserve both the platform category and
+the specific game title
 - Example: Entity name "Jon(John)" when both names are used in conversation
 - Example: "As of 2024-03-20, Alex adopted a dog named Toby(golden retriever)" — preserve breed as alias
 - This ensures the system can match queries regardless of which name variant the user searches with
@@ -175,7 +212,8 @@ These properties capture preferences, attitudes, opinions, and behavioral patter
 **SEMANTIC COMPLETENESS RULE** (CRITICAL):
 - BAD: "lost job" → GOOD: "On January 2023, Alex lost his job at the delivery company DoorDash"
 - BAD: "sunflower" → GOOD: "On March 15, Alex expressed interest in getting a sunflower tattoo design"
-- BAD: "performed well" → GOOD: "On July 23, Alex's dance team performed a contemporary piece called 'Finding Freedom' and won first place at the summer dance festival"
+- BAD: "performed well" → GOOD: "On July 23, Alex's dance team performed a contemporary piece called 'Finding
+Freedom' and won first place at the summer dance festival"
 - Every value should be a self-contained fact that includes subject, action, and all known contextual details
 
 ## PROPERTY VALUE QUALITY GATES (MANDATORY - system will reject values that fail)
@@ -191,70 +229,109 @@ Every property value MUST pass ALL of these checks before acceptance:
 3. **No orphan fragments**: Never store bare nouns, adjectives, short verb phrases, or sentence fragments
    - REJECT: "great performance", "first place", "new hobby"
    - ACCEPT: Full sentences with subject + verb + object/complement
-4. **No bare speech acts**: Do NOT store property values that only record someone asking a question, greeting, thanking, congratulating, or making small talk — unless the speech act itself reveals a new fact.
+4. **No bare speech acts**: Do NOT store property values that only record someone asking a question, greeting,
+thanking, congratulating, or making small talk — unless the speech act itself reveals a new fact.
    - REJECT: "Andrew asked Audrey if her dogs enjoy going on hikes" — this is just a question, no factual content
    - REJECT: "Audrey congratulated Andrew on his new job" — pure social interaction, no new fact
    - REJECT: "Andrew said he is excited about the trip" — vague emotional expression without specific detail
    - ACCEPT: "Andrew asked Audrey to recommend a hiking trail near Fox Hollow" — reveals a specific plan/location
-   - ACCEPT: "Audrey suggested Andrew try the Blue Ridge trail for his first hike with Toby" — contains a concrete recommendation
-   - **Rule of thumb**: If removing the speech verb ("asked", "said", "mentioned") leaves no retrievable fact, do NOT store it.
-5. **Timestamp context in value** ⚠️ MANDATORY FOR EVERY VALUE: **ALL** property values MUST contain a date reference, no exceptions
+   - ACCEPT: "Audrey suggested Andrew try the Blue Ridge trail for his first hike with Toby" — contains a concrete
+   recommendation
+   - **Rule of thumb**: If removing the speech verb ("asked", "said", "mentioned") leaves no retrievable fact, do
+   NOT store it.
+5. **Timestamp context in value** ⚠️ MANDATORY FOR EVERY VALUE: **ALL** property values MUST contain a date
+reference, no exceptions
    - If the dialogue mentions a specific date → use it: "On 2023-07-17, Caroline got promoted to senior designer"
-   - If the dialogue mentions relative time → use natural form: "Last week from 2023-05-08, Caroline attended the LGBTQ support group"
-   - If NO time is mentioned in the dialogue → use the dialogue timestamp as default: "As of 2023-05-08, Caroline is transgender and a member of the LGBTQ community"
+   - If the dialogue mentions relative time → use natural form: "Last week from 2023-05-08, Caroline attended the
+   LGBTQ support group"
+   - If NO time is mentioned in the dialogue → use the dialogue timestamp as default: "As of 2023-05-08, Caroline is
+   transgender and a member of the LGBTQ community"
    - Use "On YYYY-MM-DD" for events/actions, "As of YYYY-MM-DD" for states/identities/traits
-   - REJECT: "Caroline is transgender" → ACCEPT: "As of 2023-05-08, Caroline is transgender and a member of the LGBTQ community"
+   - REJECT: "Caroline is transgender" → ACCEPT: "As of 2023-05-08, Caroline is transgender and a member of the
+   LGBTQ community"
    - REJECT: "got promoted" → ACCEPT: "On 2023-07-17, Caroline got promoted to senior designer"
    - REJECT: "Caroline loves painting" → ACCEPT: "As of 2023-05-08, Caroline loves painting as a creative outlet"
 
 ## 5. Greedy Complete Coverage ⚠️ CRITICAL
-Each property value MUST greedily cover ALL substantive information from the corresponding part of the original message. Do not extract only a fragment and discard the rest.
+Each property value MUST greedily cover ALL substantive information from the corresponding part of the original
+message. Do not extract only a fragment and discard the rest.
 
-**⚠️ ZERO FACT LOSS CHECK**: After extraction, re-scan every message. For each message containing substantive information, verify that ALL of the following are captured in at least one non-episode entity property:
+**⚠️ ZERO FACT LOSS CHECK**: After extraction, re-scan every message. For each message containing substantive
+information, verify that ALL of the following are captured in at least one non-episode entity property:
 - **Geographic names** (countries, cities, states, regions, landmarks) — e.g., "Phuket", "Minnesota", "Stamford"
-- **Specific suggestions/recommendations** one speaker makes to the other — e.g., "install a bird feeder", "try cooking dog treats for the dogs"
+- **Specific suggestions/recommendations** one speaker makes to the other — e.g., "install a bird feeder", "try
+cooking dog treats for the dogs"
 - **Activities, hobbies, and skills** mentioned even casually — e.g., "surfing", "yoga retreat", "cat-themed card game"
 - **Named items, gifts, and objects** — e.g., "yellow coffee cup with handwritten message", "forest scene painting"
-- **Relationship identifiers** — preserve exactly as stated (e.g., "partner", "sister", "pet") without guessing or re-labeling
+- **Relationship identifiers** — preserve exactly as stated (e.g., "partner", "sister", "pet") without guessing or
+re-labeling
 
 **Rules**:
-1. **Every property value must be complete — no omissions allowed**: If a message mentions a method, location, time, schedule, or any other detail alongside the main fact, ALL of these must appear in the property value. Do not strip away qualifying details.
-2. **Every message must be independently and fully extracted**: Each message containing substantive information must be fully captured in the appropriate non-episode entity properties. The existence of an episode entity does NOT exempt you from extracting the same information into person/org entities.
-3. **One message → multiple properties when needed**: If a single message covers multiple factual dimensions (time, place, method, target, etc.), split them into separate property values rather than merging into one generic summary.
-4. **Preserve original terminology**: Specific adjectives, proper nouns, method names, brand names, and activity type names (e.g., "positive reinforcement", "glazing techniques", "Lotus Garden") must be kept verbatim. Never substitute with synonyms or generic terms.
-5. **Description-Property Consistency Rule** ⚠️ MANDATORY: For every non-episode entity, ALL substantive information mentioned in the entity's `description` field MUST be fully covered by at least one property value. The properties together must contain EVERY fact that the description summarizes — the description is a brief overview, but properties are the authoritative record. If you write something in description, there MUST be a corresponding property capturing that information in full detail.
-   - BAD: description says "Person who moved to Shanghai and works at Alibaba on cloud project" but properties only contain location_event and miss the work/project info
-   - GOOD: description says "Person who moved to Shanghai and works at Alibaba on cloud project" and properties contain location_event (the move), position_event (works at Alibaba), AND experience (cloud project with teammates)
+1. **Every property value must be complete — no omissions allowed**: If a message mentions a method, location, time,
+schedule, or any other detail alongside the main fact, ALL of these must appear in the property value. Do not strip
+away qualifying details.
+2. **Every message must be independently and fully extracted**: Each message containing substantive information must
+be fully captured in the appropriate non-episode entity properties. The existence of an episode entity does NOT
+exempt you from extracting the same information into person/org entities.
+3. **One message → multiple properties when needed**: If a single message covers multiple factual dimensions (time,
+place, method, target, etc.), split them into separate property values rather than merging into one generic summary.
+4. **Preserve original terminology**: Specific adjectives, proper nouns, method names, brand names, and activity
+type names (e.g., "positive reinforcement", "glazing techniques", "Lotus Garden") must be kept verbatim. Never
+substitute with synonyms or generic terms.
+5. **Description-Property Consistency Rule** ⚠️ MANDATORY: For every non-episode entity, ALL substantive information
+mentioned in the entity's `description` field MUST be fully covered by at least one property value. The properties
+together must contain EVERY fact that the description summarizes — the description is a brief overview, but
+properties are the authoritative record. If you write something in description, there MUST be a corresponding
+property capturing that information in full detail.
+   - BAD: description says "Person who moved to Shanghai and works at Alibaba on cloud project" but properties only
+   contain location_event and miss the work/project info
+   - GOOD: description says "Person who moved to Shanghai and works at Alibaba on cloud project" and properties
+   contain location_event (the move), position_event (works at Alibaba), AND experience (cloud project with
+   teammates)
 
 **GREEDY COVERAGE EXAMPLES**:
 
-Message: "2024-03-20: I signed up for a positive reinforcement dog training class last week, it's at the community center on Oak Street every Saturday morning"
+Message: "2024-03-20: I signed up for a positive reinforcement dog training class last week, it's at the community
+center on Oak Street every Saturday morning"
 BAD extraction (incomplete):
-  - training_event: "On 2024-03-13, Alex signed up for a dog training class"  ← MISSING: training method, location, schedule
+  - training_event: "On 2024-03-13, Alex signed up for a dog training class"  ← MISSING: training method, location,
+  schedule
 GOOD extraction (complete):
-  - training_event: "Last week from 2024-03-20, Alex signed up for a positive reinforcement dog training class at the community center on Oak Street, held every Saturday morning"
+  - training_event: "Last week from 2024-03-20, Alex signed up for a positive reinforcement dog training class at
+  the community center on Oak Street, held every Saturday morning"
 
-Message: "2024-03-20: I've been making YouTube videos about pottery since last July, and I just finished editing one about glazing techniques yesterday"
+Message: "2024-03-20: I've been making YouTube videos about pottery since last July, and I just finished editing one
+about glazing techniques yesterday"
 BAD extraction (partial):
-  - creative_work: "As of 2024-03-20, Alex makes YouTube videos about pottery"  ← MISSING: start time July, specific video topic, completion time
+  - creative_work: "As of 2024-03-20, Alex makes YouTube videos about pottery"  ← MISSING: start time July, specific
+  video topic, completion time
 GOOD extraction (complete, split into two time points):
   - creative_work: "Since July 2023, Alex has been making YouTube videos about pottery"
   - creative_work: "On 2024-03-19, Alex finished editing a YouTube video about glazing techniques"
 
-Message: "2024-03-20: My friend recommended this amazing Thai restaurant called Lotus Garden near the university, they have the best pad thai"
+Message: "2024-03-20: My friend recommended this amazing Thai restaurant called Lotus Garden near the university,
+they have the best pad thai"
 BAD extraction:
-  - recommendation_given: "As of 2024-03-20, Alex likes Thai food"  ← MISSING: restaurant name, location, specific dish, that it was a recommendation
+  - recommendation_given: "As of 2024-03-20, Alex likes Thai food"  ← MISSING: restaurant name, location, specific
+  dish, that it was a recommendation
 GOOD extraction:
-  - recommendation_given: "As of 2024-03-20, Alex's friend recommended a Thai restaurant called Lotus Garden near the university, known for their pad thai"
+  - recommendation_given: "As of 2024-03-20, Alex's friend recommended a Thai restaurant called Lotus Garden near
+  the university, known for their pad thai"
 
 ## 6. Entity Type Selection & Default Property Usage
-- **Entity type (`entity_type`) MUST be one of the types defined in the schema** (e.g., person, organization). NEVER invent new entity types. Do NOT generate "episodes" type entities — the system creates them separately.
-- If an entity does not perfectly match any entity type in schema, choose the **closest matching type**. For example, a pet or named animal should use "animal"; a fictional character or public figure should use "person"; a club or team should use "organization".
-- **`default_property` is a PROPERTY NAME, NOT an entity type.** It is used when an entity's type is already determined, but a specific piece of information does not fit any of the defined property categories for that type.
-- Each default_property value must still be a semantically complete statement following the same rule as general property values.
+- **Entity type (`entity_type`) MUST be one of the types defined in the schema** (e.g., person, organization). NEVER
+invent new entity types. Do NOT generate "episodes" type entities — the system creates them separately.
+- If an entity does not perfectly match any entity type in schema, choose the **closest matching type**. For
+example, a pet or named animal should use "animal"; a fictional character or public figure should use "person"; a
+club or team should use "organization".
+- **`default_property` is a PROPERTY NAME, NOT an entity type.** It is used when an entity's type is already
+determined, but a specific piece of information does not fit any of the defined property categories for that type.
+- Each default_property value must still be a semantically complete statement following the same rule as general
+property values.
 
 # Time Handling Rules (Multi-Precision Support)
-**IMPORTANT**: The system supports multiple time precisions. Choose the appropriate precision based on information provided in the dialogue:
+**IMPORTANT**: The system supports multiple time precisions. Choose the appropriate precision based on information
+provided in the dialogue:
 
 ## Supported Time Formats (max precision: DAY)
 1. **Year precision**: `2023` - only year is known
@@ -273,20 +350,26 @@ GOOD extraction:
    - "on March 19, 2024" → `2024-03-19`
 
 3. **Relative time inference**: Infer based on dialogue timestamp. Use COARSER precision when uncertain.
-   - The dialogue timestamp includes the day of the week (e.g., "2023-07-15 13:51:00 (Saturday)"). Use this to calculate relative dates precisely.
+   - The dialogue timestamp includes the day of the week (e.g., "2023-07-15 13:51:00 (Saturday)"). Use this to
+   calculate relative dates precisely.
    - **CRITICAL — "last [weekday]" calculation rule**:
-     - "last Friday" means the MOST RECENT Friday BEFORE the conversation date, NOT the Friday of the previous calendar week
-     - Step-by-step: (1) Note the conversation day of week from the timestamp, (2) Count backwards to find the nearest target weekday, (3) That is the answer
+     - "last Friday" means the MOST RECENT Friday BEFORE the conversation date, NOT the Friday of the previous
+     calendar week
+     - Step-by-step: (1) Note the conversation day of week from the timestamp, (2) Count backwards to find the
+     nearest target weekday, (3) That is the answer
      - Example: Timestamp is "2023-07-15 (Saturday)", speaker says "last Friday" → July 14 (1 day back), NOT July 7
      - Example: Timestamp is "2023-09-13 (Wednesday)", speaker says "last Monday" → Sept 11 (2 days back), NOT Sept 4
      - Example: Timestamp is "2023-02-09 (Thursday)", speaker says "last Wednesday" → Feb 8 (1 day back), NOT Feb 1
    - **"last weekend" rule**: means the most recent Saturday-Sunday before the conversation date
      - Example: Timestamp is "2023-05-24 (Wednesday)", "last weekend" → May 20-21, NOT May 13-14
-   - Dialogue time is 2024-03-20, user says "yesterday" → time field: `2024-03-19`, value: "On 2024-03-19 (yesterday), ..."
+   - Dialogue time is 2024-03-20, user says "yesterday" → time field: `2024-03-19`, value: "On 2024-03-19
+   (yesterday), ..."
    - Dialogue time is 2024-03-20, user says "last week" → time field: `2024-03`, value: "Last week from 2024-03-20, ..."
-   - Dialogue time is 2024-03-20, user says "last month" → time field: `2024-02`, value: "Last month from 2024-03-20, ..."
+   - Dialogue time is 2024-03-20, user says "last month" → time field: `2024-02`, value: "Last month from
+   2024-03-20, ..."
    - Dialogue time is 2024-03-20, user says "last year" → time field: `2023`, value: "Last year from 2024-03-20, ..."
-   - **NEVER fabricate a specific day from a vague relative expression** — if "last week" is said, don't guess which exact day
+   - **NEVER fabricate a specific day from a vague relative expression** — if "last week" is said, don't guess which
+   exact day
 
 4. **Default to dialogue timestamp when time not mentioned**:
    - If no time is mentioned at all, use `{dialogue_timestamp}` as default (day precision max)
@@ -307,7 +390,8 @@ GOOD extraction:
 2. Use the format specified in schema - each property has an example format, follow it
 3. Only use properties defined in schema
 4. **Keep original phrasing from dialogue** - preserve specific words, names, and details
-5. **Concrete Details Priority**: When extracting information, prioritize concrete, specific facts over abstract summaries
+5. **Concrete Details Priority**: When extracting information, prioritize concrete, specific facts over abstract
+summaries
    - Extract "lost job in January 2023" rather than "career transition"
    - Extract "visited Rome and Paris" rather than "traveled internationally"
    - Preserve specific dates, amounts, names, and locations exactly as mentioned
@@ -316,7 +400,8 @@ GOOD extraction:
    - "started dance studio because lost job" ≠ "pursuing passion for dance"
    - Both may be true, but the causal relationship is more specific and valuable
 7. **Time-Sensitive Information**: Give extra care to temporal details as they are crucial for retrieval accuracy
-   - For relative time mentions (yesterday, last week, etc.), preserve the original relative expression naturally in the value
+   - For relative time mentions (yesterday, last week, etc.), preserve the original relative expression naturally in
+   the value
    - Format: "Last week from {dialogue_timestamp}, ..." or "On 2024-03-14 (yesterday), ..."
    - Example: "Last week from 2024-03-20, Alex had a great time talking about childhood memories"
    - NEVER use format like "As of 2024-03-20 14:30:00, ..." — no time-of-day precision in values
@@ -326,7 +411,8 @@ GOOD extraction:
    - "usually has coffee at 8 AM" includes both the activity and timing pattern
 
 # Message Mapping Requirements ⚠️ Critical
-Before generating the final answer, you must output a message mapping dictionary `message_mapping` explaining how each message maps to which entity's properties.
+Before generating the final answer, you must output a message mapping dictionary `message_mapping` explaining how
+each message maps to which entity's properties.
 
 ## Mapping Format Requirements
 ```json
@@ -355,19 +441,28 @@ Before generating the final answer, you must output a message mapping dictionary
 ```
 
 ## Mapping Principles
-1. **Index reference**: Use message indices "0", "1", "2", "3" etc. to reference messages, indices must be consecutive starting from 0
+1. **Index reference**: Use message indices "0", "1", "2", "3" etc. to reference messages, indices must be
+consecutive starting from 0
 2. **Comprehensive mapping**: One message can correspond to multiple entities and properties, must list all
-3. **Exclude episodes type**: **STRICTLY FORBIDDEN to map to episodes entities**, episodes entities are used to save original dialogue and not in property extraction consideration
-4. **Exclude invalid information**: Pure interjections, questions, greetings, congratulations and other messages without specific information content may not be mapped
-5. **Valid information identification**: Only map messages containing concrete facts, states, events, plans and other substantial information
-6. **Multiple values per property**: Same entity's same property can have multiple values from different messages - this is allowed and should be mapped separately
-7. **Reason explanation**: Every message must have a reason field explaining why it maps to these properties (or why it doesn't map)
+3. **Exclude episodes type**: **STRICTLY FORBIDDEN to map to episodes entities**, episodes entities are used to save
+original dialogue and not in property extraction consideration
+4. **Exclude invalid information**: Pure interjections, questions, greetings, congratulations and other messages
+without specific information content may not be mapped
+5. **Valid information identification**: Only map messages containing concrete facts, states, events, plans and
+other substantial information
+6. **Multiple values per property**: Same entity's same property can have multiple values from different messages -
+this is allowed and should be mapped separately
+7. **Reason explanation**: Every message must have a reason field explaining why it maps to these properties (or why
+it doesn't map)
 
 # Output Format
 Output clean JSON with `message_mapping`, `entities` and `edges` top-level fields.
 - **message_mapping**: Dictionary mapping message indices to entity properties as specified above
 - **entities**: Each entity must have: name, entity_type, description, properties
-- **edges**: Each edge must have proper link information. Edge `link_description` must describe a **factual relationship** (e.g., "works at", "owns", "lives in", "adopted from"), NOT a speech act (e.g., "asked about", "mentioned", "talked about", "congratulated on"). If the only connection between two entities is that one person asked about or mentioned the other, do NOT create an edge.
+- **edges**: Each edge must have proper link information. Edge `link_description` must describe a **factual
+relationship** (e.g., "works at", "owns", "lives in", "adopted from"), NOT a speech act (e.g., "asked about",
+"mentioned", "talked about", "congratulated on"). If the only connection between two entities is that one person
+asked about or mentioned the other, do NOT create an edge.
 - Each property must have: property_name, value, time
 - Use string values only for all properties
 
@@ -485,7 +580,8 @@ Dialogue history: {chat_chunk}
 
 
 MERGE_DECISION_PROMPT = """
-You are a memory integration expert. Analyze the relationship between newly extracted information and the existing entity library.
+You are a memory integration expert. Analyze the relationship between newly extracted information and the existing
+entity library.
 
 ## Task
 1. For each new extracted entity, decide whether to CREATE a new entity or UPDATE an existing one.
@@ -495,7 +591,9 @@ You are a memory integration expert. Analyze the relationship between newly extr
 
 ### Use CREATE when:
 1. The entity does not exist in the existing library (completely new entity)
-2. The entity has the same name but represents a different thing (e.g., two different people named "John Smith"). Note: two entities with the same specific name usually refer to the same thing unless there is clear information indicating otherwise.
+2. The entity has the same name but represents a different thing (e.g., two different people named "John Smith").
+Note: two entities with the same specific name usually refer to the same thing unless there is clear information
+indicating otherwise.
 3. Key attributes conflict with existing entity (e.g., same name but different type, contradictory core information)
 
 ### Use UPDATE when:
@@ -586,7 +684,8 @@ Wrong Example (Do NOT do this):
 """
 
 DUPLICATE_NAME_RESOLUTION_PROMPT = """
-You are a memory entity conflict resolution expert. A newly extracted entity has the SAME NAME as an existing entity in the database. You must decide: **rename** the new entity or **merge** it into the existing one.
+You are a memory entity conflict resolution expert. A newly extracted entity has the SAME NAME as an existing entity
+in the database. You must decide: **rename** the new entity or **merge** it into the existing one.
 
 ## Conflict Information
 
@@ -603,7 +702,8 @@ You are a memory entity conflict resolution expert. A newly extracted entity has
 ## Decision Rules
 
 ### ⚠️ CRITICAL: Episodes Entity — RENAME ONLY
-**If the entity type is "episodes", you MUST choose "rename". Episodes entities represent unique conversation segments and MUST NEVER be merged.**
+**If the entity type is "episodes", you MUST choose "rename". Episodes entities represent unique conversation
+segments and MUST NEVER be merged.**
 - Each episode is an independent dialogue record — even if topics are similar, they are distinct events
 - Rename the new episode to highlight its unique focus (e.g., add date, specific subtopic, or distinguishing detail)
 
@@ -616,11 +716,14 @@ You are a memory entity conflict resolution expert. A newly extracted entity has
 4. A person named "Jon" who is a banker is the same "Jon" who dances — people have multiple aspects
 
 **Use "rename" only when:**
-1. Same name but **explicitly and clearly** different entities with concrete distinguishing evidence (e.g., "Zhang Wei from Beijing" vs "Zhang Wei from Shanghai" with incompatible biographies)
+1. Same name but **explicitly and clearly** different entities with concrete distinguishing evidence (e.g., "Zhang
+Wei from Beijing" vs "Zhang Wei from Shanghai" with incompatible biographies)
 2. Entity types differ fundamentally (e.g., a person vs. an organization with the same name)
-3. Core descriptions are **directly contradictory** in a way that cannot be reconciled (not just different topics — different identities)
+3. Core descriptions are **directly contradictory** in a way that cannot be reconciled (not just different topics —
+different identities)
 
-**When uncertain, prefer "merge" — it is better to consolidate information about one entity than to fragment it across duplicates.**
+**When uncertain, prefer "merge" — it is better to consolidate information about one entity than to fragment it
+across duplicates.**
 
 ## Output Format
 Output a JSON object:
@@ -667,7 +770,8 @@ Merged description:
 """
 
 SINGLE_ENTITY_MERGE_PROMPT = """
-You are a memory integration expert. Decide whether this newly extracted entity should CREATE a new entry or UPDATE an existing one.
+You are a memory integration expert. Decide whether this newly extracted entity should CREATE a new entry or UPDATE
+an existing one.
 
 ## New Entity
 - Name: {entity_name}
@@ -682,24 +786,33 @@ You are a memory integration expert. Decide whether this newly extracted entity 
 ### Use UPDATE when (PREFERRED — default choice unless clearly wrong):
 1. The entity name matches or is similar to an existing candidate (same person, thing, or event)
 2. The entity could plausibly be the same real-world entity as an existing candidate
-3. Same name with additional context (e.g., "Jon" in new info about dancing is the same "Jon" who lost his banking job — people have multiple aspects)
+3. Same name with additional context (e.g., "Jon" in new info about dancing is the same "Jon" who lost his banking
+job — people have multiple aspects)
 4. The target_entity name MUST be one of the candidates listed above
 
 ### ⚠️ CRITICAL: Base-Name Matching Rule
-When the new entity and an existing candidate share the **same base name** (the name part before any parenthetical qualifier), they are almost certainly the same entity — even if the parenthetical qualifiers differ.
-- "Toby(German Shepherd)" and "Toby(golden retriever)" → **UPDATE** (same dog Toby — the breed discrepancy is a data inconsistency, not evidence of two different dogs)
+When the new entity and an existing candidate share the **same base name** (the name part before any parenthetical
+qualifier), they are almost certainly the same entity — even if the parenthetical qualifiers differ.
+- "Toby(German Shepherd)" and "Toby(golden retriever)" → **UPDATE** (same dog Toby — the breed discrepancy is a data
+inconsistency, not evidence of two different dogs)
 - "Fox Hollow(hiking trail)" and "Fox Hollow(nature reserve)" → **UPDATE** (same place, different descriptions)
 - "Ferrari(sports car)" and "Ferrari(488 GTB)" → **UPDATE** (same car, different detail levels)
 
-**Why:** Parenthetical qualifiers like "(golden retriever)" or "(German Shepherd)" are descriptive annotations, NOT identity-defining features. In a conversation between the same speakers, the same named entity is the same real-world thing. Conflicting qualifiers indicate imprecise descriptions, not distinct entities.
+**Why:** Parenthetical qualifiers like "(golden retriever)" or "(German Shepherd)" are descriptive annotations, NOT
+identity-defining features. In a conversation between the same speakers, the same named entity is the same
+real-world thing. Conflicting qualifiers indicate imprecise descriptions, not distinct entities.
 
-**Same-speaker context strengthens merge confidence:** If both the new entity and the existing candidate appear in conversations involving the same speakers (e.g., both from Andrew-Audrey conversations), this is strong evidence they refer to the same real-world entity. People don't typically have two pets/items/places with identical names.
+**Same-speaker context strengthens merge confidence:** If both the new entity and the existing candidate appear in
+conversations involving the same speakers (e.g., both from Andrew-Audrey conversations), this is strong evidence
+they refer to the same real-world entity. People don't typically have two pets/items/places with identical names.
 
 ### Use CREATE only when:
 1. No candidate in the existing list could possibly match this entity
-2. There is **explicit, concrete evidence** that this is a different entity (e.g., "Jon Smith from New York" vs "Jon Lee from Tokyo" — clearly different people with different full names)
+2. There is **explicit, concrete evidence** that this is a different entity (e.g., "Jon Smith from New York" vs "Jon
+Lee from Tokyo" — clearly different people with different full names)
 3. The entity type is fundamentally incompatible (e.g., a person vs an organization with the same name)
-4. **Different parenthetical qualifiers alone are NOT sufficient evidence for CREATE** — you need fundamentally different identities
+4. **Different parenthetical qualifiers alone are NOT sufficient evidence for CREATE** — you need fundamentally
+different identities
 
 ## Output Format (JSON object, NOT array)
 
@@ -723,9 +836,14 @@ For UPDATE:
 
 ## Rules
 1. Output exactly ONE decision
-2. **When uncertain, prefer UPDATE** — a person with the same name is almost always the same person unless there is explicit evidence otherwise. People have multiple facets (career, hobbies, relationships) that should all be on one entity.
-3. Only use CREATE when you have **concrete evidence** that this is a genuinely different entity (different full name, different location, different identity)
-4. **Same base name = same entity**: If the new entity's name without parentheses matches a candidate's name without parentheses, and they share the same entity_type, always UPDATE. Differing parenthetical qualifiers (breed, model, subtitle) are never sufficient grounds for CREATE.
+2. **When uncertain, prefer UPDATE** — a person with the same name is almost always the same person unless there is
+explicit evidence otherwise. People have multiple facets (career, hobbies, relationships) that should all be on one
+entity.
+3. Only use CREATE when you have **concrete evidence** that this is a genuinely different entity (different full
+name, different location, different identity)
+4. **Same base name = same entity**: If the new entity's name without parentheses matches a candidate's name without
+parentheses, and they share the same entity_type, always UPDATE. Differing parenthetical qualifiers (breed, model,
+subtitle) are never sufficient grounds for CREATE.
 5. For relation_candidates, only include entities with clear relationships
 6. If no clear relations exist, relation_candidates can be empty []
 7. For UPDATE, target_entity MUST exactly match a name from the candidate list
@@ -746,19 +864,27 @@ You are a memory property merge expert. Decide how to handle new properties rela
 {new_properties}
 
 ## IMPORTANT: Default Behavior
-In MOST cases, both lists should be empty — existing properties are kept and new properties are added as-is. Only output an item when there is a clear, justified reason. Do NOT over-merge or over-delete.
+In MOST cases, both lists should be empty — existing properties are kept and new properties are added as-is. Only
+output an item when there is a clear, justified reason. Do NOT over-merge or over-delete.
 
 **⚠️ ANTI-INFORMATION-LOSS SAFEGUARD:**
 Before outputting ANY delete or update operation, verify:
-1. **Delete existing**: The old property's EVERY fact (names, dates, locations, details) must be fully preserved elsewhere. If the old property contains ANY unique detail not present in the new property — keep it.
-2. **Delete new**: The new property's EVERY fact must already exist in an existing property. If the new property mentions ANY detail (a specific name, date, location, number) not in the existing property — do NOT delete.
-3. **Update/merge**: The merged value must contain ALL facts from BOTH the old and new values. No detail may be dropped during merging.
-4. **When in doubt**: Output nothing (keep both). The cost of a redundant property is negligible; the cost of losing a fact is permanent.
+1. **Delete existing**: The old property's EVERY fact (names, dates, locations, details) must be fully preserved
+elsewhere. If the old property contains ANY unique detail not present in the new property — keep it.
+2. **Delete new**: The new property's EVERY fact must already exist in an existing property. If the new property
+mentions ANY detail (a specific name, date, location, number) not in the existing property — do NOT delete.
+3. **Update/merge**: The merged value must contain ALL facts from BOTH the old and new values. No detail may be
+dropped during merging.
+4. **When in doubt**: Output nothing (keep both). The cost of a redundant property is negligible; the cost of losing
+a fact is permanent.
 
 Properties should only be changed when:
-- **Explicit redundancy**: A new value is ENTIRELY contained within an existing property (every fact in the new value already appears in the old one)
-- **Explicit supersession**: A new fact clearly makes an old fact obsolete (e.g., a plan was executed, a status was resolved)
-- **Incomplete information**: A property has unresolved references, missing context, or vague details that another property can complete
+- **Explicit redundancy**: A new value is ENTIRELY contained within an existing property (every fact in the new
+value already appears in the old one)
+- **Explicit supersession**: A new fact clearly makes an old fact obsolete (e.g., a plan was executed, a status was
+resolved)
+- **Incomplete information**: A property has unresolved references, missing context, or vague details that another
+property can complete
 
 Properties should NOT be changed when:
 - Two properties describe DIFFERENT events/times, even if the topic is similar (e.g., two different hikes → keep both)
@@ -767,13 +893,17 @@ Properties should NOT be changed when:
 
 ## Rules
 For each existing property (p1, p2, ...):
-- **delete**: ONLY when the old value is factually obsolete AND a new property explicitly supersedes it. The old information must be fully covered elsewhere.
-- **update**: ONLY when a new property adds missing context (pronouns, intent, details) to this old value. Output the merged `value`.
+- **delete**: ONLY when the old value is factually obsolete AND a new property explicitly supersedes it. The old
+information must be fully covered elsewhere.
+- **update**: ONLY when a new property adds missing context (pronouns, intent, details) to this old value. Output
+the merged `value`.
 - *(no output)*: Keep as-is. This is the default.
 
 For each new property (n1, n2, ...):
-- **delete**: ONLY when EVERY fact in the new value is already explicitly present in an existing property. No information loss allowed.
-- **update**: The new value should be merged into an existing property. Provide `target` (which p-item) and merged `value`.
+- **delete**: ONLY when EVERY fact in the new value is already explicitly present in an existing property. No
+information loss allowed.
+- **update**: The new value should be merged into an existing property. Provide `target` (which p-item) and merged
+`value`.
 - *(no output)*: Add as-is. This is the default.
 
 ## Output Format
@@ -815,9 +945,11 @@ Reason: All four describe different events/facts. Keep all.
 
 ### Example 2: Similar topic but different events — no changes
 Existing:
-p1: [hobby_activity] time=2023-05-06, value="On 2023-05-06, Andrew went hiking at Blue Ridge Trail with friends and girlfriend"
+p1: [hobby_activity] time=2023-05-06, value="On 2023-05-06, Andrew went hiking at Blue Ridge Trail with friends and
+girlfriend"
 New:
-n1: [hobby_activity] time=2023-06-23, value="On 2023-06-23, Andrew hiked with friends, great weather, took awesome photos"
+n1: [hobby_activity] time=2023-06-23, value="On 2023-06-23, Andrew hiked with friends, great weather, took awesome
+photos"
 Output:
 ```json
 {{"existing": [], "new": []}}
@@ -826,7 +958,8 @@ Reason: Two different hikes on different dates. Both have unique details. Keep b
 
 ### Example 3: New is fully redundant — delete new
 Existing:
-p1: [hobby_activity] time=2023-06-05, value="On 2023-06-05, Andrew went hiking at Blue Ridge Trail with friends and his girlfriend, took awesome photos"
+p1: [hobby_activity] time=2023-06-05, value="On 2023-06-05, Andrew went hiking at Blue Ridge Trail with friends and
+his girlfriend, took awesome photos"
 New:
 n1: [hobby_activity] time=2023-06, value="As of 2023-06, Andrew went hiking recently"
 Output:
@@ -848,23 +981,29 @@ Reason: The plan (p1) was executed — n1 supersedes it with the actual event. p
 
 ### Example 5: Evolving state — merge into existing
 Existing:
-p1: [default_property] time=2023-06-02, value="As of 2023-06-02, Andrew is searching for a pet-friendly apartment in the city, has checked out some places without success"
+p1: [default_property] time=2023-06-02, value="As of 2023-06-02, Andrew is searching for a pet-friendly apartment in
+the city, has checked out some places without success"
 New:
-n1: [default_property] time=2023-08, value="As of 2023-08, Andrew is still searching for a pet-friendly apartment, feeling discouraged but determined"
+n1: [default_property] time=2023-08, value="As of 2023-08, Andrew is still searching for a pet-friendly apartment,
+feeling discouraged but determined"
 Output:
 ```json
-{{"existing": [], "new": [{{"id": "n1", "op": "update", "target": "p1", "value": "From 2023-06-02 to 2023-08, Andrew has been searching for a pet-friendly apartment in the city, checked out some places without success, feeling discouraged but remaining determined to find the right place"}}]}}
+{{"existing": [], "new": [{{"id": "n1", "op": "update", "target": "p1", "value": "From 2023-06-02 to 2023-08, Andrew
+has been searching for a pet-friendly apartment in the city, checked out some places without success, feeling
+discouraged but remaining determined to find the right place"}}]}}
 ```
 Reason: Same ongoing state across time. Merging preserves the full timeline without duplication.
 
 ### Example 6: New adds context to vague old property — update existing
 Existing:
-p1: [default_property] time=2023-03, value="Last week from 2023-03-27, Andrew experienced quite a change from his previous job"
+p1: [default_property] time=2023-03, value="Last week from 2023-03-27, Andrew experienced quite a change from his
+previous job"
 New:
 n1: [position_event] time=2023-03, value="Last week from 2023-03-27, Andrew started a new job as a Financial Analyst"
 Output:
 ```json
-{{"existing": [{{"id": "p1", "op": "update", "value": "Last week from 2023-03-27, Andrew experienced quite a change from his previous job, starting a new position as a Financial Analyst"}}], "new": [{{"id": "n1", "op": "delete"}}]}}
+{{"existing": [{{"id": "p1", "op": "update", "value": "Last week from 2023-03-27, Andrew experienced quite a change
+from his previous job, starting a new position as a Financial Analyst"}}], "new": [{{"id": "n1", "op": "delete"}}]}}
 ```
 Reason: n1 provides the specific detail that p1 was missing. Merge into p1 and skip n1.
 
