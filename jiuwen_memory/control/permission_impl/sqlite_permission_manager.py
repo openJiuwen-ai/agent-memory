@@ -84,11 +84,17 @@ def _principal_order(context: PermissionContext | None) -> tuple[str, str, str]:
     return ("user", "agent", "session")
 
 
-def _owner_scope_covers(
+def scope_covers(
     parent: Scope,
     child: Scope,
     context: PermissionContext | None = None,
 ) -> bool:
+    """主体覆盖判定：``parent`` 是否涵盖 ``child``（判定链第 8 步）。
+
+    公开名而非模块私有，因为空间感知判定要复用同一份实现——覆盖判定分叉会使两处对
+    「用户经代理调用是否覆盖本人」得出不同结论。本函数是本仓库对该判定的实现，与
+    ``common/security`` 的身份比较函数同源（F03 决策 4）。
+    """
     if parent == Scope():
         return True
     if parent.org != child.org or parent.space != child.space:
@@ -238,12 +244,30 @@ class SQLitePermissionManager(PermissionManager):
         if actor == Scope():
             return True
 
-        if _owner_scope_covers(actor, target, context):
+        if scope_covers(actor, target, context):
             return True
 
         if actor.org != target.org:
             return False
 
+        return self.grant_matches(actor, target, action, context)
+
+    def grant_matches(
+        self,
+        actor: Scope,
+        target: Scope,
+        action: Action,
+        context: PermissionContext | None = None,
+    ) -> bool:
+        """显式授权记录是否命中该动作。
+
+        由 :meth:`check` 的末段抽出，供空间感知判定复用：两轴求值要把显式授权命中的
+        动作并入内容轴的动作集合，而 ``check`` 的返回值混合了空身份放行与主体覆盖两条
+        其他来源，无法区分是哪一条使它为真。
+
+        本方法不含组织边界判据——调用方各自决定该判据排在何处：``check`` 排在主体覆盖
+        之后，空间感知判定按安全横切契约的目标次序排在其之前。
+        """
         with self._lock:
             rows = self._conn.execute(
                 """
@@ -275,7 +299,7 @@ class SQLitePermissionManager(PermissionManager):
         for row in rows:
             grantee = _row_scope(row, "grantee")
             grantor = _row_scope(row, "grantor")
-            if _owner_scope_covers(grantee, actor, context) and _owner_scope_covers(
+            if scope_covers(grantee, actor, context) and scope_covers(
                 grantor, target, context
             ):
                 return True

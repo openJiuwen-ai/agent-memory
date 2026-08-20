@@ -145,7 +145,8 @@ class AsyncTimerScheduler(Scheduler):
         self._jobs[job_id] = JobInfo(
             id=job_id,
             channel=channel,
-            mode=type(job).__name__,
+            # 与 InProcessScheduler 同口径：优先取演进模式，无则回落任务类名。
+            mode=job.mode or type(job).__name__,
             scope=job.scope,
             status=JobStatus.PENDING,
         )

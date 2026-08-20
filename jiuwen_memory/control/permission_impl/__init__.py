@@ -10,5 +10,6 @@ from jiuwen_memory.control.permission import PermissionProducer
 import_module(".allow_all_permission_manager", __name__)
 import_module(".routing_permission_manager", __name__)
 import_module(".sqlite_permission_manager", __name__)
+import_module(".space_aware_permission_manager", __name__)
 
 __all__ = ["PermissionProducer"]
