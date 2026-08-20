@@ -120,7 +120,7 @@ def _read_json(resp) -> dict[str, Any]:
         return {}
     try:
         return json.loads(raw)
-    except (ValueError, json.JSONDecodeError):
+    except ValueError:
         return {"error": "BadResponse", "message": raw.decode("utf-8", "replace")}
 
 

@@ -20,6 +20,7 @@ Two backends, chosen by ``--server`` / ``--base-url`` (else in-process):
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from importlib import import_module
@@ -33,6 +34,9 @@ if _CLI_DIR not in sys.path:
 commands = import_module("commands")
 make_client = import_module("client").make_client
 CliError = commands.CliError
+
+
+logger = logging.getLogger("agent-memory.cli")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -72,10 +76,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(asctime)s] %(name)s %(levelname)s %(message)s",
+    )
     args = build_parser().parse_args(argv)
 
     if args.server and args.config:
-        sys.stderr.write("note: --config is ignored in --server (HTTP) mode\n")
+        logger.info("note: --config is ignored in --server (HTTP) mode")
 
     try:
         client = make_client(args.server, args.config)
@@ -85,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
             return commands.run_batch(client, args)
         return commands.run_command(client, args.command, args)
     except CliError as exc:
-        sys.stderr.write(f"error: {exc}\n")
+        logger.error("error: %s", exc)
         return 2
 
 
