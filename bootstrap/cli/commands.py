@@ -16,10 +16,13 @@ dispatch ``if/else`` (the A20 "route by table" rule the engine follows).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from dataclasses import dataclass
 from typing import Any, Callable
+
+logger = logging.getLogger("agent-memory.cli.commands")
 
 
 class CliError(Exception):
@@ -38,7 +41,8 @@ class Command:
 
 def add_identity_args(p) -> None:
     """Mem0-style scoping: ``-u/--user-id`` is primary; ``--scope`` is the native
-    alias; ``--tenant`` is our multi-tenant dimension (optional, defaults)."""
+    alias; ``--tenant`` is our multi-tenant dimension (optional, defaults).
+    """
     p.add_argument("-u", "--user-id", dest="user_id", help="scope to a user (Mem0 --user-id)")
     p.add_argument("--scope", help="native alias of --user-id")
     p.add_argument("--tenant", help="tenant_id (default: $AGENT_MEMORY_TENANT or 'default')")
@@ -74,8 +78,8 @@ def _tags(value: str | None) -> list[str] | None:
     if value.startswith("["):
         try:
             return [str(t) for t in json.loads(value)]
-        except (ValueError, json.JSONDecodeError) as exc:
-            raise CliError(f"--categories/--tags: bad JSON array ({exc})")
+        except ValueError as exc:
+            raise CliError(f"--categories/--tags: bad JSON array ({exc})") from exc
     tags = []
     for raw_tag in value.split(","):
         tag = raw_tag.strip()
@@ -88,8 +92,8 @@ def _flatten_messages(raw: str) -> str:
     """Turn a Mem0 ``--messages`` JSON ``[{role, content}, ...]`` into one memory."""
     try:
         msgs = json.loads(raw)
-    except (ValueError, json.JSONDecodeError) as exc:
-        raise CliError(f"--messages: bad JSON ({exc})")
+    except ValueError as exc:
+        raise CliError(f"--messages: bad JSON ({exc})") from exc
     if isinstance(msgs, str):
         return msgs
     lines = []
@@ -167,8 +171,8 @@ def _payload_search(args) -> dict[str, Any]:
     if args.filters:
         try:
             payload["filters"] = json.loads(args.filters)
-        except (ValueError, json.JSONDecodeError) as exc:
-            raise CliError(f"--filters: bad JSON ({exc})")
+        except ValueError as exc:
+            raise CliError(f"--filters: bad JSON ({exc})") from exc
     return payload
 
 
@@ -306,7 +310,8 @@ def run_health(client, args) -> int:
 def run_batch(client, args) -> int:
     """Run a stream of NDJSON ops on one (stateful) client — the LoCoMo ingest
     primitive and a stateful-session demo. Always emits one JSON result per op
-    (machine-facing), regardless of ``--output``."""
+    (machine-facing), regardless of ``--output``.
+    """
     source = sys.stdin if args.input in (None, "-") else open(args.input, "r", encoding="utf-8")
     worst = 0
     try:
@@ -318,7 +323,7 @@ def run_batch(client, args) -> int:
                 record = json.loads(line)
                 verb = record.pop("op")
             except (ValueError, KeyError) as exc:
-                sys.stderr.write(f"line {lineno}: bad record ({exc})\n")
+                logger.warning("line %s: bad record (%s)", lineno, exc)
                 worst = max(worst, 1)
                 continue
             status, body = client.call(verb, record)

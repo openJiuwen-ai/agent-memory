@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -32,6 +33,9 @@ _profiles_module = import_module("profiles")
 OFFLINE = _profiles_module.OFFLINE
 load_config = _profiles_module.load_config
 Server = import_module("server").Server
+
+
+logger = logging.getLogger("agent-memory.server")
 
 
 class HttpServer(Server):
@@ -80,19 +84,23 @@ class HttpServer(Server):
 
     def serve(self, host: str, port: int) -> None:
         httpd = ThreadingHTTPServer((host, port), self._handler_cls())
-        sys.stderr.write(
-            f"agent-memory server (profile={self.config.profile}) on http://{host}:{port}\n"
+        logger.info(
+            "agent-memory server (profile=%s) on http://%s:%s",
+            self.config.profile, host, port,
         )
-        sys.stderr.flush()
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
-            sys.stderr.write("\nagent-memory server stopped\n")
+            logger.info("agent-memory server stopped")
         finally:
             httpd.server_close()
 
 
 def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(asctime)s] %(name)s %(levelname)s %(message)s",
+    )
     parser = argparse.ArgumentParser(prog="agent-memory-server")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8137)
