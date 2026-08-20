@@ -99,7 +99,7 @@ CREATE INDEX IF NOT EXISTS idx_cfg_audit_tenant_time ON config_audit_logs(tenant
 INSERT INTO config_templates
   (id, template_name, display_name, description, template_type, config_json, is_builtin, parent_id, version, created_by, updated_at)
 SELECT 'tpl_scope_basic', 'scope_basic', '基础版', '适用于一般 agent，单 LLM + 轻量配置', 'SCOPE',
-   '{"model_cfg":{"model":"qwen-plus","temperature":0.1,"max_tokens":2000},"model_client_cfg":{"client_provider":"SiliconFlow","api_key":"","api_base":"https://api.siliconflow.cn/v1","verify_ssl":false,"timeout":90.0},"embedding_cfg":{"model_name":"BAAI/bge-m3","api_key":"","base_url":"https://api.siliconflow.cn/v1/embeddings"},"user_profile_definition":"用户本人的肯定或否定表述（包含不限于基本身份、兴趣偏好、人际关系、资产状况）","semantic_memory_definition":"用户对话中涉及的和时间无明确关系的事实性内容或概念","episodic_memory_definition":"用户对话中涉及的和时间有明确关系的事实性内容或概念","extract_assistant_memory":false,"use_query_rewrite":false,"use_when_to_use":false}',
+   '{"model_cfg":{"model":"qwen-plus","temperature":0.1,"max_tokens":2000},"model_client_cfg":{"client_provider":"","api_key":"","api_base":"","verify_ssl":false,"timeout":90.0},"embedding_cfg":{"model_name":"BAAI/bge-m3","api_key":"","base_url":""},"user_profile_definition":"用户本人的肯定或否定表述（包含不限于基本身份、兴趣偏好、人际关系、资产状况）","semantic_memory_definition":"用户对话中涉及的和时间无明确关系的事实性内容或概念","episodic_memory_definition":"用户对话中涉及的和时间有明确关系的事实性内容或概念","extract_assistant_memory":false,"use_query_rewrite":false,"use_when_to_use":false}',
    1, NULL, 1, 'system', CURRENT_TIMESTAMP
 WHERE NOT EXISTS (SELECT 1 FROM config_templates WHERE id = 'tpl_scope_basic');
 
@@ -107,7 +107,7 @@ WHERE NOT EXISTS (SELECT 1 FROM config_templates WHERE id = 'tpl_scope_basic');
 INSERT INTO config_templates
   (id, template_name, display_name, description, template_type, config_json, is_builtin, parent_id, version, created_by, updated_at)
 SELECT 'tpl_scope_enhanced', 'scope_enhanced', '增强版', '适用于复杂业务，高 LLM + 向量优化', 'SCOPE',
-   '{"model_cfg":{"model":"qwen-max","temperature":0.1,"max_tokens":3000},"model_client_cfg":{"client_provider":"SiliconFlow","api_key":"","api_base":"https://api.siliconflow.cn/v1","verify_ssl":false,"timeout":120.0},"embedding_cfg":{"model_name":"BAAI/bge-m3","api_key":"","base_url":"https://api.siliconflow.cn/v1/embeddings"},"user_profile_definition":"详细提取用户身份信息、职业背景、技能专长、兴趣偏好、人际关系、资产状况、健康状况、地理位置等全方位画像信息","semantic_memory_definition":"提取用户对话中所有事实性内容，包括概念定义、技术原理、产品信息、行业知识等","episodic_memory_definition":"提取用户对话中所有时间相关的事件，包括会议、约会、里程碑、历史事件等","extract_assistant_memory":true,"use_query_rewrite":true,"use_when_to_use":true}',
+   '{"model_cfg":{"model":"qwen-max","temperature":0.1,"max_tokens":3000},"model_client_cfg":{"client_provider":"","api_key":"","api_base":"","verify_ssl":false,"timeout":120.0},"embedding_cfg":{"model_name":"BAAI/bge-m3","api_key":"","base_url":""},"user_profile_definition":"详细提取用户身份信息、职业背景、技能专长、兴趣偏好、人际关系、资产状况、健康状况、地理位置等全方位画像信息","semantic_memory_definition":"提取用户对话中所有事实性内容，包括概念定义、技术原理、产品信息、行业知识等","episodic_memory_definition":"提取用户对话中所有时间相关的事件，包括会议、约会、里程碑、历史事件等","extract_assistant_memory":true,"use_query_rewrite":true,"use_when_to_use":true}',
    1, NULL, 1, 'system', CURRENT_TIMESTAMP
 WHERE NOT EXISTS (SELECT 1 FROM config_templates WHERE id = 'tpl_scope_enhanced');
 
@@ -115,7 +115,7 @@ WHERE NOT EXISTS (SELECT 1 FROM config_templates WHERE id = 'tpl_scope_enhanced'
 INSERT INTO config_templates
   (id, template_name, display_name, description, template_type, config_json, is_builtin, parent_id, version, created_by, updated_at)
 SELECT 'tpl_scope_highperf', 'scope_highperf', '高性能版', '企业级，高并发 + 长保留', 'SCOPE',
-   '{"model_cfg":{"model":"qwen-turbo","temperature":0.05,"max_tokens":1500},"model_client_cfg":{"client_provider":"SiliconFlow","api_key":"","api_base":"https://api.siliconflow.cn/v1","verify_ssl":false,"timeout":30.0},"embedding_cfg":{"model_name":"BAAI/bge-small-zh","api_key":"","base_url":"https://api.siliconflow.cn/v1/embeddings"},"user_profile_definition":"用户核心身份","semantic_memory_definition":"用户对话核心事实","episodic_memory_definition":"用户对话关键事件","extract_assistant_memory":false,"use_query_rewrite":false,"use_when_to_use":true}',
+   '{"model_cfg":{"model":"qwen-turbo","temperature":0.05,"max_tokens":1500},"model_client_cfg":{"client_provider":"","api_key":"","api_base":"","verify_ssl":false,"timeout":30.0},"embedding_cfg":{"model_name":"BAAI/bge-small-zh","api_key":"","base_url":""},"user_profile_definition":"用户核心身份","semantic_memory_definition":"用户对话核心事实","episodic_memory_definition":"用户对话关键事件","extract_assistant_memory":false,"use_query_rewrite":false,"use_when_to_use":true}',
    1, NULL, 1, 'system', CURRENT_TIMESTAMP
 WHERE NOT EXISTS (SELECT 1 FROM config_templates WHERE id = 'tpl_scope_highperf');
 
