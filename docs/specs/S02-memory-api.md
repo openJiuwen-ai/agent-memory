@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/api/ |
-| 最近一次修订日期 | 2026-08-18 |
+| 最近一次修订日期 | 2026-08-19 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-entity-schema-extension.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md |
 ## Metadata 公共 API 契约
 
 `add` / `add_async` / `batch_add` 以及 `BatchWriteItem` 分别接收
@@ -326,9 +326,14 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 ## 实现注册机制
 
 ```
-src/api/memory_api_impl/
+jiuwen_memory/api/memory_api_impl/
     __init__.py             # 重导出实现类
+    assembly.py             # 官方 build_kernel / assemble
+    schema_assembly.py      # 可选 Schema build_schema_kernel / assemble_schema
 ```
+
+`assemble_schema()` 只先注册隔离 Schema 构造目标，再委托官方 `build_kernel()`；鉴权、Engine、
+Storage 和 MemoryAPI 契约不分叉。普通调用仍使用官方 assembly。
 
 ## 与其它 spec 的关系
 
