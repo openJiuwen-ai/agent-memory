@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/api/ |
-| 最近一次修订日期 | 2026-08-18 |
+| 最近一次修订日期 | 2026-08-20 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/common/F01-memory-layer.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md |
 ## Metadata 公共 API 契约
 
 `add` / `add_async` / `batch_add` 以及 `BatchWriteItem` 分别接收
@@ -48,10 +48,78 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 12. **list 按实际资源二次鉴权**：请求显式给出的 `memory_types` 先做类型级鉴权；Engine 再以当前分页实际命中的 MemoryUnit 真源元数据返回权限上下文，API 逐条 READ 鉴权，全部通过后才返回内容。参与权限路由的 extensions 值必须作为系统过滤条件回注。
 13. **list 过滤和计数在 KV 内完成**：API 复制 `extensions`、规范化 `filters` 后完整下推；返回 `MemoryListResult.items` 当前页和分页前精确 `count`，不以 `len(items)` 代替总数。
 14. **六类动态配置不走业务入参**：能力开关、prompt 全文、LLM/Embedder/Reranker 的 model/api_key/url、Store 连接或 `*.active` 等由 `ConfigSource.fetch` 提供（见 S08）；`add`/`search`/`evolve`/`list` 不得把上述值解释为配置写入。调用侧可传 prompt **key**、`memory_type`/pipeline 等业务选择子。
+15. **层级能力默认关闭（目标）**：普通 `add` 默认不建父树；只由显式 `evolve(..., mode=HIERARCHY, hierarchy_options=...)` 或启用的后台策略触发。显式层级请求在 `hierarchy.enabled=false` 时抛 `PolicyError`，不带层级参数的既有操作保持语义。
+16. **三类遍历严格分离（目标）**：`trace` 只沿 `provenance`；树下钻由 `search(..., expand_depth>0)` 沿 `HierarchyRef` 完成；`get(as_of)` 只沿 `supersedes`/valid-time；L0/L1/L2 仅表示同一 unit 的披露层。
+
 
 ## 接口契约
 
 ### MemoryAPI（`memory_api.py`）
+
+### search
+
+```python
+def search(
+    query: str,
+    context: Context,
+    *,
+    identity: Scope,
+    filters: FilterExpr | list[FilterClause] | None = None,
+    as_of: datetime | None = None,
+    top_k: int = 10,
+    disclosure: DisclosureLevel = DisclosureLevel.L0,
+    with_trajectory: bool = False,
+    hierarchy_kind: HierarchyKind | None = None,
+    hierarchy_role: HierarchyRole | None = None,
+    span_start: datetime | None = None,
+    span_end: datetime | None = None,
+    expand_depth: int = 0,
+    rollup: bool = False,
+) -> RetrievalResult: ...
+```
+
+`filters/as_of/top_k/disclosure/with_trajectory` 和 `context.extensions["max_tokens"]` 的既有处理不变。新增参数原样装配到 `RetrievalQuery`。`expand_depth=0`、`rollup=false` 保证默认只返回直接召回命中的节点，不展开后代、不把后代分数上卷；调用方通过 `hierarchy_role` 指定父侧角色时，即形成父节点优先召回。省略 role 时，同 kind 下所有活动角色均可参与召回。span 是 `HierarchyRef` 结构区间，不替代查询文本解析得到的 event-time。
+
+`expand_depth>0` 时，Retriever 在同一次 search 内沿命中父节点展开子证据（单 kind）；**不另设公开 `MemoryAPI.expand`**。展开选子与父命中共用既有 `max_tokens` 上下文预算，不另设独立预算参数。
+
+校验和闭区间相交语义以 [S04-retrieval.md](S04-retrieval.md) 为准。任一显式 hierarchy 参数、非零展开深度或 rollup 都构成层级请求；功能关闭时抛 `PolicyError`。普通 search 不因 hierarchy 关闭而失败。
+
+### evolve
+
+```python
+def evolve(
+    scope: Scope,
+    mode: EvolveMode,
+    channel: Channel = Channel.BACKGROUND,
+    *,
+    identity: Scope,
+    hierarchy_options: HierarchyComposeOptions | None = None,
+) -> str: ...
+```
+
+所有 evolve 模式要求 `Action.WRITE`。`EvolveMode.HIERARCHY` 是目标新增，必须提供
+[S05-construction.md](S05-construction.md) 定义的 `HierarchyComposeOptions`。S05 是该
+类型字段与默认值的唯一契约来源，API 层不复制定义。
+
+仅 HIERARCHY 接受 `hierarchy_options`；其他模式提供 options 时抛 `ValidationError`。
+HIERARCHY 缺 options 或 options 违反 S05 的 span、role 序列、`replace_existing`
+约束时抛 `ValidationError`。功能关闭时抛 `PolicyError`。调用成功返回 job id，
+不表示任务已经完成。
+
+### update 与层级 patch（目标契约，尚未实现）
+
+`MemoryPatch` 的既有非空字段为 `content/tier/tags/metadata/t_valid/t_invalid/mode`，目标增加：
+
+```python
+hierarchy: HierarchyPatch | None = None
+```
+
+`HierarchyPatch` 的精确类型由 S03 定义。它只允许修改指定 kind 的结构状态、span、
+受控子边和稳定顺序；不得接受未校验的完整 `HierarchyRef`、裸 `parent_id` 或任意
+`child_ids` 覆写。API 仅做形状校验，Engine 必须按 S03 验证同 org+space、无环、单父、
+双向一致和稳定顺序后原子应用。
+
+`SUPERSEDE` 若目标已挂树，Engine 必须把结构位置从旧 id 一致迁移到新版本 id，再把旧版本设为 `SUPERSEDED`；不得留下指向旧版本的活动结构边。`OVERWRITE` 保持 id，但层级 patch 仍须经过相同校验。
 
 #### 数据面（委托 MemoryEngine）
 
@@ -61,12 +129,13 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 | `add_async` | `async (同签名) -> list[MemoryUnit]` | 异步写入：直通 Engine 协程，供事件循环形态使用 |
 | `batch_add` | `(items: list[BatchWriteItem], scope=None, source=TEXT, *, identity, tags, metadata, occurred_at, stream_id="", continue_on_error=True) -> BatchWriteResult` | 同步桥接批量写入；逐项归一化、WRITE 鉴权、space 校验与审计，结果始终按输入索引对齐 |
 | `batch_add_async` | `async (同签名) -> BatchWriteResult` | 串行保序批量写入；默认归集单项错误，`continue_on_error=False` 时后续项为 `Skipped` |
-| `search` | `(query, context: Context, *, identity, filters, as_of, top_k, disclosure, with_trajectory) -> RetrievalResult` | 混合检索：鉴权 READ→拆 Context→装配 RetrievalQuery→委托 Engine |
+| `search` | 见上文完整签名 | 混合检索：鉴权 READ→拆 Context→装配 RetrievalQuery→委托 Engine；层级字段为目标、默认关闭；`expand_depth>0` 时同次召回内展开 |
+
 | `list` | `(scope, *, identity, offset=0, limit=100, memory_types=None, extensions=None, filters=None) -> MemoryListResult` | 列出已建索引记忆：支持类型/FilterExpr 过滤、自定义参数透传和分页前精确总数；只返回 `/memory/` 真源记录 |
 | `get` | `(unit_id, scope, *, identity, as_of=None) -> MemoryUnit` | 真源点读：鉴权 READ→委托 Engine |
 | `update` | `(unit_id, scope, patch: MemoryPatch, *, identity) -> MemoryUnit` | 修正记忆：鉴权 UPDATE→委托 Engine |
 | `delete` | `(selector: DeleteSelector, *, identity) -> list[str]` | 删除/归档/降权：鉴权 DELETE→委托 Engine |
-| `evolve` | `(scope, mode: EvolveMode, channel=BACKGROUND, *, identity) -> str` | 触发演进：鉴权→委托 Engine→返回 job_id |
+| `evolve` | `(scope, mode: EvolveMode, channel=BACKGROUND, *, identity, hierarchy_options=None) -> str` | 触发演进：鉴权→委托 Engine→返回 job_id；仅目标 `HIERARCHY` 接受 options |
 | `job_status` | `(job_id, *, identity) -> JobInfo` | 查询任务状态（委托 Scheduler） |
 | `job_cancel` | `(job_id, *, identity) -> None` | 取消任务（委托 Scheduler） |
 | `admin_get` | `(key, *, identity) -> str` | 读策略（直达 PolicyManager） |
@@ -205,8 +274,11 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 | `tags` | list[str] | 标签（检索前置过滤用） |
 | `metadata` | dict[str, Any] | 业务元数据；保留 JSON 标量原生类型，也可使用字符串数组 |
 | `lifecycle` | LifecycleState | 生命周期状态 |
+| `hierarchy` | HierarchyRef | 目标树结构；为空时不启用层级 |
 
 `Segment`：`content`（可治理文本/结构投影，索引与检索对象）、`assets`（本段原模态资产引用）、`source`（本段来源 Modality）。便捷只读折叠属性：`unit.content`（各段换行连接）、`unit.assets`（各段扁平合并）、`unit.source`（首段模态）——返回新对象，勿就地 `append`。
+
+`ContentLayers` 的 L0/L1 是同一 unit 的披露层，不是多模态粒度，也不是 TIME 父子结构。
 
 写入和更新边界对 metadata 执行以下约束：
 
@@ -217,9 +289,12 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 
 ### MemoryPatch / UpdateMode（update，`control/types.py`）
 
-`MemoryPatch` 仅**非 None** 字段生效：`content` / `tier` / `tags`（整体替换）/ `metadata`（合并）/ `t_valid` / `t_invalid` / `mode`。
+`MemoryPatch` 仅**非 None** 字段生效：`content` / `tier` / `tags`（整体替换）/
+`metadata`（合并）/ `t_valid` / `t_invalid` / `mode`。目标增加
+`hierarchy: HierarchyPatch | None = None`；其精确类型及结构事务校验见 S03。
 
-`UpdateMode`：`SUPERSEDE`（默认、非破坏式，新 id 新版本 + 旧版标 superseded）/ `OVERWRITE`（原地覆写、同 id，旧内容仅留审计）。
+`UpdateMode`：`SUPERSEDE`（默认、非破坏式，新 id 新版本 + 旧版标 superseded）/
+`OVERWRITE`（原地覆写、同 id，旧内容仅留审计）。
 
 ### DeleteSelector / DeleteMode（delete，`control/types.py`）
 
@@ -299,17 +374,18 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 
 `id` / `actor`（操作者 Scope）/ `target`（目标 Scope）/ `action` / `target_id` / `layer`（产生事件的层）/ `occurred_at` / `detail`。`detail` 常见约定包括 `permission_check`、`permission_reason`、`job_id`、`before_unit_id` / `after_unit_id`、`before_unit_ids` / `after_unit_ids`；其中 `before_unit_*` / `after_unit_*` 仅表示记忆单元 id，不用于调度任务 id。审计查询支持 `actor_*` 与 `target_*` scope 字段过滤。
 
-## 错误语义
+`search/get/inspect/trace` 使用 READ，`add/evolve` 使用 WRITE，`update` 使用 UPDATE，`delete` 使用 DELETE，`grant/revoke` 使用 SHARE。未限定 target scope 的 delete 和全局管理操作退到根 scope 闸门。
 
-均继承自 `common.errors.AgentMemoryError`：
+## 错误语义
 
 | 异常 | 触发场景 |
 |------|----------|
 | `PermissionDeniedError` | 鉴权不通过（identity 对 target scope 无相应 Action 权限） |
-| `NotFoundError` | `get` 等按 id 读取但记忆不存在 |
-| `ValidationError` | 入参非法（如 `search` 的 `top_k <= 0`；`add`/`batch_add` 的 `content` 非 `str`、空串或纯空白） |
-| `PolicyError` | `admin_set` 的键未知或为不可变配置 |
-| `ConflictError` | 写入冲突（如 id 重复） |
+| `NotFoundError` | `get`、`update` 目标在已鉴权 scope 内不可见 |
+| `ValidationError` | 入参非法（如 `search` 的 `top_k <= 0`；`add`/`batch_add` 的 `content` 非 `str`、空串或纯空白；目标层级的 span、深度、预算、options 或 patch 形状非法） |
+| `PolicyError` | `admin_set` 的键未知或为不可变配置；层级功能关闭时发起显式目标层级操作 |
+| `ConflictError` | 写入冲突（如 id 重复）或目标结构前置条件与当前状态冲突 |
+
 | `BackendError` / `HealthCheckError` | 后端故障 / 健康探测失败 |
 
 ## 鉴权流程

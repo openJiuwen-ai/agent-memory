@@ -5,9 +5,9 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | src/common/ |
-| 最近一次修订日期 | 2026-08-18 |
+| 最近一次修订日期 | 2026-08-20 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F08-memory-tree.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md |
 
 ## Metadata 领域模型契约
 
@@ -56,6 +56,25 @@
     第二道防线（幂等键、唯一约束、乐观并发控制）。重入以 `asyncio.current_task()` 为身份
     边界，`create_task` 派生的子任务不视为重入；重入记账与租约有效性正交，持有权状态一律
     以 `LockHandle.lost` 为准。后端不可用时 fail-closed 抛 `BackendError`，不静默降级为无锁。
+12. **四条层次轴正交**：`ContentLayers`/`DisclosureLevel` 表示同一 unit 的 L0/L1/L2 披露；
+    多模态 CLM/ELM（`metadata.memory_level` + `provenance`）表示单媒体源构建粒度；
+    `MemoryTier` 表示认知角色；`HierarchyRef` 表示跨 unit 的树结构包含。任一轴不得推导
+    或代替另外三轴。
+13. **树结构引用一致**（目标契约，尚未实现）：`kind` 与 `role` 必须同时设置或同时缺省；
+   空 `HierarchyRef` 等价于未启用树结构。非空结构**不得成环**；同一 kind 下采用单父
+   严格树；父 `child_ids` 与子 `parent_id` 双向一致且子列表不得重复。
+   **结构边的 scope 规则（非五维全等）**：
+   - **硬边界**：相连节点必须同 `org` 且同 `space`；禁止跨 org / 跨 space 的结构边
+     （与 F03 租户隔离一致；跨 space 共享走 grant / shared space，不走树边）。
+   - **细粒度可放宽**：`user` / `agent` / `session` **不要求**与父节点五维全等。
+     因此「同 scope 连接」**不是**要求 `Scope(org, space, user, agent, session)` 全部一致。
+   - **典型允许**：同 user 跨多个 session 建 TIME 树；同 org+space 下跨多个 user
+     （及各自 session）建树——后者须 compose profile / 策略显式开启，默认关闭。
+   - **引用可解析**：因 `MemoryUnit.id` 仅在完整 Scope 内唯一，当子（或父）与持有边的
+     unit 完整 Scope 不完全相同时，边必须携带可定位的子/父 Scope（见下方
+     `child_scopes` / `parent_scope`）；二者皆缺省时退化为「与本 unit 完整 Scope 相同」。
+14. **层级区间有效**（目标契约，尚未实现）：`span_start`/`span_end` 必须同时为空或同时存在，存在时 `span_start <= span_end`，父区间覆盖直接子区间；`HierarchyKind.TIME` 的所有节点必须有区间。
+15. **引用语义分离**：`provenance` 只表示演进来源，`supersedes` 只表示版本替换，`hierarchy` 只表示结构包含；生命周期归 `LifecycleState`，结构修正状态归 `HierarchyStatus`。
 
 ## 接口契约
 
@@ -189,7 +208,7 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 
 | 类型 | 关键字段 | 语义 |
 |------|----------|------|
-| `MemoryUnit` | id / scope / tier / layers / segments / source / temporal / provenance / supersedes / tags / metadata / lifecycle | 记忆单元；id 在完整 Scope 内唯一 |
+| `MemoryUnit` | id / scope / tier / layers / segments / source / temporal / provenance / supersedes / tags / metadata / lifecycle / hierarchy | 记忆单元；id 在完整 Scope 内唯一 |
 | `ContentLayers` | l0 / l1 | 分层披露标注（l0=50-100 字概要、l1=200-500 字要点 overview）；默认空串，extractor 对超阈 content 产出 |
 | `Segment` | type / content / asset_ref / metadata | 内容段 |
 | `Temporal` | t_event / t_ingest / t_valid / t_invalid | 时间字段 |
@@ -215,14 +234,104 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 | `Modality` | TEXT / IMAGE / AUDIO / VIDEO / CODE / DOCUMENT |
 | `LifecycleState` | ACTIVE / SUPERSEDED / ARCHIVED / FORGOTTEN |
 
+目标新增的 `HierarchyKind`、`HierarchyRole` 和 `HierarchyStatus` 只在下节定义一次，
+避免摘要表与精确枚举并存后发生漂移。
+
+### 树结构（目标契约，尚未实现）
+
+```python
+class HierarchyKind(str, Enum):
+    TIME = "time"
+    TOPIC = "topic"
+    DIRECTORY = "directory"
+    CLUSTER = "cluster"
+    CUSTOM = "custom"
+
+class HierarchyRole(str, Enum):
+    SNAPSHOT = "snapshot"
+    TIME_SPAN = "time_span"
+    SCENE = "scene"
+    EVENT = "event"
+    PROFILE = "profile"  # 画像组织角色；不进入 TIME 主树边，见下文
+    ROOT = "root"
+    NODE = "node"
+```
+
+`HierarchyRole.PROFILE` 表示画像类组织角色：产出的是独立 `MemoryUnit`（常建议
+`MemoryTier.CORE`），**不**通过 TIME 的 `parent_id`/`child_ids` 与
+snapshot/time_span/scene/event 互挂；TIME 主树角色仍是 snapshot→time_span→scene→event。
+若用 TOPIC/CUSTOM 组织画像，须单独立项，不得把 TIME 节点挂为 profile 的结构子。
+
+```python
+class HierarchyStatus(str, Enum):
+    ACTIVE = "active"
+    DISMISSED = "dismissed"
+
+@dataclass
+class HierarchyRef:
+    kind: HierarchyKind | None = None
+    role: HierarchyRole | None = None
+    parent_id: str = ""
+    child_ids: list[str] = field(default_factory=list)
+    # 与 child_ids 等长；空列表表示全部子节点与本 unit 完整 Scope 相同（兼容旧语义）。
+    # 非空时 child_scopes[i] 为 child_ids[i] 的驻留 Scope，且必须与本 unit 同 org+space。
+    child_scopes: list[Scope] = field(default_factory=list)
+    # None 表示 parent 与本 unit 完整 Scope 相同；非空时必须同 org+space。
+    parent_scope: Scope | None = None
+    span_start: datetime | None = None
+    span_end: datetime | None = None
+    ordinal: int = 0
+    status: HierarchyStatus = HierarchyStatus.ACTIVE
+
+# MemoryUnit 的目标增量字段；其余既有字段保持不变
+hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
+```
+
+`HierarchyStatus` 只描述结构节点是否有效、被结构修正排除或等待确认，不包含
+`ARCHIVED`/`FORGOTTEN`；归档、遗忘与版本失效继续由 `LifecycleState` 表达。
+`parent_id=""` 表示根或尚未挂接，`child_ids` 是直接子节点的稳定有序列表，
+`ordinal` 是同一父节点下的排序提示。非 TIME kind 可以不声明区间；一旦声明，仍须满足
+成对、顺序和父覆盖约束。TIME 的区间是结构覆盖范围，不替代
+`MemoryUnit.temporal` 的双时间，也不替代 `RecallChannel.TEMPORAL` 的召回过滤。
+
+目标实现必须满足以下校验不变量：
+
+- 所有父子引用必须解析到**同 org + 同 space** 的 `MemoryUnit`；禁止跨 org / 跨 space
+  结构边；禁止自环、祖先环。
+- `user` / `agent` / `session` 允许按 compose profile 与本 unit 不同；此时必须用
+  `child_scopes` / `parent_scope` 唯一定位，不得只靠裸 id 在错误命名空间里点读。
+- `child_scopes` 为空时，每个 `child_ids[i]` 在本 unit 的完整 Scope 下解析；非空时
+  `len(child_scopes) == len(child_ids)`，且每个 `child_scopes[i]` 与本 unit 同 org+space。
+- 同一 kind 下每个节点最多一个非空 `parent_id`；当前契约不支持同 kind 多父。
+- 对每条边 `P -> C`，`C.parent_id == P.id` 当且仅当 `C.id` 在 `P.child_ids` 中；若使用
+  scope 覆盖，则 `C` 侧 `parent_scope`（或缺省的本 unit scope）必须与 `P` 的驻留 Scope 一致。
+- `child_ids` 不重复；TIME 按区间起点或事件时间稳定排序，其他 kind 按 `ordinal`
+  与领域稳定顺序排序。
+- 空结构定义为 `kind is None and role is None`；此时 `parent_id=""`、`child_ids=[]`、
+  `child_scopes=[]`、`parent_scope is None`，且不得携带非空父子 id 或 span。旧数据没有
+  `hierarchy` 时读取为空结构。
+- `provenance`、`supersedes`、`hierarchy` 不互相回填；披露级、多模态粒度、tier 与
+  hierarchy 也不互相推导。
+
+单父限制是本 spec 当前有效的目标契约。未来若引入同 kind 多父，必须先修订本契约和
+编解码/存储模型，再按
+[F08-memory-tree.md](../features/common/F08-memory-tree.md) 的独立边存储
+迁移条件更新实现；在此之前，多父输入必须被拒绝。
+
 ### MemoryUnit 编解码（`type_def/memory_codec.py`）
 
 真源 KVStore 存**字节**，`MemoryUnit` 对象只在写入（`dumps`）与产出结果（`loads`）两处出现。编解码与 `MemoryUnit` 同住 `common/type_def`，纯函数、无存储后端依赖。
 
-- `dumps(unit) -> bytes`：`MemoryUnit` → JSON 字节，带 `_v` 版本号、枚举取 `.value`、时间取 isoformat。字段含 `layers`（`{l0, l1}`）。
+- `dumps(unit) -> bytes`：`MemoryUnit` → JSON 字节，带 `_v` 版本号、枚举取 `.value`、时间取 isoformat。字段含 `segments`、`layers`（`{l0, l1}`）。
 - `loads(raw) -> MemoryUnit | None`：逆 `dumps`；非 dict 返回 `None`（KVStore 中混有索引/跟踪等非 unit 记录，靠此过滤）。
 - **容错演进**：未知字段忽略、缺失字段取默认。加字段是兼容演进（老数据缺省读出，不升 `_v`）；改字段含义/结构才升 `_v` 并在 `loads` 按 `_v` 分支。当前 `_v=3`（`_v=2` 为 segments 列表化；`_v=3` 把 scope 从 `org/user/agent/session` 扩展为 `org/space/user/agent/session`，老数据读为空 `space`）。
 - `layers` 字段缺失时 `loads` 取空串 `ContentLayers()`——老数据无迁移读出。
+- `hierarchy` 缺失、非对象、字段缺失或包含未知扩展字段时安全读取：缺失/非对象读为空
+  `HierarchyRef`，未知字段忽略。未知 kind/role/status 不得构造半有效结构，应把该
+  hierarchy 降级为空并留下可观测诊断；写出侧只允许已定义枚举值。
+- 写入和接入路径对非法枚举或半有效结构执行严格拒绝；上述降级只用于兼容读取已经
+  存在的异常或未来版本数据。
+- 只有字段语义或结构发生破坏性变化时才提升 `_v`；增加可选枚举成员或可缺省字段不单独升版。
 
 ### 工厂注册机制（`factory/factory.py`）
 

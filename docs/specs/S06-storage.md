@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/storage/ |
-| 最近一次修订日期 | 2026-08-18 |
+| 最近一次修订日期 | 2026-08-20 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md |
 ## Metadata 物理存储契约
 
 索引记录保留 `system_metadata.<key>` 和 `user_metadata.<key>` 的逻辑路径。Milvus 与
@@ -33,6 +33,7 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 - 不做检索编排（由 `src/retrieval` 层负责）
 - 不做索引构建逻辑（由 `src/construction` 层负责）
 - 不实现具体后端（实现在 `*_impl/` 下，通过 Producer 注册）
+- 不解释或维护父子业务语义；通用 CRUD 不执行 hierarchy 级联
 
 ## 不变量
 
@@ -59,14 +60,24 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 16. **space 是 scope 的硬分区维度**：`scope_segments(scope)` 使用 `org/space/user/agent/session` 五段；`scope_dims(scope)` 在 `org` 非空时即使 `space==""` 也下推 `space == ""`，避免空 space 查询跨到非空 space。
 17. **标识唯一性分层**：非空 Space id 在 Space 资源注册表中全局唯一；MemoryUnit 与各 Store 记录 id 只要求在完整 Scope 内唯一。
 18. **SSL 声明即生效**：接外部后端的实现统一接受 `ssl_verify` / `ssl_ca_cert` 两个装配参数（默认关闭）。`ssl_verify` 只表示**是否校验服务端证书**，不负责开启加密——加密开关落在连接串上（`rediss://` / `https://` / `sslmode=`）。开启后不得静默降级：缺证书、连接串仍为明文、或连接串自带会覆盖本设置的 TLS 参数，一律在**装配阶段**报错。
-19. **Storage capability 唯一来源**：能力集合只包含 KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS；
+19. **KV 是层级真源**（目标契约，尚未实现）：序列化 `MemoryUnit.hierarchy` 与 unit
+    一同存入 KV。当前契约不新增 hierarchy Store，也不把父子包含边双写到 GraphStore；
+    若未来迁移到独立边存储，必须先修订本 spec 和 S07 的数据模型契约。
+20. **层级索引是派生物**：VectorRecord/Document 的 hierarchy metadata 必须能够从 KV
+    中的 `MemoryUnit` 全量重建；索引丢失或不一致时以 KV 为准。
+21. **GraphStore 边界明确**：GraphStore 表示关联和多跳关系，不表示 hierarchy containment；
+    `HierarchyRef.parent_id/child_ids` 不投影为图边。
+22. **CRUD 不级联层级关系**：KVStore 的 insert/update/delete 只作用于指定 key。删除父或子
+    不会自动改写其他 unit；父子双向边维护、剪枝与修复由 construction/control 调用显式
+    CRUD 完成。GraphStore 删除节点时清理关联图边的既有语义不适用于 hierarchy。
+23. **Storage capability 唯一来源**：能力集合只包含 KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS；
     `has_*()` 由集合推导，未声明端口访问抛 `UnsupportedStorageCapabilityError`。
-20. **命名端口仍受 Storage 管控**：`has_vector_port(name)` 与 `vector_port(name)` 等成对使用；
+24. **命名端口仍受 Storage 管控**：`has_vector_port(name)` 与 `vector_port(name)` 等成对使用；
     默认端口名为 `default`，分层索引可使用 `layers_l0` / `layers_l1`，上层不得绕过
     StorageProducer 直接解析 Store 具名实例。
-21. **检索路径独立于 capability**：Storage 提供 recall/recall_and_get/retrieve，并以全局稳定的
+25. **检索路径独立于 capability**：Storage 提供 recall/recall_and_get/retrieve，并以全局稳定的
     `preferred_retrieval_pipeline()` 选择首选入口；路径值不加入 capability。
-22. **统一授权不可绕过**：MemoryUnit 领域接口和 Storage 暴露的 Store 代理端口都先执行
+26. **统一授权不可绕过**：MemoryUnit 领域接口和 Storage 暴露的 Store 代理端口都先执行
     `StorageSecurity.authorize`；默认 AllowAll 可省略 access。Store 自身 `security` 表示数据保护。
 
 ## 接口契约
@@ -177,6 +188,9 @@ AAD 版本当前为 `1`，绑定 `scope(org/space/user/agent/session)`、KV `key
 | `get` | `(scope, node_ids: list[str]) -> list[Node]` | 在 scope 内按 id 点查节点；缺失的 id 从结果中省略 |
 | `search` | `(scope, query: GraphQuery) -> list[Node]` | 在 scope 内从 query.start_id 出发扩展邻域/子图（多跳遍历） |
 
+GraphStore 只承载 `ASSOCIATE` 等路径产生的语义关联、共指、因果或引用关系。父子包含
+关系的读取与遍历以 KV 中 `MemoryUnit.hierarchy` 为准，不通过 GraphStore 搜索或修复。
+
 ### FusionStore（`fusion.py`）
 
 向量·倒排·正排融合存储。
@@ -216,12 +230,44 @@ AAD 版本当前为 `1`，绑定 `scope(org/space/user/agent/session)`、KV `key
 | `VectorRecord` | id / vector: list[float] / metadata |
 | `VectorQuery` | vector: list[float] / top_k / filters: FilterExpr \| None |
 
+目标层级索引 metadata 在既有 `unit_id`、`content_layer`、`tier`、`lifecycle`、`seq`
+基础上增加：
+
+| 键 | 表示 |
+|---|---|
+| `hierarchy_kind` | kind 的字符串值；空 hierarchy 时缺省 |
+| `hierarchy_role` | role 的字符串值；空 hierarchy 时缺省 |
+| `parent_id` | 直接父 id；根或未挂接时为空串 |
+| `span_start` | ISO 8601 区间起点；未声明区间时缺省 |
+| `span_end` | ISO 8601 区间终点；未声明区间时缺省 |
+
+同一 unit 的 L0/L1/L2 VectorRecord 必须携带相同的 hierarchy metadata；现有记录 id
+格式保持不变。
+
 ### 全文（`types.py`）
 
 | 类型 | 关键字段 |
 |------|----------|
 | `Document` | id / text / metadata |
 | `TextQuery` | text / top_k / filters: FilterExpr \| None |
+
+Document 使用与 VectorRecord 相同的五个 hierarchy metadata 键，并保留既有
+`content_layer`。L0/L1/L2 文档的当前 id 规则保持不变；增加 metadata 不改变主键。
+
+### 层级过滤与区间表示（目标契约，尚未实现）
+
+层级过滤继续使用现有 `FilterClause(field, op, value)`，不新增查询结构：
+
+- kind/role/parent 精确过滤使用 `EQ`，例如
+  `field="hierarchy_kind"`、`field="parent_id"`。
+- 区间相交 `[query_start, query_end]` 表示为
+  `span_start <= query_end AND span_end >= query_start`，即分别使用 `LTE` 与 `GTE`。
+- 时间值统一写为 ISO 8601 字符串；同一索引内必须规范到可按时间顺序比较的统一时区格式。
+- filters 只承载 scope 之外的谓词，scope 仍是 Store 方法的显式第一参数。
+
+后端若不能原生执行区间谓词，可以在同 scope 候选上做等价后过滤，但不得放宽结果语义。
+索引重建必须枚举 KV 真源的 MemoryUnit，重新生成内容层与 hierarchy metadata；不得从
+旧索引反推 hierarchy。
 
 ### 图（`types.py`）
 
@@ -275,5 +321,6 @@ Store 抽象、跨后端不变量与注册机制。
 | S03-control | Engine 通过 KVStore 读写真源；目标生命周期/治理操作按显式 Scope 定位，全局 sweep/offboarding 才跨 Scope 枚举 |
 | S04-retrieval | Retriever 经 StorageProducer 获取统一 Storage；CompositeStorage 的兼容 Recaller 在检索装配期绑定 |
 | S05-construction | 构建层通过本层抽象做真源与索引持久化 |
+| S07-common | 定义 `MemoryUnit.hierarchy`、`HierarchyKind`、`HierarchyRole` 与 `FilterClause` |
 | S08-config | Store 连接参数与 `*.active` 可由 ConfigSource 晚绑定；切换后端不包含数据迁移 |
 | architecture.md §5 | 可配置真源形态（文档/结构化）与多后端 |
