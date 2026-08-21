@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import sys
+import uuid
 from datetime import datetime
 from importlib import import_module
 from typing import Any, Callable
@@ -374,6 +375,135 @@ def _usage_view(usage) -> Body:
     }
 
 
+def _video_unit_view(unit: MemoryUnit) -> Body:
+    """Serialize fields needed by video job responses."""
+    return {
+        **_unit_view(unit),
+        "source": unit.source.value,
+        "source_ref": unit.source_ref,
+        "provenance": list(unit.provenance),
+    }
+
+
+def _ensure_video_chain(srv) -> None:
+    """Fail-closed: reject video ingest when the multimodal chain is not assembled."""
+    memory_api = srv.config.settings.get("memory_api")
+    if not isinstance(memory_api, dict):
+        raise ValidationError("video ingest requires multimodal configuration")
+    normalizer_cfg = memory_api.get("normalizer")
+    default_normalizer = (
+        normalizer_cfg.get("default", {}) if isinstance(normalizer_cfg, dict) else {}
+    )
+    default_params = (
+        default_normalizer.get("params", {})
+        if isinstance(default_normalizer, dict)
+        else {}
+    )
+    routes = default_params.get("routes") if isinstance(default_params, dict) else None
+    has_video_normalizer = isinstance(routes, dict) and "video" in routes
+    evolver_cfg = memory_api.get("evolver")
+    has_video_evolver = isinstance(evolver_cfg, dict) and "video" in evolver_cfg
+    if not (has_video_normalizer and has_video_evolver):
+        raise ValidationError(
+            "video ingest requires routing normalizer with 'video' route and video evolver"
+        )
+
+
+def _submit_video(srv, payload: Body, *, scope: Scope, identity: Scope) -> Body:
+    """Submit a video write through the Control-managed ingest queue."""
+    uri = str(_require(payload, "uri")).strip()
+    if not uri:
+        raise ValidationError("missing required field: 'uri'")
+    _ensure_video_chain(srv)
+    payload_id = str(payload.get("payload_id") or uuid.uuid4())
+    raw_system_metadata = payload.get("system_metadata")
+    raw_user_metadata = payload.get("user_metadata")
+    if raw_system_metadata is not None and not isinstance(raw_system_metadata, dict):
+        raise ValidationError("system_metadata must be an object")
+    if raw_user_metadata is not None and not isinstance(raw_user_metadata, dict):
+        raise ValidationError("user_metadata must be an object")
+    system_metadata = dict(raw_system_metadata or {})
+    user_metadata = dict(raw_user_metadata or {})
+    system_metadata.update(
+        {"infer": "true", "pipeline": "video", "payload_id": payload_id}
+    )
+    requested_assets = payload.get("assets")
+    extras = requested_assets if isinstance(requested_assets, list) else []
+    assets = [uri, *(str(item) for item in extras if str(item) != uri)]
+
+    # P1-2: 提交前完成 WRITE 鉴权 + 输入合法性校验，后台 add() 仍保留一次鉴权作防御层。
+    # 无权限请求在此被拒（PermissionDeniedError → 403），不进队列，避免占满 worker。
+    srv.api.check_write(
+        scope,
+        identity,
+        tags=payload.get("tags"),
+        system_metadata=system_metadata,
+        user_metadata=user_metadata,
+    )
+
+    submission = srv.ingest_jobs.submit(
+        payload_id=payload_id,
+        source_ref=uri,
+        scope=scope,
+        task=lambda: srv.api.add(
+            uri,
+            scope,
+            Modality.VIDEO,
+            identity=identity,
+            assets=assets,
+            tags=payload.get("tags"),
+            system_metadata=system_metadata,
+            user_metadata=user_metadata,
+        ),
+    )
+    job = submission.job
+    return {
+        "ok": True,
+        "op": "add",
+        "accepted": True,
+        "job_id": job.id,
+        "video_id": payload_id,
+        "status": job.status,
+        "reused": submission.reused,
+        "feedback_message": (
+            "已返回该视频现有的处理任务。"
+            if submission.reused
+            else "视频处理任务已提交。"
+        ),
+    }
+
+
+def _ingest_job_status(srv, job, *, identity: Scope) -> Body:
+    """Adapt a Control ingest job to the shared job response shape."""
+    scope = job.scope
+    units = []
+    unit_ids = [item for item in job.detail.get("unit_ids", "").split(",") if item]
+    for unit_id in unit_ids:
+        try:
+            units.append(srv.api.get(unit_id, scope, identity=identity))
+        except NotFoundError:
+            continue
+    items = [_video_unit_view(unit) for unit in units]
+    body: Body = {
+        "ok": True,
+        "op": "job",
+        "job_id": job.id,
+        "video_id": job.detail.get("payload_id", ""),
+        "status": job.status.value,
+        "count": len(items),
+        "item_ids": [item["item_id"] for item in items],
+        "items": items,
+    }
+    if job.status.value == "succeeded":
+        body["feedback_message"] = f"视频处理完成，共生成 {len(items)} 条多模态记忆。"
+    elif job.status.value == "failed":
+        body["error"] = job.detail.get("error", "")
+        body["feedback_message"] = "视频处理失败。"
+    else:
+        body["feedback_message"] = "视频正在处理中。"
+    return body
+
+
 # --- per-verb handlers ----------------------------------------------------- #
 
 
@@ -384,6 +514,8 @@ def _add(srv, payload: Body) -> Body:
             "metadata has been removed; use system_metadata and user_metadata"
         )
     modality = Modality(payload.get("modality", "text"))
+    if modality == Modality.VIDEO:
+        return _submit_video(srv, payload, scope=scope, identity=actor)
     # metadata 透传：infer 等调用级开关经 metadata 下推到引擎（engine.write 从
     # metadata["infer"]=="true" 判定是否同步走 evolve(EXTRACT) 抽取派生记忆）。
     # JSON 标量原样透传（不 str 化）：数值/布尔要保持原生类型才能在索引里建
@@ -650,9 +782,16 @@ def _evolve(srv, payload: Body) -> Body:
 
 
 def _job(srv, payload: Body) -> Body:
-    """查询演进任务状态（Scheduler）。"""
+    """查询视频 Ingest 任务或原生 Scheduler 任务状态。"""
+    job_id = str(_require(payload, "job_id"))
     actor = _actor_scope(payload)
-    info = srv.api.job_status(_require(payload, "job_id"), identity=actor)
+    info = srv.api.job_status(
+        job_id,
+        identity=actor,
+        scope=_target_scope(payload),
+    )
+    if info.mode == "ingest":
+        return _ingest_job_status(srv, info, identity=actor)
     return {
         "ok": True,
         "op": "job",

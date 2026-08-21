@@ -11,5 +11,6 @@ from jiuwen_memory.construction.extractor import ExtractorProducer
 import_module(".keyword_extractor", __name__)
 import_module(".llm_extractor", __name__)
 import_module(".dynamic_llm_extractor", __name__)
+import_module(".video_memory_extractor", __name__)
 
 __all__ = ["ExtractorProducer"]

@@ -13,7 +13,7 @@
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
 | `memory_api_impl/assembly.py` | 装配入口：`build_kernel(config)` 构建并暴露 MemoryAPI、Storage、兼容 KV 与控制面句柄 |
-| `memory_api_impl/local_memory_api.py` | LocalMemoryAPI：委托 Engine/Governor/Scheduler/PermissionManager/SpaceManager + PEP 鉴权 |
+| `memory_api_impl/local_memory_api.py` | LocalMemoryAPI：委托 Control 算子并执行 PEP 鉴权与审计 |
 
 ## 行为铁律
 
@@ -91,3 +91,5 @@ MemoryAPI.method(scope=target, identity=caller)
    （composite 再 dep 各 Store）。`RoutingKVStore` 须作为 raw 落在加密层内；同实现换 Redis
    用 `kv_store.url` 晚绑定，不要为换 URL 预装多套 Routing 槽位（F01 §2.1.5 / S08）。
 4. 实现类（LocalMemoryAPI）不对外暴露，外部只依赖 `MemoryAPI` 抽象接口。
+5. `job_status` 统一查询 Scheduler 和长耗时 Ingest 任务；Ingest 任务必须显式传入
+   target `scope`，由 API 对任务真实 Scope 执行 READ 鉴权并记录审计。

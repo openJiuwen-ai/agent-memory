@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
 class ChatMessage:
     role: str = "user"  # 角色：system | user | assistant
-    content: str = ""  # 消息文本
+    # OpenAI-compatible providers accept plain text or typed multimodal parts.
+    content: str | list[dict[str, Any]] = ""

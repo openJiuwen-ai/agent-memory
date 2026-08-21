@@ -18,7 +18,7 @@
 ## 范围 / 边界
 
 **管什么**：
-- 共享可插拔插件（Embedder/Chunker/Tokenizer/Normalizer/FeatureExtractor/LLM/Reranker）
+- 共享可插拔插件（Embedder/Chunker/Tokenizer/Normalizer/ASR/FeatureExtractor/LLM/Reranker）
 - 核心数据类型定义（MemoryUnit/Scope/Context/Relation 等）
 - 工厂注册机制（Factory/Producer 基础设施）
 - 审计日志（AuditLogger）
@@ -45,7 +45,7 @@
 8. **标识唯一性分层**：非空 Space id 全局唯一；`MemoryUnit.id` 只要求在完整 Scope 内唯一。
 9. **Scope 位置参数兼容**：`space` 可为空但只能按关键字传入；旧位置参数顺序保持
    `Scope(org, user, agent, session)`。
-10. **出站客户端 SSL 声明即生效**：LLM / Embedder / Reranker 统一接受
+10. **出站客户端 SSL 声明即生效**：LLM / ASR / Embedder / Reranker 统一接受
     `<prefix>_ssl_verify` / `<prefix>_ssl_ca_cert`（默认关闭）。`ssl_verify` 只决定是否
     接管信任锚，不负责开启加密——加密开关在 `base_url` 的 scheme。关闭时完全不干预
     客户端（`http://` 明文直连、`https://` 仍走 SDK 默认校验）；开启后 `base_url` 必须是
@@ -82,7 +82,7 @@
 
 ```python
 class PluginType(str, Enum):
-    TOKENIZER / CHUNKER / EMBEDDER / FEATURE_EXTRACTOR / LLM / NORMALIZER / RERANKER
+    TOKENIZER / CHUNKER / EMBEDDER / FEATURE_EXTRACTOR / LLM / ASR / NORMALIZER / RERANKER
 
 class Plugin(ABC):
     def plugin_type(self) -> PluginType  # 自描述
@@ -147,6 +147,9 @@ class Plugin(ABC):
 解释。通用 Adapter 不得默认发送其他厂商的扩展字段，业务算子不得硬编码
 `extra_body` 等厂商专属请求字段；健康检查与正常
 `chat` 必须使用同一套 Provider 请求选项。
+
+`ChatMessage.content` 支持纯文本 `str` 或 OpenAI-compatible 的多模态 parts
+`list[dict[str, Any]]`；文本模型和视觉模型可装配为不同的具名 LLM 实例。
 
 DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 `extra_body.enable_thinking`，缺省为 `false`；通用 OpenAI Adapter 不按 base URL
@@ -218,7 +221,7 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 | `Entity` | text / type / confidence | 实体 |
 | `FeatureSet` | keywords / entities / tags | 特征集合 |
 | `Chunk` | id / text / unit_id / metadata | 切分块 |
-| `ChatMessage` | role / content | LLM 对话消息 |
+| `ChatMessage` | role / content | LLM 对话消息；content 为文本或多模态 parts |
 | `RawPayload` | id / scope / modality / data / uri / metadata / occurred_at | 原始负载 |
 | `FilterClause` | field / op / value | 原子过滤谓词；`EQ` / `IN` 正向匹配标量，`CONTAINS` 匹配数组成员，`NE` / `NOT_IN` 分别取反 |
 | `FilterGroup` | logic / children | AND / OR / NOT 逻辑节点 |
@@ -346,7 +349,7 @@ hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
 | `KvProducer` / `VectorProducer` / `FulltextProducer` | `kv_store` / `vector_store` / `fulltext_store` |
 | `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` | `embedder` / `chunker` / `tokenizer` |
 | `IndexBuilderProducer` / `RecallerProducer` | `constructor` / `recaller` |
-| `NormalizerProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` | `normalizer` / `feature_extractor` / `llm` / `reranker` |
+| `NormalizerProducer` / `VideoAsrProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` | `normalizer` / `asr` / `feature_extractor` / `llm` / `reranker` |
 | `AuditProducer` / `SecurityProducer` / `LockProducer` | `audit` / `security` / `lock` |
 
 #### Factory 基类
@@ -408,7 +411,7 @@ def _build(config: ComponentConfig) -> Embedder:
 - `reset_all()` 清空缓存（隔离多次装配 / 测试隔离）
 
 各 Producer 继承 `Factory`：
-- `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` / `NormalizerProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditProducer` / `SecurityProducer`
+- `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` / `NormalizerProducer` / `VideoAsrProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditProducer` / `SecurityProducer`
 
 ## 错误类型（`errors.py` / `security.py` / `lock.py`）
 

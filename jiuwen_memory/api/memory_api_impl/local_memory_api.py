@@ -51,6 +51,7 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.control.engine import MemoryEngine
 from jiuwen_memory.control.governance import Governor
+from jiuwen_memory.control.ingest_job import INGEST_JOB_PREFIX, IngestJobController
 from jiuwen_memory.control.permission import PermissionManager
 from jiuwen_memory.control.policy import PolicyManager
 from jiuwen_memory.control.scheduler import Scheduler
@@ -65,6 +66,7 @@ from jiuwen_memory.control.types import (
     DeleteSelector,
     Grant,
     JobInfo,
+    JobStatus,
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
@@ -395,6 +397,7 @@ class LocalMemoryAPI(MemoryAPI):
         governor: Governor,
         audit_logger: AuditLogger,
         space: SpaceManager,
+        ingest_jobs: IngestJobController,
     ) -> None:
         self._engine = engine
         self._perm = permission
@@ -403,6 +406,7 @@ class LocalMemoryAPI(MemoryAPI):
         self._governor = governor
         self._audit = audit_logger
         self._space = space
+        self._ingest_jobs = ingest_jobs
 
     @property
     def space_manager(self) -> SpaceManager:
@@ -550,6 +554,30 @@ class LocalMemoryAPI(MemoryAPI):
         )
 
     # -- 数据面 ------------------------------------------------------------- #
+
+    def check_write(
+        self,
+        scope: Scope,
+        identity: Scope,
+        *,
+        tags: list[str] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
+    ) -> None:
+        """Pre-flight WRITE 鉴权（不落盘）。镜像 add 的鉴权路径，但不调 engine.write；
+        供长耗时摄入任务入队前拒绝无权限请求（P1-2 防 DoS）。
+        """
+        _reject_non_scalar_metadata(system_metadata, field_name="system_metadata")
+        _reject_non_scalar_metadata(user_metadata, field_name="user_metadata")
+        permission_context = _write_permission_context(scope, tags, system_metadata)
+        self._authorize(
+            identity,
+            scope,
+            Action.WRITE,
+            "check_write",
+            context=permission_context,
+        )
+        self._ensure_space_writable(scope)
 
     def add(
         self,
@@ -1159,11 +1187,35 @@ class LocalMemoryAPI(MemoryAPI):
 
     # -- 任务调度（直达 Scheduler） ----------------------------------------- #
 
-    def job_status(self, job_id: str, *, identity: Scope) -> JobInfo:
+    def job_status(
+        self,
+        job_id: str,
+        *,
+        identity: Scope,
+        scope: Scope | None = None,
+    ) -> JobInfo:
         # 先取任务（含其 scope），再据 identity 对该 scope 的 READ 权放行
         # （仅可查自身/已授权范围的任务）；status 为只读查询，先取后判权
         # 不产生副作用。
-        info = self._scheduler.status(job_id)
+        if job_id.startswith(INGEST_JOB_PREFIX):
+            if scope is None:
+                raise ValidationError("ingest job status requires target scope")
+            job = self._ingest_jobs.status(job_id, scope=scope)
+            info = JobInfo(
+                id=job.id,
+                channel=Channel.BACKGROUND,
+                mode="ingest",
+                scope=job.scope,
+                status=JobStatus(job.status),
+                detail={
+                    "payload_id": job.payload_id,
+                    "source_ref": job.source_ref,
+                    "unit_ids": ",".join(job.unit_ids),
+                    "error": job.error,
+                },
+            )
+        else:
+            info = self._scheduler.status(job_id)
         auth = self._authorize(identity, info.scope, Action.READ, "job_status", job_id)
         self._log(identity, "job_status", job_id, target_scope=info.scope, detail=auth)
         return info

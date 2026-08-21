@@ -8,8 +8,6 @@
 
 from __future__ import annotations
 
-from typing import List
-
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.type_def import ChatMessage
@@ -24,11 +22,22 @@ class EchoLLM(LLM):
     def health(self) -> None:
         return None
 
-    def chat(self, messages: List[ChatMessage], **options: object) -> str:
+    def chat(self, messages: list[ChatMessage], **options: object) -> str:
+        del options
         for msg in reversed(messages):
             if msg.role == "user":
-                return msg.content
-        return messages[-1].content if messages else ""
+                return _content_text(msg.content)
+        return _content_text(messages[-1].content) if messages else ""
+
+
+def _content_text(content: str | list[dict]) -> str:
+    if isinstance(content, str):
+        return content
+    return "\n".join(
+        str(part.get("text", ""))
+        for part in content
+        if part.get("type") == "text"
+    )
 
 
 # -- 注册到 LlmProducer（实现自注册，新增无需改 producer/make_plugins） ------ #

@@ -30,6 +30,7 @@ class ControlOperatorType(str, Enum):
     GOVERNOR = "governor"
     PERMISSION = "permission"
     SCHEDULER = "scheduler"
+    INGEST_JOB = "ingest_job"
     POLICY = "policy"
     SPACE = "space"
 
