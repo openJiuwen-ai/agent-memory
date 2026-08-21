@@ -12,7 +12,7 @@
 |---|---|
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
-| `memory_api_impl/assembly.py` | 装配入口：`build_kernel(config)` 构建并暴露 MemoryAPI、Storage、兼容 KV 与控制面句柄 |
+| `memory_api_impl/assembly.py` | 统一装配入口：`build_kernel(config)` 构建并暴露 MemoryAPI、Storage、兼容 KV 与控制面句柄；按装配配置条件注册可选扩展 |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI：委托 Engine/Governor/Scheduler/PermissionManager/SpaceManager + PEP 鉴权 |
 
 ## 行为铁律
@@ -54,6 +54,13 @@
 
 9. **Space 删除覆盖全部子 Scope**
    `delete_space` 通过 `MemoryEngine.purge_space` 清理同一 `org + space` 下所有 user/agent/session 子 Scope 的真源和索引，再委托 `SpaceManager` 清理 messages 与管理元数据。
+
+10. **Schema 装配保持配置 opt-in**
+    `assemble()` / `build_kernel()` 是唯一装配入口。`globals.schema_enabled` 默认为
+    `false`，此时不导入或注册 Schema 算子；仅在装配时为 `true` 才条件注册。
+    注册不等于启用，调用方还必须显式选择 `entity_schema` Extractor 和
+    `schema_orchestrating` Evolver；默认 target 保持不变。开关关闭但配置了 Schema
+    target 时装配必须 fail-closed，不得借进程中残留的 Producer 注册绕过开关。
 
 ## PEP 鉴权流程
 

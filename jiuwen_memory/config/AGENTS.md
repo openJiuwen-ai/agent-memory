@@ -60,6 +60,10 @@
    `RoutingKVStore` 挂在 encrypted 的 raw，禁止把 Routing 包在加密层外面（见 F01 §2.1.5 / S08）。
    未启用加密时，`RoutingKVStore` 可直接作为 `kv_store.default`。
 
+10. **Schema 是装配期开关**
+    `globals.schema_enabled` 默认 `false`；它只在 `build_kernel` 装配期决定是否注册
+    Schema target，不是可经 ConfigSource 热切换的运行时能力开关。改值后必须重新装配。
+
 ## 与其他子目录的边界
 
 **本模块管**：装配合并、ConfigSource 契约与默认实现、active/晚绑定解析辅助、多实例 Routing（`Routing*` / `RoutingStorage`）。

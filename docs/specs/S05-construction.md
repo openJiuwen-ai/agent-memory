@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-08-20 |
+| 最近一次修订日期 | 2026-08-21 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F06-unified-index-builder.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
 
 ## Metadata 派生与索引契约
 
@@ -69,6 +69,11 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
     并在写索引前通过同 org+space、无环、单 kind 单父、区间覆盖校验（跨细粒度 scope 时边可解析）。
 17. **父标注先于持久化和索引**（目标契约，尚未实现）：新派生父节点先经 `LayerAnnotator` best-effort 生成 L0/L1，
     再写 KV 和索引。标注失败保留空 layers 并继续，不得因摘要失败丢失结构结果。
+18. **Schema 属性使用标准 MemoryUnit**：一个合法属性生成一个 MemoryUnit；
+    `entities` 至少包含该属性所属实体，`source_ref`/`provenance` 回指支持消息。
+    Schema 模式不得要求自定义实体 ID 或 Schema 专用 Storage 才能持久化属性。
+19. **Schema Source-first**：非 procedural Schema 抽取必须先持久化并索引 Source Unit。
+    LLM 或 Schema 校验失败时保留 Source 并降级返回；Source 持久化失败仍向上抛错。
 
 ## 接口契约
 
@@ -117,6 +122,20 @@ registry 未配置或 key 缺失时回退把值本身当文本用（兼容内联
 仍向 Evolver 返回 `list[MemoryUnit]`。单个策略失败与其它策略隔离；若所有策略都失败则
 向上抛出最后一个错误，以区别于策略成功返回合法空结果。没有动态 prompt 时委托配置的旧
 Extractor。
+
+#### 可选 Entity Schema 抽取契约
+
+Schema 抽取先选择本轮相关 entity type/property，再使用同一选中集合生成并校验属性。
+生成器不得借完整 Catalog 放行未选中的属性。每个属性候选必须包含 Schema 内的实体类型和
+属性名、非空事实文本，以及同 Scope 输入中的一个或多个 `source_unit_ids`。
+
+每个合法属性生成一个独立 MemoryUnit。其 `entities` 写属性所属实体明文；Schema 名称、版本、
+实体类型和属性名写系统 metadata；来源业务 metadata 仍按通用派生规则写入 user metadata。
+完整可解析的事件日期/时间可写 `temporal.t_event`，但时间不是属性合法性的必要条件。
+
+Schema Evolver 对非 procedural 写入采用 Source-first，并将属性候选直接 ADD，不进入普通文本
+相似度 Dedup。Extractor 连续重试后仍失败时只放弃 Schema 派生，不回滚已持久化 Source。
+该链路必须显式装配；默认 Extractor/Evolver 行为不变。
 
 ### DynamicEvolver（`evolver_impl/dynamic_evolver.py`）
 

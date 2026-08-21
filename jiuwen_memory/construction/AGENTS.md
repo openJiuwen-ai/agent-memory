@@ -23,14 +23,17 @@
 | `dedup.py` | Dedup 接口：去重召回（向量/倒排两路）+ DedupProducer 工厂 |
 | `evolver.py` | Evolver 接口：记忆自演进（抽取/关联/巩固/遗忘）+ EvolveMode + EvolveResult |
 | `layer_annotator.py` | LayerAnnotator 接口：分层披露标注（L0/L1 写入 unit.layers）+ LayerAnnotatorProducer 工厂 |
-| `extractor_impl/` | Extractor 实现目录（keyword / llm / dynamic_llm） |
+| `extractor_impl/` | Extractor 实现目录（keyword / llm / dynamic_llm / 可选 entity_schema） |
 | `abstractor_impl/` | Abstractor 实现目录（concat / llm） |
 | `associator_impl/` | Associator 实现目录（keyword / llm） |
 | `classifier_impl/` | Classifier 实现目录（keyword / llm） |
 | `index_builder_impl/` | IndexBuilder 实现目录（fulltext / hybrid / unified / vector）；`unified` 仅按 Scope 直调统一 Storage 的 add/update/delete，不派生检索索引，调用方不得预先写入同一 unit；vector/fulltext 各扩展 L0/L1 分层索引（独立 store 分表，store None 跳过），详见 F01-memory-layer |
 | `layer_annotator_impl/` | LayerAnnotator 实现目录（keyword / llm）；evolver 抽取后调用，对超阈 content 标注 L0/L1 |
 | `dedup_impl/` | Dedup 实现目录（vector / keyword） |
-| `evolver_impl/` | Evolver 实现目录（orchestrating=legacy / dynamic=动态 prompt 四步） |
+| `evolver_impl/` | Evolver 实现目录（orchestrating=legacy / dynamic=动态 prompt 四步 / 可选 schema_orchestrating） |
+| `entity_schema.py` | Entity Schema 文件加载、生成期过滤与选中属性集裁剪 |
+| `schema_prompts.py` | Schema Selection 与属性生成 Prompt |
+| `schema_bootstrap.py` | 仅由 Schema 装配入口调用的扩展注册入口 |
 | `bootstrap.py` | 统一触发所有构建算子注册（含 dedup_impl） |
 
 ## 构建链路
@@ -60,6 +63,11 @@
 ```
 
 `OrchestratingEvolver` 与 `DynamicEvolver` 平级（同属 `evolver` 顶层命名空间，注册名 `orchestrating` / `dynamic`）。`DynamicEvolver` 继承 `OrchestratingEvolver`，只覆盖 `_evolve_extract` 走动态 prompt 四步；其余三模式继承父类。装配或 pipeline profile 选哪个 evolver 实例即启用哪条 EXTRACT 路径。
+
+可选 Schema 链路由统一装配入口在 `globals.schema_enabled=true` 时条件注册
+`entity_schema` 与 `schema_orchestrating`。非 procedural
+写入先保存 Source，再抽取每属性一个 MemoryUnit；属性 Unit 直接 ADD，抽取失败仅放弃派生。
+每个属性 Unit 的 `entities` 只写属性所属实体，实体建索引复用现有 EntityLinkService。
 
 ## 行为铁律
 
@@ -132,6 +140,11 @@
     与坏子批分别隔离，整次抽取无可用候选时才显式失败；动态抽取可隔离单策略失败，但
     全部策略失败必须向上抛错。LLM 分层的重复、越界或遗漏 ID 拒绝整批，单条长度异常
     只跳过该条，其余合法结果在结构校验完成后写入。
+
+15. **Schema 扩展保持 opt-in 和标准实体契约**
+    默认 Bootstrap 不导入 Schema 扩展。Schema 属性用标准 MemoryUnit 表达，
+    `entities=[属性所属实体]`，不生成自定义 entity id，不维护 Schema 专用 Registry/Storage。
+    Source-first 只降级 LLM/校验错误；Source 落盘错误不得吞掉。
 
 ## 与其他子目录的边界
 

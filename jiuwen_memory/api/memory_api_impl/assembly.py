@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from jiuwen_memory.common._support import as_bool
 from jiuwen_memory.common.audit.base import AuditProducer
 from jiuwen_memory.common.bootstrap import register_plugins
 from jiuwen_memory.common.errors import ValidationError
@@ -31,7 +32,7 @@ from jiuwen_memory.common.log import setup_logging
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.config_source import ConfigSource, ConfigSourceProducer
 from jiuwen_memory.config.config_source_impl import register_config_sources
-from jiuwen_memory.config.context import ComponentConfig
+from jiuwen_memory.config.context import AssemblyContext, ComponentConfig
 from jiuwen_memory.config.defaults import KV_DEFAULT_NAME, ROOT_PARAMS, default_context
 from jiuwen_memory.construction.bootstrap import register_constructors
 from jiuwen_memory.control.bootstrap import register_controllers
@@ -48,6 +49,22 @@ from jiuwen_memory.storage.kv import KvProducer, KVStore
 from jiuwen_memory.storage.storage import Storage, StorageProducer
 
 from .local_memory_api import LocalMemoryAPI
+
+_SCHEMA_TARGETS = frozenset(
+    {
+        ("extractor", "entity_schema"),
+        ("evolver", "schema_orchestrating"),
+    }
+)
+
+
+def _configured_schema_targets(ctx: AssemblyContext) -> list[str]:
+    selected: list[str] = []
+    for namespace, target in _SCHEMA_TARGETS:
+        for name, spec in ctx.namespaces.get(namespace, {}).items():
+            if spec.target == target:
+                selected.append(f"{namespace}.{name}={target}")
+    return sorted(selected)
 
 
 @dataclass
@@ -100,6 +117,18 @@ def build_kernel(
         ctx = ctx.merged(config.context(known_top_names=Factory.known_top_names()))
     if policies is not None:
         ctx.globals["policies"] = dict(policies)
+    schema_enabled = as_bool(ctx.globals.get("schema_enabled"), default=False)
+    configured_schema_targets = _configured_schema_targets(ctx)
+    if configured_schema_targets and not schema_enabled:
+        configured = ", ".join(configured_schema_targets)
+        raise ValidationError(
+            "Schema targets require globals.schema_enabled=true; configured: " + configured
+        )
+    if schema_enabled:
+        # Schema 实现不在默认导入路径里。默认是关闭。配置允许我解析任何组件依赖之前就注册
+        from jiuwen_memory.construction.schema_bootstrap import register_schema_constructors
+
+        register_schema_constructors()
     if kv is not None:
         KvProducer.put(KV_DEFAULT_NAME, kv)  # 外部注入的真源覆盖配置选择，并被各处共享
 

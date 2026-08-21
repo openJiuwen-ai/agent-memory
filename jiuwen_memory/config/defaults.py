@@ -31,6 +31,7 @@ def default_config_dict() -> dict[str, Any]:
     """返回内置默认配置（两级命名空间字典）。"""
     return {
         "globals": {
+            "schema_enabled": False,
             "vector_enabled": True,
             "graph_enabled": True,
             "rerank_enabled": True,

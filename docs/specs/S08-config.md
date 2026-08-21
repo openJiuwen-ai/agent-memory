@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-08-18 |
-| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md` |
+| 最近一次修订日期 | 2026-08-21 |
+| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 装配开关见 `docs/features/construction/F07-entity-schema-extension.md` |
 
 ## 范围 / 边界
 
@@ -41,6 +41,10 @@
 7. **key 稳定、值为传输安全字符串**：`fetch` 返回的值以 `str` 为主契约；布尔/数字由消费方解析。缺失 key 的语义由方法约定（返回 `None` 或抛错），实现须文档化且默认源与自定义源一致。
 8. **双侧同配置**：Embedder/Tokenizer 等构建侧与检索侧必须观察到同一 `ConfigSource` 快照语义，避免两侧模型或开关不一致。
 9. **与 PolicyManager 边界**：lifecycle / `scope.require_space` 等已有策略键仍走 `PolicyManager`；六类动态配置（能力开关、prompt、模型凭证、store 端点/`active`）走 `ConfigSource`。
+10. **Schema 默认关闭**：`globals.schema_enabled` 默认为 `false`，只在
+    `build_kernel` 装配期决定是否注册 Schema target。它不是运行时热切换键，
+    改值后必须重新装配。开关开启不得自动改写 Extractor/Evolver target。
+    开关关闭却出现 Schema target 配置时必须 fail-closed，即使它们曾在同一进程注册过。
 
 ## 接口契约
 
@@ -51,6 +55,8 @@
 - `ComponentConfig.get`：实例 params > globals > 代码默认
 
 装配拓扑（选哪个 `target`、有哪些具名实例、依赖引用）仍由上述机制在 **`build_kernel` 时**确定。
+`globals.schema_enabled` 是装配期扩展注册开关：为 `true` 时先注册 Schema target，
+再按命名空间中显式配置的 target 解析依赖；为 `false` 时不导入该扩展。
 
 ### ConfigSource（新增）
 

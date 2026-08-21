@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/api/ |
-| 最近一次修订日期 | 2026-08-20 |
+| 最近一次修订日期 | 2026-08-21 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/common/F01-memory-layer.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F07-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md |
 ## Metadata 公共 API 契约
 
 `add` / `add_async` / `batch_add` 以及 `BatchWriteItem` 分别接收
@@ -152,6 +152,14 @@ hierarchy: HierarchyPatch | None = None
 `extensions` 为 `dict[str, str]`，API 防御性复制并把值规范为字符串；未知 key 原样透传。
 `filters` 与 search 共用 FilterExpr/旧 list/dict DSL 规范化语义，`memory_types` 与 filters
 取 AND。`org/space/user/agent/session` 属于 Scope 隔离轴，不得出现在 filters。
+
+#### 可选 Entity Schema 装配
+
+Entity Schema 抽取复用统一的 `assemble(config)` / `build_kernel(config)` 装配入口。
+`globals.schema_enabled` 默认 `false`；只有装配时显式设为 `true` 才注册 Schema
+target。调用方还必须在配置中显式选择 Schema Extractor 和 Schema Evolver；
+仅打开注册开关不改变默认 target 及写入语义。Schema 写入仍使用
+`add(..., system_metadata={"infer": True})`。开关关闭但显式配置 Schema target 时装配失败。
 
 #### infer 开关（add 的同步抽取语义）
 
