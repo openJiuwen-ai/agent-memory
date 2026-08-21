@@ -278,11 +278,14 @@ class InMemoryEngine(MemoryEngine):
         # meta 保留原生类型落库（与 CloudEngine 不同——后者走 _normalized_metadata str 化）。
         meta = raw_meta
 
+        is_video = source == Modality.VIDEO
+        payload_id = str(meta.get("payload_id", "")).strip() if is_video else ""
         payload = RawPayload(
-            id=str(uuid.uuid4()),
+            id=payload_id or str(uuid.uuid4()),
             scope=scope,
             modality=source,
-            data=content.encode("utf-8"),
+            data=b"" if is_video else content.encode("utf-8"),
+            uri=content if is_video else "",
             system_metadata=meta,
             user_metadata=dict(user_metadata or {}),
             occurred_at=occurred_at,

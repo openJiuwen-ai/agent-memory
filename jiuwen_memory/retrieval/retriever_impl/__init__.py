@@ -8,5 +8,6 @@ from importlib import import_module
 from jiuwen_memory.retrieval.retriever import RetrieverProducer
 
 import_module(".pipeline_retriever", __name__)
+import_module(".multimodal_retriever", __name__)
 
 __all__ = ["RetrieverProducer"]

@@ -7,7 +7,7 @@
 | 关联模块 | jiuwen_memory/construction/ |
 | 最近一次修订日期 | 2026-08-20 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F06-unified-index-builder.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
 
 ## Metadata 派生与索引契约
 
@@ -117,6 +117,12 @@ registry 未配置或 key 缺失时回退把值本身当文本用（兼容内联
 仍向 Evolver 返回 `list[MemoryUnit]`。单个策略失败与其它策略隔离；若所有策略都失败则
 向上抛出最后一个错误，以区别于策略成功返回合法空结果。没有动态 prompt 时委托配置的旧
 Extractor。
+
+`VideoMemoryExtractor` 是 Extractor 的视频实现：只消费 ACTIVE 的源视频单元，跳过已有
+`system_metadata.modal_type=multimodal` 的派生单元，将 Normalizer 输出的 clips/events
+转换为 CLM/ELM `MemoryUnit`。两类单元使用 `system_metadata.memory_level` 标识层级，
+不生成 L0/L1；事件的 `child_clm_source_ids` 为 `list[str]`，并通过 provenance 保留源
+视频血缘。
 
 ### DynamicEvolver（`evolver_impl/dynamic_evolver.py`）
 

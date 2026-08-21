@@ -1,0 +1,92 @@
+memory_api:
+  globals:
+    ingest_max_workers: 1
+    ingest_max_pending_jobs: 2
+
+  normalizer:
+    default:
+      target: routing
+      params:
+        routes:
+          video:
+            target: video
+            params:
+              asr_port: video
+              asr_chunk_seconds: 600
+              llm_port: video_text
+              vlm_port: video_vision
+              temp_root: /tmp/agent-memory-video
+
+  asr:
+    video:
+      target: openai_transcription
+      params:
+        asr_model: whisper-large-v3-turbo
+        asr_base_url: http://127.0.0.1:8003/v1
+        asr_api_key: dummy
+        config_namespace: asr.video
+
+  llm:
+    video_text:
+      target: openai
+      params:
+        llm_model: qwen-text
+        llm_base_url: http://127.0.0.1:8000/v1
+        llm_api_key: dummy
+        llm_temperature: 0.0
+        config_namespace: llm.video_text
+    video_vision:
+      target: openai
+      params:
+        llm_model: qwen-vl
+        llm_base_url: http://127.0.0.1:8100/v1
+        llm_api_key: dummy
+        llm_temperature: 0.0
+        config_namespace: llm.video_vision
+
+  extractor:
+    video:
+      target: video_memory
+
+  retriever:
+    multimodal:
+      target: multimodal
+      params:
+        base_retriever: default
+        clip_top_k: 10
+        event_top_k: 10
+        rrf_k: 60
+
+  evolver:
+    video:
+      target: orchestrating
+      params:
+        extractor: video
+        abstractor: default
+        associator: default
+        index_builder: default
+        kv_store: default
+        graph_store: default
+        dedup: default
+        llm: default
+        layer_annotator: null  # 视频 profile 显式禁用 L0/L1 标注，对齐 F05（CLM/ELM 用 memory_level 区分层级）
+
+  pipeline:
+    default:
+      target: metadata
+      params:
+        route_key: pipeline
+        fallback: default
+        routes:
+          video: video
+        profiles:
+          default:
+            index_builder: default
+            retriever: multimodal
+            evolver: default
+            classifier: default
+          video:
+            index_builder: default
+            retriever: multimodal
+            evolver: video
+            classifier: default

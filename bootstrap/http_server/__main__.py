@@ -94,6 +94,7 @@ class HttpServer(Server):
             logger.info("agent-memory server stopped")
         finally:
             httpd.server_close()
+            self.close(wait=True)
 
 
 def main(argv: list[str] | None = None) -> int:

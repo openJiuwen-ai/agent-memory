@@ -136,7 +136,7 @@ hierarchy: HierarchyPatch | None = None
 | `update` | `(unit_id, scope, patch: MemoryPatch, *, identity) -> MemoryUnit` | 修正记忆：鉴权 UPDATE→委托 Engine |
 | `delete` | `(selector: DeleteSelector, *, identity) -> list[str]` | 删除/归档/降权：鉴权 DELETE→委托 Engine |
 | `evolve` | `(scope, mode: EvolveMode, channel=BACKGROUND, *, identity, hierarchy_options=None) -> str` | 触发演进：鉴权→委托 Engine→返回 job_id；仅目标 `HIERARCHY` 接受 options |
-| `job_status` | `(job_id, *, identity) -> JobInfo` | 查询任务状态（委托 Scheduler） |
+| `job_status` | `(job_id, *, identity, scope=None) -> JobInfo` | 查询 Scheduler 或长耗时 Ingest 任务；Ingest 任务要求 target scope，API 对任务真实 Scope 执行 READ 鉴权与审计 |
 | `job_cancel` | `(job_id, *, identity) -> None` | 取消任务（委托 Scheduler） |
 | `admin_get` | `(key, *, identity) -> str` | 读策略（直达 PolicyManager） |
 | `admin_set` | `(key, value, *, identity) -> None` | 写策略（直达 PolicyManager） |

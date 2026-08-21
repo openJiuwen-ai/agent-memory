@@ -173,6 +173,10 @@ parent_score = max(parent_recall_score, selected_descendant_scores)
 `RetrievedItem` 始终返回 `abstract/overview/content` 全字段，因此这些字段的完整序列化
 大小可能超过上述逻辑预算。当前契约不提供严格 wire-size/token-size 投影或上限保证。
 
+多模态 profile 使用 `MultimodalRetriever` 包装基础 Retriever，并行执行原生文本、CLM
+和 ELM 三个过滤分支后按 RRF 融合。该包装器不扫描 KV 判断多模态记忆是否存在，也不
+依赖具体 Store；没有视频记忆时 CLM/ELM 分支返回空，融合结果由原生分支提供。
+
 ### QueryParser（`query_parser.py`）
 
 | 方法 | 签名 | 语义 |

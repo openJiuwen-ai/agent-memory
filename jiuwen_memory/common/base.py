@@ -34,6 +34,7 @@ class PluginType(str, Enum):
     EMBEDDER = "embedder"
     FEATURE_EXTRACTOR = "feature_extractor"
     LLM = "llm"
+    ASR = "asr"
     NORMALIZER = "normalizer"
     RERANKER = "reranker"
 

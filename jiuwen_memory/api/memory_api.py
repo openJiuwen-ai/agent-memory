@@ -213,7 +213,27 @@ class MemoryAPI(ABC):
         """
 
     @abstractmethod
-    def job_status(self, job_id: str, *, identity: Scope) -> JobInfo:
+    def check_write(
+        self,
+        scope: Scope,
+        identity: Scope,
+        *,
+        tags: list[str] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
+    ) -> None:
+        """Pre-flight WRITE 鉴权，不落盘。用于长耗时摄入任务入队前拒绝无权限请求，
+        避免 DoS（队列被无权限请求占满）。后台实际写入仍保留一次鉴权作防御层。
+        """
+
+    @abstractmethod
+    def job_status(
+        self,
+        job_id: str,
+        *,
+        identity: Scope,
+        scope: Scope | None = None,
+    ) -> JobInfo:
         """
         查询演进任务状态（委托 Scheduler）；``identity`` 为调用方身份，本层
         据其鉴权（仅可查自身/已授权范围的任务）。

@@ -22,7 +22,7 @@
 | `recaller_impl/` | Recaller 实现目录（keyword / keyword_l0/l1 / vector / vector_l0/l1 / graph） |
 | `fuser_impl/` | Fuser 实现目录（rrf【默认】/ weighted_rrf / score_max）+ `layered_merge` 分层归并前处理 |
 | `discloser_impl/` | Discloser 实现目录（structured / truncating） |
-| `retriever_impl/` | Retriever 实现目录；pipeline 实现通过 StorageProducer 获取统一 Storage |
+| `retriever_impl/` | Retriever 实现目录；pipeline 通过 StorageProducer 获取统一 Storage；multimodal 组合原生、CLM、ELM 三个过滤分支并执行 RRF 融合 |
 | `bootstrap.py` | 统一触发所有检索算子注册 |
 
 ## 检索链路
@@ -128,3 +128,6 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
    多通道候选。Fuser 不执行 Reranker。
 8. `PipelineRetriever` 的生产装配必须通过 `StorageProducer` 获取 Storage；默认
    `CompositeStorage` 的兼容 Recaller 只允许在装配阶段绑定，不得在 storage 层构建检索算子。
+9. `MultimodalRetriever` 只组合已注入的基础 Retriever，不得直接依赖 `KvProducer`、
+   扫描 KV 或识别具体存储后端。原生、CLM、ELM 分支分别检索；无视频记忆时两个视频
+   分支自然为空，再按 RRF 融合并截断到请求的 `top_k`。
