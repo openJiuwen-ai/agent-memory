@@ -104,6 +104,17 @@ class _SequenceResponseLLM(LLM):
         return response
 
 
+class _CapturingResponseLLM(_ConstantResponseLLM):
+    def __init__(self, response: str) -> None:
+        super().__init__(response)
+        self.messages: list[ChatMessage] = []
+
+    def chat(self, messages: list[ChatMessage], **options: object) -> str:
+        del options
+        self.messages.extend(messages)
+        return self.response
+
+
 def _property_response(
     source_id: str,
     *,
@@ -223,6 +234,19 @@ def test_schema_json_parser_requires_one_root_object() -> None:
     assert _parse_json_object('```json\n{"entities": []}\n```')["entities"] == []
     with pytest.raises(ValueError, match="not valid JSON"):
         _parse_json_object('example: {"entities": []}')
+
+
+def test_rendered_entity_generation_prompt_has_no_escaped_json_braces() -> None:
+    source = _source()
+    llm = _CapturingResponseLLM(_property_response(source.id))
+    extractor = EntitySchemaExtractor(llm=llm, schema=_catalog())
+
+    units = extractor.extract([source])
+
+    assert len(units) == 1
+    assert llm.messages
+    rendered_prompt = llm.messages[-1].content
+    assert "{{" not in rendered_prompt
 
 
 def test_partial_event_time_does_not_create_private_temporal_metadata() -> None:

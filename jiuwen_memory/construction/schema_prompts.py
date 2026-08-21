@@ -41,22 +41,22 @@ Input messages. Each message marker contains its authoritative unit_id:
 {chat_chunk}
 
 Return exactly one JSON object with this shape:
-{{
+{
   "entities": [
-    {{
+    {
       "name": "Alice",
       "entity_type": "person",
       "properties": [
-        {{
+        {
           "property_name": "occupation",
           "value": "On 2024-05-03, Alice started working as a software engineer at Acme.",
           "time": "2024-05-03",
           "source_unit_ids": ["the exact supporting unit_id"]
-        }}
+        }
       ]
-    }}
+    }
   ]
-}}
+}
 
 Rules:
 1. Use only entity types and properties present in the supplied schema.
