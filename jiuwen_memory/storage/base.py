@@ -50,6 +50,11 @@ class StoreType(str, Enum):
 class BaseStore(ABC):
     """所有存储后端的自描述契约。"""
 
+    @property
+    def security(self) -> StoreSecurity:
+        """返回本 Store 的数据保护模块；默认明确表示未启用保护。"""
+        return PASSTHROUGH_STORE_SECURITY
+
     @abstractmethod
     def store_type(self) -> StoreType:
         """返回本存储的类型。"""
@@ -57,8 +62,3 @@ class BaseStore(ABC):
     @abstractmethod
     def health(self) -> None:
         """存活探测：健康时返回 ``None``，否则抛 :class:`~common.errors.HealthCheckError`。"""
-
-    @property
-    def security(self) -> StoreSecurity:
-        """返回本 Store 的数据保护模块；默认明确表示未启用保护。"""
-        return PASSTHROUGH_STORE_SECURITY

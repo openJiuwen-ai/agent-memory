@@ -116,6 +116,20 @@ class DynamicLLMExtractor(Extractor):
             raise last_error
         return result
 
+    def parse_response(
+        self,
+        response: str,
+        sources: list[MemoryUnit],
+        strategy: str,
+    ) -> list[MemoryUnit]:
+        """解析一次策略响应并转换为下游统一消费的 MemoryUnit 列表。
+
+        默认实现按 JSON 解析。metadata prompt 负责约束响应格式；子类可解析任意内部
+        结构，但必须在本方法边界内完成到 ``list[MemoryUnit]`` 的转换。
+        """
+        candidates = self._parse_json_candidates(response, sources, strategy)
+        return self._helper.build_units(candidates, sources)
+
     def _extract_strategy(
         self,
         units: list[MemoryUnit],
@@ -151,20 +165,6 @@ class DynamicLLMExtractor(Extractor):
             ]
         )
         return self.parse_response(response, units, strategy)
-
-    def parse_response(
-        self,
-        response: str,
-        sources: list[MemoryUnit],
-        strategy: str,
-    ) -> list[MemoryUnit]:
-        """解析一次策略响应并转换为下游统一消费的 MemoryUnit 列表。
-
-        默认实现按 JSON 解析。metadata prompt 负责约束响应格式；子类可解析任意内部
-        结构，但必须在本方法边界内完成到 ``list[MemoryUnit]`` 的转换。
-        """
-        candidates = self._parse_json_candidates(response, sources, strategy)
-        return self._helper.build_units(candidates, sources)
 
     def _parse_json_candidates(
         self,

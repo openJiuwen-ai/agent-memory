@@ -63,12 +63,6 @@ class KeywordRecaller(Recaller):
         # 但持有 storage 无成本，装配期统一注入，避免 __init__ 分层条件分支。
         self._storage = storage
 
-    def operator_type(self) -> RetrievalOperatorType:
-        return RetrievalOperatorType.RECALLER
-
-    def health(self) -> None:
-        return None
-
     @property
     def layer(self) -> str:
         """当前召回层级（l2/l0/l1），公开只读。"""
@@ -78,6 +72,27 @@ class KeywordRecaller(Recaller):
     def fulltext_store(self) -> FulltextStore | None:
         """注入的全文 store（只读；None 表示该层未注入，recall 返空）。"""
         return self._fulltext
+
+    @staticmethod
+    def _entity_list_limit(hash_count: int) -> int:
+        """hash→实体记录的 list 上限。按 hash 数给余量，但封顶防过大。"""
+        return max(hash_count * 2, 50)
+
+    @staticmethod
+    def _merge_maxp(batch1: list[ScoredUnit], batch2: list[ScoredUnit]) -> list[ScoredUnit]:
+        """同 unit_id 取 MaxP，按分降序合并 batch 1/2。不负责 top_k 截断——
+        截断是 recall 对 ``Recaller.recall`` 契约（≤ top_k）的承诺，在 recall
+        里切。batch 1 已排除 batch 2 的重复 id，直接拼即可保证 MaxP。
+        """
+        merged = list(batch1) + list(batch2)
+        merged.sort(key=lambda u: u.score, reverse=True)
+        return merged
+
+    def operator_type(self) -> RetrievalOperatorType:
+        return RetrievalOperatorType.RECALLER
+
+    def health(self) -> None:
+        return None
 
     def channel(self) -> RecallChannel:
         return RecallChannel.KEYWORD
@@ -232,21 +247,6 @@ class KeywordRecaller(Recaller):
             ))
         batch2.sort(key=lambda u: u.score, reverse=True)
         return batch2
-
-    @staticmethod
-    def _entity_list_limit(hash_count: int) -> int:
-        """hash→实体记录的 list 上限。按 hash 数给余量，但封顶防过大。"""
-        return max(hash_count * 2, 50)
-
-    @staticmethod
-    def _merge_maxp(batch1: list[ScoredUnit], batch2: list[ScoredUnit]) -> list[ScoredUnit]:
-        """同 unit_id 取 MaxP，按分降序合并 batch 1/2。不负责 top_k 截断——
-        截断是 recall 对 ``Recaller.recall`` 契约（≤ top_k）的承诺，在 recall
-        里切。batch 1 已排除 batch 2 的重复 id，直接拼即可保证 MaxP。
-        """
-        merged = list(batch1) + list(batch2)
-        merged.sort(key=lambda u: u.score, reverse=True)
-        return merged
 
 
 # -- 注册到 RecallerProducer（实现自注册，新增无需改 producer/build_kernel） -------- #

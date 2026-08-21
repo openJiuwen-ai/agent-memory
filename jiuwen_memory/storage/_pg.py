@@ -174,29 +174,6 @@ class PgStoreBase:
         self._jsonb: Any = None
         self._init_lock = threading.Lock()
 
-    def _resolved_dsn(self) -> str:
-        """当前应使用的 DSN（ConfigSource 优先，否则构造期回落）。"""
-        from jiuwen_memory.config.binding import resolve_connection_url
-
-        live = resolve_connection_url(
-            self._config_source,
-            namespace=self._config_namespace,
-            field=self._config_dsn_field,
-            fallback=self._fallback_dsn,
-        )
-        return live or self._fallback_dsn
-
-    def _close_pool_unlocked(self) -> None:
-        if self._pool is None:
-            return
-        try:
-            self._pool.close()
-        except Exception as exc:
-            # 重连路径上的尽力关闭；池可能已损坏，仍须丢弃句柄以便重建。
-            logger.debug("postgres pool close during reconnect: %s", exc)
-        self._pool = None
-        self._pool_dsn = None
-
     @property
     def pool(self) -> Any:
         dsn = self._resolved_dsn()
@@ -252,9 +229,6 @@ class PgStoreBase:
                 raise BackendError(f"postgres connect: {exc}") from exc
         return self._pool
 
-    def _ensure_schema(self, pool: Any) -> None:
-        raise NotImplementedError
-
     @property
     def sql(self) -> Any:
         if self._sql is None:
@@ -267,14 +241,57 @@ class PgStoreBase:
             _ = self.pool
         return self._jsonb
 
+    @staticmethod
+    def _lock_schema(cursor: Any) -> None:
+        cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (_SCHEMA_LOCK_KEY,))
+
+    @staticmethod
+    def _require_vector_extension(cursor: Any, minimum: str = "0.8.0") -> str:
+        cursor.execute("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
+        row = cursor.fetchone()
+        if row is None:
+            raise ValidationError("pgvector 扩展不存在；请执行 CREATE EXTENSION vector")
+        actual = str(row[0])
+        if _version_tuple(actual) < _version_tuple(minimum):
+            raise ValidationError(f"pgvector 版本过低：实际 {actual}，要求 >= {minimum}")
+        return actual
+
+    def close(self) -> None:
+        with self._init_lock:
+            if self._pool is not None:
+                self._pool.close()
+                self._pool = None
+
+    def _resolved_dsn(self) -> str:
+        """当前应使用的 DSN（ConfigSource 优先，否则构造期回落）。"""
+        from jiuwen_memory.config.binding import resolve_connection_url
+
+        live = resolve_connection_url(
+            self._config_source,
+            namespace=self._config_namespace,
+            field=self._config_dsn_field,
+            fallback=self._fallback_dsn,
+        )
+        return live or self._fallback_dsn
+
+    def _close_pool_unlocked(self) -> None:
+        if self._pool is None:
+            return
+        try:
+            self._pool.close()
+        except Exception as exc:
+            # 重连路径上的尽力关闭；池可能已损坏，仍须丢弃句柄以便重建。
+            logger.debug("postgres pool close during reconnect: %s", exc)
+        self._pool = None
+        self._pool_dsn = None
+
+    def _ensure_schema(self, pool: Any) -> None:
+        raise NotImplementedError
+
     def _qualified(self, name: str | None = None) -> Any:
         return self.sql.SQL(".").join(
             (self.sql.Identifier(self._schema), self.sql.Identifier(name or self._table))
         )
-
-    @staticmethod
-    def _lock_schema(cursor: Any) -> None:
-        cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (_SCHEMA_LOCK_KEY,))
 
     def _create_schema(self, cursor: Any) -> None:
         cursor.execute(
@@ -307,17 +324,6 @@ class PgStoreBase:
                 "请预建或启用 auto_create_schema"
             )
 
-    @staticmethod
-    def _require_vector_extension(cursor: Any, minimum: str = "0.8.0") -> str:
-        cursor.execute("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
-        row = cursor.fetchone()
-        if row is None:
-            raise ValidationError("pgvector 扩展不存在；请执行 CREATE EXTENSION vector")
-        actual = str(row[0])
-        if _version_tuple(actual) < _version_tuple(minimum):
-            raise ValidationError(f"pgvector 版本过低：实际 {actual}，要求 >= {minimum}")
-        return actual
-
     def _health(self) -> None:
         try:
             with self.pool.connection() as conn, conn.cursor() as cursor:
@@ -327,9 +333,3 @@ class PgStoreBase:
             if isinstance(exc, HealthCheckError):
                 raise
             raise HealthCheckError(f"postgres health failed: {exc}") from exc
-
-    def close(self) -> None:
-        with self._init_lock:
-            if self._pool is not None:
-                self._pool.close()
-                self._pool = None

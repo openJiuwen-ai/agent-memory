@@ -97,16 +97,6 @@ class ActiveRouter(Generic[T]):
         self._config_source = config_source
         self._default_name = default_name
 
-    def get(self) -> T:
-        """返回当前 active 对应实例；未知 active 名抛 :class:`ValidationError`。"""
-        name = resolve_active_name(
-            self._config_source,
-            namespace=self._namespace,
-            available=tuple(self._instances),
-            default=self._default_name,
-        )
-        return self._instances[name]
-
     @property
     def active_name(self) -> str:
         """当前解析出的具名实例名（与 :meth:`get` 同一套规则）。"""
@@ -116,6 +106,16 @@ class ActiveRouter(Generic[T]):
             available=tuple(self._instances),
             default=self._default_name,
         )
+
+    def get(self) -> T:
+        """返回当前 active 对应实例；未知 active 名抛 :class:`ValidationError`。"""
+        name = resolve_active_name(
+            self._config_source,
+            namespace=self._namespace,
+            available=tuple(self._instances),
+            default=self._default_name,
+        )
+        return self._instances[name]
 
 
 class RoutingEmbedder(Embedder):
@@ -452,33 +452,9 @@ class RoutingStorage(Storage):
         self._lazy_fusion = _LazyStorePort(lambda: self._router.get().fusion)
         self._lazy_fs = _LazyStorePort(lambda: self._router.get().fs)
 
-    def _active(self) -> Storage:
-        return self._router.get()
-
     @property
     def security(self) -> StorageSecurity:
         return self._active().security
-
-    def capabilities(self) -> frozenset[StorageCapability]:
-        return self._active().capabilities()
-
-    def has_kv_port(self, name: str = "default") -> bool:
-        return self._active().has_kv_port(name)
-
-    def has_vector_port(self, name: str = "default") -> bool:
-        return self._active().has_vector_port(name)
-
-    def has_fulltext_port(self, name: str = "default") -> bool:
-        return self._active().has_fulltext_port(name)
-
-    def has_graph_port(self, name: str = "default") -> bool:
-        return self._active().has_graph_port(name)
-
-    def has_fusion_port(self, name: str = "default") -> bool:
-        return self._active().has_fusion_port(name)
-
-    def has_fs_port(self, name: str = "default") -> bool:
-        return self._active().has_fs_port(name)
 
     @property
     def kv(self) -> KVStore:
@@ -503,6 +479,27 @@ class RoutingStorage(Storage):
     @property
     def fs(self) -> FSStore:
         return self._lazy_fs  # type: ignore[return-value]
+
+    def capabilities(self) -> frozenset[StorageCapability]:
+        return self._active().capabilities()
+
+    def has_kv_port(self, name: str = "default") -> bool:
+        return self._active().has_kv_port(name)
+
+    def has_vector_port(self, name: str = "default") -> bool:
+        return self._active().has_vector_port(name)
+
+    def has_fulltext_port(self, name: str = "default") -> bool:
+        return self._active().has_fulltext_port(name)
+
+    def has_graph_port(self, name: str = "default") -> bool:
+        return self._active().has_graph_port(name)
+
+    def has_fusion_port(self, name: str = "default") -> bool:
+        return self._active().has_fusion_port(name)
+
+    def has_fs_port(self, name: str = "default") -> bool:
+        return self._active().has_fs_port(name)
 
     def kv_port(self, name: str = "default") -> KVStore:
         return _LazyStorePort(lambda n=name: self._router.get().kv_port(n))  # type: ignore[return-value]
@@ -642,4 +639,7 @@ class RoutingStorage(Storage):
 
     def health(self) -> None:
         self._active().health()
+
+    def _active(self) -> Storage:
+        return self._router.get()
 

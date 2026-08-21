@@ -89,6 +89,20 @@ class RedisLockProvider(LockProvider):
                 self._client = client
         return self._client
 
+    async def renew(self, handle: LockHandle, *, lease_ms: int | None = None) -> bool:
+        lease = handle.lease_ms if lease_ms is None else int(lease_ms)
+        client = self.client
+        with wrap_backend("redis lock renew"):
+            result = await self._renew_script(
+                keys=[handle.key], args=[handle.token, lease], client=client
+            )
+        return bool(result)
+
+    async def health(self) -> None:
+        client = self.client
+        with wrap_backend("redis lock ping"):
+            await client.ping()
+
     async def _acquire(self, key: str, *, lease_ms: int, wait_timeout_ms: int) -> LockHandle:
         token = uuid.uuid4().hex
         client = self.client
@@ -105,20 +119,6 @@ class RedisLockProvider(LockProvider):
         client = self.client
         with wrap_backend("redis lock release"):
             await self._release_script(keys=[handle.key], args=[handle.token], client=client)
-
-    async def renew(self, handle: LockHandle, *, lease_ms: int | None = None) -> bool:
-        lease = handle.lease_ms if lease_ms is None else int(lease_ms)
-        client = self.client
-        with wrap_backend("redis lock renew"):
-            result = await self._renew_script(
-                keys=[handle.key], args=[handle.token, lease], client=client
-            )
-        return bool(result)
-
-    async def health(self) -> None:
-        client = self.client
-        with wrap_backend("redis lock ping"):
-            await client.ping()
 
 
 @LockProducer.register("redis")

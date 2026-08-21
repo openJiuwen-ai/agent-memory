@@ -143,18 +143,6 @@ class SQLitePermissionManager(PermissionManager):
             self._migrate_schema()
             self._conn.executescript(_INDEX_SCHEMA)
 
-    def _migrate_schema(self) -> None:
-        columns: set[str] = set()
-        rows = self._conn.execute("PRAGMA table_info(grants)").fetchall()
-        for row in rows:
-            column_name = row["name"] if isinstance(row, sqlite3.Row) else row[1]
-            columns.add(column_name)
-        for column in ("grantor_space", "grantee_space"):
-            if column not in columns:
-                self._conn.execute(
-                    f"ALTER TABLE grants ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
-                )
-
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.PERMISSION
 
@@ -280,6 +268,18 @@ class SQLitePermissionManager(PermissionManager):
             ):
                 return True
         return False
+
+    def _migrate_schema(self) -> None:
+        columns: set[str] = set()
+        rows = self._conn.execute("PRAGMA table_info(grants)").fetchall()
+        for row in rows:
+            column_name = row["name"] if isinstance(row, sqlite3.Row) else row[1]
+            columns.add(column_name)
+        for column in ("grantor_space", "grantee_space"):
+            if column not in columns:
+                self._conn.execute(
+                    f"ALTER TABLE grants ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
+                )
 
 
 @PermissionProducer.register("sqlite")

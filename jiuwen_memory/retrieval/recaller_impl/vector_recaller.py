@@ -56,12 +56,6 @@ class VectorRecaller(Recaller):
                 "无法用于 MaxP 聚合与降序融合"
             )
 
-    def operator_type(self) -> RetrievalOperatorType:
-        return RetrievalOperatorType.RECALLER
-
-    def health(self) -> None:
-        return None
-
     @property
     def layer(self) -> str:
         """当前召回层级（l2/l0/l1），公开只读。"""
@@ -71,6 +65,12 @@ class VectorRecaller(Recaller):
     def vector_store(self) -> VectorStore | None:
         """注入的向量 store（只读；None 表示该层未注入，recall 返空）。"""
         return self._vector
+
+    def operator_type(self) -> RetrievalOperatorType:
+        return RetrievalOperatorType.RECALLER
+
+    def health(self) -> None:
+        return None
 
     def channel(self) -> RecallChannel:
         return RecallChannel.VECTOR

@@ -206,6 +206,29 @@ class LLMAssociator(Associator):
         self._retry_max_retries = retry_max_retries
         self._retry_backoff_ms = retry_backoff_ms
 
+    @staticmethod
+    def _cosine_similarity(a: list[float], b: list[float]) -> float:
+        """计算两个向量的 cosine similarity。"""
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = math.sqrt(sum(x * x for x in a))
+        norm_b = math.sqrt(sum(x * x for x in b))
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return dot / (norm_a * norm_b)
+
+    @staticmethod
+    def _strip_non_json(text: str) -> str:
+        """去除 markdown fences 等噪声，提取 JSON 核心。"""
+        s = text.strip()
+        if s.startswith("```"):
+            lines = s.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            s = "\n".join(lines)
+        return s.strip()
+
     def operator_type(self) -> OperatorType:
         return OperatorType.ASSOCIATOR
 
@@ -443,16 +466,6 @@ class LLMAssociator(Associator):
                         )
 
         return candidates
-
-    @staticmethod
-    def _cosine_similarity(a: list[float], b: list[float]) -> float:
-        """计算两个向量的 cosine similarity。"""
-        dot = sum(x * y for x, y in zip(a, b))
-        norm_a = math.sqrt(sum(x * x for x in a))
-        norm_b = math.sqrt(sum(x * x for x in b))
-        if norm_a == 0 or norm_b == 0:
-            return 0.0
-        return dot / (norm_a * norm_b)
 
     # ------------------------------------------------------------------
     # Phase 3: 关系验证与深度发现
@@ -817,19 +830,6 @@ class LLMAssociator(Associator):
             logger.warning("Associator: LLM response not valid JSON, returning empty")
             return []
         return []
-
-    @staticmethod
-    def _strip_non_json(text: str) -> str:
-        """去除 markdown fences 等噪声，提取 JSON 核心。"""
-        s = text.strip()
-        if s.startswith("```"):
-            lines = s.split("\n")
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            s = "\n".join(lines)
-        return s.strip()
 
     # ------------------------------------------------------------------
     # Phase 4: 关系产出

@@ -84,6 +84,40 @@ class RecursiveChunker(Chunker):
     def chunk_size(self) -> int:
         return self._chunk_size
 
+    @staticmethod
+    def _pick_separator(text: str, candidates: list[str]) -> str | None:
+        """从候选分隔符中选取文本中出现的第一个。"""
+        for sep in candidates:
+            if sep in text:
+                return sep
+        return None
+
+    @staticmethod
+    def _split_keep_separator(text: str, sep: str) -> list[tuple[str, int, int]]:
+        """按分隔符切分，分隔符保留在片段尾部，返回 (片段, 起始偏移, 结束偏移)。"""
+        # text.split(sep) 会移除分隔符，需重新拼接
+        parts = text.split(sep)
+
+        result: list[tuple[str, int, int]] = []
+        char_offset = 0
+
+        for i, part in enumerate(parts):
+            if i < len(parts) - 1:
+                # 非末段：拼接分隔符
+                fragment = part + sep
+            else:
+                # 末段：原文末尾可能无分隔符
+                fragment = part
+
+            if fragment.strip():
+                start = char_offset
+                end = char_offset + len(fragment)
+                result.append((fragment, start, end))
+
+            char_offset += len(fragment)
+
+        return result
+
     def plugin_type(self) -> PluginType:
         return PluginType.CHUNKER
 
@@ -161,40 +195,6 @@ class RecursiveChunker(Chunker):
                     )
             else:
                 result.append(_Split(text=frag_text, start=frag_start, end=frag_end))
-
-        return result
-
-    @staticmethod
-    def _pick_separator(text: str, candidates: list[str]) -> str | None:
-        """从候选分隔符中选取文本中出现的第一个。"""
-        for sep in candidates:
-            if sep in text:
-                return sep
-        return None
-
-    @staticmethod
-    def _split_keep_separator(text: str, sep: str) -> list[tuple[str, int, int]]:
-        """按分隔符切分，分隔符保留在片段尾部，返回 (片段, 起始偏移, 结束偏移)。"""
-        # text.split(sep) 会移除分隔符，需重新拼接
-        parts = text.split(sep)
-
-        result: list[tuple[str, int, int]] = []
-        char_offset = 0
-
-        for i, part in enumerate(parts):
-            if i < len(parts) - 1:
-                # 非末段：拼接分隔符
-                fragment = part + sep
-            else:
-                # 末段：原文末尾可能无分隔符
-                fragment = part
-
-            if fragment.strip():
-                start = char_offset
-                end = char_offset + len(fragment)
-                result.append((fragment, start, end))
-
-            char_offset += len(fragment)
 
         return result
 

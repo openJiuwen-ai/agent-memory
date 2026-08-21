@@ -88,6 +88,94 @@ class ElasticsearchEntityStore(EntityStore):
             )
         return self._client
 
+    @staticmethod
+    def _parse_bulk_response(response: dict) -> EntityBatchResult:
+        """Parse a bulk response into per-item successful/failed ids.
+
+        Unlike the main CSSAdapter (which raises on any failure), this never raises
+        — entity linking needs per-item granularity so one bad document does not
+        fail the whole group.
+        """
+        successful_ids: list[str] = []
+        failed_ids: list[str] = []
+        for item in response.get("items", []):
+            action_type = next(iter(item))
+            result = item[action_type]
+            doc_id = result.get("_id")
+            if not doc_id:
+                continue
+            if result.get("status", 0) in (200, 201):
+                successful_ids.append(doc_id)
+            else:
+                failed_ids.append(doc_id)
+        return EntityBatchResult(successful_ids=successful_ids, failed_ids=failed_ids)
+
+    @staticmethod
+    def _link_script_body(memory_ids: list[str]) -> dict:
+        """Build the painless script body that atomically appends memory ids.
+
+        Shared by LINK bulk operations. painless is ES native — ES/OS 语法零差异,
+        脚本可直接复用。``ctx._source.linked_memory_ids`` 幂等去重追加。
+        """
+        return {
+            "script": {
+                "lang": "painless",
+                "source": (
+                    "if (ctx._source.linked_memory_ids == null) { "
+                    "ctx._source.linked_memory_ids = new ArrayList(); "
+                    "} "
+                    "for (def memory_id : params.memory_ids) { "
+                    "if (!ctx._source.linked_memory_ids.contains(memory_id)) { "
+                    "ctx._source.linked_memory_ids.add(memory_id); "
+                    "} "
+                    "}"
+                ),
+                "params": {"memory_ids": memory_ids},
+            }
+        }
+
+    # ------------------------------------------------------------------
+    # 序列化与过滤构造
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_filters(space_id: str, filters: EntityStoreFilters) -> list[dict]:
+        query_filters = [{"term": {"space_id": space_id}}]
+        for field in filters.__dataclass_fields__:
+            value = getattr(filters, field)
+            if value is not None:
+                query_filters.append({"term": {field: value}})
+        return query_filters
+
+    @staticmethod
+    def _to_document(record: EntityRecord) -> dict:
+        doc = {
+            "space_id": record.space_id,
+            "entity_text_hash": record.entity_text_hash,
+            "entity_type": record.entity_type,
+            "linked_memory_ids": list(record.linked_memory_ids),
+            "actor_id": record.filters.actor_id,
+        }
+        return doc
+
+    @classmethod
+    def _hit_to_entity_record(cls, hit: dict) -> EntityRecord:
+        source = hit["_source"]
+        return EntityRecord(
+            id=hit["_id"],
+            space_id=source["space_id"],
+            # entity_text 明文不持久化（_to_document 只存 hash，见 hash_entity_text
+            # 的隐私设计）——回读恒空。消费方不依赖回读的 entity_text，只读
+            # linked_memory_ids / id。
+            entity_text="",
+            entity_text_hash=source.get("entity_text_hash", ""),
+            entity_type=source["entity_type"],
+            linked_memory_ids=tuple(source.get("linked_memory_ids", [])),
+            filters=EntityStoreFilters(
+                actor_id=source.get("actor_id"),
+            ),
+        )
+
     # ------------------------------------------------------------------
     # 索引初始化与校验（lazy）
     # ------------------------------------------------------------------
@@ -123,50 +211,6 @@ class ElasticsearchEntityStore(EntityStore):
                     ) from exc
 
         self._index_ready = True
-
-    def _validate_existing_index(self, client) -> None:
-        try:
-            mapping_resp = client.indices.get_mapping(index=self._index)
-        except Exception as exc:
-            raise BackendError(f"Failed to validate entity index '{self._index}': {exc}") from exc
-
-        mappings = mapping_resp[self._index]["mappings"]
-        if not mappings.get("_routing", {}).get("required", False):
-            raise BackendError(
-                f"Entity index '{self._index}' exists but _routing.required is not set."
-            )
-
-        # entity_text_hash must exist; an index built before the hash change still
-        # stores plaintext entity_text and must be rebuilt.
-        if "entity_text_hash" not in mappings.get("properties", {}):
-            raise BackendError(
-                f"Entity index '{self._index}' is missing the entity_text_hash field. "
-                "It was likely created before the entity_text hashing change and must be recreated."
-            )
-
-        logger.info("existing_entity_index_validated index=%s", self._index)
-
-    def _build_index_settings(self) -> dict:
-        return {
-            "number_of_shards": self._number_of_shards,
-            "number_of_replicas": self._number_of_replicas,
-        }
-
-    def _build_index_mappings(self) -> dict:
-        return {
-            "_routing": {"required": True},
-            "properties": {
-                "space_id": {"type": "keyword"},
-                "entity_text_hash": {"type": "keyword"},
-                "entity_type": {"type": "keyword"},
-                "linked_memory_ids": {"type": "keyword"},
-                "actor_id": {"type": "keyword"},
-            },
-        }
-
-    def _require_index_ready(self) -> None:
-        if not self._index_ready:
-            self.ensure_index()  # lazy 触发（首次查询/写入时）
 
     # ------------------------------------------------------------------
     # hash 精确查询（term/terms，ES/OS 通用语法，零改动）
@@ -307,94 +351,6 @@ class ElasticsearchEntityStore(EntityStore):
 
         return self._parse_bulk_response(response)
 
-    @staticmethod
-    def _parse_bulk_response(response: dict) -> EntityBatchResult:
-        """Parse a bulk response into per-item successful/failed ids.
-
-        Unlike the main CSSAdapter (which raises on any failure), this never raises
-        — entity linking needs per-item granularity so one bad document does not
-        fail the whole group.
-        """
-        successful_ids: list[str] = []
-        failed_ids: list[str] = []
-        for item in response.get("items", []):
-            action_type = next(iter(item))
-            result = item[action_type]
-            doc_id = result.get("_id")
-            if not doc_id:
-                continue
-            if result.get("status", 0) in (200, 201):
-                successful_ids.append(doc_id)
-            else:
-                failed_ids.append(doc_id)
-        return EntityBatchResult(successful_ids=successful_ids, failed_ids=failed_ids)
-
-    @staticmethod
-    def _link_script_body(memory_ids: list[str]) -> dict:
-        """Build the painless script body that atomically appends memory ids.
-
-        Shared by LINK bulk operations. painless is ES native — ES/OS 语法零差异,
-        脚本可直接复用。``ctx._source.linked_memory_ids`` 幂等去重追加。
-        """
-        return {
-            "script": {
-                "lang": "painless",
-                "source": (
-                    "if (ctx._source.linked_memory_ids == null) { "
-                    "ctx._source.linked_memory_ids = new ArrayList(); "
-                    "} "
-                    "for (def memory_id : params.memory_ids) { "
-                    "if (!ctx._source.linked_memory_ids.contains(memory_id)) { "
-                    "ctx._source.linked_memory_ids.add(memory_id); "
-                    "} "
-                    "}"
-                ),
-                "params": {"memory_ids": memory_ids},
-            }
-        }
-
-    # ------------------------------------------------------------------
-    # 序列化与过滤构造
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _build_filters(space_id: str, filters: EntityStoreFilters) -> list[dict]:
-        query_filters = [{"term": {"space_id": space_id}}]
-        for field in filters.__dataclass_fields__:
-            value = getattr(filters, field)
-            if value is not None:
-                query_filters.append({"term": {field: value}})
-        return query_filters
-
-    @staticmethod
-    def _to_document(record: EntityRecord) -> dict:
-        doc = {
-            "space_id": record.space_id,
-            "entity_text_hash": record.entity_text_hash,
-            "entity_type": record.entity_type,
-            "linked_memory_ids": list(record.linked_memory_ids),
-            "actor_id": record.filters.actor_id,
-        }
-        return doc
-
-    @classmethod
-    def _hit_to_entity_record(cls, hit: dict) -> EntityRecord:
-        source = hit["_source"]
-        return EntityRecord(
-            id=hit["_id"],
-            space_id=source["space_id"],
-            # entity_text 明文不持久化（_to_document 只存 hash，见 hash_entity_text
-            # 的隐私设计）——回读恒空。消费方不依赖回读的 entity_text，只读
-            # linked_memory_ids / id。
-            entity_text="",
-            entity_text_hash=source.get("entity_text_hash", ""),
-            entity_type=source["entity_type"],
-            linked_memory_ids=tuple(source.get("linked_memory_ids", [])),
-            filters=EntityStoreFilters(
-                actor_id=source.get("actor_id"),
-            ),
-        )
-
     # ------------------------------------------------------------------
     # BaseStore 契约
     # ------------------------------------------------------------------
@@ -411,6 +367,50 @@ class ElasticsearchEntityStore(EntityStore):
             raise BackendError(f"elasticsearch (entity) ping failed: {exc}") from exc
         if not ok:
             raise BackendError("elasticsearch (entity) ping returned falsy")
+
+    def _validate_existing_index(self, client) -> None:
+        try:
+            mapping_resp = client.indices.get_mapping(index=self._index)
+        except Exception as exc:
+            raise BackendError(f"Failed to validate entity index '{self._index}': {exc}") from exc
+
+        mappings = mapping_resp[self._index]["mappings"]
+        if not mappings.get("_routing", {}).get("required", False):
+            raise BackendError(
+                f"Entity index '{self._index}' exists but _routing.required is not set."
+            )
+
+        # entity_text_hash must exist; an index built before the hash change still
+        # stores plaintext entity_text and must be rebuilt.
+        if "entity_text_hash" not in mappings.get("properties", {}):
+            raise BackendError(
+                f"Entity index '{self._index}' is missing the entity_text_hash field. "
+                "It was likely created before the entity_text hashing change and must be recreated."
+            )
+
+        logger.info("existing_entity_index_validated index=%s", self._index)
+
+    def _build_index_settings(self) -> dict:
+        return {
+            "number_of_shards": self._number_of_shards,
+            "number_of_replicas": self._number_of_replicas,
+        }
+
+    def _build_index_mappings(self) -> dict:
+        return {
+            "_routing": {"required": True},
+            "properties": {
+                "space_id": {"type": "keyword"},
+                "entity_text_hash": {"type": "keyword"},
+                "entity_type": {"type": "keyword"},
+                "linked_memory_ids": {"type": "keyword"},
+                "actor_id": {"type": "keyword"},
+            },
+        }
+
+    def _require_index_ready(self) -> None:
+        if not self._index_ready:
+            self.ensure_index()  # lazy 触发（首次查询/写入时）
 
 
 # -- 注册到 EntityStoreProducer（实现自注册，与 FulltextStore._build 同构） ------- #

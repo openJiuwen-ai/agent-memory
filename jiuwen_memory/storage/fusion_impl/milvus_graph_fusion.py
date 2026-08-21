@@ -91,77 +91,6 @@ class MilvusGraphFusionStore(FusionStore):
 
         Path(self._fallback_workdir).mkdir(parents=True, exist_ok=True)
 
-    def _resolved_working_dir(self) -> str:
-        from pathlib import Path
-
-        from jiuwen_memory.config.binding import resolve_connection_url
-
-        live = resolve_connection_url(
-            self._config_source,
-            namespace=self._config_namespace,
-            field="working_dir",
-            fallback=self._fallback_workdir,
-        )
-        path = str(Path(live or self._fallback_workdir).resolve())
-        Path(path).mkdir(parents=True, exist_ok=True)
-        return path
-
-    # ------------------------------------------------------------ 图基础设施
-    def _run(self, coro: Any) -> Any:
-        import asyncio
-
-        if self._loop is None or self._loop.is_closed():
-            self._loop = asyncio.new_event_loop()
-        return self._loop.run_until_complete(coro)
-
-    def _graph(self, scope: Scope) -> Any:
-        working_dir = self._resolved_working_dir()
-        if self._active_working_dir != working_dir:
-            self._graphs.clear()
-            self._active_working_dir = working_dir
-        ns = f"{self._prefix}-" + "_".join(scope_segments(scope))
-        storage = self._graphs.get(ns)
-        if storage is None:
-            cls = _networkx_storage_cls()
-            with wrap_backend("fusion graph open"):
-                storage = cls(namespace=ns, global_config={"working_dir": working_dir})
-            self._graphs[ns] = storage
-        return storage
-
-    def _persist(self, storage: Any) -> None:
-        with wrap_backend("fusion graph persist"):
-            self._run(storage.index_done_callback())
-
-    def _links(self, record: FusionRecord) -> list[str]:
-        raw = record.scalars.get(self._link_field) or []
-        if isinstance(raw, (list, tuple, set)):
-            return [str(x) for x in raw]
-        return []
-
-    def _index_graph(self, scope: Scope, records: list[FusionRecord]) -> None:
-        storage = self._graph(scope)
-
-        async def apply() -> None:
-            for rec in records:
-                await storage.upsert_node(rec.id, {"id": rec.id})
-                for target in self._links(rec):
-                    await storage.upsert_edge(rec.id, target, {"relation": self._relation})
-
-        with wrap_backend("fusion graph index"):
-            self._run(apply())
-        self._persist(storage)
-
-    # ------------------------------------------------------------ 序列化
-    def _to_vector_record(self, record: FusionRecord) -> VectorRecord:
-        if record.vector is None:
-            raise ValidationError(f"fusion record {record.id!r} requires a vector")
-        metadata = dict(record.scalars)
-        metadata[_TEXT_KEY] = record.text
-        metadata[_VALUE_KEY] = (
-            base64.b64encode(record.value).decode("ascii") if record.value is not None else None
-        )
-        return VectorRecord(id=record.id, vector=record.vector, metadata=metadata)
-
     @staticmethod
     def _from_vector_record(vr: VectorRecord) -> FusionRecord:
         metadata = dict(vr.metadata)
@@ -234,6 +163,77 @@ class MilvusGraphFusionStore(FusionStore):
         out = [ScoredID(id=i, score=sc) for i, sc in merged.items()]
         out.sort(key=lambda x: x.score, reverse=True)
         return out
+
+    def _resolved_working_dir(self) -> str:
+        from pathlib import Path
+
+        from jiuwen_memory.config.binding import resolve_connection_url
+
+        live = resolve_connection_url(
+            self._config_source,
+            namespace=self._config_namespace,
+            field="working_dir",
+            fallback=self._fallback_workdir,
+        )
+        path = str(Path(live or self._fallback_workdir).resolve())
+        Path(path).mkdir(parents=True, exist_ok=True)
+        return path
+
+    # ------------------------------------------------------------ 图基础设施
+    def _run(self, coro: Any) -> Any:
+        import asyncio
+
+        if self._loop is None or self._loop.is_closed():
+            self._loop = asyncio.new_event_loop()
+        return self._loop.run_until_complete(coro)
+
+    def _graph(self, scope: Scope) -> Any:
+        working_dir = self._resolved_working_dir()
+        if self._active_working_dir != working_dir:
+            self._graphs.clear()
+            self._active_working_dir = working_dir
+        ns = f"{self._prefix}-" + "_".join(scope_segments(scope))
+        storage = self._graphs.get(ns)
+        if storage is None:
+            cls = _networkx_storage_cls()
+            with wrap_backend("fusion graph open"):
+                storage = cls(namespace=ns, global_config={"working_dir": working_dir})
+            self._graphs[ns] = storage
+        return storage
+
+    def _persist(self, storage: Any) -> None:
+        with wrap_backend("fusion graph persist"):
+            self._run(storage.index_done_callback())
+
+    def _links(self, record: FusionRecord) -> list[str]:
+        raw = record.scalars.get(self._link_field) or []
+        if isinstance(raw, (list, tuple, set)):
+            return [str(x) for x in raw]
+        return []
+
+    def _index_graph(self, scope: Scope, records: list[FusionRecord]) -> None:
+        storage = self._graph(scope)
+
+        async def apply() -> None:
+            for rec in records:
+                await storage.upsert_node(rec.id, {"id": rec.id})
+                for target in self._links(rec):
+                    await storage.upsert_edge(rec.id, target, {"relation": self._relation})
+
+        with wrap_backend("fusion graph index"):
+            self._run(apply())
+        self._persist(storage)
+
+    # ------------------------------------------------------------ 序列化
+    def _to_vector_record(self, record: FusionRecord) -> VectorRecord:
+        if record.vector is None:
+            raise ValidationError(f"fusion record {record.id!r} requires a vector")
+        metadata = dict(record.scalars)
+        metadata[_TEXT_KEY] = record.text
+        metadata[_VALUE_KEY] = (
+            base64.b64encode(record.value).decode("ascii") if record.value is not None else None
+        )
+        return VectorRecord(id=record.id, vector=record.vector, metadata=metadata)
 
     def _expand_neighbors(self, scope: Scope, seeds: list[ScoredID]) -> dict[str, float]:
         storage = self._graph(scope)

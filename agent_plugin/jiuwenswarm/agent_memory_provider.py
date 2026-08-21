@@ -149,6 +149,42 @@ class AgentMemoryMemoryProvider(MemoryProvider):
     def is_initialized(self) -> bool:
         return self._initialized
 
+    # -- MemoryProvider: 主动召回（每轮 before_model_call，5s 超时） ---------- #
+
+    # jiuwenswarm 把用户输入包成 TUI 信封再送进 agent（见 interface.py:498）：
+    #   "你收到一条消息：\n{source,timezone,timestamp,content,...json}"
+    #   / "You receive a new message:\n{...}"
+    # rail 的 _resolve_user_text_for_memory 老实取了整段信封当 query 传给 prefetch，
+    # 导致 AgentMemory 用带壳文本检索，命中对话原文而非语义事实。
+    # prefetch 前剥信封，只取纯 content 作为检索 query。
+    _TUI_ENVELOPE_PREFIXES = (
+        "你收到一条消息：\n",
+        "你收到一条消息，对于查询类任务必须输出查询到的内容，不要只回复确认，不要记录到memory：\n",
+        "You receive a new message:\n",
+        "You receive a new message. For query tasks, you must output the queried content"
+        "—don't just reply with confirmation, don't record to memory:\n",
+    )
+
+    @classmethod
+    def _strip_tui_envelope(cls, query: str) -> str:
+        """若 query 是 jiuwenswarm TUI 信封，剥出纯 content；否则原样返回。"""
+        if not query:
+            return query
+        for prefix in cls._TUI_ENVELOPE_PREFIXES:
+            if query.startswith(prefix):
+                rest = query[len(prefix):].lstrip()
+                try:
+                    data = json.loads(rest)
+                except json.JSONDecodeError:
+                    # 前缀命中但非合法 json（可能 interaction_prefix 拼在前），回退原 query
+                    return query
+                if isinstance(data, dict):
+                    content = data.get("content")
+                    if isinstance(content, str) and content.strip():
+                        return content.strip()
+                return query
+        return query
+
     def is_available(self) -> bool:
         """配置就绪探测（契约要求无网络调用）。
 
@@ -270,42 +306,6 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         except Exception as exc:
             logger.warning("[AgentMemoryMemoryProvider] handle_tool_call '%s' failed: %s", tool_name, exc)
             return json.dumps({"error": str(exc)})
-
-    # -- MemoryProvider: 主动召回（每轮 before_model_call，5s 超时） ---------- #
-
-    # jiuwenswarm 把用户输入包成 TUI 信封再送进 agent（见 interface.py:498）：
-    #   "你收到一条消息：\n{source,timezone,timestamp,content,...json}"
-    #   / "You receive a new message:\n{...}"
-    # rail 的 _resolve_user_text_for_memory 老实取了整段信封当 query 传给 prefetch，
-    # 导致 AgentMemory 用带壳文本检索，命中对话原文而非语义事实。
-    # prefetch 前剥信封，只取纯 content 作为检索 query。
-    _TUI_ENVELOPE_PREFIXES = (
-        "你收到一条消息：\n",
-        "你收到一条消息，对于查询类任务必须输出查询到的内容，不要只回复确认，不要记录到memory：\n",
-        "You receive a new message:\n",
-        "You receive a new message. For query tasks, you must output the queried content"
-        "—don't just reply with confirmation, don't record to memory:\n",
-    )
-
-    @classmethod
-    def _strip_tui_envelope(cls, query: str) -> str:
-        """若 query 是 jiuwenswarm TUI 信封，剥出纯 content；否则原样返回。"""
-        if not query:
-            return query
-        for prefix in cls._TUI_ENVELOPE_PREFIXES:
-            if query.startswith(prefix):
-                rest = query[len(prefix):].lstrip()
-                try:
-                    data = json.loads(rest)
-                except json.JSONDecodeError:
-                    # 前缀命中但非合法 json（可能 interaction_prefix 拼在前），回退原 query
-                    return query
-                if isinstance(data, dict):
-                    content = data.get("content")
-                    if isinstance(content, str) and content.strip():
-                        return content.strip()
-                return query
-        return query
 
     async def prefetch(self, query: str, **kwargs: Any) -> str:
         """返 Markdown 字符串，Rail 包 ``<memory-context>`` 注入提示词。"""
@@ -516,23 +516,18 @@ class _HttpClient(_AgentMemoryClient):
             timeout=httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=10.0),
         )
 
-    async def _request(self, path: str, payload: dict, *, timeout: float | None = None) -> dict:
-        """统一 POST 入口：发请求 → 检查 HTTP 状态码 → 解析 JSON。
-
-        服务器 4xx/5xx（如 502/503 返回 HTML 错误页）或返回非 JSON body 时，
-        抛明确的 ``RuntimeError(HTTP <code>...)``，避免 ``r.json()`` 抛误导性的
-        ``JSONDecodeError`` 被 prefetch/sync_turn/on_session_end 静默吞掉后无错误线索。
+    @staticmethod
+    def _scope_payload(scope) -> dict[str, Any]:
+        """AgentMemory HTTP surface 的 scope 映射（``handler.py:57-63``）：
+        ``tenant_id`` → ``Scope.org``，``scope`` → ``Scope.user``。
+        这里把四维拼成 HTTP 期望的 ``tenant_id``/``scope``/``agent_id``/``session_id``。
         """
-        r = await self._http.post(path, json=payload, timeout=timeout) if timeout \
-            else await self._http.post(path, json=payload)
-        if r.is_error:
-            raise RuntimeError(f"HTTP {r.status_code} from {path}: {r.text[:200]}")
-        try:
-            return r.json()
-        except Exception as exc:
-            raise RuntimeError(
-                f"non-JSON response from {path} (status {r.status_code}): {r.text[:200]}"
-            ) from exc
+        return {
+            "tenant_id": scope.org,
+            "scope": scope.user,
+            "agent_id": scope.agent,
+            "session_id": scope.session,
+        }
 
     async def add(
         self, content, scope, *, tags=None, system_metadata=None, user_metadata=None
@@ -605,18 +600,23 @@ class _HttpClient(_AgentMemoryClient):
     async def close(self) -> None:
         await self._http.aclose()
 
-    @staticmethod
-    def _scope_payload(scope) -> dict[str, Any]:
-        """AgentMemory HTTP surface 的 scope 映射（``handler.py:57-63``）：
-        ``tenant_id`` → ``Scope.org``，``scope`` → ``Scope.user``。
-        这里把四维拼成 HTTP 期望的 ``tenant_id``/``scope``/``agent_id``/``session_id``。
+    async def _request(self, path: str, payload: dict, *, timeout: float | None = None) -> dict:
+        """统一 POST 入口：发请求 → 检查 HTTP 状态码 → 解析 JSON。
+
+        服务器 4xx/5xx（如 502/503 返回 HTML 错误页）或返回非 JSON body 时，
+        抛明确的 ``RuntimeError(HTTP <code>...)``，避免 ``r.json()`` 抛误导性的
+        ``JSONDecodeError`` 被 prefetch/sync_turn/on_session_end 静默吞掉后无错误线索。
         """
-        return {
-            "tenant_id": scope.org,
-            "scope": scope.user,
-            "agent_id": scope.agent,
-            "session_id": scope.session,
-        }
+        r = await self._http.post(path, json=payload, timeout=timeout) if timeout \
+            else await self._http.post(path, json=payload)
+        if r.is_error:
+            raise RuntimeError(f"HTTP {r.status_code} from {path}: {r.text[:200]}")
+        try:
+            return r.json()
+        except Exception as exc:
+            raise RuntimeError(
+                f"non-JSON response from {path} (status {r.status_code}): {r.text[:200]}"
+            ) from exc
 
 
 # --------------------------------------------------------------------------- #

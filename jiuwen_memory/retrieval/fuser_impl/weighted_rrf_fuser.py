@@ -28,6 +28,22 @@ class WeightedRRFFuser(Fuser):
         self._k = k
         self._channel_weights = self._normalize_weights(channel_weights or {})
 
+    @staticmethod
+    def _normalize_weights(
+        weights: Mapping[RecallChannel | str, float | str],
+    ) -> dict[RecallChannel, float]:
+        normalized: dict[RecallChannel, float] = {}
+        for raw_channel, raw_weight in weights.items():
+            if isinstance(raw_channel, RecallChannel):
+                channel = raw_channel
+            else:
+                try:
+                    channel = RecallChannel(raw_channel)
+                except ValueError:
+                    channel = RecallChannel[raw_channel.upper()]
+            normalized[channel] = float(raw_weight)
+        return normalized
+
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.FUSER
 
@@ -85,22 +101,6 @@ class WeightedRRFFuser(Fuser):
             )
         fused.sort(key=lambda s: s.score, reverse=True)
         return fused
-
-    @staticmethod
-    def _normalize_weights(
-        weights: Mapping[RecallChannel | str, float | str],
-    ) -> dict[RecallChannel, float]:
-        normalized: dict[RecallChannel, float] = {}
-        for raw_channel, raw_weight in weights.items():
-            if isinstance(raw_channel, RecallChannel):
-                channel = raw_channel
-            else:
-                try:
-                    channel = RecallChannel(raw_channel)
-                except ValueError:
-                    channel = RecallChannel[raw_channel.upper()]
-            normalized[channel] = float(raw_weight)
-        return normalized
 
 
 # -- 注册到 FuserProducer（实现自注册，新增无需改 producer/build_kernel） -------- #

@@ -108,6 +108,18 @@ class LLMClassifier(Classifier):
         self._retry_max_retries = retry_max_retries
         self._retry_backoff_ms = retry_backoff_ms
 
+    @staticmethod
+    def _strip_non_json(text: str) -> str:
+        s = text.strip()
+        if s.startswith("```"):
+            lines = s.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            s = "\n".join(lines)
+        return s.strip()
+
     def operator_type(self) -> OperatorType:
         return OperatorType.CLASSIFIER
 
@@ -232,18 +244,6 @@ class LLMClassifier(Classifier):
                 response[:200],
             )
         return []  # 所有解析路径失败，统一返空
-
-    @staticmethod
-    def _strip_non_json(text: str) -> str:
-        s = text.strip()
-        if s.startswith("```"):
-            lines = s.split("\n")
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            s = "\n".join(lines)
-        return s.strip()
 
 
 # -- 注册到 ClassifierProducer（实现自注册，新增无需改 producer/build_kernel） -------- #

@@ -120,16 +120,26 @@ class VectorIndexBuilder(IndexBuilder):
         """L1 分层 store（只读；None 表示该层未注入）。"""
         return self._vector_l1
 
+    @staticmethod
+    def _chunk_tracking_key(unit_id: str) -> str:
+        """unit_id → KVStore 中 chunk_id 跟踪记录的 key。"""
+        return f"/index/chunks/{unit_id}"
+
+    # ------------------------------------------------------------------
+    # L0/L1 分层索引辅助
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _layer_record_id(unit_id: str, layer: str) -> str:
+        """分层 record id：``{unit_id}-layer-l0`` / ``{unit_id}-layer-l1``（对齐 F01 命名），
+        与 content 的 chunk id（``{unit_id}-{chunk_id}``）不冲突。"""
+        return f"{unit_id}-layer-{layer}"
+
     def operator_type(self) -> OperatorType:
         return OperatorType.INDEX_BUILDER
 
     def health(self) -> None:
         return None
-
-    @staticmethod
-    def _chunk_tracking_key(unit_id: str) -> str:
-        """unit_id → KVStore 中 chunk_id 跟踪记录的 key。"""
-        return f"/index/chunks/{unit_id}"
 
     # ------------------------------------------------------------------
     # IndexBuilder 契约
@@ -299,16 +309,6 @@ class VectorIndexBuilder(IndexBuilder):
 
         # 删 L0/L1 分层 record（store 非空才删，幂等）
         self._delete_layer_records(unit_id, scope)
-
-    # ------------------------------------------------------------------
-    # L0/L1 分层索引辅助
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _layer_record_id(unit_id: str, layer: str) -> str:
-        """分层 record id：``{unit_id}-layer-l0`` / ``{unit_id}-layer-l1``（对齐 F01 命名），
-        与 content 的 chunk id（``{unit_id}-{chunk_id}``）不冲突。"""
-        return f"{unit_id}-layer-{layer}"
 
     def _build_layers(self, units: list[MemoryUnit]) -> None:
         """对带 layers 的 unit 构建 L0/L1 向量索引（整段 embed，写独立 store）。
