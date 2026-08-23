@@ -25,7 +25,7 @@
 | **Discloser** | `discloser.py` · `discloser` | 按披露层级（L0/L1/L2/ADAPTIVE）塑形结果内容 |
 | **Retriever** | `retriever.py` · `retriever` | 编排上述算子的完整链路；持有 `scope` 显式下推 |
 
-重排算子 **Reranker** 归 `common/reranker`（`TOP_NAME=reranker`，实现 overlap / api / bge_reranker），由 `Retriever` 经 `dep` 注入、在融合后对候选重排——其实现规约见 common 层文档，本文只记其在检索链路中的接入点。
+重排算子 **Reranker** 归 `common/reranker`（`TOP_NAME=reranker`，实现 bm25 / api / bge_reranker），由 `Retriever` 经 `dep` 注入、在融合后对候选重排——其实现规约见 common 层文档，本文只记其在检索链路中的接入点。
 
 ### 注册铁律
 
@@ -82,7 +82,7 @@
 
 | target | 类 | 依赖（缺省） | 参数（默认） | 关键语义 |
 |---|---|---|---|---|
-| `pipeline` | `PipelineRetriever` | `query_parser`（`simple`）；`recaller` 三路 `keyword_recaller`/`vector_recaller`/`graph_recaller`（后两路按 `vector_enabled`/`graph_enabled` 开关接入）；`fuser`（`rrf`）；`discloser`（`truncating`）；`unit_reader` ← `kv_store`（`memory`）；`reranker`（common，`overlap`，仅 `rerank_enabled` 接入） | 召回超采样 `over_fetch_factor`（4）/`over_fetch_floor`（60）/`recall_max`（100，召回硬上限，0=不限）；精排预算 `rerank_max`（60）；相关性阈值 `min_score`（0，绝对，仅校准路径）/`min_score_ratio`（0，校准）/`min_score_ratio_uncalibrated`（0，未校准；两项默认关闭，见 `F04`）/`min_results`（0，兜底） | 编排完整 Read 链路（见下「编排顺序」），`scope` 作显式首参贯穿下推到各召回路；本类不含召回/打分逻辑，全由注入算子完成 |
+| `pipeline` | `PipelineRetriever` | `query_parser`（`simple`）；`recaller` 三路 `keyword_recaller`/`vector_recaller`/`graph_recaller`（后两路按 `vector_enabled`/`graph_enabled` 开关接入）；`fuser`（`rrf`）；`discloser`（`truncating`）；`unit_reader` ← `kv_store`（`memory`）；`reranker`（common，`bm25`，仅 `rerank_enabled` 接入） | 召回超采样 `over_fetch_factor`（4）/`over_fetch_floor`（60）/`recall_max`（100，召回硬上限，0=不限）；精排预算 `rerank_max`（60）；相关性阈值 `min_score`（0，绝对，仅校准路径）/`min_score_ratio`（0，校准）/`min_score_ratio_uncalibrated`（0，未校准；两项默认关闭，见 `F04`）/`min_results`（0，兜底） | 编排完整 Read 链路（见下「编排顺序」），`scope` 作显式首参贯穿下推到各召回路；本类不含召回/打分逻辑，全由注入算子完成 |
 
 ### 非工厂支撑件（由 `PipelineRetriever` 直接构造/调用，不进依赖图）
 
@@ -135,7 +135,7 @@
 ## 已知遗留
 
 - **LLM 改写 / 时间解析默认关闭**：缺省走 `echo` + 规则版，真正的 query 改写与复杂时间解析需显式注入 LLM 并承担延迟/漂移。
-- **InMemory 召回为近似计分**：内存向量走暴力余弦、内存全文走词重叠比值近似 BM25，仅供离线/测试；生产召回走 milvus / es。
+- **InMemory 召回为近似计分**：内存向量走暴力余弦；内存全文为 Okapi BM25 但索引非增量（O(N)/查询），仅供离线/测试；生产召回走 milvus / es。
 - **图召回依赖已建图**：`graph` 通道依赖构建层 ASSOCIATE 已建关联图，图为空时该路无产出。
 - **FusionStore 未接入 pipeline**：`PipelineRetriever` 走分离的多路 `recaller` + `Fuser`；向量·倒排·正排合一的 `fusion_store` 形态（见存储层规约）是另一条尚未编排进检索链路的路径。
 - **`structured_discloser` 字段约定待打磨**：结构化输出面向特定 Agent 消费约定，通用性与稳定性仍需迭代。

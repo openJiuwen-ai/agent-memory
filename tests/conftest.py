@@ -12,7 +12,7 @@ from jiuwen_memory.common.embedder.embedder_impl.hashing_embedder import Hashing
 from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (
     KeywordFeatureExtractor,
 )
-from jiuwen_memory.common.reranker.reranker_impl.overlap_reranker import OverlapReranker
+from jiuwen_memory.common.reranker.reranker_impl.bm25_reranker import BM25Reranker
 from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
 from jiuwen_memory.common.type_def import memory_key
 from jiuwen_memory.common.type_def.memory import (
@@ -71,7 +71,7 @@ def make_world(rerank: bool = False) -> RetrievalWorld:
     vector_recaller = VectorRecaller(storage)
     discloser = TruncatingDiscloser()
     unit_reader = UnitReader(kv)
-    reranker = OverlapReranker(tokenizer) if rerank else None
+    reranker = BM25Reranker(tokenizer) if rerank else None
     retriever = PipelineRetriever(
         parser,
         [keyword, vector_recaller],

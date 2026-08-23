@@ -402,7 +402,7 @@ def _build(config):
             )
     # 精排器与 UnitReader 的真源 kv 与索引/构建侧共享同一实例。
     reranker = (
-        RerankerProducer.dep(config, default="overlap")
+        RerankerProducer.dep(config, default="bm25")
         if config.get("rerank_enabled", True)
         else None
     )

@@ -67,7 +67,7 @@
 
 | target | 类 | 后端 | 必填参数 | 可选参数（默认） | 隔离 | 关键语义 |
 |---|---|---|---|---|---|---|
-| `memory` | `InMemoryFulltextStore` | 进程内词重叠计分 | — | 依赖 `tokenizer`（`dep`，缺省 `whitespace`） | scope 折五段命名空间键 | 分词复用注入的 `Tokenizer`（与构建侧同实例=同词表）；`score`=命中词数/文档词数模拟 BM25；降序 top-k |
+| `memory` | `InMemoryFulltextStore` | 进程内 Okapi BM25 计分 | — | 依赖 `tokenizer`（`dep`，缺省 `whitespace`） | scope 折五段命名空间键 | 分词复用注入的 `Tokenizer`（与构建侧同实例=同词表）；`score`=Okapi BM25（Lucene 口径，`k1`/`b` 可配，与 `elasticsearch` 后端同为无上界原始分）；IDF/avgdl 每次查询现算故不可能与索引失配，代价 O(N)；降序 top-k |
 | `elasticsearch` | `ElasticsearchFulltextStore` | Elasticsearch（`elasticsearch-py` 8.x 惰性导入） | `hosts` | `index`(`agent_memory_fulltext`)/`username`+`password` 或 `api_key`/`text_field`(`text`)/`refresh`(`false`) | scope 落文档 `scope.{dim}` 嵌套 keyword，`term` 过滤非空维 | 首次连接 `_ensure_index`：`metadata.*` 字符串**动态映射为 keyword**（精确等值/集合/包含；text 分析器会拆词小写化导致匹配不上），数值/布尔动态推断支持 range；`insert`=bulk `create`（409→`ConflictError`），`update` 先 mget 查缺→`NotFoundError` 再 bulk `index`，`delete` 用受 scope 约束的 `delete_by_query`；`refresh: wait_for` 让写入对随后 search 立即可见；`search`=`match` + scope/filters，`score`=BM25 `_score` |
 
 ### FusionStore（`storage/fusion.py` · `FusionProducer` · TOP_NAME=`fusion_store`）
@@ -126,5 +126,5 @@
 
 - **`milvus_graph` 融合不支持 text/BM25 通道**：`FusionQuery.text` / `vector_weight` 仅 `InMemoryFusionStore` 实现，Milvus 融合形态聚焦「向量→图」，文本只随记录存储供 get 回读。
 - **`milvus_graph` update 不移除旧链边**：`update` 走 upsert 追加新边，移除旧链需 `delete + insert`。
-- **`InMemoryFulltextStore` 计分非真 BM25**：词重叠比值近似，仅用于离线/测试；生产全文走 ES。
+- **`InMemoryFulltextStore` 为 Okapi BM25，但索引非增量**：IDF/avgdl 每次 `search` 现算，O(N)/查询；小规模 scope 与离线/测试适用，大规模语料走 ES。
 - **`nano_graphrag` 单边模型**：同一对端点至多一条边，多重关系无法并存（再插按冲突处理）。

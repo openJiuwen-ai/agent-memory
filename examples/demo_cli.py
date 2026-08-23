@@ -11,7 +11,7 @@ SQLite）。一个进程内共享内核，状态跨调用持久。无任何外�
 - add     → Ingestor·Normalizer·Classifier·HybridIndexBuilder(Fulltext+Vector+Embedder)·
             KVStore·memory_codec·PermissionManager·AuditLogger·Tokenizer
 - search  → QueryParser(+EchoLLM 改写·Embedder)·Keyword/Vector/Graph Recaller·RRFFuser·
-            TruncatingDiscloser(+OverlapReranker)
+            TruncatingDiscloser(+BM25Reranker)
 - evolve  → Chunker·Extractor·Abstractor·FeatureExtractor·Associator·GraphStore·Evolver·Scheduler
 - job     → Scheduler.status
 - inspect/trace → Governor      · audit → Governor+AuditLogger

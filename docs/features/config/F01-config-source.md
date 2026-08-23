@@ -321,7 +321,7 @@ Store 切换后旧库数据不自动迁移。`memory` 等无连接串的后端�
 ### 决策 5：消费侧晚绑定约定（强制优先路径）
 
 - **PromptRegistry**：优先 `ConfigSource.fetch("prompts.<phase>.<name>")`，缺失回落构造快照。
-- **LLM / Embedder / Reranker（OpenAI 兼容与 API 类）**：在 **每次** `chat` / `embed` / `rerank`（及 health）路径上 `fetch` `model` / `api_key` / `base_url`；凭证变化时重建客户端。hashing/overlap 等无凭证实现忽略这些 key。
+- **LLM / Embedder / Reranker（OpenAI 兼容与 API 类）**：在 **每次** `chat` / `embed` / `rerank`（及 health）路径上 `fetch` `model` / `api_key` / `base_url`；凭证变化时重建客户端。hashing/bm25 等无凭证实现忽略这些 key。
 - **Store（连接型后端）**：在惰性取客户端/连接路径上 `fetch` `url` / `hosts` / `uri` 等；连接串变化时丢弃旧客户端并按新值重连。旧库数据不自动迁移。
 - `*.active` **路由门面**：仅当需要在**不同实现类**或产品明确要求多实例隔离时使用；不得作为同构多 Key/URL 的首选。
 - **能力开关**：使用可选能力前读取开关；未预装通道仅改开关不够，须预装配或重建。

@@ -34,7 +34,7 @@
    > **演进触发方式已调整**（见 [`docs/features/api/F02-write-infer-extract.md`](../api/F02-write-infer-extract.md)）：默认路径不再由 `control.Scheduler` 在 write 后自动提交 background EXTRACT（`InProcessScheduler` 同步执行下"自动提交"实为同步阻塞，与异步初衷相悖）；演进由调用方显式 `evolve()` 触发，或经 `write(metadata={"infer":"true"})` 同步走 EXTRACT。双通道"写入轻量、提取重"的立场不变——同步抽取是显式 opt-in 开关，非默认行为（不违背下方拒绝方案 A）。
 2. **全部可重建**：`MemoryUnit` 序列化存 KVStore 是唯一真源；向量/关键词/图索引全是从真源派生的可重建数据。`IndexBuilder.rebuild()` 从 KVStore 全量扫描重建，是非破坏式保障——存储故障恢复、换 embedding 模型都靠它。
 3. **接口与实现严格分离**：顶层 `.py` 纯抽象（不 import `*_impl/`），实现经 `@Producer.register` 自注册。端侧用规则/小模型（keyword classifier、hashing embedder）、云侧用强 LLM，只改配置不改代码。共享插件（Embedder/Tokenizer/Chunker/FeatureExtractor）须与 retrieval 侧同一实例，装配按字段名缓存保证同实例。
-4. **去重召回与判定分离**：去重召回抽象成独立 `Dedup` 接口，Evolver 只做阈值 + LLM 判定。装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`——只配倒排时去重仍可用（向量路在 fulltext-only 下 VectorStore 恒空会失效）。两路 score 同为 0~1 量纲（cosine / 词重叠率），medium/high 阈值统一复用。
+4. **去重召回与判定分离**：去重召回抽象成独立 `Dedup` 接口，Evolver 只做阈值 + LLM 判定。装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`——只配倒排时去重仍可用（向量路在 fulltext-only 下 VectorStore 恒空会失效）。两路 score 量纲不同（cosine 0~1 / BM25 无上界），medium/high 阈值需分别标定，见 S05 遗留项。
 5. **SUPERSEDE 不经 LifecycleManager**：Evolver 标记旧版 SUPERSEDED 直接 `KVStore.update`，不经 control 层 LifecycleManager（construction → control 严禁）。版本链由 `supersedes` 字段记录，非破坏式、保留血缘。
 6. **去重不用 Reranker**：LLM 直接做最终语义判定，Reranker 中间层不增精度只增开销。若未来需降 LLM 调用成本，可考虑在 LLM 前加 Reranker 过滤器。
 
@@ -79,9 +79,9 @@
 | target | 类 | 依赖 | 产出 | 关键语义 |
 |---|---|---|---|---|
 | `vector` | `VectorDedup` | `vector_store`、`embedder`、`kv`（`dep`） | `list[(MemoryUnit, score)]` | Embedder → VectorStore.search（cosine）；过滤自身（id 前缀）、解析 `{unit_id}-{chunk_id}`、按 unit 聚合取 max；装配在 `vector_enabled=True` 时选 |
-| `keyword` | `KeywordDedup` | `fulltext_store`、`kv`（`dep`） | `list[(MemoryUnit, score)]` | FulltextStore.search（词重叠率，0~1 与 cosine 同量纲）；Document.id=unit.id 恒等无需解析、tier 过滤在加载后；装配在 `vector_enabled=False` 时选 |
+| `keyword` | `KeywordDedup` | `fulltext_store`、`kv`（`dep`） | `list[(MemoryUnit, score)]` | FulltextStore.search（Okapi BM25 原始分，无上界，与 cosine 不同量纲，见 S05 遗留项）；Document.id=unit.id 恒等无需解析、tier 过滤在加载后；装配在 `vector_enabled=False` 时选 |
 
-> 两路 score 量纲统一，Evolver 的 medium/high 阈值直接复用。实现内部异常吞掉返回空列表，不阻断演进。
+> 两路 score 量纲不统一（见 S05 遗留项），Evolver 的阈值需按所选 Dedup 实现标定。实现内部异常吞掉返回空列表，不阻断演进。
 
 ### Evolver（`evolver.py` · `EvolverProducer`）
 

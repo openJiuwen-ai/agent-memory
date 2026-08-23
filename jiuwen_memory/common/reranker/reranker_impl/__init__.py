@@ -7,7 +7,7 @@ from importlib import import_module
 
 from jiuwen_memory.common.reranker.base import RerankerProducer
 
-import_module(".overlap_reranker", __name__)
+import_module(".bm25_reranker", __name__)
 import_module(".bge_reranker", __name__)
 import_module(".api_reranker", __name__)
 
