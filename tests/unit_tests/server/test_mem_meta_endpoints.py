@@ -16,12 +16,13 @@ from jiuwen_memory.server import mem_meta_api
 def mock_manager(mocker):
     """mock 掉 mem_meta_api 模块级 _manager，返回 AsyncMock 实例。
 
+    直接 include router 到 app（不创建真实 MemMetaManager，避免 _init_db 访问 mock db_store）。
     各用例按需对方法 .return_value / .side_effect 设定。
     """
-    # 确保 router 已注册到 app（startup_event 不触发时 _register_mem_meta 未执行）
-    from jiuwen_memory.server.memory_server import _register_mem_meta, _mem_meta_registered
-    if not _mem_meta_registered:
-        _register_mem_meta()
+    from jiuwen_memory.server.memory_server import app
+    existing_paths = {getattr(r, "path", "") for r in app.routes}
+    if not any("/admin/mem_meta" in p for p in existing_paths):
+        app.include_router(mem_meta_api.router)
     mgr = mocker.AsyncMock()
     mocker.patch.object(mem_meta_api, "_manager", mgr)
     return mgr
