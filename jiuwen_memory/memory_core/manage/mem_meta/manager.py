@@ -709,6 +709,7 @@ class MemMetaManager:
                     "scopes_affected": 0,
                     "status": "success",
                     "error": None,
+                    "scope_failures": [],
                 }
                 try:
                     from jiuwen_memory.memory_core.common.distributed_lock import DistributedLock
@@ -806,11 +807,36 @@ class MemMetaManager:
                                 user_deleted += len(expired_mem_ids)
                                 user_result["scopes_affected"] += 1
                             except Exception as e:
-                                user_result["status"] = "partial_failed"
-                                user_result["error"] = str(e)[:MAX_USER_ERROR_LEN]
+                                # 记录每个 scope 的失败原因
+                                user_result["scope_failures"].append({
+                                    "scope_id": sid,
+                                    "error": str(e)[:MAX_USER_ERROR_LEN],
+                                })
+                                logger.warning(
+                                    "scope %s 删除失败, user=%s: %s",
+                                    sid, user_id, e)
 
                         user_result["total_deleted"] = user_deleted
                         deleted_total += user_deleted
+
+                        # 根据 scope 失败情况设置用户级状态
+                        total_scopes = len(scopes)
+                        failed_scopes = len(user_result["scope_failures"])
+                        if failed_scopes > 0:
+                            if failed_scopes == total_scopes:
+                                # 所有 scope 都失败
+                                user_result["status"] = "failed"
+                                user_result["error"] = (
+                                    f"全部 {total_scopes} 个 scope 删除失败"
+                                )
+                                failed += 1
+                            else:
+                                # 部分 scope 失败
+                                user_result["status"] = "partial_failed"
+                                user_result["error"] = (
+                                    f"{failed_scopes}/{total_scopes} 个 scope "
+                                    f"删除失败"
+                                )
 
                     processed += 1
                     await self._update_task(
@@ -864,7 +890,12 @@ class MemMetaManager:
                 details.append(user_result)
 
             # 最终状态判断
-            if failed == 0:
+            # failed: 用户级失败（所有 scope 都失败或分布式锁/校验失败）
+            # partial_failed 用户: 部分 scope 成功部分失败
+            has_partial = any(
+                d.get("status") == "partial_failed" for d in details
+            )
+            if failed == 0 and not has_partial:
                 final_status = "completed"
             elif failed == len(params.user_ids):
                 final_status = "failed"
