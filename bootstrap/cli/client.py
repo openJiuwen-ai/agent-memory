@@ -92,6 +92,12 @@ class HttpClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
+    def call(self, verb: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        return self._request("POST", f"/v1/{verb}", payload)
+
+    def healthz(self) -> tuple[int, dict[str, Any]]:
+        return self._request("GET", "/healthz", None)
+
     def _request(self, method: str, path: str, body: dict | None) -> tuple[int, dict[str, Any]]:
         url = f"{self.base_url}{path}"
         data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -109,12 +115,6 @@ class HttpClient:
             return exc.code, _read_json(exc)
         except urllib.error.URLError as exc:
             return 0, {"error": "ConnectionError", "message": str(exc.reason)}
-
-    def call(self, verb: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-        return self._request("POST", f"/v1/{verb}", payload)
-
-    def healthz(self) -> tuple[int, dict[str, Any]]:
-        return self._request("GET", "/healthz", None)
 
 
 def _read_json(resp) -> dict[str, Any]:

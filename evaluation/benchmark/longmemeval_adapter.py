@@ -68,6 +68,14 @@ class LongMemEvalDataset(Dataset):
         if os.path.exists(path):
             self._parse(path, samples, max_questions)
 
+    def seeds(self) -> Sequence[MemorySeed]:
+        self._require_loaded()
+        return self._seeds
+
+    def queries(self) -> Sequence[QueryCase]:
+        self._require_loaded()
+        return self._queries
+
     # -- 解析 --------------------------------------------------------------- #
     def _parse(
         self,
@@ -145,11 +153,3 @@ class LongMemEvalDataset(Dataset):
                 f"LongMemEval 数据缺失：{self._path}。从 "
                 "https://github.com/xiaowu0162/LongMemEval 下载（如 longmemeval_s.json）后重试。"
             )
-
-    def seeds(self) -> Sequence[MemorySeed]:
-        self._require_loaded()
-        return self._seeds
-
-    def queries(self) -> Sequence[QueryCase]:
-        self._require_loaded()
-        return self._queries

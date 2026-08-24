@@ -50,6 +50,31 @@ class Factory:
                 )
             Factory._by_top_name[top] = cls
 
+    @staticmethod
+    def cfg_get(config: Any, name: str, default: Any = None) -> Any:
+        """从本组件配置（ComponentSpec/参数视图）读一个参数：优先 ``.get(name)``，
+        回退属性访问，缺失给 ``default``——供 builder 统一取自己 ``params`` 里的连接参数。
+        """
+        getter = getattr(config, "get", None)
+        if callable(getter):
+            return getter(name, default)
+        return getattr(config, name, default)
+
+    @staticmethod
+    def require_param(config: Any, name: str, *, backend: str) -> Any:
+        """读**必填**参数；未配置（None/空）时在 *build 阶段*抛 :class:`ValidationError`。
+
+        依赖三方库/外部服务的后端（redis/elasticsearch/milvus …）缺了 url/hosts/uri 这类
+        必填项时，宁可装配时就报错，也好过惰性连接阶段才暴露。
+        这样能让配置错误尽早、清晰地暴露。
+        """
+        value = Factory.cfg_get(config, name)
+        if value is None or value == "":
+            raise ValidationError(
+                f"{backend} 后端缺少必填参数 params.{name!r}（请在该组件 params 下配置）"
+            )
+        return value
+
     @classmethod
     def known_top_names(cls) -> set:
         """已注册的 Producer 顶层命名空间名集合（供 Config 解析期校验）。"""
@@ -132,31 +157,6 @@ class Factory:
             f"{cls.__name__}.dep: 依赖 {field!r} 应是引用名(str)或内联配置(dict)，"
             f"得到 {type(value).__name__}"
         )
-
-    @staticmethod
-    def cfg_get(config: Any, name: str, default: Any = None) -> Any:
-        """从本组件配置（ComponentSpec/参数视图）读一个参数：优先 ``.get(name)``，
-        回退属性访问，缺失给 ``default``——供 builder 统一取自己 ``params`` 里的连接参数。
-        """
-        getter = getattr(config, "get", None)
-        if callable(getter):
-            return getter(name, default)
-        return getattr(config, name, default)
-
-    @staticmethod
-    def require_param(config: Any, name: str, *, backend: str) -> Any:
-        """读**必填**参数；未配置（None/空）时在 *build 阶段*抛 :class:`ValidationError`。
-
-        依赖三方库/外部服务的后端（redis/elasticsearch/milvus …）缺了 url/hosts/uri 这类
-        必填项时，宁可装配时就报错，也好过惰性连接阶段才暴露。
-        这样能让配置错误尽早、清晰地暴露。
-        """
-        value = Factory.cfg_get(config, name)
-        if value is None or value == "":
-            raise ValidationError(
-                f"{backend} 后端缺少必填参数 params.{name!r}（请在该组件 params 下配置）"
-            )
-        return value
 
     @classmethod
     def put(cls, name: str, instance: Any) -> None:

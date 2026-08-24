@@ -81,6 +81,14 @@ class LoCoMoDataset(Dataset):
         if os.path.exists(path):
             self._parse(path, samples, max_questions)
 
+    def seeds(self) -> Sequence[MemorySeed]:
+        self._require_loaded()
+        return self._seeds
+
+    def queries(self) -> Sequence[QueryCase]:
+        self._require_loaded()
+        return self._queries
+
     # -- 解析 --------------------------------------------------------------- #
     def _parse(
         self,
@@ -147,11 +155,3 @@ class LoCoMoDataset(Dataset):
                 f"LoCoMo 数据缺失：{self._path}。从 "
                 "https://github.com/snap-research/LoCoMo 下载 locomo10.json 后重试。"
             )
-
-    def seeds(self) -> Sequence[MemorySeed]:
-        self._require_loaded()
-        return self._seeds
-
-    def queries(self) -> Sequence[QueryCase]:
-        self._require_loaded()
-        return self._queries

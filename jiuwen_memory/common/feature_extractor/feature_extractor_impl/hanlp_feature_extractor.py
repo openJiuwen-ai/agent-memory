@@ -124,6 +124,26 @@ class HanlpFeatureExtractor(FeatureExtractor):
 
         self._init_hanlp()
 
+    def plugin_type(self) -> PluginType:
+        return PluginType.FEATURE_EXTRACTOR
+
+    def health(self) -> None:
+        if not self._available and not self._fallback_to_tokenizer:
+            raise HealthCheckError(
+                "HanlpFeatureExtractor: HanLP models not available"
+            )
+
+    def extract(self, text: str) -> FeatureSet:
+        if not text.strip():
+            return FeatureSet()
+
+        if self._available:
+            return self._extract_with_hanlp(text)
+        elif self._fallback_to_tokenizer:
+            return self._extract_fallback(text)
+        else:
+            return FeatureSet()
+
     def _init_hanlp(self) -> None:
         """尝试加载 HanLP 模型；失败时标记为不可用。
 
@@ -185,26 +205,6 @@ class HanlpFeatureExtractor(FeatureExtractor):
             self._tok_task = None
             self._pos_task = None
             self._ner_task = None
-
-    def plugin_type(self) -> PluginType:
-        return PluginType.FEATURE_EXTRACTOR
-
-    def health(self) -> None:
-        if not self._available and not self._fallback_to_tokenizer:
-            raise HealthCheckError(
-                "HanlpFeatureExtractor: HanLP models not available"
-            )
-
-    def extract(self, text: str) -> FeatureSet:
-        if not text.strip():
-            return FeatureSet()
-
-        if self._available:
-            return self._extract_with_hanlp(text)
-        elif self._fallback_to_tokenizer:
-            return self._extract_fallback(text)
-        else:
-            return FeatureSet()
 
     def _extract_with_hanlp(self, text: str) -> FeatureSet:
         """HanLP pipeline 提取：POS 关键词 + NER 实体 + 标签推断。

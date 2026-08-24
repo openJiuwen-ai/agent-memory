@@ -33,26 +33,6 @@ class BGEReranker(Reranker):
         self._normalize = normalize
         self._model = None  # lazy load
 
-    def _load_model(self) -> None:
-        """延迟加载模型，避免默认轻量环境在 import 阶段触发重依赖。"""
-        if self._model is not None:
-            return
-        try:
-            from FlagEmbedding import FlagReranker
-        except ImportError:
-            raise ImportError(
-                "BGEReranker requires the 'FlagEmbedding' package. "
-                "Install it with: pip install FlagEmbedding"
-            ) from None
-
-        logger.info(
-            "BGEReranker: loading model %s (fp16=%s)",
-            self._model_name_or_path,
-            self._use_fp16,
-        )
-        self._model = FlagReranker(self._model_name_or_path, use_fp16=self._use_fp16)
-        logger.info("BGEReranker: model loaded successfully")
-
     def plugin_type(self) -> PluginType:
         return PluginType.RERANKER
 
@@ -83,6 +63,26 @@ class BGEReranker(Reranker):
                 )
             scores.extend(batch_scores)
         return scores
+
+    def _load_model(self) -> None:
+        """延迟加载模型，避免默认轻量环境在 import 阶段触发重依赖。"""
+        if self._model is not None:
+            return
+        try:
+            from FlagEmbedding import FlagReranker
+        except ImportError:
+            raise ImportError(
+                "BGEReranker requires the 'FlagEmbedding' package. "
+                "Install it with: pip install FlagEmbedding"
+            ) from None
+
+        logger.info(
+            "BGEReranker: loading model %s (fp16=%s)",
+            self._model_name_or_path,
+            self._use_fp16,
+        )
+        self._model = FlagReranker(self._model_name_or_path, use_fp16=self._use_fp16)
+        logger.info("BGEReranker: model loaded successfully")
 
     def _compute_score(self, pairs: List[List[str]]) -> List[float]:
         try:

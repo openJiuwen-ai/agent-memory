@@ -83,9 +83,6 @@ class InMemoryFusionStore(FusionStore):
     def health(self) -> None:
         return None
 
-    def _index_tokens(self, sk: _ScopeKey, rec: FusionRecord) -> None:
-        self._tokens[sk][rec.id] = self._tokenizer.tokenize(rec.text) if rec.text else []
-
     def insert(self, scope: Scope, records: List[FusionRecord]) -> None:
         sk = _skey(scope)
         for rec in records:
@@ -131,6 +128,9 @@ class InMemoryFusionStore(FusionStore):
                 scored.append(ScoredID(id=rec_id, score=mixed))
         scored.sort(key=lambda s: s.score, reverse=True)
         return scored[: query.top_k]
+
+    def _index_tokens(self, sk: _ScopeKey, rec: FusionRecord) -> None:
+        self._tokens[sk][rec.id] = self._tokenizer.tokenize(rec.text) if rec.text else []
 
 
 # -- 注册到 FusionProducer（实现自注册，新增无需改 producer/build_kernel） -------- #

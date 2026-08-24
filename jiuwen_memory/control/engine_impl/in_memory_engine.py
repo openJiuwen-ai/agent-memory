@@ -226,16 +226,6 @@ class InMemoryEngine(MemoryEngine):
     def health(self) -> None:
         return None
 
-    def _write_binding(self, units: list[MemoryUnit]) -> PipelineBinding | None:
-        if self._pipeline is None:
-            return None
-        return self._pipeline.select_for_write(units)
-
-    def _recall_binding(self, query: RetrievalQuery) -> PipelineBinding | None:
-        if self._pipeline is None:
-            return None
-        return self._pipeline.select_for_recall(query)
-
     async def write(
         self,
         content: str,
@@ -352,62 +342,6 @@ class InMemoryEngine(MemoryEngine):
         await asyncio.to_thread(self._write_default_to_kv, scope, units)
         await asyncio.to_thread(index_builder.build, units)  # hot 轻量索引
         return units
-
-    # ---- 中期缓冲子路径 ----
-
-    async def _write_middle_path(
-        self,
-        units: list[MemoryUnit],
-        scope: Scope,
-        index_builder: IndexBuilder,
-        evolver: Evolver,
-        middle_interval: Any,
-    ) -> list[MemoryUnit]:
-        """中期缓冲子路径：原文落 /memory/ + 建索引 + tier=WORKING + 提交定时 MiddleToLongJob。
-
-        ``middle_interval`` 经 write 的 ``system_metadata`` 透传，但不落盘到生成的
-        ``MemoryUnit.system_metadata``；``None`` 时由 Spec 装配期默认兜底，与
-        ``evolver=`` / ``index=`` 覆盖入参模式一致。
-        """
-        if self._job_factory is None:
-            raise RuntimeError(
-                "middle path requires job_factory, please configure "
-                "engine.default.job_factory"
-            )
-        if evolver is None:
-            raise RuntimeError(
-                "Engine.write middle=true requires an Evolver (装配未注入 evolver)"
-            )
-
-        for unit in units:
-            unit.tier = MemoryTier.WORKING
-            unit.system_metadata["middle"] = "true"
-        await asyncio.to_thread(self._write_middle_to_kv, scope, units)
-        await asyncio.to_thread(index_builder.build, units)
-
-        job = self._job_factory.get_job(
-            JobType.MIDDLE_TO_LONG,
-            scope=scope,
-            evolver=evolver,
-            index=index_builder,
-            interval=middle_interval,
-        )
-        await self._scheduler.submit(job, channel=Channel.BACKGROUND)
-        logger.info(
-            "Engine.write middle=True: %d originals buffered, scope=%s interval=%s",
-            len(units),
-            scope,
-            middle_interval,
-        )
-        return units
-
-    def _write_middle_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
-        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
-        self._storage.add(scope, units)
-
-    def _write_default_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
-        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
-        self._storage.add(scope, units)
 
     async def batch_write(
         self,
@@ -526,39 +460,6 @@ class InMemoryEngine(MemoryEngine):
                 if _matches_delete_selector(unit, selector):
                     contexts.append(_permission_context_from_unit(unit))
         return contexts
-
-    def _load(self, scope: Scope, unit_id: str) -> MemoryUnit:
-        """从真源读字节并反序列化（产出结果的边界点）。"""
-        units = self._storage.get(scope, [unit_id])
-        if not units:
-            raise NotFoundError("memory_unit", unit_id)
-        return units[0]
-
-    def _list_units(self, scope: Scope) -> list[MemoryUnit]:
-        # 只列建索引记忆（/memory/ 前缀）。loads 对非 MemoryUnit 记录返回 None，自然过滤。
-        # 版本链（SUPERSEDE/supersedes）只在建索引记忆间；原文 /messages/ 无版本链。
-        return self._storage.list(scope, limit=1_000_000).items
-
-    def _version_family(self, scope: Scope, unit_id: str) -> list[MemoryUnit]:
-        units_by_id = {unit.id: unit for unit in self._list_units(scope)}
-        if unit_id not in units_by_id:
-            raise NotFoundError("memory_unit", unit_id)
-
-        neighbors: dict[str, set[str]] = {uid: set() for uid in units_by_id}
-        for unit in units_by_id.values():
-            if unit.supersedes in units_by_id:
-                neighbors[unit.id].add(unit.supersedes)
-                neighbors[unit.supersedes].add(unit.id)
-
-        seen: set[str] = set()
-        pending = [unit_id]
-        while pending:
-            current = pending.pop()
-            if current in seen:
-                continue
-            seen.add(current)
-            pending.extend(neighbors[current] - seen)
-        return [units_by_id[uid] for uid in seen]
 
     async def get(
         self, unit_id: str, scope: Scope, as_of: datetime | None = None
@@ -757,6 +658,105 @@ class InMemoryEngine(MemoryEngine):
 
     async def admin_all(self) -> dict[str, str]:
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")
+
+    def _write_binding(self, units: list[MemoryUnit]) -> PipelineBinding | None:
+        if self._pipeline is None:
+            return None
+        return self._pipeline.select_for_write(units)
+
+    def _recall_binding(self, query: RetrievalQuery) -> PipelineBinding | None:
+        if self._pipeline is None:
+            return None
+        return self._pipeline.select_for_recall(query)
+
+    # ---- 中期缓冲子路径 ----
+
+    async def _write_middle_path(
+        self,
+        units: list[MemoryUnit],
+        scope: Scope,
+        index_builder: IndexBuilder,
+        evolver: Evolver,
+        middle_interval: Any,
+    ) -> list[MemoryUnit]:
+        """中期缓冲子路径：原文落 /memory/ + 建索引 + tier=WORKING + 提交定时 MiddleToLongJob。
+
+        ``middle_interval`` 经 write 的 ``system_metadata`` 透传，但不落盘到生成的
+        ``MemoryUnit.system_metadata``；``None`` 时由 Spec 装配期默认兜底，与
+        ``evolver=`` / ``index=`` 覆盖入参模式一致。
+        """
+        if self._job_factory is None:
+            raise RuntimeError(
+                "middle path requires job_factory, please configure "
+                "engine.default.job_factory"
+            )
+        if evolver is None:
+            raise RuntimeError(
+                "Engine.write middle=true requires an Evolver (装配未注入 evolver)"
+            )
+
+        for unit in units:
+            unit.tier = MemoryTier.WORKING
+            unit.system_metadata["middle"] = "true"
+        await asyncio.to_thread(self._write_middle_to_kv, scope, units)
+        await asyncio.to_thread(index_builder.build, units)
+
+        job = self._job_factory.get_job(
+            JobType.MIDDLE_TO_LONG,
+            scope=scope,
+            evolver=evolver,
+            index=index_builder,
+            interval=middle_interval,
+        )
+        await self._scheduler.submit(job, channel=Channel.BACKGROUND)
+        logger.info(
+            "Engine.write middle=True: %d originals buffered, scope=%s interval=%s",
+            len(units),
+            scope,
+            middle_interval,
+        )
+        return units
+
+    def _write_middle_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
+        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
+        self._storage.add(scope, units)
+
+    def _write_default_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
+        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
+        self._storage.add(scope, units)
+
+    def _load(self, scope: Scope, unit_id: str) -> MemoryUnit:
+        """从真源读字节并反序列化（产出结果的边界点）。"""
+        units = self._storage.get(scope, [unit_id])
+        if not units:
+            raise NotFoundError("memory_unit", unit_id)
+        return units[0]
+
+    def _list_units(self, scope: Scope) -> list[MemoryUnit]:
+        # 只列建索引记忆（/memory/ 前缀）。loads 对非 MemoryUnit 记录返回 None，自然过滤。
+        # 版本链（SUPERSEDE/supersedes）只在建索引记忆间；原文 /messages/ 无版本链。
+        return self._storage.list(scope, limit=1_000_000).items
+
+    def _version_family(self, scope: Scope, unit_id: str) -> list[MemoryUnit]:
+        units_by_id = {unit.id: unit for unit in self._list_units(scope)}
+        if unit_id not in units_by_id:
+            raise NotFoundError("memory_unit", unit_id)
+
+        neighbors: dict[str, set[str]] = {uid: set() for uid in units_by_id}
+        for unit in units_by_id.values():
+            if unit.supersedes in units_by_id:
+                neighbors[unit.id].add(unit.supersedes)
+                neighbors[unit.supersedes].add(unit.id)
+
+        seen: set[str] = set()
+        pending = [unit_id]
+        while pending:
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            pending.extend(neighbors[current] - seen)
+        return [units_by_id[uid] for uid in seen]
 
 
 # -- 注册到 EngineProducer（实现自注册，新增无需改 producer/build_kernel） -------- #

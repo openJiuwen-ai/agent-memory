@@ -186,11 +186,46 @@ class OrchestratingEvolver(Evolver):
         self._recent_originals_limit = 10
         self._related_memories_top_k = 10
 
+    # ------------------------------------------------------------------
+    # infer=true 上下文收集（evolver 内部，evolve 接口不变）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_procedural(units: List[MemoryUnit]) -> bool:
+        """本轮是否走过程记忆抽取（metadata["procedural"]=="true"）。"""
+        return any(
+            str(u.system_metadata.get("procedural", "")).strip().lower() == "true"
+            for u in units
+        )
+
     def operator_type(self) -> OperatorType:
         return OperatorType.EVOLVER
 
     def health(self) -> None:
         return None
+
+    # ------------------------------------------------------------------
+    # Evolver 契约
+    # ------------------------------------------------------------------
+
+    def evolve(
+        self,
+        units: List[MemoryUnit],
+        mode: EvolveMode,
+    ) -> EvolveResult:
+        logger.info("Evolver: evolve mode=%s, %d units", mode.value, len(units))
+        for u in units:
+            logger.info("Evolver: input unit id=%s tier=%s lifecycle=%s provenance=%s content=%s",
+                         u.id[:8], u.tier.value, u.lifecycle.value, u.provenance, u.content[:200])
+        if mode == EvolveMode.EXTRACT:
+            return self._evolve_extract(units)
+        if mode == EvolveMode.CONSOLIDATE:
+            return self._evolve_consolidate(units)
+        if mode == EvolveMode.ASSOCIATE:
+            return self._evolve_associate(units)
+        if mode == EvolveMode.FORGET:
+            return self._evolve_forget(units)
+        return EvolveResult()
 
     # ------------------------------------------------------------------
     # 落盘辅助
@@ -644,18 +679,6 @@ class OrchestratingEvolver(Evolver):
             # 降级：简单拼接新旧内容
             return f"{old.content}\n{new.content}"
 
-    # ------------------------------------------------------------------
-    # infer=true 上下文收集（evolver 内部，evolve 接口不变）
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _is_procedural(units: List[MemoryUnit]) -> bool:
-        """本轮是否走过程记忆抽取（metadata["procedural"]=="true"）。"""
-        return any(
-            str(u.system_metadata.get("procedural", "")).strip().lower() == "true"
-            for u in units
-        )
-
     def _maybe_collect_extract_context(
         self, units: List[MemoryUnit], recent: List[MemoryUnit]
     ) -> ExtractContext | None:
@@ -799,29 +822,6 @@ class OrchestratingEvolver(Evolver):
                 len(units),
                 exc,
             )
-
-    # ------------------------------------------------------------------
-    # Evolver 契约
-    # ------------------------------------------------------------------
-
-    def evolve(
-        self,
-        units: List[MemoryUnit],
-        mode: EvolveMode,
-    ) -> EvolveResult:
-        logger.info("Evolver: evolve mode=%s, %d units", mode.value, len(units))
-        for u in units:
-            logger.info("Evolver: input unit id=%s tier=%s lifecycle=%s provenance=%s content=%s",
-                         u.id[:8], u.tier.value, u.lifecycle.value, u.provenance, u.content[:200])
-        if mode == EvolveMode.EXTRACT:
-            return self._evolve_extract(units)
-        if mode == EvolveMode.CONSOLIDATE:
-            return self._evolve_consolidate(units)
-        if mode == EvolveMode.ASSOCIATE:
-            return self._evolve_associate(units)
-        if mode == EvolveMode.FORGET:
-            return self._evolve_forget(units)
-        return EvolveResult()
 
     def _evolve_extract(self, units: List[MemoryUnit]) -> EvolveResult:
         """EXTRACT：抽取派生候选 → 分层标注 → 去重判定+落盘（_dedup_batch）。

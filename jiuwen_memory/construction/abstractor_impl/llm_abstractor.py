@@ -205,6 +205,19 @@ class LLMAbstractor(Abstractor):
         # 估算 token 系数：4 chars ≈ 1 token（中英文混合场景）
         self._chars_per_token = 4
 
+    @staticmethod
+    def _strip_non_json(text: str) -> str:
+        """去除 markdown fences 等噪声，提取 JSON 核心。"""
+        s = text.strip()
+        if s.startswith("```"):
+            lines = s.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            s = "\n".join(lines)
+        return s.strip()
+
     def operator_type(self) -> OperatorType:
         return OperatorType.ABSTRACTOR
 
@@ -528,19 +541,6 @@ class LLMAbstractor(Abstractor):
             logger.warning("Abstractor: LLM response not valid JSON, returning empty")
             return []
         return []
-
-    @staticmethod
-    def _strip_non_json(text: str) -> str:
-        """去除 markdown fences 等噪声，提取 JSON 核心。"""
-        s = text.strip()
-        if s.startswith("```"):
-            lines = s.split("\n")
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            s = "\n".join(lines)
-        return s.strip()
 
     # ------------------------------------------------------------------
     # Phase 3: 特征富化

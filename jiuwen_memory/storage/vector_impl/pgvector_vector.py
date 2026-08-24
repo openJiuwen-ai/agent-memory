@@ -106,6 +106,182 @@ class PgVectorStore(PgStoreBase, VectorStore):
         self._create_metadata_index = create_metadata_index
         self._create_extension = create_extension
 
+    @staticmethod
+    def _first_duplicate(ids: list[str]) -> str | None:
+        seen: set[str] = set()
+        for id_ in ids:
+            if id_ in seen:
+                return id_
+            seen.add(id_)
+        return None
+
+    def store_type(self) -> StoreType:
+        return StoreType.VECTOR
+
+    def health(self) -> None:
+        self._health()
+
+    def score_higher_is_better(self) -> bool:
+        return True
+
+    def insert(self, scope: Scope, records: list[VectorRecord]) -> None:
+        if not records:
+            return
+        duplicate = self._first_duplicate([record.id for record in records])
+        if duplicate is not None:
+            raise ConflictError(entity="vector", key=duplicate)
+        for record in records:
+            self._vector_text(record.vector)
+        row = self.sql.SQL("(%s, %s::vector, %s, %s, %s, %s, %s, %s::jsonb)")
+        values = self.sql.SQL(", ").join(row for _ in records)
+        statement = self.sql.SQL(
+            """
+            INSERT INTO {} (
+                id, embedding, scope_org, scope_space, scope_user, scope_agent,
+                scope_session, metadata
+            )
+            VALUES {}
+            ON CONFLICT (
+                scope_org, scope_space, scope_user, scope_agent, scope_session, id
+            ) DO NOTHING
+            RETURNING id
+            """
+        ).format(self._qualified(), values)
+        params = [value for record in records for value in self._record_params(scope, record)]
+        with wrap_backend("pgvector insert"):
+            with self.pool.connection() as conn, conn.cursor() as cursor:
+                cursor.execute(statement, params)
+                inserted = {str(row[0]) for row in cursor.fetchall()}
+                if len(inserted) != len(records):
+                    conflict = next(record.id for record in records if record.id not in inserted)
+                    raise ConflictError(entity="vector", key=conflict)
+
+    def update(self, scope: Scope, records: list[VectorRecord]) -> None:
+        if not records:
+            return
+        duplicate = self._first_duplicate([record.id for record in records])
+        if duplicate is not None:
+            raise ValidationError(f"duplicate vector id in update batch: {duplicate!r}")
+        for record in records:
+            self._vector_text(record.vector)
+        row = self.sql.SQL("(%s, %s::vector, %s::jsonb)")
+        values = self.sql.SQL(", ").join(row for _ in records)
+        scope_clause, scope_params = pg_scope_clause(scope, exact=True)
+        where = "target.id = incoming.id"
+        if scope_clause:
+            where += f" AND {scope_clause}"
+        statement = self.sql.SQL(
+            f"""
+            UPDATE {{}} AS target
+            SET embedding = incoming.embedding, metadata = incoming.metadata
+            FROM (VALUES {{}}) AS incoming(id, embedding, metadata)
+            WHERE {where}
+            RETURNING target.id
+            """
+        ).format(self._qualified(), values)
+        params: list[Any] = []
+        for record in records:
+            params.extend(
+                [record.id, self._vector_text(record.vector), self.jsonb(record.metadata)]
+            )
+        params.extend(scope_params)
+        with wrap_backend("pgvector update"):
+            with self.pool.connection() as conn, conn.cursor() as cursor:
+                cursor.execute(statement, params)
+                updated = {str(row[0]) for row in cursor.fetchall()}
+                if len(updated) != len(records):
+                    missing = next(record.id for record in records if record.id not in updated)
+                    raise NotFoundError(entity="vector", key=missing)
+
+    def delete(self, scope: Scope, ids: list[str]) -> None:
+        if not ids:
+            return
+        scope_clause, scope_params = pg_scope_clause(scope, exact=True)
+        where = "id = ANY(%s::text[])"
+        if scope_clause:
+            where += f" AND {scope_clause}"
+        statement = self.sql.SQL(f"DELETE FROM {{}} WHERE {where}").format(self._qualified())
+        with wrap_backend("pgvector delete"):
+            with self.pool.connection() as conn, conn.cursor() as cursor:
+                cursor.execute(statement, [ids, *scope_params])
+
+    def get(self, scope: Scope, ids: list[str]) -> list[VectorRecord]:
+        if not ids:
+            return []
+        scope_clause, scope_params = pg_scope_clause(scope, exact=True)
+        where = "id = ANY(%s::text[])"
+        if scope_clause:
+            where += f" AND {scope_clause}"
+        statement = self.sql.SQL(
+            f"SELECT id, embedding::text, metadata FROM {{}} WHERE {where}"
+        ).format(self._qualified())
+        with wrap_backend("pgvector get"):
+            with self.pool.connection() as conn, conn.cursor() as cursor:
+                cursor.execute(statement, [ids, *scope_params])
+                rows = cursor.fetchall()
+        return [
+            VectorRecord(id=str(id_), vector=json.loads(embedding), metadata=metadata or {})
+            for id_, embedding, metadata in rows
+        ]
+
+    def search(self, scope: Scope, query: VectorQuery) -> list[ScoredID]:
+        query_vector = self._vector_text(query.vector)
+        where, where_params = self._search_where(scope, query.filters)
+        statement = self._knn_statement(where)
+        with wrap_backend("pgvector search"):
+            with self.pool.connection() as conn, conn.cursor() as cursor:
+                self._apply_knn_settings(cursor, query)
+                cursor.execute(
+                    statement,
+                    [query_vector, *where_params, query_vector, query.top_k],
+                )
+                rows = cursor.fetchall()
+        return [ScoredID(id=str(id_), score=float(score_value)) for id_, score_value in rows]
+
+    def recall(
+        self,
+        scope: Scope,
+        query: VectorQuery,
+        output_fields: list[str] | None = None,
+    ) -> list[ScoredHit]:
+        # 把"召回 + 取 metadata"合并为同一条 KNN SELECT——仅在 SELECT 列追加
+        # metadata，省掉调用方再发一次 get 的往返。output_fields 仅认 "metadata"
+        # （归并所需的 unit_id 即在其中），其余值忽略并记日志，与 milvus 后端对齐。
+        fetch_meta = bool(output_fields) and "metadata" in output_fields
+        if output_fields:
+            unknown = [f for f in output_fields if f != "metadata"]
+            if unknown:
+                logger.info(
+                    "PgVectorStore.recall: output_fields only supports 'metadata', ignoring %s",
+                    unknown,
+                )
+        query_vector = self._vector_text(query.vector)
+        where, where_params = self._search_where(scope, query.filters)
+        statement = self._knn_statement(where, extra_columns="metadata" if fetch_meta else "")
+        with wrap_backend("pgvector recall"):
+            with self.pool.connection() as conn, conn.cursor() as cursor:
+                self._apply_knn_settings(cursor, query)
+                cursor.execute(
+                    statement,
+                    [query_vector, *where_params, query_vector, query.top_k],
+                )
+                rows = cursor.fetchall()
+        out: list[ScoredHit] = []
+        for row in rows:
+            if fetch_meta:
+                id_, metadata, score_value = row
+                out.append(
+                    ScoredHit(
+                        id=str(id_),
+                        score=float(score_value),
+                        metadata=metadata or {},
+                    )
+                )
+            else:
+                id_, score_value = row
+                out.append(ScoredHit(id=str(id_), score=float(score_value)))
+        return out
+
     def _ensure_schema(self, pool: Any) -> None:
         with pool.connection() as conn, conn.cursor() as cursor:
             if not self._auto_create_schema:
@@ -208,30 +384,12 @@ class PgVectorStore(PgStoreBase, VectorStore):
                 f"pgvector 维度不匹配：表为 {actual}，配置 dim={self._dim}"
             )
 
-    def store_type(self) -> StoreType:
-        return StoreType.VECTOR
-
-    def health(self) -> None:
-        self._health()
-
-    def score_higher_is_better(self) -> bool:
-        return True
-
     def _vector_text(self, vector: list[float]) -> str:
         if len(vector) != self._dim:
             raise ValidationError(
                 f"vector dimension mismatch: expected {self._dim}, got {len(vector)}"
             )
         return json.dumps(vector, separators=(",", ":"))
-
-    @staticmethod
-    def _first_duplicate(ids: list[str]) -> str | None:
-        seen: set[str] = set()
-        for id_ in ids:
-            if id_ in seen:
-                return id_
-            seen.add(id_)
-        return None
 
     def _record_params(self, scope: Scope, record: VectorRecord) -> list[Any]:
         return [
@@ -243,106 +401,6 @@ class PgVectorStore(PgStoreBase, VectorStore):
             scope.agent,
             scope.session,
             self.jsonb(record.metadata),
-        ]
-
-    def insert(self, scope: Scope, records: list[VectorRecord]) -> None:
-        if not records:
-            return
-        duplicate = self._first_duplicate([record.id for record in records])
-        if duplicate is not None:
-            raise ConflictError(entity="vector", key=duplicate)
-        for record in records:
-            self._vector_text(record.vector)
-        row = self.sql.SQL("(%s, %s::vector, %s, %s, %s, %s, %s, %s::jsonb)")
-        values = self.sql.SQL(", ").join(row for _ in records)
-        statement = self.sql.SQL(
-            """
-            INSERT INTO {} (
-                id, embedding, scope_org, scope_space, scope_user, scope_agent,
-                scope_session, metadata
-            )
-            VALUES {}
-            ON CONFLICT (
-                scope_org, scope_space, scope_user, scope_agent, scope_session, id
-            ) DO NOTHING
-            RETURNING id
-            """
-        ).format(self._qualified(), values)
-        params = [value for record in records for value in self._record_params(scope, record)]
-        with wrap_backend("pgvector insert"):
-            with self.pool.connection() as conn, conn.cursor() as cursor:
-                cursor.execute(statement, params)
-                inserted = {str(row[0]) for row in cursor.fetchall()}
-                if len(inserted) != len(records):
-                    conflict = next(record.id for record in records if record.id not in inserted)
-                    raise ConflictError(entity="vector", key=conflict)
-
-    def update(self, scope: Scope, records: list[VectorRecord]) -> None:
-        if not records:
-            return
-        duplicate = self._first_duplicate([record.id for record in records])
-        if duplicate is not None:
-            raise ValidationError(f"duplicate vector id in update batch: {duplicate!r}")
-        for record in records:
-            self._vector_text(record.vector)
-        row = self.sql.SQL("(%s, %s::vector, %s::jsonb)")
-        values = self.sql.SQL(", ").join(row for _ in records)
-        scope_clause, scope_params = pg_scope_clause(scope, exact=True)
-        where = "target.id = incoming.id"
-        if scope_clause:
-            where += f" AND {scope_clause}"
-        statement = self.sql.SQL(
-            f"""
-            UPDATE {{}} AS target
-            SET embedding = incoming.embedding, metadata = incoming.metadata
-            FROM (VALUES {{}}) AS incoming(id, embedding, metadata)
-            WHERE {where}
-            RETURNING target.id
-            """
-        ).format(self._qualified(), values)
-        params: list[Any] = []
-        for record in records:
-            params.extend(
-                [record.id, self._vector_text(record.vector), self.jsonb(record.metadata)]
-            )
-        params.extend(scope_params)
-        with wrap_backend("pgvector update"):
-            with self.pool.connection() as conn, conn.cursor() as cursor:
-                cursor.execute(statement, params)
-                updated = {str(row[0]) for row in cursor.fetchall()}
-                if len(updated) != len(records):
-                    missing = next(record.id for record in records if record.id not in updated)
-                    raise NotFoundError(entity="vector", key=missing)
-
-    def delete(self, scope: Scope, ids: list[str]) -> None:
-        if not ids:
-            return
-        scope_clause, scope_params = pg_scope_clause(scope, exact=True)
-        where = "id = ANY(%s::text[])"
-        if scope_clause:
-            where += f" AND {scope_clause}"
-        statement = self.sql.SQL(f"DELETE FROM {{}} WHERE {where}").format(self._qualified())
-        with wrap_backend("pgvector delete"):
-            with self.pool.connection() as conn, conn.cursor() as cursor:
-                cursor.execute(statement, [ids, *scope_params])
-
-    def get(self, scope: Scope, ids: list[str]) -> list[VectorRecord]:
-        if not ids:
-            return []
-        scope_clause, scope_params = pg_scope_clause(scope, exact=True)
-        where = "id = ANY(%s::text[])"
-        if scope_clause:
-            where += f" AND {scope_clause}"
-        statement = self.sql.SQL(
-            f"SELECT id, embedding::text, metadata FROM {{}} WHERE {where}"
-        ).format(self._qualified())
-        with wrap_backend("pgvector get"):
-            with self.pool.connection() as conn, conn.cursor() as cursor:
-                cursor.execute(statement, [ids, *scope_params])
-                rows = cursor.fetchall()
-        return [
-            VectorRecord(id=str(id_), vector=json.loads(embedding), metadata=metadata or {})
-            for id_, embedding, metadata in rows
         ]
 
     def _search_where(
@@ -396,64 +454,6 @@ class PgVectorStore(PgStoreBase, VectorStore):
         )
         if self._index_type == "none":
             cursor.execute("SET LOCAL enable_indexscan = off")
-
-    def search(self, scope: Scope, query: VectorQuery) -> list[ScoredID]:
-        query_vector = self._vector_text(query.vector)
-        where, where_params = self._search_where(scope, query.filters)
-        statement = self._knn_statement(where)
-        with wrap_backend("pgvector search"):
-            with self.pool.connection() as conn, conn.cursor() as cursor:
-                self._apply_knn_settings(cursor, query)
-                cursor.execute(
-                    statement,
-                    [query_vector, *where_params, query_vector, query.top_k],
-                )
-                rows = cursor.fetchall()
-        return [ScoredID(id=str(id_), score=float(score_value)) for id_, score_value in rows]
-
-    def recall(
-        self,
-        scope: Scope,
-        query: VectorQuery,
-        output_fields: list[str] | None = None,
-    ) -> list[ScoredHit]:
-        # 把"召回 + 取 metadata"合并为同一条 KNN SELECT——仅在 SELECT 列追加
-        # metadata，省掉调用方再发一次 get 的往返。output_fields 仅认 "metadata"
-        # （归并所需的 unit_id 即在其中），其余值忽略并记日志，与 milvus 后端对齐。
-        fetch_meta = bool(output_fields) and "metadata" in output_fields
-        if output_fields:
-            unknown = [f for f in output_fields if f != "metadata"]
-            if unknown:
-                logger.info(
-                    "PgVectorStore.recall: output_fields only supports 'metadata', ignoring %s",
-                    unknown,
-                )
-        query_vector = self._vector_text(query.vector)
-        where, where_params = self._search_where(scope, query.filters)
-        statement = self._knn_statement(where, extra_columns="metadata" if fetch_meta else "")
-        with wrap_backend("pgvector recall"):
-            with self.pool.connection() as conn, conn.cursor() as cursor:
-                self._apply_knn_settings(cursor, query)
-                cursor.execute(
-                    statement,
-                    [query_vector, *where_params, query_vector, query.top_k],
-                )
-                rows = cursor.fetchall()
-        out: list[ScoredHit] = []
-        for row in rows:
-            if fetch_meta:
-                id_, metadata, score_value = row
-                out.append(
-                    ScoredHit(
-                        id=str(id_),
-                        score=float(score_value),
-                        metadata=metadata or {},
-                    )
-                )
-            else:
-                id_, score_value = row
-                out.append(ScoredHit(id=str(id_), score=float(score_value)))
-        return out
 
 
 @VectorProducer.register("pgvector")

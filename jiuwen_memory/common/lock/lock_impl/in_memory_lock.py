@@ -38,6 +38,14 @@ class InMemoryLockProvider(LockProvider):
         # key -> (token, 过期时刻)；用 monotonic 计时，不受系统时钟调整影响
         self._entries: dict[str, tuple[str, float]] = {}
 
+    async def renew(self, handle: LockHandle, *, lease_ms: int | None = None) -> bool:
+        now = time.monotonic()
+        if self._held_token(handle.key, now) != handle.token:
+            return False
+        lease = handle.lease_ms if lease_ms is None else int(lease_ms)
+        self._entries[handle.key] = (handle.token, now + lease / 1000.0)
+        return True
+
     def _held_token(self, key: str, now: float) -> str | None:
         """返回当前有效持有者的 token；无人持有或已过期则 None（顺带清理）。"""
         entry = self._entries.get(key)
@@ -62,14 +70,6 @@ class InMemoryLockProvider(LockProvider):
     async def _release(self, handle: LockHandle) -> None:
         if self._held_token(handle.key, time.monotonic()) == handle.token:
             self._entries.pop(handle.key, None)
-
-    async def renew(self, handle: LockHandle, *, lease_ms: int | None = None) -> bool:
-        now = time.monotonic()
-        if self._held_token(handle.key, now) != handle.token:
-            return False
-        lease = handle.lease_ms if lease_ms is None else int(lease_ms)
-        self._entries[handle.key] = (handle.token, now + lease / 1000.0)
-        return True
 
 
 @LockProducer.register("memory")

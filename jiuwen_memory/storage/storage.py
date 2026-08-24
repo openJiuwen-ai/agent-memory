@@ -75,6 +75,36 @@ class Storage(ABC):
     def security(self) -> StorageSecurity:
         ...
 
+    @property
+    @abstractmethod
+    def kv(self) -> KVStore:
+        ...
+
+    @property
+    @abstractmethod
+    def vector(self) -> VectorStore:
+        ...
+
+    @property
+    @abstractmethod
+    def fulltext(self) -> FulltextStore:
+        ...
+
+    @property
+    @abstractmethod
+    def graph(self) -> GraphStore:
+        ...
+
+    @property
+    @abstractmethod
+    def fusion(self) -> FusionStore:
+        ...
+
+    @property
+    @abstractmethod
+    def fs(self) -> FSStore:
+        ...
+
     @abstractmethod
     def capabilities(self) -> frozenset[StorageCapability]:
         ...
@@ -114,36 +144,6 @@ class Storage(ABC):
 
     def has_fs_port(self, name: str = "default") -> bool:
         return name == "default" and self.has_fs()
-
-    @property
-    @abstractmethod
-    def kv(self) -> KVStore:
-        ...
-
-    @property
-    @abstractmethod
-    def vector(self) -> VectorStore:
-        ...
-
-    @property
-    @abstractmethod
-    def fulltext(self) -> FulltextStore:
-        ...
-
-    @property
-    @abstractmethod
-    def graph(self) -> GraphStore:
-        ...
-
-    @property
-    @abstractmethod
-    def fusion(self) -> FusionStore:
-        ...
-
-    @property
-    @abstractmethod
-    def fs(self) -> FSStore:
-        ...
 
     def kv_port(self, name: str = "default") -> KVStore:
         if name == "default":

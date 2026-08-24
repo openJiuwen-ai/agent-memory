@@ -36,19 +36,6 @@ class KeywordClassifier(Classifier):
     def health(self) -> None:
         return None
 
-    def _tier(self, content: str) -> MemoryTier:
-        if any(w in content for w in _SEMANTIC):
-            return MemoryTier.SEMANTIC
-        if any(w in content for w in _PROCEDURAL):
-            return MemoryTier.PROCEDURAL
-        return MemoryTier.EPISODIC
-
-    def _topic(self, content: str) -> str:
-        for topic, words in _TOPIC.items():
-            if any(w in content for w in words):
-                return topic
-        return ""
-
     def classify(self, units: List[MemoryUnit]) -> List[MemoryUnit]:
         logger.info("KeywordClassifier: received %d units", len(units))
         for unit in units:
@@ -63,6 +50,19 @@ class KeywordClassifier(Classifier):
                          topic, old_tags, unit.tags)
         logger.info("KeywordClassifier: classified %d units", len(units))
         return units
+
+    def _tier(self, content: str) -> MemoryTier:
+        if any(w in content for w in _SEMANTIC):
+            return MemoryTier.SEMANTIC
+        if any(w in content for w in _PROCEDURAL):
+            return MemoryTier.PROCEDURAL
+        return MemoryTier.EPISODIC
+
+    def _topic(self, content: str) -> str:
+        for topic, words in _TOPIC.items():
+            if any(w in content for w in words):
+                return topic
+        return ""
 
 
 # -- 注册到 ClassifierProducer（实现自注册，新增无需改 producer/build_kernel） -------- #

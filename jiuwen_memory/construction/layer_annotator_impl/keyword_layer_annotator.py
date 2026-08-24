@@ -32,6 +32,24 @@ class KeywordLayerAnnotator(LayerAnnotator):
         super().__init__(layers_threshold=layers_threshold)
         self._l1_chars = l1_chars
 
+    @staticmethod
+    def first_sentence(content: str) -> str:
+        """取 content 第一句（按句号/换行切分）。
+
+        遍历所有分隔符收集最早出现位置，按最早位置截取——而非按分隔符类型顺序
+        在首个被找到的类型处返回（否则中英混合文本如 "Hello. 这是中文。" 会错截到
+        第一个中文句号而非更早的英文句号）。
+        """
+        separators = ("。", "！", "？", ".", "!", "?", "\n")
+        earliest = -1
+        for sep in separators:
+            idx = content.find(sep)
+            if idx >= 0 and (earliest == -1 or idx < earliest):
+                earliest = idx
+        if earliest >= 0:
+            return content[: earliest + 1].strip()
+        return content[:80].strip()
+
     def health(self) -> None:
         return None
 
@@ -67,24 +85,6 @@ class KeywordLayerAnnotator(LayerAnnotator):
             first_sentence = self.first_sentence(content)
             tags_str = " ".join(unit.tags[:3]) if unit.tags else ""
             unit.layers.l0 = f"{tags_str} {first_sentence}".strip()
-
-    @staticmethod
-    def first_sentence(content: str) -> str:
-        """取 content 第一句（按句号/换行切分）。
-
-        遍历所有分隔符收集最早出现位置，按最早位置截取——而非按分隔符类型顺序
-        在首个被找到的类型处返回（否则中英混合文本如 "Hello. 这是中文。" 会错截到
-        第一个中文句号而非更早的英文句号）。
-        """
-        separators = ("。", "！", "？", ".", "!", "?", "\n")
-        earliest = -1
-        for sep in separators:
-            idx = content.find(sep)
-            if idx >= 0 and (earliest == -1 or idx < earliest):
-                earliest = idx
-        if earliest >= 0:
-            return content[: earliest + 1].strip()
-        return content[:80].strip()
 
 
 # -- 注册到 LayerAnnotatorProducer（实现自注册，新增无需改 producer/build_kernel） -------- #

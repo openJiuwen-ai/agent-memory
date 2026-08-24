@@ -48,28 +48,6 @@ class LocalFSStore(FSStore):
         if create_root:
             path.mkdir(parents=True, exist_ok=True)
 
-    def _resolved_root(self) -> Path:
-        from jiuwen_memory.config.binding import resolve_connection_url
-
-        live = resolve_connection_url(
-            self._config_source,
-            namespace=self._config_namespace,
-            field="root",
-            fallback=self._fallback_root,
-        )
-        root = Path(live or self._fallback_root).resolve()
-        if self._create_root:
-            root.mkdir(parents=True, exist_ok=True)
-        return root
-
-    def _path(self, scope: Scope, ref: str) -> Path:
-        """把 ``(scope, ref)`` 解析为 ``root`` 下的绝对路径，并阻断目录穿越。"""
-        base = self._resolved_root().joinpath(*scope_segments(scope))
-        target = (base / ref).resolve()
-        if target != base and base.resolve() not in target.parents:
-            raise ValidationError(f"ref escapes scope root: {ref!r}")
-        return target
-
     def store_type(self) -> StoreType:
         return StoreType.FS
 
@@ -123,6 +101,28 @@ class LocalFSStore(FSStore):
             created_at=st.st_ctime,
             updated_at=st.st_mtime,
         )
+
+    def _resolved_root(self) -> Path:
+        from jiuwen_memory.config.binding import resolve_connection_url
+
+        live = resolve_connection_url(
+            self._config_source,
+            namespace=self._config_namespace,
+            field="root",
+            fallback=self._fallback_root,
+        )
+        root = Path(live or self._fallback_root).resolve()
+        if self._create_root:
+            root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _path(self, scope: Scope, ref: str) -> Path:
+        """把 ``(scope, ref)`` 解析为 ``root`` 下的绝对路径，并阻断目录穿越。"""
+        base = self._resolved_root().joinpath(*scope_segments(scope))
+        target = (base / ref).resolve()
+        if target != base and base.resolve() not in target.parents:
+            raise ValidationError(f"ref escapes scope root: {ref!r}")
+        return target
 
 
 # -- 注册到 FsProducer（实现自注册，新增无需改 producer/build_kernel） -------- #

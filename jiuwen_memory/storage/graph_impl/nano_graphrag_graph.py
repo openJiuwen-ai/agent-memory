@@ -107,48 +107,6 @@ class NanoGraphRAGGraphStore(GraphStore):
         if create_root:
             Path(self._fallback_working_dir).mkdir(parents=True, exist_ok=True)
 
-    def _resolved_working_dir(self) -> str:
-        from jiuwen_memory.config.binding import resolve_connection_url
-
-        live = resolve_connection_url(
-            self._config_source,
-            namespace=self._config_namespace,
-            field="working_dir",
-            fallback=self._fallback_working_dir,
-        )
-        path = str(Path(live or self._fallback_working_dir).resolve())
-        if self._create_root:
-            Path(path).mkdir(parents=True, exist_ok=True)
-        return path
-
-    # ------------------------------------------------------------ 基础设施
-    def _run(self, coro: Any) -> Any:
-        if self._loop is None or self._loop.is_closed():
-            self._loop = asyncio.new_event_loop()
-        return self._loop.run_until_complete(coro)
-
-    def _namespace(self, scope: Scope) -> str:
-        return f"{self._prefix}-" + "_".join(scope_segments(scope))
-
-    def _store(self, scope: Scope) -> Any:
-        working_dir = self._resolved_working_dir()
-        if self._active_working_dir != working_dir:
-            # working_dir 切换：丢弃旧 scope 缓存（旧图文件仍在旧目录，不迁移）
-            self._storages.clear()
-            self._active_working_dir = working_dir
-        ns = self._namespace(scope)
-        storage = self._storages.get(ns)
-        if storage is None:
-            cls = _networkx_storage_cls()
-            with wrap_backend("nano-graphrag open"):
-                storage = cls(namespace=ns, global_config={"working_dir": working_dir})
-            self._storages[ns] = storage
-        return storage
-
-    def _persist(self, storage: Any) -> None:
-        with wrap_backend("nano-graphrag persist"):
-            self._run(storage.index_done_callback())
-
     # ------------------------------------------------------------ 序列化
     @staticmethod
     def _node_data(node: Node) -> dict[str, str]:
@@ -331,6 +289,48 @@ class NanoGraphRAGGraphStore(GraphStore):
                     break
             found = found[: query.limit]
             return [self._to_node(nid, graph.nodes[nid]) for nid in found]
+
+    def _resolved_working_dir(self) -> str:
+        from jiuwen_memory.config.binding import resolve_connection_url
+
+        live = resolve_connection_url(
+            self._config_source,
+            namespace=self._config_namespace,
+            field="working_dir",
+            fallback=self._fallback_working_dir,
+        )
+        path = str(Path(live or self._fallback_working_dir).resolve())
+        if self._create_root:
+            Path(path).mkdir(parents=True, exist_ok=True)
+        return path
+
+    # ------------------------------------------------------------ 基础设施
+    def _run(self, coro: Any) -> Any:
+        if self._loop is None or self._loop.is_closed():
+            self._loop = asyncio.new_event_loop()
+        return self._loop.run_until_complete(coro)
+
+    def _namespace(self, scope: Scope) -> str:
+        return f"{self._prefix}-" + "_".join(scope_segments(scope))
+
+    def _store(self, scope: Scope) -> Any:
+        working_dir = self._resolved_working_dir()
+        if self._active_working_dir != working_dir:
+            # working_dir 切换：丢弃旧 scope 缓存（旧图文件仍在旧目录，不迁移）
+            self._storages.clear()
+            self._active_working_dir = working_dir
+        ns = self._namespace(scope)
+        storage = self._storages.get(ns)
+        if storage is None:
+            cls = _networkx_storage_cls()
+            with wrap_backend("nano-graphrag open"):
+                storage = cls(namespace=ns, global_config={"working_dir": working_dir})
+            self._storages[ns] = storage
+        return storage
+
+    def _persist(self, storage: Any) -> None:
+        with wrap_backend("nano-graphrag persist"):
+            self._run(storage.index_done_callback())
 
 
 # -- 注册到 GraphProducer（实现自注册，新增无需改 producer/build_kernel） -------- #

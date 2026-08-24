@@ -78,42 +78,15 @@ class OpenAIEmbedder(Embedder):
         self._client: openai.OpenAI | None = None
         self._client_fingerprint: tuple[str, str | None, bool, str | None] | None = None
 
-    def plugin_type(self) -> PluginType:
-        """返回插件类型 ``EMBEDDER``。"""
-        return PluginType.EMBEDDER
-
-    def _endpoint(self):
-        """解析当前应生效的 model / api_key / base_url（ConfigSource 优先）。"""
-        return resolve_endpoint(
-            self._config_source,
-            namespace=self._config_namespace,
-            fallback_model=self._fallback_model,
-            fallback_api_key=self._fallback_api_key,
-            fallback_base_url=self._fallback_base_url,
-        )
-
-    def _ensure_client(self):
-        """按当前晚绑定凭证确保 client；凭证变化时重建。返回 ``(model, client)``。"""
-        ep = self._endpoint()
-        fingerprint = (ep.api_key, ep.base_url, self._ssl_verify, self._ssl_ca_cert)
-        if self._client is None or self._client_fingerprint != fingerprint:
-            client_kwargs: dict = {"api_key": ep.api_key}
-            if ep.base_url is not None:
-                client_kwargs["base_url"] = ep.base_url
-            if self._ssl_verify:
-                # 使用 SDK 默认客户端，在注入信任锚的同时保留长读取超时、连接池等
-                client_kwargs["http_client"] = openai.DefaultHttpxClient(
-                    verify=outbound_verify(self._ssl_ca_cert)
-                )
-            self._client = openai.OpenAI(**client_kwargs)
-            self._client_fingerprint = fingerprint
-        return ep.model, self._client
-
     @property
     def client(self) -> openai.OpenAI:
         """惰性创建的 OpenAI 客户端（凭证经 ConfigSource 晚绑定；变化时重建）。"""
         _, client = self._ensure_client()
         return client
+
+    def plugin_type(self) -> PluginType:
+        """返回插件类型 ``EMBEDDER``。"""
+        return PluginType.EMBEDDER
 
     def health(self) -> None:
         """探活：调用一次 embed 测试 API 可达。"""
@@ -141,6 +114,33 @@ class OpenAIEmbedder(Embedder):
         for batch in self._split_batches(texts):
             all_vectors.extend(self._embed_batch(batch))
         return all_vectors
+
+    def _endpoint(self):
+        """解析当前应生效的 model / api_key / base_url（ConfigSource 优先）。"""
+        return resolve_endpoint(
+            self._config_source,
+            namespace=self._config_namespace,
+            fallback_model=self._fallback_model,
+            fallback_api_key=self._fallback_api_key,
+            fallback_base_url=self._fallback_base_url,
+        )
+
+    def _ensure_client(self):
+        """按当前晚绑定凭证确保 client；凭证变化时重建。返回 ``(model, client)``。"""
+        ep = self._endpoint()
+        fingerprint = (ep.api_key, ep.base_url, self._ssl_verify, self._ssl_ca_cert)
+        if self._client is None or self._client_fingerprint != fingerprint:
+            client_kwargs: dict = {"api_key": ep.api_key}
+            if ep.base_url is not None:
+                client_kwargs["base_url"] = ep.base_url
+            if self._ssl_verify:
+                # 使用 SDK 默认客户端，在注入信任锚的同时保留长读取超时、连接池等
+                client_kwargs["http_client"] = openai.DefaultHttpxClient(
+                    verify=outbound_verify(self._ssl_ca_cert)
+                )
+            self._client = openai.OpenAI(**client_kwargs)
+            self._client_fingerprint = fingerprint
+        return ep.model, self._client
 
     def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         """单批次调用 embeddings API。"""

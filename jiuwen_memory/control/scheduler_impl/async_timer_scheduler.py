@@ -82,16 +82,16 @@ class AsyncTimerScheduler(Scheduler):
         # job_id → JobInfo（含一次性实例与定时任务的 JobInfo）
         self._jobs: dict[str, JobInfo] = {}
 
+    @staticmethod
+    def _scope_key(scope: Scope) -> tuple[str, ...]:
+        """per scope dict key——Scheduler 内部实现细节。"""
+        return (scope.org, scope.space, scope.user, scope.agent, scope.session)
+
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.SCHEDULER
 
     def health(self) -> None:
         return None
-
-    @staticmethod
-    def _scope_key(scope: Scope) -> tuple[str, ...]:
-        """per scope dict key——Scheduler 内部实现细节。"""
-        return (scope.org, scope.space, scope.user, scope.agent, scope.session)
 
     # ---- 公开 API ----
 

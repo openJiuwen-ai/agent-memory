@@ -31,6 +31,16 @@ class StructuredDiscloser(Discloser):
     优先用预生成 ``unit.layers.l0``/``.l1``，空则回退到规则渲染（卡片/证据片段）。
     """
 
+    @staticmethod
+    def _truncate(text: str, limit: int) -> str:
+        return text if len(text) <= limit else text[:limit].rstrip() + "..."
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        if not text:
+            return 0
+        return max(1, (len(text) + 3) // 4)
+
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.DISCLOSER
 
@@ -287,16 +297,6 @@ class StructuredDiscloser(Discloser):
             f"agent={scope.agent or '-'} "
             f"session={scope.session or '-'}"
         )
-
-    @staticmethod
-    def _truncate(text: str, limit: int) -> str:
-        return text if len(text) <= limit else text[:limit].rstrip() + "..."
-
-    @staticmethod
-    def _estimate_tokens(text: str) -> int:
-        if not text:
-            return 0
-        return max(1, (len(text) + 3) // 4)
 
 
 # -- 注册到 DiscloserProducer（实现自注册，新增无需改 producer/build_kernel） -------- #

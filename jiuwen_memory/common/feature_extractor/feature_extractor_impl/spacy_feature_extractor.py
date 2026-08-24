@@ -222,31 +222,6 @@ class SpacyFeatureExtractor(FeatureExtractor):
 
         self._init_spacy()
 
-    def _init_spacy(self) -> None:
-        """尝试加载 spaCy 模型；失败时标记为不可用。"""
-        try:
-            import spacy
-        except ImportError:
-            logger.warning(
-                "SpacyFeatureExtractor: spaCy not installed, "
-                "falling back to simple tokenization if enabled"
-            )
-            self._available = False
-            self._nlp = None
-            return
-
-        try:
-            self._nlp = spacy.load(self._model_name)
-            self._available = True
-        except OSError:
-            logger.warning(
-                "SpacyFeatureExtractor: model %s not found, "
-                "falling back to simple tokenization if enabled",
-                self._model_name,
-            )
-            self._available = False
-            self._nlp = None
-
     @staticmethod
     def _get_lang_from_model_name(model_name: str) -> str:
         """从模型名推断语言代码：zh_core_web_sm → zh, en_core_web_sm → en。"""
@@ -302,6 +277,31 @@ class SpacyFeatureExtractor(FeatureExtractor):
             fs.labels,
         )
         return fs
+
+    def _init_spacy(self) -> None:
+        """尝试加载 spaCy 模型；失败时标记为不可用。"""
+        try:
+            import spacy
+        except ImportError:
+            logger.warning(
+                "SpacyFeatureExtractor: spaCy not installed, "
+                "falling back to simple tokenization if enabled"
+            )
+            self._available = False
+            self._nlp = None
+            return
+
+        try:
+            self._nlp = spacy.load(self._model_name)
+            self._available = True
+        except OSError:
+            logger.warning(
+                "SpacyFeatureExtractor: model %s not found, "
+                "falling back to simple tokenization if enabled",
+                self._model_name,
+            )
+            self._available = False
+            self._nlp = None
 
     def _extract_with_spacy(self, text: str) -> FeatureSet:
         """spaCy pipeline 提取：NER + POS 关键词 + 标签推断。"""

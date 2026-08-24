@@ -245,6 +245,18 @@ class LockProvider(ABC):
                     await renewer
             await self.release(handle)
 
+    @abstractmethod
+    async def renew(self, handle: LockHandle, *, lease_ms: int | None = None) -> bool:
+        """按 token 做 CAS 续期；返回 False 表示已失去持有权。"""
+
+    async def health(self) -> None:
+        """存活探测：健康时返回 ``None``，否则由实现抛出异常。
+
+        与其余组件的同步 ``health()`` 不一致——本组件整体异步，探测需要往后端发一次
+        往返。消费方级联调用时须 ``await``。
+        """
+        return None
+
     async def _renew_loop(self, handle: LockHandle) -> None:
         """看门狗：周期性续期，一旦失败就置位 ``handle.lost`` 并退出。
 
@@ -273,15 +285,3 @@ class LockProvider(ABC):
     @abstractmethod
     async def _release(self, handle: LockHandle) -> None:
         """向后端释放锁，必须按 token 做 CAS。"""
-
-    @abstractmethod
-    async def renew(self, handle: LockHandle, *, lease_ms: int | None = None) -> bool:
-        """按 token 做 CAS 续期；返回 False 表示已失去持有权。"""
-
-    async def health(self) -> None:
-        """存活探测：健康时返回 ``None``，否则由实现抛出异常。
-
-        与其余组件的同步 ``health()`` 不一致——本组件整体异步，探测需要往后端发一次
-        往返。消费方级联调用时须 ``await``。
-        """
-        return None

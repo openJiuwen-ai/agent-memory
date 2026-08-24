@@ -129,18 +129,6 @@ class MilvusVectorStore(VectorStore):
         self._client: Any = None
         self._client_uri: str | None = None
 
-    def _resolved_uri(self) -> str:
-        """当前 Milvus URI（ConfigSource ``vector_store.uri`` / ``fusion_store.uri``）。"""
-        from jiuwen_memory.config.binding import resolve_connection_url
-
-        live = resolve_connection_url(
-            self._config_source,
-            namespace=self._config_namespace,
-            field="uri",
-            fallback=self._fallback_uri,
-        )
-        return live or self._fallback_uri
-
     @property
     def client(self) -> Any:
         uri = self._resolved_uri()
@@ -161,51 +149,10 @@ class MilvusVectorStore(VectorStore):
             self._ensure_collection()
         return self._client
 
-    def _ensure_collection(self) -> None:
-        if self._client.has_collection(self._collection):
-            self._client.load_collection(self._collection)
-            return
-        from pymilvus import DataType
-
-        schema = self._client.create_schema(auto_id=False, enable_dynamic_field=False)
-        schema.add_field(
-            "id", DataType.VARCHAR, is_primary=True, max_length=self._physical_id_len
-        )
-        schema.add_field("logical_id", DataType.VARCHAR, max_length=self._id_len)
-        schema.add_field("vector", DataType.FLOAT_VECTOR, dim=self._dim)
-        for fld in _SCOPE_FIELDS:
-            schema.add_field(fld, DataType.VARCHAR, max_length=self._scope_len)
-        schema.add_field("metadata", DataType.JSON)  # scope 之外的元数据整体存 JSON
-        index_params = self._client.prepare_index_params()
-        index_params.add_index(
-            field_name="vector", index_type="AUTOINDEX", metric_type=self._metric_type
-        )
-        self._client.create_collection(
-            collection_name=self._collection,
-            schema=schema,
-            index_params=index_params,
-            consistency_level=self._consistency,
-        )
-        self._client.load_collection(self._collection)
-
     # --------------------------------------------------------------- 序列化
     @staticmethod
     def _physical_id(scope: Scope, logical_id: str) -> str:
         return ":".join((*scope_segments(scope), logical_id))
-
-    @classmethod
-    def _row(cls, scope: Scope, rec: VectorRecord) -> dict[str, Any]:
-        return {
-            "id": cls._physical_id(scope, rec.id),
-            "logical_id": rec.id,
-            "vector": rec.vector,
-            "scope_org": scope.org,
-            "scope_space": scope.space,
-            "scope_user": scope.user,
-            "scope_agent": scope.agent,
-            "scope_session": scope.session,
-            "metadata": rec.metadata,  # JSON 字段
-        }
 
     @staticmethod
     def _to_record(row: dict[str, Any]) -> VectorRecord:
@@ -232,6 +179,20 @@ class MilvusVectorStore(VectorStore):
         raise ValidationError(f"unsupported filter op for vector: {fc.op}")
 
     @classmethod
+    def _row(cls, scope: Scope, rec: VectorRecord) -> dict[str, Any]:
+        return {
+            "id": cls._physical_id(scope, rec.id),
+            "logical_id": rec.id,
+            "vector": rec.vector,
+            "scope_org": scope.org,
+            "scope_space": scope.space,
+            "scope_user": scope.user,
+            "scope_agent": scope.agent,
+            "scope_session": scope.session,
+            "metadata": rec.metadata,  # JSON 字段
+        }
+
+    @classmethod
     def _compile_filter(cls, expr: FilterExpr | None) -> str:
         """把完整 FilterExpr 编译为 Milvus scalar filtering 表达式。"""
         if expr is None:
@@ -246,28 +207,6 @@ class MilvusVectorStore(VectorStore):
         if expr.logic is FilterLogic.NOT:
             return f"(not ({children[0]}))"
         raise ValidationError(f"unsupported filter logic for vector: {expr.logic}")
-
-    def _scope_expr(self, scope: Scope) -> str:
-        return " && ".join(f'scope_{dim} == {_lit(val)}' for dim, val in scope_dims(scope))
-
-    def _expr(self, scope: Scope, filters: FilterExpr | None) -> str:
-        parts = [self._scope_expr(scope)] if scope_dims(scope) else []
-        compiled = self._compile_filter(filters)
-        if compiled:
-            parts.append(compiled)
-        return " && ".join(p for p in parts if p)
-
-    def _existing_ids(self, scope: Scope, ids: list[str]) -> set[str]:
-        physical_ids = [self._physical_id(scope, rec_id) for rec_id in ids]
-        items = ", ".join(_lit(i) for i in physical_ids)
-        with wrap_backend("milvus query"):
-            rows = self.client.query(
-                self._collection,
-                filter=f"id in [{items}]",
-                output_fields=["logical_id"],
-                consistency_level=self._consistency,
-            )
-        return {row["logical_id"] for row in rows}
 
     # --------------------------------------------------------------- CRUD
     def store_type(self) -> StoreType:
@@ -384,6 +323,67 @@ class MilvusVectorStore(VectorStore):
     def score_higher_is_better(self) -> bool:
         # 分数方向随 metric_type：COSINE/IP 越大越相关；L2 等距离型越小越相关。
         return str(self._metric_type).upper() in ("COSINE", "IP")
+
+    def _resolved_uri(self) -> str:
+        """当前 Milvus URI（ConfigSource ``vector_store.uri`` / ``fusion_store.uri``）。"""
+        from jiuwen_memory.config.binding import resolve_connection_url
+
+        live = resolve_connection_url(
+            self._config_source,
+            namespace=self._config_namespace,
+            field="uri",
+            fallback=self._fallback_uri,
+        )
+        return live or self._fallback_uri
+
+    def _ensure_collection(self) -> None:
+        if self._client.has_collection(self._collection):
+            self._client.load_collection(self._collection)
+            return
+        from pymilvus import DataType
+
+        schema = self._client.create_schema(auto_id=False, enable_dynamic_field=False)
+        schema.add_field(
+            "id", DataType.VARCHAR, is_primary=True, max_length=self._physical_id_len
+        )
+        schema.add_field("logical_id", DataType.VARCHAR, max_length=self._id_len)
+        schema.add_field("vector", DataType.FLOAT_VECTOR, dim=self._dim)
+        for fld in _SCOPE_FIELDS:
+            schema.add_field(fld, DataType.VARCHAR, max_length=self._scope_len)
+        schema.add_field("metadata", DataType.JSON)  # scope 之外的元数据整体存 JSON
+        index_params = self._client.prepare_index_params()
+        index_params.add_index(
+            field_name="vector", index_type="AUTOINDEX", metric_type=self._metric_type
+        )
+        self._client.create_collection(
+            collection_name=self._collection,
+            schema=schema,
+            index_params=index_params,
+            consistency_level=self._consistency,
+        )
+        self._client.load_collection(self._collection)
+
+    def _scope_expr(self, scope: Scope) -> str:
+        return " && ".join(f'scope_{dim} == {_lit(val)}' for dim, val in scope_dims(scope))
+
+    def _expr(self, scope: Scope, filters: FilterExpr | None) -> str:
+        parts = [self._scope_expr(scope)] if scope_dims(scope) else []
+        compiled = self._compile_filter(filters)
+        if compiled:
+            parts.append(compiled)
+        return " && ".join(p for p in parts if p)
+
+    def _existing_ids(self, scope: Scope, ids: list[str]) -> set[str]:
+        physical_ids = [self._physical_id(scope, rec_id) for rec_id in ids]
+        items = ", ".join(_lit(i) for i in physical_ids)
+        with wrap_backend("milvus query"):
+            rows = self.client.query(
+                self._collection,
+                filter=f"id in [{items}]",
+                output_fields=["logical_id"],
+                consistency_level=self._consistency,
+            )
+        return {row["logical_id"] for row in rows}
 
 
 # -- 注册到 VectorProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
