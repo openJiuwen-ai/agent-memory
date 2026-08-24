@@ -176,6 +176,56 @@ def test_selected_schema_is_the_validation_allowlist() -> None:
     assert any("was not selected" in error for error in errors)
 
 
+def test_entity_name_uniqueness_uses_persisted_stripped_names() -> None:
+    normalizer = SchemaExtractionNormalizer(_catalog())
+
+    normalized, errors = normalizer.normalize_and_validate(
+        {
+            "entities": [
+                {"name": "Alice", "entity_type": "person", "properties": []},
+                {"name": " Alice ", "entity_type": "person", "properties": []},
+            ]
+        },
+        "2026-08-19",
+    )
+
+    assert [entity["name"] for entity in normalized["entities"]] == ["Alice", "Alice"]
+    assert "entity names must be unique within one response" in errors
+
+
+def test_episode_entity_is_rejected_instead_of_silently_dropped() -> None:
+    catalog = EntitySchemaCatalog.from_data(
+        [
+            {
+                "entity_type": "person",
+                "dynamic_property": {"default_property": {"desc": "fallback"}},
+            },
+            {
+                "entity_type": "episodes",
+                "dynamic_property": {"default_property": {"desc": "raw episode"}},
+            },
+        ]
+    )
+    normalizer = SchemaExtractionNormalizer(catalog)
+
+    normalized, errors = normalizer.normalize_and_validate(
+        {
+            "entities": [
+                {
+                    "name": "Conversation episode",
+                    "entity_type": "episodes",
+                    "properties": [],
+                }
+            ]
+        },
+        "2026-08-19",
+        entity_schema=catalog.schema_for_generation(),
+    )
+
+    assert normalized["entities"] == []
+    assert any("type 'episodes' was not selected" in error for error in errors)
+
+
 def test_schema_selection_filters_static_and_dynamic_properties() -> None:
     catalog = EntitySchemaCatalog.from_data(
         [
@@ -227,6 +277,27 @@ def test_empty_schema_selection_skips_property_generation() -> None:
     units = extractor.extract([_source()])
 
     assert units == []
+    assert llm.call_count == 1
+
+
+def test_schema_selection_prompt_render_failure_falls_back_to_full_schema(monkeypatch) -> None:
+    source = _source()
+    llm = _SequenceResponseLLM([_property_response(source.id)])
+    extractor = EntitySchemaExtractor(
+        llm=llm,
+        schema=_catalog(),
+        enable_schema_selection=True,
+    )
+    monkeypatch.setattr(
+        "jiuwen_memory.construction.extractor_impl.entity_schema_extractor."
+        "_SCHEMA_SELECTION_SYSTEM_PROMPT",
+        "{missing_template_field}",
+    )
+
+    units = extractor.extract([source])
+
+    assert len(units) == 1
+    assert units[0].system_metadata["schema_property_name"] == "occupation"
     assert llm.call_count == 1
 
 

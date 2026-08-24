@@ -136,7 +136,7 @@ class SchemaExtractionNormalizer:
         if not isinstance(entities, list):
             return raw, ["entities must be an array"]
         names = [
-            str(entity.get("name"))
+            str(entity.get("name")).strip()
             for entity in entities
             if isinstance(entity, dict) and entity.get("name")
         ]
@@ -162,8 +162,6 @@ class SchemaExtractionNormalizer:
         for entity_index, entity in enumerate(entities):
             if not isinstance(entity, dict):
                 errors.append(f"entity {entity_index} must be an object")
-                continue
-            if entity.get("entity_type") == "episodes":
                 continue
             name = str(entity.get("name") or "").strip()
             if not name:
@@ -347,13 +345,13 @@ class EntitySchemaExtractor(Extractor):
     ) -> list[dict[str, Any]]:
         if not self._enable_schema_selection:
             return full_schema
-        summary = _format_schema_summary(full_schema)
-        conversation = "\n".join(unit.content for unit in units)[:2000]
-        prompt = _SCHEMA_SELECTION_SYSTEM_PROMPT.format(
-            dialogue_text=conversation,
-            entity_schema=summary,
-        )
         try:
+            summary = _format_schema_summary(full_schema)
+            conversation = "\n".join(unit.content for unit in units)[:2000]
+            prompt = _SCHEMA_SELECTION_SYSTEM_PROMPT.format(
+                dialogue_text=conversation,
+                entity_schema=summary,
+            )
             response = self._helper.call_llm_with_retry(
                 [ChatMessage(role="user", content=prompt)],
                 max_tokens=2048,
@@ -775,7 +773,7 @@ def _schema_memory_tier(entity_type: str, property_name: str) -> MemoryTier:
     normalized_type = entity_type.strip().lower().replace("-", "_").replace(" ", "_")
     normalized_property = property_name.strip().lower().replace("-", "_").replace(" ", "_")
     if normalized_type in {"episode", "episodes", "episodic"}:
-        return MemoryTier.EPISODIC
+        raise ValueError("episode schema memories are not supported")
     if "task_experience" in {normalized_type, normalized_property}:
         return MemoryTier.PROCEDURAL
     if normalized_type in {"person", "user"}:
