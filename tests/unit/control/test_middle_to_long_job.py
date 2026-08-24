@@ -38,6 +38,7 @@ from jiuwen_memory.control.lifecycle import LifecycleManager
 from jiuwen_memory.control.types import JobStatus
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 pytestmark = pytest.mark.unit
 
@@ -101,13 +102,13 @@ class _RecordingIndex(IndexBuilder):
     def health(self) -> None:
         return None
 
-    def build(self, units) -> None:
+    def build(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         return None
 
-    def update(self, units) -> None:
+    def update(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         return None
 
-    def remove(self, units) -> None:
+    def remove(self, units, *, mode: IndexRemoveMode = IndexRemoveMode.HARD) -> None:
         self.removed.extend(units)
 
     def rebuild(self) -> None:

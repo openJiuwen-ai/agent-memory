@@ -12,7 +12,7 @@ from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
 from jiuwen_memory.storage.fulltext import FulltextStore
 from jiuwen_memory.storage.storage import Storage, StorageProducer
-from jiuwen_memory.storage.types import Document
+from jiuwen_memory.storage.types import Document, IndexRemoveMode, IndexWriteMode
 
 logger = get_logger(__name__)
 
@@ -111,7 +111,10 @@ class FulltextIndexBuilder(IndexBuilder):
             metadata=_index_metadata(unit, layer=layer),
         )
 
-    def build(self, units: list[MemoryUnit]) -> None:
+    def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
+        # 本实现只建检索索引，不交付记忆本体：FORWARD_ONLY 即整体跳过。
+        if mode is IndexWriteMode.FORWARD_ONLY:
+            return
         logger.info("FulltextIndexBuilder: building index for %d units", len(units))
         for unit in units:
             if self._store is not None:
@@ -127,16 +130,31 @@ class FulltextIndexBuilder(IndexBuilder):
             # L0/L1 分层：store 非空且 layers 非空才写独立 store（分表）
             self._build_layers(unit)
 
-    def update(self, units: list[MemoryUnit]) -> None:
+    def update(
+        self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL
+    ) -> None:
+        """删后重建，与 :class:`VectorIndexBuilder` 同一容错水平。
+
+        不用 ``store.update``——它要求文档已存在，而文档可能先前已被移出检索（如归档后
+        再更新），那时会抛 ``NotFoundError``。``delete`` 契约幂等，删后 ``insert`` 对
+        「已存在」与「不存在」两种前态都成立。
+        """
+        # 本实现只建倒排索引（检索）：调用方要求只动正排时整体跳过。
+        if mode is IndexWriteMode.FORWARD_ONLY:
+            return
         logger.info("FulltextIndexBuilder: updating index for %d units", len(units))
         for unit in units:
             if self._store is not None:
-                self._store.update(unit.scope, [self._doc(unit)])
+                self._store.delete(unit.scope, [unit.id])
+                self._store.insert(unit.scope, [self._doc(unit)])
             # L0/L1：先删旧 record（store 非空才删），再按新 layers 重建——避免旧分层残留
             self._delete_layer_records(unit.id, unit.scope)
             self._build_layers(unit)
 
-    def remove(self, units: list[MemoryUnit]) -> None:
+    def remove(
+        self, units: list[MemoryUnit], *, mode: IndexRemoveMode = IndexRemoveMode.HARD
+    ) -> None:
+        # 本实现只持有检索索引：SOFT/HARD 都要移出检索，行为相同。
         logger.info("FulltextIndexBuilder: removing %d units from index", len(units))
         for unit in units:
             if self._store is not None:

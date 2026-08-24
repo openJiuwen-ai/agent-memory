@@ -45,7 +45,12 @@ from jiuwen_memory.construction.extractor import Extractor
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.kv import KVStore
 from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
-from jiuwen_memory.storage.types import ScoredID, VectorRecord
+from jiuwen_memory.storage.types import (
+    IndexRemoveMode,
+    IndexWriteMode,
+    ScoredID,
+    VectorRecord,
+)
 from jiuwen_memory.storage.vector import VectorStore
 
 pytestmark = pytest.mark.unit
@@ -239,6 +244,11 @@ class _ScriptedExtractor(Extractor):
 
 
 class _NoopIndexBuilder:
+    """只交付 Storage 的替身：IndexBuilder 是写入口，不交付则真源为空。"""
+
+    def __init__(self, storage) -> None:
+        self._storage = storage
+
     @staticmethod
     def operator_type() -> OperatorType:
         return OperatorType.INDEX_BUILDER
@@ -247,13 +257,15 @@ class _NoopIndexBuilder:
     def health() -> None:
         return None
 
-    def build(self, units):
-        pass
+    def build(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL):
+        for unit in units:
+            self._storage.add(unit.scope, [unit])
 
-    def update(self, units):
-        pass
+    def update(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL):
+        for unit in units:
+            self._storage.update(unit.scope, [unit])
 
-    def remove(self, units):
+    def remove(self, units, *, mode: IndexRemoveMode = IndexRemoveMode.HARD):
         pass
 
     def rebuild(self):
@@ -299,8 +311,9 @@ def _make_evolver(kv, vector_store, embedder, llm, extractor) -> OrchestratingEv
         extractor=extractor,
         abstractor=None,  # EXTRACT 不用
         associator=None,
-        index_builder=_NoopIndexBuilder(),
+        index_builder=_NoopIndexBuilder(storage),
         storage=storage,
+        message_store=storage.kv,
         dedup=dedup,
         llm=llm,
     )
@@ -478,7 +491,9 @@ class TestEngineInferPersist:
         原文落盘在 evolver 内部（_persist_and_maintain_messages），故用真实 OrchestratingEvolver。
         """
         from jiuwen_memory.common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
-        from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer import PassthroughNormalizer
+        from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer import (
+            PassthroughNormalizer,
+        )
         from jiuwen_memory.construction.extractor_impl.keyword_extractor import KeywordExtractor
         from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
         from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
@@ -489,18 +504,19 @@ class TestEngineInferPersist:
         extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=50, overlap_chars=10))
         evolver = OrchestratingEvolver(
             extractor=extractor, abstractor=None, associator=None,
-            index_builder=_NoopIndexBuilder(), storage=storage,
+            index_builder=_NoopIndexBuilder(storage), storage=storage,
+            message_store=storage.kv,
             dedup=dedup, llm=_MockLLM(),
         )
 
         class _NoopIndex:
-            def build(self, units):
+            def build(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL):
                 pass
 
-            def update(self, units):
+            def update(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL):
                 pass
 
-            def remove(self, units):
+            def remove(self, units, *, mode: IndexRemoveMode = IndexRemoveMode.HARD):
                 pass
 
             def rebuild(self):
@@ -586,7 +602,9 @@ class TestProceduralExtract:
     @staticmethod
     def test_procedural_original_not_in_kv():
         """procedural 原文不落 KV（/messages/ 和 /memory/ 都无原文）。"""
-        from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer import PassthroughNormalizer
+        from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer import (
+            PassthroughNormalizer,
+        )
         from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
         from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
 
@@ -602,18 +620,19 @@ class TestProceduralExtract:
         # keyword_extractor 构造需 chunker + normalizer？看签名——只 chunker
         evolver = OrchestratingEvolver(
             extractor=extractor, abstractor=None, associator=None,
-            index_builder=_NoopIndexBuilder(), storage=storage,
+            index_builder=_NoopIndexBuilder(storage), storage=storage,
+            message_store=storage.kv,
             dedup=dedup, llm=_MockLLM(),
         )
 
         class _NoopIndex:
-            def build(self, units):
+            def build(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL):
                 pass
 
-            def update(self, units):
+            def update(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL):
                 pass
 
-            def remove(self, units):
+            def remove(self, units, *, mode: IndexRemoveMode = IndexRemoveMode.HARD):
                 pass
 
             def rebuild(self):
@@ -652,7 +671,9 @@ class TestProceduralExtract:
         「procedural 原文不落 KV」契约。修正为 `if infer and not procedural:`。
         """
         from jiuwen_memory.common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
-        from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer import PassthroughNormalizer
+        from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer import (
+            PassthroughNormalizer,
+        )
         from jiuwen_memory.construction.extractor_impl.keyword_extractor import KeywordExtractor
         from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
         from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
@@ -663,18 +684,19 @@ class TestProceduralExtract:
         extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=50, overlap_chars=10))
         evolver = OrchestratingEvolver(
             extractor=extractor, abstractor=None, associator=None,
-            index_builder=_NoopIndexBuilder(), storage=storage,
+            index_builder=_NoopIndexBuilder(storage), storage=storage,
+            message_store=storage.kv,
             dedup=dedup, llm=_MockLLM(),
         )
 
         class _NoopIndex:
-            def build(self, units):
+            def build(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL):
                 pass
 
-            def update(self, units):
+            def update(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL):
                 pass
 
-            def remove(self, units):
+            def remove(self, units, *, mode: IndexRemoveMode = IndexRemoveMode.HARD):
                 pass
 
             def rebuild(self):

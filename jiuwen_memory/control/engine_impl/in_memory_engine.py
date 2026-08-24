@@ -55,6 +55,7 @@ from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
 from jiuwen_memory.storage.storage import Storage, StorageProducer
+from jiuwen_memory.storage.types import IndexRemoveMode
 
 logger = get_logger(__name__)
 
@@ -349,8 +350,8 @@ class InMemoryEngine(MemoryEngine):
         # classifier 为 None 时跳过（tier 保持 EPISODIC 默认，向后兼容）。
         if classifier is not None:
             classifier.classify(units)
-        await asyncio.to_thread(self._write_default_to_kv, scope, units)
-        await asyncio.to_thread(index_builder.build, units)  # hot 轻量索引
+        # 记忆写入只经 IndexBuilder：交付 Storage + 建 hot 轻量索引由其统一编排。
+        await asyncio.to_thread(index_builder.build, units)
         return units
 
     # ---- 中期缓冲子路径 ----
@@ -382,7 +383,6 @@ class InMemoryEngine(MemoryEngine):
         for unit in units:
             unit.tier = MemoryTier.WORKING
             unit.system_metadata["middle"] = "true"
-        await asyncio.to_thread(self._write_middle_to_kv, scope, units)
         await asyncio.to_thread(index_builder.build, units)
 
         job = self._job_factory.get_job(
@@ -400,14 +400,6 @@ class InMemoryEngine(MemoryEngine):
             middle_interval,
         )
         return units
-
-    def _write_middle_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
-        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
-        self._storage.add(scope, units)
-
-    def _write_default_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
-        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
-        self._storage.add(scope, units)
 
     async def batch_write(
         self,
@@ -599,7 +591,6 @@ class InMemoryEngine(MemoryEngine):
         new = _apply_patch(old, patch)
         if patch.mode == UpdateMode.OVERWRITE:
             new.id = old.id
-            self._storage.update(scope, [new])
             self._index.update([new])
             logger.info("Engine.update overwrite: unit_id=%s scope=%s", new.id, scope)
         else:  # SUPERSEDE：新 id、记版本链，旧版标记 superseded
@@ -608,10 +599,11 @@ class InMemoryEngine(MemoryEngine):
             new.lifecycle = LifecycleState.ACTIVE
             if patch.t_valid is None:
                 new.temporal.t_valid = _now()
-            self._storage.add(scope, [new])
+            # 新版先落地再废旧版：任何时刻都有一个可读版本。反过来的话，若 build 失败，
+            # 旧版已 SUPERSEDED 而新版尚未存在，这条记忆既退出活跃召回又无新版可读。
+            self._index.build([new])
             old = self._lifecycle.supersede(scope, old.id, new.temporal.t_valid)
             self._index.update([old])
-            self._index.build([new])
             logger.info(
                 "Engine.update supersede: old_id=%s new_id=%s scope=%s t_valid=%s",
                 old.id,
@@ -664,8 +656,8 @@ class InMemoryEngine(MemoryEngine):
             purged_units: list[MemoryUnit] = []
             for scope, _, unit in scanned:
                 if _scoped_unit_id(scope, unit.id) in purge_ids:
-                    self._storage.delete(scope, [unit.id])
                     purged_units.append(unit)
+            # 物理删除：记忆本体与派生索引由 IndexBuilder 一并移除。
             self._index.remove(purged_units)
             logger.info(
                 "Engine.delete purge: count=%d scope=%s",
@@ -678,7 +670,6 @@ class InMemoryEngine(MemoryEngine):
             update_index: list[MemoryUnit] = []
             for scope, _, unit in matches:
                 _downweight_importance(unit)
-                self._storage.update(scope, [unit])
                 update_index.append(unit)
             self._index.update(update_index)
             logger.info(
@@ -705,7 +696,9 @@ class InMemoryEngine(MemoryEngine):
                 unit_ids,
                 _LIFECYCLE_OF_DELETE[selector.mode],
             )
-        self._index.remove([unit for _, _, unit in matches])
+        # 非破坏式：lifecycle 已把真源改为 ARCHIVED/FORGOTTEN 并保留，
+        # 此处仅让检索索引退出检索。
+        self._index.remove([unit for _, _, unit in matches], mode=IndexRemoveMode.SOFT)
         logger.info(
             "Engine.delete transition: mode=%s target=%s count=%d scope=%s",
             selector.mode.value,
@@ -724,7 +717,6 @@ class InMemoryEngine(MemoryEngine):
             if candidate.org == org and candidate.space == space
         ]:
             units = self._list_units(scope)
-            self._storage.delete(scope, [unit.id for unit in units])
             purged_units.extend(units)
         self._index.remove(purged_units)
         return [unit.id for unit in purged_units]
