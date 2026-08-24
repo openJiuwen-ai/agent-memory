@@ -599,6 +599,251 @@ curl -X POST http://127.0.0.1:8000/add_messages/ \
 }
 ```
 
+---
+
+### POST /admin/mem_meta/refresh
+
+触发元数据刷新任务，扫描内核所有 `uid_*` collection（通过 `SimpleMemoryIndex`），统计每个用户的记忆总数、active 数、blacklisted 过期数等，写入 `av_user_stats` 表。该任务是异步执行的。
+
+**请求参数**：
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `force` | `bool` | 否 | `false` | `true` 时跳过冷却检查（5分钟）和运行中任务检查，强制刷新 |
+
+**请求示例**：
+
+```bash
+curl -X POST http://127.0.0.1:8000/admin/mem_meta/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"force": true}'
+```
+
+**响应 202（已接受）**：
+
+```json
+{
+  "status": "accepted",
+  "task_id": "550e8400-e29b-41d4-a716-446655440000",
+  "task_type": "refresh_meta",
+  "message": "元数据刷新任务已提交"
+}
+```
+
+**响应 200（跳过，存在运行中任务或冷却期内）**：
+
+```json
+{
+  "status": "skipped",
+  "task_type": "refresh_meta",
+  "task_id": "550e8400-...",
+  "task_status": "running",
+  "message": "存在正在执行的任务"
+}
+```
+
+> 刷新任务完成后，可通过 `GET /admin/mem_meta/task_status` 查询任务状态和结果摘要（扫描总数、用户数、过期数等）。
+
+---
+
+### POST /admin/mem_meta/expired_memorys
+
+查询过期用户 Top N。根据 `inactive_days_threshold` 选择查询路径：
+
+- `inactive_days_threshold == 30`（默认）：走 **快表路径**，直接查 `av_user_stats` 表，毫秒级响应
+- `inactive_days_threshold != 30`：走 **实时扫描路径**，遍历 KV 中所有用户的 `blacklisted` 记忆，较慢但准确
+
+**请求参数**：
+
+| 字段 | 类型 | 必填 | 默认值 | 范围 | 说明 |
+|---|---|---|---|---|---|
+| `inactive_days_threshold` | `int` | 否 | `30` | 1-365 | 不活跃天数阈值。30 走快表，非 30 走实时扫描 |
+| `limit` | `int` | 否 | `10` | 1-100 | 返回用户数上限 |
+| `min_expired_count` | `int` | 否 | `0` | ≥0 | 最小过期记忆数，0=不过滤 |
+
+**请求示例**：
+
+```bash
+curl -X POST http://127.0.0.1:8000/admin/mem_meta/expired_memorys \
+  -H "Content-Type: application/json" \
+  -d '{"inactive_days_threshold": 30, "limit": 10, "min_expired_count": 0}'
+```
+
+**响应 200（扫描完成）**：
+
+```json
+{
+  "status": "success",
+  "task_id": "550e8400-...",
+  "task_status": "completed",
+  "inactive_days_threshold": 30,
+  "total_users": 21,
+  "total_expired_30d": 1646,
+  "users_with_expired": 19,
+  "top_users": [
+    {
+      "scope_user": "test_user_010",
+      "total_count": 500,
+      "active_count": 288,
+      "superseded_count": 212,
+      "expired_30d_count": 126,
+      "expired_all_count": 212,
+      "tier_episodic": 120,
+      "tier_semantic": 80,
+      "tier_other": 12,
+      "updated_at": "2026-08-18 07:27:39"
+    }
+  ]
+}
+```
+
+**响应 200（扫描进行中，返回已有快照数据）**：
+
+```json
+{
+  "status": "scanning",
+  "task_id": "550e8400-...",
+  "task_status": "running",
+  "top_users": [...]
+}
+```
+
+> `inactive_days_threshold` 会透传到返回体中，供调用方传给 `batch_delete` 接口做删除前校验。
+
+---
+
+### POST /admin/mem_meta/batch_delete
+
+按用户 ID 列表批量删除过期记忆（`blacklisted=True` 的记忆）。精准删除——遍历每个用户所有 scope，只删 blacklisted 的，保留 active 记忆。KV 和 Milvus 同步删除。异步执行。
+
+**请求参数**：
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `user_ids` | `list[str]` | 是* | - | 待删除过期记忆的用户 ID 列表 |
+| `all_expired` | `bool` | 否 | `false` | `true` 时自动从 `av_user_stats` 查所有有过期记忆的用户，并跳过不活跃天数校验 |
+| `inactive_days_threshold` | `int` | 否 | `30` | 不活跃天数阈值，删除前二次校验。30 走快表校验，非 30 跳过校验直接删 |
+| `scope_id` | `str\|null` | 否 | `null` | 可选，限定只处理该 scope。不传则遍历该用户所有 scope |
+| `cleanup_retrieve_history` | `bool` | 否 | `true` | 是否同时清理检索历史（retrieve_history KV 记录） |
+| `dry_run` | `bool` | 否 | `false` | `true` 时只统计不删除，返回预览结果 |
+| `force` | `bool` | 否 | `false` | `true` 时跳过冷却检查（5分钟），强制执行 |
+
+*`user_ids` 和 `all_expired` 至少传一个，否则返回 422。
+
+**请求示例（指定用户，正式删除）**：
+
+```bash
+curl -X POST http://127.0.0.1:8000/admin/mem_meta/batch_delete \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_ids": ["test_user_001"],
+    "all_expired": false,
+    "inactive_days_threshold": 30,
+    "dry_run": false,
+    "force": true
+  }'
+```
+
+**请求示例（全量过期，试运行）**：
+
+```bash
+curl -X POST http://127.0.0.1:8000/admin/mem_meta/batch_delete \
+  -H "Content-Type: application/json" \
+  -d '{"all_expired": true, "dry_run": true, "force": true}'
+```
+
+**响应 202（已接受）**：
+
+```json
+{
+  "status": "accepted",
+  "task_id": "660e8400-e29b-41d4-a716-446655440001",
+  "task_type": "batch_delete",
+  "message": "批量删除任务已提交，涉及 1 个用户",
+  "total_users": 1
+}
+```
+
+**响应 200（跳过，冷却期或运行中任务）**：
+
+```json
+{
+  "status": "skipped",
+  "task_type": "batch_delete",
+  "task_id": "660e8400-...",
+  "task_status": "completed",
+  "message": "冷却期内（<300秒）"
+}
+```
+
+> 删除任务完成后，`av_user_stats` 表会同步更新（减去已删除的数量）。可通过 `GET /admin/mem_meta/task_status` 查询删除进度和结果详情。
+
+**内部安全机制**：
+
+1. **refresh 任务冲突检查**：如果 `refresh` 任务正在运行，`batch_delete` 会直接跳过并标记 failed，避免读到不一致的中间状态
+2. **不活跃天数校验**（`all_expired=false` 时）：从 `av_user_stats` 表读取该用户的 `expired_30d_count`，为 0 或查不到则跳过该用户
+3. **分布式锁**：每个用户删除前获取 `DistributedLock`，防止并发删除冲突
+4. **精准删除**：只删 `blacklisted=True` 的记忆，通过 `SimpleMemoryIndex.delete_memories(user_id, scope_id, mem_ids)` 同步删 KV + Milvus
+
+---
+
+### GET /admin/mem_meta/task_status
+
+查询任务状态。支持按 `task_id` 查询指定任务，或不传参数查询最新一条任务。
+
+**请求参数**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `task_id` | `str` | 否 | 任务 ID。不传则返回最新创建的任务 |
+
+**请求示例**：
+
+```bash
+# 查询指定任务
+curl http://127.0.0.1:8000/admin/mem_meta/task_status?task_id=660e8400-...
+
+# 查询最新任务
+curl http://127.0.0.1:8000/admin/mem_meta/task_status
+```
+
+**响应 200（任务存在）**：
+
+```json
+{
+  "status": "success",
+  "task": {
+    "task_id": "660e8400-e29b-41d4-a716-446655440001",
+    "task_type": "batch_delete",
+    "status": "completed",
+    "request_params": "{\"user_ids\": [\"test_user_001\"], ...}",
+    "result_summary": "{\"processed\": 1, \"deleted\": 196, \"failed\": 0, \"details\": [...]}",
+    "error_message": null,
+    "total_users": 1,
+    "processed_users": 1,
+    "deleted_count": 196,
+    "failed_count": 0,
+    "created_at": "2026-08-18 07:30:00",
+    "updated_at": "2026-08-18 07:30:15",
+    "started_at": "2026-08-18 07:30:01",
+    "finished_at": "2026-08-18 07:30:15"
+  }
+}
+```
+
+**响应 404（任务不存在）**：
+
+```json
+{
+  "status": "not_found",
+  "task_id": "nonexistent-uuid",
+  "message": "任务 nonexistent-uuid 不存在"
+}
+```
+
+> `status` 字段取值：`pending` → `running` → `completed` / `failed` / `partial_failed`。
+> `result_summary` 是 JSON 字符串，包含 `processed`、`deleted`、`failed`、`dry_run`、`details` 等字段。
+
 
 ## 错误响应
 
