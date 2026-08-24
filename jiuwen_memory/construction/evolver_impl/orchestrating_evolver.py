@@ -913,11 +913,18 @@ def _build(config):
     vector_on = config.get("vector_enabled", True)
     ib_default = "hybrid" if vector_on else "fulltext"
     dr_default = "vector" if vector_on else "keyword"
-    # layer_annotator 可选：config 声明了 layer_annotator 命名空间具名实例则注入，
-    # 否则 None（evolver 跳过标注，向后兼容）。直接走 build_named 取具名实例，
-    # 不经 dep（dep 从组件 params 取字段，layer_annotator 是顶层命名空间）。
+    # layer_annotator 可选：本 evolver params 显式声明 ``layer_annotator`` 时按它取
+    # （None/空串 → 显式禁用，视频 profile 用此关闭 L0/L1 标注，对齐 F05；
+    # 命名字符串 → 用该具名实例）；键不存在时回退全局 namespace ``default``（向后兼容）。
+    # 直接走 build_named 取具名实例，不经 dep（dep 从组件 params 取字段，
+    # layer_annotator 是顶层命名空间）。
 
     def _opt_annotator():
+        if "layer_annotator" in config.params:
+            name = config.params.get("layer_annotator")
+            if not name:  # None / "" → 显式禁用
+                return None
+            return LayerAnnotatorProducer.build_named(str(name), config.ctx)
         ctx = config.ctx
         ns = ctx.namespaces.get(LayerAnnotatorProducer.TOP_NAME, {})
         if "default" not in ns:

@@ -26,12 +26,12 @@
 | `embedder/` | Embedder 插件目录（接口 + 实现） |
 | `chunker/` | Chunker 插件目录 |
 | `tokenizer/` | Tokenizer 插件目录 |
-| `normalizer/` | Normalizer 插件目录 |
+| `normalizer/` | Normalizer 插件目录（passthrough / routing / video，video 使用远程 ASR） |
 | `feature_extractor/` | FeatureExtractor 插件目录 |
 | `llm/` | LLM 插件目录（`echo` / `openai` / `dashscope`） |
 | `reranker/` | Reranker 插件目录 |
 | `audit/` | AuditLogger 插件目录 |
-| `security/` | SecurityProvider 横切接口目录（接口 + `local` ENC1 AES-GCM 实现） |
+| `security/` | 安全域唯一归属地：F05 契约层（`types.py` 公共值对象、`authentication/` / `cryptography/` / `protection/` 各能力 base、`runtime.py`）+ 旧 `SecurityProvider` 横切接口（接口 + `local` ENC1 AES-GCM 实现）。`*_impl` 实现包暂缓合入（接口先行，见 `docs/features/common/F05-security-api-contracts.md`） |
 | `lock/` | LockProvider 横切接口目录：跨实例互斥原语（接口 + `redis` / `memory` 实现）。**common 层唯一的异步契约**，只交付原语、不在业务路径加锁，见 [F06-distributed-lock.md](../../docs/features/common/F06-distributed-lock.md) |
 
 ## 行为铁律
@@ -64,6 +64,7 @@
 - 核心数据类型（MemoryUnit/Scope/Context/Relation/Chunk/AuditEvent 等）
 - 工厂注册基础设施（Factory 基类 + `TOP_NAME` 命名空间 + `build`/`build_named`/`dep` 三接口）
 - 横切接口（AuditLogger / SecurityProvider / LockProvider）
+- 安全域契约（认证/密码学/保护的抽象接口与公共安全值对象；接口先行，实现暂缓）
 - 错误类型
 - 工具函数
 
@@ -82,7 +83,7 @@
 5. 两级命名空间配置驱动装配：每个 Producer 声明全局唯一 `TOP_NAME`（占配置顶层段），其下是若干具名实例（`target` 指定实现名、`params` 传参、`new_instance` 控制是否共享）。`_build(config)` 里用 `XProducer.dep(config, param_name=None, default=...)` 取子依赖（引用名→共享 / 内联 dict→匿名 / 缺省→默认匿名）。
 6. LLM 的厂商扩展参数必须由对应 Provider Adapter 注入；构建、检索等内核业务调用点不得硬编码 `extra_body` 等传输层字段。
 7. SecurityProvider、AuditLogger 与 LockProvider 都是横切组件，不继承 `Plugin`、不进入 `PluginType`；实现仍通过独立 Producer 与 `*_impl` 自注册。横切组件的接口文件命名为 `<name>/<name>.py`（不是插件的 `base.py`）。
-8. 出站 HTTP 客户端（LLM / Embedder / Reranker）统一接受 `<prefix>_ssl_verify` /
+8. 出站 HTTP 客户端（LLM / ASR / Embedder / Reranker）统一接受 `<prefix>_ssl_verify` /
    `<prefix>_ssl_ca_cert`（默认关闭），经 `_support.read_outbound_ssl` 读取。开启时须调
    `require_https` 与 `require_ca_file` 在装配期拦截明文 scheme 和缺失证书，并只在此时
    注入 `http_client`。OpenAI SDK 相关实现必须使用 `openai.DefaultHttpxClient`，不得用
@@ -99,3 +100,4 @@
 10. LockProvider 的契约是异步的，`health()` 随之异步——这是 common 层唯一的异步组件。
     锁只交付原语，本层不在任何业务路径上加锁；在哪些临界区取锁由各消费方自行论证。
     锁是基于租约的协调机制而非共识算法，依赖方必须能容忍偶发互斥失效或自备第二道防线。
+11. `security/` 是 F05 安全域的契约层：消费方只 import 契约与值对象，不反向 import；接口先行过渡期内不启用任何新认证/授权逻辑，旧 `SecurityProvider` 继续从包顶层导出，新契约异常从各能力子包取。

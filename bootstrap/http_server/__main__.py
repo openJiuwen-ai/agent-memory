@@ -95,6 +95,20 @@ class HttpServer(Server):
         setattr(Handler, "do_POST", Handler.handle_post)
         return Handler
 
+    def serve(self, host: str, port: int) -> None:
+        httpd = ThreadingHTTPServer((host, port), self._handler_cls())
+        logger.info(
+            "agent-memory server (profile=%s) on http://%s:%s",
+            self.config.profile, host, port,
+        )
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            logger.info("agent-memory server stopped")
+        finally:
+            httpd.server_close()
+            self.close(wait=True)
+
 
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(

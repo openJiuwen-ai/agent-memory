@@ -4,7 +4,7 @@
 
 > 本文档只记录相对稳定的模块本地规约（职责边界、行为铁律、本地约束）。特性设计与方案取舍记录在 `docs/features/` 下。
 
-编排层（管理面）：不直接生产/检索记忆,而是管理它们的生命周期与使用规则。`MemoryEngine` 是接口层各语义的编排中枢，驱动接入层、构建层、检索层、存储层完成实际工作；其余算子（Pipeline/Lifecycle/Governance/Permission/Scheduler/Policy/Space）各自管一个治理切面。
+编排层（管理面）：不直接生产/检索记忆,而是管理它们的生命周期与使用规则。`MemoryEngine` 是接口层各语义的编排中枢，驱动接入层、构建层、检索层、存储层完成实际工作；其余算子（Pipeline/Lifecycle/Governance/Permission/Scheduler/IngestJob/Policy/Space）各自管一个治理切面。
 
 所有算子继承 `ControlOperator`（`base.py`），由外部装配注入到引擎，引擎本身不实现具体能力。
 
@@ -20,6 +20,7 @@
 | `governance.py` | `Governor` 接口——检视/血缘回溯/审计查询 |
 | `permission.py` | `PermissionManager` 接口——跨 scope 授权与校验 |
 | `scheduler.py` | `Scheduler` 接口——hot/background 双通道演进调度 |
+| `ingest_job.py` | `IngestJobController` 接口、任务数据类型与 Producer——长耗时摄入任务管理 |
 | `policy.py` | `PolicyManager` 接口——运行时可变策略读写 |
 | `space.py` | `SpaceManager` 接口——space 创建/读取/列表/更新/归档/删除/导出/用量/策略/成员 |
 | `__init__.py` | 公开导出全部接口类与数据类型 |
@@ -28,6 +29,7 @@
 | `bootstrap.py` | `register_controllers()` 统一 import 各 `*_impl/` 包，触发实现自注册（幂等） |
 | `pipeline_impl/` | MemoryPipeline 实现目录（metadata） |
 | `space_impl/` | SpaceManager 实现目录（kv） |
+| `job_impl/` | IngestJobController 实现目录（in_process：后台队列、状态持久化与 payload 幂等） |
 
 ## 文件关系
 
@@ -58,6 +60,9 @@
 11. **Space id 全局唯一**：`KVSpaceManager` 在根 Scope 维护全局 Space 注册键；不同 org 创建同一非空 Space id 必须报 `ConflictError`。
 12. **治理读取按已鉴权 Scope 定位**：Governor 的 `inspect` / `trace` 必须接收 API 已鉴权 target Scope，不得仅按 unit id 跨 Scope 扫描。
 13. **批量写入保序且不鉴权**：Engine 的 `batch_write` 只接收 API 已前置校验的归一化 item，按输入顺序复用 `write`；不得在 Engine 内并发提交或重复执行 `PermissionManager.check`。
+14. **Ingest 任务按 Scope 隔离**：任务状态查询为纯读取，不更新进程缓存或
+    `payload_id -> job_id` 映射；`_find_existing` 只有在任务 Scope 与请求 Scope
+    完全一致后才维护映射，READ 鉴权由 MemoryAPI 执行。
 
 ## 双通道调度机制
 

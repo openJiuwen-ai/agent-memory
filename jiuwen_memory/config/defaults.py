@@ -46,7 +46,8 @@ def default_config_dict() -> dict[str, Any]:
         # 安全 provider：默认声明为 local 信封加密（AES-256-GCM），仅供 opt-in encrypted KV 引用。
         # F04 §5.4：默认装配不强制包装 EncryptedKVStore；用户配 kv_store.default.target=encrypted
         # 时由 @KvProducer.register("encrypted") builder 经 SecurityProducer.dep(config) 取此实例。
-        # local provider 的 create_key_file 默认 False：未注入密钥源且 key_file 不存在时装配 fail-closed。
+        # local provider 的 create_key_file 默认 False：未注入密钥源且 key_file
+        # 不存在时装配 fail-closed。
         "security": {_D: "local"},
         "vector_store": {
             _D: "memory",
@@ -237,6 +238,9 @@ def default_config_dict() -> dict[str, Any]:
         },
         # scheduler 只接收 Job（Job 自带数据源），无 params。
         "scheduler": {_D: {"target": "in_process", "params": {}}},
+        "ingest_job": {
+            _D: {"target": "in_process", "params": {"kv_store": _D}}
+        },
         "lifecycle": {_D: {"target": "kv", "params": {"storage": _D, "policy": _D}}},
         "policy": {_D: "dict"},
         "governor": {_D: {"target": "in_memory", "params": {"audit": _D, "storage": _D}}},
@@ -252,6 +256,7 @@ ROOT_PARAMS: dict[str, str] = {
     "engine": _D,
     "permission": _D,
     "scheduler": _D,
+    "ingest_job": _D,
     "policy": _D,
     "governor": _D,
     "audit": _D,

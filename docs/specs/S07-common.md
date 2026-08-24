@@ -4,10 +4,10 @@
 
 | 项 | 值           |
 |---|-------------|
-| 关联模块 | src/common/ |
+| 关联模块 | jiuwen_memory/common/ |
 | 最近一次修订日期 | 2026-08-20 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F08-memory-tree.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F05-security-api-contracts.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md |
 
 ## Metadata 领域模型契约
 
@@ -18,12 +18,13 @@
 ## 范围 / 边界
 
 **管什么**：
-- 共享可插拔插件（Embedder/Chunker/Tokenizer/Normalizer/FeatureExtractor/LLM/Reranker）
+- 共享可插拔插件（Embedder/Chunker/Tokenizer/Normalizer/ASR/FeatureExtractor/LLM/Reranker）
 - 核心数据类型定义（MemoryUnit/Scope/Context/Relation 等）
 - 工厂注册机制（Factory/Producer 基础设施）
 - 审计日志（AuditLogger）
 - 数据保护横切接口（SecurityProvider）
 - 跨实例互斥横切接口（LockProvider）
+- 安全域契约（认证/密码学/保护的抽象接口、公共安全值对象、`SecurityRuntime`；接口先行，实现暂缓）
 - 错误类型（自定义异常）
 - 工具函数（ID 生成/时间解析等）
 
@@ -45,7 +46,7 @@
 8. **标识唯一性分层**：非空 Space id 全局唯一；`MemoryUnit.id` 只要求在完整 Scope 内唯一。
 9. **Scope 位置参数兼容**：`space` 可为空但只能按关键字传入；旧位置参数顺序保持
    `Scope(org, user, agent, session)`。
-10. **出站客户端 SSL 声明即生效**：LLM / Embedder / Reranker 统一接受
+10. **出站客户端 SSL 声明即生效**：LLM / ASR / Embedder / Reranker 统一接受
     `<prefix>_ssl_verify` / `<prefix>_ssl_ca_cert`（默认关闭）。`ssl_verify` 只决定是否
     接管信任锚，不负责开启加密——加密开关在 `base_url` 的 scheme。关闭时完全不干预
     客户端（`http://` 明文直连、`https://` 仍走 SDK 默认校验）；开启后 `base_url` 必须是
@@ -82,7 +83,7 @@
 
 ```python
 class PluginType(str, Enum):
-    TOKENIZER / CHUNKER / EMBEDDER / FEATURE_EXTRACTOR / LLM / NORMALIZER / RERANKER
+    TOKENIZER / CHUNKER / EMBEDDER / FEATURE_EXTRACTOR / LLM / ASR / NORMALIZER / RERANKER
 
 class Plugin(ABC):
     def plugin_type(self) -> PluginType  # 自描述
@@ -148,6 +149,9 @@ class Plugin(ABC):
 `extra_body` 等厂商专属请求字段；健康检查与正常
 `chat` 必须使用同一套 Provider 请求选项。
 
+`ChatMessage.content` 支持纯文本 `str` 或 OpenAI-compatible 的多模态 parts
+`list[dict[str, Any]]`；文本模型和视觉模型可装配为不同的具名 LLM 实例。
+
 DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 `extra_body.enable_thinking`，缺省为 `false`；通用 OpenAI Adapter 不按 base URL
 猜测厂商，也不自动注入该字段。
@@ -182,7 +186,7 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 | `health` | `() -> None` | 存活探测；默认返回 `None`，具体实现可覆盖并抛出健康检查异常 |
 
 `SecurityProducer.TOP_NAME` 为 `security`。具体 provider 的实现列表、target 名与
-私有配置参数归 `src/common/AGENTS.md` 与对应 feature 文档记录；本 spec 只固化
+私有配置参数归 `jiuwen_memory/common/AGENTS.md` 与对应 feature 文档记录；本 spec 只固化
 接口、上下文和错误语义。
 
 ### LockProvider（`lock/lock.py`）
@@ -202,6 +206,26 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 `LockProducer.TOP_NAME` 为 `lock`，**不设默认实现**——消费方必须显式配置，避免漏配时
 静默退化成不跨实例的单机锁。
 
+### 安全域契约（`security/`，接口先行）
+
+F05 公共安全架构的契约层（认证 / 密码学 / 保护 / Runtime 与公共安全值对象），
+**只固定接口，实现暂缓**。设计与过渡期语义见
+`docs/features/common/F05-security-api-contracts.md`。
+
+| 子包/模块 | 契约 | 语义 |
+|---|---|---|
+| `security/types.py` | `Credentials` / `AuthContext` / `RequestSecurityContext` / `CryptoContext` / `Role` / `Surface` | 协议无关的公共安全值对象与身份传播原语；`RequestSecurityContext` 是 `MemoryAPI` 公开方法的显式安全输入（PR2 起签名切换） |
+| `security/authentication/` | `Authenticator` / `PrincipalKeyStore` / `CredentialStatusRegistry` | 认证：凭据 -> `AuthContext`；key 真源与凭据状态 |
+| `security/cryptography/` | `CryptographyProvider` / `KeyProvider` | 密码学能力与密钥提供方 |
+| `security/protection/` | `RateLimiter` / `WorkloadGuard` / `BindingPolicy` | 入口限流、昂贵操作并发预算与绑定策略 |
+| `security/runtime.py` | `SecurityRuntime` | 跨能力装配根 |
+
+配套的 bootstrap 接缝：`bootstrap/core/auth_middleware.py` 的
+`authenticated(..., surface=None) -> Iterator[RequestSecurityContext]`（限流 ->
+并发预算 -> 认证 -> 构造请求上下文）与
+`bootstrap/mcp_server/transport_security.py` 的 `credentials_for_transport(...)`
+（stdio 环境变量 / Streamable HTTP 逐请求提取，缺 Request Context fail-closed）。
+
 ## 数据结构
 
 ### 核心类型（`type_def/memory.py`）
@@ -218,7 +242,7 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 | `Entity` | text / type / confidence | 实体 |
 | `FeatureSet` | keywords / entities / tags | 特征集合 |
 | `Chunk` | id / text / unit_id / metadata | 切分块 |
-| `ChatMessage` | role / content | LLM 对话消息 |
+| `ChatMessage` | role / content | LLM 对话消息；content 为文本或多模态 parts |
 | `RawPayload` | id / scope / modality / data / uri / metadata / occurred_at | 原始负载 |
 | `FilterClause` | field / op / value | 原子过滤谓词；`EQ` / `IN` 正向匹配标量，`CONTAINS` 匹配数组成员，`NE` / `NOT_IN` 分别取反 |
 | `FilterGroup` | logic / children | AND / OR / NOT 逻辑节点 |
@@ -346,7 +370,7 @@ hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
 | `KvProducer` / `VectorProducer` / `FulltextProducer` | `kv_store` / `vector_store` / `fulltext_store` |
 | `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` | `embedder` / `chunker` / `tokenizer` |
 | `IndexBuilderProducer` / `RecallerProducer` | `constructor` / `recaller` |
-| `NormalizerProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` | `normalizer` / `feature_extractor` / `llm` / `reranker` |
+| `NormalizerProducer` / `VideoAsrProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` | `normalizer` / `asr` / `feature_extractor` / `llm` / `reranker` |
 | `AuditProducer` / `SecurityProducer` / `LockProducer` | `audit` / `security` / `lock` |
 
 #### Factory 基类
@@ -408,7 +432,7 @@ def _build(config: ComponentConfig) -> Embedder:
 - `reset_all()` 清空缓存（隔离多次装配 / 测试隔离）
 
 各 Producer 继承 `Factory`：
-- `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` / `NormalizerProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditProducer` / `SecurityProducer`
+- `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` / `NormalizerProducer` / `VideoAsrProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditProducer` / `SecurityProducer`
 
 ## 错误类型（`errors.py` / `security.py` / `lock.py`）
 
@@ -432,7 +456,7 @@ def _build(config: ComponentConfig) -> Embedder:
 ## 实现注册机制
 
 ```
-src/common/<组件>/
+jiuwen_memory/common/<组件>/
     base.py | <name>.py     # 接口 + Producer（横切组件用 <name>.py，如 security.py / lock.py）
     <组件>_impl/
         __init__.py         # 重导出实现类

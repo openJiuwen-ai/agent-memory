@@ -43,6 +43,7 @@ class Server:
     def __init__(self, config: Config, kernel: Kernel) -> None:
         self.config = config
         self.kernel = kernel
+        self.ingest_jobs = kernel.ingest_jobs
 
     @property
     def api(self):
@@ -74,6 +75,10 @@ class Server:
         from handler import dispatch as _dispatch
 
         return _dispatch(self, verb, payload)
+
+    def close(self, *, wait: bool = True) -> None:
+        """Release the Control-owned ingest worker pool."""
+        self.ingest_jobs.close(wait=wait)
 
 
 def default_spaces() -> Dict[str, Any]:

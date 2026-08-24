@@ -51,6 +51,7 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.control.engine import MemoryEngine
 from jiuwen_memory.control.governance import Governor
+from jiuwen_memory.control.ingest_job import INGEST_JOB_PREFIX, IngestJobController
 from jiuwen_memory.control.permission import PermissionManager
 from jiuwen_memory.control.policy import PolicyManager
 from jiuwen_memory.control.scheduler import Scheduler
@@ -65,6 +66,7 @@ from jiuwen_memory.control.types import (
     DeleteSelector,
     Grant,
     JobInfo,
+    JobStatus,
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
@@ -395,6 +397,7 @@ class LocalMemoryAPI(MemoryAPI):
         governor: Governor,
         audit_logger: AuditLogger,
         space: SpaceManager,
+        ingest_jobs: IngestJobController,
     ) -> None:
         self._engine = engine
         self._perm = permission
@@ -403,10 +406,243 @@ class LocalMemoryAPI(MemoryAPI):
         self._governor = governor
         self._audit = audit_logger
         self._space = space
+        self._ingest_jobs = ingest_jobs
 
     @property
     def space_manager(self) -> SpaceManager:
         return self._space
+
+    def _space_info_if_exists(self, scope: Scope) -> SpaceInfo | None:
+        if not scope.org or not scope.space:
+            return None
+        try:
+            return self._space.get(scope.org, scope.space)
+        except NotFoundError:
+            return None
+
+    def _ensure_space_writable(self, scope: Scope) -> None:
+        info = self._space_info_if_exists(scope)
+        if info is None:
+            return
+        if info.status != SpaceStatus.ACTIVE:
+            raise ValidationError(
+                f"space is not writable: {info.org}/{info.space} status={info.status.value}"
+            )
+
+    def _purge_space_memories(self, scope: Scope) -> list[str]:
+        return asyncio.run(self._engine.purge_space(scope.org, scope.space))
+
+    # -- 鉴权 + 审计公共点 --------------------------------------------------- #
+
+    def _record_audit(
+        self,
+        identity: Scope,
+        action: str,
+        *,
+        target_id: str = "",
+        target_scope: Scope | None = None,
+        decision: str = "allow",
+        detail: dict[str, str] | None = None,
+    ) -> None:
+        payload = dict(detail or {})
+        payload.setdefault("decision", decision)
+        self._audit.record(
+            AuditEvent(
+                id=str(uuid.uuid4()),
+                actor=identity,
+                action=action,
+                target_id=target_id,
+                layer="api",
+                decision=decision,
+                occurred_at=datetime.now(timezone.utc),
+                detail=payload,
+                target=target_scope or _ROOT,
+            )
+        )
+
+    def _apply_space_policy_context(
+        self,
+        target: Scope,
+        context: PermissionContext | None,
+    ) -> PermissionContext | None:
+        if not target.org or not target.space:
+            return context
+        try:
+            policy = self._space.get_policy(target.org, target.space)
+        except NotFoundError:
+            return context
+        metadata = dict(context.metadata) if context is not None else {}
+        metadata["principal_path"] = policy.principal_path.value
+        if context is None:
+            return PermissionContext(
+                resource_type="",
+                scope=target,
+                metadata=metadata,
+            )
+        return replace(context, metadata=metadata)
+
+    def _authorize(
+        self,
+        identity: Scope,
+        target: Scope,
+        action: Action,
+        audit_action: str,
+        target_id: str = "",
+        *,
+        context: PermissionContext | None = None,
+        check_permission: bool = True,
+        require_space: bool = True,
+    ) -> dict[str, str]:
+        effective_context = self._apply_space_policy_context(target, context)
+        if _missing_required_space(self._policy, target, require_space):
+            self._record_audit(
+                identity,
+                audit_action,
+                target_id=target_id,
+                target_scope=target,
+                decision="deny",
+                detail={
+                    "permission_check": "enabled",
+                    "permission_reason": "scope.space is required",
+                    **_context_detail(effective_context),
+                },
+            )
+            raise ValidationError("scope.space is required")
+        if not check_permission:
+            return {
+                "permission_check": "disabled",
+                "permission_reason": "permission check disabled",
+                **_context_detail(effective_context),
+            }
+        if not self._perm.check(identity, target, action, context=effective_context):
+            self._record_audit(
+                identity,
+                audit_action,
+                target_id=target_id,
+                target_scope=target,
+                decision="deny",
+                detail={
+                    "permission_check": "enabled",
+                    "permission_reason": f"permission denied for action={action.value}",
+                    **_context_detail(effective_context),
+                },
+            )
+            raise PermissionDeniedError(action.value)
+        return {
+            "permission_check": "enabled",
+            "permission_reason": "permission check passed",
+            **_context_detail(effective_context),
+        }
+
+    def _log(
+        self,
+        identity: Scope,
+        action: str,
+        target_id: str = "",
+        *,
+        target_scope: Scope | None = None,
+        decision: str = "allow",
+        detail: dict[str, str] | None = None,
+    ) -> None:
+        self._record_audit(
+            identity,
+            action,
+            target_id=target_id,
+            target_scope=target_scope,
+            decision=decision,
+            detail=detail,
+        )
+
+    # -- 数据面 ------------------------------------------------------------- #
+
+    def check_write(
+        self,
+        scope: Scope,
+        identity: Scope,
+        *,
+        tags: list[str] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
+    ) -> None:
+        """Pre-flight WRITE 鉴权（不落盘）。镜像 add 的鉴权路径，但不调 engine.write；
+        供长耗时摄入任务入队前拒绝无权限请求（P1-2 防 DoS）。
+        """
+        _reject_non_scalar_metadata(system_metadata, field_name="system_metadata")
+        _reject_non_scalar_metadata(user_metadata, field_name="user_metadata")
+        permission_context = _write_permission_context(scope, tags, system_metadata)
+        self._authorize(
+            identity,
+            scope,
+            Action.WRITE,
+            "check_write",
+            context=permission_context,
+        )
+        self._ensure_space_writable(scope)
+
+    def add(
+        self,
+        content: str,
+        scope: Scope,
+        source: Modality = Modality.TEXT,
+        *,
+        identity: Scope,
+        assets: list[str] | None = None,
+        tags: list[str] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
+        occurred_at: datetime | None = None,
+    ) -> list[MemoryUnit]:
+        return asyncio.run(
+            self.add_async(
+                content,
+                scope,
+                source,
+                identity=identity,
+                assets=assets,
+                tags=tags,
+                system_metadata=system_metadata,
+                user_metadata=user_metadata,
+                occurred_at=occurred_at,
+            )
+        )
+
+    async def add_async(
+        self,
+        content: str,
+        scope: Scope,
+        source: Modality = Modality.TEXT,
+        *,
+        identity: Scope,
+        assets: list[str] | None = None,
+        tags: list[str] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
+        occurred_at: datetime | None = None,
+    ) -> list[MemoryUnit]:
+        _reject_invalid_content(content)
+        _reject_non_scalar_metadata(system_metadata, field_name="system_metadata")
+        _reject_non_scalar_metadata(user_metadata, field_name="user_metadata")
+        permission_context = _write_permission_context(scope, tags, system_metadata)
+        auth = self._authorize(
+            identity,
+            scope,
+            Action.WRITE,
+            "add",
+            context=permission_context,
+        )
+        self._ensure_space_writable(scope)
+        units = await self._engine.write(
+            content,
+            scope,
+            source,
+            assets=assets,
+            tags=tags,
+            system_metadata=system_metadata,
+            user_metadata=user_metadata,
+            occurred_at=occurred_at,
+        )
+        self._log(identity, "add", target_scope=scope, detail=auth)
+        return units
 
     @staticmethod
     def _batch_error_item(item: object) -> BatchWriteItem:
@@ -1018,11 +1254,35 @@ class LocalMemoryAPI(MemoryAPI):
 
     # -- 任务调度（直达 Scheduler） ----------------------------------------- #
 
-    def job_status(self, job_id: str, *, identity: Scope) -> JobInfo:
+    def job_status(
+        self,
+        job_id: str,
+        *,
+        identity: Scope,
+        scope: Scope | None = None,
+    ) -> JobInfo:
         # 先取任务（含其 scope），再据 identity 对该 scope 的 READ 权放行
         # （仅可查自身/已授权范围的任务）；status 为只读查询，先取后判权
         # 不产生副作用。
-        info = self._scheduler.status(job_id)
+        if job_id.startswith(INGEST_JOB_PREFIX):
+            if scope is None:
+                raise ValidationError("ingest job status requires target scope")
+            job = self._ingest_jobs.status(job_id, scope=scope)
+            info = JobInfo(
+                id=job.id,
+                channel=Channel.BACKGROUND,
+                mode="ingest",
+                scope=job.scope,
+                status=JobStatus(job.status),
+                detail={
+                    "payload_id": job.payload_id,
+                    "source_ref": job.source_ref,
+                    "unit_ids": ",".join(job.unit_ids),
+                    "error": job.error,
+                },
+            )
+        else:
+            info = self._scheduler.status(job_id)
         auth = self._authorize(identity, info.scope, Action.READ, "job_status", job_id)
         self._log(identity, "job_status", job_id, target_scope=info.scope, detail=auth)
         return info

@@ -81,6 +81,9 @@ class InProcessClient:
     def healthz(self) -> tuple[int, dict[str, Any]]:
         return 200, {"status": "ok", "profile": self._srv.config.profile}
 
+    def close(self) -> None:
+        self._srv.close(wait=True)
+
 
 class HttpClient:
     """Drive a running ``bootstrap`` server over HTTP (``POST /v1/<verb>``)."""

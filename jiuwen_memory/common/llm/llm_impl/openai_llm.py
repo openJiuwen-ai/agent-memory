@@ -216,4 +216,5 @@ def _build(config):
         ssl_verify=ssl.verify,
         ssl_ca_cert=ssl.ca_cert,
         config_source=ConfigSourceProducer.get_cached("default"),
+        config_namespace=str(config.get("config_namespace", "llm")),
     )
