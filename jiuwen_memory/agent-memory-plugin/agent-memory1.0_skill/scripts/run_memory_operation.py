@@ -52,8 +52,12 @@ DEFAULT_SCOPE_ID = os.environ.get("MEM1_DEFAULT_SCOPE_ID", "edp_agent")
 
 # ── 输出 ──────────────────────────────────────────────────────────
 def emit_result(data: dict) -> None:
-    """输出 JSON 结果到 stdout（Agent 通过 call_mcp 读取）。"""
-    print(json.dumps(data, ensure_ascii=False, indent=2))
+    """输出 JSON 结果到 stdout（Agent 通过 call_mcp 读取）。
+
+    使用 sys.stdout.write 而非 print，因为这是结构化通信通道而非日志输出。
+    """
+    sys.stdout.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    sys.stdout.flush()
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -432,21 +436,30 @@ def _save_memory(
     content: str = "",
     role: str = "assistant",
     messages: list = None,
-    session_id: str = "",
-    scope_id: str = "",
-    buffer: bool = False,
-    enable_long_term_mem: bool = True,
-    enable_semantic_memory: bool = True,
-    enable_episodic_memory: bool = True,
-    enable_summary_memory: bool = True,
-    enable_user_profile: bool = True,
+    options: dict = None,
 ) -> dict:
     """写入记忆到 agent-memory1.0。
 
     支持两种写入模式：
     - 直接写入（buffer=False，默认）：立即调用 add_messages API
     - 缓冲写入（buffer=True）：追加到缓冲区文件，满足条件时自动 flush
+
+    options 可选字段：
+    - session_id, scope_id, buffer
+    - enable_long_term_mem, enable_semantic_memory,
+      enable_episodic_memory, enable_summary_memory,
+      enable_user_profile
     """
+    if options is None:
+        options = {}
+    session_id = options.get("session_id", "")
+    scope_id = options.get("scope_id", "")
+    buffer = options.get("buffer", False)
+    enable_long_term_mem = options.get("enable_long_term_mem", True)
+    enable_semantic_memory = options.get("enable_semantic_memory", True)
+    enable_episodic_memory = options.get("enable_episodic_memory", True)
+    enable_summary_memory = options.get("enable_summary_memory", True)
+    enable_user_profile = options.get("enable_user_profile", True)
     if not scope_id:
         scope_id = DEFAULT_SCOPE_ID
     # 构建消息列表
@@ -477,7 +490,14 @@ def _save_memory(
         current_chars = _buffer_append(user_id, msg_list)
         # 检查是否超过阈值，自动 flush
         if current_chars >= BUFFER_CHARS_THRESHOLD:
-            return _flush_buffer(user_id, session_id, scope_id)
+            enable_flags = {
+                "enable_long_term_mem": enable_long_term_mem,
+                "enable_semantic_memory": enable_semantic_memory,
+                "enable_episodic_memory": enable_episodic_memory,
+                "enable_summary_memory": enable_summary_memory,
+                "enable_user_profile": enable_user_profile,
+            }
+            return _flush_buffer(user_id, session_id, scope_id, enable_flags)
         return {
             "success": True,
             "operation": "save",
@@ -539,13 +559,20 @@ def _flush_buffer(
     user_id: str,
     session_id: str = "",
     scope_id: str = "",
-    enable_long_term_mem: bool = True,
-    enable_semantic_memory: bool = True,
-    enable_episodic_memory: bool = True,
-    enable_summary_memory: bool = True,
-    enable_user_profile: bool = True,
+    enable_flags: dict = None,
 ) -> dict:
-    """将缓冲区中的所有消息批量写入 agent-memory1.0。"""
+    """将缓冲区中的所有消息批量写入 agent-memory1.0。
+
+    enable_flags 可选字段：enable_long_term_mem, enable_semantic_memory,
+    enable_episodic_memory, enable_summary_memory, enable_user_profile
+    """
+    if enable_flags is None:
+        enable_flags = {}
+    enable_long_term_mem = enable_flags.get("enable_long_term_mem", True)
+    enable_semantic_memory = enable_flags.get("enable_semantic_memory", True)
+    enable_episodic_memory = enable_flags.get("enable_episodic_memory", True)
+    enable_summary_memory = enable_flags.get("enable_summary_memory", True)
+    enable_user_profile = enable_flags.get("enable_user_profile", True)
     if not scope_id:
         scope_id = DEFAULT_SCOPE_ID
     messages = _buffer_read_all(user_id)
@@ -994,18 +1021,18 @@ def main():
             content = str(params.get("content", ""))
             role = str(params.get("role", "assistant"))
             messages = params.get("messages", None)
-            session_id = str(params.get("session_id", ""))
-            buffer = bool(params.get("buffer", False))
-            enable_long_term_mem = bool(params.get("enable_long_term_mem", True))
-            enable_semantic_memory = bool(params.get("enable_semantic_memory", True))
-            enable_episodic_memory = bool(params.get("enable_episodic_memory", True))
-            enable_summary_memory = bool(params.get("enable_summary_memory", True))
-            enable_user_profile = bool(params.get("enable_user_profile", True))
+            save_options = {
+                "session_id": str(params.get("session_id", "")),
+                "scope_id": scope_id,
+                "buffer": bool(params.get("buffer", False)),
+                "enable_long_term_mem": bool(params.get("enable_long_term_mem", True)),
+                "enable_semantic_memory": bool(params.get("enable_semantic_memory", True)),
+                "enable_episodic_memory": bool(params.get("enable_episodic_memory", True)),
+                "enable_summary_memory": bool(params.get("enable_summary_memory", True)),
+                "enable_user_profile": bool(params.get("enable_user_profile", True)),
+            }
             result = _save_memory(
-                user_id, content, role, messages, session_id, scope_id, buffer,
-                enable_long_term_mem, enable_semantic_memory,
-                enable_episodic_memory, enable_summary_memory,
-                enable_user_profile,
+                user_id, content, role, messages, save_options,
             )
 
         elif operation == "update":
@@ -1053,10 +1080,14 @@ def main():
             result = _flush_buffer(user_id, session_id, scope_id)
 
         else:
+            supported = (
+                "search / get / save / update / delete / batch_delete / "
+                "update_variables / delete_variables / trace / flush / status"
+            )
             result = {
                 "success": False,
                 "operation": operation,
-                "error": f"不支持的操作: {operation}，支持: search / get / save / update / delete / batch_delete / update_variables / delete_variables / trace / flush / status",
+                "error": f"不支持的操作: {operation}，支持: {supported}",
                 "results": [],
             }
 
