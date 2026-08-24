@@ -366,6 +366,39 @@ class ExtractorImpl(Extractor):
         self._retry_max_retries = retry_max_retries
         self._retry_backoff_ms = retry_backoff_ms
 
+    # ------------------------------------------------------------------
+    # 过程记忆抽取（procedural=true：1 条结构化执行历史汇总）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_procedural(units: list[MemoryUnit]) -> bool:
+        """本轮是否走过程记忆抽取（metadata["procedural"]=="true"）。"""
+        return any(
+            str(u.system_metadata.get("procedural", "")).strip().lower() == "true"
+            for u in units
+        )
+
+    @staticmethod
+    def _log_trailing_json_text(text: str, end: int) -> None:
+        trailing = text[end:].strip()
+        if trailing:
+            logger.warning("Extractor: ignored trailing LLM text after JSON root: %r", trailing)
+
+    @staticmethod
+    def _strip_non_json(text: str) -> str:
+        """去除 markdown fences 等噪声，提取 JSON 核心。"""
+        # 剔除 ```json ... ``` 包裹
+        s = text.strip()
+        if s.startswith("```"):
+            lines = s.split("\n")
+            # 去首行 ```json 和末行 ```
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            s = "\n".join(lines)
+        return s.strip()
+
     def operator_type(self) -> OperatorType:
         return OperatorType.EXTRACTOR
 
@@ -466,210 +499,11 @@ class ExtractorImpl(Extractor):
         return self._build_units(all_candidates, accepted)
 
     # ------------------------------------------------------------------
-    # 过程记忆抽取（procedural=true：1 条结构化执行历史汇总）
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _is_procedural(units: list[MemoryUnit]) -> bool:
-        """本轮是否走过程记忆抽取（metadata["procedural"]=="true"）。"""
-        return any(
-            str(u.system_metadata.get("procedural", "")).strip().lower() == "true"
-            for u in units
-        )
-
-    def _extract_procedural(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
-        """把本轮汇总成 1 条 PROCEDURAL 执行历史 MemoryUnit。
-
-        不走走重、不收 context。LLM 产 1 条结构化「目标/步骤/结果」汇总，
-        provenance 回指本轮 unit（多源合并到一条，provenance 列全部本轮 unit id）。
-        """
-        from jiuwen_memory.common.type_def import ChatMessage
-
-        # 拼本轮原文（多 unit 合并成一段，作为单个执行历史源）
-        source_text = "\n".join(u.content for u in units if u.content).strip()
-        if not source_text:
-            logger.info("Extractor._extract_procedural: empty source, return []")
-            return []
-
-        messages = [
-            ChatMessage(role="system", content=_PROCEDURAL_SYSTEM_PROMPT),
-            ChatMessage(role="user", content=source_text),
-        ]
-        try:
-            response = self._call_llm_with_retry(messages)
-        except Exception as exc:
-            logger.warning("Extractor._extract_procedural: LLM call failed, return []: %s", exc)
-            return []
-
-        content = self._parse_procedural_response(response)
-        if not content:
-            logger.info("Extractor._extract_procedural: empty content parsed, return []")
-            return []
-
-        # procedural 路径固定产 PROCEDURAL tier，不走 LLM tier/tags 判定、不走富化。
-        candidate = ExtractionCandidate(
-            target=ExtractionTarget.CONTEXT,
-            content=content,
-            source_unit_id=units[0].id,
-            confidence=1.0,
-            tier=MemoryTier.PROCEDURAL,
-        )
-
-        # 构建 1 条 PROCEDURAL MemoryUnit，provenance 回指全部本轮 unit
-        now = datetime.now(timezone.utc)
-        source = units[0]
-        # 合并 write tags（engine 已写到源 unit）+ 系统标记 procedural
-        tags = merge_unit_tags(source.tags, ["procedural"])
-        unit = MemoryUnit(
-            id=str(uuid.uuid4()),
-            scope=source.scope,
-            tier=MemoryTier.PROCEDURAL,
-            segments=[Segment(content=candidate.content, source=source.source)],
-            # 不设 source_ref：procedural 原文不落 KV，source.id 指向不存在的记录，
-            # 设了反而误导溯源。provenance 仍记本轮 unit id（血缘列表，可指向未落盘源）。
-            temporal=Temporal(
-                t_event=None,
-                t_ingest=now,
-                t_valid=now,
-                t_message=source.temporal.t_message,
-            ),
-            provenance=[u.id for u in units],
-            tags=tags,
-            system_metadata=inherited_system_metadata(units)
-            | {
-                "confidence": str(candidate.confidence),
-                "target": candidate.target.value,
-            }
-            | candidate.metadata,
-            user_metadata=inherited_user_metadata(units),
-            lifecycle=LifecycleState.ACTIVE,
-        )
-        logger.info(
-            "Extractor._extract_procedural: built 1 PROCEDURAL unit id=%s provenance=%s content=%s",
-            unit.id[:8], unit.provenance, unit.content[:200],
-        )
-        return [unit]
-
-    def _parse_procedural_response(self, response: str) -> str:
-        """解析 LLM 返回的 {"content": "..."} JSON，取 content 字段。
-
-        多级兜底：直接解析 → 剥 markdown fence 再解析 → 整个响应当 content。
-        任一路径解析出 dict 即取 content 返回；都不成则返回原文（保证产 1 条）。
-        """
-        for candidate_text in (response.strip(), self._strip_non_json(response)):
-            try:
-                parsed = json.loads(candidate_text)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(parsed, dict):
-                return str(parsed.get("content", "")).strip()
-        logger.warning(
-            "Extractor._parse_procedural_response: cannot parse as JSON, use raw response: %s",
-            response[:200],
-        )
-        return response.strip()
-
-    # ------------------------------------------------------------------
     # Phase 1: 预处理
     # ------------------------------------------------------------------
 
     def preprocess(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         return self._preprocess(units)
-
-    def _preprocess(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
-        """过滤 lifecycle≠ACTIVE / 空 content / 派生单元（provenance 非空）。"""
-        accepted = []
-        skipped_reasons: dict[str, int] = {}
-        for u in units:
-            if u.lifecycle != LifecycleState.ACTIVE:
-                skipped_reasons["lifecycle"] = skipped_reasons.get("lifecycle", 0) + 1
-                continue
-            if not u.content.strip():
-                skipped_reasons["empty_content"] = skipped_reasons.get("empty_content", 0) + 1
-                continue
-            if u.provenance:
-                skipped_reasons["provenance"] = skipped_reasons.get("provenance", 0) + 1
-                continue  # 跳过派生单元，避免反复提取
-            logger.info(
-                "Extractor: accepting unit id=%s tier=%s provenance=%s content=%s",
-                u.id[:8],
-                u.tier.value,
-                u.provenance,
-                u.content[:200],
-            )
-            accepted.append(u)
-        logger.info("Extractor: preprocess accepted=%d, skipped=%s", len(accepted), skipped_reasons)
-        return accepted
-
-    # ------------------------------------------------------------------
-    # Phase 2: LLM 提取（批量）
-    # ------------------------------------------------------------------
-
-    def _llm_extract_batch(
-        self,
-        units: list[MemoryUnit],
-        *,
-        context: ExtractContext | None = None,
-    ) -> list[ExtractionCandidate]:
-        """对一批 unit 调一次 LLM 提取——每条 unit 带 [ID: ...] 标识，
-        LLM 在每个候选里输出 ``source_id`` 回指来源；解析时校验 source_id 存在。
-
-        ``context`` 非空时在 user prompt 末尾追加两段参考项（见 ExtractContext）：
-        - Recent conversation context：做指代/代词消解与语境，不从中提取、不作 source_id。
-        - Existing related memories：已有事实，本轮不要重复产出。
-        """
-        from jiuwen_memory.common.type_def import ChatMessage
-
-        # 拼 user prompt：每条 unit 带 [ID: unit.id] 前缀
-        parts = [_SOURCE_PREFIX.format(unit_id=u.id, unit_content=u.content) for u in units]
-        user_text = "\n".join(parts)
-        # 基准时间 observation_date（经 metadata 下推）：LLM 据此把相对时间解析成绝对时间。
-        # 取首个含 observation_date 的 unit（同批通常一致）；未传则以当前时间为基准。
-        observation_date = next(
-            (
-                str(u.system_metadata.get("observation_date", "")).strip()
-                for u in units
-                if u.system_metadata.get("observation_date")
-            ),
-            "",
-        )
-        if not observation_date:
-            observation_date = datetime.now(timezone.utc).date().isoformat()
-        # prompt 声明该行形如 "observation_date: YYYY-MM-DD"，且据此把观测日期按日精度写进
-        # content。调用方可能下推完整时间戳，故统一截到日——否则 prompt 的日精度约定不成立，
-        # LLM 会把时分秒当作源文本给出的精度照抄进条目。
-        elif "T" in observation_date:
-            observation_date = observation_date.split("T", 1)[0]
-        user_text = (
-            f"observation_date: {observation_date}\n"
-            f"(Use this as the reference point to resolve relative time expressions "
-            f"like \"yesterday\"/\"last week\"/\"tomorrow\" into absolute dates in content "
-            f"and event_date.)\n\n"
-            + user_text
-        )
-        # 追加 context 参考段（仅本轮 units 作提取来源，context 只供 LLM 参考）
-        context_block = _format_context_block(context)
-        if context_block:
-            user_text = user_text + "\n" + context_block
-        fidelity_mode = any(
-            str(unit.system_metadata.get("extraction_fidelity_mode", "false")).strip().lower()
-            in {"true", "1", "yes", "on"}
-            for unit in units
-        )
-        system_prompt = _EXTRACT_SYSTEM_PROMPT
-        if fidelity_mode:
-            system_prompt = system_prompt + "\n\n" + _EXTRACTION_FIDELITY_SUFFIX
-        messages = [
-            ChatMessage(role="system", content=system_prompt),
-            ChatMessage(role="user", content=user_text),
-        ]
-
-        # 调用 LLM（含重试）
-        response = self._call_llm_with_retry(messages)
-
-        # 解析 JSON。
-        items = self.parse_llm_response(response)
-        return self.build_candidates(items, units)
 
     def build_candidates(
         self,
@@ -785,29 +619,6 @@ class ExtractorImpl(Extractor):
     def call_llm_with_retry(self, messages: list, max_tokens: int = 8192) -> str:
         return self._call_llm_with_retry(messages, max_tokens=max_tokens)
 
-    def _call_llm_with_retry(self, messages: list, max_tokens: int = 8192) -> str:
-        """调用 LLM.chat()，含重试逻辑。"""
-        import time
-
-        last_exc = None
-        for attempt in range(self._retry_max_retries):
-            try:
-                return self._llm.chat(messages, temperature=0, max_tokens=max_tokens)
-            except Exception as exc:
-                last_exc = exc
-                if attempt < self._retry_max_retries - 1:
-                    wait = self._retry_backoff_ms * (2**attempt) / 1000.0
-                    logger.warning(
-                        "Extractor: LLM call failed (attempt %d), retrying in %.1fs",
-                        attempt + 1,
-                        wait,
-                    )
-                    time.sleep(wait)
-        # 所有重试都失败（retry_max_retries <= 0 时未进入循环，last_exc 仍为 None）
-        if last_exc is None:
-            raise RuntimeError("LLM 调用未执行：retry_max_retries 必须 >= 1")
-        raise last_exc
-
     def parse_llm_response(self, response: str) -> list[dict]:
         """从响应中恢复最靠左的非空 JSON 对象或数组。"""
         cleaned = self._strip_non_json(response)
@@ -853,27 +664,6 @@ class ExtractorImpl(Extractor):
             f"extractor response must be a JSON array or object, got {type(parsed).__name__}"
         )
 
-    @staticmethod
-    def _log_trailing_json_text(text: str, end: int) -> None:
-        trailing = text[end:].strip()
-        if trailing:
-            logger.warning("Extractor: ignored trailing LLM text after JSON root: %r", trailing)
-
-    @staticmethod
-    def _strip_non_json(text: str) -> str:
-        """去除 markdown fences 等噪声，提取 JSON 核心。"""
-        # 剔除 ```json ... ``` 包裹
-        s = text.strip()
-        if s.startswith("```"):
-            lines = s.split("\n")
-            # 去首行 ```json 和末行 ```
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            s = "\n".join(lines)
-        return s.strip()
-
     # ------------------------------------------------------------------
     # Phase 3: 构建 MemoryUnit
     # ------------------------------------------------------------------
@@ -884,6 +674,216 @@ class ExtractorImpl(Extractor):
         source_units: list[MemoryUnit],
     ) -> list[MemoryUnit]:
         return self._build_units(candidates, source_units)
+
+    def _extract_procedural(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
+        """把本轮汇总成 1 条 PROCEDURAL 执行历史 MemoryUnit。
+
+        不走走重、不收 context。LLM 产 1 条结构化「目标/步骤/结果」汇总，
+        provenance 回指本轮 unit（多源合并到一条，provenance 列全部本轮 unit id）。
+        """
+        from jiuwen_memory.common.type_def import ChatMessage
+
+        # 拼本轮原文（多 unit 合并成一段，作为单个执行历史源）
+        source_text = "\n".join(u.content for u in units if u.content).strip()
+        if not source_text:
+            logger.info("Extractor._extract_procedural: empty source, return []")
+            return []
+
+        messages = [
+            ChatMessage(role="system", content=_PROCEDURAL_SYSTEM_PROMPT),
+            ChatMessage(role="user", content=source_text),
+        ]
+        try:
+            response = self._call_llm_with_retry(messages)
+        except Exception as exc:
+            logger.warning("Extractor._extract_procedural: LLM call failed, return []: %s", exc)
+            return []
+
+        content = self._parse_procedural_response(response)
+        if not content:
+            logger.info("Extractor._extract_procedural: empty content parsed, return []")
+            return []
+
+        # procedural 路径固定产 PROCEDURAL tier，不走 LLM tier/tags 判定、不走富化。
+        candidate = ExtractionCandidate(
+            target=ExtractionTarget.CONTEXT,
+            content=content,
+            source_unit_id=units[0].id,
+            confidence=1.0,
+            tier=MemoryTier.PROCEDURAL,
+        )
+
+        # 构建 1 条 PROCEDURAL MemoryUnit，provenance 回指全部本轮 unit
+        now = datetime.now(timezone.utc)
+        source = units[0]
+        # 合并 write tags（engine 已写到源 unit）+ 系统标记 procedural
+        tags = merge_unit_tags(source.tags, ["procedural"])
+        unit = MemoryUnit(
+            id=str(uuid.uuid4()),
+            scope=source.scope,
+            tier=MemoryTier.PROCEDURAL,
+            segments=[Segment(content=candidate.content, source=source.source)],
+            # 不设 source_ref：procedural 原文不落 KV，source.id 指向不存在的记录，
+            # 设了反而误导溯源。provenance 仍记本轮 unit id（血缘列表，可指向未落盘源）。
+            temporal=Temporal(
+                t_event=None,
+                t_ingest=now,
+                t_valid=now,
+                t_message=source.temporal.t_message,
+            ),
+            provenance=[u.id for u in units],
+            tags=tags,
+            system_metadata=inherited_system_metadata(units)
+            | {
+                "confidence": str(candidate.confidence),
+                "target": candidate.target.value,
+            }
+            | candidate.metadata,
+            user_metadata=inherited_user_metadata(units),
+            lifecycle=LifecycleState.ACTIVE,
+        )
+        logger.info(
+            "Extractor._extract_procedural: built 1 PROCEDURAL unit id=%s provenance=%s content=%s",
+            unit.id[:8], unit.provenance, unit.content[:200],
+        )
+        return [unit]
+
+    def _parse_procedural_response(self, response: str) -> str:
+        """解析 LLM 返回的 {"content": "..."} JSON，取 content 字段。
+
+        多级兜底：直接解析 → 剥 markdown fence 再解析 → 整个响应当 content。
+        任一路径解析出 dict 即取 content 返回；都不成则返回原文（保证产 1 条）。
+        """
+        for candidate_text in (response.strip(), self._strip_non_json(response)):
+            try:
+                parsed = json.loads(candidate_text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return str(parsed.get("content", "")).strip()
+        logger.warning(
+            "Extractor._parse_procedural_response: cannot parse as JSON, use raw response: %s",
+            response[:200],
+        )
+        return response.strip()
+
+    def _preprocess(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
+        """过滤 lifecycle≠ACTIVE / 空 content / 派生单元（provenance 非空）。"""
+        accepted = []
+        skipped_reasons: dict[str, int] = {}
+        for u in units:
+            if u.lifecycle != LifecycleState.ACTIVE:
+                skipped_reasons["lifecycle"] = skipped_reasons.get("lifecycle", 0) + 1
+                continue
+            if not u.content.strip():
+                skipped_reasons["empty_content"] = skipped_reasons.get("empty_content", 0) + 1
+                continue
+            if u.provenance:
+                skipped_reasons["provenance"] = skipped_reasons.get("provenance", 0) + 1
+                continue  # 跳过派生单元，避免反复提取
+            logger.info(
+                "Extractor: accepting unit id=%s tier=%s provenance=%s content=%s",
+                u.id[:8],
+                u.tier.value,
+                u.provenance,
+                u.content[:200],
+            )
+            accepted.append(u)
+        logger.info("Extractor: preprocess accepted=%d, skipped=%s", len(accepted), skipped_reasons)
+        return accepted
+
+    # ------------------------------------------------------------------
+    # Phase 2: LLM 提取（批量）
+    # ------------------------------------------------------------------
+
+    def _llm_extract_batch(
+        self,
+        units: list[MemoryUnit],
+        *,
+        context: ExtractContext | None = None,
+    ) -> list[ExtractionCandidate]:
+        """对一批 unit 调一次 LLM 提取——每条 unit 带 [ID: ...] 标识，
+        LLM 在每个候选里输出 ``source_id`` 回指来源；解析时校验 source_id 存在。
+
+        ``context`` 非空时在 user prompt 末尾追加两段参考项（见 ExtractContext）：
+        - Recent conversation context：做指代/代词消解与语境，不从中提取、不作 source_id。
+        - Existing related memories：已有事实，本轮不要重复产出。
+        """
+        from jiuwen_memory.common.type_def import ChatMessage
+
+        # 拼 user prompt：每条 unit 带 [ID: unit.id] 前缀
+        parts = [_SOURCE_PREFIX.format(unit_id=u.id, unit_content=u.content) for u in units]
+        user_text = "\n".join(parts)
+        # 基准时间 observation_date（经 metadata 下推）：LLM 据此把相对时间解析成绝对时间。
+        # 取首个含 observation_date 的 unit（同批通常一致）；未传则以当前时间为基准。
+        observation_date = next(
+            (
+                str(u.system_metadata.get("observation_date", "")).strip()
+                for u in units
+                if u.system_metadata.get("observation_date")
+            ),
+            "",
+        )
+        if not observation_date:
+            observation_date = datetime.now(timezone.utc).date().isoformat()
+        # prompt 声明该行形如 "observation_date: YYYY-MM-DD"，且据此把观测日期按日精度写进
+        # content。调用方可能下推完整时间戳，故统一截到日——否则 prompt 的日精度约定不成立，
+        # LLM 会把时分秒当作源文本给出的精度照抄进条目。
+        elif "T" in observation_date:
+            observation_date = observation_date.split("T", 1)[0]
+        user_text = (
+            f"observation_date: {observation_date}\n"
+            f"(Use this as the reference point to resolve relative time expressions "
+            f"like \"yesterday\"/\"last week\"/\"tomorrow\" into absolute dates in content "
+            f"and event_date.)\n\n"
+            + user_text
+        )
+        # 追加 context 参考段（仅本轮 units 作提取来源，context 只供 LLM 参考）
+        context_block = _format_context_block(context)
+        if context_block:
+            user_text = user_text + "\n" + context_block
+        fidelity_mode = any(
+            str(unit.system_metadata.get("extraction_fidelity_mode", "false")).strip().lower()
+            in {"true", "1", "yes", "on"}
+            for unit in units
+        )
+        system_prompt = _EXTRACT_SYSTEM_PROMPT
+        if fidelity_mode:
+            system_prompt = system_prompt + "\n\n" + _EXTRACTION_FIDELITY_SUFFIX
+        messages = [
+            ChatMessage(role="system", content=system_prompt),
+            ChatMessage(role="user", content=user_text),
+        ]
+
+        # 调用 LLM（含重试）
+        response = self._call_llm_with_retry(messages)
+
+        # 解析 JSON。
+        items = self.parse_llm_response(response)
+        return self.build_candidates(items, units)
+
+    def _call_llm_with_retry(self, messages: list, max_tokens: int = 8192) -> str:
+        """调用 LLM.chat()，含重试逻辑。"""
+        import time
+
+        last_exc = None
+        for attempt in range(self._retry_max_retries):
+            try:
+                return self._llm.chat(messages, temperature=0, max_tokens=max_tokens)
+            except Exception as exc:
+                last_exc = exc
+                if attempt < self._retry_max_retries - 1:
+                    wait = self._retry_backoff_ms * (2**attempt) / 1000.0
+                    logger.warning(
+                        "Extractor: LLM call failed (attempt %d), retrying in %.1fs",
+                        attempt + 1,
+                        wait,
+                    )
+                    time.sleep(wait)
+        # 所有重试都失败（retry_max_retries <= 0 时未进入循环，last_exc 仍为 None）
+        if last_exc is None:
+            raise RuntimeError("LLM 调用未执行：retry_max_retries 必须 >= 1")
+        raise last_exc
 
     def _build_units(
         self,

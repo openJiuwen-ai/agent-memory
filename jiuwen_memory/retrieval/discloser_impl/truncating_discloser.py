@@ -25,29 +25,6 @@ class TruncatingDiscloser(Discloser):
     def health(self) -> None:
         return None
 
-    def _l0(self, unit: MemoryUnit) -> str:
-        # 优先预生成 l0；空则截断 content 兜底
-        if unit.layers.l0:
-            return unit.layers.l0
-        content = unit.content
-        limit = _LIMIT[DisclosureLevel.L0]
-        return content if len(content) <= limit else content[:limit].rstrip() + "…"
-
-    def _l1(self, unit: MemoryUnit, keywords: list[str]) -> str:
-        # 优先预生成 l1；空则围绕关键词取窗兜底
-        if unit.layers.l1:
-            return unit.layers.l1
-        content = unit.content
-        for kw in keywords:  # 围绕首个命中关键词取窗口
-            idx = content.find(kw)
-            if idx >= 0:
-                start = max(0, idx - 30)
-                end = start + _LIMIT[DisclosureLevel.L1]
-                window = content[start:end]
-                return ("…" if start else "") + window
-        limit = _LIMIT[DisclosureLevel.L1]
-        return content if len(content) <= limit else content[:limit].rstrip() + "…"
-
     def disclose(
         self,
         query: ParsedQuery,
@@ -74,6 +51,29 @@ class TruncatingDiscloser(Discloser):
                 )
             )
         return items
+
+    def _l0(self, unit: MemoryUnit) -> str:
+        # 优先预生成 l0；空则截断 content 兜底
+        if unit.layers.l0:
+            return unit.layers.l0
+        content = unit.content
+        limit = _LIMIT[DisclosureLevel.L0]
+        return content if len(content) <= limit else content[:limit].rstrip() + "…"
+
+    def _l1(self, unit: MemoryUnit, keywords: list[str]) -> str:
+        # 优先预生成 l1；空则围绕关键词取窗兜底
+        if unit.layers.l1:
+            return unit.layers.l1
+        content = unit.content
+        for kw in keywords:  # 围绕首个命中关键词取窗口
+            idx = content.find(kw)
+            if idx >= 0:
+                start = max(0, idx - 30)
+                end = start + _LIMIT[DisclosureLevel.L1]
+                window = content[start:end]
+                return ("…" if start else "") + window
+        limit = _LIMIT[DisclosureLevel.L1]
+        return content if len(content) <= limit else content[:limit].rstrip() + "…"
 
 
 # -- 注册到 DiscloserProducer（实现自注册，新增无需改 producer/装配入口） -------- #

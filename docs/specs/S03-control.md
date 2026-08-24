@@ -23,6 +23,7 @@
 - 治理「看」侧（检视 / 血缘回溯 / 审计查询）
 - 跨 scope 权限授权与校验
 - 演进任务的 hot/background 双通道调度
+- 长耗时摄入任务的队列、状态持久化和 Scope 内幂等
 - 运行时可变策略的查询与调整
 - space 生命周期、策略、成员、用量、导出与 offboarding 管理
 
@@ -67,7 +68,8 @@
 
 ```python
 class ControlOperatorType(str, Enum):
-    ENGINE / PIPELINE / LIFECYCLE / GOVERNOR / PERMISSION / SCHEDULER / POLICY / SPACE
+    ENGINE / PIPELINE / LIFECYCLE / GOVERNOR / PERMISSION / SCHEDULER / INGEST_JOB /
+    POLICY / SPACE
 
 class ControlOperator(ABC):
     def operator_type(self) -> ControlOperatorType  # 自描述
@@ -330,6 +332,12 @@ recall 完成权限检查后，API 读取 `PermissionManager.routing_fields()`�
 **双通道**：HOT（在线低时延：write 返回前完成的轻量索引）；BACKGROUND（离线异步：重的抽取/升华/重索引）。
 
 目标 HIERARCHY 任务必须在 `JobInfo.detail` 中提供稳定字符串键：`hierarchy_kind`、`span_start`/`span_end`、`trigger`（`explicit`/`ensure_on_recall`/`auto_derive`）、`created_parent_count`、`updated_child_count`、`replaced_parent_count`、`repair_required_count`、`complete`、`error`。`detail["repair_required_count"]` 等于 `HierarchyComposeResult.repair_required` 的元素数量。目标 `JobInfo` 增加 `result: EvolveResult | None = None`（结构见 S05）；`complete=false` 或非空 `repair_required` 不得标记 SUCCEEDED。ensure 等待终态；auto derive 不等待。
+
+### IngestJobController（`ingest_job.py`）
+
+长耗时摄入任务使用独立 Control 算子管理，具体线程池实现位于 `job_impl/`。`status`
+是无缓存副作用的只读查询；payload 幂等映射只在 Scope 一致后维护。接口层通过
+`MemoryAPI.job_status()` 对任务真实 Scope 执行 READ 鉴权与审计。
 
 ### PolicyManager（`policy.py`）
 

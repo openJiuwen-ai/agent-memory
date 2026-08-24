@@ -48,6 +48,12 @@ class JsonlDataset(Dataset):
         self._queries: List[QueryCase] = []
         self._load(path, default_scope)
 
+    def seeds(self) -> Sequence[MemorySeed]:
+        return self._seeds
+
+    def queries(self) -> Sequence[QueryCase]:
+        return self._queries
+
     def _load(self, path: str, default_scope: Scope) -> None:
         with open(path, "r", encoding="utf-8") as fh:
             for line in fh:
@@ -80,9 +86,3 @@ class JsonlDataset(Dataset):
                     )
                 else:
                     raise ValueError(f"unknown record type: {kind!r} in {path}")
-
-    def seeds(self) -> Sequence[MemorySeed]:
-        return self._seeds
-
-    def queries(self) -> Sequence[QueryCase]:
-        return self._queries

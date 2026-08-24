@@ -52,49 +52,6 @@ class PostgresKVStore(PgStoreBase, KVStore):
             config_dsn_field="dsn",
         )
 
-    def _ensure_schema(self, pool: Any) -> None:
-        with pool.connection() as conn, conn.cursor() as cursor:
-            if not self._auto_create_schema:
-                self._require_table(cursor)
-                return
-            self._lock_schema(cursor)
-            self._create_schema(cursor)
-            cursor.execute(
-                self.sql.SQL(
-                    """
-                    CREATE TABLE IF NOT EXISTS {} (
-                        scope_org text NOT NULL,
-                        scope_space text NOT NULL,
-                        scope_user text NOT NULL,
-                        scope_agent text NOT NULL,
-                        scope_session text NOT NULL,
-                        key text NOT NULL,
-                        value bytea NOT NULL,
-                        expires_at double precision,
-                        PRIMARY KEY (
-                            scope_org, scope_space, scope_user, scope_agent,
-                            scope_session, key
-                        )
-                    )
-                    """
-                ).format(self._qualified())
-            )
-            cursor.execute(
-                self.sql.SQL(
-                    "CREATE INDEX IF NOT EXISTS {} ON {} (expires_at) "
-                    "WHERE expires_at IS NOT NULL"
-                ).format(
-                    self.sql.Identifier(f"{self._table}_expires_idx"),
-                    self._qualified(),
-                )
-            )
-
-    def store_type(self) -> StoreType:
-        return StoreType.KV
-
-    def health(self) -> None:
-        self._health()
-
     @staticmethod
     def _expiry_sql() -> str:
         return (
@@ -105,6 +62,12 @@ class PostgresKVStore(PgStoreBase, KVStore):
     @staticmethod
     def _scope_params(scope: Scope) -> tuple[str, str, str, str, str]:
         return scope.org, scope.space, scope.user, scope.agent, scope.session
+
+    def store_type(self) -> StoreType:
+        return StoreType.KV
+
+    def health(self) -> None:
+        self._health()
 
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
         statement = self.sql.SQL(
@@ -268,6 +231,43 @@ class PostgresKVStore(PgStoreBase, KVStore):
             Scope(org=org, space=space, user=user, agent=agent, session=session)
             for org, space, user, agent, session in rows
         ]
+
+    def _ensure_schema(self, pool: Any) -> None:
+        with pool.connection() as conn, conn.cursor() as cursor:
+            if not self._auto_create_schema:
+                self._require_table(cursor)
+                return
+            self._lock_schema(cursor)
+            self._create_schema(cursor)
+            cursor.execute(
+                self.sql.SQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS {} (
+                        scope_org text NOT NULL,
+                        scope_space text NOT NULL,
+                        scope_user text NOT NULL,
+                        scope_agent text NOT NULL,
+                        scope_session text NOT NULL,
+                        key text NOT NULL,
+                        value bytea NOT NULL,
+                        expires_at double precision,
+                        PRIMARY KEY (
+                            scope_org, scope_space, scope_user, scope_agent,
+                            scope_session, key
+                        )
+                    )
+                    """
+                ).format(self._qualified())
+            )
+            cursor.execute(
+                self.sql.SQL(
+                    "CREATE INDEX IF NOT EXISTS {} ON {} (expires_at) "
+                    "WHERE expires_at IS NOT NULL"
+                ).format(
+                    self.sql.Identifier(f"{self._table}_expires_idx"),
+                    self._qualified(),
+                )
+            )
 
 
 @KvProducer.register("postgres")

@@ -77,18 +77,6 @@ class OpenAILLM(LLM):
         self._client = None  # 惰性创建（见 client 属性）
         self._client_fingerprint: tuple[str, str | None, bool, str | None] | None = None
 
-    def _endpoint(self):
-        """解析当前应生效的 model / api_key / base_url（ConfigSource 优先）。"""
-        from jiuwen_memory.config.binding import resolve_endpoint
-
-        return resolve_endpoint(
-            self._config_source,
-            namespace=self._config_namespace,
-            fallback_model=self._fallback_model,
-            fallback_api_key=self._fallback_api_key,
-            fallback_base_url=self._fallback_base_url,
-        )
-
     @property
     def client(self) -> "openai.OpenAI":
         """
@@ -115,32 +103,6 @@ class OpenAILLM(LLM):
     def plugin_type(self) -> PluginType:
         """返回插件类型 ``LLM``。"""
         return PluginType.LLM
-
-    def _provider_request_options(self) -> dict[str, object]:
-        """返回 Provider Adapter 的默认请求选项。
-
-        通用 OpenAI 实现不注入任何厂商字段；兼容协议上的厂商差异由子类覆盖。
-        """
-        return {}
-
-    def _merge_request_options(
-        self,
-        create_kwargs: dict[str, object],
-        options: Mapping[str, object],
-    ) -> None:
-        """先合并 Provider 默认值，再让显式调用参数覆盖。"""
-        create_kwargs.update(self._provider_request_options())
-        for key, value in options.items():
-            if key in ("temperature", "max_tokens") or value is None:
-                continue
-            if (
-                key == "extra_body"
-                and isinstance(create_kwargs.get(key), Mapping)
-                and isinstance(value, Mapping)
-            ):
-                create_kwargs[key] = {**create_kwargs[key], **value}
-            else:
-                create_kwargs[key] = value
 
     def health(self) -> None:
         """探活：调用一次极短 chat 测试 API 可达。"""
@@ -193,6 +155,44 @@ class OpenAILLM(LLM):
         content = response.choices[0].message.content
         return content or ""
 
+    def _endpoint(self):
+        """解析当前应生效的 model / api_key / base_url（ConfigSource 优先）。"""
+        from jiuwen_memory.config.binding import resolve_endpoint
+
+        return resolve_endpoint(
+            self._config_source,
+            namespace=self._config_namespace,
+            fallback_model=self._fallback_model,
+            fallback_api_key=self._fallback_api_key,
+            fallback_base_url=self._fallback_base_url,
+        )
+
+    def _provider_request_options(self) -> dict[str, object]:
+        """返回 Provider Adapter 的默认请求选项。
+
+        通用 OpenAI 实现不注入任何厂商字段；兼容协议上的厂商差异由子类覆盖。
+        """
+        return {}
+
+    def _merge_request_options(
+        self,
+        create_kwargs: dict[str, object],
+        options: Mapping[str, object],
+    ) -> None:
+        """先合并 Provider 默认值，再让显式调用参数覆盖。"""
+        create_kwargs.update(self._provider_request_options())
+        for key, value in options.items():
+            if key in ("temperature", "max_tokens") or value is None:
+                continue
+            if (
+                key == "extra_body"
+                and isinstance(create_kwargs.get(key), Mapping)
+                and isinstance(value, Mapping)
+            ):
+                create_kwargs[key] = {**create_kwargs[key], **value}
+            else:
+                create_kwargs[key] = value
+
 
 # -- 注册到 LlmProducer（实现自注册，新增无需改 producer/make_plugins） ------ #
 
@@ -216,4 +216,5 @@ def _build(config):
         ssl_verify=ssl.verify,
         ssl_ca_cert=ssl.ca_cert,
         config_source=ConfigSourceProducer.get_cached("default"),
+        config_namespace=str(config.get("config_namespace", "llm")),
     )

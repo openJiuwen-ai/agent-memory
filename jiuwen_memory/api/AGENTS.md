@@ -12,8 +12,8 @@
 |---|---|
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
-| `memory_api_impl/assembly.py` | 统一装配入口：`build_kernel(config)` 构建并暴露 MemoryAPI、Storage、兼容 KV 与控制面句柄；按装配配置条件注册可选扩展 |
-| `memory_api_impl/local_memory_api.py` | LocalMemoryAPI：委托 Engine/Governor/Scheduler/PermissionManager/SpaceManager + PEP 鉴权 |
+| `memory_api_impl/assembly.py` | 装配入口：`build_kernel(config)` 构建并暴露 MemoryAPI、Storage、兼容 KV 与控制面句柄 |
+| `memory_api_impl/local_memory_api.py` | LocalMemoryAPI：委托 Control 算子并执行 PEP 鉴权与审计 |
 
 ## 行为铁律
 
@@ -55,13 +55,6 @@
 9. **Space 删除覆盖全部子 Scope**
    `delete_space` 通过 `MemoryEngine.purge_space` 清理同一 `org + space` 下所有 user/agent/session 子 Scope 的真源和索引，再委托 `SpaceManager` 清理 messages 与管理元数据。
 
-10. **Schema 装配保持配置 opt-in**
-    `assemble()` / `build_kernel()` 是唯一装配入口。`globals.schema_enabled` 默认为
-    `false`，此时不导入或注册 Schema 算子；仅在装配时为 `true` 才条件注册。
-    注册不等于启用，调用方还必须显式选择 `entity_schema` Extractor 和
-    `schema_orchestrating` Evolver；默认 target 保持不变。开关关闭但配置了 Schema
-    target 时装配必须 fail-closed，不得借进程中残留的 Producer 注册绕过开关。
-
 ## PEP 鉴权流程
 
 ```
@@ -98,3 +91,5 @@ MemoryAPI.method(scope=target, identity=caller)
    （composite 再 dep 各 Store）。`RoutingKVStore` 须作为 raw 落在加密层内；同实现换 Redis
    用 `kv_store.url` 晚绑定，不要为换 URL 预装多套 Routing 槽位（F01 §2.1.5 / S08）。
 4. 实现类（LocalMemoryAPI）不对外暴露，外部只依赖 `MemoryAPI` 抽象接口。
+5. `job_status` 统一查询 Scheduler 和长耗时 Ingest 任务；Ingest 任务必须显式传入
+   target `scope`，由 API 对任务真实 Scope 执行 READ 鉴权并记录审计。

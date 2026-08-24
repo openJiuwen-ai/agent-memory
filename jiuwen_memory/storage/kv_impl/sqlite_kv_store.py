@@ -57,38 +57,11 @@ class SQLiteKVStore(KVStore):
         self._conn: sqlite3.Connection | None = None
         self._conn_path: str | None = None
 
-    def _resolved_db_path(self) -> str:
-        from jiuwen_memory.config.binding import resolve_connection_url
+    # -- 内部 ---------------------------------------------------------------- #
 
-        live = resolve_connection_url(
-            self._config_source,
-            namespace=self._config_namespace,
-            field="db_path",
-            fallback=self._fallback_db_path,
-        )
-        return live or self._fallback_db_path
-
-    def _ensure_conn(self) -> sqlite3.Connection:
-        """按当前 ``db_path`` 惰性打开连接；路径变化则重建。调用方须已持 ``_lock``。"""
-        path = self._resolved_db_path()
-        if self._conn is not None and self._conn_path == path:
-            return self._conn
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
-            self._conn_path = None
-        self._conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
-        self._conn_path = path
-        self._conn.execute(_SCHEMA)
-        self._migrate_schema(self._conn)
-        return self._conn
-
-    def _require_conn(self) -> sqlite3.Connection:
-        """返回已打开连接；调用方须已持锁且刚调用过 ``_ensure_conn``。"""
-        conn = self._conn
-        if conn is None:
-            raise RuntimeError("SQLiteKVStore connection is not open")
-        return conn
+    @staticmethod
+    def _expiry(ttl: float) -> float | None:
+        return time.time() + ttl if ttl else None
 
     def store_type(self) -> StoreType:
         return StoreType.KV
@@ -104,46 +77,6 @@ class SQLiteKVStore(KVStore):
                 self._conn.close()
                 self._conn = None
                 self._conn_path = None
-
-    # -- 内部 ---------------------------------------------------------------- #
-
-    @staticmethod
-    def _expiry(ttl: float) -> float | None:
-        return time.time() + ttl if ttl else None
-
-    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
-        columns = {
-            row[1] for row in conn.execute("PRAGMA table_info(kv)").fetchall()
-        }
-        if not columns or "space" in columns:
-            return
-        conn.execute("ALTER TABLE kv RENAME TO kv_legacy")
-        conn.execute(_SCHEMA)
-        conn.execute(
-            'INSERT INTO kv (org, space, "user", agent, session, key, value, expires_at) '
-            'SELECT org, "", "user", agent, session, key, value, expires_at FROM kv_legacy'
-        )
-        conn.execute("DROP TABLE kv_legacy")
-
-    def _live_value(self, scope: Scope, key: str) -> bytes | None:
-        """返回未过期的值；过期则惰性删除并返回 None（调用方持锁且已 ensure_conn）。"""
-        conn = self._require_conn()
-        row = conn.execute(
-            'SELECT value, expires_at FROM kv WHERE org=? AND space=? AND "user"=? '
-            "AND agent=? AND session=? AND key=?",
-            (scope.org, scope.space, scope.user, scope.agent, scope.session, key),
-        ).fetchone()
-        if row is None:
-            return None
-        value, expires_at = row
-        if expires_at is not None and expires_at <= time.time():
-            conn.execute(
-                'DELETE FROM kv WHERE org=? AND space=? AND "user"=? '
-                "AND agent=? AND session=? AND key=?",
-                (scope.org, scope.space, scope.user, scope.agent, scope.session, key),
-            )
-            return None
-        return bytes(value)
 
     # -- KVStore 契约 -------------------------------------------------------- #
 
@@ -283,6 +216,73 @@ class SQLiteKVStore(KVStore):
             )
             for org_name, space_name, user_name, agent_name, session_name in rows
         ]
+
+    def _resolved_db_path(self) -> str:
+        from jiuwen_memory.config.binding import resolve_connection_url
+
+        live = resolve_connection_url(
+            self._config_source,
+            namespace=self._config_namespace,
+            field="db_path",
+            fallback=self._fallback_db_path,
+        )
+        return live or self._fallback_db_path
+
+    def _ensure_conn(self) -> sqlite3.Connection:
+        """按当前 ``db_path`` 惰性打开连接；路径变化则重建。调用方须已持 ``_lock``。"""
+        path = self._resolved_db_path()
+        if self._conn is not None and self._conn_path == path:
+            return self._conn
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+            self._conn_path = None
+        self._conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
+        self._conn_path = path
+        self._conn.execute(_SCHEMA)
+        self._migrate_schema(self._conn)
+        return self._conn
+
+    def _require_conn(self) -> sqlite3.Connection:
+        """返回已打开连接；调用方须已持锁且刚调用过 ``_ensure_conn``。"""
+        conn = self._conn
+        if conn is None:
+            raise RuntimeError("SQLiteKVStore connection is not open")
+        return conn
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(kv)").fetchall()
+        }
+        if not columns or "space" in columns:
+            return
+        conn.execute("ALTER TABLE kv RENAME TO kv_legacy")
+        conn.execute(_SCHEMA)
+        conn.execute(
+            'INSERT INTO kv (org, space, "user", agent, session, key, value, expires_at) '
+            'SELECT org, "", "user", agent, session, key, value, expires_at FROM kv_legacy'
+        )
+        conn.execute("DROP TABLE kv_legacy")
+
+    def _live_value(self, scope: Scope, key: str) -> bytes | None:
+        """返回未过期的值；过期则惰性删除并返回 None（调用方持锁且已 ensure_conn）。"""
+        conn = self._require_conn()
+        row = conn.execute(
+            'SELECT value, expires_at FROM kv WHERE org=? AND space=? AND "user"=? '
+            "AND agent=? AND session=? AND key=?",
+            (scope.org, scope.space, scope.user, scope.agent, scope.session, key),
+        ).fetchone()
+        if row is None:
+            return None
+        value, expires_at = row
+        if expires_at is not None and expires_at <= time.time():
+            conn.execute(
+                'DELETE FROM kv WHERE org=? AND space=? AND "user"=? '
+                "AND agent=? AND session=? AND key=?",
+                (scope.org, scope.space, scope.user, scope.agent, scope.session, key),
+            )
+            return None
+        return bytes(value)
 
 
 # -- 注册到 KvProducer（接口层定义的工厂；实现自注册，新增无需改 producer/build_kernel） -- #

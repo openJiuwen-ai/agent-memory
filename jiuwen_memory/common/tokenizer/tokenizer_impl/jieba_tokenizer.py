@@ -55,19 +55,6 @@ class JiebaTokenizer(Tokenizer):
     def initialized(self) -> bool:
         return self._initialized
 
-    def _ensure_initialized(self) -> None:
-        """延迟初始化 jieba——首次 tokenize 时才加载词典，避免 import 时等待。"""
-        if self._initialized:
-            return
-        try:
-            import_module("jieba")
-        except ImportError:
-            raise ImportError(
-                "JiebaTokenizer requires the 'jieba' package. Install it with: pip install jieba"
-            ) from None
-        logger.info("JiebaTokenizer: initialized (mode=%s, HMM=%s)", self._mode, self._hmm)
-        self._initialized = True
-
     def plugin_type(self) -> PluginType:
         return PluginType.TOKENIZER
 
@@ -93,6 +80,19 @@ class JiebaTokenizer(Tokenizer):
     def tokenize_batch(self, texts: list[str]) -> list[list[str]]:
         """批量分词——逐条调用 tokenize（jieba 无原生批量接口）。"""
         return [self.tokenize(t) for t in texts]
+
+    def _ensure_initialized(self) -> None:
+        """延迟初始化 jieba——首次 tokenize 时才加载词典，避免 import 时等待。"""
+        if self._initialized:
+            return
+        try:
+            import_module("jieba")
+        except ImportError:
+            raise ImportError(
+                "JiebaTokenizer requires the 'jieba' package. Install it with: pip install jieba"
+            ) from None
+        logger.info("JiebaTokenizer: initialized (mode=%s, HMM=%s)", self._mode, self._hmm)
+        self._initialized = True
 
 
 # -- 注册到 TokenizerProducer（实现自注册，新增无需改 producer/make_plugins） ------ #

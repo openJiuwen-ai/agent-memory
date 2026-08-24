@@ -116,18 +116,6 @@ class APIReranker(Reranker):
                 client_kwargs["verify"] = outbound_verify(ssl_ca_cert)
             self._client = httpx.Client(**client_kwargs)
 
-    def _endpoint(self):
-        """解析当前应生效的 model / api_key / base_url（ConfigSource 优先）。"""
-        from jiuwen_memory.config.binding import resolve_endpoint
-
-        return resolve_endpoint(
-            self._config_source,
-            namespace=self._config_namespace,
-            fallback_model=self._fallback_model,
-            fallback_api_key=self._fallback_api_key,
-            fallback_base_url=self._fallback_base_url,
-        )
-
     def plugin_type(self) -> PluginType:
         """返回插件类型 ``RERANKER``。"""
         return PluginType.RERANKER
@@ -169,6 +157,18 @@ class APIReranker(Reranker):
             if isinstance(idx, int) and 0 <= idx < len(scores):
                 scores[idx] = float(item.get("relevance_score", 0.0))
         return scores
+
+    def _endpoint(self):
+        """解析当前应生效的 model / api_key / base_url（ConfigSource 优先）。"""
+        from jiuwen_memory.config.binding import resolve_endpoint
+
+        return resolve_endpoint(
+            self._config_source,
+            namespace=self._config_namespace,
+            fallback_model=self._fallback_model,
+            fallback_api_key=self._fallback_api_key,
+            fallback_base_url=self._fallback_base_url,
+        )
 
 
 # -- 注册到 RerankerProducer（实现自注册，新增无需改 producer/make_plugins） ------ #

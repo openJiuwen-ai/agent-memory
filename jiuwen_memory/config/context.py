@@ -51,30 +51,6 @@ class AssemblyContext:
     globals: Dict[str, Any] = field(default_factory=dict)
     namespaces: Dict[str, Dict[str, RawSpec]] = field(default_factory=dict)
 
-    def lookup(self, top_name: str, name: str) -> RawSpec:
-        """取 ``top_name`` 命名空间下名为 ``name`` 的具名实例配置；不存在即报错。"""
-        ns = self.namespaces.get(top_name)
-        if ns is None or name not in ns:
-            known = sorted(ns) if ns else []
-            raise ValidationError(
-                f"引用的具名配置不存在：{top_name}.{name!r}（{top_name} 已定义：{known}）"
-            )
-        return ns[name]
-
-    def merged(self, other: "AssemblyContext") -> "AssemblyContext":
-        """把 ``other`` 覆盖到本上下文之上：globals 按 key 覆盖、命名空间按实例名覆盖/新增。
-
-        用于 ``build_kernel`` 把用户配置叠加到内置默认之上——用户只需写要改动的部分。
-        """
-        namespaces: Dict[str, Dict[str, RawSpec]] = {
-            top: dict(insts) for top, insts in self.namespaces.items()
-        }
-        for top, insts in other.namespaces.items():
-            namespaces.setdefault(top, {}).update(insts)
-        merged_globals = dict(self.globals)
-        merged_globals.update(other.globals)
-        return AssemblyContext(globals=merged_globals, namespaces=namespaces)
-
     @classmethod
     def from_dict(
         cls,
@@ -110,6 +86,30 @@ class AssemblyContext:
                 for inst_name, raw in section.items()
             }
         return cls(globals=globals_, namespaces=namespaces)
+
+    def lookup(self, top_name: str, name: str) -> RawSpec:
+        """取 ``top_name`` 命名空间下名为 ``name`` 的具名实例配置；不存在即报错。"""
+        ns = self.namespaces.get(top_name)
+        if ns is None or name not in ns:
+            known = sorted(ns) if ns else []
+            raise ValidationError(
+                f"引用的具名配置不存在：{top_name}.{name!r}（{top_name} 已定义：{known}）"
+            )
+        return ns[name]
+
+    def merged(self, other: "AssemblyContext") -> "AssemblyContext":
+        """把 ``other`` 覆盖到本上下文之上：globals 按 key 覆盖、命名空间按实例名覆盖/新增。
+
+        用于 ``build_kernel`` 把用户配置叠加到内置默认之上——用户只需写要改动的部分。
+        """
+        namespaces: Dict[str, Dict[str, RawSpec]] = {
+            top: dict(insts) for top, insts in self.namespaces.items()
+        }
+        for top, insts in other.namespaces.items():
+            namespaces.setdefault(top, {}).update(insts)
+        merged_globals = dict(self.globals)
+        merged_globals.update(other.globals)
+        return AssemblyContext(globals=merged_globals, namespaces=namespaces)
 
 
 def _parse_instance(top_name: str, inst_name: str, raw: Any) -> RawSpec:

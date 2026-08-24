@@ -46,6 +46,18 @@ class PromptRegistry:
             }
         self._config_source = config_source
 
+    @classmethod
+    def from_dict(
+        cls,
+        data: Mapping[str, Any] | None,
+        *,
+        config_source: ConfigSource | None = None,
+    ) -> "PromptRegistry":
+        """从 yml 解析出的 ``prompts`` 段构造；可同时注入 ConfigSource 做运行时覆盖。"""
+        if data is None or not isinstance(data, Mapping):
+            return cls(config_source=config_source)
+        return cls(dict(data), config_source=config_source)
+
     def get(self, phase: str, key: str) -> str | None:
         """按阶段和 key 取 prompt 文本；缺失返回 ``None``。
 
@@ -62,15 +74,3 @@ class PromptRegistry:
     def has_phase(self, phase: str) -> bool:
         """构造期快照是否包含该 phase（不含仅存在于 ConfigSource 的 live key）。"""
         return phase in self._prompts
-
-    @classmethod
-    def from_dict(
-        cls,
-        data: Mapping[str, Any] | None,
-        *,
-        config_source: ConfigSource | None = None,
-    ) -> "PromptRegistry":
-        """从 yml 解析出的 ``prompts`` 段构造；可同时注入 ConfigSource 做运行时覆盖。"""
-        if data is None or not isinstance(data, Mapping):
-            return cls(config_source=config_source)
-        return cls(dict(data), config_source=config_source)

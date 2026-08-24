@@ -71,6 +71,38 @@ class BGEM3Embedder(Embedder):
         self._use_fp16 = use_fp16
         self._model = None  # lazy load
 
+    def plugin_type(self) -> PluginType:
+        return PluginType.EMBEDDER
+
+    def health(self) -> None:
+        self._load_model()
+        try:
+            vectors = self._embed_batch(["health check"])
+            if len(vectors[0]) != self._dimension:
+                raise HealthCheckError(
+                    f"BGE-M3 dimension mismatch: expected {self._dimension}, got {len(vectors[0])}"
+                )
+        except Exception as exc:
+            raise HealthCheckError(f"BGEM3Embedder health check failed: {exc}") from exc
+
+    def dimension(self) -> int:
+        return self._dimension
+
+    def embed(self, texts: List[str]) -> List[List[float]]:
+        if not texts:
+            return []
+        self._load_model()
+        try:
+            all_vectors: List[List[float]] = []
+            for batch in self._split_batches(texts):
+                vectors = self._embed_batch(batch)
+                all_vectors.extend(vectors)
+            return all_vectors
+        except Exception as exc:
+            # 模型已加载成功但 encode 失败——不置 _load_failed，允许后续重试
+            logger.error("BGEM3Embedder: encode failed: %s", exc)
+            raise
+
     def _load_model(self):
         """延迟加载模型——首次 embed/health 时才初始化，避免 import 时长时间等待。
 
@@ -147,38 +179,6 @@ class BGEM3Embedder(Embedder):
                 f"Ensure the model files are in the HuggingFace cache or provide "
                 f"a local directory path via config.embedder_bge_m3_model."
             ) from exc
-
-    def plugin_type(self) -> PluginType:
-        return PluginType.EMBEDDER
-
-    def health(self) -> None:
-        self._load_model()
-        try:
-            vectors = self._embed_batch(["health check"])
-            if len(vectors[0]) != self._dimension:
-                raise HealthCheckError(
-                    f"BGE-M3 dimension mismatch: expected {self._dimension}, got {len(vectors[0])}"
-                )
-        except Exception as exc:
-            raise HealthCheckError(f"BGEM3Embedder health check failed: {exc}") from exc
-
-    def dimension(self) -> int:
-        return self._dimension
-
-    def embed(self, texts: List[str]) -> List[List[float]]:
-        if not texts:
-            return []
-        self._load_model()
-        try:
-            all_vectors: List[List[float]] = []
-            for batch in self._split_batches(texts):
-                vectors = self._embed_batch(batch)
-                all_vectors.extend(vectors)
-            return all_vectors
-        except Exception as exc:
-            # 模型已加载成功但 encode 失败——不置 _load_failed，允许后续重试
-            logger.error("BGEM3Embedder: encode failed: %s", exc)
-            raise
 
     def _embed_batch(self, texts: List[str]) -> List[List[float]]:
         # normalize_embeddings 不传给底层 tokenizer（避免版本兼容问题），

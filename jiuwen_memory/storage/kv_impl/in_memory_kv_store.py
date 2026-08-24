@@ -40,17 +40,6 @@ class InMemoryKVStore(KVStore):
     def health(self) -> None:
         return None
 
-    def _live(self, sk: _ScopeKey, key: str) -> bytes | None:
-        """返回未过期的值；已过期则惰性删除并返回 None。"""
-        rec = self._data[sk].get(key)
-        if rec is None:
-            return None
-        value, expires_at = rec
-        if expires_at is not None and expires_at <= time.time():
-            del self._data[sk][key]
-            return None
-        return value
-
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
         sk = _skey(scope)
         if self._live(sk, key) is not None:
@@ -120,6 +109,17 @@ class InMemoryKVStore(KVStore):
             Scope(org=k[0], space=k[1], user=k[2], agent=k[3], session=k[4])
             for k in self._data
         ]
+
+    def _live(self, sk: _ScopeKey, key: str) -> bytes | None:
+        """返回未过期的值；已过期则惰性删除并返回 None。"""
+        rec = self._data[sk].get(key)
+        if rec is None:
+            return None
+        value, expires_at = rec
+        if expires_at is not None and expires_at <= time.time():
+            del self._data[sk][key]
+            return None
+        return value
 
 
 # -- 注册到 KvProducer（接口层定义的工厂；实现自注册，新增无需改 producer/build_kernel） -------- #

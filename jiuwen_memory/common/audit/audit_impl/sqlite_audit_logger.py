@@ -45,6 +45,47 @@ class SqliteAuditLogger(AuditLogger):
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
 
+    def record(self, event: AuditEvent) -> None:
+        self._record_many([event])
+
+    def query(self, filters: dict[str, str], limit: int = 100) -> list[AuditEvent]:
+        with self._lock:
+            clauses: list[str] = []
+            params: list[object] = []
+            exact_fields = {
+                "action": "action",
+                "layer": "layer",
+                "decision": "decision",
+                "target_id": "target_id",
+                "actor_org": "actor_org",
+                "actor_space": "actor_space",
+                "actor_user": "actor_user",
+                "actor_agent": "actor_agent",
+                "actor_session": "actor_session",
+                "target_org": "target_org",
+                "target_space": "target_space",
+                "target_user": "target_user",
+                "target_agent": "target_agent",
+                "target_session": "target_session",
+            }
+            for field, column in exact_fields.items():
+                if filters.get(field):
+                    clauses.append(f"{column} = ?")
+                    params.append(filters[field])
+            if filters.get("occurred_after"):
+                clauses.append("datetime(occurred_at) >= datetime(?)")
+                params.append(filters["occurred_after"])
+            if filters.get("occurred_before"):
+                clauses.append("datetime(occurred_at) <= datetime(?)")
+                params.append(filters["occurred_before"])
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            params.append(limit)
+            rows = self._conn.execute(
+                f"SELECT * FROM audit_events {where} ORDER BY seq ASC LIMIT ?",
+                params,
+            ).fetchall()
+        return [_row_to_event(row) for row in rows]
+
     def _init_schema(self) -> None:
         with self._lock, self._conn:
             self._conn.execute(
@@ -96,9 +137,6 @@ class SqliteAuditLogger(AuditLogger):
                         f"ALTER TABLE audit_events ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
                     )
 
-    def record(self, event: AuditEvent) -> None:
-        self._record_many([event])
-
     def _record_many(self, events: Iterable[AuditEvent]) -> None:
         """Internal bulk insert hook for a future public record_many API."""
         rows = [_event_to_row(event) for event in events]
@@ -116,44 +154,6 @@ class SqliteAuditLogger(AuditLogger):
                 """,
                 rows,
             )
-
-    def query(self, filters: dict[str, str], limit: int = 100) -> list[AuditEvent]:
-        with self._lock:
-            clauses: list[str] = []
-            params: list[object] = []
-            exact_fields = {
-                "action": "action",
-                "layer": "layer",
-                "decision": "decision",
-                "target_id": "target_id",
-                "actor_org": "actor_org",
-                "actor_space": "actor_space",
-                "actor_user": "actor_user",
-                "actor_agent": "actor_agent",
-                "actor_session": "actor_session",
-                "target_org": "target_org",
-                "target_space": "target_space",
-                "target_user": "target_user",
-                "target_agent": "target_agent",
-                "target_session": "target_session",
-            }
-            for field, column in exact_fields.items():
-                if filters.get(field):
-                    clauses.append(f"{column} = ?")
-                    params.append(filters[field])
-            if filters.get("occurred_after"):
-                clauses.append("datetime(occurred_at) >= datetime(?)")
-                params.append(filters["occurred_after"])
-            if filters.get("occurred_before"):
-                clauses.append("datetime(occurred_at) <= datetime(?)")
-                params.append(filters["occurred_before"])
-            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-            params.append(limit)
-            rows = self._conn.execute(
-                f"SELECT * FROM audit_events {where} ORDER BY seq ASC LIMIT ?",
-                params,
-            ).fetchall()
-        return [_row_to_event(row) for row in rows]
 
 
 @AuditProducer.register("sqlite")

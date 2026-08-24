@@ -99,6 +99,13 @@ class MiddleToLongJob(Job):
         self._concurrency = max(1, concurrency)
         self._lock = lock
 
+    # ---- 连续性检测 ----
+
+    @staticmethod
+    def _format_for_continuity(unit: MemoryUnit) -> str:
+        """取 unit 第一段 content 作为连续性检测输入。"""
+        return unit.segments[0].content if unit.segments else ""
+
     # ---- 入口 ----
 
     async def run(self) -> JobInfo:
@@ -203,13 +210,6 @@ class MiddleToLongJob(Job):
                 "mode": EvolveMode.EXTRACT.value,
             },
         )
-
-    # ---- 连续性检测 ----
-
-    @staticmethod
-    def _format_for_continuity(unit: MemoryUnit) -> str:
-        """取 unit 第一段 content 作为连续性检测输入。"""
-        return unit.segments[0].content if unit.segments else ""
 
     async def _check_continuity(self, prev: MemoryUnit, cur: MemoryUnit) -> str:
         """单次连续性检测：返回 'true' / 'false'。3 次重试，失败默认 'true'（合并）。

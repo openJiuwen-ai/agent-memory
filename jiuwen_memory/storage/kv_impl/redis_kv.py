@@ -68,67 +68,6 @@ class RedisKVStore(KVStore):
         self._client: Any = None
         self._client_fingerprint: object | None = None
 
-    def _resolved_url(self) -> str | None:
-        """解析当前应连接的 Redis URL（ConfigSource ``kv_store.url`` 优先）。"""
-        from jiuwen_memory.config.binding import resolve_connection_url
-
-        return resolve_connection_url(
-            self._config_source,
-            namespace=self._config_namespace,
-            field="url",
-            fallback=self._fallback_url,
-        )
-
-    def _resolved_host_conn(self) -> dict[str, Any]:
-        """无 url 时解析 host/port/db/password（ConfigSource 晚绑定）。"""
-        from jiuwen_memory.config.active import resolve_bound_value
-
-        host = resolve_bound_value(
-            self._config_source,
-            namespace=self._config_namespace,
-            field="host",
-            fallback=self._fallback_host,
-        ) or self._fallback_host
-        port_raw = resolve_bound_value(
-            self._config_source,
-            namespace=self._config_namespace,
-            field="port",
-            fallback=str(self._fallback_port),
-        )
-        db_raw = resolve_bound_value(
-            self._config_source,
-            namespace=self._config_namespace,
-            field="db",
-            fallback=str(self._fallback_db),
-        )
-        password = resolve_bound_value(
-            self._config_source,
-            namespace=self._config_namespace,
-            field="password",
-            fallback=self._fallback_password,
-        )
-        return {
-            "host": host,
-            "port": int(port_raw) if port_raw is not None else self._fallback_port,
-            "db": int(db_raw) if db_raw is not None else self._fallback_db,
-            "password": password if password not in (None, "") else self._fallback_password,
-            **self._options,
-        }
-
-    def _client_key(self) -> object:
-        """当前连接指纹：有 url 用 url；否则用 host 四元组。"""
-        url = self._resolved_url()
-        if url:
-            return ("url", url)
-        conn = self._resolved_host_conn()
-        return (
-            "host",
-            conn["host"],
-            conn["port"],
-            conn["db"],
-            conn.get("password"),
-        )
-
     @property
     def client(self) -> Any:
         """惰性创建 Redis 客户端（``decode_responses=False``，值以 bytes 收发）。
@@ -285,6 +224,67 @@ class RedisKVStore(KVStore):
                 )
             )
         return scopes
+
+    def _resolved_url(self) -> str | None:
+        """解析当前应连接的 Redis URL（ConfigSource ``kv_store.url`` 优先）。"""
+        from jiuwen_memory.config.binding import resolve_connection_url
+
+        return resolve_connection_url(
+            self._config_source,
+            namespace=self._config_namespace,
+            field="url",
+            fallback=self._fallback_url,
+        )
+
+    def _resolved_host_conn(self) -> dict[str, Any]:
+        """无 url 时解析 host/port/db/password（ConfigSource 晚绑定）。"""
+        from jiuwen_memory.config.active import resolve_bound_value
+
+        host = resolve_bound_value(
+            self._config_source,
+            namespace=self._config_namespace,
+            field="host",
+            fallback=self._fallback_host,
+        ) or self._fallback_host
+        port_raw = resolve_bound_value(
+            self._config_source,
+            namespace=self._config_namespace,
+            field="port",
+            fallback=str(self._fallback_port),
+        )
+        db_raw = resolve_bound_value(
+            self._config_source,
+            namespace=self._config_namespace,
+            field="db",
+            fallback=str(self._fallback_db),
+        )
+        password = resolve_bound_value(
+            self._config_source,
+            namespace=self._config_namespace,
+            field="password",
+            fallback=self._fallback_password,
+        )
+        return {
+            "host": host,
+            "port": int(port_raw) if port_raw is not None else self._fallback_port,
+            "db": int(db_raw) if db_raw is not None else self._fallback_db,
+            "password": password if password not in (None, "") else self._fallback_password,
+            **self._options,
+        }
+
+    def _client_key(self) -> object:
+        """当前连接指纹：有 url 用 url；否则用 host 四元组。"""
+        url = self._resolved_url()
+        if url:
+            return ("url", url)
+        conn = self._resolved_host_conn()
+        return (
+            "host",
+            conn["host"],
+            conn["port"],
+            conn["db"],
+            conn.get("password"),
+        )
 
 
 # -- 注册到 KvProducer（接口层定义的工厂；实现自注册，新增无需改 producer/build_kernel） -------- #

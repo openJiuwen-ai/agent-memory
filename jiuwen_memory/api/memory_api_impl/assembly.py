@@ -38,6 +38,7 @@ from jiuwen_memory.construction.bootstrap import register_constructors
 from jiuwen_memory.control.bootstrap import register_controllers
 from jiuwen_memory.control.engine import EngineProducer
 from jiuwen_memory.control.governance import GovernorProducer
+from jiuwen_memory.control.ingest_job import IngestJobController, IngestJobProducer
 from jiuwen_memory.control.permission import PermissionProducer
 from jiuwen_memory.control.policy import PolicyProducer
 from jiuwen_memory.control.scheduler import SchedulerProducer
@@ -73,7 +74,8 @@ class Kernel:
 
     Attributes:
         api: 形态无关的 MemoryAPI 入口
-        kv: 真源 KV（按 ``kv_store.default`` 装配；F04 §5.4 默认 raw，opt-in encrypted target 才包装）
+        kv: 真源 KV（按 ``kv_store.default`` 装配；F04 §5.4 默认 raw，
+            opt-in encrypted target 才包装）
         storage: 上层统一使用的 Storage（默认 CompositeStorage）
         space: SpaceManager（若装配）
         config_source: 运行时晚绑定配置来源（默认 YamlDefaultsConfigSource）
@@ -82,6 +84,7 @@ class Kernel:
     api: LocalMemoryAPI
     kv: KVStore
     storage: Storage
+    ingest_jobs: IngestJobController
     space: SpaceManager | None = None
     config_source: ConfigSource | None = None
 
@@ -144,10 +147,18 @@ def build_kernel(
         )
     ConfigSourceProducer.put("default", config_source)
 
+    kv_store = KvProducer.dep(root, default="memory")
     storage = StorageProducer.dep(root, default="composite")
     if not isinstance(storage, Storage):
         raise ValidationError(
             f"storage namespace assembled a non-Storage value: {type(storage).__name__}"
+        )
+
+    ingest_jobs = IngestJobProducer.dep(root, default="in_process")
+    if not isinstance(ingest_jobs, IngestJobController):
+        raise ValidationError(
+            "ingest_job namespace assembled a non-IngestJobController value: "
+            f"{type(ingest_jobs).__name__}"
         )
 
     api = LocalMemoryAPI(
@@ -158,11 +169,13 @@ def build_kernel(
         governor=GovernorProducer.dep(root, default="in_memory"),
         audit_logger=AuditProducer.dep(root, default="sqlite"),
         space=SpaceProducer.dep(root, default="kv"),
+        ingest_jobs=ingest_jobs,
     )
     return Kernel(
         api=api,
-        kv=KvProducer.dep(root, default="memory"),
+        kv=kv_store,
         storage=storage,
+        ingest_jobs=ingest_jobs,
         space=api.space_manager,
         config_source=config_source,
     )

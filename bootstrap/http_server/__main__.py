@@ -41,18 +41,23 @@ logger = logging.getLogger("agent-memory.server")
 class HttpServer(Server):
     """The HTTP/socket surface over the shared kernel dispatch."""
 
+    def serve(self, host: str, port: int) -> None:
+        httpd = ThreadingHTTPServer((host, port), self._handler_cls())
+        logger.info(
+            "agent-memory server (profile=%s) on http://%s:%s",
+            self.config.profile, host, port,
+        )
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            logger.info("agent-memory server stopped")
+        finally:
+            httpd.server_close()
+
     def _handler_cls(self):
         srv = self
 
         class Handler(BaseHTTPRequestHandler):
-            def _send(self, status: int, body: dict) -> None:
-                data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
-
             def handle_get(self) -> None:
                 if self.path.rstrip("/") == "/healthz":
                     self._send(200, {"status": "ok", "profile": srv.config.profile})
@@ -78,6 +83,14 @@ class HttpServer(Server):
             def log_message(self, *args) -> None:  # quiet by default
                 pass
 
+            def _send(self, status: int, body: dict) -> None:
+                data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
         setattr(Handler, "do_GET", Handler.handle_get)
         setattr(Handler, "do_POST", Handler.handle_post)
         return Handler
@@ -94,6 +107,7 @@ class HttpServer(Server):
             logger.info("agent-memory server stopped")
         finally:
             httpd.server_close()
+            self.close(wait=True)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -262,11 +262,14 @@ class CloudEngine(MemoryEngine):
         raw_meta.pop("middle", None)
 
         meta = self._normalized_metadata(raw_meta)
+        is_video = source == Modality.VIDEO
+        payload_id = str(meta.get("payload_id", "")).strip() if is_video else ""
         payload = RawPayload(
-            id=str(uuid.uuid4()),
+            id=payload_id or str(uuid.uuid4()),
             scope=scope,
             modality=source,
-            data=content.encode("utf-8"),
+            data=b"" if is_video else content.encode("utf-8"),
+            uri=content if is_video else "",
             system_metadata=meta,
             user_metadata=dict(user_metadata or {}),
             occurred_at=occurred_at,
@@ -384,71 +387,6 @@ class CloudEngine(MemoryEngine):
                     )
                     break
         return BatchWriteResult(outcomes=outcomes)
-
-    # ---- 中期缓冲子路径 ----
-
-    async def _write_middle_path(
-        self,
-        units: list[MemoryUnit],
-        scope: Scope,
-        index_builder: IndexBuilder,
-        evolver: Evolver,
-        pipeline_name: str,
-        *,
-        middle_interval: Any,
-    ) -> list[MemoryUnit]:
-        """中期缓冲子路径：原文落 /memory/ + 建索引 + tier=WORKING + 提交定时 MiddleToLongJob。
-
-        多 profile 适配：此处通过 ``get_job`` 的运行时覆盖入参 ``evolver=`` / ``index=``
-        注入 binding 选的——保证 Job 内部 evolver/index 与原文落盘时一致（否则原文用
-        chat_index 建索引但归档调 default_index.remove，索引不会被正确清理）。
-
-        ``middle_interval`` 经 write 的 ``system_metadata`` 透传，但不落盘到生成的
-        ``MemoryUnit.system_metadata``；``None`` 时由 Spec 装配期默认兜底。
-        """
-        if self._job_factory is None:
-            raise RuntimeError(
-                "middle path requires job_factory, please configure "
-                "engine.default.job_factory"
-            )
-        if evolver is None:
-            raise RuntimeError(
-                "CloudEngine.write middle=true requires an Evolver (装配未注入 evolver)"
-            )
-
-        for unit in units:
-            unit.tier = MemoryTier.WORKING
-            unit.system_metadata["middle"] = "true"
-        await asyncio.to_thread(self._write_middle_to_kv, scope, units)
-        await asyncio.to_thread(index_builder.build, units)
-
-        # 通过 JobFactory.get_job 的运行时覆盖入参注入 binding 的 evolver/index，
-        # 保证归档时 index.remove 用对正确的 index。
-        job = self._job_factory.get_job(
-            JobType.MIDDLE_TO_LONG,
-            scope=scope,
-            evolver=evolver,
-            index=index_builder,
-            interval=middle_interval,
-        )
-        await self._scheduler.submit(job, channel=Channel.BACKGROUND)
-        logger.info(
-            "CloudEngine.write middle=True: %d originals buffered, scope=%s "
-            "pipeline=%s interval=%s",
-            len(units),
-            scope,
-            pipeline_name,
-            middle_interval,
-        )
-        return units
-
-    def _write_middle_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
-        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
-        self._storage.add(scope, units)
-
-    def _write_default_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
-        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
-        self._storage.add(scope, units)
 
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         routed_query = self._normalized_query(query)
@@ -694,6 +632,71 @@ class CloudEngine(MemoryEngine):
 
     async def admin_all(self) -> dict[str, str]:
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")
+
+    # ---- 中期缓冲子路径 ----
+
+    async def _write_middle_path(
+        self,
+        units: list[MemoryUnit],
+        scope: Scope,
+        index_builder: IndexBuilder,
+        evolver: Evolver,
+        pipeline_name: str,
+        *,
+        middle_interval: Any,
+    ) -> list[MemoryUnit]:
+        """中期缓冲子路径：原文落 /memory/ + 建索引 + tier=WORKING + 提交定时 MiddleToLongJob。
+
+        多 profile 适配：此处通过 ``get_job`` 的运行时覆盖入参 ``evolver=`` / ``index=``
+        注入 binding 选的——保证 Job 内部 evolver/index 与原文落盘时一致（否则原文用
+        chat_index 建索引但归档调 default_index.remove，索引不会被正确清理）。
+
+        ``middle_interval`` 经 write 的 ``system_metadata`` 透传，但不落盘到生成的
+        ``MemoryUnit.system_metadata``；``None`` 时由 Spec 装配期默认兜底。
+        """
+        if self._job_factory is None:
+            raise RuntimeError(
+                "middle path requires job_factory, please configure "
+                "engine.default.job_factory"
+            )
+        if evolver is None:
+            raise RuntimeError(
+                "CloudEngine.write middle=true requires an Evolver (装配未注入 evolver)"
+            )
+
+        for unit in units:
+            unit.tier = MemoryTier.WORKING
+            unit.system_metadata["middle"] = "true"
+        await asyncio.to_thread(self._write_middle_to_kv, scope, units)
+        await asyncio.to_thread(index_builder.build, units)
+
+        # 通过 JobFactory.get_job 的运行时覆盖入参注入 binding 的 evolver/index，
+        # 保证归档时 index.remove 用对正确的 index。
+        job = self._job_factory.get_job(
+            JobType.MIDDLE_TO_LONG,
+            scope=scope,
+            evolver=evolver,
+            index=index_builder,
+            interval=middle_interval,
+        )
+        await self._scheduler.submit(job, channel=Channel.BACKGROUND)
+        logger.info(
+            "CloudEngine.write middle=True: %d originals buffered, scope=%s "
+            "pipeline=%s interval=%s",
+            len(units),
+            scope,
+            pipeline_name,
+            middle_interval,
+        )
+        return units
+
+    def _write_middle_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
+        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
+        self._storage.add(scope, units)
+
+    def _write_default_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
+        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
+        self._storage.add(scope, units)
 
     def _normalized_metadata(
         self, metadata: dict[str, MetadataValueType] | None

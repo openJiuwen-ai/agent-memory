@@ -23,5 +23,6 @@ def register_controllers() -> None:
     import_module("jiuwen_memory.control.permission_impl")
     import_module("jiuwen_memory.control.policy_impl")
     import_module("jiuwen_memory.control.scheduler_impl")
+    import_module("jiuwen_memory.control.job_impl")
     import_module("jiuwen_memory.control.space_impl")
     _REGISTERED = True

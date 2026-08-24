@@ -26,10 +26,6 @@ class InMemoryGovernor(Governor):
     def health(self) -> None:
         return None
 
-    def _find(self, unit_id: str, scope: Scope) -> MemoryUnit | None:
-        units = self._storage.get(scope, [unit_id])
-        return units[0] if units else None
-
     def inspect(self, unit_ids: list[str], scope: Scope) -> list[MemoryUnit]:
         found = [self._find(uid, scope) for uid in unit_ids]
         return [u for u in found if u is not None]
@@ -54,6 +50,10 @@ class InMemoryGovernor(Governor):
 
     def audit(self, filters: dict[str, str], limit: int = 100) -> list[AuditEvent]:
         return self._audit.query(filters, limit)
+
+    def _find(self, unit_id: str, scope: Scope) -> MemoryUnit | None:
+        units = self._storage.get(scope, [unit_id])
+        return units[0] if units else None
 
 
 # -- 注册到 GovernorProducer（实现自注册，新增无需改 producer/build_kernel） -------- #

@@ -140,51 +140,9 @@ class CompositeStorage(Storage):
             for capability, ports in self._named_stores.items()
         }
 
-    def bind_recallers(self, recallers: list[Any]) -> None:
-        """在装配阶段绑定检索适配器；同一 Storage 不允许绑定两套不同实例。"""
-        bound = list(recallers)
-        same_binding = len(self._recallers) == len(bound) and all(
-            current is candidate for current, candidate in zip(self._recallers, bound)
-        )
-        if self._recallers and not same_binding:
-            raise ValidationError("CompositeStorage cannot be rebound to different recallers")
-        self._recallers = bound
-
     @property
     def security(self) -> StorageSecurity:
         return self._security
-
-    def capabilities(self) -> frozenset[StorageCapability]:
-        return self._capabilities
-
-    def _port(self, capability: StorageCapability, name: str = "default") -> Any:
-        try:
-            return self._proxies[capability][name]
-        except KeyError as exc:
-            raise UnsupportedStorageCapabilityError(
-                f"storage capability is not available: {capability.value}.{name}"
-            ) from exc
-
-    def _has_port(self, capability: StorageCapability, name: str) -> bool:
-        return name in self._named_stores[capability]
-
-    def has_kv_port(self, name: str = "default") -> bool:
-        return self._has_port(StorageCapability.KV, name)
-
-    def has_vector_port(self, name: str = "default") -> bool:
-        return self._has_port(StorageCapability.VECTOR, name)
-
-    def has_fulltext_port(self, name: str = "default") -> bool:
-        return self._has_port(StorageCapability.FULLTEXT, name)
-
-    def has_graph_port(self, name: str = "default") -> bool:
-        return self._has_port(StorageCapability.GRAPH, name)
-
-    def has_fusion_port(self, name: str = "default") -> bool:
-        return self._has_port(StorageCapability.FUSION, name)
-
-    def has_fs_port(self, name: str = "default") -> bool:
-        return self._has_port(StorageCapability.FS, name)
 
     @property
     def kv(self) -> KVStore:
@@ -210,6 +168,43 @@ class CompositeStorage(Storage):
     def fs(self) -> FSStore:
         return cast(FSStore, self._port(StorageCapability.FS))
 
+    @staticmethod
+    def _validate_units(scope: Scope, units: list[MemoryUnit]) -> None:
+        invalid = [unit.id for unit in units if unit.scope != scope]
+        if invalid:
+            raise ValidationError(f"MemoryUnit scope differs from explicit scope: {invalid}")
+
+    def bind_recallers(self, recallers: list[Any]) -> None:
+        """在装配阶段绑定检索适配器；同一 Storage 不允许绑定两套不同实例。"""
+        bound = list(recallers)
+        same_binding = len(self._recallers) == len(bound) and all(
+            current is candidate for current, candidate in zip(self._recallers, bound)
+        )
+        if self._recallers and not same_binding:
+            raise ValidationError("CompositeStorage cannot be rebound to different recallers")
+        self._recallers = bound
+
+    def capabilities(self) -> frozenset[StorageCapability]:
+        return self._capabilities
+
+    def has_kv_port(self, name: str = "default") -> bool:
+        return self._has_port(StorageCapability.KV, name)
+
+    def has_vector_port(self, name: str = "default") -> bool:
+        return self._has_port(StorageCapability.VECTOR, name)
+
+    def has_fulltext_port(self, name: str = "default") -> bool:
+        return self._has_port(StorageCapability.FULLTEXT, name)
+
+    def has_graph_port(self, name: str = "default") -> bool:
+        return self._has_port(StorageCapability.GRAPH, name)
+
+    def has_fusion_port(self, name: str = "default") -> bool:
+        return self._has_port(StorageCapability.FUSION, name)
+
+    def has_fs_port(self, name: str = "default") -> bool:
+        return self._has_port(StorageCapability.FS, name)
+
     def kv_port(self, name: str = "default") -> KVStore:
         return cast(KVStore, self._port(StorageCapability.KV, name))
 
@@ -233,27 +228,6 @@ class CompositeStorage(Storage):
 
     def scopes(self) -> list[Scope]:
         return self._raw_kv().scopes()
-
-    def _authorize(
-        self,
-        access: StorageAccessContext | None,
-        scope: Scope,
-        action: StorageAction,
-        resource: str,
-    ) -> None:
-        self._security.authorize(access, scope, action, resource)
-
-    def _raw_kv(self) -> KVStore:
-        store = self._stores[StorageCapability.KV]
-        if store is None:
-            self._port(StorageCapability.KV)
-        return cast(KVStore, store)
-
-    @staticmethod
-    def _validate_units(scope: Scope, units: list[MemoryUnit]) -> None:
-        invalid = [unit.id for unit in units if unit.scope != scope]
-        if invalid:
-            raise ValidationError(f"MemoryUnit scope differs from explicit scope: {invalid}")
 
     def add(
         self,
@@ -303,32 +277,6 @@ class CompositeStorage(Storage):
         self._authorize(access, scope, StorageAction.GET, "memory_unit")
         return self._get_units(scope, unit_ids)
 
-    def _get_units(self, scope: Scope, unit_ids: list[str]) -> list[MemoryUnit]:
-        """批量点读真源：按输入顺序返回，缺失 id 省略，重复 id 各自返回。
-
-        ``mget`` 不去重且任一 key 缺失即抛 ``NotFoundError``（见 :meth:`KVStore.mget`），
-        故去重与「索引↔真源短暂不一致」的兜底都由本方法承担。
-        """
-        if not unit_ids:
-            return []
-        kv = self._raw_kv()
-        unique = list(dict.fromkeys(unit_ids))
-        try:
-            loaded = list(zip(unique, kv.mget(scope, [memory_key(uid) for uid in unique])))
-        except NotFoundError:
-            loaded = []
-            for unit_id in unique:
-                try:
-                    loaded.append((unit_id, kv.get(scope, memory_key(unit_id))))
-                except NotFoundError:
-                    continue
-        by_id: dict[str, MemoryUnit] = {}
-        for unit_id, raw in loaded:
-            unit = loads(raw)
-            if unit is not None:
-                by_id[unit_id] = unit
-        return [by_id[unit_id] for unit_id in unit_ids if unit_id in by_id]
-
     def list(
         self,
         scope: Scope,
@@ -367,6 +315,108 @@ class CompositeStorage(Storage):
     ) -> RecallResult[ScoredUnit]:
         self._authorize(access, scope, StorageAction.SEARCH, "memory_unit")
         return self._recall(scope, query, channels=channels, recall_limit=recall_limit)
+
+    def recall_and_get(
+        self,
+        scope: Scope,
+        query: ParsedQuery,
+        *,
+        channels: list[RecallChannel] | None,
+        recall_limit: int,
+        access: StorageAccessContext | None = None,
+    ) -> RecallResult[ScoredMemoryUnit]:
+        self._authorize(access, scope, StorageAction.SEARCH, "memory_unit")
+        return self._recall_and_get(
+            scope, query, channels=channels, recall_limit=recall_limit
+        )
+
+    def retrieve(
+        self,
+        scope: Scope,
+        query: ParsedQuery,
+        fuser: CandidateFuser,
+        *,
+        channels: list[RecallChannel] | None,
+        recall_limit: int,
+        rank_limit: int,
+        access: StorageAccessContext | None = None,
+    ) -> RankedStorageResult:
+        self._authorize(access, scope, StorageAction.SEARCH, "memory_unit")
+        materialized = self._recall_and_get(
+            scope, query, channels=channels, recall_limit=recall_limit
+        )
+        filtered: list[list[ScoredMemoryUnit]] = []
+        for batch in materialized.batches:
+            candidates = []
+            for candidate in batch.candidates:
+                if _passes(candidate.unit, query):
+                    candidates.append(candidate)
+            filtered.append(candidates)
+        ranked = fuser.fuse(query, filtered)[:rank_limit]
+        return RankedStorageResult(candidates=ranked, errors=materialized.errors)
+
+    def health(self) -> None:
+        self._security.health()
+        checked: set[int] = set()
+        for ports in self._named_stores.values():
+            for store in ports.values():
+                if id(store) in checked:
+                    continue
+                checked.add(id(store))
+                store.security.health()
+                store.health()
+
+    def _port(self, capability: StorageCapability, name: str = "default") -> Any:
+        try:
+            return self._proxies[capability][name]
+        except KeyError as exc:
+            raise UnsupportedStorageCapabilityError(
+                f"storage capability is not available: {capability.value}.{name}"
+            ) from exc
+
+    def _has_port(self, capability: StorageCapability, name: str) -> bool:
+        return name in self._named_stores[capability]
+
+    def _authorize(
+        self,
+        access: StorageAccessContext | None,
+        scope: Scope,
+        action: StorageAction,
+        resource: str,
+    ) -> None:
+        self._security.authorize(access, scope, action, resource)
+
+    def _raw_kv(self) -> KVStore:
+        store = self._stores[StorageCapability.KV]
+        if store is None:
+            self._port(StorageCapability.KV)
+        return cast(KVStore, store)
+
+    def _get_units(self, scope: Scope, unit_ids: list[str]) -> list[MemoryUnit]:
+        """批量点读真源：按输入顺序返回，缺失 id 省略，重复 id 各自返回。
+
+        ``mget`` 不去重且任一 key 缺失即抛 ``NotFoundError``（见 :meth:`KVStore.mget`），
+        故去重与「索引↔真源短暂不一致」的兜底都由本方法承担。
+        """
+        if not unit_ids:
+            return []
+        kv = self._raw_kv()
+        unique = list(dict.fromkeys(unit_ids))
+        try:
+            loaded = list(zip(unique, kv.mget(scope, [memory_key(uid) for uid in unique])))
+        except NotFoundError:
+            loaded = []
+            for unit_id in unique:
+                try:
+                    loaded.append((unit_id, kv.get(scope, memory_key(unit_id))))
+                except NotFoundError:
+                    continue
+        by_id: dict[str, MemoryUnit] = {}
+        for unit_id, raw in loaded:
+            unit = loads(raw)
+            if unit is not None:
+                by_id[unit_id] = unit
+        return [by_id[unit_id] for unit_id in unit_ids if unit_id in by_id]
 
     def _recall(
         self,
@@ -413,20 +463,6 @@ class CompositeStorage(Storage):
         successful = [batch for batch in batches if batch is not None]
         return RecallResult(batches=successful, errors=errors)
 
-    def recall_and_get(
-        self,
-        scope: Scope,
-        query: ParsedQuery,
-        *,
-        channels: list[RecallChannel] | None,
-        recall_limit: int,
-        access: StorageAccessContext | None = None,
-    ) -> RecallResult[ScoredMemoryUnit]:
-        self._authorize(access, scope, StorageAction.SEARCH, "memory_unit")
-        return self._recall_and_get(
-            scope, query, channels=channels, recall_limit=recall_limit
-        )
-
     def _recall_and_get(
         self,
         scope: Scope,
@@ -467,42 +503,6 @@ class CompositeStorage(Storage):
                 )
             batches.append(RecallBatch(batch.channel, batch.source, candidates))
         return RecallResult(batches=batches, errors=errors)
-
-    def retrieve(
-        self,
-        scope: Scope,
-        query: ParsedQuery,
-        fuser: CandidateFuser,
-        *,
-        channels: list[RecallChannel] | None,
-        recall_limit: int,
-        rank_limit: int,
-        access: StorageAccessContext | None = None,
-    ) -> RankedStorageResult:
-        self._authorize(access, scope, StorageAction.SEARCH, "memory_unit")
-        materialized = self._recall_and_get(
-            scope, query, channels=channels, recall_limit=recall_limit
-        )
-        filtered: list[list[ScoredMemoryUnit]] = []
-        for batch in materialized.batches:
-            candidates = []
-            for candidate in batch.candidates:
-                if _passes(candidate.unit, query):
-                    candidates.append(candidate)
-            filtered.append(candidates)
-        ranked = fuser.fuse(query, filtered)[:rank_limit]
-        return RankedStorageResult(candidates=ranked, errors=materialized.errors)
-
-    def health(self) -> None:
-        self._security.health()
-        checked: set[int] = set()
-        for ports in self._named_stores.values():
-            for store in ports.values():
-                if id(store) in checked:
-                    continue
-                checked.add(id(store))
-                store.security.health()
-                store.health()
 
 
 def _passes(unit: MemoryUnit, query: ParsedQuery) -> bool:

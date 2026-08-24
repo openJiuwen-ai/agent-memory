@@ -81,6 +81,9 @@ class InProcessClient:
     def healthz(self) -> tuple[int, dict[str, Any]]:
         return 200, {"status": "ok", "profile": self._srv.config.profile}
 
+    def close(self) -> None:
+        self._srv.close(wait=True)
+
 
 class HttpClient:
     """Drive a running ``bootstrap`` server over HTTP (``POST /v1/<verb>``)."""
@@ -88,6 +91,12 @@ class HttpClient:
     def __init__(self, base_url: str, timeout: float = 30.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+
+    def call(self, verb: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        return self._request("POST", f"/v1/{verb}", payload)
+
+    def healthz(self) -> tuple[int, dict[str, Any]]:
+        return self._request("GET", "/healthz", None)
 
     def _request(self, method: str, path: str, body: dict | None) -> tuple[int, dict[str, Any]]:
         url = f"{self.base_url}{path}"
@@ -106,12 +115,6 @@ class HttpClient:
             return exc.code, _read_json(exc)
         except urllib.error.URLError as exc:
             return 0, {"error": "ConnectionError", "message": str(exc.reason)}
-
-    def call(self, verb: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-        return self._request("POST", f"/v1/{verb}", payload)
-
-    def healthz(self) -> tuple[int, dict[str, Any]]:
-        return self._request("GET", "/healthz", None)
 
 
 def _read_json(resp) -> dict[str, Any]:

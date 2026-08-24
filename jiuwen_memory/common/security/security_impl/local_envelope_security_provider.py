@@ -129,28 +129,6 @@ class LocalKeyProvider:
             raise CorruptedCiphertextError("decrypted data key has invalid length")
         return data_key
 
-    def _load_or_create_root_key(self) -> bytes:
-        if self._key_hex:
-            return _decode_hex_key(self._key_hex, source="key_hex")
-        if self._key_b64:
-            return _decode_b64_key(self._key_b64, source="key_b64")
-
-        env_value = os.environ.get(self._key_env) if self._key_env else None
-        if env_value:
-            return _decode_key_string(env_value, source=f"env {self._key_env}")
-
-        if self._key_file is None:
-            raise self._missing_key_error()
-        if self._key_file.exists():
-            _restrict_file_mode(self._key_file)
-            return _decode_hex_key(
-                self._key_file.read_text(encoding="ascii").strip(),
-                source=str(self._key_file),
-            )
-        if not self._create_key_file_enabled:
-            raise self._missing_key_error()
-        return self._create_key_file()
-
     def validate_key_source_or_raise(self) -> None:
         """装配期预检：密钥源缺失或解码失败时立即 fail-closed（F04 §5）。
 
@@ -174,6 +152,28 @@ class LocalKeyProvider:
         if self._create_key_file_enabled:
             return
         raise self._missing_key_error()
+
+    def _load_or_create_root_key(self) -> bytes:
+        if self._key_hex:
+            return _decode_hex_key(self._key_hex, source="key_hex")
+        if self._key_b64:
+            return _decode_b64_key(self._key_b64, source="key_b64")
+
+        env_value = os.environ.get(self._key_env) if self._key_env else None
+        if env_value:
+            return _decode_key_string(env_value, source=f"env {self._key_env}")
+
+        if self._key_file is None:
+            raise self._missing_key_error()
+        if self._key_file.exists():
+            _restrict_file_mode(self._key_file)
+            return _decode_hex_key(
+                self._key_file.read_text(encoding="ascii").strip(),
+                source=str(self._key_file),
+            )
+        if not self._create_key_file_enabled:
+            raise self._missing_key_error()
+        return self._create_key_file()
 
     def _missing_key_error(self) -> BackendError:
         sources: list[str] = []

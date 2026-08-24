@@ -95,22 +95,6 @@ class FulltextIndexBuilder(IndexBuilder):
     def health(self) -> None:
         return None
 
-    def _doc(self, unit: MemoryUnit) -> Document:
-        return Document(
-            id=unit.id,  # L2 文档沿用 unit.id（F01 允许短期保留旧 id 兼容删除/update）
-            text=unit.content,
-            metadata=_index_metadata(unit, layer="l2"),
-        )
-
-    def _layer_doc(self, unit: MemoryUnit, layer: str) -> Document:
-        """L0/L1 分层文档：id={unit_id}:l0/:l1（对齐 F01 命名），text=layers 对应字段。"""
-        text = unit.layers.l0 if layer == "l0" else unit.layers.l1
-        return Document(
-            id=f"{unit.id}:{layer}",
-            text=text,
-            metadata=_index_metadata(unit, layer=layer),
-        )
-
     def build(self, units: list[MemoryUnit]) -> None:
         logger.info("FulltextIndexBuilder: building index for %d units", len(units))
         for unit in units:
@@ -146,6 +130,22 @@ class FulltextIndexBuilder(IndexBuilder):
     def rebuild(self) -> None:
         # 最小实现：索引与真源同生命周期，无独立重建路径。
         return None
+
+    def _doc(self, unit: MemoryUnit) -> Document:
+        return Document(
+            id=unit.id,  # L2 文档沿用 unit.id（F01 允许短期保留旧 id 兼容删除/update）
+            text=unit.content,
+            metadata=_index_metadata(unit, layer="l2"),
+        )
+
+    def _layer_doc(self, unit: MemoryUnit, layer: str) -> Document:
+        """L0/L1 分层文档：id={unit_id}:l0/:l1（对齐 F01 命名），text=layers 对应字段。"""
+        text = unit.layers.l0 if layer == "l0" else unit.layers.l1
+        return Document(
+            id=f"{unit.id}:{layer}",
+            text=text,
+            metadata=_index_metadata(unit, layer=layer),
+        )
 
     # ------------------------------------------------------------------
     # L0/L1 分层索引辅助
