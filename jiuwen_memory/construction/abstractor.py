@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Abstractor — 抽象与精炼/升华（架构 §6.1）。
 
 在低/中抽象记忆之上做概括：情景→语义、经验→技能/模式，升华出画像、

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Parallel native, CLM and ELM retrieval for multimodal memory."""
 
 from __future__ import annotations

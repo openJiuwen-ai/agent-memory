@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """统一 Storage 授权与 Store 数据保护的基础契约。"""
 
 from __future__ import annotations

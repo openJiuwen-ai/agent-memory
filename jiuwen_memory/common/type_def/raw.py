@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """RawPayload — 信息源产出的原始负载（规约前的形态）。
 
 接入层从各信息源拉到的最原始数据：二进制或其引用 + 模态 + 来源信息。

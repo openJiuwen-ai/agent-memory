@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """新装配模型：两级命名空间配置 + builder 视图（过渡期与旧 :class:`ComponentSpec` 并存）。
 
 - :class:`RawSpec`：一个**具名实例**的纯数据（``target`` / ``params`` / ``new_instance``）。

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """EntityIndexBuilder — 实体反向索引的 IndexBuilder 实现。"""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """查询文本去噪：剥除上游包装元数据，保留用户真实检索意图。"""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """ConfigSource — 可插拔配置来源抽象（S08 / F01-config-source）。
 
 与密钥侧 ``KeySource`` 同构：

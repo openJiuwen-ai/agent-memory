@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """配置层加载：读一层 YAML/JSON 文件并展开 ``${VAR}`` / ``${VAR:-默认值}``。
 
 由 HTTP / MCP 两个 surface 共享——连接串与密钥经环境变量注入，配置文件本身不落密。

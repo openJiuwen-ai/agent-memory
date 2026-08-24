@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """ElasticsearchEntityStore — entity 反向索引的 Elasticsearch 实现。
 
 实现 ``EntityStore`` 端口：维护"实体 → 关联 unit_id"反向索引，提供 hash 精确

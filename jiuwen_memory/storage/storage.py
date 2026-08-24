@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """上层屏蔽底层装配的统一 Storage 契约。"""
 
 from __future__ import annotations

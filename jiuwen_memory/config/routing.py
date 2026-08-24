@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """ActiveRouter / Routing* — 按 ConfigSource 的 ``*.active`` 在已预装实例间切换。
 
 **次选路径**（S08）：同实现多套 model/key/url 应优先走调用路径晚绑定

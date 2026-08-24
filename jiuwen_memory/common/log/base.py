@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """统一日志接口——横切共用基础设施（架构 §13 侧，不可变配置）。
 
 全系统通过 ``get_logger(name)`` 获取带 ``agent-memory.`` 前缀的层级 logger，

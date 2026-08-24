@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Score-max fuser — 通道内 max 归一化 + 通道间取最大值（CombMAX）。
 
     combined(u) = max_c  weight_c × ( score_c(u) / max_score_c )

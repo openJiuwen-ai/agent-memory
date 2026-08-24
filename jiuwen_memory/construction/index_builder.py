@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """IndexBuilder — 多形式索引构建（架构 §6.2）。
 
 在各粒度记忆之上构建/更新索引（文档/关键词/向量/图，按配置启用）。

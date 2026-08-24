@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """内置默认装配配置：离线进程内栈，用**显式具名 + 引用**复刻系统的共享拓扑。
 
 ``build_kernel`` 未传 config 时用它装配；传 config 时把用户配置**合并覆盖**到它之上

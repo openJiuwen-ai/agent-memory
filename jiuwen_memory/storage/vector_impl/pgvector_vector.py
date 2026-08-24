@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """pgvector-backed :class:`~storage.vector.VectorStore` implementation."""
 
 from __future__ import annotations

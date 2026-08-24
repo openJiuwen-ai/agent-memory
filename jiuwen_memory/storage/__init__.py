@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """记忆存储层（F 层）接口：统一 CRUD 的可插拔存储抽象。"""
 
 from importlib import import_module

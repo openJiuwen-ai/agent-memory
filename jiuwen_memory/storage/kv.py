@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """KVStore — 键值存储，统一 CRUD + 范围枚举。
 
 ``scope`` 为显式第一入参，对 key 做命名空间隔离（同一逻辑 ``key`` 在不同

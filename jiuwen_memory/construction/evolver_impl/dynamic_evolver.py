@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """DynamicEvolver：EXTRACT 走动态 prompt 四步编排的 Evolver 实现。
 
 继承 :class:`OrchestratingEvolver`，只覆盖 ``_evolve_extract``：

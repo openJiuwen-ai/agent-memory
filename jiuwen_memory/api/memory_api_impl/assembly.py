@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """内核组装：从顶层组件出发，经各组件 Producer 装配成 MemoryAPI。
 
 设计要点：

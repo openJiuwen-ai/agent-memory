@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """默认日志初始化实现——注册为 ``"default"``。
 
 按配置树节点（``memory_api.params``）的 log_level / log_format / log_datefmt / log_file

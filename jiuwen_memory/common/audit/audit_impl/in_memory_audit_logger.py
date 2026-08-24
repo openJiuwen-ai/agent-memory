@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~common.audit.base.AuditLogger` 的纯内存审计后端。
 
 把所有审计事件留在内存列表里，供控制层治理 audit 按条件过滤查询。

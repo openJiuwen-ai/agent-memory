@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~control.engine.MemoryEngine`（接口层各语义的编排中枢）。
 
 串起 write→recall→get（及 update/delete/evolve），按架构 §14 Write 路径：

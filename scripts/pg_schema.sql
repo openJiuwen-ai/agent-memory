@@ -1,3 +1,4 @@
+-- Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 -- Default production schema for the PostgreSQL KVStore and pgvector VectorStore.
 -- Copy and adjust this file when schema, table names, dimension, or metric differ.
 

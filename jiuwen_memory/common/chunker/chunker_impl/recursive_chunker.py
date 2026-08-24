@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """RecursiveChunker — 递归分块实现。
 
 按多层分隔符优先级递归切分：先尝试最高级分隔符（段落/换行），

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """AuditEvent — 审计事件（横切结构，架构 §12）。
 
 各层（接入/构建/检索/控制）的关键动作都产生同一结构的审计事件：

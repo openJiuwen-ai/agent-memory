@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Weighted RRF fuser — 带通道权重与融合证据的倒数排名融合。"""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """安全域：认证、密码学、资源保护与请求安全上下文（F05 Common Security）。
 
 本包是安全能力的**唯一归属地**。消费方（Bootstrap/Surface、MemoryAPI、Storage

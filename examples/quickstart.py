@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小功能集端到端演示：add → search → get（+ update / 治理 / admin）。
 
 运行：``PYTHONPATH=. python3 examples/quickstart.py``（或先 ``pip install -e .``）

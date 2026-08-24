@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """EvalHarness——用真实装配把数据集灌入并跑查询，产出可打分的原始观测。
 
 走 ``MemoryAPI`` 公共面（``add`` / ``search``），因此评测的是「整体功能」而非

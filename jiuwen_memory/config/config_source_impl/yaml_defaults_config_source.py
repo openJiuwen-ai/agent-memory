@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """YamlDefaultsConfigSource — 默认配置源：装配上下文的不可变投影。
 
 对应 defaults + 用户 YAML 合并后的扁平 key→str 表。改 YAML 不会自动反映到已创建

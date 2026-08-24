@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """metadata 驱动的动态 LLM Extractor；无 prompt 时委托旧实现。
 
 metadata 只写 prompt 的 **key**（引用 yml ``prompts.extract`` 段的命名 prompt），运行时

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """装配配置：把 YAML/字典解析成 :class:`AssemblyContext`（两级命名空间，纯数据）。
 
 - :class:`Config`：门面，``from_yaml`` / ``from_dict`` 解析，

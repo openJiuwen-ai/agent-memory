@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """注册引导：import 各共享组件实现包，触发其 ``@Producer.register`` 自注册。
 
 工厂句柄定义在各组件的接口模块（多数插件为 ``common.<plugin>.base``，横切组件

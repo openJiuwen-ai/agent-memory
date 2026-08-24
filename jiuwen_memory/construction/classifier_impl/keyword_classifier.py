@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~construction.classifier.Classifier`。
 
 按内容关键词的轻量启发式判定认知角色 tier，并打一个主题标签写入 ``tags``：

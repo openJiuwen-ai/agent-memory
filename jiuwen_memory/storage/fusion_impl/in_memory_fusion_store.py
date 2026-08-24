@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~storage.fusion.FusionStore`——向量·倒排·正排合一。
 
 同一 id 一行同时承载向量 / 文本 / 标量 / 原始值；``search`` 在一次调用内做

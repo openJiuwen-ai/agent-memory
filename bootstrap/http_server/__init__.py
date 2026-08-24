@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """http_server — 内核装配与协议 surface 的落点。
 
 :mod:`server` 提供基类 :class:`~server.Server`（装配内核 + 共享 dispatch），

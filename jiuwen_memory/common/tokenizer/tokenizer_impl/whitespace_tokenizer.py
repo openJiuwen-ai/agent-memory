@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~common.tokenizer.base.Tokenizer` 的纯内存分词器。
 
 无外部依赖：小写化后，拉丁字母/数字按连续串成词、CJK 逐字成元（unigram），

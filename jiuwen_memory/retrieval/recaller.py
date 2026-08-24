@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Recaller — 单路召回。
 
 一个 Recaller 对应一条召回通道（向量 ANN / 关键词 BM25 / 图遍历 /

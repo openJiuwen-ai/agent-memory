@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """端到端 benchmark 评测入口（骨架）——write→recall→(LLM judge) 答案级评测。
 
     python3 evaluation/scripts/run_e2e_eval.py --dataset locomo [--data PATH]

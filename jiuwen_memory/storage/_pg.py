@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """PostgreSQL 存储后端共享基础：惰性连接池、schema 工具与过滤编译。"""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """把 AssemblyContext 投影为 ConfigSource 可读的扁平 key→str 表。"""
 
 from __future__ import annotations

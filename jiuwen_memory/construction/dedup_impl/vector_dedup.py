@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """向量去重召回：Embedder → VectorStore.search → 加载 unit → 聚合。
 
 召回命中 id 为 chunk 复合 id（``{unit_id}-{chunk_id}``），按记录 metadata 的

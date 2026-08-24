@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~common.embedder.base.Embedder`——确定性哈希词袋向量。
 
 无外部模型：分词（复用注入的 Tokenizer → 与关键词通道同词表）后，把每个 token

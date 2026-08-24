@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """``MemoryUnit`` ↔ bytes 编解码（无状态，跨层共用）。
 
 真源不是「一个存 MemoryUnit 的模块」——它就是裸 :class:`~storage.kv.KVStore` 存

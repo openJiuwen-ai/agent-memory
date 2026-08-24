@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """SecurityProvider — 数据保护横切接口。
 
 安全能力不是无状态模型插件，不继承 :class:`common.base.Plugin`，但仍使用

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~storage.fs.FSStore`——内存「文件系统」存原始二进制资产。
 
 存 ``MemoryUnit.assets`` 指向的原模态原件（图片/音频/原始文档等）：``insert`` 读入

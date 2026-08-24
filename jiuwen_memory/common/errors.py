@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """跨层共用异常类型：接口错误契约的一部分（横切，所有层共享）。
 
 各层接口的 docstring 以「报冲突 / 报缺失 / 不存在时抛出异常 / 报错拒绝」

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """KeySource — 外部密钥源抽象接口。
 
 调用方（DynamicKeySecurityProvider）按 key_name 向 KeySource 请求密钥字节；

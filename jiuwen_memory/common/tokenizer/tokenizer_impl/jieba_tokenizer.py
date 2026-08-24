@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """JiebaTokenizer — 基于 jieba 的中文分词 Tokenizer。
 
 jieba 是最广泛使用的 Python 中文分词库，支持三种分词模式：

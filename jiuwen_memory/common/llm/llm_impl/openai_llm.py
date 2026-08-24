@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """OpenAILLM — OpenAI 兼容 Chat Completions API 实现。
 
 调用 OpenAI SDK 的 chat.completions.create 接口，支持：

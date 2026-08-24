@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """PermissionManager — 权限管理（架构 §3.2）。
 
 scope 模型的执行点：检索/写入默认限制在自身 scope 内，跨 scope 访问

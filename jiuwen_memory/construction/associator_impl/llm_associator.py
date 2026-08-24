@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """LLMAssociator — M2 关联分析实现（三层发现流水线）。
 
 三层发现策略（接口契约见 docs/specs/S05-construction.md Associator 节）：

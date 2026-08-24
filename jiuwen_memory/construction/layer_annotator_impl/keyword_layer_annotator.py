@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """KeywordLayerAnnotator — 规则版分层标注（hot path 可用，不依赖 LLM）。
 
 按规则从 content 提取 L0/L1：

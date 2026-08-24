@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """MilvusVectorStore — 基于 Milvus 的 :class:`~storage.vector.VectorStore` 实现。
 
 ``insert/update/delete/get`` 走主键 CRUD，``search`` 走 ANN 近邻检索。``scope`` 为

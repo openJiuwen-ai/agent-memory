@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Construction extractor for hierarchical video memories."""
 
 from __future__ import annotations

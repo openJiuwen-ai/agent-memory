@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """落盘实现：:class:`~storage.kv.KVStore` 的 SQLite 后端（纯标准库 ``sqlite3``）。
 
 一张表承载所有 scope 的键值：``(org,space,user,agent,session,key)`` 为主键、``value`` 为

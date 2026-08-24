@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Storage 与 Retrieval 共用的检索数据契约。"""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """EntityStore — 实体反向索引存储端口（与 VectorStore/FulltextStore 平级）。
 
 抽象实体索引的读写能力：hash 精确查询、bulk 变更、反查关联。实现侧

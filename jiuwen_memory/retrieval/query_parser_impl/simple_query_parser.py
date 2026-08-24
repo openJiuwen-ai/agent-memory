@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~retrieval.query_parser.QueryParser`。
 
 把 ``RetrievalQuery`` 解析为 ``ParsedQuery``：用注入的 Tokenizer 分词（与索引侧同

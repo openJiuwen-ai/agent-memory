@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~retrieval.recaller.Recaller` 的 KEYWORD 通道。
 
 消费 ``ParsedQuery``，组装 :class:`~storage.types.TextQuery`（scope 落查询的专用

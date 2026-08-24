@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~construction.associator.Associator`。
 
 按「共享关键词」发现记忆单元间的关联：用 FeatureExtractor 抽各单元关键词，两两比较

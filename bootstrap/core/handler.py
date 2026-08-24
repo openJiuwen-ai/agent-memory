@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Verb dispatch — the single code path both the CLI and HTTP surfaces share.
 
 ``dispatch(srv, verb, payload) -> (status, body)`` routes a ``(verb, payload)``

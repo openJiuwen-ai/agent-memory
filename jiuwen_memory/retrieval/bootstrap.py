@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """注册引导：import 各检索算子实现包，触发其 ``@Producer.register`` 自注册。
 
 工厂句柄（如 :class:`~retrieval.recaller.RecallerProducer`）定义在**接口模块**，消费方据此

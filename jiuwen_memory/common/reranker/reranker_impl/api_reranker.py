@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """APIReranker — 云端 rerank API（多方言：Cohere 扁平风格 / 阿里 DashScope 信封）。
 
 rerank 无统一标准，各厂商请求/响应形态不一。本实现用 ``dialect`` 旋钮覆盖主流两套：

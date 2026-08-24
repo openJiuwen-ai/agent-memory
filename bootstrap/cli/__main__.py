@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """agent-memory CLI — the command-line surface over the memory engine.
 
 A §15 surface (protocol adapter): it parses argv into a ``(verb, payload)`` and

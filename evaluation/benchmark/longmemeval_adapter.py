@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """LongMemEval 适配器——把 ``longmemeval_*.json`` 解析为 (seeds, queries)。
 
 LongMemEval（Benchmarking Chat Assistants on Long-Term Interactive Memory, ICLR 2025）

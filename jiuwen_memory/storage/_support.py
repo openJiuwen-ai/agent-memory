@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """具体后端实现共用的小工具：scope 过滤派生，及从 common 再导出的公共件。
 
 异常归一（``wrap_backend``）、scope 命名空间渲染（``scope_segments``）与 SSL 配置

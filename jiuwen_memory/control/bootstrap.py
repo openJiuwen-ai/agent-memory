@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """注册引导：import 各控制实现包，触发其 ``@Producer.register`` 自注册。
 
 工厂句柄定义在接口模块（如 :class:`~control.engine.EngineProducer`），消费方只依赖接口层；

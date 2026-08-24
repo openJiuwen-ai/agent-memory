@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~common.feature_extractor.base.FeatureExtractor`。
 
 用注入的 Tokenizer 分词，去重得关键词；把较长的拉丁词当作 ``TERM`` 实体（占位，

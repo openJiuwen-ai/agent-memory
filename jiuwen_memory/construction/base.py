@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """构建层（E 层）算子基类。
 
 构建层的输入是接入层规约/转换产生的 :class:`~common.type_def.MemoryUnit`。

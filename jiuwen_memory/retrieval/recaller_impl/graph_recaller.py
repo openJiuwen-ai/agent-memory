@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~retrieval.recaller.Recaller` 的 GRAPH 通道。
 
 图召回靠多跳：先在图里按 query 关键词找种子节点（``InMemoryGraphStore.seed_ids``），

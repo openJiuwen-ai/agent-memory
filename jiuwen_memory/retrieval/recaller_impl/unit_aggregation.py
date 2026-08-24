@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """召回命中 → unit 粒度归并（chunk→unit 的 MaxP 聚合）。
 
 各通道索引的记录 id 粒度不一：向量索引按 chunk 建（id 为 chunk 复合 id），全文索引

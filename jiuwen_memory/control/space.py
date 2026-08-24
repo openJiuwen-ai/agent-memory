@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """SpaceManager — space 管理面接口。
 
 space 是 ``org`` 下的逻辑隔离单元，承担多租户 access/storage/governance

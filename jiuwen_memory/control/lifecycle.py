@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """LifecycleManager — 生命周期管理（架构 §3.1）。
 
 管理记忆单元的状态流转：active → superseded（被取代）/ archived（归档）

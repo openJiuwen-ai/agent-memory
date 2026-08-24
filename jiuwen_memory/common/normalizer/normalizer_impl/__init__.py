@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """normalizer_impl 实现集：工厂 NormalizerProducer + 各实现。
 
 import 各实现模块即触发其 ``@NormalizerProducer.register(...)`` 自注册；

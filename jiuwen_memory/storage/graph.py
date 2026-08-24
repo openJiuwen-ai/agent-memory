@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """GraphStore — 属性图存储，节点与边统一 CRUD + 邻域遍历。
 
 增/删/改在一次调用内同时作用于节点与边（任一列表可为空），

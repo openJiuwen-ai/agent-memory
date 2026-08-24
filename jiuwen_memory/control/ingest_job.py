@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Long-running ingest job control contract."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """LLMAbstractor — M5 信息抽象实现（4 Phase 流水线）。
 
 四阶段流水线（接口契约见 docs/specs/S05-construction.md Abstractor 节）：
