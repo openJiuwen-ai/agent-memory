@@ -201,7 +201,7 @@ public class RuntimeLogController {
             }
             return builder.body(streamBody);
         } catch (Exception e) {
-            try { upstream.close(); } catch (Exception ignored) {}
+            try { upstream.close(); } catch (Exception ex) { log.warn("关闭上游流失败", ex); }
             log.error("下载运行日志文件失败 filename={}", filename, e);
             throw new BizException(ResultCode.UPSTREAM_ERROR,
                     "下载运行日志文件失败: " + e.getMessage());

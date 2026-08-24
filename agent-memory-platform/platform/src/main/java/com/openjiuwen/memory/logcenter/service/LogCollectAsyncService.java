@@ -292,7 +292,9 @@ public class LogCollectAsyncService {
             zos.putNextEntry(new ZipEntry(entryName));
             zos.write(content.getBytes(StandardCharsets.UTF_8));
             zos.closeEntry();
-        } catch (IOException ignored) {}
+        } catch (IOException e) {
+            log.warn("写入错误说明文件失败 entryName={}", entryName, e);
+        }
     }
 
     private String buildReadme(String scene, LocalDate startDate, LocalDate endDate, String tenant, String name) {

@@ -302,7 +302,6 @@ public class UiAggregatorServiceImpl implements UiAggregatorService {
         }
 
         // 追溯摘要 — TraceService 当前无聚合统计接口，暂用占位值
-        // TODO: 待 TraceService 增加 aggregateSummary(adminUserId) 后替换
         Map<String, Object> traceSummary = new LinkedHashMap<>();
         traceSummary.put("total_traced_memories", 0);
         traceSummary.put("recent_corrections", 0);

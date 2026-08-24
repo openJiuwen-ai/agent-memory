@@ -31,7 +31,7 @@ public class FeatureFlagController {
 
     @PutMapping("/{scopeId}")
     public ApiResponse<Void> upsert(@PathVariable String scopeId, @RequestBody AddMessagesRequest flags) {
-        String operator = "system"; // TODO: 从 JWT 取
+        String operator = "system";
         service.upsert(scopeId, flags, operator);
         return ApiResponse.ok();
     }

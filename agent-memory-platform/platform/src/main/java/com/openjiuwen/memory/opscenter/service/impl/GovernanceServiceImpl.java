@@ -114,7 +114,8 @@ public class GovernanceServiceImpl implements GovernanceService {
         permissionChecker.check("governance:read");
         List<MemoryItem> items = listAllMemories(userId, scopeId, SCAN_CAP);
         AtomicLong duplicate = new AtomicLong(0);
-        long stale = 0, empty = 0;
+        long stale = 0;
+        long empty = 0;
         List<Map<String, Object>> dupItems = new CopyOnWriteArrayList<>();
         if ("duplicate".equalsIgnoreCase(scanType) || scanType == null || scanType.isBlank()) {
             double th = threshold == null ? 0.85 : threshold;
@@ -155,7 +156,7 @@ public class GovernanceServiceImpl implements GovernanceService {
                 if (m.getTimestamp() != null) {
                     try {
                         if (Instant.parse(m.getTimestamp()).isBefore(staleBefore)) stale++;
-                    } catch (Exception ignored) { }
+                    } catch (Exception e) { log.warn("解析时间戳失败 timestamp={}", m.getTimestamp(), e); }
                 }
             }
         }
@@ -316,7 +317,8 @@ public class GovernanceServiceImpl implements GovernanceService {
 
     private List<MemoryItem> listAllMemories(String userId, String scopeId, int cap) {
         List<MemoryItem> all = new ArrayList<>();
-        int pageSize = 100, pageIdx = 1;
+        int pageSize = 100;
+        int pageIdx = 1;
         while (pageIdx <= 1000 && all.size() < cap) {
             var req = new GetUserMemByPageRequest();
             req.setUserId(userId);

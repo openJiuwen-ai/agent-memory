@@ -61,7 +61,8 @@ public class MockMemoryEngineClient implements MemoryEngineClient {
 
     @Override
     public PageResult<MemoryItem> getUserMemByPage(GetUserMemByPageRequest req) {
-        String u = norm(req.getUserId()), s = norm(req.getScopeId());
+        String u = norm(req.getUserId());
+        String s = norm(req.getScopeId());
         int pageSize = req.getPageSize() == null ? 10 : req.getPageSize();
         int pageIdx = req.getPageIdx() == null ? 1 : req.getPageIdx();
         String type = req.getMemoryType() == null || req.getMemoryType().isBlank() || "unknown".equalsIgnoreCase(req.getMemoryType())
@@ -80,7 +81,8 @@ public class MockMemoryEngineClient implements MemoryEngineClient {
 
     @Override
     public List<MemoryItem> searchMemory(SearchMemoryRequest req) {
-        String u = norm(req.getUserId()), s = norm(req.getScopeId());
+        String u = norm(req.getUserId());
+        String s = norm(req.getScopeId());
         int num = req.getNum() == null ? 10 : req.getNum();
         String q = req.getQuery() == null ? "" : req.getQuery();
         return store.values().stream()
@@ -102,7 +104,8 @@ public class MockMemoryEngineClient implements MemoryEngineClient {
 
     @Override
     public RawResponses.StatusMessage addMessages(AddMessagesRequest req) {
-        String u = norm(req.getUserId()), s = norm(req.getScopeId());
+        String u = norm(req.getUserId());
+        String s = norm(req.getScopeId());
         int n = req.getMessages() == null ? 0 : req.getMessages().size();
         for (int i = 0; i < n; i++) {
             String content = String.valueOf(req.getMessages().get(i).getOrDefault("content", ""));
@@ -138,7 +141,8 @@ public class MockMemoryEngineClient implements MemoryEngineClient {
 
     @Override
     public RawResponses.DeleteResult deleteMemByUserId(String userId, String scopeId) {
-        String u = norm(userId), s = norm(scopeId);
+        String u = norm(userId);
+        String s = norm(scopeId);
         int n = (int) store.values().stream().filter(m -> m.userId.equals(u) && m.scopeId.equals(s))
                 .peek(m -> store.remove(m.memId)).count();
         return delete(n);
@@ -367,7 +371,11 @@ public class MockMemoryEngineClient implements MemoryEngineClient {
     }
 
     private static final class MockMem {
-        String memId, userId, scopeId, content, type;
+        String memId;
+        String userId;
+        String scopeId;
+        String content;
+        String type;
         Instant createdAt;
     }
 }
