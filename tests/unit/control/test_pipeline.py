@@ -8,6 +8,7 @@ from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderP
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult, RetrievedItem
+from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 _INDEX_BUILDERS: dict[str, "RecordingIndexBuilder"] = {}
 
@@ -23,13 +24,13 @@ class RecordingIndexBuilder(IndexBuilder):
     def health(self) -> None:
         return None
 
-    def build(self, units) -> None:
+    def build(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         self.built.extend(unit.content for unit in units)
 
-    def update(self, units) -> None:
+    def update(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         return None
 
-    def remove(self, units) -> None:
+    def remove(self, units, *, mode: IndexRemoveMode = IndexRemoveMode.HARD) -> None:
         return None
 
     def rebuild(self) -> None:

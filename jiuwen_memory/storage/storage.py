@@ -27,7 +27,7 @@ from .fusion import FusionStore
 from .graph import GraphStore
 from .kv import KVStore
 from .security import StorageAccessContext, StorageSecurity
-from .types import MemoryListResult
+from .types import IndexRemoveMode, IndexWriteMode, MemoryListResult
 from .vector import VectorStore
 
 
@@ -198,8 +198,17 @@ class Storage(ABC):
         scope: Scope,
         units: list[MemoryUnit],
         *,
+        mode: IndexWriteMode = IndexWriteMode.ALL,
         access: StorageAccessContext | None = None,
     ) -> None:
+        """写入一批记忆。
+
+        覆盖范围是**实现相关**的：该实现按其能力落地——``CompositeStorage`` 无投影能力，
+        只落记忆本体；一体化后端可一次建立正排、倒排、向量、图。
+
+        ``mode=RETRIEVAL_ONLY`` 表示记忆本体已存在、只需补建检索索引；不具备检索索引
+        能力的实现此时为空操作。
+        """
         ...
 
     @abstractmethod
@@ -208,8 +217,14 @@ class Storage(ABC):
         scope: Scope,
         units: list[MemoryUnit],
         *,
+        mode: IndexWriteMode = IndexWriteMode.ALL,
         access: StorageAccessContext | None = None,
     ) -> None:
+        """更新一批记忆。覆盖范围同 :meth:`add`。
+
+        ``mode=FORWARD_ONLY`` 表示只回写记忆本体、检索索引不动。无法拆分两者的实现应
+        至少保证本体被写到——多刷新一次检索索引无害，漏写本体则丢数据。
+        """
         ...
 
     @abstractmethod
@@ -218,8 +233,15 @@ class Storage(ABC):
         scope: Scope,
         unit_ids: list[str],
         *,
+        mode: IndexRemoveMode = IndexRemoveMode.HARD,
         access: StorageAccessContext | None = None,
     ) -> None:
+        """删除一批记忆。覆盖范围同 :meth:`add`。
+
+        ``mode=SOFT`` 为软删除：只移出检索索引（search/recall 不再召回），记忆本体
+        保留，`get`/`list` 仍可读——用于归档/遗忘等非破坏式治理；不具备检索索引能力
+        的实现此时为空操作。``mode=HARD`` 为硬删除：检索索引与记忆本体一并物理删除。
+        """
         ...
 
     @abstractmethod

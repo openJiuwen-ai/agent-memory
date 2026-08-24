@@ -27,6 +27,7 @@ from jiuwen_memory.common.type_def.scope import space_id_from_scope
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.storage.entity_store import EntityStore
+from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 logger = get_logger(__name__)
 
@@ -412,7 +413,10 @@ class EntityIndexBuilder(IndexBuilder):
     def health(self) -> None:
         return None
 
-    def build(self, units: list[MemoryUnit]) -> None:
+    def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
+        # 本实现只建检索索引，不交付记忆本体：FORWARD_ONLY 即整体跳过。
+        if mode is IndexWriteMode.FORWARD_ONLY:
+            return
         if not units:
             return
         logger.info("EntityIndexBuilder: building entity index for %d units", len(units))
@@ -439,12 +443,17 @@ class EntityIndexBuilder(IndexBuilder):
                 result.updated_count, result.deleted_count, result.failed_count,
             )
 
-    def update(self, units: list[MemoryUnit]) -> None:
+    def update(
+        self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL
+    ) -> None:
         """增量更新：先 unlink 旧实体链接，再按新内容 link。
 
         SUPERSEDE 场景下若旧 unit 已是 SUPERSEDED 状态（仅 lifecycle 变化），
         跳过 unlink，靠召回侧 lifecycle 过滤处理（保留链接支持 as_of 回溯）。
         """
+        # 本实现只建实体反向索引（检索）：调用方要求只动正排时整体跳过。
+        if mode is IndexWriteMode.FORWARD_ONLY:
+            return
         if not units:
             return
         logger.info("EntityIndexBuilder: updating entity index for %d units", len(units))
@@ -463,7 +472,10 @@ class EntityIndexBuilder(IndexBuilder):
         except Exception as exc:
             logger.warning("EntityIndexBuilder: link_memories failed in update for %d units: %s", len(units), exc)
 
-    def remove(self, units: list[MemoryUnit]) -> None:
+    def remove(
+        self, units: list[MemoryUnit], *, mode: IndexRemoveMode = IndexRemoveMode.HARD
+    ) -> None:
+        # 同 build：不持有记忆本体，SOFT/HARD 都要移出检索，行为相同。
         if not units:
             return
         logger.info("EntityIndexBuilder: removing entity index for %d units", len(units))

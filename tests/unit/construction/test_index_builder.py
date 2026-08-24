@@ -10,11 +10,13 @@ from datetime import datetime, timezone
 import pytest
 
 from jiuwen_memory.common.bootstrap import register_plugins
+from jiuwen_memory.common.errors import NotFoundError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import (
     T_EVENT_UNKNOWN,
     T_INVALID_OPEN,
     Scope,
+    memory_key,
 )
 from jiuwen_memory.config.context import AssemblyContext
 from jiuwen_memory.construction.bootstrap import register_constructors
@@ -27,7 +29,7 @@ from jiuwen_memory.construction.index_builder_impl.unified_index_builder import 
 from jiuwen_memory.construction.index_builder_impl.vector_index_builder import VectorIndexBuilder
 from jiuwen_memory.storage.bootstrap import register_backends
 from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
-from jiuwen_memory.storage.types import TextQuery, VectorQuery
+from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode, TextQuery, VectorQuery
 from tests.unit.construction.fixtures import (
     create_test_plugins,
     create_test_stores,
@@ -527,7 +529,6 @@ def test_empty_content_unit():
     builder.build(units)
 
     # vector 无写入（空 content → Chunker 返回空 list → 无 chunk tracking）
-    from jiuwen_memory.common.errors import NotFoundError
     try:
         stores["kv"].get(scope, "/index/chunks/u1")
         assert False, "chunk tracking should not exist for empty content"
@@ -721,3 +722,105 @@ def test_build_layers_runs_even_when_no_content_chunks():
     l1_records = vector_l1.get(scope, ["u1-layer-l1"])
     assert len(l1_records) == 1, "L1 分层索引未构建：content 无 chunk 时 _build_layers 应仍执行"
     assert l1_records[0].metadata.get("content_layer") == "l1"
+
+
+# ---------------------------------------------------------------------------
+# T-I-16: IndexWriteMode / IndexRemoveMode 行为矩阵
+# ---------------------------------------------------------------------------
+
+
+def test_hybrid_build_retrieval_only_skips_forward():
+    """build(mode=RETRIEVAL_ONLY)：本体已存在只补建检索索引，正排不写。"""
+    builder, stores, _ = _make_hybrid_builder()
+    scope = Scope(org="test", user="alice")
+    units = [create_test_unit("u1", "用户偏好用 Python 写代码", scope=scope)]
+
+    builder.build(units, mode=IndexWriteMode.RETRIEVAL_ONLY)
+
+    with pytest.raises(NotFoundError):
+        stores["kv"].get(scope, memory_key("u1"))
+    hits = stores["fulltext"].search(scope, TextQuery(text="Python", top_k=10))
+    assert any(h.id == "u1" for h in hits)
+
+
+def test_hybrid_build_forward_only_skips_retrieval():
+    """build(mode=FORWARD_ONLY)：只交付本体，检索索引不写。"""
+    builder, stores, _ = _make_hybrid_builder()
+    scope = Scope(org="test", user="alice")
+    units = [create_test_unit("u1", "用户偏好用 Python 写代码", scope=scope)]
+
+    builder.build(units, mode=IndexWriteMode.FORWARD_ONLY)
+
+    assert stores["kv"].get(scope, memory_key("u1"))
+    hits = stores["fulltext"].search(scope, TextQuery(text="Python", top_k=10))
+    assert not any(h.id == "u1" for h in hits)
+
+
+def test_hybrid_update_forward_only_leaves_retrieval_untouched():
+    """update(mode=FORWARD_ONLY)：只回写本体新状态，检索索引保持旧内容。"""
+    builder, stores, _ = _make_hybrid_builder()
+    scope = Scope(org="test", user="alice")
+    units = [create_test_unit("u1", "用户偏好 Python", scope=scope)]
+    builder.build(units)
+
+    updated = [create_test_unit("u1", "用户偏好 Java", scope=scope)]
+    builder.update(updated, mode=IndexWriteMode.FORWARD_ONLY)
+
+    # 本体已回写新内容
+    assert stores["kv"].get(scope, memory_key("u1"))
+    # 检索索引不动：新词不召回，旧词仍召回
+    assert not any(
+        h.id == "u1" for h in stores["fulltext"].search(scope, TextQuery(text="Java", top_k=10))
+    )
+    assert any(
+        h.id == "u1" for h in stores["fulltext"].search(scope, TextQuery(text="Python", top_k=10))
+    )
+
+
+def test_hybrid_remove_soft_keeps_body_readable():
+    """remove(mode=SOFT)：退出检索（search 不召回），本体保留，get 仍可读。"""
+    builder, stores, _ = _make_hybrid_builder()
+    scope = Scope(org="test", user="alice")
+    units = [
+        create_test_unit(
+            "u1", "用户偏好用 Python 写代码，经常使用 Python 进行数据分析", scope=scope
+        )
+    ]
+    builder.build(units)
+    chunk_ids = json.loads(stores["kv"].get(scope, "/index/chunks/u1").decode())
+
+    builder.remove(units, mode=IndexRemoveMode.SOFT)
+
+    # 检索索引全清：fulltext / vector 均不可召回
+    assert stores["fulltext"].search(scope, TextQuery(text="Python", top_k=10)) == []
+    assert stores["vector"].get(scope, chunk_ids) == []
+    # 本体保留：get/list 路径的真源仍可读
+    assert stores["kv"].get(scope, memory_key("u1"))
+
+
+def test_hybrid_remove_hard_deletes_body_last():
+    """remove(mode=HARD)：检索索引与本体一并物理删除。"""
+    builder, stores, _ = _make_hybrid_builder()
+    scope = Scope(org="test", user="alice")
+    units = [create_test_unit("u1", "用户偏好用 Python 写代码", scope=scope)]
+    builder.build(units)
+
+    builder.remove(units, mode=IndexRemoveMode.HARD)
+
+    assert stores["fulltext"].search(scope, TextQuery(text="Python", top_k=10)) == []
+    with pytest.raises(NotFoundError):
+        stores["kv"].get(scope, memory_key("u1"))
+
+
+def test_unified_builder_passes_mode_through_to_storage():
+    """unified 原样透传枚举：SOFT 在 CompositeStorage 上为空操作，本体保留。"""
+    builder, storage, _, _ = _make_unified_builder()
+    scope = Scope(org="test", user="alice")
+    unit = create_test_unit("u1", "first version", scope=scope)
+    builder.build([unit])
+
+    builder.remove([unit], mode=IndexRemoveMode.SOFT)
+    assert storage.get(scope, ["u1"]) == [unit]
+
+    builder.remove([unit], mode=IndexRemoveMode.HARD)
+    assert storage.get(scope, ["u1"]) == []
