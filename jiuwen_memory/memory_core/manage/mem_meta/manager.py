@@ -20,7 +20,7 @@ from typing import Any
 
 from sqlalchemy import (
     Column, Integer, String, Text, Index, MetaData, Table,
-    select, insert, update, delete, func, case,
+    select, insert, update, delete, func, case, or_,
 )
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -194,12 +194,12 @@ class MemMetaManager:
 
         返回 None 表示可以提交新任务；
         返回 dict 表示存在冲突，包含已有任务信息。
-        """
-        if force:
-            return None
 
+        force=True 时仅跳过冷却期检查，**不跳过运行中任务检查**
+        （防止并发任务冲突导致数据竞争）。
+        """
         async with self._engine.begin() as conn:
-            # 1. 检查运行中任务
+            # 1. 检查运行中任务（不可跳过，即使 force=true）
             result = await conn.execute(
                 select(mem_meta_task_table.c.task_id, mem_meta_task_table.c.status)
                 .where(mem_meta_task_table.c.task_type == task_type)
@@ -216,6 +216,10 @@ class MemMetaManager:
                 }
 
             # 2. 检查冷却（最新任务距今 < COOLDOWN_SECONDS）
+            # force=True 时跳过此检查
+            if force:
+                return None
+
             result = await conn.execute(
                 select(
                     mem_meta_task_table.c.task_id,
@@ -295,7 +299,12 @@ class MemMetaManager:
         return task
 
     async def cleanup_zombie_tasks(self) -> None:
-        """清理僵尸任务（running 超 1 小时 → failed）。"""
+        """清理僵尸任务（running 超 1 小时 → failed）。
+
+        处理两种情况：
+        1. started_at < cutoff：正常僵尸任务
+        2. started_at IS NULL：任务创建后进程崩溃，未及写入 started_at
+        """
         cutoff = (
             _now_dt().replace(tzinfo=None) - timedelta(hours=ZOMBIE_TASK_TIMEOUT_HOURS)
         ).strftime("%Y-%m-%d %H:%M:%S")
@@ -303,7 +312,12 @@ class MemMetaManager:
             await conn.execute(
                 update(mem_meta_task_table)
                 .where(mem_meta_task_table.c.status == "running")
-                .where(mem_meta_task_table.c.started_at < cutoff)
+                .where(
+                    or_(
+                        mem_meta_task_table.c.started_at < cutoff,
+                        mem_meta_task_table.c.started_at.is_(None),
+                    )
+                )
                 .values(
                     status="failed",
                     error_message="zombie task cleaned up on restart",
