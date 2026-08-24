@@ -38,11 +38,23 @@ ZOMBIE_TASK_TIMEOUT_HOURS = 1  # 僵尸任务超时阈值
 
 
 def _now_str() -> str:
-    """返回当前 UTC 时间字符串（数据库兼容格式）。
+    """返回当前本地时间字符串（数据库兼容格式）。
 
-    使用 Python 侧时间戳，兼容 SQLite / PostgreSQL / GaussDB。
+    与记忆 timestamp 口径对齐（base_memory_index.py 用 datetime.now(timezone.utc).astimezone()，
+    即本地墙钟）。不使用 datetime.utcnow() 以避免时区混用。
     """
-    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    from datetime import timezone
+    return datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _now_dt() -> datetime:
+    """返回当前本地时间（aware datetime，与记忆 timestamp 同口径）。
+
+    用于过期判定（_is_expired / refresh 统计 / realtime 扫描），
+    与 doc.timestamp（本地墙钟）相减才正确。
+    """
+    from datetime import timezone
+    return datetime.now(timezone.utc).astimezone()
 
 
 @dataclass
@@ -111,12 +123,20 @@ class MemMetaManager:
 
     @staticmethod
     def _is_expired(doc, now_dt: datetime, threshold: int) -> bool:
-        """判断单条记忆是否过期（blacklisted 且不活跃天数 >= threshold）。"""
+        """判断单条记忆是否过期（blacklisted 且不活跃天数 >= threshold）。
+
+        now_dt 为本地时区 aware datetime（与 doc.timestamp 同口径）。
+        """
         if not doc.blacklisted:
             return False
         if doc.timestamp is None:
             return True
-        return (now_dt - doc.timestamp.replace(tzinfo=None)).days >= threshold
+        ts = doc.timestamp
+        if ts.tzinfo is None:
+            # KV 序列化可能丢失 tzinfo，按本地时区补回
+            from datetime import timezone
+            ts = ts.replace(tzinfo=datetime.now(timezone.utc).astimezone().tzinfo)
+        return (now_dt - ts).days >= threshold
 
     def __init__(
         self,
@@ -213,7 +233,7 @@ class MemMetaManager:
                     created_at = datetime.strptime(
                         created_at_str, "%Y-%m-%d %H:%M:%S"
                     )
-                    elapsed = (datetime.utcnow() - created_at).total_seconds()
+                    elapsed = (_now_dt().replace(tzinfo=None) - created_at).total_seconds()
                     if elapsed < COOLDOWN_SECONDS:
                         return {
                             "task_id": task_id,
@@ -277,7 +297,7 @@ class MemMetaManager:
     async def cleanup_zombie_tasks(self) -> None:
         """清理僵尸任务（running 超 1 小时 → failed）。"""
         cutoff = (
-            datetime.utcnow() - timedelta(hours=ZOMBIE_TASK_TIMEOUT_HOURS)
+            _now_dt().replace(tzinfo=None) - timedelta(hours=ZOMBIE_TASK_TIMEOUT_HOURS)
         ).strftime("%Y-%m-%d %H:%M:%S")
         async with self._engine.begin() as conn:
             await conn.execute(
@@ -346,7 +366,7 @@ class MemMetaManager:
 
             memory_index = engine.memory_index
             now_str = _now_str()
-            now = datetime.utcnow()
+            now = _now_dt()
 
             # 获取所有 (user_id, scope_id) 对
             all_scopes = await memory_index.list_user_scopes()
@@ -379,9 +399,13 @@ class MemMetaManager:
                         if doc.blacklisted:
                             s["superseded"] += 1
                             s["expired_all"] += 1
-                            # 判断是否过期超过30天
+                            # 判断是否过期超过30天（与 _is_expired 同口径）
                             if doc.timestamp:
-                                days_ago = (now - doc.timestamp.replace(tzinfo=None)).days
+                                ts = doc.timestamp
+                                if ts.tzinfo is None:
+                                    from datetime import timezone
+                                    ts = ts.replace(tzinfo=datetime.now(timezone.utc).astimezone().tzinfo)
+                                days_ago = (now - ts).days
                                 if days_ago >= 30:
                                     s["expired_30d"] += 1
                             else:
@@ -542,7 +566,7 @@ class MemMetaManager:
         all_scopes = await memory_index.list_user_scopes()
 
         # 按用户聚合统计
-        now_dt = datetime.utcnow()
+        now_dt = _now_dt()
         user_stats: dict[str, dict] = {}
         for user_id, scope_id in all_scopes:
             try:
@@ -764,7 +788,7 @@ class MemMetaManager:
                                     )
                                 )
                                 # 过滤 blacklisted == True 且满足不活跃天数
-                                now_dt = datetime.utcnow()
+                                now_dt = _now_dt()
                                 if params.all_expired:
                                     expired_mem_ids = [
                                         d.id for d in docs if d.blacklisted
