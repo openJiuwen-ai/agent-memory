@@ -30,12 +30,23 @@ agent-memory1.0_skill — 通过 HTTP API 调用 agent-memory1.0 记忆服务（
   python run_memory_operation.py '{"operation":"search","user_id":"<YOUR_USER_ID>","query":"风险 违约","top_k":5}'
 """
 import json
+import logging
 import os
 import sys
 import time
 import traceback
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
+
+# ── emit_result 专用 logger：输出到 stdout 供 Agent 通过 call_mcp 读取 ──
+# 这不是常规日志，而是结构化 JSON 通信通道，因此不添加时间戳/级别等元信息
+_emit_log = logging.getLogger("mem1_skill_emit")
+_emit_log.propagate = False
+if not _emit_log.handlers:
+    _emit_handler = logging.StreamHandler(sys.stdout)
+    _emit_handler.setFormatter(logging.Formatter("%(message)s"))
+    _emit_log.addHandler(_emit_handler)
+    _emit_log.setLevel(logging.INFO)
 
 
 # ── 配置 ──────────────────────────────────────────────────────────
@@ -52,12 +63,8 @@ DEFAULT_SCOPE_ID = os.environ.get("MEM1_DEFAULT_SCOPE_ID", "edp_agent")
 
 # ── 输出 ──────────────────────────────────────────────────────────
 def emit_result(data: dict) -> None:
-    """输出 JSON 结果到 stdout（Agent 通过 call_mcp 读取）。
-
-    使用 sys.stdout.write 而非 print，因为这是结构化通信通道而非日志输出。
-    """
-    sys.stdout.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-    sys.stdout.flush()
+    """输出 JSON 结果到 stdout（Agent 通过 call_mcp 读取）。"""
+    _emit_log.info(json.dumps(data, ensure_ascii=False, indent=2))
 
 
 # ══════════════════════════════════════════════════════════════════
