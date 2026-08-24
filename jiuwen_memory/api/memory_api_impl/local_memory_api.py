@@ -86,7 +86,6 @@ from jiuwen_memory.retrieval.types import DisclosureLevel, RetrievalQuery, Retri
 # 管理员闸门；在 allow_all
 # 装配下为 no-op。租户数据/治理方法仍按各自的 target scope 鉴权。
 _ROOT = Scope()
-_TRANSIENT_EXTENSION_KEYS = frozenset({"db_query_service", "encryption_port"})
 
 
 def _parse_max_tokens(raw: str | None) -> int | None:
@@ -243,10 +242,6 @@ def _recall_permission_context(
     routed_metadata = _required_filter_metadata(filters)
     # S03「MemoryPipeline 路由规则」——extensions 优先。
     for key, override in context.extensions.items():
-        # 瞬态 key 透传原值，不 str 化
-        if key in _TRANSIENT_EXTENSION_KEYS:
-            routed_metadata[key] = override
-            continue
         effective = str(override).strip()
         if effective:
             routed_metadata[key] = effective
@@ -267,10 +262,6 @@ def _list_permission_contexts(
 ) -> list[PermissionContext]:
     routed_metadata = _required_filter_metadata(filters)
     for key, override in extensions.items():
-        # 瞬态 key 透传原值，不 str 化
-        if key in _TRANSIENT_EXTENSION_KEYS:
-            routed_metadata[key] = override
-            continue
         effective = str(override).strip()
         if effective:
             routed_metadata[key] = effective
@@ -316,11 +307,7 @@ def _normalize_list_extensions(raw: dict[str, Any] | None) -> dict[str, Any]:
     for key, value in raw.items():
         if not isinstance(key, str):
             raise ValidationError("extensions keys must be strings")
-        # 瞬态 key 保留原始对象（如 db_query_service / encryption_port），不强制 str 化
-        if key in _TRANSIENT_EXTENSION_KEYS:
-            normalized[key] = value
-        else:
-            normalized[key] = str(value)
+        normalized[key] = str(value)
     return normalized
 
 

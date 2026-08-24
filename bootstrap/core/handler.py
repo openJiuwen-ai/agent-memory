@@ -667,7 +667,7 @@ def _search(srv, payload: Body) -> Body:
     raw_ext = payload.get("extensions")
     if not isinstance(raw_ext, dict):
         raw_ext = {}
-    extensions = {k: str(v) for k, v in raw_ext.items()}
+    extensions = dict(raw_ext)
     # 自适应披露预算经约定 key 并入 extensions（由 API 边界解析为 typed
     # 预算）。
     max_tokens = payload.get("max_tokens")
@@ -688,6 +688,7 @@ def _search(srv, payload: Body) -> Body:
             "score": item.score,
             "item_id": item.unit_id,
             "content": item.content,
+            "system_metadata": dict(item.system_metadata),
             "user_metadata": dict(item.user_metadata),
         }
         for item in res.items

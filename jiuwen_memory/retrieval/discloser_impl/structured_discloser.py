@@ -76,6 +76,7 @@ class StructuredDiscloser(Discloser):
                     content=full,
                     user_metadata=dict(unit.user_metadata),
                     level=level,
+                    system_metadata=dict(unit.system_metadata),
                 )
             )
         return items
@@ -124,6 +125,7 @@ class StructuredDiscloser(Discloser):
                     content=full,
                     user_metadata=dict(variant.unit.user_metadata),
                     level=actual_level,
+                    system_metadata=dict(variant.unit.system_metadata),
                 )
             )
         return items

@@ -58,8 +58,6 @@ from jiuwen_memory.storage.storage import Storage, StorageProducer
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 logger = get_logger(__name__)
-_TRANSIENT_EXTENSION_KEYS = frozenset({"db_query_service", "encryption_port"})
-
 _LIFECYCLE_OF_DELETE = {
     DeleteMode.FORGET: LifecycleState.FORGOTTEN,
     DeleteMode.ARCHIVE: LifecycleState.ARCHIVED,
@@ -730,21 +728,13 @@ class CloudEngine(MemoryEngine):
         value = str(query.extensions.get(self._message_type_key, "")).strip()
         if value or not self._default_message_type:
             return query
-        # 瞬态 key（db_query_service / encryption_port 等）的值可能是不可深拷贝的对象，
-        # 深拷贝前临时剥离，拷贝后原样装回。
-        transient = {
-            k: v for k, v in query.extensions.items() if k in _TRANSIENT_EXTENSION_KEYS
+        # 仅为路由默认值创建浅副本。extensions 允许承载调用方注入的运行时对象，
+        # 例如 db_query_service / encryption_port；深拷贝会破坏对象身份或直接失败。
+        routed = copy.copy(query)
+        routed.extensions = {
+            **query.extensions,
+            self._message_type_key: self._default_message_type,
         }
-        if transient:
-            query.extensions = {
-                k: v for k, v in query.extensions.items()
-                if k not in _TRANSIENT_EXTENSION_KEYS
-            }
-        routed = copy.deepcopy(query)
-        if transient:
-            query.extensions.update(transient)
-            routed.extensions.update(transient)
-        routed.extensions[self._message_type_key] = self._default_message_type
         return routed
 
     def _prepare_ingested_units(

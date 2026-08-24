@@ -150,6 +150,7 @@ class _RecordingRetriever(Retriever):
     def __init__(self, name: str) -> None:
         self.name = name
         self.queries: list[str] = []
+        self.extensions: list[dict] = []
 
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.RETRIEVER
@@ -159,6 +160,7 @@ class _RecordingRetriever(Retriever):
 
     def retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         self.queries.append(query.extensions.get("message_type", ""))
+        self.extensions.append(query.extensions)
         return RetrievalResult(items=[RetrievedItem(unit_id=self.name, content=query.text)])
 
 
@@ -446,6 +448,24 @@ def test_cloud_engine_recall_routes_by_message_type_extension() -> None:
     assert [item.unit_id for item in result.items] == ["coding"]
     assert records["coding_retriever"].queries == ["coding"]
     assert records["chat_retriever"].queries == []
+
+
+def test_cloud_engine_recall_keeps_runtime_extension_identity() -> None:
+    engine, records = _engine()
+    scope = Scope(org="acme", user="alice")
+    marker = object()
+
+    result = asyncio.run(
+        engine.recall(
+            scope,
+            RetrievalQuery(text="testing", extensions={"db_query_service": marker}),
+        )
+    )
+
+    assert result.items
+    routed = records["chat_retriever"]
+    assert routed.queries == ["chat"]
+    assert routed.extensions[0]["db_query_service"] is marker
 
 
 def test_cloud_engine_list_forwards_query_and_returns_total_count() -> None:

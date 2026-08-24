@@ -5,15 +5,15 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | src/retrieval/ |
-| 最近一次修订日期 | 2026-08-20 |
+| 最近一次修订日期 | 2026-08-21 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md |
 
 ## Metadata 检索契约
 
 FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<key>` 表示
-内部系统谓词，两者不 fallback。`RetrievedItem` 返回 `user_metadata`，普通搜索结果
-不暴露 `system_metadata`。
+内部系统谓词，两者不 fallback。`RetrievedItem` 同时返回两个命名空间；接入层可按
+信任边界裁剪 `system_metadata`，但 Core API 的检索结果保留完整字段。
 
 ## 范围 / 边界
 
@@ -274,7 +274,7 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 | `channels` | list[RecallChannel] \| None | `None` | 覆盖召回通道 |
 | `rerank` | bool \| None | `None` | 覆盖重排开关 |
 | `include_archived` | bool | `False` | 是否纳入归档 unit |
-| `extensions` | dict[str, str] | `{}` | 调用级透传配置 |
+| `extensions` | dict[str, Any] | `{}` | 调用级透传配置；本地调用可携带运行时对象 |
 | `hierarchy_kind`（目标） | HierarchyKind \| None | `None` | 单一结构 kind |
 | `hierarchy_role`（目标） | HierarchyRole \| None | `None` | 父层角色过滤 |
 | `span_start`（目标） | datetime \| None | `None` | 结构区间起点 |
@@ -300,7 +300,7 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 | `time_to` | datetime \| None | event-time 上界 |
 | `channels` | list[RecallChannel] | 建议启用的通道 |
 | `include_archived` | bool | 当前态真源复核是否允许 archived |
-| `extensions` | dict[str, str] | 透传配置 |
+| `extensions` | dict[str, Any] | 透传配置 |
 
 1. `top_k > 0`，`expand_depth >= 0`；非空 `max_tokens` 必须大于 0。
 2. `hierarchy_role`、任一 span、`expand_depth > 0` 或 `rollup=true` 都要求显式 `hierarchy_kind`。
@@ -313,7 +313,7 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 |------|----------|
 | `ScoredUnit` | unit_id / score / channel / evidence: list[ChannelEvidence] |
 | `ChannelEvidence` | channel / rank / score / weight / contribution |
-| `RetrievedItem` | unit_id / score / content / level: DisclosureLevel |
+| `RetrievedItem` | unit_id / score / content / user_metadata / system_metadata / level: DisclosureLevel |
 | `TrajectoryStep` | stage / channel / candidate_count / cost_ms / detail |
 | `ScoredMemoryUnit` | unit: MemoryUnit / score / channel / evidence |
 | `ChannelError` | channel / source / error_type / message |
@@ -363,7 +363,7 @@ class ExpandResult:
 |---|---|
 | `ScoredUnit` | `unit_id` / `score` / `channel` / `evidence` |
 | `ChannelEvidence` | `channel` / `rank` / `score` / `weight` / `contribution` |
-| `RetrievedItem` | `unit_id` / `score` / `abstract` / `overview` / `content` / `level` |
+| `RetrievedItem` | `unit_id` / `score` / `abstract` / `overview` / `content` / `user_metadata` / `system_metadata` / `level` |
 | `TrajectoryStep` | `stage` / `channel` / `candidate_count` / `cost_ms` / `detail` |
 | `RetrievalResult` | `items` / `trajectory` |
 

@@ -91,6 +91,7 @@ class SimpleQueryParser(QueryParser):
             time_from=time_from,
             time_to=time_to,
             channels=channels,
+            extensions=dict(query.extensions),
         )
 
 
