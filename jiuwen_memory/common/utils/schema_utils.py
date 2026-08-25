@@ -109,7 +109,7 @@ class SchemaUtils:
         else:
             try:
                 return str(data)
-            except:
+            except (TypeError, ValueError):
                 return None
 
     @staticmethod
