@@ -54,7 +54,7 @@ logger = get_logger(__name__)
 class PipelineRetriever(Retriever):
     """编排 parse → 谓词 → recall(多路) → fuse → 点读+复核 → rerank → disclose。"""
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-locals
         self,
         parser: QueryParser,
         recallers: list[Recaller],
@@ -123,8 +123,148 @@ class PipelineRetriever(Retriever):
     def health(self) -> None:
         return None
 
-    def retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
-        # 入参校验：top_k 非法直接拒绝（可预期的调用错误）。
+    @staticmethod
+    def _record_step(
+        trajectory: list[TrajectoryStep],
+        enabled: bool,
+        stage: str,
+        cost_ms: float,
+        n: int = 0,
+        channel: RecallChannel | None = None,
+        detail: dict[str, str] | None = None,
+    ) -> None:
+        if enabled:
+            trajectory.append(
+                TrajectoryStep(
+                    stage=stage,
+                    channel=channel,
+                    candidate_count=n,
+                    cost_ms=cost_ms,
+                    detail=detail or {},
+                )
+            )
+
+    def _recall_and_fuse(
+        self,
+        scope: Scope,
+        parsed,
+        enabled,
+        recall_k: int,
+        budget_n: int,
+    ) -> tuple[RetrievalPipeline, list[ScoredUnit], list[ChannelError], object | None]:
+        pipeline = self._storage.preferred_retrieval_pipeline()
+        if pipeline == RetrievalPipeline.RECALL_GET_RANK:
+            recalled = self._storage.recall(
+                scope, parsed, channels=enabled, recall_limit=recall_k
+            )
+            materialized = _materialize_recalled(self._storage, scope, recalled, parsed)
+            fused = self._fuser.fuse(
+                parsed, [batch.candidates for batch in materialized.batches]
+            )
+            return pipeline, fused, materialized.errors, materialized
+        if pipeline == RetrievalPipeline.RECALL_AND_GET_RANK:
+            materialized = self._storage.recall_and_get(
+                scope, parsed, channels=enabled, recall_limit=recall_k
+            )
+            materialized = _filter_materialized(materialized, parsed)
+            fused = self._fuser.fuse(
+                parsed, [batch.candidates for batch in materialized.batches]
+            )
+            return pipeline, fused, materialized.errors, materialized
+        ranked = self._storage.retrieve(
+            scope,
+            parsed,
+            self._fuser,
+            channels=enabled,
+            recall_limit=recall_k,
+            rank_limit=budget_n,
+        )
+        return pipeline, ranked.candidates, ranked.errors, None
+
+    def _record_recall_steps(
+        self,
+        trajectory: list[TrajectoryStep],
+        trace: bool,
+        pipeline: RetrievalPipeline,
+        materialized,
+        fused: list[ScoredUnit],
+        errors: list[ChannelError],
+        cost_ms: float,
+    ) -> None:
+        if pipeline == RetrievalPipeline.RETRIEVE:
+            self._record_step(
+                trajectory,
+                trace,
+                "recall",
+                cost_ms,
+                len(fused),
+                detail={"pipeline": pipeline.value, "errors": str(len(errors))},
+            )
+            return
+        for batch in materialized.batches:
+            self._record_step(
+                trajectory,
+                trace,
+                "recall",
+                cost_ms,
+                len(batch.candidates),
+                batch.channel,
+                {"source": batch.source, "pipeline": pipeline.value},
+            )
+        for error in errors:
+            self._record_step(
+                trajectory,
+                trace,
+                "recall",
+                cost_ms,
+                channel=error.channel,
+                detail={
+                    "source": error.source,
+                    "degraded": error.error_type,
+                    "error": error.message,
+                },
+            )
+
+    def _rerank_survivors(
+        self,
+        parsed,
+        survivors: list[ScoredUnit],
+        units: dict[str, object],
+        rerank: bool,
+    ) -> tuple[list[ScoredUnit], bool]:
+        if not rerank or not survivors:
+            return survivors, False
+        if self._reranker is None:
+            return survivors, False
+        scores = self._reranker.rerank(
+            parsed.raw, [units[su.unit_id].content for su in survivors]
+        )
+        order = sorted(range(len(survivors)), key=lambda i: scores[i], reverse=True)
+        return [replace(survivors[i], score=scores[i]) for i in order], True
+
+    def _disclose(
+        self,
+        parsed,
+        survivors: list[ScoredUnit],
+        units: dict[str, object],
+        query: RetrievalQuery,
+    ) -> tuple[list[ScoredMemoryUnit], dict[str, str]]:
+        items = self._discloser.disclose(
+            parsed, survivors, units, query.disclosure, max_tokens=query.max_tokens
+        )
+        if query.disclosure != DisclosureLevel.ADAPTIVE:
+            return items, {}
+        return items, {
+            "mode": "adaptive",
+            "max_tokens": str(query.max_tokens or ""),
+            "estimated_tokens": str(sum(_estimate_tokens(item.content) for item in items)),
+            "levels": ",".join(item.level.value for item in items),
+        }
+
+    # Pylint: this method is the ordered retrieval pipeline and retains stage state.
+    def retrieve(  # pylint: disable=too-many-locals
+        self, scope: Scope, query: RetrievalQuery
+    ) -> RetrievalResult:
         if query.top_k <= 0:
             raise ValidationError(f"top_k must be positive, got {query.top_k}")
         if query.max_tokens is not None and query.max_tokens <= 0:
@@ -149,30 +289,8 @@ class PipelineRetriever(Retriever):
         traj: list[TrajectoryStep] = []
         trace = query.with_trajectory
 
-        def record_step(
-            stage: str,
-            cost_ms: float,
-            n: int = 0,
-            channel: RecallChannel | None = None,
-            detail: dict[str, str] | None = None,
-        ) -> None:
-            if trace:
-                traj.append(
-                    TrajectoryStep(
-                        stage=stage,
-                        channel=channel,
-                        candidate_count=n,
-                        cost_ms=cost_ms,
-                        detail=detail or {},
-                    )
-                )
-
-        def step(stage: str, t0: float, n: int = 0, channel=None, detail=None) -> None:
-            record_step(stage, (perf_counter() - t0) * 1000.0, n, channel, detail)
-
-        # 空 query 短路：无可检索信号，返回空结果而非把空串喂给各后端。
         if not query.text.strip():
-            step("parse", perf_counter(), detail={"skipped": "empty_query"})
+            self._record_step(traj, trace, "parse", 0.0, detail={"skipped": "empty_query"})
             logger.debug(
                 "Retriever.retrieve empty query: trace_id=%s scope_dims=%s",
                 trace_id,
@@ -194,12 +312,20 @@ class PipelineRetriever(Retriever):
         t0 = perf_counter()
         parsed = self._parser.parse(query)
         if not parsed.raw.strip():
-            step("parse", t0, detail={"skipped": "empty_after_parse"})
+            self._record_step(
+                traj,
+                trace,
+                "parse",
+                (perf_counter() - t0) * 1000.0,
+                detail={"skipped": "empty_after_parse"},
+            )
             return RetrievalResult(items=[], trajectory=traj)
         # 调用方自定义透传配置随 parsed 下达各召回路（自定义 Recaller 按约定读取）；
         # 在此统一接力，无需各 parser 实现感知。
         parsed.extensions = dict(query.extensions)
-        step("parse", t0, n=len(parsed.tokens))
+        self._record_step(
+            traj, trace, "parse", (perf_counter() - t0) * 1000.0, n=len(parsed.tokens)
+        )
 
         # [3a] 前置谓词：系统谓词（lifecycle×as_of / 时间窗）与用户表达式 AND 外包一同下推。
         #      用户表达式作整体 child——绝不摊平，防其 OR 稀释 lifecycle 等安全谓词。
@@ -220,42 +346,13 @@ class PipelineRetriever(Retriever):
         #   budget_n = max(rerank_max, top_k)    —— recheck+rerank 封顶，永不欠 top_k
         recall_k = max(query.top_k * self._over_fetch_factor, self._over_fetch_floor)
         if self._recall_max > 0:
-            recall_k = min(recall_k, self._recall_max)  # 硬上限：封顶后端召回压力
+            recall_k = min(recall_k, self._recall_max)
         budget_n = max(self._rerank_max, query.top_k)
 
-        # [3b-6] Storage 的全局首选值选择三条 recall/get/rank 路径。
-        pipeline = self._storage.preferred_retrieval_pipeline()
         t0 = perf_counter()
-        errors: list[ChannelError]
-        if pipeline == RetrievalPipeline.RECALL_GET_RANK:
-            recalled = self._storage.recall(
-                scope, parsed, channels=enabled, recall_limit=recall_k
-            )
-            materialized = _materialize_recalled(self._storage, scope, recalled, parsed)
-            fused = self._fuser.fuse(
-                parsed, [batch.candidates for batch in materialized.batches]
-            )
-            errors = materialized.errors
-        elif pipeline == RetrievalPipeline.RECALL_AND_GET_RANK:
-            materialized = self._storage.recall_and_get(
-                scope, parsed, channels=enabled, recall_limit=recall_k
-            )
-            materialized = _filter_materialized(materialized, parsed)
-            fused = self._fuser.fuse(
-                parsed, [batch.candidates for batch in materialized.batches]
-            )
-            errors = materialized.errors
-        else:
-            ranked = self._storage.retrieve(
-                scope,
-                parsed,
-                self._fuser,
-                channels=enabled,
-                recall_limit=recall_k,
-                rank_limit=budget_n,
-            )
-            fused = ranked.candidates
-            errors = ranked.errors
+        pipeline, fused, errors, materialized = self._recall_and_fuse(
+            scope, parsed, enabled, recall_k, budget_n
+        )
 
         for error in errors:
             logger.warning(
@@ -269,68 +366,41 @@ class PipelineRetriever(Retriever):
                 error.message,
             )
         recall_cost_ms = (perf_counter() - t0) * 1000.0
-        if pipeline == RetrievalPipeline.RETRIEVE:
-            record_step(
-                "recall",
-                recall_cost_ms,
-                len(fused),
-                detail={"pipeline": pipeline.value, "errors": str(len(errors))},
-            )
-        else:
-            for batch in materialized.batches:
-                record_step(
-                    "recall",
-                    recall_cost_ms,
-                    len(batch.candidates),
-                    batch.channel,
-                    {"source": batch.source, "pipeline": pipeline.value},
-                )
-            for error in errors:
-                record_step(
-                    "recall",
-                    recall_cost_ms,
-                    channel=error.channel,
-                    detail={
-                        "source": error.source,
-                        "degraded": error.error_type,
-                        "error": error.message,
-                    },
-                )
+        self._record_recall_steps(
+            traj, trace, pipeline, materialized, fused, errors, recall_cost_ms
+        )
 
         explain_fusion = getattr(self._fuser, "explain", None)
         fusion_detail = explain_fusion() if callable(explain_fusion) else {}
-        record_step("fuse", 0.0, n=len(fused), detail=fusion_detail)
+        self._record_step(traj, trace, "fuse", 0.0, n=len(fused), detail=fusion_detail)
 
         # Fuser 后再限制精排预算；Storage.retrieve 已在入口内应用同一个上限。
         survivors = list(fused[:budget_n])
         units = {candidate.unit_id: candidate.unit for candidate in survivors}
-        recheck_dropped = 0
-        record_step("recheck", 0.0, n=len(survivors), detail={"dropped": "0"})
-        if recheck_dropped:
-            logger.debug(
-                "Retriever.recheck dropped: trace_id=%s scope_dims=%s dropped=%d budget=%d",
-                trace_id,
-                scope_dims,
-                recheck_dropped,
-                len(survivors),
-            )
+        self._record_step(
+            traj, trace, "recheck", 0.0, n=len(survivors), detail={"dropped": "0"}
+        )
 
         # [7] 可选重排：内容已物化，按与 query 的相关性精排
         do_rerank = query.rerank if query.rerank is not None else (self._reranker is not None)
-        reranked = False
-        if do_rerank and self._reranker is not None and survivors:
-            t0 = perf_counter()
-            scores = self._reranker.rerank(
-                parsed.raw, [units[su.unit_id].content for su in survivors]
+        rerank_started = perf_counter()
+        survivors, reranked = self._rerank_survivors(parsed, survivors, units, do_rerank)
+        if reranked:
+            self._record_step(
+                traj,
+                trace,
+                "rerank",
+                (perf_counter() - rerank_started) * 1000.0,
+                n=len(survivors),
             )
-            order = sorted(range(len(survivors)), key=lambda i: scores[i], reverse=True)
-            survivors = [replace(survivors[i], score=scores[i]) for i in order]
-            step("rerank", t0, n=len(survivors))
-            reranked = True
         elif do_rerank and self._reranker is None:
-            # 显式要求精排但装配未注入 reranker：记轨迹让降级可见（阈值走未校准路径）。
-            record_step(
-                "rerank", 0.0, n=len(survivors), detail={"skipped": "no_reranker_configured"}
+            self._record_step(
+                traj,
+                trace,
+                "rerank",
+                0.0,
+                n=len(survivors),
+                detail={"skipped": "no_reranker_configured"},
             )
 
         # [8] 统一阈值过滤：精排路径用校准分；未精排路径仅使用相对阈值。
@@ -344,25 +414,29 @@ class PipelineRetriever(Retriever):
             min_score_ratio_uncalibrated=self._min_score_ratio_uncalibrated,
             min_results=self._min_results,
         )
-        step("threshold", t0, n=len(survivors), detail=threshold_detail)
+        self._record_step(
+            traj,
+            trace,
+            "threshold",
+            (perf_counter() - t0) * 1000.0,
+            n=len(survivors),
+            detail=threshold_detail,
+        )
 
         # [9] 截断 top_k
         final = survivors[: query.top_k]
 
         # [10] 渐进式披露（纯内容塑形，复用已点读的 units）
         t0 = perf_counter()
-        items = self._discloser.disclose(
-            parsed, final, units, query.disclosure, max_tokens=query.max_tokens
+        items, disclose_detail = self._disclose(parsed, final, units, query)
+        self._record_step(
+            traj,
+            trace,
+            "disclose",
+            (perf_counter() - t0) * 1000.0,
+            n=len(items),
+            detail=disclose_detail,
         )
-        disclose_detail = {}
-        if query.disclosure == DisclosureLevel.ADAPTIVE:
-            disclose_detail = {
-                "mode": "adaptive",
-                "max_tokens": str(query.max_tokens or ""),
-                "estimated_tokens": str(sum(_estimate_tokens(item.content) for item in items)),
-                "levels": ",".join(item.level.value for item in items),
-            }
-        step("disclose", t0, n=len(items), detail=disclose_detail)
 
         logger.debug(
             "Retriever.retrieve done: trace_id=%s scope_dims=%s fused=%d survivors=%d "
@@ -437,7 +511,7 @@ def _estimate_tokens(text: str) -> int:
     return max(1, (len(text) + 3) // 4)
 
 
-def apply_threshold(
+def apply_threshold(  # pylint: disable=too-many-locals
     survivors: list[ScoredCandidate],
     top_k: int,
     *,
@@ -449,57 +523,82 @@ def apply_threshold(
 ) -> tuple[list[ScoredCandidate], dict[str, str]]:
     """应用统一相关性阈值，返回保留候选与轨迹明细。"""
     n_in = len(survivors)
-    positive = sorted(
-        (su for su in survivors if su.score > 0.0),
-        key=lambda su: su.score,
-        reverse=True,
-    )
+    positive = _positive_candidates(survivors)
     # 绝对阈值仅在校准（已精排）路径生效；相对阈值分路取不同默认：
     # 校准分较可信取严，未校准 RRF 分聚集取松，避免过度偏好多通道一致。
-    abs_min = min_score if calibrated else 0.0
-    ratio = min_score_ratio if calibrated else min_score_ratio_uncalibrated
-    base_detail = {
-        "in": str(n_in),
-        "positive": str(len(positive)),
-        "calibrated": str(calibrated),
-        "min_score": f"{abs_min:g}",
-        "min_score_ratio": f"{ratio:g}",
-    }
+    abs_min, ratio = _threshold_values(
+        calibrated, min_score, min_score_ratio, min_score_ratio_uncalibrated
+    )
     if not positive:
-        return [], {
-            **base_detail,
-            "passed": "0",
-            "backfilled": "0",
-            "out": "0",
-            "dropped": str(n_in),
-        }
+        return [], _threshold_detail(n_in, positive, calibrated, abs_min, ratio, 0, 0)
 
     max_score = positive[0].score
-
-    def _pass(score: float) -> bool:
-        if abs_min > 0.0 and score < abs_min:
-            return False
-        if ratio > 0.0 and max_score > 0.0 and score < ratio * max_score:
-            return False
-        return True
-
-    n_pass = 0
-    for su in positive:
-        if _pass(su.score):
-            n_pass += 1
-        else:
-            break
+    n_pass = _count_passing(positive, abs_min, ratio, max_score)
 
     floor = min(max(0, int(min_results)), top_k) if min_results > 0 else 0
     keep_n = max(n_pass, floor)
     kept = positive[:keep_n]
     backfilled = max(0, len(kept) - n_pass)
-    return kept, {
-        **base_detail,
+    return kept, _threshold_detail(
+        n_in, positive, calibrated, abs_min, ratio, n_pass, backfilled, len(kept)
+    )
+
+
+def _positive_candidates(survivors: list[ScoredCandidate]) -> list[ScoredCandidate]:
+    """返回按分数降序排列的正分候选。"""
+    return sorted(
+        (su for su in survivors if su.score > 0.0),
+        key=lambda su: su.score,
+        reverse=True,
+    )
+
+
+def _threshold_values(
+    calibrated: bool,
+    min_score: float,
+    min_score_ratio: float,
+    min_score_ratio_uncalibrated: float,
+) -> tuple[float, float]:
+    """选择校准和未校准路径对应的阈值。"""
+    return (
+        min_score if calibrated else 0.0,
+        min_score_ratio if calibrated else min_score_ratio_uncalibrated,
+    )
+
+
+def _count_passing(
+    positive: list[ScoredCandidate], abs_min: float, ratio: float, max_score: float
+) -> int:
+    """统计连续通过绝对阈值和相对阈值的候选数量。"""
+    return sum(
+        1
+        for candidate in positive
+        if not (abs_min > 0.0 and candidate.score < abs_min)
+        and not (ratio > 0.0 and max_score > 0.0 and candidate.score < ratio * max_score)
+    )
+
+
+def _threshold_detail(
+    n_in: int,
+    positive: list[ScoredCandidate],
+    calibrated: bool,
+    abs_min: float,
+    ratio: float,
+    n_pass: int,
+    backfilled: int,
+    out_count: int = 0,
+) -> dict[str, str]:
+    """构造阈值过滤轨迹明细。"""
+    return {
+        "in": str(n_in),
+        "positive": str(len(positive)),
+        "calibrated": str(calibrated),
+        "min_score": f"{abs_min:g}",
+        "min_score_ratio": f"{ratio:g}",
         "passed": str(n_pass),
         "backfilled": str(backfilled),
-        "out": str(len(kept)),
-        "dropped": str(n_in - len(kept)),
+        "out": str(out_count),
+        "dropped": str(n_in - out_count),
     }
 
 

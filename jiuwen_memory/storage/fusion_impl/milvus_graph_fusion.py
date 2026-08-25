@@ -45,7 +45,7 @@ _VALUE_KEY = "_fusion_value_b64"
 
 
 class MilvusGraphFusionStore(FusionStore):
-    def __init__(
+    def __init__(  # pylint: disable=too-many-locals
         self,
         *,
         working_dir: str,

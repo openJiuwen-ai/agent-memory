@@ -85,7 +85,7 @@ def _action_for_store_method(name: str) -> StorageAction:
 
 
 class CompositeStorage(Storage):
-    def __init__(
+    def __init__(  # pylint: disable=too-many-locals
         self,
         *,
         kv: KVStore | None = None,
@@ -430,7 +430,7 @@ class CompositeStorage(Storage):
                 by_id[unit_id] = unit
         return [by_id[unit_id] for unit_id in unit_ids if unit_id in by_id]
 
-    def _recall(
+    def _recall(  # pylint: disable=too-many-locals
         self,
         scope: Scope,
         query: ParsedQuery,

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Sequence
+from functools import partial
 
 from evaluation.core.types import CaseOutcome, MetricResult
 
@@ -61,6 +62,26 @@ def _macro(graded: list[CaseOutcome], fn: Callable[[CaseOutcome], float]) -> flo
     return sum(fn(outcome) for outcome in graded) / len(graded)
 
 
+def _recall_score(outcome: CaseOutcome, k: int) -> float:
+    return recall_at_k(outcome.ranked_unit_ids, outcome.relevant_unit_ids, k)
+
+
+def _precision_score(outcome: CaseOutcome, k: int) -> float:
+    return precision_at_k(outcome.ranked_unit_ids, outcome.relevant_unit_ids, k)
+
+
+def _ndcg_score(outcome: CaseOutcome, k: int) -> float:
+    return ndcg_at_k(outcome.ranked_unit_ids, outcome.relevant_unit_ids, k)
+
+
+def _mrr_score(outcome: CaseOutcome) -> float:
+    return reciprocal_rank(outcome.ranked_unit_ids, outcome.relevant_unit_ids)
+
+
+def _map_score(outcome: CaseOutcome) -> float:
+    return average_precision(outcome.ranked_unit_ids, outcome.relevant_unit_ids)
+
+
 def ir_metrics(ks: Sequence[int] = (1, 3, 5, 10)):
     """构造 IR 指标套件（一个 :data:`evaluation.core.runner.Metric`）。"""
 
@@ -72,68 +93,35 @@ def ir_metrics(ks: Sequence[int] = (1, 3, 5, 10)):
             results.append(
                 MetricResult(
                     f"recall@{k}",
-                    _macro(
-                        graded,
-                        lambda outcome, k=k: recall_at_k(
-                            outcome.ranked_unit_ids,
-                            outcome.relevant_unit_ids,
-                            k,
-                        ),
-                    ),
+                    _macro(graded, partial(_recall_score, k=k)),
                     dict(detail),
                 )
             )
             results.append(
                 MetricResult(
                     f"precision@{k}",
-                    _macro(
-                        graded,
-                        lambda outcome, k=k: precision_at_k(
-                            outcome.ranked_unit_ids,
-                            outcome.relevant_unit_ids,
-                            k,
-                        ),
-                    ),
+                    _macro(graded, partial(_precision_score, k=k)),
                     dict(detail),
                 )
             )
             results.append(
                 MetricResult(
                     f"ndcg@{k}",
-                    _macro(
-                        graded,
-                        lambda outcome, k=k: ndcg_at_k(
-                            outcome.ranked_unit_ids,
-                            outcome.relevant_unit_ids,
-                            k,
-                        ),
-                    ),
+                    _macro(graded, partial(_ndcg_score, k=k)),
                     dict(detail),
                 )
             )
         results.append(
             MetricResult(
                 "mrr",
-                _macro(
-                    graded,
-                    lambda outcome: reciprocal_rank(
-                        outcome.ranked_unit_ids,
-                        outcome.relevant_unit_ids,
-                    ),
-                ),
+                _macro(graded, _mrr_score),
                 dict(detail),
             )
         )
         results.append(
             MetricResult(
                 "map",
-                _macro(
-                    graded,
-                    lambda outcome: average_precision(
-                        outcome.ranked_unit_ids,
-                        outcome.relevant_unit_ids,
-                    ),
-                ),
+                _macro(graded, _map_score),
                 dict(detail),
             )
         )

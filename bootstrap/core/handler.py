@@ -549,16 +549,10 @@ def _add(srv, payload: Body) -> Body:
     return {"ok": True, "op": "add", "item_id": unit.id, "item": _unit_view(unit)}
 
 
-def _batch_add(srv, payload: Body) -> Body:
+def _batch_defaults(payload: Body) -> tuple[dict, Scope, Modality, dict | None, dict | None, list | None, object]:
     raw_defaults = payload.get("defaults", {})
     if not isinstance(raw_defaults, dict):
         raise ValidationError("batch_add defaults must be an object")
-    raw_items = payload.get("items")
-    if not isinstance(raw_items, list) or not raw_items:
-        raise ValidationError("batch_add items must be a non-empty list")
-    if not isinstance(payload.get("continue_on_error", True), bool):
-        raise ValidationError("batch_add continue_on_error must be boolean")
-
     defaults = {key: value for key, value in payload.items() if key not in {"defaults", "items"}}
     defaults.update(raw_defaults)
     if "metadata" in defaults:
@@ -582,7 +576,18 @@ def _batch_add(srv, payload: Body) -> Body:
     default_occurred_at = _parse_occurred_at(
         defaults.get("occurred_at"), name="batch_add defaults.occurred_at"
     )
+    return (
+        defaults,
+        default_scope,
+        default_source,
+        raw_system_metadata,
+        raw_user_metadata,
+        default_tags,
+        default_occurred_at,
+    )
 
+
+def _batch_items(raw_items: list, default_scope: Scope) -> list[BatchWriteItem | object]:
     items: list[BatchWriteItem | object] = []
     for raw_item in raw_items:
         if not isinstance(raw_item, dict):
@@ -626,6 +631,25 @@ def _batch_add(srv, payload: Body) -> Body:
             )
         )
 
+    return items
+
+
+def _batch_add(srv, payload: Body) -> Body:
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list) or not raw_items:
+        raise ValidationError("batch_add items must be a non-empty list")
+    if not isinstance(payload.get("continue_on_error", True), bool):
+        raise ValidationError("batch_add continue_on_error must be boolean")
+    (
+        defaults,
+        default_scope,
+        default_source,
+        raw_system_metadata,
+        raw_user_metadata,
+        default_tags,
+        default_occurred_at,
+    ) = _batch_defaults(payload)
+    items = _batch_items(raw_items, default_scope)
     result = srv.api.batch_add(
         items,
         default_scope,

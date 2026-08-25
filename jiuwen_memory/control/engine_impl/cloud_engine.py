@@ -238,7 +238,7 @@ class CloudEngine(MemoryEngine):
     def health(self) -> None:
         return None
 
-    async def write(
+    async def write(  # pylint: disable=too-many-locals
         self,
         content: str,
         scope: Scope,
@@ -577,6 +577,8 @@ class CloudEngine(MemoryEngine):
         )
         return new
 
+    # Pylint: delete preserves authorization and lifecycle decisions in one flow.
+    # pylint: disable=too-many-locals
     async def delete(self, selector: DeleteSelector) -> list[str]:
         selector_is_empty = (
             not selector.unit_ids and not selector.tags and selector.before is None

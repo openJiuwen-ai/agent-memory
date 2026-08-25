@@ -83,6 +83,17 @@ class ScoreMaxFuser(Fuser):
         # 最高分取基准，候选少的层会把弱命中抬到与主层最强候选同级（见 layered_merge）。
         merged = merge_layered_channels(candidates)
 
+        best, channel, evidence, representatives = self._accumulate(merged)
+        return self._build_fused(best, channel, evidence, representatives)
+
+    def _accumulate(
+        self, merged: list[list[ScoredCandidate]]
+    ) -> tuple[
+        dict[str, float],
+        dict[str, RecallChannel],
+        dict[str, list[ChannelEvidence]],
+        dict[str, ScoredCandidate],
+    ]:
         best: dict[str, float] = {}
         channel: dict[str, RecallChannel] = {}
         evidence: dict[str, list[ChannelEvidence]] = {}
@@ -110,6 +121,15 @@ class ScoreMaxFuser(Fuser):
                     best[su.unit_id] = contribution
                     channel[su.unit_id] = ch
 
+        return best, channel, evidence, representatives
+
+    @staticmethod
+    def _build_fused(
+        best: dict[str, float],
+        channel: dict[str, RecallChannel],
+        evidence: dict[str, list[ChannelEvidence]],
+        representatives: dict[str, ScoredCandidate],
+    ) -> list[ScoredCandidate]:
         fused: list[ScoredCandidate] = []
         for uid, score in best.items():
             representative = representatives.get(uid)

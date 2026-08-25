@@ -145,7 +145,7 @@ class VectorIndexBuilder(IndexBuilder):
     # IndexBuilder 契约
     # ------------------------------------------------------------------
 
-    def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
+    def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:  # pylint: disable=too-many-locals
         """为一批记忆单元构建向量索引。"""
         # 本实现只建检索索引，不交付记忆本体：FORWARD_ONLY 即整体跳过。
         if mode is IndexWriteMode.FORWARD_ONLY:
@@ -339,7 +339,7 @@ class VectorIndexBuilder(IndexBuilder):
                 continue  # 该层未注入，跳过
             self._build_one_layer(store, layer, get_text, units)
 
-    def _build_one_layer(
+    def _build_one_layer(  # pylint: disable=too-many-locals
         self, store: VectorStore, layer: str, get_text, units: list[MemoryUnit]
     ) -> None:
         """构建单层（L0 或 L1）向量索引：整段 embed → 写独立 store。

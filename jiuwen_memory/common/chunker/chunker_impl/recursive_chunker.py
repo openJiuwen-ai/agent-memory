@@ -223,7 +223,7 @@ class RecursiveChunker(Chunker):
     # 分组 + overlap → Chunk
     # ------------------------------------------------------------------
 
-    def _build_chunks(
+    def _build_chunks(  # pylint: disable=too-many-locals
         self,
         splits: list[_Split],
         unit_id: str,

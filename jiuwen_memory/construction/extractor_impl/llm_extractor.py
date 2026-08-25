@@ -505,7 +505,7 @@ class ExtractorImpl(Extractor):
     def preprocess(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         return self._preprocess(units)
 
-    def build_candidates(
+    def build_candidates(  # pylint: disable=too-many-locals
         self,
         items: list[dict],
         units: list[MemoryUnit],

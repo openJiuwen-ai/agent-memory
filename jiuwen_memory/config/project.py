@@ -28,8 +28,15 @@ def project_assembly_values(ctx: AssemblyContext) -> dict[str, str]:
     - 若 globals 或 params 含 ``<ns>.active`` / ``active`` 约定，照常投影
     """
     out: dict[str, str] = {}
+    _project_globals(out, ctx.globals)
+    _project_prompts(out, ctx.globals.get("prompts"))
+    _project_namespaces(out, ctx.namespaces)
+    return out
 
-    for key, value in ctx.globals.items():
+
+def _project_globals(out: dict[str, str], values: dict[str, Any]) -> None:
+    """投影简单全局配置值。"""
+    for key, value in values.items():
         if key == "prompts":
             continue
         if key.startswith("_"):
@@ -39,15 +46,21 @@ def project_assembly_values(ctx: AssemblyContext) -> dict[str, str]:
             continue
         out[f"{GLOBALS_PREFIX}{key}"] = _stringify(value)
 
-    prompts = ctx.globals.get("prompts")
-    if isinstance(prompts, dict):
-        for phase, items in prompts.items():
-            if not isinstance(items, dict):
-                continue
-            for name, text in items.items():
-                out[f"{PROMPTS_PREFIX}{phase}.{name}"] = _stringify(text)
 
-    for top_name, instances in ctx.namespaces.items():
+def _project_prompts(out: dict[str, str], prompts: Any) -> None:
+    """投影分阶段 prompt 配置。"""
+    if not isinstance(prompts, dict):
+        return
+    for phase, items in prompts.items():
+        if not isinstance(items, dict):
+            continue
+        for name, text in items.items():
+            out[f"{PROMPTS_PREFIX}{phase}.{name}"] = _stringify(text)
+
+
+def _project_namespaces(out: dict[str, str], namespaces: dict[str, dict[str, RawSpec]]) -> None:
+    """投影命名空间实例参数。"""
+    for top_name, instances in namespaces.items():
         if top_name == "config_source":
             continue
         for inst_name, spec in instances.items():
@@ -63,9 +76,6 @@ def project_assembly_values(ctx: AssemblyContext) -> dict[str, str]:
                     # 兼容装配 params 名 embedder_api_key → 约定 embedder.api_key
                     short = _short_field(top_name, param_key)
                     out[namespaced_key(top_name, short)] = _stringify(param_val)
-
-    return out
-
 
 def _short_field(namespace: str, param_key: str) -> str:
     """把 ``embedder_api_key`` 收成约定 ``api_key``；无法收则原样返回。"""

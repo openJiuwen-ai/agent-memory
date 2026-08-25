@@ -223,6 +223,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         )
         return schemas
 
+    # Pylint: this dispatch keeps tool-specific state together for JSON responses.
+    # pylint: disable=too-many-locals
     async def handle_tool_call(self, tool_name: str, args: dict) -> str:
         """LLM 调工具时触发；返 JSON 字符串（Rail 会 ``json.loads``）。"""
         logger.info("[AgentMemoryMemoryProvider] handle_tool_call CALLED tool=%s args=%s", tool_name, args)

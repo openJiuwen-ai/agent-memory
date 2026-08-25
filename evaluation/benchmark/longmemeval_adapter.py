@@ -96,36 +96,11 @@ class LongMemEvalDataset(Dataset):
     def _parse_sample(self, sample: dict) -> None:
         qid = sample["question_id"]
         scope = Scope(org=self._scope_org, user=qid)
-        sessions = sample.get("haystack_sessions", [])
-        session_ids = sample.get("haystack_session_ids", [])
-        dates = sample.get("haystack_dates", [])
-        answer_session_ids = set(sample.get("answer_session_ids", []))
-
-        evidence_keys: set[str] = set()
-        session_keys: dict[str, list[str]] = {}  # session_id -> 其全部 turn key
-        for s_idx, turns in enumerate(sessions):
-            sid = session_ids[s_idx] if s_idx < len(session_ids) else f"session_{s_idx + 1}"
-            base_dt = _parse_dt(dates[s_idx]) if s_idx < len(dates) else None
-            session_keys[sid] = []
-            for t_idx, turn in enumerate(turns):
-                key = f"{qid}/{sid}#{t_idx}"
-                session_keys[sid].append(key)
-                self._seeds.append(
-                    MemorySeed(
-                        key=key,
-                        content=f"[{turn.get('role', 'user')}]: {turn.get('content', '')}",
-                        scope=scope,
-                        tags=[sid],
-                        metadata={"session": sid, "role": turn.get("role", "")},
-                        occurred_at=(base_dt + timedelta(seconds=t_idx) if base_dt else None),
-                    )
-                )
-                if turn.get("has_answer"):  # turn 级证据标注（更精确）
-                    evidence_keys.add(key)
+        evidence_keys, session_keys = self._parse_sessions(sample, qid, scope)
 
         # 无 turn 级 has_answer 时，回退到会话级证据标注（answer_session_ids 整会话）。
         if not evidence_keys:
-            for sid in answer_session_ids:
+            for sid in sample.get("answer_session_ids", []):
                 evidence_keys.update(session_keys.get(sid, []))
 
         qtype = sample.get("question_type", "")
@@ -145,6 +120,36 @@ class LongMemEvalDataset(Dataset):
                 },
             )
         )
+
+    def _parse_sessions(  # pylint: disable=too-many-locals
+        self, sample: dict, qid: str, scope: Scope
+    ) -> tuple[set[str], dict[str, list[str]]]:
+        """解析样本会话并追加记忆种子。"""
+        sessions = sample.get("haystack_sessions", [])
+        session_ids = sample.get("haystack_session_ids", [])
+        dates = sample.get("haystack_dates", [])
+        evidence_keys: set[str] = set()
+        session_keys: dict[str, list[str]] = {}
+        for s_idx, turns in enumerate(sessions):
+            sid = session_ids[s_idx] if s_idx < len(session_ids) else f"session_{s_idx + 1}"
+            base_dt = _parse_dt(dates[s_idx]) if s_idx < len(dates) else None
+            session_keys[sid] = []
+            for t_idx, turn in enumerate(turns):
+                key = f"{qid}/{sid}#{t_idx}"
+                session_keys[sid].append(key)
+                self._seeds.append(
+                    MemorySeed(
+                        key=key,
+                        content=f"[{turn.get('role', 'user')}]: {turn.get('content', '')}",
+                        scope=scope,
+                        tags=[sid],
+                        metadata={"session": sid, "role": turn.get("role", "")},
+                        occurred_at=(base_dt + timedelta(seconds=t_idx) if base_dt else None),
+                    )
+                )
+                if turn.get("has_answer"):
+                    evidence_keys.add(key)
+        return evidence_keys, session_keys
 
     # -- Dataset 接口 ------------------------------------------------------- #
     def _require_loaded(self) -> None:

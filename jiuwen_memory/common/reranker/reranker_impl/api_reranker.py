@@ -36,26 +36,42 @@ from jiuwen_memory.common.reranker.base import Reranker, RerankerProducer
 logger = get_logger(__name__)
 
 
+def _cohere_body(model: str, query: str, docs: list[str]) -> dict[str, Any]:
+    return {
+        "model": model,
+        "query": query,
+        "documents": docs,
+        "top_n": len(docs),
+    }
+
+
+def _cohere_results(data: dict[str, Any]) -> list[dict[str, Any]]:
+    return data.get("results", [])
+
+
+def _dashscope_body(model: str, query: str, docs: list[str]) -> dict[str, Any]:
+    return {
+        "model": model,
+        "input": {"query": query, "documents": docs},
+        "parameters": {"return_documents": False, "top_n": len(docs)},
+    }
+
+
+def _dashscope_results(data: dict[str, Any]) -> list[dict[str, Any]]:
+    return (data.get("output") or {}).get("results", [])
+
+
 # 每种方言 = 端点后缀 + body 拼装 + 从响应取 results 列表（项均为 {index, relevance_score}）。
 _DIALECTS: Dict[str, Dict[str, Any]] = {
     "cohere": {
         "path": "/rerank",
-        "body": lambda model, query, docs: {
-            "model": model,
-            "query": query,
-            "documents": docs,
-            "top_n": len(docs),
-        },
-        "results": lambda data: data.get("results", []),
+        "body": _cohere_body,
+        "results": _cohere_results,
     },
     "dashscope": {
         "path": "/services/rerank/text-rerank/text-rerank",
-        "body": lambda model, query, docs: {
-            "model": model,
-            "input": {"query": query, "documents": docs},
-            "parameters": {"return_documents": False, "top_n": len(docs)},
-        },
-        "results": lambda data: (data.get("output") or {}).get("results", []),
+        "body": _dashscope_body,
+        "results": _dashscope_results,
     },
 }
 

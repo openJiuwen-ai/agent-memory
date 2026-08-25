@@ -129,7 +129,55 @@ class KeywordRecaller(Recaller):
     # L2 实体关联扩展
     # ------------------------------------------------------------------
 
-    def _expand_by_entities(
+    @staticmethod
+    def _entity_hashes(records: list) -> set[str]:
+        hashes: set[str] = set()
+        for rec in records:
+            meta = getattr(rec, "metadata", None) or {}
+            for entity_text in meta.get("entities") or []:
+                normalized = EntityNormalizer.normalize(entity_text)
+                if normalized:
+                    hashes.add(hash_entity_text(normalized))
+        return hashes
+
+    def _entity_records(self, scope: Scope, hashes: set[str]) -> list:
+        space_id = space_id_from_scope(scope)
+        filters = EntityStoreFilters.from_scope(scope)
+        try:
+            return self._entity_store.find_by_entity_text_hash(
+                space_id,
+                tuple(hashes),
+                filters=filters,
+                limit=self._entity_list_limit(len(hashes)),
+            )
+        except Exception:
+            logger.warning("entity_expansion_lookup_failed space_id=%s", space_id, exc_info=True)
+            return []
+
+    @staticmethod
+    def _entity_contributions(entity_records: list, batch1_ids: set[str]) -> dict[str, float]:
+        raw_contrib: dict[str, float] = defaultdict(float)
+        for record in entity_records:
+            df = len(record.linked_memory_ids)
+            if df <= 0:
+                continue
+            weight = 1.0 / math.log(1.0 + df)
+            for uid in record.linked_memory_ids:
+                if uid not in batch1_ids:
+                    raw_contrib[uid] += weight
+        return raw_contrib
+
+    @staticmethod
+    def _entity_anchor(batch1: list[ScoredUnit]) -> tuple[float, float]:
+        scores = [unit.score for unit in batch1]
+        if len(scores) >= 3:
+            anchor = median(scores)
+        else:
+            anchor = (max(scores) if scores else 0.0) * 0.5
+        cap = (max(scores) / anchor) if scores and anchor > 0 else 1.0
+        return anchor, cap
+
+    def _expand_by_entities(  # pylint: disable=too-many-locals
         self,
         scope: Scope,
         query: ParsedQuery,
@@ -161,54 +209,25 @@ class KeywordRecaller(Recaller):
         if self._entity_store is None or self._layer != "l2" or not batch1:
             return []
 
-        # 收集 batch 1 候选记录里的所有 entities 明文，归一化+hash 去重。
-        hashes: set[str] = set()
-        for rec in records:
-            meta = getattr(rec, "metadata", None) or {}
-            for entity_text in meta.get("entities") or []:
-                normalized = EntityNormalizer.normalize(entity_text)
-                if normalized:
-                    hashes.add(hash_entity_text(normalized))
+        hashes = self._entity_hashes(records)
         if not hashes:
             return []
 
-        space_id = space_id_from_scope(scope)
-        filters = EntityStoreFilters.from_scope(scope)
-        try:
-            entity_records = self._entity_store.find_by_entity_text_hash(
-                space_id, tuple(hashes), filters=filters, limit=self._entity_list_limit(len(hashes)),
-            )
-        except Exception:
-            logger.warning("entity_expansion_lookup_failed space_id=%s", space_id, exc_info=True)
+        entity_records = self._entity_records(scope, hashes)
+        if not entity_records:
             return []
 
         # 聚合：unit_id → Σ idf(df_e)。df 用 EntityRecord.linked_memory_ids 全长
         # （实体固有属性，不因 batch1 命中浮动）。batch1 已命中 id 不扩展（MaxP 归并）。
-        batch1_ids = {u.unit_id for u in batch1}
-        raw_contrib: dict[str, float] = defaultdict(float)
-        for er in entity_records:
-            df = len(er.linked_memory_ids)
-            if df <= 0:
-                continue
-            weight = 1.0 / math.log(1.0 + df)  # idf(df): df=1→1.44, df=10→0.42, df=1000→0.145
-            for uid in er.linked_memory_ids:
-                if uid in batch1_ids:
-                    continue
-                raw_contrib[uid] += weight
+        batch1_ids = {unit.unit_id for unit in batch1}
+        raw_contrib = self._entity_contributions(entity_records, batch1_ids)
         if not raw_contrib:
             return []
 
         # 中位数锚定（rank-based，与 RRF 口径一致——fuser 只看 rank 不看绝对分）。
-        scores = [u.score for u in batch1]
-        if len(scores) >= 3:
-            anchor = median(scores)
-        else:
-            anchor = (max(scores) if scores else 0.0) * 0.5  # batch1<3 fallback
+        anchor, cap = self._entity_anchor(batch1)
         if anchor <= 0.0:
             return []
-        # cap = max/anchor ≥ 1：保证 score=anchor×min(raw,cap) ≤ anchor×cap = max(batch1)，
-        # 严格不压过 batch1 最高分。max==anchor（batch1<3 时 max×0.5=anchor）退化为 cap=2.0。
-        cap = (max(scores) / anchor) if scores and anchor > 0 else 1.0
 
         # 按 raw 相关分预筛到 _ENTITY_EXPANSION_TOP_K（纯内存，无 IO），再点读真源
         # 做生产过滤。点读量从"反查全部 id"压到 ≤ N=20。

@@ -213,68 +213,75 @@ class HanlpFeatureExtractor(FeatureExtractor):
         其中 ``pos`` 返回与 tokens 对齐的 ``list[str]``，``ner`` 返回
         ``[(span, type, start, end), ...]`` 四元组列表。
         """
-        keywords: list[str] = []
-        entities: list[Entity] = []
-        seen_keywords: set[str] = set()
-
-        # --- 分词（STL 上游必需） ---
-        tokens: list[str] = []
-        if self._tok_task is not None:
-            try:
-                tok_out = self._tok_task(text)
-                if isinstance(tok_out, list):
-                    tokens = [str(t) for t in tok_out]
-            except Exception:
-                logger.warning("HanlpFeatureExtractor: tok task failed, using empty tokens")
-
-        # --- POS 词性标注 ---
-        pos_tokens: list[tuple[str, str]] = []
-        if self._pos_task is not None and tokens:
-            try:
-                tags = self._pos_task(tokens)
-                if isinstance(tags, list) and len(tags) == len(tokens):
-                    pos_tokens = list(zip(tokens, [str(t) for t in tags]))
-                else:
-                    logger.warning(
-                        "HanlpFeatureExtractor: POS returned unexpected shape, "
-                        "expected list aligned with tokens"
-                    )
-            except Exception:
-                logger.warning("HanlpFeatureExtractor: POS task failed, using empty pos_tokens")
-
-        # 关键词过滤
-        for word, pos in pos_tokens:
-            if pos not in _HANLP_KEYWORD_POS:
-                continue
-            word_stripped = word.strip()
-            if not word_stripped or word_stripped in _STOP_WORDS:
-                continue
-            if len(word_stripped) < 2 and not any(c >= '一' for c in word_stripped):
-                continue
-            if word_stripped not in seen_keywords:
-                seen_keywords.add(word_stripped)
-                keywords.append(word_stripped)
-
-        # 如果 POS 未产出关键词，从分词结果中取名词/动词
-        if not keywords and pos_tokens:
-            for word, pos in pos_tokens:
-                word_stripped = word.strip()
-                if word_stripped and word_stripped not in _STOP_WORDS and word_stripped not in seen_keywords:
-                    seen_keywords.add(word_stripped)
-                    keywords.append(word_stripped)
-
-        # --- NER 实体识别 ---
-        if self._ner_task is not None and tokens:
-            try:
-                ner_result = self._ner_task(tokens)
-                entities = self._parse_ner_result(ner_result, text)
-            except Exception:
-                logger.warning("HanlpFeatureExtractor: NER task failed, using empty entities")
-
-        # --- 标签推断 ---
+        tokens = self._tokenize(text)
+        pos_tokens = self._tag_tokens(tokens)
+        keywords = self._extract_keywords(pos_tokens)
+        entities = self._extract_entities(tokens, text)
         labels = self._infer_labels(text, keywords, entities)
-
         return FeatureSet(keywords=keywords, entities=entities, labels=labels)
+
+    def _tokenize(self, text: str) -> list[str]:
+        """Run the optional HanLP tokenization task."""
+        if self._tok_task is None:
+            return []
+        try:
+            result = self._tok_task(text)
+        except Exception:
+            logger.warning("HanlpFeatureExtractor: tok task failed, using empty tokens")
+            return []
+        return [str(token) for token in result] if isinstance(result, list) else []
+
+    def _tag_tokens(self, tokens: list[str]) -> list[tuple[str, str]]:
+        """Run POS tagging and retain only token-aligned results."""
+        if self._pos_task is None or not tokens:
+            return []
+        try:
+            tags = self._pos_task(tokens)
+        except Exception:
+            logger.warning("HanlpFeatureExtractor: POS task failed, using empty pos_tokens")
+            return []
+        if not isinstance(tags, list) or len(tags) != len(tokens):
+            logger.warning(
+                "HanlpFeatureExtractor: POS returned unexpected shape, "
+                "expected list aligned with tokens"
+            )
+            return []
+        return list(zip(tokens, [str(tag) for tag in tags]))
+
+    @staticmethod
+    def _extract_keywords(pos_tokens: list[tuple[str, str]]) -> list[str]:
+        """Extract POS-filtered keywords with a token fallback."""
+        keywords: list[str] = []
+        seen: set[str] = set()
+        for word, pos in pos_tokens:
+            stripped = word.strip()
+            if pos not in _HANLP_KEYWORD_POS or not stripped:
+                continue
+            if stripped in _STOP_WORDS:
+                continue
+            if len(stripped) < 2 and not any(char >= '一' for char in stripped):
+                continue
+            if stripped not in seen:
+                seen.add(stripped)
+                keywords.append(stripped)
+        if keywords:
+            return keywords
+        for word, _ in pos_tokens:
+            stripped = word.strip()
+            if stripped and stripped not in _STOP_WORDS and stripped not in seen:
+                seen.add(stripped)
+                keywords.append(stripped)
+        return keywords
+
+    def _extract_entities(self, tokens: list[str], text: str) -> list[Entity]:
+        """Run NER and normalize its result, returning an empty list on failure."""
+        if self._ner_task is None or not tokens:
+            return []
+        try:
+            return self._parse_ner_result(self._ner_task(tokens), text)
+        except Exception:
+            logger.warning("HanlpFeatureExtractor: NER task failed, using empty entities")
+            return []
 
     def _parse_ner_result(self, result, text: str) -> list[Entity]:
         """解析 HanLP NER 输出，转换为 Entity 列表。"""

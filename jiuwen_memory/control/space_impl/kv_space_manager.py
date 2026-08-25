@@ -203,6 +203,15 @@ def _normalize_member_scope(org: str, space: str, member: Scope) -> Scope:
     return scope
 
 
+def _member_sort_key(member: SpaceMember) -> tuple[str, str, str, str]:
+    return (
+        member.scope.user,
+        member.scope.agent,
+        member.scope.session,
+        member.role,
+    )
+
+
 class KVSpaceManager(SpaceManager):
     """SpaceManager backed by KVStore."""
 
@@ -392,14 +401,7 @@ class KVSpaceManager(SpaceManager):
             _member_from_bytes(raw)
             for _, raw in self._kv.scan(_scope(org, space), prefix=_MEMBER_PREFIX)
         ]
-        members.sort(
-            key=lambda member: (
-                member.scope.user,
-                member.scope.agent,
-                member.scope.session,
-                member.role,
-            )
-        )
+        members.sort(key=_member_sort_key)
         return members
 
     def add_member(self, org: str, space: str, member: SpaceMember) -> None:

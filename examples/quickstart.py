@@ -23,7 +23,7 @@ from jiuwen_memory.control.types import MemoryPatch
 logger = logging.getLogger(__name__)
 
 
-def main() -> None:
+def main() -> None:  # pylint: disable=too-many-locals
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yml")
     config = Config.from_yaml(cfg_path) if os.path.exists(cfg_path) else Config()

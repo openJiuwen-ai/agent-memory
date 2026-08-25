@@ -167,7 +167,7 @@ _PAIR_CONTEXT_TEMPLATE = """\
 class LLMAssociator(Associator):
     """M2 Associator：三层发现流水线，L1/L2 快速通道 + L3 LLM 验证/深度发现。"""
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-locals
         self,
         llm: LLM,
         feature_extractor: FeatureExtractor,
@@ -366,6 +366,108 @@ class LLMAssociator(Associator):
     # Phase 2: 候选关系生成
     # ------------------------------------------------------------------
 
+    def _corefer_candidates(
+        self,
+        entity_index: dict[str, list[str]],
+        features_map: dict[str, FeatureSet],
+    ) -> list[RelationCandidate]:
+        candidates: list[RelationCandidate] = []
+        for entity_key, uid_list in entity_index.items():
+            if len(uid_list) < 2:
+                continue
+            for index, source_id in enumerate(uid_list):
+                for target_id in uid_list[index + 1:]:
+                    source_features = features_map.get(source_id)
+                    target_features = features_map.get(target_id)
+                    source_scores = [
+                        entity.score
+                        for entity in (source_features.entities if source_features else [])
+                        if (f"{entity.text}#{entity.type}" if entity.type else entity.text)
+                        == entity_key
+                    ]
+                    target_scores = [
+                        entity.score
+                        for entity in (target_features.entities if target_features else [])
+                        if (f"{entity.text}#{entity.type}" if entity.type else entity.text)
+                        == entity_key
+                    ]
+                    score = (
+                        sum(source_scores) / max(len(source_scores), 1)
+                        + sum(target_scores) / max(len(target_scores), 1)
+                    ) / 2.0
+                    candidates.append(
+                        RelationCandidate(
+                            source_id=source_id,
+                            target_id=target_id,
+                            relation=RelationType.COREFERS,
+                            score=score,
+                            evidence=[f"shared entity: {entity_key}"],
+                            discovery_layer=DiscoveryLayer.L1,
+                        )
+                    )
+        return candidates
+
+    def _vector_candidates(self, vectors: dict[str, list[float]]) -> list[RelationCandidate]:
+        candidates: list[RelationCandidate] = []
+        if len(vectors) < 2:
+            return candidates
+        ids = list(vectors)
+        for index, source_id in enumerate(ids):
+            for target_id in ids[index + 1:]:
+                score = self._cosine_similarity(vectors[source_id], vectors[target_id])
+                if score >= self._similarity_threshold:
+                    candidates.append(
+                        RelationCandidate(
+                            source_id=source_id,
+                            target_id=target_id,
+                            relation=RelationType.SIMILAR_TO,
+                            score=score,
+                            evidence=[f"cosine={score:.3f}"],
+                            discovery_layer=DiscoveryLayer.L1,
+                        )
+                    )
+        return candidates
+
+    def _keyword_candidates(
+        self,
+        features_map: dict[str, FeatureSet],
+        candidates: list[RelationCandidate],
+    ) -> list[RelationCandidate]:
+        if len(features_map) < 2:
+            return []
+        found: list[RelationCandidate] = []
+        ids = list(features_map)
+        existing_pairs = {
+            (candidate.source_id, candidate.target_id)
+            for candidate in candidates
+            if candidate.relation == RelationType.SIMILAR_TO
+        }
+        for index, source_id in enumerate(ids):
+            for target_id in ids[index + 1:]:
+                if (source_id, target_id) in existing_pairs:
+                    continue
+                source_keywords = set(features_map[source_id].keywords)
+                target_keywords = set(features_map[target_id].keywords)
+                if not source_keywords or not target_keywords:
+                    continue
+                score = len(source_keywords & target_keywords) / len(
+                    source_keywords | target_keywords
+                )
+                if score >= self._keyword_jaccard_threshold:
+                    found.append(
+                        RelationCandidate(
+                            source_id=source_id,
+                            target_id=target_id,
+                            relation=RelationType.SIMILAR_TO,
+                            score=score,
+                            evidence=[
+                                f"shared keywords: {','.join(sorted(source_keywords & target_keywords))}"
+                            ],
+                            discovery_layer=DiscoveryLayer.L2,
+                        )
+                    )
+        return found
+
     def _phase2_generate_candidates(
         self,
         units: list[MemoryUnit],
@@ -375,96 +477,9 @@ class LLMAssociator(Associator):
     ) -> list[RelationCandidate]:
         """L1/L2 快速通道：corefers + similar_to + 关键词 Jaccard 补充。"""
 
-        candidates: list[RelationCandidate] = []
-
-        # --- L1 corefers 候选 ---
-        for entity_key, uid_list in entity_index.items():
-            if len(uid_list) < 2:
-                continue
-            # 同实体跨 unit → 共指候选（无向，score 取实体置信度均值）
-            for index, source_id in enumerate(uid_list):
-                remaining_ids = uid_list[index + 1:]
-                for target_id in remaining_ids:
-                    # 计算该实体在两个 unit 的置信度均值作为候选 score
-                    fs_a = features_map.get(source_id)
-                    fs_b = features_map.get(target_id)
-                    scores_a = [
-                        e.score
-                        for e in (fs_a.entities if fs_a else [])
-                        if (f"{e.text}#{e.type}" if e.type else e.text) == entity_key
-                    ]
-                    scores_b = [
-                        e.score
-                        for e in (fs_b.entities if fs_b else [])
-                        if (f"{e.text}#{e.type}" if e.type else e.text) == entity_key
-                    ]
-                    avg_score = (
-                        sum(scores_a) / max(len(scores_a), 1)
-                        + sum(scores_b) / max(len(scores_b), 1)
-                    ) / 2.0
-                    candidates.append(
-                        RelationCandidate(
-                            source_id=source_id,
-                            target_id=target_id,
-                            relation=RelationType.COREFERS,
-                            score=avg_score,
-                            evidence=[f"shared entity: {entity_key}"],
-                            discovery_layer=DiscoveryLayer.L1,
-                        )
-                    )
-
-        # --- L1 similar_to 候选：向量 cosine ---
-        if vectors and len(vectors) >= 2:
-            vid_list = list(vectors.keys())
-            for index, a_id in enumerate(vid_list):
-                remaining_ids = vid_list[index + 1:]
-                for b_id in remaining_ids:
-                    cosine = self._cosine_similarity(vectors[a_id], vectors[b_id])
-                    if cosine >= self._similarity_threshold:
-                        candidates.append(
-                            RelationCandidate(
-                                source_id=a_id,
-                                target_id=b_id,
-                                relation=RelationType.SIMILAR_TO,
-                                score=cosine,
-                                evidence=[f"cosine={cosine:.3f}"],
-                                discovery_layer=DiscoveryLayer.L1,
-                            )
-                        )
-
-        # --- L2 关键词 Jaccard 补充 similar_to ---
-        if features_map and len(features_map) >= 2:
-            fid_list = list(features_map.keys())
-            for index, a_id in enumerate(fid_list):
-                remaining_ids = fid_list[index + 1:]
-                for b_id in remaining_ids:
-                    # 跳过已通过 cosine 发现的 pair（避免重复）
-                    existing = any(
-                        c.source_id == a_id
-                        and c.target_id == b_id
-                        and c.relation == RelationType.SIMILAR_TO
-                        for c in candidates
-                    )
-                    if existing:
-                        continue
-                    kw_a = set(features_map[a_id].keywords)
-                    kw_b = set(features_map[b_id].keywords)
-                    if not kw_a or not kw_b:
-                        continue
-                    jaccard = len(kw_a & kw_b) / len(kw_a | kw_b)
-                    if jaccard >= self._keyword_jaccard_threshold:
-                        shared_kw = sorted(kw_a & kw_b)
-                        candidates.append(
-                            RelationCandidate(
-                                source_id=a_id,
-                                target_id=b_id,
-                                relation=RelationType.SIMILAR_TO,
-                                score=jaccard,
-                                evidence=[f"shared keywords: {','.join(shared_kw)}"],
-                                discovery_layer=DiscoveryLayer.L2,
-                            )
-                        )
-
+        candidates = self._corefer_candidates(entity_index, features_map)
+        candidates.extend(self._vector_candidates(vectors))
+        candidates.extend(self._keyword_candidates(features_map, candidates))
         return candidates
 
     # ------------------------------------------------------------------
@@ -571,7 +586,7 @@ class LLMAssociator(Associator):
 
         return verified
 
-    def _verify_one_batch(
+    def _verify_one_batch(  # pylint: disable=too-many-locals
         self,
         unit_map: dict[str, MemoryUnit],
         candidates: list[RelationCandidate],
@@ -693,7 +708,7 @@ class LLMAssociator(Associator):
 
         return deep_candidates
 
-    def _deep_discover_one_batch(
+    def _deep_discover_one_batch(  # pylint: disable=too-many-locals
         self,
         unit_map: dict[str, MemoryUnit],
         seed_pairs: list[RelationCandidate],

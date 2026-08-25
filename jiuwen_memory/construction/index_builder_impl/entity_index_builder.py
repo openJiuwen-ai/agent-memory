@@ -134,6 +134,8 @@ class EntityLinkService:
     # link_memories：吃 MemoryUnit（不再是 MemoryRecordVector），sync 调用
     # ------------------------------------------------------------------
 
+    # Pylint: entity linking retains intermediate batches for consistent scoring.
+    # pylint: disable=too-many-locals
     def link_memories(self, units: list[MemoryUnit]) -> EntityLinkResult:
         """一批 MemoryUnit 落盘后维护实体反向索引。sync 调用（配合 IndexBuilder 契约）。"""
         if not units:
@@ -271,16 +273,11 @@ class EntityLinkService:
     # _link_group：两级匹配（hash 精确 → INSERT/LINK）
     # ------------------------------------------------------------------
 
-    def _link_group(
+    def _collect_group_entities(
         self,
-        space_id: str,
         group: list[tuple[MemoryUnit, int]],
         extracted_by_unit: list,
-    ) -> EntityLinkResult:
-        first_unit = group[0][0]
-        filters = EntityStoreFilters.from_scope(first_unit.scope)
-
-        # 归一化 + hash 聚合：同 hash 的不同 unit_id 合并到一个 set
+    ) -> tuple[dict[str, tuple[str, str, str, set[str]]], int]:
         entities_by_key: dict[str, tuple[str, str, str, set[str]]] = {}
         extracted_count = 0
         for unit, index in group:
@@ -292,9 +289,28 @@ class EntityLinkService:
                 key = hash_entity_text(normalized)
                 extracted_count += 1
                 if key not in entities_by_key:
-                    entities_by_key[key] = (mention.entity_type, mention.display_name, normalized, {unit.id})
+                    entities_by_key[key] = (
+                        mention.entity_type,
+                        mention.display_name,
+                        normalized,
+                        {unit.id},
+                    )
                 else:
-                    entities_by_key[key][3].add(unit.id)  # ← unit.id（str）存进 set
+                    entities_by_key[key][3].add(unit.id)
+        return entities_by_key, extracted_count
+
+    def _link_group(
+        self,
+        space_id: str,
+        group: list[tuple[MemoryUnit, int]],
+        extracted_by_unit: list,
+    ) -> EntityLinkResult:
+        first_unit = group[0][0]
+        filters = EntityStoreFilters.from_scope(first_unit.scope)
+
+        entities_by_key, extracted_count = self._collect_group_entities(
+            group, extracted_by_unit
+        )
 
         if not entities_by_key:
             return EntityLinkResult()

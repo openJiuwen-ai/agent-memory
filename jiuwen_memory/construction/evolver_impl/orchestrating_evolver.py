@@ -534,7 +534,7 @@ class OrchestratingEvolver(Evolver):
             )
             return DedupDecision.ADD
 
-    def _llm_dedup_decide_batch(
+    def _llm_dedup_decide_batch(  # pylint: disable=too-many-locals
         self,
         items: List[Tuple[MemoryUnit, List[Tuple[MemoryUnit, float]]]],
     ) -> dict[str, DedupDecision]:

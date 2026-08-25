@@ -673,6 +673,76 @@ class LocalMemoryAPI(MemoryAPI):
             error_type=error_type or type(error).__name__,
         )
 
+    @staticmethod
+    def _validate_batch_item_fields(item: BatchWriteItem) -> None:
+        if not isinstance(item, BatchWriteItem):
+            raise ValidationError("batch item must be BatchWriteItem")
+        _reject_invalid_content(item.content)
+        LocalMemoryAPI._validate_batch_item_collections(item)
+        LocalMemoryAPI._validate_batch_item_metadata(item)
+        LocalMemoryAPI._validate_batch_item_timing(item)
+
+    @staticmethod
+    def _validate_batch_item_collections(item: BatchWriteItem) -> None:
+        if item.assets is not None and (
+            not isinstance(item.assets, list)
+            or any(not isinstance(asset, str) for asset in item.assets)
+        ):
+            raise ValidationError("batch item assets must be list[str]")
+        for values, name in ((item.tags, "item tags"),):
+            if values is not None and (
+                not isinstance(values, list) or any(not isinstance(value, str) for value in values)
+            ):
+                raise ValidationError(f"batch {name} must be list[str]")
+
+    @staticmethod
+    def _validate_batch_item_metadata(item: BatchWriteItem) -> None:
+        if item.system_metadata is not None and not isinstance(item.system_metadata, dict):
+            raise ValidationError("batch item system_metadata must be dict")
+        if item.user_metadata is not None and not isinstance(item.user_metadata, dict):
+            raise ValidationError("batch item user_metadata must be dict")
+
+    @staticmethod
+    def _validate_batch_item_timing(item: BatchWriteItem) -> None:
+        if item.occurred_at is not None and not isinstance(item.occurred_at, datetime):
+            raise ValidationError("batch item occurred_at must be datetime")
+        if item.stream_id and not isinstance(item.stream_id, str):
+            raise ValidationError("batch item stream_id must be str")
+        if item.sequence is not None and not isinstance(item.sequence, int):
+            raise ValidationError("batch item sequence must be int")
+        if not isinstance(item.idempotency_key, str):
+            raise ValidationError("batch item idempotency_key must be str")
+
+    @staticmethod
+    def _resolve_batch_scope_and_source(
+        item: BatchWriteItem, scope: Scope | None, source: Modality
+    ) -> tuple[Scope, Modality]:
+        target_scope = item.scope if item.scope is not None else scope
+        if not isinstance(target_scope, Scope):
+            raise ValidationError("batch item scope is required")
+        item_source = item.source if item.source is not None else source
+        if not isinstance(item_source, Modality):
+            raise ValidationError("batch item source must be Modality")
+        return target_scope, item_source
+
+    @staticmethod
+    def _validate_batch_default_tags(tags: list[str] | None) -> None:
+        if tags is not None and (
+            not isinstance(tags, list) or any(not isinstance(value, str) for value in tags)
+        ):
+            raise ValidationError("batch tags must be list[str]")
+
+    @staticmethod
+    def _merge_batch_metadata(
+        defaults: dict[str, MetadataValueType] | None,
+        item_metadata: dict[str, MetadataValueType] | None,
+        *,
+        field_name: str,
+    ) -> dict[str, MetadataValueType] | None:
+        merged = {**(defaults or {}), **(item_metadata or {})}
+        _reject_non_scalar_metadata(merged, field_name=field_name)
+        return merged or None
+
     @classmethod
     def _normalize_batch_item(
         cls,
@@ -688,52 +758,23 @@ class LocalMemoryAPI(MemoryAPI):
     ) -> BatchWriteItem:
         if not isinstance(item, BatchWriteItem):
             raise ValidationError("batch item must be BatchWriteItem")
-        _reject_invalid_content(item.content)
-        target_scope = item.scope if item.scope is not None else scope
-        if not isinstance(target_scope, Scope):
-            raise ValidationError("batch item scope is required")
-        item_source = item.source if item.source is not None else source
-        if not isinstance(item_source, Modality):
-            raise ValidationError("batch item source must be Modality")
-        if item.assets is not None and (
-            not isinstance(item.assets, list)
-            or any(not isinstance(asset, str) for asset in item.assets)
-        ):
-            raise ValidationError("batch item assets must be list[str]")
-        for values, name in ((tags, "tags"), (item.tags, "item tags")):
-            if values is not None and (
-                not isinstance(values, list) or any(not isinstance(value, str) for value in values)
-            ):
-                raise ValidationError(f"batch {name} must be list[str]")
-        if item.system_metadata is not None and not isinstance(item.system_metadata, dict):
-            raise ValidationError("batch item system_metadata must be dict")
-        if item.user_metadata is not None and not isinstance(item.user_metadata, dict):
-            raise ValidationError("batch item user_metadata must be dict")
-        if item.occurred_at is not None and not isinstance(item.occurred_at, datetime):
-            raise ValidationError("batch item occurred_at must be datetime")
-        merged_system_metadata = {
-            **(system_metadata or {}),
-            **(item.system_metadata or {}),
-        }
-        merged_user_metadata = {**(user_metadata or {}), **(item.user_metadata or {})}
-        _reject_non_scalar_metadata(
-            merged_system_metadata, field_name="system_metadata"
+        cls._validate_batch_item_fields(item)
+        target_scope, item_source = cls._resolve_batch_scope_and_source(item, scope, source)
+        cls._validate_batch_default_tags(tags)
+        merged_system_metadata = cls._merge_batch_metadata(
+            system_metadata, item.system_metadata, field_name="system_metadata"
         )
-        _reject_non_scalar_metadata(merged_user_metadata, field_name="user_metadata")
-        if item.stream_id and not isinstance(item.stream_id, str):
-            raise ValidationError("batch item stream_id must be str")
-        if item.sequence is not None and not isinstance(item.sequence, int):
-            raise ValidationError("batch item sequence must be int")
-        if not isinstance(item.idempotency_key, str):
-            raise ValidationError("batch item idempotency_key must be str")
+        merged_user_metadata = cls._merge_batch_metadata(
+            user_metadata, item.user_metadata, field_name="user_metadata"
+        )
         return BatchWriteItem(
             content=item.content,
             scope=target_scope,
             source=item_source,
             assets=list(item.assets) if item.assets is not None else None,
             tags=cls._merge_batch_tags(tags, item.tags),
-            system_metadata=merged_system_metadata or None,
-            user_metadata=merged_user_metadata or None,
+            system_metadata=merged_system_metadata,
+            user_metadata=merged_user_metadata,
             occurred_at=item.occurred_at if item.occurred_at is not None else occurred_at,
             stream_id=item.stream_id or stream_id,
             sequence=item.sequence,
@@ -807,49 +848,18 @@ class LocalMemoryAPI(MemoryAPI):
         self._log(identity, "add", target_scope=scope, detail=auth)
         return units
 
-    def batch_add(
-        self,
-        items: list[BatchWriteItem],
-        scope: Scope | None = None,
-        source: Modality = Modality.TEXT,
-        *,
-        identity: Scope,
-        tags: list[str] | None = None,
-        system_metadata: dict[str, MetadataValueType] | None = None,
-        user_metadata: dict[str, MetadataValueType] | None = None,
-        occurred_at: datetime | None = None,
-        stream_id: str = "",
-        continue_on_error: bool = True,
-    ) -> BatchWriteResult:
-        return asyncio.run(
-            self.batch_add_async(
-                items,
-                scope,
-                source,
-                identity=identity,
-                tags=tags,
-                system_metadata=system_metadata,
-                user_metadata=user_metadata,
-                occurred_at=occurred_at,
-                stream_id=stream_id,
-                continue_on_error=continue_on_error,
-            )
-        )
 
-    async def batch_add_async(
-        self,
+    @staticmethod
+    def _validate_batch_request(
         items: list[BatchWriteItem],
-        scope: Scope | None = None,
-        source: Modality = Modality.TEXT,
-        *,
-        identity: Scope,
-        tags: list[str] | None = None,
-        system_metadata: dict[str, MetadataValueType] | None = None,
-        user_metadata: dict[str, MetadataValueType] | None = None,
-        occurred_at: datetime | None = None,
-        stream_id: str = "",
-        continue_on_error: bool = True,
-    ) -> BatchWriteResult:
+        scope: Scope | None,
+        source: Modality,
+        tags: list[str] | None,
+        system_metadata: dict[str, MetadataValueType] | None,
+        user_metadata: dict[str, MetadataValueType] | None,
+        occurred_at: datetime | None,
+        stream_id: str,
+    ) -> None:
         if not isinstance(items, list) or not items:
             raise ValidationError("batch items must be a non-empty list")
         if scope is not None and not isinstance(scope, Scope):
@@ -871,11 +881,41 @@ class LocalMemoryAPI(MemoryAPI):
         _reject_non_scalar_metadata(system_metadata, field_name="system_metadata")
         _reject_non_scalar_metadata(user_metadata, field_name="user_metadata")
 
+    @staticmethod
+    def _mark_batch_skipped(
+        outcomes: dict[int, BatchWriteOutcome],
+        items: list[BatchWriteItem],
+        start: int,
+    ) -> None:
+        for index in range(start, len(items)):
+            outcomes.setdefault(
+                index,
+                BatchWriteOutcome(
+                    index=index,
+                    item=LocalMemoryAPI._batch_error_item(items[index]),
+                    error="skipped after previous item failed",
+                    error_type="Skipped",
+                ),
+            )
+
+    def _prepare_batch_items(  # pylint: disable=too-many-locals
+        self,
+        items: list[BatchWriteItem],
+        *,
+        scope: Scope | None,
+        source: Modality,
+        tags: list[str] | None,
+        system_metadata: dict[str, MetadataValueType] | None,
+        user_metadata: dict[str, MetadataValueType] | None,
+        occurred_at: datetime | None,
+        stream_id: str,
+        identity: Scope,
+        continue_on_error: bool,
+    ) -> tuple[dict[int, BatchWriteOutcome], list[tuple[int, BatchWriteItem]], int | None]:
         outcomes: dict[int, BatchWriteOutcome] = {}
         ready: list[tuple[int, BatchWriteItem]] = []
         seen_sequences: set[tuple[str, str, str, str, str, str, int]] = set()
         stopped_index: int | None = None
-
         for index, raw_item in enumerate(items):
             try:
                 item = self._normalize_batch_item(
@@ -923,17 +963,18 @@ class LocalMemoryAPI(MemoryAPI):
                 if not continue_on_error:
                     stopped_index = index
                     break
+        return outcomes, ready, stopped_index
 
-        if stopped_index is not None:
-            for index in range(stopped_index + 1, len(items)):
-                outcomes[index] = BatchWriteOutcome(
-                    index=index,
-                    item=self._batch_error_item(items[index]),
-                    error="skipped after previous item failed",
-                    error_type="Skipped",
-                )
-
+    def _authorize_batch_items(
+        self,
+        ready: list[tuple[int, BatchWriteItem]],
+        outcomes: dict[int, BatchWriteOutcome],
+        *,
+        identity: Scope,
+        continue_on_error: bool,
+    ) -> tuple[list[tuple[int, BatchWriteItem, dict[str, str]]], int | None]:
         authorized: list[tuple[int, BatchWriteItem, dict[str, str]]] = []
+        stopped_index: int | None = None
         for index, item in ready:
             permission_context = _write_permission_context(
                 item.scope, item.tags, item.system_metadata
@@ -961,46 +1002,126 @@ class LocalMemoryAPI(MemoryAPI):
                 if not continue_on_error:
                     stopped_index = index
                     break
+        return authorized, stopped_index
 
-        if stopped_index is not None:
-            for index in range(stopped_index + 1, len(items)):
-                outcomes.setdefault(
-                    index,
-                    BatchWriteOutcome(
-                        index=index,
-                        item=self._batch_error_item(items[index]),
-                        error="skipped after previous item failed",
-                        error_type="Skipped",
-                    ),
-                )
-            authorized = [entry for entry in authorized if entry[0] < stopped_index]
+    async def _write_authorized_batch(
+        self,
+        authorized: list[tuple[int, BatchWriteItem, dict[str, str]]],
+        outcomes: dict[int, BatchWriteOutcome],
+        *,
+        identity: Scope,
+        continue_on_error: bool,
+    ) -> None:
+        if not authorized:
+            return
+        engine_result = await self._engine.batch_write(
+            [item for _, item, _ in authorized],
+            continue_on_error=continue_on_error,
+        )
+        for engine_outcome, (index, item, auth) in zip(engine_result.outcomes, authorized):
+            engine_outcome.index = index
+            engine_outcome.item = item
+            outcomes[index] = engine_outcome
+            self._log(
+                identity,
+                "add",
+                target_scope=item.scope,
+                decision="allow" if not engine_outcome.error else "error",
+                detail={
+                    **auth,
+                    "error": engine_outcome.error,
+                    "error_type": engine_outcome.error_type,
+                },
+            )
 
-        if authorized:
-            engine_result = await self._engine.batch_write(
-                [item for _, item, _ in authorized],
+    def batch_add(
+        self,
+        items: list[BatchWriteItem],
+        scope: Scope | None = None,
+        source: Modality = Modality.TEXT,
+        *,
+        identity: Scope,
+        tags: list[str] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
+        occurred_at: datetime | None = None,
+        stream_id: str = "",
+        continue_on_error: bool = True,
+    ) -> BatchWriteResult:
+        return asyncio.run(
+            self.batch_add_async(
+                items,
+                scope,
+                source,
+                identity=identity,
+                tags=tags,
+                system_metadata=system_metadata,
+                user_metadata=user_metadata,
+                occurred_at=occurred_at,
+                stream_id=stream_id,
                 continue_on_error=continue_on_error,
             )
-            for engine_outcome, (index, item, auth) in zip(engine_result.outcomes, authorized):
-                engine_outcome.index = index
-                engine_outcome.item = item
-                outcomes[index] = engine_outcome
-                self._log(
-                    identity,
-                    "add",
-                    target_scope=item.scope,
-                    decision="allow" if not engine_outcome.error else "error",
-                    detail={
-                        **auth,
-                        "error": engine_outcome.error,
-                        "error_type": engine_outcome.error_type,
-                    },
-                )
+        )
+
+    async def batch_add_async(  # pylint: disable=too-many-locals
+        self,
+        items: list[BatchWriteItem],
+        scope: Scope | None = None,
+        source: Modality = Modality.TEXT,
+        *,
+        identity: Scope,
+        tags: list[str] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
+        occurred_at: datetime | None = None,
+        stream_id: str = "",
+        continue_on_error: bool = True,
+    ) -> BatchWriteResult:
+        self._validate_batch_request(
+            items,
+            scope,
+            source,
+            tags,
+            system_metadata,
+            user_metadata,
+            occurred_at,
+            stream_id,
+        )
+        outcomes, ready, stopped_index = self._prepare_batch_items(
+            items,
+            scope=scope,
+            source=source,
+            tags=tags,
+            system_metadata=system_metadata,
+            user_metadata=user_metadata,
+            occurred_at=occurred_at,
+            stream_id=stream_id,
+            identity=identity,
+            continue_on_error=continue_on_error,
+        )
+        if stopped_index is not None:
+            self._mark_batch_skipped(outcomes, items, stopped_index + 1)
+        authorized, authorization_stop = self._authorize_batch_items(
+            ready,
+            outcomes,
+            identity=identity,
+            continue_on_error=continue_on_error,
+        )
+        if authorization_stop is not None:
+            self._mark_batch_skipped(outcomes, items, authorization_stop + 1)
+            authorized = [entry for entry in authorized if entry[0] < authorization_stop]
+        await self._write_authorized_batch(
+            authorized,
+            outcomes,
+            identity=identity,
+            continue_on_error=continue_on_error,
+        )
 
         return BatchWriteResult(
             outcomes=[outcomes[index] for index in range(len(items))]
         )
 
-    def search(
+    def search(  # pylint: disable=too-many-locals
         self,
         query: str,
         context: Context,
@@ -1057,7 +1178,7 @@ class LocalMemoryAPI(MemoryAPI):
         self._log(identity, "search", target_scope=context.scope, detail=auth)
         return result
 
-    def list(
+    def list(  # pylint: disable=too-many-locals
         self,
         scope: Scope,
         *,

@@ -65,8 +65,19 @@ class WeightedRRFFuser(Fuser):
     def fuse(
         self, query: ParsedQuery, candidates: list[list[ScoredCandidate]]
     ) -> list[ScoredCandidate]:
+        scores, channels, evidence, representatives = self._accumulate(candidates)
+        return self._build_fused(scores, channels, evidence, representatives)
+
+    def _accumulate(
+        self, candidates: list[list[ScoredCandidate]]
+    ) -> tuple[
+        dict[str, float],
+        dict[str, RecallChannel],
+        dict[str, list[ChannelEvidence]],
+        dict[str, ScoredCandidate],
+    ]:
         scores: dict[str, float] = {}
-        channel: dict[str, RecallChannel] = {}
+        channels: dict[str, RecallChannel] = {}
         evidence: dict[str, list[ChannelEvidence]] = {}
         representatives: dict[str, ScoredCandidate] = {}
         # 分层召回下同通道有多路（L2/L0/L1），先归并再计分（见 layered_merge）。
@@ -75,7 +86,7 @@ class WeightedRRFFuser(Fuser):
                 weight = self._channel_weights.get(su.channel, 1.0)
                 contribution = weight / (self._k + rank + 1)
                 scores[su.unit_id] = scores.get(su.unit_id, 0.0) + contribution
-                channel.setdefault(su.unit_id, su.channel)
+                channels.setdefault(su.unit_id, su.channel)
                 representatives.setdefault(su.unit_id, su)
                 evidence.setdefault(su.unit_id, []).append(
                     ChannelEvidence(
@@ -86,6 +97,15 @@ class WeightedRRFFuser(Fuser):
                         contribution=contribution,
                     )
                 )
+        return scores, channels, evidence, representatives
+
+    @staticmethod
+    def _build_fused(
+        scores: dict[str, float],
+        channels: dict[str, RecallChannel],
+        evidence: dict[str, list[ChannelEvidence]],
+        representatives: dict[str, ScoredCandidate],
+    ) -> list[ScoredCandidate]:
         fused: list[ScoredCandidate] = []
         for uid, score in scores.items():
             representative = representatives.get(uid)
@@ -95,7 +115,7 @@ class WeightedRRFFuser(Fuser):
                 replace(
                     representative,
                     score=score,
-                    channel=channel.get(uid, RecallChannel.KEYWORD),
+                    channel=channels.get(uid, RecallChannel.KEYWORD),
                     evidence=evidence.get(uid, []),
                 )
             )

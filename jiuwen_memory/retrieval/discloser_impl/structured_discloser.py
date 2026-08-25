@@ -87,12 +87,7 @@ class StructuredDiscloser(Discloser):
         units: dict[str, MemoryUnit],
         max_tokens: int | None,
     ) -> list[RetrievedItem]:
-        keywords = self._keywords(query)
-        variants = []
-        for scored_unit in candidates:
-            unit = units.get(scored_unit.unit_id)
-            if unit is not None:
-                variants.append(self._variants(scored_unit, unit, keywords))
+        variants = self._build_variants(query, candidates, units)
         selected_levels = [DisclosureLevel.L0 for _ in variants]
         if not variants:
             return []
@@ -107,23 +102,37 @@ class StructuredDiscloser(Discloser):
             for idx in range(1, len(variants)):
                 self._try_upgrade(selected_levels, variants, idx, DisclosureLevel.L1, budget)
 
+        return self._to_items(variants, selected_levels)
+
+    def _build_variants(
+        self,
+        query: ParsedQuery,
+        candidates: list[ScoredCandidate],
+        units: dict[str, MemoryUnit],
+    ) -> list[_DisclosureVariant]:
+        keywords = self._keywords(query)
+        return [
+            self._variants(scored_unit, unit, keywords)
+            for scored_unit in candidates
+            if (unit := units.get(scored_unit.unit_id)) is not None
+        ]
+
+    @staticmethod
+    def _to_items(
+        variants: list[_DisclosureVariant], selected_levels: list[DisclosureLevel]
+    ) -> list[RetrievedItem]:
         items: list[RetrievedItem] = []
         for idx, variant in enumerate(variants):
             requested_level = selected_levels[idx]
-            actual_level = variant.actual_level_by_level[requested_level]
-            # 三层一次性填充：abstract=L0、overview=L1、content=L2（全文）
-            abstract = variant.content_by_level[DisclosureLevel.L0]
-            overview = variant.content_by_level[DisclosureLevel.L1]
-            full = variant.content_by_level[DisclosureLevel.L2]
             items.append(
                 RetrievedItem(
                     unit_id=variant.unit.id,
                     score=variant.scored.score,
-                    abstract=abstract,
-                    overview=overview,
-                    content=full,
+                    abstract=variant.content_by_level[DisclosureLevel.L0],
+                    overview=variant.content_by_level[DisclosureLevel.L1],
+                    content=variant.content_by_level[DisclosureLevel.L2],
                     user_metadata=dict(variant.unit.user_metadata),
-                    level=actual_level,
+                    level=variant.actual_level_by_level[requested_level],
                 )
             )
         return items
@@ -243,20 +252,9 @@ class StructuredDiscloser(Discloser):
         if not candidates:
             return "", []
 
-        best_idx = len(content)
-        best_start = 0
-        best_score = -1
-        best_matched: list[str] = []
-        for idx, start in candidates:
-            end = min(len(content), start + _L1_LIMIT)
-            window = lowered[start:end]
-            matched = [keyword for keyword in keywords if keyword.lower() in window]
-            score = len(set(matched))
-            if score > best_score or (score == best_score and idx < best_idx):
-                best_idx = idx
-                best_start = start
-                best_score = score
-                best_matched = matched
+        best_idx, best_start, best_matched = self._select_snippet_window(
+            lowered, keywords, candidates
+        )
 
         end = min(len(content), best_start + _L1_LIMIT)
         snippet = content[best_start:end].strip()
@@ -265,6 +263,25 @@ class StructuredDiscloser(Discloser):
         if end < len(content):
             snippet = snippet.rstrip() + "..."
         return snippet, list(dict.fromkeys(best_matched))
+
+    @staticmethod
+    def _select_snippet_window(
+        lowered: str,
+        keywords: list[str],
+        candidates: list[tuple[int, int]],
+    ) -> tuple[int, int, list[str]]:
+        """选择命中关键词最多且位置最靠前的窗口。"""
+        best_idx = len(lowered)
+        best_start = 0
+        best_score = -1
+        best_matched: list[str] = []
+        for idx, start in candidates:
+            end = min(len(lowered), start + _L1_LIMIT)
+            matched = [keyword for keyword in keywords if keyword.lower() in lowered[start:end]]
+            score = len(set(matched))
+            if score > best_score or (score == best_score and idx < best_idx):
+                best_idx, best_start, best_score, best_matched = idx, start, score, matched
+        return best_idx, best_start, best_matched
 
     def _keywords(self, query: ParsedQuery) -> list[str]:
         keywords: list[str] = []

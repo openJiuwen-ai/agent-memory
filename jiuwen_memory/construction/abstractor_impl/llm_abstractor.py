@@ -422,7 +422,7 @@ class LLMAbstractor(Abstractor):
     # Phase 2: LLM 抽象
     # ------------------------------------------------------------------
 
-    def _llm_abstract(
+    def _llm_abstract(  # pylint: disable=too-many-locals
         self, target: AbstractionTarget, units: list[MemoryUnit]
     ) -> list[AbstractionCandidate]:
         """构建 target-specific prompt → 调 LLM → 解析 JSON → 过滤 confidence。"""

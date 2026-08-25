@@ -157,7 +157,7 @@ class LLMLayerAnnotator(LayerAnnotator):
         )
         return units
 
-    def _annotate_batch(self, units: List[MemoryUnit]) -> None:
+    def _annotate_batch(self, units: List[MemoryUnit]) -> None:  # pylint: disable=too-many-locals
         """单批 L0/L1 生成：拼 prompt → 调 LLM → 解析 JSON → 回填 unit.layers。"""
         from jiuwen_memory.common.type_def import ChatMessage
 

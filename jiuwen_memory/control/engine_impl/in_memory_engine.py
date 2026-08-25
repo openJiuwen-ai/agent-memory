@@ -227,7 +227,7 @@ class InMemoryEngine(MemoryEngine):
     def health(self) -> None:
         return None
 
-    async def write(
+    async def write(  # pylint: disable=too-many-locals
         self,
         content: str,
         scope: Scope,
@@ -570,7 +570,7 @@ class InMemoryEngine(MemoryEngine):
             )
         return new
 
-    async def delete(self, selector: DeleteSelector) -> list[str]:
+    async def delete(self, selector: DeleteSelector) -> list[str]:  # pylint: disable=too-many-locals
         selector_is_empty = (
             not selector.unit_ids and not selector.tags and selector.before is None
         )

@@ -40,6 +40,13 @@ from jiuwen_memory.storage.types import IndexRemoveMode
 logger = get_logger(__name__)
 
 
+def _unit_ingest_sort_key(unit: MemoryUnit) -> tuple[datetime, str]:
+    return (
+        unit.temporal.t_ingest or datetime.min.replace(tzinfo=timezone.utc),
+        unit.id,
+    )
+
+
 # ---- 连续性检测 prompt ---------------------------------------------------- #
 
 _CONTINUITY_SYSTEM_PROMPT = """Role
@@ -299,12 +306,7 @@ class MiddleToLongJob(Job):
             if u.system_metadata.get("middle") != "true":
                 continue
             candidates.append(u)
-        candidates.sort(
-            key=lambda unit: (
-                unit.temporal.t_ingest or datetime.min.replace(tzinfo=timezone.utc),
-                unit.id,
-            )
-        )
+        candidates.sort(key=_unit_ingest_sort_key)
         return candidates[: self._max_fetch]
 
     # ---- 并发执行批 ----

@@ -42,7 +42,7 @@ _INDEX_TYPES = {"hnsw", "none"}
 class PgVectorStore(PgStoreBase, VectorStore):
     """PostgreSQL + pgvector 的 CRUD、过滤下推与 HNSW 近邻搜索。"""
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-locals
         self,
         *,
         dsn: str,
@@ -156,7 +156,7 @@ class PgVectorStore(PgStoreBase, VectorStore):
                     conflict = next(record.id for record in records if record.id not in inserted)
                     raise ConflictError(entity="vector", key=conflict)
 
-    def update(self, scope: Scope, records: list[VectorRecord]) -> None:
+    def update(self, scope: Scope, records: list[VectorRecord]) -> None:  # pylint: disable=too-many-locals
         if not records:
             return
         duplicate = self._first_duplicate([record.id for record in records])
@@ -238,7 +238,7 @@ class PgVectorStore(PgStoreBase, VectorStore):
                 rows = cursor.fetchall()
         return [ScoredID(id=str(id_), score=float(score_value)) for id_, score_value in rows]
 
-    def recall(
+    def recall(  # pylint: disable=too-many-locals
         self,
         scope: Scope,
         query: VectorQuery,
