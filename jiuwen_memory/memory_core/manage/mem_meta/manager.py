@@ -867,6 +867,7 @@ class MemMetaManager:
                                     f"{failed_scopes}/{total_scopes} 个 scope "
                                     f"删除失败"
                                 )
+                                failed += 1
 
                     processed += 1
                     await self._update_task(
