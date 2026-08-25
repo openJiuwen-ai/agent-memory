@@ -173,7 +173,8 @@ class SimpleMemoryIndex(BaseMemoryIndex):
             timestamp = None
             for fmt in ("%Y-%m-%d %H-%M-%S", "%Y-%m-%d %H:%M:%S"):
                 try:
-                    timestamp = datetime.strptime(ts_raw, fmt).replace(tzinfo=timezone.utc)
+                    timestamp = datetime.strptime(ts_raw, fmt).replace(
+                        tzinfo=datetime.now(timezone.utc).astimezone().tzinfo)
                     break
                 except ValueError:
                     continue

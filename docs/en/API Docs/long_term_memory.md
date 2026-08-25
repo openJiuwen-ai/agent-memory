@@ -515,7 +515,7 @@ Add conversation messages to the memory engine and generate memories (user profi
 * **user_id**(str, optional): User identifier. Default: `"__default__"`.
 * **scope_id**(str, optional): Scope identifier; if format is invalid, an exception is raised. Default: `"__default__"`.
 * **session_id**(str, optional): Session identifier. Default: `"__default__"`.
-* **timestamp**(datetime | None, optional): Message timestamp; if `None`, current UTC time is used. Default: `None`.
+* **timestamp**(datetime | None, optional): Message timestamp; if `None`, current local time is used. Default: `None`.
 * **gen_mem**(bool, optional): Whether to generate memories; when `False`, only messages are saved without triggering memory extraction. Default: `True`.
 * **gen_mem_with_history_msg_num**(int, optional): Number of historical messages to reference when generating memories. Default: 2.
 

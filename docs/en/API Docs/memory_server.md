@@ -609,7 +609,7 @@ Triggers a metadata refresh task that scans all kernel `uid_*` collections (via 
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `force` | `bool` | No | `false` | When `true`, skips cooldown check (5 minutes) and running-task check |
+| `force` | `bool` | No | `false` | When `true`, skips cooldown check (5 minutes) |
 
 **Example**:
 

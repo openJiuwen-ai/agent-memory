@@ -514,7 +514,7 @@ async def add_messages(
 * **user_id**(str, 可选)：用户标识符。默认值：`"__default__"`。
 * **scope_id**(str, 可选)：作用域标识符；格式无效时会抛出异常。默认值：`"__default__"`。
 * **session_id**(str, 可选)：会话标识符。默认值：`"__default__"`。
-* **timestamp**(datetime | None, 可选)：消息时间戳，若为 `None` 则使用当前 UTC 时间。默认值：`None`。
+* **timestamp**(datetime | None, 可选)：消息时间戳，若为 `None` 则使用当前本地时间。默认值：`None`。
 * **gen_mem**(bool, 可选)：是否生成记忆；为 `False` 时仅保存消息，不触发记忆提取。默认值：`True`。
 * **gen_mem_with_history_msg_num**(int, 可选)：生成记忆时参考的历史消息数量。默认值：2。
 
