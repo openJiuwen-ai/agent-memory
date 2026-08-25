@@ -147,6 +147,8 @@ class MemMetaManager:
         self.db_store = db_store
         # 防止 asyncio task 被 GC 回收
         self._background_tasks: set = set()
+        # 应用层互斥锁：防止并发请求穿透 check-then-insert 竞态
+        self._task_guard_lock = asyncio.Lock()
         self._init_db()
 
     @property
@@ -215,6 +217,18 @@ class MemMetaManager:
         返回 (task_id, None) 表示创建成功；
         返回 (None, conflict_dict) 表示存在冲突未创建。
         """
+        async with self._task_guard_lock:
+            return await self._check_and_create_task_impl(
+                task_type, force, request_params, total_users)
+
+    async def _check_and_create_task_impl(
+        self,
+        task_type: str,
+        force: bool = False,
+        request_params: dict | None = None,
+        total_users: int = 0,
+    ) -> tuple[str | None, dict | None]:
+        """防重检查 + 创建任务的实际实现（调用方已持锁）。"""
         task_id = str(uuid.uuid4())
         now = _now_str()
         params_json = (
@@ -223,11 +237,12 @@ class MemMetaManager:
         )
 
         async with self._engine.begin() as conn:
-            # 1. 检查运行中任务（不可跳过，即使 force=true）
+            # 1. 检查运行中/待处理任务（不可跳过，即使 force=true）
+            #    包含 pending 状态：防止并发请求在任务从 pending→running 之间穿过
             result = await conn.execute(
                 select(mem_meta_task_table.c.task_id, mem_meta_task_table.c.status)
                 .where(mem_meta_task_table.c.task_type == task_type)
-                .where(mem_meta_task_table.c.status == "running")
+                .where(mem_meta_task_table.c.status.in_(["pending", "running"]))
                 .order_by(mem_meta_task_table.c.created_at.desc())
                 .limit(1)
             )
@@ -880,6 +895,7 @@ class MemMetaManager:
                                     f"{failed_scopes}/{total_scopes} 个 scope "
                                     f"删除失败"
                                 )
+                                # 计入 failed_count（反映有用户未完全成功），但终态用 has_partial 防止升级为 failed
                                 failed += 1
 
                     processed += 1
@@ -887,6 +903,7 @@ class MemMetaManager:
                         task_id,
                         processed_users=processed,
                         deleted_count=deleted_total,
+                        failed_count=failed,
                     )
 
                     # ★ 同步更新 av_user_stats：删除了多少条就减多少 ★
@@ -934,14 +951,14 @@ class MemMetaManager:
                 details.append(user_result)
 
             # 最终状态判断
-            # failed: 用户级失败（所有 scope 都失败或分布式锁/校验失败）
-            # partial_failed 用户: 部分 scope 成功部分失败
+            # failed: 用户级全部 scope 失败或分布式锁/校验失败
+            # partial_failed 用户: 部分 scope 成功部分失败（不计入 failed）
             has_partial = any(
                 d.get("status") == "partial_failed" for d in details
             )
             if failed == 0 and not has_partial:
                 final_status = "completed"
-            elif failed == len(params.user_ids):
+            elif failed == len(params.user_ids) and not has_partial:
                 final_status = "failed"
             else:
                 final_status = "partial_failed"
