@@ -330,23 +330,24 @@ class MemMetaManager:
         cutoff = (
             _now_dt().replace(tzinfo=None) - timedelta(hours=ZOMBIE_TASK_TIMEOUT_HOURS)
         ).strftime("%Y-%m-%d %H:%M:%S")
-        async with self._engine.begin() as conn:
-            await conn.execute(
-                update(mem_meta_task_table)
-                .where(mem_meta_task_table.c.status == "running")
-                .where(
-                    or_(
-                        mem_meta_task_table.c.started_at < cutoff,
-                        mem_meta_task_table.c.started_at.is_(None),
+        async with self._task_guard_lock:
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    update(mem_meta_task_table)
+                    .where(mem_meta_task_table.c.status == "running")
+                    .where(
+                        or_(
+                            mem_meta_task_table.c.started_at < cutoff,
+                            mem_meta_task_table.c.started_at.is_(None),
+                        )
+                    )
+                    .values(
+                        status="failed",
+                        error_message="zombie task cleaned up on restart",
+                        finished_at=_now_str(),
+                        updated_at=_now_str(),
                     )
                 )
-                .values(
-                    status="failed",
-                    error_message="zombie task cleaned up on restart",
-                    finished_at=_now_str(),
-                    updated_at=_now_str(),
-                )
-            )
 
     # ============================================================
     # 接口 1: refresh（异步刷新元数据）
