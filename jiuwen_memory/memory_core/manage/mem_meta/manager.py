@@ -187,17 +187,28 @@ class MemMetaManager:
     # 任务管理
     # ============================================================
 
-    async def _check_task_guard(
-        self, task_type: str, force: bool = False
-    ) -> dict | None:
-        """防重检查：运行中任务 + 5 分钟冷却。
+    async def _check_and_create_task(
+        self,
+        task_type: str,
+        force: bool = False,
+        request_params: dict | None = None,
+        total_users: int = 0,
+    ) -> tuple[str | None, dict | None]:
+        """原子性防重检查 + 创建任务（同一事务内 SELECT + INSERT）。
 
-        返回 None 表示可以提交新任务；
-        返回 dict 表示存在冲突，包含已有任务信息。
+        解决 check-then-insert 竞态：原两步式（_check_task_guard 事务
+        先提交，_create_task 事务后提交）在并发请求下窗口可被穿透。
 
-        force=True 时仅跳过冷却期检查，**不跳过运行中任务检查**
-        （防止并发任务冲突导致数据竞争）。
+        返回 (task_id, None) 表示创建成功；
+        返回 (None, conflict_dict) 表示存在冲突未创建。
         """
+        task_id = str(uuid.uuid4())
+        now = _now_str()
+        params_json = (
+            json.dumps(request_params, ensure_ascii=False)
+            if request_params else None
+        )
+
         async with self._engine.begin() as conn:
             # 1. 检查运行中任务（不可跳过，即使 force=true）
             result = await conn.execute(
@@ -209,7 +220,7 @@ class MemMetaManager:
             )
             row = result.fetchone()
             if row:
-                return {
+                return None, {
                     "task_id": row[0],
                     "status": row[1],
                     "message": "存在正在执行的任务",
@@ -217,54 +228,37 @@ class MemMetaManager:
 
             # 2. 检查冷却（最新任务距今 < COOLDOWN_SECONDS）
             # force=True 时跳过此检查
-            if force:
-                return None
-
-            result = await conn.execute(
-                select(
-                    mem_meta_task_table.c.task_id,
-                    mem_meta_task_table.c.status,
-                    mem_meta_task_table.c.created_at,
-                )
-                .where(mem_meta_task_table.c.task_type == task_type)
-                .order_by(mem_meta_task_table.c.created_at.desc())
-                .limit(1)
-            )
-            row = result.fetchone()
-            if row:
-                task_id, status, created_at_str = row
-                try:
-                    created_at = datetime.strptime(
-                        created_at_str, "%Y-%m-%d %H:%M:%S"
+            if not force:
+                result = await conn.execute(
+                    select(
+                        mem_meta_task_table.c.task_id,
+                        mem_meta_task_table.c.status,
+                        mem_meta_task_table.c.created_at,
                     )
-                    elapsed = (_now_dt().replace(tzinfo=None) - created_at).total_seconds()
-                    if elapsed < COOLDOWN_SECONDS:
-                        return {
-                            "task_id": task_id,
-                            "status": status,
-                            "message": f"冷却期内（<{COOLDOWN_SECONDS}秒）",
-                        }
-                except ValueError as exc:
-                    logger.warning(
-                        "task guard: time parse failed for %s: %s",
-                        created_at_str, exc)
-            return None
+                    .where(mem_meta_task_table.c.task_type == task_type)
+                    .order_by(mem_meta_task_table.c.created_at.desc())
+                    .limit(1)
+                )
+                row = result.fetchone()
+                if row:
+                    task_id_existing, status, created_at_str = row
+                    try:
+                        created_at = datetime.strptime(
+                            created_at_str, "%Y-%m-%d %H:%M:%S"
+                        )
+                        elapsed = (_now_dt().replace(tzinfo=None) - created_at).total_seconds()
+                        if elapsed < COOLDOWN_SECONDS:
+                            return None, {
+                                "task_id": task_id_existing,
+                                "status": status,
+                                "message": f"冷却期内（<{COOLDOWN_SECONDS}秒）",
+                            }
+                    except ValueError as exc:
+                        logger.warning(
+                            "task guard: time parse failed for %s: %s",
+                            created_at_str, exc)
 
-    async def _create_task(
-        self,
-        task_type: str,
-        request_params: dict | None = None,
-        total_users: int = 0,
-    ) -> str:
-        """创建任务记录（INSERT mem_meta_task，status=pending）。"""
-        task_id = str(uuid.uuid4())
-        now = _now_str()
-        params_json = (
-            json.dumps(request_params, ensure_ascii=False)
-            if request_params
-            else None
-        )
-        async with self._engine.begin() as conn:
+            # 3. 同一事务内 INSERT（与上面的 SELECT 原子）
             await conn.execute(
                 insert(mem_meta_task_table).values(
                     task_id=task_id,
@@ -276,7 +270,7 @@ class MemMetaManager:
                     updated_at=now,
                 )
             )
-        return task_id
+        return task_id, None
 
     async def _update_task(self, task_id: str, **fields: Any) -> None:
         """更新任务字段（UPDATE mem_meta_task）。
@@ -333,10 +327,13 @@ class MemMetaManager:
     async def submit_refresh(self, force: bool = False) -> dict:
         """提交元数据刷新任务。
 
-        流程: 防重检查 → 创建任务 → asyncio.create_task 后台执行。
+        流程: 原子防重+创建任务 → asyncio 后台执行。
         返回 accepted（202）或 skipped（200）。
         """
-        existing = await self._check_task_guard("refresh_meta", force=force)
+        task_id, existing = await self._check_and_create_task(
+            "refresh_meta", force=force,
+            request_params={"force": force},
+        )
         if existing:
             return {
                 "status": "skipped",
@@ -345,9 +342,6 @@ class MemMetaManager:
                 "task_status": existing.get("status"),
                 "message": existing.get("message", ""),
             }
-        task_id = await self._create_task(
-            "refresh_meta", request_params={"force": force}
-        )
         self._create_background_task(self._run_refresh_meta(task_id))
         return {
             "status": "accepted",
@@ -650,19 +644,8 @@ class MemMetaManager:
                 "total_users": 0,
             }
 
-        existing = await self._check_task_guard(
-            "batch_delete", force=params.force)
-        if existing:
-            return {
-                "status": "skipped",
-                "task_type": "batch_delete",
-                "task_id": existing.get("task_id"),
-                "task_status": existing.get("status"),
-                "message": existing.get("message", ""),
-            }
-
-        task_id = await self._create_task(
-            "batch_delete",
+        task_id, existing = await self._check_and_create_task(
+            "batch_delete", force=params.force,
             request_params={
                 "user_ids": params.user_ids,
                 "all_expired": params.all_expired,
@@ -673,6 +656,15 @@ class MemMetaManager:
             },
             total_users=len(params.user_ids),
         )
+        if existing:
+            return {
+                "status": "skipped",
+                "task_type": "batch_delete",
+                "task_id": existing.get("task_id"),
+                "task_status": existing.get("status"),
+                "message": existing.get("message", ""),
+            }
+
         self._create_background_task(
             self._run_batch_delete(task_id, params)
         )
