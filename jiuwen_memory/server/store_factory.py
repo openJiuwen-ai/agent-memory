@@ -85,6 +85,15 @@ def create_async_engine_from_env() -> AsyncEngine:
         connect_args = {"timeout": 30, "check_same_thread": False}
         from sqlalchemy import pool
         engine_kwargs["poolclass"] = pool.NullPool
+    else:
+        # 非 SQLite（GaussDB / PostgreSQL 等）：配置连接池参数
+        # pool_recycle 早于服务端空闲超时主动回收，防止连接被服务端关闭后 pool_pre_ping 失效
+        engine_kwargs.update({
+            "pool_size": 20,
+            "max_overflow": 40,
+            "pool_recycle": 1800,
+            "pool_timeout": 30,
+        })
 
     engine_kwargs["connect_args"] = connect_args
     engine = create_async_engine(db_url, **engine_kwargs)
