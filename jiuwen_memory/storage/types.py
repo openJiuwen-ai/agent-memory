@@ -10,9 +10,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 from jiuwen_memory.common.type_def import FilterExpr, MemoryUnit, normalize
+
+
+class IndexWriteMode(str, Enum):
+    """``add``/``build``/``update`` 的索引写入范围（逻辑层面：检索索引 vs 正排本体）。"""
+
+    ALL = "all"  # 正排（记忆本体）+ 全部检索索引均写入
+    FORWARD_ONLY = "forward_only"  # 仅写正排索引（记忆本体），检索索引不动
+    RETRIEVAL_ONLY = "retrieval_only"  # 仅写检索索引，记忆本体已存在/不动
+
+
+class IndexRemoveMode(str, Enum):
+    """``remove``/``delete`` 的删除语义。"""
+
+    # 软删除：退出检索（search/recall 不可召回），记忆本体保留，get/list 仍可读
+    SOFT = "soft"
+    # 硬删除：检索索引 + 记忆本体一并物理删除
+    HARD = "hard"
 
 
 @dataclass

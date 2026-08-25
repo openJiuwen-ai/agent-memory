@@ -4,16 +4,15 @@
 
 | 项 | 值 |
 |---|---|
-| 关联模块 | src/storage/ |
-| 最近一次修订日期 | 2026-08-20 |
+| 关联模块 | jiuwen_memory/storage/ |
+| 最近一次修订日期 | 2026-08-24 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md |
 ## Metadata 物理存储契约
 
 索引记录保留 `system_metadata.<key>` 和 `user_metadata.<key>` 的逻辑路径。Milvus 与
 PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对象层级，使
 `metadata.user_metadata.<key>` 等 DSL 路径可下推。Store record 自身的 `metadata` 名称不变。
-
 ## 范围 / 边界
 
 **管什么**：
@@ -79,6 +78,14 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
     `preferred_retrieval_pipeline()` 选择首选入口；路径值不加入 capability。
 26. **统一授权不可绕过**：MemoryUnit 领域接口和 Storage 暴露的 Store 代理端口都先执行
     `StorageSecurity.authorize`；默认 AllowAll 可省略 access。Store 自身 `security` 表示数据保护。
+27. **写接口覆盖范围由实现决定**：`add`/`update`/`delete` 落成哪些索引形式取决于该 Storage
+    实现的能力，调用方不得假定「只写记忆本体」。`IndexWriteMode` / `IndexRemoveMode` 表达调用方
+    意图，能否拆分由实现按自身能力决定——不具备检索索引能力的实现在 `RETRIEVAL_ONLY` /
+    `SOFT` 时为空操作。差额由 IndexBuilder 补齐，匹配关系由装配期约定保证。
+28. **正排的 key 方案与编解码是跨层共享契约**：`memory_key` 与 `memory_codec` 归口
+    `common.type_def`，写侧在 `ForwardIndexBuilder`、读侧在 `Storage.get`/`list`，`KVStore.list`
+    本身也按 `MEMORY_KEY_PREFIX` 扫描。这是正排作为唯一需要**两向投影**的索引形式的固有代价：
+    实现分居两层，靠这对共享契约对齐。
 
 ## 接口契约
 
@@ -86,7 +93,7 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 
 | 类别 | 接口 | 语义 |
 |---|---|---|
-| 领域操作 | `add/update/delete/get/list/scopes(..., access=None)` | 操作或枚举 MemoryUnit 真源；get 保序并省略缺失，list 返回 items 与 count |
+| 领域操作 | `add/update(..., mode: IndexWriteMode = ALL)` / `delete(..., mode: IndexRemoveMode = HARD)` / `get` / `list` / `scopes` | 操作或枚举 MemoryUnit 真源；get 保序并省略缺失，list 返回 items 与 count |
 | 能力 | `capabilities()` / `has_kv()` 等 | 返回不可变标准 Store 端口能力 |
 | 端口 | `kv/vector/fulltext/graph/fusion/fs` 及 `*_port(name)` | 暴露经过统一授权代理的完整 Store 契约；命名端口通过 `has_*_port(name)` 判断，未声明能力时报错 |
 | 检索适配 | `preferred_retrieval_pipeline()` / `recall` / `recall_and_get` / `retrieve` | 供 Retriever 选择 recall/get/rank 三步的组合位置 |
@@ -94,6 +101,22 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 
 `CompositeStorage` 是默认实现。一体化实现可以只实现 Storage 的领域和首选检索入口；只有完整
 提供某个标准 Store 契约时才声明对应 capability。
+
+**写接口的覆盖范围是实现相关的**：`add`/`update`/`delete` 的语义是「按该实现的能力落地」，
+而非「只写记忆本体」。`CompositeStorage` 不持有 Chunker/Embedder，无投影能力，故只落本体；
+一体化平台可在一次 `add` 内建立全部索引形式。差额由 `IndexBuilder` 补齐，两者的匹配由
+**装配期约定**保证（见 S05 不变量 15），不引入运行时能力协商。
+
+两个枚举把调用方意图透传到实现：`IndexWriteMode`（`ALL` / `FORWARD_ONLY` /
+`RETRIEVAL_ONLY`）表达写入范围，`IndexRemoveMode`（`SOFT` / `HARD`）表达删除语义——
+`SOFT` 软删除只移出检索索引（search/recall 不再召回），本体保留、get/list 仍可读。
+`UnifiedIndexBuilder` 原样下传，不代实现判断；不具备检索索引能力的实现在
+`RETRIEVAL_ONLY` / `SOFT` 时为空操作，而 `FORWARD_ONLY` 时应**至少保证本体被写到**——
+多刷新一次检索索引无害，漏写本体则丢数据。
+
+**原文**（对话消息）不属于 Storage 的领域范围：它既非 MemoryUnit 真源也非索引，不建索引、
+不参与检索，仅供构建层做指代消解与语境补全，条数上限由写入方维护。故不占 Storage 接口——
+构建层注入一个独立的 `KVStore` 直接读写（见 [F07](../features/construction/F07-memory-write-entry.md)）。
 
 `StorageProducer.TOP_NAME = "storage"`。统一 Storage 实现以 target 自注册；默认
 `CompositeStorage` target 为 `composite`。具名引用必须复用同一 Storage 实例，使 Kernel、

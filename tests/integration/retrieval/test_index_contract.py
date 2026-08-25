@@ -17,8 +17,6 @@ from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_featu
     KeywordFeatureExtractor,
 )
 from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
-from jiuwen_memory.common.type_def import memory_key
-from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.construction.index_builder_impl.hybrid_index_builder import HybridIndexBuilder
 from jiuwen_memory.retrieval.discloser_impl.truncating_discloser import TruncatingDiscloser
 from jiuwen_memory.retrieval.fuser_impl.rrf_fuser import RRFFuser
@@ -39,7 +37,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def indexed_via_builder():
-    """用真实 HybridIndexBuilder 建索引（chunk 粒度）+ 正排 KV，组装检索栈。"""
+    """用真实 HybridIndexBuilder 交付真源并建 chunk 粒度索引，组装检索栈。"""
     tokenizer = WhitespaceTokenizer()
     embedder = HashingEmbedder(tokenizer)
     features = KeywordFeatureExtractor(tokenizer)
@@ -62,8 +60,7 @@ def indexed_via_builder():
     )
 
     unit = make_unit("u_long", "alice loves iced americano coffee every single morning before work")
-    kv.insert(unit.scope, memory_key(unit.id), dumps(unit))  # 正排真源（控制层写链路的等价物）
-    index_builder.build([unit])  # 派生索引：向量按 chunk、全文按 unit
+    index_builder.build([unit])  # 交付正排真源 + 派生索引：向量按 chunk、全文按 unit
     return retriever, unit
 
 

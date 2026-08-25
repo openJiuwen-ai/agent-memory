@@ -39,7 +39,12 @@ from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.graph import GraphStore
 from jiuwen_memory.storage.kv import KVStore
 from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
-from jiuwen_memory.storage.types import ScoredID, VectorRecord
+from jiuwen_memory.storage.types import (
+    IndexRemoveMode,
+    IndexWriteMode,
+    ScoredID,
+    VectorRecord,
+)
 from jiuwen_memory.storage.vector import VectorStore
 
 pytestmark = pytest.mark.unit
@@ -261,7 +266,14 @@ class NoopAssociator(Associator):
 
 
 class NoopIndexBuilder(IndexBuilder):
-    """Mock IndexBuilder：什么都不做（去重测试不依赖索引构建细节）。"""
+    """Mock IndexBuilder：只交付 Storage，不建派生索引。
+
+    IndexBuilder 是记忆写入的唯一入口，替身必须交付 Storage，否则去重测试读不到
+    真源；派生索引与去重判定无关，此处省略。
+    """
+
+    def __init__(self, storage) -> None:
+        self._storage = storage
 
     def operator_type(self) -> OperatorType:
         return OperatorType.INDEX_BUILDER
@@ -269,13 +281,21 @@ class NoopIndexBuilder(IndexBuilder):
     def health(self) -> None:
         return None
 
-    def build(self, units: list[MemoryUnit]) -> None:
-        pass
+    def build(
+        self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL
+    ) -> None:
+        for unit in units:
+            self._storage.add(unit.scope, [unit])
 
-    def update(self, units: list[MemoryUnit]) -> None:
-        pass
+    def update(
+        self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL
+    ) -> None:
+        for unit in units:
+            self._storage.update(unit.scope, [unit])
 
-    def remove(self, units: list[MemoryUnit]) -> None:
+    def remove(
+        self, units: list[MemoryUnit], *, mode: IndexRemoveMode = IndexRemoveMode.HARD
+    ) -> None:
         pass
 
     def rebuild(self) -> None:
@@ -341,8 +361,9 @@ def _make_evolver(
         extractor=NoopExtractor(),
         abstractor=NoopAbstractor(),
         associator=NoopAssociator(),
-        index_builder=NoopIndexBuilder(),
+        index_builder=NoopIndexBuilder(storage),
         storage=storage,
+        message_store=storage.kv,
         dedup=dedup,
         llm=llm,
         **evolver_kwargs,
@@ -906,8 +927,9 @@ class TestDedupEvolveExtract:
             extractor=SimpleExtractor(),
             abstractor=NoopAbstractor(),
             associator=NoopAssociator(),
-            index_builder=NoopIndexBuilder(),
+            index_builder=NoopIndexBuilder(storage),
             storage=storage,
+            message_store=storage.kv,
             dedup=dedup,
             llm=plugins["llm"],
         )
