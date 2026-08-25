@@ -4,13 +4,13 @@
 agent-memory1.0_skill — 通过 HTTP API 调用 agent-memory1.0 记忆服务（完整版，与 MemoryRail 功能对等）
 
 用法（通过 call_mcp script_params 传入）：
-  {"operation": "search",          "user_id": "XXX", "query": "客户历史风控记录", "top_k": 5}
+  {"operation": "search",          "user_id": "XXX", "query": "用户历史处理记录", "top_k": 5}
   {"operation": "get",             "user_id": "XXX", "top_k": 20}
-  {"operation": "save",            "user_id": "XXX", "content": "复核结论...", "role": "assistant"}
+  {"operation": "save",            "user_id": "XXX", "content": "处理结果...", "role": "assistant"}
   {"operation": "update",          "user_id": "XXX", "mem_id": "mem_abc123", "memory": "修正后的内容"}
   {"operation": "delete",          "user_id": "XXX", "mem_id": "mem_abc123"}
   {"operation": "batch_delete",    "user_id": "XXX", "mem_ids": ["mem_a", "mem_b"]}
-  {"operation": "update_variables","user_id": "XXX", "variables": {"risk_level": "low"}}
+  {"operation": "update_variables","user_id": "XXX", "variables": {"status": "normal"}}
   {"operation": "delete_variables","user_id": "XXX", "names": ["old_var_name"]}
   {"operation": "trace",           "message_id": "msg_abc123"}
   {"operation": "flush",           "user_id": "XXX"}
@@ -27,7 +27,7 @@ agent-memory1.0_skill — 通过 HTTP API 调用 agent-memory1.0 记忆服务（
   MEM1_DEFAULT_SCOPE_ID          — 默认 scope_id，默认 edp_agent
 
 独立测试：
-  python run_memory_operation.py '{"operation":"search","user_id":"<YOUR_USER_ID>","query":"风险 违约","top_k":5}'
+  python run_memory_operation.py '{"operation":"search","user_id":"<YOUR_USER_ID>","query":"业务关键词","top_k":5}'
 """
 import json
 import logging
@@ -1015,7 +1015,7 @@ def main():
 
     try:
         if operation == "search":
-            query = str(params.get("query", "风险 违约")).strip()
+            query = str(params.get("query", "业务关键词")).strip()
             top_k = int(params.get("top_k", 5))
             threshold = float(params.get("threshold", 0.0))
             result = _search_memory(user_id, query, top_k, threshold, scope_id)

@@ -1,6 +1,6 @@
 ---
 name: agent-memory1.0_skill
-description: 通过 HTTP API 调用 agent-memory1.0 记忆服务，召回与写入历史风险评估记忆
+description: 通过 HTTP API 调用 agent-memory1.0 记忆服务，召回与写入历史处理记忆
 scripts:
   search_ok: "agent-memory1.0 历史记忆召回完成"
   save_ok: "agent-memory1.0 记忆写入完成"
@@ -13,7 +13,7 @@ scripts:
 
 ## 触发条件
 
-复核任务中需要召回或写入客户历史风险评估记忆时调用。本 Skill 直接调用 agent-memory1.0 容器的 HTTP API（端口 8517），
+需要召回或写入用户历史处理记忆时调用。本 Skill 直接调用 agent-memory1.0 容器的 HTTP API（端口 8517），
 不依赖 MemoryRail 框架。内置熔断器、批量写入缓冲、fail-open 降级等完整功能。
 
 ## call_mcp 参数
@@ -23,7 +23,7 @@ scripts:
 ```json
 {
   "script_command": "python agent-memory1.0_skill/scripts/run_memory_operation.py",
-  "script_params": "{\"operation\": \"search\", \"user_id\": \"{customer_code}\", \"query\": \"客户 {customer_code} 的历史风控记录和违约情况\", \"top_k\": 5}"
+  "script_params": "{\"operation\": \"search\", \"user_id\": \"{user_id}\", \"query\": \"用户 {user_id} 的历史处理记录\", \"top_k\": 5}"
 }
 ```
 
@@ -32,7 +32,7 @@ scripts:
 ```json
 {
   "script_command": "python agent-memory1.0_skill/scripts/run_memory_operation.py",
-  "script_params": "{\"operation\": \"save\", \"user_id\": \"{customer_code}\", \"content\": \"复核结论文本...\", \"role\": \"assistant\"}"
+  "script_params": "{\"operation\": \"save\", \"user_id\": \"{user_id}\", \"content\": \"处理结果...\", \"role\": \"assistant\"}"
 }
 ```
 
@@ -41,7 +41,7 @@ scripts:
 ```json
 {
   "script_command": "python agent-memory1.0_skill/scripts/run_memory_operation.py",
-  "script_params": "{\"operation\": \"save\", \"user_id\": \"{customer_code}\", \"content\": \"中间结论...\", \"buffer\": true}"
+  "script_params": "{\"operation\": \"save\", \"user_id\": \"{user_id}\", \"content\": \"中间结果...\", \"buffer\": true}"
 }
 ```
 
@@ -50,7 +50,7 @@ scripts:
 ```json
 {
   "script_command": "python agent-memory1.0_skill/scripts/run_memory_operation.py",
-  "script_params": "{\"operation\": \"flush\", \"user_id\": \"{customer_code}\"}"
+  "script_params": "{\"operation\": \"flush\", \"user_id\": \"{user_id}\"}"
 }
 ```
 
@@ -68,7 +68,7 @@ scripts:
 ```json
 {
   "script_command": "python agent-memory1.0_skill/scripts/run_memory_operation.py",
-  "script_params": "{\"operation\": \"update\", \"user_id\": \"{customer_code}\", \"mem_id\": \"{mem_id}\", \"memory\": \"修正后的记忆内容...\"}"
+  "script_params": "{\"operation\": \"update\", \"user_id\": \"{user_id}\", \"mem_id\": \"{mem_id}\", \"memory\": \"修正后的内容...\"}"
 }
 ```
 
@@ -77,7 +77,7 @@ scripts:
 ```json
 {
   "script_command": "python agent-memory1.0_skill/scripts/run_memory_operation.py",
-  "script_params": "{\"operation\": \"delete\", \"user_id\": \"{customer_code}\", \"mem_id\": \"{mem_id}\"}"
+  "script_params": "{\"operation\": \"delete\", \"user_id\": \"{user_id}\", \"mem_id\": \"{mem_id}\"}"
 }
 ```
 
@@ -86,7 +86,7 @@ scripts:
 ```json
 {
   "script_command": "python agent-memory1.0_skill/scripts/run_memory_operation.py",
-  "script_params": "{\"operation\": \"batch_delete\", \"user_id\": \"{customer_code}\", \"mem_ids\": [\"mem_abc\", \"mem_def\"]}"
+  "script_params": "{\"operation\": \"batch_delete\", \"user_id\": \"{user_id}\", \"mem_ids\": [\"mem_abc\", \"mem_def\"]}"
 }
 ```
 
@@ -95,7 +95,7 @@ scripts:
 ```json
 {
   "script_command": "python agent-memory1.0_skill/scripts/run_memory_operation.py",
-  "script_params": "{\"operation\": \"update_variables\", \"user_id\": \"{customer_code}\", \"variables\": {\"risk_level\": \"low\", \"credit_score\": \"A\"}}"
+  "script_params": "{\"operation\": \"update_variables\", \"user_id\": \"{user_id}\", \"variables\": {\"status\": \"normal\", \"priority\": \"high\"}}"
 }
 ```
 
@@ -104,7 +104,7 @@ scripts:
 ```json
 {
   "script_command": "python agent-memory1.0_skill/scripts/run_memory_operation.py",
-  "script_params": "{\"operation\": \"delete_variables\", \"user_id\": \"{customer_code}\", \"names\": [\"old_var_name\"]}"
+  "script_params": "{\"operation\": \"delete_variables\", \"user_id\": \"{user_id}\", \"names\": [\"old_var_name\"]}"
 }
 ```
 
@@ -124,14 +124,14 @@ scripts:
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | `operation` | string | 是 | — | `search` / `get` / `save` / `update` / `delete` / `batch_delete` / `update_variables` / `delete_variables` / `trace` / `flush` / `status` |
-| `user_id` | string | 是* | — | 客户编码（customer_code），*status 操作不需要 |
+| `user_id` | string | 是* | — | 用户标识，*status 操作不需要 |
 | `scope_id` | string | 否 | `"edp_agent"` | 多租户隔离标识（与 MemoryRail 保持一致） |
 
 ### search 操作
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `query` | string | 否 | `"风险 违约"` | 搜索查询文本 |
+| `query` | string | 否 | `"业务关键词"` | 搜索查询文本 |
 | `top_k` | int | 否 | `5` | 返回结果数量上限 |
 | `threshold` | float | 否 | `0.0` | 向量搜索相似度阈值（0.0 = 不过滤） |
 | `scope_id` | string | 否 | `"edp_agent"` | 多租户隔离标识 |
@@ -194,7 +194,7 @@ scripts:
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `variables` | object | 是 | — | 键值对 `{"变量名": "变量值"}`，如 `{"risk_level": "low"}` |
+| `variables` | object | 是 | — | 键值对 `{"变量名": "变量值"}`，如 `{"status": "normal"}` |
 | `scope_id` | string | 否 | `"edp_agent"` | 多租户隔离标识 |
 
 ### delete_variables 操作
@@ -221,10 +221,10 @@ scripts:
   "user_id": "<YOUR_USER_ID>",
   "scope_id": "edp_agent",
   "total_results": 3,
-  "variables": {"risk_preference": "保守", "industry_focus": "制造业"},
+  "variables": {"category": "general", "priority": "normal"},
   "results": [
     {
-      "content": "2025年09月29日，南京苏通商贸有限公司模型预警：高危...",
+      "content": "2024-01-15，用户 USER_001 处理结论：正常...",
       "type": "summary",
       "score": 1.0,
       "source": "summary_search"
@@ -378,7 +378,7 @@ scripts:
   "message": {
     "role": "user",
     "content": "原始对话内容...",
-    "timestamp": "2025-09-29T10:00:00"
+    "timestamp": "2024-01-15T10:00:00"
   },
   "breaker_open": false
 }
@@ -507,7 +507,7 @@ flush 操作         → 手动将缓冲区所有消息批量写入 agent-memory
 ## 注意事项
 
 1. **召回链路与 MemoryRail 完全对等**：四路召回（get_variables → search_memory → search_user_history_summary → get_user_mem_by_page 兜底），确保 Skill 方式与代码修改方式获得相同质量的记忆数据
-2. **user_id 隔离**：agent-memory1.0 按 user_id + scope_id 隔离数据，确保不同客户数据不交叉
+2. **user_id 隔离**：agent-memory1.0 按 user_id + scope_id 隔离数据，确保不同用户数据不交叉
 3. **不依赖 EDPAgent 框架**：本 Skill 是纯 Python HTTP 脚本，不依赖 `risk_review.skill_runtime` 等内部模块，可以独立运行和测试
 4. **熔断器跨进程共享**：通过文件系统实现，确保多次 `call_mcp` 调用之间熔断器状态一致
 5. **缓冲写入适用于多轮对话**：AgentRule.md 中每轮调用 `save` 时使用 `buffer: true`，对话结束时调用 `flush` 统一写入
