@@ -23,20 +23,47 @@ class GraphRecaller(Recaller):
     """
 
     def __init__(self, storage: Storage, depth: int = 1) -> None:
+        """初始化 GraphRecaller。
+
+        Args:
+            storage: 参数 storage（Storage）。
+            depth: 参数 depth（int）。
+        """
         self._graph = storage.graph
         self._depth = depth
 
     def operator_type(self) -> RetrievalOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 RetrievalOperatorType。
+        """
         return RetrievalOperatorType.RECALLER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def channel(self) -> RecallChannel:
+        """执行 `channel` 操作。
+
+        Returns:
+            返回 RecallChannel。
+        """
         return RecallChannel.GRAPH
 
     def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]:
         # 种子词项 = 关键词 ∪ 实体文本（实体更精准地定位图入口）。
+        """召回与查询匹配的记忆结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（ParsedQuery）。
+            top_k: 参数 top_k（int）。
+
+        Returns:
+            返回 list[ScoredUnit]。
+        """
         terms = set(query.keywords) | {e.text for e in query.entities if e.text}
         seeds = self._graph.seed_ids(scope, terms)
         scores: dict[str, float] = {}
@@ -54,6 +81,11 @@ class GraphRecaller(Recaller):
 
 @RecallerProducer.register("graph")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return GraphRecaller(
         StorageProducer.resolve(config),
         depth=Factory.cfg_get(config, "depth", 1),

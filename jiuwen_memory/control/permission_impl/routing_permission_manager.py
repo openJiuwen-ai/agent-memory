@@ -41,6 +41,17 @@ class RoutingPermissionManager(PermissionManager):
         fallback: str,
         route_key: str = "memory_type",
     ) -> None:
+        """初始化 RoutingPermissionManager。
+
+        Args:
+            policies: 参数 policies（dict[str, PermissionManager]）。
+            routes: 参数 routes（dict[str, str]）。
+            fallback: 参数 fallback（str）。
+            route_key: 参数 route_key（str）。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if fallback not in policies:
             raise ValidationError(
                 f"RoutingPermissionManager fallback {fallback!r} 不存在"
@@ -62,20 +73,41 @@ class RoutingPermissionManager(PermissionManager):
 
     def routing_fields(self) -> tuple[str, ...]:
         # 供 API 层把路由值回注为系统谓词，绑定「按哪条策略授权」与「能读到哪些数据」。
+        """执行 `routing_fields` 操作。
+
+        Returns:
+            返回 tuple[str, ...]。
+        """
         return (self._route_key,)
 
     def operator_type(self) -> ControlOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 ControlOperatorType。
+        """
         return ControlOperatorType.PERMISSION
 
     def health(self) -> None:
+        """执行健康检查。"""
         for policy in self._policies.values():
             policy.health()
 
     def grant(self, grant: Grant) -> None:
+        """执行 `grant` 操作。
+
+        Args:
+            grant: 参数 grant（Grant）。
+        """
         for policy in _unique_policies(self._policies):
             policy.grant(grant)
 
     def revoke(self, grant: Grant) -> None:
+        """执行 `revoke` 操作。
+
+        Args:
+            grant: 参数 grant（Grant）。
+        """
         for policy in _unique_policies(self._policies):
             policy.revoke(grant)
 
@@ -91,10 +123,29 @@ class RoutingPermissionManager(PermissionManager):
         # 不额外 deny、不对多个 policy 求交集，root / owner-cover / Grant 等基础规则
         # 全部由被选中的 delegate 按 S03 的 check 规则判定。路由值未解析时按 _select
         # 落到 fallback（S03 示例即如此定义），不在路由层加码。
+        """执行 `check` 操作。
+
+        Args:
+            actor: 参数 actor（Scope）。
+            target: 参数 target（Scope）。
+            action: 参数 action（Action）。
+            context: 参数 context（PermissionContext | None）。
+
+        Returns:
+            返回 bool。
+        """
         policy = self._select(context)
         return policy.check(actor, target, action, context=context)
 
     def _select(self, context: PermissionContext | None) -> PermissionManager:
+        """执行 `select` 操作。
+
+        Args:
+            context: 参数 context（PermissionContext | None）。
+
+        Returns:
+            返回 PermissionManager。
+        """
         value = _context_value(context, self._route_key)
         # 只接受 routes 里**显式声明**的路由值，未命中一律落 fallback。不同于 Pipeline
         # 路由（S03:136 允许「路由值本身是 profile 名则直接使用」）——授权侧若沿用该
@@ -106,6 +157,14 @@ class RoutingPermissionManager(PermissionManager):
 
 
 def _unique_policies(policies: dict[str, PermissionManager]) -> list[PermissionManager]:
+    """执行 `unique_policies` 操作。
+
+    Args:
+        policies: 参数 policies（dict[str, PermissionManager]）。
+
+    Returns:
+        返回 list[PermissionManager]。
+    """
     seen: set[int] = set()
     result: list[PermissionManager] = []
     for policy in policies.values():
@@ -118,6 +177,15 @@ def _unique_policies(policies: dict[str, PermissionManager]) -> list[PermissionM
 
 
 def _context_value(context: PermissionContext | None, route_key: str) -> str:
+    """执行 `context_value` 操作。
+
+    Args:
+        context: 参数 context（PermissionContext | None）。
+        route_key: 参数 route_key（str）。
+
+    Returns:
+        返回 str。
+    """
     if context is None:
         return ""
     if route_key == "memory_type":
@@ -131,6 +199,14 @@ def _context_value(context: PermissionContext | None, route_key: str) -> str:
 
 @PermissionProducer.register("routing")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     route_key = config.get("route_key", "memory_type")
     fallback = str(config.get("fallback", "")).strip()
     if not fallback:

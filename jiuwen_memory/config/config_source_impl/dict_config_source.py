@@ -14,6 +14,11 @@ class DictConfigSource(ConfigSource):
     """可变 dict；``fetch`` 读当前表，``put`` 更新单键。"""
 
     def __init__(self, values: dict[str, str] | None = None) -> None:
+        """初始化 DictConfigSource。
+
+        Args:
+            values: 参数 values（dict[str, str] | None）。
+        """
         self._values: dict[str, str] = {str(k): str(v) for k, v in (values or {}).items()}
 
     def fetch(self, key: str) -> str | None:

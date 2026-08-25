@@ -72,6 +72,14 @@ class EntityIndexAdmissionPolicy:
     )
 
     def decide(self, unit: MemoryUnit) -> EntityIndexAdmission:
+        """执行 `decide` 操作。
+
+        Args:
+            unit: 参数 unit（MemoryUnit）。
+
+        Returns:
+            返回 EntityIndexAdmission。
+        """
         content = (unit.content or "").strip()
         if not content:
             return EntityIndexAdmission(admitted=False, reason="empty_content")
@@ -126,6 +134,13 @@ class EntityLinkService:
         admission_policy: EntityIndexAdmissionPolicy | None = None,
         list_limit: int = _DEFAULT_LIST_LIMIT,
     ) -> None:
+        """初始化 EntityLinkService。
+
+        Args:
+            entity_store: 参数 entity_store（EntityStore）。
+            admission_policy: 参数 admission_policy（EntityIndexAdmissionPolicy | None）。
+            list_limit: 参数 list_limit（int）。
+        """
         self._entity_store = entity_store
         self._admission_policy = admission_policy or EntityIndexAdmissionPolicy()
         self._list_limit = list_limit
@@ -277,6 +292,16 @@ class EntityLinkService:
         group: list[tuple[MemoryUnit, int]],
         extracted_by_unit: list,
     ) -> EntityLinkResult:
+        """执行 `link_group` 操作。
+
+        Args:
+            space_id: 参数 space_id（str）。
+            group: 参数 group（list[tuple[MemoryUnit, int]]）。
+            extracted_by_unit: 参数 extracted_by_unit（list）。
+
+        Returns:
+            返回 EntityLinkResult。
+        """
         first_unit = group[0][0]
         filters = EntityStoreFilters.from_scope(first_unit.scope)
 
@@ -405,16 +430,32 @@ class EntityIndexBuilder(IndexBuilder):
     """
 
     def __init__(self, entity_link_service: EntityLinkService) -> None:
+        """初始化 EntityIndexBuilder。
+
+        Args:
+            entity_link_service: 参数 entity_link_service（EntityLinkService）。
+        """
         self._linker = entity_link_service
 
     def operator_type(self) -> OperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 OperatorType。
+        """
         return OperatorType.INDEX_BUILDER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         # 本实现只建检索索引，不交付记忆本体：FORWARD_ONLY 即整体跳过。
+        """根据配置构建组件实例。
+
+        Args:
+            units: 参数 units（list[MemoryUnit]）。
+        """
         if mode is IndexWriteMode.FORWARD_ONLY:
             return
         if not units:
@@ -476,6 +517,11 @@ class EntityIndexBuilder(IndexBuilder):
         self, units: list[MemoryUnit], *, mode: IndexRemoveMode = IndexRemoveMode.HARD
     ) -> None:
         # 同 build：不持有记忆本体，SOFT/HARD 都要移出检索，行为相同。
+        """移除指定的记录或资源。
+
+        Args:
+            units: 参数 units（list[MemoryUnit]）。
+        """
         if not units:
             return
         logger.info("EntityIndexBuilder: removing entity index for %d units", len(units))
@@ -508,4 +554,5 @@ class EntityIndexBuilder(IndexBuilder):
                 logger.warning("EntityIndexBuilder: unlink_memory failed for unit_id %s: %s", unit_id[:8], exc)
 
     def rebuild(self) -> None:
+        """执行 `rebuild` 操作。"""
         return None

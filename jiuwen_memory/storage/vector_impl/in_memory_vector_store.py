@@ -23,10 +23,27 @@ _ScopeKey = Tuple[str, str, str, str, str]
 
 
 def _skey(scope: Scope) -> _ScopeKey:
+    """执行 `skey` 操作。
+
+    Args:
+        scope: 参数 scope（Scope）。
+
+    Returns:
+        返回 _ScopeKey。
+    """
     return (scope.org, scope.space, scope.user, scope.agent, scope.session)
 
 
 def _cosine(a: List[float], b: List[float]) -> float:
+    """执行 `cosine` 操作。
+
+    Args:
+        a: 参数 a（List[float]）。
+        b: 参数 b（List[float]）。
+
+    Returns:
+        返回 float。
+    """
     if len(a) != len(b):
         return 0.0
     dot = sum(x * y for x, y in zip(a, b))
@@ -39,15 +56,31 @@ class InMemoryVectorStore(VectorStore):
     """纯内存向量存储：按 scope 隔离，暴力余弦近邻。"""
 
     def __init__(self) -> None:
+        """初始化 InMemoryVectorStore。"""
         self._data: Dict[_ScopeKey, Dict[str, VectorRecord]] = defaultdict(dict)
 
     def store_type(self) -> StoreType:
+        """返回当前存储类型。
+
+        Returns:
+            返回 StoreType。
+        """
         return StoreType.VECTOR
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def insert(self, scope: Scope, records: List[VectorRecord]) -> None:
+        """插入一条或多条记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            records: 参数 records（List[VectorRecord]）。
+
+        Raises:
+            ConflictError: 执行失败时抛出。
+        """
         bucket = self._data[_skey(scope)]
         for rec in records:
             if rec.id in bucket:
@@ -55,6 +88,15 @@ class InMemoryVectorStore(VectorStore):
             bucket[rec.id] = rec
 
     def update(self, scope: Scope, records: List[VectorRecord]) -> None:
+        """更新已有记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            records: 参数 records（List[VectorRecord]）。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         bucket = self._data[_skey(scope)]
         for rec in records:
             if rec.id not in bucket:
@@ -62,15 +104,39 @@ class InMemoryVectorStore(VectorStore):
             bucket[rec.id] = rec
 
     def delete(self, scope: Scope, ids: List[str]) -> None:
+        """删除指定的记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ids: 参数 ids（List[str]）。
+        """
         bucket = self._data[_skey(scope)]
         for rec_id in ids:
             bucket.pop(rec_id, None)
 
     def get(self, scope: Scope, ids: List[str]) -> List[VectorRecord]:
+        """读取指定的记录或资源。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ids: 参数 ids（List[str]）。
+
+        Returns:
+            返回 List[VectorRecord]。
+        """
         bucket = self._data[_skey(scope)]
         return [bucket[i] for i in ids if i in bucket]
 
     def search(self, scope: Scope, query: VectorQuery) -> List[ScoredID]:
+        """检索与查询匹配的结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（VectorQuery）。
+
+        Returns:
+            返回 List[ScoredID]。
+        """
         bucket = self._data[_skey(scope)]
         scored = [
             ScoredID(
@@ -92,6 +158,16 @@ class InMemoryVectorStore(VectorStore):
     ) -> List[ScoredHit]:
         # 内存后端无 RTT，recall 即 search 的薄包装：output_fields 只认 "metadata"
         # （归并所需的 unit_id 即在其中），其余值忽略并记日志；空列表/None 不回带。
+        """召回与查询匹配的记忆结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（VectorQuery）。
+            output_fields: 参数 output_fields（list[str] | None）。
+
+        Returns:
+            返回 List[ScoredHit]。
+        """
         fetch_meta = bool(output_fields) and "metadata" in output_fields
         if output_fields:
             unknown = [f for f in output_fields if f != "metadata"]
@@ -122,4 +198,9 @@ class InMemoryVectorStore(VectorStore):
 
 @VectorProducer.register("memory")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return InMemoryVectorStore()

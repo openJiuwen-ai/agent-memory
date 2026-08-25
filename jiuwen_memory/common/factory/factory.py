@@ -37,6 +37,14 @@ class Factory:
     _by_top_name: Dict[str, type] = {}  # TOP_NAME -> producer 子类（供 Config 解析期校验顶层段）
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
+        """执行 `init_subclass` 操作。
+
+        Args:
+            **kwargs: 参数 kwargs（Any）。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         super().__init_subclass__(**kwargs)
         cls._registry = {}  # 每个 producer 子类一张独立注册表
         cls._instances = {}  # 每个 producer 子类一份具名实例缓存
@@ -85,6 +93,14 @@ class Factory:
         """装饰器：把一个 builder 以实现名 ``target`` 注册进本 producer。"""
 
         def deco(builder: Builder) -> Builder:
+            """执行 `deco` 操作。
+
+            Args:
+                builder: 参数 builder（Builder）。
+
+            Returns:
+                返回 Builder。
+            """
             cls._registry[target] = builder
             return builder
 

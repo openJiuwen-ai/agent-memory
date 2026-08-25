@@ -36,6 +36,17 @@ class MultimodalRetriever(Retriever):
         event_top_k: int = 10,
         rrf_k: int = 60,
     ) -> None:
+        """初始化 MultimodalRetriever。
+
+        Args:
+            base_retriever: 参数 base_retriever（Retriever）。
+            clip_top_k: 参数 clip_top_k（int）。
+            event_top_k: 参数 event_top_k（int）。
+            rrf_k: 参数 rrf_k（int）。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if clip_top_k <= 0 or event_top_k <= 0:
             raise ValidationError("clip_top_k and event_top_k must be greater than zero")
         if rrf_k <= 0:
@@ -46,12 +57,27 @@ class MultimodalRetriever(Retriever):
         self._rrf_k = rrf_k
 
     def operator_type(self) -> RetrievalOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 RetrievalOperatorType。
+        """
         return RetrievalOperatorType.RETRIEVER
 
     def health(self) -> None:
+        """执行健康检查。"""
         self._base.health()
 
     def retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
+        """执行完整检索流程并返回结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（RetrievalQuery）。
+
+        Returns:
+            返回 RetrievalResult。
+        """
         queries = {
             "native": _with_filters(
                 query,
@@ -131,6 +157,16 @@ def _with_filters(
     *filters: FilterClause,
     top_k: int,
 ) -> RetrievalQuery:
+    """执行 `with_filters` 操作。
+
+    Args:
+        query: 参数 query（RetrievalQuery）。
+        top_k: 参数 top_k（int）。
+        *filters: 参数 filters（FilterClause）。
+
+    Returns:
+        返回 RetrievalQuery。
+    """
     return replace(
         query,
         filters=and_merge(query.filters, list(filters)),
@@ -144,6 +180,16 @@ def _rrf_merge(
     top_k: int,
     rrf_k: int,
 ) -> list[RetrievedItem]:
+    """执行 `rrf_merge` 操作。
+
+    Args:
+        branches: 参数 branches（list[list[RetrievedItem]]）。
+        top_k: 参数 top_k（int）。
+        rrf_k: 参数 rrf_k（int）。
+
+    Returns:
+        返回 list[RetrievedItem]。
+    """
     by_id: dict[str, RetrievedItem] = {}
     scores: dict[str, float] = {}
     for branch in branches:
@@ -163,6 +209,15 @@ def _branch_trajectory(
     steps: list[TrajectoryStep],
     branch: str,
 ) -> list[TrajectoryStep]:
+    """执行 `branch_trajectory` 操作。
+
+    Args:
+        steps: 参数 steps（list[TrajectoryStep]）。
+        branch: 参数 branch（str）。
+
+    Returns:
+        返回 list[TrajectoryStep]。
+    """
     return [
         replace(step, detail={**step.detail, "branch": branch})
         for step in steps
@@ -171,6 +226,11 @@ def _branch_trajectory(
 
 @RetrieverProducer.register("multimodal")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return MultimodalRetriever(
         RetrieverProducer.dep(config, "base_retriever", default="pipeline"),
         clip_top_k=int(config.get("clip_top_k", 10)),

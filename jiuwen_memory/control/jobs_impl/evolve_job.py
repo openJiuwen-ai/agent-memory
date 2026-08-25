@@ -34,6 +34,15 @@ class EvolveJob(Job):
         mode: EvolveMode = EvolveMode.EXTRACT,
         interval: int = 0,
     ) -> None:
+        """初始化 EvolveJob。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            storage: 参数 storage（Storage）。
+            evolver: 参数 evolver（Evolver）。
+            mode: 参数 mode（EvolveMode）。
+            interval: 参数 interval（int）。
+        """
         super().__init__(scope=scope, interval=interval)
         self._storage = storage
         self._evolver = evolver
@@ -42,6 +51,11 @@ class EvolveJob(Job):
     async def run(self) -> JobInfo:
         # 排除中期记忆：middle 路径写入的 unit 由 MiddleToLongJob 专门处理，
         # 避免同一原文被两次处理。
+        """执行当前任务并返回结果。
+
+        Returns:
+            返回 JobInfo。
+        """
         page = await asyncio.to_thread(self._storage.list, self.scope, limit=1_000_000)
         units = [
             unit for unit in page.items if unit.system_metadata.get("middle") != "true"

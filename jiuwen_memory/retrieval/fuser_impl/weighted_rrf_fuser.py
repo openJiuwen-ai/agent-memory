@@ -25,6 +25,13 @@ class WeightedRRFFuser(Fuser):
         k: int = 60,
         channel_weights: Mapping[RecallChannel | str, float | str] | None = None,
     ) -> None:
+        """初始化 WeightedRRFFuser。
+
+        Args:
+            k: 参数 k（int）。
+            channel_weights: 参数 channel_weights（Mapping[RecallChannel | str, float | str]
+                | None）。
+        """
         self._k = k
         self._channel_weights = self._normalize_weights(channel_weights or {})
 
@@ -32,6 +39,14 @@ class WeightedRRFFuser(Fuser):
     def _normalize_weights(
         weights: Mapping[RecallChannel | str, float | str],
     ) -> dict[RecallChannel, float]:
+        """规范化输入值。
+
+        Args:
+            weights: 参数 weights（Mapping[RecallChannel | str, float | str]）。
+
+        Returns:
+            返回 dict[RecallChannel, float]。
+        """
         normalized: dict[RecallChannel, float] = {}
         for raw_channel, raw_weight in weights.items():
             if isinstance(raw_channel, RecallChannel):
@@ -45,12 +60,23 @@ class WeightedRRFFuser(Fuser):
         return normalized
 
     def operator_type(self) -> RetrievalOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 RetrievalOperatorType。
+        """
         return RetrievalOperatorType.FUSER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def explain(self) -> dict[str, str]:
+        """执行 `explain` 操作。
+
+        Returns:
+            返回 dict[str, str]。
+        """
         sorted_weights = sorted(self._channel_weights.items(), key=lambda item: item[0].value)
         weight_parts = []
         for channel, weight in sorted_weights:
@@ -65,6 +91,18 @@ class WeightedRRFFuser(Fuser):
     def fuse(
         self, query: ParsedQuery, candidates: list[list[ScoredCandidate]]
     ) -> list[ScoredCandidate]:
+        """执行 `fuse` 操作。
+
+        Args:
+            query: 参数 query（ParsedQuery）。
+            candidates: 参数 candidates（list[list[ScoredCandidate]]）。
+
+        Returns:
+            返回 list[ScoredCandidate]。
+
+        Raises:
+            KeyError: 执行失败时抛出。
+        """
         scores: dict[str, float] = {}
         channel: dict[str, RecallChannel] = {}
         evidence: dict[str, list[ChannelEvidence]] = {}
@@ -108,6 +146,11 @@ class WeightedRRFFuser(Fuser):
 
 @FuserProducer.register("weighted_rrf")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return WeightedRRFFuser(
         k=config.get("fusion_rrf_k", 60),
         channel_weights=config.get("fusion_channel_weights", {}),

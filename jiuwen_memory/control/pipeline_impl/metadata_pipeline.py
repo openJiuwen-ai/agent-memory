@@ -37,6 +37,17 @@ class MetadataPipeline(MemoryPipeline):
         fallback: str,
         route_key: str = "memory_type",
     ) -> None:
+        """初始化 MetadataPipeline。
+
+        Args:
+            profiles: 参数 profiles（dict[str, PipelineBinding]）。
+            routes: 参数 routes（dict[str, str]）。
+            fallback: 参数 fallback（str）。
+            route_key: 参数 route_key（str）。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if fallback not in profiles:
             raise ValidationError(
                 f"MetadataPipeline fallback profile {fallback!r} 不存在"
@@ -48,9 +59,15 @@ class MetadataPipeline(MemoryPipeline):
         self._route_key = route_key
 
     def operator_type(self) -> ControlOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 ControlOperatorType。
+        """
         return ControlOperatorType.PIPELINE
 
     def health(self) -> None:
+        """执行健康检查。"""
         for binding in self._profiles.values():
             binding.index_builder.health()
             binding.retriever.health()
@@ -59,14 +76,39 @@ class MetadataPipeline(MemoryPipeline):
                 binding.classifier.health()
 
     def select_for_write(self, units: list[MemoryUnit]) -> PipelineBinding:
+        """执行 `select_for_write` 操作。
+
+        Args:
+            units: 参数 units（list[MemoryUnit]）。
+
+        Returns:
+            返回 PipelineBinding。
+        """
         value = _route_value_from_units(units, self._route_key)
         return self._select(value, "write")
 
     def select_for_recall(self, query: RetrievalQuery) -> PipelineBinding:
+        """执行 `select_for_recall` 操作。
+
+        Args:
+            query: 参数 query（RetrievalQuery）。
+
+        Returns:
+            返回 PipelineBinding。
+        """
         value = _route_value_from_query(query, self._route_key)
         return self._select(value, "recall")
 
     def _select(self, value: str, surface: str) -> PipelineBinding:
+        """执行 `select` 操作。
+
+        Args:
+            value: 参数 value（str）。
+            surface: 参数 surface（str）。
+
+        Returns:
+            返回 PipelineBinding。
+        """
         profile_name = self._routes.get(value, value) if value else self._fallback
         if profile_name not in self._profiles:
             logger.warning(
@@ -89,6 +131,15 @@ class MetadataPipeline(MemoryPipeline):
 
 
 def _route_value_from_units(units: list[MemoryUnit], route_key: str) -> str:
+    """执行 `route_value_from_units` 操作。
+
+    Args:
+        units: 参数 units（list[MemoryUnit]）。
+        route_key: 参数 route_key（str）。
+
+    Returns:
+        返回 str。
+    """
     for unit in units:
         value = str(unit.system_metadata.get(route_key, "")).strip()
         if value:
@@ -97,6 +148,15 @@ def _route_value_from_units(units: list[MemoryUnit], route_key: str) -> str:
 
 
 def _route_value_from_query(query: RetrievalQuery, route_key: str) -> str:
+    """执行 `route_value_from_query` 操作。
+
+    Args:
+        query: 参数 query（RetrievalQuery）。
+        route_key: 参数 route_key（str）。
+
+    Returns:
+        返回 str。
+    """
     value = str(query.extensions.get(route_key, "")).strip()
     if value:
         return value
@@ -111,6 +171,19 @@ def _route_value_from_query(query: RetrievalQuery, route_key: str) -> str:
 
 
 def _string_param(raw: object, *, field: str, default: str | None = None) -> str:
+    """执行 `string_param` 操作。
+
+    Args:
+        raw: 参数 raw（object）。
+        field: 参数 field（str）。
+        default: 参数 default（str | None）。
+
+    Returns:
+        返回 str。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     if raw is None:
         if default is None:
             raise ValidationError(f"pipeline profile 缺少必填字段 {field!r}")
@@ -124,6 +197,19 @@ def _string_param(raw: object, *, field: str, default: str | None = None) -> str
 
 
 def _build_profile(config, name: str, raw: object) -> PipelineBinding:
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+        name: 参数 name（str）。
+        raw: 参数 raw（object）。
+
+    Returns:
+        返回 PipelineBinding。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     if not isinstance(raw, Mapping):
         raise ValidationError(
             f"pipeline profile {name!r} 应是映射，得到 {type(raw).__name__}"
@@ -146,6 +232,14 @@ def _build_profile(config, name: str, raw: object) -> PipelineBinding:
 
 @PipelineProducer.register("metadata")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     profiles_config = config.get("profiles")
     if not isinstance(profiles_config, Mapping) or not profiles_config:
         raise ValidationError("pipeline.metadata params.profiles 必须配置至少一个 profile")

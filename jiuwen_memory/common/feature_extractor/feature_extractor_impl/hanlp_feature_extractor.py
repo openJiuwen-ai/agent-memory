@@ -113,6 +113,14 @@ class HanlpFeatureExtractor(FeatureExtractor):
         ner_task_name: str = "MSRA_NER_ELECTRA_SMALL_ZH",
         fallback_to_tokenizer: bool = True,
     ) -> None:
+        """初始化 HanlpFeatureExtractor。
+
+        Args:
+            tok_task_name: 参数 tok_task_name（str）。
+            task_name: 参数 task_name（str）。
+            ner_task_name: 参数 ner_task_name（str）。
+            fallback_to_tokenizer: 参数 fallback_to_tokenizer（bool）。
+        """
         self._tok_task_name = tok_task_name
         self._task_name = task_name
         self._ner_task_name = ner_task_name
@@ -125,15 +133,33 @@ class HanlpFeatureExtractor(FeatureExtractor):
         self._init_hanlp()
 
     def plugin_type(self) -> PluginType:
+        """返回当前插件类型。
+
+        Returns:
+            返回 PluginType。
+        """
         return PluginType.FEATURE_EXTRACTOR
 
     def health(self) -> None:
+        """执行健康检查。
+
+        Raises:
+            HealthCheckError: 执行失败时抛出。
+        """
         if not self._available and not self._fallback_to_tokenizer:
             raise HealthCheckError(
                 "HanlpFeatureExtractor: HanLP models not available"
             )
 
     def extract(self, text: str) -> FeatureSet:
+        """执行 `extract` 操作。
+
+        Args:
+            text: 参数 text（str）。
+
+        Returns:
+            返回 FeatureSet。
+        """
         if not text.strip():
             return FeatureSet()
 
@@ -390,6 +416,11 @@ class HanlpFeatureExtractor(FeatureExtractor):
 
 @FeatureExtractorProducer.register("hanlp")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return HanlpFeatureExtractor(
         tok_task_name=config.get("feature_extractor_hanlp_tok_task", "FINE_ELECTRA_SMALL_ZH"),
         task_name=config.get("feature_extractor_hanlp_task", "CTB9_POS_ELECTRA_SMALL"),

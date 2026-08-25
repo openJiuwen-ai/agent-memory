@@ -190,6 +190,25 @@ class LLMAssociator(Associator):
         retry_max_retries: int = 3,
         retry_backoff_ms: int = 1000,
     ) -> None:
+        """初始化 LLMAssociator。
+
+        Args:
+            llm: 参数 llm（LLM）。
+            feature_extractor: 参数 feature_extractor（FeatureExtractor）。
+            embedder: 参数 embedder（Embedder）。
+            similarity_threshold: 参数 similarity_threshold（float）。
+            keyword_jaccard_threshold: 参数 keyword_jaccard_threshold（float）。
+            entity_match_threshold: 参数 entity_match_threshold（float）。
+            min_auto_confirm: 参数 min_auto_confirm（float）。
+            max_auto_confirm: 参数 max_auto_confirm（float）。
+            min_final_score: 参数 min_final_score（float）。
+            deep_discovery: 参数 deep_discovery（bool）。
+            max_pairs_per_llm_call: 参数 max_pairs_per_llm_call（int）。
+            ann_threshold: 参数 ann_threshold（int）。
+            max_units_per_associate: 参数 max_units_per_associate（int）。
+            retry_max_retries: 参数 retry_max_retries（int）。
+            retry_backoff_ms: 参数 retry_backoff_ms（int）。
+        """
         self._llm = llm
         self._feature_extractor = feature_extractor
         self._embedder = embedder
@@ -230,10 +249,20 @@ class LLMAssociator(Associator):
         return s.strip()
 
     def operator_type(self) -> OperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 OperatorType。
+        """
         return OperatorType.ASSOCIATOR
 
     def health(self) -> None:
         # 探测 LLM 可用性——若不可用则抛异常
+        """执行健康检查。
+
+        Raises:
+            HealthCheckError: 执行失败时抛出。
+        """
         try:
             self._llm.health()
         except Exception as exc:
@@ -888,6 +917,11 @@ class LLMAssociator(Associator):
 
 @AssociatorProducer.register("llm")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return LLMAssociator(
         llm=LlmProducer.dep(config, default="echo"),
         feature_extractor=FeatureExtractorProducer.dep(config, default="keyword"),

@@ -24,6 +24,15 @@ _DEFAULT_SCOPE = Scope(org="eval", user="u1")
 
 
 def _to_scope(raw: Optional[dict], fallback: Scope) -> Scope:
+    """执行 `to_scope` 操作。
+
+    Args:
+        raw: 参数 raw（Optional[dict]）。
+        fallback: 参数 fallback（Scope）。
+
+    Returns:
+        返回 Scope。
+    """
     if not raw:
         return fallback
     return Scope(
@@ -43,18 +52,44 @@ class JsonlDataset(Dataset):
         name: Optional[str] = None,
         default_scope: Scope = _DEFAULT_SCOPE,
     ) -> None:
+        """初始化 JsonlDataset。
+
+        Args:
+            path: 参数 path（str）。
+            name: 参数 name（Optional[str]）。
+            default_scope: 参数 default_scope（Scope）。
+        """
         self.name = name or os.path.splitext(os.path.basename(path))[0]
         self._seeds: List[MemorySeed] = []
         self._queries: List[QueryCase] = []
         self._load(path, default_scope)
 
     def seeds(self) -> Sequence[MemorySeed]:
+        """执行 `seeds` 操作。
+
+        Returns:
+            返回 Sequence[MemorySeed]。
+        """
         return self._seeds
 
     def queries(self) -> Sequence[QueryCase]:
+        """执行 `queries` 操作。
+
+        Returns:
+            返回 Sequence[QueryCase]。
+        """
         return self._queries
 
     def _load(self, path: str, default_scope: Scope) -> None:
+        """加载并解析输入数据。
+
+        Args:
+            path: 参数 path（str）。
+            default_scope: 参数 default_scope（Scope）。
+
+        Raises:
+            ValueError: 执行失败时抛出。
+        """
         with open(path, "r", encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()

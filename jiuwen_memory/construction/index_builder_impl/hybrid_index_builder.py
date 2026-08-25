@@ -50,6 +50,15 @@ class HybridIndexBuilder(IndexBuilder):
         entity_linker: EntityLinkService | None = None,
     ) -> None:
         # 各子 builder 的 Store 端口都从这一个 storage 取，保证读写同源。
+        """初始化 HybridIndexBuilder。
+
+        Args:
+            storage: 参数 storage（Storage）。
+            chunker: 参数 chunker（Chunker）。
+            embedder: 参数 embedder（Embedder）。
+            layers_enabled: 参数 layers_enabled（bool）。
+            entity_linker: 参数 entity_linker（EntityLinkService | None）。
+        """
         self._forward_builder = ForwardIndexBuilder(storage)
         self._fulltext_builder = FulltextIndexBuilder(
             storage,
@@ -65,12 +74,23 @@ class HybridIndexBuilder(IndexBuilder):
         self._entity_builder = EntityIndexBuilder(entity_linker) if entity_linker is not None else None
 
     def operator_type(self) -> OperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 OperatorType。
+        """
         return OperatorType.INDEX_BUILDER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
+        """根据配置构建组件实例。
+
+        Args:
+            units: 参数 units（list[MemoryUnit]）。
+        """
         logger.info(
             "HybridIndexBuilder: building index for %d units (mode=%s)",
             len(units), mode,
@@ -123,6 +143,7 @@ class HybridIndexBuilder(IndexBuilder):
 
     def rebuild(self) -> None:
         # 最小实现：索引与真源同生命周期，无独立重建路径。
+        """执行 `rebuild` 操作。"""
         return None
 
     # ------------------------------------------------------------------
@@ -149,6 +170,11 @@ def _build(config):
 
     # entity_linker 注入：entity_enabled 默认 False（需显式开启 + EntityStore 后端
     # 可解析）
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     entity_linker = None
     if config.get("entity_enabled", False):
         try:

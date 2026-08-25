@@ -51,16 +51,40 @@ class _AuthorizedStoreProxy:
     """给现有 Store 方法增加可选 access，同时避免暴露原始实例。"""
 
     def __init__(self, store: Any, security: StorageSecurity, resource: str) -> None:
+        """初始化 _AuthorizedStoreProxy。
+
+        Args:
+            store: 参数 store（Any）。
+            security: 参数 security（StorageSecurity）。
+            resource: 参数 resource（str）。
+        """
         self._store = store
         self._security = security
         self._resource = resource
 
     def __getattr__(self, name: str) -> Any:
+        """执行 `getattr` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 Any。
+        """
         member = getattr(self._store, name)
         if not callable(member):
             return member
 
         def authorized(*args: Any, **kwargs: Any) -> Any:
+            """执行 `authorized` 操作。
+
+            Args:
+                *args: 参数 args（Any）。
+                **kwargs: 参数 kwargs（Any）。
+
+            Returns:
+                返回 Any。
+            """
             access = kwargs.pop("access", None)
             scope = args[0] if args and isinstance(args[0], Scope) else Scope()
             action = _action_for_store_method(name)
@@ -71,6 +95,14 @@ class _AuthorizedStoreProxy:
 
 
 def _action_for_store_method(name: str) -> StorageAction:
+    """执行 `action_for_store_method` 操作。
+
+    Args:
+        name: 参数 name（str）。
+
+    Returns:
+        返回 StorageAction。
+    """
     if name == "insert":
         return StorageAction.ADD
     if name == "update":
@@ -104,6 +136,25 @@ class CompositeStorage(Storage):
         preferred_pipeline: RetrievalPipeline = RetrievalPipeline.RECALL_GET_RANK,
         security: StorageSecurity | None = None,
     ) -> None:
+        """初始化 CompositeStorage。
+
+        Args:
+            kv: 参数 kv（KVStore | None）。
+            vector: 参数 vector（VectorStore | None）。
+            fulltext: 参数 fulltext（FulltextStore | None）。
+            graph: 参数 graph（GraphStore | None）。
+            fusion: 参数 fusion（FusionStore | None）。
+            fs: 参数 fs（FSStore | None）。
+            kv_ports: 参数 kv_ports（dict[str, KVStore] | None）。
+            vector_ports: 参数 vector_ports（dict[str, VectorStore] | None）。
+            fulltext_ports: 参数 fulltext_ports（dict[str, FulltextStore] | None）。
+            graph_ports: 参数 graph_ports（dict[str, GraphStore] | None）。
+            fusion_ports: 参数 fusion_ports（dict[str, FusionStore] | None）。
+            fs_ports: 参数 fs_ports（dict[str, FSStore] | None）。
+            recallers: 参数 recallers（list[Any] | None）。
+            preferred_pipeline: 参数 preferred_pipeline（RetrievalPipeline）。
+            security: 参数 security（StorageSecurity | None）。
+        """
         self._stores = {
             StorageCapability.KV: kv,
             StorageCapability.VECTOR: vector,
@@ -142,34 +193,78 @@ class CompositeStorage(Storage):
 
     @property
     def security(self) -> StorageSecurity:
+        """返回 security 属性。
+
+        Returns:
+            返回 StorageSecurity。
+        """
         return self._security
 
     @property
     def kv(self) -> KVStore:
+        """返回 kv 属性。
+
+        Returns:
+            返回 KVStore。
+        """
         return cast(KVStore, self._port(StorageCapability.KV))
 
     @property
     def vector(self) -> VectorStore:
+        """返回 vector 属性。
+
+        Returns:
+            返回 VectorStore。
+        """
         return cast(VectorStore, self._port(StorageCapability.VECTOR))
 
     @property
     def fulltext(self) -> FulltextStore:
+        """返回 fulltext 属性。
+
+        Returns:
+            返回 FulltextStore。
+        """
         return cast(FulltextStore, self._port(StorageCapability.FULLTEXT))
 
     @property
     def graph(self) -> GraphStore:
+        """返回 graph 属性。
+
+        Returns:
+            返回 GraphStore。
+        """
         return cast(GraphStore, self._port(StorageCapability.GRAPH))
 
     @property
     def fusion(self) -> FusionStore:
+        """返回 fusion 属性。
+
+        Returns:
+            返回 FusionStore。
+        """
         return cast(FusionStore, self._port(StorageCapability.FUSION))
 
     @property
     def fs(self) -> FSStore:
+        """返回 fs 属性。
+
+        Returns:
+            返回 FSStore。
+        """
         return cast(FSStore, self._port(StorageCapability.FS))
 
     @staticmethod
     def _validate_units(scope: Scope, units: list[MemoryUnit]) -> None:
+        """校验输入参数或当前状态。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            units: 参数 units（list[MemoryUnit]）。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         invalid = [unit.id for unit in units if unit.scope != scope]
         if invalid:
             raise ValidationError(f"MemoryUnit scope differs from explicit scope: {invalid}")
@@ -185,48 +280,159 @@ class CompositeStorage(Storage):
         self._recallers = bound
 
     def capabilities(self) -> frozenset[StorageCapability]:
+        """返回当前组件支持的能力集合。
+
+        Returns:
+            返回 frozenset[StorageCapability]。
+        """
         return self._capabilities
 
     def has_kv_port(self, name: str = "default") -> bool:
+        """执行 `has_kv_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 bool。
+        """
         return self._has_port(StorageCapability.KV, name)
 
     def has_vector_port(self, name: str = "default") -> bool:
+        """执行 `has_vector_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 bool。
+        """
         return self._has_port(StorageCapability.VECTOR, name)
 
     def has_fulltext_port(self, name: str = "default") -> bool:
+        """执行 `has_fulltext_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 bool。
+        """
         return self._has_port(StorageCapability.FULLTEXT, name)
 
     def has_graph_port(self, name: str = "default") -> bool:
+        """执行 `has_graph_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 bool。
+        """
         return self._has_port(StorageCapability.GRAPH, name)
 
     def has_fusion_port(self, name: str = "default") -> bool:
+        """执行 `has_fusion_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 bool。
+        """
         return self._has_port(StorageCapability.FUSION, name)
 
     def has_fs_port(self, name: str = "default") -> bool:
+        """执行 `has_fs_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 bool。
+        """
         return self._has_port(StorageCapability.FS, name)
 
     def kv_port(self, name: str = "default") -> KVStore:
+        """执行 `kv_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 KVStore。
+        """
         return cast(KVStore, self._port(StorageCapability.KV, name))
 
     def vector_port(self, name: str = "default") -> VectorStore:
+        """执行 `vector_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 VectorStore。
+        """
         return cast(VectorStore, self._port(StorageCapability.VECTOR, name))
 
     def fulltext_port(self, name: str = "default") -> FulltextStore:
+        """执行 `fulltext_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 FulltextStore。
+        """
         return cast(FulltextStore, self._port(StorageCapability.FULLTEXT, name))
 
     def graph_port(self, name: str = "default") -> GraphStore:
+        """执行 `graph_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 GraphStore。
+        """
         return cast(GraphStore, self._port(StorageCapability.GRAPH, name))
 
     def fusion_port(self, name: str = "default") -> FusionStore:
+        """执行 `fusion_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 FusionStore。
+        """
         return cast(FusionStore, self._port(StorageCapability.FUSION, name))
 
     def fs_port(self, name: str = "default") -> FSStore:
+        """执行 `fs_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 FSStore。
+        """
         return cast(FSStore, self._port(StorageCapability.FS, name))
 
     def preferred_retrieval_pipeline(self) -> RetrievalPipeline:
+        """执行 `preferred_retrieval_pipeline` 操作。
+
+        Returns:
+            返回 RetrievalPipeline。
+        """
         return self._preferred_pipeline
 
     def scopes(self) -> list[Scope]:
+        """执行 `scopes` 操作。
+
+        Returns:
+            返回 list[Scope]。
+        """
         return self._raw_kv().scopes()
 
     def add(
@@ -237,6 +443,13 @@ class CompositeStorage(Storage):
         mode: IndexWriteMode = IndexWriteMode.ALL,
         access: StorageAccessContext | None = None,
     ) -> None:
+        """添加记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            units: 参数 units（list[MemoryUnit]）。
+            access: 参数 access（StorageAccessContext | None）。
+        """
         self._authorize(access, scope, StorageAction.ADD, "memory_unit")
         # 本实现无投影能力，落地范围仅记忆本体：调用方只要检索索引时无事可做。
         if mode is IndexWriteMode.RETRIEVAL_ONLY:
@@ -255,6 +468,13 @@ class CompositeStorage(Storage):
         access: StorageAccessContext | None = None,
     ) -> None:
         # 本实现落地范围仅记忆本体，FORWARD_ONLY 与 ALL 行为相同（无检索索引可跳过）。
+        """更新已有记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            units: 参数 units（list[MemoryUnit]）。
+            access: 参数 access（StorageAccessContext | None）。
+        """
         self._authorize(access, scope, StorageAction.UPDATE, "memory_unit")
         if mode is IndexWriteMode.RETRIEVAL_ONLY:
             return
@@ -271,6 +491,13 @@ class CompositeStorage(Storage):
         mode: IndexRemoveMode = IndexRemoveMode.HARD,
         access: StorageAccessContext | None = None,
     ) -> None:
+        """删除指定的记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            unit_ids: 参数 unit_ids（list[str]）。
+            access: 参数 access（StorageAccessContext | None）。
+        """
         self._authorize(access, scope, StorageAction.DELETE, "memory_unit")
         # 同 add：无检索索引可单独移除，软删除保留本体即无事可做。
         if mode is IndexRemoveMode.SOFT:
@@ -286,6 +513,16 @@ class CompositeStorage(Storage):
         *,
         access: StorageAccessContext | None = None,
     ) -> list[MemoryUnit]:
+        """读取指定的记录或资源。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            unit_ids: 参数 unit_ids（list[str]）。
+            access: 参数 access（StorageAccessContext | None）。
+
+        Returns:
+            返回 list[MemoryUnit]。
+        """
         self._authorize(access, scope, StorageAction.GET, "memory_unit")
         return self._get_units(scope, unit_ids)
 
@@ -300,6 +537,20 @@ class CompositeStorage(Storage):
         extensions: dict[str, str] | None = None,
         access: StorageAccessContext | None = None,
     ) -> MemoryListResult:
+        """列出符合条件的记录或资源。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            offset: 参数 offset（int）。
+            limit: 参数 limit（int）。
+            memory_types: 参数 memory_types（list[str] | None）。
+            filters: 参数 filters（FilterExpr | None）。
+            extensions: 参数 extensions（dict[str, str] | None）。
+            access: 参数 access（StorageAccessContext | None）。
+
+        Returns:
+            返回 MemoryListResult。
+        """
         self._authorize(access, scope, StorageAction.LIST, "memory_unit")
         result = self._raw_kv().list(
             scope,
@@ -325,6 +576,18 @@ class CompositeStorage(Storage):
         recall_limit: int,
         access: StorageAccessContext | None = None,
     ) -> RecallResult[ScoredUnit]:
+        """召回与查询匹配的记忆结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（ParsedQuery）。
+            channels: 参数 channels（list[RecallChannel] | None）。
+            recall_limit: 参数 recall_limit（int）。
+            access: 参数 access（StorageAccessContext | None）。
+
+        Returns:
+            返回 RecallResult[ScoredUnit]。
+        """
         self._authorize(access, scope, StorageAction.SEARCH, "memory_unit")
         return self._recall(scope, query, channels=channels, recall_limit=recall_limit)
 
@@ -337,6 +600,18 @@ class CompositeStorage(Storage):
         recall_limit: int,
         access: StorageAccessContext | None = None,
     ) -> RecallResult[ScoredMemoryUnit]:
+        """执行 `recall_and_get` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（ParsedQuery）。
+            channels: 参数 channels（list[RecallChannel] | None）。
+            recall_limit: 参数 recall_limit（int）。
+            access: 参数 access（StorageAccessContext | None）。
+
+        Returns:
+            返回 RecallResult[ScoredMemoryUnit]。
+        """
         self._authorize(access, scope, StorageAction.SEARCH, "memory_unit")
         return self._recall_and_get(
             scope, query, channels=channels, recall_limit=recall_limit
@@ -353,6 +628,20 @@ class CompositeStorage(Storage):
         rank_limit: int,
         access: StorageAccessContext | None = None,
     ) -> RankedStorageResult:
+        """执行完整检索流程并返回结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（ParsedQuery）。
+            fuser: 参数 fuser（CandidateFuser）。
+            channels: 参数 channels（list[RecallChannel] | None）。
+            recall_limit: 参数 recall_limit（int）。
+            rank_limit: 参数 rank_limit（int）。
+            access: 参数 access（StorageAccessContext | None）。
+
+        Returns:
+            返回 RankedStorageResult。
+        """
         self._authorize(access, scope, StorageAction.SEARCH, "memory_unit")
         materialized = self._recall_and_get(
             scope, query, channels=channels, recall_limit=recall_limit
@@ -368,6 +657,7 @@ class CompositeStorage(Storage):
         return RankedStorageResult(candidates=ranked, errors=materialized.errors)
 
     def health(self) -> None:
+        """执行健康检查。"""
         self._security.health()
         checked: set[int] = set()
         for ports in self._named_stores.values():
@@ -379,6 +669,18 @@ class CompositeStorage(Storage):
                 store.health()
 
     def _port(self, capability: StorageCapability, name: str = "default") -> Any:
+        """执行 `port` 操作。
+
+        Args:
+            capability: 参数 capability（StorageCapability）。
+            name: 参数 name（str）。
+
+        Returns:
+            返回 Any。
+
+        Raises:
+            UnsupportedStorageCapabilityError: 执行失败时抛出。
+        """
         try:
             return self._proxies[capability][name]
         except KeyError as exc:
@@ -387,6 +689,15 @@ class CompositeStorage(Storage):
             ) from exc
 
     def _has_port(self, capability: StorageCapability, name: str) -> bool:
+        """执行 `has_port` 操作。
+
+        Args:
+            capability: 参数 capability（StorageCapability）。
+            name: 参数 name（str）。
+
+        Returns:
+            返回 bool。
+        """
         return name in self._named_stores[capability]
 
     def _authorize(
@@ -396,9 +707,22 @@ class CompositeStorage(Storage):
         action: StorageAction,
         resource: str,
     ) -> None:
+        """校验当前访问是否获得授权。
+
+        Args:
+            access: 参数 access（StorageAccessContext | None）。
+            scope: 参数 scope（Scope）。
+            action: 参数 action（StorageAction）。
+            resource: 参数 resource（str）。
+        """
         self._security.authorize(access, scope, action, resource)
 
     def _raw_kv(self) -> KVStore:
+        """执行 `raw_kv` 操作。
+
+        Returns:
+            返回 KVStore。
+        """
         store = self._stores[StorageCapability.KV]
         if store is None:
             self._port(StorageCapability.KV)
@@ -438,6 +762,21 @@ class CompositeStorage(Storage):
         channels: list[RecallChannel] | None,
         recall_limit: int,
     ) -> RecallResult[ScoredUnit]:
+        """召回与查询匹配的记忆结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（ParsedQuery）。
+            channels: 参数 channels（list[RecallChannel] | None）。
+            recall_limit: 参数 recall_limit（int）。
+
+        Returns:
+            返回 RecallResult[ScoredUnit]。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+            StorageRetrievalError: 执行失败时抛出。
+        """
         if channels == []:
             raise ValidationError("channels must be omitted or contain at least one channel")
         selected = [
@@ -483,6 +822,17 @@ class CompositeStorage(Storage):
         channels: list[RecallChannel] | None,
         recall_limit: int,
     ) -> RecallResult[ScoredMemoryUnit]:
+        """召回与查询匹配的记忆结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（ParsedQuery）。
+            channels: 参数 channels（list[RecallChannel] | None）。
+            recall_limit: 参数 recall_limit（int）。
+
+        Returns:
+            返回 RecallResult[ScoredMemoryUnit]。
+        """
         recalled = self._recall(
             scope, query, channels=channels, recall_limit=recall_limit
         )
@@ -518,6 +868,15 @@ class CompositeStorage(Storage):
 
 
 def _passes(unit: MemoryUnit, query: ParsedQuery) -> bool:
+    """执行 `passes` 操作。
+
+    Args:
+        unit: 参数 unit（MemoryUnit）。
+        query: 参数 query（ParsedQuery）。
+
+    Returns:
+        返回 bool。
+    """
     return is_retrieval_candidate(
         unit,
         as_of=query.as_of,
@@ -529,6 +888,14 @@ def _passes(unit: MemoryUnit, query: ParsedQuery) -> bool:
 
 
 def _recaller_source(recaller: Any) -> str:
+    """召回与查询匹配的记忆结果。
+
+    Args:
+        recaller: 参数 recaller（Any）。
+
+    Returns:
+        返回 str。
+    """
     layer = getattr(recaller, "layer", None)
     if layer:
         return f"{recaller.channel().value}_{layer}"
@@ -538,12 +905,32 @@ def _recaller_source(recaller: Any) -> str:
 def _optional_store(
     producer: type[Factory], config: Any, field: str, *, include_default: bool = False
 ) -> Any | None:
+    """执行 `optional_store` 操作。
+
+    Args:
+        producer: 参数 producer（type[Factory]）。
+        config: 参数 config（Any）。
+        field: 参数 field（str）。
+        include_default: 参数 include_default（bool）。
+
+    Returns:
+        返回 Any | None。
+    """
     if field not in config.params:
         return producer.build("memory", {}, config.ctx) if include_default else None
     return producer.dep(config, field)
 
 
 def _named_ports(producer: type[Factory], config: Any) -> dict[str, Any]:
+    """执行 `named_ports` 操作。
+
+    Args:
+        producer: 参数 producer（type[Factory]）。
+        config: 参数 config（Any）。
+
+    Returns:
+        返回 dict[str, Any]。
+    """
     namespace = config.ctx.namespaces.get(producer.TOP_NAME, {})
     return {
         name: producer.build_named(name, config.ctx)
@@ -554,6 +941,14 @@ def _named_ports(producer: type[Factory], config: Any) -> dict[str, Any]:
 
 @StorageProducer.register("composite")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     pipeline_value = config.get(
         "preferred_retrieval_pipeline", RetrievalPipeline.RECALL_GET_RANK.value
     )

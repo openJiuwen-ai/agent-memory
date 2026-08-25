@@ -19,12 +19,23 @@ class UnifiedIndexBuilder(IndexBuilder):
     """将构建生命周期直接委托给统一 Storage 的记忆单元写接口。"""
 
     def __init__(self, storage: Storage) -> None:
+        """初始化 UnifiedIndexBuilder。
+
+        Args:
+            storage: 参数 storage（Storage）。
+        """
         self._storage = storage
 
     def operator_type(self) -> OperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 OperatorType。
+        """
         return OperatorType.INDEX_BUILDER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
@@ -52,6 +63,7 @@ class UnifiedIndexBuilder(IndexBuilder):
 
     def rebuild(self) -> None:
         # 最小实现：统一存储与真源同生命周期，无独立重建路径。
+        """执行 `rebuild` 操作。"""
         return None
 
 
@@ -74,4 +86,9 @@ def _group_by_scope(units: list[MemoryUnit]) -> list[tuple[Scope, list[MemoryUni
 
 @IndexBuilderProducer.register("unified")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return UnifiedIndexBuilder(StorageProducer.resolve(config))

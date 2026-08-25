@@ -63,6 +63,19 @@ class OpenAILLM(LLM):
         config_source: ConfigSource | None = None,
         config_namespace: str = "llm",
     ) -> None:
+        """初始化 OpenAILLM。
+
+        Args:
+            model_name: 参数 model_name（str）。
+            base_url: 参数 base_url（str | None）。
+            api_key: 参数 api_key（str）。
+            default_temperature: 参数 default_temperature（float）。
+            default_max_tokens: 参数 default_max_tokens（int）。
+            ssl_verify: 参数 ssl_verify（bool）。
+            ssl_ca_cert: 参数 ssl_ca_cert（str | None）。
+            config_source: 参数 config_source（ConfigSource | None）。
+            config_namespace: 参数 config_namespace（str）。
+        """
         self._fallback_model = model_name
         self._default_temperature = default_temperature
         self._default_max_tokens = default_max_tokens

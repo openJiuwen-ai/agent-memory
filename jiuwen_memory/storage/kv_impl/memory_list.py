@@ -11,10 +11,26 @@ from ..types import KVMemoryListResult
 
 
 def _memory_type(unit: MemoryUnit) -> str:
+    """执行 `memory_type` 操作。
+
+    Args:
+        unit: 参数 unit（MemoryUnit）。
+
+    Returns:
+        返回 str。
+    """
     return str(unit.system_metadata.get("memory_type", "")).strip() or unit.tier.value
 
 
 def _sort_key(unit: MemoryUnit) -> tuple[datetime, str]:
+    """执行 `sort_key` 操作。
+
+    Args:
+        unit: 参数 unit（MemoryUnit）。
+
+    Returns:
+        返回 tuple[datetime, str]。
+    """
     ingested_at = unit.temporal.t_ingest or datetime.min.replace(tzinfo=timezone.utc)
     return ingested_at, unit.id
 

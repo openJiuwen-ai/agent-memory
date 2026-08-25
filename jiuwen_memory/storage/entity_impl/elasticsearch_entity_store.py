@@ -52,6 +52,18 @@ class ElasticsearchEntityStore(EntityStore):
         number_of_replicas: int = 1,
         **options: Any,
     ) -> None:
+        """初始化 ElasticsearchEntityStore。
+
+        Args:
+            hosts: 参数 hosts（list[str] | str）。
+            index: 参数 index（str）。
+            username: 参数 username（str | None）。
+            password: 参数 password（str | None）。
+            list_limit: 参数 list_limit（int）。
+            number_of_shards: 参数 number_of_shards（int）。
+            number_of_replicas: 参数 number_of_replicas（int）。
+            **options: 参数 options（Any）。
+        """
         self._hosts = hosts or "http://localhost:9200"
         self._index = index
         self._auth = dict(username=username, password=password)
@@ -69,6 +81,14 @@ class ElasticsearchEntityStore(EntityStore):
 
     @property
     def client(self) -> Any:
+        """返回 client 属性。
+
+        Returns:
+            返回 Any。
+
+        Raises:
+            BackendError: 执行失败时抛出。
+        """
         if self._client is None:
             try:
                 from elasticsearch import Elasticsearch
@@ -140,6 +160,15 @@ class ElasticsearchEntityStore(EntityStore):
 
     @staticmethod
     def _build_filters(space_id: str, filters: EntityStoreFilters) -> list[dict]:
+        """根据配置构建组件实例。
+
+        Args:
+            space_id: 参数 space_id（str）。
+            filters: 参数 filters（EntityStoreFilters）。
+
+        Returns:
+            返回 list[dict]。
+        """
         query_filters = [{"term": {"space_id": space_id}}]
         for field in filters.__dataclass_fields__:
             value = getattr(filters, field)
@@ -149,6 +178,14 @@ class ElasticsearchEntityStore(EntityStore):
 
     @staticmethod
     def _to_document(record: EntityRecord) -> dict:
+        """执行 `to_document` 操作。
+
+        Args:
+            record: 参数 record（EntityRecord）。
+
+        Returns:
+            返回 dict。
+        """
         doc = {
             "space_id": record.space_id,
             "entity_text_hash": record.entity_text_hash,
@@ -160,6 +197,14 @@ class ElasticsearchEntityStore(EntityStore):
 
     @classmethod
     def _hit_to_entity_record(cls, hit: dict) -> EntityRecord:
+        """执行 `hit_to_entity_record` 操作。
+
+        Args:
+            hit: 参数 hit（dict）。
+
+        Returns:
+            返回 EntityRecord。
+        """
         source = hit["_source"]
         return EntityRecord(
             id=hit["_id"],
@@ -358,9 +403,15 @@ class ElasticsearchEntityStore(EntityStore):
     def store_type(self):
         # entity_store 不在 StoreType 枚举里（它是独立端口，不走 KV/FULLTEXT/VECTOR
         # 等分类）；返回 None 供装配层判活用，不参与 store_type 路由。
+        """返回当前存储类型。"""
         return None
 
     def health(self) -> None:
+        """执行健康检查。
+
+        Raises:
+            BackendError: 执行失败时抛出。
+        """
         try:
             ok = self.client.ping()
         except Exception as exc:
@@ -369,6 +420,14 @@ class ElasticsearchEntityStore(EntityStore):
             raise BackendError("elasticsearch (entity) ping returned falsy")
 
     def _validate_existing_index(self, client) -> None:
+        """校验输入参数或当前状态。
+
+        Args:
+            client: 参数 client。
+
+        Raises:
+            BackendError: 执行失败时抛出。
+        """
         try:
             mapping_resp = client.indices.get_mapping(index=self._index)
         except Exception as exc:
@@ -391,12 +450,22 @@ class ElasticsearchEntityStore(EntityStore):
         logger.info("existing_entity_index_validated index=%s", self._index)
 
     def _build_index_settings(self) -> dict:
+        """根据配置构建组件实例。
+
+        Returns:
+            返回 dict。
+        """
         return {
             "number_of_shards": self._number_of_shards,
             "number_of_replicas": self._number_of_replicas,
         }
 
     def _build_index_mappings(self) -> dict:
+        """根据配置构建组件实例。
+
+        Returns:
+            返回 dict。
+        """
         return {
             "_routing": {"required": True},
             "properties": {
@@ -409,6 +478,7 @@ class ElasticsearchEntityStore(EntityStore):
         }
 
     def _require_index_ready(self) -> None:
+        """校验并取得必需的资源或参数。"""
         if not self._index_ready:
             self.ensure_index()  # lazy 触发（首次查询/写入时）
 
@@ -419,6 +489,11 @@ class ElasticsearchEntityStore(EntityStore):
 def _build(config):
     # hosts 可选（entity 是增强层，未配即降级关闭 entity 链路，不报错——与
     # FulltextStore 的 require_param 不同，后者是主链路必需品，缺了必报错）。
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     hosts = Factory.cfg_get(config, "hosts") or Factory.cfg_get(config, "endpoint")
     if not hosts:
         logger.warning("EntityStore: hosts not configured, entity chain disabled")

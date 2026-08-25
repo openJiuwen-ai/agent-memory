@@ -41,16 +41,24 @@ class Server:
     """Assembled kernel + shared dispatch; base for all protocol surfaces."""
 
     def __init__(self, config: Config, kernel: Kernel) -> None:
+        """初始化 Server。
+
+        Args:
+            config: 参数 config（Config）。
+            kernel: 参数 kernel（Kernel）。
+        """
         self.config = config
         self.kernel = kernel
         self.ingest_jobs = kernel.ingest_jobs
 
     @property
     def api(self):
+        """返回 api 属性。"""
         return self.kernel.api
 
     @property
     def kv(self):
+        """返回 kv 属性。"""
         return self.kernel.kv
 
     @classmethod

@@ -361,6 +361,14 @@ class ExtractorImpl(Extractor):
         retry_max_retries: int = 3,
         retry_backoff_ms: int = 1000,
     ) -> None:
+        """初始化 ExtractorImpl。
+
+        Args:
+            llm: 参数 llm（LLM）。
+            min_confidence: 参数 min_confidence（float）。
+            retry_max_retries: 参数 retry_max_retries（int）。
+            retry_backoff_ms: 参数 retry_backoff_ms（int）。
+        """
         self._llm = llm
         self._min_confidence = min_confidence
         self._retry_max_retries = retry_max_retries
@@ -380,6 +388,12 @@ class ExtractorImpl(Extractor):
 
     @staticmethod
     def _log_trailing_json_text(text: str, end: int) -> None:
+        """执行 `log_trailing_json_text` 操作。
+
+        Args:
+            text: 参数 text（str）。
+            end: 参数 end（int）。
+        """
         trailing = text[end:].strip()
         if trailing:
             logger.warning("Extractor: ignored trailing LLM text after JSON root: %r", trailing)
@@ -400,10 +414,20 @@ class ExtractorImpl(Extractor):
         return s.strip()
 
     def operator_type(self) -> OperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 OperatorType。
+        """
         return OperatorType.EXTRACTOR
 
     def health(self) -> None:
         # 探测 LLM 可用性——若不可用则抛异常
+        """执行健康检查。
+
+        Raises:
+            HealthCheckError: 执行失败时抛出。
+        """
         try:
             self._llm.health()
         except Exception as exc:
@@ -503,6 +527,14 @@ class ExtractorImpl(Extractor):
     # ------------------------------------------------------------------
 
     def preprocess(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
+        """执行 `preprocess` 操作。
+
+        Args:
+            units: 参数 units（list[MemoryUnit]）。
+
+        Returns:
+            返回 list[MemoryUnit]。
+        """
         return self._preprocess(units)
 
     def build_candidates(
@@ -617,6 +649,15 @@ class ExtractorImpl(Extractor):
         return candidates
 
     def call_llm_with_retry(self, messages: list, max_tokens: int = 8192) -> str:
+        """执行 `call_llm_with_retry` 操作。
+
+        Args:
+            messages: 参数 messages（list）。
+            max_tokens: 参数 max_tokens（int）。
+
+        Returns:
+            返回 str。
+        """
         return self._call_llm_with_retry(messages, max_tokens=max_tokens)
 
     def parse_llm_response(self, response: str) -> list[dict]:
@@ -673,6 +714,15 @@ class ExtractorImpl(Extractor):
         candidates: list[ExtractionCandidate],
         source_units: list[MemoryUnit],
     ) -> list[MemoryUnit]:
+        """执行 `build_units` 操作。
+
+        Args:
+            candidates: 参数 candidates（list[ExtractionCandidate]）。
+            source_units: 参数 source_units（list[MemoryUnit]）。
+
+        Returns:
+            返回 list[MemoryUnit]。
+        """
         return self._build_units(candidates, source_units)
 
     def _extract_procedural(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
@@ -971,6 +1021,11 @@ class ExtractorImpl(Extractor):
 
 @ExtractorProducer.register("llm")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return ExtractorImpl(
         llm=LlmProducer.dep(config, default="echo"),
         min_confidence=config.get("extractor_min_confidence", 0.5),

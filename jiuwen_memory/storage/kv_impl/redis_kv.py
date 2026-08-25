@@ -37,6 +37,14 @@ from .memory_list import list_memory_entries
 
 
 def _decode_scope_segment(segment: str) -> str:
+    """执行 `decode_scope_segment` 操作。
+
+    Args:
+        segment: 参数 segment（str）。
+
+    Returns:
+        返回 str。
+    """
     return "" if segment == "_" else segment
 
 
@@ -56,6 +64,18 @@ class RedisKVStore(KVStore):
         **options: Any,
     ) -> None:
         # 构造期字段为 ConfigSource 缺失时的回落
+        """初始化 RedisKVStore。
+
+        Args:
+            url: 参数 url（str | None）。
+            host: 参数 host（str）。
+            port: 参数 port（int）。
+            db: 参数 db（int）。
+            password: 参数 password（str | None）。
+            config_source: 参数 config_source。
+            config_namespace: 参数 config_namespace（str）。
+            **options: 参数 options（Any）。
+        """
         self._fallback_url = url
         self._fallback_host = host
         self._fallback_port = int(port)
@@ -98,10 +118,27 @@ class RedisKVStore(KVStore):
 
     @staticmethod
     def _namespaced(scope: Scope, key: str) -> str:
+        """执行 `namespaced` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            key: 参数 key（str）。
+
+        Returns:
+            返回 str。
+        """
         return ":".join((*scope_segments(scope), key))
 
     @staticmethod
     def _px(ttl: float) -> int | None:
+        """执行 `px` 操作。
+
+        Args:
+            ttl: 参数 ttl（float）。
+
+        Returns:
+            返回 int | None。
+        """
         return int(ttl * 1000) if ttl and ttl > 0 else None
 
     def store_type(self) -> StoreType:

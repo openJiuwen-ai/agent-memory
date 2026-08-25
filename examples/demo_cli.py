@@ -40,14 +40,30 @@ logger = logging.getLogger(__name__)
 
 
 def hr(title: str) -> None:
+    """执行 `hr` 操作。
+
+    Args:
+        title: 参数 title（str）。
+    """
     logger.info("\n\033[1m== %s ==\033[0m", title)
 
 
 def main() -> int:
+    """执行程序入口逻辑。
+
+    Returns:
+        返回 int。
+    """
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     client = make_client(None)  # in-process：同一内核，状态跨调用持久
 
     def call(verb: str, **payload):
+        """执行 `call` 操作。
+
+        Args:
+            verb: 参数 verb（str）。
+            **payload: 参数 payload。
+        """
         status, body = client.call(verb, {**BASE, **payload})
         if status >= 300:
             logger.info("  [%s] %s: %s", status, body.get("error"), body.get("message"))

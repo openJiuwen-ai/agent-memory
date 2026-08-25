@@ -18,18 +18,35 @@ class RoutingNormalizer(Normalizer):
         fallback: Normalizer,
         routes: Mapping[Modality, Normalizer],
     ) -> None:
+        """初始化 RoutingNormalizer。
+
+        Args:
+            fallback: 参数 fallback（Normalizer）。
+            routes: 参数 routes（Mapping[Modality, Normalizer]）。
+        """
         self._fallback = fallback
         self._routes = dict(routes)
 
     def modalities(self) -> list[Modality]:
+        """执行 `modalities` 操作。
+
+        Returns:
+            返回 list[Modality]。
+        """
         supported = set(self._fallback.modalities())
         supported.update(self._routes)
         return sorted(supported, key=lambda item: item.value)
 
     def plugin_type(self) -> PluginType:
+        """返回当前插件类型。
+
+        Returns:
+            返回 PluginType。
+        """
         return PluginType.NORMALIZER
 
     def health(self) -> None:
+        """执行健康检查。"""
         seen: set[int] = set()
         for normalizer in [self._fallback, *self._routes.values()]:
             if id(normalizer) in seen:
@@ -38,6 +55,17 @@ class RoutingNormalizer(Normalizer):
             normalizer.health()
 
     def normalize(self, payload: RawPayload) -> str:
+        """规范化输入值。
+
+        Args:
+            payload: 参数 payload（RawPayload）。
+
+        Returns:
+            返回 str。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         normalizer = self._routes.get(payload.modality, self._fallback)
         if payload.modality not in normalizer.modalities():
             raise ValidationError(
@@ -47,6 +75,19 @@ class RoutingNormalizer(Normalizer):
 
 
 def _build_normalizer(config, value: object, *, field: str) -> Normalizer:
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+        value: 参数 value（object）。
+        field: 参数 field（str）。
+
+    Returns:
+        返回 Normalizer。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     if isinstance(value, str):
         return NormalizerProducer.build_named(value, config.ctx)
     if isinstance(value, Mapping):
@@ -66,6 +107,14 @@ def _build_normalizer(config, value: object, *, field: str) -> Normalizer:
 
 @NormalizerProducer.register("routing")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     fallback_raw = config.get("fallback", {"target": "passthrough"})
     fallback = _build_normalizer(config, fallback_raw, field="fallback")
     routes_raw = config.get("routes", {})

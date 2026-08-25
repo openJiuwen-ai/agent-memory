@@ -28,6 +28,11 @@ class Config:
     """一次装配的用户配置（两级命名空间字典，解析后只读）。"""
 
     def __init__(self, data: Optional[Mapping[str, Any]] = None) -> None:
+        """初始化 Config。
+
+        Args:
+            data: 参数 data（Optional[Mapping[str, Any]]）。
+        """
         self._data = dict(data or {})
 
     @classmethod
@@ -46,10 +51,23 @@ class Config:
         return AssemblyContext.from_dict(self._data, known_top_names=known_top_names)
 
     def is_empty(self) -> bool:
+        """执行 `is_empty` 操作。
+
+        Returns:
+            返回 bool。
+        """
         return not self._data
 
 
 def _load_yaml(text: str) -> dict:
+    """加载并解析输入数据。
+
+    Args:
+        text: 参数 text（str）。
+
+    Returns:
+        返回 dict。
+    """
     import yaml  # type: ignore
 
     return yaml.safe_load(text) or {}

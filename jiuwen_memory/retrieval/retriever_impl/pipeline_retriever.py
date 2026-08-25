@@ -73,6 +73,28 @@ class PipelineRetriever(Retriever):
         min_results: int = 0,
         storage: Storage | None = None,
     ) -> None:
+        """初始化 PipelineRetriever。
+
+        Args:
+            parser: 参数 parser（QueryParser）。
+            recallers: 参数 recallers（list[Recaller]）。
+            fuser: 参数 fuser（Fuser）。
+            discloser: 参数 discloser（Discloser）。
+            unit_reader: 参数 unit_reader（UnitReader | None）。
+            reranker: 参数 reranker（Reranker | None）。
+            over_fetch_factor: 参数 over_fetch_factor（int）。
+            over_fetch_floor: 参数 over_fetch_floor（int）。
+            recall_max: 参数 recall_max（int）。
+            rerank_max: 参数 rerank_max（int）。
+            min_score: 参数 min_score（float）。
+            min_score_ratio: 参数 min_score_ratio（float）。
+            min_score_ratio_uncalibrated: 参数 min_score_ratio_uncalibrated（float）。
+            min_results: 参数 min_results（int）。
+            storage: 参数 storage（Storage | None）。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         self._parser = parser
         self._recallers = recallers
         self._fuser = fuser
@@ -118,13 +140,31 @@ class PipelineRetriever(Retriever):
         return self._storage
 
     def operator_type(self) -> RetrievalOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 RetrievalOperatorType。
+        """
         return RetrievalOperatorType.RETRIEVER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         # 入参校验：top_k 非法直接拒绝（可预期的调用错误）。
+        """执行完整检索流程并返回结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（RetrievalQuery）。
+
+        Returns:
+            返回 RetrievalResult。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if query.top_k <= 0:
             raise ValidationError(f"top_k must be positive, got {query.top_k}")
         if query.max_tokens is not None and query.max_tokens <= 0:
@@ -156,6 +196,15 @@ class PipelineRetriever(Retriever):
             channel: RecallChannel | None = None,
             detail: dict[str, str] | None = None,
         ) -> None:
+            """执行 `record_step` 操作。
+
+            Args:
+                stage: 参数 stage（str）。
+                cost_ms: 参数 cost_ms（float）。
+                n: 参数 n（int）。
+                channel: 参数 channel（RecallChannel | None）。
+                detail: 参数 detail（dict[str, str] | None）。
+            """
             if trace:
                 traj.append(
                     TrajectoryStep(
@@ -168,6 +217,15 @@ class PipelineRetriever(Retriever):
                 )
 
         def step(stage: str, t0: float, n: int = 0, channel=None, detail=None) -> None:
+            """执行 `step` 操作。
+
+            Args:
+                stage: 参数 stage（str）。
+                t0: 参数 t0（float）。
+                n: 参数 n（int）。
+                channel: 参数 channel。
+                detail: 参数 detail。
+            """
             record_step(stage, (perf_counter() - t0) * 1000.0, n, channel, detail)
 
         # 空 query 短路：无可检索信号，返回空结果而非把空串喂给各后端。
@@ -381,6 +439,11 @@ class PipelineRetriever(Retriever):
 
 @RetrieverProducer.register("pipeline")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     storage = StorageProducer.resolve(config)
     # 召回路按能力开关启用；每路 recaller 自取其 Store，可被 config 各自覆盖。
     recallers = [RecallerProducer.dep(config, "keyword_recaller", default="keyword")]
@@ -432,6 +495,14 @@ def _build(config):
 
 
 def _estimate_tokens(text: str) -> int:
+    """执行 `estimate_tokens` 操作。
+
+    Args:
+        text: 参数 text（str）。
+
+    Returns:
+        返回 int。
+    """
     if not text:
         return 0
     return max(1, (len(text) + 3) // 4)
@@ -477,6 +548,14 @@ def apply_threshold(
     max_score = positive[0].score
 
     def _pass(score: float) -> bool:
+        """执行 `pass` 操作。
+
+        Args:
+            score: 参数 score（float）。
+
+        Returns:
+            返回 bool。
+        """
         if abs_min > 0.0 and score < abs_min:
             return False
         if ratio > 0.0 and max_score > 0.0 and score < ratio * max_score:
@@ -504,6 +583,15 @@ def apply_threshold(
 
 
 def _format_channels(channels: list[RecallChannel] | None, *, auto_label: str) -> str:
+    """执行 `format_channels` 操作。
+
+    Args:
+        channels: 参数 channels（list[RecallChannel] | None）。
+        auto_label: 参数 auto_label（str）。
+
+    Returns:
+        返回 str。
+    """
     if channels is None:
         return auto_label
     if not channels:
@@ -512,6 +600,14 @@ def _format_channels(channels: list[RecallChannel] | None, *, auto_label: str) -
 
 
 def _scope_log_dims(scope: Scope) -> str:
+    """执行 `scope_log_dims` 操作。
+
+    Args:
+        scope: 参数 scope（Scope）。
+
+    Returns:
+        返回 str。
+    """
     dims: list[str] = []
     if scope.org:
         dims.append("org")
@@ -527,6 +623,14 @@ def _scope_log_dims(scope: Scope) -> str:
 
 
 def _safe_error(exc: Exception) -> str:
+    """执行 `safe_error` 操作。
+
+    Args:
+        exc: 参数 exc（Exception）。
+
+    Returns:
+        返回 str。
+    """
     return safe_error_message(exc)
 
 
@@ -573,6 +677,15 @@ def _materialize_recalled(
 def _filter_materialized(
     result: RecallResult[ScoredMemoryUnit], query
 ) -> RecallResult[ScoredMemoryUnit]:
+    """执行 `filter_materialized` 操作。
+
+    Args:
+        result: 参数 result（RecallResult[ScoredMemoryUnit]）。
+        query: 参数 query。
+
+    Returns:
+        返回 RecallResult[ScoredMemoryUnit]。
+    """
     batches: list[RecallBatch[ScoredMemoryUnit]] = []
     for batch in result.batches:
         candidates = [
@@ -585,6 +698,15 @@ def _filter_materialized(
 
 
 def _passes_recheck(candidate: ScoredMemoryUnit, query) -> bool:
+    """执行 `passes_recheck` 操作。
+
+    Args:
+        candidate: 参数 candidate（ScoredMemoryUnit）。
+        query: 参数 query。
+
+    Returns:
+        返回 bool。
+    """
     return is_retrieval_candidate(
         candidate.unit,
         as_of=query.as_of,

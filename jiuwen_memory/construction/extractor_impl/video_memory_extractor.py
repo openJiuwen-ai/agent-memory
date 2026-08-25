@@ -30,9 +30,15 @@ class VideoMemoryExtractor(Extractor):
     """Convert normalized video data into CLM and ELM MemoryUnits."""
 
     def operator_type(self) -> OperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 OperatorType。
+        """
         return OperatorType.EXTRACTOR
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def extract(
@@ -41,6 +47,15 @@ class VideoMemoryExtractor(Extractor):
         *,
         context: ExtractContext | None = None,
     ) -> list[MemoryUnit]:
+        """执行 `extract` 操作。
+
+        Args:
+            units: 参数 units（list[MemoryUnit]）。
+            context: 参数 context（ExtractContext | None）。
+
+        Returns:
+            返回 list[MemoryUnit]。
+        """
         del context
         derived: list[MemoryUnit] = []
         for source in units:
@@ -72,6 +87,18 @@ def _build_clips(
     source: MemoryUnit,
     video_data: dict[str, Any],
 ) -> dict[str, MemoryUnit]:
+    """根据配置构建组件实例。
+
+    Args:
+        source: 参数 source（MemoryUnit）。
+        video_data: 参数 video_data（dict[str, Any]）。
+
+    Returns:
+        返回 dict[str, MemoryUnit]。
+
+    Raises:
+        BackendError: 执行失败时抛出。
+    """
     video_id = str(video_data.get("payload_id") or source.source_ref)
     clips: dict[str, MemoryUnit] = {}
     for clip in video_data["clips"]:
@@ -119,6 +146,19 @@ def _build_events(
     video_data: dict[str, Any],
     clips: dict[str, MemoryUnit],
 ) -> list[MemoryUnit]:
+    """根据配置构建组件实例。
+
+    Args:
+        source: 参数 source（MemoryUnit）。
+        video_data: 参数 video_data（dict[str, Any]）。
+        clips: 参数 clips（dict[str, MemoryUnit]）。
+
+    Returns:
+        返回 list[MemoryUnit]。
+
+    Raises:
+        BackendError: 执行失败时抛出。
+    """
     video_id = str(video_data.get("payload_id") or source.source_ref)
     events: list[MemoryUnit] = []
     for event in video_data["events"]:
@@ -169,6 +209,17 @@ def _build_events(
 
 
 def _load_video_data(unit: MemoryUnit) -> dict[str, Any]:
+    """加载并解析输入数据。
+
+    Args:
+        unit: 参数 unit（MemoryUnit）。
+
+    Returns:
+        返回 dict[str, Any]。
+
+    Raises:
+        BackendError: 执行失败时抛出。
+    """
     try:
         value = json.loads(unit.content)
     except json.JSONDecodeError as exc:
@@ -191,6 +242,19 @@ def _memory_system_metadata(
     start: object,
     end: object,
 ) -> dict[str, MetadataValueType]:
+    """执行 `memory_system_metadata` 操作。
+
+    Args:
+        source: 参数 source（MemoryUnit）。
+        level: 参数 level（str）。
+        video_id: 参数 video_id（str）。
+        source_id: 参数 source_id（str）。
+        start: 参数 start（object）。
+        end: 参数 end（object）。
+
+    Returns:
+        返回 dict[str, MetadataValueType]。
+    """
     metadata = {
         k: v for k, v in source.system_metadata.items()
         if k not in _CALL_LEVEL_METADATA_KEYS
@@ -209,6 +273,17 @@ def _memory_system_metadata(
 
 
 def _memory_content(*parts: tuple[str, object]) -> str:
+    """执行 `memory_content` 操作。
+
+    Args:
+        *parts: 参数 parts（tuple[str, object]）。
+
+    Returns:
+        返回 str。
+
+    Raises:
+        BackendError: 执行失败时抛出。
+    """
     lines = [
         f"{label}: {str(value).strip()}"
         for label, value in parts
@@ -220,6 +295,18 @@ def _memory_content(*parts: tuple[str, object]) -> str:
 
 
 def _memory_float(value: object, *, field: str) -> float:
+    """执行 `memory_float` 操作。
+
+    Args:
+        value: 参数 value（object）。
+        field: 参数 field（str）。
+
+    Returns:
+        返回 float。
+
+    Raises:
+        BackendError: 执行失败时抛出。
+    """
     try:
         return float(value)
     except (TypeError, ValueError) as exc:
@@ -228,5 +315,10 @@ def _memory_float(value: object, *, field: str) -> float:
 
 @ExtractorProducer.register("video_memory")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     del config
     return VideoMemoryExtractor()

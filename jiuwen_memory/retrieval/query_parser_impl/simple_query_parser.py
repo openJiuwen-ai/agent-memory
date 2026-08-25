@@ -36,6 +36,16 @@ class SimpleQueryParser(QueryParser):
         sanitize: bool = False,
         strip_code_fences: bool = False,
     ) -> None:
+        """初始化 SimpleQueryParser。
+
+        Args:
+            tokenizer: 参数 tokenizer（Tokenizer）。
+            embedder: 参数 embedder（Embedder | None）。
+            llm: 参数 llm（LLM | None）。
+            feature_extractor: 参数 feature_extractor（FeatureExtractor | None）。
+            sanitize: 参数 sanitize（bool）。
+            strip_code_fences: 参数 strip_code_fences（bool）。
+        """
         self._tokenizer = tokenizer
         self._embedder = embedder
         self._llm = llm
@@ -44,12 +54,26 @@ class SimpleQueryParser(QueryParser):
         self._strip_code_fences = strip_code_fences
 
     def operator_type(self) -> RetrievalOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 RetrievalOperatorType。
+        """
         return RetrievalOperatorType.QUERY_PARSER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def parse(self, query: RetrievalQuery) -> ParsedQuery:
+        """解析输入数据并返回结构化结果。
+
+        Args:
+            query: 参数 query（RetrievalQuery）。
+
+        Returns:
+            返回 ParsedQuery。
+        """
         text = (
             sanitize_query(query.text, strip_code_fences=self._strip_code_fences)
             if self._sanitize
@@ -101,6 +125,11 @@ class SimpleQueryParser(QueryParser):
 @QueryParserProducer.register("simple")
 def _build(config):
     # tokenizer / embedder 与索引侧共享同一实例（同词表 / 同向量空间）；无向量能力时不接 embedder。
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     tokenizer = TokenizerProducer.dep(config, default="whitespace")
     embedder = (
         EmbedderProducer.dep(config, default="hashing")

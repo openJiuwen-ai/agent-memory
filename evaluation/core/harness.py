@@ -24,6 +24,11 @@ class EvalHarness:
     """装配内核 → 灌语料 → 跑查询 → 采集观测。"""
 
     def __init__(self, config: Optional[Config] = None) -> None:
+        """初始化 EvalHarness。
+
+        Args:
+            config: 参数 config（Optional[Config]）。
+        """
         self._kernel = build_kernel(config=config)
         self._api = self._kernel.api
         self._key2ids: Dict[str, List[str]] = {}

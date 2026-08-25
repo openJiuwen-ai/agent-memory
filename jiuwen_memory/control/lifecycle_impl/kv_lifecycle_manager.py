@@ -55,6 +55,16 @@ _ALLOWED_TRANSITIONS = {
 def _ensure_transition_allowed(
     current: LifecycleState, target: LifecycleState, unit_id: str
 ) -> None:
+    """确保所需资源或状态已就绪。
+
+    Args:
+        current: 参数 current（LifecycleState）。
+        target: 参数 target（LifecycleState）。
+        unit_id: 参数 unit_id（str）。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     if target not in _ALLOWED_TRANSITIONS[current]:
         raise ValidationError(
             f"invalid lifecycle transition for {unit_id!r}: {current.value} -> {target.value}"
@@ -62,6 +72,18 @@ def _ensure_transition_allowed(
 
 
 def _policy_target(policy: PolicyManager | None, key: str) -> LifecycleState:
+    """执行 `policy_target` 操作。
+
+    Args:
+        policy: 参数 policy（PolicyManager | None）。
+        key: 参数 key（str）。
+
+    Returns:
+        返回 LifecycleState。
+
+    Raises:
+        PolicyError: 执行失败时抛出。
+    """
     if policy is None:
         return _DEFAULT_SWEEP_TARGET
     raw = policy.get(key)
@@ -82,6 +104,16 @@ def _policy_target(policy: PolicyManager | None, key: str) -> LifecycleState:
 def _sweep_target(
     unit: MemoryUnit, now: datetime, policy: PolicyManager | None
 ) -> LifecycleState | None:
+    """执行 `sweep_target` 操作。
+
+    Args:
+        unit: 参数 unit（MemoryUnit）。
+        now: 参数 now（datetime）。
+        policy: 参数 policy（PolicyManager | None）。
+
+    Returns:
+        返回 LifecycleState | None。
+    """
     if unit.lifecycle == LifecycleState.SUPERSEDED:
         return _policy_target(policy, _SUPERSEDED_TARGET_KEY)
     t_invalid = unit.temporal.t_invalid
@@ -94,18 +126,37 @@ class KVLifecycleManager(LifecycleManager):
     """在 kv 真源上做非破坏式状态流转与到期清扫。"""
 
     def __init__(self, storage: Storage, policy: PolicyManager | None = None) -> None:
+        """初始化 KVLifecycleManager。
+
+        Args:
+            storage: 参数 storage（Storage）。
+            policy: 参数 policy（PolicyManager | None）。
+        """
         self._storage = storage
         self._policy = policy
 
     def operator_type(self) -> ControlOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 ControlOperatorType。
+        """
         return ControlOperatorType.LIFECYCLE
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def transition(
         self, scope: Scope, unit_ids: list[str], target: LifecycleState
     ) -> None:
+        """执行 `transition` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            unit_ids: 参数 unit_ids（list[str]）。
+            target: 参数 target（LifecycleState）。
+        """
         matches = self._storage.get(scope, unit_ids)
         for unit in matches:
             _ensure_transition_allowed(unit.lifecycle, target, unit.id)
@@ -121,6 +172,19 @@ class KVLifecycleManager(LifecycleManager):
         )
 
     def supersede(self, scope: Scope, unit_id: str, invalid_at: datetime) -> MemoryUnit:
+        """执行 `supersede` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            unit_id: 参数 unit_id（str）。
+            invalid_at: 参数 invalid_at（datetime）。
+
+        Returns:
+            返回 MemoryUnit。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         units = self._storage.get(scope, [unit_id])
         for unit in units:
             _ensure_transition_allowed(unit.lifecycle, LifecycleState.SUPERSEDED, unit.id)
@@ -138,6 +202,11 @@ class KVLifecycleManager(LifecycleManager):
         raise NotFoundError("memory_unit", unit_id)
 
     def sweep(self) -> list[str]:
+        """执行 `sweep` 操作。
+
+        Returns:
+            返回 list[str]。
+        """
         now = datetime.now(timezone.utc)
         swept: list[str] = []
         for scope in self._storage.scopes():
@@ -158,6 +227,11 @@ class KVLifecycleManager(LifecycleManager):
 
 @LifecycleProducer.register("kv")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return KVLifecycleManager(
         StorageProducer.resolve(config),
         PolicyProducer.dep(config, default="dict"),

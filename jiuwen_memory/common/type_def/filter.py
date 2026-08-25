@@ -127,6 +127,14 @@ def filter_field_metadata_key(name: str) -> str:
 
 
 def _check_field(name: str) -> None:
+    """执行 `check_field` 操作。
+
+    Args:
+        name: 参数 name（str）。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     if not isinstance(name, str) or not name or name != name.strip():
         raise ValidationError("filter 字段名必须是非空字符串")
     if name.startswith("metadata.") or name == "metadata":
@@ -142,6 +150,14 @@ def _check_field(name: str) -> None:
 
 
 def _scalar_kind(value: Any) -> str | None:
+    """执行 `scalar_kind` 操作。
+
+    Args:
+        value: 参数 value（Any）。
+
+    Returns:
+        返回 str | None。
+    """
     if isinstance(value, bool):
         return "bool"
     if isinstance(value, str):
@@ -154,6 +170,18 @@ def _scalar_kind(value: Any) -> str | None:
 
 
 def _normalize_value(op: FilterOp, value: Any) -> Any:
+    """规范化输入值。
+
+    Args:
+        op: 参数 op（FilterOp）。
+        value: 参数 value（Any）。
+
+    Returns:
+        返回 Any。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     if op in _SET_OPS:
         if not isinstance(value, (list, tuple)) or not value:
             raise ValidationError(f"{op.value} 的 value 必须是非空 list/tuple：{value!r}")
@@ -176,6 +204,17 @@ def _normalize_value(op: FilterOp, value: Any) -> Any:
 
 
 def _normalize_clause(clause: FilterClause) -> FilterClause:
+    """规范化输入值。
+
+    Args:
+        clause: 参数 clause（FilterClause）。
+
+    Returns:
+        返回 FilterClause。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     _check_field(clause.field)
     if not isinstance(clause.op, FilterOp):
         raise ValidationError(f"未知过滤算子：{clause.op!r}")
@@ -187,6 +226,17 @@ def _normalize_clause(clause: FilterClause) -> FilterClause:
 
 
 def _normalize_expr(expr: FilterExpr) -> FilterExpr:
+    """规范化输入值。
+
+    Args:
+        expr: 参数 expr（FilterExpr）。
+
+    Returns:
+        返回 FilterExpr。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     if isinstance(expr, FilterClause):
         return _normalize_clause(expr)
     if not isinstance(expr, FilterGroup):

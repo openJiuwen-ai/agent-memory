@@ -67,18 +67,47 @@ ON grants (
 
 
 def _now() -> datetime:
+    """执行 `now` 操作。
+
+    Returns:
+        返回 datetime。
+    """
     return datetime.now(timezone.utc)
 
 
 def _iso(dt: datetime | None) -> str | None:
+    """执行 `iso` 操作。
+
+    Args:
+        dt: 参数 dt（datetime | None）。
+
+    Returns:
+        返回 str | None。
+    """
     return None if dt is None else dt.astimezone(timezone.utc).isoformat()
 
 
 def _scope_tuple(scope: Scope) -> tuple[str, str, str, str, str]:
+    """执行 `scope_tuple` 操作。
+
+    Args:
+        scope: 参数 scope（Scope）。
+
+    Returns:
+        返回 tuple[str, str, str, str, str]。
+    """
     return (scope.org, scope.space, scope.user, scope.agent, scope.session)
 
 
 def _principal_order(context: PermissionContext | None) -> tuple[str, str, str]:
+    """执行 `principal_order` 操作。
+
+    Args:
+        context: 参数 context（PermissionContext | None）。
+
+    Returns:
+        返回 tuple[str, str, str]。
+    """
     if context and context.metadata.get("principal_path") == "agent_user":
         return ("agent", "user", "session")
     return ("user", "agent", "session")
@@ -89,6 +118,16 @@ def _owner_scope_covers(
     child: Scope,
     context: PermissionContext | None = None,
 ) -> bool:
+    """执行 `owner_scope_covers` 操作。
+
+    Args:
+        parent: 参数 parent（Scope）。
+        child: 参数 child（Scope）。
+        context: 参数 context（PermissionContext | None）。
+
+    Returns:
+        返回 bool。
+    """
     if parent == Scope():
         return True
     if parent.org != child.org or parent.space != child.space:
@@ -113,6 +152,15 @@ def _owner_scope_covers(
 
 
 def _row_scope(row: sqlite3.Row | tuple, prefix: str) -> Scope:
+    """执行 `row_scope` 操作。
+
+    Args:
+        row: 参数 row（sqlite3.Row | tuple）。
+        prefix: 参数 prefix（str）。
+
+    Returns:
+        返回 Scope。
+    """
     if isinstance(row, sqlite3.Row):
         return Scope(
             org=row[f"{prefix}_org"],
@@ -133,6 +181,11 @@ def _row_scope(row: sqlite3.Row | tuple, prefix: str) -> Scope:
 
 class SQLitePermissionManager(PermissionManager):
     def __init__(self, db_path: str = ":memory:") -> None:
+        """初始化 SQLitePermissionManager。
+
+        Args:
+            db_path: 参数 db_path（str）。
+        """
         if db_path != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
@@ -144,14 +197,25 @@ class SQLitePermissionManager(PermissionManager):
             self._conn.executescript(_INDEX_SCHEMA)
 
     def operator_type(self) -> ControlOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 ControlOperatorType。
+        """
         return ControlOperatorType.PERMISSION
 
     def health(self) -> None:
+        """执行健康检查。"""
         with self._lock:
             self._conn.execute("SELECT 1")
         return None
 
     def grant(self, grant: Grant) -> None:
+        """执行 `grant` 操作。
+
+        Args:
+            grant: 参数 grant（Grant）。
+        """
         now = _now()
         now_iso = _iso(now)
         with self._lock:
@@ -196,6 +260,11 @@ class SQLitePermissionManager(PermissionManager):
                 )
 
     def revoke(self, grant: Grant) -> None:
+        """执行 `revoke` 操作。
+
+        Args:
+            grant: 参数 grant（Grant）。
+        """
         with self._lock:
             for action in grant.actions:
                 self._conn.execute(
@@ -223,6 +292,17 @@ class SQLitePermissionManager(PermissionManager):
         action: Action,
         context: PermissionContext | None = None,
     ) -> bool:
+        """执行 `check` 操作。
+
+        Args:
+            actor: 参数 actor（Scope）。
+            target: 参数 target（Scope）。
+            action: 参数 action（Action）。
+            context: 参数 context（PermissionContext | None）。
+
+        Returns:
+            返回 bool。
+        """
         if actor == Scope():
             return True
 
@@ -270,6 +350,7 @@ class SQLitePermissionManager(PermissionManager):
         return False
 
     def _migrate_schema(self) -> None:
+        """执行 `migrate_schema` 操作。"""
         columns: set[str] = set()
         rows = self._conn.execute("PRAGMA table_info(grants)").fetchall()
         for row in rows:
@@ -284,5 +365,10 @@ class SQLitePermissionManager(PermissionManager):
 
 @PermissionProducer.register("sqlite")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     db_path = config.get("db_path", ":memory:")
     return SQLitePermissionManager(str(db_path))

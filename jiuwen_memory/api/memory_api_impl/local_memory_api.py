@@ -105,6 +105,14 @@ def _parse_max_tokens(raw: str | None) -> int | None:
 
 
 def _context_detail(context: PermissionContext | None) -> dict[str, str]:
+    """执行 `context_detail` 操作。
+
+    Args:
+        context: 参数 context（PermissionContext | None）。
+
+    Returns:
+        返回 dict[str, str]。
+    """
     if context is None:
         return {}
     detail = {
@@ -188,6 +196,16 @@ def _reject_non_scalar_metadata(
 
 
 def _policy_bool(policy: PolicyManager, key: str, *, default: bool = False) -> bool:
+    """执行 `policy_bool` 操作。
+
+    Args:
+        policy: 参数 policy（PolicyManager）。
+        key: 参数 key（str）。
+        default: 参数 default（bool）。
+
+    Returns:
+        返回 bool。
+    """
     try:
         raw = policy.get(key)
     except PolicyError:
@@ -200,6 +218,16 @@ def _missing_required_space(
     target: Scope,
     require_space: bool,
 ) -> bool:
+    """执行 `missing_required_space` 操作。
+
+    Args:
+        policy: 参数 policy（PolicyManager）。
+        target: 参数 target（Scope）。
+        require_space: 参数 require_space（bool）。
+
+    Returns:
+        返回 bool。
+    """
     if not require_space:
         return False
     if target == _ROOT:
@@ -214,6 +242,16 @@ def _write_permission_context(
     tags: list[str] | None,
     system_metadata: dict[str, MetadataValueType] | None,
 ) -> PermissionContext:
+    """写入指定的数据或资源。
+
+    Args:
+        scope: 参数 scope（Scope）。
+        tags: 参数 tags（list[str] | None）。
+        system_metadata: 参数 system_metadata（dict[str, MetadataValueType] | None）。
+
+    Returns:
+        返回 PermissionContext。
+    """
     meta = {key: str(value) for key, value in (system_metadata or {}).items()}
     return PermissionContext(
         resource_type="write_input",
@@ -265,6 +303,17 @@ def _list_permission_contexts(
     filters: FilterExpr | None,
     extensions: dict[str, Any],
 ) -> list[PermissionContext]:
+    """列出符合条件的记录或资源。
+
+    Args:
+        scope: 参数 scope（Scope）。
+        memory_types: 参数 memory_types（list[str] | None）。
+        filters: 参数 filters（FilterExpr | None）。
+        extensions: 参数 extensions（dict[str, Any]）。
+
+    Returns:
+        返回 list[PermissionContext]。
+    """
     routed_metadata = _required_filter_metadata(filters)
     for key, override in extensions.items():
         # 瞬态 key 透传原值，不 str 化
@@ -308,6 +357,17 @@ def _list_permission_contexts(
 
 
 def _normalize_list_extensions(raw: dict[str, Any] | None) -> dict[str, Any]:
+    """规范化输入值。
+
+    Args:
+        raw: 参数 raw（dict[str, Any] | None）。
+
+    Returns:
+        返回 dict[str, Any]。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     if raw is None:
         return {}
     if not isinstance(raw, dict):
@@ -325,6 +385,15 @@ def _normalize_list_extensions(raw: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _permission_route_value(context: PermissionContext, field: str) -> str:
+    """执行 `permission_route_value` 操作。
+
+    Args:
+        context: 参数 context（PermissionContext）。
+        field: 参数 field（str）。
+
+    Returns:
+        返回 str。
+    """
     if field == "memory_type":
         return context.memory_type
     if field == "pipeline":
@@ -339,6 +408,16 @@ def _list_routing_clauses(
     routing_fields: tuple[str, ...],
     memory_types: list[str] | None,
 ) -> list[FilterClause]:
+    """列出符合条件的记录或资源。
+
+    Args:
+        contexts: 参数 contexts（list[PermissionContext]）。
+        routing_fields: 参数 routing_fields（tuple[str, ...]）。
+        memory_types: 参数 memory_types（list[str] | None）。
+
+    Returns:
+        返回 list[FilterClause]。
+    """
     has_memory_types = any(str(value).strip() for value in memory_types or ())
     clauses: list[FilterClause] = []
     for field in routing_fields:
@@ -357,6 +436,15 @@ def _list_routing_clauses(
 
 
 def _selector_permission_context(selector: DeleteSelector, scope: Scope) -> PermissionContext:
+    """执行 `selector_permission_context` 操作。
+
+    Args:
+        selector: 参数 selector（DeleteSelector）。
+        scope: 参数 scope（Scope）。
+
+    Returns:
+        返回 PermissionContext。
+    """
     return PermissionContext(
         resource_type="delete_selector",
         scope=scope,
@@ -366,6 +454,15 @@ def _selector_permission_context(selector: DeleteSelector, scope: Scope) -> Perm
 
 
 def _unit_lookup_permission_context(unit_id: str, scope: Scope) -> PermissionContext:
+    """执行 `unit_lookup_permission_context` 操作。
+
+    Args:
+        unit_id: 参数 unit_id（str）。
+        scope: 参数 scope（Scope）。
+
+    Returns:
+        返回 PermissionContext。
+    """
     return PermissionContext(
         resource_type="memory_unit_lookup",
         unit_id=unit_id,
@@ -374,14 +471,41 @@ def _unit_lookup_permission_context(unit_id: str, scope: Scope) -> PermissionCon
 
 
 def _space_scope(org: str, space: str) -> Scope:
+    """执行 `space_scope` 操作。
+
+    Args:
+        org: 参数 org（str）。
+        space: 参数 space（str）。
+
+    Returns:
+        返回 Scope。
+    """
     return Scope(org=org, space=space)
 
 
 def _space_target_id(org: str, space: str) -> str:
+    """执行 `space_target_id` 操作。
+
+    Args:
+        org: 参数 org（str）。
+        space: 参数 space（str）。
+
+    Returns:
+        返回 str。
+    """
     return f"{org}/{space}"
 
 
 def _space_permission_context(resource_type: str, scope: Scope) -> PermissionContext:
+    """执行 `space_permission_context` 操作。
+
+    Args:
+        resource_type: 参数 resource_type（str）。
+        scope: 参数 scope（Scope）。
+
+    Returns:
+        返回 PermissionContext。
+    """
     return PermissionContext(resource_type=resource_type, scope=scope)
 
 
@@ -399,6 +523,18 @@ class LocalMemoryAPI(MemoryAPI):
         space: SpaceManager,
         ingest_jobs: IngestJobController,
     ) -> None:
+        """初始化 LocalMemoryAPI。
+
+        Args:
+            engine: 参数 engine（MemoryEngine）。
+            permission: 参数 permission（PermissionManager）。
+            scheduler: 参数 scheduler（Scheduler）。
+            policy: 参数 policy（PolicyManager）。
+            governor: 参数 governor（Governor）。
+            audit_logger: 参数 audit_logger（AuditLogger）。
+            space: 参数 space（SpaceManager）。
+            ingest_jobs: 参数 ingest_jobs（IngestJobController）。
+        """
         self._engine = engine
         self._perm = permission
         self._scheduler = scheduler
@@ -410,6 +546,11 @@ class LocalMemoryAPI(MemoryAPI):
 
     @property
     def space_manager(self) -> SpaceManager:
+        """返回 space_manager 属性。
+
+        Returns:
+            返回 SpaceManager。
+        """
         return self._space
 
     def _space_info_if_exists(self, scope: Scope) -> SpaceInfo | None:
@@ -646,6 +787,14 @@ class LocalMemoryAPI(MemoryAPI):
 
     @staticmethod
     def _batch_error_item(item: object) -> BatchWriteItem:
+        """执行 `batch_error_item` 操作。
+
+        Args:
+            item: 参数 item（object）。
+
+        Returns:
+            返回 BatchWriteItem。
+        """
         if isinstance(item, BatchWriteItem):
             return item
         return BatchWriteItem(content="")
@@ -654,6 +803,15 @@ class LocalMemoryAPI(MemoryAPI):
     def _merge_batch_tags(
         defaults: list[str] | None, item_tags: list[str] | None
     ) -> list[str] | None:
+        """执行 `merge_batch_tags` 操作。
+
+        Args:
+            defaults: 参数 defaults（list[str] | None）。
+            item_tags: 参数 item_tags（list[str] | None）。
+
+        Returns:
+            返回 list[str] | None。
+        """
         if defaults is None and item_tags is None:
             return None
         merged: list[str] = []
@@ -666,6 +824,17 @@ class LocalMemoryAPI(MemoryAPI):
     def _batch_outcome(
         index: int, item: object, error: Exception, *, error_type: str | None = None
     ) -> BatchWriteOutcome:
+        """执行 `batch_outcome` 操作。
+
+        Args:
+            index: 参数 index（int）。
+            item: 参数 item（object）。
+            error: 参数 error（Exception）。
+            error_type: 参数 error_type（str | None）。
+
+        Returns:
+            返回 BatchWriteOutcome。
+        """
         return BatchWriteOutcome(
             index=index,
             item=LocalMemoryAPI._batch_error_item(item),
@@ -686,6 +855,24 @@ class LocalMemoryAPI(MemoryAPI):
         occurred_at: datetime | None,
         stream_id: str,
     ) -> BatchWriteItem:
+        """规范化输入值。
+
+        Args:
+            item: 参数 item（object）。
+            scope: 参数 scope（Scope | None）。
+            source: 参数 source（Modality）。
+            tags: 参数 tags（list[str] | None）。
+            system_metadata: 参数 system_metadata（dict[str, MetadataValueType] | None）。
+            user_metadata: 参数 user_metadata（dict[str, MetadataValueType] | None）。
+            occurred_at: 参数 occurred_at（datetime | None）。
+            stream_id: 参数 stream_id（str）。
+
+        Returns:
+            返回 BatchWriteItem。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if not isinstance(item, BatchWriteItem):
             raise ValidationError("batch item must be BatchWriteItem")
         _reject_invalid_content(item.content)
@@ -755,6 +942,22 @@ class LocalMemoryAPI(MemoryAPI):
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
+        """添加记忆或业务记录。
+
+        Args:
+            content: 参数 content（str）。
+            scope: 参数 scope（Scope）。
+            source: 参数 source（Modality）。
+            identity: 参数 identity（Scope）。
+            assets: 参数 assets（list[str] | None）。
+            tags: 参数 tags（list[str] | None）。
+            system_metadata: 参数 system_metadata（dict[str, MetadataValueType] | None）。
+            user_metadata: 参数 user_metadata（dict[str, MetadataValueType] | None）。
+            occurred_at: 参数 occurred_at（datetime | None）。
+
+        Returns:
+            返回 list[MemoryUnit]。
+        """
         return asyncio.run(
             self.add_async(
                 content,
@@ -782,6 +985,22 @@ class LocalMemoryAPI(MemoryAPI):
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
+        """执行 `add_async` 操作。
+
+        Args:
+            content: 参数 content（str）。
+            scope: 参数 scope（Scope）。
+            source: 参数 source（Modality）。
+            identity: 参数 identity（Scope）。
+            assets: 参数 assets（list[str] | None）。
+            tags: 参数 tags（list[str] | None）。
+            system_metadata: 参数 system_metadata（dict[str, MetadataValueType] | None）。
+            user_metadata: 参数 user_metadata（dict[str, MetadataValueType] | None）。
+            occurred_at: 参数 occurred_at（datetime | None）。
+
+        Returns:
+            返回 list[MemoryUnit]。
+        """
         _reject_invalid_content(content)
         _reject_non_scalar_metadata(system_metadata, field_name="system_metadata")
         _reject_non_scalar_metadata(user_metadata, field_name="user_metadata")
@@ -821,6 +1040,23 @@ class LocalMemoryAPI(MemoryAPI):
         stream_id: str = "",
         continue_on_error: bool = True,
     ) -> BatchWriteResult:
+        """执行 `batch_add` 操作。
+
+        Args:
+            items: 参数 items（list[BatchWriteItem]）。
+            scope: 参数 scope（Scope | None）。
+            source: 参数 source（Modality）。
+            identity: 参数 identity（Scope）。
+            tags: 参数 tags（list[str] | None）。
+            system_metadata: 参数 system_metadata（dict[str, MetadataValueType] | None）。
+            user_metadata: 参数 user_metadata（dict[str, MetadataValueType] | None）。
+            occurred_at: 参数 occurred_at（datetime | None）。
+            stream_id: 参数 stream_id（str）。
+            continue_on_error: 参数 continue_on_error（bool）。
+
+        Returns:
+            返回 BatchWriteResult。
+        """
         return asyncio.run(
             self.batch_add_async(
                 items,
@@ -850,6 +1086,26 @@ class LocalMemoryAPI(MemoryAPI):
         stream_id: str = "",
         continue_on_error: bool = True,
     ) -> BatchWriteResult:
+        """执行 `batch_add_async` 操作。
+
+        Args:
+            items: 参数 items（list[BatchWriteItem]）。
+            scope: 参数 scope（Scope | None）。
+            source: 参数 source（Modality）。
+            identity: 参数 identity（Scope）。
+            tags: 参数 tags（list[str] | None）。
+            system_metadata: 参数 system_metadata（dict[str, MetadataValueType] | None）。
+            user_metadata: 参数 user_metadata（dict[str, MetadataValueType] | None）。
+            occurred_at: 参数 occurred_at（datetime | None）。
+            stream_id: 参数 stream_id（str）。
+            continue_on_error: 参数 continue_on_error（bool）。
+
+        Returns:
+            返回 BatchWriteResult。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if not isinstance(items, list) or not items:
             raise ValidationError("batch items must be a non-empty list")
         if scope is not None and not isinstance(scope, Scope):
@@ -1017,6 +1273,21 @@ class LocalMemoryAPI(MemoryAPI):
         # Context 对象本身不进内核。约定 key max_tokens（自适应披露预算）
         # 在此解析为 typed int 写入 RetrievalQuery，
         # 并从透传 extensions 中移除，避免与内核已解释的字段重复。
+        """检索与查询匹配的结果。
+
+        Args:
+            query: 参数 query（str）。
+            context: 参数 context（Context）。
+            identity: 参数 identity（Scope）。
+            filters: 参数 filters（FilterExpr | list[FilterClause] | dict | None）。
+            as_of: 参数 as_of（datetime | None）。
+            top_k: 参数 top_k（int）。
+            disclosure: 参数 disclosure（DisclosureLevel）。
+            with_trajectory: 参数 with_trajectory（bool）。
+
+        Returns:
+            返回 RetrievalResult。
+        """
         options = dict(context.extensions)
         max_tokens = _parse_max_tokens(options.pop(EXT_MAX_TOKENS, None))
         rq = RetrievalQuery(
@@ -1068,6 +1339,20 @@ class LocalMemoryAPI(MemoryAPI):
         extensions: dict[str, Any] | None = None,
         filters: FilterExpr | list[FilterClause] | dict | None = None,
     ) -> MemoryListResult:
+        """列出符合条件的记录或资源。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            identity: 参数 identity（Scope）。
+            offset: 参数 offset（int）。
+            limit: 参数 limit（int）。
+            memory_types: 参数 memory_types（list[str] | None）。
+            extensions: 参数 extensions（dict[str, Any] | None）。
+            filters: 参数 filters（FilterExpr | list[FilterClause] | dict | None）。
+
+        Returns:
+            返回 MemoryListResult。
+        """
         normalized_extensions = _normalize_list_extensions(extensions)
         normalized_filters = normalize(filters)
         permission_contexts = _list_permission_contexts(
@@ -1129,6 +1414,17 @@ class LocalMemoryAPI(MemoryAPI):
     def get(
         self, unit_id: str, scope: Scope, *, identity: Scope, as_of: datetime | None = None
     ) -> MemoryUnit:
+        """读取指定的记录或资源。
+
+        Args:
+            unit_id: 参数 unit_id（str）。
+            scope: 参数 scope（Scope）。
+            identity: 参数 identity（Scope）。
+            as_of: 参数 as_of（datetime | None）。
+
+        Returns:
+            返回 MemoryUnit。
+        """
         self._authorize(
             identity,
             scope,
@@ -1159,6 +1455,17 @@ class LocalMemoryAPI(MemoryAPI):
     def update(
         self, unit_id: str, scope: Scope, patch: MemoryPatch, *, identity: Scope
     ) -> MemoryUnit:
+        """更新已有记忆或业务记录。
+
+        Args:
+            unit_id: 参数 unit_id（str）。
+            scope: 参数 scope（Scope）。
+            patch: 参数 patch（MemoryPatch）。
+            identity: 参数 identity（Scope）。
+
+        Returns:
+            返回 MemoryUnit。
+        """
         _reject_non_scalar_metadata(patch.system_metadata, field_name="system_metadata")
         _reject_non_scalar_metadata(patch.user_metadata, field_name="user_metadata")
         self._authorize(
@@ -1191,6 +1498,18 @@ class LocalMemoryAPI(MemoryAPI):
         return unit
 
     def delete(self, selector: DeleteSelector, *, identity: Scope) -> list[str]:
+        """删除指定的记忆或业务记录。
+
+        Args:
+            selector: 参数 selector（DeleteSelector）。
+            identity: 参数 identity（Scope）。
+
+        Returns:
+            返回 list[str]。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         selector_is_empty = (
             not selector.unit_ids and not selector.tags and selector.before is None
         )
@@ -1246,6 +1565,17 @@ class LocalMemoryAPI(MemoryAPI):
         *,
         identity: Scope,
     ) -> str:
+        """执行 `evolve` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            mode: 参数 mode（EvolveMode）。
+            channel: 参数 channel（Channel）。
+            identity: 参数 identity（Scope）。
+
+        Returns:
+            返回 str。
+        """
         auth = self._authorize(identity, scope, Action.WRITE, "evolve")
         self._ensure_space_writable(scope)
         job_id = asyncio.run(self._engine.evolve(scope, mode, channel))
@@ -1264,6 +1594,19 @@ class LocalMemoryAPI(MemoryAPI):
         # 先取任务（含其 scope），再据 identity 对该 scope 的 READ 权放行
         # （仅可查自身/已授权范围的任务）；status 为只读查询，先取后判权
         # 不产生副作用。
+        """执行 `job_status` 操作。
+
+        Args:
+            job_id: 参数 job_id（str）。
+            identity: 参数 identity（Scope）。
+            scope: 参数 scope（Scope | None）。
+
+        Returns:
+            返回 JobInfo。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if job_id.startswith(INGEST_JOB_PREFIX):
             if scope is None:
                 raise ValidationError("ingest job status requires target scope")
@@ -1290,6 +1633,12 @@ class LocalMemoryAPI(MemoryAPI):
     def job_cancel(self, job_id: str, *, identity: Scope) -> None:
         # 取消即对该任务范围的写动作，按其 scope 鉴权 WRITE
         # （与 evolve 触发一致）。
+        """执行 `job_cancel` 操作。
+
+        Args:
+            job_id: 参数 job_id（str）。
+            identity: 参数 identity（Scope）。
+        """
         info = self._scheduler.status(job_id)
         auth = self._authorize(identity, info.scope, Action.WRITE, "job_cancel", job_id)
         self._log(identity, "job_cancel", job_id, target_scope=info.scope, detail=auth)
@@ -1298,16 +1647,40 @@ class LocalMemoryAPI(MemoryAPI):
     # -- admin（直达 PolicyManager；管理面闸门 = 根 scope 鉴权） ------------- #
 
     def admin_get(self, key: str, *, identity: Scope) -> str:
+        """执行 `admin_get` 操作。
+
+        Args:
+            key: 参数 key（str）。
+            identity: 参数 identity（Scope）。
+
+        Returns:
+            返回 str。
+        """
         auth = self._authorize(identity, _ROOT, Action.READ, "admin_get", key)
         self._log(identity, "admin_get", key, target_scope=_ROOT, detail=auth)
         return self._policy.get(key)
 
     def admin_set(self, key: str, value: str, *, identity: Scope) -> None:
+        """执行 `admin_set` 操作。
+
+        Args:
+            key: 参数 key（str）。
+            value: 参数 value（str）。
+            identity: 参数 identity（Scope）。
+        """
         auth = self._authorize(identity, _ROOT, Action.WRITE, "admin_set", key)
         self._log(identity, "admin_set", key, target_scope=_ROOT, detail=auth)
         self._policy.set(key, value)
 
     def admin_all(self, *, identity: Scope) -> dict[str, str]:
+        """执行 `admin_all` 操作。
+
+        Args:
+            identity: 参数 identity（Scope）。
+
+        Returns:
+            返回 dict[str, str]。
+        """
         auth = self._authorize(identity, _ROOT, Action.READ, "admin_all")
         self._log(identity, "admin_all", target_scope=_ROOT, detail=auth)
         return self._policy.all()
@@ -1317,11 +1690,31 @@ class LocalMemoryAPI(MemoryAPI):
     def inspect(
         self, unit_ids: list[str], scope: Scope, *, identity: Scope
     ) -> list[MemoryUnit]:
+        """执行 `inspect` 操作。
+
+        Args:
+            unit_ids: 参数 unit_ids（list[str]）。
+            scope: 参数 scope（Scope）。
+            identity: 参数 identity（Scope）。
+
+        Returns:
+            返回 list[MemoryUnit]。
+        """
         auth = self._authorize(identity, scope, Action.READ, "inspect")
         self._log(identity, "inspect", target_scope=scope, detail=auth)
         return self._governor.inspect(unit_ids, scope)
 
     def trace(self, unit_id: str, scope: Scope, *, identity: Scope) -> list[MemoryUnit]:
+        """执行 `trace` 操作。
+
+        Args:
+            unit_id: 参数 unit_id（str）。
+            scope: 参数 scope（Scope）。
+            identity: 参数 identity（Scope）。
+
+        Returns:
+            返回 list[MemoryUnit]。
+        """
         auth = self._authorize(identity, scope, Action.READ, "trace", unit_id)
         self._log(identity, "trace", unit_id, target_scope=scope, detail=auth)
         return self._governor.trace(unit_id, scope)
@@ -1331,6 +1724,16 @@ class LocalMemoryAPI(MemoryAPI):
     ) -> list[AuditEvent]:
         # 审计查询跨 scope，按管理面闸门（根 scope READ）鉴权；
         # 查询本身亦留痕。
+        """执行 `audit` 操作。
+
+        Args:
+            filters: 参数 filters（dict[str, str]）。
+            identity: 参数 identity（Scope）。
+            limit: 参数 limit（int）。
+
+        Returns:
+            返回 list[AuditEvent]。
+        """
         auth = self._authorize(identity, _ROOT, Action.READ, "audit")
         self._log(identity, "audit", target_scope=_ROOT, detail=auth)
         return self._governor.audit(filters, limit)
@@ -1338,11 +1741,23 @@ class LocalMemoryAPI(MemoryAPI):
     # -- 跨 scope 授权（直达 PermissionManager） ---------------------------- #
 
     def grant(self, grant: Grant, *, identity: Scope) -> None:
+        """执行 `grant` 操作。
+
+        Args:
+            grant: 参数 grant（Grant）。
+            identity: 参数 identity（Scope）。
+        """
         auth = self._authorize(identity, grant.grantor, Action.SHARE, "grant")
         self._log(identity, "grant", target_scope=grant.grantor, detail=auth)
         self._perm.grant(grant)
 
     def revoke(self, grant: Grant, *, identity: Scope) -> None:
+        """执行 `revoke` 操作。
+
+        Args:
+            grant: 参数 grant（Grant）。
+            identity: 参数 identity（Scope）。
+        """
         auth = self._authorize(identity, grant.grantor, Action.SHARE, "revoke")
         self._log(identity, "revoke", target_scope=grant.grantor, detail=auth)
         self._perm.revoke(grant)
@@ -1350,6 +1765,15 @@ class LocalMemoryAPI(MemoryAPI):
     # -- Space 管理（直达 SpaceManager） ------------------------------------ #
 
     def create_space(self, spec: SpaceSpec, *, identity: Scope) -> SpaceInfo:
+        """执行 `create_space` 操作。
+
+        Args:
+            spec: 参数 spec（SpaceSpec）。
+            identity: 参数 identity（Scope）。
+
+        Returns:
+            返回 SpaceInfo。
+        """
         target = _space_scope(spec.org, spec.space)
         target_id = _space_target_id(spec.org, spec.space)
         auth = self._authorize(
@@ -1366,6 +1790,16 @@ class LocalMemoryAPI(MemoryAPI):
         return info
 
     def get_space(self, org: str, space: str, *, identity: Scope) -> SpaceInfo:
+        """执行 `get_space` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+            identity: 参数 identity（Scope）。
+
+        Returns:
+            返回 SpaceInfo。
+        """
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
@@ -1389,6 +1823,18 @@ class LocalMemoryAPI(MemoryAPI):
         limit: int = 100,
         cursor: str | None = None,
     ) -> list[SpaceInfo]:
+        """执行 `list_spaces` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            identity: 参数 identity（Scope）。
+            status: 参数 status（SpaceStatus | None）。
+            limit: 参数 limit（int）。
+            cursor: 参数 cursor（str | None）。
+
+        Returns:
+            返回 list[SpaceInfo]。
+        """
         target = Scope(org=org)
         auth = self._authorize(
             identity,
@@ -1412,6 +1858,17 @@ class LocalMemoryAPI(MemoryAPI):
     def update_space(
         self, org: str, space: str, patch: SpacePatch, *, identity: Scope
     ) -> SpaceInfo:
+        """执行 `update_space` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+            patch: 参数 patch（SpacePatch）。
+            identity: 参数 identity（Scope）。
+
+        Returns:
+            返回 SpaceInfo。
+        """
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
@@ -1427,6 +1884,16 @@ class LocalMemoryAPI(MemoryAPI):
         return info
 
     def archive_space(self, org: str, space: str, *, identity: Scope) -> SpaceInfo:
+        """执行 `archive_space` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+            identity: 参数 identity（Scope）。
+
+        Returns:
+            返回 SpaceInfo。
+        """
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
@@ -1449,6 +1916,20 @@ class LocalMemoryAPI(MemoryAPI):
         identity: Scope,
         mode: DeleteMode = DeleteMode.PURGE,
     ) -> SpaceDeleteResult:
+        """执行 `delete_space` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+            identity: 参数 identity（Scope）。
+            mode: 参数 mode（DeleteMode）。
+
+        Returns:
+            返回 SpaceDeleteResult。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if mode != DeleteMode.PURGE:
             raise ValidationError("delete_space currently supports DeleteMode.PURGE only")
         target = _space_scope(org, space)
@@ -1487,6 +1968,17 @@ class LocalMemoryAPI(MemoryAPI):
         identity: Scope,
         include_audit: bool = True,
     ) -> str:
+        """执行 `export_space` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+            identity: 参数 identity（Scope）。
+            include_audit: 参数 include_audit（bool）。
+
+        Returns:
+            返回 str。
+        """
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
@@ -1508,6 +2000,16 @@ class LocalMemoryAPI(MemoryAPI):
         return export_id
 
     def space_usage(self, org: str, space: str, *, identity: Scope) -> SpaceUsage:
+        """执行 `space_usage` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+            identity: 参数 identity（Scope）。
+
+        Returns:
+            返回 SpaceUsage。
+        """
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
@@ -1534,6 +2036,16 @@ class LocalMemoryAPI(MemoryAPI):
         return usage
 
     def get_space_policy(self, org: str, space: str, *, identity: Scope) -> SpacePolicy:
+        """执行 `get_space_policy` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+            identity: 参数 identity（Scope）。
+
+        Returns:
+            返回 SpacePolicy。
+        """
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
@@ -1551,6 +2063,17 @@ class LocalMemoryAPI(MemoryAPI):
     def set_space_policy(
         self, org: str, space: str, policy: SpacePolicy, *, identity: Scope
     ) -> SpacePolicy:
+        """执行 `set_space_policy` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+            policy: 参数 policy（SpacePolicy）。
+            identity: 参数 identity（Scope）。
+
+        Returns:
+            返回 SpacePolicy。
+        """
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
@@ -1574,6 +2097,16 @@ class LocalMemoryAPI(MemoryAPI):
     def list_space_members(
         self, org: str, space: str, *, identity: Scope
     ) -> list[SpaceMember]:
+        """执行 `list_space_members` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+            identity: 参数 identity（Scope）。
+
+        Returns:
+            返回 list[SpaceMember]。
+        """
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
@@ -1597,6 +2130,14 @@ class LocalMemoryAPI(MemoryAPI):
     def add_space_member(
         self, org: str, space: str, member: SpaceMember, *, identity: Scope
     ) -> None:
+        """执行 `add_space_member` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+            member: 参数 member（SpaceMember）。
+            identity: 参数 identity（Scope）。
+        """
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
@@ -1619,6 +2160,14 @@ class LocalMemoryAPI(MemoryAPI):
     def remove_space_member(
         self, org: str, space: str, member: Scope, *, identity: Scope
     ) -> None:
+        """执行 `remove_space_member` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+            member: 参数 member（Scope）。
+            identity: 参数 identity（Scope）。
+        """
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
@@ -1633,6 +2182,14 @@ class LocalMemoryAPI(MemoryAPI):
         self._log(identity, "remove_space_member", target_id, target_scope=target, detail=auth)
 
     def _space_info_if_exists(self, scope: Scope) -> SpaceInfo | None:
+        """执行 `space_info_if_exists` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+
+        Returns:
+            返回 SpaceInfo | None。
+        """
         if not scope.org or not scope.space:
             return None
         try:
@@ -1641,6 +2198,14 @@ class LocalMemoryAPI(MemoryAPI):
             return None
 
     def _ensure_space_writable(self, scope: Scope) -> None:
+        """确保所需资源或状态已就绪。
+
+        Args:
+            scope: 参数 scope（Scope）。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         info = self._space_info_if_exists(scope)
         if info is None:
             return
@@ -1650,6 +2215,14 @@ class LocalMemoryAPI(MemoryAPI):
             )
 
     def _purge_space_memories(self, scope: Scope) -> list[str]:
+        """执行 `purge_space_memories` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+
+        Returns:
+            返回 list[str]。
+        """
         return asyncio.run(self._engine.purge_space(scope.org, scope.space))
 
     # -- 鉴权 + 审计公共点 --------------------------------------------------- #
@@ -1664,6 +2237,16 @@ class LocalMemoryAPI(MemoryAPI):
         decision: str = "allow",
         detail: dict[str, str] | None = None,
     ) -> None:
+        """执行 `record_audit` 操作。
+
+        Args:
+            identity: 参数 identity（Scope）。
+            action: 参数 action（str）。
+            target_id: 参数 target_id（str）。
+            target_scope: 参数 target_scope（Scope | None）。
+            decision: 参数 decision（str）。
+            detail: 参数 detail（dict[str, str] | None）。
+        """
         payload = dict(detail or {})
         payload.setdefault("decision", decision)
         self._audit.record(
@@ -1685,6 +2268,15 @@ class LocalMemoryAPI(MemoryAPI):
         target: Scope,
         context: PermissionContext | None,
     ) -> PermissionContext | None:
+        """执行 `apply_space_policy_context` 操作。
+
+        Args:
+            target: 参数 target（Scope）。
+            context: 参数 context（PermissionContext | None）。
+
+        Returns:
+            返回 PermissionContext | None。
+        """
         if not target.org or not target.space:
             return context
         try:
@@ -1713,6 +2305,25 @@ class LocalMemoryAPI(MemoryAPI):
         check_permission: bool = True,
         require_space: bool = True,
     ) -> dict[str, str]:
+        """校验当前访问是否获得授权。
+
+        Args:
+            identity: 参数 identity（Scope）。
+            target: 参数 target（Scope）。
+            action: 参数 action（Action）。
+            audit_action: 参数 audit_action（str）。
+            target_id: 参数 target_id（str）。
+            context: 参数 context（PermissionContext | None）。
+            check_permission: 参数 check_permission（bool）。
+            require_space: 参数 require_space（bool）。
+
+        Returns:
+            返回 dict[str, str]。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+            PermissionDeniedError: 执行失败时抛出。
+        """
         effective_context = self._apply_space_policy_context(target, context)
         if _missing_required_space(self._policy, target, require_space):
             self._record_audit(
@@ -1764,6 +2375,16 @@ class LocalMemoryAPI(MemoryAPI):
         decision: str = "allow",
         detail: dict[str, str] | None = None,
     ) -> None:
+        """执行 `log` 操作。
+
+        Args:
+            identity: 参数 identity（Scope）。
+            action: 参数 action（str）。
+            target_id: 参数 target_id（str）。
+            target_scope: 参数 target_scope（Scope | None）。
+            decision: 参数 decision（str）。
+            detail: 参数 detail（dict[str, str] | None）。
+        """
         self._record_audit(
             identity,
             action,

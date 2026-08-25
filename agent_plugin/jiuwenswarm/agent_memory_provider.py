@@ -127,6 +127,15 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         agent_id: str = "jiuwenswarm",
         **_kwargs: Any,
     ) -> None:
+        """初始化 AgentMemoryMemoryProvider。
+
+        Args:
+            base_url: 参数 base_url（str | None）。
+            config_path: 参数 config_path（str | None）。
+            user_id: 参数 user_id（str）。
+            agent_id: 参数 agent_id（str）。
+            **_kwargs: 参数 _kwargs（Any）。
+        """
         self._base_url = base_url or ""
         self._config_path = config_path
         self._user_id = user_id
@@ -143,10 +152,20 @@ class AgentMemoryMemoryProvider(MemoryProvider):
 
     @property
     def name(self) -> str:
+        """返回 name 属性。
+
+        Returns:
+            返回 str。
+        """
         return "agent_memory"
 
     @property
     def is_initialized(self) -> bool:
+        """返回 is_initialized 属性。
+
+        Returns:
+            返回 bool。
+        """
         return self._initialized
 
     # -- MemoryProvider: 主动召回（每轮 before_model_call，5s 超时） ---------- #
@@ -375,6 +394,11 @@ class AgentMemoryMemoryProvider(MemoryProvider):
     # -- MemoryProvider: 静态提示词 + 生命周期（非抽象，有默认） -------------- #
 
     def system_prompt_block(self) -> str:
+        """执行 `system_prompt_block` 操作。
+
+        Returns:
+            返回 str。
+        """
         return (
             "# AgentMemory Memory\n"
             f"Active. User: {self._user_id}.\n"
@@ -384,6 +408,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         )
 
     async def shutdown(self) -> None:
+        """关闭并释放相关资源。"""
         if self._client is not None:
             await self._client.close()
         self._client = None
@@ -457,6 +482,21 @@ class _AgentMemoryClient:
         system_metadata: dict[str, str] | None = None,
         user_metadata: dict[str, str] | None = None,
     ) -> str | None:
+        """添加记忆或业务记录。
+
+        Args:
+            content: 参数 content（str）。
+            scope: 参数 scope。
+            tags: 参数 tags（list[str] | None）。
+            system_metadata: 参数 system_metadata（dict[str, str] | None）。
+            user_metadata: 参数 user_metadata（dict[str, str] | None）。
+
+        Returns:
+            返回 str | None。
+
+        Raises:
+            NotImplementedError: 执行失败时抛出。
+        """
         raise NotImplementedError
 
     async def search(
@@ -466,19 +506,61 @@ class _AgentMemoryClient:
         *,
         top_k: int = 10,
     ) -> list[dict[str, Any]]:
+        """检索与查询匹配的结果。
+
+        Args:
+            query: 参数 query（str）。
+            scope: 参数 scope。
+            top_k: 参数 top_k（int）。
+
+        Returns:
+            返回 list[dict[str, Any]]。
+
+        Raises:
+            NotImplementedError: 执行失败时抛出。
+        """
         raise NotImplementedError
 
     async def list_semantic(self, scope) -> list[dict[str, Any]]:
+        """执行 `list_semantic` 操作。
+
+        Args:
+            scope: 参数 scope。
+
+        Returns:
+            返回 list[dict[str, Any]]。
+
+        Raises:
+            NotImplementedError: 执行失败时抛出。
+        """
         raise NotImplementedError
 
     async def evolve_extract(self, scope) -> None:
+        """执行 `evolve_extract` 操作。
+
+        Args:
+            scope: 参数 scope。
+
+        Raises:
+            NotImplementedError: 执行失败时抛出。
+        """
         raise NotImplementedError
 
     async def close(self) -> None:
+        """关闭并释放相关资源。"""
         pass
 
 
 def _build_client(base_url: str, config_path: str | None) -> _AgentMemoryClient:
+    """根据配置构建组件实例。
+
+    Args:
+        base_url: 参数 base_url（str）。
+        config_path: 参数 config_path（str | None）。
+
+    Returns:
+        返回 _AgentMemoryClient。
+    """
     if base_url:
         return _HttpClient(base_url)
     return _InProcessClient(config_path)
@@ -507,6 +589,11 @@ class _HttpClient(_AgentMemoryClient):
     """
 
     def __init__(self, base_url: str) -> None:
+        """初始化 _HttpClient。
+
+        Args:
+            base_url: 参数 base_url（str）。
+        """
         import httpx
 
         # add 触发 AgentMemory 的 background EXTRACT（含 LLM 抽取 + dedup，可能 60-90s），
@@ -532,6 +619,21 @@ class _HttpClient(_AgentMemoryClient):
     async def add(
         self, content, scope, *, tags=None, system_metadata=None, user_metadata=None
     ) -> str | None:
+        """添加记忆或业务记录。
+
+        Args:
+            content: 参数 content。
+            scope: 参数 scope。
+            tags: 参数 tags。
+            system_metadata: 参数 system_metadata。
+            user_metadata: 参数 user_metadata。
+
+        Returns:
+            返回 str | None。
+
+        Raises:
+            RuntimeError: 执行失败时抛出。
+        """
         payload = self._scope_payload(scope) | {
             "content": content,
             "tags": tags or [],
@@ -557,6 +659,19 @@ class _HttpClient(_AgentMemoryClient):
     ) -> list[dict[str, Any]]:
         # HTTP /v1/search 的 hits 不带 tier 字段（RetrievedItem 只有
         # unit_id/score/content），HTTP 模式返回全部命中（含 EPISODIC 原文）。
+        """检索与查询匹配的结果。
+
+        Args:
+            query: 参数 query。
+            scope: 参数 scope。
+            top_k: 参数 top_k。
+
+        Returns:
+            返回 list[dict[str, Any]]。
+
+        Raises:
+            RuntimeError: 执行失败时抛出。
+        """
         payload = self._scope_payload(scope) | {"query": query, "k": top_k}
         logger.info(
             "[AgentMemoryMemoryProvider] HTTP POST /v1/search query=%r k=%d",
@@ -574,6 +689,17 @@ class _HttpClient(_AgentMemoryClient):
 
     async def list_semantic(self, scope) -> list[dict[str, Any]]:
         # HTTP list 返回全量 unit（含原文 + 派生 + 索引簿记过滤后），不按 tier 过滤。
+        """执行 `list_semantic` 操作。
+
+        Args:
+            scope: 参数 scope。
+
+        Returns:
+            返回 list[dict[str, Any]]。
+
+        Raises:
+            RuntimeError: 执行失败时抛出。
+        """
         payload = self._scope_payload(scope)
         logger.info("[AgentMemoryMemoryProvider] HTTP POST /v1/list")
         data = await self._request("/v1/list", payload)
@@ -587,6 +713,14 @@ class _HttpClient(_AgentMemoryClient):
         return items
 
     async def evolve_extract(self, scope) -> None:
+        """执行 `evolve_extract` 操作。
+
+        Args:
+            scope: 参数 scope。
+
+        Raises:
+            RuntimeError: 执行失败时抛出。
+        """
         payload = self._scope_payload(scope) | {"mode": "extract"}
         logger.info("[AgentMemoryMemoryProvider] HTTP POST /v1/evolve mode=extract")
         data = await self._request("/v1/evolve", payload, timeout=180.0)
@@ -598,6 +732,7 @@ class _HttpClient(_AgentMemoryClient):
             raise RuntimeError(f"evolve failed: {data.get('error')}")
 
     async def close(self) -> None:
+        """关闭并释放相关资源。"""
         await self._http.aclose()
 
     async def _request(self, path: str, payload: dict, *, timeout: float | None = None) -> dict:
@@ -635,6 +770,11 @@ class _InProcessClient(_AgentMemoryClient):
     """
 
     def __init__(self, config_path: str | None) -> None:
+        """初始化 _InProcessClient。
+
+        Args:
+            config_path: 参数 config_path（str | None）。
+        """
         from jiuwen_memory.api import build_kernel
         from jiuwen_memory.config.config import Config
 
@@ -665,6 +805,18 @@ class _InProcessClient(_AgentMemoryClient):
     async def add(
         self, content, scope, *, tags=None, system_metadata=None, user_metadata=None
     ) -> str | None:
+        """添加记忆或业务记录。
+
+        Args:
+            content: 参数 content。
+            scope: 参数 scope。
+            tags: 参数 tags。
+            system_metadata: 参数 system_metadata。
+            user_metadata: 参数 user_metadata。
+
+        Returns:
+            返回 str | None。
+        """
         from jiuwen_memory.api import Modality
         api_scope = self._to_api_scope(scope)
 
@@ -680,6 +832,16 @@ class _InProcessClient(_AgentMemoryClient):
     async def search(
         self, query, scope, *, top_k=10
     ) -> list[dict[str, Any]]:
+        """检索与查询匹配的结果。
+
+        Args:
+            query: 参数 query。
+            scope: 参数 scope。
+            top_k: 参数 top_k。
+
+        Returns:
+            返回 list[dict[str, Any]]。
+        """
         from jiuwen_memory.api import Context, DisclosureLevel
 
         api_scope = self._to_api_scope(scope)
@@ -705,6 +867,14 @@ class _InProcessClient(_AgentMemoryClient):
         # 原文（未建索引）与 /index/chunks/ 簿记（loads 返 None）都不在结果中。
         # （生产应给 MemoryAPI 加 get_all，见 §4.1.3。）
 
+        """执行 `list_semantic` 操作。
+
+        Args:
+            scope: 参数 scope。
+
+        Returns:
+            返回 list[dict[str, Any]]。
+        """
         api_scope = self._to_api_scope(scope)
         raw_pairs = await asyncio.to_thread(self._kv.list, api_scope, MEMORY_KEY_PREFIX)
         items = []
@@ -716,6 +886,11 @@ class _InProcessClient(_AgentMemoryClient):
         return items
 
     async def evolve_extract(self, scope) -> None:
+        """执行 `evolve_extract` 操作。
+
+        Args:
+            scope: 参数 scope。
+        """
         from jiuwen_memory.api import Channel, EvolveMode
         api_scope = self._to_api_scope(scope)
 
@@ -726,10 +901,19 @@ class _InProcessClient(_AgentMemoryClient):
 
     async def close(self) -> None:
         # LocalMemoryAPI 无显式 close；释放由 GC 处理
+        """关闭并释放相关资源。"""
         pass
 
 
 def _load_yaml(path):
+    """加载并解析输入数据。
+
+    Args:
+        path: 参数 path。
+
+    Raises:
+        RuntimeError: 执行失败时抛出。
+    """
     try:
         import yaml
     except ImportError as exc:

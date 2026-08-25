@@ -55,6 +55,20 @@ class DashScopeLLM(OpenAILLM):
         config_source=None,
         config_namespace: str = "llm",
     ) -> None:
+        """初始化 DashScopeLLM。
+
+        Args:
+            model_name: 参数 model_name（str）。
+            base_url: 参数 base_url（str | None）。
+            api_key: 参数 api_key（str）。
+            default_temperature: 参数 default_temperature（float）。
+            default_max_tokens: 参数 default_max_tokens（int）。
+            enable_thinking: 参数 enable_thinking（bool | None）。
+            ssl_verify: 参数 ssl_verify（bool）。
+            ssl_ca_cert: 参数 ssl_ca_cert（str | None）。
+            config_source: 参数 config_source。
+            config_namespace: 参数 config_namespace（str）。
+        """
         super().__init__(
             model_name=model_name,
             base_url=base_url,
@@ -69,6 +83,11 @@ class DashScopeLLM(OpenAILLM):
         self._enable_thinking = enable_thinking
 
     def _provider_request_options(self) -> dict[str, object]:
+        """执行 `provider_request_options` 操作。
+
+        Returns:
+            返回 dict[str, object]。
+        """
         if self._enable_thinking is None:
             return {}
         return {"extra_body": {"enable_thinking": self._enable_thinking}}

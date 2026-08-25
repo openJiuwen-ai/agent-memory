@@ -23,16 +23,36 @@ class KeywordAssociator(Associator):
     """共享关键词关联：重叠词数 ≥ ``min_overlap`` 即建一条 related 关联。"""
 
     def __init__(self, feature_extractor: FeatureExtractor, min_overlap: int = 2) -> None:
+        """初始化 KeywordAssociator。
+
+        Args:
+            feature_extractor: 参数 feature_extractor（FeatureExtractor）。
+            min_overlap: 参数 min_overlap（int）。
+        """
         self._features = feature_extractor
         self._min_overlap = min_overlap
 
     def operator_type(self) -> OperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 OperatorType。
+        """
         return OperatorType.ASSOCIATOR
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def associate(self, units: List[MemoryUnit]) -> List[Relation]:
+        """执行 `associate` 操作。
+
+        Args:
+            units: 参数 units（List[MemoryUnit]）。
+
+        Returns:
+            返回 List[Relation]。
+        """
         logger.info("KeywordAssociator: received %d units", len(units))
         for u in units:
             logger.info(
@@ -77,4 +97,9 @@ class KeywordAssociator(Associator):
 
 @AssociatorProducer.register("keyword")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return KeywordAssociator(FeatureExtractorProducer.dep(config, default="keyword"))

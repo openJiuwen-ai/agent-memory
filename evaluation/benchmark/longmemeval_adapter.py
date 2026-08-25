@@ -43,6 +43,14 @@ _DATE_FMT = "%Y/%m/%d (%a) %H:%M"  # 如 "2023/05/20 (Sat) 10:30"
 
 
 def _parse_dt(date_str: str) -> Optional[datetime]:
+    """解析输入数据并返回结构化结果。
+
+    Args:
+        date_str: 参数 date_str（str）。
+
+    Returns:
+        返回 Optional[datetime]。
+    """
     try:
         return datetime.strptime(date_str.strip(), _DATE_FMT)
     except (ValueError, AttributeError):
@@ -61,6 +69,14 @@ class LongMemEvalDataset(Dataset):
         max_questions: Optional[int] = None,
         scope_org: str = "longmemeval",
     ) -> None:
+        """初始化 LongMemEvalDataset。
+
+        Args:
+            path: 参数 path（str）。
+            samples: 参数 samples（Optional[Sequence[int]]）。
+            max_questions: 参数 max_questions（Optional[int]）。
+            scope_org: 参数 scope_org（str）。
+        """
         self._path = path
         self._scope_org = scope_org
         self._seeds: List[MemorySeed] = []
@@ -69,10 +85,20 @@ class LongMemEvalDataset(Dataset):
             self._parse(path, samples, max_questions)
 
     def seeds(self) -> Sequence[MemorySeed]:
+        """执行 `seeds` 操作。
+
+        Returns:
+            返回 Sequence[MemorySeed]。
+        """
         self._require_loaded()
         return self._seeds
 
     def queries(self) -> Sequence[QueryCase]:
+        """执行 `queries` 操作。
+
+        Returns:
+            返回 Sequence[QueryCase]。
+        """
         self._require_loaded()
         return self._queries
 
@@ -83,6 +109,13 @@ class LongMemEvalDataset(Dataset):
         samples: Optional[Sequence[int]],
         max_questions: Optional[int],
     ) -> None:
+        """解析输入数据并返回结构化结果。
+
+        Args:
+            path: 参数 path（str）。
+            samples: 参数 samples（Optional[Sequence[int]]）。
+            max_questions: 参数 max_questions（Optional[int]）。
+        """
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
 
@@ -94,6 +127,11 @@ class LongMemEvalDataset(Dataset):
             self._queries = self._queries[:max_questions]
 
     def _parse_sample(self, sample: dict) -> None:
+        """解析输入数据并返回结构化结果。
+
+        Args:
+            sample: 参数 sample（dict）。
+        """
         qid = sample["question_id"]
         scope = Scope(org=self._scope_org, user=qid)
         sessions = sample.get("haystack_sessions", [])
@@ -148,6 +186,11 @@ class LongMemEvalDataset(Dataset):
 
     # -- Dataset 接口 ------------------------------------------------------- #
     def _require_loaded(self) -> None:
+        """校验并取得必需的资源或参数。
+
+        Raises:
+            FileNotFoundError: 执行失败时抛出。
+        """
         if not self._seeds and not self._queries:
             raise FileNotFoundError(
                 f"LongMemEval 数据缺失：{self._path}。从 "

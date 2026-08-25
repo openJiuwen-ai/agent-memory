@@ -70,6 +70,7 @@ class RetrievalQuery:
 
     def __post_init__(self) -> None:
         # 查询对象边界规范化：外部兼容旧输入，内部只保留 FilterExpr | None。
+        """执行 `post_init` 操作。"""
         self.filters = normalize(self.filters)
 
 

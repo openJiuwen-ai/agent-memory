@@ -22,17 +22,38 @@ class FixedWindowChunker(Chunker):
     """定长字符窗口切分器。"""
 
     def __init__(self, size: int = 120) -> None:
+        """初始化 FixedWindowChunker。
+
+        Args:
+            size: 参数 size（int）。
+        """
         self._size = size
 
     def plugin_type(self) -> PluginType:
+        """返回当前插件类型。
+
+        Returns:
+            返回 PluginType。
+        """
         return PluginType.CHUNKER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def chunk(
         self, text: str, unit_id: str = "", metadata: Optional[Dict[str, str]] = None
     ) -> List[Chunk]:
+        """将输入文本切分为多个片段。
+
+        Args:
+            text: 参数 text（str）。
+            unit_id: 参数 unit_id（str）。
+            metadata: 参数 metadata（Optional[Dict[str, str]]）。
+
+        Returns:
+            返回 List[Chunk]。
+        """
         meta = dict(metadata or {})
         chunks: List[Chunk] = []
         for seq, start in enumerate(range(0, max(len(text), 1), self._size)):
@@ -64,4 +85,9 @@ class FixedWindowChunker(Chunker):
 
 @ChunkerProducer.register("fixed_window")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return FixedWindowChunker(size=config.get("chunk_size", 120))

@@ -31,6 +31,14 @@ def sanitize_query(text: str | None, *, strip_code_fences: bool = False) -> str:
     code_blocks: list[str] = []
 
     def protect(match: re.Match[str]) -> str:
+        """执行 `protect` 操作。
+
+        Args:
+            match: 参数 match（re.Match[str]）。
+
+        Returns:
+            返回 str。
+        """
         code_blocks.append(match.group(0))
         return f"<<<CODE_FENCE_{len(code_blocks) - 1}>>>"
 

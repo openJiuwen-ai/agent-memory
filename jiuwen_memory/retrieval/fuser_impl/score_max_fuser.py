@@ -38,12 +38,26 @@ class ScoreMaxFuser(Fuser):
     ) -> None:
         # 通道权重可选：默认全 1.0（不偏好任何通道）。用于人工压制/抬升某一路，
         # 不参与归一化——归一化基准始终是该通道自身的最高分。
+        """初始化 ScoreMaxFuser。
+
+        Args:
+            channel_weights: 参数 channel_weights（Mapping[RecallChannel | str, float | str]
+                | None）。
+        """
         self._channel_weights = self._normalize_weights(channel_weights or {})
 
     @staticmethod
     def _normalize_weights(
         weights: Mapping[RecallChannel | str, float | str],
     ) -> dict[RecallChannel, float]:
+        """规范化输入值。
+
+        Args:
+            weights: 参数 weights（Mapping[RecallChannel | str, float | str]）。
+
+        Returns:
+            返回 dict[RecallChannel, float]。
+        """
         normalized: dict[RecallChannel, float] = {}
         for raw_channel, raw_weight in weights.items():
             if isinstance(raw_channel, RecallChannel):
@@ -57,12 +71,23 @@ class ScoreMaxFuser(Fuser):
         return normalized
 
     def operator_type(self) -> RetrievalOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 RetrievalOperatorType。
+        """
         return RetrievalOperatorType.FUSER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def explain(self) -> dict[str, str]:
+        """执行 `explain` 操作。
+
+        Returns:
+            返回 dict[str, str]。
+        """
         ordered_weights = sorted(
             self._channel_weights.items(), key=lambda item: item[0].value
         )
@@ -81,6 +106,18 @@ class ScoreMaxFuser(Fuser):
     ) -> list[ScoredCandidate]:
         # 分层召回下同通道有多路（L2/L0/L1），必须先归并再归一化——否则各层按各自
         # 最高分取基准，候选少的层会把弱命中抬到与主层最强候选同级（见 layered_merge）。
+        """执行 `fuse` 操作。
+
+        Args:
+            query: 参数 query（ParsedQuery）。
+            candidates: 参数 candidates（list[list[ScoredCandidate]]）。
+
+        Returns:
+            返回 list[ScoredCandidate]。
+
+        Raises:
+            KeyError: 执行失败时抛出。
+        """
         merged = merge_layered_channels(candidates)
 
         best: dict[str, float] = {}
@@ -132,4 +169,9 @@ class ScoreMaxFuser(Fuser):
 
 @FuserProducer.register("score_max")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return ScoreMaxFuser(channel_weights=config.get("fusion_channel_weights", {}))

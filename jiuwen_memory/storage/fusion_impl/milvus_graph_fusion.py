@@ -62,6 +62,23 @@ class MilvusGraphFusionStore(FusionStore):
         config_namespace: str = "fusion_store",
         **options: Any,
     ) -> None:
+        """初始化 MilvusGraphFusionStore。
+
+        Args:
+            working_dir: 参数 working_dir（str）。
+            dim: 参数 dim（int）。
+            milvus: 参数 milvus（dict[str, Any] | None）。
+            collection: 参数 collection（str）。
+            metric_type: 参数 metric_type（str）。
+            namespace_prefix: 参数 namespace_prefix（str）。
+            link_field: 参数 link_field（str）。
+            neighbor_depth: 参数 neighbor_depth（int）。
+            neighbor_decay: 参数 neighbor_decay（float）。
+            neighbor_relation: 参数 neighbor_relation（str）。
+            config_source: 参数 config_source。
+            config_namespace: 参数 config_namespace（str）。
+            **options: 参数 options（Any）。
+        """
         import asyncio  # 仅桥接异步图存储用
 
         mcfg = dict(milvus or {})
@@ -93,6 +110,14 @@ class MilvusGraphFusionStore(FusionStore):
 
     @staticmethod
     def _from_vector_record(vr: VectorRecord) -> FusionRecord:
+        """执行 `from_vector_record` 操作。
+
+        Args:
+            vr: 参数 vr（VectorRecord）。
+
+        Returns:
+            返回 FusionRecord。
+        """
         metadata = dict(vr.metadata)
         text = metadata.pop(_TEXT_KEY, None)
         vb64 = metadata.pop(_VALUE_KEY, None)
@@ -107,9 +132,19 @@ class MilvusGraphFusionStore(FusionStore):
 
     # ------------------------------------------------------------ 契约
     def store_type(self) -> StoreType:
+        """返回当前存储类型。
+
+        Returns:
+            返回 StoreType。
+        """
         return StoreType.FUSION
 
     def health(self) -> None:
+        """执行健康检查。
+
+        Raises:
+            HealthCheckError: 执行失败时抛出。
+        """
         self._vec.health()
         try:
             _networkx_storage_cls()
@@ -117,6 +152,12 @@ class MilvusGraphFusionStore(FusionStore):
             raise HealthCheckError(f"fusion graph unavailable: {exc}") from exc
 
     def insert(self, scope: Scope, records: list[FusionRecord]) -> None:
+        """插入一条或多条记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            records: 参数 records（list[FusionRecord]）。
+        """
         if not records:
             return
         vrecs = [self._to_vector_record(r) for r in records]  # 校验 vector
@@ -124,6 +165,12 @@ class MilvusGraphFusionStore(FusionStore):
         self._index_graph(scope, records)
 
     def update(self, scope: Scope, records: list[FusionRecord]) -> None:
+        """更新已有记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            records: 参数 records（list[FusionRecord]）。
+        """
         if not records:
             return
         vrecs = [self._to_vector_record(r) for r in records]
@@ -132,6 +179,12 @@ class MilvusGraphFusionStore(FusionStore):
         self._index_graph(scope, records)
 
     def delete(self, scope: Scope, ids: list[str]) -> None:
+        """删除指定的记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ids: 参数 ids（list[str]）。
+        """
         if not ids:
             return
         self._vec.delete(scope, ids)
@@ -144,11 +197,32 @@ class MilvusGraphFusionStore(FusionStore):
         self._persist(storage)
 
     def get(self, scope: Scope, ids: list[str]) -> list[FusionRecord]:
+        """读取指定的记录或资源。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ids: 参数 ids（list[str]）。
+
+        Returns:
+            返回 list[FusionRecord]。
+        """
         if not ids:
             return []
         return [self._from_vector_record(vr) for vr in self._vec.get(scope, ids)]
 
     def search(self, scope: Scope, query: FusionQuery) -> list[ScoredID]:
+        """检索与查询匹配的结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（FusionQuery）。
+
+        Returns:
+            返回 list[ScoredID]。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if query.vector is None:
             raise ValidationError("fusion search requires a query vector (vector → graph)")
         # ① Milvus 向量召回种子
@@ -165,6 +239,11 @@ class MilvusGraphFusionStore(FusionStore):
         return out
 
     def _resolved_working_dir(self) -> str:
+        """解析并返回目标配置或资源。
+
+        Returns:
+            返回 str。
+        """
         from pathlib import Path
 
         from jiuwen_memory.config.binding import resolve_connection_url
@@ -181,6 +260,14 @@ class MilvusGraphFusionStore(FusionStore):
 
     # ------------------------------------------------------------ 图基础设施
     def _run(self, coro: Any) -> Any:
+        """执行 `run` 操作。
+
+        Args:
+            coro: 参数 coro（Any）。
+
+        Returns:
+            返回 Any。
+        """
         import asyncio
 
         if self._loop is None or self._loop.is_closed():
@@ -188,6 +275,14 @@ class MilvusGraphFusionStore(FusionStore):
         return self._loop.run_until_complete(coro)
 
     def _graph(self, scope: Scope) -> Any:
+        """执行 `graph` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+
+        Returns:
+            返回 Any。
+        """
         working_dir = self._resolved_working_dir()
         if self._active_working_dir != working_dir:
             self._graphs.clear()
@@ -202,19 +297,39 @@ class MilvusGraphFusionStore(FusionStore):
         return storage
 
     def _persist(self, storage: Any) -> None:
+        """执行 `persist` 操作。
+
+        Args:
+            storage: 参数 storage（Any）。
+        """
         with wrap_backend("fusion graph persist"):
             self._run(storage.index_done_callback())
 
     def _links(self, record: FusionRecord) -> list[str]:
+        """执行 `links` 操作。
+
+        Args:
+            record: 参数 record（FusionRecord）。
+
+        Returns:
+            返回 list[str]。
+        """
         raw = record.scalars.get(self._link_field) or []
         if isinstance(raw, (list, tuple, set)):
             return [str(x) for x in raw]
         return []
 
     def _index_graph(self, scope: Scope, records: list[FusionRecord]) -> None:
+        """执行 `index_graph` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            records: 参数 records（list[FusionRecord]）。
+        """
         storage = self._graph(scope)
 
         async def apply() -> None:
+            """执行 `apply` 操作。"""
             for rec in records:
                 await storage.upsert_node(rec.id, {"id": rec.id})
                 for target in self._links(rec):
@@ -226,6 +341,17 @@ class MilvusGraphFusionStore(FusionStore):
 
     # ------------------------------------------------------------ 序列化
     def _to_vector_record(self, record: FusionRecord) -> VectorRecord:
+        """执行 `to_vector_record` 操作。
+
+        Args:
+            record: 参数 record（FusionRecord）。
+
+        Returns:
+            返回 VectorRecord。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if record.vector is None:
             raise ValidationError(f"fusion record {record.id!r} requires a vector")
         metadata = dict(record.scalars)
@@ -236,6 +362,15 @@ class MilvusGraphFusionStore(FusionStore):
         return VectorRecord(id=record.id, vector=record.vector, metadata=metadata)
 
     def _expand_neighbors(self, scope: Scope, seeds: list[ScoredID]) -> dict[str, float]:
+        """执行 `expand_neighbors` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            seeds: 参数 seeds（list[ScoredID]）。
+
+        Returns:
+            返回 dict[str, float]。
+        """
         storage = self._graph(scope)
         graph = networkx_graph(storage)
         out: dict[str, float] = {}
@@ -269,6 +404,11 @@ class MilvusGraphFusionStore(FusionStore):
 def _build(config):
     # 三方库 + 本地图：uri/working_dir 必填；dim 取 params.dim，回退内核共享的 embedder_dim。
     # 其余有默认值的构造参数均可经 params 覆盖。
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     from jiuwen_memory.config.config_source import ConfigSourceProducer
 
     uri = Factory.require_param(config, "uri", backend="milvus_graph fusion")

@@ -75,6 +75,12 @@ class FulltextIndexBuilder(IndexBuilder):
         *,
         layers_enabled: bool = True,
     ) -> None:
+        """初始化 FulltextIndexBuilder。
+
+        Args:
+            storage: 参数 storage（Storage）。
+            layers_enabled: 参数 layers_enabled（bool）。
+        """
         self._store = storage.fulltext if storage.has_fulltext() else None
         self._fulltext_l0 = _fulltext_port(storage, "layers_l0", layers_enabled)
         self._fulltext_l1 = _fulltext_port(storage, "layers_l1", layers_enabled)
@@ -90,12 +96,26 @@ class FulltextIndexBuilder(IndexBuilder):
         return self._fulltext_l1
 
     def operator_type(self) -> OperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 OperatorType。
+        """
         return OperatorType.INDEX_BUILDER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def _doc(self, unit: MemoryUnit) -> Document:
+        """执行 `doc` 操作。
+
+        Args:
+            unit: 参数 unit（MemoryUnit）。
+
+        Returns:
+            返回 Document。
+        """
         return Document(
             id=unit.id,  # L2 文档沿用 unit.id（F01 允许短期保留旧 id 兼容删除/update）
             text=unit.content,
@@ -113,6 +133,11 @@ class FulltextIndexBuilder(IndexBuilder):
 
     def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         # 本实现只建检索索引，不交付记忆本体：FORWARD_ONLY 即整体跳过。
+        """根据配置构建组件实例。
+
+        Args:
+            units: 参数 units（list[MemoryUnit]）。
+        """
         if mode is IndexWriteMode.FORWARD_ONLY:
             return
         logger.info("FulltextIndexBuilder: building index for %d units", len(units))
@@ -155,6 +180,11 @@ class FulltextIndexBuilder(IndexBuilder):
         self, units: list[MemoryUnit], *, mode: IndexRemoveMode = IndexRemoveMode.HARD
     ) -> None:
         # 本实现只持有检索索引：SOFT/HARD 都要移出检索，行为相同。
+        """移除指定的记录或资源。
+
+        Args:
+            units: 参数 units（list[MemoryUnit]）。
+        """
         logger.info("FulltextIndexBuilder: removing %d units from index", len(units))
         for unit in units:
             if self._store is not None:
@@ -163,6 +193,7 @@ class FulltextIndexBuilder(IndexBuilder):
 
     def rebuild(self) -> None:
         # 最小实现：索引与真源同生命周期，无独立重建路径。
+        """执行 `rebuild` 操作。"""
         return None
 
     # ------------------------------------------------------------------
@@ -213,6 +244,11 @@ class FulltextIndexBuilder(IndexBuilder):
 
 @IndexBuilderProducer.register("fulltext")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return FulltextIndexBuilder(
         StorageProducer.resolve(config),
         layers_enabled=config.get("layers_index_enabled", True),
@@ -220,6 +256,16 @@ def _build(config):
 
 
 def _fulltext_port(storage: Storage, name: str, enabled: bool) -> FulltextStore | None:
+    """执行 `fulltext_port` 操作。
+
+    Args:
+        storage: 参数 storage（Storage）。
+        name: 参数 name（str）。
+        enabled: 参数 enabled（bool）。
+
+    Returns:
+        返回 FulltextStore | None。
+    """
     if not enabled or not storage.has_fulltext_port(name):
         return None
     return storage.fulltext_port(name)

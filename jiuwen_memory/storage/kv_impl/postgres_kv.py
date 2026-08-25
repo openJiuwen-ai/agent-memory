@@ -36,6 +36,22 @@ class PostgresKVStore(PgStoreBase, KVStore):
         config_source=None,
         config_namespace: str = "kv_store",
     ) -> None:
+        """初始化 PostgresKVStore。
+
+        Args:
+            dsn: 参数 dsn（str）。
+            schema: 参数 schema（str）。
+            table: 参数 table（str）。
+            pool_min_size: 参数 pool_min_size（int）。
+            pool_max_size: 参数 pool_max_size（int）。
+            connect_timeout: 参数 connect_timeout（float）。
+            application_name: 参数 application_name（str）。
+            auto_create_schema: 参数 auto_create_schema（bool）。
+            ssl_verify: 参数 ssl_verify（bool）。
+            ssl_ca_cert: 参数 ssl_ca_cert（str | None）。
+            config_source: 参数 config_source。
+            config_namespace: 参数 config_namespace（str）。
+        """
         super().__init__(
             dsn=dsn,
             schema=schema,
@@ -54,6 +70,11 @@ class PostgresKVStore(PgStoreBase, KVStore):
 
     @staticmethod
     def _expiry_sql() -> str:
+        """执行 `expiry_sql` 操作。
+
+        Returns:
+            返回 str。
+        """
         return (
             "CASE WHEN %s > 0 THEN "
             "extract(epoch from clock_timestamp()) + %s ELSE NULL END"
@@ -61,15 +82,40 @@ class PostgresKVStore(PgStoreBase, KVStore):
 
     @staticmethod
     def _scope_params(scope: Scope) -> tuple[str, str, str, str, str]:
+        """执行 `scope_params` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+
+        Returns:
+            返回 tuple[str, str, str, str, str]。
+        """
         return scope.org, scope.space, scope.user, scope.agent, scope.session
 
     def store_type(self) -> StoreType:
+        """返回当前存储类型。
+
+        Returns:
+            返回 StoreType。
+        """
         return StoreType.KV
 
     def health(self) -> None:
+        """执行健康检查。"""
         self._health()
 
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
+        """插入一条或多条记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            key: 参数 key（str）。
+            value: 参数 value（bytes）。
+            ttl: 参数 ttl（float）。
+
+        Raises:
+            ConflictError: 执行失败时抛出。
+        """
         statement = self.sql.SQL(
             f"""
             INSERT INTO {{}} AS current (
@@ -94,6 +140,17 @@ class PostgresKVStore(PgStoreBase, KVStore):
                     raise ConflictError(entity="key", key=key)
 
     def update(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
+        """更新已有记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            key: 参数 key（str）。
+            value: 参数 value（bytes）。
+            ttl: 参数 ttl（float）。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         statement = self.sql.SQL(
             f"""
             UPDATE {{}} SET
@@ -117,6 +174,12 @@ class PostgresKVStore(PgStoreBase, KVStore):
                     raise NotFoundError(entity="key", key=key)
 
     def delete(self, scope: Scope, key: str) -> None:
+        """删除指定的记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            key: 参数 key（str）。
+        """
         clause, params = pg_scope_clause(scope, exact=True)
         statement = self.sql.SQL(f"DELETE FROM {{}} WHERE {clause} AND key = %s").format(
             self._qualified()
@@ -126,6 +189,18 @@ class PostgresKVStore(PgStoreBase, KVStore):
                 cursor.execute(statement, [*params, key])
 
     def get(self, scope: Scope, key: str) -> bytes:
+        """读取指定的记录或资源。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            key: 参数 key（str）。
+
+        Returns:
+            返回 bytes。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         clause, params = pg_scope_clause(scope, exact=True)
         statement = self.sql.SQL(
             f"""
@@ -144,6 +219,18 @@ class PostgresKVStore(PgStoreBase, KVStore):
         return bytes(row[0])
 
     def mget(self, scope: Scope, keys: list[str]) -> list[bytes]:
+        """执行 `mget` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            keys: 参数 keys（list[str]）。
+
+        Returns:
+            返回 list[bytes]。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         if not keys:
             return []
         clause, params = pg_scope_clause(scope, exact=True)
@@ -166,6 +253,15 @@ class PostgresKVStore(PgStoreBase, KVStore):
         return [values[key] for key in keys]
 
     def exists(self, scope: Scope, key: str) -> bool:
+        """检查指定记录或资源是否存在。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            key: 参数 key（str）。
+
+        Returns:
+            返回 bool。
+        """
         clause, params = pg_scope_clause(scope, exact=True)
         statement = self.sql.SQL(
             f"""
@@ -181,6 +277,15 @@ class PostgresKVStore(PgStoreBase, KVStore):
                 return cursor.fetchone() is not None
 
     def scan(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
+        """扫描指定范围内的记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            prefix: 参数 prefix（str）。
+
+        Returns:
+            返回 list[tuple[str, bytes]]。
+        """
         clause, params = pg_scope_clause(scope, exact=True)
         statement = self.sql.SQL(
             f"""
@@ -206,6 +311,19 @@ class PostgresKVStore(PgStoreBase, KVStore):
         filters: FilterExpr | None = None,
         extensions: dict[str, str] | None = None,
     ) -> KVMemoryListResult:
+        """列出符合条件的记录或资源。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            offset: 参数 offset（int）。
+            limit: 参数 limit（int）。
+            memory_types: 参数 memory_types（list[str] | None）。
+            filters: 参数 filters（FilterExpr | None）。
+            extensions: 参数 extensions（dict[str, str] | None）。
+
+        Returns:
+            返回 KVMemoryListResult。
+        """
         return list_memory_entries(
             self.scan(scope, MEMORY_KEY_PREFIX),
             offset=offset,
@@ -216,6 +334,11 @@ class PostgresKVStore(PgStoreBase, KVStore):
         )
 
     def scopes(self) -> list[Scope]:
+        """执行 `scopes` 操作。
+
+        Returns:
+            返回 list[Scope]。
+        """
         statement = self.sql.SQL(
             """
             SELECT DISTINCT
@@ -233,6 +356,11 @@ class PostgresKVStore(PgStoreBase, KVStore):
         ]
 
     def _ensure_schema(self, pool: Any) -> None:
+        """确保所需资源或状态已就绪。
+
+        Args:
+            pool: 参数 pool（Any）。
+        """
         with pool.connection() as conn, conn.cursor() as cursor:
             if not self._auto_create_schema:
                 self._require_table(cursor)
@@ -273,6 +401,11 @@ class PostgresKVStore(PgStoreBase, KVStore):
 @KvProducer.register("postgres")
 def _build(config):
     # sslmode 是参数形态的真开关，无须校验 dsn scheme（见 _pg.PgStoreBase.pool）。
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     from jiuwen_memory.config.config_source import ConfigSourceProducer
 
     ssl = read_ssl_config(config, backend="postgres KV")

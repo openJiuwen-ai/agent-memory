@@ -36,12 +36,23 @@ class KeywordExtractor(Extractor):
     """按 chunk 把原始单元提升为带血缘的 SEMANTIC 事实派生单元。"""
 
     def __init__(self, chunker: Chunker) -> None:
+        """初始化 KeywordExtractor。
+
+        Args:
+            chunker: 参数 chunker（Chunker）。
+        """
         self._chunker = chunker
 
     def operator_type(self) -> OperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 OperatorType。
+        """
         return OperatorType.EXTRACTOR
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def extract(
@@ -54,6 +65,15 @@ class KeywordExtractor(Extractor):
         # （_dedup_batch 兜底）。接受参数仅为统一 Extractor 签名。
         # procedural 模式：本实现无 LLM 做结构化汇总，降级为把本轮原文原样合成 1 条
         # PROCEDURAL（provenance 回指全部本轮 unit），仍保证「1 条过程记忆」契约。
+        """执行 `extract` 操作。
+
+        Args:
+            units: 参数 units（List[MemoryUnit]）。
+            context: 参数 context（ExtractContext | None）。
+
+        Returns:
+            返回 List[MemoryUnit]。
+        """
         if any(
             str(u.system_metadata.get("procedural", "")).strip().lower() == "true"
             for u in units
@@ -146,4 +166,9 @@ class KeywordExtractor(Extractor):
 
 @ExtractorProducer.register("keyword")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return KeywordExtractor(ChunkerProducer.dep(config, default="fixed_window"))

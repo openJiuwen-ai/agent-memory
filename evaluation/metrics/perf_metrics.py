@@ -13,6 +13,15 @@ from evaluation.core.types import CaseOutcome, MetricResult
 
 
 def _percentile(values: Sequence[float], pct: float) -> float:
+    """执行 `percentile` 操作。
+
+    Args:
+        values: 参数 values（Sequence[float]）。
+        pct: 参数 pct（float）。
+
+    Returns:
+        返回 float。
+    """
     if not values:
         return 0.0
     ordered = sorted(values)
@@ -24,6 +33,14 @@ def _percentile(values: Sequence[float], pct: float) -> float:
 
 
 def _estimate_tokens(text: str) -> int:
+    """执行 `estimate_tokens` 操作。
+
+    Args:
+        text: 参数 text（str）。
+
+    Returns:
+        返回 int。
+    """
     return max(1, (len(text) + 3) // 4) if text else 0
 
 
@@ -31,6 +48,14 @@ def perf_metrics():
     """构造性能指标套件（一个 :data:`evaluation.core.runner.Metric`）。"""
 
     def _metric(outcomes: list[CaseOutcome]) -> list[MetricResult]:
+        """执行 `metric` 操作。
+
+        Args:
+            outcomes: 参数 outcomes（list[CaseOutcome]）。
+
+        Returns:
+            返回 list[MetricResult]。
+        """
         latencies = [
             sum(getattr(step, "cost_ms", 0.0) for step in outcome.trajectory)
             for outcome in outcomes

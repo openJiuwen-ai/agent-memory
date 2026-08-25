@@ -129,6 +129,11 @@ statement. Output ONLY that statement as plain text. No explanation, no labels, 
 
 
 def _now() -> datetime:
+    """执行 `now` 操作。
+
+    Returns:
+        返回 datetime。
+    """
     return datetime.now(timezone.utc)
 
 
@@ -165,6 +170,20 @@ class OrchestratingEvolver(Evolver):
         dedup_medium_similarity: float = 0.7,
         dedup_high_similarity: float = 0.9,
     ) -> None:
+        """初始化 OrchestratingEvolver。
+
+        Args:
+            extractor: 参数 extractor（Extractor）。
+            abstractor: 参数 abstractor（Abstractor）。
+            associator: 参数 associator（Associator）。
+            index_builder: 参数 index_builder（IndexBuilder）。
+            storage: 参数 storage（Storage）。
+            dedup: 参数 dedup（Dedup）。
+            llm: 参数 llm（LLM）。
+            layer_annotator: 参数 layer_annotator（LayerAnnotator | None）。
+            dedup_medium_similarity: 参数 dedup_medium_similarity（float）。
+            dedup_high_similarity: 参数 dedup_high_similarity（float）。
+        """
         self._extractor = extractor
         self._abstractor = abstractor
         self._associator = associator
@@ -204,9 +223,15 @@ class OrchestratingEvolver(Evolver):
         )
 
     def operator_type(self) -> OperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 OperatorType。
+        """
         return OperatorType.EVOLVER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     # ------------------------------------------------------------------
@@ -218,6 +243,15 @@ class OrchestratingEvolver(Evolver):
         units: List[MemoryUnit],
         mode: EvolveMode,
     ) -> EvolveResult:
+        """执行 `evolve` 操作。
+
+        Args:
+            units: 参数 units（List[MemoryUnit]）。
+            mode: 参数 mode（EvolveMode）。
+
+        Returns:
+            返回 EvolveResult。
+        """
         logger.info("Evolver: evolve mode=%s, %d units", mode.value, len(units))
         for u in units:
             logger.info("Evolver: input unit id=%s tier=%s lifecycle=%s provenance=%s content=%s",
@@ -238,6 +272,14 @@ class OrchestratingEvolver(Evolver):
 
     def _persist(self, units: List[MemoryUnit]) -> List[str]:
         # 记忆写入只经 IndexBuilder：正排与派生索引由其统一编排。
+        """执行 `persist` 操作。
+
+        Args:
+            units: 参数 units（List[MemoryUnit]）。
+
+        Returns:
+            返回 List[str]。
+        """
         self._index.build(units)
         return [u.id for u in units]
 
@@ -870,6 +912,14 @@ class OrchestratingEvolver(Evolver):
         return self._dedup_batch(extracted)
 
     def _evolve_consolidate(self, units: List[MemoryUnit]) -> EvolveResult:
+        """执行 `evolve_consolidate` 操作。
+
+        Args:
+            units: 参数 units（List[MemoryUnit]）。
+
+        Returns:
+            返回 EvolveResult。
+        """
         abstracted = self._abstractor.abstract(units)
         logger.info("Evolver: CONSOLIDATE abstractor returned %d units", len(abstracted))
         if not abstracted:
@@ -879,6 +929,14 @@ class OrchestratingEvolver(Evolver):
         return self._dedup_batch(abstracted)
 
     def _evolve_associate(self, units: List[MemoryUnit]) -> EvolveResult:
+        """执行 `evolve_associate` 操作。
+
+        Args:
+            units: 参数 units（List[MemoryUnit]）。
+
+        Returns:
+            返回 EvolveResult。
+        """
         relations = self._associator.associate(units)
         self.relations.extend(relations)
         self._persist_graph(units, relations)
@@ -965,6 +1023,7 @@ def _build(config):
     # layer_annotator 是顶层命名空间）。
 
     def _opt_annotator():
+        """执行 `opt_annotator` 操作。"""
         if "layer_annotator" in config.params:
             name = config.params.get("layer_annotator")
             if not name:  # None / "" → 显式禁用

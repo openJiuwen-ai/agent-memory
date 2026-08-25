@@ -12,6 +12,12 @@ class OverlayConfigSource(ConfigSource):
     """``fetch``：primary 返回非 ``None`` 则用之，否则问 fallback。"""
 
     def __init__(self, primary: ConfigSource, fallback: ConfigSource) -> None:
+        """初始化 OverlayConfigSource。
+
+        Args:
+            primary: 参数 primary（ConfigSource）。
+            fallback: 参数 fallback（ConfigSource）。
+        """
         self._primary = primary
         self._fallback = fallback
 

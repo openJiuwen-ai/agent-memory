@@ -33,15 +33,40 @@ _ATTRIBUTE_QUERY_PATTERN = re.compile(
 
 
 def _day_bounds(d: datetime) -> TimeWindow:
+    """执行 `day_bounds` 操作。
+
+    Args:
+        d: 参数 d（datetime）。
+
+    Returns:
+        返回 TimeWindow。
+    """
     start = d.replace(hour=0, minute=0, second=0, microsecond=0)
     return start, start + timedelta(days=1)
 
 
 def _month_start(d: datetime) -> datetime:
+    """执行 `month_start` 操作。
+
+    Args:
+        d: 参数 d（datetime）。
+
+    Returns:
+        返回 datetime。
+    """
     return d.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
 def _rule_based(text: str, now: datetime) -> TimeWindow:
+    """执行 `rule_based` 操作。
+
+    Args:
+        text: 参数 text（str）。
+        now: 参数 now（datetime）。
+
+    Returns:
+        返回 TimeWindow。
+    """
     t = text.strip()
 
     # 最近/过去 N 天｜周（到 now）

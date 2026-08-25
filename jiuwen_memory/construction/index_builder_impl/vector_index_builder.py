@@ -29,10 +29,26 @@ _ScopeKey = tuple[str, str, str, str, str]
 
 
 def _scope_key(scope: Scope) -> _ScopeKey:
+    """执行 `scope_key` 操作。
+
+    Args:
+        scope: 参数 scope（Scope）。
+
+    Returns:
+        返回 _ScopeKey。
+    """
     return (scope.org, scope.space, scope.user, scope.agent, scope.session)
 
 
 def _scope_from_key(key: _ScopeKey) -> Scope:
+    """执行 `scope_from_key` 操作。
+
+    Args:
+        key: 参数 key（_ScopeKey）。
+
+    Returns:
+        返回 Scope。
+    """
     return Scope(org=key[0], space=key[1], user=key[2], agent=key[3], session=key[4])
 
 
@@ -102,6 +118,14 @@ class VectorIndexBuilder(IndexBuilder):
         *,
         layers_enabled: bool = True,
     ) -> None:
+        """初始化 VectorIndexBuilder。
+
+        Args:
+            storage: 参数 storage（Storage）。
+            chunker: 参数 chunker（Chunker）。
+            embedder: 参数 embedder（Embedder）。
+            layers_enabled: 参数 layers_enabled（bool）。
+        """
         self._vector_store = storage.vector if storage.has_vector() else None
         self._kv_store = storage.kv if storage.has_kv() else None
         self._chunker = chunker
@@ -136,9 +160,15 @@ class VectorIndexBuilder(IndexBuilder):
         return f"{unit_id}-layer-{layer}"
 
     def operator_type(self) -> OperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 OperatorType。
+        """
         return OperatorType.INDEX_BUILDER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     # ------------------------------------------------------------------
@@ -290,6 +320,7 @@ class VectorIndexBuilder(IndexBuilder):
 
     def rebuild(self) -> None:
         # 最小实现：索引与真源同生命周期，无独立重建路径。
+        """执行 `rebuild` 操作。"""
         return None
 
     # ------------------------------------------------------------------
@@ -411,6 +442,11 @@ class VectorIndexBuilder(IndexBuilder):
 
 @IndexBuilderProducer.register("vector")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return VectorIndexBuilder(
         storage=StorageProducer.resolve(config),
         chunker=ChunkerProducer.dep(config, default="fixed_window"),
@@ -420,6 +456,16 @@ def _build(config):
 
 
 def _vector_port(storage: Storage, name: str, enabled: bool) -> VectorStore | None:
+    """执行 `vector_port` 操作。
+
+    Args:
+        storage: 参数 storage（Storage）。
+        name: 参数 name（str）。
+        enabled: 参数 enabled（bool）。
+
+    Returns:
+        返回 VectorStore | None。
+    """
     if not enabled or not storage.has_vector_port(name):
         return None
     return storage.vector_port(name)

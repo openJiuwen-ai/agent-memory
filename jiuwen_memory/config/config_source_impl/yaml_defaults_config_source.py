@@ -14,6 +14,11 @@ class YamlDefaultsConfigSource(ConfigSource):
     """只读 YAML/defaults 投影。改 YAML 不会自动反映到已创建实例；要运行时改值请用 Dict/Overlay。"""
 
     def __init__(self, values: dict[str, str] | None = None) -> None:
+        """初始化 YamlDefaultsConfigSource。
+
+        Args:
+            values: 参数 values（dict[str, str] | None）。
+        """
         self._values = {str(k): str(v) for k, v in (values or {}).items()}
 
     def fetch(self, key: str) -> str | None:

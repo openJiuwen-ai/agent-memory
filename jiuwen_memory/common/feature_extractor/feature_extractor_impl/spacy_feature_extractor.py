@@ -215,6 +215,12 @@ class SpacyFeatureExtractor(FeatureExtractor):
         model_name: str = "zh_core_web_sm",
         fallback_to_tokenizer: bool = True,
     ) -> None:
+        """初始化 SpacyFeatureExtractor。
+
+        Args:
+            model_name: 参数 model_name（str）。
+            fallback_to_tokenizer: 参数 fallback_to_tokenizer（bool）。
+        """
         self._model_name = model_name
         self._fallback_to_tokenizer = fallback_to_tokenizer
         self._nlp = None
@@ -239,15 +245,33 @@ class SpacyFeatureExtractor(FeatureExtractor):
         return "zh"
 
     def plugin_type(self) -> PluginType:
+        """返回当前插件类型。
+
+        Returns:
+            返回 PluginType。
+        """
         return PluginType.FEATURE_EXTRACTOR
 
     def health(self) -> None:
+        """执行健康检查。
+
+        Raises:
+            HealthCheckError: 执行失败时抛出。
+        """
         if not self._available:
             raise HealthCheckError(
                 f"SpacyFeatureExtractor: spaCy model '{self._model_name}' not available"
             )
 
     def extract(self, text: str) -> FeatureSet:
+        """执行 `extract` 操作。
+
+        Args:
+            text: 参数 text（str）。
+
+        Returns:
+            返回 FeatureSet。
+        """
         if not text.strip():
             logger.debug("SpacyFeatureExtractor: input text is empty, returning empty FeatureSet")
             return FeatureSet()
@@ -467,6 +491,11 @@ class SpacyFeatureExtractor(FeatureExtractor):
 
 @FeatureExtractorProducer.register("spacy")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return SpacyFeatureExtractor(
         model_name=config.get("feature_extractor_spacy_model", "zh_core_web_sm"),
         fallback_to_tokenizer=config.get("feature_extractor_spacy_fallback", True),

@@ -27,6 +27,14 @@ class BGEReranker(Reranker):
         max_batch_size: int = 16,
         normalize: bool = True,
     ) -> None:
+        """初始化 BGEReranker。
+
+        Args:
+            model_name_or_path: 参数 model_name_or_path（str）。
+            use_fp16: 参数 use_fp16（bool）。
+            max_batch_size: 参数 max_batch_size（int）。
+            normalize: 参数 normalize（bool）。
+        """
         self._model_name_or_path = model_name_or_path
         self._use_fp16 = use_fp16
         self._max_batch_size = max(1, max_batch_size)
@@ -34,9 +42,19 @@ class BGEReranker(Reranker):
         self._model = None  # lazy load
 
     def plugin_type(self) -> PluginType:
+        """返回当前插件类型。
+
+        Returns:
+            返回 PluginType。
+        """
         return PluginType.RERANKER
 
     def health(self) -> None:
+        """执行健康检查。
+
+        Raises:
+            HealthCheckError: 执行失败时抛出。
+        """
         self._load_model()
         try:
             scores = self.rerank("health check", ["health check"])
@@ -48,6 +66,18 @@ class BGEReranker(Reranker):
             raise HealthCheckError(f"BGEReranker health check failed: {exc}") from exc
 
     def rerank(self, query: str, texts: List[str]) -> List[float]:
+        """对候选结果重新排序并评分。
+
+        Args:
+            query: 参数 query（str）。
+            texts: 参数 texts（List[str]）。
+
+        Returns:
+            返回 List[float]。
+
+        Raises:
+            ValueError: 执行失败时抛出。
+        """
         if not texts:
             return []
         self._load_model()
@@ -85,6 +115,14 @@ class BGEReranker(Reranker):
         logger.info("BGEReranker: model loaded successfully")
 
     def _compute_score(self, pairs: List[List[str]]) -> List[float]:
+        """执行 `compute_score` 操作。
+
+        Args:
+            pairs: 参数 pairs（List[List[str]]）。
+
+        Returns:
+            返回 List[float]。
+        """
         try:
             raw_scores = self._model.compute_score(pairs, normalize=self._normalize)
         except TypeError:
@@ -92,6 +130,14 @@ class BGEReranker(Reranker):
         return _coerce_scores(raw_scores)
 
     def _split_batches(self, pairs: List[List[str]]) -> List[List[List[str]]]:
+        """执行 `split_batches` 操作。
+
+        Args:
+            pairs: 参数 pairs（List[List[str]]）。
+
+        Returns:
+            返回 List[List[List[str]]]。
+        """
         batches = []
         for i in range(0, len(pairs), self._max_batch_size):
             batch_end = i + self._max_batch_size
@@ -100,6 +146,14 @@ class BGEReranker(Reranker):
 
 
 def _coerce_scores(raw_scores: Any) -> List[float]:
+    """执行 `coerce_scores` 操作。
+
+    Args:
+        raw_scores: 参数 raw_scores（Any）。
+
+    Returns:
+        返回 List[float]。
+    """
     if hasattr(raw_scores, "tolist"):
         raw_scores = raw_scores.tolist()
     if isinstance(raw_scores, (int, float)):

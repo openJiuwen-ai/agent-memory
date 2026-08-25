@@ -32,6 +32,17 @@ _CMP_OPS = {
 
 
 def _typed_value(value: Any) -> tuple[str, Any]:
+    """执行 `typed_value` 操作。
+
+    Args:
+        value: 参数 value（Any）。
+
+    Returns:
+        返回 tuple[str, Any]。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     if isinstance(value, bool):
         return "boolean", value
     if isinstance(value, str):
@@ -42,6 +53,15 @@ def _typed_value(value: Any) -> tuple[str, Any]:
 
 
 def _scalar_clause(key: str, value: Any) -> tuple[str, list[Any]]:
+    """执行 `scalar_clause` 操作。
+
+    Args:
+        key: 参数 key（str）。
+        value: 参数 value（Any）。
+
+    Returns:
+        返回 tuple[str, list[Any]]。
+    """
     type_name, parameter = _typed_value(value)
     return (
         f"metadata @> jsonb_build_object(%s::text, to_jsonb(%s::{type_name}))",
@@ -50,6 +70,15 @@ def _scalar_clause(key: str, value: Any) -> tuple[str, list[Any]]:
 
 
 def _array_contains_clause(key: str, value: Any) -> tuple[str, list[Any]]:
+    """执行 `array_contains_clause` 操作。
+
+    Args:
+        key: 参数 key（str）。
+        value: 参数 value（Any）。
+
+    Returns:
+        返回 tuple[str, list[Any]]。
+    """
     type_name, parameter = _typed_value(value)
     return (
         "(jsonb_typeof(metadata->%s) = 'array' AND "
@@ -125,6 +154,17 @@ def pg_scope_clause(scope: Scope, *, exact: bool) -> tuple[str, list[str]]:
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
+    """执行 `version_tuple` 操作。
+
+    Args:
+        version: 参数 version（str）。
+
+    Returns:
+        返回 tuple[int, ...]。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     match = re.match(r"^\s*(\d+(?:\.\d+)*)", version)
     if match is None:
         raise ValidationError(f"无法解析 pgvector 扩展版本：{version!r}")
@@ -155,6 +195,23 @@ class PgStoreBase:
         config_namespace: str = "kv_store",
         config_dsn_field: str = "dsn",
     ) -> None:
+        """初始化 PgStoreBase。
+
+        Args:
+            dsn: 参数 dsn（str）。
+            schema: 参数 schema（str）。
+            table: 参数 table（str）。
+            pool_min_size: 参数 pool_min_size（int）。
+            pool_max_size: 参数 pool_max_size（int）。
+            connect_timeout: 参数 connect_timeout（float）。
+            application_name: 参数 application_name（str）。
+            auto_create_schema: 参数 auto_create_schema（bool）。
+            ssl_verify: 参数 ssl_verify（bool）。
+            ssl_ca_cert: 参数 ssl_ca_cert（str | None）。
+            config_source: 参数 config_source（Any）。
+            config_namespace: 参数 config_namespace（str）。
+            config_dsn_field: 参数 config_dsn_field（str）。
+        """
         self._fallback_dsn = dsn
         self._config_source = config_source
         self._config_namespace = config_namespace
@@ -176,6 +233,14 @@ class PgStoreBase:
 
     @property
     def pool(self) -> Any:
+        """返回 pool 属性。
+
+        Returns:
+            返回 Any。
+
+        Raises:
+            BackendError: 执行失败时抛出。
+        """
         dsn = self._resolved_dsn()
         if self._pool is not None and self._pool_dsn == dsn:
             return self._pool
@@ -231,22 +296,49 @@ class PgStoreBase:
 
     @property
     def sql(self) -> Any:
+        """返回 sql 属性。
+
+        Returns:
+            返回 Any。
+        """
         if self._sql is None:
             _ = self.pool
         return self._sql
 
     @property
     def jsonb(self) -> Any:
+        """返回 jsonb 属性。
+
+        Returns:
+            返回 Any。
+        """
         if self._jsonb is None:
             _ = self.pool
         return self._jsonb
 
     @staticmethod
     def _lock_schema(cursor: Any) -> None:
+        """执行 `lock_schema` 操作。
+
+        Args:
+            cursor: 参数 cursor（Any）。
+        """
         cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (_SCHEMA_LOCK_KEY,))
 
     @staticmethod
     def _require_vector_extension(cursor: Any, minimum: str = "0.8.0") -> str:
+        """校验并取得必需的资源或参数。
+
+        Args:
+            cursor: 参数 cursor（Any）。
+            minimum: 参数 minimum（str）。
+
+        Returns:
+            返回 str。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         cursor.execute("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
         row = cursor.fetchone()
         if row is None:
@@ -257,6 +349,7 @@ class PgStoreBase:
         return actual
 
     def close(self) -> None:
+        """关闭并释放相关资源。"""
         with self._init_lock:
             if self._pool is not None:
                 self._pool.close()
@@ -275,6 +368,7 @@ class PgStoreBase:
         return live or self._fallback_dsn
 
     def _close_pool_unlocked(self) -> None:
+        """执行 `close_pool_unlocked` 操作。"""
         if self._pool is None:
             return
         try:
@@ -286,14 +380,35 @@ class PgStoreBase:
         self._pool_dsn = None
 
     def _ensure_schema(self, pool: Any) -> None:
+        """确保所需资源或状态已就绪。
+
+        Args:
+            pool: 参数 pool（Any）。
+
+        Raises:
+            NotImplementedError: 执行失败时抛出。
+        """
         raise NotImplementedError
 
     def _qualified(self, name: str | None = None) -> Any:
+        """执行 `qualified` 操作。
+
+        Args:
+            name: 参数 name（str | None）。
+
+        Returns:
+            返回 Any。
+        """
         return self.sql.SQL(".").join(
             (self.sql.Identifier(self._schema), self.sql.Identifier(name or self._table))
         )
 
     def _create_schema(self, cursor: Any) -> None:
+        """创建并返回新的资源。
+
+        Args:
+            cursor: 参数 cursor（Any）。
+        """
         cursor.execute(
             self._sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
                 self._sql.Identifier(self._schema)
@@ -301,6 +416,14 @@ class PgStoreBase:
         )
 
     def _table_exists(self, cursor: Any) -> bool:
+        """执行 `table_exists` 操作。
+
+        Args:
+            cursor: 参数 cursor（Any）。
+
+        Returns:
+            返回 bool。
+        """
         cursor.execute(
             """
             SELECT EXISTS (
@@ -318,6 +441,14 @@ class PgStoreBase:
         return bool(row and row[0])
 
     def _require_table(self, cursor: Any) -> None:
+        """校验并取得必需的资源或参数。
+
+        Args:
+            cursor: 参数 cursor（Any）。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if not self._table_exists(cursor):
             raise ValidationError(
                 f"PostgreSQL 表不存在：{self._schema}.{self._table}；"
@@ -325,6 +456,11 @@ class PgStoreBase:
             )
 
     def _health(self) -> None:
+        """执行 `health` 操作。
+
+        Raises:
+            HealthCheckError: 执行失败时抛出。
+        """
         try:
             with self.pool.connection() as conn, conn.cursor() as cursor:
                 cursor.execute("SELECT 1")

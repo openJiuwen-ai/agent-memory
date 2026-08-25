@@ -31,12 +31,26 @@ class KeywordClassifier(Classifier):
     """关键词启发式分类：设定 tier，并追加一个主题标签。"""
 
     def operator_type(self) -> OperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 OperatorType。
+        """
         return OperatorType.CLASSIFIER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def classify(self, units: List[MemoryUnit]) -> List[MemoryUnit]:
+        """执行 `classify` 操作。
+
+        Args:
+            units: 参数 units（List[MemoryUnit]）。
+
+        Returns:
+            返回 List[MemoryUnit]。
+        """
         logger.info("KeywordClassifier: received %d units", len(units))
         for unit in units:
             old_tier = unit.tier.value
@@ -52,6 +66,14 @@ class KeywordClassifier(Classifier):
         return units
 
     def _tier(self, content: str) -> MemoryTier:
+        """执行 `tier` 操作。
+
+        Args:
+            content: 参数 content（str）。
+
+        Returns:
+            返回 MemoryTier。
+        """
         if any(w in content for w in _SEMANTIC):
             return MemoryTier.SEMANTIC
         if any(w in content for w in _PROCEDURAL):
@@ -59,6 +81,14 @@ class KeywordClassifier(Classifier):
         return MemoryTier.EPISODIC
 
     def _topic(self, content: str) -> str:
+        """执行 `topic` 操作。
+
+        Args:
+            content: 参数 content（str）。
+
+        Returns:
+            返回 str。
+        """
         for topic, words in _TOPIC.items():
             if any(w in content for w in words):
                 return topic
@@ -70,4 +100,9 @@ class KeywordClassifier(Classifier):
 
 @ClassifierProducer.register("keyword")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return KeywordClassifier()

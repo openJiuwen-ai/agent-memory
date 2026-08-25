@@ -137,6 +137,11 @@ def memory_evolve(tenant_id: str, scope: str, mode: str = "extract") -> dict:
 
 
 def main() -> int:
+    """执行程序入口逻辑。
+
+    Returns:
+        返回 int。
+    """
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
     if transport in ("http", "streamable-http"):
         mcp.run(transport="streamable-http")  # host/port 已在 FastMCP(...) 设好

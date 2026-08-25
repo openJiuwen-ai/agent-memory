@@ -16,12 +16,27 @@ class InMemoryAuditLogger(AuditLogger):
     """内存审计后端：记录全部事件，供治理 audit 按条件过滤查询。"""
 
     def __init__(self) -> None:
+        """初始化 InMemoryAuditLogger。"""
         self.events: List[AuditEvent] = []
 
     def record(self, event: AuditEvent) -> None:
+        """执行 `record` 操作。
+
+        Args:
+            event: 参数 event（AuditEvent）。
+        """
         self.events.append(event)
 
     def query(self, filters: dict[str, str], limit: int = 100) -> list[AuditEvent]:
+        """执行 `query` 操作。
+
+        Args:
+            filters: 参数 filters（dict[str, str]）。
+            limit: 参数 limit（int）。
+
+        Returns:
+            返回 list[AuditEvent]。
+        """
         out: list[AuditEvent] = []
         for event in self.events:
             if not _matches(event, filters):
@@ -37,10 +52,24 @@ class InMemoryAuditLogger(AuditLogger):
 
 @AuditProducer.register("in_memory")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return InMemoryAuditLogger()
 
 
 def _matches(event: AuditEvent, filters: dict[str, str]) -> bool:
+    """执行 `matches` 操作。
+
+    Args:
+        event: 参数 event（AuditEvent）。
+        filters: 参数 filters（dict[str, str]）。
+
+    Returns:
+        返回 bool。
+    """
     for field in ("action", "layer", "decision", "target_id"):
         if filters.get(field) and getattr(event, field) != filters[field]:
             return False
@@ -78,12 +107,28 @@ def _matches(event: AuditEvent, filters: dict[str, str]) -> bool:
 
 
 def _parse_datetime(raw: str | None) -> datetime | None:
+    """解析输入数据并返回结构化结果。
+
+    Args:
+        raw: 参数 raw（str | None）。
+
+    Returns:
+        返回 datetime | None。
+    """
     if not raw:
         return None
     return _as_utc(datetime.fromisoformat(raw))
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
+    """执行 `as_utc` 操作。
+
+    Args:
+        value: 参数 value（datetime | None）。
+
+    Returns:
+        返回 datetime | None。
+    """
     if value is None:
         return None
     if value.tzinfo is None:

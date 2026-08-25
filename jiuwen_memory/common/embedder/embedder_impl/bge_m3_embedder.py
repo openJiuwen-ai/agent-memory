@@ -63,6 +63,16 @@ class BGEM3Embedder(Embedder):
         max_length: int = 8192,
         normalize_embeddings: bool = True,
     ) -> None:
+        """初始化 BGEM3Embedder。
+
+        Args:
+            model_name_or_path: 参数 model_name_or_path（str）。
+            use_fp16: 参数 use_fp16（bool）。
+            dimension: 参数 dimension（int）。
+            max_batch_size: 参数 max_batch_size（int）。
+            max_length: 参数 max_length（int）。
+            normalize_embeddings: 参数 normalize_embeddings（bool）。
+        """
         self._model_name_or_path = model_name_or_path
         self._dimension = dimension
         self._max_batch_size = max_batch_size
@@ -72,9 +82,19 @@ class BGEM3Embedder(Embedder):
         self._model = None  # lazy load
 
     def plugin_type(self) -> PluginType:
+        """返回当前插件类型。
+
+        Returns:
+            返回 PluginType。
+        """
         return PluginType.EMBEDDER
 
     def health(self) -> None:
+        """执行健康检查。
+
+        Raises:
+            HealthCheckError: 执行失败时抛出。
+        """
         self._load_model()
         try:
             vectors = self._embed_batch(["health check"])
@@ -86,9 +106,22 @@ class BGEM3Embedder(Embedder):
             raise HealthCheckError(f"BGEM3Embedder health check failed: {exc}") from exc
 
     def dimension(self) -> int:
+        """返回当前向量维度。
+
+        Returns:
+            返回 int。
+        """
         return self._dimension
 
     def embed(self, texts: List[str]) -> List[List[float]]:
+        """将输入文本转换为向量。
+
+        Args:
+            texts: 参数 texts（List[str]）。
+
+        Returns:
+            返回 List[List[float]]。
+        """
         if not texts:
             return []
         self._load_model()
@@ -183,6 +216,14 @@ class BGEM3Embedder(Embedder):
     def _embed_batch(self, texts: List[str]) -> List[List[float]]:
         # normalize_embeddings 不传给底层 tokenizer（避免版本兼容问题），
         # 而在 encode 之后手动做 L2 归一化。
+        """执行 `embed_batch` 操作。
+
+        Args:
+            texts: 参数 texts（List[str]）。
+
+        Returns:
+            返回 List[List[float]]。
+        """
         result = self._model.encode(
             texts,
             return_dense=True,
@@ -206,6 +247,14 @@ class BGEM3Embedder(Embedder):
         return vectors
 
     def _split_batches(self, texts: List[str]) -> List[List[str]]:
+        """执行 `split_batches` 操作。
+
+        Args:
+            texts: 参数 texts（List[str]）。
+
+        Returns:
+            返回 List[List[str]]。
+        """
         batches = []
         for i in range(0, len(texts), self._max_batch_size):
             batch_end = i + self._max_batch_size

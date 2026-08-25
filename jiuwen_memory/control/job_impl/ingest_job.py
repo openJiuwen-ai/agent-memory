@@ -54,6 +54,16 @@ class InProcessIngestJobController(IngestJobController):
         max_pending_jobs: int = 2,
         kv: KVStore | None = None,
     ) -> None:
+        """初始化 InProcessIngestJobController。
+
+        Args:
+            max_workers: 参数 max_workers（int）。
+            max_pending_jobs: 参数 max_pending_jobs（int）。
+            kv: 参数 kv（KVStore | None）。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if max_workers <= 0:
             raise ValidationError("max_workers must be greater than zero")
         if max_pending_jobs < 0:
@@ -68,9 +78,15 @@ class InProcessIngestJobController(IngestJobController):
         self._closed = False
 
     def operator_type(self) -> ControlOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 ControlOperatorType。
+        """
         return ControlOperatorType.INGEST_JOB
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def submit(
@@ -81,6 +97,21 @@ class InProcessIngestJobController(IngestJobController):
         scope: Scope,
         task: IngestTask,
     ) -> IngestSubmission:
+        """执行 `submit` 操作。
+
+        Args:
+            payload_id: 参数 payload_id（str）。
+            source_ref: 参数 source_ref（str）。
+            scope: 参数 scope（Scope）。
+            task: 参数 task（IngestTask）。
+
+        Returns:
+            返回 IngestSubmission。
+
+        Raises:
+            BackendError: 执行失败时抛出。
+            ConflictError: 执行失败时抛出。
+        """
         key = _payload_key(scope, payload_id)
         now = datetime.now(timezone.utc)
         job = IngestJob(
@@ -142,6 +173,18 @@ class InProcessIngestJobController(IngestJobController):
         return IngestSubmission(job, reused=False)
 
     def status(self, job_id: str, *, scope: Scope) -> IngestJob:
+        """执行 `status` 操作。
+
+        Args:
+            job_id: 参数 job_id（str）。
+            scope: 参数 scope（Scope）。
+
+        Returns:
+            返回 IngestJob。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         with self._lock:
             job = self._jobs.get(job_id) or self._load(scope, job_id)
         if job is None or job.scope != scope:
@@ -149,6 +192,11 @@ class InProcessIngestJobController(IngestJobController):
         return job
 
     def close(self, *, wait: bool = True) -> None:
+        """关闭并释放相关资源。
+
+        Args:
+            wait: 参数 wait（bool）。
+        """
         with self._lock:
             if self._closed:
                 return
@@ -162,6 +210,16 @@ class InProcessIngestJobController(IngestJobController):
         payload_id: str,
         key: _PayloadKey,
     ) -> IngestJob | None:
+        """执行 `find_existing` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            payload_id: 参数 payload_id（str）。
+            key: 参数 key（_PayloadKey）。
+
+        Returns:
+            返回 IngestJob | None。
+        """
         job_id = self._job_id_by_payload.get(key)
         existing = self._jobs.get(job_id or "")
         if existing is None and self._kv is not None:
@@ -177,6 +235,12 @@ class InProcessIngestJobController(IngestJobController):
         return existing
 
     def _run(self, job_id: str, task: IngestTask) -> None:
+        """执行 `run` 操作。
+
+        Args:
+            job_id: 参数 job_id（str）。
+            task: 参数 task（IngestTask）。
+        """
         self._update(job_id, status="running")
         try:
             units = task()
@@ -198,6 +262,14 @@ class InProcessIngestJobController(IngestJobController):
         unit_ids: tuple[str, ...] = (),
         error: str = "",
     ) -> None:
+        """更新已有记忆或业务记录。
+
+        Args:
+            job_id: 参数 job_id（str）。
+            status: 参数 status（str）。
+            unit_ids: 参数 unit_ids（tuple[str, ...]）。
+            error: 参数 error（str）。
+        """
         with self._lock:
             current = self._jobs[job_id]
             updated = replace(
@@ -211,6 +283,11 @@ class InProcessIngestJobController(IngestJobController):
             self._persist(updated)
 
     def _persist(self, job: IngestJob) -> None:
+        """执行 `persist` 操作。
+
+        Args:
+            job: 参数 job（IngestJob）。
+        """
         if self._kv is None:
             return
         value = json.dumps(
@@ -240,6 +317,18 @@ class InProcessIngestJobController(IngestJobController):
             self._kv.insert(job.scope, payload_key, payload_value)
 
     def _load(self, scope: Scope, job_id: str) -> IngestJob | None:
+        """加载并解析输入数据。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            job_id: 参数 job_id（str）。
+
+        Returns:
+            返回 IngestJob | None。
+
+        Raises:
+            BackendError: 执行失败时抛出。
+        """
         if self._kv is None or not self._kv.exists(scope, _job_storage_key(job_id)):
             return None
         try:
@@ -271,6 +360,15 @@ class InProcessIngestJobController(IngestJobController):
 
 
 def _payload_key(scope: Scope, payload_id: str) -> _PayloadKey:
+    """执行 `payload_key` 操作。
+
+    Args:
+        scope: 参数 scope（Scope）。
+        payload_id: 参数 payload_id（str）。
+
+    Returns:
+        返回 _PayloadKey。
+    """
     return _PayloadKey(
         org=scope.org,
         space=scope.space,
@@ -282,15 +380,36 @@ def _payload_key(scope: Scope, payload_id: str) -> _PayloadKey:
 
 
 def _job_storage_key(job_id: str) -> str:
+    """执行 `job_storage_key` 操作。
+
+    Args:
+        job_id: 参数 job_id（str）。
+
+    Returns:
+        返回 str。
+    """
     return f"{_JOB_KEY_PREFIX}{job_id}"
 
 
 def _payload_storage_key(payload_id: str) -> str:
+    """执行 `payload_storage_key` 操作。
+
+    Args:
+        payload_id: 参数 payload_id（str）。
+
+    Returns:
+        返回 str。
+    """
     return f"{_PAYLOAD_KEY_PREFIX}{payload_id}"
 
 
 @IngestJobProducer.register("in_process")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return InProcessIngestJobController(
         max_workers=int(config.get("ingest_max_workers", 1)),
         max_pending_jobs=int(config.get("ingest_max_pending_jobs", 2)),

@@ -29,6 +29,12 @@ class KeywordLayerAnnotator(LayerAnnotator):
     """规则版分层标注：前 N 字 + 首句，不调 LLM。"""
 
     def __init__(self, *, layers_threshold: int = 512, l1_chars: int = _L1_DEFAULT_CHARS) -> None:
+        """初始化 KeywordLayerAnnotator。
+
+        Args:
+            layers_threshold: 参数 layers_threshold（int）。
+            l1_chars: 参数 l1_chars（int）。
+        """
         super().__init__(layers_threshold=layers_threshold)
         self._l1_chars = l1_chars
 
@@ -51,9 +57,18 @@ class KeywordLayerAnnotator(LayerAnnotator):
         return content[:80].strip()
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def annotate(self, units: List[MemoryUnit]) -> List[MemoryUnit]:
+        """执行 `annotate` 操作。
+
+        Args:
+            units: 参数 units（List[MemoryUnit]）。
+
+        Returns:
+            返回 List[MemoryUnit]。
+        """
         logger.info("KeywordLayerAnnotator: received %d units", len(units))
         annotated = 0
         for unit in units:
@@ -92,6 +107,11 @@ class KeywordLayerAnnotator(LayerAnnotator):
 
 @LayerAnnotatorProducer.register("keyword")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return KeywordLayerAnnotator(
         layers_threshold=config.get("layer_annotator_threshold", 512),
         l1_chars=config.get("layer_annotator_l1_chars", _L1_DEFAULT_CHARS),

@@ -32,19 +32,44 @@ class HashingEmbedder(Embedder):
     """哈希词袋 + L2 归一化的确定性向量化器。"""
 
     def __init__(self, tokenizer: Tokenizer, dim: int = 64) -> None:
+        """初始化 HashingEmbedder。
+
+        Args:
+            tokenizer: 参数 tokenizer（Tokenizer）。
+            dim: 参数 dim（int）。
+        """
         self._tokenizer = tokenizer
         self._dim = dim
 
     def plugin_type(self) -> PluginType:
+        """返回当前插件类型。
+
+        Returns:
+            返回 PluginType。
+        """
         return PluginType.EMBEDDER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def dimension(self) -> int:
+        """返回当前向量维度。
+
+        Returns:
+            返回 int。
+        """
         return self._dim
 
     def embed(self, texts: List[str]) -> List[List[float]]:
+        """将输入文本转换为向量。
+
+        Args:
+            texts: 参数 texts（List[str]）。
+
+        Returns:
+            返回 List[List[float]]。
+        """
         logger.info("HashingEmbedder: embedding %d texts (dim=%d)", len(texts), self._dim)
         out: List[List[float]] = []
         for text in texts:
@@ -65,5 +90,10 @@ class HashingEmbedder(Embedder):
 @EmbedderProducer.register("hashing")
 def _build(config):
     # Tokenizer 经 TokenizerProducer 自取（缺省 whitespace），与索引/查询侧共享同一实例 → 同词表。
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     tokenizer = TokenizerProducer.dep(config, default="whitespace")
     return HashingEmbedder(tokenizer, dim=config.get("embedder_dim", 64))

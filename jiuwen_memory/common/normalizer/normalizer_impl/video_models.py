@@ -6,6 +6,17 @@ from uuid import UUID
 
 
 def _ensure_float_list(values: list[float]) -> list[float]:
+    """确保所需资源或状态已就绪。
+
+    Args:
+        values: 参数 values（list[float]）。
+
+    Returns:
+        返回 list[float]。
+
+    Raises:
+        TypeError: 执行失败时抛出。
+    """
     if not isinstance(values, list):
         raise TypeError("embedding must be a list of floats")
     out: list[float] = []
@@ -18,6 +29,18 @@ def _ensure_float_list(values: list[float]) -> list[float]:
 
 
 def _ensure_time_tuple(tp: tuple[float, float]) -> tuple[float, float]:
+    """确保所需资源或状态已就绪。
+
+    Args:
+        tp: 参数 tp（tuple[float, float]）。
+
+    Returns:
+        返回 tuple[float, float]。
+
+    Raises:
+        TypeError: 执行失败时抛出。
+        ValueError: 执行失败时抛出。
+    """
     if not (isinstance(tp, (list, tuple)) and len(tp) == 2):
         raise TypeError("time range/span must be a tuple/list of two numbers")
     start, end = tp
@@ -49,6 +72,11 @@ class ShortTermMemory:
     inferred_intent: str = ""
 
     def __post_init__(self) -> None:
+        """执行 `post_init` 操作。
+
+        Raises:
+            TypeError: 执行失败时抛出。
+        """
         if not isinstance(self.id, UUID):
             raise TypeError("id must be a UUID")
         if not isinstance(self.video_source_path, str) or not self.video_source_path:
@@ -67,10 +95,20 @@ class ShortTermMemory:
             raise TypeError("environment must be a string")
 
     def duration(self) -> float:
+        """执行 `duration` 操作。
+
+        Returns:
+            返回 float。
+        """
         start, end = self.time_range
         return float(end - start)
 
     def to_dict(self) -> dict[str, Any]:
+        """执行 `to_dict` 操作。
+
+        Returns:
+            返回 dict[str, Any]。
+        """
         return {
             "id": str(self.id),
             "video_source_path": self.video_source_path,
@@ -84,6 +122,14 @@ class ShortTermMemory:
 
     @staticmethod
     def from_dict(d: dict[str, Any]) -> ShortTermMemory:
+        """执行 `from_dict` 操作。
+
+        Args:
+            d: 参数 d（dict[str, Any]）。
+
+        Returns:
+            返回 ShortTermMemory。
+        """
         return ShortTermMemory(
             id=UUID(d["id"]) if not isinstance(d.get("id"), UUID) else d["id"],
             video_source_path=d["video_source_path"],
@@ -114,6 +160,11 @@ class MediumTermMemory:
     semantic_inference: str = ""
 
     def __post_init__(self) -> None:
+        """执行 `post_init` 操作。
+
+        Raises:
+            TypeError: 执行失败时抛出。
+        """
         if not isinstance(self.task_id, UUID):
             raise TypeError("task_id must be a UUID")
         if not isinstance(self.topic, str) or not self.topic:
@@ -132,15 +183,33 @@ class MediumTermMemory:
         self.embedding = _ensure_float_list(self.embedding)
 
     def duration(self) -> float:
+        """执行 `duration` 操作。
+
+        Returns:
+            返回 float。
+        """
         start, end = self.time_span
         return float(end - start)
 
     def add_child_clip(self, clip_id: UUID) -> None:
+        """执行 `add_child_clip` 操作。
+
+        Args:
+            clip_id: 参数 clip_id（UUID）。
+
+        Raises:
+            TypeError: 执行失败时抛出。
+        """
         if not isinstance(clip_id, UUID):
             raise TypeError("clip_id must be a UUID")
         self.child_clip_ids.append(clip_id)
 
     def to_dict(self) -> dict[str, Any]:
+        """执行 `to_dict` 操作。
+
+        Returns:
+            返回 dict[str, Any]。
+        """
         return {
             "task_id": str(self.task_id),
             "topic": self.topic,
@@ -153,6 +222,14 @@ class MediumTermMemory:
 
     @staticmethod
     def from_dict(d: dict[str, Any]) -> MediumTermMemory:
+        """执行 `from_dict` 操作。
+
+        Args:
+            d: 参数 d（dict[str, Any]）。
+
+        Returns:
+            返回 MediumTermMemory。
+        """
         return MediumTermMemory(
             task_id=UUID(d["task_id"])
             if not isinstance(d.get("task_id"), UUID)

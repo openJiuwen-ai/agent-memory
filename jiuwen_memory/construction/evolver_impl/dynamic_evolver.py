@@ -83,6 +83,13 @@ class DynamicEvolver(OrchestratingEvolver):
         prompt_registry: PromptRegistry | None = None,
         **kwargs,
     ) -> None:
+        """初始化 DynamicEvolver。
+
+        Args:
+            prompt_registry: 参数 prompt_registry（PromptRegistry | None）。
+            *args: 参数 args。
+            **kwargs: 参数 kwargs。
+        """
         super().__init__(*args, **kwargs)
         self._prompts = prompt_registry or PromptRegistry()
 
@@ -114,6 +121,15 @@ class DynamicEvolver(OrchestratingEvolver):
         units: List[MemoryUnit],
         context: Optional[ExtractContext],
     ) -> List[MemoryUnit]:
+        """执行 `extract_step` 操作。
+
+        Args:
+            units: 参数 units（List[MemoryUnit]）。
+            context: 参数 context（Optional[ExtractContext]）。
+
+        Returns:
+            返回 List[MemoryUnit]。
+        """
         extracted = self._extractor.extract(units, context=context)
         logger.info("DynamicEvolver: EXTRACT extractor returned %d units", len(extracted))
         if not extracted:
@@ -131,6 +147,14 @@ class DynamicEvolver(OrchestratingEvolver):
         self,
         candidates: List[MemoryUnit],
     ) -> List[ConsolidateDecision]:
+        """执行 `consolidate_step` 操作。
+
+        Args:
+            candidates: 参数 candidates（List[MemoryUnit]）。
+
+        Returns:
+            返回 List[ConsolidateDecision]。
+        """
         decisions: List[ConsolidateDecision] = []
         for candidate in candidates:
             try:
@@ -158,6 +182,15 @@ class DynamicEvolver(OrchestratingEvolver):
         candidate: MemoryUnit,
         hits: List[Tuple[MemoryUnit, float]],
     ) -> Tuple[DedupDecision, Optional[MemoryUnit], float]:
+        """执行 `judge` 操作。
+
+        Args:
+            candidate: 参数 candidate（MemoryUnit）。
+            hits: 参数 hits（List[Tuple[MemoryUnit, float]]）。
+
+        Returns:
+            返回 Tuple[DedupDecision, Optional[MemoryUnit], float]。
+        """
         if not hits:
             return DedupDecision.ADD, None, 0.0
         existing, score = max(hits, key=lambda item: item[1])
@@ -181,6 +214,14 @@ class DynamicEvolver(OrchestratingEvolver):
             return DedupDecision.ADD, existing, score
 
     def _resolve_consolidate_prompt(self, candidate: MemoryUnit) -> Optional[str]:
+        """解析并返回目标配置或资源。
+
+        Args:
+            candidate: 参数 candidate（MemoryUnit）。
+
+        Returns:
+            返回 Optional[str]。
+        """
         prompts = parse_prompt_strategies(
             candidate.system_metadata, CONSOLIDATION_PROMPT_PREFIX
         )
@@ -202,6 +243,19 @@ class DynamicEvolver(OrchestratingEvolver):
         hits: List[Tuple[MemoryUnit, float]],
         prompt: str,
     ) -> Tuple[DedupDecision, Optional[MemoryUnit], float]:
+        """执行 `llm_judge` 操作。
+
+        Args:
+            candidate: 参数 candidate（MemoryUnit）。
+            hits: 参数 hits（List[Tuple[MemoryUnit, float]]）。
+            prompt: 参数 prompt（str）。
+
+        Returns:
+            返回 Tuple[DedupDecision, Optional[MemoryUnit], float]。
+
+        Raises:
+            ValueError: 执行失败时抛出。
+        """
         hit_map = {unit.id: (unit, score) for unit, score in hits[:5]}
         existing_text = "\n\n".join(
             f"[Memory ID: {unit.id}]\nContent: {unit.content}\n"
@@ -239,6 +293,15 @@ class DynamicEvolver(OrchestratingEvolver):
         candidates: List[MemoryUnit],
         decisions: List[ConsolidateDecision],
     ) -> List[MemoryUnit]:
+        """执行 `reflect_step` 操作。
+
+        Args:
+            candidates: 参数 candidates（List[MemoryUnit]）。
+            decisions: 参数 decisions（List[ConsolidateDecision]）。
+
+        Returns:
+            返回 List[MemoryUnit]。
+        """
         return candidates
 
     # ------------------------------------------------------------------
@@ -250,6 +313,15 @@ class DynamicEvolver(OrchestratingEvolver):
         candidates: List[MemoryUnit],
         decisions: List[ConsolidateDecision],
     ) -> EvolveResult:
+        """执行 `persist_decisions` 操作。
+
+        Args:
+            candidates: 参数 candidates（List[MemoryUnit]）。
+            decisions: 参数 decisions（List[ConsolidateDecision]）。
+
+        Returns:
+            返回 EvolveResult。
+        """
         result = EvolveResult()
         for decision in decisions:
             self._apply_decision(
@@ -322,6 +394,15 @@ class DynamicEvolver(OrchestratingEvolver):
         return 0
 
     def _merge_content(self, old: MemoryUnit, new: MemoryUnit) -> str:
+        """执行 `merge_content` 操作。
+
+        Args:
+            old: 参数 old（MemoryUnit）。
+            new: 参数 new（MemoryUnit）。
+
+        Returns:
+            返回 str。
+        """
         user_prompt = f"Old:\n{old.content}\n\nNew:\n{new.content}"
         messages = [
             ChatMessage(
@@ -341,6 +422,17 @@ class DynamicEvolver(OrchestratingEvolver):
 
 
 def _parse_object(response: str) -> dict:
+    """解析输入数据并返回结构化结果。
+
+    Args:
+        response: 参数 response（str）。
+
+    Returns:
+        返回 dict。
+
+    Raises:
+        ValueError: 执行失败时抛出。
+    """
     try:
         payload = json.loads(response.strip())
     except json.JSONDecodeError:
@@ -365,6 +457,7 @@ def _build(config):
     dr_default = "vector" if vector_on else "keyword"
 
     def _opt_annotator():
+        """执行 `opt_annotator` 操作。"""
         from jiuwen_memory.construction.layer_annotator import LayerAnnotatorProducer
 
         ctx = config.ctx

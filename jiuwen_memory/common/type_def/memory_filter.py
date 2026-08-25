@@ -9,10 +9,24 @@ from .memory import T_EVENT_UNKNOWN, T_INVALID_OPEN, MemoryUnit
 
 
 def _epoch_ms(value: datetime | None) -> int | None:
+    """执行 `epoch_ms` 操作。
+
+    Args:
+        value: 参数 value（datetime | None）。
+
+    Returns:
+        返回 int | None。
+    """
     return None if value is None else int(value.timestamp() * 1000)
 
 
 def _field_value(unit: MemoryUnit, field: str):
+    """执行 `field_value` 操作。
+
+    Args:
+        unit: 参数 unit（MemoryUnit）。
+        field: 参数 field（str）。
+    """
     if field == "tags":
         return unit.tags
     if field == "tier":
@@ -45,6 +59,15 @@ def _field_value(unit: MemoryUnit, field: str):
 
 
 def _matches_clause(unit: MemoryUnit, clause: FilterClause) -> bool:
+    """执行 `matches_clause` 操作。
+
+    Args:
+        unit: 参数 unit（MemoryUnit）。
+        clause: 参数 clause（FilterClause）。
+
+    Returns:
+        返回 bool。
+    """
     value = _field_value(unit, clause.field)
     op, target = clause.op, clause.value
 

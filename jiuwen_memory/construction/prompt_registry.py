@@ -39,6 +39,12 @@ class PromptRegistry:
         config_source: ConfigSource | None = None,
     ) -> None:
         # 深拷贝避免外部改动影响注册表；value 统一转 str
+        """初始化 PromptRegistry。
+
+        Args:
+            prompts: 参数 prompts（Mapping[str, Mapping[str, str]] | None）。
+            config_source: 参数 config_source（ConfigSource | None）。
+        """
         self._prompts: dict[str, dict[str, str]] = {}
         for phase, items in (prompts or {}).items():
             self._prompts[str(phase)] = {

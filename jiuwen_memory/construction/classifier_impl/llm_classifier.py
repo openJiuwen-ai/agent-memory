@@ -104,12 +104,27 @@ class LLMClassifier(Classifier):
         retry_max_retries: int = 3,
         retry_backoff_ms: int = 1000,
     ) -> None:
+        """初始化 LLMClassifier。
+
+        Args:
+            llm: 参数 llm（LLM）。
+            retry_max_retries: 参数 retry_max_retries（int）。
+            retry_backoff_ms: 参数 retry_backoff_ms（int）。
+        """
         self._llm = llm
         self._retry_max_retries = retry_max_retries
         self._retry_backoff_ms = retry_backoff_ms
 
     @staticmethod
     def _strip_non_json(text: str) -> str:
+        """执行 `strip_non_json` 操作。
+
+        Args:
+            text: 参数 text（str）。
+
+        Returns:
+            返回 str。
+        """
         s = text.strip()
         if s.startswith("```"):
             lines = s.split("\n")
@@ -121,9 +136,19 @@ class LLMClassifier(Classifier):
         return s.strip()
 
     def operator_type(self) -> OperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 OperatorType。
+        """
         return OperatorType.CLASSIFIER
 
     def health(self) -> None:
+        """执行健康检查。
+
+        Raises:
+            HealthCheckError: 执行失败时抛出。
+        """
         try:
             self._llm.health()
         except Exception as exc:
@@ -201,6 +226,18 @@ class LLMClassifier(Classifier):
         )
 
     def _call_llm_with_retry(self, messages: list) -> str:
+        """执行 `call_llm_with_retry` 操作。
+
+        Args:
+            messages: 参数 messages（list）。
+
+        Returns:
+            返回 str。
+
+        Raises:
+            last_exc: 执行失败时抛出。
+            RuntimeError: 执行失败时抛出。
+        """
         import time
 
         last_exc = None
@@ -251,6 +288,11 @@ class LLMClassifier(Classifier):
 
 @ClassifierProducer.register("llm")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return LLMClassifier(
         llm=LlmProducer.dep(config, default="echo"),
         retry_max_retries=config.get("classifier_retry_max", 3),

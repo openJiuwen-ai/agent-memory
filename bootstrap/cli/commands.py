@@ -50,6 +50,11 @@ def add_identity_args(p) -> None:
 
 
 def add_output_args(p) -> None:
+    """执行 `add_output_args` 操作。
+
+    Args:
+        p: 参数 p。
+    """
     p.add_argument("-o", "--output", choices=["json", "text", "table", "quiet"],
                    help="output format (default: json)")
     p.add_argument("--json", "--agent", dest="json", action="store_true",
@@ -130,6 +135,11 @@ def _resolve_content(args) -> str:
 # --- per-verb argument + payload builders ---------------------------------
 
 def _args_add(p) -> None:
+    """执行 `args_add` 操作。
+
+    Args:
+        p: 参数 p。
+    """
     add_identity_args(p)
     p.add_argument("text", nargs="?", help="memory text (Mem0-style positional)")
     p.add_argument("-c", "--content", help="memory text (alias of the positional)")
@@ -143,6 +153,14 @@ def _args_add(p) -> None:
 
 
 def _payload_add(args) -> dict[str, Any]:
+    """执行 `payload_add` 操作。
+
+    Args:
+        args: 参数 args。
+
+    Returns:
+        返回 dict[str, Any]。
+    """
     payload = triple(args)
     payload.update(content=_resolve_content(args), owner_ref=args.owner_ref, modality=args.modality)
     tags = _tags(args.tags if args.tags is not None else args.categories)
@@ -152,6 +170,11 @@ def _payload_add(args) -> dict[str, Any]:
 
 
 def _args_search(p) -> None:
+    """执行 `args_search` 操作。
+
+    Args:
+        p: 参数 p。
+    """
     add_identity_args(p)
     p.add_argument("query_pos", nargs="?", metavar="query", help="query text (positional)")
     p.add_argument("-q", "--query", help="query text (alias of the positional)")
@@ -163,6 +186,17 @@ def _args_search(p) -> None:
 
 
 def _payload_search(args) -> dict[str, Any]:
+    """执行 `payload_search` 操作。
+
+    Args:
+        args: 参数 args。
+
+    Returns:
+        返回 dict[str, Any]。
+
+    Raises:
+        CliError: 执行失败时抛出。
+    """
     query = args.query or args.query_pos
     if not query:
         raise CliError("a query is required — give it positionally or with --query")
@@ -177,15 +211,39 @@ def _payload_search(args) -> dict[str, Any]:
 
 
 def _args_list(p) -> None:
+    """执行 `args_list` 操作。
+
+    Args:
+        p: 参数 p。
+    """
     add_identity_args(p)
     add_output_args(p)
 
 
 def _payload_list(args) -> dict[str, Any]:
+    """执行 `payload_list` 操作。
+
+    Args:
+        args: 参数 args。
+
+    Returns:
+        返回 dict[str, Any]。
+    """
     return triple(args)
 
 
 def _id_arg(args) -> str:
+    """执行 `id_arg` 操作。
+
+    Args:
+        args: 参数 args。
+
+    Returns:
+        返回 str。
+
+    Raises:
+        CliError: 执行失败时抛出。
+    """
     item_id = getattr(args, "item_id", None) or getattr(args, "id_pos", None)
     if not item_id:
         raise CliError("a memory id is required — give it positionally or with --item-id")
@@ -193,6 +251,11 @@ def _id_arg(args) -> str:
 
 
 def _args_get(p) -> None:
+    """执行 `args_get` 操作。
+
+    Args:
+        p: 参数 p。
+    """
     add_identity_args(p)
     p.add_argument("id_pos", nargs="?", metavar="memory-id", help="lifecycle id (positional)")
     p.add_argument("--item-id", dest="item_id", help="alias of the positional id")
@@ -200,10 +263,23 @@ def _args_get(p) -> None:
 
 
 def _payload_get(args) -> dict[str, Any]:
+    """执行 `payload_get` 操作。
+
+    Args:
+        args: 参数 args。
+
+    Returns:
+        返回 dict[str, Any]。
+    """
     return {**triple(args), "item_id": _id_arg(args)}
 
 
 def _args_update(p) -> None:
+    """执行 `args_update` 操作。
+
+    Args:
+        p: 参数 p。
+    """
     add_identity_args(p)
     p.add_argument("id_pos", nargs="?", metavar="memory-id", help="lifecycle id (positional)")
     p.add_argument("text", nargs="?", help="new content (Mem0-style positional)")
@@ -215,6 +291,14 @@ def _args_update(p) -> None:
 
 
 def _payload_update(args) -> dict[str, Any]:
+    """执行 `payload_update` 操作。
+
+    Args:
+        args: 参数 args。
+
+    Returns:
+        返回 dict[str, Any]。
+    """
     payload = {**triple(args), "item_id": _id_arg(args)}
     content = args.content if args.content is not None else args.text
     if content is not None:
@@ -226,6 +310,11 @@ def _payload_update(args) -> dict[str, Any]:
 
 
 def _args_delete(p) -> None:
+    """执行 `args_delete` 操作。
+
+    Args:
+        p: 参数 p。
+    """
     add_identity_args(p)
     p.add_argument("id_pos", nargs="?", metavar="memory-id", help="lifecycle id (positional)")
     p.add_argument("--item-id", dest="item_id", help="alias of the positional id")
@@ -241,6 +330,14 @@ def _args_delete(p) -> None:
 
 
 def _payload_delete(args) -> dict[str, Any]:
+    """执行 `payload_delete` 操作。
+
+    Args:
+        args: 参数 args。
+
+    Returns:
+        返回 dict[str, Any]。
+    """
     return {
         **triple(args),
         "item_id": _id_arg(args),
@@ -267,6 +364,16 @@ COMMANDS: dict[str, Command] = {
 # --- execution ------------------------------------------------------------
 
 def run_command(client, name: str, args) -> int:
+    """执行 `run_command` 操作。
+
+    Args:
+        client: 参数 client。
+        name: 参数 name（str）。
+        args: 参数 args。
+
+    Returns:
+        返回 int。
+    """
     cmd = COMMANDS[name]
 
     # Mem0 `delete --all`: our engine has only per-item delete, so fan out over a
@@ -285,6 +392,15 @@ def run_command(client, name: str, args) -> int:
 
 
 def _delete_all(client, args) -> int:
+    """删除指定的记忆或业务记录。
+
+    Args:
+        client: 参数 client。
+        args: 参数 args。
+
+    Returns:
+        返回 int。
+    """
     t = triple(args)
     status, body = client.call("list", t)
     if status != 200:
@@ -303,6 +419,15 @@ def _delete_all(client, args) -> int:
 
 
 def run_health(client, args) -> int:
+    """执行 `run_health` 操作。
+
+    Args:
+        client: 参数 client。
+        args: 参数 args。
+
+    Returns:
+        返回 int。
+    """
     status, body = client.healthz()
     return emit(status, body, args)
 
@@ -337,16 +462,45 @@ def run_batch(client, args) -> int:
 # --- output ---------------------------------------------------------------
 
 def _resolve_format(args) -> str:
+    """解析并返回目标配置或资源。
+
+    Args:
+        args: 参数 args。
+
+    Returns:
+        返回 str。
+    """
     if getattr(args, "json", False):
         return "json"
     return getattr(args, "output", None) or "json"
 
 
 def emit(status: int, body: dict[str, Any], args) -> int:
+    """输出格式化后的结果。
+
+    Args:
+        status: 参数 status（int）。
+        body: 参数 body（dict[str, Any]）。
+        args: 参数 args。
+
+    Returns:
+        返回 int。
+    """
     return _write(status, body, _resolve_format(args), pretty=getattr(args, "pretty", False))
 
 
 def _write(status: int, body: dict[str, Any], fmt: str, pretty: bool) -> int:
+    """写入指定的数据或资源。
+
+    Args:
+        status: 参数 status（int）。
+        body: 参数 body（dict[str, Any]）。
+        fmt: 参数 fmt（str）。
+        pretty: 参数 pretty（bool）。
+
+    Returns:
+        返回 int。
+    """
     ok = 200 <= status < 300
     stream = sys.stdout if ok else sys.stderr
     if fmt in ("text", "table"):
@@ -362,6 +516,14 @@ def _write(status: int, body: dict[str, Any], fmt: str, pretty: bool) -> int:
 
 
 def _render_text(body: dict[str, Any]) -> str:
+    """执行 `render_text` 操作。
+
+    Args:
+        body: 参数 body（dict[str, Any]）。
+
+    Returns:
+        返回 str。
+    """
     if "error" in body:
         return f"error: {body['error']}: {body.get('message', '')}"
     if "status" in body:  # healthz
@@ -396,6 +558,14 @@ def _render_text(body: dict[str, Any]) -> str:
 
 
 def _render_quiet(body: dict[str, Any]) -> str:
+    """执行 `render_quiet` 操作。
+
+    Args:
+        body: 参数 body（dict[str, Any]）。
+
+    Returns:
+        返回 str。
+    """
     if "error" in body:
         return ""
     if body.get("hits"):

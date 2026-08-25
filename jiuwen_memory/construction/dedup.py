@@ -57,6 +57,15 @@ class Dedup(ConstructionOperator):
         tier_filter: bool = False,
         scope_filter: bool = True,
     ) -> None:
+        """初始化 Dedup。
+
+        Args:
+            storage: 参数 storage（Storage）。
+            min_similarity: 参数 min_similarity（float）。
+            top_k: 参数 top_k（int）。
+            tier_filter: 参数 tier_filter（bool）。
+            scope_filter: 参数 scope_filter（bool）。
+        """
         self._storage = storage
         self._min_similarity = min_similarity
         self._top_k = top_k

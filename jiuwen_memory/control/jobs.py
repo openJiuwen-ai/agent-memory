@@ -58,6 +58,7 @@ class JobFactory:
 
     def __init__(self) -> None:
         # builder 签名：``builder(scope: Scope, **runtime_kwargs) -> Job``
+        """初始化 JobFactory。"""
         self._builders: dict[JobType, Callable[..., Job]] = {}
 
     def register(self, job_type: JobType, builder: Callable[..., Job]) -> None:

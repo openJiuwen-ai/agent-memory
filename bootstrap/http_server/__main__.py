@@ -55,16 +55,19 @@ class HttpServer(Server):
             httpd.server_close()
 
     def _handler_cls(self):
+        """执行 `handler_cls` 操作。"""
         srv = self
 
         class Handler(BaseHTTPRequestHandler):
             def handle_get(self) -> None:
+                """执行 `handle_get` 操作。"""
                 if self.path.rstrip("/") == "/healthz":
                     self._send(200, {"status": "ok", "profile": srv.config.profile})
                 else:
                     self._send(404, {"error": "NotFound", "message": self.path})
 
             def handle_post(self) -> None:
+                """执行 `handle_post` 操作。"""
                 if not self.path.startswith("/v1/"):
                     self._send(404, {"error": "NotFound", "message": self.path})
                     return
@@ -81,9 +84,20 @@ class HttpServer(Server):
                 self._send(status, body)
 
             def log_message(self, *args) -> None:  # quiet by default
+                """执行 `log_message` 操作。
+
+                Args:
+                    *args: 参数 args。
+                """
                 pass
 
             def _send(self, status: int, body: dict) -> None:
+                """执行 `send` 操作。
+
+                Args:
+                    status: 参数 status（int）。
+                    body: 参数 body（dict）。
+                """
                 data = json.dumps(body, ensure_ascii=False).encode("utf-8")
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -96,6 +110,12 @@ class HttpServer(Server):
         return Handler
 
     def serve(self, host: str, port: int) -> None:
+        """执行 `serve` 操作。
+
+        Args:
+            host: 参数 host（str）。
+            port: 参数 port（int）。
+        """
         httpd = ThreadingHTTPServer((host, port), self._handler_cls())
         logger.info(
             "agent-memory server (profile=%s) on http://%s:%s",
@@ -111,6 +131,14 @@ class HttpServer(Server):
 
 
 def main(argv: list[str] | None = None) -> int:
+    """执行程序入口逻辑。
+
+    Args:
+        argv: 参数 argv（list[str] | None）。
+
+    Returns:
+        返回 int。
+    """
     logging.basicConfig(
         level=logging.INFO,
         format="[%(asctime)s] %(name)s %(levelname)s %(message)s",

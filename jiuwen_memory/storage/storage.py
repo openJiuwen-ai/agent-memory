@@ -73,84 +73,224 @@ class Storage(ABC):
     @property
     @abstractmethod
     def security(self) -> StorageSecurity:
+        """返回 security 属性。
+
+        Returns:
+            返回 StorageSecurity。
+        """
         ...
 
     @property
     @abstractmethod
     def kv(self) -> KVStore:
+        """返回 kv 属性。
+
+        Returns:
+            返回 KVStore。
+        """
         ...
 
     @property
     @abstractmethod
     def vector(self) -> VectorStore:
+        """返回 vector 属性。
+
+        Returns:
+            返回 VectorStore。
+        """
         ...
 
     @property
     @abstractmethod
     def fulltext(self) -> FulltextStore:
+        """返回 fulltext 属性。
+
+        Returns:
+            返回 FulltextStore。
+        """
         ...
 
     @property
     @abstractmethod
     def graph(self) -> GraphStore:
+        """返回 graph 属性。
+
+        Returns:
+            返回 GraphStore。
+        """
         ...
 
     @property
     @abstractmethod
     def fusion(self) -> FusionStore:
+        """返回 fusion 属性。
+
+        Returns:
+            返回 FusionStore。
+        """
         ...
 
     @property
     @abstractmethod
     def fs(self) -> FSStore:
+        """返回 fs 属性。
+
+        Returns:
+            返回 FSStore。
+        """
         ...
 
     @abstractmethod
     def capabilities(self) -> frozenset[StorageCapability]:
+        """返回当前组件支持的能力集合。
+
+        Returns:
+            返回 frozenset[StorageCapability]。
+        """
         ...
 
     def has_kv(self) -> bool:
+        """执行 `has_kv` 操作。
+
+        Returns:
+            返回 bool。
+        """
         return StorageCapability.KV in self.capabilities()
 
     def has_vector(self) -> bool:
+        """执行 `has_vector` 操作。
+
+        Returns:
+            返回 bool。
+        """
         return StorageCapability.VECTOR in self.capabilities()
 
     def has_fulltext(self) -> bool:
+        """执行 `has_fulltext` 操作。
+
+        Returns:
+            返回 bool。
+        """
         return StorageCapability.FULLTEXT in self.capabilities()
 
     def has_graph(self) -> bool:
+        """执行 `has_graph` 操作。
+
+        Returns:
+            返回 bool。
+        """
         return StorageCapability.GRAPH in self.capabilities()
 
     def has_fusion(self) -> bool:
+        """执行 `has_fusion` 操作。
+
+        Returns:
+            返回 bool。
+        """
         return StorageCapability.FUSION in self.capabilities()
 
     def has_fs(self) -> bool:
+        """执行 `has_fs` 操作。
+
+        Returns:
+            返回 bool。
+        """
         return StorageCapability.FS in self.capabilities()
 
     def has_kv_port(self, name: str = "default") -> bool:
+        """执行 `has_kv_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 bool。
+        """
         return name == "default" and self.has_kv()
 
     def has_vector_port(self, name: str = "default") -> bool:
+        """执行 `has_vector_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 bool。
+        """
         return name == "default" and self.has_vector()
 
     def has_fulltext_port(self, name: str = "default") -> bool:
+        """执行 `has_fulltext_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 bool。
+        """
         return name == "default" and self.has_fulltext()
 
     def has_graph_port(self, name: str = "default") -> bool:
+        """执行 `has_graph_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 bool。
+        """
         return name == "default" and self.has_graph()
 
     def has_fusion_port(self, name: str = "default") -> bool:
+        """执行 `has_fusion_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 bool。
+        """
         return name == "default" and self.has_fusion()
 
     def has_fs_port(self, name: str = "default") -> bool:
+        """执行 `has_fs_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 bool。
+        """
         return name == "default" and self.has_fs()
 
     def kv_port(self, name: str = "default") -> KVStore:
+        """执行 `kv_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 KVStore。
+
+        Raises:
+            UnsupportedStorageCapabilityError: 执行失败时抛出。
+        """
         if name == "default":
             return self.kv
         raise UnsupportedStorageCapabilityError(f"storage capability is not available: kv.{name}")
 
     def vector_port(self, name: str = "default") -> VectorStore:
+        """执行 `vector_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 VectorStore。
+
+        Raises:
+            UnsupportedStorageCapabilityError: 执行失败时抛出。
+        """
         if name == "default":
             return self.vector
         raise UnsupportedStorageCapabilityError(
@@ -158,6 +298,17 @@ class Storage(ABC):
         )
 
     def fulltext_port(self, name: str = "default") -> FulltextStore:
+        """执行 `fulltext_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 FulltextStore。
+
+        Raises:
+            UnsupportedStorageCapabilityError: 执行失败时抛出。
+        """
         if name == "default":
             return self.fulltext
         raise UnsupportedStorageCapabilityError(
@@ -165,6 +316,17 @@ class Storage(ABC):
         )
 
     def graph_port(self, name: str = "default") -> GraphStore:
+        """执行 `graph_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 GraphStore。
+
+        Raises:
+            UnsupportedStorageCapabilityError: 执行失败时抛出。
+        """
         if name == "default":
             return self.graph
         raise UnsupportedStorageCapabilityError(
@@ -172,6 +334,17 @@ class Storage(ABC):
         )
 
     def fusion_port(self, name: str = "default") -> FusionStore:
+        """执行 `fusion_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 FusionStore。
+
+        Raises:
+            UnsupportedStorageCapabilityError: 执行失败时抛出。
+        """
         if name == "default":
             return self.fusion
         raise UnsupportedStorageCapabilityError(
@@ -179,12 +352,28 @@ class Storage(ABC):
         )
 
     def fs_port(self, name: str = "default") -> FSStore:
+        """执行 `fs_port` 操作。
+
+        Args:
+            name: 参数 name（str）。
+
+        Returns:
+            返回 FSStore。
+
+        Raises:
+            UnsupportedStorageCapabilityError: 执行失败时抛出。
+        """
         if name == "default":
             return self.fs
         raise UnsupportedStorageCapabilityError(f"storage capability is not available: fs.{name}")
 
     @abstractmethod
     def preferred_retrieval_pipeline(self) -> RetrievalPipeline:
+        """执行 `preferred_retrieval_pipeline` 操作。
+
+        Returns:
+            返回 RetrievalPipeline。
+        """
         ...
 
     @abstractmethod
@@ -252,6 +441,16 @@ class Storage(ABC):
         *,
         access: StorageAccessContext | None = None,
     ) -> list[MemoryUnit]:
+        """读取指定的记录或资源。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            unit_ids: 参数 unit_ids（list[str]）。
+            access: 参数 access（StorageAccessContext | None）。
+
+        Returns:
+            返回 list[MemoryUnit]。
+        """
         ...
 
     @abstractmethod
@@ -266,6 +465,20 @@ class Storage(ABC):
         extensions: dict[str, str] | None = None,
         access: StorageAccessContext | None = None,
     ) -> MemoryListResult:
+        """列出符合条件的记录或资源。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            offset: 参数 offset（int）。
+            limit: 参数 limit（int）。
+            memory_types: 参数 memory_types（list[str] | None）。
+            filters: 参数 filters（FilterExpr | None）。
+            extensions: 参数 extensions（dict[str, str] | None）。
+            access: 参数 access（StorageAccessContext | None）。
+
+        Returns:
+            返回 MemoryListResult。
+        """
         ...
 
     @abstractmethod
@@ -278,6 +491,18 @@ class Storage(ABC):
         recall_limit: int,
         access: StorageAccessContext | None = None,
     ) -> RecallResult[ScoredUnit]:
+        """召回与查询匹配的记忆结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（ParsedQuery）。
+            channels: 参数 channels（list[RecallChannel] | None）。
+            recall_limit: 参数 recall_limit（int）。
+            access: 参数 access（StorageAccessContext | None）。
+
+        Returns:
+            返回 RecallResult[ScoredUnit]。
+        """
         ...
 
     @abstractmethod
@@ -290,6 +515,18 @@ class Storage(ABC):
         recall_limit: int,
         access: StorageAccessContext | None = None,
     ) -> RecallResult[ScoredMemoryUnit]:
+        """执行 `recall_and_get` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（ParsedQuery）。
+            channels: 参数 channels（list[RecallChannel] | None）。
+            recall_limit: 参数 recall_limit（int）。
+            access: 参数 access（StorageAccessContext | None）。
+
+        Returns:
+            返回 RecallResult[ScoredMemoryUnit]。
+        """
         ...
 
     @abstractmethod
@@ -304,8 +541,23 @@ class Storage(ABC):
         rank_limit: int,
         access: StorageAccessContext | None = None,
     ) -> RankedStorageResult:
+        """执行完整检索流程并返回结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（ParsedQuery）。
+            fuser: 参数 fuser（CandidateFuser）。
+            channels: 参数 channels（list[RecallChannel] | None）。
+            recall_limit: 参数 recall_limit（int）。
+            rank_limit: 参数 rank_limit（int）。
+            access: 参数 access（StorageAccessContext | None）。
+
+        Returns:
+            返回 RankedStorageResult。
+        """
         ...
 
     @abstractmethod
     def health(self) -> None:
+        """执行健康检查。"""
         ...

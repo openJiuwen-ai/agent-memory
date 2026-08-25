@@ -23,12 +23,26 @@ class WhitespaceTokenizer(Tokenizer):
     """小写化分词：拉丁/数字成词、汉字逐字成元的极简分词器。"""
 
     def plugin_type(self) -> PluginType:
+        """返回当前插件类型。
+
+        Returns:
+            返回 PluginType。
+        """
         return PluginType.TOKENIZER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def tokenize(self, text: str) -> list[str]:
+        """执行 `tokenize` 操作。
+
+        Args:
+            text: 参数 text（str）。
+
+        Returns:
+            返回 list[str]。
+        """
         tokens = _TOKEN_RE.findall(text.lower())
         logger.info("WhitespaceTokenizer: tokenized %d chars into %d tokens", len(text), len(tokens))
         return tokens
@@ -39,4 +53,9 @@ class WhitespaceTokenizer(Tokenizer):
 
 @TokenizerProducer.register("whitespace")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return WhitespaceTokenizer()

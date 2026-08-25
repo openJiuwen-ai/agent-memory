@@ -137,6 +137,12 @@ class LockProvider(ABC):
         lease_ms: int = DEFAULT_LEASE_MS,
         wait_timeout_ms: int = DEFAULT_WAIT_TIMEOUT_MS,
     ) -> None:
+        """初始化 LockProvider。
+
+        Args:
+            lease_ms: 参数 lease_ms（int）。
+            wait_timeout_ms: 参数 wait_timeout_ms（int）。
+        """
         self._lease_ms = int(lease_ms)
         self._wait_timeout_ms = int(wait_timeout_ms)
         self._held: dict[str, _Holding] = {}

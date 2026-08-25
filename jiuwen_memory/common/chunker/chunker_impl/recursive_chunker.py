@@ -82,6 +82,11 @@ class RecursiveChunker(Chunker):
 
     @property
     def chunk_size(self) -> int:
+        """返回 chunk_size 属性。
+
+        Returns:
+            返回 int。
+        """
         return self._chunk_size
 
     @staticmethod
@@ -119,9 +124,15 @@ class RecursiveChunker(Chunker):
         return result
 
     def plugin_type(self) -> PluginType:
+        """返回当前插件类型。
+
+        Returns:
+            返回 PluginType。
+        """
         return PluginType.CHUNKER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def chunk(
@@ -315,6 +326,11 @@ class RecursiveChunker(Chunker):
 
 @ChunkerProducer.register("recursive")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     size = config.get("chunk_size", 512)
     return RecursiveChunker(
         chunk_size_chars=size,

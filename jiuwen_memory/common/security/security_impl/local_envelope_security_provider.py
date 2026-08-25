@@ -67,6 +67,15 @@ class _Envelope:
 
 
 def _private_file_opener(path: str, flags: int) -> int:
+    """执行 `private_file_opener` 操作。
+
+    Args:
+        path: 参数 path（str）。
+        flags: 参数 flags（int）。
+
+    Returns:
+        返回 int。
+    """
     return os.open(path, flags, 0o600)
 
 
@@ -84,6 +93,15 @@ class LocalKeyProvider:
         key_env: str = _DEFAULT_KEY_ENV,
         create_key_file: bool = False,
     ) -> None:
+        """初始化 LocalKeyProvider。
+
+        Args:
+            key_file: 参数 key_file（str）。
+            key_hex: 参数 key_hex（str）。
+            key_b64: 参数 key_b64（str）。
+            key_env: 参数 key_env（str）。
+            create_key_file: 参数 create_key_file（bool）。
+        """
         _ensure_crypto()
         self._key_file = Path(key_file).expanduser() if key_file else None
         self._key_hex = key_hex.strip()
@@ -93,11 +111,27 @@ class LocalKeyProvider:
         self._root_key: bytes | None = None
 
     def get_encryption_root_key(self) -> bytes:
+        """执行 `get_encryption_root_key` 操作。
+
+        Returns:
+            返回 bytes。
+        """
         if self._root_key is None:
             self._root_key = self._load_or_create_root_key()
         return self._root_key
 
     def derive_org_key(self, org_id: str) -> bytes:
+        """执行 `derive_org_key` 操作。
+
+        Args:
+            org_id: 参数 org_id（str）。
+
+        Returns:
+            返回 bytes。
+
+        Raises:
+            BackendError: 执行失败时抛出。
+        """
         root_key = self.get_encryption_root_key()
         hkdf_type = HKDF
         hashes_module = hashes
@@ -113,6 +147,18 @@ class LocalKeyProvider:
         return hkdf.derive(root_key)
 
     def encrypt_key(self, plaintext: bytes, org_id: str) -> tuple[bytes, bytes]:
+        """执行 `encrypt_key` 操作。
+
+        Args:
+            plaintext: 参数 plaintext（bytes）。
+            org_id: 参数 org_id（str）。
+
+        Returns:
+            返回 tuple[bytes, bytes]。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if len(plaintext) != DATA_KEY_SIZE:
             raise ValidationError("local security data key must be 32 bytes")
         org_key = self.derive_org_key(org_id)
@@ -120,6 +166,20 @@ class LocalKeyProvider:
         return _aes_encrypt(org_key, nonce, plaintext, _key_aad(org_id)), nonce
 
     def decrypt_key(self, ciphertext: bytes, nonce: bytes, org_id: str) -> bytes:
+        """执行 `decrypt_key` 操作。
+
+        Args:
+            ciphertext: 参数 ciphertext（bytes）。
+            nonce: 参数 nonce（bytes）。
+            org_id: 参数 org_id（str）。
+
+        Returns:
+            返回 bytes。
+
+        Raises:
+            CorruptedCiphertextError: 执行失败时抛出。
+            KeyMismatchError: 执行失败时抛出。
+        """
         org_key = self.derive_org_key(org_id)
         try:
             data_key = _aes_decrypt(org_key, nonce, ciphertext, _key_aad(org_id))
@@ -154,6 +214,14 @@ class LocalKeyProvider:
         raise self._missing_key_error()
 
     def _load_or_create_root_key(self) -> bytes:
+        """加载并解析输入数据。
+
+        Returns:
+            返回 bytes。
+
+        Raises:
+            self._missing_key_error: 执行失败时抛出。
+        """
         if self._key_hex:
             return _decode_hex_key(self._key_hex, source="key_hex")
         if self._key_b64:
@@ -176,6 +244,11 @@ class LocalKeyProvider:
         return self._create_key_file()
 
     def _missing_key_error(self) -> BackendError:
+        """执行 `missing_key_error` 操作。
+
+        Returns:
+            返回 BackendError。
+        """
         sources: list[str] = []
         if self._key_env:
             sources.append(f"env {self._key_env} (unset)")
@@ -196,6 +269,14 @@ class LocalKeyProvider:
         )
 
     def _create_key_file(self) -> bytes:
+        """创建并返回新的资源。
+
+        Returns:
+            返回 bytes。
+
+        Raises:
+            BackendError: 执行失败时抛出。
+        """
         key_file = self._key_file
         if key_file is None:
             raise BackendError("local security key file is not configured")
@@ -231,6 +312,12 @@ class LocalEnvelopeSecurityProvider(SecurityProvider):
         *,
         allow_plaintext: bool = True,
     ) -> None:
+        """初始化 LocalEnvelopeSecurityProvider。
+
+        Args:
+            key_provider: 参数 key_provider（LocalKeyProvider）。
+            allow_plaintext: 参数 allow_plaintext（bool）。
+        """
         _ensure_crypto()
         self._key_provider = key_provider
         self._allow_plaintext = allow_plaintext
@@ -244,6 +331,16 @@ class LocalEnvelopeSecurityProvider(SecurityProvider):
         context: SecurityContext | None = None,
         aad: bytes = b"",
     ) -> bytes:
+        """执行 `encrypt` 操作。
+
+        Args:
+            plaintext: 参数 plaintext（bytes）。
+            context: 参数 context（SecurityContext | None）。
+            aad: 参数 aad（bytes）。
+
+        Returns:
+            返回 bytes。
+        """
         data_key = secrets.token_bytes(DATA_KEY_SIZE)
         data_nonce = secrets.token_bytes(NONCE_SIZE)
         org_id = _org_id(context)
@@ -269,6 +366,19 @@ class LocalEnvelopeSecurityProvider(SecurityProvider):
         context: SecurityContext | None = None,
         aad: bytes = b"",
     ) -> bytes:
+        """执行 `decrypt` 操作。
+
+        Args:
+            ciphertext: 参数 ciphertext（bytes）。
+            context: 参数 context（SecurityContext | None）。
+            aad: 参数 aad（bytes）。
+
+        Returns:
+            返回 bytes。
+
+        Raises:
+            InvalidMagicError: 执行失败时抛出。
+        """
         if not ciphertext.startswith(ENVELOPE_MAGIC):
             if self._allow_plaintext:
                 return ciphertext
@@ -289,10 +399,16 @@ class LocalEnvelopeSecurityProvider(SecurityProvider):
         )
 
     def health(self) -> None:
+        """执行健康检查。"""
         self._key_provider.get_encryption_root_key()
 
 
 def _ensure_crypto() -> None:
+    """确保所需资源或状态已就绪。
+
+    Raises:
+        BackendError: 执行失败时抛出。
+    """
     if _CRYPTO_IMPORT_ERROR is not None:
         raise BackendError(
             "security.local requires the 'cryptography' package; install project dependencies"
@@ -306,6 +422,18 @@ def _build_envelope(
     data_nonce: bytes,
     encrypted_content: bytes,
 ) -> bytes:
+    """根据配置构建组件实例。
+
+    Args:
+        provider_id: 参数 provider_id（int）。
+        encrypted_data_key: 参数 encrypted_data_key（bytes）。
+        key_nonce: 参数 key_nonce（bytes）。
+        data_nonce: 参数 data_nonce（bytes）。
+        encrypted_content: 参数 encrypted_content（bytes）。
+
+    Returns:
+        返回 bytes。
+    """
     header = _HEADER.pack(
         ENVELOPE_MAGIC,
         ENVELOPE_VERSION,
@@ -318,6 +446,18 @@ def _build_envelope(
 
 
 def _parse_envelope(ciphertext: bytes) -> _Envelope:
+    """解析输入数据并返回结构化结果。
+
+    Args:
+        ciphertext: 参数 ciphertext（bytes）。
+
+    Returns:
+        返回 _Envelope。
+
+    Raises:
+        CorruptedCiphertextError: 执行失败时抛出。
+        InvalidMagicError: 执行失败时抛出。
+    """
     if len(ciphertext) < _HEADER.size:
         raise CorruptedCiphertextError("ENC1 envelope too short")
     magic, version, provider_id, key_len, key_nonce_len, data_nonce_len = _HEADER.unpack(
@@ -352,6 +492,14 @@ def _parse_envelope(ciphertext: bytes) -> _Envelope:
 
 
 def _validate_local_envelope(envelope: _Envelope) -> None:
+    """校验输入参数或当前状态。
+
+    Args:
+        envelope: 参数 envelope（_Envelope）。
+
+    Raises:
+        CorruptedCiphertextError: 执行失败时抛出。
+    """
     if envelope.provider_id != LOCAL_PROVIDER_ID:
         raise CorruptedCiphertextError(f"unsupported security provider id: {envelope.provider_id}")
     if len(envelope.key_nonce) != NONCE_SIZE:
@@ -365,6 +513,20 @@ def _validate_local_envelope(envelope: _Envelope) -> None:
 
 
 def _aes_encrypt(key: bytes, nonce: bytes, plaintext: bytes, aad: bytes) -> bytes:
+    """执行 `aes_encrypt` 操作。
+
+    Args:
+        key: 参数 key（bytes）。
+        nonce: 参数 nonce（bytes）。
+        plaintext: 参数 plaintext（bytes）。
+        aad: 参数 aad（bytes）。
+
+    Returns:
+        返回 bytes。
+
+    Raises:
+        BackendError: 执行失败时抛出。
+    """
     aesgcm_type = AESGCM
     if aesgcm_type is None:
         _ensure_crypto()
@@ -376,6 +538,21 @@ def _aes_encrypt(key: bytes, nonce: bytes, plaintext: bytes, aad: bytes) -> byte
 
 
 def _aes_decrypt(key: bytes, nonce: bytes, ciphertext: bytes, aad: bytes) -> bytes:
+    """执行 `aes_decrypt` 操作。
+
+    Args:
+        key: 参数 key（bytes）。
+        nonce: 参数 nonce（bytes）。
+        ciphertext: 参数 ciphertext（bytes）。
+        aad: 参数 aad（bytes）。
+
+    Returns:
+        返回 bytes。
+
+    Raises:
+        BackendError: 执行失败时抛出。
+        AuthenticationFailedError: 执行失败时抛出。
+    """
     aesgcm_type = AESGCM
     if aesgcm_type is None:
         _ensure_crypto()
@@ -389,10 +566,27 @@ def _aes_decrypt(key: bytes, nonce: bytes, ciphertext: bytes, aad: bytes) -> byt
 
 
 def _is_invalid_tag(exc: Exception) -> bool:
+    """执行 `is_invalid_tag` 操作。
+
+    Args:
+        exc: 参数 exc（Exception）。
+
+    Returns:
+        返回 bool。
+    """
     return InvalidTag is not None and isinstance(exc, InvalidTag)
 
 
 def _effective_aad(context: SecurityContext | None, aad: bytes) -> bytes:
+    """执行 `effective_aad` 操作。
+
+    Args:
+        context: 参数 context（SecurityContext | None）。
+        aad: 参数 aad（bytes）。
+
+    Returns:
+        返回 bytes。
+    """
     context_bytes = json.dumps(
         _context_payload(context),
         sort_keys=True,
@@ -402,6 +596,14 @@ def _effective_aad(context: SecurityContext | None, aad: bytes) -> bytes:
 
 
 def _context_payload(context: SecurityContext | None) -> dict[str, Any]:
+    """执行 `context_payload` 操作。
+
+    Args:
+        context: 参数 context（SecurityContext | None）。
+
+    Returns:
+        返回 dict[str, Any]。
+    """
     scope = context.scope if context is not None else None
     metadata = context.metadata if context is not None else {}
     return {
@@ -418,16 +620,41 @@ def _context_payload(context: SecurityContext | None) -> dict[str, Any]:
 
 
 def _org_id(context: SecurityContext | None) -> str:
+    """执行 `org_id` 操作。
+
+    Args:
+        context: 参数 context（SecurityContext | None）。
+
+    Returns:
+        返回 str。
+    """
     if context is None:
         return ""
     return context.scope.org
 
 
 def _key_aad(org_id: str) -> bytes:
+    """执行 `key_aad` 操作。
+
+    Args:
+        org_id: 参数 org_id（str）。
+
+    Returns:
+        返回 bytes。
+    """
     return b"agent-memory:security:data-key:v1:" + org_id.encode("utf-8")
 
 
 def _decode_key_string(value: str, *, source: str) -> bytes:
+    """执行 `decode_key_string` 操作。
+
+    Args:
+        value: 参数 value（str）。
+        source: 参数 source（str）。
+
+    Returns:
+        返回 bytes。
+    """
     raw = value.strip()
     if raw.startswith("hex:"):
         return _decode_hex_key(raw[4:], source=source)
@@ -437,6 +664,18 @@ def _decode_key_string(value: str, *, source: str) -> bytes:
 
 
 def _decode_hex_key(value: str, *, source: str) -> bytes:
+    """执行 `decode_hex_key` 操作。
+
+    Args:
+        value: 参数 value（str）。
+        source: 参数 source（str）。
+
+    Returns:
+        返回 bytes。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     try:
         key = bytes.fromhex(value.strip())
     except ValueError as exc:
@@ -445,6 +684,18 @@ def _decode_hex_key(value: str, *, source: str) -> bytes:
 
 
 def _decode_b64_key(value: str, *, source: str) -> bytes:
+    """执行 `decode_b64_key` 操作。
+
+    Args:
+        value: 参数 value（str）。
+        source: 参数 source（str）。
+
+    Returns:
+        返回 bytes。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     try:
         key = binascii.a2b_base64(value.strip(), strict_mode=True)
     except binascii.Error as exc:
@@ -453,6 +704,18 @@ def _decode_b64_key(value: str, *, source: str) -> bytes:
 
 
 def _validate_root_key(key: bytes, *, source: str) -> bytes:
+    """校验输入参数或当前状态。
+
+    Args:
+        key: 参数 key（bytes）。
+        source: 参数 source（str）。
+
+    Returns:
+        返回 bytes。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     if len(key) != DATA_KEY_SIZE:
         raise ValidationError(
             f"encryption root key from {source} must be {DATA_KEY_SIZE} bytes"
@@ -461,6 +724,14 @@ def _validate_root_key(key: bytes, *, source: str) -> bytes:
 
 
 def _restrict_file_mode(path: Path) -> None:
+    """执行 `restrict_file_mode` 操作。
+
+    Args:
+        path: 参数 path（Path）。
+
+    Raises:
+        BackendError: 执行失败时抛出。
+    """
     try:
         os.chmod(path, 0o600)
     except OSError as exc:
@@ -470,6 +741,11 @@ def _restrict_file_mode(path: Path) -> None:
 
 @SecurityProducer.register("local")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return LocalEnvelopeSecurityProvider(
         LocalKeyProvider(
             key_file=Factory.cfg_get(config, "key_file", _DEFAULT_KEY_FILE),

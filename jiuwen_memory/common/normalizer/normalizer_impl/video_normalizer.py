@@ -41,6 +41,21 @@ class VideoNormalizer(Normalizer):
         temp_root: str = "",
         backend: VideoMemoryBackend | None = None,
     ) -> None:
+        """初始化 VideoNormalizer。
+
+        Args:
+            chunk_seconds: 参数 chunk_seconds（int）。
+            asr_port: 参数 asr_port（VideoAsrService | None）。
+            asr_language: 参数 asr_language（str）。
+            asr_chunk_seconds: 参数 asr_chunk_seconds（int）。
+            llm_port: 参数 llm_port（LLM | None）。
+            vlm_port: 参数 vlm_port（LLM | None）。
+            temp_root: 参数 temp_root（str）。
+            backend: 参数 backend（VideoMemoryBackend | None）。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if chunk_seconds <= 0:
             raise ValidationError("chunk_seconds must be greater than zero")
         if asr_chunk_seconds <= 0:
@@ -64,6 +79,18 @@ class VideoNormalizer(Normalizer):
         vlm_port: LLM | None = None,
         backend: VideoMemoryBackend | None = None,
     ) -> VideoNormalizer:
+        """执行 `from_config` 操作。
+
+        Args:
+            config: 参数 config（Mapping[str, Any] | None）。
+            asr_port: 参数 asr_port（VideoAsrService | None）。
+            llm_port: 参数 llm_port（LLM | None）。
+            vlm_port: 参数 vlm_port（LLM | None）。
+            backend: 参数 backend（VideoMemoryBackend | None）。
+
+        Returns:
+            返回 VideoNormalizer。
+        """
         params = dict(config or {})
         return cls(
             chunk_seconds=int(params.get("chunk_seconds", 30)),
@@ -77,12 +104,27 @@ class VideoNormalizer(Normalizer):
         )
 
     def modalities(self) -> list[Modality]:
+        """执行 `modalities` 操作。
+
+        Returns:
+            返回 list[Modality]。
+        """
         return [Modality.VIDEO]
 
     def plugin_type(self) -> PluginType:
+        """返回当前插件类型。
+
+        Returns:
+            返回 PluginType。
+        """
         return PluginType.NORMALIZER
 
     def health(self) -> None:
+        """执行健康检查。
+
+        Raises:
+            HealthCheckError: 执行失败时抛出。
+        """
         if self._backend is not None:
             return
         if self._asr_port is None:
@@ -98,6 +140,17 @@ class VideoNormalizer(Normalizer):
             )
 
     def normalize(self, payload: RawPayload) -> str:
+        """规范化输入值。
+
+        Args:
+            payload: 参数 payload（RawPayload）。
+
+        Returns:
+            返回 str。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if payload.modality != Modality.VIDEO:
             raise ValidationError(
                 f"video normalizer does not support {payload.modality.value!r}"
@@ -112,6 +165,18 @@ class VideoNormalizer(Normalizer):
         return json.dumps(video_memory, ensure_ascii=False, separators=(",", ":"))
 
     def _extract_video_memory(self, payload: RawPayload) -> VideoMemoryOutput:
+        """执行 `extract_video_memory` 操作。
+
+        Args:
+            payload: 参数 payload（RawPayload）。
+
+        Returns:
+            返回 VideoMemoryOutput。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+            BackendError: 执行失败时抛出。
+        """
         if self._backend is not None:
             return self._backend(payload)
         if not payload.uri:
@@ -144,6 +209,18 @@ class VideoNormalizer(Normalizer):
             return self._run_pipeline(video_path, Path(temp_dir))
 
     def _run_pipeline(self, video_path: Path, run_root: Path) -> VideoMemoryOutput:
+        """执行 `run_pipeline` 操作。
+
+        Args:
+            video_path: 参数 video_path（Path）。
+            run_root: 参数 run_root（Path）。
+
+        Returns:
+            返回 VideoMemoryOutput。
+
+        Raises:
+            BackendError: 执行失败时抛出。
+        """
         try:
             from .video_pipeline import VideoPipelineConfig, run_video_memory_pipeline_off
 
@@ -174,6 +251,14 @@ class VideoNormalizer(Normalizer):
 
 
 def _normalize_clip(item: dict[str, Any]) -> dict[str, Any]:
+    """规范化输入值。
+
+    Args:
+        item: 参数 item（dict[str, Any]）。
+
+    Returns:
+        返回 dict[str, Any]。
+    """
     source_id = _required_string(item, "id", "clip")
     start, end = _time_range(item, "time_range", "clip")
     return {
@@ -188,6 +273,17 @@ def _normalize_clip(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_event(item: dict[str, Any]) -> dict[str, Any]:
+    """规范化输入值。
+
+    Args:
+        item: 参数 item（dict[str, Any]）。
+
+    Returns:
+        返回 dict[str, Any]。
+
+    Raises:
+        BackendError: 执行失败时抛出。
+    """
     source_id = _required_string(item, "task_id", "event")
     start, end = _time_range(item, "time_span", "event")
     children = item.get("child_clip_ids", [])
@@ -205,6 +301,17 @@ def _normalize_event(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _file_uri_to_path(uri: str) -> Path:
+    """执行 `file_uri_to_path` 操作。
+
+    Args:
+        uri: 参数 uri（str）。
+
+    Returns:
+        返回 Path。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     parsed = urlparse(uri)
     if parsed.scheme not in ("", "file"):
         raise ValidationError(
@@ -222,12 +329,37 @@ def _file_uri_to_path(uri: str) -> Path:
 
 
 def _object_list(value: Any, label: str) -> list[dict[str, Any]]:
+    """执行 `object_list` 操作。
+
+    Args:
+        value: 参数 value（Any）。
+        label: 参数 label（str）。
+
+    Returns:
+        返回 list[dict[str, Any]]。
+
+    Raises:
+        BackendError: 执行失败时抛出。
+    """
     if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
         raise BackendError(f"video memory {label} must be a list of objects")
     return value
 
 
 def _required_string(item: dict[str, Any], key: str, label: str) -> str:
+    """校验并取得必需的资源或参数。
+
+    Args:
+        item: 参数 item（dict[str, Any]）。
+        key: 参数 key（str）。
+        label: 参数 label（str）。
+
+    Returns:
+        返回 str。
+
+    Raises:
+        BackendError: 执行失败时抛出。
+    """
     value = str(item.get(key, "")).strip()
     if not value:
         raise BackendError(f"video {label} is missing {key}")
@@ -235,6 +367,19 @@ def _required_string(item: dict[str, Any], key: str, label: str) -> str:
 
 
 def _time_range(item: dict[str, Any], key: str, label: str) -> tuple[float, float]:
+    """执行 `time_range` 操作。
+
+    Args:
+        item: 参数 item（dict[str, Any]）。
+        key: 参数 key（str）。
+        label: 参数 label（str）。
+
+    Returns:
+        返回 tuple[float, float]。
+
+    Raises:
+        BackendError: 执行失败时抛出。
+    """
     value = item.get(key)
     if not isinstance(value, (list, tuple)) or len(value) != 2:
         raise BackendError(f"video {label} {key} must contain start and end")
@@ -249,6 +394,11 @@ def _time_range(item: dict[str, Any], key: str, label: str) -> tuple[float, floa
 
 @NormalizerProducer.register("video")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return VideoNormalizer(
         chunk_seconds=int(config.get("chunk_seconds", 30)),
         asr_port=VideoAsrProducer.dep(config, "asr_port"),

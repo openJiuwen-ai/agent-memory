@@ -19,6 +19,11 @@ from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
 
 
 def _now() -> datetime:
+    """执行 `now` 操作。
+
+    Returns:
+        返回 datetime。
+    """
     return datetime.now(timezone.utc)
 
 
@@ -26,15 +31,34 @@ class SimpleIngestor(Ingestor):
     """规约 + 转换为记忆单元（不落盘）。"""
 
     def __init__(self, normalizer: Normalizer) -> None:
+        """初始化 SimpleIngestor。
+
+        Args:
+            normalizer: 参数 normalizer（Normalizer）。
+        """
         self._normalizer = normalizer
 
     def operator_type(self) -> IngestOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 IngestOperatorType。
+        """
         return IngestOperatorType.INGESTOR
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def ingest(self, payloads: List[RawPayload]) -> List[MemoryUnit]:
+        """执行 `ingest` 操作。
+
+        Args:
+            payloads: 参数 payloads（List[RawPayload]）。
+
+        Returns:
+            返回 List[MemoryUnit]。
+        """
         units: List[MemoryUnit] = []
         for payload in payloads:
             now = _now()
@@ -69,4 +93,9 @@ class SimpleIngestor(Ingestor):
 @IngestorProducer.register("simple")
 def _build(config):
     # Normalizer 经 NormalizerProducer 自取（缺省 passthrough），实例由该 Producer 生成/共享。
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return SimpleIngestor(NormalizerProducer.dep(config, default="passthrough"))

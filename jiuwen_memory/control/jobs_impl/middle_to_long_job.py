@@ -89,6 +89,21 @@ class MiddleToLongJob(Job):
         *,
         lock: LockProvider | None = None,
     ) -> None:
+        """初始化 MiddleToLongJob。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            storage: 参数 storage（Storage）。
+            evolver: 参数 evolver（Evolver）。
+            lifecycle: 参数 lifecycle（LifecycleManager）。
+            index: 参数 index（IndexBuilder）。
+            llm: 参数 llm（LLM）。
+            max_fetch: 参数 max_fetch（int）。
+            batch_size: 参数 batch_size（int）。
+            concurrency: 参数 concurrency（int）。
+            interval: 参数 interval（int）。
+            lock: 参数 lock（LockProvider | None）。
+        """
         super().__init__(scope=scope, interval=interval)
         self._storage = storage
         self._evolver = evolver
@@ -314,6 +329,11 @@ class MiddleToLongJob(Job):
         sem = asyncio.Semaphore(self._concurrency)
 
         async def _run_one(batch):
+            """执行 `run_one` 操作。
+
+            Args:
+                batch: 参数 batch。
+            """
             async with sem:
                 return await asyncio.to_thread(
                     self._evolver.evolve, batch, EvolveMode.EXTRACT

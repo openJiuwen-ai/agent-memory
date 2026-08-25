@@ -53,6 +53,13 @@ class KeywordRecaller(Recaller):
         layer: str = "l2",
         entity_store: EntityStore | None = None,
     ) -> None:
+        """初始化 KeywordRecaller。
+
+        Args:
+            storage: 参数 storage（Storage）。
+            layer: 参数 layer（str）。
+            entity_store: 参数 entity_store（EntityStore | None）。
+        """
         port_name = "default" if layer == "l2" else f"layers_{layer}"
         self._fulltext = (
             storage.fulltext_port(port_name) if storage.has_fulltext_port(port_name) else None
@@ -89,15 +96,36 @@ class KeywordRecaller(Recaller):
         return merged
 
     def operator_type(self) -> RetrievalOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 RetrievalOperatorType。
+        """
         return RetrievalOperatorType.RECALLER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def channel(self) -> RecallChannel:
+        """执行 `channel` 操作。
+
+        Returns:
+            返回 RecallChannel。
+        """
         return RecallChannel.KEYWORD
 
     def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]:
+        """召回与查询匹配的记忆结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（ParsedQuery）。
+            top_k: 参数 top_k（int）。
+
+        Returns:
+            返回 list[ScoredUnit]。
+        """
         if self._fulltext is None:
             return []  # store 未注入（该层未配）→ 跳过
         tq = TextQuery(
@@ -257,6 +285,11 @@ def _build(config):
     # entity_enabled 默认 False（与构建侧 HybridIndexBuilder 同名同义）。开启时
     # 注入 EntityStore 做 L2 实体关联扩展；endpoint 未配时 dep 返 None，recall
     # 侧 _expand_by_entities 自动跳过，不破坏原召回。
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     entity_store = None
     if config.get("entity_enabled", False):
         from jiuwen_memory.storage.entity_store import EntityStoreProducer
@@ -269,6 +302,11 @@ def _build(config):
 @RecallerProducer.register("keyword_l0")
 def _build_l0(config):
     # layers_index_enabled 默认 true；未配置命名端口时该层返回空结果。
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     if not config.get("layers_index_enabled", True):
         return KeywordRecaller(StorageProducer.resolve(config), layer="l0")
     recaller = KeywordRecaller(StorageProducer.resolve(config), layer="l0")
@@ -279,6 +317,11 @@ def _build_l0(config):
 
 @RecallerProducer.register("keyword_l1")
 def _build_l1(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     if not config.get("layers_index_enabled", True):
         return KeywordRecaller(StorageProducer.resolve(config), layer="l1")
     recaller = KeywordRecaller(StorageProducer.resolve(config), layer="l1")

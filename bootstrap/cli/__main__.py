@@ -40,6 +40,11 @@ logger = logging.getLogger("agent-memory.cli")
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """构建命令行参数解析器。
+
+    Returns:
+        返回 argparse.ArgumentParser。
+    """
     parser = argparse.ArgumentParser(
         prog="agent-memory",
         description="agent-memory memory engine CLI",
@@ -76,6 +81,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """执行程序入口逻辑。
+
+    Args:
+        argv: 参数 argv（list[str] | None）。
+
+    Returns:
+        返回 int。
+    """
     logging.basicConfig(
         level=logging.INFO,
         format="[%(asctime)s] %(name)s %(levelname)s %(message)s",

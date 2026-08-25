@@ -25,6 +25,14 @@ def qa_accuracy(judge: JudgeFn | None = None):
     """
 
     def _metric(outcomes: list[CaseOutcome]) -> list[MetricResult]:
+        """执行 `metric` 操作。
+
+        Args:
+            outcomes: 参数 outcomes（list[CaseOutcome]）。
+
+        Returns:
+            返回 list[MetricResult]。
+        """
         graded = [outcome for outcome in outcomes if outcome.expected_answer]
         if judge is None:
             return [

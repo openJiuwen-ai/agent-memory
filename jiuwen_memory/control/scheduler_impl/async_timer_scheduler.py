@@ -68,6 +68,11 @@ class AsyncTimerScheduler(Scheduler):
     """
 
     def __init__(self, tick_interval: int = 10) -> None:
+        """初始化 AsyncTimerScheduler。
+
+        Args:
+            tick_interval: 参数 tick_interval（int）。
+        """
         self._tick_interval = tick_interval
 
         # per scope 三件套：queue（FIFO 队列）+ drain_task（单消费协程）
@@ -88,14 +93,32 @@ class AsyncTimerScheduler(Scheduler):
         return (scope.org, scope.space, scope.user, scope.agent, scope.session)
 
     def operator_type(self) -> ControlOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 ControlOperatorType。
+        """
         return ControlOperatorType.SCHEDULER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     # ---- 公开 API ----
 
     async def submit(self, job: Job, channel: Channel) -> str:
+        """执行 `submit` 操作。
+
+        Args:
+            job: 参数 job（Job）。
+            channel: 参数 channel（Channel）。
+
+        Returns:
+            返回 str。
+
+        Raises:
+            ValueError: 执行失败时抛出。
+        """
         scope_key = self._scope_key(job.scope)
         if job.interval > 0:
             if job.interval < self._tick_interval:
@@ -107,6 +130,17 @@ class AsyncTimerScheduler(Scheduler):
         return self._submit_once(scope_key, job, channel)
 
     def status(self, job_id: str) -> JobInfo:
+        """执行 `status` 操作。
+
+        Args:
+            job_id: 参数 job_id（str）。
+
+        Returns:
+            返回 JobInfo。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         if job_id not in self._jobs:
             logger.warning("AsyncTimerScheduler.status missing job: job_id=%s", job_id)
             raise NotFoundError("job", job_id)
@@ -141,6 +175,16 @@ class AsyncTimerScheduler(Scheduler):
     # ---- 一次性任务路径 ----
 
     def _submit_once(self, scope_key: tuple, job: Job, channel: Channel) -> str:
+        """执行 `submit_once` 操作。
+
+        Args:
+            scope_key: 参数 scope_key（tuple）。
+            job: 参数 job（Job）。
+            channel: 参数 channel（Channel）。
+
+        Returns:
+            返回 str。
+        """
         job_id = str(uuid.uuid4())
         self._jobs[job_id] = JobInfo(
             id=job_id,
@@ -160,6 +204,11 @@ class AsyncTimerScheduler(Scheduler):
         return job_id
 
     def _ensure_drain_task(self, scope_key: tuple) -> None:
+        """确保所需资源或状态已就绪。
+
+        Args:
+            scope_key: 参数 scope_key（tuple）。
+        """
         existing = self._scope_drain_tasks.get(scope_key)
         if existing is None or existing.done():
             self._scope_drain_tasks[scope_key] = asyncio.create_task(
@@ -215,6 +264,16 @@ class AsyncTimerScheduler(Scheduler):
     # ---- 定时任务路径 ----
 
     def _submit_timer(self, scope_key: tuple, job: Job, channel: Channel) -> str:
+        """执行 `submit_timer` 操作。
+
+        Args:
+            scope_key: 参数 scope_key（tuple）。
+            job: 参数 job（Job）。
+            channel: 参数 channel（Channel）。
+
+        Returns:
+            返回 str。
+        """
         wheel = self._wheels.get(scope_key)
         kind = type(job).__name__
 
@@ -386,6 +445,11 @@ class AsyncTimerScheduler(Scheduler):
                     return
 
     def _now_iso(self) -> str:
+        """执行 `now_iso` 操作。
+
+        Returns:
+            返回 str。
+        """
         return datetime.now(timezone.utc).isoformat()
 
 
@@ -394,5 +458,10 @@ class AsyncTimerScheduler(Scheduler):
 
 @SchedulerProducer.register("async_timer")
 def _build_async_timer(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     tick = int(config.get("tick_interval", 10))
     return AsyncTimerScheduler(tick_interval=tick)

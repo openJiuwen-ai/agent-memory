@@ -65,6 +65,14 @@ class RedisLockProvider(LockProvider):
         wait_timeout_ms: int = DEFAULT_WAIT_TIMEOUT_MS,
         **options: Any,
     ) -> None:
+        """初始化 RedisLockProvider。
+
+        Args:
+            url: 参数 url（str）。
+            lease_ms: 参数 lease_ms（int）。
+            wait_timeout_ms: 参数 wait_timeout_ms（int）。
+            **options: 参数 options（Any）。
+        """
         super().__init__(lease_ms=lease_ms, wait_timeout_ms=wait_timeout_ms)
         self._url = url
         self._options = options
@@ -90,6 +98,15 @@ class RedisLockProvider(LockProvider):
         return self._client
 
     async def renew(self, handle: LockHandle, *, lease_ms: int | None = None) -> bool:
+        """执行 `renew` 操作。
+
+        Args:
+            handle: 参数 handle（LockHandle）。
+            lease_ms: 参数 lease_ms（int | None）。
+
+        Returns:
+            返回 bool。
+        """
         lease = handle.lease_ms if lease_ms is None else int(lease_ms)
         client = self.client
         with wrap_backend("redis lock renew"):
@@ -99,11 +116,25 @@ class RedisLockProvider(LockProvider):
         return bool(result)
 
     async def health(self) -> None:
+        """执行健康检查。"""
         client = self.client
         with wrap_backend("redis lock ping"):
             await client.ping()
 
     async def _acquire(self, key: str, *, lease_ms: int, wait_timeout_ms: int) -> LockHandle:
+        """执行 `acquire` 操作。
+
+        Args:
+            key: 参数 key（str）。
+            lease_ms: 参数 lease_ms（int）。
+            wait_timeout_ms: 参数 wait_timeout_ms（int）。
+
+        Returns:
+            返回 LockHandle。
+
+        Raises:
+            LockTimeoutError: 执行失败时抛出。
+        """
         token = uuid.uuid4().hex
         client = self.client
         async for _ in wait_ticks(wait_timeout_ms):
@@ -116,6 +147,11 @@ class RedisLockProvider(LockProvider):
         )
 
     async def _release(self, handle: LockHandle) -> None:
+        """执行 `release` 操作。
+
+        Args:
+            handle: 参数 handle（LockHandle）。
+        """
         client = self.client
         with wrap_backend("redis lock release"):
             await self._release_script(keys=[handle.key], args=[handle.token], client=client)
@@ -123,6 +159,14 @@ class RedisLockProvider(LockProvider):
 
 @LockProducer.register("redis")
 def _build(config: Any) -> RedisLockProvider:
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config（Any）。
+
+    Returns:
+        返回 RedisLockProvider。
+    """
     url = Factory.require_param(config, "url", backend="redis lock")
     ssl = read_ssl_config(config, backend="redis lock")
     options: dict[str, Any] = {}

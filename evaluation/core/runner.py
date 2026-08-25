@@ -29,9 +29,23 @@ class Runner:
     """编排一次评测：装配 → 采集 → 逐指标聚合。"""
 
     def __init__(self, metrics: Sequence[Metric]) -> None:
+        """初始化 Runner。
+
+        Args:
+            metrics: 参数 metrics（Sequence[Metric]）。
+        """
         self._metrics = list(metrics)
 
     def run(self, dataset: Dataset, config: Optional[Config] = None) -> RunResult:
+        """执行当前任务并返回结果。
+
+        Args:
+            dataset: 参数 dataset（Dataset）。
+            config: 参数 config（Optional[Config]）。
+
+        Returns:
+            返回 RunResult。
+        """
         harness = EvalHarness(config=config)
         outcomes = harness.evaluate(dataset)
         results: List[MetricResult] = []

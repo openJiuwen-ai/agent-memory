@@ -30,12 +30,26 @@ class ConcatAbstractor(Abstractor):
     """把多条记忆拼接概括为一条 CORE 画像单元（高抽象，记全量血缘）。"""
 
     def operator_type(self) -> OperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 OperatorType。
+        """
         return OperatorType.ABSTRACTOR
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def abstract(self, units: List[MemoryUnit]) -> List[MemoryUnit]:
+        """执行 `abstract` 操作。
+
+        Args:
+            units: 参数 units（List[MemoryUnit]）。
+
+        Returns:
+            返回 List[MemoryUnit]。
+        """
         sources = [u for u in units if u.lifecycle.value == "active"]
         logger.info(
             "ConcatAbstractor: received %d units, %d active sources", len(units), len(sources)
@@ -88,4 +102,9 @@ class ConcatAbstractor(Abstractor):
 
 @AbstractorProducer.register("concat")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return ConcatAbstractor()

@@ -192,6 +192,20 @@ class LLMAbstractor(Abstractor):
         retry_max_retries: int = 3,
         retry_backoff_ms: int = 1000,
     ) -> None:
+        """初始化 LLMAbstractor。
+
+        Args:
+            llm: 参数 llm（LLM）。
+            feature_extractor: 参数 feature_extractor（FeatureExtractor）。
+            min_confidence: 参数 min_confidence（float）。
+            min_group_size_summary: 参数 min_group_size_summary（int）。
+            min_group_size_pattern: 参数 min_group_size_pattern（int）。
+            min_group_size_portrait: 参数 min_group_size_portrait（int）。
+            max_groups_per_batch: 参数 max_groups_per_batch（int）。
+            max_context_tokens: 参数 max_context_tokens（int）。
+            retry_max_retries: 参数 retry_max_retries（int）。
+            retry_backoff_ms: 参数 retry_backoff_ms（int）。
+        """
         self._llm = llm
         self._feature_extractor = feature_extractor
         self._min_confidence = min_confidence
@@ -219,10 +233,20 @@ class LLMAbstractor(Abstractor):
         return s.strip()
 
     def operator_type(self) -> OperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 OperatorType。
+        """
         return OperatorType.ABSTRACTOR
 
     def health(self) -> None:
         # 探测 LLM 可用性——若不可用则抛异常
+        """执行健康检查。
+
+        Raises:
+            HealthCheckError: 执行失败时抛出。
+        """
         try:
             self._llm.health()
         except Exception as exc:
@@ -650,6 +674,11 @@ class LLMAbstractor(Abstractor):
 
 @AbstractorProducer.register("llm")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return LLMAbstractor(
         llm=LlmProducer.dep(config, default="echo"),
         feature_extractor=FeatureExtractorProducer.dep(config, default="keyword"),

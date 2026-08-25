@@ -46,6 +46,13 @@ class NotFoundError(AgentMemoryError):
     """
 
     def __init__(self, entity: str = "", key: str = "", message: str = "") -> None:
+        """初始化 NotFoundError。
+
+        Args:
+            entity: 参数 entity（str）。
+            key: 参数 key（str）。
+            message: 参数 message（str）。
+        """
         self.entity = entity  # 实体类型：memory_unit / document / node / key ...
         self.key = key  # 缺失的 id / 键
         super().__init__(message or f"{entity or 'entity'} not found: {key!r}")
@@ -55,6 +62,13 @@ class ConflictError(AgentMemoryError):
     """目标已存在、与现有记录冲突：对应各 Store ``insert`` 的「id 已存在时报冲突」。"""
 
     def __init__(self, entity: str = "", key: str = "", message: str = "") -> None:
+        """初始化 ConflictError。
+
+        Args:
+            entity: 参数 entity（str）。
+            key: 参数 key（str）。
+            message: 参数 message（str）。
+        """
         self.entity = entity  # 实体类型
         self.key = key  # 冲突的 id / 键
         super().__init__(message or f"{entity or 'entity'} already exists: {key!r}")
@@ -67,6 +81,12 @@ class PermissionDeniedError(AgentMemoryError):
     """
 
     def __init__(self, action: str = "", message: str = "") -> None:
+        """初始化 PermissionDeniedError。
+
+        Args:
+            action: 参数 action（str）。
+            message: 参数 message（str）。
+        """
         self.action = action  # 被拒的动作：read / write / update / delete / share ...
         super().__init__(message or f"permission denied: {action or 'action'}")
 
@@ -131,5 +151,10 @@ class StorageRetrievalError(AgentMemoryError):
     """所有选中召回入口均失败。"""
 
     def __init__(self, errors: list[object]) -> None:
+        """初始化 StorageRetrievalError。
+
+        Args:
+            errors: 参数 errors（list[object]）。
+        """
         self.errors = errors
         super().__init__(f"all selected retrieval sources failed: {len(errors)} error(s)")

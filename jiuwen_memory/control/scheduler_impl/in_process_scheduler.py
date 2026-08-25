@@ -27,15 +27,31 @@ class InProcessScheduler(Scheduler):
     """同步调度：任务提交后立即执行。"""
 
     def __init__(self) -> None:
+        """初始化 InProcessScheduler。"""
         self._jobs: dict[str, JobInfo] = {}
 
     def operator_type(self) -> ControlOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 ControlOperatorType。
+        """
         return ControlOperatorType.SCHEDULER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     async def submit(self, job: Job, channel: Channel) -> str:
+        """执行 `submit` 操作。
+
+        Args:
+            job: 参数 job（Job）。
+            channel: 参数 channel（Channel）。
+
+        Returns:
+            返回 str。
+        """
         job_id = str(uuid.uuid4())
         info = JobInfo(
             id=job_id,
@@ -89,12 +105,28 @@ class InProcessScheduler(Scheduler):
         return job_id
 
     def status(self, job_id: str) -> JobInfo:
+        """执行 `status` 操作。
+
+        Args:
+            job_id: 参数 job_id（str）。
+
+        Returns:
+            返回 JobInfo。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         if job_id not in self._jobs:
             logger.warning("InProcessScheduler.status missing job: job_id=%s", job_id)
             raise NotFoundError("job", job_id)
         return self._jobs[job_id]
 
     def cancel(self, job_id: str) -> None:
+        """执行 `cancel` 操作。
+
+        Args:
+            job_id: 参数 job_id（str）。
+        """
         job = self._jobs.get(job_id)
         if job is not None and job.status == JobStatus.PENDING:
             job.status = JobStatus.CANCELLED
@@ -111,6 +143,11 @@ class InProcessScheduler(Scheduler):
             )
 
     def _now_iso(self) -> str:
+        """执行 `now_iso` 操作。
+
+        Returns:
+            返回 str。
+        """
         return datetime.now(timezone.utc).isoformat()
 
 
@@ -119,4 +156,9 @@ class InProcessScheduler(Scheduler):
 
 @SchedulerProducer.register("in_process")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return InProcessScheduler()

@@ -17,25 +17,61 @@ class DictPolicyManager(PolicyManager):
     """内存策略表：仅允许改已知键，未知键抛 :class:`PolicyError`。"""
 
     def __init__(self, policies: Dict[str, str] | None = None) -> None:
+        """初始化 DictPolicyManager。
+
+        Args:
+            policies: 参数 policies（Dict[str, str] | None）。
+        """
         self._policies: Dict[str, str] = dict(policies or {})
 
     def operator_type(self) -> ControlOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 ControlOperatorType。
+        """
         return ControlOperatorType.POLICY
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def get(self, key: str) -> str:
+        """读取指定的记录或资源。
+
+        Args:
+            key: 参数 key（str）。
+
+        Returns:
+            返回 str。
+
+        Raises:
+            PolicyError: 执行失败时抛出。
+        """
         if key not in self._policies:
             raise PolicyError(f"unknown policy key: {key!r}")
         return self._policies[key]
 
     def set(self, key: str, value: str) -> None:
+        """执行 `set` 操作。
+
+        Args:
+            key: 参数 key（str）。
+            value: 参数 value（str）。
+
+        Raises:
+            PolicyError: 执行失败时抛出。
+        """
         if key not in self._policies:
             raise PolicyError(f"unknown policy key: {key!r}")
         self._policies[key] = value
 
     def all(self) -> Dict[str, str]:
+        """执行 `all` 操作。
+
+        Returns:
+            返回 Dict[str, str]。
+        """
         return dict(self._policies)
 
 
@@ -53,4 +89,9 @@ _DEFAULT_POLICIES = {
 
 @PolicyProducer.register("dict")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return DictPolicyManager(dict(config.get("policies", _DEFAULT_POLICIES)))

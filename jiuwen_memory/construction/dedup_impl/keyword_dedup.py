@@ -32,6 +32,15 @@ class KeywordDedup(Dedup):
         tier_filter: bool = True,
         scope_filter: bool = True,
     ) -> None:
+        """初始化 KeywordDedup。
+
+        Args:
+            storage: 参数 storage（Storage）。
+            min_similarity: 参数 min_similarity（float）。
+            top_k: 参数 top_k（int）。
+            tier_filter: 参数 tier_filter（bool）。
+            scope_filter: 参数 scope_filter（bool）。
+        """
         super().__init__(
             storage,
             min_similarity=min_similarity,
@@ -42,13 +51,27 @@ class KeywordDedup(Dedup):
         self._fulltext = storage.fulltext
 
     def operator_type(self) -> OperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 OperatorType。
+        """
         return OperatorType.EVOLVER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def recall(self, candidate: MemoryUnit) -> list[tuple[MemoryUnit, float]]:
         # 召回已有相似记忆：用候选 content 做关键词检索
+        """召回与查询匹配的记忆结果。
+
+        Args:
+            candidate: 参数 candidate（MemoryUnit）。
+
+        Returns:
+            返回 list[tuple[MemoryUnit, float]]。
+        """
         query = TextQuery(text=candidate.content, top_k=self._top_k)
         scope = candidate.scope
         try:
@@ -97,6 +120,11 @@ class KeywordDedup(Dedup):
 
 @DedupProducer.register("keyword")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return KeywordDedup(
         storage=StorageProducer.resolve(config),
         min_similarity=config.get("dedup_min_similarity", 0.5),

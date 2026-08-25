@@ -119,12 +119,25 @@ class LLMLayerAnnotator(LayerAnnotator):
         retry_max_retries: int = 3,
         retry_backoff_ms: int = 1000,
     ) -> None:
+        """初始化 LLMLayerAnnotator。
+
+        Args:
+            llm: 参数 llm（LLM）。
+            layers_threshold: 参数 layers_threshold（int）。
+            retry_max_retries: 参数 retry_max_retries（int）。
+            retry_backoff_ms: 参数 retry_backoff_ms（int）。
+        """
         super().__init__(layers_threshold=layers_threshold)
         self._llm = llm
         self._retry_max_retries = retry_max_retries
         self._retry_backoff_ms = retry_backoff_ms
 
     def health(self) -> None:
+        """执行健康检查。
+
+        Raises:
+            HealthCheckError: 执行失败时抛出。
+        """
         try:
             self._llm.health()
         except Exception as exc:
@@ -132,6 +145,14 @@ class LLMLayerAnnotator(LayerAnnotator):
             raise HealthCheckError(str(exc)) from exc
 
     def annotate(self, units: List[MemoryUnit]) -> List[MemoryUnit]:
+        """执行 `annotate` 操作。
+
+        Args:
+            units: 参数 units（List[MemoryUnit]）。
+
+        Returns:
+            返回 List[MemoryUnit]。
+        """
         logger.info("LLMLayerAnnotator: received %d units", len(units))
         # 仅超阈 content 的 unit 进 LLM 批次
         long_units = [u for u in units if self._should_annotate(u)]
@@ -247,6 +268,11 @@ class LLMLayerAnnotator(LayerAnnotator):
 
 @LayerAnnotatorProducer.register("llm")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return LLMLayerAnnotator(
         llm=LlmProducer.dep(config, default="echo"),
         layers_threshold=config.get("layer_annotator_threshold", 512),

@@ -50,6 +50,13 @@ class SQLiteKVStore(KVStore):
         config_source=None,
         config_namespace: str = "kv_store",
     ) -> None:
+        """初始化 SQLiteKVStore。
+
+        Args:
+            db_path: 参数 db_path（str）。
+            config_source: 参数 config_source。
+            config_namespace: 参数 config_namespace（str）。
+        """
         self._fallback_db_path = db_path
         self._config_source = config_source
         self._config_namespace = config_namespace
@@ -61,17 +68,32 @@ class SQLiteKVStore(KVStore):
 
     @staticmethod
     def _expiry(ttl: float) -> float | None:
+        """执行 `expiry` 操作。
+
+        Args:
+            ttl: 参数 ttl（float）。
+
+        Returns:
+            返回 float | None。
+        """
         return time.time() + ttl if ttl else None
 
     def store_type(self) -> StoreType:
+        """返回当前存储类型。
+
+        Returns:
+            返回 StoreType。
+        """
         return StoreType.KV
 
     def health(self) -> None:
+        """执行健康检查。"""
         with self._lock:
             self._ensure_conn().execute("SELECT 1")
         return None
 
     def close(self) -> None:
+        """关闭并释放相关资源。"""
         with self._lock:
             if self._conn is not None:
                 self._conn.close()
@@ -81,6 +103,17 @@ class SQLiteKVStore(KVStore):
     # -- KVStore 契约 -------------------------------------------------------- #
 
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
+        """插入一条或多条记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            key: 参数 key（str）。
+            value: 参数 value（bytes）。
+            ttl: 参数 ttl（float）。
+
+        Raises:
+            ConflictError: 执行失败时抛出。
+        """
         with self._lock:
             self._ensure_conn()
             if self._live_value(scope, key) is not None:
@@ -102,6 +135,17 @@ class SQLiteKVStore(KVStore):
             )
 
     def update(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
+        """更新已有记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            key: 参数 key（str）。
+            value: 参数 value（bytes）。
+            ttl: 参数 ttl（float）。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         with self._lock:
             self._ensure_conn()
             if self._live_value(scope, key) is None:
@@ -123,6 +167,12 @@ class SQLiteKVStore(KVStore):
             )
 
     def delete(self, scope: Scope, key: str) -> None:
+        """删除指定的记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            key: 参数 key（str）。
+        """
         with self._lock:
             conn = self._ensure_conn()
             conn.execute(
@@ -132,6 +182,18 @@ class SQLiteKVStore(KVStore):
             )
 
     def get(self, scope: Scope, key: str) -> bytes:
+        """读取指定的记录或资源。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            key: 参数 key（str）。
+
+        Returns:
+            返回 bytes。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         with self._lock:
             self._ensure_conn()
             value = self._live_value(scope, key)
@@ -143,6 +205,18 @@ class SQLiteKVStore(KVStore):
         # 一次 IN 查询召回命中 key → 按 keys 下标一一对应组装；任一缺失报
         # NotFoundError（与 get 一致）。与 list 同款「WHERE 过滤已过期行」语义；
         # 惰性删仍走单 key 的 _live_value/get。不去重：keys 透传。
+        """执行 `mget` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            keys: 参数 keys（list[str]）。
+
+        Returns:
+            返回 list[bytes]。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         if not keys:
             return []
         placeholders = ",".join("?" for _ in keys)
@@ -165,11 +239,29 @@ class SQLiteKVStore(KVStore):
         return out
 
     def exists(self, scope: Scope, key: str) -> bool:
+        """检查指定记录或资源是否存在。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            key: 参数 key（str）。
+
+        Returns:
+            返回 bool。
+        """
         with self._lock:
             self._ensure_conn()
             return self._live_value(scope, key) is not None
 
     def scan(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
+        """扫描指定范围内的记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            prefix: 参数 prefix（str）。
+
+        Returns:
+            返回 list[tuple[str, bytes]]。
+        """
         now = time.time()
         with self._lock:
             conn = self._ensure_conn()
@@ -191,6 +283,19 @@ class SQLiteKVStore(KVStore):
         filters: FilterExpr | None = None,
         extensions: dict[str, str] | None = None,
     ) -> KVMemoryListResult:
+        """列出符合条件的记录或资源。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            offset: 参数 offset（int）。
+            limit: 参数 limit（int）。
+            memory_types: 参数 memory_types（list[str] | None）。
+            filters: 参数 filters（FilterExpr | None）。
+            extensions: 参数 extensions（dict[str, str] | None）。
+
+        Returns:
+            返回 KVMemoryListResult。
+        """
         return list_memory_entries(
             self.scan(scope, MEMORY_KEY_PREFIX),
             offset=offset,
@@ -201,6 +306,11 @@ class SQLiteKVStore(KVStore):
         )
 
     def scopes(self) -> list[Scope]:
+        """执行 `scopes` 操作。
+
+        Returns:
+            返回 list[Scope]。
+        """
         with self._lock:
             conn = self._ensure_conn()
             rows = conn.execute(
@@ -218,6 +328,11 @@ class SQLiteKVStore(KVStore):
         ]
 
     def _resolved_db_path(self) -> str:
+        """解析并返回目标配置或资源。
+
+        Returns:
+            返回 str。
+        """
         from jiuwen_memory.config.binding import resolve_connection_url
 
         live = resolve_connection_url(
@@ -251,6 +366,11 @@ class SQLiteKVStore(KVStore):
         return conn
 
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        """执行 `migrate_schema` 操作。
+
+        Args:
+            conn: 参数 conn（sqlite3.Connection）。
+        """
         columns = {
             row[1] for row in conn.execute("PRAGMA table_info(kv)").fetchall()
         }
@@ -290,6 +410,11 @@ class SQLiteKVStore(KVStore):
 
 @KvProducer.register("sqlite")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     from jiuwen_memory.config.config_source import ConfigSourceProducer
 
     return SQLiteKVStore(

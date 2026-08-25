@@ -33,6 +33,16 @@ _JUDGE_SYS = (
 
 
 def _answer_user(question: str, memories: str, question_date: str) -> str:
+    """执行 `answer_user` 操作。
+
+    Args:
+        question: 参数 question（str）。
+        memories: 参数 memories（str）。
+        question_date: 参数 question_date（str）。
+
+    Returns:
+        返回 str。
+    """
     today = (
         f"Today's date is {question_date}. Compute relative time from it.\n"
         if question_date
@@ -57,6 +67,17 @@ _ABSTENTION_RULE = (
 
 
 def _judge_user(question: str, gold: str, answer: str, strict: bool) -> str:
+    """执行 `judge_user` 操作。
+
+    Args:
+        question: 参数 question（str）。
+        gold: 参数 gold（str）。
+        answer: 参数 answer（str）。
+        strict: 参数 strict（bool）。
+
+    Returns:
+        返回 str。
+    """
     leniency = (
         "Require the model answer to be essentially equivalent to the gold answer."
         if strict
@@ -93,10 +114,27 @@ class LLMJudge:
     """两步 LLM judge：召回记忆 → 合成答案 → 比对参考答案 → 1.0/0.0。"""
 
     def __init__(self, chat: ChatFn, strict: bool = False) -> None:
+        """初始化 LLMJudge。
+
+        Args:
+            chat: 参数 chat（ChatFn）。
+            strict: 参数 strict（bool）。
+        """
         self._chat = chat
         self._strict = strict
 
     def __call__(self, query: str, expected: str, contexts, meta=None) -> float:
+        """调用当前对象执行主要操作。
+
+        Args:
+            query: 参数 query（str）。
+            expected: 参数 expected（str）。
+            contexts: 参数 contexts。
+            meta: 参数 meta。
+
+        Returns:
+            返回 float。
+        """
         question_date = (meta or {}).get("question_date", "")
         memories = "\n".join(f"- {c}" for c in contexts) or "(no memories retrieved)"
         answer = self._chat(_ANSWER_SYS, _answer_user(query, memories, question_date)).strip()
@@ -120,6 +158,15 @@ def openai_chat(
     client = OpenAI(base_url=base_url, api_key=api_key)
 
     def _chat(system: str, user: str) -> str:
+        """执行 `chat` 操作。
+
+        Args:
+            system: 参数 system（str）。
+            user: 参数 user（str）。
+
+        Returns:
+            返回 str。
+        """
         kwargs = {
             "model": model,
             "messages": [

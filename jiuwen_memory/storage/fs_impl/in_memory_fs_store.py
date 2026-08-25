@@ -22,6 +22,14 @@ _ScopeKey = Tuple[str, str, str, str, str]
 
 
 def _skey(scope: Scope) -> _ScopeKey:
+    """执行 `skey` 操作。
+
+    Args:
+        scope: 参数 scope（Scope）。
+
+    Returns:
+        返回 _ScopeKey。
+    """
     return (scope.org, scope.space, scope.user, scope.agent, scope.session)
 
 
@@ -34,6 +42,12 @@ class _Blob:
     __slots__ = ("data", "created_at", "updated_at")
 
     def __init__(self, data: bytes, now: float) -> None:
+        """初始化 _Blob。
+
+        Args:
+            data: 参数 data（bytes）。
+            now: 参数 now（float）。
+        """
         self.data = data
         self.created_at = now
         self.updated_at = now
@@ -43,15 +57,35 @@ class InMemoryFSStore(FSStore):
     """纯内存二进制存储：ref 寻址，按 scope 隔离。"""
 
     def __init__(self) -> None:
+        """初始化 InMemoryFSStore。"""
         self._data: Dict[_ScopeKey, Dict[str, _Blob]] = defaultdict(dict)
 
     def store_type(self) -> StoreType:
+        """返回当前存储类型。
+
+        Returns:
+            返回 StoreType。
+        """
         return StoreType.FS
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def insert(self, scope: Scope, key: str, data: BinaryIO) -> str:
+        """插入一条或多条记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            key: 参数 key（str）。
+            data: 参数 data（BinaryIO）。
+
+        Returns:
+            返回 str。
+
+        Raises:
+            ConflictError: 执行失败时抛出。
+        """
         ref = _ref(scope, key)
         bucket = self._data[_skey(scope)]
         if ref in bucket:
@@ -60,6 +94,19 @@ class InMemoryFSStore(FSStore):
         return ref
 
     def update(self, scope: Scope, ref: str, data: BinaryIO) -> str:
+        """更新已有记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ref: 参数 ref（str）。
+            data: 参数 data（BinaryIO）。
+
+        Returns:
+            返回 str。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         bucket = self._data[_skey(scope)]
         if ref not in bucket:
             raise NotFoundError("file", ref)
@@ -69,15 +116,45 @@ class InMemoryFSStore(FSStore):
         return ref
 
     def delete(self, scope: Scope, ref: str) -> None:
+        """删除指定的记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ref: 参数 ref（str）。
+        """
         self._data[_skey(scope)].pop(ref, None)
 
     def get(self, scope: Scope, ref: str) -> BinaryIO:
+        """读取指定的记录或资源。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ref: 参数 ref（str）。
+
+        Returns:
+            返回 BinaryIO。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         bucket = self._data[_skey(scope)]
         if ref not in bucket:
             raise NotFoundError("file", ref)
         return io.BytesIO(bucket[ref].data)
 
     def stat(self, scope: Scope, ref: str) -> FileStat:
+        """返回指定资源的元信息。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ref: 参数 ref（str）。
+
+        Returns:
+            返回 FileStat。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         bucket = self._data[_skey(scope)]
         if ref not in bucket:
             raise NotFoundError("file", ref)
@@ -96,4 +173,9 @@ class InMemoryFSStore(FSStore):
 
 @FsProducer.register("memory")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return InMemoryFSStore()

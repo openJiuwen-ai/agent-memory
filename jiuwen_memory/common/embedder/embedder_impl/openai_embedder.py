@@ -65,6 +65,19 @@ class OpenAIEmbedder(Embedder):
         config_namespace: str = NS_EMBEDDER,
     ) -> None:
         # 构造期值仅作 ConfigSource 缺失时的回落；运行时以 fetch 为准
+        """初始化 OpenAIEmbedder。
+
+        Args:
+            model_name: 参数 model_name（str）。
+            base_url: 参数 base_url（str | None）。
+            api_key: 参数 api_key（str）。
+            dimension: 参数 dimension（int）。
+            max_batch_size: 参数 max_batch_size（int）。
+            ssl_verify: 参数 ssl_verify（bool）。
+            ssl_ca_cert: 参数 ssl_ca_cert（str | None）。
+            config_source: 参数 config_source（ConfigSource | None）。
+            config_namespace: 参数 config_namespace（str）。
+        """
         self._fallback_model = model_name
         self._fallback_base_url = base_url or None
         self._fallback_api_key = api_key

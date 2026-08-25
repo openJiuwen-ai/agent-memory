@@ -39,6 +39,16 @@ class VectorRecaller(Recaller):
         *,
         layer: str = "l2",
     ) -> None:
+        """初始化 VectorRecaller。
+
+        Args:
+            storage: 参数 storage（Storage）。
+            min_similarity: 参数 min_similarity（float）。
+            layer: 参数 layer（str）。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         port_name = "default" if layer == "l2" else f"layers_{layer}"
         self._vector = (
             storage.vector_port(port_name) if storage.has_vector_port(port_name) else None
@@ -67,15 +77,36 @@ class VectorRecaller(Recaller):
         return self._vector
 
     def operator_type(self) -> RetrievalOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 RetrievalOperatorType。
+        """
         return RetrievalOperatorType.RECALLER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def channel(self) -> RecallChannel:
+        """执行 `channel` 操作。
+
+        Returns:
+            返回 RecallChannel。
+        """
         return RecallChannel.VECTOR
 
     def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]:
+        """召回与查询匹配的记忆结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（ParsedQuery）。
+            top_k: 参数 top_k（int）。
+
+        Returns:
+            返回 list[ScoredUnit]。
+        """
         if self._vector is None or not query.vector:
             return []  # store 未注入（该层未配）或无 query 向量 → 跳过
         vq = VectorQuery(vector=query.vector, top_k=top_k, filters=query.scalar_filters)
@@ -115,6 +146,11 @@ class VectorRecaller(Recaller):
 
 @RecallerProducer.register("vector")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return VectorRecaller(
         StorageProducer.resolve(config),
         min_similarity=float(Factory.cfg_get(config, "min_similarity", 0.0)),
@@ -125,6 +161,11 @@ def _build(config):
 @RecallerProducer.register("vector_l0")
 def _build_l0(config):
     # layers_index_enabled 默认 true；未配置命名端口时该层返回空结果。
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     if not config.get("layers_index_enabled", True):
         return VectorRecaller(StorageProducer.resolve(config), layer="l0")
     recaller = VectorRecaller(StorageProducer.resolve(config), layer="l0")
@@ -135,6 +176,11 @@ def _build_l0(config):
 
 @RecallerProducer.register("vector_l1")
 def _build_l1(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     if not config.get("layers_index_enabled", True):
         return VectorRecaller(StorageProducer.resolve(config), layer="l1")
     recaller = VectorRecaller(StorageProducer.resolve(config), layer="l1")

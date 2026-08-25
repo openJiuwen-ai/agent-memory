@@ -54,6 +54,16 @@ class DynamicLLMExtractor(Extractor):
         retry_max_retries: int = 3,
         retry_backoff_ms: int = 1000,
     ) -> None:
+        """初始化 DynamicLLMExtractor。
+
+        Args:
+            llm: 参数 llm（LLM）。
+            fallback: 参数 fallback（Extractor）。
+            prompt_registry: 参数 prompt_registry（PromptRegistry | None）。
+            min_confidence: 参数 min_confidence（float）。
+            retry_max_retries: 参数 retry_max_retries（int）。
+            retry_backoff_ms: 参数 retry_backoff_ms（int）。
+        """
         self._llm = llm
         self._fallback = fallback
         self._prompts = prompt_registry or PromptRegistry()
@@ -139,6 +149,17 @@ class DynamicLLMExtractor(Extractor):
     ) -> list[MemoryUnit]:
         # prompt_key 是引用 yml prompts.extract 段的 key；查 registry 取真实文本。
         # registry 未配置或 key 缺失时回退把 key 本身当文本用（兼容内联文本）。
+        """执行 `extract_strategy` 操作。
+
+        Args:
+            units: 参数 units（list[MemoryUnit]）。
+            context: 参数 context（ExtractContext | None）。
+            strategy: 参数 strategy（str）。
+            prompt_key: 参数 prompt_key（str）。
+
+        Returns:
+            返回 list[MemoryUnit]。
+        """
         prompt = self._prompts.get(PHASE_EXTRACT, prompt_key)
         if prompt is None:
             prompt = prompt_key
@@ -172,6 +193,16 @@ class DynamicLLMExtractor(Extractor):
         sources: list[MemoryUnit],
         strategy: str,
     ) -> list[ExtractionCandidate]:
+        """解析输入数据并返回结构化结果。
+
+        Args:
+            response: 参数 response（str）。
+            sources: 参数 sources（list[MemoryUnit]）。
+            strategy: 参数 strategy（str）。
+
+        Returns:
+            返回 list[ExtractionCandidate]。
+        """
         items = self._helper.parse_llm_response(response)
         candidates = self._helper.build_candidates(items, sources)
         for candidate in candidates:

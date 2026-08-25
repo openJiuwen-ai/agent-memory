@@ -41,6 +41,16 @@ class VectorDedup(Dedup):
         tier_filter: bool = True,
         scope_filter: bool = True,
     ) -> None:
+        """初始化 VectorDedup。
+
+        Args:
+            storage: 参数 storage（Storage）。
+            embedder: 参数 embedder（Embedder）。
+            min_similarity: 参数 min_similarity（float）。
+            top_k: 参数 top_k（int）。
+            tier_filter: 参数 tier_filter（bool）。
+            scope_filter: 参数 scope_filter（bool）。
+        """
         super().__init__(
             storage,
             min_similarity=min_similarity,
@@ -52,13 +62,27 @@ class VectorDedup(Dedup):
         self._embedder = embedder
 
     def operator_type(self) -> OperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 OperatorType。
+        """
         return OperatorType.EVOLVER  # 去重召回服务于 evolver，复用其算子类型
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def recall(self, candidate: MemoryUnit) -> list[tuple[MemoryUnit, float]]:
         # Step A: 向量化候选
+        """召回与查询匹配的记忆结果。
+
+        Args:
+            candidate: 参数 candidate（MemoryUnit）。
+
+        Returns:
+            返回 list[tuple[MemoryUnit, float]]。
+        """
         try:
             candidate_vector = self._embedder.embed([candidate.content])[0]
         except Exception as exc:
@@ -125,6 +149,11 @@ class VectorDedup(Dedup):
 
 @DedupProducer.register("vector")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return VectorDedup(
         storage=StorageProducer.resolve(config),
         embedder=EmbedderProducer.dep(config, default="hashing"),

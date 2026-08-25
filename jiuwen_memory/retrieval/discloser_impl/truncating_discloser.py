@@ -20,9 +20,15 @@ class TruncatingDiscloser(Discloser):
     """L0 摘要 / L1 片段 / L2 全文，优先预生成、兜底截断。无状态，无后端依赖。"""
 
     def operator_type(self) -> RetrievalOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 RetrievalOperatorType。
+        """
         return RetrievalOperatorType.DISCLOSER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def disclose(
@@ -33,6 +39,18 @@ class TruncatingDiscloser(Discloser):
         level: DisclosureLevel,
         max_tokens: int | None = None,
     ) -> list[RetrievedItem]:
+        """执行 `disclose` 操作。
+
+        Args:
+            query: 参数 query（ParsedQuery）。
+            candidates: 参数 candidates（list[ScoredCandidate]）。
+            units: 参数 units（dict[str, MemoryUnit]）。
+            level: 参数 level（DisclosureLevel）。
+            max_tokens: 参数 max_tokens（int | None）。
+
+        Returns:
+            返回 list[RetrievedItem]。
+        """
         items: list[RetrievedItem] = []
         effective_level = DisclosureLevel.L0 if level == DisclosureLevel.ADAPTIVE else level
         for su in candidates:
@@ -54,6 +72,14 @@ class TruncatingDiscloser(Discloser):
 
     def _l0(self, unit: MemoryUnit) -> str:
         # 优先预生成 l0；空则截断 content 兜底
+        """执行 `l0` 操作。
+
+        Args:
+            unit: 参数 unit（MemoryUnit）。
+
+        Returns:
+            返回 str。
+        """
         if unit.layers.l0:
             return unit.layers.l0
         content = unit.content
@@ -62,6 +88,15 @@ class TruncatingDiscloser(Discloser):
 
     def _l1(self, unit: MemoryUnit, keywords: list[str]) -> str:
         # 优先预生成 l1；空则围绕关键词取窗兜底
+        """执行 `l1` 操作。
+
+        Args:
+            unit: 参数 unit（MemoryUnit）。
+            keywords: 参数 keywords（list[str]）。
+
+        Returns:
+            返回 str。
+        """
         if unit.layers.l1:
             return unit.layers.l1
         content = unit.content
@@ -81,4 +116,9 @@ class TruncatingDiscloser(Discloser):
 
 @DiscloserProducer.register("truncating")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return TruncatingDiscloser()  # 无状态：点读/过滤/重排已上移到 Retriever 阶段

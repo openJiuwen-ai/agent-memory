@@ -22,20 +22,48 @@ class RRFFuser(Fuser):
     """Reciprocal Rank Fusion：跨路按名次倒数累加。"""
 
     def __init__(self, k: int = 60) -> None:
+        """初始化 RRFFuser。
+
+        Args:
+            k: 参数 k（int）。
+        """
         self._k = k
 
     def operator_type(self) -> RetrievalOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 RetrievalOperatorType。
+        """
         return RetrievalOperatorType.FUSER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def explain(self) -> dict[str, str]:
+        """执行 `explain` 操作。
+
+        Returns:
+            返回 dict[str, str]。
+        """
         return {"strategy": "rrf", "rrf_k": str(self._k)}
 
     def fuse(
         self, query: ParsedQuery, candidates: list[list[ScoredCandidate]]
     ) -> list[ScoredCandidate]:
+        """执行 `fuse` 操作。
+
+        Args:
+            query: 参数 query（ParsedQuery）。
+            candidates: 参数 candidates（list[list[ScoredCandidate]]）。
+
+        Returns:
+            返回 list[ScoredCandidate]。
+
+        Raises:
+            KeyError: 执行失败时抛出。
+        """
         scores: dict[str, float] = {}
         channel: dict[str, RecallChannel] = {}
         evidence: dict[str, list[ChannelEvidence]] = {}
@@ -79,4 +107,9 @@ class RRFFuser(Fuser):
 @FuserProducer.register("rrf")
 def _build(config):
     # RRF 常数 k 可经 params 覆盖（默认 60）。
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return RRFFuser(k=Factory.cfg_get(config, "k", 60))

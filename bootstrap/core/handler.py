@@ -74,6 +74,19 @@ _STATUS = {
 
 
 def _parse_positive_int(value: Any, *, name: str, default: int) -> int:
+    """解析输入数据并返回结构化结果。
+
+    Args:
+        value: 参数 value（Any）。
+        name: 参数 name（str）。
+        default: 参数 default（int）。
+
+    Returns:
+        返回 int。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     if value is None:
         return default
     try:
@@ -86,6 +99,19 @@ def _parse_positive_int(value: Any, *, name: str, default: int) -> int:
 
 
 def _parse_non_negative_int(value: Any, *, name: str, default: int) -> int:
+    """解析输入数据并返回结构化结果。
+
+    Args:
+        value: 参数 value（Any）。
+        name: 参数 name（str）。
+        default: 参数 default（int）。
+
+    Returns:
+        返回 int。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     if value is None:
         return default
     try:
@@ -98,6 +124,17 @@ def _parse_non_negative_int(value: Any, *, name: str, default: int) -> int:
 
 
 def _parse_string_list(value: Any) -> list[str] | None:
+    """解析输入数据并返回结构化结果。
+
+    Args:
+        value: 参数 value（Any）。
+
+    Returns:
+        返回 list[str] | None。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     if value is None:
         return None
     if isinstance(value, str):
@@ -110,6 +147,17 @@ def _parse_string_list(value: Any) -> list[str] | None:
 
 
 def _parse_extensions(value: Any) -> dict[str, str] | None:
+    """解析输入数据并返回结构化结果。
+
+    Args:
+        value: 参数 value（Any）。
+
+    Returns:
+        返回 dict[str, str] | None。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     if value is None:
         return None
     if not isinstance(value, dict):
@@ -120,11 +168,31 @@ def _parse_extensions(value: Any) -> dict[str, str] | None:
 
 
 def _space_value(payload: Body, *, prefix: str = "") -> str:
+    """执行 `space_value` 操作。
+
+    Args:
+        payload: 参数 payload（Body）。
+        prefix: 参数 prefix（str）。
+
+    Returns:
+        返回 str。
+    """
     raw = payload.get(f"{prefix}space", payload.get(f"{prefix}space_id", ""))
     return "" if raw is None else str(raw)
 
 
 def _require_space(payload: Body) -> str:
+    """校验并取得必需的资源或参数。
+
+    Args:
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 str。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     value = _space_value(payload)
     if not value:
         raise ValidationError("missing required field: 'space'")
@@ -192,6 +260,18 @@ def _actor_scope(payload: Body) -> Scope:
 
 
 def _require(payload: Body, key: str) -> Any:
+    """校验并取得必需的资源或参数。
+
+    Args:
+        payload: 参数 payload（Body）。
+        key: 参数 key（str）。
+
+    Returns:
+        返回 Any。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     value = payload.get(key)
     if value in (None, ""):
         raise ValidationError(f"missing required field: {key!r}")
@@ -199,6 +279,14 @@ def _require(payload: Body, key: str) -> Any:
 
 
 def _unit_view(unit: MemoryUnit) -> Body:
+    """执行 `unit_view` 操作。
+
+    Args:
+        unit: 参数 unit（MemoryUnit）。
+
+    Returns:
+        返回 Body。
+    """
     return {
         "item_id": unit.id,
         "content": unit.content,
@@ -212,6 +300,14 @@ def _unit_view(unit: MemoryUnit) -> Body:
 
 
 def _batch_item_view(item: BatchWriteItem) -> Body:
+    """执行 `batch_item_view` 操作。
+
+    Args:
+        item: 参数 item（BatchWriteItem）。
+
+    Returns:
+        返回 Body。
+    """
     return {
         "content": item.content,
         "scope": {
@@ -234,6 +330,18 @@ def _batch_item_view(item: BatchWriteItem) -> Body:
 
 
 def _parse_occurred_at(value: Any, *, name: str) -> datetime | None:
+    """解析输入数据并返回结构化结果。
+
+    Args:
+        value: 参数 value（Any）。
+        name: 参数 name（str）。
+
+    Returns:
+        返回 datetime | None。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -247,6 +355,14 @@ def _parse_occurred_at(value: Any, *, name: str) -> datetime | None:
 
 
 def _scope_view(scope: Scope) -> Body:
+    """执行 `scope_view` 操作。
+
+    Args:
+        scope: 参数 scope（Scope）。
+
+    Returns:
+        返回 Body。
+    """
     return {
         "org": scope.org,
         "space": scope.space,
@@ -257,6 +373,14 @@ def _scope_view(scope: Scope) -> Body:
 
 
 def _event_view(ev: AuditEvent) -> Body:
+    """执行 `event_view` 操作。
+
+    Args:
+        ev: 参数 ev（AuditEvent）。
+
+    Returns:
+        返回 Body。
+    """
     return {
         "action": ev.action,
         "target_id": ev.target_id,
@@ -269,6 +393,17 @@ def _event_view(ev: AuditEvent) -> Body:
 
 
 def _string_map(value: Any) -> dict[str, str]:
+    """执行 `string_map` 操作。
+
+    Args:
+        value: 参数 value（Any）。
+
+    Returns:
+        返回 dict[str, str]。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     if value is None:
         return {}
     if not isinstance(value, dict):
@@ -277,6 +412,15 @@ def _string_map(value: Any) -> dict[str, str]:
 
 
 def _bool_value(value: Any, *, default: bool = False) -> bool:
+    """执行 `bool_value` 操作。
+
+    Args:
+        value: 参数 value（Any）。
+        default: 参数 default（bool）。
+
+    Returns:
+        返回 bool。
+    """
     if value is None:
         return default
     if isinstance(value, bool):
@@ -285,6 +429,19 @@ def _bool_value(value: Any, *, default: bool = False) -> bool:
 
 
 def _enum_value(enum_cls: Any, value: Any, *, name: str) -> Any:
+    """执行 `enum_value` 操作。
+
+    Args:
+        enum_cls: 参数 enum_cls（Any）。
+        value: 参数 value（Any）。
+        name: 参数 name（str）。
+
+    Returns:
+        返回 Any。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     try:
         return enum_cls(str(value))
     except ValueError:
@@ -293,6 +450,17 @@ def _enum_value(enum_cls: Any, value: Any, *, name: str) -> Any:
 
 
 def _space_policy(payload: Body) -> SpacePolicy:
+    """执行 `space_policy` 操作。
+
+    Args:
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 SpacePolicy。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     raw = payload.get("policy")
     if raw is None:
         raw = {}
@@ -313,6 +481,14 @@ def _space_policy(payload: Body) -> SpacePolicy:
 
 
 def _space_info_view(info) -> Body:
+    """执行 `space_info_view` 操作。
+
+    Args:
+        info: 参数 info。
+
+    Returns:
+        返回 Body。
+    """
     return {
         "org": info.org,
         "space": info.space,
@@ -327,6 +503,14 @@ def _space_info_view(info) -> Body:
 
 
 def _space_policy_view(policy) -> Body:
+    """执行 `space_policy_view` 操作。
+
+    Args:
+        policy: 参数 policy。
+
+    Returns:
+        返回 Body。
+    """
     return {
         "require_space": policy.require_space,
         "principal_path": policy.principal_path.value,
@@ -339,6 +523,14 @@ def _space_policy_view(policy) -> Body:
 
 
 def _space_member(payload: Body) -> SpaceMember:
+    """执行 `space_member` 操作。
+
+    Args:
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 SpaceMember。
+    """
     target = _target_scope(payload)
     member_scope = Scope(
         org=str(payload.get("member_tenant_id", target.org)) or target.org,
@@ -351,10 +543,26 @@ def _space_member(payload: Body) -> SpaceMember:
 
 
 def _member_scope(payload: Body) -> Scope:
+    """执行 `member_scope` 操作。
+
+    Args:
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Scope。
+    """
     return _space_member(payload).scope
 
 
 def _member_view(member) -> Body:
+    """执行 `member_view` 操作。
+
+    Args:
+        member: 参数 member。
+
+    Returns:
+        返回 Body。
+    """
     return {
         "scope": _scope_view(member.scope),
         "role": member.role,
@@ -364,6 +572,14 @@ def _member_view(member) -> Body:
 
 
 def _usage_view(usage) -> Body:
+    """执行 `usage_view` 操作。
+
+    Args:
+        usage: 参数 usage。
+
+    Returns:
+        返回 Body。
+    """
     return {
         "org": usage.org,
         "space": usage.space,
@@ -508,6 +724,18 @@ def _ingest_job_status(srv, job, *, identity: Scope) -> Body:
 
 
 def _add(srv, payload: Body) -> Body:
+    """添加记忆或业务记录。
+
+    Args:
+        srv: 参数 srv。
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Body。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     scope, actor = _target_scope(payload), _actor_scope(payload)
     if "metadata" in payload:
         raise ValidationError(
@@ -550,6 +778,18 @@ def _add(srv, payload: Body) -> Body:
 
 
 def _batch_add(srv, payload: Body) -> Body:
+    """执行 `batch_add` 操作。
+
+    Args:
+        srv: 参数 srv。
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Body。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     raw_defaults = payload.get("defaults", {})
     if not isinstance(raw_defaults, dict):
         raise ValidationError("batch_add defaults must be an object")
@@ -659,6 +899,15 @@ def _batch_add(srv, payload: Body) -> Body:
 
 
 def _search(srv, payload: Body) -> Body:
+    """检索与查询匹配的结果。
+
+    Args:
+        srv: 参数 srv。
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Body。
+    """
     scope, actor = _target_scope(payload), _actor_scope(payload)
     # extensions：把调用方在请求里给的自定义配置透传给（可能自定义的）
     # 检索模块。显式校验 dict：extensions 为 truthy 非 dict（字符串/列表等
@@ -710,6 +959,18 @@ def _search(srv, payload: Body) -> Body:
 
 
 def _list(srv, payload: Body) -> Body:
+    """列出符合条件的记录或资源。
+
+    Args:
+        srv: 参数 srv。
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Body。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     scope, actor = _target_scope(payload), _actor_scope(payload)
     offset = _parse_non_negative_int(payload.get("offset"), name="offset", default=0)
     limit = _parse_positive_int(payload.get("limit"), name="limit", default=100)
@@ -739,12 +1000,33 @@ def _list(srv, payload: Body) -> Body:
 
 
 def _get(srv, payload: Body) -> Body:
+    """读取指定的记录或资源。
+
+    Args:
+        srv: 参数 srv。
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Body。
+    """
     scope, actor = _target_scope(payload), _actor_scope(payload)
     unit = srv.api.get(_require(payload, "item_id"), scope, identity=actor)
     return {"ok": True, "op": "get", "item": _unit_view(unit)}
 
 
 def _update(srv, payload: Body) -> Body:
+    """更新已有记忆或业务记录。
+
+    Args:
+        srv: 参数 srv。
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Body。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     scope, actor = _target_scope(payload), _actor_scope(payload)
     if "metadata" in payload:
         raise ValidationError(
@@ -761,6 +1043,15 @@ def _update(srv, payload: Body) -> Body:
 
 
 def _delete(srv, payload: Body) -> Body:
+    """删除指定的记忆或业务记录。
+
+    Args:
+        srv: 参数 srv。
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Body。
+    """
     scope, actor = _target_scope(payload), _actor_scope(payload)
     mode = DeleteMode.PURGE if payload.get("hard") else DeleteMode.FORGET
     selector = DeleteSelector(
@@ -916,6 +1207,15 @@ def _revoke(srv, payload: Body) -> Body:
 
 
 def _create_space(srv, payload: Body) -> Body:
+    """创建并返回新的资源。
+
+    Args:
+        srv: 参数 srv。
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Body。
+    """
     actor = _actor_scope(payload)
     org = str(payload.get("tenant_id", "default")) or "default"
     space = _require_space(payload)
@@ -935,6 +1235,15 @@ def _create_space(srv, payload: Body) -> Body:
 
 
 def _get_space(srv, payload: Body) -> Body:
+    """读取指定的记录或资源。
+
+    Args:
+        srv: 参数 srv。
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Body。
+    """
     actor = _actor_scope(payload)
     org = str(payload.get("tenant_id", "default")) or "default"
     info = srv.api.get_space(org, _require_space(payload), identity=actor)
@@ -942,6 +1251,15 @@ def _get_space(srv, payload: Body) -> Body:
 
 
 def _list_spaces(srv, payload: Body) -> Body:
+    """列出符合条件的记录或资源。
+
+    Args:
+        srv: 参数 srv。
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Body。
+    """
     actor = _actor_scope(payload)
     org = str(payload.get("tenant_id", "default")) or "default"
     raw_status = payload.get("status")
@@ -962,6 +1280,15 @@ def _list_spaces(srv, payload: Body) -> Body:
 
 
 def _update_space(srv, payload: Body) -> Body:
+    """更新已有记忆或业务记录。
+
+    Args:
+        srv: 参数 srv。
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Body。
+    """
     actor = _actor_scope(payload)
     org = str(payload.get("tenant_id", "default")) or "default"
     patch = SpacePatch(
@@ -980,6 +1307,15 @@ def _update_space(srv, payload: Body) -> Body:
 
 
 def _archive_space(srv, payload: Body) -> Body:
+    """执行 `archive_space` 操作。
+
+    Args:
+        srv: 参数 srv。
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Body。
+    """
     actor = _actor_scope(payload)
     org = str(payload.get("tenant_id", "default")) or "default"
     info = srv.api.archive_space(org, _require_space(payload), identity=actor)
@@ -987,6 +1323,15 @@ def _archive_space(srv, payload: Body) -> Body:
 
 
 def _delete_space(srv, payload: Body) -> Body:
+    """删除指定的记忆或业务记录。
+
+    Args:
+        srv: 参数 srv。
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Body。
+    """
     actor = _actor_scope(payload)
     org = str(payload.get("tenant_id", "default")) or "default"
     mode = _enum_value(DeleteMode, payload.get("mode", "purge"), name="mode")
@@ -1002,6 +1347,15 @@ def _delete_space(srv, payload: Body) -> Body:
 
 
 def _export_space(srv, payload: Body) -> Body:
+    """执行 `export_space` 操作。
+
+    Args:
+        srv: 参数 srv。
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Body。
+    """
     actor = _actor_scope(payload)
     org = str(payload.get("tenant_id", "default")) or "default"
     export_id = srv.api.export_space(
@@ -1014,6 +1368,15 @@ def _export_space(srv, payload: Body) -> Body:
 
 
 def _space_usage(srv, payload: Body) -> Body:
+    """执行 `space_usage` 操作。
+
+    Args:
+        srv: 参数 srv。
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Body。
+    """
     actor = _actor_scope(payload)
     org = str(payload.get("tenant_id", "default")) or "default"
     usage = srv.api.space_usage(org, _require_space(payload), identity=actor)
@@ -1021,6 +1384,15 @@ def _space_usage(srv, payload: Body) -> Body:
 
 
 def _get_space_policy(srv, payload: Body) -> Body:
+    """读取指定的记录或资源。
+
+    Args:
+        srv: 参数 srv。
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Body。
+    """
     actor = _actor_scope(payload)
     org = str(payload.get("tenant_id", "default")) or "default"
     policy = srv.api.get_space_policy(org, _require_space(payload), identity=actor)
@@ -1028,6 +1400,15 @@ def _get_space_policy(srv, payload: Body) -> Body:
 
 
 def _set_space_policy(srv, payload: Body) -> Body:
+    """设置指定的配置或状态。
+
+    Args:
+        srv: 参数 srv。
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Body。
+    """
     actor = _actor_scope(payload)
     org = str(payload.get("tenant_id", "default")) or "default"
     policy = srv.api.set_space_policy(
@@ -1040,6 +1421,15 @@ def _set_space_policy(srv, payload: Body) -> Body:
 
 
 def _list_space_members(srv, payload: Body) -> Body:
+    """列出符合条件的记录或资源。
+
+    Args:
+        srv: 参数 srv。
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Body。
+    """
     actor = _actor_scope(payload)
     org = str(payload.get("tenant_id", "default")) or "default"
     members = srv.api.list_space_members(org, _require_space(payload), identity=actor)
@@ -1052,6 +1442,15 @@ def _list_space_members(srv, payload: Body) -> Body:
 
 
 def _add_space_member(srv, payload: Body) -> Body:
+    """添加记忆或业务记录。
+
+    Args:
+        srv: 参数 srv。
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Body。
+    """
     actor = _actor_scope(payload)
     org = str(payload.get("tenant_id", "default")) or "default"
     srv.api.add_space_member(org, _require_space(payload), _space_member(payload), identity=actor)
@@ -1059,6 +1458,15 @@ def _add_space_member(srv, payload: Body) -> Body:
 
 
 def _remove_space_member(srv, payload: Body) -> Body:
+    """执行 `remove_space_member` 操作。
+
+    Args:
+        srv: 参数 srv。
+        payload: 参数 payload（Body）。
+
+    Returns:
+        返回 Body。
+    """
     actor = _actor_scope(payload)
     org = str(payload.get("tenant_id", "default")) or "default"
     srv.api.remove_space_member(

@@ -74,10 +74,24 @@ class _IndexGroup:
 
 
 def _now() -> datetime:
+    """执行 `now` 操作。
+
+    Returns:
+        返回 datetime。
+    """
     return datetime.now(timezone.utc)
 
 
 def _apply_patch(old: MemoryUnit, patch: MemoryPatch) -> MemoryUnit:
+    """执行 `apply_patch` 操作。
+
+    Args:
+        old: 参数 old（MemoryUnit）。
+        patch: 参数 patch（MemoryPatch）。
+
+    Returns:
+        返回 MemoryUnit。
+    """
     new = copy.deepcopy(old)
     if patch.content is not None:
         new.segments = [Segment(content=patch.content, assets=list(old.assets), source=old.source)]
@@ -97,6 +111,15 @@ def _apply_patch(old: MemoryUnit, patch: MemoryPatch) -> MemoryUnit:
 
 
 def _valid_at(unit: MemoryUnit, as_of: datetime) -> bool:
+    """执行 `valid_at` 操作。
+
+    Args:
+        unit: 参数 unit（MemoryUnit）。
+        as_of: 参数 as_of（datetime）。
+
+    Returns:
+        返回 bool。
+    """
     valid_from = unit.temporal.t_valid
     invalid_from = unit.temporal.t_invalid
     has_non_positive_validity_window = (
@@ -112,10 +135,23 @@ def _valid_at(unit: MemoryUnit, as_of: datetime) -> bool:
 
 
 def _valid_sort_key(unit: MemoryUnit) -> datetime:
+    """执行 `valid_sort_key` 操作。
+
+    Args:
+        unit: 参数 unit（MemoryUnit）。
+
+    Returns:
+        返回 datetime。
+    """
     return unit.temporal.t_valid or datetime.min.replace(tzinfo=timezone.utc)
 
 
 def _downweight_importance(unit: MemoryUnit) -> None:
+    """执行 `downweight_importance` 操作。
+
+    Args:
+        unit: 参数 unit（MemoryUnit）。
+    """
     raw = unit.system_metadata.get("importance")
     try:
         value = float(raw) if raw is not None else 1.0
@@ -135,6 +171,15 @@ class _ScopedUnitId:
 
 
 def _scoped_unit_id(scope: Scope, unit_id: str) -> _ScopedUnitId:
+    """执行 `scoped_unit_id` 操作。
+
+    Args:
+        scope: 参数 scope（Scope）。
+        unit_id: 参数 unit_id（str）。
+
+    Returns:
+        返回 _ScopedUnitId。
+    """
     return _ScopedUnitId(
         org=scope.org,
         space=scope.space,
@@ -146,10 +191,28 @@ def _scoped_unit_id(scope: Scope, unit_id: str) -> _ScopedUnitId:
 
 
 def _truthy(metadata: dict[str, MetadataValueType], key: str) -> bool:
+    """执行 `truthy` 操作。
+
+    Args:
+        metadata: 参数 metadata（dict[str, MetadataValueType]）。
+        key: 参数 key（str）。
+
+    Returns:
+        返回 bool。
+    """
     return str(metadata.get(key, "")).strip().lower() == "true"
 
 
 def _matches_delete_selector(unit: MemoryUnit, selector: DeleteSelector) -> bool:
+    """执行 `matches_delete_selector` 操作。
+
+    Args:
+        unit: 参数 unit（MemoryUnit）。
+        selector: 参数 selector（DeleteSelector）。
+
+    Returns:
+        返回 bool。
+    """
     wanted_ids = set(selector.unit_ids)
     wanted_tags = set(selector.tags)
     if wanted_ids and unit.id not in wanted_ids:
@@ -167,6 +230,15 @@ def _expand_provenance_descendants(
     units: list[tuple[Scope, str, MemoryUnit]],
     seed_ids: set[_ScopedUnitId],
 ) -> set[_ScopedUnitId]:
+    """执行 `expand_provenance_descendants` 操作。
+
+    Args:
+        units: 参数 units（list[tuple[Scope, str, MemoryUnit]]）。
+        seed_ids: 参数 seed_ids（set[_ScopedUnitId]）。
+
+    Returns:
+        返回 set[_ScopedUnitId]。
+    """
     purge_ids = set(seed_ids)
     changed = True
     while changed:
@@ -185,6 +257,14 @@ def _expand_provenance_descendants(
 
 
 def _permission_context_from_unit(unit: MemoryUnit) -> PermissionContext:
+    """执行 `permission_context_from_unit` 操作。
+
+    Args:
+        unit: 参数 unit（MemoryUnit）。
+
+    Returns:
+        返回 PermissionContext。
+    """
     return PermissionContext(
         resource_type="memory_unit",
         memory_type=str(unit.system_metadata.get("memory_type", "")).strip(),
@@ -216,6 +296,26 @@ class CloudEngine(MemoryEngine):
         default_pipeline_name: str = "default",
         job_factory: JobFactory | None = None,
     ) -> None:
+        """初始化 CloudEngine。
+
+        Args:
+            ingestor: 参数 ingestor（Ingestor）。
+            index_builder: 参数 index_builder（IndexBuilder）。
+            retriever: 参数 retriever（Retriever）。
+            storage: 参数 storage（Storage）。
+            scheduler: 参数 scheduler（Scheduler）。
+            evolver: 参数 evolver（Evolver）。
+            lifecycle: 参数 lifecycle（LifecycleManager）。
+            classifier: 参数 classifier（Classifier | None）。
+            pipeline: 参数 pipeline（MemoryPipeline | None）。
+            message_type_key: 参数 message_type_key（str）。
+            default_message_type: 参数 default_message_type（str）。
+            default_pipeline_name: 参数 default_pipeline_name（str）。
+            job_factory: 参数 job_factory（JobFactory | None）。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         self._ingestor = ingestor
         self._index = index_builder
         self._retriever = retriever
@@ -233,9 +333,15 @@ class CloudEngine(MemoryEngine):
         self._job_factory = job_factory
 
     def operator_type(self) -> ControlOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 ControlOperatorType。
+        """
         return ControlOperatorType.ENGINE
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     async def write(
@@ -250,6 +356,25 @@ class CloudEngine(MemoryEngine):
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
+        """写入指定的数据或资源。
+
+        Args:
+            content: 参数 content（str）。
+            scope: 参数 scope（Scope）。
+            source: 参数 source（Modality）。
+            assets: 参数 assets（list[str] | None）。
+            tags: 参数 tags（list[str] | None）。
+            system_metadata: 参数 system_metadata（dict[str, MetadataValueType] | None）。
+            user_metadata: 参数 user_metadata（dict[str, MetadataValueType] | None）。
+            occurred_at: 参数 occurred_at（datetime | None）。
+
+        Returns:
+            返回 list[MemoryUnit]。
+
+        Raises:
+            ValueError: 执行失败时抛出。
+            RuntimeError: 执行失败时抛出。
+        """
         raw_meta = dict(system_metadata or {})
         procedural = _truthy(raw_meta, "procedural")
         infer = _truthy(raw_meta, "infer")
@@ -350,6 +475,15 @@ class CloudEngine(MemoryEngine):
         *,
         continue_on_error: bool = True,
     ) -> BatchWriteResult:
+        """执行 `batch_write` 操作。
+
+        Args:
+            items: 参数 items（list[BatchWriteItem]）。
+            continue_on_error: 参数 continue_on_error（bool）。
+
+        Returns:
+            返回 BatchWriteResult。
+        """
         outcomes: list[BatchWriteOutcome] = []
         for index, item in enumerate(items):
             try:
@@ -446,6 +580,15 @@ class CloudEngine(MemoryEngine):
         return units
 
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
+        """召回与查询匹配的记忆结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（RetrievalQuery）。
+
+        Returns:
+            返回 RetrievalResult。
+        """
         routed_query = self._normalized_query(query)
         binding = self._recall_binding(routed_query)
         retriever = binding.retriever if binding is not None else self._retriever
@@ -461,6 +604,19 @@ class CloudEngine(MemoryEngine):
         extensions: dict[str, str] | None = None,
         filters: FilterExpr | None = None,
     ) -> MemoryListResult:
+        """列出符合条件的记录或资源。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            offset: 参数 offset（int）。
+            limit: 参数 limit（int）。
+            memory_types: 参数 memory_types（list[str] | None）。
+            extensions: 参数 extensions（dict[str, str] | None）。
+            filters: 参数 filters（FilterExpr | None）。
+
+        Returns:
+            返回 MemoryListResult。
+        """
         return list_page(
             self._storage,
             scope,
@@ -474,6 +630,15 @@ class CloudEngine(MemoryEngine):
     async def permission_context_for_unit(
         self, unit_id: str, scope: Scope
     ) -> PermissionContext:
+        """执行 `permission_context_for_unit` 操作。
+
+        Args:
+            unit_id: 参数 unit_id（str）。
+            scope: 参数 scope（Scope）。
+
+        Returns:
+            返回 PermissionContext。
+        """
         return _permission_context_from_unit(self._load(scope, unit_id))
 
     async def list_with_permission_contexts(
@@ -486,6 +651,19 @@ class CloudEngine(MemoryEngine):
         extensions: dict[str, Any] | None = None,
         filters: FilterExpr | None = None,
     ) -> tuple[MemoryListResult, list[PermissionContext]]:
+        """执行 `list_with_permission_contexts` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            offset: 参数 offset（int）。
+            limit: 参数 limit（int）。
+            memory_types: 参数 memory_types（list[str] | None）。
+            extensions: 参数 extensions（dict[str, Any] | None）。
+            filters: 参数 filters（FilterExpr | None）。
+
+        Returns:
+            返回 tuple[MemoryListResult, list[PermissionContext]]。
+        """
         result = await self.list(
             scope,
             offset=offset,
@@ -500,6 +678,14 @@ class CloudEngine(MemoryEngine):
     async def permission_contexts_for_delete(
         self, selector: DeleteSelector
     ) -> list[PermissionContext]:
+        """执行 `permission_contexts_for_delete` 操作。
+
+        Args:
+            selector: 参数 selector（DeleteSelector）。
+
+        Returns:
+            返回 list[PermissionContext]。
+        """
         scopes = [selector.scope] if selector.scope is not None else self._storage.scopes()
         if not scopes:
             scopes = [Scope()]
@@ -513,6 +699,19 @@ class CloudEngine(MemoryEngine):
     async def get(
         self, unit_id: str, scope: Scope, as_of: datetime | None = None
     ) -> MemoryUnit:
+        """读取指定的记录或资源。
+
+        Args:
+            unit_id: 参数 unit_id（str）。
+            scope: 参数 scope（Scope）。
+            as_of: 参数 as_of（datetime | None）。
+
+        Returns:
+            返回 MemoryUnit。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         if as_of is None:
             return self._load(scope, unit_id)
 
@@ -529,6 +728,16 @@ class CloudEngine(MemoryEngine):
     async def update(
         self, unit_id: str, scope: Scope, patch: MemoryPatch
     ) -> MemoryUnit:
+        """更新已有记忆或业务记录。
+
+        Args:
+            unit_id: 参数 unit_id（str）。
+            scope: 参数 scope（Scope）。
+            patch: 参数 patch（MemoryPatch）。
+
+        Returns:
+            返回 MemoryUnit。
+        """
         old = self._load(scope, unit_id)
         new = _apply_patch(old, patch)
         self._normalize_unit_metadata(new)
@@ -578,6 +787,17 @@ class CloudEngine(MemoryEngine):
         return new
 
     async def delete(self, selector: DeleteSelector) -> list[str]:
+        """删除指定的记忆或业务记录。
+
+        Args:
+            selector: 参数 selector（DeleteSelector）。
+
+        Returns:
+            返回 list[str]。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         selector_is_empty = (
             not selector.unit_ids and not selector.tags and selector.before is None
         )
@@ -647,6 +867,15 @@ class CloudEngine(MemoryEngine):
         return affected
 
     async def purge_space(self, org: str, space: str) -> list[str]:
+        """执行 `purge_space` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+
+        Returns:
+            返回 list[str]。
+        """
         purged: list[str] = []
         for scope in [
             candidate
@@ -688,12 +917,40 @@ class CloudEngine(MemoryEngine):
         return job_id
 
     async def admin_get(self, key: str) -> str:
+        """执行 `admin_get` 操作。
+
+        Args:
+            key: 参数 key（str）。
+
+        Returns:
+            返回 str。
+
+        Raises:
+            NotImplementedError: 执行失败时抛出。
+        """
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")
 
     async def admin_set(self, key: str, value: str) -> None:
+        """执行 `admin_set` 操作。
+
+        Args:
+            key: 参数 key（str）。
+            value: 参数 value（str）。
+
+        Raises:
+            NotImplementedError: 执行失败时抛出。
+        """
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")
 
     async def admin_all(self) -> dict[str, str]:
+        """执行 `admin_all` 操作。
+
+        Returns:
+            返回 dict[str, str]。
+
+        Raises:
+            NotImplementedError: 执行失败时抛出。
+        """
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")
 
     def _write_middle_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
@@ -707,6 +964,14 @@ class CloudEngine(MemoryEngine):
     def _normalized_metadata(
         self, metadata: dict[str, MetadataValueType] | None
     ) -> dict[str, MetadataValueType]:
+        """规范化输入值。
+
+        Args:
+            metadata: 参数 metadata（dict[str, MetadataValueType] | None）。
+
+        Returns:
+            返回 dict[str, MetadataValueType]。
+        """
         meta = dict(metadata or {})
         message_type = (
             str(meta.get(self._message_type_key, "")).strip()
@@ -717,6 +982,11 @@ class CloudEngine(MemoryEngine):
         return meta
 
     def _normalize_unit_metadata(self, unit: MemoryUnit) -> None:
+        """规范化输入值。
+
+        Args:
+            unit: 参数 unit（MemoryUnit）。
+        """
         meta = dict(unit.system_metadata)
         message_type = (
             str(meta.get(self._message_type_key, "")).strip()
@@ -727,6 +997,14 @@ class CloudEngine(MemoryEngine):
         unit.system_metadata = meta
 
     def _normalized_query(self, query: RetrievalQuery) -> RetrievalQuery:
+        """规范化输入值。
+
+        Args:
+            query: 参数 query（RetrievalQuery）。
+
+        Returns:
+            返回 RetrievalQuery。
+        """
         value = str(query.extensions.get(self._message_type_key, "")).strip()
         if value or not self._default_message_type:
             return query
@@ -756,6 +1034,15 @@ class CloudEngine(MemoryEngine):
         assets: list[str] | None,
         tags: list[str] | None,
     ) -> None:
+        """执行 `prepare_ingested_units` 操作。
+
+        Args:
+            units: 参数 units（list[MemoryUnit]）。
+            scope: 参数 scope（Scope）。
+            system_metadata: 参数 system_metadata（dict[str, MetadataValueType]）。
+            assets: 参数 assets（list[str] | None）。
+            tags: 参数 tags（list[str] | None）。
+        """
         for unit in units:
             self._ensure_unit_scope(unit, scope)
             unit.system_metadata.update(system_metadata)
@@ -767,26 +1054,64 @@ class CloudEngine(MemoryEngine):
             unit.tags = list(tags or [])
 
     def _stamp_pipeline(self, units: list[MemoryUnit], pipeline_name: str) -> None:
+        """执行 `stamp_pipeline` 操作。
+
+        Args:
+            units: 参数 units（list[MemoryUnit]）。
+            pipeline_name: 参数 pipeline_name（str）。
+        """
         if not pipeline_name:
             return
         for unit in units:
             unit.system_metadata["pipeline"] = pipeline_name
 
     def _write_binding(self, units: list[MemoryUnit]) -> PipelineBinding | None:
+        """写入指定的数据或资源。
+
+        Args:
+            units: 参数 units（list[MemoryUnit]）。
+
+        Returns:
+            返回 PipelineBinding | None。
+        """
         if self._pipeline is None:
             return None
         return self._pipeline.select_for_write(units)
 
     def _recall_binding(self, query: RetrievalQuery) -> PipelineBinding | None:
+        """召回与查询匹配的记忆结果。
+
+        Args:
+            query: 参数 query（RetrievalQuery）。
+
+        Returns:
+            返回 PipelineBinding | None。
+        """
         if self._pipeline is None:
             return None
         return self._pipeline.select_for_recall(query)
 
     def _index_for_unit(self, unit: MemoryUnit) -> IndexBuilder:
+        """执行 `index_for_unit` 操作。
+
+        Args:
+            unit: 参数 unit（MemoryUnit）。
+
+        Returns:
+            返回 IndexBuilder。
+        """
         binding = self._write_binding([unit])
         return binding.index_builder if binding is not None else self._index
 
     def _group_by_index(self, units: list[MemoryUnit]) -> list[_IndexGroup]:
+        """执行 `group_by_index` 操作。
+
+        Args:
+            units: 参数 units（list[MemoryUnit]）。
+
+        Returns:
+            返回 list[_IndexGroup]。
+        """
         groups: dict[int, _IndexGroup] = {}
         for unit in units:
             builder = self._index_for_unit(unit)
@@ -799,14 +1124,36 @@ class CloudEngine(MemoryEngine):
     def _remove_indexes(
         self, units: list[MemoryUnit], *, mode: IndexRemoveMode = IndexRemoveMode.HARD
     ) -> None:
+        """执行 `remove_indexes` 操作。
+
+        Args:
+            units: 参数 units（list[MemoryUnit]）。
+        """
         for group in self._group_by_index(units):
             group.builder.remove(group.units, mode=mode)
 
     def _update_indexes(self, units: list[MemoryUnit]) -> None:
+        """更新已有记忆或业务记录。
+
+        Args:
+            units: 参数 units（list[MemoryUnit]）。
+        """
         for group in self._group_by_index(units):
             group.builder.update(group.units)
 
     def _load(self, scope: Scope, unit_id: str) -> MemoryUnit:
+        """加载并解析输入数据。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            unit_id: 参数 unit_id（str）。
+
+        Returns:
+            返回 MemoryUnit。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         units = self._storage.get(scope, [unit_id])
         if not units:
             raise NotFoundError("memory_unit", unit_id)
@@ -815,12 +1162,32 @@ class CloudEngine(MemoryEngine):
         return unit
 
     def _list_units(self, scope: Scope) -> list[MemoryUnit]:
+        """列出符合条件的记录或资源。
+
+        Args:
+            scope: 参数 scope（Scope）。
+
+        Returns:
+            返回 list[MemoryUnit]。
+        """
         units = self._storage.list(scope, limit=1_000_000).items
         for unit in units:
             self._ensure_unit_scope(unit, scope)
         return units
 
     def _version_family(self, scope: Scope, unit_id: str) -> list[MemoryUnit]:
+        """执行 `version_family` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            unit_id: 参数 unit_id（str）。
+
+        Returns:
+            返回 list[MemoryUnit]。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         units_by_id = {unit.id: unit for unit in self._list_units(scope)}
         if unit_id not in units_by_id:
             raise NotFoundError("memory_unit", unit_id)
@@ -842,6 +1209,15 @@ class CloudEngine(MemoryEngine):
         return [units_by_id[uid] for uid in seen]
 
     def _ensure_unit_scope(self, unit: MemoryUnit, scope: Scope) -> None:
+        """确保所需资源或状态已就绪。
+
+        Args:
+            unit: 参数 unit（MemoryUnit）。
+            scope: 参数 scope（Scope）。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if unit.scope != scope:
             raise ValidationError(
                 f"memory unit {unit.id!r} scope mismatch: expected {scope!r}, got {unit.scope!r}"
@@ -849,6 +1225,14 @@ class CloudEngine(MemoryEngine):
 
 
 def _optional_classifier(config) -> Classifier | None:
+    """执行 `optional_classifier` 操作。
+
+    Args:
+        config: 参数 config。
+
+    Returns:
+        返回 Classifier | None。
+    """
     if ClassifierProducer.TOP_NAME in config.params:
         return ClassifierProducer.dep(config)
     ns = config.ctx.namespaces.get(ClassifierProducer.TOP_NAME, {})
@@ -858,6 +1242,14 @@ def _optional_classifier(config) -> Classifier | None:
 
 
 def _optional_pipeline(config) -> MemoryPipeline | None:
+    """执行 `optional_pipeline` 操作。
+
+    Args:
+        config: 参数 config。
+
+    Returns:
+        返回 MemoryPipeline | None。
+    """
     if PipelineProducer.TOP_NAME in config.params:
         return PipelineProducer.dep(config)
     ns = config.ctx.namespaces.get(PipelineProducer.TOP_NAME, {})
@@ -880,6 +1272,11 @@ def _optional_job_factory(config) -> JobFactory | None:
 
 @EngineProducer.register("cloud")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     ib_default = "hybrid" if config.get("vector_enabled", True) else "fulltext"
     return CloudEngine(
         IngestorProducer.dep(config, default="simple"),

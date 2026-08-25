@@ -15,4 +15,12 @@ class EntityNormalizer:
 
     @staticmethod
     def normalize(text: str) -> str:
+        """规范化输入值。
+
+        Args:
+            text: 参数 text（str）。
+
+        Returns:
+            返回 str。
+        """
         return " ".join(text.strip().lower().split())

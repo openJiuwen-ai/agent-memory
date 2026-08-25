@@ -71,6 +71,14 @@ def _lit(value: Any) -> str:
 
 
 def _hit_id(hit: Any) -> str:
+    """执行 `hit_id` 操作。
+
+    Args:
+        hit: 参数 hit（Any）。
+
+    Returns:
+        返回 str。
+    """
     if isinstance(hit, dict):
         entity = hit.get("entity") or {}
         if isinstance(entity, dict) and entity.get("logical_id"):
@@ -88,6 +96,14 @@ def _hit_id(hit: Any) -> str:
 
 
 def _logical_id(physical_id: str) -> str:
+    """执行 `logical_id` 操作。
+
+    Args:
+        physical_id: 参数 physical_id（str）。
+
+    Returns:
+        返回 str。
+    """
     parts = physical_id.split(":", 5)
     return parts[-1] if len(parts) == 6 else physical_id
 
@@ -110,6 +126,26 @@ class MilvusVectorStore(VectorStore):
         config_namespace: str = "vector_store",
         **options: Any,
     ) -> None:
+        """初始化 MilvusVectorStore。
+
+        Args:
+            uri: 参数 uri（str | None）。
+            host: 参数 host（str）。
+            port: 参数 port（int）。
+            token: 参数 token（str | None）。
+            collection: 参数 collection（str）。
+            dim: 参数 dim（int）。
+            metric_type: 参数 metric_type（str）。
+            consistency_level: 参数 consistency_level（str）。
+            scope_field_max_length: 参数 scope_field_max_length（int）。
+            id_max_length: 参数 id_max_length（int）。
+            config_source: 参数 config_source。
+            config_namespace: 参数 config_namespace（str）。
+            **options: 参数 options（Any）。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if dim <= 0:
             raise ValidationError("milvus vector store requires positive 'dim'")
         self._fallback_uri = uri or f"http://{host}:{port}"
@@ -131,6 +167,14 @@ class MilvusVectorStore(VectorStore):
 
     @property
     def client(self) -> Any:
+        """返回 client 属性。
+
+        Returns:
+            返回 Any。
+
+        Raises:
+            BackendError: 执行失败时抛出。
+        """
         uri = self._resolved_uri()
         if self._client is not None and self._client_uri == uri:
             return self._client
@@ -152,10 +196,27 @@ class MilvusVectorStore(VectorStore):
     # --------------------------------------------------------------- 序列化
     @staticmethod
     def _physical_id(scope: Scope, logical_id: str) -> str:
+        """执行 `physical_id` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            logical_id: 参数 logical_id（str）。
+
+        Returns:
+            返回 str。
+        """
         return ":".join((*scope_segments(scope), logical_id))
 
     @staticmethod
     def _to_record(row: dict[str, Any]) -> VectorRecord:
+        """执行 `to_record` 操作。
+
+        Args:
+            row: 参数 row（dict[str, Any]）。
+
+        Returns:
+            返回 VectorRecord。
+        """
         return VectorRecord(
             id=row.get("logical_id") or _logical_id(row["id"]),
             vector=list(row.get("vector") or []),
@@ -164,6 +225,17 @@ class MilvusVectorStore(VectorStore):
 
     @staticmethod
     def _filter_clause(fc: FilterClause) -> str:
+        """执行 `filter_clause` 操作。
+
+        Args:
+            fc: 参数 fc（FilterClause）。
+
+        Returns:
+            返回 str。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         key = filter_field_metadata_key(fc.field)
         field = f"metadata[{_lit(key)}]"
         if fc.op in _CMP_OPS:
@@ -180,6 +252,15 @@ class MilvusVectorStore(VectorStore):
 
     @classmethod
     def _row(cls, scope: Scope, rec: VectorRecord) -> dict[str, Any]:
+        """执行 `row` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            rec: 参数 rec（VectorRecord）。
+
+        Returns:
+            返回 dict[str, Any]。
+        """
         return {
             "id": cls._physical_id(scope, rec.id),
             "logical_id": rec.id,
@@ -210,15 +291,34 @@ class MilvusVectorStore(VectorStore):
 
     # --------------------------------------------------------------- CRUD
     def store_type(self) -> StoreType:
+        """返回当前存储类型。
+
+        Returns:
+            返回 StoreType。
+        """
         return StoreType.VECTOR
 
     def health(self) -> None:
+        """执行健康检查。
+
+        Raises:
+            HealthCheckError: 执行失败时抛出。
+        """
         try:
             self.client.list_collections()
         except Exception as exc:
             raise HealthCheckError(f"milvus health failed: {exc}") from exc
 
     def insert(self, scope: Scope, records: list[VectorRecord]) -> None:
+        """插入一条或多条记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            records: 参数 records（list[VectorRecord]）。
+
+        Raises:
+            ConflictError: 执行失败时抛出。
+        """
         if not records:
             return
         existing = self._existing_ids(scope, [r.id for r in records])
@@ -228,6 +328,15 @@ class MilvusVectorStore(VectorStore):
             self.client.insert(self._collection, data=[self._row(scope, r) for r in records])
 
     def update(self, scope: Scope, records: list[VectorRecord]) -> None:
+        """更新已有记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            records: 参数 records（list[VectorRecord]）。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         if not records:
             return
         ids = [r.id for r in records]
@@ -238,6 +347,12 @@ class MilvusVectorStore(VectorStore):
             self.client.upsert(self._collection, data=[self._row(scope, r) for r in records])
 
     def delete(self, scope: Scope, ids: list[str]) -> None:
+        """删除指定的记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ids: 参数 ids（list[str]）。
+        """
         if not ids:
             return
         items = ", ".join(_lit(self._physical_id(scope, i)) for i in ids)
@@ -247,6 +362,15 @@ class MilvusVectorStore(VectorStore):
             self.client.delete(self._collection, filter=filter_)  # scope 内幂等删除
 
     def get(self, scope: Scope, ids: list[str]) -> list[VectorRecord]:
+        """读取指定的记录或资源。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ids: 参数 ids（list[str]）。
+
+        Returns:
+            返回 list[VectorRecord]。
+        """
         if not ids:
             return []
         items = ", ".join(_lit(self._physical_id(scope, i)) for i in ids)
@@ -262,6 +386,15 @@ class MilvusVectorStore(VectorStore):
         return [self._to_record(row) for row in rows]
 
     def search(self, scope: Scope, query: VectorQuery) -> list[ScoredID]:
+        """检索与查询匹配的结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（VectorQuery）。
+
+        Returns:
+            返回 list[ScoredID]。
+        """
         expr = self._expr(scope, query.filters)
         with wrap_backend("milvus search"):
             results = self.client.search(
@@ -285,6 +418,16 @@ class MilvusVectorStore(VectorStore):
         # 把"召回 + 取 metadata"合并为一次 Milvus search 请求，省掉调用方再发
         # 一次 get 的网络 RTT 与服务端 id 匹配开销。output_fields 仅认 "metadata"
         # （归并所需的 unit_id 即在其中），其余值忽略并记日志。
+        """召回与查询匹配的记忆结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（VectorQuery）。
+            output_fields: 参数 output_fields（list[str] | None）。
+
+        Returns:
+            返回 list[ScoredHit]。
+        """
         fetch_meta = bool(output_fields) and "metadata" in output_fields
         if output_fields:
             unknown = [f for f in output_fields if f != "metadata"]
@@ -322,6 +465,11 @@ class MilvusVectorStore(VectorStore):
 
     def score_higher_is_better(self) -> bool:
         # 分数方向随 metric_type：COSINE/IP 越大越相关；L2 等距离型越小越相关。
+        """执行 `score_higher_is_better` 操作。
+
+        Returns:
+            返回 bool。
+        """
         return str(self._metric_type).upper() in ("COSINE", "IP")
 
     def _resolved_uri(self) -> str:
@@ -337,6 +485,7 @@ class MilvusVectorStore(VectorStore):
         return live or self._fallback_uri
 
     def _ensure_collection(self) -> None:
+        """确保所需资源或状态已就绪。"""
         if self._client.has_collection(self._collection):
             self._client.load_collection(self._collection)
             return
@@ -364,9 +513,26 @@ class MilvusVectorStore(VectorStore):
         self._client.load_collection(self._collection)
 
     def _scope_expr(self, scope: Scope) -> str:
+        """执行 `scope_expr` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+
+        Returns:
+            返回 str。
+        """
         return " && ".join(f'scope_{dim} == {_lit(val)}' for dim, val in scope_dims(scope))
 
     def _expr(self, scope: Scope, filters: FilterExpr | None) -> str:
+        """执行 `expr` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            filters: 参数 filters（FilterExpr | None）。
+
+        Returns:
+            返回 str。
+        """
         parts = [self._scope_expr(scope)] if scope_dims(scope) else []
         compiled = self._compile_filter(filters)
         if compiled:
@@ -374,6 +540,15 @@ class MilvusVectorStore(VectorStore):
         return " && ".join(p for p in parts if p)
 
     def _existing_ids(self, scope: Scope, ids: list[str]) -> set[str]:
+        """执行 `existing_ids` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ids: 参数 ids（list[str]）。
+
+        Returns:
+            返回 set[str]。
+        """
         physical_ids = [self._physical_id(scope, rec_id) for rec_id in ids]
         items = ", ".join(_lit(i) for i in physical_ids)
         with wrap_backend("milvus query"):
@@ -393,6 +568,11 @@ class MilvusVectorStore(VectorStore):
 def _build(config):
     # 三方库后端：uri 必填；dim 取本组件 params.dim，回退到内核共享的 embedder_dim。
     # 其余构造参数（host/port/一致性/字段长度等）均有默认值，可经 params 覆盖。
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     from jiuwen_memory.config.config_source import ConfigSourceProducer
 
     ssl = read_ssl_config(config, backend="milvus vector")

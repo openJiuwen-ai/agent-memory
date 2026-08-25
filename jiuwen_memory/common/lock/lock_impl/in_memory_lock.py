@@ -34,11 +34,26 @@ class InMemoryLockProvider(LockProvider):
         lease_ms: int = DEFAULT_LEASE_MS,
         wait_timeout_ms: int = DEFAULT_WAIT_TIMEOUT_MS,
     ) -> None:
+        """初始化 InMemoryLockProvider。
+
+        Args:
+            lease_ms: 参数 lease_ms（int）。
+            wait_timeout_ms: 参数 wait_timeout_ms（int）。
+        """
         super().__init__(lease_ms=lease_ms, wait_timeout_ms=wait_timeout_ms)
         # key -> (token, 过期时刻)；用 monotonic 计时，不受系统时钟调整影响
         self._entries: dict[str, tuple[str, float]] = {}
 
     async def renew(self, handle: LockHandle, *, lease_ms: int | None = None) -> bool:
+        """执行 `renew` 操作。
+
+        Args:
+            handle: 参数 handle（LockHandle）。
+            lease_ms: 参数 lease_ms（int | None）。
+
+        Returns:
+            返回 bool。
+        """
         now = time.monotonic()
         if self._held_token(handle.key, now) != handle.token:
             return False
@@ -57,6 +72,19 @@ class InMemoryLockProvider(LockProvider):
         return entry[0]
 
     async def _acquire(self, key: str, *, lease_ms: int, wait_timeout_ms: int) -> LockHandle:
+        """执行 `acquire` 操作。
+
+        Args:
+            key: 参数 key（str）。
+            lease_ms: 参数 lease_ms（int）。
+            wait_timeout_ms: 参数 wait_timeout_ms（int）。
+
+        Returns:
+            返回 LockHandle。
+
+        Raises:
+            LockTimeoutError: 执行失败时抛出。
+        """
         token = uuid.uuid4().hex
         async for _ in wait_ticks(wait_timeout_ms):
             now = time.monotonic()
@@ -68,12 +96,25 @@ class InMemoryLockProvider(LockProvider):
         )
 
     async def _release(self, handle: LockHandle) -> None:
+        """执行 `release` 操作。
+
+        Args:
+            handle: 参数 handle（LockHandle）。
+        """
         if self._held_token(handle.key, time.monotonic()) == handle.token:
             self._entries.pop(handle.key, None)
 
 
 @LockProducer.register("memory")
 def _build(config: Any) -> InMemoryLockProvider:
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config（Any）。
+
+    Returns:
+        返回 InMemoryLockProvider。
+    """
     return InMemoryLockProvider(
         lease_ms=int(Factory.cfg_get(config, "lease_ms", DEFAULT_LEASE_MS)),
         wait_timeout_ms=int(Factory.cfg_get(config, "wait_timeout_ms", DEFAULT_WAIT_TIMEOUT_MS)),

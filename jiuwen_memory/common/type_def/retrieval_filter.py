@@ -10,6 +10,15 @@ from .memory_filter import matches_memory_unit
 
 
 def valid_at(unit: MemoryUnit, as_of: datetime) -> bool:
+    """执行 `valid_at` 操作。
+
+    Args:
+        unit: 参数 unit（MemoryUnit）。
+        as_of: 参数 as_of（datetime）。
+
+    Returns:
+        返回 bool。
+    """
     temporal = unit.temporal
     if temporal.t_valid is not None and as_of < temporal.t_valid:
         return False
@@ -21,6 +30,16 @@ def valid_at(unit: MemoryUnit, as_of: datetime) -> bool:
 def passes_lifecycle(
     unit: MemoryUnit, as_of: datetime | None, include_archived: bool = False
 ) -> bool:
+    """执行 `passes_lifecycle` 操作。
+
+    Args:
+        unit: 参数 unit（MemoryUnit）。
+        as_of: 参数 as_of（datetime | None）。
+        include_archived: 参数 include_archived（bool）。
+
+    Returns:
+        返回 bool。
+    """
     if as_of is None:
         allowed = {LifecycleState.ACTIVE}
         if include_archived:
@@ -32,6 +51,16 @@ def passes_lifecycle(
 def in_event_window(
     unit: MemoryUnit, time_from: datetime | None, time_to: datetime | None
 ) -> bool:
+    """执行 `in_event_window` 操作。
+
+    Args:
+        unit: 参数 unit（MemoryUnit）。
+        time_from: 参数 time_from（datetime | None）。
+        time_to: 参数 time_to（datetime | None）。
+
+    Returns:
+        返回 bool。
+    """
     if time_from is None and time_to is None:
         return True
     event_time = unit.temporal.t_event
@@ -43,6 +72,15 @@ def in_event_window(
 
 
 def matches_retrieval_filters(unit: MemoryUnit, filters: FilterExpr | None) -> bool:
+    """执行 `matches_retrieval_filters` 操作。
+
+    Args:
+        unit: 参数 unit（MemoryUnit）。
+        filters: 参数 filters（FilterExpr | None）。
+
+    Returns:
+        返回 bool。
+    """
     return matches_memory_unit(unit, filters)
 
 
@@ -55,6 +93,19 @@ def is_retrieval_candidate(
     filters: FilterExpr | None,
     include_archived: bool,
 ) -> bool:
+    """执行 `is_retrieval_candidate` 操作。
+
+    Args:
+        unit: 参数 unit（MemoryUnit）。
+        as_of: 参数 as_of（datetime | None）。
+        time_from: 参数 time_from（datetime | None）。
+        time_to: 参数 time_to（datetime | None）。
+        filters: 参数 filters（FilterExpr | None）。
+        include_archived: 参数 include_archived（bool）。
+
+    Returns:
+        返回 bool。
+    """
     return (
         passes_lifecycle(unit, as_of, include_archived)
         and in_event_window(unit, time_from, time_to)

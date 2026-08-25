@@ -37,6 +37,11 @@ class SqliteAuditLogger(AuditLogger):
     """Persist audit events in a local SQLite database."""
 
     def __init__(self, db_path: str) -> None:
+        """初始化 SqliteAuditLogger。
+
+        Args:
+            db_path: 参数 db_path（str）。
+        """
         self.db_path = db_path
         self._lock = RLock()
         if db_path != ":memory:":
@@ -46,9 +51,23 @@ class SqliteAuditLogger(AuditLogger):
         self._init_schema()
 
     def record(self, event: AuditEvent) -> None:
+        """执行 `record` 操作。
+
+        Args:
+            event: 参数 event（AuditEvent）。
+        """
         self._record_many([event])
 
     def query(self, filters: dict[str, str], limit: int = 100) -> list[AuditEvent]:
+        """执行 `query` 操作。
+
+        Args:
+            filters: 参数 filters（dict[str, str]）。
+            limit: 参数 limit（int）。
+
+        Returns:
+            返回 list[AuditEvent]。
+        """
         with self._lock:
             clauses: list[str] = []
             params: list[object] = []
@@ -87,6 +106,7 @@ class SqliteAuditLogger(AuditLogger):
         return [_row_to_event(row) for row in rows]
 
     def _init_schema(self) -> None:
+        """执行 `init_schema` 操作。"""
         with self._lock, self._conn:
             self._conn.execute(
                 """
@@ -158,10 +178,23 @@ class SqliteAuditLogger(AuditLogger):
 
 @AuditProducer.register("sqlite")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return SqliteAuditLogger(config.get("db_path", ":memory:"))
 
 
 def _event_to_row(event: AuditEvent) -> AuditRow:
+    """执行 `event_to_row` 操作。
+
+    Args:
+        event: 参数 event（AuditEvent）。
+
+    Returns:
+        返回 AuditRow。
+    """
     occurred_at = event.occurred_at.isoformat() if event.occurred_at else None
     detail_json = json.dumps(event.detail, ensure_ascii=False, sort_keys=True)
     return AuditRow(
@@ -186,6 +219,14 @@ def _event_to_row(event: AuditEvent) -> AuditRow:
 
 
 def _row_to_event(row: sqlite3.Row) -> AuditEvent:
+    """执行 `row_to_event` 操作。
+
+    Args:
+        row: 参数 row（sqlite3.Row）。
+
+    Returns:
+        返回 AuditEvent。
+    """
     occurred_at = row["occurred_at"]
     return AuditEvent(
         id=row["id"],

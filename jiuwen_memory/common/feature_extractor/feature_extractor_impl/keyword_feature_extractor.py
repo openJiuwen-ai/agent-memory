@@ -21,15 +21,34 @@ class KeywordFeatureExtractor(FeatureExtractor):
     """分词关键词 + 拉丁长词实体的轻量特征抽取。"""
 
     def __init__(self, tokenizer: Tokenizer) -> None:
+        """初始化 KeywordFeatureExtractor。
+
+        Args:
+            tokenizer: 参数 tokenizer（Tokenizer）。
+        """
         self._tokenizer = tokenizer
 
     def plugin_type(self) -> PluginType:
+        """返回当前插件类型。
+
+        Returns:
+            返回 PluginType。
+        """
         return PluginType.FEATURE_EXTRACTOR
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def extract(self, text: str) -> FeatureSet:
+        """执行 `extract` 操作。
+
+        Args:
+            text: 参数 text（str）。
+
+        Returns:
+            返回 FeatureSet。
+        """
         tokens = self._tokenizer.tokenize(text)
         keywords = list(dict.fromkeys(tokens))  # 去重保序
         entities = [
@@ -47,5 +66,10 @@ class KeywordFeatureExtractor(FeatureExtractor):
 
 @FeatureExtractorProducer.register("keyword")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     tokenizer = TokenizerProducer.dep(config, default="whitespace")
     return KeywordFeatureExtractor(tokenizer)

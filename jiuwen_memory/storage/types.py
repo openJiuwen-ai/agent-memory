@@ -92,6 +92,7 @@ class VectorQuery:
     return_metadata: bool = False
 
     def __post_init__(self) -> None:
+        """执行 `post_init` 操作。"""
         self.filters = normalize(self.filters)  # 边界规范化：兼容旧 list，内部统一 FilterExpr
 
 
@@ -118,6 +119,7 @@ class TextQuery:
     filters: FilterExpr | None = None  # scope 之外的元数据谓词（AND/OR/NOT 树；None 表示无过滤）
 
     def __post_init__(self) -> None:
+        """执行 `post_init` 操作。"""
         self.filters = normalize(self.filters)  # 边界规范化：兼容旧 list，内部统一 FilterExpr
 
 
@@ -187,6 +189,7 @@ class FusionQuery:
     vector_weight: float = 0.5  # 向量得分权重（1.0 纯向量，0.0 纯文本）
 
     def __post_init__(self) -> None:
+        """执行 `post_init` 操作。"""
         self.scalar_filters = normalize(self.scalar_filters)  # 边界规范化：兼容旧 list，内部统一
 
 

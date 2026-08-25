@@ -38,10 +38,26 @@ _V = 4
 
 
 def _dt(value: datetime | None) -> str | None:
+    """执行 `dt` 操作。
+
+    Args:
+        value: 参数 value（datetime | None）。
+
+    Returns:
+        返回 str | None。
+    """
     return value.isoformat() if value is not None else None
 
 
 def _pt(value: str | None) -> datetime | None:
+    """执行 `pt` 操作。
+
+    Args:
+        value: 参数 value（str | None）。
+
+    Returns:
+        返回 datetime | None。
+    """
     return datetime.fromisoformat(value) if value else None
 
 

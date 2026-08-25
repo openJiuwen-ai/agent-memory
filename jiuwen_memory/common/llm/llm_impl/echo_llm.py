@@ -17,12 +17,27 @@ class EchoLLM(LLM):
     """回显式 LLM 桩：返回最后一条 user 消息内容。"""
 
     def plugin_type(self) -> PluginType:
+        """返回当前插件类型。
+
+        Returns:
+            返回 PluginType。
+        """
         return PluginType.LLM
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def chat(self, messages: list[ChatMessage], **options: object) -> str:
+        """调用模型生成对话结果。
+
+        Args:
+            messages: 参数 messages（list[ChatMessage]）。
+            **options: 参数 options（object）。
+
+        Returns:
+            返回 str。
+        """
         del options
         for msg in reversed(messages):
             if msg.role == "user":
@@ -31,6 +46,14 @@ class EchoLLM(LLM):
 
 
 def _content_text(content: str | list[dict]) -> str:
+    """执行 `content_text` 操作。
+
+    Args:
+        content: 参数 content（str | list[dict]）。
+
+    Returns:
+        返回 str。
+    """
     if isinstance(content, str):
         return content
     return "\n".join(
@@ -45,4 +68,9 @@ def _content_text(content: str | list[dict]) -> str:
 
 @LlmProducer.register("echo")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return EchoLLM()

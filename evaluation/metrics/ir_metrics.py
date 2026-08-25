@@ -17,6 +17,16 @@ from evaluation.core.types import CaseOutcome, MetricResult
 
 
 def recall_at_k(ranked: Sequence[str], relevant: set[str], k: int) -> float:
+    """执行 `recall_at_k` 操作。
+
+    Args:
+        ranked: 参数 ranked（Sequence[str]）。
+        relevant: 参数 relevant（set[str]）。
+        k: 参数 k（int）。
+
+    Returns:
+        返回 float。
+    """
     if not relevant:
         return 0.0
     hit = sum(1 for uid in ranked[:k] if uid in relevant)
@@ -24,6 +34,16 @@ def recall_at_k(ranked: Sequence[str], relevant: set[str], k: int) -> float:
 
 
 def precision_at_k(ranked: Sequence[str], relevant: set[str], k: int) -> float:
+    """执行 `precision_at_k` 操作。
+
+    Args:
+        ranked: 参数 ranked（Sequence[str]）。
+        relevant: 参数 relevant（set[str]）。
+        k: 参数 k（int）。
+
+    Returns:
+        返回 float。
+    """
     if k <= 0:
         return 0.0
     hit = sum(1 for uid in ranked[:k] if uid in relevant)
@@ -31,6 +51,15 @@ def precision_at_k(ranked: Sequence[str], relevant: set[str], k: int) -> float:
 
 
 def reciprocal_rank(ranked: Sequence[str], relevant: set[str]) -> float:
+    """执行 `reciprocal_rank` 操作。
+
+    Args:
+        ranked: 参数 ranked（Sequence[str]）。
+        relevant: 参数 relevant（set[str]）。
+
+    Returns:
+        返回 float。
+    """
     for idx, uid in enumerate(ranked):
         if uid in relevant:
             return 1.0 / (idx + 1)
@@ -38,6 +67,15 @@ def reciprocal_rank(ranked: Sequence[str], relevant: set[str]) -> float:
 
 
 def average_precision(ranked: Sequence[str], relevant: set[str]) -> float:
+    """执行 `average_precision` 操作。
+
+    Args:
+        ranked: 参数 ranked（Sequence[str]）。
+        relevant: 参数 relevant（set[str]）。
+
+    Returns:
+        返回 float。
+    """
     if not relevant:
         return 0.0
     hits = 0
@@ -50,12 +88,31 @@ def average_precision(ranked: Sequence[str], relevant: set[str]) -> float:
 
 
 def ndcg_at_k(ranked: Sequence[str], relevant: set[str], k: int) -> float:
+    """执行 `ndcg_at_k` 操作。
+
+    Args:
+        ranked: 参数 ranked（Sequence[str]）。
+        relevant: 参数 relevant（set[str]）。
+        k: 参数 k（int）。
+
+    Returns:
+        返回 float。
+    """
     dcg = sum(1.0 / math.log2(idx + 2) for idx, uid in enumerate(ranked[:k]) if uid in relevant)
     ideal = sum(1.0 / math.log2(idx + 2) for idx in range(min(len(relevant), k)))
     return dcg / ideal if ideal else 0.0
 
 
 def _macro(graded: list[CaseOutcome], fn: Callable[[CaseOutcome], float]) -> float:
+    """执行 `macro` 操作。
+
+    Args:
+        graded: 参数 graded（list[CaseOutcome]）。
+        fn: 参数 fn（Callable[[CaseOutcome], float]）。
+
+    Returns:
+        返回 float。
+    """
     if not graded:
         return 0.0
     return sum(fn(outcome) for outcome in graded) / len(graded)
@@ -65,6 +122,14 @@ def ir_metrics(ks: Sequence[int] = (1, 3, 5, 10)):
     """构造 IR 指标套件（一个 :data:`evaluation.core.runner.Metric`）。"""
 
     def _metric(outcomes: list[CaseOutcome]) -> list[MetricResult]:
+        """执行 `metric` 操作。
+
+        Args:
+            outcomes: 参数 outcomes（list[CaseOutcome]）。
+
+        Returns:
+            返回 list[MetricResult]。
+        """
         graded = [outcome for outcome in outcomes if outcome.relevant_unit_ids]
         detail = {"graded_queries": float(len(graded))}
         results: list[MetricResult] = []

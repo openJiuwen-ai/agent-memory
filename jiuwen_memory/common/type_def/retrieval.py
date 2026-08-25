@@ -75,6 +75,11 @@ class ScoredMemoryUnit:
 
     @property
     def unit_id(self) -> str:
+        """返回 unit_id 属性。
+
+        Returns:
+            返回 str。
+        """
         return self.unit.id
 
 
@@ -133,4 +138,13 @@ class CandidateFuser(Protocol):
     def fuse(
         self, query: ParsedQuery, candidates: list[list[ScoredMemoryUnit]]
     ) -> list[ScoredMemoryUnit]:
+        """执行 `fuse` 操作。
+
+        Args:
+            query: 参数 query（ParsedQuery）。
+            candidates: 参数 candidates（list[list[ScoredMemoryUnit]]）。
+
+        Returns:
+            返回 list[ScoredMemoryUnit]。
+        """
         ...

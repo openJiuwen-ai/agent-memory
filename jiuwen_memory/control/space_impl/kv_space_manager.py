@@ -33,14 +33,37 @@ _ROOT_SCOPE = Scope()
 
 
 def _now() -> datetime:
+    """执行 `now` 操作。
+
+    Returns:
+        返回 datetime。
+    """
     return datetime.now(timezone.utc)
 
 
 def _scope(org: str, space: str) -> Scope:
+    """执行 `scope` 操作。
+
+    Args:
+        org: 参数 org（str）。
+        space: 参数 space（str）。
+
+    Returns:
+        返回 Scope。
+    """
     return Scope(org=org, space=space)
 
 
 def _validate_space(org: str, space: str) -> None:
+    """校验输入参数或当前状态。
+
+    Args:
+        org: 参数 org（str）。
+        space: 参数 space（str）。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     if not org:
         raise ValidationError("org is required")
     if not space:
@@ -48,14 +71,38 @@ def _validate_space(org: str, space: str) -> None:
 
 
 def _dt(value: datetime | None) -> str:
+    """执行 `dt` 操作。
+
+    Args:
+        value: 参数 value（datetime | None）。
+
+    Returns:
+        返回 str。
+    """
     return value.isoformat() if value else ""
 
 
 def _parse_dt(value: str | None) -> datetime | None:
+    """解析输入数据并返回结构化结果。
+
+    Args:
+        value: 参数 value（str | None）。
+
+    Returns:
+        返回 datetime | None。
+    """
     return datetime.fromisoformat(value) if value else None
 
 
 def _scope_to_dict(scope: Scope) -> dict[str, str]:
+    """执行 `scope_to_dict` 操作。
+
+    Args:
+        scope: 参数 scope（Scope）。
+
+    Returns:
+        返回 dict[str, str]。
+    """
     return {
         "org": scope.org,
         "space": scope.space,
@@ -66,6 +113,14 @@ def _scope_to_dict(scope: Scope) -> dict[str, str]:
 
 
 def _scope_from_dict(data: dict[str, str]) -> Scope:
+    """执行 `scope_from_dict` 操作。
+
+    Args:
+        data: 参数 data（dict[str, str]）。
+
+    Returns:
+        返回 Scope。
+    """
     return Scope(
         org=str(data.get("org", "")),
         space=str(data.get("space", "")),
@@ -76,6 +131,14 @@ def _scope_from_dict(data: dict[str, str]) -> Scope:
 
 
 def _policy_to_dict(policy: SpacePolicy) -> dict[str, object]:
+    """执行 `policy_to_dict` 操作。
+
+    Args:
+        policy: 参数 policy（SpacePolicy）。
+
+    Returns:
+        返回 dict[str, object]。
+    """
     return {
         "require_space": policy.require_space,
         "principal_path": policy.principal_path.value,
@@ -88,6 +151,14 @@ def _policy_to_dict(policy: SpacePolicy) -> dict[str, object]:
 
 
 def _policy_from_dict(data: dict[str, object] | None) -> SpacePolicy:
+    """执行 `policy_from_dict` 操作。
+
+    Args:
+        data: 参数 data（dict[str, object] | None）。
+
+    Returns:
+        返回 SpacePolicy。
+    """
     data = data or {}
     return SpacePolicy(
         require_space=bool(data.get("require_space", False)),
@@ -107,6 +178,14 @@ def _policy_from_dict(data: dict[str, object] | None) -> SpacePolicy:
 
 
 def _info_to_bytes(info: SpaceInfo) -> bytes:
+    """执行 `info_to_bytes` 操作。
+
+    Args:
+        info: 参数 info（SpaceInfo）。
+
+    Returns:
+        返回 bytes。
+    """
     payload = {
         "org": info.org,
         "space": info.space,
@@ -122,6 +201,14 @@ def _info_to_bytes(info: SpaceInfo) -> bytes:
 
 
 def _info_from_bytes(raw: bytes) -> SpaceInfo:
+    """执行 `info_from_bytes` 操作。
+
+    Args:
+        raw: 参数 raw（bytes）。
+
+    Returns:
+        返回 SpaceInfo。
+    """
     data = json.loads(raw.decode("utf-8"))
     policy = _policy_from_dict(data.get("policy"))
     principal_path = PrincipalPath(str(data.get("principal_path", policy.principal_path.value)))
@@ -140,6 +227,14 @@ def _info_from_bytes(raw: bytes) -> SpaceInfo:
 
 
 def _member_to_bytes(member: SpaceMember) -> bytes:
+    """执行 `member_to_bytes` 操作。
+
+    Args:
+        member: 参数 member（SpaceMember）。
+
+    Returns:
+        返回 bytes。
+    """
     payload = {
         "scope": _scope_to_dict(member.scope),
         "role": member.role,
@@ -150,6 +245,14 @@ def _member_to_bytes(member: SpaceMember) -> bytes:
 
 
 def _member_from_bytes(raw: bytes) -> SpaceMember:
+    """执行 `member_from_bytes` 操作。
+
+    Args:
+        raw: 参数 raw（bytes）。
+
+    Returns:
+        返回 SpaceMember。
+    """
     data = json.loads(raw.decode("utf-8"))
     return SpaceMember(
         scope=_scope_from_dict(dict(data.get("scope", {}) or {})),
@@ -160,6 +263,14 @@ def _member_from_bytes(raw: bytes) -> SpaceMember:
 
 
 def _member_key(scope: Scope) -> str:
+    """执行 `member_key` 操作。
+
+    Args:
+        scope: 参数 scope（Scope）。
+
+    Returns:
+        返回 str。
+    """
     payload = json.dumps(
         _scope_to_dict(scope),
         ensure_ascii=False,
@@ -171,11 +282,32 @@ def _member_key(scope: Scope) -> str:
 
 
 def _registry_key(space: str) -> str:
+    """执行 `registry_key` 操作。
+
+    Args:
+        space: 参数 space（str）。
+
+    Returns:
+        返回 str。
+    """
     token = base64.urlsafe_b64encode(space.encode("utf-8")).decode("ascii").rstrip("=")
     return f"{_REGISTRY_PREFIX}{token}"
 
 
 def _normalize_member(org: str, space: str, member: SpaceMember) -> SpaceMember:
+    """规范化输入值。
+
+    Args:
+        org: 参数 org（str）。
+        space: 参数 space（str）。
+        member: 参数 member（SpaceMember）。
+
+    Returns:
+        返回 SpaceMember。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     scope = replace(member.scope)
     if scope.org and scope.org != org:
         raise ValidationError("member scope org must match target space org")
@@ -193,6 +325,19 @@ def _normalize_member(org: str, space: str, member: SpaceMember) -> SpaceMember:
 
 
 def _normalize_member_scope(org: str, space: str, member: Scope) -> Scope:
+    """规范化输入值。
+
+    Args:
+        org: 参数 org（str）。
+        space: 参数 space（str）。
+        member: 参数 member（Scope）。
+
+    Returns:
+        返回 Scope。
+
+    Raises:
+        ValidationError: 执行失败时抛出。
+    """
     scope = replace(member)
     if scope.org and scope.org != org:
         raise ValidationError("member scope org must match target space org")
@@ -207,16 +352,38 @@ class KVSpaceManager(SpaceManager):
     """SpaceManager backed by KVStore."""
 
     def __init__(self, storage: Storage) -> None:
+        """初始化 KVSpaceManager。
+
+        Args:
+            storage: 参数 storage（Storage）。
+        """
         self._storage = storage
         self._kv = storage.kv
 
     def operator_type(self) -> ControlOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 ControlOperatorType。
+        """
         return ControlOperatorType.SPACE
 
     def health(self) -> None:
+        """执行健康检查。"""
         self._kv.health()
 
     def create(self, spec: SpaceSpec) -> SpaceInfo:
+        """执行 `create` 操作。
+
+        Args:
+            spec: 参数 spec（SpaceSpec）。
+
+        Returns:
+            返回 SpaceInfo。
+
+        Raises:
+            ConflictError: 执行失败时抛出。
+        """
         _validate_space(spec.org, spec.space)
         scope = _scope(spec.org, spec.space)
         registry_key = _registry_key(spec.space)
@@ -250,6 +417,18 @@ class KVSpaceManager(SpaceManager):
         return info
 
     def get(self, org: str, space: str) -> SpaceInfo:
+        """读取指定的记录或资源。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+
+        Returns:
+            返回 SpaceInfo。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         _validate_space(org, space)
         try:
             return _info_from_bytes(self._kv.get(_scope(org, space), _INFO_KEY))
@@ -264,6 +443,20 @@ class KVSpaceManager(SpaceManager):
         limit: int = 100,
         cursor: str | None = None,
     ) -> list[SpaceInfo]:
+        """列出符合条件的记录或资源。
+
+        Args:
+            org: 参数 org（str）。
+            status: 参数 status（SpaceStatus | None）。
+            limit: 参数 limit（int）。
+            cursor: 参数 cursor（str | None）。
+
+        Returns:
+            返回 list[SpaceInfo]。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if not org:
             raise ValidationError("org is required")
         if limit <= 0:
@@ -290,6 +483,16 @@ class KVSpaceManager(SpaceManager):
         return ordered[offset:offset + limit]
 
     def update(self, org: str, space: str, patch: SpacePatch) -> SpaceInfo:
+        """更新已有记忆或业务记录。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+            patch: 参数 patch（SpacePatch）。
+
+        Returns:
+            返回 SpaceInfo。
+        """
         info = self.get(org, space)
         if patch.display_name is not None:
             info.display_name = patch.display_name
@@ -309,9 +512,27 @@ class KVSpaceManager(SpaceManager):
         return info
 
     def archive(self, org: str, space: str) -> SpaceInfo:
+        """执行 `archive` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+
+        Returns:
+            返回 SpaceInfo。
+        """
         return self.update(org, space, SpacePatch(status=SpaceStatus.ARCHIVED))
 
     def delete(self, org: str, space: str) -> SpaceDeleteResult:
+        """删除指定的记忆或业务记录。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+
+        Returns:
+            返回 SpaceDeleteResult。
+        """
         self.get(org, space)
         counts = {
             "memory": 0,
@@ -343,6 +564,16 @@ class KVSpaceManager(SpaceManager):
         return SpaceDeleteResult(org=org, space=space, deleted_counts=counts)
 
     def export(self, org: str, space: str, *, include_audit: bool = True) -> str:
+        """执行 `export` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+            include_audit: 参数 include_audit（bool）。
+
+        Returns:
+            返回 str。
+        """
         info = self.get(org, space)
         export_id = str(uuid.uuid4())
         payload = {
@@ -362,6 +593,15 @@ class KVSpaceManager(SpaceManager):
         return export_id
 
     def usage(self, org: str, space: str) -> SpaceUsage:
+        """执行 `usage` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+
+        Returns:
+            返回 SpaceUsage。
+        """
         _validate_space(org, space)
         usage = SpaceUsage(org=org, space=space)
         for scope in self._kv.scopes():
@@ -376,9 +616,28 @@ class KVSpaceManager(SpaceManager):
         return usage
 
     def get_policy(self, org: str, space: str) -> SpacePolicy:
+        """执行 `get_policy` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+
+        Returns:
+            返回 SpacePolicy。
+        """
         return self.get(org, space).policy
 
     def set_policy(self, org: str, space: str, policy: SpacePolicy) -> SpacePolicy:
+        """执行 `set_policy` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+            policy: 参数 policy（SpacePolicy）。
+
+        Returns:
+            返回 SpacePolicy。
+        """
         info = self.update(
             org,
             space,
@@ -387,6 +646,15 @@ class KVSpaceManager(SpaceManager):
         return info.policy
 
     def list_members(self, org: str, space: str) -> list[SpaceMember]:
+        """执行 `list_members` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+
+        Returns:
+            返回 list[SpaceMember]。
+        """
         self.get(org, space)
         members = [
             _member_from_bytes(raw)
@@ -403,6 +671,13 @@ class KVSpaceManager(SpaceManager):
         return members
 
     def add_member(self, org: str, space: str, member: SpaceMember) -> None:
+        """执行 `add_member` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+            member: 参数 member（SpaceMember）。
+        """
         self.get(org, space)
         normalized = _normalize_member(org, space, member)
         key = _member_key(normalized.scope)
@@ -413,6 +688,13 @@ class KVSpaceManager(SpaceManager):
         self._kv.insert(_scope(org, space), key, value)
 
     def remove_member(self, org: str, space: str, member: Scope) -> None:
+        """执行 `remove_member` 操作。
+
+        Args:
+            org: 参数 org（str）。
+            space: 参数 space（str）。
+            member: 参数 member（Scope）。
+        """
         self.get(org, space)
         normalized = _normalize_member_scope(org, space, member)
         self._kv.delete(_scope(org, space), _member_key(normalized))
@@ -420,4 +702,9 @@ class KVSpaceManager(SpaceManager):
 
 @SpaceProducer.register("kv")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return KVSpaceManager(StorageProducer.resolve(config))

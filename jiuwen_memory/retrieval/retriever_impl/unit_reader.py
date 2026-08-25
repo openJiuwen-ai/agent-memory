@@ -92,6 +92,11 @@ class UnitReader:
     """
 
     def __init__(self, kv: KVStore) -> None:
+        """初始化 UnitReader。
+
+        Args:
+            kv: 参数 kv（KVStore）。
+        """
         self._kv = kv
 
     @property

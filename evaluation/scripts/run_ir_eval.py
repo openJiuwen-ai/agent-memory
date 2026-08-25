@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 
 
 def main() -> int:
+    """执行程序入口逻辑。
+
+    Returns:
+        返回 int。
+    """
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description="组件级 IR 评测")
     parser.add_argument("--dataset", default=_DEFAULT_DATASET, help="JSONL 评测标注路径")

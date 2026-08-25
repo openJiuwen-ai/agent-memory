@@ -61,6 +61,17 @@ class VideoAsrService(Plugin):
 
 
 def _executable(name: str) -> str:
+    """执行 `executable` 操作。
+
+    Args:
+        name: 参数 name（str）。
+
+    Returns:
+        返回 str。
+
+    Raises:
+        BackendError: 执行失败时抛出。
+    """
     path = shutil.which(name)
     if path is None:
         raise BackendError(f"required executable is unavailable: {name}")
@@ -91,6 +102,17 @@ def _ensure_audio(video_path: Path, output_dir: Path) -> Path:
 
 
 def _get_duration(path: Path) -> float:
+    """读取指定的记录或资源。
+
+    Args:
+        path: 参数 path（Path）。
+
+    Returns:
+        返回 float。
+
+    Raises:
+        BackendError: 执行失败时抛出。
+    """
     result = subprocess.run(
         [
             _executable("ffprobe"),
@@ -118,6 +140,16 @@ def _split_audio_to_chunks(
     *,
     chunk_seconds: int,
 ) -> list[tuple[Path, float]]:
+    """执行 `split_audio_to_chunks` 操作。
+
+    Args:
+        audio_path: 参数 audio_path（Path）。
+        out_dir: 参数 out_dir（Path）。
+        chunk_seconds: 参数 chunk_seconds（int）。
+
+    Returns:
+        返回 list[tuple[Path, float]]。
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     duration = _get_duration(audio_path)
     if duration <= 0:
@@ -158,11 +190,27 @@ def _split_audio_to_chunks(
 
 
 def _seconds_to_hhmmss(seconds: float) -> str:
+    """执行 `seconds_to_hhmmss` 操作。
+
+    Args:
+        seconds: 参数 seconds（float）。
+
+    Returns:
+        返回 str。
+    """
     total = int(round(max(0.0, seconds)))
     return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
 
 
 def _fix_monotonic_timestamps(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """执行 `fix_monotonic_timestamps` 操作。
+
+    Args:
+        segments: 参数 segments（list[dict[str, Any]]）。
+
+    Returns:
+        返回 list[dict[str, Any]]。
+    """
     fixed: list[dict[str, Any]] = []
     previous_end: float | None = None
     for segment in segments:
@@ -180,6 +228,12 @@ def _fix_monotonic_timestamps(segments: list[dict[str, Any]]) -> list[dict[str, 
 
 
 def _write_cleaned_segments(segments: list[dict[str, str]], path: Path) -> None:
+    """写入指定的数据或资源。
+
+    Args:
+        segments: 参数 segments（list[dict[str, str]]）。
+        path: 参数 path（Path）。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as file:
         for segment in segments:
@@ -235,6 +289,17 @@ class OpenAITranscriptionVideoAsr(VideoAsrService):
         config_source: Any | None = None,
         config_namespace: str = "asr",
     ) -> None:
+        """初始化 OpenAITranscriptionVideoAsr。
+
+        Args:
+            model_name: 参数 model_name（str）。
+            base_url: 参数 base_url（str）。
+            api_key: 参数 api_key（str）。
+            ssl_verify: 参数 ssl_verify（bool）。
+            ssl_ca_cert: 参数 ssl_ca_cert（str | None）。
+            config_source: 参数 config_source（Any | None）。
+            config_namespace: 参数 config_namespace（str）。
+        """
         self._fallback_model = model_name
         self._fallback_base_url = base_url
         self._fallback_api_key = api_key
@@ -246,9 +311,15 @@ class OpenAITranscriptionVideoAsr(VideoAsrService):
         self._client_fingerprint: tuple[str, str | None, bool, str | None] | None = None
 
     def plugin_type(self) -> PluginType:
+        """返回当前插件类型。
+
+        Returns:
+            返回 PluginType。
+        """
         return PluginType.ASR
 
     def _endpoint(self):
+        """执行 `endpoint` 操作。"""
         from jiuwen_memory.config.binding import resolve_endpoint
 
         return resolve_endpoint(
@@ -261,6 +332,11 @@ class OpenAITranscriptionVideoAsr(VideoAsrService):
 
     @property
     def client(self) -> openai.OpenAI:
+        """返回 client 属性。
+
+        Returns:
+            返回 openai.OpenAI。
+        """
         endpoint = self._endpoint()
         fingerprint = (endpoint.api_key, endpoint.base_url, self._ssl_verify, self._ssl_ca_cert)
         if self._client is None or self._client_fingerprint != fingerprint:
@@ -276,6 +352,11 @@ class OpenAITranscriptionVideoAsr(VideoAsrService):
         return self._client
 
     def health(self) -> None:
+        """执行健康检查。
+
+        Raises:
+            HealthCheckError: 执行失败时抛出。
+        """
         try:
             self.client.models.list()
         except Exception as exc:
@@ -288,6 +369,19 @@ class OpenAITranscriptionVideoAsr(VideoAsrService):
         language: str | None,
         chunk_seconds: int,
     ) -> list[dict[str, str]]:
+        """执行 `transcribe` 操作。
+
+        Args:
+            audio_path: 参数 audio_path（Path）。
+            language: 参数 language（str | None）。
+            chunk_seconds: 参数 chunk_seconds（int）。
+
+        Returns:
+            返回 list[dict[str, str]]。
+
+        Raises:
+            BackendError: 执行失败时抛出。
+        """
         raw_segments: list[dict[str, Any]] = []
         model = self._endpoint().model
         chunks = _split_audio_to_chunks(
@@ -336,6 +430,17 @@ class OpenAITranscriptionVideoAsr(VideoAsrService):
 
 
 def _transcription_payload(response: Any) -> dict[str, Any]:
+    """执行 `transcription_payload` 操作。
+
+    Args:
+        response: 参数 response（Any）。
+
+    Returns:
+        返回 dict[str, Any]。
+
+    Raises:
+        BackendError: 执行失败时抛出。
+    """
     if isinstance(response, Mapping):
         return dict(response)
     model_dump = getattr(response, "model_dump", None)
@@ -348,6 +453,14 @@ def _transcription_payload(response: Any) -> dict[str, Any]:
 
 @VideoAsrProducer.register("openai_transcription")
 def _build_openai_transcription(config: Mapping[str, Any]) -> VideoAsrService:
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config（Mapping[str, Any]）。
+
+    Returns:
+        返回 VideoAsrService。
+    """
     base_url = Factory.require_param(config, "asr_base_url", backend="remote ASR")
     ssl = read_outbound_ssl(config, "asr")
     if ssl.verify:

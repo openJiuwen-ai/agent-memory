@@ -64,6 +64,21 @@ class ElasticsearchFulltextStore(FulltextStore):
         config_namespace: str = "fulltext_store",
         **options: Any,
     ) -> None:
+        """初始化 ElasticsearchFulltextStore。
+
+        Args:
+            hosts: 参数 hosts（list[str] | str | None）。
+            index: 参数 index（str）。
+            username: 参数 username（str | None）。
+            password: 参数 password（str | None）。
+            api_key: 参数 api_key（str | None）。
+            text_field: 参数 text_field（str）。
+            text_analyzer: 参数 text_analyzer（str | None）。
+            refresh: 参数 refresh（str）。
+            config_source: 参数 config_source。
+            config_namespace: 参数 config_namespace（str）。
+            **options: 参数 options（Any）。
+        """
         self._fallback_hosts = hosts or "http://localhost:9200"
         self._config_source = config_source
         self._config_namespace = config_namespace
@@ -83,6 +98,14 @@ class ElasticsearchFulltextStore(FulltextStore):
 
     @property
     def client(self) -> Any:
+        """返回 client 属性。
+
+        Returns:
+            返回 Any。
+
+        Raises:
+            BackendError: 执行失败时抛出。
+        """
         hosts = self._resolved_hosts()
         fingerprint: object = (
             tuple(hosts) if isinstance(hosts, list) else hosts
@@ -109,6 +132,14 @@ class ElasticsearchFulltextStore(FulltextStore):
     # --------------------------------------------------------------- 序列化
     @staticmethod
     def _scope_dict(scope: Scope) -> dict[str, str]:
+        """执行 `scope_dict` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+
+        Returns:
+            返回 dict[str, str]。
+        """
         return {
             "org": scope.org,
             "space": scope.space,
@@ -119,19 +150,53 @@ class ElasticsearchFulltextStore(FulltextStore):
 
     @staticmethod
     def _doc_id(scope: Scope, logical_id: str) -> str:
+        """执行 `doc_id` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            logical_id: 参数 logical_id（str）。
+
+        Returns:
+            返回 str。
+        """
         return ":".join((*scope_segments(scope), logical_id))
 
     @staticmethod
     def _logical_id(doc_id: str) -> str:
+        """执行 `logical_id` 操作。
+
+        Args:
+            doc_id: 参数 doc_id（str）。
+
+        Returns:
+            返回 str。
+        """
         parts = doc_id.split(":", 5)
         return parts[-1] if len(parts) == 6 else doc_id
 
     @staticmethod
     def _array_marker(key: str) -> dict[str, Any]:
+        """执行 `array_marker` 操作。
+
+        Args:
+            key: 参数 key（str）。
+
+        Returns:
+            返回 dict[str, Any]。
+        """
         return {"term": {_METADATA_ARRAY_FIELDS: key}}
 
     @classmethod
     def _scalar_match(cls, key: str, query: dict[str, Any]) -> dict[str, Any]:
+        """执行 `scalar_match` 操作。
+
+        Args:
+            key: 参数 key（str）。
+            query: 参数 query（dict[str, Any]）。
+
+        Returns:
+            返回 dict[str, Any]。
+        """
         return {
             "bool": {
                 "filter": [query],
@@ -141,6 +206,17 @@ class ElasticsearchFulltextStore(FulltextStore):
 
     @classmethod
     def _filter_clause(cls, fc: FilterClause) -> dict[str, Any]:
+        """执行 `filter_clause` 操作。
+
+        Args:
+            fc: 参数 fc（FilterClause）。
+
+        Returns:
+            返回 dict[str, Any]。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         key = filter_field_metadata_key(fc.field)
         field = f"metadata.{key}"
         if fc.op == FilterOp.EQ:
@@ -186,9 +262,19 @@ class ElasticsearchFulltextStore(FulltextStore):
 
     # --------------------------------------------------------------- CRUD
     def store_type(self) -> StoreType:
+        """返回当前存储类型。
+
+        Returns:
+            返回 StoreType。
+        """
         return StoreType.FULLTEXT
 
     def health(self) -> None:
+        """执行健康检查。
+
+        Raises:
+            HealthCheckError: 执行失败时抛出。
+        """
         try:
             ok = self.client.ping()
         except Exception as exc:
@@ -197,6 +283,16 @@ class ElasticsearchFulltextStore(FulltextStore):
             raise HealthCheckError("elasticsearch ping returned falsy")
 
     def insert(self, scope: Scope, docs: list[Document]) -> None:
+        """插入一条或多条记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            docs: 参数 docs（list[Document]）。
+
+        Raises:
+            ConflictError: 执行失败时抛出。
+            BackendError: 执行失败时抛出。
+        """
         if not docs:
             return
         ops: list[dict[str, Any]] = []
@@ -215,6 +311,16 @@ class ElasticsearchFulltextStore(FulltextStore):
                     raise BackendError(f"elasticsearch insert failed: {res.get('error')}")
 
     def update(self, scope: Scope, docs: list[Document]) -> None:
+        """更新已有记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            docs: 参数 docs（list[Document]）。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+            BackendError: 执行失败时抛出。
+        """
         if not docs:
             return
         missing = self._missing_ids(scope, [doc.id for doc in docs])
@@ -230,6 +336,12 @@ class ElasticsearchFulltextStore(FulltextStore):
             raise BackendError(f"elasticsearch update failed: {resp['items']}")
 
     def delete(self, scope: Scope, ids: list[str]) -> None:
+        """删除指定的记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ids: 参数 ids（list[str]）。
+        """
         if not ids:
             return
         # delete_by_query 受 scope 约束：只删 scope 内命中的 id（幂等）。
@@ -247,6 +359,15 @@ class ElasticsearchFulltextStore(FulltextStore):
             )
 
     def get(self, scope: Scope, ids: list[str]) -> list[Document]:
+        """读取指定的记录或资源。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ids: 参数 ids（list[str]）。
+
+        Returns:
+            返回 list[Document]。
+        """
         if not ids:
             return []
         with wrap_backend("elasticsearch get"):
@@ -266,6 +387,15 @@ class ElasticsearchFulltextStore(FulltextStore):
         return out
 
     def search(self, scope: Scope, query: TextQuery) -> list[ScoredID]:
+        """检索与查询匹配的结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（TextQuery）。
+
+        Returns:
+            返回 list[ScoredID]。
+        """
         tokens = self._analyze_query(query.text)
         if not tokens:
             return []
@@ -322,6 +452,7 @@ class ElasticsearchFulltextStore(FulltextStore):
         return parts
 
     def _ensure_index(self) -> None:
+        """确保所需资源或状态已就绪。"""
         if not self._client.indices.exists(index=self._index):
             self._client.indices.create(
                 index=self._index,
@@ -392,6 +523,15 @@ class ElasticsearchFulltextStore(FulltextStore):
         )
 
     def _source(self, scope: Scope, doc: Document) -> dict[str, Any]:
+        """执行 `source` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            doc: 参数 doc（Document）。
+
+        Returns:
+            返回 dict[str, Any]。
+        """
         metadata: dict[str, Any] = {}
         for key, value in doc.metadata.items():
             namespace, separator, nested_key = key.partition(".")
@@ -410,6 +550,15 @@ class ElasticsearchFulltextStore(FulltextStore):
         }
 
     def _to_document(self, doc_id: str, src: dict[str, Any]) -> Document:
+        """执行 `to_document` 操作。
+
+        Args:
+            doc_id: 参数 doc_id（str）。
+            src: 参数 src（dict[str, Any]）。
+
+        Returns:
+            返回 Document。
+        """
         metadata: dict[str, Any] = {}
         for key, value in (src.get("metadata") or {}).items():
             if key in {"system_metadata", "user_metadata"} and isinstance(value, dict):
@@ -428,9 +577,26 @@ class ElasticsearchFulltextStore(FulltextStore):
         )
 
     def _scope_filters(self, scope: Scope) -> list[dict[str, Any]]:
+        """执行 `scope_filters` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+
+        Returns:
+            返回 list[dict[str, Any]]。
+        """
         return [{"term": {f"scope.{dim}": val}} for dim, val in scope_dims(scope)]
 
     def _missing_ids(self, scope: Scope, ids: list[str]) -> list[str]:
+        """执行 `missing_ids` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ids: 参数 ids（list[str]）。
+
+        Returns:
+            返回 list[str]。
+        """
         physical_to_logical = {self._doc_id(scope, doc_id): doc_id for doc_id in ids}
         with wrap_backend("elasticsearch mget"):
             resp = self.client.mget(index=self._index, ids=list(physical_to_logical))
@@ -463,6 +629,11 @@ class ElasticsearchFulltextStore(FulltextStore):
 @FulltextProducer.register("elasticsearch")
 def _build(config):
     # 三方库后端：hosts 必填，未配置即在 build 阶段报错；其余构造参数有默认值，可经 params 覆盖。
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     from jiuwen_memory.config.config_source import ConfigSourceProducer
 
     hosts = Factory.require_param(config, "hosts", backend="elasticsearch fulltext")

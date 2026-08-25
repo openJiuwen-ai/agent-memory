@@ -95,6 +95,16 @@ class NanoGraphRAGGraphStore(GraphStore):
         config_namespace: str = "graph_store",
         **options: Any,
     ) -> None:
+        """初始化 NanoGraphRAGGraphStore。
+
+        Args:
+            working_dir: 参数 working_dir（str）。
+            namespace_prefix: 参数 namespace_prefix（str）。
+            create_root: 参数 create_root（bool）。
+            config_source: 参数 config_source。
+            config_namespace: 参数 config_namespace（str）。
+            **options: 参数 options（Any）。
+        """
         self._fallback_working_dir = str(Path(working_dir).resolve())
         self._config_source = config_source
         self._config_namespace = config_namespace
@@ -110,14 +120,39 @@ class NanoGraphRAGGraphStore(GraphStore):
     # ------------------------------------------------------------ 序列化
     @staticmethod
     def _node_data(node: Node) -> dict[str, str]:
+        """执行 `node_data` 操作。
+
+        Args:
+            node: 参数 node（Node）。
+
+        Returns:
+            返回 dict[str, str]。
+        """
         return {"label": node.label, "properties": json.dumps(node.properties)}
 
     @staticmethod
     def _edge_data(edge: Edge) -> dict[str, str]:
+        """执行 `edge_data` 操作。
+
+        Args:
+            edge: 参数 edge（Edge）。
+
+        Returns:
+            返回 dict[str, str]。
+        """
         return {"id": edge.id, "relation": edge.relation, "properties": json.dumps(edge.properties)}
 
     @staticmethod
     def _to_node(node_id: str, data: dict[str, Any]) -> Node:
+        """执行 `to_node` 操作。
+
+        Args:
+            node_id: 参数 node_id（str）。
+            data: 参数 data（dict[str, Any]）。
+
+        Returns:
+            返回 Node。
+        """
         return Node(
             id=node_id,
             label=data.get("label", ""),
@@ -126,6 +161,15 @@ class NanoGraphRAGGraphStore(GraphStore):
 
     @staticmethod
     def _find_edge(graph: Any, edge_id: str) -> tuple[str, str] | None:
+        """执行 `find_edge` 操作。
+
+        Args:
+            graph: 参数 graph（Any）。
+            edge_id: 参数 edge_id（str）。
+
+        Returns:
+            返回 tuple[str, str] | None。
+        """
         for u, v, data in graph.edges(data=True):
             if data.get("id") == edge_id:
                 return (u, v)
@@ -133,9 +177,19 @@ class NanoGraphRAGGraphStore(GraphStore):
 
     # ------------------------------------------------------------ 契约
     def store_type(self) -> StoreType:
+        """返回当前存储类型。
+
+        Returns:
+            返回 StoreType。
+        """
         return StoreType.GRAPH
 
     def health(self) -> None:
+        """执行健康检查。
+
+        Raises:
+            HealthCheckError: 执行失败时抛出。
+        """
         try:
             _networkx_storage_cls()
         except BackendError as exc:
@@ -146,6 +200,15 @@ class NanoGraphRAGGraphStore(GraphStore):
             )
 
     def seed_ids(self, scope: Scope, tokens: set[str]) -> list[str]:
+        """返回可用于检索的种子标识。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            tokens: 参数 tokens（set[str]）。
+
+        Returns:
+            返回 list[str]。
+        """
         if not tokens:
             return []
         storage = self._store(scope)
@@ -164,6 +227,16 @@ class NanoGraphRAGGraphStore(GraphStore):
         nodes: list[Node] | None = None,
         edges: list[Edge] | None = None,
     ) -> None:
+        """插入一条或多条记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            nodes: 参数 nodes（list[Node] | None）。
+            edges: 参数 edges（list[Edge] | None）。
+
+        Raises:
+            ConflictError: 执行失败时抛出。
+        """
         nodes = nodes or []
         edges = edges or []
         storage = self._store(scope)
@@ -183,6 +256,7 @@ class NanoGraphRAGGraphStore(GraphStore):
                 )
 
         async def apply() -> None:
+            """执行 `apply` 操作。"""
             for node in nodes:
                 await storage.upsert_node(node.id, self._node_data(node))
             for edge in edges:
@@ -198,6 +272,16 @@ class NanoGraphRAGGraphStore(GraphStore):
         nodes: list[Node] | None = None,
         edges: list[Edge] | None = None,
     ) -> None:
+        """更新已有记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            nodes: 参数 nodes（list[Node] | None）。
+            edges: 参数 edges（list[Edge] | None）。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         nodes = nodes or []
         edges = edges or []
         storage = self._store(scope)
@@ -213,6 +297,7 @@ class NanoGraphRAGGraphStore(GraphStore):
             edge_locs[edge.id] = loc
 
         async def apply() -> None:
+            """执行 `apply` 操作。"""
             for node in nodes:
                 await storage.upsert_node(node.id, self._node_data(node))
             for edge in edges:
@@ -229,6 +314,13 @@ class NanoGraphRAGGraphStore(GraphStore):
         node_ids: list[str] | None = None,
         edge_ids: list[str] | None = None,
     ) -> None:
+        """删除指定的记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            node_ids: 参数 node_ids（list[str] | None）。
+            edge_ids: 参数 edge_ids（list[str] | None）。
+        """
         storage = self._store(scope)
         graph = networkx_graph(storage)
         with wrap_backend("nano-graphrag delete"):
@@ -242,12 +334,22 @@ class NanoGraphRAGGraphStore(GraphStore):
         self._persist(storage)
 
     def get(self, scope: Scope, node_ids: list[str]) -> list[Node]:
+        """读取指定的记录或资源。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            node_ids: 参数 node_ids（list[str]）。
+
+        Returns:
+            返回 list[Node]。
+        """
         if not node_ids:
             return []
         storage = self._store(scope)
         out: list[Node] = []
 
         async def fetch() -> None:
+            """执行 `fetch` 操作。"""
             for nid in node_ids:
                 data = await storage.get_node(nid)
                 if data is not None:
@@ -258,6 +360,15 @@ class NanoGraphRAGGraphStore(GraphStore):
         return out
 
     def search(self, scope: Scope, query: GraphQuery) -> list[Node]:
+        """检索与查询匹配的结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（GraphQuery）。
+
+        Returns:
+            返回 list[Node]。
+        """
         storage = self._store(scope)
         graph = networkx_graph(storage)
         if not graph.has_node(query.start_id):
@@ -291,6 +402,11 @@ class NanoGraphRAGGraphStore(GraphStore):
             return [self._to_node(nid, graph.nodes[nid]) for nid in found]
 
     def _resolved_working_dir(self) -> str:
+        """解析并返回目标配置或资源。
+
+        Returns:
+            返回 str。
+        """
         from jiuwen_memory.config.binding import resolve_connection_url
 
         live = resolve_connection_url(
@@ -306,14 +422,38 @@ class NanoGraphRAGGraphStore(GraphStore):
 
     # ------------------------------------------------------------ 基础设施
     def _run(self, coro: Any) -> Any:
+        """执行 `run` 操作。
+
+        Args:
+            coro: 参数 coro（Any）。
+
+        Returns:
+            返回 Any。
+        """
         if self._loop is None or self._loop.is_closed():
             self._loop = asyncio.new_event_loop()
         return self._loop.run_until_complete(coro)
 
     def _namespace(self, scope: Scope) -> str:
+        """执行 `namespace` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+
+        Returns:
+            返回 str。
+        """
         return f"{self._prefix}-" + "_".join(scope_segments(scope))
 
     def _store(self, scope: Scope) -> Any:
+        """执行 `store` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+
+        Returns:
+            返回 Any。
+        """
         working_dir = self._resolved_working_dir()
         if self._active_working_dir != working_dir:
             # working_dir 切换：丢弃旧 scope 缓存（旧图文件仍在旧目录，不迁移）
@@ -329,6 +469,11 @@ class NanoGraphRAGGraphStore(GraphStore):
         return storage
 
     def _persist(self, storage: Any) -> None:
+        """执行 `persist` 操作。
+
+        Args:
+            storage: 参数 storage（Any）。
+        """
         with wrap_backend("nano-graphrag persist"):
             self._run(storage.index_done_callback())
 
@@ -339,6 +484,11 @@ class NanoGraphRAGGraphStore(GraphStore):
 @GraphProducer.register("nano_graphrag")
 def _build(config):
     # working_dir 在构造器中无默认值 → 必填；namespace_prefix/create_root 有默认值，可覆盖。
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     from jiuwen_memory.config.config_source import ConfigSourceProducer
 
     return NanoGraphRAGGraphStore(

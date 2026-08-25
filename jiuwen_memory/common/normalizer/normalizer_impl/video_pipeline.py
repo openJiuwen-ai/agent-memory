@@ -98,6 +98,17 @@ atexit.register(_cleanup_dist)
 
 
 def _parse_json_safe(text: str) -> dict[str, Any]:
+    """解析输入数据并返回结构化结果。
+
+    Args:
+        text: 参数 text（str）。
+
+    Returns:
+        返回 dict[str, Any]。
+
+    Raises:
+        ValueError: 执行失败时抛出。
+    """
     text = (text or "").strip()
     if text.startswith("```"):
         first_newline = text.find("\n")
@@ -120,6 +131,15 @@ def _parse_json_safe(text: str) -> dict[str, Any]:
 
 
 def _raw_snippet(text: Any, limit: int = 200) -> str:
+    """执行 `raw_snippet` 操作。
+
+    Args:
+        text: 参数 text（Any）。
+        limit: 参数 limit（int）。
+
+    Returns:
+        返回 str。
+    """
     snippet = str(text or "").replace("\n", " ").strip()
     if len(snippet) > limit:
         return snippet[:limit] + "..."
@@ -135,6 +155,19 @@ def _call_openai_json_with_retry(
     validator: Any | None = None,
     call_name: str = "json_call",
 ) -> tuple[dict[str, Any] | None, str, str]:
+    """执行 `call_openai_json_with_retry` 操作。
+
+    Args:
+        llm_port: 参数 llm_port（LLM）。
+        prompt: 参数 prompt（str）。
+        max_tokens: 参数 max_tokens（int）。
+        temperature: 参数 temperature（float | None）。
+        validator: 参数 validator（Any | None）。
+        call_name: 参数 call_name（str）。
+
+    Returns:
+        返回 tuple[dict[str, Any] | None, str, str]。
+    """
     last_error = ""
     last_raw = ""
 
@@ -177,6 +210,14 @@ def _call_openai_json_with_retry(
 
 
 def _validate_summary_payload(data: dict[str, Any]) -> None:
+    """校验输入参数或当前状态。
+
+    Args:
+        data: 参数 data（dict[str, Any]）。
+
+    Raises:
+        ValueError: 执行失败时抛出。
+    """
     if not isinstance(data, dict):
         raise ValueError("summary payload is not a dict")
     required = ("topic_label", "full_narrative", "semantic_inference")
@@ -186,6 +227,14 @@ def _validate_summary_payload(data: dict[str, Any]) -> None:
 
 
 def _validate_event_link_payload(data: dict[str, Any]) -> None:
+    """校验输入参数或当前状态。
+
+    Args:
+        data: 参数 data（dict[str, Any]）。
+
+    Raises:
+        ValueError: 执行失败时抛出。
+    """
     if not isinstance(data, dict):
         raise ValueError("event link payload is not a dict")
     if "is_same_event" not in data:
@@ -200,6 +249,14 @@ def _validate_event_link_payload(data: dict[str, Any]) -> None:
 
 
 def _validate_chapter_payload(data: dict[str, Any]) -> None:
+    """校验输入参数或当前状态。
+
+    Args:
+        data: 参数 data（dict[str, Any]）。
+
+    Raises:
+        ValueError: 执行失败时抛出。
+    """
     if not isinstance(data, dict):
         raise ValueError("chapter payload is not a dict")
     chapters = data.get("chapters")
@@ -277,6 +334,14 @@ def _normalize_chapters_start_only(
 
 
 def _validate_event_table_payload(data: dict[str, Any]) -> None:
+    """校验输入参数或当前状态。
+
+    Args:
+        data: 参数 data（dict[str, Any]）。
+
+    Raises:
+        ValueError: 执行失败时抛出。
+    """
     if not isinstance(data, dict):
         raise ValueError("event table payload is not a dict")
     required = {
@@ -343,7 +408,21 @@ def _resolve_video_path(video_path: Path) -> Path:
 
 
 def _append_jsonl(path: Path, item: dict[str, Any]) -> None:
+    """执行 `append_jsonl` 操作。
+
+    Args:
+        path: 参数 path（Path）。
+        item: 参数 item（dict[str, Any]）。
+    """
     def _drop_embeddings(obj: Any) -> Any:
+        """执行 `drop_embeddings` 操作。
+
+        Args:
+            obj: 参数 obj（Any）。
+
+        Returns:
+            返回 Any。
+        """
         if isinstance(obj, dict):
             out: dict[str, Any] = {}
             for k, v in obj.items():
@@ -365,6 +444,18 @@ def _append_jsonl(path: Path, item: dict[str, Any]) -> None:
 
 
 def _get_clip_duration(clip_path: Path) -> float:
+    """读取指定的记录或资源。
+
+    Args:
+        clip_path: 参数 clip_path（Path）。
+
+    Returns:
+        返回 float。
+
+    Raises:
+        FileNotFoundError: 执行失败时抛出。
+        RuntimeError: 执行失败时抛出。
+    """
     import shutil
     import subprocess
 
@@ -391,6 +482,14 @@ def _get_clip_duration(clip_path: Path) -> float:
 
 
 def _mmss_to_seconds(ts: str) -> float:
+    """执行 `mmss_to_seconds` 操作。
+
+    Args:
+        ts: 参数 ts（str）。
+
+    Returns:
+        返回 float。
+    """
     try:
         parts = ts.split(":")
         if len(parts) != 2:
@@ -402,6 +501,14 @@ def _mmss_to_seconds(ts: str) -> float:
 
 
 def _hhmmss_to_seconds(ts: str) -> float:
+    """执行 `hhmmss_to_seconds` 操作。
+
+    Args:
+        ts: 参数 ts（str）。
+
+    Returns:
+        返回 float。
+    """
     try:
         parts = ts.split(":")
         if len(parts) == 2:
@@ -415,6 +522,14 @@ def _hhmmss_to_seconds(ts: str) -> float:
 
 
 def _seconds_to_hhmmss(sec: float) -> str:
+    """执行 `seconds_to_hhmmss` 操作。
+
+    Args:
+        sec: 参数 sec（float）。
+
+    Returns:
+        返回 str。
+    """
     sec = max(0.0, float(sec))
     h = int(sec // 3600)
     m = int((sec % 3600) // 60)
@@ -423,6 +538,14 @@ def _seconds_to_hhmmss(sec: float) -> str:
 
 
 def _normalize_to_hhmmss(ts: str) -> str:
+    """规范化输入值。
+
+    Args:
+        ts: 参数 ts（str）。
+
+    Returns:
+        返回 str。
+    """
     return _seconds_to_hhmmss(_hhmmss_to_seconds(ts))
 
 
@@ -434,6 +557,15 @@ def _summarize_session(
     *,
     llm_port: LLM,
 ) -> dict[str, str]:
+    """执行 `summarize_session` 操作。
+
+    Args:
+        details: 参数 details（list[str]）。
+        llm_port: 参数 llm_port（LLM）。
+
+    Returns:
+        返回 dict[str, str]。
+    """
     detail_list = "\n".join(f"- {d}" for d in details)
     prompt = _fill_prompt_template(
         SESSION_SUMMARY_PROMPT_TEMPLATE, detail_list=detail_list
@@ -459,6 +591,14 @@ def _summarize_session(
 
 
 def _build_event_link_prompt(request: EventLinkRequest) -> str:
+    """根据配置构建组件实例。
+
+    Args:
+        request: 参数 request（EventLinkRequest）。
+
+    Returns:
+        返回 str。
+    """
     pre_et_payload = _event_link_pre_et_payload(request.pre_event)
     pre_et_text = (
         "null"
@@ -498,6 +638,14 @@ def _build_event_link_prompt(request: EventLinkRequest) -> str:
 def _event_link_pre_et_payload(
     pre_et: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
+    """执行 `event_link_pre_et_payload` 操作。
+
+    Args:
+        pre_et: 参数 pre_et（dict[str, Any] | None）。
+
+    Returns:
+        返回 dict[str, Any] | None。
+    """
     if not isinstance(pre_et, dict):
         return None
     return {
@@ -512,6 +660,15 @@ def _event_link_current_segments_payload(
     anchor_stm: ShortTermMemory,
     pending_stm: ShortTermMemory,
 ) -> dict[str, Any]:
+    """执行 `event_link_current_segments_payload` 操作。
+
+    Args:
+        anchor_stm: 参数 anchor_stm（ShortTermMemory）。
+        pending_stm: 参数 pending_stm（ShortTermMemory）。
+
+    Returns:
+        返回 dict[str, Any]。
+    """
     return {
         "anchor_segment": {
             "clip_id": str(anchor_stm.id),
@@ -531,6 +688,14 @@ def _event_link_current_segments_payload(
 
 
 def _parse_split_points(data: dict[str, Any]) -> list[dict[str, str]]:
+    """解析输入数据并返回结构化结果。
+
+    Args:
+        data: 参数 data（dict[str, Any]）。
+
+    Returns:
+        返回 list[dict[str, str]]。
+    """
     points: list[dict[str, str]] = []
     if not isinstance(data, dict):
         return points
@@ -550,6 +715,15 @@ def _parse_split_points(data: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def _format_et_shift_candidate(delta: str, evidence: str) -> str:
+    """执行 `format_et_shift_candidate` 操作。
+
+    Args:
+        delta: 参数 delta（str）。
+        evidence: 参数 evidence（str）。
+
+    Returns:
+        返回 str。
+    """
     raw = str(delta or "").strip()
     if not raw:
         return f"ET shift:SHIFT: unknown -> unknown | evidence={evidence}."
@@ -610,6 +784,17 @@ def _judge_event_with_et(
     log_path: Path | None = None,
     meta: dict[str, Any] | None = None,
 ) -> tuple[bool, list[dict[str, str]]]:
+    """执行 `judge_event_with_et` 操作。
+
+    Args:
+        request: 参数 request（EventLinkRequest）。
+        llm_port: 参数 llm_port（LLM）。
+        log_path: 参数 log_path（Path | None）。
+        meta: 参数 meta（dict[str, Any] | None）。
+
+    Returns:
+        返回 tuple[bool, list[dict[str, str]]]。
+    """
     pre_et_payload = _event_link_pre_et_payload(request.pre_event)
     current_segments_payload = _event_link_current_segments_payload(
         request.anchor,
@@ -680,6 +865,14 @@ def _judge_event_with_et(
 
 
 def _stm_to_event_payload(stm: ShortTermMemory) -> dict[str, Any]:
+    """执行 `stm_to_event_payload` 操作。
+
+    Args:
+        stm: 参数 stm（ShortTermMemory）。
+
+    Returns:
+        返回 dict[str, Any]。
+    """
     return {
         "clip_id": str(stm.id),
         "time_range": [stm.time_range[0], stm.time_range[1]],
@@ -693,6 +886,15 @@ def _stm_to_event_payload(stm: ShortTermMemory) -> dict[str, Any]:
 def _fallback_event_table(
     pre_et: dict[str, Any] | None, stm: ShortTermMemory
 ) -> dict[str, Any]:
+    """执行 `fallback_event_table` 操作。
+
+    Args:
+        pre_et: 参数 pre_et（dict[str, Any] | None）。
+        stm: 参数 stm（ShortTermMemory）。
+
+    Returns:
+        返回 dict[str, Any]。
+    """
     identity = (stm.visual_summary or "ongoing activity").strip()
     summary = stm.detailed_caption.strip() or stm.visual_summary.strip() or ""
     if pre_et and isinstance(pre_et, dict):
@@ -717,6 +919,16 @@ def _fallback_event_table(
 def _coerce_event_table(
     data: Any, pre_et: dict[str, Any] | None, stm: ShortTermMemory
 ) -> dict[str, Any]:
+    """执行 `coerce_event_table` 操作。
+
+    Args:
+        data: 参数 data（Any）。
+        pre_et: 参数 pre_et（dict[str, Any] | None）。
+        stm: 参数 stm（ShortTermMemory）。
+
+    Returns:
+        返回 dict[str, Any]。
+    """
     if not isinstance(data, dict):
         return _fallback_event_table(pre_et, stm)
     required = {"event_summary", "entities", "open_questions", "delta"}
@@ -745,6 +957,17 @@ def _update_event_table(
     *,
     llm_port: LLM,
 ) -> dict[str, Any]:
+    """更新已有记忆或业务记录。
+
+    Args:
+        pre_et: 参数 pre_et（dict[str, Any] | None）。
+        stm: 参数 stm（ShortTermMemory）。
+        force_continue: 参数 force_continue（bool）。
+        llm_port: 参数 llm_port（LLM）。
+
+    Returns:
+        返回 dict[str, Any]。
+    """
     pre_et_text = (
         "null" if not pre_et else json.dumps(pre_et, ensure_ascii=False, indent=2)
     )
@@ -781,6 +1004,19 @@ def _segment_chapters(
     *,
     llm_port: LLM,
 ) -> dict[str, Any]:
+    """执行 `segment_chapters` 操作。
+
+    Args:
+        cleaned_asr_segments: 参数 cleaned_asr_segments（list[dict[str, str]]）。
+        video_duration_s: 参数 video_duration_s（float）。
+        llm_port: 参数 llm_port（LLM）。
+
+    Returns:
+        返回 dict[str, Any]。
+
+    Raises:
+        RuntimeError: 执行失败时抛出。
+    """
     chapters_only_schema = (
         "You must return JSON only in the following schema:\n"
         "{\n"
@@ -839,6 +1075,18 @@ def _should_fallback_to_legacy(
     video_duration_s: float,
     segmentation_confidence: str | None = None,
 ) -> tuple[bool, str]:
+    """执行 `should_fallback_to_legacy` 操作。
+
+    Args:
+        asr_segments: 参数 asr_segments（list[dict[str, str]]）。
+        cleaned_asr_segments: 参数 cleaned_asr_segments（list[dict[str, str]]）。
+        chapters: 参数 chapters（list[dict[str, Any]]）。
+        video_duration_s: 参数 video_duration_s（float）。
+        segmentation_confidence: 参数 segmentation_confidence（str | None）。
+
+    Returns:
+        返回 tuple[bool, str]。
+    """
     try:
         if segmentation_confidence and segmentation_confidence.lower() in ("low"):
             return (
@@ -891,6 +1139,14 @@ def _should_fallback_to_legacy(
 
 
 def _collect_asr_boundaries(cleaned_asr_segments: list[dict[str, str]]) -> list[float]:
+    """执行 `collect_asr_boundaries` 操作。
+
+    Args:
+        cleaned_asr_segments: 参数 cleaned_asr_segments（list[dict[str, str]]）。
+
+    Returns:
+        返回 list[float]。
+    """
     boundaries: list[float] = []
     for seg in cleaned_asr_segments:
         st = _hhmmss_to_seconds(seg.get("start", "00:00:00"))
@@ -903,6 +1159,14 @@ def _collect_asr_boundaries(cleaned_asr_segments: list[dict[str, str]]) -> list[
 
 
 def _collect_chapter_boundaries(chapters: list[dict[str, Any]]) -> list[float]:
+    """执行 `collect_chapter_boundaries` 操作。
+
+    Args:
+        chapters: 参数 chapters（list[dict[str, Any]]）。
+
+    Returns:
+        返回 list[float]。
+    """
     boundaries: list[float] = []
     for idx, ch in enumerate(chapters):
         if idx == 0:
@@ -937,6 +1201,17 @@ def make_asr_aligned_segments(
     boundaries: list[float],
     policy: SegmentPolicy = SegmentPolicy(),
 ) -> list[dict[str, float]]:
+    """执行 `make_asr_aligned_segments` 操作。
+
+    Args:
+        start_s: 参数 start_s（float）。
+        end_s: 参数 end_s（float）。
+        boundaries: 参数 boundaries（list[float]）。
+        policy: 参数 policy（SegmentPolicy）。
+
+    Returns:
+        返回 list[dict[str, float]]。
+    """
     segments: list[dict[str, float]] = []
     cur = start_s
     while cur < end_s - 1e-6:
@@ -983,6 +1258,14 @@ def make_asr_aligned_segments(
 
 
 def _get_video_duration(path: Path) -> float:
+    """读取指定的记录或资源。
+
+    Args:
+        path: 参数 path（Path）。
+
+    Returns:
+        返回 float。
+    """
     return _get_clip_duration(path)
 
 
@@ -993,6 +1276,22 @@ def _extract_video_subclip(
     end_s: float,
     timeout_s: int = 180,
 ) -> Path:
+    """执行 `extract_video_subclip` 操作。
+
+    Args:
+        video_path: 参数 video_path（Path）。
+        out_path: 参数 out_path（Path）。
+        start_s: 参数 start_s（float）。
+        end_s: 参数 end_s（float）。
+        timeout_s: 参数 timeout_s（int）。
+
+    Returns:
+        返回 Path。
+
+    Raises:
+        FileNotFoundError: 执行失败时抛出。
+        RuntimeError: 执行失败时抛出。
+    """
     import shutil
     import subprocess
 
@@ -1044,6 +1343,16 @@ def _extract_video_subclip(
 def _asr_for_range(
     asr_segments: list[dict[str, str]], start_s: float, end_s: float
 ) -> list[str]:
+    """执行 `asr_for_range` 操作。
+
+    Args:
+        asr_segments: 参数 asr_segments（list[dict[str, str]]）。
+        start_s: 参数 start_s（float）。
+        end_s: 参数 end_s（float）。
+
+    Returns:
+        返回 list[str]。
+    """
     lines: list[str] = []
     for seg in asr_segments:
         seg_start = _hhmmss_to_seconds(seg.get("start", "00:00:00"))
@@ -1066,6 +1375,17 @@ def _merge_short_segments(
     chapter_start_s: float,
     chapter_end_s: float,
 ) -> list[dict[str, Any]]:
+    """执行 `merge_short_segments` 操作。
+
+    Args:
+        segments: 参数 segments（list[dict[str, Any]]）。
+        min_len_s: 参数 min_len_s（float）。
+        chapter_start_s: 参数 chapter_start_s（float）。
+        chapter_end_s: 参数 chapter_end_s（float）。
+
+    Returns:
+        返回 list[dict[str, Any]]。
+    """
     merged: list[dict[str, Any]] = []
     for seg in segments:
         st_s = max(chapter_start_s, float(seg.get("start_s", 0.0)))
@@ -1140,6 +1460,20 @@ def run_video_memory_pipeline_off(
     work_root: str | Path,
     config: VideoPipelineConfig,
 ) -> dict[str, Any]:
+    """执行 `run_video_memory_pipeline_off` 操作。
+
+    Args:
+        video_path: 参数 video_path（str | Path）。
+        work_root: 参数 work_root（str | Path）。
+        config: 参数 config（VideoPipelineConfig）。
+
+    Returns:
+        返回 dict[str, Any]。
+
+    Raises:
+        ValueError: 执行失败时抛出。
+        RuntimeError: 执行失败时抛出。
+    """
     video_path = _resolve_video_path(Path(video_path))
     chunk_seconds = config.chunk_seconds
     asr_port = config.asr_port
@@ -1375,6 +1709,16 @@ def run_video_memory_pipeline_off(
         stm: ShortTermMemory,
         force_continue: bool = False,
     ) -> dict[str, Any]:
+        """更新已有记忆或业务记录。
+
+        Args:
+            pre_et: 参数 pre_et（dict[str, Any] | None）。
+            stm: 参数 stm（ShortTermMemory）。
+            force_continue: 参数 force_continue（bool）。
+
+        Returns:
+            返回 dict[str, Any]。
+        """
         return _update_event_table(
             pre_et,
             stm,
@@ -1400,6 +1744,14 @@ def run_video_memory_pipeline_off(
     pending_event_table: dict[str, Any] | None = None
 
     def _iter_jsonl(path: Path) -> list[dict[str, Any]]:
+        """执行 `iter_jsonl` 操作。
+
+        Args:
+            path: 参数 path（Path）。
+
+        Returns:
+            返回 list[dict[str, Any]]。
+        """
         rows: list[dict[str, Any]] = []
         if not path.exists() or not path.is_file():
             return rows
@@ -1417,12 +1769,28 @@ def run_video_memory_pipeline_off(
         return rows
 
     def _safe_uuid(raw: Any) -> UUID | None:
+        """执行 `safe_uuid` 操作。
+
+        Args:
+            raw: 参数 raw（Any）。
+
+        Returns:
+            返回 UUID | None。
+        """
         try:
             return raw if isinstance(raw, UUID) else UUID(str(raw))
         except (AttributeError, TypeError, ValueError):
             return None
 
     def _stm_from_stream_row(d: dict[str, Any]) -> ShortTermMemory | None:
+        """执行 `stm_from_stream_row` 操作。
+
+        Args:
+            d: 参数 d（dict[str, Any]）。
+
+        Returns:
+            返回 ShortTermMemory | None。
+        """
         try:
             sid = _safe_uuid(d.get("id"))
             tr = d.get("time_range", [0.0, 0.0])
@@ -1453,6 +1821,14 @@ def run_video_memory_pipeline_off(
             return None
 
     def _mtm_from_stream_row(d: dict[str, Any]) -> MediumTermMemory | None:
+        """执行 `mtm_from_stream_row` 操作。
+
+        Args:
+            d: 参数 d（dict[str, Any]）。
+
+        Returns:
+            返回 MediumTermMemory | None。
+        """
         try:
             tid = _safe_uuid(d.get("task_id"))
             sp = d.get("time_span", [0.0, 0.0])
@@ -1488,11 +1864,24 @@ def run_video_memory_pipeline_off(
             return None
 
     def _record_stm(stm: ShortTermMemory) -> None:
+        """执行 `record_stm` 操作。
+
+        Args:
+            stm: 参数 stm（ShortTermMemory）。
+        """
         short_terms.append(stm)
         stms_by_id[stm.id] = stm
         _append_jsonl(st_stream_path, stm.to_dict())
 
     def _mtm_detail_from_stm(stm: ShortTermMemory) -> str:
+        """执行 `mtm_detail_from_stm` 操作。
+
+        Args:
+            stm: 参数 stm（ShortTermMemory）。
+
+        Returns:
+            返回 str。
+        """
         visual = str(stm.detailed_caption or "").strip()
         asr_text = str(stm.asr or "").strip()
         environment = str(stm.environment or "").strip()
@@ -1502,6 +1891,7 @@ def run_video_memory_pipeline_off(
         return f"[VISUAL] {visual}{env_line}".strip()
 
     def _finalize_session() -> None:
+        """执行 `finalize_session` 操作。"""
         if not session_clip_ids:
             return
         first_stm = stms_by_id[session_clip_ids[0]]
@@ -1528,6 +1918,15 @@ def run_video_memory_pipeline_off(
         _append_jsonl(mt_stream_path, mtm.to_dict())
 
     def _chapters_for_segment(start_s: float, end_s: float) -> list[dict[str, Any]]:
+        """执行 `chapters_for_segment` 操作。
+
+        Args:
+            start_s: 参数 start_s（float）。
+            end_s: 参数 end_s（float）。
+
+        Returns:
+            返回 list[dict[str, Any]]。
+        """
         if not chapters:
             return []
         overlapping: list[dict[str, Any]] = []
@@ -1545,6 +1944,14 @@ def run_video_memory_pipeline_off(
         return overlapping
 
     def _chapter_shift_text(boundary_t: float) -> str:
+        """执行 `chapter_shift_text` 操作。
+
+        Args:
+            boundary_t: 参数 boundary_t（float）。
+
+        Returns:
+            返回 str。
+        """
         if not chapters:
             return "ASR shift:unknown -> unknown | evidence=asr."
         eps = 1e-3
@@ -1575,6 +1982,11 @@ def run_video_memory_pipeline_off(
         return f"ASR shift:{prev_summary}->{next_summary} | evidence=asr."
 
     def _fixed_length_segments() -> list[dict[str, float]]:
+        """执行 `fixed_length_segments` 操作。
+
+        Returns:
+            返回 list[dict[str, float]]。
+        """
         step = max(1.0, float(chunk_seconds))
         segments: list[dict[str, float]] = []
         start_t = 0.0
@@ -1589,6 +2001,11 @@ def run_video_memory_pipeline_off(
         return segments
 
     def _prepare_segments() -> list[dict[str, float]]:
+        """执行 `prepare_segments` 操作。
+
+        Returns:
+            返回 list[dict[str, float]]。
+        """
         asr_text_len = sum(
             len(str(seg.get("text", "")).strip()) for seg in asr_segments
         )
@@ -1846,6 +2263,14 @@ def run_video_memory_pipeline_off(
         return 0.0 <= gap < min_split_gap_s
 
     def _apply_split(split_t: float, start_t: float, end_t: float, seg_id: int) -> None:
+        """执行 `apply_split` 操作。
+
+        Args:
+            split_t: 参数 split_t（float）。
+            start_t: 参数 start_t（float）。
+            end_t: 参数 end_t（float）。
+            seg_id: 参数 seg_id（int）。
+        """
         nonlocal session_clip_ids
         nonlocal session_details
         nonlocal prev_stm
@@ -1898,6 +2323,14 @@ def run_video_memory_pipeline_off(
             )
 
     def _parse_split_seconds(raw_t: str) -> float | None:
+        """解析输入数据并返回结构化结果。
+
+        Args:
+            raw_t: 参数 raw_t（str）。
+
+        Returns:
+            返回 float | None。
+        """
         t = str(raw_t or "").strip()
         if not t:
             return None
@@ -1916,6 +2349,17 @@ def run_video_memory_pipeline_off(
         end_t: float,
         fallback_t: float | None = None,
     ) -> float | None:
+        """执行 `pick_split_t` 操作。
+
+        Args:
+            split_points: 参数 split_points（list[dict[str, str]]）。
+            start_t: 参数 start_t（float）。
+            end_t: 参数 end_t（float）。
+            fallback_t: 参数 fallback_t（float | None）。
+
+        Returns:
+            返回 float | None。
+        """
         eps = 1e-3
         for sp in split_points:
             t_s = _parse_split_seconds(sp.get("t", ""))
@@ -1932,6 +2376,19 @@ def run_video_memory_pipeline_off(
     def _run_stm_for_segment(
         start_t: float, end_t: float, seg_tag: str
     ) -> tuple[ShortTermMemory | None, list[float], str]:
+        """执行 `run_stm_for_segment` 操作。
+
+        Args:
+            start_t: 参数 start_t（float）。
+            end_t: 参数 end_t（float）。
+            seg_tag: 参数 seg_tag（str）。
+
+        Returns:
+            返回 tuple[ShortTermMemory | None, list[float], str]。
+
+        Raises:
+            RuntimeError: 执行失败时抛出。
+        """
         out_clip = segments_dir / f"seg_{seg_tag}.mp4"
         logger.debug(
             "VideoPipeline: extracting segment=%s start=%.3f end=%.3f",
@@ -1988,6 +2445,15 @@ def run_video_memory_pipeline_off(
         old_et: dict[str, Any] | None,
         pending_items: list[ShortTermMemory],
     ) -> dict[str, Any]:
+        """执行 `rebuild_event_table_from_old` 操作。
+
+        Args:
+            old_et: 参数 old_et（dict[str, Any] | None）。
+            pending_items: 参数 pending_items（list[ShortTermMemory]）。
+
+        Returns:
+            返回 dict[str, Any]。
+        """
         rebuilt = old_et
         for item in pending_items:
             rebuilt = _update_event_table_for_run(

@@ -15,6 +15,14 @@ _ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
 def _sub_env(m: "re.Match[str]") -> str:
+    """执行 `sub_env` 操作。
+
+    Args:
+        m: 参数 m（'re.Match[str]'）。
+
+    Returns:
+        返回 str。
+    """
     name, default = m.group(1), m.group(2)
     return os.environ.get(name, default if default is not None else "")
 

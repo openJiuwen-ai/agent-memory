@@ -43,6 +43,14 @@ _ADVERSARIAL = 5  # category 5：对抗题，judge/stat 一律跳过
 
 
 def _parse_dt(date_str: str) -> Optional[datetime]:
+    """解析输入数据并返回结构化结果。
+
+    Args:
+        date_str: 参数 date_str（str）。
+
+    Returns:
+        返回 Optional[datetime]。
+    """
     try:
         return datetime.strptime(date_str.strip(), _DATE_FMT)
     except (ValueError, AttributeError):
@@ -50,10 +58,26 @@ def _parse_dt(date_str: str) -> Optional[datetime]:
 
 
 def _session_num(key: str) -> int:
+    """执行 `session_num` 操作。
+
+    Args:
+        key: 参数 key（str）。
+
+    Returns:
+        返回 int。
+    """
     return int(key.split("_")[1])
 
 
 def _message_content(msg: dict) -> str:
+    """执行 `message_content` 操作。
+
+    Args:
+        msg: 参数 msg（dict）。
+
+    Returns:
+        返回 str。
+    """
     text = f"[{msg.get('speaker', 'unknown')}]: {msg.get('text', '')}"
     caption = str(msg.get("blip_caption", "") or "")
     img = msg.get("img_url")
@@ -74,6 +98,14 @@ class LoCoMoDataset(Dataset):
         max_questions: Optional[int] = None,
         scope_org: str = "locomo",
     ) -> None:
+        """初始化 LoCoMoDataset。
+
+        Args:
+            path: 参数 path（str）。
+            samples: 参数 samples（Optional[Sequence[int]]）。
+            max_questions: 参数 max_questions（Optional[int]）。
+            scope_org: 参数 scope_org（str）。
+        """
         self._path = path
         self._scope_org = scope_org
         self._seeds: List[MemorySeed] = []
@@ -82,10 +114,20 @@ class LoCoMoDataset(Dataset):
             self._parse(path, samples, max_questions)
 
     def seeds(self) -> Sequence[MemorySeed]:
+        """执行 `seeds` 操作。
+
+        Returns:
+            返回 Sequence[MemorySeed]。
+        """
         self._require_loaded()
         return self._seeds
 
     def queries(self) -> Sequence[QueryCase]:
+        """执行 `queries` 操作。
+
+        Returns:
+            返回 Sequence[QueryCase]。
+        """
         self._require_loaded()
         return self._queries
 
@@ -96,6 +138,13 @@ class LoCoMoDataset(Dataset):
         samples: Optional[Sequence[int]],
         max_questions: Optional[int],
     ) -> None:
+        """解析输入数据并返回结构化结果。
+
+        Args:
+            path: 参数 path（str）。
+            samples: 参数 samples（Optional[Sequence[int]]）。
+            max_questions: 参数 max_questions（Optional[int]）。
+        """
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
 
@@ -109,6 +158,13 @@ class LoCoMoDataset(Dataset):
             self._queries = self._queries[:max_questions]
 
     def _parse_sample(self, sample: dict, sample_id: str, scope: Scope) -> None:
+        """解析输入数据并返回结构化结果。
+
+        Args:
+            sample: 参数 sample（dict）。
+            sample_id: 参数 sample_id（str）。
+            scope: 参数 scope（Scope）。
+        """
         conv = sample.get("conversation", {})
         session_keys = sorted(
             (k for k in conv if k.startswith("session_") and not k.endswith("_date_time")),
@@ -150,6 +206,11 @@ class LoCoMoDataset(Dataset):
 
     # -- Dataset 接口 ------------------------------------------------------- #
     def _require_loaded(self) -> None:
+        """校验并取得必需的资源或参数。
+
+        Raises:
+            FileNotFoundError: 执行失败时抛出。
+        """
         if not self._seeds and not self._queries:
             raise FileNotFoundError(
                 f"LoCoMo 数据缺失：{self._path}。从 "

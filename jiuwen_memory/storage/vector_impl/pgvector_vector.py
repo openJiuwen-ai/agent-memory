@@ -67,6 +67,34 @@ class PgVectorStore(PgStoreBase, VectorStore):
         config_source=None,
         config_namespace: str = "vector_store",
     ) -> None:
+        """初始化 PgVectorStore。
+
+        Args:
+            dsn: 参数 dsn（str）。
+            schema: 参数 schema（str）。
+            table: 参数 table（str）。
+            dim: 参数 dim（int）。
+            metric_type: 参数 metric_type（str）。
+            index_type: 参数 index_type（str）。
+            hnsw_m: 参数 hnsw_m（int）。
+            hnsw_ef_construction: 参数 hnsw_ef_construction（int）。
+            ef_search: 参数 ef_search（int）。
+            max_scan_tuples: 参数 max_scan_tuples（int）。
+            create_metadata_index: 参数 create_metadata_index（bool）。
+            pool_min_size: 参数 pool_min_size（int）。
+            pool_max_size: 参数 pool_max_size（int）。
+            connect_timeout: 参数 connect_timeout（float）。
+            application_name: 参数 application_name（str）。
+            auto_create_schema: 参数 auto_create_schema（bool）。
+            create_extension: 参数 create_extension（bool）。
+            ssl_verify: 参数 ssl_verify（bool）。
+            ssl_ca_cert: 参数 ssl_ca_cert（str | None）。
+            config_source: 参数 config_source。
+            config_namespace: 参数 config_namespace（str）。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if dim <= 0:
             raise ValidationError("pgvector store requires positive 'dim'")
         metric = str(metric_type).upper()
@@ -108,6 +136,14 @@ class PgVectorStore(PgStoreBase, VectorStore):
 
     @staticmethod
     def _first_duplicate(ids: list[str]) -> str | None:
+        """执行 `first_duplicate` 操作。
+
+        Args:
+            ids: 参数 ids（list[str]）。
+
+        Returns:
+            返回 str | None。
+        """
         seen: set[str] = set()
         for id_ in ids:
             if id_ in seen:
@@ -116,15 +152,35 @@ class PgVectorStore(PgStoreBase, VectorStore):
         return None
 
     def store_type(self) -> StoreType:
+        """返回当前存储类型。
+
+        Returns:
+            返回 StoreType。
+        """
         return StoreType.VECTOR
 
     def health(self) -> None:
+        """执行健康检查。"""
         self._health()
 
     def score_higher_is_better(self) -> bool:
+        """执行 `score_higher_is_better` 操作。
+
+        Returns:
+            返回 bool。
+        """
         return True
 
     def insert(self, scope: Scope, records: list[VectorRecord]) -> None:
+        """插入一条或多条记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            records: 参数 records（list[VectorRecord]）。
+
+        Raises:
+            ConflictError: 执行失败时抛出。
+        """
         if not records:
             return
         duplicate = self._first_duplicate([record.id for record in records])
@@ -157,6 +213,16 @@ class PgVectorStore(PgStoreBase, VectorStore):
                     raise ConflictError(entity="vector", key=conflict)
 
     def update(self, scope: Scope, records: list[VectorRecord]) -> None:
+        """更新已有记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            records: 参数 records（list[VectorRecord]）。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+            NotFoundError: 执行失败时抛出。
+        """
         if not records:
             return
         duplicate = self._first_duplicate([record.id for record in records])
@@ -194,6 +260,12 @@ class PgVectorStore(PgStoreBase, VectorStore):
                     raise NotFoundError(entity="vector", key=missing)
 
     def delete(self, scope: Scope, ids: list[str]) -> None:
+        """删除指定的记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ids: 参数 ids（list[str]）。
+        """
         if not ids:
             return
         scope_clause, scope_params = pg_scope_clause(scope, exact=True)
@@ -206,6 +278,15 @@ class PgVectorStore(PgStoreBase, VectorStore):
                 cursor.execute(statement, [ids, *scope_params])
 
     def get(self, scope: Scope, ids: list[str]) -> list[VectorRecord]:
+        """读取指定的记录或资源。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ids: 参数 ids（list[str]）。
+
+        Returns:
+            返回 list[VectorRecord]。
+        """
         if not ids:
             return []
         scope_clause, scope_params = pg_scope_clause(scope, exact=True)
@@ -225,6 +306,15 @@ class PgVectorStore(PgStoreBase, VectorStore):
         ]
 
     def search(self, scope: Scope, query: VectorQuery) -> list[ScoredID]:
+        """检索与查询匹配的结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（VectorQuery）。
+
+        Returns:
+            返回 list[ScoredID]。
+        """
         query_vector = self._vector_text(query.vector)
         where, where_params = self._search_where(scope, query.filters)
         statement = self._knn_statement(where)
@@ -247,6 +337,16 @@ class PgVectorStore(PgStoreBase, VectorStore):
         # 把"召回 + 取 metadata"合并为同一条 KNN SELECT——仅在 SELECT 列追加
         # metadata，省掉调用方再发一次 get 的往返。output_fields 仅认 "metadata"
         # （归并所需的 unit_id 即在其中），其余值忽略并记日志，与 milvus 后端对齐。
+        """召回与查询匹配的记忆结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（VectorQuery）。
+            output_fields: 参数 output_fields（list[str] | None）。
+
+        Returns:
+            返回 list[ScoredHit]。
+        """
         fetch_meta = bool(output_fields) and "metadata" in output_fields
         if output_fields:
             unknown = [f for f in output_fields if f != "metadata"]
@@ -283,6 +383,14 @@ class PgVectorStore(PgStoreBase, VectorStore):
         return out
 
     def _ensure_schema(self, pool: Any) -> None:
+        """确保所需资源或状态已就绪。
+
+        Args:
+            pool: 参数 pool（Any）。
+
+        Raises:
+            BackendError: 执行失败时抛出。
+        """
         with pool.connection() as conn, conn.cursor() as cursor:
             if not self._auto_create_schema:
                 self._require_vector_extension(cursor)
@@ -360,6 +468,14 @@ class PgVectorStore(PgStoreBase, VectorStore):
             self._require_dimension(cursor)
 
     def _require_dimension(self, cursor: Any) -> None:
+        """校验并取得必需的资源或参数。
+
+        Args:
+            cursor: 参数 cursor（Any）。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         cursor.execute(
             """
             SELECT a.atttypmod
@@ -385,6 +501,17 @@ class PgVectorStore(PgStoreBase, VectorStore):
             )
 
     def _vector_text(self, vector: list[float]) -> str:
+        """执行 `vector_text` 操作。
+
+        Args:
+            vector: 参数 vector（list[float]）。
+
+        Returns:
+            返回 str。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if len(vector) != self._dim:
             raise ValidationError(
                 f"vector dimension mismatch: expected {self._dim}, got {len(vector)}"
@@ -392,6 +519,15 @@ class PgVectorStore(PgStoreBase, VectorStore):
         return json.dumps(vector, separators=(",", ":"))
 
     def _record_params(self, scope: Scope, record: VectorRecord) -> list[Any]:
+        """执行 `record_params` 操作。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            record: 参数 record（VectorRecord）。
+
+        Returns:
+            返回 list[Any]。
+        """
         return [
             record.id,
             self._vector_text(record.vector),
@@ -406,6 +542,15 @@ class PgVectorStore(PgStoreBase, VectorStore):
     def _search_where(
         self, scope: Scope, filters: FilterExpr | None
     ) -> tuple[str, list[Any]]:
+        """检索与查询匹配的结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            filters: 参数 filters（FilterExpr | None）。
+
+        Returns:
+            返回 tuple[str, list[Any]]。
+        """
         parts: list[str] = []
         params: list[Any] = []
         scope_clause, scope_params = pg_scope_clause(scope, exact=False)
@@ -459,6 +604,11 @@ class PgVectorStore(PgStoreBase, VectorStore):
 @VectorProducer.register("pgvector")
 def _build(config):
     # sslmode 是参数形态的真开关，无须校验 dsn scheme（见 _pg.PgStoreBase.pool）。
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     from jiuwen_memory.config.config_source import ConfigSourceProducer
 
     ssl = read_ssl_config(config, backend="pgvector")

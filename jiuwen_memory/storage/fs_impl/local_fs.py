@@ -39,6 +39,14 @@ class LocalFSStore(FSStore):
         config_source=None,
         config_namespace: str = "fs_store",
     ) -> None:
+        """初始化 LocalFSStore。
+
+        Args:
+            root: 参数 root（str）。
+            create_root: 参数 create_root（bool）。
+            config_source: 参数 config_source。
+            config_namespace: 参数 config_namespace（str）。
+        """
         self._fallback_root = root
         self._create_root = create_root
         self._config_source = config_source
@@ -49,14 +57,37 @@ class LocalFSStore(FSStore):
             path.mkdir(parents=True, exist_ok=True)
 
     def store_type(self) -> StoreType:
+        """返回当前存储类型。
+
+        Returns:
+            返回 StoreType。
+        """
         return StoreType.FS
 
     def health(self) -> None:
+        """执行健康检查。
+
+        Raises:
+            HealthCheckError: 执行失败时抛出。
+        """
         root = self._resolved_root()
         if not root.is_dir():
             raise HealthCheckError(f"storage root not a directory: {root}")
 
     def insert(self, scope: Scope, key: str, data: BinaryIO) -> str:
+        """插入一条或多条记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            key: 参数 key（str）。
+            data: 参数 data（BinaryIO）。
+
+        Returns:
+            返回 str。
+
+        Raises:
+            ConflictError: 执行失败时抛出。
+        """
         path = self._path(scope, key)
         if path.exists():
             raise ConflictError(entity="file", key=key)
@@ -67,6 +98,19 @@ class LocalFSStore(FSStore):
         return key
 
     def update(self, scope: Scope, ref: str, data: BinaryIO) -> str:
+        """更新已有记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ref: 参数 ref（str）。
+            data: 参数 data（BinaryIO）。
+
+        Returns:
+            返回 str。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         path = self._path(scope, ref)
         if not path.exists():
             raise NotFoundError(entity="file", key=ref)
@@ -76,11 +120,29 @@ class LocalFSStore(FSStore):
         return ref
 
     def delete(self, scope: Scope, ref: str) -> None:
+        """删除指定的记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ref: 参数 ref（str）。
+        """
         path = self._path(scope, ref)
         with wrap_backend(f"fs delete {ref!r}"):
             path.unlink(missing_ok=True)  # 幂等
 
     def get(self, scope: Scope, ref: str) -> BinaryIO:
+        """读取指定的记录或资源。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ref: 参数 ref（str）。
+
+        Returns:
+            返回 BinaryIO。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         path = self._path(scope, ref)
         try:
             return open(path, "rb")
@@ -88,6 +150,18 @@ class LocalFSStore(FSStore):
             raise NotFoundError(entity="file", key=ref) from None
 
     def stat(self, scope: Scope, ref: str) -> FileStat:
+        """返回指定资源的元信息。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ref: 参数 ref（str）。
+
+        Returns:
+            返回 FileStat。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         path = self._path(scope, ref)
         try:
             st = path.stat()
@@ -103,6 +177,11 @@ class LocalFSStore(FSStore):
         )
 
     def _resolved_root(self) -> Path:
+        """解析并返回目标配置或资源。
+
+        Returns:
+            返回 Path。
+        """
         from jiuwen_memory.config.binding import resolve_connection_url
 
         live = resolve_connection_url(
@@ -131,6 +210,11 @@ class LocalFSStore(FSStore):
 @FsProducer.register("local")
 def _build(config):
     # root 在构造器中无默认值 → 必填，build 阶段校验；create_root 有默认值，可覆盖。
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     from jiuwen_memory.config.config_source import ConfigSourceProducer
 
     return LocalFSStore(

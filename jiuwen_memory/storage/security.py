@@ -40,6 +40,7 @@ class StorageSecurity(ABC):
         """允许时返回 None，拒绝时抛 PermissionDeniedError。"""
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
 
@@ -51,6 +52,14 @@ class AllowAllStorageSecurity(StorageSecurity):
         action: StorageAction,
         resource: str,
     ) -> None:
+        """校验当前访问是否获得授权。
+
+        Args:
+            access: 参数 access（StorageAccessContext | None）。
+            scope: 参数 scope（Scope）。
+            action: 参数 action（StorageAction）。
+            resource: 参数 resource（str）。
+        """
         return None
 
 
@@ -62,11 +71,17 @@ class StoreSecurity(ABC):
         """是否启用了实际数据保护。"""
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
 
 class PassthroughStoreSecurity(StoreSecurity):
     def enabled(self) -> bool:
+        """执行 `enabled` 操作。
+
+        Returns:
+            返回 bool。
+        """
         return False
 
 
@@ -74,12 +89,23 @@ class EnabledStoreSecurity(StoreSecurity):
     """由既有后端安全组件支撑的已启用数据保护标记。"""
 
     def __init__(self, health_check: Callable[[], None]) -> None:
+        """初始化 EnabledStoreSecurity。
+
+        Args:
+            health_check: 参数 health_check（Callable[[], None]）。
+        """
         self._health_check = health_check
 
     def enabled(self) -> bool:
+        """执行 `enabled` 操作。
+
+        Returns:
+            返回 bool。
+        """
         return True
 
     def health(self) -> None:
+        """执行健康检查。"""
         self._health_check()
 
 

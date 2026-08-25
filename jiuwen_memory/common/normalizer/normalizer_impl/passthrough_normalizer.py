@@ -16,15 +16,37 @@ class PassthroughNormalizer(Normalizer):
     """文本直通规约：从 ``RawPayload`` 取出 UTF-8 文本作为 content 投影。"""
 
     def plugin_type(self) -> PluginType:
+        """返回当前插件类型。
+
+        Returns:
+            返回 PluginType。
+        """
         return PluginType.NORMALIZER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def modalities(self) -> list[Modality]:
+        """执行 `modalities` 操作。
+
+        Returns:
+            返回 list[Modality]。
+        """
         return [Modality.TEXT]
 
     def normalize(self, payload: RawPayload) -> str:
+        """规范化输入值。
+
+        Args:
+            payload: 参数 payload（RawPayload）。
+
+        Returns:
+            返回 str。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+        """
         if payload.data:
             return payload.data.decode("utf-8")
         if payload.uri:
@@ -37,4 +59,9 @@ class PassthroughNormalizer(Normalizer):
 
 @NormalizerProducer.register("passthrough")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return PassthroughNormalizer()

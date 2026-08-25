@@ -45,23 +45,52 @@ class JiebaTokenizer(Tokenizer):
 
     @property
     def mode(self) -> str:
+        """返回 mode 属性。
+
+        Returns:
+            返回 str。
+        """
         return self._mode
 
     @property
     def hmm(self) -> bool:
+        """返回 hmm 属性。
+
+        Returns:
+            返回 bool。
+        """
         return self._hmm
 
     @property
     def initialized(self) -> bool:
+        """返回 initialized 属性。
+
+        Returns:
+            返回 bool。
+        """
         return self._initialized
 
     def plugin_type(self) -> PluginType:
+        """返回当前插件类型。
+
+        Returns:
+            返回 PluginType。
+        """
         return PluginType.TOKENIZER
 
     def health(self) -> None:
+        """执行健康检查。"""
         self._ensure_initialized()
 
     def tokenize(self, text: str) -> list[str]:
+        """执行 `tokenize` 操作。
+
+        Args:
+            text: 参数 text（str）。
+
+        Returns:
+            返回 list[str]。
+        """
         if not text:
             return []
         self._ensure_initialized()

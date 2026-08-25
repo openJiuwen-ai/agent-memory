@@ -41,9 +41,23 @@ class EngineClient(Protocol):
     """A backend the CLI can drive: turn a (verb, payload) into (status, body)."""
 
     def call(self, verb: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        """执行 `call` 操作。
+
+        Args:
+            verb: 参数 verb（str）。
+            payload: 参数 payload（dict[str, Any]）。
+
+        Returns:
+            返回 tuple[int, dict[str, Any]]。
+        """
         ...
 
     def healthz(self) -> tuple[int, dict[str, Any]]:
+        """执行 `healthz` 操作。
+
+        Returns:
+            返回 tuple[int, dict[str, Any]]。
+        """
         ...
 
 
@@ -57,6 +71,11 @@ class InProcessClient:
     """
 
     def __init__(self, configs: list[str] | None = None) -> None:
+        """初始化 InProcessClient。
+
+        Args:
+            configs: 参数 configs（list[str] | None）。
+        """
         import server
         from profiles import OFFLINE, load_config
 
@@ -74,14 +93,29 @@ class InProcessClient:
         return self._srv
 
     def call(self, verb: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        """执行 `call` 操作。
+
+        Args:
+            verb: 参数 verb（str）。
+            payload: 参数 payload（dict[str, Any]）。
+
+        Returns:
+            返回 tuple[int, dict[str, Any]]。
+        """
         from handler import dispatch
 
         return dispatch(self._srv, verb, payload)
 
     def healthz(self) -> tuple[int, dict[str, Any]]:
+        """执行 `healthz` 操作。
+
+        Returns:
+            返回 tuple[int, dict[str, Any]]。
+        """
         return 200, {"status": "ok", "profile": self._srv.config.profile}
 
     def close(self) -> None:
+        """关闭并释放相关资源。"""
         self._srv.close(wait=True)
 
 
@@ -89,16 +123,46 @@ class HttpClient:
     """Drive a running ``bootstrap`` server over HTTP (``POST /v1/<verb>``)."""
 
     def __init__(self, base_url: str, timeout: float = 30.0) -> None:
+        """初始化 HttpClient。
+
+        Args:
+            base_url: 参数 base_url（str）。
+            timeout: 参数 timeout（float）。
+        """
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
     def call(self, verb: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        """执行 `call` 操作。
+
+        Args:
+            verb: 参数 verb（str）。
+            payload: 参数 payload（dict[str, Any]）。
+
+        Returns:
+            返回 tuple[int, dict[str, Any]]。
+        """
         return self._request("POST", f"/v1/{verb}", payload)
 
     def healthz(self) -> tuple[int, dict[str, Any]]:
+        """执行 `healthz` 操作。
+
+        Returns:
+            返回 tuple[int, dict[str, Any]]。
+        """
         return self._request("GET", "/healthz", None)
 
     def _request(self, method: str, path: str, body: dict | None) -> tuple[int, dict[str, Any]]:
+        """执行 `request` 操作。
+
+        Args:
+            method: 参数 method（str）。
+            path: 参数 path（str）。
+            body: 参数 body（dict | None）。
+
+        Returns:
+            返回 tuple[int, dict[str, Any]]。
+        """
         url = f"{self.base_url}{path}"
         data = json.dumps(body).encode("utf-8") if body is not None else None
         req = urllib.request.Request(
@@ -118,6 +182,14 @@ class HttpClient:
 
 
 def _read_json(resp) -> dict[str, Any]:
+    """读取指定的数据或资源。
+
+    Args:
+        resp: 参数 resp。
+
+    Returns:
+        返回 dict[str, Any]。
+    """
     raw = resp.read()
     if not raw:
         return {}

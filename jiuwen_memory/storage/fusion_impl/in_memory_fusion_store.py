@@ -26,10 +26,27 @@ _ScopeKey = Tuple[str, str, str, str, str]
 
 
 def _skey(scope: Scope) -> _ScopeKey:
+    """执行 `skey` 操作。
+
+    Args:
+        scope: 参数 scope（Scope）。
+
+    Returns:
+        返回 _ScopeKey。
+    """
     return (scope.org, scope.space, scope.user, scope.agent, scope.session)
 
 
 def _cosine(a: List[float], b: List[float]) -> float:
+    """执行 `cosine` 操作。
+
+    Args:
+        a: 参数 a（List[float]）。
+        b: 参数 b（List[float]）。
+
+    Returns:
+        返回 float。
+    """
     if not a or not b or len(a) != len(b):
         return 0.0
     dot = sum(x * y for x, y in zip(a, b))
@@ -39,6 +56,15 @@ def _cosine(a: List[float], b: List[float]) -> float:
 
 
 def _passes(scalars: Dict[str, Any], clause: FilterClause) -> bool:
+    """执行 `passes` 操作。
+
+    Args:
+        scalars: 参数 scalars（Dict[str, Any]）。
+        clause: 参数 clause（FilterClause）。
+
+    Returns:
+        返回 bool。
+    """
     val = scalars.get(filter_field_metadata_key(clause.field))
     if isinstance(val, (list, tuple, set)):
         if clause.op == FilterOp.CONTAINS:
@@ -73,17 +99,37 @@ class InMemoryFusionStore(FusionStore):
     """纯内存融合存储：向量近邻 + 文本相关性混合 + 标量过滤，一次召回。"""
 
     def __init__(self, tokenizer: Tokenizer) -> None:
+        """初始化 InMemoryFusionStore。
+
+        Args:
+            tokenizer: 参数 tokenizer（Tokenizer）。
+        """
         self._tokenizer = tokenizer
         self._data: Dict[_ScopeKey, Dict[str, FusionRecord]] = defaultdict(dict)
         self._tokens: Dict[_ScopeKey, Dict[str, List[str]]] = defaultdict(dict)
 
     def store_type(self) -> StoreType:
+        """返回当前存储类型。
+
+        Returns:
+            返回 StoreType。
+        """
         return StoreType.FUSION
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def insert(self, scope: Scope, records: List[FusionRecord]) -> None:
+        """插入一条或多条记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            records: 参数 records（List[FusionRecord]）。
+
+        Raises:
+            ConflictError: 执行失败时抛出。
+        """
         sk = _skey(scope)
         for rec in records:
             if rec.id in self._data[sk]:
@@ -92,6 +138,15 @@ class InMemoryFusionStore(FusionStore):
             self._index_tokens(sk, rec)
 
     def update(self, scope: Scope, records: List[FusionRecord]) -> None:
+        """更新已有记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            records: 参数 records（List[FusionRecord]）。
+
+        Raises:
+            NotFoundError: 执行失败时抛出。
+        """
         sk = _skey(scope)
         for rec in records:
             if rec.id not in self._data[sk]:
@@ -100,16 +155,40 @@ class InMemoryFusionStore(FusionStore):
             self._index_tokens(sk, rec)
 
     def delete(self, scope: Scope, ids: List[str]) -> None:
+        """删除指定的记忆或业务记录。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ids: 参数 ids（List[str]）。
+        """
         sk = _skey(scope)
         for rec_id in ids:
             self._data[sk].pop(rec_id, None)
             self._tokens[sk].pop(rec_id, None)
 
     def get(self, scope: Scope, ids: List[str]) -> List[FusionRecord]:
+        """读取指定的记录或资源。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            ids: 参数 ids（List[str]）。
+
+        Returns:
+            返回 List[FusionRecord]。
+        """
         bucket = self._data[_skey(scope)]
         return [bucket[i] for i in ids if i in bucket]
 
     def search(self, scope: Scope, query: FusionQuery) -> List[ScoredID]:
+        """检索与查询匹配的结果。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            query: 参数 query（FusionQuery）。
+
+        Returns:
+            返回 List[ScoredID]。
+        """
         sk = _skey(scope)
         q_tokens = set(self._tokenizer.tokenize(query.text)) if query.text else set()
         scored: List[ScoredID] = []
@@ -130,6 +209,12 @@ class InMemoryFusionStore(FusionStore):
         return scored[: query.top_k]
 
     def _index_tokens(self, sk: _ScopeKey, rec: FusionRecord) -> None:
+        """执行 `index_tokens` 操作。
+
+        Args:
+            sk: 参数 sk（_ScopeKey）。
+            rec: 参数 rec（FusionRecord）。
+        """
         self._tokens[sk][rec.id] = self._tokenizer.tokenize(rec.text) if rec.text else []
 
 
@@ -139,4 +224,9 @@ class InMemoryFusionStore(FusionStore):
 
 @FusionProducer.register("memory")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return InMemoryFusionStore(TokenizerProducer.dep(config, default="whitespace"))

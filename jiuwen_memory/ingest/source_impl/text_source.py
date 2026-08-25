@@ -21,19 +21,44 @@ class TextSource(Source):
     """以预置 ``(text, occurred_at)`` 列表模拟的文本信息源。"""
 
     def __init__(self, scope: Scope, items: Sequence[Tuple[str, datetime]]) -> None:
+        """初始化 TextSource。
+
+        Args:
+            scope: 参数 scope（Scope）。
+            items: 参数 items（Sequence[Tuple[str, datetime]]）。
+        """
         self._scope = scope
         self._items = list(items)
 
     def operator_type(self) -> IngestOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 IngestOperatorType。
+        """
         return IngestOperatorType.SOURCE
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def modalities(self) -> List[Modality]:
+        """执行 `modalities` 操作。
+
+        Returns:
+            返回 List[Modality]。
+        """
         return [Modality.TEXT]
 
     def fetch(self, since: Optional[datetime] = None) -> List[RawPayload]:
+        """执行 `fetch` 操作。
+
+        Args:
+            since: 参数 since（Optional[datetime]）。
+
+        Returns:
+            返回 List[RawPayload]。
+        """
         out: List[RawPayload] = []
         for text, occurred_at in self._items:
             if since is not None and occurred_at <= since:

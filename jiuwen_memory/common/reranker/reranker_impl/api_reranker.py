@@ -86,6 +86,24 @@ class APIReranker(Reranker):
         config_source=None,
         config_namespace: str = "reranker",
     ) -> None:
+        """初始化 APIReranker。
+
+        Args:
+            model_name: 参数 model_name（str）。
+            base_url: 参数 base_url（str）。
+            api_key: 参数 api_key（str）。
+            timeout: 参数 timeout（float）。
+            dialect: 参数 dialect（str）。
+            client: 参数 client（object）。
+            ssl_verify: 参数 ssl_verify（bool）。
+            ssl_ca_cert: 参数 ssl_ca_cert（str | None）。
+            config_source: 参数 config_source。
+            config_namespace: 参数 config_namespace（str）。
+
+        Raises:
+            ValidationError: 执行失败时抛出。
+            ImportError: 执行失败时抛出。
+        """
         dialect = (dialect or "cohere").lower()
         if dialect not in _DIALECTS:
             raise ValidationError(

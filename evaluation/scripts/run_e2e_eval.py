@@ -34,6 +34,15 @@ logger = logging.getLogger(__name__)
 
 
 def _load_dataset(name: str, data: str | None):
+    """加载并解析输入数据。
+
+    Args:
+        name: 参数 name（str）。
+        data: 参数 data（str | None）。
+
+    Raises:
+        ValueError: 执行失败时抛出。
+    """
     if name == "locomo":
         from evaluation.benchmark.locomo_adapter import LoCoMoDataset
 
@@ -50,6 +59,11 @@ def _load_dataset(name: str, data: str | None):
 
 
 def main() -> int:
+    """执行程序入口逻辑。
+
+    Returns:
+        返回 int。
+    """
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description="端到端 QA 评测")
     parser.add_argument(

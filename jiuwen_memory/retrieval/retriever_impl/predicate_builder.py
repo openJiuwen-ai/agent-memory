@@ -33,6 +33,14 @@ _ACTIVE_ARCHIVED = [LifecycleState.ACTIVE.value, LifecycleState.ARCHIVED.value]
 
 
 def _epoch_ms(dt: datetime) -> int:
+    """执行 `epoch_ms` 操作。
+
+    Args:
+        dt: 参数 dt（datetime）。
+
+    Returns:
+        返回 int。
+    """
     return int(dt.timestamp() * 1000)
 
 

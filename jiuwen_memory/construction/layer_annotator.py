@@ -48,6 +48,11 @@ class LayerAnnotator(ConstructionOperator):
 
     def __init__(self, *, layers_threshold: int = 512) -> None:
         # content 长度超此阈值的 unit 才标注 L0/L1；短 content 留空。
+        """初始化 LayerAnnotator。
+
+        Args:
+            layers_threshold: 参数 layers_threshold（int）。
+        """
         self._layers_threshold = layers_threshold
 
     @abstractmethod
@@ -59,6 +64,11 @@ class LayerAnnotator(ConstructionOperator):
         """
 
     def operator_type(self) -> OperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 OperatorType。
+        """
         return OperatorType.LAYER_ANNOTATOR
 
     def _should_annotate(self, unit: MemoryUnit) -> bool:

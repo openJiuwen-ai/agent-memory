@@ -33,18 +33,41 @@ class StructuredDiscloser(Discloser):
 
     @staticmethod
     def _truncate(text: str, limit: int) -> str:
+        """执行 `truncate` 操作。
+
+        Args:
+            text: 参数 text（str）。
+            limit: 参数 limit（int）。
+
+        Returns:
+            返回 str。
+        """
         return text if len(text) <= limit else text[:limit].rstrip() + "..."
 
     @staticmethod
     def _estimate_tokens(text: str) -> int:
+        """执行 `estimate_tokens` 操作。
+
+        Args:
+            text: 参数 text（str）。
+
+        Returns:
+            返回 int。
+        """
         if not text:
             return 0
         return max(1, (len(text) + 3) // 4)
 
     def operator_type(self) -> RetrievalOperatorType:
+        """返回当前算子类型。
+
+        Returns:
+            返回 RetrievalOperatorType。
+        """
         return RetrievalOperatorType.DISCLOSER
 
     def health(self) -> None:
+        """执行健康检查。"""
         return None
 
     def disclose(
@@ -55,6 +78,18 @@ class StructuredDiscloser(Discloser):
         level: DisclosureLevel,
         max_tokens: int | None = None,
     ) -> list[RetrievedItem]:
+        """执行 `disclose` 操作。
+
+        Args:
+            query: 参数 query（ParsedQuery）。
+            candidates: 参数 candidates（list[ScoredCandidate]）。
+            units: 参数 units（dict[str, MemoryUnit]）。
+            level: 参数 level（DisclosureLevel）。
+            max_tokens: 参数 max_tokens（int | None）。
+
+        Returns:
+            返回 list[RetrievedItem]。
+        """
         if level == DisclosureLevel.ADAPTIVE:
             return self._adaptive_disclose(query, candidates, units, max_tokens)
 
@@ -87,6 +122,17 @@ class StructuredDiscloser(Discloser):
         units: dict[str, MemoryUnit],
         max_tokens: int | None,
     ) -> list[RetrievedItem]:
+        """执行 `adaptive_disclose` 操作。
+
+        Args:
+            query: 参数 query（ParsedQuery）。
+            candidates: 参数 candidates（list[ScoredCandidate]）。
+            units: 参数 units（dict[str, MemoryUnit]）。
+            max_tokens: 参数 max_tokens（int | None）。
+
+        Returns:
+            返回 list[RetrievedItem]。
+        """
         keywords = self._keywords(query)
         variants = []
         for scored_unit in candidates:
@@ -131,6 +177,16 @@ class StructuredDiscloser(Discloser):
     def _variants(
         self, scored: ScoredCandidate, unit: MemoryUnit, keywords: list[str]
     ) -> _DisclosureVariant:
+        """执行 `variants` 操作。
+
+        Args:
+            scored: 参数 scored（ScoredCandidate）。
+            unit: 参数 unit（MemoryUnit）。
+            keywords: 参数 keywords（list[str]）。
+
+        Returns:
+            返回 _DisclosureVariant。
+        """
         content_by_level: dict[DisclosureLevel, str] = {}
         actual_level_by_level: dict[DisclosureLevel, DisclosureLevel] = {}
         for level in (DisclosureLevel.L0, DisclosureLevel.L1, DisclosureLevel.L2):
@@ -147,6 +203,15 @@ class StructuredDiscloser(Discloser):
         target_level: DisclosureLevel,
         budget: int | None,
     ) -> None:
+        """执行 `try_upgrade` 操作。
+
+        Args:
+            selected_levels: 参数 selected_levels（list[DisclosureLevel]）。
+            variants: 参数 variants（list[_DisclosureVariant]）。
+            idx: 参数 idx（int）。
+            target_level: 参数 target_level（DisclosureLevel）。
+            budget: 参数 budget（int | None）。
+        """
         if idx >= len(variants):
             return
         if variants[idx].actual_level_by_level[target_level] != target_level:
@@ -157,6 +222,14 @@ class StructuredDiscloser(Discloser):
             selected_levels[idx] = target_level
 
     def _can_upgrade_top_to_l2(self, variants: list[_DisclosureVariant]) -> bool:
+        """执行 `can_upgrade_top_to_l2` 操作。
+
+        Args:
+            variants: 参数 variants（list[_DisclosureVariant]）。
+
+        Returns:
+            返回 bool。
+        """
         if not variants:
             return False
         if len(variants) == 1:
@@ -172,6 +245,15 @@ class StructuredDiscloser(Discloser):
         variants: list[_DisclosureVariant],
         levels: list[DisclosureLevel],
     ) -> int:
+        """执行 `total_tokens` 操作。
+
+        Args:
+            variants: 参数 variants（list[_DisclosureVariant]）。
+            levels: 参数 levels（list[DisclosureLevel]）。
+
+        Returns:
+            返回 int。
+        """
         return sum(
             self._estimate_tokens(variant.content_by_level[level])
             for variant, level in zip(variants, levels)
@@ -184,6 +266,17 @@ class StructuredDiscloser(Discloser):
         level: DisclosureLevel,
         keywords: list[str],
     ) -> tuple[str, DisclosureLevel]:
+        """执行 `render` 操作。
+
+        Args:
+            scored: 参数 scored（ScoredCandidate）。
+            unit: 参数 unit（MemoryUnit）。
+            level: 参数 level（DisclosureLevel）。
+            keywords: 参数 keywords（list[str]）。
+
+        Returns:
+            返回 tuple[str, DisclosureLevel]。
+        """
         if level == DisclosureLevel.L2:
             return "[full]\n" + unit.content, DisclosureLevel.L2
         if level == DisclosureLevel.L1:
@@ -209,6 +302,15 @@ class StructuredDiscloser(Discloser):
         return self._l0_card(scored, unit), DisclosureLevel.L0
 
     def _l0_card(self, scored: ScoredCandidate, unit: MemoryUnit) -> str:
+        """执行 `l0_card` 操作。
+
+        Args:
+            scored: 参数 scored（ScoredCandidate）。
+            unit: 参数 unit（MemoryUnit）。
+
+        Returns:
+            返回 str。
+        """
         return "\n".join(
             [
                 f"[summary] {self._summary(unit)}",
@@ -221,6 +323,14 @@ class StructuredDiscloser(Discloser):
 
     def _summary(self, unit: MemoryUnit) -> str:
         # metadata 值为 JSON 标量原生类型，summary 若被写成非字符串仍需可披露。
+        """执行 `summary` 操作。
+
+        Args:
+            unit: 参数 unit（MemoryUnit）。
+
+        Returns:
+            返回 str。
+        """
         explicit = str(unit.system_metadata.get("summary") or "").strip()
         if explicit:
             return explicit
@@ -234,6 +344,15 @@ class StructuredDiscloser(Discloser):
         return self._truncate(summary, _L0_LIMIT)
 
     def _best_snippet(self, content: str, keywords: list[str]) -> tuple[str, list[str]]:
+        """执行 `best_snippet` 操作。
+
+        Args:
+            content: 参数 content（str）。
+            keywords: 参数 keywords（list[str]）。
+
+        Returns:
+            返回 tuple[str, list[str]]。
+        """
         lowered = content.lower()
         candidates: list[tuple[int, int]] = []
         for keyword in keywords:
@@ -267,6 +386,14 @@ class StructuredDiscloser(Discloser):
         return snippet, list(dict.fromkeys(best_matched))
 
     def _keywords(self, query: ParsedQuery) -> list[str]:
+        """执行 `keywords` 操作。
+
+        Args:
+            query: 参数 query（ParsedQuery）。
+
+        Returns:
+            返回 list[str]。
+        """
         keywords: list[str] = []
         seen: set[str] = set()
         for token in list(query.keywords) + list(query.tokens):
@@ -278,6 +405,14 @@ class StructuredDiscloser(Discloser):
         return keywords
 
     def _why(self, scored: ScoredCandidate) -> str:
+        """执行 `why` 操作。
+
+        Args:
+            scored: 参数 scored（ScoredCandidate）。
+
+        Returns:
+            返回 str。
+        """
         if not scored.evidence:
             return f"score={scored.score:.4g}"
         parts = []
@@ -290,6 +425,14 @@ class StructuredDiscloser(Discloser):
         return "; ".join(parts)
 
     def _scope(self, unit: MemoryUnit) -> str:
+        """执行 `scope` 操作。
+
+        Args:
+            unit: 参数 unit（MemoryUnit）。
+
+        Returns:
+            返回 str。
+        """
         scope = unit.scope
         return (
             f"org={scope.org or '-'} "
@@ -304,4 +447,9 @@ class StructuredDiscloser(Discloser):
 
 @DiscloserProducer.register("structured")
 def _build(config):
+    """根据配置构建组件实例。
+
+    Args:
+        config: 参数 config。
+    """
     return StructuredDiscloser()
