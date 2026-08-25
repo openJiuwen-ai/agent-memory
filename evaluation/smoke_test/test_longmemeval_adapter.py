@@ -22,8 +22,8 @@ pytestmark = pytest.mark.integration
 _MINI = os.path.join(os.path.dirname(__file__), "longmemeval_mini.json")
 
 
-@pytest.fixture(scope="module")
-def dataset() -> LongMemEvalDataset:
+@pytest.fixture(name="dataset", scope="module")
+def _dataset_fixture() -> LongMemEvalDataset:
     return LongMemEvalDataset(_MINI)
 
 

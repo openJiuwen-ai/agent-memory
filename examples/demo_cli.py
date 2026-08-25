@@ -107,7 +107,13 @@ def main() -> int:
     logger.info("  %s", call("grant", grantee="bob"))
 
     hr("delete — 软删除（LifecycleManager 非破坏式流转）")
-    call("delete", item_id=hit_id)
+    delete_result = call("delete", item_id=hit_id)
+    if delete_result.get("error") or not delete_result.get("ok"):
+        logger.error(
+            "  delete failed: %s",
+            delete_result.get("message") or delete_result.get("error") or "unknown error",
+        )
+        return 1
     logger.info(
         "  原始项 lifecycle: %s (记录仍在)", call("get", item_id=hit_id)["item"]["lifecycle"]
     )

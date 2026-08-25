@@ -424,7 +424,7 @@ class KVSpaceManager(SpaceManager):
         return self.update(org, space, SpacePatch(status=SpaceStatus.ARCHIVED))
 
     def delete(self, org: str, space: str) -> SpaceDeleteResult:
-        self.get(org, space)
+        self._require_space(org, space)
         # 先清索引后删主数据：孤儿索引项会被逐空间判定挡住，只造成候选集虚大；
         # 反过来则出现「空间已删、索引仍指向它」之外的更坏形态——主数据已删而索引清理
         # 中断时无从重建清理依据。
@@ -503,7 +503,7 @@ class KVSpaceManager(SpaceManager):
         return info.policy
 
     def list_members(self, org: str, space: str) -> list[SpaceMember]:
-        self.get(org, space)
+        self._require_space(org, space)
         members = self._read_members(org, space)
         members.sort(
             key=lambda member: (
@@ -655,6 +655,10 @@ class KVSpaceManager(SpaceManager):
             self._kv.delete(_ROOT_SCOPE, key)
             removed += 1
         return removed
+
+    def _require_space(self, org: str, space: str) -> None:
+        """确保空间存在。"""
+        self.get(org, space)
 
 
 @SpaceProducer.register("kv")

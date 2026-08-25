@@ -14,7 +14,6 @@ from typing import List
 
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import MemoryUnit
-from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
 
 logger = get_logger(__name__)
