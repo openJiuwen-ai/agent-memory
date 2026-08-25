@@ -60,6 +60,7 @@ class DbBasedKVStore(BaseKVStore):
         self._lock = asyncio.Lock()
 
     def _get_upsert_stmt(self, key: str, value: str):
+        """返回方言对应的 upsert 语句，GaussDB 返回 None（走手动 upsert）。"""
         dialect_name = self.engine.dialect.name
 
         if dialect_name == "mysql":
@@ -68,6 +69,10 @@ class DbBasedKVStore(BaseKVStore):
                 .values(key=key, value=value)
                 .on_duplicate_key_update(value=value)
             )
+        elif dialect_name == "gaussdb":
+            # GaussDB 不支持 ON CONFLICT 也不支持 ON DUPLICATE KEY UPDATE
+            # 返回 None，由调用方走手动 UPDATE + INSERT 路径
+            stmt = None
         else:
             stmt = (
                 insert(KVStoreTable)
@@ -78,6 +83,21 @@ class DbBasedKVStore(BaseKVStore):
                 )
             )
         return stmt
+
+    async def _manual_upsert(self, session, key: str, value: str):
+        """手动 upsert（先 UPDATE，rowcount=0 再 INSERT），用于 GaussDB。"""
+        from sqlalchemy import text
+        update_sql = text("UPDATE kv_store SET value = :value WHERE key = :key")
+        insert_sql = text(
+            "INSERT INTO kv_store (key, value) VALUES (:key, :value)"
+        )
+        result = await session.execute(update_sql, {"key": key, "value": value})
+        if result.rowcount == 0:
+            try:
+                await session.execute(insert_sql, {"key": key, "value": value})
+            except Exception:
+                # 并发场景：另一个事务已插入，视为成功
+                pass
 
     def _encode_value(self, value: str | bytes) -> str:
         """Encode value to string for database storage."""
@@ -98,7 +118,10 @@ class DbBasedKVStore(BaseKVStore):
         async with self.async_session() as session:
             async with session.begin():
                 stmt = self._get_upsert_stmt(key, encoded_value)
-                await session.execute(stmt)
+                if stmt is not None:
+                    await session.execute(stmt)
+                else:
+                    await self._manual_upsert(session, key, encoded_value)
 
     async def exclusive_set(
             self, key: str, value: str | bytes, expiry: Optional[int] = None
@@ -123,7 +146,10 @@ class DbBasedKVStore(BaseKVStore):
                 encoded_value = self._encode_value(value)
                 val = json.dumps({EXCLUSIVE_VALUE_KEY: encoded_value, EXCLUSIVE_EXPIRY_KEY: expire_at})
                 stmt = self._get_upsert_stmt(key, val)
-                await session.execute(stmt)
+                if stmt is not None:
+                    await session.execute(stmt)
+                else:
+                    await self._manual_upsert(session, key, val)
                 return True
 
     async def renew_exclusive(
@@ -161,7 +187,10 @@ class DbBasedKVStore(BaseKVStore):
                     EXCLUSIVE_EXPIRY_KEY: expire_at,
                 })
                 stmt = self._get_upsert_stmt(key, new_payload)
-                await session.execute(stmt)
+                if stmt is not None:
+                    await session.execute(stmt)
+                else:
+                    await self._manual_upsert(session, key, new_payload)
                 return True
 
     async def get(self, key: str) -> str | bytes | None:
