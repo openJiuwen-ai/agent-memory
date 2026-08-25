@@ -77,7 +77,7 @@ _metadata = MetaData()
 
 av_user_stats_table = Table(
     "av_user_stats", _metadata,
-    Column("scope_user", String, primary_key=True),
+    Column("scope_user", String(255), primary_key=True),
     Column("total_count", Integer, nullable=False),
     Column("active_count", Integer, nullable=False),
     Column("superseded_count", Integer, nullable=False),
@@ -86,15 +86,15 @@ av_user_stats_table = Table(
     Column("tier_episodic", Integer, default=0),
     Column("tier_semantic", Integer, default=0),
     Column("tier_other", Integer, default=0),
-    Column("created_at", String, nullable=False, default=_now_str),
-    Column("updated_at", String, nullable=False, default=_now_str),
+    Column("created_at", String(32), nullable=False, default=_now_str),
+    Column("updated_at", String(32), nullable=False, default=_now_str),
 )
 
 mem_meta_task_table = Table(
     "mem_meta_task", _metadata,
-    Column("task_id", String, primary_key=True),
-    Column("task_type", String, nullable=False),
-    Column("status", String, nullable=False, default="pending"),
+    Column("task_id", String(64), primary_key=True),
+    Column("task_type", String(32), nullable=False),
+    Column("status", String(32), nullable=False, default="pending"),
     Column("request_params", Text),
     Column("result_summary", Text),
     Column("error_message", Text),
@@ -102,10 +102,10 @@ mem_meta_task_table = Table(
     Column("processed_users", Integer, default=0),
     Column("deleted_count", Integer, default=0),
     Column("failed_count", Integer, default=0),
-    Column("created_at", String, nullable=False, default=_now_str),
-    Column("updated_at", String, nullable=False, default=_now_str),
-    Column("started_at", String),
-    Column("finished_at", String),
+    Column("created_at", String(32), nullable=False, default=_now_str),
+    Column("updated_at", String(32), nullable=False, default=_now_str),
+    Column("started_at", String(32)),
+    Column("finished_at", String(32)),
     Index("idx_task_status", "status"),
     Index("idx_task_type_created", "task_type"),
 )
@@ -161,7 +161,10 @@ class MemMetaManager:
     # ============================================================
 
     def _init_db(self) -> None:
-        """初始化数据库，建 2 张表。"""
+        """初始化数据库，建 2 张表。
+
+        建表失败时记录 ERROR 并暴露异常回调，不静默吞掉。
+        """
         if self.db_store is None:
             return
         engine = self.db_store.get_async_engine()
@@ -170,13 +173,23 @@ class MemMetaManager:
             # 保存 task 引用防止 GC 回收
             task = loop.create_task(self._async_init_db())
             self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
+            task.add_done_callback(self._on_init_db_done)
         except RuntimeError:
             # 没有运行中的事件循环，用同步引擎建表
             import sqlalchemy
             sync_engine = sqlalchemy.create_engine(engine.engine.url)
             with sync_engine.begin() as conn:
                 _metadata.create_all(conn, checkfirst=True)
+
+    def _on_init_db_done(self, task: asyncio.Task) -> None:
+        """建表任务完成回调：异常不静默吞，记录 ERROR。"""
+        self._background_tasks.discard(task)
+        if task.cancelled():
+            logger.error("mem_meta 建表任务被取消")
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("mem_meta 建表失败，mem_meta 接口将不可用: %s", exc)
 
     async def _async_init_db(self) -> None:
         """异步建表。"""
