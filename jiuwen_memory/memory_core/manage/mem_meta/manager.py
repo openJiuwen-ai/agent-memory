@@ -237,11 +237,12 @@ class MemMetaManager:
         )
 
         async with self._engine.begin() as conn:
-            # 1. 检查运行中任务（不可跳过，即使 force=true）
+            # 1. 检查运行中/待处理任务（不可跳过，即使 force=true）
+            #    包含 pending 状态：防止并发请求在任务从 pending→running 之间穿过
             result = await conn.execute(
                 select(mem_meta_task_table.c.task_id, mem_meta_task_table.c.status)
                 .where(mem_meta_task_table.c.task_type == task_type)
-                .where(mem_meta_task_table.c.status == "running")
+                .where(mem_meta_task_table.c.status.in_(["pending", "running"]))
                 .order_by(mem_meta_task_table.c.created_at.desc())
                 .limit(1)
             )
@@ -894,13 +895,15 @@ class MemMetaManager:
                                     f"{failed_scopes}/{total_scopes} 个 scope "
                                     f"删除失败"
                                 )
-                                # 不计入 failed，只通过 has_partial 影响 final_status
+                                # 计入 failed_count（反映有用户未完全成功），但终态用 has_partial 防止升级为 failed
+                                failed += 1
 
                     processed += 1
                     await self._update_task(
                         task_id,
                         processed_users=processed,
                         deleted_count=deleted_total,
+                        failed_count=failed,
                     )
 
                     # ★ 同步更新 av_user_stats：删除了多少条就减多少 ★
