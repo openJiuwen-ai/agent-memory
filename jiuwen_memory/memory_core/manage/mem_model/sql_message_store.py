@@ -180,7 +180,8 @@ class SqlMessageStore(BaseMessageStore):
             except ValueError:
                 return None
             if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
+                parsed = parsed.replace(
+                    tzinfo=datetime.now(timezone.utc).astimezone().tzinfo)
             return parsed
         return None
 
