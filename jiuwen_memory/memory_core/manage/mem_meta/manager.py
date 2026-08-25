@@ -147,6 +147,8 @@ class MemMetaManager:
         self.db_store = db_store
         # 防止 asyncio task 被 GC 回收
         self._background_tasks: set = set()
+        # 应用层互斥锁：防止并发请求穿透 check-then-insert 竞态
+        self._task_guard_lock = asyncio.Lock()
         self._init_db()
 
     @property
@@ -215,6 +217,18 @@ class MemMetaManager:
         返回 (task_id, None) 表示创建成功；
         返回 (None, conflict_dict) 表示存在冲突未创建。
         """
+        async with self._task_guard_lock:
+            return await self._check_and_create_task_impl(
+                task_type, force, request_params, total_users)
+
+    async def _check_and_create_task_impl(
+        self,
+        task_type: str,
+        force: bool = False,
+        request_params: dict | None = None,
+        total_users: int = 0,
+    ) -> tuple[str | None, dict | None]:
+        """防重检查 + 创建任务的实际实现（调用方已持锁）。"""
         task_id = str(uuid.uuid4())
         now = _now_str()
         params_json = (
@@ -880,7 +894,7 @@ class MemMetaManager:
                                     f"{failed_scopes}/{total_scopes} 个 scope "
                                     f"删除失败"
                                 )
-                                failed += 1
+                                # 不计入 failed，只通过 has_partial 影响 final_status
 
                     processed += 1
                     await self._update_task(
@@ -934,14 +948,14 @@ class MemMetaManager:
                 details.append(user_result)
 
             # 最终状态判断
-            # failed: 用户级失败（所有 scope 都失败或分布式锁/校验失败）
-            # partial_failed 用户: 部分 scope 成功部分失败
+            # failed: 用户级全部 scope 失败或分布式锁/校验失败
+            # partial_failed 用户: 部分 scope 成功部分失败（不计入 failed）
             has_partial = any(
                 d.get("status") == "partial_failed" for d in details
             )
             if failed == 0 and not has_partial:
                 final_status = "completed"
-            elif failed == len(params.user_ids):
+            elif failed == len(params.user_ids) and not has_partial:
                 final_status = "failed"
             else:
                 final_status = "partial_failed"
