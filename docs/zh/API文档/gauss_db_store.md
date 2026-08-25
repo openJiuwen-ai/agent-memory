@@ -339,7 +339,7 @@ async def main():
             session_id="session-abc",
             role="user",
             content="你好，帮我记住我喜欢喝美式咖啡。",
-            timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            timestamp=datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S"),
         )
         session.add(msg)
 
