@@ -163,40 +163,33 @@ class MemMetaManager:
     # ============================================================
 
     def _init_db(self) -> None:
-        """初始化数据库，建 2 张表。
+        """初始化数据库，建 2 张表（同步，阻塞至建表完成）。
 
-        建表失败时记录 ERROR 并暴露异常回调，不静默吞掉。
+        使用同步引擎建表，确保 server 开始服务时表已存在，
+        避免外部请求先于建表到达导致 UndefinedTableError。
+        建表失败时记录 ERROR 并触发 cleanup 跳过。
         """
         if self.db_store is None:
             return
         engine = self.db_store.get_async_engine()
         try:
-            loop = asyncio.get_running_loop()
-            # 保存 task 引用防止 GC 回收
-            task = loop.create_task(self._async_init_db())
-            self._background_tasks.add(task)
-            task.add_done_callback(self._on_init_db_done)
-        except RuntimeError:
-            # 没有运行中的事件循环，用同步引擎建表
             import sqlalchemy
             sync_engine = sqlalchemy.create_engine(engine.engine.url)
             with sync_engine.begin() as conn:
                 _metadata.create_all(conn, checkfirst=True)
-
-    def _on_init_db_done(self, task: asyncio.Task) -> None:
-        """建表任务完成回调：异常不静默吞，记录 ERROR；成功后清理僵尸任务。"""
-        self._background_tasks.discard(task)
-        if task.cancelled():
-            logger.error("mem_meta 建表任务被取消")
-            return
-        exc = task.exception()
-        if exc is not None:
+            logger.info("mem_meta 建表完成")
+        except Exception as exc:
             logger.error("mem_meta 建表失败，mem_meta 接口将不可用: %s", exc)
             return
-        # 建表成功后清理僵尸任务（确保表已存在）
-        task2 = asyncio.create_task(self.cleanup_zombie_tasks())
-        self._background_tasks.add(task2)
-        task2.add_done_callback(self._background_tasks.discard)
+
+        # 建表成功后清理僵尸任务（异步，不阻塞）
+        try:
+            loop = asyncio.get_running_loop()
+            task = loop.create_task(self.cleanup_zombie_tasks())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        except RuntimeError:
+            pass
 
     async def _async_init_db(self) -> None:
         """异步建表。"""
