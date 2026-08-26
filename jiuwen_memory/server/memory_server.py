@@ -533,7 +533,7 @@ async def startup_event():
         raise
 
     # 延迟注册批量删除管理端点（需要 db_store 已初始化）
-    _register_mem_meta()
+    await _register_mem_meta()
 
 
 @app.on_event("shutdown")
@@ -800,12 +800,12 @@ register_log_center_endpoints(
 _mem_meta_registered = False
 
 
-def _register_mem_meta():
+async def _register_mem_meta():
     global _mem_meta_registered
     if _mem_meta_registered:
         return
     from jiuwen_memory.server.mem_meta_api import register_mem_meta_endpoints
-    register_mem_meta_endpoints(
+    await register_mem_meta_endpoints(
         app,
         memory_engine=memory_engine,
         db_store=memory_engine.db_store if memory_engine else None,

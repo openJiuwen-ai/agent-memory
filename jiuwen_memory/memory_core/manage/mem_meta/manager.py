@@ -149,7 +149,7 @@ class MemMetaManager:
         self._background_tasks: set = set()
         # 应用层互斥锁：防止并发请求穿透 check-then-insert 竞态
         self._task_guard_lock = asyncio.Lock()
-        self._init_db()
+        # 建表由调用方通过 await manager.init_db() 完成
 
     @property
     def _engine(self) -> AsyncEngine:
@@ -162,34 +162,28 @@ class MemMetaManager:
     # 数据库初始化
     # ============================================================
 
-    def _init_db(self) -> None:
-        """初始化数据库，建 2 张表（同步，阻塞至建表完成）。
+    async def _init_db(self) -> None:
+        """初始化数据库，建 2 张表（异步，阻塞至建表完成）。
 
-        使用同步引擎建表，确保 server 开始服务时表已存在，
+        使用异步引擎建表，确保 server 开始服务时表已存在，
         避免外部请求先于建表到达导致 UndefinedTableError。
-        建表失败时记录 ERROR 并触发 cleanup 跳过。
+        建表失败时记录 ERROR 并跳过 cleanup。
         """
         if self.db_store is None:
             return
-        engine = self.db_store.get_async_engine()
         try:
-            import sqlalchemy
-            sync_engine = sqlalchemy.create_engine(engine.engine.url)
-            with sync_engine.begin() as conn:
-                _metadata.create_all(conn, checkfirst=True)
+            async with self._engine.begin() as conn:
+                await conn.run_sync(_metadata.create_all, checkfirst=True)
             logger.info("mem_meta 建表完成")
         except Exception as exc:
             logger.error("mem_meta 建表失败，mem_meta 接口将不可用: %s", exc)
             return
 
-        # 建表成功后清理僵尸任务（异步，不阻塞）
+        # 建表成功后清理僵尸任务
         try:
-            loop = asyncio.get_running_loop()
-            task = loop.create_task(self.cleanup_zombie_tasks())
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
-        except RuntimeError:
-            pass
+            await self.cleanup_zombie_tasks()
+        except Exception as exc:
+            logger.warning("mem_meta 僵尸任务清理失败: %s", exc)
 
     async def _async_init_db(self) -> None:
         """异步建表。"""
