@@ -431,7 +431,7 @@ def test_each_property_becomes_one_unit_and_named_speaker_owns_it() -> None:
         "default_property",
     }
     for unit in units:
-        assert unit.entities == ["Alice"]
+        assert unit.entities == []
         assert unit.system_metadata["schema_entity_name"] == "Alice"
         assert unit.system_metadata["schema_entity_type"] == "person"
         assert unit.system_metadata["schema_name"] == "inline-schema"
@@ -525,13 +525,21 @@ class _Storage:
         for unit in units:
             self.units[unit.id] = unit
 
+    def update(self, _scope, units):
+        for unit in units:
+            self.units[unit.id] = unit
+
 
 class _Index:
     def __init__(self) -> None:
         self.ids: list[str] = []
+        self.updated_ids: list[str] = []
 
     def build(self, units):
         self.ids.extend(unit.id for unit in units)
+
+    def update(self, units):
+        self.updated_ids.extend(unit.id for unit in units)
 
 
 class _SchemaEvolverHarness(SchemaOrchestratingEvolver):
@@ -628,13 +636,19 @@ def test_unsupported_entity_type_without_source_first_raises() -> None:
 
 def test_schema_properties_are_added_without_ordinary_dedup() -> None:
     source = _source()
+    source.entities = ["ExistingEntity"]
     property_unit = MemoryUnit(
         id="property-1",
         scope=source.scope,
         tier=MemoryTier.CORE,
         segments=[Segment(content="Alice is an engineer")],
-        entities=["Alice"],
-        system_metadata={"extraction_mode": "schema"},
+        provenance=[source.id],
+        entities=[],
+        system_metadata={
+            "extraction_mode": "schema",
+            "schema_entity_name": "Alice",
+            "schema_property_name": "occupation",
+        },
     )
 
     class SuccessfulExtractor:
@@ -649,6 +663,9 @@ def test_schema_properties_are_added_without_ordinary_dedup() -> None:
     assert result.created_ids == [source.id, property_unit.id]
     assert set(storage.units) == {source.id, property_unit.id}
     assert index.ids == [source.id, property_unit.id]
+    assert index.updated_ids == [source.id]
+    assert storage.units[source.id].entities == ["ExistingEntity", "Alice", "occupation"]
+    assert storage.units[property_unit.id].entities == []
 
 
 class _MemoryEntityStore(EntityStore):
@@ -716,23 +733,24 @@ class _MemoryEntityStore(EntityStore):
         return EntityBatchResult(successful_ids=successful, failed_ids=[])
 
 
-def test_property_entities_feed_the_official_entity_reverse_index() -> None:
+def test_source_entities_feed_the_official_entity_reverse_index() -> None:
     store = _MemoryEntityStore()
     linker = EntityLinkService(entity_store=store)
     unit = MemoryUnit(
-        id="property-1",
+        id="source-1",
         scope=Scope(org="org", user="alice"),
         tier=MemoryTier.CORE,
         segments=[Segment(content="Alice is an engineer")],
-        entities=["Alice"],
+        entities=["Alice", "occupation"],
     )
 
     result = linker.link_memories([unit])
 
-    assert result.inserted_count == 1
-    record = next(iter(store.records.values()))
-    assert record.entity_text == "Alice"
-    assert record.linked_memory_ids == (unit.id,)
+    assert result.inserted_count == 2
+    records_by_text = {record.entity_text: record for record in store.records.values()}
+    assert set(records_by_text) == {"Alice", "occupation"}
+    assert records_by_text["Alice"].linked_memory_ids == (unit.id,)
+    assert records_by_text["occupation"].linked_memory_ids == (unit.id,)
 
 
 def test_schema_is_disabled_in_default_assembly_config() -> None:
@@ -883,7 +901,8 @@ def test_schema_enabled_assembly_runs_source_first_property_extraction(monkeypat
     )
     assert source.system_metadata["schema_source_evidence"] is True
     assert property_unit.content == "On 2023-08-03, Alice became a software engineer"
-    assert property_unit.entities == ["Alice"]
+    assert source.entities == ["Alice", "position_event"]
+    assert property_unit.entities == []
     assert property_unit.system_metadata["schema_entity_name"] == "Alice"
     assert property_unit.system_metadata["schema_entity_type"] == "user"
     assert property_unit.system_metadata["schema_property_name"] == "position_event"

@@ -48,6 +48,50 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver):
             created.extend(self._persist([source]))
         return created
 
+    def _write_schema_entities_to_sources(
+        self,
+        source_units: list[MemoryUnit],
+        property_units: list[MemoryUnit],
+    ) -> list[str]:
+        """Write extracted entity/property terms back to their persisted sources."""
+        source_by_id = {unit.id: unit for unit in source_units}
+        terms_by_source: dict[str, list[str]] = {unit.id: [] for unit in source_units}
+        for property_unit in property_units:
+            entity_name = str(
+                property_unit.system_metadata.get("schema_entity_name") or ""
+            ).strip()
+            property_name = str(
+                property_unit.system_metadata.get("schema_property_name") or ""
+            ).strip()
+            terms = [term for term in (entity_name, property_name) if term]
+            if not terms:
+                continue
+            referenced_ids = property_unit.provenance
+            if not referenced_ids and property_unit.source_ref:
+                referenced_ids = [property_unit.source_ref]
+            for source_id in referenced_ids:
+                if source_id in source_by_id:
+                    terms_by_source[source_id].extend(terms)
+
+        updated_ids: list[str] = []
+        for source_id, terms in terms_by_source.items():
+            if not terms:
+                continue
+            input_source = source_by_id[source_id]
+            stored = self._storage.get(input_source.scope, [source_id])
+            if not stored:
+                logger.warning(
+                    "SchemaOrchestratingEvolver: persisted source %s is missing during writeback",
+                    source_id,
+                )
+                continue
+            source = copy.deepcopy(stored[0])
+            source.entities = list(dict.fromkeys([*source.entities, *terms]))
+            self._storage.update(source.scope, [source])
+            self._index.update([source])
+            updated_ids.append(source.id)
+        return updated_ids
+
     def _evolve_extract(self, units: list[MemoryUnit]) -> EvolveResult:
         if self._is_procedural(units):
             return super()._evolve_extract(units)
@@ -77,12 +121,20 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver):
         copy_consolidation_prompts(units, extracted)
         self._annotate_layers(extracted)
         property_ids = self._persist(extracted)
+        source_writeback_ids = self._write_schema_entities_to_sources(units, extracted)
+        existing_source_updates = [
+            source_id for source_id in source_writeback_ids if source_id not in source_ids
+        ]
         logger.info(
-            "SchemaOrchestratingEvolver: source=%d properties=%d",
+            "SchemaOrchestratingEvolver: source=%d properties=%d source_writebacks=%d",
             len(source_ids),
             len(property_ids),
+            len(source_writeback_ids),
         )
-        return EvolveResult(created_ids=[*source_ids, *property_ids])
+        return EvolveResult(
+            created_ids=[*source_ids, *property_ids],
+            updated_ids=existing_source_updates,
+        )
 
 
 def _optional_layer_annotator(config):

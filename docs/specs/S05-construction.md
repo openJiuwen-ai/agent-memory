@@ -130,8 +130,9 @@ Schema 抽取先选择本轮相关 entity type/property，再使用同一选中�
 生成器不得借完整 Catalog 放行未选中的属性。每个属性候选必须包含 Schema 内的实体类型和
 属性名、非空事实文本，以及同 Scope 输入中的一个或多个 `source_unit_ids`。
 
-每个合法属性生成一个独立 MemoryUnit。其 `entities` 写属性所属实体明文；Schema 名称、版本、
-实体类型和属性名写系统 metadata；来源业务 metadata 仍按通用派生规则写入 user metadata。
+每个合法属性生成一个独立 MemoryUnit。属性 Unit 的 `entities` 为空；Schema 名称、版本、
+实体类型和属性名写系统 metadata。属性成功落盘后，实体明文和属性名聚合写回相应 Source
+MemoryUnit 的 `entities` 并刷新索引；来源业务 metadata 仍按通用派生规则写入 user metadata。
 完整可解析的事件日期/时间可写 `temporal.t_event`，但时间不是属性合法性的必要条件。
 
 Schema Evolver 对非 procedural 写入采用 Source-first，并将属性候选直接 ADD，不进入普通文本

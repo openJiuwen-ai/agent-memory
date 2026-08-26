@@ -15,8 +15,8 @@
 Schema 专用实体真源、实体 ID 或索引协议。
 
 本特性的目标是增加一条显式启用的 Schema 属性抽取路径：调用方提供实体类型及候选属性，
-抽取器只生成白名单内的属性事实，并把属性所属实体写入标准 `MemoryUnit.entities`。后续实体
-建索引继续复用既有 EntityLinkService。
+抽取器只生成白名单内的属性事实。属性成功落盘后，其所属实体及属性名写回相应 Source
+MemoryUnit 的标准 `entities` 字段；后续反向索引继续复用既有 EntityLinkService。
 
 ## 决策
 
@@ -52,14 +52,14 @@ Schema 发送给属性生成 Prompt。Normalizer 使用同一个选中 Schema �
 一个实体可以对应多个属性 MemoryUnit；每个属性 MemoryUnit 只表达一个属性事实，并使用：
 
 - `content`：包含明确主语的属性事实文本；
-- `entities=[entity_name]`：该属性的所属实体；
+- `entities=[]`：Property Unit 本身不进入实体反向索引；
 - `system_metadata`：只保存 Schema 名称、版本、实体类型、实体明文和属性名；
 - `source_ref` 与 `provenance`：回指支持该事实的原始消息；
 - `temporal.t_event`：仅在属性具有可完整解析的日期或时间时填写。
 
-`entities` 是列表，因为它是所有 MemoryUnit 共用的“实体提及”字段，普通记忆或关系事实可能
-提及多个实体；本特性的属性 Unit 当前只写唯一的属性所属实体。属性与实体的对应关系由同一
-Unit 上的 `entities[0]` 和 `system_metadata.schema_property_name` 共同表达。
+属性 Unit 成功持久化后，Evolver 按其 `provenance` 找到对应 Source Unit，把
+`schema_entity_name` 和 `schema_property_name` 去重聚合到 Source 的 `entities`。一个 Source
+支持多个实体和多个属性，Property Unit 仍通过 `source_ref/provenance` 回指 Source。
 
 ### 4. Source-first 保证原始信息不丢失
 
@@ -79,8 +79,9 @@ SUPERSEDE。当前语义是 append-only：每次成功抽取的属性都作为�
 ### 5. 复用既有实体链路
 
 Schema Extractor 不生成自定义 `schema_entity_id`，也不维护 Schema Entity Registry。
-IndexBuilder 看到 `MemoryUnit.entities` 后，按现有配置调用 EntityLinkService；该服务负责实体
-名称归一化、EntityRecord upsert 以及 Entity→MemoryUnit 反向链接。
+Evolver 更新 Source MemoryUnit 后调用 `IndexBuilder.update()` 刷新索引。IndexBuilder 看到
+Source 的 `entities` 后，按现有配置调用 EntityLinkService；该服务负责名称归一化、
+EntityRecord upsert 以及实体名/属性名→Source MemoryUnit 的反向链接。
 
 因此，是否建立实体索引仍由 mem2.0 原有 `entity_enabled` 和 EntityStore 配置决定。Schema
 功能本身不新增 `schema_entities` collection/index，也不要求自定义 Storage。
@@ -125,10 +126,10 @@ Extractor/Evolver target 共同保证。
 
 - 验证选中属性白名单、空选择语义、严格根 JSON、来源绑定和事件时间映射；
 - 验证来源绑定与实体类型错误参与三次纠错，且未知类型不会被静默改型；
-- 验证一个实体的多个属性生成多个 Unit，且每个 Unit 的 `entities` 都是属性所属实体；
+- 验证一个实体的多个属性生成多个 Unit，Property Unit 的 `entities` 为空，实体名与属性名写回 Source；
 - 验证 Schema 抽取失败后 Source MemoryUnit 仍可读取和检索；
 - 验证 Schema 属性不进入普通 Dedup；
-- 验证标准 EntityLinkService 能从属性 Unit 建立 EntityRecord 及反向 MemoryUnit 链接；
+- 验证标准 EntityLinkService 能从更新后的 Source Unit 建立 EntityRecord 及反向链接；
 - 验证 `schema_enabled` 默认关闭，开启后统一 `build_kernel()` 能完成 Source-first
   Schema 写入。
 
@@ -136,5 +137,5 @@ Extractor/Evolver target 共同保证。
 
 1. 当前实体统一完全依赖现有 EntityLinkService 的名称归一化能力，不处理复杂别名或同名消歧；
 2. 属性采用 append-only，尚未提供按实体和属性的版本合并；
-3. `entities` 当前只写属性所属实体，不额外写属性值中提及的其他实体；
+3. Source 的 `entities` 当前写属性所属实体和属性名，不额外写属性值中提及的其他实体；
 4. 关系、图和 Schema 时序检索留待独立特性设计。

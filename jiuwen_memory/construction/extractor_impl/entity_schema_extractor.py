@@ -557,7 +557,7 @@ class EntitySchemaExtractor(Extractor):
                     system_metadata=metadata,
                     user_metadata=inherited_user_metadata(source_units),
                     lifecycle=LifecycleState.ACTIVE,
-                    entities=[candidate.entity_name],
+                    entities=[],
                 )
             )
         return result
