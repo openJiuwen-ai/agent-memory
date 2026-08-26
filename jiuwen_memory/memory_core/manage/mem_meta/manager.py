@@ -184,7 +184,7 @@ class MemMetaManager:
                 _metadata.create_all(conn, checkfirst=True)
 
     def _on_init_db_done(self, task: asyncio.Task) -> None:
-        """建表任务完成回调：异常不静默吞，记录 ERROR。"""
+        """建表任务完成回调：异常不静默吞，记录 ERROR；成功后清理僵尸任务。"""
         self._background_tasks.discard(task)
         if task.cancelled():
             logger.error("mem_meta 建表任务被取消")
@@ -192,6 +192,11 @@ class MemMetaManager:
         exc = task.exception()
         if exc is not None:
             logger.error("mem_meta 建表失败，mem_meta 接口将不可用: %s", exc)
+            return
+        # 建表成功后清理僵尸任务（确保表已存在）
+        task2 = asyncio.create_task(self.cleanup_zombie_tasks())
+        self._background_tasks.add(task2)
+        task2.add_done_callback(self._background_tasks.discard)
 
     async def _async_init_db(self) -> None:
         """异步建表。"""

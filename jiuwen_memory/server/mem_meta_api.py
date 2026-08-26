@@ -84,15 +84,8 @@ def register_mem_meta_endpoints(
         memory_engine=memory_engine,
         db_store=db_store,
     )
-    # 启动时清理僵尸任务（忽略事件循环不可用的情况）
-    try:
-        loop = asyncio.get_running_loop()
-        task = loop.create_task(_manager.cleanup_zombie_tasks())
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
-    except RuntimeError:
-        # 无运行中事件循环时跳过
-        pass
+    # 僵尸任务清理由 _on_init_db_done 回调在建表完成后自动触发，
+    # 不在此处单独 create_task，避免建表未完成时 cleanup 撞 Table doesn't exist。
     app.include_router(router)
 
 
