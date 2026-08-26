@@ -561,10 +561,15 @@ async def shutdown_event():
 async def add_messages_endpoint(request: AddMessagesRequest):
     """添加消息到内存"""
     try:
-        # 转换请求中的消息为BaseMessage对象
+        # 转换请求中的消息为BaseMessage对象，过滤空内容消息
         base_messages = []
         for msg in request.messages:
-            base_messages.append(BaseMessage(role=msg.get('role', 'user'), content=msg.get('content', '')))
+            content = msg.get('content', '')
+            if not content or not content.strip():
+                continue
+            base_messages.append(BaseMessage(role=msg.get('role', 'user'), content=content))
+        if not base_messages:
+            raise HTTPException(status_code=422, detail="No valid messages (all content is empty)")
         # 对外用窄模型 MemVariable（只要求 name/description），这里补齐成引擎要求的 Param 列表；
         # 未传则 mem_variables 为空（不抽取变量）
         mem_variables = [v.to_param() for v in request.mem_variables]
@@ -586,6 +591,8 @@ async def add_messages_endpoint(request: AddMessagesRequest):
         )
 
         return {"status": "success", "message": "Messages added successfully"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error adding messages: {str(e)}") from e
 
