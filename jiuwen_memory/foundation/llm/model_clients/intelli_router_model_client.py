@@ -112,7 +112,7 @@ class IntelliRouterModelClient(BaseModelClient):
             f"{config.enable_health_check}|{config.health_check_interval}|"
             f"{config.verify_ssl}"
         )
-        return hashlib.md5(raw.encode()).hexdigest()
+        return hashlib.sha256(raw.encode()).hexdigest()
 
     @classmethod
     def _get_or_create_router(cls, config: IntelliRouterClientConfig) -> "ReliableRouter":

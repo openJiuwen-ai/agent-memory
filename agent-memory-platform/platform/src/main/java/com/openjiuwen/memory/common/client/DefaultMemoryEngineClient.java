@@ -15,6 +15,8 @@ import com.openjiuwen.memory.common.PageResult;
 import com.openjiuwen.memory.common.ResultCode;
 import com.openjiuwen.memory.common.exception.BizException;
 import org.springframework.web.client.RestClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -36,6 +38,8 @@ import java.util.Map;
  * </ul>
  */
 public class DefaultMemoryEngineClient implements MemoryEngineClient {
+
+    private static final Logger log = LoggerFactory.getLogger(DefaultMemoryEngineClient.class);
 
     private final RestClient restClient;
 
@@ -356,12 +360,10 @@ public class DefaultMemoryEngineClient implements MemoryEngineClient {
                 resp.close();
                 throw new org.springframework.web.client.RestClientException("内核 /logs/download 返回 " + code);
             }
-            System.out.println("[MemoryEngineClient] downloadKernelLogs(stream) OK uri=" + uri
-                    + " contentLength=" + resp.getHeaders().getContentLength());
+            log.info("[MemoryEngineClient] downloadKernelLogs(stream) OK uri={} contentLength={}", uri, resp.getHeaders().getContentLength());
             return resp;
         } catch (java.io.IOException e) {
-            System.err.println("[MemoryEngineClient] downloadKernelLogs(stream) FAIL uri=" + uri
-                    + " filename=" + filename + " error=" + e.getClass().getName() + ": " + e.getMessage());
+            log.error("[MemoryEngineClient] downloadKernelLogs(stream) FAIL uri={} filename={} error={}: {}", uri, filename, e.getClass().getName(), e.getMessage());
             throw new org.springframework.web.client.RestClientException("内核 /logs/download 请求失败: " + e.getMessage(), e);
         }
     }

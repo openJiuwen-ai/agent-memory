@@ -17,6 +17,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.transaction.annotation.Transactional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -32,6 +34,8 @@ import java.util.stream.Collectors;
 @RestController
 @RequestMapping("/api/v1/tenants")
 public class TenantController {
+
+    private static final Logger log = LoggerFactory.getLogger(TenantController.class);
     
     @Autowired
     private TenantService tenantService;
@@ -191,7 +195,7 @@ public class TenantController {
                         
             boolean success = tenantService.updateById(existingTenant);
             if (!success) {
-                System.err.println("【租户更新失败】Tenant ID: " + tenantId + ", Updated scopeIds: " + existingTenant.getScopeIds());
+                log.error("【租户更新失败】Tenant ID: {}, Updated scopeIds: {}", tenantId, existingTenant.getScopeIds());
             }
             if (success) {
                 return CommonResult.success(existingTenant);

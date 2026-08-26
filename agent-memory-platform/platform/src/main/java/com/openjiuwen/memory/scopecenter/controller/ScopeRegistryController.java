@@ -269,13 +269,12 @@ public class ScopeRegistryController {
             // 从后端表获取配额信息
             int maxMemories = scope.getMaxMemories() != null ? scope.getMaxMemories() : 0;
             
-            // TODO: 后续可集成内核 API 获取实际使用量
             // 当前暂时返回 0，因为后端不直接管理记忆数量
             int used = 0;
             
             double usagePercent = 0.0;
             if (maxMemories > 0) {
-                usagePercent = (double) used / maxMemories * 100;
+                usagePercent = ((double) used) / maxMemories * 100;
             }
             
             Map<String, Object> quotaInfo = Map.of(

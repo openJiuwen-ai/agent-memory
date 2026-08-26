@@ -313,7 +313,8 @@ public class ConfigTemplateServiceImpl implements ConfigTemplateService {
                 .eq("template_id", id));
 
         List<TemplateDeleteResultDTO.ScopeCleanupResult> cleanedScopes = new ArrayList<>();
-        int kernelSuccess = 0, kernelFail = 0;
+        int kernelSuccess = 0;
+        int kernelFail = 0;
 
         // 级联清理：对每个绑定的租户，删除内核 scope 配置 + DB 绑定记录
         for (TenantScopeConfigEntity cfg : boundConfigs) {
@@ -447,7 +448,8 @@ public class ConfigTemplateServiceImpl implements ConfigTemplateService {
                 "无法确定 scope_id，配置无法下发到内核。请在编辑页选择《应用目标租户》后再保存发布。");
         }
         List<TemplateApplyResultDTO.TenantApplyResult> results = new ArrayList<>();
-        int success = 0, fail = 0;
+        int success = 0;
+        int fail = 0;
         for (String tenantId : tenantIds) {
             try {
                 Tenant tenant = tenantMapper.selectById(tenantId);

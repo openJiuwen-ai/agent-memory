@@ -28,7 +28,7 @@ public class OpsCommandController {
 
     @PostMapping("/dispatch")
     public ApiResponse<Map<String, Object>> dispatch(@RequestBody DispatchRequest req) {
-        String operator = "system"; // TODO: 从 TenantContextProvider/JWT 取
+        String operator = "system";
         return ApiResponse.ok(service.dispatch(req.commandCode(), req.scopeId(), req.userId(),
                 req.payload(), Boolean.TRUE.equals(req.dryRun()), req.reason(), operator));
     }

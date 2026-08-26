@@ -100,11 +100,25 @@ public class SqliteSchemaCompatInitializer implements BeanFactoryPostProcessor, 
         }
     }
 
+    private static final java.util.regex.Pattern IDENT_PATTERN =
+            java.util.regex.Pattern.compile("^[a-zA-Z_][a-zA-Z0-9_]*$");
+
+    private void validateIdentifier(String name) {
+        if (name == null || !IDENT_PATTERN.matcher(name).matches()) {
+            throw new IllegalArgumentException("Invalid SQL identifier: " + name);
+        }
+    }
+
     private void addColumnIfMissing(Connection connection,
                                     String tableName,
                                     String columnName,
                                     String columnDefinition,
                                     String copyFromColumn) throws Exception {
+        validateIdentifier(tableName);
+        validateIdentifier(columnName);
+        if (copyFromColumn != null) {
+            validateIdentifier(copyFromColumn);
+        }
         if (columnExists(connection, tableName, columnName)) {
             return;
         }

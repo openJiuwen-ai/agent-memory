@@ -42,7 +42,7 @@ def merge_parser_content(left: Any, right: Any) -> Any:
     
     # Handle custom objects: check if __add__ method is implemented
     if (hasattr(left, '__add__') and 
-        type(left) == type(right) and
+        type(left) is type(right) and
         not isinstance(left, (int, float, bool))):  # Exclude basic numeric types
         try:
             return left + right
@@ -104,7 +104,7 @@ def merge_pydantic_models(left: Any, right: Any) -> Any:
     - For nested Pydantic Models, recursively merge them
     - For other fields, use the non-empty value from the right side
     """
-    if type(left) != type(right):
+    if type(left) is not type(right):
         return right
     
     # Get all fields of the model
