@@ -658,7 +658,11 @@ class MilvusVectorStore(BaseVectorStore):
                     collection_info = self.client.describe_collection(
                         collection_name=collection_name, timeout=self._default_rpc_timeout
                     )
-                    search_output_fields = [field.get("name") for field in collection_info.get("fields", [])]
+                    if collection_info.get("enable_dynamic_field", False):
+                        # Dynamic fields aren't listed in schema; use ["*"] to return all
+                        search_output_fields = ["*"]
+                    else:
+                        search_output_fields = [field.get("name") for field in collection_info.get("fields", [])]
                 except Exception:
                     # Fallback: use common field names
                     search_output_fields = ["id", "text", "metadata"]
@@ -858,7 +862,11 @@ class MilvusVectorStore(BaseVectorStore):
         def _query():
             try:
                 collection_info = self.client.describe_collection(collection_name=collection_name)
-                schema_fields = [f.get("name") for f in collection_info.get("fields", [])]
+                if collection_info.get("enable_dynamic_field", False):
+                    # Dynamic fields aren't listed in schema; use ["*"] to return all
+                    schema_fields = ["*"]
+                else:
+                    schema_fields = [f.get("name") for f in collection_info.get("fields", [])]
             except Exception:
                 schema_fields = None
 
