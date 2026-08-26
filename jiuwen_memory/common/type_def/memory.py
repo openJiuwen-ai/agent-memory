@@ -186,6 +186,75 @@ class MemoryUnit:
 
 MEMORY_KEY_PREFIX = "/memory/"
 
+# 归属判定上下文的瞬态键名：由 API 层装配、构建层的归属判定算子消费，用完即从
+# ``system_metadata`` 剥除（见 construction.router.apply_decisions），不落盘。
+#
+# 它走 ``system_metadata`` 而不是 ``extensions``：判定上下文要跟着**源单元**到达构建层，
+# 而 ``MemoryEngine.write`` 的签名里没有 extensions。取值是 ``RouteContext`` 对象而非
+# 标量，因此写入边界的标量校验对该键单独放行。
+ROUTE_CTX_KEY = "route_ctx"
+
+# ``system_metadata`` 里携带、消费后不落盘的键。编解码器在序列化时剥除（见
+# memory_codec.dumps）——判定应用处的 pop 只覆盖被判定改写过的单元，而载体单元
+# （infer/procedural 的原文）不经判定，它的上下文要靠这一处兜住。
+# 本清单只作用于 ``system_metadata``；``Context.extensions`` 侧的编排键由 API 边界
+# 各自取出并移除，两者互不覆盖。
+# 归属坐标在参数袋中的约定键。取值为 ``dict[str, str]``，键为部署配置 ``coord_entities``
+# 声明的实体名；写入侧放 ``system_metadata``，检索侧放 ``Context.extensions``。
+#
+# **取值不受 ``MetadataValueType`` 约束**，与 ``ROUTE_CTX_KEY`` 承载 ``RouteContext``
+# 对象同例。不扩展该联合类型：扩展会使全部元数据键都可承载嵌套结构，而落盘键的嵌套值
+# 会在 Elasticsearch 的 ``metadata`` 动态映射下逐层展开为新字段。
+#
+# 该键在 API 层入口即被取出、不进入下游，列入瞬态键集合是防御性的第二道——某条路径漏了
+# 取出时由剥离机制兜住不落盘。
+COORDS_KEY = "coords"
+
+TRANSIENT_SYSTEM_METADATA_KEYS = frozenset({ROUTE_CTX_KEY, COORDS_KEY})
+
+# 归属判定命中的类别名，落条目 system_metadata（见 KERNEL_SYSTEM_METADATA_KEYS 内的同名项）。
+MEMORY_CLASS_KEY = "memory_class"
+
+# ``system_metadata`` 里由内核写入并参与判定的键，调用方不得经该入参赋值。
+#
+# 上游把 metadata 拆成两个命名空间后，用户元数据物理上已占用不了系统键名；但
+# ``system_metadata`` 同时是对外入参，调用方仍可直接写这些键——作者主体可被伪造成他人、
+# 会话标签可被改成他人的会话 id 使条目出现在他人上下文里、项目标签可被改写使条目脱离
+# 按标签的批量删除范围。故在写入边界拒绝。
+KERNEL_SYSTEM_METADATA_KEYS = frozenset(
+    {
+        # -- 索引投影字段：真源系统字段在索引里占用同名 key -----------------------
+        # 调用方经 system_metadata 写这些 key 会与索引投影的取值不一致，两侧判定相反、
+        # 过滤结果静默出错。用户元数据落在另一命名空间、占不到它们，本项只防入参。
+        "unit_id",
+        "tier",
+        "lifecycle",
+        "tags",
+        "source",
+        "content_layer",
+        "t_event",
+        "t_valid",
+        "t_invalid",
+        "t_message",
+        "seq",
+        # -- 群体记忆（F07）：内核按调用方身份写入并参与判定 --------------------
+        # 作者主体：user:<id> 或 agent:<id>，由内核从身份推导，调用方不可赋值
+        "author_principal",
+        # 经哪个代理写入。两种形态下为空串：用户不经代理直接调用、代理自主运行
+        # （后者靠 author_principal 的 agent: 前缀区分）。空串恒写入不省略键。
+        # 它是记录项而非判据，判定不读它
+        "author_agent",
+        # 归属判定命中的类别名，由判定算子写入；走 fallback 时写 fallback 类别名，
+        # 未启用判定的写入路径不写该键。它是落点断言的唯一稳定判据——派生记忆的
+        # content 是模型产物、措辞不保证逐次一致，按内容等值匹配不成立
+        "memory_class",
+        # -- 群体记忆阶段四才写入：先占位，防止存量数据占用键名 ------------------
+        "origin_spaces",  # 内容源自哪些空间
+        "origin_contributors",  # 内容由哪些主体产生
+        "pending_review_sources",  # 删除传播写入的待复核来源
+    }
+)
+
 # 开放有效期（``Temporal.t_invalid is None``，即"仍有效"）在索引里的哨兵值：
 # 9999-12-31T23:59:59Z 的 epoch 毫秒。
 #

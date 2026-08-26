@@ -7,6 +7,16 @@ from .classifier import Classifier
 from .evolver import EvolveMode, Evolver, EvolveResult
 from .extractor import Extractor
 from .index_builder import IndexBuilder
+from .router import (
+    EMPTY_ROUTE_TABLE,
+    MemoryClass,
+    NarrowDim,
+    RouteContext,
+    RouteDecision,
+    Router,
+    RouteTable,
+    SpaceNaming,
+)
 
 __all__ = [
     "ConstructionOperator",
@@ -19,4 +29,12 @@ __all__ = [
     "Evolver",
     "EvolveMode",
     "EvolveResult",
+    "Router",
+    "RouteContext",
+    "RouteDecision",
+    "RouteTable",
+    "MemoryClass",
+    "NarrowDim",
+    "SpaceNaming",
+    "EMPTY_ROUTE_TABLE",
 ]

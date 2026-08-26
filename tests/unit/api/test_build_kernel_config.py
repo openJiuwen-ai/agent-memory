@@ -20,8 +20,9 @@ from jiuwen_memory.common.security.security_impl.local_envelope_security_provide
 )
 from jiuwen_memory.common.type_def import Context, Scope
 from jiuwen_memory.config import Config
-from jiuwen_memory.config.context import AssemblyContext
+from jiuwen_memory.config.context import AssemblyContext, ComponentConfig
 from jiuwen_memory.config.defaults import default_config_dict
+from jiuwen_memory.construction.router import RouterProducer, optional_router
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.permission import PermissionManager, PermissionProducer
 from jiuwen_memory.control.types import Action, Grant, PermissionContext
@@ -70,6 +71,16 @@ class _DenyAllPermission(PermissionManager):
 @PermissionProducer.register("deny_all_test")
 def _build_deny(config) -> _DenyAllPermission:
     return _DenyAllPermission()
+
+
+_ROUTERS_BUILT: list = []
+
+
+@RouterProducer.register("counting_router_test")
+def _build_counting_router(config):
+    router = object()
+    _ROUTERS_BUILT.append(router)
+    return router
 
 
 def test_default_assembly_allows_write() -> None:
@@ -150,6 +161,43 @@ def test_build_named_shares_single_instance() -> None:
     b = VectorProducer.build_named("main", ctx)
     assert a is b
     assert len(_VEC_BUILT) == 1
+
+
+def test_optional_router_shares_by_name_but_not_by_inline_config() -> None:
+    """判定算子跨消费方是否同实例，取决于配置写法。
+
+    三个消费方（API 层与两个 Evolver）各自调 ``optional_router``。经 ``router.default``
+    具名引用时 ``Factory.build_named`` 缓存，三方拿到同一实例、共用一份判定表；而组件
+    配置里内联 ``router`` 参数时走 ``dep`` 的匿名分支，每次调用新建一个实例，两侧判定表
+    可以不同——此时写入边界拒绝的键集合按 API 层的表算、实际落点按构建层的表算。
+
+    本用例把这两种写法的差别钉在测试里。分歧本身是已接受的遗留（F07「已知遗留 > 本期
+    不做」的判定表跨实例一致一项），此处保证它不会在无人察觉时改变方向。
+    """
+    Factory.reset_all()
+    _ROUTERS_BUILT.clear()
+    ctx = AssemblyContext.from_dict({"router": {"default": "counting_router_test"}})
+
+    named = ComponentConfig(params={}, ctx=ctx, target="", name="")
+    assert optional_router(named) is optional_router(named)
+    assert len(_ROUTERS_BUILT) == 1
+
+    _ROUTERS_BUILT.clear()
+    inline = ComponentConfig(
+        params={"router": {"target": "counting_router_test", "params": {}}},
+        ctx=ctx,
+        target="",
+        name="",
+    )
+    assert optional_router(inline) is not optional_router(inline)
+    assert len(_ROUTERS_BUILT) == 2
+
+
+def test_optional_router_returns_none_without_the_router_namespace() -> None:
+    """未声明 router 命名空间即不装配：判定表为空、判定路径整体不可达。"""
+    Factory.reset_all()
+    config = ComponentConfig(params={}, ctx=AssemblyContext.from_dict({}), target="", name="")
+    assert optional_router(config) is None
 
 
 def test_default_assembly_does_not_wrap_kv() -> None:

@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from jiuwen_memory.api.memory_api_impl import build_kernel
 from bootstrap.core import handler
+from jiuwen_memory.api.memory_api_impl import build_kernel
 from jiuwen_memory.control import BatchWriteItem, BatchWriteOutcome, BatchWriteResult
 
 pytestmark = pytest.mark.unit

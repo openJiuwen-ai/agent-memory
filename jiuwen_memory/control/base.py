@@ -12,6 +12,7 @@
 - :class:`~control.policy.PolicyManager` 运行时可变策略（§13.4 admin 落点）
 - :class:`~control.pipeline.MemoryPipeline` 记忆类型 pipeline 路由（跨构建/查询 profile 编排）
 - :class:`~control.space.SpaceManager` space 生命周期、策略、成员与 offboarding 管理
+- :class:`~control.membership.MembershipResolver` 空间授权事实的一次读取与主体反查
 
 控制层驱动构建层做演进、经 ``jiuwen_memory/storage`` 读写状态；审计记录走
 ``jiuwen_memory/common`` 的 :class:`~common.audit.AuditLogger`（横切共用）。
@@ -33,6 +34,7 @@ class ControlOperatorType(str, Enum):
     INGEST_JOB = "ingest_job"
     POLICY = "policy"
     SPACE = "space"
+    MEMBERSHIP = "membership"
 
 
 class ControlOperator(ABC):

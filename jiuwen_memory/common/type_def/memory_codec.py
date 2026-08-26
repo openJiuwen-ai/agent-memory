@@ -17,6 +17,7 @@ import json
 from datetime import datetime
 
 from .memory import (
+    TRANSIENT_SYSTEM_METADATA_KEYS,
     ContentLayers,
     LifecycleState,
     MemoryTier,
@@ -78,7 +79,12 @@ def dumps(unit: MemoryUnit) -> bytes:
             "provenance": list(unit.provenance),
             "supersedes": unit.supersedes,
             "tags": list(unit.tags),
-            "system_metadata": dict(unit.system_metadata),
+            # 瞬态键消费后不落盘（route_ctx 是 RouteContext 对象，本就不可序列化）。
+            "system_metadata": {
+                key: value
+                for key, value in unit.system_metadata.items()
+                if key not in TRANSIENT_SYSTEM_METADATA_KEYS
+            },
             "user_metadata": dict(unit.user_metadata),
             "lifecycle": unit.lifecycle.value,
             "entities": list(unit.entities),

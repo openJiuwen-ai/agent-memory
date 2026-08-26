@@ -40,6 +40,16 @@ class Job(ABC):
     async def run(self) -> JobInfo:
         """执行任务，返回 JobInfo。"""
 
+    @property
+    def mode(self) -> str:
+        """本任务的演进模式取值；无演进模式的任务取空串。
+
+        鉴权点按该取值决定任务状态查询与取消要哪个动作（F07「入口到轴与动作的映射」），
+        因此它必须是演进模式而非任务类名——类名相同的任务可以是遗忘也可以是抽取，
+        两者的动作不同。
+        """
+        return ""
+
 
 class JobType(str, Enum):
     """Job 类型枚举——``JobFactory.get_job`` 的必选参数。"""
