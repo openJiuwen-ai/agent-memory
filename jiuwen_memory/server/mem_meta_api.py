@@ -66,7 +66,7 @@ class BatchDeleteRequest(BaseModel):
 # 注册函数
 # ============================================================
 
-def register_mem_meta_endpoints(
+async def register_mem_meta_endpoints(
     app,
     memory_engine=None,
     db_store=None,
@@ -84,8 +84,8 @@ def register_mem_meta_endpoints(
         memory_engine=memory_engine,
         db_store=db_store,
     )
-    # 僵尸任务清理由 _on_init_db_done 回调在建表完成后自动触发，
-    # 不在此处单独 create_task，避免建表未完成时 cleanup 撞 Table doesn't exist。
+    # 异步建表（阻塞至完成），确保 server 开始服务时表已存在
+    await _manager._init_db()
     app.include_router(router)
 
 
