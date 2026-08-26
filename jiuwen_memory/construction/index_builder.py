@@ -15,6 +15,7 @@ from abc import abstractmethod
 
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import MemoryUnit
+from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 from .base import ConstructionOperator
 
@@ -30,17 +31,55 @@ class IndexBuilderProducer(Factory):
 
 
 class IndexBuilder(ConstructionOperator):
-    @abstractmethod
-    def build(self, units: list[MemoryUnit]) -> None:
-        """为一批记忆单元构建已启用的各形式索引。"""
+    """索引构建的统一入口——记忆写入只经本算子，调用方不直接调 Storage 写接口。
+
+    写接口（``build``/``update``）用 ``IndexWriteMode`` 表达写入范围：
+
+    - ``ALL``（默认）——**交付记忆**：正排（记忆本体）与全部检索索引均写入；
+    - ``FORWARD_ONLY`` ——**仅正排**：只回写记忆本体，检索索引不动。用于生命周期
+      治理（归档/遗忘时真源保留新状态、检索索引另行处置）；
+    - ``RETRIEVAL_ONLY`` ——**仅检索索引**：记忆本体保持不动。用于索引迁移
+      （记忆不变、检索索引换承载者）与部分失败后的补建。
+
+    删除接口（``remove``）用 ``IndexRemoveMode`` 表达删除语义：
+
+    - ``HARD``（默认）——**硬删除**：检索索引与记忆本体一并物理删除；
+    - ``SOFT`` ——**软删除**：只移出检索索引（search/recall 不再召回），记忆本体
+      保留，``get``/``list`` 仍可读。
+
+    不支持细粒度控制的实现（如全权委托 Storage 的 ``unified``）把枚举原样下传，
+    能否拆分由该 Storage 实现按自身能力决定。
+    """
 
     @abstractmethod
-    def update(self, units: list[MemoryUnit]) -> None:
-        """记忆变更后增量更新对应索引条目。"""
+    def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
+        """为一批记忆单元构建已启用的各形式索引。
+
+        ``mode=RETRIEVAL_ONLY`` 时记忆本体已存在，只补建检索索引；
+        ``mode=FORWARD_ONLY`` 时只交付记忆本体，不建检索索引。
+        """
 
     @abstractmethod
-    def remove(self, units: list[MemoryUnit]) -> None:
-        """删除一批记忆单元对应的索引条目（幂等）。"""
+    def update(
+        self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL
+    ) -> None:
+        """记忆变更后增量更新对应索引条目（含记忆本体的回写）。
+
+        ``mode=FORWARD_ONLY`` 时只回写记忆本体，检索索引不动——供上层表达「本体改状态、
+        但检索索引另行处置」（如遗忘：回写 FORGOTTEN 后再 ``remove(mode=SOFT)``
+        移出检索），避免先重建检索索引再删掉那一轮无用功。
+        """
+
+    @abstractmethod
+    def remove(
+        self, units: list[MemoryUnit], *, mode: IndexRemoveMode = IndexRemoveMode.HARD
+    ) -> None:
+        """删除一批记忆单元对应的索引条目（幂等）。
+
+        ``mode=SOFT`` 为软删除：只移出检索索引（search/recall 不再召回），记忆本体
+        保留，``get``/``list`` 仍可读；``mode=HARD`` 为硬删除：检索索引与记忆本体
+        一并物理删除。
+        """
 
     @abstractmethod
     def rebuild(self) -> None:

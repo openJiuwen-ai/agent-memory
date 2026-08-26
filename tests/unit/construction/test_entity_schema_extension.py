@@ -41,6 +41,7 @@ from jiuwen_memory.construction.extractor_impl.entity_schema_extractor import (
 )
 from jiuwen_memory.construction.index_builder_impl.entity_index_builder import EntityLinkService
 from jiuwen_memory.storage.entity_store import EntityStore
+from jiuwen_memory.storage.types import IndexWriteMode
 
 pytestmark = pytest.mark.unit
 
@@ -531,15 +532,26 @@ class _Storage:
 
 
 class _Index:
-    def __init__(self) -> None:
+    def __init__(self, storage: _Storage) -> None:
+        self._storage = storage
         self.ids: list[str] = []
         self.updated_ids: list[str] = []
+        self.update_modes: list[IndexWriteMode] = []
 
-    def build(self, units):
+    def build(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL):
         self.ids.extend(unit.id for unit in units)
+        if mode is IndexWriteMode.RETRIEVAL_ONLY:
+            return
+        for unit in units:
+            self._storage.add(unit.scope, [unit])
 
-    def update(self, units):
+    def update(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL):
         self.updated_ids.extend(unit.id for unit in units)
+        self.update_modes.append(mode)
+        if mode is IndexWriteMode.RETRIEVAL_ONLY:
+            return
+        for unit in units:
+            self._storage.update(unit.scope, [unit])
 
 
 class _SchemaEvolverHarness(SchemaOrchestratingEvolver):
@@ -560,13 +572,14 @@ class _SchemaEvolverHarness(SchemaOrchestratingEvolver):
 
 def _evolver(extractor) -> tuple[SchemaOrchestratingEvolver, _Storage, _Index]:
     storage = _Storage()
-    index = _Index()
+    index = _Index(storage)
     evolver = _SchemaEvolverHarness(
         extractor=extractor,
         abstractor=SimpleNamespace(),
         associator=SimpleNamespace(),
         index_builder=index,
         storage=storage,
+        message_store=SimpleNamespace(),
         dedup=SimpleNamespace(),
         llm=SimpleNamespace(),
     )
@@ -664,6 +677,7 @@ def test_schema_properties_are_added_without_ordinary_dedup() -> None:
     assert set(storage.units) == {source.id, property_unit.id}
     assert index.ids == [source.id, property_unit.id]
     assert index.updated_ids == [source.id]
+    assert index.update_modes == [IndexWriteMode.ALL]
     assert storage.units[source.id].entities == ["ExistingEntity", "Alice", "occupation"]
     assert storage.units[property_unit.id].entities == []
 

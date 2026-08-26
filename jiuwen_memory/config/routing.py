@@ -53,6 +53,8 @@ from jiuwen_memory.storage.types import (
     FusionQuery,
     FusionRecord,
     GraphQuery,
+    IndexRemoveMode,
+    IndexWriteMode,
     KVMemoryListResult,
     MemoryListResult,
     Node,
@@ -530,27 +532,31 @@ class RoutingStorage(Storage):
         scope: Scope,
         units: list[MemoryUnit],
         *,
+        mode: IndexWriteMode = IndexWriteMode.ALL,
         access: StorageAccessContext | None = None,
     ) -> None:
-        self._active().add(scope, units, access=access)
+        # 意图参数原样下传：落地范围由当前 active 实例按自身能力决定，本类只做路由。
+        self._active().add(scope, units, mode=mode, access=access)
 
     def update(
         self,
         scope: Scope,
         units: list[MemoryUnit],
         *,
+        mode: IndexWriteMode = IndexWriteMode.ALL,
         access: StorageAccessContext | None = None,
     ) -> None:
-        self._active().update(scope, units, access=access)
+        self._active().update(scope, units, mode=mode, access=access)
 
     def delete(
         self,
         scope: Scope,
         unit_ids: list[str],
         *,
+        mode: IndexRemoveMode = IndexRemoveMode.HARD,
         access: StorageAccessContext | None = None,
     ) -> None:
-        self._active().delete(scope, unit_ids, access=access)
+        self._active().delete(scope, unit_ids, mode=mode, access=access)
 
     def get(
         self,

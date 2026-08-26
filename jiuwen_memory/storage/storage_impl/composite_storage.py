@@ -43,7 +43,7 @@ from jiuwen_memory.storage.security import (
     StorageSecurity,
 )
 from jiuwen_memory.storage.storage import Storage, StorageCapability, StorageProducer
-from jiuwen_memory.storage.types import MemoryListResult
+from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode, MemoryListResult
 from jiuwen_memory.storage.vector import VectorProducer, VectorStore
 
 
@@ -234,9 +234,13 @@ class CompositeStorage(Storage):
         scope: Scope,
         units: list[MemoryUnit],
         *,
+        mode: IndexWriteMode = IndexWriteMode.ALL,
         access: StorageAccessContext | None = None,
     ) -> None:
         self._authorize(access, scope, StorageAction.ADD, "memory_unit")
+        # 本实现无投影能力，落地范围仅记忆本体：调用方只要检索索引时无事可做。
+        if mode is IndexWriteMode.RETRIEVAL_ONLY:
+            return
         self._validate_units(scope, units)
         kv = self._raw_kv()
         for unit in units:
@@ -247,9 +251,13 @@ class CompositeStorage(Storage):
         scope: Scope,
         units: list[MemoryUnit],
         *,
+        mode: IndexWriteMode = IndexWriteMode.ALL,
         access: StorageAccessContext | None = None,
     ) -> None:
+        # 本实现落地范围仅记忆本体，FORWARD_ONLY 与 ALL 行为相同（无检索索引可跳过）。
         self._authorize(access, scope, StorageAction.UPDATE, "memory_unit")
+        if mode is IndexWriteMode.RETRIEVAL_ONLY:
+            return
         self._validate_units(scope, units)
         kv = self._raw_kv()
         for unit in units:
@@ -260,9 +268,13 @@ class CompositeStorage(Storage):
         scope: Scope,
         unit_ids: list[str],
         *,
+        mode: IndexRemoveMode = IndexRemoveMode.HARD,
         access: StorageAccessContext | None = None,
     ) -> None:
         self._authorize(access, scope, StorageAction.DELETE, "memory_unit")
+        # 同 add：无检索索引可单独移除，软删除保留本体即无事可做。
+        if mode is IndexRemoveMode.SOFT:
+            return
         kv = self._raw_kv()
         for unit_id in unit_ids:
             kv.delete(scope, memory_key(unit_id))

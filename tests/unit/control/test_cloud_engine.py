@@ -45,6 +45,7 @@ from jiuwen_memory.retrieval.retriever import Retriever
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult, RetrievedItem
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 pytestmark = pytest.mark.unit
 
@@ -83,11 +84,14 @@ class _RecordingIngestor(Ingestor):
 
 
 class _RecordingIndexBuilder(IndexBuilder):
-    def __init__(self, name: str) -> None:
+    """记录调用并交付 Storage 的替身——IndexBuilder 是记忆写入的唯一入口。"""
+
+    def __init__(self, name: str, storage=None) -> None:
         self.name = name
         self.built: list[str] = []
         self.updated: list[str] = []
         self.removed: list[str] = []
+        self._storage = storage
 
     def operator_type(self) -> OperatorType:
         return OperatorType.INDEX_BUILDER
@@ -95,14 +99,30 @@ class _RecordingIndexBuilder(IndexBuilder):
     def health(self) -> None:
         return None
 
-    def build(self, units: list[MemoryUnit]) -> None:
+    def build(
+        self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL
+    ) -> None:
         self.built.extend(unit.content for unit in units)
+        # 遵守契约：mode=RETRIEVAL_ONLY 表示本体已存在、只补建派生索引，不得再写本体。
+        if mode is not IndexWriteMode.RETRIEVAL_ONLY and self._storage is not None:
+            for unit in units:
+                self._storage.add(unit.scope, [unit])
 
-    def update(self, units: list[MemoryUnit]) -> None:
+    def update(
+        self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL
+    ) -> None:
         self.updated.extend(unit.id for unit in units)
+        if self._storage is not None:
+            for unit in units:
+                self._storage.update(unit.scope, [unit])
 
-    def remove(self, units: list[MemoryUnit]) -> None:
+    def remove(
+        self, units: list[MemoryUnit], *, mode: IndexRemoveMode = IndexRemoveMode.HARD
+    ) -> None:
         self.removed.extend(unit.id for unit in units)
+        if mode is IndexRemoveMode.HARD and self._storage is not None:
+            for unit in units:
+                self._storage.delete(unit.scope, [unit.id])
 
     def rebuild(self) -> None:
         return None
@@ -237,11 +257,12 @@ def _build_test_job_factory(
         def chat(self, messages: list[ChatMessage], **options: object) -> str:
             return messages[-1].content if messages else ""
 
+    storage = CompositeStorage(kv=kv)
     factory = JobFactory()
     factory.register(
         JobType.MIDDLE_TO_LONG,
         MiddleToLongJobSpec(
-            storage=CompositeStorage(kv=kv),
+            storage=storage,
             evolver=evolver,
             lifecycle=lifecycle,
             index=index,
@@ -253,7 +274,7 @@ def _build_test_job_factory(
     )
     factory.register(
         JobType.EVOLVE,
-        EvolveJobSpec(storage=CompositeStorage(kv=kv), evolver=evolver).with_scope,
+        EvolveJobSpec(storage=storage, evolver=evolver).with_scope,
     )
     return factory
 
@@ -279,8 +300,9 @@ class _MessageTypePipeline(MemoryPipeline):
 
 def _engine():
     kv = _RecordingKVStore()
-    chat_index = _RecordingIndexBuilder("chat")
-    coding_index = _RecordingIndexBuilder("coding")
+    storage = CompositeStorage(kv=kv)
+    chat_index = _RecordingIndexBuilder("chat", storage)
+    coding_index = _RecordingIndexBuilder("coding", storage)
     chat_classifier = _RecordingClassifier("chat")
     coding_classifier = _RecordingClassifier("coding")
     chat_retriever = _RecordingRetriever("chat")
@@ -308,7 +330,7 @@ def _engine():
             ingestor=_RecordingIngestor(),
             index_builder=chat_index,
             retriever=chat_retriever,
-            storage=CompositeStorage(kv=kv),
+            storage=storage,
             scheduler=InProcessScheduler(),
             evolver=chat_evolver,
             lifecycle=_NoopLifecycle(),
@@ -548,8 +570,9 @@ def _engine_with_job_factory(
     job._evolver / job._index 为 binding 选的——这是测试要验证的关键点。
     """
     kv = InMemoryKVStore()
-    chat_index = _RecordingIndexBuilder("chat")
-    coding_index = _RecordingIndexBuilder("coding")
+    storage = CompositeStorage(kv=kv)
+    chat_index = _RecordingIndexBuilder("chat", storage)
+    coding_index = _RecordingIndexBuilder("coding", storage)
     chat_evolver = _RecordingEvolver("chat", kv)
     coding_evolver = _RecordingEvolver("coding", kv)
     lifecycle = _NoopLifecycle()
@@ -575,7 +598,7 @@ def _engine_with_job_factory(
         ingestor=_RecordingIngestor(),
         index_builder=chat_index,
         retriever=_RecordingRetriever("chat"),
-        storage=CompositeStorage(kv=kv),
+        storage=storage,
         scheduler=scheduler,
         evolver=chat_evolver,
         lifecycle=lifecycle,

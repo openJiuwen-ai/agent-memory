@@ -79,9 +79,10 @@ SUPERSEDE。当前语义是 append-only：每次成功抽取的属性都作为�
 ### 5. 复用既有实体链路
 
 Schema Extractor 不生成自定义 `schema_entity_id`，也不维护 Schema Entity Registry。
-Evolver 更新 Source MemoryUnit 后调用 `IndexBuilder.update()` 刷新索引。IndexBuilder 看到
-Source 的 `entities` 后，按现有配置调用 EntityLinkService；该服务负责名称归一化、
-EntityRecord upsert 以及实体名/属性名→Source MemoryUnit 的反向链接。
+Evolver 通过 Storage 只读加载 Source MemoryUnit，合并实体名和属性名后调用
+`IndexBuilder.update(mode=ALL)`，由 IndexBuilder 统一回写 Source 本体并刷新检索索引。
+IndexBuilder 看到 Source 的 `entities` 后，按现有配置调用 EntityLinkService；该服务负责
+名称归一化、EntityRecord upsert 以及实体名/属性名→Source MemoryUnit 的反向链接。
 
 因此，是否建立实体索引仍由 mem2.0 原有 `entity_enabled` 和 EntityStore 配置决定。Schema
 功能本身不新增 `schema_entities` collection/index，也不要求自定义 Storage。

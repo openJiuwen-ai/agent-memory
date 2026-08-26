@@ -12,10 +12,10 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
 
 | 文件 | 职责 |
 |---|---|
-| `storage.py` | Storage 统一契约与 StorageProducer：MemoryUnit 领域操作、能力发现、底层端口与检索适配入口 |
+| `storage.py` | Storage 统一契约与 StorageProducer：MemoryUnit 领域操作（`add`/`update` 带 `IndexWriteMode` 写入范围参数、`delete` 带 `IndexRemoveMode` 软/硬删除参数）、能力发现、底层端口与检索适配入口。原文不在此列——它不是存储领域概念，由构建层注入独立 `KVStore` 自行读写 |
 | `security.py` | StorageSecurity 通用授权与 StoreSecurity 数据保护能力标识 |
 | `base.py` | BaseStore 基类：所有存储后端的自描述契约（store_type / health） |
-| `types.py` | 存储层数据类型：KVMemoryListResult/VectorRecord/Document/Node/Edge/FusionRecord/FileStat 等 |
+| `types.py` | 存储层数据类型：`IndexWriteMode`/`IndexRemoveMode` 写删语义枚举、KVMemoryListResult/VectorRecord/Document/Node/Edge/FusionRecord/FileStat 等 |
 | `kv.py` | KVStore 接口：键值存储，统一 CRUD + MemoryUnit 列表查询 + 范围枚举 |
 | `vector.py` | VectorStore 接口：向量存储，统一 CRUD + ANN 检索 |
 | `graph.py` | GraphStore 接口：属性图存储，节点与边统一 CRUD + 邻域遍历 |
@@ -103,7 +103,7 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
 - 可配置真源（KVStore）
 - 多后端索引存储（Vector/Fulltext/Graph/Fusion）
 - 文件系统存储（FSStore）
-- MemoryUnit 领域 CRUD/list、能力发现和底层 Store 端口统一暴露
+- MemoryUnit 领域 CRUD/list、原文读写、能力发现和底层 Store 端口统一暴露
 - Storage 数据面授权与 Store 数据保护能力边界
 - 统一 CRUD 动词
 - scope 原生隔离

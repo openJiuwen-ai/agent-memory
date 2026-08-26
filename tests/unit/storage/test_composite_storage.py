@@ -6,7 +6,11 @@ from typing import Any
 
 import pytest
 
-from jiuwen_memory.common.errors import PermissionDeniedError, UnsupportedStorageCapabilityError, ValidationError
+from jiuwen_memory.common.errors import (
+    PermissionDeniedError,
+    UnsupportedStorageCapabilityError,
+    ValidationError,
+)
 from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment, memory_key
 from jiuwen_memory.config import AssemblyContext
 from jiuwen_memory.storage.bootstrap import register_backends
@@ -14,7 +18,7 @@ from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from jiuwen_memory.storage.security import StorageAccessContext, StorageAction, StorageSecurity
 from jiuwen_memory.storage.storage import StorageCapability, StorageProducer
 from jiuwen_memory.storage.storage_impl import CompositeStorage
-from jiuwen_memory.storage.types import KVMemoryListResult
+from jiuwen_memory.storage.types import IndexRemoveMode, KVMemoryListResult
 
 pytestmark = pytest.mark.unit
 
@@ -84,6 +88,22 @@ def test_memory_unit_crud_and_list_preserve_scope_and_count() -> None:
     assert storage.get(scope, ["u1"])[0].content == "updated"
 
     storage.delete(scope, ["u1"])
+    assert storage.get(scope, ["u1"]) == []
+
+
+def test_soft_delete_is_noop_and_body_stays_readable() -> None:
+    """SOFT 软删除：无检索索引可移除，CompositeStorage 空操作，本体 get/list 仍可读。"""
+    scope = Scope(org="org", space="space", user="user")
+    storage = CompositeStorage(kv=RecordingKVStore())
+    unit = _unit(scope, "u1", "first")
+    storage.add(scope, [unit])
+
+    storage.delete(scope, ["u1"], mode=IndexRemoveMode.SOFT)
+
+    assert storage.get(scope, ["u1"]) == [unit]
+    assert storage.list(scope).count == 1
+
+    storage.delete(scope, ["u1"], mode=IndexRemoveMode.HARD)
     assert storage.get(scope, ["u1"]) == []
 
 

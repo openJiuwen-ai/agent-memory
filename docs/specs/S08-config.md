@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-08-21 |
-| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 装配开关见 `docs/features/construction/F07-entity-schema-extension.md` |
+| 最近一次修订日期 | 2026-08-26 |
+| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 装配开关见 `docs/features/construction/F08-entity-schema-extension.md` |
 
 ## 范围 / 边界
 

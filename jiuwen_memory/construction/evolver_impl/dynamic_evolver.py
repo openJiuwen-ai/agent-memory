@@ -37,7 +37,10 @@ from jiuwen_memory.construction.associator import AssociatorProducer
 from jiuwen_memory.construction.base import ExtractContext
 from jiuwen_memory.construction.dedup import DedupProducer
 from jiuwen_memory.construction.evolver import EvolveResult, EvolverProducer
-from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import OrchestratingEvolver
+from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
+    OrchestratingEvolver,
+    _resolve_message_store,
+)
 from jiuwen_memory.construction.extractor import ExtractorProducer
 from jiuwen_memory.construction.index_builder import IndexBuilderProducer
 from jiuwen_memory.construction.prompt_registry import (
@@ -271,7 +274,6 @@ class DynamicEvolver(OrchestratingEvolver):
             decision in {DedupDecision.UPDATE, DedupDecision.SUPERSEDE}
             and existing is None
         ):
-            self._storage.add(candidate.scope, [candidate])
             self._index.build([candidate])
             result.created_ids.append(candidate.id)
             return 0
@@ -297,7 +299,6 @@ class DynamicEvolver(OrchestratingEvolver):
                     "dedup_merged_from": candidate.id,
                 }
             )
-            self._storage.update(existing.scope, [existing])
             self._index.update([existing])
             result.updated_ids.append(existing.id)
             return 0
@@ -312,11 +313,9 @@ class DynamicEvolver(OrchestratingEvolver):
                 "dedup_superseded": existing.id,
             }
         )
-        self._storage.add(candidate.scope, [candidate])
         self._index.build([candidate])
         existing.lifecycle = LifecycleState.SUPERSEDED
         existing.temporal.t_invalid = datetime.now(timezone.utc)
-        self._storage.update(existing.scope, [existing])
         self._index.update([existing])
         result.created_ids.append(candidate.id)
         result.superseded_ids.append(existing.id)
@@ -391,6 +390,7 @@ def _build(config):
         associator=AssociatorProducer.dep(config, default="keyword"),
         index_builder=IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
         storage=StorageProducer.resolve(config),
+        message_store=_resolve_message_store(config),
         dedup=DedupProducer.dep(config, default=dr_default),
         llm=LlmProducer.dep(config, default="echo"),
         layer_annotator=_opt_annotator(),

@@ -10,20 +10,25 @@ from __future__ import annotations
 
 import copy
 
-from jiuwen_memory.common.llm.base import LlmProducer
+from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import MemoryUnit
-from jiuwen_memory.construction.abstractor import AbstractorProducer
-from jiuwen_memory.construction.associator import AssociatorProducer
+from jiuwen_memory.construction.abstractor import Abstractor, AbstractorProducer
+from jiuwen_memory.construction.associator import Associator, AssociatorProducer
 from jiuwen_memory.construction.common import merge_unit_tags
-from jiuwen_memory.construction.dedup import DedupProducer
+from jiuwen_memory.construction.dedup import Dedup, DedupProducer
 from jiuwen_memory.construction.evolver import EvolveResult, EvolverProducer
-from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import OrchestratingEvolver
-from jiuwen_memory.construction.extractor import ExtractorProducer
-from jiuwen_memory.construction.index_builder import IndexBuilderProducer
-from jiuwen_memory.construction.layer_annotator import LayerAnnotatorProducer
+from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
+    OrchestratingEvolver,
+    _resolve_message_store,
+)
+from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
+from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
+from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
 from jiuwen_memory.construction.prompt_strategy import copy_consolidation_prompts
-from jiuwen_memory.storage.storage import StorageProducer
+from jiuwen_memory.storage.kv import KVStore
+from jiuwen_memory.storage.storage import Storage, StorageProducer
+from jiuwen_memory.storage.types import IndexWriteMode
 
 logger = get_logger(__name__)
 
@@ -31,10 +36,41 @@ logger = get_logger(__name__)
 class SchemaOrchestratingEvolver(OrchestratingEvolver):
     """Persist source evidence first, then add accepted Schema property units."""
 
+    def __init__(
+        self,
+        extractor: Extractor,
+        abstractor: Abstractor,
+        associator: Associator,
+        index_builder: IndexBuilder,
+        storage: Storage,
+        message_store: KVStore,
+        dedup: Dedup,
+        llm: LLM,
+        layer_annotator: LayerAnnotator | None = None,
+        *,
+        dedup_medium_similarity: float = 0.7,
+        dedup_high_similarity: float = 0.9,
+    ) -> None:
+        super().__init__(
+            extractor=extractor,
+            abstractor=abstractor,
+            associator=associator,
+            index_builder=index_builder,
+            storage=storage,
+            message_store=message_store,
+            dedup=dedup,
+            llm=llm,
+            layer_annotator=layer_annotator,
+            dedup_medium_similarity=dedup_medium_similarity,
+            dedup_high_similarity=dedup_high_similarity,
+        )
+        # Official IndexBuilder owns all writes. Storage is retained for source reads only.
+        self._source_storage = storage
+
     def _persist_source_evidence(self, units: list[MemoryUnit]) -> list[str]:
         created: list[str] = []
         for unit in units:
-            if self._storage.get(unit.scope, [unit.id]):
+            if self._source_storage.get(unit.scope, [unit.id]):
                 continue
             source = copy.deepcopy(unit)
             source.system_metadata = dict(source.system_metadata)
@@ -78,7 +114,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver):
             if not terms:
                 continue
             input_source = source_by_id[source_id]
-            stored = self._storage.get(input_source.scope, [source_id])
+            stored = self._source_storage.get(input_source.scope, [source_id])
             if not stored:
                 logger.warning(
                     "SchemaOrchestratingEvolver: persisted source %s is missing during writeback",
@@ -87,8 +123,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver):
                 continue
             source = copy.deepcopy(stored[0])
             source.entities = list(dict.fromkeys([*source.entities, *terms]))
-            self._storage.update(source.scope, [source])
-            self._index.update([source])
+            self._index.update([source], mode=IndexWriteMode.ALL)
             updated_ids.append(source.id)
         return updated_ids
 
@@ -149,12 +184,14 @@ def _build(config):
     vector_on = config.get("vector_enabled", True)
     index_default = "hybrid" if vector_on else "fulltext"
     dedup_default = "vector" if vector_on else "keyword"
+    storage = StorageProducer.resolve(config)
     return SchemaOrchestratingEvolver(
         extractor=ExtractorProducer.dep(config, default="entity_schema"),
         abstractor=AbstractorProducer.dep(config, default="concat"),
         associator=AssociatorProducer.dep(config, default="keyword"),
         index_builder=IndexBuilderProducer.dep(config, "index_builder", default=index_default),
-        storage=StorageProducer.resolve(config),
+        storage=storage,
+        message_store=_resolve_message_store(config),
         dedup=DedupProducer.dep(config, default=dedup_default),
         llm=LlmProducer.dep(config, default="echo"),
         layer_annotator=_optional_layer_annotator(config),
