@@ -21,7 +21,6 @@ from pydantic import BaseModel, ConfigDict, Field
 # 模块级 manager 引用 — 由 register_mem_meta_endpoints() 注入
 # ============================================================
 _manager = None
-_background_tasks: set = set()
 
 # ============================================================
 # APIRouter
