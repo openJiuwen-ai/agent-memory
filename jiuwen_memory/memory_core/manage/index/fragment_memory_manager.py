@@ -70,7 +70,7 @@ class FragmentMemoryManager(BaseMemoryManager):
         for fmt in ("%Y-%m-%d %H-%M-%S", "%Y-%m-%d %H:%M:%S"):
             try:
                 return datetime.strptime(ts, fmt).replace(
-                tzinfo=datetime.now(timezone.utc).astimezone().tzinfo)
+                    tzinfo=datetime.now(timezone.utc).astimezone().tzinfo)
             except ValueError:
                 continue
         try:

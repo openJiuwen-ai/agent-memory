@@ -165,9 +165,9 @@ class MemMetaManager:
     async def init_db(self) -> None:
         """初始化数据库，建 2 张表（异步，阻塞至建表完成）。
 
-        使用异步引擎建表，确保 server 开始服务时表已存在，
-        避免外部请求先于建表到达导致 UndefinedTableError。
-        建表失败时记录 ERROR 并跳过 cleanup。
+        使用异步引擎建表，确保 server 开始服务时表已存在。
+        建表失败时记录 ERROR 并跳过 cleanup，但不阻止 server 启动
+        （mem_meta 表仅影响治理层，不影响核心记忆功能）。
         """
         if self.db_store is None:
             return

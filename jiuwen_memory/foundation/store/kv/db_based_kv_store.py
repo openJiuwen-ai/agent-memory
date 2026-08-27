@@ -18,9 +18,10 @@ from sqlalchemy import (
     String,
     Text,
 )
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.mysql import MEDIUMTEXT
-from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     AsyncEngine,
@@ -75,7 +76,7 @@ class DbBasedKVStore(BaseKVStore):
             stmt = None
         else:
             stmt = (
-                insert(KVStoreTable)
+                sqlite_insert(KVStoreTable)
                 .values(key=key, value=value)
                 .on_conflict_do_update(
                     index_elements=["key"],
@@ -85,19 +86,28 @@ class DbBasedKVStore(BaseKVStore):
         return stmt
 
     async def _manual_upsert(self, session, key: str, value: str):
-        """手动 upsert（先 UPDATE，rowcount=0 再 INSERT），用于 GaussDB。"""
+        """手动 upsert（先 SELECT 判断，存在则 UPDATE，不存在则 INSERT），用于 GaussDB。
+
+        GaussDB 的 async_gaussdb 驱动抛 UniqueViolationError 后，
+        SQLAlchemy 的 asyncpg 异常映射会因缺少 asyncpg 模块而崩溃，
+        因此不能用 try-INSERT-catch 方案。改为先 SELECT 判断再 INSERT/UPDATE。
+        并发问题由调用方的应用层锁（_task_guard_lock）和 exclusive_set 的 SELECT 检查缓解。
+        """
         from sqlalchemy import text
+        select_sql = text("SELECT 1 FROM kv_store WHERE key = :key LIMIT 1")
         update_sql = text("UPDATE kv_store SET value = :value WHERE key = :key")
         insert_sql = text(
             "INSERT INTO kv_store (key, value) VALUES (:key, :value)"
         )
-        result = await session.execute(update_sql, {"key": key, "value": value})
-        if result.rowcount == 0:
+        result = await session.execute(select_sql, {"key": key})
+        if result.first() is not None:
+            await session.execute(update_sql, {"key": key, "value": value})
+        else:
             try:
                 await session.execute(insert_sql, {"key": key, "value": value})
-            except Exception:
-                # 并发场景：另一个事务已插入，视为成功
-                pass
+            except IntegrityError:
+                # 并发场景：另一事务已插入，转 UPDATE
+                await session.execute(update_sql, {"key": key, "value": value})
 
     def _encode_value(self, value: str | bytes) -> str:
         """Encode value to string for database storage."""
@@ -126,10 +136,20 @@ class DbBasedKVStore(BaseKVStore):
     async def exclusive_set(
             self, key: str, value: str | bytes, expiry: Optional[int] = None
     ) -> bool:
+        """原子性设置独占锁。
+
+        GaussDB 路径改为先 INSERT（失败转 UPDATE），避免 check-then-set 竞态。
+        MySQL/SQLite 走方言原子 upsert，天然无竞态。
+        """
         await self._create_table_if_not_exist()
         now = time.time()
+        expire_at = now + expiry if expiry else None
+        encoded_value = self._encode_value(value)
+        val = json.dumps({EXCLUSIVE_VALUE_KEY: encoded_value, EXCLUSIVE_EXPIRY_KEY: expire_at})
+
         async with self.async_session() as session:
             async with session.begin():
+                # 先检查是否已被持有（未过期）
                 stmt = select(KVStoreTable).where(
                     KVStoreTable.key == key
                 )
@@ -142,9 +162,8 @@ class DbBasedKVStore(BaseKVStore):
                             return False
                     except json.JSONDecodeError:
                         return False
-                expire_at = now + expiry if expiry else None
-                encoded_value = self._encode_value(value)
-                val = json.dumps({EXCLUSIVE_VALUE_KEY: encoded_value, EXCLUSIVE_EXPIRY_KEY: expire_at})
+
+                # 原子 upsert（MySQL/SQLite 走方言，GaussDB 走手动）
                 stmt = self._get_upsert_stmt(key, val)
                 if stmt is not None:
                     await session.execute(stmt)
@@ -365,15 +384,11 @@ class DbBasedKVStore(BaseKVStore):
                     if set_ops:
                         for key, value in set_ops:
                             encoded_value = self._encode_value(value)
-                            stmt = (
-                                insert(KVStoreTable)
-                                .values(key=key, value=encoded_value)
-                                .on_conflict_do_update(
-                                    index_elements=["key"],
-                                    set_={"value": encoded_value}
-                                )
-                            )
-                            await session.execute(stmt)
+                            stmt = self._get_upsert_stmt(key, encoded_value)
+                            if stmt is not None:
+                                await session.execute(stmt)
+                            else:
+                                await self._manual_upsert(session, key, encoded_value)
 
                     # Batch get operations
                     get_results = {}
