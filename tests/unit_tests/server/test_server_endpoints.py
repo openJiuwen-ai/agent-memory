@@ -167,11 +167,11 @@ async def test_missing_messages_rejected(client, mock_engine):
 
 
 @pytest.mark.asyncio
-async def test_empty_messages_list_accepted(client, mock_engine):
-    """空 messages 列表是合法 list，通过校验（是否真正写入由 engine 决定）。"""
-    mock_engine.add_messages.return_value = None
+async def test_empty_messages_list_rejected(client, mock_engine):
+    """空 messages 列表无有效消息，返回 422。"""
     r = await client.post("/add_messages/", json={"messages": []})
-    assert r.status_code == 200
+    assert r.status_code == 422
+    mock_engine.add_messages.assert_not_called()
 
 
 @pytest.mark.asyncio
