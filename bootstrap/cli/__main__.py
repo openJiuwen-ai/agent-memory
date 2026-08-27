@@ -3,7 +3,7 @@
 A §15 surface (protocol adapter): it parses argv into a ``(verb, payload)`` and
 hands it to an :class:`~client.EngineClient`, reusing the same dispatch the HTTP
 surface uses. No business logic lives here. The verb + flag vocabulary tracks
-**Mem0's CLI** (see ``DESIGN.md`` § "Mem0 compatibility").
+common memory-layer CLI conventions (see ``DESIGN.md`` § "CLI compatibility").
 
 通过启动脚本运行，以便把仓库根与 ``bootstrap/core`` 放入 ``PYTHONPATH``，
 并确保 ``import server`` 解析到共享应用核 ``bootstrap/core/server.py``::
@@ -12,7 +12,7 @@ surface uses. No business logic lives here. The verb + flag vocabulary tracks
 
 Two backends, chosen by ``--server`` / ``--base-url`` (else in-process):
 
-    scripts/run-cli.sh add "buy milk" -u alice                 # Mem0-style
+    scripts/run-cli.sh add "buy milk" -u alice
     scripts/run-cli.sh search "milk" -u alice -k 3 -o text
     scripts/run-cli.sh --server http://127.0.0.1:8080 list -u alice
 """
@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--server", "--base-url", dest="server",
         metavar="URL", default=os.environ.get("AGENT_MEMORY_SERVER"),
-        help="drive a running server over HTTP (Mem0 --base-url; default: in-process)",
+        help="drive a running server over HTTP (default: in-process)",
     )
     parser.add_argument(
         "--config", action="append", default=[], metavar="PATH",
@@ -60,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
         sp = sub.add_parser(name, help=cmd.help)
         cmd.add_arguments(sp)
 
-    for alias in ("health", "status"):  # `status` is the Mem0 spelling
+    for alias in ("health", "status"):
         hp = sub.add_parser(alias, help="liveness probe (GET /healthz)")
         commands.add_output_args(hp)
 

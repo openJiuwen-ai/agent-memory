@@ -28,9 +28,9 @@ def test_collapses_whitespace() -> None:
 
 
 def test_clean_query_unchanged() -> None:
-    result = sanitize_query("如何使用 mem0 的图记忆")
+    result = sanitize_query("如何使用 记忆系统 的图记忆")
 
-    assert result == "如何使用 mem0 的图记忆", "干净 query 不应被改写"
+    assert result == "如何使用 记忆系统 的图记忆", "干净 query 不应被改写"
 
 
 def test_code_fence_kept_by_default() -> None:
