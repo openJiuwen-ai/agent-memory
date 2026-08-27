@@ -122,8 +122,10 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 4. Retriever 内部 UnitReader 点读后必须复核 lifecycle、valid-time、event-time 和完整
    FilterExpr；当前态也须按当前 UTC 时间检查 `[t_valid, t_invalid)`。
 5. `extensions` 字段透传配置：RetrievalQuery.extensions → ParsedQuery.extensions，供自定义 Recaller 按约定 key 读取，内核核心不解释。
-6. 显式空 `channels` 无效；None 表示使用全部已配置通道。部分通道失败返回 items 与
-   `ChannelError`，全部选中通道失败抛 `StorageRetrievalError`。
+6. 显式空 `channels` 无效；`RetrievalQuery.channels=None` 时优先使用
+   `QueryParser` 建议的通道，parser 未给出建议时再由 Storage 使用已配置入口。
+   部分通道失败返回 items 与 `ChannelError`，全部选中通道失败抛
+   `StorageRetrievalError`。
 7. Fuser 接受物化候选并保持 MemoryUnit 与 evidence；读取前只允许对 id 去重，不得合并
    多通道候选。Fuser 不执行 Reranker。
 8. `PipelineRetriever` 的生产装配必须通过 `StorageProducer` 获取 Storage；默认

@@ -22,6 +22,7 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
 | `fulltext.py` | FulltextStore 接口：全文倒排索引存储，统一 CRUD + 关键词检索（BM25） |
 | `fusion.py` | FusionStore 接口：融合存储（向量+倒排+正排一体） |
 | `fs.py` | FSStore 接口：文件系统存储（原始负载/二进制资产） |
+| `entity_store.py` | EntityStore 独立接口：以 `space_id` routing + actor filter 隔离的实体反向索引；不属于 StorageCapability 六端口 |
 | `_support.py` | 后端实现共用：异常归一（`wrap_backend`）、scope 派生（`scope_dims`/`scope_segments`）、SSL 配置读取（`read_ssl_config`）；`SslConfig` 与 scheme 校验复用 `common._support` |
 | `_pg.py` | PostgreSQL 后端共享的惰性连接池、schema 工具与 FilterExpr SQL 编译；`dsn` 支持 ConfigSource 晚绑定 |
 | `kv_impl/` | KVStore 实现目录（memory / sqlite / redis / encrypted / postgres）及共用的 `memory_list.py` 兼容逻辑；连接型后端支持 `kv_store.*` 晚绑定 |
@@ -30,6 +31,7 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
 | `fulltext_impl/` | FulltextStore 实现目录（memory / elasticsearch）；`hosts` 晚绑定 |
 | `fusion_impl/` | FusionStore 实现目录（memory / milvus_graph）；`uri`/`working_dir` 晚绑定 |
 | `fs_impl/` | FSStore 实现目录（local）；`root` 晚绑定 |
+| `entity_impl/` | EntityStore 实现目录（elasticsearch）；独立装配，不经 Storage capability 路由 |
 | `storage_impl/` | Storage 实现目录；`CompositeStorage` 以 `composite` target 自注册 |
 | `bootstrap.py` | 统一触发六类 Store 后端与 Storage 实现注册 |
 

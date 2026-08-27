@@ -1,0 +1,699 @@
+# Storage 层 API
+
+Storage 层为上层提供两级存储抽象：
+
+- `Storage`：面向 `MemoryUnit` 的统一领域接口，同时负责能力发现、授权和检索适配。
+- `BaseStore` 及其子接口：面向 KV、向量、全文、图、融合和文件后端的六类标准端口，以及独立的实体反向索引端口。
+
+本文是当前抽象接口的 API 参考，不规定某个具体后端的内部实现。以下源码是最终依据：
+
+- [`storage.py`](../../../jiuwen_memory/storage/storage.py)
+- [`base.py`](../../../jiuwen_memory/storage/base.py)
+- [`security.py`](../../../jiuwen_memory/storage/security.py)
+- [`kv.py`](../../../jiuwen_memory/storage/kv.py)
+- [`vector.py`](../../../jiuwen_memory/storage/vector.py)
+- [`fulltext.py`](../../../jiuwen_memory/storage/fulltext.py)
+- [`graph.py`](../../../jiuwen_memory/storage/graph.py)
+- [`fusion.py`](../../../jiuwen_memory/storage/fusion.py)
+- [`fs.py`](../../../jiuwen_memory/storage/fs.py)
+- [`entity_store.py`](../../../jiuwen_memory/storage/entity_store.py)
+- [`types.py`](../../../jiuwen_memory/storage/types.py)
+
+## 1. 通用约定
+
+### 1.1 Scope 隔离
+
+`Storage` 和六类标准 Store 的数据操作都显式接收 `scope: Scope`。`Scope` 由 `org`、`space`、`user`、`agent`、`session` 五个维度组成，存储实现必须在该范围内完成写入、查询和删除。
+
+`scope` 是独立隔离轴，不应塞入 `metadata`、`filters` 或各种 Record/Query 结构中。同一个 ID 可以在不同 Scope 内独立存在。
+
+`EntityStore` 是唯一例外：它使用 `space_id` routing 和 `EntityStoreFilters.actor_id` 隔离，不使用五段 Scope 作为方法首参。该特殊性见本文“EntityStore API”。
+
+```python
+from jiuwen_memory.common.type_def import Scope
+
+scope = Scope(
+    org="org-1",
+    space="space-1",
+    user="user-1",
+    agent="agent-1",
+    session="session-1",
+)
+```
+
+### 1.2 CRUD 语义
+
+| 方法 | 语义 | 记录已存在/不存在时 |
+|---|---|---|
+| `insert` | 新建记录 | 已存在时抛 `ConflictError` |
+| `update` | 替换或更新已有记录 | 不存在时抛 `NotFoundError` |
+| `delete` | 删除记录 | 幂等，不存在也不报错 |
+| `get` | 按 ID/key 点查 | 单条缺失抛 `NotFoundError`；检索型 Store 的批量点查省略缺失项 |
+
+批量方法的接口层不承诺事务原子性，需要原子语义时应查阅具体后端的能力说明。
+
+### 1.3 通用异常
+
+| 异常 | 含义 |
+|---|---|
+| `ConflictError` | 新建的 ID/key 在当前 Scope 内已存在 |
+| `NotFoundError` | 更新或点查的 ID/key 不存在 |
+| `ValidationError` | 参数、Scope 或数据结构不满足要求 |
+| `PermissionDeniedError` | `StorageSecurity` 拒绝当前操作 |
+| `UnsupportedStorageCapabilityError` | 访问了 Storage 未声明的端口能力 |
+| `BackendError` | 存储连接、IO、超时或远端服务等非预期错误 |
+| `HealthCheckError` | `health()` 检查失败 |
+| `StorageRetrievalError` | 所有选中的检索入口均失败 |
+
+## 2. Storage 统一接口
+
+```python
+from jiuwen_memory.storage.storage import Storage
+```
+
+`Storage` 是 Engine、Construction 和 Retrieval 共享的存储入口。它是面向接口的功能约定，不等同于“只写真源”：具体实现可以只保存 MemoryUnit 本体，也可以同时完成正排、向量、全文或图索引的写入。
+
+### 2.1 能力发现与端口访问
+
+`StorageCapability` 包含六种标准能力：`KV`、`VECTOR`、`FULLTEXT`、`GRAPH`、`FUSION`、`FS`。
+
+| API | 返回值 | 说明 |
+|---|---|---|
+| `capabilities()` | `frozenset[StorageCapability]` | 返回当前 Storage 实例声明的能力集 |
+| `has_kv()` / `has_vector()` / `has_fulltext()` | `bool` | 判断默认 KV/向量/全文能力是否存在 |
+| `has_graph()` / `has_fusion()` / `has_fs()` | `bool` | 判断默认图/融合/文件能力是否存在 |
+| `has_*_port(name="default")` | `bool` | 判断具名端口是否存在 |
+| `kv` / `vector` / `fulltext` / `graph` / `fusion` / `fs` | 对应 Store | 访问默认端口 |
+| `*_port(name="default")` | 对应 Store | 访问指定名称的端口 |
+
+访问端口前应先用 `has_*()` 或 `has_*_port()` 判断能力。未声明的端口会抛出 `UnsupportedStorageCapabilityError`。
+
+```python
+if storage.has_vector_port("default"):
+    vector_store = storage.vector_port("default")
+```
+
+### 2.2 MemoryUnit 写入与删除
+
+#### `add`
+
+```python
+storage.add(
+    scope: Scope,
+    units: list[MemoryUnit],
+    *,
+    mode: IndexWriteMode = IndexWriteMode.ALL,
+    access: StorageAccessContext | None = None,
+) -> None
+```
+
+在 `scope` 内新建一批 MemoryUnit。`unit.scope` 应与显式传入的 `scope` 一致。重复 ID 的处理遵循具体 Storage 实现对新建语义的落地，标准存储端口使用 `ConflictError` 表示冲突。
+
+#### `update`
+
+```python
+storage.update(
+    scope: Scope,
+    units: list[MemoryUnit],
+    *,
+    mode: IndexWriteMode = IndexWriteMode.ALL,
+    access: StorageAccessContext | None = None,
+) -> None
+```
+
+更新一批已存在的 MemoryUnit。无法将本体和检索索引拆分写入的实现，在 `FORWARD_ONLY` 模式下仍必须至少保证本体已更新。
+
+#### `delete`
+
+```python
+storage.delete(
+    scope: Scope,
+    unit_ids: list[str],
+    *,
+    mode: IndexRemoveMode = IndexRemoveMode.HARD,
+    access: StorageAccessContext | None = None,
+) -> None
+```
+
+在 `scope` 内删除指定记忆，删除操作幂等。
+
+#### 写入范围 `IndexWriteMode`
+
+| 枚举值 | 语义 |
+|---|---|
+| `ALL` | 请求写入记忆本体和实现支持的全部检索索引 |
+| `FORWARD_ONLY` | 只写记忆本体，不主动更新检索索引 |
+| `RETRIEVAL_ONLY` | 本体已存在，只写检索索引；无检索能力的实现可为空操作 |
+
+`mode` 表达调用方要求的逻辑写入范围，不代表底层一定有两个物理存储。例如，`CompositeStorage` 不负责索引投影，而一体化 Storage 可以在一次 `add` 中完成多种写入。
+
+#### 删除范围 `IndexRemoveMode`
+
+| 枚举值 | 语义 |
+|---|---|
+| `SOFT` | 只移出检索索引，`get`/`list` 仍可读取记忆本体；无检索能力的实现可为空操作 |
+| `HARD` | 物理删除检索索引和记忆本体 |
+
+### 2.3 MemoryUnit 读取与列表
+
+#### `get`
+
+```python
+storage.get(
+    scope: Scope,
+    unit_ids: list[str],
+    *,
+    access: StorageAccessContext | None = None,
+) -> list[MemoryUnit]
+```
+
+在 `scope` 内批量点读 MemoryUnit。返回值只包含实际读到的记忆；调用方如果需要与 `unit_ids` 一一对齐，应自行按 `unit.id` 建立映射。
+
+#### `list`
+
+```python
+storage.list(
+    scope: Scope,
+    *,
+    offset: int = 0,
+    limit: int = 100,
+    memory_types: list[str] | None = None,
+    filters: FilterExpr | None = None,
+    extensions: dict[str, str] | None = None,
+    access: StorageAccessContext | None = None,
+) -> MemoryListResult
+```
+
+| 参数 | 说明 |
+|---|---|
+| `offset` | 分页起始位置 |
+| `limit` | 本页最大条数 |
+| `memory_types` | 记忆类型白名单；`None` 表示不按该字段过滤 |
+| `filters` | Scope 之外的 `FilterExpr` 元数据谓词 |
+| `extensions` | 由具体实现或业务约定解释的透传参数 |
+| `access` | 可选授权上下文 |
+
+`MemoryListResult.items` 是当前页，`MemoryListResult.count` 是分页前的匹配总数。标准语义是先过滤、再计数和分页。
+
+### 2.4 检索适配 API
+
+`Storage` 以三种粒度向 Retrieval 层暴露检索能力：
+
+| API | 返回值 | 责任边界 |
+|---|---|---|
+| `recall(scope, query, *, channels, recall_limit, access=None)` | `RecallResult[ScoredUnit]` | 只返回未物化的 `unit_id` 候选、分数和通道证据 |
+| `recall_and_get(scope, query, *, channels, recall_limit, access=None)` | `RecallResult[ScoredMemoryUnit]` | 召回并读取完整 `MemoryUnit` |
+| `retrieve(scope, query, fuser, *, channels, recall_limit, rank_limit, access=None)` | `RankedStorageResult` | 在 Storage 内完成召回、物化和 Fuser 排序 |
+
+共享参数：
+
+- `query: ParsedQuery`：由 Retrieval 层解析后的结构化查询。
+- `channels`：需要使用的逻辑召回通道。直接调用 Storage 时，`None` 的展开方式由具体 Storage 和其装配的召回入口决定；业务调用优先使用 `Retriever.retrieve()`。
+- `recall_limit`：每个物理召回入口的候选上限。
+- `rank_limit`：Storage 内融合后的候选上限。
+- `fuser: CandidateFuser`：只要实现 `fuse(query, candidates)` 即可。
+
+`preferred_retrieval_pipeline() -> RetrievalPipeline` 返回 Storage 实例的稳定首选路径：
+
+| 枚举值 | Retriever 的调用方式 |
+|---|---|
+| `RECALL_GET_RANK` | `recall` → 点读 → `Fuser` |
+| `RECALL_AND_GET_RANK` | `recall_and_get` → `Fuser` |
+| `RETRIEVE` | 直接调用 `Storage.retrieve` |
+
+`RecallResult` 支持部分成功：`batches` 保留每个物理召回入口的候选，`errors` 记录失败入口的 `ChannelError`。
+
+### 2.5 其他统一 API
+
+| API | 说明 |
+|---|---|
+| `security` | 返回当前 Storage 的 `StorageSecurity` |
+| `scopes() -> list[Scope]` | 枚举已存在 MemoryUnit 数据的 Scope；顺序由实现定义 |
+| `health() -> None` | 检查 Storage、安全组件及所属后端；健康时返回 `None` |
+
+## 3. BaseStore 基类
+
+```python
+from jiuwen_memory.storage.base import BaseStore, StoreType
+```
+
+所有底层 Store 都继承 `BaseStore`，并提供下列 API：
+
+| API | 类型 | 说明 |
+|---|---|---|
+| `security` | 属性 | 返回 `StoreSecurity`；默认为未启用保护的 passthrough 实现 |
+| `store_type()` | 抽象方法 | 返回 `StoreType` |
+| `health()` | 抽象方法 | 健康时返回 `None`，否则抛 `HealthCheckError` |
+
+`StoreType` 包含 `KV`、`FULLTEXT`、`VECTOR`、`GRAPH`、`FUSION`、`FS`。
+
+## 4. KVStore API
+
+```python
+from jiuwen_memory.storage.kv import KVStore
+```
+
+| API | 返回值 | 说明 |
+|---|---|---|
+| `insert(scope, key, value, ttl=0.0)` | `None` | 新建二进制值；`ttl` 单位为秒，`0` 表示永不过期 |
+| `update(scope, key, value, ttl=0.0)` | `None` | 覆写已有 key |
+| `delete(scope, key)` | `None` | 幂等删除 key |
+| `get(scope, key)` | `bytes` | 读取单个 key；缺失抛 `NotFoundError` |
+| `mget(scope, keys)` | `list[bytes]` | 返回顺序与 `keys` 一一对应，不去重；任一 key 缺失即抛 `NotFoundError` |
+| `exists(scope, key)` | `bool` | 判断 key 是否存在 |
+| `scan(scope, prefix="")` | `list[tuple[str, bytes]]` | 扫描 Scope 内未过期的原始键值；可按前缀过滤，顺序未定义 |
+| `list(scope, *, offset=0, limit=100, memory_types=None, filters=None, extensions=None)` | `KVMemoryListResult` | 查询 `/memory/` 命名空间中的 MemoryUnit 原始条目 |
+| `scopes()` | `list[Scope]` | 枚举已使用的 Scope，顺序未定义 |
+
+`KVMemoryListResult.entries` 为当前页 `(key, value)`，`count` 为分页前总数。
+
+## 5. VectorStore API
+
+```python
+from jiuwen_memory.storage.vector import VectorStore
+from jiuwen_memory.storage.types import VectorQuery, VectorRecord
+```
+
+| API | 返回值 | 说明 |
+|---|---|---|
+| `insert(scope, records)` | `None` | 新建 `VectorRecord` 列表 |
+| `update(scope, records)` | `None` | 替换已有向量行 |
+| `delete(scope, ids)` | `None` | 幂等删除向量行 |
+| `get(scope, ids)` | `list[VectorRecord]` | 批量点查，缺失 ID 省略 |
+| `search(scope, query)` | `list[ScoredID]` | 在 Scope 内做 ANN 检索 |
+| `recall(scope, query, output_fields=None)` | `list[ScoredHit]` | 可选单请求回带 payload 的 ANN 能力；默认抛 `NotImplementedError` |
+| `score_higher_is_better()` | `bool` | 返回分数方向；默认 `True` |
+
+`VectorRecord` 由 `id`、`vector`、`metadata` 组成。`VectorQuery` 由 `vector`、`top_k`、`filters`、`return_metadata` 组成。
+
+`recall()` 是可选优化 API，目前 `output_fields` 只识别 `"metadata"`。后端未覆盖该方法时，调用方应回退到 `search()` + `get()`。距离型后端如果“分越小越相关”，必须覆盖 `score_higher_is_better()` 返回 `False`。
+
+## 6. FulltextStore API
+
+```python
+from jiuwen_memory.storage.fulltext import FulltextStore
+from jiuwen_memory.storage.types import Document, TextQuery
+```
+
+| API | 返回值 | 说明 |
+|---|---|---|
+| `insert(scope, docs)` | `None` | 新建 `Document` 列表 |
+| `update(scope, docs)` | `None` | 重建已有文档索引 |
+| `delete(scope, ids)` | `None` | 幂等删除文档 |
+| `get(scope, ids)` | `list[Document]` | 批量点查，缺失 ID 省略 |
+| `search(scope, query)` | `list[ScoredID]` | 执行 BM25 等关键词检索，返回 top-k |
+
+`Document` 由 `id`、`text`、`metadata` 组成。`TextQuery` 由 `text`、`top_k`、`filters` 组成。
+
+## 7. GraphStore API
+
+```python
+from jiuwen_memory.storage.graph import GraphStore
+from jiuwen_memory.storage.types import Edge, GraphQuery, Node
+```
+
+| API | 返回值 | 说明 |
+|---|---|---|
+| `seed_ids(scope, tokens)` | `list[str]` | 根据词项定位图遍历的种子节点；匹配策略由后端定义 |
+| `insert(scope, nodes=None, edges=None)` | `None` | 新建节点和/或边 |
+| `update(scope, nodes=None, edges=None)` | `None` | 更新已有节点和/或边 |
+| `delete(scope, node_ids=None, edge_ids=None)` | `None` | 幂等删除节点和/或边；删节点时连带关联边 |
+| `get(scope, node_ids)` | `list[Node]` | 批量点查节点，缺失 ID 省略 |
+| `search(scope, query)` | `list[Node]` | 从 `start_id` 开始执行多跳遍历 |
+
+`Node` 由 `id`、`label`、`properties` 组成；`Edge` 由 `id`、`source`、`target`、`relation`、`properties` 组成。`GraphQuery` 提供 `start_id`、`relation`、`depth`、`limit`。
+
+## 8. FusionStore API
+
+```python
+from jiuwen_memory.storage.fusion import FusionStore
+from jiuwen_memory.storage.types import FusionQuery, FusionRecord
+```
+
+| API | 返回值 | 说明 |
+|---|---|---|
+| `insert(scope, records)` | `None` | 新建融合行 |
+| `update(scope, records)` | `None` | 替换已有融合行 |
+| `delete(scope, ids)` | `None` | 幂等删除融合行 |
+| `get(scope, ids)` | `list[FusionRecord]` | 正排点查完整融合行，缺失 ID 省略 |
+| `search(scope, query)` | `list[ScoredID]` | 在一次调用内完成向量、文本和标量谓词的融合检索 |
+
+`FusionRecord` 可同时承载 `vector`、`text`、`scalars`、`value`，也允许部分字段为 `None`。`FusionQuery.vector_weight` 控制向量和文本得分的混合比例，值域语义为 `1.0` 纯向量、`0.0` 纯文本。
+
+## 9. FSStore API
+
+```python
+from jiuwen_memory.storage.fs import FSStore
+```
+
+| API | 返回值 | 说明 |
+|---|---|---|
+| `insert(scope, key, data)` | `str` | 写入新文件并返回规范化 `ref` |
+| `update(scope, ref, data)` | `str` | 覆写已有文件并返回可能更新的 `ref` |
+| `delete(scope, ref)` | `None` | 幂等删除文件 |
+| `get(scope, ref)` | `BinaryIO` | 打开文件；返回的流由调用方关闭 |
+| `stat(scope, ref)` | `FileStat` | 返回文件引用、大小、MIME 类型和创建/更新时间 |
+
+```python
+with storage.fs.get(scope, ref) as stream:
+    payload = stream.read()
+```
+
+## 10. EntityStore API
+
+```python
+from jiuwen_memory.storage.entity_store import EntityStore
+```
+
+`EntityStore` 是实体到 MemoryUnit ID 的独立反向索引端口。它不属于 `StorageCapability`，也不能通过 `storage.entity` 或 `storage.*_port()` 访问；它由 `EntityStoreProducer` 独立装配。
+
+| API | 返回值 | 说明 |
+|---|---|---|
+| `ensure_index()` | `None` | 确保实体索引已创建并就绪；使用其他 API 前必须调用 |
+| `find_by_entity_text_hash(space_id, entity_text_hashes, *, filters, limit=500)` | `list[EntityRecord]` | 按实体文本 SHA-256 hash 精确查询，不提供向量近邻检索 |
+| `find_by_linked_memory_id(space_id, memory_id, *, filters)` | `list[EntityRecord]` | 反查关联了指定 MemoryUnit ID 的实体 |
+| `execute_operations(space_id, operations)` | `EntityBatchResult` | 批量执行 `INSERT` / `LINK` / `UNLINK_UPDATE` / `DELETE` 混合操作 |
+
+`EntityStoreFilters.from_scope(scope)` 使用 `scope.user` 生成 `actor_id`。这意味着实体在同一 user 下可跨 agent、跨 session 共享，但仍受 `space_id + actor_id` 约束。
+
+`EntityBatchResult.successful_ids` 和 `failed_ids` 以单项粒度报告批处理结果，允许部分失败。`EntityStore` 虽继承 `BaseStore`，但不参与六类 `StoreType` 路由；当前实现的 `store_type()` 返回 `None`。
+
+## 11. 安全 API
+
+### 11.1 StorageSecurity
+
+```python
+security.authorize(
+    access: StorageAccessContext | None,
+    scope: Scope,
+    action: StorageAction,
+    resource: str,
+) -> None
+```
+
+允许操作时返回 `None`，拒绝时抛 `PermissionDeniedError`。`StorageAccessContext.actor` 表示访问主体，`attributes` 承载授权实现需要的扩展上下文。`StorageAction` 包含 `ADD`、`UPDATE`、`DELETE`、`GET`、`LIST`、`SEARCH`、`ADMIN`。
+
+`health() -> None` 用于检查授权组件，基类默认直接返回 `None`，依赖外部策略服务的实现可覆盖它。
+
+`AllowAllStorageSecurity` 是默认放行实现，因此未启用自定义授权时可以不传 `access`。
+
+### 11.2 StoreSecurity
+
+`StoreSecurity` 表示底层数据保护能力，与 `StorageSecurity` 的访问授权职责不同。
+
+| API | 说明 |
+|---|---|
+| `enabled() -> bool` | 返回后端是否已启用实际数据保护 |
+| `health() -> None` | 检查保护组件健康状态 |
+
+`BaseStore.security` 默认返回 `PassthroughStoreSecurity`，其 `enabled()` 为 `False`。
+
+## 12. Producer 与实现注册
+
+| Producer | `TOP_NAME` | 产物 |
+|---|---|---|
+| `StorageProducer` | `storage` | `Storage` |
+| `KvProducer` | `kv_store` | `KVStore` |
+| `VectorProducer` | `vector_store` | `VectorStore` |
+| `FulltextProducer` | `fulltext_store` | `FulltextStore` |
+| `GraphProducer` | `graph_store` | `GraphStore` |
+| `FusionProducer` | `fusion_store` | `FusionStore` |
+| `FsProducer` | `fs_store` | `FSStore` |
+| `EntityStoreProducer` | `entity_store` | `EntityStore` |
+
+具体实现使用 `@XxxProducer.register("name")` 注册，并由 `storage.bootstrap.register_backends()` 触发实现模块导入。`StorageProducer.resolve(config)` 用于从组件配置解析共享 Storage，默认 target 为 `composite`。业务代码通常使用装配层已注入的 `Storage`，不应自行解析和固化底层 Store。
+
+## 13. 可配置实现
+
+### 13.1 配置结构
+
+配置使用“Producer 命名空间 → 具名实例 → `target/params`”两级结构：
+
+```yaml
+kv_store:                 # KvProducer.TOP_NAME
+  default:                # 具名实例，可被其他组件引用
+    target: sqlite        # 已注册的实现名
+    params:               # 实现参数和依赖引用
+      db_path: ./data/memory.db
+    new_instance: false   # 可选；false 表示共享具名实例
+```
+
+无参数实现可使用字符串简写：
+
+```yaml
+kv_store:
+  default: memory
+```
+
+依赖参数有两种写法：
+
+- 字符串，如 `storage: default`：引用相应 Producer 命名空间下的具名共享实例。
+- 映射，如 `raw_kv_store: {target: sqlite, params: {...}}`：就地创建不共享的匿名实例。
+
+`params` 中未找到的普通参数会回退读取 `globals`。用户配置会按“命名空间 + 实例名”覆盖内置默认；覆盖某个已有实例时，该实例的 `params` 整体替换，因此不能丢失必要的依赖引用。
+
+直接传给 `Config.from_dict()` / `Config.from_yaml()` 时，以上命名空间就是顶层段；部署配置中则放在 `memory_api:` 下。
+
+不传用户配置时，Storage 默认组合是 `composite + memory KV/vector/fulltext/graph`，L0/L1 向量和全文端口也使用 `memory`；FusionStore、FSStore 和 EntityStore 不会默认接入 `CompositeStorage`。外部后端 target 采用惰性导入/连接，配置成功不代表对应三方客户端和服务已就绪，上线前还应调用 `health()`。
+
+### 13.2 Storage 实现
+
+| `target` | 实现类 | 功能 | 主要 `params` |
+|---|---|---|---|
+| `composite` | `CompositeStorage` | 默认统一 Storage；组合各类 Store 端口，MemoryUnit 本体由 KV 端口持久化，检索适配由装配的 Recaller 提供；本实现不负责向量/全文/图投影构建 | `kv_store`（默认 `memory`），可选 `vector_store` / `fulltext_store` / `graph_store` / `fusion_store` / `fs_store`，`preferred_retrieval_pipeline`（默认 `recall_get_rank`） |
+
+`preferred_retrieval_pipeline` 可选 `recall_get_rank`、`recall_and_get_rank`、`retrieve`。`vector_store.layers_l0/layers_l1` 和 `fulltext_store.layers_l0/layers_l1` 会被 `CompositeStorage` 自动暴露为同名端口。
+
+```yaml
+storage:
+  default:
+    target: composite
+    params:
+      kv_store: default
+      vector_store: default
+      fulltext_store: default
+      graph_store: default
+      preferred_retrieval_pipeline: recall_get_rank
+```
+
+目前内置 Storage target 只有 `composite`。`RoutingStorage` 和 Routing Store 是产品可手工注入的路由组件，当前没有注册成可在 YAML 中直接使用的 `target: routing`。
+
+### 13.3 KVStore 实现
+
+| `target` | 实现类 | 功能 | 必填参数 | 主要可选参数 |
+|---|---|---|---|---|
+| `memory` | `InMemoryKVStore` | 进程内 KV，支持 TTL；适合默认开发、测试，进程结束后数据丢失 | 无 | 无 |
+| `sqlite` | `SQLiteKVStore` | SQLite 单文件持久化，Scope 五维落列隔离 | 无 | `db_path`（默认 `agent_memory.db`；`":memory:"` 表示进程内 SQLite） |
+| `redis` | `RedisKVStore` | Redis 远程 KV，将 Scope 编入键命名空间，支持连接参数晚绑定 | `url` | `ssl_verify`、`ssl_ca_cert`；代码仍接受 `host` / `port` / `db` / `password` 回退字段，但当前 builder 强制要求 `url`，URL 分支优先 |
+| `postgres` | `PostgresKVStore` | PostgreSQL 持久化 KV，Scope 五维落列，支持 TTL 与连接池 | `dsn` | `schema`、`table`、`pool_min_size`、`pool_max_size`、`connect_timeout`、`application_name`、`auto_create_schema`、`ssl_verify`、`ssl_ca_cert` |
+| `encrypted` | `EncryptedKVStore` | 加密装饰器；在任意 raw KV 外透明加解密，不自己实现密码算法 | `raw_kv_store`、`security` | 无；`raw_kv_store` 不能指向当前实例自身 |
+
+```yaml
+kv_store:
+  raw:
+    target: sqlite
+    params:
+      db_path: ./data/memory.db
+  default:
+    target: encrypted
+    params:
+      raw_kv_store: raw
+      security: default
+
+security:
+  default:
+    target: local
+    params:
+      key_env: AGENT_MEMORY_ENCRYPTION_ROOT_KEY
+      allow_plaintext: false
+```
+
+`redis` 开启 `ssl_verify=true` 时，`url` 必须使用 `rediss://`，且必须同时配置 `ssl_ca_cert`。`postgres` 开启后内部使用 `sslmode=verify-full`。
+
+### 13.4 VectorStore 实现
+
+| `target` | 实现类 | 功能 | 必填参数 | 主要可选参数 |
+|---|---|---|---|---|
+| `memory` | `InMemoryVectorStore` | 进程内穷举向量检索，适合测试和小数据集 | 无 | 无 |
+| `milvus` | `MilvusVectorStore` | Milvus ANN + 元数据过滤，支持召回时回带 metadata | `uri`，以及正数 `dim`（可回退 `globals.embedder_dim`） | `token`、`collection`、`metric_type`、`consistency_level`、`scope_field_max_length`、`id_max_length`、`ssl_verify`、`ssl_ca_cert` |
+| `pgvector` | `PgVectorStore` | PostgreSQL + pgvector，支持 HNSW、Scope/元数据过滤下推和连接池 | `dsn`，以及正数 `dim`（可回退 `globals.embedder_dim`） | `schema`、`table`、`metric_type`、`index_type`、`hnsw_m`、`hnsw_ef_construction`、`ef_search`、`max_scan_tuples`、`create_metadata_index`、`pool_min_size`、`pool_max_size`、`connect_timeout`、`application_name`、`auto_create_schema`、`create_extension`、`ssl_verify`、`ssl_ca_cert` |
+
+```yaml
+globals:
+  embedder_dim: 1024
+
+vector_store:
+  default:
+    target: milvus
+    params:
+      uri: http://localhost:19530
+      collection: agent_memory_vectors
+      dim: 1024
+      metric_type: COSINE
+  layers_l0:
+    target: milvus
+    params:
+      uri: http://localhost:19530
+      collection: agent_memory_vectors_l0
+      dim: 1024
+      metric_type: COSINE
+  layers_l1:
+    target: milvus
+    params:
+      uri: http://localhost:19530
+      collection: agent_memory_vectors_l1
+      dim: 1024
+      metric_type: COSINE
+```
+
+向量维度必须与 Embedder 输出一致。生产 Retriever 的 MaxP 和降序融合要求“分越大越相关”；Milvus 使用 `L2` 时会声明为距离语义并在 `VectorRecaller` 装配阶段被拒绝，检索链路应使用 `COSINE` 或 `IP`。`pgvector` 会把 `L2` 距离转换为高分优先，因此支持 `COSINE`、`IP`、`L2`。
+
+`milvus` 开启 `ssl_verify=true` 时会设置 `secure=True` 和 `server_pem_path`；`pgvector` 的 SSL 行为与 PostgreSQL KV 一致。
+
+### 13.5 FulltextStore 实现
+
+| `target` | 实现类 | 功能 | 必填参数 | 主要可选参数 |
+|---|---|---|---|---|
+| `memory` | `InMemoryFulltextStore` | 进程内基于 Tokenizer 的词项命中计分 | 无 | `tokenizer`（具名引用，默认匿名 `whitespace`） |
+| `elasticsearch` | `ElasticsearchFulltextStore` | Elasticsearch 文档 CRUD + `match`/BM25 检索，Scope 和 FilterExpr 下推 | `hosts` | `index`、`username`、`password`、`api_key`、`text_field`、`text_analyzer`、`refresh`、`ssl_verify`、`ssl_ca_cert` |
+
+```yaml
+fulltext_store:
+  default:
+    target: elasticsearch
+    params:
+      hosts: http://localhost:9200
+      index: agent_memory_fulltext
+      text_analyzer: english
+  layers_l0:
+    target: elasticsearch
+    params:
+      hosts: http://localhost:9200
+      index: agent_memory_fulltext_l0
+      text_analyzer: english
+  layers_l1:
+    target: elasticsearch
+    params:
+      hosts: http://localhost:9200
+      index: agent_memory_fulltext_l1
+      text_analyzer: english
+```
+
+`text_analyzer` 只在创建索引时生效，修改后需要重建索引。`ssl_verify=true` 时 `hosts` 必须使用 `https://`，并配置 `ssl_ca_cert`。
+
+### 13.6 GraphStore 实现
+
+| `target` | 实现类 | 功能 | 必填参数 | 主要可选参数 |
+|---|---|---|---|---|
+| `memory` | `InMemoryGraphStore` | 进程内属性图，支持词项定位种子和多跳遍历 | 无 | 无 |
+| `nano_graphrag` | `NanoGraphRAGGraphStore` | 基于 nano-graphrag `NetworkXStorage`，每个 Scope 一个 GraphML 命名空间，可落盘持久化 | `working_dir` | `namespace_prefix`（默认 `agent_memory_graph`）、`create_root`（默认 `true`） |
+
+```yaml
+graph_store:
+  default:
+    target: nano_graphrag
+    params:
+      working_dir: ./data/graph
+      namespace_prefix: agent_memory_graph
+```
+
+### 13.7 FusionStore 实现
+
+| `target` | 实现类 | 功能 | 必填参数 | 主要可选参数 |
+|---|---|---|---|---|
+| `memory` | `InMemoryFusionStore` | 进程内向量 + 词项 + 标量过滤 + 正排值融合存储 | 无 | `tokenizer`（默认匿名 `whitespace`） |
+| `milvus_graph` | `MilvusGraphFusionStore` | Milvus 保存向量/标量/正排值，nano-graphrag 保存邻接图；检索先 ANN，再按图关系扩展 | `uri`、`working_dir`、正数 `dim`（可回退 `globals.embedder_dim`） | `collection`、`metric_type`、`namespace_prefix`、`link_field`、`neighbor_depth`、`neighbor_decay`、`neighbor_relation` |
+
+```yaml
+fusion_store:
+  default:
+    target: milvus_graph
+    params:
+      uri: http://localhost:19530
+      working_dir: ./data/fusion-graph
+      dim: 1024
+      collection: agent_memory_fusion
+      link_field: links
+      neighbor_depth: 1
+      neighbor_decay: 0.5
+```
+
+`milvus_graph` 当前聚焦“向量种子 → 图邻居扩展”，不使用 `FusionQuery.text` 和 `vector_weight`，因此不提供 BM25 融合。
+
+### 13.8 FSStore 实现
+
+| `target` | 实现类 | 功能 | 必填参数 | 主要可选参数 |
+|---|---|---|---|---|
+| `memory` | `InMemoryFSStore` | 进程内二进制文件存储 | 无 | 无 |
+| `local` | `LocalFSStore` | 本地文件系统，将文件保存到 `root/<scope 五段>/` 下并阻止目录穿越 | `root` | `create_root`（默认 `true`） |
+
+```yaml
+fs_store:
+  default:
+    target: local
+    params:
+      root: ./data/assets
+      create_root: true
+```
+
+### 13.9 EntityStore 实现
+
+| `target` | 实现类 | 功能 | 启用参数 | 主要可选参数 |
+|---|---|---|---|---|
+| `elasticsearch` | `ElasticsearchEntityStore` | 实体 hash 精确反查、MemoryUnit 关联反查和批量变更 | `hosts` 或 `endpoint`；未配时 builder 返回 `None`，实体链路静默关闭 | `index`、`username`、`password`、`timeout`、`list_limit`、`number_of_shards`、`number_of_replicas`、`ssl_verify`、`ssl_ca_cert` |
+
+```yaml
+globals:
+  entity_enabled: true
+
+entity_store:
+  default:
+    target: elasticsearch
+    params:
+      hosts: http://localhost:9200
+      index: memory_entities
+
+# 写入侧和召回侧都要引用同一具名实例
+constructor:
+  default:
+    target: hybrid
+    params:
+      storage: default
+      chunker: default
+      embedder: default
+      entity_store: default
+recaller:
+  keyword:
+    target: keyword
+    params:
+      storage: default
+      entity_store: default
+```
+
+`entity_enabled=true` 只是总开关；写入侧 `constructor.default` 和召回侧 `recaller.keyword` 还必须分别引用同一 `entity_store` 具名实例。
+
+### 13.10 安全接口的实现方式
+
+`StorageSecurity` 目前没有独立 Producer 命名空间。`CompositeStorage` 配置构建默认使用 `AllowAllStorageSecurity`；自定义授权实现需要代码构造 `CompositeStorage(..., security=...)` 或由产品装配层注入，不能直接写成 YAML target。
+
+`StoreSecurity` 也不单独选 target：普通 Store 默认为 `PassthroughStoreSecurity`；选择 `kv_store.target=encrypted` 后，`EncryptedKVStore.security` 自动变为已启用状态，真正的加密实现由 `params.security` 引用的 `SecurityProvider` 提供。
+
+## 14. 最小调用示例
+
+```python
+from jiuwen_memory.common.type_def import MemoryUnit, Scope
+from jiuwen_memory.storage.storage import Storage
+from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
+
+
+def save_and_load(storage: Storage, scope: Scope, unit: MemoryUnit) -> MemoryUnit | None:
+    storage.add(scope, [unit], mode=IndexWriteMode.ALL)
+    loaded = storage.get(scope, [unit.id])
+    return loaded[0] if loaded else None
+
+
+def remove_from_retrieval(storage: Storage, scope: Scope, unit_id: str) -> None:
+    storage.delete(scope, [unit_id], mode=IndexRemoveMode.SOFT)
+```
+
+这两段代码只表达接口语义。`ALL` 或 `SOFT` 最终会操作哪些物理数据，取决于注入的 `Storage` 实现及其能力。
