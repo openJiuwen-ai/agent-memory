@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-27 |
-| 影响范围 | `src/control/permission.py`、`src/control/types.py`、`src/control/permission_impl/`、`src/control/engine.py`、`src/api/memory_api_impl/local_memory_api.py`、`docs/specs/S03-control.md` |
-| 测试基线 | `PYTHONPATH=src uv run --no-sync pytest -q tests/unit/control/test_permission_context_routing.py tests/unit/control/test_pipeline.py tests/unit/api/test_handler_identity_split.py tests/unit/api/test_write_reserved_metadata.py` 通过；本特性变更的 Python 文件通过 `ruff check` |
+| 影响范围 | `jiuwen_memory/control/permission.py`、`jiuwen_memory/control/types.py`、`jiuwen_memory/control/permission_impl/`、`jiuwen_memory/control/engine.py`、`jiuwen_memory/api/memory_api_impl/local_memory_api.py`、`docs/specs/S03-control.md` |
+| 测试基线 | `PYTHONPATH=. uv run --no-sync pytest -q tests/unit/control/test_permission_context_routing.py tests/unit/control/test_pipeline.py tests/unit/api/test_handler_identity_split.py tests/unit/api/test_write_reserved_metadata.py` 通过；本特性变更的 Python 文件通过 `ruff check` |
 
 ## 背景
 
@@ -32,7 +32,7 @@ def check(
 
 API 层的上下文来源：
 
-1. `add`：从入参 `metadata["memory_type"]`、`metadata["pipeline"]`、`tags` 构造；
+1. `add`：从入参 `system_metadata["memory_type"]`、`system_metadata["pipeline"]`、`tags` 构造；
    业务 metadata 在真源中保留原生类型，进入 PermissionContext 的路由值才规范为字符串。
 2. `search`：先从规范化 `FilterExpr` 提取逻辑上强制的唯一等值，再由
    `Context.extensions[route_key]` 的非空值覆盖。OR 多值、NOT、AND 冲突不产生路由值。

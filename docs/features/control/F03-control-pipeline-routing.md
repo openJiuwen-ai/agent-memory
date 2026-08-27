@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-27 |
-| 影响范围 | `src/control/`、`docs/specs/S03-control.md` |
-| 测试基线 | `PYTHONPATH=src uv run --no-sync pytest -q tests/unit/control/test_pipeline.py tests/unit/control/test_permission_context_routing.py` 通过；本特性变更的 Python 文件通过 `ruff check` |
+| 影响范围 | `jiuwen_memory/control/`、`docs/specs/S03-control.md` |
+| 测试基线 | `PYTHONPATH=. uv run --no-sync pytest -q tests/unit/control/test_pipeline.py tests/unit/control/test_permission_context_routing.py` 通过；本特性变更的 Python 文件通过 `ruff check` |
 
 ## 背景
 
@@ -16,11 +16,11 @@
 
 新增 control 层 `MemoryPipeline` 抽象，把 pipeline 作为控制层编排能力，而不是 construction 或 retrieval 的本地能力。原因是 pipeline 同时影响构建和查询，放在单一子层会让另一侧反向依赖，或复制路由规则。
 
-第一版实现 `metadata` pipeline：
+第一版实现 `metadata` pipeline（路由字段存于系统命名空间）：
 
-1. 写入侧按 `MemoryUnit.metadata[route_key]` 路由。
+1. 写入侧按 `MemoryUnit.system_metadata[route_key]` 路由。
 2. 查询侧按 `RetrievalQuery.extensions[route_key]` 路由，规范化 `FilterExpr` 中逻辑上
-   强制成立的 `metadata.<route_key>` 唯一等值作为兜底；OR 多值、NOT、AND 冲突不参与路由。
+   强制成立的 `system_metadata.<route_key>` 唯一等值作为兜底；OR 多值、NOT、AND 冲突不参与路由。
 3. route 只返回 `PipelineBinding`，其中包含已装配的 `index_builder`、`evolver`、`retriever`、可选 `classifier`。
 4. `InMemoryEngine` 仍负责数据面编排：写入时使用选中绑定处理分类/索引/同步抽取，查询时使用选中绑定的 retriever。
 5. 默认配置不注入 pipeline；未配置 `pipeline.default` 时 `InMemoryEngine` 使用旧的单组组件字段，用户通过 YAML 显式声明后才启用 profile 路由。
@@ -37,7 +37,7 @@
 
 新增 `tests/unit/control/test_pipeline.py`：
 
-- `metadata.memory_type=coding` 写入时使用 coding profile 的 `IndexBuilder`。
+- `system_metadata.memory_type=coding` 写入时使用 coding profile 的 `IndexBuilder`。
 - `Context.extensions["memory_type"]="coding"` 查询时使用 coding profile 的 `Retriever`。
 
 ## 已知遗留

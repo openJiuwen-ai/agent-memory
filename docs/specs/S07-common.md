@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-08-20 |
+| 最近一次修订日期 | 2026-08-27 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F05-security-api-contracts.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md |
 
@@ -24,7 +24,7 @@
 - 审计日志（AuditLogger）
 - 数据保护横切接口（SecurityProvider）
 - 跨实例互斥横切接口（LockProvider）
-- 安全域契约（认证/密码学/保护的抽象接口、公共安全值对象、`SecurityRuntime`；接口先行，实现暂缓）
+- 安全域契约与接入中间件（认证/凭据、密码学、绑定策略、限流、工作负载保护与 `SecurityRuntime`；具体后端与完整生命周期接线另行实现）
 - 错误类型（自定义异常）
 - 工具函数（ID 生成/时间解析等）
 
@@ -412,7 +412,7 @@ class Embedder(Plugin):
     ...
 
 # 实现模块（如 common/embedder/embedder_impl/bge_m3_embedder.py）
-from common.embedder.base import EmbedderProducer
+from jiuwen_memory.common.embedder.base import EmbedderProducer
 
 @EmbedderProducer.register("bge_m3")
 def _build(config: ComponentConfig) -> Embedder:

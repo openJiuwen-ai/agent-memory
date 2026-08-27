@@ -4,8 +4,8 @@
 
 | 项 | 值 |
 |---|---|
-| 关联模块 | src/ingest/ |
-| 最近一次修订日期 | 2026-08-18 |
+| 关联模块 | jiuwen_memory/ingest/ |
+| 最近一次修订日期 | 2026-08-27 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 
 | 关联特性文档 | docs/features/F01-system-spec-design.md |
@@ -23,10 +23,10 @@ Ingestor 必须分别复制两个 dict，不得合并、解释或在两者之间
 - 编排整条接入流水线（Source → Normalizer → 组装 MemoryUnit）
 
 **不管什么**：
-- 不负责落盘（真源写入由构建层调用 `src/storage` 完成）
+- 不负责落盘（真源写入由构建层调用 `jiuwen_memory/storage` 完成）
 - 不做 LLM 调用（如需 caption/ASR 等，由注入的 Normalizer 插件内部调用）
 - 不做分类/索引/演进（由构建层负责）
-- 不做鉴权（由 `src/api` 层在入口执行）
+- 不做鉴权（由 `jiuwen_memory/api` 层在入口执行）
 
 ## 不变量
 
@@ -97,7 +97,7 @@ TEXT / IMAGE / AUDIO / VIDEO / CODE / DOCUMENT
 ## 实现注册机制
 
 ```
-src/ingest/source_impl/
+jiuwen_memory/ingest/source_impl/
     __init__.py             # 重导出实现类
     <impl_class_snake>.py   # 具体实现 + 尾部 @SourceProducer.register("name")
 ```

@@ -34,7 +34,7 @@
 ## 文件关系
 
 - 顶层 `.py` 只定义抽象接口，零实现逻辑
-- `types.py` 不依赖本层其他文件（纯数据定义），被本层各接口和 `src/api/` 共同依赖
+- `types.py` 不依赖本层其他文件（纯数据定义），被本层各接口和 `jiuwen_memory/api/` 共同依赖
 - 每个 `*_impl/` 子目录：具体实现类 + 尾部 `@XProducer.register("<target>")` 注册函数，由外部装配消费
 - 顶层接口文件不 import `*_impl/`；`*_impl/` import 顶层接口文件
 - Producer 工厂定义在对应顶层接口文件中（如 `engine.py` 的 `EngineProducer`），不要新增独立 `*_producer.py`
@@ -99,7 +99,7 @@ metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` /
   强制成立的 `system_metadata.<route_key>` 唯一等值（`memory_type` 裸字段仅作兼容别名）。
 - `PipelineBinding` 只绑定组件引用：`index_builder`、`evolver`、`retriever`、可选 `classifier`。
 - `InMemoryEngine` 仅接受 `space=""` 的本地兼容域，使用绑定后的 `index_builder/evolver/classifier` 处理 write；profile 选择 `OrchestratingEvolver` 或 `DynamicEvolver` 决定 EXTRACT 路径。recall 使用绑定后的 `retriever`；`list` 把分页、类型、过滤和 extensions 透传 `Storage.list`，不经 pipeline。未注入 pipeline 时走原单 profile 字段。
-- `CloudEngine` 使用 `message_type`（默认 metadata key）选择构建/查询 profile，写入后固化 `system_metadata["message_type"]` 与 `system_metadata["pipeline"]`，并校验真源 unit.scope 与 target scope 一致。
+- `CloudEngine` 使用 `message_type`（默认 system metadata key）选择构建/查询 profile，写入后固化 `system_metadata["message_type"]` 与 `system_metadata["pipeline"]`，并校验真源 unit.scope 与 target scope 一致。
 - 未配置 `pipeline.default` 时不启用 pipeline，行为等价旧单 pipeline；用户通过 YAML 显式声明后启用。
 
 ## 本地约束

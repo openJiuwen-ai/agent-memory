@@ -1,25 +1,25 @@
-# F01 — 记忆接口层实现规约（src/api/memory_api_impl）
+# F01 — 记忆接口层实现规约（jiuwen_memory/api/memory_api_impl）
 
 ## 元信息
 
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-06-24 |
-| 影响范围 | src/api/，src/control/，src/storage/，src/common/type_def/，bootstrap/core/handler.py，docs/specs/S02-memory-api.md，docs/specs/S03-control.md，docs/specs/S06-storage.md，docs/specs/S07-common.md |
+| 影响范围 | jiuwen_memory/api/，jiuwen_memory/control/，jiuwen_memory/storage/，jiuwen_memory/common/type_def/，bootstrap/core/handler.py，docs/specs/S02-memory-api.md，docs/specs/S03-control.md，docs/specs/S06-storage.md，docs/specs/S07-common.md |
 | 测试基线 | list 相关 API/handler/Engine/KV/common/retrieval 单测通过；ruff、compileall 与 `git diff --check` 通过；完整 `tests/unit` 仅两项因环境缺少 torch 失败 |
 | Refs | —（如有 issue 补 `Refs: #<n>`） |
 
 > 本文档归档**记忆接口层实现的设计与取舍**：`MemoryAPI` 的单进程实现 `LocalMemoryAPI`（鉴权/审计执行点）与装配落点 `assembly.py`（`build_kernel`/`assemble`/`Kernel`）。
-> `MemoryAPI` 的**公开方法签名 / 参数语义 / 返回类型**以接口 `src/api/memory_api.py` 为准（归 spec/接口源码），本文不重复罗列签名，只记录「为什么这样实现」。
+> `MemoryAPI` 的**公开方法签名 / 参数语义 / 返回类型**以接口 `jiuwen_memory/api/memory_api.py` 为准（归 spec/接口源码），本文不重复罗列签名，只记录「为什么这样实现」。
 
 ---
 
 ## 背景
 
-`MemoryAPI`（`src/api/memory_api.py`）是内核的**唯一对外入口**，形态无关——SDK/CLI/Skill/MCP/HTTP·gRPC 各接入形态最终都映射到这同一组语义。调用层只依赖 `api` 这一个包即可触达全部能力与所需类型，无需 import 内核其他包：
+`MemoryAPI`（`jiuwen_memory/api/memory_api.py`）是内核的**唯一对外入口**，形态无关——SDK/CLI/Skill/MCP/HTTP·gRPC 各接入形态最终都映射到这同一组语义。调用层只依赖 `jiuwen_memory.api` 这一个包即可触达全部能力与所需类型，无需 import 内核其他包：
 
 ```python
-from api import (
+from jiuwen_memory.api import (
     assemble, MemoryAPI,               # 入口 + 接口
     Scope, Context, Modality,          # 调用上下文
     MemoryPatch, UpdateMode,           # update
@@ -38,7 +38,7 @@ from api import (
 | `local_memory_api.py` · `LocalMemoryAPI` | 单进程下的 `MemoryAPI` 实现——**鉴权（PEP）+ 入口审计 + 委派**，自身不含编排逻辑 |
 | `assembly.py` · `build_kernel`/`assemble`/`Kernel` | 把各层具体实现经 Producer 串成一个可直接调用的内核——「把整个项目串起来」的落点 |
 
-接口层是控制层（`src/control`）的**薄封装**：数据面（add/search/list/get/update/delete/evolve）委托 `MemoryEngine`，管理面（任务/治理/授权/admin/space 管理）直达对应控制算子；本层只做**参数装配 + 鉴权 + 入口审计**，编排逻辑全在控制层。
+接口层是控制层（`jiuwen_memory/control`）的**薄封装**：数据面（add/search/list/get/update/delete/evolve）委托 `MemoryEngine`，管理面（任务/治理/授权/admin/space 管理）直达对应控制算子；本层只做**参数装配 + 鉴权 + 入口审计**，编排逻辑全在控制层。
 
 ---
 
@@ -104,8 +104,8 @@ admin（运行时策略）与全局 audit 查询**没有具体 target scope**，
   的真源兼容句柄；`assemble` 仍只返回 api。普通数据面能力应走 `MemoryAPI`。
 
 ```python
-from api import assemble, build_kernel
-from config import Config
+from jiuwen_memory.api import assemble, build_kernel
+from jiuwen_memory.config import Config
 
 api = assemble()                                  # 默认纯内存离线栈
 api = assemble(config=Config(...), policies={"rerank_enabled": "true"})
@@ -160,7 +160,7 @@ KV 层列表语义：
 
 - 校验 `offset >= 0`、`limit > 0`。
 - `KVStore.list` 只加载 `/memory/` 记录。
-- `memory_types` 过滤优先读取 `unit.metadata["memory_type"]`，缺省退回 `unit.tier.value`。
+- `memory_types` 过滤优先读取 `unit.system_metadata["memory_type"]`，缺省退回 `unit.tier.value`。
 - 按 `unit.temporal.t_ingest` 倒序返回，`unit.id` 作为稳定次级排序键。
 - 返回当前页 `items`；响应中的 `count` 是过滤后的分页前总数。
 
@@ -240,7 +240,7 @@ Python API 使用 `filters` 作为规范参数名，与 `search` 保持一致；
 - Scope 是独立的强隔离轴，`org/space/user/agent/session` 不允许放入 filters；
   用户过滤只能进一步收窄已鉴权的 target Scope，不能扩大查询范围。
 - `memory_types` 保留为兼容快捷参数，与 filters 是 `AND` 关系；类型匹配仍优先读取
-  `unit.metadata["memory_type"]`，缺省退回 `unit.tier.value`。
+  `unit.system_metadata["memory_type"]`，缺省退回 `unit.tier.value`。
 - 规范化后的 filters、`memory_types`、`extensions`、`offset` 和 `limit` 必须由 Engine
   原样下推 KV 查询契约；过滤必须在存储适配器内部先于排序、`offset` 和 `limit` 执行，
   禁止 Engine 先取一页再做后置过滤。
@@ -404,7 +404,7 @@ count。
 
 - **`identity` 作为位置参数**：被拒。与 target `scope` 同为 `Scope`，位置传反即静默越权；强制 keyword-only 把错误挡在调用处。
 - **Context 对象下沉进内核**：被拒。Context 是接口层的打包容器，下沉会让内核耦合「调用形态」；改为边界拆包，scope 独立下推，extensions 中的约定 key 由 API 边界解释，其余 extensions 透传。
-- **接口层承担编排**：被拒。api 层只做 PEP + 参数装配 + 审计，所有编排（add 的规约/索引、search 的多路召回/融合/披露、evolve 的阶段调度）留在 `src/control` 与各算子层，保证入口薄、可替换接入形态。
+- **接口层承担编排**：被拒。api 层只做 PEP + 参数装配 + 审计，所有编排（add 的规约/索引、search 的多路召回/融合/披露、evolve 的阶段调度）留在 `jiuwen_memory/control` 与各算子层，保证入口薄、可替换接入形态。
 - **管理面也走 MemoryEngine**：被拒。engine 聚焦数据面；任务/策略/治理/授权直达对应控制算子，避免 engine 变成「什么都转发」的上帝对象。
 - **同步实现整套内核**：被拒。内核选异步（适配 HTTP/MCP 高并发），同步入口用 `asyncio.run` 桥接；避免维护同步/异步两份实现导致语义漂移。
 - **admin/全局 audit 按调用方自身 scope 鉴权**：被拒。这类操作无具体 target scope，按自身 scope 判权会让任意用户都「对自己有权」从而绕过管理面；改用根 scope 闸门统一表达管理员权限。

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-08-10 |
-| 影响范围 | `src/common/type_def/memory.py`、`src/common/type_def/memory_codec.py`、`src/common/type_def/memory_filter.py`、`src/ingest/ingestor_impl/simple_ingestor.py`、`src/construction/extractor_impl/keyword_extractor.py`、`src/construction/extractor_impl/llm_extractor.py`、`src/construction/extractor_impl/dynamic_llm_extractor.py`、`src/construction/abstractor_impl/llm_abstractor.py`、`src/retrieval/retriever_impl/predicate_builder.py`、`src/retrieval/retriever_impl/unit_reader.py` |
+| 影响范围 | `jiuwen_memory/common/type_def/memory.py`、`jiuwen_memory/common/type_def/memory_codec.py`、`jiuwen_memory/common/type_def/memory_filter.py`、`jiuwen_memory/ingest/ingestor_impl/simple_ingestor.py`、`jiuwen_memory/construction/extractor_impl/keyword_extractor.py`、`jiuwen_memory/construction/extractor_impl/llm_extractor.py`、`jiuwen_memory/construction/extractor_impl/dynamic_llm_extractor.py`、`jiuwen_memory/construction/abstractor_impl/llm_abstractor.py`、`jiuwen_memory/retrieval/retriever_impl/predicate_builder.py`、`jiuwen_memory/retrieval/retriever_impl/unit_reader.py` |
 | 测试基线 | 见"验证" |
 | Refs | — |
 
@@ -52,11 +52,11 @@ class Temporal:
 
 一条记忆内容含多个事件时间（"14号去医院，20号复查"）时，**优先靠 Extractor 拆分**成多条派生 unit，各自 `t_event` = 14号 / 20号。这与 architecture §9.1 "信息提取 → 从原始数据抽取事实/事件"的设计意图一致——Extractor 的职责就是把多事件内容拆成单事件派生。
 
-确实不可拆分的聚合单元（如 consolidate 后的摘要）需要多事件时间时，走 `metadata["t_events"]: list[str]`（ISO 格式），不侵入结构化字段——过滤仍用主 `t_event`。
+确实不可拆分的聚合单元（如 consolidate 后的摘要）需要多事件时间时，走 `system_metadata["t_events"]: list[str]`（ISO 格式），不侵入结构化字段——过滤仍用主 `t_event`。
 
 ### 3. 多消息时间同理走 metadata
 
-consolidate 合并多 source 时会有多个消息时间。合并后的摘要 unit 主 `t_message` 取一个（如最早或最近），其余进 `metadata["t_messages"]: list[str]`（ISO 格式）。内核过滤逻辑不读 metadata 里的 list，业务层自行处理。
+consolidate 合并多 source 时会有多个消息时间。合并后的摘要 unit 主 `t_message` 取一个（如最早或最近），其余进 `system_metadata["t_messages"]: list[str]`（ISO 格式）。内核过滤逻辑不读 metadata 里的 list，业务层自行处理。
 
 ### 4. 写入侧适配
 
@@ -69,7 +69,7 @@ consolidate 合并多 source 时会有多个消息时间。合并后的摘要 un
 
 ### 5. 编解码兼容
 
-`memory_codec.py` 的 temporal 数组从 4 元素扩展到 5 元素（加 `t_message`）。按 codec 自身版本策略（[memory_codec.py:31-33](file:///d:/Codes/0725_1_agentmemory/agent-memory/src/common/type_def/memory_codec.py#L31-L33)），「加字段」属于兼容演进，**不升 `_v`**——`loads` 对老数据（4 元素 temporal 数组）缺省补 `t_message=None` 即可。升版本留给"改字段含义/结构"的破坏性变更。
+`memory_codec.py` 的 temporal 数组从 4 元素扩展到 5 元素（加 `t_message`）。按 codec 自身版本策略（[memory_codec.py:31-33](file:///d:/Codes/0725_1_agentmemory/agent-memory/jiuwen_memory/common/type_def/memory_codec.py#L31-L33)），「加字段」属于兼容演进，**不升 `_v`**——`loads` 对老数据（4 元素 temporal 数组）缺省补 `t_message=None` 即可。升版本留给"改字段含义/结构"的破坏性变更。
 
 ### 6. t_event 语义净化的老数据兼容
 
@@ -109,4 +109,4 @@ consolidate 合并多 source 时会有多个消息时间。合并后的摘要 un
   - **属性问止血（同 commit）**：`time_parse` 识别属性问关键词（多大/几岁/爱好/
     是谁/住址/名字/生日/年龄…）后清空 `time_from/to`，即便 query 含「今年/昨天」
     也不下推事件窗——属性问本就不是事件时间检索，避免误下推杀 None 派生。
-- **`metadata["t_events"]` / `metadata["t_messages"]` 不参与检索过滤**：当前索引层（Milvus/ES/pgvector）不原生支持"数组任一元素落在 range 内"的查询，召回后置过滤（`in_event_window`）只读结构化字段 `t_event`，不读 metadata。因此聚合单元的次要事件/消息时间**无法用于时间窗过滤**——若业务有"按多事件时间过滤"的刚需，正确答案是拆分成多条 unit（每条带自己的 `t_event`），而非依赖 metadata 兜底。metadata 方案仅保证信息不丢（审计/展示可读 + 未来索引扩展有数据基础），不提供过滤能力。
+- **`system_metadata["t_events"]` / `system_metadata["t_messages"]` 不参与检索过滤**：当前索引层（Milvus/ES/pgvector）不原生支持"数组任一元素落在 range 内"的查询，召回后置过滤（`in_event_window`）只读结构化字段 `t_event`，不读 metadata。因此聚合单元的次要事件/消息时间**无法用于时间窗过滤**——若业务有"按多事件时间过滤"的刚需，正确答案是拆分成多条 unit（每条带自己的 `t_event`），而非依赖 metadata 兜底。metadata 方案仅保证信息不丢（审计/展示可读 + 未来索引扩展有数据基础），不提供过滤能力。

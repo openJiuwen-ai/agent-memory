@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-08-04 |
-| 影响范围 | src/api/，src/control/，bootstrap/core/handler.py，docs/specs/S02-memory-api.md，docs/specs/S03-control.md |
+| 影响范围 | jiuwen_memory/api/，jiuwen_memory/control/，bootstrap/core/handler.py，docs/specs/S02-memory-api.md，docs/specs/S03-control.md |
 | 测试基线 | `tests/unit/api/test_batch_write.py`、`test_batch_handler.py`、`tests/unit/control/test_cloud_engine.py` |
 | Refs | — |
 
@@ -355,7 +355,7 @@ handler 负责把 `defaults` 解析为 `batch_add` 顶层默认参数，把每�
 8. 每个 item 独立执行 WRITE 鉴权，跨 scope 无授权项不能借整批通过。
 9. `scope.require_space=true` 时缺少 space 的 item 被拒绝，不影响其他合法 item。
 10. `metadata` 保留 key 和非标量校验复用单条 add。
-11. CloudEngine 下 `message_type` routing 逐 item 生效，并固化 `metadata["pipeline"]`。
+11. CloudEngine 下 `message_type` routing 逐 item 生效，并固化 `system_metadata["pipeline"]`。
 12. 同一 stream 的多条 `infer=true` 按输入顺序执行，后项可看到前项 `/messages/` 上下文。
 13. HTTP `/v1/batch_add` malformed item 返回结构化错误，不产生 HTTP 500。
 14. Engine 运行期非领域异常同样归集为 `InternalError` outcome，并记录异常；单条 `add`

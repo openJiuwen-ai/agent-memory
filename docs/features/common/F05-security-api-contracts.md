@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-08-20 |
 | 影响范围 | `jiuwen_memory/common/security/`、`bootstrap/core/auth_middleware.py`、`bootstrap/mcp_server/transport_security.py`、`docs/specs/S07-common.md` |
-| 关联文档 | [F05 公共安全架构](../../../security-plans/F05-common-security-architecture.md)、[PR1/PR2 接口说明文档](../../../security-plans/2026-08-17-PR1-PR2-接口说明文档.md)、[F04 安全接口与加密设计](F04-security-interfaces-and-encryption.md) |
+| 关联文档 | 历史安全架构与 PR1/PR2 接口说明（仓库外归档）；[F04 安全接口与加密设计](F04-security-interfaces-and-encryption.md) |
 | 状态 | **接口先行、实现暂缓**：契约层已合入，`*_impl` 实现包与 Server lifecycle 接线随后续实装 PR 合入 |
 
 ## 1. 背景与目标

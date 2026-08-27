@@ -1,15 +1,15 @@
-# F01 — 构建层实现规约（src/construction/*_impl）
+# F01 — 构建层实现规约（jiuwen_memory/construction/*_impl）
 
 ## 元信息
 
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-06-24 |
-| 影响范围 | src/construction/（七个算子 + 实现包）、docs/specs/S05-construction.md、src/construction/AGENTS.md |
+| 影响范围 | jiuwen_memory/construction/（七个算子 + 实现包）、docs/specs/S05-construction.md、jiuwen_memory/construction/AGENTS.md |
 | 测试基线 | tests/unit/construction/（82 passed，含 test_evolver_dedup.py / test_extractor.py）、examples/demo_classifier.py、examples/quickstart*.py 端到端跑通 |
 | Refs | — |
 
-> 本文是构建层的特性文档（features）——记来龙去脉与决策取舍 + 各算子实现的落地规约。接口契约见 [`docs/specs/S05-construction.md`](../../specs/S05-construction.md)；当前实现地图见 [`src/construction/AGENTS.md`](../../../src/construction/AGENTS.md)。
+> 本文是构建层的特性文档（features）——记来龙去脉与决策取舍 + 各算子实现的落地规约。接口契约见 [`docs/specs/S05-construction.md`](../../specs/S05-construction.md)；当前实现地图见 [`jiuwen_memory/construction/AGENTS.md`](../../../jiuwen_memory/construction/AGENTS.md)。
 
 ## 背景
 
@@ -102,7 +102,7 @@
 - 写入路径变脆弱——LLM 不可用时 write 直接失败，而数据面本应始终可用
 - 闭环反馈失效——没有「写入先 ADD → 后台修正」的闭环，矛盾/冗余只能靠写入时一次性发现，遗漏无补偿
 
-> 这里拒绝的是"**默认**同步抽取"。后续 [`F02-write-infer-extract`](../api/F02-write-infer-extract.md) 新增的 `metadata["infer"]=="true"` 是**可选 opt-in 开关**——调用方按场景显式承担同步时延代价（如外接记忆 provider 的 `sync_turn` 契约需要"写完即可召回派生事实"），不违背本方案"默认不同步"的立场。
+> 这里拒绝的是"**默认**同步抽取"。后续 [`F02-write-infer-extract`](../api/F02-write-infer-extract.md) 新增的 `system_metadata["infer"]=="true"` 是**可选 opt-in 开关**——调用方按场景显式承担同步时延代价（如外接记忆 provider 的 `sync_turn` 契约需要"写完即可召回派生事实"），不违背本方案"默认不同步"的立场。
 
 ### 方案 B：索引与真源同库，不区分派生
 
@@ -133,7 +133,7 @@
 
 ### 方案 E：Classifier 也放 Background，写入路径纯落盘
 
-**描述**：写入路径只 KVStore.insert + IndexBuilder.build，分类完全交 Background。
+**描述**：当时的写入路径只做 `KVStore.insert + IndexBuilder.build`，分类完全交 Background。
 
 **拒绝原因**：
 - tier/tags 是索引构建前提——写入时无分类，索引建完要 Background 补分类并重建索引，代价远高于写入时一次规则分类

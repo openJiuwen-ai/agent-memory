@@ -4,8 +4,8 @@
 
 | 项 | 值 |
 |---|---|
-| 关联模块 | src/api/ |
-| 最近一次修订日期 | 2026-08-20 |
+| 关联模块 | jiuwen_memory/api/ |
+| 最近一次修订日期 | 2026-08-27 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/common/F01-memory-layer.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md |
 ## Metadata 公共 API 契约
@@ -25,7 +25,7 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 - 同步/异步桥接：为同步形态桥接引擎异步协程
 
 **不管什么**：
-- 不做编排逻辑（全部委托 `src/control`）
+- 不做编排逻辑（全部委托 `jiuwen_memory/control`）
 - 不直接操作存储
 - 不调用 LLM / 构建 / 检索
 - 不做 admin 策略存储（直达 PolicyManager）
@@ -402,7 +402,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 ## 实现注册机制
 
 ```
-src/api/memory_api_impl/
+jiuwen_memory/api/memory_api_impl/
     __init__.py             # 重导出实现类
 ```
 

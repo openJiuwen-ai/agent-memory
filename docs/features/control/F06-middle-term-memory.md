@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-31（决策 9 分布式锁接入：2026-08-17） |
-| 影响范围 | `src/control/jobs.py`、`src/control/jobs_impl/`（含 `MiddleToLongJob` 加 `lock` 字段）、`src/control/scheduler.py`、`src/control/scheduler_impl/async_timer_scheduler.py`、`src/control/scheduler_impl/in_process_scheduler.py`、`src/control/engine_impl/in_memory_engine.py`、`src/control/engine_impl/cloud_engine.py`、`src/control/bootstrap.py`、`src/construction/dedup_impl/keyword_dedup.py`、`src/construction/dedup_impl/vector_dedup.py`、`src/config/defaults.py`；决策 9 复用 [`F06-distributed-lock`](../common/F06-distributed-lock.md) 的 `LockProvider` 横切原语 |
+| 影响范围 | `jiuwen_memory/control/jobs.py`、`jiuwen_memory/control/jobs_impl/`（含 `MiddleToLongJob` 加 `lock` 字段）、`jiuwen_memory/control/scheduler.py`、`jiuwen_memory/control/scheduler_impl/async_timer_scheduler.py`、`jiuwen_memory/control/scheduler_impl/in_process_scheduler.py`、`jiuwen_memory/control/engine_impl/in_memory_engine.py`、`jiuwen_memory/control/engine_impl/cloud_engine.py`、`jiuwen_memory/control/bootstrap.py`、`jiuwen_memory/construction/dedup_impl/keyword_dedup.py`、`jiuwen_memory/construction/dedup_impl/vector_dedup.py`、`jiuwen_memory/config/defaults.py`；决策 9 复用 [`F06-distributed-lock`](../common/F06-distributed-lock.md) 的 `LockProvider` 横切原语 |
 | 测试基线 | `pytest tests/unit/control tests/unit/construction` 全绿（307 passed）；`test_middle_e2e_real_llm.py` 4 个 e2e 用例**默认 skip**（依赖外部 LLM 凭证）；`test_middle_two_instances_e2e.py` 双实例 e2e 用例**默认 skip**（依赖真实 Redis 容器，验证跨实例互斥语义）|
 | Refs | [`F02-write-infer-extract`](../api/F02-write-infer-extract.md)、[`F01-control-impl-design`](F01-control-impl-design.md)、[`F05-cloud-engine-design`](F05-cloud-engine-design.md)、[`F06-distributed-lock`](../common/F06-distributed-lock.md) |
 
@@ -35,7 +35,7 @@ mem2.0 把这件事拆回控制层标准范式：
 
 ### 决策 1：新增 `Job` 抽象，把"做什么"从 Scheduler 中拆出
 
-`src/control/jobs.py` 定义 `Job`（ABC，dataclass）与 `JobFactory`：
+`jiuwen_memory/control/jobs.py` 定义 `Job`（ABC，dataclass）与 `JobFactory`：
 
 - `Job` 持 `scope` + `interval` 两个标识字段：`interval=0` 是一次性任务，`interval>0` 是定时任务声明。`run() -> JobInfo` 是唯一执行入口，处理一次即返回，**不自带循环**——周期由 Scheduler 的 Timer 负责。
 - `JobFactory` 按 `job_type + scope + 可选运行时参数` 生成实例。装配期把各 Job 类型的 builder 闭包注册进来，闭包内固化依赖（kv/evolver/llm 等）与业务参数（max_fetch/batch_size 等），运行时只补 scope 与运行时参数（interval/mode）。
@@ -48,7 +48,7 @@ mem2.0 把这件事拆回控制层标准范式：
 
 ### 决策 2：`AsyncTimerScheduler` —— 异步 + 定时调度器
 
-`src/control/scheduler_impl/async_timer_scheduler.py` 注册为 `scheduler: async_timer`。三层结构：
+`jiuwen_memory/control/scheduler_impl/async_timer_scheduler.py` 注册为 `scheduler: async_timer`。三层结构：
 
 - **per scope FIFO 队列** + 单 drain Task：同 scope 串行性由"per scope 单 drain Task"保证——`_ensure_drain_task` 检查 `existing.done()`，旧 drain 没跑完不创建新 drain。单线程事件循环 + 单 drain 协程跑 FIFO，无并发竞争，无需 `asyncio.Lock`。跨 scope 完全并行（不同 drain Task 抢不同队列）。
 - **per scope TimerWheel** + 单 Timer 协程：每 `tick_interval` 秒扫 entries 检查 `next_run_at`，到点生成一次性实例塞 queue（`copy.copy(entry.job)` + `interval=0`），重置 `next_run_at = now + interval`。Timer 协程只做"扫一遍 + append"，不抢 drain Task——一次性任务能在 tick 间隙跑。
@@ -62,9 +62,9 @@ mem2.0 把这件事拆回控制层标准范式：
 
 ### 决策 3：`MiddleToLongJob` —— 中期转长期任务
 
-`src/control/jobs_impl/middle_to_long_job.py` 注册到 `JobType.MIDDLE_TO_LONG`。`run()` 流程：
+`jiuwen_memory/control/jobs_impl/middle_to_long_job.py` 注册到 `JobType.MIDDLE_TO_LONG`。`run()` 流程：
 
-1. **list 候选**：`kv.scan(scope, MEMORY_KEY_PREFIX)` → 反序列化 → 过滤 `tier=WORKING + lifecycle=ACTIVE + metadata["middle"]="true"` → 按 `t_ingest` 升序取最老 max_fetch 条（默认 100）。
+1. **list 候选**：`kv.scan(scope, MEMORY_KEY_PREFIX)` → 反序列化 → 过滤 `tier=WORKING + lifecycle=ACTIVE + system_metadata["middle"]="true"` → 按 `t_ingest` 升序取最老 max_fetch 条（默认 100）。
 2. **空候选退出**：返回 `is_done="true"`，Scheduler 的 `_merge_info` 标记 parent entry `is_done`，下次 tick 跳过；entries 全 `is_done` 时 Timer 协程退出。
 3. **连续性检测切批**：LLM 判相邻候选是否语义连续（3 次重试，失败默认连续），连续且当前批未达 `batch_size` 则留在当前批，否则切批。首条直接入首批。
 4. **批执行**：`concurrency<=1` 串行；`>1` 用 `asyncio.Semaphore` 限流 + `asyncio.gather(return_exceptions=True)` 并发，每批调 `evolver.evolve(batch, EXTRACT)`。失败批次隔离（不收集 unit），原文保留 ACTIVE+WORKING 下轮重试。
@@ -72,7 +72,7 @@ mem2.0 把这件事拆回控制层标准范式：
 
 **关键权衡**：
 
-- middle 标记过滤：Engine.write 给 middle 路径的 unit 同时打 `tier=WORKING` 和 `metadata["middle"]="true"`。若系统其他路径也写 WORKING+ACTIVE 单元（人工 import 等），只按 tier+lifecycle 过滤会误扫；加 `metadata.get("middle")=="true"` 显式过滤，精确锁定本 Job 的候选。
+- middle 标记过滤：Engine.write 给 middle 路径的 unit 同时打 `tier=WORKING` 和 `system_metadata["middle"]="true"`。若系统其他路径也写 WORKING+ACTIVE 单元（人工 import 等），只按 tier+lifecycle 过滤会误扫；加 `system_metadata.get("middle")=="true"` 显式过滤，精确锁定本 Job 的候选。
 - 连续性检测 JSON 解析 fallback：小模型可能返回单引号、无引号 key 或带 Markdown 包装的伪 JSON，`json.loads` 失败时用正则 `\b(true|false)\b` 提取首个 true/false。
 - 非破坏式归档而非物理删除：与 mem1.0 的 `_batch_delete_middle_messages` 对应，本方案改为 ARCHIVED + index.remove——召回侧移除但治理侧可审计、可恢复。
 
@@ -80,21 +80,21 @@ mem2.0 把这件事拆回控制层标准范式：
 
 `infer=true` 下按 `middle` 二级分流。`middle=true` 触发中期缓冲子路径 `_write_middle_path`：
 
-1. 给 unit 打 `tier=WORKING` + `metadata["middle"]="true"` 标记。
+1. 给 unit 打 `tier=WORKING` + `system_metadata["middle"]="true"` 标记。
 2. `kv.insert` 落 `/memory/{id}`（与建索引记忆同前缀，被 `_list_working_units` 扫到）+ `index_builder.build(units)`（原文立即可检索）。
-3. `job_factory.get_job(JobType.MIDDLE_TO_LONG, scope=scope, evolver=evolver, index=index_builder, **interval_kw)` 取实例 + `scheduler.submit(job, channel=Channel.BACKGROUND)`。其中 `interval_kw` 由 write 入参 `metadata["middle_interval"]` 透传（pop 后不落盘到 unit.metadata），缺省不传由 `MiddleToLongJobSpec.interval` 装配期默认 50 兜底——与 `evolver=` / `index=` 运行时覆盖入参模式一致。
+3. `job_factory.get_job(JobType.MIDDLE_TO_LONG, scope=scope, evolver=evolver, index=index_builder, **interval_kw)` 取实例 + `scheduler.submit(job, channel=Channel.BACKGROUND)`。其中 `interval_kw` 由 write 入参 `system_metadata["middle_interval"]` 透传（pop 后不落盘到 unit.system_metadata），缺省不传由 `MiddleToLongJobSpec.interval` 装配期默认 50 兜底——与 `evolver=` / `index=` 运行时覆盖入参模式一致。
 
 `CloudEngine._write_middle_path` 多 profile 适配：按 `message_type` 选 binding，每个 profile 有自己的 evolver/index。JobFactory Spec 装配期固化的是 default evolver/index——若直接用 Spec 的，原文用 `chat_index` 建索引但归档时调 `default_index.remove`，原文索引不会被正确清理。故此处通过 `JobFactory.get_job` 的**运行时覆盖入参** `evolver=` / `index=` 注入 binding 的——`MiddleToLongJobSpec.with_scope` 从 `kwargs` 弹出 `evolver` / `index` 覆盖 Spec 装配期固化的默认值，保证 Job 内部的 evolver/index 与原文落盘时一致。
 
 **关键权衡**：
 
 - middle 是 infer=true 的二级开关：middle 路径要原文立即可检索（落 /memory/ + 建索引），与 infer=true 同步抽取语义冲突（infer 原文不建索引、走 /messages/）。故 middle=true 必须在 infer=true 下生效，且走自己的子分支。
-- `middle_interval` 是 MiddleToLongJob 的运行时参数，落在 `MiddleToLongJobSpec.interval`（装配期默认 50，与 `max_fetch`/`batch_size`/`concurrency` 同级）。Engine.write 不持有 interval——从入参 `metadata["middle_interval"]` 透传到 `factory.get_job(interval=...)`，缺省由 Spec 默认兜底。调用级开关（middle / middle_interval）在 write 入口从 raw_meta pop，不落盘到 unit.metadata。详见决策 4 第 3 步。
+- `middle_interval` 是 MiddleToLongJob 的运行时参数，落在 `MiddleToLongJobSpec.interval`（装配期默认 50，与 `max_fetch`/`batch_size`/`concurrency` 同级）。Engine.write 不持有 interval——从入参 `system_metadata["middle_interval"]` 透传到 `factory.get_job(interval=...)`，缺省由 Spec 默认兜底。调用级开关（middle / middle_interval）在 write 入口从 raw_meta pop，不落盘到 unit.system_metadata。详见决策 4 第 3 步。
 - JobFactory 可选注入：config 声明了 `job_factory` 命名空间具名实例则注入，None 时 evolve/middle 路径报错（向后兼容——纯默认配置不走演进）。
 
 ### 决策 5：`EvolveJob` —— 通用演进入口（替代原 InProcessScheduler._execute_task）
 
-`src/control/jobs_impl/evolve_job.py` 注册到 `JobType.EVOLVE`。`run()` 流程：`kv.scan(scope, MEMORY_KEY_PREFIX)` → 反序列化 + 过滤 `metadata["middle"]!="true"`（中期记忆由 MiddleToLongJob 专门处理，避免同一原文被两次处理）→ `evolver.evolve(units, mode)`。`mode` 由构造参数注入，支持 EXTRACT/ASSOCIATE/CONSOLIDATE/FORGET 任意值，忠实于原 `submit(scope, mode, channel)` 的 mode 语义。
+`jiuwen_memory/control/jobs_impl/evolve_job.py` 注册到 `JobType.EVOLVE`。`run()` 流程：`kv.scan(scope, MEMORY_KEY_PREFIX)` → 反序列化 + 过滤 `system_metadata["middle"]!="true"`（中期记忆由 MiddleToLongJob 专门处理，避免同一原文被两次处理）→ `evolver.evolve(units, mode)`。`mode` 由构造参数注入，支持 EXTRACT/ASSOCIATE/CONSOLIDATE/FORGET 任意值，忠实于原 `submit(scope, mode, channel)` 的 mode 语义。
 
 `Engine.evolve` 不再直接 new EvolveJob，走 `JobFactory.get_job(JobType.EVOLVE, scope=scope, mode=mode)`——与 MiddleToLongJob 创建路径统一。
 
@@ -107,7 +107,7 @@ mem2.0 把这件事拆回控制层标准范式：
 
 ### 决策 7：dedup 跳过中期原文
 
-`KeywordDedup.recall` / `VectorDedup.recall` 跳过 `metadata.get("middle")=="true"` 的 unit：
+`KeywordDedup.recall` / `VectorDedup.recall` 跳过 `system_metadata.get("middle")=="true"` 的 unit：
 
 - dedup 旨在查"派生是否与已沉淀长期记忆重复"。
 - 中期原文是"待 MiddleToLongJob 处理的缓冲态输入"，语义必然接近派生（派生就是从原文抽取的事实陈述），让原文参与对照会触发 LLM dedup 判 NOOP 丢派生。
@@ -148,14 +148,14 @@ job_factory:
 
 **注意**：`middle_interval` 配到 `job_factory.default.params` 是**装配期默认值**，经 `_build_middle_to_long_job_spec` 固化到 `Spec.interval`。若 write metadata 不显式传 `middle_interval`，Job 用此 Spec 默认值；若 write metadata 显式传，覆盖 Spec 默认值（单次生效，不污染 Spec）。
 
-#### 8.2 调用级开关（write `metadata`）
+#### 8.2 调用级开关（write `system_metadata`）
 
-write 调用时经 `metadata` 传入，是"本次 write 如何处理"的指令，不是 unit 持久属性——engine 在 write 入口从 `raw_meta` pop 后透传到下游，不进 `unit.metadata` 落盘。
+write 调用时经 `system_metadata` 传入，是"本次 write 如何处理"的指令，不是 unit 持久属性——engine 在 write 入口从 `raw_meta` pop 后透传到下游，不进 `unit.system_metadata` 落盘。
 
-| metadata key | 取值 | 作用 | 透传目标 |
+| system metadata key | 取值 | 作用 | 透传目标 |
 |---|---|---|---|
 | `infer` | `"true"` | 同步抽取开关——write 时立即调 `evolver.evolve(EXTRACT)` 走完整派生链路 | engine 内部判定路径分流（见 [F02-write-infer-extract](../api/F02-write-infer-extract.md)） |
-| `middle` | `"true"` | 中期缓冲二级开关——仅在 `infer=true` 下生效；走 `_write_middle_path` 子路径（原文落 `/memory/` + 建索引 + tier=WORKING + 提交 MiddleToLongJob）。**会主动写回 `unit.metadata["middle"]="true"`**——`MiddleToLongJob._list_working_units` 据此过滤候选 | engine 内部 + 写回 unit.metadata 作候选标记 |
+| `middle` | `"true"` | 中期缓冲二级开关——仅在 `infer=true` 下生效；走 `_write_middle_path` 子路径（原文落 `/memory/` + 建索引 + tier=WORKING + 提交 MiddleToLongJob）。**会主动写回 `unit.system_metadata["middle"]="true"`**——`MiddleToLongJob._list_working_units` 据此过滤候选 | engine 内部 + 写回 unit.system_metadata 作候选标记 |
 | `middle_interval` | `"30"` 等 | MiddleToLongJob 的运行时周期（覆盖 Spec 装配期默认） | engine 透传到 `factory.get_job(interval=...)` |
 | `procedural` | `"true"` | 程序性记忆路径开关（与 infer/middle 互斥的第三条分流） | engine 内部判定路径分流 |
 
@@ -177,7 +177,7 @@ await engine.write(
 
 - `middle=true` 但 `infer!=true` 且 `procedural!=true` → engine 抛 `ValueError`（middle 是 infer 的二级开关，见决策 4 关键权衡）。fail fast 而非静默退化。
 - `middle_interval` 单独传（无 `middle=true`）→ 被 engine pop 但不透传（不进 middle 路径），无副作用。
-- `middle` / `middle_interval` 不落盘到 `unit.metadata`——engine 入口 pop 剥除。`middle=true` 标记是 `_write_middle_path` 内**有意的写回**（候选过滤需要），不是入口 metadata 透传。
+- `middle` / `middle_interval` 不落盘到 `unit.system_metadata`——engine 入口 pop 剥除。`middle=true` 标记是 `_write_middle_path` 内**有意的写回**（候选过滤需要），不是入口 metadata 透传。
 
 #### 8.3 与 ConfigSource 的边界
 
@@ -370,7 +370,7 @@ job_factory:
 
 1. **`AsyncTimerScheduler` 不是真持久化调度**：TimerWheel / queue / JobInfo 全在进程内，进程重启全丢。生产需替换成 Redis/DB 持久化 + 多 worker 协调，但 `Scheduler.submit/status/cancel` 契约不变。
 
-2. **`middle_interval` 已下沉到 `MiddleToLongJobSpec.interval`**（已修复）：原实现 Engine 持 `self._middle_interval` 在 `factory.get_job` 时注入，是 Engine 编排参数而非 Job 自描述。重构后 `MiddleToLongJobSpec` 装配期固化 `interval` 字段（默认 50，与 `max_fetch`/`batch_size`/`concurrency` 同级），write 入参 `metadata["middle_interval"]` 经透传覆盖 Spec 默认值（与 `evolver=` / `index=` 覆盖入参模式一致）。`middle_interval` 作为调用级开关在 write 入口从 raw_meta pop，不落盘到 unit.metadata。Engine 不再持 interval，多 scope/多调用方走不同周期直接经 metadata 传入即可。
+2. **`middle_interval` 已下沉到 `MiddleToLongJobSpec.interval`**（已修复）：原实现 Engine 持 `self._middle_interval` 在 `factory.get_job` 时注入，是 Engine 编排参数而非 Job 自描述。重构后 `MiddleToLongJobSpec` 装配期固化 `interval` 字段（默认 50，与 `max_fetch`/`batch_size`/`concurrency` 同级），write 入参 `system_metadata["middle_interval"]` 经透传覆盖 Spec 默认值（与 `evolver=` / `index=` 覆盖入参模式一致）。`middle_interval` 作为调用级开关在 write 入口从 raw_meta pop，不落盘到 unit.system_metadata。Engine 不再持 interval，多 scope/多调用方走不同周期直接经 system metadata 传入即可。
 
 3. **连续性检测是串行依赖**：`_check_continuity` 必须串行（前一条结果影响下一条是否切批），无法 gather 并发。max_fetch=100 时最坏 99 次 LLM 调用串行——耗时与 LLM 单次延迟线性相关。若成瓶颈，可改"分块预切批 + 块内并发检测"两阶段。
 
@@ -378,7 +378,7 @@ job_factory:
 
 5. **`CloudEngine._write_middle_path` 通过 `get_job` 运行时覆盖入参注入 binding 的 evolver/index**：`MiddleToLongJobSpec.with_scope` 从 `kwargs` 弹出 `evolver` / `index` 覆盖 Spec 装配期固化的默认值，再传给 `MiddleToLongJob.__init__`。这是替代"`job._evolver = evolver` 直接赋值"的合规方案——不破坏 Job 字段封装，覆盖逻辑收敛在 Spec 层。`InMemoryEngine._write_middle_path` 同样通过该机制注入。
 
-6. **`JobFactory` 自注册靠显式 import**：`bootstrap.register_controllers` 不 import `jobs_impl`；`Engine._opt_job_factory` 内显式 `import control.jobs_impl as _ji` 触发 `@JobFactoryProducer.register("default")` 装饰器执行。若调用方未配 `job_factory` 命名空间，`_opt_job_factory` 返回 None，evolve/middle 路径报错——向后兼容但容易让人误以为"配了 job_factory 就能用"。
+6. **`JobFactory` 自注册靠显式 import**：`bootstrap.register_controllers` 不 import `jobs_impl`；`Engine._opt_job_factory` 内显式 `import jiuwen_memory.control.jobs_impl as _ji` 触发 `@JobFactoryProducer.register("default")` 装饰器执行。若调用方未配 `job_factory` 命名空间，`_opt_job_factory` 返回 None，evolve/middle 路径报错——向后兼容但容易让人误以为"配了 job_factory 就能用"。
 
 7. **`AsyncTimerScheduler` 与同步 API `asyncio.run` 桥接不兼容**（架构债）：`LocalMemoryAPI.add` 同步桥接用 `asyncio.run(add_async(...))`，临时事件循环关闭后 Timer 协程被取消——同步 API 路径提交的 middle Job 永远不会转换为长期记忆。**触发条件**：用户显式配 `scheduler=async_timer` + 用同步 `api.add(...)`。**默认配置无影响**（默认 `in_process`，submit 即跑完 Job，原文立即 ARCHIVED）。**目标终态**：Kernel 级长生命周期 `AsyncRuntime` + 生产形态独立持久化 Worker——已单独立 issue 跟进，不在本次 PR 范围。**当前可用方式**：(a) 用默认 `in_process` scheduler（同步执行，与 mem1.0 行为等价）；(b) 用 `add_async` 全链路 await + 长生命周期事件循环。
 

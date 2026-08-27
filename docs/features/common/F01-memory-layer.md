@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-07（初版）/ 2026-07-03（落地修订） |
-| 影响范围 | src/common/type_def/memory.py、src/common/type_def/memory_codec.py、src/construction/layer_annotator.py、src/construction/layer_annotator_impl/、src/construction/evolver_impl/orchestrating_evolver.py、src/construction/index_builder_impl/、src/construction/base.py、src/construction/bootstrap.py、docs/specs/S05-construction.md、docs/specs/S07-common.md |
+| 影响范围 | jiuwen_memory/common/type_def/memory.py、jiuwen_memory/common/type_def/memory_codec.py、jiuwen_memory/construction/layer_annotator.py、jiuwen_memory/construction/layer_annotator_impl/、jiuwen_memory/construction/evolver_impl/orchestrating_evolver.py、jiuwen_memory/construction/index_builder_impl/、jiuwen_memory/construction/base.py、jiuwen_memory/construction/bootstrap.py、docs/specs/S05-construction.md、docs/specs/S07-common.md |
 | 测试基线 | `tests/unit/construction/test_layer_annotator.py`（10 passed）、`tests/unit/construction/test_layers_index.py`（10 passed）、全量 `tests/` 426 passed / 54 skipped |
 | Refs | — |
 
@@ -110,24 +110,25 @@ LLM 版策略：
 Extractor.extract / Abstractor.abstract
 → LayerAnnotator.annotate(derived)        # _annotate_layers，best effort
 → Dedup / persist decision
-→ KVStore.insert or update
-→ IndexBuilder.build or update
+→ IndexBuilder.build or update（交付真源与派生索引）
 ```
 
-`OrchestratingEvolver._persist` 是 `KVStore.insert` 后立即 `IndexBuilder.build`，故标注必须在
+`OrchestratingEvolver._persist` 通过 `IndexBuilder.build` 交付真源与派生索引，故标注必须在
 `_dedup_batch` 之前完成，否则索引 metadata 中的 `l0/l1` 会与真源不一致。当前实现：procedural
 与非 procedural 的 EXTRACT 路径、CONSOLIDATE 路径均在抽取（升华）后立即调 `_annotate_layers`。
 
-#### Engine.write 默认 / infer=true 路径（未落地）
+#### Engine.write 默认 / infer=true 路径（当前实现）
 
 蓝图规划原始 unit 在分类后、落盘前标注：
 
 ```text
-Ingestor.ingest → Classifier.classify → LayerAnnotator.annotate → KVStore.insert → IndexBuilder.build
+Ingestor.ingest → Classifier.classify → IndexBuilder.build
 ```
 
-当前未接 Engine.write 路径——原始 unit 无 layers。infer=true 下原始 unit 落 `/messages/`
-（不建索引），派生 unit 由 Evolver 产出并标注（已落地，见上）。后续如需原始 unit 也分层，再接 write 路径。
+当前默认写入经 Classifier 后直接交给 `IndexBuilder.build`：`ForwardIndexBuilder` 写入
+`/memory/` 真源，其他子 builder 写派生索引。原始 unit 仍不自动生成 `layers`；infer=true
+下原始 unit 写入 `/messages/`（不建索引），派生 unit 由 Evolver 产出并标注。若要让原始
+unit 也分层，仍需单独把 LayerAnnotator 接入默认写入路径。
 
 ### 4. update/delete 对 layers 的影响（未落地）
 
@@ -388,11 +389,11 @@ L0/L1/L2 分别落独立 Milvus collection，共用同一维度与 COSINE 度量
 - [x] `LayerAnnotator` 接口和 Producer 注册（`construction/layer_annotator.py`）
 - [x] `KeywordLayerAnnotator` 标注 L0/L1，失败不阻断（按阈值筛选）
 - [x] `LLMLayerAnnotator` 标注 L0/L1，LLM 失败回退空 layers（按阈值筛选）
-- [ ] Engine.write 默认路径在 KVStore.insert / IndexBuilder.build 前完成标注（未落地）
+- [x] Engine.write 默认路径经 IndexBuilder 统一交付真源与派生索引（未自动标注 layers）
 - [ ] infer=true 原始 unit 标注后落盘（未落地；派生 unit 标注已落地）
 - [x] Evolver EXTRACT / CONSOLIDATE 派生 unit 在去重落盘前完成标注（`_annotate_layers`）
 - [ ] Engine.update 在 content/tags 变化时重新标注（未落地）
-- [ ] delete/lifecycle 转换不修改 layers，PURGE 删除真源与索引（未落地）
+- [x] PURGE 经 IndexBuilder 删除真源与派生索引；非破坏式 lifecycle 转换不修改 layers
 - [x] VectorIndexBuilder 为 L0/L1/L2 建层级记录，metadata 含 `content_layer`（分表、store None 跳过）
 - [x] FulltextIndexBuilder 为 L0/L1/L2 建层级文档，metadata 含 `content_layer`（分表、store None 跳过）
 - [x] Recaller 聚合层级命中到 `unit_id`：同通道多层命中取 MaxP，跨通道由所选 Fuser 聚合（已实施，§6）

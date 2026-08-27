@@ -10,9 +10,9 @@
 
 ## 背景
 
-mem2.0 以 `src/{api,common,config,...}` 平铺布局 + setuptools `include=api*` 打 whl，导致 `top_level.txt` 暴露 9 个通用顶层名。宿主项目若自带 `common/` / `config/` / `api/`，`sys.path` 优先 shadow，`JiuwenMemory` SDK 进程内路径在 `initialize` 即 `ModuleNotFoundError: No module named 'common.type_def'`。
+重命名前，mem2.0 以 `src/{api,common,config,...}` 平铺布局 + setuptools `include=api*` 打 whl，导致 `top_level.txt` 暴露 9 个通用顶层名。宿主项目若自带 `common/` / `config/` / `api/`，`sys.path` 优先 shadow，`JiuwenMemory` SDK 进程内路径在 `initialize` 即 `ModuleNotFoundError: No module named 'common.type_def'`。
 
-内核目录改名后，`deploy/docker/*` 仍 `COPY src ./src` 且 compose 挂载 `../../../src:/app/src`，**镜像构建期即失败**（仓库已无 `src/`），与 whl/开发态不同步。
+改名前的 deploy 配置仍使用 `COPY src ./src` 与 `../../../src:/app/src`；目录已改为 `jiuwen_memory/` 后，这些旧路径会使镜像构建期失败，与 whl/开发态不同步。
 
 ## 决策
 
@@ -24,7 +24,7 @@ mem2.0 以 `src/{api,common,config,...}` 平铺布局 + setuptools `include=api*
    - **Dockerfile**（`local` / `online` / `postgres`）：`COPY jiuwen_memory ./jiuwen_memory`，`pip install -e .` 的 editable 目标为 `/app/jiuwen_memory`。
    - **docker-compose**（同上三套件）：开发热更新挂载 `../../../jiuwen_memory:/app/jiuwen_memory:ro`（替代原 `src:/app/src`）。
    - **bootstrap** 仍 `COPY` + 挂载 `bootstrap/`，HTTP 入口不变（`python bootstrap/http_server/__main__.py`）；**不在** Dockerfile 里为 flat `import server` 额外设 `PYTHONPATH`（`__main__.py` 已 append `bootstrap/core`）。
-   - **文档注释**：`deploy/docker/local/config.yml`、`deploy/docker/README.md` 中 `src/config` 改为 `jiuwen_memory/config`。
+   - **文档注释**：`deploy/docker/local/config.yml`、`deploy/docker/README.md` 中的旧 `src/config` 改为 `jiuwen_memory/config`。
 
 ## 拒绝的方案
 
@@ -47,5 +47,5 @@ mem2.0 以 `src/{api,common,config,...}` 平铺布局 + setuptools `include=api*
 
 - bootstrap surface 仍有 flat path-hack。
 - `agent_plugin` / `bootstrap` 仍是相对通用的顶层名，极端宿主冲突未消。
-- 全库 docs/specs/features 中仍有大量历史 `src/` 路径与 `from api import` 示例，需按需渐进刷新（本轮已改根 `AGENTS.md`、内核 `AGENTS.md` 标题与 hook、`deploy/docker`）。
+- 历史文档如需引用改名前布局，必须明确标记 `src/` 为历史路径；现行路径、内部链接和代码示例统一使用 `jiuwen_memory/` 与 `jiuwen_memory.*`。
 - 对外为 breaking change：调用方须改 import 前缀。

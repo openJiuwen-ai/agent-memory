@@ -1,15 +1,15 @@
-# F01 — 控制层实现规约（src/control/*_impl）
+# F01 — 控制层实现规约（jiuwen_memory/control/*_impl）
 
 ## 元信息
 
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-06-24 |
-| 影响范围 | src/control/{engine,governance,lifecycle,permission,policy,scheduler}_impl/，docs/specs/S03-control.md |
+| 影响范围 | jiuwen_memory/control/{engine,governance,lifecycle,permission,policy,scheduler}_impl/，docs/specs/S03-control.md |
 | 测试基线 | `pytest tests/unit/control` 全绿；控制层主链路同时被 `tests/unit/api/test_recall_context.py` 与 quickstart 类端到端用例间接覆盖 |
 | Refs | — |
 
-> 本文档归档**控制层第一版实现规约**：每个控制算子的当前实现、注册名、依赖、行为边界与取舍。接口契约本身归 [`docs/specs/S03-control.md`](../../specs/S03-control.md)；当前文件地图和本地铁律见 [`src/control/AGENTS.md`](../../../src/control/AGENTS.md)。本文聚焦「当前实现怎么落地、为什么这么做」。
+> 本文档归档**控制层第一版实现规约**：每个控制算子的当前实现、注册名、依赖、行为边界与取舍。接口契约本身归 [`docs/specs/S03-control.md`](../../specs/S03-control.md)；当前文件地图和本地铁律见 [`jiuwen_memory/control/AGENTS.md`](../../../jiuwen_memory/control/AGENTS.md)。本文聚焦「当前实现怎么落地、为什么这么做」。
 
 ---
 
@@ -35,7 +35,7 @@
 
 | 路径 | 第一版语义 |
 |---|---|
-| `write` | 构造 `RawPayload` → `Ingestor.ingest` → 补 `assets/tags` → `Classifier.classify` → `KVStore.insert` 真源落盘 → `IndexBuilder.build` hot 索引 → 返回 units。`metadata["infer"]=="true"` 时改为同步走 `Evolver.evolve(units, EXTRACT)` 抽取派生记忆（原始不建索引），返回派生单元；默认路径**不再** `Scheduler.submit(EXTRACT, BACKGROUND)`（演进由调用方显式 `evolve()` 触发）。详见 [`F02-write-infer-extract`](../api/F02-write-infer-extract.md) |
+| `write` | 构造 `RawPayload` → `Ingestor.ingest` → 补 `assets/tags` → `Classifier.classify` → `IndexBuilder.build` 交付真源与 hot 索引 → 返回 units。`system_metadata["infer"]=="true"` 时改为同步走 `Evolver.evolve(units, EXTRACT)` 抽取派生记忆（原始不建索引），返回派生单元；默认路径**不再** `Scheduler.submit(EXTRACT, BACKGROUND)`（演进由调用方显式 `evolve()` 触发）。详见 [`F02-write-infer-extract`](../api/F02-write-infer-extract.md) |
 | `recall` | 直接委托 `Retriever.retrieve(scope, query)` |
 | `get` | 从 KV 真源加载；`as_of` 非空时沿 `supersedes` 版本族选 valid-time 命中的版本 |
 | `update` | `SUPERSEDE` 新建新 id、旧版经 `LifecycleManager.supersede` 标记失效；`OVERWRITE` 原地覆写 |

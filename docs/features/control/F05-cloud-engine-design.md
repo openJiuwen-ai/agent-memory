@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-27 |
-| 影响范围 | `src/control/engine_impl/cloud_engine.py`、`src/control/engine_impl/__init__.py`、`src/control/pipeline.py`、`src/construction/`、`src/common/security/`、`src/storage/kv_impl/`、`docs/specs/S03-control.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md` |
+| 影响范围 | `jiuwen_memory/control/engine_impl/cloud_engine.py`、`jiuwen_memory/control/engine_impl/__init__.py`、`jiuwen_memory/control/pipeline.py`、`jiuwen_memory/construction/`、`jiuwen_memory/common/security/`、`jiuwen_memory/storage/kv_impl/`、`docs/specs/S03-control.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md` |
 | 测试基线 | 已新增 `tests/unit/control/test_cloud_engine.py`；本地无 pytest，使用 `runpy` 显式调用测试函数通过 |
 
 ## 背景
@@ -32,8 +32,8 @@
 
 ### 决策 1：新增独立 `CloudEngine` 实现，不继承 `InMemoryEngine`
 
-`CloudEngine` 放在 `src/control/engine_impl/cloud_engine.py`，直接实现 `MemoryEngine`，并通过
-`EngineProducer` 注册为 `cloud`。`src/control/engine_impl/__init__.py` import 该模块触发自注册。
+`CloudEngine` 放在 `jiuwen_memory/control/engine_impl/cloud_engine.py`，直接实现 `MemoryEngine`，并通过
+`EngineProducer` 注册为 `cloud`。`jiuwen_memory/control/engine_impl/__init__.py` import 该模块触发自注册。
 
 `CloudEngine` 不继承 `InMemoryEngine`，也不访问其 `_kv`、`_pipeline`、`_index` 等受保护成员。
 原因是云侧编排会涉及 message type、space、安全 KV、profile-aware evolve 等新约束，继承旧实现容易形成隐式耦合，后续修改也容易绕过安全接缝。
@@ -56,17 +56,17 @@
 - `document`
 
 `message_type` 表示输入消息来源、格式和抽取策略，不等同于 `MemoryUnit.tier`
-或 `metadata["memory_type"]`。后者描述记忆本身的认知角色或策略分类，例如 episodic、semantic、
+或 `system_metadata["memory_type"]`。后者描述记忆本身的认知角色或策略分类，例如 episodic、semantic、
 procedural、preference。
 
 第一阶段保持 `MemoryEngine.write` 抽象接口兼容：调用侧可通过
-`metadata["message_type"]` 下传。HTTP/SDK 等 surface 后续可以增加显式 `message_type`
+`system_metadata["message_type"]` 下传。HTTP/SDK 等 surface 后续可以增加显式 `message_type`
 字段，但进入 API 层后必须归一化到 metadata，保证 engine 只消费统一内部结构。
 
 写入后，`CloudEngine` 必须把路由信息固化到真源：
 
-- `metadata["message_type"]`
-- `metadata["pipeline"]`
+- `system_metadata["message_type"]`
+- `system_metadata["pipeline"]`
 - 选中 profile 需要的其他治理字段
 
 这样 `get/update/delete` 的权限上下文可以从真源解析，不能信任调用方重新声明的
@@ -140,7 +140,7 @@ RawPayload
   -> Ingestor.ingest
   -> 补齐 Scope / metadata / tags / occurred_at
   -> MemoryPipeline.select_for_write
-  -> 固化 metadata["message_type"] 与 metadata["pipeline"]
+  -> 固化 system_metadata["message_type"] 与 system_metadata["pipeline"]
   -> 根据写入模式分流
 ```
 
@@ -149,15 +149,15 @@ RawPayload
 | 模式 | 触发条件 | 编排行为 |
 |---|---|---|
 | `raw_indexed` | 默认，`infer` 与 `procedural` 均不为 true | 选中 profile 的 classifier 分类，落 `/memory/{id}`，构建索引，返回原始 memory unit |
-| `infer_extract` | `metadata["infer"] == "true"` | 原文落 `/messages/{id}` 作为上下文，不建索引；选中 profile 的 evolver 执行 `EXTRACT`，返回派生 memory unit |
-| `procedural_extract` | `metadata["procedural"] == "true"` | 原文不作为普通记忆落 `/memory/`；选中 profile 的 evolver 汇总为过程记忆并落真源与索引 |
+| `infer_extract` | `system_metadata["infer"] == "true"` | 原文落 `/messages/{id}` 作为上下文，不建索引；选中 profile 的 evolver 执行 `EXTRACT`，返回派生 memory unit |
+| `procedural_extract` | `system_metadata["procedural"] == "true"` | 原文不作为普通记忆落 `/memory/`；选中 profile 的 evolver 汇总为过程记忆并落真源与索引 |
 
 所有写入都必须满足：
 
 - 写入 target scope 必须与产出的 `MemoryUnit.scope` 一致。
 - 写入 target scope 已由 API 鉴权，engine 不重复 check。
-- 真源落盘只通过注入的 `KVStore`。
-- 索引构建只通过选中 profile 的 `IndexBuilder`。
+- 真源与派生索引均只通过选中 profile 的 `IndexBuilder` 交付；engine 只直接使用
+  `Storage` 的读取接口与生命周期治理所需操作。
 - 返回值来自真源或刚构建的明文 `MemoryUnit`，不返回密文字节。
 
 ### 决策 5：读取路径保持明文对象语义，加密在 KV 装饰器内透明完成
@@ -194,8 +194,8 @@ encryptor”，避免配置声称启用加密但实际透传明文。
 
 | 层 | 位置 | 职责 |
 |---|---|---|
-| 安全接口与加密实现 | `src/common/security/` | `SecurityProvider`、`SecurityContext`、本地密钥实现、`ENC1` envelope、加密错误 |
-| KV 加密装饰器 | `src/storage/kv_impl/encrypted_kv_store.py` | 实现 `KVStore`，写前加密、读后解密、明文兼容、fail-closed |
+| 安全接口与加密实现 | `jiuwen_memory/common/security/` | `SecurityProvider`、`SecurityContext`、本地密钥实现、`ENC1` envelope、加密错误 |
+| KV 加密装饰器 | `jiuwen_memory/storage/kv_impl/encrypted_kv_store.py` | 实现 `KVStore`，写前加密、读后解密、明文兼容、fail-closed |
 
 `SecurityContext` 与显式 AAD 至少绑定：
 
@@ -240,7 +240,7 @@ encryptor”，避免配置声称启用加密但实际透传明文。
 CloudEngine.evolve(scope, mode)
   -> 提交一个 scope 级 job
   -> executor 扫描 scope 内 /memory/ 记录
-  -> 按 metadata["message_type"] 或 metadata["pipeline"] 分组
+  -> 按 system_metadata["message_type"] 或 system_metadata["pipeline"] 分组
   -> 每组调用对应 PipelineBinding.evolver
   -> 合并 EvolveResult 并记录 job detail
 ```

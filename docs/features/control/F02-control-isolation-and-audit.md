@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-02 |
-| 影响范围 | `bootstrap/core/handler.py`、`src/api/`、`src/control/`、`src/storage/`、`src/common/audit/`、`docs/specs/S03-control.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md` |
+| 影响范围 | `bootstrap/core/handler.py`、`jiuwen_memory/api/`、`jiuwen_memory/control/`、`jiuwen_memory/storage/`、`jiuwen_memory/common/audit/`、`docs/specs/S03-control.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md` |
 | 测试基线 | `ruff check` 通过；相关单测通过 |
 | Refs | `docs/design/mem0-control-layer-gap-analysis.md` |
 
@@ -214,7 +214,7 @@ SQLite 审计通过 `audit.default` 配置启用：
 **拒绝原因**：
 
 - 改动面会迅速扩大到装配、配置、部署和运维层。
-- 当前仓库的最主要缺口仍是“访问控制未落地”，不是“物理隔离编排能力不足”。
+- 当时仓库的最主要缺口是“访问控制未落地”；当前 SQLite 权限管理、API PEP 与审计链路已落地，物理隔离编排仍不在本特性范围。
 - 如果在 ACL、history、audit 都还没稳住之前就引入物理隔离，复杂度会上升得过快。
 
 ### 方案 C：退化为 mem0 式 identity 过滤模型

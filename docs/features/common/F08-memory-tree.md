@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-08-15 |
-| 影响范围 | src/api/、src/common/、src/construction/、src/control/、src/ingest/、src/retrieval/、src/storage/；docs/specs/S01–S07；关联 [`F05-construction-spec-multimodal-design`](../construction/F05-construction-spec-multimodal-design.md) |
+| 影响范围 | jiuwen_memory/api/、jiuwen_memory/common/、jiuwen_memory/construction/、jiuwen_memory/control/、jiuwen_memory/ingest/、jiuwen_memory/retrieval/、jiuwen_memory/storage/；docs/specs/S01–S07；关联 [`F05-construction-spec-multimodal-design`](../construction/F05-construction-spec-multimodal-design.md) |
 | 测试基线 | 目标设计与 specs 已同步完成，待设计评审；树结构代码尚未实现，无 pytest 结果 |
 | Refs | — |
 
@@ -494,7 +494,7 @@ Policy 键、默认值和校验由
 
 ## ingest 接入层 （层级叶提示）
 
-Source adapter 可以在 `RawPayload.metadata` 中提供以下保留键：
+Source adapter 可以在 `RawPayload.system_metadata` 中提供以下保留键：
 
 | 键 | 类型 | 语义 |
 |---|---|---|

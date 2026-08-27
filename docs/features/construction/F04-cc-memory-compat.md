@@ -6,7 +6,7 @@
 |---|---|
 | 系统范围 | 记忆写入、基线记忆、Markdown 目录检索、团队记忆同步、retained evaluation |
 | 日期 | 2026-07-22 |
-| 关联模块 | `agent_plugin/cc_memory`、`src/construction`、`src/retrieval`、`evaluation/cc_memory` |
+| 关联模块 | `agent_plugin/cc_memory`、`jiuwen_memory/construction`、`jiuwen_memory/retrieval`、`evaluation/cc_memory` |
 | 适用调用面 | `MemoryAPI`、构建算子、Recaller、评测运行器、团队同步 adapter |
 
 ## 1. 系统目标和边界

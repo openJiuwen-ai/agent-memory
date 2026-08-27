@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-31 |
-| 影响范围 | `src/common/_support.py`（共用件）、`src/storage/_support.py`、redis / elasticsearch / milvus / postgres / pgvector 五个 builder、`deploy/docker/online/`、`deploy/docker/postgres/` |
+| 影响范围 | `jiuwen_memory/common/_support.py`（共用件）、`jiuwen_memory/storage/_support.py`、redis / elasticsearch / milvus / postgres / pgvector 五个 builder、`deploy/docker/online/`、`deploy/docker/postgres/` |
 | 测试基线 | `tests/unit/storage` 118 passed, 2 skipped |
 | Refs | [S06-storage.md](../../specs/S06-storage.md) 不变量 17、[F05-model-service-ssl.md](../common/F05-model-service-ssl.md) |
 
