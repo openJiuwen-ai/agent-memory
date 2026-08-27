@@ -263,6 +263,25 @@ scripts:
 }
 ```
 
+### save 操作 — 空内容时
+
+```json
+{
+  "success": false,
+  "operation": "save",
+  "user_id": "<YOUR_USER_ID>",
+  "error": "没有可写入的消息内容（全部为空或仅包含空白字符）",
+  "mode": "filtered",
+  "breaker_open": false
+}
+```
+
+> **v1.1+ 修复**：当所有消息的 `content` 均为空字符串或仅包含空白字符时：
+> - Skill 本地过滤（防御层）→ 返回 `success: false`（如上）
+> - 若绕过 skill 直接调用 mem1.0 HTTP API → mem1.0 返回 HTTP 422 `{"detail": "No valid messages (all content is empty)"}`
+>
+> PR #244 已修复：mem1.0 服务端现在过滤空内容和纯空白内容（`content.strip() == ""`）。Skill 仍保留本地过滤作为熔断/buffer 场景的防御层。
+
 ### flush 操作
 
 ```json
@@ -378,11 +397,30 @@ scripts:
   "message": {
     "role": "user",
     "content": "原始对话内容...",
-    "timestamp": "2024-01-15T10:00:00"
+    "timestamp": "2026-08-26T15:36:17.517757+08:00"
   },
   "breaker_open": false
 }
 ```
+
+> **时区说明**：v1.1+（对应 mem1.0 PR #244 后），`timestamp` 字段使用**本地时区**（带时区偏移，如 `+08:00`），不再强制使用 UTC。Agent 在解析时间戳时应考虑时区信息。
+
+### trace 操作 — 消息不存在时
+
+```json
+{
+  "success": true,
+  "operation": "trace",
+  "message_id": "msg_nonexistent_id",
+  "message": {
+    "found": false,
+    "message_id": "msg_nonexistent_id"
+  },
+  "breaker_open": false
+}
+```
+
+> **v1.1+ 修复**：当 `message_id` 不存在时，mem1.0 不再返回 HTTP 500，而是 `{"found": false}`（PR #244 已修复 `message_manager.get_by_id` 的 `BaseError` 异常处理）。Skill 仍返回 `success: true`，调用方需检查 `message.found` 字段判断溯源是否成功。
 
 ### 失败时（fail-open）
 
@@ -512,3 +550,33 @@ flush 操作         → 手动将缓冲区所有消息批量写入 agent-memory
 4. **熔断器跨进程共享**：通过文件系统实现，确保多次 `call_mcp` 调用之间熔断器状态一致
 5. **缓冲写入适用于多轮对话**：AgentRule.md 中每轮调用 `save` 时使用 `buffer: true`，对话结束时调用 `flush` 统一写入
 6. **scope_id 默认值**：`edp_agent`，与 MemoryRail 的 `memory_scope_id` 保持一致
+
+## 附：mem1.0 服务端其他端点（运维参考，未集成到 Skill）
+
+以下端点由 mem1.0 服务端提供，但**未被本 Skill 集成**（运维场景使用，Agent 无需调用）：
+
+| 端点 | 方法 | 用途 | 集成建议 |
+|------|------|------|---------|
+| `/admin/mem_meta/refresh` | POST | 触发元数据刷新任务（异步） | ❌ 运维操作 |
+| `/admin/mem_meta/expired_memorys` | POST | 查询有过期记忆的 Top N 用户 | ❌ 运维操作 |
+| `/admin/mem_meta/batch_delete` | POST | 批量删除过期记忆（异步） | ❌ 运维操作 |
+| `/admin/mem_meta/task_status` | GET | 查询异步任务状态 | ❌ 运维操作 |
+| `/delete_mem_by_scope/` | POST | 按 scope 删除某用户全部记忆 | ⚠️ 可选集成 |
+| `/get_user_mem_by_page_with_total/` | POST | 分页获取（含 total） | ⚠️ 可选集成 |
+| `/admin/messages/query` | POST | 管理端消息查询 | ❌ 运维操作 |
+| `/admin/messages/stats` | GET | 管理端消息统计 | ❌ 运维操作 |
+| `/admin/messages/detail/{msg_id}` | GET | 管理端消息详情（含完整元数据） | ⚠️ 可选（trace 替代） |
+| `/logs/tail` `/logs/download` `/logs/files` | GET | 日志查询 | ❌ 运维操作 |
+
+> **设计原则**：Skill 仅集成 Agent 必需的操作，运维/管理类端点通过独立脚本或平台工具直接调用。
+
+## 附：v1.1 变更摘要（对应 mem1.0 PR #244）
+
+| 变更 | mem1.0 端改动 | 对 Skill 的影响 |
+|------|-------------|---------------|
+| `message_manager.get_by_id` 补 `except BaseError` | `message_manager.py:138-144` | trace 操作：不存在 message_id 时返回 `{"found":false}` 而非 HTTP 500 |
+| `add_messages` 端点过滤空/空白内容 | `memory_server.py:561-590` | save 操作：全部为空时服务端返回 422 |
+| 返回时间戳改用本地时区 | 5 个 *_manager.py / *_store.py | trace/search/get 返回的时间戳带本地时区偏移（如 `+08:00`） |
+| 新增 mem_meta 4 个管理端点 | `mem_meta_api.py` | Skill 未集成，运维参考 |
+
+> Skill 代码无需修改即可兼容 PR #244 后的 mem1.0 服务端。
