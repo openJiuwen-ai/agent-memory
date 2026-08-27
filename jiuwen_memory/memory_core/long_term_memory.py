@@ -2353,7 +2353,8 @@ class LongTermMemory(metaclass=Singleton):
         if mem_info.timestamp is None:
             return 0.0
         if mem_info.timestamp.tzinfo is None:
-            return mem_info.timestamp.replace(tzinfo=timezone.utc).timestamp()
+            return mem_info.timestamp.replace(
+                tzinfo=datetime.now(timezone.utc).astimezone().tzinfo).timestamp()
         return mem_info.timestamp.timestamp()
 
     async def _list_middle_memories_by_page(

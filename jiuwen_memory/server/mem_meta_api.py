@@ -21,7 +21,6 @@ from pydantic import BaseModel, ConfigDict, Field
 # 模块级 manager 引用 — 由 register_mem_meta_endpoints() 注入
 # ============================================================
 _manager = None
-_background_tasks: set = set()
 
 # ============================================================
 # APIRouter
@@ -66,7 +65,7 @@ class BatchDeleteRequest(BaseModel):
 # 注册函数
 # ============================================================
 
-def register_mem_meta_endpoints(
+async def register_mem_meta_endpoints(
     app,
     memory_engine=None,
     db_store=None,
@@ -84,15 +83,8 @@ def register_mem_meta_endpoints(
         memory_engine=memory_engine,
         db_store=db_store,
     )
-    # 启动时清理僵尸任务（忽略事件循环不可用的情况）
-    try:
-        loop = asyncio.get_running_loop()
-        task = loop.create_task(_manager.cleanup_zombie_tasks())
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
-    except RuntimeError:
-        # 无运行中事件循环时跳过
-        pass
+    # 异步建表（阻塞至完成），确保 server 开始服务时表已存在
+    await _manager.init_db()
     app.include_router(router)
 
 

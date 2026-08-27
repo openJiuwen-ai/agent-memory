@@ -20,7 +20,7 @@ from typing import Any
 
 from sqlalchemy import (
     Column, Integer, String, Text, Index, MetaData, Table,
-    select, insert, update, delete, func, case,
+    select, insert, update, delete, func, case, or_,
 )
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -38,11 +38,23 @@ ZOMBIE_TASK_TIMEOUT_HOURS = 1  # 僵尸任务超时阈值
 
 
 def _now_str() -> str:
-    """返回当前 UTC 时间字符串（数据库兼容格式）。
+    """返回当前本地时间字符串（数据库兼容格式）。
 
-    使用 Python 侧时间戳，兼容 SQLite / PostgreSQL / GaussDB。
+    与记忆 timestamp 口径对齐（base_memory_index.py 用 datetime.now(timezone.utc).astimezone()，
+    即本地墙钟）。不使用 datetime.utcnow() 以避免时区混用。
     """
-    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    from datetime import timezone
+    return datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _now_dt() -> datetime:
+    """返回当前本地时间（aware datetime，与记忆 timestamp 同口径）。
+
+    用于过期判定（_is_expired / refresh 统计 / realtime 扫描），
+    与 doc.timestamp（本地墙钟）相减才正确。
+    """
+    from datetime import timezone
+    return datetime.now(timezone.utc).astimezone()
 
 
 @dataclass
@@ -65,7 +77,7 @@ _metadata = MetaData()
 
 av_user_stats_table = Table(
     "av_user_stats", _metadata,
-    Column("scope_user", String, primary_key=True),
+    Column("scope_user", String(255), primary_key=True),
     Column("total_count", Integer, nullable=False),
     Column("active_count", Integer, nullable=False),
     Column("superseded_count", Integer, nullable=False),
@@ -74,15 +86,15 @@ av_user_stats_table = Table(
     Column("tier_episodic", Integer, default=0),
     Column("tier_semantic", Integer, default=0),
     Column("tier_other", Integer, default=0),
-    Column("created_at", String, nullable=False, default=_now_str),
-    Column("updated_at", String, nullable=False, default=_now_str),
+    Column("created_at", String(32), nullable=False, default=_now_str),
+    Column("updated_at", String(32), nullable=False, default=_now_str),
 )
 
 mem_meta_task_table = Table(
     "mem_meta_task", _metadata,
-    Column("task_id", String, primary_key=True),
-    Column("task_type", String, nullable=False),
-    Column("status", String, nullable=False, default="pending"),
+    Column("task_id", String(64), primary_key=True),
+    Column("task_type", String(32), nullable=False),
+    Column("status", String(32), nullable=False, default="pending"),
     Column("request_params", Text),
     Column("result_summary", Text),
     Column("error_message", Text),
@@ -90,10 +102,10 @@ mem_meta_task_table = Table(
     Column("processed_users", Integer, default=0),
     Column("deleted_count", Integer, default=0),
     Column("failed_count", Integer, default=0),
-    Column("created_at", String, nullable=False, default=_now_str),
-    Column("updated_at", String, nullable=False, default=_now_str),
-    Column("started_at", String),
-    Column("finished_at", String),
+    Column("created_at", String(32), nullable=False, default=_now_str),
+    Column("updated_at", String(32), nullable=False, default=_now_str),
+    Column("started_at", String(32)),
+    Column("finished_at", String(32)),
     Index("idx_task_status", "status"),
     Index("idx_task_type_created", "task_type"),
 )
@@ -111,12 +123,20 @@ class MemMetaManager:
 
     @staticmethod
     def _is_expired(doc, now_dt: datetime, threshold: int) -> bool:
-        """判断单条记忆是否过期（blacklisted 且不活跃天数 >= threshold）。"""
+        """判断单条记忆是否过期（blacklisted 且不活跃天数 >= threshold）。
+
+        now_dt 为本地时区 aware datetime（与 doc.timestamp 同口径）。
+        """
         if not doc.blacklisted:
             return False
         if doc.timestamp is None:
             return True
-        return (now_dt - doc.timestamp.replace(tzinfo=None)).days >= threshold
+        ts = doc.timestamp
+        if ts.tzinfo is None:
+            # KV 序列化可能丢失 tzinfo，按本地时区补回
+            from datetime import timezone
+            ts = ts.replace(tzinfo=datetime.now(timezone.utc).astimezone().tzinfo)
+        return (now_dt - ts).days >= threshold
 
     def __init__(
         self,
@@ -127,7 +147,9 @@ class MemMetaManager:
         self.db_store = db_store
         # 防止 asyncio task 被 GC 回收
         self._background_tasks: set = set()
-        self._init_db()
+        # 应用层互斥锁：防止并发请求穿透 check-then-insert 竞态
+        self._task_guard_lock = asyncio.Lock()
+        # 建表由调用方通过 await manager.init_db() 完成
 
     @property
     def _engine(self) -> AsyncEngine:
@@ -140,23 +162,28 @@ class MemMetaManager:
     # 数据库初始化
     # ============================================================
 
-    def _init_db(self) -> None:
-        """初始化数据库，建 2 张表。"""
+    async def init_db(self) -> None:
+        """初始化数据库，建 2 张表（异步，阻塞至建表完成）。
+
+        使用异步引擎建表，确保 server 开始服务时表已存在。
+        建表失败时记录 ERROR 并跳过 cleanup，但不阻止 server 启动
+        （mem_meta 表仅影响治理层，不影响核心记忆功能）。
+        """
         if self.db_store is None:
             return
-        engine = self.db_store.get_async_engine()
         try:
-            loop = asyncio.get_running_loop()
-            # 保存 task 引用防止 GC 回收
-            task = loop.create_task(self._async_init_db())
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
-        except RuntimeError:
-            # 没有运行中的事件循环，用同步引擎建表
-            import sqlalchemy
-            sync_engine = sqlalchemy.create_engine(engine.engine.url)
-            with sync_engine.begin() as conn:
-                _metadata.create_all(conn, checkfirst=True)
+            async with self._engine.begin() as conn:
+                await conn.run_sync(_metadata.create_all, checkfirst=True)
+            logger.info("mem_meta 建表完成")
+        except Exception as exc:
+            logger.error("mem_meta 建表失败，mem_meta 接口将不可用: %s", exc)
+            return
+
+        # 建表成功后清理僵尸任务
+        try:
+            await self.cleanup_zombie_tasks()
+        except Exception as exc:
+            logger.warning("mem_meta 僵尸任务清理失败: %s", exc)
 
     async def _async_init_db(self) -> None:
         """异步建表。"""
@@ -167,80 +194,91 @@ class MemMetaManager:
     # 任务管理
     # ============================================================
 
-    async def _check_task_guard(
-        self, task_type: str, force: bool = False
-    ) -> dict | None:
-        """防重检查：运行中任务 + 5 分钟冷却。
+    async def _check_and_create_task(
+        self,
+        task_type: str,
+        force: bool = False,
+        request_params: dict | None = None,
+        total_users: int = 0,
+    ) -> tuple[str | None, dict | None]:
+        """原子性防重检查 + 创建任务（同一事务内 SELECT + INSERT）。
 
-        返回 None 表示可以提交新任务；
-        返回 dict 表示存在冲突，包含已有任务信息。
+        解决 check-then-insert 竞态：原两步式（_check_task_guard 事务
+        先提交，_create_task 事务后提交）在并发请求下窗口可被穿透。
+
+        返回 (task_id, None) 表示创建成功；
+        返回 (None, conflict_dict) 表示存在冲突未创建。
         """
-        if force:
-            return None
+        async with self._task_guard_lock:
+            return await self._check_and_create_task_impl(
+                task_type, force, request_params, total_users)
+
+    async def _check_and_create_task_impl(
+        self,
+        task_type: str,
+        force: bool = False,
+        request_params: dict | None = None,
+        total_users: int = 0,
+    ) -> tuple[str | None, dict | None]:
+        """防重检查 + 创建任务的实际实现（调用方已持锁）。"""
+        task_id = str(uuid.uuid4())
+        now = _now_str()
+        params_json = (
+            json.dumps(request_params, ensure_ascii=False)
+            if request_params else None
+        )
 
         async with self._engine.begin() as conn:
-            # 1. 检查运行中任务
+            # 1. 检查运行中/待处理任务（不可跳过，即使 force=true）
+            #    包含 pending 状态：防止并发请求在任务从 pending→running 之间穿过
             result = await conn.execute(
                 select(mem_meta_task_table.c.task_id, mem_meta_task_table.c.status)
                 .where(mem_meta_task_table.c.task_type == task_type)
-                .where(mem_meta_task_table.c.status == "running")
+                .where(mem_meta_task_table.c.status.in_(["pending", "running"]))
                 .order_by(mem_meta_task_table.c.created_at.desc())
                 .limit(1)
             )
             row = result.fetchone()
             if row:
-                return {
+                return None, {
                     "task_id": row[0],
                     "status": row[1],
                     "message": "存在正在执行的任务",
                 }
 
             # 2. 检查冷却（最新任务距今 < COOLDOWN_SECONDS）
-            result = await conn.execute(
-                select(
-                    mem_meta_task_table.c.task_id,
-                    mem_meta_task_table.c.status,
-                    mem_meta_task_table.c.created_at,
-                )
-                .where(mem_meta_task_table.c.task_type == task_type)
-                .order_by(mem_meta_task_table.c.created_at.desc())
-                .limit(1)
-            )
-            row = result.fetchone()
-            if row:
-                task_id, status, created_at_str = row
-                try:
-                    created_at = datetime.strptime(
-                        created_at_str, "%Y-%m-%d %H:%M:%S"
+            # force=True 时跳过此检查
+            if not force:
+                result = await conn.execute(
+                    select(
+                        mem_meta_task_table.c.task_id,
+                        mem_meta_task_table.c.status,
+                        mem_meta_task_table.c.created_at,
                     )
-                    elapsed = (datetime.utcnow() - created_at).total_seconds()
-                    if elapsed < COOLDOWN_SECONDS:
-                        return {
-                            "task_id": task_id,
-                            "status": status,
-                            "message": f"冷却期内（<{COOLDOWN_SECONDS}秒）",
-                        }
-                except ValueError as exc:
-                    logger.warning(
-                        "task guard: time parse failed for %s: %s",
-                        created_at_str, exc)
-            return None
+                    .where(mem_meta_task_table.c.task_type == task_type)
+                    .order_by(mem_meta_task_table.c.created_at.desc())
+                    .limit(1)
+                )
+                row = result.fetchone()
+                if row:
+                    task_id_existing, status, created_at_str = row
+                    try:
+                        created_at = datetime.strptime(
+                            created_at_str, "%Y-%m-%d %H:%M:%S"
+                        )
+                        elapsed = (_now_dt().replace(tzinfo=None) - created_at).total_seconds()
+                        if elapsed < COOLDOWN_SECONDS:
+                            return None, {
+                                "task_id": task_id_existing,
+                                "status": status,
+                                "message": f"冷却期内（<{COOLDOWN_SECONDS}秒）",
+                            }
+                    except ValueError as exc:
+                        logger.warning(
+                            "task guard: time parse failed for %s: %s",
+                            created_at_str, exc)
 
-    async def _create_task(
-        self,
-        task_type: str,
-        request_params: dict | None = None,
-        total_users: int = 0,
-    ) -> str:
-        """创建任务记录（INSERT mem_meta_task，status=pending）。"""
-        task_id = str(uuid.uuid4())
-        now = _now_str()
-        params_json = (
-            json.dumps(request_params, ensure_ascii=False)
-            if request_params
-            else None
-        )
-        async with self._engine.begin() as conn:
+            # 3. 同一事务内 INSERT（与上面的 SELECT 原子）
             await conn.execute(
                 insert(mem_meta_task_table).values(
                     task_id=task_id,
@@ -252,7 +290,7 @@ class MemMetaManager:
                     updated_at=now,
                 )
             )
-        return task_id
+        return task_id, None
 
     async def _update_task(self, task_id: str, **fields: Any) -> None:
         """更新任务字段（UPDATE mem_meta_task）。
@@ -275,22 +313,33 @@ class MemMetaManager:
         return task
 
     async def cleanup_zombie_tasks(self) -> None:
-        """清理僵尸任务（running 超 1 小时 → failed）。"""
+        """清理僵尸任务（running 超 1 小时 → failed）。
+
+        处理两种情况：
+        1. started_at < cutoff：正常僵尸任务
+        2. started_at IS NULL：任务创建后进程崩溃，未及写入 started_at
+        """
         cutoff = (
-            datetime.utcnow() - timedelta(hours=ZOMBIE_TASK_TIMEOUT_HOURS)
+            _now_dt().replace(tzinfo=None) - timedelta(hours=ZOMBIE_TASK_TIMEOUT_HOURS)
         ).strftime("%Y-%m-%d %H:%M:%S")
-        async with self._engine.begin() as conn:
-            await conn.execute(
-                update(mem_meta_task_table)
-                .where(mem_meta_task_table.c.status == "running")
-                .where(mem_meta_task_table.c.started_at < cutoff)
-                .values(
-                    status="failed",
-                    error_message="zombie task cleaned up on restart",
-                    finished_at=_now_str(),
-                    updated_at=_now_str(),
+        async with self._task_guard_lock:
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    update(mem_meta_task_table)
+                    .where(mem_meta_task_table.c.status == "running")
+                    .where(
+                        or_(
+                            mem_meta_task_table.c.started_at < cutoff,
+                            mem_meta_task_table.c.started_at.is_(None),
+                        )
+                    )
+                    .values(
+                        status="failed",
+                        error_message="zombie task cleaned up on restart",
+                        finished_at=_now_str(),
+                        updated_at=_now_str(),
+                    )
                 )
-            )
 
     # ============================================================
     # 接口 1: refresh（异步刷新元数据）
@@ -299,10 +348,13 @@ class MemMetaManager:
     async def submit_refresh(self, force: bool = False) -> dict:
         """提交元数据刷新任务。
 
-        流程: 防重检查 → 创建任务 → asyncio.create_task 后台执行。
+        流程: 原子防重+创建任务 → asyncio 后台执行。
         返回 accepted（202）或 skipped（200）。
         """
-        existing = await self._check_task_guard("refresh_meta", force=force)
+        task_id, existing = await self._check_and_create_task(
+            "refresh_meta", force=force,
+            request_params={"force": force},
+        )
         if existing:
             return {
                 "status": "skipped",
@@ -311,9 +363,6 @@ class MemMetaManager:
                 "task_status": existing.get("status"),
                 "message": existing.get("message", ""),
             }
-        task_id = await self._create_task(
-            "refresh_meta", request_params={"force": force}
-        )
         self._create_background_task(self._run_refresh_meta(task_id))
         return {
             "status": "accepted",
@@ -346,7 +395,7 @@ class MemMetaManager:
 
             memory_index = engine.memory_index
             now_str = _now_str()
-            now = datetime.utcnow()
+            now = _now_dt()
 
             # 获取所有 (user_id, scope_id) 对
             all_scopes = await memory_index.list_user_scopes()
@@ -379,9 +428,13 @@ class MemMetaManager:
                         if doc.blacklisted:
                             s["superseded"] += 1
                             s["expired_all"] += 1
-                            # 判断是否过期超过30天
+                            # 判断是否过期超过30天（与 _is_expired 同口径）
                             if doc.timestamp:
-                                days_ago = (now - doc.timestamp.replace(tzinfo=None)).days
+                                ts = doc.timestamp
+                                if ts.tzinfo is None:
+                                    from datetime import timezone
+                                    ts = ts.replace(tzinfo=datetime.now(timezone.utc).astimezone().tzinfo)
+                                days_ago = (now - ts).days
                                 if days_ago >= 30:
                                     s["expired_30d"] += 1
                             else:
@@ -542,7 +595,7 @@ class MemMetaManager:
         all_scopes = await memory_index.list_user_scopes()
 
         # 按用户聚合统计
-        now_dt = datetime.utcnow()
+        now_dt = _now_dt()
         user_stats: dict[str, dict] = {}
         for user_id, scope_id in all_scopes:
             try:
@@ -612,19 +665,8 @@ class MemMetaManager:
                 "total_users": 0,
             }
 
-        existing = await self._check_task_guard(
-            "batch_delete", force=params.force)
-        if existing:
-            return {
-                "status": "skipped",
-                "task_type": "batch_delete",
-                "task_id": existing.get("task_id"),
-                "task_status": existing.get("status"),
-                "message": existing.get("message", ""),
-            }
-
-        task_id = await self._create_task(
-            "batch_delete",
+        task_id, existing = await self._check_and_create_task(
+            "batch_delete", force=params.force,
             request_params={
                 "user_ids": params.user_ids,
                 "all_expired": params.all_expired,
@@ -635,6 +677,15 @@ class MemMetaManager:
             },
             total_users=len(params.user_ids),
         )
+        if existing:
+            return {
+                "status": "skipped",
+                "task_type": "batch_delete",
+                "task_id": existing.get("task_id"),
+                "task_status": existing.get("status"),
+                "message": existing.get("message", ""),
+            }
+
         self._create_background_task(
             self._run_batch_delete(task_id, params)
         )
@@ -709,6 +760,7 @@ class MemMetaManager:
                     "scopes_affected": 0,
                     "status": "success",
                     "error": None,
+                    "scope_failures": [],
                 }
                 try:
                     from jiuwen_memory.memory_core.common.distributed_lock import DistributedLock
@@ -763,7 +815,7 @@ class MemMetaManager:
                                     )
                                 )
                                 # 过滤 blacklisted == True 且满足不活跃天数
-                                now_dt = datetime.utcnow()
+                                now_dt = _now_dt()
                                 if params.all_expired:
                                     expired_mem_ids = [
                                         d.id for d in docs if d.blacklisted
@@ -806,17 +858,45 @@ class MemMetaManager:
                                 user_deleted += len(expired_mem_ids)
                                 user_result["scopes_affected"] += 1
                             except Exception as e:
-                                user_result["status"] = "partial_failed"
-                                user_result["error"] = str(e)[:MAX_USER_ERROR_LEN]
+                                # 记录每个 scope 的失败原因
+                                user_result["scope_failures"].append({
+                                    "scope_id": sid,
+                                    "error": str(e)[:MAX_USER_ERROR_LEN],
+                                })
+                                logger.warning(
+                                    "scope %s 删除失败, user=%s: %s",
+                                    sid, user_id, e)
 
                         user_result["total_deleted"] = user_deleted
                         deleted_total += user_deleted
+
+                        # 根据 scope 失败情况设置用户级状态
+                        total_scopes = len(scopes)
+                        failed_scopes = len(user_result["scope_failures"])
+                        if failed_scopes > 0:
+                            if failed_scopes == total_scopes:
+                                # 所有 scope 都失败
+                                user_result["status"] = "failed"
+                                user_result["error"] = (
+                                    f"全部 {total_scopes} 个 scope 删除失败"
+                                )
+                                failed += 1
+                            else:
+                                # 部分 scope 失败
+                                user_result["status"] = "partial_failed"
+                                user_result["error"] = (
+                                    f"{failed_scopes}/{total_scopes} 个 scope "
+                                    f"删除失败"
+                                )
+                                # 计入 failed_count（反映有用户未完全成功），但终态用 has_partial 防止升级为 failed
+                                failed += 1
 
                     processed += 1
                     await self._update_task(
                         task_id,
                         processed_users=processed,
                         deleted_count=deleted_total,
+                        failed_count=failed,
                     )
 
                     # ★ 同步更新 av_user_stats：删除了多少条就减多少 ★
@@ -864,9 +944,14 @@ class MemMetaManager:
                 details.append(user_result)
 
             # 最终状态判断
-            if failed == 0:
+            # failed: 用户级全部 scope 失败或分布式锁/校验失败
+            # partial_failed 用户: 部分 scope 成功部分失败（不计入 failed）
+            has_partial = any(
+                d.get("status") == "partial_failed" for d in details
+            )
+            if failed == 0 and not has_partial:
                 final_status = "completed"
-            elif failed == len(params.user_ids):
+            elif failed == len(params.user_ids) and not has_partial:
                 final_status = "failed"
             else:
                 final_status = "partial_failed"

@@ -599,6 +599,251 @@ Gets user memories by page.
 }
 ```
 
+---
+
+### POST /admin/mem_meta/refresh
+
+Triggers a metadata refresh task that scans all kernel `uid_*` collections (via `SimpleMemoryIndex`), counting total/active/blacklisted memories per user and writing to the `av_user_stats` table. This task runs asynchronously.
+
+**Request Parameters**:
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `force` | `bool` | No | `false` | When `true`, skips cooldown check (5 minutes) |
+
+**Example**:
+
+```bash
+curl -X POST http://127.0.0.1:8000/admin/mem_meta/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"force": true}'
+```
+
+**Response 202 (Accepted)**:
+
+```json
+{
+  "status": "accepted",
+  "task_id": "550e8400-...",
+  "task_type": "refresh_meta",
+  "message": "元数据刷新任务已提交"
+}
+```
+
+**Response 200 (Skipped — running task or cooldown)**:
+
+```json
+{
+  "status": "skipped",
+  "task_type": "refresh_meta",
+  "task_id": "550e8400-...",
+  "task_status": "running",
+  "message": "存在正在执行的任务"
+}
+```
+
+> After completion, query `GET /admin/mem_meta/task_status` for results (scanned count, user count, expired count).
+
+---
+
+### POST /admin/mem_meta/expired_memorys
+
+Queries Top N users with expired memories. Query path depends on `inactive_days_threshold`:
+
+- `inactive_days_threshold == 30` (default): **fast path** — queries `av_user_stats` table directly, millisecond response
+- `inactive_days_threshold != 30`: **realtime scan path** — scans all KV users' `blacklisted` memories, slower but accurate
+
+**Request Parameters**:
+
+| Field | Type | Required | Default | Range | Description |
+|---|---|---|---|---|---|
+| `inactive_days_threshold` | `int` | No | `30` | 1-365 | Inactive days threshold. 30 uses fast path, non-30 uses realtime scan |
+| `limit` | `int` | No | `10` | 1-100 | Max number of users to return |
+| `min_expired_count` | `int` | No | `0` | ≥0 | Minimum expired memory count, 0 = no filter |
+
+**Example**:
+
+```bash
+curl -X POST http://127.0.0.1:8000/admin/mem_meta/expired_memorys \
+  -H "Content-Type: application/json" \
+  -d '{"inactive_days_threshold": 30, "limit": 10, "min_expired_count": 0}'
+```
+
+**Response 200 (Scan completed)**:
+
+```json
+{
+  "status": "success",
+  "task_id": "550e8400-...",
+  "task_status": "completed",
+  "inactive_days_threshold": 30,
+  "total_users": 21,
+  "total_expired_30d": 1646,
+  "users_with_expired": 19,
+  "top_users": [
+    {
+      "scope_user": "test_user_010",
+      "total_count": 500,
+      "active_count": 288,
+      "superseded_count": 212,
+      "expired_30d_count": 126,
+      "expired_all_count": 212,
+      "tier_episodic": 120,
+      "tier_semantic": 80,
+      "tier_other": 12,
+      "updated_at": "2026-08-18 07:27:39"
+    }
+  ]
+}
+```
+
+**Response 200 (Scan in progress, returns existing snapshot)**:
+
+```json
+{
+  "status": "scanning",
+  "task_id": "550e8400-...",
+  "task_status": "running",
+  "top_users": [...]
+}
+```
+
+> `inactive_days_threshold` is echoed in the response for the caller to pass to `batch_delete` for pre-deletion validation.
+
+---
+
+### POST /admin/mem_meta/batch_delete
+
+Batch-deletes expired memories (`blacklisted=True`) by user ID list. Precision deletion — iterates all scopes per user, only deletes blacklisted memories, preserves active ones. KV and Milvus are deleted synchronously. Runs asynchronously.
+
+**Request Parameters**:
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `user_ids` | `list[str]` | Yes* | - | User IDs to delete expired memories for |
+| `all_expired` | `bool` | No | `false` | When `true`, auto-fetches all users with expired memories from `av_user_stats` and skips inactive-days validation |
+| `inactive_days_threshold` | `int` | No | `30` | Inactive days threshold for pre-deletion validation. 30 uses fast-table check, non-30 skips check |
+| `scope_id` | `str\|null` | No | `null` | Optional, limit to this scope only. If omitted, iterates all user scopes |
+| `cleanup_retrieve_history` | `bool` | No | `true` | Whether to also clean up retrieve_history KV records |
+| `dry_run` | `bool` | No | `false` | When `true`, only counts without deleting |
+| `force` | `bool` | No | `false` | When `true`, skips cooldown check (5 minutes) |
+
+*At least one of `user_ids` or `all_expired` must be provided, otherwise 422.
+
+**Example (specified users, actual deletion)**:
+
+```bash
+curl -X POST http://127.0.0.1:8000/admin/mem_meta/batch_delete \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_ids": ["test_user_001"],
+    "all_expired": false,
+    "inactive_days_threshold": 30,
+    "dry_run": false,
+    "force": true
+  }'
+```
+
+**Example (all expired, dry run)**:
+
+```bash
+curl -X POST http://127.0.0.1:8000/admin/mem_meta/batch_delete \
+  -H "Content-Type: application/json" \
+  -d '{"all_expired": true, "dry_run": true, "force": true}'
+```
+
+**Response 202 (Accepted)**:
+
+```json
+{
+  "status": "accepted",
+  "task_id": "660e8400-...",
+  "task_type": "batch_delete",
+  "message": "批量删除任务已提交，涉及 1 个用户",
+  "total_users": 1
+}
+```
+
+**Response 200 (Skipped — cooldown or running task)**:
+
+```json
+{
+  "status": "skipped",
+  "task_type": "batch_delete",
+  "task_id": "660e8400-...",
+  "task_status": "completed",
+  "message": "冷却期内（<300秒）"
+}
+```
+
+> After deletion, `av_user_stats` table is updated synchronously (counts decremented). Query `GET /admin/mem_meta/task_status` for progress and result details.
+
+**Internal Safety Mechanisms**:
+
+1. **Refresh task conflict check**: If a `refresh` task is running, `batch_delete` skips and marks failed to avoid inconsistent intermediate state
+2. **Inactive days validation** (when `all_expired=false`): Reads `expired_30d_count` from `av_user_stats`; skips user if 0 or not found
+3. **Distributed lock**: Acquires `DistributedLock` per user before deletion to prevent concurrent conflicts
+4. **Precision deletion**: Only deletes `blacklisted=True` memories via `SimpleMemoryIndex.delete_memories(user_id, scope_id, mem_ids)`, syncing KV + Milvus
+
+---
+
+### GET /admin/mem_meta/task_status
+
+Queries task status. Supports querying by `task_id` or returning the latest task when no parameter is provided.
+
+**Request Parameters**:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `task_id` | `str` | No | Task ID. If omitted, returns the most recent task |
+
+**Example**:
+
+```bash
+# Query specific task
+curl http://127.0.0.1:8000/admin/mem_meta/task_status?task_id=660e8400-...
+
+# Query latest task
+curl http://127.0.0.1:8000/admin/mem_meta/task_status
+```
+
+**Response 200 (Task found)**:
+
+```json
+{
+  "status": "success",
+  "task": {
+    "task_id": "660e8400-e29b-41d4-a716-446655440001",
+    "task_type": "batch_delete",
+    "status": "completed",
+    "request_params": "{\"user_ids\": [\"test_user_001\"], ...}",
+    "result_summary": "{\"processed\": 1, \"deleted\": 196, \"failed\": 0, \"details\": [...]}",
+    "error_message": null,
+    "total_users": 1,
+    "processed_users": 1,
+    "deleted_count": 196,
+    "failed_count": 0,
+    "created_at": "2026-08-18 07:30:00",
+    "updated_at": "2026-08-18 07:30:15",
+    "started_at": "2026-08-18 07:30:01",
+    "finished_at": "2026-08-18 07:30:15"
+  }
+}
+```
+
+**Response 404 (Task not found)**:
+
+```json
+{
+  "status": "not_found",
+  "task_id": "nonexistent-uuid",
+  "message": "任务 nonexistent-uuid 不存在"
+}
+```
+
+> `status` values: `pending` → `running` → `completed` / `failed` / `partial_failed`.
+> `result_summary` is a JSON string containing `processed`, `deleted`, `failed`, `dry_run`, `details` fields.
+
 
 ## Error Responses
 
