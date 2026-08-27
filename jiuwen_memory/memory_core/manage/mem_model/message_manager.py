@@ -138,6 +138,10 @@ class MessageManager:
             return message, metadata.timestamp
         except ValueError:
             return None
+        except BaseError as e:
+            if e.status == StatusCode.MEMORY_GET_MEMORY_EXECUTION_ERROR:
+                return None
+            raise
 
     async def delete_by_user_and_scope(self, user_id: str, scope_id: str) -> bool:
         message_filter: Dict[str, Any] = {

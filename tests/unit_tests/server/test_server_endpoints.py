@@ -44,12 +44,11 @@ async def test_message_missing_role_defaults_to_user(client, mock_engine):
 
 
 @pytest.mark.asyncio
-async def test_message_missing_content_defaults_empty(client, mock_engine):
-    """消息缺 content 时端点用空串。"""
-    mock_engine.add_messages.return_value = None
-    await client.post("/add_messages/", json={"messages": [{"role": "user"}]})
-    msgs = mock_engine.add_messages.call_args.kwargs["messages"]
-    assert msgs[0].content == ""
+async def test_message_missing_content_filtered_to_422(client, mock_engine):
+    """消息缺 content（空串）被过滤，全部为空时返回 422。"""
+    r = await client.post("/add_messages/", json={"messages": [{"role": "user"}]})
+    assert r.status_code == 422
+    mock_engine.add_messages.assert_not_called()
 
 
 # ====== 2. user_id / scope_id 透传 ======
@@ -168,11 +167,11 @@ async def test_missing_messages_rejected(client, mock_engine):
 
 
 @pytest.mark.asyncio
-async def test_empty_messages_list_accepted(client, mock_engine):
-    """空 messages 列表是合法 list，通过校验（是否真正写入由 engine 决定）。"""
-    mock_engine.add_messages.return_value = None
+async def test_empty_messages_list_rejected(client, mock_engine):
+    """空 messages 列表无有效消息，返回 422。"""
     r = await client.post("/add_messages/", json={"messages": []})
-    assert r.status_code == 200
+    assert r.status_code == 422
+    mock_engine.add_messages.assert_not_called()
 
 
 @pytest.mark.asyncio
