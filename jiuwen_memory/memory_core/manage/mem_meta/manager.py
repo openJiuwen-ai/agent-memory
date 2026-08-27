@@ -162,7 +162,7 @@ class MemMetaManager:
     # 数据库初始化
     # ============================================================
 
-    async def _init_db(self) -> None:
+    async def init_db(self) -> None:
         """初始化数据库，建 2 张表（异步，阻塞至建表完成）。
 
         使用异步引擎建表，确保 server 开始服务时表已存在，

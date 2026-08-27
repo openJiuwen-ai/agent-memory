@@ -85,7 +85,7 @@ async def register_mem_meta_endpoints(
         db_store=db_store,
     )
     # 异步建表（阻塞至完成），确保 server 开始服务时表已存在
-    await _manager._init_db()
+    await _manager.init_db()
     app.include_router(router)
 
 
