@@ -473,13 +473,19 @@ def _save_memory(
     msg_list = []
     if messages:
         for m in messages:
-            c = _truncate_content(m.get("content", "") or "")
+            # v1.1+ 防御性过滤：纯空白内容跳过（不修改用户实际内容）
+            raw_content = m.get("content", "") or ""
+            if not raw_content.strip():
+                continue
+            c = _truncate_content(raw_content)
             if c:
                 msg_list.append({"role": m.get("role", "user"), "content": c})
     elif content:
-        c = _truncate_content(content)
-        if c:
-            msg_list.append({"role": role, "content": c})
+        # v1.1+ 防御性过滤：纯空白内容跳过
+        if content.strip():
+            c = _truncate_content(content)
+            if c:
+                msg_list.append({"role": role, "content": c})
 
     if not msg_list:
         return {
