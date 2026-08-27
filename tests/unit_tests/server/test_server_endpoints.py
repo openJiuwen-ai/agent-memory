@@ -44,12 +44,11 @@ async def test_message_missing_role_defaults_to_user(client, mock_engine):
 
 
 @pytest.mark.asyncio
-async def test_message_missing_content_defaults_empty(client, mock_engine):
-    """消息缺 content 时端点用空串。"""
-    mock_engine.add_messages.return_value = None
-    await client.post("/add_messages/", json={"messages": [{"role": "user"}]})
-    msgs = mock_engine.add_messages.call_args.kwargs["messages"]
-    assert msgs[0].content == ""
+async def test_message_missing_content_filtered_to_422(client, mock_engine):
+    """消息缺 content（空串）被过滤，全部为空时返回 422。"""
+    r = await client.post("/add_messages/", json={"messages": [{"role": "user"}]})
+    assert r.status_code == 422
+    mock_engine.add_messages.assert_not_called()
 
 
 # ====== 2. user_id / scope_id 透传 ======
