@@ -832,7 +832,7 @@ class GraphMemory:
                 map_src2tgt[src_entity.uuid] = tgt_uuid
                 src_episode_uuids = [ep if isinstance(ep, str) else ep.uuid for ep in src_entity.episodes]
                 tgt_entity.episodes.extend(src_episode_uuids)
-                tgt_entity.episodes.extend(src_episode_uuids)
+              
                 episodes_to_update.update(src_episode_uuids)
                 if not src_entity.relations:
                     continue
