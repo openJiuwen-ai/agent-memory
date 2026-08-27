@@ -18,6 +18,17 @@
 - AGENTS.md 是实现地图，记录当前有哪些实现、文件职责、行为铁律
 - features 是决策日志，记录为什么这样改、拒绝了什么方案
 
+**MemoryAPI 对外接口的四处分工**（详见 [S02](specs/S02-memory-api.md)）：
+
+| 位置 | 记什么 |
+|---|---|
+| `docs/design/architecture.md` §6 | 已实现接口清单 |
+| `jiuwen_memory/api/` | 已实现接口代码 |
+| `docs/specs/S02-memory-api.md` | 详细介绍与用法（已实现 + 已设计尚未实现，须标注）；方法总览只在此维护 |
+| `docs/features/api/`（F01–F04） | 特性决策；不另建方法目录。各 F 覆盖哪些方法见 S02 方法总览 |
+
+尚未实现的接口完成代码上库时：更新 S02（及受影响 F 文档）的尚未实现标注，并补进 architecture.md §6。
+
 ## 目录用途
 
 | 目录 | 用途 | 关联触发 |
