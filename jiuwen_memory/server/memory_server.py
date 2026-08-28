@@ -746,7 +746,9 @@ async def get_user_mem_by_page_endpoint(request: GetUserMemByPageRequest):
             serializable_results.append({
                 "mem_id": result.mem_id,
                 "content": result.content,
-                "type": result.type.value if hasattr(result.type, 'value') else str(result.type)
+                "type": result.type.value if hasattr(result.type, 'value') else str(result.type),
+                "timestamp": result.timestamp.isoformat() if result.timestamp else None,
+                "source_id": result.source_id,
             })
 
         return {"results": serializable_results, "total": len(serializable_results)}

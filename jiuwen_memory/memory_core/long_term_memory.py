@@ -2343,7 +2343,8 @@ class LongTermMemory(metaclass=Singleton):
                     mem_id=item["id"],
                     content=item["mem"],
                     type=mem_type,
-                    timestamp=item.get("timestamp")
+                    timestamp=item.get("timestamp"),
+                    source_id=item.get("source_id"),
                 )
             )
         return mem_results
