@@ -41,7 +41,7 @@
 | `memory` | `InMemoryKVStore` | 进程内 dict | — | — | scope 折五段命名空间键 | `ttl` 过期在 get/exists/scan 时**惰性清除**；`list` 使用公共 MemoryUnit 过滤/计数/分页 |
 | `sqlite` | `SQLiteKVStore` | 标准库 `sqlite3` 落盘 | — | `db_path`(`agent_memory.db`) | scope 五维各落一列，主键 `(org,space,user,agent,session,key)` | 跨进程/重启保留；`check_same_thread=False` + 一把锁串行化（HTTP 多线程）；过期行读时过滤 + 惰性删；`":memory:"` 为进程内；旧表迁移到空 `space` |
 | `redis` | `RedisKVStore` | Redis（`redis-py` 惰性导入） | `url` | `host`/`port`(6379)/`db`(0)/`password` | key 前缀 `org:space:user:agent:session:<key>` | `insert`=`SET NX`（已存在→`ConflictError`）、`update`=`SET XX`（不存在→`NotFoundError`）；`ttl`→`px` 毫秒；`scopes()` 扫 `*` 还原五段 |
-| `postgres` | `PostgresKVStore` | PostgreSQL（`psycopg` 3 + 每实例连接池，惰性导入） | `dsn` | `schema`(`public`)/`table`(`agent_memory_kv`)/池大小/`auto_create_schema` | scope 五维各落一列，复合主键 | 条件式 `ON CONFLICT` 原子区分活跃冲突与过期覆盖；TTL 用库侧 Unix 秒，读取过滤过期行；`scan` 用 `starts_with` 做字面前缀；`list` 使用公共 MemoryUnit 过滤/计数/分页 |
+| `postgres` | `PostgresKVStore` | PostgreSQL（`asyncpg` + 每实例连接池（F06 桥接），惰性导入） | `dsn` | `schema`(`public`)/`table`(`agent_memory_kv`)/池大小/`auto_create_schema` | scope 五维各落一列，复合主键 | 条件式 `ON CONFLICT` 原子区分活跃冲突与过期覆盖；TTL 用库侧 Unix 秒，读取过滤过期行；`scan` 用 `starts_with` 做字面前缀；`list` 使用公共 MemoryUnit 过滤/计数/分页 |
 
 > 上述四个真源后端与 `encrypted` 装饰器同实现 `KVStore` 契约 + 同一字节编码；`list` 当前都使用公共兼容路径完成
 > MemoryUnit 过滤、精确计数、稳定排序和分页，装配替换后上层语义不变。
@@ -57,7 +57,7 @@
 |---|---|---|---|---|---|---|
 | `memory` | `InMemoryVectorStore` | 进程内暴力余弦 | — | — | scope 折五段命名空间键 | `search` 暴力算余弦、过滤 `score>0`、降序 top-k；维度一致性由调用方（同一 Embedder）保证；**`recall` override**：search 的薄包装，单次遍历内按 `output_fields=["metadata"]` 回带 metadata（内存零 RTT，仅为与远端后端契约对齐） |
 | `milvus` | `MilvusVectorStore` | Milvus（`pymilvus` 2.4+ `MilvusClient` 惰性导入） | `uri`、`dim`（>0，回退 `globals.embedder_dim`） | `host`/`port`(19530)/`token`/`collection`(`agent_memory_vectors`)/`metric_type`(`COSINE`)/`consistency_level`(`Strong`)/`scope_field_max_length`(256)/`id_max_length`(512) | scope 五维落标量字段，表达式 `scope_x == v` 约束 | 首次连接 `_ensure_collection`（建 schema：id/vector/5×scope/metadata-JSON + AUTOINDEX）；**Strong 一致性**保证 read-after-write；`insert` 先 query 查重→`ConflictError`，`update` 查缺→`NotFoundError` 后 `upsert`；`score`=Milvus distance（COSINE/IP 越大越近、L2 越小越近）；**`recall` override**：`output_fields` 含 `metadata` 时把 search 的 `output_fields` 扩为 `["logical_id","metadata"]`，一次请求回带 metadata（省去再 `get` 的 RTT 与 vector/scope 字段无效回传） |
-| `pgvector` | `PgVectorStore` | PostgreSQL 16 + pgvector ≥0.8.0（`psycopg` 惰性导入） | `dsn`、`dim` | `schema`/`table`/`metric_type`/`index_type`/HNSW 与池参数/`auto_create_schema` | scope 五维与逻辑 id 组成复合主键，search 按 scope 维度过滤 | HNSW + iterative scan；COSINE/L2/IP 均转为高分优先；FilterExpr 在 top-k 前编译为参数化 jsonb SQL；`update` 不改 scope；`index_type=none` 在事务内禁用 index scan 做精确搜索；**`recall` override**：与 `search` 共用同条 KNN SELECT，仅在 SELECT 列追加 `metadata` 一次回带（pgvector 本就一条 SELECT，比 milvus 合并请求更直接），省去再 `get` 的往返 |
+| `pgvector` | `PgVectorStore` | PostgreSQL 16 + pgvector ≥0.8.0（`asyncpg` 惰性导入，F06 桥接） | `dsn`、`dim` | `schema`/`table`/`metric_type`/`index_type`/HNSW 与池参数/`auto_create_schema` | scope 五维与逻辑 id 组成复合主键，search 按 scope 维度过滤 | HNSW + iterative scan；COSINE/L2/IP 均转为高分优先；FilterExpr 在 top-k 前编译为参数化 jsonb SQL；`update` 不改 scope；`index_type=none` 在事务内禁用 index scan 做精确搜索；**`recall` override**：与 `search` 共用同条 KNN SELECT，仅在 SELECT 列追加 `metadata` 一次回带（pgvector 本就一条 SELECT，比 milvus 合并请求更直接），省去再 `get` 的往返 |
 
 > `dim` 必须 >0，构造期即校验（缺失或回退后仍为 0 → `ValidationError`）。
 

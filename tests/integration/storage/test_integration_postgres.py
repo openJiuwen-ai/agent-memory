@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 import uuid
@@ -21,13 +22,20 @@ DIM = 8
 
 
 def _require_postgres() -> None:
-    psycopg = pytest.importorskip("psycopg")
+    asyncpg = pytest.importorskip("asyncpg")
     if not PG_DSN:
         pytest.skip("AGENT_MEMORY_TEST_PG_DSN is not configured")
+
+    async def probe() -> None:
+        conn = await asyncpg.connect(PG_DSN, timeout=3)
+        try:
+            await conn.fetchval("SELECT 1")
+        finally:
+            await conn.close()
+
     try:
-        with psycopg.connect(PG_DSN, connect_timeout=3) as conn:
-            conn.execute("SELECT 1")
-    except psycopg.OperationalError as exc:
+        asyncio.run(probe())
+    except Exception as exc:
         pytest.skip(f"PostgreSQL unavailable for integration test: {exc}")
 
 
@@ -38,13 +46,13 @@ def _vector(index: int, value: float = 1.0) -> list[float]:
 
 
 def _drop_schema(store, schema: str) -> None:
+    from jiuwen_memory.storage._pg import _quote_ident
+
     try:
-        with store.pool.connection() as conn, conn.cursor() as cursor:
-            cursor.execute(
-                store.sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
-                    store.sql.Identifier(schema)
-                )
-            )
+        pool = store.pool
+        getattr(store, "_run")(
+            pool.execute(f"DROP SCHEMA IF EXISTS {_quote_ident(schema)} CASCADE")
+        )
     finally:
         store.close()
 
@@ -164,17 +172,29 @@ def test_pgvector_search_order_scope_and_filters(pg_vector) -> None:
             VectorRecord(
                 id="x",
                 vector=_vector(0),
-                metadata={"color": "red", "priority": 9, "tags": ["work"]},
+                metadata={
+                    "user_metadata.color": "red",
+                    "user_metadata.priority": 9,
+                    "tags": ["work"],
+                },
             ),
             VectorRecord(
                 id="y",
                 vector=[0.8, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                metadata={"color": "blue", "priority": 7, "tags": ["work"]},
+                metadata={
+                    "user_metadata.color": "blue",
+                    "user_metadata.priority": 7,
+                    "tags": ["work"],
+                },
             ),
             VectorRecord(
                 id="z",
                 vector=_vector(1),
-                metadata={"color": "red", "priority": 5, "tags": ["home"]},
+                metadata={
+                    "user_metadata.color": "red",
+                    "user_metadata.priority": 5,
+                    "tags": ["home"],
+                },
             ),
         ],
     )
@@ -211,8 +231,16 @@ def test_pgvector_distinguishes_scalar_equality_from_array_membership(pg_vector)
     store.insert(
         scope,
         [
-            VectorRecord(id="scalar", vector=_vector(0), metadata={"kind": "work"}),
-            VectorRecord(id="array", vector=_vector(0), metadata={"kind": ["work"]}),
+            VectorRecord(
+                id="scalar",
+                vector=_vector(0),
+                metadata={"user_metadata.kind": "work"},
+            ),
+            VectorRecord(
+                id="array",
+                vector=_vector(0),
+                metadata={"user_metadata.kind": ["work"]},
+            ),
         ],
     )
 
@@ -263,13 +291,17 @@ def test_pgvector_recall_returns_metadata_in_one_query(pg_vector) -> None:
     store.insert(
         scope,
         [
-            VectorRecord(id="x", vector=_vector(0), metadata={"color": "red", "n": 1}),
-            VectorRecord(id="y", vector=[0.8, 0.2, 0, 0, 0, 0, 0, 0], metadata={"color": "blue"}),
+            VectorRecord(id="x", vector=_vector(0), metadata={"user_metadata.color": "red", "user_metadata.n": 1}),
+            VectorRecord(id="y", vector=[0.8, 0.2, 0, 0, 0, 0, 0, 0], metadata={"user_metadata.color": "blue"}),
         ],
     )
 
     searched = store.search(scope, VectorQuery(vector=_vector(0), top_k=2))
-    recalled = store.recall(scope, VectorQuery(vector=_vector(0), top_k=2))
+    recalled = store.recall(
+        scope,
+        VectorQuery(vector=_vector(0), top_k=2),
+        output_fields=["metadata"],
+    )
 
     # recall 与 search 的 id/score 同源（同一条 KNN SELECT），分数方向一致
     assert [h.id for h in recalled] == [h.id for h in searched]
@@ -277,8 +309,8 @@ def test_pgvector_recall_returns_metadata_in_one_query(pg_vector) -> None:
     assert [h.score for h in recalled] == sorted((h.score for h in recalled), reverse=True)
     # metadata 在命中项内回带，无需再发 get
     meta_by_id = {h.id: h.metadata for h in recalled}
-    assert meta_by_id["x"] == {"color": "red", "n": 1}
-    assert meta_by_id["y"] == {"color": "blue"}
+    assert meta_by_id["x"] == {"user_metadata.color": "red", "user_metadata.n": 1}
+    assert meta_by_id["y"] == {"user_metadata.color": "blue"}
 
 
 def test_pgvector_recall_without_output_fields_returns_empty_metadata(pg_vector) -> None:
@@ -306,23 +338,49 @@ def test_pgvector_recall_scope_isolation_and_filters(pg_vector) -> None:
     store.insert(
         scope,
         [
-            VectorRecord(id="red", vector=_vector(0), metadata={"color": "red"}),
-            VectorRecord(id="blue", vector=_vector(0), metadata={"color": "blue"}),
+            VectorRecord(
+                id="red",
+                vector=_vector(0),
+                metadata={"user_metadata.color": "red"},
+            ),
+            VectorRecord(
+                id="blue",
+                vector=_vector(0),
+                metadata={"user_metadata.color": "blue"},
+            ),
         ],
     )
-    store.insert(other, [VectorRecord(id="red", vector=_vector(0), metadata={"color": "green"})])
+    store.insert(
+        other,
+        [
+            VectorRecord(
+                id="red",
+                vector=_vector(0),
+                metadata={"user_metadata.color": "green"},
+            )
+        ],
+    )
 
     # scope 隔离：不跨 scope 命中
-    recalled = store.recall(scope, VectorQuery(vector=_vector(0), top_k=10))
+    recalled = store.recall(
+        scope,
+        VectorQuery(vector=_vector(0), top_k=10),
+        output_fields=["metadata"],
+    )
     assert {h.id for h in recalled} == {"red", "blue"}
 
     # filters 下推：recall 同 search 一样在 top-k 前编译 FilterExpr
     filtered = store.recall(
         scope,
-        VectorQuery(vector=_vector(0), top_k=10, filters=FilterClause("color", FilterOp.EQ, "red")),
+        VectorQuery(
+            vector=_vector(0),
+            top_k=10,
+            filters=FilterClause("color", FilterOp.EQ, "red"),
+        ),
+        output_fields=["metadata"],
     )
     assert {h.id for h in filtered} == {"red"}
-    assert filtered[0].metadata == {"color": "red"}
+    assert filtered[0].metadata == {"user_metadata.color": "red"}
 
 
 def test_pgvector_recall_ignores_unknown_output_fields(pg_vector) -> None:

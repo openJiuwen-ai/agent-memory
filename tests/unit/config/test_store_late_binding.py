@@ -130,7 +130,9 @@ def test_milvus_late_binds_uri(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_elasticsearch_late_binds_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
-    from jiuwen_memory.storage.fulltext_impl.elasticsearch_fulltext import ElasticsearchFulltextStore
+    from jiuwen_memory.storage.fulltext_impl.elasticsearch_fulltext import (
+        ElasticsearchFulltextStore,
+    )
 
     cfg = DictConfigSource({"fulltext_store.hosts": "http://es-a:9200"})
     store = ElasticsearchFulltextStore(hosts="http://fallback:9200", config_source=cfg)
@@ -169,7 +171,7 @@ def test_pg_store_base_late_binds_dsn(monkeypatch: pytest.MonkeyPatch) -> None:
     from jiuwen_memory.storage._pg import PgStoreBase
 
     class _Tiny(PgStoreBase):
-        def _ensure_schema(self, pool) -> None:
+        async def _ensure_schema(self, pool) -> None:
             return None
 
     cfg = DictConfigSource({"kv_store.dsn": "postgresql://a/db"})
@@ -189,32 +191,19 @@ def test_pg_store_base_late_binds_dsn(monkeypatch: pytest.MonkeyPatch) -> None:
     pools: list[str] = []
 
     class _Pool:
-        def __init__(self, conninfo: str, **kwargs):
-            pools.append(conninfo)
+        def __init__(self, dsn: str, **kwargs):
+            pools.append(dsn)
 
-        @staticmethod
-        def open(wait=True, timeout=None):
+        async def close(self):
             return None
 
-        @staticmethod
-        def close():
-            return None
+    fake_asyncpg = types.ModuleType("asyncpg")
 
-        @staticmethod
-        def connection():
-            raise AssertionError("not needed")
+    async def create_pool(dsn=None, **kwargs):
+        return _Pool(dsn, **kwargs)
 
-    fake_pool_mod = types.ModuleType("psycopg_pool")
-    fake_pool_mod.ConnectionPool = _Pool  # type: ignore[attr-defined]
-    fake_psycopg = types.ModuleType("psycopg")
-    fake_psycopg.sql = MagicMock()
-    fake_types = types.ModuleType("psycopg.types")
-    fake_json = types.ModuleType("psycopg.types.json")
-    fake_json.Jsonb = object
-    monkeypatch.setitem(sys.modules, "psycopg_pool", fake_pool_mod)
-    monkeypatch.setitem(sys.modules, "psycopg", fake_psycopg)
-    monkeypatch.setitem(sys.modules, "psycopg.types", fake_types)
-    monkeypatch.setitem(sys.modules, "psycopg.types.json", fake_json)
+    fake_asyncpg.create_pool = create_pool  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "asyncpg", fake_asyncpg)
 
     _ = store.pool
     assert pools == ["postgresql://a/db"]
