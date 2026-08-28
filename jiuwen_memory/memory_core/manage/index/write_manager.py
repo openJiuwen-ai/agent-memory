@@ -2,7 +2,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 from jiuwen_memory.memory_core.manage.index.base_memory_manager import BaseMemoryManager
-from jiuwen_memory.memory_core.manage.mem_model.memory_unit import BaseMemoryUnit
+from jiuwen_memory.memory_core.manage.mem_model.memory_unit import BaseMemoryUnit, MemoryType
 from jiuwen_memory.foundation.llm import Model
 from jiuwen_memory.foundation.store.base_memory_index import BaseMemoryIndex
 from jiuwen_memory.common.logging import memory_logger
@@ -44,16 +44,17 @@ class WriteManager:
     async def update_mem_by_id(self, user_id: str, scope_id: str, mem_id: str, memory: str, **kwargs):
         mem_type = await self.__get_mem_type_from_index(user_id, scope_id, mem_id)
         if mem_type is None:
-            memory_logger.warning(
-                "Long-term memory type not found, trying middle-term memory update",
-                memory_type=mem_type,
+            memory_logger.info(
+                "Memory not found in index, converting update to insert",
                 memory_id=[mem_id],
                 event_type=LogEventType.MEMORY_STORE,
                 user_id=user_id,
                 scope_id=scope_id,
             )
-            if self.middle_manager:
-                return await self.middle_manager.update(
+            # Route to fragment manager with default type for insert
+            default_type = MemoryType.SEMANTIC_MEMORY.value
+            if default_type in self.managers:
+                return await self.managers[default_type].update(
                     user_id=user_id,
                     scope_id=scope_id,
                     mem_id=mem_id,
