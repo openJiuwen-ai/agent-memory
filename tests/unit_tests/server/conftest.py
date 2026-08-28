@@ -75,12 +75,15 @@ def make_search_result(mocker):
 
 @pytest.fixture
 def make_mem_unit(mocker):
-    """构造 get_user_mem_by_page 的 engine 返回项（扁平 .mem_id/.content/.type）。"""
-    def _make(mem_id: str, content: str, type_value: str = "semantic_memory"):
+    """构造 get_user_mem_by_page 的 engine 返回项（.mem_id/.content/.type/.timestamp/.source_id）。"""
+    def _make(mem_id: str, content: str, type_value: str = "semantic_memory",
+              timestamp=None, source_id=None):
         unit = mocker.Mock()
         unit.mem_id = mem_id
         unit.content = content
         unit.type = mocker.Mock()
         unit.type.value = type_value
+        unit.timestamp = timestamp
+        unit.source_id = source_id
         return unit
     return _make

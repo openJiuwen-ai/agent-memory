@@ -148,7 +148,12 @@ async def test_get_page_serializes_units(client, mock_engine, make_mem_unit):
     r = await client.post("/get_user_mem_by_page/", json=_page_body())
     res = r.json()
     assert res["total"] == 2
-    assert res["results"][0] == {"mem_id": "m1", "content": "内容A", "type": "semantic_memory"}
+    item0 = res["results"][0]
+    assert item0["mem_id"] == "m1"
+    assert item0["content"] == "内容A"
+    assert item0["type"] == "semantic_memory"
+    assert "timestamp" in item0
+    assert "source_id" in item0
     assert res["results"][1]["type"] == "episodic_memory"
 
 
