@@ -122,7 +122,11 @@ class ElasticsearchVectorStore(BaseVectorStore):
             else:
                 properties[field.name] = self._map_es_type(field)
         properties["_meta"] = {"type": "object", "enabled": False}
-        return {"dynamic": "strict", "properties": properties}
+        # Honor schema.enable_dynamic_field (matches milvus/chroma).
+        # The previous hardcoded "strict" rejected content/timestamp fields
+        # written by SemanticStore.add_docs when is_middle=True.
+        dynamic_setting = "true" if schema.enable_dynamic_field else "strict"
+        return {"dynamic": dynamic_setting, "properties": properties}
 
     async def _store_metadata(self, index_name: str, metadata: Dict[str, Any]) -> None:
         try:
