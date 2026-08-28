@@ -206,7 +206,25 @@ class FragmentMemoryManager(BaseMemoryManager):
         try:
             old_doc = await self.memory_index.get_by_id(user_id, scope_id, mem_id)
             if not old_doc:
-                return False
+                # Memory does not exist: convert update to insert
+                new_doc = MemoryDoc(
+                    id=mem_id,
+                    text=new_memory,
+                    type=MemoryType.SEMANTIC_MEMORY.value,
+                    timestamp=datetime.now(timezone.utc).astimezone(),
+                    fields={},
+                    is_important=False,
+                    blacklisted=False,
+                )
+                await self.memory_index.add_memories(user_id, scope_id, [new_doc])
+                memory_logger.info(
+                    "Memory not found, inserted as new memory",
+                    memory_id=[mem_id],
+                    event_type=LogEventType.MEMORY_STORE,
+                    user_id=user_id,
+                    scope_id=scope_id,
+                )
+                return True
             updated_doc = MemoryDoc(
                 id=mem_id,
                 text=new_memory,

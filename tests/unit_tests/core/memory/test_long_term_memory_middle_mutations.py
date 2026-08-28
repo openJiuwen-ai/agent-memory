@@ -269,17 +269,19 @@ async def test_long_term_memory_update_passes_semantic_store_to_write_manager():
 
 
 @pytest.mark.asyncio
-async def test_write_manager_update_falls_back_to_middle_memory():
+async def test_write_manager_update_converts_to_insert_when_mem_type_missing():
     user_id = "local_update_user"
     scope_id = "local_update_scope"
     mem_id = "msg_middle_001"
     new_memory = "我在北京工作"
     semantic_store = object()
 
+    long_term_manager = FakeLongTermUpdateManager(updated=True)
+    middle_manager = FakeMiddleUpdateManager(updated=True)
     write_manager = WriteManager(
-        managers={},
+        managers={"semantic_memory": long_term_manager},
         memory_index=FakeMemoryIndexMissing(),
-        middle_manager=FakeMiddleUpdateManager(updated=True),
+        middle_manager=middle_manager,
     )
 
     result = await write_manager.update_mem_by_id(
@@ -291,9 +293,10 @@ async def test_write_manager_update_falls_back_to_middle_memory():
     )
 
     assert result is True
-    assert write_manager.middle_manager.update_calls == [
+    assert long_term_manager.update_calls == [
         (user_id, scope_id, mem_id, new_memory, semantic_store),
     ]
+    assert middle_manager.update_calls == []
 
 
 @pytest.mark.asyncio
