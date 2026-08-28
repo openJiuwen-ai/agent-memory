@@ -18,6 +18,9 @@ This document is an API reference for the current abstract interfaces. It does n
 - [`fs.py`](../../../jiuwen_memory/storage/fs.py)
 - [`entity_store.py`](../../../jiuwen_memory/storage/entity_store.py)
 - [`types.py`](../../../jiuwen_memory/storage/types.py)
+- [`common/type_def/entity.py`](../../../jiuwen_memory/common/type_def/entity.py)
+- [`common/type_def/retrieval.py`](../../../jiuwen_memory/common/type_def/retrieval.py)
+- [`common/errors.py`](../../../jiuwen_memory/common/errors.py)
 
 ## 1. Common Conventions
 
@@ -461,11 +464,12 @@ not be omitted.
 When passed directly to `Config.from_dict()` or `Config.from_yaml()`, these namespaces are top-level
 sections. In deployment configuration, place them under `memory_api:`.
 
-Without user configuration, the default Storage composition is `composite + memory
-KV/vector/fulltext/graph`; the L0/L1 vector and full-text ports also use `memory`. FusionStore,
-FSStore, and EntityStore are not connected to `CompositeStorage` by default. External backend
-targets import clients and establish connections lazily. A valid configuration therefore does not
-guarantee that the third-party client and service are ready; call `health()` before deployment.
+Without user configuration, the default Storage composition is
+`composite + memory KV/vector/fulltext/graph`; the L0/L1 vector and full-text ports also use
+`memory`. FusionStore, FSStore, and EntityStore are not connected to `CompositeStorage` by default.
+External backend targets import clients and establish connections lazily. A valid configuration
+therefore does not guarantee that the third-party client and service are ready; call `health()`
+before deployment.
 
 ### 13.2 Storage Implementation
 
@@ -727,3 +731,232 @@ def remove_from_retrieval(storage: Storage, scope: Scope, unit_id: str) -> None:
 ```
 
 These examples express only the interface semantics. The physical data affected by `ALL` or `SOFT` depends on the injected `Storage` implementation and its capabilities.
+
+## 15. Storage Data Types
+
+The types in this section do not carry Scope. Scope is the explicit first argument of Store methods
+and should not be duplicated in `metadata`, `filters`, or record bodies.
+
+### 15.1 Common Result Types
+
+| Type.field | Type | Default/required | Semantics |
+|---|---|---|---|
+| `ScoredID.id` | `str` | Required | Logical ID within a Scope |
+| `ScoredID.score` | `float` | Required | Relevance score; the current retrieval path expects higher scores first |
+| `ScoredID.metadata` | `dict[str, Any] \| None` | `None` | Optional hit metadata |
+| `ScoredHit.id` | `str` | Required | Hit ID |
+| `ScoredHit.score` | `float` | Required | Relevance score |
+| `ScoredHit.metadata` | `dict[str, Any]` | `{}` | Payload optionally returned by `VectorStore.recall` |
+| `KVMemoryListResult.entries` | `list[tuple[str, bytes]]` | `[]` | Raw KV entries on the current page |
+| `KVMemoryListResult.count` | `int` | `0` | Total matches before pagination |
+| `MemoryListResult.items` | `list[MemoryUnit]` | `[]` | Domain objects on the current page |
+| `MemoryListResult.count` | `int` | `0` | Total matches before pagination |
+
+### 15.2 Vector and Fulltext
+
+| Type | Fields (type; default) | Constraints |
+|---|---|---|
+| `VectorRecord` | `id: str`; `vector: list[float]`; `metadata: dict[str, Any]={}` | Vector dimension must match the backend index; ID is unique within Scope |
+| `VectorQuery` | `vector: list[float]`; `top_k: int=10`; `filters: FilterExpr \| None=None`; `return_metadata: bool=false` | `filters` is normalized at construction; `top_k` should be positive |
+| `Document` | `id: str`; `text: str`; `metadata: dict[str, Any]={}` | ID is unique within Scope |
+| `TextQuery` | `text: str`; `top_k: int=10`; `filters: FilterExpr \| None=None` | `filters` is normalized at construction; `top_k` should be positive |
+
+`VectorStore.search()` returns `ScoredID`. Optional `VectorStore.recall()` can return
+`ScoredHit.metadata` in the same ANN request. When the backend does not implement it, the base class
+raises `NotImplementedError` and `VectorRecaller` falls back to `search + get`.
+
+### 15.3 Graph, Fusion, and FS
+
+| Type | Fields (type; default) | Constraints |
+|---|---|---|
+| `Node` | `id: str`; `label: str=""`; `properties: dict[str, Any]={}` | ID is unique within Scope |
+| `Edge` | `id: str`; `source: str`; `target: str`; `relation: str=""`; `properties: dict[str, Any]={}` | source/target are node IDs |
+| `GraphQuery` | `start_id: str`; `relation: str \| None=None`; `depth: int=1`; `limit: int=100` | `relation=None` does not restrict relationship type |
+| `FusionRecord` | `id: str`; `vector: list[float] \| None=None`; `text: str \| None=None`; `scalars: dict[str, Any]={}`; `value: bytes \| None=None` | May provide only a subset of modality fields |
+| `FusionQuery` | `vector: list[float] \| None=None`; `text: str \| None=None`; `scalar_filters: FilterExpr \| None=None`; `top_k: int=10`; `vector_weight: float=0.5` | `vector_weight` is the vector-score weight; a backend may support only a subset |
+| `FileStat` | `ref: str`; `size: int`; `content_type: str=""`; `created_at/updated_at: float=0.0` | Times are Unix seconds |
+
+### 15.4 EntityStore Types
+
+| Type | Fields | Semantics |
+|---|---|---|
+| `EntityStoreFilters` | `actor_id: str \| None=None` | User-isolation condition in addition to `space_id` |
+| `EntityMention` | `entity_type: str`, `display_name: str`, `normalized_name: str` | Normalized entity mention extracted from memory or query text |
+| `EntityRecord` | `id`, `space_id`, `entity_text`, `entity_type`, `linked_memory_ids: tuple[str, ...]`, `filters`, `entity_text_hash=""` | Reverse index from an entity to MemoryUnit IDs |
+| `EntityLinkResult` | `extracted_count/inserted_count/updated_count/deleted_count/failed_count/skipped_count: int=0` | Write statistics from the entity linker, not per-item results from the EntityStore batch API |
+| `EntityOperation` | `type: EntityOpType`, `record: EntityRecord \| None=None`, `record_id: str \| None=None`, `link_memory_ids: tuple[str, ...]=()` | `INSERT/LINK/UNLINK_UPDATE/DELETE` batch command |
+| `EntityBatchResult` | `successful_ids: list[str]`, `failed_ids: list[str]` | Per-item partial-success result; one item failure need not fail the whole batch |
+
+## 16. Complete Store Method Signatures
+
+### 16.1 KVStore
+
+```python
+insert(scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None
+update(scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None
+delete(scope: Scope, key: str) -> None
+get(scope: Scope, key: str) -> bytes
+mget(scope: Scope, keys: list[str]) -> list[bytes]
+exists(scope: Scope, key: str) -> bool
+scan(scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]
+list(
+    scope: Scope,
+    *,
+    offset: int = 0,
+    limit: int = 100,
+    memory_types: list[str] | None = None,
+    filters: FilterExpr | None = None,
+    extensions: dict[str, str] | None = None,
+) -> KVMemoryListResult
+scopes() -> list[Scope]
+```
+
+`ttl` is measured in seconds; `0` means no expiration. `mget` preserves input order and duplicate
+keys and returns one value per key; any missing key raises `NotFoundError`. Ordering from `scan` and
+`scopes` is implementation-defined and callers must not depend on it.
+
+### 16.2 VectorStore, FulltextStore, and FusionStore
+
+```python
+# VectorStore
+insert(scope: Scope, records: list[VectorRecord]) -> None
+update(scope: Scope, records: list[VectorRecord]) -> None
+delete(scope: Scope, ids: list[str]) -> None
+get(scope: Scope, ids: list[str]) -> list[VectorRecord]
+search(scope: Scope, query: VectorQuery) -> list[ScoredID]
+recall(
+    scope: Scope,
+    query: VectorQuery,
+    output_fields: list[str] | None = None,
+) -> list[ScoredHit]
+score_higher_is_better() -> bool
+
+# FulltextStore
+insert(scope: Scope, docs: list[Document]) -> None
+update(scope: Scope, docs: list[Document]) -> None
+delete(scope: Scope, ids: list[str]) -> None
+get(scope: Scope, ids: list[str]) -> list[Document]
+search(scope: Scope, query: TextQuery) -> list[ScoredID]
+
+# FusionStore
+insert(scope: Scope, records: list[FusionRecord]) -> None
+update(scope: Scope, records: list[FusionRecord]) -> None
+delete(scope: Scope, ids: list[str]) -> None
+get(scope: Scope, ids: list[str]) -> list[FusionRecord]
+search(scope: Scope, query: FusionQuery) -> list[ScoredID]
+```
+
+Batch `get` on all three Stores returns only records that actually exist and is not positionally
+aligned with input IDs. Built-in `search` methods return higher scores first. A distance-based
+VectorStore must report score direction through `score_higher_is_better()`; current
+`VectorRecaller` rejects direct assembly with a lower-is-better Store.
+
+### 16.3 GraphStore, FSStore, and EntityStore
+
+```python
+# GraphStore
+seed_ids(scope: Scope, tokens: set[str]) -> list[str]
+insert(
+    scope: Scope,
+    nodes: list[Node] | None = None,
+    edges: list[Edge] | None = None,
+) -> None
+update(
+    scope: Scope,
+    nodes: list[Node] | None = None,
+    edges: list[Edge] | None = None,
+) -> None
+delete(
+    scope: Scope,
+    node_ids: list[str] | None = None,
+    edge_ids: list[str] | None = None,
+) -> None
+get(scope: Scope, node_ids: list[str]) -> list[Node]
+search(scope: Scope, query: GraphQuery) -> list[Node]
+
+# FSStore
+insert(scope: Scope, key: str, data: BinaryIO) -> str
+update(scope: Scope, ref: str, data: BinaryIO) -> str
+delete(scope: Scope, ref: str) -> None
+get(scope: Scope, ref: str) -> BinaryIO
+stat(scope: Scope, ref: str) -> FileStat
+
+# EntityStore (routes by space_id and is not one of the six Storage capabilities)
+ensure_index() -> None
+find_by_entity_text_hash(
+    space_id: str,
+    entity_text_hashes: tuple[str, ...],
+    *,
+    filters: EntityStoreFilters,
+    limit: int = 500,
+) -> list[EntityRecord]
+find_by_linked_memory_id(
+    space_id: str,
+    memory_id: str,
+    *,
+    filters: EntityStoreFilters,
+) -> list[EntityRecord]
+execute_operations(
+    space_id: str,
+    operations: list[EntityOperation],
+) -> EntityBatchResult
+```
+
+An FS `ref` is the canonical reference returned by the Store; callers must not construct a physical
+path themselves. GraphStore `seed_ids` only locates traversal entry points; the backend defines its
+token-matching strategy.
+
+## 17. CRUD, Batch, and Exception Contracts
+
+| Scenario | Standard result |
+|---|---|
+| `(scope, id/key)` already exists for `insert` | `ConflictError` |
+| `(scope, id/key)` is absent for `update` | `NotFoundError` |
+| Deletion target is absent | Idempotent success; no missing-item exception |
+| KV/FS single-item `get` target is absent | `NotFoundError` |
+| Any key in KV `mget` is absent | `NotFoundError`; no partial list is returned |
+| Some IDs in a retrieval Store batch `get` are absent | Missing items are omitted and existing records are returned |
+| `MemoryUnit.scope` differs from the explicit Scope passed to `Storage.add/update` | Built-in `CompositeStorage` raises `ValidationError` |
+| Filter operator, vector dimension, query, or configuration is invalid | `ValidationError` |
+| An undeclared capability or named port is accessed | `UnsupportedStorageCapabilityError` |
+| `StorageSecurity.authorize` denies access | `PermissionDeniedError` |
+| External backend connection fails, times out, or is unavailable | `BackendError` |
+| Some of multiple recall sources fail | Successful batches plus `ChannelError` |
+| Every selected recall source fails | `StorageRetrievalError` |
+
+The standard interfaces do not require global atomicity across batch items or multiple Stores. If
+an implementation relies on a backend batch API, its own documentation and tests should state
+whether the operation is all-or-nothing or may partially succeed. A caller must not infer a
+cross-backend transaction from a `None` return value.
+
+## 18. Storage Modes and Implementation Capability Matrix
+
+`IndexWriteMode` and `IndexRemoveMode` are logical requirements on the Storage interface. They do
+not imply that every Storage implementation has built-in index-projection capability.
+
+| Combination | `ALL` | `FORWARD_ONLY` | `RETRIEVAL_ONLY` | `SOFT` | `HARD` |
+|---|---|---|---|---|---|
+| Direct CRUD through `CompositeStorage` | Writes/updates the KV memory record | Writes/updates the KV memory record | No-op | No-op; record remains | Deletes the KV memory record |
+| `HybridIndexBuilder + CompositeStorage` | forward + fulltext + vector + optional entity | Runs forward only | Runs retrieval sub-builders only | Removes derived retrieval indexes only | Removes derived indexes first, then forward |
+| `UnifiedIndexBuilder + CompositeStorage` | KV memory record only | KV memory record only | No-op | No-op | Deletes the KV memory record |
+| `UnifiedIndexBuilder + custom unified Storage` | Storage implements the complete write | Must preserve at least the source record | Implementation decides whether indexes can be backfilled independently | Implementation must preserve the source record | Implementation deletes the record and derived indexes |
+
+Therefore, the abstract `Storage` methods alone do not prove that a selected target manages vector,
+full-text, and graph indexes together. Index-projection capability must be evaluated from both the
+Storage implementation and its paired IndexBuilder.
+
+## 19. Backend Selection Summary
+
+| Store | In-process target | Persistent/remote target | Key constraints |
+|---|---|---|---|
+| KV | `memory` | `sqlite`, `redis`, `postgres`; `encrypted` wraps any raw KV | Redis builder requires `url`; Postgres requires `dsn`; TTL is in seconds |
+| Vector | `memory` | `milvus`, `pgvector` | `dim` must match Embedder; retrieval requires higher scores first |
+| Fulltext | `memory` | `elasticsearch` | Rebuild indexes after changing the analyzer |
+| Graph | `memory` | `nano_graphrag` | External implementation creates a separate GraphML namespace per Scope |
+| Fusion | `memory` | `milvus_graph` | Current `milvus_graph` is vector seeding + graph expansion and does not implement BM25 text fusion |
+| FS | `memory` | `local` | LocalFS stores under `root/<scope>/` and prevents directory traversal |
+| Entity | None | `elasticsearch` | Independent Producer; not one of the six StorageCapability ports |
+
+Connection-backed implementations usually establish a real connection only on first access or
+`health()`. Successful configuration construction does not prove that the remote service,
+schema/index, or TLS path is ready; deployment acceptance should call `health()` explicitly.

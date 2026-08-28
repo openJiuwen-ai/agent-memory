@@ -17,6 +17,8 @@ This document is an API reference for the current abstract interfaces and public
 - [`discloser.py`](../../../jiuwen_memory/retrieval/discloser.py)
 - [`retriever.py`](../../../jiuwen_memory/retrieval/retriever.py)
 - [`types.py`](../../../jiuwen_memory/retrieval/types.py)
+- [`common/type_def/retrieval.py`](../../../jiuwen_memory/common/type_def/retrieval.py)
+- [`common/errors.py`](../../../jiuwen_memory/common/errors.py)
 
 ## 1. Public Entry Point
 
@@ -553,3 +555,144 @@ def search_memory(retriever: Retriever, scope: Scope) -> list[str]:
 ```
 
 Application code should prefer `Retriever.retrieve()` rather than assembling QueryParser, Recaller, Fuser, and Discloser directly. Direct composition is intended primarily for implementing a new retrieval pipeline, replacing an algorithm, or performing component-level tests.
+
+## 14. Intermediate Data Contracts
+
+### 14.1 ParsedQuery
+
+`ParsedQuery` is the structured query produced by QueryParser and shared by Storage, Recaller, and
+Fuser:
+
+| Field | Type | Default | Semantics |
+|---|---|---|---|
+| `raw` | `str` | `""` | Normalized original query; Retriever short-circuits when empty |
+| `rewritten` | `str` | `""` | Rewritten query |
+| `intent` | `str` | `""` | Query intent |
+| `tokens` | `list[str]` | `[]` | Tokenizer output |
+| `keywords` | `list[str]` | `[]` | Keyword features |
+| `entities` | `list[Entity]` | `[]` | Entity features |
+| `vector` | `list[float]` | `[]` | Query vector; its dimension must match the write-side Embedder |
+| `scalar_filters` | `FilterExpr \| None` | `None` | Pre-filter with system boundaries already merged in |
+| `recheck_filters` | `FilterExpr \| None` | `None` | User expression used for source-of-truth verification |
+| `as_of` | `datetime \| None` | `None` | Valid-time historical point |
+| `time_from` / `time_to` | `datetime \| None` | `None` | Event-time range boundaries |
+| `channels` | `list[RecallChannel]` | `[]` | Logical channels suggested by Parser |
+| `include_archived` | `bool` | `false` | Includes ARCHIVED units in current-state queries |
+| `extensions` | `dict[str, Any]` | `{}` | Extension parameters passed to custom retrieval components |
+
+PipelineRetriever adds lifecycle, valid-time, and event-time system predicates to `scalar_filters`.
+`recheck_filters` preserves the user filter for source-of-truth verification. A custom Parser must
+not combine the two into an expression whose system boundary can be weakened by OR.
+
+### 14.2 Candidates, Evidence, and Per-Source Results
+
+| Type | Fields (type; default) | Purpose |
+|---|---|---|
+| `ChannelEvidence` | `channel: RecallChannel=VECTOR`; `rank: int=0`; `score: float=0.0`; `weight: float=1.0`; `contribution: float=0.0` | Records per-channel rank, original score, weight, and fusion contribution |
+| `ScoredUnit` | `unit_id: str=""`; `score: float=0.0`; `channel: RecallChannel=VECTOR`; `evidence: list[ChannelEvidence]=[]` | Unmaterialized candidate |
+| `ScoredMemoryUnit` | `unit: MemoryUnit=MemoryUnit()`; same score/channel/evidence fields | Materialized candidate; its `unit_id` property returns `unit.id` |
+| `ScoredCandidate` | `ScoredUnit \| ScoredMemoryUnit` | Union type shared by Fuser and Discloser |
+| `RecallBatch[T]` | `channel: RecallChannel`; `source: str`; `candidates: list[T]=[]` | Result from one physical recall source; `source` distinguishes L0/L1/L2 indexes |
+| `ChannelError` | `channel: RecallChannel`; `source: str`; `error_type: str`; `message: str` | Failure from one physical source; message should be a safely sanitized summary |
+| `RecallResult[T]` | `batches: list[RecallBatch[T]]=[]`; `errors: list[ChannelError]=[]` | Represents partial success across multiple sources |
+| `RankedStorageResult` | `candidates: list[ScoredMemoryUnit]=[]`; `errors: list[ChannelError]=[]` | Result after Storage completes materialization and Fuser processing |
+
+The original score scale is defined by each Recaller/Store and must not be assumed to be `[0, 1]`.
+RRF uses rank only; `score_max` normalizes within each invocation and channel before comparing
+scores. Every built-in Fuser returns results in descending final-score order.
+
+### 14.3 Final Result Types and Defaults
+
+| Type.field | Type | Default |
+|---|---|---|
+| `RetrievedItem.unit_id` | `str` | `""` |
+| `RetrievedItem.score` | `float` | `0.0` |
+| `RetrievedItem.abstract` / `overview` / `content` | `str` | `""` |
+| `RetrievedItem.user_metadata` | `dict[str, MetadataValueType]` | `{}` |
+| `RetrievedItem.level` | `DisclosureLevel` | `L0` |
+| `TrajectoryStep.stage` | `str` | `""` |
+| `TrajectoryStep.channel` | `RecallChannel \| None` | `None` |
+| `TrajectoryStep.candidate_count` | `int` | `0` |
+| `TrajectoryStep.cost_ms` | `float` | `0.0` |
+| `TrajectoryStep.detail` | `dict[str, str]` | `{}` |
+| `RetrievalResult.items` | `list[RetrievedItem]` | `[]` |
+| `RetrievalResult.trajectory` | `list[TrajectoryStep]` | `[]` |
+| `RetrievalResult.errors` | `list[ChannelError]` | `[]` |
+
+## 15. Operator Method Contracts
+
+| API | Input requirements | Output requirements | Side effects/boundaries |
+|---|---|---|---|
+| `QueryParser.parse(query)` | Accepts one `RetrievalQuery`, not Scope | Returns `ParsedQuery`; `raw` is the normalized text that actually enters recall | Does not read Storage; a custom implementation should preserve filters, as_of, and extensions |
+| `Recaller.recall(scope, query, top_k)` | `top_k` should be positive; Scope and filters are separate boundaries | Returns this physical source's `ScoredUnit` objects; built-in implementations put high scores first | Recalls IDs only and never updates the source of truth |
+| `Fuser.fuse(query, candidates)` | `candidates` is a two-dimensional list with one list per physical recall source | Fuses each unit into one candidate while retaining representative data and evidence; built-ins put high scores first | Does not point-read, filter, or invoke Reranker |
+| `Discloser.disclose(...)` | `units` is a source-of-truth lookup map from `unit_id` to `MemoryUnit` | Produces `RetrievedItem` objects for candidates with an available unit | Does not point-read or reorder; built-ins skip IDs absent from `units` |
+| `Retriever.retrieve(scope, query)` | `top_k > 0`; `max_tokens` is `None` or positive; `channels` must not be an empty list | Returns a `RetrievalResult` in descending final-score order | Empty query short-circuits; never writes to Storage |
+
+Fuser must not mutate input lists or `MemoryUnit` objects in place. Built-in implementations create
+replacement candidates when they need to change scores or evidence. L0/L1/L2 candidates from one
+logical channel are merged with MaxP before cross-channel fusion.
+
+## 16. Error Propagation Matrix
+
+| Stage | Locally degradable | Recorded in `RetrievalResult.errors` | Raised directly |
+|---|---|---|---|
+| Request validation | No | No | `top_k <= 0`, `max_tokens <= 0`, and `channels=[]` raise `ValidationError` |
+| QueryParser | No | No | Parser exceptions propagate unchanged |
+| One physical recall source | Yes, if another source succeeds | Yes, as `ChannelError` | Storage raises `StorageRetrievalError` when no source succeeds |
+| Source-of-truth materialization/verification | Missing or invalid units are filtered | Preserves earlier recall errors | Unexpected Storage failures propagate |
+| Fuser | No | No | Fuser exceptions propagate |
+| Reranker | When explicitly requested but not assembled, it is skipped and trajectory records `no_reranker_configured` | No | Exceptions from an assembled Reranker propagate |
+| Discloser | Missing units are skipped | No | Formatter implementation exceptions propagate |
+
+`errors` is independent of `with_trajectory`: disabling trajectory only yields `trajectory=[]`; it
+does not discard partial recall errors.
+
+## 17. Complete Result Example
+
+```python
+from jiuwen_memory.common.type_def import ChannelError, RecallChannel
+from jiuwen_memory.retrieval.types import (
+    DisclosureLevel,
+    RetrievedItem,
+    RetrievalResult,
+    TrajectoryStep,
+)
+
+
+result = RetrievalResult(
+    items=[
+        RetrievedItem(
+            unit_id="memory-1",
+            score=0.0325,
+            abstract="The user prefers PostgreSQL.",
+            overview="The user explicitly prefers PostgreSQL when selecting storage.",
+            content="The user said PostgreSQL should be preferred as the production persistence backend.",
+            user_metadata={"topic": "storage"},
+            level=DisclosureLevel.L1,
+        )
+    ],
+    trajectory=[
+        TrajectoryStep(stage="parse", candidate_count=3, cost_ms=1.2),
+        TrajectoryStep(
+            stage="recall",
+            channel=RecallChannel.VECTOR,
+            candidate_count=8,
+            cost_ms=12.4,
+        ),
+        TrajectoryStep(stage="fuse", candidate_count=5, cost_ms=0.3),
+    ],
+    errors=[
+        ChannelError(
+            channel=RecallChannel.KEYWORD,
+            source="keyword_l1",
+            error_type="BackendError",
+            message="fulltext backend unavailable",
+        )
+    ],
+)
+```
+
+This result means that other sources, such as vector recall, succeeded, so the query returns
+`items` while preserving the failed `keyword_l1` physical source. Only when every selected source
+fails does the call raise `StorageRetrievalError` instead of returning this structure.

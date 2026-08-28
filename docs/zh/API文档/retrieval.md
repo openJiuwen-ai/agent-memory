@@ -17,6 +17,8 @@ Retrieval 层将检索拆分为五类可插拔算子：
 - [`discloser.py`](../../../jiuwen_memory/retrieval/discloser.py)
 - [`retriever.py`](../../../jiuwen_memory/retrieval/retriever.py)
 - [`types.py`](../../../jiuwen_memory/retrieval/types.py)
+- [`common/type_def/retrieval.py`](../../../jiuwen_memory/common/type_def/retrieval.py)
+- [`common/errors.py`](../../../jiuwen_memory/common/errors.py)
 
 ## 1. 公共调用入口
 
@@ -534,3 +536,138 @@ def search_memory(retriever: Retriever, scope: Scope) -> list[str]:
 ```
 
 应用侧优先调用 `Retriever.retrieve()`，而不是自行组合 QueryParser、Recaller、Fuser 和 Discloser。后者主要用于实现新的检索管线、替换算法或进行组件级测试。
+
+## 14. 中间数据契约
+
+### 14.1 ParsedQuery
+
+`ParsedQuery` 是 QueryParser 产出、Storage/Recaller/Fuser 共享的结构化查询：
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `raw` | `str` | `""` | 规范化后的原始查询；为空时 Retriever 短路 |
+| `rewritten` | `str` | `""` | 改写后查询 |
+| `intent` | `str` | `""` | 查询意图 |
+| `tokens` | `list[str]` | `[]` | Tokenizer 输出 |
+| `keywords` | `list[str]` | `[]` | 关键词特征 |
+| `entities` | `list[Entity]` | `[]` | 实体特征 |
+| `vector` | `list[float]` | `[]` | 查询向量；维度必须与写入侧 Embedder 一致 |
+| `scalar_filters` | `FilterExpr \| None` | `None` | 已合并系统边界的前置过滤 |
+| `recheck_filters` | `FilterExpr \| None` | `None` | 真源复核使用的用户表达式 |
+| `as_of` | `datetime \| None` | `None` | valid-time 回溯点 |
+| `time_from` / `time_to` | `datetime \| None` | `None` | event-time 起止范围 |
+| `channels` | `list[RecallChannel]` | `[]` | Parser 建议的逻辑通道 |
+| `include_archived` | `bool` | `false` | 当前态查询是否包含 ARCHIVED |
+| `extensions` | `dict[str, Any]` | `{}` | 透传给自定义检索组件的扩展参数 |
+
+`scalar_filters` 在 PipelineRetriever 内会加上 lifecycle/valid-time/event-time 系统谓词；
+`recheck_filters` 保留用户过滤用于真源复核。两者不应被自定义 Parser 混为一个可被 OR 稀释的表达式。
+
+### 14.2 候选、证据和分入口结果
+
+| 类型 | 字段（类型；默认值） | 用途 |
+|---|---|---|
+| `ChannelEvidence` | `channel: RecallChannel=VECTOR`；`rank: int=0`；`score: float=0.0`；`weight: float=1.0`；`contribution: float=0.0` | 记录单通道名次、原分、权重和融合贡献 |
+| `ScoredUnit` | `unit_id: str=""`；`score: float=0.0`；`channel: RecallChannel=VECTOR`；`evidence: list[ChannelEvidence]=[]` | 未物化候选 |
+| `ScoredMemoryUnit` | `unit: MemoryUnit=MemoryUnit()`；`score/channel/evidence` 同上 | 已物化候选；`unit_id` 属性返回 `unit.id` |
+| `ScoredCandidate` | `ScoredUnit \| ScoredMemoryUnit` | Fuser/Discloser 共享联合类型 |
+| `RecallBatch[T]` | `channel: RecallChannel`；`source: str`；`candidates: list[T]=[]` | 一个物理召回入口的结果；`source` 区分 L0/L1/L2 等分表 |
+| `ChannelError` | `channel: RecallChannel`；`source: str`；`error_type: str`；`message: str` | 单物理入口失败；message 应为已安全处理的摘要 |
+| `RecallResult[T]` | `batches: list[RecallBatch[T]]=[]`；`errors: list[ChannelError]=[]` | 表达多入口部分成功 |
+| `RankedStorageResult` | `candidates: list[ScoredMemoryUnit]=[]`；`errors: list[ChannelError]=[]` | Storage 内完成物化和 Fuser 后的结果 |
+
+score 的原始量纲由 Recaller/Store 实现定义，不得假定统一在 `[0, 1]`。RRF 只使用名次；
+`score_max` 会在当次通道内归一化后比较。所有内置 Fuser 都按最终 score 降序返回。
+
+### 14.3 最终结果的类型与默认值
+
+| 类型.字段 | 类型 | 默认值 |
+|---|---|---|
+| `RetrievedItem.unit_id` | `str` | `""` |
+| `RetrievedItem.score` | `float` | `0.0` |
+| `RetrievedItem.abstract` / `overview` / `content` | `str` | `""` |
+| `RetrievedItem.user_metadata` | `dict[str, MetadataValueType]` | `{}` |
+| `RetrievedItem.level` | `DisclosureLevel` | `L0` |
+| `TrajectoryStep.stage` | `str` | `""` |
+| `TrajectoryStep.channel` | `RecallChannel \| None` | `None` |
+| `TrajectoryStep.candidate_count` | `int` | `0` |
+| `TrajectoryStep.cost_ms` | `float` | `0.0` |
+| `TrajectoryStep.detail` | `dict[str, str]` | `{}` |
+| `RetrievalResult.items` | `list[RetrievedItem]` | `[]` |
+| `RetrievalResult.trajectory` | `list[TrajectoryStep]` | `[]` |
+| `RetrievalResult.errors` | `list[ChannelError]` | `[]` |
+
+## 15. 算子方法契约
+
+| API | 输入要求 | 输出要求 | 副作用/边界 |
+|---|---|---|---|
+| `QueryParser.parse(query)` | 接收一个 `RetrievalQuery`，不接收 Scope | 返回 `ParsedQuery`；`raw` 是实际进入召回的规范化文本 | 不读存储；自定义实现应保留 filters、as_of 和 extensions |
+| `Recaller.recall(scope, query, top_k)` | `top_k` 应为正整数；Scope 与 filters 是两条独立边界 | 返回本物理入口的 `ScoredUnit`；内置实现高分在前 | 只召回 ID，不更新真源 |
+| `Fuser.fuse(query, candidates)` | `candidates` 是“每个物理召回入口一个列表”的二维列表 | 同 unit 融合为一条，保留代表候选和证据；内置实现高分在前 | 不执行点读、过滤或 Reranker |
+| `Discloser.disclose(...)` | `units` 是 `unit_id -> MemoryUnit` 真源查找表 | 为有可用 unit 的候选生成 `RetrievedItem` | 不点读和重排；内置实现跳过 `units` 中缺失的 ID |
+| `Retriever.retrieve(scope, query)` | `top_k > 0`；`max_tokens` 为 `None` 或正数；`channels` 不得是空列表 | 按最终分数排序的 `RetrievalResult` | 空查询短路；不写入 Storage |
+
+`Fuser` 不应原地修改输入列表或 `MemoryUnit`。当需要改分和证据时，内置实现会创建替换后的
+candidate。同一逻辑通道的 L0/L1/L2 候选在跨通道融合前先做 MaxP 归并。
+
+## 16. 错误传播矩阵
+
+| 阶段 | 局部失败是否可降级 | 记录到 `RetrievalResult.errors` | 直接抛出 |
+|---|---|---|---|
+| 请求校验 | 否 | 否 | `top_k <= 0`、`max_tokens <= 0`、`channels=[]` 抛 `ValidationError` |
+| QueryParser | 否 | 否 | Parser 异常原样向上传播 |
+| 单个物理召回入口 | 是，只要仍有成功入口 | 是，记录 `ChannelError` | 无成功入口时由 Storage 抛 `StorageRetrievalError` |
+| 真源物化/复核 | 缺失或失效 unit 被过滤 | 保留前置召回错误 | 非可预期 Storage 失败向上传播 |
+| Fuser | 否 | 否 | Fuser 异常向上传播 |
+| Reranker | 显式要求但未装配时跳过，并在 trajectory 记录 `no_reranker_configured` | 否 | 已装配 Reranker 的执行异常向上传播 |
+| Discloser | 缺失 unit 被跳过 | 否 | 格式化实现异常向上传播 |
+
+`errors` 与 `with_trajectory` 无关：关闭轨迹只会让 `trajectory=[]`，不会丢弃部分召回错误。
+
+## 17. 完整结果示例
+
+```python
+from jiuwen_memory.common.type_def import ChannelError, RecallChannel
+from jiuwen_memory.retrieval.types import (
+    DisclosureLevel,
+    RetrievedItem,
+    RetrievalResult,
+    TrajectoryStep,
+)
+
+
+result = RetrievalResult(
+    items=[
+        RetrievedItem(
+            unit_id="memory-1",
+            score=0.0325,
+            abstract="用户偏好 PostgreSQL。",
+            overview="用户在存储选型中明确偏好 PostgreSQL。",
+            content="用户表示生产环境应优先使用 PostgreSQL 作为持久化后端。",
+            user_metadata={"topic": "storage"},
+            level=DisclosureLevel.L1,
+        )
+    ],
+    trajectory=[
+        TrajectoryStep(stage="parse", candidate_count=3, cost_ms=1.2),
+        TrajectoryStep(
+            stage="recall",
+            channel=RecallChannel.VECTOR,
+            candidate_count=8,
+            cost_ms=12.4,
+        ),
+        TrajectoryStep(stage="fuse", candidate_count=5, cost_ms=0.3),
+    ],
+    errors=[
+        ChannelError(
+            channel=RecallChannel.KEYWORD,
+            source="keyword_l1",
+            error_type="BackendError",
+            message="fulltext backend unavailable",
+        )
+    ],
+)
+```
+
+该结果表示向量等其他入口仍已成功，因此查询返回 `items`，同时保留失败的 `keyword_l1`
+物理入口。仅当全部选中入口都失败时，才不返回该结构而是抛出 `StorageRetrievalError`。

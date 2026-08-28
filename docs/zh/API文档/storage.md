@@ -18,6 +18,9 @@ Storage 层为上层提供两级存储抽象：
 - [`fs.py`](../../../jiuwen_memory/storage/fs.py)
 - [`entity_store.py`](../../../jiuwen_memory/storage/entity_store.py)
 - [`types.py`](../../../jiuwen_memory/storage/types.py)
+- [`common/type_def/entity.py`](../../../jiuwen_memory/common/type_def/entity.py)
+- [`common/type_def/retrieval.py`](../../../jiuwen_memory/common/type_def/retrieval.py)
+- [`common/errors.py`](../../../jiuwen_memory/common/errors.py)
 
 ## 1. 通用约定
 
@@ -697,3 +700,226 @@ def remove_from_retrieval(storage: Storage, scope: Scope, unit_id: str) -> None:
 ```
 
 这两段代码只表达接口语义。`ALL` 或 `SOFT` 最终会操作哪些物理数据，取决于注入的 `Storage` 实现及其能力。
+
+## 15. 存储数据类型
+
+本节的数据类型都不携带 Scope。Scope 是 Store 方法的显式第一参数，不应重复写入
+`metadata`、`filters` 或记录主体。
+
+### 15.1 通用结果类型
+
+| 类型.字段 | 类型 | 默认值/必填 | 语义 |
+|---|---|---|---|
+| `ScoredID.id` | `str` | 必填 | Scope 内逻辑 ID |
+| `ScoredID.score` | `float` | 必填 | 相关性分数，当前检索链要求高分优先 |
+| `ScoredID.metadata` | `dict[str, Any] \| None` | `None` | 可选的命中元数据 |
+| `ScoredHit.id` | `str` | 必填 | 命中 ID |
+| `ScoredHit.score` | `float` | 必填 | 相关性分数 |
+| `ScoredHit.metadata` | `dict[str, Any]` | `{}` | `VectorStore.recall` 按需回带的 payload |
+| `KVMemoryListResult.entries` | `list[tuple[str, bytes]]` | `[]` | 当前页原始 KV 条目 |
+| `KVMemoryListResult.count` | `int` | `0` | 分页前匹配总数 |
+| `MemoryListResult.items` | `list[MemoryUnit]` | `[]` | 当前页领域对象 |
+| `MemoryListResult.count` | `int` | `0` | 分页前匹配总数 |
+
+### 15.2 Vector 与 Fulltext
+
+| 类型 | 字段（类型；默认值） | 约束 |
+|---|---|---|
+| `VectorRecord` | `id: str`；`vector: list[float]`；`metadata: dict[str, Any]={}` | vector 维度必须与后端索引一致；id 在 Scope 内唯一 |
+| `VectorQuery` | `vector: list[float]`；`top_k: int=10`；`filters: FilterExpr \| None=None`；`return_metadata: bool=false` | `filters` 在构造边界规范化；`top_k` 应为正数 |
+| `Document` | `id: str`；`text: str`；`metadata: dict[str, Any]={}` | id 在 Scope 内唯一 |
+| `TextQuery` | `text: str`；`top_k: int=10`；`filters: FilterExpr \| None=None` | `filters` 在构造边界规范化；`top_k` 应为正数 |
+
+`VectorStore.search()` 返回 `ScoredID`。可选的 `VectorStore.recall()` 可在同一次 ANN 请求中回带
+`ScoredHit.metadata`；后端未实现时基类抛 `NotImplementedError`，`VectorRecaller` 回退到
+`search + get`。
+
+### 15.3 Graph、Fusion 与 FS
+
+| 类型 | 字段（类型；默认值） | 约束 |
+|---|---|---|
+| `Node` | `id: str`；`label: str=""`；`properties: dict[str, Any]={}` | id 在 Scope 内唯一 |
+| `Edge` | `id: str`；`source: str`；`target: str`；`relation: str=""`；`properties: dict[str, Any]={}` | source/target 是节点 ID |
+| `GraphQuery` | `start_id: str`；`relation: str \| None=None`；`depth: int=1`；`limit: int=100` | relation 为 `None` 时不限关系类型 |
+| `FusionRecord` | `id: str`；`vector: list[float] \| None=None`；`text: str \| None=None`；`scalars: dict[str, Any]={}`；`value: bytes \| None=None` | 允许只提供部分模态字段 |
+| `FusionQuery` | `vector: list[float] \| None=None`；`text: str \| None=None`；`scalar_filters: FilterExpr \| None=None`；`top_k: int=10`；`vector_weight: float=0.5` | `vector_weight` 表示向量得分权重；具体后端可只支持子集 |
+| `FileStat` | `ref: str`；`size: int`；`content_type: str=""`；`created_at/updated_at: float=0.0` | 时间为 Unix 秒 |
+
+### 15.4 EntityStore 类型
+
+| 类型 | 字段 | 语义 |
+|---|---|---|
+| `EntityStoreFilters` | `actor_id: str \| None=None` | `space_id` 之外的用户隔离条件 |
+| `EntityMention` | `entity_type: str`、`display_name: str`、`normalized_name: str` | 从记忆或 query 抽取并已归一化的实体提及 |
+| `EntityRecord` | `id`、`space_id`、`entity_text`、`entity_type`、`linked_memory_ids: tuple[str, ...]`、`filters`、`entity_text_hash=""` | 实体到 MemoryUnit ID 的反向索引记录 |
+| `EntityLinkResult` | `extracted_count/inserted_count/updated_count/deleted_count/failed_count/skipped_count: int=0` | 实体链接器的写入统计，不是 EntityStore 批量 API 的逐项结果 |
+| `EntityOperation` | `type: EntityOpType`、`record: EntityRecord \| None=None`、`record_id: str \| None=None`、`link_memory_ids: tuple[str, ...]=()` | `INSERT/LINK/UNLINK_UPDATE/DELETE` 批量命令 |
+| `EntityBatchResult` | `successful_ids: list[str]`、`failed_ids: list[str]` | 逐项部分成功结果，单项失败不要求整批抛异常 |
+
+## 16. Store 完整方法签名
+
+### 16.1 KVStore
+
+```python
+insert(scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None
+update(scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None
+delete(scope: Scope, key: str) -> None
+get(scope: Scope, key: str) -> bytes
+mget(scope: Scope, keys: list[str]) -> list[bytes]
+exists(scope: Scope, key: str) -> bool
+scan(scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]
+list(
+    scope: Scope,
+    *,
+    offset: int = 0,
+    limit: int = 100,
+    memory_types: list[str] | None = None,
+    filters: FilterExpr | None = None,
+    extensions: dict[str, str] | None = None,
+) -> KVMemoryListResult
+scopes() -> list[Scope]
+```
+
+`ttl` 单位为秒，`0` 表示永不过期。`mget` 保持输入顺序和重复 key，与 `keys` 一一对应；
+任意 key 缺失都抛 `NotFoundError`。`scan` 和 `scopes` 的顺序由实现定义，调用方不应依赖。
+
+### 16.2 VectorStore、FulltextStore 与 FusionStore
+
+```python
+# VectorStore
+insert(scope: Scope, records: list[VectorRecord]) -> None
+update(scope: Scope, records: list[VectorRecord]) -> None
+delete(scope: Scope, ids: list[str]) -> None
+get(scope: Scope, ids: list[str]) -> list[VectorRecord]
+search(scope: Scope, query: VectorQuery) -> list[ScoredID]
+recall(
+    scope: Scope,
+    query: VectorQuery,
+    output_fields: list[str] | None = None,
+) -> list[ScoredHit]
+score_higher_is_better() -> bool
+
+# FulltextStore
+insert(scope: Scope, docs: list[Document]) -> None
+update(scope: Scope, docs: list[Document]) -> None
+delete(scope: Scope, ids: list[str]) -> None
+get(scope: Scope, ids: list[str]) -> list[Document]
+search(scope: Scope, query: TextQuery) -> list[ScoredID]
+
+# FusionStore
+insert(scope: Scope, records: list[FusionRecord]) -> None
+update(scope: Scope, records: list[FusionRecord]) -> None
+delete(scope: Scope, ids: list[str]) -> None
+get(scope: Scope, ids: list[str]) -> list[FusionRecord]
+search(scope: Scope, query: FusionQuery) -> list[ScoredID]
+```
+
+三种 Store 的批量 `get` 只返回实际存在的记录，不与输入 ID 一一对齐。内置 `search`
+按高分优先返回；距离型 VectorStore 必须用 `score_higher_is_better()` 明确分数方向，
+当前 `VectorRecaller` 会拒绝低分优先的直接装配。
+
+### 16.3 GraphStore、FSStore 与 EntityStore
+
+```python
+# GraphStore
+seed_ids(scope: Scope, tokens: set[str]) -> list[str]
+insert(
+    scope: Scope,
+    nodes: list[Node] | None = None,
+    edges: list[Edge] | None = None,
+) -> None
+update(
+    scope: Scope,
+    nodes: list[Node] | None = None,
+    edges: list[Edge] | None = None,
+) -> None
+delete(
+    scope: Scope,
+    node_ids: list[str] | None = None,
+    edge_ids: list[str] | None = None,
+) -> None
+get(scope: Scope, node_ids: list[str]) -> list[Node]
+search(scope: Scope, query: GraphQuery) -> list[Node]
+
+# FSStore
+insert(scope: Scope, key: str, data: BinaryIO) -> str
+update(scope: Scope, ref: str, data: BinaryIO) -> str
+delete(scope: Scope, ref: str) -> None
+get(scope: Scope, ref: str) -> BinaryIO
+stat(scope: Scope, ref: str) -> FileStat
+
+# EntityStore（以 space_id routing，不属于六类 Storage capability）
+ensure_index() -> None
+find_by_entity_text_hash(
+    space_id: str,
+    entity_text_hashes: tuple[str, ...],
+    *,
+    filters: EntityStoreFilters,
+    limit: int = 500,
+) -> list[EntityRecord]
+find_by_linked_memory_id(
+    space_id: str,
+    memory_id: str,
+    *,
+    filters: EntityStoreFilters,
+) -> list[EntityRecord]
+execute_operations(
+    space_id: str,
+    operations: list[EntityOperation],
+) -> EntityBatchResult
+```
+
+FS 的 `ref` 是 Store 返回的规范引用，不应由调用方拼接物理路径。GraphStore 的 `seed_ids`
+只定位遍历入口，词项匹配策略由后端实现。
+
+## 17. CRUD、批量与异常契约
+
+| 场景 | 标准结果 |
+|---|---|
+| `insert` 的 `(scope, id/key)` 已存在 | `ConflictError` |
+| `update` 的 `(scope, id/key)` 不存在 | `NotFoundError` |
+| `delete` 目标不存在 | 幂等成功，不抛缺失异常 |
+| KV/FS 单条 `get` 不存在 | `NotFoundError` |
+| KV `mget` 任意 key 不存在 | `NotFoundError`，不返回部分列表 |
+| 检索型 Store 批量 `get` 部分 ID 缺失 | 省略缺失项，返回实际找到的记录 |
+| `MemoryUnit.scope` 与 `Storage.add/update` 显式 Scope 不一致 | 内置 `CompositeStorage` 抛 `ValidationError` |
+| 过滤算子、向量维度、query 或配置非法 | `ValidationError` |
+| 访问未声明能力/具名端口 | `UnsupportedStorageCapabilityError` |
+| `StorageSecurity.authorize` 拒绝 | `PermissionDeniedError` |
+| 外部后端连接失败、超时或不可用 | `BackendError` |
+| 多召回入口部分失败 | 成功 batch + `ChannelError` |
+| 全部选中召回入口失败 | `StorageRetrievalError` |
+
+标准接口不要求多条批量或多 Store 操作具备全局原子性。实现如果依赖后端批量 API，
+应在自身文档和测试中说明是 all-or-nothing 还是可能部分成功；调用方不应从 `None`
+返回值推断跨后端事务存在。
+
+## 18. Storage mode 与实现能力矩阵
+
+`IndexWriteMode` / `IndexRemoveMode` 是面向 Storage 接口的逻辑要求，不代表每个 Storage
+都内建索引投影能力。
+
+| 组合 | `ALL` | `FORWARD_ONLY` | `RETRIEVAL_ONLY` | `SOFT` | `HARD` |
+|---|---|---|---|---|---|
+| `CompositeStorage` 直接 CRUD | 写/更新 KV 记忆本体 | 写/更新 KV 记忆本体 | 空操作 | 空操作，保留本体 | 删除 KV 记忆本体 |
+| `HybridIndexBuilder + CompositeStorage` | forward + fulltext + vector + 可选 entity | 只执行 forward | 只执行检索子 builder | 只删派生检索索引 | 先删派生索引，后删 forward |
+| `UnifiedIndexBuilder + CompositeStorage` | 只有 KV 记忆本体 | 只有 KV 记忆本体 | 空操作 | 空操作 | 删除 KV 记忆本体 |
+| `UnifiedIndexBuilder + 自定义一体化 Storage` | 由该 Storage 实现全部写入 | 必须至少保证本体 | 由实现决定能否单独补索引 | 由实现保证本体保留 | 由实现删除本体和派生索引 |
+
+因此，不能仅看 `Storage` 的抽象方法就假定当前 target 已经同时管理向量、全文和图索引。
+是否具备索引投影能力，必须同时看 Storage 实现和与之搭配的 IndexBuilder。
+
+## 19. 后端选择摘要
+
+| Store | 进程内 target | 持久化/远程 target | 关键约束 |
+|---|---|---|---|
+| KV | `memory` | `sqlite`、`redis`、`postgres`；`encrypted` 包装任意 raw KV | Redis builder 需 `url`；Postgres 需 `dsn`；TTL 单位秒 |
+| Vector | `memory` | `milvus`、`pgvector` | `dim` 与 Embedder 一致；检索链要求高分优先 |
+| Fulltext | `memory` | `elasticsearch` | analyzer 改变后需重建索引 |
+| Graph | `memory` | `nano_graphrag` | 外部实现按 Scope 生成独立 GraphML 命名空间 |
+| Fusion | `memory` | `milvus_graph` | `milvus_graph` 当前为“向量种子 + 图扩展”，不实现 BM25 文本融合 |
+| FS | `memory` | `local` | LocalFS 在 `root/<scope>/` 内存储并阻止目录穿越 |
+| Entity | 无 | `elasticsearch` | 独立 Producer，不属于 StorageCapability 六端口 |
+
+连接型后端通常在首次访问或 `health()` 时才完成真实连接。配置对象能构建成功，
+不等于远程服务、schema/index 或 TLS 链路已可用；部署验收应显式调用 `health()`。
