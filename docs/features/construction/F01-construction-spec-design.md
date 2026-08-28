@@ -32,7 +32,10 @@
 1. **双通道**：写入路径只做 Classifier 快速分类 → KVStore 落盘 → IndexBuilder 建索引（< 250ms）；提取/去重/冲突消解/遗忘放 Evolver。Classifier 是写入路径唯一智能操作例外（tier/tags 是索引前提，规则优先 ~80% 覆盖、~0 LLM）；写入直接 ADD 不去重，由 SUPERSEDE/UPDATE 补偿形成闭环。Evolver 不调 Classifier——派生 unit 的 tier 由 Extractor/Abstractor 预设，遗忘策略读写入路径产出的 importance/freshness metadata。
 
    > **演进触发方式已调整**（见 [`docs/features/api/F02-write-infer-extract.md`](../api/F02-write-infer-extract.md)）：默认路径不再由 `control.Scheduler` 在 write 后自动提交 background EXTRACT（`InProcessScheduler` 同步执行下"自动提交"实为同步阻塞，与异步初衷相悖）；演进由调用方显式 `evolve()` 触发，或经 `write(metadata={"infer":"true"})` 同步走 EXTRACT。双通道"写入轻量、提取重"的立场不变——同步抽取是显式 opt-in 开关，非默认行为（不违背下方拒绝方案 A）。
-2. **全部可重建**：`MemoryUnit` 序列化存 KVStore 是唯一真源；向量/关键词/图索引全是从真源派生的可重建数据。`IndexBuilder.rebuild()` 从 KVStore 全量扫描重建，是非破坏式保障——存储故障恢复、换 embedding 模型都靠它。
+2. **全部可重建（目标）**：`MemoryUnit` 序列化存 KVStore 是唯一真源；向量/关键词/图索引
+   全是从真源派生的可重建数据。目标是由 `IndexBuilder.rebuild()` 从 KVStore 全量扫描重建，
+   作为存储故障恢复和更换 embedding 模型的非破坏式保障；当前各 Builder 的 `rebuild()`
+   仍为 no-op，恢复能力尚未落地。
 3. **接口与实现严格分离**：顶层 `.py` 纯抽象（不 import `*_impl/`），实现经 `@Producer.register` 自注册。端侧用规则/小模型（keyword classifier、hashing embedder）、云侧用强 LLM，只改配置不改代码。共享插件（Embedder/Tokenizer/Chunker/FeatureExtractor）须与 retrieval 侧同一实例，装配按字段名缓存保证同实例。
 4. **去重召回与判定分离**：去重召回抽象成独立 `Dedup` 接口，Evolver 只做阈值 + LLM 判定。装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`——只配倒排时去重仍可用（向量路在 fulltext-only 下 VectorStore 恒空会失效）。两路 score 同为 0~1 量纲（cosine / 词重叠率），medium/high 阈值统一复用。
 5. **SUPERSEDE 不经 LifecycleManager**：Evolver 标记旧版 SUPERSEDED 直接 `KVStore.update`，不经 control 层 LifecycleManager（construction → control 严禁）。版本链由 `supersedes` 字段记录，非破坏式、保留血缘。
@@ -159,7 +162,7 @@
 |------|---------|------|
 | 只配倒排时去重仍可用 | `vector_enabled=False` 装配，`KeywordDedup` 召回命中现有记忆 score=1.000 | ✅（修复前 score=0.000 完全失效） |
 | 写入路径低时延 | quickstart write 链路（分类+落盘+建索引）秒级内完成 | ✅ |
-| 索引可重建 | `IndexBuilder.rebuild()` 从 KVStore 全量重建 | ✅（契约保障，单测覆盖） |
+| 索引可重建 | `IndexBuilder.rebuild()` 从 KVStore 全量重建 | ❌（当前实现为 no-op，待补齐） |
 | 端侧降级 | 无 LLM/无 spaCy 时 classifier 规则兜底、demo 仍可跑 | ✅ |
 
 ## 已知遗留
@@ -173,4 +176,3 @@
 3. **去重 access_frequency 未实现**：Classifier 的 importance 计算中 `access_frequency` 项（被召回 M 次 → +0.05×min(M,10)）当前未实现——检索层尚无访问频次统计数据源。待检索层 recall 统计对接后补齐。
 
 4. **部分算子仍是占位实现**：M1 阶段部分算子（如 KeywordExtractor/KeywordAssociator）是轻量占位，真实 LLM 驱动实现（llm_*）需配 LLM API。装配按配置切换。
-

@@ -2,7 +2,7 @@
 
 > 文档性质：总体架构设计（概念、分层、组件与依赖方向）
 > 版本：v0.2 ｜ 日期：2026-08-06
-> 关联文档：[愿景 VISION](./VISION.md) ｜ [统一 Storage](../features/storage/F05-unified-storage-design.md) ｜ [Storage 检索 Pipeline](../features/retrieval/F05-storage-retrieval-pipelines.md) ｜ [Benchmark 调研](./memory_benchmarks.md)
+> 关联文档：[愿景 VISION](./vision.md) ｜ [统一 Storage](../features/storage/F05-unified-storage-design.md) ｜ [Storage 检索 Pipeline](../features/retrieval/F05-storage-retrieval-pipelines.md) ｜ [Benchmark 调研](./memory_benchmarks.md)
 > 说明：本文描述系统级架构方向；精确接口契约以 `docs/specs/` 为准，特性取舍与首版实现边界以 `docs/features/` 为准。
 
 ---
@@ -289,7 +289,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 - **检索内核只含三步**：Storage 适配的边界仅为 `recall`、`get`、`rank`，其中 `rank` 只指 Fuser 的分层归并与跨通道融合；Reranker、阈值、最终 `top_k` 和 Discloser 始终留在 Retriever。
 - **三条等价 Pipeline**：组合后端使用 `recall -> get -> rank`；可直接回带 MemoryUnit 的后端使用 `recall_and_get -> rank`；一体化平台使用 `retrieve`。Storage 通过稳定的 `preferred_retrieval_pipeline()` 声明首选路径，Retriever 不按请求动态探测或失败后静默切换。
-- **共享候选契约**：索引候选使用 `ScoredUnit`，物化候选使用 `ScoredMemoryUnit`；`ParsedQuery`、候选、分批结果、通道错误及 Fuser 最小协议位于 `src/common/type_def`，避免 Storage 反向依赖 Retrieval 实现。
+- **共享候选契约**：索引候选使用 `ScoredUnit`，物化候选使用 `ScoredMemoryUnit`；`ParsedQuery`、候选、分批结果、通道错误及 Fuser 最小协议位于 `jiuwen_memory/common/type_def`，避免 Storage 反向依赖 Retrieval 实现。
 - **读取去重不丢证据**：第一条 pipeline 只对批量 `get` 的 id 去重；读取完成后恢复每个召回入口的 score、channel 和 evidence，再交给 Fuser，保证同一 MemoryUnit 的多通道命中仍参与融合。
 - **分层索引不是新通道**：L0/L1/L2 可以是同一 Vector 或 Fulltext 通道的多个物理入口；Fuser 先按同一 channel、同一 unit 做 MaxP，再做跨通道融合，避免层数更多的 MemoryUnit 被重复加权。
 - **部分失败可返回**：部分通道失败时保留成功候选，并通过 `RetrievalResult.errors` 返回结构化 `ChannelError`；全部选中通道失败时抛 `StorageRetrievalError`。错误可见性不依赖 `with_trajectory`。
@@ -540,7 +540,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 ### 13.4 实现落点
 
-- **`src/config/`**：`Config` / `defaults` / `AssemblyContext` 负责装配期合并；**`ConfigSource`** 负责可插拔配置来源（默认对齐 YAML/defaults，产品可注入配置中心实现）。契约见 `docs/specs/S08-config.md`。
+- **`jiuwen_memory/config/`**：`Config` / `defaults` / `AssemblyContext` 负责装配期合并；**`ConfigSource`** 负责可插拔配置来源（默认对齐 YAML/defaults，产品可注入配置中心实现）。契约见 `docs/specs/S08-config.md`。
 - **`bootstrap/core/profiles.py`**：把维度组合成 `edge/cloud/hybrid` 与上述场景 Preset，装配对应组件与后端。
 - **`admin_get/set/all`（§6）**：运行时查询/调整 **PolicyManager** 已知策略键（如 lifecycle 目标、`scope.require_space`）；**不是**六类模型/prompt/store 配置的主通道。
 - **两层动态性**：换 ConfigSource 实现或增减预装配组件 → 重建内核；已注入来源上的值（开关/prompt/凭证/连接）→ 运行中 `fetch`（首选）；异质实例选用 → `*.active`（次选）。注册在仓内的多种实现 ≠ 默认已全部预装。
@@ -602,7 +602,7 @@ evolve()/触发器 → 读取原始数据 → LLM 提取/抽象升华 → 关联
 
 ## 16. 代码目录结构（Repository Layout）
 
-> Python 为主（SDK 一等支持）。整体是 **`src/` 内核** + `bootstrap/`、`agent_plugin/` 薄封装的多形态接入；目录直接对应 §2 的分层，使架构可被代码落地。
+> Python 为主（SDK 一等支持）。整体是 **`jiuwen_memory/` 内核** + `bootstrap/`、`agent_plugin/` 薄封装的多形态接入；目录直接对应 §2 的分层，使架构可被代码落地。
 
 ```
 agent-memory/
@@ -638,7 +638,7 @@ agent-memory/
 │   ├── scripts/                    #   测评脚本
 │   └── smoke_test/                 #   总体测试
 │
-└── src/                            # 内核（in-process 嵌入即用此包 = SDK 内核）
+└── jiuwen_memory/                  # 内核（in-process 嵌入即用此包 = SDK 内核）
     ├── config/                     # 配置：真源形态 / 索引策略 / 部署 profile（不可变/重型配置）
     │
     ├── common/                     # 跨层共享：能力插件 + 通用结构体 + 异常 + 横切组件
@@ -720,31 +720,31 @@ agent-memory/
 | 目录                                  | 对应架构层 / 章节            |
 | ----------------------------------- | -------------------- |
 | `bootstrap/`、`agent_plugin/`        | A 调用层（§5）：内核的薄封装（core 共享 + CLI/SDK/HTTP/MCP surface）与 Agent 插件接入 |
-| `src/ingest/`                       | A 数据接入（§5/§5.1）：信息源接入 + 模态规约 + 转换为 MemoryUnit（**不落盘**） |
-| `src/api/`                          | B 记忆接口层（§6）：`MemoryAPI` 统一 Core API，`MemoryEngine` 的薄封装 |
-| `src/control/`                      | C 控制层：记忆引擎编排（§6 语义的执行中枢）/ 生命周期（§3.1）/ 治理审计（§12）/ scope 权限（§3.2）/ 演进调度（§9.3）/ 运行时策略（§13.4） |
-| `src/retrieval/`                    | D 记忆检索层（§8）：查询理解 + Storage pipeline 选择 + Fuser + Reranker + 相关性阈值 + 渐进披露 + 轨迹/错误 |
-| `src/construction/`                 | E 记忆构建层 / 分层记忆结构（§4/§9.1/§9.2/§9.3）：**负责 MemoryUnit 落盘**与多形式索引构建、自演进 |
-| `src/storage/`                      | F 记忆存储层（§10）：统一 Storage 领域契约、能力/安全/检索适配，以及六种 Store（kv/fulltext/vector/graph/fusion/fs） |
-| `src/common/`                       | 跨层共享：能力插件（Plugin：tokenizer/chunker/embedder/feature_extractor/llm/normalizer/reranker）+ 通用结构体（type_def，含 §3 数据模型）+ 横切组件（audit） |
-| `src/config/`                       | 配置（§13）：装配合并（YAML/defaults）+ 可插拔 `ConfigSource`（晚绑定六类配置）；少量策略键仍归 `src/control/policy` |
+| `jiuwen_memory/ingest/`             | A 数据接入（§5/§5.1）：信息源接入 + 模态规约 + 转换为 MemoryUnit（**不落盘**） |
+| `jiuwen_memory/api/`                | B 记忆接口层（§6）：`MemoryAPI` 统一 Core API，`MemoryEngine` 的薄封装 |
+| `jiuwen_memory/control/`            | C 控制层：记忆引擎编排（§6 语义的执行中枢）/ 生命周期（§3.1）/ 治理审计（§12）/ scope 权限（§3.2）/ 演进调度（§9.3）/ 运行时策略（§13.4） |
+| `jiuwen_memory/retrieval/`          | D 记忆检索层（§8）：查询理解 + Storage pipeline 选择 + Fuser + Reranker + 相关性阈值 + 渐进披露 + 轨迹/错误 |
+| `jiuwen_memory/construction/`       | E 记忆构建层 / 分层记忆结构（§4/§9.1/§9.2/§9.3）：**负责 MemoryUnit 落盘**与多形式索引构建、自演进 |
+| `jiuwen_memory/storage/`            | F 记忆存储层（§10）：统一 Storage 领域契约、能力/安全/检索适配，以及六种 Store（kv/fulltext/vector/graph/fusion/fs） |
+| `jiuwen_memory/common/`             | 跨层共享：能力插件（Plugin：tokenizer/chunker/embedder/feature_extractor/llm/normalizer/reranker）+ 通用结构体（type_def，含 §3 数据模型）+ 横切组件（audit） |
+| `jiuwen_memory/config/`             | 配置（§13）：装配合并（YAML/defaults）+ 可插拔 `ConfigSource`（晚绑定六类配置）；少量策略键仍归 `jiuwen_memory/control/policy` |
 | `evaluation/`                       | 测评（对接 VISION §7：benchmark / metrics / scripts / smoke_test） |
 | `deploy/`、`docs/`、`examples/`      | 部署物料 / 文档 / 示例      |
 
 
 - **三类基础契约**：接口代码落地为「算子 + 插件 + 存储」三类契约——各层算子、共享能力插件，以及存储层的统一 `Storage` 与底层 `BaseStore`。`Storage` 以 capability 和标准端口描述组合能力，`BaseStore` 继续以 `storeType()` 和 `health()` 描述单一后端。
-- **兼容报告单独归档**：跨层 legacy 兼容（例如 `rust/cc_memory` 的 `MemoryIngestor`/`MemoryRetriever`、`memdir`、`retained_eval`）不塞进单层接口；统一归 `docs/features/construction/F04-cc-memory-compat.md`，再映射回 `src/api` / `src/retrieval` / `evaluation` / `agent_plugin`。
+- **兼容报告单独归档**：跨层 legacy 兼容（例如 `rust/cc_memory` 的 `MemoryIngestor`/`MemoryRetriever`、`memdir`、`retained_eval`）不塞进单层接口；统一归 `docs/features/construction/F04-cc-memory-compat.md`，再映射回 `jiuwen_memory/api` / `jiuwen_memory/retrieval` / `evaluation` / `agent_plugin`。
 - **写入边界**：`ingest` 只做规约与转换（RawPayload → MemoryUnit），**不落盘**；`construction` 负责把 MemoryUnit 写入真源、在其上挖掘分层记忆并构建索引。构建层**没有编排 service**，六个算子（extractor/abstractor/associator/classifier/index_builder/evolver）由上层/控制层驱动。
-- **索引「构建」与「持久化」分离**：`src/construction/index_builder` 负责生成/维护索引投影，`src/storage` 负责真源与索引的持久化。MemoryUnit 优先走 `Storage.add/update/delete/get/list`，索引投影走所需标准端口；底层 Store 的 CRUD 仍为 `insert/delete/update/get`。所有 Storage/Store 操作显式携带 scope 并由存储层原生隔离。
-- **共享插件保证两侧一致**：分词/切分/向量化/特征抽取/LLM/规约/重排抽到 `src/common`，构建侧与检索侧（以及重建/演进路径）注入**同一实现**——同词表、同向量空间、同切分规则、同规约器，是「派生可重建」与召回对齐的前提。
-- **依赖方向**：`src/common` 承载跨层数据契约与插件；`src/storage` 只依赖 common，不反向依赖 Retrieval。Retrieval 依赖统一 Storage 和 common，QueryParser/Fuser 等算法仍归 Retrieval。Construction/Control 的目标依赖也是 Storage 契约，但首版仍有直接 Store 依赖待迁移；API 继续作为 control/retrieval/construction 的薄封装。
+- **索引「构建」与「持久化」分离**：`jiuwen_memory/construction/index_builder` 负责生成/维护索引投影，`jiuwen_memory/storage` 负责真源与索引的持久化。MemoryUnit 优先走 `Storage.add/update/delete/get/list`，索引投影走所需标准端口；底层 Store 的 CRUD 仍为 `insert/delete/update/get`。所有 Storage/Store 操作显式携带 scope 并由存储层原生隔离。
+- **共享插件保证两侧一致**：分词/切分/向量化/特征抽取/LLM/规约/重排抽到 `jiuwen_memory/common`，构建侧与检索侧（以及重建/演进路径）注入**同一实现**——同词表、同向量空间、同切分规则、同规约器，是「派生可重建」与召回对齐的前提。
+- **依赖方向**：`jiuwen_memory/common` 承载跨层数据契约与插件；`jiuwen_memory/storage` 只依赖 common，不反向依赖 Retrieval。Retrieval 依赖统一 Storage 和 common，QueryParser/Fuser 等算法仍归 Retrieval。Construction/Control 的目标依赖也是 Storage 契约，但首版仍有直接 Store 依赖待迁移；API 继续作为 control/retrieval/construction 的薄封装。
 - **鉴权/隔离/异常的统一落点**：① `MemoryAPI` 是公开接口 PEP，分离 `identity` 与 target `scope`；② `StorageSecurity` 是可插拔的数据面授权边界，默认 allow-all，各 Store Security 负责后端数据保护；③ scope 作为 Storage/Store 专用入参做原生隔离，`FilterExpr` 不承载 scope；④ `common/errors` 提供跨层异常契约；⑤版本链走 `supersedes`，演进血缘走 `provenance`。
-- **一个内核，多形态接入**：`bootstrap/*` 与 `agent_plugin/*` 依赖内核、仅做协议/参数转换后调用 `src/api`，不含业务逻辑。`bootstrap/core` 是各 surface 共享的应用核（内核装配 + 共享 `dispatch` + profile/配置加载）；其上 `http_server`（HTTP/REST）与 `mcp_server`（MCP）作为独立服务对外提供、`sdk` 作为库嵌入、`cli` 作为命令行——四个 surface 彼此解耦，共用同一 `core` 与 `src/api`。
-- **端/云/混合**靠 `src/config` 的部署 profile 装配不同后端组合（端侧 SQLite+轻向量，云侧 PG+Milvus+Neo4j），逻辑模型不变。
+- **一个内核，多形态接入**：`bootstrap/*` 与 `agent_plugin/*` 依赖内核、仅做协议/参数转换后调用 `jiuwen_memory/api`，不含业务逻辑。`bootstrap/core` 是各 surface 共享的应用核（内核装配 + 共享 `dispatch` + profile/配置加载）；其上 `http_server`（HTTP/REST）与 `mcp_server`（MCP）作为独立服务对外提供、`sdk` 作为库嵌入、`cli` 作为命令行——四个 surface 彼此解耦，共用同一 `core` 与 `jiuwen_memory/api`。
+- **端/云/混合**靠 `jiuwen_memory/config` 的部署 profile 装配不同后端组合（端侧 SQLite+轻向量，云侧 PG+Milvus+Neo4j），逻辑模型不变。
 
 > 当前状态：主要接口与默认实现已存在。本轮统一 Storage 首版已完成 Retriever 接入；
 > Construction/Control 迁移和一体化 `Storage` 实现仍待后续迭代。实际签名与行为以
-> `src/`、`docs/specs/` 和对应 features 文档为准。标记 `[planned]` 的 hierarchy 条目仅表示目标落点，不声称代码已存在。
+> `jiuwen_memory/`、`docs/specs/` 和对应 features 文档为准。标记 `[planned]` 的 hierarchy 条目仅表示目标落点，不声称代码已存在。
 
 ---
 
@@ -757,7 +757,7 @@ agent-memory/
 3. **端云同步的一致性级别**：最终一致 vs 更强一致；冲突合并的具体策略与冲突可视化。
 4. **演进所用 LLM 的端侧降级**：端侧无强模型时，抽取/升华如何降级（规则/小模型/延迟到云）。
 5. **多模态规约的保真边界**：§5.1 已定（保留原模态资产 + 文本投影、检索走投影），但仍待细化——投影的保真度/成本权衡、是否保留多份不同粒度投影、原模态资产的生命周期与遗忘策略。
-6. **审计后端缺口**：`common/audit` 已定义横切的 `AuditLogger` 记录接口与 `AuditEvent` 结构，但 `src/storage` 的六种 Store 中没有审计持久化后端——是新增 `AuditStore`（append-only 写入 + 按条件查询，供 `Governor.audit()` 消费），还是复用 KV/Fulltext 存储审计流水？涉及合规保留期限与查询能力的权衡。
+6. **审计后端缺口**：`common/audit` 已定义横切的 `AuditLogger` 记录接口与 `AuditEvent` 结构，但 `jiuwen_memory/storage` 的六种 Store 中没有审计持久化后端——是新增 `AuditStore`（append-only 写入 + 按条件查询，供 `Governor.audit()` 消费），还是复用 KV/Fulltext 存储审计流水？涉及合规保留期限与查询能力的权衡。
 7. **数值元数据的类型**：`FilterClause` 已支持数值/时间范围算子（gt/lt 等），但 `MemoryUnit.metadata` 仍为 `dict[str,str]`、重要度/置信度按字符串存放。范围比较与 `LifecycleManager.sweep` 的「低价值」判断要可靠生效，需让数值类元数据以可比较类型入库，或把 `importance`/`confidence` 提升为 `MemoryUnit` 的显式数值字段；本轮暂不改，留待实现/调优阶段定。
 8. **多父与独立边存储阈值**：同一 kind 多父、边属性或跨 kind 组合查询增长到什么规模时，内嵌 `HierarchyRef` 应迁移为独立边存储？需要以查询频率、双写成本和一致性故障率量化。
 9. **父子双向更新并发语义**：并发 write、Expand、剪边与 `replace_in_span` 下，`parent_id`/`child_ids` 如何原子更新、失败回滚和修复，需结合具体后端验证。
@@ -769,7 +769,7 @@ agent-memory/
 
 ## 18. 后续（Next）
 
-- 本架构与 [VISION](./VISION.md) 一致，作为 `/opsx-propose` 立项输入。
+- 本架构与 [VISION](./vision.md) 一致，作为 `/opsx-propose` 立项输入。
 - 建议的首批 change 切分：① 记忆接口层 + 数据模型；② 记忆存储层/真源抽象（先文档 + SQLite）；③ 混合检索引擎；④ 自演进（写入流水线优先）；⑤ 调用与数据接入层（SDK Python + CLI + MCP 优先）；⑥ 配置体系与场景 Preset（§13，贯穿各 change）；⑦ 端云同步（后置）。
 
 > 本文为设计阶段架构，不含实现代码与排期；具体技术选型与接口签名以立项后的 design/spec 为准。

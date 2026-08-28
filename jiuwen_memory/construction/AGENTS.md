@@ -72,10 +72,11 @@
    调用 Storage。**Evolver 不得直接调用 Storage 的 `add`/`update`/`delete`**（读取与原文接口不受限）。
    接入层禁止落盘。
 
-2. **索引是可重建派生**
-   派生索引（向量/关键词/图/文档）全部可从记忆本体重建。`IndexBuilder.rebuild()` 是非破坏式
-   保障——删索引不丢数据。`update` 下派生索引的去留由 `unit.lifecycle` 决定（FORGOTTEN/ARCHIVED
-   移出、SUPERSEDED 保留），与调用顺序无关。
+2. **索引是可重建派生（目标约束）**
+   派生索引（向量/关键词/图/文档）应全部可从记忆本体重建，`IndexBuilder.rebuild()` 应提供
+   非破坏式保障。当前 Forward/Fulltext/Vector/Hybrid/Unified/Entity 实现均为 no-op，
+   因此当前版本不能宣称删索引后可恢复；`update` 下派生索引的去留由 `unit.lifecycle` 决定
+   （FORGOTTEN/ARCHIVED 移出、SUPERSEDED 保留），与调用顺序无关。
 
 3. **provenance 回指来源**
    派生记忆单元（Extractor/Abstractor 产出）的 `provenance` 字段记录由哪些 unit 演进而来，保证可重建、可审计回溯。
