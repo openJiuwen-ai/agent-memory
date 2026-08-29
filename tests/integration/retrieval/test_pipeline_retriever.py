@@ -17,7 +17,7 @@ from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_featu
     KeywordFeatureExtractor,
 )
 from jiuwen_memory.common.reranker.base import Reranker
-from jiuwen_memory.common.reranker.reranker_impl.overlap_reranker import OverlapReranker
+from jiuwen_memory.common.reranker.reranker_impl.bm25_reranker import BM25Reranker
 from jiuwen_memory.common.type_def import FilterClause, FilterOp, memory_key
 from jiuwen_memory.common.type_def.memory import LifecycleState
 from jiuwen_memory.common.type_def.memory_codec import dumps
@@ -327,7 +327,7 @@ def test_rerank_filters_zero_score_candidates() -> None:
         RRFFuser(),
         world.discloser,
         world.unit_reader,
-        OverlapReranker(world.tokenizer),
+        BM25Reranker(world.tokenizer),
     )
 
     result = retriever.retrieve(
@@ -706,7 +706,8 @@ def test_configured_threshold_active_end_to_end() -> None:
     finally:
         Factory.reset_all()
 
-    # overlap 精排分：u1 命中 2/3 查询词、u2 命中 1/3 → 0.6 ratio 裁掉 u2、保留 u1。
+    # BM25 精排分（批内归一）：u1 含 alice+coffee → 1.0；u2 只含 coffee，且 coffee
+    # 批内 df=2 故 IDF 低 → 0.208。0.6 ratio 裁掉 u2、保留 u1。
     assert [item.unit_id for item in result.items] == ["u1"], "阈值应裁剪低分候选且不清空结果"
     threshold = [step for step in result.trajectory if step.stage == "threshold"][0]
     assert threshold.detail["calibrated"] == "True", "默认装配 rerank 恒开应走校准路径"

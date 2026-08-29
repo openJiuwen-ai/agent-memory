@@ -451,11 +451,11 @@ class EvolveResult:
 |------|------|------|
 | `recall` | `(candidate: MemoryUnit) -> list[tuple[MemoryUnit, float]]` | 对候选召回已有相似记忆，返回 (unit, score) 列表（按 score 降序）；已完成过滤自身、过滤非 ACTIVE、按 unit 聚合取 max、按 min_similarity 过滤低分。空列表 → 调用方判 ADD |
 
-**score 量纲 0~1**：向量路=cosine，倒排路=词重叠率，阈值统一复用。
+**score 量纲**：向量路=cosine（0~1）；倒排路=FulltextStore 后端原生分，`memory` / `elasticsearch` 均为无上界的 Okapi BM25 原始分。（**遗留**：`KeywordDedup` 的 `min_similarity` 缺省 0.5 是按旧的词重叠率标定的；`memory` 与 `elasticsearch` 两个 FulltextStore 后端现均返回无上界的 BM25 原始分，该阈值需重新标定——`elasticsearch` 后端一直如此，本次仅使 `memory` 与之一致。缺省装配走 `VectorDedup`，仅 `vector_enabled=False` 时受影响。）
 
 **两个实现**（装配按 `vector_enabled` 选）：
 - `VectorDedup`（`vector`）— Embedder → VectorStore.search，cosine；record_id 为 `{unit_id}-{chunk_id}` 需解析
-- `KeywordDedup`（`keyword`）— FulltextStore.search，词重叠率；Document.id = unit.id 恒等无需解析
+- `KeywordDedup`（`keyword`）— FulltextStore.search，BM25 原始分；Document.id = unit.id 恒等无需解析
 
 **降级契约**：实现内部任何异常（Embedder/Store 失败）都吞掉并返回空列表——去重是尽力而为，不可阻断演进。
 

@@ -80,7 +80,7 @@ def default_config_dict() -> dict[str, Any]:
         "chunker": {_D: "fixed_window"},
         "feature_extractor": {_D: {"target": "keyword", "params": {"tokenizer": _D}}},
         "llm": {_D: "echo"},
-        "reranker": {_D: {"target": "overlap", "params": {"tokenizer": _D}}},
+        "reranker": {_D: {"target": "bm25", "params": {"tokenizer": _D}}},
         "normalizer": {_D: "passthrough"},
         "audit": {_D: {"target": "sqlite", "params": {"db_path": ":memory:"}}},
         # -- 检索 ------------------------------------------------------------ #

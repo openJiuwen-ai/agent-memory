@@ -37,7 +37,7 @@
    作为存储故障恢复和更换 embedding 模型的非破坏式保障；当前各 Builder 的 `rebuild()`
    仍为 no-op，恢复能力尚未落地。
 3. **接口与实现严格分离**：顶层 `.py` 纯抽象（不 import `*_impl/`），实现经 `@Producer.register` 自注册。端侧用规则/小模型（keyword classifier、hashing embedder）、云侧用强 LLM，只改配置不改代码。共享插件（Embedder/Tokenizer/Chunker/FeatureExtractor）须与 retrieval 侧同一实例，装配按字段名缓存保证同实例。
-4. **去重召回与判定分离**：去重召回抽象成独立 `Dedup` 接口，Evolver 只做阈值 + LLM 判定。装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`——只配倒排时去重仍可用（向量路在 fulltext-only 下 VectorStore 恒空会失效）。两路 score 同为 0~1 量纲（cosine / 词重叠率），medium/high 阈值统一复用。
+4. **去重召回与判定分离**：去重召回抽象成独立 `Dedup` 接口，Evolver 只做阈值 + LLM 判定。装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`——只配倒排时去重仍可用（向量路在 fulltext-only 下 VectorStore 恒空会失效）。两路 score 量纲不同（cosine 0~1 / BM25 无上界），medium/high 阈值需分别标定，见 S05 遗留项。
 5. **SUPERSEDE 不经 LifecycleManager**：Evolver 标记旧版 SUPERSEDED 直接 `KVStore.update`，不经 control 层 LifecycleManager（construction → control 严禁）。版本链由 `supersedes` 字段记录，非破坏式、保留血缘。
 6. **去重不用 Reranker**：LLM 直接做最终语义判定，Reranker 中间层不增精度只增开销。若未来需降 LLM 调用成本，可考虑在 LLM 前加 Reranker 过滤器。
 
@@ -82,9 +82,9 @@
 | target | 类 | 依赖 | 产出 | 关键语义 |
 |---|---|---|---|---|
 | `vector` | `VectorDedup` | `vector_store`、`embedder`、`kv`（`dep`） | `list[(MemoryUnit, score)]` | Embedder → VectorStore.search（cosine）；过滤自身（id 前缀）、解析 `{unit_id}-{chunk_id}`、按 unit 聚合取 max；装配在 `vector_enabled=True` 时选 |
-| `keyword` | `KeywordDedup` | `fulltext_store`、`kv`（`dep`） | `list[(MemoryUnit, score)]` | FulltextStore.search（词重叠率，0~1 与 cosine 同量纲）；Document.id=unit.id 恒等无需解析、tier 过滤在加载后；装配在 `vector_enabled=False` 时选 |
+| `keyword` | `KeywordDedup` | `fulltext_store`、`kv`（`dep`） | `list[(MemoryUnit, score)]` | FulltextStore.search（Okapi BM25 原始分，无上界，与 cosine 不同量纲，见 S05 遗留项）；Document.id=unit.id 恒等无需解析、tier 过滤在加载后；装配在 `vector_enabled=False` 时选 |
 
-> 两路 score 量纲统一，Evolver 的 medium/high 阈值直接复用。实现内部异常吞掉返回空列表，不阻断演进。
+> 两路 score 量纲不统一（见 S05 遗留项），Evolver 的阈值需按所选 Dedup 实现标定。实现内部异常吞掉返回空列表，不阻断演进。
 
 ### Evolver（`evolver.py` · `EvolverProducer`）
 
