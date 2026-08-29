@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-08-20 |
+| 最近一次修订日期 | 2026-08-29 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F05-security-api-contracts.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md |
 
@@ -24,7 +24,7 @@
 - 审计日志（AuditLogger）
 - 数据保护横切接口（SecurityProvider）
 - 跨实例互斥横切接口（LockProvider）
-- 安全域契约（认证/密码学/保护的抽象接口、公共安全值对象、`SecurityRuntime`；接口先行，实现暂缓）
+- 安全域契约（认证/密码学/保护/授权的抽象接口、公共安全值对象、请求上下文受控构造、`SecurityRuntime`；接口先行，实现暂缓）
 - 错误类型（自定义异常）
 - 工具函数（ID 生成/时间解析等）
 
@@ -43,25 +43,27 @@
 5. **工厂注册发生在 import 时**：实现文件尾部 `@XxxProducer.register("name")` 绑定构建函数，`__init__.py` 导入实现文件触发注册。
 6. **LLM Provider 参数不上浮到业务层**：厂商专属请求字段只能由对应 Adapter 生成；消费 `LLM` 的算子只传递通用生成选项。
 7. **SecurityProvider 是字节级横切接口**：调用方在持久化字节写入前加密、读取后解密；接口不绑定 `MemoryUnit` 或存储后端，是否启用由装配配置决定。
-8. **标识唯一性分层**：非空 Space id 全局唯一；`MemoryUnit.id` 只要求在完整 Scope 内唯一。
-9. **Scope 位置参数兼容**：`space` 可为空但只能按关键字传入；旧位置参数顺序保持
+8. **安全域接口先行**：`common/security/` 当前只合入 F05 契约层（types / 各能力 base / request_context / runtime），`*_impl` 实现包与 Server lifecycle 接线暂缓；运行链路不启用任何新认证/授权逻辑，旧 `SecurityProvider` 继续从包顶层导出。`security/legacy.py` 是过渡桥，随实装 PR 删除。
+9. **`RequestSecurityContext` 只由受控入口构造**：`security/request_context.py` 的 `new_request_context` / `internal_context` 是唯一构造点——`request_id` 服务端生成、`started_at` 取服务端时钟、`attributes` 只由系统组件写入；实例携带来源绑定，`has_valid_origin()` 判定是否出自受控入口。
+10. **标识唯一性分层**：非空 Space id 全局唯一；`MemoryUnit.id` 只要求在完整 Scope 内唯一。
+11. **Scope 位置参数兼容**：`space` 可为空但只能按关键字传入；旧位置参数顺序保持
    `Scope(org, user, agent, session)`。
-10. **出站客户端 SSL 声明即生效**：LLM / ASR / Embedder / Reranker 统一接受
+12. **出站客户端 SSL 声明即生效**：LLM / ASR / Embedder / Reranker 统一接受
     `<prefix>_ssl_verify` / `<prefix>_ssl_ca_cert`（默认关闭）。`ssl_verify` 只决定是否
     接管信任锚，不负责开启加密——加密开关在 `base_url` 的 scheme。关闭时完全不干预
     客户端（`http://` 明文直连、`https://` 仍走 SDK 默认校验）；开启后 `base_url` 必须是
     `https://`、证书文件必须存在，否则在**装配阶段**报错。缺证书不报错而回落系统 CA，
     这是与 storage 侧唯一的矩阵差异（公网端点走公共 CA 属正常状态）。
-11. **LockProvider 是基于租约的协调机制，不是共识算法**：租约到期、进程停顿超过租约、
+13. **LockProvider 是基于租约的协调机制，不是共识算法**：租约到期、进程停顿超过租约、
     Redis 主从切换丢失未同步写入都会导致短暂双持。依赖方必须能容忍偶发互斥失效，或自备
     第二道防线（幂等键、唯一约束、乐观并发控制）。重入以 `asyncio.current_task()` 为身份
     边界，`create_task` 派生的子任务不视为重入；重入记账与租约有效性正交，持有权状态一律
     以 `LockHandle.lost` 为准。后端不可用时 fail-closed 抛 `BackendError`，不静默降级为无锁。
-12. **四条层次轴正交**：`ContentLayers`/`DisclosureLevel` 表示同一 unit 的 L0/L1/L2 披露；
+14. **四条层次轴正交**：`ContentLayers`/`DisclosureLevel` 表示同一 unit 的 L0/L1/L2 披露；
     多模态 CLM/ELM（`metadata.memory_level` + `provenance`）表示单媒体源构建粒度；
     `MemoryTier` 表示认知角色；`HierarchyRef` 表示跨 unit 的树结构包含。任一轴不得推导
     或代替另外三轴。
-13. **树结构引用一致**（目标契约，尚未实现）：`kind` 与 `role` 必须同时设置或同时缺省；
+15. **树结构引用一致**（目标契约，尚未实现）：`kind` 与 `role` 必须同时设置或同时缺省；
    空 `HierarchyRef` 等价于未启用树结构。非空结构**不得成环**；同一 kind 下采用单父
    严格树；父 `child_ids` 与子 `parent_id` 双向一致且子列表不得重复。
    **结构边的 scope 规则（非五维全等）**：
@@ -74,8 +76,8 @@
    - **引用可解析**：因 `MemoryUnit.id` 仅在完整 Scope 内唯一，当子（或父）与持有边的
      unit 完整 Scope 不完全相同时，边必须携带可定位的子/父 Scope（见下方
      `child_scopes` / `parent_scope`）；二者皆缺省时退化为「与本 unit 完整 Scope 相同」。
-14. **层级区间有效**（目标契约，尚未实现）：`span_start`/`span_end` 必须同时为空或同时存在，存在时 `span_start <= span_end`，父区间覆盖直接子区间；`HierarchyKind.TIME` 的所有节点必须有区间。
-15. **引用语义分离**：`provenance` 只表示演进来源，`supersedes` 只表示版本替换，`hierarchy` 只表示结构包含；生命周期归 `LifecycleState`，结构修正状态归 `HierarchyStatus`。
+16. **层级区间有效**（目标契约，尚未实现）：`span_start`/`span_end` 必须同时为空或同时存在，存在时 `span_start <= span_end`，父区间覆盖直接子区间；`HierarchyKind.TIME` 的所有节点必须有区间。
+17. **引用语义分离**：`provenance` 只表示演进来源，`supersedes` 只表示版本替换，`hierarchy` 只表示结构包含；生命周期归 `LifecycleState`，结构修正状态归 `HierarchyStatus`。
 
 ## 接口契约
 
@@ -208,17 +210,25 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 
 ### 安全域契约（`security/`，接口先行）
 
-F05 公共安全架构的契约层（认证 / 密码学 / 保护 / Runtime 与公共安全值对象），
+F05 公共安全架构的契约层（认证 / 密码学 / 保护 / 授权 / Runtime 与公共安全值对象），
 **只固定接口，实现暂缓**。设计与过渡期语义见
 `docs/features/common/F05-security-api-contracts.md`。
 
 | 子包/模块 | 契约 | 语义 |
 |---|---|---|
-| `security/types.py` | `Credentials` / `AuthContext` / `RequestSecurityContext` / `CryptoContext` / `Role` / `Surface` | 协议无关的公共安全值对象与身份传播原语；`RequestSecurityContext` 是 `MemoryAPI` 公开方法的显式安全输入（PR2 起签名切换） |
+| `security/types.py` | `Credentials` / `AuthContext` / `RequestSecurityContext` / `CryptoContext` / `Grant` / `Action` / `Role` / `Surface` | 协议无关的公共安全值对象与身份传播原语；`RequestSecurityContext` 是 `MemoryAPI` 公开方法的显式安全输入 |
+| `security/request_context.py` | `new_request_context` / `internal_context` | `RequestSecurityContext` 的受控构造入口（见不变量 9）；`internal_context` 的 authenticator 必填，进程内直连不得自述身份 |
 | `security/authentication/` | `Authenticator` / `PrincipalKeyStore` / `CredentialStatusRegistry` | 认证：凭据 -> `AuthContext`；key 真源与凭据状态 |
+| `security/authorization/` | `Authorizer` / `RoutingFieldsProvider` / `GrantStore` / `DelegationStore` / `scope_covers` | 授权判定契约与授权真源；两代授权接口共享路由字段 capability；`grant_id` 是存储主键，撤销按 ID 且软撤销 |
 | `security/cryptography/` | `CryptographyProvider` / `KeyProvider` | 密码学能力与密钥提供方 |
 | `security/protection/` | `RateLimiter` / `WorkloadGuard` / `BindingPolicy` | 入口限流、昂贵操作并发预算与绑定策略 |
-| `security/runtime.py` | `SecurityRuntime` | 跨能力装配根 |
+| `security/runtime.py` | `SecurityRuntime` | 跨能力装配根（authenticator / authorizer / crypto / protection） |
+| `security/legacy.py` | `legacy_request_context` | **过渡桥**：把旧调用方的 identity `Scope` 包成 `RequestSecurityContext`；假认证，随实装 PR 删除 |
+
+`Grant` 保留旧公共构造形状：调用方只传 `grantor` / `grantee` / `actions` 即可，
+`grant_id` 默认留空并由目标管理面服务生成。`actions` 在构造时统一冻结为
+`frozenset[Action]`；传入非 `Action` 成员必须立即抛 `TypeError`，不得将错误延迟到
+`GrantStore`。
 
 配套的 bootstrap 接缝：`bootstrap/core/auth_middleware.py` 的
 `authenticated(..., surface=None) -> Iterator[RequestSecurityContext]`（限流 ->

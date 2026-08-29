@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-27 |
-| 影响范围 | src/common/type_def/filter.py，src/common/type_def/memory.py，src/api/memory_api_impl/local_memory_api.py，src/construction/index_builder_impl/，src/retrieval/types.py，src/retrieval/retriever_impl/，src/storage/{vector,fulltext,fusion}.py，docs/specs/S02-memory-api.md，docs/specs/S04-retrieval.md，docs/specs/S06-storage.md |
-| 测试基线 | `PYTHONPATH=src uv run --no-sync pytest -q -m unit` 通过；Milvus/Elasticsearch/PostgreSQL 集成测试由真实后端环境启用；本特性变更的 Python 文件通过 `ruff check` |
+| 影响范围 | jiuwen_memory/common/type_def/filter.py，jiuwen_memory/common/type_def/memory.py，jiuwen_memory/api/memory_api_impl/local_memory_api.py，jiuwen_memory/construction/index_builder_impl/，jiuwen_memory/retrieval/types.py，jiuwen_memory/retrieval/retriever_impl/，jiuwen_memory/storage/{vector,fulltext,fusion}.py，docs/specs/S02-memory-api.md，docs/specs/S04-retrieval.md，docs/specs/S06-storage.md |
+| 测试基线 | `PYTHONPATH=. uv run --no-sync pytest -q -m unit` 通过；Milvus/Elasticsearch/PostgreSQL 集成测试由真实后端环境启用；本特性变更的 Python 文件通过 `ruff check` |
 | Refs | — |
 
 > 本文归档 agent-memory 的 metadata 过滤设计。目标是让 `filters` 支持类似 DSL 的树形逻辑表达，同时保持 scope 过滤仍由现有 scope 链路负责，避免把租户、用户、agent、session 隔离语义混进 metadata filter。
@@ -377,8 +377,8 @@ filters = {
 文档落地对应命令：
 
 ```bash
-PYTHONPATH=src uv run --no-sync pytest -q -m unit
-PYTHONPATH=src uv run --no-sync pytest -q \
+PYTHONPATH=. uv run --no-sync pytest -q -m unit
+PYTHONPATH=. uv run --no-sync pytest -q \
   tests/integration/storage/test_integration_backends.py \
   tests/integration/storage/test_integration_fulltext.py
 git diff --name-only -z HEAD -- '*.py' | xargs -0 uv run --no-sync ruff check

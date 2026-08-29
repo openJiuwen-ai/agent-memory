@@ -1,9 +1,9 @@
 """MemoryEngine — 记忆引擎（接口层 §9 各语义的编排中枢）。
 
-记忆接口层 ``src/api`` 是本引擎的薄封装：只做参数装配后逐方法委托到
+记忆接口层 ``jiuwen_memory/api`` 是本引擎的薄封装：只做参数装配后逐方法委托到
 这里，跨层编排全部在引擎内完成。**引擎方法一律为异步协程**（数据面与
 管理面均触及 IO——存储、向量库、LLM/embedding），事件循环形态（HTTP/
-MCP）可直接 await 非阻塞调用，CLI/脚本等同步形态由接口层 ``src/api``
+MCP）可直接 await 非阻塞调用，CLI/脚本等同步形态由接口层 ``jiuwen_memory/api``
 自行桥接（如 ``asyncio.run``）：
 - write：权限校验 → Ingestor 规约（RawPayload → MemoryUnit，不落盘）
   → 构建层落盘 + hot 轻量索引 → Scheduler 提交 background 重演进，

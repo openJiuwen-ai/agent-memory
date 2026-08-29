@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-07（初版）/ 2026-07-03（落地修订） |
-| 影响范围 | src/common/type_def/memory.py、src/common/type_def/memory_codec.py、src/construction/layer_annotator.py、src/construction/layer_annotator_impl/、src/construction/evolver_impl/orchestrating_evolver.py、src/construction/index_builder_impl/、src/construction/base.py、src/construction/bootstrap.py、docs/specs/S05-construction.md、docs/specs/S07-common.md |
+| 影响范围 | jiuwen_memory/common/type_def/memory.py、jiuwen_memory/common/type_def/memory_codec.py、jiuwen_memory/construction/layer_annotator.py、jiuwen_memory/construction/layer_annotator_impl/、jiuwen_memory/construction/evolver_impl/orchestrating_evolver.py、jiuwen_memory/construction/index_builder_impl/、jiuwen_memory/construction/base.py、jiuwen_memory/construction/bootstrap.py、docs/specs/S05-construction.md、docs/specs/S07-common.md |
 | 测试基线 | `tests/unit/construction/test_layer_annotator.py`（10 passed）、`tests/unit/construction/test_layers_index.py`（10 passed）、全量 `tests/` 426 passed / 54 skipped |
 | Refs | — |
 

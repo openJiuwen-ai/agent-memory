@@ -19,6 +19,7 @@ from jiuwen_memory.common.normalizer.normalizer_impl.routing_normalizer import (
     RoutingNormalizer,
 )
 from jiuwen_memory.common.normalizer.normalizer_impl.video_normalizer import VideoNormalizer
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import (
     Context,
     FilterClause,
@@ -304,7 +305,7 @@ def test_multimodal_config_add_and_search_end_to_end(tmp_path, monkeypatch) -> N
         video_path.as_uri(),
         scope,
         Modality.VIDEO,
-        identity=scope,
+        security=legacy_request_context(scope),
         assets=[video_path.as_uri()],
         system_metadata={
             "infer": "true",
@@ -317,7 +318,7 @@ def test_multimodal_config_add_and_search_end_to_end(tmp_path, monkeypatch) -> N
     result = kernel.api.search(
         "deployment",
         Context(scope),
-        identity=scope,
+        security=legacy_request_context(scope),
         top_k=10,
         with_trajectory=True,
     )
@@ -469,20 +470,20 @@ def test_video_add_rejected_when_chain_not_assembled() -> None:
 
 
 def test_video_add_rejected_when_write_permission_denied() -> None:
-    """P1-2: 无权限 identity 在 submit 前被 check_write 拒绝（403），不创建 ingest job。"""
+    """P1-2: 无权限 actor 在 submit 前被 check_write 拒绝（403），不创建 ingest job。"""
     from jiuwen_memory.common.errors import PermissionDeniedError
 
     class _DeniedAPI:
         @staticmethod
         def check_write(
             scope,
-            identity,
             *,
+            security,
             tags=None,
             system_metadata=None,
             user_metadata=None,
         ):
-            del scope, identity, tags, system_metadata, user_metadata
+            del scope, security, tags, system_metadata, user_metadata
             raise PermissionDeniedError("write")
 
     controller = InProcessIngestJobController(max_workers=1, max_pending_jobs=1)

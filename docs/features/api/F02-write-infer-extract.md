@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-06-30 |
-| 影响范围 | src/control/engine_impl/in_memory_engine.py、src/control/AGENTS.md、bootstrap/core/handler.py、docs/specs/S02-memory-api.md、docs/specs/S03-control.md、docs/features/construction/F01-construction-spec-design.md |
+| 影响范围 | jiuwen_memory/control/engine_impl/in_memory_engine.py、jiuwen_memory/control/AGENTS.md、bootstrap/core/handler.py、docs/specs/S02-memory-api.md、docs/specs/S03-control.md、docs/features/construction/F01-construction-spec-design.md |
 | 测试基线 | `pytest tests/unit/construction` 全绿（82 passed）；`pytest tests/unit/api` 全绿；`pytest tests/unit` 4 failed（仅 `test_bge_reranker.py`，与本特性无关） |
 | Refs | — |
 

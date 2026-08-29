@@ -211,6 +211,12 @@ def test_authenticated_yields_request_security_context() -> None:
         assert security.auth.auth_method == "stub"
 
 
+def test_context_comes_from_the_controlled_constructor() -> None:
+    """中间件产出的上下文必须通过受控构造入口绑定来源。"""
+    with authenticated(_StubAuthenticator(), Credentials(api_key="k")) as security:
+        assert security.has_valid_origin()
+
+
 def test_request_id_is_server_generated_and_unique() -> None:
     """request_id 必须由服务端生成，且在请求之间保持唯一。"""
     seen = set()

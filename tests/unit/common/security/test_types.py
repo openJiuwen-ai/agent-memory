@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from jiuwen_memory.common.errors import AgentMemoryError, AuthenticationError, PermissionDeniedError
+from jiuwen_memory.common.security.request_context import new_request_context
 from jiuwen_memory.common.security.types import (
     ROLE_RANK,
     AuthContext,
@@ -41,7 +42,6 @@ def test_context_is_frozen() -> None:
 def test_defaults_are_least_privilege() -> None:
     ctx = AuthContext(actor=Scope(org="acme", user="alice"))
     assert ctx.role is Role.USER
-    assert ctx.acting_user == ""
     assert ctx.delegation_id == ""
     assert ctx.credential_id == ""
     assert ctx.credential_issuer == ""
@@ -118,6 +118,25 @@ def test_request_context_surface_defaults_to_internal() -> None:
     """未声明接入形态时按进程内算，不猜成某个网络 surface。"""
     ctx = RequestSecurityContext(auth=AuthContext(actor=Scope()))
     assert ctx.surface is Surface.INTERNAL
+
+
+def test_request_context_origin_binds_credential_status_and_expiry() -> None:
+    """调用方不能复用旧证明放宽撤销复核或延长认证上下文有效期。"""
+    auth = AuthContext(
+        actor=Scope(org="acme", user="alice"),
+        credential_status_required=True,
+        expires_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    ctx = new_request_context(auth, surface=Surface.HTTP)
+    assert ctx.has_valid_origin()
+
+    without_status_check = replace(ctx, auth=replace(auth, credential_status_required=False))
+    extended_expiry = replace(
+        ctx,
+        auth=replace(auth, expires_at=datetime(2027, 1, 1, tzinfo=timezone.utc)),
+    )
+    assert not without_status_check.has_valid_origin()
+    assert not extended_expiry.has_valid_origin()
 
 
 # --- ContextVar 传播 ---

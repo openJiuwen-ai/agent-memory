@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-08-01 |
-| 影响范围 | `src/common/_support.py`（新增，含从 storage 与 security 下沉的公共件）、LLM（openai / dashscope）、embedder（openai）、reranker（api）四个 builder、`deploy/docker/online/`、`deploy/docker/postgres/` |
+| 影响范围 | `jiuwen_memory/common/_support.py`（新增，含从 storage 与 security 下沉的公共件）、LLM（openai / dashscope）、embedder（openai）、reranker（api）四个 builder、`deploy/docker/online/`、`deploy/docker/postgres/` |
 | 测试基线 | `tests/unit/common/test_outbound_ssl.py` 44 passed；`pytest -m unit` 542 passed；全量 `tests/unit` 925 passed、2 failed、2 skipped（失败因环境缺少 `torch`，与本特性无关） |
 | Refs | [S07-common.md](../../specs/S07-common.md)、[F04-storage-ssl.md](../storage/F04-storage-ssl.md) |
 

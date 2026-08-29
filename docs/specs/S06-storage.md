@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-08-26 |
+| 最近一次修订日期 | 2026-08-29 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md |
 ## Metadata 物理存储契约
@@ -29,8 +29,8 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 
 **不管什么**：
 - 不管理 grant/revoke、授权策略生命周期或业务权限模型
-- 不做检索编排（由 `src/retrieval` 层负责）
-- 不做索引构建逻辑（由 `src/construction` 层负责）
+- 不做检索编排（由 `jiuwen_memory/retrieval` 层负责）
+- 不做索引构建逻辑（由 `jiuwen_memory/construction` 层负责）
 - 不实现具体后端（实现在 `*_impl/` 下，通过 Producer 注册）
 - 不解释或维护父子业务语义；通用 CRUD 不执行 hierarchy 级联
 
@@ -325,7 +325,7 @@ Document 使用与 VectorRecord 相同的五个 hierarchy metadata 键，并保�
 ## 实现注册机制
 
 ```
-src/storage/<store>_impl/
+jiuwen_memory/storage/<store>_impl/
     __init__.py             # 重导出实现类
     <impl_class_snake>.py   # 具体实现 + 尾部 @XxxProducer.register("name")
 ```
@@ -334,7 +334,7 @@ src/storage/<store>_impl/
 `GraphProducer` / `FusionProducer` / `FsProducer`。
 注册由 `storage.bootstrap.register_backends` 统一触发。
 
-具体 Store target 名与实现文件列表归 `src/storage/AGENTS.md` 维护；本 spec 只固化
+具体 Store target 名与实现文件列表归 `jiuwen_memory/storage/AGENTS.md` 维护；本 spec 只固化
 Store 抽象、跨后端不变量与注册机制。
 
 ## 与其它 spec 的关系

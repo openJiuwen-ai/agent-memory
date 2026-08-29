@@ -62,7 +62,7 @@ features/ FNN-<slug>.md     （如 F01-memory-lifecycle-manage.md）
 ## 元信息
 | 项 | 值 |
 |---|---|
-| 关联模块 | src/<path> |
+| 关联模块 | jiuwen_memory/<path> |
 | 最近一次修订日期 | <YYYY-MM-DD> |
 | 关联特性文档 | FNN-<slug>.md（可选） |
 
@@ -74,7 +74,7 @@ features/ FNN-<slug>.md     （如 F01-memory-lifecycle-manage.md）
 
 ## 接口契约
 （公共 API 形态、参数语义、错误语义）
-❌ 不写"当前实现：xxx.py"——实现列表归 src/<module>/AGENTS.md
+❌ 不写"当前实现：xxx.py"——实现列表归 jiuwen_memory/<module>/AGENTS.md
 
 ## 数据结构
 （关键状态字段及其生命周期）
@@ -91,7 +91,7 @@ features/ FNN-<slug>.md     （如 F01-memory-lifecycle-manage.md）
 | 项 | 值 |
 |---|---|
 | 日期 | YYYY-MM-DD |
-| 影响范围 | src/<path>，docs/specs/SNN-<slug>.md（如有） |
+| 影响范围 | jiuwen_memory/<path>，docs/specs/SNN-<slug>.md（如有） |
 | 测试基线 | <pytest 结果> |
 | Refs | #<issue>（如有） |
 
@@ -120,7 +120,7 @@ features/ FNN-<slug>.md     （如 F01-memory-lifecycle-manage.md）
 
 1. `feat(memory): <实现>` — 功能代码
 2. `test(memory): <测试>` — 测试代码
-3. `docs(memory): <归档>` — `features/FNN-*.md` 新增 + 受影响 `specs/SNN-*.md` 修订日期更新 + 受影响 `src/<subdir>/AGENTS.md` 更新
+3. `docs(memory): <归档>` — `features/FNN-*.md` 新增 + 受影响 `specs/SNN-*.md` 修订日期更新 + 受影响 `jiuwen_memory/<subdir>/AGENTS.md` 更新
 
 纯内部小改动允许提交 1+2 合并，但提交 3（文档）仍然必须。
 

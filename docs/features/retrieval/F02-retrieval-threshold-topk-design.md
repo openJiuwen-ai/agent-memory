@@ -1,11 +1,11 @@
-# F02 — 检索相关性阈值 + 候选预算重构（src/retrieval）
+# F02 — 检索相关性阈值 + 候选预算重构（jiuwen_memory/retrieval）
 
 ## 元信息
 
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-01 |
-| 影响范围 | `src/retrieval/retriever_impl/pipeline_retriever.py`、`src/retrieval/recaller_impl/vector_recaller.py`、`src/retrieval/query_parser_impl/simple_query_parser.py`（配置迁移）、`src/config/defaults.py`、`src/storage/vector.py` + `src/storage/vector_impl/milvus_vector.py`（`score_higher_is_better` 契约）；文档 `docs/features/retrieval/F01-retrieval-impl-design.md` |
+| 影响范围 | `jiuwen_memory/retrieval/retriever_impl/pipeline_retriever.py`、`jiuwen_memory/retrieval/recaller_impl/vector_recaller.py`、`jiuwen_memory/retrieval/query_parser_impl/simple_query_parser.py`（配置迁移）、`jiuwen_memory/config/defaults.py`、`jiuwen_memory/storage/vector.py` + `jiuwen_memory/storage/vector_impl/milvus_vector.py`（`score_higher_is_better` 契约）；文档 `docs/features/retrieval/F01-retrieval-impl-design.md` |
 | 测试基线 | `pytest tests/unit/retrieval tests/integration/retrieval` 全绿（exit 0；真实后端未连通时按约定 skip） |
 | Refs | —（如有 issue 补 `Refs: #<n>`） |
 

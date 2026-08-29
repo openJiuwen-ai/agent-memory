@@ -9,10 +9,12 @@ from __future__ import annotations
 from abc import abstractmethod
 
 from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.security.authorization.base import RoutingFieldsProvider
+from jiuwen_memory.common.security.types import Action, Grant
 from jiuwen_memory.common.type_def import Scope
 
 from .base import ControlOperator
-from .types import Action, Grant, PermissionContext
+from .types import PermissionContext
 
 
 class PermissionProducer(Factory):
@@ -26,7 +28,7 @@ class PermissionProducer(Factory):
     TOP_NAME = "permission"
 
 
-class PermissionManager(ControlOperator):
+class PermissionManager(ControlOperator, RoutingFieldsProvider):
     @abstractmethod
     def grant(self, grant: Grant) -> None:
         """新增一条跨 scope 授权。"""
@@ -46,13 +48,3 @@ class PermissionManager(ControlOperator):
         context: PermissionContext | None = None,
     ) -> bool:
         """校验 ``actor`` 是否可对 ``target`` scope 执行 ``action``。"""
-
-    def routing_fields(self) -> tuple[str, ...]:
-        """本实现据以**选择策略**的 :class:`PermissionContext` 字段名（默认不路由）。
-
-        路由型实现按请求里的某个字段挑选 delegate，而该字段由调用方提供——若不同时
-        约束查询能触达的数据，调用方就能"用 A 的钥匙开 B 的门"：路由值填宽松策略对应
-        的类型、``filters`` 却指向受严格策略保护的数据。API 层据此把路由值**回注为
-        系统谓词**，使授权依据与数据范围绑定。
-        """
-        return ()

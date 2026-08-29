@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
+from jiuwen_memory.common.security.types import Action as Action
+from jiuwen_memory.common.security.types import Grant as Grant
 from jiuwen_memory.common.type_def import (
     MemoryTier,
     MemoryUnit,
@@ -13,16 +15,6 @@ from jiuwen_memory.common.type_def import (
     Modality,
     Scope,
 )
-
-
-class Action(str, Enum):
-    """权限动作。"""
-
-    READ = "read"  # 读取/检索
-    WRITE = "write"  # 写入新记忆
-    UPDATE = "update"  # 修正已有记忆
-    DELETE = "delete"  # 遗忘/降权/归档
-    SHARE = "share"  # 再授权给其他 scope
 
 
 class PrincipalPath(str, Enum):
@@ -195,16 +187,6 @@ class PermissionContext:
     # 路由值恒为字符串：构造点（_write/_recall_permission_context）已做 str().strip()
     # 归一化，delegate 选择也按字符串比较。此处不随 MemoryUnit 的 metadata 值类型放宽。
     metadata: dict[str, str] = field(default_factory=dict)
-
-
-@dataclass
-class Grant:
-    """一条跨 scope 授权：grantor 把自己 scope 内的某些动作授权给 grantee。"""
-
-    grantor: Scope = field(default_factory=Scope)  # 授权方 scope
-    grantee: Scope = field(default_factory=Scope)  # 被授权方 scope
-    actions: list[Action] = field(default_factory=list)  # 授权的动作集合
-    expires_at: datetime | None = None  # 授权过期时间；None 表示长期有效
 
 
 class Channel(str, Enum):

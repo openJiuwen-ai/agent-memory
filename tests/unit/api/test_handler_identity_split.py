@@ -33,21 +33,21 @@ class _RecordingApi:
         scope,
         modality,
         *,
-        identity,
+        security,
         tags=None,
         assets=None,
         system_metadata=None,
         user_metadata=None,
     ):
-        self.add_calls.append({"scope": scope, "identity": identity})
+        self.add_calls.append({"scope": scope, "identity": security.auth.actor})
         return [handler.MemoryUnit(id="unit-1", scope=scope, segments=[Segment(content=content)])]
 
-    def search(self, query, context, *, identity, filters=None, **options):
+    def search(self, query, context, *, security, filters=None, **options):
         self.search_calls.append(
             {
                 "query": query,
                 "context": context,
-                "identity": identity,
+                "identity": security.auth.actor,
                 "filters": filters,
                 "options": options,
             }
@@ -122,8 +122,8 @@ def test_search_preserves_json_extensions_and_returns_both_metadata_namespaces()
         def __init__(self) -> None:
             self.context = None
 
-        def search(self, query, context, *, identity, filters=None, **options):
-            del query, identity, filters, options
+        def search(self, query, context, *, security, filters=None, **options):
+            del query, security, filters, options
             self.context = context
             return SimpleNamespace(
                 items=[

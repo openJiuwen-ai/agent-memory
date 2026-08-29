@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config.config import Config
 from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
@@ -137,11 +138,11 @@ def test_api_evolve_returns_completed_scheduler_job_with_evolve_result_detail() 
     )
     kernel = build_kernel(config=config)
     scope = Scope(user="u1")
-    kernel.api.add("Alice likes tea", scope, identity=scope)
+    kernel.api.add("Alice likes tea", scope, security=legacy_request_context(scope))
 
-    job_id = kernel.api.evolve(scope, EvolveMode.EXTRACT, identity=scope)
+    job_id = kernel.api.evolve(scope, EvolveMode.EXTRACT, security=legacy_request_context(scope))
 
-    job = kernel.api.job_status(job_id, identity=scope)
+    job = kernel.api.job_status(job_id, security=legacy_request_context(scope))
     assert job.status == JobStatus.SUCCEEDED
     assert job.detail["created_ids"] is not None
     assert job.detail["updated_ids"] == ""

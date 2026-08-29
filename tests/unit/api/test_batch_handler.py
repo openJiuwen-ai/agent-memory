@@ -72,7 +72,9 @@ def test_batch_add_maps_defaults_item_scope_and_actor() -> None:
     assert body["ok"] is True
     assert [outcome["input"]["content"] for outcome in body["outcomes"]] == ["first", "second"]
     call = srv.api.calls[0]
-    assert call["identity"] == handler.Scope(org="acme", space="product", user="writer")
+    assert call["security"].auth.actor == handler.Scope(
+        org="acme", space="product", user="writer"
+    )
     assert call["items"][0].scope == handler.Scope(org="acme", space="product", user="alice")
     assert call["items"][1].scope == handler.Scope(org="acme", space="product", user="bob")
     assert call["items"][1].source == handler.Modality.CODE

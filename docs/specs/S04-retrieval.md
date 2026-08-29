@@ -4,8 +4,8 @@
 
 | 项 | 值 |
 |---|---|
-| 关联模块 | src/retrieval/ |
-| 最近一次修订日期 | 2026-08-21 |
+| 关联模块 | jiuwen_memory/retrieval/ |
+| 最近一次修订日期 | 2026-08-29 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md |
 
@@ -28,10 +28,10 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
 - 检索轨迹：可观测的非黑盒调试信息
 
 **不管什么**：
-- 不做鉴权（由 `src/api` 层负责）
+- 不做鉴权（由 `jiuwen_memory/api` 层负责）
 - 不做记忆写入/演进/落盘
 - 不直接操作存储写入（只做存储读取/检索）
-- 不实现 Embedder/Tokenizer/Reranker 等共享插件（消费 `src/common` 注入的实例）
+- 不实现 Embedder/Tokenizer/Reranker 等共享插件（消费 `jiuwen_memory/common` 注入的实例）
 
 ## 不变量
 
@@ -397,7 +397,7 @@ class ExpandResult:
 ## 实现注册机制
 
 ```
-src/retrieval/<算子>_impl/
+jiuwen_memory/retrieval/<算子>_impl/
     __init__.py             # 重导出实现类
     <impl_class_snake>.py   # 具体实现 + 尾部 @XxxProducer.register("name")
 ```

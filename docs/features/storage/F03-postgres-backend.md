@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-28 |
-| 影响范围 | `src/storage/`、`deploy/docker/postgres/`、`scripts/pg_schema.sql` |
+| 影响范围 | `jiuwen_memory/storage/`、`deploy/docker/postgres/`、`scripts/pg_schema.sql` |
 | 测试基线 | `tests/unit/storage` 53 passed；PostgreSQL 真库测试由 `AGENT_MEMORY_TEST_PG_DSN` 启用 |
 | Refs | — |
 

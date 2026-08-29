@@ -47,11 +47,14 @@ Modality = _type_def_module.Modality
 Scope = _type_def_module.Scope
 EvolveMode = import_module("jiuwen_memory.construction").EvolveMode
 
+# 接口先行过渡桥接：公开签名收 security: RequestSecurityContext，此处把 payload
+# 声明的 actor 包装后传入（实装 PR 合入时改为 auth_middleware 产出的真实上下文）。
+_security_legacy_module = import_module("jiuwen_memory.common.security.legacy")
+legacy_request_context = _security_legacy_module.legacy_request_context
+
 _control_types_module = import_module("jiuwen_memory.control.types")
-Action = _control_types_module.Action
 DeleteMode = _control_types_module.DeleteMode
 DeleteSelector = _control_types_module.DeleteSelector
-Grant = _control_types_module.Grant
 MemoryPatch = _control_types_module.MemoryPatch
 BatchWriteItem = _control_types_module.BatchWriteItem
 PrincipalPath = _control_types_module.PrincipalPath
@@ -60,6 +63,11 @@ SpacePatch = _control_types_module.SpacePatch
 SpacePolicy = _control_types_module.SpacePolicy
 SpaceSpec = _control_types_module.SpaceSpec
 SpaceStatus = _control_types_module.SpaceStatus
+
+# 授权管理走安全域 Grant/Action（grant_id 精确撤销契约，SEC-API-01）
+_security_types_module = import_module("jiuwen_memory.common.security.types")
+Action = _security_types_module.Action
+Grant = _security_types_module.Grant
 DisclosureLevel = import_module("jiuwen_memory.retrieval.types").DisclosureLevel
 
 Body = dict[str, Any]
@@ -435,7 +443,7 @@ def _submit_video(srv, payload: Body, *, scope: Scope, identity: Scope) -> Body:
     # 无权限请求在此被拒（PermissionDeniedError → 403），不进队列，避免占满 worker。
     srv.api.check_write(
         scope,
-        identity,
+        security=legacy_request_context(identity),
         tags=payload.get("tags"),
         system_metadata=system_metadata,
         user_metadata=user_metadata,
@@ -449,7 +457,7 @@ def _submit_video(srv, payload: Body, *, scope: Scope, identity: Scope) -> Body:
             uri,
             scope,
             Modality.VIDEO,
-            identity=identity,
+            security=legacy_request_context(identity),
             assets=assets,
             tags=payload.get("tags"),
             system_metadata=system_metadata,
@@ -480,7 +488,9 @@ def _ingest_job_status(srv, job, *, identity: Scope) -> Body:
     unit_ids = [item for item in job.detail.get("unit_ids", "").split(",") if item]
     for unit_id in unit_ids:
         try:
-            units.append(srv.api.get(unit_id, scope, identity=identity))
+            units.append(
+                srv.api.get(unit_id, scope, security=legacy_request_context(identity))
+            )
         except NotFoundError:
             continue
     items = [_video_unit_view(unit) for unit in units]
@@ -532,7 +542,7 @@ def _add(srv, payload: Body) -> Body:
         _require(payload, "content"),
         scope,
         modality,
-        identity=actor,
+        security=legacy_request_context(actor),
         tags=payload.get("tags"),
         assets=payload.get("assets"),
         system_metadata=dict(raw_system_metadata or {}) or None,
@@ -630,7 +640,7 @@ def _batch_add(srv, payload: Body) -> Body:
         items,
         default_scope,
         default_source,
-        identity=_actor_scope(defaults),
+        security=legacy_request_context(_actor_scope(defaults)),
         tags=default_tags,
         system_metadata=raw_system_metadata,
         user_metadata=raw_user_metadata,
@@ -677,7 +687,7 @@ def _search(srv, payload: Body) -> Body:
     res = srv.api.search(
         _require(payload, "query"),
         Context(scope, extensions=extensions),
-        identity=actor,
+        security=legacy_request_context(actor),
         filters=payload.get("filters"),  # dict DSL / 旧 list：由 API 边界 normalize，非法则 400
         top_k=int(payload.get("k", 10)),
         disclosure=DisclosureLevel.L2,
@@ -722,7 +732,7 @@ def _list(srv, payload: Body) -> Body:
     filters = payload.get("filters", payload.get("filter"))
     result = srv.api.list(
         scope,
-        identity=actor,
+        security=legacy_request_context(actor),
         offset=offset,
         limit=limit,
         memory_types=memory_types,
@@ -741,7 +751,7 @@ def _list(srv, payload: Body) -> Body:
 
 def _get(srv, payload: Body) -> Body:
     scope, actor = _target_scope(payload), _actor_scope(payload)
-    unit = srv.api.get(_require(payload, "item_id"), scope, identity=actor)
+    unit = srv.api.get(_require(payload, "item_id"), scope, security=legacy_request_context(actor))
     return {"ok": True, "op": "get", "item": _unit_view(unit)}
 
 
@@ -757,7 +767,9 @@ def _update(srv, payload: Body) -> Body:
         system_metadata=payload.get("system_metadata"),
         user_metadata=payload.get("user_metadata"),
     )
-    unit = srv.api.update(_require(payload, "item_id"), scope, patch, identity=actor)
+    unit = srv.api.update(
+        _require(payload, "item_id"), scope, patch, security=legacy_request_context(actor)
+    )
     return {"ok": True, "op": "update", "item": _unit_view(unit)}
 
 
@@ -767,7 +779,7 @@ def _delete(srv, payload: Body) -> Body:
     selector = DeleteSelector(
         unit_ids=[_require(payload, "item_id")], scope=scope, mode=mode
     )
-    deleted = srv.api.delete(selector, identity=actor)
+    deleted = srv.api.delete(selector, security=legacy_request_context(actor))
     return {"ok": True, "op": "delete", "item_id": payload["item_id"], "deleted": deleted}
 
 
@@ -778,7 +790,7 @@ def _evolve(srv, payload: Body) -> Body:
     """触发演进（extract/associate/consolidate/forget）→ Evolver 全链路 + Scheduler。"""
     scope, actor = _target_scope(payload), _actor_scope(payload)
     mode = EvolveMode(payload.get("mode", "extract"))
-    job_id = srv.api.evolve(scope, mode, identity=actor)
+    job_id = srv.api.evolve(scope, mode, security=legacy_request_context(actor))
     return {"ok": True, "op": "evolve", "mode": mode.value, "job_id": job_id}
 
 
@@ -788,7 +800,7 @@ def _job(srv, payload: Body) -> Body:
     actor = _actor_scope(payload)
     info = srv.api.job_status(
         job_id,
-        identity=actor,
+        security=legacy_request_context(actor),
         scope=_target_scope(payload),
     )
     if info.mode == "ingest":
@@ -806,14 +818,16 @@ def _inspect(srv, payload: Body) -> Body:
     """治理检视：按 id 读完整单元（含失效版本）→ Governor。"""
     scope, actor = _target_scope(payload), _actor_scope(payload)
     ids = payload.get("item_ids") or [_require(payload, "item_id")]
-    units = srv.api.inspect(ids, scope, identity=actor)
+    units = srv.api.inspect(ids, scope, security=legacy_request_context(actor))
     return {"ok": True, "op": "inspect", "items": [_unit_view(u) for u in units]}
 
 
 def _trace(srv, payload: Body) -> Body:
     """血缘回溯：沿 supersedes 版本链 → Governor。"""
     scope, actor = _target_scope(payload), _actor_scope(payload)
-    chain = srv.api.trace(_require(payload, "item_id"), scope, identity=actor)
+    chain = srv.api.trace(
+        _require(payload, "item_id"), scope, security=legacy_request_context(actor)
+    )
     return {"ok": True, "op": "trace", "items": [_unit_view(u) for u in chain]}
 
 
@@ -843,7 +857,7 @@ def _audit(srv, payload: Body) -> Body:
             filters[key] = payload[key]
     events = srv.api.audit(
         filters,
-        identity=actor,
+        security=legacy_request_context(actor),
         limit=_parse_positive_int(payload.get("limit"), name="limit", default=100),
     )
     return {
@@ -859,21 +873,22 @@ def _admin(srv, payload: Body) -> Body:
     actor = _actor_scope(payload)
     key, value = payload.get("key"), payload.get("value")
     if key and value is not None:
-        srv.api.admin_set(key, str(value), identity=actor)
+        srv.api.admin_set(key, str(value), security=legacy_request_context(actor))
         return {
             "ok": True,
             "op": "admin",
             "key": key,
-            "value": srv.api.admin_get(key, identity=actor),
+            "value": srv.api.admin_get(key, security=legacy_request_context(actor)),
         }
     if key:
         return {
             "ok": True,
             "op": "admin",
             "key": key,
-            "value": srv.api.admin_get(key, identity=actor),
+            "value": srv.api.admin_get(key, security=legacy_request_context(actor)),
         }
-    return {"ok": True, "op": "admin", "policies": srv.api.admin_all(identity=actor)}
+    policies = srv.api.admin_all(security=legacy_request_context(actor))
+    return {"ok": True, "op": "admin", "policies": policies}
 
 
 def _grant(srv, payload: Body) -> Body:
@@ -886,8 +901,8 @@ def _grant(srv, payload: Body) -> Body:
         agent=str(payload.get("grantee_agent", "")),
         session=str(payload.get("grantee_session", "")),
     )
-    grant = Grant(grantor=scope, grantee=grantee, actions=[Action.READ])
-    srv.api.grant(grant, identity=actor)
+    grant = Grant(grant_id="", grantor=scope, grantee=grantee, actions=frozenset({Action.READ}))
+    srv.api.grant(grant, security=legacy_request_context(actor))
     return {
         "ok": True,
         "op": "grant",
@@ -906,8 +921,8 @@ def _revoke(srv, payload: Body) -> Body:
         agent=str(payload.get("grantee_agent", "")),
         session=str(payload.get("grantee_session", "")),
     )
-    grant = Grant(grantor=scope, grantee=grantee, actions=[Action.READ])
-    srv.api.revoke(grant, identity=actor)
+    grant = Grant(grant_id="", grantor=scope, grantee=grantee, actions=frozenset({Action.READ}))
+    srv.api.revoke(grant, security=legacy_request_context(actor))
     return {
         "ok": True,
         "op": "revoke",
@@ -930,7 +945,7 @@ def _create_space(srv, payload: Body) -> Body:
             policy=policy,
             metadata=_string_map(payload.get("metadata")),
         ),
-        identity=actor,
+        security=legacy_request_context(actor),
     )
     return {"ok": True, "op": "create_space", "space": _space_info_view(info)}
 
@@ -938,7 +953,7 @@ def _create_space(srv, payload: Body) -> Body:
 def _get_space(srv, payload: Body) -> Body:
     actor = _actor_scope(payload)
     org = str(payload.get("tenant_id", "default")) or "default"
-    info = srv.api.get_space(org, _require_space(payload), identity=actor)
+    info = srv.api.get_space(org, _require_space(payload), security=legacy_request_context(actor))
     return {"ok": True, "op": "get_space", "space": _space_info_view(info)}
 
 
@@ -949,7 +964,7 @@ def _list_spaces(srv, payload: Body) -> Body:
     status = _enum_value(SpaceStatus, raw_status, name="status") if raw_status else None
     spaces = srv.api.list_spaces(
         org,
-        identity=actor,
+        security=legacy_request_context(actor),
         status=status,
         limit=_parse_positive_int(payload.get("limit"), name="limit", default=100),
         cursor=payload.get("cursor"),
@@ -976,14 +991,18 @@ def _update_space(srv, payload: Body) -> Body:
         policy=_space_policy(payload) if payload.get("policy") else None,
         metadata=_string_map(payload.get("metadata")) if payload.get("metadata") else None,
     )
-    info = srv.api.update_space(org, _require_space(payload), patch, identity=actor)
+    info = srv.api.update_space(
+        org, _require_space(payload), patch, security=legacy_request_context(actor)
+    )
     return {"ok": True, "op": "update_space", "space": _space_info_view(info)}
 
 
 def _archive_space(srv, payload: Body) -> Body:
     actor = _actor_scope(payload)
     org = str(payload.get("tenant_id", "default")) or "default"
-    info = srv.api.archive_space(org, _require_space(payload), identity=actor)
+    info = srv.api.archive_space(
+        org, _require_space(payload), security=legacy_request_context(actor)
+    )
     return {"ok": True, "op": "archive_space", "space": _space_info_view(info)}
 
 
@@ -991,7 +1010,9 @@ def _delete_space(srv, payload: Body) -> Body:
     actor = _actor_scope(payload)
     org = str(payload.get("tenant_id", "default")) or "default"
     mode = _enum_value(DeleteMode, payload.get("mode", "purge"), name="mode")
-    result = srv.api.delete_space(org, _require_space(payload), identity=actor, mode=mode)
+    result = srv.api.delete_space(
+        org, _require_space(payload), security=legacy_request_context(actor), mode=mode
+    )
     return {
         "ok": True,
         "op": "delete_space",
@@ -1008,7 +1029,7 @@ def _export_space(srv, payload: Body) -> Body:
     export_id = srv.api.export_space(
         org,
         _require_space(payload),
-        identity=actor,
+        security=legacy_request_context(actor),
         include_audit=_bool_value(payload.get("include_audit"), default=True),
     )
     return {"ok": True, "op": "export_space", "export_id": export_id}
@@ -1017,14 +1038,18 @@ def _export_space(srv, payload: Body) -> Body:
 def _space_usage(srv, payload: Body) -> Body:
     actor = _actor_scope(payload)
     org = str(payload.get("tenant_id", "default")) or "default"
-    usage = srv.api.space_usage(org, _require_space(payload), identity=actor)
+    usage = srv.api.space_usage(
+        org, _require_space(payload), security=legacy_request_context(actor)
+    )
     return {"ok": True, "op": "space_usage", "usage": _usage_view(usage)}
 
 
 def _get_space_policy(srv, payload: Body) -> Body:
     actor = _actor_scope(payload)
     org = str(payload.get("tenant_id", "default")) or "default"
-    policy = srv.api.get_space_policy(org, _require_space(payload), identity=actor)
+    policy = srv.api.get_space_policy(
+        org, _require_space(payload), security=legacy_request_context(actor)
+    )
     return {"ok": True, "op": "get_space_policy", "policy": _space_policy_view(policy)}
 
 
@@ -1035,7 +1060,7 @@ def _set_space_policy(srv, payload: Body) -> Body:
         org,
         _require_space(payload),
         _space_policy(payload),
-        identity=actor,
+        security=legacy_request_context(actor),
     )
     return {"ok": True, "op": "set_space_policy", "policy": _space_policy_view(policy)}
 
@@ -1043,7 +1068,9 @@ def _set_space_policy(srv, payload: Body) -> Body:
 def _list_space_members(srv, payload: Body) -> Body:
     actor = _actor_scope(payload)
     org = str(payload.get("tenant_id", "default")) or "default"
-    members = srv.api.list_space_members(org, _require_space(payload), identity=actor)
+    members = srv.api.list_space_members(
+        org, _require_space(payload), security=legacy_request_context(actor)
+    )
     return {
         "ok": True,
         "op": "list_space_members",
@@ -1055,7 +1082,9 @@ def _list_space_members(srv, payload: Body) -> Body:
 def _add_space_member(srv, payload: Body) -> Body:
     actor = _actor_scope(payload)
     org = str(payload.get("tenant_id", "default")) or "default"
-    srv.api.add_space_member(org, _require_space(payload), _space_member(payload), identity=actor)
+    srv.api.add_space_member(
+        org, _require_space(payload), _space_member(payload), security=legacy_request_context(actor)
+    )
     return {"ok": True, "op": "add_space_member"}
 
 
@@ -1066,7 +1095,7 @@ def _remove_space_member(srv, payload: Body) -> Body:
         org,
         _require_space(payload),
         _member_scope(payload),
-        identity=actor,
+        security=legacy_request_context(actor),
     )
     return {"ok": True, "op": "remove_space_member"}
 
