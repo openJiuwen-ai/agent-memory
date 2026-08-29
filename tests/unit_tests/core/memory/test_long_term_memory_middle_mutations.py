@@ -333,6 +333,7 @@ async def test_write_manager_update_uses_middle_memory_when_enabled_and_mem_type
     assert middle_manager.update_calls == [
         (user_id, scope_id, mem_id, new_memory, semantic_store),
     ]
+    assert middle_manager.update_calls == []
 
 
 @pytest.mark.asyncio
