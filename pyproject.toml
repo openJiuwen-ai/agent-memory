@@ -35,7 +35,7 @@ deploy = [
     "pymilvus>=2.4",
     "elasticsearch>=8,<9",
     "redis>=5",
-    "psycopg[binary,pool]>=3.1",
+    "asyncpg>=0.30",
     "pyyaml>=6",
 ]
 # MCP surface（bootstrap/mcp_server）：把记忆动词暴露为 Model Context Protocol 工具。

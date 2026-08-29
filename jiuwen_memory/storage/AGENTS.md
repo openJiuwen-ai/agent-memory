@@ -24,7 +24,7 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
 | `fs.py` | FSStore 接口：文件系统存储（原始负载/二进制资产） |
 | `entity_store.py` | EntityStore 独立接口：以 `space_id` routing + actor filter 隔离的实体反向索引；不属于 StorageCapability 六端口 |
 | `_support.py` | 后端实现共用：异常归一（`wrap_backend`）、scope 派生（`scope_dims`/`scope_segments`）、SSL 配置读取（`read_ssl_config`）；`SslConfig` 与 scheme 校验复用 `common._support` |
-| `_pg.py` | PostgreSQL 后端共享的惰性连接池、schema 工具与 FilterExpr SQL 编译；`dsn` 支持 ConfigSource 晚绑定 |
+| `_pg.py` | PostgreSQL 后端共享基础：asyncpg 惰性连接池（专职事件循环线程桥接同步调用）、schema 工具与 FilterExpr SQL 编译；`dsn` 支持 ConfigSource 晚绑定 |
 | `kv_impl/` | KVStore 实现目录（memory / sqlite / redis / encrypted / postgres）及共用的 `memory_list.py` 兼容逻辑；连接型后端支持 `kv_store.*` 晚绑定 |
 | `vector_impl/` | VectorStore 实现目录（memory / milvus / pgvector）；`uri`/`dsn` 晚绑定 |
 | `graph_impl/` | GraphStore 实现目录（memory / nano_graphrag）；`working_dir` 晚绑定 |
@@ -128,7 +128,7 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
 8. `KVStore.mget` 是 `get` 的批量互补：返回与 `keys` 下标一一对应的 `list[bytes]`、任一 key 缺失即抛 `NotFoundError`（与 `get` 一致，不静默省略）、**不去重**、支持重复 key（各下标独立返回，语义同 Redis `MGET`，重复 key 去重由调用方如 `UnitReader.load` 负责，不下沉到本接口）；`encrypted` 的 `mget` 委托 raw 取密文（raw 缺失即抛 `NotFoundError`）后须逐项解密（AAD 绑 key，不可批量统一解密）。
 9. 接外部后端的实现统一接受 `ssl_verify` / `ssl_ca_cert`（默认关闭），经 `_support.read_ssl_config`
    读取后由各 builder 自行翻译为客户端参数：redis `ssl_ca_certs`、elasticsearch `ca_certs`、
-   postgres/pgvector `sslrootcert`（配 `sslmode=verify-full`）、milvus `server_pem_path`（配
+   postgres/pgvector `SSLContext`（`CERT_REQUIRED` + `check_hostname`）、milvus `server_pem_path`（配
    `secure=True`）。不做跨后端的 TLS 参数抽象层——各客户端语义切分不同，详见
    [F04-storage-ssl.md](../../docs/features/storage/F04-storage-ssl.md)。
    `SslConfig`、归一（`build_ssl_config`）与 scheme 校验（`require_tls_scheme`）住在
