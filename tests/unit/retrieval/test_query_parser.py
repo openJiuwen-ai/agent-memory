@@ -29,6 +29,16 @@ def test_parser_transfers_filters_and_as_of(world) -> None:
     assert RecallChannel.VECTOR in parsed.channels
 
 
+def test_parser_preserves_runtime_extension_identity(world) -> None:
+    marker = object()
+    query = RetrievalQuery(text="hello world", extensions={"db_query_service": marker})
+
+    parsed = world.parser.parse(query)
+
+    assert parsed.extensions is not query.extensions
+    assert parsed.extensions["db_query_service"] is marker
+
+
 def test_parser_extracts_time_constraint(world) -> None:
     parsed = world.parser.parse(RetrievalQuery(text="昨天 coffee"))
 

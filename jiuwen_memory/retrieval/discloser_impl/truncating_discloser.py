@@ -48,6 +48,7 @@ class TruncatingDiscloser(Discloser):
                     content=unit.content,  # L2 全文
                     user_metadata=dict(unit.user_metadata),
                     level=effective_level,
+                    system_metadata=dict(unit.system_metadata),
                 )
             )
         return items

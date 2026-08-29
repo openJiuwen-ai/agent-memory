@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-08-24 |
+| 最近一次修订日期 | 2026-08-26 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md |
 ## Metadata 物理存储契约
@@ -251,7 +251,7 @@ GraphStore 只承载 `ASSOCIATE` 等路径产生的语义关联、共指、因�
 | 类型 | 关键字段 |
 |------|----------|
 | `VectorRecord` | id / vector: list[float] / metadata |
-| `VectorQuery` | vector: list[float] / top_k / filters: FilterExpr \| None |
+| `VectorQuery` | vector: list[float] / top_k / filters: FilterExpr \| None / extensions: dict[str, Any] |
 
 目标层级索引 metadata 在既有 `unit_id`、`content_layer`、`tier`、`lifecycle`、`seq`
 基础上增加：
@@ -272,7 +272,7 @@ GraphStore 只承载 `ASSOCIATE` 等路径产生的语义关联、共指、因�
 | 类型 | 关键字段 |
 |------|----------|
 | `Document` | id / text / metadata |
-| `TextQuery` | text / top_k / filters: FilterExpr \| None |
+| `TextQuery` | text / top_k / filters: FilterExpr \| None / extensions: dict[str, Any] |
 
 Document 使用与 VectorRecord 相同的五个 hierarchy metadata 键，并保留既有
 `content_layer`。L0/L1/L2 文档的当前 id 规则保持不变；增加 metadata 不改变主键。
@@ -298,14 +298,14 @@ Document 使用与 VectorRecord 相同的五个 hierarchy metadata 键，并保�
 |------|----------|
 | `Node` | id / label / properties |
 | `Edge` | id / source / target / relation / properties |
-| `GraphQuery` | start_id / relation / depth / limit |
+| `GraphQuery` | start_id / relation / depth / limit / extensions: dict[str, Any] |
 
 ### 融合（`types.py`）
 
 | 类型 | 关键字段 |
 |------|----------|
 | `FusionRecord` | id / vector / text / scalars / value: bytes |
-| `FusionQuery` | vector / text / scalar_filters: FilterExpr \| None / top_k / vector_weight |
+| `FusionQuery` | vector / text / scalar_filters: FilterExpr \| None / top_k / vector_weight / extensions: dict[str, Any] |
 
 ### 文件系统（`types.py`）
 
