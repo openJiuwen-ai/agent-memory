@@ -2328,7 +2328,7 @@ class LongTermMemory(metaclass=Singleton):
         mem_results = self._build_mem_info_list(search_data)
         mem_results.extend(await self._list_middle_memories(user_id=user_id, scope_id=scope_id,
                                                             limit=fetch_size))
-        mem_results.sort(key=self._mem_info_timestamp_sort_key)
+        mem_results.sort(key=lambda m: (m.timestamp.timestamp() if m.timestamp else 0.0, m.mem_id or ""))
         return mem_results[start_idx:start_idx + page_size]
 
     @staticmethod
