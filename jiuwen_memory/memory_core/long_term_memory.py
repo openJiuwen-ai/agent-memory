@@ -2331,8 +2331,11 @@ class LongTermMemory(metaclass=Singleton):
                                                               mem_type=None,
                                                               filters=filters)
         mem_results = self._build_mem_info_list(search_data)
-        mem_results.extend(await self._list_middle_memories(user_id=user_id, scope_id=scope_id,
-                                                            limit=fetch_size))
+        # 中期记忆没有 blacklisted 概念，当 filters 显式查询 blacklisted 字段时不合并中期记忆，
+        # 避免 EQ("blacklisted", True) 查询结果被中期记忆污染。
+        if not self._filters_has_field(filters, "blacklisted"):
+            mem_results.extend(await self._list_middle_memories(user_id=user_id, scope_id=scope_id,
+                                                                limit=fetch_size))
         mem_results.sort(key=lambda m: (m.timestamp.timestamp() if m.timestamp else 0.0, m.mem_id or ""))
         return mem_results[start_idx:start_idx + page_size]
 
@@ -2362,6 +2365,20 @@ class LongTermMemory(metaclass=Singleton):
             return mem_info.timestamp.replace(
                 tzinfo=datetime.now(timezone.utc).astimezone().tzinfo).timestamp()
         return mem_info.timestamp.timestamp()
+
+    @staticmethod
+    def _filters_has_field(filters: "FilterGroup | None", field_name: str) -> bool:
+        """递归检查 filters 中是否包含指定字段的 FilterCondition。"""
+        if filters is None:
+            return False
+        for cond in filters.conditions:
+            # FilterCondition 有 field 属性
+            if hasattr(cond, "field") and cond.field == field_name:
+                return True
+            # 递归检查嵌套 FilterGroup
+            if hasattr(cond, "conditions") and LongTermMemory._filters_has_field(cond, field_name):
+                return True
+        return False
 
     async def _list_middle_memories_by_page(
             self,
