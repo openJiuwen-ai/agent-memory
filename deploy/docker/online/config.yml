@@ -194,7 +194,7 @@ memory_api:
     # keyword_l0/keyword_l1/vector* retain defaults.py defaults (not restated here to avoid
     # wholesale-replace field loss)
 
-  # Keep query text unchanged: the chat LLM is not used for query rewriting.
+  # Keep query text unchanged: rewrite_enabled controls LLM rewriting (default off).
   query_parser:
     default:
       target: simple
@@ -202,3 +202,4 @@ memory_api:
         tokenizer: default
         embedder: default
         llm: { target: echo }
+        rewrite_enabled: false
