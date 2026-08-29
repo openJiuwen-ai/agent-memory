@@ -5,7 +5,7 @@ to the assembled :class:`~server.Server`'s ``MemoryAPI`` and shapes a JSON-able
 envelope the surfaces render. Routing is a table (A20 "route by table"), not an
 if/else ladder; domain exceptions map to HTTP-ish status codes.
 
-Scope mapping (DESIGN.md "Two id spaces" / "Mem0 compatibility"): the kernel
+Scope mapping (DESIGN.md "Two id spaces" / "CLI compatibility"): the kernel
 scopes by ``tenant_id`` + optional ``space`` / ``space_id`` + a single
 ``scope`` string, mapped onto the native
 ``Scope(org=tenant_id, space=space, user=scope)``. The request shape keeps old

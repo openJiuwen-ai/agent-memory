@@ -240,7 +240,7 @@ class InMemoryEngine(MemoryEngine):
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
         _ensure_local_scope(scope)
-        # 调用级开关（经 metadata 下推，对齐 mem0 add(infer=True)）：
+        # 调用级开关（经 metadata 下推，对齐常见记忆层 add(infer=True)）：
         # - procedural=true：过程记忆抽取——原文不落 KV，evolver 让 extractor 把本轮汇总成
         #   1 条 PROCEDURAL 执行历史，落 /memory/ 建索引；不走去重、不收集 context。
         # - infer=true：同步抽取——原文落 /messages/（不建索引），evolver 收集最近10条原文
