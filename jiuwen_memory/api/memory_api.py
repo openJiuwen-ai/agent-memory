@@ -90,7 +90,39 @@ class MemoryAPI(ABC):
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
-        """同步写入记忆；阻塞至 hot path 完成并返回本次插入的记忆单元。"""
+        """同步写入记忆；阻塞至 hot path 完成并返回本次插入的记忆单元。
+
+        条目的可读范围由所在空间的权限决定，写入侧不另设条目级的可见性声明（F07）。
+
+        ``scope`` 必填，它就是落点。落点也可以交给归属判定选择：在参数袋里放
+        ``system_metadata["coords"]`` 即请求判定，此时 ``scope.space`` 不参与落点计算，
+        真实落点由返回的记忆单元携带。表中「判定表非空」指配置的 ``router`` 命名空间下声明了
+        记忆类别，未声明即为空表、本节全部变更不可达：
+
+        | 判定表非空 | ``coords`` 键 | ``scope.space`` | 落点 |
+        |---|---|---|---|
+        | 否 | 任意 | 任意 | 就是 ``scope`` |
+        | 是 | 有 | 任意 | 由判定算子在候选空间集合内选 |
+        | 是 | 无 | 非空 | 就是 ``scope`` |
+        | 是 | 无 | 空 | 拒绝：既未指定落点，也未请求判定 |
+
+        判据取 ``coords`` 键的有无，不取 ``scope`` 的取值形态，理由见 F07「接口契约」；
+        取值为 ``{}`` 是合法的判定请求，表示「请判定，但本次没有业务坐标」。
+
+        两条路径都校验入参 ``scope`` 的主体维——归属不由调用方声明，与身份不符即拒绝，判定
+        路径另校验 ``org``。判定标签键按落盘不变量恒写，直写路径上取值一律空串。
+
+        **归属坐标经参数袋传入，不占形参**：写入侧 ``system_metadata["coords"]``，检索侧
+        ``Context.extensions["coords"]``，取值为 ``dict[str, str]``，表达这次交互发生在
+        什么上下文。``user`` / ``agent`` / ``session`` 三项以身份为准、不接受覆盖，其余键由
+        部署的 ``coord_entities`` 声明。该键在本层即被取出，不落盘、不进鉴权入参、不随
+        options 透传给自定义检索模块；检索侧它只作收窄谓词，跨空间检索另由 ``extensions["spaces"]``
+        触发（见 :meth:`search`），两者互不相干。
+
+        取值不受 ``MetadataValueType`` 约束（该联合类型不含 ``dict``），与 ``route_ctx``
+        承载判定上下文对象同例；判型改在运行期做，键名拼写错误无从覆盖——内核区分不了
+        「拼错」与「本次不带该坐标」，失效方向是该维不收窄。
+        """
 
     @abstractmethod
     async def add_async(
@@ -123,7 +155,12 @@ class MemoryAPI(ABC):
         stream_id: str = "",
         continue_on_error: bool = True,
     ) -> BatchWriteResult:
-        """同步批量写入；结果按输入顺序逐项对齐。"""
+        """同步批量写入；结果按输入顺序逐项对齐。
+
+        ``scope`` 是批级缺省值，逐项 ``BatchWriteItem.scope`` 为 ``None`` 时沿用它；两级都
+        不给即该项没有落点，除非批级参数袋请求了判定（见 :meth:`add`）。判定请求是批级的，
+        逐项参数袋携带 ``coords`` 即拒绝——整批共用一次判定上下文。
+        """
 
     @abstractmethod
     async def batch_add_async(
@@ -155,7 +192,29 @@ class MemoryAPI(ABC):
         disclosure: DisclosureLevel = DisclosureLevel.L0,
         with_trajectory: bool = False,
     ) -> RetrievalResult:
-        """执行混合检索；由 ``context`` 指定 scope、透传 options 与披露预算。"""
+        """执行混合检索；由 ``context`` 指定 scope、透传 options 与披露预算。
+
+        ``context.extensions`` 带 ``spaces`` 键时转为跨空间检索（F07「多空间读写」），
+        取值为 ``list[str]``：**判据取键的有无，不取取值形态**——键不在即单空间检索，
+        行为与本特性之前一字不差；键在即跨空间，空列表表示「调用方可读的全部空间」（由
+        主体反查索引给出），非空即显式候选集。该键在本层即被取出，不随 options 透传给
+        自定义检索模块。取值为 ``None`` 按非法拒绝，不当作空列表——网关把未填字段序列化
+        成 ``null`` 时若按空列表处置，一次本意为单空间的检索会静默扩到全部可读空间。
+
+        跨空间不是新的检索算法，是在单空间召回之上套的一层编排：候选空间 → 逐空间判权
+        → 按上界分配取数 → 逐空间召回 → 跨空间按内容去重、截到 ``top_k``。两族谓词与
+        召回复用同一份实现。不另设入口的理由见 F07「多空间读写」。
+
+        跨空间形态下的三处差异：
+
+        - ``context.scope``：只取 ``org`` 维定组织边界，空间维由候选集给出、传了不生效。
+        - 无权的候选空间：逐个剔除并记入 ``RetrievalResult.errors``，不使整次调用失败；
+          候选集非空而一个都读不到时抛 ``PermissionDeniedError``，与单空间路径同一处置。
+        - 时延：随候选空间数线性增长。召回按并发写就，但引擎侧 ``recall`` 当前是同步实现、
+          实际顺序执行，候选集上限（``space.fanout_limit``）因而同时是时延上界的约束项。
+
+        取同步形态：多空间召回在实现内部完成，不向调用方暴露异步契约。
+        """
 
     @abstractmethod
     def list(

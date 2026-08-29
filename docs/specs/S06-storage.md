@@ -331,7 +331,7 @@ jiuwen_memory/storage/<store>_impl/
 ```
 
 各 Producer：`StorageProducer` / `KvProducer` / `FulltextProducer` / `VectorProducer` /
-`GraphProducer` / `FusionProducer` / `FsProducer`。
+`GraphProducer` / `FusionProducer` / `FsProducer` / `EntityStoreProducer`。
 注册由 `storage.bootstrap.register_backends` 统一触发。
 
 具体 Store target 名与实现文件列表归 `jiuwen_memory/storage/AGENTS.md` 维护；本 spec 只固化

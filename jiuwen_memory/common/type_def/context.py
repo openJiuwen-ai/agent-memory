@@ -27,9 +27,20 @@ from .scope import Scope
 # 由 API 边界解析为 RetrievalQuery.max_tokens；自定义检索模块亦可按此 key 读取。
 EXT_MAX_TOKENS = "max_tokens"
 
+# extensions 中把 search 转为跨空间检索的约定 key，取值 ``list[str]``。
+#
+# **判据取键的有无，不取取值形态**：键不在即单空间检索，行为与本特性之前一字不差；键在
+# 即跨空间，取值为空列表表示「调用方能读的全部空间」（由主体反查索引给出），非空即显式
+# 候选集。取值判空则「查我能读的全部」这层意图无法表达，只能退回缺省状态触发。
+#
+# 与 ``EXT_MAX_TOKENS`` 同一处置：由 API 边界取出并从透传 options 中移除，不随 parser
+# 下传给自定义检索模块——它是内核解释的编排开关，不是检索模块的入参。
+EXT_SPACES = "spaces"
+
 
 @dataclass
 class Context:
     scope: Scope = field(default_factory=Scope)  # 操作/检索的目标范围（多租户隔离）
-    # 调用级透传配置；内核核心不解释。约定 key 见 EXT_MAX_TOKENS。
+    # 调用级透传配置；内核核心不解释。
+    # 三个约定 key 由 API 边界解释并移除：EXT_MAX_TOKENS、EXT_SPACES、"coords"。
     extensions: dict[str, Any] = field(default_factory=dict)

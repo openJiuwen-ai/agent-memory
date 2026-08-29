@@ -7,7 +7,7 @@
 | 关联模块 | jiuwen_memory/api/ |
 | 最近一次修订日期 | 2026-08-29 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md |
 
 ## 文档分工
 
@@ -29,6 +29,11 @@
 dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key>`；裸自定义
 字段仅在规范化边界作为该路径的兼容写法，`metadata.<key>` 拒绝。
 
+群体记忆的内核字段（作者标记、判定命中的类别名、判定标签键）全部落 `system_metadata`：
+它们由内核写入、内核解释并参与判定与检索谓词，谓词路径为 `system_metadata.<key>`。
+`system_metadata` 同时是对外入参，因此写入与改写入口拒绝调用方占用这些键
+（`KERNEL_SYSTEM_METADATA_KEYS` 与判定表解析出的标签键集合），见 F07「写入边界校验」。
+
 ## 范围 / 边界
 
 **管什么**：
@@ -36,12 +41,18 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 - 鉴权执行点（PEP）：从请求安全上下文取 actor，调用 `PermissionManager.check(identity, scope, action)` 做入口鉴权
 - 入口审计：写审计事件到 `AuditLogger`
 - 参数装配：将调用侧参数装配为控制层可消费的内部结构
+- 鉴权驱动的编排：按 `identity` 决定资源可见范围、生成并回注系统谓词、按判权结果决定取数范围。不变量 9（授权路由值回注查询）与 12（分页命中后逐条 READ 鉴权）是这一职责的两处既有形态；跨空间检索的候选空间枚举、逐空间判权与逐空间系统谓词的生成同属此列。**范围以「判权本身及其直接输入输出」为限**，其余属机械计算或 I/O 编排，落控制层 `control/collective/`，本层只提供回调：
+
+  | 机械部分 | 落点 | 本层提供 |
+  |---|---|---|
+  | 写入候选空间的渲染、排序与上限截断 | `collective/write_targets.py` | `can_write` 判权回调 |
+  | 跨空间的取数上界摊配、召回扇出与结果合并 | `collective/cross_space_recall.py` | `recall` 回调、已判权的空间目标与逐空间谓词 |
 - 同步/异步桥接：为同步形态桥接引擎异步协程
 
 **不管什么**：
-- 不做编排逻辑（全部委托 `jiuwen_memory/control`）
+- 不做业务编排逻辑（全部委托 `jiuwen_memory/control`）——指内容如何抽取、演进、索引这类加工编排；上条所述的鉴权驱动编排不在此列，它是 PEP 职责的延伸。判据是「移出本层是否还能按 `identity` 裁决」：逐空间判权循环移出即 PEP 分裂为两处，故留本层；候选集合的计算与跨空间的召回扇出都不读 `identity`——前者在判权之前、后者在候选集与谓词都已定妥之后，故不留。逐空间构造 `RetrievalQuery` 的循环本身就是取数编排，随扇出一并移出
 - 不直接操作存储
-- 不调用 LLM / 构建 / 检索
+- 不调用 LLM / 构建 / 检索。此处「调用」指调用该层的**算子**——有 Producer 注册、实现可替换、访问模型或存储的组件（`Router` / `Evolver` / `Classifier` / `IndexBuilder` 等）。引用该层导出的类型与无状态纯函数不在此列（见 `construction/router.py` 模块文档：「API 层引用构建层类型是既有形态，依赖方向为 API → 构建，无环」）。归属判定算子的调用落在控制层的 `control/collective/routing.py`，本层调控制层
 - 不做 admin 策略存储（直达 PolicyManager）
 
 ## 不变量
@@ -113,6 +124,40 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 | 运行时策略面（直达 PolicyManager） | `admin_get` | 已实现 | [admin_get](#admin_get) | F01 |
 | 运行时策略面 | `admin_set` | 已实现 | [admin_set](#admin_set) | F01 |
 | 运行时策略面 | `admin_all` | 已实现 | [admin_all](#admin_all) | F01 |
+
+---
+
+### 群体记忆带来的契约变更（F07）
+
+契约细节、判定规则与决策取舍见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)。「已落地」指内核已实现；接入层改造另计。
+
+| 入口 | 变更 | 兼容性 | 状态 |
+|---|---|---|---|
+| `add` / `add_async` | 签名不变。`scope` 仍必填、语义不变；`system_metadata["coords"]` 在参数袋里即表示落点交由判定 | 向后兼容，不带该键的调用方行为不变 | 已落地 |
+| `batch_add` / `batch_add_async` | 签名不变，批级 `scope` 仍为缺省值（逐项自带即可整批省略）。批级参数袋带 `coords` 键即转入归属判定；坐标取自批级 `system_metadata["coords"]`，逐项携带即拒绝 | 向后兼容 | 已落地 |
+| `search` | 签名不变。归属坐标经 `Context.extensions["coords"]` 传入，供收窄维谓词取值；`Context.extensions["spaces"]` 在参数袋里即转为跨空间检索 | 向后兼容，不带这两个键的调用方行为不变 | 已落地 |
+| `RecallChannel` | 新增取值 `space`，标记跨空间检索里某个空间整体召回失败 | 向后兼容；穷举该枚举的调用方须容纳新取值 | 已落地 |
+| `delete` | 入参 `DeleteSelector` 新增 `filters`，空选择器判据随之纳入该字段；实体删除后的跨空间清理由接入方经本入口逐个执行 | 向后兼容 | 已落地 |
+| `list` | 不读归属坐标，但注入第一族系统谓词 | 行为变更：个体空间内不再返回不可见条目 | 已落地 |
+| `list_spaces` | `cursor` 标记废弃；`limit` 由每页条数改为返回条数上限 | 签名不变，翻页语义变更 | 已落地 |
+| `create_space` | 签名不变；入参 `SpaceSpec` 新增 `owner` 字段，供开通服务声明归属主体或显式不登记 | 向后兼容 | 已落地 |
+| `job_status` / `job_cancel` | 签名不变；返回值 `JobInfo.mode` 的取值域由任务类名改为演进模式（`EvolveMode` 的值），无演进模式的任务仍回落类名 | 行为变更，不受两个开关约束：鉴权点按该取值决定任务入口取哪个动作，类名区分不了遗忘与抽取 | 已落地 |
+
+`scope` 语义不变：它就是落点，且保持必填。落点也可以不由调用方指定、改由归属判定选择，这时在写入侧参数袋里放 `system_metadata["coords"]` 请求判定，候选空间集合由归属坐标推出、落点由判定算子在集内选择。分流判据是该键在不在，与 `scope` 的取值形态无关——键由调用方主动放入，而 `space` 为空是调用方什么都没表达时的取值，拿它触发另一条路径等于由内核解读缺省状态。`space` 非空也不否决判定请求：上游网关按自己的租户或应用标识填 `space` 是常见形态，那个取值不是本系统的空间标识，以它否决则这类接入方无路可走（直写要求空间已登记，未登记即判权拒绝）。给了 `coords` 即交出落点决定权，`scope.space` 在这条路径上不参与落点计算，真实落点由返回的记忆单元携带。两处都没有声明时拒绝，替换的是同一形态下原本含义模糊的判权拒绝。走判定路径时入参 `scope` 的主体维与 `org` 仍须与身份一致，不静默丢弃。条目的可读范围由所在空间的权限决定，写入侧不设条目级的可见性声明入参（F07）。
+
+**归属坐标不占形参，经参数袋传入**：写入侧 `system_metadata["coords"]`，检索侧 `Context.extensions["coords"]`，取值为 `dict[str, str]`。该键在 API 层入口即被取出，不落盘、不进鉴权入参、不随 options 透传给自定义检索模块。检索侧的取出以装配了判定表为条件：未装配的部署里本特性整体不可达，该键不产生任何收窄谓词，取出它只会让自定义检索模块少收到一个调用方明确传入的字段。取值不受 `MetadataValueType` 约束（该联合类型不含 `dict`），与 `route_ctx` 承载判定上下文对象同例；判型改在运行期做。由此，六个入口的形参列表与本特性之前逐字一致。身份入参不新增：随上游安全模块交付的 `security` 是唯一可信身份来源。
+
+**跨空间检索不另设入口，同样经参数袋分流**：`Context.extensions["spaces"]` 键在即跨空间，取值 `list[str]`，空列表表示「调用方可读的全部空间」。跨空间不是新的检索算法，是在单空间召回之上套的一层编排（候选空间 → 逐空间判权 → 按上界分配取数 → 逐空间召回 → 轮转合并），两族谓词与召回复用同一份实现；拆成两个入口即同一件事有两处契约，接入方须先判断部署形态才知道该调哪个，且两处一旦分叉就出现「一个入口挂了谓词、另一个没挂」的绕过通道。判据同样取键的有无：取值判空则「查我能读的全部空间」这层意图只能靠缺省状态表达，与「没打算跨空间」不可区分。取值为 `None` 按非法拒绝，不当作空列表——网关把未填字段序列化成 `null` 时若按空列表处置，一次本意为单空间的检索会静默扩到全部可读空间。
+
+跨空间形态下 `search` 有三处差异，其余与单空间路径一致：
+
+| 项 | 差异 |
+|---|---|
+| `context.scope` | 只取 `org` 维定组织边界，空间维由候选集给出、传了不生效 |
+| 无权的候选空间 | 逐个剔除并记入 `RetrievalResult.errors`（`ChannelError`，`channel=space`、`error_type=PermissionDeniedError`）；候选集非空而一个都读不到时抛 `PermissionDeniedError`，与单空间路径同一处置。候选集为空是合法空结果，不抛 |
+| 时延 | 随候选空间数线性增长，上界由 `space.fanout_limit` 约束 |
+
+未装配判定算子（未声明 `router` 配置命名空间）时，上述写入侧变更全部不可达：判定表为空、`coords` 键不产生落点、`space` 为空照旧直写，全链路行为与改造前一致。装配条件是分流判据的一半，缺它则未装配部署里以空 `space` 为落点的既有调用会撞上「写入落点未声明」。这是可灰度上线的前提。
 
 ---
 
@@ -891,6 +936,8 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 - `SpaceUsage`：`org` / `space` / `memory_count` / `message_count` / `index_count` / `storage_bytes` / `audit_count`。当前实现填充 memory/message 数量与 KV bytes；`index_count` / `audit_count` **状态：已设计、尚未实现**。
 - `SpaceDeleteResult`：`org` / `space` / `deleted_counts` / `status` / `audit_event_id`。
 
+> 规划中：`SpaceMember` 增内容轴与治理轴两个角色字段、`SpaceInfo` 增归属主体登记、`SpaceSpec` 增创建者身份，另新增空间授权事实快照类型。见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) 「空间数据结构变更」。
+
 ### AuditEvent（audit 返回，`common/type_def/audit.py`）
 
 `id` / `actor`（操作者 Scope）/ `target`（目标 Scope）/ `action` / `target_id` / `layer`（产生事件的层）/ `occurred_at` / `detail`。`detail` 常见约定包括 `permission_check`、`permission_reason`、`job_id`、`before_unit_id` / `after_unit_id`、`before_unit_ids` / `after_unit_ids`；其中 `before_unit_*` / `after_unit_*` 仅表示记忆单元 id，不用于调度任务 id。审计查询支持 `actor_*` 与 `target_*` scope 字段过滤。
@@ -943,4 +990,5 @@ jiuwen_memory/api/memory_api_impl/
 | S04-retrieval | search 路径中 Engine 委托 Retriever |
 | S05-construction | 目标 `HierarchyComposeOptions` / `EvolveMode.HIERARCHY` 的字段契约 |
 | S08-config | 六类动态配置经 ConfigSource；不经本层业务入参写入 |
+| F07-collective-memory | 本层是空间治理的鉴权点：入口到轴与动作的映射、空间事实一次读取、检索两族谓词的生成与注入均落在本层。多空间读写编排按「是否读 `identity`」拆开——判权与谓词生成留本层，写入候选集的计算与跨空间的召回扇出落控制层 `control/collective/` |
 | architecture.md §6 | 已实现 MemoryAPI 清单 |

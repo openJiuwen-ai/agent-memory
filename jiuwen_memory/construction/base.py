@@ -33,6 +33,7 @@ class OperatorType(str, Enum):
     INDEX_BUILDER = "index_builder"
     EVOLVER = "evolver"
     LAYER_ANNOTATOR = "layer_annotator"
+    ROUTER = "router"
 
 
 class ConstructionOperator(ABC):

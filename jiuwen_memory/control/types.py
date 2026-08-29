@@ -6,9 +6,15 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
+from jiuwen_memory.common.security.space_roles import (
+    SpaceAuthorizationFacts,
+    SpaceContentRole,
+    SpaceGovernanceRole,
+)
 from jiuwen_memory.common.security.types import Action as Action
 from jiuwen_memory.common.security.types import Grant as Grant
 from jiuwen_memory.common.type_def import (
+    FilterExpr,
     MemoryTier,
     MemoryUnit,
     MetadataValueType,
@@ -61,6 +67,14 @@ class SpaceSpec:
     principal_path: PrincipalPath = PrincipalPath.USER_AGENT
     policy: SpacePolicy = field(default_factory=SpacePolicy)
     metadata: dict[str, str] = field(default_factory=dict)
+    # 归属主体，由调用方填写，API 层校验同组织与主体维恰好一维非空两项。「非组织管理员
+    # 不得填他人」尚未实现：判据取组织管理员角色，而组织级角色不属本特性范围
+    # （F07 决策 4）。该入口回落改造前的判据，实际持有者是运维通道。
+    # 三种形态：``None`` 由 API 层填入调用方身份推导值；主体维全空的 ``Scope()`` 即不
+    # 登记，共享空间取此形态——其治理权由成员记录的治理轴与组织管理员的治理放行承担，
+    # 本特性内无组织管理员判据，该形态的第一个成员须由运维脚本直接经 SpaceManager 写入；
+    # 具名主体即替该主体登记，用于开通服务预建用户主空间。
+    owner: Scope | None = None
 
 
 @dataclass
@@ -76,6 +90,10 @@ class SpaceInfo:
     metadata: dict[str, str] = field(default_factory=dict)
     created_at: datetime | None = None
     archived_at: datetime | None = None
+    # 归属主体登记（F07）：一个没有任何成员记录的空间在判定链看来无人可放行，本字段
+    # 使个体空间的本人可经归属对比通过。每项取单维（登记双维则本人直接调用时对不上）；
+    # 新建恒为至多一项，列表形态只为兼容回填产生的多归属空间。
+    owners: list[Scope] = field(default_factory=list)
 
 
 @dataclass
@@ -91,12 +109,39 @@ class SpacePatch:
 
 @dataclass
 class SpaceMember:
-    """space 成员与角色。"""
+    """space 成员与两轴角色（F07）。
+
+    ``role`` 是改造前的单轴角色，判定不再读取，保留只为存量数据的读取兼容；
+    未识别取值按最低档解析并记警告，不抛异常——拒绝解析会使存量空间整体不可用。
+    """
 
     scope: Scope = field(default_factory=Scope)
-    role: str = "member"
+    role: str = "member"  # 旧单轴角色，判定不再读
+    # 内容轴：空间内条目的读写改删
+    content_role: SpaceContentRole = SpaceContentRole.CONTRIBUTOR
+    # 治理轴：成员与策略，不含条目读取权
+    governance_role: SpaceGovernanceRole = SpaceGovernanceRole.NONE
     created_at: datetime | None = None
-    expires_at: datetime | None = None
+    expires_at: datetime | None = None  # 已过期的记录不参与判定
+
+
+@dataclass(frozen=True)
+class SpaceFacts:
+    """一次调用内的空间授权事实快照，由 API 层取一次、贯穿判定与谓词生成（F07）。
+
+    判定实现看到的是它的最小投影（``SpaceAuthorizationFacts``）：空间策略、生命周期
+    状态与成员记录的时间戳不进判定，只在鉴权点使用。
+    """
+
+    org: str = ""
+    space: str = ""
+    info: SpaceInfo | None = None  # 空间不存在时为 None（隐式创建路径）
+    members: tuple[SpaceMember, ...] = ()  # 已滤除过期记录
+
+    @property
+    def is_individual(self) -> bool:
+        """成员表为空即个体空间——归属对比的前提之一、检索第一族谓词的开关。"""
+        return not self.members
 
 
 @dataclass
@@ -187,6 +232,11 @@ class PermissionContext:
     # 路由值恒为字符串：构造点（_write/_recall_permission_context）已做 str().strip()
     # 归一化，delegate 选择也按字符串比较。此处不随 MemoryUnit 的 metadata 值类型放宽。
     metadata: dict[str, str] = field(default_factory=dict)
+    # 空间授权事实快照，由鉴权点一次读取后折算传入（F07「空间事实的两层投影与传入通道」）。
+    # 取结构化字段而非塞进 metadata：后者是字符串映射，装不下成员元组与归属登记；序列化为
+    # JSON 串的备选把判定依据的类型检查由编译期挪到运行期，而这是安全属性。
+    # 该字段是空间事实进入判定的通道；换判定宿主时改传入通道即可，判据主体不动。
+    space_facts: SpaceAuthorizationFacts | None = None
 
 
 class Channel(str, Enum):
@@ -254,6 +304,19 @@ class DeleteMode(str, Enum):
     PURGE = "purge"  # 完全删除：物理删除真源与全部派生索引（合规删除，不可恢复，仅留审计记录）
 
 
+@dataclass(frozen=True)
+class WriteTargets:
+    """一次写入的候选空间集合与兜底落点（F07「多空间读写」）。
+
+    ``fallback`` 为 ``None`` 表示兜底落点不在候选集内，即判不准时无处可落。此时整次写入
+    应被拒绝，但**拒绝由鉴权点抛出，不在控制层**：控制层只出集合运算结果，权限异常的语义
+    留在 PEP。静默落到别处等于把兜底落点交给判定实现决定。
+    """
+
+    candidates: tuple[Scope, ...] = ()
+    fallback: Scope | None = None
+
+
 @dataclass
 class DeleteSelector:
     """``delete`` 的目标选择：各条件取「与」，至少给出一项。"""
@@ -262,4 +325,7 @@ class DeleteSelector:
     scope: Scope | None = None  # 限定归属 scope
     tags: list[str] = field(default_factory=list)  # 命中任一标签
     before: datetime | None = None  # 仅命中 t_message 早于此时间的
+    # 结构化谓词。删除连带按判定标签或作者主体标记逐条清除，这两项都在 metadata 上，
+    # tags 表达不了（tags 是标签数组，判定标签是键值对）。
+    filters: FilterExpr | None = None
     mode: DeleteMode = DeleteMode.FORGET  # 删除语义
