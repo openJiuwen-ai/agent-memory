@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timezone
+from unittest import mock as unittest_mock
 
 import pytest
 
@@ -269,17 +270,55 @@ async def test_long_term_memory_update_passes_semantic_store_to_write_manager():
 
 
 @pytest.mark.asyncio
-async def test_write_manager_update_falls_back_to_middle_memory():
+async def test_write_manager_update_converts_to_insert_when_mem_type_missing():
+    """开关关闭时，记忆不存在 → 返回 False，不走中期记忆。"""
     user_id = "local_update_user"
     scope_id = "local_update_scope"
     mem_id = "msg_middle_001"
     new_memory = "我在北京工作"
     semantic_store = object()
 
+    long_term_manager = FakeLongTermUpdateManager(updated=True)
+    middle_manager = FakeMiddleUpdateManager(updated=True)
     write_manager = WriteManager(
-        managers={},
+        managers={"semantic_memory": long_term_manager},
         memory_index=FakeMemoryIndexMissing(),
-        middle_manager=FakeMiddleUpdateManager(updated=True),
+        middle_manager=middle_manager,
+        enable_middle_memory=False,
+    )
+
+    result = await write_manager.update_mem_by_id(
+        user_id=user_id,
+        scope_id=scope_id,
+        mem_id=mem_id,
+        memory=new_memory,
+        semantic_store=semantic_store,
+    )
+
+    assert result is False
+    assert long_term_manager.update_calls == []
+    assert middle_manager.update_calls == []
+
+
+@pytest.mark.asyncio
+async def test_write_manager_update_uses_middle_memory_when_enabled_and_mem_type_missing():
+    """开关开启时，记忆不存在 → 走中期记忆 update。"""
+    user_id = "local_update_user"
+    scope_id = "local_update_scope"
+    mem_id = "msg_middle_001"
+    new_memory = "我在北京工作"
+    semantic_store = object()
+
+    long_term_manager = FakeLongTermUpdateManager(updated=True)
+    middle_manager = FakeMiddleUpdateManager(updated=True)
+    fake_message_manager = unittest_mock.AsyncMock()
+    fake_message_manager.get_by_id.return_value = (object(), object())
+    write_manager = WriteManager(
+        managers={"semantic_memory": long_term_manager},
+        memory_index=FakeMemoryIndexMissing(),
+        middle_manager=middle_manager,
+        enable_middle_memory=True,
+        message_manager=fake_message_manager,
     )
 
     result = await write_manager.update_mem_by_id(
@@ -291,7 +330,7 @@ async def test_write_manager_update_falls_back_to_middle_memory():
     )
 
     assert result is True
-    assert write_manager.middle_manager.update_calls == [
+    assert middle_manager.update_calls == [
         (user_id, scope_id, mem_id, new_memory, semantic_store),
     ]
 
@@ -329,15 +368,48 @@ async def test_write_manager_update_uses_long_term_manager_when_mem_type_exists(
 
 @pytest.mark.asyncio
 async def test_write_manager_delete_falls_back_to_middle_memory():
+    """开关关闭时，记忆不存在 → 返回 False，不走中期记忆。"""
     user_id = "local_delete_user"
     scope_id = "local_delete_scope"
     mem_id = "msg_middle_001"
     semantic_store = object()
 
+    middle_manager = FakeMiddleUpdateManager(updated=True)
     write_manager = WriteManager(
         managers={},
         memory_index=FakeMemoryIndexMissing(),
-        middle_manager=FakeMiddleUpdateManager(updated=True),
+        middle_manager=middle_manager,
+        enable_middle_memory=False,
+    )
+
+    result = await write_manager.delete_mem_by_id(
+        user_id=user_id,
+        scope_id=scope_id,
+        mem_id=mem_id,
+        semantic_store=semantic_store,
+    )
+
+    assert result is False
+    assert middle_manager.delete_calls == []
+
+
+@pytest.mark.asyncio
+async def test_write_manager_delete_uses_middle_memory_when_enabled_and_mem_type_missing():
+    """开关开启时，记忆不存在 → 走中期记忆 delete。"""
+    user_id = "local_delete_user"
+    scope_id = "local_delete_scope"
+    mem_id = "msg_middle_001"
+    semantic_store = object()
+
+    middle_manager = FakeMiddleUpdateManager(updated=True)
+    fake_message_manager = unittest_mock.AsyncMock()
+    fake_message_manager.get_by_id.return_value = (object(), object())
+    write_manager = WriteManager(
+        managers={},
+        memory_index=FakeMemoryIndexMissing(),
+        middle_manager=middle_manager,
+        enable_middle_memory=True,
+        message_manager=fake_message_manager,
     )
 
     result = await write_manager.delete_mem_by_id(
@@ -348,7 +420,7 @@ async def test_write_manager_delete_falls_back_to_middle_memory():
     )
 
     assert result is True
-    assert write_manager.middle_manager.delete_calls == [
+    assert middle_manager.delete_calls == [
         (user_id, scope_id, mem_id, semantic_store),
     ]
 

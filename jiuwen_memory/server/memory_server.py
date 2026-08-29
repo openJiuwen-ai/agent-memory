@@ -601,14 +601,20 @@ async def add_messages_endpoint(request: AddMessagesRequest):
 async def update_mem_by_id_endpoint(request: UpdateMemoryRequest):
     """根据ID更新内存内容"""
     try:
-        await memory_engine.update_mem_by_id(
+        updated = await memory_engine.update_mem_by_id(
             mem_id=request.mem_id,
             memory=request.memory,
             user_id=request.user_id,
             scope_id=request.scope_id
         )
-
+        if not updated:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Memory {request.mem_id} not found",
+            )
         return {"status": "success", "message": f"Memory {request.mem_id} updated successfully"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating memory: {str(e)}") from e
 
@@ -826,25 +832,26 @@ async def _register_mem_meta():
 async def delete_mem_by_id_endpoint(request: DeleteMemByIdRequest):
     """根据ID删除单条记忆"""
     try:
-        await memory_engine.delete_mem_by_id(
+        deleted = await memory_engine.delete_mem_by_id(
             mem_id=request.mem_id,
             user_id=request.user_id,
             scope_id=request.scope_id,
         )
+        if not deleted:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Memory {request.mem_id} not found",
+            )
         return {"status": "success", "message": f"Memory {request.mem_id} deleted successfully"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting memory by id: {str(e)}") from e
 
 
 @app.post("/batch_delete_mem/")
 async def batch_delete_mem_endpoint(request: BatchDeleteMemRequest):
-    """批量删除记忆（逐条调用 delete_mem_by_id，正确处理长期/中期记忆）。
-
-    delete_mem_by_id 会判断 mem_type 并路由到对应 manager：
-    - 长期记忆：KV + 向量库（Milvus/ES）
-    - 中期记忆：ES semantic_store
-    避免直接调 memory_index.delete_memories 只删 KV/向量库而漏掉中期记忆。
-    """
+    """批量删除记忆（向量存储批量删 + KV 批量删，非逐条 HTTP）"""
     try:
         if not request.mem_ids:
             return {"status": "success", "deleted": 0, "failed": 0}
@@ -854,17 +861,39 @@ async def batch_delete_mem_endpoint(request: BatchDeleteMemRequest):
         from jiuwen_memory.memory_core.common.distributed_lock import DistributedLock
         lock = DistributedLock(memory_engine.kv_store, f"user/{request.user_id}")
         async with lock:
-            for mid in request.mem_ids:
+            if memory_engine.memory_index:
                 try:
-                    await memory_engine.delete_mem_by_id(
-                        mem_id=mid,
+                    await memory_engine.memory_index.delete_memories(
                         user_id=request.user_id,
-                        scope_id=request.scope_id
+                        scope_id=request.scope_id,
+                        ids=request.mem_ids
                     )
-                    deleted += 1
-                except Exception as e:
-                    failed += 1
-                    errors.append({"mem_id": mid, "error": str(e)})
+                    deleted = len(request.mem_ids)
+                except Exception:
+                    # 批量删失败，降级逐条删
+                    for mid in request.mem_ids:
+                        try:
+                            await memory_engine.delete_mem_by_id(
+                                mem_id=mid,
+                                user_id=request.user_id,
+                                scope_id=request.scope_id
+                            )
+                            deleted += 1
+                        except Exception as e:
+                            failed += 1
+                            errors.append({"mem_id": mid, "error": str(e)})
+            else:
+                for mid in request.mem_ids:
+                    try:
+                        await memory_engine.delete_mem_by_id(
+                            mem_id=mid,
+                            user_id=request.user_id,
+                            scope_id=request.scope_id
+                        )
+                        deleted += 1
+                    except Exception as e:
+                        failed += 1
+                        errors.append({"mem_id": mid, "error": str(e)})
 
         return {"status": "success", "deleted": deleted, "failed": failed, "errors": errors}
     except Exception as e:
