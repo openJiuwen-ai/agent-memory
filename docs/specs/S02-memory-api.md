@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-08-27 |
+| 最近一次修订日期 | 2026-08-28 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/common/F01-memory-layer.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md |
 
@@ -46,7 +46,7 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 
 ## 不变量
 
-1. **本层是薄封装 + PEP**：数据面委托 `MemoryEngine`，治理面委托 `Governor`，授权面委托 `PermissionManager`，调度面委托 `Scheduler`，策略面直达 `PolicyManager`。
+1. **本层是薄封装 + PEP**：数据面委托 `MemoryEngine`，治理面委托 `Governor`，授权面委托 `PermissionManager`，调度面委托 `Scheduler`，策略面直达 `PolicyManager`。API 不实现跨层业务编排，真实处理逻辑由 control 层算子及其下游 construction/retrieval/storage 完成。
 2. **`identity` 不下沉**：鉴权通过后只透传已鉴权的 target `scope`，`identity` 不传入控制层。
 3. **`identity` 为必填 keyword-only 参数**：与 target `scope` 同为 `Scope` 类型，强制具名传入防止位置传反。
 4. **search 参数拆分**：`context: Context` 在本层边界拆开——`context.scope` 作独立轴穿透，`context.extensions` 写入调用级 options；约定 key `context.extensions["max_tokens"]` 由 API 边界解析为 int 后写入 `RetrievalQuery.max_tokens`，并从透传 extensions 中移除；`Context` 对象本身不进控制层。
@@ -64,6 +64,14 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 14. **六类动态配置不走业务入参**：能力开关、prompt 全文、LLM/Embedder/Reranker 的 model/api_key/url、Store 连接或 `*.active` 等由 `ConfigSource.fetch` 提供（见 S08）；`add`/`search`/`evolve`/`list` 不得把上述值解释为配置写入。调用侧可传 prompt **key**、`memory_type`/pipeline 等业务选择子。
 15. **层级能力默认关闭（目标）**：普通 `add` 默认不建父树；只由显式 `evolve(..., mode=HIERARCHY, hierarchy_options=...)` 或启用的后台策略触发。显式层级请求在 `hierarchy.enabled=false` 时抛 `PolicyError`，不带层级参数的既有操作保持语义。
 16. **三类遍历严格分离（目标）**：`trace` 只沿 `provenance`；树下钻由 `search(..., expand_depth>0)` 沿 `HierarchyRef` 完成；`get(as_of)` 只沿 `supersedes`/valid-time；L0/L1/L2 仅表示同一 unit 的披露层。
+
+17. **API 与 Control 的职责边界**：API 只负责协议边界工作——输入形状和兼容参数校验、请求对象装配、`identity`/target `scope` 的 PEP 鉴权、权限路由过滤回注、入口审计以及同步/异步桥接。API 不得调用 LLM、Extractor、Classifier、IndexBuilder、Retriever 或 Store，也不得实现写入、去重、版本、生命周期、检索排序和后台任务编排。
+
+18. **委托对象按职责分流**：数据面 add/search/list/get/update/delete/evolve 委托 `MemoryEngine`；治理操作委托 `Governor`；任务状态和取消委托 `Scheduler`/`IngestJobController`；跨 scope 授权委托 `PermissionManager`；策略读写委托 `PolicyManager`；space 管理委托 `SpaceManager`。这些是控制算子的直接委托，不属于 API 自行实现业务逻辑。
+
+19. **允许的 API 协调例外**：`delete_space` 可以在鉴权后先调用 `MemoryEngine.purge_space` 清理记忆，再调用 `SpaceManager.delete` 清理 space 元数据；该方法只负责跨控制算子的事务顺序和结果汇总，不得实现 purge、索引删除或存储遍历本身。
+
+20. **业务逻辑下沉可验证**：新增数据面语义时，API 侧只增加契约校验/参数装配/授权映射，具体行为必须在 `MemoryEngine` 或对应 Control/Construction/Retrieval 算子中实现。API 单测应使用 spy/mock 验证委托，Control 单测应覆盖真实行为，禁止只在 API 单测中覆盖业务分支。
 
 
 ## 接口契约
@@ -230,6 +238,31 @@ Pre-flight WRITE 鉴权，不落盘。用于长耗时摄入任务入队前拒绝
 #### search
 
 **状态：已实现**（下列签名为当前代码）。层级过滤 / 展开 / rollup 为已设计增量，见本节末。
+#### 薄封装职责
+
+API 方法的实现顺序应保持为：
+
+```text
+transport input
+  → 类型/形状校验与兼容归一化
+  → 构造 PermissionContext / 内部请求对象
+  → PermissionManager.check + 审计
+  → 委托 Control 算子
+  → 结果适配与审计
+```
+
+API 可以复制可变参数、规范化过滤表达式、把 `Context` 拆为 `scope` 和 `RetrievalQuery`，也可以将授权路由值合并为系统过滤条件；这些属于边界适配和安全约束，不属于检索或写入算法。
+
+API 不得在上述流程中自行执行以下逻辑：
+
+- 记忆抽取、分类、去重、巩固和索引构建；
+- 检索通道选择、召回、融合、重排和披露预算计算；
+- MemoryUnit 版本、生命周期或 Storage CRUD；
+- 后台任务拆分、并发策略、重试和调度实现。
+
+管理面直接委托 `PolicyManager`、`PermissionManager`、`SpaceManager` 等 Control 算子是允许的；API 仍只承担鉴权、参数装配、调用顺序和结果适配。
+
+### search
 
 ```python
 def search(
@@ -291,7 +324,9 @@ def list(
 `memory_type/pipeline/tags/metadata` 权限上下文并逐条二次鉴权，避免未传过滤条件时落入
 宽松 fallback，也避免权限上下文与内容来自两次分页读取。
 
-`extensions` 为 `dict[str, str]`，API 防御性复制并把值规范为字符串；未知 key 原样透传。
+`extensions` 为 `dict[str, Any]`，API 只复制外层字典并原样透传值；内核不得隐式调用
+`str()`。只有明确声明需要落盘或跨进程传输的扩展，才由对应边界 adapter 使用显式 codec
+序列化；未知 key 原样透传。
 `filters` 与 search 共用 FilterExpr/旧 list/dict DSL 规范化语义，`memory_types` 与 filters
 取 AND。`org/space/user/agent/session` 属于 Scope 隔离轴，不得出现在 filters。
 

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-08-24 |
+| 最近一次修订日期 | 2026-08-25 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
 
@@ -37,7 +37,10 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 ## 不变量
 
 1. **落盘由本层负责**：接入层产出 MemoryUnit 后，记忆本体的写入由本层完成——统一经 `IndexBuilder`，由其内部调用 Storage。
-2. **索引是可重建派生**：索引全部可从真源重建，IndexBuilder.rebuild() 是非破坏式保障。例外：实体反向索引路（EntityIndexBuilder）`rebuild()` 当前是 no-op——entity 索引不支持从 KVStore 全量重建，需重建时靠定期清理 + 重新写入累积（已知缺口，见 [F06](../features/retrieval/F06-entity-recall-channel.md)）。
+2. **索引是可重建派生（目标契约）**：索引应全部从真源重建，`IndexBuilder.rebuild()` 应提供
+   非破坏式恢复保障。当前实现中的 Forward/Fulltext/Vector/Hybrid/Unified/Entity Builder
+   `rebuild()` 均为 no-op，不能据此宣称已具备“删索引不丢数据”的恢复能力；该缺口需要按本
+   spec 的目标契约补齐，而不是将 Entity 视为唯一例外。
 3. **provenance 回指来源**：派生记忆单元的 `provenance` 字段记录由哪些 unit 演进而来。
 4. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
 5. **所有算子必须实现 `operator_type()` 和 `health()`**：继承自 `ConstructionOperator`。
@@ -214,7 +217,7 @@ Extractor。
 | `build` | `(units, *, mode: IndexWriteMode = ALL) -> None` | 建立已启用的各形式索引；`RETRIEVAL_ONLY` 表示记忆本体已存在、只补建检索索引，`FORWARD_ONLY` 表示只交付本体 |
 | `update` | `(units, *, mode: IndexWriteMode = ALL) -> None` | 更新各形式索引；`FORWARD_ONLY` 表示只回写记忆本体、检索索引不动，`RETRIEVAL_ONLY` 表示只刷新检索索引 |
 | `remove` | `(units, *, mode: IndexRemoveMode = HARD) -> None` | 按每个 MemoryUnit 自带 Scope 删除索引（幂等）；`SOFT` 为软删除——只移出检索索引（search/recall 不再召回），记忆本体保留、get/list 仍可读；`HARD` 物理删除本体与全部索引 |
-| `rebuild` | `() -> None` | 从记忆本体全量重建派生索引（删索引不丢数据的保障）；重建时也重新投影 hierarchy metadata |
+| `rebuild` | `() -> None` | **目标契约**：从记忆本体全量重建派生索引（删索引不丢数据的保障）；重建时也重新投影 hierarchy metadata。当前实现尚未提供该能力。 |
 
 写接口枚举 `IndexWriteMode`（`ALL` / `FORWARD_ONLY` / `RETRIEVAL_ONLY`）表达写入范围，
 删除接口枚举 `IndexRemoveMode`（`SOFT` / `HARD`）表达删除语义，均归口
