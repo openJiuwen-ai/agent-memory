@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Context, Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.construction.base import OperatorType
@@ -112,7 +113,7 @@ def test_engine_write_uses_pipeline_profile_from_memory_type() -> None:
     kernel.api.add(
         "use pytest for this repo",
         scope,
-        identity=scope,
+        security=legacy_request_context(scope),
         system_metadata={"memory_type": "coding"},
     )
 
@@ -127,7 +128,7 @@ def test_engine_recall_uses_pipeline_profile_from_context_extensions() -> None:
     result = kernel.api.search(
         "test strategy",
         Context(scope=scope, extensions={"memory_type": "coding"}),
-        identity=scope,
+        security=legacy_request_context(scope),
     )
 
     assert [item.unit_id for item in result.items] == ["coding"]
@@ -140,7 +141,7 @@ def test_engine_recall_uses_pipeline_profile_from_system_metadata_filter() -> No
     result = kernel.api.search(
         "test strategy",
         Context(scope=scope),
-        identity=scope,
+        security=legacy_request_context(scope),
         filters={"system_metadata.memory_type": "coding"},
     )
 
@@ -154,7 +155,7 @@ def test_engine_recall_canonicalizes_legacy_memory_type_filter_name() -> None:
     result = kernel.api.search(
         "test strategy",
         Context(scope=scope),
-        identity=scope,
+        security=legacy_request_context(scope),
         filters={"memory_type": "coding"},
     )
 

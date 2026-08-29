@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-06-23 |
-| 影响范围 | src/api, src/control, src/retrieval, src/construction, src/storage, src/ingest, src/common, docs/specs/ |
+| 影响范围 | jiuwen_memory/api, jiuwen_memory/control, jiuwen_memory/retrieval, jiuwen_memory/construction, jiuwen_memory/storage, jiuwen_memory/ingest, jiuwen_memory/common, docs/specs/ |
 | 测试基线 | 基于现有代码接口设计完成规约编写 |
 | Refs | — |
 
@@ -24,13 +24,13 @@
 ### 规约覆盖范围
 
 每层一个 spec 文档，覆盖：
-- **S01** — 接入层（src/ingest/）：Source、Ingestor、规约投影
-- **S02** — 记忆接口层（src/api/）：MemoryAPI 统一对外接口、鉴权执行点
-- **S03** — 控制层（src/control/）：已有，本次仅更新元信息
-- **S04** — 检索层（src/retrieval/）：QueryParser、Recaller、Fuser、Discloser、Retriever
-- **S05** — 构建层（src/construction/）：Extractor、Abstractor、Associator、Classifier、IndexBuilder、Evolver
-- **S06** — 存储层（src/storage/）：KVStore、FulltextStore、VectorStore、GraphStore、FusionStore、FSStore
-- **S07** — 公共组件层（src/common/）：Embedder、Chunker、Tokenizer、Normalizer、FeatureExtractor、LLM、Reranker、AuditLogger + 核心数据类型
+- **S01** — 接入层（jiuwen_memory/ingest/）：Source、Ingestor、规约投影
+- **S02** — 记忆接口层（jiuwen_memory/api/）：MemoryAPI 统一对外接口、鉴权执行点
+- **S03** — 控制层（jiuwen_memory/control/）：已有，本次仅更新元信息
+- **S04** — 检索层（jiuwen_memory/retrieval/）：QueryParser、Recaller、Fuser、Discloser、Retriever
+- **S05** — 构建层（jiuwen_memory/construction/）：Extractor、Abstractor、Associator、Classifier、IndexBuilder、Evolver
+- **S06** — 存储层（jiuwen_memory/storage/）：KVStore、FulltextStore、VectorStore、GraphStore、FusionStore、FSStore
+- **S07** — 公共组件层（jiuwen_memory/common/）：Embedder、Chunker、Tokenizer、Normalizer、FeatureExtractor、LLM、Reranker、AuditLogger + 核心数据类型
 
 ### 文档结构
 
@@ -75,7 +75,7 @@
 ### 与代码实现对齐
 
 所有 spec 严格对齐当前代码：
-- 接口签名与 src/ 下实际方法一致
+- 接口签名与 jiuwen_memory/ 下实际方法一致
 - 数据结构与 common/type_def/ 一致
 - 枚举与 **/types.py 一致
 - 当前实现列举实际存在的 *_impl/ 文件
@@ -118,7 +118,7 @@
 
 ### 一致性检查
 
-- [x] 接口签名与 src/ 下实际代码一致（逐方法核对）
+- [x] 接口签名与 jiuwen_memory/ 下实际代码一致（逐方法核对）
 - [x] 数据结构与 `common/type_def/` 一致
 - [x] 枚举与 `**/types.py` 一致
 - [x] 实现注册机制与 `*_impl/` 目录结构一致

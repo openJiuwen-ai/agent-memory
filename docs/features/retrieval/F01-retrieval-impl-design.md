@@ -1,11 +1,11 @@
-# F01 — 检索层实现规约（src/retrieval/*_impl）
+# F01 — 检索层实现规约（jiuwen_memory/retrieval/*_impl）
 
 ## 元信息
 
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-06-24 |
-| 影响范围 | src/retrieval/{query_parser,recaller,fuser,discloser,retriever}_impl/，docs/specs/S04-retrieval.md |
+| 影响范围 | jiuwen_memory/retrieval/{query_parser,recaller,fuser,discloser,retriever}_impl/，docs/specs/S04-retrieval.md |
 | 测试基线 | `pytest tests/unit/retrieval tests/integration/retrieval` 全绿（exit 0；真实后端未连通时按约定 skip） |
 | Refs | —（如有 issue 补 `Refs: #<n>`） |
 

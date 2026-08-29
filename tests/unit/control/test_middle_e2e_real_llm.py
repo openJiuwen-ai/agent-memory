@@ -43,6 +43,8 @@ import os
 import pytest
 from dotenv import load_dotenv
 
+from jiuwen_memory.common.security.legacy import legacy_request_context
+
 # 模块导入时加载项目根 .env——把 .env 内的 OPENAI_API_KEY 等塞进 os.environ。
 # .env 在 .gitignore 内已忽略，不会误提交；缺失也不报错（仅本次测试 skip）。
 load_dotenv()
@@ -187,12 +189,14 @@ def _list_via_thread(api, scope: Scope = SCOPE, *, identity: Scope = SCOPE):
     在已运行的事件循环里直接调会 RuntimeError。to_thread 推到独立线程，
     线程没事件循环，内部 asyncio.run 能跑。
     """
-    return asyncio.to_thread(api.list, scope, identity=identity)
+    return asyncio.to_thread(api.list, scope, security=legacy_request_context(identity))
 
 
 def _recall_via_thread(api, query: str, ctx: Context, *, identity: Scope = SCOPE, top_k: int = 30):
     """在 async 测试函数里调同步 api.search——同 _list_via_thread。"""
-    return asyncio.to_thread(api.search, query, ctx, identity=identity, top_k=top_k)
+    return asyncio.to_thread(
+        api.search, query, ctx, security=legacy_request_context(identity), top_k=top_k
+    )
 
 
 async def _recall_async(kernel, query: str, ctx: Context, *, top_k: int = 30):
@@ -236,7 +240,7 @@ def _sync_write_via_thread(
         api.add,
         content,
         SCOPE,
-        identity=identity,
+        security=legacy_request_context(identity),
         metadata=metadata,
     )
 
@@ -265,7 +269,7 @@ async def _async_write(
     return await api.add_async(
         content,
         SCOPE,
-        identity=identity,
+        security=legacy_request_context(identity),
         metadata=metadata,
     )
 

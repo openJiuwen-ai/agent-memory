@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-08-06 |
-| 影响范围 | `src/storage` 统一门面，以及 `src/construction`、`src/retrieval`、`src/control` 对存储层的依赖方式 |
+| 影响范围 | `jiuwen_memory/storage` 统一门面，以及 `jiuwen_memory/construction`、`jiuwen_memory/retrieval`、`jiuwen_memory/control` 对存储层的依赖方式 |
 | 测试基线 | Storage、Construction、Retrieval 与 Control 的目标单测通过；默认加密路径需要可写的本地密钥目录 |
 | Refs | —（如有 issue 补 `Refs: #<n>`） |
 

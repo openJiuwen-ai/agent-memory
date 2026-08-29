@@ -1,11 +1,11 @@
-# F01 — 存储层实现规约（src/storage/*_impl）
+# F01 — 存储层实现规约（jiuwen_memory/storage/*_impl）
 
 ## 元信息
 
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-06-24 |
-| 影响范围 | src/storage/{kv,vector,fulltext,fusion,graph,fs}_impl/，docs/specs/S06-storage.md（如有） |
+| 影响范围 | jiuwen_memory/storage/{kv,vector,fulltext,fusion,graph,fs}_impl/，docs/specs/S06-storage.md（如有） |
 | 测试基线 | `pytest tests/unit/storage tests/integration/storage` 全绿（真实后端 redis/milvus/es/nano-graphrag/postgres 未配置或不可达时按约定 skip；PostgreSQL 真库由 `AGENT_MEMORY_TEST_PG_DSN` 启用） |
 | Refs | —（如有 issue 补 `Refs: #<n>`） |
 

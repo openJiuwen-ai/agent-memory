@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Context
 from jiuwen_memory.config.config import Config
 
@@ -34,7 +35,7 @@ class EvalHarness:
             units = self._api.add(
                 seed.content,
                 seed.scope,
-                identity=seed.scope,
+                security=legacy_request_context(seed.scope),
                 tags=list(seed.tags),
                 metadata=dict(seed.metadata),
                 occurred_at=seed.occurred_at,
@@ -46,7 +47,7 @@ class EvalHarness:
         result = self._api.search(
             case.text,
             Context(case.scope),
-            identity=case.scope,
+            security=legacy_request_context(case.scope),
             filters=list(case.filters) or None,
             as_of=case.as_of,
             top_k=case.top_k,

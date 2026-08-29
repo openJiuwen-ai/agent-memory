@@ -14,6 +14,7 @@ from jiuwen_memory.api.memory_api_impl import assembly, build_kernel
 from jiuwen_memory.common.audit.base import AuditProducer
 from jiuwen_memory.common.errors import BackendError, PermissionDeniedError, ValidationError
 from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.security.security_impl.local_envelope_security_provider import (
     LocalEnvelopeSecurityProvider,
 )
@@ -74,17 +75,19 @@ def _build_deny(config) -> _DenyAllPermission:
 def test_default_assembly_allows_write() -> None:
     """无 config：内置默认 owner-only sqlite ACL，owner 写入放行、可召回。"""
     api = assemble()
-    units = api.add("hello", SCOPE, identity=SCOPE)
-    assert units and api.search("hello", Context(SCOPE), identity=SCOPE).items
+    units = api.add("hello", SCOPE, security=legacy_request_context(SCOPE))
+    assert units and api.search(
+        "hello", Context(SCOPE), security=legacy_request_context(SCOPE)
+    ).items
 
 
 def test_default_audit_config_uses_in_memory_sqlite() -> None:
     audit_config = default_config_dict()["audit"]["default"]
     api = assemble()
-    api.add("audit default smoke", SCOPE, identity=SCOPE)
+    api.add("audit default smoke", SCOPE, security=legacy_request_context(SCOPE))
 
     assert audit_config == {"target": "sqlite", "params": {"db_path": ":memory:"}}
-    events = api.audit({"action": "add"}, identity=Scope())
+    events = api.audit({"action": "add"}, security=legacy_request_context(Scope()))
     assert any(event.action == "add" for event in events)
 
 
@@ -112,7 +115,7 @@ def test_config_overrides_control_operator() -> None:
     cfg = Config.from_dict({"permission": {"default": "deny_all_test"}})
     api = assemble(config=cfg)
     with pytest.raises(PermissionDeniedError):
-        api.add("hello", SCOPE, identity=SCOPE)
+        api.add("hello", SCOPE, security=legacy_request_context(SCOPE))
 
 
 def test_unknown_operator_target_raises() -> None:

@@ -29,6 +29,7 @@ from typing import Any
 
 from openjiuwen.core.memory.external.provider import MemoryProvider
 
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX
 from jiuwen_memory.common.type_def.memory_codec import loads
 
@@ -670,7 +671,7 @@ class _InProcessClient(_AgentMemoryClient):
 
         units = await self._api.add_async(
             content, api_scope,
-            source=Modality.TEXT, identity=api_scope,
+            source=Modality.TEXT, security=legacy_request_context(api_scope),
             tags=tags,
             system_metadata=system_metadata,
             user_metadata=user_metadata,
@@ -689,7 +690,7 @@ class _InProcessClient(_AgentMemoryClient):
             self._api.search,
             query,
             Context(scope=api_scope),
-            identity=api_scope,
+            security=legacy_request_context(api_scope),
             filters=filters,
             top_k=top_k,
             disclosure=DisclosureLevel.L2,
@@ -721,7 +722,11 @@ class _InProcessClient(_AgentMemoryClient):
 
         # evolve 是同步+asyncio.run，必须 to_thread
         await asyncio.to_thread(
-            self._api.evolve, api_scope, EvolveMode.EXTRACT, Channel.BACKGROUND, identity=api_scope
+            self._api.evolve,
+            api_scope,
+            EvolveMode.EXTRACT,
+            Channel.BACKGROUND,
+            security=legacy_request_context(api_scope),
         )
 
     async def close(self) -> None:

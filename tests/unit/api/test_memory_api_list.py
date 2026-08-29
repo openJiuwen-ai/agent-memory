@@ -4,6 +4,7 @@ import pytest
 
 from jiuwen_memory.api.memory_api_impl import build_kernel
 from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterOp,
@@ -45,25 +46,25 @@ def test_memory_api_list_supports_pagination_and_memory_type_filter() -> None:
     episodic = api.add(
         "alice joined the sprint planning",
         scope,
-        identity=scope,
+        security=legacy_request_context(scope),
         system_metadata={"memory_type": "episodic"},
     )[0]
     coding = api.add(
         "repo uses pytest for unit tests",
         scope,
-        identity=scope,
+        security=legacy_request_context(scope),
         system_metadata={"memory_type": "coding"},
     )[0]
     semantic = api.add(
         "alice prefers concise summaries",
         scope,
-        identity=scope,
+        security=legacy_request_context(scope),
         system_metadata={"memory_type": "semantic"},
     )[0]
 
-    coding_result = api.list(scope, identity=scope, memory_types=["coding"])
-    all_result = api.list(scope, identity=scope)
-    second_page = api.list(scope, identity=scope, offset=1, limit=1)
+    coding_result = api.list(scope, security=legacy_request_context(scope), memory_types=["coding"])
+    all_result = api.list(scope, security=legacy_request_context(scope))
+    second_page = api.list(scope, security=legacy_request_context(scope), offset=1, limit=1)
 
     assert [unit.id for unit in coding_result.items] == [coding.id]
     assert coding_result.count == 1
@@ -79,7 +80,7 @@ def test_memory_api_list_is_scope_bound_and_ignores_message_prefix_records() -> 
     owner = Scope(org="acme", user="owner")
     other = Scope(org="acme", user="other")
 
-    visible = api.add("visible indexed memory", owner, identity=owner)[0]
+    visible = api.add("visible indexed memory", owner, security=legacy_request_context(owner))[0]
     hidden = MemoryUnit(
         id="raw-message",
         scope=owner,
@@ -87,9 +88,9 @@ def test_memory_api_list_is_scope_bound_and_ignores_message_prefix_records() -> 
         temporal=Temporal(t_ingest=visible.temporal.t_ingest),
     )
     kernel.kv.insert(owner, messages_key(hidden.id), dumps(hidden))
-    api.add("other tenant memory", other, identity=other)
+    api.add("other tenant memory", other, security=legacy_request_context(other))
 
-    listed = api.list(owner, identity=owner)
+    listed = api.list(owner, security=legacy_request_context(owner))
 
     assert [unit.id for unit in listed.items] == [visible.id]
     assert listed.count == 1
@@ -102,28 +103,28 @@ def test_memory_api_list_filters_before_pagination_and_preserves_total_count() -
     first = api.add(
         "first alpha memory",
         scope,
-        identity=scope,
+        security=legacy_request_context(scope),
         system_metadata={"memory_type": "coding"},
         user_metadata={"project": "alpha", "priority": 1},
     )[0]
     second = api.add(
         "second alpha memory",
         scope,
-        identity=scope,
+        security=legacy_request_context(scope),
         system_metadata={"memory_type": "coding"},
         user_metadata={"project": "alpha", "priority": 2},
     )[0]
     api.add(
         "beta memory",
         scope,
-        identity=scope,
+        security=legacy_request_context(scope),
         system_metadata={"memory_type": "coding"},
         user_metadata={"project": "beta", "priority": 3},
     )
 
     result = api.list(
         scope,
-        identity=scope,
+        security=legacy_request_context(scope),
         offset=1,
         limit=1,
         memory_types=["coding"],
@@ -147,7 +148,7 @@ def test_memory_api_list_copies_extensions_and_forwards_normalized_filters() -> 
     api.add(
         "alpha memory",
         scope,
-        identity=scope,
+        security=legacy_request_context(scope),
         user_metadata={"project": "alpha"},
     )
     extensions = {"vendor_mode": 7}
@@ -163,7 +164,7 @@ def test_memory_api_list_copies_extensions_and_forwards_normalized_filters() -> 
 
     result = api.list(
         scope,
-        identity=scope,
+        security=legacy_request_context(scope),
         extensions=extensions,
         filters=filters,
     )
@@ -181,9 +182,9 @@ def test_memory_api_list_rejects_invalid_extensions_and_scope_filter() -> None:
     scope = Scope(org="acme", user="owner")
 
     with pytest.raises(ValidationError):
-        api.list(scope, identity=scope, extensions=["invalid"])
+        api.list(scope, security=legacy_request_context(scope), extensions=["invalid"])
     with pytest.raises(ValidationError):
-        api.list(scope, identity=scope, filters={"space": "other"})
+        api.list(scope, security=legacy_request_context(scope), filters={"space": "other"})
 
 
 def test_memory_api_list_validates_pagination() -> None:
@@ -191,9 +192,9 @@ def test_memory_api_list_validates_pagination() -> None:
     scope = Scope(org="acme", user="owner")
 
     with pytest.raises(ValidationError):
-        api.list(scope, identity=scope, offset=-1)
+        api.list(scope, security=legacy_request_context(scope), offset=-1)
     with pytest.raises(ValidationError):
-        api.list(scope, identity=scope, limit=0)
+        api.list(scope, security=legacy_request_context(scope), limit=0)
 
 
 def test_memory_api_list_permission_routes_by_memory_type() -> None:
@@ -201,11 +202,13 @@ def test_memory_api_list_permission_routes_by_memory_type() -> None:
     owner = Scope(org="acme", user="owner")
     reader = Scope(org="acme", user="reader")
 
-    api.list(owner, identity=reader, memory_types=["episodic"])
+    api.list(owner, security=legacy_request_context(reader), memory_types=["episodic"])
     with pytest.raises(PermissionDeniedError):
-        api.list(owner, identity=reader, memory_types=["coding"])
+        api.list(owner, security=legacy_request_context(reader), memory_types=["coding"])
     with pytest.raises(PermissionDeniedError):
-        api.list(owner, identity=reader, memory_types=["episodic", "coding"])
+        api.list(
+            owner, security=legacy_request_context(reader), memory_types=["episodic", "coding"]
+        )
 
 
 def test_memory_api_unfiltered_list_uses_strict_fallback() -> None:
@@ -215,12 +218,12 @@ def test_memory_api_unfiltered_list_uses_strict_fallback() -> None:
     api.add(
         "private coding memory",
         owner,
-        identity=owner,
+        security=legacy_request_context(owner),
         system_metadata={"memory_type": "coding"},
     )
 
     with pytest.raises(PermissionDeniedError):
-        api.list(owner, identity=reader)
+        api.list(owner, security=legacy_request_context(reader))
 
 
 def test_memory_api_list_binds_extension_permission_route_to_filter() -> None:
@@ -230,19 +233,19 @@ def test_memory_api_list_binds_extension_permission_route_to_filter() -> None:
     episodic = api.add(
         "shareable episodic memory",
         owner,
-        identity=owner,
+        security=legacy_request_context(owner),
         system_metadata={"memory_type": "episodic"},
     )[0]
     api.add(
         "private coding memory",
         owner,
-        identity=owner,
+        security=legacy_request_context(owner),
         system_metadata={"memory_type": "coding"},
     )
 
     result = api.list(
         owner,
-        identity=reader,
+        security=legacy_request_context(reader),
         extensions={"memory_type": "episodic"},
     )
 

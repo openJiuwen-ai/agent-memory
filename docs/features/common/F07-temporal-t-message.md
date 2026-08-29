@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-08-10 |
-| 影响范围 | `src/common/type_def/memory.py`、`src/common/type_def/memory_codec.py`、`src/common/type_def/memory_filter.py`、`src/ingest/ingestor_impl/simple_ingestor.py`、`src/construction/extractor_impl/keyword_extractor.py`、`src/construction/extractor_impl/llm_extractor.py`、`src/construction/extractor_impl/dynamic_llm_extractor.py`、`src/construction/abstractor_impl/llm_abstractor.py`、`src/retrieval/retriever_impl/predicate_builder.py`、`src/retrieval/retriever_impl/unit_reader.py` |
+| 影响范围 | `jiuwen_memory/common/type_def/memory.py`、`jiuwen_memory/common/type_def/memory_codec.py`、`jiuwen_memory/common/type_def/memory_filter.py`、`jiuwen_memory/ingest/ingestor_impl/simple_ingestor.py`、`jiuwen_memory/construction/extractor_impl/keyword_extractor.py`、`jiuwen_memory/construction/extractor_impl/llm_extractor.py`、`jiuwen_memory/construction/extractor_impl/dynamic_llm_extractor.py`、`jiuwen_memory/construction/abstractor_impl/llm_abstractor.py`、`jiuwen_memory/retrieval/retriever_impl/predicate_builder.py`、`jiuwen_memory/retrieval/retriever_impl/unit_reader.py` |
 | 测试基线 | 见"验证" |
 | Refs | — |
 
@@ -69,7 +69,7 @@ consolidate 合并多 source 时会有多个消息时间。合并后的摘要 un
 
 ### 5. 编解码兼容
 
-`memory_codec.py` 的 temporal 数组从 4 元素扩展到 5 元素（加 `t_message`）。按 codec 自身版本策略（[memory_codec.py:31-33](file:///d:/Codes/0725_1_agentmemory/agent-memory/src/common/type_def/memory_codec.py#L31-L33)），「加字段」属于兼容演进，**不升 `_v`**——`loads` 对老数据（4 元素 temporal 数组）缺省补 `t_message=None` 即可。升版本留给"改字段含义/结构"的破坏性变更。
+`memory_codec.py` 的 temporal 数组从 4 元素扩展到 5 元素（加 `t_message`）。按 codec 自身版本策略（[memory_codec.py:31-33](file:///d:/Codes/0725_1_agentmemory/agent-memory/jiuwen_memory/common/type_def/memory_codec.py#L31-L33)），「加字段」属于兼容演进，**不升 `_v`**——`loads` 对老数据（4 元素 temporal 数组）缺省补 `t_message=None` 即可。升版本留给"改字段含义/结构"的破坏性变更。
 
 ### 6. t_event 语义净化的老数据兼容
 

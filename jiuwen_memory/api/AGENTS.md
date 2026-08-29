@@ -6,7 +6,7 @@
 >
 > **文档分工**：`docs/design/architecture.md` §6 = 已实现接口清单；本目录 = 已实现代码；S02 = 详细用法与方法总览（含尚未实现标注）；`docs/features/api/`（F01–F04）= 特性决策。尚未实现接口上库后须同步 S02 与 §6。
 
-统一对外 Core API，所有接入形态（SDK/CLI/MCP/HTTP）最终映射到 `MemoryAPI`。本层是控制层的薄封装：做参数装配与鉴权，编排逻辑全部在 `src/control`。
+统一对外 Core API，所有接入形态（SDK/CLI/MCP/HTTP）最终映射到 `MemoryAPI`。本层是控制层的薄封装：做参数装配与鉴权，编排逻辑全部在 `jiuwen_memory/control`。
 
 ## 模块地图
 
@@ -26,11 +26,11 @@
 1. **本层不做编排**  
    `MemoryAPI` 只做三件事：鉴权（PEP）、参数装配、委托。编排逻辑（add 路径、search/list 路径、evolve 调度）全部在 `control/MemoryEngine`，禁止在本层堆业务逻辑。
 
-2. **identity 不下沉**  
-   鉴权通过后只透传已鉴权的 target `scope`，`identity` 参数不传入控制层/检索层/构建层/存储层。
+2. **调用方身份不下沉**
+   身份取自 `security.auth.actor`；鉴权通过后只透传已鉴权的 target `scope`，`security` 及其中的 actor 不传入控制层/检索层/构建层/存储层。
 
 3. **search 参数拆分在本层边界**
-   `search(query, context, *, identity, ...)` 中的 `context: Context` 在本层拆开：
+   `search(query, context, *, security, ...)` 中的 `context: Context` 在本层拆开：
    - `context.scope` 作独立轴穿透到 Engine
    - `context.extensions["max_tokens"]` 由 API 边界解析为 `RetrievalQuery.max_tokens`
    - 其余 `context.extensions` 写入 `RetrievalQuery.extensions`
@@ -60,7 +60,8 @@
 ## PEP 鉴权流程
 
 ```
-MemoryAPI.method(scope=target, identity=caller)
+MemoryAPI.method(scope=target, security=RequestSecurityContext)
+  → identity = security.auth.actor（actor 只能来自这里，不来自业务 payload）
   → 构造 PermissionContext（add/search/list 请求条件来自入参；list 实际 unit 与 get/update/delete 来自 Engine 真源元数据）
   → PermissionManager.check(actor=identity, target=scope, action=<对应动作>, context=...)
     → 通过 → 委托 Engine/Governor/PolicyManager（仅传 scope，不传 identity）
@@ -85,13 +86,14 @@ MemoryAPI.method(scope=target, identity=caller)
 
 ## 本地约束
 
-1. `identity` 为必填 keyword-only 参数，与 `scope` 同为 Scope 类型，强制具名传入防止位置传反。
-2. 所有数据面方法（add/batch_add/search/list/get/update/delete/evolve）都需要鉴权，治理面（inspect/trace/audit）也需要鉴权。
-3. 装配由 `assembly.build_kernel(config)` 完成，经各 Producer 的 `dep/build_named/build` 组装；
+1. `security` 为必填参数，类型 `common.security.types.RequestSecurityContext`；只能来自 `auth_middleware.authenticated()` 或 `request_context.internal_context()`（过渡期另有 `legacy_request_context()`，实装 PR 删除）。除 `check_write(scope, security, *, ...)` 为兼容旧第二位置参数外，其余公开方法均要求 keyword-only。
+2. 授权面（`grant`/`revoke`）的公共类型是 `common.security.types.Grant`/`Action`；`control.types` 只兼容再导出同一对象，不得定义第二套类型或结构转换。`Grant` 必须兼容旧 `grantor`/`grantee`/`actions` 构造形状，`grant_id` 构造时默认留空，actions 在值对象边界冻结并校验。目标形态下 `grant_id` 服务端生成、`revoke` 按 ID 精确定位；接口先行过渡期撤销语义不变，安全域独有动作在委托旧 `PermissionManager` 前 fail-closed。
+3. 所有数据面方法（add/batch_add/search/list/get/update/delete/evolve）都需要鉴权，治理面（inspect/trace/audit）也需要鉴权。
+4. 装配由 `assembly.build_kernel(config)` 完成，经各 Producer 的 `dep/build_named/build` 组装；
    `Kernel.storage` 与 Retriever 引用同一个 `storage.default` 实例。顺序铁律：
    ConfigSource → `kv_store.default`（非已加密则外包 `EncryptedKVStore`）→ `storage.default`
    （composite 再 dep 各 Store）。`RoutingKVStore` 须作为 raw 落在加密层内；同实现换 Redis
    用 `kv_store.url` 晚绑定，不要为换 URL 预装多套 Routing 槽位（F01 §2.1.5 / S08）。
-4. 实现类（LocalMemoryAPI）不对外暴露，外部只依赖 `MemoryAPI` 抽象接口。
-5. `job_status` 统一查询 Scheduler 和长耗时 Ingest 任务；Ingest 任务必须显式传入
+5. 实现类（LocalMemoryAPI）不对外暴露，外部只依赖 `MemoryAPI` 抽象接口。
+6. `job_status` 统一查询 Scheduler 和长耗时 Ingest 任务；Ingest 任务必须显式传入
    target `scope`，由 API 对任务真实 Scope 执行 READ 鉴权并记录审计。

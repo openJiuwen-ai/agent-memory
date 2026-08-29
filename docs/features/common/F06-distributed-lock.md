@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-08-03 |
-| 影响范围 | `src/common/lock/`（新增）、`src/common/_support.py`（接收从 storage 下沉的公共件）、`src/common/bootstrap.py`、`src/common/AGENTS.md`、`src/storage/_support.py`（改为再导出）、`examples/config_template.yml`、`docs/specs/S07-common.md` |
+| 影响范围 | `jiuwen_memory/common/lock/`（新增）、`jiuwen_memory/common/_support.py`（接收从 storage 下沉的公共件）、`jiuwen_memory/common/bootstrap.py`、`jiuwen_memory/common/AGENTS.md`、`jiuwen_memory/storage/_support.py`（改为再导出）、`examples/config_template.yml`、`docs/specs/S07-common.md` |
 | 测试基线 | `tests/unit/common/test_distributed_lock.py` 37 passed；独立 `redis:7-alpine` 容器黑盒验证通过（跨实例互斥、TTL 后旧 token 不释放新锁、自动续期、失锁通知、PING），未新增真实 Redis 集成测试；全量 `tests/unit` 862 passed、9 failed、4 skipped（失败与跳过均因环境缺少 `cryptography` / `torch` / `psycopg_pool`，改动前后一致，与本特性无关）；`ruff check` 对本次改动文件全部通过 |
 | Refs | [S07-common.md](../../specs/S07-common.md)、[F04-security-interfaces-and-encryption.md](F04-security-interfaces-and-encryption.md)、[F05-model-service-ssl.md](F05-model-service-ssl.md) |
 
@@ -22,12 +22,12 @@
 
 ### 一、落位：`common/` 下的横切组件
 
-`src/common/AGENTS.md` 铁律 7 已确立横切组件的形态——`SecurityProvider` 与
+`jiuwen_memory/common/AGENTS.md` 铁律 7 已确立横切组件的形态——`SecurityProvider` 与
 `AuditLogger` 不继承 `Plugin`、不进入 `PluginType`，但仍用独立 Producer 加 `*_impl`
 自注册。锁是第三个同类组件，完全复用该形态。
 
 ```
-src/common/lock/
+jiuwen_memory/common/lock/
 ├── __init__.py                  再导出公开符号
 ├── lock.py                      LockProvider 契约 + LockProducer + 错误类型
 └── lock_impl/
@@ -169,7 +169,7 @@ docstring 与配置注释中显式标注。
 ### 七、从 storage 下沉的公共件
 
 `common` 不能反向依赖 `storage`，而 Redis 实现需要的四个工具目前都在
-`src/storage/_support.py`。按铁律 9 已确立的做法（SSL 公共件只实现一份，storage 与
+`jiuwen_memory/storage/_support.py`。按铁律 9 已确立的做法（SSL 公共件只实现一份，storage 与
 security 共同引用），把以下内容下沉到 `common/_support.py`，`storage/_support.py` 改为
 再导出：
 

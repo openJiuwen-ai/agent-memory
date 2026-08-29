@@ -1,15 +1,15 @@
-# F01 — 构建层实现规约（src/construction/*_impl）
+# F01 — 构建层实现规约（jiuwen_memory/construction/*_impl）
 
 ## 元信息
 
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-06-24 |
-| 影响范围 | src/construction/（七个算子 + 实现包）、docs/specs/S05-construction.md、src/construction/AGENTS.md |
+| 影响范围 | jiuwen_memory/construction/（七个算子 + 实现包）、docs/specs/S05-construction.md、jiuwen_memory/construction/AGENTS.md |
 | 测试基线 | tests/unit/construction/（82 passed，含 test_evolver_dedup.py / test_extractor.py）、examples/demo_classifier.py、examples/quickstart*.py 端到端跑通 |
 | Refs | — |
 
-> 本文是构建层的特性文档（features）——记来龙去脉与决策取舍 + 各算子实现的落地规约。接口契约见 [`docs/specs/S05-construction.md`](../../specs/S05-construction.md)；当前实现地图见 [`src/construction/AGENTS.md`](../../../src/construction/AGENTS.md)。
+> 本文是构建层的特性文档（features）——记来龙去脉与决策取舍 + 各算子实现的落地规约。接口契约见 [`docs/specs/S05-construction.md`](../../specs/S05-construction.md)；当前实现地图见 [`jiuwen_memory/construction/AGENTS.md`](../../../jiuwen_memory/construction/AGENTS.md)。
 
 ## 背景
 

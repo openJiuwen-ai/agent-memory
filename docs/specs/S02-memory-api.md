@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-08-28 |
+| 最近一次修订日期 | 2026-08-29 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/common/F01-memory-layer.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md |
 
 ## 文档分工
 
@@ -33,13 +33,13 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 
 **管什么**：
 - 统一对外 Core API（形态无关）：所有接入形态（SDK/CLI/Skill/MCP/HTTP·gRPC）最终映射到 `MemoryAPI`
-- 鉴权执行点（PEP）：调用 `PermissionManager.check(identity, scope, action)` 做入口鉴权
+- 鉴权执行点（PEP）：从请求安全上下文取 actor，调用 `PermissionManager.check(identity, scope, action)` 做入口鉴权
 - 入口审计：写审计事件到 `AuditLogger`
 - 参数装配：将调用侧参数装配为控制层可消费的内部结构
 - 同步/异步桥接：为同步形态桥接引擎异步协程
 
 **不管什么**：
-- 不做编排逻辑（全部委托 `src/control`）
+- 不做编排逻辑（全部委托 `jiuwen_memory/control`）
 - 不直接操作存储
 - 不调用 LLM / 构建 / 检索
 - 不做 admin 策略存储（直达 PolicyManager）
@@ -47,8 +47,8 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 ## 不变量
 
 1. **本层是薄封装 + PEP**：数据面委托 `MemoryEngine`，治理面委托 `Governor`，授权面委托 `PermissionManager`，调度面委托 `Scheduler`，策略面直达 `PolicyManager`。API 不实现跨层业务编排，真实处理逻辑由 control 层算子及其下游 construction/retrieval/storage 完成。
-2. **`identity` 不下沉**：鉴权通过后只透传已鉴权的 target `scope`，`identity` 不传入控制层。
-3. **`identity` 为必填 keyword-only 参数**：与 target `scope` 同为 `Scope` 类型，强制具名传入防止位置传反。
+2. **调用方身份不下沉**：鉴权通过后只透传已鉴权的 target `scope`，`security` 及其中的 actor 不传入控制层。
+3. **`security` 为必填安全输入**：类型为 `common.security.types.RequestSecurityContext`，由接入层的 `authenticated()` 产出，调用方不得自行拼装；actor 从 `security.auth.actor` 取。除 `check_write` 为兼容原第二位置参数而保留 `(scope, security, *, ...)` 外，其余方法均为 keyword-only。
 4. **search 参数拆分**：`context: Context` 在本层边界拆开——`context.scope` 作独立轴穿透，`context.extensions` 写入调用级 options；约定 key `context.extensions["max_tokens"]` 由 API 边界解析为 int 后写入 `RetrievalQuery.max_tokens`，并从透传 extensions 中移除；`Context` 对象本身不进控制层。
 5. **admin 不经 Engine**：admin_get/set/all 直达 PolicyManager。
 6. **管理面闸门 = 根 scope**：无具体 target scope 的方法（admin_*、全局 audit）以根 scope `Scope()` 为鉴权目标——「能对根 scope 行权」即管理员闸门；租户数据/治理方法仍按各自 target scope 鉴权。
@@ -62,17 +62,14 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 12. **list 按实际资源二次鉴权**：请求显式给出的 `memory_types` 先做类型级鉴权；Engine 再以当前分页实际命中的 MemoryUnit 真源元数据返回权限上下文，API 逐条 READ 鉴权，全部通过后才返回内容。参与权限路由的 extensions 值必须作为系统过滤条件回注。
 13. **list 过滤和计数在 KV 内完成**：API 复制 `extensions`、规范化 `filters` 后完整下推；返回 `MemoryListResult.items` 当前页和分页前精确 `count`，不以 `len(items)` 代替总数。
 14. **六类动态配置不走业务入参**：能力开关、prompt 全文、LLM/Embedder/Reranker 的 model/api_key/url、Store 连接或 `*.active` 等由 `ConfigSource.fetch` 提供（见 S08）；`add`/`search`/`evolve`/`list` 不得把上述值解释为配置写入。调用侧可传 prompt **key**、`memory_type`/pipeline 等业务选择子。
-15. **层级能力默认关闭（目标）**：普通 `add` 默认不建父树；只由显式 `evolve(..., mode=HIERARCHY, hierarchy_options=...)` 或启用的后台策略触发。显式层级请求在 `hierarchy.enabled=false` 时抛 `PolicyError`，不带层级参数的既有操作保持语义。
-16. **三类遍历严格分离（目标）**：`trace` 只沿 `provenance`；树下钻由 `search(..., expand_depth>0)` 沿 `HierarchyRef` 完成；`get(as_of)` 只沿 `supersedes`/valid-time；L0/L1/L2 仅表示同一 unit 的披露层。
-
-17. **API 与 Control 的职责边界**：API 只负责协议边界工作——输入形状和兼容参数校验、请求对象装配、`identity`/target `scope` 的 PEP 鉴权、权限路由过滤回注、入口审计以及同步/异步桥接。API 不得调用 LLM、Extractor、Classifier、IndexBuilder、Retriever 或 Store，也不得实现写入、去重、版本、生命周期、检索排序和后台任务编排。
-
-18. **委托对象按职责分流**：数据面 add/search/list/get/update/delete/evolve 委托 `MemoryEngine`；治理操作委托 `Governor`；任务状态和取消委托 `Scheduler`/`IngestJobController`；跨 scope 授权委托 `PermissionManager`；策略读写委托 `PolicyManager`；space 管理委托 `SpaceManager`。这些是控制算子的直接委托，不属于 API 自行实现业务逻辑。
-
-19. **允许的 API 协调例外**：`delete_space` 可以在鉴权后先调用 `MemoryEngine.purge_space` 清理记忆，再调用 `SpaceManager.delete` 清理 space 元数据；该方法只负责跨控制算子的事务顺序和结果汇总，不得实现 purge、索引删除或存储遍历本身。
-
-20. **业务逻辑下沉可验证**：新增数据面语义时，API 侧只增加契约校验/参数装配/授权映射，具体行为必须在 `MemoryEngine` 或对应 Control/Construction/Retrieval 算子中实现。API 单测应使用 spy/mock 验证委托，Control 单测应覆盖真实行为，禁止只在 API 单测中覆盖业务分支。
-
+15. **安全输入唯一且不可自造**：`security` 只能来自受控构造入口——接入形态经 `bootstrap.core.auth_middleware.authenticated()`，进程内直连经 `common.security.request_context.internal_context(authenticator)`。请求 payload 不得声明 actor / request_id / surface。过渡期 `common.security.legacy.legacy_request_context()` 是唯一例外（见 F05 §PR2），随实装 PR 一并删除。
+16. **授权面使用安全域授权类型**：`grant`/`revoke` 的公共类型是 `common.security.types.Grant` / `Action`；目标形态下 `grant_id` 由服务端生成、`revoke` 按 `grant_id` 精确定位。接口先行过渡期只固定签名，`GrantStore` 未实装前不生成 ID、不据 ID 判定，撤销语义与 `mem2.0` 一致（见 F05 §5.4）。
+17. **层级能力默认关闭（目标）**：普通 `add` 默认不建父树；只由显式 `evolve(..., mode=HIERARCHY, hierarchy_options=...)` 或启用的后台策略触发。显式层级请求在 `hierarchy.enabled=false` 时抛 `PolicyError`，不带层级参数的既有操作保持语义。
+18. **三类遍历严格分离（目标）**：`trace` 只沿 `provenance`；树下钻由 `search(..., expand_depth>0)` 沿 `HierarchyRef` 完成；`get(as_of)` 只沿 `supersedes`/valid-time；L0/L1/L2 仅表示同一 unit 的披露层。
+19. **API 与 Control 的职责边界**：API 只负责协议边界工作——输入形状和兼容参数校验、请求对象装配、`security.auth.actor`/target `scope` 的 PEP 鉴权、权限路由过滤回注、入口审计以及同步/异步桥接。API 不得调用 LLM、Extractor、Classifier、IndexBuilder、Retriever 或 Store，也不得实现写入、去重、版本、生命周期、检索排序和后台任务编排。
+20. **委托对象按职责分流**：数据面 add/search/list/get/update/delete/evolve 委托 `MemoryEngine`；治理操作委托 `Governor`；任务状态和取消委托 `Scheduler`/`IngestJobController`；跨 scope 授权在过渡期委托 `PermissionManager`，目标切到 `Authorizer` / `GrantStore`；策略读写委托 `PolicyManager`；space 管理委托 `SpaceManager`。这些是控制算子的直接委托，不属于 API 自行实现业务逻辑。
+21. **允许的 API 协调例外**：`delete_space` 可以在鉴权后先调用 `MemoryEngine.purge_space` 清理记忆，再调用 `SpaceManager.delete` 清理 space 元数据；该方法只负责跨控制算子的事务顺序和结果汇总，不得实现 purge、索引删除或存储遍历本身。
+22. **业务逻辑下沉可验证**：新增数据面语义时，API 侧只增加契约校验/参数装配/授权映射，具体行为必须在 `MemoryEngine` 或对应 Control/Construction/Retrieval 算子中实现。API 单测应使用 spy/mock 验证委托，Control 单测应覆盖真实行为，禁止只在 API 单测中覆盖业务分支。
 
 ## 接口契约
 
@@ -131,7 +128,7 @@ def add(
     scope: Scope,
     source: Modality = Modality.TEXT,
     *,
-    identity: Scope,
+    security: RequestSecurityContext,
     assets: list[str] | None = None,
     tags: list[str] | None = None,
     system_metadata: dict[str, MetadataValueType] | None = None,
@@ -188,7 +185,7 @@ async def add_async(...) -> list[MemoryUnit]: ...  # 签名同 add
 - **KV key 前缀分离**：真源 key 按「是否建索引」带前缀——`/memory/{id}`（建索引记忆）、`/messages/{id}`（未建索引 infer 原文）。前缀常量与 helper 在 `common.type_def.memory`/`raw`。详见 F02 决策6。
 - **engine.write infer=false 调 classify**：默认路径调 `classifier.classify` 给原文打 tier+tags（纯 LLM 抽取 episodic/semantic/procedural + tags）；infer=true 不经 classifier（extractor 产派生时自定）。详见 F02 决策9。
 - **`/v1/list` 收窄并上收为 API 契约**：handler `_list` 委托
-  `MemoryAPI.list(scope, identity=..., offset, limit, memory_types, extensions, filters)`；
+  `MemoryAPI.list(scope, security=..., offset, limit, memory_types, extensions, filters)`；
   `KVStore.list` 只查询 `/memory/` 记忆并返回当前页与分页前总数。详见 F02 决策10与
   F01 的 list 决策。
 
@@ -204,7 +201,7 @@ def batch_add(
     scope: Scope | None = None,
     source: Modality = Modality.TEXT,
     *,
-    identity: Scope,
+    security: RequestSecurityContext,
     tags: list[str] | None = None,
     system_metadata: dict[str, MetadataValueType] | None = None,
     user_metadata: dict[str, MetadataValueType] | None = None,
@@ -225,7 +222,7 @@ async def batch_add_async(...) -> BatchWriteResult: ...  # 签名同 batch_add
 ```python
 def check_write(
     scope: Scope,
-    identity: Scope,
+    security: RequestSecurityContext,
     *,
     tags: list[str] | None = None,
     system_metadata: dict[str, MetadataValueType] | None = None,
@@ -269,7 +266,7 @@ def search(
     query: str,
     context: Context,
     *,
-    identity: Scope,
+    security: RequestSecurityContext,
     filters: FilterExpr | list[FilterClause] | dict | None = None,
     as_of: datetime | None = None,
     top_k: int = 10,
@@ -306,7 +303,7 @@ rollup: bool = False
 def list(
     scope: Scope,
     *,
-    identity: Scope,
+    security: RequestSecurityContext,
     offset: int = 0,
     limit: int = 100,
     memory_types: list[str] | None = None,
@@ -339,7 +336,7 @@ def get(
     unit_id: str,
     scope: Scope,
     *,
-    identity: Scope,
+    security: RequestSecurityContext,
     as_of: datetime | None = None,
 ) -> MemoryUnit: ...
 ```
@@ -356,7 +353,7 @@ def update(
     scope: Scope,
     patch: MemoryPatch,
     *,
-    identity: Scope,
+    security: RequestSecurityContext,
 ) -> MemoryUnit: ...
 ```
 
@@ -382,7 +379,7 @@ hierarchy: HierarchyPatch | None = None
 **状态：已实现**
 
 ```python
-def delete(selector: DeleteSelector, *, identity: Scope) -> list[str]: ...
+def delete(selector: DeleteSelector, *, security: RequestSecurityContext) -> list[str]: ...
 ```
 
 删除/归档/降权：鉴权 DELETE→委托 Engine。按选择器删除，条件取「与」，至少一项：`unit_ids` / `scope` / `tags` / `before` / `mode`。返回命中 id。未给 `selector.scope` 时鉴权退到根 scope。
@@ -397,7 +394,7 @@ def evolve(
     mode: EvolveMode,
     channel: Channel = Channel.BACKGROUND,
     *,
-    identity: Scope,
+    security: RequestSecurityContext,
 ) -> str: ...
 ```
 
@@ -411,7 +408,7 @@ def evolve(
     mode: EvolveMode,
     channel: Channel = Channel.BACKGROUND,
     *,
-    identity: Scope,
+    security: RequestSecurityContext,
     hierarchy_options: HierarchyComposeOptions | None = None,
 ) -> str: ...
 ```
@@ -438,19 +435,19 @@ HIERARCHY 缺 options 或 options 违反 S05 的 span、role 序列、`replace_e
 def job_status(
     job_id: str,
     *,
-    identity: Scope,
+    security: RequestSecurityContext,
     scope: Scope | None = None,
 ) -> JobInfo: ...
 ```
 
-查询 Scheduler 或长耗时 Ingest 任务；Ingest 任务要求 target scope，API 对任务真实 Scope 执行 READ 鉴权与审计。先取任务（含其 scope），再据 identity 对该 scope 判权。`JobInfo`：`id` / `channel` / `mode` / `scope` / `status`（`PENDING`/`RUNNING`/`SUCCEEDED`/`FAILED`/`CANCELLED`）/ `detail`。
+查询 Scheduler 或长耗时 Ingest 任务；Ingest 任务要求 target scope，API 对任务真实 Scope 执行 READ 鉴权与审计。先取任务（含其 scope），再据 `security.auth.actor` 对该 scope 判权。`JobInfo`：`id` / `channel` / `mode` / `scope` / `status`（`PENDING`/`RUNNING`/`SUCCEEDED`/`FAILED`/`CANCELLED`）/ `detail`。
 
 #### job_cancel
 
 **状态：已实现**
 
 ```python
-def job_cancel(job_id: str, *, identity: Scope) -> None: ...
+def job_cancel(job_id: str, *, security: RequestSecurityContext) -> None: ...
 ```
 
 取消尚未完成的演进任务（幂等，委托 Scheduler）。按其任务 scope 鉴权 WRITE（与 evolve 触发一致）。
@@ -466,17 +463,21 @@ def job_cancel(job_id: str, *, identity: Scope) -> None: ...
 **状态：已实现**
 
 ```python
-def inspect(unit_ids: list[str], scope: Scope, *, identity: Scope) -> list[MemoryUnit]: ...
+def inspect(
+    unit_ids: list[str], scope: Scope, *, security: RequestSecurityContext
+) -> list[MemoryUnit]: ...
 ```
 
-检视完整内容与治理字段（含已失效版本）。`scope` 为目标范围，`identity` 为调用方身份，本层据二者鉴权 READ。
+检视完整内容与治理字段（含已失效版本）。`scope` 为目标范围，本层据 `security.auth.actor` 与目标范围鉴权 READ。
 
 #### trace
 
 **状态：已实现**
 
 ```python
-def trace(unit_id: str, scope: Scope, *, identity: Scope) -> list[MemoryUnit]: ...
+def trace(
+    unit_id: str, scope: Scope, *, security: RequestSecurityContext
+) -> list[MemoryUnit]: ...
 ```
 
 沿 provenance 追溯演进来源链（不沿层级树、不沿 `supersedes`）。
@@ -489,7 +490,7 @@ def trace(unit_id: str, scope: Scope, *, identity: Scope) -> list[MemoryUnit]: .
 def audit(
     filters: dict[str, str],
     *,
-    identity: Scope,
+    security: RequestSecurityContext,
     limit: int = 100,
 ) -> list[AuditEvent]: ...
 ```
@@ -507,20 +508,20 @@ def audit(
 **状态：已实现**
 
 ```python
-def grant(grant: Grant, *, identity: Scope) -> None: ...
+def grant(grant: Grant, *, security: RequestSecurityContext) -> Grant: ...
 ```
 
-新增跨 scope 授权。`identity` 须有权再授权 `grant.grantor` 范围（鉴权 SHARE）。
+新增跨 scope 授权。`security.auth.actor` 须有权再授权 `grant.grantor` 范围（当前过渡态鉴权 SHARE）。返回同一个安全域 `Grant`；当前 `PermissionManager` 尚不生成 `grant_id`，目标 `GrantStore` 实装后由服务端生成稳定 ID。
 
 #### revoke
 
 **状态：已实现**
 
 ```python
-def revoke(grant: Grant, *, identity: Scope) -> None: ...
+def revoke(grant: Grant, *, security: RequestSecurityContext) -> None: ...
 ```
 
-回收授权（幂等）。匹配哪条既有授权（按 grantor+grantee、是否逐 action 撤销等）由具体实现定义。
+回收授权（幂等）。当前过渡态按 grantor+grantee+action 条件撤销且鉴权 SHARE；目标形态鉴权 `REVOKE_SHARE` 并按 `grant_id` 精确定位。公共签名保持不变。
 
 ---
 
@@ -531,7 +532,7 @@ def revoke(grant: Grant, *, identity: Scope) -> None: ...
 **状态：已实现**
 
 ```python
-def create_space(spec: SpaceSpec, *, identity: Scope) -> SpaceInfo: ...
+def create_space(spec: SpaceSpec, *, security: RequestSecurityContext) -> SpaceInfo: ...
 ```
 
 创建全局唯一 space id；以 `Scope(org=spec.org)` 做 WRITE 鉴权，成功后记录目标 space 审计。`SpaceSpec`：`org` / `space` / `display_name` / `principal_path` / `policy` / `metadata`。
@@ -541,7 +542,7 @@ def create_space(spec: SpaceSpec, *, identity: Scope) -> SpaceInfo: ...
 **状态：已实现**
 
 ```python
-def get_space(org: str, space: str, *, identity: Scope) -> SpaceInfo: ...
+def get_space(org: str, space: str, *, security: RequestSecurityContext) -> SpaceInfo: ...
 ```
 
 读取单个 space 的基础信息与策略。
@@ -554,7 +555,7 @@ def get_space(org: str, space: str, *, identity: Scope) -> SpaceInfo: ...
 def list_spaces(
     org: str,
     *,
-    identity: Scope,
+    security: RequestSecurityContext,
     status: SpaceStatus | None = None,
     limit: int = 100,
     cursor: str | None = None,
@@ -569,7 +570,7 @@ def list_spaces(
 
 ```python
 def update_space(
-    org: str, space: str, patch: SpacePatch, *, identity: Scope
+    org: str, space: str, patch: SpacePatch, *, security: RequestSecurityContext
 ) -> SpaceInfo: ...
 ```
 
@@ -580,7 +581,7 @@ def update_space(
 **状态：已实现**
 
 ```python
-def archive_space(org: str, space: str, *, identity: Scope) -> SpaceInfo: ...
+def archive_space(org: str, space: str, *, security: RequestSecurityContext) -> SpaceInfo: ...
 ```
 
 归档 space；已归档 space 的 `add/update/evolve` 会被拒绝。读取与导出保留。
@@ -594,7 +595,7 @@ def delete_space(
     org: str,
     space: str,
     *,
-    identity: Scope,
+    security: RequestSecurityContext,
     mode: DeleteMode = DeleteMode.PURGE,
 ) -> SpaceDeleteResult: ...
 ```
@@ -612,7 +613,7 @@ def export_space(
     org: str,
     space: str,
     *,
-    identity: Scope,
+    security: RequestSecurityContext,
     include_audit: bool = True,
 ) -> str: ...
 ```
@@ -624,7 +625,7 @@ def export_space(
 **状态：已实现**（当前统计侧重 memory/message 数量与 KV bytes）
 
 ```python
-def space_usage(org: str, space: str, *, identity: Scope) -> SpaceUsage: ...
+def space_usage(org: str, space: str, *, security: RequestSecurityContext) -> SpaceUsage: ...
 ```
 
 查询 space 级 memory/message/KV bytes 用量。
@@ -636,7 +637,7 @@ def space_usage(org: str, space: str, *, identity: Scope) -> SpaceUsage: ...
 **状态：已实现**
 
 ```python
-def get_space_policy(org: str, space: str, *, identity: Scope) -> SpacePolicy: ...
+def get_space_policy(org: str, space: str, *, security: RequestSecurityContext) -> SpacePolicy: ...
 ```
 
 读取 space policy。
@@ -647,7 +648,7 @@ def get_space_policy(org: str, space: str, *, identity: Scope) -> SpacePolicy: .
 
 ```python
 def set_space_policy(
-    org: str, space: str, policy: SpacePolicy, *, identity: Scope
+    org: str, space: str, policy: SpacePolicy, *, security: RequestSecurityContext
 ) -> SpacePolicy: ...
 ```
 
@@ -659,7 +660,7 @@ def set_space_policy(
 
 ```python
 def list_space_members(
-    org: str, space: str, *, identity: Scope
+    org: str, space: str, *, security: RequestSecurityContext
 ) -> list[SpaceMember]: ...
 ```
 
@@ -671,7 +672,7 @@ def list_space_members(
 
 ```python
 def add_space_member(
-    org: str, space: str, member: SpaceMember, *, identity: Scope
+    org: str, space: str, member: SpaceMember, *, security: RequestSecurityContext
 ) -> None: ...
 ```
 
@@ -683,7 +684,7 @@ def add_space_member(
 
 ```python
 def remove_space_member(
-    org: str, space: str, member: Scope, *, identity: Scope
+    org: str, space: str, member: Scope, *, security: RequestSecurityContext
 ) -> None: ...
 ```
 
@@ -700,7 +701,7 @@ def remove_space_member(
 **状态：已实现**
 
 ```python
-def admin_get(key: str, *, identity: Scope) -> str: ...
+def admin_get(key: str, *, security: RequestSecurityContext) -> str: ...
 ```
 
 读策略（直达 PolicyManager）。管理面以根 `Scope()` 鉴权。
@@ -710,7 +711,7 @@ def admin_get(key: str, *, identity: Scope) -> str: ...
 **状态：已实现**
 
 ```python
-def admin_set(key: str, value: str, *, identity: Scope) -> None: ...
+def admin_set(key: str, value: str, *, security: RequestSecurityContext) -> None: ...
 ```
 
 写策略（直达 PolicyManager）；键未知或不可变抛 `PolicyError`。
@@ -720,7 +721,7 @@ def admin_set(key: str, value: str, *, identity: Scope) -> None: ...
 **状态：已实现**
 
 ```python
-def admin_all(*, identity: Scope) -> dict[str, str]: ...
+def admin_all(*, security: RequestSecurityContext) -> dict[str, str]: ...
 ```
 
 列全部策略（直达 PolicyManager）。
@@ -729,15 +730,32 @@ def admin_all(*, identity: Scope) -> dict[str, str]: ...
 
 ### Scope —— 目标范围 vs 调用方身份（`common/type_def`）
 
-`org > space > user/agent > session` 五维归属，同时支撑隔离与共享。各维默认 `""`。API 里 `Scope` 出现在两个**不同语义**的位置（均为 `Scope` 类型，勿混淆）：
+`org > space > user/agent > session` 五维归属，同时支撑隔离与共享。各维默认 `""`。API 里目标范围与调用方身份是**两个不同语义**的位置（勿混淆）：
 
-- **目标范围（target）**：操作作用于「谁的」记忆——`scope` 参数（或 `Context.scope` / `DeleteSelector.scope`）。
-- **调用方身份（identity）**：「谁」在发起调用——`identity` 参数（必填 keyword-only）。
+- **目标范围（target）**：操作作用于「谁的」记忆——`scope` 参数（或 `Context.scope` / `DeleteSelector.scope`），类型 `Scope`。
+- **调用方身份（actor）**：「谁」在发起调用——不再由调用方以 `Scope` 直传，而是取自必填 `security: RequestSecurityContext` 的 `security.auth.actor`；除 `check_write` 保留第二位置参数兼容外，其余方法要求具名传入。
 
 `space` 是全局唯一的逻辑隔离标识，`org` 表示其归属组织并继续参与权限边界；不同 org
 不能创建相同的非空 space id。空 `space` 只表示兼容旧数据/单租户默认域，不参与 Space
 资源注册，也不表示跨全部 space。`space` 为 keyword-only 字段，旧四段位置参数顺序仍是
 `org/user/agent/session`。
+
+### RequestSecurityContext（安全输入，`common/security/types.py`）
+
+一次请求的可信身份绑定，是 `MemoryAPI` 所有公开方法的唯一安全输入（keyword-only 必填）。
+
+| 字段 | 类型 | 语义 |
+|------|------|------|
+| `auth` | AuthContext | 认证产出；`auth.actor` 即调用方身份 Scope |
+| `request_id` | str | 服务端生成，进审计与授权环境，调用方不可指定 |
+| `peer` | str | 传输层对端地址（不采信 `X-Forwarded-For` 一类自述 header） |
+| `surface` | Surface | 接入形态（HTTP/MCP/CLI/SDK/INTERNAL），由适配层写入 |
+| `started_at` | datetime | 服务端时钟（带时区），授权时效判定的 now 由它派生 |
+| `attributes` | Mapping[str, str] | 只读；只由系统组件写入，业务 payload 不得注入 |
+
+便捷属性 `security.actor` 等价于 `security.auth.actor`。构造收在
+`common.security.request_context`（见不变量 14），实例携带来源绑定，
+`has_valid_origin()` 可校验其是否出自受控入口。
 
 ### Context（`common/type_def/context.py`）
 
@@ -844,9 +862,22 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 - `MemoryTier`：`WORKING`/`CORE`/`EPISODIC`/`SEMANTIC`/`PROCEDURAL`/`ARCHIVAL`。
 - `LifecycleState`：`ACTIVE`（默认可召回）/ `SUPERSEDED`（被新版取代）/ `ARCHIVED`（归档转冷，不默认召回）/ `FORGOTTEN`（遗忘，无继任者）。
 
-### Grant / Action（授权，`control/types.py`）
+### Grant / Action（授权，`common/security/types.py`）
 
-`Grant`：`grantor`（授权方 scope）/ `grantee`（被授权方 scope）/ `actions: list[Action]` / `expires_at`（None 为长期）。`Action`：`READ`/`WRITE`/`UPDATE`/`DELETE`/`SHARE`。
+`Grant`（frozen）：`grantor`（授权方 scope）/ `grantee`（被授权方 scope）/
+`actions: frozenset[Action]` / `expires_at`（None 为长期）/ `grant_id`（授权的稳定标识，
+构造时默认为空，目标形态由服务端生成）/ `revoked`；`is_active(*, now)` 判定时效。
+为兼容既有 `jiuwen_memory.api.Grant` 调用方，构造器继续接受不含 `grant_id` 的旧参数形状，
+并在构造边界把 `list[Action]` 等动作迭代归一为 `frozenset[Action]`；非 `Action` 成员立即
+抛 `TypeError`。`Action`：`READ`/`WRITE`/`UPDATE`/`DELETE`/`SHARE`/
+`REVOKE_SHARE`/`MANAGE_PRINCIPAL`/`MANAGE_SPACE`/`MANAGE_POLICY`/`READ_AUDIT`/
+`VERIFY_AUDIT`/`ADMINISTER_SYSTEM`。
+
+`control/types.py` 为兼容既有内部与仓外导入路径，再导出同一个安全域 `Grant`/`Action`
+对象，不再维护第二套字段或枚举；API 把同一 `Grant` 实例直接交给过渡期
+`PermissionManager`，不会裁掉 `grant_id` / `revoked`。旧权限实现尚无安全域管理动作的
+角色闸门，因此 API 对五个旧动作之外的 Grant 显式抛 `ValueError`（fail-closed），待
+`Authorizer` 实装后由其完整策略判定。
 
 ### Space 数据结构（`control/types.py`）
 
@@ -870,7 +901,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 
 | 异常 | 触发场景 |
 |------|----------|
-| `PermissionDeniedError` | 鉴权不通过（identity 对 target scope 无相应 Action 权限） |
+| `PermissionDeniedError` | 鉴权不通过（`security.auth.actor` 对 target scope 无相应 Action 权限） |
 | `NotFoundError` | `get`、`update` 目标在已鉴权 scope 内不可见 |
 | `ValidationError` | 入参非法（如 `search` 的 `top_k <= 0`；`add`/`batch_add` 的 `content` 非 `str`、空串或纯空白；目标层级的 span、深度、预算、options 或 patch 形状非法） |
 | `PolicyError` | `admin_set` 的键未知或为不可变配置；层级功能关闭时发起显式目标层级操作 |
@@ -880,13 +911,19 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 ## 鉴权流程
 
 ```
-调用方 → MemoryAPI.method(scope=target, identity=caller)
+接入层 → authenticated(...) / internal_context(...) → security: RequestSecurityContext
+调用方 → MemoryAPI.method(scope=target, security=security)
+  → identity = security.auth.actor
   → PermissionManager.check(actor=identity, target=scope, action=<对应动作>, context=...)
     # list/get/update/delete/inspect/trace 的已有资源上下文来自真源和已鉴权 target scope
     → 通过 → 委托 Engine/Governor/PolicyManager（仅传 scope，不传 identity）
     → 拒绝 → 抛 PermissionDeniedError
   → 落审计事件（含 identity + action + target_id + 时间）
 ```
+
+> 目标形态下这一步由安全域 `Authorizer` 承担（策略判定、`AuthorizationEnvironment`、
+> 决策审计）；本期只固定接口，鉴权仍走既有 `PermissionManager`，运行行为不变。
+> 详见 [F05 安全域接口契约](../features/common/F05-security-api-contracts.md)。
 
 ## 实现注册机制
 

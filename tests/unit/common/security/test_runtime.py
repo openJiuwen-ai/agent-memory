@@ -13,6 +13,7 @@ import pytest
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.security.authentication.base import Authenticator
+from jiuwen_memory.common.security.authorization.base import Authorizer
 from jiuwen_memory.common.security.protection.binding_policy import BindingPolicy
 from jiuwen_memory.common.security.protection.rate_limit import RateLimiter
 from jiuwen_memory.common.security.protection.workload_guard import WorkloadGuard
@@ -31,6 +32,18 @@ class _StubAuthenticator(Authenticator):
 
     def mode(self) -> str:
         return "stub"
+
+    def health(self) -> None:
+        if not self._healthy:
+            raise RuntimeError("unhealthy")
+
+
+class _StubAuthorizer(Authorizer):
+    def __init__(self, *, healthy: bool = True) -> None:
+        self._healthy = healthy
+
+    def authorize(self, *, auth, resource, environment):
+        raise NotImplementedError
 
     def health(self) -> None:
         if not self._healthy:
@@ -90,9 +103,12 @@ class _StubBinding(BindingPolicy):
         return None
 
 
-def _runtime(authenticator=None, limiter=None, guard=None, binding=None) -> SecurityRuntime:
+def _runtime(
+    authenticator=None, authorizer=None, limiter=None, guard=None, binding=None
+) -> SecurityRuntime:
     return SecurityRuntime(
         authenticator=authenticator or _StubAuthenticator(),
+        authorizer=authorizer or _StubAuthorizer(),
         rate_limiter=limiter or _StubLimiter(),
         workload_guard=guard or _StubGuard(),
         binding_policy=binding or _StubBinding(),
@@ -112,19 +128,26 @@ def test_health_raises_on_unhealthy_capability() -> None:
         runtime.health()
 
 
+def test_health_covers_authorizer() -> None:
+    """授权能力同样纳入健康检查：authorizer 不健康也必须拒绝启动。"""
+    runtime = _runtime(authorizer=_StubAuthorizer(healthy=False))
+    with pytest.raises(ValidationError, match="authorizer"):
+        runtime.health()
+
+
 def test_health_passes_when_all_healthy() -> None:
     _runtime().health()
 
 
 def test_cryptography_provider_is_optional() -> None:
-    """未配置存储加密是合法形态：该项允许 None，其余四项必须非 None。"""
+    """未配置存储加密是合法形态：该项允许 None，其余五项必须非 None。"""
     assert _runtime().cryptography_provider is None
 
 
 def test_close_continues_after_failure() -> None:
     """一个能力关闭失败不能中断其余能力的关闭：句柄泄漏比首个异常更难排查。
 
-    能力顺序为 authenticator -> rate_limiter -> workload_guard -> binding_policy；
+    能力顺序为 authenticator -> authorizer -> rate_limiter -> workload_guard -> binding_policy；
     让排前的 limiter 抛错、排后的 guard 正常，guard.closed 为 True 即证明继续执行。
     """
     limiter = _StubLimiter(close_raises=True)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from jiuwen_memory.api.memory_api_impl import assemble
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import EXT_MAX_TOKENS, Context, Modality, Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.retrieval.types import DisclosureLevel
@@ -25,12 +26,12 @@ def _api():
 
 def test_context_max_tokens_reaches_adaptive_disclosure() -> None:
     api = _api()
-    api.add(_TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR)
+    api.add(_TEXT, _SCOPE, source=Modality.TEXT, security=legacy_request_context(_ACTOR))
 
     res = api.search(
         "coffee",
         Context(_SCOPE, extensions={EXT_MAX_TOKENS: "300"}),
-        identity=_ACTOR,
+        security=legacy_request_context(_ACTOR),
         disclosure=DisclosureLevel.ADAPTIVE,
         with_trajectory=True,
     )
@@ -41,12 +42,12 @@ def test_context_max_tokens_reaches_adaptive_disclosure() -> None:
 
 def test_context_without_max_tokens_uses_default() -> None:
     api = _api()
-    api.add(_TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR)
+    api.add(_TEXT, _SCOPE, source=Modality.TEXT, security=legacy_request_context(_ACTOR))
 
     res = api.search(
         "coffee",
         Context(_SCOPE),  # 不给预算 → max_tokens=None
-        identity=_ACTOR,
+        security=legacy_request_context(_ACTOR),
         disclosure=DisclosureLevel.ADAPTIVE,
         with_trajectory=True,
     )

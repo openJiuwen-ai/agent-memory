@@ -15,6 +15,7 @@ import logging
 import os
 
 from jiuwen_memory.api import assemble
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Context, Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.construction import EvolveMode
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yml")
+    cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jiuwen_memory.config.yml")
     config = Config.from_yaml(cfg_path) if os.path.exists(cfg_path) else Config()
     if not config.is_empty():
         g = config.context().globals
@@ -41,6 +42,7 @@ def main() -> None:
     api = assemble(config=config)
     scope = Scope(org="acme", user="alice", agent="assistant", session="s1")
     actor = scope  # 本人操作自己的 scope
+    security = legacy_request_context(actor)  # 接口先行过渡桥接（实装后由认证产出）
 
     # 1) add -----------------------------------------------------------------
     facts = [
@@ -50,20 +52,20 @@ def main() -> None:
     ]
     written_ids = []
     for f in facts:
-        units = api.add(f, scope, identity=actor, tags=["demo"])
+        units = api.add(f, scope, security=security, tags=["demo"])
         written_ids.append(units[0].id)
         logger.info("[add] %s  <%s...>", units[0].id[:8], f[:24])
 
     # 2) search --------------------------------------------------------------
     logger.info("\n[search] query='咖啡 早上'")
-    res = api.search("咖啡 早上", Context(scope), identity=actor, top_k=3, with_trajectory=True)
+    res = api.search("咖啡 早上", Context(scope), security=security, top_k=3, with_trajectory=True)
     for item in res.items:
         logger.info("  score=%.3f  %s  %s", item.score, item.unit_id[:8], item.content)
     logger.info("  trajectory: %s", [(s.stage, s.candidate_count) for s in res.trajectory])
 
     # 3) get（tier 由构建层 Classifier 在写入时判定：含「喜欢」→ semantic） ----
     first = written_ids[0]
-    got = api.get(first, scope, identity=actor)
+    got = api.get(first, scope, security=security)
     logger.info(
         "\n[get] %s  tier=%s  tags=%s  content=<%s>",
         first[:8],
@@ -74,32 +76,32 @@ def main() -> None:
 
     # 4) update（SUPERSEDE，记版本链） ---------------------------------------
     new_unit = api.update(
-        first, scope, MemoryPatch(content="Alice 改喝拿铁了，要加燕麦奶。"), identity=actor
+        first, scope, MemoryPatch(content="Alice 改喝拿铁了，要加燕麦奶。"), security=security
     )
     logger.info(
         "\n[update] %s -> %s  supersedes=%s", first[:8], new_unit.id[:8], new_unit.supersedes[:8]
     )
-    chain = api.trace(new_unit.id, scope, identity=actor)
+    chain = api.trace(new_unit.id, scope, security=security)
     logger.info("  trace chain: %s", [u.id[:8] for u in chain])
 
     # 4.5) evolve（构建层闭环：抽取低抽象事实 / 升华画像 / 遗忘被取代的旧版） --
     q = "咖啡 项目 评审"
-    before = len(api.search(q, Context(scope), identity=actor, top_k=20).items)
-    api.evolve(scope, EvolveMode.EXTRACT, identity=actor)  # Extractor：派生事实(记血缘)
-    api.evolve(scope, EvolveMode.CONSOLIDATE, identity=actor)  # Abstractor：升华 CORE 画像
-    api.evolve(scope, EvolveMode.ASSOCIATE, identity=actor)  # Associator：发现关联
-    api.evolve(scope, EvolveMode.FORGET, identity=actor)  # 清理 superseded 旧版
-    after = len(api.search(q, Context(scope), identity=actor, top_k=20).items)
+    before = len(api.search(q, Context(scope), security=security, top_k=20).items)
+    api.evolve(scope, EvolveMode.EXTRACT, security=security)  # Extractor：派生事实(记血缘)
+    api.evolve(scope, EvolveMode.CONSOLIDATE, security=security)  # Abstractor：升华 CORE 画像
+    api.evolve(scope, EvolveMode.ASSOCIATE, security=security)  # Associator：发现关联
+    api.evolve(scope, EvolveMode.FORGET, security=security)  # 清理 superseded 旧版
+    after = len(api.search(q, Context(scope), security=security, top_k=20).items)
     logger.info(
         "\n[evolve] 召回命中 %s -> %s（extract 派生 + consolidate 画像入索引）", before, after
     )
-    prof = api.search("画像综合", Context(scope), identity=actor, top_k=1).items
+    prof = api.search("画像综合", Context(scope), security=security, top_k=1).items
     if prof:
         logger.info("  consolidate 画像 %s: <%s...>", prof[0].unit_id[:8], prof[0].content[:36])
 
     # 5) admin + audit -------------------------------------------------------
-    logger.info("\n[admin] policies: %s", api.admin_all(identity=actor))
-    logger.info("[audit] add 事件数: %s", len(api.audit({"action": "add"}, identity=actor)))
+    logger.info("\n[admin] policies: %s", api.admin_all(security=security))
+    logger.info("[audit] add 事件数: %s", len(api.audit({"action": "add"}, security=security)))
 
 
 if __name__ == "__main__":

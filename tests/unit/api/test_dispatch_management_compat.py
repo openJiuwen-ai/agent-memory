@@ -88,7 +88,7 @@ def test_dispatch_audit_forwards_structured_filters() -> None:
         def __init__(self) -> None:
             self.filters = None
 
-        def audit(self, filters, *, identity, limit=100):
+        def audit(self, filters, *, security, limit=100):
             self.filters = filters
             return [
                 handler.AuditEvent(
@@ -132,7 +132,7 @@ def test_dispatch_audit_forwards_structured_filters() -> None:
 def test_dispatch_audit_rejects_invalid_limit(limit) -> None:
     class _Api:
         @staticmethod
-        def audit(filters, *, identity, limit=100):
+        def audit(filters, *, security, limit=100):
             raise AssertionError("audit should not be called with an invalid limit")
 
     class _Srv:
@@ -154,7 +154,7 @@ def test_dispatch_list_delegates_to_api_with_pagination_and_type_filter() -> Non
             self,
             scope,
             *,
-            identity,
+            security,
             offset=0,
             limit=100,
             memory_types=None,
@@ -163,7 +163,7 @@ def test_dispatch_list_delegates_to_api_with_pagination_and_type_filter() -> Non
         ):
             self.call = {
                 "scope": scope,
-                "identity": identity,
+                "identity": security.auth.actor,
                 "offset": offset,
                 "limit": limit,
                 "memory_types": memory_types,
@@ -254,8 +254,8 @@ def test_dispatch_create_space_delegates_to_api_with_space_spec() -> None:
         def __init__(self) -> None:
             self.call = None
 
-        def create_space(self, spec, *, identity):
-            self.call = {"spec": spec, "identity": identity}
+        def create_space(self, spec, *, security):
+            self.call = {"spec": spec, "identity": security.auth.actor}
             return SpaceInfo(
                 org=spec.org,
                 space=spec.space,

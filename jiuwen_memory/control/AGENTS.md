@@ -13,7 +13,7 @@
 | 文件 | 职责 |
 |---|---|
 | `base.py` | `ControlOperator` 抽象基类 + `ControlOperatorType` 枚举；所有算子的自描述契约 |
-| `types.py` | 控制层数据类型（Action/Grant/Channel/JobInfo/MemoryPatch/DeleteSelector/BatchWrite* 等），被本层所有文件及上游 `api/` 依赖 |
+| `types.py` | 控制层数据类型（Channel/JobInfo/MemoryPatch/DeleteSelector/BatchWrite* 等）+ 安全域 Action/Grant 兼容再导出，被本层所有文件及上游 `api/` 依赖 |
 | `engine.py` | `MemoryEngine` 抽象接口——跨层编排中枢，异步协程 |
 | `pipeline.py` | `MemoryPipeline` 抽象接口——按记忆类型选择构建/查询 profile |
 | `lifecycle.py` | `LifecycleManager` 接口——状态流转（transition）与到期清扫（sweep） |
@@ -34,7 +34,7 @@
 ## 文件关系
 
 - 顶层 `.py` 只定义抽象接口，零实现逻辑
-- `types.py` 不依赖本层其他文件（纯数据定义），被本层各接口和 `src/api/` 共同依赖
+- `types.py` 不依赖本层其他文件（纯数据定义），被本层各接口和 `jiuwen_memory/api/` 共同依赖
 - 每个 `*_impl/` 子目录：具体实现类 + 尾部 `@XProducer.register("<target>")` 注册函数，由外部装配消费
 - 顶层接口文件不 import `*_impl/`；`*_impl/` import 顶层接口文件
 - Producer 工厂定义在对应顶层接口文件中（如 `engine.py` 的 `EngineProducer`），不要新增独立 `*_producer.py`
@@ -63,6 +63,7 @@
 14. **Ingest 任务按 Scope 隔离**：任务状态查询为纯读取，不更新进程缓存或
     `payload_id -> job_id` 映射；`_find_existing` 只有在任务 Scope 与请求 Scope
     完全一致后才维护映射，READ 鉴权由 MemoryAPI 执行。
+15. **授权值对象与路由 capability 单一真源**：`Action` / `Grant` 只从 `common.security.types` 兼容再导出，不在 control 重定义；`PermissionManager.routing_fields()` 继承 `common.security.authorization.RoutingFieldsProvider`，只允许路由实现覆盖。
 
 ## 双通道调度机制
 
