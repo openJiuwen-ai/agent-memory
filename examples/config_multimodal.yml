@@ -15,15 +15,16 @@ memory_api:
               asr_chunk_seconds: 600
               llm_port: video_text
               vlm_port: video_vision
+              vlm_max_inline_video_bytes: 52428800
               temp_root: /tmp/agent-memory-video
 
   asr:
     video:
-      target: openai_transcription
+      target: dashscope_filetrans
       params:
-        asr_model: whisper-large-v3-turbo
-        asr_base_url: http://127.0.0.1:8003/v1
-        asr_api_key: dummy
+        asr_model: qwen3-asr-flash-filetrans
+        asr_base_url: ${DASHSCOPE_ASR_BASE_URL}
+        asr_api_key: ${DASHSCOPE_API_KEY}
         config_namespace: asr.video
 
   llm:

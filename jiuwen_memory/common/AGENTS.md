@@ -26,7 +26,7 @@
 | `embedder/` | Embedder 插件目录（接口 + 实现） |
 | `chunker/` | Chunker 插件目录 |
 | `tokenizer/` | Tokenizer 插件目录 |
-| `normalizer/` | Normalizer 插件目录（passthrough / routing / video，video 使用远程 ASR） |
+| `normalizer/` | Normalizer 插件目录（passthrough / routing / video）；视频 ASR 支持 OpenAI transcription 与 DashScope filetrans |
 | `feature_extractor/` | FeatureExtractor 插件目录 |
 | `llm/` | LLM 插件目录（`echo` / `openai` / `dashscope`） |
 | `reranker/` | Reranker 插件目录 |

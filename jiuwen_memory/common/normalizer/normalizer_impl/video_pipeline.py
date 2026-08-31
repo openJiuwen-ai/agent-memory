@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import atexit
+import base64
 import gc
 import json
+import mimetypes
 import os
 import re
 from dataclasses import dataclass
@@ -35,6 +37,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
 JSON_API_MAX_ATTEMPTS = 3
+DEFAULT_MAX_INLINE_VIDEO_BYTES = 50 * 1024 * 1024
 
 logger = get_logger(__name__)
 
@@ -66,6 +69,7 @@ class VideoPipelineConfig:
     require_precomputed_asr: bool = False
     llm_port: LLM | None = None
     vlm_port: LLM | None = None
+    vlm_max_inline_video_bytes: int = DEFAULT_MAX_INLINE_VIDEO_BYTES
     resume_from_stream: bool = True
     cleanup: bool = True
 
@@ -779,7 +783,7 @@ def _segment_chapters(
     cleaned_asr_segments: list[dict[str, str]],
     video_duration_s: float,
     *,
-    llm_port: LLM,
+    llm_port: LLM | None,
 ) -> dict[str, Any]:
     chapters_only_schema = (
         "You must return JSON only in the following schema:\n"
@@ -799,12 +803,17 @@ def _segment_chapters(
     for seg in cleaned_asr_segments:
         st = _normalize_to_hhmmss(seg.get("start", "00:00"))
         text = str(seg.get("text", "")).strip()
+        if not text:
+            continue
         transcript_lines.append(f"[{st}] {text}")
 
     if not transcript_lines:
-        raise RuntimeError(
-            "ASR chaptering aborted: no ASR transcript lines available for chapter segmentation."
+        logger.warning(
+            "VideoPipeline: no ASR transcript available; skipping chapter segmentation"
         )
+        return {"chapters": [], "segmentation_confidence": "low"}
+    if llm_port is None:
+        raise ValueError("chapter segmentation requires a configured llm_port")
 
     prompt = f"{CHAPTER_SEGMENT_PROMPT_JSON}\n\n{chapters_only_schema}\n\n" + "\n".join(
         transcript_lines
@@ -1085,12 +1094,31 @@ def _merge_short_segments(
 # -------------------- Offline Qwen-VL inference --------------------
 
 
+def _video_data_url(clip_path: Path, max_inline_bytes: int) -> str:
+    resolved_path = clip_path.resolve(strict=True)
+    media_type, _ = mimetypes.guess_type(resolved_path.name)
+    if media_type is None or not media_type.startswith("video/"):
+        raise ValueError(f"unsupported video format: {resolved_path.suffix or '<none>'}")
+
+    video_bytes = resolved_path.read_bytes()
+    if len(video_bytes) > max_inline_bytes:
+        raise ValueError(
+            "video clip exceeds the inline request limit: "
+            f"{len(video_bytes)} > {max_inline_bytes} bytes"
+        )
+    encoded = base64.b64encode(video_bytes).decode("ascii")
+    return f"data:{media_type};base64,{encoded}"
+
+
 def _offline_vu(
     clip_path: Path,
     prompt: str,
     llm_port: LLM,
+    *,
+    max_inline_video_bytes: int = DEFAULT_MAX_INLINE_VIDEO_BYTES,
 ) -> dict[str, Any]:
     """Run vision-language inference through the configured LLM plugin."""
+    video_url = _video_data_url(clip_path, max_inline_video_bytes)
     max_retries = 4
     generated_text = ""
     for attempt in range(max_retries + 1):
@@ -1109,7 +1137,7 @@ def _offline_vu(
                         content=[
                             {
                                 "type": "video_url",
-                                "video_url": {"url": clip_path.resolve().as_uri()},
+                                "video_url": {"url": video_url},
                             },
                             {"type": "text", "text": retry_prompt},
                         ],
@@ -1964,6 +1992,7 @@ def run_video_memory_pipeline_off(
             out_clip,
             prompt,
             llm_port=vlm_port,
+            max_inline_video_bytes=config.vlm_max_inline_video_bytes,
         )
         logger.debug("VideoPipeline: VLM inference completed segment=%s", seg_tag)
 
