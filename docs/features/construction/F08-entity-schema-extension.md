@@ -26,6 +26,8 @@ Schema 复用统一 `assemble()` / `build_kernel()` 入口。`globals.schema_ena
 `defaults.py` 中默认为 `false`；只有装配时显式设为 `true` 才条件注册
 Schema target。调用方还必须显式选择 `entity_schema` Extractor 和
 `schema_orchestrating` Evolver 才会进入 Schema 链路；默认 target 均不改变。
+Schema 不提供第二套公共装配入口，所有调用方继续使用既有 `assemble()` 或
+`build_kernel()`。
 开关关闭却配置 Schema target 时装配 fail-closed，防止同一进程曾经注册过 Schema
 target 后绕过开关。
 
@@ -116,12 +118,6 @@ ADD。
 
 拒绝。Schema 的 Source-first 和直接 ADD 语义与默认 Evolver 不同。独立
 `schema_orchestrating` 可以保持功能 opt-in，并降低与上游演进代码的冲突。
-
-### 保留独立 assemble_schema 入口
-
-拒绝。部署和调用方已统一使用 `assemble()`，额外入口会迫使上层改变装配调用，
-也无法仅通过现有配置系统启用。默认兼容由 `schema_enabled=false` 和未变的默认
-Extractor/Evolver target 共同保证。
 
 ## 验证
 

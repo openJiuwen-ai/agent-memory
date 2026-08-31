@@ -36,7 +36,7 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 | `dedup_impl/` | Dedup 实现目录（vector / keyword） |
 | `evolver_impl/` | Evolver 实现目录（orchestrating=legacy / dynamic=动态 prompt 四步 / schema_orchestrating=Source-first Schema 属性抽取） |
 | `bootstrap.py` | 统一触发所有构建算子注册（含 dedup_impl） |
-| `schema_bootstrap.py` | 显式注册 Schema Extractor/Evolver target；默认构建注册链路不导入 |
+| `schema_bootstrap.py` | 由统一 assembly 在 Schema 开关开启时内部调用，注册 Schema Extractor/Evolver target；不是独立公共装配入口 |
 
 ## 构建链路
 
