@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-08-31 |
+| 最近一次修订日期 | 2026-09-01 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
@@ -169,7 +169,7 @@ Schema Evolver 对非 procedural 写入采用 Source-first，并将属性候选�
 **四步语义**：
 
 1. **extract**：委托父类持有的 `Extractor.extract`，产出派生候选；把源 unit 的 consolidation/reflect prompt key 透传给候选；调 `_annotate_layers` 标注 L0/L1。
-2. **consolidate（只判定不落盘）**：对每个候选调 `Dedup.recall` 召回已有记忆，按相似度阈值 + LLM 判定产出 `ConsolidateDecision`（候选 + `DedupDecision` + 已有记忆 + 相似度）。无命中 → ADD；高相似度（≥ `dedup_high_similarity`）→ NOOP；中段（`dedup_medium_similarity` ~ high）→ 查 `PromptRegistry` 取 consolidate prompt 调 LLM 判定；无 prompt 或 LLM 失败 → 回退规则。
+2. **consolidate（只判定不落盘）**：对每个候选调 `Dedup.recall` 召回已有记忆，按相似度阈值 + LLM 判定产出 `ConsolidateDecision`（候选 + `DedupDecision` + 已有记忆 + 相似度）。无命中 → ADD；高相似度且 `should_direct_noop` 为真（`score ≥ dedup_high_similarity` 且候选相对已有记忆无 `has_meaningful_delta`）→ NOOP；高相似但有实质差异 → 走 LLM；中段（`dedup_medium_similarity` ~ high）→ 查 `PromptRegistry` 取 consolidate prompt 调 LLM 判定；无 prompt 或 LLM 失败 → 回退规则（高相似且无实质差异才 NOOP，否则 ADD）。
 3. **reflect（默认 no-op）**：基类 `_reflect_step` 直接返回候选；子类可覆盖
    `_reflect_step` 在落盘前原地修正候选。当前持久化仍读取
    `ConsolidateDecision.candidate`，替换候选对象不会生效。
@@ -438,7 +438,7 @@ layers 降级。只有通过结构校验后，才按“KV 真源 → 内容索�
 
 ### Evolver（`evolver.py`）
 
-记忆自演进，持续驱动演进闭环。两个实现：`OrchestratingEvolver`（注册名 `orchestrating`，legacy）与 `DynamicEvolver`（注册名 `dynamic`，子类，EXTRACT 走动态 prompt 四步）。`evolve` 按模式分派到 `_evolve_extract` / `_evolve_consolidate` / `_evolve_associate` / `_evolve_forget` 四个可覆盖方法。
+记忆自演进，持续驱动演进闭环。两个实现：`OrchestratingEvolver`（注册名 `orchestrating`，legacy）与 `DynamicEvolver`（注册名 `dynamic`，子类，EXTRACT 走动态 prompt 四步）。`evolve` 按模式分派到 `_evolve_extract` / `_evolve_consolidate` / `_evolve_associate` / `_evolve_forget` 四个可覆盖方法。两种 Evolver 的高相似 direct_noop 短路共用 `evolver_impl/dedup_direct_noop.should_direct_noop`。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|

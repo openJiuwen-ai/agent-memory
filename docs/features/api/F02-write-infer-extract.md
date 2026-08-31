@@ -98,7 +98,7 @@ Ingestor.ingest → 补 assets/tags → Classifier.classify → KVStore.insert�
 
 ### 单元测试
 
-- `tests/unit/construction/test_evolver_dedup.py` — 13 passed：去重四态（ADD/UPDATE/SUPERSEDE/NOOP）+ 降级场景。其中 supersede/update/json-fallback 三例用 `dedup_high_similarity=1.01` 抬高短路阈值，强制走 LLM 判定分支验证（见 [construction F01](../construction/F01-construction-spec-design.md) 测试基线）
+- `tests/unit/construction/test_evolver_dedup.py` — 13 passed：去重四态（ADD/UPDATE/SUPERSEDE/NOOP）+ 降级场景 + 高相似实质差异改走 LLM。其中 supersede/update/json-fallback 三例用 `dedup_high_similarity=1.01` 抬高短路阈值，强制走 LLM 判定分支验证（见 [construction F01](../construction/F01-construction-spec-design.md) 测试基线）
 - `tests/unit/construction/test_extractor.py` — 14 passed：含 `test_extract_batch` 批量提取一次调用返回全部候选、source_id 回指正确源 unit
 - `tests/unit/api` — 全绿：write 路径 + 装配
 

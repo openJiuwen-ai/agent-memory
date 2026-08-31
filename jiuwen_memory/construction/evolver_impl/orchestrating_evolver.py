@@ -51,6 +51,7 @@ from jiuwen_memory.construction.associator import Associator, AssociatorProducer
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
 from jiuwen_memory.construction.dedup import Dedup, DedupProducer
 from jiuwen_memory.construction.evolver import EvolveMode, Evolver, EvolveResult, EvolverProducer
+from jiuwen_memory.construction.evolver_impl.dedup_direct_noop import should_direct_noop
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
@@ -335,8 +336,12 @@ class OrchestratingEvolver(Evolver):
                 # 低相似 → 直接 ADD（不调 LLM）
                 direct_add.append((candidate, best_unit, best_score))
             elif best_score >= self._dedup_high_similarity:
-                # 确定性重复 → 直接 NOOP（不调 LLM）
-                direct_noop.append((candidate, best_unit, best_score))
+                if should_direct_noop(
+                    best_score, self._dedup_high_similarity, candidate, best_unit
+                ):
+                    direct_noop.append((candidate, best_unit, best_score))
+                else:
+                    need_llm.append((candidate, best_unit, best_score, hit_units))
             else:
                 # medium ~ high → 需 LLM 判定
                 need_llm.append((candidate, best_unit, best_score, hit_units))
@@ -477,8 +482,9 @@ class OrchestratingEvolver(Evolver):
         best_unit, best_score = max(hit_units, key=lambda x: x[1])
 
         # Step D: 语义判定
-        # 确定性重复 → 直接 NOOP（不调 LLM）
-        if best_score >= self._dedup_high_similarity:
+        if should_direct_noop(
+            best_score, self._dedup_high_similarity, candidate, best_unit
+        ):
             return (DedupDecision.NOOP, best_unit, best_score)
 
         # 低相似 → ADD（新事实，不值得深度判定）
@@ -494,9 +500,10 @@ class OrchestratingEvolver(Evolver):
                 candidate.id[:8], exc,
             )
             # 降级策略与 _llm_dedup_decide 一致：宁可重复不丢失。
-            # high 相似 → NOOP（确定性重复）；medium 相似 → ADD（不覆盖已有，
-            # 避免 SUPERSEDE 误替换致信息丢失，留待后续 LLM 恢复后修正）。
-            if best_score >= self._dedup_high_similarity:
+            # high 相似且无实质差异 → NOOP；否则 ADD（不覆盖已有）。
+            if should_direct_noop(
+                best_score, self._dedup_high_similarity, candidate, best_unit
+            ):
                 decision = DedupDecision.NOOP
             else:
                 decision = DedupDecision.ADD
@@ -667,7 +674,7 @@ class OrchestratingEvolver(Evolver):
         """批量降级：逐条调单条 LLM 判定。某条失败 → 按规则（score 阈值）判定。"""
         results: dict[str, DedupDecision] = {}
         for cand, hits in items:
-            best_score = max(s for _, s in hits) if hits else 0.0
+            best_unit, best_score = max(hits, key=lambda x: x[1]) if hits else (None, 0.0)
             try:
                 results[cand.id] = self._llm_dedup_decide(cand, hits)
             except Exception:
@@ -676,9 +683,9 @@ class OrchestratingEvolver(Evolver):
                     cand.id[:8],
                 )
                 # 降级策略与 _llm_dedup_decide 一致：宁可重复不丢失。
-                # high 相似 → NOOP（确定性重复）；medium 相似 → ADD（新事实，不覆盖已有，
-                # 避免 SUPERSEDE 误替换可能各有补充的同主题记忆致信息丢失）。
-                if best_score >= self._dedup_high_similarity:
+                if best_unit is not None and should_direct_noop(
+                    best_score, self._dedup_high_similarity, cand, best_unit
+                ):
                     results[cand.id] = DedupDecision.NOOP
                 else:
                     results[cand.id] = DedupDecision.ADD

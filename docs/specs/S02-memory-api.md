@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-08-31 |
+| 最近一次修订日期 | 2026-09-01 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md |
 
@@ -227,7 +227,7 @@ target。调用方还必须在配置中显式选择 Schema Extractor 和 Schema 
   进入 EXTRACT；procedural 或显式 `evolve(EXTRACT)` 同样进入 Evolver 的 EXTRACT
   路径，Extractor 本身不校验 infer。支持任意非空 strategy，每个策略调用一次；
   无动态 prompt 时回退旧 Extractor。
-- `_consolidation_prompt_<strategy>` 为落盘前动态巩固 prompt 的 **key**（引用 yml `prompts` 段的命名 prompt）。运行时由 `PromptRegistry` 按 `phase=consolidate + key` 查真实文本。`DynamicEvolver` 消费；无 prompt 或输出不合法时回退规则判定（高相似度 NOOP，否则 ADD）。
+- `_consolidation_prompt_<strategy>` 为落盘前动态巩固 prompt 的 **key**（引用 yml `prompts` 段的命名 prompt）。运行时由 `PromptRegistry` 按 `phase=consolidate + key` 查真实文本。`DynamicEvolver` 消费；无 prompt 或输出不合法时回退规则判定（高相似且 `should_direct_noop` 为真则 NOOP，否则 ADD）。
 - `_reflect_prompt_<strategy>` 为反思步 prompt 的 key（同上，`phase=reflect`）。reflect 默认 no-op，子类可覆盖 `_reflect_step`。
 - LLM 输出格式由 prompt 自身约定，内核不追加固定 schema。
 
