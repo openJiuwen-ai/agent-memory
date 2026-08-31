@@ -601,14 +601,20 @@ async def add_messages_endpoint(request: AddMessagesRequest):
 async def update_mem_by_id_endpoint(request: UpdateMemoryRequest):
     """根据ID更新内存内容"""
     try:
-        await memory_engine.update_mem_by_id(
+        updated = await memory_engine.update_mem_by_id(
             mem_id=request.mem_id,
             memory=request.memory,
             user_id=request.user_id,
             scope_id=request.scope_id
         )
-
+        if updated is False:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Memory {request.mem_id} not found",
+            )
         return {"status": "success", "message": f"Memory {request.mem_id} updated successfully"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating memory: {str(e)}") from e
 
@@ -826,12 +832,19 @@ async def _register_mem_meta():
 async def delete_mem_by_id_endpoint(request: DeleteMemByIdRequest):
     """根据ID删除单条记忆"""
     try:
-        await memory_engine.delete_mem_by_id(
+        deleted = await memory_engine.delete_mem_by_id(
             mem_id=request.mem_id,
             user_id=request.user_id,
             scope_id=request.scope_id,
         )
+        if deleted is False:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Memory {request.mem_id} not found",
+            )
         return {"status": "success", "message": f"Memory {request.mem_id} deleted successfully"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting memory by id: {str(e)}") from e
 

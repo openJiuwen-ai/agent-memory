@@ -538,7 +538,13 @@ class LongTermMemory(metaclass=Singleton):
         middle_managers = {MemoryType.MIDDLE_TERM_MEMORY.value: self.middle_mem_manager}
         self.fragment_type = [MemoryType.USER_PROFILE.value, MemoryType.EPISODIC_MEMORY.value,
                               MemoryType.SEMANTIC_MEMORY.value]
-        self.write_manager = WriteManager(managers, self.memory_index, middle_manager=self.middle_mem_manager)
+        self._enable_hierarchical_memory = config.enable_middle_memory
+        self.write_manager = WriteManager(
+            managers, self.memory_index,
+            middle_manager=self.middle_mem_manager,
+            enable_middle_memory=self._enable_hierarchical_memory,
+            message_manager=self.message_manager,
+        )
         self.middle_write_manager = WriteManager(middle_managers, self.memory_index)
 
         self.search_manager = SearchManager(
@@ -562,7 +568,6 @@ class LongTermMemory(metaclass=Singleton):
                                                     model_client_config=config.default_model_client_cfg)
             self._base_llm = llm
 
-        self._enable_hierarchical_memory = config.enable_middle_memory
         self.middle_memory_check_interval = config.middle_memory_check_interval
 
 
