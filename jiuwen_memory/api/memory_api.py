@@ -21,6 +21,11 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any
 
+from jiuwen_memory.common.security.audit_integrity.base import (
+    DEFAULT_AUDIT_VERIFY_MAX_SAMPLES,
+    DEFAULT_AUDIT_VERIFY_PAGE_SIZE,
+    AuditVerificationResult,
+)
 from jiuwen_memory.common.security.types import Grant, RequestSecurityContext
 from jiuwen_memory.common.type_def import (
     AuditEvent,
@@ -369,7 +374,28 @@ class MemoryAPI(ABC):
         self, filters: dict[str, str], *, security: RequestSecurityContext, limit: int = 100
     ) -> list[AuditEvent]:
         """审计查询：按条件（actor/action/layer/时间段等）检索审计留痕；
-        本层据 ``security`` 鉴权 ``READ_AUDIT``。
+        当前实现为兼容存量授权记录，仍据 ``security`` 鉴权 ``READ``；迁移到目标动作
+        ``READ_AUDIT`` 必须作为独立兼容性变更处理。
+        """
+
+    @abstractmethod
+    def verify_audit(
+        self,
+        *,
+        security: RequestSecurityContext,
+        after_sequence: int = 0,
+        page_size: int = DEFAULT_AUDIT_VERIFY_PAGE_SIZE,
+        max_samples: int = DEFAULT_AUDIT_VERIFY_MAX_SAMPLES,
+        anchor_policy: str = "if_configured",
+    ) -> AuditVerificationResult:
+        """审计链完整性验证：流式校验证明链，返回结构化状态。
+
+        本层据 ``security`` 鉴权 ``VERIFY_AUDIT``（管理面，默认不可委托）。输入只允许
+        服务端验证参数（范围、页预算、anchor policy），不接受调用方传入 expected
+        digest / key / proof。``page_size`` 与 ``max_samples`` 还受服务端可信配置上限
+        约束，不能靠放大单次请求绕过 ``WorkloadGuard`` 的并发预算。全量验证在
+        ``WorkloadGuard`` 独立预算下执行。未装配审计完整性 provider 的部署返回
+        ``unsupported`` 状态，不抛错。
         """
 
     # -- 跨 scope 授权（委托 PermissionManager，架构 §3.2） ------------------- #

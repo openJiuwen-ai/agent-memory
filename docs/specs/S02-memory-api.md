@@ -548,6 +548,14 @@ def audit(
 ```
 
 按条件（actor/action/layer/时间段等）检索审计留痕。无具体 target scope 时以根 `Scope()` 为鉴权闸门。
+当前实现为兼容存量按 action 精确匹配的授权记录，继续使用 `Action.READ`；目标动作
+`Action.READ_AUDIT` 的启用须作为独立兼容性变更并配套授权数据迁移。
+
+#### 审计完整性面（接口先行，PR3）
+
+| 方法 | 签名 | 语义 |
+|------|------|------|
+| `verify_audit` | `(*, security, after_sequence=0, page_size=1000, max_samples=20, anchor_policy="if_configured") -> AuditVerificationResult` | 审计链完整性验证：按 `VERIFY_AUDIT` 执行管理面根 scope 闸门，与仍使用 legacy `READ` 的既有 `audit` 是两个独立入口；provider 与专用 `audit_verify_guard` 成对注入，全量验证占独立并发槽，耗尽抛 `RateLimitedError`；此时授权事件保持 `decision=allow`，沿用 `workload_guard=exhausted` 明细区分容量准入失败与鉴权拒绝。guard 准入后必须先记录验证尝试再调用 provider，使 provider 抛出的完整性异常仍可追溯发起者与发生时间。输入只允许服务端验证参数，不接受调用方传入 expected digest / key / proof。`after_sequence=N` 必须从同一稳定快照读取并验证第 N 条 checkpoint proof，扫描固定截至快照链头；并发追加留到下一次，checkpoint/序号缺口/截断导致 `incomplete`，不得从 genesis 盲接。`page_size` / `max_samples` 截到服务端可信 `globals.audit_verify_max_page_size` / `globals.audit_verify_max_samples`，装配只接受真正的整数（拒绝 `bool` 和字符串），非法类型、范围或超过硬上限统一抛 `ValidationError`；PEP 再保证返回 samples 不超过有效上限。`truncated` 只表示样本列表截断，`high_water_mark` 是本次连续成功验证到的最高 sequence。未装配 provider 时诚实返回 `unsupported`，不降级成 clean。真实认证接入前 HTTP generic dispatch、MCP tool、CLI command 均不注册，当前一等入口仅为 `MemoryAPI`（见 F05 §6.4） |
 
 ---
 

@@ -14,6 +14,7 @@ from jiuwen_memory.api.memory_api_impl import assembly, build_kernel
 from jiuwen_memory.common.audit.base import AuditProducer
 from jiuwen_memory.common.errors import BackendError, PermissionDeniedError, ValidationError
 from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.security.audit_integrity.base import AuditVerificationLimits
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.security.security_impl.local_envelope_security_provider import (
     LocalEnvelopeSecurityProvider,
@@ -100,6 +101,54 @@ def test_default_audit_config_uses_in_memory_sqlite() -> None:
     assert audit_config == {"target": "sqlite", "params": {"db_path": ":memory:"}}
     events = api.audit({"action": "add"}, security=legacy_request_context(Scope()))
     assert any(event.action == "add" for event in events)
+
+
+def test_audit_verify_limits_from_globals_reach_pep(monkeypatch) -> None:
+    """globals 是唯一配置入口；合法整数必须实际注入 LocalMemoryAPI。"""
+    captured: dict[str, AuditVerificationLimits] = {}
+    local_memory_api = assembly.LocalMemoryAPI
+
+    def _capture_limits(*args, **kwargs):
+        captured["limits"] = kwargs["audit_verify_limits"]
+        return local_memory_api(*args, **kwargs)
+
+    monkeypatch.setattr(assembly, "LocalMemoryAPI", _capture_limits)
+    cfg = Config.from_dict(
+        {
+            "globals": {
+                "audit_verify_max_page_size": 2000,
+                "audit_verify_max_samples": 50,
+            }
+        }
+    )
+
+    assemble(config=cfg)
+
+    assert captured["limits"] == AuditVerificationLimits(
+        max_page_size=2000,
+        max_samples=50,
+    )
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("audit_verify_max_page_size", 20_000, "hard limit 10000"),
+        ("audit_verify_max_samples", 101, "hard limit 100"),
+        ("audit_verify_max_page_size", "2000", "must be an integer"),
+        ("audit_verify_max_page_size", "two thousand", "must be an integer"),
+        ("audit_verify_max_samples", True, "must be an integer"),
+    ],
+)
+def test_invalid_audit_verify_globals_raise_validation_error(
+    key: str,
+    value: object,
+    message: str,
+) -> None:
+    cfg = Config.from_dict({"globals": {key: value}})
+
+    with pytest.raises(ValidationError, match=message):
+        assemble(config=cfg)
 
 
 def test_assembly_audit_fallback_matches_sqlite_default(monkeypatch) -> None:

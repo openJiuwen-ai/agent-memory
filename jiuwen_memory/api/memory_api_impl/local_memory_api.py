@@ -37,10 +37,21 @@ from jiuwen_memory.common.errors import (
     NotFoundError,
     PermissionDeniedError,
     PolicyError,
+    RateLimitedError,
     ValidationError,
 )
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.security import principal, space_predicates
+from jiuwen_memory.common.security.audit_integrity.base import (
+    DEFAULT_AUDIT_VERIFY_MAX_SAMPLES,
+    DEFAULT_AUDIT_VERIFY_PAGE_SIZE,
+    AnchorState,
+    AuditIntegrityProvider,
+    AuditIntegrityStatus,
+    AuditVerificationLimits,
+    AuditVerificationResult,
+)
+from jiuwen_memory.common.security.protection.workload_guard import WorkloadGuard
 from jiuwen_memory.common.security.space_decision import (
     ATTR_PRINCIPAL_PATH,
     ATTR_SPACE_ACTION,
@@ -829,9 +840,20 @@ class LocalMemoryAPI(MemoryAPI):
         audit_logger: AuditLogger,
         space: SpaceManager,
         ingest_jobs: IngestJobController,
+        audit_integrity_provider: AuditIntegrityProvider | None = None,
+        audit_verify_guard: WorkloadGuard | None = None,
+        audit_verify_limits: AuditVerificationLimits | None = None,
         membership: MembershipResolver | None = None,
         router: Router | None = None,
     ) -> None:
+        if audit_integrity_provider is not None and audit_verify_guard is None:
+            raise ValidationError(
+                "audit_integrity_provider requires a dedicated audit_verify_guard"
+            )
+        if audit_verify_limits is not None and not isinstance(
+            audit_verify_limits, AuditVerificationLimits
+        ):
+            raise ValidationError("audit_verify_limits must be AuditVerificationLimits")
         self._engine = engine
         self._perm = permission
         self._scheduler = scheduler
@@ -840,6 +862,16 @@ class LocalMemoryAPI(MemoryAPI):
         self._audit = audit_logger
         self._space = space
         self._ingest_jobs = ingest_jobs
+        # 审计完整性 provider：未装配（None）时 verify_audit 返回 unsupported。装配后
+        # 由本层 verify_audit 经 provider.verify 流式校验证明链。provider 持有的
+        # ChainedAuditStore 与 self._audit 须是同一具名实例（装配侧保证）。
+        self._audit_integrity = audit_integrity_provider
+        # verify_audit 的全量验证是重操作，占专用 WorkloadGuard 的一个并发槽。
+        # 未装配 provider 时 guard 可为空（verify 直接返回 unsupported）；provider 与
+        # guard 必须成对注入，避免完整性验证无预算运行或与认证路径争抢同一预算。
+        self._audit_verify_guard = audit_verify_guard
+        # 可信服务端装配值；不从 verify_audit payload 或 provider 返回读取。
+        self._audit_verify_limits = audit_verify_limits or AuditVerificationLimits()
         # 空间授权事实的读取算子。取可选参数是为了不改变既有装配的构造签名：不做
         # 空间级判定的部署无须提供它，此时判定实现的 requires_space_facts 也为假。
         self._membership = membership
@@ -2822,11 +2854,95 @@ class LocalMemoryAPI(MemoryAPI):
         limit: int = 100,
     ) -> list[AuditEvent]:
         identity = security.auth.actor
-        # 审计查询跨 scope，按管理面闸门（根 scope READ）鉴权；
-        # 查询本身亦留痕。
+        # 审计查询跨 scope，继续按既有管理面闸门（根 scope READ）鉴权；存量授权记录
+        # 按 action 精确匹配，本接口 PR 不迁移其语义。READ_AUDIT 的切换须由独立的
+        # 兼容性变更连同授权数据迁移一起完成。查询本身亦留痕。
         auth = self._authorize(identity, _ROOT, Action.READ, "audit")
         self._log(identity, "audit", target_scope=_ROOT, detail=auth)
         return self._governor.audit(filters, limit)
+
+    def verify_audit(
+        self,
+        *,
+        security: RequestSecurityContext,
+        after_sequence: int = 0,
+        page_size: int = DEFAULT_AUDIT_VERIFY_PAGE_SIZE,
+        max_samples: int = DEFAULT_AUDIT_VERIFY_MAX_SAMPLES,
+        anchor_policy: str = "if_configured",
+    ) -> AuditVerificationResult:
+        identity = security.auth.actor
+        if (
+            not isinstance(after_sequence, int)
+            or isinstance(after_sequence, bool)
+            or after_sequence < 0
+        ):
+            raise ValidationError("after_sequence must be a non-negative integer")
+        if not isinstance(page_size, int) or isinstance(page_size, bool) or page_size <= 0:
+            raise ValidationError("page_size must be a positive integer")
+        if not isinstance(max_samples, int) or isinstance(max_samples, bool) or max_samples < 0:
+            raise ValidationError("max_samples must be a non-negative integer")
+        effective_page_size = min(page_size, self._audit_verify_limits.max_page_size)
+        effective_max_samples = min(max_samples, self._audit_verify_limits.max_samples)
+        if anchor_policy not in {"if_configured", "required", "skip"}:
+            raise ValidationError(
+                f"anchor_policy must be one of if_configured/required/skip, got {anchor_policy!r}"
+            )
+        # 验证审计链完整性：管理面根 scope 闸门使用独立 VERIFY_AUDIT 动作；
+        # 验证本身亦留痕。
+        auth = self._authorize(identity, _ROOT, Action.VERIFY_AUDIT, "verify_audit")
+        if self._audit_integrity is None:
+            # 未装配审计完整性 provider：诚实返回 unsupported，不抛错。
+            self._log(identity, "verify_audit", target_scope=_ROOT, detail=auth)
+            return AuditVerificationResult(
+                status=AuditIntegrityStatus.UNSUPPORTED,
+                checked_count=0,
+                error_count=0,
+                truncated=False,
+                high_water_mark=0,
+                key_epoch_range=(0, 0),
+                anchor=AnchorState(checked=False),
+                detail="audit integrity provider not configured",
+            )
+        # 全量验证在 WorkloadGuard 独立预算下执行：占用一个并发槽，耗尽则拒绝。
+        guard = self._audit_verify_guard
+        if guard is None:
+            raise ValidationError("audit verify workload guard is not configured")
+        if not guard.acquire():
+            self._log(
+                identity,
+                "verify_audit",
+                target_scope=_ROOT,
+                # decision 表达授权结果；此处授权已通过，失败的是操作准入，不能让
+                # decision=deny 的安全事件筛选把容量不足误报成权限拒绝。
+                decision="allow",
+                detail={
+                    **auth,
+                    "workload_guard": "exhausted",
+                },
+            )
+            raise RateLimitedError("audit verification workload budget exhausted")
+        # 与 audit() 一致，真正读取审计数据前先记录本次已授权且已准入的验证尝试。
+        # provider 若因链篡改、schema 损坏等抛 AuditIntegrityError，此记录仍可追溯
+        # 发起者与发生时间；异常继续原样传播，guard 仍由 finally 归还。
+        self._log(identity, "verify_audit", target_scope=_ROOT, detail=auth)
+        try:
+            result = self._audit_integrity.verify(
+                after_sequence=after_sequence,
+                page_size=effective_page_size,
+                max_samples=effective_max_samples,
+                anchor_policy=anchor_policy,
+            )
+        finally:
+            guard.release()
+        # Provider 也受契约约束，但 PEP 对公网返回体再做一次 fail-safe 截断；自定义或
+        # 旧 provider 即使错误地返回过多样本，也不能突破本次请求和可信装配的有效上限。
+        if len(result.samples) > effective_max_samples:
+            result = replace(
+                result,
+                samples=result.samples[:effective_max_samples],
+                truncated=True,
+            )
+        return result
 
     # -- 跨 scope 授权（直达 PermissionManager） ---------------------------- #
 

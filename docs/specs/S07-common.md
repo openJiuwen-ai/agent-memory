@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-08-29 |
+| 最近一次修订日期 | 2026-08-31 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F05-security-api-contracts.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md |
@@ -25,7 +25,7 @@
 - 审计日志（AuditLogger）
 - 数据保护横切接口（SecurityProvider）
 - 跨实例互斥横切接口（LockProvider）
-- 安全域契约（认证/密码学/保护/授权的抽象接口、公共安全值对象、请求上下文受控构造、`SecurityRuntime`；接口先行，实现暂缓）
+- 安全域契约（认证/密码学/保护/授权/审计完整性的抽象接口、公共安全值对象、请求上下文受控构造、`SecurityRuntime`；接口先行，实现暂缓）
 - 错误类型（自定义异常）
 - 工具函数（ID 生成/时间解析等）
 
@@ -178,6 +178,13 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 
 治理层通过 `Governor.audit(filters, limit)` 提供对外查询入口；`AuditLogger.query(...)` 是控制层消费审计后端的内部接口，不直接暴露为用户 API。
 
+基类**不**附带完整性方法（`verify_integrity` / `get_chain_head` 等一律不加）：完整性是
+opt-in 的 `audit_integrity` 能力（见上文安全域契约表），经 `ProtectedAuditLogger`
+（`audit/protected_audit_logger.py`，record 委派完整性 provider、query 透传）叠加，
+不往公共基类塞默认空实现形成 fail-open 契约。wrapper 构造时要求
+`provider.chain_store() is audit_logger`，以对象 identity 强制“记链与查询同一存储”的
+不变量，不能只依赖具名配置或注释。
+
 ### SecurityProvider（`security/security.py`）
 
 数据保护横切接口。调用方以 bytes 为边界接入：写入持久化字节前调用 `encrypt`，读取持久化字节后调用 `decrypt`。接口只表达数据保护能力，不绑定 `MemoryUnit` 序列化、不绑定 KV 后端、不决定是否默认启用加密。
@@ -211,7 +218,7 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 
 ### 安全域契约（`security/`，接口先行）
 
-F05 公共安全架构的契约层（认证 / 密码学 / 保护 / 授权 / Runtime 与公共安全值对象），
+F05 公共安全架构的契约层（认证 / 密码学 / 保护 / 授权 / 审计完整性 / Runtime 与公共安全值对象），
 **只固定接口，实现暂缓**。设计与过渡期语义见
 `docs/features/common/F05-security-api-contracts.md`。
 
@@ -223,7 +230,8 @@ F05 公共安全架构的契约层（认证 / 密码学 / 保护 / 授权 / Runt
 | `security/authorization/` | `Authorizer` / `RoutingFieldsProvider` / `GrantStore` / `DelegationStore` / `scope_covers` | 授权判定契约与授权真源；两代授权接口共享路由字段 capability；`grant_id` 是存储主键，撤销按 ID 且软撤销 |
 | `security/cryptography/` | `CryptographyProvider` / `KeyProvider` | 密码学能力与密钥提供方 |
 | `security/protection/` | `RateLimiter` / `WorkloadGuard` / `BindingPolicy` | 入口限流、昂贵操作并发预算与绑定策略 |
-| `security/runtime.py` | `SecurityRuntime` | 跨能力装配根（authenticator / authorizer / crypto / protection） |
+| `security/audit_integrity/` | `AuditIntegrityProvider` / `ChainedAuditStore` / `AuditAnchor` / `AnchorStatus` / `Proof` / `AuditVerificationLimits` / `AuditVerificationResult` | 审计链完整性契约（PR3）：链式 HMAC 证明、六布尔 `ChainStoreCapability` 行为声明与有界流式验证；`AnchorStatus` 固定锚点核对取值域并与 `AnchorState.checked` 交叉校验；`read_stable_snapshot(after_sequence)` 原子取得增量 checkpoint 与固定链头，`scan(..., through_sequence=快照链头)` 排除并发追加；可信 limits 与代码硬上限共同限制单页读取和 samples；`AuditLogger` 基类不加完整性默认方法，capability 不从 target 名推断 |
+| `security/runtime.py` | `SecurityRuntime` | 跨能力装配根（authenticator / authorizer / crypto / protection / audit_integrity） |
 | `security/legacy.py` | `legacy_request_context` | **过渡桥**：把旧调用方的 identity `Scope` 包成 `RequestSecurityContext`；假认证，随实装 PR 删除 |
 
 `Grant` 保留旧公共构造形状：调用方只传 `grantor` / `grantee` / `actions` 即可，
