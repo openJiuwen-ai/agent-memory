@@ -14,11 +14,19 @@ from __future__ import annotations
 
 import os
 import uuid
+from contextlib import suppress
 
 import pytest
 
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
-from jiuwen_memory.common.type_def import T_INVALID_OPEN, FilterClause, FilterGroup, FilterLogic, FilterOp, Scope
+from jiuwen_memory.common.type_def import (
+    T_INVALID_OPEN,
+    FilterClause,
+    FilterGroup,
+    FilterLogic,
+    FilterOp,
+    Scope,
+)
 from jiuwen_memory.storage.fulltext_impl.elasticsearch_fulltext import ElasticsearchFulltextStore
 from jiuwen_memory.storage.types import Document, TextQuery
 
@@ -43,10 +51,8 @@ def ft(ft_index):
     except Exception as exc:
         pytest.skip(f"elasticsearch unreachable on {ES_HOSTS}: {exc}")
     yield store, SCOPE
-    try:
+    with suppress(Exception):
         store.client.indices.delete(index=ft_index, ignore_unavailable=True)
-    except Exception:  # 清理尽力而为
-        pass
 
 
 def _ids(hits) -> set[str]:
@@ -217,6 +223,38 @@ def test_ft_metadata_filters(ft):
         ],
     )
     assert query_ids(tree) == {"r1"}
+
+
+def test_ft_date_like_tags_keep_keyword_mapping(ft, ft_index):
+    """日期样式 tag 不得把 metadata.tags 动态映射成 date。"""
+    store, scope = ft
+    store.insert(
+        scope,
+        [Document(id="date", text="visa", metadata={"tags": ["2025-12-31"]})],
+    )
+    mapping = store.client.indices.get_mapping(index=ft_index)
+    tags_mapping = mapping[ft_index]["mappings"]["properties"]["metadata"]["properties"]["tags"]
+    assert tags_mapping == {"type": "keyword"}
+    store.insert(
+        scope,
+        [Document(id="normal", text="visa", metadata={"tags": ["travel"]})],
+    )
+
+    def query_ids(value: str) -> set[str]:
+        return _ids(
+            store.search(
+                scope,
+                TextQuery(
+                    text="visa",
+                    top_k=10,
+                    filters=[FilterClause("tags", FilterOp.CONTAINS, value)],
+                ),
+            )
+        )
+
+    assert query_ids("2025-12-31") == {"date"}
+    assert query_ids("travel") == {"normal"}
+    assert store.get(scope, ["date"])[0].metadata == {"tags": ["2025-12-31"]}
 
 
 def test_ft_distinguishes_scalar_equality_from_array_membership(ft):
