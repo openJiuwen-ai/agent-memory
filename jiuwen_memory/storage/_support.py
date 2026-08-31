@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """具体后端实现共用的小工具：scope 过滤派生，及从 common 再导出的公共件。
 
 异常归一（``wrap_backend``）、scope 命名空间渲染（``scope_segments``）与 SSL 配置
@@ -8,7 +9,9 @@
 
 from __future__ import annotations
 
-from jiuwen_memory.common._support import (  # noqa: F401  向后兼容的再导出
+# The names below are kept as the storage package's backward-compatible import surface.
+# pylint: disable=unused-import
+from jiuwen_memory.common._support import (  # noqa: F401
     SCOPE_DIMS,
     SslConfig,
     as_bool,
@@ -19,6 +22,7 @@ from jiuwen_memory.common._support import (  # noqa: F401  向后兼容的再导
     scope_segments,
     wrap_backend,
 )
+# pylint: enable=unused-import
 from jiuwen_memory.common.type_def import Scope
 
 

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """控制层任务实现包（架构 §8）。
 
 各 Job 实现自本包导出：``EvolveJob``（通用演进任务，mode 由构造参数注入）、

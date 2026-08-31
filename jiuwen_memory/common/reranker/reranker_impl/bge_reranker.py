@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """BGEReranker — BAAI BGE reranker 本地交叉编码精排实现。
 
 使用 ``FlagEmbedding`` 的 ``FlagReranker`` 加载 BGE reranker 模型，对

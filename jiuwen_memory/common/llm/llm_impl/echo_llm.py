@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~common.llm.base.LLM`——确定性回显桩。
 
 无外部模型/服务：``chat`` 返回最后一条 user 消息内容（``generate`` 即回显 prompt）。

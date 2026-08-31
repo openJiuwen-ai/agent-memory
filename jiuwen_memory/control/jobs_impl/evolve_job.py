@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """EvolveJob——通用演进入口。
 
 数据来源、调用方式与原 ``InProcessScheduler._execute_task`` 一致——
@@ -38,6 +39,10 @@ class EvolveJob(Job):
         self._storage = storage
         self._evolver = evolver
         self._mode = mode
+
+    @property
+    def mode(self) -> str:
+        return self._mode.value
 
     async def run(self) -> JobInfo:
         # 排除中期记忆：middle 路径写入的 unit 由 MiddleToLongJob 专门处理，

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~common.normalizer.base.Normalizer` 的文本直通规约器。
 
 仅支持 TEXT 模态：从 ``RawPayload`` 取出 UTF-8 文本作为 content 投影

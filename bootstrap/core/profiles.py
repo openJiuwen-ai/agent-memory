@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Profiles & config stacking for the kernel surface (in-process assembly).
 
 ``OFFLINE`` is the no-external-deps baseline profile. ``load_config`` stacks JSON

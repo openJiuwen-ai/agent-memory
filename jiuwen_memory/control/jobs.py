@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Job — 控制层任务抽象。
 
 Job 封装"做什么 + 怎么找数据 + 怎么调 evolver + 怎么后处理"，本身不携带
@@ -39,6 +40,16 @@ class Job(ABC):
     @abstractmethod
     async def run(self) -> JobInfo:
         """执行任务，返回 JobInfo。"""
+
+    @property
+    def mode(self) -> str:
+        """本任务的演进模式取值；无演进模式的任务取空串。
+
+        鉴权点按该取值决定任务状态查询与取消要哪个动作（F07「入口到轴与动作的映射」），
+        因此它必须是演进模式而非任务类名——类名相同的任务可以是遗忘也可以是抽取，
+        两者的动作不同。
+        """
+        return ""
 
 
 class JobType(str, Enum):

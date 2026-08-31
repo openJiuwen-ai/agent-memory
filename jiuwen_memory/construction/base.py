@@ -1,7 +1,8 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """构建层（E 层）算子基类。
 
 构建层的输入是接入层规约/转换产生的 :class:`~common.type_def.MemoryUnit`。
-**落盘由本层负责**：构建层调用 ``src/storage`` 各 Store 把记忆单元写入
+**落盘由本层负责**：构建层调用 ``jiuwen_memory/storage`` 各 Store 把记忆单元写入
 真源，并在其上挖掘分层记忆、构建多形式索引（架构 §4/§6），由自演进
 闭环持续维护（§8）。各环节拆成可插拔算子：
 
@@ -12,8 +13,8 @@
 - :class:`~construction.index_builder.IndexBuilder` 多形式索引构建
 - :class:`~construction.evolver.Evolver` 自演进闭环
 
-算子内部调用 ``src/common`` 共享插件（分词/切分/向量化/特征抽取/LLM），
-经 ``src/storage`` 接口落库；二者均由装配注入，算子不依赖具体后端。
+算子内部调用 ``jiuwen_memory/common`` 共享插件（分词/切分/向量化/特征抽取/LLM），
+经 ``jiuwen_memory/storage`` 接口落库；二者均由装配注入，算子不依赖具体后端。
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ class OperatorType(str, Enum):
     INDEX_BUILDER = "index_builder"
     EVOLVER = "evolver"
     LAYER_ANNOTATOR = "layer_annotator"
+    ROUTER = "router"
 
 
 class ConstructionOperator(ABC):

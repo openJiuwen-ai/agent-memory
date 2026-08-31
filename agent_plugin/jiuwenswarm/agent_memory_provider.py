@@ -29,6 +29,7 @@ from typing import Any
 
 from openjiuwen.core.memory.external.provider import MemoryProvider
 
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX
 from jiuwen_memory.common.type_def.memory_codec import loads
 
@@ -115,7 +116,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
       非空 → HTTP 模式（路径 B，全 async，推荐生产）；空 → 进程内模式（路径 A）。
     - ``config_path``：进程内模式的 AgentMemory 配置文件路径（YAML/JSON）。
       生产应配真实后端 + llm extractor（见 §4.3）。
-    - ``user_id``/``agent_id``：mem0 兼容隔离键（默认与 mem0 一致）。
+    - ``user_id``/``agent_id``：兼容常见记忆层隔离键（默认约定一致）。
     """
 
     def __init__(
@@ -200,7 +201,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         self._user_id = kwargs.get("user_id") or self._user_id
         self._scope_id = kwargs.get("scope_id", "__default__")
         self._session_id = kwargs.get("session_id", "__default__")
-        # mem0 兼容：agent_id 可由 kwargs 覆盖
+        # 兼容约定：agent_id 可由 kwargs 覆盖
         if kwargs.get("agent_id"):
             self._agent_id = kwargs["agent_id"]
 
@@ -270,7 +271,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 conclusion = args.get("conclusion", "")
                 if not conclusion:
                     return json.dumps({"error": "Missing required parameter: conclusion"})
-                # 原样存（对齐 mem0 infer=False）；add_async 会自动触发 background
+                # 原样存（对齐常见记忆层 infer=False）；add_async 会自动触发 background
                 # EXTRACT，但默认占位空转（§4.1.1），需配 extractor:llm 才真抽取。
                 await self._client.add(conclusion, scope, tags=["conclude"])
                 logger.info("[AgentMemoryMemoryProvider] agent_memory_conclude stored=%r", conclusion[:300])
@@ -344,7 +345,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
     async def sync_turn(
         self, user_msg: str, assistant_msg: str, **kwargs: Any
     ) -> None:
-        """存本轮对话原文并**同步抽取事实**（对齐 mem0 ``add(infer=True)``）。
+        """存本轮对话原文并**同步抽取事实**（对齐常见记忆层 ``add(infer=True)``）。
 
         传 ``system_metadata={"infer": "true"}`` 给 AgentMemory ``add``：hot path 同步调
         Extractor 从 ``user: ...\\nassistant: ...`` 抽取派生事实并建索引，**原文
@@ -413,7 +414,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         - ``user_id`` → ``.user``
         - ``agent_id`` → ``.agent``
         - ``session_id`` → ``.session``（空则跨会话共享，显式传才隔离）
-        - ``scope_id`` → ``.org``（作 tenant，mem0 忽略 scope_id，AgentMemory 用作租户）
+        - ``scope_id`` → ``.org``（作 tenant；部分记忆层忽略 scope_id，AgentMemory 用作租户）
         identity = target（actor==target，单租户，与 HTTP surface 一致）
 
         返回内置 _Scope（而非 api.Scope），让 HTTP 模式无需 AgentMemory src 在 path。
@@ -670,7 +671,7 @@ class _InProcessClient(_AgentMemoryClient):
 
         units = await self._api.add_async(
             content, api_scope,
-            source=Modality.TEXT, identity=api_scope,
+            source=Modality.TEXT, security=legacy_request_context(api_scope),
             tags=tags,
             system_metadata=system_metadata,
             user_metadata=user_metadata,
@@ -689,7 +690,7 @@ class _InProcessClient(_AgentMemoryClient):
             self._api.search,
             query,
             Context(scope=api_scope),
-            identity=api_scope,
+            security=legacy_request_context(api_scope),
             filters=filters,
             top_k=top_k,
             disclosure=DisclosureLevel.L2,
@@ -721,7 +722,11 @@ class _InProcessClient(_AgentMemoryClient):
 
         # evolve 是同步+asyncio.run，必须 to_thread
         await asyncio.to_thread(
-            self._api.evolve, api_scope, EvolveMode.EXTRACT, Channel.BACKGROUND, identity=api_scope
+            self._api.evolve,
+            api_scope,
+            EvolveMode.EXTRACT,
+            Channel.BACKGROUND,
+            security=legacy_request_context(api_scope),
         )
 
     async def close(self) -> None:

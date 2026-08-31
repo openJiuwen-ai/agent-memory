@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """llm_impl 实现集：工厂 LlmProducer + 各实现。
 
 import 各实现模块即触发其 ``@LlmProducer.register(...)`` 自注册；本包只对外暴露工厂 LlmProducer。

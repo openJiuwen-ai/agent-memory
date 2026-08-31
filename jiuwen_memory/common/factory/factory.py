@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Factory — 注册式工厂基类（开闭：分发封闭、实现可插拔）+ 具名实例共享。
 
 每个 producer 继承本类，声明全局唯一的 ``TOP_NAME``（配置里的顶层命名空间），

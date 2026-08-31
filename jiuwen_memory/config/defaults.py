@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """内置默认装配配置：离线进程内栈，用**显式具名 + 引用**复刻系统的共享拓扑。
 
 ``build_kernel`` 未传 config 时用它装配；传 config 时把用户配置**合并覆盖**到它之上
@@ -107,6 +108,7 @@ def default_config_dict() -> dict[str, Any]:
                     "feature_extractor": _D,
                     "sanitize_enabled": True,
                     "sanitize_strip_code": False,
+                    "rewrite_enabled": False,
                 },
             }
         },
@@ -255,6 +257,9 @@ def default_config_dict() -> dict[str, Any]:
         "governor": {_D: {"target": "in_memory", "params": {"audit": _D, "storage": _D}}},
         "permission": {_D: {"target": "sqlite", "params": {"db_path": ":memory:"}}},
         "space": {_D: {"target": "kv", "params": {"storage": _D}}},
+        # 空间授权事实的读取与缓存。params 只引用 space：正查（元数据与成员表）与
+        # 反查（主体到空间）都在 SpaceManager 契约内，本算子只依赖它一个。
+        "membership": {_D: {"target": "kv", "params": {"space": _D}}},
         # 可插拔配置来源：默认装配快照；产品可覆盖为 dict/overlay/自研 target
         "config_source": {_D: "yaml_defaults"},
     }
@@ -273,6 +278,7 @@ ROOT_PARAMS: dict[str, str] = {
     "security": _D,
     "storage": _D,
     "space": _D,
+    "membership": _D,
     "config_source": _D,
 }
 

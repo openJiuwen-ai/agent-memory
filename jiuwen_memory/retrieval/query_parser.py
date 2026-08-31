@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """QueryParser — 查询理解。
 
 把自然语言 query 解析为结构化的 :class:`ParsedQuery`，供各召回通道

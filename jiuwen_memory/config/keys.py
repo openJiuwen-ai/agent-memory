@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """ConfigSource 稳定 key 约定（S08 推荐路径的常量与拼接辅助）。
 
 业务配置与加密密钥（:class:`~common.security.key_source.KeySource`）分属不同抽象：

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Scheduler — 演进调度（架构 §8 双通道）。
 
 控制层驱动构建层自演进的调度面：hot 通道做低时延的在线轻量更新，

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """OpenAIEmbedder — OpenAI 兼容 Embeddings API 实现。
 
 调用 OpenAI SDK 的 embeddings.create 接口，支持：

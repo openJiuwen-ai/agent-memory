@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """评估框架核心抽象：数据集、采集、编排、报告。"""
 
 from __future__ import annotations

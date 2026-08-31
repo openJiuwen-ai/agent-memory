@@ -121,8 +121,8 @@ memory_api:
     # keyword_l0/keyword_l1/vector* 沿用 defaults.py 默认（不在此重复声明，避免整体替换丢字段）
 
   # query_parser 不走 LLM 改写：对话模型会把 query「答」成长文，反而拖垮召回（语义漂移 +
-  # 10~19s 延迟）。这里把它的 llm 依赖内联成匿名 echo（不引用共享 dashscope）令 query 原样透传；
-  # 实例级覆盖会整体替换默认 params，故 tokenizer/embedder 需一并写出（仍引用各自 default）。
+  # 10~19s 延迟）。通过 rewrite_enabled 开关控制改写（默认关闭）；如需启用，设为 true 并
+  # 配置适合改写的 LLM。实例级覆盖会整体替换默认 params，故 tokenizer/embedder 需一并写出。
   query_parser:
     default:
       target: simple
@@ -130,3 +130,4 @@ memory_api:
         tokenizer: default
         embedder: default
         llm: { target: echo }
+        rewrite_enabled: false

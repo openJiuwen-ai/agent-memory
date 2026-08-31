@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~construction.index_builder.IndexBuilder`。
 
 把记忆单元的 content 经注入的 :class:`~common.chunker.base.Chunker` 切片

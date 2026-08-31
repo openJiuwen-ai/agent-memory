@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Structured discloser — 面向 Agent 消费的结构化渐进披露。"""
 
 from __future__ import annotations
@@ -76,6 +77,7 @@ class StructuredDiscloser(Discloser):
                     content=full,
                     user_metadata=dict(unit.user_metadata),
                     level=level,
+                    system_metadata=dict(unit.system_metadata),
                 )
             )
         return items
@@ -124,6 +126,7 @@ class StructuredDiscloser(Discloser):
                     content=full,
                     user_metadata=dict(variant.unit.user_metadata),
                     level=actual_level,
+                    system_metadata=dict(variant.unit.system_metadata),
                 )
             )
         return items

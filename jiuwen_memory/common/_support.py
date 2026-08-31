@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """跨层共用的小工具：配置值归一、TLS 配置读取与校验、scope 命名空间渲染、异常归一。
 
 出站客户端（LLM / Embedder / Reranker）连的是 HTTP API，与 storage 连托管实例的

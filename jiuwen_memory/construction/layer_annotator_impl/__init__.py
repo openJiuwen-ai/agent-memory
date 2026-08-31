@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """layer_annotator_impl 实现集：工厂 LayerAnnotatorProducer + 各实现。
 
 import 各实现模块即触发其 ``@LayerAnnotatorProducer.register(...)`` 自注册；

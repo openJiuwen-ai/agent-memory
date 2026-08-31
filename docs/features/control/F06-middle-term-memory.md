@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-31（决策 9 分布式锁接入：2026-08-17） |
-| 影响范围 | `src/control/jobs.py`、`src/control/jobs_impl/`（含 `MiddleToLongJob` 加 `lock` 字段）、`src/control/scheduler.py`、`src/control/scheduler_impl/async_timer_scheduler.py`、`src/control/scheduler_impl/in_process_scheduler.py`、`src/control/engine_impl/in_memory_engine.py`、`src/control/engine_impl/cloud_engine.py`、`src/control/bootstrap.py`、`src/construction/dedup_impl/keyword_dedup.py`、`src/construction/dedup_impl/vector_dedup.py`、`src/config/defaults.py`；决策 9 复用 [`F06-distributed-lock`](../common/F06-distributed-lock.md) 的 `LockProvider` 横切原语 |
+| 影响范围 | `jiuwen_memory/control/jobs.py`、`jiuwen_memory/control/jobs_impl/`（含 `MiddleToLongJob` 加 `lock` 字段）、`jiuwen_memory/control/scheduler.py`、`jiuwen_memory/control/scheduler_impl/async_timer_scheduler.py`、`jiuwen_memory/control/scheduler_impl/in_process_scheduler.py`、`jiuwen_memory/control/engine_impl/in_memory_engine.py`、`jiuwen_memory/control/engine_impl/cloud_engine.py`、`jiuwen_memory/control/bootstrap.py`、`jiuwen_memory/construction/dedup_impl/keyword_dedup.py`、`jiuwen_memory/construction/dedup_impl/vector_dedup.py`、`jiuwen_memory/config/defaults.py`；决策 9 复用 [`F06-distributed-lock`](../common/F06-distributed-lock.md) 的 `LockProvider` 横切原语 |
 | 测试基线 | `pytest tests/unit/control tests/unit/construction` 全绿（307 passed）；`test_middle_e2e_real_llm.py` 4 个 e2e 用例**默认 skip**（依赖外部 LLM 凭证）；`test_middle_two_instances_e2e.py` 双实例 e2e 用例**默认 skip**（依赖真实 Redis 容器，验证跨实例互斥语义）|
 | Refs | [`F02-write-infer-extract`](../api/F02-write-infer-extract.md)、[`F01-control-impl-design`](F01-control-impl-design.md)、[`F05-cloud-engine-design`](F05-cloud-engine-design.md)、[`F06-distributed-lock`](../common/F06-distributed-lock.md) |
 
@@ -35,7 +35,7 @@ mem2.0 把这件事拆回控制层标准范式：
 
 ### 决策 1：新增 `Job` 抽象，把"做什么"从 Scheduler 中拆出
 
-`src/control/jobs.py` 定义 `Job`（ABC，dataclass）与 `JobFactory`：
+`jiuwen_memory/control/jobs.py` 定义 `Job`（ABC，dataclass）与 `JobFactory`：
 
 - `Job` 持 `scope` + `interval` 两个标识字段：`interval=0` 是一次性任务，`interval>0` 是定时任务声明。`run() -> JobInfo` 是唯一执行入口，处理一次即返回，**不自带循环**——周期由 Scheduler 的 Timer 负责。
 - `JobFactory` 按 `job_type + scope + 可选运行时参数` 生成实例。装配期把各 Job 类型的 builder 闭包注册进来，闭包内固化依赖（kv/evolver/llm 等）与业务参数（max_fetch/batch_size 等），运行时只补 scope 与运行时参数（interval/mode）。
@@ -48,7 +48,7 @@ mem2.0 把这件事拆回控制层标准范式：
 
 ### 决策 2：`AsyncTimerScheduler` —— 异步 + 定时调度器
 
-`src/control/scheduler_impl/async_timer_scheduler.py` 注册为 `scheduler: async_timer`。三层结构：
+`jiuwen_memory/control/scheduler_impl/async_timer_scheduler.py` 注册为 `scheduler: async_timer`。三层结构：
 
 - **per scope FIFO 队列** + 单 drain Task：同 scope 串行性由"per scope 单 drain Task"保证——`_ensure_drain_task` 检查 `existing.done()`，旧 drain 没跑完不创建新 drain。单线程事件循环 + 单 drain 协程跑 FIFO，无并发竞争，无需 `asyncio.Lock`。跨 scope 完全并行（不同 drain Task 抢不同队列）。
 - **per scope TimerWheel** + 单 Timer 协程：每 `tick_interval` 秒扫 entries 检查 `next_run_at`，到点生成一次性实例塞 queue（`copy.copy(entry.job)` + `interval=0`），重置 `next_run_at = now + interval`。Timer 协程只做"扫一遍 + append"，不抢 drain Task——一次性任务能在 tick 间隙跑。
@@ -62,7 +62,7 @@ mem2.0 把这件事拆回控制层标准范式：
 
 ### 决策 3：`MiddleToLongJob` —— 中期转长期任务
 
-`src/control/jobs_impl/middle_to_long_job.py` 注册到 `JobType.MIDDLE_TO_LONG`。`run()` 流程：
+`jiuwen_memory/control/jobs_impl/middle_to_long_job.py` 注册到 `JobType.MIDDLE_TO_LONG`。`run()` 流程：
 
 1. **list 候选**：`kv.scan(scope, MEMORY_KEY_PREFIX)` → 反序列化 → 过滤 `tier=WORKING + lifecycle=ACTIVE + metadata["middle"]="true"` → 按 `t_ingest` 升序取最老 max_fetch 条（默认 100）。
 2. **空候选退出**：返回 `is_done="true"`，Scheduler 的 `_merge_info` 标记 parent entry `is_done`，下次 tick 跳过；entries 全 `is_done` 时 Timer 协程退出。
@@ -94,7 +94,7 @@ mem2.0 把这件事拆回控制层标准范式：
 
 ### 决策 5：`EvolveJob` —— 通用演进入口（替代原 InProcessScheduler._execute_task）
 
-`src/control/jobs_impl/evolve_job.py` 注册到 `JobType.EVOLVE`。`run()` 流程：`kv.scan(scope, MEMORY_KEY_PREFIX)` → 反序列化 + 过滤 `metadata["middle"]!="true"`（中期记忆由 MiddleToLongJob 专门处理，避免同一原文被两次处理）→ `evolver.evolve(units, mode)`。`mode` 由构造参数注入，支持 EXTRACT/ASSOCIATE/CONSOLIDATE/FORGET 任意值，忠实于原 `submit(scope, mode, channel)` 的 mode 语义。
+`jiuwen_memory/control/jobs_impl/evolve_job.py` 注册到 `JobType.EVOLVE`。`run()` 流程：`kv.scan(scope, MEMORY_KEY_PREFIX)` → 反序列化 + 过滤 `metadata["middle"]!="true"`（中期记忆由 MiddleToLongJob 专门处理，避免同一原文被两次处理）→ `evolver.evolve(units, mode)`。`mode` 由构造参数注入，支持 EXTRACT/ASSOCIATE/CONSOLIDATE/FORGET 任意值，忠实于原 `submit(scope, mode, channel)` 的 mode 语义。
 
 `Engine.evolve` 不再直接 new EvolveJob，走 `JobFactory.get_job(JobType.EVOLVE, scope=scope, mode=mode)`——与 MiddleToLongJob 创建路径统一。
 

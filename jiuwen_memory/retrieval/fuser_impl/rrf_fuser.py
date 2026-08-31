@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~retrieval.fuser.Fuser`——RRF 倒数排名融合。
 
 各路候选按 RRF（Reciprocal Rank Fusion）合并：同一 unit 在每路里按其名次 r 贡献

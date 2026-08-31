@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """construction 模块内的公共实现。
 
 放抽取/分类等算子共享的小工具。此前 ``llm_extractor._parse_tags`` 与

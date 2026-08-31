@@ -13,6 +13,7 @@ from jiuwen_memory.api import build_kernel
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import (
     ChatMessage,
     EntityBatchResult,
@@ -904,7 +905,7 @@ def test_schema_enabled_assembly_runs_source_first_property_extraction(monkeypat
     created = kernel.api.add(
         "speaker=Alice: On 2023-08-03, I became a software engineer.",
         scope,
-        identity=scope,
+        security=legacy_request_context(scope),
         system_metadata={"infer": True},
     )
 

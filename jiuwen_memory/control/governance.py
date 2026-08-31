@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Governor — 治理（架构 §12：可检视/可回溯/可审计）。
 
 透明可治理的落点：记忆可被人检视、沿 provenance 血缘回溯「这条记忆

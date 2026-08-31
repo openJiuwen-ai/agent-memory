@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """注册式工厂层：:class:`Factory` 基类。
 
 各组件的工厂均为组件级注册式工厂，且**与各自的契约同处接口模块**（如

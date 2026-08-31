@@ -4,16 +4,64 @@ from __future__ import annotations
 
 import pytest
 
+from jiuwen_memory.common.embedder.embedder_impl.hashing_embedder import HashingEmbedder
 from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
+from jiuwen_memory.retrieval.discloser_impl.truncating_discloser import TruncatingDiscloser
+from jiuwen_memory.retrieval.fuser_impl.rrf_fuser import RRFFuser
+from jiuwen_memory.retrieval.query_parser_impl.simple_query_parser import SimpleQueryParser
 from jiuwen_memory.retrieval.recaller_impl.graph_recaller import GraphRecaller
 from jiuwen_memory.retrieval.recaller_impl.keyword_recaller import KeywordRecaller
 from jiuwen_memory.retrieval.recaller_impl.vector_recaller import VectorRecaller
-from jiuwen_memory.retrieval.types import ParsedQuery, RetrievalQuery
+from jiuwen_memory.retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
+from jiuwen_memory.retrieval.retriever_impl.unit_reader import UnitReader
+from jiuwen_memory.retrieval.types import ParsedQuery, RecallChannel, RetrievalQuery
 from jiuwen_memory.storage.graph_impl.in_memory_graph_store import InMemoryGraphStore
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 from jiuwen_memory.storage.types import Edge, Node
 
 pytestmark = pytest.mark.unit
+
+
+class _RecordingVectorStore:
+    def __init__(self) -> None:
+        self.query = None
+
+    @staticmethod
+    def score_higher_is_better() -> bool:
+        return True
+
+    def recall(self, scope, query, output_fields=None):
+        self.query = query
+        return []
+
+
+class _RecordingFulltextStore:
+    def __init__(self) -> None:
+        self.query = None
+
+    def search(self, scope, query):
+        self.query = query
+        return []
+
+    @staticmethod
+    def get(scope, ids):
+        return []
+
+
+class _RecordingGraphStore:
+    def __init__(self) -> None:
+        self.seed_terms = None
+        self.query = None
+
+    def seed_ids(self, scope, terms):
+        self.seed_terms = terms
+        return ["seed"]
+
+    def search(self, scope, query):
+        self.query = query
+        return []
 
 
 @pytest.fixture
@@ -45,6 +93,101 @@ def test_vector_recall_empty_without_vector(world, scope) -> None:
     results = world.vector_recaller.recall(scope, ParsedQuery(raw="x"), 10)
 
     assert results == []
+
+
+def test_vector_recaller_forwards_runtime_extension_identity(scope) -> None:
+    """Unit boundary: VectorRecaller preserves a live extension object into VectorQuery."""
+    marker = object()
+    vector_store = _RecordingVectorStore()
+    vector = VectorRecaller(CompositeStorage(vector=vector_store))
+    vector.recall(
+        scope,
+        ParsedQuery(raw="x", vector=[0.1], extensions={"db_query_service": marker}),
+        10,
+    )
+    assert vector_store.query.extensions["db_query_service"] is marker
+
+
+def test_keyword_recaller_forwards_runtime_extension_identity(scope) -> None:
+    """Unit boundary: KeywordRecaller preserves a live extension object into TextQuery."""
+    marker = object()
+    fulltext_store = _RecordingFulltextStore()
+    keyword = KeywordRecaller(CompositeStorage(fulltext=fulltext_store))
+    keyword.recall(
+        scope,
+        ParsedQuery(raw="x", extensions={"encryption_port": marker}),
+        10,
+    )
+    assert fulltext_store.query.extensions["encryption_port"] is marker
+
+
+def test_graph_recaller_forwards_runtime_extension_identity(scope) -> None:
+    """Unit boundary: GraphRecaller preserves a live extension object into GraphQuery."""
+    marker = object()
+    graph_store = _RecordingGraphStore()
+    recaller = GraphRecaller(CompositeStorage(graph=graph_store))
+
+    recaller.recall(
+        scope,
+        ParsedQuery(raw="coffee", keywords=["coffee"], extensions={"graph_runtime": marker}),
+        10,
+    )
+
+    assert graph_store.query.extensions["graph_runtime"] is marker
+
+
+def test_pipeline_forwards_runtime_extension_identity_to_all_store_queries(scope) -> None:
+    """Prove runtime-object identity from RetrievalQuery through each Store query.
+
+    Marker values cannot cross JSON, so this covers in-process plugin objects only. HTTP tests cover
+    JSON-compatible extension values separately.
+    """
+    vector_store = _RecordingVectorStore()
+    fulltext_store = _RecordingFulltextStore()
+    graph_store = _RecordingGraphStore()
+    storage = CompositeStorage(
+        kv=InMemoryKVStore(),
+        vector=vector_store,
+        fulltext=fulltext_store,
+        graph=graph_store,
+    )
+    tokenizer = WhitespaceTokenizer()
+    parser = SimpleQueryParser(tokenizer, HashingEmbedder(tokenizer))
+    recallers = [
+        VectorRecaller(storage),
+        KeywordRecaller(storage),
+        GraphRecaller(storage),
+    ]
+    retriever = PipelineRetriever(
+        parser,
+        recallers,
+        RRFFuser(),
+        TruncatingDiscloser(),
+        UnitReader(storage.kv),
+        storage=storage,
+    )
+    vector_marker = object()
+    text_marker = object()
+    graph_marker = object()
+
+    result = retriever.retrieve(
+        scope,
+        RetrievalQuery(
+            text="coffee",
+            top_k=1,
+            channels=[RecallChannel.VECTOR, RecallChannel.KEYWORD, RecallChannel.GRAPH],
+            extensions={
+                "db_query_service": vector_marker,
+                "encryption_port": text_marker,
+                "graph_runtime": graph_marker,
+            },
+        ),
+    )
+
+    assert result.errors == []
+    assert vector_store.query.extensions["db_query_service"] is vector_marker
+    assert fulltext_store.query.extensions["encryption_port"] is text_marker
+    assert graph_store.query.extensions["graph_runtime"] is graph_marker
 
 
 def test_vector_recall_min_similarity_filters(indexed_world, scope) -> None:

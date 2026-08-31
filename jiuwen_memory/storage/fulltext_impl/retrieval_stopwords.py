@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """全文检索查询侧的中文停用词表。
 
 仅过滤不承载检索意图的高频中文结构虚词。刻意保留“不/没有/什么/如何”等

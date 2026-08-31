@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """PostgreSQL-backed :class:`~storage.kv.KVStore` implementation."""
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, FilterExpr, Scope
 from jiuwen_memory.storage.kv import KvProducer
 
-from .._pg import PgStoreBase, pg_scope_clause
+from .._pg import PgStoreBase, _quote_ident, pg_scope_clause
 from .._support import read_ssl_config, wrap_backend
 from ..base import StoreType
 from ..kv import KVStore
@@ -54,8 +55,11 @@ class PostgresKVStore(PgStoreBase, KVStore):
 
     @staticmethod
     def _expiry_sql() -> str:
+        # 守卫参数须显式 ::numeric：裸参数与整数 0 比较时 PG 推断为 int4，
+        # asyncpg 会把 float ttl 截断成 0，CASE 恒走 ELSE 使 TTL 失效（psycopg
+        # 客户端声明 float8 类型故无此问题）。
         return (
-            "CASE WHEN %s > 0 THEN "
+            "CASE WHEN %s::numeric > 0 THEN "
             "extract(epoch from clock_timestamp()) + %s ELSE NULL END"
         )
 
@@ -70,9 +74,8 @@ class PostgresKVStore(PgStoreBase, KVStore):
         self._health()
 
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
-        statement = self.sql.SQL(
-            f"""
-            INSERT INTO {{}} AS current (
+        statement = f"""
+            INSERT INTO {self._table_ref} AS current (
                 scope_org, scope_space, scope_user, scope_agent, scope_session,
                 key, value, expires_at
             )
@@ -84,19 +87,15 @@ class PostgresKVStore(PgStoreBase, KVStore):
             WHERE current.expires_at IS NOT NULL
               AND current.expires_at <= extract(epoch from clock_timestamp())
             RETURNING 1
-            """
-        ).format(self._qualified())
+        """
         params = (*self._scope_params(scope), key, value, ttl, ttl)
         with wrap_backend(f"postgres insert {key!r}"):
-            with self.pool.connection() as conn, conn.cursor() as cursor:
-                cursor.execute(statement, params)
-                if cursor.fetchone() is None:
-                    raise ConflictError(entity="key", key=key)
+            if self._fetch_one(statement, params) is None:
+                raise ConflictError(entity="key", key=key)
 
     def update(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
-        statement = self.sql.SQL(
-            f"""
-            UPDATE {{}} SET
+        statement = f"""
+            UPDATE {self._table_ref} SET
                 value = %s,
                 expires_at = {self._expiry_sql()}
             WHERE scope_org = %s
@@ -107,38 +106,28 @@ class PostgresKVStore(PgStoreBase, KVStore):
               AND key = %s
               AND (expires_at IS NULL OR expires_at > extract(epoch from clock_timestamp()))
             RETURNING 1
-            """
-        ).format(self._qualified())
+        """
         params = (value, ttl, ttl, *self._scope_params(scope), key)
         with wrap_backend(f"postgres update {key!r}"):
-            with self.pool.connection() as conn, conn.cursor() as cursor:
-                cursor.execute(statement, params)
-                if cursor.fetchone() is None:
-                    raise NotFoundError(entity="key", key=key)
+            if self._fetch_one(statement, params) is None:
+                raise NotFoundError(entity="key", key=key)
 
     def delete(self, scope: Scope, key: str) -> None:
         clause, params = pg_scope_clause(scope, exact=True)
-        statement = self.sql.SQL(f"DELETE FROM {{}} WHERE {clause} AND key = %s").format(
-            self._qualified()
-        )
+        statement = f"DELETE FROM {self._table_ref} WHERE {clause} AND key = %s"
         with wrap_backend(f"postgres delete {key!r}"):
-            with self.pool.connection() as conn, conn.cursor() as cursor:
-                cursor.execute(statement, [*params, key])
+            self._execute(statement, (*params, key))
 
     def get(self, scope: Scope, key: str) -> bytes:
         clause, params = pg_scope_clause(scope, exact=True)
-        statement = self.sql.SQL(
-            f"""
-            SELECT value FROM {{}}
+        statement = f"""
+            SELECT value FROM {self._table_ref}
             WHERE {clause}
               AND key = %s
               AND (expires_at IS NULL OR expires_at > extract(epoch from clock_timestamp()))
-            """
-        ).format(self._qualified())
+        """
         with wrap_backend(f"postgres get {key!r}"):
-            with self.pool.connection() as conn, conn.cursor() as cursor:
-                cursor.execute(statement, [*params, key])
-                row = cursor.fetchone()
+            row = self._fetch_one(statement, (*params, key))
         if row is None:
             raise NotFoundError(entity="key", key=key)
         return bytes(row[0])
@@ -147,19 +136,15 @@ class PostgresKVStore(PgStoreBase, KVStore):
         if not keys:
             return []
         clause, params = pg_scope_clause(scope, exact=True)
-        statement = self.sql.SQL(
-            f"""
-            SELECT key, value FROM {{}}
+        statement = f"""
+            SELECT key, value FROM {self._table_ref}
             WHERE {clause}
               AND key = ANY(%s)
               AND (expires_at IS NULL OR expires_at > extract(epoch from clock_timestamp()))
-            """
-        ).format(self._qualified())
+        """
         with wrap_backend(f"postgres mget {len(keys)} keys"):
-            with self.pool.connection() as conn, conn.cursor() as cursor:
-                cursor.execute(statement, [*params, keys])
-                rows = cursor.fetchall()
-        values = {str(key): bytes(value) for key, value in rows}
+            rows = self._fetch_all(statement, (*params, keys))
+        values = {str(row[0]): bytes(row[1]) for row in rows}
         for key in keys:
             if key not in values:
                 raise NotFoundError(entity="key", key=key)
@@ -167,34 +152,26 @@ class PostgresKVStore(PgStoreBase, KVStore):
 
     def exists(self, scope: Scope, key: str) -> bool:
         clause, params = pg_scope_clause(scope, exact=True)
-        statement = self.sql.SQL(
-            f"""
-            SELECT 1 FROM {{}}
+        statement = f"""
+            SELECT 1 FROM {self._table_ref}
             WHERE {clause}
               AND key = %s
               AND (expires_at IS NULL OR expires_at > extract(epoch from clock_timestamp()))
-            """
-        ).format(self._qualified())
+        """
         with wrap_backend(f"postgres exists {key!r}"):
-            with self.pool.connection() as conn, conn.cursor() as cursor:
-                cursor.execute(statement, [*params, key])
-                return cursor.fetchone() is not None
+            return self._fetch_one(statement, (*params, key)) is not None
 
     def scan(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
         clause, params = pg_scope_clause(scope, exact=True)
-        statement = self.sql.SQL(
-            f"""
-            SELECT key, value FROM {{}}
+        statement = f"""
+            SELECT key, value FROM {self._table_ref}
             WHERE {clause}
               AND starts_with(key, %s)
               AND (expires_at IS NULL OR expires_at > extract(epoch from clock_timestamp()))
-            """
-        ).format(self._qualified())
+        """
         with wrap_backend(f"postgres scan {prefix!r}"):
-            with self.pool.connection() as conn, conn.cursor() as cursor:
-                cursor.execute(statement, [*params, prefix])
-                rows = cursor.fetchall()
-        return [(str(key), bytes(value)) for key, value in rows]
+            rows = self._fetch_all(statement, (*params, prefix))
+        return [(str(row[0]), bytes(row[1])) for row in rows]
 
     def list(
         self,
@@ -216,33 +193,29 @@ class PostgresKVStore(PgStoreBase, KVStore):
         )
 
     def scopes(self) -> list[Scope]:
-        statement = self.sql.SQL(
-            """
-            SELECT DISTINCT
-                scope_org, scope_space, scope_user, scope_agent, scope_session
-            FROM {}
-            """
-        ).format(self._qualified())
+        statement = (
+            "SELECT DISTINCT scope_org, scope_space, scope_user, scope_agent, scope_session "
+            f"FROM {self._table_ref}"
+        )
         with wrap_backend("postgres scopes"):
-            with self.pool.connection() as conn, conn.cursor() as cursor:
-                cursor.execute(statement)
-                rows = cursor.fetchall()
+            rows = self._fetch_all(statement, ())
         return [
-            Scope(org=org, space=space, user=user, agent=agent, session=session)
-            for org, space, user, agent, session in rows
+            Scope(org=row[0], space=row[1], user=row[2], agent=row[3], session=row[4])
+            for row in rows
         ]
 
-    def _ensure_schema(self, pool: Any) -> None:
-        with pool.connection() as conn, conn.cursor() as cursor:
+    async def _ensure_schema(self, pool: Any) -> None:
+        async with pool.acquire() as conn:
             if not self._auto_create_schema:
-                self._require_table(cursor)
+                await self._require_table(conn)
                 return
-            self._lock_schema(cursor)
-            self._create_schema(cursor)
-            cursor.execute(
-                self.sql.SQL(
-                    """
-                    CREATE TABLE IF NOT EXISTS {} (
+            # advisory xact lock 依赖显式事务（spike 铁律 3），DDL 整体包一个事务。
+            async with conn.transaction():
+                await self._lock_schema(conn)
+                await self._create_schema(conn)
+                await conn.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {self._table_ref} (
                         scope_org text NOT NULL,
                         scope_space text NOT NULL,
                         scope_user text NOT NULL,
@@ -257,17 +230,12 @@ class PostgresKVStore(PgStoreBase, KVStore):
                         )
                     )
                     """
-                ).format(self._qualified())
-            )
-            cursor.execute(
-                self.sql.SQL(
-                    "CREATE INDEX IF NOT EXISTS {} ON {} (expires_at) "
-                    "WHERE expires_at IS NOT NULL"
-                ).format(
-                    self.sql.Identifier(f"{self._table}_expires_idx"),
-                    self._qualified(),
                 )
-            )
+                await conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS {_quote_ident(self._table + '_expires_idx')} "
+                    f"ON {self._table_ref} (expires_at) "
+                    "WHERE expires_at IS NOT NULL"
+                )
 
 
 @KvProducer.register("postgres")

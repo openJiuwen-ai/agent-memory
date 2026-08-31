@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """LogProducer — 注册式工厂：管理 log_impl 下全部日志初始化实现（按 config 选）。
 
 各实现在本包内以 ``@LogProducer.register("<名>")`` 自注册；builder 签名为

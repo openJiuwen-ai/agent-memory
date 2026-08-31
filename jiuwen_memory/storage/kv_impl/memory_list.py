@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """KVStore MemoryUnit 列表查询的公共兼容实现。"""
 
 from __future__ import annotations

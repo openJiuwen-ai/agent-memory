@@ -1,9 +1,10 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """接入层（A 层数据接入侧，架构 §10/§10.1）算子基类。
 
 接入层承接多模态信息源，对每条原始数据做两件事（检索链路不感知模态）：
 
 1. **保留原模态资产引用**——记入 ``MemoryUnit.assets``；
-2. **规约出可治理文本/结构投影**——调用 ``src/common`` 的
+2. **规约出可治理文本/结构投影**——调用 ``jiuwen_memory/common`` 的
    :class:`~common.normalizer.Normalizer` 产出 ``content``。
 
 **什么是「规约投影」**：把各种格式的来源统一转成一份系统能处理的文字
@@ -24,7 +25,7 @@
 
 随后把规约结果转换为 :class:`~common.type_def.MemoryUnit` 返回。
 **接入层不负责落盘**：记忆单元（含资产）写入真源由构建层调用
-``src/storage`` 完成。算子拆分：
+``jiuwen_memory/storage`` 完成。算子拆分：
 
 - :class:`~ingest.source.Source` 信息源连接器（对话/文档/代码/工具轨迹/图像/音视频）
 - :class:`~ingest.ingestor.Ingestor` 接入编排（规约 + 转换为记忆单元）

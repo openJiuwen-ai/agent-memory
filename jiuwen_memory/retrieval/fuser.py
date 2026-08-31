@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Fuser — 多路融合 + 重排（架构 §7 ③）。
 
 把各召回通道的候选合并去重、归一化打分并融合排序（如 RRF / 加权），

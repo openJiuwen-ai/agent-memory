@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Reranker — 重排能力：对候选文本按与 query 的相关性精排。
 
 **共用说明**：检索层在多路召回融合后调用它做精排（粗排靠各索引自身

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~ingest.source.Source`——内存文本信息源连接器。
 
 用一批预置文本模拟一类信息源（对话/导入），``fetch`` 把它们拉成统一的

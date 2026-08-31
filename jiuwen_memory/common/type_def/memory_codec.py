@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """``MemoryUnit`` ↔ bytes 编解码（无状态，跨层共用）。
 
 真源不是「一个存 MemoryUnit 的模块」——它就是裸 :class:`~storage.kv.KVStore` 存
@@ -17,6 +18,7 @@ import json
 from datetime import datetime
 
 from .memory import (
+    TRANSIENT_SYSTEM_METADATA_KEYS,
     ContentLayers,
     LifecycleState,
     MemoryTier,
@@ -78,7 +80,12 @@ def dumps(unit: MemoryUnit) -> bytes:
             "provenance": list(unit.provenance),
             "supersedes": unit.supersedes,
             "tags": list(unit.tags),
-            "system_metadata": dict(unit.system_metadata),
+            # 瞬态键消费后不落盘（route_ctx 是 RouteContext 对象，本就不可序列化）。
+            "system_metadata": {
+                key: value
+                for key, value in unit.system_metadata.items()
+                if key not in TRANSIENT_SYSTEM_METADATA_KEYS
+            },
             "user_metadata": dict(unit.user_metadata),
             "lifecycle": unit.lifecycle.value,
             "entities": list(unit.entities),

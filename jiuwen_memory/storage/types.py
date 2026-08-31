@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """存储层接口涉及的数据类型（仅定义结构，与具体后端无关）。
 
 **scope 不在这些结构体里**：它是各 Store 方法的显式第一入参（``scope: Scope``，
@@ -88,6 +89,7 @@ class VectorQuery:
     vector: list[float]  # 查询向量
     top_k: int = 10  # 返回条数
     filters: FilterExpr | None = None  # scope 之外的元数据谓词（AND/OR/NOT 树；None 表示无过滤）
+    extensions: dict[str, Any] = field(default_factory=dict)  # 调用方运行时透传配置
     # True 时支持的后端在 ANN 命中同时回带记录 metadata（填入 ScoredID.metadata）。
     return_metadata: bool = False
 
@@ -116,6 +118,7 @@ class TextQuery:
     text: str  # 查询文本（关键词/短语）
     top_k: int = 10  # 返回条数
     filters: FilterExpr | None = None  # scope 之外的元数据谓词（AND/OR/NOT 树；None 表示无过滤）
+    extensions: dict[str, Any] = field(default_factory=dict)  # 调用方运行时透传配置
 
     def __post_init__(self) -> None:
         self.filters = normalize(self.filters)  # 边界规范化：兼容旧 list，内部统一 FilterExpr
@@ -154,6 +157,7 @@ class GraphQuery:
     relation: str | None = None  # 限定关系类型；None 表示不限定
     depth: int = 1  # 遍历深度（跳数）
     limit: int = 100  # 返回节点数上限
+    extensions: dict[str, Any] = field(default_factory=dict)  # 调用方运行时透传配置
 
 
 # --------------------------------------------------------------------------- #
@@ -185,6 +189,7 @@ class FusionQuery:
     scalar_filters: FilterExpr | None = None  # scope 之外的标量谓词（AND/OR/NOT 树）
     top_k: int = 10  # 返回条数
     vector_weight: float = 0.5  # 向量得分权重（1.0 纯向量，0.0 纯文本）
+    extensions: dict[str, Any] = field(default_factory=dict)  # 调用方运行时透传配置
 
     def __post_init__(self) -> None:
         self.scalar_filters = normalize(self.scalar_filters)  # 边界规范化：兼容旧 list，内部统一

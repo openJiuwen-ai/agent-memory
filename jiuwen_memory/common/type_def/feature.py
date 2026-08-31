@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """特征与关联结构：实体 / 关系 / 特征集。
 
 构建层用它们富化记忆并产出图索引的节点与边；检索层用同样的结构

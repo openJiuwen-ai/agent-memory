@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """OverlayConfigSource — primary 优先，缺失时回退 fallback。
 
 典型用法：Dict（可写）叠在 YamlDefaults（装配默认）之上，产品只改少量运行时键。

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~storage.graph.GraphStore` 的纯内存属性图。
 
 按 scope 隔离地存节点/边，``search`` 从 ``start_id`` BFS 扩展邻域（按 depth 跳数、

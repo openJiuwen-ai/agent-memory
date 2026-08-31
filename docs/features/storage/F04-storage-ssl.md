@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-31 |
-| 影响范围 | `src/common/_support.py`（共用件）、`src/storage/_support.py`、redis / elasticsearch / milvus / postgres / pgvector 五个 builder、`deploy/docker/online/`、`deploy/docker/postgres/` |
+| 影响范围 | `jiuwen_memory/common/_support.py`（共用件）、`jiuwen_memory/storage/_support.py`、redis / elasticsearch / milvus / postgres / pgvector 五个 builder、`deploy/docker/online/`、`deploy/docker/postgres/` |
 | 测试基线 | `tests/unit/storage` 118 passed, 2 skipped |
 | Refs | [S06-storage.md](../../specs/S06-storage.md) 不变量 17、[F05-model-service-ssl.md](../common/F05-model-service-ssl.md) |
 
@@ -27,23 +27,26 @@ params:
   ssl_ca_cert: "${X_SSL_CA:-}"           # CA 证书路径
 ```
 
-读取逻辑收在 `storage/_support.read_ssl_config`，**翻译留在各 builder**：
+读取逻辑收在 `storage/_support.read_ssl_config`，**翻译留在各 builder**（postgres/pgvector
+的翻译在 `_pg.PgStoreBase._ssl_context()`：`ssl.SSLContext(PROTOCOL_TLS_CLIENT)` +
+`CERT_REQUIRED` + `check_hostname=True`，建池时作为 asyncpg 的 `ssl=` 传入）：
 
 | 后端 | `ssl_verify=true` → | `ssl_ca_cert` → |
 |---|---|---|
 | redis | 校验 url 为 `rediss://` | `ssl_ca_certs` |
 | elasticsearch | 校验 hosts 为 `https://` | `ca_certs` |
-| postgres / pgvector | `sslmode="verify-full"` | `sslrootcert` |
+| postgres / pgvector | `ssl.SSLContext`（`CERT_REQUIRED` + `check_hostname`） | `load_verify_locations` |
 | milvus | `secure=True` | `server_pem_path` |
 
 不做跨后端的参数抽象层：四个客户端的参数名、类型与语义切分互不相同（"是否校验"
-在 redis 是 `ssl_cert_reqs` 枚举 + `ssl_check_hostname` 两维、在 pg 是 `sslmode`
-六档枚举、在 ES 是三个独立布尔），统一抽象只能取交集或退化为并集，收益抵不过映射成本。
+在 redis 是 `ssl_cert_reqs` 枚举 + `ssl_check_hostname` 两维、在 pg（asyncpg）是
+单个 `ssl.SSLContext`、在 ES 是三个独立布尔），统一抽象只能取交集或退化为并集，收益抵不过映射成本。
 
 ### 二、`ssl_verify` 只管校验，不管加密
 
 加密开关落在连接串上，四个后端形态不同：redis/ES 只认 scheme（redis-py 的
-`ssl=True` 实测不生效，elasticsearch-py 8.x 已移除 `use_ssl`），pg 靠 `sslmode`，
+`ssl=True` 实测不生效，elasticsearch-py 8.x 已移除 `use_ssl`），pg（asyncpg）
+默认 `prefer`——先试 SSL、失败回落明文，显式控制走 DSN 的 `sslmode` 等参数，
 milvus 两者皆可。因此本参数**不承诺开启加密**。
 
 redis 与 elasticsearch 在开启时额外校验 scheme：若声明校验而连接串仍为明文，
@@ -89,7 +92,7 @@ redis-py 的 `from_url` 让 URL query **覆盖** kwargs（实测），故
 |---|---|
 | 统一的 `ssl_enabled` 开关 | redis/ES 的加密开关只存在于 scheme，参数形态无法开启；要生效需改写连接串字符串，引入两个真相来源 |
 | 统一 TLS 参数抽象层（`tls_verify_cert` / `tls_verify_hostname` …） | 四个客户端语义切分不同，抽象会丢失表达能力或退化成并集；每新增一项能力需改四处映射 |
-| 构造统一的 `ssl.SSLContext` | 只有 elasticsearch 接受；redis 用自有参数、pg 走 libpq、milvus 走 gRPC 自带 BoringSSL |
+| 构造统一的 `ssl.SSLContext` | elasticsearch 与 pg（asyncpg 直接收 `ssl.SSLContext`）之外，redis 用自有参数、milvus 走 gRPC 自带 BoringSSL，统一构造覆盖不了全部后端 |
 | 证书路径白名单（`SAFE_CERT_DIR`） | 配置由运维掌握，非外部输入；当前阶段不引入 |
 
 ## 验证
@@ -105,7 +108,8 @@ redis-py 的 `from_url` 让 URL query **覆盖** kwargs（实测），故
 - **未覆盖 mTLS**：客户端证书与私钥（`ssl_certfile` / `client_cert` / `sslcert` /
   `client_pem_path`）未纳入。DCS 明确不支持双向认证，CSS 仅独享型 ELB 场景需要。
   需要时按同样模式增补两个参数。
-- **主机名校验不可单独关闭**：`verify-full` 与客户端默认均校验主机名，用 IP 直连
+- **主机名校验不可单独关闭**：pg 侧 `SSLContext` 固定 `check_hostname=True`
+  （verify-full 等价），客户端默认均校验主机名，用 IP 直连
   且证书 CN 为域名时会失败。当前须改用域名，或置 `ssl_verify=false` 由连接串自理。
 - **milvus 参数依据为官方文档与源码，未经真实实例验证**：`server_pem_path` 用于
   单向认证、`ca_pem_path` 属双向分支（须与客户端证书、私钥三者同时提供才生效）。

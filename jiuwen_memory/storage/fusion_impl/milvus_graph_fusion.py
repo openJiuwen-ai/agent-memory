@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """MilvusGraphFusionStore — Milvus(向量) + nano-graphrag(图) 融合的 FusionStore。
 
 后端为 Milvus(向量) + nano-graphrag(图) 的融合：构建时同时建向量与图索引，检索时
@@ -154,7 +155,12 @@ class MilvusGraphFusionStore(FusionStore):
         # ① Milvus 向量召回种子
         seeds = self._vec.search(
             scope,
-            VectorQuery(vector=query.vector, top_k=query.top_k, filters=query.scalar_filters),
+            VectorQuery(
+                vector=query.vector,
+                top_k=query.top_k,
+                filters=query.scalar_filters,
+                extensions=dict(query.extensions),
+            ),
         )
         # ② 图扩展邻居（按跳数衰减），与种子合并去重、取最大分
         merged: dict[str, float] = self._expand_neighbors(scope, seeds)

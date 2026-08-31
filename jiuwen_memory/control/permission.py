@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """PermissionManager — 权限管理（架构 §3.2）。
 
 scope 模型的执行点：检索/写入默认限制在自身 scope 内，跨 scope 访问
@@ -9,10 +10,13 @@ from __future__ import annotations
 from abc import abstractmethod
 
 from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.security.authorization.base import RoutingFieldsProvider
+from jiuwen_memory.common.security.space_decision import DecisionOutcome
+from jiuwen_memory.common.security.types import Action, Grant
 from jiuwen_memory.common.type_def import Scope
 
 from .base import ControlOperator
-from .types import Action, Grant, PermissionContext
+from .types import PermissionContext
 
 
 class PermissionProducer(Factory):
@@ -26,7 +30,7 @@ class PermissionProducer(Factory):
     TOP_NAME = "permission"
 
 
-class PermissionManager(ControlOperator):
+class PermissionManager(ControlOperator, RoutingFieldsProvider):
     @abstractmethod
     def grant(self, grant: Grant) -> None:
         """新增一条跨 scope 授权。"""
@@ -47,12 +51,34 @@ class PermissionManager(ControlOperator):
     ) -> bool:
         """校验 ``actor`` 是否可对 ``target`` scope 执行 ``action``。"""
 
-    def routing_fields(self) -> tuple[str, ...]:
-        """本实现据以**选择策略**的 :class:`PermissionContext` 字段名（默认不路由）。
+    def decide(
+        self,
+        actor: Scope,
+        target: Scope,
+        action: Action,
+        context: PermissionContext | None = None,
+    ) -> DecisionOutcome:
+        """完整判定结论：除放行与否外，还带判据名与通过的轴。
 
-        路由型实现按请求里的某个字段挑选 delegate，而该字段由调用方提供——若不同时
-        约束查询能触达的数据，调用方就能"用 A 的钥匙开 B 的门"：路由值填宽松策略对应
-        的类型、``filters`` 却指向受严格策略保护的数据。API 层据此把路由值**回注为
-        系统谓词**，使授权依据与数据范围绑定。
+        鉴权点的空间策略裁剪要知道通过的是哪条轴（经治理轴通过才可读策略），而布尔
+        :meth:`check` 表达不了。裁剪不另发起一次判定，因此结论须由同一次判定带出。
+
+        默认实现折算自 :meth:`check`，轴留空——不做空间级判定的实现无须改动，轴为空
+        即「无轴概念」，裁剪随之不执行。
+
+        本方法随 :class:`PermissionManager` 整体退出：安全横切契约合入后判定移入 ``Authorizer``，
+        其 ``authorize`` 本就返回带判据的结论对象。
         """
-        return ()
+        return DecisionOutcome(
+            allowed=self.check(actor, target, action, context),
+            rule="permission_manager_check",
+        )
+
+    def requires_space_facts(self) -> bool:
+        """本实现的判定是否需要鉴权点下发空间授权事实（默认不需要）。
+
+        判定实现不访问存储，空间级判据所需的成员表与归属登记由鉴权点一次读取后随
+        :class:`PermissionContext` 传入。该读取有存储成本，因此由实现声明是否需要——
+        不做空间级判定的实现返回假，鉴权点即跳过读取，行为与改造前一致。
+        """
+        return False

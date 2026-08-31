@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """存储层基类：所有 ``*Store`` 共享的契约。
 
 统一 CRUD 动词（增删改查），各存储接口保持同一命名：

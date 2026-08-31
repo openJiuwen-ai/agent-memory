@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """ChatMessage — LLM 对话补全请求中的一轮消息。"""
 
 from __future__ import annotations

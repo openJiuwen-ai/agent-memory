@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """ElasticsearchFulltextStore — 基于 Elasticsearch 的全文倒排实现。
 
 实现 :class:`~storage.fulltext.FulltextStore`：``insert/update/delete/get`` 走文档

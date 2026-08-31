@@ -194,10 +194,10 @@ agent-memory 致力于成为智能体世界的「记忆底座」：
  │ 一个 Agent 独占其记忆    │  │ 各 Agent 私有记忆 + 按需共享池 │
  │ scope=单一 user/agent   │  │ scope 隔离 + 显式授权共享     │
  └────────────────────────┘  └────────────────────────────┘
-        ▲ 同一套 scope 模型（org / user / agent / session）既管隔离，也管共享 ▲
+        ▲ 同一套 scope 模型（org / space / user / agent / session）既管隔离，也管共享 ▲
 ```
 
-- **scope 模型**：记忆按 `org / user / agent / session` 多维 scope 归属；检索/写入默认在 scope 内，跨 scope 需显式授权。这同一套模型既决定**多 Agent 隔离与共享**，也决定**端云协同时数据的分级放置与同步粒度**（即支柱四与本支柱的连接点）。
+- **scope 模型**：记忆按 `org / space / user / agent / session` 多维 scope 归属；检索/写入默认在 scope 内，跨 scope 需显式授权。这同一套模型既决定**多 Agent 隔离与共享**，也决定**端云协同时数据的分级放置与同步粒度**（即支柱四与本支柱的连接点）。
 - **隔离**：单 Agent 私有记忆、多租户互不可见，满足隐私与权限边界。
 - **共享**：支持「一处更新、多 Agent 可见」的共享记忆池，便于多 Agent 协作与知识复用（借鉴 Letta 共享 block、MemOS memory cube）。
 - **与部署正交**：单/多 Agent 可运行在端、云或端云协同任一形态上（如端侧多 Agent、云侧多 Agent 集群、端私有 + 云共享池）。

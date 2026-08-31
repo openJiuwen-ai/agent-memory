@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~control.lifecycle.LifecycleManager`。
 
 非破坏式状态流转：把记忆单元在真源里改 ``lifecycle``（active→superseded/archived/

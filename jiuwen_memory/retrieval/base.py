@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """检索层（D 层，架构 §7）算子基类。
 
 检索链路五步：① scope/标签前置过滤 → ② 并行多路召回 → ③ 融合 + 重排
@@ -9,10 +10,10 @@
 - :class:`~retrieval.discloser.Discloser` 渐进式披露（L0 摘要 → L1 片段 → L2 全文）
 - :class:`~retrieval.retriever.Retriever` 检索入口（编排整条链路，记录轨迹）
 
-算子内部复用 ``src/common`` 共享插件——query 分词用 Tokenizer、向量化用
+算子内部复用 ``jiuwen_memory/common`` 共享插件——query 分词用 Tokenizer、向量化用
 Embedder、实体抽取用 FeatureExtractor、改写用 LLM、精排用 Reranker，
 与构建侧同一套实现才能保证同词表/同向量空间；读索引经注入的
-``src/storage`` 各 Store，算子不依赖具体后端。
+``jiuwen_memory/storage`` 各 Store，算子不依赖具体后端。
 """
 
 from __future__ import annotations

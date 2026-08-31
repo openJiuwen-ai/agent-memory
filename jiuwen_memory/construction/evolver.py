@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Evolver — 记忆自演进（架构 §8）。
 
 持续驱动「抽取 → 关联 → 冲突消解 → 升华 → 遗忘/降权」闭环：
@@ -34,12 +35,18 @@ class EvolveMode(str, Enum):
 
 @dataclass
 class EvolveResult:
-    """一次演进的产出：新增/更新/被取代/被遗忘的记忆单元 id。"""
+    """一次演进的产出：新增/更新/被取代/被遗忘的记忆单元 id，以及落盘产物本身。
+
+    ``created_units`` 回传实际落盘的对象。归属判定改写派生单元的 scope 之后，调用方按
+    原 scope 回读真源会落空——只有回传对象才取得到。新增与版本替换两条分支都要回填：
+    前者是 ``_persist``，后者是去重判定为 UPDATE / SUPERSEDE 时写入的新版本。
+    """
 
     created_ids: list[str] = field(default_factory=list)
     updated_ids: list[str] = field(default_factory=list)
     superseded_ids: list[str] = field(default_factory=list)
     forgotten_ids: list[str] = field(default_factory=list)
+    created_units: list[MemoryUnit] = field(default_factory=list)
 
 
 class EvolverProducer(Factory):

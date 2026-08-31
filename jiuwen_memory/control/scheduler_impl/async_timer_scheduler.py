@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """AsyncTimerScheduler——异步 + 定时调度器。
 
 职责边界：
@@ -145,7 +146,8 @@ class AsyncTimerScheduler(Scheduler):
         self._jobs[job_id] = JobInfo(
             id=job_id,
             channel=channel,
-            mode=type(job).__name__,
+            # 与 InProcessScheduler 同口径：优先取演进模式，无则回落任务类名。
+            mode=job.mode or type(job).__name__,
             scope=job.scope,
             status=JobStatus.PENDING,
         )
@@ -238,6 +240,17 @@ class AsyncTimerScheduler(Scheduler):
                     entry.job = job
                     entry.interval = job.interval
                     entry.is_done = False
+                    # JobInfo 与 entry 同步刷新：去重键是任务类名，而 JobInfo 的 mode
+                    # 取实例声明的演进模式，取值随实例变化而键不随；status 也会漂——
+                    # 上一轮结束时置 SUCCEEDED、取消时置 CANCELLED，复活后不复位即
+                    # 「任务在跑而 job_status 报终态」。鉴权点按 mode 决定 job_status /
+                    # job_cancel 要哪个动作，漂移方向为放行（WRITE 宽于 UPDATE）。
+                    info = self._jobs.get(entry.job_id)
+                    if info is not None:
+                        info.mode = job.mode or kind
+                        info.scope = job.scope
+                        info.status = JobStatus.RUNNING
+                        info.detail["interval"] = str(job.interval)
                     self._ensure_timer_task(wheel)
                     logger.info(
                         "AsyncTimerScheduler: update timer scope=%s kind=%s interval=%s "
@@ -255,7 +268,9 @@ class AsyncTimerScheduler(Scheduler):
         self._jobs[job_id] = JobInfo(
             id=job_id,
             channel=channel,
-            mode=kind,
+            # 与一次性任务路径同口径：优先取演进模式，无则回落任务类名。定时任务的
+            # JobInfo 同样经 job_status / job_cancel 对外，鉴权动作按该取值决定。
+            mode=job.mode or kind,
             scope=job.scope,
             status=JobStatus.RUNNING,
             detail={
@@ -338,7 +353,9 @@ class AsyncTimerScheduler(Scheduler):
                     instance_id = str(uuid.uuid4())
                     self._jobs[instance_id] = JobInfo(
                         id=instance_id,
-                        mode=type(instance).__name__,
+                        # 到点生成的实例继承声明时的演进模式，否则遗忘类任务的实例
+                        # 会因取值不可解析而回落到 WRITE 动作，比应取的 UPDATE 宽松。
+                        mode=instance.mode or type(instance).__name__,
                         scope=instance.scope,
                         status=JobStatus.PENDING,
                         detail={"parent_timer": entry.job_id},

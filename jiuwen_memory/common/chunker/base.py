@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Chunker — 内容切分能力。
 
 **共用说明**：构建层写入时把内容切成 :class:`Chunk`（向量化与建索引的

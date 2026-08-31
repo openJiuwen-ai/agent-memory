@@ -7,6 +7,7 @@ import pytest
 from jiuwen_memory.api import Scope
 from jiuwen_memory.api.memory_api_impl import build_kernel
 from jiuwen_memory.common.errors import NotFoundError, PolicyError, ValidationError
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import LifecycleState, memory_key
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.config.config import Config
@@ -210,11 +211,22 @@ def test_default_kernel_exposes_lifecycle_policy_keys() -> None:
     api = build_kernel().api
     root = Scope()
 
-    assert api.admin_get("lifecycle.expired_active.target", identity=root) == "forgotten"
-    assert api.admin_get("lifecycle.superseded.target", identity=root) == "forgotten"
+    assert (
+        api.admin_get("lifecycle.expired_active.target", security=legacy_request_context(root))
+        == "forgotten"
+    )
+    assert (
+        api.admin_get("lifecycle.superseded.target", security=legacy_request_context(root))
+        == "forgotten"
+    )
 
-    api.admin_set("lifecycle.expired_active.target", "archived", identity=root)
-    assert api.admin_get("lifecycle.expired_active.target", identity=root) == "archived"
+    api.admin_set(
+        "lifecycle.expired_active.target", "archived", security=legacy_request_context(root)
+    )
+    assert (
+        api.admin_get("lifecycle.expired_active.target", security=legacy_request_context(root))
+        == "archived"
+    )
 
 
 def test_default_kernel_lifecycle_sweep_uses_runtime_policy(unit_factory) -> None:
@@ -238,7 +250,9 @@ def test_default_kernel_lifecycle_sweep_uses_runtime_policy(unit_factory) -> Non
     )
     kernel.kv.insert(scope, memory_key(expired.id), dumps(expired))
 
-    api.admin_set("lifecycle.expired_active.target", "archived", identity=root)
+    api.admin_set(
+        "lifecycle.expired_active.target", "archived", security=legacy_request_context(root)
+    )
     swept = getattr(getattr(api, "_engine"), "_lifecycle").sweep()
 
     stored = loads(kernel.kv.get(scope, memory_key(expired.id)))

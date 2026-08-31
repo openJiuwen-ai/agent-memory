@@ -440,6 +440,50 @@ def test_timer_loop_triggers_instance_at_next_run_at() -> None:
     # 事件循环关闭后不验证（Task 被取消）
 
 
+# ---- 演进模式随任务记录 ----
+
+
+class _ModeJob(Job):
+    """声明了演进模式的 fake Job——``mode`` 是 Job 契约上的属性，非演进任务取空串。"""
+
+    def __init__(self, scope: Scope, *, interval: int = 0, mode: str = "forget") -> None:
+        super().__init__(scope=scope, interval=interval)
+        self._mode = mode
+
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    async def run(self) -> JobInfo:
+        return JobInfo(scope=self.scope, status=JobStatus.SUCCEEDED, detail={})
+
+
+def test_timer_entry_and_fired_instance_both_carry_the_evolve_mode() -> None:
+    """定时任务的两条记录都取演进模式，不回落任务类名。
+
+    鉴权点按 ``JobInfo.mode`` 决定 ``job_status`` / ``job_cancel`` 要哪个动作：遗忘与
+    去重取 UPDATE，其余取 WRITE，取值不可解析时回落 WRITE。类名不可解析，因此记成类名
+    会把遗忘类任务的动作放宽到 WRITE——CONTRIBUTOR 持有 WRITE 而不持有 UPDATE，方向
+    是放行。一次性任务路径已取演进模式，定时注册与到点生成的实例两条路径同样要取。
+    """
+    scheduler = AsyncTimerScheduler(tick_interval=1)
+    scope = Scope(user="u1")
+
+    async def _run():
+        jid = await scheduler.submit(_ModeJob(scope, interval=1), Channel.BACKGROUND)
+        assert scheduler.status(jid).mode == "forget"
+        await asyncio.sleep(2.2)
+        fired = [
+            info
+            for info in scheduler._jobs.values()
+            if info.detail.get("parent_timer") == jid
+        ]
+        assert fired, "到点未生成实例"
+        assert {info.mode for info in fired} == {"forget"}
+
+    asyncio.run(_run())
+
+
 # ---- 退出语义 ----
 
 

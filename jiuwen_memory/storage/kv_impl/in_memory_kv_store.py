@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~storage.kv.KVStore` 的纯内存键值存储。
 
 按 scope 原生隔离（scope 折成命名空间键），支持统一 CRUD + ``scan`` 范围枚举。

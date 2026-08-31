@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """KeywordLayerAnnotator — 规则版分层标注（hot path 可用，不依赖 LLM）。
 
 按规则从 content 提取 L0/L1：
@@ -14,7 +15,6 @@ from typing import List
 
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import MemoryUnit
-from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
 
 logger = get_logger(__name__)

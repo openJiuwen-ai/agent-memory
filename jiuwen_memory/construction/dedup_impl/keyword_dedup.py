@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """倒排去重召回：FulltextStore.search → 加载 unit → 过滤聚合。
 
 只配倒排索引（``vector_enabled=False``）时装配选本路——VectorStore 恒空会使

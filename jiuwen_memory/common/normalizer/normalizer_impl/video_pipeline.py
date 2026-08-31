@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # ruff: noqa: E501
 
 from __future__ import annotations

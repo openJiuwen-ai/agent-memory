@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """进程内锁：字典加租约，供单测与无 Redis 的本地开发使用。
 
 **不提供跨实例互斥**——多个记忆服务实例各持一份字典，互不可见。生产部署必须配

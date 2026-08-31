@@ -1,6 +1,6 @@
 """测试用 fixtures：轻量级 Store / Plugin 实现。
 
-这些不是正式的 src/ 代码，只在 tests/ 目录中使用。
+这些不是正式的 jiuwen_memory/ 代码，只在 tests/ 目录中使用。
 正式的 Store/Plugin 实现由其他团队提供。
 """
 

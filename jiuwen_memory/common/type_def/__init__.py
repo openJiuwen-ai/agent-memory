@@ -1,9 +1,10 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """跨层共用的结构体定义。"""
 
 from .audit import AuditEvent
 from .chat import ChatMessage
 from .chunk import Chunk
-from .context import EXT_MAX_TOKENS, Context
+from .context import EXT_MAX_TOKENS, EXT_SPACES, Context
 from .entity import (
     EntityBatchResult,
     EntityLinkResult,
@@ -34,9 +35,14 @@ from .filter import (
     validate,
 )
 from .memory import (
+    COORDS_KEY,
+    KERNEL_SYSTEM_METADATA_KEYS,
+    MEMORY_CLASS_KEY,
     MEMORY_KEY_PREFIX,
+    ROUTE_CTX_KEY,
     T_EVENT_UNKNOWN,
     T_INVALID_OPEN,
+    TRANSIENT_SYSTEM_METADATA_KEYS,
     ContentLayers,
     DedupDecision,
     LifecycleState,
@@ -74,13 +80,15 @@ from .retrieval_filter import (
     passes_lifecycle,
     valid_at,
 )
-from .scope import Scope, space_id_from_scope
+from .scope import KERNEL_COORD_KEYS, Scope, space_id_from_scope
 
 __all__ = [
+    "KERNEL_COORD_KEYS",
     "Scope",
     "space_id_from_scope",
     "Context",
     "EXT_MAX_TOKENS",
+    "EXT_SPACES",
     "Modality",
     "MemoryTier",
     "DedupDecision",
@@ -125,6 +133,11 @@ __all__ = [
     "extract_required_equality",
     "from_dict",
     "MEMORY_KEY_PREFIX",
+    "KERNEL_SYSTEM_METADATA_KEYS",
+    "MEMORY_CLASS_KEY",
+    "COORDS_KEY",
+    "ROUTE_CTX_KEY",
+    "TRANSIENT_SYSTEM_METADATA_KEYS",
     "T_INVALID_OPEN",
     "T_EVENT_UNKNOWN",
     "MESSAGES_KEY_PREFIX",

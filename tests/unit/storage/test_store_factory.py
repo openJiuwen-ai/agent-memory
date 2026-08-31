@@ -247,11 +247,10 @@ def test_redis_backend_error_when_lib_missing() -> None:
 
 def test_postgres_backend_error_when_lib_missing() -> None:
     try:
-        import_module("psycopg")
-        import_module("psycopg_pool")
+        import_module("asyncpg")
     except ImportError:
         kv = PostgresKVStore(dsn="postgresql://example.invalid/db")
-        with pytest.raises(BackendError, match="psycopg"):
+        with pytest.raises(BackendError, match="asyncpg"):
             kv.get(SCOPE, "k")
     else:
-        pytest.skip("psycopg installed; lazy-missing path not exercised")
+        pytest.skip("asyncpg installed; lazy-missing path not exercised")

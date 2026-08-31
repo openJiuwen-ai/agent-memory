@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """查询时间约束解析：自然语言 → 事件时间窗 ``(time_from, time_to)``（event-time）。
 
 **规则版**：覆盖中文常见相对时间（今天/昨天/前天/本周/上周/本月/上个月/今年/

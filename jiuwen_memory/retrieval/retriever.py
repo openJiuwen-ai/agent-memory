@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Retriever — 检索层入口（编排架构 §7 的完整链路）。
 
 单次 :meth:`retrieve` 驱动：查询理解 → 并行多路召回（按配置启用的

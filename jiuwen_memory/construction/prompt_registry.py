@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Prompt 注册表：从配置加载的命名 prompt 文本，供动态抽取/巩固/反思三步按 key 查询。
 
 配置形态（yml 顶层 ``prompts`` 段）::

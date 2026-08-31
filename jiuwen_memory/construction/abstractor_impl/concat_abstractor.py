@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~construction.abstractor.Abstractor`。
 
 把多条记忆概括成一条**高抽象粒度**的 CORE「画像」单元：内容为各来源内容的

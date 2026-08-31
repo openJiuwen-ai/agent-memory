@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-08-18 |
+| 日期 | 2026-08-21 |
 | 影响范围 | `jiuwen_memory/common/type_def/`、`jiuwen_memory/api/`、`jiuwen_memory/control/`、`jiuwen_memory/ingest/`、`jiuwen_memory/construction/`、`jiuwen_memory/retrieval/`、`bootstrap/` |
 | 测试基线 | `pytest -m unit`：全部通过（外部依赖/真实 LLM 用例按原有标记跳过） |
 | Refs | — |
@@ -120,7 +120,7 @@ infer = as_bool(
 | `BatchWriteItem` | `metadata` | `system_metadata` 和 `user_metadata` | `jiuwen_memory/control/types.py`、batch 归一化逻辑 |
 | `MemoryPatch` | `metadata` | `system_metadata` 和 `user_metadata`，均保持 dict 合并语义 | `jiuwen_memory/control/types.py`、Engine update |
 | `search/list.filters` | `metadata.<key>` | 用户输入改用 `user_metadata.<key>` | API、Retrieval、Store filter compiler |
-| `RetrievedItem` | 不返回 metadata | 增加 `user_metadata` | `jiuwen_memory/retrieval/types.py`、Discloser |
+| `RetrievedItem` | 不返回 metadata | 增加 `user_metadata` 和 `system_metadata` | `jiuwen_memory/retrieval/types.py`、Discloser |
 | HTTP/SDK add、batch、update | `metadata` | 按接入形态暴露 `system_metadata` 和 `user_metadata` | `bootstrap/core/handler.py`、SDK/plugin adapter |
 
 `get`、`delete`、`evolve` 等方法不需要增加 metadata 参数。它们继续使用 `MemoryUnit` 或已有 selector，
@@ -368,7 +368,8 @@ class RetrievedItem:
     user_metadata: dict[str, MetadataValueType] = field(default_factory=dict)
 ```
 
-普通搜索结果不增加 `system_metadata`；系统诊断信息继续通过 `get`、`inspect` 或 trajectory 获取。
+Core API 的 `RetrievedItem` 同时返回 `user_metadata` 和 `system_metadata`；HTTP 等接入形态
+可按信任边界裁剪系统字段。系统诊断信息仍可通过 `get`、`inspect` 或 trajectory 获取。
 
 ## 4. ToB 与 ToC 接入
 
@@ -517,11 +518,10 @@ t_message
 - `PermissionContext.metadata`、Space metadata、Store record metadata 等其他模型按自身语义处理，不在
   本次修改中机械改名。
 
-当前 `TRANSIENT_METADATA_KEYS` 允许把任意运行时对象临时塞进 metadata，这与统一
-`MetadataValueType` 不兼容，也不属于持久元数据语义。落地前应先核对实际调用：未使用的瞬态 key
-直接删除；仍在使用的值改走已有 extensions、依赖注入或明确参数，不能通过放宽
-`MetadataValueType` 保留对象透传。CloudEngine 当前对 metadata 的字符串归一化也应移除，两个
-命名空间都保留 JSON 原生类型。
+运行时对象不属于持久元数据语义，不能通过放宽 `MetadataValueType` 塞入
+`MemoryUnit.system_metadata` 或 `user_metadata`。需要访问数据库服务、加密端口等调用级依赖时，
+统一经 `Context.extensions` / `RetrievalQuery.extensions` 透传到具体 Recaller 和 Storage；
+CloudEngine 的路由副本只做浅复制，保留扩展对象身份。两个 metadata 命名空间保留 JSON 原生类型。
 
 ## 9. 验证
 
@@ -537,7 +537,7 @@ t_message
 8. 同名系统字段和用户字段可以共存且互不影响；
 9. 单来源派生复制用户字段，多来源冲突字段不传播；
 10. 派生记忆不继承 `infer`、`procedural`、`middle`；
-11. Core API 返回两个字段，普通 `RetrievedItem` 返回 `user_metadata`；
+11. Core API 返回两个字段，`RetrievedItem` 返回 `user_metadata` 和 `system_metadata`；
 12. 旧 `metadata` 入参和未迁移 codec 数据明确失败，不静默猜测。
 
 已实现上述链路并运行全量 unit marker 测试。仓库原有的真实 LLM 和未安装

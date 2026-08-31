@@ -1,11 +1,12 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Subcommands for the CLI surface — argument parsing, payload building, output.
 
-The verb set and flag names track **Mem0's CLI** (`mem0 add/search/list/get/
-update/delete`, `-u/--user-id`, positional content/id, `-k/--top-k`,
-`-o/--output`, `--messages`/`--file`, `--categories`, `--all`) so a Mem0 user can
-drive agent-memory with the same muscle memory. Where our engine's contract
-differs (a mandatory `tenant_id`, the two id spaces), we adapt rather than fake —
-see ``DESIGN.md`` § "Mem0 compatibility".
+The verb set and flag names track common memory-layer CLI conventions
+(`add/search/list/get/update/delete`, `-u/--user-id`, positional content/id,
+`-k/--top-k`, `-o/--output`, `--messages`/`--file`, `--categories`, `--all`) so
+users familiar with those CLIs can drive agent-memory with the same muscle
+memory. Where our engine's contract differs (a mandatory `tenant_id`, the two
+id spaces), we adapt rather than fake — see ``DESIGN.md`` § "CLI compatibility".
 
 Each engine verb is a row in :data:`COMMANDS` mapping it to
 ``(add_arguments, build_payload)``; the subparser is built from the row and the
@@ -37,13 +38,13 @@ class Command:
     build_payload: Callable[[Any], dict[str, Any]]
 
 
-# --- shared argument groups (Mem0-style identity + output) ----------------
+# --- shared argument groups (compat-style identity + output) --------------
 
 def add_identity_args(p) -> None:
-    """Mem0-style scoping: ``-u/--user-id`` is primary; ``--scope`` is the native
+    """Compat-style scoping: ``-u/--user-id`` is primary; ``--scope`` is the native
     alias; ``--tenant`` is our multi-tenant dimension (optional, defaults).
     """
-    p.add_argument("-u", "--user-id", dest="user_id", help="scope to a user (Mem0 --user-id)")
+    p.add_argument("-u", "--user-id", dest="user_id", help="scope to a user (--user-id)")
     p.add_argument("--scope", help="native alias of --user-id")
     p.add_argument("--tenant", help="tenant_id (default: $AGENT_MEMORY_TENANT or 'default')")
     p.add_argument("--trace", default="", help="optional trace_id")
@@ -53,12 +54,12 @@ def add_output_args(p) -> None:
     p.add_argument("-o", "--output", choices=["json", "text", "table", "quiet"],
                    help="output format (default: json)")
     p.add_argument("--json", "--agent", dest="json", action="store_true",
-                   help="force JSON output (Mem0 --json/--agent)")
+                   help="force JSON output (--json/--agent)")
     p.add_argument("--pretty", action="store_true", help="pretty-print JSON")
 
 
 def triple(args) -> dict[str, Any]:
-    """Resolve the mandatory (tenant, scope, trace) from Mem0/native flags + env."""
+    """Resolve the mandatory (tenant, scope, trace) from compat/native flags + env."""
     scope = getattr(args, "user_id", None) or getattr(args, "scope", None) \
         or os.environ.get("AGENT_MEMORY_USER_ID", "")
     if not scope:
@@ -89,7 +90,7 @@ def _tags(value: str | None) -> list[str] | None:
 
 
 def _flatten_messages(raw: str) -> str:
-    """Turn a Mem0 ``--messages`` JSON ``[{role, content}, ...]`` into one memory."""
+    """Turn a ``--messages`` JSON ``[{role, content}, ...]`` into one memory."""
     try:
         msgs = json.loads(raw)
     except ValueError as exc:
@@ -115,7 +116,7 @@ def _read_source(path: str) -> str:
 
 
 def _resolve_content(args) -> str:
-    """Mem0 ``add`` content: positional text, ``--content``, ``--messages``, or ``--file``."""
+    """Resolve ``add`` content: positional text, ``--content``, ``--messages``, or ``--file``."""
     if getattr(args, "content", None):
         return args.content
     if getattr(args, "text", None):
@@ -131,12 +132,12 @@ def _resolve_content(args) -> str:
 
 def _args_add(p) -> None:
     add_identity_args(p)
-    p.add_argument("text", nargs="?", help="memory text (Mem0-style positional)")
+    p.add_argument("text", nargs="?", help="memory text (positional)")
     p.add_argument("-c", "--content", help="memory text (alias of the positional)")
-    p.add_argument("--messages", help="JSON array of {role, content} (Mem0)")
+    p.add_argument("--messages", help="JSON array of {role, content}")
     p.add_argument("-f", "--file", help="read text/JSON messages from a file ('-' = stdin)")
     p.add_argument("--tags", help="comma-separated or JSON-array tags")
-    p.add_argument("--categories", help="Mem0 alias of --tags")
+    p.add_argument("--categories", help="alias of --tags")
     p.add_argument("--owner-ref", default="", help="optional owner reference")
     p.add_argument("--modality", default="text", choices=["text", "image", "audio"])
     add_output_args(p)
@@ -155,7 +156,7 @@ def _args_search(p) -> None:
     add_identity_args(p)
     p.add_argument("query_pos", nargs="?", metavar="query", help="query text (positional)")
     p.add_argument("-q", "--query", help="query text (alias of the positional)")
-    p.add_argument("-k", "--top-k", dest="top_k", type=int, help="number of results (Mem0 --top-k)")
+    p.add_argument("-k", "--top-k", dest="top_k", type=int, help="number of results (--top-k)")
     p.add_argument("--k", dest="k", type=int, help="native alias of --top-k")
     p.add_argument("--threshold", type=float, help="drop hits below this score")
     p.add_argument("--filters", help="JSON object of equality filters")
@@ -206,11 +207,11 @@ def _payload_get(args) -> dict[str, Any]:
 def _args_update(p) -> None:
     add_identity_args(p)
     p.add_argument("id_pos", nargs="?", metavar="memory-id", help="lifecycle id (positional)")
-    p.add_argument("text", nargs="?", help="new content (Mem0-style positional)")
+    p.add_argument("text", nargs="?", help="new content (positional)")
     p.add_argument("--item-id", dest="item_id", help="alias of the positional id")
     p.add_argument("-c", "--content", help="new content (alias of the positional)")
     p.add_argument("--tags", help="new comma-separated or JSON-array tags")
-    p.add_argument("--categories", help="Mem0 alias of --tags")
+    p.add_argument("--categories", help="alias of --tags")
     add_output_args(p)
 
 
@@ -229,11 +230,11 @@ def _args_delete(p) -> None:
     add_identity_args(p)
     p.add_argument("id_pos", nargs="?", metavar="memory-id", help="lifecycle id (positional)")
     p.add_argument("--item-id", dest="item_id", help="alias of the positional id")
-    p.add_argument("--all", action="store_true", help="delete all memories in scope (Mem0 --all)")
+    p.add_argument("--all", action="store_true", help="delete all memories in scope (--all)")
     p.add_argument(
         "--force",
         action="store_true",
-        help="skip confirmation (accepted for Mem0 parity)",
+        help="skip confirmation (compat parity)",
     )
     p.add_argument("--hard", action="store_true", help="hard delete (needs --approval-token)")
     p.add_argument("--approval-token", default="", help="approval token for a hard delete")
@@ -269,14 +270,14 @@ COMMANDS: dict[str, Command] = {
 def run_command(client, name: str, args) -> int:
     cmd = COMMANDS[name]
 
-    # Mem0 `delete --all`: our engine has only per-item delete, so fan out over a
+    # `delete --all`: our engine has only per-item delete, so fan out over a
     # `list` client-side (a CLI ergonomic, not an engine verb).
     if name == "delete" and getattr(args, "all", False):
         return _delete_all(client, args)
 
     status, body = client.call(cmd.verb, cmd.build_payload(args))
 
-    # Mem0 `search --threshold`: filter hits client-side, preserving the envelope.
+    # `search --threshold`: filter hits client-side, preserving the envelope.
     if name == "search" and getattr(args, "threshold", None) is not None and status == 200:
         body = dict(body)
         body["hits"] = [h for h in body.get("hits", []) if h.get("score", 0.0) >= args.threshold]

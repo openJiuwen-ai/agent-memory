@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Classifier — 多维分类（架构 §6.1）。
 
 按主题/认知角色/来源/重要度等多维度归类：认知角色（tier）决定记忆

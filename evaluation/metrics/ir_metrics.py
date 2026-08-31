@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """组件级 IR 排序质量指标：Recall@k / Precision@k / MRR / nDCG@k / MAP。
 
 全部确定性、不需 LLM——输入是单 query 的有序候选 id + 相关 id 集，输出 [0,1] 分。

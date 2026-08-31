@@ -139,4 +139,7 @@ Extractor/Evolver target 共同保证。
 1. 当前实体统一完全依赖现有 EntityLinkService 的名称归一化能力，不处理复杂别名或同名消歧；
 2. 属性采用 append-only，尚未提供按实体和属性的版本合并；
 3. Source 的 `entities` 当前写属性所属实体和属性名，不额外写属性值中提及的其他实体；
-4. 关系、图和 Schema 时序检索留待独立特性设计。
+4. 关系、图和 Schema 时序检索留待独立特性设计；
+5. `SchemaOrchestratingEvolver` 当前尚未接入 `Router`。启用群体记忆归属判定时，Schema
+   派生属性仍沿用 Source MemoryUnit 的 Scope；未配置 Router 时不影响 Schema 抽取、属性
+   落盘及 Source `entities` 写回。

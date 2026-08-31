@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Modality, Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.control import BatchWriteItem
@@ -28,7 +29,7 @@ def test_batch_add_normalizes_defaults_and_preserves_input_order() -> None:
             ),
         ],
         scope,
-        identity=scope,
+        security=legacy_request_context(scope),
         tags=["shared"],
         user_metadata={"project": "batch", "priority": 1},
         stream_id="import-1",
@@ -52,7 +53,7 @@ def test_batch_add_collects_item_validation_errors_and_continues() -> None:
             BatchWriteItem(content="valid"),
         ],
         scope,
-        identity=scope,
+        security=legacy_request_context(scope),
     )
 
     assert result.outcomes[0].error_type == "ValidationError"
@@ -70,7 +71,7 @@ def test_batch_add_fail_fast_marks_remaining_items_skipped() -> None:
             BatchWriteItem(content="not-written"),
         ],
         scope,
-        identity=scope,
+        security=legacy_request_context(scope),
         continue_on_error=False,
     )
 
@@ -85,7 +86,7 @@ def test_batch_add_rejects_duplicate_sequence_within_scope_and_stream() -> None:
     result = api.batch_add(
         [BatchWriteItem(content="first", sequence=1), BatchWriteItem(content="second", sequence=1)],
         scope,
-        identity=scope,
+        security=legacy_request_context(scope),
         stream_id="import-1",
     )
 
@@ -103,7 +104,7 @@ def test_batch_add_authorizes_each_item_without_blocking_later_owner_item() -> N
             BatchWriteItem(content="denied", scope=owner),
             BatchWriteItem(content="allowed", scope=reader),
         ],
-        identity=reader,
+        security=legacy_request_context(reader),
     )
 
     assert result.outcomes[0].error_type == "PermissionDeniedError"
@@ -115,7 +116,9 @@ def test_batch_add_async_matches_synchronous_result_shape() -> None:
     scope = Scope(org="acme", user="alice")
 
     result = asyncio.run(
-        api.batch_add_async([BatchWriteItem(content="async")], scope, identity=scope)
+        api.batch_add_async(
+            [BatchWriteItem(content="async")], scope, security=legacy_request_context(scope)
+        )
     )
 
     assert len(result.outcomes) == 1

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """LocalFSStore — 基于本地文件系统的 :class:`~storage.fs.FSStore` 实现。
 
 原模态资产/原始负载落在 ``root/<scope 五段>/`` 下，``ref`` 即相对该 scope 子目录

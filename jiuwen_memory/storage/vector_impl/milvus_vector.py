@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """MilvusVectorStore — 基于 Milvus 的 :class:`~storage.vector.VectorStore` 实现。
 
 ``insert/update/delete/get`` 走主键 CRUD，``search`` 走 ANN 近邻检索。``scope`` 为
@@ -14,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from jiuwen_memory.common.errors import (
@@ -92,6 +94,23 @@ def _logical_id(physical_id: str) -> str:
     return parts[-1] if len(parts) == 6 else physical_id
 
 
+def _is_not_loaded(exc: Exception) -> bool:
+    """Check if a Milvus exception indicates collection not loaded or connection lost.
+
+    两类可自愈故障：code=101 (collection not loaded) 或
+    ConnectionNotExistException (connection closed/lost, e.g. shared alias removed)。
+    """
+    code = getattr(exc, "code", None)
+    if code == 101:
+        return True
+    msg = str(exc).lower()
+    return (
+        "not loaded" in msg
+        or "code=101" in msg
+        or "should create connection first" in msg
+    )
+
+
 class MilvusVectorStore(VectorStore):
     def __init__(
         self,
@@ -106,12 +125,15 @@ class MilvusVectorStore(VectorStore):
         consistency_level: str = "Strong",
         scope_field_max_length: int = 256,
         id_max_length: int = 512,
+        load_timeout: float = 30.0,
         config_source=None,
         config_namespace: str = "vector_store",
         **options: Any,
     ) -> None:
         if dim <= 0:
             raise ValidationError("milvus vector store requires positive 'dim'")
+        if load_timeout <= 0:
+            raise ValidationError("milvus vector store requires positive 'load_timeout'")
         self._fallback_uri = uri or f"http://{host}:{port}"
         self._config_source = config_source
         self._config_namespace = config_namespace
@@ -125,6 +147,7 @@ class MilvusVectorStore(VectorStore):
         self._scope_len = scope_field_max_length
         self._id_len = id_max_length
         self._physical_id_len = id_max_length + 5 * (scope_field_max_length + 1)
+        self._load_timeout = load_timeout
         self._options = options
         self._client: Any = None
         self._client_uri: str | None = None
@@ -148,6 +171,39 @@ class MilvusVectorStore(VectorStore):
             self._client_uri = uri
             self._ensure_collection()
         return self._client
+
+    def _wait_for_load_complete(self, timeout: float | None = None) -> None:
+        """Poll load state until collection is fully loaded or timeout.
+
+        ``load_collection`` may return before the collection is actually
+        loaded into query nodes, especially for freshly created collections.
+        This causes ``code=101 (collection not loaded)`` on the immediate
+        subsequent search (e.g. dedup search after the first ``mem2_add``).
+
+        ``timeout`` defaults to the store's configured ``load_timeout`` —
+        raise it for slow clusters, lower it for fail-fast deployments.
+        """
+        if not callable(getattr(self._client, "get_load_state", None)):
+            return
+        if timeout is None:
+            timeout = self._load_timeout
+        deadline = time.monotonic() + timeout
+        last_error: Exception | None = None
+        while time.monotonic() < deadline:
+            try:
+                state = self._client.get_load_state(collection_name=self._collection)
+                load_state = state.get("state") if isinstance(state, dict) else state
+                if str(load_state) == "Loaded":
+                    return
+                # 查询成功但尚未 Loaded：清掉历史异常，继续轮询。
+                last_error = None
+            except Exception as exc:
+                last_error = exc
+            time.sleep(0.5)
+        raise BackendError(
+            "MilvusVectorStore: collection %s not loaded within %.1fs"
+            % (self._collection, timeout)
+        ) from last_error
 
     # --------------------------------------------------------------- 序列化
     @staticmethod
@@ -261,18 +317,89 @@ class MilvusVectorStore(VectorStore):
             )
         return [self._to_record(row) for row in rows]
 
+    def _recover_connection(self, op: str) -> None:
+        """连接丢失或 collection 未加载时的统一恢复：清缓存重建 client，
+        经 ``self.client`` property 重新建连 + ``_ensure_collection``（含 load+wait）。
+
+        连接已废时直接 load_collection 也会抛同款异常，故必须先重建连接。
+        """
+        logger.warning(
+            "MilvusVectorStore: %s failed with not-loaded/connection-lost, "
+            "reconnecting and ensuring collection %s",
+            op,
+            self._collection,
+        )
+        self._client = None
+        self._client_uri = None
+        _ = self.client  # 触发重建 + ensure_collection
+
+    def _search_with_not_loaded_retry(
+        self,
+        *,
+        op: str,
+        query: VectorQuery,
+        filter_expr: str,
+        output_fields: list[str],
+    ) -> Any:
+        """执行一次 milvus search；撞 code=101 / 连接丢失则重建后重试一次。"""
+        client = self.client
+        try:
+            with wrap_backend(op):
+                return client.search(
+                    self._collection,
+                    data=[query.vector],
+                    limit=query.top_k,
+                    filter=filter_expr,
+                    output_fields=output_fields,
+                    search_params={"metric_type": self._metric_type},
+                    consistency_level=self._consistency,
+                )
+        except Exception as exc:
+            if not _is_not_loaded(exc):
+                raise
+            self._recover_connection(op)
+            client = self.client
+            with wrap_backend(op):
+                return client.search(
+                    self._collection,
+                    data=[query.vector],
+                    limit=query.top_k,
+                    filter=filter_expr,
+                    output_fields=output_fields,
+                    search_params={"metric_type": self._metric_type},
+                    consistency_level=self._consistency,
+                )
+
+    def _query_with_not_loaded_retry(
+        self,
+        *,
+        filter_: str,
+        output_fields: list[str] | None = None,
+    ) -> Any:
+        """执行一次 milvus query；撞 code=101 / 连接丢失则重建后重试一次。"""
+        client = self.client
+        kwargs: dict[str, Any] = {"filter": filter_, "consistency_level": self._consistency}
+        if output_fields is not None:
+            kwargs["output_fields"] = output_fields
+        try:
+            with wrap_backend("milvus query"):
+                return client.query(self._collection, **kwargs)
+        except Exception as exc:
+            if not _is_not_loaded(exc):
+                raise
+            self._recover_connection("milvus query")
+            client = self.client
+            with wrap_backend("milvus query"):
+                return client.query(self._collection, **kwargs)
+
     def search(self, scope: Scope, query: VectorQuery) -> list[ScoredID]:
         expr = self._expr(scope, query.filters)
-        with wrap_backend("milvus search"):
-            results = self.client.search(
-                self._collection,
-                data=[query.vector],
-                limit=query.top_k,
-                filter=expr,
-                output_fields=["logical_id"],
-                search_params={"metric_type": self._metric_type},
-                consistency_level=self._consistency,
-            )
+        results = self._search_with_not_loaded_retry(
+            op="milvus search",
+            query=query,
+            filter_expr=expr,
+            output_fields=["logical_id"],
+        )
         hits = results[0] if results else []
         return [ScoredID(id=_hit_id(hit), score=float(hit["distance"])) for hit in hits]
 
@@ -292,16 +419,12 @@ class MilvusVectorStore(VectorStore):
                 logger.info("MilvusVectorStore.recall: output_fields only supports 'metadata', ignoring %s", unknown)
         expr = self._expr(scope, query.filters)
         milvus_out = ["logical_id", "metadata"] if fetch_meta else ["logical_id"]
-        with wrap_backend("milvus recall"):
-            results = self.client.search(
-                self._collection,
-                data=[query.vector],
-                limit=query.top_k,
-                filter=expr,
-                output_fields=milvus_out,
-                search_params={"metric_type": self._metric_type},
-                consistency_level=self._consistency,
-            )
+        results = self._search_with_not_loaded_retry(
+            op="milvus recall",
+            query=query,
+            filter_expr=expr,
+            output_fields=milvus_out,
+        )
         hits = results[0] if results else []
         out: list[ScoredHit] = []
         for hit in hits:
@@ -339,6 +462,7 @@ class MilvusVectorStore(VectorStore):
     def _ensure_collection(self) -> None:
         if self._client.has_collection(self._collection):
             self._client.load_collection(self._collection)
+            self._wait_for_load_complete()
             return
         from pymilvus import DataType
 
@@ -362,6 +486,7 @@ class MilvusVectorStore(VectorStore):
             consistency_level=self._consistency,
         )
         self._client.load_collection(self._collection)
+        self._wait_for_load_complete()
 
     def _scope_expr(self, scope: Scope) -> str:
         return " && ".join(f'scope_{dim} == {_lit(val)}' for dim, val in scope_dims(scope))
@@ -376,13 +501,8 @@ class MilvusVectorStore(VectorStore):
     def _existing_ids(self, scope: Scope, ids: list[str]) -> set[str]:
         physical_ids = [self._physical_id(scope, rec_id) for rec_id in ids]
         items = ", ".join(_lit(i) for i in physical_ids)
-        with wrap_backend("milvus query"):
-            rows = self.client.query(
-                self._collection,
-                filter=f"id in [{items}]",
-                output_fields=["logical_id"],
-                consistency_level=self._consistency,
-            )
+        filter_ = f"id in [{items}]"
+        rows = self._query_with_not_loaded_retry(filter_=filter_)
         return {row["logical_id"] for row in rows}
 
 
@@ -414,6 +534,7 @@ def _build(config):
         consistency_level=Factory.cfg_get(config, "consistency_level", "Strong"),
         scope_field_max_length=Factory.cfg_get(config, "scope_field_max_length", 256),
         id_max_length=Factory.cfg_get(config, "id_max_length", 512),
+        load_timeout=Factory.cfg_get(config, "load_timeout", 30.0),
         config_source=ConfigSourceProducer.get_cached("default"),
         **options,
     )

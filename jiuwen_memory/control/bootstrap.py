@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """注册引导：import 各控制实现包，触发其 ``@Producer.register`` 自注册。
 
 工厂句柄定义在接口模块（如 :class:`~control.engine.EngineProducer`），消费方只依赖接口层；
@@ -20,6 +21,7 @@ def register_controllers() -> None:
     import_module("jiuwen_memory.control.engine_impl")
     import_module("jiuwen_memory.control.governance_impl")
     import_module("jiuwen_memory.control.lifecycle_impl")
+    import_module("jiuwen_memory.control.membership_impl")
     import_module("jiuwen_memory.control.permission_impl")
     import_module("jiuwen_memory.control.policy_impl")
     import_module("jiuwen_memory.control.scheduler_impl")

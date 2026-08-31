@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """FusionStore — 向量·倒排·正排融合存储。
 
 同一 id 的一行 :class:`FusionRecord` 同时承载：

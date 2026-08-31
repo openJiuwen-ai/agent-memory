@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """通用 JSONL 评测标注数据集——自定义评测标注与回归数据的标准载体。
 
 每行一条 JSON 记录，``type`` 区分两类：

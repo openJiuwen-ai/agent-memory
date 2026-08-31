@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """注册引导：import 各构建实现包，触发其 ``@Producer.register`` 自注册。
 
 工厂句柄定义在接口模块（如 :class:`~construction.evolver.EvolverProducer`），消费方只依赖接口层；
@@ -24,4 +25,5 @@ def register_constructors() -> None:
     import_module("jiuwen_memory.construction.extractor_impl")
     import_module("jiuwen_memory.construction.index_builder_impl")
     import_module("jiuwen_memory.construction.layer_annotator_impl")
+    import_module("jiuwen_memory.construction.router_impl")
     _REGISTERED = True

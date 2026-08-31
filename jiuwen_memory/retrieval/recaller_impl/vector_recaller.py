@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~retrieval.recaller.Recaller` 的 VECTOR 通道。
 
 消费 ``ParsedQuery.vector``（由 QueryParser 经 Embedder 产出），组装
@@ -78,7 +79,12 @@ class VectorRecaller(Recaller):
     def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]:
         if self._vector is None or not query.vector:
             return []  # store 未注入（该层未配）或无 query 向量 → 跳过
-        vq = VectorQuery(vector=query.vector, top_k=top_k, filters=query.scalar_filters)
+        vq = VectorQuery(
+            vector=query.vector,
+            top_k=top_k,
+            filters=query.scalar_filters,
+            extensions=dict(query.extensions),
+        )
         # 优先走 store.recall：在召回请求内一并回带 metadata，省掉再发一次 get 的
         # 网络 RTT 与服务端 id 匹配开销（远端后端如 milvus 收益显著）。store 未实现
         # recall 时抛 NotImplementedError，回退到 search + get 两段式（内存后端零成本）。

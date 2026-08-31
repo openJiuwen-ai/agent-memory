@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """MemoryPipeline — 控制层的跨构建/查询 pipeline 编排抽象。
 
 Pipeline 不实现抽取、索引或检索算法；它只根据写入单元或查询选项选择

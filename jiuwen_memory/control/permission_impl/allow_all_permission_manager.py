@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~control.permission.PermissionManager`。
 
 最小放行策略（``check`` 恒真），仅记录授权——适合单租户本地装配 / demo。

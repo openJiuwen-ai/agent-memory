@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Redis 分布式锁：``SET NX PX`` 获取，Lua CAS 释放与续期。
 
 三个原语各自的原子性来源：

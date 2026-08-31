@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """两个 MemoryEngine 实现共用的 List 存储委托。"""
 
 from __future__ import annotations

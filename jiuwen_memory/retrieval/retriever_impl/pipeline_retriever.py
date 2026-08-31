@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~retrieval.retriever.Retriever`——检索链路编排者。
 
 单次 :meth:`retrieve` 驱动完整链路（Option B：点读/有效性/重排为独立阶段）：

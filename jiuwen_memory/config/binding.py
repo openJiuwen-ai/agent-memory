@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """调用路径晚绑定辅助：从 ConfigSource 解析 model/api_key/base_url/连接串。
 
 与 :mod:`config.active` 的分工：

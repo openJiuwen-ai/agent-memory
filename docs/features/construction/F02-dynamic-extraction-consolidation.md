@@ -4,7 +4,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-25 |
-| 影响范围 | src/construction/，src/control/，src/config/，docs/specs/S05-construction.md |
+| 影响范围 | jiuwen_memory/construction/，jiuwen_memory/control/，jiuwen_memory/config/，docs/specs/S05-construction.md |
 | 测试基线 | 见“验证” |
 | Refs | — |
 

@@ -1,11 +1,11 @@
-# F01 — 接入层实现规约（src/ingest/*_impl）
+# F01 — 接入层实现规约（jiuwen_memory/ingest/*_impl）
 
 ## 元信息
 
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-06-24 |
-| 影响范围 | src/ingest/{ingestor,source}_impl/，docs/specs/S01-ingest-access.md（如有） |
+| 影响范围 | jiuwen_memory/ingest/{ingestor,source}_impl/，docs/specs/S01-ingest-access.md（如有） |
 | 测试基线 | 无专属 ingest 测试目录；写入路径经 e2e/控制层覆盖：`pytest tests/unit/construction/test_e2e_evolution.py tests/unit/api/test_recall_context.py tests/unit/control/` 全绿（exit 0） |
 | Refs | —（如有 issue 补 `Refs: #<n>`） |
 

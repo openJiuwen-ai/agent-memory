@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~storage.vector.VectorStore` 的纯内存余弦 ANN。
 
 按 scope 原生隔离（scope 折成命名空间键），``search`` 暴力计算查询向量与各行的

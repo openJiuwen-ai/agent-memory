@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-27 |
-| 影响范围 | `src/control/`、`docs/specs/S03-control.md` |
-| 测试基线 | `PYTHONPATH=src uv run --no-sync pytest -q tests/unit/control/test_pipeline.py tests/unit/control/test_permission_context_routing.py` 通过；本特性变更的 Python 文件通过 `ruff check` |
+| 影响范围 | `jiuwen_memory/control/`、`docs/specs/S03-control.md` |
+| 测试基线 | `PYTHONPATH=. uv run --no-sync pytest -q tests/unit/control/test_pipeline.py tests/unit/control/test_permission_context_routing.py` 通过；本特性变更的 Python 文件通过 `ruff check` |
 
 ## 背景
 

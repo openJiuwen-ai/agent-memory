@@ -17,6 +17,7 @@ from pathlib import Path
 
 from jiuwen_memory.api import assemble
 from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config import Config
 
@@ -72,7 +73,7 @@ def main() -> None:
     units = api.add(
         "speaker=Alice: On 2023-08-03, I started working as a software engineer at Acme.",
         scope,
-        identity=scope,
+        security=legacy_request_context(scope),
         system_metadata={"infer": True},
         user_metadata={"example": "schema_extension_quickstart"},
     )

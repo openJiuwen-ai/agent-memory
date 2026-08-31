@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Embedder — 向量化能力：文本 -> 稠密向量。
 
 **共用说明**：构建层写入时对 chunk 向量化建向量索引；检索层读取时对

@@ -4,16 +4,16 @@
 
 | 项 | 值 |
 |---|---|
-| 关联模块 | src/retrieval/ |
-| 最近一次修订日期 | 2026-08-20 |
+| 关联模块 | jiuwen_memory/retrieval/ |
+| 最近一次修订日期 | 2026-08-29 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md |
 
 ## Metadata 检索契约
 
 FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<key>` 表示
-内部系统谓词，两者不 fallback。`RetrievedItem` 返回 `user_metadata`，普通搜索结果
-不暴露 `system_metadata`。
+内部系统谓词，两者不 fallback。`RetrievedItem` 同时返回两个命名空间；接入层可按
+信任边界裁剪 `system_metadata`，但 Core API 的检索结果保留完整字段。
 
 ## 范围 / 边界
 
@@ -28,10 +28,10 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
 - 检索轨迹：可观测的非黑盒调试信息
 
 **不管什么**：
-- 不做鉴权（由 `src/api` 层负责）
+- 不做鉴权（由 `jiuwen_memory/api` 层负责）
 - 不做记忆写入/演进/落盘
 - 不直接操作存储写入（只做存储读取/检索）
-- 不实现 Embedder/Tokenizer/Reranker 等共享插件（消费 `src/common` 注入的实例）
+- 不实现 Embedder/Tokenizer/Reranker 等共享插件（消费 `jiuwen_memory/common` 注入的实例）
 
 ## 不变量
 
@@ -112,6 +112,10 @@ FORGOTTEN/SUPERSEDED 不可见，ARCHIVED 仅在 `include_archived=true` 时可�
 | `Fuser.fuse` | `(query: ParsedQuery, candidates: list[list[ScoredUnit]]) -> list[ScoredUnit]` | 按 unit_id 融合多路、多内容层候选并稳定排序 |
 
 `RecallChannel.TEMPORAL` 仅应用 event-time/valid-time 条件，不创建、过滤或展开 `HierarchyKind.TIME` 树。TIME 层级过滤必须来自明确的 hierarchy 字段。
+
+`RecallChannel.SPACE`（F07 随跨空间检索新增）不是召回通道，是「某个空间整体没进结果」的标记位，只出现在 `RetrievalResult.errors` 的 `ChannelError.channel` 上。它不进候选、不参与融合，也不出现在 `ChannelEvidence.channel` 里，因此按通道配置融合权重或按通道打点的消费方不为它配权重。该取值的构造点是本层的 `cross_space.space_error`，由 API 层（判权剔除）与控制层（扇出失败）两侧共用。
+
+`cross_space.py` 只提供取数上界、结果合并与失败编码三个纯函数；跨空间的召回扇出编排落控制层 `control/collective/cross_space_recall.py`，它 import 本模块，本模块不反向依赖控制层。
 
 ### Expander（目标契约，尚未实现）
 
@@ -274,7 +278,7 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 | `channels` | list[RecallChannel] \| None | `None` | 覆盖召回通道 |
 | `rerank` | bool \| None | `None` | 覆盖重排开关 |
 | `include_archived` | bool | `False` | 是否纳入归档 unit |
-| `extensions` | dict[str, str] | `{}` | 调用级透传配置 |
+| `extensions` | dict[str, Any] | `{}` | 调用级透传配置；本地调用可携带运行时对象 |
 | `hierarchy_kind`（目标） | HierarchyKind \| None | `None` | 单一结构 kind |
 | `hierarchy_role`（目标） | HierarchyRole \| None | `None` | 父层角色过滤 |
 | `span_start`（目标） | datetime \| None | `None` | 结构区间起点 |
@@ -300,7 +304,7 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 | `time_to` | datetime \| None | event-time 上界 |
 | `channels` | list[RecallChannel] | 建议启用的通道 |
 | `include_archived` | bool | 当前态真源复核是否允许 archived |
-| `extensions` | dict[str, str] | 透传配置 |
+| `extensions` | dict[str, Any] | 透传配置 |
 
 1. `top_k > 0`，`expand_depth >= 0`；非空 `max_tokens` 必须大于 0。
 2. `hierarchy_role`、任一 span、`expand_depth > 0` 或 `rollup=true` 都要求显式 `hierarchy_kind`。
@@ -313,7 +317,7 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 |------|----------|
 | `ScoredUnit` | unit_id / score / channel / evidence: list[ChannelEvidence] |
 | `ChannelEvidence` | channel / rank / score / weight / contribution |
-| `RetrievedItem` | unit_id / score / content / level: DisclosureLevel |
+| `RetrievedItem` | unit_id / score / content / user_metadata / system_metadata / level: DisclosureLevel |
 | `TrajectoryStep` | stage / channel / candidate_count / cost_ms / detail |
 | `ScoredMemoryUnit` | unit: MemoryUnit / score / channel / evidence |
 | `ChannelError` | channel / source / error_type / message |
@@ -363,7 +367,7 @@ class ExpandResult:
 |---|---|
 | `ScoredUnit` | `unit_id` / `score` / `channel` / `evidence` |
 | `ChannelEvidence` | `channel` / `rank` / `score` / `weight` / `contribution` |
-| `RetrievedItem` | `unit_id` / `score` / `abstract` / `overview` / `content` / `level` |
+| `RetrievedItem` | `unit_id` / `score` / `abstract` / `overview` / `content` / `user_metadata` / `system_metadata` / `level` |
 | `TrajectoryStep` | `stage` / `channel` / `candidate_count` / `cost_ms` / `detail` |
 | `RetrievalResult` | `items` / `trajectory` |
 
@@ -397,7 +401,7 @@ class ExpandResult:
 ## 实现注册机制
 
 ```
-src/retrieval/<算子>_impl/
+jiuwen_memory/retrieval/<算子>_impl/
     __init__.py             # 重导出实现类
     <impl_class_snake>.py   # 具体实现 + 尾部 @XxxProducer.register("name")
 ```

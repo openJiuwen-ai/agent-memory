@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~retrieval.discloser.Discloser`——渐进式披露（纯内容塑形）。
 
 三层级内容：L0 摘要 / L1 片段 / L2 全文。**优先用预生成的** ``unit.layers.l0``/``.l1``
@@ -48,6 +49,7 @@ class TruncatingDiscloser(Discloser):
                     content=unit.content,  # L2 全文
                     user_metadata=dict(unit.user_metadata),
                     level=effective_level,
+                    system_metadata=dict(unit.system_metadata),
                 )
             )
         return items

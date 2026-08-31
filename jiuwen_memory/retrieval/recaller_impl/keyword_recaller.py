@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~retrieval.recaller.Recaller` 的 KEYWORD 通道。
 
 消费 ``ParsedQuery``，组装 :class:`~storage.types.TextQuery`（scope 落查询的专用
@@ -104,6 +105,7 @@ class KeywordRecaller(Recaller):
             text=query.rewritten or query.raw,
             top_k=top_k,
             filters=query.scalar_filters,  # scope 不混进 filters，单独走入参
+            extensions=dict(query.extensions),
         )
         hits = self._fulltext.search(scope, tq)
         records = self._fulltext.get(scope, [h.id for h in hits])

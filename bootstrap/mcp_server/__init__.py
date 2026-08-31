@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """MCP surface — 一个真正的 Model Context Protocol 服务，把记忆动词暴露为 MCP 工具。
 
 与 ``bootstrap/http_server``（HTTP）、``bootstrap/cli``（CLI）平级的协议适配器：复用同一套

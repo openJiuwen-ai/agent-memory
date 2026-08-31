@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """FeatureExtractor — 特征抽取能力：文本 -> 结构化特征。
 
 **共用说明**：产出关键词/命名实体/标签（不含稠密向量，向量由

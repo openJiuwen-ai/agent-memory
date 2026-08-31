@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """控制层（C 层，管理面）接口：引擎编排 · 生命周期 · 治理 · 权限 · 演进调度 · 运行时策略。"""
 
 from .base import ControlOperator, ControlOperatorType
@@ -34,6 +35,7 @@ from .types import (
     SpaceStatus,
     SpaceUsage,
     UpdateMode,
+    WriteTargets,
 )
 
 __all__ = [
@@ -74,4 +76,5 @@ __all__ = [
     "UpdateMode",
     "DeleteMode",
     "DeleteSelector",
+    "WriteTargets",
 ]

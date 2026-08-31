@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """log_impl 的实现集（注册式工厂 LogProducer + 各实现）。"""
 
 from importlib import import_module

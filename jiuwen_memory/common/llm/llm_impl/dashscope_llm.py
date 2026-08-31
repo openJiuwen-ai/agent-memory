@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """DashScopeLLM — 阿里云 DashScope OpenAI-compatible Chat 实现。"""
 
 from __future__ import annotations

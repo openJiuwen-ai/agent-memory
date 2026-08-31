@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """LayerAnnotator — 分层披露标注（架构 §9.1）。
 
 给已有 ``MemoryUnit`` 标注 L0/L1 内容层（``unit.layers``），供检索披露端渐进消费。

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """评估框架的数据契约：语料、查询样例、单例观测、指标与运行结果。
 
 设计要点：

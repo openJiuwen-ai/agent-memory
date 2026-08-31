@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Base surface-server — kernel assembly + the shared verb dispatch.
 
 :class:`Server` is the **base class** every protocol surface builds on: it holds

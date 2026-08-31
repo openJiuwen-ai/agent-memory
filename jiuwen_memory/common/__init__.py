@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """共享组件：跨层复用的能力插件接口、通用结构体与异常类型（见 base.py / errors.py / log/）。"""
 
 from .base import Plugin, PluginType

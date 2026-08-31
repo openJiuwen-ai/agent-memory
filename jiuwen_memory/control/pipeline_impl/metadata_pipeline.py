@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """基于 metadata / query.extensions 的 pipeline 路由实现。"""
 
 from __future__ import annotations

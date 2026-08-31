@@ -22,6 +22,7 @@ pytestmark = pytest.mark.unit
 def test_l0_truncates_and_l2_returns_full_content(unit_factory) -> None:
     content = "word " * 40
     unit = unit_factory("u1", content)
+    unit.system_metadata = {"memory_type": "episodic", "importance": 0.5}
     unit.user_metadata = {"project": "alpha"}
     discloser = TruncatingDiscloser()
     candidates = [ScoredUnit("u1", 1.0, RecallChannel.VECTOR)]
@@ -32,6 +33,7 @@ def test_l0_truncates_and_l2_returns_full_content(unit_factory) -> None:
 
     assert l2.content == content  # L2 全文
     assert l2.user_metadata == {"project": "alpha"}
+    assert l2.system_metadata == {"memory_type": "episodic", "importance": 0.5}
     assert len(l0.abstract) < len(l2.content)  # L0 摘要比全文短
     assert l0.abstract.endswith("…")
 

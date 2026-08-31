@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~ingest.ingestor.Ingestor`。
 
 对每条 ``RawPayload``：调用注入的 Normalizer 规约出 content 文本投影，转换为

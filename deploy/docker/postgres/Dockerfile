@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \

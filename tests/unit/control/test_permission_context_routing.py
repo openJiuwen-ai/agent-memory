@@ -19,11 +19,18 @@ import pytest
 
 from jiuwen_memory.api.memory_api_impl import build_kernel
 from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
+from jiuwen_memory.common.security.authorization import RoutingFieldsProvider
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Context, Scope
 from jiuwen_memory.config import Config
+from jiuwen_memory.control.permission import PermissionManager
 from jiuwen_memory.control.types import DeleteMode, DeleteSelector
 
 pytestmark = pytest.mark.unit
+
+
+def test_permission_manager_uses_shared_routing_fields_capability() -> None:
+    assert PermissionManager.routing_fields is RoutingFieldsProvider.routing_fields
 
 
 def _routing_config() -> Config:
@@ -79,10 +86,20 @@ def test_policy_name_is_not_accepted_as_route_value() -> None:
     outsider, victim = Scope(org="evil", user="x"), Scope(org="acme", user="owner")
 
     # episodic 是显式声明的宽松路由，standard 只是它背后的 policy 名
-    api.add("ok", victim, identity=outsider, system_metadata={"memory_type": "episodic"})
+    api.add(
+        "ok",
+        victim,
+        security=legacy_request_context(outsider),
+        system_metadata={"memory_type": "episodic"},
+    )
 
     with pytest.raises(PermissionDeniedError):
-        api.add("secret", victim, identity=outsider, system_metadata={"memory_type": "standard"})
+        api.add(
+            "secret",
+            victim,
+            security=legacy_request_context(outsider),
+            system_metadata={"memory_type": "standard"},
+        )
 
 
 def test_add_permission_routes_by_memory_type() -> None:
@@ -90,13 +107,18 @@ def test_add_permission_routes_by_memory_type() -> None:
     actor = Scope(org="acme", user="reader")
     target = Scope(org="acme", user="owner")
 
-    api.add("general note", target, identity=actor, system_metadata={"memory_type": "episodic"})
+    api.add(
+        "general note",
+        target,
+        security=legacy_request_context(actor),
+        system_metadata={"memory_type": "episodic"},
+    )
 
     with pytest.raises(PermissionDeniedError):
         api.add(
             "repo must use pytest",
             target,
-            identity=actor,
+            security=legacy_request_context(actor),
             system_metadata={"memory_type": "coding"},
         )
 
@@ -110,7 +132,7 @@ def test_search_permission_routes_by_metadata_memory_type_filter() -> None:
         api.search(
             "repo",
             Context(scope=target),
-            identity=actor,
+            security=legacy_request_context(actor),
             filters={"system_metadata.memory_type": "coding"},
         )
 
@@ -124,7 +146,7 @@ def test_search_permission_routes_to_lenient_policy_for_declared_type() -> None:
     api.search(
         "general",
         Context(scope=target),
-        identity=actor,
+        security=legacy_request_context(actor),
         filters={"system_metadata.memory_type": "episodic"},
     )
 
@@ -133,7 +155,12 @@ def test_search_permission_routes_to_lenient_policy_for_declared_type() -> None:
 
 
 def _seed(api, owner: Scope) -> None:
-    api.add("repo must use pytest", owner, identity=owner, system_metadata={"memory_type": "coding"})
+    api.add(
+        "repo must use pytest",
+        owner,
+        security=legacy_request_context(owner),
+        system_metadata={"memory_type": "coding"},
+    )
 
 
 def test_escalation_1_unknown_extensions_value_falls_to_strict_fallback() -> None:
@@ -146,7 +173,7 @@ def test_escalation_1_unknown_extensions_value_falls_to_strict_fallback() -> Non
         api.search(
             "repo must use pytest",
             Context(scope=owner, extensions={"memory_type": "unknown"}),
-            identity=reader,
+            security=legacy_request_context(reader),
             filters={"system_metadata.memory_type": "coding"},
         )
 
@@ -158,7 +185,9 @@ def test_escalation_2_missing_route_value_falls_to_strict_fallback() -> None:
     _seed(api, owner)
 
     with pytest.raises(PermissionDeniedError):
-        api.search("repo must use pytest", Context(scope=owner), identity=reader)
+        api.search(
+            "repo must use pytest", Context(scope=owner), security=legacy_request_context(reader)
+        )
 
 
 def test_escalation_3_ambiguous_or_filter_falls_to_strict_fallback() -> None:
@@ -171,7 +200,7 @@ def test_escalation_3_ambiguous_or_filter_falls_to_strict_fallback() -> None:
         api.search(
             "repo must use pytest",
             Context(scope=owner),
-            identity=reader,
+            security=legacy_request_context(reader),
             filters={
                 "OR": [
                     {"system_metadata.memory_type": "coding"},
@@ -194,7 +223,7 @@ def test_escalation_4_lenient_route_cannot_read_protected_data() -> None:
     result = api.search(
         "repo must use pytest",
         Context(scope=owner, extensions={"memory_type": "episodic"}),
-        identity=reader,
+        security=legacy_request_context(reader),
         filters={"system_metadata.memory_type": "coding"},
         top_k=10,
     )
@@ -206,12 +235,17 @@ def test_route_value_injection_still_returns_own_type_data() -> None:
     """回注谓词不得误伤：按 episodic 授权时，episodic 的数据必须照常可读。"""
     api = build_kernel(config=_routing_config()).api
     owner, reader = Scope(org="acme", user="owner"), Scope(org="acme", user="reader")
-    api.add("lunch plan tomorrow", owner, identity=owner, system_metadata={"memory_type": "episodic"})
+    api.add(
+        "lunch plan tomorrow",
+        owner,
+        security=legacy_request_context(owner),
+        system_metadata={"memory_type": "episodic"},
+    )
 
     result = api.search(
         "lunch plan tomorrow",
         Context(scope=owner, extensions={"memory_type": "episodic"}),
-        identity=reader,
+        security=legacy_request_context(reader),
         top_k=10,
     )
 
@@ -229,14 +263,15 @@ def test_unresolved_route_keeps_owner_base_rule() -> None:
     api = build_kernel(config=_routing_config()).api
     owner = Scope(org="acme", user="owner")
 
-    api.search("general", Context(scope=owner), identity=owner)  # 未限定 memory_type
+    # 未限定 memory_type
+    api.search("general", Context(scope=owner), security=legacy_request_context(owner))
 
 
 def test_unresolved_route_keeps_root_base_rule() -> None:
     api = build_kernel(config=_routing_config()).api
     owner, root = Scope(org="acme", user="owner"), Scope()
 
-    api.search("general", Context(scope=owner), identity=root)
+    api.search("general", Context(scope=owner), security=legacy_request_context(root))
 
 
 # -- 已有 unit 的操作按真源元数据鉴权 ------------------------------------------ #
@@ -249,12 +284,12 @@ def test_get_permission_uses_stored_memory_type_context() -> None:
     unit = api.add(
         "repo must use pytest",
         owner,
-        identity=owner,
+        security=legacy_request_context(owner),
         system_metadata={"memory_type": "coding"},
     )[0]
 
     with pytest.raises(PermissionDeniedError):
-        api.get(unit.id, owner, identity=reader)
+        api.get(unit.id, owner, security=legacy_request_context(reader))
 
 
 def test_delete_permission_checks_each_matched_unit_context() -> None:
@@ -264,7 +299,7 @@ def test_delete_permission_checks_each_matched_unit_context() -> None:
     unit = api.add(
         "repo must use pytest",
         owner,
-        identity=owner,
+        security=legacy_request_context(owner),
         tags=["repo"],
         system_metadata={"memory_type": "coding"},
     )[0]
@@ -272,5 +307,5 @@ def test_delete_permission_checks_each_matched_unit_context() -> None:
     with pytest.raises(PermissionDeniedError):
         api.delete(
             DeleteSelector(unit_ids=[unit.id], scope=owner, mode=DeleteMode.FORGET),
-            identity=reader,
+            security=legacy_request_context(reader),
         )
