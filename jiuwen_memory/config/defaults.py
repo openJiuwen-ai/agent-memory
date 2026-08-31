@@ -73,6 +73,18 @@ def default_config_dict() -> dict[str, Any]:
                     "fulltext_store": _D,
                     "graph_store": _D,
                     "preferred_retrieval_pipeline": "recall_get_rank",
+                    # 召回路装配：CompositeStorage 按能力开关（vector_enabled /
+                    # graph_enabled / layers_index_enabled，回退 globals）启用各
+                    # recaller，构建期同步组装。layers_index_enabled 默认 true
+                    #（与构建侧对齐：默认建默认查）；不在 params 硬编码，让 get
+                    # 回退 globals，便于全局关停。
+                    "keyword_recaller": "keyword",
+                    "vector_recaller": "vector",
+                    "graph_recaller": "graph",
+                    "keyword_l0_recaller": "keyword_l0",
+                    "keyword_l1_recaller": "keyword_l1",
+                    "vector_l0_recaller": "vector_l0",
+                    "vector_l1_recaller": "vector_l1",
                 },
             }
         },
@@ -118,15 +130,6 @@ def default_config_dict() -> dict[str, Any]:
             _D: {
                 "target": "pipeline",
                 "params": {
-                    "keyword_recaller": "keyword",
-                    "vector_recaller": "vector",
-                    "graph_recaller": "graph",
-                    # L0/L1 分层召回开关：回退 globals.layers_index_enabled；构建/召回侧默认均 true
-                    # （默认建默认查）。不在 params 硬编码，让 get 回退 globals，便于全局关停。
-                    "keyword_l0_recaller": "keyword_l0",
-                    "keyword_l1_recaller": "keyword_l1",
-                    "vector_l0_recaller": "vector_l0",
-                    "vector_l1_recaller": "vector_l1",
                     "reranker": _D,
                     "query_parser": _D,
                     "fuser": _D,

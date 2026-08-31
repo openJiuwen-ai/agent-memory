@@ -136,8 +136,16 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
 10. `CompositeStorage` 的默认首选检索路径是 `RECALL_GET_RANK`；首选路径是实例级稳定值，
     不随请求或健康状态切换，也不加入 Store capability 集合。
 11. `StorageProducer.TOP_NAME` 固定为 `storage`；默认具名实例为 `storage.default`，
-    `CompositeStorage` 只装配配置中声明的 Store 端口。兼容 Recaller 由 Retriever 在装配期绑定，
-    storage 包不得导入 retrieval。
+    `CompositeStorage` 只装配配置中声明的 Store 端口。兼容 Recaller 由 `CompositeStorage`
+    工厂按配置（`vector_enabled`/`graph_enabled`/`layers_index_enabled` 与 `*_recaller`
+    选择键）在构建期同步组装，装配错误 fail-fast。recaller builder 会经
+    `StorageProducer.resolve` 回取本 Storage 实例，故工厂先预注册再组装打破循环依赖：
+    具名构建用 `config.name` 预注册（recaller 命名空间下具名实例的 `storage` 引用走
+    `build_named` 命中缓存），匿名构建无缓存键用合成名（`id(storage)` 唯一）预注册并
+    把 storage 引用注入 recaller params（让 builder 内 `resolve` 走 `cls.dep` 第一分支
+    命中合成名缓存，不落到第三分支再建匿名 CompositeStorage 触发递归）；模块层面
+    storage 不导入 retrieval（工厂内函数级惰性 import）。详见
+    [F06-composite-recaller-assembly.md](../../docs/features/storage/F06-composite-recaller-assembly.md)。
 12. `Storage.scopes()` 枚举 MemoryUnit 真源已有 Scope；分层索引通过
     `has_*_port(name)` / `*_port(name)` 访问命名端口，Construction、Retrieval、Control 不得直接
     调用 Store Producer 解析具名后端。

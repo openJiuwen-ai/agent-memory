@@ -45,6 +45,7 @@ from jiuwen_memory.retrieval.types import (
 from jiuwen_memory.storage.bootstrap import register_backends
 from jiuwen_memory.storage.fulltext import FulltextProducer
 from jiuwen_memory.storage.kv import KvProducer
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 from jiuwen_memory.storage.vector import VectorProducer
 from tests.conftest import DEFAULT_SCOPE, index_unit, make_unit, make_world
 
@@ -131,6 +132,13 @@ class SlowRecaller(Recaller):
         return [ScoredUnit(self._unit_id, 1.0, self._channel)]
 
 
+def _storage_for(world, recallers: list) -> CompositeStorage:
+    """复用 world 的各 Store 建 CompositeStorage，并把测试 recaller 绑到它上面。"""
+    return CompositeStorage(
+        kv=world.kv, vector=world.vector, fulltext=world.fulltext, recallers=recallers
+    )
+
+
 @pytest.fixture
 def indexed_world(world, unit_factory, index_unit_fn):
     index_unit_fn(world, unit_factory("u1", "alice likes coffee"))
@@ -163,7 +171,6 @@ def test_noise_only_query_short_circuits_after_parse(indexed_world, scope) -> No
     )
     retriever = PipelineRetriever(
         parser,
-        [indexed_world.keyword, indexed_world.vector_recaller],
         RRFFuser(),
         indexed_world.discloser,
         indexed_world.unit_reader,
@@ -251,10 +258,10 @@ def test_trajectory_records_stages_and_cost(indexed_world, scope) -> None:
 def test_channel_failure_isolated(indexed_world, scope) -> None:
     retriever = PipelineRetriever(
         indexed_world.parser,
-        [FailingRecaller(), indexed_world.keyword],
         RRFFuser(),
         indexed_world.discloser,
         indexed_world.unit_reader,
+        storage=_storage_for(indexed_world, [FailingRecaller(), indexed_world.keyword]),
     )
 
     result = retriever.retrieve(scope, RetrievalQuery(text="coffee", top_k=5, with_trajectory=True))
@@ -271,13 +278,16 @@ def test_recall_channels_run_in_parallel(scope) -> None:
     index_unit(world, make_unit("u2", "bob likes tea"))
     retriever = PipelineRetriever(
         world.parser,
-        [
-            SlowRecaller(RecallChannel.KEYWORD, "u1", 0.10),
-            SlowRecaller(RecallChannel.VECTOR, "u2", 0.10),
-        ],
         RRFFuser(),
         world.discloser,
         world.unit_reader,
+        storage=_storage_for(
+            world,
+            [
+                SlowRecaller(RecallChannel.KEYWORD, "u1", 0.10),
+                SlowRecaller(RecallChannel.VECTOR, "u2", 0.10),
+            ],
+        ),
     )
 
     t0 = perf_counter()
@@ -316,18 +326,21 @@ def test_rerank_filters_zero_score_candidates() -> None:
     index_unit(world, make_unit("noise", "tea"))
     retriever = PipelineRetriever(
         world.parser,
-        [
-            StaticRecaller(
-                [
-                    ScoredUnit("hit", 1.0, RecallChannel.KEYWORD),
-                    ScoredUnit("noise", 0.9, RecallChannel.KEYWORD),
-                ]
-            )
-        ],
         RRFFuser(),
         world.discloser,
         world.unit_reader,
         OverlapReranker(world.tokenizer),
+        storage=_storage_for(
+            world,
+            [
+                StaticRecaller(
+                    [
+                        ScoredUnit("hit", 1.0, RecallChannel.KEYWORD),
+                        ScoredUnit("noise", 0.9, RecallChannel.KEYWORD),
+                    ]
+                )
+            ],
+        ),
     )
 
     result = retriever.retrieve(
@@ -345,20 +358,23 @@ def test_min_score_applies_when_reranked() -> None:
         index_unit(world, make_unit(uid, f"{uid} candidate"))
     retriever = PipelineRetriever(
         world.parser,
-        [
-            StaticRecaller(
-                [
-                    ScoredUnit("u1", 1.0, RecallChannel.KEYWORD),
-                    ScoredUnit("u2", 0.9, RecallChannel.KEYWORD),
-                    ScoredUnit("u3", 0.8, RecallChannel.KEYWORD),
-                ]
-            )
-        ],
         RRFFuser(),
         world.discloser,
         world.unit_reader,
         StaticReranker([0.9, 0.45, 0.1]),
         min_score=0.5,
+        storage=_storage_for(
+            world,
+            [
+                StaticRecaller(
+                    [
+                        ScoredUnit("u1", 1.0, RecallChannel.KEYWORD),
+                        ScoredUnit("u2", 0.9, RecallChannel.KEYWORD),
+                        ScoredUnit("u3", 0.8, RecallChannel.KEYWORD),
+                    ]
+                )
+            ],
+        ),
     )
 
     result = retriever.retrieve(
@@ -377,19 +393,22 @@ def test_min_score_skipped_when_rerank_disabled() -> None:
         index_unit(world, make_unit(uid, f"{uid} candidate"))
     retriever = PipelineRetriever(
         world.parser,
-        [
-            StaticRecaller(
-                [
-                    ScoredUnit("u1", 1.0, RecallChannel.KEYWORD),
-                    ScoredUnit("u2", 0.9, RecallChannel.KEYWORD),
-                ]
-            )
-        ],
         RRFFuser(),
         world.discloser,
         world.unit_reader,
         StaticReranker([0.01, 0.01]),
         min_score=0.4,
+        storage=_storage_for(
+            world,
+            [
+                StaticRecaller(
+                    [
+                        ScoredUnit("u1", 1.0, RecallChannel.KEYWORD),
+                        ScoredUnit("u2", 0.9, RecallChannel.KEYWORD),
+                    ]
+                )
+            ],
+        ),
     )
 
     result = retriever.retrieve(
@@ -408,20 +427,23 @@ def test_threshold_under_fills_below_top_k() -> None:
         index_unit(world, make_unit(uid, f"{uid} candidate"))
     retriever = PipelineRetriever(
         world.parser,
-        [
-            StaticRecaller(
-                [
-                    ScoredUnit("u1", 1.0, RecallChannel.KEYWORD),
-                    ScoredUnit("u2", 0.9, RecallChannel.KEYWORD),
-                    ScoredUnit("u3", 0.8, RecallChannel.KEYWORD),
-                ]
-            )
-        ],
         RRFFuser(),
         world.discloser,
         world.unit_reader,
         StaticReranker([0.95, 0.7, 0.2]),
         min_score_ratio=0.8,
+        storage=_storage_for(
+            world,
+            [
+                StaticRecaller(
+                    [
+                        ScoredUnit("u1", 1.0, RecallChannel.KEYWORD),
+                        ScoredUnit("u2", 0.9, RecallChannel.KEYWORD),
+                        ScoredUnit("u3", 0.8, RecallChannel.KEYWORD),
+                    ]
+                )
+            ],
+        ),
     )
 
     result = retriever.retrieve(
@@ -443,13 +465,13 @@ def test_budget_expands_to_top_k() -> None:
         candidates.append(ScoredUnit(uid, 1.0, RecallChannel.KEYWORD))
     retriever = PipelineRetriever(
         world.parser,
-        [StaticRecaller(candidates)],
         RRFFuser(),
         world.discloser,
         world.unit_reader,
         over_fetch_factor=1,
         over_fetch_floor=1,
         rerank_max=2,
+        storage=_storage_for(world, [StaticRecaller(candidates)]),
     )
 
     result = retriever.retrieve(DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=4))
@@ -469,12 +491,12 @@ def test_over_fetch_recall_width() -> None:
     factor_driven = StaticRecaller(candidates)
     retriever = PipelineRetriever(
         world.parser,
-        [factor_driven],
         RRFFuser(),
         world.discloser,
         world.unit_reader,
         over_fetch_factor=3,
         over_fetch_floor=1,
+        storage=_storage_for(world, [factor_driven]),
     )
     result = retriever.retrieve(DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=2))
     assert factor_driven.calls == [6], "factor 主导：max(2*3, 1) = 6"
@@ -483,12 +505,12 @@ def test_over_fetch_recall_width() -> None:
     floor_driven = StaticRecaller(candidates)
     retriever = PipelineRetriever(
         world.parser,
-        [floor_driven],
         RRFFuser(),
         world.discloser,
         world.unit_reader,
         over_fetch_factor=1,
         over_fetch_floor=5,
+        storage=_storage_for(world, [floor_driven]),
     )
     retriever.retrieve(DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=2))
     assert floor_driven.calls == [5], "floor 主导：max(2*1, 5) = 5"
@@ -500,13 +522,13 @@ def test_recall_max_caps_recall_k() -> None:
     recaller = StaticRecaller([])
     retriever = PipelineRetriever(
         world.parser,
-        [recaller],
         RRFFuser(),
         world.discloser,
         world.unit_reader,
         over_fetch_factor=4,
         over_fetch_floor=60,
         recall_max=100,
+        storage=_storage_for(world, [recaller]),
     )
 
     retriever.retrieve(DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=50))
@@ -521,10 +543,10 @@ def test_direct_constructor_default_recall_max_caps_recall_k() -> None:
     recaller = StaticRecaller([])
     retriever = PipelineRetriever(
         world.parser,
-        [recaller],
         RRFFuser(),
         world.discloser,
         world.unit_reader,
+        storage=_storage_for(world, [recaller]),
     )
 
     retriever.retrieve(DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=50))
@@ -547,8 +569,11 @@ def test_retrieval_over_fetch_read_from_config() -> None:
     raw = default_config_dict()
     raw["globals"]["graph_enabled"] = False
     raw["globals"]["vector_enabled"] = False
+    # recaller 选择键归 storage 命名空间：覆盖 default 实例的 keyword_recaller 装配。
+    raw["storage"]["default"]["params"]["keyword_recaller"] = {
+        "target": "recording_config_test"
+    }
     params = raw["retriever"]["default"]["params"]
-    params["keyword_recaller"] = {"target": "recording_config_test"}
     params["over_fetch_factor"] = 3
     params["over_fetch_floor"] = 7
     params["recall_max"] = 11
@@ -590,19 +615,22 @@ def test_configured_calibrated_threshold_active() -> None:
         index_unit(world, make_unit(uid, f"{uid} candidate"))
     retriever = PipelineRetriever(
         world.parser,
-        [
-            StaticRecaller(
-                [
-                    ScoredUnit("u1", 1.0, RecallChannel.KEYWORD),
-                    ScoredUnit("u2", 0.9, RecallChannel.KEYWORD),
-                ]
-            )
-        ],
         RRFFuser(),
         world.discloser,
         world.unit_reader,
         StaticReranker([0.95, 0.2]),
         min_score_ratio=0.6,
+        storage=_storage_for(
+            world,
+            [
+                StaticRecaller(
+                    [
+                        ScoredUnit("u1", 1.0, RecallChannel.KEYWORD),
+                        ScoredUnit("u2", 0.9, RecallChannel.KEYWORD),
+                    ]
+                )
+            ],
+        ),
     )
 
     result = retriever.retrieve(
@@ -626,11 +654,11 @@ def test_configured_uncalibrated_threshold_active() -> None:
         candidates.append(ScoredUnit(uid, 1.0, RecallChannel.KEYWORD))
     retriever = PipelineRetriever(
         world.parser,
-        [StaticRecaller(candidates)],
         RRFFuser(k=0),
         world.discloser,
         world.unit_reader,
         min_score_ratio_uncalibrated=0.3,
+        storage=_storage_for(world, [StaticRecaller(candidates)]),
     )
 
     result = retriever.retrieve(
@@ -656,10 +684,10 @@ def test_direct_constructor_threshold_off_by_default() -> None:
         candidates.append(ScoredUnit(uid, 1.0, RecallChannel.KEYWORD))
     retriever = PipelineRetriever(
         world.parser,
-        [StaticRecaller(candidates)],
         RRFFuser(k=0),
         world.discloser,
         world.unit_reader,
+        storage=_storage_for(world, [StaticRecaller(candidates)]),
     )
 
     result = retriever.retrieve(
@@ -756,11 +784,11 @@ def test_rerank_requested_without_reranker_records_skip() -> None:
     index_unit(world, make_unit("u1", "coffee beans"))
     retriever = PipelineRetriever(
         world.parser,
-        [world.keyword],
         RRFFuser(),
         world.discloser,
         world.unit_reader,
         None,
+        storage=_storage_for(world, [world.keyword]),
     )
 
     result = retriever.retrieve(
@@ -787,7 +815,6 @@ def test_recall_max_below_floor_warns(monkeypatch) -> None:
 
     PipelineRetriever(
         world.parser,
-        [world.keyword],
         RRFFuser(),
         world.discloser,
         world.unit_reader,
@@ -811,17 +838,20 @@ def test_adaptive_disclosure_records_actual_levels_in_trajectory() -> None:
     )
     retriever = PipelineRetriever(
         world.parser,
-        [
-            StaticRecaller(
-                [
-                    ScoredUnit("u1", 1.0, RecallChannel.KEYWORD),
-                    ScoredUnit("u2", 1.0, RecallChannel.KEYWORD),
-                ]
-            )
-        ],
         RRFFuser(),
         StructuredDiscloser(),
         world.unit_reader,
+        storage=_storage_for(
+            world,
+            [
+                StaticRecaller(
+                    [
+                        ScoredUnit("u1", 1.0, RecallChannel.KEYWORD),
+                        ScoredUnit("u2", 1.0, RecallChannel.KEYWORD),
+                    ]
+                )
+            ],
+        ),
     )
 
     result = retriever.retrieve(
@@ -861,22 +891,25 @@ def test_weighted_rrf_and_structured_discloser_run_in_pipeline() -> None:
     )
     retriever = PipelineRetriever(
         world.parser,
-        [
-            StaticRecaller(
-                [ScoredUnit("keyword_hit", 0.3, RecallChannel.KEYWORD)],
-                RecallChannel.KEYWORD,
-            ),
-            StaticRecaller(
-                [ScoredUnit("vector_hit", 0.99, RecallChannel.VECTOR)],
-                RecallChannel.VECTOR,
-            ),
-        ],
         WeightedRRFFuser(
             k=0,
             channel_weights={RecallChannel.KEYWORD: 2.0, RecallChannel.VECTOR: 1.0},
         ),
         StructuredDiscloser(),
         world.unit_reader,
+        storage=_storage_for(
+            world,
+            [
+                StaticRecaller(
+                    [ScoredUnit("keyword_hit", 0.3, RecallChannel.KEYWORD)],
+                    RecallChannel.KEYWORD,
+                ),
+                StaticRecaller(
+                    [ScoredUnit("vector_hit", 0.99, RecallChannel.VECTOR)],
+                    RecallChannel.VECTOR,
+                ),
+            ],
+        ),
     )
 
     result = retriever.retrieve(
@@ -942,11 +975,13 @@ def test_default_config_attaches_l0_l1_recallers() -> None:
     try:
         retriever = RetrieverProducer.build_named("default", ctx)
         assert isinstance(retriever, PipelineRetriever)
+        storage = retriever.storage
+        assert isinstance(storage, CompositeStorage)
 
         # (channel, layer) 联合 key——keyword/vector 各 l0/l1，共四路
         by_key = {
             (r.channel().value, r.layer): r
-            for r in retriever.recallers
+            for r in storage.recallers
             if isinstance(r, (KeywordRecaller, VectorRecaller))
         }
         # 默认接入四路分层 recaller（keyword+vector 各 l0/l1）

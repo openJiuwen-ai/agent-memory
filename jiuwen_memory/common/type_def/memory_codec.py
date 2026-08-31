@@ -19,6 +19,7 @@ from datetime import datetime
 
 from .memory import (
     TRANSIENT_SYSTEM_METADATA_KEYS,
+    ChunkVector,
     ContentLayers,
     LifecycleState,
     MemoryTier,
@@ -89,6 +90,10 @@ def dumps(unit: MemoryUnit) -> bytes:
             "user_metadata": dict(unit.user_metadata),
             "lifecycle": unit.lifecycle.value,
             "entities": list(unit.entities),
+            "vectors": [
+                {"id": cv.id, "seq": cv.seq, "vector": list(cv.vector)}
+                for cv in unit.vectors
+            ],
         },
         ensure_ascii=False,
     ).encode("utf-8")
@@ -180,4 +185,12 @@ def loads(raw: bytes) -> MemoryUnit | None:
         user_metadata=dict(payload.get("user_metadata") or {}),
         lifecycle=LifecycleState(payload.get("lifecycle", LifecycleState.ACTIVE.value)),
         entities=list(payload.get("entities") or []),
+        vectors=[
+            ChunkVector(
+                id=str(cv.get("id", "")),
+                seq=int(cv.get("seq", 0)),
+                vector=list(cv.get("vector") or []),
+            )
+            for cv in payload.get("vectors") or []
+        ],
     )

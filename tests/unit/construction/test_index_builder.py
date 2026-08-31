@@ -15,6 +15,7 @@ from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import (
     T_EVENT_UNKNOWN,
     T_INVALID_OPEN,
+    ChunkVector,
     Scope,
     memory_key,
 )
@@ -78,12 +79,19 @@ def _make_hybrid_builder() -> tuple[HybridIndexBuilder, dict, dict]:
     return builder, stores, plugins
 
 
-def _make_unified_builder() -> tuple[UnifiedIndexBuilder, CompositeStorage, dict, dict]:
-    """创建测试用 UnifiedIndexBuilder 及其统一 Storage。"""
+def _make_unified_builder(
+    vector_enabled: bool = True,
+) -> tuple[UnifiedIndexBuilder, CompositeStorage, dict, dict]:
+    """创建测试用 UnifiedIndexBuilder 及其统一 Storage（全部写只经领域接口）。"""
     stores = create_test_stores()
     plugins = create_test_plugins()
     storage = CompositeStorage(kv=stores["kv"])
-    builder = UnifiedIndexBuilder(storage)
+    builder = UnifiedIndexBuilder(
+        storage,
+        vector_enabled=vector_enabled,
+        chunker=plugins["chunker"] if vector_enabled else None,
+        embedder=plugins["embedder"] if vector_enabled else None,
+    )
     return builder, storage, stores, plugins
 
 
@@ -189,6 +197,130 @@ def test_unified_builder_delegates_lifecycle_to_storage_by_scope():
     assert storage.get(scope_a, [updated_a.id]) == []
     assert storage.get(scope_b, [unit_b.id]) == [unit_b]
     assert builder.rebuild() is None
+
+
+# ---------------------------------------------------------------------------
+# T-I-03b: unified 向量化随本体下传（全部写只经 Storage 领域接口，不碰底层端口；
+# 向量化管线与 VectorIndexBuilder 一致：Chunker 切片 → Embedder 逐 chunk embed）
+# ---------------------------------------------------------------------------
+
+
+def _expected_chunk_vectors(plugins: dict, unit) -> list:
+    """用测试插件直接跑 chunk → embed 管线，给出 unit.vectors 的期望值。"""
+    chunks = plugins["chunker"].chunk(
+        text=unit.content, unit_id=unit.id, metadata={"tier": unit.tier.value}
+    )
+    vectors = plugins["embedder"].embed([c.text for c in chunks])
+    return [ChunkVector(id=c.id, seq=c.seq, vector=v) for c, v in zip(chunks, vectors)]
+
+
+def test_unified_builder_vectorizes_units_when_enabled():
+    """vector_enabled=True：build 走 chunker+embedder 管线，chunk 级向量随本体落盘。"""
+    builder, storage, _, plugins = _make_unified_builder()
+    scope = Scope(org="test", user="alice")
+    units = [
+        create_test_unit(
+            "u1", "用户偏好用 Python 写代码，经常使用 Python 进行数据分析", scope=scope
+        )
+    ]
+
+    builder.build(units)
+
+    expected = _expected_chunk_vectors(plugins, units[0])
+    assert expected, "测试内容应切出至少一个 chunk"
+    assert units[0].vectors == expected
+    persisted = storage.get(scope, ["u1"])[0]
+    assert persisted.vectors == expected, "vectors 应随本体经 codec 往返保留"
+
+
+def test_unified_builder_skips_vectorization_when_disabled():
+    """vector_enabled=False：不向量化，vectors 保持空列表。"""
+    builder, storage, _, _ = _make_unified_builder(vector_enabled=False)
+    scope = Scope(org="test", user="alice")
+    units = [create_test_unit("u1", "用户偏好用 Python 写代码", scope=scope)]
+
+    builder.build(units)
+
+    assert units[0].vectors == []
+    assert storage.get(scope, ["u1"])[0].vectors == []
+
+
+def test_unified_builder_embed_failure_does_not_block_body_write():
+    """embed 失败：本体仍落盘，vectors 留空（本体是真源，向量可由后端补算）。"""
+    builder, storage, _, plugins = _make_unified_builder()
+
+    def _boom(_texts):
+        raise RuntimeError("simulated embedder down")
+
+    plugins["embedder"].embed = _boom
+    scope = Scope(org="test", user="alice")
+    units = [create_test_unit("u1", "用户偏好用 Python 写代码", scope=scope)]
+
+    builder.build(units)
+
+    assert units[0].vectors == []
+    assert storage.get(scope, ["u1"]) == units
+
+
+def test_unified_builder_update_re_vectorizes():
+    """update：按新 content 重新切片向量化后回写本体。"""
+    builder, storage, _, plugins = _make_unified_builder()
+    scope = Scope(org="test", user="alice")
+    builder.build([create_test_unit("u1", "用户偏好 Python", scope=scope)])
+
+    updated = create_test_unit("u1", "用户偏好 Java", scope=scope)
+    builder.update([updated])
+
+    persisted = storage.get(scope, ["u1"])[0]
+    assert persisted.content == "用户偏好 Java"
+    assert persisted.vectors == _expected_chunk_vectors(plugins, updated)
+
+
+def test_unified_builder_vector_enabled_requires_embedder():
+    """vector_enabled=True 但缺 chunker/embedder：装配期直接报错，不拖到首次写入。"""
+    stores = create_test_stores()
+    with pytest.raises(ValueError, match="embedder"):
+        UnifiedIndexBuilder(CompositeStorage(kv=stores["kv"]), vector_enabled=True)
+
+
+def test_unified_builder_enriches_index_metadata_into_system_metadata():
+    """build 把 index_metadata 的过滤投影字段补进 unit.system_metadata，一体化后端直接读。
+
+    content_layer/t_event(哨兵)/t_invalid(哨兵)恒写；t_valid 仅非 None 时写。
+    其余过滤字段（unit_id/tier/lifecycle/tags/entities/source）已在 unit 顶层，
+    后端直接读、不重复补。seq 在 ChunkVector 上、per-chunk 不进 system_metadata。
+    """
+    builder, storage, _, _ = _make_unified_builder(vector_enabled=False)
+    scope = Scope(org="test", user="alice")
+    units = [create_test_unit("u1", "alice likes coffee", scope=scope)]
+
+    builder.build(units)
+
+    sm = units[0].system_metadata
+    assert sm["content_layer"] == "l2", "content 索引层恒为 l2"
+    assert sm["t_event"] == T_EVENT_UNKNOWN, "t_event None 落哨兵（恒写）"
+    assert sm["t_invalid"] == T_INVALID_OPEN, "t_invalid None 落哨兵（恒写）"
+    assert "t_valid" not in sm, "t_valid None 不写（下推用 LTE 放行）"
+    # 持久化往返保留：CompositeStorage.add 经 dumps/loads 保留补齐字段
+    persisted = storage.get(scope, ["u1"])[0]
+    assert persisted.system_metadata["content_layer"] == "l2"
+    assert persisted.system_metadata["t_event"] == T_EVENT_UNKNOWN
+    assert persisted.system_metadata["t_invalid"] == T_INVALID_OPEN
+
+
+def test_unified_builder_enriches_t_valid_when_set():
+    """t_valid 非 None：写 epoch 毫秒进 system_metadata。"""
+    from jiuwen_memory.common.type_def import Temporal
+
+    builder, storage, _, _ = _make_unified_builder(vector_enabled=False)
+    scope = Scope(org="test", user="alice")
+    t_valid = datetime(2026, 8, 31, 0, 0, 0, tzinfo=timezone.utc)
+    unit = create_test_unit("u1", "x", scope=scope)
+    unit.temporal = Temporal(t_valid=t_valid)
+
+    builder.build([unit])
+
+    assert unit.system_metadata["t_valid"] == int(t_valid.timestamp() * 1000)
 
 
 # ---------------------------------------------------------------------------
@@ -665,6 +797,22 @@ def test_unified_factory_resolves_storage_dependency():
     teardown = _bootstrap_factories()
     try:
         ctx = AssemblyContext.from_dict({"constructor": {"ub": "unified"}})
+        builder = IndexBuilderProducer.build_named("ub", ctx)
+        assert isinstance(builder, UnifiedIndexBuilder)
+    finally:
+        teardown()
+
+
+def test_unified_factory_vector_disabled_assembles_without_vector_plugins():
+    """globals.vector_enabled=False 时 unified 工厂不解析 embedder 即可装配。"""
+    teardown = _bootstrap_factories()
+    try:
+        ctx = AssemblyContext.from_dict(
+            {
+                "globals": {"vector_enabled": False},
+                "constructor": {"ub": "unified"},
+            }
+        )
         builder = IndexBuilderProducer.build_named("ub", ctx)
         assert isinstance(builder, UnifiedIndexBuilder)
     finally:

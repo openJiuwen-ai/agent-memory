@@ -70,7 +70,8 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 14. **索引删除按 MemoryUnit 定位**：`IndexBuilder.remove` 接收带 Scope 的 MemoryUnit，禁止维护仅按 unit id 的单值 Scope 缓存；同一逻辑 id 在不同 Scope 的索引互不影响。
 15. **记忆写入只经 IndexBuilder**：Evolver 与上层调用方不得直接调用 `Storage` 的
     `add`/`update`/`delete`；正排与各派生索引由 `IndexBuilder` 统一编排，使调用方不感知
-    底层存储拓扑。剩余的合法调用方只有 `UnifiedIndexBuilder`（转发给一体化后端）与
+    底层存储拓扑。剩余的合法调用方只有 `UnifiedIndexBuilder`（全部写经 Storage 领域接口，
+    自身只做 `vector_enabled` 门控的 content 向量化并回填 `MemoryUnit.vector` 随本体下传）与
     `LifecycleManager`（状态回写）。读取（`get`/`list`/`scopes`）不受此约束。
 16. **索引状态由调用方判定，构建算子不解读 `lifecycle`**：记忆处于什么状态、因而该对索引
     做什么，由调用方判断后调对应方法；`IndexBuilder` 只执行被要求的操作。如归档/遗忘为
@@ -523,9 +524,10 @@ class EvolveResult:
 | `provenance` | list[str] | 演进血缘（多→一）：由哪些 unit 抽取/升华/合并而来 |
 | `supersedes` | str | 版本链（一→一）：本版取代的上一版 id（空=首版） |
 | `tags` | list[str] | 标签（检索前置过滤用） |
-| `metadata` | dict[str, Any] | 元数据（保留 JSON 标量原生类型） |
+| `system_metadata` / `user_metadata` | dict[str, MetadataValueType] | 系统/用户双命名空间元数据（保留 JSON 标量原生类型，见 F04-memory-metadata-separation） |
 | `lifecycle` | LifecycleState | 生命周期状态 |
 | `entities` | list[str] | L2 记忆里由大模型抽取得到的实体文本（明文）。entity linker 建反向索引时只消费本字段构造 `EntityMention`，为空时直接跳过该 unit（已砍 spaCy 兜底，无回退抽取，见 [F06](../features/retrieval/F06-entity-recall-channel.md)）。默认空，向后兼容 |
+| `vectors` | list[ChunkVector] | content 的 chunk 级向量投影：构建期由 IndexBuilder 在 `vector_enabled` 时按 VectorIndexBuilder 同管线（Chunker 切片 → 共享 Embedder 逐 chunk embed）填充，`id`/`seq` 与 Chunk 对齐，随本体经 `Storage.add/update` 下传；一体化 Storage 消费它自建 chunk 级向量索引（record id 沿用 `{unit_id}-{chunk_id}`），CompositeStorage 仅随本体持久化。空列表表示未向量化；codec 加字段兼容演进，`_v` 不升（见 F06-unified-index-builder） |
 
 构建层直接消费 S07 定义的 `HierarchyRef` 和层级枚举。目标父节点复用既有
 segments、layers、tier 和 metadata 槽位，结构边只写 hierarchy；`content/assets/source`

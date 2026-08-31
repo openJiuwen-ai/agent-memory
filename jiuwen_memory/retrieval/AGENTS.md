@@ -129,8 +129,10 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
    `StorageRetrievalError`。
 7. Fuser 接受物化候选并保持 MemoryUnit 与 evidence；读取前只允许对 id 去重，不得合并
    多通道候选。Fuser 不执行 Reranker。
-8. `PipelineRetriever` 的生产装配必须通过 `StorageProducer` 获取 Storage；默认
-   `CompositeStorage` 的兼容 Recaller 只允许在装配阶段绑定，不得在 storage 层构建检索算子。
+8. `PipelineRetriever` 的生产装配必须通过 `StorageProducer` 获取 Storage；Retriever 不再
+   持有召回路——`CompositeStorage` 的兼容 Recaller 由 storage 层工厂按配置在构建期
+   同步装配，非 Composite 实现自带检索路径、无需 Recaller。手工/测试接线用 `CompositeStorage`
+   构造参数或 `bind_recallers`。
 9. `MultimodalRetriever` 只组合已注入的基础 Retriever，不得直接依赖 `KvProducer`、
    扫描 KV 或识别具体存储后端。原生、CLM、ELM 分支分别检索；无视频记忆时两个视频
    分支自然为空，再按 RRF 融合并截断到请求的 `top_k`。

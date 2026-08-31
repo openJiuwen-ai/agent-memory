@@ -14,7 +14,7 @@
 ├── deploy/             # 部署配置（docker / local）
 ├── evaluation/         # 评测框架（benchmark / metrics / smoke_test）
 ├── examples/           # 使用示例与快速上手
-├── scripts/            # 运行脚本（run-cli / run-server）
+├── scripts/            # 运行脚本（run-cli / run-server / run-mcp，见「环境与运行」）
 └── .claude/            # AI 辅助工具配置（rules / skills / settings）
 ```
 
@@ -36,6 +36,16 @@ docs/AGENTS.md                   ← 文档归档规约：文档目录结构、�
 - **`docs/specs/`**：跨模块接口规约（接口契约、协议、不变量、公共 API），相对稳定
 - **`docs/features/`**：特性设计文档（决策、方案取舍、验证基线、已知遗留），承载会变化的特性层面内容
 - **`docs/AGENTS.md`**：只讲归档结构与命名规约，不重复模块设计内容
+
+## 环境与运行
+
+- **Python**：`>=3.11`。包为顶层布局（`jiuwen_memory` / `bootstrap` / `agent_plugin`），**无 `src/` 布局**——仓库根存在空的 `src/` 目录但未纳入 `[tool.setuptools.packages.find]`，不要往里放代码或从中导入。
+- **安装**：`pip install -e ".[dev]"` 装开发依赖。按需追加 extras：`deploy`（Milvus/ES/Redis/PG 真后端）、`mcp`（MCP server）、`nlp`（spacy/hanlp）、`embed`（FlagEmbedding/torch）。`pyproject.toml` 已配 uv 阿里云镜像。
+- **运行入口用 `scripts/run-{cli,server,mcp}.sh`**：它们已把 `PYTHONPATH` 设为 `仓库根:bootstrap/core`；直接 `python -m bootstrap...` 会因缺 `bootstrap/core` 路径导致导入失败。
+  - CLI：`scripts/run-cli.sh`
+  - HTTP server：`scripts/run-server.sh`
+  - MCP：`scripts/run-mcp.sh`（需先 `pip install ".[mcp]"`；默认 stdio，设 `MCP_TRANSPORT=http` + `MCP_PORT` 切 Streamable HTTP）
+- **Postgres schema**：`scripts/pg_schema.sql`（deploy 后端用）。
 
 ## 测试
 
@@ -61,7 +71,7 @@ docs/AGENTS.md                   ← 文档归档规约：文档目录结构、�
 - **`docs/specs/SNN-*.md`**：跨模块接口规约（接口契约、协议、公共 API、架构铁律）。这些是"系统层契约"——变化需要跨模块协调。
 - **`docs/features/FNN-*.md`**：特性设计文档（决策上下文、方案取舍、验证基线、已知遗留）。这些是"会演进的设计"——承载特性层面的变化和历史。
 
-三条强制约束，提交时必查（由 `.githooks/pre-commit` 自动检查）：
+三条强制约束，提交时必查（由 `.githooks/pre-commit` 检查，**默认未启用**：先跑 `git config core.hooksPath .githooks` 才会生效）：
 
 1. **影响公开接口、跨模块协调或有多方案取舍的特性必须归档特性文档，特性代码、测试代码、文档拆成三个连续提交**：在 `docs/features/` 下新增 `FNN-<slug>.md`，记录决策、拒绝的方案、验证基线、已知遗留。落地顺序**固定为三个紧邻的提交**——提交 1 落特性代码（`feat(memory): ...`），提交 2 落单测（`test(memory): ...`），提交 3 落文档（`docs(memory): ...`，含 features 新增、受影响 specs 修订日期更新、受影响模块 AGENTS.md 更新）。特性代码、测试、文档不再混进同一次 commit——既不让大段文档 diff 淹没代码评审，也让测试改动独立可审，还避免文档归档拖延导致设计上下文随时间漂移。commit message 只写 what，features 文档负责写 why / why-not。
 
@@ -69,10 +79,12 @@ docs/AGENTS.md                   ← 文档归档规约：文档目录结构、�
 
 3. **双向同步：读到与代码不一致的描述必须当场修文档**。以代码为准刷新文档，在同一次改动里落地；不要把过时表述当作新约束执行。任何一份 `AGENTS.md` / `docs/specs/*` / `docs/features/*` 里读到的接口名、枚举值、truth table 行数、文件路径、不变量等只要与当前代码不符，**不要**把过时表述当作新约束去执行、也不要原样转述给用户；先 `grep` 代码、以代码为准刷新文档，在同一次改动里落地。`AGENTS.md` 里每条点名了"X 个分支 / Y 路 dispatch / Z 方法"的句子都是契约的一部分。**更新目标是 `AGENTS.md`，不是 `CLAUDE.md`**——`CLAUDE.md` 现在只是 `@AGENTS.md` 的单行壳，编辑它没有任何意义；所有内容变更一律落到对应目录的 `AGENTS.md`。
 
-**pre-commit hook 自动检查**：
-- 源码变更（.py/.yaml/.yml）但未包含文档更新时提示
-- 提示检查对应模块的 AGENTS.md / docs/specs / docs/features
-- spec 文件变更时检查是否更新了修订日期
+**pre-commit hook 行为**（`.githooks/pre-commit`，需手动 `git config core.hooksPath .githooks` 启用）：
+- 非交互环境（无 TTY，如 CI）直接 `exit 0`，不做任何检查；交互终端下会逐项询问
+- 源码变更（.py/.yaml/.yml）但未包含文档更新时提示，并询问是否触发文档更新
+- 检查已暂存 AGENTS.md 是否含 `## 模块地图` / `## 行为铁律` / `## 与其他子目录的边界` 三节
+- spec 文件变更时检查是否更新了「最近一次修订日期」（可交互式自动回填当天日期并 `git add`）
+- 提示里出现的 `kiro chat ...` 是外部工具引用，仅作建议输出，不影响检查逻辑
 - 可用 `--no-verify` 跳过检查（确认无需更新文档时）
 
 收尾规范：

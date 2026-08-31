@@ -123,7 +123,6 @@ def _build_retriever(
     kv.read_keys = 0
     retriever = PipelineRetriever(
         StaticParser(),
-        recallers,
         RRFFuser(),
         SimpleDiscloser(),
         UnitReader(kv),
