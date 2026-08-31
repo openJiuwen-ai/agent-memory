@@ -5,10 +5,10 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-08-25 |
+| 最近一次修订日期 | 2026-08-31 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
-| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
 
 ## Metadata 派生与索引契约
 
@@ -19,7 +19,7 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 ## 范围 / 边界
 
 **管什么**：
-- 真源落盘（调用 Storage 写入记忆单元）
+- 真源落盘（统一经 IndexBuilder 写入记忆单元及派生索引）
 - 信息提取（低抽象粒度：事实/事件/偏好）
 - 抽象与精炼/升华（高抽象粒度：画像/长期偏好/可复用技能）
 - 关联分析（实体共指/因果链/引用关系）
@@ -140,6 +140,22 @@ Extractor。
 转换为 CLM/ELM `MemoryUnit`。两类单元使用 `system_metadata.memory_level` 标识层级，
 不生成 L0/L1；事件的 `child_clm_source_ids` 为 `list[str]`，并通过 provenance 保留源
 视频血缘。
+
+#### 可选 Entity Schema 抽取契约
+
+Schema 抽取先选择本轮相关 entity type/property，再使用同一选中集合生成并校验属性。
+生成器不得借完整 Catalog 放行未选中的属性。每个属性候选必须包含 Schema 内的实体类型和
+属性名、非空事实文本，以及同 Scope 输入中的一个或多个 `source_unit_ids`。
+
+每个合法属性生成一个独立 MemoryUnit。属性 Unit 的 `entities` 为空；Schema 名称、版本、
+实体类型和属性名写系统 metadata。属性成功落盘后，实体明文和属性名聚合写回相应 Source
+MemoryUnit 的 `entities`，并经 `IndexBuilder.update(mode=ALL)` 同时回写本体和刷新检索索引；
+来源业务 metadata 仍按通用派生规则写入 user metadata。
+完整可解析的事件日期/时间可写 `temporal.t_event`，但时间不是属性合法性的必要条件。
+
+Schema Evolver 对非 procedural 写入采用 Source-first，并将属性候选直接 ADD，不进入普通文本
+相似度 Dedup。Extractor 连续重试后仍失败时只放弃 Schema 派生，不回滚已持久化 Source。
+该链路必须显式装配；默认 Extractor/Evolver 行为不变。
 
 ### DynamicEvolver（`evolver_impl/dynamic_evolver.py`）
 

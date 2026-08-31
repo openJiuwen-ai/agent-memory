@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-08-29 |
+| 最近一次修订日期 | 2026-08-31 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md |
 
 ## 文档分工
 
@@ -21,7 +21,6 @@
 | `docs/features/api/`（F01–F04） | 特性决策（为什么这样改）；不重复罗列全部方法签名。各 F 覆盖哪些方法见下文方法总览与特性文档对照 |
 
 已设计但尚未实现的接口完成代码开发上库时：去掉本文（及受影响 F 文档）中的尚未实现标注，并把该方法（或增量入参）补进 architecture.md §6。
-
 ## Metadata 公共 API 契约
 
 `add` / `add_async` / `batch_add` 以及 `BatchWriteItem` 分别接收
@@ -185,6 +184,14 @@ async def add_async(...) -> list[MemoryUnit]: ...  # 签名同 add
 ```
 
 同步写入：鉴权 WRITE→委托 Engine→阻塞至 hot path 完成。infer/procedural 触发时返回 `created_ids` 对应的派生单元（可空），否则返回原始单元。`add_async` 为异步写入：直通 Engine 协程，供事件循环形态使用。
+
+##### 可选 Entity Schema 装配
+
+Entity Schema 抽取复用统一的 `assemble(config)` / `build_kernel(config)` 装配入口。
+`globals.schema_enabled` 默认 `false`；只有装配时显式设为 `true` 才注册 Schema
+target。调用方还必须在配置中显式选择 Schema Extractor 和 Schema Evolver；
+仅打开注册开关不改变默认 target 及写入语义。Schema 写入仍使用
+`add(..., system_metadata={"infer": True})`。开关关闭但显式配置 Schema target 时装配失败。
 
 ##### infer 开关（add 的同步抽取语义）
 

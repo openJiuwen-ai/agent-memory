@@ -4,7 +4,10 @@
 
 > 本文档只记录相对稳定的模块本地规约（职责边界、行为铁律、本地约束）。特性设计与方案取舍记录在 `docs/features/` 下。
 
-接收接入层产出的 `MemoryUnit`，调用 `storage` 落盘，在其上构建多形式索引。可插拔算子由 Extractor、Abstractor、Associator、Classifier、IndexBuilder、Dedup、LayerAnnotator 与 Evolver（两个平级实现：`OrchestratingEvolver` legacy / `DynamicEvolver` 动态四步）组成。
+接收接入层产出的 `MemoryUnit`，统一经 `IndexBuilder` 交付本体并构建多形式索引。
+可插拔算子由 Extractor、Abstractor、Associator、Classifier、IndexBuilder、Router、
+Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四步
+`DynamicEvolver`，以及显式启用的 `SchemaOrchestratingEvolver`）组成。
 
 > 契约（接口签名/数据结构/不变量）见 [`docs/specs/S05-construction.md`](../../docs/specs/S05-construction.md)；设计理念与决策取舍（双通道/演进闭环/依赖关系）见 [`docs/features/construction/F01-construction-spec-design.md`](../../docs/features/construction/F01-construction-spec-design.md)。本文件只记当前实现地图与本地约束。
 
@@ -24,15 +27,16 @@
 | `dedup.py` | Dedup 接口：去重召回（向量/倒排两路）+ DedupProducer 工厂 |
 | `evolver.py` | Evolver 接口：记忆自演进（抽取/关联/巩固/遗忘）+ EvolveMode + EvolveResult |
 | `layer_annotator.py` | LayerAnnotator 接口：分层披露标注（L0/L1 写入 unit.layers）+ LayerAnnotatorProducer 工厂 |
-| `extractor_impl/` | Extractor 实现目录（keyword / llm / dynamic_llm / video_memory）；video_memory 将视频规约结果转换为 CLM/ELM |
+| `extractor_impl/` | Extractor 实现目录（keyword / llm / dynamic_llm / video_memory，以及显式启用的 entity_schema）；video_memory 将视频规约结果转换为 CLM/ELM |
 | `abstractor_impl/` | Abstractor 实现目录（concat / llm） |
 | `associator_impl/` | Associator 实现目录（keyword / llm） |
 | `classifier_impl/` | Classifier 实现目录（keyword / llm） |
 | `index_builder_impl/` | IndexBuilder 实现目录（forward / fulltext / hybrid / unified / vector / entity）。**IndexBuilder 是记忆写入的唯一入口**：`hybrid`（默认 target）纯编排，组合 forward / fulltext / vector / entity 四个子 builder；`unified` 全权委托 Storage（`RETRIEVAL_ONLY` / `SOFT` 时由该 Storage 实现按能力决定，CompositeStorage 下为空操作）；`forward` 只交付记忆本体（正排 KV），`fulltext`/`vector`/`entity` 只建各自的检索索引，**不交付记忆本体**，作为独立 target 使用时写路径无人写本体。写接口用 `IndexWriteMode`（`ALL`/`FORWARD_ONLY`/`RETRIEVAL_ONLY`）表达写入范围，`remove` 用 `IndexRemoveMode`（`SOFT`/`HARD`）表达删除语义：`SOFT` 只移出检索索引、本体保留且 get/list 可读；`HARD` 物理删除。vector/fulltext 各扩展 L0/L1 分层索引（独立 store 分表，store None 跳过），详见 F01-memory-layer |
 | `layer_annotator_impl/` | LayerAnnotator 实现目录（keyword / llm）；evolver 抽取后调用，对超阈 content 标注 L0/L1 |
 | `dedup_impl/` | Dedup 实现目录（vector / keyword） |
-| `evolver_impl/` | Evolver 实现目录（orchestrating=legacy / dynamic=动态 prompt 四步） |
+| `evolver_impl/` | Evolver 实现目录（orchestrating=legacy / dynamic=动态 prompt 四步 / schema_orchestrating=Source-first Schema 属性抽取） |
 | `bootstrap.py` | 统一触发所有构建算子注册（含 dedup_impl） |
+| `schema_bootstrap.py` | 由统一 assembly 在 Schema 开关开启时内部调用，注册 Schema Extractor/Evolver target；不是独立公共装配入口 |
 
 ## 构建链路
 
@@ -51,8 +55,9 @@
 4. Scheduler.submit(scope, EXTRACT, BACKGROUND) → 提交演进任务
   ↓
 （后台）Evolver.evolve(units, mode):
-  EXTRACT     → [orchestrating] _evolve_extract: extract→annotate→_dedup_batch(判定+落盘)
-              → [dynamic]     _evolve_extract: extract→consolidate(判定)→reflect→落盘
+  EXTRACT     → [orchestrating] _evolve_extract: extract→route→annotate→_dedup_batch(判定+落盘)
+              → [dynamic]     _evolve_extract: extract→route→consolidate(判定)→reflect→落盘
+              → [schema]      _evolve_extract: Source-first→属性抽取→属性落盘→Source entities 写回
   CONSOLIDATE → _evolve_consolidate: abstract→annotate→_dedup_batch
   ASSOCIATE   → _evolve_associate: associate→冲突消解→图索引 Edge
   FORGET     → _evolve_forget: 遗忘候选筛选→lifecycle 置 FORGOTTEN→
@@ -60,7 +65,9 @@
                IndexBuilder.remove(mode=SOFT) 移出检索
 ```
 
-`OrchestratingEvolver` 与 `DynamicEvolver` 平级（同属 `evolver` 顶层命名空间，注册名 `orchestrating` / `dynamic`）。`DynamicEvolver` 继承 `OrchestratingEvolver`，只覆盖 `_evolve_extract` 走动态 prompt 四步；其余三模式继承父类。装配或 pipeline profile 选哪个 evolver 实例即启用哪条 EXTRACT 路径。
+三个 Evolver 同属 `evolver` 顶层命名空间。`DynamicEvolver` 与显式启用的
+`SchemaOrchestratingEvolver` 都继承 `OrchestratingEvolver`，只覆盖 `_evolve_extract`；
+其余三模式继承父类。装配或 pipeline profile 选择注册名即启用对应 EXTRACT 路径。
 
 ## 行为铁律
 
@@ -76,8 +83,8 @@
 2. **索引是可重建派生（目标约束）**
    派生索引（向量/关键词/图/文档）应全部可从记忆本体重建，`IndexBuilder.rebuild()` 应提供
    非破坏式保障。当前 Forward/Fulltext/Vector/Hybrid/Unified/Entity 实现均为 no-op，
-   因此当前版本不能宣称删索引后可恢复；`update` 下派生索引的去留由 `unit.lifecycle` 决定
-   （FORGOTTEN/ARCHIVED 移出、SUPERSEDED 保留），与调用顺序无关。
+   因此当前版本不能宣称删索引后可恢复。`IndexBuilder` 不根据 `unit.lifecycle` 推断操作；
+   调用方通过 `IndexWriteMode` / `IndexRemoveMode` 明确要求回写本体、刷新检索索引或软删除。
 
 3. **provenance 回指来源**
    派生记忆单元（Extractor/Abstractor 产出）的 `provenance` 字段记录由哪些 unit 演进而来，保证可重建、可审计回溯。
@@ -129,7 +136,7 @@
 14. **过滤索引投影与真源语义对齐**
     Vector/Fulltext IndexBuilder 原样复制业务 metadata，再由真源系统字段覆盖保留 key；
     时间写 epoch 毫秒，开放 `t_invalid=None` 在索引中投影为 `T_INVALID_OPEN`，
-    未知事件时间 `t_event=None` 恒写哨兵 `T_EVENT_UNKNOWN=0`（F07 派生常为此值）。
+    未知事件时间 `t_event=None` 恒写哨兵 `T_EVENT_UNKNOWN=0`（F08 派生常为此值）。
     真源仍保留 None，禁止为适配后端改写 MemoryUnit；`memory_filter._field_value`
     对 `t_event` / `t_invalid` 的 None 同步投影为对应哨兵，使后置复核与下推不分叉。
 
@@ -143,7 +150,7 @@
 
 **本模块管**：
 - 记忆本体落盘（经 IndexBuilder 调用 Storage）
-- 原文（`/messages/`）读写（调用 Storage 的原文接口）
+- 原文（`/messages/`）读写（调用独立注入的 `message_store: KVStore`）
 - 信息提取与抽象升华（Extractor / Abstractor）
 - 关联分析（Associator）
 - 多维分类（Classifier）
