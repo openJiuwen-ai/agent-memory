@@ -667,9 +667,9 @@ class SimpleMemoryIndex(BaseMemoryIndex):
 
         if mem_types:
             type_order = {mt: i for i, mt in enumerate(mem_types)}
-            docs.sort(key=lambda d: (type_order.get(d.type, len(type_order)), -d.timestamp.timestamp()))
+            docs.sort(key=lambda d: (type_order.get(d.type, len(type_order)), d.timestamp.timestamp(), d.id))
         else:
-            docs.sort(key=lambda d: d.timestamp, reverse=True)
+            docs.sort(key=lambda d: (d.timestamp.timestamp(), d.id))
         return docs[offset:offset + limit]
 
     async def _list_memories_via_kv_scan(
@@ -709,9 +709,9 @@ class SimpleMemoryIndex(BaseMemoryIndex):
                 docs.append(doc)
         if mem_types:
             type_order = {mt: i for i, mt in enumerate(mem_types)}
-            docs.sort(key=lambda d: (type_order.get(d.type, len(type_order)), -d.timestamp.timestamp()))
+            docs.sort(key=lambda d: (type_order.get(d.type, len(type_order)), d.timestamp.timestamp(), d.id))
         else:
-            docs.sort(key=lambda d: d.timestamp, reverse=True)
+            docs.sort(key=lambda d: (d.timestamp.timestamp(), d.id))
         if filters is not None:
             docs = [d for d in docs if _apply_filter_group(d, filters)]
         return docs[offset:offset + limit]
