@@ -563,6 +563,7 @@ class SimpleMemoryIndex(BaseMemoryIndex):
         mem_types: list[str] | None = None,
         *,
         filters: Optional[FilterGroup] = None,
+        order_direction: str = "desc",
     ) -> list[MemoryDoc]:
         """List memory documents with pagination, reading from the KV store.
 
@@ -584,12 +585,15 @@ class SimpleMemoryIndex(BaseMemoryIndex):
 
         * ``filters=None`` always takes the KV-scan path.
         """
-        if filters is not None and _can_pushdown_filter(filters, self._VECTOR_PUSHDOWN_FIELDS):
+        if (order_direction.lower() != "asc" and filters is not None
+                and _can_pushdown_filter(filters, self._VECTOR_PUSHDOWN_FIELDS)):
             return await self._list_memories_via_vector_pushdown(
-                user_id, scope_id, offset, limit, mem_types, filters=filters
+                user_id, scope_id, offset, limit, mem_types,
+                filters=filters, order_direction=order_direction,
             )
         return await self._list_memories_via_kv_scan(
-            user_id, scope_id, offset, limit, mem_types, filters=filters
+            user_id, scope_id, offset, limit, mem_types,
+            filters=filters, order_direction=order_direction,
         )
 
     async def list_memories_with_total(
@@ -622,6 +626,7 @@ class SimpleMemoryIndex(BaseMemoryIndex):
         mem_types: list[str] | None,
         *,
         filters: FilterGroup,
+        order_direction: str = "desc",
     ) -> list[MemoryDoc]:
         """Push the entire FilterGroup to ``vector_store.list_docs`` for each
         target collection, then materialise MemoryDoc bodies from KV.
@@ -665,11 +670,19 @@ class SimpleMemoryIndex(BaseMemoryIndex):
                     data["mem"] = self._codec.decode(data["mem"])
                 docs.append(self._kv_data_to_memory_doc(data, mid))
 
+        descending = order_direction.lower() != "asc"
         if mem_types:
             type_order = {mt: i for i, mt in enumerate(mem_types)}
-            docs.sort(key=lambda d: (type_order.get(d.type, len(type_order)), -d.timestamp.timestamp()))
+            docs.sort(key=lambda d: (
+                type_order.get(d.type, len(type_order)),
+                -d.timestamp.timestamp() if descending else d.timestamp.timestamp(),
+                d.id,
+            ))
         else:
-            docs.sort(key=lambda d: d.timestamp, reverse=True)
+            docs.sort(key=lambda d: (
+                -d.timestamp.timestamp() if descending else d.timestamp.timestamp(),
+                d.id,
+            ))
         return docs[offset:offset + limit]
 
     async def _list_memories_via_kv_scan(
@@ -681,6 +694,7 @@ class SimpleMemoryIndex(BaseMemoryIndex):
         mem_types: list[str] | None,
         *,
         filters: Optional[FilterGroup],
+        order_direction: str = "desc",
     ) -> list[MemoryDoc]:
         """Original KV-prefix-scan path. Used when ``filters`` references
         non-vector-schema fields or when ``filters`` is None."""
@@ -707,11 +721,19 @@ class SimpleMemoryIndex(BaseMemoryIndex):
             doc = self._kv_data_to_memory_doc(data, mid)
             if not mem_types or doc.type in mem_types:
                 docs.append(doc)
+        descending = order_direction.lower() != "asc"
         if mem_types:
             type_order = {mt: i for i, mt in enumerate(mem_types)}
-            docs.sort(key=lambda d: (type_order.get(d.type, len(type_order)), -d.timestamp.timestamp()))
+            docs.sort(key=lambda d: (
+                type_order.get(d.type, len(type_order)),
+                -d.timestamp.timestamp() if descending else d.timestamp.timestamp(),
+                d.id,
+            ))
         else:
-            docs.sort(key=lambda d: d.timestamp, reverse=True)
+            docs.sort(key=lambda d: (
+                -d.timestamp.timestamp() if descending else d.timestamp.timestamp(),
+                d.id,
+            ))
         if filters is not None:
             docs = [d for d in docs if _apply_filter_group(d, filters)]
         return docs[offset:offset + limit]

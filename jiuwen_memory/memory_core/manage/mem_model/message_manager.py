@@ -84,6 +84,38 @@ class MessageManager:
         
         return result
 
+    async def get_page(
+        self,
+        user_id: str = None,
+        scope_id: str = None,
+        session_id: str = None,
+        offset: int = 0,
+        limit: int = 10,
+    ) -> list[Tuple[BaseMessage, datetime, str]]:
+        """Return one stable oldest-first page without rereading earlier rows."""
+        if offset < 0 or limit <= 0:
+            raise build_error(
+                StatusCode.MEMORY_GET_MEMORY_EXECUTION_ERROR,
+                memory_type="message",
+                error_msg="offset must be non-negative and limit must be positive",
+            )
+
+        message_filter: Dict[str, Any] = {
+            'user_id': user_id,
+            'scope_id': scope_id,
+            'session_id': session_id,
+        }
+        messages_with_metadata = await self._store.get_messages(
+            message_filter,
+            limit=limit,
+            offset=offset,
+            order_direction='asc',
+        )
+        return [
+            (message, metadata.timestamp, metadata.message_id)
+            for message, metadata in messages_with_metadata
+        ]
+
     async def get_with_metadata(self, user_id: str = None, scope_id: str = None, session_id: str = None,
                                 message_len: int = 10) -> list[Tuple[BaseMessage, MessageMetadata]]:
         """Like ``get`` but also returns the full ``MessageMetadata`` (user_id/scope_id/session_id).
