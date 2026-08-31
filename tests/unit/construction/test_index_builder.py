@@ -69,9 +69,7 @@ def _make_hybrid_builder() -> tuple[HybridIndexBuilder, dict, dict]:
     stores = create_test_stores()
     plugins = create_test_plugins()
     builder = HybridIndexBuilder(
-        CompositeStorage(
-            kv=stores["kv"], vector=stores["vector"], fulltext=stores["fulltext"]
-        ),
+        CompositeStorage(kv=stores["kv"], vector=stores["vector"], fulltext=stores["fulltext"]),
         chunker=plugins["chunker"],
         embedder=plugins["embedder"],
     )
@@ -600,20 +598,29 @@ def _layered_ctx():
                 "layers_l1": {"target": "memory"},
             },
             "kv_store": {"shared": {"target": "memory"}},
+            "storage": {
+                "default": {
+                    "target": "composite",
+                    "params": {
+                        "kv_store": "shared",
+                        "vector_store": "shared",
+                        "fulltext_store": "shared",
+                    },
+                }
+            },
             # 构造器命名空间（IndexBuilderProducer.TOP_NAME == "constructor"）
             "constructor": {
                 "fb": {
                     "target": "fulltext",
                     "params": {
-                        "fulltext_store": "shared",
+                        "storage": "default",
                         "layers_index_enabled": True,
                     },
                 },
                 "vb": {
                     "target": "vector",
                     "params": {
-                        "vector_store": "shared",
-                        "kv_store": "shared",
+                        "storage": "default",
                         "layers_index_enabled": True,
                     },
                 },
@@ -664,7 +671,12 @@ def test_unified_factory_resolves_storage_dependency():
     """注册名 unified 可经 IndexBuilderProducer 装配统一 Storage。"""
     teardown = _bootstrap_factories()
     try:
-        ctx = AssemblyContext.from_dict({"constructor": {"ub": "unified"}})
+        ctx = AssemblyContext.from_dict(
+            {
+                "storage": {"default": "composite"},
+                "constructor": {"ub": "unified"},
+            }
+        )
         builder = IndexBuilderProducer.build_named("ub", ctx)
         assert isinstance(builder, UnifiedIndexBuilder)
     finally:

@@ -6,7 +6,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from enum import Enum
 
-from jiuwen_memory.common.errors import UnsupportedStorageCapabilityError
+from jiuwen_memory.common.errors import UnsupportedStorageCapabilityError, ValidationError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import (
     CandidateFuser,
@@ -38,24 +38,40 @@ class StorageProducer(Factory):
     TOP_NAME = "storage"
 
     @classmethod
-    def resolve(cls, config, *, default_target: str = "composite") -> Storage:
-        """解析组件依赖，缺省时优先复用 ``storage.default`` 具名实例。"""
+    def resolve(cls, config) -> Storage:
+        """解析具名 Storage，未配置时复用 ``storage.default``。
+
+        只接受具名引用：Storage 是有状态组件，内联装配经 ``Factory.build`` 不入缓存，
+        多个上层算子会各得一个实例。内层 Store 仍按具名引用共享，但包装层状态随之分叉
+        ——尤其 ``recallers`` 由 ``PipelineRetriever`` 单向 bind，未被绑定的那个实例
+        ``recall``/``recall_and_get``/``retrieve`` 恒返回空且不报错。
+        """
         if cls.TOP_NAME in config.params:
-            storage = cls.dep(config)
+            storage_name = config.params[cls.TOP_NAME]
+            if isinstance(storage_name, dict):
+                raise ValidationError(
+                    "StorageProducer.resolve does not accept inline Storage: it is stateful "
+                    "and inline instances are not shared across operators. Define "
+                    "storage.<name> and reference it by name through params.storage"
+                )
+            if not isinstance(storage_name, str):
+                raise ValidationError(
+                    "StorageProducer.resolve expects params.storage to be a named reference"
+                )
         elif "default" in config.ctx.namespaces.get(cls.TOP_NAME, {}):
-            storage = cls.build_named("default", config.ctx)
+            storage_name = "default"
         else:
-            store_params = {
-                name: config.params[name]
-                for name in ("kv_store", "vector_store", "fulltext_store", "graph_store")
-                if name in config.params
-            }
-            store_params["__default_capabilities"] = True
-            storage = cls.build(
-                default_target,
-                store_params,
-                config.ctx,
+            raise ValidationError(
+                "StorageProducer.resolve cannot assemble Storage: configure params.storage "
+                "as a named reference, or define storage.default"
             )
+        storage_spec = config.ctx.lookup(cls.TOP_NAME, storage_name)
+        if storage_spec.new_instance:
+            raise ValidationError(
+                f"Storage {cls.TOP_NAME}.{storage_name} cannot set new_instance=true: "
+                "Storage is stateful and must be shared; remove new_instance or set it to false"
+            )
+        storage = cls.build_named(storage_name, config.ctx)
         if not isinstance(storage, Storage):
             raise TypeError(f"StorageProducer assembled {type(storage).__name__}, expected Storage")
         return storage

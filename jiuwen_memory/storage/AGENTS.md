@@ -135,9 +135,12 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
    `common._support`，与出站客户端共用；storage 侧只保留缺证书即报错这条自有策略。
 10. `CompositeStorage` 的默认首选检索路径是 `RECALL_GET_RANK`；首选路径是实例级稳定值，
     不随请求或健康状态切换，也不加入 Store capability 集合。
-11. `StorageProducer.TOP_NAME` 固定为 `storage`；默认具名实例为 `storage.default`，
-    `CompositeStorage` 只装配配置中声明的 Store 端口。兼容 Recaller 由 Retriever 在装配期绑定，
-    storage 包不得导入 retrieval。
+11. `StorageProducer.TOP_NAME` 固定为 `storage`；`resolve()` 按“显式 `params.storage` →
+    `storage.default`”解析并复用具名实例；显式值只能是名称字符串，Storage 具名配置禁止
+    `new_instance: true`。两者均不存在时必须在装配期抛 `ValidationError`；零散的
+    KV/Vector/Fulltext/Graph/Fusion/FS/Entity/Security/Pipeline 参数不构成 Storage 配置，也
+    不得触发匿名兜底装配。`CompositeStorage` 只装配自身支持且配置中声明的 Store 端口；兼容
+    Recaller 由 Retriever 在装配期绑定，storage 包不得导入 retrieval。
 12. `Storage.scopes()` 枚举 MemoryUnit 真源已有 Scope；分层索引通过
     `has_*_port(name)` / `*_port(name)` 访问命名端口，Construction、Retrieval、Control 不得直接
     调用 Store Producer 解析具名后端。

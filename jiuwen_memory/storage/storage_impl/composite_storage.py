@@ -536,11 +536,10 @@ def _recaller_source(recaller: Any) -> str:
     return type(recaller).__name__
 
 
-def _optional_store(
-    producer: type[Factory], config: Any, field: str, *, include_default: bool = False
-) -> Any | None:
+def _optional_store(producer: type[Factory], config: Any, field: str) -> Any | None:
+    """按字段取可选 Store；未声明即 None——不做匿名兜底装配。"""
     if field not in config.params:
-        return producer.build("memory", {}, config.ctx) if include_default else None
+        return None
     return producer.dep(config, field)
 
 
@@ -568,24 +567,9 @@ def _build(config):
         ) from exc
     return CompositeStorage(
         kv=KvProducer.dep(config, default="memory"),
-        vector=_optional_store(
-            VectorProducer,
-            config,
-            "vector_store",
-            include_default=config.get("__default_capabilities", False),
-        ),
-        fulltext=_optional_store(
-            FulltextProducer,
-            config,
-            "fulltext_store",
-            include_default=config.get("__default_capabilities", False),
-        ),
-        graph=_optional_store(
-            GraphProducer,
-            config,
-            "graph_store",
-            include_default=config.get("__default_capabilities", False),
-        ),
+        vector=_optional_store(VectorProducer, config, "vector_store"),
+        fulltext=_optional_store(FulltextProducer, config, "fulltext_store"),
+        graph=_optional_store(GraphProducer, config, "graph_store"),
         fusion=_optional_store(FusionProducer, config, "fusion_store"),
         fs=_optional_store(FsProducer, config, "fs_store"),
         vector_ports=_named_ports(VectorProducer, config),
