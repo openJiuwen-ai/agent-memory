@@ -377,12 +377,70 @@ class SimpleMemoryIndex(BaseMemoryIndex):
         return results[:top_k]
 
     async def update_memories(self, user_id: str, scope_id: str, memories: list[MemoryDoc]) -> None:
-        """Update memories by deleting old ones then adding new ones."""
+        """Update memories by overwriting KV and replacing vector store data.
+
+        Unlike delete-then-add, this keeps KV populated throughout the operation,
+        so concurrent get_by_id reads never see a "not found" window.
+        Vector store entries are deleted then re-added per collection.
+        """
         if not memories:
             return
-        ids = [m.id for m in memories]
-        await self.delete_memories(user_id, scope_id, ids)
-        await self.add_memories(user_id, scope_id, memories)
+
+        by_type: dict[str, list[MemoryDoc]] = {}
+        for m in memories:
+            by_type.setdefault(m.type, []).append(m)
+
+        for mem_type, docs in by_type.items():
+            ids = [d.id for d in docs]
+            col = self._get_collection_name(user_id, scope_id, mem_type)
+
+            # Delete old vector entries first (avoids duplicate id on add)
+            if await self._vector_store.collection_exists(col):
+                await self._vector_store.delete_docs_by_ids(col, ids)
+
+            # Add new vector entries + overwrite KV (set is upsert)
+            texts = [d.text for d in docs]
+            if self._embedding_model:
+                embeddings = await self._embedding_model.embed_documents(texts)
+            else:
+                memory_logger.error(
+                    "Embedding model not initialized.",
+                    event_type=LogEventType.MEMORY_STORE,
+                    scope_id=scope_id,
+                    metadata={"collection": col},
+                )
+                raise build_error(
+                    StatusCode.MEMORY_ADD_MEMORY_EXECUTION_ERROR,
+                    memory_type="vector store",
+                    error_msg="vector store failed: embedding model not initialized",
+                )
+
+            if embeddings:
+                await self._ensure_collection(col, len(embeddings[0]))
+
+            await self._vector_store.add_docs(
+                col,
+                [
+                    {
+                        "id": d.id,
+                        "embedding": e,
+                        "blacklisted": d.blacklisted,
+                        "is_important": d.is_important,
+                    }
+                    for d, e in zip(docs, embeddings)
+                ],
+            )
+
+            for doc in docs:
+                kv_key = self._kv_mem_key(user_id, scope_id, doc.id)
+                kv_data = self._memory_doc_to_kv_data(doc, user_id, scope_id)
+                if self._codec is not None:
+                    kv_data["mem"] = self._codec.encode(kv_data.get("mem", ""))
+                await self._kv_store.set(
+                    kv_key,
+                    self._write_kv_value(json.dumps(kv_data)),
+                )
+                await self._add_id_to_tracking(user_id, scope_id, doc.id, mem_type)
 
     async def update_mem_by_id(
         self,
