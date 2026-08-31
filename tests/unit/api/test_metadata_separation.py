@@ -6,6 +6,8 @@ import pytest
 
 from jiuwen_memory.api.memory_api_impl import assemble
 from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security.principal import AUTHOR_AGENT, AUTHOR_PRINCIPAL
 from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterOp,
@@ -34,7 +36,7 @@ def test_add_keeps_same_key_in_independent_namespaces() -> None:
         _TEXT,
         _SCOPE,
         source=Modality.TEXT,
-        identity=_ACTOR,
+        security=legacy_request_context(_ACTOR),
         system_metadata={"infer": False, "project": "system"},
         user_metadata={"infer": True, "project": "user"},
     )[0]
@@ -49,7 +51,7 @@ def test_user_metadata_never_controls_system_write_branch() -> None:
     unit = _api().add(
         _TEXT,
         _SCOPE,
-        identity=_ACTOR,
+        security=legacy_request_context(_ACTOR),
         user_metadata={"infer": True, "procedural": True, "middle": True},
     )[0]
 
@@ -61,7 +63,7 @@ def test_system_infer_controls_write_while_same_user_key_does_not() -> None:
     units = _api().add(
         _TEXT,
         _SCOPE,
-        identity=_ACTOR,
+        security=legacy_request_context(_ACTOR),
         system_metadata={"infer": True},
         user_metadata={"infer": False},
     )
@@ -77,7 +79,7 @@ def test_update_merges_namespaces_independently() -> None:
     unit = api.add(
         _TEXT,
         _SCOPE,
-        identity=_ACTOR,
+        security=legacy_request_context(_ACTOR),
         system_metadata={"pipeline": "default"},
         user_metadata={"project": "alpha"},
     )[0]
@@ -89,10 +91,17 @@ def test_update_merges_namespaces_independently() -> None:
             system_metadata={"dreaming": True},
             user_metadata={"project": "beta", "owner": "alice"},
         ),
-        identity=_ACTOR,
+        security=legacy_request_context(_ACTOR),
     )
 
-    assert updated.system_metadata == {"pipeline": "default", "dreaming": True}
+    # 作者标记两个键由内核按调用方身份恒写入（F07「作者标记」），与本用例要断言的
+    # 「两个命名空间各自独立 merge」正交，一并列出以保持相等断言的强度。
+    assert updated.system_metadata == {
+        "pipeline": "default",
+        "dreaming": True,
+        AUTHOR_PRINCIPAL: "user:u",
+        AUTHOR_AGENT: "",
+    }
     assert updated.user_metadata == {"project": "beta", "owner": "alice"}
 
 
@@ -101,16 +110,18 @@ def test_update_merges_namespaces_independently() -> None:
 def test_add_rejects_unsupported_metadata_values(field_name: str, value) -> None:
     kwargs = {field_name: {"x": value}}
     with pytest.raises(ValidationError):
-        _api().add(_TEXT, _SCOPE, identity=_ACTOR, **kwargs)
+        _api().add(_TEXT, _SCOPE, security=legacy_request_context(_ACTOR), **kwargs)
 
 
 def test_user_metadata_filter_uses_explicit_namespace() -> None:
     api = _api()
-    api.add(_TEXT, _SCOPE, identity=_ACTOR, user_metadata={"project": "alpha"})
+    api.add(
+        _TEXT, _SCOPE, security=legacy_request_context(_ACTOR), user_metadata={"project": "alpha"}
+    )
 
     result = api.list(
         _SCOPE,
-        identity=_ACTOR,
+        security=legacy_request_context(_ACTOR),
         filters=FilterClause("user_metadata.project", FilterOp.EQ, "alpha"),
     )
 
@@ -122,7 +133,7 @@ def test_legacy_metadata_filter_namespace_is_rejected() -> None:
     with pytest.raises(ValidationError, match="user_metadata"):
         _api().list(
             _SCOPE,
-            identity=_ACTOR,
+            security=legacy_request_context(_ACTOR),
             filters=FilterClause("metadata.project", FilterOp.EQ, "alpha"),
         )
 
@@ -130,12 +141,17 @@ def test_legacy_metadata_filter_namespace_is_rejected() -> None:
 @pytest.mark.parametrize("key", ["", "   ", 1])
 def test_metadata_key_must_be_non_empty_string(key) -> None:
     with pytest.raises(ValidationError, match="key"):
-        _api().add(_TEXT, _SCOPE, identity=_ACTOR, user_metadata={key: "x"})
+        _api().add(_TEXT, _SCOPE, security=legacy_request_context(_ACTOR), user_metadata={key: "x"})
 
 
 def test_metadata_rejects_non_finite_float() -> None:
     with pytest.raises(ValidationError, match="有限"):
-        _api().add(_TEXT, _SCOPE, identity=_ACTOR, user_metadata={"score": float("inf")})
+        _api().add(
+            _TEXT,
+            _SCOPE,
+            security=legacy_request_context(_ACTOR),
+            user_metadata={"score": float("inf")},
+        )
 
 
 def test_derived_metadata_keeps_equal_user_values_and_drops_control_keys() -> None:

@@ -2,7 +2,7 @@
 
 > Agent-memory在1.0版本上进行了全量的架构升级，版本规划从 **V0.2.0** 起编号。下面按照版本记录每个版本交付的主要新特性；后续版本为规划草案，随立项与 Issue 调整，不构成实现承诺。
 >
-> 最近一次修订日期：2026-08-03
+> 最近一次修订日期：2026-08-29
 
 ---
 
@@ -24,7 +24,8 @@
 
 ### 1. 统一记忆接口（Memory API）
 
-- 形态无关 Core API：`add` / `search` / `get` / `update` / `delete` / `evolve`
+- 形态无关的核心数据面：`add` / `search` / `list` / `get` / `update` / `delete` / `evolve`
+- 完整 API 以 [Memory API 规约](specs/S02-memory-api.md#数据面委托-memoryengine) 为准
 
 ### 2. 编排与生命周期（Control）
 
@@ -38,7 +39,7 @@
 
 ### 4. 记忆构建与演进（Construction）
 
-- 支持多形式索引构建：全文 / 向量 / 混合（含 L0/L1 层级索引）
+- 支持全文、向量及混合检索索引，并支持 L0/L1 内容层的可选分层索引
 - 支持抽取多种记忆内容（情景、语义、程序、core），支持自定义抽取模式。
 - 支持构建记忆缓存，实现快速记忆检索
 - 支持基于特定条件触发对缓存记忆的抽取及长期记忆构建
@@ -47,17 +48,17 @@
 
 - 支持对查询进行解析及向量化
 - 支持扁平及树状Filter过滤
-- 支持基于关键词、向量、图的召回
-- 支持基于RRF、加权RRF、最大值及分层等多种融合方式
+- 支持按配置启用基于关键词、向量、图的召回
+- 支持分层召回，并支持 RRF、加权 RRF、Score Max 等融合方式
 
 ### 6. 记忆存储（Storage）
 
-- 支持六类记忆存储：KV / Vector / Fulltext / Graph / Fusion / FS
-- 支持对接的生产后端：SQLite KV、Redis KV、Milvus、Elasticsearch、nano_graphrag、Milvus Graph Fusion、本地 FS
+- 支持可配置的 KV / Vector / Fulltext / Graph / Fusion / FS 存储能力
+- 已提供可选生产后端适配器：SQLite KV、Redis KV、Milvus、Elasticsearch、nano_graphrag、Milvus Graph Fusion、本地 FS；使用时需部署相应依赖并完成连接配置
 
 ### 7. 多形态接入面（Bootstrap）
 
-- 支持以SDK形式进行进程内嵌入使用
+- 支持 Python Core API 进程内嵌入
 - 支持CLI形式调用
 
 ### 8. Agent 插件
@@ -98,13 +99,10 @@
 - 支持用户鉴权及权限管理
 - 支持索引数据加密
 
-### **多模态接入面**
-
-- 支持基于Skill形式的记忆调用
 
 ### **Agent插件**
 
-- 支持对接ClaudeCode及Codex、Hermes
+- 支持对接ClaudeCode
 
 ---
 
@@ -121,6 +119,7 @@
 - 支持基于动态文件的记忆构建
 - 支持多模态对话记忆构建
 - 支持共享记忆增强构建
+- 支持群体记忆构建
 
 ### **记忆检索**
 
@@ -128,8 +127,7 @@
 
 ### **记忆管理**
 
-- 支持用户鉴权及权限管理
-- 支持索引数据加密
+- 支持记忆可追溯管理
 
 ### **多模态接入面**
 
@@ -137,7 +135,7 @@
 
 ### **Agent插件**
 
-- 支持对接ClaudeCode及Codex、Hermes
+- 支持对接Codex、Hermes
 
 ---
 
@@ -155,4 +153,4 @@
 | 日期         | 说明                     |
 | ---------- | ---------------------- |
 | 2026-08-03 | 按照当日代码及与各团队对其的情况进行初稿规划 |
-
+| 2026-08-29 | 澄清 Core API、检索融合、索引、存储能力与进程内嵌入表述 |

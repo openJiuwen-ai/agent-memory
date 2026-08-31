@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-27 |
-| 影响范围 | `src/common/security/`、`src/storage/kv_impl/`、`src/control/engine_impl/`、`docs/specs/S07-common.md`、`docs/specs/S06-storage.md` |
+| 影响范围 | `jiuwen_memory/common/security/`、`jiuwen_memory/storage/kv_impl/`、`jiuwen_memory/control/engine_impl/`、`docs/specs/S07-common.md`、`docs/specs/S06-storage.md` |
 | 测试基线 | `local` SecurityProvider 直接行为校验通过，`EncryptedKVStore` 单测函数直接执行通过；当前环境缺少 pytest/ruff runner |
 
 本文由原 `docs/security/security.md` 迁入 common 特性归档，作为认证、授权、隔离、加密与审计的安全设计基线。后续 `common/security` 接口、`EncryptedKVStore`、`cloud_engine` 读写编排与安全配置均以本文为设计入口。
@@ -1072,7 +1072,7 @@ class LocalProvider(KeyProvider):
         return await aes_gcm_decrypt(org_key, iv, ciphertext)
 ```
 
-> **`create_key_file` 默认值**：当前 `agent-memory` mem2.0 的 `LocalKeyProvider`（`src/common/security/security_impl/local_envelope_security_provider.py`）
+> **`create_key_file` 默认值**：当前 `agent-memory` mem2.0 的 `LocalKeyProvider`（`jiuwen_memory/common/security/security_impl/local_envelope_security_provider.py`）
 > 把 `create_key_file` 默认值设为 `False`。未注入 `key_hex`/`key_b64`/`key_env` 且 `key_file` 不存在时，
 > `LocalEnvelopeSecurityProvider.__init__` 末尾的预检即抛 `BackendError`，装配阶段 fail-closed，不再静默生成。
 > Dev/单机用户显式 `security.default.params.create_key_file: true` 启用自动生成路径。生成新密钥用 `openssl rand -hex 32`。

@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-27 |
-| 影响范围 | `src/control/permission.py`、`src/control/types.py`、`src/control/permission_impl/`、`src/control/engine.py`、`src/api/memory_api_impl/local_memory_api.py`、`docs/specs/S03-control.md` |
-| 测试基线 | `PYTHONPATH=src uv run --no-sync pytest -q tests/unit/control/test_permission_context_routing.py tests/unit/control/test_pipeline.py tests/unit/api/test_handler_identity_split.py tests/unit/api/test_write_reserved_metadata.py` 通过；本特性变更的 Python 文件通过 `ruff check` |
+| 影响范围 | `jiuwen_memory/control/permission.py`、`jiuwen_memory/control/types.py`、`jiuwen_memory/control/permission_impl/`、`jiuwen_memory/control/engine.py`、`jiuwen_memory/api/memory_api_impl/local_memory_api.py`、`docs/specs/S03-control.md` |
+| 测试基线 | `PYTHONPATH=. uv run --no-sync pytest -q tests/unit/control/test_permission_context_routing.py tests/unit/control/test_pipeline.py tests/unit/api/test_handler_identity_split.py tests/unit/api/test_write_reserved_metadata.py` 通过；本特性变更的 Python 文件通过 `ruff check` |
 
 ## 背景
 

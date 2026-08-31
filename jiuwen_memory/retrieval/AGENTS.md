@@ -13,6 +13,7 @@
 |---|---|
 | `base.py` | RetrievalOperator 基类：所有检索层算子的自描述契约 |
 | `types.py` | 检索对外类型；Storage 共用的 ParsedQuery/候选/错误类型从 common 重导出 |
+| `cross_space.py` | 跨空间检索的取数上界（`allocate_quota`）与结果合并（`merge`）；不访问存储、不调模型的纯函数，与算子并列而非算子，不进工厂 |
 | `query_parser.py` | QueryParser 接口：查询理解（去噪/改写/分词/实体/向量化/时间解析） |
 | `recaller.py` | Recaller 接口：单路召回（向量/关键词/图/文档/时序） |
 | `fuser.py` | Fuser 接口：多路融合排序（重排由 common `Reranker` 独立阶段承担） |
@@ -63,8 +64,8 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 ## 行为铁律
 
 0. **metadata 过滤不跨命名空间**：`user_metadata.<key>` 和
-   `system_metadata.<key>` 从对应真源字段复核，不 fallback。`RetrievedItem` 只附带
-   `user_metadata`。
+   `system_metadata.<key>` 从对应真源字段复核，不 fallback。`RetrievedItem` 同时附带
+   两个命名空间，调用方按接入形态决定是否暴露系统字段。
 
 1. **scope 是独立轴**  
    `scope: Scope` 作为 `Retriever.retrieve` / `Recaller.recall` 的显式第一入参贯穿全链路，不随 `RetrievalQuery` 携带、也不混进 `filters`。query 是"找什么"，scope 是"在谁的范围内找"。
@@ -122,8 +123,10 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 4. Retriever 内部 UnitReader 点读后必须复核 lifecycle、valid-time、event-time 和完整
    FilterExpr；当前态也须按当前 UTC 时间检查 `[t_valid, t_invalid)`。
 5. `extensions` 字段透传配置：RetrievalQuery.extensions → ParsedQuery.extensions，供自定义 Recaller 按约定 key 读取，内核核心不解释。
-6. 显式空 `channels` 无效；None 表示使用全部已配置通道。部分通道失败返回 items 与
-   `ChannelError`，全部选中通道失败抛 `StorageRetrievalError`。
+6. 显式空 `channels` 无效；`RetrievalQuery.channels=None` 时优先使用
+   `QueryParser` 建议的通道，parser 未给出建议时再由 Storage 使用已配置入口。
+   部分通道失败返回 items 与 `ChannelError`，全部选中通道失败抛
+   `StorageRetrievalError`。
 7. Fuser 接受物化候选并保持 MemoryUnit 与 evidence；读取前只允许对 id 去重，不得合并
    多通道候选。Fuser 不执行 Reranker。
 8. `PipelineRetriever` 的生产装配必须通过 `StorageProducer` 获取 Storage；默认

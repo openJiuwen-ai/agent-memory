@@ -4,6 +4,7 @@ import pytest
 
 from jiuwen_memory.api.memory_api_impl import build_kernel
 from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.construction import EvolveMode
@@ -19,13 +20,10 @@ def test_permission_denial_is_audited() -> None:
     target = Scope(org="acme", user="owner")
 
     with pytest.raises(PermissionDeniedError):
-        api.get("missing", target, identity=actor)
+        api.get("missing", target, security=legacy_request_context(actor))
 
-    denied = [
-        event
-        for event in api.audit({"action": "get"}, identity=Scope(), limit=10)
-        if event.detail.get("decision") == "deny"
-    ]
+    events = api.audit({"action": "get"}, security=legacy_request_context(Scope()), limit=10)
+    denied = [event for event in events if event.detail.get("decision") == "deny"]
     assert denied
     assert denied[-1].actor == actor
     assert denied[-1].detail["permission_check"] == "enabled"
@@ -38,9 +36,9 @@ def test_root_identity_can_use_admin_interfaces_with_sqlite_permission() -> None
     api = kernel.api
     root = Scope()
 
-    assert api.admin_get("rerank.enabled", identity=root) == "true"
-    api.admin_set("rerank.enabled", "false", identity=root)
-    assert api.admin_get("rerank.enabled", identity=root) == "false"
+    assert api.admin_get("rerank.enabled", security=legacy_request_context(root)) == "true"
+    api.admin_set("rerank.enabled", "false", security=legacy_request_context(root))
+    assert api.admin_get("rerank.enabled", security=legacy_request_context(root)) == "false"
 
 
 def test_audit_event_view_includes_actor_decision_and_detail_fields() -> None:
@@ -50,8 +48,8 @@ def test_audit_event_view_includes_actor_decision_and_detail_fields() -> None:
     root = Scope()
     scope = Scope(org="acme", user="owner")
 
-    api.add("audit event view", scope, identity=scope)
-    events = api.audit({"action": "add"}, identity=root, limit=10)
+    api.add("audit event view", scope, security=legacy_request_context(scope))
+    events = api.audit({"action": "add"}, security=legacy_request_context(root), limit=10)
 
     add_event = next(event for event in events if event.action == "add")
     assert add_event.actor == scope
@@ -65,8 +63,8 @@ def test_evolve_audit_records_job_id_not_unit_id() -> None:
     root = Scope()
     scope = Scope(org="acme", user="owner")
 
-    job_id = api.evolve(scope, EvolveMode.EXTRACT, identity=scope)
-    events = api.audit({"action": "evolve"}, identity=root, limit=10)
+    job_id = api.evolve(scope, EvolveMode.EXTRACT, security=legacy_request_context(scope))
+    events = api.audit({"action": "evolve"}, security=legacy_request_context(root), limit=10)
 
     evolve_event = next(event for event in events if event.action == "evolve")
     assert evolve_event.detail["job_id"] == job_id
@@ -90,10 +88,10 @@ def test_configured_sqlite_audit_persists_through_api_audit(tmp_path) -> None:
     root = Scope()
 
     first = build_kernel(config=cfg).api
-    first.add("persisted audit event", scope, identity=scope)
+    first.add("persisted audit event", scope, security=legacy_request_context(scope))
 
     second = build_kernel(config=cfg).api
-    events = second.audit({"action": "add"}, identity=root, limit=10)
+    events = second.audit({"action": "add"}, security=legacy_request_context(root), limit=10)
 
     assert any(event.action == "add" and event.actor == scope for event in events)
 
@@ -114,8 +112,8 @@ def test_configured_sqlite_audit_memory_database_is_queryable() -> None:
     root = Scope()
     api = build_kernel(config=cfg).api
 
-    api.add("in-memory sqlite audit event", scope, identity=scope)
-    events = api.audit({"action": "add"}, identity=root, limit=10)
+    api.add("in-memory sqlite audit event", scope, security=legacy_request_context(scope))
+    events = api.audit({"action": "add"}, security=legacy_request_context(root), limit=10)
 
     assert any(event.action == "add" and event.actor == scope for event in events)
 
@@ -143,12 +141,9 @@ def test_require_space_policy_rejects_empty_space_and_audits_denial() -> None:
     scope = Scope(org="acme", user="owner")
 
     with pytest.raises(ValidationError):
-        api.add("missing space", scope, identity=scope)
+        api.add("missing space", scope, security=legacy_request_context(scope))
 
-    denied = [
-        event
-        for event in api.audit({"action": "add"}, identity=Scope(), limit=10)
-        if event.decision == "deny"
-    ]
+    events = api.audit({"action": "add"}, security=legacy_request_context(Scope()), limit=10)
+    denied = [event for event in events if event.decision == "deny"]
     assert denied
     assert denied[-1].detail["permission_reason"] == "scope.space is required"

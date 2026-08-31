@@ -33,21 +33,21 @@ class _RecordingApi:
         scope,
         modality,
         *,
-        identity,
+        security,
         tags=None,
         assets=None,
         system_metadata=None,
         user_metadata=None,
     ):
-        self.add_calls.append({"scope": scope, "identity": identity})
+        self.add_calls.append({"scope": scope, "identity": security.auth.actor})
         return [handler.MemoryUnit(id="unit-1", scope=scope, segments=[Segment(content=content)])]
 
-    def search(self, query, context, *, identity, filters=None, **options):
+    def search(self, query, context, *, security, filters=None, **options):
         self.search_calls.append(
             {
                 "query": query,
                 "context": context,
-                "identity": identity,
+                "identity": security.auth.actor,
                 "filters": filters,
                 "options": options,
             }
@@ -115,6 +115,50 @@ def test_search_forwards_filter_dsl_to_api_boundary() -> None:
 
     assert status == 200, body
     assert srv.api.search_calls[0]["filters"] == filters
+
+
+def test_search_preserves_json_extensions_and_returns_both_metadata_namespaces() -> None:
+    class _Api:
+        def __init__(self) -> None:
+            self.context = None
+
+        def search(self, query, context, *, security, filters=None, **options):
+            del query, security, filters, options
+            self.context = context
+            return SimpleNamespace(
+                items=[
+                    SimpleNamespace(
+                        score=0.8,
+                        unit_id="unit-1",
+                        content="remembered content",
+                        system_metadata={"memory_type": "coding"},
+                        user_metadata={"project": "alpha"},
+                    )
+                ],
+                trajectory=[],
+            )
+
+    api = _Api()
+    status, body = handler.dispatch(
+        SimpleNamespace(api=api),
+        "search",
+        {
+            "query": "remember",
+            "extensions": {"routing": {"mode": "strict"}, "attempt": 2},
+        },
+    )
+
+    assert status == 200, body
+    assert api.context.extensions == {"routing": {"mode": "strict"}, "attempt": 2}
+    assert body["hits"] == [
+        {
+            "score": 0.8,
+            "item_id": "unit-1",
+            "content": "remembered content",
+            "system_metadata": {"memory_type": "coding"},
+            "user_metadata": {"project": "alpha"},
+        }
+    ]
 
 
 def test_actor_space_override_can_differ_from_target_space() -> None:

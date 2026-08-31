@@ -29,6 +29,7 @@ from jiuwen_memory.common.type_def import (
     Scope,
     Segment,
 )
+from jiuwen_memory.common.type_def.memory_filter import matches_memory_unit
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
 from jiuwen_memory.construction.evolver import Evolver, EvolverProducer
@@ -59,8 +60,6 @@ from jiuwen_memory.storage.storage import Storage, StorageProducer
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 logger = get_logger(__name__)
-_TRANSIENT_EXTENSION_KEYS = frozenset({"db_query_service", "encryption_port"})
-
 _LIFECYCLE_OF_DELETE = {
     DeleteMode.FORGET: LifecycleState.FORGOTTEN,
     DeleteMode.ARCHIVE: LifecycleState.ARCHIVED,
@@ -161,6 +160,8 @@ def _matches_delete_selector(unit: MemoryUnit, selector: DeleteSelector) -> bool
         t_message = unit.temporal.t_message
         if t_message is None or t_message >= selector.before:
             return False
+    if selector.filters is not None and not matches_memory_unit(unit, selector.filters):
+        return False
     return True
 
 
@@ -296,7 +297,11 @@ class CloudEngine(MemoryEngine):
             result = await asyncio.to_thread(
                 evolver.evolve, units, EvolveMode.EXTRACT
             )
-            derived = [self._load(scope, unit_id) for unit_id in result.created_ids]
+            # 落盘产物优先取回传对象：归属判定改写派生单元的 scope 之后，按入参 scope
+            # 回读真源会落空。回传为空时回落按 id 回读，兼容不回填该字段的 Evolver 实现。
+            derived = list(result.created_units) or [
+                self._load(scope, unit_id) for unit_id in result.created_ids
+            ]
             logger.info(
                 "CloudEngine.write procedural=True: originals=%d derived=%d scope=%s pipeline=%s",
                 len(units),
@@ -321,7 +326,11 @@ class CloudEngine(MemoryEngine):
             result = await asyncio.to_thread(
                 evolver.evolve, units, EvolveMode.EXTRACT
             )
-            derived = [self._load(scope, unit_id) for unit_id in result.created_ids]
+            # 落盘产物优先取回传对象：归属判定改写派生单元的 scope 之后，按入参 scope
+            # 回读真源会落空。回传为空时回落按 id 回读，兼容不回填该字段的 Evolver 实现。
+            derived = list(result.created_units) or [
+                self._load(scope, unit_id) for unit_id in result.created_ids
+            ]
             logger.info(
                 "CloudEngine.write infer=True: originals=%d derived=%d scope=%s pipeline=%s",
                 len(units),
@@ -580,10 +589,13 @@ class CloudEngine(MemoryEngine):
 
     async def delete(self, selector: DeleteSelector) -> list[str]:
         selector_is_empty = (
-            not selector.unit_ids and not selector.tags and selector.before is None
+            not selector.unit_ids
+            and not selector.tags
+            and selector.before is None
+            and selector.filters is None
         )
         if selector_is_empty:
-            raise ValidationError("DeleteSelector requires unit_ids, tags, or before")
+            raise ValidationError("DeleteSelector requires unit_ids, tags, before, or filters")
 
         scopes = [selector.scope] if selector.scope is not None else self._storage.scopes()
         if not scopes:
@@ -731,21 +743,13 @@ class CloudEngine(MemoryEngine):
         value = str(query.extensions.get(self._message_type_key, "")).strip()
         if value or not self._default_message_type:
             return query
-        # 瞬态 key（db_query_service / encryption_port 等）的值可能是不可深拷贝的对象，
-        # 深拷贝前临时剥离，拷贝后原样装回。
-        transient = {
-            k: v for k, v in query.extensions.items() if k in _TRANSIENT_EXTENSION_KEYS
+        # 仅为路由默认值创建浅副本。extensions 允许承载调用方注入的运行时对象，
+        # 例如 db_query_service / encryption_port；深拷贝会破坏对象身份或直接失败。
+        routed = copy.copy(query)
+        routed.extensions = {
+            **query.extensions,
+            self._message_type_key: self._default_message_type,
         }
-        if transient:
-            query.extensions = {
-                k: v for k, v in query.extensions.items()
-                if k not in _TRANSIENT_EXTENSION_KEYS
-            }
-        routed = copy.deepcopy(query)
-        if transient:
-            query.extensions.update(transient)
-            routed.extensions.update(transient)
-        routed.extensions[self._message_type_key] = self._default_message_type
         return routed
 
     def _prepare_ingested_units(

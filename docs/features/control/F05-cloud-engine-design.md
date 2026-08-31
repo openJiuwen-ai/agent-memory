@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-27 |
-| 影响范围 | `src/control/engine_impl/cloud_engine.py`、`src/control/engine_impl/__init__.py`、`src/control/pipeline.py`、`src/construction/`、`src/common/security/`、`src/storage/kv_impl/`、`docs/specs/S03-control.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md` |
+| 影响范围 | `jiuwen_memory/control/engine_impl/cloud_engine.py`、`jiuwen_memory/control/engine_impl/__init__.py`、`jiuwen_memory/control/pipeline.py`、`jiuwen_memory/construction/`、`jiuwen_memory/common/security/`、`jiuwen_memory/storage/kv_impl/`、`docs/specs/S03-control.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md` |
 | 测试基线 | 已新增 `tests/unit/control/test_cloud_engine.py`；本地无 pytest，使用 `runpy` 显式调用测试函数通过 |
 
 ## 背景
@@ -32,8 +32,8 @@
 
 ### 决策 1：新增独立 `CloudEngine` 实现，不继承 `InMemoryEngine`
 
-`CloudEngine` 放在 `src/control/engine_impl/cloud_engine.py`，直接实现 `MemoryEngine`，并通过
-`EngineProducer` 注册为 `cloud`。`src/control/engine_impl/__init__.py` import 该模块触发自注册。
+`CloudEngine` 放在 `jiuwen_memory/control/engine_impl/cloud_engine.py`，直接实现 `MemoryEngine`，并通过
+`EngineProducer` 注册为 `cloud`。`jiuwen_memory/control/engine_impl/__init__.py` import 该模块触发自注册。
 
 `CloudEngine` 不继承 `InMemoryEngine`，也不访问其 `_kv`、`_pipeline`、`_index` 等受保护成员。
 原因是云侧编排会涉及 message type、space、安全 KV、profile-aware evolve 等新约束，继承旧实现容易形成隐式耦合，后续修改也容易绕过安全接缝。
@@ -194,8 +194,8 @@ encryptor”，避免配置声称启用加密但实际透传明文。
 
 | 层 | 位置 | 职责 |
 |---|---|---|
-| 安全接口与加密实现 | `src/common/security/` | `SecurityProvider`、`SecurityContext`、本地密钥实现、`ENC1` envelope、加密错误 |
-| KV 加密装饰器 | `src/storage/kv_impl/encrypted_kv_store.py` | 实现 `KVStore`，写前加密、读后解密、明文兼容、fail-closed |
+| 安全接口与加密实现 | `jiuwen_memory/common/security/` | `SecurityProvider`、`SecurityContext`、本地密钥实现、`ENC1` envelope、加密错误 |
+| KV 加密装饰器 | `jiuwen_memory/storage/kv_impl/encrypted_kv_store.py` | 实现 `KVStore`，写前加密、读后解密、明文兼容、fail-closed |
 
 `SecurityContext` 与显式 AAD 至少绑定：
 

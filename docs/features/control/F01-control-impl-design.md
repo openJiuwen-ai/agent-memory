@@ -1,15 +1,15 @@
-# F01 — 控制层实现规约（src/control/*_impl）
+# F01 — 控制层实现规约（jiuwen_memory/control/*_impl）
 
 ## 元信息
 
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-06-24 |
-| 影响范围 | src/control/{engine,governance,lifecycle,permission,policy,scheduler}_impl/，docs/specs/S03-control.md |
+| 影响范围 | jiuwen_memory/control/{engine,governance,lifecycle,permission,policy,scheduler}_impl/，docs/specs/S03-control.md |
 | 测试基线 | `pytest tests/unit/control` 全绿；控制层主链路同时被 `tests/unit/api/test_recall_context.py` 与 quickstart 类端到端用例间接覆盖 |
 | Refs | — |
 
-> 本文档归档**控制层第一版实现规约**：每个控制算子的当前实现、注册名、依赖、行为边界与取舍。接口契约本身归 [`docs/specs/S03-control.md`](../../specs/S03-control.md)；当前文件地图和本地铁律见 [`src/control/AGENTS.md`](../../../src/control/AGENTS.md)。本文聚焦「当前实现怎么落地、为什么这么做」。
+> 本文档归档**控制层第一版实现规约**：每个控制算子的当前实现、注册名、依赖、行为边界与取舍。接口契约本身归 [`docs/specs/S03-control.md`](../../specs/S03-control.md)；当前文件地图和本地铁律见 [`jiuwen_memory/control/AGENTS.md`](../../../jiuwen_memory/control/AGENTS.md)。本文聚焦「当前实现怎么落地、为什么这么做」。
 
 ---
 

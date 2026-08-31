@@ -40,6 +40,10 @@ class EvolveJob(Job):
         self._evolver = evolver
         self._mode = mode
 
+    @property
+    def mode(self) -> str:
+        return self._mode.value
+
     async def run(self) -> JobInfo:
         # 排除中期记忆：middle 路径写入的 unit 由 MiddleToLongJob 专门处理，
         # 避免同一原文被两次处理。

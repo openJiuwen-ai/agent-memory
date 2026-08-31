@@ -91,6 +91,7 @@ class RetrievedItem:
     content: str = ""  # L2 全文（unit.content）
     user_metadata: dict[str, MetadataValueType] = field(default_factory=dict)
     level: DisclosureLevel = DisclosureLevel.L0  # 本次披露主层级
+    system_metadata: dict[str, MetadataValueType] = field(default_factory=dict)
 
 
 @dataclass

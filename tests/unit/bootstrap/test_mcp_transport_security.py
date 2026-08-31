@@ -10,7 +10,7 @@ import pytest
 
 _MCP_DIR = os.path.join("bootstrap", "mcp_server")
 _CORE_DIR = os.path.join("bootstrap", "core")
-for _path in (_MCP_DIR, _CORE_DIR, "src"):
+for _path in (_MCP_DIR, _CORE_DIR, "."):
     if _path not in sys.path:
         sys.path.append(_path)
 

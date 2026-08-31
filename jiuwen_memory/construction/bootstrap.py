@@ -25,4 +25,5 @@ def register_constructors() -> None:
     import_module("jiuwen_memory.construction.extractor_impl")
     import_module("jiuwen_memory.construction.index_builder_impl")
     import_module("jiuwen_memory.construction.layer_annotator_impl")
+    import_module("jiuwen_memory.construction.router_impl")
     _REGISTERED = True

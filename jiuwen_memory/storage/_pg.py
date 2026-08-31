@@ -1,16 +1,36 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""PostgreSQL 存储后端共享基础：惰性连接池、schema 工具与过滤编译。"""
+"""PostgreSQL 存储后端共享基础：asyncpg 惰性连接池、schema 工具与过滤编译。
+
+驱动为 asyncpg（Apache-2.0，规避 psycopg 的 LGPL 分发义务）。asyncpg 是纯异步
+客户端，而 Store 接口是同步的：经模块级专职事件循环线程（``_LOOP``）桥接——同步
+调用方把协程经 ``run_coroutine_threadsafe`` 提交到常驻 loop 并阻塞等待结果；
+多个调用线程可并发提交，连接池并发能力不受影响（spike 实测 4 写 + 4 读线程并发
+40/40 成功，见 docs/features/storage/F06-asyncpg-driver.md）。
+
+驱动适配三铁律（spike 实测）：
+1. jsonb 走 type codec（json.dumps / json.loads），参数类型为 jsonb 时 dict 直传
+   直取；但 FROM 子查询的 VALUES 列表无赋值上下文、裸参数会被推断为 text，
+   该场景（如 update 的 incoming VALUES）须显式 $N::jsonb 转型；
+2. vector 走 text 参数 + $N::vector 服务端转型，无需 pgvector pip 包与 codec；
+3. SET LOCAL / pg_advisory_xact_lock 依赖显式事务（asyncpg 默认 autocommit 下
+   二者静默失效），必须包 async with conn.transaction()。
+"""
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import re
+import ssl
 import threading
-from typing import Any
+from typing import Any, Coroutine
 
-logger = logging.getLogger(__name__)
-
-from jiuwen_memory.common.errors import AgentMemoryError, BackendError, HealthCheckError, ValidationError
+from jiuwen_memory.common.errors import (
+    AgentMemoryError,
+    BackendError,
+    HealthCheckError,
+    ValidationError,
+)
 from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterExpr,
@@ -22,6 +42,8 @@ from jiuwen_memory.common.type_def import (
 )
 
 from ._support import scope_dims
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA_LOCK_KEY = "agent-memory:postgres-storage:schema"
 _CMP_OPS = {
@@ -132,8 +154,61 @@ def _version_tuple(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in match.group(1).split("."))
 
 
+# -- asyncpg 适配层 -------------------------------------------------------------- #
+
+
+def _quote_ident(name: str) -> str:
+    """SQL 标识符安全引用（``psycopg.sql.Identifier`` 的等价替代）。"""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _convert_placeholders(sql_text: str) -> str:
+    """把 psycopg 风格 ``%s`` 按出现顺序改写为 asyncpg 的 ``$N``。
+
+    本模块的 SQL 文本不含字面 ``%``（前缀匹配用 ``starts_with`` 函数而非
+    ``LIKE``），可安全按出现顺序编号。过滤片段（``compile_pg_filter`` /
+    ``pg_scope_clause``）继续产出 ``%s`` 片段，拼装完成后在执行边界统一转换。
+    """
+    counter = iter(range(1, sql_text.count("%s") + 1))
+    return re.sub(r"%s", lambda _m: f"${next(counter)}", sql_text)
+
+
+class _LoopRunner:
+    """进程级专职事件循环线程。
+
+    ``run`` 可从任意线程调用：协程经 ``run_coroutine_threadsafe`` 提交到常驻
+    loop，调用线程阻塞等待结果。多个调用线程可并发提交，保住连接池并发。
+    线程为 daemon，随进程退出；``close()`` 只关池不停 loop。
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+
+    def _ensure_loop(self) -> asyncio.AbstractEventLoop:
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                if self._loop is None:
+                    raise RuntimeError("pg loop thread is alive but event loop is missing")
+                return self._loop
+            self._loop = asyncio.new_event_loop()
+            self._thread = threading.Thread(
+                target=self._loop.run_forever, name="agent-memory-pg-loop", daemon=True
+            )
+            self._thread.start()
+            return self._loop
+
+    def run(self, coro: Coroutine[Any, Any, Any], timeout: float | None = None) -> Any:
+        future = asyncio.run_coroutine_threadsafe(coro, self._ensure_loop())
+        return future.result(timeout)
+
+
+_LOOP = _LoopRunner()
+
+
 class PgStoreBase:
-    """每个 Store 实例自有的惰性 ``psycopg_pool.ConnectionPool``。
+    """每个 Store 实例自有的惰性 ``asyncpg.Pool``（经专职事件循环线程驱动）。
 
     ``dsn`` 可经 ConfigSource 晚绑定（如 ``kv_store.dsn`` / ``vector_store.dsn``）；
     DSN 变化时关闭旧池并按新值重建。旧库数据不自动迁移。
@@ -171,8 +246,6 @@ class PgStoreBase:
         self._auto_create_schema = auto_create_schema
         self._pool: Any = None
         self._pool_dsn: str | None = None
-        self._sql: Any = None
-        self._jsonb: Any = None
         self._init_lock = threading.Lock()
 
     @property
@@ -185,83 +258,67 @@ class PgStoreBase:
             if self._pool is not None and self._pool_dsn == dsn:
                 return self._pool
             self._close_pool_unlocked()
-            try:
-                from psycopg import sql
-                from psycopg.types.json import Jsonb
-                from psycopg_pool import ConnectionPool
-            except ImportError as exc:
-                raise BackendError(
-                    "psycopg client not installed (pip install 'psycopg[binary,pool]')"
-                ) from exc
+            self._pool = _LOOP.run(self._create_pool(dsn))
+            self._pool_dsn = dsn
+            return self._pool
 
-            connect_kwargs: dict[str, Any] = {
-                "application_name": self._application_name,
-                "connect_timeout": max(1, int(self._connect_timeout)),
-            }
-            if self._ssl_verify:
-                # libpq 把 kwargs 合并进 conninfo 且优先级高于 dsn 中的同名项，
-                # 故此处设定即为最终生效值。verify-full 同时校验证书链与主机名；
-                # 若须用 IP 直连（证书 CN 为域名），改在 dsn 里写 sslmode=verify-ca。
-                connect_kwargs["sslmode"] = "verify-full"
-                connect_kwargs["sslrootcert"] = self._ssl_ca_cert
-            pool = ConnectionPool(
-                conninfo=dsn,
+    async def _create_pool(self, dsn: str) -> Any:
+        try:
+            import asyncpg
+        except ImportError as exc:
+            raise BackendError(
+                "asyncpg client not installed (pip install asyncpg)"
+            ) from exc
+
+        async def _init(conn: Any) -> None:
+            # jsonb type codec：dict 直传直取（spike 铁律 1）。
+            await conn.set_type_codec(
+                "jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
+            )
+
+        connect_kwargs: dict[str, Any] = {
+            "timeout": self._connect_timeout,
+            "server_settings": {"application_name": self._application_name},
+        }
+        if self._ssl_verify:
+            # verify-full 等价：CERT_REQUIRED 校验证书链，check_hostname 校验主机名。
+            # 逃生舱与 psycopg 时期一致：ssl_verify=false 时连接串自带 TLS 参数自理。
+            connect_kwargs["ssl"] = self._ssl_context()
+        pool: Any = None
+        try:
+            pool = await asyncpg.create_pool(
+                dsn,
                 min_size=self._pool_min_size,
                 max_size=self._pool_max_size,
-                kwargs=connect_kwargs,
-                open=False,
+                init=_init,
+                **connect_kwargs,
             )
-            try:
-                pool.open(wait=True, timeout=self._connect_timeout)
-                self._pool = pool
-                self._pool_dsn = dsn
-                self._sql = sql
-                self._jsonb = Jsonb
-                self._ensure_schema(pool)
-            except AgentMemoryError:
-                pool.close()
-                self._pool = None
-                self._pool_dsn = None
-                raise
-            except Exception as exc:
-                pool.close()
-                self._pool = None
-                self._pool_dsn = None
-                raise BackendError(f"postgres connect: {exc}") from exc
-        return self._pool
+            await self._ensure_schema(pool)
+            return pool
+        except AgentMemoryError:
+            if pool is not None:
+                await pool.close()
+            raise
+        except Exception as exc:
+            if pool is not None:
+                await pool.close()
+            raise BackendError(f"postgres connect: {exc}") from exc
 
-    @property
-    def sql(self) -> Any:
-        if self._sql is None:
-            _ = self.pool
-        return self._sql
-
-    @property
-    def jsonb(self) -> Any:
-        if self._jsonb is None:
-            _ = self.pool
-        return self._jsonb
-
-    @staticmethod
-    def _lock_schema(cursor: Any) -> None:
-        cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (_SCHEMA_LOCK_KEY,))
-
-    @staticmethod
-    def _require_vector_extension(cursor: Any, minimum: str = "0.8.0") -> str:
-        cursor.execute("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
-        row = cursor.fetchone()
-        if row is None:
-            raise ValidationError("pgvector 扩展不存在；请执行 CREATE EXTENSION vector")
-        actual = str(row[0])
-        if _version_tuple(actual) < _version_tuple(minimum):
-            raise ValidationError(f"pgvector 版本过低：实际 {actual}，要求 >= {minimum}")
-        return actual
+    def _ssl_context(self) -> ssl.SSLContext:
+        """verify-full 等价的 SSLContext；缺 CA 在建池阶段即报错（铁律 10）。"""
+        if not self._ssl_ca_cert:
+            raise ValidationError(
+                "ssl_verify=true 需要 ssl_ca_cert（verify-full 等价校验）"
+            )
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.verify_mode = ssl.CERT_REQUIRED
+        context.check_hostname = True
+        context.load_verify_locations(self._ssl_ca_cert)
+        return context
 
     def close(self) -> None:
         with self._init_lock:
-            if self._pool is not None:
-                self._pool.close()
-                self._pool = None
+            self._close_pool_unlocked()
 
     def _resolved_dsn(self) -> str:
         """当前应使用的 DSN（ConfigSource 优先，否则构造期回落）。"""
@@ -278,58 +335,111 @@ class PgStoreBase:
     def _close_pool_unlocked(self) -> None:
         if self._pool is None:
             return
+        pool, self._pool = self._pool, None
+        self._pool_dsn = None
         try:
-            self._pool.close()
+            self._run(pool.close())
         except Exception as exc:
             # 重连路径上的尽力关闭；池可能已损坏，仍须丢弃句柄以便重建。
             logger.debug("postgres pool close during reconnect: %s", exc)
-        self._pool = None
-        self._pool_dsn = None
 
-    def _ensure_schema(self, pool: Any) -> None:
+    # -- 桥接执行入口 ------------------------------------------------------------ #
+
+    @staticmethod
+    def _run(coro: Coroutine[Any, Any, Any], timeout: float | None = None) -> Any:
+        return _LOOP.run(coro, timeout)
+
+    def _fetch_all(self, statement: str, params: list[Any] | tuple[Any, ...]) -> list[Any]:
+        """单语句取回全部行（autocommit，无显式事务）。"""
+        pool = self.pool
+
+        async def go() -> list[Any]:
+            async with pool.acquire() as conn:
+                return await conn.fetch(_convert_placeholders(statement), *params)
+
+        return self._run(go())
+
+    def _fetch_one(self, statement: str, params: list[Any] | tuple[Any, ...]) -> Any:
+        """单语句取回首行（autocommit）。"""
+        pool = self.pool
+
+        async def go() -> Any:
+            async with pool.acquire() as conn:
+                return await conn.fetchrow(_convert_placeholders(statement), *params)
+
+        return self._run(go())
+
+    def _execute(
+        self, statement: str, params: list[Any] | tuple[Any, ...] = ()
+    ) -> str:
+        """单语句执行，返回 asyncpg 状态串（autocommit）。"""
+        pool = self.pool
+
+        async def go() -> str:
+            async with pool.acquire() as conn:
+                return await conn.execute(_convert_placeholders(statement), *params)
+
+        return self._run(go())
+
+    @property
+    def _table_ref(self) -> str:
+        return f"{_quote_ident(self._schema)}.{_quote_ident(self._table)}"
+
+    # -- schema 工具（conn 为 asyncpg 连接，均需显式事务由调用方包好） ------------- #
+
+    async def _ensure_schema(self, pool: Any) -> None:
         raise NotImplementedError
 
-    def _qualified(self, name: str | None = None) -> Any:
-        return self.sql.SQL(".").join(
-            (self.sql.Identifier(self._schema), self.sql.Identifier(name or self._table))
-        )
+    @staticmethod
+    async def _lock_schema(conn: Any) -> None:
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", _SCHEMA_LOCK_KEY)
 
-    def _create_schema(self, cursor: Any) -> None:
-        cursor.execute(
-            self._sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
-                self._sql.Identifier(self._schema)
-            )
-        )
+    @staticmethod
+    async def _require_vector_extension(conn: Any, minimum: str = "0.8.0") -> str:
+        row = await conn.fetchrow("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
+        if row is None:
+            raise ValidationError("pgvector 扩展不存在；请执行 CREATE EXTENSION vector")
+        actual = str(row[0])
+        if _version_tuple(actual) < _version_tuple(minimum):
+            raise ValidationError(f"pgvector 版本过低：实际 {actual}，要求 >= {minimum}")
+        return actual
 
-    def _table_exists(self, cursor: Any) -> bool:
-        cursor.execute(
+    async def _create_schema(self, conn: Any) -> None:
+        await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {_quote_ident(self._schema)}")
+
+    async def _table_exists(self, conn: Any) -> bool:
+        row = await conn.fetchrow(
             """
             SELECT EXISTS (
                 SELECT 1
                 FROM pg_class c
                 JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE n.nspname = %s
-                  AND c.relname = %s
+                WHERE n.nspname = $1
+                  AND c.relname = $2
                   AND c.relkind IN ('r', 'p')
             )
             """,
-            (self._schema, self._table),
+            self._schema,
+            self._table,
         )
-        row = cursor.fetchone()
         return bool(row and row[0])
 
-    def _require_table(self, cursor: Any) -> None:
-        if not self._table_exists(cursor):
+    async def _require_table(self, conn: Any) -> None:
+        if not await self._table_exists(conn):
             raise ValidationError(
                 f"PostgreSQL 表不存在：{self._schema}.{self._table}；"
                 "请预建或启用 auto_create_schema"
             )
 
     def _health(self) -> None:
+        pool = self.pool
+
+        async def go() -> None:
+            async with pool.acquire() as conn:
+                await conn.fetchval("SELECT 1")
+
         try:
-            with self.pool.connection() as conn, conn.cursor() as cursor:
-                cursor.execute("SELECT 1")
-                cursor.fetchone()
+            self._run(go())
         except Exception as exc:
             if isinstance(exc, HealthCheckError):
                 raise

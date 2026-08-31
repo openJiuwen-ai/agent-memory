@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-27 |
-| 影响范围 | src/storage/kv_impl/encrypted_kv_store.py，src/storage/kv_impl/__init__.py，src/common/security/，docs/specs/S06-storage.md，docs/features/common/F04-security-interfaces-and-encryption.md |
+| 影响范围 | jiuwen_memory/storage/kv_impl/encrypted_kv_store.py，jiuwen_memory/storage/kv_impl/__init__.py，jiuwen_memory/common/security/，docs/specs/S06-storage.md，docs/features/common/F04-security-interfaces-and-encryption.md |
 | 测试基线 | `tests/unit/storage/test_encrypted_kv_store.py` 覆盖加密写入、读后解密、scan 解密、透传操作、工厂装配与失败关闭；`pytest -q tests/unit/storage`、相关模块测试、ruff 与 `git diff --check` 已通过 |
 | Refs | — |
 
@@ -13,7 +13,7 @@
 
 KVStore 是 `MemoryUnit` 内容、原始消息与部分控制数据的真源字节存储。未加密时，落盘后端或远端 KV 后端可以直接看到 value 明文；但如果把加解密逻辑分散到 `add`、`search`、`get` 等上层接口，会导致每条读写路径都要重复处理开关、密钥、AAD 与错误语义，也容易让新增入口绕过加密。
 
-因此加密能力需要落在 KV 边界：对调用方保持 `KVStore` 合同不变，对底层后端只写入密文。算法、密钥来源、明文兼容策略不归 storage 层管理，而是由 `src/common/security/` 的 `SecurityProvider` 提供。
+因此加密能力需要落在 KV 边界：对调用方保持 `KVStore` 合同不变，对底层后端只写入密文。算法、密钥来源、明文兼容策略不归 storage 层管理，而是由 `jiuwen_memory/common/security/` 的 `SecurityProvider` 提供。
 
 ## 决策
 

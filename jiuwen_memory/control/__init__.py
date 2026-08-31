@@ -35,6 +35,7 @@ from .types import (
     SpaceStatus,
     SpaceUsage,
     UpdateMode,
+    WriteTargets,
 )
 
 __all__ = [
@@ -75,4 +76,5 @@ __all__ = [
     "UpdateMode",
     "DeleteMode",
     "DeleteSelector",
+    "WriteTargets",
 ]

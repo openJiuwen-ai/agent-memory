@@ -43,7 +43,13 @@ class GraphRecaller(Recaller):
         scores: dict[str, float] = {}
         for seed in seeds:
             for node in self._graph.search(
-                scope, GraphQuery(start_id=seed, depth=self._depth, limit=top_k)
+                scope,
+                GraphQuery(
+                    start_id=seed,
+                    depth=self._depth,
+                    limit=top_k,
+                    extensions=dict(query.extensions),
+                ),
             ):
                 scores[node.id] = max(scores.get(node.id, 0.0), 1.0)
         ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:top_k]

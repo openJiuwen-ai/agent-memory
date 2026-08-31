@@ -8,6 +8,7 @@ import pytest
 
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.llm.base import LLM
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import (
     MemoryTier,
     MemoryUnit,
@@ -522,8 +523,8 @@ def test_default_engine_writes_through_without_consolidator():
     )
     scope = Scope(org="org", user="user")
 
-    first = kernel.api.add("完全相同的记忆", scope, identity=scope)
-    second = kernel.api.add("完全相同的记忆", scope, identity=scope)
+    first = kernel.api.add("完全相同的记忆", scope, security=legacy_request_context(scope))
+    second = kernel.api.add("完全相同的记忆", scope, security=legacy_request_context(scope))
 
     # 默认直写路径：两次都落盘，不去重（去重交给显式 evolve）
     assert len(first) == 1

@@ -16,9 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
-import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from importlib import import_module
 from typing import Any, Iterator, Mapping
 
@@ -34,6 +32,12 @@ set_current = _security_types.set_current
 Credentials = _security_types.Credentials
 RequestSecurityContext = _security_types.RequestSecurityContext
 Surface = _security_types.Surface
+
+# RequestSecurityContext 的构造规则（服务端生成 request_id、服务端时钟、attributes
+# 只由系统组件写）收在 common.security.request_context 一处，本模块只提供本形态的
+# surface 与 peer。
+_request_context_module = import_module("jiuwen_memory.common.security.request_context")
+new_request_context = _request_context_module.new_request_context
 
 Scope = import_module("jiuwen_memory.common.type_def").Scope
 AuditEvent = import_module("jiuwen_memory.common.type_def").AuditEvent
@@ -116,15 +120,10 @@ def authenticated(
         if guard_acquired:
             workload_guard.release()
 
-    # PR1 过渡：RequestSecurityContext 由 surface（本中间件）直接构造（types.py
-    # 的 PR1 约定）；PR2 起收口到 common.security.request_context.new_request_context
-    # 受控入口，此处只提供本形态的 surface 与 peer。
-    security = RequestSecurityContext(
-        auth=ctx,
-        request_id=uuid.uuid4().hex,
-        peer=_normalized_peer(credentials),
+    security = new_request_context(
+        ctx,
         surface=surface if surface is not None else Surface.INTERNAL,
-        started_at=datetime.now(timezone.utc),
+        peer=_normalized_peer(credentials),
         # attributes 留空：本层没有可写入的系统属性，而业务 payload 一律不得注入
         # （迁移计划 §5.2 第 7 项）。将来要加（如可信代理链、mTLS 主体）只能由
         # 服务端组件在此处写。

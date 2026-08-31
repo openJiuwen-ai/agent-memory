@@ -105,6 +105,7 @@ class KeywordRecaller(Recaller):
             text=query.rewritten or query.raw,
             top_k=top_k,
             filters=query.scalar_filters,  # scope 不混进 filters，单独走入参
+            extensions=dict(query.extensions),
         )
         hits = self._fulltext.search(scope, tq)
         records = self._fulltext.get(scope, [h.id for h in hits])

@@ -19,6 +19,16 @@ class Scope:
     session: str = ""  # 会话标识
 
 
+# 内核自带的归属坐标实体名（F07）。取值以调用方身份为准，部署声明项不得与之重名——
+# 重名即接入方传入的取值覆盖内核由身份推导的权威取值（判定表加载期第 12 条校验）。
+#
+# **三项取值必须是 :class:`Scope` 的字段名**，因此紧贴该类定义：折算函数
+# （``common.security.principal.kernel_coords``）按本元组逐项 ``getattr`` 取身份取值，
+# 取值与字段名对不上即 ``AttributeError``。新增第四项内核坐标时须同时给 ``Scope`` 加同名
+# 字段。落本模块而非构建层，是因为消费方跨安全层与构建层两侧，而安全层不得反向依赖构建层。
+KERNEL_COORD_KEYS: tuple[str, ...] = ("user", "agent", "session")
+
+
 def space_id_from_scope(scope: Scope) -> str:
     """生成 entity 索引的 routing 与文档字段值。
 

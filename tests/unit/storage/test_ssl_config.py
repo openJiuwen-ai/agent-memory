@@ -1,7 +1,7 @@
 """存储后端 SSL 配置（``ssl_verify`` / ``ssl_ca_cert``）的读取、校验与翻译测试。
 
 四个后端共用同一组配置参数，但翻译目标各不相同（``ssl_ca_certs`` / ``ca_certs`` /
-``sslrootcert`` / ``server_pem_path``），且加密开关的位置分两类：redis 与 elasticsearch
+``SSLContext`` / ``server_pem_path``），且加密开关的位置分两类：redis 与 elasticsearch
 只认连接串 scheme，postgres 与 milvus 有参数形态的真开关。这里覆盖：
 
 - 布尔归一：``${VAR:-false}`` 展开后是字符串 ``"false"``，不得被判为真；
@@ -12,7 +12,9 @@
 
 from __future__ import annotations
 
+import ssl
 import sys
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
@@ -24,6 +26,7 @@ from jiuwen_memory.storage._support import as_bool, read_ssl_config
 from jiuwen_memory.storage.bootstrap import register_backends
 from jiuwen_memory.storage.fulltext import FulltextProducer
 from jiuwen_memory.storage.kv import KvProducer
+from jiuwen_memory.storage.kv_impl.postgres_kv import PostgresKVStore
 from jiuwen_memory.storage.vector import VectorProducer
 
 pytestmark = pytest.mark.unit
@@ -64,15 +67,15 @@ def test_as_bool_falls_back_to_default_only_for_none() -> None:
 
 def test_ssl_is_disabled_by_default() -> None:
     """不配置时行为与引入本参数前一致，现有明文部署不受影响。"""
-    ssl = read_ssl_config({}, backend="test")
-    assert ssl.verify is False
-    assert ssl.ca_cert is None
+    ssl_config = read_ssl_config({}, backend="test")
+    assert ssl_config.verify is False
+    assert ssl_config.ca_cert is None
 
 
 def test_blank_ca_cert_is_normalized_to_none() -> None:
     """``${VAR:-}`` 展开出空串，须归一为 None 而非空路径。"""
-    ssl = read_ssl_config({"ssl_ca_cert": "  "}, backend="test")
-    assert ssl.ca_cert is None
+    ssl_config = read_ssl_config({"ssl_ca_cert": "  "}, backend="test")
+    assert ssl_config.ca_cert is None
 
 
 def test_verify_without_ca_cert_fails_at_assembly() -> None:
@@ -290,21 +293,63 @@ def test_milvus_passes_server_pem_path_to_client(monkeypatch: pytest.MonkeyPatch
     assert "ca_pem_path" not in recorded
 
 
-class _FakePool:
-    """记录 ConnectionPool 构造参数；open 抛哨兵以免真实建连。"""
+# -- postgres 系：fake asyncpg 观察建池入参 --------------------------------------- #
 
-    recorded: dict[str, Any] = {}
 
-    def __init__(self, **kwargs: Any) -> None:
-        type(self).recorded = dict(kwargs)
+def _fake_asyncpg_module(monkeypatch: pytest.MonkeyPatch, recorded: dict[str, Any]) -> None:
+    """fake asyncpg：create_pool 记录入参；acquire 失败模拟无真实连接。"""
 
-    @staticmethod
-    def open(**_: Any) -> None:
-        raise _Recorded
+    class _Pool:
+        def __init__(self, dsn: str | None = None, **kwargs: Any) -> None:
+            recorded["dsn"] = dsn
+            recorded["kwargs"] = kwargs
 
-    @staticmethod
-    def close() -> None:
-        pass
+        async def close(self) -> None:
+            return None
+
+        @staticmethod
+        def acquire() -> _BrokenConnCtx:
+            return _BrokenConnCtx()
+
+    class _BrokenConnCtx:
+        async def __aenter__(self) -> Any:
+            raise RuntimeError("no real connection in unit test")
+
+        async def __aexit__(self, *exc: Any) -> bool:
+            return False
+
+    async def create_pool(dsn: str | None = None, **kwargs: Any) -> _Pool:
+        return _Pool(dsn, **kwargs)
+
+    fake = ModuleType("asyncpg")
+    setattr(fake, "create_pool", create_pool)
+    monkeypatch.setitem(sys.modules, "asyncpg", fake)
+
+
+def _write_ca_pem(tmp_path: Path) -> str:
+    """cryptography 现签一张自签 CA 落盘，供真实 load_verify_locations 使用。"""
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "agent-memory-test-ca")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc))
+        .not_valid_after(datetime.datetime(2040, 1, 1, tzinfo=datetime.timezone.utc))
+        .sign(key, hashes.SHA256())
+    )
+    path = tmp_path / "ca.pem"
+    path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    return str(path)
 
 
 @pytest.mark.parametrize(
@@ -314,31 +359,35 @@ class _FakePool:
         (VectorProducer, "pgvector", {"dsn": "postgresql://u@h/db", "dim": 8}),
     ],
 )
-def test_postgres_family_passes_sslmode_and_root_cert(
-    monkeypatch: pytest.MonkeyPatch, producer: Any, target: str, params: dict[str, Any]
+def test_postgres_family_passes_ssl_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    producer: Any,
+    target: str,
+    params: dict[str, Any],
 ) -> None:
-    psycopg_pool = pytest.importorskip("psycopg_pool")
-    _FakePool.recorded = {}
-    monkeypatch.setattr(psycopg_pool, "ConnectionPool", _FakePool)
+    recorded: dict[str, Any] = {}
+    _fake_asyncpg_module(monkeypatch, recorded)
 
     store = producer.build(
         target,
-        {**params, "ssl_verify": "true", "ssl_ca_cert": "/certs/rds-ca.pem"},
+        {**params, "ssl_verify": "true", "ssl_ca_cert": _write_ca_pem(tmp_path)},
         AssemblyContext(),
     )
     with pytest.raises(BackendError):
-        store.pool
+        store.pool  # 惰性建池：acquire 失败按 BackendError 归一
 
-    connect_kwargs = _FakePool.recorded["kwargs"]
-    assert connect_kwargs["sslmode"] == "verify-full"
-    assert connect_kwargs["sslrootcert"] == "/certs/rds-ca.pem"
+    context = recorded["kwargs"]["ssl"]
+    assert isinstance(context, ssl.SSLContext), "ssl 入参必须是 SSLContext"
+    assert context.verify_mode == ssl.CERT_REQUIRED, "verify-full 等价：校验证书链"
+    assert context.check_hostname is True, "verify-full 等价：校验主机名"
+    assert recorded["kwargs"]["server_settings"]["application_name"] == "agent_memory"
 
 
 def test_postgres_leaves_dsn_untouched_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    """默认关闭时不得注入 sslmode，避免覆盖 dsn 里既有的 TLS 设定。"""
-    psycopg_pool = pytest.importorskip("psycopg_pool")
-    _FakePool.recorded = {}
-    monkeypatch.setattr(psycopg_pool, "ConnectionPool", _FakePool)
+    """默认关闭时不得传 ssl 入参，dsn 里既有的 TLS 设定自理。"""
+    recorded: dict[str, Any] = {}
+    _fake_asyncpg_module(monkeypatch, recorded)
 
     store = KvProducer.build(
         "postgres", {"dsn": "postgresql://u@h/db?sslmode=require"}, AssemblyContext()
@@ -346,6 +395,21 @@ def test_postgres_leaves_dsn_untouched_when_disabled(monkeypatch: pytest.MonkeyP
     with pytest.raises(BackendError):
         store.pool
 
-    connect_kwargs = _FakePool.recorded["kwargs"]
-    assert "sslmode" not in connect_kwargs
-    assert "sslrootcert" not in connect_kwargs
+    assert "ssl" not in recorded["kwargs"], "ssl_verify=false 不得注入 ssl 入参"
+
+
+# -- _ssl_context 直测（postgres 系共用基类） ------------------------------------- #
+
+
+def test_pg_ssl_context_requires_ca() -> None:
+    store = PostgresKVStore(dsn="postgresql://u@h/db", ssl_verify=True)
+    with pytest.raises(ValidationError, match="ssl_ca_cert"):
+        getattr(store, "_ssl_context")()
+
+
+def test_pg_ssl_context_verify_full(tmp_path: Path) -> None:
+    ca = _write_ca_pem(tmp_path)
+    store = PostgresKVStore(dsn="postgresql://u@h/db", ssl_verify=True, ssl_ca_cert=ca)
+    context = getattr(store, "_ssl_context")()
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True

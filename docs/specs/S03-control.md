@@ -5,9 +5,11 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-08-24 |
+| 最近一次修订日期 | 2026-08-29 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
+| 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md |
+
 ## Metadata 编排契约
 
 `MemoryEngine.write` 分别接收两个命名空。引擎控制流、pipeline 路由、权限上下文
@@ -27,21 +29,21 @@
 - space 生命周期、策略、成员、用量、导出与 offboarding 管理
 
 **不管什么**：
-- 不执行鉴权（PEP 在 `src/api` 层，Engine 信任传入的 scope）
+- 不执行鉴权（PEP 在 `jiuwen_memory/api` 层，Engine 信任传入的 scope）
 - 不绑定具体存储后端（只通过注入的 Store 抽象读写）
 - 不实现抽取/升华/关联/冲突消解等演进逻辑（由构建层 `Evolver` 负责，控制层仅调度）
-- 不生产记忆（由 `src/ingest` + `src/construction` 负责）
-- 不执行检索（由 `src/retrieval` 负责）
-- 不管不可变/重型配置（由 `src/config` 在实例初始化时确定）
+- 不生产记忆（由 `jiuwen_memory/ingest` + `jiuwen_memory/construction` 负责）
+- 不执行检索（由 `jiuwen_memory/retrieval` 负责）。「执行」指调用该层的**算子**——有 Producer 注册、实现可替换、访问存储或模型的组件（`Retriever` / `Recaller` / `Fuser` 等）。两件事不在禁止之列：import 该层导出的类型与无状态纯函数（如 `retrieval/cross_space.py` 的取数上界、结果合并与失败编码），以及经调用方传入的 `recall` 回调调 `MemoryEngine` 门面。两者都不使本层持有检索算子实例，依赖方向仍是 control → retrieval，检索层不反向依赖控制层，无环。缺这条限定，`collective/cross_space_recall.py` 的召回扇出会被读成越界
+- 不管不可变/重型配置（由 `jiuwen_memory/config` 在实例初始化时确定）
 
 ## 不变量
 
 1. **引擎不实现具体算法能力**：`MemoryEngine` 只编排，Ingestor/构建算子/Retriever/Store 全部由装配注入；可通过 Store 抽象完成真源语义，但不得绑定具体后端或直接调用 LLM。
-2. **引擎方法一律异步协程**：同步调用由 `src/api` 层自行桥接（`asyncio.run`），engine 内不做同步阻塞。
-3. **鉴权不在本层执行**：`PermissionManager.check` 由 `src/api/MemoryAPI` 在入口调用，engine 信任传入的 scope 已鉴权。禁止在 engine 内部重复 check。
+2. **引擎方法一律异步协程**：同步调用由 `jiuwen_memory/api` 层自行桥接（`asyncio.run`），engine 内不做同步阻塞。
+3. **鉴权不在本层执行**：`PermissionManager.check` 由 `jiuwen_memory/api/MemoryAPI` 在入口调用，engine 信任传入的 scope 已鉴权。禁止在 engine 内部重复 check。
 4. **LifecycleManager 只做非破坏式标记**：`transition` 标记状态（superseded/archived/forgotten），绝不物理删除。物理删除（purge）走 Engine 的 `delete` 路径 + `DeleteMode.PURGE`。
 5. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。`*_impl/` 通过 Producer 自注册后被外部装配消费，不被顶层接口引用。
-6. **types.py 零依赖本层其他文件**：纯数据定义，被本层各接口和 `src/api/` 共同依赖。
+6. **types.py 零依赖本层其他文件**：纯数据定义，被本层各接口和 `jiuwen_memory/api/` 共同依赖。
 7. **DeleteSelector 各条件取「与」**：至少给出一项可命中条件；空 selector 抛 `ValidationError`。
 8. **UpdateMode.SUPERSEDE 产生新 id**：旧 id 标记 superseded，`update` 返回的记忆 id 可能与传入的 `unit_id` 不同。
 9. **admin_* 不经 Engine**：由 API 层直达 PolicyManager；Engine 不承载策略存储。
@@ -60,6 +62,7 @@
 19. **树结构一致性（目标）**：同一 kind 的父子边必须同 `org+space`、无环、单父、双向一致且顺序稳定；`user`/`agent`/`session` 可按 compose profile 放宽（跨细粒度 scope 时边须可解析定位）；`HierarchyStatus` 只允许 ACTIVE/DISMISSED，且与 `LifecycleState` 分离。
 20. **结构与生命周期事务（目标）**：`provenance`、`supersedes` 与 `hierarchy` 分别表示演进来源、版本替换和父子包含；FORGET/PURGE 不级联删除后代内容。
 21. **重叠 span 串行化（目标）**：同一 `scope + kind` 下 span 相交的 HIERARCHY build/replace、层级 update、FORGET 和 PURGE 必须串行化，或以乐观版本条件在提交前检测冲突；replace 不得吸收未参与初始输入快照的并发叶写入。
+22. **判权范围的裁剪可落本层，判权的执行不可**：`collective/write_targets.py` 决定哪些候选空间被送去判权（候选渲染、排序与上限截断），判权本身经 `can_write` 回调由 API 层执行；本层不持有 `PermissionManager`、不接收 `identity`、不抛权限异常——缺兜底落点时返回 `WriteTargets.fallback=None`，由 PEP 抛出。该裁剪可下沉的前提是失效方向为拒绝：未参与判权的空间不进候选，表现为写不进去而非越权写入。**检索侧的逐空间判权循环不适用本条**，其循环体就是 `PermissionManager.decide` 本身，移出等于把 PEP 分裂为两处；逐空间系统谓词的生成同样留 API 层，它按 `identity` 与空间事实取值。检索侧可下沉的是判权之后的部分：`collective/cross_space_recall.py` 收已判权的空间目标（含各自的谓词）与 `recall` 回调，做取数上界摊配、召回扇出与结果合并，全程不读 `identity`、不做任何裁决，与写入侧同一形态。它把空间级扇出失败与判权剔除分两路交回——并进 `merged.errors` 之后，扇出失败会与检索层的分通道错误混在同一个列表里，API 层要为「整个空间挂了」写审计就只能按 `channel is SPACE` 过滤，那是把审计判据绑在本层的 channel 编码上。
 
 ## 接口契约
 
@@ -280,7 +283,7 @@ active → archived → forgotten
 | `grant` | `(grant: Grant) -> None` | 新增跨 scope 授权 |
 | `revoke` | `(grant: Grant) -> None` | 回收授权（幂等） |
 | `check` | `(actor: Scope, target: Scope, action: Action, context: PermissionContext \| None = None) -> bool` | 校验 actor 对 target 是否可执行 action；context 为资源类型、memory_type、pipeline、unit_id、tags 等可选上下文 |
-| `routing_fields` | `() -> tuple[str, ...]` | 返回本实现鉴权路由所依据的 metadata 字段；非路由实现返回空元组 |
+| `routing_fields` | `() -> tuple[str, ...]` | 继承安全域共享的 `RoutingFieldsProvider`；返回本实现鉴权路由所依据的 metadata 字段，非路由实现返回空元组 |
 
 **check 规则**：
 1. `actor == Scope()`（platform admin）→ 全局通过
@@ -381,16 +384,31 @@ space 元数据、space policy、成员、用量与 offboarding 状态管理。
 
 `enabled=false` 优先于其他层级键。修改策略不回写已有 unit，不触发隐式重建。未知值或越界值抛 `PolicyError`。
 
+#### 群体记忆带来的控制层变更（F07）
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 新增算子 `MembershipResolver`（`membership.py`） | 一次读取空间授权事实（元数据 + 已滤除过期记录的成员表）并缓存，向鉴权点提供同一份快照；另提供主体到空间的反查与缓存失效 | 已落地，消费方是空间感知判定实现 |
+| 新增子包 `collective/` | 三个非算子模块，均不含判据、不读 `identity`。`routing.py`：结论直写路径的归属判定调用点，判定算子在构建层、判定输入由 API 层的鉴权点构造，二者之间的调用按 S02 的分层边界落在本层；不接判权回调——`RouteContext.candidates` 是 API 层判权后给出的成品集合。`write_targets.py`：写入候选空间集合的计算，接判权回调（`identity` 由 API 层闭包捕获，不出现在本层签名内），不抛权限异常，见不变量 22。`cross_space_recall.py`：跨空间召回的取数上界摊配、扇出与合并，接 `recall` 回调与已判权的空间目标（含逐空间谓词），只 import `retrieval/cross_space.py` 的三个纯函数、不持有引擎；空间级扇出失败单独返回，不并进 `merged.errors`。带实现的模块收在子包而非顶层，以保持「顶层只定义抽象接口」 | 已落地 |
+| `SpaceManager` 新增 `spaces_for` | 主体到空间的反查，取代 `list` 的全 keyspace 遍历。与 `list` 是同一批成员关系的两个查询方向：`list` 按 org 枚举空间，`spaces_for` 按主体反查。KV 没有二级索引，实现须另建一份按主体组织的派生索引并在成员与归属的增删处同步维护，超集语义（允许多给、不允许遗漏）。与 `list` 同为裸算子，不含鉴权 | 已落地 |
+| `SpaceManager` 改造 | 创建时按 `SpaceSpec.owner` 登记归属主体；成员表由逐成员键改单键（破坏性，须回填）；`update` 增状态机校验；拒绝主体两维同时非空的成员记录；四处索引维护 | 已落地 |
+| `types.py` 加字段 | `SpaceMember` 增两轴角色（枚举类型自安全层导入）、`SpaceInfo` 增归属登记、`SpaceSpec` 增创建者身份，另新增空间授权事实快照类型 | 已落地 |
+| `Scheduler` 两个实现 | `JobInfo.mode` 优先取 `Job.mode` 声明的演进模式，无声明才回落任务类名；一次性任务、定时注册、到点生成的实例三条路径同口径 | 已落地，取值域变更见 S02 契约变更表 |
+| `PermissionManager` | 在上游安全模块合入后退出请求授权路径，只服务兼容测试。授权判定迁至安全层的 `Authorizer` 实现，本层不再承载判定 | 规划中，随上游合入 |
+
+**两轴角色枚举、三张动作矩阵与身份推导比较函数不落本层**，落 `common/security/`：其元素类型取上游 12 值 `Action`，而本层 `types.py` 已有五值 `Action` 且 `Grant.actions` 仍在使用，同一模块内两者无法共存；更根本的是这些常量与函数的消费方跨安全层、API 层与控制层三侧，落本层即安全层反向依赖控制层。本层只消费它们作为成员记录的字段类型。
+
 ## 数据结构
 
 ### 控制层数据类型（`types.py`）
 
 | 类型 | 性质 | 关键字段 |
 |------|------|----------|
-| `Action` | 枚举 | READ / WRITE / UPDATE / DELETE / SHARE |
+| `Action` | 安全域兼容再导出 | 与 `common.security.types.Action` 为同一对象；旧 PermissionManager 运行路径仅处理 READ / WRITE / UPDATE / DELETE / SHARE |
 | `PermissionContext` | dataclass | resource_type / memory_type / pipeline / unit_id / scope / tags / metadata |
-| `Grant` | dataclass | grantor(Scope) / grantee(Scope) / actions(list[Action]) / expires_at |
+| `Grant` | 安全域兼容再导出 | 与 `common.security.types.Grant` 为同一对象，不另建四字段选择子 |
 | `Channel` | 枚举 | HOT / BACKGROUND |
+| `WriteTargets` | frozen dataclass | candidates(tuple[Scope]) / fallback(Scope \| None，为 None 即兜底落点不在候选集内，由 PEP 拒绝) |
 | `JobStatus` | 枚举 | PENDING / RUNNING / SUCCEEDED / FAILED / CANCELLED |
 | `JobInfo` | dataclass | id / channel / mode / scope / status / detail；目标增加 result |
 | `MemoryListResult` | dataclass | items: list[MemoryUnit] / count: int（分页前匹配总数） |
@@ -404,7 +422,7 @@ space 元数据、space policy、成员、用量与 offboarding 状态管理。
 | `SpaceSpec` | dataclass | org / space / display_name / principal_path / policy / metadata |
 | `SpaceInfo` | dataclass | org / space / display_name / status / principal_path / policy / metadata / created_at / archived_at |
 | `SpacePatch` | dataclass | display_name / status / principal_path / policy / metadata |
-| `SpaceMember` | dataclass | scope / role / created_at / expires_at |
+| `SpaceMember` | dataclass | scope / role / content_role / governance_role / created_at / expires_at（两轴角色为判定依据，`role` 保留但判定不再读取） |
 | `SpaceUsage` | dataclass | org / space / memory_count / message_count / index_count / storage_bytes / audit_count |
 | `SpaceDeleteResult` | dataclass | org / space / deleted_counts / status / audit_event_id |
 
@@ -434,7 +452,7 @@ space 元数据、space policy、成员、用量与 offboarding 状态管理。
 每个算子对应一个 `*_impl/` 子目录：
 
 ```
-src/control/<算子>_impl/
+jiuwen_memory/control/<算子>_impl/
     __init__.py             # import 实现模块，触发自注册
     <impl_class_snake>.py   # 具体实现 + 尾部 @Producer.register("name")
 ```
@@ -460,9 +478,10 @@ src/control/<算子>_impl/
 | S05-construction | Engine/Scheduler 驱动构建层 IndexBuilder/Evolver；演进逻辑由构建层执行 |
 | S06-storage | 控制层经 IndexBuilder 写正排与派生索引，直接调用 Storage 只读（get/list/scopes）；LifecycleManager/Governor 的目标操作按显式 Scope 点查或枚举，只有 sweep/offboarding 这类全局管理任务使用 `kv.scopes()` |
 | S07-common | 控制层消费 `MemoryUnit`、`AuditEvent`、错误类型等公共结构 |
+| F07-collective-memory | 两轴角色、归属登记、空间授权事实快照落本层类型；`MembershipResolver` 是本层新增算子，`SpaceManager` 增 `spaces_for` 反查；授权判定迁出本层 |
 | architecture.md §3.1 | MemoryUnit 数据模型（lifecycle / temporal / supersedes / provenance）由 `common/type_def` 定义，控制层消费 |
 | architecture.md §8 | 演进调度（EvolveMode / Channel）映射到 Scheduler 双通道 + Evolver 四阶段 |
-| architecture.md §9 | `src/api/MemoryAPI` 是控制层的薄封装 + PEP；数据面委托 Engine，管理面直达各算子 |
+| architecture.md §9 | `jiuwen_memory/api/MemoryAPI` 是控制层的薄封装 + PEP；数据面委托 Engine，管理面直达各算子 |
 | architecture.md §12 | 横切可观测/治理——Governor.audit 消费 `common/audit/AuditLogger` 记录的审计事件 |
 | architecture.md §13.4 | PolicyManager 是少量已知策略键的 admin 落点；六类动态配置见 S08 ConfigSource |
 | S08-config | ConfigSource 与 PolicyManager 分工 |

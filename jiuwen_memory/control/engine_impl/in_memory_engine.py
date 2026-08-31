@@ -29,6 +29,7 @@ from jiuwen_memory.common.type_def import (
     Scope,
     Segment,
 )
+from jiuwen_memory.common.type_def.memory_filter import matches_memory_unit
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
 from jiuwen_memory.construction.evolver import Evolver, EvolverProducer
@@ -169,6 +170,8 @@ def _matches_delete_selector(unit: MemoryUnit, selector: DeleteSelector) -> bool
         t_message = unit.temporal.t_message
         if t_message is None or t_message >= selector.before:
             return False
+    if selector.filters is not None and not matches_memory_unit(unit, selector.filters):
+        return False
     return True
 
 
@@ -241,7 +244,7 @@ class InMemoryEngine(MemoryEngine):
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
         _ensure_local_scope(scope)
-        # 调用级开关（经 metadata 下推，对齐 mem0 add(infer=True)）：
+        # 调用级开关（经 metadata 下推，对齐常见记忆层 add(infer=True)）：
         # - procedural=true：过程记忆抽取——原文不落 KV，evolver 让 extractor 把本轮汇总成
         #   1 条 PROCEDURAL 执行历史，落 /memory/ 建索引；不走去重、不收集 context。
         # - infer=true：同步抽取——原文落 /messages/（不建索引），evolver 收集最近10条原文
@@ -307,7 +310,11 @@ class InMemoryEngine(MemoryEngine):
             result = await asyncio.to_thread(
                 evolver.evolve, units, EvolveMode.EXTRACT
             )
-            derived = [self._load(scope, uid) for uid in result.created_ids]
+            # 落盘产物优先取回传对象：归属判定改写派生单元的 scope 之后，按入参 scope
+            # 回读真源会落空。回传为空时回落按 id 回读，兼容不回填该字段的 Evolver 实现。
+            derived = list(result.created_units) or [
+                self._load(scope, uid) for uid in result.created_ids
+            ]
             logger.info(
                 "Engine.write procedural=True: %d originals, %d derived added, scope=%s",
                 len(units),
@@ -329,7 +336,11 @@ class InMemoryEngine(MemoryEngine):
             result = await asyncio.to_thread(
                 evolver.evolve, units, EvolveMode.EXTRACT
             )
-            derived = [self._load(scope, uid) for uid in result.created_ids]
+            # 落盘产物优先取回传对象：归属判定改写派生单元的 scope 之后，按入参 scope
+            # 回读真源会落空。回传为空时回落按 id 回读，兼容不回填该字段的 Evolver 实现。
+            derived = list(result.created_units) or [
+                self._load(scope, uid) for uid in result.created_ids
+            ]
             logger.info(
                 "Engine.write infer=True: %d originals, %d derived added, scope=%s",
                 len(units),
@@ -573,11 +584,14 @@ class InMemoryEngine(MemoryEngine):
 
     async def delete(self, selector: DeleteSelector) -> list[str]:
         selector_is_empty = (
-            not selector.unit_ids and not selector.tags and selector.before is None
+            not selector.unit_ids
+            and not selector.tags
+            and selector.before is None
+            and selector.filters is None
         )
         if selector_is_empty:
             logger.warning("Engine.delete rejected empty selector")
-            raise ValidationError("DeleteSelector requires unit_ids, tags, or before")
+            raise ValidationError("DeleteSelector requires unit_ids, tags, before, or filters")
 
         if selector.scope is not None:
             _ensure_local_scope(selector.scope)

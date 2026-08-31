@@ -21,6 +21,7 @@ def register_controllers() -> None:
     import_module("jiuwen_memory.control.engine_impl")
     import_module("jiuwen_memory.control.governance_impl")
     import_module("jiuwen_memory.control.lifecycle_impl")
+    import_module("jiuwen_memory.control.membership_impl")
     import_module("jiuwen_memory.control.permission_impl")
     import_module("jiuwen_memory.control.policy_impl")
     import_module("jiuwen_memory.control.scheduler_impl")

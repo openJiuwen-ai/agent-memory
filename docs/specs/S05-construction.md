@@ -5,8 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-08-24 |
+| 最近一次修订日期 | 2026-08-25 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
+| 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
 
 ## Metadata 派生与索引契约
@@ -37,7 +38,10 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 ## 不变量
 
 1. **落盘由本层负责**：接入层产出 MemoryUnit 后，记忆本体的写入由本层完成——统一经 `IndexBuilder`，由其内部调用 Storage。
-2. **索引是可重建派生**：索引全部可从真源重建，IndexBuilder.rebuild() 是非破坏式保障。例外：实体反向索引路（EntityIndexBuilder）`rebuild()` 当前是 no-op——entity 索引不支持从 KVStore 全量重建，需重建时靠定期清理 + 重新写入累积（已知缺口，见 [F06](../features/retrieval/F06-entity-recall-channel.md)）。
+2. **索引是可重建派生（目标契约）**：索引应全部从真源重建，`IndexBuilder.rebuild()` 应提供
+   非破坏式恢复保障。当前实现中的 Forward/Fulltext/Vector/Hybrid/Unified/Entity Builder
+   `rebuild()` 均为 no-op，不能据此宣称已具备“删索引不丢数据”的恢复能力；该缺口需要按本
+   spec 的目标契约补齐，而不是将 Entity 视为唯一例外。
 3. **provenance 回指来源**：派生记忆单元的 `provenance` 字段记录由哪些 unit 演进而来。
 4. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
 5. **所有算子必须实现 `operator_type()` 和 `health()`**：继承自 `ConstructionOperator`。
@@ -200,6 +204,36 @@ Extractor。
 条目单独跳过，其余条目在结构校验完成后写入。Evolver 在 EXTRACT/CONSOLIDATE 抽取
 （升华）后、去重落盘前调用。
 
+### Router（`router.py`）
+
+归属判定算子：逐条决定派生记忆落哪个空间、打哪些收窄维标签。与 `LayerAnnotator` 同构——契约在接口层、实现自注册、不注入即整段跳过。契约细节见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)。
+
+| 方法 | 签名 | 语义 |
+|------|------|------|
+| `route` | `(units: list[MemoryUnit], ctx: RouteContext) -> list[RouteDecision]` | 逐条给出目标空间、标签、命中类别与是否丢弃 |
+
+| 约束 | 内容 |
+|---|---|
+| 落点范围 | 只在 `ctx.candidates`（由 API 层按写权算出的候选空间）内选择，判定不可扩权 |
+| 插入点 | 抽取之后、分层标注与去重之前。晚于去重会导致在源空间比对、在目标空间落盘 |
+| 上下文通道 | `RouteContext` 经源单元的瞬态 metadata 键传入，存储层写入前移除、不落盘 |
+| 生效范围 | 构建层插入点覆盖同步抽取与过程记忆两条路径；结论直写路径没有抽取环节，由 API 层把入参内容整体作为一条候选调本算子；后台演进通道从存储重读原文，取不到上下文键，不判定 |
+| 失败处置 | 未装配即原样透传；判定异常时全批落 fallback 空间，不阻断写入 |
+| 调用粒度 | 每批一次模型调用，不逐条调用 |
+
+两个落盘不变量由本模块的公共函数承担，不放进任何 `Router` 实现内部——放实现内则换一个实现即可能漏掉，而漏掉的失效方向都是放行或静默收窄：
+
+| 函数 | 作用 |
+|---|---|
+| `enforce_sanitized` | 目标类别声明「不含主体标识」时做一次确定性检查，命中即改落 fallback；不改写内容，也不阻断整批 |
+| `with_all_tag_keys` | 补齐本次未出现的全部收窄维标签键为空串。检索侧的集合谓词在键缺失时判为不匹配，靠「不写键表示默认值」会静默收窄 |
+
+两处调用点：本层的判定应用处与 API 层的单条判定入口。
+
+配套数据类：`RouteContext` / `RouteDecision` / `MemoryClass` / `NarrowDim` / `SpaceNaming`，判定表由 `router` 配置命名空间声明，加载期十四条校验不通过即装配失败。解析产物由实现经 `Router.table` 向上暴露，API 层不另读一次配置。
+
+`route_batch` 是两处调用点共用的入口：调判定、套两个落盘不变量、并对「落点不在候选集内」复判一次。三种情形一律落 fallback——未装配、判定抛异常、落点越出候选集；`apply_decisions` 随后把结果写回单元（改 scope、写判定标签与 `memory_class`、剔除判为丢弃的、剥除判定上下文的瞬态键）。
+
 ### IndexBuilder（`index_builder.py`）
 
 多形式索引构建与维护。
@@ -214,7 +248,7 @@ Extractor。
 | `build` | `(units, *, mode: IndexWriteMode = ALL) -> None` | 建立已启用的各形式索引；`RETRIEVAL_ONLY` 表示记忆本体已存在、只补建检索索引，`FORWARD_ONLY` 表示只交付本体 |
 | `update` | `(units, *, mode: IndexWriteMode = ALL) -> None` | 更新各形式索引；`FORWARD_ONLY` 表示只回写记忆本体、检索索引不动，`RETRIEVAL_ONLY` 表示只刷新检索索引 |
 | `remove` | `(units, *, mode: IndexRemoveMode = HARD) -> None` | 按每个 MemoryUnit 自带 Scope 删除索引（幂等）；`SOFT` 为软删除——只移出检索索引（search/recall 不再召回），记忆本体保留、get/list 仍可读；`HARD` 物理删除本体与全部索引 |
-| `rebuild` | `() -> None` | 从记忆本体全量重建派生索引（删索引不丢数据的保障）；重建时也重新投影 hierarchy metadata |
+| `rebuild` | `() -> None` | **目标契约**：从记忆本体全量重建派生索引（删索引不丢数据的保障）；重建时也重新投影 hierarchy metadata。当前实现尚未提供该能力。 |
 
 写接口枚举 `IndexWriteMode`（`ALL` / `FORWARD_ONLY` / `RETRIEVAL_ONLY`）表达写入范围，
 删除接口枚举 `IndexRemoveMode`（`SOFT` / `HARD`）表达删除语义，均归口
@@ -440,6 +474,8 @@ class EvolveResult:
 | `FORGET` | 不改其他节点 kind/role/span；断开直接父边和全部直接子边，不级联删除父或任何子孙 |
 | `HIERARCHY` | 委托 HierarchyComposer 创建/替换父节点并一致回写直接子边 |
 
+- `created_units: list[MemoryUnit]` — 落盘产物本身。判定改写派生单元的 scope 后，调用方按原 scope 回读真源会落空，只有回传实际落盘的对象才取得到。新增与版本替换两条分支都回填；引擎的 `write` 优先取该字段，为空时才回落按 id 回读，以兼容不回填它的第三方 `Evolver` 实现。
+
 ### Dedup（`dedup.py`）
 
 去重召回，由 Evolver 实现（`OrchestratingEvolver._dedup_batch` / `DynamicEvolver._consolidate_step`）及 infer 上下文收集调用。召回 + 阈值过滤 + 加载 + 聚合取 max 全在实现内完成；判定与落盘动作归调用方（evolver）。
@@ -507,7 +543,7 @@ jiuwen_memory/construction/<算子>_impl/
     <impl_class_snake>.py   # 具体实现 + 尾部 @XxxProducer.register("name")
 ```
 
-各 Producer：`ExtractorProducer` / `AbstractorProducer` / `AssociatorProducer` / `ClassifierProducer` / `IndexBuilderProducer` / `DedupProducer` / `EvolverProducer`。
+各 Producer：`ExtractorProducer` / `AbstractorProducer` / `AssociatorProducer` / `ClassifierProducer` / `IndexBuilderProducer` / `DedupProducer` / `EvolverProducer`；`RouterProducer`（可选装配，首版只有模型实现）。
 注册由 `construction.bootstrap.register_constructors` 统一触发。
 
 > 当前有哪些实现、文件职责、行为铁律归 [`jiuwen_memory/construction/AGENTS.md`](../../jiuwen_memory/construction/AGENTS.md)，本 spec 只列契约。
@@ -522,4 +558,5 @@ jiuwen_memory/construction/<算子>_impl/
 | S06-storage | 本层通过注入的 Store 抽象做真源与索引持久化 |
 | S07-common | 本层消费 Chunker/Tokenizer/Embedder/FeatureExtractor/LLM/Reranker 共享插件 |
 | S08-config | Prompt 文本与模型晚绑定经 ConfigSource；业务入参只传 prompt key |
+| F07-collective-memory | `Router` 是本层承担的归属判定算子；判定表配置、生效范围与失败方向由该规约定义 |
 | architecture.md §4/§6/§8 | 分层记忆结构 / 多形式索引 / 记忆自演进 |

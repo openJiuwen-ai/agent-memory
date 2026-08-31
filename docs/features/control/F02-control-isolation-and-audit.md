@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-02 |
-| 影响范围 | `bootstrap/core/handler.py`、`src/api/`、`src/control/`、`src/storage/`、`src/common/audit/`、`docs/specs/S03-control.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md` |
+| 影响范围 | `bootstrap/core/handler.py`、`jiuwen_memory/api/`、`jiuwen_memory/control/`、`jiuwen_memory/storage/`、`jiuwen_memory/common/audit/`、`docs/specs/S03-control.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md` |
 | 测试基线 | `ruff check` 通过；相关单测通过 |
 | Refs | `docs/design/mem0-control-layer-gap-analysis.md` |
 

@@ -12,10 +12,6 @@ from datetime import datetime, timezone
 
 from jiuwen_memory.common.errors import NotFoundError
 from jiuwen_memory.common.log import get_logger
-from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, Scope
-from jiuwen_memory.common.type_def.memory_codec import loads
-from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
-from jiuwen_memory.construction.evolver import EvolverProducer
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.jobs import Job
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
@@ -41,7 +37,9 @@ class InProcessScheduler(Scheduler):
         info = JobInfo(
             id=job_id,
             channel=channel,
-            mode=type(job).__name__,
+            # 优先取演进模式：鉴权点按它决定任务入口要哪个动作。无演进模式的任务
+            # 回落任务类名，保持该字段对既有读取方非空。
+            mode=job.mode or type(job).__name__,
             scope=job.scope,
             status=JobStatus.PENDING,
         )

@@ -155,7 +155,12 @@ class MilvusGraphFusionStore(FusionStore):
         # ① Milvus 向量召回种子
         seeds = self._vec.search(
             scope,
-            VectorQuery(vector=query.vector, top_k=query.top_k, filters=query.scalar_filters),
+            VectorQuery(
+                vector=query.vector,
+                top_k=query.top_k,
+                filters=query.scalar_filters,
+                extensions=dict(query.extensions),
+            ),
         )
         # ② 图扩展邻居（按跳数衰减），与种子合并去重、取最大分
         merged: dict[str, float] = self._expand_neighbors(scope, seeds)

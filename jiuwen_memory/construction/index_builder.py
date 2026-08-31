@@ -4,7 +4,7 @@
 在各粒度记忆之上构建/更新索引（文档/关键词/向量/图，按配置启用）。
 索引是可配置的检索结构、并非记忆固有结构，全部可从真源重建。
 本算子负责构建**逻辑**（调用 Chunker/Tokenizer/Embedder 等共享插件
-生成索引投影），持久化由注入的 ``src/storage`` 后端承担——构建与
+生成索引投影），持久化由注入的 ``jiuwen_memory/storage`` 后端承担——构建与
 存储经此解耦。构建各索引记录时把来源 ``MemoryUnit.scope`` 落到记录的
 专用 ``scope`` 字段（``VectorRecord``/``Document``/``Node``/``FusionRecord``
 等），使检索得以按 scope 原生隔离。

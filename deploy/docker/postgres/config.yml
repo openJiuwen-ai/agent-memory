@@ -133,3 +133,4 @@ memory_api:
         tokenizer: default
         embedder: default
         llm: { target: echo }
+        rewrite_enabled: false

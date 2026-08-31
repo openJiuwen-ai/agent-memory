@@ -14,13 +14,19 @@ from .memory import MemoryUnit
 
 
 class RecallChannel(str, Enum):
-    """逻辑召回通道；物理分层索引不新增通道。"""
+    """逻辑召回通道；物理分层索引不新增通道。
+
+    ``SPACE`` 不是召回通道，是跨空间检索里「某个空间整体召回失败」的标记位：该失败不属于
+    任何一个通道，而 :class:`ChannelError` 是结果对象上唯一的结构化错误载体。它只出现在
+    ``RetrievalResult.errors`` 里，不进候选与融合。
+    """
 
     DOCUMENT = "document"
     KEYWORD = "keyword"
     VECTOR = "vector"
     GRAPH = "graph"
     TEMPORAL = "temporal"
+    SPACE = "space"
 
 
 @dataclass

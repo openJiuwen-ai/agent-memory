@@ -15,6 +15,7 @@ from __future__ import annotations
 import pytest
 
 from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.tokenizer.tokenizer_impl import TokenizerProducer
 from jiuwen_memory.common.tokenizer.tokenizer_impl.jieba_tokenizer import JiebaTokenizer
 
@@ -194,7 +195,9 @@ def test_assemble_with_jieba():
     scope = Scope(org="test", user="alice", agent="a1", session="s1")
     actor = Scope(org="test", user="alice")
     # add → jieba 分词建索引 → search
-    units = api.add("用户偏好简洁回答", scope, source=Modality.TEXT, identity=actor)
+    units = api.add(
+        "用户偏好简洁回答", scope, source=Modality.TEXT, security=legacy_request_context(actor)
+    )
     assert len(units) == 1
-    result = api.search("偏好", Context(scope), identity=actor, top_k=10)
+    result = api.search("偏好", Context(scope), security=legacy_request_context(actor), top_k=10)
     assert len(result.items) > 0
