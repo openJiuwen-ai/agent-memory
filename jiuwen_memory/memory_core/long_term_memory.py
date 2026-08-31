@@ -121,6 +121,7 @@ class LongTermMemory(metaclass=Singleton):
         backends (KV store, semantic store, database store).
     """
     DEFAULT_VALUE: str = "__default__"
+    _PAGINATION_BATCH_SIZE = 100
     SCOPE_CONFIG_KEY: str = "memory_scope_config"
 
     def __init__(self):
@@ -2207,6 +2208,7 @@ class LongTermMemory(metaclass=Singleton):
 
         Uses the KV scan path (not vector pushdown) to ensure correct total.
         """
+        self._validate_pagination(page_size=page_size, page_idx=page_idx)
         if not self._validate_id(event_type=LogEventType.MEMORY_RETRIEVE, scope_id=scope_id):
             memory_logger.error(
                 "Invalid scope_id format.",
@@ -2269,7 +2271,11 @@ class LongTermMemory(metaclass=Singleton):
         List user memories with pagination support.
 
         Retrieves memories in chronological order, suitable for displaying
-        conversation history or memory browsing interfaces.
+        conversation history or memory browsing interfaces. Page boundaries
+        are deterministic while the underlying data set is unchanged. This
+        page-number API does not provide snapshot isolation across concurrent
+        writes or deletes; callers needing that guarantee require a cursor or
+        snapshot-token API.
 
         Args:
             user_id: User identifier to search within
@@ -2286,6 +2292,7 @@ class LongTermMemory(metaclass=Singleton):
         Returns:
             List of memory information
         """
+        self._validate_pagination(page_size=page_size, page_idx=page_idx)
         if not self._validate_id(event_type=LogEventType.MEMORY_RETRIEVE, scope_id=scope_id):
             memory_logger.error(
                 "Invalid scope_id format.",
@@ -2319,17 +2326,49 @@ class LongTermMemory(metaclass=Singleton):
                                                                   filters=filters)
             return self._build_mem_info_list(search_data)
 
-        start_idx = page_size * (page_idx - 1)
-        fetch_size = start_idx + page_size
-        search_data = await self.search_manager.list_user_mem(user_id=user_id, scope_id=scope_id,
-                                                              nums=fetch_size, pages=1,
-                                                              mem_type=None,
-                                                              filters=filters)
-        mem_results = self._build_mem_info_list(search_data)
-        mem_results.extend(await self._list_middle_memories(user_id=user_id, scope_id=scope_id,
-                                                            limit=fetch_size))
-        mem_results.sort(key=self._mem_info_timestamp_sort_key)
-        return mem_results[start_idx:start_idx + page_size]
+        end_idx = page_size * page_idx
+        mem_results = await self._list_indexed_memories_until(
+            user_id=user_id, scope_id=scope_id, filters=filters, limit=end_idx,
+        )
+        mem_results.extend(await self._list_middle_memories_until(
+            user_id=user_id, scope_id=scope_id, limit=end_idx,
+        ))
+        mem_results.sort(key=self._mem_info_chronological_sort_key)
+        start_idx = end_idx - page_size
+        return mem_results[start_idx:end_idx]
+
+    async def _list_indexed_memories_until(
+        self,
+        user_id: str,
+        scope_id: str,
+        filters: "FilterGroup | None",
+        limit: int,
+    ) -> list[MemInfo]:
+        """Read at most ``limit`` indexed memories in fixed-size pages."""
+        if limit <= 0:
+            return []
+        offset = 0
+        results_by_id: dict[str, MemInfo] = {}
+        while len(results_by_id) < limit:
+            batch_limit = min(self._PAGINATION_BATCH_SIZE, limit - len(results_by_id))
+            search_data = await self.search_manager.list_user_mem_by_offset(
+                user_id=user_id,
+                scope_id=scope_id,
+                offset=offset,
+                limit=batch_limit,
+                mem_type=None,
+                filters=filters,
+            )
+            batch = self._build_mem_info_list(search_data)
+            new_count = 0
+            for mem_info in batch:
+                if mem_info.mem_id not in results_by_id:
+                    results_by_id[mem_info.mem_id] = mem_info
+                    new_count += 1
+            if len(batch) < batch_limit or new_count == 0:
+                break
+            offset += len(batch)
+        return list(results_by_id.values())
 
     @staticmethod
     def _build_mem_info_list(search_data: list[dict] | None) -> list[MemInfo]:
@@ -2350,13 +2389,24 @@ class LongTermMemory(metaclass=Singleton):
         return mem_results
 
     @staticmethod
-    def _mem_info_timestamp_sort_key(mem_info: MemInfo) -> float:
+    def _mem_info_chronological_sort_key(mem_info: MemInfo) -> tuple[float, str]:
         if mem_info.timestamp is None:
-            return 0.0
-        if mem_info.timestamp.tzinfo is None:
-            return mem_info.timestamp.replace(
+            timestamp = 0.0
+        elif mem_info.timestamp.tzinfo is None:
+            timestamp = mem_info.timestamp.replace(
                 tzinfo=datetime.now(timezone.utc).astimezone().tzinfo).timestamp()
-        return mem_info.timestamp.timestamp()
+        else:
+            timestamp = mem_info.timestamp.timestamp()
+        return timestamp, mem_info.mem_id
+
+    @staticmethod
+    def _validate_pagination(page_size: int, page_idx: int) -> None:
+        if page_size <= 0 or page_idx < 1:
+            raise build_error(
+                StatusCode.MEMORY_GET_MEMORY_EXECUTION_ERROR,
+                memory_type="all",
+                error_msg="page_size must be positive and page_idx must be at least 1",
+            )
 
     async def _list_middle_memories_by_page(
             self,
@@ -2365,19 +2415,52 @@ class LongTermMemory(metaclass=Singleton):
             page_size: int,
             page_idx: int,
     ) -> list[MemInfo]:
-        start_idx = page_size * (page_idx - 1)
-        fetch_size = start_idx + page_size
-        mem_results = await self._list_middle_memories(user_id=user_id, scope_id=scope_id, limit=fetch_size)
-        return mem_results[start_idx:start_idx + page_size]
+        offset = page_size * (page_idx - 1)
+        return await self._list_middle_memories_page(
+            user_id=user_id, scope_id=scope_id, offset=offset, limit=page_size,
+        )
 
-    async def _list_middle_memories(self, user_id: str, scope_id: str, limit: int) -> list[MemInfo]:
+    async def _list_middle_memories_until(
+        self,
+        user_id: str,
+        scope_id: str,
+        limit: int,
+    ) -> list[MemInfo]:
+        """Read at most ``limit`` middle memories in fixed-size pages."""
+        if limit <= 0:
+            return []
+        offset = 0
+        results_by_id: dict[str, MemInfo] = {}
+        while len(results_by_id) < limit:
+            batch_limit = min(self._PAGINATION_BATCH_SIZE, limit - len(results_by_id))
+            batch = await self._list_middle_memories_page(
+                user_id=user_id, scope_id=scope_id, offset=offset, limit=batch_limit,
+            )
+            new_count = 0
+            for mem_info in batch:
+                if mem_info.mem_id not in results_by_id:
+                    results_by_id[mem_info.mem_id] = mem_info
+                    new_count += 1
+            if len(batch) < batch_limit or new_count == 0:
+                break
+            offset += len(batch)
+        return list(results_by_id.values())
+
+    async def _list_middle_memories_page(
+        self,
+        user_id: str,
+        scope_id: str,
+        offset: int,
+        limit: int,
+    ) -> list[MemInfo]:
         if limit <= 0 or not self.message_manager:
             return []
         middle_scope_id = f"middle_term_memory:{scope_id}:{user_id}"
-        middle_messages = await self.message_manager.get(
+        middle_messages = await self.message_manager.get_page(
             user_id=user_id,
             scope_id=middle_scope_id,
-            message_len=limit,
+            offset=offset,
+            limit=limit,
         )
         return [
             MemInfo(

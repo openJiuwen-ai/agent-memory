@@ -153,6 +153,37 @@ class TestSqlMessageStore:
         assert messages_with_metadata[3][0].content == "Response 2"
 
     @ pytest.mark.asyncio
+    async def test_get_messages_stable_offset_pagination(self, sql_message_store):
+        timestamp = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc)
+        message_adds = [
+            {
+                'message': UserMessage(content=f"Message {idx}"),
+                'user_id': "user1",
+                'scope_id': "scope1",
+                'session_id': "session1",
+                'timestamp': timestamp,
+            }
+            for idx in range(4)
+        ]
+        message_ids = await sql_message_store.add_messages(message_adds)
+        message_filter = {
+            'user_id': "user1",
+            'scope_id': "scope1",
+            'session_id': "session1",
+        }
+
+        first_page = await sql_message_store.get_messages(
+            message_filter, limit=2, offset=0, order_direction="asc",
+        )
+        second_page = await sql_message_store.get_messages(
+            message_filter, limit=2, offset=2, order_direction="asc",
+        )
+
+        returned_ids = [metadata.message_id for _, metadata in first_page + second_page]
+        assert returned_ids == sorted(message_ids)
+        assert len(returned_ids) == len(set(returned_ids)) == 4
+
+    @ pytest.mark.asyncio
     async def test_update_message(self, sql_message_store):
         message = UserMessage(content="Original content")
         message_add = {

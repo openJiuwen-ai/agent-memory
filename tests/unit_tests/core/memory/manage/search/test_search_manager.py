@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+from datetime import datetime, timezone
 from typing import Any
 import pytest
 from jiuwen_memory.memory_core.manage.search.search_manager import SearchManager
@@ -96,10 +97,14 @@ class MockMemoryIndex(BaseMemoryIndex):
 
     async def list_memories(self, user_id: str, scope_id: str, offset: int = 0, limit: int = 100,
                             mem_types: list[str] | None = None,
-                            *, filters=None) -> list[MemoryDoc]:
+                            *, filters=None, order_direction: str = "desc") -> list[MemoryDoc]:
         if user_id not in self._data or scope_id not in self._data[user_id]:
             return []
-        docs = sorted(self._data[user_id][scope_id].values(), key=lambda d: d.timestamp, reverse=True)
+        docs = sorted(
+            self._data[user_id][scope_id].values(),
+            key=lambda d: (d.timestamp, d.id),
+            reverse=order_direction.lower() != "asc",
+        )
         # Honor the NE("blacklisted", True) default-injected by the list
         # entrypoint when filters is non-None.
         if filters is not None:
@@ -118,6 +123,23 @@ class MockMemoryIndex(BaseMemoryIndex):
 
 
 class TestSearchManager:
+    @pytest.mark.asyncio
+    async def test_list_user_mem_by_offset_returns_oldest_first_page(self):
+        memory_index = MockMemoryIndex()
+        search_manager = SearchManager({}, b"test_key_32_bytes_long_enough_12", memory_index)
+        await memory_index.add_memories("u1", "s1", [
+            MemoryDoc(id="b", text="newer", type="summary"),
+            MemoryDoc(id="a", text="older", type="summary"),
+        ])
+        memory_index._data["u1"]["s1"]["a"].timestamp = datetime(2026, 7, 21, 11, 0, tzinfo=timezone.utc)
+        memory_index._data["u1"]["s1"]["b"].timestamp = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc)
+
+        result = await search_manager.list_user_mem_by_offset(
+            user_id="u1", scope_id="s1", offset=0, limit=1,
+        )
+
+        assert [item["id"] for item in result] == ["a"]
+
     @pytest.mark.asyncio
     async def test_get_user_variable_with_empty_var_name(self):
         # Create necessary dependencies

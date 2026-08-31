@@ -80,6 +80,7 @@ class BaseMessageStore(ABC):
         limit: int = 10,
         order_by: str = "timestamp",
         order_direction: str = "desc",
+        offset: int = 0,
     ) -> List[Tuple[BaseMessage, MessageMetadata]]:
         """
         Get messages by filter with pagination
@@ -95,6 +96,7 @@ class BaseMessageStore(ABC):
             limit: Maximum number of results
             order_by: Field to sort by
             order_direction: Sort direction ("asc" or "desc")
+            offset: Number of matching messages to skip
 
         Returns:
             List[Tuple[BaseMessage, MessageMetadata]]: List of (message object, message metadata) tuples

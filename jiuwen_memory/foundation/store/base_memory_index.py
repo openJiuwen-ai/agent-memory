@@ -221,6 +221,7 @@ class BaseMemoryIndex(ABC):
         mem_types: list[str] | None = None,
         *,
         filters: Optional[FilterGroup] = None,
+        order_direction: str = "desc",
     ) -> list[MemoryDoc]:
         """
         Retrieve a paginated list of memory documents for a specific user and scope.
@@ -240,6 +241,7 @@ class BaseMemoryIndex(ABC):
             filters: Optional backend-neutral scalar filters (FilterGroup DSL).
                 When provided, backends translate this to their native scalar
                 filter expression; pure-scalar pagination (no ANN) is preferred.
+            order_direction: Timestamp order, either ``asc`` or ``desc``.
 
         Returns:
             list[MemoryDoc]: A list of memory documents matching the criteria.

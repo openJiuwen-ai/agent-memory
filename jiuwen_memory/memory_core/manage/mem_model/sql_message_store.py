@@ -259,7 +259,7 @@ class SqlMessageStore(BaseMessageStore):
         Returns:
             List[Tuple[BaseMessage, MessageMetadata]]: List of (message object, message metadata) tuples
         """
-        # Fast path: no time-range filter, no offset, and no exclude_scopes ->
+        # Fast path: no time-range filter, no offset, descending order, and no exclude_scopes ->
         # keep the original equality-only code path so data-plane callers are untouched.
         # exclude_scopes requires a NOT IN condition, which get_with_sort
         # does not support — must take the range path.
@@ -268,7 +268,8 @@ class SqlMessageStore(BaseMessageStore):
             or self._parse_ts(message_filter.get('end_time')) is not None
         )
         has_exclude = bool(message_filter.get('exclude_scopes'))
-        if not has_time_filter and offset <= 0 and not has_exclude:
+        if (not has_time_filter and offset <= 0 and not has_exclude
+                and order_direction.lower() == "desc"):
             filters = {}
             if message_filter.get('user_id'):
                 filters['user_id'] = message_filter['user_id']
@@ -301,7 +302,8 @@ class SqlMessageStore(BaseMessageStore):
         if clauses:
             stmt = stmt.where(and_(*clauses))
         order_col = table.c[order_by]
-        stmt = stmt.order_by(desc(order_col) if order_direction.lower() == "desc" else asc(order_col))
+        primary_order = desc(order_col) if order_direction.lower() == "desc" else asc(order_col)
+        stmt = stmt.order_by(primary_order, asc(table.c.message_id))
         if offset > 0:
             stmt = stmt.offset(offset)
         stmt = stmt.limit(limit)

@@ -286,6 +286,23 @@ class TestListMemoriesPushdownPath:
         assert len(page) == 1
         assert page[0].blacklisted is False
 
+    @pytest.mark.asyncio
+    async def test_ascending_order_uses_stable_kv_pagination(self, index):
+        await index.add_memories("u", "s", [
+            _doc(_M1, blacklisted=False),
+            _doc(_M2, blacklisted=False),
+        ])
+        flt = FilterGroup(conditions=[
+            FilterCondition(field="blacklisted", op=FilterOperator.NE, value=True),
+        ])
+
+        page = await index.list_memories(
+            "u", "s", offset=0, limit=2, filters=flt, order_direction="asc",
+        )
+
+        assert len(index._vector_store.list_docs_calls) == 0
+        assert [doc.id for doc in page] == sorted([_M1, _M2])
+
 
 class TestCanPushdownFilterHelper:
     """Direct unit tests on the _can_pushdown_filter decision helper."""

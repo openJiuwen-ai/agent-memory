@@ -752,7 +752,8 @@ class FileMemoryIndex(BaseMemoryIndex):
 
     async def list_memories(self, user_id: str, scope_id: str, offset: int = 0,
                             limit: int = 100, mem_types: list[str] | None = None,
-                            *, filters: Optional[FilterGroup] = None) -> list[MemoryDoc]:
+                            *, filters: Optional[FilterGroup] = None,
+                            order_direction: str = "desc") -> list[MemoryDoc]:
         """List memories with pagination and optional type filter.
 
         Uses chunks table for ID ordering (by updated_at DESC), then reads
@@ -837,6 +838,9 @@ class FileMemoryIndex(BaseMemoryIndex):
         # never came back from SQL.
         if filters is not None and not _filter_group_is_pure_sql(filters):
             docs = [d for d in docs if _apply_filter_group_to_doc(d, filters)]
+
+        if order_direction.lower() == "asc":
+            docs.sort(key=lambda doc: (doc.timestamp.timestamp(), doc.id))
 
         return docs[offset:offset + limit]
 

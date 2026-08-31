@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from jiuwen_memory.common.exception.errors import BaseError
 from jiuwen_memory.common.utils.singleton import Singleton
 from jiuwen_memory.foundation.llm import BaseMessage
 from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
@@ -120,6 +121,7 @@ class FakeLongTermUpdateManager:
 class FakeMessageManager:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.page_calls: list[dict] = []
         self.messages: list[tuple[BaseMessage, datetime, str]] = []
 
     async def delete_by_user_and_scope(self, user_id: str, scope_id: str) -> bool:
@@ -129,6 +131,17 @@ class FakeMessageManager:
     async def get(self, user_id: str = None, scope_id: str = None, session_id: str = None,
                   message_len: int = 10) -> list[tuple[BaseMessage, datetime, str]]:
         return self.messages[:message_len]
+
+    async def get_page(self, user_id: str = None, scope_id: str = None, session_id: str = None,
+                       offset: int = 0, limit: int = 10) -> list[tuple[BaseMessage, datetime, str]]:
+        self.page_calls.append({
+            "user_id": user_id,
+            "scope_id": scope_id,
+            "offset": offset,
+            "limit": limit,
+        })
+        oldest_first = sorted(self.messages, key=lambda item: (item[1], item[2]))
+        return oldest_first[offset:offset + limit]
 
 
 class FakeSearchManager:
@@ -149,6 +162,20 @@ class FakeSearchManager:
         filtered = [item for item in self.items if mem_type is None or item.get("mem_type") == mem_type]
         start_idx = nums * (pages - 1)
         return filtered[start_idx:start_idx + nums]
+
+    async def list_user_mem_by_offset(self, user_id: str, scope_id: str, offset: int, limit: int,
+                                      mem_type: str = None, *, filters=None):
+        self.calls.append({
+            "user_id": user_id,
+            "scope_id": scope_id,
+            "offset": offset,
+            "limit": limit,
+            "mem_type": mem_type,
+            "filters": filters,
+        })
+        filtered = [item for item in self.items if mem_type is None or item.get("mem_type") == mem_type]
+        oldest_first = sorted(filtered, key=lambda item: (item.get("timestamp"), item["id"]))
+        return oldest_first[offset:offset + limit]
 
 
 class FakeSemanticStore:
@@ -472,8 +499,202 @@ async def test_get_user_mem_by_page_unknown_merges_long_and_middle_memory():
     assert memory.search_manager.calls == [{
         "user_id": "u1",
         "scope_id": "s1",
-        "nums": 10,
-        "pages": 1,
+        "offset": 0,
+        "limit": 10,
         "mem_type": None,
         "filters": None,
     }]
+
+
+@pytest.mark.asyncio
+async def test_get_user_mem_by_page_unknown_has_no_cross_page_duplicates():
+    oldest_first = [
+        {
+            "id": f"long_{idx:03d}",
+            "mem": f"长期记忆 {idx}",
+            "mem_type": MemoryType.SEMANTIC_MEMORY.value,
+            "timestamp": datetime(2026, 7, 21, idx, 0, tzinfo=timezone.utc),
+        }
+        for idx in range(10)
+    ]
+    memory = LongTermMemory()
+    # Production indexes list newest-first.  The old implementation fetched
+    # an expanding newest-N prefix, reversed it, and returned duplicate pages.
+    memory.search_manager = FakeSearchManager(list(reversed(oldest_first)))
+    memory.message_manager = FakeMessageManager()
+
+    pages = [
+        await memory.get_user_mem_by_page(
+            user_id="u1",
+            scope_id="s1",
+            page_size=3,
+            page_idx=page_idx,
+            memory_type=MemoryType.UNKNOWN,
+        )
+        for page_idx in range(1, 6)
+    ]
+
+    assert [[item.mem_id for item in page] for page in pages] == [
+        ["long_000", "long_001", "long_002"],
+        ["long_003", "long_004", "long_005"],
+        ["long_006", "long_007", "long_008"],
+        ["long_009"],
+        [],
+    ]
+    all_ids = [item.mem_id for page in pages for item in page]
+    assert len(all_ids) == len(set(all_ids)) == 10
+
+
+@pytest.mark.asyncio
+async def test_get_user_mem_by_page_unknown_orders_same_timestamp_by_mem_id():
+    timestamp = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc)
+    memory = LongTermMemory()
+    memory.search_manager = FakeSearchManager([
+        {
+            "id": "b-long",
+            "mem": "长期记忆 B",
+            "mem_type": MemoryType.SEMANTIC_MEMORY.value,
+            "timestamp": timestamp,
+        },
+        {
+            "id": "a-long",
+            "mem": "长期记忆 A",
+            "mem_type": MemoryType.SEMANTIC_MEMORY.value,
+            "timestamp": timestamp,
+        },
+    ])
+    memory.message_manager = FakeMessageManager()
+    memory.message_manager.messages = [
+        (BaseMessage(role="user", content="中期记忆 D"), timestamp, "d-middle"),
+        (BaseMessage(role="user", content="中期记忆 C"), timestamp, "c-middle"),
+    ]
+
+    pages = [
+        await memory.get_user_mem_by_page(
+            user_id="u1",
+            scope_id="s1",
+            page_size=2,
+            page_idx=page_idx,
+            memory_type=MemoryType.UNKNOWN,
+        )
+        for page_idx in (1, 2)
+    ]
+
+    assert [[item.mem_id for item in page] for page in pages] == [
+        ["a-long", "b-long"],
+        ["c-middle", "d-middle"],
+    ]
+    all_ids = [item.mem_id for page in pages for item in page]
+    assert len(all_ids) == len(set(all_ids)) == 4
+
+
+@pytest.mark.asyncio
+async def test_get_user_mem_by_page_middle_has_no_cross_page_duplicates():
+    oldest_first = [
+        (
+            BaseMessage(role="user", content=f"中期记忆 {idx}"),
+            datetime(2026, 7, 21, idx, 0, tzinfo=timezone.utc),
+            f"middle_{idx:03d}",
+        )
+        for idx in range(10)
+    ]
+    memory = LongTermMemory()
+    memory.search_manager = FakeSearchManager([])
+    memory.message_manager = FakeMessageManager()
+    memory.message_manager.messages = oldest_first
+
+    pages = [
+        await memory.get_user_mem_by_page(
+            user_id="u1",
+            scope_id="s1",
+            page_size=3,
+            page_idx=page_idx,
+            memory_type=MemoryType.MIDDLE_TERM_MEMORY,
+        )
+        for page_idx in range(1, 5)
+    ]
+
+    assert [[item.mem_id for item in page] for page in pages] == [
+        ["middle_000", "middle_001", "middle_002"],
+        ["middle_003", "middle_004", "middle_005"],
+        ["middle_006", "middle_007", "middle_008"],
+        ["middle_009"],
+    ]
+    all_ids = [item.mem_id for page in pages for item in page]
+    assert len(all_ids) == len(set(all_ids)) == 10
+    assert [call["offset"] for call in memory.message_manager.page_calls] == [0, 3, 6, 9]
+    assert [call["limit"] for call in memory.message_manager.page_calls] == [3, 3, 3, 3]
+
+
+@pytest.mark.asyncio
+async def test_get_user_mem_by_page_uses_fixed_size_batches_for_deep_page():
+    newest_first = [
+        {
+            "id": f"long_{idx:03d}",
+            "mem": f"长期记忆 {idx}",
+            "mem_type": MemoryType.SEMANTIC_MEMORY.value,
+            "timestamp": datetime(2026, 7, 21, 12, idx % 60, tzinfo=timezone.utc),
+        }
+        for idx in range(250)
+    ]
+    memory = LongTermMemory()
+    memory.search_manager = FakeSearchManager(newest_first)
+    memory.message_manager = FakeMessageManager()
+
+    await memory.get_user_mem_by_page(
+        user_id="u1",
+        scope_id="s1",
+        page_size=50,
+        page_idx=5,
+        memory_type=MemoryType.UNKNOWN,
+    )
+
+    assert [call["limit"] for call in memory.search_manager.calls] == [100, 100, 50]
+    assert [call["offset"] for call in memory.search_manager.calls] == [0, 100, 200]
+
+
+@pytest.mark.asyncio
+async def test_get_user_mem_by_page_stops_when_backend_makes_no_progress():
+    item = {
+        "id": "long_001",
+        "mem": "长期记忆",
+        "mem_type": MemoryType.SEMANTIC_MEMORY.value,
+        "timestamp": datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc),
+    }
+
+    class RepeatingSearchManager(FakeSearchManager):
+        async def list_user_mem_by_offset(self, user_id, scope_id, offset, limit, mem_type=None, *, filters=None):
+            self.calls.append({"offset": offset, "limit": limit})
+            return [item] * limit
+
+    memory = LongTermMemory()
+    memory.search_manager = RepeatingSearchManager([])
+    memory.message_manager = FakeMessageManager()
+
+    results = await memory.get_user_mem_by_page(
+        user_id="u1",
+        scope_id="s1",
+        page_size=100,
+        page_idx=2,
+        memory_type=MemoryType.UNKNOWN,
+    )
+
+    assert results == []
+    assert len(memory.search_manager.calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("page_size", "page_idx"), [(0, 1), (-1, 1), (10, 0), (10, -1)])
+async def test_get_user_mem_by_page_rejects_invalid_pagination(page_size: int, page_idx: int):
+    memory = LongTermMemory()
+    memory.search_manager = FakeSearchManager([])
+    memory.message_manager = FakeMessageManager()
+
+    with pytest.raises(BaseError, match="page_size must be positive"):
+        await memory.get_user_mem_by_page(
+            user_id="u1",
+            scope_id="s1",
+            page_size=page_size,
+            page_idx=page_idx,
+            memory_type=MemoryType.UNKNOWN,
+        )

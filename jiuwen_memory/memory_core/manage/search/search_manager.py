@@ -360,6 +360,41 @@ class SearchManager:
         } for res in result]
         return result
 
+    async def list_user_mem_by_offset(
+            self,
+            user_id: str,
+            scope_id: str,
+            offset: int,
+            limit: int,
+            mem_type: str = None,
+            *,
+            filters: Optional[FilterGroup] = None,
+    ) -> list[dict[str, Any]] | None:
+        """List one stable oldest-first memory page using an explicit offset."""
+        if not self.memory_index:
+            raise build_error(
+                StatusCode.MEMORY_GET_MEMORY_EXECUTION_ERROR,
+                memory_type="search_memory",
+                error_msg="memory index not inited",
+            )
+        filters = ensure_blacklisted_ne(normalize_filters(filters))
+        mem_types = [mem_type] if mem_type else []
+        result = await self.memory_index.list_memories(
+            user_id, scope_id, offset, limit, mem_types,
+            filters=filters, order_direction="asc",
+        )
+        return [{
+            "id": res.id,
+            "user_id": user_id,
+            "scope_id": scope_id,
+            "mem": res.text,
+            "mem_type": res.type,
+            "timestamp": res.timestamp,
+            "blacklisted": res.blacklisted,
+            "is_important": res.is_important,
+            **res.fields,
+        } for res in result]
+
     async def list_user_mem_with_total(
             self,
             user_id: str,
