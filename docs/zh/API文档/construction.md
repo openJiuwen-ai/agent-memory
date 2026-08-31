@@ -304,7 +304,7 @@ constructor:             # Producer.TOP_NAME
 | `target` | 实现类 | 功能 | 依赖与主要参数 |
 |---|---|---|---|
 | `keyword` | `KeywordExtractor` | 按 Chunker 切分原文，生成带血缘的 SEMANTIC 单元；procedural 时合并为一条过程记忆 | `chunker`，默认 `fixed_window` |
-| `llm` | `ExtractorImpl` | LLM 结构化抽取，校验来源、置信度、tier 和 tags | `llm`；`extractor_min_confidence`、`extractor_retry_max`、`extractor_retry_backoff` |
+| `llm` | `ExtractorImpl` | LLM 结构化抽取，校验来源、置信度、tier 和 tags | `llm`；`extractor_min_confidence`、`extractor_retry_max`、`extractor_retry_backoff`、`extract_batch_size` |
 | `dynamic_llm` | `DynamicLLMExtractor` | 按 `_extract_prompt_<strategy>` 逐策略抽取；无策略时委托 fallback | `llm`、`fallback`、`prompts`；参数同 `llm` |
 | `video_memory` | `VideoMemoryExtractor` | 将视频规约结果转换为 CLM/ELM 多模态 MemoryUnit | 无配置依赖；输入需包含约定的视频 metadata |
 
@@ -517,6 +517,7 @@ rebuild() -> None
 | `extractor_min_confidence` | `float` | `0.5` | `llm` / `dynamic_llm` | 过滤低置信抽取候选 |
 | `extractor_retry_max` | `int` | `3` | `llm` / `dynamic_llm` | LLM 最大尝试次数，应大于等于 `1` |
 | `extractor_retry_backoff` | `int` | `1000` | `llm` / `dynamic_llm` | 重试退避，毫秒 |
+| `extract_batch_size` | `int` | `10` | `llm` / `dynamic_llm` | 单次 LLM 抽取的原文条数上限 |
 | `abstractor_min_confidence` | `float` | `0.5` | `abstractor.llm` | 最低置信度 |
 | `abstractor_min_group_size_summary` | `int` | `1` | `abstractor.llm` | summary 分组下限 |
 | `abstractor_min_group_size_pattern` | `int` | `3` | `abstractor.llm` | pattern 分组下限 |
@@ -552,6 +553,15 @@ rebuild() -> None
 | `layers_index_enabled` | `bool` | `true` | fulltext/vector/hybrid | 是否写入 L0/L1 独立索引 |
 | `entity_enabled` | `bool` | `false` | `hybrid` | 是否尝试装配 EntityStore |
 | `vector_enabled` | `bool` | `true` | Evolver builder | 决定未显式指定时的 IndexBuilder/Dedup 默认组合 |
+
+### 18.1 `extract_batch_size` 与 `middle_batch_size`
+
+| 参数 | 配置位置 | 默认 | 作用 |
+|---|---|---:|---|
+| `middle_batch_size` | `job_factory.default.params` | `10` | Job 切批上限 |
+| `extract_batch_size` | `extractor` 装配 params（同 `extractor_min_confidence`） | `10` | Extractor 单次 LLM 条数上限 |
+
+`middle_batch_size` 在 `defaults.py` 快照中；`extract_batch_size` 默认由 Extractor `_build` 提供，需覆盖时在装配 YAML 的 `extractor.*.params` 中声明。调参时保持 `extract_batch_size` ≥ `middle_batch_size`。
 
 ## 19. 最小算子示例
 

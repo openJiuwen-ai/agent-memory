@@ -26,6 +26,7 @@ from jiuwen_memory.construction.prompt_strategy import (
 )
 
 from .llm_extractor import (
+    _DEFAULT_EXTRACT_BATCH_SIZE,
     _SOURCE_PREFIX,
     ExtractionCandidate,
     ExtractorImpl,
@@ -54,6 +55,7 @@ class DynamicLLMExtractor(Extractor):
         min_confidence: float = 0.5,
         retry_max_retries: int = 3,
         retry_backoff_ms: int = 1000,
+        extract_batch_size: int = _DEFAULT_EXTRACT_BATCH_SIZE,
     ) -> None:
         self._llm = llm
         self._fallback = fallback
@@ -63,6 +65,7 @@ class DynamicLLMExtractor(Extractor):
             min_confidence=min_confidence,
             retry_max_retries=retry_max_retries,
             retry_backoff_ms=retry_backoff_ms,
+            extract_batch_size=extract_batch_size,
         )
 
     def operator_type(self) -> OperatorType:
@@ -199,4 +202,5 @@ def _build(config):
         min_confidence=config.get("extractor_min_confidence", 0.5),
         retry_max_retries=config.get("extractor_retry_max", 3),
         retry_backoff_ms=config.get("extractor_retry_backoff", 1000),
+        extract_batch_size=config.get("extract_batch_size", _DEFAULT_EXTRACT_BATCH_SIZE),
     )
