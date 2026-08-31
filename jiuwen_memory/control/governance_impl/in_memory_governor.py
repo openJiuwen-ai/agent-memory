@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~control.governance.Governor`。
 
 治理「看」侧：按目标 scope 检视 / 沿 ``provenance`` 来源链回溯 / 审计过滤查询。

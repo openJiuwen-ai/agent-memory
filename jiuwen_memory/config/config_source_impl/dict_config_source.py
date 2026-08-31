@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """DictConfigSource — 可变内存配置源（测试 / 简易产品落地）。
 
 产品可将配置中心拉取结果写入本源，或在本源之上做 Overlay。

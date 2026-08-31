@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """MCP surface 入口——基于 FastMCP，把记忆动词暴露为 MCP 工具。
 
 每个工具都是对**共享 ``handler.dispatch``** 的薄封装（HTTP / CLI 用的是同一个 dispatch），

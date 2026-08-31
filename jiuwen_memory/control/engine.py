@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """MemoryEngine — 记忆引擎（接口层 §9 各语义的编排中枢）。
 
 记忆接口层 ``jiuwen_memory/api`` 是本引擎的薄封装：只做参数装配后逐方法委托到

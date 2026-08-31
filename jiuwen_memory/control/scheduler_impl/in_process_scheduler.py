@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现 Scheduler——同步调度：任务提交后在当前进程内立即执行。
 
 task 内容由 :class:`~control.jobs.Job` 定义。

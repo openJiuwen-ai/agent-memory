@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """评估模块（对接架构 §「可观测/指标」与 Benchmark 调研 §5 选型建议）。
 
 两层评估，互补：

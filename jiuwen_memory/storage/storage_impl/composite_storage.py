@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """由现有 Store 和 Recaller 组合而成的默认统一 Storage。"""
 
 from __future__ import annotations

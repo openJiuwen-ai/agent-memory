@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Associator — 关联分析（架构 §6.1）。
 
 发现实体共指、因果/引用链、跨会话/跨 Agent 的关联，构成中抽象的

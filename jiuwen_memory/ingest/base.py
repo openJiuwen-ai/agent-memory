@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """接入层（A 层数据接入侧，架构 §10/§10.1）算子基类。
 
 接入层承接多模态信息源，对每条原始数据做两件事（检索链路不感知模态）：

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Evolver — 记忆自演进（架构 §8）。
 
 持续驱动「抽取 → 关联 → 冲突消解 → 升华 → 遗忘/降权」闭环：

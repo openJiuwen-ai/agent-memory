@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Extractor — 信息提取（架构 §6.1）。
 
 从原始记忆单元（真源中贴近原始的数据）中抽取事实/事件/偏好，产出

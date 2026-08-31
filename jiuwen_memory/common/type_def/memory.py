@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """MemoryUnit — 记忆单元，最小记忆载体（架构 §3.1）及其枚举。
 
 数据层（真源）中存储的原子记录：无论文档还是结构化形态，逻辑模型一致。

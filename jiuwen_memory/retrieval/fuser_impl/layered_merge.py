@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """分层召回的通道内归并——各 Fuser 融合前的统一前处理。
 
 L0/L1 分层召回下，同一通道存在多个 recall 实例（L2 content / L0 概要 / L1 片段），

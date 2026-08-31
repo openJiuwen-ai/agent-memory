@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Source — 多模态信息源连接器（架构 §10）。
 
 对接一类信息源（对话流/文档/代码库/工具调用轨迹/图像/音视频/外部导入），

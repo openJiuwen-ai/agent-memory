@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Video normalizer: raw video reference -> structured video-memory data."""
 
 from __future__ import annotations

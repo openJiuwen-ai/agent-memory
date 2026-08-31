@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """LLM — 大模型调用能力（vLLM 部署 / OpenAI 兼容 chat 后端）。
 
 **共用说明**：通用生成端口。构建层用于信息提取/摘要/抽象升华；检索层

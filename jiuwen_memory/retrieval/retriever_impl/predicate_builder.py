@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """PredicateBuilder — 把检索策略翻译成结构化前置过滤谓词（架构 §7 ①）。
 
 由 lifecycle×as_of / 事件时间窗 / include_archived 生成一组 :data:`FilterExpr`，

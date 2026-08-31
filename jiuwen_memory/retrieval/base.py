@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """检索层（D 层，架构 §7）算子基类。
 
 检索链路五步：① scope/标签前置过滤 → ② 并行多路召回 → ③ 融合 + 重排

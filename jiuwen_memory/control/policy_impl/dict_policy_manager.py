@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~control.policy.PolicyManager`。
 
 内存策略表：仅允许调整已知键；未知键（含试图新增）抛

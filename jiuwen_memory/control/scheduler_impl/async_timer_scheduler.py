@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """AsyncTimerScheduler——异步 + 定时调度器。
 
 职责边界：

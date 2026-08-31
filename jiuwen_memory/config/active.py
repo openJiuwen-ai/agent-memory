@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """按 ConfigSource 解析 ``*.active`` 与单字段晚绑定值。
 
 - :func:`resolve_active_name`：异质多实例次选路径（未知 active 抛 ValidationError）

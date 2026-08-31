@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """组合实现：:class:`~construction.index_builder.IndexBuilder`。
 
 组合 :class:`ForwardIndexBuilder`、:class:`FulltextIndexBuilder`、

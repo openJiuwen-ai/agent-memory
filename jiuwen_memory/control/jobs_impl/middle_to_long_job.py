@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """MiddleToLongJob——中期转长期任务。
 
 Job 内完成：list 候选 → 连续性检测切批 → 串行/并发调

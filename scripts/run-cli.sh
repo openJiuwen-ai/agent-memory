@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # Convenience wrapper for the agent-memory CLI surface (DESIGN.md).
 # Runs the CLI as a script so its sibling import roots resolve correctly.
 set -euo pipefail

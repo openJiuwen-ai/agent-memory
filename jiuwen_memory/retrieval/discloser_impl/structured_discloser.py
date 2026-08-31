@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Structured discloser — 面向 Agent 消费的结构化渐进披露。"""
 
 from __future__ import annotations

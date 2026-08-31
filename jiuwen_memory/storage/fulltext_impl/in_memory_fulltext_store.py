@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~storage.fulltext.FulltextStore` 的纯内存全文存储。
 
 按 scope 原生隔离（scope 折成命名空间键），用词重叠计分模拟 BM25 的 top-k

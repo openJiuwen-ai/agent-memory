@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Chunk — 内容切分后的连续片段，向量化与建索引的基本单元。"""
 
 from __future__ import annotations

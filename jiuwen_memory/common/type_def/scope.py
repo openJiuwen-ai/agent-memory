@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Scope — 多维作用域（架构 §3.2）。
 
 ``org > space > user/agent > session`` 五维归属，统一支撑隔离（多租户、

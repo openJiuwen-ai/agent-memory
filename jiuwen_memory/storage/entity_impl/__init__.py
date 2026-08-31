@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """entity_impl 实现集：工厂 EntityStoreProducer + 各实现。
 
 import 各实现模块即触发其 ``@EntityStoreProducer.register(...)`` 自注册；本包只对外

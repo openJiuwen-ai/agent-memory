@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """ExtractorImpl — M1 信息提取实现（3 Phase 流水线）。
 
 三阶段流水线（接口契约见 docs/specs/S05-construction.md Extractor 节）：

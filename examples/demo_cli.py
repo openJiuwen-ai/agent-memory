@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """CLI surface 端到端演示——尽量调用全部模块（同进程 dispatch，无需起服务）。
 
 运行：``python3 examples/demo_cli.py``

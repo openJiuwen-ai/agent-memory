@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """LoCoMo 适配器——把 ``locomo10.json`` 解析为 (seeds, queries)（端到端 QA）。
 
 LoCoMo（Evaluating Very Long-Term Conversational Memory, ACL 2024）schema：

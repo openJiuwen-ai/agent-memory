@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """CloudEngine — 面向云侧部署的 profile-aware 读写编排实现。
 
 CloudEngine 直接实现 :class:`control.engine.MemoryEngine`，不继承

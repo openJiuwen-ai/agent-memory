@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """LockProvider — 跨实例互斥横切接口。
 
 锁与 SecurityProvider / AuditLogger 同属横切组件：不继承 :class:`common.base.Plugin`、

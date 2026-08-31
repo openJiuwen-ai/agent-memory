@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """HanlpFeatureExtractor — 基于 HanLP 的 NER 特征抽取。
 
 用 HanLP pipeline 对文本做分词 + 词性标注 + 命名实体识别，产出：

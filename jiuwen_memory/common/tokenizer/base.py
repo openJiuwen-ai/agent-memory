@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Tokenizer — 分词能力。
 
 **共用说明**：构建层建全文倒排索引时对文档分词；检索层做关键词检索时

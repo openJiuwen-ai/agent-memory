@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """共享能力插件基类：跨层复用的无状态计算能力。
 
 这些能力不属于任何单独一层——构建层与检索层（以及接入、演进路径）都会

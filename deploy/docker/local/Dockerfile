@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # agent-memory 应用镜像：HTTP 在线服务 + 进程内 bge 嵌入/精排。
 #
 # 注意：含 CPU 版 torch + FlagEmbedding（纯 CPU 推理，不装 CUDA 库，镜像约 5–6GB）。

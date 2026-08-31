@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """检索/前置过滤的结构化谓词（跨层共用）。
 
 替代「``dict[str, str]`` 平铺等值」的弱表达：单条 :class:`FilterClause`

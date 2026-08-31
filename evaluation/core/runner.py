@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Runner——把数据集、采集与指标串起来，产出一次评测运行结果。
 
 ``Metric`` 是「一批观测 → 一组指标」的可调用：IR 套件、性能套件、QA judge 都按此

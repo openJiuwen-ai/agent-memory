@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """MilvusGraphFusionStore — Milvus(向量) + nano-graphrag(图) 融合的 FusionStore。
 
 后端为 Milvus(向量) + nano-graphrag(图) 的融合：构建时同时建向量与图索引，检索时

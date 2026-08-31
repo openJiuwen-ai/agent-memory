@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~construction.evolver.Evolver`——演进闭环的编排者。
 
 按 ``mode`` 驱动各构建算子，并把新产物落真源 + 建索引（构建层负责落盘）：

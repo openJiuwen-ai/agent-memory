@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """FSStore — 本地文件系统存储（原始负载/二进制资产）。
 
 CRUD 映射到文件操作：``insert`` = 写入并返回规范引用 ref，

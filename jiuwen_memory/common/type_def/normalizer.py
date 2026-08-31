@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """EntityNormalizer — 归一化实体文本生成稳定 key。
 
 用于去重和精确匹配（hash 精确匹配第一级：normalize+hash）。

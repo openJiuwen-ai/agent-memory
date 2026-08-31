@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~common.chunker.base.Chunker`——定长字符窗口切分。
 
 按固定字符窗口（默认 120，无重叠）把内容切成有序 :class:`~common.type_def.Chunk`，

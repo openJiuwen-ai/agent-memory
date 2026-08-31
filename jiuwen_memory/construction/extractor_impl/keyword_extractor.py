@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~construction.extractor.Extractor`。
 
 从原始记忆单元提取**低抽象粒度**的派生单元：用注入的 Chunker 把每条「原始」单元

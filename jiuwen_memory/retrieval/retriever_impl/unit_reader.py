@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """UnitReader + 后置过滤——检索编排的「点读真源 + 复核」支撑件。
 
 Option B 下，点读与复核从 Discloser 上移到 Retriever 阶段：Retriever 在融合截断后用

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """报告渲染：RunResult → JSON（机读/留档）/ Markdown（人读/PR 粘贴）。"""
 
 from __future__ import annotations

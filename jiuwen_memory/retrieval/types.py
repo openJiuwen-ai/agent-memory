@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """检索层接口涉及的数据类型。"""
 
 from __future__ import annotations

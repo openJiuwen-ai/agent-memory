@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # agent-memory application image for remote embedding/rerank services.
 #
 # This image intentionally does not install torch / FlagEmbedding / transformers

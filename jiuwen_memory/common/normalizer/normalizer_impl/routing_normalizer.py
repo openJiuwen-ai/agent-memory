@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Route raw payloads to a modality-specific normalizer."""
 
 from __future__ import annotations

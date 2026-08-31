@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """EvolveJob——通用演进入口。
 
 数据来源、调用方式与原 ``InProcessScheduler._execute_task`` 一致——

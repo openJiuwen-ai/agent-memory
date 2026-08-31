@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """存储层接口涉及的数据类型（仅定义结构，与具体后端无关）。
 
 **scope 不在这些结构体里**：它是各 Store 方法的显式第一入参（``scope: Scope``，

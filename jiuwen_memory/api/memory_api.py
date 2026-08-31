@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """MemoryAPI — 记忆接口层（B 层，架构 §9）：统一 Core API，形态无关。
 
 所有接入形态（SDK/CLI/Skill/MCP/HTTP·gRPC）最终映射到本接口；不论

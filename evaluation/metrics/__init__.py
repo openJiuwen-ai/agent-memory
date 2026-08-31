@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """评测指标：组件级 IR（确定性）+ 性能（吃检索轨迹）+ 端到端 QA（需 judge）。"""
 
 from __future__ import annotations

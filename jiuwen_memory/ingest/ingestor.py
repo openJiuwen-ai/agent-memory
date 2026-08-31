@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Ingestor — 接入编排（架构 §10.1 / §14 Write 路径的前半段）。
 
 对一批 :class:`~common.type_def.RawPayload` 执行接入两步：

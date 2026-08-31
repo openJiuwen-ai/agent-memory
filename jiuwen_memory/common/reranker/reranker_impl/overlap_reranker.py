@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~common.reranker.base.Reranker`——词重叠精排。
 
 对每条候选文本，按其与 query 的分词重叠占比打分（顺序与输入一致）。真实实现用

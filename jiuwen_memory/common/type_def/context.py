@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Context — 调用上下文：目标范围 + 调用级透传配置。
 
 把「在谁的范围内」（``scope``）与「调用级透传配置」（``extensions``）打包成调用端

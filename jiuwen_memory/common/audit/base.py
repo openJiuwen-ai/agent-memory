@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """AuditLogger — 审计记录（横切共用接口，架构 §12）。
 
 **共用说明**：透明可治理是一等公民——写入/修改/遗忘/检索/授权等关键

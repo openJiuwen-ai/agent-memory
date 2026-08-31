@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """按 PermissionContext 路由到不同权限策略的 PermissionManager。"""
 
 from __future__ import annotations

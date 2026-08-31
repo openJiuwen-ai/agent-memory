@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """PolicyManager — 运行时可变策略（架构 §13.4 的 admin 落点）。
 
 配置分两类：不可变/重型配置（真源形态、后端选型）在实例初始化时由

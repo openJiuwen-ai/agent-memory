@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """组件级 IR 评测入口——装配 → 灌库 → 跑 query → 算 IR/性能指标 → 出报告。
 
     python3 evaluation/scripts/run_ir_eval.py [--dataset PATH.jsonl] [--json OUT.json]

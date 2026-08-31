@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~retrieval.recaller.Recaller` 的 VECTOR 通道。
 
 消费 ``ParsedQuery.vector``（由 QueryParser 经 Embedder 产出），组装

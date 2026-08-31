@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Config — 装配配置的门面：把 YAML/字典解析成 :class:`AssemblyContext`（两级命名空间，纯数据）。
 
 配置顶层是一个可选的 ``globals``（跨切面参数）+ 若干**命名空间**（每个对应一个 Producer 的

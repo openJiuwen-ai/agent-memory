@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """NanoGraphRAGGraphStore — 基于 nano-graphrag ``NetworkXStorage`` 的 GraphStore 实现。
 
 后端基于 nano-graphrag 的 ``NetworkXStorage``；第三方依赖惰性加载，未安装也可

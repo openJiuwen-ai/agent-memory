@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """分布式锁横切接口：跨实例互斥原语。"""
 
 from .lock import (

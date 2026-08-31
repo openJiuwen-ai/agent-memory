@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """ConfigSource 实现包：触发 yaml_defaults / dict / overlay 自注册。"""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """LLMLayerAnnotator — LLM 版分层标注（background / infer=true 路径用）。
 
 对超阈 content 的 unit 批量调 LLM 生成 L0/L1，回填 ``unit.layers``。任务单一

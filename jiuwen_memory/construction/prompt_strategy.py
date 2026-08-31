@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """调用级动态 prompt 的解析与传递工具。
 
 metadata 只写 prompt 的 **key**（引用 yml ``prompts`` 段里的命名 prompt），真实文本

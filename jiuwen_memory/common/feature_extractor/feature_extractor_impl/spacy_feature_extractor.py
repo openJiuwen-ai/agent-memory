@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """SpacyFeatureExtractor — 基于 spaCy 的 NER 特征抽取。
 
 用 spaCy pipeline 对文本做分词 + 词性标注 + 命名实体识别，产出：

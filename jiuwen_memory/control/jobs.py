@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Job — 控制层任务抽象。
 
 Job 封装"做什么 + 怎么找数据 + 怎么调 evolver + 怎么后处理"，本身不携带

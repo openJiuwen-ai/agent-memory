@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """RedisKVStore — 基于 Redis 的 :class:`~storage.kv.KVStore` 实现。
 
 ``redis`` 客户端在首次使用时惰性导入与连接，故未安装 ``redis-py`` 或后端未就绪

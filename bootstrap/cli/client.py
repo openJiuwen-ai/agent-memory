@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Engine clients for the CLI surface — one in-process, one over HTTP.
 
 Both expose the same shape::

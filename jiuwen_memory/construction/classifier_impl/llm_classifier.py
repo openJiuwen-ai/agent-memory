@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """LLMClassifier — 纯 LLM 抽取 tier + tags 的分类实现。
 
 对一批 MemoryUnit，单次 LLM 调用产出每条的 ``tier``（认知角色）与 ``tags``（主题标签），

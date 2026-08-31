@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Normalizer — 模态规约能力：原模态数据 -> 可治理文本/结构投影。
 
 **共用说明**：接入层写入时对每种模态规约出 ``content`` 投影（图像 →

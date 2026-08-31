@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """core — 各协议 surface 共享的应用核（与传输无关）。
 
 ``bootstrap/{http_server, mcp_server, cli, sdk}`` 都是薄传输适配器，统一依赖这里：

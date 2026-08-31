@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """EncryptedKVStore — KVStore 加密装饰器。
 
 该实现不包含具体加解密算法，只在 KV 边界统一构造

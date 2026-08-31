@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """BGEM3Embedder — BAAI BGE-M3 本地向量化：多语言（100+）、多功能（dense/sparse/colbert）、
 长文本（8192 tokens）。
 

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Discloser — 渐进式披露（架构 §7 ④）。
 
 按需加载、控制 token：L0 只给摘要，L1 给相关片段，L2 给全文。

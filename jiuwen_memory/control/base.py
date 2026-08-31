@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """控制层（C 层，记忆管理面）算子基类。
 
 控制层是管理面（架构 §2）：不直接生产/检索记忆，而是管理它们的

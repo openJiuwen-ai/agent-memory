@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """MemoryUnit 的公共 FilterExpr 求值语义。"""
 
 from __future__ import annotations

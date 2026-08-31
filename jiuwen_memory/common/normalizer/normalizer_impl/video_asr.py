@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Remote ASR adapter used by the video normalizer."""
 
 from __future__ import annotations

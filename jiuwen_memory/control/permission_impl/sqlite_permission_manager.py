@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """SQLite-backed :class:`~control.permission.PermissionManager`.
 
 第一期真实 ACL 实现：

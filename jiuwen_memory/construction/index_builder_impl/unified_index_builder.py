@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """统一存储直写的 :class:`~construction.index_builder.IndexBuilder` 实现。
 
 该实现不派生向量、全文等检索索引。它把 ``MemoryUnit`` 按 ``Scope`` 分组后直接交给
