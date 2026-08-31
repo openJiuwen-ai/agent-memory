@@ -20,8 +20,8 @@ pytestmark = pytest.mark.integration
 _GOLDEN = os.path.join(os.path.dirname(__file__), "golden_ir.jsonl")
 
 
-@pytest.fixture(scope="module")
-def run_result():
+@pytest.fixture(name="run_result", scope="module")
+def _run_result_fixture():
     dataset = JsonlDataset(_GOLDEN)
     runner = Runner([ir_metrics(ks=(1, 3, 5)), perf_metrics()])
     return runner.run(dataset)

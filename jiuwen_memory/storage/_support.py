@@ -9,7 +9,9 @@
 
 from __future__ import annotations
 
-from jiuwen_memory.common._support import (  # noqa: F401  向后兼容的再导出
+# The names below are kept as the storage package's backward-compatible import surface.
+# pylint: disable=unused-import
+from jiuwen_memory.common._support import (  # noqa: F401
     SCOPE_DIMS,
     SslConfig,
     as_bool,
@@ -20,6 +22,7 @@ from jiuwen_memory.common._support import (  # noqa: F401  向后兼容的再导
     scope_segments,
     wrap_backend,
 )
+# pylint: enable=unused-import
 from jiuwen_memory.common.type_def import Scope
 
 
