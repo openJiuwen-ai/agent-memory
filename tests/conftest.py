@@ -69,12 +69,12 @@ def make_world(rerank: bool = False) -> RetrievalWorld:
     parser = SimpleQueryParser(tokenizer, embedder, feature_extractor=features)
     keyword = KeywordRecaller(storage)
     vector_recaller = VectorRecaller(storage)
+    storage.bind_recallers([keyword, vector_recaller])
     discloser = TruncatingDiscloser()
     unit_reader = UnitReader(kv)
     reranker = OverlapReranker(tokenizer) if rerank else None
     retriever = PipelineRetriever(
         parser,
-        [keyword, vector_recaller],
         RRFFuser(),
         discloser,
         unit_reader,

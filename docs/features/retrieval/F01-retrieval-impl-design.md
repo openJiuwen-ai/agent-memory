@@ -82,7 +82,7 @@
 
 | target | 类 | 依赖（缺省） | 参数（默认） | 关键语义 |
 |---|---|---|---|---|
-| `pipeline` | `PipelineRetriever` | `query_parser`（`simple`）；`recaller` 三路 `keyword_recaller`/`vector_recaller`/`graph_recaller`（后两路按 `vector_enabled`/`graph_enabled` 开关接入）；`fuser`（`rrf`）；`discloser`（`truncating`）；`unit_reader` ← `kv_store`（`memory`）；`reranker`（common，`overlap`，仅 `rerank_enabled` 接入） | 召回超采样 `over_fetch_factor`（4）/`over_fetch_floor`（60）/`recall_max`（100，召回硬上限，0=不限）；精排预算 `rerank_max`（60）；相关性阈值 `min_score`（0，绝对，仅校准路径）/`min_score_ratio`（0，校准）/`min_score_ratio_uncalibrated`（0，未校准；两项默认关闭，见 `F04`）/`min_results`（0，兜底） | 编排完整 Read 链路（见下「编排顺序」），`scope` 作显式首参贯穿下推到各召回路；本类不含召回/打分逻辑，全由注入算子完成 |
+| `pipeline` | `PipelineRetriever` | `query_parser`（`simple`）；`fuser`（`rrf`）；`discloser`（`truncating`）；`unit_reader` ← `kv_store`（`memory`）；`reranker`（common，`overlap`，仅 `rerank_enabled` 接入）；召回路（`keyword_recaller`/`vector_recaller`/`graph_recaller` 等选择键 + `vector_enabled`/`graph_enabled` 开关）已内收到 `CompositeStorage` 工厂装配（见 `docs/features/storage/F06-composite-recaller-assembly.md`） | 召回超采样 `over_fetch_factor`（4）/`over_fetch_floor`（60）/`recall_max`（100，召回硬上限，0=不限）；精排预算 `rerank_max`（60）；相关性阈值 `min_score`（0，绝对，仅校准路径）/`min_score_ratio`（0，校准）/`min_score_ratio_uncalibrated`（0，未校准；两项默认关闭，见 `F04`）/`min_results`（0，兜底） | 编排完整 Read 链路（见下「编排顺序」），`scope` 作显式首参贯穿下推；本类不含召回/打分逻辑，召回执行委托统一 Storage |
 
 ### 非工厂支撑件（由 `PipelineRetriever` 直接构造/调用，不进依赖图）
 

@@ -130,6 +130,21 @@ class ContentLayers:
 
 
 @dataclass
+class ChunkVector:
+    """chunk 级向量投影：与 Chunker 产出的 Chunk 对齐（id/seq），vector 由共享 Embedder 产出。
+
+    构建期由 IndexBuilder 在 ``vector_enabled`` 时填充（与 VectorIndexBuilder 同管线：
+    chunk → embed），随 MemoryUnit 本体经 ``Storage.add``/``update`` 下传；一体化
+    Storage 消费它自建 chunk 级向量索引（record id 沿用 ``{unit_id}-{chunk_id}`` 约定），
+    CompositeStorage 仅随本体持久化、不参与索引。
+    """
+
+    id: str = ""  # chunk id
+    seq: int = 0  # 在 content 中的顺序（0 起）
+    vector: list[float] = field(default_factory=list)
+
+
+@dataclass
 class MemoryUnit:
     """一条记忆：多段内容投影 + 归属/时间/血缘/生命周期。
 
@@ -163,6 +178,11 @@ class MemoryUnit:
     # normalizer 归一化）；为空时该 unit 不入实体索引（已砍 spaCy 兜底，实体完全
     # 由 LLM 在写入前抽取填充此字段）。
     entities: list[str] = field(default_factory=list)
+    # content 的 chunk 级向量投影：构建期由 IndexBuilder 在 vector_enabled 时用共享
+    # Chunker/Embedder 填充（与 VectorIndexBuilder 同管线），随本体经
+    # Storage.add/update 下传；一体化 Storage 消费它自建向量索引，CompositeStorage
+    # 仅随本体持久化。空列表表示未向量化。
+    vectors: list[ChunkVector] = field(default_factory=list)
 
     @property
     def content(self) -> str:

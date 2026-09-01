@@ -158,9 +158,9 @@ def test_pipeline_forwards_runtime_extension_identity_to_all_store_queries(scope
         KeywordRecaller(storage),
         GraphRecaller(storage),
     ]
+    storage.bind_recallers(recallers)
     retriever = PipelineRetriever(
         parser,
-        recallers,
         RRFFuser(),
         TruncatingDiscloser(),
         UnitReader(storage.kv),

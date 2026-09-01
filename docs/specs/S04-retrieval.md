@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-08-29 |
+| 最近一次修订日期 | 2026-08-31 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
 ## Metadata 检索契约
 
@@ -416,7 +416,7 @@ jiuwen_memory/retrieval/<算子>_impl/
 | S02-memory_api | MemoryAPI.search → Engine → 本层 Retriever |
 | S03-control | Engine.recall 委托本层 Retriever |
 | S05-construction | 本层消费构建层产出的索引（向量/全文/图） |
-| S06-storage | Retriever 经 StorageProducer 获取统一 Storage；现有 Recaller 作为 CompositeStorage 的兼容检索适配器 |
+| S06-storage | Retriever 经 StorageProducer 获取统一 Storage；Recaller 作为 CompositeStorage 的兼容检索适配器，由 storage 层工厂按配置装配 |
 | S07-common | 复用 Tokenizer/Embedder/FeatureExtractor/LLM/Reranker |
 | S08-config | 能力开关与 rerank/embedder 晚绑定经 ConfigSource |
 | architecture.md §8 | 检索链路设计 |

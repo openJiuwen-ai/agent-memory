@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import pytest
 
 from jiuwen_memory.common.type_def import MemoryUnit, Segment
-from jiuwen_memory.common.type_def.memory import LifecycleState, MemoryTier, Modality
+from jiuwen_memory.common.type_def.memory import ChunkVector, LifecycleState, MemoryTier, Modality
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.common.type_def.scope import Scope
 
@@ -102,6 +102,21 @@ def test_loads_ignores_unknown_fields(unit_factory) -> None:
     back = loads(json.dumps(obj).encode("utf-8"))
 
     assert back.id == "u1"
+
+
+def test_roundtrip_preserves_vector(unit_factory) -> None:
+    """vectors 字段（F08 加字段兼容演进）：chunk 级向量往返保留，缺省读为空列表。"""
+    unit = unit_factory("u1", "alice likes coffee")
+    unit.vectors = [ChunkVector(id="0", seq=0, vector=[0.1, -0.2, 0.3])]
+
+    back = loads(dumps(unit))
+
+    assert back.vectors == [ChunkVector(id="0", seq=0, vector=[0.1, -0.2, 0.3])]
+
+    # 老数据无 vectors 键：缺省取空列表，无迁移读出
+    obj = json.loads(dumps(unit_factory("u2", "x")).decode("utf-8"))
+    obj.pop("vectors")
+    assert loads(json.dumps(obj).encode("utf-8")).vectors == []
 
 
 def test_loads_rejects_unversioned_legacy_payload() -> None:

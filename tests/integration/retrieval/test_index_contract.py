@@ -47,12 +47,12 @@ def indexed_via_builder():
     # size 调小，强制把内容切成多个 chunk，覆盖「同 unit 多 chunk → MaxP 折叠」
     chunker = FixedWindowChunker(size=20)
     storage = CompositeStorage(kv=kv, vector=vector, fulltext=fulltext)
+    storage.bind_recallers([KeywordRecaller(storage), VectorRecaller(storage)])
     index_builder = HybridIndexBuilder(storage, chunker, embedder)
 
     parser = SimpleQueryParser(tokenizer, embedder, feature_extractor=features)
     retriever = PipelineRetriever(
         parser,
-        [KeywordRecaller(storage), VectorRecaller(storage)],
         RRFFuser(),
         TruncatingDiscloser(),
         UnitReader(kv),

@@ -285,7 +285,11 @@ CompositeStorage 长期持有的反向依赖。
 
 Retriever 通过 `StorageProducer` 获取该具名实例。一体化平台只需注册新的 Storage target 并
 把 `storage.default` 指向它，不需要修改 Retriever 的实现选择。现有 Recaller 仍是默认组合
-实现的兼容适配器，由 Retriever 在装配阶段绑定；该绑定不让 storage 包导入 retrieval。
+实现的兼容适配器，由 `CompositeStorage` 工厂按配置在构建期同步组装（装配期同步构建会
+经 recaller builder 回取本 Storage 形成循环依赖，由工厂预注册打破：具名用 `config.name`、
+匿名用合成名注入 storage 引用，见
+[F06-composite-recaller-assembly](F06-composite-recaller-assembly.md)）；模块层面
+storage 不导入 retrieval。
 
 ### 十一、Elasticsearch metadata 动态映射
 

@@ -312,7 +312,7 @@ RetrievedItem（abstract/overview/content + level）
     "vector": {...}, "vector_l0": {"target": "vector_l0"}, "vector_l1": {"target": "vector_l1"},
     "graph": {...},
 },
-"retriever": {
+"storage": {
     _D: {
         "params": {
             "keyword_recaller": "keyword", "vector_recaller": "vector", "graph_recaller": "graph",
@@ -324,6 +324,10 @@ RetrievedItem（abstract/overview/content + level）
     },
 },
 ```
+
+> 注：召回路选择键最初挂在 `retriever.default.params`，后随召回路装配内收到
+> `CompositeStorage` 工厂而移至 `storage.default.params`（见
+> `docs/features/storage/F06-composite-recaller-assembly.md`）。
 
 构建侧 `constructor`（HybridIndexBuilder）经 `_opt_dep(VectorProducer, "layers_l0/l1")`
 取具名实例注入——`layers_index_enabled`（默认 true）开且 layers 非空才建 L0/L1 分表。

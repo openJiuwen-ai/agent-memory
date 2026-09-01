@@ -251,7 +251,7 @@ F05 公共安全架构的契约层（认证 / 密码学 / 保护 / 授权 / 审�
 
 | 类型 | 关键字段 | 语义 |
 |------|----------|------|
-| `MemoryUnit` | id / scope / tier / layers / segments / source / temporal / provenance / supersedes / tags / metadata / lifecycle / hierarchy | 记忆单元；id 在完整 Scope 内唯一 |
+| `MemoryUnit` | id / scope / tier / layers / segments / source / temporal / provenance / supersedes / tags / metadata / lifecycle / hierarchy / vectors | 记忆单元；id 在完整 Scope 内唯一；`vectors` 为 chunk 级向量投影（构建期按 Chunker+Embedder 管线填充，随本体经 Storage 领域接口下传，见 F06-unified-index-builder） |
 | `ContentLayers` | l0 / l1 | 分层披露标注（l0=50-100 字概要、l1=200-500 字要点 overview）；默认空串，extractor 对超阈 content 产出 |
 | `Segment` | type / content / asset_ref / metadata | 内容段 |
 | `Temporal` | t_event / t_ingest / t_valid / t_invalid | 时间字段 |

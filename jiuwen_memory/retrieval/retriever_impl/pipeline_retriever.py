@@ -4,7 +4,9 @@
 单次 :meth:`retrieve` 驱动完整链路（Option B：点读/有效性/重排为独立阶段）：
 查询理解 → 前置谓词构造 → 并行多路召回 → 融合 → 截断候选预算 → 点读真源 +
 有效性过滤 → （可选）重排 → 阈值过滤 → 截断 top_k → 渐进式披露 → 返回结果与轨迹。
-scope 作显式首参贯穿下推到各召回路；各子算子由装配注入，本类不含召回/打分逻辑。
+scope 作显式首参贯穿下推；召回/取数/排序全部委托统一 Storage 的三条首选路径，
+本类不含召回/打分逻辑，也不持有召回路（CompositeStorage 的兼容 Recaller 由
+storage 层工厂按配置装配）。
 """
 
 from __future__ import annotations
@@ -34,7 +36,6 @@ from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.discloser import Discloser, DiscloserProducer
 from jiuwen_memory.retrieval.fuser import Fuser, FuserProducer
 from jiuwen_memory.retrieval.query_parser import QueryParser, QueryParserProducer
-from jiuwen_memory.retrieval.recaller import Recaller, RecallerProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import (
     DisclosureLevel,
@@ -58,7 +59,6 @@ class PipelineRetriever(Retriever):
     def __init__(
         self,
         parser: QueryParser,
-        recallers: list[Recaller],
         fuser: Fuser,
         discloser: Discloser,
         unit_reader: UnitReader | None,
@@ -75,16 +75,13 @@ class PipelineRetriever(Retriever):
         storage: Storage | None = None,
     ) -> None:
         self._parser = parser
-        self._recallers = recallers
         self._fuser = fuser
         self._discloser = discloser
         self._reader = unit_reader
         if storage is None:
             if unit_reader is None:
                 raise ValidationError("PipelineRetriever requires storage or unit_reader")
-            storage = CompositeStorage(kv=unit_reader.kv, recallers=recallers)
-        elif isinstance(storage, CompositeStorage):
-            storage.bind_recallers(recallers)
+            storage = CompositeStorage(kv=unit_reader.kv)
         self._storage = storage
         self._reranker = reranker
         # 召回超采样：每路取 max(top_k*factor, floor)，撒宽网喂融合。
@@ -107,11 +104,6 @@ class PipelineRetriever(Retriever):
         self._min_score_ratio = float(min_score_ratio)
         self._min_score_ratio_uncalibrated = float(min_score_ratio_uncalibrated)
         self._min_results = max(0, int(min_results))
-
-    @property
-    def recallers(self) -> list[Recaller]:
-        """已接入的 recaller 列表（只读视图；外部不应原地修改）。"""
-        return self._recallers
 
     @property
     def storage(self) -> Storage:
@@ -382,36 +374,17 @@ class PipelineRetriever(Retriever):
 
 @RetrieverProducer.register("pipeline")
 def _build(config):
+    # 召回路装配归 CompositeStorage 工厂（按 vector_enabled 等开关构建期同步组装）；
+    # 这里只取统一 Storage——非 Composite 实现自带检索路径，无需 recaller。
     storage = StorageProducer.resolve(config)
-    # 召回路按能力开关启用；每路 recaller 自取其 Store，可被 config 各自覆盖。
-    recallers = [RecallerProducer.dep(config, "keyword_recaller", default="keyword")]
-    if config.get("vector_enabled", True):
-        recallers.append(RecallerProducer.dep(config, "vector_recaller", default="vector"))
-    if config.get("graph_enabled", True):
-        recallers.append(RecallerProducer.dep(config, "graph_recaller", default="graph"))
-    # L0/L1 分层召回：layers_index_enabled 默认 true（与构建侧对齐：默认建默认查）。
-    # recaller 内部 store 为 None 时 recall 返空，不破坏其他路（向后兼容）。
-    if config.get("layers_index_enabled", True):
-        recallers.append(RecallerProducer.dep(config, "keyword_l0_recaller", default="keyword_l0"))
-        recallers.append(RecallerProducer.dep(config, "keyword_l1_recaller", default="keyword_l1"))
-        if config.get("vector_enabled", True):
-            recallers.append(
-                RecallerProducer.dep(config, "vector_l0_recaller", default="vector_l0")
-            )
-            recallers.append(
-                RecallerProducer.dep(config, "vector_l1_recaller", default="vector_l1")
-            )
     # 精排器与 UnitReader 的真源 kv 与索引/构建侧共享同一实例。
     reranker = (
         RerankerProducer.dep(config, default="overlap")
         if config.get("rerank_enabled", True)
         else None
     )
-    if isinstance(storage, CompositeStorage):
-        storage.bind_recallers(recallers)
     return PipelineRetriever(
         QueryParserProducer.dep(config, default="simple"),
-        recallers,
         FuserProducer.dep(config, default="rrf"),
         DiscloserProducer.dep(config, default="truncating"),
         UnitReader(storage.kv) if storage.has_kv() else None,
