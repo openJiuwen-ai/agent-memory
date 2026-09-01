@@ -72,7 +72,7 @@ def test_text_analyzer_is_written_to_index_mapping(monkeypatch: pytest.MonkeyPat
         return client
 
     elasticsearch = ModuleType("elasticsearch")
-    setattr(elasticsearch, "Elasticsearch", create_client)
+    elasticsearch.Elasticsearch = create_client
     monkeypatch.setitem(sys.modules, "elasticsearch", elasticsearch)
 
     store = ElasticsearchFulltextStore(index="memory_l0", text_analyzer="english")
@@ -81,6 +81,24 @@ def test_text_analyzer_is_written_to_index_mapping(monkeypatch: pytest.MonkeyPat
     assert client.indices.created is not None
     text_mapping = client.indices.created["mappings"]["properties"]["text"]
     assert text_mapping == {"type": "text", "analyzer": "english"}
+    metadata_mapping = client.indices.created["mappings"]["properties"]["metadata"]
+    assert metadata_mapping == {"type": "object"}
+    date_template = client.indices.created["mappings"]["dynamic_templates"][0]
+    assert date_template == {
+        "metadata_dates_as_keyword": {
+            "path_match": "metadata.*",
+            "match_mapping_type": "date",
+            "mapping": {"type": "keyword"},
+        }
+    }
+    string_template = client.indices.created["mappings"]["dynamic_templates"][1]
+    assert string_template == {
+        "metadata_strings_as_keyword": {
+            "path_match": "metadata.*",
+            "match_mapping_type": "string",
+            "mapping": {"type": "keyword"},
+        }
+    }
     array_marker = client.indices.created["mappings"]["properties"]["metadata_array_fields"]
     assert array_marker == {"type": "keyword"}
 
@@ -92,7 +110,7 @@ def test_existing_index_gets_array_marker_mapping(monkeypatch: pytest.MonkeyPatc
         return client
 
     elasticsearch = ModuleType("elasticsearch")
-    setattr(elasticsearch, "Elasticsearch", create_client)
+    elasticsearch.Elasticsearch = create_client
     monkeypatch.setitem(sys.modules, "elasticsearch", elasticsearch)
 
     store = ElasticsearchFulltextStore(index="memory_l0")
@@ -113,7 +131,7 @@ def test_source_records_array_metadata_keys_without_exposing_them_as_metadata(
         return client
 
     elasticsearch = ModuleType("elasticsearch")
-    setattr(elasticsearch, "Elasticsearch", create_client)
+    elasticsearch.Elasticsearch = create_client
     monkeypatch.setitem(sys.modules, "elasticsearch", elasticsearch)
 
     store = ElasticsearchFulltextStore()
@@ -140,7 +158,7 @@ def test_search_filters_stopwords_from_es_analyzed_query(
         return client
 
     elasticsearch = ModuleType("elasticsearch")
-    setattr(elasticsearch, "Elasticsearch", create_client)
+    elasticsearch.Elasticsearch = create_client
     monkeypatch.setitem(sys.modules, "elasticsearch", elasticsearch)
 
     store = ElasticsearchFulltextStore(index="memory_zh")
@@ -175,7 +193,7 @@ def test_search_returns_empty_when_query_contains_only_stopwords(
         return client
 
     elasticsearch = ModuleType("elasticsearch")
-    setattr(elasticsearch, "Elasticsearch", create_client)
+    elasticsearch.Elasticsearch = create_client
     monkeypatch.setitem(sys.modules, "elasticsearch", elasticsearch)
 
     store = ElasticsearchFulltextStore(index="memory_zh")

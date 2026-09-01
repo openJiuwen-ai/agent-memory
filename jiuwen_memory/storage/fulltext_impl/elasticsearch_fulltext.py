@@ -77,7 +77,7 @@ class ElasticsearchFulltextStore(FulltextStore):
         # 生效——已存在的索引不会被重映射，变更后需删除或换 index 重建才能应用。
         self._text_analyzer = text_analyzer
         self._refresh = refresh  # "false" / "true" / "wait_for"
-        self._auth = dict(username=username, password=password, api_key=api_key)
+        self._auth = {"username": username, "password": password, "api_key": api_key}
         self._options = options
         self._client: Any = None
         self._client_hosts: object | None = None
@@ -85,9 +85,7 @@ class ElasticsearchFulltextStore(FulltextStore):
     @property
     def client(self) -> Any:
         hosts = self._resolved_hosts()
-        fingerprint: object = (
-            tuple(hosts) if isinstance(hosts, list) else hosts
-        )
+        fingerprint: object = tuple(hosts) if isinstance(hosts, list) else hosts
         if self._client is not None and self._client_hosts == fingerprint:
             return self._client
         try:
@@ -276,10 +274,7 @@ class ElasticsearchFulltextStore(FulltextStore):
             filters.append(compiled)
         keyword_query = {
             "bool": {
-                "should": [
-                    {"term": {self._text_field: token}}
-                    for token in tokens
-                ],
+                "should": [{"term": {self._text_field: token}} for token in tokens],
                 "minimum_should_match": 1,
             }
         }
@@ -338,6 +333,13 @@ class ElasticsearchFulltextStore(FulltextStore):
                     # 塌陷——16777216 与 16777217 索引成同一个值，两个 EQ 互相命中。
                     # 布尔仍按动态推断。
                     "dynamic_templates": [
+                        {
+                            "metadata_dates_as_keyword": {
+                                "path_match": "metadata.*",
+                                "match_mapping_type": "date",
+                                "mapping": {"type": "keyword"},
+                            }
+                        },
                         {
                             "metadata_strings_as_keyword": {
                                 "path_match": "metadata.*",
@@ -445,16 +447,9 @@ class ElasticsearchFulltextStore(FulltextStore):
                 field=self._text_field,
                 text=text,
             )
-        tokens = (
-            str(item.get("token", "")).strip()
-            for item in response.get("tokens", [])
-        )
+        tokens = (str(item.get("token", "")).strip() for item in response.get("tokens", []))
         return list(
-            dict.fromkeys(
-                token
-                for token in tokens
-                if token and token not in RETRIEVAL_STOPWORDS
-            )
+            dict.fromkeys(token for token in tokens if token and token not in RETRIEVAL_STOPWORDS)
         )
 
 

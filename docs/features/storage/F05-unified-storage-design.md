@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-08-06 |
+| 日期 | 2026-08-31 |
 | 影响范围 | `jiuwen_memory/storage` 统一门面，以及 `jiuwen_memory/construction`、`jiuwen_memory/retrieval`、`jiuwen_memory/control` 对存储层的依赖方式 |
 | 测试基线 | Storage、Construction、Retrieval 与 Control 的目标单测通过；默认加密路径需要可写的本地密钥目录 |
 | Refs | —（如有 issue 补 `Refs: #<n>`） |
@@ -286,6 +286,14 @@ CompositeStorage 长期持有的反向依赖。
 Retriever 通过 `StorageProducer` 获取该具名实例。一体化平台只需注册新的 Storage target 并
 把 `storage.default` 指向它，不需要修改 Retriever 的实现选择。现有 Recaller 仍是默认组合
 实现的兼容适配器，由 Retriever 在装配阶段绑定；该绑定不让 storage 包导入 retrieval。
+
+### 十一、Elasticsearch metadata 动态映射
+
+Elasticsearch 新建全文索引时，`metadata.*` 中被识别为日期的值必须优先映射为
+`keyword`，普通字符串也映射为 `keyword`。metadata 是业务上的 JSON 值，日期样式字符串
+（例如 `2025-12-31`）不应锁定为日期字段，否则同一字段后续写入普通字符串会产生类型冲突，
+破坏真源与检索索引的一致性。已有错误 mapping 的索引不在应用启动时原地迁移，需按运维流程
+重建索引并 reindex。
 
 ---
 
