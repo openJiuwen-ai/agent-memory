@@ -407,6 +407,13 @@ class OrchestratingEvolver(Evolver):
         elif decision == DedupDecision.UPDATE:
             # 合成新旧 content
             merged_content = self._merge_content(existing_unit, candidate)
+            if not merged_content.strip():
+                logger.warning(
+                    "Evolver._dedup: empty merge result for %s, skip update to preserve "
+                    "existing memory",
+                    existing_unit.id[:8],
+                )
+                return 1
             # 更新 existing_unit
             if existing_unit.segments:
                 existing_unit.segments[0].content = merged_content

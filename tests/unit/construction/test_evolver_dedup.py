@@ -631,6 +631,36 @@ class TestDedupUpdate:
         # 验证 provenance 包含候选 id
         assert "c1" in updated.provenance
 
+    @staticmethod
+    def test_empty_merge_preserves_existing_memory():
+        """空白合并结果不得静默覆写已有记忆。"""
+        stores = _create_stores()
+        llm = _MockLLM(
+            responses=[
+                json.dumps({"decision": "update", "reason": "候选补充了新信息"}),
+                " \n\t",
+            ]
+        )
+        plugins = {"embedder": _HashEmbedder(), "llm": llm}
+        evolver = _make_evolver(
+            stores["kv"],
+            stores["vector"],
+            plugins["embedder"],
+            plugins["llm"],
+            dedup_high_similarity=1.01,
+        )
+
+        existing_unit = _make_unit("e1", "用户在阿里巴巴工作")
+        _index_unit(existing_unit, stores["kv"], stores["vector"], plugins["embedder"])
+        candidate = _make_unit("c1", "用户担任高级工程师")
+
+        result = getattr(evolver, "_dedup_batch")([candidate])
+
+        assert result.updated_ids == []
+        stored = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("e1")))
+        assert stored.content == "用户在阿里巴巴工作"
+        assert stored.provenance == []
+
 
 class TestDedupDegradation:
     """降级场景：Embedder/VectorStore/LLM 不可用时的行为。"""

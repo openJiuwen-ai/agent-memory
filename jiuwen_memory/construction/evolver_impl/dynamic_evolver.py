@@ -291,6 +291,13 @@ class DynamicEvolver(OrchestratingEvolver):
             if existing is None:
                 raise ValueError("UPDATE 决策必须提供 existing memory")
             merged = self._merge_content(existing, candidate)
+            if not merged.strip():
+                logger.warning(
+                    "DynamicEvolver: empty merge result for %s, skip update to "
+                    "preserve existing memory",
+                    existing.id[:8],
+                )
+                return 1
             if existing.segments:
                 existing.segments[0].content = merged
             else:
