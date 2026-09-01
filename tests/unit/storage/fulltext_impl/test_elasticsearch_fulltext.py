@@ -7,6 +7,7 @@ from types import ModuleType
 
 import pytest
 
+from jiuwen_memory.common.errors import BackendError
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.storage.fulltext_impl.elasticsearch_fulltext import ElasticsearchFulltextStore
 from jiuwen_memory.storage.types import Document, TextQuery
@@ -41,12 +42,36 @@ class _FakeClient:
         self.indices = _FakeIndices(exists=index_exists)
         self.documents: dict[str, dict] = {}
         self.searches: list[dict] = []
+        self.bulk_calls: list[dict] = []
+        self.delete_by_queries: list[dict] = []
+        self.bulk_failures: list[dict] = []  # 每个 bulk item 强制返回的错误项
 
     def bulk(self, *, operations: list[dict], refresh: str) -> dict:
-        for offset in range(0, len(operations), 2):
-            action = operations[offset]["create"]
-            self.documents[action["_id"]] = operations[offset + 1]
-        return {"errors": False}
+        self.bulk_calls.append({"operations": operations, "refresh": refresh})
+        items: list[dict] = []
+        offset = 0
+        while offset < len(operations):
+            action = operations[offset]
+            if "create" in action:
+                self.documents[action["create"]["_id"]] = operations[offset + 1]
+                items.append({"create": {"_id": action["create"]["_id"], "status": 201}})
+                offset += 2
+            else:
+                doc_id = action["delete"]["_id"]
+                found = doc_id in self.documents
+                self.documents.pop(doc_id, None)
+                items.append(
+                    {"delete": {"_id": doc_id, "status": 200 if found else 404}}
+                )
+                offset += 1
+        if self.bulk_failures:
+            items.extend(self.bulk_failures.pop(0))
+            return {"errors": True, "items": items}
+        return {"errors": False, "items": items}
+
+    def delete_by_query(self, **kwargs) -> dict:
+        self.delete_by_queries.append(kwargs)
+        return {"took": 0, "total": 0, "deleted": 0}
 
     def mget(self, *, index: str, ids: list[str]) -> dict:
         return {
@@ -201,3 +226,56 @@ def test_search_returns_empty_when_query_contains_only_stopwords(
 
     assert result == []
     assert client.searches == []
+
+
+def _store_with_fake_client(
+    monkeypatch: pytest.MonkeyPatch, client: _FakeClient
+) -> ElasticsearchFulltextStore:
+    def create_client(*_args: object, **_kwargs: object) -> _FakeClient:
+        return client
+
+    elasticsearch = ModuleType("elasticsearch")
+    elasticsearch.Elasticsearch = create_client
+    monkeypatch.setitem(sys.modules, "elasticsearch", elasticsearch)
+    store = ElasticsearchFulltextStore(index="memory_ft")
+    assert store.client is client
+    return store
+
+
+def test_delete_uses_realtime_bulk_delete_by_physical_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """delete 必须走按物理 _id 的 bulk delete（实时可见），不得用 delete_by_query。
+
+    delete_by_query 是搜索类 API，只能看到已 refresh 的文档；与 insert 的 bulk
+    create（实时可见）组合时，"写入后 ~1s 内删后重建" 会静默删 0 条并 409。
+    不存在的 id 走 not_found（不置 errors、不抛错），幂等契约保持。
+    """
+    client = _FakeClient()
+    store = _store_with_fake_client(monkeypatch, client)
+    scope = Scope(org="acme", space="s1", user="u1", agent="a1", session="ss1")
+
+    store.insert(scope, [Document(id="m1", text="hello", metadata={})])
+    store.delete(scope, ["m1"])
+    store.delete(scope, ["m1", "never-existed"])  # 已删 + 从未存在：均不得抛错
+
+    assert client.delete_by_queries == [], "delete 不得走 delete_by_query（近实时可见性缝隙）"
+    assert len(client.bulk_calls) == 3, "delete 应各发起一次 bulk 调用"
+    delete_call = client.bulk_calls[1]
+    doc_id = getattr(type(store), "_doc_id")(scope, "m1")
+    assert delete_call["operations"] == [
+        {"delete": {"_index": "memory_ft", "_id": doc_id}}
+    ], "按物理 _id 精确删，隔离由 _doc_id 的五段 scope 编码保证"
+    assert delete_call["refresh"] == "false", "refresh 参数透传"
+
+
+def test_delete_raises_backend_error_on_failed_bulk_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """bulk 置 errors 时，非 not_found 的失败项必须抛 BackendError。"""
+    client = _FakeClient()
+    client.bulk_failures = [[{"delete": {"_id": "x", "status": 500, "error": "boom"}}]]
+    store = _store_with_fake_client(monkeypatch, client)
+
+    with pytest.raises(BackendError, match="elasticsearch delete failed"):
+        store.delete(Scope(org="acme"), ["m1"])
