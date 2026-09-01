@@ -467,6 +467,10 @@ Delete all memory data under the specified `scope_id` (including messages, user 
 
 * **bool**: `True` if deleted successfully.
 
+**Behavior extension (Ebbinghaus forgetting)**:
+
+- Internally iterates over the user list returned by `scope_user_mapping_manager.get_by_scope_id(scope_id)`, per user under a user-level lock: first calls `write_manager.delete_mem_by_user_id`, then `_cleanup_forgetting_traces(scope_id, user_id)` (`mem_id=None` → prefix path) to sweep all of that user's retrieve_history KV keys. KV ops are best-effort; failures only warn and do not abort the main delete flow.
+
 **Exceptions**:
 
 * **build_error**: Raised when `scope_id` format is invalid (`MEMORY_DELETE_MEMORY_EXECUTION_ERROR`).
@@ -770,6 +774,10 @@ Delete a memory entry by its ID (user profile or variable).
 * **user_id**(str, optional): User identifier. Default: `"__default__"`.
 * **scope_id**(str, optional): Scope identifier; if format is invalid, returns directly. Default: `"__default__"`.
 
+**Behavior extension (Ebbinghaus forgetting)**:
+
+- After the main delete completes, synchronously cleans up the forgetting traces for this `mem_id`: `_cleanup_forgetting_traces` deletes the `retrieve_history/{user_id}/{scope_id}/{mem_id}` KV key. KV op is best-effort; failure only warns and does not abort the main delete flow.
+
 **Exceptions**:
 
 * **build_error**: Raised when `write_manager` is not initialized (`MEMORY_DELETE_MEMORY_EXECUTION_ERROR`).
@@ -799,12 +807,16 @@ async def delete_mem_by_user_id(
 ) -> None
 ```
 
-Delete all types of memories for a specified user under a scope (user profiles, variables, etc.).
+Delete all types of memories for a specified user under a scope (user profiles, variables, etc.). Suitable for "forget me" user-data cleanup scenarios.
 
 **Parameters**:
 
 * **user_id**(str, optional): User identifier. Default: `"__default__"`.
 * **scope_id**(str, optional): Scope identifier; if format is invalid, returns directly. Default: `"__default__"`.
+
+**Behavior extension (Ebbinghaus forgetting)**:
+
+- After the main delete completes, synchronously cleans up this user's forgetting traces: `_cleanup_forgetting_traces(scope_id, user_id)` (`mem_id=None` → prefix path) calls `kv_store.delete_by_prefix("retrieve_history/{user_id}/")` to sweep all of that user's retrieve_history KV keys across every scope. KV op is best-effort; failure only warns and does not abort the main delete flow.
 
 **Exceptions**:
 
@@ -821,6 +833,67 @@ Delete all types of memories for a specified user under a scope (user profiles, 
 >>>     user_id="user123",
 >>>     scope_id="my_scope"
 >>> )
+```
+
+
+### async add_memory_unit
+
+```
+async def add_memory_unit(
+    self,
+    *,
+    scope_id: str,
+    user_id: str,
+    memory_doc: MemoryDoc,
+    retrieve_history: dict | None = None,
+) -> str
+```
+
+Write a single `MemoryDoc` directly to the memory index, bypassing LLM extraction and conflict detection. Used by the Ebbinghaus "recall" flow: the caller constructs the full doc (an evicted memory they want to "remember again"), and this method skips the `add_messages` extraction / conflict-detection chain, writing straight to `memory_index.add_memories` with `blacklisted=False` (recall = un-forget); optionally seeds the `retrieve_history` KV so the new unit starts with a non-zero reinforcement score.
+
+**Parameters** (all keyword-only):
+
+* **scope_id**(str): Scope identifier.
+* **user_id**(str): User identifier.
+* **memory_doc**(MemoryDoc): Fully-constructed doc; caller sets `id / text / type / timestamp / fields / is_important`. The `blacklisted` field is ignored — this method always writes `blacklisted=False`.
+* **retrieve_history**(dict | None, optional): Optional initial retrieve_history payload (e.g. carry over the original count + timestamps). When `None`, no retrieve_history KV key is written and the new memory scores like a fresh memory on the next forget sweep. Default: `None`.
+
+**Returns**:
+
+* **str**: The written memory id (i.e. `memory_doc.id`).
+
+**Behavior constraints**:
+
+- Skips LLM extraction (`Generator.generate` / `long_term_memory_extractor.extract` are not called);
+- Skips conflict detection (`MemUpdateChecker.check` is not called);
+- On `mem_id` collision, silently upserts — convenient for the "recall a forgotten memory" scenario reusing the original id;
+- After the write succeeds, if `retrieve_history is not None`, initializes the `retrieve_history/{user_id}/{scope_id}/{mem_id}` KV key with the supplied dict; KV write failure only warns and does not abort the main write.
+
+**Exceptions**:
+
+* **build_error**: Raised as `MEMORY_ADD_MEMORY_UNIT_ERROR` when parameter validation fails (any of `scope_id` / `user_id` / `memory_doc.id` / `memory_doc.text` is empty) or `memory_index` is not initialized; non-`BaseError` exceptions from the underlying `add_memories` are wrapped into the same status code.
+
+**Example**:
+
+```python
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.foundation.store.base_memory_index import MemoryDoc
+>>> 
+>>> memory = LongTermMemory()
+>>> # Recall a forgotten memory (preserving original id / timestamp / is_important)
+>>> new_id = await memory.add_memory_unit(
+>>>     scope_id="my_scope",
+>>>     user_id="user123",
+>>>     memory_doc=MemoryDoc(
+>>>         id="mem_12345",
+>>>         text="re-written memory content",
+>>>         type="user_profile",
+>>>         timestamp="2026-01-01T00:00:00",
+>>>         is_important=True,
+>>>     ),
+>>>     retrieve_history={"retrieve_count": 5, "latest_retrieve_time": "...", "retrieve_history": [...]},
+>>> )
+>>> print(f"Wrote, id={new_id}")
 ```
 
 
@@ -844,6 +917,10 @@ Update the content of a memory entry by its ID.
 * **memory**(str): New memory content.
 * **user_id**(str, optional): User identifier. Default: `"__default__"`.
 * **scope_id**(str, optional): Scope identifier; if format is invalid, returns directly. Default: `"__default__"`.
+
+**Behavior constraint (Ebbinghaus forgetting)**:
+
+- The update only modifies `content`; the top-level `is_important` / `blacklisted` fields are preserved (not reset) — prevents important-memory tags from being lost and prevents an already-forgotten memory from being "revived" by an update.
 
 **Exceptions**:
 
@@ -1021,6 +1098,8 @@ async def search_user_mem(
     user_id: str = "__default__",
     scope_id: str = "__default__",
     threshold: float = 0.3,
+    *,
+    filters: FilterGroup | None = None,
 ) -> list[MemResult]
 ```
 
@@ -1033,6 +1112,7 @@ Search user memories (user profiles, variables, etc.) based on semantic similari
 * **user_id**(str, optional): User identifier. Default: `"__default__"`.
 * **scope_id**(str, optional): Scope identifier; if format is invalid, returns an empty list. Default: `"__default__"`.
 * **threshold**(float, optional): Similarity threshold; memories below this threshold are filtered out. Default: 0.3.
+* **filters**(FilterGroup | None, optional, keyword-only): Filter DSL. `None` (default) → `search_manager` auto-injects `NE("blacklisted", True)`, i.e. Ebbinghaus-forgotten memories are hidden by default; pass a FilterGroup mentioning the `blacklisted` field (e.g. `EQ("blacklisted", True)`) to switch to the recall path that surfaces forgotten memories.
 
 **Returns**:
 
@@ -1164,28 +1244,28 @@ async def get_user_mem_by_page(
     self,
     user_id: str = "__default__",
     scope_id: str = "__default__",
-    page_num: int = 1,
     page_size: int = 10,
-) -> dict[str, Any]
+    page_idx: int = 1,
+    memory_type: MemoryType = MemoryType.UNKNOWN,
+    *,
+    filters: FilterGroup | None = None,
+) -> list[MemInfo]
 ```
 
-Paginate memories for a specified user under a scope.
+Paginate memories for a specified user under a scope, returned in reverse chronological order.
 
 **Parameters**:
 
 * **user_id**(str, optional): User identifier. Default: `"__default__"`.
-* **scope_id**(str, optional): Scope identifier; if format is invalid, returns an empty dict. Default: `"__default__"`.
-* **page_num**(int, optional): Page number, starting from 1. Default: 1.
+* **scope_id**(str, optional): Scope identifier; if format is invalid, returns an empty list. Default: `"__default__"`.
 * **page_size**(int, optional): Page size. Default: 10.
+* **page_idx**(int, optional): Page number, starting from 1. Default: 1.
+* **memory_type**(MemoryType, optional): Memory type filter. `MemoryType.UNKNOWN` means no type filtering and merges middle-term memories into the result. Default: `MemoryType.UNKNOWN`.
+* **filters**(FilterGroup | None, optional, keyword-only): Filter DSL. `None` (default) → `search_manager` auto-injects `NE("blacklisted", True)`, i.e. Ebbinghaus-forgotten memories are hidden by default; pass a FilterGroup mentioning the `blacklisted` field (e.g. `EQ("blacklisted", True)`) to switch to the recall path. When `filters` explicitly queries the `blacklisted` field, middle-term memories are not merged (avoids middle-term entries polluting the query result).
 
 **Returns**:
 
-* **dict[str, Any]**: Contains the following fields:
-  * `total: int`: Total memory count;
-  * `page_num: int`: Current page number;
-  * `page_size: int`: Page size;
-  * `total_pages: int`: Total number of pages;
-  * `data: list[MemInfo]`: Memory list for the current page.
+* **list[MemInfo]**: Memory list for the current page; each `MemInfo` contains `mem_id / content / type / timestamp`.
 
 **Exceptions**:
 
@@ -1196,19 +1276,16 @@ Paginate memories for a specified user under a scope.
 ```python
 >>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
->>> # Paginate user memories
+>>> # Paginate user memories (forgotten memories hidden by default)
 >>> memory = LongTermMemory()
 >>> result = await memory.get_user_mem_by_page(
 >>>     user_id="user123",
 >>>     scope_id="my_scope",
->>>     page_num=2,
->>>     page_size=5
+>>>     page_size=5,
+>>>     page_idx=2
 >>> )
 >>> 
->>> print(f"Total memories: {result['total']}")
->>> print(f"Current page: {result['page_num']}/{result['total_pages']}")
->>> 
->>> for mem_info in result['data']:
+>>> for mem_info in result:
 >>>     print(f"ID: {mem_info.mem_id}, Content: {mem_info.content[:50]}...")
 ```
 
@@ -1232,12 +1309,12 @@ Start the background **dreaming** process for a `(scope_id, user_id)` pair: a sc
 
 * **scope_id**(str): Scope identifier; if the format is invalid, an exception is raised.
 * **user_id**(str): User identifier.
-* **config**(DreamingConfig | None, optional): Dreaming configuration. When `None`, a default `DreamingConfig()` is used (which has `enabled=False`, so nothing starts). Default: `None`.
-* **busy_checker**(Callable[[], bool] | None, optional): Optional callback polled before each sweep; return `True` to defer the current sweep (e.g., while the agent is busy serving the user). Default: `None`.
+* **config**(DreamingConfig | None, optional, keyword-only): Dreaming configuration. When `None`, a default `DreamingConfig()` is used (which has `enabled=False`, so nothing starts). Default: `None`.
+* **busy_checker**(Callable[[], bool] | None, optional, keyword-only): Optional callback polled before each sweep; return `True` to defer the current sweep (e.g., while the agent is busy serving the user). Default: `None`.
 
 **Returns**:
 
-* **DreamingOrchestrator | None**: The background orchestrator instance, or `None` when `config.enabled` is `False`. **Idempotent**: a second call for the same `(scope_id, user_id)` returns the existing orchestrator instead of starting a new one.
+* **DreamingOrchestrator | None**: The background orchestrator instance, or `None` when **both** `config.enabled` and `config.forgetting.enabled` are `False`. **Idempotent**: a second call for the same `(scope_id, user_id)` returns the existing orchestrator instead of starting a new one.
 
 **Prerequisites**:
 
@@ -1245,8 +1322,17 @@ Start the background **dreaming** process for a `(scope_id, user_id)` pair: a sc
 
 **Behavior**:
 
-- The orchestrator runs in the background, performing a sweep every `config.interval_seconds` (after an initial warm-up). Scanned sessions are checkpointed in `kv_store` (key `dreaming/checkpoint/{scope_id}/{user_id}`), so a restarted process does not re-process old sessions.
+- The orchestrator runs in the background, performing a tick every `config.interval_seconds` (after an initial warm-up). Scanned sessions are checkpointed in `kv_store` (key `dreaming/checkpoint/{scope_id}/{user_id}`), so a restarted process does not re-process old sessions.
 - Sessions are grouped by `session_id`; pass meaningful `session_id` values to `add_messages` so consolidation behaves as expected.
+
+**Ebbinghaus forgetting extension**:
+
+- The `DreamingConfig.forgetting` field (type `ForgettingConfig | None`) controls whether the Ebbinghaus forgetting step runs in series inside the same orchestrator tick. The two sub-flows share the orchestrator thread and `interval_seconds` cadence but are governed by independent switches:
+  - `config.enabled` (`DreamingConfig.enabled`) controls whether the sweeper (compress → extract → promote) runs;
+  - `config.forgetting.enabled` (`ForgettingConfig.enabled`) controls whether the forgetting step runs;
+  - When both are `False`, `None` is returned; when either is `True`, the orchestrator runs and each tick dispatches whichever sub-flow(s) are enabled.
+- The forgetting step runs in series after the sweeper, takes the user-level lock independently, degrades to a warning on exception (does not abort the sweeper), and retries on the next tick.
+- When only forgetting is enabled (`config.enabled=False, config.forgetting=ForgettingConfig(enabled=True)`), the sweeper is skipped — no session reads, no LLM extraction, no new writes. This is the common case for tenants who want Ebbinghaus forgetting without offline consolidation.
 
 **Exceptions**:
 
