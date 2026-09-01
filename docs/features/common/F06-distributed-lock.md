@@ -36,8 +36,9 @@ jiuwen_memory/common/lock/
     └── in_memory_lock.py        @LockProducer.register("memory")
 ```
 
-`common/bootstrap.py::register_plugins()` 追加 `import_module("common.lock.lock_impl")`。
-`LockProducer.TOP_NAME = "lock"` 一经导入即成为配置的合法顶层段——`config/context.py`
+`jiuwen_memory/common/bootstrap.py::register_plugins()` 追加
+`import_module("jiuwen_memory.common.lock.lock_impl")`。
+`LockProducer.TOP_NAME = "lock"` 一经导入即成为配置的合法顶层段——`jiuwen_memory/config/context.py`
 的顶层段校验取自 `Factory.known_top_names()`，无需额外登记。
 
 不落在 `storage/`：锁不是记忆数据的读写通道，不参与 `BaseStore` 的 CRUD 动词契约，
@@ -168,9 +169,9 @@ docstring 与配置注释中显式标注。
 
 ### 七、从 storage 下沉的公共件
 
-`common` 不能反向依赖 `storage`，而 Redis 实现需要的四个工具目前都在
+`jiuwen_memory/common` 不能反向依赖 `jiuwen_memory/storage`，而 Redis 实现需要的四个工具目前都在
 `jiuwen_memory/storage/_support.py`。按铁律 9 已确立的做法（SSL 公共件只实现一份，storage 与
-security 共同引用），把以下内容下沉到 `common/_support.py`，`storage/_support.py` 改为
+security 共同引用），把以下内容下沉到 `jiuwen_memory/common/_support.py`，`jiuwen_memory/storage/_support.py` 改为
 再导出：
 
 | 符号 | 说明 |
@@ -181,8 +182,9 @@ security 共同引用），把以下内容下沉到 `common/_support.py`，`stor
 | `read_ssl_config` | 组件 `params` 下的 `ssl_verify` / `ssl_ca_cert` 读取与校验 |
 | `reject_url_tls_params` | 连接串自带 `ssl_*` 查询参数的拦截 |
 
-五者均为纯函数，不依赖 storage 任何模块，行为无变更。`scope_dims` 留在 storage——它是
-检索型后端的过滤构造，与命名空间渲染是两回事。`storage/_support.py` 已有向后兼容再导出
+五者均为纯函数，不依赖 `jiuwen_memory/storage` 任何模块，行为无变更。`scope_dims` 留在
+`jiuwen_memory/storage`——它是
+检索型后端的过滤构造，与命名空间渲染是两回事。`jiuwen_memory/storage/_support.py` 已有向后兼容再导出
 块，追加即可，现有 import 路径不变。
 
 ### 八、配置

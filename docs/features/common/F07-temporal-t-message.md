@@ -69,7 +69,7 @@ consolidate 合并多 source 时会有多个消息时间。合并后的摘要 un
 
 ### 5. 编解码兼容
 
-`memory_codec.py` 的 temporal 数组从 4 元素扩展到 5 元素（加 `t_message`）。按 codec 自身版本策略（[memory_codec.py:31-33](file:///d:/Codes/0725_1_agentmemory/agent-memory/jiuwen_memory/common/type_def/memory_codec.py#L31-L33)），「加字段」属于兼容演进，**不升 `_v`**——`loads` 对老数据（4 元素 temporal 数组）缺省补 `t_message=None` 即可。升版本留给"改字段含义/结构"的破坏性变更。
+`jiuwen_memory/common/type_def/memory_codec.py` 的 temporal 数组从 4 元素扩展到 5 元素（加 `t_message`）。按 codec 自身版本策略（[memory_codec.py:31-33](../../../jiuwen_memory/common/type_def/memory_codec.py#L31-L33)），「加字段」属于兼容演进，**不升 `_v`**——`loads` 对老数据（4 元素 temporal 数组）缺省补 `t_message=None` 即可。升版本留给"改字段含义/结构"的破坏性变更。
 
 ### 6. t_event 语义净化的老数据兼容
 

@@ -17,7 +17,7 @@
 
 存储层定义 6 类 Store 契约（`kv` / `vector` / `fulltext` / `fusion` / `graph` / `fs`），每类各有一个或多个后端实现。装配按「两级命名空间 + Producer」选用：配置里 `kv_store.<实例>.target: redis` 即选 Redis 后端，参数走 `params`。所有实现共享三条铁律：
 
-1. **接口与实现分离**：顶层 `storage/<type>.py` 是纯抽象 + `XProducer` 工厂（声明 `TOP_NAME`）；实现在 `<type>_impl/*.py`，文件尾部 `@XProducer.register("target")` 自注册，`import storage` 即注册（重依赖后端用惰性导入，未装也能 import + 注册，仅访问后端才报 `BackendError`）。
+1. **接口与实现分离**：顶层 `jiuwen_memory/storage/<type>.py` 是纯抽象 + `XProducer` 工厂（声明 `TOP_NAME`）；实现在 `jiuwen_memory/storage/<type>_impl/*.py`，文件尾部 `@XProducer.register("target")` 自注册，`import jiuwen_memory.storage` 即注册（重依赖后端用惰性导入，未装也能 import + 注册，仅访问后端才报 `BackendError`）。
 2. **scope 原生隔离**：所有实现按 `Scope(org/space/user/agent/session)` 隔离。两种落地范式见下「scope 隔离范式」。
 3. **错误语义统一**：业务异常（`ConflictError`/`NotFoundError`/`ValidationError` 等 `AgentMemoryError` 子类）由实现按契约主动抛出并原样透传；后端 I/O 的非预期异常经 `_support.wrap_backend` 归一为 `BackendError`。
 
@@ -104,7 +104,7 @@
 ## 拒绝的方案
 
 - **`import nano_graphrag` 直接用其图存储**：被拒。包 `__init__` 急切拉起整条 GraphRAG 流水线（openai/tiktoken/graspologic/dspy/hnswlib/neo4j），在新版 Python 上多无法构建。改用 `PathFinder` + stub 占位，只加载 `_storage.gdb_networkx` 子模块。
-- **重依赖后端缺失即 import 失败 / 连坐默认实现**：被拒。改为惰性导入——未装 redis/pymilvus/es/nano-graphrag 仍可 `import storage` 并完成工厂注册，只有真正访问后端才抛 `BackendError`；可选后端在 `*_impl/__init__.py` 用 `try/except ImportError` 包裹，互不连坐。
+- **重依赖后端缺失即 import 失败 / 连坐默认实现**：被拒。改为惰性导入——未装 redis/pymilvus/es/nano-graphrag 仍可 `import jiuwen_memory.storage` 并完成工厂注册，只有真正访问后端才抛 `BackendError`；可选后端在 `jiuwen_memory/storage/*_impl/__init__.py` 用 `try/except ImportError` 包裹，互不连坐。
 - **必填连接参数（url/uri/hosts/root/working_dir）惰性校验**：被拒。改为 `Factory.require_param` 在 **build 阶段**即报错，而非拖到首次连接才暴露。
 - **Milvus 默认 Bounded 一致性**：被拒。记忆库需读己之写，固定 `consistency_level="Strong"`，让 get/search 立刻看到刚写入/删除的结果。
 - **ES `metadata.*` 走默认 text 映射**：被拒。text 分析器拆词小写化会让 `"Red Hat"` 之类等值/集合过滤匹配不上；改用 dynamic_template 把 metadata 字符串映射为 keyword，数值/布尔仍动态推断以支持 range。
