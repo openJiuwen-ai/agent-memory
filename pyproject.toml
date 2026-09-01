@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "JiuwenMemory"
-version = "0.1.1"
+version = "0.1.2"
 description = "JiuwenMemory is a long-term memory module for AI agents, providing memory extraction, storage, retrieval, and migration capabilities."
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
