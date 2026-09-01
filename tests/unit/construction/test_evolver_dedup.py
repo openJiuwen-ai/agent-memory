@@ -652,11 +652,12 @@ class TestDedupUpdate:
 
         existing_unit = _make_unit("e1", "用户在阿里巴巴工作")
         _index_unit(existing_unit, stores["kv"], stores["vector"], plugins["embedder"])
-        candidate = _make_unit("c1", "用户担任高级工程师")
+        candidate = _make_unit("c1", "用户在阿里巴巴工作")
 
         result = getattr(evolver, "_dedup_batch")([candidate])
 
         assert result.updated_ids == []
+        assert result.created_ids == []
         stored = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("e1")))
         assert stored.content == "用户在阿里巴巴工作"
         assert stored.provenance == []
