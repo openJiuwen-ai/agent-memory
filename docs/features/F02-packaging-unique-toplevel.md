@@ -47,5 +47,5 @@ mem2.0 以 `src/{api,common,config,...}` 平铺布局 + setuptools `include=api*
 
 - bootstrap surface 仍有 flat path-hack。
 - `agent_plugin` / `bootstrap` 仍是相对通用的顶层名，极端宿主冲突未消。
-- 全库 docs/specs/features 中仍有大量历史 `src/` 路径与 `from api import` 示例，需按需渐进刷新（本轮已改根 `AGENTS.md`、内核 `AGENTS.md` 标题与 hook、`deploy/docker`）。
+- 本文前文保留 `src/` 与旧顶层 import 作为迁移历史证据；当前文档中的可执行 import 示例已统一使用 `jiuwen_memory.*`，后续新增示例也必须遵循该前缀。
 - 对外为 breaking change：调用方须改 import 前缀。

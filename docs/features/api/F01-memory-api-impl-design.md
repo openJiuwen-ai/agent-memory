@@ -16,10 +16,10 @@
 
 ## 背景
 
-`MemoryAPI`（`jiuwen_memory/api/memory_api.py`）是内核的**唯一对外入口**，形态无关——SDK/CLI/Skill/MCP/HTTP·gRPC 各接入形态最终都映射到这同一组语义。调用层只依赖 `api` 这一个包即可触达全部能力与所需类型，无需 import 内核其他包：
+`MemoryAPI`（`jiuwen_memory/api/memory_api.py`）是内核的**唯一对外入口**，形态无关——SDK/CLI/Skill/MCP/HTTP·gRPC 各接入形态最终都映射到这同一组语义。调用层只依赖 `jiuwen_memory.api` 这一个包即可触达全部能力与所需类型，无需 import 内核其他包：
 
 ```python
-from api import (
+from jiuwen_memory.api import (
     assemble, MemoryAPI,               # 入口 + 接口
     Scope, Context, Modality,          # 调用上下文
     MemoryPatch, UpdateMode,           # update
@@ -104,8 +104,8 @@ admin（运行时策略）与全局 audit 查询**没有具体 target scope**，
   的真源兼容句柄；`assemble` 仍只返回 api。普通数据面能力应走 `MemoryAPI`。
 
 ```python
-from api import assemble, build_kernel
-from config import Config
+from jiuwen_memory.api import assemble, build_kernel
+from jiuwen_memory.config import Config
 
 api = assemble()                                  # 默认纯内存离线栈
 api = assemble(config=Config(...), policies={"rerank_enabled": "true"})

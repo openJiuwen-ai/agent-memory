@@ -378,7 +378,7 @@ job_factory:
 
 5. **`CloudEngine._write_middle_path` 通过 `get_job` 运行时覆盖入参注入 binding 的 evolver/index**：`MiddleToLongJobSpec.with_scope` 从 `kwargs` 弹出 `evolver` / `index` 覆盖 Spec 装配期固化的默认值，再传给 `MiddleToLongJob.__init__`。这是替代"`job._evolver = evolver` 直接赋值"的合规方案——不破坏 Job 字段封装，覆盖逻辑收敛在 Spec 层。`InMemoryEngine._write_middle_path` 同样通过该机制注入。
 
-6. **`JobFactory` 自注册靠显式 import**：`bootstrap.register_controllers` 不 import `jobs_impl`；`Engine._opt_job_factory` 内显式 `import control.jobs_impl as _ji` 触发 `@JobFactoryProducer.register("default")` 装饰器执行。若调用方未配 `job_factory` 命名空间，`_opt_job_factory` 返回 None，evolve/middle 路径报错——向后兼容但容易让人误以为"配了 job_factory 就能用"。
+6. **`JobFactory` 自注册靠显式 import**：`bootstrap.register_controllers` 不 import `jobs_impl`；`Engine._opt_job_factory` 内显式 `import jiuwen_memory.control.jobs_impl as _ji` 触发 `@JobFactoryProducer.register("default")` 装饰器执行。若调用方未配 `job_factory` 命名空间，`_opt_job_factory` 返回 None，evolve/middle 路径报错——向后兼容但容易让人误以为"配了 job_factory 就能用"。
 
 7. **`AsyncTimerScheduler` 与同步 API `asyncio.run` 桥接不兼容**（架构债）：`LocalMemoryAPI.add` 同步桥接用 `asyncio.run(add_async(...))`，临时事件循环关闭后 Timer 协程被取消——同步 API 路径提交的 middle Job 永远不会转换为长期记忆。**触发条件**：用户显式配 `scheduler=async_timer` + 用同步 `api.add(...)`。**默认配置无影响**（默认 `in_process`，submit 即跑完 Job，原文立即 ARCHIVED）。**目标终态**：Kernel 级长生命周期 `AsyncRuntime` + 生产形态独立持久化 Worker——已单独立 issue 跟进，不在本次 PR 范围。**当前可用方式**：(a) 用默认 `in_process` scheduler（同步执行，与 mem1.0 行为等价）；(b) 用 `add_async` 全链路 await + 长生命周期事件循环。
 

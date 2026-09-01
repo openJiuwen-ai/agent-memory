@@ -430,7 +430,7 @@ hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
 #### 注册模式
 
 ```python
-# 接口模块（如 common/embedder/base.py）
+# 接口模块（如 jiuwen_memory/common/embedder/base.py）
 class EmbedderProducer(Factory):
     """Embedder 的注册式工厂；TOP_NAME 即配置里的顶层命名空间。"""
     TOP_NAME = "embedder"
@@ -438,8 +438,8 @@ class EmbedderProducer(Factory):
 class Embedder(Plugin):
     ...
 
-# 实现模块（如 common/embedder/embedder_impl/bge_m3_embedder.py）
-from common.embedder.base import EmbedderProducer
+# 实现模块（如 jiuwen_memory/common/embedder/embedder_impl/bge_m3_embedder.py）
+from jiuwen_memory.common.embedder.base import EmbedderProducer
 
 @EmbedderProducer.register("bge_m3")
 def _build(config: ComponentConfig) -> Embedder:

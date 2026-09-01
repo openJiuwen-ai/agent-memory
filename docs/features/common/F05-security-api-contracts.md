@@ -80,7 +80,7 @@ PR 落地前继续从 `jiuwen_memory.common.security` 顶层导出，既有消�
 - `audit_integrity_impl/`（版本化规范化 + 链式 HMAC 的 `AuditIntegrityProvider`；内存 /
   SQLite 审计后端叠加 `ChainedAuditStore`；锚点产品实现）
 - 上述接缝接入实际 Server lifecycle（HTTP / MCP / CLI）
-- 删除过渡桥 `common/security/legacy.py` 与全部 `legacy_request_context(...)` 调用点
+- 删除过渡桥 `jiuwen_memory/common/security/legacy.py` 与全部 `legacy_request_context(...)` 调用点
 
 ## 5. PR2 固定的接口（隔离 / 授权）
 
@@ -205,7 +205,7 @@ authenticator 产出，不接受调用方以 `Scope` 自述身份，也不再有
 - `high_water_mark` 是本次连续成功验证到的最高 sequence，不是返回瞬间的动态链头；只有
   到达稳定快照链头才可为 clean。合法并发只允许追加，更新/删除/截断属于损坏或攻击路径。
 
-### 6.2 `ProtectedAuditLogger`（`common/audit/protected_audit_logger.py`）
+### 6.2 `ProtectedAuditLogger`（`jiuwen_memory/common/audit/protected_audit_logger.py`）
 
 `record(event)` 委派 `AuditIntegrityProvider.record_chained`（失败抛
 `AuditIntegrityError`，不吞错、不降级）；`query(filters, limit)` 透传底层

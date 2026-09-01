@@ -76,7 +76,7 @@ Source.fetch() → list[RawPayload]
 
 ## 数据结构
 
-### RawPayload（`common/type_def/raw.py`）
+### RawPayload（`jiuwen_memory/common/type_def/raw.py`）
 
 | 字段 | 类型 | 语义 |
 |------|------|------|
@@ -88,7 +88,7 @@ Source.fetch() → list[RawPayload]
 | `metadata` | dict[str, Any] | 附加元数据；JSON 标量原生类型由接入链路透传 |
 | `occurred_at` | datetime \| None | 事件发生时间 |
 
-### Modality（`common/type_def/memory.py`）
+### Modality（`jiuwen_memory/common/type_def/memory.py`）
 
 ```
 TEXT / IMAGE / AUDIO / VIDEO / CODE / DOCUMENT
