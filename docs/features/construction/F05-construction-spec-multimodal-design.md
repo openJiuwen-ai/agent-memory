@@ -115,6 +115,46 @@ future = self._executor.submit(self._run, job.id, task)
 完成 ASR/视觉双流处理、事件边界确认以及 CLM/ELM 原始结果生成。
 
 ASR 通过 `asr_port` 注入独立的 `VideoAsrService`，由远程服务返回带时间戳的转写片段。
+当前支持 `openai_transcription` 和 `dashscope_filetrans` 两种实现。百炼文件转写配置示例：
+
+```yaml
+asr:
+  video:
+    target: dashscope_filetrans
+    params:
+      asr_model: qwen3-asr-flash-filetrans
+      asr_base_url: ${DASHSCOPE_ASR_BASE_URL}
+      asr_api_key: ${DASHSCOPE_API_KEY}
+      config_namespace: asr.video
+```
+
+`DASHSCOPE_ASR_BASE_URL` 可设置为 `https://dashscope.aliyuncs.com/api/v1`；地址必须以
+`/api/v1` 结尾。
+
+`dashscope_filetrans` 在 Adapter 内上传临时音频、提交异步任务并轮询结果，最终仅向视频
+流水线返回句级时间戳；业务流程不感知百炼传输协议。使用该实现前安装
+`JiuwenMemory[multimodal]` 可选依赖。
+
+使用 vLLM Whisper 等 OpenAI-compatible ASR 服务时，将同一具名实例替换为：
+
+```yaml
+asr:
+  video:
+    target: openai_transcription
+    params:
+      asr_model: whisper-large-v3-turbo
+      asr_base_url: ${OPENAI_ASR_BASE_URL}
+      asr_api_key: ${OPENAI_ASR_API_KEY:-dummy}
+      config_namespace: asr.video
+```
+
+`OPENAI_ASR_BASE_URL` 通常以 `/v1` 结尾，服务需要实现 `/audio/transcriptions`，并支持
+`verbose_json` 响应和 segment 级时间戳。
+
+视频规约同时依赖系统命令 `ffmpeg` 和 `ffprobe`，二者不由 Python 依赖管理器安装；
+部署时必须单独安装并确保可通过 `PATH` 调用，缺失时 Normalizer 健康检查直接失败。
+视频没有音轨或 ASR 未产生有效文本时，流水线跳过 ASR 章节切分，按固定窗口和视觉流
+继续构建 CLM/ELM，不将静音视频判定为任务失败。
 
 ```python
 clips, events = self._extract_video_memory(payload)
@@ -172,7 +212,9 @@ IndexBuilder 建立索引。系统不新增多模态 Store，原始视频不复�
 ```
 
 视频流水线通过 `asr_port`、`llm_port` 和 `vlm_port` 分别注入语音、文本和视觉模型；
-`asr_port` 是具名实例引用，具体参数见 `examples/config_multimodal.yml`。
+`asr_port` 是具名实例引用。视频片段以 Base64 Data URL 传给远程 VLM，
+`vlm_max_inline_video_bytes` 用于限制单个请求内联的视频大小，具体参数见
+`examples/config_multimodal.yml`。
 
 ### 6. 记忆检索
 

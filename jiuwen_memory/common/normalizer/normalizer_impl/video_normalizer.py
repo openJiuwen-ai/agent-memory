@@ -23,6 +23,7 @@ from .video_asr import VideoAsrProducer, VideoAsrService
 
 VideoMemoryOutput = tuple[list[dict[str, Any]], list[dict[str, Any]]]
 VideoMemoryBackend = Callable[[RawPayload], VideoMemoryOutput]
+DEFAULT_MAX_INLINE_VIDEO_BYTES = 50 * 1024 * 1024
 
 logger = get_logger(__name__)
 
@@ -39,6 +40,7 @@ class VideoNormalizer(Normalizer):
         asr_chunk_seconds: int = 600,
         llm_port: LLM | None = None,
         vlm_port: LLM | None = None,
+        vlm_max_inline_video_bytes: int = DEFAULT_MAX_INLINE_VIDEO_BYTES,
         temp_root: str = "",
         backend: VideoMemoryBackend | None = None,
     ) -> None:
@@ -46,12 +48,15 @@ class VideoNormalizer(Normalizer):
             raise ValidationError("chunk_seconds must be greater than zero")
         if asr_chunk_seconds <= 0:
             raise ValidationError("asr_chunk_seconds must be greater than zero")
+        if vlm_max_inline_video_bytes <= 0:
+            raise ValidationError("vlm_max_inline_video_bytes must be greater than zero")
         self._chunk_seconds = chunk_seconds
         self._asr_port = asr_port
         self._asr_language = asr_language
         self._asr_chunk_seconds = asr_chunk_seconds
         self._llm_port = llm_port
         self._vlm_port = vlm_port
+        self._vlm_max_inline_video_bytes = vlm_max_inline_video_bytes
         self._temp_root = temp_root
         self._backend = backend
 
@@ -73,6 +78,11 @@ class VideoNormalizer(Normalizer):
             asr_chunk_seconds=int(params.get("asr_chunk_seconds", 600)),
             llm_port=llm_port,
             vlm_port=vlm_port,
+            vlm_max_inline_video_bytes=int(
+                params.get(
+                    "vlm_max_inline_video_bytes", DEFAULT_MAX_INLINE_VIDEO_BYTES
+                )
+            ),
             temp_root=str(params.get("temp_root", "")),
             backend=backend,
         )
@@ -159,6 +169,7 @@ class VideoNormalizer(Normalizer):
                     require_precomputed_asr=False,
                     llm_port=self._llm_port,
                     vlm_port=self._vlm_port,
+                    vlm_max_inline_video_bytes=self._vlm_max_inline_video_bytes,
                     resume_from_stream=False,
                     cleanup=True,
                 ),
@@ -257,5 +268,8 @@ def _build(config):
         asr_chunk_seconds=int(config.get("asr_chunk_seconds", 600)),
         llm_port=LlmProducer.dep(config, "llm_port"),
         vlm_port=LlmProducer.dep(config, "vlm_port"),
+        vlm_max_inline_video_bytes=int(
+            config.get("vlm_max_inline_video_bytes", DEFAULT_MAX_INLINE_VIDEO_BYTES)
+        ),
         temp_root=str(config.get("temp_root", "")),
     )
