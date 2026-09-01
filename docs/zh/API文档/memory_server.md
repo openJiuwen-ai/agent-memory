@@ -105,7 +105,7 @@ IP=127.0.0.1 PORT=8000 python -m jiuwen_memory.server.memory_server
 | `DB_STORE_TYPE` | `default` | DB Store 类型，支持 `default` / `gauss`。 |
 | `INDEX_BACKEND` | `simple` | 记忆索引后端，支持 `simple`（向量，KV+Vector）/ `file`（markdown+SQLite）。`file` 时长期记忆落 markdown 文件，配合 `FILE_MEMORY_DATA_DIR`。 |
 | `FILE_MEMORY_DATA_DIR` | `~/.jiuwenmemory/file_memory_data` | FileMemoryIndex 数据根目录，仅 `INDEX_BACKEND=file` 时生效。 |
-| `VECTOR_STORE_TYPE` | `chroma` | Vector Store 类型，支持 `chroma` / `milvus` / `elasticsearch` / `gauss`。`INDEX_BACKEND=file` 时仅用于中间记忆 / dreaming，可不配。 |
+| `VECTOR_STORE_TYPE` | `chroma` | Vector Store 类型，支持 `chroma` / `milvus` / `elasticsearch` / `gauss` / `qdrant`。`INDEX_BACKEND=file` 时仅用于中间记忆 / dreaming，可不配。 |
 | `VECTOR_CHROMA_PERSIST_DIR` | `MEMORY_DATA_DIR` | Chroma 向量库持久化目录。 |
 | `VECTOR_MILVUS_URI` | 空字符串 | Milvus 服务地址。 |
 | `VECTOR_MILVUS_TOKEN` | 空字符串 | Milvus Token，可为空。 |
@@ -124,6 +124,11 @@ IP=127.0.0.1 PORT=8000 python -m jiuwen_memory.server.memory_server
 | `VECTOR_GAUSS_DATABASE` | `postgres` | Gauss 向量库数据库名。 |
 | `VECTOR_GAUSS_USER` | `postgres` | Gauss 向量库用户名。 |
 | `VECTOR_GAUSS_PASSWORD` | 空字符串 | Gauss 向量库密码。 |
+| `VECTOR_QDRANT_URL` | `http://localhost:6333` | Qdrant HTTP 服务地址。 |
+| `VECTOR_QDRANT_API_KEY` | 空字符串 | Qdrant API Key；本地无鉴权部署可留空。 |
+| `VECTOR_QDRANT_COLLECTION_PREFIX` | `agent_vector` | JiuwenMemory collection 隔离前缀。 |
+| `VECTOR_QDRANT_PREFER_GRPC` | `false` | 设为 `true` 时优先使用 Qdrant gRPC 传输。 |
+| `VECTOR_QDRANT_TIMEOUT` | 客户端默认值 | 请求超时秒数；留空使用客户端默认值。 |
 
 #### `INDEX_BACKEND=file` 说明
 

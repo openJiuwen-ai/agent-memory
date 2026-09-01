@@ -68,7 +68,7 @@ def create_async_engine_from_env() -> AsyncEngine:
         db_url = f"sqlite+aiosqlite:///{db_path}"
 
     if db_url.startswith("gaussdb"):
-        import jiuwen_memory.foundation.store.db.gauss_dialect
+        import jiuwen_memory.foundation.store.db.gauss_dialect  # noqa: F401
 
     memory_logger.info("Using DB engine url=%s", db_url)
 
@@ -170,7 +170,7 @@ def create_db_store(engine: AsyncEngine) -> BaseDbStore:
 def create_vector_store() -> BaseVectorStore:
     """根据 VECTOR_STORE_TYPE 构建 Vector store。
 
-    支持值: chroma | milvus | elasticsearch | gauss
+    支持值: chroma | milvus | elasticsearch | gauss | qdrant
     各分支懒导入对应实现，避免没装第三方包时影响其他分支启动。
     """
     vec_type = os.getenv("VECTOR_STORE_TYPE", "chroma").strip().lower()
@@ -240,7 +240,22 @@ def create_vector_store() -> BaseVectorStore:
             password=os.getenv("VECTOR_GAUSS_PASSWORD", ""),
         )
 
+    if vec_type == "qdrant":
+        from jiuwen_memory.foundation.store.vector.qdrant_vector_store import QdrantVectorStore
+        timeout_raw = os.getenv("VECTOR_QDRANT_TIMEOUT", "").strip()
+        try:
+            timeout = float(timeout_raw) if timeout_raw else None
+        except ValueError as exc:
+            raise ValueError(f"VECTOR_QDRANT_TIMEOUT must be a number, got {timeout_raw!r}") from exc
+        return QdrantVectorStore(
+            url=os.getenv("VECTOR_QDRANT_URL", "http://localhost:6333").strip() or "http://localhost:6333",
+            api_key=os.getenv("VECTOR_QDRANT_API_KEY", "").strip() or None,
+            collection_prefix=os.getenv("VECTOR_QDRANT_COLLECTION_PREFIX", "agent_vector").strip(),
+            prefer_grpc=os.getenv("VECTOR_QDRANT_PREFER_GRPC", "false").strip().lower() == "true",
+            timeout=timeout,
+        )
+
     raise ValueError(
         f"Unsupported VECTOR_STORE_TYPE={vec_type!r}, "
-        f"expected one of: chroma, milvus, elasticsearch, gauss"
+        f"expected one of: chroma, milvus, elasticsearch, gauss, qdrant"
     )

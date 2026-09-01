@@ -105,7 +105,7 @@ If neither `.env` file is found, the service automatically creates the `~/.jiuwe
 | `DB_STORE_TYPE` | `default` | DB Store type. Supported values: `default` / `gauss`. |
 | `INDEX_BACKEND` | `simple` | Memory index backend. Supported values: `simple` (vector, KV+Vector) / `file` (markdown+SQLite). When `file`, long-term memories are persisted to markdown files; see `FILE_MEMORY_DATA_DIR`. |
 | `FILE_MEMORY_DATA_DIR` | `~/.jiuwenmemory/file_memory_data` | `FileMemoryIndex` data root directory. Only effective when `INDEX_BACKEND=file`. |
-| `VECTOR_STORE_TYPE` | `chroma` | Vector Store type. Supported values: `chroma` / `milvus` / `elasticsearch` / `gauss`. Under `INDEX_BACKEND=file`, the vector store is only used for middle-term memory / dreaming and may be left unconfigured. |
+| `VECTOR_STORE_TYPE` | `chroma` | Vector Store type. Supported values: `chroma` / `milvus` / `elasticsearch` / `gauss` / `qdrant`. Under `INDEX_BACKEND=file`, the vector store is only used for middle-term memory / dreaming and may be left unconfigured. |
 | `VECTOR_CHROMA_PERSIST_DIR` | `MEMORY_DATA_DIR` | Chroma persistence directory. |
 | `VECTOR_MILVUS_URI` | empty string | Milvus service URI. |
 | `VECTOR_MILVUS_TOKEN` | empty string | Milvus token; optional. |
@@ -124,6 +124,11 @@ If neither `.env` file is found, the service automatically creates the `~/.jiuwe
 | `VECTOR_GAUSS_DATABASE` | `postgres` | Gauss vector store database name. |
 | `VECTOR_GAUSS_USER` | `postgres` | Gauss vector store user. |
 | `VECTOR_GAUSS_PASSWORD` | empty string | Gauss vector store password. |
+| `VECTOR_QDRANT_URL` | `http://localhost:6333` | Qdrant HTTP endpoint. |
+| `VECTOR_QDRANT_API_KEY` | empty string | Qdrant API key; optional for unsecured local deployments. |
+| `VECTOR_QDRANT_COLLECTION_PREFIX` | `agent_vector` | Prefix used to isolate JiuwenMemory collections. |
+| `VECTOR_QDRANT_PREFER_GRPC` | `false` | Prefer Qdrant's gRPC transport when set to `true`. |
+| `VECTOR_QDRANT_TIMEOUT` | client default | Request timeout in seconds; leave empty to use the client default. |
 
 #### `INDEX_BACKEND=file` notes
 

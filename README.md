@@ -28,7 +28,7 @@ Agent conversational systems rely on limited context windows — once the Token 
 
 - **Semantic Retrieval & Conflict Detection**: Unified cross-type vector semantic retrieval; `MemUpdateChecker` uses LLM to analyze semantic conflicts and intelligently decide ADD/DELETE strategies; LLM outputs UPDATE/DELETE directives validated via semantic checks before execution, ensuring memory consistency and controllable operations.
 
-- **Full-Stack Storage Backend System**: Coverage across five storage categories — KV (InMemoryKV/ShelveStore/DbBasedKV/Redis), Vector (ChromaDB/Milvus/Elasticsearch/GaussVector), Relational (SQLite/PostgreSQL/MySQL/GaussDB), Message (SqlMessageStore), and Graph (Milvus GraphStore) — adapting from local single-node to cloud cluster scenarios.
+- **Full-Stack Storage Backend System**: Coverage across five storage categories — KV (InMemoryKV/ShelveStore/DbBasedKV/Redis), Vector (ChromaDB/Milvus/Elasticsearch/GaussVector/Qdrant), Relational (SQLite/PostgreSQL/MySQL/GaussDB), Message (SqlMessageStore), and Graph (Milvus GraphStore) — adapting from local single-node to cloud cluster scenarios.
 
 - **Data Migration Framework**: Supports versioned schema migration for KV/vector/SQL/message/index stores and cross-BaseMemoryIndex batch data migration, with an operation registry for custom migration extensions.
 
@@ -79,6 +79,9 @@ pip install JiuwenMemory[redis]
 
 # ChromaDB vector store
 pip install JiuwenMemory[chromadb]
+
+# Qdrant vector store
+pip install JiuwenMemory[qdrant]
 
 # File-system memory backend (sqlite-vec + watchdog + jieba)
 # Required for INDEX_BACKEND=file; missing deps silently degrade:
@@ -330,7 +333,7 @@ Graph Memory is an independent knowledge graph memory module. It turns input con
 
 ### **Flexible Storage Backends and Data Migration**
 
-- **Full-Stack Storage Backends**: Coverage across five storage categories — KV (InMemoryKV/ShelveStore/DbBasedKV/Redis), Vector (ChromaDB/Milvus/Elasticsearch/GaussVector), Relational (SQLite/PostgreSQL/MySQL/GaussDB), Message (SqlMessageStore), and Graph (Milvus GraphStore) — adapting from local single-node to cloud cluster scenarios.
+- **Full-Stack Storage Backends**: Coverage across five storage categories — KV (InMemoryKV/ShelveStore/DbBasedKV/Redis), Vector (ChromaDB/Milvus/Elasticsearch/GaussVector/Qdrant), Relational (SQLite/PostgreSQL/MySQL/GaussDB), Message (SqlMessageStore), and Graph (Milvus GraphStore) — adapting from local single-node to cloud cluster scenarios.
 - **Versioned Migration**: A complete migration framework supporting SQL schema changes, vector field renaming, KV data updates, message data transformation, and index field operations.
 - **Cross-index Migration**: Supports batch migration of memory data between different BaseMemoryIndex instances for smooth storage engine switching, with an operation registry for custom migration extensions.
 
