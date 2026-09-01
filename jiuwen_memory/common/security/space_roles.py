@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """空间内两轴角色、判定事实投影与取最具体成员记录（F07）。
 
 一个空间内的权限拆成两条独立的轴：内容轴管条目的读写改删，治理轴管成员与
@@ -6,8 +7,8 @@
 
 **落 `common/security/` 而非控制层或 API 层**，四条判据（F07「模块落点」）：
 
-- 三张动作矩阵的元素类型取安全横切契约的 12 值 ``Action``，而
-  ``control/types.py`` 已有一个五值 ``Action`` 且授权记录仍在用它，两者无法同模块共存；
+- 安全横切契约的 12 值 ``Action`` 真源位于 ``common/security``，``control/types.py``
+  只兼容再导出同一对象；角色矩阵同属跨层公共判据，不能反向落到控制层；
 - 矩阵的消费方是判定实现（安全层）与鉴权点的授予上界校验（API 层），角色枚举的
   消费方还包括成员记录的字段类型与存量兼容解析（控制层），三者能共同依赖的只有 ``common/``；
 - 归属主体档清单与「取最具体记录」的划分规则同样被判定实现与鉴权点两侧读取；
@@ -17,8 +18,8 @@
 
 .. note::
    三张动作矩阵的元素类型取本模块自定义的 :class:`SpaceAction`，与安全横切契约的 ``Action`` 是
-   两套枚举，取值在本规约用到的九项上同名同义。取自定义枚举而非直接依赖安全横切契约：判据主体
-   不绑定宿主形态（F07 决策 4），换宿主时整体替换枚举、矩阵内容不动。
+   两套枚举，取值在本规约用到的十项上同名同义。当前保留本地枚举是为了让 F07 判据
+   不绑定宿主动作类型；替换宿主时矩阵内容不动，不再依赖旧 control 五值枚举。
 """
 
 from __future__ import annotations
@@ -67,11 +68,8 @@ GOVERNANCE_RANK: dict[SpaceGovernanceRole, int] = {
 class SpaceAction(str, Enum):
     """判定动作枚举（F07「入口到轴与动作的映射」）。
 
-    取值与安全横切契约的 ``Action`` 中本规约用到的九项同名同义。上游合入后本枚举整体由
-    ``Action`` 替换，三张矩阵与入口映射表的内容不变。
-
-    不复用 ``control/types.py`` 的五值 ``Action``：后者缺 ``REVOKE_SHARE`` 与三个
-    组织级动作，且它是授权记录的字段类型，扩充会改变存量记录的取值域。
+    取值与安全横切契约的 ``Action`` 中本规约用到的十项同名同义。`control/types.py`
+    已兼容再导出安全域 ``Action``；本枚举只作为 F07 判据的宿主解耦层保留。
     """
 
     # 空间内动作：由两轴求值裁决
@@ -84,6 +82,7 @@ class SpaceAction(str, Enum):
     # 组织级动作：由管理面角色闸门终局裁决，不落两轴求值
     MANAGE_SPACE = "manage_space"
     READ_AUDIT = "read_audit"
+    VERIFY_AUDIT = "verify_audit"
     ADMINISTER_SYSTEM = "administer_system"
 
 
@@ -190,6 +189,7 @@ ENTRY_RULES: dict[str, EntryRule] = {
     # -- 组织级：角色闸门终局，本特性内维持现状判据 ------------------------- #
     "create_space": EntryRule(SpaceAxis.ORG, SpaceAction.MANAGE_SPACE),
     "audit": EntryRule(SpaceAxis.ORG, SpaceAction.READ_AUDIT),
+    "verify_audit": EntryRule(SpaceAxis.ORG, SpaceAction.VERIFY_AUDIT),
     "admin_get": EntryRule(SpaceAxis.ORG, SpaceAction.ADMINISTER_SYSTEM),
     "admin_all": EntryRule(SpaceAxis.ORG, SpaceAction.ADMINISTER_SYSTEM),
     "admin_set": EntryRule(SpaceAxis.ORG, SpaceAction.ADMINISTER_SYSTEM),

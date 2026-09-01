@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """jiuwen_memory.common.security.cryptography: 契约层--抽象方法、错误分类与密钥值对象。
 
 接口先行版：``cryptography_impl`` 未合入，只固定
@@ -84,3 +85,39 @@ def test_crypto_context_requires_scope_and_purpose() -> None:
 def test_wrapped_key_is_plain_value_object() -> None:
     wrapped = WrappedKey(ciphertext=b"c", nonce=b"n", ref=KeyRef(key_id="kp-1"))
     assert wrapped.ref.epoch == 1
+
+
+class _MaclessKeyProvider(KeyProvider):
+    """只实现加密侧抽象方法的最小 provider：MAC capability 走契约默认。"""
+
+    def active_key(self):
+        return KeyRef(key_id="kp-1")
+
+    def rotate(self):
+        raise NotImplementedError
+
+    def wrap(self, data_key, *, purpose, org):
+        raise NotImplementedError
+
+    def unwrap(self, wrapped, *, purpose, org):
+        raise NotImplementedError
+
+    def health(self) -> None:
+        return None
+
+
+def test_mac_capability_defaults_to_unsupported() -> None:
+    """默认不支持 MAC：审计完整性装配期靠 supports_mac 检查拦截，不靠 target 名。"""
+    provider = _MaclessKeyProvider()
+    assert provider.supports_mac() is False
+
+
+def test_mac_and_verify_mac_do_not_silently_fall_back() -> None:
+    """不支持 MAC 的 provider 直接抛 NotImplementedError，不静默降级。"""
+    provider = _MaclessKeyProvider()
+    with pytest.raises(NotImplementedError):
+        provider.mac(b"message", purpose="audit-integrity:hmac:v1")
+    with pytest.raises(NotImplementedError):
+        provider.verify_mac(
+            b"message", b"tag", purpose="audit-integrity:hmac:v1", ref=KeyRef(key_id="kp-1")
+        )

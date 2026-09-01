@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """密钥提供与轮换契约（F05 §Cryptography §KeyProvider）。
 
 密码学能力**只能通过本接口获取密钥**，不得自己读环境变量或配置文件里的根密钥
@@ -95,3 +96,32 @@ class KeyProvider(ABC):
 
         不得在异常消息里泄露密钥材料、密钥文件内容或 KMS 凭据（F05 §装配不变量 8）。
         """
+
+    # -- MAC / 签名 capability（审计完整性用，F05 §Audit Integrity §Key 生命周期）- #
+    # 默认不支持：本地信封 provider 覆写为支持（实装 PR），KMS/HSM 不可导出 key 的
+    # 部署同样需要本 capability。审计完整性装配时调用 :meth:`supports_mac`，不支持即
+    # 拒绝（capability 不满足组合要求时拒绝启动）--不靠 target 名判断（F05 §依据
+    # capability 做安全决策）。``purpose`` 实现用途隔离：审计完整性固定用版本化常量
+    # （如 ``audit-integrity:hmac:v1``），与加密的包裹密钥派生互不复用（F05 §密钥隔离）。
+
+    def supports_mac(self) -> bool:
+        """本 provider 是否提供 MAC/sign capability。默认 ``False``。"""
+        return False
+
+    def mac(self, message: bytes, *, purpose: str) -> tuple[bytes, KeyRef]:
+        """用**当前活动密钥**对 ``message`` 计算 MAC，返回 ``(tag, 使用的 KeyRef)``。
+
+        不支持 MAC 的 provider 不得静默回退--直接抛 ``NotImplementedError``，由装配期
+        :meth:`supports_mac` 检查先行拦住。``purpose`` 参与密钥派生，实现用途隔离。
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not provide MAC capability")
+
+    def verify_mac(self, message: bytes, tag: bytes, *, purpose: str, ref: KeyRef) -> bool:
+        """用 ``ref`` 指定代次的密钥材料验证 MAC。
+
+        必须按 ``ref.epoch`` 选取历史材料，找不到时**抛**
+        :class:`~jiuwen_memory.common.security.cryptography.base.KeyMismatchError`
+        （不回退活动密钥试验--那会让 epoch 绑定形同虚设）。材料存在但 tag 不匹配返回
+        ``False``；匹配返回 ``True``。比较走常时间 API。
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not provide MAC capability")

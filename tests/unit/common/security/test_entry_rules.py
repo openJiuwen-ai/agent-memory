@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """入口到轴与动作的映射表的完整性与一致性断言（F07「入口到轴与动作的映射」）。
 
 映射表与归属主体档两级清单的分工由三条断言固定，任一不成立即两侧的分工被改坏；
@@ -86,7 +87,14 @@ def test_policy_trimming_entries_share_the_second_grade() -> None:
 
 def test_org_level_entries_take_org_axis() -> None:
     """组织级入口走角色闸门，不落两轴求值。"""
-    for entry in ("create_space", "audit", "admin_get", "admin_all", "admin_set"):
+    for entry in (
+        "create_space",
+        "audit",
+        "verify_audit",
+        "admin_get",
+        "admin_all",
+        "admin_set",
+    ):
         assert ENTRY_RULES[entry].axis is SpaceAxis.ORG, entry
 
 
@@ -135,10 +143,11 @@ def test_own_actions_only_extend_contributor() -> None:
 
 
 def test_content_axis_never_grants_organisation_level_actions() -> None:
-    """三个组织级动作不出现在任一轴的矩阵里：它们由角色闸门终局裁决。"""
+    """四个组织级动作不出现在任一轴的矩阵里：它们由角色闸门终局裁决。"""
     org_actions = {
         SpaceAction.MANAGE_SPACE,
         SpaceAction.READ_AUDIT,
+        SpaceAction.VERIFY_AUDIT,
         SpaceAction.ADMINISTER_SYSTEM,
     }
     for actions in list(CONTENT_ACTIONS.values()) + list(GOVERNANCE_ACTIONS.values()):

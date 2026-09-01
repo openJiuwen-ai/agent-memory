@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-08-20 |
-| 影响范围 | `jiuwen_memory/common/security/`、`jiuwen_memory/api/`、`bootstrap/core/`、`bootstrap/mcp_server/transport_security.py`、`docs/specs/S02-memory-api.md`、`docs/specs/S07-common.md` |
-| 关联文档 | [F05 公共安全架构](../../../security-plans/F05-common-security-architecture.md)、[PR1/PR2 接口说明文档](../../../security-plans/2026-08-17-PR1-PR2-接口说明文档.md)、[F04 安全接口与加密设计](F04-security-interfaces-and-encryption.md) |
+| 影响范围 | `jiuwen_memory/common/security/`、`jiuwen_memory/common/audit/`、`jiuwen_memory/api/`、`bootstrap/core/`、`bootstrap/mcp_server/transport_security.py`、`docs/specs/S02-memory-api.md`、`docs/specs/S07-common.md` |
+| 关联文档 | [S02 记忆接口层](../../specs/S02-memory-api.md)、[S07 公共组件层](../../specs/S07-common.md)、[F04 安全接口与加密设计](F04-security-interfaces-and-encryption.md) |
 | 状态 | **接口先行、实现暂缓**：契约层已合入，`*_impl` 实现包与 Server lifecycle 接线随后续实装 PR 合入 |
 
 ## 1. 背景与目标
@@ -75,8 +75,10 @@ PR 落地前继续从 `jiuwen_memory.common.security` 顶层导出，既有消�
 ## 4. 暂缓合入清单（实装 PR 交付）
 
 - `authentication_impl/`（dev / trusted / api_key 三种 Authenticator 及 KeyStore 后端）
-- `cryptography_impl/`（KeyProvider 后端）
+- `cryptography_impl/`（KeyProvider 后端；`LocalKeyProvider` 补齐 MAC capability）
 - `authorization_impl/`（`Authorizer` / `GrantStore` / `DelegationStore` 的后端实现）
+- `audit_integrity_impl/`（版本化规范化 + 链式 HMAC 的 `AuditIntegrityProvider`；内存 /
+  SQLite 审计后端叠加 `ChainedAuditStore`；锚点产品实现）
 - 上述接缝接入实际 Server lifecycle（HTTP / MCP / CLI）
 - 删除过渡桥 `common/security/legacy.py` 与全部 `legacy_request_context(...)` 调用点
 
@@ -169,3 +171,135 @@ authenticator 产出，不接受调用方以 `Scope` 自述身份，也不再有
 `examples/quickstart.py`、`tests/`）在 `authentication_impl` 合入、各 surface 接上
 `authenticated()` 的同一个 PR 中删除。届时接入层直接产出 `RequestSecurityContext`，
 `MemoryAPI` 公共签名不再变动；请求 payload 携带 identity 的临时态也在那时一并去掉。
+
+## 6. PR3 固定的接口（审计完整性）
+
+### 6.1 完整性契约包（`security/audit_integrity/`）
+
+| 项 | 内容 |
+|---|---|
+| `AuditIntegrityProvider` | 完整性能力契约（`base.py`）：`capabilities` / `chain_store` / `record_chained` / `verify` / `active_key_ref` / `health` / `is_test_only`；`chain_store()` 暴露实际使用的 store 供装配 identity 校验；`AuditIntegrityProducer.TOP_NAME = "audit_integrity"` |
+| `Proof` | 链式证明，独立于 `AuditEvent.detail` 的 frozen 值对象（format_version / sequence / previous_digest / digest / key_id / key_epoch） |
+| `AuditIntegrityStatus` | `unsupported` / `clean` / `tampered` / `incomplete` / `rollback_suspected`；除 `clean` 外都不得当 clean（unsupported / incomplete 亦然） |
+| `AuditVerificationLimits` / `AuditVerificationResult` | 服务端可信单次资源上限，以及 `verify_audit` 的 frozen、不含秘密结构化返回；`to_body()` 输出 §6.4 的 Body |
+| `AnchorStatus` / `AnchorState` | 外部锚点核对状态枚举（`""` / `ok` / `lagging` / `conflict` / `unavailable`）及结果；`checked=False` 只能使用 `UNCHECKED`，`checked=True` 必须给出非空状态，wire 仍输出枚举字符串值 |
+| `AuditIntegrityError` 族 | 单根于 `AgentMemoryError`：`AuditMigrationRequiredError` / `ChainConflictError` / `AuditSchemaError` / `KeyCapabilityError` |
+| `ChainedAuditStore` | 后端原子链式追加 capability（`chain_store.py`）：`read_head` / `append(record, expected_head)` / `read_stable_snapshot(after_sequence)` / `scan(after_sequence, limit, *, through_sequence)` / `health` |
+| `ChainStoreCapability` | 六布尔行为声明：persistent / atomic_append / stable_head_snapshot / key_epoch / external_anchor / streaming_scan；不从 target 名推断后端性质 |
+| `AuditAnchor` | 外部可信锚点契约（`anchor_head` / `read_anchored` / `health`）；`GENESIS_DIGEST = "0" * 64` |
+
+`AuditLogger` 基类**不**增加 `verify_integrity` / `get_chain_head` 等默认方法——默认空实现
+会把「不支持」伪装成「支持但较弱」（fail-open 公共契约）；完整性能力只经显式
+`ChainedAuditStore` capability 表达。
+
+增量验证的窗口语义固定如下：
+
+- `read_stable_snapshot(after_sequence=N)` 在同一临界区/事务读取第 N 条 checkpoint、链头和
+  最后一条记录。`N=0` 使用 genesis；`N>0` 必须返回恰好第 N 条的 record，缺失时验证结果
+  是 `incomplete`，不得从 genesis 重来、跳过缺口或信任调用方历史 digest。
+- provider 先验证 checkpoint proof，再把其 digest 用作续链基线；checkpoint proof 计入
+  `checked_count`。通过后即使没有新记录，`high_water_mark=N`。
+- 每页 `scan` 固定传同一快照的 `through_sequence=head.sequence`，只返回
+  `after_sequence < sequence <= through_sequence`。验证期间的并发追加不进入本次结果，
+  留给下一次；页空、序号缺口、截断或无法到达该快照链头一律为 `incomplete`，不能报 clean。
+- `high_water_mark` 是本次连续成功验证到的最高 sequence，不是返回瞬间的动态链头；只有
+  到达稳定快照链头才可为 clean。合法并发只允许追加，更新/删除/截断属于损坏或攻击路径。
+
+### 6.2 `ProtectedAuditLogger`（`common/audit/protected_audit_logger.py`）
+
+`record(event)` 委派 `AuditIntegrityProvider.record_chained`（失败抛
+`AuditIntegrityError`，不吞错、不降级）；`query(filters, limit)` 透传底层
+`AuditLogger`。构造时调用 `provider.chain_store()`，要求它与 `audit_logger` 对象 identity
+相同；不再仅靠“同一具名实例”的注释假定关键不变量。wrapper 不持有需自管 `close` 的
+资源，由审计日志生命周期所有者统一关闭。
+
+### 6.3 `KeyProvider` 的 MAC capability 与 `SecurityRuntime` 装配位
+
+```python
+class KeyProvider(ABC):
+    def supports_mac(self) -> bool: ...      # 默认 False
+    def mac(self, message, *, purpose) -> tuple[bytes, KeyRef]: ...
+    def verify_mac(self, message, tag, *, purpose, ref) -> bool: ...
+```
+
+不支持 MAC 的 provider 不得静默回退——`mac` / `verify_mac` 默认抛
+`NotImplementedError`，由装配期 `supports_mac()` 检查先行拦住；`purpose` 参与密钥
+派生实现用途隔离（审计完整性固定 `audit-integrity:hmac:v1`）。
+
+`SecurityRuntime` 增加 `audit_integrity_provider: AuditIntegrityProvider | None = None`：
+与 `cryptography_provider` 同为可选装配位（完整性 opt-in，未装配即普通审计）；装配后
+纳入 `health()`，provider 不持有需 Runtime 关闭的资源。
+
+### 6.4 `MemoryAPI.verify_audit`（PEP）与接入形态边界
+
+```python
+def verify_audit(
+    self, *,
+    security: RequestSecurityContext,
+    after_sequence: int = 0,
+    page_size: int = 1000,
+    max_samples: int = 20,
+    anchor_policy: str = "if_configured",  # if_configured / required / skip
+) -> AuditVerificationResult: ...
+```
+
+- `verify_audit` 与既有 `audit` 是两个独立入口，不合并；本 PR 只为新入口使用
+  `VERIFY_AUDIT`，`audit` 继续按 legacy `READ` 对根 scope 判权，避免使存量精确匹配
+  `action='read'` 的授权记录失效。迁移到目标动作 `READ_AUDIT` 须另行评审并迁移授权数据；
+  验证输入只允许服务端参数，不接受调用方传入 expected digest / key / proof / chain head；
+- provider 与专用 `audit_verify_guard` 成对注入；全量验证占该 `WorkloadGuard` 的一个
+  独立并发槽，耗尽抛 `RateLimitedError`。本期不注册 `verify_audit` HTTP verb，也不修改
+  generic handler 的既有错误映射（`RateLimitedError` 仍按默认路径返回 400，与 FAQ 一致）；
+  未来随真实认证接入改为 HTTP 429 时，应作为影响既有接口的独立兼容性变更评审；
+- guard 准入后、调用 provider 前先写入 `verify_audit` 审计事件；provider 因链篡改、
+  schema 损坏等抛 `AuditIntegrityError` 时异常原样传播，但发起者与发生时间已经留痕。
+  guard 耗尽时调用仍抛 `RateLimitedError`，但事件的 `decision` 保持 `allow`（授权已通过），
+  沿用既有 `workload_guard=exhausted` 明细表达容量准入失败，避免 `decision=deny` 的安全
+  告警把限流和鉴权拒绝混为一谈；成功或 provider 异常路径不重复写第二条完成事件；
+- `page_size` / `max_samples` 先做类型与下界校验，再截到服务端装配的
+  `AuditVerificationLimits`；有效上限只从服务端 `globals.audit_verify_max_page_size` /
+  `globals.audit_verify_max_samples` 读取。装配边界只接受真正的整数（`bool` 与包括
+  `"2000"` 在内的字符串均拒绝），类型错误、负值和超过代码硬上限统一抛
+  `ValidationError`，不泄漏值对象的裸
+  `TypeError` / `ValueError`。PEP 对 provider 返回样本数再做一次有效上限截断并设置
+  `truncated=true`，避免自定义 provider 放大返回体；
+- `truncated` 只表示错误样本列表被有效 `max_samples` 截短，扫描未完成用
+  `status=incomplete`，不能复用同一标志掩盖缺页；
+- 真实认证接入前，`bootstrap/core/handler.py` **不注册** `verify_audit`：legacy handler
+  只能从 payload 构造普通 actor，无法构造可信根管理上下文，注册后默认装配必然 403，且
+  不能用 payload 自述 root 修补。当前只有形态无关的 `MemoryAPI` 一等入口；HTTP、MCP、CLI
+  都暂不提供该管理面的一等入口。认证中间件接入后，HTTP 可直接使用下列
+  `AuditVerificationResult.to_body()` 纯 dict；MCP tool 与 CLI command 仍需另行设计：
+
+```json
+{
+  "op": "verify_audit",
+  "status": "clean",
+  "checked_count": 5,
+  "error_count": 0,
+  "truncated": false,
+  "high_water_mark": 5,
+  "key_epoch_range": [1, 2],
+  "anchor": {"checked": false, "status": "", "detail": ""},
+  "samples": [{"sequence": 3, "format_version": 1, "previous_digest": "<hex>",
+               "digest": "<hex>", "key_id": "<fp>", "key_epoch": 1}],
+  "detail": ""
+}
+```
+
+Body 是**对外线上契约**：字段名、类型与样本 Proof 字段一经发布即为承诺，变更需评审；
+不含 `ok` 字段、事件内容、密钥材料或可重放凭据。
+
+### 6.5 当前过渡行为（与目标接口的差异）
+
+正式接口如上，但本期**不实装**任何完整性实现（`audit_integrity_impl` 随实装 PR 合入），
+主业务流程不受影响。已知过渡态：
+
+| 项 | 目标形态 | 当前过渡行为 |
+|---|---|---|
+| 鉴权动作 | `verify_audit` 使用安全域 `Action.VERIFY_AUDIT`；既有 `audit` 的目标动作是 `READ_AUDIT` | `verify_audit` 直接按 `VERIFY_AUDIT` 对根 scope 判权；`audit` 为兼容存量精确匹配 `action='read'` 的授权记录，仍使用 legacy `READ`，本 PR 不做授权数据迁移 |
+| 未装配 provider | —— | `verify_audit` 诚实返回 `unsupported`（`detail="audit integrity provider not configured"`），不抛错、不降级成 clean |
+| `audit_integrity` 配置段 | `chained_hmac` 实现注册 | 无注册 target，配置该段装配失败（fail-closed，不静默降级为普通审计） |
+| `ProtectedAuditLogger` | PEP 与 surface 记录入口都经它 | 无调用点（需要 provider 实例），仅固定接口 |
+| `KeyProvider.mac` | `LocalKeyProvider` 支持 | 默认 `NotImplementedError`（所有 provider） |
+| Surface 暴露 | 认证中间件产出可信根管理上下文后由 HTTP 暴露；MCP/CLI 另设一等入口 | HTTP generic dispatch、MCP tool、CLI command 均不注册；进程内调用须显式传 `RequestSecurityContext` |

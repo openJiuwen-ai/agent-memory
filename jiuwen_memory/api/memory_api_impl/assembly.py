@@ -30,6 +30,11 @@ from jiuwen_memory.common.bootstrap import register_plugins
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import setup_logging
+from jiuwen_memory.common.security.audit_integrity.base import (
+    DEFAULT_AUDIT_VERIFY_MAX_SAMPLES,
+    DEFAULT_AUDIT_VERIFY_PAGE_SIZE,
+    AuditVerificationLimits,
+)
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.config_source import ConfigSource, ConfigSourceProducer
 from jiuwen_memory.config.config_source_impl import register_config_sources
@@ -103,6 +108,35 @@ def _register_all() -> None:
     register_config_sources()  # ConfigSource：yaml_defaults / dict / overlay
 
 
+def _audit_verify_config_int(root: ComponentConfig, key: str, default: int) -> int:
+    """读取 ``globals`` 中的审计验证整数；不把字符串静默强制转换为数字。"""
+    raw = root.get(key, default)
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        return raw
+    raise ValidationError(f"globals.{key} must be an integer, got {raw!r}")
+
+
+def _audit_verify_limits(root: ComponentConfig) -> AuditVerificationLimits:
+    """从可信服务端 globals 构造 PEP 上限，屏蔽值对象的裸类型/范围异常。"""
+    max_page_size = _audit_verify_config_int(
+        root,
+        "audit_verify_max_page_size",
+        DEFAULT_AUDIT_VERIFY_PAGE_SIZE,
+    )
+    max_samples = _audit_verify_config_int(
+        root,
+        "audit_verify_max_samples",
+        DEFAULT_AUDIT_VERIFY_MAX_SAMPLES,
+    )
+    try:
+        return AuditVerificationLimits(
+            max_page_size=max_page_size,
+            max_samples=max_samples,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"invalid audit verification limits: {exc}") from None
+
+
 def build_kernel(
     policies: dict[str, str] | None = None,
     kv: KVStore | None = None,
@@ -115,6 +149,12 @@ def build_kernel(
     - ``policies``：便捷覆盖运行时策略（折进 ``globals.policies``）。
     - ``kv``：显式注入真源后端，覆盖配置的 kv_store 选择（如传 ``SQLiteKVStore`` 即落盘）。
     """
+    if config is not None and not config.is_empty():
+        requested = config.context()
+        if "audit_integrity" in requested.namespaces:
+            raise ValidationError(
+                "audit_integrity is interface-only: no implementation target is registered"
+            )
     _register_all()
     Factory.reset_all()  # 每次组装前清空具名实例缓存以隔离多次装配
 
@@ -173,6 +213,9 @@ def build_kernel(
         audit_logger=AuditProducer.dep(root, default="sqlite"),
         space=SpaceProducer.dep(root, default="kv"),
         ingest_jobs=ingest_jobs,
+        # 单次扫描量/返回样本量是可信服务端配置，不从请求 payload 读取。即使完整性
+        # provider 尚未装配，也先固定同一组装配键，后续实装无需再改 PEP 构造签名。
+        audit_verify_limits=_audit_verify_limits(root),
         # 空间授权事实的读取算子，与 space / policy / governor 同为 ROOT_PARAMS 里声明的
         # 根组件，因此一律装配，不按判定实现的能力声明按需建。判定实现声明不需要空间事实时
         # 鉴权点确实不调用它，但跨空间检索的候选空间反查不经判定实现，按能力声明跳过装配
