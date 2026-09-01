@@ -37,6 +37,7 @@ from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderP
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
 from jiuwen_memory.control.engine_impl.list_support import list_page
+from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
 from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
@@ -326,7 +327,11 @@ class InMemoryEngine(MemoryEngine):
         if infer:
             if middle:
                 return await self._write_middle_path(
-                    units, scope, index_builder, evolver, middle_interval
+                    units,
+                    scope,
+                    index_builder,
+                    evolver,
+                    parse_middle_interval(middle_interval),
                 )
             # 既有 infer=true 同步抽取路径，不动
             if evolver is None:
@@ -364,13 +369,12 @@ class InMemoryEngine(MemoryEngine):
         scope: Scope,
         index_builder: IndexBuilder,
         evolver: Evolver,
-        middle_interval: Any,
+        middle_interval: int | None,
     ) -> list[MemoryUnit]:
         """中期缓冲子路径：原文落 /memory/ + 建索引 + tier=WORKING + 提交定时 MiddleToLongJob。
 
-        ``middle_interval`` 经 write 的 ``system_metadata`` 透传，但不落盘到生成的
-        ``MemoryUnit.system_metadata``；``None`` 时由 Spec 装配期默认兜底，与
-        ``evolver=`` / ``index=`` 覆盖入参模式一致。
+        ``middle_interval`` 已在 write 入口经 :func:`parse_middle_interval` 校验；
+        ``None`` 时由 Spec 装配期默认兜底，与 ``evolver=`` / ``index=`` 覆盖入参一致。
         """
         if self._job_factory is None:
             raise RuntimeError(

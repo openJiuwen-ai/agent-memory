@@ -19,6 +19,7 @@ import pytest
 
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.llm.base import LLM
+from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryTier,
@@ -369,6 +370,33 @@ def test_write_default_path_persists_original_without_middle() -> None:
 
 
 # ---- _write_middle_path 错误分支 ----
+
+
+@pytest.mark.parametrize(
+    "middle_interval",
+    ["abc", "0", "-1"],
+)
+def test_write_middle_invalid_interval_raises_before_persist(middle_interval: str) -> None:
+    """非法 middle_interval 在落盘前 fail fast，不残留 KV/索引/Job（Refs #182）。"""
+    engine, scheduler, index, kv = _build_engine()
+    scope = Scope(org="acme", user="u1")
+
+    with pytest.raises(ValidationError, match=r"middle_interval"):
+        asyncio.run(
+            engine.write(
+                "oscar likes pottery",
+                scope,
+                system_metadata={
+                    "infer": "true",
+                    "middle": "true",
+                    "middle_interval": middle_interval,
+                },
+            )
+        )
+
+    assert scheduler.calls == []
+    assert index.built == []
+    assert kv.list(scope, limit=100).entries == []
 
 
 def test_write_middle_raises_when_job_factory_is_none() -> None:

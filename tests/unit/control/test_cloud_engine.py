@@ -695,6 +695,36 @@ def test_cloud_engine_write_middle_raises_when_job_factory_is_none() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "middle_interval",
+    ["abc", "0", "-1"],
+)
+def test_cloud_engine_write_middle_invalid_interval_raises_before_persist(
+    middle_interval: str,
+) -> None:
+    """非法 middle_interval 在落盘前 fail fast，不残留 KV/索引/Job（Refs #182）。"""
+    engine, scheduler, records = _engine_with_job_factory()
+    scope = Scope(org="acme", user="alice")
+
+    with pytest.raises(ValidationError, match=r"middle_interval"):
+        asyncio.run(
+            engine.write(
+                "oscar likes pottery",
+                scope,
+                system_metadata={
+                    "message_type": "chat",
+                    "infer": "true",
+                    "middle": "true",
+                    "middle_interval": middle_interval,
+                },
+            )
+        )
+
+    assert scheduler.calls == []
+    assert records["chat_index"].built == []
+    assert records["kv"].list(scope, limit=100).entries == []
+
+
 def test_cloud_engine_procedural_takes_precedence_over_middle() -> None:
     """procedural=true 优先——即使 middle=true，也走 procedural 路径（不提交 MiddleToLongJob）。
 
