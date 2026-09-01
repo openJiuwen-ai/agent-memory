@@ -466,6 +466,10 @@ async def delete_mem_by_scope(self, scope_id: str) -> bool
 
 * **bool**：删除成功返回 `True`。
 
+**行为扩展（Ebbinghaus 遗忘特性）**：
+
+- 内部按 `scope_user_mapping_manager.get_by_scope_id(scope_id)` 返回的 user 列表逐 user 执行：在每个 user 级锁内先调 `write_manager.delete_mem_by_user_id`，再调用 `_cleanup_forgetting_traces(scope_id, user_id)`（`mem_id=None` 走前缀路径）清理该 user 的全部 retrieve_history KV 键。KV 操作 best-effort，失败仅 warning，不阻断主删除流。
+
 **异常**：
 
 * **build_error**：当 `scope_id` 格式无效时抛出（`MEMORY_DELETE_MEMORY_EXECUTION_ERROR`）。
@@ -769,6 +773,10 @@ async def delete_mem_by_id(
 * **user_id**(str, 可选)：用户标识符。默认值：`"__default__"`。
 * **scope_id**(str, 可选)：作用域标识符；格式无效时直接返回。默认值：`"__default__"`。
 
+**行为扩展（Ebbinghaus 遗忘特性）**：
+
+- 删除主流程完成后，同步清理该 `mem_id` 的遗忘痕迹：调用 `_cleanup_forgetting_traces` 删除 KV 中的 `retrieve_history/{user_id}/{scope_id}/{mem_id}` 键。KV 操作 best-effort，失败仅 warning，不阻断主删除流。
+
 **异常**：
 
 * **build_error**：当 `write_manager` 未初始化时抛出（`MEMORY_DELETE_MEMORY_EXECUTION_ERROR`）。
@@ -798,12 +806,16 @@ async def delete_mem_by_user_id(
 ) -> None
 ```
 
-删除指定用户在某 scope 下的所有类型记忆（用户画像、变量等）。
+删除指定用户在某 scope 下的所有类型记忆（用户画像、变量等）。适用于"forget me"等用户数据清理场景。
 
 **参数**：
 
 * **user_id**(str, 可选)：用户标识符。默认值：`"__default__"`。
 * **scope_id**(str, 可选)：作用域标识符；格式无效时直接返回。默认值：`"__default__"`。
+
+**行为扩展（Ebbinghaus 遗忘特性）**：
+
+- 删除主流程完成后，同步清理该 user 的遗忘痕迹：调用 `_cleanup_forgetting_traces(scope_id, user_id)`（`mem_id=None` 走前缀路径）通过 `kv_store.delete_by_prefix("retrieve_history/{user_id}/")` 一次性扫掉该 user 全部 retrieve_history KV 键（跨所有 scope）。KV 操作 best-effort，失败仅 warning，不阻断主删除流。
 
 **异常**：
 
@@ -820,6 +832,67 @@ async def delete_mem_by_user_id(
 >>>     user_id="user123",
 >>>     scope_id="my_scope"
 >>> )
+```
+
+
+### async add_memory_unit
+
+```
+async def add_memory_unit(
+    self,
+    *,
+    scope_id: str,
+    user_id: str,
+    memory_doc: MemoryDoc,
+    retrieve_history: dict | None = None,
+) -> str
+```
+
+直接向记忆索引写入单条 `MemoryDoc`，跳过 LLM 提取与冲突检测。用于 Ebbinghaus 遗忘"召回"路径：调用方构造完整 doc（一条已被遗忘、想"重新记住"的记忆），此方法绕过 `add_messages` 的提取 / 冲突检测链路，直接走 `memory_index.add_memories`，且总是写 `blacklisted=False`（召回 = 取消遗忘）；可选地初始化 `retrieve_history` KV，让新记忆以非零强化分起步。
+
+**参数**（全部为关键字参数）：
+
+* **scope_id**(str)：作用域标识。
+* **user_id**(str)：用户标识。
+* **memory_doc**(MemoryDoc)：完整构造的 doc，调用方设置 `id / text / type / timestamp / fields / is_important`。`blacklisted` 字段被忽略——此方法总是写 `blacklisted=False`。
+* **retrieve_history**(dict | None, 可选)：可选的初始 retrieve_history 载荷（用于承接原记忆的 `retrieve_count` + 时间戳）。为 `None` 时不写 retrieve_history KV 键，新记忆在下一次遗忘周期按全新记忆算分。默认：`None`。
+
+**返回**：
+
+* **str**：写入的 memory id（即 `memory_doc.id`）。
+
+**行为约束**：
+
+- 不走 LLM 提取（`Generator.generate` / `long_term_memory_extractor.extract` 不被调用）；
+- 不走冲突检测（`MemUpdateChecker.check` 不被调用）；
+- `mem_id` 冲突时静默覆盖（upsert 语义）——便于"召回已遗忘记忆"场景复用原 id；
+- 写入成功后，若 `retrieve_history is not None`，会用传入的 dict 初始化 `retrieve_history/{user_id}/{scope_id}/{mem_id}` KV 键；KV 写失败仅 warning，不阻断主写入。
+
+**异常**：
+
+* **build_error**：参数校验失败（`scope_id` / `user_id` / `memory_doc.id` / `memory_doc.text` 任一为空）或 `memory_index` 未初始化时抛出 `MEMORY_ADD_MEMORY_UNIT_ERROR`；底层 `add_memories` 抛非 `BaseError` 异常时包装为同状态码。
+
+**示例**：
+
+```python
+>>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
+>>> from jiuwen_memory.foundation.store.base_memory_index import MemoryDoc
+>>> 
+>>> memory = LongTermMemory()
+>>> # 召回一条已遗忘记忆（保留原 id / timestamp / is_important）
+>>> new_id = await memory.add_memory_unit(
+>>>     scope_id="my_scope",
+>>>     user_id="user123",
+>>>     memory_doc=MemoryDoc(
+>>>         id="mem_12345",
+>>>         text="重新写入的记忆内容",
+>>>         type="user_profile",
+>>>         timestamp="2026-01-01T00:00:00",
+>>>         is_important=True,
+>>>     ),
+>>>     retrieve_history={"retrieve_count": 5, "latest_retrieve_time": "...", "retrieve_history": [...]},
+>>> )
+>>> print(f"写入完成，id={new_id}")
 ```
 
 
@@ -843,6 +916,10 @@ async def update_mem_by_id(
 * **memory**(str)：新的记忆内容。
 * **user_id**(str, 可选)：用户标识符。默认值：`"__default__"`。
 * **scope_id**(str, 可选)：作用域标识符；格式无效时直接返回。默认值：`"__default__"`。
+
+**行为约束（Ebbinghaus 遗忘特性）**：
+
+- 更新只修改 `content`，保留 `is_important` / `blacklisted` 顶层字段不被重置（避免重要记忆标签丢失 / 避免已被遗忘的记忆因更新而"复活"）。
 
 **异常**：
 
@@ -1019,6 +1096,8 @@ async def search_user_mem(
     user_id: str = "__default__",
     scope_id: str = "__default__",
     threshold: float = 0.3,
+    *,
+    filters: FilterGroup | None = None,
 ) -> list[MemResult]
 ```
 
@@ -1031,6 +1110,7 @@ async def search_user_mem(
 * **user_id**(str, 可选)：用户标识符。默认值：`"__default__"`。
 * **scope_id**(str, 可选)：作用域标识符；格式无效时返回空列表。默认值：`"__default__"`。
 * **threshold**(float, 可选)：相似度阈值，低于该阈值的记忆会被过滤。默认值：0.3。
+* **filters**(FilterGroup | None, 可选，关键字参数)：过滤 DSL。`None`（默认）时由 `search_manager` 自动注入 `NE("blacklisted", True)`，即默认隐藏已被 Ebbinghaus 遗忘的记忆；显式传入含 `blacklisted` 字段的 FilterGroup（如 `EQ("blacklisted", True)`）则改为列已遗忘记忆的召回路径。
 
 **返回**：
 
@@ -1162,28 +1242,28 @@ async def get_user_mem_by_page(
     self,
     user_id: str = "__default__",
     scope_id: str = "__default__",
-    page_num: int = 1,
     page_size: int = 10,
-) -> dict[str, Any]
+    page_idx: int = 1,
+    memory_type: MemoryType = MemoryType.UNKNOWN,
+    *,
+    filters: FilterGroup | None = None,
+) -> list[MemInfo]
 ```
 
-分页获取指定用户在某 scope 下的记忆。
+分页获取指定用户在某 scope 下的记忆，按时间倒序返回。
 
 **参数**：
 
 * **user_id**(str, 可选)：用户标识符。默认值：`"__default__"`。
-* **scope_id**(str, 可选)：作用域标识符；格式无效时返回空字典。默认值：`"__default__"`。
-* **page_num**(int, 可选)：页码，从 1 开始。默认值：1。
+* **scope_id**(str, 可选)：作用域标识符；格式无效时返回空列表。默认值：`"__default__"`。
 * **page_size**(int, 可选)：每页大小。默认值：10。
+* **page_idx**(int, 可选)：页码，从 1 开始。默认值：1。
+* **memory_type**(MemoryType, 可选)：记忆类型过滤。`MemoryType.UNKNOWN` 表示不按类型过滤，会合并中期记忆一起返回。默认值：`MemoryType.UNKNOWN`。
+* **filters**(FilterGroup | None, 可选，关键字参数)：过滤 DSL。`None`（默认）时由 `search_manager` 自动注入 `NE("blacklisted", True)`，即默认隐藏已被 Ebbinghaus 遗忘的记忆；显式传入含 `blacklisted` 字段的 FilterGroup（如 `EQ("blacklisted", True)`）则改为列已遗忘记忆的召回路径。当 `filters` 显式查询 `blacklisted` 字段时不合并中期记忆（避免中期记忆污染查询结果）。
 
 **返回**：
 
-* **dict[str, Any]**：包含以下字段：
-  * `total: int`：总记忆数；
-  * `page_num: int`：当前页码；
-  * `page_size: int`：每页大小；
-  * `total_pages: int`：总页数；
-  * `data: list[MemInfo]`：当前页的记忆列表。
+* **list[MemInfo]**：当前页的记忆列表，每个 `MemInfo` 含 `mem_id / content / type / timestamp`。
 
 **异常**：
 
@@ -1194,19 +1274,16 @@ async def get_user_mem_by_page(
 ```python
 >>> from jiuwen_memory.memory_core.long_term_memory import LongTermMemory
 >>> 
->>> # 分页获取用户记忆
+>>> # 分页获取用户记忆（默认隐藏已遗忘记忆）
 >>> memory = LongTermMemory()
 >>> result = await memory.get_user_mem_by_page(
 >>>     user_id="user123",
 >>>     scope_id="my_scope",
->>>     page_num=2,
->>>     page_size=5
+>>>     page_size=5,
+>>>     page_idx=2
 >>> )
 >>> 
->>> print(f"总记忆数: {result['total']}")
->>> print(f"当前页: {result['page_num']}/{result['total_pages']}")
->>> 
->>> for mem_info in result['data']:
+>>> for mem_info in result:
 >>>     print(f"ID: {mem_info.mem_id}, 内容: {mem_info.content[:50]}...")
 ```
 
@@ -1230,12 +1307,12 @@ async def start_dreaming(
 
 * **scope_id**(str)：作用域标识；格式非法时抛出异常。
 * **user_id**(str)：用户标识。
-* **config**(DreamingConfig | None, 可选)：睡时巩固配置。为 `None` 时使用默认的 `DreamingConfig()`（其 `enabled=False`，因此不会启动）。默认：`None`。
-* **busy_checker**(Callable[[], bool] | None, 可选)：可选回调，每次 sweep 前调用；返回 `True` 则跳过本次 sweep（例如 agent 正忙于服务用户时）。默认：`None`。
+* **config**(DreamingConfig | None, 可选，关键字参数)：睡时巩固配置。为 `None` 时使用默认的 `DreamingConfig()`（其 `enabled=False`，因此不会启动）。默认：`None`。
+* **busy_checker**(Callable[[], bool] | None, 可选，关键字参数)：可选回调，每次 sweep 前调用；返回 `True` 则跳过本次 sweep（例如 agent 正忙于服务用户时）。默认：`None`。
 
 **返回**：
 
-* **DreamingOrchestrator | None**：后台 orchestrator 实例；当 `config.enabled` 为 `False` 时返回 `None`。**幂等**：对同一 `(scope_id, user_id)` 再次调用会返回已有的 orchestrator，而不会重复启动。
+* **DreamingOrchestrator | None**：后台 orchestrator 实例；当 `config.enabled` 与 `config.forgetting.enabled` **都**为 `False` 时返回 `None`。**幂等**：对同一 `(scope_id, user_id)` 再次调用会返回已有的 orchestrator，而不会重复启动。
 
 **前置条件**：
 
@@ -1243,8 +1320,17 @@ async def start_dreaming(
 
 **行为**：
 
-- orchestrator 在后台运行，每隔 `config.interval_seconds` 执行一次 sweep（首次有一段预热延迟）。已扫描的会话在 `kv_store` 中记录 checkpoint（键为 `dreaming/checkpoint/{scope_id}/{user_id}`），因此进程重启后不会重复处理旧会话。
+- orchestrator 在后台运行，每隔 `config.interval_seconds` 执行一次 tick（首次有一段预热延迟）。已扫描的会话在 `kv_store` 中记录 checkpoint（键为 `dreaming/checkpoint/{scope_id}/{user_id}`），因此进程重启后不会重复处理旧会话。
 - 会话按 `session_id` 分组；请在调用 `add_messages` 时传入有意义的 `session_id`，以保证巩固效果符合预期。
+
+**Ebbinghaus 遗忘特性扩展**：
+
+- `DreamingConfig.forgetting` 字段（类型 `ForgettingConfig | None`）控制是否在同一 orchestrator tick 内串行执行 Ebbinghaus 遗忘步骤。两个子流程共享 orchestrator 线程和 `interval_seconds` 节拍，但由各自独立开关控制：
+  - `config.enabled`（`DreamingConfig.enabled`）控制 sweeper（压缩 → 提取 → 提升）是否运行；
+  - `config.forgetting.enabled`（`ForgettingConfig.enabled`）控制遗忘步骤是否运行；
+  - 两者都为 `False` 时返回 `None`；任一为 `True` 时 orchestrator 运行，每个 tick dispatch 各自启用的子流程。
+- 遗忘步骤在 sweeper 之后串行执行，独立加 user 级锁，异常降级 warning 不阻断 sweeper，下一周期可重试。
+- 仅启用遗忘（`config.enabled=False, config.forgetting=ForgettingConfig(enabled=True)`）时跳过 sweeper，不读会话、不调 LLM、不产生新写入——适用于只想要 Ebbinghaus 遗忘而不需要离线巩固的租户。
 
 **异常**：
 
