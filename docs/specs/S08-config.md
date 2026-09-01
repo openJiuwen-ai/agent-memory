@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-08-26 |
-| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 装配开关见 `docs/features/construction/F08-entity-schema-extension.md` |
+| 最近一次修订日期 | 2026-08-31 |
+| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Storage 具名共享见 `docs/features/storage/F05-unified-storage-design.md`；Schema 装配开关见 `docs/features/construction/F08-entity-schema-extension.md` |
 
 ## 范围 / 边界
 
@@ -33,7 +33,8 @@
 2. **A/B 两层分离**：更换 `ConfigSource` 实现类或增减预装配组件属于装配/重建（A）；在已注入来源上 `fetch` 取值属于运行时（B）。
 3. **注册 ≠ 预装配**：Producer 已注册的 target 不等于进程内已有实例；运行时 `*.active` 只能指向装配期已创建的具名实例。
 4. **统一 Storage 具名共享**：`storage.default` 选择统一 Storage 实现；其下层 Store 参数使用
-   对应命名空间的具名引用。Kernel 与 Retriever 必须复用该 Storage 实例。
+   对应命名空间的具名引用。Kernel 与 Retriever 必须复用该 Storage 实例。Storage 依赖只接受
+   具名引用，不接受内联配置；Storage 具名实例禁止 `new_instance: true`。
    `security.default` 同样必须从根组件显式引用，使用户的安全参数覆盖实际作用于
    `EncryptedKVStore`，不得静默退回默认密钥文件。
 5. **同实现多套凭证优先晚绑定**：同一 LLM/Embedder/Reranker/Store 实现上切换 model/api_key/base_url/url/hosts/uri，须在调用/取连接路径 `fetch` 对应 key；**不得**把同构多 Key/URL 的首选做成多具名实例 + `*.active`。`*.active` 仅用于异质实现互切或产品明确要求的实例隔离。

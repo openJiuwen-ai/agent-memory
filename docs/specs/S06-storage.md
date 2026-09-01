@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-08-29 |
+| 最近一次修订日期 | 2026-08-31 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md |
 ## Metadata 物理存储契约
@@ -86,6 +86,11 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
     `common.type_def`，写侧在 `ForwardIndexBuilder`、读侧在 `Storage.get`/`list`，`KVStore.list`
     本身也按 `MEMORY_KEY_PREFIX` 扫描。这是正排作为唯一需要**两向投影**的索引形式的固有代价：
     实现分居两层，靠这对共享契约对齐。
+29. **有状态 Storage 必须具名共享**：`StorageProducer.resolve()` 的正式入口只有显式
+    `params.storage` 具名引用和 `storage.default`。两者均不存在时，必须在装配期抛
+    `ValidationError` 并指出这两条修复路径，不得静默创建匿名 Storage。Storage 配置禁止
+    `new_instance: true`，否则具名引用仍会绕过缓存。零散的 KV/Vector/Fulltext/Graph/
+    Fusion/FS/Entity/Security/Pipeline 参数不作为兼容入口。
 
 ## 接口契约
 
@@ -121,6 +126,10 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 `StorageProducer.TOP_NAME = "storage"`。统一 Storage 实现以 target 自注册；默认
 `CompositeStorage` target 为 `composite`。具名引用必须复用同一 Storage 实例，使 Kernel、
 Retriever 及后续迁移的 Construction/Control 不重复装配底层 Store。
+
+`StorageProducer.resolve()` 的解析顺序固定为：显式具名 `params.storage`、
+`storage.default`。内联 Storage、`new_instance: true` 和零散 Store 参数均不会被提升为可用的
+Storage 配置；调用方必须显式完成具名共享装配。
 
 ### BaseStore（基类，`base.py`）
 

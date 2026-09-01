@@ -391,6 +391,9 @@ An anonymous instance:
 - Is created again every time the dependency is resolved.
 - Is unsuitable for a Store, Embedder, or Tokenizer whose state must be shared across components.
 
+`StorageProducer.resolve()` is stricter: `params.storage` accepts only a named reference, not an
+anonymous inline Storage.
+
 ### 6.3 Default Dependencies
 
 Suppose a builder calls:
@@ -482,6 +485,9 @@ cache.
 Use this setting only when a component explicitly requires instance isolation. Applying
 `new_instance: true` to a stateful Store can cause writers and readers to connect to different
 instances.
+
+Named Storage instances cannot set `new_instance: true`; `StorageProducer.resolve()` raises
+`ValidationError` during assembly when this option is enabled.
 
 ## 8. Default Configuration and User Overrides
 

@@ -381,6 +381,9 @@ query_parser:
 - 每次解析都会新建；
 - 不适合需要跨组件共享状态的 Store、Embedder 或 Tokenizer。
 
+`StorageProducer.resolve()` 的约束更严格：`params.storage` 只接受具名引用，不接受匿名内联
+Storage。
+
 ### 6.3 缺省依赖
 
 如果 builder 调用：
@@ -467,6 +470,9 @@ llm:
 
 建议仅在组件明确需要实例隔离时使用。对有状态 Store 使用 `new_instance: true`，容易造成
 写入侧和读取侧连接到不同实例。
+
+Storage 具名实例禁止使用 `new_instance: true`，否则 `StorageProducer.resolve()` 会在装配期
+抛出 `ValidationError`。
 
 ## 8. 默认配置与用户覆盖
 

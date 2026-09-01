@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -11,8 +12,16 @@ from jiuwen_memory.common.errors import (
     UnsupportedStorageCapabilityError,
     ValidationError,
 )
-from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment, memory_key
-from jiuwen_memory.config import AssemblyContext
+from jiuwen_memory.common.type_def import (
+    MemoryUnit,
+    ParsedQuery,
+    RecallChannel,
+    Scope,
+    ScoredUnit,
+    Segment,
+    memory_key,
+)
+from jiuwen_memory.config import AssemblyContext, ComponentConfig
 from jiuwen_memory.storage.bootstrap import register_backends
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from jiuwen_memory.storage.security import StorageAccessContext, StorageAction, StorageSecurity
@@ -48,6 +57,14 @@ class RecordingKVStore(InMemoryKVStore):
     def mget(self, scope: Scope, keys: list[str]) -> list[bytes]:
         self.mget_batches.append(list(keys))
         return super().mget(scope, keys)
+
+
+@pytest.fixture
+def reset_storage_producer_instances() -> Iterator[None]:
+    """隔离 StorageProducer 的进程级实例缓存。"""
+    StorageProducer.reset_instances()
+    yield
+    StorageProducer.reset_instances()
 
 
 def _unit(scope: Scope, unit_id: str, content: str = "content") -> MemoryUnit:
@@ -168,9 +185,7 @@ def test_storage_producer_builds_named_composite_with_configured_ports() -> None
     storage = StorageProducer.build_named("main", context)
 
     assert isinstance(storage, CompositeStorage)
-    assert storage.capabilities() == frozenset(
-        {StorageCapability.KV, StorageCapability.VECTOR}
-    )
+    assert storage.capabilities() == frozenset({StorageCapability.KV, StorageCapability.VECTOR})
     assert StorageProducer.build_named("main", context) is storage
 
 
@@ -183,3 +198,123 @@ def test_storage_producer_rejects_unknown_retrieval_pipeline() -> None:
             {"preferred_retrieval_pipeline": "unknown"},
             AssemblyContext(),
         )
+
+
+def test_storage_resolve_reuses_named_default(reset_storage_producer_instances) -> None:
+    """同一上下文中的 storage.default 被多次 resolve 时保持对象同一性。"""
+    register_backends()
+    context = AssemblyContext.from_dict(
+        {"storage": {"default": {"target": "composite", "params": {}}}}
+    )
+    config = ComponentConfig(params={}, ctx=context)
+
+    storage = StorageProducer.resolve(config)
+
+    assert StorageProducer.resolve(config) is storage
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {},
+        {
+            "kv_store": "kv",
+            "vector_store": "vector",
+            "fulltext_store": "fulltext",
+            "graph_store": "graph",
+            "fusion_store": "fusion",
+            "fs_store": "fs",
+            "entity_store": "entity",
+            "security": "security",
+            "preferred_retrieval_pipeline": "retrieve",
+        },
+    ],
+)
+def test_storage_resolve_without_storage_configuration_fails(
+    params: dict[str, Any],
+    reset_storage_producer_instances,
+) -> None:
+    """缺少正式 Storage 入口时，即使有零散 Store 参数也应失败。"""
+    config = ComponentConfig(params=params, ctx=AssemblyContext())
+
+    with pytest.raises(ValidationError, match="params.storage.*storage.default"):
+        StorageProducer.resolve(config)
+
+
+def test_storage_resolve_rejects_inline_storage(reset_storage_producer_instances) -> None:
+    """内联 Storage 被拒：有状态组件内联装配不共享，必须具名引用。"""
+    register_backends()
+    context = AssemblyContext.from_dict(
+        {"storage": {"default": {"target": "composite", "params": {}}}}
+    )
+    config = ComponentConfig(params={"storage": {"target": "composite", "params": {}}}, ctx=context)
+
+    with pytest.raises(ValidationError, match="inline Storage.*storage.<name>"):
+        StorageProducer.resolve(config)
+
+
+@pytest.mark.parametrize(
+    ("storage_name", "params"),
+    [
+        ("main", {"storage": "main"}),
+        ("default", {}),
+    ],
+)
+def test_storage_resolve_rejects_new_instance(
+    storage_name: str,
+    params: dict[str, Any],
+    reset_storage_producer_instances,
+) -> None:
+    """显式具名引用与 storage.default 均不得绕过 Storage 共享缓存。"""
+    register_backends()
+    context = AssemblyContext.from_dict(
+        {
+            "storage": {
+                storage_name: {
+                    "target": "composite",
+                    "new_instance": True,
+                }
+            }
+        }
+    )
+    config = ComponentConfig(params=params, ctx=context)
+
+    with pytest.raises(ValidationError, match="new_instance=true.*set it to false"):
+        StorageProducer.resolve(config)
+
+
+def test_storage_resolve_named_reference_shares_instance_across_operators(
+    reset_storage_producer_instances,
+) -> None:
+    """不同上层算子按名引用同一 Storage 时得到同一对象——包装层状态不分叉。
+
+    内层 Store 本就按具名缓存共享，但 recallers/security/preferred_pipeline 只挂在
+    包装层：若分叉，未被 PipelineRetriever bind 的那个实例 recall 恒空且不报错。
+    """
+    register_backends()
+    context = AssemblyContext.from_dict(
+        {"storage": {"default": {"target": "composite", "params": {}}}}
+    )
+
+    from_operator_a = StorageProducer.resolve(
+        ComponentConfig(params={"storage": "default"}, ctx=context)
+    )
+    from_operator_b = StorageProducer.resolve(ComponentConfig(params={}, ctx=context))
+
+    assert from_operator_a is from_operator_b, "按名引用与回落 storage.default 应得同一实例"
+
+    class _StubRecaller:
+        @staticmethod
+        def channel() -> RecallChannel:
+            return RecallChannel.KEYWORD
+
+        @staticmethod
+        def recall(scope: Scope, query: ParsedQuery, limit: int) -> list[ScoredUnit]:
+            return [ScoredUnit("u1", 1.0, RecallChannel.KEYWORD)]
+
+    from_operator_a.bind_recallers([_StubRecaller()])
+    result = from_operator_b.recall(Scope(), ParsedQuery(raw="q"), channels=None, recall_limit=1)
+
+    assert [c.unit_id for b in result.batches for c in b.candidates] == ["u1"], (
+        "同一实例上 bind 的 recallers 必须对另一持有方可见"
+    )

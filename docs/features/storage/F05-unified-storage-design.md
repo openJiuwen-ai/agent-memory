@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-08-06 |
+| 日期 | 2026-08-31 |
 | 影响范围 | `jiuwen_memory/storage` 统一门面，以及 `jiuwen_memory/construction`、`jiuwen_memory/retrieval`、`jiuwen_memory/control` 对存储层的依赖方式 |
 | 测试基线 | Storage、Construction、Retrieval 与 Control 的目标单测通过；默认加密路径需要可写的本地密钥目录 |
 | Refs | —（如有 issue 补 `Refs: #<n>`） |
@@ -287,6 +287,15 @@ Retriever 通过 `StorageProducer` 获取该具名实例。一体化平台只需
 把 `storage.default` 指向它，不需要修改 Retriever 的实现选择。现有 Recaller 仍是默认组合
 实现的兼容适配器，由 Retriever 在装配阶段绑定；该绑定不让 storage 包导入 retrieval。
 
+`StorageProducer.resolve()` 的正式解析顺序固定为：调用方通过 `params.storage` 提供具名引用，
+否则复用 `storage.default`。两者都不存在的新配置在装配期失败，错误信息直接指出补充
+`params.storage` 或定义 `storage.default`，不再静默创建匿名有状态 Storage。内联 Storage 和
+`new_instance: true` 均在装配期拒绝，避免绕过具名缓存导致包装层状态分叉。
+
+项目仍处于开发阶段，不保留零散 Store 参数的兼容路径。即使调用方参数中存在 KV、Vector、
+Fulltext、Graph、Fusion、FS、Entity、Security 或 Pipeline 配置，只要没有显式
+`params.storage` 且上下文未定义 `storage.default`，装配就直接失败。
+
 ---
 
 ## 拒绝的方案
@@ -335,6 +344,12 @@ Storage 同时暴露领域接口和细粒度 Store 端口，依赖调用纪律�
 `storage.vector.get()` 成为绕过点。统一授权必须由公开 Storage/Store 代理执行；默认不需要
 授权通过显式 allow-all 插件表达，而不是省略安全边界。
 
+### 保留零散参数兼容装配
+
+在没有 `storage.default` 时为上层算子匿名构造 Storage，会让同一进程出现多个有状态实例，
+并且每增加一个端口都可能再次发生参数漏传。当前项目尚未进入兼容性维护阶段，因此不为旧式
+零散参数保留迁移窗口，直接要求调用方改为正式配置。
+
 ### 对检索字段做普通应用层加密
 
 普通密文无法执行 ANN、BM25 或图遍历。当前阶段依赖 TLS 和后端原生静态加密保护检索字段，
@@ -358,6 +373,10 @@ Storage 同时暴露领域接口和细粒度 Store 端口，依赖调用纪律�
 10. 默认 AllowAllStorageSecurity 不限制调用；启用授权实现后缺失或无效 access 被拒绝。
 11. 领域接口和 `storage.vector.get()` 等细粒度入口都无法绕过统一授权。
 12. 每个 Store 在后端边界调用自身 security，passthrough 与受保护实现行为可区分。
+13. 显式具名 Storage 与 `storage.default` 被多次 resolve 时保持对象同一性；内联 Storage 和
+    `new_instance: true` 均在装配期失败。
+14. 没有正式 Storage 入口时，即使存在零散 Store 参数，装配也失败并给出可执行的配置修复
+    路径。
 
 ## 已知遗留
 
