@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-08-31 |
+| 最近一次修订日期 | 2026-09-01 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md |
 
@@ -33,14 +33,59 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 `system_metadata` 同时是对外入参，因此写入与改写入口拒绝调用方占用这些键
 （`KERNEL_SYSTEM_METADATA_KEYS` 与判定表解析出的标签键集合），见 F07「写入边界校验」。
 
+## HTTP 与协议适配契约
+
+HTTP `/v1/<verb>` 使用嵌套 `target` 作为唯一的范围表达。字段映射为：
+
+```text
+target.tenant_id -> Scope.org
+target.scope     -> Scope.user
+target.space     -> Scope.space
+target.agent     -> Scope.agent
+target.session   -> Scope.session
+```
+
+`target.space_id` 仅是 HTTP 层的兼容别名；与 `target.space` 同时出现时返回 400。
+顶层扁平 Scope 字段不属于 HTTP DTO。`space_id` 在归一化后不再进入 dispatch、授权、审计或存储。
+
+actor 不属于请求 payload。HTTP 在 dispatch 前从凭据建立认证上下文，并以
+`RequestSecurityContext.auth.actor` 作为认证 actor，通过 `security=` 传入 API；`actor_*`、`identity`、`role`、`acting_user`、`principal` 和
+`authenticated_user` 等身份声明字段必须拒绝并返回 400。未装配认证运行时则 fail-closed
+返回 503，不得使用空 Scope 或 payload 身份回退。
+
+DTO 解析一次完成 JSON object、字段 allowlist、类型和 Scope 结构校验；未知字段拒绝，
+扩展必须放在显式 `extensions` 对象中。解析结果转换为不可变 `DispatchRequest`，其中
+`actor` 来自认证上下文，`target` 为结构化 Scope，业务 `payload` 不再携带 Scope/actor
+声明，`grantee`、`member` 和 batch item target 也保持结构化。
+
+共享 handler 只消费 `DispatchRequest`。CLI、MCP 和进程内旧 flat 输入由
+`bootstrap/core/legacy_request_adapter.py` 显式转换；handler 不得根据业务 payload
+隐式猜测或重新解析 Scope、actor。统一流程为：
+
+```text
+transport -> legacy/HTTP adapter -> DispatchRequest -> API 鉴权/审计 -> Control -> response
+```
+
+`batch_add` 的 item target 是完整替换：item 未提供 target 时继承顶层默认 target，提供
+target 时不与顶层 Scope 按维度隐式合并。普通 batch 写入不混用逐 item actor；如需不同 actor，
+应另开管理接口。
+
+单条 `add` 的标准模态字段是 `source`；`modality` 仅作兼容别名。两者同时提供时值必须相同，
+否则 DTO 返回 400，避免适配层静默选择其中一个。`source="video"` 的单条写入必须带非空字符串
+`uri`，供视频摄入任务引用原始资产；`uri` 不属于 `batch_add` 的 defaults 或 item 形态。
+
+`delete_space` 使用 `mode`（`forget`、`archive`、`downweight` 或 `purge`）与
+`MemoryAPI.delete_space(..., mode=...)` 对齐；HTTP 不接受未被 API 消费的 `hard` 和
+`approval_token` 字段。
+
 ## 范围 / 边界
 
 **管什么**：
 - 统一对外 Core API（形态无关）：所有接入形态（SDK/CLI/Skill/MCP/HTTP·gRPC）最终映射到 `MemoryAPI`
-- 鉴权执行点（PEP）：从请求安全上下文取 actor，调用 `PermissionManager.check(identity, scope, action)` 做入口鉴权
+- 鉴权执行点（PEP）：从请求安全上下文取 actor，调用 `PermissionManager.check(security.auth.actor, scope, action)` 做入口鉴权
 - 入口审计：写审计事件到 `AuditLogger`
 - 参数装配：将调用侧参数装配为控制层可消费的内部结构
-- 鉴权驱动的编排：按 `identity` 决定资源可见范围、生成并回注系统谓词、按判权结果决定取数范围。不变量 9（授权路由值回注查询）与 12（分页命中后逐条 READ 鉴权）是这一职责的两处既有形态；跨空间检索的候选空间枚举、逐空间判权与逐空间系统谓词的生成同属此列。**范围以「判权本身及其直接输入输出」为限**，其余属机械计算或 I/O 编排，落控制层 `control/collective/`，本层只提供回调：
+- 鉴权驱动的编排：按 `security.auth.actor` 决定资源可见范围、生成并回注系统谓词、按判权结果决定取数范围。不变量 9（授权路由值回注查询）与 12（分页命中后逐条 READ 鉴权）是这一职责的两处既有形态；跨空间检索的候选空间枚举、逐空间判权与逐空间系统谓词的生成同属此列。**范围以「判权本身及其直接输入输出」为限**，其余属机械计算或 I/O 编排，落控制层 `control/collective/`，本层只提供回调：
 
   | 机械部分 | 落点 | 本层提供 |
   |---|---|---|
@@ -49,7 +94,7 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 - 同步/异步桥接：为同步形态桥接引擎异步协程
 
 **不管什么**：
-- 不做业务编排逻辑（全部委托 `jiuwen_memory/control`）——指内容如何抽取、演进、索引这类加工编排；上条所述的鉴权驱动编排不在此列，它是 PEP 职责的延伸。判据是「移出本层是否还能按 `identity` 裁决」：逐空间判权循环移出即 PEP 分裂为两处，故留本层；候选集合的计算与跨空间的召回扇出都不读 `identity`——前者在判权之前、后者在候选集与谓词都已定妥之后，故不留。逐空间构造 `RetrievalQuery` 的循环本身就是取数编排，随扇出一并移出
+- 不做业务编排逻辑（全部委托 `jiuwen_memory/control`）——指内容如何抽取、演进、索引这类加工编排；上条所述的鉴权驱动编排不在此列，它是 PEP 职责的延伸。判据是「移出本层是否还能按 `security.auth.actor` 裁决」：逐空间判权循环移出即 PEP 分裂为两处，故留本层；候选集合的计算与跨空间的召回扇出都不读 `security`——前者在判权之前、后者在候选集与谓词都已定妥之后，故不留。逐空间构造 `RetrievalQuery` 的循环本身就是取数编排，随扇出一并移出
 - 不直接操作存储
 - 不调用 LLM / 构建 / 检索。此处「调用」指调用该层的**算子**——有 Producer 注册、实现可替换、访问模型或存储的组件（`Router` / `Evolver` / `Classifier` / `IndexBuilder` 等）。引用该层导出的类型与无状态纯函数不在此列（见 `construction/router.py` 模块文档：「API 层引用构建层类型是既有形态，依赖方向为 API → 构建，无环」）。归属判定算子的调用落在控制层的 `control/collective/routing.py`，本层调控制层
 - 不做 admin 策略存储（直达 PolicyManager）
@@ -975,12 +1020,12 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 ```
 接入层 → authenticated(...) / internal_context(...) → security: RequestSecurityContext
 调用方 → MemoryAPI.method(scope=target, security=security)
-  → identity = security.auth.actor
-  → PermissionManager.check(actor=identity, target=scope, action=<对应动作>, context=...)
+  → actor = security.auth.actor
+  → PermissionManager.check(actor=security.auth.actor, target=scope, action=<对应动作>, context=...)
     # list/get/update/delete/inspect/trace 的已有资源上下文来自真源和已鉴权 target scope
-    → 通过 → 委托 Engine/Governor/PolicyManager（仅传 scope，不传 identity）
+    → 通过 → 委托 Engine/Governor/PolicyManager（仅传 scope，不传 security）
     → 拒绝 → 抛 PermissionDeniedError
-  → 落审计事件（含 identity + action + target_id + 时间）
+  → 落审计事件（含 actor + action + target_id + 时间）
 ```
 
 > 目标形态下这一步由安全域 `Authorizer` 承担（策略判定、`AuthorizationEnvironment`、
@@ -1005,5 +1050,5 @@ jiuwen_memory/api/memory_api_impl/
 | S04-retrieval | search 路径中 Engine 委托 Retriever |
 | S05-construction | 目标 `HierarchyComposeOptions` / `EvolveMode.HIERARCHY` 的字段契约 |
 | S08-config | 六类动态配置经 ConfigSource；不经本层业务入参写入 |
-| F07-collective-memory | 本层是空间治理的鉴权点：入口到轴与动作的映射、空间事实一次读取、检索两族谓词的生成与注入均落在本层。多空间读写编排按「是否读 `identity`」拆开——判权与谓词生成留本层，写入候选集的计算与跨空间的召回扇出落控制层 `control/collective/` |
+| F07-collective-memory | 本层是空间治理的鉴权点：入口到轴与动作的映射、空间事实一次读取、检索两族谓词的生成与注入均落在本层。多空间读写编排按「是否读 `security`」拆开——判权与谓词生成留本层，写入候选集的计算与跨空间的召回扇出落控制层 `control/collective/` |
 | architecture.md §6 | 已实现 MemoryAPI 清单 |

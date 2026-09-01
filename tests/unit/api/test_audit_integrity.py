@@ -32,6 +32,7 @@ from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.security.types import Action
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config import Config
+from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
 
 pytestmark = pytest.mark.unit
 
@@ -76,7 +77,9 @@ def test_generic_dispatch_does_not_expose_verify_audit_before_real_authenticatio
             return _clean_result()
 
     api = _Api()
-    status, body = handler.dispatch(_srv(api), "verify_audit", {"actor_user": "root"})
+    status, body = handler.dispatch(
+        _srv(api), build_legacy_dispatch_request("verify_audit", {"actor_user": "root"})
+    )
 
     assert status == 404
     assert body["error"] == "UnknownVerb"

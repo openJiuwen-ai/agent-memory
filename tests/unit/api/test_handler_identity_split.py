@@ -1,13 +1,17 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 from __future__ import annotations
 
 import importlib
 import os
 import sys
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
 from jiuwen_memory.common.type_def import Segment
+from jiuwen_memory_entry.core.dispatch_request import DispatchRequest
+from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
 
 pytestmark = pytest.mark.unit
 
@@ -20,6 +24,13 @@ if _BOOTSTRAP not in sys.path:
     sys.path.append(_BOOTSTRAP)
 
 handler = importlib.import_module("handler")
+
+
+def _dispatch(srv, verb: str, payload: dict, *, identity=None):
+    request = build_legacy_dispatch_request(verb, payload)
+    if identity is not None:
+        request = replace(request, actor=identity)
+    return handler.dispatch(srv, request)
 
 
 class _RecordingApi:
@@ -39,7 +50,9 @@ class _RecordingApi:
         system_metadata=None,
         user_metadata=None,
     ):
-        self.add_calls.append({"scope": scope, "identity": security.auth.actor})
+        self.add_calls.append(
+            {"scope": scope, "identity": security.auth.actor, "modality": modality}
+        )
         return [handler.MemoryUnit(id="unit-1", scope=scope, segments=[Segment(content=content)])]
 
     def search(self, query, context, *, security, filters=None, **options):
@@ -62,7 +75,7 @@ class _RecordingServer:
 
 def _dispatch_add(payload: dict) -> dict:
     srv = _RecordingServer()
-    status, body = handler.dispatch(srv, "add", {"content": "hello", **payload})
+    status, body = _dispatch(srv, "add", {"content": "hello", **payload})
 
     assert status == 200, body
     return srv.api.add_calls[0]
@@ -75,6 +88,12 @@ def test_actor_scope_and_target_scope_match_when_actor_fields_are_omitted() -> N
     assert call["identity"].org == "acme"
     assert call["identity"].space == "product"
     assert call["identity"].user == "alice"
+
+
+def test_single_add_uses_source_as_the_canonical_modality_field() -> None:
+    call = _dispatch_add({"source": "image"})
+
+    assert call["modality"] is handler.Modality.IMAGE
 
 
 def test_actor_scope_uses_default_scope_when_identity_fields_are_omitted() -> None:
@@ -107,7 +126,7 @@ def test_search_forwards_filter_dsl_to_api_boundary() -> None:
         ]
     }
 
-    status, body = handler.dispatch(
+    status, body = _dispatch(
         srv,
         "search",
         {"query": "pytest", "tenant_id": "acme", "scope": "alice", "filters": filters},
@@ -139,7 +158,7 @@ def test_search_preserves_json_extensions_and_returns_both_metadata_namespaces()
             )
 
     api = _Api()
-    status, body = handler.dispatch(
+    status, body = _dispatch(
         SimpleNamespace(api=api),
         "search",
         {
@@ -174,3 +193,67 @@ def test_actor_space_override_can_differ_from_target_space() -> None:
 
     assert call["identity"] == handler.Scope(org="acme", space="coding", user="reader")
     assert call["scope"] == handler.Scope(org="acme", space="product", user="owner")
+
+
+def test_explicit_adapter_identity_wins_over_payload_identity_claims() -> None:
+    srv = _RecordingServer()
+    trusted = handler.Scope(org="acme", user="trusted")
+    status, body = _dispatch(
+        srv,
+        "add",
+        {
+            "content": "hello",
+            "tenant_id": "acme",
+            "scope": "owner",
+            "actor_scope": "forged",
+        },
+        identity=trusted,
+    )
+
+    assert status == 200, body
+    assert srv.api.add_calls[0]["identity"] == trusted
+
+
+def test_structured_request_uses_typed_actor_and_target_not_payload_claims() -> None:
+    srv = _RecordingServer()
+    actor = handler.Scope(org="acme", user="writer")
+    target = handler.Scope(org="acme", space="product", user="alice")
+
+    status, body = handler.dispatch(
+        srv,
+        DispatchRequest(
+            verb="add",
+            actor=actor,
+            target=target,
+            payload={
+                "content": "hello",
+                "tenant_id": "forged-org",
+                "scope": "forged-target",
+                "actor_scope": "forged-actor",
+            },
+        ),
+    )
+
+    assert status == 200, body
+    assert srv.api.add_calls[0] == {
+        "scope": target,
+        "identity": actor,
+        "modality": handler.Modality.TEXT,
+    }
+
+
+def test_legacy_adapter_preserves_actor_fallback_without_leaking_scope_fields() -> None:
+    request = build_legacy_dispatch_request(
+        "add",
+        {
+            "tenant_id": "acme",
+            "space": "product",
+            "scope": "owner",
+            "actor_scope": "writer",
+            "content": "hello",
+        },
+    )
+
+    assert request.target == handler.Scope(org="acme", space="product", user="owner")
+    assert request.actor == handler.Scope(org="acme", space="product", user="writer")
+    assert dict(request.payload) == {"content": "hello"}

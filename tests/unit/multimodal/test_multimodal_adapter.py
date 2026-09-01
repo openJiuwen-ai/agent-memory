@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 from __future__ import annotations
 
 import importlib
@@ -45,6 +46,7 @@ from jiuwen_memory.retrieval.retriever_impl.multimodal_retriever import (
     MultimodalRetriever,
 )
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
+from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
 
 _BOOTSTRAP_CORE = Path(__file__).parents[3] / "jiuwen_memory_entry" / "core"
 if str(_BOOTSTRAP_CORE) not in sys.path:
@@ -52,6 +54,10 @@ if str(_BOOTSTRAP_CORE) not in sys.path:
 handler = importlib.import_module("handler")
 
 pytestmark = pytest.mark.unit
+
+
+def _dispatch(srv, verb: str, payload: dict[str, Any]):
+    return handler.dispatch(srv, build_legacy_dispatch_request(verb, payload))
 
 
 class _JsonResponse:
@@ -633,7 +639,7 @@ def test_video_add_and_prefixed_job_status_share_handler_route(
         },
     )()
     try:
-        status, submitted = handler.dispatch(
+        status, submitted = _dispatch(
             srv,
             "add",
             {
@@ -652,7 +658,7 @@ def test_video_add_and_prefixed_job_status_share_handler_route(
 
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
-            status, result = handler.dispatch(
+            status, result = _dispatch(
                 srv,
                 "job",
                 {
@@ -671,7 +677,7 @@ def test_video_add_and_prefixed_job_status_share_handler_route(
             "video-1"
         }
 
-        status, reused = handler.dispatch(
+        status, reused = _dispatch(
             srv,
             "add",
             {
@@ -692,7 +698,7 @@ def test_video_add_and_prefixed_job_status_share_handler_route(
 
 def test_video_add_requires_uri() -> None:
     srv = type("ServerStub", (), {})()
-    status, body = handler.dispatch(
+    status, body = _dispatch(
         srv,
         "add",
         {
@@ -716,7 +722,7 @@ def test_video_add_rejected_when_chain_not_assembled() -> None:
             config=SimpleNamespace(settings={}),
             ingest_jobs=controller,
         )
-        status, body = handler.dispatch(
+        status, body = _dispatch(
             srv,
             "add",
             {
@@ -744,8 +750,8 @@ def test_video_add_rejected_when_write_permission_denied() -> None:
         @staticmethod
         def check_write(
             scope,
-            *,
             security,
+            *,
             tags=None,
             system_metadata=None,
             user_metadata=None,
@@ -764,7 +770,7 @@ def test_video_add_rejected_when_write_permission_denied() -> None:
             api=_DeniedAPI(),
             ingest_jobs=controller,
         )
-        status, body = handler.dispatch(
+        status, body = _dispatch(
             srv,
             "add",
             {
@@ -796,7 +802,7 @@ def test_ingest_job_status_uses_memory_api_read_permission() -> None:
     )
     srv = SimpleNamespace(api=kernel.api, ingest_jobs=kernel.ingest_jobs)
     try:
-        status, body = handler.dispatch(
+        status, body = _dispatch(
             srv,
             "job",
             {
