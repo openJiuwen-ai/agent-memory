@@ -110,7 +110,7 @@ services:
     volumes:
       - ./config.yml:/config/config.yml:ro
       - ../../../jiuwen_memory:/app/jiuwen_memory:ro
-      - ../../../bootstrap:/app/bootstrap:ro
+      - ../../../jiuwen_memory_entry:/app/jiuwen_memory_entry:ro
     ports:
       - "8137:8137"
     depends_on:

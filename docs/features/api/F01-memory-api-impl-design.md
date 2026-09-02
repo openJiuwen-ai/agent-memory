@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-06-24 |
-| 影响范围 | jiuwen_memory/api/，jiuwen_memory/control/，jiuwen_memory/storage/，jiuwen_memory/common/type_def/，bootstrap/core/handler.py，docs/specs/S02-memory-api.md，docs/specs/S03-control.md，docs/specs/S06-storage.md，docs/specs/S07-common.md |
+| 影响范围 | jiuwen_memory/api/，jiuwen_memory/control/，jiuwen_memory/storage/，jiuwen_memory/common/type_def/，jiuwen_memory_entry/core/handler.py，docs/specs/S02-memory-api.md，docs/specs/S03-control.md，docs/specs/S06-storage.md，docs/specs/S07-common.md |
 | 测试基线 | list 相关 API/handler/Engine/KV/common/retrieval 单测通过；ruff、compileall 与 `git diff --check` 通过；完整 `tests/unit` 仅两项因环境缺少 torch 失败 |
 | Refs | —（如有 issue 补 `Refs: #<n>`） |
 
@@ -115,7 +115,7 @@ kernel = build_kernel(config=Config(...))         # 另需真源 kv 句柄时
 
 ### 10. list 升级为正式数据面接口
 
-`bootstrap` 表面已有 `list` verb，但此前接口层没有正式 `MemoryAPI.list(...)`，
+`jiuwen_memory_entry` 表面已有 `list` verb，但此前接口层没有正式 `MemoryAPI.list(...)`，
 容易让不同接入形态各自实现枚举逻辑，甚至把“surface 直扫 KV”误读成长期架构。
 参考 mem1.0 `list_memories(user_id, scope_id, offset, limit, mem_types)` 的核心语义，
 本层把 list 收口到统一 API：

@@ -1,13 +1,13 @@
-# bootstrap/cli — the command-line surface
+# jiuwen_memory_entry/cli — the command-line surface
 
-The **CLI surface**: a §15 protocol adapter peer to `bootstrap/http_server` (the HTTP
+The **CLI surface**: a §15 protocol adapter peer to `jiuwen_memory_entry/http_server` (the HTTP
 surface). It parses argv into a `(verb, payload)` and routes it through the same
 kernel dispatch the HTTP path uses — **no business logic lives here**. It is the
 concrete, scriptable 对外接口 (external interface) of the memory engine, and the
 interface the LoCoMo evaluation harness drives.
 
 - Stdlib only; no third-party deps.
-- Entry: `scripts/run-cli.sh …` → `python3 bootstrap/cli/__main__.py …`.
+- Entry: `scripts/run-cli.sh …` → `python3 jiuwen_memory_entry/cli/__main__.py …`.
 - Tests: exercised by the evaluation harness (`evaluation/`, e.g. LoCoMo /
   LongMemEval) end to end, plus
   the manual smoke calls below.
@@ -18,7 +18,7 @@ Every backend implements `call(verb, payload) -> (status, body)` and
 `healthz()`. `make_client(server_url, configs)` picks one:
 
 - **`InProcessClient` (default).** Assembles the engine in *this* process exactly
-  like `bootstrap/http_server/__main__` — `server.build(load_config([OFFLINE,
+  like `jiuwen_memory_entry/http_server/__main__` — `server.build(load_config([OFFLINE,
   *configs]))` — and routes each call through `handler.dispatch`, the very code
   path the HTTP surface uses minus the socket. The `Server` is held for the
   client's lifetime, so repeated writes share the in-memory store.
@@ -33,10 +33,10 @@ shapes argv ergonomics.
 
 ### The `server` import-root subtlety
 
-`server.py`、`handler.py`、`profiles.py` 是共享目录 `bootstrap/core/` 下的
-flat import root。如果 `bootstrap/` 排在 `bootstrap/core/` 前面，`import server`
+`server.py`、`handler.py`、`profiles.py` 是共享目录 `jiuwen_memory_entry/core/` 下的
+flat import root。如果 `jiuwen_memory_entry/` 排在 `jiuwen_memory_entry/core/` 前面，`import server`
 就可能被同名模块遮蔽。因此 CLI 仍以脚本方式启动（不用 `python3 -m`），并由
-`scripts/run-cli.sh` 把仓库根与 `bootstrap/core` 前置到 `PYTHONPATH`，确保
+`scripts/run-cli.sh` 把仓库根与 `jiuwen_memory_entry/core` 前置到 `PYTHONPATH`，确保
 `import server` 解析到 `core/server.py`（所有 surface 复用的共享应用核），同时
 避免在运行时把路径强插到 `sys.path` 最前。
 

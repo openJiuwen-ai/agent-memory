@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from bootstrap.core import handler
+from jiuwen_memory_entry.core import handler
 from jiuwen_memory.api.memory_api_impl import build_kernel
 from jiuwen_memory.control import BatchWriteItem, BatchWriteOutcome, BatchWriteResult
 

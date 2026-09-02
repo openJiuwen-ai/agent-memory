@@ -3,11 +3,11 @@
 
 ``HttpServer`` extends the base :class:`Server` (kernel + shared dispatch) and
 adds a socket: ``POST /v1/<verb>`` with a JSON body, ``GET /healthz``. The
-:class:`HttpClient` in ``bootstrap/cli/client.py`` speaks exactly this protocol,
+:class:`HttpClient` in ``jiuwen_memory_entry/cli/client.py`` speaks exactly this protocol,
 and one assembled kernel is held for the server's lifetime so state persists
 across requests.
 
-通过启动脚本运行，以便把仓库根与 ``bootstrap/core`` 放入 ``PYTHONPATH``::
+通过启动脚本运行，以便把仓库根与 ``jiuwen_memory_entry/core`` 放入 ``PYTHONPATH``::
 
     scripts/run-server.sh --port 8137
     scripts/run-server.sh [--host H] [--port P] [config.json ...]
@@ -23,7 +23,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import import_module
 
-# 共享应用核（server / profiles / handler / config_loader）住在 bootstrap/core；
+# 共享应用核（server / profiles / handler / config_loader）住在 jiuwen_memory_entry/core；
 # 加入 sys.path 后 flat-import 复用——本 surface 只做 HTTP 传输。
 _CORE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core")
 if _CORE_DIR not in sys.path:

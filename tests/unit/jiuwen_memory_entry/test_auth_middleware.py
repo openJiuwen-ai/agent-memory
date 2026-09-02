@@ -1,4 +1,4 @@
-"""bootstrap/core/auth_middleware：凭据归一 + 请求作用域生命周期。
+"""jiuwen_memory_entry/core/auth_middleware：凭据归一 + 请求作用域生命周期。
 
 接口先行版：用 stub Authenticator / limiter / guard 验证中间件的**编排顺序**
 （限流 -> 并发预算 -> 认证 -> 构造请求上下文）与凭据归一逻辑；
@@ -14,9 +14,9 @@ import sys
 
 import pytest
 
-# bootstrap/core 是 flat import root（不是包），与各 surface 用同样的方式接进来。
+# jiuwen_memory_entry/core 是 flat import root（不是包），与各 surface 用同样的方式接进来。
 _CORE_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "bootstrap", "core")
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", "jiuwen_memory_entry", "core")
 )
 if _CORE_DIR not in sys.path:
     sys.path.append(_CORE_DIR)

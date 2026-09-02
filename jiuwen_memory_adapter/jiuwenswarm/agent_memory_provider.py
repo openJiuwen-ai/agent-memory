@@ -500,7 +500,7 @@ def _semantic_filter():
 class _HttpClient(_AgentMemoryClient):
     """经 AgentMemory HTTP surface（``POST /v1/<verb>``）调用的 async 客户端。
 
-    HTTP verb 响应格式（``bootstrap/core/handler.py``）：
+    HTTP verb 响应格式（``jiuwen_memory_entry/core/handler.py``）：
     - ``add``    → ``{ok, op, item_id, item}``
     - ``search`` → ``{ok, op, hits:[{score, item_id, content}], count}``
     - ``list``   → ``{ok, op, items:[_unit_view], count}``

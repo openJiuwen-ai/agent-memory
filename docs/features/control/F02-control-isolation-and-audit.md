@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-02 |
-| 影响范围 | `bootstrap/core/handler.py`、`jiuwen_memory/api/`、`jiuwen_memory/control/`、`jiuwen_memory/storage/`、`jiuwen_memory/common/audit/`、`docs/specs/S03-control.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md` |
+| 影响范围 | `jiuwen_memory_entry/core/handler.py`、`jiuwen_memory/api/`、`jiuwen_memory/control/`、`jiuwen_memory/storage/`、`jiuwen_memory/common/audit/`、`docs/specs/S03-control.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md` |
 | 测试基线 | `ruff check` 通过；相关单测通过 |
 | Refs | `docs/design/mem0-control-layer-gap-analysis.md` |
 
@@ -64,7 +64,7 @@ surface actor -> API gate -> control decision -> storage scope boundary
 2. 某用户经授权读取另一个 agent/session 的共享记忆。
 3. 系统任务以平台身份对某个目标 scope 执行 sweep、audit、history、delete_all。
 
-第一阶段不新增独立的 `RequestContext` / `Principal` 文件，也不修改 `dispatch(...)` 签名。入口层在 `bootstrap/core/handler.py` 中拆成：
+第一阶段不新增独立的 `RequestContext` / `Principal` 文件，也不修改 `dispatch(...)` 签名。入口层在 `jiuwen_memory_entry/core/handler.py` 中拆成：
 
 - `_target_scope(payload)`
 - `_actor_scope(payload)`
@@ -136,7 +136,7 @@ surface actor -> API gate -> control decision -> storage scope boundary
 
 ### 接入与 API
 
-1. `bootstrap/core/handler.py` 已拆分 `_target_scope(payload)` 与 `_actor_scope(payload)`。
+1. `jiuwen_memory_entry/core/handler.py` 已拆分 `_target_scope(payload)` 与 `_actor_scope(payload)`。
 2. 对外请求形状保持兼容，`tenant_id + scope` 仍代表 target scope。
 3. dispatch surface 新增可选 claimed actor 字段：`actor_tenant_id`、`actor_space` / `actor_space_id`、`actor_scope`、`actor_agent`、`actor_session`。
 4. 若未传任何 `actor_*` 字段，则 actor 默认继承当前请求的 `tenant_id + scope`。

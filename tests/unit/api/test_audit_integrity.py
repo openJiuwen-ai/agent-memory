@@ -37,7 +37,7 @@ pytestmark = pytest.mark.unit
 
 _BOOTSTRAP = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
-    "bootstrap",
+    "jiuwen_memory_entry",
     "core",
 )
 if _BOOTSTRAP not in sys.path:

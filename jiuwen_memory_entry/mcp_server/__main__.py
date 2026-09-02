@@ -20,7 +20,7 @@ import os
 import sys
 from importlib import import_module
 
-# 复用 bootstrap/core 的共享件（server 内核装配 + profiles 配置叠加 + handler dispatch +
+# 复用 jiuwen_memory_entry/core 的共享件（server 内核装配 + profiles 配置叠加 + handler dispatch +
 # config_loader 配置加载），与 CLI 相同的 flat-import；启动脚本通过 PYTHONPATH 保证优先级，
 # 这里 append 仅作为直接运行本文件时的兜底。
 _BOOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

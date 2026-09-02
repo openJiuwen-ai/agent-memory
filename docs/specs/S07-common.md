@@ -239,10 +239,10 @@ F05 公共安全架构的契约层（认证 / 密码学 / 保护 / 授权 / 审�
 `frozenset[Action]`；传入非 `Action` 成员必须立即抛 `TypeError`，不得将错误延迟到
 `GrantStore`。
 
-配套的 bootstrap 接缝：`bootstrap/core/auth_middleware.py` 的
+配套的 bootstrap 接缝：`jiuwen_memory_entry/core/auth_middleware.py` 的
 `authenticated(..., surface=None) -> Iterator[RequestSecurityContext]`（限流 ->
 并发预算 -> 认证 -> 构造请求上下文）与
-`bootstrap/mcp_server/transport_security.py` 的 `credentials_for_transport(...)`
+`jiuwen_memory_entry/mcp_server/transport_security.py` 的 `credentials_for_transport(...)`
 （stdio 环境变量 / Streamable HTTP 逐请求提取，缺 Request Context fail-closed）。
 
 ## 数据结构

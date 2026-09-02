@@ -45,7 +45,7 @@ SDK deployment means installing and assembling `jiuwen_memory` in the consumer's
 The application can call `MemoryAPI` directly or start the repository's local HTTP service in that
 process.
 
-> `bootstrap/sdk` does not yet provide a separately packaged SDK client or launcher. In this
+> `jiuwen_memory_entry/sdk` does not yet provide a separately packaged SDK client or launcher. In this
 > documentation, "SDK deployment" is the general term for direct Python package integration. The
 > stable entry points are the `Kernel` and `MemoryAPI` returned by
 > `jiuwen_memory.api.build_kernel()`.
@@ -120,7 +120,7 @@ and availability management solution appropriate for production.
 - **CLI**: can call the kernel in process or access an HTTP service; it is a client entry point.
 - **MCP**: can expose tools over stdio or streamable HTTP; it is a protocol surface whose underlying
   deployment must still choose between memory and real storage.
-- **`bootstrap/sdk`**: currently contains only a package skeleton and is not a separate SDK product
+- **`jiuwen_memory_entry/sdk`**: currently contains only a package skeleton and is not a separate SDK product
   layer from `jiuwen_memory.api`.
 - **Kubernetes / Helm / systemd**: the repository does not currently provide ready-made deployment
   manifests for these systems.

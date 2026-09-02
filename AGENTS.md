@@ -8,9 +8,9 @@
 .
 ├── jiuwen_memory/      # 内核源码（接口/接入/构建/检索/编排/存储/共享插件）
 ├── tests/              # 测试（unit / integration，路径镜像 jiuwen_memory/）
-├── bootstrap/          # 接入形态（CLI / HTTP / MCP / SDK；whl 独立顶层）
+├── jiuwen_memory_entry/  # 接入形态（CLI / HTTP / MCP / SDK；whl 独立顶层）
 ├── docs/               # 设计文档归档（design / specs / features）
-├── agent_plugin/       # 外部 agent 插件适配（whl 独立顶层）
+├── jiuwen_memory_adapter/ # 外部 agent 插件适配（whl 独立顶层）
 ├── deploy/             # 部署配置（docker / local）
 ├── evaluation/         # 评测框架（benchmark / metrics / smoke_test）
 ├── examples/           # 使用示例与快速上手
@@ -39,9 +39,9 @@ docs/AGENTS.md                   ← 文档归档规约：文档目录结构、�
 
 ## 环境与运行
 
-- **Python**：`>=3.11`。包为顶层布局（`jiuwen_memory` / `bootstrap` / `agent_plugin`），**无 `src/` 布局**——仓库根存在空的 `src/` 目录但未纳入 `[tool.setuptools.packages.find]`，不要往里放代码或从中导入。
+- **Python**：`>=3.11`。包为顶层布局（`jiuwen_memory` / `jiuwen_memory_entry` / `jiuwen_memory_adapter`），**无 `src/` 布局**——仓库根存在空的 `src/` 目录但未纳入 `[tool.setuptools.packages.find]`，不要往里放代码或从中导入。
 - **安装**：`pip install -e ".[dev]"` 装开发依赖。按需追加 extras：`deploy`（Milvus/ES/Redis/PG 真后端）、`mcp`（MCP server）、`nlp`（spacy/hanlp）、`embed`（FlagEmbedding/torch）。`pyproject.toml` 已配 uv 阿里云镜像。
-- **运行入口用 `scripts/run-{cli,server,mcp}.sh`**：它们已把 `PYTHONPATH` 设为 `仓库根:bootstrap/core`；直接 `python -m bootstrap...` 会因缺 `bootstrap/core` 路径导致导入失败。
+- **运行入口用 `scripts/run-{cli,server,mcp}.sh`**：它们已把 `PYTHONPATH` 设为 `仓库根:jiuwen_memory_entry/core`；直接 `python -m jiuwen_memory_entry...` 会因缺 `jiuwen_memory_entry/core` 路径导致导入失败。
   - CLI：`scripts/run-cli.sh`
   - HTTP server：`scripts/run-server.sh`
   - MCP：`scripts/run-mcp.sh`（需先 `pip install ".[mcp]"`；默认 stdio，设 `MCP_TRANSPORT=http` + `MCP_PORT` 切 Streamable HTTP）

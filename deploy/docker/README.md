@@ -134,7 +134,7 @@ curl -X POST http://localhost:8137/v1/search \
   -d '{"tenant_id":"demo","scope":"alice","query":"用什么语言","k":5}'
 ```
 
-其他接口参见 [bootstrap/core/handler.py](../../bootstrap/core/handler.py)：
+其他接口参见 [jiuwen_memory_entry/core/handler.py](../../jiuwen_memory_entry/core/handler.py)：
 `add / search / list / get / update / delete / evolve / job / inspect / trace / audit / admin / grant`。
 
 ## 端口
@@ -198,7 +198,7 @@ volumes:
 volumes:
   - ./config.yml:/config/config.yml:ro
   - ./config.prod.yml:/config/config.prod.yml:ro
-command: ["python", "bootstrap/http_server/__main__.py",
+command: ["python", "jiuwen_memory_entry/http_server/__main__.py",
           "--host", "0.0.0.0", "--port", "8137",
           "/config/config.yml", "/config/config.prod.yml"]
 ```

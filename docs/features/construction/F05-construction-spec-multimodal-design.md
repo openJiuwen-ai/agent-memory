@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-08-05 |
-| 影响范围 | `bootstrap/core/`、`jiuwen_memory/control/`、`jiuwen_memory/ingest/`、`jiuwen_memory/construction/`、`jiuwen_memory/retrieval/` |
+| 影响范围 | `jiuwen_memory_entry/core/`、`jiuwen_memory/control/`、`jiuwen_memory/ingest/`、`jiuwen_memory/construction/`、`jiuwen_memory/retrieval/` |
 | 状态 | **已落地**（视频记忆写入、异步任务管理及多通道检索） |
 
 ## 背景
@@ -39,7 +39,7 @@ CLM 组成的事件级摘要。两级结果统一构建为 mem2.0 原生 `Memory
 
 | 模块 | 代码路径 | 职责 |
 |---|---|---|
-| 接口适配 | `bootstrap/core/handler.py`、`bootstrap/core/server.py` | 识别视频请求、校验参数并组织响应 |
+| 接口适配 | `jiuwen_memory_entry/core/handler.py`、`jiuwen_memory_entry/core/server.py` | 识别视频请求、校验参数并组织响应 |
 | 后台任务管理 | `jiuwen_memory/control/ingest_job.py`、`jiuwen_memory/control/job_impl/ingest_job.py` | 定义任务管理接口并实现异步执行、状态和提交幂等 |
 | 视频规约 | `jiuwen_memory/common/normalizer/normalizer_impl/` | 执行视频处理并生成 clips/events 结构化结果 |
 | 多层级记忆构建 | `jiuwen_memory/construction/extractor_impl/video_memory_extractor.py` | 将 clips/events 转换为 CLM/ELM `MemoryUnit` |
@@ -48,7 +48,7 @@ CLM 组成的事件级摘要。两级结果统一构建为 mem2.0 原生 `Memory
 
 ### 1. 接口适配
 
-**代码路径**：`bootstrap/core/handler.py`、`bootstrap/core/server.py`
+**代码路径**：`jiuwen_memory_entry/core/handler.py`、`jiuwen_memory_entry/core/server.py`
 
 **输入输出**：输入视频 URI、scope、`payload_id`、`system_metadata` 和
 `user_metadata`；输出 `ing_` 前缀的`job_id`，由 `/v1/job` 返回后续状态和记忆结果。

@@ -318,7 +318,7 @@ common → storage → construction → retrieval → control → api
 
 这里表示类型和能力依赖，不表示所有代码必须串行开发。construction 不得反向依赖
 control 或 Scheduler；control 负责提交任务，construction 只执行构建请求。
-ingest 与 api 可以在公共契约稳定后并行实现。bootstrap 和 agent plugin 只做薄适配，
+ingest 与 api 可以在公共契约稳定后并行实现。jiuwen_memory_entry 和 jiuwen_memory_adapter 只做薄适配，
 不承载内核建树算法。
 
 结构事务的业务编排归 control：它负责 scope/kind/span 并发闸门、任务终态，以及

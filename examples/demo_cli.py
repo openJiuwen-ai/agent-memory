@@ -3,7 +3,7 @@
 
 运行：``python3 examples/demo_cli.py``
 
-走 CLI 的 :class:`~bootstrap.cli.client.InProcessClient`（CLI/HTTP 共用的
+走 CLI 的 :class:`~jiuwen_memory_entry.cli.client.InProcessClient`（CLI/HTTP 共用的
 ``handler.dispatch`` 代码路径，少了 socket）。前半段用动词把主链路 + 演进 + 治理 +
 管理面都跑一遍；末段直接演示几个不在默认装配里的可选/辅助组件（Source/FS/Fusion/
 SQLite）。一个进程内共享内核，状态跨调用持久。无任何外部依赖。
@@ -30,7 +30,7 @@ import sys
 from importlib import import_module
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_CLI_DIR = os.path.join(_REPO, "bootstrap", "cli")
+_CLI_DIR = os.path.join(_REPO, "jiuwen_memory_entry", "cli")
 if _CLI_DIR not in sys.path:
     sys.path.append(_CLI_DIR)
 

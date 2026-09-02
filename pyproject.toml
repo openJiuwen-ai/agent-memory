@@ -41,7 +41,7 @@ deploy = [
     "asyncpg>=0.30",
     "pyyaml>=6",
 ]
-# MCP surface（bootstrap/mcp_server）：把记忆动词暴露为 Model Context Protocol 工具。
+# MCP surface（jiuwen_memory_entry/mcp_server）：把记忆动词暴露为 Model Context Protocol 工具。
 mcp = [
     "mcp>=1.2",
     "pyyaml>=6",
@@ -63,8 +63,8 @@ default = true
 where = ["."]
 include = [
     "jiuwen_memory*",
-    "agent_plugin*",
-    "bootstrap*",
+    "jiuwen_memory_adapter*",
+    "jiuwen_memory_entry*",
 ]
 
 [tool.pytest.ini_options]

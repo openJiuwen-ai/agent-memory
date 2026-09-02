@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-07-27 |
 | 影响范围 | `jiuwen_memory/common/type_def/`、`jiuwen_memory/api/`、`jiuwen_memory/control/`、`jiuwen_memory/storage/`、`jiuwen_memory/retrieval/`、`jiuwen_memory/construction/`、`docs/design/architecture.md`、`docs/specs/S02-memory-api.md`、`docs/specs/S03-control.md`、`docs/specs/S05-construction.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md` |
-| 测试基线 | `python3 -m compileall -q jiuwen_memory bootstrap/core tests`；12 个 Scope/Space 关键测试函数直接执行；`git diff --check`。当前环境未安装 pytest 与 ruff，未执行完整测试和 lint |
+| 测试基线 | `python3 -m compileall -q jiuwen_memory jiuwen_memory_entry/core tests`；12 个 Scope/Space 关键测试函数直接执行；`git diff --check`。当前环境未安装 pytest 与 ruff，未执行完整测试和 lint |
 
 ## 背景
 

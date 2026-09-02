@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-08-21 |
-| 影响范围 | `jiuwen_memory/common/type_def/`、`jiuwen_memory/api/`、`jiuwen_memory/control/`、`jiuwen_memory/ingest/`、`jiuwen_memory/construction/`、`jiuwen_memory/retrieval/`、`bootstrap/` |
+| 影响范围 | `jiuwen_memory/common/type_def/`、`jiuwen_memory/api/`、`jiuwen_memory/control/`、`jiuwen_memory/ingest/`、`jiuwen_memory/construction/`、`jiuwen_memory/retrieval/`、`jiuwen_memory_entry/` |
 | 测试基线 | `pytest -m unit`：全部通过（外部依赖/真实 LLM 用例按原有标记跳过） |
 | Refs | — |
 
@@ -121,7 +121,7 @@ infer = as_bool(
 | `MemoryPatch` | `metadata` | `system_metadata` 和 `user_metadata`，均保持 dict 合并语义 | `jiuwen_memory/control/types.py`、Engine update |
 | `search/list.filters` | `metadata.<key>` | 用户输入改用 `user_metadata.<key>` | API、Retrieval、Store filter compiler |
 | `RetrievedItem` | 不返回 metadata | 增加 `user_metadata` 和 `system_metadata` | `jiuwen_memory/retrieval/types.py`、Discloser |
-| HTTP/SDK add、batch、update | `metadata` | 按接入形态暴露 `system_metadata` 和 `user_metadata` | `bootstrap/core/handler.py`、SDK/plugin adapter |
+| HTTP/SDK add、batch、update | `metadata` | 按接入形态暴露 `system_metadata` 和 `user_metadata` | `jiuwen_memory_entry/core/handler.py`、SDK/plugin adapter |
 
 `get`、`delete`、`evolve` 等方法不需要增加 metadata 参数。它们继续使用 `MemoryUnit` 或已有 selector，
 只适配新的字段名。
@@ -508,7 +508,7 @@ t_message
 | ingest | RawPayload 到 MemoryUnit 的字段复制 |
 | construction | Extractor/Evolver 传播、IndexBuilder 投影 |
 | retrieval | FilterExpr 字段解析、Store 下推、UnitReader 复核、RetrievedItem |
-| bootstrap/SDK/plugin | 请求和响应 schema、旧 `metadata` 参数移除 |
+| jiuwen_memory_entry/sdk/plugin | 请求和响应 schema、旧 `metadata` 参数移除 |
 | docs | S02/S03/S04/S06/S07、受影响模块 AGENTS.md、对应 feature 归档 |
 
 不要机械地把所有 `.metadata` 替换成 `.user_metadata`：

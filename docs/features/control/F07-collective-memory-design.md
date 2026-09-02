@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-08-20（决策 25 于 2026-08-28 追加；2026-08-29 并入原 `S09-collective-memory.md` 的契约章节，该规约随之删除——群体记忆是特性，不占模块规约编号） |
-| 影响范围 | `jiuwen_memory/api/`、`jiuwen_memory/control/`、`jiuwen_memory/construction/`、`jiuwen_memory/common/security/`、`jiuwen_memory/common/type_def/memory.py`、`deploy/migration/`、`agent_plugin/jiuwenswarm/`、`docs/specs/S02-memory-api.md`、`docs/specs/S03-control.md`、`docs/specs/S04-retrieval.md`、`docs/specs/S05-construction.md`、`docs/specs/S07-common.md` |
+| 影响范围 | `jiuwen_memory/api/`、`jiuwen_memory/control/`、`jiuwen_memory/construction/`、`jiuwen_memory/common/security/`、`jiuwen_memory/common/type_def/memory.py`、`deploy/migration/`、`jiuwen_memory_adapter/jiuwenswarm/`、`docs/specs/S02-memory-api.md`、`docs/specs/S03-control.md`、`docs/specs/S04-retrieval.md`、`docs/specs/S05-construction.md`、`docs/specs/S07-common.md` |
 | 测试基线 | 见「验证」 |
 | 相关规约 | 本文档自带契约章节（接口契约 / 数据结构 / 判定规则 / 配置契约）；跨模块改动同步落 S02、S03、S04、S05、S07；安全横切契约随上游安全模块合入 |
 | Refs | — |
@@ -260,7 +260,7 @@
 
 写入入口不提供声明条目可见性的入参，条目上也不落对应的 metadata 键。作者代理（`author_agent`）只作记录项，判定不读它：同一用户经其名下任一代理发起的调用与本人直接调用推导出同一个作者主体，因此换代理不改变可达性。
 
-早前方案在写入入口设 `private: bool = False`，用于表达「这条对该用户名下的代理不可见」。该设计的判据是调用方身份的代理维，而接入层的代理维当前由调用方在请求体中经 `actor_agent` 字段自行声明、服务端不校验（`bootstrap/core/handler.py` 的 `_actor_scope`，注释即写明是 claimed actor）。判据可由调用方自行规避，标记因此不构成任何强度的隔离，反而使读者误认为敏感内容受保护。
+早前方案在写入入口设 `private: bool = False`，用于表达「这条对该用户名下的代理不可见」。该设计的判据是调用方身份的代理维，而接入层的代理维当前由调用方在请求体中经 `actor_agent` 字段自行声明、服务端不校验（`jiuwen_memory_entry/core/handler.py` 的 `_actor_scope`，注释即写明是 claimed actor）。判据可由调用方自行规避，标记因此不构成任何强度的隔离，反而使读者误认为敏感内容受保护。
 
 替代做法是空间隔离：要让一部分内容对某些主体不可见，把它放进另一个空间。后续若确有条目级的需求，须与安全横切契约提供的可信代理身份一并引入——彼时代理维取自认证产物，判据才成立。
 
