@@ -459,6 +459,49 @@ def test_dynamic_evolver_supersedes_existing_via_llm_judge():
 
 
 @pytest.mark.unit
+def test_dynamic_evolver_update_empty_merge_falls_back_to_concatenation():
+    """UPDATE 但合并结果为空串 → 视同合并失败，降级拼接新旧内容（Issue #189）。"""
+    existing = _unit("existing", "旧事实")
+    kv = InMemoryKVStore()
+    kv.insert(existing.scope, memory_key(existing.id), dumps(existing))
+    storage = CompositeStorage(kv=kv, graph=InMemoryGraphStore())
+    index = _Index(storage)
+    dedup = _Dedup([(existing, 0.8)])
+    registry = PromptRegistry.from_dict({"consolidate": {"episodic": "巩固判定"}})
+    llm = _ScriptedLLM(
+        [
+            json.dumps({"decision": "update", "existing_id": "existing", "reason": "补充"}),
+            "",  # _merge_content 调用：LLM 200 但返回空串
+        ]
+    )
+    candidate = _unit(
+        "candidate",
+        "新事实",
+        {"_extraction_strategy": "episodic", "_consolidation_prompt_episodic": "episodic"},
+    )
+    evolver = DynamicEvolver(
+        extractor=_FallbackExtractor(),
+        abstractor=object(),
+        associator=object(),
+        index_builder=index,
+        storage=storage,
+        message_store=storage.kv,
+        dedup=dedup,
+        llm=llm,
+        layer_annotator=None,
+        prompt_registry=registry,
+    )
+
+    result = evolver.evolve([candidate], EvolveMode.EXTRACT)
+
+    # UPDATE 照常执行，但 content 为降级拼接（非空串）
+    assert result.updated_ids == ["existing"]
+    assert result.created_ids == []
+    kept = loads(kv.get(existing.scope, memory_key(existing.id)))
+    assert kept.content == "旧事实\n新事实"
+
+
+@pytest.mark.unit
 def test_dynamic_evolver_invalid_llm_response_falls_back_to_add():
     evolver, kv, _ = _make_evolver(
         llm=_ScriptedLLM(["not-json"]),

@@ -631,6 +631,43 @@ class TestDedupUpdate:
         # 验证 provenance 包含候选 id
         assert "c1" in updated.provenance
 
+    @staticmethod
+    def test_update_empty_merge_falls_back_to_concatenation():
+        """UPDATE 但合并结果为空串 → 视同合并失败，降级拼接新旧内容（Issue #189）。
+
+        LLM 输出抖动返回 200 + 空 content：降级路径产出拼接文本，
+        真源不得被空串静默清空。
+        """
+        stores = _create_stores()
+        llm = _MockLLM(
+            responses=[
+                json.dumps({"decision": "update", "reason": "候选补充信息"}),
+                "",  # 第二次调用（merge content）：HTTP 200 但 content 为空
+            ]
+        )
+        plugins = {"embedder": _HashEmbedder(), "llm": llm}
+        evolver = _make_evolver(
+            stores["kv"],
+            stores["vector"],
+            plugins["embedder"],
+            plugins["llm"],
+            dedup_high_similarity=1.01,
+        )
+
+        existing_unit = _make_unit("e1", "用户偏好简洁回答风格")
+        _index_unit(existing_unit, stores["kv"], stores["vector"], plugins["embedder"])
+
+        candidate = _make_unit("c1", "用户偏好简洁回答风格")
+        result = getattr(evolver, "_dedup_batch")([candidate])
+
+        # UPDATE 照常执行，但 content 为降级拼接（非空串）
+        assert result.updated_ids == ["e1"]
+        assert result.created_ids == []
+
+        # 真源内容 = 新旧拼接，未被空串覆写
+        kept = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("e1")))
+        assert kept.content == "用户偏好简洁回答风格\n用户偏好简洁回答风格"
+
 
 class TestDedupDegradation:
     """降级场景：Embedder/VectorStore/LLM 不可用时的行为。"""
