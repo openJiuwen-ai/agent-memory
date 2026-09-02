@@ -481,6 +481,49 @@ class TestRelatedMemoriesDedup:
         assert "c-1" in result.created_ids
 
 
+class TestMessagesUpsertOnRetry:
+    """_add_messages upsert：extract 失败后重试同一 unit.id 不撞 KV insert 拒重。"""
+
+    @staticmethod
+    def test_evolve_retry_after_extract_failure_does_not_raise_conflict():
+        class _FailOnceExtractor(Extractor):
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def operator_type(self) -> OperatorType:
+                return OperatorType.EXTRACTOR
+
+            def health(self) -> None:
+                return None
+
+            def extract(self, units, *, context=None):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("inject failure")
+                return []
+
+        stores = {"kv": _MemoryKVStore(), "vector": _MemoryVectorStore()}
+        plugins = {"embedder": _HashEmbedder(), "llm": _MockLLM()}
+        extractor = _FailOnceExtractor()
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor
+        )
+        unit = _make_unit(
+            "u-retry-1",
+            "alice FAIL_INJECT",
+            system_metadata={"infer": "true", "middle": "true"},
+        )
+        message_store = getattr(evolver, "_message_store")
+
+        with pytest.raises(RuntimeError, match="inject failure"):
+            evolver.evolve([unit], EvolveMode.EXTRACT)
+        assert message_store.exists(_DEFAULT_SCOPE, messages_key(unit.id))
+
+        result = evolver.evolve([unit], EvolveMode.EXTRACT)
+        assert result.created_ids == []
+        assert extractor.calls == 2
+
+
 class TestEngineInferPersist:
     """engine.write(infer=true)：原文以规约后的 MemoryUnit 落 /messages/（由 evolver 落盘）。"""
 
