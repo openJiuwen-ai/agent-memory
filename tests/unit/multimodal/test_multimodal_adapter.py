@@ -46,7 +46,7 @@ from jiuwen_memory.retrieval.retriever_impl.multimodal_retriever import (
 )
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
 
-_BOOTSTRAP_CORE = Path(__file__).parents[3] / "bootstrap" / "core"
+_BOOTSTRAP_CORE = Path(__file__).parents[3] / "jiuwen_memory_entry" / "core"
 if str(_BOOTSTRAP_CORE) not in sys.path:
     sys.path.append(str(_BOOTSTRAP_CORE))
 handler = importlib.import_module("handler")

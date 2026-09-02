@@ -4,5 +4,5 @@
 # stdio by default; set MCP_TRANSPORT=http (+ MCP_PORT) for Streamable HTTP.
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/bootstrap/core${PYTHONPATH:+:${PYTHONPATH}}"
-exec python3 "${REPO_ROOT}/bootstrap/mcp_server/__main__.py" "$@"
+export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/jiuwen_memory_entry/core${PYTHONPATH:+:${PYTHONPATH}}"
+exec python3 "${REPO_ROOT}/jiuwen_memory_entry/mcp_server/__main__.py" "$@"

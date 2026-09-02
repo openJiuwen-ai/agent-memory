@@ -35,11 +35,11 @@ ENV HF_HOME=/models \
     HF_ENDPOINT=https://huggingface.co
 
 # 调用层（HTTP surface）与脚本
-COPY bootstrap ./bootstrap
+COPY jiuwen_memory_entry ./jiuwen_memory_entry
 COPY scripts ./scripts
 
 EXPOSE 8137
 
 # 配置经挂载卷提供（compose 把 ./config.yml 挂到 /config/config.yml）
-CMD ["python", "bootstrap/http_server/__main__.py", \
+CMD ["python", "jiuwen_memory_entry/http_server/__main__.py", \
      "--host", "0.0.0.0", "--port", "8137", "/config/config.yml"]

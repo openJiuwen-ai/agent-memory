@@ -4,7 +4,7 @@ SDK deployment means installing and assembling `jiuwen_memory` in the consumer's
 The process can call `MemoryAPI` directly or run a local HTTP service. Storage can use the default
 in-process implementations or real backends started with Docker.
 
-> `bootstrap/sdk/__init__.py` is currently empty, and the project does not yet provide a separately
+> `jiuwen_memory_entry/sdk/__init__.py` is currently empty, and the project does not yet provide a separately
 > packaged SDK client. This document uses `jiuwen_memory.api.build_kernel()` and `MemoryAPI` as the
 > current stable Python integration entry points.
 
@@ -214,7 +214,7 @@ both the HTTP configuration format and its environment-variable expansion, load 
 follows:
 
 ```python
-from bootstrap.core.config_loader import load_layer
+from jiuwen_memory_entry.core.config_loader import load_layer
 from jiuwen_memory.api import build_kernel
 from jiuwen_memory.common.type_def import Context, Scope
 from jiuwen_memory.config import Config

@@ -16,9 +16,9 @@ Producer 注册表、具名实例和依赖引用的轻量级装配机制。本�
 - [`routing.py`](../../../jiuwen_memory/config/routing.py)
 - [`factory.py`](../../../jiuwen_memory/common/factory/factory.py)
 - [`assembly.py`](../../../jiuwen_memory/api/memory_api_impl/assembly.py)
-- [`config_loader.py`](../../../bootstrap/core/config_loader.py)
-- [`profiles.py`](../../../bootstrap/core/profiles.py)
-- [`server.py`](../../../bootstrap/core/server.py)
+- [`config_loader.py`](../../../jiuwen_memory_entry/core/config_loader.py)
+- [`profiles.py`](../../../jiuwen_memory_entry/core/profiles.py)
+- [`server.py`](../../../jiuwen_memory_entry/core/server.py)
 
 ## 1. 配置模型概述
 

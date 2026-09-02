@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from bootstrap.core import handler
+from jiuwen_memory_entry.core import handler
 from jiuwen_memory.common.errors import RateLimitedError
 
 pytestmark = pytest.mark.unit

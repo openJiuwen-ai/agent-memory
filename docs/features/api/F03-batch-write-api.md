@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-08-04 |
-| 影响范围 | jiuwen_memory/api/，jiuwen_memory/control/，bootstrap/core/handler.py，docs/specs/S02-memory-api.md，docs/specs/S03-control.md |
+| 影响范围 | jiuwen_memory/api/，jiuwen_memory/control/，jiuwen_memory_entry/core/handler.py，docs/specs/S02-memory-api.md，docs/specs/S03-control.md |
 | 测试基线 | `tests/unit/api/test_batch_write.py`、`test_batch_handler.py`、`tests/unit/control/test_cloud_engine.py` |
 | Refs | — |
 

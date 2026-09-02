@@ -6,8 +6,8 @@ hands it to an :class:`~client.EngineClient`, reusing the same dispatch the HTTP
 surface uses. No business logic lives here. The verb + flag vocabulary tracks
 common memory-layer CLI conventions (see ``DESIGN.md`` § "CLI compatibility").
 
-通过启动脚本运行，以便把仓库根与 ``bootstrap/core`` 放入 ``PYTHONPATH``，
-并确保 ``import server`` 解析到共享应用核 ``bootstrap/core/server.py``::
+通过启动脚本运行，以便把仓库根与 ``jiuwen_memory_entry/core`` 放入 ``PYTHONPATH``，
+并确保 ``import server`` 解析到共享应用核 ``jiuwen_memory_entry/core/server.py``::
 
     scripts/run-cli.sh [global opts] <verb> [verb opts]
 

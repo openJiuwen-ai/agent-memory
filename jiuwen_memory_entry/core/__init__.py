@@ -1,7 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """core — 各协议 surface 共享的应用核（与传输无关）。
 
-``bootstrap/{http_server, mcp_server, cli, sdk}`` 都是薄传输适配器，统一依赖这里：
+``jiuwen_memory_entry/{http_server, mcp_server, cli, sdk}`` 都是薄传输适配器，统一依赖这里：
 
 - :mod:`server`：``Server`` 基类——装配一次内核（config + api + 真源）并暴露 ``dispatch``；
 - :mod:`handler`：verb→``MemoryAPI`` 的唯一 dispatch 表 + JSON 信封整形；

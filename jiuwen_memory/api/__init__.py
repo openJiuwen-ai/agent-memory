@@ -1,7 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """记忆接口层（B 层，§9）：统一 Core API（形态无关）。
 
-调用层（``bootstrap/``、``agent_plugin/``）只依赖本包：这里重导出
+调用层（``jiuwen_memory_entry/``、``jiuwen_memory_adapter/``）只依赖本包：这里重导出
 调用所需的全部类型，调用方无需 import 内核其他包。
 """
 

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-06-30 |
-| 影响范围 | jiuwen_memory/control/engine_impl/in_memory_engine.py、jiuwen_memory/control/AGENTS.md、bootstrap/core/handler.py、docs/specs/S02-memory-api.md、docs/specs/S03-control.md、docs/features/construction/F01-construction-spec-design.md |
+| 影响范围 | jiuwen_memory/control/engine_impl/in_memory_engine.py、jiuwen_memory/control/AGENTS.md、jiuwen_memory_entry/core/handler.py、docs/specs/S02-memory-api.md、docs/specs/S03-control.md、docs/features/construction/F01-construction-spec-design.md |
 | 测试基线 | `pytest tests/unit/construction` 全绿（82 passed）；`pytest tests/unit/api` 全绿；`pytest tests/unit` 4 failed（仅 `test_bge_reranker.py`，与本特性无关） |
 | Refs | — |
 
@@ -21,7 +21,7 @@
 
 这一立场是为了保住写入时延（agent 等待），其代价是「写入的原始记忆先以 EPISODIC 入库、派生 SEMANTIC 事实要等后台 EXTRACT 跑完才出现」。在两条新诉求下，这个代价变得不可接受：
 
-1. **外接记忆 provider 的同步语义**：`agent_plugin/JiwenSwarm/agent_memory_provider.py` 把本系统适配成 openjiuwen `MemoryProvider`，其 `sync_turn` 契约要求「写完即可被下一轮 `prefetch` 召回派生事实」——若 write 后派生事实要等 background EXTRACT（且 `InProcessScheduler` 当前是**同步执行**，见 F01 已知遗留 1）才出现，provider 的同步语义失效，agent 下一轮检索不到刚写入的事实。
+1. **外接记忆 provider 的同步语义**：`jiuwen_memory_adapter/JiwenSwarm/agent_memory_provider.py` 把本系统适配成 openjiuwen `MemoryProvider`，其 `sync_turn` 契约要求「写完即可被下一轮 `prefetch` 召回派生事实」——若 write 后派生事实要等 background EXTRACT（且 `InProcessScheduler` 当前是**同步执行**，见 F01 已知遗留 1）才出现，provider 的同步语义失效，agent 下一轮检索不到刚写入的事实。
 
 2. **对齐 mem0 `add(infer=True)`**：mem0 的 `add` 支持 `infer=True` 在写入时同步抽取事实。本系统作为可替代 mem0 的独立记忆子系统，需要在 `write` 暴露等价开关，否则上层（如 `ExternalMemoryRail`）无法做语义对等迁移。
 
@@ -58,7 +58,7 @@ Ingestor.ingest → 补 assets/tags → Classifier.classify → KVStore.insert�
 
 ### 3. HTTP handler `/v1/add` 透传 metadata
 
-`bootstrap/core/handler.py` 的 `_add`：
+`jiuwen_memory_entry/core/handler.py` 的 `_add`：
 - 校验 `payload["metadata"]` 必须是对象后按原生类型透传给 `api.add`；API 写入边界只
   接受 JSON 标量或字符串数组，并拒绝系统保留 key。业务 metadata 不再统一
   string 化，`RawPayload` / `MemoryUnit` / 索引投影保持同一值类型。
@@ -104,7 +104,7 @@ Ingestor.ingest → 补 assets/tags → Classifier.classify → KVStore.insert�
 
 ### 端到端验证
 
-- `agent_plugin/JiwenSwarm/_e2e_real.py` — provider ↔ 服务(8137) 全链路：conclude / sync_turn(infer=true) / on_session_end / prefetch / search / profile
+- `jiuwen_memory_adapter/JiwenSwarm/_e2e_real.py` — provider ↔ 服务(8137) 全链路：conclude / sync_turn(infer=true) / on_session_end / prefetch / search / profile
 - `examples/quickstart*.py` — add → search → get → update → evolve 全链路
 
 ### 关键场景验证
@@ -213,7 +213,7 @@ InProcess 模式 `list_semantic` 同步对齐：去掉 `tier==SEMANTIC` 过滤�
 
 ### 决策11：provider 新增 agent_memory_procedural 工具
 
-`agent_plugin/jiuwenswarm/agent_memory_provider.py` 新增第 4 个工具 `agent_memory_procedural`：
+`jiuwen_memory_adapter/jiuwenswarm/agent_memory_provider.py` 新增第 4 个工具 `agent_memory_procedural`：
 
 - `PROCEDURAL_SCHEMA`：参数 `content`（要汇总的本轮内容），description 说明"汇总成 1 条 procedural 记录、原文不存、不去重不检索"。
 - `handle_tool_call` 分支：调 `self._client.add(content, scope, metadata={"procedural": "true"})` → 经 engine procedural 分支。返回 `{result, item_id}`。

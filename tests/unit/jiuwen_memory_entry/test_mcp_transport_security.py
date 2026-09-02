@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-_MCP_DIR = os.path.join("bootstrap", "mcp_server")
-_CORE_DIR = os.path.join("bootstrap", "core")
+_MCP_DIR = os.path.join("jiuwen_memory_entry", "mcp_server")
+_CORE_DIR = os.path.join("jiuwen_memory_entry", "core")
 for _path in (_MCP_DIR, _CORE_DIR, "."):
     if _path not in sys.path:
         sys.path.append(_path)

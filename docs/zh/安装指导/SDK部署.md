@@ -4,7 +4,7 @@ SDK 部署是指在使用方的 Python 进程中安装和装配 `jiuwen_memory`�
 `MemoryAPI`，也可以是在本机启动 HTTP 服务；存储可以使用默认进程内实现，也可以连接由 Docker
 启动的真实后端。
 
-> 当前 `bootstrap/sdk/__init__.py` 还是空的，项目尚未提供独立封装的 SDK 客户端。
+> 当前 `jiuwen_memory_entry/sdk/__init__.py` 还是空的，项目尚未提供独立封装的 SDK 客户端。
 > 本文以 `jiuwen_memory.api.build_kernel()` 和 `MemoryAPI` 作为当前稳定的 Python 接入入口。
 
 ## 1. 组合方式
@@ -207,7 +207,7 @@ export ES_HOSTS='http://127.0.0.1:9200'
 配置格式和环境变量展开逻辑，可以这样加载：
 
 ```python
-from bootstrap.core.config_loader import load_layer
+from jiuwen_memory_entry.core.config_loader import load_layer
 from jiuwen_memory.api import build_kernel
 from jiuwen_memory.common.type_def import Context, Scope
 from jiuwen_memory.config import Config

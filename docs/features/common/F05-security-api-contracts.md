@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-08-20 |
-| 影响范围 | `jiuwen_memory/common/security/`、`jiuwen_memory/common/audit/`、`jiuwen_memory/api/`、`bootstrap/core/`、`bootstrap/mcp_server/transport_security.py`、`docs/specs/S02-memory-api.md`、`docs/specs/S07-common.md` |
+| 影响范围 | `jiuwen_memory/common/security/`、`jiuwen_memory/common/audit/`、`jiuwen_memory/api/`、`jiuwen_memory_entry/core/`、`jiuwen_memory_entry/mcp_server/transport_security.py`、`docs/specs/S02-memory-api.md`、`docs/specs/S07-common.md` |
 | 关联文档 | [S02 记忆接口层](../../specs/S02-memory-api.md)、[S07 公共组件层](../../specs/S07-common.md)、[F04 安全接口与加密设计](F04-security-interfaces-and-encryption.md) |
 | 状态 | **接口先行、实现暂缓**：契约层已合入，`*_impl` 实现包与 Server lifecycle 接线随后续实装 PR 合入 |
 
@@ -32,7 +32,7 @@
 
 `RequestSecurityContext` 的 `attributes` 构造时统一冻结为只读映射；来源绑定
 （`_origin`）机制已就位，**受控构造入口（`new_request_context` / `internal_context`）
-随 PR2 合入**（见 §5.1）。PR1 过渡期由 surface（`bootstrap.core.auth_middleware.authenticated`）
+随 PR2 合入**（见 §5.1）。PR1 过渡期由 surface（`jiuwen_memory_entry.core.auth_middleware.authenticated`）
 直接构造。
 
 ### 2.2 能力契约（各子包 `base.py`）
@@ -44,7 +44,7 @@
 | `protection/` | `RateLimiter`、`WorkloadGuard`、`BindingPolicy` |
 | `runtime.py` | `SecurityRuntime`（跨能力装配根；PR2 起增加 `authorizer` 引用） |
 
-### 2.3 Bootstrap 接缝（`bootstrap/core/auth_middleware.py`）
+### 2.3 jiuwen_memory_entry 接缝（`jiuwen_memory_entry/core/auth_middleware.py`）
 
 ```python
 credentials_from_headers(headers, peer_address="") -> Credentials
@@ -54,7 +54,7 @@ authenticated(
     workload_guard=None, surface=None,
 ) -> Iterator[RequestSecurityContext]
 
-credentials_for_transport(  # bootstrap/mcp_server/transport_security.py
+credentials_for_transport(  # jiuwen_memory_entry/mcp_server/transport_security.py
     transport, *, context=None, environ=None,
 ) -> Credentials
 ```
@@ -99,7 +99,7 @@ internal_context(authenticator) -> RequestSecurityContext
 `internal_context(authenticator)` 的 `authenticator` **必填**：进程内直连的身份仍由
 authenticator 产出，不接受调用方以 `Scope` 自述身份，也不再有「无参领 ROOT」的默认。
 
-`bootstrap.core.auth_middleware.authenticated()` 改为经 `new_request_context` 构造，
+`jiuwen_memory_entry.core.auth_middleware.authenticated()` 改为经 `new_request_context` 构造，
 `surface` 由适配层写入（缺省 `INTERNAL`），`peer` 只取传输层对端地址。
 
 ### 5.2 授权域公共类型（`security/types.py`、`security/authorization/`）
@@ -166,8 +166,8 @@ authenticator 产出，不接受调用方以 `Scope` 自述身份，也不再有
 “接口先行、实现暂缓”的边界留给实装 PR。
 
 **`legacy_request_context` 的移除点**：`jiuwen_memory/common/security/legacy.py` 及其全部调用点
-（`bootstrap/core/handler.py`——HTTP / MCP / CLI 都经它 dispatch、
-`agent_plugin/jiuwenswarm/agent_memory_provider.py`、`evaluation/core/harness.py`、
+（`jiuwen_memory_entry/core/handler.py`——HTTP / MCP / CLI 都经它 dispatch、
+`jiuwen_memory_adapter/jiuwenswarm/agent_memory_provider.py`、`evaluation/core/harness.py`、
 `examples/quickstart.py`、`tests/`）在 `authentication_impl` 合入、各 surface 接上
 `authenticated()` 的同一个 PR 中删除。届时接入层直接产出 `RequestSecurityContext`，
 `MemoryAPI` 公共签名不再变动；请求 payload 携带 identity 的临时态也在那时一并去掉。
@@ -265,7 +265,7 @@ def verify_audit(
   `truncated=true`，避免自定义 provider 放大返回体；
 - `truncated` 只表示错误样本列表被有效 `max_samples` 截短，扫描未完成用
   `status=incomplete`，不能复用同一标志掩盖缺页；
-- 真实认证接入前，`bootstrap/core/handler.py` **不注册** `verify_audit`：legacy handler
+- 真实认证接入前，`jiuwen_memory_entry/core/handler.py` **不注册** `verify_audit`：legacy handler
   只能从 payload 构造普通 actor，无法构造可信根管理上下文，注册后默认装配必然 403，且
   不能用 payload 自述 root 修补。当前只有形态无关的 `MemoryAPI` 一等入口；HTTP、MCP、CLI
   都暂不提供该管理面的一等入口。认证中间件接入后，HTTP 可直接使用下列

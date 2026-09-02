@@ -11,11 +11,11 @@ once against :class:`EngineClient` and chooses a backend at the edge.
 Two backends, mirroring the two ways to reach an assembled memory engine:
 
 - :class:`InProcessClient` builds the engine in *this* process (like
-  ``bootstrap/http_server/__main__``) and routes through :func:`handler.dispatch` —
+  ``jiuwen_memory_entry/http_server/__main__``) and routes through :func:`handler.dispatch` —
   the exact code path the HTTP surface uses, minus the socket. The engine lives
   for the client's lifetime, so repeated ``add`` calls share the in-memory store
   (the stateful path the LoCoMo ingest needs without a running server).
-- :class:`HttpClient` POSTs to a running ``bootstrap`` server's ``/v1/<verb>``.
+- :class:`HttpClient` POSTs to a running ``jiuwen_memory_entry`` server's ``/v1/<verb>``.
 
 The CLI is a §15 *surface*: a protocol adapter that reuses the kernel's dispatch
 and adds no business logic of its own.
@@ -31,7 +31,7 @@ import urllib.request
 from typing import Any, Protocol
 
 # The shared core modules (server.py, handler.py, profiles.py) are a flat import
-# root living in ``bootstrap/core``. Add it to the path so in-process mode can
+# root living in ``jiuwen_memory_entry/core``. Add it to the path so in-process mode can
 # reuse the shared dispatch modules.
 _CORE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core")
 if _CORE_DIR not in sys.path:
@@ -52,7 +52,7 @@ class InProcessClient:
     """Assemble an engine in this process and route verbs through it.
 
     ``configs`` are paths to JSON config layers stacked on top of the OFFLINE
-    profile (nearest-wins), matching ``bootstrap/http_server/__main__``. The built
+    profile (nearest-wins), matching ``jiuwen_memory_entry/http_server/__main__``. The built
     :class:`Server` is held for the client's lifetime so writes persist across
     calls within the process.
     """
@@ -71,7 +71,7 @@ class InProcessClient:
 
     @property
     def server(self):
-        """The assembled :class:`bootstrap.server.Server` (for direct inspection)."""
+        """The assembled :class:`jiuwen_memory_entry.server.Server` (for direct inspection)."""
         return self._srv
 
     def call(self, verb: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -87,7 +87,7 @@ class InProcessClient:
 
 
 class HttpClient:
-    """Drive a running ``bootstrap`` server over HTTP (``POST /v1/<verb>``)."""
+    """Drive a running ``jiuwen_memory_entry`` server over HTTP (``POST /v1/<verb>``)."""
 
     def __init__(self, base_url: str, timeout: float = 30.0) -> None:
         self.base_url = base_url.rstrip("/")

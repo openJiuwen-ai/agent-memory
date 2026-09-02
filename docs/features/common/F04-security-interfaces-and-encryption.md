@@ -67,7 +67,7 @@
 3. **单次验证、上下文传播**：认证中间件只验证一次身份，结果注入请求上下文，后续流程不再重复校验身份。
 4. **常时间比较（timing-safe）**：所有密钥比对必须使用 `hmac.compare_digest` 或等价的常时间函数。
 5. **可插拔算子用注册式工厂（Factory + Producer）**：`agent-memory` mem2.0 的所有核心抽象（PermissionManager / AuditLogger / Governor / Engine / KVStore 等）用 `XxxProducer(Factory)` + `@Producer.register("name")` 自注册，装配时 `Producer.dep(root, default="name")` 按名取实例。安全模块的认证/权限/审计算子同样遵循此模式。
-6. **应用层 bootstrap 已生成**：`bootstrap/` 下有 CLI / HTTP server / MCP server / SDK 四种接入形态的薄封装，安全模块通过 bootstrap 挂载。`deploy/` 下有 Docker / local 部署方案。
+6. **应用层 bootstrap 已生成**：`jiuwen_memory_entry/` 下有 CLI / HTTP server / MCP server / SDK 四种接入形态的薄封装，安全模块通过 bootstrap 挂载。`deploy/` 下有 Docker / local 部署方案。
 
 ### 2.2 三种认证模式
 

@@ -4,7 +4,7 @@
 :class:`Server` is the **base class** every protocol surface builds on: it holds
 one assembled kernel (config + api + truth-source) and exposes :meth:`dispatch`,
 the verb router that the CLI and HTTP/MCP surfaces all share. A concrete surface
-subclasses it and adds its transport (see :class:`bootstrap.http_server.__main__.HttpServer`
+subclasses it and adds its transport (see :class:`jiuwen_memory_entry.http_server.__main__.HttpServer`
 for the HTTP/socket surface); the CLI's ``InProcessClient`` uses the base directly.
 
 The minimal reference build uses :func:`api.build_kernel` (the per-capability
@@ -13,7 +13,7 @@ means assembling real plugins/Stores in :meth:`build` and reusing the same
 ``dispatch``.
 
 本模块仍按 flat import root 使用（``import server`` / ``import profiles``）。
-内核依赖改为 ``jiuwen_memory.*``；本地脚本把仓库根与 ``bootstrap/core`` 放入
+内核依赖改为 ``jiuwen_memory.*``；本地脚本把仓库根与 ``jiuwen_memory_entry/core`` 放入
 ``PYTHONPATH``，这里仅在直接运行时把仓库根追加为兜底路径。
 """
 
