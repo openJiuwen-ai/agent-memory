@@ -743,7 +743,14 @@ class OrchestratingEvolver(Evolver):
 
     def _add_messages(self, scope: Scope, units: List[MemoryUnit]) -> None:
         for unit in units:
-            self._message_store.insert(scope, messages_key(unit.id), dumps(unit))
+            key = messages_key(unit.id)
+            value = dumps(unit)
+            try:
+                self._message_store.insert(scope, key, value)
+            except ConflictError:
+                # MiddleToLongJob 失败批下轮重试会对同一 unit.id 再调 evolve；extract
+                # 失败时 /messages/ 已写入且按契约不回滚，upsert 使重试不再撞 insert 拒重。
+                self._message_store.update(scope, key, value)
 
     def _list_messages(self, scope: Scope) -> List[MemoryUnit]:
         """返回 scope 内全部原文（无序；调用方自行排序）。损坏记录跳过，不阻断整批。"""
