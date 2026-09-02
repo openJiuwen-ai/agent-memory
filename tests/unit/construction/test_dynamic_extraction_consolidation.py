@@ -10,6 +10,7 @@ from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.llm.base import LLM
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import (
+    DedupDecision,
     MemoryTier,
     MemoryUnit,
     Modality,
@@ -489,6 +490,38 @@ def test_dynamic_evolver_high_similarity_skips_llm_judge():
     # 高相似度 NOOP：候选不落盘
     with pytest.raises(Exception):
         kv.get(candidate.scope, memory_key(candidate.id))
+
+
+@pytest.mark.unit
+def test_dynamic_evolver_judge_routes_high_similarity_delta_to_llm():
+    """DynamicEvolver._judge：高相似但有月份差异 → 不走 direct_noop，改走 LLM。"""
+    existing = _unit("existing", "会议定于3月举行")
+    evolver, _, _ = _make_evolver(
+        dedup_hits=[(existing, 0.95)],
+        prompts={"consolidate": {"episodic": "事件变化时替换旧记忆"}},
+    )
+    setattr(evolver, "_dedup_high_similarity", 0.9)
+    candidate = _unit(
+        "candidate",
+        "会议定于5月举行",
+        {
+            "_extraction_strategy": "episodic",
+            "_consolidation_prompt_episodic": "episodic",
+        },
+    )
+    llm = getattr(evolver, "_llm")
+    llm.responses = [
+        json.dumps({"decision": "supersede", "existing_id": "existing", "reason": "月份更新"})
+    ]
+
+    decision, existing_hit, similarity = getattr(evolver, "_judge")(
+        candidate, [(existing, 0.95)]
+    )
+
+    assert llm.messages, "有实质差异时应走 LLM 而非 direct_noop"
+    assert decision == DedupDecision.SUPERSEDE
+    assert existing_hit is not None and existing_hit.id == "existing"
+    assert similarity == pytest.approx(0.95)
 
 
 @pytest.mark.unit

@@ -104,6 +104,9 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
    `OrchestratingEvolver._evolve_extract`（legacy）由 `_dedup_batch` 耦合判定与落盘；
    `DynamicEvolver._evolve_extract`（dynamic）在 consolidate 只判定，reflect 后统一落盘。
    装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`，保证 fulltext-only 下去重仍可用。
+   高相似 direct_noop 短路（`score ≥ dedup_high_similarity`）须经
+   `evolver_impl/dedup_direct_noop.should_direct_noop` 校验：仅当相对已有记忆无
+   `has_meaningful_delta`（`t_event` 冲突、更正词、日期 span 集合差）时才允许跳过 LLM。
 
 8. **构建层不依赖 control**
    SUPERSEDE/FORGET 标记由 `OrchestratingEvolver`/`DynamicEvolver` 经

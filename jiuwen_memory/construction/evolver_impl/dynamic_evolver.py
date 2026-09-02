@@ -38,6 +38,7 @@ from jiuwen_memory.construction.associator import AssociatorProducer
 from jiuwen_memory.construction.base import ExtractContext
 from jiuwen_memory.construction.dedup import DedupProducer
 from jiuwen_memory.construction.evolver import EvolveResult, EvolverProducer
+from jiuwen_memory.construction.evolver_impl.dedup_direct_noop import should_direct_noop
 from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
     OrchestratingEvolver,
     _resolve_message_store,
@@ -168,7 +169,7 @@ class DynamicEvolver(OrchestratingEvolver):
         if not hits:
             return DedupDecision.ADD, None, 0.0
         existing, score = max(hits, key=lambda item: item[1])
-        if score >= self._dedup_high_similarity:
+        if should_direct_noop(score, self._dedup_high_similarity, candidate, existing):
             return DedupDecision.NOOP, existing, score
         if score < self._dedup_medium_similarity:
             return DedupDecision.ADD, existing, score
@@ -183,7 +184,7 @@ class DynamicEvolver(OrchestratingEvolver):
                 candidate.id[:8],
                 exc,
             )
-            if score >= self._dedup_high_similarity:
+            if should_direct_noop(score, self._dedup_high_similarity, candidate, existing):
                 return DedupDecision.NOOP, existing, score
             return DedupDecision.ADD, existing, score
 
