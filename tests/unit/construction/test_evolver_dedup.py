@@ -541,6 +541,71 @@ class TestDedupNoop:
             stores["kv"].get(_DEFAULT_SCOPE, memory_key("c1"))
 
 
+class TestDedupDirectNoopDelta:
+    """高相似但有实质差异时，不走 direct_noop，改走 LLM。"""
+
+    @staticmethod
+    def test_high_similarity_month_change_routes_to_llm():
+        stores = _create_stores()
+        llm = _MockLLM(
+            responses=[json.dumps({"decision": "supersede", "reason": "月份更新"})]
+        )
+        plugins = {"embedder": _HashEmbedder(), "llm": llm}
+        evolver = _make_evolver(
+            stores["kv"],
+            stores["vector"],
+            plugins["embedder"],
+            plugins["llm"],
+            dedup_high_similarity=0.9,
+        )
+        existing_unit = _make_unit("e1", "会议定于3月举行")
+        _index_unit(existing_unit, stores["kv"], stores["vector"], plugins["embedder"])
+        candidate = _make_unit("c1", "会议定于5月举行")
+
+        def fake_recall(unit: MemoryUnit):
+            return [(existing_unit, 0.95)]
+
+        setattr(getattr(evolver, "_dedup"), "recall", fake_recall)
+
+        decision, existing, similarity = getattr(evolver, "_dedup_single")(candidate)
+
+        assert getattr(llm, "_call_count") == 1, "有实质差异时应走 LLM 而非 direct_noop"
+        assert decision == DedupDecision.SUPERSEDE
+        assert existing.id == "e1"
+        assert similarity == pytest.approx(0.95)
+
+    @staticmethod
+    def test_high_similarity_month_change_routes_to_llm_in_batch():
+        """_dedup_batch 路径：高相似但有月份差异 → 不入 direct_noop，改入 need_llm。"""
+        stores = _create_stores()
+        llm = _MockLLM(
+            responses=[json.dumps({"decision": "supersede", "reason": "月份更新"})]
+        )
+        plugins = {"embedder": _HashEmbedder(), "llm": llm}
+        evolver = _make_evolver(
+            stores["kv"],
+            stores["vector"],
+            plugins["embedder"],
+            plugins["llm"],
+            dedup_high_similarity=0.9,
+        )
+        existing_unit = _make_unit("e1", "会议定于3月举行")
+        _index_unit(existing_unit, stores["kv"], stores["vector"], plugins["embedder"])
+        candidate = _make_unit("c1", "会议定于5月举行")
+
+        def fake_recall(unit: MemoryUnit):
+            return [(existing_unit, 0.95)]
+
+        setattr(getattr(evolver, "_dedup"), "recall", fake_recall)
+
+        result = getattr(evolver, "_dedup_batch")([candidate])
+
+        assert getattr(llm, "_call_count") == 1, "有实质差异时 batch 应走 LLM"
+        assert result.superseded_ids == ["e1"]
+        assert result.created_ids == ["c1"]
+        assert result.updated_ids == []
+
+
 class TestDedupSupersede:
     """SUPERSEDE 场景：新版替代旧版 → 新版落盘 + 旧版标记 SUPERSEDED。"""
 

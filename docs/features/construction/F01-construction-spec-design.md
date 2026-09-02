@@ -147,7 +147,8 @@
 
 ### 单元测试
 
-- `tests/unit/construction/test_evolver_dedup.py` — 去重决策四态（ADD/UPDATE/SUPERSEDE/NOOP）+ 降级场景（Embedder/VectorStore/LLM 失败）+ 自身过滤。其中 supersede/update/json-fallback 三例用 `dedup_high_similarity=1.01` 抬高短路阈值，强制走 LLM 判定分支（默认 `≥high(0.9)→NOOP` 短路会跳过 LLM，测不到 LLM 判定路径）
+- `tests/unit/construction/test_evolver_dedup.py` — 去重决策四态（ADD/UPDATE/SUPERSEDE/NOOP）+ 降级场景（Embedder/VectorStore/LLM 失败）+ 自身过滤 + 高相似实质差异改走 LLM（`TestDedupDirectNoopDelta`）。其中 supersede/update/json-fallback 三例用 `dedup_high_similarity=1.01` 抬高短路阈值，强制走 LLM 判定分支（默认高相似且无实质差异才 direct_noop，测 LLM 路径时需抬高阈值或构造 `has_meaningful_delta`）
+- `tests/unit/construction/test_dedup_direct_noop.py` — `should_direct_noop` / `has_meaningful_delta` 启发式闸门
 - `tests/unit/construction/test_extractor.py` — Extractor 4 Phase；`test_extract_batch` 验证批量提取一次 LLM 调用返回全部候选、`source_id` 回指正确源 unit
 - `tests/unit/construction/test_e2e_evolution.py` — 演进闭环端到端
 
