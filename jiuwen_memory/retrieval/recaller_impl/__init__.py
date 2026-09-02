@@ -11,5 +11,6 @@ from jiuwen_memory.retrieval.recaller import RecallerProducer
 import_module(".graph_recaller", __name__)
 import_module(".keyword_recaller", __name__)
 import_module(".vector_recaller", __name__)
+import_module(".shadow_recaller", __name__)  # 文档记忆影子索引召回（globals.write_document=true）
 
 __all__ = ["RecallerProducer"]

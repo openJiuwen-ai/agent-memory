@@ -38,6 +38,14 @@ def default_config_dict() -> dict[str, Any]:
             "rerank_enabled": True,
             "embedder_dim": 64,
             "chunk_size": 120,
+            # 文档记忆总开关（F07 §2）。false=真源写 KV（默认）；true=真源写影子索引
+            # + md 人类视图，不写 KV。装配期由各消费方 _build 经 config.get 读取并
+            # 归一固化进实例属性（见 should_write_document），运行期方法不再查 config。
+            "write_document": False,
+            # 文档看门狗开关（F07 §12）：仅 write_document=true 下有意义；默认 true
+            # （随文档开启）。build_kernel 装配期经 resolve_watch_document 归一。
+            # defaults 下 write_document=False 故本值不会被读到，仅作配置自洽基线。
+            "watch_document": True,
         },
         # 顶层 prompts 段：按 phase（consolidate/reflect）→ key → prompt 文本。
         # 与 globals 同级，由 AssemblyContext 抽取到 globals["prompts"] 供

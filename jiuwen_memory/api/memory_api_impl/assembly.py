@@ -22,8 +22,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from jiuwen_memory.common._support import as_bool
@@ -31,7 +33,7 @@ from jiuwen_memory.common.audit.base import AuditProducer
 from jiuwen_memory.common.bootstrap import register_plugins
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.log import setup_logging
+from jiuwen_memory.common.log import get_logger, setup_logging
 from jiuwen_memory.common.security.audit_integrity.base import (
     DEFAULT_AUDIT_VERIFY_MAX_SAMPLES,
     DEFAULT_AUDIT_VERIFY_PAGE_SIZE,
@@ -42,6 +44,10 @@ from jiuwen_memory.config.config_source import ConfigSource, ConfigSourceProduce
 from jiuwen_memory.config.config_source_impl import register_config_sources
 from jiuwen_memory.config.context import AssemblyContext, ComponentConfig
 from jiuwen_memory.config.defaults import KV_DEFAULT_NAME, ROOT_PARAMS, default_context
+from jiuwen_memory.config.document_flag import (
+    WATCH_DOCUMENT_KEY,
+    resolve_watch_document,
+)
 from jiuwen_memory.construction.bootstrap import register_constructors
 from jiuwen_memory.construction.router import optional_router
 from jiuwen_memory.control.bootstrap import register_controllers
@@ -58,9 +64,12 @@ from jiuwen_memory.retrieval.bootstrap import register_operators
 from jiuwen_memory.storage.bootstrap import register_backends
 from jiuwen_memory.storage.kv import KvProducer, KVStore
 from jiuwen_memory.storage.storage import Storage, StorageProducer
+from jiuwen_memory.storage.watchdog import Watchdog, WatchdogProducer
 
 from ..memory_api import MemoryAPI
 from .local_memory_api import LocalMemoryAPI
+
+logger = get_logger(__name__)
 
 _SCHEMA_TARGETS = frozenset(
     {
@@ -93,14 +102,60 @@ class _Kernel:
     ingest_jobs: IngestJobController
     space: SpaceManager | None = None
     config_source: ConfigSource | None = None
+    watchdog: Watchdog | None = None
+
+    async def start_background(self) -> None:
+        """启动需事件循环就绪的后台组件。
+
+        ``build_kernel`` 是同步函数，装配期无 running loop，故看门狗的 ``start``
+        （内部 ``asyncio.get_running_loop`` 取 loop 绑 Observer 桥接）延后到此。
+        由 server startup event 调用。无 watchdog 时为 no-op。
+        """
+        if self.watchdog is not None:
+            self.watchdog.start()
+
+    def close(self) -> None:
+        """关闭需显式释放的后台组件（server shutdown event 调）。
+
+        顺序：先停看门狗 Observer（不再监听后续文件变更），再关影子索引 sqlite
+        连接。幂等——重复调不报错（watchdog.stop / shadow.close 自身幂等）。
+        """
+        if self.watchdog is not None:
+            if getattr(self.watchdog, "_observer", None) is None:
+                logger.info(
+                    "文档看门狗已装配但从未 start（start_background/start 未调），"
+                    "进程生命周期内 md 手改监听未生效。见 F07 §12.10。"
+                )
+            self.watchdog.stop()
+        shadow = None
+        try:
+            if self.storage.should_write_document():
+                shadow = self.storage.shadow_index_port()
+        except Exception:
+            shadow = None
+        if shadow is not None:
+            try:
+                shadow.close()
+            except Exception:  # pragma: no cover - 防御性清理
+                pass
 
 
 @runtime_checkable
 class MemoryRuntime(Protocol):
-    """Access composition root 使用的运行时句柄：只有 API 与关闭语义。"""
+    """Access composition root 使用的运行时句柄：API + 生命周期语义（F07 §12.10）。
+
+    ``start_background``（异步面，watchdog 绑当前 loop）与 ``start``（同步面，daemon
+    线程自持 loop）由各协议面按自己的并发模型择一显式调；不调则文档看门狗不启动。
+    """
 
     @property
     def api(self) -> MemoryAPI:
+        ...
+
+    async def start_background(self) -> None:
+        ...
+
+    def start(self) -> None:
         ...
 
     def close(self, *, wait: bool = True) -> None:
@@ -109,11 +164,58 @@ class MemoryRuntime(Protocol):
 
 @dataclass
 class _MemoryRuntime:
+    """``assemble_runtime`` 的产物：api + 生命周期（F07 §12.10）。
+
+    ``_kernel`` 私有持有（不暴露 kv/storage/space 等端口——S02 边界）；start 语义按
+    调用方的并发模型二选一，watchdog 绑的长寿 loop 必须活到进程退出。
+    """
+
     api: MemoryAPI
-    _ingest_jobs: IngestJobController
+    _kernel: _Kernel
+
+    async def start_background(self) -> None:
+        """异步面（FastAPI lifespan / MCP / SDK provider）：watchdog 绑当前 loop。"""
+        await self._kernel.start_background()
+
+    def start(self) -> None:
+        """同步面（http_server 等无事件循环的宿主）：daemon 线程自持专属 loop。
+
+        装配期无 running loop 是既定铁律，故 watchdog 的 start 在此线程内
+        ``call_soon`` 后 ``run_forever``。close 时先停 watchdog 再停 loop。
+        """
+        if self._kernel.watchdog is None or self._loop_thread is not None:
+            return  # 无看门狗（no-op）或已启动（幂等）
+        started = threading.Event()
+        loop = asyncio.new_event_loop()
+        self._loop = loop
+
+        def _run() -> None:
+            # 局部引用：close() 清 _loop 后这里不再读共享字段（run_forever 退出
+            # 与 close 并发，读 self._loop 会撞 None）。
+            asyncio.set_event_loop(loop)
+            loop.call_soon(self._kernel.watchdog.start)
+            started.set()
+            try:
+                loop.run_forever()
+            finally:
+                loop.close()
+
+        self._loop_thread = threading.Thread(
+            target=_run, name="memory-runtime-loop", daemon=True
+        )
+        self._loop_thread.start()
+        started.wait()
 
     def close(self, *, wait: bool = True) -> None:
-        self._ingest_jobs.close(wait=wait)
+        # 顺序：先停看门狗（不再监听文件事件），再停专属 loop（若有），最后关任务池。
+        self._kernel.close()
+        loop, self._loop = self._loop, None
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(loop.stop)
+        self._kernel.ingest_jobs.close(wait=wait)
+
+    _loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False)
+    _loop_thread: threading.Thread | None = field(default=None, repr=False)
 
 
 def _coerce_config(config: Config | Mapping[str, Any] | None) -> Config | None:
@@ -268,6 +370,13 @@ def _build_kernel(
         router=optional_router(root),
     )
     _reject_routing_without_space_authorization(api)
+
+    watchdog: Watchdog | None = None
+    if storage.should_write_document() and resolve_watch_document(
+            root.get(WATCH_DOCUMENT_KEY, True)
+    ):
+        watchdog = WatchdogProducer.dep(root, default="watchdog")
+
     return _Kernel(
         api=api,
         kv=kv_store,
@@ -275,6 +384,7 @@ def _build_kernel(
         ingest_jobs=ingest_jobs,
         space=space,
         config_source=config_source,
+        watchdog=watchdog,
     )
 
 
@@ -312,6 +422,11 @@ def assemble_runtime(
     kv: KVStore | None = None,
     config: Config | Mapping[str, Any] | None = None,
 ) -> MemoryRuntime:
-    """装配 Access 运行时：``api`` + ``close``，不暴露存储或任务控制器端口。"""
+    """装配 Access 运行时：``api`` + 生命周期，不暴露存储或任务控制器端口。
+
+    文档模式（``globals.write_document=true``）下须在宿主生命周期点调
+    ``await start_background()``（异步面）或 ``start()``（同步面），否则看门狗
+    不启动、md 手改监听静默失效（F07 §12.10）。
+    """
     kernel = _build_kernel(policies, kv, config)
-    return _MemoryRuntime(api=kernel.api, _ingest_jobs=kernel.ingest_jobs)
+    return _MemoryRuntime(api=kernel.api, _kernel=kernel)
