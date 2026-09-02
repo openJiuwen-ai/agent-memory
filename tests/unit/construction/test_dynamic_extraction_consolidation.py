@@ -492,6 +492,35 @@ def test_dynamic_evolver_high_similarity_skips_llm_judge():
 
 
 @pytest.mark.unit
+def test_dynamic_evolver_empty_merge_preserves_existing_memory():
+    """DynamicEvolver must not overwrite an existing unit with blank merge output."""
+    existing = _unit("existing", "旧事实")
+    evolver, kv, index = _make_evolver(
+        llm=_ScriptedLLM(
+            [
+                json.dumps({"decision": "update", "existing_id": "existing"}),
+                " \n\t",
+            ]
+        ),
+        dedup_hits=[(existing, 0.8)],
+        prompts={"consolidate": {"custom": "执行巩固"}},
+    )
+    kv.insert(existing.scope, memory_key(existing.id), dumps(existing))
+    candidate = _unit(
+        "candidate",
+        "新事实",
+        {"_consolidation_prompt_custom": "custom"},
+    )
+    result = evolver.evolve([candidate], EvolveMode.EXTRACT)
+
+    assert result.updated_ids == []
+    assert result.created_ids == []
+    assert index.updated == []
+    assert existing.content == "旧事实"
+    assert loads(kv.get(existing.scope, memory_key(existing.id))).content == "旧事实"
+
+
+@pytest.mark.unit
 def test_dynamic_evolver_procedural_falls_back_to_parent():
     """procedural=true 走父类行为（不判定、直接落盘）。"""
     evolver, kv, _ = _make_evolver()

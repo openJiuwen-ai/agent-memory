@@ -135,6 +135,10 @@ class APIReranker(Reranker):
         """
         if not texts:
             return []
+        valid_indices = [index for index, text in enumerate(texts) if text.strip()]
+        valid_texts = [texts[index] for index in valid_indices]
+        if not valid_texts:
+            return [0.0] * len(texts)
         ep = self._endpoint()
         url = (ep.base_url or self._fallback_base_url).rstrip("/") + self._spec["path"]
         build_body: Callable = self._spec["body"]
@@ -143,7 +147,7 @@ class APIReranker(Reranker):
             resp = self._client.post(
                 url,
                 headers={"Authorization": f"Bearer {ep.api_key}"},
-                json=build_body(ep.model, query, list(texts)),
+                json=build_body(ep.model, query, valid_texts),
             )
             resp.raise_for_status()
             data = resp.json()
@@ -155,8 +159,8 @@ class APIReranker(Reranker):
         scores = [0.0] * len(texts)
         for item in extract(data):
             idx = item.get("index")
-            if isinstance(idx, int) and 0 <= idx < len(scores):
-                scores[idx] = float(item.get("relevance_score", 0.0))
+            if isinstance(idx, int) and 0 <= idx < len(valid_indices):
+                scores[valid_indices[idx]] = float(item.get("relevance_score", 0.0))
         return scores
 
     def _endpoint(self):

@@ -92,6 +92,30 @@ def test_empty_texts_returns_empty() -> None:
     assert _reranker({"results": []}).rerank("q", []) == []
 
 
+def test_blank_texts_are_filtered_and_scores_keep_input_positions() -> None:
+    reranker, client = _reranker_with_client(
+        {
+            "results": [
+                {"index": 1, "relevance_score": 0.9},
+                {"index": 0, "relevance_score": 0.2},
+            ]
+        }
+    )
+
+    scores = reranker.rerank("q", ["", "doc1", " \t", "doc2"])
+
+    assert scores == [0.0, 0.2, 0.0, 0.9]
+    assert client.calls[0]["json"]["documents"] == ["doc1", "doc2"]
+    assert client.calls[0]["json"]["top_n"] == 2
+
+
+def test_all_blank_texts_skip_backend_request() -> None:
+    reranker, client = _reranker_with_client({"results": []})
+
+    assert reranker.rerank("q", ["", " \n"]) == [0.0, 0.0]
+    assert client.calls == []
+
+
 def test_backend_error_on_http_failure() -> None:
     reranker = _reranker({}, raise_exc=RuntimeError("502 Bad Gateway"))
     with pytest.raises(BackendError):
