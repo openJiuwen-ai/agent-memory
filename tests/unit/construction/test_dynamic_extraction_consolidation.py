@@ -10,7 +10,6 @@ from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.llm.base import LLM
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import (
-    DedupDecision,
     MemoryTier,
     MemoryUnit,
     Modality,
@@ -22,10 +21,7 @@ from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.config.config import Config
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.evolver import EvolveMode, EvolverProducer
-from jiuwen_memory.construction.evolver_impl.dynamic_evolver import (
-    ConsolidateDecision,
-    DynamicEvolver,
-)
+from jiuwen_memory.construction.evolver_impl.dynamic_evolver import DynamicEvolver
 from jiuwen_memory.construction.extractor import Extractor
 from jiuwen_memory.construction.extractor_impl.dynamic_llm_extractor import DynamicLLMExtractor
 from jiuwen_memory.construction.extractor_impl.llm_extractor import (
@@ -499,15 +495,26 @@ def test_dynamic_evolver_high_similarity_skips_llm_judge():
 def test_dynamic_evolver_empty_merge_preserves_existing_memory():
     """DynamicEvolver must not overwrite an existing unit with blank merge output."""
     existing = _unit("existing", "旧事实")
-    evolver, kv, index = _make_evolver(llm=_ScriptedLLM([" \n\t"]))
-    kv.insert(existing.scope, memory_key(existing.id), dumps(existing))
-    candidate = _unit("candidate", "新事实")
-    result = evolver._persist_decisions(
-        [candidate],
-        [ConsolidateDecision(candidate, DedupDecision.UPDATE, existing, 0.8)],
+    evolver, kv, index = _make_evolver(
+        llm=_ScriptedLLM(
+            [
+                json.dumps({"decision": "update", "existing_id": "existing"}),
+                " \n\t",
+            ]
+        ),
+        dedup_hits=[(existing, 0.8)],
+        prompts={"consolidate": {"custom": "执行巩固"}},
     )
+    kv.insert(existing.scope, memory_key(existing.id), dumps(existing))
+    candidate = _unit(
+        "candidate",
+        "新事实",
+        {"_consolidation_prompt_custom": "custom"},
+    )
+    result = evolver.evolve([candidate], EvolveMode.EXTRACT)
 
     assert result.updated_ids == []
+    assert result.created_ids == []
     assert index.updated == []
     assert existing.content == "旧事实"
     assert loads(kv.get(existing.scope, memory_key(existing.id))).content == "旧事实"
