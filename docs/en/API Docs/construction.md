@@ -346,7 +346,7 @@ required. In HTTP/deployment configuration, these sections are nested under `mem
 | `target` | Implementation | Function | Dependencies and primary parameters |
 |---|---|---|---|
 | `keyword` | `KeywordExtractor` | Splits source text with a Chunker and produces SEMANTIC units with lineage; combines procedural content into one procedural memory | `chunker`, default `fixed_window` |
-| `llm` | `ExtractorImpl` | Performs structured LLM extraction and validates source, confidence, tier, and tags | `llm`; `extractor_min_confidence`, `extractor_retry_max`, `extractor_retry_backoff` |
+| `llm` | `ExtractorImpl` | Performs structured LLM extraction and validates source, confidence, tier, and tags | `llm`; `extractor_min_confidence`, `extractor_retry_max`, `extractor_retry_backoff`, `extract_batch_size` |
 | `dynamic_llm` | `DynamicLLMExtractor` | Extracts once per `_extract_prompt_<strategy>`; delegates to fallback when no strategy is present | `llm`, `fallback`, `prompts`; same parameters as `llm` |
 | `video_memory` | `VideoMemoryExtractor` | Converts video normalization results into CLM/ELM multimodal MemoryUnit objects | No configuration dependency; input must contain the expected video metadata |
 
@@ -572,6 +572,7 @@ Producer rules above.
 | `extractor_min_confidence` | `float` | `0.5` | `llm` / `dynamic_llm` | Filters low-confidence extraction candidates |
 | `extractor_retry_max` | `int` | `3` | `llm` / `dynamic_llm` | Maximum LLM attempts; must be at least `1` |
 | `extractor_retry_backoff` | `int` | `1000` | `llm` / `dynamic_llm` | Retry backoff in milliseconds |
+| `extract_batch_size` | `int` | `10` | `llm` / `dynamic_llm` | Maximum source units per LLM extraction call |
 | `abstractor_min_confidence` | `float` | `0.5` | `abstractor.llm` | Minimum confidence |
 | `abstractor_min_group_size_summary` | `int` | `1` | `abstractor.llm` | Minimum summary group size |
 | `abstractor_min_group_size_pattern` | `int` | `3` | `abstractor.llm` | Minimum pattern group size |
@@ -607,6 +608,15 @@ Producer rules above.
 | `layers_index_enabled` | `bool` | `true` | fulltext/vector/hybrid | Writes independent L0/L1 indexes when enabled |
 | `entity_enabled` | `bool` | `false` | `hybrid` | Attempts to assemble EntityStore when enabled |
 | `vector_enabled` | `bool` | `true` | Evolver builder | Selects the default IndexBuilder/Dedup combination when targets are not explicit |
+
+### 18.1 `extract_batch_size` vs `middle_batch_size`
+
+| Parameter | Config location | Default | Role |
+|---|---|---:|---|
+| `middle_batch_size` | `job_factory.default.params` | `10` | Job batching cap |
+| `extract_batch_size` | `extractor` assembly params (same as `extractor_min_confidence`) | `10` | Extractor LLM batch cap |
+
+`middle_batch_size` is in the `defaults.py` snapshot; `extract_batch_size` defaults from Extractor `_build` and is overridden in `extractor.*.params` when needed. When tuning, keep `extract_batch_size` ≥ `middle_batch_size`.
 
 ## 19. Minimal Operator Example
 

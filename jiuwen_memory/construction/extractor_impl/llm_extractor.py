@@ -263,7 +263,8 @@ _SOURCE_ID_SHELL_RE = re.compile(r"^\s*\[ID:\s*(?P<id>[^\]]+)\]\s*$", re.IGNOREC
 # 批量提取的子批大小：把 accepted 拆成若干子批，每子批独立一次 LLM 调用。
 # 单个子批失败与其它子批隔离；仅当整次抽取没有产生任何可用候选时向上抛错，
 # 避免把完全失败伪装成模型明确返回的正常空抽取。
-_EXTRACT_BATCH_SIZE = 8
+# 默认值 10 与 middle_batch_size 对齐，可通过 extract_batch_size 配置覆盖。
+_DEFAULT_EXTRACT_BATCH_SIZE = 10
 
 
 def _strip_source_id_shell(raw: str) -> str:
@@ -361,11 +362,13 @@ class ExtractorImpl(Extractor):
         min_confidence: float = 0.5,
         retry_max_retries: int = 3,
         retry_backoff_ms: int = 1000,
+        extract_batch_size: int = _DEFAULT_EXTRACT_BATCH_SIZE,
     ) -> None:
         self._llm = llm
         self._min_confidence = min_confidence
         self._retry_max_retries = retry_max_retries
         self._retry_backoff_ms = retry_backoff_ms
+        self._extract_batch_size = max(1, int(extract_batch_size))
 
     # ------------------------------------------------------------------
     # 过程记忆抽取（procedural=true：1 条结构化执行历史汇总）
@@ -451,8 +454,8 @@ class ExtractorImpl(Extractor):
         all_candidates: list[ExtractionCandidate] = []
         successful_batches = 0
         failed_batches: list[tuple[int, int, Exception]] = []
-        for start in range(0, len(accepted), _EXTRACT_BATCH_SIZE):
-            sub_batch = accepted[start:start + _EXTRACT_BATCH_SIZE]
+        for start in range(0, len(accepted), self._extract_batch_size):
+            sub_batch = accepted[start:start + self._extract_batch_size]
             try:
                 batch_candidates = self._llm_extract_batch(sub_batch, context=context)
             except Exception as exc:
@@ -977,4 +980,5 @@ def _build(config):
         min_confidence=config.get("extractor_min_confidence", 0.5),
         retry_max_retries=config.get("extractor_retry_max", 3),
         retry_backoff_ms=config.get("extractor_retry_backoff", 1000),
+        extract_batch_size=config.get("extract_batch_size", _DEFAULT_EXTRACT_BATCH_SIZE),
     )

@@ -27,14 +27,21 @@ from tests.unit.construction.fixtures import (
 # ---------------------------------------------------------------------------
 
 
-def _make_extractor(llm_responses: list[str] | None = None) -> ExtractorImpl:
+def _make_extractor(
+    llm_responses: list[str] | None = None,
+    *,
+    extract_batch_size: int | None = None,
+) -> ExtractorImpl:
     """创建测试用 ExtractorImpl。"""
-    return ExtractorImpl(
-        llm=MockLLM(responses=llm_responses),
-        min_confidence=0.5,
-        retry_max_retries=3,
-        retry_backoff_ms=1000,
-    )
+    kwargs: dict = {
+        "llm": MockLLM(responses=llm_responses),
+        "min_confidence": 0.5,
+        "retry_max_retries": 3,
+        "retry_backoff_ms": 1000,
+    }
+    if extract_batch_size is not None:
+        kwargs["extract_batch_size"] = extract_batch_size
+    return ExtractorImpl(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +223,31 @@ def test_extract_batch():
     assert "u1" in provenance_ids
     assert "u2" in provenance_ids
     assert "u3" in provenance_ids
+
+
+def test_extract_batch_size_splits_llm_calls():
+    """extract_batch_size 控制子批大小：3 条 unit、batch_size=2 → 两次 LLM 调用。"""
+    unit_payload = {
+        "target": "fact",
+        "content": "fact",
+        "evidence": "e",
+        "confidence": 1.0,
+    }
+    responses = [
+        json.dumps([{**unit_payload, "source_id": "u1"}, {**unit_payload, "source_id": "u2"}]),
+        json.dumps([{**unit_payload, "source_id": "u3"}]),
+    ]
+    llm = MockLLM(responses=responses)
+    extractor = ExtractorImpl(llm=llm, extract_batch_size=2)
+    units = [
+        create_test_unit("u1", "第一条"),
+        create_test_unit("u2", "第二条"),
+        create_test_unit("u3", "第三条"),
+    ]
+    result = extractor.extract(units)
+
+    assert getattr(llm, "_call_count", 0) == 2, "3 units with batch_size=2 should trigger 2 LLM calls"
+    assert len(result) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -700,17 +732,20 @@ def test_extract_rejects_missing_or_invalid_confidence(item):
 
 
 def test_extract_continues_after_one_sub_batch_fails():
-    extractor = _make_extractor([
-        "not valid JSON",
-        json.dumps([
-            {
-                "source_id": "u9",
-                "target": "fact",
-                "content": "valid statement from the second sub-batch",
-                "confidence": 1.0,
-            }
-        ]),
-    ])
+    extractor = _make_extractor(
+        [
+            "not valid JSON",
+            json.dumps([
+                {
+                    "source_id": "u9",
+                    "target": "fact",
+                    "content": "valid statement from the second sub-batch",
+                    "confidence": 1.0,
+                }
+            ]),
+        ],
+        extract_batch_size=8,  # 9 条 unit 需拆成 8+1 两子批
+    )
     units = [create_test_unit(f"u{i}", f"source {i}") for i in range(1, 10)]
 
     result = extractor.extract(units)
@@ -721,7 +756,10 @@ def test_extract_continues_after_one_sub_batch_fails():
 
 
 def test_extract_does_not_hide_failed_sub_batch_as_empty_result():
-    extractor = _make_extractor(["not valid JSON", "[]"])
+    extractor = _make_extractor(
+        ["not valid JSON", "[]"],
+        extract_batch_size=8,  # 9 条 unit 需拆成 8+1 两子批
+    )
     units = [create_test_unit(f"u{i}", f"source {i}") for i in range(1, 10)]
 
     with pytest.raises(InvalidExtractionJSONError):
