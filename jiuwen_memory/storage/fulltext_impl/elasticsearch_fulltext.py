@@ -231,19 +231,24 @@ class ElasticsearchFulltextStore(FulltextStore):
     def delete(self, scope: Scope, ids: list[str]) -> None:
         if not ids:
             return
-        # delete_by_query 受 scope 约束：只删 scope 内命中的 id（幂等）。
-        query = {
-            "bool": {
-                "filter": [
-                    {"ids": {"values": [self._doc_id(scope, doc_id) for doc_id in ids]}},
-                    *self._scope_filters(scope),
-                ]
-            }
-        }
+        # 按 _id 精确 bulk delete：物理 _id 由 _doc_id 编码五段 scope，与 insert 的
+        # create op 用同一定位方式，隔离由 id 编码保证，无需查询期 scope 过滤。
+        # 关键是可见性对齐：bulk delete 走实时路径（版本映射/translog），能看到尚未
+        # refresh 的文档；此前用 delete_by_query（搜索类 API）只能删已 refresh 的
+        # 文档，与 bulk create 组合时"写入后 ~1s 内删后重建"会静默删 0 条并 409，
+        # remove 后未 refresh 文档还会延迟"复活"。
+        # 文档不存在时 bulk delete 返回 not_found 且不置 errors——幂等契约保持。
+        ops: list[dict[str, Any]] = [
+            {"delete": {"_index": self._index, "_id": self._doc_id(scope, doc_id)}}
+            for doc_id in ids
+        ]
         with wrap_backend("elasticsearch delete"):
-            self.client.delete_by_query(
-                index=self._index, query=query, refresh=bool(self._refresh != "false")
-            )
+            resp = self.client.bulk(operations=ops, refresh=self._refresh)
+        if resp.get("errors"):
+            for item in resp["items"]:
+                res = item.get("delete", {})
+                if res.get("status", 0) >= 400:
+                    raise BackendError(f"elasticsearch delete failed: {res.get('error')}")
 
     def get(self, scope: Scope, ids: list[str]) -> list[Document]:
         if not ids:
