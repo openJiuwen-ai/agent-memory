@@ -27,7 +27,7 @@ MemoryAPI
   ├── Governor                    inspect / trace / audit
   ├── SpaceManager                space 管理面
   └── MemoryEngine                已鉴权的数据面编排
-       ├── write -> Ingestor -> Pipeline/Classifier -> IndexBuilder
+       ├── write -> RawPayload(assets) -> Ingestor(能力校验/资产映射) -> Pipeline/Classifier -> IndexBuilder
        ├── recall -> Pipeline -> Retriever
        ├── list/get -> Storage
        ├── update/delete -> LifecycleManager + IndexBuilder
@@ -74,6 +74,11 @@ from jiuwen_memory.control.engine import MemoryEngine
 | `await update(unit_id, scope, patch)` | `MemoryUnit` | 按 `MemoryPatch.mode` 新建版本或原地覆盖 |
 | `await delete(selector)` | `list[str]` | 按选择器执行遗忘、归档、降权或物理删除 |
 | `await purge_space(org, space)` | `list[str]` | 清理 Space 下全部子 Scope 的本体和派生索引 |
+
+`write` 只把 `assets` 防御性复制到 `RawPayload.assets`。资产引用如何分配到一个或多个
+`MemoryUnit.segments` 由 Ingestor 决定，Engine 不再假设“首个 Segment”并进行回填。
+Ingestor 在规约前校验 `source` 是否属于当前 `Normalizer.modalities()`；不支持时抛出
+`UnsupportedCapabilityError`，不会产生 MemoryUnit，也不会进入 Storage 或索引写入。
 
 ### 3.2 鉴权上下文辅助方法
 
@@ -708,6 +713,7 @@ remove_member(org: str, space: str, member: Scope) -> None
 | 单元不存在或 `as_of` 无有效版本 | Engine `get/update` | `NotFoundError` |
 | DeleteSelector 无 ID/tag/before | Engine `delete` | `ValidationError` |
 | `InMemoryEngine` 收到非空 Space | 任意数据面方法 | `ValidationError` |
+| `source` 不在当前 Normalizer 的能力集合内 | Engine `write` / `batch_write` | `UnsupportedCapabilityError` |
 | 非法 lifecycle 转换 | `transition` / `supersede` | `ValidationError` 或 `PolicyError` |
 | job 不存在 | Scheduler `status` | `NotFoundError` |
 | 已关闭或队列已满 | Ingest `submit` | `BackendError` |

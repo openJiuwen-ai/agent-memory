@@ -31,7 +31,7 @@ MemoryAPI
   ├── Governor                    inspect / trace / audit
   ├── SpaceManager                Space management plane
   └── MemoryEngine                authorized data-plane orchestration
-       ├── write -> Ingestor -> Pipeline/Classifier -> IndexBuilder
+       ├── write -> RawPayload(assets) -> Ingestor(capability check/asset mapping) -> Pipeline/Classifier -> IndexBuilder
        ├── recall -> Pipeline -> Retriever
        ├── list/get -> Storage
        ├── update/delete -> LifecycleManager + IndexBuilder
@@ -82,6 +82,12 @@ the interface boundary; Engine does not create an event loop internally.
 | `await update(unit_id, scope, patch)` | `MemoryUnit` | Creates a new version or overwrites in place according to `MemoryPatch.mode` |
 | `await delete(selector)` | `list[str]` | Forgets, archives, downweights, or physically deletes selected units |
 | `await purge_space(org, space)` | `list[str]` | Removes records and derived indexes from every child Scope in a Space |
+
+`write` only makes a defensive copy of `assets` into `RawPayload.assets`. The Ingestor decides how
+to map those references into one or more `MemoryUnit.segments`; the Engine no longer assumes and
+backfills a “first Segment.” Before normalization, the Ingestor checks whether `source` belongs to
+the active `Normalizer.modalities()`. An unsupported source raises `UnsupportedCapabilityError`
+before any MemoryUnit, Storage write, or index write is produced.
 
 ### 3.2 Authorization-Context Helpers
 
@@ -762,6 +768,7 @@ are combined with AND.
 | Unit absent or no valid version at `as_of` | Engine `get/update` | `NotFoundError` |
 | DeleteSelector has no ID/tag/before | Engine `delete` | `ValidationError` |
 | `InMemoryEngine` receives a non-empty Space | Any data-plane method | `ValidationError` |
+| `source` is outside the active Normalizer capability set | Engine `write` / `batch_write` | `UnsupportedCapabilityError` |
 | Invalid lifecycle transition | `transition` / `supersede` | `ValidationError` or `PolicyError` |
 | Job absent | Scheduler `status` | `NotFoundError` |
 | Controller closed or queue full | Ingest `submit` | `BackendError` |

@@ -8,7 +8,7 @@
 | 最近一次修订日期 | 2026-09-02 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
 ## Metadata 编排契约
 
@@ -65,6 +65,7 @@
 21. **重叠 span 串行化（目标）**：同一 `scope + kind` 下 span 相交的 HIERARCHY build/replace、层级 update、FORGET 和 PURGE 必须串行化，或以乐观版本条件在提交前检测冲突；replace 不得吸收未参与初始输入快照的并发叶写入。
 22. **判权范围的裁剪可落本层，判权的执行不可**：`collective/write_targets.py` 决定哪些候选空间被送去判权（候选渲染、排序与上限截断），判权本身经 `can_write` 回调由 API 层执行；本层不持有 `PermissionManager`、不接收 `identity`、不抛权限异常——缺兜底落点时返回 `WriteTargets.fallback=None`，由 PEP 抛出。该裁剪可下沉的前提是失效方向为拒绝：未参与判权的空间不进候选，表现为写不进去而非越权写入。**检索侧的逐空间判权循环不适用本条**，其循环体就是 `PermissionManager.decide` 本身，移出等于把 PEP 分裂为两处；逐空间系统谓词的生成同样留 API 层，它按 `identity` 与空间事实取值。检索侧可下沉的是判权之后的部分：`collective/cross_space_recall.py` 收已判权的空间目标（含各自的谓词）与 `recall` 回调，做取数上界摊配、召回扇出与结果合并，全程不读 `identity`、不做任何裁决，与写入侧同一形态。它把空间级扇出失败与判权剔除分两路交回——并进 `merged.errors` 之后，扇出失败会与检索层的分通道错误混在同一个列表里，API 层要为「整个空间挂了」写审计就只能按 `channel is SPACE` 过滤，那是把审计判据绑在本层的 channel 编码上。
 23. **应用端口不是算子**：`control/application` 的 `MemoryCommandService` / `MemoryQueryService` / `SpaceLifecycleService` / `GovernanceService` 无 Producer、不执行 PEP、不接收 `identity`。它们由已注入的 Engine / Governor / SpaceManager 组成，供 API 与单测复用同一语义，禁止 Service Locator。`delete_space` 的 purge → SpaceManager.delete → `deleted_counts` 汇总只允许出现在 `SpaceLifecycleService`。purge 成功而 metadata delete 失败必须抛 `PartialFailureError`，重试入口仍是 `delete_space`。路由谓词回注、逐空间判权和逐单元结果鉴权仍属 PEP（见不变量 22），不经这些端口下沉。
+24. **Engine 不解释资产映射**：`write` 只把 `assets` 防御性复制到 `RawPayload.assets` 后交给 Ingestor；Ingestor 返回后，Engine 不得按“首个 Segment”或其他假设改写 `Segment.assets`。
 
 ## 接口契约
 
@@ -86,7 +87,7 @@ class ControlOperator(ABC):
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `write` | `async (content, scope, source, *, assets, tags, metadata: dict[str, Any] \| None, occurred_at) -> list[MemoryUnit]` | 规约→可选抽取/分类→落盘+建索引；`infer=true` 时返回 `created_ids` 对应的派生结果，否则处理原始单元（直写不去重） |
+| `write` | `async (content, scope, source, *, assets, tags, system_metadata, user_metadata, occurred_at) -> list[MemoryUnit]` | 规约→可选抽取/分类→落盘+建索引；`infer=true` 时返回 `created_ids` 对应的派生结果，否则处理原始单元（直写不去重） |
 | `batch_write` | `async (items: list[BatchWriteItem], *, continue_on_error=True) -> BatchWriteResult` | 只接收 API 已归一化并完成鉴权/space 前置校验的项；按输入顺序复用 `write`，归集领域异常及非领域异常（后者为 `InternalError`）；fail-fast 时填充 `Skipped` outcomes |
 | `recall` | `async (scope, query: RetrievalQuery) -> RetrievalResult` | 委托 Retriever 完整检索链路（含目标 `expand_depth>0` 时的内部展开） |
 | `list` | `async (scope, *, offset=0, limit=100, memory_types=None, extensions=None, filters=None) -> MemoryListResult` | 校验分页参数并完整委托 `Storage.list`；返回当前页和分页前匹配总数 |
@@ -102,8 +103,10 @@ class ControlOperator(ABC):
 
 **write 路径**：
 ```
-Ingestor.ingest([RawPayload]) → list[MemoryUnit]
-→ 将 metadata/assets/tags 入参补入接入层产出的 MemoryUnit
+Engine 组装 RawPayload（含 assets 的防御性副本）
+→ Ingestor.ingest([RawPayload]) → list[MemoryUnit]
+  # assets 如何映射到 Segment 由 Ingestor 实现决定
+→ Engine 补充引擎管理的 metadata/tags，不改写 Segment.assets
 → MemoryPipeline.select_for_write(units)  # 可选；未注入时使用 Engine 默认组件
 → if str((metadata or {}).get("procedural", "")).strip().lower() == "true"
      or str((metadata or {}).get("infer", "")).strip().lower() == "true":

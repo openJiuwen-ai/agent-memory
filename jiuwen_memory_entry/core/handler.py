@@ -59,6 +59,7 @@ from jiuwen_memory.api import (
     SpaceSpec,
     SpaceStatus,
     Surface,
+    UnsupportedCapabilityError,
     ValidationError,
     legacy_request_context,
 )
@@ -70,6 +71,7 @@ _STATUS = {
     PermissionDeniedError: 403,
     ConflictError: 409,
     PartialFailureError: 409,
+    UnsupportedCapabilityError: 400,
     ValidationError: 400,
     PolicyError: 400,
 }
@@ -338,7 +340,11 @@ def _ensure_video_chain(srv) -> None:
     """Fail-closed: reject video ingest when the multimodal chain is not assembled."""
     memory_api = srv.config.settings.get("memory_api")
     if not isinstance(memory_api, dict):
-        raise ValidationError("video ingest requires multimodal configuration")
+        raise UnsupportedCapabilityError(
+            capability="modality",
+            value=Modality.VIDEO.value,
+            component="PassthroughNormalizer",
+        )
     normalizer_cfg = memory_api.get("normalizer")
     default_normalizer = (
         normalizer_cfg.get("default", {}) if isinstance(normalizer_cfg, dict) else {}
@@ -348,12 +354,26 @@ def _ensure_video_chain(srv) -> None:
     )
     routes = default_params.get("routes") if isinstance(default_params, dict) else None
     has_video_normalizer = isinstance(routes, dict) and "video" in routes
+    if not has_video_normalizer:
+        target = (
+            str(default_normalizer.get("target", "passthrough"))
+            if isinstance(default_normalizer, dict)
+            else "passthrough"
+        )
+        component = {
+            "passthrough": "PassthroughNormalizer",
+            "routing": "RoutingNormalizer",
+        }.get(target, target)
+        raise UnsupportedCapabilityError(
+            capability="modality",
+            value=Modality.VIDEO.value,
+            component=component or "PassthroughNormalizer",
+        )
+
     evolver_cfg = memory_api.get("evolver")
     has_video_evolver = isinstance(evolver_cfg, dict) and "video" in evolver_cfg
-    if not (has_video_normalizer and has_video_evolver):
-        raise ValidationError(
-            "video ingest requires routing normalizer with 'video' route and video evolver"
-        )
+    if not has_video_evolver:
+        raise ValidationError("video ingest requires a configured video evolver")
 
 
 def _submit_video(

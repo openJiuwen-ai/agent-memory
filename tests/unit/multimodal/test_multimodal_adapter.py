@@ -14,7 +14,7 @@ import requests
 import yaml
 
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
-from jiuwen_memory.common.errors import BackendError
+from jiuwen_memory.common.errors import BackendError, ValidationError
 from jiuwen_memory.common.normalizer.normalizer_impl import video_asr, video_pipeline
 from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer import (
     PassthroughNormalizer,
@@ -58,6 +58,10 @@ pytestmark = pytest.mark.unit
 
 def _dispatch(srv, verb: str, payload: dict[str, Any]):
     return handler.dispatch(srv, build_legacy_dispatch_request(verb, payload))
+
+
+def _unexpected_submit_ingest(*_args, **_kwargs):
+    pytest.fail("submit_ingest must not be called for an invalid video chain")
 
 
 class _JsonResponse:
@@ -355,6 +359,24 @@ def test_routing_normalizer_keeps_text_and_routes_video() -> None:
     assert video["asset_uri"] == "file:///data/demo.mp4"
     assert video["clips"][0]["start_seconds"] == 1.25
     assert video["events"][0]["clip_ids"] == ["clip-1"]
+
+
+def test_build_kernel_rejects_incompatible_normalizer_route() -> None:
+    config = Config.from_dict(
+        {
+            "normalizer": {
+                "default": {
+                    "target": "routing",
+                    "params": {
+                        "routes": {"video": {"target": "passthrough"}},
+                    },
+                }
+            }
+        }
+    )
+
+    with pytest.raises(ValidationError, match="route 'video'.*PassthroughNormalizer"):
+        build_kernel(config=config)
 
 
 def test_video_normalizer_uses_configured_temp_root(tmp_path, monkeypatch) -> None:
@@ -712,31 +734,75 @@ def test_video_add_requires_uri() -> None:
     assert "uri" in body["message"]
 
 
-def test_video_add_rejected_when_chain_not_assembled() -> None:
-    """#4: 无多模态装配时 modality=video+uri 返回 400，不创建 ingest job。"""
-    controller = InProcessIngestJobController(max_workers=1, max_pending_jobs=1)
-    try:
-        srv = SimpleNamespace(
-            config=SimpleNamespace(settings={}),
-        )
-        status, body = _dispatch(
-            srv,
-            "add",
+@pytest.mark.parametrize(
+    ("settings", "component"),
+    [
+        ({}, "PassthroughNormalizer"),
+        (
             {
-                "tenant_id": "org-1",
-                "scope": "user-1",
-                "payload_id": "video-1",
-                "modality": "video",
-                "uri": "file:///data/demo.mp4",
+                "memory_api": {
+                    "normalizer": {"default": {"target": "routing", "params": {"routes": {}}}}
+                }
             },
-        )
+            "RoutingNormalizer",
+        ),
+    ],
+)
+def test_video_add_rejected_when_normalizer_not_assembled(
+    settings: dict[str, object], component: str
+) -> None:
+    """无视频 Normalizer 时返回能力错误，且不提交 ingest job。"""
+    srv = SimpleNamespace(
+        config=SimpleNamespace(settings=settings),
+        api=SimpleNamespace(submit_ingest=_unexpected_submit_ingest),
+    )
+    status, body = _dispatch(
+        srv,
+        "add",
+        {
+            "tenant_id": "org-1",
+            "scope": "user-1",
+            "payload_id": "video-1",
+            "modality": "video",
+            "uri": "file:///data/demo.mp4",
+        },
+    )
 
-        assert status == 400
-        assert body["error"] == "ValidationError"
-        assert "video ingest requires" in body["message"]
-        assert not vars(controller).get("_jobs")
-    finally:
-        controller.close()
+    assert status == 400
+    assert body["error"] == "UnsupportedCapabilityError"
+    assert "modality 'video'" in body["message"]
+    assert component in body["message"]
+
+
+def test_video_add_rejected_when_evolver_not_assembled() -> None:
+    """视频 Normalizer 已配置但 Evolver 缺失时在提交任务前返回装配错误。"""
+    memory_api_cfg = {
+        "normalizer": {
+            "default": {
+                "target": "routing",
+                "params": {"routes": {"video": {"target": "video"}}},
+            }
+        }
+    }
+    srv = SimpleNamespace(
+        config=SimpleNamespace(settings={"memory_api": memory_api_cfg}),
+        api=SimpleNamespace(submit_ingest=_unexpected_submit_ingest),
+    )
+    status, body = _dispatch(
+        srv,
+        "add",
+        {
+            "tenant_id": "org-1",
+            "scope": "user-1",
+            "payload_id": "video-1",
+            "modality": "video",
+            "uri": "file:///data/demo.mp4",
+        },
+    )
+
+    assert status == 400
+    assert body["error"] == "ValidationError"
+    assert "video evolver" in body["message"]
 
 
 def test_video_add_rejected_when_write_permission_denied() -> None:

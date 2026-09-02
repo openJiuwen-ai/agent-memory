@@ -124,6 +124,27 @@ class BackendError(AgentMemoryError):
     """
 
 
+class UnsupportedCapabilityError(AgentMemoryError):
+    """组件不支持调用方请求的某项能力。"""
+
+    def __init__(
+        self,
+        capability: str,
+        value: str,
+        component: str,
+        message: str = "",
+    ) -> None:
+        """记录不受支持的能力、请求值和组件名。"""
+        self.capability = capability
+        self.value = value
+        self.component = component
+        super().__init__(
+            message
+            or f"{component or 'component'!r} does not support "
+            f"{capability or 'capability'} {value!r}"
+        )
+
+
 class UnsupportedStorageCapabilityError(AgentMemoryError):
     """Storage 未声明调用方请求的底层端口能力。"""
 
