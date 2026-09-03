@@ -3,11 +3,14 @@
 使用 MockLLM 隔离外部 LLM API 依赖。
 """
 
+import io
 import json
+import logging
 from unittest.mock import patch
 
 import pytest
 
+from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryTier,
@@ -530,7 +533,7 @@ def test_extract_llm_non_json():
     assert isinstance(exc_info.value.__cause__, json.JSONDecodeError)
 
 
-def test_extract_llm_trailing_text_logs_raw_response():
+def test_extract_llm_trailing_text_preserves_valid_json_result():
     response = (
         '[{"source_id":"u1","target":"fact","content":"user prefers Python",'
         '"confidence":1.0}]!'
@@ -538,15 +541,51 @@ def test_extract_llm_trailing_text_logs_raw_response():
     extractor = _make_extractor([response])
     units = [create_test_unit("u1", "user prefers Python")]
 
-    with patch("jiuwen_memory.construction.extractor_impl.llm_extractor.logger.warning") as warning:
+    with patch(
+        "jiuwen_memory.construction.extractor_impl.llm_extractor.logger.warning"
+    ) as warning:
         result = extractor.extract(units)
 
     assert len(result) == 1
     assert result[0].content == "user prefers Python"
-    warning.assert_called_once_with(
-        "Extractor: ignored trailing LLM text after JSON root: %r",
-        "!",
+    warning.assert_called_once()
+    log_template, logged_trailing = warning.call_args.args
+    assert log_template == "Extractor: ignored trailing LLM text after JSON root: %s"
+    assert str(logged_trailing) == "*"
+    assert "!" not in str(warning.call_args)
+
+
+def test_extract_llm_trailing_text_is_redacted_after_formatter():
+    trailing_text = "private trailing response text"
+    response = (
+        '[{"source_id":"u1","target":"fact","content":"user prefers Python",'
+        f'"confidence":1.0}}]{trailing_text}'
     )
+    extractor = _make_extractor([response])
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+    component_logger = get_logger(
+        "jiuwen_memory.construction.extractor_impl.llm_extractor"
+    )
+    old_level = component_logger.level
+    old_propagate = component_logger.propagate
+    component_logger.setLevel(logging.WARNING)
+    component_logger.propagate = False
+    component_logger.addHandler(handler)
+
+    try:
+        result = extractor.extract([create_test_unit("u1", "user prefers Python")])
+    finally:
+        component_logger.removeHandler(handler)
+        component_logger.setLevel(old_level)
+        component_logger.propagate = old_propagate
+        handler.close()
+
+    formatted = stream.getvalue()
+    assert len(result) == 1
+    assert "Extractor: ignored trailing LLM text after JSON root: *" in formatted
+    assert trailing_text not in formatted
 
 
 @pytest.mark.parametrize(
