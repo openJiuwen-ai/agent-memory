@@ -47,8 +47,7 @@ process.
 
 > `jiuwen_memory_entry/sdk` does not yet provide a separately packaged SDK client or launcher. In this
 > documentation, "SDK deployment" is the general term for direct Python package integration. The
-> stable entry points are the `Kernel` and `MemoryAPI` returned by
-> `jiuwen_memory.api.build_kernel()`.
+> stable entry point is the `MemoryAPI` returned by `jiuwen_memory.api.assemble()`.
 
 This mode has two independent selection dimensions:
 
@@ -75,7 +74,7 @@ See [SDK Deployment](<SDK Deployment.md>) for detailed instructions.
 
 ### 3.1 Default In-Memory Stack
 
-When `build_kernel()` is called without a configuration, the system uses its built-in offline
+When `assemble()` is called without a configuration, the system uses its built-in offline
 configuration:
 
 - `CompositeStorage` exposes the unified Storage interface;

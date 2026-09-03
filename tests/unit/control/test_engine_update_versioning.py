@@ -3,13 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from jiuwen_memory.api import MemoryPatch, Scope
-from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.lifecycle import LifecycleManager
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 
 
 class RecordingLifecycle(LifecycleManager):
@@ -89,8 +90,9 @@ def test_supersede_uses_patch_valid_time_as_new_version_boundary() -> None:
 def test_update_supersede_delegates_old_version_lifecycle_to_manager() -> None:
     scope = Scope(org="acme", user="u1", agent="a1", session="s1")
     actor = scope
-    kernel = build_kernel()
-    lifecycle = RecordingLifecycle(kernel.kv)
+    kv = InMemoryKVStore()
+    kernel = build_kernel(kv=kv)
+    lifecycle = RecordingLifecycle(kv)
     setattr(getattr(kernel.api, "_engine"), "_lifecycle", lifecycle)
     valid_from = datetime(2026, 6, 17, 11, 0, tzinfo=timezone.utc)
 

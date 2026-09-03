@@ -180,6 +180,70 @@ def test_search_preserves_json_extensions_and_returns_both_metadata_namespaces()
     ]
 
 
+def test_five_dimension_payload_maps_onto_scope() -> None:
+    call = _dispatch_add(
+        {
+            "tenant_id": "acme",
+            "space": "product",
+            "scope": "alice",
+            "agent": "bot",
+            "session": "sess-1",
+        }
+    )
+
+    expected = handler.Scope(
+        org="acme", space="product", user="alice", agent="bot", session="sess-1"
+    )
+    assert call["scope"] == expected
+    assert call["identity"] == expected
+
+
+def test_same_org_different_space_stay_isolated() -> None:
+    from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
+
+    params = {
+        "ingestor": "default",
+        "index_builder": "default",
+        "retriever": "default",
+        "kv_store": "default",
+        "scheduler": "default",
+        "evolver": "default",
+        "lifecycle": "default",
+    }
+
+    class _KernelServer:
+        def __init__(self) -> None:
+            self.api = build_kernel(
+                config={"engine": {"default": {"target": "cloud", "params": params}}}
+            ).api
+
+    srv = _KernelServer()
+    payload_a = {
+        "content": "alpha-only",
+        "tenant_id": "acme",
+        "space": "alpha",
+        "scope": "user",
+    }
+    payload_b = {
+        "content": "beta-only",
+        "tenant_id": "acme",
+        "space": "beta",
+        "scope": "user",
+    }
+    status, body = _dispatch(srv, "add", payload_a)
+    assert status == 200, body
+    status, body = _dispatch(srv, "add", payload_b)
+    assert status == 200, body
+
+    status, listed = _dispatch(
+        srv, "list", {"tenant_id": "acme", "space": "alpha", "scope": "user"}
+    )
+    assert status == 200, listed
+    contents = [item["content"] for item in listed["items"]]
+    assert "alpha-only" in contents, listed
+    assert "beta-only" not in contents, listed
+
+
 def test_actor_space_override_can_differ_from_target_space() -> None:
     call = _dispatch_add(
         {

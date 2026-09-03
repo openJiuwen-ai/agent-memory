@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.errors import NotFoundError, PermissionDeniedError, ValidationError
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.security.space_roles import SpaceContentRole, SpaceGovernanceRole
@@ -295,16 +295,17 @@ def test_the_fallback_space_is_created_on_first_write(api) -> None:
 
     空间名由调用方自己的身份渲染而来，别的主体渲染不出它，归属该登记给谁是确定的。
     """
-    fresh = _kernel().api  # 一个空间都没建
+    kernel = _kernel()  # 一个空间都没建
+    fresh = kernel.api
     units = fresh.add(
         "偏好深色主题", scope=Scope(org=ORG), security=SEC_ALICE, system_metadata=COORDS_P1
     )
     assert units[0].scope.space == ALICE_SPACE
-    info = fresh.space_manager.get(ORG, ALICE_SPACE)
+    info = fresh.get_space(ORG, ALICE_SPACE, security=SEC_ALICE)
     assert [owner.user for owner in info.owners] == ["alice"]
     # 只建 fallback：坐标指向的协作空间不自动建——它的成员表内核产生不了。
     with pytest.raises(NotFoundError):
-        fresh.space_manager.get(ORG, PROJECT_SPACE)
+        kernel.space.get(ORG, PROJECT_SPACE)
 
 
 def test_auto_create_is_switchable_off() -> None:
@@ -353,7 +354,7 @@ def test_auto_create_does_not_resurrect_a_space_the_caller_cannot_write(api) -> 
     api.archive_space(ORG, ALICE_SPACE, security=SEC_ALICE)
     with pytest.raises(ValidationError, match="not writable"):
         api.add("偏好深色主题", scope=Scope(org=ORG), security=SEC_ALICE, system_metadata=COORDS_P1)
-    assert api.space_manager.get(ORG, ALICE_SPACE).status is SpaceStatus.ARCHIVED
+    assert api.get_space(ORG, ALICE_SPACE, security=SEC_ALICE).status is SpaceStatus.ARCHIVED
 
 
 def test_the_coordinates_key_is_what_requests_a_decision_not_an_empty_space() -> None:

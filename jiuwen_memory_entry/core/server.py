@@ -2,19 +2,23 @@
 """Base surface-server — kernel assembly + the shared verb dispatch.
 
 :class:`Server` is the **base class** every protocol surface builds on: it holds
-one assembled kernel (config + api + truth-source) and exposes :meth:`dispatch`,
+one assembled runtime (config + api + ingest lifecycle) and exposes :meth:`dispatch`,
 the verb router that the CLI and HTTP/MCP surfaces all share. A concrete surface
 subclasses it and adds its transport (see
 :class:`jiuwen_memory_entry.http_server.__main__.HttpServer` for the HTTP/socket
 surface); the CLI's ``InProcessClient`` uses the base directly.
 
-The minimal reference build uses :func:`api.build_kernel` (the per-capability
+The minimal reference build uses :func:`api.assemble_runtime` (the per-capability
 impls wired together, pure in-memory, no external deps). Swapping in a real profile
 means assembling real plugins/Stores in :meth:`build` and reusing the same
 ``dispatch``.
 
+本模块是 Access 的 **composition root**：只通过 ``jiuwen_memory.api.assemble_runtime``
+装配内核（传入 dict，不 import ``jiuwen_memory.config``）。公开面只保留 ``api``、
+``dispatch()`` 和 surface lifecycle，不暴露 raw KV。
+
 本模块仍按 flat import root 使用（``import server`` / ``import profiles``）。
-内核依赖改为 ``jiuwen_memory.*``；本地脚本把仓库根与 ``jiuwen_memory_entry/core`` 放入
+内核依赖改为 ``jiuwen_memory.api``；本地脚本把仓库根与 ``jiuwen_memory_entry/core`` 放入
 ``PYTHONPATH``，这里仅在直接运行时把仓库根追加为兜底路径。
 """
 
@@ -23,10 +27,11 @@ from __future__ import annotations
 import os
 import sys
 from dataclasses import replace
-from importlib import import_module
 from typing import Any
 
-from jiuwen_memory.common.security.types import Surface
+from profiles import Config
+
+from jiuwen_memory.api import MemoryRuntime, Surface, assemble_runtime
 from jiuwen_memory_entry.core.dispatch_request import DispatchRequest
 from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
 
@@ -36,42 +41,32 @@ if _REPO not in sys.path:
     # editable 安装或 scripts/run-*.sh 保证，避免运行时把路径强插到最前。
     sys.path.append(_REPO)
 
-_api_module = import_module("jiuwen_memory.api")
-build_kernel = _api_module.build_kernel
-KernelConfig = import_module("jiuwen_memory.config").Config
-
 
 class Server:
-    """Assembled kernel + shared dispatch; base for all protocol surfaces."""
+    """Assembled runtime + shared dispatch; base for all protocol surfaces."""
 
-    def __init__(self, config: Any, kernel: Any) -> None:
+    def __init__(self, config: Config, runtime: MemoryRuntime) -> None:
         self.config = config
-        self.kernel = kernel
-        self.ingest_jobs = kernel.ingest_jobs
+        self._runtime = runtime
 
     @property
     def api(self):
-        return self.kernel.api
-
-    @property
-    def kv(self):
-        return self.kernel.kv
+        return self._runtime.api
 
     @classmethod
-    def build(cls, config: Any, spaces: Any = None) -> "Server":
-        """Assemble a kernel from ``config`` and return a ``cls`` instance.
+    def build(cls, config: Config, spaces: Any = None) -> "Server":
+        """Assemble a runtime from ``config`` and return a ``cls`` instance.
 
         ``config.settings`` 是合并后的完整配置字典，含 profiles 层自有的 ``profile`` /
         ``policies`` 等顶层键；其中 ``memory_api`` 段（若有）才是交给内核的**两级命名空间**
-        装配配置，解析为 :class:`~config.Config` 后由 :func:`api.build_kernel` 合并覆盖到
-        内置默认之上装配出接真后端的内核。须**只取该段**交 ``from_dict`` —— 整包传入会让
-        ``profile`` / ``policies`` 撞上新配置解析期的顶层段名校验而报错。无该段时（纯
-        ``OFFLINE`` 档）``from_dict(None)`` 返回空配置，回落进程内默认实现，与原行为一致。
+        装配配置，由 :func:`api.assemble_runtime` 合并覆盖到内置默认之上。须**只取该段**
+        交装配 —— 整包传入会让 ``profile`` / ``policies`` 撞上新配置解析期的顶层段名
+        校验而报错。无该段时（纯 ``OFFLINE`` 档）``config=None`` 回落进程内默认实现。
         """
-        kernel_config = KernelConfig.from_dict(config.settings.get("memory_api"))
+        memory_api = config.settings.get("memory_api")
         return cls(
             config,
-            build_kernel(policies=config.policies or None, config=kernel_config),
+            assemble_runtime(policies=config.policies or None, config=memory_api),
         )
 
     def dispatch(
@@ -100,7 +95,7 @@ class Server:
 
     def close(self, *, wait: bool = True) -> None:
         """Release the Control-owned ingest worker pool."""
-        self.ingest_jobs.close(wait=wait)
+        self._runtime.close(wait=wait)
 
 
 def default_spaces() -> dict[str, Any]:
@@ -108,6 +103,6 @@ def default_spaces() -> dict[str, Any]:
     return {}
 
 
-def build(config: Any, spaces: Any = None) -> Server:
+def build(config: Config, spaces: Any = None) -> Server:
     """Module-level assembly shim (the CLI's ``InProcessClient`` calls this)."""
     return Server.build(config, spaces)

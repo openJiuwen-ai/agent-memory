@@ -18,7 +18,6 @@ import sys
 import uuid
 from collections.abc import Mapping
 from datetime import datetime
-from importlib import import_module
 from typing import Any, Callable
 
 from jiuwen_memory_entry.core.dispatch_request import DispatchRequest
@@ -30,44 +29,39 @@ if _SRC not in sys.path:
     # 仓库根兜底，供 ``jiuwen_memory.*`` 解析（scripts 已设 PYTHONPATH 时为幂等）。
     sys.path.append(_SRC)
 
-_errors_module = import_module("jiuwen_memory.common.errors")
-AgentMemoryError = _errors_module.AgentMemoryError
-ConflictError = _errors_module.ConflictError
-NotFoundError = _errors_module.NotFoundError
-PermissionDeniedError = _errors_module.PermissionDeniedError
-PolicyError = _errors_module.PolicyError
-ValidationError = _errors_module.ValidationError
-
-_type_def_module = import_module("jiuwen_memory.common.type_def")
-AuditEvent = _type_def_module.AuditEvent
-Context = _type_def_module.Context
-EXT_MAX_TOKENS = _type_def_module.EXT_MAX_TOKENS
-MEMORY_KEY_PREFIX = _type_def_module.MEMORY_KEY_PREFIX
-MemoryUnit = _type_def_module.MemoryUnit
-Modality = _type_def_module.Modality
-Scope = _type_def_module.Scope
-EvolveMode = import_module("jiuwen_memory.construction").EvolveMode
-
-_security_legacy_module = import_module("jiuwen_memory.common.security.legacy")
-legacy_request_context = _security_legacy_module.legacy_request_context
-_security_types_module = import_module("jiuwen_memory.common.security.types")
-RequestSecurityContext = _security_types_module.RequestSecurityContext
-Surface = _security_types_module.Surface
-
-_control_types_module = import_module("jiuwen_memory.control.types")
-Action = _control_types_module.Action
-DeleteMode = _control_types_module.DeleteMode
-DeleteSelector = _control_types_module.DeleteSelector
-Grant = _control_types_module.Grant
-MemoryPatch = _control_types_module.MemoryPatch
-BatchWriteItem = _control_types_module.BatchWriteItem
-PrincipalPath = _control_types_module.PrincipalPath
-SpaceMember = _control_types_module.SpaceMember
-SpacePatch = _control_types_module.SpacePatch
-SpacePolicy = _control_types_module.SpacePolicy
-SpaceSpec = _control_types_module.SpaceSpec
-SpaceStatus = _control_types_module.SpaceStatus
-DisclosureLevel = import_module("jiuwen_memory.retrieval.types").DisclosureLevel
+# ruff: noqa: E402
+from jiuwen_memory.api import (
+    EXT_MAX_TOKENS,
+    Action,
+    AgentMemoryError,
+    AuditEvent,
+    BatchWriteItem,
+    ConflictError,
+    Context,
+    DeleteMode,
+    DeleteSelector,
+    DisclosureLevel,
+    EvolveMode,
+    Grant,
+    MemoryPatch,
+    MemoryUnit,
+    Modality,
+    NotFoundError,
+    PartialFailureError,
+    PermissionDeniedError,
+    PolicyError,
+    PrincipalPath,
+    RequestSecurityContext,
+    Scope,
+    SpaceMember,
+    SpacePatch,
+    SpacePolicy,
+    SpaceSpec,
+    SpaceStatus,
+    Surface,
+    ValidationError,
+    legacy_request_context,
+)
 
 Body = Mapping[str, Any]
 
@@ -75,6 +69,7 @@ _STATUS = {
     NotFoundError: 404,
     PermissionDeniedError: 403,
     ConflictError: 409,
+    PartialFailureError: 409,
     ValidationError: 400,
     PolicyError: 400,
 }
@@ -385,28 +380,17 @@ def _submit_video(
 
     # P1-2: 提交前完成 WRITE 鉴权 + 输入合法性校验，后台 add() 仍保留一次鉴权作防御层。
     # 无权限请求在此被拒（PermissionDeniedError → 403），不进队列，避免占满 worker。
-    srv.api.check_write(
+    submission = srv.api.submit_ingest(
+        uri,
         scope,
-        security,
+        Modality.VIDEO,
+        security=security,
+        payload_id=payload_id,
+        source_ref=uri,
+        assets=assets,
         tags=payload.get("tags"),
         system_metadata=system_metadata,
         user_metadata=user_metadata,
-    )
-
-    submission = srv.ingest_jobs.submit(
-        payload_id=payload_id,
-        source_ref=uri,
-        scope=scope,
-        task=lambda: srv.api.add(
-            uri,
-            scope,
-            Modality.VIDEO,
-            security=security,
-            assets=assets,
-            tags=payload.get("tags"),
-            system_metadata=system_metadata,
-            user_metadata=user_metadata,
-        ),
     )
     job = submission.job
     return {
@@ -1083,6 +1067,11 @@ def dispatch(srv, request: DispatchRequest) -> tuple[int, Body]:
         return 200, handler(srv, request)
     except AgentMemoryError as exc:
         status = next((code for cls, code in _STATUS.items() if isinstance(exc, cls)), 400)
-        return status, {"error": type(exc).__name__, "message": str(exc)}
+        body: Body = {"error": type(exc).__name__, "message": str(exc)}
+        if isinstance(exc, PartialFailureError):
+            body["completed"] = list(exc.completed)
+            body["failed"] = exc.failed
+            body["retry_action"] = exc.retry_action
+        return status, body
     except Exception as exc:  # surface unexpected failures as 500
         return 500, {"error": "InternalError", "message": str(exc)}

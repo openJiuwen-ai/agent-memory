@@ -5,7 +5,7 @@ The process can call `MemoryAPI` directly or run a local HTTP service. Storage c
 in-process implementations or real backends started with Docker.
 
 > `jiuwen_memory_entry/sdk/__init__.py` is currently empty, and the project does not yet provide a separately
-> packaged SDK client. This document uses `jiuwen_memory.api.build_kernel()` and `MemoryAPI` as the
+> packaged SDK client. This document uses `jiuwen_memory.api.assemble()` and `MemoryAPI` as the
 > current stable Python integration entry points.
 
 ## 1. Deployment Combinations
@@ -53,18 +53,17 @@ python -m pip install -e '.[embed]'
 
 ## 3. Option One: In-Memory Storage + Direct MemoryAPI Calls
 
-Without a configuration, `build_kernel()` uses the built-in offline assembly. `CompositeStorage`
+Without a configuration, `assemble()` uses the built-in offline assembly. `CompositeStorage`
 combines the in-process KV, Vector, Fulltext, and Graph Store implementations. Embedding, the LLM,
 and reranking also use default implementations with no external dependencies.
 
 ```python
-from jiuwen_memory.api import build_kernel
+from jiuwen_memory.api import assemble_runtime
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Context, Scope
 
-kernel = build_kernel()
-api = kernel.api
-
+runtime = assemble_runtime()
+api = runtime.api
 scope = Scope(org="demo", user="alice")
 security = legacy_request_context(scope)
 
@@ -84,7 +83,7 @@ try:
     print(units[0].id)
     print([item.content for item in result.items])
 finally:
-    kernel.ingest_jobs.close(wait=True)
+    runtime.close(wait=True)
 ```
 
 All data in this mode lives in the current process and is lost when the process exits. Docker and
@@ -222,29 +221,30 @@ export PG_DSN='postgresql://agent_memory:replace-with-password@127.0.0.1:5432/ag
 export ES_HOSTS='http://127.0.0.1:9200'
 ```
 
-For direct calls, `build_kernel()` accepts only the two-level namespace inside `memory_api`. To reuse
+For direct calls, `assemble()` accepts only the two-level namespace inside `memory_api`. To reuse
 both the HTTP configuration format and its environment-variable expansion, load the configuration as
 follows:
 
 ```python
 from jiuwen_memory_entry.core.config_loader import load_layer
-from jiuwen_memory.api import build_kernel
+from jiuwen_memory.api import assemble_runtime
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Context, Scope
 from jiuwen_memory.config import Config
 
 layer = load_layer("local-real-storage.yml")
 kernel_config = Config.from_dict(layer["memory_api"])
-kernel = build_kernel(config=kernel_config)
+runtime = assemble_runtime(config=kernel_config)
+api = runtime.api
 
 scope = Scope(org="demo", user="alice")
 security = legacy_request_context(scope)
 try:
-    kernel.api.add("A memory that must be persisted", scope, security=security)
-    result = kernel.api.search("persisted memory", Context(scope), security=security, top_k=5)
+    api.add("A memory that must be persisted", scope, security=security)
+    result = api.search("persisted memory", Context(scope), security=security, top_k=5)
     print([item.content for item in result.items])
 finally:
-    kernel.ingest_jobs.close(wait=True)
+    runtime.close(wait=True)
 ```
 
 Do not call `Config.from_yaml()` directly on this file with the `profile` and `memory_api` wrapper.
@@ -314,10 +314,10 @@ kv_store: {}
 To read this form without a `memory_api` wrapper directly, use:
 
 ```python
-from jiuwen_memory.api import build_kernel
+from jiuwen_memory.api import assemble
 from jiuwen_memory.config import Config
 
-kernel = build_kernel(config=Config.from_yaml("memory-api.yml"))
+api = assemble(config=Config.from_yaml("memory-api.yml"))
 ```
 
 This form does not expand environment variables automatically. Write already-resolved values or let
@@ -354,7 +354,7 @@ retrieval capabilities.
   or payload-provided identity.
 - Production environments should provide a trusted authentication runtime together with TLS, rate
   limiting, timeouts, monitoring, backups, and reliable process management.
-- Before the application exits, call `kernel.ingest_jobs.close(wait=True)` to wait for and release
+- Before the application exits, call `runtime.close(wait=True)` to wait for and release
   the in-process ingestion worker pool.
 
 ## 11. Related Documentation

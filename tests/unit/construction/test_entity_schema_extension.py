@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwen_memory.api import build_kernel
+from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
