@@ -3,8 +3,9 @@
 
 数据来源、调用方式与原 ``InProcessScheduler._execute_task`` 一致——
 mode 由构造参数注入，Scheduler 不再持有 kv/evolver。装配期依赖
-（kv/evolver）固化到 :class:`EvolveJobSpec`，由 :class:`JobFactoryProducer`
-装配后经 :class:`JobFactory.get_job` 取实例。
+（storage）固化到 :class:`EvolveJobSpec`；evolver 由 Engine 经
+:class:`JobFactory.get_job` 运行时注入（E-06：Job 与 Engine 共用同一
+实例，Spec 不自行解析）。
 """
 
 from __future__ import annotations
@@ -12,9 +13,9 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.construction import EvolveMode, Evolver
-from jiuwen_memory.construction.evolver import EvolverProducer
 from jiuwen_memory.control.jobs import Job
 from jiuwen_memory.control.types import JobInfo, JobStatus
 from jiuwen_memory.storage.storage import Storage, StorageProducer
@@ -70,22 +71,32 @@ class EvolveJob(Job):
 
 @dataclass
 class EvolveJobSpec:
-    """EvolveJob 装配期固化的部分——不含 scope/mode（evolve 调用时补）。
+    """EvolveJob 装配期固化的部分——不含 scope/mode/evolver（evolve 调用时补）。
 
     ``mode`` 是运行时参数（每次 evolve 入参不同），不进 Spec。
+    ``evolver`` 同为运行时注入（E-06）：``Engine.evolve`` 经 ``get_job``
+    传入装配给 Engine 的同一实例，保证演进与写入使用同一套索引组件；
+    缺失时显式报错，不回退默认实现。
     """
 
     storage: Storage
-    evolver: Evolver
+    evolver: Evolver | None = None
 
     def with_scope(self, scope: Scope, **kwargs) -> EvolveJob:
-        """生成完整 Job 实例——``kwargs`` 透传运行时参数（``mode`` 等）。"""
-        return EvolveJob(scope=scope, storage=self.storage, evolver=self.evolver, **kwargs)
+        """生成完整 Job 实例——``kwargs`` 透传运行时参数（``mode`` / ``evolver`` 等）。"""
+        evolver = kwargs.pop("evolver", None) or self.evolver
+        if evolver is None:
+            raise ValidationError(
+                "EvolveJob requires an Evolver (由 Engine 经 get_job 运行时注入，"
+                "Spec 不自行解析)"
+            )
+        return EvolveJob(scope=scope, storage=self.storage, evolver=evolver, **kwargs)
 
 
 def _build_evolve_job_spec(config) -> EvolveJobSpec:
-    """装配期固化 EvolveJob 的依赖——返回 Spec dataclass。"""
-    return EvolveJobSpec(
-        storage=StorageProducer.resolve(config),
-        evolver=EvolverProducer.dep(config, default="orchestrating"),
-    )
+    """装配期固化 EvolveJob 的依赖——返回 Spec dataclass。
+
+    E-06：evolver 不在此解析——Engine.evolve 提交时注入装配给 Engine 的
+    同一实例，Job 不得自行解析另一套。
+    """
+    return EvolveJobSpec(storage=StorageProducer.resolve(config))
