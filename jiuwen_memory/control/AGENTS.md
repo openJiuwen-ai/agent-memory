@@ -33,6 +33,8 @@
 | `pipeline_impl/` | MemoryPipeline 实现目录（metadata） |
 | `space_impl/` | SpaceManager 实现目录（kv） |
 | `job_impl/` | IngestJobController 实现目录（in_process：后台队列、状态持久化与 payload 幂等） |
+| `jobs.py` | `Job` 抽象（scope + interval 标识，`run() -> JobInfo` 唯一执行入口，不自带循环）+ `JobFactory`（按 job_type + scope + 运行时参数生成实例）+ `JobType` 枚举 + `JobFactoryProducer` |
+| `jobs_impl/` | 后台 Job 实现目录：`evolve_job.py`（EvolveJob + EvolveJobSpec）、`middle_to_long_job.py`（MiddleToLongJob + MiddleToLongJobSpec + default JobFactory 装配）。Spec 装配期固化业务参数与 storage/lifecycle/llm 依赖；index/evolver 不在装配期解析（行为铁律 17） |
 
 ## 文件关系
 
@@ -67,8 +69,9 @@
 14. **Ingest 任务按 Scope 隔离**：任务状态查询为纯读取，不更新进程缓存或
     `payload_id -> job_id` 映射；`_find_existing` 只有在任务 Scope 与请求 Scope
     完全一致后才维护映射，READ 鉴权由 MemoryAPI 执行。
-15. **授权值对象与路由 capability 单一真源**：`Action` / `Grant` 只从 `common.security.types` 兼容再导出，不在 control 重定义；`PermissionManager.routing_fields()` 继承 `common.security.authorization.RoutingFieldsProvider`，只允许路由实现覆盖。
+15. **授权值对象与路由 capability 单一真源**：`Action` / `Grant` 只从 `common.security.types` 兼容再导出，不在 control 重定义；`PermissionManager.routing_fields()` 继承自 `common.security.authorization.RoutingFieldsProvider`，只允许路由实现覆盖。
 16. **Engine 不回填 Segment assets**：`write` 将 API 入参中的 `assets` 复制到 `RawPayload`，之后由 Ingestor 负责映射。Engine 可继续处理 tags 和引擎管理的 metadata，但不得假设首 Segment 并改写 `Segment.assets`。
+17. **后台 Job 的 IndexBuilder/Evolver 由 Engine 运行时注入**：`EvolveJobSpec` / `MiddleToLongJobSpec` 装配期不解析 Evolver/IndexBuilder（不按 `vector_enabled` 猜默认、不调 `EvolverProducer` / `IndexBuilderProducer`）；Engine 提交 Job 时必传注入与写入/演进同源的实例（middle 路径传 pipeline binding 或单 profile 的 `index=` / `evolver=`，`evolve` 传 Engine 装配的 `evolver=`），运行时注入优先于 Spec 兜底字段；缺失注入时 `with_scope` 抛 `ValidationError`，不静默回退默认实现（见 docs/features/control/F08-engine-job-builder-alignment.md）。
 
 ## 双通道调度机制
 

@@ -271,9 +271,11 @@ IndexBuilder 只补检索索引那一半。
    Hybrid，写入与去重检索的不是同一份索引。
 3. **图索引仍在 evolver 内构建**。`_persist_graph` 直接调用 `storage.graph`，五个
    IndexBuilder 实现均不涉及图。按决策一，该逻辑应成为第五个子 builder。
-4. **`KVLifecycleManager.sweep()` 不同步派生索引**。它只持有 `storage`、不持有 index，把
-   单元转成 ARCHIVED/FORGOTTEN 后无人移除其派生索引。`sweep()` 目前无生产调用方，接线前
-   必须补上。
+4. **`KVLifecycleManager.sweep()` 不同步派生索引**（已修复，2026-09-03）。`sweep()`
+   已改为纯计算，返回带 Scope/unit_id/from-to state 的 `SweepTransition` 列表，不写真源、
+   不触碰索引；索引移出与真源回写由 `MemoryEngine.sweep_expired` 编排（FORGOTTEN 组先
+   `IndexBuilder.remove(SOFT)`、成功后 `LifecycleManager.transition` 回写，ARCHIVED 组只
+   回写；失败组计入 `SweepResult.failed` 留待下轮重试），见 S03/S05。
 5. **原文淘汰的容错等级下降**。整批一个 `try`，首条删除失败即中断剩余淘汰；失败告警报的是
    意图条数而非实际失败条数。影响有限：`/messages/` 短暂超出上限，下一轮取全量重排后自愈。
 6. **`HybridIndexBuilder.remove_with_scope` 不删正排**，与 `remove` 语义不一致；该方法目前
