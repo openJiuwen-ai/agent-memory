@@ -1,0 +1,35 @@
+# Compatibility entry for the command used by the earlier README.
+# Paths are relative to this file (evaluation/configs/).
+benchmark: longmemeval
+
+longmemeval:
+  data: ../datasets/longmemeval/longmemeval_mini.json
+  memory_config: ../longmemeval/config.yml
+  output_root: ../outputs/longmemeval
+  question_ids: []
+  sample_indices: [0]
+  max_questions: 1
+  concurrency: 1
+  scope_org: longmemeval-0804-local-smoke
+  granularity: dialogue_turn
+  dialogue_turn_max_chars: 4096
+  oracle_sessions: true
+  infer: true
+  recall_top_k: 200
+  answer_cutoff: 50
+  answer_cutoffs: [50, 10, 20]
+  judge_strict: false
+  proxy_retry_attempts: 4
+
+locomo:
+  data: ../datasets/locomo/locomo_mini.json
+  memory_config: ../locomo/config.yml
+  output_root: ../outputs/locomo
+  conversation_ids: [0]
+  max_sessions: 0
+  max_turns: 5
+  max_qa: 2
+  concurrency: 1
+  recall_top_k: 200
+  cutoffs: [10, 20, 50, 200]
+  run_tag: local-smoke

@@ -23,7 +23,16 @@ logs/
 # benchmark datasets (large; fetched separately) + eval run outputs
 automated_testing/data/
 evaluation/benchmark/data/
+evaluation/datasets/locomo/*.json
+!evaluation/datasets/locomo/locomo_mini.json
+evaluation/datasets/longmemeval/*.json
+!evaluation/datasets/longmemeval/longmemeval_mini.json
+evaluation/outputs/
 results.json
+
+# local evaluation backups (never include in a PR)
+evaluation_legacy_backup/
+evaluation_backup_*/
 
 # 预下载的本地模型（GB 级二进制；用 deploy/docker/download-models.sh 自行拉取，不入库）
 deploy/docker/models/
