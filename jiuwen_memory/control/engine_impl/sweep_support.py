@@ -20,6 +20,7 @@ FORGOTTEN 返回 None）。
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import NamedTuple
 
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit, Scope
@@ -28,18 +29,27 @@ from jiuwen_memory.control.types import SweepResult
 
 logger = get_logger(__name__)
 
-_GroupKey = tuple[str, str, str, str, str, str]
+
+class _GroupKey(NamedTuple):
+    """sweep 分组键：scope 五维 + 目标态（具名封装，避免 6 元裸元组）。"""
+
+    org: str
+    space: str
+    user: str
+    agent: str
+    session: str
+    target: str
 
 
 def _group_key(transition: SweepTransition) -> _GroupKey:
     scope = transition.scope
-    return (
-        scope.org,
-        scope.space,
-        scope.user,
-        scope.agent,
-        scope.session,
-        transition.to_state.value,
+    return _GroupKey(
+        org=scope.org,
+        space=scope.space,
+        user=scope.user,
+        agent=scope.agent,
+        session=scope.session,
+        target=transition.to_state.value,
     )
 
 

@@ -252,17 +252,22 @@ class _EngineSpyIndex(IndexBuilder):
         return None
 
 
-def _engine(kv: InMemoryKVStore, lifecycle: KVLifecycleManager) -> InMemoryEngine:
+def _engine(
+    kv: InMemoryKVStore, lifecycle: KVLifecycleManager
+) -> tuple[InMemoryEngine, _EngineSpyIndex]:
+    """构造 sweep 路径的 InMemoryEngine，同时返回 spy 索引引用（免访问受保护成员）。"""
     storage = CompositeStorage(kv=kv)
-    return InMemoryEngine(
+    spy = _EngineSpyIndex()
+    engine = InMemoryEngine(
         ingestor=None,  # sweep 路径不依赖 ingestor
-        index_builder=_EngineSpyIndex(),
+        index_builder=spy,
         retriever=None,  # sweep 路径不依赖 retriever
         storage=storage,
         scheduler=InProcessScheduler(),
         evolver=None,  # sweep 路径不依赖 evolver
         lifecycle=lifecycle,
     )
+    return engine, spy
 
 
 def test_engine_sweep_expired_forgets_and_cleans_derived_index(unit_factory) -> None:
@@ -279,10 +284,9 @@ def test_engine_sweep_expired_forgets_and_cleans_derived_index(unit_factory) -> 
     for unit in [expired, superseded, keep]:
         kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
     lifecycle = KVLifecycleManager(CompositeStorage(kv=kv))
-    engine = _engine(kv, lifecycle)
+    engine, spy = _engine(kv, lifecycle)
 
     result = asyncio.run(engine.sweep_expired())
-    spy = engine._index
 
     assert result.swept == [expired.id, superseded.id]
     assert result.failed == []
@@ -307,10 +311,9 @@ def test_engine_sweep_expired_archived_policy_keeps_derived_index(unit_factory) 
         CompositeStorage(kv=kv),
         DictPolicyManager({"lifecycle.expired_active.target": "archived"}),
     )
-    engine = _engine(kv, lifecycle)
+    engine, spy = _engine(kv, lifecycle)
 
     result = asyncio.run(engine.sweep_expired())
-    spy = engine._index
 
     # ARCHIVED：只回写真源，检索索引保留（include_archived / as_of 回溯仍需）。
     assert result.swept == [expired.id]

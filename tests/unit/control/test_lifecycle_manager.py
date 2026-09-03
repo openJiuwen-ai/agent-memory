@@ -265,7 +265,8 @@ def test_default_kernel_lifecycle_sweep_uses_runtime_policy(unit_factory) -> Non
     api.admin_set(
         "lifecycle.expired_active.target", "archived", security=legacy_request_context(root)
     )
-    result = asyncio.run(api._engine.sweep_expired())
+    engine = api._engine  # pylint: disable=protected-access
+    result = asyncio.run(engine.sweep_expired())
 
     stored = loads(kernel.kv.get(scope, memory_key(expired.id)))
     assert result.swept == [expired.id]
