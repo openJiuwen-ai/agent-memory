@@ -17,33 +17,27 @@ from __future__ import annotations
 import os
 import sys
 from contextlib import contextmanager
-from importlib import import_module
 from typing import Any, Iterator, Mapping
 
 _SRC = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "src"
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
 )
 if _SRC not in sys.path:
     sys.path.append(_SRC)
 
-_security_types = import_module("jiuwen_memory.common.security.types")
-reset_current = _security_types.reset_current
-set_current = _security_types.set_current
-Credentials = _security_types.Credentials
-RequestSecurityContext = _security_types.RequestSecurityContext
-Surface = _security_types.Surface
-
-# RequestSecurityContext 的构造规则（服务端生成 request_id、服务端时钟、attributes
-# 只由系统组件写）收在 common.security.request_context 一处，本模块只提供本形态的
-# surface 与 peer。
-_request_context_module = import_module("jiuwen_memory.common.security.request_context")
-new_request_context = _request_context_module.new_request_context
-
-Scope = import_module("jiuwen_memory.common.type_def").Scope
-AuditEvent = import_module("jiuwen_memory.common.type_def").AuditEvent
-_errors = import_module("jiuwen_memory.common.errors")
-AuthenticationError = _errors.AuthenticationError
-RateLimitedError = _errors.RateLimitedError
+# ruff: noqa: E402
+from jiuwen_memory.api import (
+    AuditEvent,
+    AuthenticationError,
+    Credentials,
+    RateLimitedError,
+    RequestSecurityContext,
+    Scope,
+    Surface,
+    new_request_context,
+    reset_current,
+    set_current,
+)
 
 _BEARER = "bearer "
 

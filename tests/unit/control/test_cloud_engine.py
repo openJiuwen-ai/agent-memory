@@ -83,6 +83,37 @@ class _RecordingIngestor(Ingestor):
         return units
 
 
+class _AssetRoutingIngestor(Ingestor):
+    """把资产映射到第二个 Segment，用于验证 Engine 不解释映射关系。"""
+
+    def __init__(self) -> None:
+        self.received_assets: list[list[str]] = []
+
+    @staticmethod
+    def operator_type() -> IngestOperatorType:
+        return IngestOperatorType.INGESTOR
+
+    @staticmethod
+    def health() -> None:
+        return None
+
+    def ingest(self, payloads: list[RawPayload]) -> list[MemoryUnit]:
+        self.received_assets.extend(list(payload.assets) for payload in payloads)
+        return [
+            MemoryUnit(
+                id=payload.id,
+                scope=payload.scope,
+                segments=[
+                    Segment(content=payload.data.decode("utf-8"), source=payload.modality),
+                    Segment(assets=list(payload.assets), source=payload.modality),
+                ],
+                system_metadata=dict(payload.system_metadata),
+                user_metadata=dict(payload.user_metadata),
+            )
+            for payload in payloads
+        ]
+
+
 class _RecordingIndexBuilder(IndexBuilder):
     """记录调用并交付 Storage 的替身——IndexBuilder 是记忆写入的唯一入口。"""
 
@@ -300,7 +331,7 @@ class _MessageTypePipeline(MemoryPipeline):
         return self.profiles.get(route, self.profiles["chat"])
 
 
-def _engine():
+def _engine(ingestor: Ingestor | None = None):
     kv = _RecordingKVStore()
     storage = CompositeStorage(kv=kv)
     chat_index = _RecordingIndexBuilder("chat", storage)
@@ -329,7 +360,7 @@ def _engine():
     }
     return (
         CloudEngine(
-            ingestor=_RecordingIngestor(),
+            ingestor=ingestor or _RecordingIngestor(),
             index_builder=chat_index,
             retriever=chat_retriever,
             storage=storage,
@@ -353,6 +384,24 @@ def _engine():
             "coding_evolver": coding_evolver,
         },
     )
+
+
+def test_cloud_engine_delegates_assets_mapping_to_ingestor() -> None:
+    ingestor = _AssetRoutingIngestor()
+    engine, _ = _engine(ingestor)
+    assets = ["file:///video.mp4", "file:///transcript.json"]
+
+    units = asyncio.run(
+        engine.write(
+            "normalized content",
+            Scope(org="acme", user="alice"),
+            assets=assets,
+        )
+    )
+
+    assert ingestor.received_assets == [assets]
+    assert units[0].segments[0].assets == []
+    assert units[0].segments[1].assets == assets
 
 
 def test_cloud_engine_write_routes_by_message_type_and_stamps_metadata() -> None:
@@ -428,7 +477,10 @@ def test_cloud_engine_batch_write_collects_unexpected_error_and_skips_after_fail
     engine.write = _raise_unexpected  # type: ignore[method-assign]
     result = asyncio.run(
         engine.batch_write(
-            [BatchWriteItem(content="first", scope=scope), BatchWriteItem(content="second", scope=scope)],
+            [
+                BatchWriteItem(content="first", scope=scope),
+                BatchWriteItem(content="second", scope=scope),
+            ],
             continue_on_error=False,
         )
     )
@@ -613,7 +665,11 @@ def _engine_with_job_factory(
             classifier=_RecordingClassifier("coding"),
         ),
     }
-    factory = _build_test_job_factory(kv, chat_evolver, lifecycle, chat_index) if with_job_factory else None
+    factory = (
+        _build_test_job_factory(kv, chat_evolver, lifecycle, chat_index)
+        if with_job_factory
+        else None
+    )
     engine = CloudEngine(
         ingestor=_RecordingIngestor(),
         index_builder=chat_index,
@@ -765,7 +821,8 @@ def test_cloud_engine_evolve_submits_evolve_job_via_job_factory() -> None:
     assert channel == Channel.HOT
     assert job.scope == scope
     assert job.interval == 0  # EvolveJob 是一次性任务
-    assert job._mode == EvolveMode.CONSOLIDATE  # mode 经构造参数流入  # pylint: disable=protected-access
+    # mode 经构造参数流入。
+    assert job._mode == EvolveMode.CONSOLIDATE  # pylint: disable=protected-access
 
 
 def test_cloud_engine_evolve_raises_when_job_factory_is_none() -> None:

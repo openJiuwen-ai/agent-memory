@@ -274,12 +274,13 @@ class CloudEngine(MemoryEngine):
             modality=source,
             data=b"" if is_video else content.encode("utf-8"),
             uri=content if is_video else "",
+            assets=list(assets or []),
             system_metadata=meta,
             user_metadata=dict(user_metadata or {}),
             occurred_at=occurred_at,
         )
         units = self._ingestor.ingest([payload])
-        self._prepare_ingested_units(units, scope, meta, assets=assets, tags=tags)
+        self._prepare_ingested_units(units, scope, meta, tags=tags)
 
         binding = self._write_binding(units)
         pipeline_name = binding.name if binding is not None else self._default_pipeline_name
@@ -763,17 +764,11 @@ class CloudEngine(MemoryEngine):
         scope: Scope,
         system_metadata: dict[str, MetadataValueType],
         *,
-        assets: list[str] | None,
         tags: list[str] | None,
     ) -> None:
         for unit in units:
             self._ensure_unit_scope(unit, scope)
             unit.system_metadata.update(system_metadata)
-            if assets:
-                if not unit.segments:
-                    unit.segments = [Segment(assets=list(assets), source=unit.source)]
-                else:
-                    unit.segments[0].assets = list(assets)
             unit.tags = list(tags or [])
 
     def _stamp_pipeline(self, units: list[MemoryUnit], pipeline_name: str) -> None:

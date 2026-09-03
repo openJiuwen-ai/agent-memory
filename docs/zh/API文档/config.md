@@ -26,8 +26,8 @@ Producer 注册表、具名实例和依赖引用的轻量级装配机制。本�
 
 | 配置类别 | 作用 | 主要生效时机 |
 |---|---|---|
-| 装配拓扑 | 选择组件实现、声明实例、连接组件依赖 | `build_kernel()` |
-| 全局参数 | 向多个组件提供能力开关和公共参数 | 主要在 `build_kernel()` |
+| 装配拓扑 | 选择组件实现、声明实例、连接组件依赖 | `assemble()` |
+| 全局参数 | 向多个组件提供能力开关和公共参数 | 主要在 `assemble()` |
 | `ConfigSource` | 晚绑定模型、凭证、连接地址和 Prompt | 运行时调用阶段 |
 | `PolicyManager` | 管理生命周期、Space 等业务策略 | 运行时 |
 
@@ -66,13 +66,13 @@ constructor:
 
 ## 2. 完整装配链路
 
-SDK 和服务部署最终都会进入 `build_kernel()`：
+SDK 和服务部署最终都会进入 `assemble()`：
 
 ```text
 SDK
   Config.from_dict / Config.from_yaml
                  ┐
-                 ├─> build_kernel
+                 ├─> assemble
                  │     ├─ 注册全部 Producer target
 HTTP / MCP       │     ├─ 清空本次装配的具名实例缓存
   load_layer     │     ├─ default_context + 用户配置覆盖
@@ -103,7 +103,7 @@ HTTP / MCP       │     ├─ 清空本次装配的具名实例缓存
 SDK 可以直接构造内核配置：
 
 ```python
-from jiuwen_memory.api import build_kernel
+from jiuwen_memory.api import assemble
 from jiuwen_memory.config import Config
 
 config = Config.from_dict(
@@ -123,15 +123,14 @@ config = Config.from_dict(
     }
 )
 
-kernel = build_kernel(config=config)
-memory_api = kernel.api
+api = assemble(config=config)
 ```
 
 也可以从只包含内核配置的 YAML 文件读取：
 
 ```python
 config = Config.from_yaml("./memory-config.yml")
-kernel = build_kernel(config=config)
+api = assemble(config=config)
 ```
 
 `Config.from_yaml()` 只负责解析 YAML，不会展开 `${ENV_VAR}`。SDK 场景需要调用方自行读取
@@ -163,7 +162,7 @@ memory_api:
 |---|---|
 | `profile` | 服务启动 profile，不属于内核组件命名空间 |
 | `policies` | 传给 `PolicyManager` 的便捷策略配置 |
-| `memory_api` | 真正传入 `Config.from_dict()` 和 `build_kernel()` 的内核配置 |
+| `memory_api` | 真正传入 `Config.from_dict()` 和 `assemble()` 的内核配置 |
 
 HTTP/MCP 启动过程会：
 
@@ -172,7 +171,7 @@ HTTP/MCP 启动过程会：
 3. 合并服务配置层；
 4. 只取 `memory_api` 段；
 5. 构造内核 `Config`；
-6. 调用 `build_kernel()`。
+6. 调用 `assemble()`。
 
 不能把包含 `profile`、`policies` 和 `memory_api` 的完整部署配置直接传给内核 `Config`，
 否则 `profile` 等字段会被当成未知 Producer 命名空间。
@@ -281,13 +280,44 @@ constructor:
 
 | 分类 | 命名空间 |
 |---|---|
-| 共享组件 | `tokenizer`、`chunker`、`embedder`、`llm`、`reranker` |
+| 共享组件 | `tokenizer`、`chunker`、`embedder`、`llm`、`reranker`、`normalizer`、`asr` |
+| Ingest | `ingestor` |
 | Storage | `storage`、`kv_store`、`vector_store`、`fulltext_store`、`graph_store` |
 | Construction | `extractor`、`classifier`、`constructor`、`dedup`、`evolver` |
 | Retrieval | `query_parser`、`recaller`、`fuser`、`discloser`、`retriever` |
 | Control | `engine`、`scheduler`、`permission`、`policy`、`lifecycle` |
 
 具体可选 target 以各层 API 文档和 Producer 注册结果为准。
+
+### 4.4 Normalizer 能力路由
+
+默认装配为 `normalizer.default=passthrough`、`ingestor.default=simple`。`simple` Ingestor
+引用 `normalizer.default`，并在规约前以 `Normalizer.modalities()` 校验输入模态。
+
+多模态场景可用 `routing` Normalizer 按模态选择实现：
+
+```yaml
+normalizer:
+  default:
+    target: routing
+    params:
+      fallback: passthrough
+      routes:
+        video:
+          target: video
+          params:
+            asr_port: video
+            llm_port: video_text
+            vlm_port: video_vision
+```
+
+`routing` 在装配时检查每个 route key 是否包含在目标 Normalizer 的 `modalities()` 中；
+例如把 `video` 路由到只支持文本化模态的 `passthrough` 会使 `build_kernel()` 抛出
+`ValidationError`。运行时输入不属于已装配能力集合时抛出 `UnsupportedCapabilityError`，
+且不会进入 MemoryUnit、Storage 或索引写入。`passthrough` 当前只支持已经是 UTF-8 文本的
+`TEXT` 和 `CODE`：CODE 输入必须是源码文本，不读取源码文件；只有 TEXT 保留无 data 时的
+URI 兼容回退。PDF/Office 等 `DOCUMENT` 原件需要专用解析型 Normalizer。完整视频依赖配置见
+[`examples/config_multimodal.yml`](../../../examples/config_multimodal.yml)。
 
 ## 5. 具名实例结构
 
@@ -470,7 +500,7 @@ llm:
 
 ## 8. 默认配置与用户覆盖
 
-`build_kernel()` 首先创建内置默认配置，再合并用户配置。
+`assemble()` 首先创建内置默认配置，再合并用户配置。
 
 默认配置是一套可离线运行的进程内组合：
 
@@ -651,6 +681,8 @@ memory_api:
 
 - `storage.default=composite`；
 - `constructor.default=hybrid`；
+- `normalizer.default=passthrough`；
+- `ingestor.default=simple`；
 - `retriever.default=pipeline`；
 - `engine.default=in_memory`；
 - `scheduler.default=in_process`。
@@ -727,7 +759,7 @@ vector_store.uri
 fulltext_store.hosts
 ```
 
-它不会监听 YAML 文件变化。修改文件后必须重新执行 `build_kernel()`。
+它不会监听 YAML 文件变化。修改文件后必须重新执行 `assemble()`。
 
 ### 12.2 可变 `dict`
 
@@ -742,14 +774,12 @@ config_source:
         llm.base_url: https://example.com/v1
 ```
 
-装配后，产品侧可以更新：
+装配后，产品侧可以更新已接线的晚绑定字段。公开 `assemble()` / `assemble_runtime()`
+不返回 `config_source` 句柄；使用 `dict` target 时，由部署方持有同一
+`DictConfigSource` 实例并调用 `put`，而不是从 Kernel 上取端口。
 
 ```python
 from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
-
-source = kernel.config_source
-if not isinstance(source, DictConfigSource):
-    raise TypeError("config_source.default 不是 dict target")
 
 source.put("llm.model", "qwen-max")
 source.put("llm.api_key", "new-key")
@@ -817,7 +847,7 @@ Recaller/IndexBuilder。此类变更需要重新装配。
 普通配置中切换实现仍应：
 
 1. 修改对应 `default.target`；
-2. 重新执行 `build_kernel()`。
+2. 重新执行 `assemble()`。
 
 ## 13. PolicyManager 与 ConfigSource 的边界
 
@@ -873,7 +903,7 @@ Reranker。当前实现中，运行时修改 `rerank.enabled` 不会自动重建
 target 或缺失后端依赖可能不会在启动阶段暴露。
 
 部署验收时应对已装配且对外暴露探活能力的组件显式执行 `health()`，
-不能仅以 `build_kernel()` 成功作为外部服务可用的证明。
+不能仅以 `assemble()` 成功作为外部服务可用的证明。
 
 ## 15. 使用建议与常见问题
 
@@ -934,4 +964,4 @@ globals:
 - 字符串既可能是普通值，也可能是实例引用；
 - 一部分错误只能在递归装配或首次连接时发现；
 - `ConfigSource` 只能动态修改已接线字段，不能自动重建对象拓扑；
-- Factory 具名缓存是进程级类变量，同一进程内不适合并发执行多个 `build_kernel()`。
+- Factory 具名缓存是进程级类变量，同一进程内不适合并发执行多个 `assemble()`。

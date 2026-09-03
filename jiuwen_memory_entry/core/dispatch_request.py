@@ -8,8 +8,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
-from jiuwen_memory.common.security.types import RequestSecurityContext, Surface
-from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.api import RequestSecurityContext, Scope, Surface
 
 
 @dataclass(frozen=True)

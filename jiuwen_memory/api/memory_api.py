@@ -44,6 +44,7 @@ from jiuwen_memory.control import (
     Channel,
     DeleteMode,
     DeleteSelector,
+    IngestSubmission,
     JobInfo,
     MemoryListResult,
     MemoryPatch,
@@ -304,6 +305,25 @@ class MemoryAPI(ABC):
     ) -> None:
         """Pre-flight WRITE 鉴权，不落盘。用于长耗时摄入任务入队前拒绝无权限请求，
         避免 DoS（队列被无权限请求占满）。后台实际写入仍保留一次鉴权作防御层。
+        """
+
+    @abstractmethod
+    def submit_ingest(
+        self,
+        content: str,
+        scope: Scope,
+        source: Modality,
+        *,
+        security: RequestSecurityContext,
+        payload_id: str,
+        source_ref: str,
+        assets: list[str] | None = None,
+        tags: list[str] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
+    ) -> IngestSubmission:
+        """受鉴权的长耗时摄入入队。本层先做 WRITE 鉴权，再委托 Control 任务控制器；
+        调用方拿不到 ``IngestJobController``。后台 ``add`` 仍再鉴权一次。
         """
 
     @abstractmethod

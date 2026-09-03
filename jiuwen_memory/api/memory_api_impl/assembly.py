@@ -22,7 +22,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any, Protocol, runtime_checkable
 
 from jiuwen_memory.common._support import as_bool
 from jiuwen_memory.common.audit.base import AuditProducer
@@ -57,6 +59,7 @@ from jiuwen_memory.storage.bootstrap import register_backends
 from jiuwen_memory.storage.kv import KvProducer, KVStore
 from jiuwen_memory.storage.storage import Storage, StorageProducer
 
+from ..memory_api import MemoryAPI
 from .local_memory_api import LocalMemoryAPI
 
 _SCHEMA_TARGETS = frozenset(
@@ -77,16 +80,11 @@ def _configured_schema_targets(ctx: AssemblyContext) -> list[str]:
 
 
 @dataclass
-class Kernel:
-    """一次装配的产物：对外 API、统一 Storage、兼容 KV 句柄与配置来源。
+class _Kernel:
+    """装配模块内部工作对象：同时持有 API 与原始端口。
 
-    Attributes:
-        api: 形态无关的 MemoryAPI 入口
-        kv: 真源 KV（按 ``kv_store.default`` 装配；F04 §5.4 默认 raw，
-            opt-in encrypted target 才包装）
-        storage: 上层统一使用的 Storage（默认 CompositeStorage）
-        space: SpaceManager（若装配）
-        config_source: 运行时晚绑定配置来源（默认 YamlDefaultsConfigSource）
+    不是库的公共能力。Access / SDK / HTTP / MCP 只能拿到 :class:`MemoryAPI`
+    或 :class:`MemoryRuntime`。
     """
 
     api: LocalMemoryAPI
@@ -95,6 +93,39 @@ class Kernel:
     ingest_jobs: IngestJobController
     space: SpaceManager | None = None
     config_source: ConfigSource | None = None
+
+
+@runtime_checkable
+class MemoryRuntime(Protocol):
+    """Access composition root 使用的运行时句柄：只有 API 与关闭语义。"""
+
+    @property
+    def api(self) -> MemoryAPI:
+        ...
+
+    def close(self, *, wait: bool = True) -> None:
+        ...
+
+
+@dataclass
+class _MemoryRuntime:
+    api: MemoryAPI
+    _ingest_jobs: IngestJobController
+
+    def close(self, *, wait: bool = True) -> None:
+        self._ingest_jobs.close(wait=wait)
+
+
+def _coerce_config(config: Config | Mapping[str, Any] | None) -> Config | None:
+    """Access 只传 dict / None；内核测试仍可传 ``Config``。"""
+    if config is None or isinstance(config, Config):
+        return config
+    if isinstance(config, Mapping):
+        return Config.from_dict(config)
+    raise TypeError(
+        "assemble config must be Config, mapping, or None, "
+        f"got {type(config).__name__}"
+    )
 
 
 def _register_all() -> None:
@@ -137,18 +168,20 @@ def _audit_verify_limits(root: ComponentConfig) -> AuditVerificationLimits:
         raise ValidationError(f"invalid audit verification limits: {exc}") from None
 
 
-def build_kernel(
+def _build_kernel(
     policies: dict[str, str] | None = None,
     kv: KVStore | None = None,
-    config: Config | None = None,
-) -> Kernel:
-    """把配置装配成内核（api + 真源）。各组件经引用自取依赖、缺省随调用点给出。
+    config: Config | Mapping[str, Any] | None = None,
+) -> _Kernel:
+    """把配置装配成内部内核（api + 真源）。各组件经引用自取依赖、缺省随调用点给出。
 
-    - ``config``：用户配置（两级命名空间），**合并覆盖**到内置默认（:mod:`config.defaults`）之上；
-      ``None`` 时纯用内置默认（离线进程内栈）。
+    - ``config``：用户配置（两级命名空间 ``Config`` 或等价 dict），**合并覆盖**到内置默认
+      （:mod:`config.defaults`）之上；``None`` 时纯用内置默认（离线进程内栈）。
+      Access 只传 dict，不 import ``jiuwen_memory.config``。
     - ``policies``：便捷覆盖运行时策略（折进 ``globals.policies``）。
     - ``kv``：显式注入真源后端，覆盖配置的 kv_store 选择（如传 ``SQLiteKVStore`` 即落盘）。
     """
+    config = _coerce_config(config)
     if config is not None and not config.is_empty():
         requested = config.context()
         if "audit_integrity" in requested.namespaces:
@@ -203,6 +236,7 @@ def build_kernel(
             "ingest_job namespace assembled a non-IngestJobController value: "
             f"{type(ingest_jobs).__name__}"
         )
+    space = SpaceProducer.dep(root, default="kv")
 
     api = LocalMemoryAPI(
         engine=EngineProducer.dep(root, default="in_memory"),
@@ -211,7 +245,7 @@ def build_kernel(
         policy=PolicyProducer.dep(root, default="dict"),
         governor=GovernorProducer.dep(root, default="in_memory"),
         audit_logger=AuditProducer.dep(root, default="sqlite"),
-        space=SpaceProducer.dep(root, default="kv"),
+        space=space,
         ingest_jobs=ingest_jobs,
         # 单次扫描量/返回样本量是可信服务端配置，不从请求 payload 读取。即使完整性
         # provider 尚未装配，也先固定同一组装配键，后续实装无需再改 PEP 构造签名。
@@ -234,12 +268,12 @@ def build_kernel(
         router=optional_router(root),
     )
     _reject_routing_without_space_authorization(api)
-    return Kernel(
+    return _Kernel(
         api=api,
         kv=kv_store,
         storage=storage,
         ingest_jobs=ingest_jobs,
-        space=api.space_manager,
+        space=space,
         config_source=config_source,
     )
 
@@ -267,7 +301,17 @@ def _reject_routing_without_space_authorization(api: LocalMemoryAPI) -> None:
 def assemble(
     policies: dict[str, str] | None = None,
     kv: KVStore | None = None,
-    config: Config | None = None,
-) -> LocalMemoryAPI:
-    """装配出一个可用的 ``MemoryAPI``（见 :func:`build_kernel`）。"""
-    return build_kernel(policies, kv, config).api
+    config: Config | Mapping[str, Any] | None = None,
+) -> MemoryAPI:
+    """装配出一个可用的 ``MemoryAPI``。普通调用方只应使用本函数。"""
+    return _build_kernel(policies, kv, config).api
+
+
+def assemble_runtime(
+    policies: dict[str, str] | None = None,
+    kv: KVStore | None = None,
+    config: Config | Mapping[str, Any] | None = None,
+) -> MemoryRuntime:
+    """装配 Access 运行时：``api`` + ``close``，不暴露存储或任务控制器端口。"""
+    kernel = _build_kernel(policies, kv, config)
+    return _MemoryRuntime(api=kernel.api, _ingest_jobs=kernel.ingest_jobs)

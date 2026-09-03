@@ -41,10 +41,11 @@ load_config = _profiles_module.load_config
 Server = import_module("server").Server
 authenticated = import_module("auth_middleware").authenticated
 credentials_from_headers = import_module("auth_middleware").credentials_from_headers
-Surface = import_module("jiuwen_memory.common.security.types").Surface
-AuthenticationError = import_module("jiuwen_memory.common.errors").AuthenticationError
-RateLimitedError = import_module("jiuwen_memory.common.errors").RateLimitedError
-ValidationError = import_module("jiuwen_memory.common.errors").ValidationError
+_api_module = import_module("jiuwen_memory.api")
+Surface = _api_module.Surface
+AuthenticationError = _api_module.AuthenticationError
+RateLimitedError = _api_module.RateLimitedError
+ValidationError = _api_module.ValidationError
 
 logger = logging.getLogger("agent-memory.server")
 

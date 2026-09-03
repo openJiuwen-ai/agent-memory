@@ -27,9 +27,8 @@ from jiuwen_memory.common.security.space_roles import (
 
 pytestmark = pytest.mark.unit
 
-_API_IMPL = pathlib.Path(__file__).parents[4] / (
-    "jiuwen_memory/api/memory_api_impl/local_memory_api.py"
-)
+_API_IMPL = pathlib.Path(__file__).parents[4] / "jiuwen_memory" / "api" / "memory_api_impl"
+_API_IMPL_SKIP = {"assembly.py", "__init__.py"}
 
 
 def _authorize_entry_names() -> set[str]:
@@ -37,21 +36,25 @@ def _authorize_entry_names() -> set[str]:
 
     按 AST 取而不是文本匹配：入口名是第四个位置参数，多行调用的文本匹配会漏。
     两个鉴权方法都要取：``search`` 只经 ``_authorize_with_context`` 调用，只取前者
-    会使该入口在两条完整性断言中都不可见。
+    会使该入口在两条完整性断言中都不可见。公开方法拆到 mixin 后，扫描整个
+    ``memory_api_impl/``（装配文件除外）。
     """
     names: set[str] = set()
-    for node in ast.walk(ast.parse(_API_IMPL.read_text(encoding="utf-8"))):
-        if not isinstance(node, ast.Call):
+    for path in sorted(_API_IMPL.glob("*.py")):
+        if path.name in _API_IMPL_SKIP:
             continue
-        if not isinstance(node.func, ast.Attribute):
-            continue
-        if node.func.attr not in ("_authorize", "_authorize_with_context"):
-            continue
-        if len(node.args) >= 4 and isinstance(node.args[3], ast.Constant):
-            names.add(node.args[3].value)
-        for keyword in node.keywords:
-            if keyword.arg == "audit_action" and isinstance(keyword.value, ast.Constant):
-                names.add(keyword.value.value)
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in ("_authorize", "_authorize_with_context"):
+                continue
+            if len(node.args) >= 4 and isinstance(node.args[3], ast.Constant):
+                names.add(node.args[3].value)
+            for keyword in node.keywords:
+                if keyword.arg == "audit_action" and isinstance(keyword.value, ast.Constant):
+                    names.add(keyword.value.value)
     return names
 
 
