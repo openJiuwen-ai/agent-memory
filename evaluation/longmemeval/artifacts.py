@@ -12,10 +12,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+_JSON_SCALAR_TYPES = (str, int, float, bool)
+
 
 def to_jsonable(value: Any) -> Any:
     """Convert benchmark objects without truncating their textual fields."""
-    if value is None or isinstance(value, (str, int, float, bool)):
+    if value is None:
+        return None
+    if isinstance(value, _JSON_SCALAR_TYPES):
         return value
     if isinstance(value, Enum):
         return to_jsonable(value.value)
