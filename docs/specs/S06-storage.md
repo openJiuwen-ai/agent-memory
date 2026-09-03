@@ -55,7 +55,7 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
     必须用内部派生字段恢复语义。
 13. **所有 Store 必须实现 `store_type()` 和 `health()`**：继承自 `BaseStore`。
 14. **多租户隔离默认依赖逻辑 scope 边界**：当前不要求物理分库/分 collection，但要求同一逻辑 key/id 在不同 scope 下严格命名空间隔离。
-15. **EncryptedKVStore 只装饰 KV，不实现算法**：写前加密、读后解密通过注入的 `SecurityProvider` 完成；`list` 在解密后执行 MemoryUnit 过滤，不能把过滤下推到密文 raw KV。
+15. **EncryptedKVStore 只装饰 KV，不实现算法**：写前加密、读后解密通过注入的 `CryptographyProvider` 完成；`list` 在解密后执行 MemoryUnit 过滤，不能把过滤下推到密文 raw KV。
 16. **space 是 scope 的硬分区维度**：`scope_segments(scope)` 使用 `org/space/user/agent/session` 五段；`scope_dims(scope)` 在 `org` 非空时即使 `space==""` 也下推 `space == ""`，避免空 space 查询跨到非空 space。
 17. **标识唯一性分层**：非空 Space id 在 Space 资源注册表中全局唯一；MemoryUnit 与各 Store 记录 id 只要求在完整 Scope 内唯一。
 18. **SSL 声明即生效**：接外部后端的实现统一接受 `ssl_verify` / `ssl_ca_cert` 两个装配参数（默认关闭）。`ssl_verify` 只表示**是否校验服务端证书**，不负责开启加密——加密开关落在连接串上（`rediss://` / `https://` / `sslmode=`）。开启后不得静默降级：缺证书、连接串仍为明文、或连接串自带会覆盖本设置的 TLS 参数，一律在**装配阶段**报错。
@@ -159,8 +159,8 @@ class BaseStore(ABC):
 
 | 方法 | 行为 |
 |------|------|
-| `insert` / `update` | 构造 `SecurityContext(scope, purpose, metadata)` 与 AAD，调用 `SecurityProvider.encrypt` 后写入 raw KV |
-| `get` / `scan` / `mget` | 从 raw KV 读取密文字节，调用 `SecurityProvider.decrypt` 后返回明文字节；任一解密失败抛 `BackendError`，不跳过坏数据。`mget` 委托 raw 一次性批量取密文（raw 缺失即抛 `NotFoundError`）后**逐项解密**——AAD 绑定 scope+key+purpose，各 key AAD 不同，不能批量统一解密 |
+| `insert` / `update` | 构造 `CryptoContext(scope, purpose, object_id, format_version)` 与 AAD，调用 `CryptographyProvider.encrypt` 后写入 raw KV |
+| `get` / `scan` / `mget` | 从 raw KV 读取密文字节，调用 `CryptographyProvider.decrypt` 后返回明文字节；任一解密失败抛 `BackendError`，不跳过坏数据。`mget` 委托 raw 一次性批量取密文（raw 缺失即抛 `NotFoundError`）后**逐项解密**——AAD 绑定 scope+key+purpose，各 key AAD 不同，不能批量统一解密 |
 | `list` | 扫描目标 Scope 的 `/memory/` 密文并逐条解密，再执行统一过滤、计数、排序和分页；不调用 raw KV 的 `list` |
 | `exists` / `delete` / `scopes` | 直接委托 raw KV，不读取或改写 value |
 
@@ -169,7 +169,7 @@ class BaseStore(ABC):
 | 参数 | 语义 |
 |------|------|
 | `raw_kv_store` | 必填，指向被装饰的 raw KVStore 具名实例或内联配置；不得指向当前 encrypted 实例自身 |
-| `security` | 必填，指向 `common.security.SecurityProvider` 具名实例或内联配置 |
+| `cryptography` | 必填，指向 `common.security.cryptography.CryptographyProvider` 具名实例或内联配置 |
 
 AAD 版本当前为 `1`，绑定 `scope(org/space/user/agent/session)`、KV `key` 与 `purpose`。`purpose` 由 key 前缀推导：`/memory/` 为 `memory_unit`，`/messages/` 为 `raw_message`，其他为 `kv_value`。
 
@@ -237,6 +237,25 @@ GraphStore 只承载 `ASSOCIATE` 等路径产生的语义关联、共指、因�
 | `delete` | `(scope, ref) -> None` | 删除 scope 下 ref 处的文件（幂等） |
 | `get` | `(scope, ref) -> BinaryIO` | 打开 scope 下 ref 处的文件用于读取，由调用方负责关闭 |
 | `stat` | `(scope, ref) -> FileStat` | 返回 scope 下 ref 处文件的元信息 |
+
+#### 加密 FS 装饰器契约
+
+`encrypted` FS target 包装任意 inner FSStore，写入时整体加密文件内容，读取时有界读完整
+密文后整体解密；`delete` 与 `stat` 委托 inner。`ref` 与 Scope 保持可寻址的明文，但二者
+必须进入 AAD。`FileStat.size` 表示 inner 中的密文长度，不承诺等于明文长度。
+
+装配参数：
+
+| 参数 | 语义 |
+|------|------|
+| `inner` | 必填，指向被装饰的 FSStore 具名实例或内联配置；不得指向当前实例自身 |
+| `cryptography` | 必填，指向 CryptographyProvider 具名实例或内联配置 |
+| `max_plaintext_bytes` | 单文件明文硬上限，必须大于等于 1 |
+| `max_ciphertext_bytes` | 密文读取上限；`0` 表示按明文上限加 provider 无关的安全余量计算，负数非法 |
+
+大小检查必须同时覆盖：写入时循环有界读取明文、读取前按 `stat` 快速早拒、真正读取时
+循环有界读取密文，以及解密后再次校验明文。`stat` 不能作为唯一边界，因为它与随后
+`get` 之间存在 TOCTOU 窗口。
 
 ## 数据结构
 

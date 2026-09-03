@@ -19,6 +19,7 @@ from jiuwen_memory.common.security.types import (
     get_current,
     reset_current,
     set_current,
+    validate_actor_form,
 )
 from jiuwen_memory.common.type_def.scope import Scope
 
@@ -201,3 +202,53 @@ def test_authentication_error_is_distinct_from_permission_denied() -> None:
     assert issubclass(AuthenticationError, AgentMemoryError)
     assert not issubclass(AuthenticationError, PermissionDeniedError)
     assert not issubclass(PermissionDeniedError, AuthenticationError)
+
+
+# -- actor 全局形态不变量（IMPL-01 §1） ---------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "actor",
+    [
+        Scope(org="acme", user="alice"),
+        Scope(org="acme", agent="assistant"),
+        Scope(org="acme", space="main", user="alice"),
+        Scope(org="acme", space="main", user="alice", session="s1"),
+        Scope(org="acme", space="main", agent="assistant", session="s1"),
+        Scope(org="system", user="root"),  # ROOT 具名系统主体
+        Scope(org="system", user="dev"),  # DEV 具名系统主体
+    ],
+)
+def test_validate_actor_form_accepts_single_principal_forms(actor: Scope) -> None:
+    """合法形态：org 非空 + user/agent 恰一个 + session 挂在主体下。"""
+    validate_actor_form(actor)
+
+
+@pytest.mark.parametrize(
+    "actor",
+    [
+        Scope(),  # 空 Scope：普通认证主体不能是无内容的身份
+        Scope(user="alice"),  # 无 org
+        Scope(org="acme"),  # 无主体（user/agent 都空）
+        Scope(org="acme", user="alice", agent="bot"),  # 双主体
+        Scope(org="acme", session="s1"),  # 孤立 session：没挂在任何主体下
+    ],
+)
+def test_validate_actor_form_rejects_non_principal_forms(actor: Scope) -> None:
+    """非法形态一律 AuthenticationError（fail-closed）。
+
+    ``Scope(user=..., agent=...)`` 同时非空仍是资源层 principal_path 的合法层级
+    表达，只是不能作为认证 actor。
+    """
+    with pytest.raises(AuthenticationError):
+        validate_actor_form(actor)
+
+
+def test_validate_actor_form_failure_message_is_generic() -> None:
+    """与各 authenticator 的失败消息同口径：不区分具体哪条规则失败。
+
+    失败细分原因对排障的价值，低于作为侧信道对攻击者的价值。
+    """
+    with pytest.raises(AuthenticationError) as exc:
+        validate_actor_form(Scope(org="acme"))
+    assert str(exc.value) == "authentication failed"

@@ -5,10 +5,10 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-08-31 |
+| 最近一次修订日期 | 2026-09-03 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F05-security-api-contracts.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F09-authentication-kernel.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md |
 
 ## Metadata 领域模型契约
 
@@ -23,9 +23,9 @@
 - 核心数据类型定义（MemoryUnit/Scope/Context/Relation 等）
 - 工厂注册机制（Factory/Producer 基础设施）
 - 审计日志（AuditLogger）
-- 数据保护横切接口（SecurityProvider）
+- 安全域横切能力（认证、资源保护与密码学，归 `common/security/`，接口与实装齐备）
 - 跨实例互斥横切接口（LockProvider）
-- 安全域契约（认证/密码学/保护/授权/审计完整性的抽象接口、公共安全值对象、请求上下文受控构造、`SecurityRuntime`；接口先行，实现暂缓）
+- 安全域契约（授权与审计完整性的抽象接口、请求上下文受控构造入口；接口先行，实现分别归 PR2 / PR3）
 - 错误类型（自定义异常）
 - 工具函数（ID 生成/时间解析等）
 
@@ -39,13 +39,16 @@
 
 1. **共享插件必须双侧同一**：Embedder/Tokenizer/FeatureExtractor 等必须在构建侧与检索侧使用同一实现/同一配置，保证同词表/同向量空间。
 2. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
-3. **所有插件必须实现 `plugin_type()` 和 `health()`**：继承自 `Plugin` 基类。
-4. **types.py 零依赖其他文件**：纯数据定义，被全局共享依赖。
+3. **模型插件遵循 `Plugin` 契约**：继承 `Plugin` 的模型插件实现 `plugin_type()` 和
+   `health()`；审计能力实现自己 `base.py` 的接口；认证、资源保护、密码学等安全能力
+   统一归 `common/security/`，实现各自能力域的契约（见 S09）。
+4. **type_def 不依赖能力实现**：`type_def/*.py` 可在目录内引用基础数据类型，但不得
+   import security、audit、storage 等能力实现。
 5. **工厂注册发生在 import 时**：实现文件尾部 `@XxxProducer.register("name")` 绑定构建函数，`__init__.py` 导入实现文件触发注册。
 6. **LLM Provider 参数不上浮到业务层**：厂商专属请求字段只能由对应 Adapter 生成；消费 `LLM` 的算子只传递通用生成选项。
-7. **SecurityProvider 是字节级横切接口**：调用方在持久化字节写入前加密、读取后解密；接口不绑定 `MemoryUnit` 或存储后端，是否启用由装配配置决定。
-8. **安全域接口先行**：`common/security/` 当前只合入 F05 契约层（types / 各能力 base / request_context / runtime），`*_impl` 实现包与 Server lifecycle 接线暂缓；运行链路不启用任何新认证/授权逻辑，旧 `SecurityProvider` 继续从包顶层导出。`security/legacy.py` 是过渡桥，随实装 PR 删除。
-9. **`RequestSecurityContext` 只由受控入口构造**：`security/request_context.py` 的 `new_request_context` / `internal_context` 是唯一构造点——`request_id` 服务端生成、`started_at` 取服务端时钟、`attributes` 只由系统组件写入；实例携带来源绑定，`has_valid_origin()` 判定是否出自受控入口。
+7. **CryptographyProvider 是字节级横切接口**：调用方在持久化字节写入前加密、读取后解密；接口不绑定 `MemoryUnit` 或存储后端，也不决定数据是否应该加密——是否启用由上层选择不同的存储适配器表达。
+8. **授权域与审计完整性接口先行**：`common/security/` 的认证 / 密码学 / 保护三域已实装并接入 Server lifecycle；`authorization/` 的实际接管归 PR2，`audit_integrity/` 归 PR3。PR1 的 `authorization_impl/` 只含 `allow_all` 占位（Runtime 必填 `authorizer` 的有值占位，`is_test_only()` 为真、不做判定；做判定的 `StandardAuthorizer` 随 PR2 合入），`audit_integrity/` 的 `*_impl` 尚未合入。`security/legacy.py` 是过渡桥，随 PR2 `dispatch` 切 `security=` 显式签名一并删除。
+9. **`RequestSecurityContext` 的受控构造入口**：`security/request_context.py` 的 `new_request_context` / `internal_context` 是唯一构造点——`request_id` 服务端生成、`started_at` 取服务端时钟、`attributes` 只由系统组件写入；实例携带来源绑定，`has_valid_origin()` 判定是否出自受控入口。`jiuwen_memory_entry.core.auth_middleware.authenticated()` 已经它构造（PR1）；PEP 侧启用来源校验与进程内调用方改用 `internal_context` 归 PR2——切换顺序必须是先受控构造、后 PEP 校验。
 10. **标识唯一性分层**：非空 Space id 全局唯一；`MemoryUnit.id` 只要求在完整 Scope 内唯一。
 11. **Scope 位置参数兼容**：`space` 可为空但只能按关键字传入；旧位置参数顺序保持
    `Scope(org, user, agent, session)`。
@@ -79,6 +82,10 @@
      `child_scopes` / `parent_scope`）；二者皆缺省时退化为「与本 unit 完整 Scope 相同」。
 16. **层级区间有效**（目标契约，尚未实现）：`span_start`/`span_end` 必须同时为空或同时存在，存在时 `span_start <= span_end`，父区间覆盖直接子区间；`HierarchyKind.TIME` 的所有节点必须有区间。
 17. **引用语义分离**：`provenance` 只表示演进来源，`supersedes` 只表示版本替换，`hierarchy` 只表示结构包含；生命周期归 `LifecycleState`，结构修正状态归 `HierarchyStatus`。
+18. **Scope 保持固定的可变 dataclass 契约**：`Scope` 是跨模块公共结构，PR1/PR2/PR3
+    接口固定后不得在实现 PR 中改成 frozen 或可哈希。安全组件不得跨信任边界复用传入的
+    Scope 引用：认证器、凭据 Store 和请求上下文必须按需创建防御性副本/来源绑定，防止
+    「签发 key 后改原 actor，使已签发身份跟着变」的跨请求污染。
 
 ## 接口契约
 
@@ -185,19 +192,24 @@ opt-in 的 `audit_integrity` 能力（见上文安全域契约表），经 `Prot
 `provider.chain_store() is audit_logger`，以对象 identity 强制“记链与查询同一存储”的
 不变量，不能只依赖具名配置或注释。
 
-### SecurityProvider（`security/security.py`）
+### CryptographyProvider（`security/cryptography/base.py`）
 
-数据保护横切接口。调用方以 bytes 为边界接入：写入持久化字节前调用 `encrypt`，读取持久化字节后调用 `decrypt`。接口只表达数据保护能力，不绑定 `MemoryUnit` 序列化、不绑定 KV 后端、不决定是否默认启用加密。
+数据保护横切接口。调用方以 bytes 为边界接入：写入持久化字节前调用 `encrypt`，读取持久化字节后调用 `decrypt`。接口只表达数据保护能力，不绑定 `MemoryUnit` 序列化、不绑定 KV 后端、不决定是否启用加密。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `encrypt` | `(plaintext: bytes, *, context: SecurityContext | None = None, aad: bytes = b"") -> bytes` | 加密明文字节，可结合 scope / purpose / metadata 与 AAD 做租户隔离和完整性保护 |
-| `decrypt` | `(ciphertext: bytes, *, context: SecurityContext | None = None, aad: bytes = b"") -> bytes` | 解密密文字节并校验完整性 |
+| `encrypt` | `(plaintext: bytes, *, context: CryptoContext, aad: bytes = b"") -> bytes` | 加密明文字节，结合 scope / purpose / object_id / 格式版本与 AAD 做租户隔离和完整性保护 |
+| `decrypt` | `(ciphertext: bytes, *, context: CryptoContext, aad: bytes = b"") -> bytes` | 解密密文字节并校验完整性；失败一律抛错，绝不返回原始 bytes |
 | `health` | `() -> None` | 存活探测；默认返回 `None`，具体实现可覆盖并抛出健康检查异常 |
 
-`SecurityProducer.TOP_NAME` 为 `security`。具体 provider 的实现列表、target 名与
+`context` 是**必填 keyword 参数**：AAD 绑定的隔离维度不能靠调用方"忘了传"退化成无绑定。
+
+密钥一律经 `KeyProvider`（`security/cryptography/key_provider.py`，`TOP_NAME` 为
+`key_provider`）取得，实现不得自己读环境变量或配置文件里的根密钥。
+
+`CryptographyProducer.TOP_NAME` 为 `cryptography`。具体 provider 的实现列表、target 名与
 私有配置参数归 `jiuwen_memory/common/AGENTS.md` 与对应 feature 文档记录；本 spec 只固化
-接口、上下文和错误语义。
+接口、上下文和错误语义，安全侧的装配不变量见 S09。
 
 ### LockProvider（`lock/lock.py`）
 
@@ -216,23 +228,24 @@ opt-in 的 `audit_integrity` 能力（见上文安全域契约表），经 `Prot
 `LockProducer.TOP_NAME` 为 `lock`，**不设默认实现**——消费方必须显式配置，避免漏配时
 静默退化成不跨实例的单机锁。
 
-### 安全域契约（`security/`，接口先行）
+### 安全域契约（`security/`）
 
-F05 公共安全架构的契约层（认证 / 密码学 / 保护 / 授权 / 审计完整性 / Runtime 与公共安全值对象），
-**只固定接口，实现暂缓**。设计与过渡期语义见
+F05 公共安全架构的契约层（认证 / 密码学 / 保护 / 授权 / 审计完整性 / Runtime 与公共安全值对象）。
+认证 / 密码学 / 保护三域已实装并接入 Server lifecycle；授权（PR2）与审计完整性（PR3）
+**只固定接口，实现待各自实装 PR**。设计与过渡期语义见
 `docs/features/common/F05-security-api-contracts.md`。
 
 | 子包/模块 | 契约 | 语义 |
 |---|---|---|
-| `security/types.py` | `Credentials` / `AuthContext` / `RequestSecurityContext` / `CryptoContext` / `Grant` / `Action` / `Role` / `Surface` | 协议无关的公共安全值对象与身份传播原语；`RequestSecurityContext` 是 `MemoryAPI` 公开方法的显式安全输入 |
-| `security/request_context.py` | `new_request_context` / `internal_context` | `RequestSecurityContext` 的受控构造入口（见不变量 9）；`internal_context` 的 authenticator 必填，进程内直连不得自述身份 |
+| `security/types.py` | `Credentials` / `AuthContext` / `RequestSecurityContext` / `CryptoContext` / `Grant` / `Action` / `Role` / `Surface` | 协议无关的公共安全值对象与身份传播原语；`RequestSecurityContext` 是 `MemoryAPI` 公开方法的显式安全输入（PR1 已切到 `security=` 签名） |
+| `security/request_context.py` | `new_request_context` / `internal_context` | `RequestSecurityContext` 的受控构造入口（见不变量 9）；PR1 的认证中间件已经它构造，PEP 侧的来源校验与进程内调用方迁移归 PR2。`internal_context` 的 authenticator 必填，进程内直连不得自述身份 |
 | `security/authentication/` | `Authenticator` / `PrincipalKeyStore` / `CredentialStatusRegistry` | 认证：凭据 -> `AuthContext`；key 真源与凭据状态 |
-| `security/authorization/` | `Authorizer` / `RoutingFieldsProvider` / `GrantStore` / `DelegationStore` / `scope_covers` | 授权判定契约与授权真源；两代授权接口共享路由字段 capability；`grant_id` 是存储主键，撤销按 ID 且软撤销 |
+| `security/authorization/` | `Authorizer` / `RoutingFieldsProvider` / `GrantStore` / `DelegationStore` / `scope_covers` | 授权判定契约与授权真源（PR2 实装）；两代授权接口共享路由字段 capability；`grant_id` 是存储主键，撤销按 ID 且软撤销 |
 | `security/cryptography/` | `CryptographyProvider` / `KeyProvider` | 密码学能力与密钥提供方 |
 | `security/protection/` | `RateLimiter` / `WorkloadGuard` / `BindingPolicy` | 入口限流、昂贵操作并发预算与绑定策略 |
 | `security/audit_integrity/` | `AuditIntegrityProvider` / `ChainedAuditStore` / `AuditAnchor` / `AnchorStatus` / `Proof` / `AuditVerificationLimits` / `AuditVerificationResult` | 审计链完整性契约（PR3）：链式 HMAC 证明、六布尔 `ChainStoreCapability` 行为声明与有界流式验证；`AnchorStatus` 固定锚点核对取值域并与 `AnchorState.checked` 交叉校验；`read_stable_snapshot(after_sequence)` 原子取得增量 checkpoint 与固定链头，`scan(..., through_sequence=快照链头)` 排除并发追加；可信 limits 与代码硬上限共同限制单页读取和 samples；`AuditLogger` 基类不加完整性默认方法，capability 不从 target 名推断 |
-| `security/runtime.py` | `SecurityRuntime` | 跨能力装配根（authenticator / authorizer / crypto / protection / audit_integrity） |
-| `security/legacy.py` | `legacy_request_context` | **过渡桥**：把旧调用方的 identity `Scope` 包成 `RequestSecurityContext`；假认证，随实装 PR 删除 |
+| `security/runtime.py` | `SecurityRuntime` | 跨能力装配根（authenticator / protection 必填、crypto 与 audit_integrity 为可选装配位并纳入健康检查；必填 authorizer 在 PR1 装 `allow_all` 占位——`is_test_only()` 为真、不做判定，做判定的 `StandardAuthorizer` 随 PR2 合入） |
+| `security/legacy.py` | `legacy_request_context` | **过渡桥**：把调用方手上的 `Scope` 包成 `RequestSecurityContext`（role / credential 为占位值；actor 来自认证上下文而非 payload），随 PR2 `dispatch` 切 `security=` 显式签名删除 |
 
 `Grant` 保留旧公共构造形状：调用方只传 `grantor` / `grantee` / `actions` 即可，
 `grant_id` 默认留空并由目标管理面服务生成。`actions` 在构造时统一冻结为
@@ -256,7 +269,7 @@ F05 公共安全架构的契约层（认证 / 密码学 / 保护 / 授权 / 审�
 | `Segment` | type / content / asset_ref / metadata | 内容段 |
 | `Temporal` | t_event / t_ingest / t_valid / t_invalid | 时间字段 |
 | `Relation` | id / source_id / target_id / relation / weight / metadata | 关联关系 |
-| `Scope` | org / space / user / agent / session | 作用域；非空 `space` 是全局唯一逻辑隔离标识，空值为兼容域且该字段为 keyword-only |
+| `Scope` | org / space / user / agent / session | 作用域（可变 dataclass，保持已固定公共契约）；非空 `space` 是全局唯一逻辑隔离标识，空值为兼容域且该字段为 keyword-only。安全边界不得复用不可信调用方持有的同一对象（见不变量 18） |
 | `Context` | scope / max_tokens / extensions | 检索上下文 |
 | `Entity` | text / type / confidence | 实体 |
 | `FeatureSet` | keywords / entities / tags | 特征集合 |
@@ -267,8 +280,20 @@ F05 公共安全架构的契约层（认证 / 密码学 / 保护 / 授权 / 审�
 | `FilterGroup` | logic / children | AND / OR / NOT 逻辑节点 |
 | `FilterExpr` | FilterClause \| FilterGroup | 跨 API、检索和存储层的过滤树 |
 | `matches_memory_unit` | `(MemoryUnit, FilterExpr \| None) -> bool` | retrieval 真源复核和 KV list 共用的 MemoryUnit 字段投影与过滤求值 |
-| `AuditEvent` | id / timestamp / actor / target / action / target_id / layer / detail | 审计事件；`actor` 与 `target` 均为 Scope，支持 actor_* 与 target_* 字段过滤 |
-| `SecurityContext` | scope / purpose / metadata | 一次加密/解密调用的安全上下文 |
+| `AuditEvent` | id / actor / target / action / target_id / layer / decision / occurred_at / detail | 审计事件；`actor` 与 `target` 均为 Scope，支持 actor_* 与 target_* 字段过滤；`detail` 可承载 `acting_user` / `role` / `credential_id` / `auth_method` 等认证审计字段 |
+
+### 安全类型（`security/types.py`）
+
+请求身份与加密上下文归安全域，不再住 `type_def/`——`type_def` 是被所有层 import 的
+基础类型，安全类型放进去会让「谁能改身份」的边界消失。字段语义与不变量见 S09。
+
+| 类型 | 关键字段 | 语义 |
+|------|----------|------|
+| `AuthContext` | actor / role / credential_type / credential_id / auth_method / credential_issuer / credential_status_required / authenticated_at / expires_at / delegation_id | 认证层产出的可信身份（`frozen=True`）；认证只回答「你是谁」——故意**不带** `acting_user` 之类的授权结果字段，委托由 `delegation_id` 携带服务端已验证的标识、由 `Authorizer` 回 `DelegationStore` 复核；`credential_issuer` 与撤销 capability 属 PR1 |
+| `RequestSecurityContext` | auth / request_id / peer / surface / started_at / attributes | 把可信身份绑定到一次具体请求；公开 `MemoryAPI` 签名已在 PR1 切到 `security: RequestSecurityContext` 必填（接口先行合入），但 `dispatch` 与进程内调用方仍收 `Scope`，用 `legacy_request_context` 过渡桥包装，随 PR2 切 `security=` 显式签名一并删除 |
+| `CryptoContext` | scope / purpose / object_id / format_version / metadata | 一次加解密调用的安全上下文；前四项进 AAD |
+| `Credentials` | api_key / headers / peer_address | 认证输入的原始凭据材料（`repr` 不打印敏感字段） |
+| `Role` / `Surface` | 见 S09 | 服务端角色注册表与接入形态枚举 |
 
 ### 枚举（`type_def/memory.py`）
 
@@ -398,7 +423,8 @@ hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
 | `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` | `embedder` / `chunker` / `tokenizer` |
 | `IndexBuilderProducer` / `RecallerProducer` | `constructor` / `recaller` |
 | `NormalizerProducer` / `VideoAsrProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` | `normalizer` / `asr` / `feature_extractor` / `llm` / `reranker` |
-| `AuditProducer` / `SecurityProducer` / `LockProducer` | `audit` / `security` / `lock` |
+| `AuditProducer` / `LockProducer` | `audit` / `lock` |
+| 安全域各 Producer（`SecurityRuntimeProducer` / `AuthProducer` / `KeyStoreProducer` / `RateLimitProducer` / `WorkloadGuardProducer` / `BindingPolicyProducer` / `CryptographyProducer` / `KeyProviderProducer`） | 见 S09 |
 
 #### Factory 基类
 
@@ -459,9 +485,9 @@ def _build(config: ComponentConfig) -> Embedder:
 - `reset_all()` 清空缓存（隔离多次装配 / 测试隔离）
 
 各 Producer 继承 `Factory`：
-- `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` / `NormalizerProducer` / `VideoAsrProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditProducer` / `SecurityProducer`
+- `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` / `NormalizerProducer` / `VideoAsrProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditProducer`，以及 `common/security/` 下的安全域 Producer（见 S09）
 
-## 错误类型（`errors.py` / `security.py` / `lock.py`）
+## 错误类型（`errors.py` / `security/cryptography/base.py` / `lock.py`）
 
 | 异常 | 含义 |
 |------|------|
@@ -471,7 +497,7 @@ def _build(config: ComponentConfig) -> Embedder:
 | `PolicyError` | 策略错误（未知键/不可变配置） |
 | `BackendError` | 后端不可用 |
 | `HealthCheckError` | 健康检查失败 |
-| `SecurityError` / `EncryptionError` | 安全横切处理失败的基类 |
+| `CryptographyError` | 加密或解密处理失败的基类 |
 | `LockError` | 锁相关异常的基类 |
 | `LockTimeoutError` | 有界等待耗尽仍未获得锁 |
 | `LockLostError` | 租约续期失败、持有权已失效（由消费方按需抛出） |
@@ -484,13 +510,18 @@ def _build(config: ComponentConfig) -> Embedder:
 
 ```
 jiuwen_memory/common/<组件>/
-    base.py | <name>.py     # 接口 + Producer（横切组件用 <name>.py，如 security.py / lock.py）
+    base.py | <name>.py     # 接口 + Producer（横切组件用 <name>.py，如 lock.py；安全域在 security/ 子包内分层）
     <组件>_impl/
         __init__.py         # 重导出实现类
         <impl_class_snake>.py   # 具体实现 + 尾部 @XxxProducer.register("name")
 ```
 
-注册由 `common.bootstrap.register_plugins` 统一触发。`security_impl/` 当前注册 `local` SecurityProvider 实现，`lock_impl/` 注册 `redis` 与 `memory` 两个 LockProvider 实现。
+安全能力多一层能力域：`src/common/security/<能力域>/{base.py, <能力域>_impl/}`。
+
+注册由 `common.bootstrap.register_plugins` 统一触发（安全域的注册入口是
+`common.security.bootstrap.register_security`）。`cryptography_impl/` 当前注册 `local`
+CryptographyProvider 与 `local` KeyProvider。
+`lock_impl/` 注册 `redis` 与 `memory` 两个 LockProvider 实现。
 
 ## 与其它 spec 的关系
 
@@ -501,6 +532,7 @@ jiuwen_memory/common/<组件>/
 | S04-retrieval | 检索层消费 Embedder/Tokenizer/FeatureExtractor/LLM/Reranker |
 | S05-construction | 构建层消费 Chunker/Embedder/Tokenizer/FeatureExtractor/LLM |
 | S06-storage | 存储层依赖本层的数据类型定义（Scope/FilterClause 等） |
+| S09-security | 约束 PR1 认证、保护、密码学 capability，配置选择与启动安全不变量 |
 | S08-config | 插件晚绑定 model/api_key/url 等由 ConfigSource 提供；装配拓扑仍走 Factory |
 | F07-collective-memory | 保留键与瞬态键集合扩充（已落地）；两轴角色与身份推导落 `security/space_roles.py` 与 `security/principal.py`（已落地）；空间授权事实经安全层资源描述对象的结构化字段传入判定实现 |
 | architecture.md 全文 | 本层承载全局共享的数据类型与工具 |

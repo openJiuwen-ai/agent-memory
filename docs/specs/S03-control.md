@@ -1,11 +1,11 @@
-# S03 — 控制层（Control Layer）
+﻿# S03 — 控制层（Control Layer）
 
 ## 元信息
 
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-08-29 |
+| 最近一次修订日期 | 2026-09-02 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md |
@@ -40,7 +40,7 @@
 
 1. **引擎不实现具体算法能力**：`MemoryEngine` 只编排，Ingestor/构建算子/Retriever/Store 全部由装配注入；可通过 Store 抽象完成真源语义，但不得绑定具体后端或直接调用 LLM。
 2. **引擎方法一律异步协程**：同步调用由 `jiuwen_memory/api` 层自行桥接（`asyncio.run`），engine 内不做同步阻塞。
-3. **鉴权不在本层执行**：`PermissionManager.check` 由 `jiuwen_memory/api/MemoryAPI` 在入口调用，engine 信任传入的 scope 已鉴权。禁止在 engine 内部重复 check。
+3. **鉴权不在本层执行**：`PermissionManager.check/decide(actor, target, action, context)` 由 `jiuwen_memory/api/MemoryAPI` 在入口调用（安全域 PR1 曾试图给 `check/decide` 增加 keyword-only `auth: AuthContext | None`，经上游复审查已回退——判定仍走 `actor: Scope`），engine 信任传入的 scope 已鉴权。禁止在 engine 内部重复 check。
 4. **LifecycleManager 只做非破坏式标记**：`transition` 标记状态（superseded/archived/forgotten），绝不物理删除。物理删除（purge）走 Engine 的 `delete` 路径 + `DeleteMode.PURGE`。
 5. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。`*_impl/` 通过 Producer 自注册后被外部装配消费，不被顶层接口引用。
 6. **types.py 零依赖本层其他文件**：纯数据定义，被本层各接口和 `jiuwen_memory/api/` 共同依赖。

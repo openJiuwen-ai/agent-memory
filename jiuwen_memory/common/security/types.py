@@ -1,10 +1,12 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """安全域公共值对象（F05「公共安全类型」）。
 
 本模块只放**协议无关、跨能力共享**的值对象与身份传播原语：认证输入
 （:class:`Credentials`）、认证产出（:class:`AuthContext`）、请求安全上下文
 （:class:`RequestSecurityContext`）、授权输入（:class:`Action`、
 :class:`ResourceDescriptor`、:class:`AuthorizationEnvironment`、:class:`Grant`、
-:class:`Delegation`）、密码学调用上下文（:class:`CryptoContext`）。
+:class:`Delegation`）、密码学调用上下文（:class:`CryptoContext`），以及认证边界共用的
+actor 形态校验（:func:`validate_actor_form`）与 secret 持有者（:class:`SecretValue`）。
 
 不放什么（F05 §公共安全类型）：
 
@@ -30,6 +32,7 @@ from datetime import datetime
 from enum import Enum
 from types import MappingProxyType
 
+from jiuwen_memory.common.errors import AuthenticationError
 from jiuwen_memory.common.type_def.scope import Scope
 
 # ====================================================================== #
@@ -143,6 +146,37 @@ class AuthContext:
         return reference >= self.expires_at
 
 
+_ACTOR_FORM_FAILED = "authentication failed"
+
+
+def validate_actor_form(actor: Scope) -> None:
+    """校验 ``AuthContext.actor`` 的全局单主体形态不变量（IMPL-01 §1）。
+
+    ``actor`` 只表达**已经认证的实际执行者**，规则对所有认证模式统一生效--内置的
+    API Key、Trusted、DEV、Root Key，也包括第三方 ``Authenticator``：
+
+    - ``org`` 必须非空（部署级凭据用 ``org="system"``）；
+    - ``session`` 若非空，必须挂在已确定的主体下（有 ``user`` 或 ``agent``）；
+    - ``user`` 与 ``agent`` 必须且只能有一个非空。
+
+    普通认证主体不能是空 ``Scope()``；``Scope(user=..., agent=...)`` 同时非空仍是
+    资源层 ``principal_path`` 的合法层级表达，只是**不作为**认证 actor 的规范形态。
+
+    校验在认证边界（``jiuwen_memory_entry.core.auth_middleware.authenticated``）统一执行：
+    第三方认证器产出的非法 actor 也会在这里 fail-closed，无法借道进入授权。PR2 的
+    受控上下文入口（``new_request_context`` / ``internal_context``）复用本函数。
+
+    :raises AuthenticationError: 形态非法。消息与各 authenticator 一致保持笼统，
+        不区分具体哪条规则失败--失败细分原因对排障的价值，低于对攻击者的价值。
+    """
+    if not actor.org:
+        raise AuthenticationError(_ACTOR_FORM_FAILED)
+    if actor.session and not (actor.user or actor.agent):
+        raise AuthenticationError(_ACTOR_FORM_FAILED)
+    if bool(actor.user) == bool(actor.agent):
+        raise AuthenticationError(_ACTOR_FORM_FAILED)
+
+
 # ====================================================================== #
 # 请求安全上下文
 # ====================================================================== #
@@ -240,7 +274,7 @@ class RequestSecurityContext:
 
     ``MemoryAPI`` 公开方法的**唯一显式安全输入**——业务 payload 中不存在
     ``identity`` / ``actor_*`` / ``role`` / ``acting_user`` 身份声明。由
-    ``bootstrap.core.auth_middleware.authenticated`` 在认证后构造，经参数一路传到
+    ``jiuwen_memory_entry.core.auth_middleware.authenticated`` 在认证后构造，经参数一路传到
     PEP；不经 ContextVar（那条通道已降级为日志辅助，见 :func:`set_current`）。
 
     ``attributes`` 只允许系统组件写入：它参与 ``AuthorizationEnvironment``，能从业务
@@ -554,6 +588,49 @@ class CryptoContext:
     object_id: str = ""  # 对象标识（KV key / FS ref）
     format_version: int = 1  # AAD 载荷格式版本
     metadata: Mapping[str, str] = field(default_factory=dict)
+
+
+# 带 secret 语义的配置参数名（F05 装配不变量 7）：配置解析期按此包裹 SecretValue /
+# 脱敏 repr。新增 secret 配置项须同步登记在这里（kernel 路径与 bootstrap 路径共用）。
+SECRET_PARAM_KEYS = frozenset(
+    {"root_api_key", "gateway_key", "key_hex", "key_b64", "shared_secret"}
+)
+
+
+class SecretValue:
+    """明文 secret 的持有者（F05 装配不变量 7：secret 不进可打印配置对象）。
+
+    配置解析期把已知 secret 参数包成本类型再进 :class:`~config.context.RawSpec`：
+    ``repr`` / ``str`` 只给 sha256 短指纹，异常诊断与 debug 输出因此看不到明文。
+    消费方在装配边界经 :func:`reveal_secret` 取回明文；对普通字符串值则原样透传，
+    直接构造 :class:`~config.context.RawSpec` 的旧路径不受影响。
+    """
+
+    __slots__ = ("_value", "_fingerprint")
+
+    def __init__(self, value: str) -> None:
+        self._value = value
+        self._fingerprint = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12] if value else ""
+
+    def reveal(self) -> str:
+        """取回明文：只在装配/认证边界调用，不进日志。"""
+        return self._value
+
+    def __repr__(self) -> str:
+        if not self._fingerprint:
+            return "<SecretValue empty>"
+        return f"<SecretValue sha256:{self._fingerprint}>"
+
+    __str__ = __repr__
+
+
+def reveal_secret(value: object) -> str:
+    """装配边界取 secret 明文：SecretValue 解包，其余按 str 透传（空值归空串）。"""
+    if value is None:
+        return ""
+    if isinstance(value, SecretValue):
+        return value.reveal()
+    return str(value)
 
 
 # ====================================================================== #

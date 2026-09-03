@@ -113,7 +113,7 @@ def scope_covers(
             if parent_value != child_value:
                 return False
             continue
-        if any(getattr(parent, later) for later in order[index + 1:]):
+        if any(getattr(parent, later) for later in order[index + 1:]):  # fmt: skip
             return False
         return True
     return True
@@ -288,9 +288,7 @@ class SQLitePermissionManager(PermissionManager):
         for row in rows:
             grantee = _row_scope(row, "grantee")
             grantor = _row_scope(row, "grantor")
-            if scope_covers(grantee, actor, context) and scope_covers(
-                grantor, target, context
-            ):
+            if scope_covers(grantee, actor, context) and scope_covers(grantor, target, context):
                 return True
         return False
 

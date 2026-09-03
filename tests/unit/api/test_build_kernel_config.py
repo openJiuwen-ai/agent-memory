@@ -15,10 +15,11 @@ from jiuwen_memory.common.audit.base import AuditProducer
 from jiuwen_memory.common.errors import BackendError, PermissionDeniedError, ValidationError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.security.audit_integrity.base import AuditVerificationLimits
-from jiuwen_memory.common.security.legacy import legacy_request_context
-from jiuwen_memory.common.security.security_impl.local_envelope_security_provider import (
-    LocalEnvelopeSecurityProvider,
+from jiuwen_memory.common.security.cryptography.cryptography_impl.local_envelope import (
+    LocalEnvelopeCryptographyProvider,
 )
+from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security.types import AuthContext
 from jiuwen_memory.common.type_def import Context, Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.context import AssemblyContext, ComponentConfig
@@ -26,9 +27,18 @@ from jiuwen_memory.config.defaults import default_config_dict
 from jiuwen_memory.construction.router import RouterProducer, optional_router
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.permission import PermissionManager, PermissionProducer
+from jiuwen_memory.control.permission_impl.allow_all_permission_manager import (  # noqa: E402
+    AllowAllPermissionManager,
+)
+from jiuwen_memory.control.permission_impl.sqlite_permission_manager import (  # noqa: E402
+    SQLitePermissionManager,
+)
 from jiuwen_memory.control.types import Action, Grant, PermissionContext
 from jiuwen_memory.storage.kv_impl.encrypted_kv_store import EncryptedKVStore
 from jiuwen_memory.storage.vector import VectorProducer
+
+# 本文件验证装配出来的具体权限实现及 Factory 注册完整性，需要读取受保护状态。
+# pylint: disable=protected-access
 
 SCOPE = Scope(org="o", user="u")
 
@@ -65,6 +75,8 @@ class _DenyAllPermission(PermissionManager):
         target: Scope,
         action: Action,
         context: PermissionContext | None = None,
+        *,
+        auth: AuthContext | None = None,
     ) -> bool:
         return False
 
@@ -88,9 +100,24 @@ def test_default_assembly_allows_write() -> None:
     """无 config：内置默认 owner-only sqlite ACL，owner 写入放行、可召回。"""
     api = assemble()
     units = api.add("hello", SCOPE, security=legacy_request_context(SCOPE))
-    assert units and api.search(
-        "hello", Context(SCOPE), security=legacy_request_context(SCOPE)
-    ).items
+    assert (
+        units and api.search("hello", Context(SCOPE), security=legacy_request_context(SCOPE)).items
+    )
+
+
+def test_default_assembly_perm_is_sqlite_not_allow_all() -> None:
+    """公共 ``assemble`` / ``build_kernel`` 的默认权限实现是 sqlite，不是 DEV 覆写的 allow_all。
+
+    第四次验收 SDK-SCOPE-01 的修复落点：DEV 兼容覆写只在 ``Server.build`` 注入，
+    公共内核入口的默认权限保持 ``defaults.py`` 里的 ``permission.default=sqlite``。
+    """
+    api = assemble()
+    assert isinstance(api._perm, SQLitePermissionManager)
+    assert not isinstance(api._perm, AllowAllPermissionManager)
+
+    kernel = build_kernel()
+    assert isinstance(kernel.api._perm, SQLitePermissionManager)
+    assert not isinstance(kernel.api._perm, AllowAllPermissionManager)
 
 
 def test_default_audit_config_uses_in_memory_sqlite() -> None:
@@ -255,18 +282,19 @@ def test_default_assembly_does_not_wrap_kv() -> None:
     assert not isinstance(kernel.kv, EncryptedKVStore)
 
 
-def test_security_namespace_params_apply_on_encrypted_kv_target() -> None:
-    """security.default.params 经 opt-in encrypted KV target 生效（allow_plaintext/key_hex）。"""
+def test_cryptography_namespace_params_apply_on_encrypted_kv_target(tmp_path) -> None:
+    """cryptography.default.params 经 opt-in encrypted KV target 生效（key_hex）。"""
     key_hex = "a" * 64
     cfg = Config.from_dict(
         {
-            "security": {
+            "cryptography": {
                 "default": {
                     "target": "local",
                     "params": {
-                        "allow_plaintext": False,
-                        "key_hex": key_hex,
-                        "create_key_file": False,
+                        "key_provider": {
+                            "target": "local",
+                            "params": {"key_hex": key_hex, "key_file": ""},
+                        }
                     },
                 }
             },
@@ -274,17 +302,50 @@ def test_security_namespace_params_apply_on_encrypted_kv_target() -> None:
                 "raw": {"target": "sqlite", "params": {"db_path": ":memory:"}},
                 "default": {
                     "target": "encrypted",
-                    "params": {"raw_kv_store": "raw", "security": "default"},
+                    "params": {"raw_kv_store": "raw", "cryptography": "default"},
                 },
             },
         }
     )
     kernel = build_kernel(config=cfg)
-    security = getattr(kernel.kv, "_security")
-    assert isinstance(security, LocalEnvelopeSecurityProvider)
-    assert getattr(security, "_allow_plaintext") is False
-    assert getattr(getattr(security, "_key_provider"), "_key_hex") == key_hex
+    encryption = getattr(kernel.kv, "_encryption")
+    assert isinstance(encryption, LocalEnvelopeCryptographyProvider)
+    assert getattr(getattr(encryption, "_key_provider"), "_key_hex") == key_hex
 
     getattr(kernel.kv, "_raw").insert(SCOPE, "plain_key", b"hello-plaintext")
     with pytest.raises(BackendError):
         kernel.kv.get(SCOPE, "plain_key")
+
+
+def _fully_registered_context() -> AssemblyContext:
+    """全部插件注册后的默认装配上下文（build_kernel 同序，不实际装配）。"""
+    from jiuwen_memory.api.memory_api_impl.assembly import _register_all
+
+    _register_all()
+    return AssemblyContext.from_dict(
+        default_config_dict(), known_top_names=Factory.known_top_names()
+    )
+
+
+def test_default_config_declares_no_security_namespace() -> None:
+    """
+    AUTH-ENC-07：内核默认不再声明装不出来的 security 段（SecurityRuntimeProducer
+    只有 standard target，旧的 `security.default=local` 是迁移残留）。安全运行时
+    由部署显式配置，bootstrap 层 build_security_runtime 负责。
+    """
+    ctx = _fully_registered_context()
+    assert "security" not in ctx.namespaces
+
+
+def test_default_config_every_namespace_is_buildable() -> None:
+    """
+    AUTH-ENC-07：default_config_dict 的每个具名实例声明的 target 都须已注册--
+    「内置默认装配失败」是迁移未完成的信号，不能留给用户配置去掩盖。
+    """
+    ctx = _fully_registered_context()
+    for top_name, instances in ctx.namespaces.items():
+        producer_cls = Factory._by_top_name[top_name]
+        for inst_name, spec in instances.items():
+            assert spec.target in producer_cls._registry, (
+                f"{top_name}.{inst_name} 声明 target {spec.target!r} 未注册"
+            )

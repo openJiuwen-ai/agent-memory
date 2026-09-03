@@ -45,12 +45,10 @@ def default_config_dict() -> dict[str, Any]:
         "prompts": _PROMPTS_DEFAULT,
         # -- 存储（有状态，必须对象共享）-------------------------------------- #
         "kv_store": {_D: "memory"},
-        # 安全 provider：默认声明为 local 信封加密（AES-256-GCM），仅供 opt-in encrypted KV 引用。
-        # F04 §5.4：默认装配不强制包装 EncryptedKVStore；用户配 kv_store.default.target=encrypted
-        # 时由 @KvProducer.register("encrypted") builder 经 SecurityProducer.dep(config) 取此实例。
-        # local provider 的 create_key_file 默认 False：未注入密钥源且 key_file
-        # 不存在时装配 fail-closed。
-        "security": {_D: "local"},
+        # 不声明 security 段（AUTH-ENC-07）：SecurityRuntime 由部署显式配置
+        # （bootstrap 层 build_security_runtime），内核默认不隐式选择；加密同理，
+        # 用户配 kv_store.default.target=encrypted 时须自带 cryptography/key_provider
+        # 段（F04 §5.4：默认装配不强制包装 EncryptedKVStore）。
         "vector_store": {
             _D: "memory",
             # L0/L1 分表（与构建侧同命名 layers_l0/l1；同后端不同 collection）
@@ -76,7 +74,7 @@ def default_config_dict() -> dict[str, Any]:
                     # 召回路装配：CompositeStorage 按能力开关（vector_enabled /
                     # graph_enabled / layers_index_enabled，回退 globals）启用各
                     # recaller，构建期同步组装。layers_index_enabled 默认 true
-                    #（与构建侧对齐：默认建默认查）；不在 params 硬编码，让 get
+                    # （与构建侧对齐：默认建默认查）；不在 params 硬编码，让 get
                     # 回退 globals，便于全局关停。
                     "keyword_recaller": "keyword",
                     "vector_recaller": "vector",
@@ -244,17 +242,15 @@ def default_config_dict() -> dict[str, Any]:
                     "index_builder": _D,
                     "llm": _D,
                     # MiddleToLongJob 业务参数
-                    "middle_max_fetch": 100,    # _list_working_units 取最近 N 条
-                    "middle_batch_size": 10,    # 连续性切批上限
-                    "middle_concurrency": 4,    # 批间并发（1=串行）
+                    "middle_max_fetch": 100,  # _list_working_units 取最近 N 条
+                    "middle_batch_size": 10,  # 连续性切批上限
+                    "middle_concurrency": 4,  # 批间并发（1=串行）
                 },
             }
         },
         # scheduler 只接收 Job（Job 自带数据源），无 params。
         "scheduler": {_D: {"target": "in_process", "params": {}}},
-        "ingest_job": {
-            _D: {"target": "in_process", "params": {"kv_store": _D}}
-        },
+        "ingest_job": {_D: {"target": "in_process", "params": {"kv_store": _D}}},
         "lifecycle": {_D: {"target": "kv", "params": {"storage": _D, "policy": _D}}},
         "policy": {_D: "dict"},
         "governor": {_D: {"target": "in_memory", "params": {"audit": _D, "storage": _D}}},
@@ -278,7 +274,6 @@ ROOT_PARAMS: dict[str, str] = {
     "governor": _D,
     "audit": _D,
     "kv_store": _D,
-    "security": _D,
     "storage": _D,
     "space": _D,
     "membership": _D,

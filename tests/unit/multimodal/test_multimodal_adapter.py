@@ -4,6 +4,7 @@ import importlib
 import json
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -28,6 +29,7 @@ from jiuwen_memory.common.normalizer.normalizer_impl.video_asr import (
 )
 from jiuwen_memory.common.normalizer.normalizer_impl.video_normalizer import VideoNormalizer
 from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security.types import AuthContext, Role, reset_current, set_current
 from jiuwen_memory.common.type_def import (
     Context,
     FilterClause,
@@ -52,6 +54,20 @@ if str(_BOOTSTRAP_CORE) not in sys.path:
 handler = importlib.import_module("handler")
 
 pytestmark = pytest.mark.unit
+
+
+@contextmanager
+def _as(actor: Scope):
+    """以 ``actor`` 的身份发起请求（等价于中间件认证通过后的状态）。
+
+    `handler._identity()` 只认认证上下文（身份铁律 #1），不设上下文时 fail-closed
+    抛 401，测不到各用例真正关心的校验与鉴权分支。
+    """
+    token = set_current(AuthContext(actor=actor, role=Role.USER))
+    try:
+        yield
+    finally:
+        reset_current(token)
 
 
 class _JsonResponse:
@@ -87,9 +103,7 @@ def test_dashscope_get_retries_transient_http_errors(monkeypatch) -> None:
                 {
                     "output": {
                         "task_status": "SUCCEEDED",
-                        "result": {
-                            "transcription_url": "https://oss.example/result.json"
-                        },
+                        "result": {"transcription_url": "https://oss.example/result.json"},
                     }
                 },
             ),
@@ -111,9 +125,7 @@ def test_dashscope_get_retries_transient_http_errors(monkeypatch) -> None:
     monkeypatch.setattr(requests, "request", fake_request)
     monkeypatch.setattr(video_asr.time, "sleep", lambda _seconds: None)
 
-    assert _dashscope_asr().transcribe(
-        Path("audio.wav"), language=None, chunk_seconds=600
-    ) == []
+    assert _dashscope_asr().transcribe(Path("audio.wav"), language=None, chunk_seconds=600) == []
     task_calls = [call for call in calls if call[1].endswith("/tasks/task-1")]
     assert len(task_calls) == 3
 
@@ -126,9 +138,7 @@ def test_dashscope_get_retries_transient_http_errors(monkeypatch) -> None:
         _JsonResponse(503, {}),
     ],
 )
-def test_dashscope_post_does_not_retry_ambiguous_failure(
-    monkeypatch, failure
-) -> None:
+def test_dashscope_post_does_not_retry_ambiguous_failure(monkeypatch, failure) -> None:
     calls = 0
 
     def fake_request(*args, **kwargs):
@@ -147,9 +157,7 @@ def test_dashscope_post_does_not_retry_ambiguous_failure(
     )
 
     with pytest.raises(BackendError):
-        _dashscope_asr().transcribe(
-            Path("audio.wav"), language=None, chunk_seconds=600
-        )
+        _dashscope_asr().transcribe(Path("audio.wav"), language=None, chunk_seconds=600)
     assert calls == 1
 
 
@@ -178,9 +186,7 @@ def test_dashscope_result_download_uses_signed_url_without_api_key(monkeypatch) 
                 {
                     "output": {
                         "task_status": "SUCCEEDED",
-                        "result": {
-                            "transcription_url": "https://oss.example/result.json"
-                        },
+                        "result": {"transcription_url": "https://oss.example/result.json"},
                     }
                 },
             )
@@ -188,11 +194,7 @@ def test_dashscope_result_download_uses_signed_url_without_api_key(monkeypatch) 
             200,
             {
                 "transcripts": [
-                    {
-                        "sentences": [
-                            {"begin_time": 0, "end_time": 1000, "text": "hello"}
-                        ]
-                    }
+                    {"sentences": [{"begin_time": 0, "end_time": 1000, "text": "hello"}]}
                 ]
             },
         )
@@ -222,9 +224,7 @@ def test_dashscope_temporary_upload_retries(monkeypatch) -> None:
                 raise _UploadError("temporary upload failure")
             return "oss://temporary/audio.wav"
 
-    monkeypatch.setattr(
-        video_asr, "_dashscope_oss_utils", lambda: (_OssUtils, _UploadError)
-    )
+    monkeypatch.setattr(video_asr, "_dashscope_oss_utils", lambda: (_OssUtils, _UploadError))
     monkeypatch.setattr(video_asr.time, "sleep", lambda _seconds: None)
 
     def fake_request(method: str, url: str, **kwargs: Any) -> _JsonResponse:
@@ -237,9 +237,7 @@ def test_dashscope_temporary_upload_retries(monkeypatch) -> None:
                 {
                     "output": {
                         "task_status": "SUCCEEDED",
-                        "result": {
-                            "transcription_url": "https://oss.example/result.json"
-                        },
+                        "result": {"transcription_url": "https://oss.example/result.json"},
                     }
                 },
             )
@@ -247,9 +245,7 @@ def test_dashscope_temporary_upload_retries(monkeypatch) -> None:
 
     monkeypatch.setattr(requests, "request", fake_request)
 
-    assert _dashscope_asr().transcribe(
-        Path("audio.wav"), language=None, chunk_seconds=600
-    ) == []
+    assert _dashscope_asr().transcribe(Path("audio.wav"), language=None, chunk_seconds=600) == []
     assert _OssUtils.calls == 3
 
 
@@ -260,9 +256,7 @@ def test_dashscope_missing_sdk_is_backend_error(monkeypatch) -> None:
     monkeypatch.setattr(video_asr, "_dashscope_oss_utils", missing_dashscope_sdk)
 
     with pytest.raises(BackendError, match="DashScope SDK is unavailable"):
-        _dashscope_asr().transcribe(
-            Path("audio.wav"), language=None, chunk_seconds=600
-        )
+        _dashscope_asr().transcribe(Path("audio.wav"), language=None, chunk_seconds=600)
 
 
 def test_video_asr_without_audio_skips_remote_service(tmp_path, monkeypatch) -> None:
@@ -550,18 +544,16 @@ def test_multimodal_config_add_and_search_end_to_end(tmp_path, monkeypatch) -> N
             encoding="utf-8"
         )
     )["memory_api"]
-    settings["normalizer"]["default"]["params"]["routes"]["video"]["params"][
-        "temp_root"
-    ] = str(tmp_path / "video-work")
+    settings["normalizer"]["default"]["params"]["routes"]["video"]["params"]["temp_root"] = str(
+        tmp_path / "video-work"
+    )
     # Pipeline 被 mock，两个模型端口只需用 echo 完成装配。
     settings["llm"]["video_text"]["target"] = "echo"
     settings["llm"]["video_vision"]["target"] = "echo"
 
     def fake_run_pipeline(self, video_path: Path, run_root: Path):
         del self, video_path, run_root
-        return _video_memory_output(
-            RawPayload(id="video-1", scope=Scope(user="user-1"))
-        )
+        return _video_memory_output(RawPayload(id="video-1", scope=Scope(user="user-1")))
 
     monkeypatch.setattr(VideoNormalizer, "_run_pipeline", fake_run_pipeline)
     video_path = tmp_path / "demo.mp4"
@@ -592,23 +584,19 @@ def test_multimodal_config_add_and_search_end_to_end(tmp_path, monkeypatch) -> N
     assert result.items
     assert {item.unit_id for item in result.items}.issubset({unit.id for unit in units})
     assert {
-        step.detail.get("branch")
-        for step in result.trajectory
-        if step.detail.get("branch")
+        step.detail.get("branch") for step in result.trajectory if step.detail.get("branch")
     } >= {"native", "multimodal_clip", "multimodal_event"}
 
 
-def test_video_add_and_prefixed_job_status_share_handler_route(
-    tmp_path, monkeypatch
-) -> None:
+def test_video_add_and_prefixed_job_status_share_handler_route(tmp_path, monkeypatch) -> None:
     settings = yaml.safe_load(
         (Path(__file__).parents[3] / "examples" / "config_multimodal.yml").read_text(
             encoding="utf-8"
         )
     )["memory_api"]
-    settings["normalizer"]["default"]["params"]["routes"]["video"]["params"][
-        "temp_root"
-    ] = str(tmp_path / "video-work")
+    settings["normalizer"]["default"]["params"]["routes"]["video"]["params"]["temp_root"] = str(
+        tmp_path / "video-work"
+    )
     # Pipeline 被 mock，两个模型端口只需用 echo 完成装配。
     settings["llm"]["video_text"]["target"] = "echo"
     settings["llm"]["video_vision"]["target"] = "echo"
@@ -633,17 +621,18 @@ def test_video_add_and_prefixed_job_status_share_handler_route(
         },
     )()
     try:
-        status, submitted = handler.dispatch(
-            srv,
-            "add",
-            {
-                "tenant_id": "org-1",
-                "scope": "user-1",
-                "payload_id": "video-1",
-                "modality": "video",
-                "uri": video_path.as_uri(),
-            },
-        )
+        with _as(Scope(org="org-1", user="user-1")):
+            status, submitted = handler.dispatch(
+                srv,
+                "add",
+                {
+                    "tenant_id": "org-1",
+                    "scope": "user-1",
+                    "payload_id": "video-1",
+                    "modality": "video",
+                    "uri": video_path.as_uri(),
+                },
+            )
         assert status == 200
         assert submitted["accepted"] is True
         assert submitted["job_id"].startswith("ing_")
@@ -652,36 +641,36 @@ def test_video_add_and_prefixed_job_status_share_handler_route(
 
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
-            status, result = handler.dispatch(
-                srv,
-                "job",
-                {
-                    "tenant_id": "org-1",
-                    "scope": "user-1",
-                    "job_id": submitted["job_id"],
-                },
-            )
+            with _as(Scope(org="org-1", user="user-1")):
+                status, result = handler.dispatch(
+                    srv,
+                    "job",
+                    {
+                        "tenant_id": "org-1",
+                        "scope": "user-1",
+                        "job_id": submitted["job_id"],
+                    },
+                )
             if result.get("status") == "succeeded":
                 break
             time.sleep(0.01)
         assert status == 200
         assert result["status"] == "succeeded"
         assert result["item_ids"]
-        assert {item["system_metadata"]["video_id"] for item in result["items"]} == {
-            "video-1"
-        }
+        assert {item["system_metadata"]["video_id"] for item in result["items"]} == {"video-1"}
 
-        status, reused = handler.dispatch(
-            srv,
-            "add",
-            {
-                "tenant_id": "org-1",
-                "scope": "user-1",
-                "payload_id": "video-1",
-                "modality": "video",
-                "uri": video_path.as_uri(),
-            },
-        )
+        with _as(Scope(org="org-1", user="user-1")):
+            status, reused = handler.dispatch(
+                srv,
+                "add",
+                {
+                    "tenant_id": "org-1",
+                    "scope": "user-1",
+                    "payload_id": "video-1",
+                    "modality": "video",
+                    "uri": video_path.as_uri(),
+                },
+            )
         assert status == 200
         assert reused["job_id"] == submitted["job_id"]
         assert reused["status"] == "succeeded"
@@ -692,16 +681,17 @@ def test_video_add_and_prefixed_job_status_share_handler_route(
 
 def test_video_add_requires_uri() -> None:
     srv = type("ServerStub", (), {})()
-    status, body = handler.dispatch(
-        srv,
-        "add",
-        {
-            "tenant_id": "org-1",
-            "scope": "user-1",
-            "modality": "video",
-            "content": "file:///data/demo.mp4",
-        },
-    )
+    with _as(Scope(org="org-1", user="user-1")):
+        status, body = handler.dispatch(
+            srv,
+            "add",
+            {
+                "tenant_id": "org-1",
+                "scope": "user-1",
+                "modality": "video",
+                "content": "file:///data/demo.mp4",
+            },
+        )
 
     assert status == 400
     assert body["error"] == "ValidationError"
@@ -716,17 +706,18 @@ def test_video_add_rejected_when_chain_not_assembled() -> None:
             config=SimpleNamespace(settings={}),
             ingest_jobs=controller,
         )
-        status, body = handler.dispatch(
-            srv,
-            "add",
-            {
-                "tenant_id": "org-1",
-                "scope": "user-1",
-                "payload_id": "video-1",
-                "modality": "video",
-                "uri": "file:///data/demo.mp4",
-            },
-        )
+        with _as(Scope(org="org-1", user="user-1")):
+            status, body = handler.dispatch(
+                srv,
+                "add",
+                {
+                    "tenant_id": "org-1",
+                    "scope": "user-1",
+                    "payload_id": "video-1",
+                    "modality": "video",
+                    "uri": "file:///data/demo.mp4",
+                },
+            )
 
         assert status == 400
         assert body["error"] == "ValidationError"
@@ -764,17 +755,18 @@ def test_video_add_rejected_when_write_permission_denied() -> None:
             api=_DeniedAPI(),
             ingest_jobs=controller,
         )
-        status, body = handler.dispatch(
-            srv,
-            "add",
-            {
-                "tenant_id": "org-1",
-                "scope": "user-1",
-                "payload_id": "video-1",
-                "modality": "video",
-                "uri": "file:///data/demo.mp4",
-            },
-        )
+        with _as(Scope(org="org-1", user="user-1")):
+            status, body = handler.dispatch(
+                srv,
+                "add",
+                {
+                    "tenant_id": "org-1",
+                    "scope": "user-1",
+                    "payload_id": "video-1",
+                    "modality": "video",
+                    "uri": "file:///data/demo.mp4",
+                },
+            )
 
         assert status == 403
         assert body["error"] == "PermissionDeniedError"
@@ -784,8 +776,14 @@ def test_video_add_rejected_when_write_permission_denied() -> None:
 
 
 def test_ingest_job_status_uses_memory_api_read_permission() -> None:
-    """视频任务状态必须经过 MemoryAPI 的 READ 鉴权。"""
-    kernel = build_kernel()
+    # 视频任务状态必须经过 MemoryAPI 的 READ 鉴权。显式装 SQLite：job 状态查询走
+    # PermissionManager 的 READ 判定，而「未配置 security / 未显式选择 permission」时
+    # 内核回退到 AllowAll（恒放行），不显式装 SQLite 就无法断言越权被拒（验收报告约束 5）。
+    kernel = build_kernel(
+        config=Config.from_dict(
+            {"permission": {"default": {"target": "sqlite", "params": {"db_path": ":memory:"}}}}
+        )
+    )
     owner = Scope(org="org-1", user="owner")
     outsider = Scope(org="org-1", user="outsider")
     submission = kernel.ingest_jobs.submit(
@@ -796,17 +794,18 @@ def test_ingest_job_status_uses_memory_api_read_permission() -> None:
     )
     srv = SimpleNamespace(api=kernel.api, ingest_jobs=kernel.ingest_jobs)
     try:
-        status, body = handler.dispatch(
-            srv,
-            "job",
-            {
-                "tenant_id": owner.org,
-                "scope": owner.user,
-                "actor_tenant_id": outsider.org,
-                "actor_scope": outsider.user,
-                "job_id": submission.job.id,
-            },
-        )
+        # 越权者的身份来自认证上下文，不来自 payload——payload 的 actor_* 声明字段在
+        # PR1 会被 handler 直接拒为 ValidationError，测不到这里关心的 READ 鉴权。
+        with _as(outsider):
+            status, body = handler.dispatch(
+                srv,
+                "job",
+                {
+                    "tenant_id": owner.org,
+                    "scope": owner.user,
+                    "job_id": submission.job.id,
+                },
+            )
 
         assert status == 403
         assert body["error"] == "PermissionDeniedError"

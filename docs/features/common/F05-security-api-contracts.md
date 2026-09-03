@@ -1,22 +1,32 @@
-# 安全域接口契约（接口先行）
+# 安全域接口契约
 
 ## 元信息
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-08-20 |
+| 日期 | 2026-08-20（2026-08-27 实装交付） |
 | 影响范围 | `jiuwen_memory/common/security/`、`jiuwen_memory/common/audit/`、`jiuwen_memory/api/`、`jiuwen_memory_entry/core/`、`jiuwen_memory_entry/mcp_server/transport_security.py`、`docs/specs/S02-memory-api.md`、`docs/specs/S07-common.md` |
-| 关联文档 | [S02 记忆接口层](../../specs/S02-memory-api.md)、[S07 公共组件层](../../specs/S07-common.md)、[F04 安全接口与加密设计](F04-security-interfaces-and-encryption.md) |
-| 状态 | **接口先行、实现暂缓**：契约层已合入，`*_impl` 实现包与 Server lifecycle 接线随后续实装 PR 合入 |
+| 关联文档 | [S02 记忆接口层](../../specs/S02-memory-api.md)、[S07 公共组件层](../../specs/S07-common.md)、[F05 公共安全架构](../../../security-plans/F05-common-security-architecture.md)、[PR1/PR2 接口说明文档](../../../security-plans/2026-08-17-PR1-PR2-接口说明文档.md)、[F04 安全接口与加密设计](F04-security-interfaces-and-encryption.md) |
+| 状态 | **PR1 实装已交付**：契约层与 PR1 的 `*_impl` 实现包均已合入，Server lifecycle 接线完成（见 [F09 认证与加密](F09-authentication-kernel.md)）；PR2/PR3 的实现包仍待各自实装 PR |
 
 ## 1. 背景与目标
 
 主项目处于版本发布阶段，认证/加密/隔离的完整安全实现（`authentication_impl` /
-`cryptography_impl` 等）暂缓合入。经项目负责人评审通过的方案是**先把公共接口固定**：
+`cryptography_impl` 等）曾暂缓合入。经项目负责人评审通过的方案是**先把公共接口固定**：
 类型、抽象契约、公开函数签名与导出按 F05 架构与接口说明文档原样合入，运行链路
-保持原状（不启用任何新认证/授权逻辑）。
+保持原状（不启用任何新认证/授权逻辑）。这样实装 PR 合入时只填充实现，不再发生
+公共签名层面的破坏性变更。
 
-这样实装 PR 合入时只填充实现，不再发生公共签名层面的破坏性变更。
+接口评审通过后，PR1 实装已按本契约交付（见下节）。实装期间曾试图在 `Scope` 上增加
+`frozen=True`、给 `PermissionManager.check()` / `decide()` 增加 keyword-only
+`auth: AuthContext | None = None` 两项公开契约变化，但经上游复审查**两项均已回退**——
+它们属于对已冻结接口的重定义，应走新的接口 PR 而非在实装提交中改动。当前上游代码
+（`common/type_def/scope.py`、`control/permission.py`）保持接口冻结前的原始签名，因此
+**本交付没有引入任何公共层面的可观察契约变化**。
+
+`validate_actor_form()`（`security/types.py`）为 PR1 新增公开函数，属纯增量：它在
+`authenticated()` 认证边界统一执行 actor 全局形态校验，不改变任何既有签名或行为。
+后续如需再改公共签名，先回接口分支评审。
 
 ## 2. PR1 固定的接口（认证 / 加密 / 保护）
 
@@ -32,8 +42,9 @@
 
 `RequestSecurityContext` 的 `attributes` 构造时统一冻结为只读映射；来源绑定
 （`_origin`）机制已就位，**受控构造入口（`new_request_context` / `internal_context`）
-随 PR2 合入**（见 §5.1）。PR1 过渡期由 surface（`jiuwen_memory_entry.core.auth_middleware.authenticated`）
-直接构造。
+的契约见 §5.1**。PR1 的认证中间件（`jiuwen_memory_entry.core.auth_middleware.authenticated`）
+已经过 `new_request_context` 构造，产物 `has_valid_origin()` 为真；PEP 侧对来源的
+**校验**仍归 PR2 启用（impl_notice IMPL-02 要求的切换顺序：先中间件受控构造、后 PEP 校验）。
 
 ### 2.2 能力契约（各子包 `base.py`）
 
@@ -42,7 +53,7 @@
 | `authentication/` | `Authenticator`（authenticate/mode/requires_concurrency_guard）、`PrincipalKeyStore`、`CredentialStatusRegistry` |
 | `cryptography/` | `CryptographyProvider`（encrypt/decrypt/health）、`KeyProvider`（active_key/rotate/wrap/unwrap/health） |
 | `protection/` | `RateLimiter`、`WorkloadGuard`、`BindingPolicy` |
-| `runtime.py` | `SecurityRuntime`（跨能力装配根；PR2 起增加 `authorizer` 引用） |
+| `runtime.py` | `SecurityRuntime`（跨能力装配根；`cryptography_provider` / `audit_integrity_provider` 为可选装配位，`authenticator` / `authorizer` / `rate_limiter` / `workload_guard` / `binding_policy` 必填。PR1 的 `authorizer` 装 `allow_all` 占位，`is_test_only()` 为真，不做任何判定；真正做判定的 `StandardAuthorizer` 随 PR2 合入） |
 
 ### 2.3 jiuwen_memory_entry 接缝（`jiuwen_memory_entry/core/auth_middleware.py`）
 
@@ -60,27 +71,34 @@ credentials_for_transport(  # jiuwen_memory_entry/mcp_server/transport_security.
 ```
 
 - `authenticated()` 按「限流 -> 并发预算 -> 认证 -> 构造请求上下文」执行，yield
-  `RequestSecurityContext`；ContextVar 仍设置 `AuthContext` 但只作日志/trace 辅助，
-  授权不读它，退出时 `finally` reset。
+  `RequestSecurityContext`；ContextVar 设置 `AuthContext`，供 PEP 从
+  `security.auth.actor` 取身份（及经 `get_current()` 取可信 `AuthContext` 供审计），
+  退出时 `finally` reset。
 - `credentials_for_transport()`：MCP stdio 读 `AGENT_MEMORY_API_KEY`；Streamable HTTP
   逐请求提取 Bearer 与 socket peer，缺 FastMCP Request Context 必须 fail-closed，
   **不回退读取进程环境变量**。
 
 ## 3. 与旧 `SecurityProvider` 的关系
 
-旧 `jiuwen_memory/common/security/security.py`（`SecurityProvider` 系，服务于存储加密装配）在实现
-PR 落地前继续从 `jiuwen_memory.common.security` 顶层导出，既有消费方不受影响。新契约的同名异常
-从各能力子包取，不与顶层旧导出冲突。两者并存期间新代码一律依赖 F05 契约层。
+旧 `jiuwen_memory/common/security/security.py`（`SecurityProvider` 系，服务于存储加密装配）已随
+PR1 实装删除：存储加密改用 `cryptography/` 的 `CryptographyProvider` / `KeyProvider`，配置顶层段
+`security` 由 `SecurityRuntimeProducer` 接管，既有存储消费方已迁移完毕。接口先行期「新旧并存、
+新代码一律依赖 F05 契约层」的过渡约定随之失效——现在只有 F05 契约层一套。
 
-## 4. 暂缓合入清单（实装 PR 交付）
+## 4. 实装清单（原「暂缓合入清单」）
 
-- `authentication_impl/`（dev / trusted / api_key 三种 Authenticator 及 KeyStore 后端）
-- `cryptography_impl/`（KeyProvider 后端；`LocalKeyProvider` 补齐 MAC capability）
-- `authorization_impl/`（`Authorizer` / `GrantStore` / `DelegationStore` 的后端实现）
-- `audit_integrity_impl/`（版本化规范化 + 链式 HMAC 的 `AuditIntegrityProvider`；内存 /
-  SQLite 审计后端叠加 `ChainedAuditStore`；锚点产品实现）
-- 上述接缝接入实际 Server lifecycle（HTTP / MCP / CLI）
-- 删除过渡桥 `jiuwen_memory/common/security/legacy.py` 与全部 `legacy_request_context(...)` 调用点
+PR1 项已交付；PR2 / PR3 项仍待各自实装 PR：
+
+- [x] `authentication_impl/`（dev / trusted / api_key 三种 Authenticator 及 KeyStore 后端）
+- [x] `cryptography_impl/`（`local` KeyProvider 与 ENC1 信封 provider，v2 写出 / v1 只读兼容）
+- [x] 上述接缝接入实际 Server lifecycle（HTTP / MCP / CLI）
+- [x] `validate_actor_form()` actor 全局形态校验（纯增量公开函数，`authenticated()` 认证边界执行；不改变任何既有签名）
+- [ ] PR2：`authorization_impl/`（`Authorizer` / `GrantStore` / `DelegationStore` 后端）、
+  `RequestSecurityContext` 受控构造入口的实际接管、`dispatch` 的 `security=` 签名切换，
+  以及删除过渡桥 `common/security/legacy.py` 与全部 `legacy_request_context(...)` 调用点
+  （`MemoryAPI` 公开签名已在 PR1 切到 `security=`，余下的是 `dispatch` 与进程内调用方）
+- [ ] PR3：`audit_integrity_impl/`（版本化规范化 + 链式 HMAC 的 `AuditIntegrityProvider`；内存 /
+  SQLite 审计后端叠加 `ChainedAuditStore`；锚点产品实现）与 `LocalKeyProvider` 的 MAC capability
 
 ## 5. PR2 固定的接口（隔离 / 授权）
 
@@ -100,7 +118,10 @@ internal_context(authenticator) -> RequestSecurityContext
 authenticator 产出，不接受调用方以 `Scope` 自述身份，也不再有「无参领 ROOT」的默认。
 
 `jiuwen_memory_entry.core.auth_middleware.authenticated()` 改为经 `new_request_context` 构造，
-`surface` 由适配层写入（缺省 `INTERNAL`），`peer` 只取传输层对端地址。
+`surface` 由适配层写入（缺省 `INTERNAL`），`peer` 只取传输层对端地址。**这一步 PR1
+已完成**（IMPL-02 要求的切换顺序：中间件受控构造必须先于 PEP 校验生效，否则所有正常
+请求都会被判为未受控）；PR2 补的是 PEP 侧的 `has_valid_origin()` 校验与进程内调用方
+迁移到 `internal_context`。
 
 ### 5.2 授权域公共类型（`security/types.py`、`security/authorization/`）
 
@@ -131,14 +152,13 @@ authenticator 产出，不接受调用方以 `Scope` 自述身份，也不再有
 
 ### 5.4 当前过渡行为（与目标接口的差异）
 
-正式接口如上，但本期**不启用**任何新认证/授权实现，运行链路仍是原有的
-`PermissionManager`，**对外行为与 `mem2.0` 逐位等价**。以下差异是已知的过渡态，
-实装 PR 收敛：
+正式接口如上，但 PR1 只交付认证与加密，**不启用**任何新授权实现：判定链路仍是原有的
+`PermissionManager`。以下差异是已知的过渡态，PR2 收敛：
 
 | 项 | 目标形态 | 当前过渡行为 |
 |---|---|---|
-| 身份来源 | 接入层认证产出 | `legacy_request_context(actor)` 把 payload 里的 identity 包成上下文（**假认证**：role / credential 为占位值） |
-| 授权判定 | `Authorizer` + 策略 + 决策审计 | 仍走 `PermissionManager.check`，逐位等价于 identity 直传时代 |
+| 身份来源 | 接入层认证产出 | 公开签名已收 `security: RequestSecurityContext`。但 `dispatch` 无 `security` 形参，handler 用 `legacy_request_context(actor)` 把认证上下文里的 actor 包成受控上下文传入 API——actor 本身来自 ContextVar 中的 `AuthContext`（`_identity()` → `get_current()`），**不来自 payload**（身份铁律 #1 已守，payload 的 `actor_*` 由 `dispatch` 入口统一拒）；role / credential 为 `legacy` 占位值 |
+| 授权判定 | `Authorizer` + 策略 + 决策审计 | 仍走 `PermissionManager.decide`，逐位等价于 identity 直传时代；PR1 无 role 闸门——认证层产出的 role 不参与判定，`ROOT` 在 PR1 无执行点（已知过渡缺口，随 PR2 收敛，见页面末尾「已知过渡缺口」） |
 | `revoke` 鉴权动作 | `REVOKE_SHARE` | `SHARE`（旧 `PermissionManager` 无 `REVOKE_SHARE`） |
 | `grant_id` 生成 | 服务端生成，写入 `GrantStore` | **不生成**：`grant()` 原样回传入参 Grant，`grant_id` 保持为空 |
 | `revoke` 定位方式 | 按 `grant_id` 精确 | 仍按 grantor+grantee+action 条件撤销，`grant_id` 不参与定位、也不做非空校验；`/v1/revoke` 的旧请求形状不变 |
@@ -168,9 +188,12 @@ authenticator 产出，不接受调用方以 `Scope` 自述身份，也不再有
 **`legacy_request_context` 的移除点**：`jiuwen_memory/common/security/legacy.py` 及其全部调用点
 （`jiuwen_memory_entry/core/handler.py`——HTTP / MCP / CLI 都经它 dispatch、
 `jiuwen_memory_adapter/jiuwenswarm/agent_memory_provider.py`、`evaluation/core/harness.py`、
-`examples/quickstart.py`、`tests/`）在 `authentication_impl` 合入、各 surface 接上
-`authenticated()` 的同一个 PR 中删除。届时接入层直接产出 `RequestSecurityContext`，
-`MemoryAPI` 公共签名不再变动；请求 payload 携带 identity 的临时态也在那时一并去掉。
+`examples/quickstart.py`、`tests/`）在 `dispatch` 收 `security=` 形参的 PR2 中删除。
+PR1 已把 `MemoryAPI` 公开签名接上 `security=`（`dispatch` 与各进程内调用方仍收
+`Scope`），故过渡桥必须留到 `dispatch` 切换到 `security=` 的那一刻。届时接入层直接
+产出 `RequestSecurityContext`，`dispatch` 不再需要 `legacy_request_context` 包装；
+请求 payload 携带 identity 的临时态也已由 PR1 的 `dispatch` 入口统一拒绝（`actor_*`
+字段一律拒），故不存在 payload 携带身份到 PR2 的遗留。
 
 ## 6. PR3 固定的接口（审计完整性）
 

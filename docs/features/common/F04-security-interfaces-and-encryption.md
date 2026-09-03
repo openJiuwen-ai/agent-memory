@@ -1,23 +1,50 @@
-# 安全接口与加密设计
+﻿# F04 — 安全架构总纲
 
 ## 元信息
 
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-27 |
-| 影响范围 | `jiuwen_memory/common/security/`、`jiuwen_memory/storage/kv_impl/`、`jiuwen_memory/control/engine_impl/`、`docs/specs/S07-common.md`、`docs/specs/S06-storage.md` |
-| 测试基线 | `local` SecurityProvider 直接行为校验通过，`EncryptedKVStore` 单测函数直接执行通过；当前环境缺少 pytest/ruff runner |
+| 最近更新 | 2026-08-27 |
+| 影响范围 | `jiuwen_memory/common/security/`（认证、加密、防护与 PR2 类型接缝）、`jiuwen_memory/storage/kv_impl/`、`jiuwen_memory/storage/fs_impl/`、`jiuwen_memory/control/engine_impl/`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md`、`docs/specs/S09-security.md` |
+| 测试基线 | 认证、凭据存储、防护、`local` CryptographyProvider、`EncryptedKVStore` 与 `EncryptedFSStore` 的镜像单测通过 |
+| 关联特性文档 | [F09 认证与加密](F09-authentication-kernel.md)；F08 属 PR2，PR1 不创建 |
+| 规范契约 | [S09 安全横切契约](../../specs/S09-security.md) |
+| Refs | — |
 
-本文由原 `docs/security/security.md` 迁入 common 特性归档，作为认证、授权、隔离、加密与审计的安全设计基线。后续 `common/security` 接口、`EncryptedKVStore`、`cloud_engine` 读写编排与安全配置均以本文为设计入口。
+## 术语说明
 
-当前落地状态（2026-07-27）：`common/security` 接口已提供 `SecurityProvider` /
-`SecurityProducer`，`storage/kv_impl/encrypted_kv_store.py` 已提供 KV 加密装饰器；
-`security_impl/local_envelope_security_provider.py` 已提供 `local` ENC1 AES-GCM
-真实加解密 provider。KMS / Vault provider 仍未实现。
+本文档作为安全架构总纲，定义以下实施阶段术语，供关联特性文档引用：
+
+- **认证与加密期（PR1，已落地）**：security 基础能力建立阶段，包括认证内核（dev/api_key/trusted 三档认证模式）、凭据管理、速率限制、加密 provider、信封加密与 key 管理。对应 [F09 认证与加密](F09-authentication-kernel.md) 所记录的工作。
+- **授权与上下文期（PR2，未在本分支落地）**：`Authorizer`、Grant / Delegation、唯一 PEP 与 `RequestSecurityContext` 显式 API 输入。该阶段才创建 F08；PR1 只预置必要类型接缝，不声明授权完成。
+
+这些阶段在时间上有先后依赖（授权期依赖认证期产出的 `AuthContext`），但在代码组织上均归属 `jiuwen_memory/common/security/` 统一模块。
+
+> **归档性质**：本文由早期 `docs/security/security.md` 迁入，保留威胁模型、方案取舍和
+> 历史设计草图；其中接口签名、伪代码与 YAML 片段均非现行契约。当前公共契约以
+> S03 / S06 / S07 / S09 为准，当前实现地图以各 `jiuwen_memory/*/AGENTS.md` 为准。本文与代码冲突时
+> 不得据此反向修改代码，应先按上述 spec 核对并更新本文的状态注记。
+
+当前落地状态（2026-08-07）：全部安全能力归 `jiuwen_memory/common/security/`，按能力域分子包：
+
+- `authentication/`：`Authenticator`、`PrincipalKeyStore`、`CredentialStatusRegistry`，内置 dev / api_key / trusted 与 memory 凭据存储。Registry 接缝和单测已落地，但 PR1 尚无 PEP 消费它。
+- `cryptography/`：`CryptographyProvider` 与独立 `KeyProvider`；内置 `local` ENC1 AES-GCM 实现。
+- `protection/`：`BindingPolicy`、`RateLimiter`、`WorkloadGuard`，内置 loopback / token_bucket / unlimited / semaphore。
+- `types.py`：定义 `AuthContext`、PR2 预置的 `RequestSecurityContext`、`CryptoContext`、Role / Surface / Credentials。`AuthContext` 不携带 `acting_user` 之类的授权结果字段——认证只回答「你是谁」，授权结果由 `AuthContext` 之外的决策链路产出。
+- `runtime.py`：持有认证、防护、可选密码学与可选审计完整性装配位；必填 `authorizer` 在 PR1 装 `allow_all` 占位（`is_test_only()` 为真，不做任何判定；做判定的 `StandardAuthorizer` 随 PR2 合入），`audit_integrity_provider` 是 F05 定义的可选装配位，判空是消费方本分，不构成 fail-open 诱导。
+
+PR1 **不实装** `Authorizer`、Grant / Delegation Store，也不写 F08：`authorization/` 与 `request_context.py` 的契约随上游接口分支已在库中，但 PR1 只用到 `request_context` 的受控构造入口（中间件），授权判定仍走 `PermissionManager`。公开 `MemoryAPI` 公开签名已在 PR1 切到 `security: RequestSecurityContext`（接口先行合入），但 `dispatch` 与进程内调用方仍收 `Scope`，用 `legacy_request_context` 过渡桥包装；`dispatch` 的 `security=` 签名切换与授权来源校验属于 PR2。
+
+ENC1 写出 v2（含 key id / epoch），读取兼容 v1，且无明文回退。`LocalKeyProvider.rotate()` 支持进程内多代轮换，但轮换状态不能跨重启持久化；KMS / Vault 尚未实现。加密 KV / FS 仍是显式选择的存储装饰器，不会因只写密码学 YAML 自动接入主业务链路。
+
+本文以下正文是迁移前历史设计输入，路径、类名、伪代码及标为「实现注记」的段落也只代表当期状态；它们不覆盖上面的 PR1 当前事实与 S09。旧平铺路径（`common/encryption`、`common/authentication`、`common/credential_store`、`common/admission`、`type_def/auth.py`）不再作为新代码约束。
 
 ---
 
-## 1. 安全模型总览
+## 背景
+
+### 1. 安全模型总览
 
 ### 1.1 三道防线
 
@@ -56,17 +83,20 @@
 
 ---
 
-## 2. 认证（Authentication）
+## 决策
+
+### 2. 认证（Authentication）
 
 > **关联设计文档**：认证的执行点（PEP, Policy Enforcement Point）落在接口层——每个 API 方法先 `check(identity, scope, action)`、落带 identity 的入口审计，通过后才委托业务。详见 [`design/architecture.md` §9 记忆接口层](../../design/architecture.md)。
 
 ### 2.1 设计原则
 
-1. **可插拔认证模式**：框架应支持多种认证模式，在启动时由配置决定，不要硬编码。
+1. **可插拔认证模式**：框架通过 Producer 选择实现，通过 capability 决定 loopback 与
+   重型校验保护；核心不按封闭 `AuthMode` 枚举分支。未知实现默认仅 loopback 且启用并发 guard。
 2. **每个请求必须过认证**：没有任何 endpoint 能绕过认证层（健康检查可例外）。
 3. **单次验证、上下文传播**：认证中间件只验证一次身份，结果注入请求上下文，后续流程不再重复校验身份。
 4. **常时间比较（timing-safe）**：所有密钥比对必须使用 `hmac.compare_digest` 或等价的常时间函数。
-5. **可插拔算子用注册式工厂（Factory + Producer）**：`agent-memory` mem2.0 的所有核心抽象（PermissionManager / AuditLogger / Governor / Engine / KVStore 等）用 `XxxProducer(Factory)` + `@Producer.register("name")` 自注册，装配时 `Producer.dep(root, default="name")` 按名取实例。安全模块的认证/权限/审计算子同样遵循此模式。
+5. **可插拔算子用注册式工厂（Factory + Producer）**：`agent-memory` mem2.0 的核心抽象通过注册式工厂装配。安全模块的认证、授权、限流与加密 provider 同样遵循此模式。当前契约见 S09。
 6. **应用层 bootstrap 已生成**：`jiuwen_memory_entry/` 下有 CLI / HTTP server / MCP server / SDK 四种接入形态的薄封装，安全模块通过 bootstrap 挂载。`deploy/` 下有 Docker / local 部署方案。
 
 ### 2.2 三种认证模式
@@ -115,6 +145,10 @@ if auth_mode == AuthMode.DEV:
     return AuthContext(actor=Scope(org="*"), role=Role.ROOT)
 ```
 
+> **PR1 实现注记**：DEV 返回具名主体
+> `AuthContext(actor=Scope(org="system", user="dev"), role=Role.ROOT)`。PR1 的旧
+> PermissionManager 兼容线仍存在，但认证器不再通过空 actor 表达 ROOT。
+
 **约束**：DEV 模式只允许监听 localhost。启动时如果检测到非 localhost 绑定，应当 `sys.exit(1)` 并打印错误消息。**注意覆盖容器化场景下 `0.0.0.0` 这种最危险的情况**：
 
 ```python
@@ -142,6 +176,14 @@ def enforce_dev_localhost_binding(bind_host):
 ```
 
 > DEV 模式唯一正确的用途：本地开发、单机调试。**永远不要**在非 localhost 上 DEV 模式运行。容器化场景下，即使绑了 `127.0.0.1`，也要保证 Docker/K8s 的网络配置不会把端口转发出去——这一层 guard 无法替你检查。生产部署必须显式配 `auth_mode: api_key` 或 `trusted`。
+
+> **主干实现注记**（F01，路径经 F05 迁移更新）：主干把这段拆成两半——绑定校验现由
+> `common.security.protection.binding_policy.BindingPolicy.check(hosts, *, requires_loopback)`
+> 表达（内置 `loopback` 实现，是否强制由 `Authenticator.requires_loopback_binding()` capability 决定），
+> 是**纯函数**，非 localhost 抛 `ValidationError`，容器场景走 `logging.warning`；
+> `sys.exit(1)` 与 stderr 上的 `FATAL:` 留在 `jiuwen_memory_entry/http_server/__main__.py:main`。
+> 这样 guard 本身可被单测直接断言（`tests/unit/common/security/protection/test_binding_policy.py`），
+> 而不必在测试里捕获 `SystemExit`。
 
 #### 2.2.2 TRUSTED 模式
 
@@ -176,6 +218,13 @@ if auth_mode == AuthMode.TRUSTED:
 
 **关键设计**：role 不来自 header——header 说「你是谁」，框架自己要查「你能干什么」。这样即使网关被攻破或误配，也无法任意提权。
 
+> **主干实现注记**（F01）：`TrustedAuthenticator` 查的 header 名一律是**小写常量**
+> ——归一在 `jiuwen_memory_entry.core.auth_middleware.credentials_from_headers` 里做了一次
+> （RFC 9110 §5.1，header 名大小写不敏感），authenticator 侧不再重复处理大小写。
+> `principal_role_store.get_role` 对应主干的 `PrincipalKeyStore.get_role(actor)`：
+> 参数是一个 `Scope` 而非三元组，与本仓 `Scope` 的实际形状对齐。
+> 主体查不到时抛 `AuthenticationError`（不回落任何默认 role）。
+
 #### 2.2.3 API_KEY 模式
 
 **语义**：框架自己验证 API Key。Root API Key 比对成功后直接返回 ROOT 身份；普通主体的 API Key 查注册表。
@@ -195,6 +244,12 @@ if auth_mode == AuthMode.API_KEY:
 
     return identity
 ```
+
+> **主干实现注记**（F01）：`compare_digest` 在主干里两边都 `.encode("utf-8")`
+> 成 **bytes** 再比。str 版本在参数含非 ASCII 字符时抛 `TypeError`，那会让一次
+> 认证失败变成 500 而不是 401——把「凭据错误」暴露成「服务器错误」，
+> 且绕过了统一的失败审计路径。见
+> `jiuwen_memory/common/security/authentication/authentication_impl/api_key_authenticator.py`。
 
 ### 2.3 API Key 系统
 
@@ -248,6 +303,15 @@ class PrincipalKeyStore:
         # 返回明文 key——这是调用方唯一一次拿到它
         return key
 ```
+
+> **主干实现注记**（F01）：主干把 `store_key` 拆成对外的
+> `PrincipalKeyStore.issue(actor: Scope, role: Role) -> str` 与实现内部的前缀
+> 索引维护——索引是**实现细节**，不该出现在跨实现的 ABC 上。另有三处收紧：
+> `api_key_hashing_enabled` 开关**不提供**（缺 `argon2-cffi` 时在装配期抛
+> `ValidationError`，绝不回落明文，铁律 #3）；`role=ROOT` 抛
+> `PermissionDeniedError`（§3.2 禁止自签发 ROOT）；`actor` 必须且只能指定
+> `user` 或 `agent` 之一。第一期唯一实现注册名为 **`memory`**（进程内），
+> Argon2 是它的内部细节而非后端名。
 
 **重要**：`api_key_hashing_enabled` 建议**默认开启**。Argon2id 推荐参数（2024+ 标准）：**`time_cost=4, memory_cost=128 * 1024 (128 MB), parallelism=2`**。这是当前 OWASP 推荐的最低值，适合 2026 年的硬件水准。金融、医疗等合规场景应进一步提高（`time_cost=6+`)。如果默认关闭，当加密层也关闭时，key 就是磁盘上的裸明文。
 
@@ -490,7 +554,7 @@ def get_ctx() -> AuthContext:
 
 ---
 
-## 3. 授权（Authorization）
+### 3. 授权（Authorization）
 
 > **关联设计文档**：本框架的授权以 `org > user = agent > session` scope 模型为载体——user 与 agent 是同级主体，检索/写入默认限制在各自主体 scope 内，跨主体访问需显式授权。授权检查在接口层以 `identity`（调用方）与 `scope`（目标）分离的形式执行，见 [`design/architecture.md` §3.2 作用域与多租户](../../design/architecture.md) 与 [`design/architecture.md` §9 记忆接口层](../../design/architecture.md)。
 
@@ -663,7 +727,7 @@ T=3: ROOT 通过 PUT .../role 可把某个 user 或 agent 提升为 ROOT
 
 ---
 
-## 4. 多租户隔离（Isolation）
+### 4. 多租户隔离（Isolation）
 
 > **关联设计文档**：本框架的路径前缀注入是项目 scope 模型的存储层落地。scope 层级为 `org > space > user/agent > session`：`space` 是 org 下的逻辑隔离单元；`user` 与 `agent` 在 space 内的归属顺序由 `principal_path` 决定。跨主体或跨 space 访问必须经显式授权。详见 [`design/architecture.md` §3.2 作用域与多租户](../../design/architecture.md)。
 
@@ -824,7 +888,7 @@ def get_search_roots(context_type, ctx):
 
 ---
 
-## 5. 数据加密（Encryption at Rest）
+### 5. 数据加密（Encryption at Rest）
 
 > **关联设计文档**：存储加密是「端侧数据不出端、传输/存储加密」原则的落地。端云协同场景下，热/私有记忆留端、冷/共享上云，选择性同步需加密传输——见 [`design/vision.md` §4 支柱四 端云协同](../../design/vision.md) 与 [`design/architecture.md` §11 部署架构](../../design/architecture.md)。可插拔存储后端（SQLite/PostgreSQL/Milvus 等）的加密生效边界见 [`design/architecture.md` §5.2 存储抽象](../../design/architecture.md)。
 >
@@ -866,6 +930,12 @@ EFK长度(2B) | KeyIV长度(2B) | DataIV长度(2B) |         ← 12B 定长头
 ```
 
 密文自描述——头里记录 provider 类型，解密时按头里的 provider 类型走对应路径。
+
+> **PR1 实现注记**：信封实现在
+> `jiuwen_memory/common/security/cryptography/cryptography_impl/local_envelope.py`。v1 头为
+> `!4sBBHHH`（12 字节，无 key id / epoch，只读兼容）；当前写出的 v2 头为
+> `!4sBBHHHBI`（17 字节），增加 key-id 长度与 key epoch，变长体携带 key id。
+> `LocalKeyProvider` 能在单进程内保留旧 epoch 并轮换，但轮换状态尚不能跨重启持久化。
 
 ```python
 ENVELOPE_MAGIC = b"ENC1"
@@ -983,6 +1053,26 @@ async def decrypt(self, org_id: str, raw: bytes) -> bytes:
     ...
 ```
 
+> **PR1 实现注记**：当前 `LocalEnvelopeCryptographyProvider` 不提供
+> `allow_plaintext`；非 ENC1、损坏信封、AAD 不匹配与未知版本均 fail-closed。旧明文
+> 迁移必须使用边界清晰的离线工具或显式选择未加密 Store，不能在同一 provider 内降级。
+>
+> 历史方案曾考虑在 provider 上增加开关，理由是两个部署阶段的正确答案相反：
+>
+> - **迁移期**必须宽松。加密层上线时，库里全是加密前写的明文；一律拒绝就等于
+>   上线即全量不可读。
+> - **迁移完成后必须收紧**。此时「读到明文」只可能意味着有人绕过了加密层直接写
+>   底层存储，或者配置被改坏了。宽松模式下这两种情况都会被静默放行——而这正是
+>   降级攻击的着力点：攻击者只要能往底层写明文，就能让读路径完全跳过解密。
+>
+> 开关只有 provider 上这一个，两个存储装饰器（KV / FS）都不重复提供同语义旋钮
+> ——两个开关意味着两处配置、两种组合，其中「装饰器宽松 + provider 严格」这类
+> 组合没有任何意义，只会在排查时多一个要查的地方。
+>
+> 无论开关如何，**写路径永远加密**
+> （`test_encrypted_fs_store_write_always_encrypts_even_when_plaintext_allowed`）。
+> 开关若顺带放松了写，迁移期写进去的数据会永远是明文而调用方毫无察觉。
+
 ### 5.2 Key Provider 抽象
 
 框架应通过 Key Provider 这个策略接口来解耦上层的加密逻辑与底层的密钥托管方式：
@@ -1017,6 +1107,28 @@ class KeyProvider(ABC):
         """获取 Encryption Root Key；远程 provider 必须在受控边界内实现。"""
         ...
 ```
+
+> **实现注记（F05 迁移后已落地）**：本节设想的独立 `KeyProvider` 顶层抽象**已经存在**
+> ——`common.security.cryptography.key_provider.KeyProvider`，独立 Producer
+> （`TOP_NAME` 为 `key_provider`），换 KMS / Vault 不必改加密实现。策略接口是
+> `common.security.cryptography.CryptographyProvider`
+> （`encrypt(plaintext, *, context, aad)` / `decrypt(...)` / `health()`），它经
+> `KeyProvider` 取密钥，**不得自己读环境变量或配置文件里的根密钥**（F05 §KeyProvider）。
+> 内置 `LocalKeyProvider` 做 HKDF 派生与 data key 包装。仍有一处偏离：
+>
+> 1. **接口是同步的，不是 `async def`**。`KVStore` / `FSStore` 的方法全是同步的
+>    （`get(scope, key) -> bytes`）。异步 provider 会逼着同步的 `get` 内部调
+>    `asyncio.run(...)`，而这在一个已有事件循环的进程里直接抛
+>    `RuntimeError: asyncio.run() cannot be called from a running event loop`——
+>    也就是说，在真实的 ASGI 部署下必炸。要么整个存储层改异步（远超本期范围），
+>    要么 provider 同步。选后者。远程 provider（Vault/KMS）用同步 HTTP 客户端实现，
+>    这是它们的库都支持的形态。
+> 2. **`get_encryption_root_key()` 不在对外接口上**。`EncryptionProvider` 只暴露
+>    `encrypt` / `decrypt` / `health`，根密钥不跨接口边界。这是收紧不是缺失：把根
+>    密钥交出接口边界，就等于要求每个调用方都正确处理它的生命周期（不落日志、
+>    不进异常、用完清零）——而 KMS/HSM 类 provider **根本交不出来**，根密钥永远
+>    不离开硬件。（`LocalKeyProvider` 上还有这个方法，但那是实现内部的类，不是
+>    存储层能看到的接口。）
 
 #### 5.2.1 LocalProvider（本地开发/单机）
 
@@ -1072,9 +1184,9 @@ class LocalProvider(KeyProvider):
         return await aes_gcm_decrypt(org_key, iv, ciphertext)
 ```
 
-> **`create_key_file` 默认值**：当前 `agent-memory` mem2.0 的 `LocalKeyProvider`（`jiuwen_memory/common/security/security_impl/local_envelope_security_provider.py`）
+> **`create_key_file` 默认值**：当前 `agent-memory` mem2.0 的 `LocalKeyProvider`（`jiuwen_memory/common/security/cryptography/cryptography_impl/local_envelope.py`）
 > 把 `create_key_file` 默认值设为 `False`。未注入 `key_hex`/`key_b64`/`key_env` 且 `key_file` 不存在时，
-> `LocalEnvelopeSecurityProvider.__init__` 末尾的预检即抛 `BackendError`，装配阶段 fail-closed，不再静默生成。
+> `LocalKeyProvider` 装配末尾的预检即抛 `BackendError`，装配阶段 fail-closed，不再静默生成。
 > Dev/单机用户显式 `security.default.params.create_key_file: true` 启用自动生成路径。生成新密钥用 `openssl rand -hex 32`。
 ```
 
@@ -1217,17 +1329,22 @@ FileEncryptor.decrypt(data, org_id)      ← ★ 解密
 
 ### 5.4 配置
 
-当前落地的 KV 加密通过组合 `security` provider 与 `kv_store` 装饰器启用；不存在全局
-`encryption.enabled` 开关。未把业务 KV 指向 `target: encrypted` 时，存储仍按 raw KV
+当前落地的 KV 加密通过组合 `cryptography` provider 与 `kv_store` 装饰器启用；不存在全局
+`cryptography.enabled` 开关。未把业务 KV 指向 `target: encrypted` 时，存储仍按 raw KV
 后端的原始行为运行。
 
 ```yaml
-security:
-  default:
+key_provider:
+  local_keys:
     target: local
     params:
       key_file: "~/.agent-memory/security/master.key"
-      allow_plaintext: false
+
+cryptography:
+  default:
+    target: local
+    params:
+      key_provider: local_keys
 
 kv_store:
   raw:
@@ -1239,7 +1356,7 @@ kv_store:
     target: encrypted
     params:
       raw_kv_store: raw
-      security: default
+      cryptography: default
 ```
 
 **默认不启用加密包装**，因为加密增加复杂度：随机读必须全量解密、grep 必须应用层解密、append 必须读全重写。部署者在确认需要 before storage encryption at rest 场景（如文件磁盘 on laptop、S3 bucket）时才把业务 KV 指向 encrypted wrapper。
@@ -1273,7 +1390,7 @@ class KeyMismatchError(EncryptionError):
 
 ---
 
-## 6. Key 管理与分发
+### 6. Key 管理与分发
 
 本章管理的是**认证凭据**，即第 2 章的 API Key；它不管理第 5 章用于静态数据加密的 Encryption Root Key。两者必须使用独立随机值、独立配置项和独立轮换流程，禁止复用。
 
@@ -1439,7 +1556,7 @@ def verify_token(token_value: str) -> Token | None:
 
 ---
 
-## 7. 审计日志（Audit Logging）
+### 7. 审计日志（Audit Logging）
 
 > **关联设计文档**：审计是「可治理」原则（可检视/编辑/审计/回溯/遗忘）的一环。记忆的 `lifecycle` 用「标记失效」而非物理删除（非破坏式更新），`delete` 支持 `purge` 合规删除（物理删除真源与全部派生索引，仅留审计记录）——这两种删除都需审计留痕。见 [`design/architecture.md` §3.1 记忆单元](../../design/architecture.md)、[`design/architecture.md` §12 横切关注点](../../design/architecture.md)、[`design/architecture.md` §14 关键数据流](../../design/architecture.md)（写入路径含审计落点）、[`design/vision.md` §3 设计原则](../../design/vision.md)。
 
@@ -1454,7 +1571,7 @@ def verify_token(token_value: str) -> Token | None:
 - `AuthContext.acting_user` 表示当前操作对应的 user：user 自操作时等于 `actor.user`；Agent 经 user 授权代其操作时，是委托目标。它来自服务端验证过的 OAuth claim、授权记录或 session，不来自请求 body/URI；该字段不表示 user 与 agent 存在从属关系。
 - PEP 使用完整 `AuthContext` 做授权和审计；鉴权通过后只把 target scope 下沉到 Engine/Store，避免认证元数据污染存储接口。
 
-参考 `D:\agent-memory-mem2.0\examples\security_demo\auth\auth_context.py`，当前最小字段如下：
+参考早期 `security_demo/auth/auth_context.py`，当期 demo 的最小字段如下（已由下方 PR1 实现注记取代）：
 
 | 字段 | 来源 | 用途 |
 |---|---|---|
@@ -1463,18 +1580,41 @@ def verify_token(token_value: str) -> Token | None:
 | `role: str` | 服务端角色注册表或已验证 claim | ROOT/org_admin/user 等特权闸门与审计 |
 | `from_oauth: bool` | 认证分流器 | 区分 OAuth 与 API Key 路径，阻止 OAuth 凭据签发新的 OAuth 状态 |
 | `authorizing_key_fp: str` | 签发 token/session 时绑定的 Principal API Key fingerprint | key 轮换后的 token/session 级联失效与审计追责 |
+| `auth_mode: str` | authenticator（dev/trusted/api_key/oauth） | 认证路径，供审计（§7.2）。由 authenticator 填，不来自请求 |
 
 ```python
-@dataclass
+@dataclass(frozen=True)
 class AuthContext:
     actor: Scope
     acting_user: str = ""
     from_oauth: bool = False
     role: str = "user"
     authorizing_key_fp: str = ""
+    auth_mode: str = ""
 ```
 
 中间件构造 `AuthContext` 后，应通过显式参数或 `ContextVar` 在单次请求内传播，并在请求结束时可靠 reset。任何 handler、LLM tool_call 或业务参数都不能覆盖其中字段。
+
+> **PR1 实现注记**：实现在
+> `jiuwen_memory/common/security/types.py`——安全类型归安全域，**不再住 `type_def/`**：
+> `type_def` 被所有层 import，身份类型放进去会让「谁能构造/改写身份」的边界消失。
+> `role` 是 `Role` 枚举（默认最小权限 `USER`），`actor` 无默认值，dataclass
+> `frozen=True`；credential type/id、auth method、认证/失效时间与 delegation id 已落地。
+> `acting_user` 仍是 PR1 兼容旧 PermissionManager 的过渡字段；支持平行认证器撤销路由的
+> `credential_issuer` 与显式撤销 capability 由 PR1 认证契约提供；PR2 只删除
+> `acting_user` 并把委托改为服务端 `DelegationStore` 复核。
+> PR1 的 ContextVar 仍承载裸 `AuthContext`；`RequestSecurityContext` 只是为 PR2 预置的
+> 类型接缝，尚未成为公开 MemoryAPI 的必填参数。`set_current` / `reset_current` /
+> `get_current` 的
+> **reset 必须在 `finally`**（`ThreadingHTTPServer` 复用线程，泄漏的 ContextVar
+> 会让下一个请求继承上一个的身份）；`get_current()` 未认证时返回 `None`，
+> **不返回默认上下文**。
+>
+> 下表的候选字段中，`authenticated_at` / `credential_type` / `credential_id` /
+> `expires_at` / `delegation_id` 已在 F05 迁移中落地，`auth_method` 取代了
+> `auth_mode`；`from_oauth` 与 `authorizing_key_fp` 已删除——布尔式的
+> `from_oauth` 被开放的 `credential_type` 取代，`authorizing_key_fp` 更名为
+> 更中性的 `credential_id`。
 
 未来可按审计和协议演进增加以下字段：
 
@@ -1580,7 +1720,7 @@ class AuditLogger:
 
 ---
 
-## 8. 附加攻击面指引
+### 8. 附加攻击面指引
 
 > **关联设计文档**：分层记忆结构（L0 摘要 / L1 片段 / L2 全文，原始数据为唯一真源）与检索层（scope 为独立轴、各 Store 查询的专用 `scope` 字段做原生隔离）共同决定了索引层攻击面。向量库的明文 abstract 列、各 Store 的索引，需与内容层分开评估访问控制。见 [`design/architecture.md` §4 分层记忆结构](../../design/architecture.md)、[`design/architecture.md` §7 记忆检索层](../../design/architecture.md)、[`design/vision.md` §4 支柱二](../../design/vision.md)。
 
@@ -1632,7 +1772,7 @@ class RateLimiter:
 
 ---
 
-## 9. 安全开发 7 条铁律（Checklist）
+### 9. 安全开发 7 条铁律（Checklist）
 
 写完代码后，对照检查每条：
 
@@ -1681,7 +1821,7 @@ except AuthenticationFailedError:
     raise  # 不 fallback
 ```
 
-**自查**：哪个 catch 了加密/解密/认证函数异常，然后 fallback 到了不安全路径?encrypt， decrypt， hmac， PasswordHasher.verify 都要 fail-closed。另外，解密函数要考虑兼容性好：不是 ENC1 魔数的直接原样返回；但只要是 ENC1 信封，解密失败就必须要拒绝，不能返回部分数据。
+**自查**：哪个 catch 了加密/解密/认证函数异常，然后 fallback 到了不安全路径？encrypt、decrypt、hmac、PasswordHasher.verify 都要 fail-closed。现行加密 provider 对非 ENC1 输入同样拒绝，不把「不是信封」解释成「可按明文读取」。
 
 ### 4. 写操作经过 ensure_mutable_access
 
@@ -1748,3 +1888,28 @@ def read_file(uri: str, target: Scope, ctx: AuthContext):
 ```
 
 **自查**：加密通常只覆盖「文件/对象存储」这一层。向量库的 `abstract` 列、embedding queue 的 sqlite、缓存层的 kv 存储，**往往不在加密范围内**。不要认为「文件加密了」等于「全链路安全了」。你的威胁模型里，索引层和内容层应该分开评估，并分别配置访问控制。
+
+## 拒绝的方案
+
+- 由客户端 payload 声明可信身份：无法阻止调用方伪造 actor。
+- 把认证模式、限流或持久化审计后端写成核心枚举/名称白名单：新增 target 必须修改核心，
+  且容易让未知实现绕过安全默认值。
+- 缺少加密依赖或密钥时回退明文：部署会在无明显信号的情况下裸存数据。
+- 在每个 Store 或业务入口重复密码学逻辑：新增路径容易漏加密，轮换和 AAD 规则也会漂移。
+
+当前 PR1 的认证与加密取舍归档在 [F09 认证与加密](F09-authentication-kernel.md)，存储包装细节见 storage/F02。授权 F08 只在 PR2 创建，审计完整性由 PR3 归档。
+
+## 验证
+
+本文是历史设计输入，不单独维护一套可能漂移的测试总数。当前 PR1 的认证、防护与加密
+基线见 F07；授权与审计沿用既有实现、不属于 PR1 完成范围。跨模块接口以 S06 / S07 /
+S09 和镜像单测为准。
+
+## 已知遗留
+
+- OAuth 资源服务器仍待独立设计。MCP API Key 通道已由 PR1 落地：stdio 从
+  `AGENT_MEMORY_API_KEY` 读取，Streamable HTTP 从逐请求 Bearer/trusted headers 读取，
+  且 HTTP 不回退到进程环境变量。
+- 外部插件尚无自动 entry-point 发现，宿主应用必须在配置解析前显式 import 注册入口。
+- FSStore 可独立装配加密装饰器，但 `build_kernel` 主业务链路尚无资产消费者。
+- KMS/Vault/HSM、可跨重启持久化的根密钥轮换，以及审计防尾删/回滚的外部可信锚点仍未落地；本地 provider 只支持进程内多代轮换。

@@ -69,7 +69,11 @@ from jiuwen_memory.common.security.space_roles import (
     SpaceAxis,
     SpaceMemberFact,
 )
-from jiuwen_memory.common.security.types import Action, Grant, RequestSecurityContext
+from jiuwen_memory.common.security.types import (
+    Action,
+    Grant,
+    RequestSecurityContext,
+)
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
     EXT_MAX_TOKENS,
@@ -325,9 +329,7 @@ def _reject_foreign_routed_scope(scope: Scope, identity: Scope) -> None:
     """
     _reject_foreign_write_scope(scope, identity)
     if scope.org and scope.org != identity.org:
-        raise ValidationError(
-            f"write scope org={scope.org!r} does not match the caller identity"
-        )
+        raise ValidationError(f"write scope org={scope.org!r} does not match the caller identity")
 
 
 def _reject_foreign_write_scope(scope: Scope, identity: Scope) -> None:
@@ -343,9 +345,7 @@ def _reject_foreign_write_scope(scope: Scope, identity: Scope) -> None:
     for dim in ("user", "agent"):
         value = getattr(scope, dim)
         if value and value != getattr(identity, dim):
-            raise ValidationError(
-                f"write scope {dim}={value!r} does not match the caller identity"
-            )
+            raise ValidationError(f"write scope {dim}={value!r} does not match the caller identity")
 
 
 def _space_level_scope(scope: Scope) -> Scope:
@@ -466,8 +466,7 @@ def _reject_non_scalar_metadata(
         if isinstance(value, list) and all(isinstance(item, str) for item in value):
             continue
         raise ValidationError(
-            f"{field_name}[{key!r}] 仅支持 JSON 标量或字符串数组，"
-            f"收到 {type(value).__name__}"
+            f"{field_name}[{key!r}] 仅支持 JSON 标量或字符串数组，收到 {type(value).__name__}"
         )
 
 
@@ -675,9 +674,7 @@ def _list_routing_clauses(
             if value:
                 values.add(value)
         if len(values) == 1:
-            clauses.append(
-                FilterClause(canonical_filter_field(field), FilterOp.EQ, values.pop())
-            )
+            clauses.append(FilterClause(canonical_filter_field(field), FilterOp.EQ, values.pop()))
     return clauses
 
 
@@ -801,9 +798,7 @@ def _is_status_only(patch: SpacePatch | None) -> bool:
     if patch is None or patch.status is None:
         return False
     return all(
-        getattr(patch, field.name) is None
-        for field in fields(patch)
-        if field.name != "status"
+        getattr(patch, field.name) is None for field in fields(patch) if field.name != "status"
     )
 
 
@@ -1194,9 +1189,11 @@ class LocalMemoryAPI(MemoryAPI):
         if self._needs_space_facts():
             facts = self._read_space_facts(target)
             if facts is not None:
-                metadata[ATTR_PRINCIPAL_PATH] = facts.info.policy.principal_path.value if (
-                    facts.info is not None
-                ) else PrincipalPath.USER_AGENT.value
+                metadata[ATTR_PRINCIPAL_PATH] = (
+                    facts.info.policy.principal_path.value
+                    if (facts.info is not None)
+                    else PrincipalPath.USER_AGENT.value
+                )
                 space_facts = _project_space_facts(facts)
         else:
             try:
@@ -1572,9 +1569,7 @@ class LocalMemoryAPI(MemoryAPI):
         # 三项校验都在落点解析之前：解析会往 system_metadata 塞判定产物与瞬态的
         # route_ctx（非标量），先校验才是校调用方给的那份。
         # 坐标先取出：它是嵌套字典，留在参数袋里会被下面的标量校验拒绝。
-        coords, system_metadata = _take_coords(
-            system_metadata, enabled=self._routing_enabled()
-        )
+        coords, system_metadata = _take_coords(system_metadata, enabled=self._routing_enabled())
         _reject_kernel_system_metadata(system_metadata)
         _reject_route_tag_keys(system_metadata, self._route_table.tag_keys)
         _reject_non_scalar_metadata(system_metadata, field_name="system_metadata")
@@ -2034,9 +2029,7 @@ class LocalMemoryAPI(MemoryAPI):
             raise ValidationError("batch occurred_at must be datetime")
         # 坐标取自批级参数袋：判定上下文每批只算一次，逐项无处安放（逐项携带即拒绝，
         # 见 _normalize_batch_item）。同样须先于标量校验取出。
-        coords, system_metadata = _take_coords(
-            system_metadata, enabled=self._routing_enabled()
-        )
+        coords, system_metadata = _take_coords(system_metadata, enabled=self._routing_enabled())
         _reject_kernel_system_metadata(system_metadata)
         _reject_route_tag_keys(system_metadata, self._route_table.tag_keys)
         _reject_non_scalar_metadata(system_metadata, field_name="system_metadata")
@@ -2113,9 +2106,7 @@ class LocalMemoryAPI(MemoryAPI):
                         item.sequence,
                     )
                     if sequence_key in seen_sequences:
-                        raise ValidationError(
-                            "duplicate sequence within the same scope and stream"
-                        )
+                        raise ValidationError("duplicate sequence within the same scope and stream")
                     seen_sequences.add(sequence_key)
                 ready.append((index, item))
             except Exception as exc:
@@ -2206,9 +2197,7 @@ class LocalMemoryAPI(MemoryAPI):
                     },
                 )
 
-        return BatchWriteResult(
-            outcomes=[outcomes[index] for index in range(len(items))]
-        )
+        return BatchWriteResult(outcomes=[outcomes[index] for index in range(len(items))])
 
     def search(
         self,
@@ -2372,7 +2361,10 @@ class LocalMemoryAPI(MemoryAPI):
             )
             try:
                 outcome = self._perm.decide(
-                    identity, target, Action.READ, context=permission_context
+                    identity,
+                    target,
+                    Action.READ,
+                    context=permission_context,
                 )
                 if outcome.allowed and self._needs_space_facts():
                     # 状态校验与单空间路径同一口径（F07「空间状态校验」）：不补则
@@ -2403,9 +2395,7 @@ class LocalMemoryAPI(MemoryAPI):
                         permission_context.space_facts, identity, narrow
                     )
                 )
-                targets.append(
-                    collective.SpaceRecallTarget(scope=target, clauses=tuple(clauses))
-                )
+                targets.append(collective.SpaceRecallTarget(scope=target, clauses=tuple(clauses)))
             else:
                 denied.append(
                     _space_denied(
@@ -2952,7 +2942,7 @@ class LocalMemoryAPI(MemoryAPI):
         self._enforce_grant_ceiling(identity, grant)
         self._log(identity, "grant", target_scope=grant.grantor, detail=auth)
         # 旧 PermissionManager 尚不按 grant_id 定位，因此本期不生成 ID
-        #（返回值原样回传，grant_id 保持入参值）。
+        # （返回值原样回传，grant_id 保持入参值）。
         # 服务端生成 ID 与按 ID 定位随 GrantStore 实装一并落地。
         # PermissionManager 与安全域共用同一 Grant/Action 类型；管理动作在旧实现
         # 尚无角色闸门，必须先显式拒绝，不能借旧 ACL 语义放行。
@@ -3133,9 +3123,7 @@ class LocalMemoryAPI(MemoryAPI):
         self._log(identity, "update_space", target_id, target_scope=target, detail=auth)
         return info
 
-    def archive_space(
-        self, org: str, space: str, *, security: RequestSecurityContext
-    ) -> SpaceInfo:
+    def archive_space(self, org: str, space: str, *, security: RequestSecurityContext) -> SpaceInfo:
         identity = security.auth.actor
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
@@ -3221,9 +3209,7 @@ class LocalMemoryAPI(MemoryAPI):
         )
         return export_id
 
-    def space_usage(
-        self, org: str, space: str, *, security: RequestSecurityContext
-    ) -> SpaceUsage:
+    def space_usage(self, org: str, space: str, *, security: RequestSecurityContext) -> SpaceUsage:
         identity = security.auth.actor
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
@@ -3377,4 +3363,3 @@ class LocalMemoryAPI(MemoryAPI):
         self._log(identity, "remove_space_member", target_id, target_scope=target, detail=auth)
 
     # -- 鉴权 + 审计公共点 --------------------------------------------------- #
-

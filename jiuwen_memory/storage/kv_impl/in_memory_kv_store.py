@@ -31,9 +31,7 @@ class InMemoryKVStore(KVStore):
     """纯内存键值存储：``{scope: {key: (value, expires_at)}}``，按 scope 隔离。"""
 
     def __init__(self) -> None:
-        self._data: dict[_ScopeKey, dict[str, tuple[bytes, float | None]]] = (
-            defaultdict(dict)
-        )
+        self._data: dict[_ScopeKey, dict[str, tuple[bytes, float | None]]] = defaultdict(dict)
 
     def store_type(self) -> StoreType:
         return StoreType.KV
@@ -62,11 +60,11 @@ class InMemoryKVStore(KVStore):
             raise NotFoundError("kv", key)
         return value
 
-    def mget(self, scope: Scope, keys: List[str]) -> List[bytes]:
+    def mget(self, scope: Scope, keys: list[str]) -> list[bytes]:
         # 按下标一一对应；不去重，重复 key 各下标独立返回。任一缺失即报
         # NotFoundError（与 get 一致），不在批量点读里静默省略。
         sk = _skey(scope)
-        out: List[bytes] = []
+        out: list[bytes] = []
         for key in keys:
             value = self._live(sk, key)
             if value is None:
@@ -107,8 +105,7 @@ class InMemoryKVStore(KVStore):
 
     def scopes(self) -> list[Scope]:
         return [
-            Scope(org=k[0], space=k[1], user=k[2], agent=k[3], session=k[4])
-            for k in self._data
+            Scope(org=k[0], space=k[1], user=k[2], agent=k[3], session=k[4]) for k in self._data
         ]
 
     def _live(self, sk: _ScopeKey, key: str) -> bytes | None:
