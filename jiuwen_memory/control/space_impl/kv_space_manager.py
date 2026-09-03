@@ -436,6 +436,14 @@ class KVSpaceManager(SpaceManager):
     def archive(self, org: str, space: str) -> SpaceInfo:
         return self.update(org, space, SpacePatch(status=SpaceStatus.ARCHIVED))
 
+    def begin_delete(self, org: str, space: str) -> SpaceInfo:
+        info = self.get(org, space)
+        if info.status in (SpaceStatus.DELETING, SpaceStatus.DELETED):
+            return info
+        info.status = SpaceStatus.DELETING
+        self._kv.update(_scope(org, space), _INFO_KEY, _info_to_bytes(info))
+        return info
+
     def delete(self, org: str, space: str) -> SpaceDeleteResult:
         self._require_space(org, space)
         # 先清索引后删主数据：孤儿索引项会被逐空间判定挡住，只造成候选集虚大；

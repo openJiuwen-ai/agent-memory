@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.control import BatchWriteItem, BatchWriteOutcome, BatchWriteResult
 from jiuwen_memory_entry.core import handler
 from jiuwen_memory_entry.core.dispatch_request import DispatchBatchItem, DispatchRequest

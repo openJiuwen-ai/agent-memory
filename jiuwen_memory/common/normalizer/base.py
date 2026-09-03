@@ -13,16 +13,18 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
-from ..factory.factory import Factory
 from ..base import Plugin
+from ..errors import UnsupportedCapabilityError
+from ..factory.factory import Factory
 from ..type_def import Modality, RawPayload
 
 
 class NormalizerProducer(Factory):
     """Normalizer 的注册式工厂（与契约同处接口层，消费方只依赖接口即可取实例）。
 
-    ``name`` 即实现名。各实现在 ``normalizer_impl`` 下以 ``@NormalizerProducer.register("<名>")`` 自注册——
-    注册发生在 import 实现模块时，由 :func:`common.bootstrap.register_plugins` 统一触发。
+    ``name`` 即实现名。各实现在 ``normalizer_impl`` 下以
+    ``@NormalizerProducer.register("<名>")`` 自注册。注册发生在 import 实现模块时，
+    由 :func:`common.bootstrap.register_plugins` 统一触发。
     """
 
     TOP_NAME = "normalizer"
@@ -36,3 +38,14 @@ class Normalizer(Plugin):
     @abstractmethod
     def normalize(self, payload: RawPayload) -> str:
         """将原模态负载规约为可治理的文本/结构投影（content）。"""
+
+
+def ensure_normalizer_supports(normalizer: Normalizer, modality: Modality) -> None:
+    """确保 Normalizer 声明支持输入模态，否则报统一能力错误。"""
+    if modality in normalizer.modalities():
+        return
+    raise UnsupportedCapabilityError(
+        capability="modality",
+        value=modality.value,
+        component=type(normalizer).__name__,
+    )

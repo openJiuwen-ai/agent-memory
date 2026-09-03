@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from jiuwen_memory import api as api_module
-from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.security import types as security_types
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Scope

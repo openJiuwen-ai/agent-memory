@@ -279,6 +279,9 @@ def test_status_transitions_are_checked() -> None:
     assert manager.update("acme", "team", SpacePatch(status=SpaceStatus.ACTIVE)).status == (
         SpaceStatus.ACTIVE
     )
+    deleting = manager.begin_delete("acme", "team")
+    assert deleting.status == SpaceStatus.DELETING
+    assert manager.begin_delete("acme", "team").status == SpaceStatus.DELETING
 
 
 def test_create_rollback_leaves_no_registry_or_index_entry() -> None:

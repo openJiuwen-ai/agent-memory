@@ -200,7 +200,7 @@ provenance 扩展和 Space 清理必须携带完整 Scope 或带 Scope 的 Memor
 ### 决策 8：迁移与 offboarding 顺序必须保留 Scope 语义
 
 SQLite grant 旧表必须先增加 `grantor_space/grantee_space` 列，再创建引用这些列的索引。
-`delete_space` 先通过 `MemoryEngine.purge_space` 清理目标 Space 下全部子 Scope 的真源与
+`delete_space` 鉴权后由 `SpaceLifecycleService` 先通过 `MemoryEngine.purge_space` 清理目标 Space 下全部子 Scope 的真源与
 索引，再由 SpaceManager 删除 messages、管理元数据和全局注册键。
 
 ## 当前落地范围

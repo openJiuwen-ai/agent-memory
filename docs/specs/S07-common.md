@@ -5,10 +5,10 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-08-31 |
+| 最近一次修订日期 | 2026-09-03 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F05-security-api-contracts.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F05-security-api-contracts.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
 ## Metadata 领域模型契约
 
@@ -128,6 +128,18 @@ class Plugin(ABC):
 |------|------|------|
 | `normalize` | `(payload: RawPayload) -> str` | 从原始负载提取/翻译为可治理文本 |
 | `modalities` | `() -> list[Modality]` | 返回本 normalizer 支持的模态类型 |
+| `ensure_normalizer_supports` | `(normalizer, modality) -> None` | 公共能力门禁；支持时返回 `None`，否则抛含 capability/value/component 的 `UnsupportedCapabilityError` |
+
+`modalities()` 是“是否支持该模态”的单一能力声明，不描述输入使用 `data` 还是 `uri`。
+`RoutingNormalizer` 构造时必须校验每个显式 route key 属于其 delegate 的能力集合，矛盾时按
+装配错误抛 `ValidationError`；运行时真实 payload 不受支持时抛
+`UnsupportedCapabilityError`。HTTP 视频入口缺少视频 Normalizer 时使用同一能力错误，
+缺少 video Evolver 仍按装配错误处理。
+
+`PassthroughNormalizer` 只支持已经是 UTF-8 文本表示的 `TEXT` / `CODE`。CODE 表示调用方
+已经提供源码文本，不读取源码文件；只有 TEXT 允许在无 data 时把 uri 字符串作为兼容文本
+回退。DOCUMENT 需要专用解析型 Normalizer，`IMAGE` / `AUDIO` / `VIDEO` 也不得通过
+passthrough。UTF-8 解码失败抛 `ValidationError`，不得泄漏为未归一的解码异常。
 
 ### FeatureExtractor（`feature_extractor/base.py`）
 
@@ -262,7 +274,7 @@ F05 公共安全架构的契约层（认证 / 密码学 / 保护 / 授权 / 审�
 | `FeatureSet` | keywords / entities / tags | 特征集合 |
 | `Chunk` | id / text / unit_id / metadata | 切分块 |
 | `ChatMessage` | role / content | LLM 对话消息；content 为文本或多模态 parts |
-| `RawPayload` | id / scope / modality / data / uri / metadata / occurred_at | 原始负载 |
+| `RawPayload` | id / scope / modality / data / uri / system_metadata / user_metadata / occurred_at / assets | 原始负载；`assets` 只承载待 Ingestor 映射的资产引用，不规定产出数量或 Segment 位置 |
 | `FilterClause` | field / op / value | 原子过滤谓词；`EQ` / `IN` 正向匹配标量，`CONTAINS` 匹配数组成员，`NE` / `NOT_IN` 分别取反 |
 | `FilterGroup` | logic / children | AND / OR / NOT 逻辑节点 |
 | `FilterExpr` | FilterClause \| FilterGroup | 跨 API、检索和存储层的过滤树 |
@@ -466,11 +478,12 @@ def _build(config: ComponentConfig) -> Embedder:
 | 异常 | 含义 |
 |------|------|
 | `ConflictError` | 资源冲突（id 已存在） |
-| `NotFoundError` | 资源不存在 |
+| `PartialFailureError` | 多步骤操作部分成功，须按 `retry_action` 重试 |
 | `PermissionDeniedError` | 鉴权失败 |
 | `PolicyError` | 策略错误（未知键/不可变配置） |
 | `BackendError` | 后端不可用 |
 | `HealthCheckError` | 健康检查失败 |
+| `UnsupportedCapabilityError` | 组件不支持请求的能力值；携带 `capability` / `value` / `component` |
 | `SecurityError` / `EncryptionError` | 安全横切处理失败的基类 |
 | `LockError` | 锁相关异常的基类 |
 | `LockTimeoutError` | 有界等待耗尽仍未获得锁 |
