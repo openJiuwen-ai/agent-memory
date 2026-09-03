@@ -11,7 +11,7 @@ from jiuwen_memory.common.errors import (
     PolicyError,
     ValidationError,
 )
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, metadata_for_log
 from jiuwen_memory.common.security import principal, space_predicates
 from jiuwen_memory.common.security.space_roles import (
     ENTRY_RULES,
@@ -418,10 +418,20 @@ def _policy_int(policy: PolicyManager, key: str, *, default: int) -> int:
     try:
         value = int(str(raw).strip())
     except ValueError:
-        logger.warning("policy %s is not an integer: %r, falling back to %d", key, raw, default)
+        logger.warning(
+            "policy %s is not an integer: value=%s, falling back to %d",
+            key,
+            metadata_for_log({"value": raw}),
+            default,
+        )
         return default
     if value <= 0:
-        logger.warning("policy %s must be > 0, got %d, falling back to %d", key, value, default)
+        logger.warning(
+            "policy %s must be > 0, value=%s, falling back to %d",
+            key,
+            metadata_for_log({"value": value}),
+            default,
+        )
         return default
     return value
 

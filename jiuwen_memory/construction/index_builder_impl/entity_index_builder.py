@@ -7,7 +7,7 @@ from collections import defaultdict
 from dataclasses import dataclass, replace
 from uuid import uuid4
 
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryTier,
@@ -228,8 +228,13 @@ class EntityLinkService:
             entities = self._entity_store.find_by_linked_memory_id(
                 space_id, memory_id, filters=filters,
             )
-        except Exception:
-            logger.warning("entity_unlink_lookup_failed space_id=%s memory_id=%s", space_id, memory_id, exc_info=True)
+        except Exception as exc:
+            logger.warning(
+                "entity_unlink_lookup_failed space_id=%s memory_id=%s error_type=%s",
+                redact_for_log(space_id),
+                memory_id,
+                type(exc).__name__,
+            )
             return EntityLinkResult(failed_count=1)
 
         # Phase 1: 分类——剩余非空则 UNLINK_UPDATE，空则 DELETE
@@ -256,15 +261,21 @@ class EntityLinkService:
         if pending_ops:
             try:
                 batch_result = self._entity_store.execute_operations(space_id, pending_ops)
-            except Exception:
+            except Exception as exc:
                 failed_count = len(pending_ops)
-                logger.warning("entity_unlink_batch_failed space_id=%s memory_id=%s op_count=%d",
-                               space_id, memory_id, len(pending_ops), exc_info=True)
+                logger.warning(
+                    "entity_unlink_batch_failed space_id=%s memory_id=%s "
+                    "op_count=%d error_type=%s",
+                    redact_for_log(space_id),
+                    memory_id,
+                    len(pending_ops),
+                    type(exc).__name__,
+                )
             else:
                 failed_count = len(batch_result.failed_ids)
                 for failed_id in batch_result.failed_ids:
                     logger.warning("entity_unlink_failed entity_id=%s space_id=%s memory_id=%s",
-                                   str(failed_id), space_id, memory_id)
+                                   str(failed_id), redact_for_log(space_id), memory_id)
 
         return EntityLinkResult(updated_count=updated_count, deleted_count=deleted_count, failed_count=failed_count)
 
@@ -307,15 +318,20 @@ class EntityLinkService:
                 filters=filters, limit=self._list_limit,
             )
             existing_by_hash = {r.entity_text_hash: r for r in existing if r.entity_text_hash}
-        except Exception:
+        except Exception as exc:
             # 查询失败不能降级成"全 INSERT"——查不到不等于不存在。若置
             # existing_by_hash={} 继续走循环，每个实体会走 INSERT 分支，对已
             # 存在的实体新建重复文档（同 hash 多条 EntityRecord，召回侧
             # find_by_entity_text_hash 命中多条，raw_contrib 累加翻倍，打分失真）。
             # 整组 abort + 计 failed：不造重复副作用，失败可见，下次同实体写入
             # 时查询恢复→命中→LINK 自愈。
-            logger.error("entity_exact_lookup_failed space_id=%s entity_count=%d abort group",
-                         space_id, len(entities_by_key), exc_info=True)
+            logger.error(
+                "entity_exact_lookup_failed space_id=%s entity_count=%d "
+                "abort_group error_type=%s",
+                redact_for_log(space_id),
+                len(entities_by_key),
+                type(exc).__name__,
+            )
             return EntityLinkResult(
                 extracted_count=extracted_count,
                 failed_count=len(entities_by_key),
@@ -357,9 +373,14 @@ class EntityLinkService:
                     key,
                 ))
                 inserted_count += 1
-            except Exception:
+            except Exception as exc:
                 failed_count += 1
-                logger.warning("entity_link_failed entity_text_hash=%s space_id=%s", key, space_id, exc_info=True)
+                logger.warning(
+                    "entity_link_failed entity_text_hash=%s space_id=%s error_type=%s",
+                    key,
+                    redact_for_log(space_id),
+                    type(exc).__name__,
+                )
 
         # 一次 bulk 提交整组
         if pending_ops:
@@ -370,17 +391,23 @@ class EntityLinkService:
                 hash_by_id[op_id] = key
             try:
                 batch_result = self._entity_store.execute_operations(space_id, ops)
-            except Exception:
+            except Exception as exc:
                 failed_count += len(pending_ops)
                 logger.warning(
-                    "entity_link_batch_failed space_id=%s op_count=%d",
-                    space_id, len(pending_ops), exc_info=True,
+                    "entity_link_batch_failed space_id=%s op_count=%d error_type=%s",
+                    redact_for_log(space_id),
+                    len(pending_ops),
+                    type(exc).__name__,
                 )
             else:
                 failed_count += len(batch_result.failed_ids)
                 for failed_id in batch_result.failed_ids:
-                    logger.warning("entity_link_failed entity_text_hash=%s space_id=%s record_id=%s",
-                                   hash_by_id.get(failed_id), space_id, str(failed_id))
+                    logger.warning(
+                        "entity_link_failed entity_text_hash=%s space_id=%s record_id=%s",
+                        hash_by_id.get(failed_id),
+                        redact_for_log(space_id),
+                        str(failed_id),
+                    )
 
         return EntityLinkResult(
             extracted_count=extracted_count,
@@ -431,8 +458,9 @@ class EntityIndexBuilder(IndexBuilder):
             # 写入时 hash 精确匹配会重新命中并 LINK，有机会自愈。
             logger.error(
                 "EntityIndexBuilder: link_memories failed for %d units (entity index "
-                "stale, will self-heal on next write): %s", len(units), exc,
-                exc_info=True,
+                "stale, will self-heal on next write): error_type=%s",
+                len(units),
+                type(exc).__name__,
             )
             return
         if result.failed_count:
@@ -467,11 +495,19 @@ class EntityIndexBuilder(IndexBuilder):
                     memory_id=unit.id,
                 )
             except Exception as exc:
-                logger.warning("EntityIndexBuilder: unlink_memory failed for unit %s: %s", unit.id[:8], exc)
+                logger.warning(
+                    "EntityIndexBuilder: unlink_memory failed for unit %s: error_type=%s",
+                    unit.id[:8],
+                    type(exc).__name__,
+                )
         try:
             self._linker.link_memories(units)
         except Exception as exc:
-            logger.warning("EntityIndexBuilder: link_memories failed in update for %d units: %s", len(units), exc)
+            logger.warning(
+                "EntityIndexBuilder: link_memories failed in update for %d units: error_type=%s",
+                len(units),
+                type(exc).__name__,
+            )
 
     def remove(
         self, units: list[MemoryUnit], *, mode: IndexRemoveMode = IndexRemoveMode.HARD
@@ -487,7 +523,11 @@ class EntityIndexBuilder(IndexBuilder):
                     memory_id=unit.id,
                 )
             except Exception as exc:
-                logger.warning("EntityIndexBuilder: unlink_memory failed for unit %s: %s", unit.id[:8], exc)
+                logger.warning(
+                    "EntityIndexBuilder: unlink_memory failed for unit %s: error_type=%s",
+                    unit.id[:8],
+                    type(exc).__name__,
+                )
 
     def remove_with_scope(self, unit_ids: list[str], scope: Scope) -> None:
         """已知 scope 时直接清理 entity 反向索引，避免 lookup。
@@ -506,7 +546,11 @@ class EntityIndexBuilder(IndexBuilder):
             try:
                 self._linker.unlink_memory(scope=scope, memory_id=unit_id)
             except Exception as exc:
-                logger.warning("EntityIndexBuilder: unlink_memory failed for unit_id %s: %s", unit_id[:8], exc)
+                logger.warning(
+                    "EntityIndexBuilder: unlink_memory failed for unit_id %s: error_type=%s",
+                    unit_id[:8],
+                    type(exc).__name__,
+                )
 
     def rebuild(self) -> None:
         return None

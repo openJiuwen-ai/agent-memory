@@ -12,7 +12,7 @@ from collections.abc import Iterable
 
 from jiuwen_memory.common.chunker.base import Chunker
 from jiuwen_memory.common.embedder.base import Embedder
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, redact_for_log, scope_for_log
 from jiuwen_memory.common.type_def import (
     T_EVENT_UNKNOWN,
     T_INVALID_OPEN,
@@ -156,11 +156,19 @@ def upsert_document(store: FulltextStore, scope: Scope, doc: Document) -> None:
     try:
         store.insert(scope, [doc])
     except Exception as exc:
-        logger.warning("index_ops: fulltext insert failed for %s: %s, try update", doc.id, exc)
+        logger.warning(
+            "index_ops: fulltext insert failed for %s: error_type=%s, try update",
+            doc.id,
+            type(exc).__name__,
+        )
         try:
             store.update(scope, [doc])
         except Exception as exc2:
-            logger.error("index_ops: fulltext update also failed for %s: %s", doc.id, exc2)
+            logger.error(
+                "index_ops: fulltext update also failed for %s: error_type=%s",
+                doc.id,
+                type(exc2).__name__,
+            )
 
 
 def build_fulltext_layers(
@@ -187,10 +195,10 @@ def delete_layer_documents(
             store.delete(scope, [f"{unit_id}:{layer}"])
         except Exception as exc:
             logger.warning(
-                "index_ops: delete layer %s doc failed for %s: %s",
+                "index_ops: delete layer %s doc failed for %s: error_type=%s",
                 layer,
                 unit_id[:8],
-                exc,
+                type(exc).__name__,
             )
 
 
@@ -224,7 +232,7 @@ def vectorize_unit(
         unit.id[:8],
         unit.tier.value,
         unit.provenance,
-        unit.content[:200],
+        redact_for_log(unit.content),
     )
     chunks = chunker.chunk(
         text=unit.content,
@@ -237,9 +245,9 @@ def vectorize_unit(
         vectors = embedder.embed([c.text for c in chunks])
     except Exception as exc:
         logger.warning(
-            "index_ops: Embedder.embed failed for unit %s: %s",
+            "index_ops: Embedder.embed failed for unit %s: error_type=%s",
             unit.id[:8],
-            exc,
+            type(exc).__name__,
         )
         return []
     return list(zip(chunks, vectors))
@@ -288,15 +296,17 @@ def write_vector_index(
             vector_store.insert(scope, group_records)
         except Exception as exc:
             logger.warning(
-                "index_ops: VectorStore.insert failed for scope %s: %s, try update", key, exc
+                "index_ops: VectorStore.insert failed for scope %s: error_type=%s, try update",
+                scope_for_log(key),
+                type(exc).__name__,
             )
             try:
                 vector_store.update(scope, group_records)
             except Exception as exc2:
                 logger.error(
-                    "index_ops: VectorStore.update also failed for scope %s: %s",
-                    key,
-                    exc2,
+                    "index_ops: VectorStore.update also failed for scope %s: error_type=%s",
+                    scope_for_log(key),
+                    type(exc2).__name__,
                 )
 
 
@@ -313,9 +323,9 @@ def write_chunk_trackings(
                 kv_store.insert(scope, kv_key, json.dumps(chunk_ids).encode())
         except Exception as exc:
             logger.warning(
-                "index_ops: KVStore chunk tracking write failed for %s: %s",
+                "index_ops: KVStore chunk tracking write failed for %s: error_type=%s",
                 kv_key,
-                exc,
+                type(exc).__name__,
             )
 
 
@@ -329,7 +339,11 @@ def delete_tracked_chunks(
         chunk_ids = json.loads(raw.decode())
         vector_store.delete(scope, chunk_ids)
     except Exception as exc:
-        logger.warning("index_ops: no chunk tracking found for %s: %s", unit_id, exc)
+        logger.warning(
+            "index_ops: no chunk tracking found for %s: error_type=%s",
+            unit_id,
+            type(exc).__name__,
+        )
 
 
 def clear_chunk_tracking(kv_store: KVStore, scope: Scope, unit_id: str) -> None:
@@ -377,7 +391,11 @@ def _build_one_vector_layer(
     try:
         vectors = embedder.embed([t for _, t in pending])
     except Exception as exc:
-        logger.warning("index_ops: layers %s embed failed: %s", layer, exc)
+        logger.warning(
+            "index_ops: layers %s embed failed: error_type=%s",
+            layer,
+            type(exc).__name__,
+        )
         return
 
     groups: dict[ScopeKey, list[VectorRecord]] = {}
@@ -403,10 +421,10 @@ def delete_layer_vector_records(
             store.delete(scope, [layer_record_id(unit_id, layer)])
         except Exception as exc:
             logger.warning(
-                "index_ops: delete layer %s record failed for %s: %s",
+                "index_ops: delete layer %s record failed for %s: error_type=%s",
                 layer,
                 unit_id[:8],
-                exc,
+                type(exc).__name__,
             )
 
 

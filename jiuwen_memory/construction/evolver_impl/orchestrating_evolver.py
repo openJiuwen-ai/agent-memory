@@ -31,7 +31,11 @@ from typing import List, Optional, Tuple
 
 from jiuwen_memory.common.errors import ConflictError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import (
+    get_logger,
+    metadata_for_log,
+    redact_for_log,
+)
 from jiuwen_memory.common.type_def import (
     MESSAGES_KEY_PREFIX,
     DedupDecision,
@@ -248,7 +252,8 @@ class OrchestratingEvolver(Evolver):
         logger.info("Evolver: evolve mode=%s, %d units", mode.value, len(units))
         for u in units:
             logger.info("Evolver: input unit id=%s tier=%s lifecycle=%s provenance=%s content=%s",
-                         u.id[:8], u.tier.value, u.lifecycle.value, u.provenance, u.content[:200])
+                         u.id[:8], u.tier.value, u.lifecycle.value, u.provenance,
+                         redact_for_log(u.content))
         if mode == EvolveMode.EXTRACT:
             return self._evolve_extract(units)
         if mode == EvolveMode.CONSOLIDATE:
@@ -387,11 +392,20 @@ class OrchestratingEvolver(Evolver):
         result: EvolveResult,
     ) -> int:
         """执行单条候选的去重决策，更新 result；返回 noop 计数（0 或 1）。"""
+        decision_ids_for_log = {candidate.id[:8]}
+        if existing_unit is not None:
+            decision_ids_for_log.add(existing_unit.id[:8])
         logger.info(
-            "Evolver._dedup: candidate %s → decision=%s existing=%s similarity=%.3f",
-            candidate.id[:8], decision.value,
-            existing_unit.id[:8] if existing_unit else "None",
-            similarity,
+            "Evolver._dedup: metadata=%s",
+            metadata_for_log(
+                {
+                    "candidate_id": candidate.id[:8],
+                    "dedup_decision": decision.value,
+                    "existing_unit_id": existing_unit.id[:8] if existing_unit else None,
+                    "dedup_similarity": similarity,
+                },
+                visible_memory_unit_ids=decision_ids_for_log,
+            ),
         )
 
         # ADD，或 UPDATE/SUPERSEDE 缺 existing_unit 时降级为 ADD（LLM 误判但 recall
@@ -402,8 +416,10 @@ class OrchestratingEvolver(Evolver):
         ):
             if decision != DedupDecision.ADD:
                 logger.warning(
-                    "Evolver._dedup: %s without existing_unit for %s, fallback ADD",
-                    decision.value, candidate.id[:8],
+                    "Evolver._dedup: metadata=%s without existing_unit for "
+                    "candidate_id=%s, fallback ADD",
+                    metadata_for_log({"dedup_decision": decision.value}),
+                    candidate.id[:8],
                 )
             self._index.build([candidate])
             result.created_ids.append(candidate.id)
@@ -555,7 +571,7 @@ class OrchestratingEvolver(Evolver):
             else:
                 logger.warning(
                     "Evolver._llm_dedup_decide: cannot parse LLM response as JSON: %s",
-                    response[:200],
+                    redact_for_log(response),
                 )
                 return DedupDecision.ADD
 
@@ -565,7 +581,7 @@ class OrchestratingEvolver(Evolver):
         except ValueError:
             logger.warning(
                 "Evolver._llm_dedup_decide: unknown decision '%s', fallback ADD",
-                decision_str,
+                redact_for_log(decision_str),
             )
             return DedupDecision.ADD
 
@@ -602,7 +618,8 @@ class OrchestratingEvolver(Evolver):
         except Exception as exc:
             logger.warning(
                 "Evolver._llm_dedup_decide_batch: LLM call failed, "
-                "fallback to per-candidate single: %s", exc,
+                "fallback to per-candidate single: error_type=%s",
+                type(exc).__name__,
             )
             return self._fallback_single_decide(items)
 
@@ -634,11 +651,13 @@ class OrchestratingEvolver(Evolver):
         if not isinstance(parsed, list):
             logger.warning(
                 "Evolver._llm_dedup_decide_batch: cannot parse LLM response as JSON array, "
-                "fallback to per-candidate single: %s", response[:200],
+                "fallback to per-candidate single: %s",
+                redact_for_log(response),
             )
             return self._fallback_single_decide(items)
 
         # 按候选 id 取 decision
+        known_candidate_ids = {candidate.id for candidate, _ in items}
         for entry in parsed:
             if not isinstance(entry, dict):
                 continue
@@ -650,9 +669,16 @@ class OrchestratingEvolver(Evolver):
             try:
                 results[cid] = DedupDecision(decision_str)
             except ValueError:
+                candidate_id_for_log = (
+                    cid
+                    if isinstance(cid, str) and cid in known_candidate_ids
+                    else redact_for_log(cid)
+                )
                 logger.warning(
-                    "Evolver._llm_dedup_decide_batch: unknown decision '%s' for %s, fallback ADD",
-                    decision_str, cid,
+                    "Evolver._llm_dedup_decide_batch: unknown decision metadata=%s "
+                    "for candidate_id=%s, fallback ADD",
+                    metadata_for_log({"dedup_decision": decision_str}),
+                    candidate_id_for_log,
                 )
                 results[cid] = DedupDecision.ADD
 
@@ -743,9 +769,13 @@ class OrchestratingEvolver(Evolver):
         ctx = ExtractContext(
             recent_originals=list(recent), related_memories=related
         )
+        infer_metadata = {"infer": True}
         logger.info(
-            "Evolver._maybe_collect_extract_context: infer=true, recent=%d related=%d",
-            len(recent), len(related),
+            "Evolver._maybe_collect_extract_context: system_metadata=%s, "
+            "recent=%d related=%d",
+            metadata_for_log(infer_metadata),
+            len(recent),
+            len(related),
         )
         return ctx
 
@@ -942,8 +972,11 @@ class OrchestratingEvolver(Evolver):
             # 不走去重。extractor 把本轮汇总成 1 条 PROCEDURAL 执行历史，直接落 /memory/
             # 建索引。见 F02「过程记忆抽取」。未抽出则直接返回空，不落盘。
             extracted = self._extractor.extract(units, context=None)
+            procedural_metadata = {"procedural": True}
             logger.info(
-                "Evolver: EXTRACT(procedural) extractor returned %d units", len(extracted)
+                "Evolver: EXTRACT system_metadata=%s extractor returned %d units",
+                metadata_for_log(procedural_metadata),
+                len(extracted),
             )
             if not extracted:
                 return EvolveResult()
@@ -989,16 +1022,13 @@ class OrchestratingEvolver(Evolver):
         self._persist_graph(units, relations)
         logger.info("Evolver: ASSOCIATE found %d relations", len(relations))
         for relation in relations:
-            metadata_preview = {}
-            for key, value in relation.metadata.items():
-                metadata_preview[key] = value[:50] if isinstance(value, str) else value
             logger.info(
                 "Evolver: relation %s→%s type=%s score=%.2f metadata=%s",
                 relation.source_id[:8],
                 relation.target_id[:8],
                 relation.relation,
                 relation.score,
-                metadata_preview,
+                metadata_for_log(relation.metadata),
             )
         return EvolveResult(updated_ids=[relation.target_id for relation in relations])
 

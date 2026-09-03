@@ -22,7 +22,7 @@ import re
 from typing import List
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, metadata_for_log, redact_for_log
 from jiuwen_memory.common.type_def import ChatMessage, LifecycleState, MemoryTier, MemoryUnit
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
@@ -177,7 +177,10 @@ class LLMClassifier(Classifier):
             sid = _strip_source_id_shell(str(item.get("source_id", "")))
             unit = unit_map.get(sid)
             if unit is None:
-                logger.debug("LLMClassifier: source_id %r not in batch, skip", sid)
+                logger.debug(
+                    "LLMClassifier: source_id %s not in batch, skip",
+                    redact_for_log(sid),
+                )
                 continue
             unit.tier = _parse_tier(item.get("tier"))
             tags = parse_tags(item.get("tags"))
@@ -194,7 +197,9 @@ class LLMClassifier(Classifier):
             matched += 1
             logger.info(
                 "LLMClassifier: unit %s → tier=%s tags=%s",
-                unit.id[:8], unit.tier.value, unit.tags,
+                unit.id[:8],
+                unit.tier.value,
+                metadata_for_log(unit.tags),
             )
         logger.info(
             "LLMClassifier: classified %d/%d units (raw items=%d)",
@@ -242,7 +247,7 @@ class LLMClassifier(Classifier):
         except json.JSONDecodeError:
             logger.warning(
                 "LLMClassifier: cannot parse LLM response as JSON, return empty: %s",
-                response[:200],
+                redact_for_log(response),
             )
         return []  # 所有解析路径失败，统一返空
 

@@ -12,7 +12,11 @@ from __future__ import annotations
 from typing import List
 
 from jiuwen_memory.common.feature_extractor.base import FeatureExtractor, FeatureExtractorProducer
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import (
+    get_logger,
+    metadata_for_log,
+    redact_for_log,
+)
 from jiuwen_memory.common.type_def import MemoryUnit, Relation
 from jiuwen_memory.construction.associator import Associator, AssociatorProducer
 from jiuwen_memory.construction.base import OperatorType
@@ -40,12 +44,20 @@ class KeywordAssociator(Associator):
                 "KeywordAssociator: input unit id=%s tier=%s content=%s",
                 u.id[:8],
                 u.tier.value,
-                u.content[:200],
+                redact_for_log(u.content),
             )
         toks = {u.id: set(self._features.extract(u.content).keywords) for u in units}
         logger.info(
-            "KeywordAssociator: keywords extracted — %s",
-            {uid[:8]: sorted(kws) for uid, kws in toks.items()},
+            "KeywordAssociator: extracted metadata=%s",
+            metadata_for_log(
+                {
+                    "units": [
+                        {"unit_id": uid[:8], "keywords": sorted(keywords)}
+                        for uid, keywords in toks.items()
+                    ]
+                },
+                visible_memory_unit_ids=[uid[:8] for uid in toks],
+            ),
         )
         relations: List[Relation] = []
         for index, a in enumerate(units):
@@ -62,11 +74,12 @@ class KeywordAssociator(Associator):
                             metadata={"shared": ",".join(sorted(shared))},
                         )
                     )
+                    relation_metadata = {"shared": ",".join(sorted(shared))}
                     logger.info(
-                        "KeywordAssociator: found relation %s↔%s shared=%s score=%.1f",
+                        "KeywordAssociator: found relation %s↔%s metadata=%s score=%.1f",
                         a.id[:8],
                         b.id[:8],
-                        sorted(shared),
+                        metadata_for_log(relation_metadata),
                         float(len(shared)),
                     )
         logger.info("KeywordAssociator: found %d relations total", len(relations))

@@ -17,6 +17,8 @@ import math
 from collections import defaultdict
 from statistics import median
 
+from jiuwen_memory.common.log import get_logger, scope_for_log
+from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.common.type_def.entity import (
     EntityStoreFilters,
     hash_entity_text,
@@ -24,8 +26,6 @@ from jiuwen_memory.common.type_def.entity import (
 from jiuwen_memory.common.type_def.normalizer import EntityNormalizer
 from jiuwen_memory.common.type_def.retrieval_filter import is_retrieval_candidate
 from jiuwen_memory.common.type_def.scope import space_id_from_scope
-from jiuwen_memory.common.log import get_logger
-from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.recaller import Recaller, RecallerProducer
 from jiuwen_memory.retrieval.types import ParsedQuery, RecallChannel, ScoredUnit
@@ -120,9 +120,16 @@ class KeywordRecaller(Recaller):
 
         result = self._merge_maxp(batch1, batch2)[:top_k]
         logger.info(
-            "KeywordRecaller: layer=%s scope=%s top_k=%d hits=%d units=%d batch2=%d merged=%d returned=%d%s",
-            self._layer, scope, top_k, len(hits), len(batch1), len(batch2),
-            len(batch1) + len(batch2), len(result),
+            "KeywordRecaller: layer=%s scope=%s top_k=%d hits=%d units=%d "
+            "batch2=%d merged=%d returned=%d%s",
+            self._layer,
+            scope_for_log(scope),
+            top_k,
+            len(hits),
+            len(batch1),
+            len(batch2),
+            len(batch1) + len(batch2),
+            len(result),
             " (short-circuit: batch1>=top_k)" if not batch2 and len(batch1) >= top_k else "",
         )
         return result

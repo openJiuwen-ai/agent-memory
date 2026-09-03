@@ -28,7 +28,7 @@ from typing import AsyncIterator
 from .._support import scope_segments
 from ..errors import AgentMemoryError, ValidationError
 from ..factory.factory import Factory
-from ..log import get_logger
+from ..log import get_logger, redact_for_log
 from ..type_def import Scope
 
 logger = get_logger(__name__)
@@ -270,10 +270,14 @@ class LockProvider(ABC):
             try:
                 renewed = await self.renew(handle)
             except Exception as exc:  # 续期失败一律视为失去持有权，不向上抛断掉临界区
-                logger.warning("lock renew failed key=%s: %s", handle.key, exc)
+                logger.warning(
+                    "lock renew failed key=%s: error_type=%s",
+                    redact_for_log(handle.key),
+                    type(exc).__name__,
+                )
                 renewed = False
             if not renewed:
-                logger.warning("lock lost key=%s", handle.key)
+                logger.warning("lock lost key=%s", redact_for_log(handle.key))
                 handle.lost.set()
                 return
 

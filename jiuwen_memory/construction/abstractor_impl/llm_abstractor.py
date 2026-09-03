@@ -27,7 +27,11 @@ from enum import Enum
 
 from jiuwen_memory.common.feature_extractor.base import FeatureExtractor, FeatureExtractorProducer
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import (
+    get_logger,
+    metadata_for_log,
+    redact_for_log,
+)
 from jiuwen_memory.common.type_def import (
     Entity,
     LifecycleState,
@@ -245,7 +249,7 @@ class LLMAbstractor(Abstractor):
                 u.lifecycle.value,
                 u.tier.value,
                 u.provenance,
-                u.content[:200],
+                redact_for_log(u.content),
             )
 
         # Phase 1: 预处理
@@ -317,7 +321,7 @@ class LLMAbstractor(Abstractor):
                 "Abstractor: accepting unit id=%s tier=%s content=%s",
                 u.id[:8],
                 u.tier.value,
-                u.content[:200],
+                redact_for_log(u.content),
             )
             accepted.append(u)
         logger.info(
@@ -475,11 +479,19 @@ class LLMAbstractor(Abstractor):
                 )
             )
             logger.info(
-                "Abstractor: candidate — target=%s, confidence=%.2f, content=%s, evidence=%s",
-                parsed_target.value,
-                confidence,
-                item.get("content", "")[:200],
-                item.get("evidence", "")[:100],
+                "Abstractor: candidate metadata=%s",
+                metadata_for_log(
+                    {
+                        "target": parsed_target.value,
+                        "confidence": confidence,
+                        "evidence": item.get("evidence", ""),
+                        "pattern_name": item.get("pattern_name", ""),
+                        "portrait_category": item.get("category", ""),
+                        "content": item.get("content", ""),
+                        "source_unit_ids": [unit.id for unit in units],
+                    },
+                    visible_memory_unit_ids=[unit.id for unit in units],
+                ),
             )
 
         return candidates
@@ -635,7 +647,7 @@ class LLMAbstractor(Abstractor):
                 unit.id[:8],
                 unit.tier.value,
                 unit.provenance,
-                unit.content[:200],
+                redact_for_log(unit.content),
             )
 
         logger.info(

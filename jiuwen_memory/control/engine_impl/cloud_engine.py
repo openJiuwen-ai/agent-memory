@@ -17,7 +17,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from jiuwen_memory.common.errors import AgentMemoryError, NotFoundError, ValidationError
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import (
+    get_logger,
+    metadata_for_log,
+    scope_for_log,
+)
 from jiuwen_memory.common.type_def import (
     FilterExpr,
     LifecycleState,
@@ -304,11 +308,14 @@ class CloudEngine(MemoryEngine):
             derived = list(result.created_units) or [
                 self._load(scope, unit_id) for unit_id in result.created_ids
             ]
+            procedural_metadata = {"procedural": raw_meta.get("procedural")}
             logger.info(
-                "CloudEngine.write procedural=True: originals=%d derived=%d scope=%s pipeline=%s",
+                "CloudEngine.write system_metadata=%s: originals=%d derived=%d "
+                "scope=%s pipeline=%s",
+                metadata_for_log(procedural_metadata),
                 len(units),
                 len(derived),
-                scope,
+                scope_for_log(scope),
                 pipeline_name,
             )
             return derived
@@ -337,11 +344,14 @@ class CloudEngine(MemoryEngine):
             derived = list(result.created_units) or [
                 self._load(scope, unit_id) for unit_id in result.created_ids
             ]
+            infer_metadata = {"infer": raw_meta.get("infer")}
             logger.info(
-                "CloudEngine.write infer=True: originals=%d derived=%d scope=%s pipeline=%s",
+                "CloudEngine.write system_metadata=%s: originals=%d derived=%d "
+                "scope=%s pipeline=%s",
+                metadata_for_log(infer_metadata),
                 len(units),
                 len(derived),
-                scope,
+                scope_for_log(scope),
                 pipeline_name,
             )
             return derived
@@ -351,12 +361,16 @@ class CloudEngine(MemoryEngine):
             classifier.classify(units)
         # 记忆写入只经 IndexBuilder：交付 Storage + 建索引由其统一编排。
         await asyncio.to_thread(index_builder.build, units)
+        indexed_metadata = {
+            "message_type_key": self._message_type_key,
+            "message_type": meta.get(self._message_type_key, ""),
+            "pipeline": pipeline_name,
+        }
         logger.info(
-            "CloudEngine.write raw_indexed: units=%d scope=%s message_type=%s pipeline=%s",
+            "CloudEngine.write raw_indexed: units=%d scope=%s system_metadata=%s",
             len(units),
-            scope,
-            meta.get(self._message_type_key, ""),
-            pipeline_name,
+            scope_for_log(scope),
+            metadata_for_log(indexed_metadata),
         )
         return units
 
@@ -383,7 +397,11 @@ class CloudEngine(MemoryEngine):
             except Exception as exc:
                 is_domain_error = isinstance(exc, AgentMemoryError)
                 if not is_domain_error:
-                    logger.exception("unexpected batch write failure at item %s", index)
+                    logger.warning(
+                        "unexpected batch write failure at item %s: error_type=%s",
+                        index,
+                        type(exc).__name__,
+                    )
                 outcomes.append(
                     BatchWriteOutcome(
                         index=index,
@@ -451,13 +469,16 @@ class CloudEngine(MemoryEngine):
             interval=middle_interval,
         )
         await self._scheduler.submit(job, channel=Channel.BACKGROUND)
+        middle_metadata = {
+            "middle": units[0].system_metadata.get("middle", "") if units else "",
+            "pipeline": pipeline_name,
+            "middle_interval": middle_interval,
+        }
         logger.info(
-            "CloudEngine.write middle=True: %d originals buffered, scope=%s "
-            "pipeline=%s interval=%s",
+            "CloudEngine.write system_metadata=%s: %d originals buffered, scope=%s",
+            metadata_for_log(middle_metadata),
             len(units),
-            scope,
-            pipeline_name,
-            middle_interval,
+            scope_for_log(scope),
         )
         return units
 
@@ -567,11 +588,12 @@ class CloudEngine(MemoryEngine):
                 new_index.update([new], mode=IndexWriteMode.FORWARD_ONLY)
                 old_index.remove([old], mode=IndexRemoveMode.SOFT)
                 new_index.build([new], mode=IndexWriteMode.RETRIEVAL_ONLY)
+            update_metadata = {"pipeline": new_pipeline}
             logger.info(
-                "CloudEngine.update overwrite: unit_id=%s scope=%s pipeline=%s",
+                "CloudEngine.update overwrite: unit_id=%s scope=%s system_metadata=%s",
                 new.id,
-                scope,
-                new_pipeline,
+                scope_for_log(scope),
+                metadata_for_log(update_metadata),
             )
             return new
 
@@ -584,12 +606,14 @@ class CloudEngine(MemoryEngine):
         new_index.build([new])
         old = self._lifecycle.supersede(scope, old.id, new.temporal.t_valid)
         self._update_indexes([old])
+        update_metadata = {"pipeline": new_pipeline}
         logger.info(
-            "CloudEngine.update supersede: old_id=%s new_id=%s scope=%s pipeline=%s",
+            "CloudEngine.update supersede: old_id=%s new_id=%s scope=%s "
+            "system_metadata=%s",
             old.id,
             new.id,
-            scope,
-            new_pipeline,
+            scope_for_log(scope),
+            metadata_for_log(update_metadata),
         )
         return new
 
@@ -700,7 +724,7 @@ class CloudEngine(MemoryEngine):
         logger.info(
             "CloudEngine.evolve submitted: job_id=%s scope=%s mode=%s channel=%s",
             job_id,
-            scope,
+            scope_for_log(scope),
             mode.value,
             channel.value,
         )

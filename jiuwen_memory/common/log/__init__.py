@@ -10,5 +10,22 @@
 """
 
 from .base import get_logger, setup_logging
+from .privacy_filter import (
+    LOG_MASK,
+    SensitiveDataFilter,
+    install_privacy_filter,
+    metadata_for_log,
+    redact_for_log,
+    scope_for_log,
+)
 
-__all__ = ["get_logger", "setup_logging"]
+__all__ = [
+    "LOG_MASK",
+    "SensitiveDataFilter",
+    "get_logger",
+    "install_privacy_filter",
+    "metadata_for_log",
+    "redact_for_log",
+    "scope_for_log",
+    "setup_logging",
+]

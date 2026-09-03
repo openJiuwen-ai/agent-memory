@@ -15,7 +15,7 @@ from urllib.parse import unquote, urlparse
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.errors import BackendError, HealthCheckError, ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.normalizer.base import (
     Normalizer,
     NormalizerProducer,
@@ -183,7 +183,8 @@ class VideoNormalizer(Normalizer):
             )
         except Exception as exc:
             logger.exception(
-                "VideoNormalizer: pipeline failed for video=%s", video_path
+                "VideoNormalizer: pipeline failed for video=%s",
+                redact_for_log(video_path),
             )
             raise BackendError(f"embedded video normalization failed: {exc}") from exc
 

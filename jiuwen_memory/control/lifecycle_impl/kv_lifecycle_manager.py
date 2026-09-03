@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from jiuwen_memory.common.errors import NotFoundError, PolicyError, ValidationError
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, scope_for_log
 from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit, Scope
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
@@ -115,7 +115,7 @@ class KVLifecycleManager(LifecycleManager):
             self._storage.update(scope, matches, mode=IndexWriteMode.FORWARD_ONLY)
         logger.info(
             "Lifecycle.transition: scope=%s target=%s requested=%d matched=%d",
-            scope,
+            scope_for_log(scope),
             target.value,
             len(unit_ids),
             len(matches),
@@ -131,11 +131,15 @@ class KVLifecycleManager(LifecycleManager):
             logger.info(
                 "Lifecycle.supersede: unit_id=%s scope=%s invalid_at=%s",
                 unit_id,
-                scope,
+                scope_for_log(scope),
                 invalid_at,
             )
             return unit
-        logger.warning("Lifecycle.supersede missing unit: unit_id=%s scope=%s", unit_id, scope)
+        logger.warning(
+            "Lifecycle.supersede missing unit: unit_id=%s scope=%s",
+            unit_id,
+            scope_for_log(scope),
+        )
         raise NotFoundError("memory_unit", unit_id)
 
     def sweep(self) -> list[str]:
