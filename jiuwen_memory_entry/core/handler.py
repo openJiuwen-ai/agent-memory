@@ -478,6 +478,9 @@ def _add(srv, request: DispatchRequest) -> Body:
         raise ValidationError("system_metadata must be an object")
     if raw_user_metadata is not None and not isinstance(raw_user_metadata, dict):
         raise ValidationError("user_metadata must be an object")
+    occurred_at = _parse_occurred_at(
+        payload.get("occurred_at"), name="add occurred_at"
+    )
     units = srv.api.add(
         _require(payload, "content"),
         scope,
@@ -487,6 +490,7 @@ def _add(srv, request: DispatchRequest) -> Body:
         assets=payload.get("assets"),
         system_metadata=dict(raw_system_metadata or {}) or None,
         user_metadata=dict(raw_user_metadata or {}) or None,
+        occurred_at=occurred_at,
     )
     # infer=True 时引擎可能合法返回空：派生记忆全部被 dedup 判为 update/noop
     # （result.created_ids 为空，见 engine.write 的 infer 分支）。
