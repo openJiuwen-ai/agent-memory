@@ -28,7 +28,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, scope_for_log
 from jiuwen_memory.common.type_def import KERNEL_COORD_KEYS, MemoryUnit, Scope
 from jiuwen_memory.common.type_def.memory import (
     KERNEL_SYSTEM_METADATA_KEYS,
@@ -818,7 +818,10 @@ def route_batch(
                 )
         except Exception as exc:  # noqa: BLE001 —— 判定失败不阻断写入
             reason = f"router raised {type(exc).__name__}: {exc}"
-            logger.warning("Router.route 失败，全批落 fallback：%s", exc)
+            logger.warning(
+                "Router.route 失败，全批落 fallback：error_type=%s",
+                type(exc).__name__,
+            )
     if decisions is None:
         decisions = [_fallback_decision(unit, ctx, reason) for unit in units]
 
@@ -829,7 +832,8 @@ def route_batch(
         decision = replace(decision, unit=unit)
         if not decision.discarded and ctx.candidate_of(decision.scope.space) is None:
             logger.warning(
-                "Router.route: 落点 %r 不在候选集内，改落 fallback", decision.scope.space
+                "Router.route: 落点 scope=%s 不在候选集内，改落 fallback",
+                scope_for_log(decision.scope),
             )
             decision = replace(
                 decision,

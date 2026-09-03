@@ -24,7 +24,7 @@ from jiuwen_memory.common._support import (
 from jiuwen_memory.common.base import Plugin, PluginType
 from jiuwen_memory.common.errors import BackendError, HealthCheckError
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, redact_for_log
 
 logger = get_logger(__name__)
 
@@ -231,7 +231,7 @@ def run_video_asr(video_path: str | Path, config: VideoAsrConfig) -> list[dict[s
         else:
             logger.warning(
                 "VideoASR: video has no audio stream; continuing without ASR path=%s",
-                source_path,
+                redact_for_log(source_path),
             )
             segments = []
         if output_json:
@@ -509,7 +509,7 @@ class DashScopeFileTranscriptionVideoAsr(VideoAsrService):
                     "DashScope ASR request attempt %d/3 interrupted; retrying %s %s",
                     attempt + 1,
                     method,
-                    url,
+                    redact_for_log(url),
                 )
                 time.sleep(2**attempt)
                 continue
@@ -529,7 +529,7 @@ class DashScopeFileTranscriptionVideoAsr(VideoAsrService):
                     attempt + 1,
                     response.status_code,
                     method,
-                    url,
+                    redact_for_log(url),
                 )
                 time.sleep(2**attempt)
                 continue

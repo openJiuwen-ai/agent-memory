@@ -19,7 +19,7 @@ import time
 from typing import Any, List
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, metadata_for_log
 from jiuwen_memory.common.type_def import ChatMessage, MemoryUnit
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.router import (
@@ -163,13 +163,16 @@ class LLMRouter(Router):
                 discarded=bool(item.get("discard")),
                 reason=str(item.get("reason", "") or ""),
             )
+            routing_metadata = {
+                "memory_class": decision.memory_class,
+                "space": decision.scope.space,
+                "tags": decision.tags,
+                "discarded": decision.discarded,
+            }
             logger.info(
-                "LLMRouter: unit=%s class=%s space=%s tags=%s discard=%s",
+                "LLMRouter: unit=%s routing_metadata=%s",
                 unit.id[:8],
-                decision.memory_class,
-                decision.scope.space,
-                decision.tags,
-                decision.discarded,
+                metadata_for_log(routing_metadata),
             )
             results.append(decision)
         return results
