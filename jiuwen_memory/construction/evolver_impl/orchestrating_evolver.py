@@ -704,15 +704,22 @@ class OrchestratingEvolver(Evolver):
         ]
 
         try:
-            merged = self._llm.chat(messages, temperature=0, max_tokens=512)
-            return merged.strip()
+            merged = self._llm.chat(messages, temperature=0, max_tokens=512).strip()
+            if merged:
+                return merged
+            # 空返回（HTTP 200 但 content 为空，模型输出抖动）视同合并失败，走降级。
+            logger.warning(
+                "Evolver._merge_content: LLM merge returned empty for %s→%s, "
+                "fallback concatenation",
+                old.id[:8], new.id[:8],
+            )
         except Exception as exc:
             logger.warning(
                 "Evolver._merge_content: LLM merge failed for %s→%s, fallback concatenation: %s",
                 old.id[:8], new.id[:8], exc,
             )
-            # 降级：简单拼接新旧内容
-            return f"{old.content}\n{new.content}"
+        # 降级：简单拼接新旧内容
+        return f"{old.content}\n{new.content}"
 
     def _maybe_collect_extract_context(
         self, units: List[MemoryUnit], recent: List[MemoryUnit]
