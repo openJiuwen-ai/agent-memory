@@ -14,6 +14,7 @@ from jiuwen_memory.common.errors import (
     PermissionDeniedError,
     PolicyError,
     RateLimitedError,
+    UnsupportedCapabilityError,
     ValidationError,
 )
 from jiuwen_memory.common.security.legacy import legacy_request_context
@@ -142,5 +143,6 @@ __all__ = [
     "PermissionDeniedError",
     "PolicyError",
     "RateLimitedError",
+    "UnsupportedCapabilityError",
     "ValidationError",
 ]

@@ -280,13 +280,44 @@ constructor:
 
 | 分类 | 命名空间 |
 |---|---|
-| 共享组件 | `tokenizer`、`chunker`、`embedder`、`llm`、`reranker` |
+| 共享组件 | `tokenizer`、`chunker`、`embedder`、`llm`、`reranker`、`normalizer`、`asr` |
+| Ingest | `ingestor` |
 | Storage | `storage`、`kv_store`、`vector_store`、`fulltext_store`、`graph_store` |
 | Construction | `extractor`、`classifier`、`constructor`、`dedup`、`evolver` |
 | Retrieval | `query_parser`、`recaller`、`fuser`、`discloser`、`retriever` |
 | Control | `engine`、`scheduler`、`permission`、`policy`、`lifecycle` |
 
 具体可选 target 以各层 API 文档和 Producer 注册结果为准。
+
+### 4.4 Normalizer 能力路由
+
+默认装配为 `normalizer.default=passthrough`、`ingestor.default=simple`。`simple` Ingestor
+引用 `normalizer.default`，并在规约前以 `Normalizer.modalities()` 校验输入模态。
+
+多模态场景可用 `routing` Normalizer 按模态选择实现：
+
+```yaml
+normalizer:
+  default:
+    target: routing
+    params:
+      fallback: passthrough
+      routes:
+        video:
+          target: video
+          params:
+            asr_port: video
+            llm_port: video_text
+            vlm_port: video_vision
+```
+
+`routing` 在装配时检查每个 route key 是否包含在目标 Normalizer 的 `modalities()` 中；
+例如把 `video` 路由到只支持文本化模态的 `passthrough` 会使 `build_kernel()` 抛出
+`ValidationError`。运行时输入不属于已装配能力集合时抛出 `UnsupportedCapabilityError`，
+且不会进入 MemoryUnit、Storage 或索引写入。`passthrough` 当前只支持已经是 UTF-8 文本的
+`TEXT` 和 `CODE`：CODE 输入必须是源码文本，不读取源码文件；只有 TEXT 保留无 data 时的
+URI 兼容回退。PDF/Office 等 `DOCUMENT` 原件需要专用解析型 Normalizer。完整视频依赖配置见
+[`examples/config_multimodal.yml`](../../../examples/config_multimodal.yml)。
 
 ## 5. 具名实例结构
 
@@ -650,6 +681,8 @@ memory_api:
 
 - `storage.default=composite`；
 - `constructor.default=hybrid`；
+- `normalizer.default=passthrough`；
+- `ingestor.default=simple`；
 - `retriever.default=pipeline`；
 - `engine.default=in_memory`；
 - `scheduler.default=in_process`。

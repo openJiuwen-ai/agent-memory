@@ -3,13 +3,14 @@
 
 from .base import Plugin, PluginType
 from .errors import (
-    BackendError,
     AgentMemoryError,
+    BackendError,
     ConflictError,
     HealthCheckError,
     NotFoundError,
     PermissionDeniedError,
     PolicyError,
+    UnsupportedCapabilityError,
     ValidationError,
 )
 from .log import get_logger, setup_logging
@@ -24,6 +25,7 @@ __all__ = [
     "PermissionDeniedError",
     "ValidationError",
     "PolicyError",
+    "UnsupportedCapabilityError",
     "HealthCheckError",
     "BackendError",
     # 统一日志（log）

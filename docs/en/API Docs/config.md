@@ -288,7 +288,8 @@ Common namespaces include:
 
 | Category | Namespaces |
 |---|---|
-| Shared components | `tokenizer`, `chunker`, `embedder`, `llm`, `reranker` |
+| Shared components | `tokenizer`, `chunker`, `embedder`, `llm`, `reranker`, `normalizer`, `asr` |
+| Ingest | `ingestor` |
 | Storage | `storage`, `kv_store`, `vector_store`, `fulltext_store`, `graph_store` |
 | Construction | `extractor`, `classifier`, `constructor`, `dedup`, `evolver` |
 | Retrieval | `query_parser`, `recaller`, `fuser`, `discloser`, `retriever` |
@@ -296,6 +297,39 @@ Common namespaces include:
 
 See the API reference for each layer and the registered Producer targets for the available target
 values.
+
+### 4.4 Normalizer Capability Routing
+
+The default assembly uses `normalizer.default=passthrough` and `ingestor.default=simple`. The
+`simple` Ingestor references `normalizer.default` and checks the input modality against
+`Normalizer.modalities()` before normalization.
+
+Multimodal deployments can use the `routing` Normalizer to select an implementation by modality:
+
+```yaml
+normalizer:
+  default:
+    target: routing
+    params:
+      fallback: passthrough
+      routes:
+        video:
+          target: video
+          params:
+            asr_port: video
+            llm_port: video_text
+            vlm_port: video_vision
+```
+
+During assembly, `routing` checks that every route key is included in the target Normalizer's
+`modalities()`. Routing `video` to the text-oriented `passthrough` target therefore makes
+`build_kernel()` raise `ValidationError`. At runtime, input outside the assembled capability set
+raises `UnsupportedCapabilityError` before any MemoryUnit, Storage write, or index write is
+produced. `passthrough` only supports `TEXT` and `CODE` that are already UTF-8 text. CODE input must
+be source text; passthrough does not read source files. Only TEXT retains the compatibility fallback
+that treats `uri` as text when `data` is empty. PDF/Office `DOCUMENT` inputs require a dedicated
+parsing Normalizer. See [`examples/config_multimodal.yml`](../../../examples/config_multimodal.yml)
+for the complete video dependency configuration.
 
 ## 5. Named Instance Structure
 
@@ -671,6 +705,8 @@ The following components are not explicitly overridden and continue to use the d
 
 - `storage.default=composite`
 - `constructor.default=hybrid`
+- `normalizer.default=passthrough`
+- `ingestor.default=simple`
 - `retriever.default=pipeline`
 - `engine.default=in_memory`
 - `scheduler.default=in_process`

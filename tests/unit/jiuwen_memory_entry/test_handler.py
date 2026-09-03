@@ -5,7 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwen_memory.common.errors import PartialFailureError, RateLimitedError
+from jiuwen_memory.common.errors import (
+    PartialFailureError,
+    RateLimitedError,
+    UnsupportedCapabilityError,
+)
 from jiuwen_memory_entry.core import handler
 from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
 
@@ -56,3 +60,33 @@ def test_partial_failure_error_returns_retry_fields() -> None:
     assert body["completed"] == ["purge_space"]
     assert body["failed"] == "space.delete"
     assert body["retry_action"] == "delete_space"
+
+
+def test_unsupported_capability_error_maps_to_400() -> None:
+    class _Api:
+        @staticmethod
+        def add(*_args, **_kwargs):
+            raise UnsupportedCapabilityError(
+                capability="modality",
+                value="image",
+                component="PassthroughNormalizer",
+            )
+
+    srv = SimpleNamespace(api=_Api())
+
+    status, body = handler.dispatch(
+        srv,
+        build_legacy_dispatch_request(
+            "add",
+            {
+                "tenant_id": "org-1",
+                "scope": "user-1",
+                "modality": "image",
+                "content": "file:///photo.jpg",
+            },
+        ),
+    )
+
+    assert status == 400
+    assert body["error"] == "UnsupportedCapabilityError"
+    assert "modality 'image'" in body["message"]
