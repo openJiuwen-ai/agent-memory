@@ -66,6 +66,10 @@ include = [
     "jiuwen_memory_adapter*",
     "jiuwen_memory_entry*",
 ]
+exclude = [
+    "jiuwen_memory_entry.cli*",
+    "jiuwen_memory_entry.mcp_server*",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
