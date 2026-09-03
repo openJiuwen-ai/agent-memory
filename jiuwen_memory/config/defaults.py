@@ -187,10 +187,6 @@ def default_config_dict() -> dict[str, Any]:
                     "associator": _D,
                     "index_builder": _D,
                     "storage": _D,
-                    # 原文 store：指向 kv_store.default，与正排 KV 是同一实例
-                    # （/messages/ 与 /memory/ 靠 key 前缀分离）。要物理拆开，
-                    # 声明另一个 kv_store 具名实例并把此处改成它的名字。
-                    "message_store": _D,
                     "dedup": _D,
                     "llm": _D,
                 },
@@ -205,10 +201,6 @@ def default_config_dict() -> dict[str, Any]:
                     "associator": _D,
                     "index_builder": _D,
                     "storage": _D,
-                    # 原文 store：指向 kv_store.default，与正排 KV 是同一实例
-                    # （/messages/ 与 /memory/ 靠 key 前缀分离）。要物理拆开，
-                    # 声明另一个 kv_store 具名实例并把此处改成它的名字。
-                    "message_store": _D,
                     "dedup": _D,
                     "llm": _D,
                 },
@@ -252,8 +244,13 @@ def default_config_dict() -> dict[str, Any]:
         },
         # scheduler 只接收 Job（Job 自带数据源），无 params。
         "scheduler": {_D: {"target": "in_process", "params": {}}},
+        # JobStateStore 是 Control 自有基础设施；其底层 KV 依赖只在 adapter
+        # 配置中出现，不让 ingest_job 直接持有 kv_store。
+        "job_state_store": {
+            _D: {"target": "kv", "params": {"kv_store": _D}}
+        },
         "ingest_job": {
-            _D: {"target": "in_process", "params": {"kv_store": _D}}
+            _D: {"target": "in_process", "params": {"state_store": _D}}
         },
         "lifecycle": {_D: {"target": "kv", "params": {"storage": _D, "policy": _D}}},
         "policy": {_D: "dict"},

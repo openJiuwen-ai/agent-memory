@@ -17,19 +17,15 @@ import math
 from collections import defaultdict
 from statistics import median
 
-from jiuwen_memory.common.type_def.entity import (
-    EntityStoreFilters,
-    hash_entity_text,
-)
-from jiuwen_memory.common.type_def.normalizer import EntityNormalizer
-from jiuwen_memory.common.type_def.retrieval_filter import is_retrieval_candidate
-from jiuwen_memory.common.type_def.scope import space_id_from_scope
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.common.type_def.entity import hash_entity_text
+from jiuwen_memory.common.type_def.normalizer import EntityNormalizer
+from jiuwen_memory.common.type_def.retrieval_filter import is_retrieval_candidate
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.recaller import Recaller, RecallerProducer
 from jiuwen_memory.retrieval.types import ParsedQuery, RecallChannel, ScoredUnit
-from jiuwen_memory.storage.entity_store import EntityStore
+from jiuwen_memory.storage.entity_store import EntityStore, adapt_entity_store
 from jiuwen_memory.storage.fulltext import FulltextStore
 from jiuwen_memory.storage.storage import Storage, StorageProducer
 from jiuwen_memory.storage.types import TextQuery
@@ -59,7 +55,8 @@ class KeywordRecaller(Recaller):
             storage.fulltext_port(port_name) if storage.has_fulltext_port(port_name) else None
         )
         self._layer = layer  # "l2"(content) | "l0" | "l1"
-        self._entity_store = entity_store  # L2 实体关联扩展用；None/非 L2 时不扩展
+        self._entity_store = adapt_entity_store(entity_store) if entity_store is not None else None
+        # L2 实体关联扩展用；None/非 L2 时不扩展
         # L2 实体扩展需要点读真源做生产过滤（is_retrieval_candidate）；非 L2 不用，
         # 但持有 storage 无成本，装配期统一注入，避免 __init__ 分层条件分支。
         self._storage = storage
@@ -120,9 +117,16 @@ class KeywordRecaller(Recaller):
 
         result = self._merge_maxp(batch1, batch2)[:top_k]
         logger.info(
-            "KeywordRecaller: layer=%s scope=%s top_k=%d hits=%d units=%d batch2=%d merged=%d returned=%d%s",
-            self._layer, scope, top_k, len(hits), len(batch1), len(batch2),
-            len(batch1) + len(batch2), len(result),
+            "KeywordRecaller: layer=%s scope=%s top_k=%d hits=%d units=%d "
+            "batch2=%d merged=%d returned=%d%s",
+            self._layer,
+            scope,
+            top_k,
+            len(hits),
+            len(batch1),
+            len(batch2),
+            len(batch1) + len(batch2),
+            len(result),
             " (short-circuit: batch1>=top_k)" if not batch2 and len(batch1) >= top_k else "",
         )
         return result
@@ -174,14 +178,14 @@ class KeywordRecaller(Recaller):
         if not hashes:
             return []
 
-        space_id = space_id_from_scope(scope)
-        filters = EntityStoreFilters.from_scope(scope)
         try:
             entity_records = self._entity_store.find_by_entity_text_hash(
-                space_id, tuple(hashes), filters=filters, limit=self._entity_list_limit(len(hashes)),
+                scope,
+                tuple(hashes),
+                limit=self._entity_list_limit(len(hashes)),
             )
         except Exception:
-            logger.warning("entity_expansion_lookup_failed space_id=%s", space_id, exc_info=True)
+            logger.warning("entity_expansion_lookup_failed scope=%s", scope, exc_info=True)
             return []
 
         # 聚合：unit_id → Σ idf(df_e)。df 用 EntityRecord.linked_memory_ids 全长
@@ -218,10 +222,7 @@ class KeywordRecaller(Recaller):
         top_n = ranked[:_ENTITY_EXPANSION_TOP_K]
         candidate_ids = [uid for uid, _ in top_n]
 
-        units = {
-            u.id: u
-            for u in self._storage.get(scope, candidate_ids)
-        }
+        units = {u.id: u for u in self._storage.get(scope, candidate_ids)}
         eligible: list[tuple[str, float]] = []
         for uid, raw in top_n:
             if uid not in units:
@@ -242,11 +243,13 @@ class KeywordRecaller(Recaller):
         batch2: list[ScoredUnit] = []
         for uid, raw in eligible:
             boost = min(raw, cap)
-            batch2.append(ScoredUnit(
-                unit_id=uid,
-                score=anchor * boost,
-                channel=RecallChannel.KEYWORD,
-            ))
+            batch2.append(
+                ScoredUnit(
+                    unit_id=uid,
+                    score=anchor * boost,
+                    channel=RecallChannel.KEYWORD,
+                )
+            )
         batch2.sort(key=lambda u: u.score, reverse=True)
         return batch2
 
@@ -259,12 +262,16 @@ def _build(config):
     # entity_enabled 默认 False（与构建侧 HybridIndexBuilder 同名同义）。开启时
     # 注入 EntityStore 做 L2 实体关联扩展；endpoint 未配时 dep 返 None，recall
     # 侧 _expand_by_entities 自动跳过，不破坏原召回。
-    entity_store = None
-    if config.get("entity_enabled", False):
-        from jiuwen_memory.storage.entity_store import EntityStoreProducer
-        entity_store = EntityStoreProducer.dep(config, default="elasticsearch")
+    storage = StorageProducer.resolve(config)
+    entity_store = (
+        storage.entity_port()
+        if config.get("entity_enabled", False) and storage.has_entity_port()
+        else None
+    )
     return KeywordRecaller(
-        StorageProducer.resolve(config), layer="l2", entity_store=entity_store,
+        storage,
+        layer="l2",
+        entity_store=entity_store,
     )
 
 

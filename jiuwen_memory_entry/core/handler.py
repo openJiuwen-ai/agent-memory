@@ -397,6 +397,7 @@ def _submit_video(
         payload_id=payload_id,
         source_ref=uri,
         scope=scope,
+        owner=security.auth.actor,
         task=lambda: srv.api.add(
             uri,
             scope,

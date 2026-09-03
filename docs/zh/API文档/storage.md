@@ -3,7 +3,7 @@
 Storage 层为上层提供两级存储抽象：
 
 - `Storage`：面向 `MemoryUnit` 的统一领域接口，同时负责能力发现、授权和检索适配。
-- `BaseStore` 及其子接口：面向 KV、向量、全文、图、融合和文件后端的六类标准端口，以及独立的实体反向索引端口。
+- `BaseStore` 及其子接口：面向 KV、向量、全文、图、融合、文件和实体反向索引后端的七类标准端口；原文消息通过 Storage 所拥有的受权 `RawDataStore` 业务端口访问。
 
 本文是当前抽象接口的 API 参考，不规定某个具体后端的内部实现。以下源码是最终依据：
 
@@ -26,11 +26,11 @@ Storage 层为上层提供两级存储抽象：
 
 ### 1.1 Scope 隔离
 
-`Storage` 和六类标准 Store 的数据操作都显式接收 `scope: Scope`。`Scope` 由 `org`、`space`、`user`、`agent`、`session` 五个维度组成，存储实现必须在该范围内完成写入、查询和删除。
+`Storage`、原文端口和七类标准 Store 的数据操作都显式接收 `scope: Scope`（`ensure_index()`、`health()` 等管理方法除外）。`Scope` 由 `org`、`space`、`user`、`agent`、`session` 五个维度组成，存储实现必须在该范围内完成写入、查询和删除。
 
 `scope` 是独立隔离轴，不应塞入 `metadata`、`filters` 或各种 Record/Query 结构中。同一个 ID 可以在不同 Scope 内独立存在。
 
-`EntityStore` 是唯一例外：它使用 `space_id` routing 和 `EntityStoreFilters.actor_id` 隔离，不使用五段 Scope 作为方法首参。该特殊性见本文“EntityStore API”。
+`EntityStore` 不再是例外：公开端口以完整 `Scope` 为方法首参，并通过 `Storage.entity_port()` 访问。仍接受 `space_id + filters` 的旧后端只能在 Storage 内部适配，Construction 和 Retrieval 不得看到这种兼容形状。
 
 ```python
 from jiuwen_memory.common.type_def import Scope
@@ -78,16 +78,17 @@ from jiuwen_memory.storage.storage import Storage
 
 ### 2.1 能力发现与端口访问
 
-`StorageCapability` 包含六种标准能力：`KV`、`VECTOR`、`FULLTEXT`、`GRAPH`、`FUSION`、`FS`。
+`StorageCapability` 包含七种标准能力：`KV`、`VECTOR`、`FULLTEXT`、`GRAPH`、`FUSION`、`FS`、`ENTITY`。原文是 Storage 所有的受权业务端口，但不是检索型 Store，因此不加入 `StorageCapability` 枚举。
 
 | API | 返回值 | 说明 |
 |---|---|---|
 | `capabilities()` | `frozenset[StorageCapability]` | 返回当前 Storage 实例声明的能力集 |
 | `has_kv()` / `has_vector()` / `has_fulltext()` | `bool` | 判断默认 KV/向量/全文能力是否存在 |
-| `has_graph()` / `has_fusion()` / `has_fs()` | `bool` | 判断默认图/融合/文件能力是否存在 |
+| `has_graph()` / `has_fusion()` / `has_fs()` / `has_entity()` | `bool` | 判断默认图/融合/文件/实体能力是否存在 |
 | `has_*_port(name="default")` | `bool` | 判断具名端口是否存在 |
-| `kv` / `vector` / `fulltext` / `graph` / `fusion` / `fs` | 对应 Store | 访问默认端口 |
+| `kv` / `vector` / `fulltext` / `graph` / `fusion` / `fs` / `entity` | 对应 Store | 访问默认端口 |
 | `*_port(name="default")` | 对应 Store | 访问指定名称的端口 |
+| `raw` / `raw_port(name="default")` | `RawDataStore` | 访问经过 `StorageSecurity` 代理的原文业务端口 |
 
 访问端口前应先用 `has_*()` 或 `has_*_port()` 判断能力。未声明的端口会抛出 `UnsupportedStorageCapabilityError`。
 
@@ -231,7 +232,7 @@ storage.list(
 | API | 说明 |
 |---|---|
 | `security` | 返回当前 Storage 的 `StorageSecurity` |
-| `scopes() -> list[Scope]` | 枚举已存在 MemoryUnit 数据的 Scope；顺序由实现定义 |
+| `scopes() -> list[Scope]` | 枚举统一 Storage 已知的 Scope；实现应合并正排 KV 与 Raw 端口的 Scope，顺序由实现定义 |
 | `health() -> None` | 检查 Storage、安全组件及所属后端；健康时返回 `None` |
 
 ## 3. BaseStore 基类
@@ -248,7 +249,37 @@ from jiuwen_memory.storage.base import BaseStore, StoreType
 | `store_type()` | 抽象方法 | 返回 `StoreType` |
 | `health()` | 抽象方法 | 健康时返回 `None`，否则抛 `HealthCheckError` |
 
-`StoreType` 包含 `KV`、`FULLTEXT`、`VECTOR`、`GRAPH`、`FUSION`、`FS`。
+`StoreType` 包含 `KV`、`FULLTEXT`、`VECTOR`、`GRAPH`、`FUSION`、`FS`、`ENTITY`。
+
+## 3.1 RawDataStore API
+
+```python
+from jiuwen_memory.storage.raw import RawDataStore
+```
+
+`RawDataStore` 是 Storage 所有的原文业务端口，用于保存抽取上下文所需的原文消息。它不是
+MemoryUnit 真源，也不是检索索引，因此不作为 `StorageCapability` 枚举值；但它和其他 Storage
+端口一样受 `StorageSecurity` 授权，并且每次数据操作都必须显式接收完整 `Scope`。
+
+端口把 `/messages/` key 前缀、`MemoryUnit` 编解码、按 `t_ingest` 排序、保留淘汰和后端选择都
+封装起来。Evolver 只能调用这些业务方法，不能导入 `KVStore`/`KvProducer`，也不能拼接
+`/messages/` 或自行调用 codec。
+
+| API | 返回值 | 说明 |
+|---|---|---|
+| `append_raw(scope, units, *, retain_limit=0, access=None)` | `None` | 追加当前 Scope 的原文；`retain_limit=0` 表示不按数量淘汰 |
+| `list_raw(scope, *, limit=100, access=None)` | `list[MemoryUnit]` | 按 `t_ingest` 倒序返回最近原文；`limit=None` 返回全部 |
+| `delete_raw(scope, record_ids, *, access=None)` | `None` | 在当前 Scope 内按 ID 幂等删除 |
+| `scopes(*, access=None)` | `list[Scope]` | 枚举含原文的 Scope，供空间级治理使用 |
+| `usage(scope, *, access=None)` | `RawDataUsage` | 返回原文条数和可获得的物理字节数 |
+| `purge(scope, *, access=None)` | `RawDataUsage` | 清空当前 Scope 的原文并返回清理前用量 |
+
+默认 `CompositeStorage` 在只配置 KV 时使用 `KVRawDataStore` 适配器：适配器在 Storage 内部
+处理 `/messages/`、`dumps/loads`、排序和 retention；如果未来 X-01 选择独立 Raw 后端，只需
+替换这个端口实现，上层业务契约保持不变。
+
+授权资源名是 `raw`。如果底层 KV 使用 `EncryptedKVStore`，它根据 `/messages/` 前缀选择加密
+purpose `raw_message`。`raw` 是访问授权资源，`raw_message` 是加密上下文，两者不是同一个概念。
 
 ## 4. KVStore API
 
@@ -368,18 +399,18 @@ with storage.fs.get(scope, ref) as stream:
 from jiuwen_memory.storage.entity_store import EntityStore
 ```
 
-`EntityStore` 是实体到 MemoryUnit ID 的独立反向索引端口。它不属于 `StorageCapability`，也不能通过 `storage.entity` 或 `storage.*_port()` 访问；它由 `EntityStoreProducer` 独立装配。
+`EntityStore` 是实体到 MemoryUnit ID 的反向索引端口，属于 `StorageCapability.ENTITY`，通过 `storage.entity` 或 `storage.entity_port(name)` 访问。`CompositeStorage` 会为该端口加上 `StorageSecurity` 授权代理；`EntityStoreProducer` 只保留为 Storage 装配时的底层实现工厂，业务组件不得直接解析它。
 
 | API | 返回值 | 说明 |
 |---|---|---|
 | `ensure_index()` | `None` | 确保实体索引已创建并就绪；使用其他 API 前必须调用 |
-| `find_by_entity_text_hash(space_id, entity_text_hashes, *, filters, limit=500)` | `list[EntityRecord]` | 按实体文本 SHA-256 hash 精确查询，不提供向量近邻检索 |
-| `find_by_linked_memory_id(space_id, memory_id, *, filters)` | `list[EntityRecord]` | 反查关联了指定 MemoryUnit ID 的实体 |
-| `execute_operations(space_id, operations)` | `EntityBatchResult` | 批量执行 `INSERT` / `LINK` / `UNLINK_UPDATE` / `DELETE` 混合操作 |
+| `find_by_entity_text_hash(scope, entity_text_hashes, *, limit=500)` | `list[EntityRecord]` | 在完整 Scope 内按实体文本 SHA-256 hash 精确查询，不提供向量近邻检索 |
+| `find_by_linked_memory_id(scope, memory_id)` | `list[EntityRecord]` | 在完整 Scope 内反查关联了指定 MemoryUnit ID 的实体 |
+| `execute_operations(scope, operations)` | `EntityBatchResult` | 在完整 Scope 内批量执行 `INSERT` / `LINK` / `UNLINK_UPDATE` / `DELETE` 混合操作 |
 
-`EntityStoreFilters.from_scope(scope)` 使用 `scope.user` 生成 `actor_id`。这意味着实体在同一 user 下可跨 agent、跨 session 共享，但仍受 `space_id + actor_id` 约束。
+公开契约保留 `org`、`space`、`user`、`agent`、`session` 五个 Scope 维度。后端可以从 Scope 派生物理 `space_id` routing 和兼容用 `EntityStoreFilters`，但不得因此放宽查询：不同 agent 或 session 的实体不会互相可见，除非调用方明确使用相同 Scope。
 
-`EntityBatchResult.successful_ids` 和 `failed_ids` 以单项粒度报告批处理结果，允许部分失败。`EntityStore` 虽继承 `BaseStore`，但不参与六类 `StoreType` 路由；当前实现的 `store_type()` 返回 `None`。
+`EntityBatchResult.successful_ids` 和 `failed_ids` 以单项粒度报告批处理结果，允许部分失败。`EntityStore` 继承 `BaseStore`，其 `store_type()` 返回 `StoreType.ENTITY`。
 
 ## 11. 安全 API
 
@@ -463,7 +494,7 @@ kv_store:
 
 | `target` | 实现类 | 功能 | 主要 `params` |
 |---|---|---|---|
-| `composite` | `CompositeStorage` | 默认统一 Storage；组合各类 Store 端口，MemoryUnit 本体由 KV 端口持久化，检索适配由装配的 Recaller 提供；本实现不负责向量/全文/图投影构建 | `kv_store`（默认 `memory`），可选 `vector_store` / `fulltext_store` / `graph_store` / `fusion_store` / `fs_store`，`preferred_retrieval_pipeline`（默认 `recall_get_rank`） |
+| `composite` | `CompositeStorage` | 默认统一 Storage；组合各类 Store 端口，MemoryUnit 本体由 KV 端口持久化，原文由受权 Raw 端口提供，检索适配由装配的 Recaller 提供；本实现不负责向量/全文/图投影构建 | `kv_store`（默认 `memory`），可选 `vector_store` / `fulltext_store` / `graph_store` / `fusion_store` / `fs_store` / `raw_store` / `entity_store`，`preferred_retrieval_pipeline`（默认 `recall_get_rank`） |
 
 `preferred_retrieval_pipeline` 可选 `recall_get_rank`、`recall_and_get_rank`、`retrieve`。`vector_store.layers_l0/layers_l1` 和 `fulltext_store.layers_l0/layers_l1` 会被 `CompositeStorage` 自动暴露为同名端口。
 
@@ -656,7 +687,14 @@ entity_store:
       hosts: http://localhost:9200
       index: memory_entities
 
-# 写入侧和召回侧都要引用同一具名实例
+# Entity 后端由 Storage 统一持有；写入侧和召回侧只引用同一具名 Storage
+storage:
+  default:
+    target: composite
+    params:
+      kv_store: default
+      entity_store: default
+
 constructor:
   default:
     target: hybrid
@@ -664,16 +702,14 @@ constructor:
       storage: default
       chunker: default
       embedder: default
-      entity_store: default
 recaller:
   keyword:
     target: keyword
     params:
       storage: default
-      entity_store: default
 ```
 
-`entity_enabled=true` 只是总开关；写入侧 `constructor.default` 和召回侧 `recaller.keyword` 还必须分别引用同一 `entity_store` 具名实例。
+`entity_enabled=true` 只是写入/召回链路的总开关；Entity 后端本身由 `storage.default.params.entity_store` 接入，Construction 和 Retrieval 都从同一 `Storage` 取得 `entity_port()`，不再分别注入或解析 `entity_store`。
 
 ### 13.10 安全接口的实现方式
 
@@ -749,9 +785,9 @@ def remove_from_retrieval(storage: Storage, scope: Scope, unit_id: str) -> None:
 
 | 类型 | 字段 | 语义 |
 |---|---|---|
-| `EntityStoreFilters` | `actor_id: str \| None=None` | `space_id` 之外的用户隔离条件 |
+| `EntityStoreFilters` | `actor_id: str \| None=None` | 旧后端兼容投影字段；上层不传入，Storage 从完整 Scope 派生 |
 | `EntityMention` | `entity_type: str`、`display_name: str`、`normalized_name: str` | 从记忆或 query 抽取并已归一化的实体提及 |
-| `EntityRecord` | `id`、`space_id`、`entity_text`、`entity_type`、`linked_memory_ids: tuple[str, ...]`、`filters`、`entity_text_hash=""` | 实体到 MemoryUnit ID 的反向索引记录 |
+| `EntityRecord` | `id`、`space_id`、`entity_text`、`entity_type`、`linked_memory_ids: tuple[str, ...]`、`filters`、`entity_text_hash=""` | 实体到 MemoryUnit ID 的反向索引记录；`space_id/filters` 是兼容后端投影，不是上层隔离输入 |
 | `EntityLinkResult` | `extracted_count/inserted_count/updated_count/deleted_count/failed_count/skipped_count: int=0` | 实体链接器的写入统计，不是 EntityStore 批量 API 的逐项结果 |
 | `EntityOperation` | `type: EntityOpType`、`record: EntityRecord \| None=None`、`record_id: str \| None=None`、`link_memory_ids: tuple[str, ...]=()` | `INSERT/LINK/UNLINK_UPDATE/DELETE` 批量命令 |
 | `EntityBatchResult` | `successful_ids: list[str]`、`failed_ids: list[str]` | 逐项部分成功结果，单项失败不要求整批抛异常 |
@@ -848,23 +884,20 @@ delete(scope: Scope, ref: str) -> None
 get(scope: Scope, ref: str) -> BinaryIO
 stat(scope: Scope, ref: str) -> FileStat
 
-# EntityStore（以 space_id routing，不属于六类 Storage capability）
+# EntityStore（StorageCapability.ENTITY；公开端口以完整 Scope 为首参）
 ensure_index() -> None
 find_by_entity_text_hash(
-    space_id: str,
+    scope: Scope,
     entity_text_hashes: tuple[str, ...],
     *,
-    filters: EntityStoreFilters,
     limit: int = 500,
 ) -> list[EntityRecord]
 find_by_linked_memory_id(
-    space_id: str,
+    scope: Scope,
     memory_id: str,
-    *,
-    filters: EntityStoreFilters,
 ) -> list[EntityRecord]
 execute_operations(
-    space_id: str,
+    scope: Scope,
     operations: list[EntityOperation],
 ) -> EntityBatchResult
 ```
@@ -919,7 +952,7 @@ FS 的 `ref` 是 Store 返回的规范引用，不应由调用方拼接物理路
 | Graph | `memory` | `nano_graphrag` | 外部实现按 Scope 生成独立 GraphML 命名空间 |
 | Fusion | `memory` | `milvus_graph` | `milvus_graph` 当前为“向量种子 + 图扩展”，不实现 BM25 文本融合 |
 | FS | `memory` | `local` | LocalFS 在 `root/<scope>/` 内存储并阻止目录穿越 |
-| Entity | 无 | `elasticsearch` | 独立 Producer，不属于 StorageCapability 六端口 |
+| Entity | 无 | `elasticsearch` | `StorageCapability.ENTITY`；后端由 Storage 持有并通过 `entity_port()` 暴露 |
 
 连接型后端通常在首次访问或 `health()` 时才完成真实连接。配置对象能构建成功，
 不等于远程服务、schema/index 或 TLS 链路已可用；部署验收应显式调用 `health()`。
