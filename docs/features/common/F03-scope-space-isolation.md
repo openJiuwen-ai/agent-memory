@@ -226,7 +226,7 @@ SQLite grant 旧表必须先增加 `grantor_space/grantee_space` 列，再创建
   `MemoryUnit.id` 而不串改、串查或串删。
 - 已创建 space 的 `principal_path` 由 `SpaceManager.get_policy` 注入 `PermissionContext.metadata["principal_path"]`，调用级 metadata 不能临时覆盖 space policy。
 - `AuditEvent` 增加 target scope，内存/SQLite 审计后端支持 `target_org` / `target_space` / `target_user` / `target_agent` / `target_session` 过滤。
-- dispatch payload 支持 `space` / `space_id`、`actor_space` / `actor_space_id`、`grantee_space` / `grantee_space_id`，并新增 space 管理 verbs。
+- 非 HTTP 兼容 dispatch payload 支持 `space` / `space_id`、`actor_space` / `actor_space_id`、`grantee_space` / `grantee_space_id`；HTTP DTO 将 target 放入嵌套对象并拒绝 `actor_*`。
 
 尚未落地：基于 `SpaceMember.role` 的默认权限矩阵、跨 space recall 的多 target API、index/audit 专用后端的精确 usage 计数、后端原生 namespace/tenant 物理删除适配。
 
@@ -302,9 +302,10 @@ space:
       kv_store: default
 ```
 
-接入 payload 支持 `space` / `space_id`，actor override 支持 `actor_space` /
-`actor_space_id`，授权 grantee 支持 `grantee_space` / `grantee_space_id`。未传时
-进入空 space 兼容域。
+非 HTTP 兼容 dispatch 接入 payload 支持 `space` / `space_id`，actor override 支持
+`actor_space` / `actor_space_id`，授权 grantee 支持 `grantee_space` /
+`grantee_space_id`。HTTP 使用 `target.space` / `target.space_id`，并拒绝 actor override；
+未传 space 时是否进入空 space 兼容域由各非 HTTP adapter 决定。
 
 ## 后续配置草案
 

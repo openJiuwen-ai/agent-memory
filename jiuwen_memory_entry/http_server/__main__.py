@@ -6,6 +6,7 @@ adds a socket: ``POST /v1/<verb>`` with a JSON body, ``GET /healthz``. The
 :class:`HttpClient` in ``jiuwen_memory_entry/cli/client.py`` speaks exactly this protocol,
 and one assembled kernel is held for the server's lifetime so state persists
 across requests.
+The strict HTTP DTO body keeps authenticated actor separate from target and business fields.
 
 通过启动脚本运行，以便把仓库根与 ``jiuwen_memory_entry/core`` 放入 ``PYTHONPATH``::
 
@@ -20,8 +21,12 @@ import json
 import logging
 import os
 import sys
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import import_module
+
+# Strict DTO parsing lives beside this HTTP surface.
+from jiuwen_memory_entry.http_server.dto import is_known_verb, parse_request
 
 # 共享应用核（server / profiles / handler / config_loader）住在 jiuwen_memory_entry/core；
 # 加入 sys.path 后 flat-import 复用——本 surface 只做 HTTP 传输。
@@ -34,7 +39,12 @@ _profiles_module = import_module("profiles")
 OFFLINE = _profiles_module.OFFLINE
 load_config = _profiles_module.load_config
 Server = import_module("server").Server
-
+authenticated = import_module("auth_middleware").authenticated
+credentials_from_headers = import_module("auth_middleware").credentials_from_headers
+Surface = import_module("jiuwen_memory.common.security.types").Surface
+AuthenticationError = import_module("jiuwen_memory.common.errors").AuthenticationError
+RateLimitedError = import_module("jiuwen_memory.common.errors").RateLimitedError
+ValidationError = import_module("jiuwen_memory.common.errors").ValidationError
 
 logger = logging.getLogger("agent-memory.server")
 
@@ -42,20 +52,20 @@ logger = logging.getLogger("agent-memory.server")
 class HttpServer(Server):
     """The HTTP/socket surface over the shared kernel dispatch."""
 
-    def serve(self, host: str, port: int) -> None:
-        httpd = ThreadingHTTPServer((host, port), self._handler_cls())
-        logger.info(
-            "agent-memory server (profile=%s) on http://%s:%s",
-            self.config.profile, host, port,
-        )
-        try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            logger.info("agent-memory server stopped")
-        finally:
-            httpd.server_close()
+    max_body_bytes = 1024 * 1024
 
-    def _handler_cls(self):
+    def __init__(self, config, kernel, *, security_runtime=None) -> None:
+        super().__init__(config, kernel)
+        self.security_runtime = security_runtime
+
+    @classmethod
+    def build(cls, config, spaces=None, *, security_runtime=None):
+        """Build the shared kernel and attach the HTTP security runtime."""
+        server = super().build(config, spaces)
+        server.security_runtime = security_runtime
+        return server
+
+    def handler_cls(self):
         srv = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -71,20 +81,99 @@ class HttpServer(Server):
                     return
                 prefix_len = len("/v1/")
                 verb = self.path[prefix_len:].strip("/")
-                length = int(self.headers.get("Content-Length", 0))
-                raw = self.rfile.read(length) if length else b""
-                try:
-                    payload = json.loads(raw) if raw else {}
-                except ValueError as exc:
-                    self._send(400, {"error": "BadRequest", "message": str(exc)})
+                if not is_known_verb(verb):
+                    self._send(404, {"error": "UnknownVerb", "message": f"no such verb: {verb!r}"})
                     return
-                status, body = srv.dispatch(verb, payload)  # 复用基类 dispatch
-                self._send(status, body)
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                except (TypeError, ValueError):
+                    self._send(400, {"error": "BadRequest", "message": "invalid Content-Length"})
+                    return
+                if length < 0 or length > srv.max_body_bytes:
+                    self._send(
+                        413, {"error": "PayloadTooLarge", "message": "request body is too large"}
+                    )
+                    return
+                raw = self.rfile.read(length) if length else b""
 
-            def log_message(self, *args) -> None:  # quiet by default
+                request_id = uuid.uuid4().hex
+                runtime = srv.security_runtime
+                if runtime is None:
+                    self._send(
+                        503,
+                        {
+                            "error": "SecurityUnavailable",
+                            "message": "HTTP authentication is not configured",
+                        },
+                        request_id=request_id,
+                    )
+                    return
+
+                peer = self.client_address[0] if self.client_address else ""
+                credentials = credentials_from_headers(self.headers, peer_address=peer)
+                context_request_id = request_id
+                try:
+                    with authenticated(
+                        runtime.authenticator,
+                        credentials,
+                        audit=getattr(runtime, "audit", None),
+                        limiter=getattr(runtime, "rate_limiter", None),
+                        workload_guard=getattr(runtime, "workload_guard", None),
+                        surface=Surface.HTTP,
+                    ) as security:
+                        context_request_id = security.request_id
+                        try:
+                            payload = json.loads(raw) if raw else None
+                        except (TypeError, ValueError) as exc:
+                            self._send(
+                                400,
+                                {"error": "BadRequest", "message": f"invalid JSON: {exc}"},
+                                request_id=security.request_id,
+                            )
+                            return
+                        request = parse_request(verb, payload)
+                        dispatch_request = request.to_dispatch_request(
+                            actor=security.actor,
+                            request_id=security.request_id,
+                            security=security,
+                        )
+                        status, body = srv.dispatch(dispatch_request)
+                        self._send(status, body, request_id=security.request_id)
+                except AuthenticationError:
+                    self._send(
+                        401,
+                        {"error": "AuthenticationError", "message": "authentication failed"},
+                        request_id=request_id,
+                    )
+                except RateLimitedError:
+                    self._send(
+                        429,
+                        {"error": "RateLimitedError", "message": "too many requests"},
+                        request_id=request_id,
+                    )
+                except ValidationError as exc:
+                    self._send(
+                        400,
+                        {"error": "ValidationError", "message": str(exc)},
+                        request_id=context_request_id,
+                    )
+                except Exception:
+                    logger.exception("HTTP request failed")
+                    self._send(
+                        500,
+                        {"error": "InternalError", "message": "internal server error"},
+                        request_id=context_request_id,
+                    )
+
+            def log_message(  # pyright: ignore[reportIncompatibleMethodOverride]
+                self, message_format, *args
+            ) -> None:  # quiet by default
                 pass
 
-            def _send(self, status: int, body: dict) -> None:
+            def _send(self, status: int, body: dict, *, request_id: str | None = None) -> None:
+                if request_id:
+                    body = dict(body)
+                    body.setdefault("request_id", request_id)
                 data = json.dumps(body, ensure_ascii=False).encode("utf-8")
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -97,10 +186,12 @@ class HttpServer(Server):
         return Handler
 
     def serve(self, host: str, port: int) -> None:
-        httpd = ThreadingHTTPServer((host, port), self._handler_cls())
+        httpd = ThreadingHTTPServer((host, port), self.handler_cls())
         logger.info(
             "agent-memory server (profile=%s) on http://%s:%s",
-            self.config.profile, host, port,
+            self.config.profile,
+            host,
+            port,
         )
         try:
             httpd.serve_forever()

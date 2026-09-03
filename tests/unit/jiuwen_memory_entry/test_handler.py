@@ -5,8 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwen_memory_entry.core import handler
 from jiuwen_memory.common.errors import RateLimitedError
+from jiuwen_memory_entry.core import handler
+from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
 
 pytestmark = pytest.mark.unit
 
@@ -22,7 +23,7 @@ def test_rate_limited_error_preserves_legacy_400_mapping() -> None:
 
     srv = SimpleNamespace(api=_Api())
 
-    status, body = handler.dispatch(srv, "audit", {})
+    status, body = handler.dispatch(srv, build_legacy_dispatch_request("audit", {}))
 
     assert status == 400
     assert body == {"error": "RateLimitedError", "message": "rate limit exceeded"}

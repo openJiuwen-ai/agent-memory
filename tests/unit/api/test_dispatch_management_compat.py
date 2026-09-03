@@ -1,13 +1,17 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 from __future__ import annotations
 
 import importlib
 import os
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 from jiuwen_memory.common.type_def import Segment
 from jiuwen_memory.control import MemoryListResult, PrincipalPath, SpaceInfo, SpaceStatus
+from jiuwen_memory_entry.core.dispatch_request import DispatchRequest
+from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
 
 pytestmark = pytest.mark.unit
 
@@ -25,6 +29,10 @@ server = importlib.import_module("server")
 OFFLINE = profiles.OFFLINE
 load_config = profiles.load_config
 Server = server.Server
+
+
+def _dispatch(srv, verb: str, payload: dict):
+    return handler.dispatch(srv, build_legacy_dispatch_request(verb, payload))
 
 
 def test_dispatch_admin_requires_platform_admin_under_default_kernel() -> None:
@@ -55,6 +63,54 @@ def test_dispatch_revoke_supports_scope_owner() -> None:
 
     assert status == 200
     assert body["grantee"]["user"] == "reader"
+
+
+def test_structured_grantee_and_member_routes_use_typed_fields() -> None:
+    class _Api:
+        def __init__(self) -> None:
+            self.grants = []
+            self.members = []
+
+        def grant(self, grant, *, security) -> None:
+            self.grants.append((grant, security.auth.actor))
+
+        def add_space_member(self, org, space, member, *, security) -> None:
+            self.members.append((org, space, member, security.auth.actor))
+
+    api = _Api()
+    srv = SimpleNamespace(api=api)
+    actor = handler.Scope(org="acme", user="administrator")
+
+    status, body = handler.dispatch(
+        srv,
+        DispatchRequest(
+            verb="grant",
+            actor=actor,
+            target=handler.Scope(org="acme", user="owner"),
+            grantee=handler.Scope(org="acme", user="reader"),
+        ),
+    )
+    assert status == 200, body
+    assert api.grants[0][0].grantor == handler.Scope(org="acme", user="owner")
+    assert api.grants[0][0].grantee == handler.Scope(org="acme", user="reader")
+    assert api.grants[0][1] == actor
+
+    status, body = handler.dispatch(
+        srv,
+        DispatchRequest(
+            verb="add_space_member",
+            actor=actor,
+            target=handler.Scope(org="acme", space="product"),
+            member=handler.Scope(org="acme", user="reader"),
+            payload={"role": "viewer"},
+        ),
+    )
+    assert status == 200, body
+    org, space, member, received_actor = api.members[0]
+    assert (org, space) == ("acme", "product")
+    assert member.scope == handler.Scope(org="acme", user="reader")
+    assert member.role == "viewer"
+    assert received_actor == actor
 
 
 @pytest.mark.parametrize(
@@ -105,7 +161,7 @@ def test_dispatch_audit_forwards_structured_filters() -> None:
 
     srv = _Srv()
 
-    status, body = handler.dispatch(
+    status, body = _dispatch(
         srv,
         "audit",
         {
@@ -139,7 +195,7 @@ def test_dispatch_audit_rejects_invalid_limit(limit) -> None:
         def __init__(self) -> None:
             self.api = _Api()
 
-    status, body = handler.dispatch(_Srv(), "audit", {"limit": limit})
+    status, body = _dispatch(_Srv(), "audit", {"limit": limit})
 
     assert status == 400
     assert body["error"] == "ValidationError"
@@ -176,7 +232,7 @@ def test_dispatch_list_delegates_to_api_with_pagination_and_type_filter() -> Non
                         id="unit-1",
                         scope=scope,
                         segments=[Segment(content="repo uses pytest")],
-                            system_metadata={"memory_type": "coding"},
+                        system_metadata={"memory_type": "coding"},
                     )
                 ],
                 count=7,
@@ -187,7 +243,7 @@ def test_dispatch_list_delegates_to_api_with_pagination_and_type_filter() -> Non
             self.api = _Api()
 
     srv = _Srv()
-    status, body = handler.dispatch(
+    status, body = _dispatch(
         srv,
         "list",
         {
@@ -198,7 +254,7 @@ def test_dispatch_list_delegates_to_api_with_pagination_and_type_filter() -> Non
             "limit": "5",
             "memory_types": "coding,episodic",
             "extensions": {"vendor_mode": 3},
-                "filter": {"user_metadata.project": "alpha"},
+            "filter": {"user_metadata.project": "alpha"},
         },
     )
 
@@ -210,7 +266,7 @@ def test_dispatch_list_delegates_to_api_with_pagination_and_type_filter() -> Non
         "limit": 5,
         "memory_types": ["coding", "episodic"],
         "extensions": {"vendor_mode": "3"},
-            "filters": {"user_metadata.project": "alpha"},
+        "filters": {"user_metadata.project": "alpha"},
     }
     assert body["ok"] is True
     assert body["op"] == "list"
@@ -239,7 +295,7 @@ def test_dispatch_list_rejects_invalid_options(payload) -> None:
     class _Srv:
         api = _Api()
 
-    status, body = handler.dispatch(
+    status, body = _dispatch(
         _Srv(),
         "list",
         {"tenant_id": "acme", "scope": "owner", **payload},
@@ -271,7 +327,7 @@ def test_dispatch_create_space_delegates_to_api_with_space_spec() -> None:
             self.api = _Api()
 
     srv = _Srv()
-    status, body = handler.dispatch(
+    status, body = _dispatch(
         srv,
         "create_space",
         {

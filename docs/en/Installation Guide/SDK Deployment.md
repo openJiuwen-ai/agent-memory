@@ -59,25 +59,26 @@ and reranking also use default implementations with no external dependencies.
 
 ```python
 from jiuwen_memory.api import build_kernel
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Context, Scope
 
 kernel = build_kernel()
 api = kernel.api
 
 scope = Scope(org="demo", user="alice")
-actor = scope
+security = legacy_request_context(scope)
 
 try:
     units = api.add(
         "The user prefers to write code in Python",
         scope,
-        identity=actor,
+        security=security,
         tags=["preference"],
     )
     result = api.search(
         "Which language does the user prefer?",
         Context(scope),
-        identity=actor,
+        security=security,
         top_k=5,
     )
     print(units[0].id)
@@ -89,7 +90,7 @@ finally:
 All data in this mode lives in the current process and is lost when the process exits. Docker and
 model services are not required.
 
-## 4. Option Two: In-Memory Storage + Local HTTP Service
+## 4. Option Two: In-Memory Storage + Local HTTP Launcher
 
 Run the following command from the repository root:
 
@@ -103,18 +104,30 @@ If you are not using uv, run the following in an environment where the dependenc
 ./scripts/run-server.sh --host 127.0.0.1 --port 8137
 ```
 
-In another terminal, verify the service:
+In another terminal, verify the health endpoint:
 
 ```bash
 curl http://127.0.0.1:8137/healthz
+```
+
+HTTP data requests must be authenticated by a trusted `SecurityRuntime` before dispatch. The
+repository does not yet include a production `SecurityRuntimeProducer`, so the reference service
+started by this script safely returns 503 for `POST /v1/<verb>` instead of falling back to a
+payload actor. An integrating application should inject an authentication runtime through
+`HttpServer.build(..., security_runtime=runtime)`. Once that runtime is present, requests use a
+nested `target` and an authentication header:
+
+```bash
 
 curl -X POST http://127.0.0.1:8137/v1/add \
   -H 'Content-Type: application/json' \
-  -d '{"tenant_id":"demo","scope":"alice","content":"The user prefers to write code in Python"}'
+  -H "Authorization: Bearer $AGENT_MEMORY_API_KEY" \
+  -d '{"target":{"tenant_id":"demo","scope":"alice"},"content":"The user prefers to write code in Python"}'
 
 curl -X POST http://127.0.0.1:8137/v1/search \
   -H 'Content-Type: application/json' \
-  -d '{"tenant_id":"demo","scope":"alice","query":"Which language does the user prefer","k":5}'
+  -H "Authorization: Bearer $AGENT_MEMORY_API_KEY" \
+  -d '{"target":{"tenant_id":"demo","scope":"alice"},"query":"Which language does the user prefer","k":5}'
 ```
 
 The HTTP process assembles one Kernel, so requests share state while the service is running. The
@@ -216,6 +229,7 @@ follows:
 ```python
 from jiuwen_memory_entry.core.config_loader import load_layer
 from jiuwen_memory.api import build_kernel
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Context, Scope
 from jiuwen_memory.config import Config
 
@@ -224,9 +238,10 @@ kernel_config = Config.from_dict(layer["memory_api"])
 kernel = build_kernel(config=kernel_config)
 
 scope = Scope(org="demo", user="alice")
+security = legacy_request_context(scope)
 try:
-    kernel.api.add("A memory that must be persisted", scope, identity=scope)
-    result = kernel.api.search("persisted memory", Context(scope), identity=scope, top_k=5)
+    kernel.api.add("A memory that must be persisted", scope, security=security)
+    result = kernel.api.search("persisted memory", Context(scope), security=security, top_k=5)
     print([item.content for item in result.items])
 finally:
     kernel.ingest_jobs.close(wait=True)
@@ -333,9 +348,12 @@ retrieval capabilities.
   variables through another process manager.
 - Bind the reference HTTP service to `127.0.0.1` during development instead of exposing it directly
   to the public internet.
-- Actor values in current HTTP requests are caller-provided claims, not authenticated identities.
-- Production environments should add TLS, authentication, rate limiting, timeouts, monitoring,
-  backups, and reliable process management.
+- HTTP actors come only from the authentication context; `actor_*`, `identity`, and other identity
+  claims in the request body are rejected.
+- An HTTP launcher without an authentication runtime returns 503 and never falls back to an empty
+  or payload-provided identity.
+- Production environments should provide a trusted authentication runtime together with TLS, rate
+  limiting, timeouts, monitoring, backups, and reliable process management.
 - Before the application exits, call `kernel.ingest_jobs.close(wait=True)` to wait for and release
   the in-process ingestion worker pool.
 

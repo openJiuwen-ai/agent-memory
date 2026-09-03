@@ -69,7 +69,7 @@ surface actor -> API gate -> control decision -> storage scope boundary
 - `_target_scope(payload)`
 - `_actor_scope(payload)`
 
-当前 `actor_*` 字段仍属于过渡态的 **claimed identity**，不等同于最终鉴权后的 authenticated identity。后续真正接入鉴权时，只替换 `_actor_scope(...)` 的来源，不重做 `MemoryAPI(identity=...)` 主链路。
+非 HTTP 兼容 dispatch 中的 `actor_*` 字段仍属于过渡态的 **claimed identity**，不等同于最终鉴权后的 authenticated identity。HTTP 已改为由 adapter 显式传入认证 actor；共享 `MemoryAPI(security=...)` 主链路从 `security.auth.actor` 取得身份。
 
 ### 决策 3：权限模型以 Scope/Grant 为核心
 
@@ -138,11 +138,11 @@ surface actor -> API gate -> control decision -> storage scope boundary
 
 1. `jiuwen_memory_entry/core/handler.py` 已拆分 `_target_scope(payload)` 与 `_actor_scope(payload)`。
 2. 对外请求形状保持兼容，`tenant_id + scope` 仍代表 target scope。
-3. dispatch surface 新增可选 claimed actor 字段：`actor_tenant_id`、`actor_space` / `actor_space_id`、`actor_scope`、`actor_agent`、`actor_session`。
-4. 若未传任何 `actor_*` 字段，则 actor 默认继承当前请求的 `tenant_id + scope`。
-5. 若完全未传身份字段，actor 回落为 `Scope(org="default", user="")`，不再通过空 payload 表达 `platform admin`。
-6. 只要显式传入任一 `actor_*` 字段，也不允许通过空值构造 `Scope()`；空 `actor_tenant_id` 会回落到当前请求的 `tenant_id`，避免 claimed identity 升级为 platform admin。
-7. `Scope()` 仍可作为 API 内部可信调用的 platform admin 身份，但 dispatch surface 不从业务 payload 推导它；后续应由真实认证层注入。
+3. 非 HTTP 的旧 dispatch surface 曾接受 claimed actor 字段：`actor_tenant_id`、`actor_space` / `actor_space_id`、`actor_scope`、`actor_agent`、`actor_session`；HTTP adapter 不接受这些字段。
+4. HTTP actor 由认证上下文显式传入；HTTP 不再从 `tenant_id + scope` 推导 actor。
+5. 非 HTTP 兼容 dispatch 若完全未传身份字段，仍回落为 `Scope(org="default", user="")`；HTTP 不执行该回退。
+6. 非 HTTP 兼容 dispatch 的 claimed actor 规则仍由调用方承担迁移责任；HTTP 对任一 `actor_*` 字段直接返回 400，不执行业务。
+7. `Scope()` 仍可作为 API 内部可信调用的 platform admin 身份；HTTP 只能由认证 adapter 显式注入，不能从业务 payload 推导。
 8. dispatch 路由已补齐 `revoke`。
 9. dispatch `list` 已恢复为正式数据面入口：`handler._list` 先解析 target/actor 与分页参数，再委托 `MemoryAPI.list(...)`；鉴权与审计仍在 API 层完成。
 
@@ -294,8 +294,8 @@ SQLite 审计通过 `audit.default` 配置启用：
 5. **跨租户共享策略本轮不开放**
    如果未来要支持跨 org 共享，需要独立设计，不应在本轮默认放开。
 
-6. **claimed identity 只是过渡方案**
-   当前 `actor_*` 仍由请求方声明。后续接入真实认证后，应由鉴权结果生成 actor，而不是信任业务 payload。
+6. **claimed identity 只是非 HTTP 兼容方案**
+   HTTP 已由鉴权结果生成 actor，不信任业务 payload；其他 surface 的迁移仍需各自完成。
 
 ## 最终判断
 

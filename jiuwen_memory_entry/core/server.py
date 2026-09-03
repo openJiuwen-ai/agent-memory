@@ -4,8 +4,9 @@
 :class:`Server` is the **base class** every protocol surface builds on: it holds
 one assembled kernel (config + api + truth-source) and exposes :meth:`dispatch`,
 the verb router that the CLI and HTTP/MCP surfaces all share. A concrete surface
-subclasses it and adds its transport (see :class:`jiuwen_memory_entry.http_server.__main__.HttpServer`
-for the HTTP/socket surface); the CLI's ``InProcessClient`` uses the base directly.
+subclasses it and adds its transport (see
+:class:`jiuwen_memory_entry.http_server.__main__.HttpServer` for the HTTP/socket
+surface); the CLI's ``InProcessClient`` uses the base directly.
 
 The minimal reference build uses :func:`api.build_kernel` (the per-capability
 impls wired together, pure in-memory, no external deps). Swapping in a real profile
@@ -21,8 +22,13 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import replace
 from importlib import import_module
-from typing import Any, Dict, Tuple
+from typing import Any
+
+from jiuwen_memory.common.security.types import Surface
+from jiuwen_memory_entry.core.dispatch_request import DispatchRequest
+from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
 
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _REPO not in sys.path:
@@ -30,10 +36,7 @@ if _REPO not in sys.path:
     # editable 安装或 scripts/run-*.sh 保证，避免运行时把路径强插到最前。
     sys.path.append(_REPO)
 
-Config = import_module("profiles").Config
-
 _api_module = import_module("jiuwen_memory.api")
-Kernel = _api_module.Kernel
 build_kernel = _api_module.build_kernel
 KernelConfig = import_module("jiuwen_memory.config").Config
 
@@ -41,7 +44,7 @@ KernelConfig = import_module("jiuwen_memory.config").Config
 class Server:
     """Assembled kernel + shared dispatch; base for all protocol surfaces."""
 
-    def __init__(self, config: Config, kernel: Kernel) -> None:
+    def __init__(self, config: Any, kernel: Any) -> None:
         self.config = config
         self.kernel = kernel
         self.ingest_jobs = kernel.ingest_jobs
@@ -55,7 +58,7 @@ class Server:
         return self.kernel.kv
 
     @classmethod
-    def build(cls, config: Config, spaces: Any = None) -> "Server":
+    def build(cls, config: Any, spaces: Any = None) -> "Server":
         """Assemble a kernel from ``config`` and return a ``cls`` instance.
 
         ``config.settings`` 是合并后的完整配置字典，含 profiles 层自有的 ``profile`` /
@@ -71,22 +74,40 @@ class Server:
             build_kernel(policies=config.policies or None, config=kernel_config),
         )
 
-    def dispatch(self, verb: str, payload: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
-        """Route a ``(verb, payload)`` through the shared handler."""
+    def dispatch(
+        self,
+        verb: str | DispatchRequest,
+        payload: dict[str, Any] | None = None,
+        *,
+        identity=None,
+    ) -> tuple[int, dict[str, Any]]:
+        """Route a request through the shared handler.
+
+        ``identity`` is an adapter-supplied actor.  HTTP passes the actor from
+        its authenticated request context; CLI/MCP omit it and retain their
+        existing in-process compatibility path.
+        """
         from handler import dispatch as _dispatch
 
-        return _dispatch(self, verb, payload)
+        if isinstance(verb, DispatchRequest):
+            status, body = _dispatch(self, verb)
+            return status, dict(body)
+        request = build_legacy_dispatch_request(verb, payload or {}, surface=Surface.INTERNAL)
+        if identity is not None:
+            request = replace(request, actor=identity)
+        status, body = _dispatch(self, request)
+        return status, dict(body)
 
     def close(self, *, wait: bool = True) -> None:
         """Release the Control-owned ingest worker pool."""
         self.ingest_jobs.close(wait=wait)
 
 
-def default_spaces() -> Dict[str, Any]:
+def default_spaces() -> dict[str, Any]:
     """Default scope/namespace registry (none needed for the in-memory build)."""
     return {}
 
 
-def build(config: Config, spaces: Any = None) -> Server:
+def build(config: Any, spaces: Any = None) -> Server:
     """Module-level assembly shim (the CLI's ``InProcessClient`` calls this)."""
     return Server.build(config, spaces)

@@ -1,17 +1,14 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Verb dispatch — the single code path both the CLI and HTTP surfaces share.
 
-``dispatch(srv, verb, payload) -> (status, body)`` routes a ``(verb, payload)``
+``dispatch(srv, request) -> (status, body)`` routes a structured request
 to the assembled :class:`~server.Server`'s ``MemoryAPI`` and shapes a JSON-able
 envelope the surfaces render. Routing is a table (A20 "route by table"), not an
 if/else ladder; domain exceptions map to HTTP-ish status codes.
 
-Scope mapping (DESIGN.md "Two id spaces" / "CLI compatibility"): the kernel
-scopes by ``tenant_id`` + optional ``space`` / ``space_id`` + a single
-``scope`` string, mapped onto the native
-``Scope(org=tenant_id, space=space, user=scope)``. The request shape keeps old
-empty-space payloads compatible, while allowing an optional claimed actor
-override via ``actor_tenant_id`` / ``actor_space`` / ``actor_scope`` fields.
+Scope mapping happens before this module: HTTP uses a nested DTO and non-HTTP
+callers use ``legacy_request_adapter``. Routes consume the resulting
+``DispatchRequest`` and never infer actor or Scope from business payload fields.
 """
 
 from __future__ import annotations
@@ -19,9 +16,12 @@ from __future__ import annotations
 import os
 import sys
 import uuid
+from collections.abc import Mapping
 from datetime import datetime
 from importlib import import_module
 from typing import Any, Callable
+
+from jiuwen_memory_entry.core.dispatch_request import DispatchRequest
 
 _SRC = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -48,14 +48,17 @@ Modality = _type_def_module.Modality
 Scope = _type_def_module.Scope
 EvolveMode = import_module("jiuwen_memory.construction").EvolveMode
 
-# 接口先行过渡桥接：公开签名收 security: RequestSecurityContext，此处把 payload
-# 声明的 actor 包装后传入（实装 PR 合入时改为 auth_middleware 产出的真实上下文）。
 _security_legacy_module = import_module("jiuwen_memory.common.security.legacy")
 legacy_request_context = _security_legacy_module.legacy_request_context
+_security_types_module = import_module("jiuwen_memory.common.security.types")
+RequestSecurityContext = _security_types_module.RequestSecurityContext
+Surface = _security_types_module.Surface
 
 _control_types_module = import_module("jiuwen_memory.control.types")
+Action = _control_types_module.Action
 DeleteMode = _control_types_module.DeleteMode
 DeleteSelector = _control_types_module.DeleteSelector
+Grant = _control_types_module.Grant
 MemoryPatch = _control_types_module.MemoryPatch
 BatchWriteItem = _control_types_module.BatchWriteItem
 PrincipalPath = _control_types_module.PrincipalPath
@@ -64,14 +67,9 @@ SpacePatch = _control_types_module.SpacePatch
 SpacePolicy = _control_types_module.SpacePolicy
 SpaceSpec = _control_types_module.SpaceSpec
 SpaceStatus = _control_types_module.SpaceStatus
-
-# 授权管理走安全域 Grant/Action（grant_id 精确撤销契约，SEC-API-01）
-_security_types_module = import_module("jiuwen_memory.common.security.types")
-Action = _security_types_module.Action
-Grant = _security_types_module.Grant
 DisclosureLevel = import_module("jiuwen_memory.retrieval.types").DisclosureLevel
 
-Body = dict[str, Any]
+Body = Mapping[str, Any]
 
 _STATUS = {
     NotFoundError: 404,
@@ -128,76 +126,30 @@ def _parse_extensions(value: Any) -> dict[str, str] | None:
     return {key: str(item) for key, item in value.items()}
 
 
-def _space_value(payload: Body, *, prefix: str = "") -> str:
-    raw = payload.get(f"{prefix}space", payload.get(f"{prefix}space_id", ""))
-    return "" if raw is None else str(raw)
+def _require_target(request: DispatchRequest) -> Scope:
+    target = request.target
+    if target is None:
+        raise ValidationError("missing required field: 'target'")
+    return target
 
 
-def _require_space(payload: Body) -> str:
-    value = _space_value(payload)
+def _request_security(request: DispatchRequest) -> RequestSecurityContext:
+    """Return the trusted request context, adapting only legacy internal calls."""
+    security = request.security
+    if security is not None:
+        if security.actor != request.actor:
+            raise ValidationError("request security actor does not match request actor")
+        return security
+    if request.surface == Surface.HTTP:
+        raise ValidationError("HTTP request missing security context")
+    return legacy_request_context(request.actor, surface=request.surface)
+
+
+def _require_space(request: DispatchRequest) -> str:
+    value = _require_target(request).space
     if not value:
         raise ValidationError("missing required field: 'space'")
     return value
-
-
-def _target_scope(payload: Body) -> Scope:
-    """Target scope from tenant_id + space + scope."""
-    return Scope(
-        org=str(payload.get("tenant_id", "default")) or "default",
-        space=_space_value(payload),
-        user=str(payload.get("scope", "")),
-    )
-
-
-def _scope_from_payload(payload: Body, base: Scope | None = None) -> Scope:
-    """Parse an optional batch item scope override over a default target scope."""
-    base = base or Scope()
-    return Scope(
-        org=str(payload.get("tenant_id") or base.org or "default"),
-        space=_space_value(payload) if "space" in payload or "space_id" in payload else base.space,
-        user=str(payload.get("scope", base.user)),
-        agent=str(payload.get("agent", base.agent)),
-        session=str(payload.get("session", base.session)),
-    )
-
-
-def _actor_scope(payload: Body) -> Scope:
-    """Claimed actor scope; defaults to payload scope, with optional explicit override."""
-    has_actor_override = False
-    actor_fields = (
-        "actor_tenant_id",
-        "actor_space",
-        "actor_space_id",
-        "actor_scope",
-        "actor_agent",
-        "actor_session",
-    )
-    for key in actor_fields:
-        if key in payload:
-            has_actor_override = True
-            break
-
-    if has_actor_override:
-        actor_org = str(payload.get("actor_tenant_id", ""))
-        if actor_org == "":
-            actor_org = str(payload.get("tenant_id", "default")) or "default"
-        actor_space = (
-            _space_value(payload, prefix="actor_")
-            if "actor_space" in payload or "actor_space_id" in payload
-            else _space_value(payload)
-        )
-        return Scope(
-            org=actor_org,
-            space=actor_space,
-            user=str(payload.get("actor_scope", "")),
-            agent=str(payload.get("actor_agent", "")),
-            session=str(payload.get("actor_session", "")),
-        )
-    return Scope(
-        org=str(payload.get("tenant_id", "default")) or "default",
-        space=_space_value(payload),
-        user=str(payload.get("scope", "")),
-    )
 
 
 def _require(payload: Body, key: str) -> Any:
@@ -311,9 +263,7 @@ def _space_policy(payload: Body) -> SpacePolicy:
     return SpacePolicy(
         require_space=_bool_value(raw.get("require_space"), default=False),
         principal_path=_enum_value(PrincipalPath, principal_path, name="principal_path"),
-        storage_isolation_strategy=str(
-            raw.get("storage_isolation_strategy", "metadata_filter")
-        ),
+        storage_isolation_strategy=str(raw.get("storage_isolation_strategy", "metadata_filter")),
         retention=_string_map(raw.get("retention")),
         quotas=_string_map(raw.get("quotas")),
         index_profiles=_string_map(raw.get("index_profiles", raw.get("indexes"))),
@@ -347,20 +297,15 @@ def _space_policy_view(policy) -> Body:
     }
 
 
-def _space_member(payload: Body) -> SpaceMember:
-    target = _target_scope(payload)
-    member_scope = Scope(
-        org=str(payload.get("member_tenant_id", target.org)) or target.org,
-        space=_space_value(payload, prefix="member_") or target.space,
-        user=str(_require(payload, "member")),
-        agent=str(payload.get("member_agent", "")),
-        session=str(payload.get("member_session", "")),
-    )
-    return SpaceMember(scope=member_scope, role=str(payload.get("role", "member")) or "member")
+def _space_member(request: DispatchRequest) -> SpaceMember:
+    member = request.member
+    if member is None:
+        raise ValidationError("missing required field: 'member'")
+    return SpaceMember(scope=member, role=str(request.payload.get("role", "member")) or "member")
 
 
-def _member_scope(payload: Body) -> Scope:
-    return _space_member(payload).scope
+def _member_scope(request: DispatchRequest) -> Scope:
+    return _space_member(request).scope
 
 
 def _member_view(member) -> Body:
@@ -404,9 +349,7 @@ def _ensure_video_chain(srv) -> None:
         normalizer_cfg.get("default", {}) if isinstance(normalizer_cfg, dict) else {}
     )
     default_params = (
-        default_normalizer.get("params", {})
-        if isinstance(default_normalizer, dict)
-        else {}
+        default_normalizer.get("params", {}) if isinstance(default_normalizer, dict) else {}
     )
     routes = default_params.get("routes") if isinstance(default_params, dict) else None
     has_video_normalizer = isinstance(routes, dict) and "video" in routes
@@ -418,7 +361,9 @@ def _ensure_video_chain(srv) -> None:
         )
 
 
-def _submit_video(srv, payload: Body, *, scope: Scope, identity: Scope) -> Body:
+def _submit_video(
+    srv, payload: Body, *, scope: Scope, security: RequestSecurityContext
+) -> Body:
     """Submit a video write through the Control-managed ingest queue."""
     uri = str(_require(payload, "uri")).strip()
     if not uri:
@@ -433,9 +378,7 @@ def _submit_video(srv, payload: Body, *, scope: Scope, identity: Scope) -> Body:
         raise ValidationError("user_metadata must be an object")
     system_metadata = dict(raw_system_metadata or {})
     user_metadata = dict(raw_user_metadata or {})
-    system_metadata.update(
-        {"infer": "true", "pipeline": "video", "payload_id": payload_id}
-    )
+    system_metadata.update({"infer": "true", "pipeline": "video", "payload_id": payload_id})
     requested_assets = payload.get("assets")
     extras = requested_assets if isinstance(requested_assets, list) else []
     assets = [uri, *(str(item) for item in extras if str(item) != uri)]
@@ -444,7 +387,7 @@ def _submit_video(srv, payload: Body, *, scope: Scope, identity: Scope) -> Body:
     # 无权限请求在此被拒（PermissionDeniedError → 403），不进队列，避免占满 worker。
     srv.api.check_write(
         scope,
-        security=legacy_request_context(identity),
+        security,
         tags=payload.get("tags"),
         system_metadata=system_metadata,
         user_metadata=user_metadata,
@@ -458,7 +401,7 @@ def _submit_video(srv, payload: Body, *, scope: Scope, identity: Scope) -> Body:
             uri,
             scope,
             Modality.VIDEO,
-            security=legacy_request_context(identity),
+            security=security,
             assets=assets,
             tags=payload.get("tags"),
             system_metadata=system_metadata,
@@ -475,23 +418,19 @@ def _submit_video(srv, payload: Body, *, scope: Scope, identity: Scope) -> Body:
         "status": job.status,
         "reused": submission.reused,
         "feedback_message": (
-            "已返回该视频现有的处理任务。"
-            if submission.reused
-            else "视频处理任务已提交。"
+            "已返回该视频现有的处理任务。" if submission.reused else "视频处理任务已提交。"
         ),
     }
 
 
-def _ingest_job_status(srv, job, *, identity: Scope) -> Body:
+def _ingest_job_status(srv, job, *, security: RequestSecurityContext) -> Body:
     """Adapt a Control ingest job to the shared job response shape."""
     scope = job.scope
     units = []
     unit_ids = [item for item in job.detail.get("unit_ids", "").split(",") if item]
     for unit_id in unit_ids:
         try:
-            units.append(
-                srv.api.get(unit_id, scope, security=legacy_request_context(identity))
-            )
+            units.append(srv.api.get(unit_id, scope, security=security))
         except NotFoundError:
             continue
     items = [_video_unit_view(unit) for unit in units]
@@ -518,15 +457,15 @@ def _ingest_job_status(srv, job, *, identity: Scope) -> Body:
 # --- per-verb handlers ----------------------------------------------------- #
 
 
-def _add(srv, payload: Body) -> Body:
-    scope, actor = _target_scope(payload), _actor_scope(payload)
+def _add(srv, request: DispatchRequest) -> Body:
+    payload = request.payload
+    scope = _require_target(request)
+    security = _request_security(request)
     if "metadata" in payload:
-        raise ValidationError(
-            "metadata has been removed; use system_metadata and user_metadata"
-        )
-    modality = Modality(payload.get("modality", "text"))
+        raise ValidationError("metadata has been removed; use system_metadata and user_metadata")
+    modality = Modality(payload.get("source", payload.get("modality", "text")))
     if modality == Modality.VIDEO:
-        return _submit_video(srv, payload, scope=scope, identity=actor)
+        return _submit_video(srv, payload, scope=scope, security=security)
     # metadata 透传：infer 等调用级开关经 metadata 下推到引擎（engine.write 从
     # metadata["infer"]=="true" 判定是否同步走 evolve(EXTRACT) 抽取派生记忆）。
     # JSON 标量原样透传（不 str 化）：数值/布尔要保持原生类型才能在索引里建
@@ -543,7 +482,7 @@ def _add(srv, payload: Body) -> Body:
         _require(payload, "content"),
         scope,
         modality,
-        security=legacy_request_context(actor),
+        security=security,
         tags=payload.get("tags"),
         assets=payload.get("assets"),
         system_metadata=dict(raw_system_metadata or {}) or None,
@@ -554,18 +493,23 @@ def _add(srv, payload: Body) -> Body:
     # 此时不伪造 item_id，
     # 如实返回 deduped 语义；非空则照常取首条返回。
     if not units:
-        return {"ok": True, "op": "add", "item_id": None, "item": None,
-                "skipped": "all derived memories deduped (update/noop)"}
+        return {
+            "ok": True,
+            "op": "add",
+            "item_id": None,
+            "item": None,
+            "skipped": "all derived memories deduped (update/noop)",
+        }
     unit = units[0]
     return {"ok": True, "op": "add", "item_id": unit.id, "item": _unit_view(unit)}
 
 
-def _batch_add(srv, payload: Body) -> Body:
+def _batch_add(srv, request: DispatchRequest) -> Body:
+    payload = request.payload
     raw_defaults = payload.get("defaults", {})
     if not isinstance(raw_defaults, dict):
         raise ValidationError("batch_add defaults must be an object")
-    raw_items = payload.get("items")
-    if not isinstance(raw_items, list) or not raw_items:
+    if not request.batch_items:
         raise ValidationError("batch_add items must be a non-empty list")
     if not isinstance(payload.get("continue_on_error", True), bool):
         raise ValidationError("batch_add continue_on_error must be boolean")
@@ -576,7 +520,7 @@ def _batch_add(srv, payload: Body) -> Body:
         raise ValidationError(
             "batch_add metadata has been removed; use system_metadata and user_metadata"
         )
-    default_scope = _scope_from_payload(defaults)
+    default_scope = _require_target(request)
     raw_system_metadata = defaults.get("system_metadata")
     raw_user_metadata = defaults.get("user_metadata")
     if raw_system_metadata is not None and not isinstance(raw_system_metadata, dict):
@@ -595,19 +539,16 @@ def _batch_add(srv, payload: Body) -> Body:
     )
 
     items: list[BatchWriteItem | object] = []
-    for raw_item in raw_items:
-        if not isinstance(raw_item, dict):
-            items.append(raw_item)
+    for dispatch_item in request.batch_items:
+        raw_item = dispatch_item.payload
+        if dispatch_item.legacy_raw_item is not None:
+            items.append(dispatch_item.legacy_raw_item)
             continue
         if "metadata" in raw_item:
             raise ValidationError(
                 "batch item metadata has been removed; use system_metadata and user_metadata"
             )
-        raw_scope = raw_item.get("target_scope", {})
-        if not isinstance(raw_scope, dict):
-            items.append(raw_item)
-            continue
-        item_scope = _scope_from_payload(raw_scope, default_scope)
+        item_scope = dispatch_item.target or default_scope
         raw_source = raw_item.get("source", raw_item.get("modality"))
         try:
             item_source = Modality(raw_source) if raw_source is not None else None
@@ -641,7 +582,7 @@ def _batch_add(srv, payload: Body) -> Body:
         items,
         default_scope,
         default_source,
-        security=legacy_request_context(_actor_scope(defaults)),
+        security=_request_security(request),
         tags=default_tags,
         system_metadata=raw_system_metadata,
         user_metadata=raw_user_metadata,
@@ -650,11 +591,16 @@ def _batch_add(srv, payload: Body) -> Body:
         continue_on_error=payload.get("continue_on_error", True),
     )
     outcomes = []
-    for raw_item, outcome in zip(raw_items, result.outcomes):
+    for dispatch_item, outcome in zip(request.batch_items, result.outcomes):
+        input_item = (
+            dispatch_item.legacy_raw_item
+            if dispatch_item.legacy_raw_item is not None
+            else dict(dispatch_item.payload)
+        )
         outcomes.append(
             {
                 "index": outcome.index,
-                "input": raw_item,
+                "input": input_item,
                 "item": _batch_item_view(outcome.item),
                 "items": [_unit_view(unit) for unit in outcome.units],
                 "ok": not outcome.error,
@@ -669,8 +615,9 @@ def _batch_add(srv, payload: Body) -> Body:
     }
 
 
-def _search(srv, payload: Body) -> Body:
-    scope, actor = _target_scope(payload), _actor_scope(payload)
+def _search(srv, request: DispatchRequest) -> Body:
+    payload = request.payload
+    scope = _require_target(request)
     # extensions：把调用方在请求里给的自定义配置透传给（可能自定义的）
     # 检索模块。显式校验 dict：extensions 为 truthy 非 dict（字符串/列表等
     # 畸形 JSON）时兜底为空，
@@ -688,7 +635,7 @@ def _search(srv, payload: Body) -> Body:
     res = srv.api.search(
         _require(payload, "query"),
         Context(scope, extensions=extensions),
-        security=legacy_request_context(actor),
+        security=_request_security(request),
         filters=payload.get("filters"),  # dict DSL / 旧 list：由 API 边界 normalize，非法则 400
         top_k=int(payload.get("k", 10)),
         disclosure=DisclosureLevel.L2,
@@ -721,8 +668,9 @@ def _search(srv, payload: Body) -> Body:
     return body
 
 
-def _list(srv, payload: Body) -> Body:
-    scope, actor = _target_scope(payload), _actor_scope(payload)
+def _list(srv, request: DispatchRequest) -> Body:
+    payload = request.payload
+    scope = _require_target(request)
     offset = _parse_non_negative_int(payload.get("offset"), name="offset", default=0)
     limit = _parse_positive_int(payload.get("limit"), name="limit", default=100)
     memory_types = _parse_string_list(
@@ -733,7 +681,7 @@ def _list(srv, payload: Body) -> Body:
     filters = payload.get("filters", payload.get("filter"))
     result = srv.api.list(
         scope,
-        security=legacy_request_context(actor),
+        security=_request_security(request),
         offset=offset,
         limit=limit,
         memory_types=memory_types,
@@ -750,18 +698,18 @@ def _list(srv, payload: Body) -> Body:
     }
 
 
-def _get(srv, payload: Body) -> Body:
-    scope, actor = _target_scope(payload), _actor_scope(payload)
-    unit = srv.api.get(_require(payload, "item_id"), scope, security=legacy_request_context(actor))
+def _get(srv, request: DispatchRequest) -> Body:
+    payload = request.payload
+    scope = _require_target(request)
+    unit = srv.api.get(_require(payload, "item_id"), scope, security=_request_security(request))
     return {"ok": True, "op": "get", "item": _unit_view(unit)}
 
 
-def _update(srv, payload: Body) -> Body:
-    scope, actor = _target_scope(payload), _actor_scope(payload)
+def _update(srv, request: DispatchRequest) -> Body:
+    payload = request.payload
+    scope = _require_target(request)
     if "metadata" in payload:
-        raise ValidationError(
-            "metadata has been removed; use system_metadata and user_metadata"
-        )
+        raise ValidationError("metadata has been removed; use system_metadata and user_metadata")
     patch = MemoryPatch(
         content=payload.get("content"),
         tags=payload.get("tags"),
@@ -769,43 +717,44 @@ def _update(srv, payload: Body) -> Body:
         user_metadata=payload.get("user_metadata"),
     )
     unit = srv.api.update(
-        _require(payload, "item_id"), scope, patch, security=legacy_request_context(actor)
+        _require(payload, "item_id"), scope, patch, security=_request_security(request)
     )
     return {"ok": True, "op": "update", "item": _unit_view(unit)}
 
 
-def _delete(srv, payload: Body) -> Body:
-    scope, actor = _target_scope(payload), _actor_scope(payload)
+def _delete(srv, request: DispatchRequest) -> Body:
+    payload = request.payload
+    scope = _require_target(request)
     mode = DeleteMode.PURGE if payload.get("hard") else DeleteMode.FORGET
-    selector = DeleteSelector(
-        unit_ids=[_require(payload, "item_id")], scope=scope, mode=mode
-    )
-    deleted = srv.api.delete(selector, security=legacy_request_context(actor))
+    selector = DeleteSelector(unit_ids=[_require(payload, "item_id")], scope=scope, mode=mode)
+    deleted = srv.api.delete(selector, security=_request_security(request))
     return {"ok": True, "op": "delete", "item_id": payload["item_id"], "deleted": deleted}
 
 
 # --- 管理面 / 治理 / 演进 verbs ------------------------------------------- #
 
 
-def _evolve(srv, payload: Body) -> Body:
+def _evolve(srv, request: DispatchRequest) -> Body:
     """触发演进（extract/associate/consolidate/forget）→ Evolver 全链路 + Scheduler。"""
-    scope, actor = _target_scope(payload), _actor_scope(payload)
+    payload = request.payload
+    scope = _require_target(request)
     mode = EvolveMode(payload.get("mode", "extract"))
-    job_id = srv.api.evolve(scope, mode, security=legacy_request_context(actor))
+    job_id = srv.api.evolve(scope, mode, security=_request_security(request))
     return {"ok": True, "op": "evolve", "mode": mode.value, "job_id": job_id}
 
 
-def _job(srv, payload: Body) -> Body:
+def _job(srv, request: DispatchRequest) -> Body:
     """查询视频 Ingest 任务或原生 Scheduler 任务状态。"""
+    payload = request.payload
     job_id = str(_require(payload, "job_id"))
-    actor = _actor_scope(payload)
+    security = _request_security(request)
     info = srv.api.job_status(
         job_id,
-        security=legacy_request_context(actor),
-        scope=_target_scope(payload),
+        security=security,
+        scope=_require_target(request),
     )
     if info.mode == "ingest":
-        return _ingest_job_status(srv, info, identity=actor)
+        return _ingest_job_status(srv, info, security=security)
     return {
         "ok": True,
         "op": "job",
@@ -815,50 +764,58 @@ def _job(srv, payload: Body) -> Body:
     }
 
 
-def _inspect(srv, payload: Body) -> Body:
+def _inspect(srv, request: DispatchRequest) -> Body:
     """治理检视：按 id 读完整单元（含失效版本）→ Governor。"""
-    scope, actor = _target_scope(payload), _actor_scope(payload)
+    payload = request.payload
+    scope = _require_target(request)
     ids = payload.get("item_ids") or [_require(payload, "item_id")]
-    units = srv.api.inspect(ids, scope, security=legacy_request_context(actor))
+    units = srv.api.inspect(ids, scope, security=_request_security(request))
     return {"ok": True, "op": "inspect", "items": [_unit_view(u) for u in units]}
 
 
-def _trace(srv, payload: Body) -> Body:
+def _trace(srv, request: DispatchRequest) -> Body:
     """血缘回溯：沿 supersedes 版本链 → Governor。"""
-    scope, actor = _target_scope(payload), _actor_scope(payload)
+    payload = request.payload
+    scope = _require_target(request)
     chain = srv.api.trace(
-        _require(payload, "item_id"), scope, security=legacy_request_context(actor)
+        _require(payload, "item_id"), scope, security=_request_security(request)
     )
     return {"ok": True, "op": "trace", "items": [_unit_view(u) for u in chain]}
 
 
-def _audit(srv, payload: Body) -> Body:
+def _audit(srv, request: DispatchRequest) -> Body:
     """审计查询（Governor + AuditLogger）。"""
-    actor = _actor_scope(payload)
-    filters = {}
-    for key in (
-        "action",
-        "layer",
-        "decision",
-        "target_id",
-        "actor_org",
-        "actor_space",
-        "actor_user",
-        "actor_agent",
-        "actor_session",
-        "target_org",
-        "target_space",
-        "target_user",
-        "target_agent",
-        "target_session",
-        "occurred_after",
-        "occurred_before",
-    ):
-        if payload.get(key):
-            filters[key] = payload[key]
+    payload = request.payload
+    raw_filters = payload.get("filters")
+    if raw_filters is not None:
+        if not isinstance(raw_filters, dict):
+            raise ValidationError("filters must be an object")
+        filters = dict(raw_filters)
+    else:
+        filters = {}
+        for key in (
+            "action",
+            "layer",
+            "decision",
+            "target_id",
+            "actor_org",
+            "actor_space",
+            "actor_user",
+            "actor_agent",
+            "actor_session",
+            "target_org",
+            "target_space",
+            "target_user",
+            "target_agent",
+            "target_session",
+            "occurred_after",
+            "occurred_before",
+        ):
+            if payload.get(key):
+                filters[key] = payload[key]
     events = srv.api.audit(
         filters,
-        security=legacy_request_context(actor),
+        security=_request_security(request),
         limit=_parse_positive_int(payload.get("limit"), name="limit", default=100),
     )
     return {
@@ -869,41 +826,37 @@ def _audit(srv, payload: Body) -> Body:
     }
 
 
-def _admin(srv, payload: Body) -> Body:
+def _admin(srv, request: DispatchRequest) -> Body:
     """运行时策略读写：给 value 即 set、给 key 即 get、否则列全部。"""
-    actor = _actor_scope(payload)
+    payload = request.payload
+    security = _request_security(request)
     key, value = payload.get("key"), payload.get("value")
     if key and value is not None:
-        srv.api.admin_set(key, str(value), security=legacy_request_context(actor))
+        srv.api.admin_set(key, str(value), security=security)
         return {
             "ok": True,
             "op": "admin",
             "key": key,
-            "value": srv.api.admin_get(key, security=legacy_request_context(actor)),
+            "value": srv.api.admin_get(key, security=security),
         }
     if key:
         return {
             "ok": True,
             "op": "admin",
             "key": key,
-            "value": srv.api.admin_get(key, security=legacy_request_context(actor)),
+            "value": srv.api.admin_get(key, security=security),
         }
-    policies = srv.api.admin_all(security=legacy_request_context(actor))
-    return {"ok": True, "op": "admin", "policies": policies}
+    return {"ok": True, "op": "admin", "policies": srv.api.admin_all(security=security)}
 
 
-def _grant(srv, payload: Body) -> Body:
+def _grant(srv, request: DispatchRequest) -> Body:
     """跨 scope 授权（PermissionManager）。"""
-    scope, actor = _target_scope(payload), _actor_scope(payload)
-    grantee = Scope(
-        org=str(payload.get("grantee_tenant_id", scope.org)) or scope.org,
-        space=_space_value(payload, prefix="grantee_") or scope.space,
-        user=str(_require(payload, "grantee")),
-        agent=str(payload.get("grantee_agent", "")),
-        session=str(payload.get("grantee_session", "")),
-    )
-    grant = Grant(grant_id="", grantor=scope, grantee=grantee, actions=frozenset({Action.READ}))
-    srv.api.grant(grant, security=legacy_request_context(actor))
+    scope = _require_target(request)
+    grantee = request.grantee
+    if grantee is None:
+        raise ValidationError("missing required field: 'grantee'")
+    grant = Grant(grantor=scope, grantee=grantee, actions=[Action.READ])
+    srv.api.grant(grant, security=_request_security(request))
     return {
         "ok": True,
         "op": "grant",
@@ -912,18 +865,14 @@ def _grant(srv, payload: Body) -> Body:
     }
 
 
-def _revoke(srv, payload: Body) -> Body:
+def _revoke(srv, request: DispatchRequest) -> Body:
     """Cross-scope revoke (PermissionManager)."""
-    scope, actor = _target_scope(payload), _actor_scope(payload)
-    grantee = Scope(
-        org=str(payload.get("grantee_tenant_id", scope.org)) or scope.org,
-        space=_space_value(payload, prefix="grantee_") or scope.space,
-        user=str(_require(payload, "grantee")),
-        agent=str(payload.get("grantee_agent", "")),
-        session=str(payload.get("grantee_session", "")),
-    )
-    grant = Grant(grant_id="", grantor=scope, grantee=grantee, actions=frozenset({Action.READ}))
-    srv.api.revoke(grant, security=legacy_request_context(actor))
+    scope = _require_target(request)
+    grantee = request.grantee
+    if grantee is None:
+        raise ValidationError("missing required field: 'grantee'")
+    grant = Grant(grantor=scope, grantee=grantee, actions=[Action.READ])
+    srv.api.revoke(grant, security=_request_security(request))
     return {
         "ok": True,
         "op": "revoke",
@@ -932,10 +881,10 @@ def _revoke(srv, payload: Body) -> Body:
     }
 
 
-def _create_space(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
-    org = str(payload.get("tenant_id", "default")) or "default"
-    space = _require_space(payload)
+def _create_space(srv, request: DispatchRequest) -> Body:
+    payload = request.payload
+    org = _require_target(request).org
+    space = _require_space(request)
     policy = _space_policy(payload)
     info = srv.api.create_space(
         SpaceSpec(
@@ -946,26 +895,25 @@ def _create_space(srv, payload: Body) -> Body:
             policy=policy,
             metadata=_string_map(payload.get("metadata")),
         ),
-        security=legacy_request_context(actor),
+        security=_request_security(request),
     )
     return {"ok": True, "op": "create_space", "space": _space_info_view(info)}
 
 
-def _get_space(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
-    org = str(payload.get("tenant_id", "default")) or "default"
-    info = srv.api.get_space(org, _require_space(payload), security=legacy_request_context(actor))
+def _get_space(srv, request: DispatchRequest) -> Body:
+    org = _require_target(request).org
+    info = srv.api.get_space(org, _require_space(request), security=_request_security(request))
     return {"ok": True, "op": "get_space", "space": _space_info_view(info)}
 
 
-def _list_spaces(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
-    org = str(payload.get("tenant_id", "default")) or "default"
+def _list_spaces(srv, request: DispatchRequest) -> Body:
+    payload = request.payload
+    org = _require_target(request).org
     raw_status = payload.get("status")
     status = _enum_value(SpaceStatus, raw_status, name="status") if raw_status else None
     spaces = srv.api.list_spaces(
         org,
-        security=legacy_request_context(actor),
+        security=_request_security(request),
         status=status,
         limit=_parse_positive_int(payload.get("limit"), name="limit", default=100),
         cursor=payload.get("cursor"),
@@ -978,9 +926,9 @@ def _list_spaces(srv, payload: Body) -> Body:
     }
 
 
-def _update_space(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
-    org = str(payload.get("tenant_id", "default")) or "default"
+def _update_space(srv, request: DispatchRequest) -> Body:
+    payload = request.payload
+    org = _require_target(request).org
     patch = SpacePatch(
         display_name=payload.get("display_name"),
         status=_enum_value(SpaceStatus, payload["status"], name="status")
@@ -993,26 +941,23 @@ def _update_space(srv, payload: Body) -> Body:
         metadata=_string_map(payload.get("metadata")) if payload.get("metadata") else None,
     )
     info = srv.api.update_space(
-        org, _require_space(payload), patch, security=legacy_request_context(actor)
+        org, _require_space(request), patch, security=_request_security(request)
     )
     return {"ok": True, "op": "update_space", "space": _space_info_view(info)}
 
 
-def _archive_space(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
-    org = str(payload.get("tenant_id", "default")) or "default"
-    info = srv.api.archive_space(
-        org, _require_space(payload), security=legacy_request_context(actor)
-    )
+def _archive_space(srv, request: DispatchRequest) -> Body:
+    org = _require_target(request).org
+    info = srv.api.archive_space(org, _require_space(request), security=_request_security(request))
     return {"ok": True, "op": "archive_space", "space": _space_info_view(info)}
 
 
-def _delete_space(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
-    org = str(payload.get("tenant_id", "default")) or "default"
+def _delete_space(srv, request: DispatchRequest) -> Body:
+    payload = request.payload
+    org = _require_target(request).org
     mode = _enum_value(DeleteMode, payload.get("mode", "purge"), name="mode")
     result = srv.api.delete_space(
-        org, _require_space(payload), security=legacy_request_context(actor), mode=mode
+        org, _require_space(request), security=_request_security(request), mode=mode
     )
     return {
         "ok": True,
@@ -1024,53 +969,48 @@ def _delete_space(srv, payload: Body) -> Body:
     }
 
 
-def _export_space(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
-    org = str(payload.get("tenant_id", "default")) or "default"
+def _export_space(srv, request: DispatchRequest) -> Body:
+    payload = request.payload
+    org = _require_target(request).org
     export_id = srv.api.export_space(
         org,
-        _require_space(payload),
-        security=legacy_request_context(actor),
+        _require_space(request),
+        security=_request_security(request),
         include_audit=_bool_value(payload.get("include_audit"), default=True),
     )
     return {"ok": True, "op": "export_space", "export_id": export_id}
 
 
-def _space_usage(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
-    org = str(payload.get("tenant_id", "default")) or "default"
-    usage = srv.api.space_usage(
-        org, _require_space(payload), security=legacy_request_context(actor)
-    )
+def _space_usage(srv, request: DispatchRequest) -> Body:
+    org = _require_target(request).org
+    usage = srv.api.space_usage(org, _require_space(request), security=_request_security(request))
     return {"ok": True, "op": "space_usage", "usage": _usage_view(usage)}
 
 
-def _get_space_policy(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
-    org = str(payload.get("tenant_id", "default")) or "default"
+def _get_space_policy(srv, request: DispatchRequest) -> Body:
+    org = _require_target(request).org
     policy = srv.api.get_space_policy(
-        org, _require_space(payload), security=legacy_request_context(actor)
+        org, _require_space(request), security=_request_security(request)
     )
     return {"ok": True, "op": "get_space_policy", "policy": _space_policy_view(policy)}
 
 
-def _set_space_policy(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
-    org = str(payload.get("tenant_id", "default")) or "default"
+def _set_space_policy(srv, request: DispatchRequest) -> Body:
+    payload = request.payload
+    org = _require_target(request).org
     policy = srv.api.set_space_policy(
         org,
-        _require_space(payload),
+        _require_space(request),
         _space_policy(payload),
-        security=legacy_request_context(actor),
+        security=_request_security(request),
     )
     return {"ok": True, "op": "set_space_policy", "policy": _space_policy_view(policy)}
 
 
-def _list_space_members(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
-    org = str(payload.get("tenant_id", "default")) or "default"
+def _list_space_members(srv, request: DispatchRequest) -> Body:
+    org = _require_target(request).org
     members = srv.api.list_space_members(
-        org, _require_space(payload), security=legacy_request_context(actor)
+        org, _require_space(request), security=_request_security(request)
     )
     return {
         "ok": True,
@@ -1080,28 +1020,29 @@ def _list_space_members(srv, payload: Body) -> Body:
     }
 
 
-def _add_space_member(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
-    org = str(payload.get("tenant_id", "default")) or "default"
+def _add_space_member(srv, request: DispatchRequest) -> Body:
+    org = _require_target(request).org
     srv.api.add_space_member(
-        org, _require_space(payload), _space_member(payload), security=legacy_request_context(actor)
+        org,
+        _require_space(request),
+        _space_member(request),
+        security=_request_security(request),
     )
     return {"ok": True, "op": "add_space_member"}
 
 
-def _remove_space_member(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
-    org = str(payload.get("tenant_id", "default")) or "default"
+def _remove_space_member(srv, request: DispatchRequest) -> Body:
+    org = _require_target(request).org
     srv.api.remove_space_member(
         org,
-        _require_space(payload),
-        _member_scope(payload),
-        security=legacy_request_context(actor),
+        _require_space(request),
+        _member_scope(request),
+        security=_request_security(request),
     )
     return {"ok": True, "op": "remove_space_member"}
 
 
-_ROUTES: dict[str, Callable[[Any, Body], Body]] = {
+_ROUTES: dict[str, Callable[[Any, DispatchRequest], Body]] = {
     "add": _add,
     "batch_add": _batch_add,
     "search": _search,
@@ -1133,17 +1074,15 @@ _ROUTES: dict[str, Callable[[Any, Body], Body]] = {
 }
 
 
-def dispatch(srv, verb: str, payload: Body) -> tuple[int, Body]:
-    """Route ``verb`` through the kernel; return ``(status, body)``."""
-    handler = _ROUTES.get(verb)
+def dispatch(srv, request: DispatchRequest) -> tuple[int, Body]:
+    """Route one already-adapted request through the kernel."""
+    handler = _ROUTES.get(request.verb)
     if handler is None:
-        return 404, {"error": "UnknownVerb", "message": f"no such verb: {verb!r}"}
+        return 404, {"error": "UnknownVerb", "message": f"no such verb: {request.verb!r}"}
     try:
-        return 200, handler(srv, payload)
+        return 200, handler(srv, request)
     except AgentMemoryError as exc:
-        status = next(
-            (code for cls, code in _STATUS.items() if isinstance(exc, cls)), 400
-        )
+        status = next((code for cls, code in _STATUS.items() if isinstance(exc, cls)), 400)
         return status, {"error": type(exc).__name__, "message": str(exc)}
     except Exception as exc:  # surface unexpected failures as 500
         return 500, {"error": "InternalError", "message": str(exc)}
