@@ -1,0 +1,8 @@
+environment/.env
+outputs/
+__pycache__/
+*.py[cod]
+*.log
+*_audit.jsonl
+datasets/longmemeval/*.json
+!datasets/longmemeval/longmemeval_mini.json

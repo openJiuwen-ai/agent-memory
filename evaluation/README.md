@@ -1,79 +1,170 @@
-# evaluation —— 记忆系统评测
+# LongMemEval 本地端到端一键测评
 
-对接 `docs/design`：能力对标见 [vision.md](../docs/design/vision.md) §能力对标、基准选型见
-[memory_benchmarks.md](../docs/design/memory_benchmarks.md) §5、指标口径见 architecture.md
-「可观测：检索 token / p50·p95 时延 / 容量」。
+本目录提供从 SSH 环境整理出的 LongMemEval 测评实现，不依赖官方旧版
+`evaluation/benchmark`、`evaluation/core`、`evaluation/metrics`、
+`evaluation/scripts` 或 `evaluation/smoke_test`。所有适配代码、模型代理、后端服务
+编排、数据路径和运行配置均位于新的 `evaluation/longmemeval` 及公共目录中，不修改
+agent-memory 记忆内核。
 
-## 两层评测
+mini 数据只减少输入 turn 数；写入、抽取、Redis、Milvus、Elasticsearch、检索、
+答案生成和 AnswerJudge 均走正式链路，不使用 Mock。
 
-| 层 | 测什么 | 指标 | 依赖 | 状态 |
-| --- | --- | --- | --- | --- |
-| **组件级 IR** | 检索召回/排序质量本身 | Recall@k · Precision@k · MRR · nDCG@k · MAP + p50/p95 时延 + 回传 token | 仅检索链路（in-memory 装配） | ✅ 可跑 |
-| **端到端 QA** | 整体功能（add→search→答案） | QA 准确率（LLM-as-judge）+ 按类目分桶 | 全链路 + LLM judge + 公开数据集 | ✅ 通路就绪（待下载数据集 + 配 judge endpoint） |
+## 一键运行
 
-两层共用同一套 harness/runner——都走 `MemoryAPI` 公共面（`add`/`search`），评的是**整体功能**而非检索层孤件。
+### Windows
 
-## 目录
+在仓库根目录执行：
 
-```
-evaluation/
-├── core/          # 框架：types(数据契约) · harness(装配+采集) · runner(编排) · report(json/md)
-├── benchmark/     # 适配器：jsonl_dataset(自定义评测标注集) · locomo_adapter · longmemeval_adapter · data/(下载区·gitignore)
-├── metrics/       # ir_metrics(确定性·全实现) · perf_metrics(吃轨迹) · qa_metrics(分类目) · llm_judge(可插拔)
-├── scripts/       # run_ir_eval(可跑) · run_e2e_eval(骨架)
-└── smoke_test/    # golden_ir.jsonl + test_ir_smoke(CI 回归基线)
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$PWD\evaluation\run.ps1"
 ```
 
-## 用法
+### Linux / SSH
 
 ```bash
-# 组件级 IR（默认跑内置冒烟评测基准）
-python3 evaluation/scripts/run_ir_eval.py
-
-# 用同一评测标注集对比装配改动（加权融合 / 结构化披露）
-python3 evaluation/scripts/run_ir_eval.py --fuser weighted_rrf --discloser structured
-
-# 自定义评测标注集
-python3 evaluation/scripts/run_ir_eval.py --dataset path/to/golden.jsonl --json out.json
-
-# 冒烟（确定性回归，不在默认 pytest testpaths 内，需显式触发）
-pytest evaluation/smoke_test
+sh evaluation/run.sh
 ```
 
-## 端到端 benchmark（LoCoMo / LongMemEval）
+脚本会依次：
 
-适配器与 judge 已就绪（按各数据集官方 schema 解析），只需两步外部输入：
+1. 创建或复用仓库根目录的 `.venv`，安装项目和测评依赖；
+2. 清理 `agent-memory-evaluation` 专用 Docker 卷；
+3. 复用标准端口上已经健康的 Redis、Elasticsearch、Milvus，并拉起缺失服务；
+4. 拉起 SSH 同款的 GLM 抽取代理、回答/判分代理和 BGE embedding 代理；
+5. 执行 mini 样本的写入、抽取、检索、回答和判分；
+6. 把结果写入 `evaluation/outputs/longmemeval/<时间>/`。
 
-```bash
-# 1. 下载数据集到 data/（gitignore，不入库）
-#    LoCoMo:      https://github.com/snap-research/LoCoMo    → data/locomo10.json
-#    LongMemEval: https://github.com/xiaowu0162/LongMemEval  → data/longmemeval_s.json
+首次运行需要下载镜像和 Python 包。Docker Desktop 建议预留约 6 GB 内存。默认端口
+为 `6379`、`9200`、`19530`、`9091`、`18937`、`18938`、`18939`。
 
-# 2. 配 judge（OpenAI 兼容 endpoint，智谱/豆包/OpenAI 均可）并运行
-export JUDGE_BASE_URL=...  JUDGE_MODEL=...  JUDGE_API_KEY=...
-python3 evaluation/scripts/run_e2e_eval.py --dataset locomo
-python3 evaluation/scripts/run_e2e_eval.py --dataset longmemeval
-# 不配 judge 也能跑：只出 IR/性能，qa_accuracy 自动跳过
+## 环境配置
+
+复制模板：
+
+```powershell
+Copy-Item evaluation\environment\.env.example evaluation\environment\.env
+notepad evaluation\environment\.env
 ```
 
-实现要点：
-- **LoCoMo**：消息→seed（`key={sample_id}/D{session}:{turn}`）、QA→query（`evidence`→`relevant_keys`）；
-  **每个 sample 独立 scope**；category 5 对抗题跳过；`bucket=cat{N}`。
-- **LongMemEval**：turn→seed（`key={qid}/{session}#{turn}`）、question→query；证据优先用 turn 级
-  `has_answer`、否则回退 `answer_session_ids`；**每道题独立 scope**；`bucket=question_type`；
-  `question_date` 透传给 judge 作「今天」（时序题）；`_abs` 题标 abstention。
-- `LLMJudge`（`metrics/llm_judge.py`）两步：召回记忆→合成答案→比对参考答案，输出 CORRECT/WRONG，
-  含**拒答判定**；`qa_accuracy` 按 `metadata['bucket']` 分桶（`acc:<bucket>`）。
-- 大数据集先切片：`LoCoMoDataset(path, samples=[0,1], max_questions=20)`（LongMemEval 同参）。
+至少填写以下上游配置：
 
-> 接新公开数据集 = 写一个 `Dataset` 子类（`seeds()`/`queries()`），metric/judge 复用。
-> 仅「边写边问」类（MemoryAgentBench/PersonaMem）需补时间线扩展，详见上层评估说明。
-
-## 评测标注 JSONL 格式
-
-```jsonl
-{"type": "seed",  "key": "m1", "content": "...", "tags": ["coffee"]}
-{"type": "query", "query_id": "q1", "text": "...", "relevant_keys": ["m1"], "top_k": 5}
+```text
+LONGMEMEVAL_CHAT_UPSTREAM_URL
+LONGMEMEVAL_CHAT_MODEL
+LONGMEMEVAL_CHAT_API_KEYS
+LONGMEMEVAL_EMBED_UPSTREAM_URL
+LONGMEMEVAL_EMBED_MODEL
+LONGMEMEVAL_EMBED_API_KEY
 ```
 
-`scope` 可省略（默认 `org=eval,user=u1`）；`relevant_keys` 指向 seed 的 `key`。
+`LONGMEMEVAL_CHAT_API_KEYS` 支持多个 Key，使用英文逗号分隔。真实 `.env` 已被 Git
+忽略，不得提交 API Key 或外部模型 URL。
+
+## mini 数据
+
+默认输入是：
+
+```text
+evaluation/datasets/longmemeval/longmemeval_mini.json
+```
+
+该样本从标准 `longmemeval_oracle.json` 数组下标 `232` 机械截取，
+`question_id=89527b6b`，保留 1 个 Oracle session、2 个原始 turn、原始问题和答案。
+没有改写保留字段。来源和 SHA-256 见
+`evaluation/datasets/longmemeval/README.md`。
+
+## 测评口径
+
+- 按 `dialogue_turn` 写入，相邻 user/assistant 合并为一轮；
+- 单轮超过 4096 字符时按句切分，并携带有界前文；
+- 只写 `answer_session_ids` 指定的 Oracle session；
+- `infer=true`，抽取后验证 `retain_source=false`；
+- Redis 保存真源，Milvus 向量召回，Elasticsearch 关键词召回；
+- weighted RRF 使用 vector `2.0`、keyword `1.0`、`k=20`，关闭 rerank；
+- 召回 Top-200，再按 `50 → 10 → 20` 三个 cutoff 生成答案；
+- 使用 LongMemEval 专用 answer prompt 和 AnswerJudge prompt；
+- 抽取代理关闭 GLM thinking，回答和 Judge 代理保留 thinking；
+- 代理对成功但内容为空的 completion 执行重试。
+
+## 修改题目范围和并行参数
+
+编辑 `evaluation/config.yml`：
+
+```yaml
+longmemeval:
+  question_ids: []
+  sample_indices: [0]
+  max_questions: 1
+  concurrency: 1
+```
+
+`question_ids` 非空时按题号选择，否则使用 `sample_indices`；`max_questions: 0`
+表示不限制。本阶段建议先保持 mini 和 `concurrency: 1`。
+
+切换到标准数据集时，只替换数据路径和范围，不替换测评实现：
+
+```yaml
+longmemeval:
+  data: datasets/longmemeval/longmemeval_oracle.json
+  question_ids: []
+  sample_indices: null
+  max_questions: 0
+```
+
+完整标准数据默认被 `.gitignore` 排除，不会进入 PR。
+
+## 兼容的直接入口
+
+下面的命令只运行 Python 测评，不创建虚拟环境，也不拉起后端服务：
+
+```powershell
+.\.venv\Scripts\python.exe -m evaluation --config evaluation\configs\e2e_smoke.yml
+```
+
+从零执行端到端测试应使用 `evaluation/run.ps1`。
+
+## 输出与日志
+
+```text
+evaluation/outputs/longmemeval/<时间>/result.json
+evaluation/outputs/longmemeval/<时间>/artifacts/
+evaluation/outputs/longmemeval/<时间>/*_proxy.log
+evaluation/outputs/longmemeval/<时间>/*_proxy_audit.jsonl
+```
+
+运行产物、日志、缓存和真实 `.env` 均被忽略。
+
+## 停止服务
+
+保留数据卷：
+
+```powershell
+docker compose -f evaluation\environment\docker-compose.yml stop
+```
+
+停止容器并删除本测评专用卷：
+
+```powershell
+docker compose -f evaluation\environment\docker-compose.yml down --volumes
+```
+
+## 常见错误
+
+- `docker` 命令不存在：安装并启动 Docker Desktop；
+- `port is already allocated`：检查上述默认端口是否被其他服务占用；
+- 缺少环境变量：检查 `evaluation/environment/.env`；
+- 模型回复异常：检查输出目录的 `extract_proxy.log` 和
+  `answer_judge_proxy.log`；
+- embedding 异常：检查 `embed_proxy.log` 和 `embed_proxy_audit.jsonl`；
+- 后端未健康：执行
+  `docker compose -f evaluation/environment/docker-compose.yml ps`。
+
+## PR 边界
+
+需要提交新的 LongMemEval 源码、公共启动与环境模板、mini 数据和本文档。不得提交：
+
+- `evaluation/environment/.env`；
+- API Key、外部模型 URL；
+- 完整标准数据；
+- `evaluation/outputs/`、日志、审计记录、缓存和编译产物；
+- `evaluation_legacy_backup/`、`evaluation_backup_*/`。
