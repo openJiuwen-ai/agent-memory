@@ -5,17 +5,19 @@ from datetime import datetime, timezone
 import pytest
 
 from jiuwen_memory.api import DeleteMode, DeleteSelector, Scope
-from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.errors import NotFoundError, ValidationError
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit, Segment, memory_key
 from jiuwen_memory.common.type_def.memory_codec import dumps
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 
 
 def test_delete_selector_matches_tags_within_scope() -> None:
     scope = Scope(org="acme", user="u1", agent="a1", session="s1")
     actor = scope
-    kernel = build_kernel()
+    kv = InMemoryKVStore()
+    kernel = build_kernel(kv=kv)
     stale = kernel.api.add(
         "old temporary note", scope, security=legacy_request_context(actor), tags=["temp"]
     )[0]
@@ -52,7 +54,8 @@ def test_delete_selector_matches_tags_within_scope() -> None:
 def test_delete_selector_matches_before_event_time() -> None:
     scope = Scope(org="acme", user="u1", agent="a1", session="s1")
     actor = scope
-    kernel = build_kernel()
+    kv = InMemoryKVStore()
+    kernel = build_kernel(kv=kv)
     old = kernel.api.add(
         "old event",
         scope,
@@ -101,7 +104,8 @@ def test_delete_selector_matches_before_event_time() -> None:
 def test_delete_selector_combines_conditions_with_and() -> None:
     scope = Scope(org="acme", user="u1", agent="a1", session="s1")
     actor = scope
-    kernel = build_kernel()
+    kv = InMemoryKVStore()
+    kernel = build_kernel(kv=kv)
     matching = kernel.api.add(
         "old temp",
         scope,
@@ -167,7 +171,8 @@ def test_delete_selector_combines_conditions_with_and() -> None:
 
 
 def test_empty_delete_selector_raises_validation_error() -> None:
-    kernel = build_kernel()
+    kv = InMemoryKVStore()
+    kernel = build_kernel(kv=kv)
 
     with pytest.raises(ValidationError):
         kernel.api.delete(
@@ -178,7 +183,8 @@ def test_empty_delete_selector_raises_validation_error() -> None:
 def test_delete_downweight_updates_importance_without_changing_lifecycle() -> None:
     scope = Scope(org="acme", user="u1", agent="a1", session="s1")
     actor = scope
-    kernel = build_kernel()
+    kv = InMemoryKVStore()
+    kernel = build_kernel(kv=kv)
     unit = kernel.api.add(
         "lower priority",
         scope,
@@ -200,7 +206,8 @@ def test_delete_downweight_updates_importance_without_changing_lifecycle() -> No
 def test_delete_purge_removes_memory_unit_from_truth_store() -> None:
     scope = Scope(org="acme", user="u1", agent="a1", session="s1")
     actor = scope
-    kernel = build_kernel()
+    kv = InMemoryKVStore()
+    kernel = build_kernel(kv=kv)
     unit = kernel.api.add("remove permanently", scope, security=legacy_request_context(actor))[0]
 
     affected = kernel.api.delete(
@@ -217,14 +224,15 @@ def test_delete_purge_removes_memory_unit_from_truth_store() -> None:
 def test_delete_archive_uses_lifecycle_transition_validation() -> None:
     scope = Scope(org="acme", user="u1", agent="a1", session="s1")
     actor = scope
-    kernel = build_kernel()
+    kv = InMemoryKVStore()
+    kernel = build_kernel(kv=kv)
     forgotten = MemoryUnit(
         id="forgotten-unit",
         scope=scope,
         segments=[Segment(content="already forgotten")],
         lifecycle=LifecycleState.FORGOTTEN,
     )
-    kernel.kv.insert(scope, memory_key(forgotten.id), dumps(forgotten))
+    kv.insert(scope, memory_key(forgotten.id), dumps(forgotten))
 
     with pytest.raises(ValidationError):
         kernel.api.delete(
@@ -241,7 +249,8 @@ def test_delete_archive_uses_lifecycle_transition_validation() -> None:
 def test_delete_purge_recursively_removes_provenance_descendants() -> None:
     scope = Scope(org="acme", user="u1", agent="a1", session="s1")
     actor = scope
-    kernel = build_kernel()
+    kv = InMemoryKVStore()
+    kernel = build_kernel(kv=kv)
     source = MemoryUnit(id="source", scope=scope, segments=[Segment(content="source")])
     direct = MemoryUnit(
         id="direct-derived",
@@ -257,7 +266,7 @@ def test_delete_purge_recursively_removes_provenance_descendants() -> None:
     )
     unrelated = MemoryUnit(id="unrelated", scope=scope, segments=[Segment(content="unrelated")])
     for unit in [source, direct, nested, unrelated]:
-        kernel.kv.insert(scope, memory_key(unit.id), dumps(unit))
+        kv.insert(scope, memory_key(unit.id), dumps(unit))
 
     affected = kernel.api.delete(
         DeleteSelector(unit_ids=[source.id], scope=scope, mode=DeleteMode.PURGE),

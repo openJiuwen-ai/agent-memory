@@ -148,7 +148,7 @@ def test_prompt_registry_prefers_config_source() -> None:
 
 
 def test_build_kernel_exposes_default_config_source() -> None:
-    from jiuwen_memory.api.memory_api_impl.assembly import build_kernel
+    from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
     from jiuwen_memory.config.config_source_impl.yaml_defaults_config_source import YamlDefaultsConfigSource
 
     Factory.reset_all()
@@ -161,7 +161,7 @@ def test_build_kernel_exposes_default_config_source() -> None:
 
 
 def test_build_kernel_can_inject_dict_config_source() -> None:
-    from jiuwen_memory.api.memory_api_impl.assembly import build_kernel
+    from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 
     Factory.reset_all()
     cfg = Config.from_dict(

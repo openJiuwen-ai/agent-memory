@@ -1,7 +1,7 @@
 # agent-memory架构设计（Architecture）
 
 > 文档性质：总体架构设计（概念、分层、组件与依赖方向）
-> 版本：v0.2 ｜ 日期：2026-08-06
+> 版本：v0.2 ｜ 日期：2026-09-03
 > 关联文档：[愿景 VISION](./vision.md) ｜ [统一 Storage](../features/storage/F05-unified-storage-design.md) ｜ [Storage 检索 Pipeline](../features/retrieval/F05-storage-retrieval-pipelines.md) ｜ [Benchmark 调研](./memory_benchmarks.md)
 > 说明：本文描述系统级架构方向；精确接口契约以 `docs/specs/` 为准，特性取舍与首版实现边界以 `docs/features/` 为准。
 
@@ -193,7 +193,8 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
                  · 图像 → caption / OCR / 视觉描述
                  · 音频 → 转录(ASR)
                  · 视频 → 关键帧描述 + 转录
-                 · 文档/代码 → 解析 + 结构化切分
+                 · 代码文本 → 直通或结构化切分
+                 · 文档原件 → 解析 + 结构化切分
                           │
                           ▼
             记忆构建层(§9.1/§9.2，分层结构见 §4) 在 content 投影上提取/抽象/关联、构建多形式索引
@@ -202,6 +203,8 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 - **原模态资产为真源、文本投影为派生**：与「真源唯一 + 派生可重建」一致；重跑规约器即可重建投影。
 - **检索统一在文本/结构投影上进行**：向量/关键词/图/文档索引均基于 `content`，不引入专门的「多模态向量检索」（保持检索链路简单一致）。
 - **可插拔规约器**：ASR/OCR/caption 模型为可替换组件（§12 可插拔），端侧可降级或延迟到云侧（§17 开放问题）。
+- **资产映射归 Ingestor**：Engine 传递资产引用，Ingestor 决定如何映射到产出的 Segment；接口不固定 payload、unit、segment 和 assets 的数量关系。
+- **模态能力由 Normalizer 声明**：未声明支持的输入按 fail-closed 处理；精确校验和异常契约见 [S07](../specs/S07-common.md)。
 
 ---
 
@@ -253,7 +256,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 > - **表面 = 数据面 + 管理面**：数据面委托 `MemoryEngine`，管理面查询（job/inspect/trace/audit/grant/revoke/space 管理）直达 Scheduler/Governor/PermissionManager/SpaceManager，admin 直达 PolicyManager；调用层只依赖 `jiuwen_memory/api` 即可触达全部对外能力。
 > - 接口形态无关：不论真源是文档还是结构化、运行在端还是云，调用方语义一致。
 > - **双时间一等暴露**：`search`/`get` 的 `as_of`（valid-time）直接消费 §3.1 的双时间模型，支持「按当时状态」的时间点查询与历史回溯，与 query 文本里解析出的事件时间（event-time）分轴（对应 §15 吸收 Zep 的落点）。
-> - **统一异常契约**：错误由 `common/errors`（根 `AgentMemoryError`）的类型承载——`NotFoundError`/`ConflictError`/`PermissionDeniedError`/`ValidationError`/`PolicyError`/`HealthCheckError`/`BackendError`，调用方跨后端/跨层用同一套捕获，不依赖具体实现自带异常。
+> - **统一异常契约**：错误由 `common/errors`（根 `AgentMemoryError`）的类型承载——`NotFoundError`/`ConflictError`/`PermissionDeniedError`/`ValidationError`/`UnsupportedCapabilityError`/`PolicyError`/`HealthCheckError`/`BackendError`，调用方跨后端/跨层用同一套捕获，不依赖具体实现自带异常。
 > - **控制模式**：`evolve` 与自动触发对应 §9.3 的 `agent_control / static_control / both`。
 > - **不设 `link` 接口**：记忆/实体关联不对外暴露为接口语义，由构建层 Associator 在演进（§9.3）中自动维护（`Relation` 结构供图索引内部使用）。
 
@@ -551,14 +554,18 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 **写入路径（Write）**
 
 ```
-add() → 接入/构建形成 MemoryUnit → Storage.add() 写真源
-                                ├─▶ [hot] IndexBuilder 生成投影并写 Storage 标准端口
-                                ├─▶ [background] 自演进: 提取→抽象精炼→关联→消解→重建多粒度记忆与索引
-                                └─▶ 审计日志(横切)
+add() → Engine 构造 RawPayload（含 assets）
+      → Ingestor 校验 Normalizer 能力、规约 content、映射 assets → MemoryUnit
+      → [hot] IndexBuilder.build
+           ├─ Hybrid：子 Builder 分别写 Storage 的正排/全文/向量/实体能力端口
+           └─ Unified：调用 Storage.add，由一体化 Storage 按自身能力完成写入
+      → [background] 自演进: 提取→抽象精炼→关联→消解→重建多粒度记忆与索引
+      → 审计日志(横切)
 ```
 
-`Storage.add()` 成功只表示 MemoryUnit 真源可读，不表示所有派生索引均已完成；索引投影仍由
-Construction 负责。一体化 Storage 可在内部自动建索引，但不能改变这一对上语义。
+`Storage.add()` 是面向 Storage 领域接口的写入能力，不等同于“只写真源”。具体覆盖本体还是
+同时覆盖索引，由 Storage 实现和写入 mode 决定；Engine 不在 IndexBuilder 之外重复调用它。
+索引投影的生成与写入编排仍由 Construction 的 IndexBuilder 对上负责。
 
 **读取路径（Read）**
 
@@ -734,11 +741,11 @@ agent-memory/
 - **三类基础契约**：接口代码落地为「算子 + 插件 + 存储」三类契约——各层算子、共享能力插件，以及存储层的统一 `Storage` 与底层 `BaseStore`。`Storage` 以 capability 和标准端口描述组合能力，`BaseStore` 继续以 `storeType()` 和 `health()` 描述单一后端。
 - **兼容报告单独归档**：跨层 legacy 兼容（例如 `rust/cc_memory` 的 `MemoryIngestor`/`MemoryRetriever`、`memdir`、`retained_eval`）不塞进单层接口；统一归 `docs/features/construction/F04-cc-memory-compat.md`，再映射回 `jiuwen_memory/api` / `jiuwen_memory/retrieval` / `evaluation` / `jiuwen_memory_adapter`。
 - **写入边界**：`ingest` 只做规约与转换（RawPayload → MemoryUnit），**不落盘**；`construction` 负责把 MemoryUnit 写入真源、在其上挖掘分层记忆并构建索引。构建层**没有编排 service**，六个算子（extractor/abstractor/associator/classifier/index_builder/evolver）由上层/控制层驱动。
-- **索引「构建」与「持久化」分离**：`jiuwen_memory/construction/index_builder` 负责生成/维护索引投影，`jiuwen_memory/storage` 负责真源与索引的持久化。MemoryUnit 优先走 `Storage.add/update/delete/get/list`，索引投影走所需标准端口；底层 Store 的 CRUD 仍为 `insert/delete/update/get`。所有 Storage/Store 操作显式携带 scope 并由存储层原生隔离。
+- **索引「构建」与「持久化」分离**：`jiuwen_memory/construction/index_builder` 负责生成/维护索引投影并作为写入交付入口，`jiuwen_memory/storage` 负责本体与索引的持久化。Unified IndexBuilder 调用 `Storage.add/update/delete`，Hybrid IndexBuilder 的子 Builder 使用 Storage 暴露的标准能力端口；底层 Store 的 CRUD 仍为 `insert/delete/update/get`。所有 Storage/Store 操作显式携带 scope 并由存储层原生隔离。
 - **共享插件保证两侧一致**：分词/切分/向量化/特征抽取/LLM/规约/重排抽到 `jiuwen_memory/common`，构建侧与检索侧（以及重建/演进路径）注入**同一实现**——同词表、同向量空间、同切分规则、同规约器，是「派生可重建」与召回对齐的前提。
 - **依赖方向**：`jiuwen_memory/common` 承载跨层数据契约与插件；`jiuwen_memory/storage` 只依赖 common，不反向依赖 Retrieval。Retrieval 依赖统一 Storage 和 common，QueryParser/Fuser 等算法仍归 Retrieval。Construction/Control 的目标依赖也是 Storage 契约，但首版仍有直接 Store 依赖待迁移；API 继续作为 control/retrieval/construction 的薄封装。
 - **鉴权/隔离/异常的统一落点**：① `MemoryAPI` 是公开接口 PEP，分离 `security.auth.actor` 与 target `scope`；② `StorageSecurity` 是可插拔的数据面授权边界，默认 allow-all，各 Store Security 负责后端数据保护；③ scope 作为 Storage/Store 专用入参做原生隔离，`FilterExpr` 不承载 scope；④ `common/errors` 提供跨层异常契约；⑤版本链走 `supersedes`，演进血缘走 `provenance`。
-- **一个内核，多形态接入**：`jiuwen_memory_entry/*` 与 `jiuwen_memory_adapter/*` 依赖内核、仅做协议/参数转换后调用 `jiuwen_memory/api`，不含业务逻辑。`jiuwen_memory_entry/core` 是各 surface 共享的应用核（内核装配 + 共享 `dispatch` + profile/配置加载）；其上 `http_server`（HTTP/REST）与 `mcp_server`（MCP）作为独立服务对外提供、`sdk` 作为库嵌入、`cli` 作为命令行——四个 surface 彼此解耦，共用同一 `core` 与 `jiuwen_memory/api`。
+- **一个内核，多形态接入**：`jiuwen_memory_entry/*` 与 `jiuwen_memory_adapter/*` 依赖内核、仅做协议/参数转换后调用 `jiuwen_memory/api`，不含业务逻辑，也不得 import `jiuwen_memory.common` / `control` / `construction` / `retrieval` / `config` / `storage`。`jiuwen_memory_entry/core` 是各 surface 共享的应用核；其中 **`jiuwen_memory_entry/core/server.py` 是 Access composition root**（调用 `jiuwen_memory.api.assemble_runtime` 装配，传入 dict，不解析内核 `Config` 类型，公开面只有 `api` / `dispatch` / lifecycle）。其上 `http_server`（HTTP/REST）与 `mcp_server`（MCP）作为独立服务对外提供、`sdk` 作为库嵌入、`cli` 作为命令行——四个 surface 彼此解耦，共用同一 `core` 与 `jiuwen_memory/api`。
 - **端/云/混合**靠 `jiuwen_memory/config` 的部署 profile 装配不同后端组合（端侧 SQLite+轻向量，云侧 PG+Milvus+Neo4j），逻辑模型不变。
 
 > 当前状态：主要接口与默认实现已存在。本轮统一 Storage 首版已完成 Retriever 接入；

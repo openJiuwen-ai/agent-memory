@@ -12,11 +12,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from jiuwen_memory.common.errors import ValidationError
-from jiuwen_memory.common.security.types import RequestSecurityContext, Surface
-from jiuwen_memory.common.type_def import Modality, Scope
-from jiuwen_memory.construction import EvolveMode
-from jiuwen_memory.control.types import DeleteMode, PrincipalPath, SpaceStatus
+from jiuwen_memory.api import (
+    DeleteMode,
+    EvolveMode,
+    Modality,
+    PrincipalPath,
+    RequestSecurityContext,
+    Scope,
+    SpaceStatus,
+    Surface,
+    ValidationError,
+)
 from jiuwen_memory_entry.core.dispatch_request import DispatchBatchItem, DispatchRequest
 
 _RESERVED_IDENTITY_FIELDS = {

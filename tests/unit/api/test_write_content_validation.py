@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwen_memory.api.memory_api_impl import assemble, build_kernel
+from jiuwen_memory.api import assemble
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Modality, Scope
@@ -57,7 +57,7 @@ def test_check_write_preserves_positional_security_argument() -> None:
 
 @pytest.mark.parametrize("content", [None, "", "   "])
 def test_batch_add_rejects_invalid_content(content: object) -> None:
-    api = build_kernel().api
+    api = assemble()
     scope = Scope(org="acme", user="alice")
 
     result = api.batch_add(

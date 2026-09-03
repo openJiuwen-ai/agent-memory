@@ -6,8 +6,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from jiuwen_memory.common.security.types import Surface
-from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.api import Scope, Surface
 from jiuwen_memory_entry.core.dispatch_request import DispatchBatchItem, DispatchRequest
 
 _SCOPE_KEYS = {"tenant_id", "scope", "space", "space_id", "agent", "session"}

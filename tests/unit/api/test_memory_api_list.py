@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.api import assemble
 from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import (
@@ -16,6 +16,7 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.config import Config
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 
 pytestmark = pytest.mark.unit
 
@@ -40,7 +41,7 @@ def _routing_config() -> Config:
 
 
 def test_memory_api_list_supports_pagination_and_memory_type_filter() -> None:
-    api = build_kernel().api
+    api = assemble()
     scope = Scope(org="acme", user="owner")
 
     episodic = api.add(
@@ -75,8 +76,8 @@ def test_memory_api_list_supports_pagination_and_memory_type_filter() -> None:
 
 
 def test_memory_api_list_is_scope_bound_and_ignores_message_prefix_records() -> None:
-    kernel = build_kernel()
-    api = kernel.api
+    kv = InMemoryKVStore()
+    api = assemble(kv=kv)
     owner = Scope(org="acme", user="owner")
     other = Scope(org="acme", user="other")
 
@@ -87,7 +88,7 @@ def test_memory_api_list_is_scope_bound_and_ignores_message_prefix_records() -> 
         segments=[Segment(content="hidden infer source")],
         temporal=Temporal(t_ingest=visible.temporal.t_ingest),
     )
-    kernel.kv.insert(owner, messages_key(hidden.id), dumps(hidden))
+    kv.insert(owner, messages_key(hidden.id), dumps(hidden))
     api.add("other tenant memory", other, security=legacy_request_context(other))
 
     listed = api.list(owner, security=legacy_request_context(owner))
@@ -97,7 +98,7 @@ def test_memory_api_list_is_scope_bound_and_ignores_message_prefix_records() -> 
 
 
 def test_memory_api_list_filters_before_pagination_and_preserves_total_count() -> None:
-    api = build_kernel().api
+    api = assemble()
     scope = Scope(org="acme", user="owner")
 
     first = api.add(
@@ -142,8 +143,8 @@ def test_memory_api_list_filters_before_pagination_and_preserves_total_count() -
 
 
 def test_memory_api_list_copies_extensions_and_forwards_normalized_filters() -> None:
-    kernel = build_kernel()
-    api = kernel.api
+    kv = InMemoryKVStore()
+    api = assemble(kv=kv)
     scope = Scope(org="acme", user="owner")
     api.add(
         "alpha memory",
@@ -153,13 +154,13 @@ def test_memory_api_list_copies_extensions_and_forwards_normalized_filters() -> 
     )
     extensions = {"vendor_mode": 7}
     calls = []
-    original_list = kernel.kv.list
+    original_list = kv.list
 
     def recording_list(target_scope, **kwargs):
         calls.append((target_scope, kwargs))
         return original_list(target_scope, **kwargs)
 
-    kernel.kv.list = recording_list
+    kv.list = recording_list
     filters = FilterClause("user_metadata.project", FilterOp.EQ, "alpha")
 
     result = api.list(
@@ -178,7 +179,7 @@ def test_memory_api_list_copies_extensions_and_forwards_normalized_filters() -> 
 
 
 def test_memory_api_list_rejects_invalid_extensions_and_scope_filter() -> None:
-    api = build_kernel().api
+    api = assemble()
     scope = Scope(org="acme", user="owner")
 
     with pytest.raises(ValidationError):
@@ -188,7 +189,7 @@ def test_memory_api_list_rejects_invalid_extensions_and_scope_filter() -> None:
 
 
 def test_memory_api_list_validates_pagination() -> None:
-    api = build_kernel().api
+    api = assemble()
     scope = Scope(org="acme", user="owner")
 
     with pytest.raises(ValidationError):
@@ -198,7 +199,7 @@ def test_memory_api_list_validates_pagination() -> None:
 
 
 def test_memory_api_list_permission_routes_by_memory_type() -> None:
-    api = build_kernel(config=_routing_config()).api
+    api = assemble(config=_routing_config())
     owner = Scope(org="acme", user="owner")
     reader = Scope(org="acme", user="reader")
 
@@ -212,7 +213,7 @@ def test_memory_api_list_permission_routes_by_memory_type() -> None:
 
 
 def test_memory_api_unfiltered_list_uses_strict_fallback() -> None:
-    api = build_kernel(config=_routing_config()).api
+    api = assemble(config=_routing_config())
     owner = Scope(org="acme", user="owner")
     reader = Scope(org="acme", user="reader")
     api.add(
@@ -227,7 +228,7 @@ def test_memory_api_unfiltered_list_uses_strict_fallback() -> None:
 
 
 def test_memory_api_list_binds_extension_permission_route_to_filter() -> None:
-    api = build_kernel(config=_routing_config()).api
+    api = assemble(config=_routing_config())
     owner = Scope(org="acme", user="owner")
     reader = Scope(org="acme", user="reader")
     episodic = api.add(

@@ -7,7 +7,11 @@ from collections.abc import Mapping
 
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.errors import ValidationError
-from jiuwen_memory.common.normalizer.base import Normalizer, NormalizerProducer
+from jiuwen_memory.common.normalizer.base import (
+    Normalizer,
+    NormalizerProducer,
+    ensure_normalizer_supports,
+)
 from jiuwen_memory.common.type_def import Modality, RawPayload
 
 
@@ -21,13 +25,22 @@ class RoutingNormalizer(Normalizer):
     ) -> None:
         self._fallback = fallback
         self._routes = dict(routes)
+        for modality, normalizer in self._routes.items():
+            supported = normalizer.modalities()
+            if modality not in supported:
+                supported_names = sorted(item.value for item in supported)
+                raise ValidationError(
+                    f"routing normalizer route {modality.value!r} targets "
+                    f"{type(normalizer).__name__!r}, which supports {supported_names}"
+                )
 
     def modalities(self) -> list[Modality]:
         supported = set(self._fallback.modalities())
         supported.update(self._routes)
         return sorted(supported, key=lambda item: item.value)
 
-    def plugin_type(self) -> PluginType:
+    @staticmethod
+    def plugin_type() -> PluginType:
         return PluginType.NORMALIZER
 
     def health(self) -> None:
@@ -40,10 +53,7 @@ class RoutingNormalizer(Normalizer):
 
     def normalize(self, payload: RawPayload) -> str:
         normalizer = self._routes.get(payload.modality, self._fallback)
-        if payload.modality not in normalizer.modalities():
-            raise ValidationError(
-                f"no normalizer configured for modality {payload.modality.value!r}"
-            )
+        ensure_normalizer_supports(normalizer, payload.modality)
         return normalizer.normalize(payload)
 
 

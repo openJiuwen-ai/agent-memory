@@ -18,13 +18,16 @@ import asyncio
 import pytest
 
 from jiuwen_memory.common.base import PluginType
-from jiuwen_memory.common.llm.base import LLM
 from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.llm.base import LLM
 from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryTier,
     MemoryUnit,
+    Modality,
+    RawPayload,
     Scope,
+    Segment,
     memory_key,
 )
 from jiuwen_memory.common.type_def.chat import ChatMessage
@@ -38,6 +41,8 @@ from jiuwen_memory.control.jobs import Job, JobFactory, JobType
 from jiuwen_memory.control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
 from jiuwen_memory.control.lifecycle import LifecycleManager
 from jiuwen_memory.control.types import Channel, JobStatus
+from jiuwen_memory.ingest.base import IngestOperatorType
+from jiuwen_memory.ingest.ingestor import Ingestor
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
@@ -119,6 +124,37 @@ class _RecordingIndex(IndexBuilder):
 
     def rebuild(self) -> None:
         return None
+
+
+class _AssetRoutingIngestor(Ingestor):
+    """把资产映射到第二个 Segment，用于验证 Engine 不解释映射关系。"""
+
+    def __init__(self) -> None:
+        self.received_assets: list[list[str]] = []
+
+    @staticmethod
+    def operator_type() -> IngestOperatorType:
+        return IngestOperatorType.INGESTOR
+
+    @staticmethod
+    def health() -> None:
+        return None
+
+    def ingest(self, payloads: list[RawPayload]) -> list[MemoryUnit]:
+        self.received_assets.extend(list(payload.assets) for payload in payloads)
+        return [
+            MemoryUnit(
+                id=payload.id,
+                scope=payload.scope,
+                segments=[
+                    Segment(content=payload.data.decode("utf-8"), source=payload.modality),
+                    Segment(assets=list(payload.assets), source=payload.modality),
+                ],
+                system_metadata=dict(payload.system_metadata),
+                user_metadata=dict(payload.user_metadata),
+            )
+            for payload in payloads
+        ]
 
 
 class _NoopLifecycle(LifecycleManager):
@@ -210,7 +246,8 @@ def _build_engine(
         ).with_scope,
     )
 
-    # 本测试聚焦 write middle 路径——不依赖 retriever。Retriever 用 None（write 路径不调 retriever）。
+    # 本测试聚焦 write middle 路径，不依赖 retriever。
+    # Retriever 用 None（write 路径不调 retriever）。
     engine = InMemoryEngine(
         ingestor=ingestor,
         index_builder=index,
@@ -226,7 +263,39 @@ def _build_engine(
     return engine, scheduler, index, kv
 
 
+def _build_assets_engine(ingestor: Ingestor) -> InMemoryEngine:
+    storage = CompositeStorage(kv=InMemoryKVStore())
+    return InMemoryEngine(
+        ingestor=ingestor,
+        index_builder=_RecordingIndex(storage),
+        retriever=None,
+        storage=storage,
+        scheduler=_RecordingScheduler(),
+        evolver=_NoopEvolver(),
+        lifecycle=_NoopLifecycle(),
+    )
+
+
 # ---- 路径选择 ----
+
+
+def test_write_delegates_assets_mapping_to_ingestor() -> None:
+    ingestor = _AssetRoutingIngestor()
+    engine = _build_assets_engine(ingestor)
+    assets = ["file:///video.mp4", "file:///transcript.json"]
+
+    units = asyncio.run(
+        engine.write(
+            "normalized content",
+            Scope(org="acme", user="alice"),
+            source=Modality.TEXT,
+            assets=assets,
+        )
+    )
+
+    assert ingestor.received_assets == [assets]
+    assert units[0].segments[0].assets == []
+    assert units[0].segments[1].assets == assets
 
 
 def test_write_procedural_takes_precedence_over_middle() -> None:

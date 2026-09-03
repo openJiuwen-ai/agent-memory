@@ -30,7 +30,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Protocol
 
-from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.api import Scope
 from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
 
 # The shared core modules (server.py, handler.py, profiles.py) are a flat import

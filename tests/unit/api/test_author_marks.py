@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.security.principal import AUTHOR_AGENT, AUTHOR_PRINCIPAL

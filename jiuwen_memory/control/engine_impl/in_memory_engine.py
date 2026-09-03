@@ -14,7 +14,6 @@ import copy
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
 
 from jiuwen_memory.common.errors import AgentMemoryError, NotFoundError, ValidationError
 from jiuwen_memory.common.log import get_logger
@@ -282,15 +281,14 @@ class InMemoryEngine(MemoryEngine):
             modality=source,
             data=b"" if is_video else content.encode("utf-8"),
             uri=content if is_video else "",
+            assets=list(assets or []),
             system_metadata=meta,
             user_metadata=dict(user_metadata or {}),
             occurred_at=occurred_at,
         )
         # 三条路径共用：Ingestor 规约。
         units = self._ingestor.ingest([payload])
-        for unit in units:  # 接入层不带 assets/tags，由引擎按 write 入参补齐
-            if assets and unit.segments:  # write 入参的 assets 归到首段（接入产出的单段投影）
-                unit.segments[0].assets = list(assets)
+        for unit in units:
             unit.tags = list(tags or [])
             if middle:  # 中期缓冲标记——MiddleToLongJob 据此过滤候选
                 unit.system_metadata["middle"] = "true"

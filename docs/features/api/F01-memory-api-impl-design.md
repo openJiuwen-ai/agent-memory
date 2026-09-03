@@ -4,12 +4,12 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-09-01 |
-| 影响范围 | jiuwen_memory/api/，jiuwen_memory/control/，jiuwen_memory/storage/，jiuwen_memory/common/type_def/，bootstrap/core/handler.py，docs/specs/S02-memory-api.md，docs/specs/S03-control.md，docs/specs/S06-storage.md，docs/specs/S07-common.md |
+| 日期 | 2026-09-03 |
+| 影响范围 | jiuwen_memory/api/，jiuwen_memory/control/，jiuwen_memory/storage/，jiuwen_memory/common/type_def/，jiuwen_memory_entry/core/handler.py，docs/specs/S02-memory-api.md，docs/specs/S03-control.md，docs/specs/S06-storage.md，docs/specs/S07-common.md |
 | 测试基线 | list 相关 API/handler/Engine/KV/common/retrieval 单测通过；ruff、compileall 与 `git diff --check` 通过；完整 `tests/unit` 仅两项因环境缺少 torch 失败 |
 | Refs | —（如有 issue 补 `Refs: #<n>`） |
 
-> 本文档归档**记忆接口层实现的设计与取舍**：`MemoryAPI` 的单进程实现 `LocalMemoryAPI`（鉴权/审计执行点）与装配落点 `assembly.py`（`build_kernel`/`assemble`/`Kernel`）。
+> 本文档归档**记忆接口层实现的设计与取舍**：`MemoryAPI` 的单进程实现 `LocalMemoryAPI`（鉴权/审计执行点）与装配落点 `assembly.py`（公开 `assemble` / `assemble_runtime`，内部 `_build_kernel` / `_Kernel`）。
 > `MemoryAPI` 的**公开方法签名 / 参数语义 / 返回类型**以接口 `jiuwen_memory/api/memory_api.py` 与 [S02](../../specs/S02-memory-api.md) 为准，本文不重复罗列签名，只记录「为什么这样实现」。
 
 ---
@@ -19,8 +19,8 @@
 `MemoryAPI`（`jiuwen_memory/api/memory_api.py`）是内核的**唯一对外入口**，形态无关——SDK/CLI/Skill/MCP/HTTP·gRPC 各接入形态最终都映射到这同一组语义。调用层只依赖 `api` 这一个包即可触达全部能力与所需类型，无需 import 内核其他包：
 
 ```python
-from api import (
-    assemble, MemoryAPI,               # 入口 + 接口
+from jiuwen_memory.api import (
+    assemble, assemble_runtime, MemoryAPI, MemoryRuntime,  # 入口 + 接口
     Scope, Context, Modality,          # 调用上下文
     MemoryPatch, UpdateMode,           # update
     DeleteSelector, DeleteMode,        # delete
@@ -28,6 +28,8 @@ from api import (
     DisclosureLevel, EvolveMode,       # search / evolve
     Grant, Action, Channel,            # 授权 / 演进通道
     SpaceSpec, SpaceInfo, SpacePolicy, # space 管理
+    ValidationError, Credentials,      # Access 错误映射 / 凭据
+    legacy_request_context,            # 过渡期安全上下文
 )
 ```
 
@@ -36,9 +38,12 @@ from api import (
 | 文件 | 角色 |
 |---|---|
 | `local_memory_api.py` · `LocalMemoryAPI` | 单进程下的 `MemoryAPI` 实现——**鉴权（PEP）+ 入口审计 + 委派**，自身不含编排逻辑 |
-| `assembly.py` · `build_kernel`/`assemble`/`Kernel` | 把各层具体实现经 Producer 串成一个可直接调用的内核——「把整个项目串起来」的落点 |
+| `assembly.py` · `assemble` / `assemble_runtime` / `_build_kernel` | 公开装配只返回 `MemoryAPI` 或 `MemoryRuntime`；内部 `_Kernel` 才持有 KV/Storage |
 
-接口层是控制层（`jiuwen_memory/control`）的**薄封装**：数据面（add/search/list/get/update/delete/evolve）委托 `MemoryEngine`，管理面（任务/治理/授权/admin/space 管理）直达对应控制算子；本层只做**参数装配 + 鉴权 + 入口审计**，编排逻辑全在控制层。
+接口层是控制层（`jiuwen_memory/control`）的**薄封装**：数据面经 `control.application` 的
+`MemoryCommandService` / `MemoryQueryService` 委托 `MemoryEngine`，治理经 `GovernanceService`
+委托 `Governor`，`delete_space` 事务经 `SpaceLifecycleService`；任务/策略/space 普通 CRUD
+仍直达对应控制算子。本层只做**参数装配 + 鉴权 + 入口审计**，编排逻辑全在控制层。
 
 ---
 
@@ -95,25 +100,24 @@ admin（运行时策略）与全局 audit 查询**没有具体 target scope**，
 
 ### 9. 装配（assembly.py）：Producer.dep + 默认上下文 + 合并覆盖 + kv 注入
 
-`build_kernel` 的串接策略：
+`assemble` / `_build_kernel` 的串接策略：
 
 - **取依赖统一走 `dep`**：`XProducer.dep(root, default=...)` 按配置值分派（引用名→`build_named` 共享 / 内联 dict→`build` 匿名 / 缺省→按 `default` 匿名新建）；字段名默认取各 Producer 的 `TOP_NAME`。根组件经 `ROOT_PARAMS` 引用各命名空间下的 `default` 实例。
 - **默认装配**：无 config 时用内置默认上下文（`config.defaults`）——纯内存离线栈，用显式具名 + 引用复刻共享拓扑；用户 config 经 `AssemblyContext.merged` **合并覆盖**到其上（只写要改动的部分）。
 - **policies 便捷覆盖**：`policies` 折进 `globals["policies"]`。
 - **真源 kv 注入**：`kv` 入参经 `KvProducer.put(KV_DEFAULT_NAME, kv)` 预置进缓存，**覆盖配置的 kv_store 选择并被各处共享**（如传 `SQLiteKVStore` 即落盘）。
 - **多次装配隔离**：组装前 `_register_all()`（各层 bootstrap 幂等自注册）+ `Factory.reset_all()` 清空具名实例缓存。
-- **Kernel 暴露统一 Storage 与控制句柄**：`build_kernel` 返回
-  `Kernel{api, storage, kv, space, config_source}`，其中 `storage` 是上层统一依赖，`kv` 是迁移期
-  的真源兼容句柄；`assemble` 仍只返回 api。普通数据面能力应走 `MemoryAPI`。
+- **内部 `_Kernel` 持有统一 Storage 与控制句柄**：`_build_kernel` 返回
+  `_Kernel{api, storage, kv, space, config_source}`，不从 `jiuwen_memory.api` 导出；
+  `assemble` 只返回 api，`assemble_runtime` 只返回 api + close。普通数据面能力应走 `MemoryAPI`。
 
 ```python
-from api import assemble, build_kernel
-from config import Config
+from jiuwen_memory.api import assemble
+from jiuwen_memory.config import Config
 
 api = assemble()                                  # 默认纯内存离线栈
 api = assemble(config=Config(...), policies={"rerank_enabled": "true"})
 api = assemble(kv=SQLiteKVStore("mem.db"))        # 注入落盘真源
-kernel = build_kernel(config=Config(...))         # 另需真源 kv 句柄时
 ```
 
 ### 10. HTTP/多 surface 的结构化 dispatch 边界
@@ -127,7 +131,7 @@ HTTP、CLI、MCP 和进程内调用共享同一个 handler，但不共享未经�
 `DispatchRequest` 是 transport 与 API 的稳定边界：handler 只消费其中的结构化 actor、target、
 grantee/member 及 batch item，不再读取 `__target`、`__actor` 等保留字段或从 flat 字段重新组装
 Scope。CLI、MCP 和旧进程内调用若仍使用 flat 输入，必须显式经过
-`bootstrap/core/legacy_request_adapter.py`；HTTP adapter 则只接受结构化 DTO。HTTP 的
+`jiuwen_memory_entry/core/legacy_request_adapter.py`；HTTP adapter 则只接受结构化 DTO。HTTP 的
 `space_id` 兼容别名在 parser 内归一化为 `Scope.space`，后续授权、审计和存储只看到规范 Scope。
 
 该边界同时保证认证、授权和审计使用同一组分离值：认证 actor 从

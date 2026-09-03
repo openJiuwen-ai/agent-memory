@@ -12,7 +12,7 @@
 |---|---|
 | `base.py` | Plugin 基类：所有共享插件的自描述契约 |
 | `bootstrap.py` | 统一触发各插件注册（per-layer bootstrap） |
-| `errors.py` | 自定义异常（ConflictError/NotFoundError/PermissionDeniedError/BackendError 等） |
+| `errors.py` | 自定义异常（含组件能力不匹配的 `UnsupportedCapabilityError`） |
 | `_support.py` | 跨层共用的小工具：配置值布尔归一（`as_bool`）、SSL 配置读取与装配期校验（`SslConfig`/`build_ssl_config`/`require_tls_scheme`/`require_ca_file`/`outbound_verify`/`read_ssl_config`/`reject_url_tls_params`）、scope 命名空间渲染（`SCOPE_DIMS`/`scope_segments`）、后端异常归一（`wrap_backend`）；storage、lock 与出站客户端共用，避免各写一份 |
 | `type_def/` | 核心数据类型定义目录 |
 | `type_def/memory.py` | MemoryUnit/Relation/Segment/Temporal/ContentLayers 等；MemoryUnit id 在完整 Scope 内唯一；KV key 前缀 `MEMORY_KEY_PREFIX`/`memory_key`（建索引记忆 `/memory/{id}`）。`ContentLayers`(l0/l1) 为分层披露标注，由 LayerAnnotator 对超阈 content 产出 |
@@ -20,13 +20,13 @@
 | `type_def/filter.py` | FilterClause/FilterGroup/FilterExpr 及 normalize/evaluate；统一 API、检索和存储的树形过滤契约 |
 | `type_def/memory_filter.py` | MemoryUnit 字段投影与 FilterExpr 公共求值；供 retrieval 真源复核和 KV list 兼容实现共用 |
 | `type_def/memory_codec.py` | `MemoryUnit` ↔ bytes 编解码（`dumps`/`loads`）；当前 `_v=4`，分别序列化 `system_metadata` / `user_metadata`，拒绝未迁移的 `_v<4` MemoryUnit |
-| `type_def/raw.py` | RawPayload；KV key 前缀 `MESSAGES_KEY_PREFIX`/`messages_key`（未建索引 infer 原文 `/messages/{id}`） |
+| `type_def/raw.py` | RawPayload（含交给 Ingestor 映射的 `assets` 资产引用）；KV key 前缀 `MESSAGES_KEY_PREFIX`/`messages_key`（未建索引 infer 原文 `/messages/{id}`） |
 | `type_def/audit.py` | AuditEvent：记录 actor scope、target scope、action、decision、target_id 与 detail |
 | `factory/factory.py` | Factory 基类：`TOP_NAME` 注册 + 三接口 `build`/`build_named`/`dep`（配置数据结构 `ComponentConfig`/`AssemblyContext`/`RawSpec` 在 `config/context.py`） |
 | `embedder/` | Embedder 插件目录（接口 + 实现） |
 | `chunker/` | Chunker 插件目录 |
 | `tokenizer/` | Tokenizer 插件目录 |
-| `normalizer/` | Normalizer 插件目录（passthrough / routing / video）；视频 ASR 支持 OpenAI transcription 与 DashScope filetrans |
+| `normalizer/` | Normalizer 插件目录（passthrough / routing / video）；passthrough 只接已是 UTF-8 文本的 TEXT/CODE，DOCUMENT 需专用解析器；`ensure_normalizer_supports` 是共用模态能力门禁；视频 ASR 支持 OpenAI transcription 与 DashScope filetrans |
 | `feature_extractor/` | FeatureExtractor 插件目录 |
 | `llm/` | LLM 插件目录（`echo` / `openai` / `dashscope`） |
 | `reranker/` | Reranker 插件目录 |
@@ -56,6 +56,12 @@
    `MemoryUnit` / `RawPayload` 只使用 `system_metadata` 和 `user_metadata`，共用
    `MetadataValueType`；系统不解释用户命名空间。`Chunk` / `Relation` 等独立模型的
    `metadata` 保持自身契约，不机械改名。
+
+7. **RawPayload 只承载资产引用**
+   `RawPayload.assets` 是输入 Ingestor 的 `list[str]`，数据类型本身不解释如何分配给 MemoryUnit 或 Segment，也不限制模态。
+
+8. **Normalizer 能力声明必须可执行**
+   `modalities()` 不是说明性信息：显式 routing route 在装配时校验，真实 payload 在规约前校验。装配矛盾抛 `ValidationError`，运行时不支持抛 `UnsupportedCapabilityError`。它只决定“是否支持”，不决定 `RawPayload.data` / `uri` 的载体选择。Passthrough 只允许 TEXT 使用 URI 文本回退；CODE 只接 UTF-8 源码文本，DOCUMENT 与不支持的媒体不得借 URI 回退绕过能力门禁。
 
 ## 与其他子目录的边界
 
