@@ -12,6 +12,7 @@
 
 | 文件 | 职责 |
 |---|---|
+| `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数及日志脱敏辅助函数 |
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
 | `memory_api_impl/assembly.py` | 公开装配：`assemble(config) -> MemoryAPI`、`assemble_runtime(config) -> MemoryRuntime`（仅 api+close）；内部 `_build_kernel` 才持有 KV/Storage/ingest |
@@ -113,7 +114,9 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
    target `scope`，由 API 对任务真实 Scope 执行 READ 鉴权并记录审计。
 8. Access（`jiuwen_memory_entry/`、`jiuwen_memory_adapter/`）只 `import jiuwen_memory.api`，
    且不得 import `jiuwen_memory.api.memory_api_impl`。本包重导出协议转换所需的 DTO /
-   枚举 / 异常 / `legacy_request_context` / `Credentials`。公开装配是
+   枚举 / 异常 / `legacy_request_context` / `Credentials`，以及 Access 日志脱敏所需的
+   `install_privacy_filter` / `metadata_for_log` / `redact_for_log` / `scope_for_log`。
+   公开装配是
    `assemble` / `assemble_runtime`（接受 `dict | Config | None`），Access composition
    root 不 import `jiuwen_memory.config`。`Kernel` / `build_kernel` / `LocalMemoryAPI`
    不是公开包导出；`assemble_runtime` 不带 `kv` / `storage` / `space`。
