@@ -26,6 +26,6 @@ def register_plugins() -> None:
     import_module("jiuwen_memory.common.reranker.reranker_impl")
     import_module("jiuwen_memory.common.llm.llm_impl")
     import_module("jiuwen_memory.common.audit.audit_impl")
-    import_module("jiuwen_memory.common.security.security_impl")
+    import_module("jiuwen_memory.common.security.bootstrap").register_security()
     import_module("jiuwen_memory.common.lock.lock_impl")
     _REGISTERED = True

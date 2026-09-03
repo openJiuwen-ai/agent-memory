@@ -262,7 +262,9 @@ def test_a_user_fact_lands_in_the_individual_space(api) -> None:
 def test_a_record_only_class_lands_in_fallback_and_keeps_its_tag(api) -> None:
     """记录维类别不落独立空间：落 fallback，实体记成标签。"""
     api.add(
-        "团队用同一套评审流程", scope=Scope(org=ORG), security=SEC_ALICE,
+        "团队用同一套评审流程",
+        scope=Scope(org=ORG),
+        security=SEC_ALICE,
         system_metadata={"coords": {"team": "t1"}},
     )
     landed = _units_in(api, ALICE_SPACE, ALICE)
@@ -315,9 +317,7 @@ def test_auto_create_is_switchable_off() -> None:
                 "engine": {
                     "default": {
                         "target": "cloud",
-                        "params": {
-                            name: "default" for name in _ENGINE_COMPONENT_NAMES
-                        },
+                        "params": {name: "default" for name in _ENGINE_COMPONENT_NAMES},
                     }
                 },
                 "permission": {
@@ -339,9 +339,7 @@ def test_auto_create_is_switchable_off() -> None:
             security=SEC_ALICE,
             system_metadata=COORDS_P1,
         )
-    assert not api.list(
-        Scope(org=ORG, space=PROJECT_SPACE), security=SEC_ALICE, limit=10
-    ).items
+    assert not api.list(Scope(org=ORG, space=PROJECT_SPACE), security=SEC_ALICE, limit=10).items
 
 
 def test_auto_create_does_not_resurrect_a_space_the_caller_cannot_write(api) -> None:
@@ -410,12 +408,16 @@ def test_the_decision_path_still_checks_the_other_scope_dimensions(api) -> None:
     """
     with pytest.raises(ValidationError, match="does not match the caller identity"):
         api.add(
-            "偏好深色主题", Scope(org=ORG, user="bob"), security=SEC_ALICE,
+            "偏好深色主题",
+            Scope(org=ORG, user="bob"),
+            security=SEC_ALICE,
             system_metadata=NO_COORDS,
         )
     with pytest.raises(ValidationError, match="does not match the caller identity"):
         api.add(
-            "偏好深色主题", Scope(org="other_org"), security=SEC_ALICE,
+            "偏好深色主题",
+            Scope(org="other_org"),
+            security=SEC_ALICE,
             system_metadata=NO_COORDS,
         )
 
@@ -461,7 +463,8 @@ def test_batch_items_without_a_scope_are_routed_per_item(api) -> None:
     """
     result = api.batch_add(
         [BatchWriteItem(content="项目部署在集群 A"), BatchWriteItem(content="偏好深色主题")],
-        scope=Scope(org=ORG), security=SEC_ALICE,
+        scope=Scope(org=ORG),
+        security=SEC_ALICE,
         system_metadata=COORDS_P1,
     )
     assert [outcome.error for outcome in result.outcomes] == ["", ""]
@@ -479,7 +482,8 @@ def test_routing_probes_carry_unique_ids(api) -> None:
     """
     api.batch_add(
         [BatchWriteItem(content="项目部署在集群 A"), BatchWriteItem(content="偏好深色主题")],
-        scope=Scope(org=ORG), security=SEC_ALICE,
+        scope=Scope(org=ORG),
+        security=SEC_ALICE,
         system_metadata=COORDS_P1,
     )
     batches = [ids for ids in api._router.seen_ids if len(ids) > 1]
@@ -496,7 +500,8 @@ def test_the_derived_units_of_an_infer_write_are_routed_in_the_construction_laye
     """
     units = api.add(
         "项目部署在集群 A",
-        scope=Scope(org=ORG), security=SEC_ALICE,
+        scope=Scope(org=ORG),
+        security=SEC_ALICE,
         system_metadata={"infer": "true", "coords": {"project": "p1"}},
     )
     assert [unit.scope.space for unit in units] == [PROJECT_SPACE]
@@ -513,7 +518,8 @@ def test_the_routing_context_reaches_neither_the_returned_units_nor_the_store(ap
     """
     units = api.add(
         "项目部署在集群 A",
-        scope=Scope(org=ORG), security=SEC_ALICE,
+        scope=Scope(org=ORG),
+        security=SEC_ALICE,
         system_metadata={"infer": "true", "coords": {"project": "p1"}},
     )
     assert all("route_ctx" not in unit.system_metadata for unit in units)
@@ -540,7 +546,8 @@ def test_the_routing_context_does_not_reach_the_write_permission_context(api) ->
     api._perm.decide = _capture
     api.add(
         "项目部署在集群 A",
-        scope=Scope(org=ORG), security=SEC_ALICE,
+        scope=Scope(org=ORG),
+        security=SEC_ALICE,
         system_metadata={"infer": "true", "coords": {"project": "p1"}},
     )
     assert seen, "写入鉴权上下文未被构造，用例前提不成立"
@@ -551,7 +558,8 @@ def test_the_returned_units_of_a_routed_infer_write_are_readable_by_id(api) -> N
     """落盘产物按回传对象取，不按入参 scope 回读——判定改了 scope，按原 scope 读会落空。"""
     units = api.add(
         "项目部署在集群 A",
-        scope=Scope(org=ORG), security=SEC_ALICE,
+        scope=Scope(org=ORG),
+        security=SEC_ALICE,
         system_metadata={"infer": "true", "coords": {"project": "p1"}},
     )
     fetched = api.get(units[0].id, units[0].scope, security=SEC_ALICE)
@@ -569,7 +577,9 @@ def test_the_caller_cannot_assign_a_kernel_coordinate(api) -> None:
     """
     with pytest.raises(ValidationError, match="不得给内核坐标赋值"):
         api.add(
-            "偏好深色主题", scope=Scope(org=ORG), security=SEC_ALICE,
+            "偏好深色主题",
+            scope=Scope(org=ORG),
+            security=SEC_ALICE,
             system_metadata={"coords": {"user": "bob"}},
         )
     with pytest.raises(ValidationError, match="不得给内核坐标赋值"):
@@ -607,8 +617,7 @@ def test_the_coordinates_do_not_reach_the_stored_unit_or_the_permission_context(
     assert all("coords" not in metadata for metadata in seen)
     assert all("coords" not in unit.system_metadata for unit in units)
     assert all(
-        "coords" not in unit.system_metadata
-        for unit in _units_in(api, PROJECT_SPACE, ALICE)
+        "coords" not in unit.system_metadata for unit in _units_in(api, PROJECT_SPACE, ALICE)
     )
 
 
@@ -648,8 +657,12 @@ def test_a_malformed_coordinate_payload_is_rejected(api) -> None:
     """
     for payload in ("p1", ["p1"], {"project": 1}, {1: "p1"}):
         with pytest.raises(ValidationError, match="coords"):
-            api.add("项目部署在集群 A", scope=Scope(org=ORG), security=SEC_ALICE,
-                    system_metadata={"coords": payload})
+            api.add(
+                "项目部署在集群 A",
+                scope=Scope(org=ORG),
+                security=SEC_ALICE,
+                system_metadata={"coords": payload},
+            )
 
 
 def test_a_batch_item_cannot_carry_its_own_coordinates(api) -> None:
@@ -853,10 +866,10 @@ def test_the_spaces_key_does_not_reach_the_permission_context(api) -> None:
     seen: list[dict] = []
     original = api._perm.decide
 
-    def _capture(actor, target, action, context=None):
+    def _capture(actor, target, action, context=None, **kwargs):
         if context is not None:
             seen.append(dict(context.metadata))
-        return original(actor, target, action, context=context)
+        return original(actor, target, action, context=context, **kwargs)
 
     api._perm.decide = _capture
     try:
@@ -941,7 +954,9 @@ def test_a_cross_space_search_narrows_by_the_agent_dimension_taken_from_identity
     """agent 维同上，且验的是跨空间入口——两个入口各自折算一次坐标，不共用。"""
     alice_a2 = Scope(org=ORG, user="alice", agent="a2")
     api.add(
-        "偏好深色主题", scope=Scope(org=ORG), security=SEC_ALICE_VIA_A1,
+        "偏好深色主题",
+        scope=Scope(org=ORG),
+        security=SEC_ALICE_VIA_A1,
         system_metadata=NO_COORDS,
     )
     api.add(
@@ -1132,9 +1147,9 @@ def test_a_cross_space_search_reinjects_the_routing_values_like_the_single_space
 
     assert seen, "引擎未被调用"
     clauses = [clause for expr in seen for clause in iter_clauses(expr)]
-    assert any(
-        clause.op is FilterOp.EQ and str(clause.value) == "notes" for clause in clauses
-    ), f"路由值未回注：{clauses}"
+    assert any(clause.op is FilterOp.EQ and str(clause.value) == "notes" for clause in clauses), (
+        f"路由值未回注：{clauses}"
+    )
 
 
 def test_a_failing_space_surfaces_a_channel_error_instead_of_vanishing(api) -> None:
@@ -1183,7 +1198,9 @@ def test_an_archived_candidate_falls_back_instead_of_failing_the_write(api) -> N
     api.archive_space(ORG, PROJECT_SPACE, security=SEC_ALICE)
 
     units = api.add(
-        "项目 P1 的回滚脚本在 rollback/", scope=Scope(org=ORG), security=SEC_ALICE,
+        "项目 P1 的回滚脚本在 rollback/",
+        scope=Scope(org=ORG),
+        security=SEC_ALICE,
         system_metadata=COORDS_P1,
     )
 
@@ -1210,7 +1227,8 @@ def test_a_batch_is_routed_in_one_call_rather_than_once_per_item(api) -> None:
                 BatchWriteItem(content=text)
                 for text in ("偏好深色主题", "项目部署在集群 A", "团队要两人评审")
             ],
-            scope=Scope(org=ORG), security=SEC_ALICE,
+            scope=Scope(org=ORG),
+            security=SEC_ALICE,
             system_metadata=COORDS_P1,
         )
     finally:
@@ -1292,7 +1310,8 @@ def test_a_middle_write_is_excluded_from_the_decision_path(api) -> None:
     """
     units = api.add(
         "项目部署在集群 A",
-        scope=Scope(org=ORG, space=PROJECT_SPACE), security=SEC_ALICE,
+        scope=Scope(org=ORG, space=PROJECT_SPACE),
+        security=SEC_ALICE,
         system_metadata={"infer": "true", "middle": "true", **COORDS_P1},
     )
     # 落点是入参空间，不是判定给的 fallback。
@@ -1315,7 +1334,8 @@ def test_a_middle_write_without_a_landing_space_is_rejected(api) -> None:
     with pytest.raises(ValidationError, match="写入落点未声明"):
         api.add(
             "项目部署在集群 A",
-            scope=Scope(org=ORG), security=SEC_ALICE,
+            scope=Scope(org=ORG),
+            security=SEC_ALICE,
             system_metadata={"infer": "true", "middle": "true", **COORDS_P1},
         )
 
@@ -1440,7 +1460,9 @@ def test_a_router_failure_is_recorded_in_the_audit_not_only_swallowed(api) -> No
     api._router.route = _boom
     try:
         api.add(
-            "项目部署在集群 A", scope=Scope(org=ORG), security=SEC_ALICE,
+            "项目部署在集群 A",
+            scope=Scope(org=ORG),
+            security=SEC_ALICE,
             system_metadata=COORDS_P1,
         )
     finally:
@@ -1460,9 +1482,7 @@ def test_a_router_failure_is_recorded_in_the_audit_not_only_swallowed(api) -> No
 
 def test_a_normal_decision_writes_no_degradation_record(api) -> None:
     """按判定原样落点的写入不产生降级记录——否则该记录在审计里没有分辨力。"""
-    api.add(
-        "项目部署在集群 A", scope=Scope(org=ORG), security=SEC_ALICE, system_metadata=COORDS_P1
-    )
+    api.add("项目部署在集群 A", scope=Scope(org=ORG), security=SEC_ALICE, system_metadata=COORDS_P1)
 
     degraded = [
         event

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """请求作用域的安全上下文——凭据提取 + ``RequestSecurityContext`` 构造。
 
 各 surface（HTTP / MCP / CLI 直连）用同一条中间件：把本形态的凭据材料归一成
@@ -20,22 +21,23 @@ from contextlib import contextmanager
 from importlib import import_module
 from typing import Any, Iterator, Mapping
 
-_SRC = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "src"
-)
-if _SRC not in sys.path:
-    sys.path.append(_SRC)
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO not in sys.path:
+    # 仓库根兜底，供 ``jiuwen_memory.*`` 解析（PYTHONPATH 已设时为幂等）。
+    sys.path.append(_REPO)
 
 _security_types = import_module("jiuwen_memory.common.security.types")
 reset_current = _security_types.reset_current
 set_current = _security_types.set_current
+validate_actor_form = _security_types.validate_actor_form
 Credentials = _security_types.Credentials
 RequestSecurityContext = _security_types.RequestSecurityContext
 Surface = _security_types.Surface
 
 # RequestSecurityContext 的构造规则（服务端生成 request_id、服务端时钟、attributes
-# 只由系统组件写）收在 common.security.request_context 一处，本模块只提供本形态的
-# surface 与 peer。
+# 只由系统组件写，以及受控来源证明 _origin）收在 common.security.request_context 一处，
+# 本模块只提供本形态的 surface 与 peer。直接构造 RequestSecurityContext 拿不到有效
+# _origin，PEP 校验时会被判为未受控。
 _request_context_module = import_module("jiuwen_memory.common.security.request_context")
 new_request_context = _request_context_module.new_request_context
 
@@ -113,6 +115,10 @@ def authenticated(
 
     try:
         ctx = authenticator.authenticate(credentials)
+        # actor 全局形态不变量（IMPL-01 §1.1）在认证边界统一执行：第三方
+        # Authenticator 产出的非法 actor 也在这里 fail-closed，借道不了授权。
+        # 放在 try 内--形态拒绝与认证失败同样落一条入口拒绝审计。
+        validate_actor_form(ctx.actor)
     except AuthenticationError:
         _record_denial(audit, authenticator, credentials, "authenticate")
         raise
@@ -120,6 +126,9 @@ def authenticated(
         if guard_acquired:
             workload_guard.release()
 
+    # 上下文构造走 common.security.request_context 的受控入口：request_id 与
+    # started_at 由那里统一生成，并写入绑定 auth 与安全字段的 _origin 证明。
+    # 审计在构造之后落：request_id 由受控入口生成，成功审计要带上同一个 id。
     security = new_request_context(
         ctx,
         surface=surface if surface is not None else Surface.INTERNAL,
@@ -128,6 +137,7 @@ def authenticated(
         # （迁移计划 §5.2 第 7 项）。将来要加（如可信代理链、mTLS 主体）只能由
         # 服务端组件在此处写。
     )
+    _record_auth_success(audit, ctx, credentials, surface, security.request_id)
 
     token = set_current(ctx)
     try:
@@ -179,4 +189,44 @@ def _record_denial(audit, authenticator, credentials, action) -> None:
             )
         )
     except Exception:  # pragma: no cover - 审计后端故障不该把 401/429 变成 500
+        pass
+
+
+def _record_auth_success(audit, ctx, credentials, surface, request_id) -> None:
+    """认证成功也落一条审计（F05 §审计与隐私：成功与失败都记，AUTH-ENC-06）。
+
+    ``detail`` 带认证元数据四件套（acting_user / role / key_fp / auth_mode，
+    见 ``type_def/audit.py`` 常见约定）+ surface / peer / request_id / mode。
+    ``acting_user`` 取 ``actor.user``：``AuthContext`` 已删去同名字段（一个 user 名
+    表达不了「那个 user 真的授权过」，见其 docstring），审计要记的本就是**实际
+    执行者**——委托关系由 ``delegation_id`` 另行表达。
+    request_id 同时挂在本请求的 ``RequestSecurityContext`` 上--入口认证事件与
+    后续业务审计据此关联。不放明文凭据（key_fp 是不可逆指纹）。
+    """
+    if audit is None:
+        return
+    try:
+        mode = ctx.auth_method or "unknown"
+        surface_name = (
+            str(getattr(surface, "value", surface)) if surface is not None else "internal"
+        )
+        audit.record(
+            AuditEvent(
+                actor=ctx.actor,
+                action="authenticate",
+                decision="allow",
+                layer="security",
+                detail={
+                    "mode": str(getattr(mode, "value", mode)),
+                    "peer": _normalized_peer(credentials),
+                    "surface": surface_name,
+                    "request_id": request_id,
+                    "acting_user": ctx.actor.user,
+                    "role": ctx.role.value,
+                    "key_fp": ctx.credential_id,
+                    "auth_mode": ctx.auth_method,
+                },
+            )
+        )
+    except Exception:  # pragma: no cover - 审计后端故障不该把已成功的请求变成 500
         pass

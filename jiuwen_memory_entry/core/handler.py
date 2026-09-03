@@ -10,8 +10,11 @@ Scope mapping (DESIGN.md "Two id spaces" / "CLI compatibility"): the kernel
 scopes by ``tenant_id`` + optional ``space`` / ``space_id`` + a single
 ``scope`` string, mapped onto the native
 ``Scope(org=tenant_id, space=space, user=scope)``. The request shape keeps old
-empty-space payloads compatible, while allowing an optional claimed actor
-override via ``actor_tenant_id`` / ``actor_space`` / ``actor_scope`` fields.
+empty-space payloads compatible, and still describes the **target** scope
+("which resource"); the **actor** ("who is asking") no longer comes from the
+payload at all — it comes from the auth layer's ``AuthContext``
+(security.md §9 铁律 #1). Payloads that still carry ``actor_*`` fields are
+rejected outright rather than silently ignored.
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ if _SRC not in sys.path:
 
 _errors_module = import_module("jiuwen_memory.common.errors")
 AgentMemoryError = _errors_module.AgentMemoryError
+AuthenticationError = _errors_module.AuthenticationError
 ConflictError = _errors_module.ConflictError
 NotFoundError = _errors_module.NotFoundError
 PermissionDeniedError = _errors_module.PermissionDeniedError
@@ -47,6 +51,7 @@ MemoryUnit = _type_def_module.MemoryUnit
 Modality = _type_def_module.Modality
 Scope = _type_def_module.Scope
 EvolveMode = import_module("jiuwen_memory.construction").EvolveMode
+get_current = import_module("jiuwen_memory.common.security.types").get_current
 
 # 接口先行过渡桥接：公开签名收 security: RequestSecurityContext，此处把 payload
 # 声明的 actor 包装后传入（实装 PR 合入时改为 auth_middleware 产出的真实上下文）。
@@ -75,7 +80,8 @@ Body = dict[str, Any]
 
 _STATUS = {
     NotFoundError: 404,
-    PermissionDeniedError: 403,
+    AuthenticationError: 401,  # 不知道你是谁
+    PermissionDeniedError: 403,  # 知道你是谁，但不许
     ConflictError: 409,
     ValidationError: 400,
     PolicyError: 400,
@@ -161,43 +167,54 @@ def _scope_from_payload(payload: Body, base: Scope | None = None) -> Scope:
     )
 
 
-def _actor_scope(payload: Body) -> Scope:
-    """Claimed actor scope; defaults to payload scope, with optional explicit override."""
-    has_actor_override = False
-    actor_fields = (
-        "actor_tenant_id",
-        "actor_space",
-        "actor_space_id",
-        "actor_scope",
-        "actor_agent",
-        "actor_session",
-    )
-    for key in actor_fields:
-        if key in payload:
-            has_actor_override = True
-            break
+def _identity() -> Scope:
+    """调用方身份——来自认证层产出的可信上下文，**不来自 payload**。
 
-    if has_actor_override:
-        actor_org = str(payload.get("actor_tenant_id", ""))
-        if actor_org == "":
-            actor_org = str(payload.get("tenant_id", "default")) or "default"
-        actor_space = (
-            _space_value(payload, prefix="actor_")
-            if "actor_space" in payload or "actor_space_id" in payload
-            else _space_value(payload)
+    security.md §9 铁律 #1：身份来自上下文，不来自参数。本函数的前身
+    ``_actor_scope(payload)`` 直接读 ``payload["actor_tenant_id"]`` 等字段，
+    任何人提交 ``{"actor_scope": "victim"}`` 即可读到 victim 的记忆；提交
+    ``{"actor_tenant_id": " "}`` 更是拿到空 ``Scope()``，命中
+    ``SQLitePermissionManager.check`` 的 platform-admin 全局放行。
+
+    不接受任何参数是刻意的：签名上就不给「从别处取身份」留位置。
+    """
+    ctx = get_current()
+    if ctx is None:
+        # 中间件未挂载或漏挂——fail-closed，绝不回退到 payload 或默认身份。
+        # 装配错误应该让所有请求失败，而不是让所有请求以未知身份成功。
+        raise AuthenticationError("authentication required")
+    return ctx.actor
+
+
+# ``actor_space`` / ``actor_space_id`` 是 space 五维化时一并加进来的伪造面：
+# 声明字段每多一维，可冒充的主体就多一维。禁止列表必须与 ``Scope`` 的维数同步——
+# 将来 ``Scope`` 再加维，这里要跟着加。
+_FORBIDDEN_IDENTITY_KEYS = (
+    "actor_tenant_id",
+    "actor_space",
+    "actor_space_id",
+    "actor_scope",
+    "actor_agent",
+    "actor_session",
+)
+
+# ``audit`` verb 用 actor_agent / actor_session 作**查询过滤谓词**（筛历史事件的
+# 操作者是谁），与身份声明同名但语义不同——它们不参与本次请求的授权。
+# 对该 verb 只拒其余四个（它们不是 audit 的过滤键，出现在那里同样是误以为能声明身份）。
+_AUDIT_FILTER_KEYS = ("actor_agent", "actor_session")
+
+
+def _reject_claimed_identity(payload: Body, allow: tuple[str, ...] = ()) -> None:
+    """payload 里出现身份声明字段一律报错，不静默忽略。
+
+    静默忽略会让「我传了 actor_scope」被误认为仍然生效，写出错误的安全认知；
+    显式报错迫使调用方改用认证凭据。
+    """
+    present = [key for key in _FORBIDDEN_IDENTITY_KEYS if key in payload and key not in allow]
+    if present:
+        raise ValidationError(
+            f"identity must come from credentials, not payload: {sorted(present)}"
         )
-        return Scope(
-            org=actor_org,
-            space=actor_space,
-            user=str(payload.get("actor_scope", "")),
-            agent=str(payload.get("actor_agent", "")),
-            session=str(payload.get("actor_session", "")),
-        )
-    return Scope(
-        org=str(payload.get("tenant_id", "default")) or "default",
-        space=_space_value(payload),
-        user=str(payload.get("scope", "")),
-    )
 
 
 def _require(payload: Body, key: str) -> Any:
@@ -311,9 +328,7 @@ def _space_policy(payload: Body) -> SpacePolicy:
     return SpacePolicy(
         require_space=_bool_value(raw.get("require_space"), default=False),
         principal_path=_enum_value(PrincipalPath, principal_path, name="principal_path"),
-        storage_isolation_strategy=str(
-            raw.get("storage_isolation_strategy", "metadata_filter")
-        ),
+        storage_isolation_strategy=str(raw.get("storage_isolation_strategy", "metadata_filter")),
         retention=_string_map(raw.get("retention")),
         quotas=_string_map(raw.get("quotas")),
         index_profiles=_string_map(raw.get("index_profiles", raw.get("indexes"))),
@@ -404,9 +419,7 @@ def _ensure_video_chain(srv) -> None:
         normalizer_cfg.get("default", {}) if isinstance(normalizer_cfg, dict) else {}
     )
     default_params = (
-        default_normalizer.get("params", {})
-        if isinstance(default_normalizer, dict)
-        else {}
+        default_normalizer.get("params", {}) if isinstance(default_normalizer, dict) else {}
     )
     routes = default_params.get("routes") if isinstance(default_params, dict) else None
     has_video_normalizer = isinstance(routes, dict) and "video" in routes
@@ -433,9 +446,7 @@ def _submit_video(srv, payload: Body, *, scope: Scope, identity: Scope) -> Body:
         raise ValidationError("user_metadata must be an object")
     system_metadata = dict(raw_system_metadata or {})
     user_metadata = dict(raw_user_metadata or {})
-    system_metadata.update(
-        {"infer": "true", "pipeline": "video", "payload_id": payload_id}
-    )
+    system_metadata.update({"infer": "true", "pipeline": "video", "payload_id": payload_id})
     requested_assets = payload.get("assets")
     extras = requested_assets if isinstance(requested_assets, list) else []
     assets = [uri, *(str(item) for item in extras if str(item) != uri)]
@@ -475,9 +486,7 @@ def _submit_video(srv, payload: Body, *, scope: Scope, identity: Scope) -> Body:
         "status": job.status,
         "reused": submission.reused,
         "feedback_message": (
-            "已返回该视频现有的处理任务。"
-            if submission.reused
-            else "视频处理任务已提交。"
+            "已返回该视频现有的处理任务。" if submission.reused else "视频处理任务已提交。"
         ),
     }
 
@@ -489,9 +498,7 @@ def _ingest_job_status(srv, job, *, identity: Scope) -> Body:
     unit_ids = [item for item in job.detail.get("unit_ids", "").split(",") if item]
     for unit_id in unit_ids:
         try:
-            units.append(
-                srv.api.get(unit_id, scope, security=legacy_request_context(identity))
-            )
+            units.append(srv.api.get(unit_id, scope, security=legacy_request_context(identity)))
         except NotFoundError:
             continue
     items = [_video_unit_view(unit) for unit in units]
@@ -519,11 +526,9 @@ def _ingest_job_status(srv, job, *, identity: Scope) -> Body:
 
 
 def _add(srv, payload: Body) -> Body:
-    scope, actor = _target_scope(payload), _actor_scope(payload)
+    scope, actor = _target_scope(payload), _identity()
     if "metadata" in payload:
-        raise ValidationError(
-            "metadata has been removed; use system_metadata and user_metadata"
-        )
+        raise ValidationError("metadata has been removed; use system_metadata and user_metadata")
     modality = Modality(payload.get("modality", "text"))
     if modality == Modality.VIDEO:
         return _submit_video(srv, payload, scope=scope, identity=actor)
@@ -554,8 +559,13 @@ def _add(srv, payload: Body) -> Body:
     # 此时不伪造 item_id，
     # 如实返回 deduped 语义；非空则照常取首条返回。
     if not units:
-        return {"ok": True, "op": "add", "item_id": None, "item": None,
-                "skipped": "all derived memories deduped (update/noop)"}
+        return {
+            "ok": True,
+            "op": "add",
+            "item_id": None,
+            "item": None,
+            "skipped": "all derived memories deduped (update/noop)",
+        }
     unit = units[0]
     return {"ok": True, "op": "add", "item_id": unit.id, "item": _unit_view(unit)}
 
@@ -641,7 +651,7 @@ def _batch_add(srv, payload: Body) -> Body:
         items,
         default_scope,
         default_source,
-        security=legacy_request_context(_actor_scope(defaults)),
+        security=legacy_request_context(_identity()),
         tags=default_tags,
         system_metadata=raw_system_metadata,
         user_metadata=raw_user_metadata,
@@ -670,7 +680,7 @@ def _batch_add(srv, payload: Body) -> Body:
 
 
 def _search(srv, payload: Body) -> Body:
-    scope, actor = _target_scope(payload), _actor_scope(payload)
+    scope, actor = _target_scope(payload), _identity()
     # extensions：把调用方在请求里给的自定义配置透传给（可能自定义的）
     # 检索模块。显式校验 dict：extensions 为 truthy 非 dict（字符串/列表等
     # 畸形 JSON）时兜底为空，
@@ -722,7 +732,7 @@ def _search(srv, payload: Body) -> Body:
 
 
 def _list(srv, payload: Body) -> Body:
-    scope, actor = _target_scope(payload), _actor_scope(payload)
+    scope, actor = _target_scope(payload), _identity()
     offset = _parse_non_negative_int(payload.get("offset"), name="offset", default=0)
     limit = _parse_positive_int(payload.get("limit"), name="limit", default=100)
     memory_types = _parse_string_list(
@@ -751,17 +761,15 @@ def _list(srv, payload: Body) -> Body:
 
 
 def _get(srv, payload: Body) -> Body:
-    scope, actor = _target_scope(payload), _actor_scope(payload)
+    scope, actor = _target_scope(payload), _identity()
     unit = srv.api.get(_require(payload, "item_id"), scope, security=legacy_request_context(actor))
     return {"ok": True, "op": "get", "item": _unit_view(unit)}
 
 
 def _update(srv, payload: Body) -> Body:
-    scope, actor = _target_scope(payload), _actor_scope(payload)
+    scope, actor = _target_scope(payload), _identity()
     if "metadata" in payload:
-        raise ValidationError(
-            "metadata has been removed; use system_metadata and user_metadata"
-        )
+        raise ValidationError("metadata has been removed; use system_metadata and user_metadata")
     patch = MemoryPatch(
         content=payload.get("content"),
         tags=payload.get("tags"),
@@ -775,11 +783,9 @@ def _update(srv, payload: Body) -> Body:
 
 
 def _delete(srv, payload: Body) -> Body:
-    scope, actor = _target_scope(payload), _actor_scope(payload)
+    scope, actor = _target_scope(payload), _identity()
     mode = DeleteMode.PURGE if payload.get("hard") else DeleteMode.FORGET
-    selector = DeleteSelector(
-        unit_ids=[_require(payload, "item_id")], scope=scope, mode=mode
-    )
+    selector = DeleteSelector(unit_ids=[_require(payload, "item_id")], scope=scope, mode=mode)
     deleted = srv.api.delete(selector, security=legacy_request_context(actor))
     return {"ok": True, "op": "delete", "item_id": payload["item_id"], "deleted": deleted}
 
@@ -789,7 +795,7 @@ def _delete(srv, payload: Body) -> Body:
 
 def _evolve(srv, payload: Body) -> Body:
     """触发演进（extract/associate/consolidate/forget）→ Evolver 全链路 + Scheduler。"""
-    scope, actor = _target_scope(payload), _actor_scope(payload)
+    scope, actor = _target_scope(payload), _identity()
     mode = EvolveMode(payload.get("mode", "extract"))
     job_id = srv.api.evolve(scope, mode, security=legacy_request_context(actor))
     return {"ok": True, "op": "evolve", "mode": mode.value, "job_id": job_id}
@@ -798,7 +804,7 @@ def _evolve(srv, payload: Body) -> Body:
 def _job(srv, payload: Body) -> Body:
     """查询视频 Ingest 任务或原生 Scheduler 任务状态。"""
     job_id = str(_require(payload, "job_id"))
-    actor = _actor_scope(payload)
+    actor = _identity()
     info = srv.api.job_status(
         job_id,
         security=legacy_request_context(actor),
@@ -817,7 +823,7 @@ def _job(srv, payload: Body) -> Body:
 
 def _inspect(srv, payload: Body) -> Body:
     """治理检视：按 id 读完整单元（含失效版本）→ Governor。"""
-    scope, actor = _target_scope(payload), _actor_scope(payload)
+    scope, actor = _target_scope(payload), _identity()
     ids = payload.get("item_ids") or [_require(payload, "item_id")]
     units = srv.api.inspect(ids, scope, security=legacy_request_context(actor))
     return {"ok": True, "op": "inspect", "items": [_unit_view(u) for u in units]}
@@ -825,7 +831,7 @@ def _inspect(srv, payload: Body) -> Body:
 
 def _trace(srv, payload: Body) -> Body:
     """血缘回溯：沿 supersedes 版本链 → Governor。"""
-    scope, actor = _target_scope(payload), _actor_scope(payload)
+    scope, actor = _target_scope(payload), _identity()
     chain = srv.api.trace(
         _require(payload, "item_id"), scope, security=legacy_request_context(actor)
     )
@@ -834,7 +840,7 @@ def _trace(srv, payload: Body) -> Body:
 
 def _audit(srv, payload: Body) -> Body:
     """审计查询（Governor + AuditLogger）。"""
-    actor = _actor_scope(payload)
+    actor = _identity()
     filters = {}
     for key in (
         "action",
@@ -870,8 +876,8 @@ def _audit(srv, payload: Body) -> Body:
 
 
 def _admin(srv, payload: Body) -> Body:
-    """运行时策略读写：给 value 即 set、给 key 即 get、否则列全部。"""
-    actor = _actor_scope(payload)
+    """运行时策略读写（PolicyManager）：给 value 即 set、给 key 即 get、否则列全部。"""
+    actor = _identity()
     key, value = payload.get("key"), payload.get("value")
     if key and value is not None:
         srv.api.admin_set(key, str(value), security=legacy_request_context(actor))
@@ -894,7 +900,7 @@ def _admin(srv, payload: Body) -> Body:
 
 def _grant(srv, payload: Body) -> Body:
     """跨 scope 授权（PermissionManager）。"""
-    scope, actor = _target_scope(payload), _actor_scope(payload)
+    scope, actor = _target_scope(payload), _identity()
     grantee = Scope(
         org=str(payload.get("grantee_tenant_id", scope.org)) or scope.org,
         space=_space_value(payload, prefix="grantee_") or scope.space,
@@ -914,7 +920,7 @@ def _grant(srv, payload: Body) -> Body:
 
 def _revoke(srv, payload: Body) -> Body:
     """Cross-scope revoke (PermissionManager)."""
-    scope, actor = _target_scope(payload), _actor_scope(payload)
+    scope, actor = _target_scope(payload), _identity()
     grantee = Scope(
         org=str(payload.get("grantee_tenant_id", scope.org)) or scope.org,
         space=_space_value(payload, prefix="grantee_") or scope.space,
@@ -933,7 +939,7 @@ def _revoke(srv, payload: Body) -> Body:
 
 
 def _create_space(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
+    actor = _identity()
     org = str(payload.get("tenant_id", "default")) or "default"
     space = _require_space(payload)
     policy = _space_policy(payload)
@@ -952,14 +958,14 @@ def _create_space(srv, payload: Body) -> Body:
 
 
 def _get_space(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
+    actor = _identity()
     org = str(payload.get("tenant_id", "default")) or "default"
     info = srv.api.get_space(org, _require_space(payload), security=legacy_request_context(actor))
     return {"ok": True, "op": "get_space", "space": _space_info_view(info)}
 
 
 def _list_spaces(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
+    actor = _identity()
     org = str(payload.get("tenant_id", "default")) or "default"
     raw_status = payload.get("status")
     status = _enum_value(SpaceStatus, raw_status, name="status") if raw_status else None
@@ -979,7 +985,7 @@ def _list_spaces(srv, payload: Body) -> Body:
 
 
 def _update_space(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
+    actor = _identity()
     org = str(payload.get("tenant_id", "default")) or "default"
     patch = SpacePatch(
         display_name=payload.get("display_name"),
@@ -999,7 +1005,7 @@ def _update_space(srv, payload: Body) -> Body:
 
 
 def _archive_space(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
+    actor = _identity()
     org = str(payload.get("tenant_id", "default")) or "default"
     info = srv.api.archive_space(
         org, _require_space(payload), security=legacy_request_context(actor)
@@ -1008,7 +1014,7 @@ def _archive_space(srv, payload: Body) -> Body:
 
 
 def _delete_space(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
+    actor = _identity()
     org = str(payload.get("tenant_id", "default")) or "default"
     mode = _enum_value(DeleteMode, payload.get("mode", "purge"), name="mode")
     result = srv.api.delete_space(
@@ -1025,7 +1031,7 @@ def _delete_space(srv, payload: Body) -> Body:
 
 
 def _export_space(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
+    actor = _identity()
     org = str(payload.get("tenant_id", "default")) or "default"
     export_id = srv.api.export_space(
         org,
@@ -1037,7 +1043,7 @@ def _export_space(srv, payload: Body) -> Body:
 
 
 def _space_usage(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
+    actor = _identity()
     org = str(payload.get("tenant_id", "default")) or "default"
     usage = srv.api.space_usage(
         org, _require_space(payload), security=legacy_request_context(actor)
@@ -1046,7 +1052,7 @@ def _space_usage(srv, payload: Body) -> Body:
 
 
 def _get_space_policy(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
+    actor = _identity()
     org = str(payload.get("tenant_id", "default")) or "default"
     policy = srv.api.get_space_policy(
         org, _require_space(payload), security=legacy_request_context(actor)
@@ -1055,7 +1061,7 @@ def _get_space_policy(srv, payload: Body) -> Body:
 
 
 def _set_space_policy(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
+    actor = _identity()
     org = str(payload.get("tenant_id", "default")) or "default"
     policy = srv.api.set_space_policy(
         org,
@@ -1067,7 +1073,7 @@ def _set_space_policy(srv, payload: Body) -> Body:
 
 
 def _list_space_members(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
+    actor = _identity()
     org = str(payload.get("tenant_id", "default")) or "default"
     members = srv.api.list_space_members(
         org, _require_space(payload), security=legacy_request_context(actor)
@@ -1081,7 +1087,7 @@ def _list_space_members(srv, payload: Body) -> Body:
 
 
 def _add_space_member(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
+    actor = _identity()
     org = str(payload.get("tenant_id", "default")) or "default"
     srv.api.add_space_member(
         org, _require_space(payload), _space_member(payload), security=legacy_request_context(actor)
@@ -1090,7 +1096,7 @@ def _add_space_member(srv, payload: Body) -> Body:
 
 
 def _remove_space_member(srv, payload: Body) -> Body:
-    actor = _actor_scope(payload)
+    actor = _identity()
     org = str(payload.get("tenant_id", "default")) or "default"
     srv.api.remove_space_member(
         org,
@@ -1139,11 +1145,11 @@ def dispatch(srv, verb: str, payload: Body) -> tuple[int, Body]:
     if handler is None:
         return 404, {"error": "UnknownVerb", "message": f"no such verb: {verb!r}"}
     try:
+        # 入口统一拒身份声明，不是每个 verb 各拒一次——单点更难漏。
+        _reject_claimed_identity(payload, allow=_AUDIT_FILTER_KEYS if verb == "audit" else ())
         return 200, handler(srv, payload)
     except AgentMemoryError as exc:
-        status = next(
-            (code for cls, code in _STATUS.items() if isinstance(exc, cls)), 400
-        )
+        status = next((code for cls, code in _STATUS.items() if isinstance(exc, cls)), 400)
         return status, {"error": type(exc).__name__, "message": str(exc)}
     except Exception as exc:  # surface unexpected failures as 500
         return 500, {"error": "InternalError", "message": str(exc)}

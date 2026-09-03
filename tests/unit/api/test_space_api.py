@@ -25,9 +25,15 @@ def _cloud_kernel():
     )
     for name in component_names:
         params[name] = "default"
+    # 显式装 SQLite permission：principal path / space policy 类判定必须真的经过
+    # PermissionManager，不能借「未配置 security、未显式选择 permission」时的 DEV
+    # AllowAll 恒放行内核测——那测不到越权被拒（验收报告约束 5）。
     return build_kernel(
         config=Config.from_dict(
-            {"engine": {"default": {"target": "cloud", "params": params}}}
+            {
+                "engine": {"default": {"target": "cloud", "params": params}},
+                "permission": {"default": {"target": "sqlite", "params": {"db_path": ":memory:"}}},
+            }
         )
     )
 
@@ -65,9 +71,9 @@ def test_memory_api_space_lifecycle_usage_members_and_delete() -> None:
         == unit_scope
     )
 
-    unit = api.add(
-        "space scoped memory", unit_scope, security=legacy_request_context(unit_scope)
-    )[0]
+    unit = api.add("space scoped memory", unit_scope, security=legacy_request_context(unit_scope))[
+        0
+    ]
     usage = api.space_usage("acme", "coding", security=legacy_request_context(space_admin))
     assert usage.memory_count == 1
     assert usage.storage_bytes > 0

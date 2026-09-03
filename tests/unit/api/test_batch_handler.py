@@ -6,11 +6,23 @@ from typing import Any
 
 import pytest
 
-from jiuwen_memory_entry.core import handler
 from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.common.security.types import AuthContext, Role, reset_current, set_current
+from jiuwen_memory.common.type_def.scope import Scope
 from jiuwen_memory.control import BatchWriteItem, BatchWriteOutcome, BatchWriteResult
+from jiuwen_memory_entry.core import handler
 
 pytestmark = pytest.mark.unit
+
+# dispatch 的身份来自认证上下文（铁律#1），测试统一以具名 actor 运行
+_ACTOR = Scope(org="acme", user="alice")
+
+
+@pytest.fixture(autouse=True)
+def _authenticated():
+    token = set_current(AuthContext(actor=_ACTOR, role=Role.USER))
+    yield
+    reset_current(token)
 
 
 @dataclass
@@ -41,40 +53,46 @@ class _Server:
 
 def test_batch_add_maps_defaults_item_scope_and_actor() -> None:
     srv = _Server()
-
-    status, body = handler.dispatch(
-        srv,
-        "batch_add",
-        {
-            "defaults": {
-                "tenant_id": "acme",
-                "space": "product",
-                "scope": "alice",
-                "system_metadata": {"infer": "true"},
-                "stream_id": "session-1",
-                "occurred_at": "2026-08-05T10:00:00+00:00",
-            },
-            "actor_scope": "writer",
-            "items": [
-                {"content": "first", "sequence": 1},
-                {
-                    "content": "second",
-                    "target_scope": {"scope": "bob"},
-                    "source": "code",
-                    "sequence": 2,
-                    "occurred_at": "2026-08-05T10:01:00+00:00",
-                },
-            ],
-        },
+    # 本测试验证 actor 向 API 透传：stub API 不判权限，用独立身份覆盖 fixture 缺省
+    token = set_current(
+        AuthContext(
+            actor=Scope(org="acme", space="product", user="writer"),
+            role=Role.USER,
+        )
     )
+    try:
+        status, body = handler.dispatch(
+            srv,
+            "batch_add",
+            {
+                "defaults": {
+                    "tenant_id": "acme",
+                    "space": "product",
+                    "scope": "alice",
+                    "system_metadata": {"infer": "true"},
+                    "stream_id": "session-1",
+                    "occurred_at": "2026-08-05T10:00:00+00:00",
+                },
+                "items": [
+                    {"content": "first", "sequence": 1},
+                    {
+                        "content": "second",
+                        "target_scope": {"scope": "bob"},
+                        "source": "code",
+                        "sequence": 2,
+                        "occurred_at": "2026-08-05T10:01:00+00:00",
+                    },
+                ],
+            },
+        )
+    finally:
+        reset_current(token)
 
     assert status == 200, body
     assert body["ok"] is True
     assert [outcome["input"]["content"] for outcome in body["outcomes"]] == ["first", "second"]
     call = srv.api.calls[0]
-    assert call["security"].auth.actor == handler.Scope(
-        org="acme", space="product", user="writer"
-    )
+    assert call["security"].auth.actor == handler.Scope(org="acme", space="product", user="writer")
     assert call["items"][0].scope == handler.Scope(org="acme", space="product", user="alice")
     assert call["items"][1].scope == handler.Scope(org="acme", space="product", user="bob")
     assert call["items"][1].source == handler.Modality.CODE

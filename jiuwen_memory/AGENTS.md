@@ -10,7 +10,7 @@
 ```
 jiuwen_memory/
 ├── api/            # 接口层：统一 Core API（add/search/get/update/delete/evolve/admin），形态无关
-├── common/         # 跨层共享插件（Tokenizer/Chunker/Embedder/FeatureExtractor/LLM/Normalizer/Reranker）+ type_def/
+├── common/         # 跨层共享插件、security/（认证/资源保护/密码学）、审计 + type_def/
 ├── config/         # 配置加载/合并 + ConfigSource 晚绑定（见 S08）
 ├── construction/   # 构建层：落盘 + 多形式索引构建 + 自演进闭环
 ├── control/        # 编排层：MemoryEngine 跨层编排中枢 + Scheduler/Permission/Policy/Governance/Space
@@ -64,7 +64,10 @@ jiuwen_memory/
 
 ### common/ — 共享插件 + 类型
 
-七个无状态插件协议（构建侧与检索侧必须共用同一实例）。`type_def/` 定义跨层数据类型：`MemoryUnit`（原子载体）、`Scope`（隔离模型）、`FilterClause`、`AuditEvent` 等。`errors.py` 统一异常体系。
+共享插件协议与横切能力均采用 `base.py + *_impl + Producer`，由 YAML 选择已注册 target。
+安全能力（认证、凭据存储、资源保护、密码学）统一归 `common/security/`，其请求身份与
+加密上下文类型住 `security/types.py`；`type_def/` 定义 `MemoryUnit`、`Scope`、
+`AuditEvent` 等跨层类型，`errors.py` 统一异常体系。
 
 ### config/ — 配置层
 

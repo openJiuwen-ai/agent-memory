@@ -7,8 +7,6 @@
 
 from __future__ import annotations
 
-from typing import List
-
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.permission import PermissionManager, PermissionProducer
@@ -19,7 +17,7 @@ class AllowAllPermissionManager(PermissionManager):
     """最小权限：记录授权但 check 恒放行（适合单租户本地装配）。"""
 
     def __init__(self) -> None:
-        self.grants: List[Grant] = []
+        self.grants: list[Grant] = []
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.PERMISSION

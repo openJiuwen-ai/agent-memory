@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from jiuwen_memory.common._support import as_bool
-from jiuwen_memory.common.audit.base import AuditProducer
+from jiuwen_memory.common.audit.base import AuditLogger, AuditProducer
 from jiuwen_memory.common.bootstrap import register_plugins
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.factory.factory import Factory
@@ -86,6 +86,7 @@ class Kernel:
             opt-in encrypted target 才包装）
         storage: 上层统一使用的 Storage（默认 CompositeStorage）
         space: SpaceManager（若装配）
+        audit: 装配好的审计器；surface 侧记认证失败等入口事件（API 外发生的事拿不到 API 私有引用）
         config_source: 运行时晚绑定配置来源（默认 YamlDefaultsConfigSource）
     """
 
@@ -94,17 +95,18 @@ class Kernel:
     storage: Storage
     ingest_jobs: IngestJobController
     space: SpaceManager | None = None
+    audit: AuditLogger | None = None  # 装配好的审计器；surface 侧记认证失败等入口事件
     config_source: ConfigSource | None = None
 
 
 def _register_all() -> None:
     """组装前按层触发自注册（句柄在接口、注册靠 import 实现；各 bootstrap 幂等）。"""
-    register_plugins()       # common 共享插件
-    register_backends()      # storage
-    register_operators()     # retrieval
-    register_ingestors()     # ingest
+    register_plugins()  # common 共享插件
+    register_backends()  # storage
+    register_operators()  # retrieval
+    register_ingestors()  # ingest
     register_constructors()  # construction
-    register_controllers()   # control
+    register_controllers()  # control
     register_config_sources()  # ConfigSource：yaml_defaults / dict / overlay
 
 
@@ -149,6 +151,8 @@ def build_kernel(
     - ``policies``：便捷覆盖运行时策略（折进 ``globals.policies``）。
     - ``kv``：显式注入真源后端，覆盖配置的 kv_store 选择（如传 ``SQLiteKVStore`` 即落盘）。
     """
+    # 只检查用户原始配置是否显式请求尚未实装的 audit_integrity；默认上下文没有该段，
+    # 因此必须在合并默认值之前拒绝，避免把接口态配置误认为可装配能力。
     if config is not None and not config.is_empty():
         requested = config.context()
         if "audit_integrity" in requested.namespaces:
@@ -161,6 +165,7 @@ def build_kernel(
     ctx = default_context()
     if config is not None and not config.is_empty():
         ctx = ctx.merged(config.context(known_top_names=Factory.known_top_names()))
+
     if policies is not None:
         ctx.globals["policies"] = dict(policies)
     schema_enabled = as_bool(ctx.globals.get("schema_enabled"), default=False)
@@ -181,6 +186,10 @@ def build_kernel(
     # 根组件（LocalMemoryAPI）经 ROOT_PARAMS 引用各命名空间下的 default 实例。
     root = ComponentConfig(params=dict(ROOT_PARAMS), ctx=ctx, target="local", name="memory_api")
     setup_logging(root)  # 初始化 agent-memory 根 logger（按 globals 的 log_* 配置；幂等）
+
+    # audit logger 装配一次、两处共用：API 内部记业务事件，Kernel.audit 暴露给
+    # surface 记入口事件（认证失败等发生在 API 之外，拿不到 API 的私有引用）。
+    audit_logger = AuditProducer.dep(root, default="sqlite")
 
     # ConfigSource 须先于 engine/evolver 装配，供 PromptRegistry / 插件晚绑定共享。
     config_source = ConfigSourceProducer.dep(root, default="yaml_defaults")
@@ -210,7 +219,7 @@ def build_kernel(
         scheduler=SchedulerProducer.dep(root, default="in_process"),
         policy=PolicyProducer.dep(root, default="dict"),
         governor=GovernorProducer.dep(root, default="in_memory"),
-        audit_logger=AuditProducer.dep(root, default="sqlite"),
+        audit_logger=audit_logger,
         space=SpaceProducer.dep(root, default="kv"),
         ingest_jobs=ingest_jobs,
         # 单次扫描量/返回样本量是可信服务端配置，不从请求 payload 读取。即使完整性
@@ -240,6 +249,7 @@ def build_kernel(
         storage=storage,
         ingest_jobs=ingest_jobs,
         space=api.space_manager,
+        audit=audit_logger,
         config_source=config_source,
     )
 

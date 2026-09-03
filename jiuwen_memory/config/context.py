@@ -27,13 +27,37 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any
 
 from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.security.types import SECRET_PARAM_KEYS, SecretValue
 
 # 保留的顶层段名：不作为命名空间解析。globals=跨切面参数；prompts=动态 prompt 文本，
 # 进 globals["prompts"] 供 PromptRegistry 加载。
 _RESERVED_TOP_NAMES = {"globals", "prompts"}
+
+
+def _wrap_secrets(value: Any) -> Any:
+    """递归把已登记的 secret 参数包成 :class:`SecretValue`，返回新结构。
+
+    只包第一层不够：Factory 支持**内联依赖**（``params: {key_provider: {target: ...,
+    params: {key_hex: "..."}}}``），嵌套那层的明文会照样进 ``RawSpec.params`` 并出现
+    在 ``repr`` 里。递归下探 dict 与 list 两种容器，凡是 key 命中
+    ``SECRET_PARAM_KEYS`` 且值是字符串就包起来（``SecretValue`` 本身不是 str，重复
+    调用幂等）。
+
+    SECRET_PARAM_KEYS 登记在 common/security/types.py（kernel 与 bootstrap 两路共用）。
+    """
+    if isinstance(value, Mapping):
+        return {
+            key: SecretValue(item)
+            if key in SECRET_PARAM_KEYS and isinstance(item, str)
+            else _wrap_secrets(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_wrap_secrets(item) for item in value]
+    return value
 
 
 @dataclass(frozen=True)
@@ -41,7 +65,7 @@ class RawSpec:
     """一个具名实例的纯数据：选哪个实现 + 字面参数 + 是否退出共享。"""
 
     target: str
-    params: Dict[str, Any] = field(default_factory=dict)
+    params: dict[str, Any] = field(default_factory=dict)
     new_instance: bool = False
 
 
@@ -49,15 +73,15 @@ class RawSpec:
 class AssemblyContext:
     """全局装配上下文：所有命名空间（top_name -> name -> RawSpec）+ 跨切面 ``globals``。"""
 
-    globals: Dict[str, Any] = field(default_factory=dict)
-    namespaces: Dict[str, Dict[str, RawSpec]] = field(default_factory=dict)
+    globals: dict[str, Any] = field(default_factory=dict)
+    namespaces: dict[str, dict[str, RawSpec]] = field(default_factory=dict)
 
     @classmethod
     def from_dict(
         cls,
         data: Mapping[str, Any] | None,
         *,
-        known_top_names: Optional[set[str]] = None,
+        known_top_names: set[str] | None = None,
     ) -> "AssemblyContext":
         """从配置字典解析。``known_top_names`` 非空时校验每个顶层段是已注册的 Producer 顶层名。
 
@@ -65,11 +89,13 @@ class AssemblyContext:
         ``globals["prompts"]`` 供 :class:`~construction.prompt_registry.PromptRegistry` 加载。
         """
         data = data or {}
-        globals_ = dict(data.get("globals", {}) or {})
+        # globals 同样过一遍：``ComponentConfig.get`` 会回退到它取参数，因此它也是
+        # 一条合法的 secret 配置路径（``globals: {root_api_key: "..."}``）。
+        globals_ = _wrap_secrets(dict(data.get("globals", {}) or {}))
         prompts = data.get("prompts")
         if prompts is not None:
             globals_["prompts"] = prompts
-        namespaces: Dict[str, Dict[str, RawSpec]] = {}
+        namespaces: dict[str, dict[str, RawSpec]] = {}
         for top_name, section in data.items():
             if top_name in _RESERVED_TOP_NAMES:
                 continue
@@ -103,7 +129,7 @@ class AssemblyContext:
 
         用于 ``build_kernel`` 把用户配置叠加到内置默认之上——用户只需写要改动的部分。
         """
-        namespaces: Dict[str, Dict[str, RawSpec]] = {
+        namespaces: dict[str, dict[str, RawSpec]] = {
             top: dict(insts) for top, insts in self.namespaces.items()
         }
         for top, insts in other.namespaces.items():
@@ -127,7 +153,7 @@ def _parse_instance(top_name: str, inst_name: str, raw: Any) -> RawSpec:
         raise ValidationError(f"{top_name}.{inst_name!r} 缺少 'target'（写实现名）")
     return RawSpec(
         target=str(target),
-        params=dict(raw.get("params", {}) or {}),
+        params=_wrap_secrets(dict(raw.get("params", {}) or {})),
         new_instance=bool(raw.get("new_instance", False)),
     )
 
@@ -136,7 +162,7 @@ def _parse_instance(top_name: str, inst_name: str, raw: Any) -> RawSpec:
 class ComponentConfig:
     """传给各 ``_build`` 的配置视图：本实例 ``params`` + 回退 ``globals`` + ``ctx`` 句柄。"""
 
-    params: Dict[str, Any]
+    params: dict[str, Any]
     ctx: AssemblyContext
     target: str = ""
     name: str = ""

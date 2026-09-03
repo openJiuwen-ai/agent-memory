@@ -998,7 +998,8 @@ def most_specific(members, actor, *, dim: str) -> SpaceMemberFact | None: ...
 
 `SpaceInfo` 的编解码是手写的逐字段映射，加字段不会自动落盘——新增字段必须同步补进序列化两侧，否则归属登记读回恒为空，归属对比整体不生效，且症状与「回填未完成」无法区分。成员记录的两个新字段同样须在写侧显式列举。
 
-`Scope` 是 frozen 值对象，清空或改写维度须整体重建。附带收益是它可作字典键，空间级缓存与多路合并去重可直接以它为键。
+`Scope` 按已固定公共接口保持可变 dataclass。需要清空或改写维度时优先整体重建，避免共享
+引用被旁路修改；空间级缓存与多路合并去重不得直接把 Scope 当字典键，应使用规范化维度元组。
 
 ### metadata 键（`common/type_def/memory.py`）
 

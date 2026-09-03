@@ -1,8 +1,4 @@
-"""jiuwen_memory.common.security.authentication.base / key_store: 抽象契约与工厂注册。
-
-接口先行版：``authentication_impl`` 未合入，工厂断言只覆盖 Producer 契约本身
-（TOP_NAME 进配置校验、注册幂等），不依赖任何实现注册项。
-"""
+"""jiuwen_memory.common.security.authentication.base / key_store: 抽象契约与工厂注册。"""
 
 from __future__ import annotations
 
@@ -14,12 +10,14 @@ from jiuwen_memory.common.bootstrap import register_plugins
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.security.authentication.base import Authenticator, AuthProducer
 from jiuwen_memory.common.security.authentication.key_store import (
+    KeyStoreProducer,
     PrincipalKeyStore,
     fingerprint,
     generate_api_key,
     key_prefix,
 )
 from jiuwen_memory.common.security.types import Credentials
+from jiuwen_memory.config.context import AssemblyContext
 
 pytestmark = pytest.mark.unit
 
@@ -29,6 +27,12 @@ def test_registration_is_idempotent() -> None:
     first = AuthProducer.known()
     register_plugins()
     assert AuthProducer.known() == first
+
+
+def test_all_three_modes_registered() -> None:
+    register_plugins()
+    assert AuthProducer.known() == ["api_key", "dev", "trusted"]
+    assert KeyStoreProducer.known() == ["memory"]
 
 
 def test_top_names_enter_config_validation() -> None:
@@ -96,6 +100,14 @@ def test_credentials_defaults_are_empty() -> None:
 def test_credentials_repr_hides_secrets() -> None:
     """凭据会进日志与异常回溯：明文 key 不能出现在 repr 里（F05 §Credentials）。"""
     assert "super-secret" not in repr(Credentials(api_key="super-secret"))
+
+
+def test_mode_is_an_open_string_not_a_closed_enum() -> None:
+    """F05 拒绝以封闭枚举驱动核心分支：第三方实现不改核心即可声明自己的模式名。"""
+    register_plugins()
+    mode = AuthProducer.build("dev", {}, AssemblyContext()).mode()
+    assert isinstance(mode, str)
+    assert mode == "dev"
 
 
 def test_fingerprint_is_sha256_hex() -> None:

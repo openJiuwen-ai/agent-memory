@@ -30,7 +30,7 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
 | `graph_impl/` | GraphStore 实现目录（memory / nano_graphrag）；`working_dir` 晚绑定 |
 | `fulltext_impl/` | FulltextStore 实现目录（memory / elasticsearch）；`hosts` 晚绑定 |
 | `fusion_impl/` | FusionStore 实现目录（memory / milvus_graph）；`uri`/`working_dir` 晚绑定 |
-| `fs_impl/` | FSStore 实现目录（local）；`root` 晚绑定 |
+| `fs_impl/` | FSStore 实现目录（local / encrypted 装饰器）；`root` 晚绑定 |
 | `entity_impl/` | EntityStore 实现目录（elasticsearch）；独立装配，不经 Storage capability 路由 |
 | `storage_impl/` | Storage 实现目录；`CompositeStorage` 以 `composite` target 自注册 |
 | `bootstrap.py` | 统一触发六类 Store 后端与 Storage 实现注册 |
@@ -75,9 +75,10 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
    连接失败/超时/服务不可用等非预期失败统一抛 `BackendError`（不抛泛化的 Exception）。
 
 8. **EncryptedKVStore 只做装饰，不做算法**
-   `encrypted` KV target 必须显式包装一个 raw KVStore，并调用 `common.security.SecurityProvider`
-   做 value 加解密；`list` 必须在解密后执行 MemoryUnit 过滤，不能把过滤下推到密文 raw KV。
-   真实加密算法不放在 storage 层。
+   `encrypted` KV target 必须显式包装一个 raw KVStore，并调用
+   `common.security.cryptography` 的 `CryptographyProvider` 做 value 加解密
+   （旧 `SecurityProvider` 已在安全域重整中删除）；`list` 必须在解密后执行
+   MemoryUnit 过滤，不能把过滤下推到密文 raw KV。真实加密算法不放在 storage 层。
 
 9. **过滤保持 metadata 形态语义**
    `EQ` / `IN` 的正向匹配只命中标量，`CONTAINS` 只命中数组成员；`NE` / `NOT_IN`
