@@ -44,7 +44,7 @@ from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import Orches
 from jiuwen_memory.construction.extractor import Extractor
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.kv import KVStore
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from tests.conftest import make_storage
 from jiuwen_memory.storage.types import (
     IndexRemoveMode,
     IndexWriteMode,
@@ -244,10 +244,13 @@ class _ScriptedExtractor(Extractor):
 
 
 class _NoopIndexBuilder:
-    """只交付 Storage 的替身：IndexBuilder 是写入口，不交付则真源为空。"""
+    """只交付真源的替身：IndexBuilder 是写入口，不交付则 KV 为空。
 
-    def __init__(self, storage) -> None:
-        self._storage = storage
+    交付走 KV 直写（``memory_key`` + ``dumps``，ForwardIndexBuilder 模式）。
+    """
+
+    def __init__(self, kv) -> None:
+        self._kv = kv
 
     @staticmethod
     def operator_type() -> OperatorType:
@@ -259,11 +262,11 @@ class _NoopIndexBuilder:
 
     def build(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL):
         for unit in units:
-            self._storage.add(unit.scope, [unit])
+            self._kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
 
     def update(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL):
         for unit in units:
-            self._storage.update(unit.scope, [unit])
+            self._kv.update(unit.scope, memory_key(unit.id), dumps(unit))
 
     def remove(self, units, *, mode: IndexRemoveMode = IndexRemoveMode.HARD):
         pass
@@ -305,15 +308,15 @@ def _index_related(unit: MemoryUnit, kv: KVStore, vector_store: VectorStore, emb
 
 def _make_evolver(kv, vector_store, embedder, llm, extractor) -> OrchestratingEvolver:
     # tier_filter=False：让 EPISODIC 本轮 unit 能召回 SEMANTIC 相关记忆（跨 tier）
-    storage = CompositeStorage(kv=kv, vector=vector_store)
+    storage = make_storage(kv=kv, vector=vector_store)
     dedup = VectorDedup(storage=storage, embedder=embedder, tier_filter=False)
     return OrchestratingEvolver(
         extractor=extractor,
         abstractor=None,  # EXTRACT 不用
         associator=None,
-        index_builder=_NoopIndexBuilder(storage),
+        index_builder=_NoopIndexBuilder(kv),
         storage=storage,
-        message_store=storage.kv,
+        message_store=storage.kv(),
         dedup=dedup,
         llm=llm,
     )
@@ -542,13 +545,13 @@ class TestEngineInferPersist:
         from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
 
         stores = {"kv": _MemoryKVStore(), "vector": _MemoryVectorStore()}
-        storage = CompositeStorage(kv=stores["kv"], vector=stores["vector"])
+        storage = make_storage(kv=stores["kv"], vector=stores["vector"])
         dedup = VectorDedup(storage=storage, embedder=_HashEmbedder(), tier_filter=False)
         extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=50, overlap_chars=10))
         evolver = OrchestratingEvolver(
             extractor=extractor, abstractor=None, associator=None,
-            index_builder=_NoopIndexBuilder(storage), storage=storage,
-            message_store=storage.kv,
+            index_builder=_NoopIndexBuilder(stores["kv"]), storage=storage,
+            message_store=storage.kv(),
             dedup=dedup, llm=_MockLLM(),
         )
 
@@ -569,7 +572,7 @@ class TestEngineInferPersist:
             ingestor=SimpleIngestor(PassthroughNormalizer()),
             index_builder=_NoopIndex(),
             retriever=None,
-            storage=CompositeStorage(kv=stores["kv"], vector=stores["vector"]),
+            kv=stores["kv"],
             scheduler=None,
             evolver=evolver,
             lifecycle=None,
@@ -657,14 +660,14 @@ class TestProceduralExtract:
         from jiuwen_memory.common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
         from jiuwen_memory.construction.extractor_impl.keyword_extractor import KeywordExtractor
 
-        storage = CompositeStorage(kv=stores["kv"], vector=stores["vector"])
+        storage = make_storage(kv=stores["kv"], vector=stores["vector"])
         dedup = VectorDedup(storage=storage, embedder=_HashEmbedder(), tier_filter=False)
         extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=50, overlap_chars=10))
         # keyword_extractor 构造需 chunker + normalizer？看签名——只 chunker
         evolver = OrchestratingEvolver(
             extractor=extractor, abstractor=None, associator=None,
-            index_builder=_NoopIndexBuilder(storage), storage=storage,
-            message_store=storage.kv,
+            index_builder=_NoopIndexBuilder(stores["kv"]), storage=storage,
+            message_store=storage.kv(),
             dedup=dedup, llm=_MockLLM(),
         )
 
@@ -685,7 +688,7 @@ class TestProceduralExtract:
             ingestor=SimpleIngestor(PassthroughNormalizer()),
             index_builder=_NoopIndex(),
             retriever=None,
-            storage=CompositeStorage(kv=stores["kv"], vector=stores["vector"]),
+            kv=stores["kv"],
             scheduler=None,
             evolver=evolver,
             lifecycle=None,
@@ -722,13 +725,13 @@ class TestProceduralExtract:
         from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
 
         stores = {"kv": _MemoryKVStore(), "vector": _MemoryVectorStore()}
-        storage = CompositeStorage(kv=stores["kv"], vector=stores["vector"])
+        storage = make_storage(kv=stores["kv"], vector=stores["vector"])
         dedup = VectorDedup(storage=storage, embedder=_HashEmbedder(), tier_filter=False)
         extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=50, overlap_chars=10))
         evolver = OrchestratingEvolver(
             extractor=extractor, abstractor=None, associator=None,
-            index_builder=_NoopIndexBuilder(storage), storage=storage,
-            message_store=storage.kv,
+            index_builder=_NoopIndexBuilder(stores["kv"]), storage=storage,
+            message_store=storage.kv(),
             dedup=dedup, llm=_MockLLM(),
         )
 
@@ -749,7 +752,7 @@ class TestProceduralExtract:
             ingestor=SimpleIngestor(PassthroughNormalizer()),
             index_builder=_NoopIndex(),
             retriever=None,
-            storage=CompositeStorage(kv=stores["kv"], vector=stores["vector"]),
+            kv=stores["kv"],
             scheduler=None,
             evolver=evolver,
             lifecycle=None,

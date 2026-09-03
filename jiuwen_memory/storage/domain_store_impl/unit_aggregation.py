@@ -13,9 +13,10 @@ Fuser 才能跨通道合并同一 unit。``metadata`` 缺 ``unit_id`` 时回退�
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Sequence
+from collections.abc import Sequence
+from typing import Any
 
-from jiuwen_memory.retrieval.types import RecallChannel, ScoredUnit
+from jiuwen_memory.common.type_def import RecallChannel, ScoredUnit
 from jiuwen_memory.storage.types import ScoredID
 
 
@@ -23,10 +24,10 @@ def aggregate_to_units(
     hits: Sequence[ScoredID],
     records: Sequence[Any],  # VectorRecord / Document：任意带 .id 与 .metadata 的记录
     channel: RecallChannel,
-) -> List[ScoredUnit]:
+) -> list[ScoredUnit]:
     """把命中按 ``metadata['unit_id']`` 归并到 unit 粒度，同 unit 取 MaxP，按分降序。"""
-    meta_by_id: Dict[str, dict] = {r.id: getattr(r, "metadata", {}) or {} for r in records}
-    best: Dict[str, float] = {}
+    meta_by_id: dict[str, dict] = {r.id: getattr(r, "metadata", {}) or {} for r in records}
+    best: dict[str, float] = {}
     for hit in hits:
         uid = meta_by_id.get(hit.id, {}).get("unit_id") or hit.id
         if hit.score > best.get(uid, float("-inf")):

@@ -21,7 +21,11 @@ from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import MemoryUnit, Scope
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
-from jiuwen_memory.storage.storage import Storage, StorageProducer
+from jiuwen_memory.storage.store_manager import (
+    StoreManager,
+    StoreManagerProducer,
+    resolve_name,
+)
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 from jiuwen_memory.storage.vector import VectorStore
 
@@ -48,14 +52,18 @@ class VectorIndexBuilder(IndexBuilder):
 
     def __init__(
         self,
-        storage: Storage,
+        storage: StoreManager,
         chunker: Chunker,
         embedder: Embedder,
         *,
+        vector_name: str = "default",
+        kv_name: str = "default",
         layers_enabled: bool = True,
     ) -> None:
-        self._vector_store = storage.vector if storage.has_vector() else None
-        self._kv_store = storage.kv if storage.has_kv() else None
+        self._vector_store = (
+            storage.vector(vector_name) if storage.has_vector(vector_name) else None
+        )
+        self._kv_store = storage.kv(kv_name) if storage.has_kv(kv_name) else None
         self._chunker = chunker
         self._embedder = embedder
         # L0/L1 分层 store：None 表示不构建该层索引（向后兼容 + 配置降级）。
@@ -184,8 +192,10 @@ class VectorIndexBuilder(IndexBuilder):
 @IndexBuilderProducer.register("vector")
 def _build(config):
     return VectorIndexBuilder(
-        storage=StorageProducer.resolve(config),
+        storage=StoreManagerProducer.resolve(config),
         chunker=ChunkerProducer.dep(config, default="fixed_window"),
         embedder=EmbedderProducer.dep(config, default="hashing"),
+        vector_name=resolve_name(config, "vector_store"),
+        kv_name=resolve_name(config, "kv_store"),
         layers_enabled=config.get("layers_index_enabled", True),
     )

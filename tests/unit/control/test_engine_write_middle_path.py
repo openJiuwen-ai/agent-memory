@@ -44,7 +44,6 @@ from jiuwen_memory.control.types import Channel, JobStatus
 from jiuwen_memory.ingest.base import IngestOperatorType
 from jiuwen_memory.ingest.ingestor import Ingestor
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 pytestmark = pytest.mark.unit
@@ -92,15 +91,16 @@ class _NoopEvolver(Evolver):
 
 
 class _RecordingIndex(IndexBuilder):
-    """记录 build 入参的 IndexBuilder 替身，并交付 Storage。
+    """记录 build 入参的 IndexBuilder 替身，并交付真源。
 
-    IndexBuilder 是记忆写入的唯一入口，替身必须交付 Storage，否则真源为空。
+    IndexBuilder 是记忆写入的唯一入口，替身必须交付真源，否则 KV 为空。
+    交付走 KV 直写（``memory_key`` + ``dumps``，ForwardIndexBuilder 模式）。
     """
 
-    def __init__(self, storage=None) -> None:
+    def __init__(self, kv=None) -> None:
         self.built: list[MemoryUnit] = []
         self.removed: list[MemoryUnit] = []
-        self._storage = storage
+        self._kv = kv
 
     def operator_type(self) -> OperatorType:
         return OperatorType.INDEX_BUILDER
@@ -110,14 +110,14 @@ class _RecordingIndex(IndexBuilder):
 
     def build(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         self.built.extend(units)
-        if self._storage is not None:
+        if self._kv is not None:
             for unit in units:
-                self._storage.add(unit.scope, [unit])
+                self._kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
 
     def update(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
-        if self._storage is not None:
+        if self._kv is not None:
             for unit in units:
-                self._storage.update(unit.scope, [unit])
+                self._kv.update(unit.scope, memory_key(unit.id), dumps(unit))
 
     def remove(self, units, *, mode: IndexRemoveMode = IndexRemoveMode.HARD) -> None:
         self.removed.extend(units)
@@ -219,8 +219,7 @@ def _build_engine(
     from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
 
     kv = InMemoryKVStore()
-    storage = CompositeStorage(kv=kv)
-    index = _RecordingIndex(storage)
+    index = _RecordingIndex(kv)
     scheduler = scheduler or _RecordingScheduler()
     evolver = evolver or _NoopEvolver()
     lifecycle = _NoopLifecycle()
@@ -235,7 +234,7 @@ def _build_engine(
     factory.register(
         JobType.MIDDLE_TO_LONG,
         MiddleToLongJobSpec(
-            storage=storage,
+            kv=kv,
             evolver=evolver,
             lifecycle=lifecycle,
             index=index,
@@ -252,7 +251,7 @@ def _build_engine(
         ingestor=ingestor,
         index_builder=index,
         retriever=None,
-        storage=storage,
+        kv=kv,
         scheduler=scheduler,
         evolver=evolver,
         lifecycle=lifecycle,
@@ -264,12 +263,12 @@ def _build_engine(
 
 
 def _build_assets_engine(ingestor: Ingestor) -> InMemoryEngine:
-    storage = CompositeStorage(kv=InMemoryKVStore())
+    kv = InMemoryKVStore()
     return InMemoryEngine(
         ingestor=ingestor,
-        index_builder=_RecordingIndex(storage),
+        index_builder=_RecordingIndex(kv),
         retriever=None,
-        storage=storage,
+        kv=kv,
         scheduler=_RecordingScheduler(),
         evolver=_NoopEvolver(),
         lifecycle=_NoopLifecycle(),

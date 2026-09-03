@@ -15,7 +15,6 @@ from jiuwen_memory.config.config import Config
 from jiuwen_memory.control.lifecycle_impl.kv_lifecycle_manager import KVLifecycleManager
 from jiuwen_memory.control.policy_impl.dict_policy_manager import DictPolicyManager
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
 
@@ -25,7 +24,7 @@ _TEST_KEY_HEX = "00" * 32
 def _store(unit) -> tuple[InMemoryKVStore, KVLifecycleManager]:
     kv = InMemoryKVStore()
     kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
-    return kv, KVLifecycleManager(CompositeStorage(kv=kv))
+    return kv, KVLifecycleManager(kv)
 
 
 def _load(kv: InMemoryKVStore, unit) -> object:
@@ -90,7 +89,7 @@ def test_supersede_rejects_invalid_lifecycle_state(unit_factory) -> None:
 
 
 def test_supersede_raises_not_found_for_missing_unit() -> None:
-    lifecycle = KVLifecycleManager(CompositeStorage(kv=InMemoryKVStore()))
+    lifecycle = KVLifecycleManager(InMemoryKVStore())
 
     with pytest.raises(NotFoundError):
         lifecycle.supersede(
@@ -110,7 +109,7 @@ def test_targeted_transition_does_not_mutate_same_id_in_another_scope(unit_facto
     kv = InMemoryKVStore()
     kv.insert(scope_a, memory_key(unit_a.id), dumps(unit_a))
     kv.insert(scope_b, memory_key(unit_b.id), dumps(unit_b))
-    lifecycle = KVLifecycleManager(CompositeStorage(kv=kv))
+    lifecycle = KVLifecycleManager(kv)
 
     lifecycle.transition(scope_b, [unit_b.id], LifecycleState.FORGOTTEN)
 
@@ -138,7 +137,7 @@ def test_sweep_returns_pending_transitions_without_mutating_units(unit_factory) 
     kv = InMemoryKVStore()
     for unit in [expired, superseded, active, archived, forgotten]:
         kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
-    lifecycle = KVLifecycleManager(CompositeStorage(kv=kv))
+    lifecycle = KVLifecycleManager(kv)
 
     transitions = lifecycle.sweep()
 
@@ -182,7 +181,7 @@ def test_sweep_uses_policy_targets_for_expired_active_and_superseded(unit_factor
             "lifecycle.superseded.target": "archived",
         }
     )
-    lifecycle = KVLifecycleManager(CompositeStorage(kv=kv), policy)
+    lifecycle = KVLifecycleManager(kv, policy)
 
     transitions = lifecycle.sweep()
 
@@ -209,7 +208,7 @@ def test_sweep_rejects_invalid_policy_target(unit_factory) -> None:
             "lifecycle.superseded.target": "forgotten",
         }
     )
-    lifecycle = KVLifecycleManager(CompositeStorage(kv=kv), policy)
+    lifecycle = KVLifecycleManager(kv, policy)
 
     with pytest.raises(PolicyError):
         lifecycle.sweep()

@@ -16,14 +16,14 @@ from jiuwen_memory.control.space_impl.kv_space_manager import (
 )
 from jiuwen_memory.control.types import SpaceMember, SpacePatch, SpaceSpec, SpaceStatus
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
 
 pytestmark = pytest.mark.unit
 
 
 def _manager() -> tuple[KVSpaceManager, InMemoryKVStore]:
     kv = InMemoryKVStore()
-    return KVSpaceManager(CompositeStorage(kv=kv)), kv
+    return KVSpaceManager(CompositeStoreManager(kv=kv)), kv
 
 
 def test_owners_survive_the_serialization_round_trip() -> None:
@@ -292,7 +292,7 @@ def test_create_rollback_leaves_no_registry_or_index_entry() -> None:
             super().insert(scope, key, value, ttl)
 
     kv = _FailingKV()
-    manager = KVSpaceManager(CompositeStorage(kv=kv))
+    manager = KVSpaceManager(CompositeStoreManager(kv=kv))
     with pytest.raises(RuntimeError):
         manager.create(SpaceSpec(org="acme", space="team", owner=Scope(user="alice")))
 

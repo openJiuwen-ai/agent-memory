@@ -7,6 +7,10 @@
 混合检索的完整链路编排：查询理解 → 按 Storage 首选路径执行 recall/get/rank → 精排 →
 相关性阈值 → 渐进式披露 → 返回 + 检索轨迹。rank 只指 Fuser，Reranker 保持独立阶段。
 
+**单路召回不在本层**：`Recaller` 契约与实现在 `storage/domain_store_impl/`——它是
+`CompositeDomainStore` 的内部件，本层只经数据面的 `recall`/`recall_and_get`/`retrieve`
+拿结果，不持有也不装配召回路（F07）。
+
 ## 模块地图
 
 | 文件 | 职责 |
@@ -15,15 +19,13 @@
 | `types.py` | 检索对外类型；Storage 共用的 ParsedQuery/候选/错误类型从 common 重导出 |
 | `cross_space.py` | 跨空间检索的取数上界（`allocate_quota`）与结果合并（`merge`）；不访问存储、不调模型的纯函数，与算子并列而非算子，不进工厂 |
 | `query_parser.py` | QueryParser 接口：查询理解（去噪/改写/分词/实体/向量化/时间解析） |
-| `recaller.py` | Recaller 接口：单路召回（向量/关键词/图/文档/时序） |
 | `fuser.py` | Fuser 接口：多路融合排序（重排由 common `Reranker` 独立阶段承担） |
 | `discloser.py` | Discloser 接口：渐进式披露（L0 摘要/L1 片段/L2 全文） |
 | `retriever.py` | Retriever 接口：检索层入口，编排完整链路 |
 | `query_parser_impl/` | QueryParser 实现目录（simple_query_parser / sanitize / time_parse） |
-| `recaller_impl/` | Recaller 实现目录（keyword / keyword_l0/l1 / vector / vector_l0/l1 / graph） |
 | `fuser_impl/` | Fuser 实现目录（rrf【默认】/ weighted_rrf / score_max）+ `layered_merge` 分层归并前处理 |
 | `discloser_impl/` | Discloser 实现目录（structured / truncating） |
-| `retriever_impl/` | Retriever 实现目录；pipeline 通过 StorageProducer 获取统一 Storage；multimodal 组合原生、CLM、ELM 三个过滤分支并执行 RRF 融合 |
+| `retriever_impl/` | Retriever 实现目录；pipeline 经 `StoreManagerProducer.resolve` 取全局 manager 并持其 `domain_store()`；multimodal 组合原生、CLM、ELM 三个过滤分支并执行 RRF 融合 |
 | `bootstrap.py` | 统一触发所有检索算子注册 |
 
 ## 检索链路
@@ -104,7 +106,7 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 
 **本模块管**：
 - 查询理解（QueryParser）
-- 多路召回编排（Recaller + Retriever）
+- 多路召回结果的编排消费（Retriever；单路 Recaller 归 `storage` 数据面）
 - 融合与重排（Fuser）
 - 渐进式披露（Discloser）
 - 检索轨迹记录（TrajectoryStep）
@@ -112,27 +114,29 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 **不管**：
 - 鉴权（归 `api`）
 - 记忆写入/演进（归 `construction`）
+- 单路召回与其装配（`Recaller` 归 `storage/domain_store_impl/`）
 - 存储实现（通过注入的 Store 抽象间接调用）
 - Tokenizer/Embedder/Reranker 实现（消费 `common` 注入的实例）
 
 ## 本地约束
 
 1. 所有 Operator 必须实现 `operator_type()` 和 `health()`（继承自 `RetrievalOperator`）。
-2. Recaller 实现必须声明 `channel()` 返回对应的 `RecallChannel`。
-3. 算子实现通过 `@XxxProducer.register("name")` 自注册。
-4. Retriever 内部 UnitReader 点读后必须复核 lifecycle、valid-time、event-time 和完整
+   `RetrievalOperatorType` 不含 `RECALLER`——单路召回不是本层算子。
+2. 算子实现通过 `@XxxProducer.register("name")` 自注册。
+3. Retriever 内部 UnitReader 点读后必须复核 lifecycle、valid-time、event-time 和完整
    FilterExpr；当前态也须按当前 UTC 时间检查 `[t_valid, t_invalid)`。
-5. `extensions` 字段透传配置：RetrievalQuery.extensions → ParsedQuery.extensions，供自定义 Recaller 按约定 key 读取，内核核心不解释。
-6. 显式空 `channels` 无效；`RetrievalQuery.channels=None` 时优先使用
+4. `extensions` 字段透传配置：RetrievalQuery.extensions → ParsedQuery.extensions，供自定义 Recaller 按约定 key 读取，内核核心不解释。
+5. 显式空 `channels` 无效；`RetrievalQuery.channels=None` 时优先使用
    `QueryParser` 建议的通道，parser 未给出建议时再由 Storage 使用已配置入口。
    部分通道失败返回 items 与 `ChannelError`，全部选中通道失败抛
    `StorageRetrievalError`。
-7. Fuser 接受物化候选并保持 MemoryUnit 与 evidence；读取前只允许对 id 去重，不得合并
+6. Fuser 接受物化候选并保持 MemoryUnit 与 evidence；读取前只允许对 id 去重，不得合并
    多通道候选。Fuser 不执行 Reranker。
-8. `PipelineRetriever` 的生产装配必须通过 `StorageProducer` 获取 Storage；Retriever 不再
-   持有召回路——`CompositeStorage` 的兼容 Recaller 由 storage 层工厂按配置在构建期
-   同步装配，非 Composite 实现自带检索路径、无需 Recaller。手工/测试接线用 `CompositeStorage`
-   构造参数或 `bind_recallers`。
-9. `MultimodalRetriever` 只组合已注入的基础 Retriever，不得直接依赖 `KvProducer`、
+7. `PipelineRetriever` 的生产装配必须经 `StoreManagerProducer.resolve` 取全局 manager，构造
+   持其 `domain_store()`（keyword-only `domain_store=`）；Retriever 不持有召回路——
+   `CompositeDomainStore` 的 Recaller 由 `for_manager` 在 manager 装配期按
+   `domain_stores.<name>` 的选择键同步组装，非 Composite 实现自带检索路径、无需 Recaller。
+   手工/测试接线用 `CompositeDomainStore.bind_recallers`。
+8. `MultimodalRetriever` 只组合已注入的基础 Retriever，不得直接依赖 `KvProducer`、
    扫描 KV 或识别具体存储后端。原生、CLM、ELM 分支分别检索；无视频记忆时两个视频
    分支自然为空，再按 RRF 融合并截断到请求的 `top_k`。

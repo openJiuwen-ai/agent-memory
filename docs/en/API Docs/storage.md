@@ -955,8 +955,103 @@ Storage implementation and its paired IndexBuilder.
 | Graph | `memory` | `nano_graphrag` | External implementation creates a separate GraphML namespace per Scope |
 | Fusion | `memory` | `milvus_graph` | Current `milvus_graph` is vector seeding + graph expansion and does not implement BM25 text fusion |
 | FS | `memory` | `local` | LocalFS stores under `root/<scope>/` and prevents directory traversal |
-| Entity | None | `elasticsearch` | Independent Producer; not one of the six StorageCapability ports |
+| Entity | None | `elasticsearch` | ENTITY, the 7th StorageCapability; degrades to no-capability when `hosts` is unset |
 
 Connection-backed implementations usually establish a real connection only on first access or
 `health()`. Successful configuration construction does not prove that the remote service,
 schema/index, or TLS path is ready; deployment acceptance should call `health()` explicitly.
+
+## 20. Recaller API (data-plane retrieval adapter)
+
+```python
+from jiuwen_memory.storage.domain_store_impl.recaller import Recaller, RecallerProducer
+```
+
+A single-channel recall operator. One Recaller maps to one recall channel: it consumes the
+fields of `ParsedQuery` that its channel needs and recalls candidates through the matching
+named port of the `StoreManager`.
+
+**Why it lives in the storage layer**: `CompositeDomainStore` is the only consumer of Recaller
+instances in production. `Retriever` merely delegates to the data plane's `recall` /
+`recall_and_get` / `retrieve` according to `preferred_retrieval_pipeline()` and owns no recall
+channels. The contract and the implementations therefore live in `storage/domain_store_impl/`,
+and `Recaller` does not inherit `RetrievalOperator` — a self-describing `operator_type()` is
+meaningless for a component that never enters the retrieval operator table.
+
+### `channel() -> RecallChannel`
+
+Returns the logical recall channel represented by the current Recaller. `RecallChannel`
+contains:
+
+- `DOCUMENT`: document lookup.
+- `KEYWORD`: keyword/full-text recall.
+- `VECTOR`: vector recall.
+- `GRAPH`: graph-traversal recall.
+- `TEMPORAL`: temporal recall or time constraints.
+
+L0/L1/L2 are different physical index sources within the same logical channel. They do not
+introduce additional `RecallChannel` enum values.
+
+### `recall(scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]`
+
+Recalls the top-k candidates for this channel within the specified Scope. Each returned
+`ScoredUnit` contains:
+
+| Field | Description |
+|---|---|
+| `unit_id` | MemoryUnit ID within the Scope |
+| `score` | Recall score from this channel |
+| `channel` | Logical channel that produced the hit |
+| `evidence` | Optional list of channel evidence |
+
+A Recaller uses `ParsedQuery` to assemble the low-level Store Query. It must pass `scope` as an
+independent Store method argument and use `query.scalar_filters` as the hard metadata predicate.
+
+### `health() -> None`
+
+Liveness probe: returns `None` when healthy, raises otherwise.
+
+### Built-in implementations and assembly
+
+| Registered name | Implementation | Notes |
+|---|---|---|
+| `keyword` / `keyword_l0` / `keyword_l1` | `KeywordRecaller` | Full-text BM25; the L2 route additionally expands by linked entities |
+| `vector` / `vector_l0` / `vector_l1` | `VectorRecaller` | Vector ANN; hits are folded to unit granularity via `metadata['unit_id']` (MaxP) |
+| `graph` | `GraphRecaller` | Graph seeds plus BFS multi-hop expansion |
+
+Assembly happens synchronously inside `CompositeDomainStore.for_manager(manager, ds_config)`
+during manager construction, and configuration errors fail fast. Selector keys and capability
+switches:
+
+```yaml
+store_manager:
+  default:
+    target: composite
+    params:
+      domain_stores:
+        default:                         # always built; also the overlay base for named ones
+          kv_store: default
+          preferred_retrieval_pipeline: recall_get_rank
+          keyword_recaller: keyword
+          vector_recaller: vector
+          graph_recaller: graph
+          keyword_l0_recaller: keyword_l0
+          keyword_l1_recaller: keyword_l1
+          vector_l0_recaller: vector_l0
+          vector_l1_recaller: vector_l1
+        fast:                            # named instance: declare only the differences
+          preferred_retrieval_pipeline: retrieve
+
+globals:                                  # cross-cutting switches, read by build and recall
+  vector_enabled: true
+  graph_enabled: true
+  layers_index_enabled: true
+```
+
+A named instance **must** be able to reach the `*_recaller` keys — either by inheriting from
+`default` or by declaring its own. `Factory.dep` reads `config.params` directly and does not
+fall back to `globals`; when the key is missing it silently builds an anonymous, unshared
+recaller, so assembly succeeds while read and write end up on different instances.
+
+Manual/test wiring goes through `CompositeDomainStore.bind_recallers(recallers)` (the same
+instance may not be rebound to a different set of recallers).

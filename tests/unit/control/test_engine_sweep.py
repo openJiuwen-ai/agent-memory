@@ -30,7 +30,6 @@ from jiuwen_memory.control.lifecycle_impl.kv_lifecycle_manager import KVLifecycl
 from jiuwen_memory.control.policy_impl.dict_policy_manager import DictPolicyManager
 from jiuwen_memory.control.scheduler_impl.in_process_scheduler import InProcessScheduler
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 pytestmark = pytest.mark.unit
@@ -256,13 +255,12 @@ def _engine(
     kv: InMemoryKVStore, lifecycle: KVLifecycleManager
 ) -> tuple[InMemoryEngine, _EngineSpyIndex]:
     """构造 sweep 路径的 InMemoryEngine，同时返回 spy 索引引用（免访问受保护成员）。"""
-    storage = CompositeStorage(kv=kv)
     spy = _EngineSpyIndex()
     engine = InMemoryEngine(
         ingestor=None,  # sweep 路径不依赖 ingestor
         index_builder=spy,
         retriever=None,  # sweep 路径不依赖 retriever
-        storage=storage,
+        kv=kv,
         scheduler=InProcessScheduler(),
         evolver=None,  # sweep 路径不依赖 evolver
         lifecycle=lifecycle,
@@ -283,7 +281,7 @@ def test_engine_sweep_expired_forgets_and_cleans_derived_index(unit_factory) -> 
     kv = InMemoryKVStore()
     for unit in [expired, superseded, keep]:
         kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
-    lifecycle = KVLifecycleManager(CompositeStorage(kv=kv))
+    lifecycle = KVLifecycleManager(kv)
     engine, spy = _engine(kv, lifecycle)
 
     result = asyncio.run(engine.sweep_expired())
@@ -308,7 +306,7 @@ def test_engine_sweep_expired_archived_policy_keeps_derived_index(unit_factory) 
     kv = InMemoryKVStore()
     kv.insert(scope, memory_key(expired.id), dumps(expired))
     lifecycle = KVLifecycleManager(
-        CompositeStorage(kv=kv),
+        kv,
         DictPolicyManager({"lifecycle.expired_active.target": "archived"}),
     )
     engine, spy = _engine(kv, lifecycle)
