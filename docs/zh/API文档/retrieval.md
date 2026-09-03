@@ -361,7 +361,7 @@ query_parser:
 
 | `target` | 实现类 | 通道/层级 | 功能 | 主要依赖与参数 |
 |---|---|---|---|---|
-| `keyword` | `KeywordRecaller` | `KEYWORD` / L2 | 查询 `storage.fulltext` 全文索引，将索引记录聚合到 MemoryUnit；开启实体链路时可做实体关联扩展 | `storage`；可选 `entity_store`；`entity_enabled`（默认 `false`） |
+| `keyword` | `KeywordRecaller` | `KEYWORD` / L2 | 查询 `storage.fulltext` 全文索引，将索引记录聚合到 MemoryUnit；开启实体链路时从 `storage.entity_port()` 获取实体端口并做实体关联扩展，实体端口沿用 Storage 的授权边界 | `storage`；`entity_enabled`（默认 `false`） |
 | `keyword_l0` | `KeywordRecaller` | `KEYWORD` / L0 | 查询 `storage.fulltext_port("layers_l0")` 中的概要索引 | `storage`；受 `layers_index_enabled` 总开关控制 |
 | `keyword_l1` | `KeywordRecaller` | `KEYWORD` / L1 | 查询 `storage.fulltext_port("layers_l1")` 中的片段索引 | `storage`；受 `layers_index_enabled` 总开关控制 |
 | `vector` | `VectorRecaller` | `VECTOR` / L2 | 对 content chunk 执行 ANN，通过 metadata 聚合回 MemoryUnit，同 unit 多 chunk 取 MaxP | `storage`；`min_similarity`（默认 `0.0`，表示关闭召回前阈值） |

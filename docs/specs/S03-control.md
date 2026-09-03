@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-08-29 |
+| 最近一次修订日期 | 2026-09-03 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md |
@@ -336,9 +336,42 @@ recall 完成权限检查后，API 读取 `PermissionManager.routing_fields()`�
 
 ### IngestJobController（`ingest_job.py`）
 
-长耗时摄入任务使用独立 Control 算子管理，具体线程池实现位于 `job_impl/`。`status`
-是无缓存副作用的只读查询；payload 幂等映射只在 Scope 一致后维护。接口层通过
-`MemoryAPI.job_status()` 对任务真实 Scope 执行 READ 鉴权与审计。
+长耗时摄入任务使用独立 Control 算子管理，具体线程池实现位于 `job_impl/`。Controller
+只依赖 Control-owned 的 `JobStateStore`，不得导入 `KVStore`、`KvProducer` 或拼接任务 key。
+`JobStateStoreProducer` 可以在 `job_impl/job_state.py` 内构造 `KVJobStateStore`，但这是明确的
+基础设施 adapter 例外；底层 prefix、JSON codec、TTL 和 payload 幂等映射均封装在 adapter 内。
+
+```python
+class JobStateStore(ABC):
+    save(job, *, scope=None, owner=None) -> None
+    get(job_id, *, scope, owner=None) -> IngestJob | None
+    find_by_payload(payload_id, *, scope, owner=None) -> IngestJob | None
+    delete(job_id, *, scope, owner=None) -> None
+    cleanup(scope, *, older_than=None, owner=None) -> int
+```
+
+契约要求：
+
+- job id 与 payload-idempotency 映射按完整五维 `Scope` 隔离；显式 `owner` 不匹配时不得读写。
+  `owner` 是任务提交者的持久化归属/过滤条件，不替代 API 层的权限判定；
+- `save` 不允许把 job 持久化到与 `job.scope` 不同的 Scope；同一 Scope 内活跃 job 复用相同
+  `payload_id`，不同 `source_ref` 必须报冲突；失败/取消记录可按契约重试；
+- TTL 单位为秒，`0` 表示不自动过期；终态可使用独立 terminal TTL；`cleanup` 只清理指定
+  Scope（可再按 owner 和 `older_than` 筛选）；
+- 进程重启后读到 `pending`/`running` 时，当前实现将其标记为 `failed` 并说明被重启中断，
+  不承诺自动恢复。是否支持恢复、重试或更细粒度租约，必须先扩展本契约。
+
+普通 `status` 查询不把读取结果写入进程缓存或 payload 幂等映射；唯一例外是**冷启动恢复**：
+从持久化状态读到 `pending`/`running` 时，Controller 必须把它持久化修正为“被服务重启中断”
+的 `failed`，避免已经不再运行的任务长期显示为进行中。这是明确的恢复副作用，不是缓存
+污染。
+
+摄入任务的状态查询必须由 API PEP 按以下顺序执行：调用者显式给出目标 `Scope`，API 先对该
+Scope 进行 `Action.READ` 授权与空间状态校验，再以调用者 identity 作为 `owner` 调用
+`IngestJobController.status(job_id, scope=scope, owner=identity)`，最后记录审计。不得为了从 job
+中“发现真实 Scope”而先读取 Controller：冷启动读取可能把 `pending`/`running` 修正为 `failed`，
+未授权请求不能触发这项持久化副作用。调用者提供的 Scope 与 job 不匹配或 owner 不匹配时，
+Controller 按未找到处理，避免泄露跨 Scope 任务存在性。
 
 ### PolicyManager（`policy.py`）
 
@@ -362,9 +395,16 @@ space 元数据、space policy、成员、用量与 offboarding 状态管理。
 | `list` | `(org: str, *, status=None, limit=100, cursor=None) -> list[SpaceInfo]` | 列出 org 下 spaces；`cursor` 是由实现解释的分页游标，调用方不得解析其内部格式 |
 | `update` | `(org: str, space: str, patch: SpacePatch) -> SpaceInfo` | 修改 display name、status、principal_path、policy 或 metadata |
 | `archive` | `(org: str, space: str) -> SpaceInfo` | 归档 space；API 层会拒绝已归档 space 的 add/update/evolve |
-| `delete` | `(org: str, space: str) -> SpaceDeleteResult` | 删除该 `org + space` 下 KV 真源、messages、space metadata；API 层在调用前先经 Engine purge memory 并清理索引 |
+| `delete` | `(org: str, space: str) -> SpaceDeleteResult` | 删除该 `org + space` 下 KV 真源、RawDataStore 原文（当前 KV 实现为 `/messages/`）、space metadata；API 层在调用前先经 Engine purge memory 并清理索引 |
 | `export` | `(org: str, space: str, *, include_audit=True) -> str` | 创建导出记录并返回 export id |
-| `usage` | `(org: str, space: str) -> SpaceUsage` | 统计 memory/message 数量与 KV bytes；index/audit 计数由后续专用后端补齐 |
+| `usage` | `(org: str, space: str) -> SpaceUsage` | 统计 memory、Raw message 数量与 KV bytes；index/audit 计数由后续专用后端补齐 |
+
+SpaceManager 的 `delete` / `usage` 是管理面例外，不是普通 Memory 数据面端口。它们必须以
+`org + space` 为边界覆盖该空间下所有 user/agent/session 子 Scope。`KVSpaceManager` 对原文
+只能通过 RawDataStore 的管理方法（`scopes` / `usage` / `purge`）处理，并携带受控的管理访问
+上下文；它仅为 MemoryUnit 真源和 space 元数据使用受控的 KV scan/delete。该例外不能成为
+Construction、Retrieval 或一般 Control 业务读写 KV 的通用规则。Raw 后端独立后，管理适配器仍
+需提供等价的 scope-wide count/delete 语义，且保留相同的授权、审计和清理边界。
 | `get_policy` | `(org: str, space: str) -> SpacePolicy` | 读取 space policy |
 | `set_policy` | `(org: str, space: str, policy: SpacePolicy) -> SpacePolicy` | 替换 space policy，并同步 `principal_path` |
 | `list_members` | `(org: str, space: str) -> list[SpaceMember]` | 列出成员与角色 |
@@ -476,7 +516,7 @@ jiuwen_memory/control/<算子>_impl/
 | S02-memory_api | 数据面委托 MemoryEngine；治理/授权/调度/策略/space 管理面直达控制算子 |
 | S04-retrieval | Retriever 检索链路 |
 | S05-construction | Engine/Scheduler 驱动构建层 IndexBuilder/Evolver；演进逻辑由构建层执行 |
-| S06-storage | 控制层经 IndexBuilder 写正排与派生索引，直接调用 Storage 只读（get/list/scopes）；LifecycleManager/Governor 的目标操作按显式 Scope 点查或枚举，只有 sweep/offboarding 这类全局管理任务使用 `kv.scopes()` |
+| S06-storage | 控制层经 IndexBuilder 写正排与派生索引，普通读写经 Storage；LifecycleManager/Governor 的目标操作按显式 Scope 点查或枚举，只有 sweep/offboarding/usage 这类全局管理任务可通过受控 adapter 使用 `Storage.scopes()` 或底层 KV 枚举，并且 SpaceManager 必须覆盖 RawDataStore 原文 |
 | S07-common | 控制层消费 `MemoryUnit`、`AuditEvent`、错误类型等公共结构 |
 | F07-collective-memory | 两轴角色、归属登记、空间授权事实快照落本层类型；`MembershipResolver` 是本层新增算子，`SpaceManager` 增 `spaces_for` 反查；授权判定迁出本层 |
 | architecture.md §3.1 | MemoryUnit 数据模型（lifecycle / temporal / supersedes / provenance）由 `common/type_def` 定义，控制层消费 |

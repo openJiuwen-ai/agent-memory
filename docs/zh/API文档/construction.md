@@ -328,10 +328,10 @@ constructor:             # Producer.TOP_NAME
 | `forward` | `ForwardIndexBuilder` | `storage` | 仅正排记忆本体 |
 | `fulltext` | `FulltextIndexBuilder` | `storage`；`layers_index_enabled` | 全文与可选 L0/L1 全文索引 |
 | `vector` | `VectorIndexBuilder` | `storage`、`chunker`、`embedder`；`layers_index_enabled` | 内容 chunk 向量与可选 L0/L1 向量索引 |
-| `hybrid` | `HybridIndexBuilder` | `storage`、`chunker`、`embedder`；`layers_index_enabled`、`entity_enabled`、可选 `entity_store` | 默认完整编排器 |
+| `hybrid` | `HybridIndexBuilder` | `storage`、`chunker`、`embedder`；`layers_index_enabled`、`entity_enabled` | 默认完整编排器；开启实体链路时，内部 `EntityIndexBuilder` 从 `storage.entity_port()` 获取实体端口 |
 | `unified` | `UnifiedIndexBuilder` | `storage` | 将全部 CRUD 和 mode 原样委托给 Storage |
 
-`EntityIndexBuilder` 是 `hybrid` 内部子 builder，不注册为独立 `constructor` target。只有 `entity_enabled=true` 且成功装配 `EntityStore` 时才启用；装配失败会关闭实体链路，但全文和向量仍继续工作。
+`EntityIndexBuilder` 是 `hybrid` 内部子 builder，不注册为独立 `constructor` target。只有 `entity_enabled=true` 且注入的 `Storage` 声明了 Entity 端口时才启用；builder 通过 `storage.entity_port()` 获取端口，实体操作沿用与其他 Storage 端口相同的 Scope 和 `StorageSecurity` 边界。装配失败会关闭实体链路，但全文和向量仍继续工作。
 
 ### 13.4 Dedup、LayerAnnotator 与 Evolver 实现
 
@@ -341,8 +341,8 @@ constructor:             # Producer.TOP_NAME
 | `dedup` | `keyword` | `KeywordDedup` | Fulltext Store 召回后用词重叠率计分 | `storage`；参数同 vector |
 | `layer_annotator` | `keyword` | `KeywordLayerAnnotator` | 规则生成 L0/L1 | `layer_annotator_threshold`、`layer_annotator_l1_chars` |
 | `layer_annotator` | `llm` | `LLMLayerAnnotator` | LLM 批量生成并严格校验 L0/L1 | `llm`；阈值与重试参数 |
-| `evolver` | `orchestrating` | `OrchestratingEvolver` | legacy 四模式；EXTRACT 中去重判定与落盘耦合 | extractor、abstractor、associator、index_builder、storage、message_store、dedup、llm；可用 `params.layer_annotator` 选择、禁用标注器 |
-| `evolver` | `dynamic` | `DynamicEvolver` | 动态 prompt 四步 EXTRACT；其他模式继承 orchestrating | 同上，额外使用 `PromptRegistry`；存在 `layer_annotator.default` 时自动注入 |
+| `evolver` | `orchestrating` | `OrchestratingEvolver` | legacy 四模式；EXTRACT 中去重判定与落盘耦合 | extractor、abstractor、associator、index_builder、storage、dedup、llm；原文上下文只能经 `storage.raw_port()` 取得；可用 `params.layer_annotator` 选择、禁用标注器 |
+| `evolver` | `dynamic` | `DynamicEvolver` | 动态 prompt 四步 EXTRACT；其他模式继承 orchestrating | 同上，额外使用 `PromptRegistry`；原文仍经 `storage.raw_port()`；存在 `layer_annotator.default` 时自动注入 |
 
 两个 Evolver 都使用 `dedup_medium_similarity`（默认 `0.7`）与 `dedup_high_similarity`（默认 `0.9`）。`vector_enabled=false` 时，未显式指定的 IndexBuilder/Dedup 默认分别切换为 `fulltext` 和 `keyword`。
 
@@ -400,7 +400,6 @@ evolver:
       associator: default
       index_builder: default
       storage: default
-      message_store: default
       dedup: default
       llm: default
       dedup_medium_similarity: 0.7
@@ -551,7 +550,7 @@ rebuild() -> None
 | `layer_annotator_retry_max` | `int` | `3` | `layer_annotator.llm` | LLM 标注最大尝试次数 |
 | `layer_annotator_retry_backoff` | `int` | `1000` | `layer_annotator.llm` | 重试退避，毫秒 |
 | `layers_index_enabled` | `bool` | `true` | fulltext/vector/hybrid | 是否写入 L0/L1 独立索引 |
-| `entity_enabled` | `bool` | `false` | `hybrid` | 是否尝试装配 EntityStore |
+| `entity_enabled` | `bool` | `false` | `hybrid` / `keyword` | 是否启用写入侧实体链接和 L2 关键词召回扩展；所选 Storage 必须声明 `StorageCapability.ENTITY` |
 | `vector_enabled` | `bool` | `true` | Evolver builder | 决定未显式指定时的 IndexBuilder/Dedup 默认组合 |
 
 ### 18.1 `extract_batch_size` 与 `middle_batch_size`

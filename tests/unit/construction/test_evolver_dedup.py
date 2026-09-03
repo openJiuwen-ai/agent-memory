@@ -363,7 +363,7 @@ def _make_evolver(
         associator=NoopAssociator(),
         index_builder=NoopIndexBuilder(storage),
         storage=storage,
-        message_store=storage.kv,
+        message_store=storage.raw_port(),
         dedup=dedup,
         llm=llm,
         **evolver_kwargs,
@@ -1031,7 +1031,7 @@ class TestDedupEvolveExtract:
             associator=NoopAssociator(),
             index_builder=NoopIndexBuilder(storage),
             storage=storage,
-            message_store=storage.kv,
+        message_store=storage.raw_port(),
             dedup=dedup,
             llm=plugins["llm"],
         )

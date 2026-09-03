@@ -9,7 +9,8 @@
 
 分层：
 - **Store 级**（F01）：``RoutingKVStore`` / ``RoutingVectorStore`` 等 + ``*_store.active``
-- **Storage 级**（F02）：``RoutingStorage`` + ``storage.active``（已预装完整 ``Storage`` 实例动态配置）
+- **Storage 级**（F02）：``RoutingStorage`` + ``storage.active``（已预装完整 ``Storage``
+  实例动态配置）
 
 均为方案 A：不注册 YAML ``target: routing``；产品手工注入。默认拓扑不预装多后端。
 """
@@ -40,11 +41,13 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.config.active import resolve_active_name
 from jiuwen_memory.config.config_source import ConfigSource
 from jiuwen_memory.storage.base import StoreType
+from jiuwen_memory.storage.entity_store import EntityStore
 from jiuwen_memory.storage.fs import FSStore
 from jiuwen_memory.storage.fulltext import FulltextStore
 from jiuwen_memory.storage.fusion import FusionStore
 from jiuwen_memory.storage.graph import GraphStore
 from jiuwen_memory.storage.kv import KVStore
+from jiuwen_memory.storage.raw import RawDataStore
 from jiuwen_memory.storage.security import StorageAccessContext, StorageSecurity
 from jiuwen_memory.storage.storage import Storage, StorageCapability
 from jiuwen_memory.storage.types import (
@@ -454,6 +457,8 @@ class RoutingStorage(Storage):
         self._lazy_graph = _LazyStorePort(lambda: self._router.get().graph)
         self._lazy_fusion = _LazyStorePort(lambda: self._router.get().fusion)
         self._lazy_fs = _LazyStorePort(lambda: self._router.get().fs)
+        self._lazy_raw = _LazyStorePort(lambda: self._router.get().raw)
+        self._lazy_entity = _LazyStorePort(lambda: self._router.get().entity)
 
     @property
     def security(self) -> StorageSecurity:
@@ -483,8 +488,19 @@ class RoutingStorage(Storage):
     def fs(self) -> FSStore:
         return self._lazy_fs  # type: ignore[return-value]
 
+    @property
+    def raw(self) -> RawDataStore:
+        return self._lazy_raw  # type: ignore[return-value]
+
+    @property
+    def entity(self) -> EntityStore:
+        return self._lazy_entity  # type: ignore[return-value]
+
     def capabilities(self) -> frozenset[StorageCapability]:
         return self._active().capabilities()
+
+    def has_raw(self) -> bool:
+        return self._active().has_raw()
 
     def has_kv_port(self, name: str = "default") -> bool:
         return self._active().has_kv_port(name)
@@ -504,6 +520,15 @@ class RoutingStorage(Storage):
     def has_fs_port(self, name: str = "default") -> bool:
         return self._active().has_fs_port(name)
 
+    def has_raw_port(self, name: str = "default") -> bool:
+        return self._active().has_raw_port(name)
+
+    def raw_shares_kv(self, name: str = "default") -> bool:
+        return self._active().raw_shares_kv(name)
+
+    def has_entity_port(self, name: str = "default") -> bool:
+        return self._active().has_entity_port(name)
+
     def kv_port(self, name: str = "default") -> KVStore:
         return _LazyStorePort(lambda n=name: self._router.get().kv_port(n))  # type: ignore[return-value]
 
@@ -521,6 +546,12 @@ class RoutingStorage(Storage):
 
     def fs_port(self, name: str = "default") -> FSStore:
         return _LazyStorePort(lambda n=name: self._router.get().fs_port(n))  # type: ignore[return-value]
+
+    def raw_port(self, name: str = "default") -> RawDataStore:
+        return _LazyStorePort(lambda n=name: self._router.get().raw_port(n))  # type: ignore[return-value]
+
+    def entity_port(self, name: str = "default") -> EntityStore:
+        return _LazyStorePort(lambda n=name: self._router.get().entity_port(n))  # type: ignore[return-value]
 
     def preferred_retrieval_pipeline(self) -> RetrievalPipeline:
         return self._active().preferred_retrieval_pipeline()
@@ -649,4 +680,3 @@ class RoutingStorage(Storage):
 
     def _active(self) -> Storage:
         return self._router.get()
-
