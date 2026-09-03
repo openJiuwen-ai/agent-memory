@@ -215,10 +215,16 @@ def _run_engine_in_thread(
                 out[f"{out_key}_unit_id"] = units[0].id
 
                 # 取装配好的 JobFactory，构造 MiddleToLongJob 实例——与 Timer 路径
-                # 产生的实例同构，只是绕过 Timer 调度。
+                # 产生的实例同构，只是绕过 Timer 调度。E-06：index/evolver 必须注入
+                # engine 装配的同一套实例（与 _write_middle_path 的注入方式一致）。
                 job_factory = engine._job_factory  # pylint: disable=protected-access
                 from jiuwen_memory.control.jobs import JobType
-                job = job_factory.get_job(JobType.MIDDLE_TO_LONG, scope=scope)
+                job = job_factory.get_job(
+                    JobType.MIDDLE_TO_LONG,
+                    scope=scope,
+                    evolver=engine._evolver,  # pylint: disable=protected-access
+                    index=engine._index,  # pylint: disable=protected-access
+                )
 
                 # barrier 同步——两线程同时开始 await job.run()
                 if barrier is not None:

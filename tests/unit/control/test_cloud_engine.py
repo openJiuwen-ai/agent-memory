@@ -28,7 +28,7 @@ from jiuwen_memory.control.engine_impl.cloud_engine import CloudEngine
 from jiuwen_memory.control.jobs import Job, JobFactory, JobType
 from jiuwen_memory.control.jobs_impl.evolve_job import EvolveJobSpec
 from jiuwen_memory.control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
-from jiuwen_memory.control.lifecycle import LifecycleManager
+from jiuwen_memory.control.lifecycle import LifecycleManager, SweepTransition
 from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding
 from jiuwen_memory.control.scheduler_impl.in_process_scheduler import InProcessScheduler
 from jiuwen_memory.control.types import (
@@ -248,7 +248,7 @@ class _NoopLifecycle(LifecycleManager):
     def supersede(self, scope, unit_id, invalid_at):
         raise AssertionError("not used in these tests")
 
-    def sweep(self):
+    def sweep(self) -> list[SweepTransition]:
         return []
 
 

@@ -40,7 +40,7 @@ from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
 from jiuwen_memory.control.jobs import JobFactory, JobType
 from jiuwen_memory.control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
-from jiuwen_memory.control.lifecycle import LifecycleManager
+from jiuwen_memory.control.lifecycle import LifecycleManager, SweepTransition
 from jiuwen_memory.control.scheduler_impl.async_timer_scheduler import AsyncTimerScheduler
 from jiuwen_memory.control.types import JobStatus
 from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
@@ -159,7 +159,7 @@ class _KvBackedLifecycle(LifecycleManager):
     def supersede(self, scope, unit_id, invalid_at):
         raise NotImplementedError
 
-    def sweep(self) -> list[str]:
+    def sweep(self) -> list[SweepTransition]:
         return []
 
 
