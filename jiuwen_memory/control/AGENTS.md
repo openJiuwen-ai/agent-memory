@@ -21,6 +21,7 @@
 | `permission.py` | `PermissionManager` 接口——跨 scope 授权与校验 |
 | `scheduler.py` | `Scheduler` 接口——hot/background 双通道演进调度 |
 | `ingest_job.py` | `IngestJobController` 接口、任务数据类型与 Producer——长耗时摄入任务管理 |
+| `job_state.py` | `JobStateStore` 接口与 Producer——Control 自有的任务状态持久化契约 |
 | `policy.py` | `PolicyManager` 接口——运行时可变策略读写 |
 | `space.py` | `SpaceManager` 接口——space 创建/读取/列表/更新/归档/删除/导出/用量/策略/成员 |
 | `collective/` | 群体记忆的控制层纯逻辑子包，三个模块均非算子（无 Producer 注册、不访问存储与模型），不由 `bootstrap` 触发注册。`routing.py`：结论直写路径的归属判定调用，API 层传入成品 `RouteContext`（含已鉴权候选集）与 `Router` 实例，本模块调 `route_batch` 并归一结果，存在的理由是分层边界——判定由构建层承担、判定输入由 API 层的鉴权点构造，二者之间的调用不能落在 API 层（S02「不调用构建」）。`write_targets.py`：写入候选空间集合的渲染、排序、截断与取交，收 `can_write` 回调而不收 `identity`。`cross_space_recall.py`：跨空间召回的取数上界摊配、扇出与轮转合并，收 `recall` 回调与 API 层判权后给出的空间目标（含逐空间谓词）；只 import `retrieval/cross_space.py` 的三个纯函数，不持有引擎、不持有检索算子；空间级扇出失败与判权剔除分两路交回，不并进 `merged.errors`。三者共同形态是「裁决留 PEP，裁决之后的机械换算与 I/O 编排落本层」，上下之间经回调或成品数据衔接。带实现的模块收在子包而不放顶层，见「文件关系」第一条 |
@@ -62,9 +63,11 @@
 11. **Space id 全局唯一**：`KVSpaceManager` 在根 Scope 维护全局 Space 注册键；不同 org 创建同一非空 Space id 必须报 `ConflictError`。
 12. **治理读取按已鉴权 Scope 定位**：Governor 的 `inspect` / `trace` 必须接收 API 已鉴权 target Scope，不得仅按 unit id 跨 Scope 扫描。
 13. **批量写入保序且不鉴权**：Engine 的 `batch_write` 只接收 API 已前置校验的归一化 item，按输入顺序复用 `write`；不得在 Engine 内并发提交或重复执行 `PermissionManager.check`。
-14. **Ingest 任务按 Scope 隔离**：任务状态查询为纯读取，不更新进程缓存或
+14. **Ingest 任务按 Scope/owner 隔离**：普通状态查询不更新进程缓存或
     `payload_id -> job_id` 映射；`_find_existing` 只有在任务 Scope 与请求 Scope
-    完全一致后才维护映射，READ 鉴权由 MemoryAPI 执行。
+    完全一致后才维护映射，显式 owner 不匹配不得返回任务。冷启动读取持久化的
+    `pending`/`running` 任务时，Controller 会将其持久化为“服务重启中断”的 `failed`；这是
+    已定义的恢复副作用，不是缓存污染。READ 鉴权仍由 MemoryAPI 执行。
 15. **授权值对象与路由 capability 单一真源**：`Action` / `Grant` 只从 `common.security.types` 兼容再导出，不在 control 重定义；`PermissionManager.routing_fields()` 继承 `common.security.authorization.RoutingFieldsProvider`，只允许路由实现覆盖。
 
 ## 双通道调度机制
@@ -87,7 +90,7 @@
 
 > tier+tags 的产出路径：**infer=false** 时由 `Classifier`（LLMClassifier）给原文打；**infer=true** 时由 `Extractor` 在派生时一并产出（不经 classifier）。两条路径产出同口径（episodic/semantic/procedural + tags）。procedural 路径 tier 固定 PROCEDURAL。
 
-**KV key 前缀分离**（决策6）：真源 key 按「是否建索引」带前缀——`/memory/{id}`（建索引记忆）、`/messages/{id}`（未建索引 infer 原文）；前缀常量与 helper 在 `common.type_def.memory` / `common.type_def.raw`。**正排的 key 拼装与序列化由 `ForwardIndexBuilder`（写）与 Storage（读 `get`/`list`）分担**，两侧共用 `memory_key` + `memory_codec`；控制层只传 MemoryUnit 与 unit_id。原文不经 Storage——构建层注入独立的 `KVStore` 自行读写 `/messages/`。仅 `kv_space_manager` 的跨类型全局遍历（统计、清空 space）与 `EncryptedKVStore` 的按前缀加密策略仍直接匹配前缀。
+**KV key 前缀分离**（决策6）：真源 key 按「是否建索引」带前缀——`/memory/{id}`（建索引记忆）、`/messages/{id}`（未建索引 infer 原文）；前缀常量与 helper 在 `common.type_def.memory` / `common.type_def.raw`。**正排的 key 拼装与序列化由 `ForwardIndexBuilder`（写）与 Storage（读 `get`/`list`）分担**，两侧共用 `memory_key` + `memory_codec`；控制层只传 MemoryUnit 与 unit_id。原文经 `Storage.raw_port()` 暴露的 RawDataStore 读写，`KVRawDataStore` 在 Storage 内部处理 `/messages/`、codec、排序和保留策略；Evolver 不接触 KV 细节。`KVSpaceManager` 仅在 offboarding/usage 中用 RawDataStore 管理原文；`EncryptedKVStore` 可以在其内部按前缀选择 `raw_message` 加密 purpose。
 
 引擎只调用注入的 Evolver（`OrchestratingEvolver` 或 `DynamicEvolver`，由装配/pipeline 选择），不直接调用 LLM。write 同步路径中的动态抽取仍要求 `infer=true`；
 metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` / `_reflect_prompt_<strategy>` 传 prompt key（引用 yml `prompts` 段）。

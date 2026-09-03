@@ -26,7 +26,7 @@ from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
 from jiuwen_memory.construction.prompt_strategy import copy_consolidation_prompts
-from jiuwen_memory.storage.kv import KVStore
+from jiuwen_memory.storage.raw import RawDataStore
 from jiuwen_memory.storage.storage import Storage, StorageProducer
 from jiuwen_memory.storage.types import IndexWriteMode
 
@@ -43,7 +43,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver):
         associator: Associator,
         index_builder: IndexBuilder,
         storage: Storage,
-        message_store: KVStore,
+        message_store: RawDataStore,
         dedup: Dedup,
         llm: LLM,
         layer_annotator: LayerAnnotator | None = None,
@@ -191,7 +191,7 @@ def _build(config):
         associator=AssociatorProducer.dep(config, default="keyword"),
         index_builder=IndexBuilderProducer.dep(config, "index_builder", default=index_default),
         storage=storage,
-        message_store=_resolve_message_store(config),
+        message_store=_resolve_message_store(storage),
         dedup=DedupProducer.dep(config, default=dedup_default),
         llm=LlmProducer.dep(config, default="echo"),
         layer_annotator=_optional_layer_annotator(config),

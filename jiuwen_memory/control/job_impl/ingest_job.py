@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -14,6 +13,7 @@ from jiuwen_memory.common.errors import (
     BackendError,
     ConflictError,
     NotFoundError,
+    PermissionDeniedError,
     ValidationError,
 )
 from jiuwen_memory.common.log import get_logger
@@ -27,13 +27,10 @@ from jiuwen_memory.control.ingest_job import (
     IngestSubmission,
     IngestTask,
 )
-from jiuwen_memory.storage.kv import KvProducer, KVStore
+from jiuwen_memory.control.job_impl.job_state import InMemoryJobStateStore
+from jiuwen_memory.control.job_state import JobStateStore, JobStateStoreProducer
 
 logger = get_logger(__name__)
-
-_JOB_KEY_PREFIX = "/ingest/jobs/"
-_PAYLOAD_KEY_PREFIX = "/ingest/payloads/"
-
 
 @dataclass(frozen=True)
 class _PayloadKey:
@@ -53,13 +50,13 @@ class InProcessIngestJobController(IngestJobController):
         *,
         max_workers: int = 1,
         max_pending_jobs: int = 2,
-        kv: KVStore | None = None,
+        state_store: JobStateStore | None = None,
     ) -> None:
         if max_workers <= 0:
             raise ValidationError("max_workers must be greater than zero")
         if max_pending_jobs < 0:
             raise ValidationError("max_pending_jobs must be non-negative")
-        self._kv = kv
+        self._state_store = state_store or InMemoryJobStateStore()
         self._max_workers = max_workers
         self._executor: ThreadPoolExecutor | None = None
         self._capacity = BoundedSemaphore(max_workers + max_pending_jobs)
@@ -72,7 +69,7 @@ class InProcessIngestJobController(IngestJobController):
         return ControlOperatorType.INGEST_JOB
 
     def health(self) -> None:
-        return None
+        self._state_store.health()
 
     def submit(
         self,
@@ -81,6 +78,7 @@ class InProcessIngestJobController(IngestJobController):
         source_ref: str,
         scope: Scope,
         task: IngestTask,
+        owner: Scope | None = None,
     ) -> IngestSubmission:
         key = _payload_key(scope, payload_id)
         now = datetime.now(timezone.utc)
@@ -89,6 +87,7 @@ class InProcessIngestJobController(IngestJobController):
             payload_id=payload_id,
             source_ref=source_ref,
             scope=scope,
+            owner=owner,
             status="pending",
             created_at=now,
             updated_at=now,
@@ -97,7 +96,7 @@ class InProcessIngestJobController(IngestJobController):
         with self._lock:
             if self._closed:
                 raise BackendError("ingest job controller is closed")
-            existing = self._find_existing(scope, payload_id, key)
+            existing = self._find_existing(scope, payload_id, key, owner=owner)
             if existing is not None:
                 if (
                     existing.status in {"pending", "running", "succeeded"}
@@ -142,10 +141,31 @@ class InProcessIngestJobController(IngestJobController):
             raise BackendError(f"failed to submit ingest job: {exc}") from exc
         return IngestSubmission(job, reused=False)
 
-    def status(self, job_id: str, *, scope: Scope) -> IngestJob:
+    def status(
+        self,
+        job_id: str,
+        *,
+        scope: Scope,
+        owner: Scope | None = None,
+    ) -> IngestJob:
         with self._lock:
-            job = self._jobs.get(job_id) or self._load(scope, job_id)
-        if job is None or job.scope != scope:
+            persisted = self._state_store.get(job_id, scope=scope, owner=owner)
+            if persisted is None:
+                job = None
+            else:
+                if job_id in self._jobs:
+                    # The durable store is authoritative once this process has
+                    # already loaded the job; refresh the in-process snapshot.
+                    job = persisted
+                    self._jobs[job_id] = persisted
+                else:
+                    # Only a cold read applies restart interruption semantics.
+                    job = self._load(scope, job_id, owner=owner, persisted=persisted)
+        if (
+            job is None
+            or job.scope != scope
+            or (owner is not None and job.owner is not None and job.owner != owner)
+        ):
             raise NotFoundError("ingest_job", job_id)
         return job
 
@@ -162,17 +182,28 @@ class InProcessIngestJobController(IngestJobController):
         scope: Scope,
         payload_id: str,
         key: _PayloadKey,
+        *,
+        owner: Scope | None = None,
     ) -> IngestJob | None:
-        job_id = self._job_id_by_payload.get(key)
-        existing = self._jobs.get(job_id or "")
-        if existing is None and self._kv is not None:
-            mapping_key = _payload_storage_key(payload_id)
-            if self._kv.exists(scope, mapping_key):
-                job_id = self._kv.get(scope, mapping_key).decode("utf-8")
-                existing = self._load(scope, job_id)
+        existing = self._state_store.find_by_payload(
+            payload_id,
+            scope=scope,
+            owner=owner,
+        )
         if existing is not None:
             if existing.scope != scope:
                 return None
+            if owner is not None and existing.owner is not None and existing.owner != owner:
+                raise PermissionDeniedError("job_state")
+            if existing.id not in self._jobs:
+                existing = self._load(
+                    scope,
+                    existing.id,
+                    owner=owner,
+                    persisted=existing,
+                )
+                if existing is None:
+                    return None
             self._jobs[existing.id] = existing
             self._job_id_by_payload[key] = existing.id
         return existing
@@ -212,54 +243,19 @@ class InProcessIngestJobController(IngestJobController):
             self._persist(updated)
 
     def _persist(self, job: IngestJob) -> None:
-        if self._kv is None:
-            return
-        value = json.dumps(
-            {
-                "id": job.id,
-                "payload_id": job.payload_id,
-                "source_ref": job.source_ref,
-                "status": job.status,
-                "created_at": job.created_at.isoformat(),
-                "updated_at": job.updated_at.isoformat(),
-                "unit_ids": list(job.unit_ids),
-                "error": job.error,
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        job_key = _job_storage_key(job.id)
-        if self._kv.exists(job.scope, job_key):
-            self._kv.update(job.scope, job_key, value)
-        else:
-            self._kv.insert(job.scope, job_key, value)
-        payload_key = _payload_storage_key(job.payload_id)
-        payload_value = job.id.encode("utf-8")
-        if self._kv.exists(job.scope, payload_key):
-            self._kv.update(job.scope, payload_key, payload_value)
-        else:
-            self._kv.insert(job.scope, payload_key, payload_value)
+        self._state_store.save(job, owner=job.owner)
 
-    def _load(self, scope: Scope, job_id: str) -> IngestJob | None:
-        if self._kv is None or not self._kv.exists(scope, _job_storage_key(job_id)):
+    def _load(
+        self,
+        scope: Scope,
+        job_id: str,
+        *,
+        owner: Scope | None = None,
+        persisted: IngestJob | None = None,
+    ) -> IngestJob | None:
+        job = persisted or self._state_store.get(job_id, scope=scope, owner=owner)
+        if job is None:
             return None
-        try:
-            data = json.loads(
-                self._kv.get(scope, _job_storage_key(job_id)).decode("utf-8")
-            )
-            job = IngestJob(
-                id=str(data["id"]),
-                payload_id=str(data["payload_id"]),
-                source_ref=str(data["source_ref"]),
-                scope=scope,
-                status=str(data["status"]),
-                created_at=datetime.fromisoformat(str(data["created_at"])),
-                updated_at=datetime.fromisoformat(str(data["updated_at"])),
-                unit_ids=tuple(str(item) for item in data.get("unit_ids", [])),
-                error=str(data.get("error", "")),
-            )
-        except (KeyError, TypeError, ValueError) as exc:
-            raise BackendError(f"invalid persisted ingest job {job_id!r}") from exc
         if job.status in {"pending", "running"}:
             job = replace(
                 job,
@@ -282,18 +278,20 @@ def _payload_key(scope: Scope, payload_id: str) -> _PayloadKey:
     )
 
 
-def _job_storage_key(job_id: str) -> str:
-    return f"{_JOB_KEY_PREFIX}{job_id}"
-
-
-def _payload_storage_key(payload_id: str) -> str:
-    return f"{_PAYLOAD_KEY_PREFIX}{payload_id}"
-
-
 @IngestJobProducer.register("in_process")
 def _build(config):
+    if "state_store" in config.params:
+        state_store = JobStateStoreProducer.dep(config, "state_store", default="memory")
+    elif "kv_store" in config.params:
+        state_store = JobStateStoreProducer.build(
+            "kv",
+            {"kv_store": config.params["kv_store"]},
+            config.ctx,
+        )
+    else:
+        state_store = JobStateStoreProducer.build("memory", {}, config.ctx)
     return InProcessIngestJobController(
         max_workers=int(config.get("ingest_max_workers", 1)),
         max_pending_jobs=int(config.get("ingest_max_pending_jobs", 2)),
-        kv=KvProducer.dep(config, default="memory"),
+        state_store=state_store,
     )

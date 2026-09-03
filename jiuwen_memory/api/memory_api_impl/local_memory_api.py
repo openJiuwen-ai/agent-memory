@@ -2759,13 +2759,18 @@ class LocalMemoryAPI(MemoryAPI):
         scope: Scope | None = None,
     ) -> JobInfo:
         identity = security.auth.actor
-        # 先取任务（含其 scope），再据 identity 对该 scope 的 READ 权放行
-        # （仅可查自身/已授权范围的任务）；status 为只读查询，先取后判权
-        # 不产生副作用。
         if job_id.startswith(INGEST_JOB_PREFIX):
             if scope is None:
                 raise ValidationError("ingest job status requires target scope")
-            job = self._ingest_jobs.status(job_id, scope=scope)
+            auth = self._authorize(
+                identity,
+                scope,
+                Action.READ,
+                "job_status",
+                job_id,
+                space_action=_evolve_space_action("ingest"),
+            )
+            job = self._ingest_jobs.status(job_id, scope=scope, owner=identity)
             info = JobInfo(
                 id=job.id,
                 channel=Channel.BACKGROUND,
@@ -2781,14 +2786,14 @@ class LocalMemoryAPI(MemoryAPI):
             )
         else:
             info = self._scheduler.status(job_id)
-        auth = self._authorize(
-            identity,
-            info.scope,
-            Action.READ,
-            "job_status",
-            job_id,
-            space_action=_evolve_space_action(info.mode),
-        )
+            auth = self._authorize(
+                identity,
+                info.scope,
+                Action.READ,
+                "job_status",
+                job_id,
+                space_action=_evolve_space_action(info.mode),
+            )
         self._log(identity, "job_status", job_id, target_scope=info.scope, detail=auth)
         return info
 
@@ -3377,4 +3382,3 @@ class LocalMemoryAPI(MemoryAPI):
         self._log(identity, "remove_space_member", target_id, target_scope=target, detail=auth)
 
     # -- 鉴权 + 审计公共点 --------------------------------------------------- #
-

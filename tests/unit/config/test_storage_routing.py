@@ -11,9 +11,10 @@ from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment
 from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
 from jiuwen_memory.config.routing import ActiveRouter, RoutingStorage
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.storage import StorageCapability
 from jiuwen_memory.storage.storage_impl import CompositeStorage
-from jiuwen_memory.storage.vector_impl.in_memory_vector_store import InMemoryVectorStore
 from jiuwen_memory.storage.types import VectorQuery, VectorRecord
+from jiuwen_memory.storage.vector_impl.in_memory_vector_store import InMemoryVectorStore
 
 pytestmark = pytest.mark.unit
 
@@ -101,6 +102,38 @@ def test_capabilities_follow_active() -> None:
     assert storage.has_kv() and not storage.has_vector()
     cfg.put("storage.active", "vec")
     assert storage.has_vector()
+
+
+def test_lazy_entity_port_follows_active_after_construct_cache() -> None:
+    """实体端口与其它标准端口一样，切换 active 后不能继续调用旧实例。"""
+    entity_a = MagicMock(name="entity-a")
+    entity_b = MagicMock(name="entity-b")
+    entity_a.find_by_entity_text_hash.return_value = ["from-a"]
+    entity_b.find_by_entity_text_hash.return_value = ["from-b"]
+
+    instance_a = MagicMock(name="storage-a")
+    instance_b = MagicMock(name="storage-b")
+    for instance, entity in ((instance_a, entity_a), (instance_b, entity_b)):
+        instance.capabilities.return_value = frozenset({StorageCapability.ENTITY})
+        instance.has_entity_port.return_value = True
+        instance.entity = entity
+        instance.entity_port.return_value = entity
+
+    cfg = DictConfigSource({"storage.active": "a"})
+    storage = RoutingStorage(
+        _router({"a": instance_a, "b": instance_b}, cfg, default="a")
+    )
+
+    cached_entity = storage.entity
+    assert cached_entity is storage.entity
+    assert storage.has_entity()
+    assert StorageCapability.ENTITY in storage.capabilities()
+    assert cached_entity.find_by_entity_text_hash(_SCOPE, ("hash",)) == ["from-a"]
+    entity_a.find_by_entity_text_hash.assert_called_once_with(_SCOPE, ("hash",))
+
+    cfg.put("storage.active", "b")
+    assert cached_entity.find_by_entity_text_hash(_SCOPE, ("hash",)) == ["from-b"]
+    entity_b.find_by_entity_text_hash.assert_called_once_with(_SCOPE, ("hash",))
 
 
 def test_routing_storage_delegates_domain_to_mock() -> None:

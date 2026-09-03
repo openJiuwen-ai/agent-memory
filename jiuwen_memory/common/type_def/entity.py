@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 from jiuwen_memory.common.type_def.scope import Scope
@@ -44,30 +44,37 @@ class EntityMention:
 
 @dataclass(frozen=True)
 class EntityStoreFilters:
-    """实体检索的硬隔离字段（term 过滤用），不包含 space_id。
+    """实体检索的硬隔离字段（term 过滤用）。
 
-    space_id 走 ES routing + 文档字段（同 shard 聚簇），不是 term 过滤的隔离
-    维度——与原设计一致，``ElasticsearchEntityStore._build_filters`` 按
-    actor_id 单段生成 term 子句。agent/session 不作隔离维度：同 user 下跨
-    agent、跨 session 共享实体索引（实体是 user 级知识，不随会话/agent 切换）。
+    ``space_id`` 仍由后端 routing/namespace 负责；其余 Scope 坐标在文档字段中
+    做硬过滤，避免同 org/space 下不同 user、agent 或 session 串读。``actor_id``
+    是旧后端兼容字段，默认与 ``user`` 相同。
     """
 
+    org: str | None = None
+    space: str | None = None
+    user: str | None = None
+    agent: str | None = None
+    session: str | None = None
     actor_id: str | None = None
 
     @classmethod
     def from_scope(cls, scope: Scope) -> "EntityStoreFilters":
-        """从 Scope 构造隔离字段。
-
-        actor_id ← scope.user（用户隔离，唯一 term 过滤维度）
-        全空时返回 None（不按 user 过滤，仅靠 space_id routing 隔离）。
-        """
+        """从 Scope 构造五维隔离字段。"""
         return cls(
-            actor_id=scope.user or None,
+            # Empty is a real Scope coordinate (for example a shared space-level
+            # record), not a wildcard. Persist and filter it exactly.
+            org=scope.org,
+            space=scope.space,
+            user=scope.user,
+            agent=scope.agent,
+            session=scope.session,
+            actor_id=scope.user,
         )
 
     def key(self) -> tuple[str | None, ...]:
-        """分组 key：同 (space_id, actor_id) 的 unit 共享一次 bulk 查询/写入。"""
-        return (self.actor_id,)
+        """分组 key：同一完整隔离坐标共享一次 bulk 查询/写入。"""
+        return (self.org, self.space, self.user, self.agent, self.session, self.actor_id)
 
 
 @dataclass(frozen=True)
@@ -76,15 +83,19 @@ class EntityRecord:
 
     linked_memory_ids 存 unit.id（str），与召回侧 ``ScoredUnit.unit_id`` 对齐——
     召回命中的实体记录取 linked_memory_ids 直接就是候选 unit_id 列表。
+
+    ``Scope`` 是 EntityStore 操作的显式入参。``space_id`` 和 ``filters`` 只保留
+    给旧后端的存储投影；领域调用方创建记录时不应填写它们，Storage 会在执行操作前
+    根据 Scope 补齐并校验。
     """
 
     id: str
-    space_id: str
     entity_text: str
     entity_type: str
     linked_memory_ids: tuple[str, ...]
-    filters: EntityStoreFilters
     entity_text_hash: str = ""
+    space_id: str | None = field(default=None, kw_only=True)
+    filters: EntityStoreFilters | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)
