@@ -134,3 +134,26 @@ class StorageRetrievalError(AgentMemoryError):
     def __init__(self, errors: list[object]) -> None:
         self.errors = errors
         super().__init__(f"all selected retrieval sources failed: {len(errors)} error(s)")
+
+
+class PartialFailureError(AgentMemoryError):
+    """多步骤操作部分成功：不得报告为完整成功，调用方应按 retry_action 重试。"""
+
+    def __init__(
+        self,
+        *,
+        completed: tuple[str, ...],
+        failed: str,
+        retry_action: str,
+        message: str = "",
+    ) -> None:
+        self.completed = completed
+        self.failed = failed
+        self.retry_action = retry_action
+        super().__init__(
+            message
+            or (
+                f"{failed} failed after {', '.join(completed)}; "
+                f"retry {retry_action}"
+            )
+        )

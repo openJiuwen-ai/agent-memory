@@ -63,6 +63,10 @@ class SpaceManager(ControlOperator):
         """归档 space。"""
 
     @abstractmethod
+    def begin_delete(self, org: str, space: str) -> SpaceInfo:
+        """删除流程内部把 space 标为 ``DELETING``，阻断新写；对已是该状态幂等。"""
+
+    @abstractmethod
     def delete(self, org: str, space: str) -> SpaceDeleteResult:
         """删除 space 管理面记录与该 space KV 真源。"""
 

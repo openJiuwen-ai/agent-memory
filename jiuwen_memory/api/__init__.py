@@ -5,11 +5,34 @@
 调用所需的全部类型，调用方无需 import 内核其他包。
 """
 
-from jiuwen_memory.common.security.types import Action, Grant
+from jiuwen_memory.common.errors import (
+    AgentMemoryError,
+    AuthenticationError,
+    ConflictError,
+    NotFoundError,
+    PartialFailureError,
+    PermissionDeniedError,
+    PolicyError,
+    RateLimitedError,
+    ValidationError,
+)
+from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security.request_context import new_request_context
+from jiuwen_memory.common.security.types import (
+    Action,
+    Credentials,
+    Grant,
+    RequestSecurityContext,
+    Surface,
+    reset_current,
+    set_current,
+)
 from jiuwen_memory.common.type_def import (
+    EXT_MAX_TOKENS,
     AuditEvent,
     Context,
     FilterClause,
+    FilterExpr,
     FilterOp,
     LifecycleState,
     MemoryTier,
@@ -20,9 +43,13 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.control import (
+    BatchWriteItem,
+    BatchWriteOutcome,
+    BatchWriteResult,
     Channel,
     DeleteMode,
     DeleteSelector,
+    IngestSubmission,
     JobInfo,
     JobStatus,
     MemoryListResult,
@@ -46,18 +73,17 @@ from jiuwen_memory.retrieval import (
 )
 
 from .memory_api import MemoryAPI
-from .memory_api_impl import Kernel, LocalMemoryAPI, assemble, build_kernel
+from .memory_api_impl import MemoryRuntime, assemble, assemble_runtime
 
 __all__ = [
     "MemoryAPI",
-    # 单进程实现 + 装配（参考装配，把各层具体实现串起来）
-    "LocalMemoryAPI",
-    "Kernel",
     "assemble",
-    "build_kernel",
+    "assemble_runtime",
+    "MemoryRuntime",
     # 数据模型（common.type_def）
     "Scope",
     "Context",
+    "EXT_MAX_TOKENS",
     "Modality",
     "MemoryTier",
     "LifecycleState",
@@ -66,6 +92,9 @@ __all__ = [
     # 写入/修正/删除（control）
     "MemoryPatch",
     "MemoryListResult",
+    "BatchWriteItem",
+    "BatchWriteOutcome",
+    "BatchWriteResult",
     "UpdateMode",
     "DeleteMode",
     "DeleteSelector",
@@ -85,16 +114,33 @@ __all__ = [
     "TrajectoryStep",
     # 前置过滤（common.type_def）
     "FilterClause",
+    "FilterExpr",
     "FilterOp",
     # 演进 + 任务调度（construction / control）
     "EvolveMode",
     "Channel",
+    "IngestSubmission",
     "JobInfo",
     "JobStatus",
-    # 治理 / 授权（common.type_def / common.security.types）
+    # 治理 / 授权 / 请求安全上下文
     "AuditEvent",
-    # 授权管理走安全域 Grant/Action（grant_id 精确撤销契约）；旧 control 域
-    # 同名类型不再从本包导出，避免新旧授权域双公共入口
     "Grant",
     "Action",
+    "Credentials",
+    "RequestSecurityContext",
+    "Surface",
+    "legacy_request_context",
+    "new_request_context",
+    "set_current",
+    "reset_current",
+    # Access 错误映射（公开异常，transport 不识别内核内部模块）
+    "AgentMemoryError",
+    "AuthenticationError",
+    "ConflictError",
+    "NotFoundError",
+    "PartialFailureError",
+    "PermissionDeniedError",
+    "PolicyError",
+    "RateLimitedError",
+    "ValidationError",
 ]

@@ -738,7 +738,7 @@ agent-memory/
 - **共享插件保证两侧一致**：分词/切分/向量化/特征抽取/LLM/规约/重排抽到 `jiuwen_memory/common`，构建侧与检索侧（以及重建/演进路径）注入**同一实现**——同词表、同向量空间、同切分规则、同规约器，是「派生可重建」与召回对齐的前提。
 - **依赖方向**：`jiuwen_memory/common` 承载跨层数据契约与插件；`jiuwen_memory/storage` 只依赖 common，不反向依赖 Retrieval。Retrieval 依赖统一 Storage 和 common，QueryParser/Fuser 等算法仍归 Retrieval。Construction/Control 的目标依赖也是 Storage 契约，但首版仍有直接 Store 依赖待迁移；API 继续作为 control/retrieval/construction 的薄封装。
 - **鉴权/隔离/异常的统一落点**：① `MemoryAPI` 是公开接口 PEP，分离 `security.auth.actor` 与 target `scope`；② `StorageSecurity` 是可插拔的数据面授权边界，默认 allow-all，各 Store Security 负责后端数据保护；③ scope 作为 Storage/Store 专用入参做原生隔离，`FilterExpr` 不承载 scope；④ `common/errors` 提供跨层异常契约；⑤版本链走 `supersedes`，演进血缘走 `provenance`。
-- **一个内核，多形态接入**：`jiuwen_memory_entry/*` 与 `jiuwen_memory_adapter/*` 依赖内核、仅做协议/参数转换后调用 `jiuwen_memory/api`，不含业务逻辑。`jiuwen_memory_entry/core` 是各 surface 共享的应用核（内核装配 + 共享 `dispatch` + profile/配置加载）；其上 `http_server`（HTTP/REST）与 `mcp_server`（MCP）作为独立服务对外提供、`sdk` 作为库嵌入、`cli` 作为命令行——四个 surface 彼此解耦，共用同一 `core` 与 `jiuwen_memory/api`。
+- **一个内核，多形态接入**：`jiuwen_memory_entry/*` 与 `jiuwen_memory_adapter/*` 依赖内核、仅做协议/参数转换后调用 `jiuwen_memory/api`，不含业务逻辑，也不得 import `jiuwen_memory.common` / `control` / `construction` / `retrieval` / `config` / `storage`。`jiuwen_memory_entry/core` 是各 surface 共享的应用核；其中 **`jiuwen_memory_entry/core/server.py` 是 Access composition root**（调用 `jiuwen_memory.api.assemble_runtime` 装配，传入 dict，不解析内核 `Config` 类型，公开面只有 `api` / `dispatch` / lifecycle）。其上 `http_server`（HTTP/REST）与 `mcp_server`（MCP）作为独立服务对外提供、`sdk` 作为库嵌入、`cli` 作为命令行——四个 surface 彼此解耦，共用同一 `core` 与 `jiuwen_memory/api`。
 - **端/云/混合**靠 `jiuwen_memory/config` 的部署 profile 装配不同后端组合（端侧 SQLite+轻向量，云侧 PG+Milvus+Neo4j），逻辑模型不变。
 
 > 当前状态：主要接口与默认实现已存在。本轮统一 Storage 首版已完成 Retriever 接入；

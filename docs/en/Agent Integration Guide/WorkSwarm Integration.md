@@ -33,7 +33,7 @@ The rail also exposes two tools to the Agent — `mem2_search` / `mem2_add` — 
 
 ## 2. Integration Steps at a Glance
 
-1. **Install the kernel**: run `pip install JiuwenMemory` in the same Python environment as WorkSwarm, and verify with `python -c "from jiuwen_memory.api import build_kernel"`;
+1. **Install the kernel**: run `pip install JiuwenMemory` in the same Python environment as WorkSwarm, and verify with `python -c "from jiuwen_memory.api import assemble"`;
 2. **Prepare the backends**:
    - `sdk` mode: deploy Redis / Milvus / Elasticsearch (lightweight setups may fall back to a sqlite / memory combination);
    - `server` mode: start the agent-memory HTTP service following the [Deployment Overview](../Installation%20Guide/Deployment%20Overview.md);

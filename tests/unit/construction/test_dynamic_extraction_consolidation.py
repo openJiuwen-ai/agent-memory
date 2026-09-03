@@ -586,7 +586,7 @@ def test_dynamic_evolver_procedural_falls_back_to_parent():
 
 @pytest.mark.unit
 def test_default_engine_writes_through_without_consolidator():
-    from jiuwen_memory.api.memory_api_impl import build_kernel
+    from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 
     kernel = build_kernel(
         config=Config.from_dict(

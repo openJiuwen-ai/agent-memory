@@ -49,7 +49,7 @@ import sys
 from dataclasses import dataclass, field, replace
 from typing import Iterable, Sequence
 
-from jiuwen_memory.api.memory_api_impl.assembly import Kernel, build_kernel
+from jiuwen_memory.api.memory_api_impl.assembly import _Kernel, _build_kernel
 from jiuwen_memory.common.errors import NotFoundError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger
@@ -483,7 +483,7 @@ def audit_shape(kv: KVStore, org: str) -> dict[str, list[str]]:
 
 
 def provision_main_spaces(
-    kernel: Kernel, org: str, principals: Iterable[str], *, dry_run: bool = False
+    kernel: _Kernel, org: str, principals: Iterable[str], *, dry_run: bool = False
 ) -> list[str]:
     """批量为清单内的主体预建主空间并登记归属。
 
@@ -574,7 +574,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     config = _load_config(args.config)
-    kernel = build_kernel(config=config)
+    kernel = _build_kernel(config=config)
     kv = kernel.kv
 
     if args.command == "backfill":

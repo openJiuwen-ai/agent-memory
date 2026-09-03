@@ -13,7 +13,7 @@ import pytest
 import requests
 import yaml
 
-from jiuwen_memory.api import build_kernel
+from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.errors import BackendError
 from jiuwen_memory.common.normalizer.normalizer_impl import video_asr, video_pipeline
 from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer import (
@@ -628,13 +628,11 @@ def test_video_add_and_prefixed_job_status_share_handler_route(
     video_path = tmp_path / "demo.mp4"
     video_path.write_bytes(b"video")
     kernel = build_kernel(config=Config.from_dict(settings))
-    controller = kernel.ingest_jobs
     srv = type(
         "ServerStub",
         (),
         {
             "api": kernel.api,
-            "ingest_jobs": controller,
             "config": SimpleNamespace(settings={"memory_api": settings}),
         },
     )()
@@ -693,7 +691,7 @@ def test_video_add_and_prefixed_job_status_share_handler_route(
         assert reused["status"] == "succeeded"
         assert reused["reused"] is True
     finally:
-        controller.close()
+        kernel.ingest_jobs.close()
 
 
 def test_video_add_requires_uri() -> None:
@@ -720,7 +718,6 @@ def test_video_add_rejected_when_chain_not_assembled() -> None:
     try:
         srv = SimpleNamespace(
             config=SimpleNamespace(settings={}),
-            ingest_jobs=controller,
         )
         status, body = _dispatch(
             srv,
@@ -748,15 +745,8 @@ def test_video_add_rejected_when_write_permission_denied() -> None:
 
     class _DeniedAPI:
         @staticmethod
-        def check_write(
-            scope,
-            security,
-            *,
-            tags=None,
-            system_metadata=None,
-            user_metadata=None,
-        ):
-            del scope, security, tags, system_metadata, user_metadata
+        def submit_ingest(*args, **kwargs):
+            del args, kwargs
             raise PermissionDeniedError("write")
 
     controller = InProcessIngestJobController(max_workers=1, max_pending_jobs=1)
@@ -768,7 +758,6 @@ def test_video_add_rejected_when_write_permission_denied() -> None:
         srv = SimpleNamespace(
             config=SimpleNamespace(settings={"memory_api": memory_api_cfg}),
             api=_DeniedAPI(),
-            ingest_jobs=controller,
         )
         status, body = _dispatch(
             srv,

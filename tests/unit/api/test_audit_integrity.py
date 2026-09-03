@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.api.memory_api_impl.local_memory_api import LocalMemoryAPI
 from jiuwen_memory.common.errors import RateLimitedError, ValidationError
 from jiuwen_memory.common.security.audit_integrity.base import (
