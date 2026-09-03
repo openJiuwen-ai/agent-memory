@@ -10,7 +10,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from jiuwen_memory.common.errors import ConflictError, NotFoundError, ValidationError
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, scope_for_log
 from jiuwen_memory.common.security import principal
 from jiuwen_memory.common.security.space_roles import SpaceContentRole, SpaceGovernanceRole
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, MESSAGES_KEY_PREFIX, Scope
@@ -353,9 +353,8 @@ class KVSpaceManager(SpaceManager):
                 self._index_remove(entry, scope.space)
             except Exception:  # 索引孤儿项只造成候选集虚大，不阻断回滚
                 logger.warning(
-                    "space create rollback: index entry left behind for %s/%s",
-                    scope.org,
-                    scope.space,
+                    "space create rollback: index entry left behind for scope=%s",
+                    scope_for_log(scope),
                 )
         self._kv.delete(scope, _INFO_KEY)
         self._kv.delete(_ROOT_SCOPE, registry_key)

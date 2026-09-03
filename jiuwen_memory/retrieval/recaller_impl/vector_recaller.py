@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, scope_for_log
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.recaller import Recaller, RecallerProducer
@@ -102,7 +102,11 @@ class VectorRecaller(Recaller):
             logger.info(
                 "VectorRecaller(fallback search+get): layer=%s scope=%s "
                 "top_k=%d hits=%d units=%d",
-                self._layer, scope, top_k, len(scored), len(result),
+                self._layer,
+                scope_for_log(scope),
+                top_k,
+                len(scored),
+                len(result),
             )
             return result
         # recall 路径下 metadata 已在 hits 内，records 即 hits 自身。
@@ -111,7 +115,11 @@ class VectorRecaller(Recaller):
         result = aggregate_to_units(hits, hits, RecallChannel.VECTOR)
         logger.info(
             "VectorRecaller: layer=%s scope=%s top_k=%d hits=%d units=%d",
-            self._layer, scope, top_k, len(hits), len(result),
+            self._layer,
+            scope_for_log(scope),
+            top_k,
+            len(hits),
+            len(result),
         )
         return result
 

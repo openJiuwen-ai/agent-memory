@@ -17,6 +17,12 @@ from jiuwen_memory.common.errors import (
     UnsupportedCapabilityError,
     ValidationError,
 )
+from jiuwen_memory.common.log import (
+    install_privacy_filter,
+    metadata_for_log,
+    redact_for_log,
+    scope_for_log,
+)
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.security.request_context import new_request_context
 from jiuwen_memory.common.security.types import (
@@ -145,4 +151,9 @@ __all__ = [
     "RateLimitedError",
     "UnsupportedCapabilityError",
     "ValidationError",
+    # Access 日志隐私能力（adapter 不直接依赖内核 common 包）
+    "install_privacy_filter",
+    "metadata_for_log",
+    "redact_for_log",
+    "scope_for_log",
 ]

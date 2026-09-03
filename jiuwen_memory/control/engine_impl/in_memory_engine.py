@@ -16,7 +16,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from jiuwen_memory.common.errors import AgentMemoryError, NotFoundError, ValidationError
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import (
+    get_logger,
+    metadata_for_log,
+    scope_for_log,
+)
 from jiuwen_memory.common.type_def import (
     FilterExpr,
     LifecycleState,
@@ -314,10 +318,13 @@ class InMemoryEngine(MemoryEngine):
             derived = list(result.created_units) or [
                 self._load(scope, uid) for uid in result.created_ids
             ]
+            procedural_metadata = {"procedural": raw_meta.get("procedural")}
             logger.info(
-                "Engine.write procedural=True: %d originals, %d derived added, scope=%s",
+                "Engine.write system_metadata=%s: %d originals, %d derived added, scope=%s",
+                metadata_for_log(procedural_metadata),
                 len(units),
-                len(derived), scope,
+                len(derived),
+                scope_for_log(scope),
             )
             return derived
 
@@ -344,10 +351,13 @@ class InMemoryEngine(MemoryEngine):
             derived = list(result.created_units) or [
                 self._load(scope, uid) for uid in result.created_ids
             ]
+            infer_metadata = {"infer": raw_meta.get("infer")}
             logger.info(
-                "Engine.write infer=True: %d originals, %d derived added, scope=%s",
+                "Engine.write system_metadata=%s: %d originals, %d derived added, scope=%s",
+                metadata_for_log(infer_metadata),
                 len(units),
-                len(derived), scope,
+                len(derived),
+                scope_for_log(scope),
             )
             return derived
 
@@ -397,11 +407,15 @@ class InMemoryEngine(MemoryEngine):
             interval=middle_interval,
         )
         await self._scheduler.submit(job, channel=Channel.BACKGROUND)
+        middle_metadata = {
+            "middle": units[0].system_metadata.get("middle", "") if units else "",
+            "middle_interval": middle_interval,
+        }
         logger.info(
-            "Engine.write middle=True: %d originals buffered, scope=%s interval=%s",
+            "Engine.write system_metadata=%s: %d originals buffered, scope=%s",
+            metadata_for_log(middle_metadata),
             len(units),
-            scope,
-            middle_interval,
+            scope_for_log(scope),
         )
         return units
 
@@ -428,7 +442,11 @@ class InMemoryEngine(MemoryEngine):
             except Exception as exc:
                 is_domain_error = isinstance(exc, AgentMemoryError)
                 if not is_domain_error:
-                    logger.exception("unexpected batch write failure at item %s", index)
+                    logger.warning(
+                        "unexpected batch write failure at item %s: error_type=%s",
+                        index,
+                        type(exc).__name__,
+                    )
                 outcomes.append(
                     BatchWriteOutcome(
                         index=index,
@@ -540,7 +558,7 @@ class InMemoryEngine(MemoryEngine):
             logger.warning(
                 "Engine.get as_of miss: unit_id=%s scope=%s as_of=%s",
                 unit_id,
-                scope,
+                scope_for_log(scope),
                 as_of,
             )
             raise NotFoundError("memory_unit", unit_id)
@@ -549,7 +567,7 @@ class InMemoryEngine(MemoryEngine):
             "Engine.get as_of hit: unit_id=%s selected_id=%s scope=%s as_of=%s",
             unit_id,
             selected.id,
-            scope,
+            scope_for_log(scope),
             as_of,
         )
         return selected
@@ -563,7 +581,11 @@ class InMemoryEngine(MemoryEngine):
         if patch.mode == UpdateMode.OVERWRITE:
             new.id = old.id
             self._index.update([new])
-            logger.info("Engine.update overwrite: unit_id=%s scope=%s", new.id, scope)
+            logger.info(
+                "Engine.update overwrite: unit_id=%s scope=%s",
+                new.id,
+                scope_for_log(scope),
+            )
         else:  # SUPERSEDE：新 id、记版本链，旧版标记 superseded
             new.id = str(uuid.uuid4())
             new.supersedes = old.id
@@ -579,7 +601,7 @@ class InMemoryEngine(MemoryEngine):
                 "Engine.update supersede: old_id=%s new_id=%s scope=%s t_valid=%s",
                 old.id,
                 new.id,
-                scope,
+                scope_for_log(scope),
                 new.temporal.t_valid,
             )
         return new
@@ -618,7 +640,7 @@ class InMemoryEngine(MemoryEngine):
             logger.info(
                 "Engine.delete no matches: mode=%s scope=%s",
                 selector.mode.value,
-                selector.scope,
+                scope_for_log(selector.scope),
             )
             return []
 
@@ -636,7 +658,7 @@ class InMemoryEngine(MemoryEngine):
             logger.info(
                 "Engine.delete purge: count=%d scope=%s",
                 len(purged_units),
-                selector.scope,
+                scope_for_log(selector.scope),
             )
             return [unit.id for unit in purged_units]
 
@@ -649,7 +671,7 @@ class InMemoryEngine(MemoryEngine):
             logger.info(
                 "Engine.delete downweight: count=%d scope=%s",
                 len(affected),
-                selector.scope,
+                scope_for_log(selector.scope),
             )
             return affected
 
@@ -678,7 +700,7 @@ class InMemoryEngine(MemoryEngine):
             selector.mode.value,
             _LIFECYCLE_OF_DELETE[selector.mode].value,
             len(affected),
-            selector.scope,
+            scope_for_log(selector.scope),
         )
         return affected
 
@@ -709,7 +731,7 @@ class InMemoryEngine(MemoryEngine):
         logger.info(
             "Engine.evolve submitted: job_id=%s scope=%s mode=%s channel=%s",
             job_id,
-            scope,
+            scope_for_log(scope),
             mode.value,
             channel.value,
         )

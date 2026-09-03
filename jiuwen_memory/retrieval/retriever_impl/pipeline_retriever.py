@@ -18,7 +18,7 @@ from uuid import uuid4
 
 from jiuwen_memory.common.errors import ValidationError, safe_error_message
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.reranker.base import Reranker, RerankerProducer
 from jiuwen_memory.common.type_def import (
     ChannelError,
@@ -259,7 +259,7 @@ class PipelineRetriever(Retriever):
                 error.channel.value,
                 error.source,
                 error.error_type,
-                error.message,
+                redact_for_log(error.message),
             )
         recall_cost_ms = (perf_counter() - t0) * 1000.0
         if pipeline == RetrievalPipeline.RETRIEVE:

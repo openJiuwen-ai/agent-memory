@@ -12,7 +12,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import (
+    get_logger,
+    metadata_for_log,
+)
 from jiuwen_memory.common.type_def import MemoryUnit
 from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
@@ -108,7 +111,12 @@ class DynamicLLMExtractor(Extractor):
             try:
                 built = self._extract_strategy(accepted, context, strategy, prompt_key)
             except Exception as exc:
-                logger.warning("Dynamic extractor strategy=%s failed: %s", strategy, exc)
+                strategy_metadata = {"strategy": strategy, "prompt_key": prompt_key}
+                logger.warning(
+                    "Dynamic extractor metadata=%s failed: error_type=%s",
+                    metadata_for_log(strategy_metadata),
+                    type(exc).__name__,
+                )
                 last_error = exc
                 continue
             successful_strategies += 1

@@ -6,7 +6,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from jiuwen_memory.common.errors import ValidationError
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import (
+    get_logger,
+    metadata_for_log,
+)
 from jiuwen_memory.common.type_def import (
     MEMORY_TYPE_FILTER_FIELD,
     MemoryUnit,
@@ -70,21 +73,28 @@ class MetadataPipeline(MemoryPipeline):
     def _select(self, value: str, surface: str) -> PipelineBinding:
         profile_name = self._routes.get(value, value) if value else self._fallback
         if profile_name not in self._profiles:
+            fallback_metadata = {
+                "route_key": self._route_key,
+                "route_value": value,
+                "resolved_profile": profile_name,
+                "fallback_profile": self._fallback,
+            }
             logger.warning(
-                "MetadataPipeline.%s: route value %r resolved to missing profile %r, fallback=%r",
+                "MetadataPipeline.%s: routing_metadata=%s",
                 surface,
-                value,
-                profile_name,
-                self._fallback,
+                metadata_for_log(fallback_metadata),
             )
             profile_name = self._fallback
         binding = self._profiles[profile_name]
+        routing_metadata = {
+            "route_key": self._route_key,
+            "route_value": value,
+            "profile": binding.name,
+        }
         logger.info(
-            "MetadataPipeline.%s: route_key=%s value=%r profile=%s",
+            "MetadataPipeline.%s: routing_metadata=%s",
             surface,
-            self._route_key,
-            value,
-            binding.name,
+            metadata_for_log(routing_metadata),
         )
         return binding
 

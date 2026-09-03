@@ -17,7 +17,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from jiuwen_memory.common.llm.base import LLM
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.type_def import ChatMessage
 
 from .video_asr import VideoAsrConfig, VideoAsrService, run_video_asr
@@ -174,8 +174,8 @@ def _call_openai_json_with_retry(
                 call_name,
                 attempt,
                 JSON_API_MAX_ATTEMPTS,
-                last_error,
-                _raw_snippet(last_raw or e),
+                redact_for_log(last_error),
+                redact_for_log(last_raw or e),
             )
 
     return None, last_raw, last_error
@@ -338,7 +338,9 @@ def _resolve_video_path(video_path: Path) -> Path:
             cand = parent / name
             if cand.exists() and cand.is_file():
                 logger.info(
-                    "VideoPipeline: resolved video path %s -> %s", video_path, cand
+                    "VideoPipeline: resolved video path %s -> %s",
+                    redact_for_log(video_path),
+                    redact_for_log(cand),
                 )
                 return cand
 
@@ -644,7 +646,7 @@ def _judge_event_with_et(
             )
         logger.warning(
             "VideoPipeline: event-link inference exhausted retries; raw=%s",
-            _raw_snippet(content),
+            redact_for_log(content),
         )
         return False, []
     try:
@@ -677,9 +679,9 @@ def _judge_event_with_et(
                 },
             )
         logger.warning(
-            "VideoPipeline: event-link response parsing failed: %s; raw=%s",
-            e,
-            _raw_snippet(content),
+            "VideoPipeline: event-link response parsing failed: error_type=%s; raw=%s",
+            type(e).__name__,
+            redact_for_log(content),
         )
         return False, []
 
@@ -769,9 +771,9 @@ def _update_event_table(
     )
     if data is None:
         logger.warning(
-            "VideoPipeline: event-table inference exhausted retries: %s; raw=%s",
-            err,
-            _raw_snippet(content),
+            "VideoPipeline: event-table inference exhausted retries: error=%s; raw=%s",
+            redact_for_log(err),
+            redact_for_log(content),
         )
         return _fallback_event_table(pre_et, stm)
     return _coerce_event_table(data, pre_et, stm)
@@ -1154,7 +1156,7 @@ def _offline_vu(
                 "VideoPipeline: VLM inference failed (attempt %d/%d): %s",
                 attempt + 1,
                 max_retries + 1,
-                _raw_snippet(snippet),
+                redact_for_log(_raw_snippet(snippet)),
             )
             if attempt < max_retries:
                 continue
@@ -1187,8 +1189,8 @@ def run_video_memory_pipeline_off(
         raise ValueError("configure vlm_port in the video normalizer")
     logger.info(
         "VideoPipeline: starting video=%s work_root=%s chunk_seconds=%d",
-        video_path,
-        work_root,
+        redact_for_log(video_path),
+        redact_for_log(work_root),
         chunk_seconds,
     )
     work_root = Path(work_root)
@@ -1234,23 +1236,23 @@ def run_video_memory_pipeline_off(
                 reused_asr = True
                 logger.info(
                     "VideoPipeline: reusing ASR transcript path=%s segments=%d",
-                    asr_save_path,
+                    redact_for_log(asr_save_path),
                     len(asr_segments),
                 )
             elif isinstance(cached, list) and not cached:
                 logger.warning(
                     "VideoPipeline: cached ASR transcript is empty; rerunning path=%s",
-                    asr_save_path,
+                    redact_for_log(asr_save_path),
                 )
             else:
                 logger.warning(
                     "VideoPipeline: cached ASR transcript is invalid; rerunning path=%s",
-                    asr_save_path,
+                    redact_for_log(asr_save_path),
                 )
         except (OSError, json.JSONDecodeError) as e:
             logger.warning(
-                "VideoPipeline: failed to load cached ASR transcript; rerunning: %s",
-                e,
+                "VideoPipeline: failed to load cached ASR transcript; rerunning: error_type=%s",
+                type(e).__name__,
             )
 
     if require_precomputed_asr and not reused_asr:
@@ -1272,7 +1274,7 @@ def run_video_memory_pipeline_off(
         )
         logger.info(
             "VideoPipeline: ASR completed path=%s segments=%d",
-            asr_save_path,
+            redact_for_log(asr_save_path),
             len(asr_segments),
         )
 
@@ -1292,20 +1294,20 @@ def run_video_memory_pipeline_off(
                 reused_chapters = True
                 logger.info(
                     "VideoPipeline: reusing chapter segmentation path=%s chapters=%d",
-                    chapter_out_path,
+                    redact_for_log(chapter_out_path),
                     len(cached_chapters.get("chapters", [])),
                 )
             else:
                 logger.warning(
                     "VideoPipeline: cached chapter segmentation is invalid; "
                     "rerunning path=%s",
-                    chapter_out_path,
+                    redact_for_log(chapter_out_path),
                 )
         except (OSError, json.JSONDecodeError) as e:
             logger.warning(
                 "VideoPipeline: failed to load cached chapter segmentation; "
-                "rerunning: %s",
-                e,
+                "rerunning: error_type=%s",
+                type(e).__name__,
             )
 
     if not reused_chapters:
@@ -1348,12 +1350,13 @@ def run_video_memory_pipeline_off(
                 indent=2,
             )
         logger.debug(
-            "VideoPipeline: saved chapter segmentation path=%s", chapter_out_path
+            "VideoPipeline: saved chapter segmentation path=%s",
+            redact_for_log(chapter_out_path),
         )
     except OSError as save_err:
         logger.warning(
-            "VideoPipeline: failed to save temporary chapter segmentation: %s",
-            save_err,
+            "VideoPipeline: failed to save temporary chapter segmentation: error_type=%s",
+            type(save_err).__name__,
         )
 
     boundaries = _collect_asr_boundaries(asr_segments)
@@ -1971,14 +1974,20 @@ def run_video_memory_pipeline_off(
         try:
             _extract_video_subclip(video_path, out_clip, start_t, end_t)
         except Exception as e:
-            logger.exception(
-                "VideoPipeline: failed to extract segment=%s start=%.3f end=%.3f",
+            logger.warning(
+                "VideoPipeline: failed to extract segment=%s start=%.3f end=%.3f "
+                "error_type=%s",
                 seg_tag,
                 start_t,
                 end_t,
+                type(e).__name__,
             )
             raise RuntimeError(f"failed to extract video segment {seg_tag}") from e
-        logger.debug("VideoPipeline: segment=%s ready path=%s", seg_tag, out_clip)
+        logger.debug(
+            "VideoPipeline: segment=%s ready path=%s",
+            seg_tag,
+            redact_for_log(out_clip),
+        )
 
         asr_lines = _asr_for_range(asr_segments, start_t, end_t)
         asr_text = "\n".join(asr_lines) if asr_lines else "无可用音频或转录失败"

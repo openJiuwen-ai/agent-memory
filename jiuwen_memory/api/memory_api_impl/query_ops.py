@@ -14,7 +14,7 @@ from jiuwen_memory.common.errors import (
     PermissionDeniedError,
     ValidationError,
 )
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, metadata_for_log, redact_for_log
 from jiuwen_memory.common.security import principal, space_predicates
 from jiuwen_memory.common.security.types import Action, RequestSecurityContext
 from jiuwen_memory.common.type_def import (
@@ -211,11 +211,11 @@ class QueryOpsMixin:
         # 收窄谓词的实际取值只在此处成形，下游只能看到条数。缺这一行时「召回为空」
         # 无法区分坐标未传到、判定表未声明该维、以及该维确实过滤掉了全部条目。
         logger.info(
-            "search cross-space: query=%r coords=%s narrow=%s candidate_spaces=%s",
-            query[:60],
-            coords,
-            narrow,
-            candidates,
+            "search cross-space: query=%s coords=%s narrow=%s candidate_spaces=%s",
+            redact_for_log(query),
+            metadata_for_log(coords),
+            metadata_for_log(narrow),
+            metadata_for_log(candidates),
         )
         targets: list[collective.SpaceRecallTarget] = []
         denied: list[ChannelError] = []
