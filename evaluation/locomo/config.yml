@@ -1,0 +1,211 @@
+# agent-memory 本地无 docker 评测配置（参考 locomo.md，对齐华为云 MaaS）。
+#
+# 选型：LLM/Embedding 走华为云 MaaS（OpenAI 兼容，DeepSeek-V3.2 + bge-m3）+ 本地 Redis 真源 +
+# 本地 Elasticsearch 关键词召回 + 远程 Milvus 向量召回。召回走「向量 + 关键词」双路，关闭图，
+# 启用 SiliconFlow bge-reranker-v2-m3 精排（融合后、截断 top_k 前重排）。
+#
+# 与 deploy/docker/online/config.yml 的差异：
+# - LLM 用 openai target（不是 dashscope），对齐 locomo/.env 的 MODEL_NAME/API_BASE/API_KEY；
+# - embedder 用 openai target，EMBED_API_BASE 去掉末尾 /embeddings（producer 自加）；
+# - reranker 用 SiliconFlow api target（cohere 方言），与 embedding 不同源、独立 key；
+# - tokenizer=jieba（中文分词，已装）；
+# - query_parser.llm 内联 echo（不调 chat 改写 query）。
+#
+# 配置是**两级命名空间**（见 src/config）。用户配置合并覆盖到内置默认（纯内存离线栈）之上，
+# 故只写要改动的部分：globals + 把各 default 实例换成真后端。连接串经 ${VAR:-默认} 从 locomo/.env
+# 注入。配置文件本身不落密。
+#
+# 注意：profile 供服务面使用；staged runner 经 config_loader.load_layer 取 memory_api 段交给内核装配。
+
+profile: local
+
+memory_api:
+  # ---- 跨切面参数（写一处，各组件经 globals 读到；具名实例 params 可覆盖）----
+  globals:
+    vector_enabled: true        # 向量索引 + 向量召回路（Milvus）
+    graph_enabled: false        # 不启用图召回路
+    rerank_enabled: false       # 关闭精排（测无 rerank 基线；pipeline_retriever 据此短路 reranker=None）
+    layers_index_enabled: false  # L0/L1 分层召回（构建/召回侧默认均 true）
+
+    # bge-m3 dense 维度 = 1024，必须与 Milvus collection 的 dim 一致
+    embedder_dim: 1024
+    chunk_size: 512
+
+    # —— LLM：华为云 MaaS OpenAI 兼容端点（DeepSeek-V3.2）——
+    # openai producer 读 llm_model/llm_base_url/llm_api_key/llm_temperature/llm_max_tokens
+    llm_model: "${MODEL_NAME}"
+    llm_base_url: "${API_BASE}"
+    llm_api_key: "${API_KEY}"
+    llm_temperature: 0.01
+    llm_max_tokens: 4096
+
+    # —— 嵌入：华为云 MaaS bge-m3（OpenAI 兼容 /v1/embeddings）——
+    # openai embedder 读 embedder_model/embedder_base_url/embedder_api_key/embedder_dim/embedder_max_batch
+    # base_url 须不含 /embeddings（OpenAI SDK 自拼），故引用无后缀的 EMBED_BASE_URL
+    embedder_model: "${EMBED_MODEL_NAME}"
+    embedder_base_url: "${EMBED_BASE_URL}"
+    embedder_api_key: "${EMBED_API_KEY}"
+    embedder_max_batch: 64
+
+  # ---- 共享插件 ----
+  llm:
+    default:
+      target: openai
+  embedder:
+    default: { target: openai }
+  tokenizer:
+    default: { target: jieba }   # 对齐 docker online：中文分词用 jieba（已装）
+  # 精排：SiliconFlow bge-reranker-v2-m3（cohere 方言）。base_url 含 /v1、不含 /rerank，
+  # APIReranker 按方言拼 base_url+"/rerank"；填成完整端点会得到 /v1/rerank/rerank。
+  # reranker 走独立 SiliconFlow key（不与 embedding 同源），故读 RERANK_API_KEY 而非 EMBED_API_KEY。
+  reranker:
+    default:
+      target: api
+      params:
+        reranker_model: BAAI/bge-reranker-v2-m3
+        reranker_base_url: "${RERANK_BASE_URL}"
+        reranker_api_key: "${RERANK_API_KEY}"
+        reranker_timeout: 30.0
+        reranker_dialect: cohere
+
+
+  # ---- 构建侧：extractor/abstractor/associator/classifier 全走共享 LLM（DeepSeek）----
+  # 显式选 llm target，避免回退出厂默认 dynamic_llm→echo（llm.default 已指真后端，二者等价，
+  # 保留显式写法以对齐旧轮次行为）。当前版本 llm extractor 只读 llm 引用（旧版 chunker 键已废弃）。
+  extractor:
+    default:
+      target: llm
+      params:
+        llm: default
+  abstractor:
+    default:
+      target: llm
+      params:
+        llm: default
+  associator:
+    default:
+      target: llm
+      params:
+        llm: default
+        feature_extractor: default
+        embedder: default
+  classifier:
+    default:
+      target: llm
+      params:
+        llm: default
+
+  # ---- 存储后端：覆盖各命名空间下的 default 实例（必填连接参数缺失会在装配期直接报错）----
+  kv_store:                      # 真源（本地 Redis）
+    default:
+      target: redis
+      params:
+        url: "${REDIS_URL:-redis://127.0.0.1:6379/0}"
+  fulltext_store:                 # 关键词召回（本地 ES，BM25）
+    default:
+      target: elasticsearch
+      params:
+        hosts: "${ES_HOSTS:-http://127.0.0.1:9200}"
+        index: "${ES_FULLTEXT_INDEX:-agent_memory_fulltext}"
+    layers_l0:
+      target: elasticsearch
+      params:
+        hosts: "${ES_HOSTS:-http://127.0.0.1:9200}"
+        index: "${ES_FULLTEXT_INDEX_L0:-agent_memory_fulltext_l0}"
+    layers_l1:
+      target: elasticsearch
+      params:
+        hosts: "${ES_HOSTS:-http://127.0.0.1:9200}"
+        index: "${ES_FULLTEXT_INDEX_L1:-agent_memory_fulltext_l1}"
+  vector_store:                  # 向量召回（远程 Milvus，ANN）
+    default:
+      target: milvus
+      params:
+        uri: "${MILVUS_URI:-http://127.0.0.1:19530}"
+        collection: "${MILVUS_COLLECTION:-agent_memory_vectors}"
+        dim: 1024
+        metric_type: COSINE
+    layers_l0:
+      target: milvus
+      params:
+        uri: "${MILVUS_URI:-http://127.0.0.1:19530}"
+        collection: "${MILVUS_COLLECTION_L0:-agent_memory_vectors_l0}"
+        dim: 1024
+        metric_type: COSINE
+    layers_l1:
+      target: milvus
+      params:
+        uri: "${MILVUS_URI:-http://127.0.0.1:19530}"
+        collection: "${MILVUS_COLLECTION_L1:-agent_memory_vectors_l1}"
+        dim: 1024
+        metric_type: COSINE
+
+  # ---- 召回侧 ----
+  # fuser：加权 RRF 融合。k=20、vector 2.0/keyword 1.0（向量通道为主，关键词为辅）。
+  # bge-m3 向量召回语义匹配稳定，权重高于 keyword(BM25)；keyword 作互补，低权重兜底。
+  # 验证生效：召回 top1 若仅 vector 命中，分数≈2/(20+0)=0.0952；双路命中≈0.1429。
+  fuser:
+    default:
+      target: weighted_rrf
+      params:
+        fusion_rrf_k: 20
+        fusion_channel_weights:
+          vector: 2.0
+          keyword: 1.0
+  recaller:
+    # keyword/vector 具名实例：当前版本 recaller 的 _build 统一经 StorageProducer.resolve
+    # 取 Storage（不再分别读 fulltext_store / vector_store 键）。storage: default 指向
+    # 内置默认 composite，其内部引用 fulltext_store/vector_store 的 default 实例
+    # （上面已覆盖为本地 ES / 远程 Milvus），故 keyword 路 → ES(BM25)、vector 路 → Milvus(ANN)。
+    keyword:
+      target: keyword
+      params:
+        storage: default   # → storage.default（composite）→ fulltext 部分 = ES，BM25
+    vector:
+      target: vector
+      params:
+        storage: default
+        min_similarity: 0.0
+  # retriever 沿用默认 pipeline（keyword/vector 双路 + L0/L1），仅经具名引用指向上面的真后端；
+  # min_score_ratio 由 staged runner 用 --min-score-ratio 运行时覆盖，不在配置硬编码。
+  # query_parser 不走 LLM 改写：query 原样透传（llm 内联 echo），避免对话模型把 query 答成长文。
+  query_parser:
+    default:
+      target: simple
+      params:
+        tokenizer: default
+        embedder: default
+        feature_extractor: default
+        llm: { target: echo }
+
+  # 检索管道（来源 commit 03aa4b97 改动7）：把相关性阈值显式置 0，对齐基线口径。
+  # 不写本段时走 src/config/defaults.py 出厂值，其中 min_score_ratio=0.6、
+  # min_score_ratio_uncalibrated=0.3，未精排路径判据为 score < ratio × max_score 则丢弃：
+  # RRF 最高分约 0.0328，阈值 0.00984 会砍掉「单通道命中且通道内名次 > 40」的候选。
+  # 本配置 rerank_enabled=false：不走精排，走未校准路径（min_score_ratio_uncalibrated）；
+  # 三者均显式置 0，让融合结果不经阈值再砍，对齐基线口径（全部召回结果进 prompt）。
+  # 注：实例级覆盖会整体替换 params，故须写全依赖拓扑，漏写会掉回内核默认值。
+  # 容量四参数：recall_max=200 双路每路召回预算（对齐 mem0 beam benchmark 召回 200），
+  # rerank_max=50 精排封顶（无 rerank 时不生效，保留无害），top_k 由 RUN 时给定（=100，对齐 mem0 主测 cutoff）。
+  # 每路实际召回宽度 = max(top_k*over_fetch_factor, over_fetch_floor)，被 recall_max 封顶 → 每路 200。
+  # 融合后取 top_k=100 进 prompt。budget_n=max(rerank_max, top_k)=100。
+  retriever:
+    default:
+      target: pipeline
+      params:
+        keyword_recaller: keyword
+        vector_recaller: vector
+        graph_recaller: graph
+        reranker: default
+        query_parser: default
+        fuser: default
+        discloser: default
+        storage: default      # 点读真源（recheck）：composite → kv 部分 = Redis
+        over_fetch_factor: 4
+        over_fetch_floor: 60
+        recall_max: 200
+        rerank_max: 50
+        min_score: 0.0
+        min_score_ratio: 0.0
+        min_score_ratio_uncalibrated: 0.0
+        min_results: 0

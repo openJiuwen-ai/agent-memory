@@ -1,0 +1,168 @@
+# LongMemEval 0804 profile. Retrieval and construction parameters mirror the
+# LoCoMo v5 setup; only the dataset adapter and answer/judge prompts differ.
+profile: local
+
+memory_api:
+  globals:
+    vector_enabled: true
+    graph_enabled: false
+    rerank_enabled: false
+    layers_index_enabled: true
+    embedder_dim: 1024
+    chunk_size: 1024
+
+    llm_model: "${MODEL_NAME}"
+    llm_base_url: "${API_BASE}"
+    llm_api_key: "${API_KEY}"
+    llm_temperature: 0.01
+    llm_max_tokens: 4096
+
+    embedder_model: "${EMBED_MODEL_NAME}"
+    embedder_base_url: "${EMBED_BASE_URL}"
+    embedder_api_key: "${EMBED_API_KEY}"
+    embedder_max_batch: 64
+    embedder_ssl_verify: false
+
+  llm:
+    default:
+      target: openai
+  embedder:
+    default:
+      target: openai
+  tokenizer:
+    default:
+      target: jieba
+
+  # Use the official mem2.0 extractor at commit 6feb2dc without task-specific
+  # construction or retrieval changes. This file is evaluation-only wiring.
+  extractor:
+    default:
+      target: llm
+      params:
+        llm: default
+        chunker: default
+  abstractor:
+    default:
+      target: llm
+      params:
+        llm: default
+  associator:
+    default:
+      target: llm
+      params:
+        llm: default
+        feature_extractor: default
+        embedder: default
+  classifier:
+    default:
+      target: llm
+      params:
+        llm: default
+  evolver:
+    default:
+      target: orchestrating
+      params:
+        extractor: default
+        abstractor: default
+        associator: default
+        index_builder: default
+        kv_store: default
+        graph_store: default
+        dedup: default
+        llm: default
+
+  kv_store:
+    default:
+      target: redis
+      params:
+        url: "${REDIS_URL:-redis://127.0.0.1:6379/0}"
+  fulltext_store:
+    default:
+      target: elasticsearch
+      params:
+        hosts: "${ES_HOSTS:-http://127.0.0.1:9200}"
+        index: "${ES_FULLTEXT_INDEX:-longmemeval_0804_fulltext}"
+    layers_l0:
+      target: elasticsearch
+      params:
+        hosts: "${ES_HOSTS:-http://127.0.0.1:9200}"
+        index: "${ES_FULLTEXT_INDEX_L0:-longmemeval_0804_fulltext_l0}"
+    layers_l1:
+      target: elasticsearch
+      params:
+        hosts: "${ES_HOSTS:-http://127.0.0.1:9200}"
+        index: "${ES_FULLTEXT_INDEX_L1:-longmemeval_0804_fulltext_l1}"
+  vector_store:
+    default:
+      target: milvus
+      params:
+        uri: "${MEM2_MILVUS_URI:-./longmemeval_0804_milvus.db}"
+        collection: "${MEM2_MILVUS_COLLECTION:-longmemeval_0804_vectors}"
+        dim: 1024
+        # pymilvus 3.0 / Milvus Lite returns COSINE *distance* (0 is identical),
+        # while Mem2.0 treats vector scores as higher-is-better.  BGE-M3 emits
+        # L2-normalized vectors, so IP preserves cosine ordering and score
+        # direction without adding any query-time work.
+        metric_type: IP
+    layers_l0:
+      target: milvus
+      params:
+        uri: "${MEM2_MILVUS_URI:-./longmemeval_0804_milvus.db}"
+        collection: "${MEM2_MILVUS_COLLECTION_L0:-longmemeval_0804_vectors_l0}"
+        dim: 1024
+        metric_type: IP
+    layers_l1:
+      target: milvus
+      params:
+        uri: "${MEM2_MILVUS_URI:-./longmemeval_0804_milvus.db}"
+        collection: "${MEM2_MILVUS_COLLECTION_L1:-longmemeval_0804_vectors_l1}"
+        dim: 1024
+        metric_type: IP
+
+  fuser:
+    default:
+      target: weighted_rrf
+      params:
+        fusion_rrf_k: 20
+        fusion_channel_weights:
+          vector: 2.0
+          keyword: 1.0
+  recaller:
+    keyword:
+      target: keyword
+      params:
+        fulltext_store: default
+    vector:
+      target: vector
+      params:
+        vector_store: default
+        min_similarity: 0.0
+  query_parser:
+    default:
+      target: simple
+      params:
+        tokenizer: default
+        embedder: default
+        feature_extractor: default
+        llm:
+          target: echo
+  retriever:
+    default:
+      target: pipeline
+      params:
+        keyword_recaller: keyword
+        vector_recaller: vector
+        graph_recaller: graph
+        reranker: default
+        query_parser: default
+        fuser: default
+        discloser: default
+        kv_store: default
+        over_fetch_factor: 4
+        over_fetch_floor: 60
+        recall_max: 200
+        rerank_max: 50
+        min_score: 0.0
+        min_score_ratio: 0.0
+        min_score_ratio_uncalibrated: 0.0
+        min_results: 0
