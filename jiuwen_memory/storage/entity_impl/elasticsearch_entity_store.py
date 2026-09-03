@@ -17,10 +17,9 @@ from __future__ import annotations
 from typing import Any
 
 from jiuwen_memory.common._support import read_ssl_config, require_tls_scheme, wrap_backend
-from jiuwen_memory.common.errors import UnsupportedCapabilityError
-from jiuwen_memory.common.errors import BackendError
+from jiuwen_memory.common.errors import BackendError, UnsupportedCapabilityError
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.type_def.entity import (
     EntityBatchResult,
     EntityOperation,
@@ -88,7 +87,8 @@ class ElasticsearchEntityStore(EntityStore):
                 self._client = Elasticsearch(self._hosts, **opts)
             logger.info(
                 "EntityStore: Elasticsearch client initialized hosts=%s index=%s",
-                self._hosts, self._index,
+                redact_for_log(self._hosts),
+                self._index,
             )
         return self._client
 

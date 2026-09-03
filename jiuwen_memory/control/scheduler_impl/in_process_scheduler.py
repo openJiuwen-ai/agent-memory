@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 
 from jiuwen_memory.common.errors import NotFoundError
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, scope_for_log
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.jobs import Job
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
@@ -47,7 +47,7 @@ class InProcessScheduler(Scheduler):
         logger.info(
             "InProcessScheduler.submit: job_id=%s scope=%s kind=%s channel=%s",
             job_id,
-            job.scope,
+            scope_for_log(job.scope),
             type(job).__name__,
             channel.value,
         )
@@ -60,7 +60,9 @@ class InProcessScheduler(Scheduler):
             info.status = JobStatus.SUCCEEDED
             logger.info(
                 "InProcessScheduler.succeeded: job_id=%s kind=%s scope=%s",
-                job_id, type(job).__name__, job.scope,
+                job_id,
+                type(job).__name__,
+                scope_for_log(job.scope),
             )
         except asyncio.CancelledError:
             # 事件循环关闭 / 主动 cancel Task——把状态 + 日志打全再重新 raise，
@@ -69,7 +71,9 @@ class InProcessScheduler(Scheduler):
             info.detail["cancelled_at"] = self._now_iso()
             logger.info(
                 "InProcessScheduler.cancelled_by_loop_shutdown: job_id=%s kind=%s scope=%s",
-                job_id, type(job).__name__, job.scope,
+                job_id,
+                type(job).__name__,
+                scope_for_log(job.scope),
             )
             raise
         except Exception as exc:
@@ -77,11 +81,10 @@ class InProcessScheduler(Scheduler):
             info.detail["error_type"] = type(exc).__name__
             info.detail["error"] = str(exc)
             logger.warning(
-                "InProcessScheduler.failed: job_id=%s kind=%s error_type=%s error=%s",
+                "InProcessScheduler.failed: job_id=%s kind=%s error_type=%s",
                 job_id,
                 type(job).__name__,
                 type(exc).__name__,
-                exc,
             )
         finally:
             info.detail["finished_at"] = self._now_iso()
