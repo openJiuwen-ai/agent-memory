@@ -77,7 +77,7 @@ docs/AGENTS.md                   ← 文档归档规约：文档目录结构、�
 
 2. **跨模块规约变动必须更新 specs 文档**：接口契约、跨模块协议、不变量、公共 API 发生变化时，同步修订 `docs/specs/SNN-<slug>.md`；新规约 = 新 spec 文件。规约变了但 specs 没改，下次读 spec 的人就被误导——这是设计债，不是文档懒。
 
-3. **双向同步：读到与代码不一致的描述必须当场修文档**。以代码为准刷新文档，在同一次改动里落地；不要把过时表述当作新约束执行。任何一份 `AGENTS.md` / `docs/specs/*` / `docs/features/*` 里读到的接口名、枚举值、truth table 行数、文件路径、不变量等只要与当前代码不符，**不要**把过时表述当作新约束去执行、也不要原样转述给用户；先 `grep` 代码、以代码为准刷新文档，在同一次改动里落地。`AGENTS.md` 里每条点名了"X 个分支 / Y 路 dispatch / Z 方法"的句子都是契约的一部分。**更新目标是 `AGENTS.md`，不是 `CLAUDE.md`**——`CLAUDE.md` 现在只是 `@AGENTS.md` 的单行壳，编辑它没有任何意义；所有内容变更一律落到对应目录的 `AGENTS.md`。
+3. **双向同步：读到与代码不一致的描述必须当场修文档**。以代码为准刷新文档，在同一次改动里落地；不要把过时表述当作新约束执行。任何一份 `AGENTS.md` / `docs/specs/*` / `docs/features/*` 里读到的接口名、枚举值、truth table 行数、文件路径、不变量等只要与当前代码不符，**不要**把过时表述当作新约束去执行、也不要原样转述给用户；先 `grep` 代码、以代码为准刷新文档，在同一次改动里落地。`AGENTS.md` 里每条点名了"X 个分支 / Y 路 dispatch / Z 方法"的句子都是契约的一部分。**更新目标是 `AGENTS.md`，不是 `CLAUDE.md`**——`CLAUDE.md` 现在只是指向 `AGENTS.md` 的只读指针壳，编辑它没有任何意义；所有内容变更一律落到对应目录的 `AGENTS.md`。
 
 **pre-commit hook 行为**（`.githooks/pre-commit`，需手动 `git config core.hooksPath .githooks` 启用）：
 - 非交互环境（无 TTY，如 CI）直接 `exit 0`，不做任何检查；交互终端下会逐项询问
@@ -94,8 +94,8 @@ docs/AGENTS.md                   ← 文档归档规约：文档目录结构、�
   回填"的来回反复。
 - 子模块自身的本地约定继续放各 `jiuwen_memory/<subdir>/AGENTS.md`；跨子模块的设计规约一律落到 `docs/specs/`，
   不要塞进单一子目录的 AGENTS.md。
-- **`CLAUDE.md` 是只读壳，不要编辑它**：本模块每个子目录的 `CLAUDE.md` 仅含 `@AGENTS.md` 一行，
-  编辑 `CLAUDE.md` 的修改不会被保留在任何有效文档里。需要更新文档时，直接编辑 `AGENTS.md`。
+- **`CLAUDE.md` 是只读指针壳，不要编辑它**：仓库当前的 `CLAUDE.md` 只负责指向同级
+  `AGENTS.md`，不承载独立项目规则。需要更新文档时，直接编辑对应的 `AGENTS.md`。
 - 拿不准某次改动是否需要归档（影响公开接口？跨模块协调？多方案取舍？）时，先问用户。
   歧义情况默认**归档**——多一份 markdown 的成本远低于丢失设计上下文。
 

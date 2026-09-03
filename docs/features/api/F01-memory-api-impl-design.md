@@ -4,8 +4,8 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-09-01 |
-| 影响范围 | jiuwen_memory/api/，jiuwen_memory/control/，jiuwen_memory/storage/，jiuwen_memory/common/type_def/，bootstrap/core/handler.py，docs/specs/S02-memory-api.md，docs/specs/S03-control.md，docs/specs/S06-storage.md，docs/specs/S07-common.md |
+| 日期 | 2026-09-03 |
+| 影响范围 | jiuwen_memory/api/，jiuwen_memory/control/，jiuwen_memory/storage/，jiuwen_memory/common/type_def/，jiuwen_memory_entry/core/handler.py，docs/specs/S02-memory-api.md，docs/specs/S03-control.md，docs/specs/S06-storage.md，docs/specs/S07-common.md |
 | 测试基线 | list 相关 API/handler/Engine/KV/common/retrieval 单测通过；ruff、compileall 与 `git diff --check` 通过；完整 `tests/unit` 仅两项因环境缺少 torch 失败 |
 | Refs | —（如有 issue 补 `Refs: #<n>`） |
 
@@ -131,7 +131,7 @@ HTTP、CLI、MCP 和进程内调用共享同一个 handler，但不共享未经�
 `DispatchRequest` 是 transport 与 API 的稳定边界：handler 只消费其中的结构化 actor、target、
 grantee/member 及 batch item，不再读取 `__target`、`__actor` 等保留字段或从 flat 字段重新组装
 Scope。CLI、MCP 和旧进程内调用若仍使用 flat 输入，必须显式经过
-`bootstrap/core/legacy_request_adapter.py`；HTTP adapter 则只接受结构化 DTO。HTTP 的
+`jiuwen_memory_entry/core/legacy_request_adapter.py`；HTTP adapter 则只接受结构化 DTO。HTTP 的
 `space_id` 兼容别名在 parser 内归一化为 `Scope.space`，后续授权、审计和存储只看到规范 Scope。
 
 该边界同时保证认证、授权和审计使用同一组分离值：认证 actor 从
