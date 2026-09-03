@@ -61,9 +61,9 @@
     边界，`create_task` 派生的子任务不视为重入；重入记账与租约有效性正交，持有权状态一律
     以 `LockHandle.lost` 为准。后端不可用时 fail-closed 抛 `BackendError`，不静默降级为无锁。
 14. **四条层次轴正交**：`ContentLayers`/`DisclosureLevel` 表示同一 unit 的 L0/L1/L2 披露；
-    多模态 CLM/ELM（`metadata.memory_level` + `provenance`）表示单媒体源构建粒度；
-    `MemoryTier` 表示认知角色；`HierarchyRef` 表示跨 unit 的树结构包含。任一轴不得推导
-    或代替另外三轴。
+    多模态 CLM/ELM（`system_metadata["memory_level"]` + `provenance`）表示单媒体源构建粒度；
+    `MemoryTier` 表示认知角色；目标契约中的 `HierarchyRef` 表示跨 unit 的树结构包含。
+    树结构尚未实现；实现后任一轴不得推导或代替另外三轴。
 15. **树结构引用一致**（目标契约，尚未实现）：`kind` 与 `role` 必须同时设置或同时缺省；
    空 `HierarchyRef` 等价于未启用树结构。非空结构**不得成环**；同一 kind 下采用单父
    严格树；父 `child_ids` 与子 `parent_id` 双向一致且子列表不得重复。
@@ -78,7 +78,9 @@
      unit 完整 Scope 不完全相同时，边必须携带可定位的子/父 Scope（见下方
      `child_scopes` / `parent_scope`）；二者皆缺省时退化为「与本 unit 完整 Scope 相同」。
 16. **层级区间有效**（目标契约，尚未实现）：`span_start`/`span_end` 必须同时为空或同时存在，存在时 `span_start <= span_end`，父区间覆盖直接子区间；`HierarchyKind.TIME` 的所有节点必须有区间。
-17. **引用语义分离**：`provenance` 只表示演进来源，`supersedes` 只表示版本替换，`hierarchy` 只表示结构包含；生命周期归 `LifecycleState`，结构修正状态归 `HierarchyStatus`。
+17. **引用语义分离**（目标契约，尚未实现）：`provenance` 只表示演进来源，`supersedes`
+    只表示版本替换，`hierarchy` 只表示结构包含；生命周期归 `LifecycleState`，结构修正状态归
+    `HierarchyStatus`。
 
 ## 接口契约
 
@@ -263,16 +265,17 @@ F05 公共安全架构的契约层（认证 / 密码学 / 保护 / 授权 / 审�
 
 | 类型 | 关键字段 | 语义 |
 |------|----------|------|
-| `MemoryUnit` | id / scope / tier / layers / segments / source / temporal / provenance / supersedes / tags / metadata / lifecycle / hierarchy / vectors | 记忆单元；id 在完整 Scope 内唯一；`vectors` 为 chunk 级向量投影（构建期按 Chunker+Embedder 管线填充，随本体经 Storage 领域接口下传，见 F06-unified-index-builder） |
+| `MemoryUnit` | id / scope / tier / layers / segments / source_ref / temporal / provenance / supersedes / tags / system_metadata / user_metadata / lifecycle / entities / vectors | 记忆单元；id 在完整 Scope 内唯一；`content` / `assets` / `source` 是从 `segments` 折叠得到的只读视图；`vectors` 为 chunk 级向量投影（构建期按 Chunker+Embedder 管线填充，随本体经 Storage 领域接口下传，见 F06-unified-index-builder）。尚未实现的 `hierarchy` 见下文“树结构（目标契约，尚未实现）” |
 | `ContentLayers` | l0 / l1 | 分层披露标注（l0=50-100 字概要、l1=200-500 字要点 overview）；默认空串，extractor 对超阈 content 产出 |
-| `Segment` | type / content / asset_ref / metadata | 内容段 |
-| `Temporal` | t_event / t_ingest / t_valid / t_invalid | 时间字段 |
-| `Relation` | id / source_id / target_id / relation / weight / metadata | 关联关系 |
+| `Segment` | content / assets / source | 内容段；文本投影、原模态资产引用和来源模态一一对应 |
+| `Temporal` | t_event / t_ingest / t_valid / t_invalid / t_message | 事件、摄入、有效期与消息时间字段 |
+| `ChunkVector` | id / seq / vector | 与 Chunk 对齐的 chunk 级向量投影 |
+| `Relation` | source_id / target_id / relation / score / metadata | 关联关系 |
 | `Scope` | org / space / user / agent / session | 作用域；非空 `space` 是全局唯一逻辑隔离标识，空值为兼容域且该字段为 keyword-only |
-| `Context` | scope / max_tokens / extensions | 检索上下文 |
-| `Entity` | text / type / confidence | 实体 |
-| `FeatureSet` | keywords / entities / tags | 特征集合 |
-| `Chunk` | id / text / unit_id / metadata | 切分块 |
+| `Context` | scope / extensions | API 调用上下文；`max_tokens` 通过 extensions 的约定键传入并在 API 边界解析，不是 Context 字段 |
+| `Entity` | text / type / score | 实体 |
+| `FeatureSet` | keywords / entities / labels | 特征集合 |
+| `Chunk` | id / unit_id / seq / text / start / end / token_count / metadata | 切分块 |
 | `ChatMessage` | role / content | LLM 对话消息；content 为文本或多模态 parts |
 | `RawPayload` | id / scope / modality / data / uri / system_metadata / user_metadata / occurred_at / assets | 原始负载；`assets` 只承载待 Ingestor 映射的资产引用，不规定产出数量或 Segment 位置 |
 | `FilterClause` | field / op / value | 原子过滤谓词；`EQ` / `IN` 正向匹配标量，`CONTAINS` 匹配数组成员，`NE` / `NOT_IN` 分别取反 |
@@ -387,13 +390,10 @@ hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
 
 - `dumps(unit) -> bytes`：`MemoryUnit` → JSON 字节，带 `_v` 版本号、枚举取 `.value`、时间取 isoformat。字段含 `segments`、`layers`（`{l0, l1}`）。
 - `loads(raw) -> MemoryUnit | None`：逆 `dumps`；非 dict 返回 `None`（KVStore 中混有索引/跟踪等非 unit 记录，靠此过滤）。
-- **容错演进**：未知字段忽略、缺失字段取默认。加字段是兼容演进（老数据缺省读出，不升 `_v`）；改字段含义/结构才升 `_v` 并在 `loads` 按 `_v` 分支。当前 `_v=3`（`_v=2` 为 segments 列表化；`_v=3` 把 scope 从 `org/user/agent/session` 扩展为 `org/space/user/agent/session`，老数据读为空 `space`）。
+- **容错演进**：未知字段忽略、缺失字段取默认。加字段是兼容演进（老数据缺省读出，不升 `_v`）；改字段含义/结构才升 `_v` 并在 `loads` 按 `_v` 分支。当前 `_v=4`（`_v=2` 为 segments 列表化；`_v=3` 把 scope 从 `org/user/agent/session` 扩展为 `org/space/user/agent/session`；`_v=4` 将混合 metadata 拆分为 `system_metadata` / `user_metadata`，`_v<4` 数据须离线迁移）。
 - `layers` 字段缺失时 `loads` 取空串 `ContentLayers()`——老数据无迁移读出。
-- `hierarchy` 缺失、非对象、字段缺失或包含未知扩展字段时安全读取：缺失/非对象读为空
-  `HierarchyRef`，未知字段忽略。未知 kind/role/status 不得构造半有效结构，应把该
-  hierarchy 降级为空并留下可观测诊断；写出侧只允许已定义枚举值。
-- 写入和接入路径对非法枚举或半有效结构执行严格拒绝；上述降级只用于兼容读取已经
-  存在的异常或未来版本数据。
+- 目标树结构尚未进入当前 `MemoryUnit` 和 codec；`hierarchy` 的读取降级及写入校验规则见
+  上文“树结构（目标契约，尚未实现）”，不得将其描述为当前 `_v=4` 已具备的能力。
 - 只有字段语义或结构发生破坏性变化时才提升 `_v`；增加可选枚举成员或可缺省字段不单独升版。
 
 ### 工厂注册机制（`factory/factory.py`）

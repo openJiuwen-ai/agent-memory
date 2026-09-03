@@ -109,10 +109,20 @@ TEXT / IMAGE / AUDIO / VIDEO / CODE / DOCUMENT
 
 ## 实现注册机制
 
+`Source` 和 `Ingestor` 的装配方式不同：
+
+- `Source` 实现不走 Producer，由信息源接入侧按连接参数直接构造并调用；
+- `Ingestor` 实现通过 `@IngestorProducer.register("name")` 自注册，由
+  `ingest.bootstrap.register_ingestors` 统一触发实现模块导入。
+
 ```
 jiuwen_memory/ingest/source_impl/
-    __init__.py             # 重导出实现类
-    <impl_class_snake>.py   # 具体实现 + 尾部 @SourceProducer.register("name")
+    __init__.py             # 重导出 Source 实现类
+    <impl_class_snake>.py   # Source 具体实现，由调用方直接构造
+
+jiuwen_memory/ingest/ingestor_impl/
+    __init__.py             # 导入实现模块，触发 Ingestor 注册
+    <impl_class_snake>.py   # Ingestor 具体实现 + @IngestorProducer.register("name")
 ```
 
 
