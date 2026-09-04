@@ -34,15 +34,18 @@ qa_accuracy = import_module("evaluation.metrics.qa_metrics").qa_accuracy
 logger = logging.getLogger(__name__)
 
 
-def _load_dataset(name: str, data: str | None):
+def _load_dataset(name: str, data: str | None, max_questions: int | None = None):
+    # max_questions 同时收敛 seeds 与 queries（见适配器 _parse）：不传时整份数据集都会
+    # 被摄入，LongMemEval-S 全量约数十万次写入，试跑务必设一个小值。
+    kwargs = {"max_questions": max_questions} if max_questions is not None else {}
     if name == "locomo":
         from evaluation.benchmark.locomo_adapter import LoCoMoDataset
 
-        return LoCoMoDataset(data) if data else LoCoMoDataset()
+        return LoCoMoDataset(data, **kwargs) if data else LoCoMoDataset(**kwargs)
     if name == "longmemeval":
         from evaluation.benchmark.longmemeval_adapter import LongMemEvalDataset
 
-        return LongMemEvalDataset(data) if data else LongMemEvalDataset()
+        return LongMemEvalDataset(data, **kwargs) if data else LongMemEvalDataset(**kwargs)
     if name.endswith(".jsonl"):
         from evaluation.benchmark.jsonl_dataset import JsonlDataset
 
@@ -59,6 +62,7 @@ def main() -> int:
         help="'locomo' / 'longmemeval' 或 *.jsonl 路径",
     )
     parser.add_argument("--data", default=None, help="数据集原始文件路径（如 locomo10.json）")
+    parser.add_argument("--max-questions", type=int, default=None, help="只摄入并评测前 N 条 query（同时收敛 seeds）；试跑必设，缺省为全量")
     # judge（OpenAI 兼容；缺省读环境变量）；三者齐备才启用，否则 QA 跳过。
     parser.add_argument("--judge-model", default=os.getenv("JUDGE_MODEL"), help="judge 模型名")
     parser.add_argument(
@@ -71,7 +75,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        dataset = _load_dataset(args.dataset, args.data)
+        dataset = _load_dataset(args.dataset, args.data, args.max_questions)
     except ValueError as exc:
         logger.error("%s", exc)
         return 2
@@ -81,6 +85,13 @@ def main() -> int:
         chat = openai_chat(args.judge_base_url, args.judge_model, args.judge_api_key)
         judge = LLMJudge(chat=chat, strict=args.judge_strict)
 
+    # 摄入规模先落日志：全量误跑是这条链路上最贵的一类错误。
+    logger.info(
+        "[dataset] %s | %d seeds, %d queries",
+        getattr(dataset, "name", args.dataset),
+        len(dataset.seeds()),
+        len(dataset.queries()),
+    )
     runner = Runner([ir_metrics(), perf_metrics(), qa_accuracy(judge=judge)])
     result = runner.run(dataset)
     logger.info(to_markdown(result))
