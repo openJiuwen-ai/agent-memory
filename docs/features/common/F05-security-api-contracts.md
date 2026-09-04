@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-08-20 |
+| 日期 | 2026-09-04 |
 | 影响范围 | `jiuwen_memory/common/security/`、`jiuwen_memory/common/audit/`、`jiuwen_memory/api/`、`jiuwen_memory_entry/core/`、`jiuwen_memory_entry/mcp_server/transport_security.py`、`docs/specs/S02-memory-api.md`、`docs/specs/S07-common.md` |
 | 关联文档 | [S02 记忆接口层](../../specs/S02-memory-api.md)、[S07 公共组件层](../../specs/S07-common.md)、[F04 安全接口与加密设计](F04-security-interfaces-and-encryption.md) |
 | 状态 | **接口先行、实现暂缓**：契约层已合入，`*_impl` 实现包与 Server lifecycle 接线随后续实装 PR 合入 |
@@ -51,7 +51,7 @@ credentials_from_headers(headers, peer_address="") -> Credentials
 
 authenticated(
     authenticator, credentials, audit=None, limiter=None, *,
-    workload_guard=None, surface=None,
+    workload_guard=None, surface=None, request_id: str | None = None,
 ) -> Iterator[RequestSecurityContext]
 
 credentials_for_transport(  # jiuwen_memory_entry/mcp_server/transport_security.py
@@ -87,12 +87,17 @@ PR 落地前继续从 `jiuwen_memory.common.security` 顶层导出，既有消�
 ### 5.1 `RequestSecurityContext` 的受控构造入口（`security/request_context.py`）
 
 ```python
-new_request_context(auth, *, surface, peer="", attributes=None) -> RequestSecurityContext
+new_request_context(
+    auth, *, surface, peer="", attributes=None, request_id: str | None = None
+) -> RequestSecurityContext
 internal_context(authenticator) -> RequestSecurityContext
 ```
 
-构造点从各 surface 收到这一处：`request_id` 服务端生成、`started_at` 取服务端时钟、
-`attributes` 只由系统组件写入——三条不变量只有一处实现。产物携带来源绑定
+构造点从各 surface 收到这一处：未传入时 `request_id` 由服务端生成、`started_at` 取服务端
+时钟、`attributes` 只由系统组件写入——三条不变量只有一处实现。受控 HTTP 适配层可以
+传递其入口刚生成的 request ID，以便响应、认证上下文和审计记录关联；客户端不得通过
+header、query 或业务 payload 指定该值。request ID 只用于日志/审计关联，不参与 actor、
+target 或授权判定。产物携带来源绑定
 （HMAC over 全部安全字段，进程内随机 key），`has_valid_origin()` 可判定其是否出自
 受控入口，`replace(attributes=...)` 一类的旁路提权因此可被识别。
 
@@ -248,9 +253,9 @@ def verify_audit(
   `action='read'` 的授权记录失效。迁移到目标动作 `READ_AUDIT` 须另行评审并迁移授权数据；
   验证输入只允许服务端参数，不接受调用方传入 expected digest / key / proof / chain head；
 - provider 与专用 `audit_verify_guard` 成对注入；全量验证占该 `WorkloadGuard` 的一个
-  独立并发槽，耗尽抛 `RateLimitedError`。本期不注册 `verify_audit` HTTP verb，也不修改
-  generic handler 的既有错误映射（`RateLimitedError` 仍按默认路径返回 400，与 FAQ 一致）；
-  未来随真实认证接入改为 HTTP 429 时，应作为影响既有接口的独立兼容性变更评审；
+  独立并发槽，耗尽抛 `RateLimitedError`。本期不注册 `verify_audit` HTTP verb；generic
+  handler 的 legacy 错误映射保持兼容，HTTP edge 将 `RateLimitedError` 映射为 429，返回
+  `retryable=true` 与固定 `Retry-After: 1`，不扩展 `RateLimiter.allow()` 的布尔接口；
 - guard 准入后、调用 provider 前先写入 `verify_audit` 审计事件；provider 因链篡改、
   schema 损坏等抛 `AuditIntegrityError` 时异常原样传播，但发起者与发生时间已经留痕。
   guard 耗尽时调用仍抛 `RateLimitedError`，但事件的 `decision` 保持 `allow`（授权已通过），

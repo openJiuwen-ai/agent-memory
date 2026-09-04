@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """请求作用域的安全上下文——凭据提取 + ``RequestSecurityContext`` 构造。
 
 各 surface（HTTP / MCP / CLI 直连）用同一条中间件：把本形态的凭据材料归一成
@@ -34,9 +35,12 @@ from jiuwen_memory.api import (
     RequestSecurityContext,
     Scope,
     Surface,
+    get_request_id,
     new_request_context,
     reset_current,
+    reset_request_id,
     set_current,
+    set_request_id,
 )
 
 _BEARER = "bearer "
@@ -66,7 +70,14 @@ def credentials_from_headers(headers: Mapping[str, Any], peer_address: str = "")
 
 @contextmanager
 def authenticated(
-    authenticator, credentials, audit=None, limiter=None, *, workload_guard=None, surface=None
+    authenticator,
+    credentials,
+    audit=None,
+    limiter=None,
+    *,
+    workload_guard=None,
+    surface=None,
+    request_id: str | None = None,
 ) -> Iterator[RequestSecurityContext]:
     """在请求作用域内建立可信 :class:`RequestSecurityContext`；退出时**必定** reset。
 
@@ -77,8 +88,8 @@ def authenticated(
     但线程可能被池化复用；漏 reset 会让下一个请求继承上一个请求的身份——
     最严重的一类越权。
 
-    ``authenticate`` 故意放在 ``try`` 之外：认证失败时没有 token 可 reset，
-    放进 try 会需要一个 ``token = None`` 的分支判断，反而更容易写错。
+    ``request_id`` 仅允许受控适配层传入。HTTP 入口生成后传给这里，使认证失败、
+    限流拒绝也能关联响应和拒绝审计；缺省时由 ``new_request_context`` 生成 ID。
 
     ``limiter`` 在 ``authenticate`` **之前**执行（F05 §请求执行流程）：认证本身就是
     要保护的资源——API_KEY 模式下每次 authenticate 跑一次 Argon2id verify（128 MiB ×
@@ -94,40 +105,47 @@ def authenticated(
     ``surface`` 由适配层写入（迁移计划 §5.2 第 7 项），调用方不能经 payload 声明；
     缺省 ``INTERNAL`` 对应进程内装配。
     """
-    if limiter is not None and not limiter.allow(credentials.peer_address):
-        _record_denial(audit, authenticator, credentials, "rate_limit")
-        raise RateLimitedError(_RATE_LIMITED)
-
-    guard_acquired = False
-    if workload_guard is not None:
-        if not workload_guard.acquire():
-            _record_denial(audit, authenticator, credentials, "workload_budget")
+    request_id_token = set_request_id(request_id) if request_id else None
+    try:
+        if limiter is not None and not limiter.allow(credentials.peer_address):
+            _record_denial(audit, authenticator, credentials, "rate_limit")
             raise RateLimitedError(_RATE_LIMITED)
-        guard_acquired = True
 
-    try:
-        ctx = authenticator.authenticate(credentials)
-    except AuthenticationError:
-        _record_denial(audit, authenticator, credentials, "authenticate")
-        raise
+        guard_acquired = False
+        if workload_guard is not None:
+            if not workload_guard.acquire():
+                _record_denial(audit, authenticator, credentials, "workload_budget")
+                raise RateLimitedError(_RATE_LIMITED)
+            guard_acquired = True
+
+        try:
+            ctx = authenticator.authenticate(credentials)
+        except AuthenticationError:
+            _record_denial(audit, authenticator, credentials, "authenticate")
+            raise
+        finally:
+            if guard_acquired and workload_guard is not None:
+                workload_guard.release()
+
+        security = new_request_context(
+            ctx,
+            surface=surface if surface is not None else Surface.INTERNAL,
+            peer=_normalized_peer(credentials),
+            request_id=request_id,
+            # attributes 留空：业务 payload 不得注入任何系统属性。
+            # 可信代理链、mTLS 主体等属性将来只能由服务端组件写入。
+        )
+
+        token = set_current(ctx)
+        if request_id_token is None:
+            request_id_token = set_request_id(security.request_id)
+        try:
+            yield security
+        finally:
+            reset_current(token)
     finally:
-        if guard_acquired:
-            workload_guard.release()
-
-    security = new_request_context(
-        ctx,
-        surface=surface if surface is not None else Surface.INTERNAL,
-        peer=_normalized_peer(credentials),
-        # attributes 留空：本层没有可写入的系统属性，而业务 payload 一律不得注入
-        # （迁移计划 §5.2 第 7 项）。将来要加（如可信代理链、mTLS 主体）只能由
-        # 服务端组件在此处写。
-    )
-
-    token = set_current(ctx)
-    try:
-        yield security
-    finally:
-        reset_current(token)
+        if request_id_token is not None:
+            reset_request_id(request_id_token)
 
 
 def _normalized_peer(credentials) -> str:
@@ -160,16 +178,20 @@ def _record_denial(audit, authenticator, credentials, action) -> None:
         return
     try:
         mode = authenticator.mode()
+        detail = {
+            "mode": str(getattr(mode, "value", mode)),
+            "peer": credentials.peer_address,
+        }
+        request_id = get_request_id()
+        if request_id:
+            detail["request_id"] = request_id
         audit.record(
             AuditEvent(
                 actor=Scope(),
                 action=action,
                 decision="deny",
                 layer="security",
-                detail={
-                    "mode": str(getattr(mode, "value", mode)),
-                    "peer": credentials.peer_address,
-                },
+                detail=detail,
             )
         )
     except Exception:  # pragma: no cover - 审计后端故障不该把 401/429 变成 500

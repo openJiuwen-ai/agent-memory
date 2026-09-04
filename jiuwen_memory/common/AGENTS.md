@@ -107,7 +107,7 @@
     锁只交付原语，本层不在任何业务路径上加锁；在哪些临界区取锁由各消费方自行论证。
     锁是基于租约的协调机制而非共识算法，依赖方必须能容忍偶发互斥失效或自备第二道防线。
 11. `security/` 是 F05 安全域的契约层：消费方只 import 契约与值对象，不反向 import；接口先行过渡期内不启用任何新认证/授权逻辑，旧 `SecurityProvider` 继续从包顶层导出，新契约异常从各能力子包取。
-12. `RequestSecurityContext` 只经 `request_context.py` 的 `new_request_context` / `internal_context` 构造，不在各 surface 各自拼装；`legacy.py` 的 `legacy_request_context` 是过渡期唯一例外，实装 PR 与其全部调用点一并删除。
+12. `RequestSecurityContext` 只经 `request_context.py` 的 `new_request_context` / `internal_context` 构造，不在各 surface 各自拼装；`legacy.py` 的 `legacy_request_context` 是过渡期唯一例外，实装 PR 与其全部调用点一并删除。request ID 由受控适配层或构造入口生成，只作日志/审计关联；不得来自客户端 header、query 或业务 payload，不参与 actor、target 或授权判定，并必须在请求结束时 reset。
 13. 安全域 `Grant` 在构造边界把动作迭代冻结为 `frozenset[Action]` 并拒绝非 `Action` 成员；`grant_id` 默认留空等待服务端生成，公共导出不得要求既有调用方预先提供服务端标识。
 14. `RoutingFieldsProvider` 是授权策略路由字段的单一 capability 契约；接口先行过渡期的 `PermissionManager` 与目标 `Authorizer` 共同继承，禁止各自复制同名默认实现。
 15. 审计增量验证必须经 `read_stable_snapshot(after_sequence)` 在同一快照取得精确 checkpoint 与固定链头，并令每页 `scan(..., through_sequence=快照链头)`；缺 checkpoint、序号缺口或未到快照链头都返回 `incomplete`，不得从 genesis 盲接。`AuditVerificationLimits` 是服务端可信单次资源边界，PEP 仍须截断 provider 的超量 samples。`ProtectedAuditLogger` 构造时必须满足 `provider.chain_store() is audit_logger`。

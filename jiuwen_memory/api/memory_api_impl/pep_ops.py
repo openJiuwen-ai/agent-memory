@@ -16,6 +16,7 @@ from jiuwen_memory.common.errors import (
 )
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.security import principal
+from jiuwen_memory.common.security.request_context import get_request_id
 from jiuwen_memory.common.security.space_decision import (
     ATTR_PRINCIPAL_PATH,
     ATTR_SPACE_ACTION,
@@ -278,6 +279,9 @@ class PepOpsMixin:
     ) -> None:
         payload = dict(detail or {})
         payload.setdefault("decision", decision)
+        request_id = get_request_id()
+        if request_id:
+            payload.setdefault("request_id", request_id)
         self._audit.record(
             AuditEvent(
                 id=str(uuid.uuid4()),
