@@ -5,6 +5,7 @@ import importlib
 import json
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -13,8 +14,8 @@ import pytest
 import requests
 import yaml
 
-from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
-from jiuwen_memory.common.errors import BackendError, ValidationError
+from jiuwen_memory.api import Action, Grant, build_kernel
+from jiuwen_memory.common.errors import BackendError, PermissionDeniedError
 from jiuwen_memory.common.normalizer.normalizer_impl import video_asr, video_pipeline
 from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer import (
     PassthroughNormalizer,
@@ -39,6 +40,7 @@ from jiuwen_memory.common.type_def import (
     iter_clauses,
 )
 from jiuwen_memory.config import Config
+from jiuwen_memory.control.ingest_job import IngestJob
 from jiuwen_memory.control.job_impl.ingest_job import InProcessIngestJobController
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.retriever import Retriever
@@ -675,6 +677,12 @@ def test_video_add_and_prefixed_job_status_share_handler_route(
         assert submitted["job_id"].startswith("ing_")
         assert submitted["status"] in {"pending", "running", "succeeded"}
         assert submitted["reused"] is False
+        persisted = controller.status(
+            submitted["job_id"],
+            scope=Scope(org="org-1", user="user-1"),
+            owner=Scope(org="org-1", user="user-1"),
+        )
+        assert persisted.owner == Scope(org="org-1", user="user-1")
 
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
@@ -873,3 +881,71 @@ def test_ingest_job_status_uses_memory_api_read_permission() -> None:
         assert body["error"] == "PermissionDeniedError"
     finally:
         kernel.ingest_jobs.close()
+
+
+def test_ingest_job_status_hides_explicit_owner_mismatch() -> None:
+    """有显式 owner 的任务不能由另一主体经 job_status 读取。"""
+    kernel = build_kernel()
+    owner = Scope(org="org-1", user="owner")
+    outsider = Scope(org="org-1", user="outsider")
+    kernel.api.grant(
+        Grant(grantor=owner, grantee=outsider, actions=[Action.READ]),
+        security=legacy_request_context(owner),
+    )
+    submission = kernel.ingest_jobs.submit(
+        payload_id="video-owned",
+        source_ref="file:///data/demo.mp4",
+        scope=owner,
+        owner=owner,
+        task=lambda: [],
+    )
+    srv = SimpleNamespace(api=kernel.api, ingest_jobs=kernel.ingest_jobs)
+    try:
+        status, body = _dispatch(
+            srv,
+            "job",
+            {
+                "tenant_id": owner.org,
+                "scope": owner.user,
+                "actor_tenant_id": outsider.org,
+                "actor_scope": outsider.user,
+                "job_id": submission.job.id,
+            },
+        )
+
+        assert status == 404
+        assert body["error"] == "NotFoundError"
+    finally:
+        kernel.ingest_jobs.close()
+
+
+def test_ingest_job_status_denial_does_not_recover_ownerless_cold_job() -> None:
+    """未授权读取不能触发历史无 owner 任务的冷读恢复写回。"""
+    kernel = build_kernel()
+    owner = Scope(org="org-1", user="owner")
+    outsider = Scope(org="org-1", user="outsider")
+    now = datetime.now(timezone.utc)
+    job = IngestJob(
+        id="ing_cold_unauthorized",
+        payload_id="video-cold-unauthorized",
+        source_ref="file:///data/demo.mp4",
+        scope=owner,
+        status="pending",
+        created_at=now,
+        updated_at=now,
+    )
+    controller = kernel.ingest_jobs
+    try:
+        controller._state_store.save(job)
+
+        with pytest.raises(PermissionDeniedError):
+            kernel.api.job_status(
+                job.id,
+                scope=owner,
+                security=legacy_request_context(outsider),
+            )
+
+        stored = controller._state_store.get(job.id, scope=owner)
+        assert stored == job
+    finally:
+        controller.close()

@@ -41,11 +41,17 @@ from jiuwen_memory.common.type_def import (
     memory_key,
 )
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.storage.entity_store import (
+    EntityStore,
+    EntityStoreProducer,
+    adapt_entity_store,
+)
 from jiuwen_memory.storage.fs import FsProducer, FSStore
 from jiuwen_memory.storage.fulltext import FulltextProducer, FulltextStore
 from jiuwen_memory.storage.fusion import FusionProducer, FusionStore
 from jiuwen_memory.storage.graph import GraphProducer, GraphStore
 from jiuwen_memory.storage.kv import KvProducer, KVStore
+from jiuwen_memory.storage.raw import KVRawDataStore, RawDataStore, adapt_raw_data_store
 from jiuwen_memory.storage.security import (
     AllowAllStorageSecurity,
     StorageAccessContext,
@@ -55,6 +61,10 @@ from jiuwen_memory.storage.security import (
 from jiuwen_memory.storage.storage import Storage, StorageCapability, StorageProducer
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode, MemoryListResult
 from jiuwen_memory.storage.vector import VectorProducer, VectorStore
+
+
+def _scope_key(scope: Scope) -> tuple[str, str, str, str, str]:
+    return (scope.org, scope.space, scope.user, scope.agent, scope.session)
 
 
 class _AuthorizedStoreProxy:
@@ -72,12 +82,58 @@ class _AuthorizedStoreProxy:
 
         def authorized(*args: Any, **kwargs: Any) -> Any:
             access = kwargs.pop("access", None)
-            scope = args[0] if args and isinstance(args[0], Scope) else Scope()
-            action = _action_for_store_method(name)
-            self._security.authorize(access, scope, action, self._resource)
+            scope = _scope_for_store_call(args, kwargs)
+            for action in _actions_for_store_method(name, args, kwargs):
+                self._security.authorize(access, scope, action, self._resource)
             return member(*args, **kwargs)
 
         return authorized
+
+
+def _scope_for_store_call(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Scope:
+    """Resolve the explicit Store scope for positional and keyword calls."""
+    if args and isinstance(args[0], Scope):
+        return args[0]
+    for name in ("scope", "target_scope"):
+        scope = kwargs.get(name)
+        if isinstance(scope, Scope):
+            return scope
+    return Scope()
+
+
+def _actions_for_store_method(
+    name: str,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> tuple[StorageAction, ...]:
+    """Map one port call to every Storage action it can mutate."""
+    if name != "execute_operations":
+        return (_action_for_store_method(name),)
+
+    operations = args[1] if len(args) > 1 else kwargs.get("operations", ())
+    action_by_operation = {
+        "INSERT": StorageAction.ADD,
+        "LINK": StorageAction.UPDATE,
+        "UNLINK_UPDATE": StorageAction.UPDATE,
+        "DELETE": StorageAction.DELETE,
+    }
+    actions = {
+        action_by_operation.get(
+            str(getattr(getattr(operation, "type", None), "value", "")),
+            StorageAction.ADMIN,
+        )
+        for operation in operations
+    }
+    return tuple(
+        action
+        for action in (
+            StorageAction.ADD,
+            StorageAction.UPDATE,
+            StorageAction.DELETE,
+            StorageAction.ADMIN,
+        )
+        if action in actions
+    )
 
 
 def _action_for_store_method(name: str) -> StorageAction:
@@ -87,10 +143,23 @@ def _action_for_store_method(name: str) -> StorageAction:
         return StorageAction.UPDATE
     if name == "delete":
         return StorageAction.DELETE
+    if name == "append_raw":
+        return StorageAction.ADD
+    if name == "delete_raw":
+        return StorageAction.DELETE
+    if name == "list_raw":
+        return StorageAction.LIST
+    if name in {
+        "find_by_entity_text_hash",
+        "find_by_linked_memory_id",
+    }:
+        return StorageAction.SEARCH
     if name in {"search", "recall", "seed_ids"}:
         return StorageAction.SEARCH
     if name in {"get", "mget", "exists", "scan", "list", "stat"}:
         return StorageAction.GET
+    if name in {"scopes", "usage", "purge"}:
+        return StorageAction.ADMIN
     return StorageAction.ADMIN
 
 
@@ -104,16 +173,26 @@ class CompositeStorage(Storage):
         graph: GraphStore | None = None,
         fusion: FusionStore | None = None,
         fs: FSStore | None = None,
+        raw: RawDataStore | Any | None = None,
+        raw_store: RawDataStore | Any | None = None,
+        entity: EntityStore | Any | None = None,
         kv_ports: dict[str, KVStore] | None = None,
         vector_ports: dict[str, VectorStore] | None = None,
         fulltext_ports: dict[str, FulltextStore] | None = None,
         graph_ports: dict[str, GraphStore] | None = None,
         fusion_ports: dict[str, FusionStore] | None = None,
         fs_ports: dict[str, FSStore] | None = None,
+        raw_ports: dict[str, RawDataStore | Any] | None = None,
+        entity_ports: dict[str, EntityStore | Any] | None = None,
         recallers: list[Any] | None = None,
         preferred_pipeline: RetrievalPipeline = RetrievalPipeline.RECALL_GET_RANK,
         security: StorageSecurity | None = None,
     ) -> None:
+        selected_raw = raw if raw is not None else raw_store
+        # 默认仍与正排共用同一个物理 KV，但只通过 RawDataStore 适配器暴露给上层。
+        if selected_raw is None and kv is not None:
+            selected_raw = KVRawDataStore(kv)
+        selected_entity = adapt_entity_store(entity) if entity is not None else None
         self._stores = {
             StorageCapability.KV: kv,
             StorageCapability.VECTOR: vector,
@@ -121,9 +200,12 @@ class CompositeStorage(Storage):
             StorageCapability.GRAPH: graph,
             StorageCapability.FUSION: fusion,
             StorageCapability.FS: fs,
+            StorageCapability.ENTITY: selected_entity,
         }
         self._capabilities = frozenset(
-            capability for capability, store in self._stores.items() if store is not None
+            capability
+            for capability, store in self._stores.items()
+            if store is not None
         )
         configured_ports = {
             StorageCapability.KV: kv_ports,
@@ -132,13 +214,34 @@ class CompositeStorage(Storage):
             StorageCapability.GRAPH: graph_ports,
             StorageCapability.FUSION: fusion_ports,
             StorageCapability.FS: fs_ports,
+            StorageCapability.ENTITY: entity_ports,
         }
         self._named_stores: dict[StorageCapability, dict[str, Any]] = {}
         for capability, store in self._stores.items():
             ports = dict(configured_ports.get(capability) or {})
+            if capability is StorageCapability.ENTITY:
+                ports = {
+                    name: adapt_entity_store(port)
+                    for name, port in ports.items()
+                }
             if store is not None:
+                if capability is StorageCapability.ENTITY:
+                    store = adapt_entity_store(store)
+                    self._stores[capability] = store
                 ports["default"] = store
             self._named_stores[capability] = ports
+        # A named-only Entity port still provides the Entity capability.  Keep
+        # capability discovery aligned with the actual port set even when no
+        # ``default`` Entity backend is configured.
+        has_named_entity_port = bool(self._named_stores[StorageCapability.ENTITY])
+        if has_named_entity_port and StorageCapability.ENTITY not in self._capabilities:
+            self._capabilities = self._capabilities | frozenset({StorageCapability.ENTITY})
+        self._raw_stores = {
+            name: adapt_raw_data_store(port)
+            for name, port in (raw_ports or {}).items()
+        }
+        if selected_raw is not None:
+            self._raw_stores["default"] = adapt_raw_data_store(selected_raw)
         self._recallers: list[Any] = list(recallers or [])
         self._preferred_pipeline = preferred_pipeline
         self._security = security or AllowAllStorageSecurity()
@@ -148,6 +251,10 @@ class CompositeStorage(Storage):
                 for name, store in ports.items()
             }
             for capability, ports in self._named_stores.items()
+        }
+        self._raw_proxies = {
+            name: _AuthorizedStoreProxy(store, self._security, "raw")
+            for name, store in self._raw_stores.items()
         }
 
     @property
@@ -177,6 +284,14 @@ class CompositeStorage(Storage):
     @property
     def fs(self) -> FSStore:
         return cast(FSStore, self._port(StorageCapability.FS))
+
+    @property
+    def raw(self) -> RawDataStore:
+        return self.raw_port()
+
+    @property
+    def entity(self) -> EntityStore:
+        return cast(EntityStore, self._port(StorageCapability.ENTITY))
 
     @staticmethod
     def _validate_units(scope: Scope, units: list[MemoryUnit]) -> None:
@@ -220,6 +335,32 @@ class CompositeStorage(Storage):
     def has_fs_port(self, name: str = "default") -> bool:
         return self._has_port(StorageCapability.FS, name)
 
+    def has_raw_port(self, name: str = "default") -> bool:
+        return name in self._raw_stores
+
+    def raw_shares_kv(self, name: str = "default") -> bool:
+        """Report physical backend sharing for raw-data accounting.
+
+        Raw ports are authorized proxies at the public boundary, so inspect
+        the underlying adapter only for this non-data identity check.
+        """
+        if name != "default":
+            return False
+        main_kv = self._stores[StorageCapability.KV]
+        if main_kv is None:
+            return False
+        raw_store = self._raw_stores.get(name)
+        if raw_store is None:
+            # A custom Storage may omit the raw port and rely on the base
+            # contract's implicit KV-backed fallback. Composite normally
+            # materializes this adapter in __init__.
+            return True
+        checker = getattr(raw_store, "shares_backend_with", None)
+        return bool(checker(main_kv)) if callable(checker) else False
+
+    def has_entity_port(self, name: str = "default") -> bool:
+        return self._has_port(StorageCapability.ENTITY, name)
+
     def kv_port(self, name: str = "default") -> KVStore:
         return cast(KVStore, self._port(StorageCapability.KV, name))
 
@@ -238,11 +379,28 @@ class CompositeStorage(Storage):
     def fs_port(self, name: str = "default") -> FSStore:
         return cast(FSStore, self._port(StorageCapability.FS, name))
 
+    def raw_port(self, name: str = "default") -> RawDataStore:
+        try:
+            return cast(RawDataStore, self._raw_proxies[name])
+        except KeyError as exc:
+            raise UnsupportedStorageCapabilityError(
+                f"storage capability is not available: raw.{name}"
+            ) from exc
+
+    def entity_port(self, name: str = "default") -> EntityStore:
+        return cast(EntityStore, self._port(StorageCapability.ENTITY, name))
+
     def preferred_retrieval_pipeline(self) -> RetrievalPipeline:
         return self._preferred_pipeline
 
     def scopes(self) -> list[Scope]:
-        return self._raw_kv().scopes()
+        found: dict[tuple[str, str, str, str, str], Scope] = {}
+        for scope in self._raw_kv().scopes():
+            found[_scope_key(scope)] = scope
+        for raw_proxy in self._raw_proxies.values():
+            for scope in raw_proxy.scopes():
+                found.setdefault(_scope_key(scope), scope)
+        return list(found.values())
 
     def add(
         self,
@@ -392,6 +550,12 @@ class CompositeStorage(Storage):
                 checked.add(id(store))
                 store.security.health()
                 store.health()
+        for store in self._raw_stores.values():
+            if id(store) in checked:
+                continue
+            checked.add(id(store))
+            store.security.health()
+            store.health()
 
     def _port(self, capability: StorageCapability, name: str = "default") -> Any:
         try:
@@ -558,12 +722,28 @@ def _optional_store(
     return producer.dep(config, field)
 
 
+def _optional_raw_store(config: Any) -> RawDataStore | None:
+    """解析可选的原文 KV 后端，未配置时由 Composite 复用真源 KV。"""
+    if "raw_store" not in config.params:
+        return None
+    return KVRawDataStore(KvProducer.dep(config, "raw_store"))
+
+
 def _named_ports(producer: type[Factory], config: Any) -> dict[str, Any]:
     namespace = config.ctx.namespaces.get(producer.TOP_NAME, {})
     return {
         name: producer.build_named(name, config.ctx)
         for name in ("layers_l0", "layers_l1")
         if name in namespace
+    }
+
+
+def _named_entity_ports(config: Any) -> dict[str, Any]:
+    namespace = config.ctx.namespaces.get(EntityStoreProducer.TOP_NAME, {})
+    return {
+        name: EntityStoreProducer.build_named(name, config.ctx)
+        for name in namespace
+        if name != "default"
     }
 
 
@@ -625,6 +805,7 @@ def _build(config):
         ) from exc
     storage = CompositeStorage(
         kv=KvProducer.dep(config, default="memory"),
+        raw=_optional_raw_store(config),
         vector=_optional_store(
             VectorProducer,
             config,
@@ -645,8 +826,10 @@ def _build(config):
         ),
         fusion=_optional_store(FusionProducer, config, "fusion_store"),
         fs=_optional_store(FsProducer, config, "fs_store"),
+        entity=_optional_store(EntityStoreProducer, config, "entity_store"),
         vector_ports=_named_ports(VectorProducer, config),
         fulltext_ports=_named_ports(FulltextProducer, config),
+        entity_ports=_named_entity_ports(config),
         preferred_pipeline=preferred_pipeline,
     )
     # 具名构建先把实例预注册进缓存再组装召回路，打破循环依赖（recaller builder

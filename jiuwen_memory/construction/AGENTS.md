@@ -77,7 +77,8 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 
 1. **落盘由本层负责**
    接入层产出 `MemoryUnit` 后，记忆本体的写入由本层完成——统一经 `IndexBuilder`，由其内部
-   调用 Storage。**Evolver 不得直接调用 Storage 的 `add`/`update`/`delete`**（读取与原文接口不受限）。
+   调用 Storage。**Evolver 不得直接调用 Storage 的 `add`/`update`/`delete`**；原文上下文必须
+   通过注入的 `RawDataStore`/`Storage.raw_port()` 访问，不得直接持有或解析裸 `KVStore`。
    接入层禁止落盘。
 
 2. **索引是可重建派生（目标约束）**
@@ -90,7 +91,7 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
    派生记忆单元（Extractor/Abstractor 产出）的 `provenance` 字段记录由哪些 unit 演进而来，保证可重建、可审计回溯。
 
 4. **构建与存储解耦**
-   算子负责构建逻辑（生成索引投影：Chunk → VectorRecord/Document/Node，MemoryUnit → KV 记录），持久化由注入的 Store 承担。算子不依赖具体后端。正排与派生索引同此模式——`ForwardIndexBuilder` 写 `storage.kv`，与 `FulltextIndexBuilder` 写 `storage.fulltext` 同构。
+   算子负责构建逻辑（生成索引投影：Chunk → VectorRecord/Document/Node，MemoryUnit → KV 记录），持久化由注入的 Store 承担。算子不依赖具体后端。正排与派生索引同此模式——`ForwardIndexBuilder` 写 `storage.kv`，与 `FulltextIndexBuilder` 写 `storage.fulltext` 同构；原文由 `RawDataStore` 负责 prefix、codec、保留策略和后端适配。
 
 5. **scope 原生隔离**
    构建索引记录时把来源 `MemoryUnit.scope` 落到记录的专用 `scope` 字段（`VectorRecord.scope` / `Document.scope` / `Node.scope`），使检索得以按 scope 原生隔离。
@@ -153,7 +154,7 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 
 **本模块管**：
 - 记忆本体落盘（经 IndexBuilder 调用 Storage）
-- 原文（`/messages/`）读写（调用独立注入的 `message_store: KVStore`）
+- 原文上下文读写（调用注入的 `RawDataStore`，由 Storage/Raw adapter 管理 `/messages/`、codec 与保留策略）
 - 信息提取与抽象升华（Extractor / Abstractor）
 - 关联分析（Associator）
 - 多维分类（Classifier）

@@ -532,6 +532,17 @@ class _Storage:
             self.units[unit.id] = unit
 
 
+class _NoopRawStore:
+    def append_raw(self, _scope, _units, **_kwargs):
+        return None
+
+    def list_raw(self, _scope, **_kwargs):
+        return []
+
+    def delete_raw(self, _scope, _record_ids, **_kwargs):
+        return None
+
+
 class _Index:
     def __init__(self, storage: _Storage) -> None:
         self._storage = storage
@@ -580,7 +591,7 @@ def _evolver(extractor) -> tuple[SchemaOrchestratingEvolver, _Storage, _Index]:
         associator=SimpleNamespace(),
         index_builder=index,
         storage=storage,
-        message_store=SimpleNamespace(),
+        message_store=_NoopRawStore(),
         dedup=SimpleNamespace(),
         llm=SimpleNamespace(),
     )

@@ -10,6 +10,7 @@ from .fulltext import FulltextStore
 from .fusion import FusionStore
 from .graph import GraphStore
 from .kv import KVStore
+from .raw import KVRawDataStore, RawDataStore, RawDataUsage, RawStore
 from .storage import Storage, StorageCapability, StorageProducer
 from .storage_impl import CompositeStorage
 from .types import (
@@ -54,6 +55,10 @@ __all__ = [
     "FSStore",
     "EntityStore",
     "EntityStoreProducer",
+    "RawDataStore",
+    "RawStore",
+    "RawDataUsage",
+    "KVRawDataStore",
     "ScoredID",
     "ScoredHit",
     "Document",

@@ -412,6 +412,23 @@ def _submit_video(
         system_metadata=system_metadata,
         user_metadata=user_metadata,
     )
+
+    submission = srv.ingest_jobs.submit(
+        payload_id=payload_id,
+        source_ref=uri,
+        scope=scope,
+        owner=security.auth.actor,
+        task=lambda: srv.api.add(
+            uri,
+            scope,
+            Modality.VIDEO,
+            security=security,
+            assets=assets,
+            tags=payload.get("tags"),
+            system_metadata=system_metadata,
+            user_metadata=user_metadata,
+        ),
+    )
     job = submission.job
     return {
         "ok": True,

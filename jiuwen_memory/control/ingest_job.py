@@ -28,6 +28,7 @@ class IngestJob:
     updated_at: datetime
     unit_ids: tuple[str, ...] = ()
     error: str = ""
+    owner: Scope | None = None
 
 
 @dataclass(frozen=True)
@@ -53,11 +54,18 @@ class IngestJobController(ControlOperator):
         source_ref: str,
         scope: Scope,
         task: IngestTask,
+        owner: Scope | None = None,
     ) -> IngestSubmission:
         """Submit or reuse an ingest job."""
 
     @abstractmethod
-    def status(self, job_id: str, *, scope: Scope) -> IngestJob:
+    def status(
+        self,
+        job_id: str,
+        *,
+        scope: Scope,
+        owner: Scope | None = None,
+    ) -> IngestJob:
         """Return a job only when it belongs to the requested scope."""
 
     @abstractmethod

@@ -22,11 +22,13 @@ from jiuwen_memory.common.type_def import (
     ScoredUnit,
 )
 
+from .entity_store import EntityStore
 from .fs import FSStore
 from .fulltext import FulltextStore
 from .fusion import FusionStore
 from .graph import GraphStore
 from .kv import KVStore
+from .raw import RawDataStore
 from .security import StorageAccessContext, StorageSecurity
 from .types import IndexRemoveMode, IndexWriteMode, MemoryListResult
 from .vector import VectorStore
@@ -47,7 +49,14 @@ class StorageProducer(Factory):
         else:
             store_params = {
                 name: config.params[name]
-                for name in ("kv_store", "vector_store", "fulltext_store", "graph_store")
+                for name in (
+                    "kv_store",
+                    "vector_store",
+                    "fulltext_store",
+                    "graph_store",
+                    "entity_store",
+                    "raw_store",
+                )
                 if name in config.params
             }
             store_params["__default_capabilities"] = True
@@ -68,47 +77,52 @@ class StorageCapability(str, Enum):
     GRAPH = "graph"
     FUSION = "fusion"
     FS = "fs"
+    ENTITY = "entity"
 
 
 class Storage(ABC):
     @property
     @abstractmethod
-    def security(self) -> StorageSecurity:
-        ...
+    def security(self) -> StorageSecurity: ...
 
     @property
     @abstractmethod
-    def kv(self) -> KVStore:
-        ...
+    def kv(self) -> KVStore: ...
 
     @property
     @abstractmethod
-    def vector(self) -> VectorStore:
-        ...
+    def vector(self) -> VectorStore: ...
 
     @property
     @abstractmethod
-    def fulltext(self) -> FulltextStore:
-        ...
+    def fulltext(self) -> FulltextStore: ...
 
     @property
     @abstractmethod
-    def graph(self) -> GraphStore:
-        ...
+    def graph(self) -> GraphStore: ...
 
     @property
     @abstractmethod
-    def fusion(self) -> FusionStore:
-        ...
+    def fusion(self) -> FusionStore: ...
 
     @property
     @abstractmethod
-    def fs(self) -> FSStore:
-        ...
+    def fs(self) -> FSStore: ...
+
+    @property
+    def raw(self) -> RawDataStore:
+        """原文业务端口；不具备能力时由 ``raw_port`` 抛统一异常。"""
+        raise UnsupportedStorageCapabilityError("storage capability is not available: raw.default")
+
+    @property
+    def entity(self) -> EntityStore:
+        """实体索引业务端口；实现可提供一体化 Entity 能力。"""
+        raise UnsupportedStorageCapabilityError(
+            "storage capability is not available: entity.default"
+        )
 
     @abstractmethod
-    def capabilities(self) -> frozenset[StorageCapability]:
-        ...
+    def capabilities(self) -> frozenset[StorageCapability]: ...
 
     def has_kv(self) -> bool:
         return StorageCapability.KV in self.capabilities()
@@ -128,6 +142,12 @@ class Storage(ABC):
     def has_fs(self) -> bool:
         return StorageCapability.FS in self.capabilities()
 
+    def has_raw(self) -> bool:
+        return self.has_raw_port()
+
+    def has_entity(self) -> bool:
+        return StorageCapability.ENTITY in self.capabilities()
+
     def has_kv_port(self, name: str = "default") -> bool:
         return name == "default" and self.has_kv()
 
@@ -145,6 +165,22 @@ class Storage(ABC):
 
     def has_fs_port(self, name: str = "default") -> bool:
         return name == "default" and self.has_fs()
+
+    def has_raw_port(self, name: str = "default") -> bool:
+        return False
+
+    def raw_shares_kv(self, name: str = "default") -> bool:
+        """Whether the named raw port shares the primary KV backend.
+
+        The default Storage contract is conservative for custom
+        implementations: the implicit ``default`` raw fallback is assumed
+        to reuse KV, while an explicitly exposed raw port must opt in through
+        its own implementation (for example, ``CompositeStorage``).
+        """
+        return name == "default" and self.has_kv() and not self.has_raw_port(name)
+
+    def has_entity_port(self, name: str = "default") -> bool:
+        return name == "default" and self.has_entity()
 
     def kv_port(self, name: str = "default") -> KVStore:
         if name == "default":
@@ -184,9 +220,20 @@ class Storage(ABC):
             return self.fs
         raise UnsupportedStorageCapabilityError(f"storage capability is not available: fs.{name}")
 
+    def raw_port(self, name: str = "default") -> RawDataStore:
+        if name == "default" and self.has_raw():
+            return self.raw
+        raise UnsupportedStorageCapabilityError(f"storage capability is not available: raw.{name}")
+
+    def entity_port(self, name: str = "default") -> EntityStore:
+        if name == "default" and self.has_entity():
+            return self.entity
+        raise UnsupportedStorageCapabilityError(
+            f"storage capability is not available: entity.{name}"
+        )
+
     @abstractmethod
-    def preferred_retrieval_pipeline(self) -> RetrievalPipeline:
-        ...
+    def preferred_retrieval_pipeline(self) -> RetrievalPipeline: ...
 
     @abstractmethod
     def scopes(self) -> list[Scope]:
@@ -252,8 +299,7 @@ class Storage(ABC):
         unit_ids: list[str],
         *,
         access: StorageAccessContext | None = None,
-    ) -> list[MemoryUnit]:
-        ...
+    ) -> list[MemoryUnit]: ...
 
     @abstractmethod
     def list(
@@ -266,8 +312,7 @@ class Storage(ABC):
         filters: FilterExpr | None = None,
         extensions: dict[str, str] | None = None,
         access: StorageAccessContext | None = None,
-    ) -> MemoryListResult:
-        ...
+    ) -> MemoryListResult: ...
 
     @abstractmethod
     def recall(
@@ -278,8 +323,7 @@ class Storage(ABC):
         channels: list[RecallChannel] | None,
         recall_limit: int,
         access: StorageAccessContext | None = None,
-    ) -> RecallResult[ScoredUnit]:
-        ...
+    ) -> RecallResult[ScoredUnit]: ...
 
     @abstractmethod
     def recall_and_get(
@@ -290,8 +334,7 @@ class Storage(ABC):
         channels: list[RecallChannel] | None,
         recall_limit: int,
         access: StorageAccessContext | None = None,
-    ) -> RecallResult[ScoredMemoryUnit]:
-        ...
+    ) -> RecallResult[ScoredMemoryUnit]: ...
 
     @abstractmethod
     def retrieve(
@@ -304,9 +347,7 @@ class Storage(ABC):
         recall_limit: int,
         rank_limit: int,
         access: StorageAccessContext | None = None,
-    ) -> RankedStorageResult:
-        ...
+    ) -> RankedStorageResult: ...
 
     @abstractmethod
-    def health(self) -> None:
-        ...
+    def health(self) -> None: ...
