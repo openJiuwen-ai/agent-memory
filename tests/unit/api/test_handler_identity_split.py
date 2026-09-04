@@ -49,9 +49,10 @@ class _RecordingApi:
         assets=None,
         system_metadata=None,
         user_metadata=None,
+        occurred_at=None,
     ):
         self.add_calls.append(
-            {"scope": scope, "identity": security.auth.actor, "modality": modality}
+            {"scope": scope, "identity": security.auth.actor, "modality": modality, "occurred_at": occurred_at}
         )
         return [handler.MemoryUnit(id="unit-1", scope=scope, segments=[Segment(content=content)])]
 
@@ -79,6 +80,22 @@ def _dispatch_add(payload: dict) -> dict:
 
     assert status == 200, body
     return srv.api.add_calls[0]
+
+
+def test_add_forwards_occurred_at_to_api() -> None:
+    from datetime import datetime
+
+    call = _dispatch_add({"occurred_at": "2026-08-26T12:00:00"})
+    assert call["occurred_at"] == datetime.fromisoformat("2026-08-26T12:00:00")
+
+
+def test_add_invalid_occurred_at_returns_400() -> None:
+    srv = _RecordingServer()
+    status, body = _dispatch(
+        srv, "add", {"content": "hello", "occurred_at": "not-a-date"},
+    )
+    assert status == 400
+    assert body["error"] == "ValidationError"
 
 
 def test_actor_scope_and_target_scope_match_when_actor_fields_are_omitted() -> None:
@@ -303,6 +320,7 @@ def test_structured_request_uses_typed_actor_and_target_not_payload_claims() -> 
         "scope": target,
         "identity": actor,
         "modality": handler.Modality.TEXT,
+        "occurred_at": None,
     }
 
 
