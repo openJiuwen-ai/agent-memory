@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-09-01 |
+| 最近一次修订日期 | 2026-09-03 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
@@ -46,7 +46,8 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 4. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
 5. **所有算子必须实现 `operator_type()` 和 `health()`**：继承自 `ConstructionOperator`。
 6. **构建与存储解耦**：算子负责构建逻辑（生成索引投影），持久化由注入的 Store 承担。正排
-   同样遵循此模式——`ForwardIndexBuilder` 生成 KV 记录投影，写入注入的 KV 端口。
+   同样遵循此模式——`ForwardIndexBuilder` 生成 KV 记录投影，写入注入的 KV 端口；原文上下文
+   由 `RawDataStore`/`Storage.raw_port()` 管理，不由 Evolver 解析底层 KV。
 7. **scope 原生隔离**：构建索引时将来源 `MemoryUnit.scope` 作为 Store 方法的显式
    入参下推；`VectorRecord` / `Document` / `Node` 等记录结构不混入 scope 字段。
 8. **去重召回与判定分离**：去重召回（用哪个索引）由 `Dedup` 接口承担，判定（ADD/UPDATE/SUPERSEDE/NOOP）与落盘由 Evolver 实现承担——`OrchestratingEvolver._evolve_extract`（legacy，`_dedup_batch` 判定+落盘耦合）或 `DynamicEvolver._evolve_extract`（dynamic，consolidate 只判定、落盘延后到 reflect 之后）。装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`。
@@ -73,19 +74,25 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
     底层存储拓扑。剩余的合法调用方只有 `UnifiedIndexBuilder`（全部写经 Storage 领域接口，
     自身只做 `vector_enabled` 门控的 content 向量化并回填 `MemoryUnit.vector` 随本体下传）与
     `LifecycleManager`（状态回写）。读取（`get`/`list`/`scopes`）不受此约束。
-16. **索引状态由调用方判定，构建算子不解读 `lifecycle`**：记忆处于什么状态、因而该对索引
+16. **原文和实体端口必须走 Storage 契约**：Evolver 的原文追加、读取、清理只能调用注入的
+    `RawDataStore`（通常来自 `Storage.raw_port()`），不得 import `KVStore`/`KvProducer`，不得
+    拼接 `/messages/`、调用 codec 或自行实现 retention。EntityIndexBuilder 与 Retrieval 的
+    KeywordRecaller 只能接收 `Storage.entity_port()`；不得直接调用 `EntityStoreProducer`，也
+    不得自行把 Scope 投影为 `space_id` / filters 或维护任何实体隔离字段。完整五维 Scope 的
+    后端 namespace、兼容转换与物理 id 规则由 EntityStore/adapter 统一负责。
+17. **索引状态由调用方判定，构建算子不解读 `lifecycle`**：记忆处于什么状态、因而该对索引
     做什么，由调用方判断后调对应方法；`IndexBuilder` 只执行被要求的操作。如归档/遗忘为
     `update(mode=FORWARD_ONLY)`（回写本体新状态）+ `remove(mode=SOFT)`
     （移出检索）两条互不重叠的指令。
-17. **一个子 builder 只负责一种索引形式，端口统一从 `Storage` 取**：写侧子 builder 与读侧
+18. **一个子 builder 只负责一种索引形式，端口统一从 `Storage` 取**：写侧子 builder 与读侧
     recaller 因此取自同一个 `Storage` 实例的同一端口，读写不分叉。
-18. **正排最先出现、最后消失**：`build`/`update` 正排在前，`remove` 正排最后。正排先删会
+19. **正排最先出现、最后消失**：`build`/`update` 正排在前，`remove` 正排最后。正排先删会
     留下孤儿派生索引，而删除路径的扫描源正是正排，此后无法清理。
-19. **叶权威、父可重建**（目标契约，尚未实现）：普通写入或来源转换产生的叶是权威事实；
+20. **叶权威、父可重建**（目标契约，尚未实现）：普通写入或来源转换产生的叶是权威事实；
     `HierarchyComposer` 生成的父节点是派生物。重建父层不得删除、改写或归档权威叶内容。
-20. **层级边双向一致**（目标契约，尚未实现）：父 `child_ids` 与子 `parent_id` 必须在同一构建操作中维护，
+21. **层级边双向一致**（目标契约，尚未实现）：父 `child_ids` 与子 `parent_id` 必须在同一构建操作中维护，
     并在写索引前通过同 org+space、无环、单 kind 单父、区间覆盖校验（跨细粒度 scope 时边可解析）。
-21. **父标注先于持久化和索引**（目标契约，尚未实现）：新派生父节点先经 `LayerAnnotator` best-effort 生成 L0/L1，
+22. **父标注先于持久化和索引**（目标契约，尚未实现）：新派生父节点先经 `LayerAnnotator` best-effort 生成 L0/L1，
     再写 KV 和索引。标注失败保留空 layers 并继续，不得因摘要失败丢失结构结果。
 
 ## 接口契约
@@ -317,7 +324,7 @@ MemoryUnit
 │   → 消费 unit.entities 明文构造 EntityMention（type 统一 PROPER；为空跳过该 unit，无 spaCy 兜底）
 │   → EntityNormalizer.normalize + hash_entity_text（sha256，精确匹配 key）
 │   → EntityLinkService 两级归并：hash 精确命中 → LINK；未命中 → INSERT 新实体（不做向量归并）
-│   → EntityStore.execute_operations（bulk，per-item 粒度，partial failure 不抛）
+│   → Storage.entity_port() → EntityStore.execute_operations（bulk，per-item 粒度，partial failure 不抛）
 │   → update 走「unlink 旧链接 + link 新内容」；SUPERSEDED（仅 lifecycle 变）不 unlink（保留 as_of 回溯）
 │   → 失败全程 try/except 吞异常，不中断 build 主链路（增强层，坏了不拖累主流程）
 ├─ HybridIndexBuilder：纯编排，组合 forward / fulltext / vector / entity 四个子 builder
@@ -438,7 +445,8 @@ layers 降级。只有通过结构校验后，才按“KV 真源 → 内容索�
 
 ### Evolver（`evolver.py`）
 
-记忆自演进，持续驱动演进闭环。两个实现：`OrchestratingEvolver`（注册名 `orchestrating`，legacy）与 `DynamicEvolver`（注册名 `dynamic`，子类，EXTRACT 走动态 prompt 四步）。`evolve` 按模式分派到 `_evolve_extract` / `_evolve_consolidate` / `_evolve_associate` / `_evolve_forget` 四个可覆盖方法。两种 Evolver 的高相似 direct_noop 短路共用 `evolver_impl/dedup_direct_noop.should_direct_noop`。
+记忆自演进，持续驱动演进闭环。两个实现：`OrchestratingEvolver`（注册名 `orchestrating`，legacy）与 `DynamicEvolver`（注册名 `dynamic`，子类，EXTRACT 走动态 prompt 四步）。原文上下文通过 `RawDataStore`/`Storage.raw_port()` 读写；Evolver 不感知 `/messages/`、codec 或 retention。`evolve` 按模式分派到 `_evolve_extract` / `_evolve_consolidate` / `_evolve_associate` / `_evolve_forget` 四个可覆盖方法。
+记忆自演进，持续驱动演进闭环。两个实现：`OrchestratingEvolver`（注册名 `orchestrating`，legacy）与 `DynamicEvolver`（注册名 `dynamic`，子类，EXTRACT 走动态 prompt 四步）。原文上下文通过 `RawDataStore`/`Storage.raw_port()` 读写；Evolver 不感知 `/messages/`、codec 或 retention。`evolve` 按模式分派到 `_evolve_extract` / `_evolve_consolidate` / `_evolve_associate` / `_evolve_forget` 四个可覆盖方法。两种 Evolver 的高相似 direct_noop 短路共用 `evolver_impl/dedup_direct_noop.should_direct_noop`。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|

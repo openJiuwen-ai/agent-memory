@@ -1,5 +1,13 @@
 # F06 — 实体关联召回并入 fulltext L2（hash-only 归并）
 
+## 元信息
+
+| 项 | 值 |
+|---|---|
+| 日期 | 2026-09-03 |
+| 影响范围 | jiuwen_memory/storage/、jiuwen_memory/construction/、jiuwen_memory/retrieval/、docs/specs/S05-construction.md、docs/specs/S06-storage.md |
+| 测试基线 | 相关定向测试 176 passed |
+
 > 本文描述实体关联记忆召回的**当前业务实现**。召回侧接口契约见 [`docs/specs/S04-retrieval.md`](../../specs/S04-retrieval.md)；写入侧归并规约见 [`docs/specs/S05-construction.md`](../../specs/S05-construction.md) 的 IndexBuilder 段。
 
 ## 概述
@@ -12,10 +20,10 @@
 
 | 端 | 执行点 | 作用 | 开关 |
 |---|---|---|---|
-| 写入侧 | `HybridIndexBuilder` 组合 `EntityLinkService` → `find_by_entity_text_hash` / `execute_operations` | 随记忆写入维护「entity_text_hash → linked_memory_ids」倒排（hash 精确归并，无向量） | `entity_enabled` |
-| 召回侧 | `KeywordRecaller._build` 注入 `entity_store`，`recall` 内部 `_expand_by_entities` | L2 batch 1 候选的 entities 反查拿到 batch 2 关联 unit，中位数锚定打分并入候选 | `entity_enabled` |
+| 写入侧 | `HybridIndexBuilder` 从 `Storage.entity_port()` 获取实体端口，组合 `EntityLinkService` → `find_by_entity_text_hash` / `execute_operations` | 随记忆写入维护「entity_text_hash → linked_memory_ids」倒排（hash 精确归并，无向量） | `entity_enabled` |
+| 召回侧 | `KeywordRecaller._build` 从同一个 `Storage.entity_port()` 获取实体端口，`recall` 内部 `_expand_by_entities` | L2 batch 1 候选的 entities 反查拿到 batch 2 关联 unit，中位数锚定打分并入候选 | `entity_enabled` |
 
-`entity_enabled` 默认 **False**。关闭时：写入侧不建索引、召回侧 `KeywordRecaller` 不注入 `entity_store`（`_expand_by_entities` 自动跳过）——两端一致降级，零开销。
+`entity_enabled` 默认 **False**。关闭时：写入侧不建索引、召回侧 `KeywordRecaller` 不从 Storage 获取实体端口（`_expand_by_entities` 自动跳过）——两端一致降级，零开销。
 
 > **默认 False 的理由**：实体反向索引是重依赖特性——需 ES entity 索引，且依赖上游在写入前把 `unit.entities` 明文抽好填充。默认关、显式开是更稳的工程姿态。开启时召回侧不对 query 做实体抽取、不拉模型；写入侧只消费 `unit.entities` 明文，为空的 unit 直接跳过不入实体索引。
 
@@ -27,7 +35,7 @@
 |---|---|---|---|
 | `entity_enabled` | `false` | 实体链路总开关（写入建索引 + 召回 L2 扩展） | 运行时 |
 
-开启步骤：config.yml 置 `entity_enabled: true` + 配 `entity_store` 命名空间（ES hosts/index）+ `constructor`/`recaller.keyword` 两端 params 各引用 `entity_store: default`。召回侧不拉模型、写入侧只消费 `unit.entities` 明文，无 NER 兜底抽取。
+开启步骤：config.yml 置 `entity_enabled: true`，配置 `entity_store` 命名空间（ES hosts/index），并在 `storage.default.params` 中引用 `entity_store: default`。`constructor` 和 `recaller.keyword` 只引用 `storage: default`，不再各自注入底层 EntityStore。召回侧不拉模型、写入侧只消费 `unit.entities` 明文，无 NER 兜底抽取。
 
 ## 写入侧
 
@@ -54,16 +62,16 @@
 
 1. **准入过滤**（`EntityIndexAdmissionPolicy.decide`）：只让 SEMANTIC / CORE / EPISODIC 三个 tier 进索引；WORKING / ARCHIVAL 跳过。
 2. **消费 unit.entities 明文**：`unit.entities` 非空时直接构造 `EntityMention`（type 统一 PROPER）；**为空则跳过该 unit，不入实体索引（无 NER 兜底，不调 extract_batch）**。
-3. **分组**：按 `(space_id, EntityStoreFilters.key())` 分组，同组共享一次 bulk 查询/写入。
+3. **分组**：按完整五维 `Scope` 分组，同组共享一次 bulk 查询/写入。旧的 `space_id + filters` 后端参数只由 Storage 内部兼容适配器生成，上层不感知。
 4. **两级归并**（[`_link_group`](../../../jiuwen_memory/construction/index_builder_impl/entity_index_builder.py#L263)）：
    - **hash 精确**：`find_by_entity_text_hash` 按 hash term 查。
    - **命中 → LINK**：追加新 unit_id（去重已有）。
    - **未命中 → INSERT**：直接当新实体建文档，不做向量归并。
 5. **bulk 提交**：`execute_operations` 一次提交整组 INSERT/LINK，per-item 粒度返回（`EntityBatchResult`，partial failure 不抛异常）。
 
-### 隔离：space_id routing + actor 单段 term
+### 隔离：完整五维 Scope（后端可内部 routing）
 
-entity 索引的隔离维度：`space_id`（`space_id_from_scope`）走 ES routing（同 shard 聚簇）+ 文档字段（`term` filter），`actor_id`（`EntityStoreFilters.from_scope`，← scope.user）走 term 过滤。**agent/session 不作隔离维度**——实体是 user 级知识，同 user 下跨 agent、跨 session 共享实体索引。召回侧 `KeywordRecaller._expand_by_entities` 同样用 `space_id_from_scope(scope)` + `EntityStoreFilters.from_scope(scope)` 构造查询参数，与写入侧对齐。
+entity 索引的公开隔离契约是完整五维 `Scope`：`org`、`space`、`user`、`agent`、`session`。后端可以把 `scope.space` 或派生的 `space_id` 用作 ES routing，并把 Scope 维度写入文档字段；但 routing 只用于定位，不能扩大可见范围。兼容旧后端所需的 `space_id + EntityStoreFilters` 由 Storage 内部适配器生成，`EntityIndexBuilder` 和 `KeywordRecaller` 不直接构造这些参数。因此，同 org 下不同 space、同 user 下不同 agent/session 的实体都不会串读，除非调用方显式使用同一个 Scope。
 
 ## 召回侧
 
@@ -75,7 +83,7 @@ entity 索引的隔离维度：`space_id`（`space_id_from_scope`）走 ES routi
 2. **短路**：`batch1 ≥ top_k` 时跳过 batch 2——扩展打分 `anchor × boost`（boost ≤ cap = max/median）注定 ≤ batch 1 最高分，挤不进 top_k 高分区，反查 + 点读 + 过滤属无用功。
 3. **batch 2**（实体关联扩展，[`_expand_by_entities`](../../../jiuwen_memory/retrieval/recaller_impl/keyword_recaller.py#L117)）：
    - 从 batch 1 records 的 `metadata['entities']` 收集所有明文 → `normalize → hash_entity_text` 去重得 hash 集合。
-   - `entity_store.find_by_entity_text_hash(space_id, hashes, filters, limit)` 反查 → 拿 `EntityRecord` 列表，取其 `linked_memory_ids`（**排除已在 batch 1 的 unit_id**，避免重复）。
+   - `storage.entity_port().find_by_entity_text_hash(scope, hashes, limit=...)` 反查 → 拿 `EntityRecord` 列表，取其 `linked_memory_ids`（**排除已在 batch 1 的 unit_id**，避免重复）。
    - 聚合 `raw_contrib: unit_id → Σ idf(df_e)`，`df_e = len(er.linked_memory_ids)` 是该实体关联的记忆数（**真正的文档频率**，user-scope 内）。
 4. **中位数锚定打分**：
    - batch 1 命中数 ≥ 3：`anchor = median(batch1 scores)`。
@@ -141,7 +149,7 @@ score2 = anchor × boost
 
 ### 失败隔离
 
-**召回侧**：`entity_store` 查询失败（`find_by_entity_text_hash` 抛异常）→ `_expand_by_entities` 捕获返空 list，batch 2 为空，recall 退化为原 L2 召回，不中断。`entity_store` 未注入（`entity_enabled=false` 或 endpoint 未配）→ `_expand_by_entities` 前置判断直接返空。
+**召回侧**：Storage 的实体端口查询失败（`find_by_entity_text_hash` 抛异常）→ `_expand_by_entities` 捕获返空 list，batch 2 为空，recall 退化为原 L2 召回，不中断。实体端口未声明（`entity_enabled=false` 或 endpoint 未配）→ `_expand_by_entities` 前置判断直接返空。
 
 **写入侧**：
 - `EntityLinkService._link_group` 的 hash 精确查询失败（`find_by_entity_text_hash` 抛异常）→ **整组 abort + 计 failed_count**，不降级成"全 INSERT"——查不到不等于不存在，误 INSERT 会造重复实体文档（同 hash 多条 `EntityRecord`，召回侧 `find_by_entity_text_hash` 命中多条，`raw_contrib` 累加翻倍，打分失真）。下次同实体写入时查询恢复 → hash 命中 → LINK，自愈。
@@ -200,15 +208,15 @@ u4 通过 Bob 关联被扩展召回（fulltext 未命中 alice）。IDF 打分�
 | 场景 | 验证方式 | 结果 |
 |------|---------|------|
 | 写入/召回归一化对齐 | L2 候选 entities 与写入 entities 同源，normalize+hash 一致 | ✅ |
-| `entity_enabled=false` 默认关 | KeywordRecaller 不注入 entity_store，`_expand_by_entities` 跳过，退化为原 L2 召回 | ✅ |
+| `entity_enabled=false` 默认关 | KeywordRecaller 不获取 Storage Entity 端口，`_expand_by_entities` 跳过，退化为原 L2 召回 | ✅ |
 | 高频实体不淹没精确实体 | IDF 抑制：df=1000→idf≈0.145，df=1→1.44；低频实体关联记忆分 > 高频实体关联记忆分 | ✅ |
 | top_k 契约 | recall 末尾 `[:top_k]` 截断，batch1+batch2 合并后 ≤ top_k | ✅ |
 | batch1≥top_k 短路 | `find_by_entity_text_hash` 调用次数=0，不做无用扩展 | ✅ |
 | 生产过滤先于 top_k（S04:40） | batch2 预筛 20 后点读过滤，无效候选（SUPERSEDED）被剔，有效候选保留 | ✅ |
 | 点读减量 | `storage.get` 的 unit 数 ≤ `_ENTITY_EXPANSION_TOP_K=20` | ✅ |
-| entity store 查询失败（召回侧） | `_expand_by_entities` 捕获返空，batch 2 空，不中断 | ✅ |
-| entity store 查询失败（写入侧） | `_link_group` 整组 abort 计 failed，不降级 INSERT 造重复 | ✅ |
-| entity store 未注入 | `_expand_by_entities` 前置判断返空 | ✅ |
+| Storage Entity 端口查询失败（召回侧） | `_expand_by_entities` 捕获返空，batch 2 空，不中断 | ✅ |
+| Storage Entity 端口查询失败（写入侧） | `_link_group` 整组 abort 计 failed，不降级 INSERT 造重复 | ✅ |
+| Storage Entity 端口未声明 | `_expand_by_entities` 前置判断返空 | ✅ |
 | 写入侧 entity 失败 | `build` 不阻断 write，error 级别可见 + failed_count 对账 | ✅ |
 
 ## 已知遗留

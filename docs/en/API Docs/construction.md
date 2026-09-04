@@ -372,13 +372,14 @@ a real LLM that can satisfy the corresponding JSON contract.
 | `forward` | `ForwardIndexBuilder` | `storage` | Forward memory records only |
 | `fulltext` | `FulltextIndexBuilder` | `storage`; `layers_index_enabled` | Full-text and optional L0/L1 full-text indexes |
 | `vector` | `VectorIndexBuilder` | `storage`, `chunker`, `embedder`; `layers_index_enabled` | Content-chunk vectors and optional L0/L1 vector indexes |
-| `hybrid` | `HybridIndexBuilder` | `storage`, `chunker`, `embedder`; `layers_index_enabled`, `entity_enabled`, optional `entity_store` | Default complete orchestrator |
+| `hybrid` | `HybridIndexBuilder` | `storage`, `chunker`, `embedder`; `layers_index_enabled`, `entity_enabled` | Default complete orchestrator; when enabled, the internal EntityIndexBuilder obtains `storage.entity_port()` |
 | `unified` | `UnifiedIndexBuilder` | `storage` | Delegates every CRUD operation and mode unchanged to Storage |
 
 `EntityIndexBuilder` is an internal sub-builder of `hybrid`; it is not registered as an independent
-`constructor` target. It is enabled only when `entity_enabled=true` and an `EntityStore` is
-assembled successfully. Assembly failure disables the entity path while full-text and vector paths
-continue to operate.
+`constructor` target. It is enabled only when `entity_enabled=true` and the injected `Storage`
+declares an Entity port. The builder obtains that port with `storage.entity_port()`, so Entity
+operations use the same Scope and `StorageSecurity` boundary as the other Storage ports. Assembly
+failure disables the entity path while full-text and vector paths continue to operate.
 
 ### 13.4 Dedup, LayerAnnotator, and Evolver Implementations
 
@@ -388,8 +389,8 @@ continue to operate.
 | `dedup` | `keyword` | `KeywordDedup` | Fulltext Store recall scored by token overlap | `storage`; same parameters as vector |
 | `layer_annotator` | `keyword` | `KeywordLayerAnnotator` | Rule-based L0/L1 generation | `layer_annotator_threshold`, `layer_annotator_l1_chars` |
 | `layer_annotator` | `llm` | `LLMLayerAnnotator` | Batch LLM generation with strict L0/L1 validation | `llm`; threshold and retry parameters |
-| `evolver` | `orchestrating` | `OrchestratingEvolver` | Legacy four-mode flow; EXTRACT couples dedup decisions with persistence | extractor, abstractor, associator, index_builder, storage, message_store, dedup, llm; `params.layer_annotator` can select or disable annotation |
-| `evolver` | `dynamic` | `DynamicEvolver` | Dynamic-prompt four-step EXTRACT; inherits other modes from orchestrating | Same dependencies plus `PromptRegistry`; automatically injects `layer_annotator.default` when present |
+| `evolver` | `orchestrating` | `OrchestratingEvolver` | Legacy four-mode flow; EXTRACT couples dedup decisions with persistence | extractor, abstractor, associator, index_builder, storage, dedup, llm. Raw context is resolved only through `storage.raw_port()`; `params.layer_annotator` can select or disable annotation |
+| `evolver` | `dynamic` | `DynamicEvolver` | Dynamic-prompt four-step EXTRACT; inherits other modes from orchestrating | Same dependencies plus `PromptRegistry`; raw context still comes from `storage.raw_port()`; automatically injects `layer_annotator.default` when present |
 
 Both Evolvers use `dedup_medium_similarity` (default `0.7`) and `dedup_high_similarity` (default
 `0.9`). When `vector_enabled=false`, unspecified IndexBuilder and Dedup targets switch to `fulltext`
@@ -449,7 +450,6 @@ evolver:
       associator: default
       index_builder: default
       storage: default
-      message_store: default
       dedup: default
       llm: default
       dedup_medium_similarity: 0.7
@@ -606,7 +606,7 @@ Producer rules above.
 | `layer_annotator_retry_max` | `int` | `3` | `layer_annotator.llm` | Maximum LLM annotation attempts |
 | `layer_annotator_retry_backoff` | `int` | `1000` | `layer_annotator.llm` | Retry backoff in milliseconds |
 | `layers_index_enabled` | `bool` | `true` | fulltext/vector/hybrid | Writes independent L0/L1 indexes when enabled |
-| `entity_enabled` | `bool` | `false` | `hybrid` | Attempts to assemble EntityStore when enabled |
+| `entity_enabled` | `bool` | `false` | `hybrid` / `keyword` | Enables the Entity port for write-side linking and L2 keyword recall expansion; the selected Storage must declare `StorageCapability.ENTITY` |
 | `vector_enabled` | `bool` | `true` | Evolver builder | Selects the default IndexBuilder/Dedup combination when targets are not explicit |
 
 ### 18.1 `extract_batch_size` vs `middle_batch_size`

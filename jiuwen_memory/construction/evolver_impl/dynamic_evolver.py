@@ -407,14 +407,15 @@ def _build(config):
         if prompts_data
         else PromptRegistry(config_source=config_source)
     )
+    storage = StorageProducer.resolve(config)
 
     return DynamicEvolver(
         extractor=ExtractorProducer.dep(config, default="dynamic_llm"),
         abstractor=AbstractorProducer.dep(config, default="concat"),
         associator=AssociatorProducer.dep(config, default="keyword"),
         index_builder=IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
-        storage=StorageProducer.resolve(config),
-        message_store=_resolve_message_store(config),
+        storage=storage,
+        message_store=_resolve_message_store(storage),
         dedup=DedupProducer.dep(config, default=dr_default),
         llm=LlmProducer.dep(config, default="echo"),
         layer_annotator=_opt_annotator(),
