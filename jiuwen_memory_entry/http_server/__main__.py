@@ -286,6 +286,8 @@ class HttpServer(Server):
         return Handler
 
     def serve(self, host: str, port: int) -> None:
+        # 同步宿主无事件循环：起 daemon 线程自持 loop 跑看门狗（F07 §12.10）。
+        self._runtime.start()
         httpd = ThreadingHTTPServer((host, port), self.handler_cls())
         logger.info(
             "agent-memory server (profile=%s) on http://%s:%s",

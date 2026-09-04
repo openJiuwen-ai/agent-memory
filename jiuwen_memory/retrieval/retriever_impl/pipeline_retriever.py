@@ -37,6 +37,7 @@ from jiuwen_memory.retrieval.discloser import Discloser, DiscloserProducer
 from jiuwen_memory.retrieval.fuser import Fuser, FuserProducer
 from jiuwen_memory.retrieval.query_parser import QueryParser, QueryParserProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
+from jiuwen_memory.config.document_flag import WRITE_DOCUMENT_KEY, should_write_document
 from jiuwen_memory.retrieval.types import (
     DisclosureLevel,
     RecallChannel,
@@ -73,11 +74,18 @@ class PipelineRetriever(Retriever):
         min_score_ratio_uncalibrated: float = 0.0,
         min_results: int = 0,
         storage: Storage | None = None,
+        doc_mode: bool = False,
     ) -> None:
         self._parser = parser
         self._fuser = fuser
         self._discloser = discloser
         self._reader = unit_reader
+        # 文档模式标志：ShadowRecaller.channel()=DOCUMENT，但 parser 产出的
+        # parsed.channels 默认含 [KEYWORD, GRAPH]（+VECTOR）不含 DOCUMENT。storage.recall
+        # 用 `r.channel() in channels` 过滤 recaller——DOCUMENT 不在 enabled 里则
+        # ShadowRecaller 被过滤 → 召回落空（F08 §5.6 S14 根因之二）。retrieve() 据此
+        # 标志把 DOCUMENT 补进 enabled（不改 ShadowRecaller.channel()，保持其 DOCUMENT 语义）。
+        self._doc_mode = doc_mode
         if storage is None:
             if unit_reader is None:
                 raise ValidationError("PipelineRetriever requires storage or unit_reader")
@@ -206,6 +214,13 @@ class PipelineRetriever(Retriever):
         if query.channels == []:
             raise ValidationError("channels must be omitted or contain at least one channel")
         enabled = query.channels if query.channels is not None else (parsed.channels or None)
+        # 文档模式：ShadowRecaller.channel()=DOCUMENT 不在 parser 默认 channels 内
+        # （[KEYWORD, GRAPH]+可选 VECTOR），这里补进去——否则 ShadowRecaller 被
+        # `r.channel() in channels` 过滤掉 → 召回落空（F08 §5.6 S14 根因之二）。
+        # 调用方若显式传 query.channels 仍尊重其选择（仅补、不替；DOCUMENT 缺失时才加）。
+        if self._doc_mode and enabled is not None:
+            if RecallChannel.DOCUMENT not in enabled:
+                enabled = [*enabled, RecallChannel.DOCUMENT]
         parsed.include_archived = query.include_archived
         parsed.recheck_filters = user_filters
         # 召回超采样（撒宽网）与精排预算（控成本）解耦：
@@ -374,8 +389,9 @@ class PipelineRetriever(Retriever):
 
 @RetrieverProducer.register("pipeline")
 def _build(config):
-    # 召回路装配归 CompositeStorage 工厂（按 vector_enabled 等开关构建期同步组装）；
-    # 这里只取统一 Storage——非 Composite 实现自带检索路径，无需 recaller。
+    # 召回路装配归 CompositeStorage 工厂（按 vector_enabled 等开关构建期同步组装，
+    # 文档模式走 shadow_recaller / 非文档模式走 keyword+vector+layers 多路）；这里只取
+    # 统一 Storage 复用其已绑定的 recallers——非 Composite 实现自带检索路径，无需 recaller。
     storage = StorageProducer.resolve(config)
     # 精排器与 UnitReader 的真源 kv 与索引/构建侧共享同一实例。
     reranker = (
@@ -383,11 +399,12 @@ def _build(config):
         if config.get("rerank_enabled", True)
         else None
     )
+    doc_mode = should_write_document(config.get(WRITE_DOCUMENT_KEY, False))
     return PipelineRetriever(
         QueryParserProducer.dep(config, default="simple"),
         FuserProducer.dep(config, default="rrf"),
         DiscloserProducer.dep(config, default="truncating"),
-        UnitReader(storage.kv) if storage.has_kv() else None,
+        None if doc_mode else (UnitReader(storage.kv) if storage.has_kv() else None),
         reranker,
         over_fetch_factor=int(Factory.cfg_get(config, "over_fetch_factor", 4)),
         over_fetch_floor=int(Factory.cfg_get(config, "over_fetch_floor", 60)),
@@ -402,6 +419,7 @@ def _build(config):
         ),
         min_results=int(Factory.cfg_get(config, "min_results", 0)),
         storage=storage,
+        doc_mode=doc_mode,
     )
 
 

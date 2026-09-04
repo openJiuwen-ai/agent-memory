@@ -55,6 +55,7 @@ from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
     Entity,
     LifecycleState,
+    MD_TITLE_KEY,
     MemoryTier,
     MemoryUnit,
     Segment,
@@ -106,6 +107,7 @@ class ExtractionCandidate:
     evidence: str = ""
     event_date: str = ""  # LLM 解析出的绝对事件时间（ISO 8601），写入 temporal.t_event
     tier: MemoryTier = MemoryTier.SEMANTIC  # LLM 判定的认知角色（非法值兜底 SEMANTIC）
+    title: str = ""  # LLM 生成的 md 块标题（F08 §8，命名「这件事」非类别；清洗后单行 ≤50 字符）
     tags: list[str] = field(default_factory=list)  # LLM 抽的 1-3 个主题标签
     keywords: list[str] = field(default_factory=list)  # 保留字段，普通抽取路径不再填充
     entities: list[Entity] = field(default_factory=list)  # 保留字段，普通抽取路径不再填充
@@ -195,6 +197,11 @@ Fields:
   emit below 0.5.
 - "tier": "episodic" happened at a point in time; "semantic" a fact, concept or
   preference; "procedural" how something is done. When unsure, "semantic".
+- "title": a short heading naming THE MATTER this item records (e.g. "Frontend framework
+  choice" / "Licence renewed"), in the content's language, about 20 characters or fewer.
+  It names the specific matter, never a category - "Fact" or "Preference" is wrong.
+  It is not a tag: exactly one title per item, and it may differ from every tag. Avoid
+  repeating the same title across items of this batch when the matters differ.
 - "tags": 1-3 short lowercase labels for the topic, in the content's language, not
   repeating words already central to the content.
 
@@ -204,6 +211,7 @@ Output schema:
   "target": "fact" | "event" | "preference" | "context" | "structured_record" | "artifact",
   "tier": "episodic" | "semantic" | "procedural",
   "content": "one self-contained statement, every specific kept",
+  "title": "short heading naming the matter",
   "tags": ["tag1", "tag2"],
   "confidence": 0.5~1.0,
   "event_date": "2026-03-14"
@@ -237,7 +245,9 @@ Output ONLY a JSON object (no array, no markdown fences). Schema:
 the goal/task, the key steps taken, and the outcome/result. Structured but as a single \
 coherent statement; inline markers such as Goal:/Steps:/Result: are optional, and must be \
 written in the source's language when used. Write the whole statement in the SAME \
-language as the source text. Cover the whole turn, not just one fact."
+language as the source text. Cover the whole turn, not just one fact.",
+  "title": "a short heading naming what this turn accomplished, in the source's \
+language, about 20 characters or fewer. Names the specific matter, never a category."
 }
 
 Rules:
@@ -312,6 +322,24 @@ def _parse_tier(raw) -> MemoryTier:
     if s:
         logger.debug("Extractor._parse_tier: unknown tier %r, fallback SEMANTIC", s)
     return MemoryTier.SEMANTIC
+
+
+# md 块标题长度上限（F08 §8.4）：块格式是「标题行\n正文行」，看门狗按行遍历——
+# 清洗保证标题恒单行；长度截断是显示层约束（prompt 约束 ~20 字，这里兜 50 防长标题）。
+_MAX_TITLE_LEN = 50
+
+
+def _parse_title(raw) -> str:
+    """解析 LLM 输出的 title：strip + 去内部换行（保单行）+ 截断 ≤50 字符。
+
+    非 str / 空串容错为空串——空串表示本条无 LLM 标题，落盘侧兜底 ``# {unit.id}``。
+    与 ``_parse_tier`` 同款「解析端兜底」：prompt 已约束，这里防模型违约破坏块格式。
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    s = " ".join(s.split())  # 折叠所有空白（含换行）为单空格——标题恒单行
+    return s[:_MAX_TITLE_LEN]
 
 
 def _format_context_block(context: ExtractContext | None) -> str:
@@ -560,6 +588,9 @@ class ExtractorImpl(Extractor):
             # tier 由 LLM 判定，限定 episodic/semantic/procedural；非法值兜底 SEMANTIC
             tier = _parse_tier(item.get("tier"))
 
+            # title 由 LLM 生成（F08 §8），清洗保单行 + 截断；空串=无标题（落盘兜底 unit.id）
+            title = _parse_title(item.get("title"))
+
             # tags 由 LLM 抽，清洗 + 去重 + 截断到 ≤3
             tags = parse_tags(item.get("tags"))
 
@@ -579,6 +610,7 @@ class ExtractorImpl(Extractor):
                 evidence=evidence,
                 event_date=event_date,
                 tier=tier,
+                title=title,
                 tags=tags,
             ))
             ev_str = f", evidence={evidence[:100]}" if evidence else ""
@@ -703,18 +735,21 @@ class ExtractorImpl(Extractor):
             logger.warning("Extractor._extract_procedural: LLM call failed, return []: %s", exc)
             return []
 
-        content = self._parse_procedural_response(response)
+        content, title = self._parse_procedural_response(response)
         if not content:
             logger.info("Extractor._extract_procedural: empty content parsed, return []")
             return []
 
         # procedural 路径固定产 PROCEDURAL tier，不走 LLM tier/tags 判定、不走富化。
+        # title 与 content 同一 prompt 产出（F08 §8 决策3）：落 daily 文件时渲染用
+        # coords.team 不用它，但字段存着备规则调整（shadow unit_json 可查）。
         candidate = ExtractionCandidate(
             target=ExtractionTarget.CONTEXT,
             content=content,
             source_unit_id=units[0].id,
             confidence=1.0,
             tier=MemoryTier.PROCEDURAL,
+            title=title,
         )
 
         # 构建 1 条 PROCEDURAL MemoryUnit，provenance 回指全部本轮 unit
@@ -742,6 +777,7 @@ class ExtractorImpl(Extractor):
                 "confidence": str(candidate.confidence),
                 "target": candidate.target.value,
             }
+            | ({MD_TITLE_KEY: candidate.title} if candidate.title else {})
             | candidate.metadata,
             user_metadata=inherited_user_metadata(units),
             lifecycle=LifecycleState.ACTIVE,
@@ -752,11 +788,12 @@ class ExtractorImpl(Extractor):
         )
         return [unit]
 
-    def _parse_procedural_response(self, response: str) -> str:
-        """解析 LLM 返回的 {"content": "..."} JSON，取 content 字段。
+    def _parse_procedural_response(self, response: str) -> tuple[str, str]:
+        """解析 LLM 返回的 {"content": "...", "title": "..."} JSON，取 (content, title)。
 
         多级兜底：直接解析 → 剥 markdown fence 再解析 → 整个响应当 content。
-        任一路径解析出 dict 即取 content 返回；都不成则返回原文（保证产 1 条）。
+        任一路径解析出 dict 即取字段返回；都不成则返回原文当 content（保证产 1 条）。
+        title 走 :func:`_parse_title` 清洗（保单行 + 截断），缺失为空串——落盘侧兜底。
         """
         for candidate_text in (response.strip(), self._strip_non_json(response)):
             try:
@@ -764,12 +801,14 @@ class ExtractorImpl(Extractor):
             except json.JSONDecodeError:
                 continue
             if isinstance(parsed, dict):
-                return str(parsed.get("content", "")).strip()
+                content = str(parsed.get("content", "")).strip()
+                title = _parse_title(parsed.get("title"))
+                return content, title
         logger.warning(
             "Extractor._parse_procedural_response: cannot parse as JSON, use raw response: %s",
             response[:200],
         )
-        return response.strip()
+        return response.strip(), ""
 
     def _preprocess(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         """过滤 lifecycle≠ACTIVE / 空 content / 派生单元（provenance 非空）。"""
@@ -948,6 +987,7 @@ class ExtractorImpl(Extractor):
                     "evidence": c.evidence,
                     "extracted_statement": statement,
                 }
+                | ({MD_TITLE_KEY: c.title} if c.title else {})
                 | c.metadata,
                 user_metadata=inherited_user_metadata([source]),
                 lifecycle=LifecycleState.ACTIVE,

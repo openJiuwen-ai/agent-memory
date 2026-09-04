@@ -27,6 +27,7 @@ from jiuwen_memory.common.type_def import (
     CandidateFuser,
     ChannelError,
     FilterExpr,
+    MD_FILENAME_KEY,
     MemoryUnit,
     ParsedQuery,
     RankedStorageResult,
@@ -41,18 +42,26 @@ from jiuwen_memory.common.type_def import (
     memory_key,
 )
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.config.document_flag import should_write_document, WRITE_DOCUMENT_KEY
 from jiuwen_memory.storage.fs import FsProducer, FSStore
 from jiuwen_memory.storage.fulltext import FulltextProducer, FulltextStore
 from jiuwen_memory.storage.fusion import FusionProducer, FusionStore
 from jiuwen_memory.storage.graph import GraphProducer, GraphStore
 from jiuwen_memory.storage.kv import KvProducer, KVStore
+from jiuwen_memory.storage.kv_impl.memory_list import list_memory_entries
+from jiuwen_memory.storage.markdown import MarkdownProducer, MarkdownStore
 from jiuwen_memory.storage.security import (
     AllowAllStorageSecurity,
     StorageAccessContext,
     StorageAction,
     StorageSecurity,
 )
+from jiuwen_memory.storage.shadow import DocumentShadowIndex, ShadowIndexProducer
 from jiuwen_memory.storage.storage import Storage, StorageCapability, StorageProducer
+from jiuwen_memory.storage.sync_gate import (
+    close_write_window,
+    open_write_window,
+)
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode, MemoryListResult
 from jiuwen_memory.storage.vector import VectorProducer, VectorStore
 
@@ -104,15 +113,20 @@ class CompositeStorage(Storage):
         graph: GraphStore | None = None,
         fusion: FusionStore | None = None,
         fs: FSStore | None = None,
+        markdown: MarkdownStore | None = None,
+        shadow_index: DocumentShadowIndex | None = None,
         kv_ports: dict[str, KVStore] | None = None,
         vector_ports: dict[str, VectorStore] | None = None,
         fulltext_ports: dict[str, FulltextStore] | None = None,
         graph_ports: dict[str, GraphStore] | None = None,
         fusion_ports: dict[str, FusionStore] | None = None,
         fs_ports: dict[str, FSStore] | None = None,
+        markdown_ports: dict[str, MarkdownStore] | None = None,
+        shadow_ports: dict[str, DocumentShadowIndex] | None = None,
         recallers: list[Any] | None = None,
         preferred_pipeline: RetrievalPipeline = RetrievalPipeline.RECALL_GET_RANK,
         security: StorageSecurity | None = None,
+        write_document: bool = False,
     ) -> None:
         self._stores = {
             StorageCapability.KV: kv,
@@ -121,6 +135,8 @@ class CompositeStorage(Storage):
             StorageCapability.GRAPH: graph,
             StorageCapability.FUSION: fusion,
             StorageCapability.FS: fs,
+            StorageCapability.MARKDOWN: markdown,
+            StorageCapability.DOCUMENT_SHADOW: shadow_index,
         }
         self._capabilities = frozenset(
             capability for capability, store in self._stores.items() if store is not None
@@ -132,6 +148,8 @@ class CompositeStorage(Storage):
             StorageCapability.GRAPH: graph_ports,
             StorageCapability.FUSION: fusion_ports,
             StorageCapability.FS: fs_ports,
+            StorageCapability.MARKDOWN: markdown_ports,
+            StorageCapability.DOCUMENT_SHADOW: shadow_ports,
         }
         self._named_stores: dict[StorageCapability, dict[str, Any]] = {}
         for capability, store in self._stores.items():
@@ -142,6 +160,10 @@ class CompositeStorage(Storage):
         self._recallers: list[Any] = list(recallers or [])
         self._preferred_pipeline = preferred_pipeline
         self._security = security or AllowAllStorageSecurity()
+        # write_document 装配期固化（与 _preferred_pipeline 同范式，F07 §2）：
+        # true → 真源写影子索引 + md 人类视图，不写 KV；false → 仅写 KV。
+        # markdown/shadow 算子是否装配与它绑定（_build 里 write_document=false 时不装配）。
+        self._write_document = write_document
         self._proxies = {
             capability: {
                 name: _AuthorizedStoreProxy(store, self._security, capability.value)
@@ -183,6 +205,29 @@ class CompositeStorage(Storage):
         invalid = [unit.id for unit in units if unit.scope != scope]
         if invalid:
             raise ValidationError(f"MemoryUnit scope differs from explicit scope: {invalid}")
+
+    @staticmethod
+    def _sanitize_document_content(units: list[MemoryUnit]) -> None:
+        """文档路径 content 单行清洗（F07 §12.4 的 enforcement point）。
+
+        块格式契约（``<标题>\\n<正文单行>\\n\\n``、看门狗按行遍历、replace/remove 按
+        ``\\n\\n`` 切块比对正文）建立在「一个 unit 一行正文」上，但上游（LLM 抽取/
+        直写）不保证——content 含换行时：md 块被切碎、replace_content 比对失锚；
+        看门狗按行遍历把第 2+ 行当独立幽灵 unit，且整段 content_hash 与任何单行
+        hash 对不上 → diff 出「删真 unit + 建幽灵 unit（新 uuid，断版本链）」。
+
+        故在 md.write / shadow.insert_units 分叉**之前**对 unit 本体原地折叠
+        ``" ".join(content.split())``——md 视图、unit_json、content_hash、后续
+        replace_content 锚点四方看到同一份单行 content。收口在文档路径入口
+        而非 extractor：单行是文档记忆的**存储层约束**（F07 §12.4），非抽取层
+        约束；KV 路径（结构化记忆）不受影响。
+        """
+        for unit in units:
+            if not unit.segments:
+                continue
+            content = unit.segments[0].content
+            if content and "\n" in content:
+                unit.segments[0].content = " ".join(content.split())
 
     @property
     def recallers(self) -> list[Any]:
@@ -238,6 +283,34 @@ class CompositeStorage(Storage):
     def fs_port(self, name: str = "default") -> FSStore:
         return cast(FSStore, self._port(StorageCapability.FS, name))
 
+    def markdown_port(self, name: str = "default") -> MarkdownStore:
+        return cast(MarkdownStore, self._port(StorageCapability.MARKDOWN, name))
+
+    def shadow_index_port(self, name: str = "default") -> DocumentShadowIndex:
+        return cast(DocumentShadowIndex, self._port(StorageCapability.DOCUMENT_SHADOW, name))
+
+    def has_markdown_port(self, name: str = "default") -> bool:
+        return self._has_port(StorageCapability.MARKDOWN, name)
+
+    def has_shadow_port(self, name: str = "default") -> bool:
+        return self._has_port(StorageCapability.DOCUMENT_SHADOW, name)
+
+    def should_write_document(self) -> bool:
+        """运行期直接读实例属性，不查 config（装配期已固化，见 ``__init__``）。"""
+        return self._write_document
+
+    def _raw_markdown(self) -> MarkdownStore:
+        store = self._stores[StorageCapability.MARKDOWN]
+        if store is None:
+            self._port(StorageCapability.MARKDOWN)
+        return cast(MarkdownStore, store)
+
+    def _raw_shadow_index(self) -> DocumentShadowIndex:
+        store = self._stores[StorageCapability.DOCUMENT_SHADOW]
+        if store is None:
+            self._port(StorageCapability.DOCUMENT_SHADOW)
+        return cast(DocumentShadowIndex, store)
+
     def preferred_retrieval_pipeline(self) -> RetrievalPipeline:
         return self._preferred_pipeline
 
@@ -253,13 +326,33 @@ class CompositeStorage(Storage):
         access: StorageAccessContext | None = None,
     ) -> None:
         self._authorize(access, scope, StorageAction.ADD, "memory_unit")
-        # 本实现无投影能力，落地范围仅记忆本体：调用方只要检索索引时无事可做。
+        # 本实现无独立投影能力（倒排/向量收进影子索引算子内部）：
+        # 调用方只要检索索引时（RETRIEVAL_ONLY）无事可做。
         if mode is IndexWriteMode.RETRIEVAL_ONLY:
             return
         self._validate_units(scope, units)
-        kv = self._raw_kv()
-        for unit in units:
-            kv.insert(scope, memory_key(unit.id), dumps(unit))
+        if self.should_write_document():
+            # 文档路径：写 md + 建影子索引，不碰 KV（F07 §3.1 互斥路径）。
+            # md.write 内部按文件分组批量写、回填 unit.system_metadata["md_filename"]
+            # + 兜底 memory_class（空落 team_memory，F08 §2）；shadow.insert_units
+            # 从 system_metadata 读 md_filename 建 three-table 索引。
+            # 写窗口：两步写期间 md 与索引短暂不一致，挡住看门狗对账（F07 §12.9 风险 6，
+            # sync_gate 模块说明）——insert_units 含逐条 embed（完整模式远端 HTTP），
+            # 窗口可达秒级，2s debounce 挡不住。
+            self._sanitize_document_content(units)
+            md = self._raw_markdown()
+            shadow = self._raw_shadow_index()
+            open_write_window()
+            try:
+                md.write(scope, units)
+                shadow.insert_units(scope, units)
+            finally:
+                close_write_window()
+        else:
+            # 非文档路径：KV 真源（原样）。
+            kv = self._raw_kv()
+            for unit in units:
+                kv.insert(scope, memory_key(unit.id), dumps(unit))
 
     def update(
         self,
@@ -274,9 +367,46 @@ class CompositeStorage(Storage):
         if mode is IndexWriteMode.RETRIEVAL_ONLY:
             return
         self._validate_units(scope, units)
-        kv = self._raw_kv()
-        for unit in units:
-            kv.update(scope, memory_key(unit.id), dumps(unit))
+        if self.should_write_document():
+            # 文档路径：影子索引 update_units 覆写 unit_json（content_hash 判定自动处理——
+            # OVERWRITE content 变 → 重建 FTS5/vec0；SUPERSEDE 状态变 → 只覆写 unit_json），
+            # content 变时同步 md.replace_content 改 md 文件（F07 §5.2.1 步骤③⑤）。
+            # 写窗口（sync_gate，F07 §12.9 风险 6）：update 是「先索引后 md」反序——
+            # update_units（含 OVERWRITE 重建的 re-embed）与 replace_content 之间，索引
+            # 已变而 md 还是旧的，看门狗在此插入会「删真 unit + 建幽灵」。整个 for 循环
+            # 共持一个窗口（批量 update 中途关窗会出现同类窗口）。
+            self._sanitize_document_content(units)
+            shadow = self._raw_shadow_index()
+            md = self._raw_markdown()
+            open_write_window()
+            try:
+                for unit in units:
+                    # 先取旧 unit 拿 old content + md_filename（replace_content 的定位锚与路径）。
+                    olds = shadow.get_units(scope, [unit.id])
+                    old = olds[0] if olds else None
+                    # 影子索引覆写（id 不存在内部报 NotFoundError，对齐 KVStore.update）。
+                    shadow.update_units(scope, [unit])
+                    # md 侧：仅 content 变才 replace（OVERWRITE 场景，§5.2.1）；SUPERSEDE 只改
+                    # 状态字段 content 不变 → md 不动（§5.2.4 对照表「md 侧：无（保留）不适用」）。
+                    # 对比口径用 segments[0].content（与 md/影子索引 _content_of 同源，§12.4 单段）。
+                    if old is None:
+                        continue
+                    old_content = old.segments[0].content if old.segments else ""
+                    new_content = unit.segments[0].content if unit.segments else ""
+                    if old_content == new_content:
+                        continue
+                    md_filename = (unit.system_metadata or {}).get(MD_FILENAME_KEY, "")
+                    if md_filename:
+                        # 未命中（md 与索引漂移，如手改 md）返 False——不抛错，索引侧已更新，
+                        # 漂移交看门狗（§12.3）后续对账，避免 update 因 md 异常而整体失败。
+                        md.replace_content(scope, md_filename, old_content, new_content)
+            finally:
+                close_write_window()
+        else:
+            # 非文档路径：KV 真源（原样）。
+            kv = self._raw_kv()
+            for unit in units:
+                kv.update(scope, memory_key(unit.id), dumps(unit))
 
     def delete(
         self,
@@ -290,9 +420,37 @@ class CompositeStorage(Storage):
         # 同 add：无检索索引可单独移除，软删除保留本体即无事可做。
         if mode is IndexRemoveMode.SOFT:
             return
-        kv = self._raw_kv()
-        for unit_id in unit_ids:
-            kv.delete(scope, memory_key(unit_id))
+        if self.should_write_document():
+            # 文档路径：影子索引 delete_units 同事务删三表 + md.remove_content 删对应块
+            # （F07 §5.4）。先 get_units 拿旧 unit（md_filename + content 定位 md 块）——
+            # delete_units 幂等不返存在信息，md 块定位靠旧 unit 的 content（类比 update 的
+            # replace_content 用 old_content 定位，§5.2.1 步骤⑤）。
+            # 写窗口（sync_gate，F07 §12.9 风险 6）：delete 也是「先索引后 md」反序——
+            # delete_units 与 remove_content 之间，索引已删而 md 还有行，看门狗在此插入
+            # 会把刚删的 unit 以新 uuid 复活（双写）。
+            shadow = self._raw_shadow_index()
+            md = self._raw_markdown()
+            open_write_window()
+            try:
+                olds = shadow.get_units(scope, unit_ids)
+                # 影子索引删三表（幂等，缺失静默跳过，§12.7 显式删三表不级联）。
+                shadow.delete_units(scope, unit_ids)
+                # md 侧：对每个存在的旧 unit 删对应块。get_units 缺失 id 省略 → 已不存在的
+                # unit 不删 md 块（md 与索引一致，本无块；若漂移交看门狗 §12.3 对账）。
+                for old in olds:
+                    content = old.segments[0].content if old.segments else ""
+                    md_filename = (old.system_metadata or {}).get(MD_FILENAME_KEY, "")
+                if md_filename:
+                    # 未命中（md 与索引漂移，如手改 md / 看门狗先删）返 False——不抛错，
+                    # 索引侧已删，漂移交看门狗对账，避免 delete 因 md 异常而整体失败。
+                    md.remove_content(scope, md_filename, content)
+            finally:
+                close_write_window()
+        else:
+            # 非文档路径：KV 真源（原样）。
+            kv = self._raw_kv()
+            for unit_id in unit_ids:
+                kv.delete(scope, memory_key(unit_id))
 
     def get(
         self,
@@ -316,14 +474,29 @@ class CompositeStorage(Storage):
         access: StorageAccessContext | None = None,
     ) -> MemoryListResult:
         self._authorize(access, scope, StorageAction.LIST, "memory_unit")
-        result = self._raw_kv().list(
-            scope,
-            offset=offset,
-            limit=limit,
-            memory_types=memory_types,
-            filters=filters,
-            extensions=extensions,
-        )
+        # 文档分流（F07 §5.3 方案A）：文档模式真源是 md+shadow，全量拉走 shadow.list_units
+        # （对应 KV.scan 的角色），过滤/排序/分页原样复用 list_memory_entries——该函数入参是
+        # list[tuple[str, bytes]]，shadow.list_units 产出 (unit_id, unit_json bytes) 正好对齐
+        # （unit_id 当 key、unit_json 当 raw_bytes），无需区分来源。非文档维持原 KV.list 路径。
+        if self.should_write_document():
+            entries = self._raw_shadow_index().list_units(scope)
+            result = list_memory_entries(
+                entries,
+                offset=offset,
+                limit=limit,
+                memory_types=memory_types,
+                filters=filters,
+                extensions=extensions,
+            )
+        else:
+            result = self._raw_kv().list(
+                scope,
+                offset=offset,
+                limit=limit,
+                memory_types=memory_types,
+                filters=filters,
+                extensions=extensions,
+            )
         items: list[MemoryUnit] = []
         for _, raw in result.entries:
             unit = loads(raw)
@@ -422,11 +595,22 @@ class CompositeStorage(Storage):
     def _get_units(self, scope: Scope, unit_ids: list[str]) -> list[MemoryUnit]:
         """批量点读真源：按输入顺序返回，缺失 id 省略，重复 id 各自返回。
 
-        ``mget`` 不去重且任一 key 缺失即抛 ``NotFoundError``（见 :meth:`KVStore.mget`），
-        故去重与「索引↔真源短暂不一致」的兜底都由本方法承担。
+        文档模式（``write_document=true``）走影子索引 ``shadow.get_units``——
+        真源已从 KV 切到 ``md``+``shadow``，KV 不再持有 MemoryUnit。``shadow.get_units``
+        契约即「缺失省略、按输入顺序保序」，与 KV 路径的语义对齐（§5.6 S2）。
+
+        非文档模式走 KV：``mget`` 不去重且任一 key 缺失即抛 ``NotFoundError``
+        （见 :meth:`KVStore.mget`），故去重与「索引↔真源短暂不一致」的兜底
+        都由本方法承担。影子索引路径无此问题——缺失 id 在 SQL 层自然省略。
         """
         if not unit_ids:
             return []
+        if self.should_write_document():
+            shadow = self._raw_shadow_index()
+            by_id = {unit.id: unit for unit in shadow.get_units(scope, unit_ids)}
+            # shadow.get_units 按 IN 查询返回唯一行，对重复 id 复用同一份 unit 对象，
+            # 与 KV 路径「重复 id 各自返回」行为一致（召回物化侧已 seen 去重，实际无重复）。
+            return [by_id[uid] for uid in unit_ids if uid in by_id]
         kv = self._raw_kv()
         unique = list(dict.fromkeys(unit_ids))
         try:
@@ -594,6 +778,17 @@ def _assemble_recallers(config: Any, *, storage: "CompositeStorage") -> list[Any
             target = config.get(key, default_target)
             return RecallerProducer.build(target, {"storage": synthetic_name}, config.ctx)
 
+    if should_write_document(config.get(WRITE_DOCUMENT_KEY, False)):
+        # 文档模式：真源 md+shadow，召回统一走 ShadowRecaller（shadow.search_fulltext
+        # + search_vector 复合算子），替代 KV 时代的 keyword+vector+layers 四路——
+        # 那四路取 fulltext/vector 端口，文档模式不装配 → 全返空。graph 路独立于
+        # fulltext/vector 端口，按端口就绪与否决定是否并存（GraphRecaller 构造期硬取
+        # storage.graph，未配 graph store 时装配即抛，故需 has_graph_port 判定）。
+        recallers = [_dep("shadow_recaller", "shadow")]
+        if config.get("graph_enabled", True) and storage.has_graph_port():
+            recallers.append(_dep("graph_recaller", "graph"))
+        return recallers
+
     recallers = [_dep("keyword_recaller", "keyword")]
     if config.get("vector_enabled", True):
         recallers.append(_dep("vector_recaller", "vector"))
@@ -610,6 +805,7 @@ def _assemble_recallers(config: Any, *, storage: "CompositeStorage") -> list[Any
     return recallers
 
 
+
 @StorageProducer.register("composite")
 def _build(config):
     pipeline_value = config.get(
@@ -623,6 +819,14 @@ def _build(config):
             f"Unsupported preferred_retrieval_pipeline {pipeline_value!r}; "
             f"expected one of {supported}"
         ) from exc
+    # write_document 经 document_flag 归一（接受 bool/字符串，None 视为未配置=False）。
+    # true → 装配 markdown + shadow 算子（真源=影子索引，不写 KV）；
+    # false → 两者都不装配（传 None，_stores 里对应位为 None，has_*_port 返回 False）。
+    write_document = should_write_document(config.get(WRITE_DOCUMENT_KEY, False))
+    markdown = _optional_store(MarkdownProducer, config, "markdown_store") if write_document else None
+    shadow_index = (
+        _optional_store(ShadowIndexProducer, config, "shadow_index") if write_document else None
+    )
     storage = CompositeStorage(
         kv=KvProducer.dep(config, default="memory"),
         vector=_optional_store(
@@ -645,9 +849,12 @@ def _build(config):
         ),
         fusion=_optional_store(FusionProducer, config, "fusion_store"),
         fs=_optional_store(FsProducer, config, "fs_store"),
+        markdown=markdown,
+        shadow_index=shadow_index,
         vector_ports=_named_ports(VectorProducer, config),
         fulltext_ports=_named_ports(FulltextProducer, config),
         preferred_pipeline=preferred_pipeline,
+        write_document=write_document,
     )
     # 具名构建先把实例预注册进缓存再组装召回路，打破循环依赖（recaller builder
     # 经 ``StorageProducer.resolve`` 回取时命中缓存）；匿名构建无缓存键，由

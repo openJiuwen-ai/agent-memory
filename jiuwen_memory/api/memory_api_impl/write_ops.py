@@ -45,6 +45,7 @@ from .local_support import (
     _reject_non_scalar_metadata,
     _reject_route_tag_keys,
     _space_level_scope,
+    _strip_transient_metadata,
     _take_coords,
     _truthy_metadata,
     _with_author_marks,
@@ -133,7 +134,7 @@ class WriteOpsMixin:
             occurred_at=occurred_at,
         )
         self._log(identity, "add", target_scope=target, detail=auth)
-        return units
+        return [_strip_transient_metadata(unit) for unit in units]
 
     def _routes_by_decision(
         self,
@@ -319,6 +320,14 @@ class WriteOpsMixin:
             )
             for (key, _content, merged), decision in zip(pending, decisions):
                 merged.update(collective.decision_metadata(decision))
+                if coords:
+                    # coords 在入口被 _take_coords 取出，判定产物只回写标签与类别，
+                    # 不塞回则 md 落盘（_md_path 读 coords.project）与影子索引
+                    # （_project_of）都读不到坐标，project_memory 全落 memory/default/。
+                    # 与派生路径同处置：OrchestratingEvolver._route 从 ctx.coords 回写。
+                    # coords 是瞬态键，dumps 进 unit_json 时剥除，但 md.write 与
+                    # shadow.insert_units 在序列化之前从 unit 对象读，路径计算不受影响。
+                    merged[COORDS_KEY] = dict(coords)
                 resolved[key] = (decision.scope, merged)
             self._log_routing_degradation(identity, ctx, decisions)
         return resolved
@@ -721,6 +730,11 @@ class WriteOpsMixin:
             )
             for engine_outcome, (index, item, auth) in zip(remapped, authorized):
                 outcomes[index] = engine_outcome
+                if engine_outcome.units:
+                    # 批路径与 add 同处置：units 是回显给调用方的形态，瞬态键不越界。
+                    engine_outcome.units = [
+                        _strip_transient_metadata(unit) for unit in engine_outcome.units
+                    ]
                 self._log(
                     identity,
                     "add",

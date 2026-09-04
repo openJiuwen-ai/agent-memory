@@ -28,6 +28,9 @@ def register_backends() -> None:
     import_module("jiuwen_memory.storage.fulltext_impl")
     import_module("jiuwen_memory.storage.fusion_impl")
     import_module("jiuwen_memory.storage.fs_impl")
+    import_module("jiuwen_memory.storage.markdown_impl")
+    import_module("jiuwen_memory.storage.shadow_impl")
+    import_module("jiuwen_memory.storage.watchdog_impl")
     import_module("jiuwen_memory.storage.storage_impl")
     import_module("jiuwen_memory.storage.entity_impl")
     _REGISTERED = True

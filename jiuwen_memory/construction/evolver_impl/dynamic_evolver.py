@@ -33,6 +33,7 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
 )
 from jiuwen_memory.common.type_def.chat import ChatMessage
+from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction.abstractor import AbstractorProducer
 from jiuwen_memory.construction.associator import AssociatorProducer
 from jiuwen_memory.construction.base import ExtractContext
@@ -385,7 +386,7 @@ def _build(config):
     ``config.get("prompts")`` 在 params 无 prompts 时回退 globals。
     """
     vector_on = config.get("vector_enabled", True)
-    ib_default = "hybrid" if vector_on else "fulltext"
+    ib_default = resolve_index_builder_default(config)
     dr_default = "vector" if vector_on else "keyword"
 
     def _opt_annotator():

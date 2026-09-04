@@ -68,6 +68,8 @@ class StorageCapability(str, Enum):
     GRAPH = "graph"
     FUSION = "fusion"
     FS = "fs"
+    MARKDOWN = "markdown"
+    DOCUMENT_SHADOW = "document_shadow"
 
 
 class Storage(ABC):

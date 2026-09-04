@@ -33,6 +33,7 @@ from jiuwen_memory.common.errors import ConflictError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
+    COORDS_KEY,
     MESSAGES_KEY_PREFIX,
     DedupDecision,
     LifecycleState,
@@ -46,6 +47,7 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.common.type_def.memory import ROUTE_CTX_KEY, Segment
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction.abstractor import Abstractor, AbstractorProducer
 from jiuwen_memory.construction.associator import Associator, AssociatorProducer
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
@@ -910,6 +912,17 @@ class OrchestratingEvolver(Evolver):
             return derived
         decisions = route_batch(self._router, derived, ctx)
         kept = apply_decisions(decisions)
+        # 断点 2 路 B：apply_decisions 改 scope/tags/memory_class 但不回写 coords。
+        # 派生 unit 经 inherited_system_metadata 继承源单元 metadata，而源单元的 coords
+        # 已被 API 层 _take_coords 取出、不在 metadata 里 → 派生 unit 也无 coords →
+        # md._project_of 读不到 coords.project 兜底 "default"。从 ctx.coords 回写，
+        # 让文档路径按 project 分流（coords 是 TRANSIENT 键，dumps 进 unit_json 时剥除，
+        # 但 md.write/shadow._project_of 在 dumps 之前从 unit 对象读，路径计算不受影响）。
+        if ctx.coords:
+            for unit in kept:
+                metadata = dict(unit.system_metadata or {})
+                metadata[COORDS_KEY] = dict(ctx.coords)
+                unit.system_metadata = metadata
         spaces = sorted({unit.scope.space for unit in kept})
         degraded = degraded_reasons(decisions)
         if degraded:
@@ -1057,11 +1070,13 @@ def _build(config):
     （``kv_store`` / ``index_builder`` / ``dedup`` / ``graph_store`` / ``llm`` …）与
     ``InMemoryEngine``、``HybridIndexBuilder`` 等共享同一实例，保证去重检索的是已索引的内容。
     """
-    # index_builder / dedup 缺省都随 vector_enabled：向量开走 hybrid+vector，
-    # 只倒排走 fulltext+keyword（去重仍可用——向量路在 fulltext-only 下 VectorStore 恒空，
-    # 会使去重失效，故此时改用倒排召回）。
+    # index_builder 缺省经公共函数 resolve_index_builder_default：文档模式 → document
+    # （全委托 storage，与 engine / job_factory 三处一致，避免缺省判定分叉拿到不一致
+    # 的 IndexBuilder）；非文档模式随 vector_enabled 在 hybrid/fulltext 间择一。
+    # dedup 缺省仍随 vector_enabled：向量开走 vector，fulltext-only 下 VectorStore 恒空
+    # 使去重失效，改用倒排召回（keyword）。
     vector_on = config.get("vector_enabled", True)
-    ib_default = "hybrid" if vector_on else "fulltext"
+    ib_default = resolve_index_builder_default(config)
     dr_default = "vector" if vector_on else "keyword"
     # layer_annotator 可选：本 evolver params 显式声明 ``layer_annotator`` 时按它取
     # （None/空串 → 显式禁用，视频 profile 用此关闭 L0/L1 标注，对齐 F05；

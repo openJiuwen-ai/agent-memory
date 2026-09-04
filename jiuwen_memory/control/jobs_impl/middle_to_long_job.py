@@ -29,6 +29,7 @@ from jiuwen_memory.common.type_def import (
     Scope,
 )
 from jiuwen_memory.common.type_def.chat import ChatMessage
+from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction import EvolveMode, Evolver
 from jiuwen_memory.construction.evolver import EvolverProducer
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
@@ -396,8 +397,9 @@ class MiddleToLongJobSpec:
 
 def _build_middle_to_long_job_spec(config) -> MiddleToLongJobSpec:
     """装配期固化 MiddleToLongJob 的依赖与业务参数——返回 Spec dataclass。"""
-    vector_on = config.get("vector_enabled", True)
-    ib_default = "hybrid" if vector_on else "fulltext"
+    # 与 engine / evolver 共用 resolve_index_builder_default：文档模式 → document，
+    # 非文档模式随 vector_enabled。避免缺省判定分叉拿到与文档模式不匹配的 IndexBuilder。
+    ib_default = resolve_index_builder_default(config)
     # lock 段未配置时不调 dep、不报错——LockProducer 不设默认实现，缺配置直接 dep 会
     # 抛 ValidationError。这里探测后再装配，让单实例 / 本地开发无需配 lock 段。
     # 多实例部署显式配 lock 段才生效，符合 F06「避免静默退化为单机锁」精神。

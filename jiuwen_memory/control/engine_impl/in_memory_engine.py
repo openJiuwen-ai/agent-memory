@@ -53,6 +53,7 @@ from jiuwen_memory.control.types import (
     PermissionContext,
     UpdateMode,
 )
+from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
@@ -785,9 +786,11 @@ class InMemoryEngine(MemoryEngine):
 
 @EngineProducer.register("in_memory")
 def _build(config):
-    # index_builder 缺省随 vector_enabled 在 hybrid/fulltext 间择一。
-    # 与 evolver 一致，共享同一实例。
-    ib_default = "hybrid" if config.get("vector_enabled", True) else "fulltext"
+    # index_builder 缺省经公共函数 resolve_index_builder_default：文档模式 → document
+    # 薄编排层（全委托 storage.add 文档分流，写真源 md + 影子索引，不碰 KV）；非文档
+    # 模式随 vector_enabled 在 hybrid/fulltext 间择一。evolver / job_factory 共用同一
+    # 函数，避免缺省判定分叉导致三处拿到不一致的 IndexBuilder。
+    ib_default = resolve_index_builder_default(config)
     # classifier 可选：config 声明了 classifier 命名空间具名实例则注入，None 时跳过（向后兼容）。
     # infer=false 默认路径用它给原文打 tier+tags；infer=true 由 extractor 产出不经 classifier。
 
