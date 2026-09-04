@@ -183,3 +183,128 @@ def test_storage_producer_rejects_unknown_retrieval_pipeline() -> None:
             {"preferred_retrieval_pipeline": "unknown"},
             AssemblyContext(),
         )
+
+
+# -- 文档路径（write_document=True） ---------------------------------------- #
+# 文档模式真源 = md 人类视图 + SQLite 影子索引，KV 不参与（F07 §3.1 互斥路径）。
+# 用真实 LocalMarkdownStore + SqliteDocumentShadowIndex（降级模式，无 embedder）
+# 验证 add/update/delete/get/list 的分流，不 mock 算子——md 落盘与影子索引三表
+# 是文档记忆的核心契约。
+
+from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
+    WhitespaceTokenizer,
+)
+from jiuwen_memory.common.type_def import COORDS_KEY, MD_FILENAME_KEY, MEMORY_CLASS_KEY
+from jiuwen_memory.storage.markdown_impl.local_markdown_store import LocalMarkdownStore
+from jiuwen_memory.storage.shadow_impl.sqlite_shadow_index import SqliteDocumentShadowIndex
+
+
+def _doc_storage(tmp_path) -> CompositeStorage:
+    return CompositeStorage(
+        markdown=LocalMarkdownStore(root=str(tmp_path)),
+        shadow_index=SqliteDocumentShadowIndex(
+            db_path=str(tmp_path / "shadow.db"), tokenizer=WhitespaceTokenizer()
+        ),
+        write_document=True,
+    )
+
+
+def _doc_unit(scope: Scope, unit_id: str, content: str, project: str = "p1") -> MemoryUnit:
+    return MemoryUnit(
+        id=unit_id,
+        scope=scope,
+        segments=[Segment(content=content)],
+        system_metadata={
+            MEMORY_CLASS_KEY: "project_memory",
+            COORDS_KEY: {"project": project},
+        },
+    )
+
+
+def test_write_document_flag_is_fixed_at_assembly(tmp_path) -> None:
+    assert CompositeStorage(kv=InMemoryKVStore()).should_write_document() is False
+    assert _doc_storage(tmp_path).should_write_document() is True
+
+
+def test_sanitize_document_content_folds_multiline_to_single_line() -> None:
+    unit = MemoryUnit(
+        id="u1", scope=Scope(org="org"), segments=[Segment(content="line one\nline two\n\nthree")]
+    )
+    CompositeStorage._sanitize_document_content([unit])
+    assert unit.segments[0].content == "line one line two three"
+
+
+def test_sanitize_document_content_leaves_single_line_untouched() -> None:
+    unit = MemoryUnit(id="u1", scope=Scope(org="org"), segments=[Segment(content="no newline")])
+    CompositeStorage._sanitize_document_content([unit])
+    assert unit.segments[0].content == "no newline"
+
+
+def test_sanitize_document_content_skips_empty_segments() -> None:
+    unit = MemoryUnit(id="u1", scope=Scope(org="org"), segments=[])
+    CompositeStorage._sanitize_document_content([unit])  # 不抛
+
+
+def test_document_mode_add_writes_md_and_shadow_not_kv(tmp_path) -> None:
+    scope = Scope(org="org", user="user")
+    storage = _doc_storage(tmp_path)
+    storage.add(scope, [_doc_unit(scope, "u1", "deploy cluster")])
+
+    # 影子索引真源可读（无 kv 端口，get 走 shadow 不碰 KV）。
+    got = storage.get(scope, ["u1"])
+    assert [u.id for u in got] == ["u1"]
+    assert got[0].segments[0].content == "deploy cluster"
+    # md 人类视图落盘。
+    md = tmp_path / "memory" / "p1" / "MEMORY.md"
+    assert md.exists()
+    assert "deploy cluster" in md.read_text(encoding="utf-8")
+
+
+def test_document_mode_add_folds_multiline_content(tmp_path) -> None:
+    """文档路径入口把多行 content 折叠单行，md/索引/后续 replace 锚四方一致。"""
+    scope = Scope(org="org", user="user")
+    storage = _doc_storage(tmp_path)
+    storage.add(scope, [_doc_unit(scope, "u1", "line one\nline two")])
+
+    assert storage.get(scope, ["u1"])[0].segments[0].content == "line one line two"
+    md = (tmp_path / "memory" / "p1" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "line one line two" in md
+    assert "\nline two" not in md
+
+
+def test_document_mode_get_and_list(tmp_path) -> None:
+    scope = Scope(org="org", user="user")
+    storage = _doc_storage(tmp_path)
+    storage.add(scope, [_doc_unit(scope, "u1", "first"), _doc_unit(scope, "u2", "second")])
+
+    assert [u.id for u in storage.get(scope, ["u2", "missing", "u1"])] == ["u2", "u1"]
+    page = storage.list(scope)
+    assert page.count == 2
+    assert {u.id for u in page.items} == {"u1", "u2"}
+
+
+def test_document_mode_update_replaces_md_block(tmp_path) -> None:
+    scope = Scope(org="org", user="user")
+    storage = _doc_storage(tmp_path)
+    storage.add(scope, [_doc_unit(scope, "u1", "old content")])
+
+    (old,) = storage.get(scope, ["u1"])
+    old.segments[0].content = "new content"
+    storage.update(scope, [old])
+
+    assert storage.get(scope, ["u1"])[0].segments[0].content == "new content"
+    md = (tmp_path / "memory" / "p1" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "new content" in md
+    assert "old content" not in md
+
+
+def test_document_mode_delete_removes_md_block(tmp_path) -> None:
+    scope = Scope(org="org", user="user")
+    storage = _doc_storage(tmp_path)
+    storage.add(scope, [_doc_unit(scope, "u1", "gone content")])
+
+    storage.delete(scope, ["u1"])
+
+    assert storage.get(scope, ["u1"]) == []
+    md = (tmp_path / "memory" / "p1" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "gone content" not in md
