@@ -16,9 +16,15 @@ from jiuwen_memory.common.errors import (
     RateLimitedError,
     UnsupportedCapabilityError,
     ValidationError,
+    safe_error_message,
 )
 from jiuwen_memory.common.security.legacy import legacy_request_context
-from jiuwen_memory.common.security.request_context import new_request_context
+from jiuwen_memory.common.security.request_context import (
+    get_request_id,
+    new_request_context,
+    reset_request_id,
+    set_request_id,
+)
 from jiuwen_memory.common.security.types import (
     Action,
     Credentials,
@@ -132,6 +138,9 @@ __all__ = [
     "Surface",
     "legacy_request_context",
     "new_request_context",
+    "reset_request_id",
+    "get_request_id",
+    "set_request_id",
     "set_current",
     "reset_current",
     # Access 错误映射（公开异常，transport 不识别内核内部模块）
@@ -145,4 +154,5 @@ __all__ = [
     "RateLimitedError",
     "UnsupportedCapabilityError",
     "ValidationError",
+    "safe_error_message",
 ]

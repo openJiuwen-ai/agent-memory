@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-09-03 |
+| 最近一次修订日期 | 2026-09-04 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -77,6 +77,45 @@ target 时不与顶层 Scope 按维度隐式合并。普通 batch 写入不混�
 `delete_space` 使用 `mode`（`forget`、`archive`、`downweight` 或 `purge`）与
 `MemoryAPI.delete_space(..., mode=...)` 对齐；HTTP 不接受未被 API 消费的 `hard` 和
 `approval_token` 字段。
+
+### HTTP 错误响应与请求关联
+
+HTTP edge 将成功或失败响应统一写入 JSON；错误响应固定包含：
+
+```json
+{
+  "error": "ValidationError",
+  "message": "safe public message",
+  "request_id": "server-generated-id",
+  "retryable": false
+}
+```
+
+`error` 保留异常类名以兼容既有客户端；`message` 是受控的对外文案，400/策略类错误
+经过 `safe_error_message()` 脱敏，其余错误使用固定泛化文案。HTTP 不返回 traceback，
+也不得在响应中暴露 Authorization、token、API key、密码或 URL 凭据。
+
+| 异常或场景 | HTTP | `retryable` | 对外 `message` |
+|---|---:|---:|---|
+| `ValidationError` / 字段非法 | 400 | `false` | 脱敏后的字段级原因 |
+| `UnsupportedCapabilityError` | 400 | `false` | 脱敏后的能力不支持原因 |
+| `PolicyError` | 400 | `false` | 脱敏后的策略错误信息 |
+| 缺失或非法凭据 | 401 | `false` | `authentication failed` |
+| `PermissionDeniedError` | 403 | `false` | `permission denied` |
+| `NotFoundError` / 未知路径或 verb | 404 | `false` | `resource not found` |
+| 未支持的 HTTP 方法 | 405 | `false` | `method not allowed` |
+| `ConflictError` | 409 | `false` | `resource conflict` |
+| `PartialFailureError` | 409 | `false` | 脱敏后的失败原因，并保留 `completed` / `failed` / `retry_action` |
+| `RateLimitedError` | 429 | `true` | `too many requests` |
+| `BackendError` / `HealthCheckError` | 503 | `true` | `service temporarily unavailable` |
+| 请求体超过限制 | 413 | `false` | `request body is too large` |
+| 未预期异常 | 500 | `false` | `internal server error` |
+
+每个 HTTP 请求由服务端在入口生成唯一 `request_id`。所有响应同时在 JSON body 写入
+`request_id`，并在 `X-Request-ID` header 返回相同值；客户端提交的同名 header 会被忽略。
+该 ID 只用于响应、日志和审计关联，不参与 actor、target 或权限判定。429 响应额外返回
+`Retry-After: 1`，表示客户端可按整数秒退避；其他状态不返回该 header。HTTP edge 的
+状态转换不改变 CLI、MCP 和进程内 legacy dispatch 的历史兼容语义。
 
 ## 范围 / 边界
 
@@ -878,7 +917,7 @@ def admin_all(*, security: RequestSecurityContext) -> dict[str, str]: ...
 | 字段 | 类型 | 语义 |
 |------|------|------|
 | `auth` | AuthContext | 认证产出；`auth.actor` 即调用方身份 Scope |
-| `request_id` | str | 服务端生成，进审计与授权环境，调用方不可指定 |
+| `request_id` | str | 服务端生成，进审计与日志关联，不参与授权判定，调用方不可指定 |
 | `peer` | str | 传输层对端地址（不采信 `X-Forwarded-For` 一类自述 header） |
 | `surface` | Surface | 接入形态（HTTP/MCP/CLI/SDK/INTERNAL），由适配层写入 |
 | `started_at` | datetime | 服务端时钟（带时区），授权时效判定的 now 由它派生 |
