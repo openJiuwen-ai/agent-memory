@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-08-31 |
+| 最近一次修订日期 | 2026-09-03 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md |
 ## Metadata 物理存储契约
@@ -21,8 +21,9 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 - MemoryUnit 领域 add/update/delete/get/list
 - StorageSecurity 数据面授权和 StoreSecurity 数据保护能力边界
 - 可配置真源（文档/结构化）的 KV 存储抽象
+- 原文业务端口（RawDataStore）及其受权访问
 - KV 加密装饰器（EncryptedKVStore）
-- 多后端索引存储抽象：向量（VectorStore）、全文（FulltextStore）、图（GraphStore）、融合（FusionStore）、文件系统（FSStore）
+- 多后端索引存储抽象：向量（VectorStore）、全文（FulltextStore）、图（GraphStore）、融合（FusionStore）、实体（EntityStore）、文件系统（FSStore）
 - 统一 CRUD 动词（insert / delete / update / get）
 - 检索型存储的 search 查询
 - scope 原生隔离（scope 为显式第一入参，物理约束在该 scope 内）
@@ -37,7 +38,7 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 ## 不变量
 
 1. **scope 原生隔离**：`scope: Scope` 为每个 Store 方法的显式第一入参，不放进记录/查询结构体、也不编进 `metadata` / `filters`。
-2. **记录 id 在 scope 内唯一**：`insert` 冲突 / `update` 缺失按 `(scope, id)` 判定；后端可用 `scope + id` 生成物理主键，保证同一逻辑 id 在不同 space 下互不冲突。
+2. **记录 id 在 scope 内唯一**：`insert` 冲突 / `update` 缺失按 `(scope, id)` 判定；后端可用完整五维 `scope + id` 生成物理主键，保证同一逻辑 id 在不同 Scope 下互不冲突。
 3. **统一 CRUD 动词**：insert（增）/ delete（删）/ update（改）/ get（查），各存储接口保持同一命名。
 4. **检索型存储额外提供 search**：fulltext / vector / graph / fusion 在 CRUD 之上再提供 `search` 查询。
 5. **vector 的 recall 为可选能力**：`VectorStore.recall` 在 `search` 之上按需回带命中行 payload（`metadata`），基类默认抛 `NotImplementedError`，**不强制**每个后端实现；未实现者由调用方（`VectorRecaller`）捕获后回退 `search + get` 两段式，功能不退化。`search`/`get` 返回 `ScoredID`/`VectorRecord` 的契约不变。
@@ -69,14 +70,16 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 22. **CRUD 不级联层级关系**：KVStore 的 insert/update/delete 只作用于指定 key。删除父或子
     不会自动改写其他 unit；父子双向边维护、剪枝与修复由 construction/control 调用显式
     CRUD 完成。GraphStore 删除节点时清理关联图边的既有语义不适用于 hierarchy。
-23. **Storage capability 唯一来源**：能力集合只包含 KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS；
-    `has_*()` 由集合推导，未声明端口访问抛 `UnsupportedStorageCapabilityError`。
-24. **命名端口仍受 Storage 管控**：`has_vector_port(name)` 与 `vector_port(name)` 等成对使用；
-    默认端口名为 `default`，分层索引可使用 `layers_l0` / `layers_l1`，上层不得绕过
-    StorageProducer 直接解析 Store 具名实例。
+23. **Storage capability 唯一来源**：标准 Store 能力集合包含
+    KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS/ENTITY；`has_*()` 由能力集合推导，未声明端口访问抛
+    `UnsupportedStorageCapabilityError`。RawDataStore 是独立业务端口，不计入 capability，
+    通过 `has_raw_port(name)` / `raw_port(name)` 发现与访问。
+24. **命名端口仍受 Storage 管控**：`has_*_port(name)` 与 `*_port(name)` 成对使用；默认端口名为
+    `default`，分层索引可使用 `layers_l0` / `layers_l1`。Construction、Retrieval、Control
+    不得绕过 StorageProducer 直接解析 Store 具名实例；Entity 也必须经 `entity_port(name)`。
 25. **检索路径独立于 capability**：Storage 提供 recall/recall_and_get/retrieve，并以全局稳定的
     `preferred_retrieval_pipeline()` 选择首选入口；路径值不加入 capability。
-26. **统一授权不可绕过**：MemoryUnit 领域接口和 Storage 暴露的 Store 代理端口都先执行
+26. **统一授权不可绕过**：MemoryUnit 领域接口和 Storage 暴露的 Store、Raw、Entity 代理端口都先执行
     `StorageSecurity.authorize`；默认 AllowAll 可省略 access。Store 自身 `security` 表示数据保护。
 27. **写接口覆盖范围由实现决定**：`add`/`update`/`delete` 落成哪些索引形式取决于该 Storage
     实现的能力，调用方不得假定「只写记忆本体」。`IndexWriteMode` / `IndexRemoveMode` 表达调用方
@@ -95,7 +98,7 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 |---|---|---|
 | 领域操作 | `add/update(..., mode: IndexWriteMode = ALL)` / `delete(..., mode: IndexRemoveMode = HARD)` / `get` / `list` / `scopes` | 操作或枚举 MemoryUnit 真源；get 保序并省略缺失，list 返回 items 与 count |
 | 能力 | `capabilities()` / `has_kv()` 等 | 返回不可变标准 Store 端口能力 |
-| 端口 | `kv/vector/fulltext/graph/fusion/fs` 及 `*_port(name)` | 暴露经过统一授权代理的完整 Store 契约；命名端口通过 `has_*_port(name)` 判断，未声明能力时报错 |
+| 端口 | `kv/vector/fulltext/graph/fusion/entity/fs` 及 `*_port(name)`；Raw 使用 `raw_port(name)` | 暴露经过统一授权代理的完整 Store/业务端口契约；命名端口通过 `has_*_port(name)` 判断，未声明能力时报错 |
 | 检索适配 | `preferred_retrieval_pipeline()` / `recall` / `recall_and_get` / `retrieve` | 供 Retriever 选择 recall/get/rank 三步的组合位置 |
 | 横切 | `security` / `health()` | 统一授权入口并聚合声明能力的健康检查 |
 
@@ -114,9 +117,55 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 `RETRIEVAL_ONLY` / `SOFT` 时为空操作，而 `FORWARD_ONLY` 时应**至少保证本体被写到**——
 多刷新一次检索索引无害，漏写本体则丢数据。
 
-**原文**（对话消息）不属于 Storage 的领域范围：它既非 MemoryUnit 真源也非索引，不建索引、
-不参与检索，仅供构建层做指代消解与语境补全，条数上限由写入方维护。故不占 Storage 接口——
-构建层注入一个独立的 `KVStore` 直接读写（见 [F07](../features/construction/F07-memory-write-entry.md)）。
+**原文**（对话消息）不是 MemoryUnit 真源，也不是检索索引；但它仍是需要统一授权、Scope 隔离、
+保留和加密策略的数据面。Storage 因此提供独立的 `RawDataStore` 业务端口，不把原文误报为
+标准 Store capability：
+
+| 方法 | 签名 | 语义 |
+|---|---|---|
+| `append_raw` | `(scope, units, *, retain_limit=0, access=None) -> None` | 追加当前 Scope 的原文；`0` 表示不按数量淘汰 |
+| `list_raw` | `(scope, *, limit=100, access=None) -> list[MemoryUnit]` | 按 `t_ingest` 倒序列出最近原文 |
+| `delete_raw` | `(scope, record_ids, *, access=None) -> None` | 仅删除当前 Scope 指定原文，幂等 |
+| `scopes` | `(*, access=None) -> list[Scope]` | 枚举含原文的 Scope，仅供空间治理使用 |
+| `usage` | `(scope, *, access=None) -> RawDataUsage` | 返回当前 Scope 的原文条数和物理字节数 |
+| `purge` | `(scope, *, access=None) -> RawDataUsage` | 清空当前 Scope 的原文并返回清理前用量 |
+
+标准 Storage 装配路径中的 `raw_port(name)` 返回经过 `StorageSecurity` 授权代理的端口；调用方
+必须显式传入 Scope 和可选 `StorageAccessContext`。该授权资源当前为 `raw`。测试或自定义接线若
+直接注入 RawDataStore，调用方必须自行提供同等的授权边界，不能把这种便利接线当成生产绕过路径。
+默认 `KVRawDataStore` 只在 Storage 层内部把该契约适配到 KV，集中拥有 `/messages/` 前缀、
+`MemoryUnit` 编解码、按摄入时间排序和 retention 淘汰；Evolver 不得导入 `KVStore`、拼接 prefix
+或调用 codec。EncryptedKVStore 根据 `/messages/` 前缀使用 `raw_message` 加密 purpose；它与
+StorageSecurity 的授权资源 `raw` 是两个不同层级的名称。
+
+原文的跨 Scope 管理不由普通业务调用方自行扫描：`CompositeStorage.scopes()` 合并主 KV 与所有
+Raw port 的 Scope，`MemoryEngine.purge_space` 与 `SpaceManager.delete/usage` 负责 offboarding、
+计数和清理，并且必须把原文纳入同一 `org + space` 的管理范围。SpaceManager 对原文使用 Raw
+端口的管理方法；它只为 MemoryUnit/space 元数据使用受控的 KV 扫描作为基础设施 adapter。未来
+Raw 后端拆分时应由等价的管理 adapter 提供相同语义，不得把该例外扩散到 Construction/Retrieval。
+
+**EntityStore** 是标准 Storage capability：`StorageCapability.ENTITY`、`has_entity_port(name)`
+和 `entity_port(name)` 共同构成发现与访问契约。Entity 端口的方法以完整 `Scope` 为首参，
+由 CompositeStorage 建立 `StorageSecurity` 代理；旧的 `space_id + filters` 后端只允许在
+Storage 内部通过 adapter 兼容。Construction 的 EntityIndexBuilder 与 Retrieval 的
+KeywordRecaller 只能接收 Storage 提供的 Entity 端口，不得直接调用 `EntityStoreProducer`。
+
+### EntityStore（实体反向索引）
+
+Entity 是标准 Store capability，公开端口的领域操作如下。通过 `entity_port(name)` 取得的端口
+同样接受可选的 `access` keyword，并由 StorageSecurity 以资源 `entity` 授权。
+
+| 方法 | 签名 | 语义 |
+|---|---|---|
+| `ensure_index` | `() -> None` | 确保实体索引可用；属于装配/运维准备，不读取业务 Scope 数据 |
+| `find_by_entity_text_hash` | `(scope, hashes, *, limit=500) -> list[EntityRecord]` | 在**完整 Scope**内按归一化实体 hash 精确查询 |
+| `find_by_linked_memory_id` | `(scope, memory_id) -> list[EntityRecord]` | 在完整 Scope 内反查包含指定记忆 id 的实体，供 unlink 使用 |
+| `execute_operations` | `(scope, operations) -> EntityBatchResult` | 对完整 Scope 执行 INSERT/LINK/UNLINK_UPDATE/DELETE 批量变更；逐项失败在 `failed_ids` 返回，后端整体故障仍抛异常 |
+
+`EntityRecord` 中遗留的 `space_id` 与 `filters` 是后端投影，不是上层隔离输入。旧
+`space_id + EntityStoreFilters` 后端只能由 Storage 内部 adapter 从 Scope 派生；上层不可传入或
+拼接这些字段。后端必须使同一逻辑实体 id 在任何两个不同五维 Scope 中物理隔离。Elasticsearch
+实现以完整 Scope 加逻辑实体 id 计算物理文档 id，space routing 仅用于定位 shard，不能替代隔离。
 
 `StorageProducer.TOP_NAME = "storage"`。统一 Storage 实现以 target 自注册；默认
 `CompositeStorage` target 为 `composite`。具名引用必须复用同一 Storage 实例，使 Kernel、
@@ -126,7 +175,7 @@ Retriever 及后续迁移的 Construction/Control 不重复装配底层 Store。
 
 ```python
 class StoreType(str, Enum):
-    KV / FULLTEXT / VECTOR / GRAPH / FUSION / FS
+    KV / FULLTEXT / VECTOR / GRAPH / FUSION / FS / ENTITY
 
 class BaseStore(ABC):
     def store_type(self) -> StoreType  # 自描述
@@ -341,7 +390,7 @@ Store 抽象、跨后端不变量与注册机制。
 
 | 关联 spec | 关系 |
 |-----------|------|
-| S03-control | Engine 通过 KVStore 读写真源；目标生命周期/治理操作按显式 Scope 定位，全局 sweep/offboarding 才跨 Scope 枚举 |
+| S03-control | Engine 通过 Storage/IndexBuilder 读写真源；目标生命周期/治理操作按显式 Scope 定位。全局 sweep/offboarding 才跨 Scope 枚举；SpaceManager 的 usage/delete 必须覆盖 RawDataStore 原文 |
 | S04-retrieval | Retriever 经 StorageProducer 获取统一 Storage；CompositeStorage 的兼容 Recaller 由本层工厂按配置在构建期同步组装（具名构建用 `config.name` 预注册、匿名构建用合成名预注册打破循环） |
 | S05-construction | 构建层通过本层抽象做真源与索引持久化 |
 | S07-common | 定义 `MemoryUnit.hierarchy`、`HierarchyKind`、`HierarchyRole` 与 `FilterClause` |

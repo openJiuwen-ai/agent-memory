@@ -373,7 +373,7 @@ as `rewritten`.
 
 | `target` | Implementation class | Channel/layer | Function | Main dependencies and parameters |
 |---|---|---|---|---|
-| `keyword` | `KeywordRecaller` | `KEYWORD` / L2 | Queries the `storage.fulltext` index and aggregates index records into MemoryUnits; entity-association expansion is available when the entity path is enabled. | `storage`; optional `entity_store`; `entity_enabled` (default `false`) |
+| `keyword` | `KeywordRecaller` | `KEYWORD` / L2 | Queries the `storage.fulltext` index and aggregates index records into MemoryUnits; entity-association expansion is available when the entity path is enabled. The entity port is obtained from `storage.entity_port()` and is protected by the same Storage authorization boundary. | `storage`; `entity_enabled` (default `false`) |
 | `keyword_l0` | `KeywordRecaller` | `KEYWORD` / L0 | Queries the summary index in `storage.fulltext_port("layers_l0")`. | `storage`; controlled by the global `layers_index_enabled` switch |
 | `keyword_l1` | `KeywordRecaller` | `KEYWORD` / L1 | Queries the fragment index in `storage.fulltext_port("layers_l1")`. | `storage`; controlled by the global `layers_index_enabled` switch |
 | `vector` | `VectorRecaller` | `VECTOR` / L2 | Runs ANN over content chunks, aggregates them back into MemoryUnits through metadata, and applies MaxP across chunks belonging to the same unit. | `storage`; `min_similarity` (default `0.0`, which disables the pre-recall threshold) |

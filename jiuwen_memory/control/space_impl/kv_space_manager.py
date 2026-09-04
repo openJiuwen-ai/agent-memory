@@ -13,7 +13,7 @@ from jiuwen_memory.common.errors import ConflictError, NotFoundError, Validation
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.security import principal
 from jiuwen_memory.common.security.space_roles import SpaceContentRole, SpaceGovernanceRole
-from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, MESSAGES_KEY_PREFIX, Scope
+from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, Scope
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.space import SpaceManager, SpaceProducer
 from jiuwen_memory.control.types import (
@@ -27,6 +27,8 @@ from jiuwen_memory.control.types import (
     SpaceStatus,
     SpaceUsage,
 )
+from jiuwen_memory.storage.raw import RawDataStore, RawDataUsage
+from jiuwen_memory.storage.security import StorageAccessContext
 from jiuwen_memory.storage.storage import Storage, StorageProducer
 
 logger = get_logger(__name__)
@@ -68,6 +70,10 @@ def _now() -> datetime:
 
 def _scope(org: str, space: str) -> Scope:
     return Scope(org=org, space=space)
+
+
+def _scope_key(scope: Scope) -> tuple[str, str, str, str, str]:
+    return (scope.org, scope.space, scope.user, scope.agent, scope.session)
 
 
 def _validate_space(org: str, space: str) -> None:
@@ -298,12 +304,18 @@ class KVSpaceManager(SpaceManager):
     def __init__(self, storage: Storage) -> None:
         self._storage = storage
         self._kv = storage.kv
+        # Space governance must use the same authorized Raw port as Evolver.
+        # A Storage implementation that cannot expose that port cannot safely
+        # back a SpaceManager.
+        self._raw: RawDataStore = storage.raw_port()
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.SPACE
 
     def health(self) -> None:
         self._kv.health()
+        if self._raw is not None:
+            self._raw.health()
 
     def create(self, spec: SpaceSpec) -> SpaceInfo:
         _validate_space(spec.org, spec.space)
@@ -445,17 +457,27 @@ class KVSpaceManager(SpaceManager):
             "kv": 0,
             "index": 0,
         }
-        target_scopes = [
-            scope for scope in self._kv.scopes() if scope.org == org and scope.space == space
-        ]
+        target_scopes = {
+            _scope_key(scope): scope
+            for scope in self._kv.scopes()
+            if scope.org == org and scope.space == space
+        }
+        target_scopes.update(
+            {
+                _scope_key(scope): scope
+                for scope in self._raw_scopes()
+                if scope.org == org and scope.space == space
+            }
+        )
         if not target_scopes:
-            target_scopes = [_scope(org, space)]
-        for scope in target_scopes:
+            target_scopes[_scope_key(_scope(org, space))] = _scope(org, space)
+        for scope in target_scopes.values():
+            raw_usage = self._raw_purge(scope)
+            counts["message"] += raw_usage.message_count
+            counts["kv"] += raw_usage.message_count
             for key, _ in list(self._kv.scan(scope)):
                 if key.startswith(MEMORY_KEY_PREFIX):
                     counts["memory"] += 1
-                elif key.startswith(MESSAGES_KEY_PREFIX):
-                    counts["message"] += 1
                 elif key.startswith("/space/"):
                     counts["space_metadata"] += 1
                 counts["kv"] += 1
@@ -489,15 +511,95 @@ class KVSpaceManager(SpaceManager):
     def usage(self, org: str, space: str) -> SpaceUsage:
         _validate_space(org, space)
         usage = SpaceUsage(org=org, space=space)
-        for scope in self._kv.scopes():
+        target_scopes = {
+            _scope_key(scope): scope
+            for scope in self._kv.scopes()
+            if scope.org == org and scope.space == space
+        }
+        target_scopes.update(
+            {
+                _scope_key(scope): scope
+                for scope in self._raw_scopes()
+                if scope.org == org and scope.space == space
+            }
+        )
+        for scope in target_scopes.values():
             if scope.org != org or scope.space != space:
                 continue
+            raw_usage = self._raw_usage(scope)
+            usage.message_count += raw_usage.message_count
+            if not self._storage.raw_shares_kv():
+                usage.storage_bytes += raw_usage.storage_bytes
             for key, value in self._kv.scan(scope):
                 usage.storage_bytes += len(value)
                 if key.startswith(MEMORY_KEY_PREFIX):
                     usage.memory_count += 1
-                elif key.startswith(MESSAGES_KEY_PREFIX):
-                    usage.message_count += 1
+        return usage
+
+    def _management_access(self, scope: Scope) -> StorageAccessContext:
+        """Mark Storage calls made by the space offboarding/usage adapter."""
+        return StorageAccessContext(
+            actor=scope,
+            attributes={"consumer": "space_manager", "operation": "space_governance"},
+        )
+
+    def _raw_scopes(self) -> list[Scope]:
+        if self._raw is None:
+            return []
+        method = getattr(self._raw, "scopes", None)
+        if not callable(method):
+            return []
+        try:
+            return list(method(access=self._management_access(_ROOT_SCOPE)))
+        except TypeError:
+            # Compatibility with an older custom RawDataStore implementation
+            # that has not adopted the optional access keyword yet.
+            return list(method())
+
+    def _raw_usage(self, scope: Scope) -> RawDataUsage:
+        if self._raw is None:
+            return RawDataUsage()
+        method = getattr(self._raw, "usage", None)
+        if callable(method):
+            try:
+                return method(scope, access=self._management_access(scope))
+            except TypeError:
+                return method(scope)
+        list_method = getattr(self._raw, "list_raw", None)
+        if not callable(list_method):
+            return RawDataUsage()
+        try:
+            records = list_method(scope, limit=None, access=self._management_access(scope))
+        except TypeError:
+            records = list_method(scope, limit=None)
+        return RawDataUsage(message_count=len(records))
+
+    def _raw_purge(self, scope: Scope) -> RawDataUsage:
+        if self._raw is None:
+            return RawDataUsage()
+        method = getattr(self._raw, "purge", None)
+        if callable(method):
+            try:
+                return method(scope, access=self._management_access(scope))
+            except TypeError:
+                return method(scope)
+        usage = self._raw_usage(scope)
+        list_method = getattr(self._raw, "list_raw", None)
+        delete_method = getattr(self._raw, "delete_raw", None)
+        if not callable(list_method) or not callable(delete_method):
+            return usage
+        try:
+            records = list_method(scope, limit=None, access=self._management_access(scope))
+        except TypeError:
+            records = list_method(scope, limit=None)
+        try:
+            delete_method(
+                scope,
+                [record.id for record in records],
+                access=self._management_access(scope),
+            )
+        except TypeError:
+            delete_method(scope, [record.id for record in records])
         return usage
 
     def get_policy(self, org: str, space: str) -> SpacePolicy:

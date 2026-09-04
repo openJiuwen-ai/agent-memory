@@ -46,6 +46,7 @@ class StoreType(str, Enum):
     GRAPH = "graph"
     FUSION = "fusion"
     FS = "fs"
+    ENTITY = "entity"
 
 
 class BaseStore(ABC):

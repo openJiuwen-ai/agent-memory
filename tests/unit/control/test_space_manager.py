@@ -8,7 +8,7 @@ from jiuwen_memory.common.errors import (
     NotFoundError,
     ValidationError,
 )
-from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment
 from jiuwen_memory.control import (
     PrincipalPath,
     SpaceMember,
@@ -20,9 +20,20 @@ from jiuwen_memory.control import (
 from jiuwen_memory.control.membership_impl.kv_membership_resolver import KVMembershipResolver
 from jiuwen_memory.control.space_impl.kv_space_manager import KVSpaceManager
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.raw import KVRawDataStore
 from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
+
+
+def _acme_coding_values(kv_store: InMemoryKVStore) -> list[bytes]:
+    """收集 ``acme/coding`` 空间下所有 KV 值，供 usage 字节数比对。"""
+    values: list[bytes] = []
+    for candidate_scope in kv_store.scopes():
+        if candidate_scope.org == "acme" and candidate_scope.space == "coding":
+            for _, value in kv_store.scan(candidate_scope):
+                values.append(value)
+    return values
 
 
 def _manager() -> KVSpaceManager:
@@ -85,6 +96,61 @@ def test_kv_space_manager_crud_policy_members_usage_and_delete() -> None:
     assert result.deleted_counts["kv"] >= 4
     assert not kv.scan(Scope(org="acme", space="coding"))
     assert not kv.scan(Scope(org="acme", space="coding", user="alice"))
+
+
+def test_space_manager_uses_independent_raw_port_for_usage_and_delete() -> None:
+    main_kv = InMemoryKVStore()
+    raw_kv = InMemoryKVStore()
+    storage = CompositeStorage(kv=main_kv, raw=KVRawDataStore(raw_kv))
+    manager = KVSpaceManager(storage)
+    scope = Scope(org="acme", space="coding", user="alice")
+    other_scope = Scope(org="acme", space="other", user="alice")
+
+    manager.create(SpaceSpec(org="acme", space="coding"))
+    manager.create(SpaceSpec(org="acme", space="other"))
+    main_kv.insert(scope, "/memory/u1", b"memory")
+    raw_port = storage.raw_port()
+    raw_port.append_raw(
+        scope,
+        [MemoryUnit(id="m1", scope=scope, segments=[Segment(content="message")])],
+    )
+    raw_port.append_raw(
+        other_scope,
+        [MemoryUnit(id="m2", scope=other_scope, segments=[Segment(content="keep")])],
+    )
+
+    usage = manager.usage("acme", "coding")
+    assert usage.memory_count == 1
+    assert usage.message_count == 1
+    main_values = _acme_coding_values(main_kv)
+    raw_values = _acme_coding_values(raw_kv)
+    expected_bytes = sum(len(value) for value in main_values) + sum(
+        len(value) for value in raw_values
+    )
+    assert usage.storage_bytes == expected_bytes
+
+    manager.delete("acme", "coding")
+
+    assert raw_kv.scan(scope) == []
+    assert raw_kv.scan(other_scope)
+
+
+def test_space_manager_does_not_double_count_shared_raw_bytes() -> None:
+    kv = InMemoryKVStore()
+    storage = CompositeStorage(kv=kv)
+    manager = KVSpaceManager(storage)
+    scope = Scope(org="acme", space="coding", user="alice")
+    unit = MemoryUnit(id="m1", scope=scope, segments=[Segment(content="message")])
+
+    kv.insert(scope, "/memory/u1", b"memory")
+    storage.raw_port().append_raw(scope, [unit])
+
+    usage = manager.usage("acme", "coding")
+    expected_bytes = sum(len(value) for _, value in kv.scan(scope))
+
+    assert usage.memory_count == 1
+    assert usage.message_count == 1
+    assert usage.storage_bytes == expected_bytes
 
 
 def test_kv_space_manager_validates_and_reports_conflicts() -> None:
