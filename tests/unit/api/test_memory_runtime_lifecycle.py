@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+# pylint: disable=protected-access  # 测试直取内部装配与状态以断言接线行为
+
 import asyncio
 import tempfile
 
@@ -69,10 +71,10 @@ def test_sync_start_boots_watchdog_in_loop_thread_and_close_stops_it() -> None:
         deadline = 50.0
         import time
 
-        while runtime._kernel.watchdog._observer is None and deadline > 0:  # noqa: SLF001
+        while runtime._kernel.watchdog._observer is None and deadline > 0:
             time.sleep(0.1)
             deadline -= 0.1
-        assert runtime._kernel.watchdog._observer is not None  # noqa: SLF001
+        assert runtime._kernel.watchdog._observer is not None
 
         runtime.close(wait=False)
         thread.join(timeout=5.0)
@@ -88,7 +90,7 @@ def test_async_start_background_boots_watchdog_in_current_loop() -> None:
             runtime = assemble_runtime(config=_doc_config(tmp))
             await runtime.start_background()
             assert runtime._kernel.watchdog is not None
-            assert runtime._kernel.watchdog._observer is not None  # noqa: SLF001
+            assert runtime._kernel.watchdog._observer is not None
             runtime.close(wait=False)
 
     asyncio.run(scenario())

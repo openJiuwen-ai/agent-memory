@@ -12,6 +12,8 @@ md 是文档记忆的人类可读视图，落盘路径由 memory_class + coords.
 
 from __future__ import annotations
 
+# pylint: disable=protected-access  # 测试直取内部装配与状态以断言接线行为
+
 import datetime
 
 import pytest
