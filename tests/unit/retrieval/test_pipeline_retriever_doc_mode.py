@@ -33,14 +33,16 @@ class _RecordingStorage:
     def __init__(self) -> None:
         self.recall_channels: list[RecallChannel] | None = None
 
-    def preferred_retrieval_pipeline(self) -> RetrievalPipeline:
+    @staticmethod
+    def preferred_retrieval_pipeline() -> RetrievalPipeline:
         return RetrievalPipeline.RECALL_GET_RANK
 
     def recall(self, scope, query, *, channels, recall_limit):
         self.recall_channels = channels
         return RecallResult(batches=[])
 
-    def get(self, scope, unit_ids):
+    @staticmethod
+    def get(scope, unit_ids):
         return []
 
 
@@ -53,12 +55,14 @@ class _ScriptedParser:
 
 
 class _EmptyFuser:
-    def fuse(self, query, candidates):
+    @staticmethod
+    def fuse(query, candidates):
         return []
 
 
 class _EmptyDiscloser:
-    def disclose(self, query, candidates, units, level, max_tokens=None):
+    @staticmethod
+    def disclose(query, candidates, units, level, max_tokens=None):
         return []
 
 

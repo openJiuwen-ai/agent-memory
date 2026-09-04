@@ -227,8 +227,10 @@ def test_sync_one_deleted_flag_drops_all_units(tmp_path) -> None:
     wd._shadow.insert_units(
         SCOPE,
         [
-            MemoryUnit(id="u1", scope=SCOPE, segments=[Segment(content="a")], system_metadata={MD_FILENAME_KEY: md_filename}),
-            MemoryUnit(id="u2", scope=SCOPE, segments=[Segment(content="b")], system_metadata={MD_FILENAME_KEY: md_filename}),
+            MemoryUnit(id="u1", scope=SCOPE, 
+                       segments=[Segment(content="a")], system_metadata={MD_FILENAME_KEY: md_filename}),
+            MemoryUnit(id="u2", scope=SCOPE, 
+                       segments=[Segment(content="b")], system_metadata={MD_FILENAME_KEY: md_filename}),
         ],
     )
 

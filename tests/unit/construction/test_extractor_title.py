@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+# pylint: disable=protected-access  # 测试直取内部装配与状态以断言接线行为
+
 import json
 
 import pytest

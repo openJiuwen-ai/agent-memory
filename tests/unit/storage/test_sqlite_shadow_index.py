@@ -253,7 +253,8 @@ def test_insert_duplicate_id_conflicts(tmp_path) -> None:
 
 def test_update_overwrites_content_and_preserves_project_guard(tmp_path) -> None:
     """coords 是 TRANSIENT 键（dumps 剥除），read-modify-write 后 project 落 default；
-    空兜底守卫须保留旧 project，否则按 project 隔离召回丢失。"""
+    空兜底守卫须保留旧 project，否则按 project 隔离召回丢失。
+    """
     store = _store(tmp_path)
     store.insert_units(
         SCOPE,
@@ -268,7 +269,8 @@ def test_update_overwrites_content_and_preserves_project_guard(tmp_path) -> None
 
     assert store.get_units(SCOPE, ["u1"])[0].segments[0].content == "updated content"
     # project 仍为 p1（非 default）：按 project 过滤召回应命中
-    hits = store.search_fulltext(SCOPE, TextQuery(text="updated", filters=FilterClause("system_metadata.project", FilterOp.IN, ["p1"])))
+    hits = store.search_fulltext(SCOPE, TextQuery(text="updated", 
+            filters=FilterClause("system_metadata.project", FilterOp.IN, ["p1"])))
     assert [h.id for h in hits] == ["u1"]
 
 
