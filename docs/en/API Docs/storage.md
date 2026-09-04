@@ -3,7 +3,7 @@
 The Storage layer provides two levels of storage abstraction to upper layers:
 
 - `Storage`: the unified domain interface for `MemoryUnit`, also responsible for capability discovery, authorization, and retrieval adaptation.
-- `BaseStore` and its subinterfaces: six standard ports for KV, vector, full-text, graph, fusion, and file backends, plus an independent entity reverse-index port.
+- `BaseStore` and its subinterfaces: seven standard ports for KV, vector, full-text, graph, fusion, file, and entity backends. Raw source messages use a separate authorized `RawDataStore` port owned by `Storage`.
 
 This document is an API reference for the current abstract interfaces. It does not prescribe the internal implementation of any specific backend. The following source files are authoritative:
 
@@ -26,11 +26,11 @@ This document is an API reference for the current abstract interfaces. It does n
 
 ### 1.1 Scope Isolation
 
-All data operations on `Storage` and the six standard Store interfaces explicitly accept `scope: Scope`. `Scope` consists of five dimensions: `org`, `space`, `user`, `agent`, and `session`. A storage implementation must constrain writes, queries, and deletions to that scope.
+All data operations on `Storage`, its raw-data port, and the seven standard Store interfaces explicitly accept `scope: Scope` (except administrative `ensure_index()`/`health()` methods). `Scope` consists of five dimensions: `org`, `space`, `user`, `agent`, and `session`. A storage implementation must constrain writes, queries, and deletions to that scope.
 
 `scope` is an independent isolation axis. It must not be embedded in `metadata`, `filters`, or any Record/Query structure. The same ID may exist independently in different Scopes.
 
-`EntityStore` is the only exception. It uses `space_id` routing together with `EntityStoreFilters.actor_id` for isolation and does not accept the five-part Scope as the first argument. See "EntityStore API" for details.
+`EntityStore` is no longer an exception: its public port is Scope-first and is reached through `Storage`. A legacy backend that still accepts `space_id + filters` is adapted inside `Storage`; that compatibility shape is not exposed to Construction or Retrieval.
 
 ```python
 from jiuwen_memory.common.type_def import Scope
@@ -78,16 +78,17 @@ from jiuwen_memory.storage.storage import Storage
 
 ### 2.1 Capability Discovery and Port Access
 
-`StorageCapability` defines six standard capabilities: `KV`, `VECTOR`, `FULLTEXT`, `GRAPH`, `FUSION`, and `FS`.
+`StorageCapability` defines seven standard capabilities: `KV`, `VECTOR`, `FULLTEXT`, `GRAPH`, `FUSION`, `FS`, and `ENTITY`. Raw data is an authorized Storage-owned port, but is intentionally not a `StorageCapability` enum value because it is not a retrieval Store.
 
 | API | Return value | Description |
 |---|---|---|
 | `capabilities()` | `frozenset[StorageCapability]` | Returns the capabilities declared by the current Storage instance |
 | `has_kv()` / `has_vector()` / `has_fulltext()` | `bool` | Checks for the default KV/vector/full-text capability |
-| `has_graph()` / `has_fusion()` / `has_fs()` | `bool` | Checks for the default graph/fusion/file capability |
+| `has_graph()` / `has_fusion()` / `has_fs()` / `has_entity()` | `bool` | Checks for the default graph/fusion/file/entity capability |
 | `has_*_port(name="default")` | `bool` | Checks whether a named port exists |
-| `kv` / `vector` / `fulltext` / `graph` / `fusion` / `fs` | Corresponding Store | Accesses the default port |
+| `kv` / `vector` / `fulltext` / `graph` / `fusion` / `fs` / `entity` | Corresponding Store | Accesses the default port |
 | `*_port(name="default")` | Corresponding Store | Accesses a named port |
+| `raw` / `raw_port(name="default")` | `RawDataStore` | Accesses the authorized raw-source message port |
 
 Check a capability with `has_*()` or `has_*_port()` before accessing its port. Accessing an undeclared port raises `UnsupportedStorageCapabilityError`.
 
@@ -248,7 +249,26 @@ Every low-level Store inherits `BaseStore` and provides the following APIs:
 | `store_type()` | Abstract method | Returns `StoreType` |
 | `health()` | Abstract method | Returns `None` when healthy; otherwise raises `HealthCheckError` |
 
-`StoreType` contains `KV`, `FULLTEXT`, `VECTOR`, `GRAPH`, `FUSION`, and `FS`.
+`StoreType` contains `KV`, `FULLTEXT`, `VECTOR`, `GRAPH`, `FUSION`, `FS`, and `ENTITY`.
+
+## 3.1 RawDataStore API
+
+```python
+from jiuwen_memory.storage.raw import RawDataStore
+```
+
+`RawDataStore` is the Storage-owned port for source messages kept for extraction context. It hides
+the `/messages/` key prefix, serialization codec, retention policy, and encryption purpose from
+Evolver. Every data operation receives the complete `Scope`; `CompositeStorage` applies the same
+`StorageSecurity` authorization proxy used by the other ports.
+
+| API | Return value | Description |
+|---|---|---|
+| `append_raw(scope, units, *, retain_limit=0, access=None)` | `None` | Appends source records; `retain_limit=0` disables count-based eviction |
+| `list_raw(scope, *, limit=100, access=None)` | `list[MemoryUnit]` | Lists the newest source records first; `limit=None` returns all |
+| `delete_raw(scope, record_ids, *, access=None)` | `None` | Idempotently deletes source records in the Scope |
+| `usage(scope, *, access=None)` | `RawDataUsage` | Reports source-record count and, where available, physical bytes |
+| `purge(scope, *, access=None)` | `RawDataUsage` | Deletes all source records in the Scope |
 
 ## 4. KVStore API
 
@@ -368,18 +388,25 @@ with storage.fs.get(scope, ref) as stream:
 from jiuwen_memory.storage.entity_store import EntityStore
 ```
 
-`EntityStore` is an independent reverse-index port from entities to MemoryUnit IDs. It is not part of `StorageCapability` and cannot be accessed through `storage.entity` or `storage.*_port()`. It is assembled independently through `EntityStoreProducer`.
+`EntityStore` is the entity reverse-index port from entities to MemoryUnit IDs. It is part of
+`StorageCapability.ENTITY` and is accessed through `storage.entity` or `storage.entity_port(name)`.
+`CompositeStorage` wraps it in a `StorageSecurity` authorization proxy. `EntityStoreProducer` remains
+an implementation factory used by Storage assembly; business components must not resolve it directly.
 
 | API | Return value | Description |
 |---|---|---|
 | `ensure_index()` | `None` | Ensures that the entity index has been created and is ready; must be called before using the other APIs |
-| `find_by_entity_text_hash(space_id, entity_text_hashes, *, filters, limit=500)` | `list[EntityRecord]` | Performs exact lookup by SHA-256 hash of entity text; vector nearest-neighbor search is not supported |
-| `find_by_linked_memory_id(space_id, memory_id, *, filters)` | `list[EntityRecord]` | Finds entities linked to the specified MemoryUnit ID |
-| `execute_operations(space_id, operations)` | `EntityBatchResult` | Executes a mixed batch of `INSERT` / `LINK` / `UNLINK_UPDATE` / `DELETE` operations |
+| `find_by_entity_text_hash(scope, entity_text_hashes, *, limit=500)` | `list[EntityRecord]` | Performs exact lookup by SHA-256 hash of entity text inside the Scope; vector nearest-neighbor search is not supported |
+| `find_by_linked_memory_id(scope, memory_id)` | `list[EntityRecord]` | Finds entities linked to the specified MemoryUnit ID inside the Scope |
+| `execute_operations(scope, operations)` | `EntityBatchResult` | Executes a mixed batch of `INSERT` / `LINK` / `UNLINK_UPDATE` / `DELETE` operations inside the Scope |
 
-`EntityStoreFilters.from_scope(scope)` derives `actor_id` from `scope.user`. This allows entities to be shared across agents and sessions for the same user while remaining constrained by `space_id + actor_id`.
+The public contract preserves all five Scope dimensions (`org`, `space`, `user`, `agent`, and
+`session`). A backend may derive a physical `space_id` routing value and may populate
+`EntityStoreFilters` for compatibility, but it must not widen the query. In particular, entities
+from another agent or session are not shared unless the caller explicitly uses the same Scope.
 
-`EntityBatchResult.successful_ids` and `failed_ids` report batch results per item, allowing partial failure. Although `EntityStore` inherits `BaseStore`, it does not participate in the six-value `StoreType` routing scheme. The current implementation returns `None` from `store_type()`.
+`EntityBatchResult.successful_ids` and `failed_ids` report batch results per item, allowing partial
+failure. `EntityStore.store_type()` returns `StoreType.ENTITY`.
 
 ## 11. Security APIs
 

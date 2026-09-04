@@ -14,7 +14,7 @@ import requests
 import yaml
 
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
-from jiuwen_memory.common.errors import BackendError, ValidationError
+from jiuwen_memory.common.errors import BackendError, PermissionDeniedError, ValidationError
 from jiuwen_memory.common.normalizer.normalizer_impl import video_asr, video_pipeline
 from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer import (
     PassthroughNormalizer,
@@ -655,6 +655,7 @@ def test_video_add_and_prefixed_job_status_share_handler_route(
         (),
         {
             "api": kernel.api,
+            "ingest_jobs": kernel.ingest_jobs,
             "config": SimpleNamespace(settings={"memory_api": settings}),
         },
     )()
@@ -675,7 +676,6 @@ def test_video_add_and_prefixed_job_status_share_handler_route(
         assert submitted["job_id"].startswith("ing_")
         assert submitted["status"] in {"pending", "running", "succeeded"}
         assert submitted["reused"] is False
-
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
             status, result = _dispatch(
@@ -807,8 +807,6 @@ def test_video_add_rejected_when_evolver_not_assembled() -> None:
 
 def test_video_add_rejected_when_write_permission_denied() -> None:
     """P1-2: 无权限 actor 在 submit 前被 check_write 拒绝（403），不创建 ingest job。"""
-    from jiuwen_memory.common.errors import PermissionDeniedError
-
     class _DeniedAPI:
         @staticmethod
         def submit_ingest(*args, **kwargs):
@@ -873,3 +871,4 @@ def test_ingest_job_status_uses_memory_api_read_permission() -> None:
         assert body["error"] == "PermissionDeniedError"
     finally:
         kernel.ingest_jobs.close()
+

@@ -18,6 +18,8 @@ from typing import Any
 
 from jiuwen_memory.common._support import read_ssl_config, require_tls_scheme, wrap_backend
 from jiuwen_memory.common.errors import BackendError
+from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def.entity import (
     EntityBatchResult,
     EntityOperation,
@@ -25,10 +27,15 @@ from jiuwen_memory.common.type_def.entity import (
     EntityRecord,
     EntityStoreFilters,
 )
-from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.type_def.scope import Scope, space_id_from_scope
+from jiuwen_memory.storage.base import StoreType
 
-from ..entity_store import EntityStore, EntityStoreProducer
+from ..entity_store import (
+    EntityStore,
+    EntityStoreProducer,
+    bind_entity_operations_to_scope,
+    scoped_entity_document_id,
+)
 
 logger = get_logger(__name__)
 
@@ -60,7 +67,8 @@ class ElasticsearchEntityStore(EntityStore):
         self._list_limit = list_limit
         self._number_of_shards = number_of_shards
         self._number_of_replicas = number_of_replicas
-        self._options = options  # SSL 等额外构造参数（ca_certs/verify_certs 由 _build 读 SSL 后传入）
+        # SSL 等额外构造参数由 _build 读取后传入。
+        self._options = options
         self._client: Any = None
         self._index_ready = False
 
@@ -85,12 +93,16 @@ class ElasticsearchEntityStore(EntityStore):
                 self._client = Elasticsearch(self._hosts, **opts)
             logger.info(
                 "EntityStore: Elasticsearch client initialized hosts=%s index=%s",
-                self._hosts, self._index,
+                self._hosts,
+                self._index,
             )
         return self._client
 
     @staticmethod
-    def _parse_bulk_response(response: dict) -> EntityBatchResult:
+    def _parse_bulk_response(
+        response: dict,
+        logical_ids: dict[str, str] | None = None,
+    ) -> EntityBatchResult:
         """Parse a bulk response into per-item successful/failed ids.
 
         Unlike the main CSSAdapter (which raises on any failure), this never raises
@@ -105,10 +117,11 @@ class ElasticsearchEntityStore(EntityStore):
             doc_id = result.get("_id")
             if not doc_id:
                 continue
+            logical_id = (logical_ids or {}).get(doc_id, doc_id)
             if result.get("status", 0) in (200, 201):
-                successful_ids.append(doc_id)
+                successful_ids.append(logical_id)
             else:
-                failed_ids.append(doc_id)
+                failed_ids.append(logical_id)
         return EntityBatchResult(successful_ids=successful_ids, failed_ids=failed_ids)
 
     @staticmethod
@@ -140,7 +153,9 @@ class ElasticsearchEntityStore(EntityStore):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _build_filters(space_id: str, filters: EntityStoreFilters) -> list[dict]:
+    def _build_filters(scope: Scope) -> list[dict]:
+        space_id = space_id_from_scope(scope)
+        filters = EntityStoreFilters.from_scope(scope)
         query_filters = [{"term": {"space_id": space_id}}]
         for field in filters.__dataclass_fields__:
             value = getattr(filters, field)
@@ -150,11 +165,19 @@ class ElasticsearchEntityStore(EntityStore):
 
     @staticmethod
     def _to_document(record: EntityRecord) -> dict:
+        if record.space_id is None or record.filters is None:
+            raise ValueError("EntityRecord must be bound to Scope before serialization")
         doc = {
+            "entity_id": record.id,
             "space_id": record.space_id,
             "entity_text_hash": record.entity_text_hash,
             "entity_type": record.entity_type,
             "linked_memory_ids": list(record.linked_memory_ids),
+            "org": record.filters.org,
+            "space": record.filters.space,
+            "user": record.filters.user,
+            "agent": record.filters.agent,
+            "session": record.filters.session,
             "actor_id": record.filters.actor_id,
         }
         return doc
@@ -163,7 +186,7 @@ class ElasticsearchEntityStore(EntityStore):
     def _hit_to_entity_record(cls, hit: dict) -> EntityRecord:
         source = hit["_source"]
         return EntityRecord(
-            id=hit["_id"],
+            id=source.get("entity_id", hit["_id"]),
             space_id=source["space_id"],
             # entity_text 明文不持久化（_to_document 只存 hash，见 hash_entity_text
             # 的隐私设计）——回读恒空。消费方不依赖回读的 entity_text，只读
@@ -173,6 +196,11 @@ class ElasticsearchEntityStore(EntityStore):
             entity_type=source["entity_type"],
             linked_memory_ids=tuple(source.get("linked_memory_ids", [])),
             filters=EntityStoreFilters(
+                org=source.get("org"),
+                space=source.get("space"),
+                user=source.get("user"),
+                agent=source.get("agent"),
+                session=source.get("session"),
                 actor_id=source.get("actor_id"),
             ),
         )
@@ -219,10 +247,9 @@ class ElasticsearchEntityStore(EntityStore):
 
     def find_by_entity_text_hash(
         self,
-        space_id: str,
+        scope: Scope,
         entity_text_hashes: tuple[str, ...],
         *,
-        filters: EntityStoreFilters,
         limit: int = 500,
     ) -> list[EntityRecord]:
         """按 entity_text_hash keyword term 查询，返回命中的实体记录。"""
@@ -233,7 +260,8 @@ class ElasticsearchEntityStore(EntityStore):
         if limit <= 0:
             raise ValueError("limit must be positive")
 
-        query_filters = self._build_filters(space_id, filters)
+        space_id = space_id_from_scope(scope)
+        query_filters = self._build_filters(scope)
         query_filters.append({"terms": {"entity_text_hash": list(hashes)}})
         try:
             response = self._client.search(
@@ -244,18 +272,14 @@ class ElasticsearchEntityStore(EntityStore):
                 routing=space_id,
             )
         except Exception as exc:
-            raise BackendError(
-                f"Entity hash lookup failed on index {self._index}: {exc}"
-            ) from exc
+            raise BackendError(f"Entity hash lookup failed on index {self._index}: {exc}") from exc
 
         return [self._hit_to_entity_record(hit) for hit in response["hits"]["hits"]]
 
     def find_by_linked_memory_id(
         self,
-        space_id: str,
+        scope: Scope,
         memory_id: str,
-        *,
-        filters: EntityStoreFilters,
     ) -> list[EntityRecord]:
         """反查：哪些实体关联了该 memory_id（unlink 用）。
 
@@ -264,7 +288,8 @@ class ElasticsearchEntityStore(EntityStore):
         下沉到反查，避免 space 内跨 user 的孤立误删。
         """
         self._require_index_ready()
-        query_filters = self._build_filters(space_id, filters)
+        space_id = space_id_from_scope(scope)
+        query_filters = self._build_filters(scope)
         query_filters.append({"term": {"linked_memory_ids": memory_id}})
         try:
             response = self._client.search(
@@ -287,7 +312,7 @@ class ElasticsearchEntityStore(EntityStore):
 
     def execute_operations(
         self,
-        space_id: str,
+        scope: Scope,
         operations: list[EntityOperation],
     ) -> EntityBatchResult:
         """Apply a batch of INSERT/LINK/UNLINK_UPDATE/DELETE mutations via one bulk call.
@@ -297,48 +322,74 @@ class ElasticsearchEntityStore(EntityStore):
         failure does not raise, so the linker can count failed_count per entity.
         """
         self._require_index_ready()
-        routing = space_id
+        operations = bind_entity_operations_to_scope(scope, operations)
+        routing = space_id_from_scope(scope)
 
         bulk_ops: list[dict] = []
+        logical_ids: dict[str, str] = {}
         for op in operations:
             if op.type is EntityOpType.INSERT:
                 if op.record is None:
                     continue
-                bulk_ops.append({"index": {
-                    "_index": self._index,
-                    "_id": op.record.id,
-                    "routing": routing,
-                }})
+                physical_id = scoped_entity_document_id(scope, op.record.id)
+                logical_ids[physical_id] = op.record.id
+                bulk_ops.append(
+                    {
+                        "index": {
+                            "_index": self._index,
+                            "_id": physical_id,
+                            "routing": routing,
+                        }
+                    }
+                )
                 bulk_ops.append(self._to_document(op.record))
             elif op.type is EntityOpType.LINK:
                 if op.record_id is None:
                     continue
+                physical_id = scoped_entity_document_id(scope, op.record_id)
+                logical_ids[physical_id] = op.record_id
                 unique_memory_ids = sorted(set(op.link_memory_ids))
                 if not unique_memory_ids:
                     continue
-                bulk_ops.append({"update": {
-                    "_index": self._index,
-                    "_id": op.record_id,
-                    "routing": routing,
-                }})
+                bulk_ops.append(
+                    {
+                        "update": {
+                            "_index": self._index,
+                            "_id": physical_id,
+                            "routing": routing,
+                        }
+                    }
+                )
                 bulk_ops.append(self._link_script_body(unique_memory_ids))
             elif op.type is EntityOpType.UNLINK_UPDATE:
                 if op.record is None:
                     continue
-                bulk_ops.append({"update": {
-                    "_index": self._index,
-                    "_id": op.record.id,
-                    "routing": routing,
-                }})
+                physical_id = scoped_entity_document_id(scope, op.record.id)
+                logical_ids[physical_id] = op.record.id
+                bulk_ops.append(
+                    {
+                        "update": {
+                            "_index": self._index,
+                            "_id": physical_id,
+                            "routing": routing,
+                        }
+                    }
+                )
                 bulk_ops.append({"doc": self._to_document(op.record)})
             elif op.type is EntityOpType.DELETE:
                 if op.record_id is None:
                     continue
-                bulk_ops.append({"delete": {
-                    "_index": self._index,
-                    "_id": op.record_id,
-                    "routing": routing,
-                }})
+                physical_id = scoped_entity_document_id(scope, op.record_id)
+                logical_ids[physical_id] = op.record_id
+                bulk_ops.append(
+                    {
+                        "delete": {
+                            "_index": self._index,
+                            "_id": physical_id,
+                            "routing": routing,
+                        }
+                    }
+                )
 
         if not bulk_ops:
             return EntityBatchResult(successful_ids=[], failed_ids=[])
@@ -346,20 +397,16 @@ class ElasticsearchEntityStore(EntityStore):
         try:
             response = self._client.bulk(operations=bulk_ops, refresh="wait_for", routing=routing)
         except Exception as exc:
-            raise BackendError(
-                f"Entity bulk write failed on index {self._index}: {exc}"
-            ) from exc
+            raise BackendError(f"Entity bulk write failed on index {self._index}: {exc}") from exc
 
-        return self._parse_bulk_response(response)
+        return self._parse_bulk_response(response, logical_ids)
 
     # ------------------------------------------------------------------
     # BaseStore 契约
     # ------------------------------------------------------------------
 
     def store_type(self):
-        # entity_store 不在 StoreType 枚举里（它是独立端口，不走 KV/FULLTEXT/VECTOR
-        # 等分类）；返回 None 供装配层判活用，不参与 store_type 路由。
-        return None
+        return StoreType.ENTITY
 
     def health(self) -> None:
         try:
@@ -381,12 +428,23 @@ class ElasticsearchEntityStore(EntityStore):
                 f"Entity index '{self._index}' exists but _routing.required is not set."
             )
 
-        # entity_text_hash must exist; an index built before the hash change still
-        # stores plaintext entity_text and must be rebuilt.
-        if "entity_text_hash" not in mappings.get("properties", {}):
+        # A pre-Scope index lacks the hard-coordinate fields. Querying it would
+        # silently omit filters (or use ES dynamic text mappings), which is worse
+        # than an explicit rebuild requirement.
+        required_fields = {
+            "entity_id",
+            "entity_text_hash",
+            "org",
+            "space",
+            "user",
+            "agent",
+            "session",
+        }
+        missing = required_fields - set(mappings.get("properties", {}))
+        if missing:
             raise BackendError(
-                f"Entity index '{self._index}' is missing the entity_text_hash field. "
-                "It was likely created before the entity_text hashing change and must be recreated."
+                f"Entity index '{self._index}' is missing Scope isolation fields "
+                f"{sorted(missing)} and must be recreated."
             )
 
         logger.info("existing_entity_index_validated index=%s", self._index)
@@ -401,10 +459,16 @@ class ElasticsearchEntityStore(EntityStore):
         return {
             "_routing": {"required": True},
             "properties": {
+                "entity_id": {"type": "keyword"},
                 "space_id": {"type": "keyword"},
                 "entity_text_hash": {"type": "keyword"},
                 "entity_type": {"type": "keyword"},
                 "linked_memory_ids": {"type": "keyword"},
+                "org": {"type": "keyword"},
+                "space": {"type": "keyword"},
+                "user": {"type": "keyword"},
+                "agent": {"type": "keyword"},
+                "session": {"type": "keyword"},
                 "actor_id": {"type": "keyword"},
             },
         }
@@ -415,6 +479,7 @@ class ElasticsearchEntityStore(EntityStore):
 
 
 # -- 注册到 EntityStoreProducer（实现自注册，与 FulltextStore._build 同构） ------- #
+
 
 @EntityStoreProducer.register("elasticsearch")
 def _build(config):

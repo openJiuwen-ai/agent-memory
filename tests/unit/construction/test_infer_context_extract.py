@@ -22,7 +22,7 @@ import pytest
 
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.embedder.base import Embedder
-from jiuwen_memory.common.errors import ConflictError, NotFoundError
+from jiuwen_memory.common.errors import ConflictError, NotFoundError, PermissionDeniedError
 from jiuwen_memory.common.llm.base import LLM
 from jiuwen_memory.common.type_def import (
     MESSAGES_KEY_PREFIX,
@@ -298,8 +298,13 @@ def _index_related(unit: MemoryUnit, kv: KVStore, vector_store: VectorStore, emb
     vec = embedder.embed([unit.content])[0]
     vector_store.insert(
         unit.scope,
-        [VectorRecord(id=f"{unit.id}-0", vector=vec,
-                      metadata={"unit_id": unit.id, "tier": unit.tier.value, "seq": "0"})],
+        [
+            VectorRecord(
+                id=f"{unit.id}-0",
+                vector=vec,
+                metadata={"unit_id": unit.id, "tier": unit.tier.value, "seq": "0"},
+            )
+        ],
     )
 
 
@@ -313,7 +318,7 @@ def _make_evolver(kv, vector_store, embedder, llm, extractor) -> OrchestratingEv
         associator=None,
         index_builder=_NoopIndexBuilder(storage),
         storage=storage,
-        message_store=storage.kv,
+        message_store=storage.raw_port(),
         dedup=dedup,
         llm=llm,
     )
@@ -328,12 +333,61 @@ class TestInferContextCollection:
     """evolver EXTRACT + infer=true 时内部收集 context。"""
 
     @staticmethod
+    def test_raw_read_permission_denied_is_not_downgraded_to_append():
+        """RawDataStore 拒绝读取时，Evolver 不应绕过授权继续追加原文。"""
+
+        from jiuwen_memory.storage.security import StorageAction, StorageSecurity
+
+        class _DenyRawReads(StorageSecurity):
+            def authorize(self, access, scope, action, resource):
+                if resource == "raw" and action is StorageAction.LIST:
+                    raise PermissionDeniedError("raw list")
+
+        kv = _MemoryKVStore()
+        storage = CompositeStorage(kv=kv, security=_DenyRawReads())
+        evolver = OrchestratingEvolver(
+            extractor=None,
+            abstractor=None,
+            associator=None,
+            index_builder=None,
+            storage=storage,
+            message_store=storage.raw_port(),
+            dedup=None,
+            llm=None,
+        )
+        unit = _make_unit("raw-auth-1", "受保护原文", system_metadata={"infer": "true"})
+
+        with pytest.raises(PermissionDeniedError):
+            getattr(evolver, "_persist_and_maintain_messages")([unit])
+
+        assert kv.scan(_DEFAULT_SCOPE, prefix=MESSAGES_KEY_PREFIX) == []
+
+    @staticmethod
+    def test_evolver_rejects_bare_kv_message_store():
+        """裸 KV 不能在 Construction 侧重新适配成未授权的原文端口。"""
+        storage = CompositeStorage(kv=_MemoryKVStore())
+
+        with pytest.raises(TypeError, match="RawDataStore"):
+            OrchestratingEvolver(
+                extractor=None,
+                abstractor=None,
+                associator=None,
+                index_builder=None,
+                storage=storage,
+                message_store=storage.kv,
+                dedup=None,
+                llm=None,
+            )
+
+    @staticmethod
     def test_non_infer_returns_none_context():
         """非 infer 的 EXTRACT → context=None，extractor 收到 None。"""
         stores = {"kv": _MemoryKVStore(), "vector": _MemoryVectorStore()}
         plugins = {"embedder": _HashEmbedder(), "llm": _MockLLM()}
         extractor = _ScriptedExtractor([_make_unit("ext-1", "新事实")])
-        evolver = _make_evolver(stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor)
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor
+        )
 
         unit = _make_unit("u1", "普通消息")  # 无 metadata.infer
         evolver.evolve([unit], EvolveMode.EXTRACT)
@@ -342,11 +396,13 @@ class TestInferContextCollection:
 
     @staticmethod
     def test_infer_collects_recent_originals_and_related():
-        """infer=true → context 含 recent_originals（/messages/ 原文）+ related_memories（召回）。"""
+        """infer=true → context 含 recent 原文和 related memories。"""
         stores = {"kv": _MemoryKVStore(), "vector": _MemoryVectorStore()}
         plugins = {"embedder": _HashEmbedder(), "llm": _MockLLM()}
         extractor = _ScriptedExtractor([_make_unit("ext-1", "新事实")])
-        evolver = _make_evolver(stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor)
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor
+        )
 
         # 预置一条已索引的相关记忆（/memory/，供 dedup.recall 召回）
         # 用与本轮相同文本（HashEmbedder 同文本→cosine=1.0，确保超过 min_similarity 召回）
@@ -354,7 +410,9 @@ class TestInferContextCollection:
         _index_related(related, stores["kv"], stores["vector"], plugins["embedder"])
 
         # 预置一条历史 infer 原文（/messages/，规约后的 MemoryUnit）
-        hist = _make_unit("hist-1", "user: 之前聊过猫\nassistant: 嗯", system_metadata={"infer": "true"})
+        hist = _make_unit(
+            "hist-1", "user: 之前聊过猫\nassistant: 嗯", system_metadata={"infer": "true"}
+        )
         stores["kv"].insert(_DEFAULT_SCOPE, messages_key(hist.id), dumps(hist))
 
         # 本轮 infer unit（content 与 related 相同，便于召回）
@@ -378,12 +436,16 @@ class TestInferContextCollection:
         stores = {"kv": _MemoryKVStore(), "vector": _MemoryVectorStore()}
         plugins = {"embedder": _HashEmbedder(), "llm": _MockLLM()}
         extractor = _ScriptedExtractor([])
-        evolver = _make_evolver(stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor)
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor
+        )
 
         # 三条历史原文，不同 t_ingest
         for i, ts in enumerate([3, 1, 2]):
             u = _make_unit(
-                f"hist-{i}", f"msg-{i}", system_metadata={"infer": "true"},
+                f"hist-{i}",
+                f"msg-{i}",
+                system_metadata={"infer": "true"},
                 t_ingest=datetime(2026, 1, ts, tzinfo=timezone.utc),
             )
             stores["kv"].insert(_DEFAULT_SCOPE, messages_key(u.id), dumps(u))
@@ -406,7 +468,9 @@ class TestRelatedMemoriesDedup:
         stores = {"kv": _MemoryKVStore(), "vector": _MemoryVectorStore()}
         plugins = {"embedder": _HashEmbedder(), "llm": _MockLLM()}
         extractor = _ScriptedExtractor([_make_unit("ext-1", "新事实")])
-        evolver = _make_evolver(stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor)
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor
+        )
 
         # related 与本轮同文本（HashEmbedder 同文本→cosine=1.0，确保超过 min_similarity 召回）
         related = _make_unit("rel-1", "用户偏好 Python 编程", tier=MemoryTier.SEMANTIC)
@@ -429,7 +493,9 @@ class TestRelatedMemoriesDedup:
         plugins = {"embedder": _HashEmbedder(), "llm": _MockLLM()}
         dup_candidate = _make_unit("c-dup", "用户偏好 Python", tier=MemoryTier.SEMANTIC)
         extractor = _ScriptedExtractor([dup_candidate])
-        evolver = _make_evolver(stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor)
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor
+        )
 
         related = _make_unit("rel-1", "用户偏好 Python", tier=MemoryTier.SEMANTIC)
         _index_related(related, stores["kv"], stores["vector"], plugins["embedder"])
@@ -447,7 +513,9 @@ class TestRelatedMemoriesDedup:
         plugins = {"embedder": _HashEmbedder(), "llm": _MockLLM()}
         new_candidate = _make_unit("c-new", "用户在做数据库迁移", tier=MemoryTier.SEMANTIC)
         extractor = _ScriptedExtractor([new_candidate])
-        evolver = _make_evolver(stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor)
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor
+        )
 
         related = _make_unit("rel-1", "用户偏好 Python", tier=MemoryTier.SEMANTIC)
         _index_related(related, stores["kv"], stores["vector"], plugins["embedder"])
@@ -468,7 +536,9 @@ class TestRelatedMemoriesDedup:
         # 候选 content 与历史原文相同
         candidate = _make_unit("c-1", "我喜欢猫", tier=MemoryTier.SEMANTIC)
         extractor = _ScriptedExtractor([candidate])
-        evolver = _make_evolver(stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor)
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor
+        )
 
         # 历史原文（/messages/，无向量索引）——不会被 dedup.recall 召回
         hist = _make_unit("hist-1", "我喜欢猫", system_metadata={"infer": "true"})
@@ -513,11 +583,12 @@ class TestMessagesUpsertOnRetry:
             "alice FAIL_INJECT",
             system_metadata={"infer": "true", "middle": "true"},
         )
-        message_store = getattr(evolver, "_message_store")
-
         with pytest.raises(RuntimeError, match="inject failure"):
             evolver.evolve([unit], EvolveMode.EXTRACT)
-        assert message_store.exists(_DEFAULT_SCOPE, messages_key(unit.id))
+        message_store = getattr(evolver, "_message_store")
+        assert any(
+            record.id == unit.id for record in message_store.list_raw(_DEFAULT_SCOPE, limit=100)
+        )
 
         result = evolver.evolve([unit], EvolveMode.EXTRACT)
         assert result.created_ids == []
@@ -546,10 +617,14 @@ class TestEngineInferPersist:
         dedup = VectorDedup(storage=storage, embedder=_HashEmbedder(), tier_filter=False)
         extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=50, overlap_chars=10))
         evolver = OrchestratingEvolver(
-            extractor=extractor, abstractor=None, associator=None,
-            index_builder=_NoopIndexBuilder(storage), storage=storage,
-            message_store=storage.kv,
-            dedup=dedup, llm=_MockLLM(),
+            extractor=extractor,
+            abstractor=None,
+            associator=None,
+            index_builder=_NoopIndexBuilder(storage),
+            storage=storage,
+            message_store=storage.raw_port(),
+            dedup=dedup,
+            llm=_MockLLM(),
         )
 
         class _NoopIndex:
@@ -574,11 +649,13 @@ class TestEngineInferPersist:
             evolver=evolver,
             lifecycle=None,
         )
-        asyncio.run(engine.write(
-            "user: 你好\nassistant: 你好",
-            _DEFAULT_SCOPE,
-            system_metadata={"infer": "true"},
-        ))
+        asyncio.run(
+            engine.write(
+                "user: 你好\nassistant: 你好",
+                _DEFAULT_SCOPE,
+                system_metadata={"infer": "true"},
+            )
+        )
 
         # /messages/ 下应有 1 条 MemoryUnit（规约后字节，由 evolver 落盘）
         msgs = stores["kv"].scan(_DEFAULT_SCOPE, prefix=MESSAGES_KEY_PREFIX)
@@ -622,17 +699,22 @@ class TestProceduralExtract:
         stores = {"kv": _MemoryKVStore(), "vector": _MemoryVectorStore()}
         plugins = {"embedder": _HashEmbedder(), "llm": _MockLLM()}
         proc_unit = _make_unit(
-            "proc-1", "目标：查询订单；步骤：调订单 API；结果：返回订单列表",
+            "proc-1",
+            "目标：查询订单；步骤：调订单 API；结果：返回订单列表",
             tier=MemoryTier.PROCEDURAL,
         )
         extractor = _ProceduralExtractor(proc_unit)
-        evolver = _make_evolver(stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor)
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor
+        )
 
         # 预置一条已有记忆（若走 dedup.recall 可能召回——procedural 不应走）
         related = _make_unit("rel-1", "目标：查询订单", tier=MemoryTier.SEMANTIC)
         _index_related(related, stores["kv"], stores["vector"], plugins["embedder"])
 
-        cur = _make_unit("cur-1", "user: 查下订单\nassistant: 已返回列表", system_metadata={"procedural": "true"})
+        cur = _make_unit(
+            "cur-1", "user: 查下订单\nassistant: 已返回列表", system_metadata={"procedural": "true"}
+        )
         result = evolver.evolve([cur], EvolveMode.EXTRACT)
 
         # procedural 收到 context=None（不收集）
@@ -662,10 +744,14 @@ class TestProceduralExtract:
         extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=50, overlap_chars=10))
         # keyword_extractor 构造需 chunker + normalizer？看签名——只 chunker
         evolver = OrchestratingEvolver(
-            extractor=extractor, abstractor=None, associator=None,
-            index_builder=_NoopIndexBuilder(storage), storage=storage,
-            message_store=storage.kv,
-            dedup=dedup, llm=_MockLLM(),
+            extractor=extractor,
+            abstractor=None,
+            associator=None,
+            index_builder=_NoopIndexBuilder(storage),
+            storage=storage,
+            message_store=storage.raw_port(),
+            dedup=dedup,
+            llm=_MockLLM(),
         )
 
         class _NoopIndex:
@@ -690,11 +776,13 @@ class TestProceduralExtract:
             evolver=evolver,
             lifecycle=None,
         )
-        derived = asyncio.run(engine.write(
-            "user: 帮我查订单\nassistant: 已返回",
-            _DEFAULT_SCOPE,
-            system_metadata={"procedural": "true"},
-        ))
+        derived = asyncio.run(
+            engine.write(
+                "user: 帮我查订单\nassistant: 已返回",
+                _DEFAULT_SCOPE,
+                system_metadata={"procedural": "true"},
+            )
+        )
 
         # 产 1 条 PROCEDURAL 派生
         assert len(derived) == 1
@@ -704,7 +792,6 @@ class TestProceduralExtract:
         # 原文不落 KV：/messages/ 与 /memory/ 都无 cur 原文（只有派生 proc 在 /memory/）
         msgs = stores["kv"].scan(_DEFAULT_SCOPE, prefix=MESSAGES_KEY_PREFIX)
         assert msgs == [], "procedural 原文不应落 /messages/"
-
 
     @staticmethod
     def test_procedural_with_infer_still_no_original_in_kv():
@@ -726,10 +813,14 @@ class TestProceduralExtract:
         dedup = VectorDedup(storage=storage, embedder=_HashEmbedder(), tier_filter=False)
         extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=50, overlap_chars=10))
         evolver = OrchestratingEvolver(
-            extractor=extractor, abstractor=None, associator=None,
-            index_builder=_NoopIndexBuilder(storage), storage=storage,
-            message_store=storage.kv,
-            dedup=dedup, llm=_MockLLM(),
+            extractor=extractor,
+            abstractor=None,
+            associator=None,
+            index_builder=_NoopIndexBuilder(storage),
+            storage=storage,
+            message_store=storage.raw_port(),
+            dedup=dedup,
+            llm=_MockLLM(),
         )
 
         class _NoopIndex:
@@ -754,11 +845,13 @@ class TestProceduralExtract:
             evolver=evolver,
             lifecycle=None,
         )
-        asyncio.run(engine.write(
-            "user: 查订单\nassistant: 已返回",
-            _DEFAULT_SCOPE,
-            system_metadata={"procedural": "true", "infer": "true"},
-        ))
+        asyncio.run(
+            engine.write(
+                "user: 查订单\nassistant: 已返回",
+                _DEFAULT_SCOPE,
+                system_metadata={"procedural": "true", "infer": "true"},
+            )
+        )
 
         # procedural 优先：原文不落 /messages/（即使 infer=true）
         msgs = stores["kv"].scan(_DEFAULT_SCOPE, prefix=MESSAGES_KEY_PREFIX)
@@ -793,9 +886,11 @@ class TestProceduralSourceRef:
             min_confidence=0.5,
         )
         source = MemoryUnit(
-            id="cur-1", scope=Scope(org="t", user="u"),
+            id="cur-1",
+            scope=Scope(org="t", user="u"),
             segments=[Segment(content="user: 查单\nassistant: 已返", source=Modality.TEXT)],
-            lifecycle=LifecycleState.ACTIVE, temporal=Temporal(),
+            lifecycle=LifecycleState.ACTIVE,
+            temporal=Temporal(),
             system_metadata={"procedural": "true"},
         )
         result = extractor.extract([source])
