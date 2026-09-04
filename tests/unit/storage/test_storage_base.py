@@ -112,6 +112,8 @@ def test_base_named_ports_raise_unsupported_capability() -> None:
     assert storage.capabilities() == frozenset()
     assert not storage.has_kv()
     assert not storage.has_vector()
+    assert not storage.has_entity()
+    assert not storage.has_entity_port()
     assert not storage.has_vector_port("layers_l0")
 
     # 未声明端口统一抛 UnsupportedStorageCapabilityError，不抛 NotImplementedError。
@@ -122,9 +124,13 @@ def test_base_named_ports_raise_unsupported_capability() -> None:
         (storage.graph_port, "kg"),
         (storage.fusion_port, "hybrid"),
         (storage.fs_port, "assets"),
+        (storage.entity_port, "default"),
     ):
         with pytest.raises(UnsupportedStorageCapabilityError):
             port(name)
+
+    with pytest.raises(UnsupportedStorageCapabilityError):
+        _ = storage.entity
 
 
 def test_storage_without_ports_serves_memory_units_through_domain_api() -> None:

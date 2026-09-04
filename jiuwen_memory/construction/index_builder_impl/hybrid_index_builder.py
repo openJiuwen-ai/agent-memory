@@ -63,7 +63,9 @@ class HybridIndexBuilder(IndexBuilder):
             layers_enabled=layers_enabled,
         )
         # entity 子 builder：None 表示不建实体索引（entity_enabled=False 或未注入 linker）
-        self._entity_builder = EntityIndexBuilder(entity_linker) if entity_linker is not None else None
+        self._entity_builder = (
+            EntityIndexBuilder(entity_linker) if entity_linker is not None else None
+        )
 
     def operator_type(self) -> OperatorType:
         return OperatorType.INDEX_BUILDER
@@ -74,7 +76,8 @@ class HybridIndexBuilder(IndexBuilder):
     def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         logger.info(
             "HybridIndexBuilder: building index for %d units (mode=%s)",
-            len(units), mode,
+            len(units),
+            mode,
         )
         # 顺序约定：正排最先出现——检索索引写失败时本体仍在、可重建。
         # 各子 builder 自行按 mode 跳过不属于自己的索引形式。
@@ -84,9 +87,7 @@ class HybridIndexBuilder(IndexBuilder):
         if self._entity_builder is not None:
             self._entity_builder.build(units, mode=mode)
 
-    def update(
-        self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL
-    ) -> None:
+    def update(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         """更新四种索引形式；``mode`` 限定本次只写正排本体或只写检索索引。
 
         本算子不解读 ``unit.lifecycle``——记忆处于什么状态、该对索引做什么操作，由上层
@@ -94,7 +95,8 @@ class HybridIndexBuilder(IndexBuilder):
         """
         logger.info(
             "HybridIndexBuilder: updating index for %d units (mode=%s)",
-            len(units), mode,
+            len(units),
+            mode,
         )
         self._forward_builder.update(units, mode=mode)
         self._fulltext_builder.update(units, mode=mode)
@@ -112,7 +114,8 @@ class HybridIndexBuilder(IndexBuilder):
         """
         logger.info(
             "HybridIndexBuilder: removing %d units from index (mode=%s)",
-            len(units), mode,
+            len(units),
+            mode,
         )
         # 顺序约定：正排最后消失——检索索引先移除，中途失败时记忆本体仍在、可重试补删。
         # 各子 builder 自行按 mode 决定动作（正排在 SOFT 下保留本体）。
@@ -138,29 +141,20 @@ class HybridIndexBuilder(IndexBuilder):
             self._entity_builder.remove_with_scope(unit_ids, scope)
 
 
-
 # -- 注册到 IndexBuilderProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
-
-
 
 
 @IndexBuilderProducer.register("hybrid")
 def _build(config):
-
-
-    # entity_linker 注入：entity_enabled 默认 False（需显式开启 + EntityStore 后端
-    # 可解析）
+    storage = StorageProducer.resolve(config)
+    # Entity 是统一 Storage 的能力；构建侧不再自行解析 EntityStoreProducer。
     entity_linker = None
-    if config.get("entity_enabled", False):
+    if config.get("entity_enabled", False) and storage.has_entity_port():
         try:
-            from jiuwen_memory.storage.entity_store import EntityStoreProducer
-
-            entity_store = EntityStoreProducer.dep(config, default="elasticsearch")
-            if entity_store is not None:
-                entity_linker = EntityLinkService(
-                    entity_store=entity_store,
-                    admission_policy=EntityIndexAdmissionPolicy(),
-                )
+            entity_linker = EntityLinkService(
+                entity_store=storage.entity_port(),
+                admission_policy=EntityIndexAdmissionPolicy(),
+            )
         except Exception as exc:
             logger.warning(
                 "EntityStore 装配失败, entity 链路降级关闭(fulltext+vector 继续工作): %s",
@@ -170,7 +164,7 @@ def _build(config):
             entity_linker = None
 
     return HybridIndexBuilder(
-        StorageProducer.resolve(config),
+        storage,
         ChunkerProducer.dep(config, default="fixed_window"),
         EmbedderProducer.dep(config, default="hashing"),
         layers_enabled=config.get("layers_index_enabled", True),

@@ -4,15 +4,15 @@
 
 > 本文档只记录相对稳定的模块本地规约（职责边界、行为铁律、本地约束）。特性设计与方案取舍记录在 `docs/features/` 下。
 
-`Storage` 为上层提供 MemoryUnit 领域操作与能力发现，`CompositeStorage` 组合六类标准
-Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/delete/update/get）和检索型
-`search`。**scope 隔离是存储层的原生职责**。
+`Storage` 为上层提供 MemoryUnit 领域操作与能力发现，`CompositeStorage` 组合七类标准
+Store（含 EntityStore），并通过 RawDataStore 暴露原文业务端口及授权代理端口。底层 Store
+统一 CRUD 动词（insert/delete/update/get）和检索型 `search`。**scope 隔离是存储层的原生职责**。
 
 ## 模块地图
 
 | 文件 | 职责 |
 |---|---|
-| `storage.py` | Storage 统一契约与 StorageProducer：MemoryUnit 领域操作（`add`/`update` 带 `IndexWriteMode` 写入范围参数、`delete` 带 `IndexRemoveMode` 软/硬删除参数）、能力发现、底层端口与检索适配入口。原文不在此列——它不是存储领域概念，由构建层注入独立 `KVStore` 自行读写 |
+| `storage.py` | Storage 统一契约与 StorageProducer：MemoryUnit 领域操作（`add`/`update` 带 `IndexWriteMode` 写入范围参数、`delete` 带 `IndexRemoveMode` 软/硬删除参数）、能力发现、KV/Entity/Raw 端口与检索适配入口 |
 | `security.py` | StorageSecurity 通用授权与 StoreSecurity 数据保护能力标识 |
 | `base.py` | BaseStore 基类：所有存储后端的自描述契约（store_type / health） |
 | `types.py` | 存储层数据类型：`IndexWriteMode`/`IndexRemoveMode` 写删语义枚举、KVMemoryListResult/VectorRecord/Document/Node/Edge/FusionRecord/FileStat 等 |
@@ -22,7 +22,8 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
 | `fulltext.py` | FulltextStore 接口：全文倒排索引存储，统一 CRUD + 关键词检索（BM25） |
 | `fusion.py` | FusionStore 接口：融合存储（向量+倒排+正排一体） |
 | `fs.py` | FSStore 接口：文件系统存储（原始负载/二进制资产） |
-| `entity_store.py` | EntityStore 独立接口：以 `space_id` routing + actor filter 隔离的实体反向索引；不属于 StorageCapability 六端口 |
+| `raw.py` | RawDataStore 原文业务端口；默认由 `KVRawDataStore` 适配现有 KV，集中处理 `/messages/` 前缀、MemoryUnit codec 与保留策略 |
+| `entity_store.py` | EntityStore 实体反向索引接口；通过 `StorageCapability.ENTITY` 和 `Storage.entity_port()` 暴露，内部兼容旧 `space_id + filters` 后端 |
 | `_support.py` | 后端实现共用：异常归一（`wrap_backend`）、scope 派生（`scope_dims`/`scope_segments`）、SSL 配置读取（`read_ssl_config`）；`SslConfig` 与 scheme 校验复用 `common._support` |
 | `_pg.py` | PostgreSQL 后端共享基础：asyncpg 惰性连接池（专职事件循环线程桥接同步调用）、schema 工具与 FilterExpr SQL 编译；`dsn` 支持 ConfigSource 晚绑定 |
 | `kv_impl/` | KVStore 实现目录（memory / sqlite / redis / encrypted / postgres）及共用的 `memory_list.py` 兼容逻辑；连接型后端支持 `kv_store.*` 晚绑定 |
@@ -31,9 +32,9 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
 | `fulltext_impl/` | FulltextStore 实现目录（memory / elasticsearch）；`hosts` 晚绑定 |
 | `fusion_impl/` | FusionStore 实现目录（memory / milvus_graph）；`uri`/`working_dir` 晚绑定 |
 | `fs_impl/` | FSStore 实现目录（local）；`root` 晚绑定 |
-| `entity_impl/` | EntityStore 实现目录（elasticsearch）；独立装配，不经 Storage capability 路由 |
+| `entity_impl/` | EntityStore 实现目录（elasticsearch）；由 CompositeStorage 通过 `EntityStoreProducer` 装配后纳入 Storage capability 路由 |
 | `storage_impl/` | Storage 实现目录；`CompositeStorage` 以 `composite` target 自注册 |
-| `bootstrap.py` | 统一触发六类 Store 后端与 Storage 实现注册 |
+| `bootstrap.py` | 统一触发七类 Store 后端与 Storage 实现注册；RawDataStore 由 Storage 适配器提供，不单独注册后端 |
 
 ## 统一 CRUD 动词
 
@@ -90,9 +91,10 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
    scheme、或连接串自带会覆盖本设置的 TLS 参数，一律在**装配阶段**报错，不得放行到
    运行期——调用方以为受保护而实际未校验，比明文更危险。
 
-11. **Storage capability 是端口能力的唯一事实来源**
-   capability 只包含 KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS。`has_*()` 必须由不可变集合推导；
-   未声明端口直接访问时抛 `UnsupportedStorageCapabilityError`。
+11. **Storage capability 是标准 Store 端口能力的唯一事实来源**
+   capability 包含 KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS/ENTITY；RawDataStore 是独立业务端口，
+   通过 `has_raw_port()` 判断。`has_*()` 必须由不可变集合或端口集合推导；未声明端口直接
+   访问时抛 `UnsupportedStorageCapabilityError`。
 
 12. **统一授权覆盖领域接口和暴露端口**
    Storage 顶层操作与 `storage.vector.get()` 等端口调用先经 `StorageSecurity`；默认
@@ -146,9 +148,10 @@ Store 并暴露授权代理端口。底层 Store 统一 CRUD 动词（insert/del
     命中合成名缓存，不落到第三分支再建匿名 CompositeStorage 触发递归）；模块层面
     storage 不导入 retrieval（工厂内函数级惰性 import）。详见
     [F06-composite-recaller-assembly.md](../../docs/features/storage/F06-composite-recaller-assembly.md)。
-12. `Storage.scopes()` 枚举 MemoryUnit 真源已有 Scope；分层索引通过
-    `has_*_port(name)` / `*_port(name)` 访问命名端口，Construction、Retrieval、Control 不得直接
-    调用 Store Producer 解析具名后端。
+12. `CompositeStorage.scopes()` 合并主 KV 与 Raw port 已有 Scope，保证空间治理不会遗漏独立原文
+    后端；Entity 是派生索引，不作为真源 Scope 枚举来源。Raw/Entity 通过 `raw_port()` /
+    `entity_port()` 访问业务端口，分层索引通过 `has_*_port(name)` / `*_port(name)` 访问命名
+    端口，Construction、Retrieval、Control 不得直接调用 Store Producer 解析具名后端。
 13. 连接型后端须支持 ConfigSource 晚绑定（S08 / F01 §2.1.4）：在取客户端/连接路径
     `fetch` 对应 key，值变化则重建连接（同实现换 Redis URL / db_path 走此路径，不必多实例）。
     异质 Store 级 `*.active` 切换由 `config.routing.Routing*Store` 承担（F01）；

@@ -5,6 +5,7 @@ from .base import ControlOperator, ControlOperatorType
 from .engine import MemoryEngine
 from .governance import Governor
 from .ingest_job import IngestJob, IngestJobController, IngestSubmission
+from .job_state import JobStateStore, JobStateStoreProducer
 from .lifecycle import LifecycleManager
 from .permission import PermissionManager
 from .pipeline import MemoryPipeline, PipelineBinding
@@ -47,6 +48,8 @@ __all__ = [
     "IngestJobController",
     "IngestJob",
     "IngestSubmission",
+    "JobStateStore",
+    "JobStateStoreProducer",
     "PermissionManager",
     "MemoryPipeline",
     "PipelineBinding",
