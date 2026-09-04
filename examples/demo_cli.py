@@ -1,24 +1,12 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""CLI surface 端到端演示——尽量调用全部模块（同进程 dispatch，无需起服务）。
+"""CLI 本地调用演示：使用 MemoryAPI 原参数，读取原返回值。
 
-运行：``python3 examples/demo_cli.py``
+运行：``uv run --no-sync python examples/demo_cli.py``
 
-走 CLI 的 :class:`~jiuwen_memory_entry.cli.client.InProcessClient`（CLI/HTTP 共用的
-``handler.dispatch`` 代码路径，少了 socket）。前半段用动词把主链路 + 演进 + 治理 +
-管理面都跑一遍；末段直接演示几个不在默认装配里的可选/辅助组件（Source/FS/Fusion/
-SQLite）。一个进程内共享内核，状态跨调用持久。无任何外部依赖。
-
-覆盖到的模块（按调用）：
-- add     → Ingestor·Normalizer·Classifier·HybridIndexBuilder(Fulltext+Vector+Embedder)·
-            KVStore·memory_codec·PermissionManager·AuditLogger·Tokenizer
-- search  → QueryParser(+EchoLLM 改写·Embedder)·Keyword/Vector/Graph Recaller·RRFFuser·
-            TruncatingDiscloser(+OverlapReranker)
-- evolve  → Chunker·Extractor·Abstractor·FeatureExtractor·Associator·GraphStore·Evolver·Scheduler
-- job     → Scheduler.status
-- inspect/trace → Governor      · audit → Governor+AuditLogger
-- admin   → PolicyManager       · grant → PermissionManager
-- delete  → LifecycleManager
-- 末段     → TextSource·InMemoryFSStore·InMemoryFusionStore·SQLiteKVStore
+显式使用 dev 认证（固定 local/developer 身份），仅供本地功能测试。
+同一个 InProcessClient 共享内核，最后释放资源。CLI 不经过 legacy handler；
+add 返回 MemoryUnit 数组，search 返回含 items 的 SearchResult，delete 返回 ID 数组。
+末段保留可选 Source / FS / Fusion / SQLite 组件的独立演示。
 """
 
 from __future__ import annotations
@@ -30,107 +18,84 @@ import sys
 from importlib import import_module
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_CLI_DIR = os.path.join(_REPO, "jiuwen_memory_entry", "cli")
-if _CLI_DIR not in sys.path:
-    sys.path.append(_CLI_DIR)
+if _REPO not in sys.path:
+    sys.path.append(_REPO)
 
-make_client = import_module("client").make_client
+make_client = import_module("jiuwen_memory_entry.cli.client").make_client
 
-BASE = {"tenant_id": "default", "scope": "alice"}
+SCOPE = {"org": "local", "user": "developer"}
 logger = logging.getLogger(__name__)
 
 
 def hr(title: str) -> None:
-    logger.info("\n\033[1m== %s ==\033[0m", title)
+    logger.info("\n== %s ==", title)
 
 
 def main() -> int:
+    """Run API-shaped calls against one explicitly authenticated local runtime."""
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    client = make_client(None)  # in-process：同一内核，状态跨调用持久
+    client = make_client(None, auth_mode="dev")
 
-    def call(verb: str, **payload):
-        status, body = client.call(verb, {**BASE, **payload})
-        if status >= 300:
-            logger.info("  [%s] %s: %s", status, body.get("error"), body.get("message"))
+    def call(method: str, **payload):
+        status, body = client.call(method, payload)
+        if not 200 <= status < 300:
+            raise RuntimeError(f"{method} failed ({status}): {body}")
         return body
 
-    hr("health")
-    logger.info("  %s", client.healthz()[1])
+    try:
+        hr("healthz")
+        logger.info("  %s", client.healthz()[1])
 
-    hr("add — 写入（规约/分类/倒排+向量索引/落 kv/审计）")
-    for content, tags in [
-        ("Alice 喜欢早上喝美式咖啡，不加糖", ["coffee", "habit"]),
-        ("项目 agent-memory 给 AI agent 提供独立记忆子系统", ["project"]),
-        ("下周三下午三点和设计团队评审检索链路", ["meeting"]),
-    ]:
-        it = call("add", content=content, tags=tags)["item"]
-        logger.info("  %s  tier=%-9s  %s", it["item_id"][:8], it["tier"], it["content"])
+        hr("add — 原返回值是 MemoryUnit 数组")
+        added = call("add", content="Alice 喜欢咖啡 coffee，不加糖", scope=SCOPE, tags=["coffee"])
+        unit_id = added[0]["id"]
+        logger.info("  id=%s segments=%s", unit_id, added[0]["segments"])
 
-    hr("search '咖啡' — 三路召回(关键词/向量/图)→RRF→精排→披露")
-    hits = call("search", query="咖啡", k=5)["hits"]
-    for h in hits:
-        logger.info("  %.3f  %s  %s", h["score"], h["item_id"][:8], h["content"])
-    hit_id = hits[0]["item_id"]
+        hr("search — 使用 context / top_k，结果读取 items / unit_id")
+        result = call("search", query="coffee", context={"scope": SCOPE}, top_k=5)
+        logger.info("  %s", result["items"])
 
-    hr("get / update(SUPERSEDE 记版本链)")
-    logger.info("  get : %s", call("get", item_id=hit_id)["item"]["content"])
-    new_id = call("update", item_id=hit_id, content="Alice 改喝拿铁，要燕麦奶")["item"]["item_id"]
-    logger.info("  update: %s -> %s", hit_id[:8], new_id[:8])
-
-    hr("evolve — 演进闭环（抽取/升华/关联落图/遗忘）+ 任务状态")
-    for mode in ("extract", "consolidate", "associate", "forget"):
-        r = call("evolve", mode=mode)
-        job = call("job", job_id=r["job_id"])
-        logger.info("  %-11s job=%s status=%s", mode, r["job_id"][:8], job["status"])
-    prof = call("search", query="画像", k=1)["hits"]
-    if prof:
-        logger.info("  consolidate 画像: %s...", prof[0]["content"][:32])
-
-    hr("inspect / trace — 治理检视与血缘回溯")
-    logger.info(
-        "  trace 版本链: %s",
-        [u["item_id"][:8] for u in call("trace", item_id=new_id)["items"]],
-    )
-    logger.info(
-        "  inspect: %s",
-        [u["content"][:16] for u in call("inspect", item_id=new_id)["items"]],
-    )
-
-    hr("audit — 审计留痕（按动作过滤）")
-    for action in ("add", "evolve", "update"):
-        logger.info("  %-7s: %s 条", action, call("audit", action=action)["count"])
-
-    hr("admin — 运行时策略（PolicyManager）")
-    logger.info("  all   : %s", call("admin")["policies"])
-    logger.info("  set   : %s", call("admin", key="rerank.enabled", value="false"))
-
-    hr("grant — 跨 scope 授权（PermissionManager）")
-    logger.info("  %s", call("grant", grantee="bob"))
-
-    hr("delete — 软删除（LifecycleManager 非破坏式流转）")
-    delete_result = call("delete", item_id=hit_id)
-    if delete_result.get("error") or not delete_result.get("ok"):
-        logger.error(
-            "  delete failed: %s",
-            delete_result.get("message") or delete_result.get("error") or "unknown error",
+        hr("get / update — 使用 unit_id / scope / patch")
+        logger.info("  get: %s", call("get", unit_id=unit_id, scope=SCOPE))
+        updated = call(
+            "update",
+            unit_id=unit_id,
+            scope=SCOPE,
+            patch={"content": "Alice 改喝拿铁 coffee，要燕麦奶", "mode": "overwrite"},
         )
-        return 1
-    logger.info(
-        "  原始项 lifecycle: %s (记录仍在)", call("get", item_id=hit_id)["item"]["lifecycle"]
-    )
+        unit_id = updated["id"]
+        logger.info("  update: %s", updated)
 
-    _aux_components()
+        hr("add_async / batch_add_async — 等待原方法完成，不转换为 job")
+        logger.info("  add_async: %s", call("add_async", content="async memory", scope=SCOPE))
+        logger.info(
+            "  batch_add_async: %s",
+            call("batch_add_async", items=[{"content": "batch memory"}], scope=SCOPE),
+        )
 
-    logger.info("\n\033[1mdemo complete.\033[0m")
-    return 0
+        hr("list / inspect / trace — 保留原列表与对象结构")
+        logger.info("  list: %s", call("list", scope=SCOPE))
+        logger.info("  inspect: %s", call("inspect", unit_ids=[unit_id], scope=SCOPE))
+        logger.info("  trace: %s", call("trace", unit_id=unit_id, scope=SCOPE))
+
+        hr("delete — 使用 selector，返回被删除的 ID 列表")
+        deleted = call("delete", selector={"scope": SCOPE, "unit_ids": [unit_id], "mode": "purge"})
+        logger.info("  deleted: %s", deleted)
+        _aux_components()
+        logger.info("demo complete.")
+        return 0
+    finally:
+        client.close()
 
 
 def _aux_components() -> None:
-    """直接演示不在默认装配里的可选/辅助组件（src 路径已由 client.py 接好）。"""
+    """直接演示不在默认装配里的可选/辅助组件。"""
     from datetime import datetime, timezone
 
     from jiuwen_memory.common.embedder.embedder_impl.hashing_embedder import HashingEmbedder
-    from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
+    from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
+        WhitespaceTokenizer,
+    )
     from jiuwen_memory.common.type_def import FilterClause, FilterOp, Scope
     from jiuwen_memory.ingest.source_impl.text_source import TextSource
     from jiuwen_memory.storage.fs_impl.in_memory_fs_store import InMemoryFSStore

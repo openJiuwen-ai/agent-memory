@@ -1,5 +1,7 @@
 # SDK Deployment
 
+Last revised: 2026-09-05
+
 SDK deployment means installing and assembling `jiuwen_memory` in the consumer's Python process.
 The process can call `MemoryAPI` directly or run a local HTTP service. Storage can use the default
 in-process implementations or real backends started with Docker.
@@ -58,9 +60,7 @@ combines the in-process KV, Vector, Fulltext, and Graph Store implementations. E
 and reranking also use default implementations with no external dependencies.
 
 ```python
-from jiuwen_memory.api import assemble_runtime
-from jiuwen_memory.common.security.legacy import legacy_request_context
-from jiuwen_memory.common.type_def import Context, Scope
+from jiuwen_memory.api import Context, Scope, assemble_runtime, legacy_request_context
 
 runtime = assemble_runtime()
 api = runtime.api
@@ -89,18 +89,23 @@ finally:
 All data in this mode lives in the current process and is lost when the process exits. Docker and
 model services are not required.
 
+The example's `legacy_request_context` is a transitional bridge for local testing; it does not
+validate credentials. Production applications must obtain `RequestSecurityContext` from a trusted
+authentication boundary instead of treating the business `scope` as an authenticated identity.
+HTTP and CLI already use independent authentication boundaries and do not use this legacy bridge.
+
 ## 4. Option Two: In-Memory Storage + Local HTTP Launcher
 
 Run the following command from the repository root:
 
 ```bash
-uv run --no-sync -- ./scripts/run-server.sh --host 127.0.0.1 --port 8137
+uv run --no-sync -- ./scripts/run-server.sh --auth-mode dev --host 127.0.0.1 --port 8137
 ```
 
 If you are not using uv, run the following in an environment where the dependencies are installed:
 
 ```bash
-./scripts/run-server.sh --host 127.0.0.1 --port 8137
+./scripts/run-server.sh --auth-mode dev --host 127.0.0.1 --port 8137
 ```
 
 In another terminal, verify the health endpoint:
@@ -109,25 +114,33 @@ In another terminal, verify the health endpoint:
 curl http://127.0.0.1:8137/healthz
 ```
 
-HTTP data requests must be authenticated by a trusted `SecurityRuntime` before dispatch. The
-repository does not yet include a production `SecurityRuntimeProducer`, so the reference service
-started by this script safely returns 503 for `POST /v1/<verb>` instead of falling back to a
-payload actor. An integrating application should inject an authentication runtime through
-`HttpServer.build(..., security_runtime=runtime)`. Once that runtime is present, requests use a
-nested `target` and an authentication header:
+`--auth-mode dev` enables a fixed identity authenticator for local functional testing only. It
+ignores authentication headers, creates the server-side ROOT identity
+`Scope(org="local", user="developer")`, and still runs `MemoryAPI` authorization. The examples use
+the same Scope as the business target. This mode binds to loopback by default and must not be used
+in production. The request body keeps the parameter structure of the same-named `MemoryAPI` method:
 
 ```bash
 
 curl -X POST http://127.0.0.1:8137/v1/add \
   -H 'Content-Type: application/json' \
-  -H "Authorization: Bearer $AGENT_MEMORY_API_KEY" \
-  -d '{"target":{"tenant_id":"demo","scope":"alice"},"content":"The user prefers to write code in Python"}'
+  -d '{"content":"The user prefers to write code in Python","scope":{"org":"local","space":"","user":"developer","agent":"","session":""}}'
 
 curl -X POST http://127.0.0.1:8137/v1/search \
   -H 'Content-Type: application/json' \
-  -H "Authorization: Bearer $AGENT_MEMORY_API_KEY" \
-  -d '{"target":{"tenant_id":"demo","scope":"alice"},"query":"Which language does the user prefer","k":5}'
+  -d '{"query":"Which language does the user prefer","context":{"scope":{"org":"local","space":"","user":"developer","agent":"","session":""},"extensions":{}},"top_k":5}'
 ```
+
+HTTP authentication mode is selected in this order: `--auth-mode`, the
+`JIUWEN_MEMORY_HTTP_AUTH_MODE` environment variable, then `required`. Setting the environment variable
+to `dev` enables development authentication even without the command-line option.
+In `required` mode, the launcher has no production `SecurityRuntimeProducer`, so business endpoints
+fail closed with 503. Integrating applications should inject a trusted security runtime through
+`HttpServer.build(..., security_runtime=security_runtime)`. This security runtime is not the
+memory-kernel runtime returned by `assemble_runtime()`.
+The development launcher uses a minimal `DevHttpSecurityRuntime` with a fixed-identity authenticator
+and no rate limiter, workload guard, or surface audit component. API authorization and business
+auditing still run.
 
 The HTTP process assembles one Kernel, so requests share state while the service is running. The
 default in-memory data is lost after the service stops.
@@ -226,15 +239,11 @@ both the HTTP configuration format and its environment-variable expansion, load 
 follows:
 
 ```python
+from jiuwen_memory.api import Context, Scope, assemble_runtime, legacy_request_context
 from jiuwen_memory_entry.core.config_loader import load_layer
-from jiuwen_memory.api import assemble_runtime
-from jiuwen_memory.common.security.legacy import legacy_request_context
-from jiuwen_memory.common.type_def import Context, Scope
-from jiuwen_memory.config import Config
 
 layer = load_layer("local-real-storage.yml")
-kernel_config = Config.from_dict(layer["memory_api"])
-runtime = assemble_runtime(config=kernel_config)
+runtime = assemble_runtime(config=layer["memory_api"])
 api = runtime.api
 
 scope = Scope(org="demo", user="alice")
@@ -262,6 +271,7 @@ export PG_DSN='postgresql://agent_memory:replace-with-password@127.0.0.1:5432/ag
 export ES_HOSTS='http://127.0.0.1:9200'
 
 uv run --no-sync -- ./scripts/run-server.sh \
+  --auth-mode dev \
   --host 127.0.0.1 \
   --port 8137 \
   local-real-storage.yml
@@ -299,7 +309,7 @@ memory_api:
 The startup command can accept one or more YAML/JSON files:
 
 ```bash
-./scripts/run-server.sh config.yml
+./scripts/run-server.sh --auth-mode dev config.yml
 ```
 
 ### Calling MemoryAPI Directly
@@ -325,20 +335,41 @@ the application inject environment variables first.
 
 ## 9. Choosing Between HTTP and MemoryAPI
 
-The HTTP service covers 28 verbs, including common add, batch_add, search, list, get, update, delete,
-evolve, job, inspect, trace, audit, admin, grant/revoke, and space-management operations. It is,
-however, an adapter with a narrower parameter surface.
+The HTTP service exposes all 36 `MemoryAPI` methods one to one through
+`POST /v1/<method_name>`. Request names, nesting, required fields, and defaults match the same-named
+method. A successful response is the JSON representation of the original return value, without an
+additional envelope. `security` is the only parameter not accepted from the request body; the
+authentication runtime constructs and injects it.
 
-Prefer direct MemoryAPI calls when you need to:
+All ordinary methods are exposed, so the choice usually depends on how the application runs:
 
-- use `add_async()`, `batch_add_async()`, or cancel a background job;
-- specify the full search parameter set, including `as_of` and the disclosure level;
-- use the complete update version modes or the complete delete selector and governance policies;
-- use the full five-dimensional `Scope(org, space, user, agent, session)`;
-- receive Python objects instead of HTTP JSON views.
+- call `MemoryAPI` directly for in-process latency, Python type checking, and original Python
+  objects;
+- use HTTP for cross-language or cross-process access;
+- an asynchronous HTTP route is still a normal request-response operation: the service waits for
+  the same-named async method and does not create another job.
 
-Choose HTTP when you need cross-language or cross-process access and use only common CRUD and
-retrieval capabilities.
+Current exception: HTTP/CLI type decoding rejects the object-valued write-side
+`system_metadata.coords` routing extension. Use the Python API directly for that feature; ordinary
+Scope-based writes are unaffected. See [API F05 limitations](../../features/api/F05-http-memory-api-alignment.md#已知遗留).
+
+### CLI Uses the Same Parameters
+
+CLI exposes all 36 API methods as same-named commands, preserves parameter names, and accepts
+complex objects as JSON. For example:
+
+```bash
+uv run --no-sync -- ./scripts/run-cli.sh --auth-mode dev add \
+  --content 'CLI write test' --scope '{"org":"local","user":"developer"}'
+```
+
+Local mode calls the API directly. `--server http://127.0.0.1:8137` sends the same JSON request over
+HTTP and returns the original response value. Without dev mode or an injected authenticator, local
+business calls return 503. Remote authentication is controlled by the server; CLI sends
+`AGENT_MEMORY_API_KEY` as a Bearer credential and rejects combining `--server` with local
+`--auth-mode dev`. The default in-memory backend does not persist between CLI processes; use a
+`batch` session, persistent storage, or a long-running HTTP service for repeated calls.
+See the [CLI guide](../../../jiuwen_memory_entry/cli/DESIGN.md) for the full parameter contract.
 
 ## 10. Runtime and Security Considerations
 
@@ -350,8 +381,10 @@ retrieval capabilities.
   to the public internet.
 - HTTP actors come only from the authentication context; `actor_*`, `identity`, and other identity
   claims in the request body are rejected.
-- An HTTP launcher without an authentication runtime returns 503 and never falls back to an empty
-  or payload-provided identity.
+- In the default `required` mode, a launcher without a production authentication runtime returns
+  503 and never falls back to an empty or payload-provided identity.
+- `dev` mode fixes the actor to the `local/developer` ROOT identity, ignores authentication headers,
+  but still runs authorization; use it only for functional tests bound to loopback.
 - Production environments should provide a trusted authentication runtime together with TLS, rate
   limiting, timeouts, monitoring, backups, and reliable process management.
 - Before the application exits, call `runtime.close(wait=True)` to wait for and release

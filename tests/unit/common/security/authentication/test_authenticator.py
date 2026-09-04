@@ -1,7 +1,7 @@
 """jiuwen_memory.common.security.authentication.base / key_store: 抽象契约与工厂注册。
 
-接口先行版：``authentication_impl`` 未合入，工厂断言只覆盖 Producer 契约本身
-（TOP_NAME 进配置校验、注册幂等），不依赖任何实现注册项。
+接口先行版当前只合入本地测试用 ``dev`` 实现；工厂断言覆盖 Producer 契约、
+TOP_NAME 配置校验、注册幂等和 dev 注册项。
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ def test_registration_is_idempotent() -> None:
     first = AuthProducer.known()
     register_plugins()
     assert AuthProducer.known() == first
+    assert "dev" in first
 
 
 def test_top_names_enter_config_validation() -> None:

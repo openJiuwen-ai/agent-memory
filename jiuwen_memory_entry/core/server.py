@@ -1,17 +1,17 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Base surface-server — kernel assembly + the shared verb dispatch.
+"""Base surface-server — kernel assembly + the legacy verb dispatch.
 
 :class:`Server` is the **base class** every protocol surface builds on: it holds
-one assembled runtime (config + api + ingest lifecycle) and exposes :meth:`dispatch`,
-the verb router that the CLI and HTTP/MCP surfaces all share. A concrete surface
-subclasses it and adds its transport (see
+one assembled runtime (config + api + ingest lifecycle) and exposes :attr:`api`
+plus :meth:`dispatch`. MCP and historical in-process callers use the legacy
+verb router; HTTP and CLI call the same-named ``MemoryAPI`` method directly. A concrete
+surface subclasses this class and adds its transport (see
 :class:`jiuwen_memory_entry.http_server.__main__.HttpServer` for the HTTP/socket
 surface); the CLI's ``InProcessClient`` uses the base directly.
 
 The minimal reference build uses :func:`api.assemble_runtime` (the per-capability
 impls wired together, pure in-memory, no external deps). Swapping in a real profile
-means assembling real plugins/Stores in :meth:`build` and reusing the same
-``dispatch``.
+means assembling real plugins/Stores in :meth:`build` and reusing the same API.
 
 本模块是 Access 的 **composition root**：只通过 ``jiuwen_memory.api.assemble_runtime``
 装配内核（传入 dict，不 import ``jiuwen_memory.config``）。公开面只保留 ``api``、
@@ -76,11 +76,11 @@ class Server:
         *,
         identity=None,
     ) -> tuple[int, dict[str, Any]]:
-        """Route a request through the shared handler.
+        """Route a legacy request through the shared handler.
 
-        ``identity`` is an adapter-supplied actor.  HTTP passes the actor from
-        its authenticated request context; CLI/MCP omit it and retain their
-        existing in-process compatibility path.
+        ``identity`` is an adapter-supplied actor. MCP retains this
+        compatibility path; HTTP and CLI inject their authenticated security context
+        while calling ``api`` directly.
         """
         from handler import dispatch as _dispatch
 
@@ -104,5 +104,5 @@ def default_spaces() -> dict[str, Any]:
 
 
 def build(config: Config, spaces: Any = None) -> Server:
-    """Module-level assembly shim (the CLI's ``InProcessClient`` calls this)."""
+    """Module-level assembly shim for callers using the flat import root."""
     return Server.build(config, spaces)
