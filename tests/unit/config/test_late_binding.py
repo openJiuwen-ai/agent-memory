@@ -6,12 +6,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from common.embedder.embedder_impl.openai_embedder import OpenAIEmbedder
-from common.llm.llm_impl.openai_llm import OpenAILLM
-from common.reranker.reranker_impl.api_reranker import APIReranker
-from common.type_def import ChatMessage
-from config.config_source_impl.dict_config_source import DictConfigSource
-from storage.kv_impl.redis_kv import RedisKVStore
+from jiuwen_memory.common.embedder.embedder_impl.openai_embedder import OpenAIEmbedder
+from jiuwen_memory.common.llm.llm_impl.openai_llm import OpenAILLM
+from jiuwen_memory.common.reranker.reranker_impl.api_reranker import APIReranker
+from jiuwen_memory.common.type_def import ChatMessage
+from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
+from jiuwen_memory.storage.kv_impl.redis_kv import RedisKVStore
 
 
 class _EmbResp:

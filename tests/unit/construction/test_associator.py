@@ -6,7 +6,7 @@
 import json
 from importlib import import_module
 
-from common.type_def import (
+from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryTier,
     MemoryUnit,
@@ -15,9 +15,9 @@ from common.type_def import (
     Segment,
     Temporal,
 )
-from construction.associator_impl.keyword_associator import KeywordAssociator
-from construction.associator_impl.llm_associator import LLMAssociator
-from construction.base import OperatorType
+from jiuwen_memory.construction.associator_impl.keyword_associator import KeywordAssociator
+from jiuwen_memory.construction.associator_impl.llm_associator import LLMAssociator
+from jiuwen_memory.construction.base import OperatorType
 from tests.unit.construction.fixtures import (
     HashEmbedder,
     MockLLM,
@@ -409,13 +409,13 @@ def test_keyword_associator_no_overlap():
 
 def test_associator_producer_factory():
     """T-A-15: AssociatorProducer 可创建 keyword 和 llm 实现。"""
-    from config import AssemblyContext
-    from construction.associator_impl import AssociatorProducer
+    from jiuwen_memory.config import AssemblyContext
+    from jiuwen_memory.construction.associator_impl import AssociatorProducer
 
     # llm 实现的依赖（echo / keyword / hashing）由各 _impl 包导入时自注册
-    import_module("common.llm.llm_impl")
-    import_module("common.feature_extractor.feature_extractor_impl")
-    import_module("common.embedder.embedder_impl")
+    import_module("jiuwen_memory.common.llm.llm_impl")
+    import_module("jiuwen_memory.common.feature_extractor.feature_extractor_impl")
+    import_module("jiuwen_memory.common.embedder.embedder_impl")
 
     # keyword 实现
     keyword = AssociatorProducer.build("keyword", {}, AssemblyContext())

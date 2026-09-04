@@ -9,21 +9,28 @@ from datetime import datetime, timezone
 
 import pytest
 
-from common.bootstrap import register_plugins
-from common.factory.factory import Factory
-from common.type_def import (
+from jiuwen_memory.common.bootstrap import register_plugins
+from jiuwen_memory.common.errors import NotFoundError
+from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.type_def import (
+    T_EVENT_UNKNOWN,
     T_INVALID_OPEN,
+    ChunkVector,
     Scope,
+    memory_key,
 )
-from config.context import AssemblyContext
-from construction.bootstrap import register_constructors
-from construction.index_builder import IndexBuilderProducer
-from construction.index_builder_impl.fulltext_index_builder import FulltextIndexBuilder
-from construction.index_builder_impl.hybrid_index_builder import HybridIndexBuilder
-from construction.index_builder_impl.vector_index_builder import VectorIndexBuilder
-from storage.bootstrap import register_backends
-from storage.storage_impl.composite_storage import CompositeStorage
-from storage.types import TextQuery, VectorQuery
+from jiuwen_memory.config.context import AssemblyContext
+from jiuwen_memory.construction.bootstrap import register_constructors
+from jiuwen_memory.construction.index_builder import IndexBuilderProducer
+from jiuwen_memory.construction.index_builder_impl.fulltext_index_builder import (
+    FulltextIndexBuilder,
+)
+from jiuwen_memory.construction.index_builder_impl.hybrid_index_builder import HybridIndexBuilder
+from jiuwen_memory.construction.index_builder_impl.unified_index_builder import UnifiedIndexBuilder
+from jiuwen_memory.construction.index_builder_impl.vector_index_builder import VectorIndexBuilder
+from jiuwen_memory.storage.bootstrap import register_backends
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode, TextQuery, VectorQuery
 from tests.unit.construction.fixtures import (
     create_test_plugins,
     create_test_stores,
@@ -70,6 +77,22 @@ def _make_hybrid_builder() -> tuple[HybridIndexBuilder, dict, dict]:
         embedder=plugins["embedder"],
     )
     return builder, stores, plugins
+
+
+def _make_unified_builder(
+    vector_enabled: bool = True,
+) -> tuple[UnifiedIndexBuilder, CompositeStorage, dict, dict]:
+    """创建测试用 UnifiedIndexBuilder 及其统一 Storage（全部写只经领域接口）。"""
+    stores = create_test_stores()
+    plugins = create_test_plugins()
+    storage = CompositeStorage(kv=stores["kv"])
+    builder = UnifiedIndexBuilder(
+        storage,
+        vector_enabled=vector_enabled,
+        chunker=plugins["chunker"] if vector_enabled else None,
+        embedder=plugins["embedder"] if vector_enabled else None,
+    )
+    return builder, storage, stores, plugins
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +170,160 @@ def test_keyword_remove_is_bound_to_each_units_scope():
 
 
 # ---------------------------------------------------------------------------
+# T-I-03a: unified 直写统一 Storage
+# ---------------------------------------------------------------------------
+
+
+def test_unified_builder_delegates_lifecycle_to_storage_by_scope():
+    """unified 按 Scope 批量委托 add/update/delete，不派生检索索引。"""
+    builder, storage, _, _ = _make_unified_builder()
+    scope_a = Scope(org="test", space="space-a", user="alice")
+    scope_b = Scope(org="test", space="space-b", user="alice")
+    unit_a = create_test_unit("shared-id", "first version", scope=scope_a)
+    unit_b = create_test_unit("shared-id", "other scope", scope=scope_b)
+
+    builder.build([unit_a, unit_b])
+
+    assert storage.get(scope_a, [unit_a.id]) == [unit_a]
+    assert storage.get(scope_b, [unit_b.id]) == [unit_b]
+
+    updated_a = create_test_unit("shared-id", "updated version", scope=scope_a)
+    builder.update([updated_a])
+
+    assert storage.get(scope_a, [updated_a.id])[0].content == "updated version"
+
+    builder.remove([updated_a])
+
+    assert storage.get(scope_a, [updated_a.id]) == []
+    assert storage.get(scope_b, [unit_b.id]) == [unit_b]
+    assert builder.rebuild() is None
+
+
+# ---------------------------------------------------------------------------
+# T-I-03b: unified 向量化随本体下传（全部写只经 Storage 领域接口，不碰底层端口；
+# 向量化管线与 VectorIndexBuilder 一致：Chunker 切片 → Embedder 逐 chunk embed）
+# ---------------------------------------------------------------------------
+
+
+def _expected_chunk_vectors(plugins: dict, unit) -> list:
+    """用测试插件直接跑 chunk → embed 管线，给出 unit.vectors 的期望值。"""
+    chunks = plugins["chunker"].chunk(
+        text=unit.content, unit_id=unit.id, metadata={"tier": unit.tier.value}
+    )
+    vectors = plugins["embedder"].embed([c.text for c in chunks])
+    return [ChunkVector(id=c.id, seq=c.seq, vector=v) for c, v in zip(chunks, vectors)]
+
+
+def test_unified_builder_vectorizes_units_when_enabled():
+    """vector_enabled=True：build 走 chunker+embedder 管线，chunk 级向量随本体落盘。"""
+    builder, storage, _, plugins = _make_unified_builder()
+    scope = Scope(org="test", user="alice")
+    units = [
+        create_test_unit(
+            "u1", "用户偏好用 Python 写代码，经常使用 Python 进行数据分析", scope=scope
+        )
+    ]
+
+    builder.build(units)
+
+    expected = _expected_chunk_vectors(plugins, units[0])
+    assert expected, "测试内容应切出至少一个 chunk"
+    assert units[0].vectors == expected
+    persisted = storage.get(scope, ["u1"])[0]
+    assert persisted.vectors == expected, "vectors 应随本体经 codec 往返保留"
+
+
+def test_unified_builder_skips_vectorization_when_disabled():
+    """vector_enabled=False：不向量化，vectors 保持空列表。"""
+    builder, storage, _, _ = _make_unified_builder(vector_enabled=False)
+    scope = Scope(org="test", user="alice")
+    units = [create_test_unit("u1", "用户偏好用 Python 写代码", scope=scope)]
+
+    builder.build(units)
+
+    assert units[0].vectors == []
+    assert storage.get(scope, ["u1"])[0].vectors == []
+
+
+def test_unified_builder_embed_failure_does_not_block_body_write():
+    """embed 失败：本体仍落盘，vectors 留空（本体是真源，向量可由后端补算）。"""
+    builder, storage, _, plugins = _make_unified_builder()
+
+    def _boom(_texts):
+        raise RuntimeError("simulated embedder down")
+
+    plugins["embedder"].embed = _boom
+    scope = Scope(org="test", user="alice")
+    units = [create_test_unit("u1", "用户偏好用 Python 写代码", scope=scope)]
+
+    builder.build(units)
+
+    assert units[0].vectors == []
+    assert storage.get(scope, ["u1"]) == units
+
+
+def test_unified_builder_update_re_vectorizes():
+    """update：按新 content 重新切片向量化后回写本体。"""
+    builder, storage, _, plugins = _make_unified_builder()
+    scope = Scope(org="test", user="alice")
+    builder.build([create_test_unit("u1", "用户偏好 Python", scope=scope)])
+
+    updated = create_test_unit("u1", "用户偏好 Java", scope=scope)
+    builder.update([updated])
+
+    persisted = storage.get(scope, ["u1"])[0]
+    assert persisted.content == "用户偏好 Java"
+    assert persisted.vectors == _expected_chunk_vectors(plugins, updated)
+
+
+def test_unified_builder_vector_enabled_requires_embedder():
+    """vector_enabled=True 但缺 chunker/embedder：装配期直接报错，不拖到首次写入。"""
+    stores = create_test_stores()
+    with pytest.raises(ValueError, match="embedder"):
+        UnifiedIndexBuilder(CompositeStorage(kv=stores["kv"]), vector_enabled=True)
+
+
+def test_unified_builder_enriches_index_metadata_into_system_metadata():
+    """build 把 index_metadata 的过滤投影字段补进 unit.system_metadata，一体化后端直接读。
+
+    content_layer/t_event(哨兵)/t_invalid(哨兵)恒写；t_valid 仅非 None 时写。
+    其余过滤字段（unit_id/tier/lifecycle/tags/entities/source）已在 unit 顶层，
+    后端直接读、不重复补。seq 在 ChunkVector 上、per-chunk 不进 system_metadata。
+    """
+    builder, storage, _, _ = _make_unified_builder(vector_enabled=False)
+    scope = Scope(org="test", user="alice")
+    units = [create_test_unit("u1", "alice likes coffee", scope=scope)]
+
+    builder.build(units)
+
+    sm = units[0].system_metadata
+    assert sm["content_layer"] == "l2", "content 索引层恒为 l2"
+    assert sm["t_event"] == T_EVENT_UNKNOWN, "t_event None 落哨兵（恒写）"
+    assert sm["t_invalid"] == T_INVALID_OPEN, "t_invalid None 落哨兵（恒写）"
+    assert "t_valid" not in sm, "t_valid None 不写（下推用 LTE 放行）"
+    # 持久化往返保留：CompositeStorage.add 经 dumps/loads 保留补齐字段
+    persisted = storage.get(scope, ["u1"])[0]
+    assert persisted.system_metadata["content_layer"] == "l2"
+    assert persisted.system_metadata["t_event"] == T_EVENT_UNKNOWN
+    assert persisted.system_metadata["t_invalid"] == T_INVALID_OPEN
+
+
+def test_unified_builder_enriches_t_valid_when_set():
+    """t_valid 非 None：写 epoch 毫秒进 system_metadata。"""
+    from jiuwen_memory.common.type_def import Temporal
+
+    builder, storage, _, _ = _make_unified_builder(vector_enabled=False)
+    scope = Scope(org="test", user="alice")
+    t_valid = datetime(2026, 8, 31, 0, 0, 0, tzinfo=timezone.utc)
+    unit = create_test_unit("u1", "x", scope=scope)
+    unit.temporal = Temporal(t_valid=t_valid)
+
+    builder.build([unit])
+
+    assert unit.system_metadata["t_valid"] == int(t_valid.timestamp() * 1000)
+
+
+# ---------------------------------------------------------------------------
 # T-I-04: vector build 基本流程
 # ---------------------------------------------------------------------------
 
@@ -184,9 +361,9 @@ def test_vector_build_basic():
 def test_index_builders_project_user_metadata_for_filtering():
     scope = Scope(org="test", user="alice")
     unit = create_test_unit("u1", "metadata projection", scope=scope)
-    unit.metadata.update(
+    unit.system_metadata["memory_type"] = "coding"
+    unit.user_metadata.update(
         {
-            "memory_type": "coding",
             "project": "alpha",
             # 非字符串标量原样带入——后端据此建 double/boolean mapping 才能原生下推
             "priority": 8,
@@ -202,15 +379,16 @@ def test_index_builders_project_user_metadata_for_filtering():
     fulltext_builder.build([unit])
     doc = fulltext_stores["fulltext"].get(scope, ["u1"])[0]
 
-    assert doc.metadata["memory_type"] == "coding"
-    assert doc.metadata["project"] == "alpha"
+    assert doc.metadata["system_metadata.memory_type"] == "coding"
+    assert doc.metadata["user_metadata.project"] == "alpha"
     assert doc.metadata["tags"] == ["work"]
     assert doc.metadata["unit_id"] == "u1"
     assert doc.metadata["lifecycle"] == "active"
     # 类型不得在投影处被改写：字符串化会让 range 退化成字典序
-    assert doc.metadata["priority"] == 8 and not isinstance(doc.metadata["priority"], str)
-    assert doc.metadata["score"] == 9.5
-    assert doc.metadata["archived"] is False
+    assert doc.metadata["user_metadata.priority"] == 8
+    assert not isinstance(doc.metadata["user_metadata.priority"], str)
+    assert doc.metadata["user_metadata.score"] == 9.5
+    assert doc.metadata["user_metadata.archived"] is False
 
     vector_builder, vector_stores, _ = _make_vector_builder()
     vector_builder.build([unit])
@@ -218,14 +396,14 @@ def test_index_builders_project_user_metadata_for_filtering():
     records = vector_stores["vector"].get(scope, chunk_ids)
 
     assert records
-    assert all(record.metadata["memory_type"] == "coding" for record in records)
-    assert all(record.metadata["project"] == "alpha" for record in records)
+    assert all(record.metadata["system_metadata.memory_type"] == "coding" for record in records)
+    assert all(record.metadata["user_metadata.project"] == "alpha" for record in records)
     assert all(record.metadata["tags"] == ["work"] for record in records)
     assert all(record.metadata["unit_id"] == "u1" for record in records)
     assert all(record.metadata["lifecycle"] == "active" for record in records)
-    assert all(record.metadata["priority"] == 8 for record in records)
-    assert all(record.metadata["score"] == 9.5 for record in records)
-    assert all(record.metadata["archived"] is False for record in records)
+    assert all(record.metadata["user_metadata.priority"] == 8 for record in records)
+    assert all(record.metadata["user_metadata.score"] == 9.5 for record in records)
+    assert all(record.metadata["user_metadata.archived"] is False for record in records)
 
 
 def test_index_builders_write_sentinel_for_open_ended_t_invalid():
@@ -256,6 +434,37 @@ def test_index_builders_write_sentinel_for_open_ended_t_invalid():
 
     assert records
     assert all(record.metadata["t_invalid"] == T_INVALID_OPEN for record in records)
+
+
+def test_index_builders_write_sentinel_for_unknown_t_event():
+    """t_event 为空（F07 派生常为此值）时索引落哨兵 0，非空时落真实时间戳。
+
+    字段缺失会被事件窗下推 ``t_event GTE/LT`` 按缺失字段排他，对含时间词 query
+    系统性空召回——哨兵使 OR(AND(GTE,LT), EQ 0) 谓词的 EQ 分支成立。哨兵只在
+    索引层 + memory_filter 投影，真源 temporal.t_event 仍是 None。
+    """
+    scope = Scope(org="test", user="alice")
+    unknown_unit = create_test_unit("u_unknown", "no event date", scope=scope)
+    known_unit = create_test_unit("u_known", "has event date", scope=scope)
+    event_at = datetime(2026, 6, 16, tzinfo=timezone.utc)
+    known_unit.temporal.t_event = event_at
+
+    fulltext_builder, fulltext_stores, _ = _make_fulltext_builder()
+    fulltext_builder.build([unknown_unit, known_unit])
+    docs = {d.id: d for d in fulltext_stores["fulltext"].get(scope, ["u_unknown", "u_known"])}
+
+    assert docs["u_unknown"].metadata["t_event"] == T_EVENT_UNKNOWN
+    assert docs["u_known"].metadata["t_event"] == int(event_at.timestamp() * 1000)
+    # 真源不受影响：哨兵是索引投影的约定
+    assert unknown_unit.temporal.t_event is None
+
+    vector_builder, vector_stores, _ = _make_vector_builder()
+    vector_builder.build([unknown_unit])
+    chunk_ids = json.loads(vector_stores["kv"].get(scope, "/index/chunks/u_unknown").decode())
+    records = vector_stores["vector"].get(scope, chunk_ids)
+
+    assert records
+    assert all(record.metadata["t_event"] == T_EVENT_UNKNOWN for record in records)
 
 
 # ---------------------------------------------------------------------------
@@ -452,7 +661,6 @@ def test_empty_content_unit():
     builder.build(units)
 
     # vector 无写入（空 content → Chunker 返回空 list → 无 chunk tracking）
-    from common.errors import NotFoundError
     try:
         stores["kv"].get(scope, "/index/chunks/u1")
         assert False, "chunk tracking should not exist for empty content"
@@ -584,6 +792,33 @@ def test_fulltext_factory_skips_layers_when_disabled():
         teardown()
 
 
+def test_unified_factory_resolves_storage_dependency():
+    """注册名 unified 可经 IndexBuilderProducer 装配统一 Storage。"""
+    teardown = _bootstrap_factories()
+    try:
+        ctx = AssemblyContext.from_dict({"constructor": {"ub": "unified"}})
+        builder = IndexBuilderProducer.build_named("ub", ctx)
+        assert isinstance(builder, UnifiedIndexBuilder)
+    finally:
+        teardown()
+
+
+def test_unified_factory_vector_disabled_assembles_without_vector_plugins():
+    """globals.vector_enabled=False 时 unified 工厂不解析 embedder 即可装配。"""
+    teardown = _bootstrap_factories()
+    try:
+        ctx = AssemblyContext.from_dict(
+            {
+                "globals": {"vector_enabled": False},
+                "constructor": {"ub": "unified"},
+            }
+        )
+        builder = IndexBuilderProducer.build_named("ub", ctx)
+        assert isinstance(builder, UnifiedIndexBuilder)
+    finally:
+        teardown()
+
+
 # ---------------------------------------------------------------------------
 # T-I-15: content 切不出 chunk 时仍建 L0/L1 分层索引（回归防护）
 #
@@ -595,7 +830,7 @@ def test_fulltext_factory_skips_layers_when_disabled():
 
 def test_build_layers_runs_even_when_no_content_chunks():
     """content 全空（无 chunk）但 layers.l0/l1 非空 → 分层 store 仍应有 L0/L1 record。"""
-    from common.type_def import ContentLayers, MemoryUnit, Modality, Segment
+    from jiuwen_memory.common.type_def import ContentLayers, MemoryUnit, Modality, Segment
     from tests.unit.construction.fixtures import MemoryVectorStore
 
     scope = Scope(org="test", user="alice")
@@ -635,3 +870,105 @@ def test_build_layers_runs_even_when_no_content_chunks():
     l1_records = vector_l1.get(scope, ["u1-layer-l1"])
     assert len(l1_records) == 1, "L1 分层索引未构建：content 无 chunk 时 _build_layers 应仍执行"
     assert l1_records[0].metadata.get("content_layer") == "l1"
+
+
+# ---------------------------------------------------------------------------
+# T-I-16: IndexWriteMode / IndexRemoveMode 行为矩阵
+# ---------------------------------------------------------------------------
+
+
+def test_hybrid_build_retrieval_only_skips_forward():
+    """build(mode=RETRIEVAL_ONLY)：本体已存在只补建检索索引，正排不写。"""
+    builder, stores, _ = _make_hybrid_builder()
+    scope = Scope(org="test", user="alice")
+    units = [create_test_unit("u1", "用户偏好用 Python 写代码", scope=scope)]
+
+    builder.build(units, mode=IndexWriteMode.RETRIEVAL_ONLY)
+
+    with pytest.raises(NotFoundError):
+        stores["kv"].get(scope, memory_key("u1"))
+    hits = stores["fulltext"].search(scope, TextQuery(text="Python", top_k=10))
+    assert any(h.id == "u1" for h in hits)
+
+
+def test_hybrid_build_forward_only_skips_retrieval():
+    """build(mode=FORWARD_ONLY)：只交付本体，检索索引不写。"""
+    builder, stores, _ = _make_hybrid_builder()
+    scope = Scope(org="test", user="alice")
+    units = [create_test_unit("u1", "用户偏好用 Python 写代码", scope=scope)]
+
+    builder.build(units, mode=IndexWriteMode.FORWARD_ONLY)
+
+    assert stores["kv"].get(scope, memory_key("u1"))
+    hits = stores["fulltext"].search(scope, TextQuery(text="Python", top_k=10))
+    assert not any(h.id == "u1" for h in hits)
+
+
+def test_hybrid_update_forward_only_leaves_retrieval_untouched():
+    """update(mode=FORWARD_ONLY)：只回写本体新状态，检索索引保持旧内容。"""
+    builder, stores, _ = _make_hybrid_builder()
+    scope = Scope(org="test", user="alice")
+    units = [create_test_unit("u1", "用户偏好 Python", scope=scope)]
+    builder.build(units)
+
+    updated = [create_test_unit("u1", "用户偏好 Java", scope=scope)]
+    builder.update(updated, mode=IndexWriteMode.FORWARD_ONLY)
+
+    # 本体已回写新内容
+    assert stores["kv"].get(scope, memory_key("u1"))
+    # 检索索引不动：新词不召回，旧词仍召回
+    assert not any(
+        h.id == "u1" for h in stores["fulltext"].search(scope, TextQuery(text="Java", top_k=10))
+    )
+    assert any(
+        h.id == "u1" for h in stores["fulltext"].search(scope, TextQuery(text="Python", top_k=10))
+    )
+
+
+def test_hybrid_remove_soft_keeps_body_readable():
+    """remove(mode=SOFT)：退出检索（search 不召回），本体保留，get 仍可读。"""
+    builder, stores, _ = _make_hybrid_builder()
+    scope = Scope(org="test", user="alice")
+    units = [
+        create_test_unit(
+            "u1", "用户偏好用 Python 写代码，经常使用 Python 进行数据分析", scope=scope
+        )
+    ]
+    builder.build(units)
+    chunk_ids = json.loads(stores["kv"].get(scope, "/index/chunks/u1").decode())
+
+    builder.remove(units, mode=IndexRemoveMode.SOFT)
+
+    # 检索索引全清：fulltext / vector 均不可召回
+    assert stores["fulltext"].search(scope, TextQuery(text="Python", top_k=10)) == []
+    assert stores["vector"].get(scope, chunk_ids) == []
+    # 本体保留：get/list 路径的真源仍可读
+    assert stores["kv"].get(scope, memory_key("u1"))
+
+
+def test_hybrid_remove_hard_deletes_body_last():
+    """remove(mode=HARD)：检索索引与本体一并物理删除。"""
+    builder, stores, _ = _make_hybrid_builder()
+    scope = Scope(org="test", user="alice")
+    units = [create_test_unit("u1", "用户偏好用 Python 写代码", scope=scope)]
+    builder.build(units)
+
+    builder.remove(units, mode=IndexRemoveMode.HARD)
+
+    assert stores["fulltext"].search(scope, TextQuery(text="Python", top_k=10)) == []
+    with pytest.raises(NotFoundError):
+        stores["kv"].get(scope, memory_key("u1"))
+
+
+def test_unified_builder_passes_mode_through_to_storage():
+    """unified 原样透传枚举：SOFT 在 CompositeStorage 上为空操作，本体保留。"""
+    builder, storage, _, _ = _make_unified_builder()
+    scope = Scope(org="test", user="alice")
+    unit = create_test_unit("u1", "first version", scope=scope)
+    builder.build([unit])
+
+    builder.remove([unit], mode=IndexRemoveMode.SOFT)
+    assert storage.get(scope, ["u1"]) == [unit]
+
+    builder.remove([unit], mode=IndexRemoveMode.HARD)
+    assert storage.get(scope, ["u1"]) == []

@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-27 |
-| 影响范围 | src/common/type_def/filter.py，src/common/type_def/memory.py，src/api/memory_api_impl/local_memory_api.py，src/construction/index_builder_impl/，src/retrieval/types.py，src/retrieval/retriever_impl/，src/storage/{vector,fulltext,fusion}.py，docs/specs/S02-memory-api.md，docs/specs/S04-retrieval.md，docs/specs/S06-storage.md |
-| 测试基线 | `PYTHONPATH=src uv run --no-sync pytest -q -m unit` 通过；Milvus/Elasticsearch/PostgreSQL 集成测试由真实后端环境启用；本特性变更的 Python 文件通过 `ruff check` |
+| 影响范围 | jiuwen_memory/common/type_def/filter.py，jiuwen_memory/common/type_def/memory.py，jiuwen_memory/api/memory_api_impl/local_memory_api.py，jiuwen_memory/construction/index_builder_impl/，jiuwen_memory/retrieval/types.py，jiuwen_memory/retrieval/retriever_impl/，jiuwen_memory/storage/{vector,fulltext,fusion}.py，docs/specs/S02-memory-api.md，docs/specs/S04-retrieval.md，docs/specs/S06-storage.md |
+| 测试基线 | `PYTHONPATH=. uv run --no-sync pytest -q -m unit` 通过；Milvus/Elasticsearch/PostgreSQL 集成测试由真实后端环境启用；本特性变更的 Python 文件通过 `ruff check` |
 | Refs | — |
 
 > 本文归档 agent-memory 的 metadata 过滤设计。目标是让 `filters` 支持类似 DSL 的树形逻辑表达，同时保持 scope 过滤仍由现有 scope 链路负责，避免把租户、用户、agent、session 隔离语义混进 metadata filter。
@@ -31,7 +31,7 @@
 
 同时，现有代码已经把 scope 作为独立入参向下传递：
 
-- `MemoryAPI.recall(..., context=Context(scope=...))`
+- `MemoryAPI.search(..., context=Context(scope=...))`
 - `Retriever.retrieve(scope, query)`
 - `Store.search(scope, query)`
 
@@ -255,6 +255,32 @@ PostgreSQL/pgvector 直接通过 JSONB 值、`jsonb_typeof(...)= 'array'` 与
 `UnitReader.valid_at` 直接读取真源 `[t_valid, t_invalid)` 区间；调用方显式过滤
 `t_invalid` 时，后置 evaluator 则使用与索引一致的哨兵投影，避免下推和复核语义分叉。
 
+### 8.1. event-time 未知时间使用索引哨兵
+
+F07 净化 `t_event` 语义后，派生 unit 的 `t_event` 常为 `None`（仅内容提取不到
+事件时间）。真源 `None` 让事件窗下推 `t_event GTE/LT` 在索引里按缺失字段排他——
+含时间词 query（「今年」「昨天」「上周」…）对这批派生系统性空召回。
+
+**三处对齐哨兵**：
+
+- **索引投影**：`Vector/FulltextIndexBuilder._index_metadata` 恒写 `t_event`——
+  有值 → epoch 毫秒，`None` → `T_EVENT_UNKNOWN = 0`。真源仍是 `None`。
+- **谓词形态**：`build_system_filters` 事件窗从扁平 `GTE + LT` 两条独立叶子改为
+  `OR(AND(GTE from, LT to), EQ T_EVENT_UNKNOWN)` 子树。`AND` 子组放行窗内已知
+  事件 unit；`EQ 0` 分支放行未知时间派生。整棵 OR 子树作为外层 AND 的一个 child
+  不摊平，不稀释 lifecycle / valid-time 等安全谓词。
+- **后置复核**：`memory_filter._field_value` 对 `t_event` 把真源 `None` 投影为
+  `T_EVENT_UNKNOWN`，与索引投影对称——使 OR 组的 `EQ 0` 分支对真源 `None`
+  在 `matches_memory_unit` 里也成立，候选不被 `is_retrieval_candidate` 误砍。
+
+**属性问止血**：`time_parse` 识别属性问关键词（多大/几岁/爱好/是谁/住址/名字/
+生日/年龄…）后清空 `time_from/to` 不下推——属性问本就不是事件时间检索，
+即便含「今年/昨天」也不应误下推。与 8.1 互补：8.1 保证真下推时未知时间派生
+不被清空；属性问闸门减少误下推本身。
+
+**存量索引前提**：哨兵只对新写入 / 重建索引生效；旧索引里 `t_event=None` 派生
+缺字段，`EQ 0` 对缺失字段返回 false 仍被排除——迁移需重建索引。
+
 ## 示例
 
 ### 简单等值兼容
@@ -351,8 +377,8 @@ filters = {
 文档落地对应命令：
 
 ```bash
-PYTHONPATH=src uv run --no-sync pytest -q -m unit
-PYTHONPATH=src uv run --no-sync pytest -q \
+PYTHONPATH=. uv run --no-sync pytest -q -m unit
+PYTHONPATH=. uv run --no-sync pytest -q \
   tests/integration/storage/test_integration_backends.py \
   tests/integration/storage/test_integration_fulltext.py
 git diff --name-only -z HEAD -- '*.py' | xargs -0 uv run --no-sync ruff check

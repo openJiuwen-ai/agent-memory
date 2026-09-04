@@ -8,11 +8,11 @@ from unittest.mock import patch
 
 import pytest
 
-from common.type_def import (
+from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryTier,
 )
-from construction.extractor_impl.llm_extractor import (
+from jiuwen_memory.construction.extractor_impl.llm_extractor import (
     ExtractorImpl,
     InvalidExtractionCandidateError,
     InvalidExtractionJSONError,
@@ -27,14 +27,21 @@ from tests.unit.construction.fixtures import (
 # ---------------------------------------------------------------------------
 
 
-def _make_extractor(llm_responses: list[str] | None = None) -> ExtractorImpl:
+def _make_extractor(
+    llm_responses: list[str] | None = None,
+    *,
+    extract_batch_size: int | None = None,
+) -> ExtractorImpl:
     """创建测试用 ExtractorImpl。"""
-    return ExtractorImpl(
-        llm=MockLLM(responses=llm_responses),
-        min_confidence=0.5,
-        retry_max_retries=3,
-        retry_backoff_ms=1000,
-    )
+    kwargs: dict = {
+        "llm": MockLLM(responses=llm_responses),
+        "min_confidence": 0.5,
+        "retry_max_retries": 3,
+        "retry_backoff_ms": 1000,
+    }
+    if extract_batch_size is not None:
+        kwargs["extract_batch_size"] = extract_batch_size
+    return ExtractorImpl(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +102,7 @@ def test_extract_fact():
     result = extractor.extract(units)
 
     assert len(result) >= 1
-    assert result[0].metadata.get("target") == "fact"
+    assert result[0].system_metadata.get("target") == "fact"
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +131,7 @@ def test_extract_event():
     result = extractor.extract(units)
 
     assert len(result) >= 1
-    assert result[0].metadata.get("target") == "event"
+    assert result[0].system_metadata.get("target") == "event"
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +223,31 @@ def test_extract_batch():
     assert "u1" in provenance_ids
     assert "u2" in provenance_ids
     assert "u3" in provenance_ids
+
+
+def test_extract_batch_size_splits_llm_calls():
+    """extract_batch_size 控制子批大小：3 条 unit、batch_size=2 → 两次 LLM 调用。"""
+    unit_payload = {
+        "target": "fact",
+        "content": "fact",
+        "evidence": "e",
+        "confidence": 1.0,
+    }
+    responses = [
+        json.dumps([{**unit_payload, "source_id": "u1"}, {**unit_payload, "source_id": "u2"}]),
+        json.dumps([{**unit_payload, "source_id": "u3"}]),
+    ]
+    llm = MockLLM(responses=responses)
+    extractor = ExtractorImpl(llm=llm, extract_batch_size=2)
+    units = [
+        create_test_unit("u1", "第一条"),
+        create_test_unit("u2", "第二条"),
+        create_test_unit("u3", "第三条"),
+    ]
+    result = extractor.extract(units)
+
+    assert getattr(llm, "_call_count", 0) == 2, "3 units with batch_size=2 should trigger 2 LLM calls"
+    assert len(result) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -446,7 +478,7 @@ def test_procedural_inherits_write_tags():
     )
     source = create_test_unit("u1", "执行了 npm run build")
     source.tags = ["devops"]
-    source.metadata = {"procedural": "true"}
+    source.system_metadata = {"procedural": "true"}
     result = extractor.extract([source])
 
     assert len(result) == 1
@@ -506,7 +538,7 @@ def test_extract_llm_trailing_text_logs_raw_response():
     extractor = _make_extractor([response])
     units = [create_test_unit("u1", "user prefers Python")]
 
-    with patch("construction.extractor_impl.llm_extractor.logger.warning") as warning:
+    with patch("jiuwen_memory.construction.extractor_impl.llm_extractor.logger.warning") as warning:
         result = extractor.extract(units)
 
     assert len(result) == 1
@@ -590,7 +622,7 @@ def test_extract_continues_past_empty_json_to_non_empty_json():
 def test_extractor_operator_type_and_health():
     """T-E-12: operator_type 返回 EXTRACTOR, health 返回 None。"""
     extractor = _make_extractor(["[]"])
-    from construction.base import OperatorType
+    from jiuwen_memory.construction.base import OperatorType
 
     assert extractor.operator_type() == OperatorType.EXTRACTOR
     assert extractor.health() is None
@@ -603,7 +635,7 @@ def test_extractor_operator_type_and_health():
 
 def test_extract_prompt_includes_merge_rule():
     """T-E-13a: prompt 约束粒度双向——一 matter 不拆成碎片、二 matter 不在合并中消失。"""
-    from construction.extractor_impl.llm_extractor import _EXTRACT_SYSTEM_PROMPT
+    from jiuwen_memory.construction.extractor_impl.llm_extractor import _EXTRACT_SYSTEM_PROMPT
 
     # 粒度双向约束：既不拆一件事成并列碎片，也不让第二件事消失进第一件
     assert "one matter per item" in _EXTRACT_SYSTEM_PROMPT
@@ -656,7 +688,7 @@ def test_extract_l2_is_compact_statement_with_source_reference():
     assert "Source:" not in result[0].content
     assert result[0].source_ref == "u1"
     assert result[0].provenance == ["u1"]
-    assert result[0].metadata["extracted_statement"] == statement
+    assert result[0].system_metadata["extracted_statement"] == statement
 
 
 def test_extract_skips_invalid_candidate_and_preserves_valid_candidate():
@@ -700,17 +732,20 @@ def test_extract_rejects_missing_or_invalid_confidence(item):
 
 
 def test_extract_continues_after_one_sub_batch_fails():
-    extractor = _make_extractor([
-        "not valid JSON",
-        json.dumps([
-            {
-                "source_id": "u9",
-                "target": "fact",
-                "content": "valid statement from the second sub-batch",
-                "confidence": 1.0,
-            }
-        ]),
-    ])
+    extractor = _make_extractor(
+        [
+            "not valid JSON",
+            json.dumps([
+                {
+                    "source_id": "u9",
+                    "target": "fact",
+                    "content": "valid statement from the second sub-batch",
+                    "confidence": 1.0,
+                }
+            ]),
+        ],
+        extract_batch_size=8,  # 9 条 unit 需拆成 8+1 两子批
+    )
     units = [create_test_unit(f"u{i}", f"source {i}") for i in range(1, 10)]
 
     result = extractor.extract(units)
@@ -721,7 +756,10 @@ def test_extract_continues_after_one_sub_batch_fails():
 
 
 def test_extract_does_not_hide_failed_sub_batch_as_empty_result():
-    extractor = _make_extractor(["not valid JSON", "[]"])
+    extractor = _make_extractor(
+        ["not valid JSON", "[]"],
+        extract_batch_size=8,  # 9 条 unit 需拆成 8+1 两子批
+    )
     units = [create_test_unit(f"u{i}", f"source {i}") for i in range(1, 10)]
 
     with pytest.raises(InvalidExtractionJSONError):
@@ -755,18 +793,18 @@ def test_extract_preserves_structured_record_target():
 
     result = extractor.extract([create_test_unit("u1", "Sunday | Admon | 8am-4pm")])
 
-    assert result[0].metadata["target"] == "structured_record"
+    assert result[0].system_metadata["target"] == "structured_record"
 
 
 def test_keyword_procedural_inherits_write_tags():
     """keyword procedural 降级路径同样合并 write tags。"""
-    from common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
-    from construction.extractor_impl.keyword_extractor import KeywordExtractor
+    from jiuwen_memory.common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
+    from jiuwen_memory.construction.extractor_impl.keyword_extractor import KeywordExtractor
 
     extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=200, overlap_chars=0))
     source = create_test_unit("u1", "执行了 npm run build")
     source.tags = ["devops"]
-    source.metadata = {"procedural": "true"}
+    source.system_metadata = {"procedural": "true"}
     result = extractor.extract([source])
 
     assert len(result) == 1

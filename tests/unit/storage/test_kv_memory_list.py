@@ -5,8 +5,8 @@ from fnmatch import fnmatch
 
 import pytest
 
-from common.security import SecurityProvider
-from common.type_def import (
+from jiuwen_memory.common.security import SecurityProvider
+from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterGroup,
     FilterLogic,
@@ -18,11 +18,11 @@ from common.type_def import (
     memory_key,
     messages_key,
 )
-from common.type_def.memory_codec import dumps, loads
-from storage.kv_impl.encrypted_kv_store import EncryptedKVStore
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.kv_impl.redis_kv import RedisKVStore
-from storage.kv_impl.sqlite_kv_store import SQLiteKVStore
+from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.storage.kv_impl.encrypted_kv_store import EncryptedKVStore
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.kv_impl.redis_kv import RedisKVStore
+from jiuwen_memory.storage.kv_impl.sqlite_kv_store import SQLiteKVStore
 
 pytestmark = pytest.mark.unit
 
@@ -112,8 +112,8 @@ def _unit(
         scope=scope,
         segments=[Segment(content=unit_id)],
         temporal=Temporal(t_ingest=datetime(2026, 7, day, tzinfo=timezone.utc)),
-        metadata={
-            "memory_type": memory_type,
+        system_metadata={"memory_type": memory_type},
+        user_metadata={
             "project": project,
             "priority": priority,
         },
@@ -169,8 +169,8 @@ def test_kv_list_filters_counts_sorts_and_paginates(kv_store) -> None:
     filters = FilterGroup(
         FilterLogic.AND,
         [
-            FilterClause("metadata.project", FilterOp.EQ, "alpha"),
-            FilterClause("metadata.priority", FilterOp.GTE, 1),
+            FilterClause("user_metadata.project", FilterOp.EQ, "alpha"),
+            FilterClause("user_metadata.priority", FilterOp.GTE, 1),
         ],
     )
     extensions = {"vendor_mode": "strict"}

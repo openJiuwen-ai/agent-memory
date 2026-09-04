@@ -7,10 +7,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from common.base import PluginType
-from common.embedder.embedder_impl import EmbedderProducer
-from common.embedder.embedder_impl.openai_embedder import OpenAIEmbedder
-from common.errors import HealthCheckError
+from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.embedder.embedder_impl import EmbedderProducer
+from jiuwen_memory.common.embedder.embedder_impl.openai_embedder import OpenAIEmbedder
+from jiuwen_memory.common.errors import HealthCheckError
 
 # ---------------------------------------------------------------------------
 # Helper: Mock openai client
@@ -135,8 +135,7 @@ def test_embed_query():
 def test_health():
     """T-EM-08: health 正常时返回 None。"""
     embedder = _make_mock_embedder()
-    result = embedder.health()
-    assert result is None
+    assert embedder.health() is None
 
 
 def test_health_failure():
@@ -160,8 +159,8 @@ def test_producer_known():
 
 def test_producer_unknown_type():
     """T-P-02: 不支持的 embedder_type 抛 ValidationError。"""
-    from common.errors import ValidationError
-    from config import AssemblyContext
+    from jiuwen_memory.common.errors import ValidationError
+    from jiuwen_memory.config import AssemblyContext
 
     with pytest.raises(ValidationError):
         EmbedderProducer.build("unknown", {}, AssemblyContext())

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-12 |
-| 影响范围 | src/common/llm，deploy/docker，docs/specs/S07-common.md |
+| 影响范围 | jiuwen_memory/common/llm，deploy/docker，docs/specs/S07-common.md |
 | 测试基线 | Provider 定向单测 25 passed；`pytest -m unit` 99 passed；全量 472 passed / 55 skipped / 2 failed（当前环境未安装可选依赖 `torch`） |
 | Refs | — |
 

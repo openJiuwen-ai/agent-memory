@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -11,13 +12,13 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./
-COPY src ./src
+COPY jiuwen_memory ./jiuwen_memory
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip \
     && pip install -e ".[deploy]" "httpx>=0.27,<1"
 
-COPY bootstrap ./bootstrap
+COPY jiuwen_memory_entry ./jiuwen_memory_entry
 COPY scripts ./scripts
 
 RUN groupadd --gid 10001 agentmemory \
@@ -28,5 +29,5 @@ USER 10001:10001
 
 EXPOSE 8137
 
-CMD ["python", "bootstrap/http_server/__main__.py", \
+CMD ["python", "jiuwen_memory_entry/http_server/__main__.py", \
      "--host", "0.0.0.0", "--port", "8137", "/config/config.yml"]

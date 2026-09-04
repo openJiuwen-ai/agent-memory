@@ -60,8 +60,8 @@ services:
       - .env
     volumes:
       - ./config.yml:/config/config.yml:ro
-      - ../../../src:/app/src:ro
-      - ../../../bootstrap:/app/bootstrap:ro
+      - ../../../jiuwen_memory:/app/jiuwen_memory:ro
+      - ../../../jiuwen_memory_entry:/app/jiuwen_memory_entry:ro
     ports:
       - "8137:8137"
     depends_on:

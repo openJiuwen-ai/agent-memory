@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import asyncio
 
-from api.memory_api_impl import build_kernel
-from common.type_def import Scope
-from config.config import Config
-from construction import EvolveMode, Evolver, EvolveResult
-from construction.base import OperatorType
-from control.engine_impl.in_memory_engine import InMemoryEngine
-from control.jobs import Job, JobFactory, JobType
-from control.jobs_impl.evolve_job import EvolveJobSpec
-from control.types import BatchWriteItem, Channel, JobStatus
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
+from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.config.config import Config
+from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
+from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
+from jiuwen_memory.control.jobs import Job, JobFactory, JobType
+from jiuwen_memory.control.jobs_impl.evolve_job import EvolveJobSpec
+from jiuwen_memory.control.types import BatchWriteItem, Channel, JobStatus
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 
 _TEST_KEY_HEX = "00" * 32
 
@@ -137,11 +138,11 @@ def test_api_evolve_returns_completed_scheduler_job_with_evolve_result_detail() 
     )
     kernel = build_kernel(config=config)
     scope = Scope(user="u1")
-    kernel.api.write("Alice likes tea", scope, identity=scope)
+    kernel.api.add("Alice likes tea", scope, security=legacy_request_context(scope))
 
-    job_id = kernel.api.evolve(scope, EvolveMode.EXTRACT, identity=scope)
+    job_id = kernel.api.evolve(scope, EvolveMode.EXTRACT, security=legacy_request_context(scope))
 
-    job = kernel.api.job_status(job_id, identity=scope)
+    job = kernel.api.job_status(job_id, security=legacy_request_context(scope))
     assert job.status == JobStatus.SUCCEEDED
     assert job.detail["created_ids"] is not None
     assert job.detail["updated_ids"] == ""

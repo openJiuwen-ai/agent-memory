@@ -15,19 +15,19 @@ from typing import Any
 import openai
 import pytest
 
-from common._support import (
+from jiuwen_memory.common._support import (
     as_bool,
     outbound_verify,
     read_outbound_ssl,
     require_ca_file,
     require_https,
 )
-from common.bootstrap import register_plugins
-from common.embedder.base import EmbedderProducer
-from common.errors import ValidationError
-from common.llm.base import LlmProducer
-from common.reranker.base import RerankerProducer
-from config import AssemblyContext
+from jiuwen_memory.common.bootstrap import register_plugins
+from jiuwen_memory.common.embedder.base import EmbedderProducer
+from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.llm.base import LlmProducer
+from jiuwen_memory.common.reranker.base import RerankerProducer
+from jiuwen_memory.config import AssemblyContext
 
 pytestmark = pytest.mark.unit
 

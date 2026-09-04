@@ -6,15 +6,19 @@ from typing import Any
 
 import pytest
 
-from common.errors import PermissionDeniedError, UnsupportedStorageCapabilityError, ValidationError
-from common.type_def import MemoryUnit, Scope, Segment
-from config import AssemblyContext
-from storage.bootstrap import register_backends
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.security import StorageAccessContext, StorageAction, StorageSecurity
-from storage.storage import StorageCapability, StorageProducer
-from storage.storage_impl import CompositeStorage
-from storage.types import KVMemoryListResult
+from jiuwen_memory.common.errors import (
+    PermissionDeniedError,
+    UnsupportedStorageCapabilityError,
+    ValidationError,
+)
+from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment, memory_key
+from jiuwen_memory.config import AssemblyContext
+from jiuwen_memory.storage.bootstrap import register_backends
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.security import StorageAccessContext, StorageAction, StorageSecurity
+from jiuwen_memory.storage.storage import StorageCapability, StorageProducer
+from jiuwen_memory.storage.storage_impl import CompositeStorage
+from jiuwen_memory.storage.types import IndexRemoveMode, KVMemoryListResult
 
 pytestmark = pytest.mark.unit
 
@@ -35,10 +39,15 @@ class RecordingKVStore(InMemoryKVStore):
     def __init__(self) -> None:
         super().__init__()
         self.list_extensions: dict[str, str] | None = None
+        self.mget_batches: list[list[str]] = []
 
     def list(self, scope: Scope, **kwargs: Any) -> KVMemoryListResult:
         self.list_extensions = kwargs.get("extensions")
         return super().list(scope, **kwargs)
+
+    def mget(self, scope: Scope, keys: list[str]) -> list[bytes]:
+        self.mget_batches.append(list(keys))
+        return super().mget(scope, keys)
 
 
 def _unit(scope: Scope, unit_id: str, content: str = "content") -> MemoryUnit:
@@ -80,6 +89,38 @@ def test_memory_unit_crud_and_list_preserve_scope_and_count() -> None:
 
     storage.delete(scope, ["u1"])
     assert storage.get(scope, ["u1"]) == []
+
+
+def test_soft_delete_is_noop_and_body_stays_readable() -> None:
+    """SOFT 软删除：无检索索引可移除，CompositeStorage 空操作，本体 get/list 仍可读。"""
+    scope = Scope(org="org", space="space", user="user")
+    storage = CompositeStorage(kv=RecordingKVStore())
+    unit = _unit(scope, "u1", "first")
+    storage.add(scope, [unit])
+
+    storage.delete(scope, ["u1"], mode=IndexRemoveMode.SOFT)
+
+    assert storage.get(scope, ["u1"]) == [unit]
+    assert storage.list(scope).count == 1
+
+    storage.delete(scope, ["u1"], mode=IndexRemoveMode.HARD)
+    assert storage.get(scope, ["u1"]) == []
+
+
+def test_get_reads_truth_source_in_one_deduplicated_batch() -> None:
+    scope = Scope(org="org")
+    kv = RecordingKVStore()
+    storage = CompositeStorage(kv=kv)
+    storage.add(scope, [_unit(scope, "u1"), _unit(scope, "u2")])
+
+    # 一次 mget 覆盖去重后的 key；返回按输入顺序展开，重复 id 各自返回。
+    assert [unit.id for unit in storage.get(scope, ["u2", "u1", "u2"])] == ["u2", "u1", "u2"]
+    assert kv.mget_batches == [[memory_key("u2"), memory_key("u1")]]
+
+    # mget 任一 key 缺失即抛 NotFoundError，由 _get_units 回退逐条并跳过缺失。
+    kv.mget_batches.clear()
+    assert [unit.id for unit in storage.get(scope, ["u1", "missing"])] == ["u1"]
+    assert kv.mget_batches == [[memory_key("u1"), memory_key("missing")]]
 
 
 def test_add_rejects_unit_owned_by_another_scope() -> None:

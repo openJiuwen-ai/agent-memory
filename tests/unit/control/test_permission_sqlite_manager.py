@@ -5,10 +5,10 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from common.type_def import Scope
-from control.permission_impl import sqlite_permission_manager
-from control.permission_impl.sqlite_permission_manager import SQLitePermissionManager
-from control.types import Action, Grant, PermissionContext
+from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.control.permission_impl import sqlite_permission_manager
+from jiuwen_memory.control.permission_impl.sqlite_permission_manager import SQLitePermissionManager
+from jiuwen_memory.control.types import Action, Grant, PermissionContext
 
 pytestmark = pytest.mark.unit
 

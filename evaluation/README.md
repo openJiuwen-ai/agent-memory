@@ -9,9 +9,9 @@
 | 层 | 测什么 | 指标 | 依赖 | 状态 |
 | --- | --- | --- | --- | --- |
 | **组件级 IR** | 检索召回/排序质量本身 | Recall@k · Precision@k · MRR · nDCG@k · MAP + p50/p95 时延 + 回传 token | 仅检索链路（in-memory 装配） | ✅ 可跑 |
-| **端到端 QA** | 整体功能（write→recall→答案） | QA 准确率（LLM-as-judge）+ 按类目分桶 | 全链路 + LLM judge + 公开数据集 | ✅ 通路就绪（待下载数据集 + 配 judge endpoint） |
+| **端到端 QA** | 整体功能（add→search→答案） | QA 准确率（LLM-as-judge）+ 按类目分桶 | 全链路 + LLM judge + 公开数据集 | ✅ 通路就绪（待下载数据集 + 配 judge endpoint） |
 
-两层共用同一套 harness/runner——都走 `MemoryAPI` 公共面（`write`/`recall`），评的是**整体功能**而非检索层孤件。
+两层共用同一套 harness/runner——都走 `MemoryAPI` 公共面（`add`/`search`），评的是**整体功能**而非检索层孤件。
 
 ## 目录
 

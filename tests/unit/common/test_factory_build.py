@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-from common.errors import ValidationError
-from common.factory.factory import Factory
-from config.context import AssemblyContext
+from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.config.context import AssemblyContext
 
 
 class _PartProducer(Factory):
@@ -122,7 +122,7 @@ def test_dep_default_is_anonymous_independent():
 def test_dep_missing_without_default_raises():
     ctx = AssemblyContext.from_dict({})
     cfg_ctx = ctx
-    from config.context import ComponentConfig
+    from jiuwen_memory.config.context import ComponentConfig
 
     config = ComponentConfig(params={}, ctx=cfg_ctx)
     with pytest.raises(ValidationError, match="未配置且无默认实现"):

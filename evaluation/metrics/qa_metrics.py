@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """端到端 QA 答案级指标（对标 LoCoMo / LongMemEval）——需注入 judge。
 
 链路：检索结果（``CaseOutcome.contents``）作为证据 → 由 ``judge`` 给出 [0,1] 正确分

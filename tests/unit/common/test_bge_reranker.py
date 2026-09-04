@@ -11,11 +11,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from common.base import PluginType
-from common.errors import HealthCheckError
-from common.reranker.reranker_impl import RerankerProducer
-from common.reranker.reranker_impl.bge_reranker import BGEReranker
-from config import AssemblyContext
+from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.errors import HealthCheckError
+from jiuwen_memory.common.reranker.reranker_impl import RerankerProducer
+from jiuwen_memory.common.reranker.reranker_impl.bge_reranker import BGEReranker
+from jiuwen_memory.config import AssemblyContext
 
 
 class MockBGEModel:

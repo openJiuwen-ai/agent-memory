@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from common.factory.factory import Factory
-from config import AssemblyContext
-from config.defaults import default_context
-from retrieval.fuser_impl import FuserProducer
-from retrieval.fuser_impl.rrf_fuser import RRFFuser
-from retrieval.fuser_impl.score_max_fuser import ScoreMaxFuser
-from retrieval.fuser_impl.weighted_rrf_fuser import WeightedRRFFuser
-from retrieval.types import ParsedQuery, RecallChannel, ScoredUnit
+from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.config import AssemblyContext
+from jiuwen_memory.config.defaults import default_context
+from jiuwen_memory.retrieval.fuser_impl import FuserProducer
+from jiuwen_memory.retrieval.fuser_impl.rrf_fuser import RRFFuser
+from jiuwen_memory.retrieval.fuser_impl.score_max_fuser import ScoreMaxFuser
+from jiuwen_memory.retrieval.fuser_impl.weighted_rrf_fuser import WeightedRRFFuser
+from jiuwen_memory.retrieval.types import ParsedQuery, RecallChannel, ScoredUnit
 
 pytestmark = pytest.mark.unit
 

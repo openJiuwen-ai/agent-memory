@@ -19,33 +19,34 @@ import asyncio
 
 import pytest
 
-from common.base import PluginType
-from common.llm.base import LLM
-from common.normalizer.normalizer_impl.passthrough_normalizer import (
+from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.llm.base import LLM
+from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer import (
     PassthroughNormalizer,
 )
-from common.type_def import (
+from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryTier,
     MemoryUnit,
     Scope,
     memory_key,
 )
-from common.type_def.chat import ChatMessage
-from common.type_def.memory_codec import dumps, loads
-from construction import EvolveMode, Evolver, EvolveResult
-from construction.base import OperatorType
-from construction.index_builder import IndexBuilder
-from control.base import ControlOperatorType
-from control.engine_impl.in_memory_engine import InMemoryEngine
-from control.jobs import JobFactory, JobType
-from control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
-from control.lifecycle import LifecycleManager
-from control.scheduler_impl.async_timer_scheduler import AsyncTimerScheduler
-from control.types import JobStatus
-from ingest.ingestor_impl.simple_ingestor import SimpleIngestor
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.common.type_def.chat import ChatMessage
+from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
+from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.index_builder import IndexBuilder
+from jiuwen_memory.control.base import ControlOperatorType
+from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
+from jiuwen_memory.control.jobs import JobFactory, JobType
+from jiuwen_memory.control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
+from jiuwen_memory.control.lifecycle import LifecycleManager
+from jiuwen_memory.control.scheduler_impl.async_timer_scheduler import AsyncTimerScheduler
+from jiuwen_memory.control.types import JobStatus
+from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 pytestmark = pytest.mark.unit
 
@@ -92,11 +93,15 @@ class _StubLLM(LLM):
 
 
 class _RecordingIndex(IndexBuilder):
-    """记录 build/remove 的 IndexBuilder。"""
+    """记录 build/remove 的 IndexBuilder，并交付 Storage。
 
-    def __init__(self) -> None:
+    IndexBuilder 是记忆写入的唯一入口，替身必须交付 Storage，否则真源为空。
+    """
+
+    def __init__(self, storage=None) -> None:
         self.built: list[MemoryUnit] = []
         self.removed: list[MemoryUnit] = []
+        self._storage = storage
 
     def operator_type(self) -> OperatorType:
         return OperatorType.INDEX_BUILDER
@@ -104,13 +109,18 @@ class _RecordingIndex(IndexBuilder):
     def health(self) -> None:
         return None
 
-    def build(self, units) -> None:
+    def build(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         self.built.extend(units)
+        if self._storage is not None:
+            for unit in units:
+                self._storage.add(unit.scope, [unit])
 
-    def update(self, units) -> None:
-        return None
+    def update(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
+        if self._storage is not None:
+            for unit in units:
+                self._storage.update(unit.scope, [unit])
 
-    def remove(self, units) -> None:
+    def remove(self, units, *, mode: IndexRemoveMode = IndexRemoveMode.HARD) -> None:
         self.removed.extend(units)
 
     def rebuild(self) -> None:
@@ -159,16 +169,18 @@ class _KvBackedLifecycle(LifecycleManager):
 def _build_engine(
     *,
     evolver=None,
-    middle_interval: int = 1,
     middle_concurrency: int = 1,
 ) -> tuple[InMemoryEngine, AsyncTimerScheduler, _RecordingIndex, InMemoryKVStore, _KvBackedLifecycle]:
     """构造最小可测 Engine + AsyncTimerScheduler（短 tick_interval=1）。
 
     mem2.0 重构后：llm 与 middle_* 业务参数经 JobFactory 固化到
-    :class:`MiddleToLongJobSpec`——Engine 仅持 JobFactory 引用 + middle_interval。
+    :class:`MiddleToLongJobSpec`——Engine 不再持 middle_interval，该参数经
+    write metadata 透传。本装配构造的 JobSpec 不显式设 interval，走 Spec 默认 50；
+    各测试通过 system_metadata={"middle_interval": "1"} 覆盖。
     """
     kv = InMemoryKVStore()
-    index = _RecordingIndex()
+    storage = CompositeStorage(kv=kv)
+    index = _RecordingIndex(storage)
     scheduler = AsyncTimerScheduler(tick_interval=1)
     lifecycle = _KvBackedLifecycle(kv)
     evolver = evolver or _StubEvolver()
@@ -179,7 +191,7 @@ def _build_engine(
     factory.register(
         JobType.MIDDLE_TO_LONG,
         MiddleToLongJobSpec(
-            storage=CompositeStorage(kv=kv),
+            storage=storage,
             evolver=evolver,
             lifecycle=lifecycle,
             index=index,
@@ -194,14 +206,13 @@ def _build_engine(
         ingestor=ingestor,
         index_builder=index,
         retriever=None,  # write 路径不依赖 retriever
-        storage=CompositeStorage(kv=kv),
+        storage=storage,
         scheduler=scheduler,
         evolver=evolver,
         lifecycle=lifecycle,
         classifier=None,
         pipeline=None,
         job_factory=factory,
-        middle_interval=middle_interval,
     )
     return engine, scheduler, index, kv, lifecycle
 
@@ -223,14 +234,14 @@ def test_e2e_write_middle_persists_originals_and_submits_job() -> None:
         units = await engine.write(
             "alice likes tea",
             scope,
-            metadata={"infer": "true", "middle": "true"},
+            system_metadata={"infer": "true", "middle": "true", "middle_interval": "1"},
         )
         # 在事件循环内存断言——Timer 还在跑
         assert len(units) == 1
         persisted = loads(kv.get(scope, memory_key(units[0].id)))
         assert persisted.tier == MemoryTier.WORKING
         assert persisted.lifecycle == LifecycleState.ACTIVE
-        assert persisted.metadata.get("middle") == "true"
+        assert persisted.system_metadata.get("middle") == "true"
         assert index.built == units
         scope_key = scheduler._scope_key(scope)  # pylint: disable=protected-access
         assert scope_key in scheduler._wheels  # pylint: disable=protected-access
@@ -259,7 +270,7 @@ def test_e2e_timer_triggers_middle_to_long_and_archives_originals() -> None:
         units = await engine.write(
             "alice likes tea",
             scope,
-            metadata={"infer": "true", "middle": "true"},
+            system_metadata={"infer": "true", "middle": "true", "middle_interval": "1"},
         )
         original_id = units[0].id
         # Timer 首次 tick(t=1s) 触发实例入队 + drain 跑 run()——等 t≈2.2s 让 drain 完成
@@ -293,7 +304,7 @@ def test_e2e_timer_exits_when_no_candidates_left() -> None:
         await engine.write(
             "alice likes tea",
             scope,
-            metadata={"infer": "true", "middle": "true"},
+            system_metadata={"infer": "true", "middle": "true", "middle_interval": "1"},
         )
         # 找到定时任务长生命 job_id（status=RUNNING 的那个，detail.parent_timer 不存在）
         for jid, info in scheduler._jobs.items():  # pylint: disable=protected-access
@@ -336,7 +347,7 @@ def test_e2e_next_write_restarts_timer_after_exit() -> None:
         await engine.write(
             "first message",
             scope,
-            metadata={"infer": "true", "middle": "true"},
+            system_metadata={"infer": "true", "middle": "true", "middle_interval": "1"},
         )
         # 等 first 轮跑完 + 退出（约 3.5s）
         await asyncio.sleep(3.5)
@@ -345,7 +356,7 @@ def test_e2e_next_write_restarts_timer_after_exit() -> None:
         await engine.write(
             "second message",
             scope,
-            metadata={"infer": "true", "middle": "true"},
+            system_metadata={"infer": "true", "middle": "true", "middle_interval": "1"},
         )
         # 第二次 write 后 wheel 应有 entry（Timer 协程重新启动）
         wheel = scheduler._wheels.get(scope_key)  # pylint: disable=protected-access
@@ -376,7 +387,7 @@ def test_e2e_failed_batch_preserves_originals_for_retry() -> None:
     """
     # fail_first_n=1：第一次 evolve 失败，第二次成功
     engine, scheduler, index, kv, _ = _build_engine(
-        evolver=_StubEvolver(fail_first_n=1), middle_interval=2
+        evolver=_StubEvolver(fail_first_n=1)
     )
     scope = Scope(org="acme", user="u1")
     state = {}
@@ -385,7 +396,7 @@ def test_e2e_failed_batch_preserves_originals_for_retry() -> None:
         units = await engine.write(
             "alice likes tea",
             scope,
-            metadata={"infer": "true", "middle": "true"},
+            system_metadata={"infer": "true", "middle": "true", "middle_interval": "2"},
         )
         original_id = units[0].id
         state["original_id"] = original_id
@@ -426,7 +437,7 @@ def test_e2e_recall_default_returns_active_only() -> None:
         units = await engine.write(
             "alice likes tea",
             scope,
-            metadata={"infer": "true", "middle": "true"},
+            system_metadata={"infer": "true", "middle": "true", "middle_interval": "1"},
         )
         original_id = units[0].id
         await asyncio.sleep(3.5)

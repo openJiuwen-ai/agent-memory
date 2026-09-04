@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """可插拔 LLM judge——端到端 QA 的「答案合成 + 判分」实现。
 
 端到端评测分两步 LLM 调用：① 从召回的记忆合成答案；② LLM-as-judge

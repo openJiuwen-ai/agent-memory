@@ -1,11 +1,11 @@
-# F04 — 通道内 max 归一化 + 通道间取最大值融合（src/retrieval）
+# F04 — 通道内 max 归一化 + 通道间取最大值融合（jiuwen_memory/retrieval）
 
 ## 元信息
 
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-23 |
-| 影响范围 | `src/retrieval/fuser_impl/score_max_fuser.py`（新增）、`src/retrieval/fuser_impl/layered_merge.py`（新增）、`src/retrieval/fuser_impl/rrf_fuser.py`、`src/retrieval/fuser_impl/weighted_rrf_fuser.py`、`src/retrieval/fuser_impl/__init__.py`、`src/retrieval/retriever_impl/pipeline_retriever.py`（阈值默认值）、`src/config/defaults.py`、`deploy/docker/online/config.yml`；关联 `src/storage/fulltext_impl/elasticsearch_fulltext.py`（`text_analyzer`）；文档 `src/retrieval/AGENTS.md`、`F01-retrieval-impl-design.md`、`F02-retrieval-threshold-topk-design.md` |
+| 影响范围 | `jiuwen_memory/retrieval/fuser_impl/score_max_fuser.py`（新增）、`jiuwen_memory/retrieval/fuser_impl/layered_merge.py`（新增）、`jiuwen_memory/retrieval/fuser_impl/rrf_fuser.py`、`jiuwen_memory/retrieval/fuser_impl/weighted_rrf_fuser.py`、`jiuwen_memory/retrieval/fuser_impl/__init__.py`、`jiuwen_memory/retrieval/retriever_impl/pipeline_retriever.py`（阈值默认值）、`jiuwen_memory/config/defaults.py`、`deploy/docker/online/config.yml`；关联 `jiuwen_memory/storage/fulltext_impl/elasticsearch_fulltext.py`（`text_analyzer`）；文档 `jiuwen_memory/retrieval/AGENTS.md`、`F01-retrieval-impl-design.md`、`F02-retrieval-threshold-topk-design.md` |
 | 测试基线 | `uv run --frozen pytest tests/unit/retrieval tests/unit/config/test_online_profile.py tests/unit/storage/fulltext_impl/test_elasticsearch_fulltext.py tests/integration/retrieval -q`（exit 0） |
 | 数据来源 | LoCoMo 10-sample 基线日志离线重放（2618 条 gold，其中 2303 条被召回覆盖） |
 | Refs | —（如有 issue 补 `Refs: #<n>`） |

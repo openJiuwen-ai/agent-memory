@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import pytest
 
-from common.errors import ConflictError, HealthCheckError, NotFoundError
-from common.type_def import Scope
-from storage import StoreType
-from storage.graph import GraphProducer
-from storage.graph_impl.nano_graphrag_graph import NanoGraphRAGGraphStore
-from storage.types import Edge, GraphQuery, Node
+from jiuwen_memory.common.errors import ConflictError, HealthCheckError, NotFoundError
+from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.storage import StoreType
+from jiuwen_memory.storage.graph import GraphProducer
+from jiuwen_memory.storage.graph_impl.nano_graphrag_graph import NanoGraphRAGGraphStore
+from jiuwen_memory.storage.types import Edge, GraphQuery, Node
 
 SCOPE = Scope(org="itest", user="u1")
 

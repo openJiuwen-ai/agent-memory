@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-08-06 |
-| 影响范围 | 规划中的 `src/retrieval` pipeline、共享检索类型，以及统一 Storage 的检索入口 |
+| 影响范围 | 规划中的 `jiuwen_memory/retrieval` pipeline、共享检索类型，以及统一 Storage 的检索入口 |
 | 测试基线 | `tests/unit/retrieval/test_storage_pipelines.py`；retrieval 单测与集成测试通过 |
 | Refs | [F05-unified-storage-design.md](../storage/F05-unified-storage-design.md) |
 
@@ -132,7 +132,7 @@ Retriever 负责把调用级 `RetrievalQuery.channels` 与 parser 建议通道�
 ### 五、共享类型下沉到 common
 
 Storage 不能反向依赖 Retrieval 实现模块。双方共同使用的契约类型下沉到
-`src/common/type_def/`，至少包括：
+`jiuwen_memory/common/type_def/`，至少包括：
 
 - `ParsedQuery`
 - `RecallChannel`
@@ -143,7 +143,7 @@ Storage 不能反向依赖 Retrieval 实现模块。双方共同使用的契约�
 - `ChannelError`
 - Fuser 所需的最小协议
 
-QueryParser、Fuser、Retriever 的接口和具体实现继续放在 `src/retrieval`。公共目录只承载数据
+QueryParser、Fuser、Retriever 的接口和具体实现继续放在 `jiuwen_memory/retrieval`。公共目录只承载数据
 契约和协议，不承载查询解析或融合算法。
 
 物化候选包含完整 MemoryUnit 及其召回上下文：

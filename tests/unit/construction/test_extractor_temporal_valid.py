@@ -9,15 +9,15 @@ import json
 import time
 from datetime import datetime, timedelta, timezone
 
-from common.type_def import (
+from jiuwen_memory.common.type_def import (
     MemoryTier,
     MemoryUnit,
     Scope,
     Segment,
     Temporal,
 )
-from construction.extractor_impl.llm_extractor import ExtractorImpl
-from control.engine_impl.in_memory_engine import _valid_at, _valid_sort_key
+from jiuwen_memory.construction.extractor_impl.llm_extractor import ExtractorImpl
+from jiuwen_memory.control.engine_impl.in_memory_engine import _valid_at, _valid_sort_key
 from tests.unit.construction.fixtures import MockLLM
 
 
@@ -43,7 +43,7 @@ def _create_source_unit(unit_id: str, content: str) -> MemoryUnit:
             t_ingest=now,
             t_valid=now,
         ),
-        metadata={"infer": "true"},
+        system_metadata={"infer": "true"},
     )
 
 

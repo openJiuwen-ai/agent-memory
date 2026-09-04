@@ -4,9 +4,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from common.audit.audit_impl.in_memory_audit_logger import InMemoryAuditLogger
-from common.audit.audit_impl.sqlite_audit_logger import SqliteAuditLogger
-from common.type_def import AuditEvent, Scope
+from jiuwen_memory.common.audit.audit_impl.in_memory_audit_logger import InMemoryAuditLogger
+from jiuwen_memory.common.audit.audit_impl.sqlite_audit_logger import SqliteAuditLogger
+from jiuwen_memory.common.type_def import AuditEvent, Scope
 
 pytestmark = pytest.mark.unit
 

@@ -1,8 +1,9 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """CLI surface 端到端演示——尽量调用全部模块（同进程 dispatch，无需起服务）。
 
 运行：``python3 examples/demo_cli.py``
 
-走 CLI 的 :class:`~bootstrap.cli.client.InProcessClient`（CLI/HTTP 共用的
+走 CLI 的 :class:`~jiuwen_memory_entry.cli.client.InProcessClient`（CLI/HTTP 共用的
 ``handler.dispatch`` 代码路径，少了 socket）。前半段用动词把主链路 + 演进 + 治理 +
 管理面都跑一遍；末段直接演示几个不在默认装配里的可选/辅助组件（Source/FS/Fusion/
 SQLite）。一个进程内共享内核，状态跨调用持久。无任何外部依赖。
@@ -29,7 +30,7 @@ import sys
 from importlib import import_module
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_CLI_DIR = os.path.join(_REPO, "bootstrap", "cli")
+_CLI_DIR = os.path.join(_REPO, "jiuwen_memory_entry", "cli")
 if _CLI_DIR not in sys.path:
     sys.path.append(_CLI_DIR)
 
@@ -96,7 +97,7 @@ def main() -> int:
     )
 
     hr("audit — 审计留痕（按动作过滤）")
-    for action in ("write", "evolve", "update"):
+    for action in ("add", "evolve", "update"):
         logger.info("  %-7s: %s 条", action, call("audit", action=action)["count"])
 
     hr("admin — 运行时策略（PolicyManager）")
@@ -107,7 +108,13 @@ def main() -> int:
     logger.info("  %s", call("grant", grantee="bob"))
 
     hr("delete — 软删除（LifecycleManager 非破坏式流转）")
-    call("delete", item_id=hit_id)
+    delete_result = call("delete", item_id=hit_id)
+    if delete_result.get("error") or not delete_result.get("ok"):
+        logger.error(
+            "  delete failed: %s",
+            delete_result.get("message") or delete_result.get("error") or "unknown error",
+        )
+        return 1
     logger.info(
         "  原始项 lifecycle: %s (记录仍在)", call("get", item_id=hit_id)["item"]["lifecycle"]
     )
@@ -122,14 +129,14 @@ def _aux_components() -> None:
     """直接演示不在默认装配里的可选/辅助组件（src 路径已由 client.py 接好）。"""
     from datetime import datetime, timezone
 
-    from common.embedder.embedder_impl.hashing_embedder import HashingEmbedder
-    from common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
-    from common.type_def import FilterClause, FilterOp, Scope
-    from ingest.source_impl.text_source import TextSource
-    from storage.fs_impl.in_memory_fs_store import InMemoryFSStore
-    from storage.fusion_impl.in_memory_fusion_store import InMemoryFusionStore
-    from storage.kv_impl.sqlite_kv_store import SQLiteKVStore
-    from storage.types import FusionQuery, FusionRecord
+    from jiuwen_memory.common.embedder.embedder_impl.hashing_embedder import HashingEmbedder
+    from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
+    from jiuwen_memory.common.type_def import FilterClause, FilterOp, Scope
+    from jiuwen_memory.ingest.source_impl.text_source import TextSource
+    from jiuwen_memory.storage.fs_impl.in_memory_fs_store import InMemoryFSStore
+    from jiuwen_memory.storage.fusion_impl.in_memory_fusion_store import InMemoryFusionStore
+    from jiuwen_memory.storage.kv_impl.sqlite_kv_store import SQLiteKVStore
+    from jiuwen_memory.storage.types import FusionQuery, FusionRecord
 
     sc = Scope(org="default", user="alice")
     tok = WhitespaceTokenizer()

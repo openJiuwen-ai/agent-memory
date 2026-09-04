@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """通用 JSONL 评测标注数据集——自定义评测标注与回归数据的标准载体。
 
 每行一条 JSON 记录，``type`` 区分两类：
@@ -17,7 +18,7 @@ import json
 import os
 from typing import List, Optional, Sequence
 
-from common.type_def import Scope
+from jiuwen_memory.common.type_def import Scope
 from evaluation.core.types import Dataset, MemorySeed, QueryCase
 
 _DEFAULT_SCOPE = Scope(org="eval", user="u1")
@@ -47,6 +48,12 @@ class JsonlDataset(Dataset):
         self._seeds: List[MemorySeed] = []
         self._queries: List[QueryCase] = []
         self._load(path, default_scope)
+
+    def seeds(self) -> Sequence[MemorySeed]:
+        return self._seeds
+
+    def queries(self) -> Sequence[QueryCase]:
+        return self._queries
 
     def _load(self, path: str, default_scope: Scope) -> None:
         with open(path, "r", encoding="utf-8") as fh:
@@ -80,9 +87,3 @@ class JsonlDataset(Dataset):
                     )
                 else:
                     raise ValueError(f"unknown record type: {kind!r} in {path}")
-
-    def seeds(self) -> Sequence[MemorySeed]:
-        return self._seeds
-
-    def queries(self) -> Sequence[QueryCase]:
-        return self._queries

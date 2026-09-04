@@ -26,6 +26,21 @@ globals:
 # fuser:
 #   default: { target: rrf, params: { k: 80 } }
 
+# ---- 换真实模型（不配则是 echo 回显桩：返回最后一条 user 消息原文，没有真实推理）----
+# 各 LLM 消费方（classifier / extractor / abstractor / associator / evolver /
+# layer_annotator / query_parser / router 等）经 params 里的「llm: default」引用共享
+# 这一个具名实例，因此换这里即全局生效。注意 router 段要自己写上该引用，内置默认
+# 只为其余组件写好了。
+# llm:
+#   default:
+#     target: dashscope          # 或 openai
+#     params:
+#       llm_api_key: "sk-..."    # 建议从环境变量注入，勿提交进仓库
+#       llm_model: qwen-plus     # openai 缺省 gpt-4o
+#       llm_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+#       llm_temperature: 0.0
+#       llm_max_tokens: 4096
+
 # ---- 本地高级精排（需安装 extra: embed，并准备模型文件）----
 # reranker:
 #   default: { target: bge_reranker, params: { reranker_bge_model: BAAI/bge-reranker-v2-m3 } }
@@ -75,3 +90,128 @@ globals:
 #     target: dynamic
 #     # dedup_medium_similarity: 0.7    # 可选：consolidate 中段阈值（< 此值直接 ADD）
 #     # dedup_high_similarity: 0.9       # 可选：consolidate 高相似阈值（≥ 此值直接 NOOP）
+
+# ====================================================================== #
+# 群体记忆：空间治理 + 归属判定
+# ====================================================================== #
+#
+# 由两个互不相关的开关控制，可各自独立开启，默认都关：
+#
+#   空间治理 —— permission.default.target = space_aware
+#     开启后：两轴角色判定、归属对比、归属主体档、检索谓词第一族、空间状态校验
+#   归属判定 —— 声明 router 命名空间且判定表非空
+#     开启后：写入侧 scope 可省、coords 生效、候选空间集合、检索谓词第二族
+#
+# 四种组合里三种合法，一种在装配期被拒：
+#
+#   都不开        与改造前一致，是灰度上线的起点
+#   只开空间治理   空间之间有权限边界，scope 仍必填、coords 不产生落点
+#   只开归属判定   装配期拒绝。内容按坐标分流进协作空间，而协作空间此时没有任何
+#                权限边界，方向为放行且从调用侧看不出异常
+#   两个都开      完整特性
+#
+# 另有一项前置：条目落在非空 space 上，而默认的 in_memory 引擎只接受
+# scope.space == ""，因此必须一并换成 cloud 引擎。
+#
+# 判定表配错一律在装配期抛 ValidationError，不会静默降级。常见几条：
+# memory_classes 缺失或为空、fallback 类别不是恰好一个、owner=user 的类别声明了
+# cross_user、cross_user 类别未给 members 也未声明 sanitized、space_template 未
+# 引用该类别的 owner。
+#
+# examples/config.yml 末段有同样一块，两处等价，按自己用的那份改即可。注意启用后
+# quickstart.py 前几节会整体跳过——它们用 space 为空的显式 scope 写入，开启空间治理
+# 后这类写入由放行改为拒绝。
+#
+# 两个可选的配套策略。它们属于 globals.policies，请加进文件开头已有的那个 globals 段内，
+# 不要在下面的块里另起一个 globals 顶层键——那会让后一个覆盖前一个，静默丢掉已有配置：
+#
+# #   # fallback 空间（调用方主空间）不存在时按调用方身份自动创建并登记归属。默认开。
+# #   # 关掉即回到硬前置：接入方须在用户开通时预建主空间，否则新主体首次写入失败。
+# #   space.auto_create_fallback: "true"
+# #   # 一次调用参与的空间数上限，写入侧与检索侧同取。缺省 8。这是功能天花板而非
+# #   # 性能参数：主体参与的空间超过它时，超出部分写入不进候选、检索也取不到。
+# #   space.fanout_limit: "8"
+#
+# 以下是本文件的最后一块，整块去掉行首的 "# " 即可启用——从下一行的 engine: 一直选到
+# 文件末尾都可以，块内的说明行是双层注释，去掉一层仍是注释：
+#
+# engine:
+#   default:
+#     target: cloud
+#     params:
+#       ingestor: default
+#       index_builder: default
+#       retriever: default
+#       kv_store: default
+#       scheduler: default
+#       evolver: default
+#       lifecycle: default
+# permission:
+#   # 与 sqlite 判定实现互斥，同一部署不得同时装配两个
+#   default: { target: space_aware, params: { db_path: ":memory:" } }
+# router:
+#   default:
+#     # 首版只交付这一个模型实现。它取 llm 命名空间的实现，而默认是 echo 回显桩——
+#     # 不换成真实模型，判定会把所有条目判进 fallback 类别，分流看不出效果。
+#     # 换真实模型见上文「换真实模型」小节。
+#     # 不想配模型时改成 keyword_demo：quickstart.py 内注册的关键词桩，
+#     # 离线可跑、结果确定，用于看清分流与隔离的行为。
+#     target: llm
+#     params:
+#       # 取 llm 命名空间的 default 实例。这一行不写，判定算子会回落到内置 echo 桩——
+#       # 即使上面配了真实模型也不生效（其余组件的引用已由内置默认写好，无须自己加）。
+#       llm: default
+#       # ---- 字段速查（下面的示例只用到其中一部分）----
+#       # memory_classes 每项 10 个字段，只有 name 无条件必填：
+#       #   name            类别名，判定结果落进条目的 system_metadata["memory_class"]
+#       #   description     默认空。拼进判定 prompt，模型据它选类别
+#       #   owner           归属维实体名，须是坐标键之一。非 record_only 类别必填
+#       #   space_template  空间名模板。非 record_only 类别必填，须引用 owner，各类别不得重复
+#       #   fallback        默认 false。全表须恰好一个 true，且该类别不得 cross_user
+#       #   cross_user      默认 false。owner=user 的类别不得设；设了须给 members 或 sanitized
+#       #   members         默认空。cross_user 类别的成员来源说明（文字，运行时不读）
+#       #   sanitized       默认 false。与 members 二选一，声明该类别内容已脱敏
+#       #   record_only     默认 false。true 即不落独立空间：条目落 fallback，归属只记标签
+#       #   tag_key         默认空。record_only 类别的标签键，不写则按 <owner>_id 生成
+#       # narrow_dims 每项 4 个字段：entity 与 tag_key 必填（tag_key 不得重复），
+#       #   applies_to 默认对全部类别生效，question 默认空（判定时问模型的那句话）。
+#       # 以上约束在装配期校验，配错即 ValidationError，不会留到运行时。
+#       # target: llm 时另可配 retry_max_retries（默认 3）、retry_backoff_ms（默认 1000）。
+#       # 接入方的产品概念，内核只作字典键透传；内核自带 user/agent/session 三项，
+#       # 取值以调用方身份为准、不接受覆盖，因此这里不得与那三项重名。
+#       coord_entities: [project, team]
+#       # 一个类别 = 一个归属维 + 一个空间名模板。
+#       # 判据是「换掉哪个坐标这条记忆就不成立，那个坐标即它的归属维」。
+#       memory_classes:
+#         - name: user_memory
+#           # description 会拼进判定 prompt，模型据它选类别，写清楚这一类是什么
+#           description: 关于用户本人的事实、偏好与习惯，换一个用户就不成立
+#           owner: user                  # 归属维实体名
+#           space_template: "u_{user}"   # 空间名模板，必须引用该类别的 owner
+#           fallback: true               # 兜底落点，有且仅有一个，且不得 cross_user
+#         - name: project_memory
+#           description: 关于某个项目的事实、决定与约定，换一个项目就不成立
+#           owner: project
+#           space_template: "p_{project}"
+#           cross_user: true             # 该类别的空间跨用户可见，是设计意图
+#           members: 项目参与者           # cross_user 必须给出成员来源或声明 sanitized
+#         - name: team_memory
+#           description: 关于某个 agent-team 的协作方式，换一个 team 就不成立
+#           owner: team
+#           # record_only：不落独立空间，命中该类别的条目落 fallback 空间，归属实体
+#           # 只记成一个标签。该形态下团队记忆不在团队内共享——标签只在作者自己的
+#           # 空间内起收窄作用。要在团队内共享就删掉本行并按 project_memory 的写法配。
+#           record_only: true
+#           tag_key: team_id             # 不写则按 <owner>_id 生成
+#       # 收窄维：命中即在条目上打标签，检索按同一组标签收窄
+#       narrow_dims:
+#         - entity: agent
+#           tag_key: agent_id
+#           question: 这条记忆是否只对这一个代理成立？
+#         - entity: session
+#           tag_key: session_id
+#           question: 这条记忆是否只在这一次会话内有意义？
+#         - entity: project
+#           tag_key: project_id
+#           applies_to: [user_memory]    # 只对这些类别生效；不写则对全部类别生效
+#           question: 这条记忆是否与某个具体项目相关？

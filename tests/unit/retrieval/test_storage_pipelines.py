@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from common.errors import StorageRetrievalError, ValidationError
-from common.type_def import (
+from jiuwen_memory.common.errors import StorageRetrievalError, ValidationError
+from jiuwen_memory.common.type_def import (
     MemoryUnit,
     ParsedQuery,
     RetrievalPipeline,
@@ -14,22 +14,22 @@ from common.type_def import (
     ScoredMemoryUnit,
     Segment,
 )
-from retrieval.base import RetrievalOperatorType
-from retrieval.discloser import Discloser
-from retrieval.fuser_impl.rrf_fuser import RRFFuser
-from retrieval.query_parser import QueryParser
-from retrieval.recaller import Recaller
-from retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
-from retrieval.retriever_impl.unit_reader import UnitReader
-from retrieval.types import (
+from jiuwen_memory.retrieval.base import RetrievalOperatorType
+from jiuwen_memory.retrieval.discloser import Discloser
+from jiuwen_memory.retrieval.fuser_impl.rrf_fuser import RRFFuser
+from jiuwen_memory.retrieval.query_parser import QueryParser
+from jiuwen_memory.retrieval.recaller import Recaller
+from jiuwen_memory.retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
+from jiuwen_memory.retrieval.retriever_impl.unit_reader import UnitReader
+from jiuwen_memory.retrieval.types import (
     DisclosureLevel,
     RecallChannel,
     RetrievalQuery,
     RetrievedItem,
     ScoredUnit,
 )
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.storage_impl import CompositeStorage
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.storage_impl import CompositeStorage
 
 pytestmark = pytest.mark.unit
 
@@ -93,13 +93,19 @@ class SimpleDiscloser(Discloser):
 
 
 class CountingKVStore(InMemoryKVStore):
+    """统计真源读取量：点读与批读合并计 key 数，不绑定具体读取方法。"""
+
     def __init__(self) -> None:
         super().__init__()
-        self.get_calls = 0
+        self.read_keys = 0
 
     def get(self, scope: Scope, key: str) -> bytes:
-        self.get_calls += 1
+        self.read_keys += 1
         return super().get(scope, key)
+
+    def mget(self, scope: Scope, keys: list[str]) -> list[bytes]:
+        self.read_keys += len(keys)
+        return super().mget(scope, keys)
 
 
 def _build_retriever(
@@ -114,10 +120,9 @@ def _build_retriever(
         preferred_pipeline=pipeline,
     )
     storage.add(scope, [MemoryUnit(id="u1", scope=scope, segments=[Segment(content="one")])])
-    kv.get_calls = 0
+    kv.read_keys = 0
     retriever = PipelineRetriever(
         StaticParser(),
-        recallers,
         RRFFuser(),
         SimpleDiscloser(),
         UnitReader(kv),
@@ -141,7 +146,7 @@ def test_all_storage_pipelines_return_equivalent_materialized_results(
 
     assert [item.unit_id for item in result.items] == ["u1"]
     assert len(result.errors) == 0
-    assert kv.get_calls == 1, "跨通道重复 id 应只读取一次真源"
+    assert kv.read_keys == 1, "跨通道重复 id 应只读取一次真源"
 
 
 def test_partial_channel_failure_returns_items_and_structured_error() -> None:

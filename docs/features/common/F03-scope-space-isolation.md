@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-27 |
-| 影响范围 | `src/common/type_def/`、`src/api/`、`src/control/`、`src/storage/`、`src/retrieval/`、`src/construction/`、`docs/design/architecture.md`、`docs/specs/S02-memory-api.md`、`docs/specs/S03-control.md`、`docs/specs/S05-construction.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md` |
-| 测试基线 | `python3 -m compileall -q src bootstrap/core tests`；12 个 Scope/Space 关键测试函数直接执行；`git diff --check`。当前环境未安装 pytest 与 ruff，未执行完整测试和 lint |
+| 影响范围 | `jiuwen_memory/common/type_def/`、`jiuwen_memory/api/`、`jiuwen_memory/control/`、`jiuwen_memory/storage/`、`jiuwen_memory/retrieval/`、`jiuwen_memory/construction/`、`docs/design/architecture.md`、`docs/specs/S02-memory-api.md`、`docs/specs/S03-control.md`、`docs/specs/S05-construction.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md` |
+| 测试基线 | `python3 -m compileall -q jiuwen_memory jiuwen_memory_entry/core tests`；12 个 Scope/Space 关键测试函数直接执行；`git diff --check`。当前环境未安装 pytest 与 ruff，未执行完整测试和 lint |
 
 ## 背景
 
@@ -161,7 +161,7 @@ Store 层必须把 `org + space` 当成隔离字段，所有读写删查都带�
 2. **Shared Space 型共享**：把组织政策、公共知识库、跨 Agent 经验池建成独立 space，例如
    `Scope(org="acme", space="shared-policy")`，再授权业务 space 或主体读取。
 
-默认 `write/recall/get/update/delete/evolve` 都只作用于一个 target space。跨 space recall
+默认 `add/search/get/update/delete/evolve` 都只作用于一个 target space。跨 space search
 只能由 API 显式传入已授权的多个 scope，或通过 shared space 配置完成；不允许底层 retriever
 自行扩大范围。
 
@@ -200,7 +200,7 @@ provenance 扩展和 Space 清理必须携带完整 Scope 或带 Scope 的 Memor
 ### 决策 8：迁移与 offboarding 顺序必须保留 Scope 语义
 
 SQLite grant 旧表必须先增加 `grantor_space/grantee_space` 列，再创建引用这些列的索引。
-`delete_space` 先通过 `MemoryEngine.purge_space` 清理目标 Space 下全部子 Scope 的真源与
+`delete_space` 鉴权后由 `SpaceLifecycleService` 先通过 `MemoryEngine.purge_space` 清理目标 Space 下全部子 Scope 的真源与
 索引，再由 SpaceManager 删除 messages、管理元数据和全局注册键。
 
 ## 当前落地范围
@@ -226,7 +226,7 @@ SQLite grant 旧表必须先增加 `grantor_space/grantee_space` 列，再创建
   `MemoryUnit.id` 而不串改、串查或串删。
 - 已创建 space 的 `principal_path` 由 `SpaceManager.get_policy` 注入 `PermissionContext.metadata["principal_path"]`，调用级 metadata 不能临时覆盖 space policy。
 - `AuditEvent` 增加 target scope，内存/SQLite 审计后端支持 `target_org` / `target_space` / `target_user` / `target_agent` / `target_session` 过滤。
-- dispatch payload 支持 `space` / `space_id`、`actor_space` / `actor_space_id`、`grantee_space` / `grantee_space_id`，并新增 space 管理 verbs。
+- 非 HTTP 兼容 dispatch payload 支持 `space` / `space_id`、`actor_space` / `actor_space_id`、`grantee_space` / `grantee_space_id`；HTTP DTO 将 target 放入嵌套对象并拒绝 `actor_*`。
 
 尚未落地：基于 `SpaceMember.role` 的默认权限矩阵、跨 space recall 的多 target API、index/audit 专用后端的精确 usage 计数、后端原生 namespace/tenant 物理删除适配。
 
@@ -239,8 +239,8 @@ SQLite grant 旧表必须先增加 `grantor_space/grantee_space` 列，再创建
 
 | 接口 | 需要变化 |
 |---|---|
-| `write` / `write_async` | 写入目标 scope 增加 `space`；落盘和索引必须记录 `org + space` |
-| `recall` | `context.scope` 增加 `space`；检索范围默认限定在单个 target space |
+| `add` / `add_async` | 写入目标 scope 增加 `space`；落盘和索引必须记录 `org + space` |
+| `search` | `context.scope` 增加 `space`；检索范围默认限定在单个 target space |
 | `get` / `update` | 点读和修正必须按 `unit_id + org + space` 校验归属 |
 | `delete` | `DeleteSelector.scope` 支持 space；无 scope 的跨范围删除继续退到根 scope 管理闸门 |
 | `evolve` | 演进任务按 target space 提交和扫描 |
@@ -302,9 +302,10 @@ space:
       kv_store: default
 ```
 
-接入 payload 支持 `space` / `space_id`，actor override 支持 `actor_space` /
-`actor_space_id`，授权 grantee 支持 `grantee_space` / `grantee_space_id`。未传时
-进入空 space 兼容域。
+非 HTTP 兼容 dispatch 接入 payload 支持 `space` / `space_id`，actor override 支持
+`actor_space` / `actor_space_id`，授权 grantee 支持 `grantee_space` /
+`grantee_space_id`。HTTP 使用 `target.space` / `target.space_id`，并拒绝 actor override；
+未传 space 时是否进入空 space 兼容域由各非 HTTP adapter 决定。
 
 ## 后续配置草案
 
@@ -396,7 +397,7 @@ memory_api:
 - `Scope` 新字段默认兼容：旧构造不传 `space` 仍可用。
 - `Scope(org, user, agent, session)` 四个位置参数的绑定顺序保持不变，`space` 只能按关键字传入。
 - 不同 org 创建相同非空 Space ID 时返回冲突。
-- `scope.require_space=true`：缺少 space 的 write/recall 拒绝。
+- `scope.require_space=true`：缺少 space 的 add/search 拒绝。
 - owner-cover：`user_agent` 下 user 覆盖 agent/session；agent 不反向覆盖 user。
 - owner-cover：`agent_user` 下 agent 覆盖 user/session；user 不反向覆盖 agent。
 - Grant：只授权指定 space；不同 space 不命中。
@@ -409,7 +410,7 @@ memory_api:
 
 ### 集成测试
 
-- 同 org 两个 space 写入同样内容，recall 只返回目标 space 的结果。
+- 同 org 两个 space 写入同样内容，search 只返回目标 space 的结果。
 - delete space A 不影响 space B。
 - 不同 space 使用相同 `MemoryUnit.id` 时，生命周期、治理读取和索引删除只影响目标 Scope。
 - vector/fulltext/graph 三类索引均不跨 space 召回。
@@ -464,7 +465,7 @@ metadata filter 只能作为低层实现策略，不能作为核心模型。若 
 ### 拒绝方案 5：默认跨 space 聚合检索
 
 跨 space 检索容易造成数据泄露和审计困难。需要共享时，应显式授权或显式查询 shared space。
-默认 recall 永远只在 target space 内执行。
+默认 search 永远只在 target space 内执行。
 
 ### 拒绝方案 6：把 Memory ID 改为全局唯一
 
@@ -494,7 +495,7 @@ offboarding 逻辑。
 ## 已知遗留
 
 - `org admin`、`space admin`、`space member` 的角色枚举与默认权限矩阵需要在 API spec 中固化。
-- 跨 space recall 的最终 API 形态需要独立设计，建议显式传 authorized scopes。
+- 跨 space search 的最终 API 形态需要独立设计，建议显式传 authorized scopes。
 - 各后端的物理隔离能力差异较大，需要在 `docs/specs/S06-storage.md` 中补矩阵。
 - 全局 Space 注册键与 Space metadata 分两次 KV 写入，进程在两次写入之间崩溃时需要后台
   reconciliation 清理孤立注册键。

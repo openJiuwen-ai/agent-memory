@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """LongMemEval 适配器——把 ``longmemeval_*.json`` 解析为 (seeds, queries)。
 
 LongMemEval（Benchmarking Chat Assistants on Long-Term Interactive Memory, ICLR 2025）
@@ -35,7 +36,7 @@ import os
 from datetime import datetime, timedelta
 from typing import List, Optional, Sequence
 
-from common.type_def import Scope
+from jiuwen_memory.common.type_def import Scope
 from evaluation.core.types import Dataset, MemorySeed, QueryCase
 
 _DEFAULT_DATA = "evaluation/benchmark/data/longmemeval_s.json"
@@ -67,6 +68,14 @@ class LongMemEvalDataset(Dataset):
         self._queries: List[QueryCase] = []
         if os.path.exists(path):
             self._parse(path, samples, max_questions)
+
+    def seeds(self) -> Sequence[MemorySeed]:
+        self._require_loaded()
+        return self._seeds
+
+    def queries(self) -> Sequence[QueryCase]:
+        self._require_loaded()
+        return self._queries
 
     # -- 解析 --------------------------------------------------------------- #
     def _parse(
@@ -145,11 +154,3 @@ class LongMemEvalDataset(Dataset):
                 f"LongMemEval 数据缺失：{self._path}。从 "
                 "https://github.com/xiaowu0162/LongMemEval 下载（如 longmemeval_s.json）后重试。"
             )
-
-    def seeds(self) -> Sequence[MemorySeed]:
-        self._require_loaded()
-        return self._seeds
-
-    def queries(self) -> Sequence[QueryCase]:
-        self._require_loaded()
-        return self._queries

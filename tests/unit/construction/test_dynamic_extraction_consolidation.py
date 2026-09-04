@@ -6,9 +6,11 @@ from xml.etree import ElementTree
 
 import pytest
 
-from common.base import PluginType
-from common.llm.base import LLM
-from common.type_def import (
+from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.llm.base import LLM
+from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.type_def import (
+    DedupDecision,
     MemoryTier,
     MemoryUnit,
     Modality,
@@ -16,27 +18,27 @@ from common.type_def import (
     Segment,
     memory_key,
 )
-from common.type_def.memory_codec import dumps, loads
-from config.config import Config
-from construction.base import OperatorType
-from construction.evolver import EvolveMode, EvolverProducer
-from construction.evolver_impl.dynamic_evolver import DynamicEvolver
-from construction.extractor import Extractor
-from construction.extractor_impl.dynamic_llm_extractor import DynamicLLMExtractor
-from construction.extractor_impl.llm_extractor import (
+from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.config.config import Config
+from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.evolver import EvolveMode, EvolverProducer
+from jiuwen_memory.construction.evolver_impl.dynamic_evolver import DynamicEvolver
+from jiuwen_memory.construction.extractor import Extractor
+from jiuwen_memory.construction.extractor_impl.dynamic_llm_extractor import DynamicLLMExtractor
+from jiuwen_memory.construction.extractor_impl.llm_extractor import (
     InvalidExtractionCandidateError,
     InvalidExtractionJSONError,
 )
-from construction.prompt_registry import (
+from jiuwen_memory.construction.prompt_registry import (
     PHASE_CONSOLIDATE,
     PHASE_EXTRACT,
     PHASE_REFLECT,
     PromptRegistry,
 )
-from storage.graph_impl.in_memory_graph_store import InMemoryGraphStore
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.storage_impl.composite_storage import CompositeStorage
-
+from jiuwen_memory.storage.graph_impl.in_memory_graph_store import InMemoryGraphStore
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.types import IndexWriteMode
 
 _TEST_KEY_HEX = "00" * 32
 
@@ -103,7 +105,7 @@ class _XmlDynamicExtractor(DynamicLLMExtractor):
                     tier=MemoryTier.SEMANTIC,
                     segments=[Segment(content=content, source=source.source)],
                     provenance=[source.id],
-                    metadata={"parser_format": "xml"},
+                    system_metadata={"parser_format": "xml"},
                 )
             )
         return result
@@ -125,15 +127,24 @@ class _Dedup:
 
 
 class _Index:
-    def __init__(self) -> None:
+    """记录调用并交付 Storage 的替身——IndexBuilder 是记忆写入的唯一入口。"""
+
+    def __init__(self, storage=None) -> None:
         self.built = []
         self.updated = []
+        self._storage = storage
 
-    def build(self, units):
+    def build(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL):
         self.built.extend(units)
+        if self._storage is not None:
+            for unit in units:
+                self._storage.add(unit.scope, [unit])
 
-    def update(self, units):
+    def update(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL):
         self.updated.extend(units)
+        if self._storage is not None:
+            for unit in units:
+                self._storage.update(unit.scope, [unit])
 
     def remove(self, unit_ids):
         pass
@@ -148,7 +159,7 @@ def _unit(unit_id: str, content: str, metadata=None) -> MemoryUnit:
         scope=Scope(org="org", user="user"),
         tier=MemoryTier.EPISODIC,
         segments=[Segment(content=content, source=Modality.TEXT)],
-        metadata=dict(metadata or {}),
+        system_metadata=dict(metadata or {}),
     )
 
 
@@ -159,7 +170,8 @@ def _make_evolver(
     prompts: dict | None = None,
 ) -> tuple[DynamicEvolver, InMemoryKVStore, _Index]:
     kv = InMemoryKVStore()
-    index = _Index()
+    storage = CompositeStorage(kv=kv, graph=InMemoryGraphStore())
+    index = _Index(storage)
     extractor = _FallbackExtractor()
     dedup = _Dedup(dedup_hits)
     registry = PromptRegistry.from_dict(prompts or {})
@@ -168,7 +180,8 @@ def _make_evolver(
         abstractor=object(),  # EXTRACT 路径不触发 abstractor
         associator=object(),  # EXTRACT 路径不触发 associator
         index_builder=index,
-        storage=CompositeStorage(kv=kv, graph=InMemoryGraphStore()),
+        storage=storage,
+        message_store=storage.kv,
         dedup=dedup,
         llm=llm or _ScriptedLLM(),
         layer_annotator=None,
@@ -208,12 +221,12 @@ def test_dynamic_extractor_runs_each_custom_strategy_and_keeps_consolidation_pro
     result = extractor.extract([source])
 
     assert len(result) == 2
-    assert [unit.metadata["_extraction_strategy"] for unit in result] == [
+    assert [unit.system_metadata["_extraction_strategy"] for unit in result] == [
         "episodic",
         "custom",
     ]
     assert all(
-        unit.metadata["_consolidation_prompt_episodic"] == "按事件时序巩固"
+        unit.system_metadata["_consolidation_prompt_episodic"] == "按事件时序巩固"
         for unit in result
     )
     assert llm.messages[0][0].content == "只抽取事件"
@@ -264,9 +277,9 @@ def test_dynamic_extractor_subclass_can_parse_xml_into_memory_units():
     assert isinstance(result[0], MemoryUnit)
     assert result[0].content == "XML抽取结果"
     assert result[0].provenance == ["source-1"]
-    assert result[0].metadata["parser_format"] == "xml"
-    assert result[0].metadata["_extraction_strategy"] == "xml"
-    assert result[0].metadata["_consolidation_prompt_xml"] == "按 XML 策略巩固"
+    assert result[0].system_metadata["parser_format"] == "xml"
+    assert result[0].system_metadata["_extraction_strategy"] == "xml"
+    assert result[0].system_metadata["_consolidation_prompt_xml"] == "按 XML 策略巩固"
     assert llm.messages[0][0].content == (
         "按 XML 格式抽取："
         '<memories><memory source_id="...">...</memory></memories>'
@@ -293,7 +306,7 @@ def test_dynamic_extractor_subclass_failure_isolated_per_strategy():
     ).extract([source])
 
     assert len(result) == 1
-    assert result[0].metadata["_extraction_strategy"] == "json"
+    assert result[0].system_metadata["_extraction_strategy"] == "json"
 
 
 @pytest.mark.unit
@@ -406,7 +419,8 @@ def test_dynamic_evolver_supersedes_existing_via_llm_judge():
     existing = _unit("existing", "旧事实")
     kv = InMemoryKVStore()
     kv.insert(existing.scope, memory_key(existing.id), dumps(existing))
-    index = _Index()
+    storage = CompositeStorage(kv=kv, graph=InMemoryGraphStore())
+    index = _Index(storage)
     extractor = _FallbackExtractor()
     dedup = _Dedup([(existing, 0.8)])
     registry = PromptRegistry.from_dict(
@@ -428,7 +442,8 @@ def test_dynamic_evolver_supersedes_existing_via_llm_judge():
         abstractor=object(),
         associator=object(),
         index_builder=index,
-        storage=CompositeStorage(kv=kv, graph=InMemoryGraphStore()),
+        storage=storage,
+        message_store=storage.kv,
         dedup=dedup,
         llm=llm,
         layer_annotator=None,
@@ -441,7 +456,50 @@ def test_dynamic_evolver_supersedes_existing_via_llm_judge():
     assert result.superseded_ids == ["existing"]
     assert "事件变化时替换旧记忆" in llm.messages[0][0].content
     stored = loads(kv.get(candidate.scope, memory_key(candidate.id)))
-    assert stored.metadata["dedup_decision"] == "supersede"
+    assert stored.system_metadata["dedup_decision"] == "supersede"
+
+
+@pytest.mark.unit
+def test_dynamic_evolver_update_empty_merge_falls_back_to_concatenation():
+    """UPDATE 但合并结果为空串 → 视同合并失败，降级拼接新旧内容（Issue #189）。"""
+    existing = _unit("existing", "旧事实")
+    kv = InMemoryKVStore()
+    kv.insert(existing.scope, memory_key(existing.id), dumps(existing))
+    storage = CompositeStorage(kv=kv, graph=InMemoryGraphStore())
+    index = _Index(storage)
+    dedup = _Dedup([(existing, 0.8)])
+    registry = PromptRegistry.from_dict({"consolidate": {"episodic": "巩固判定"}})
+    llm = _ScriptedLLM(
+        [
+            json.dumps({"decision": "update", "existing_id": "existing", "reason": "补充"}),
+            "",  # _merge_content 调用：LLM 200 但返回空串
+        ]
+    )
+    candidate = _unit(
+        "candidate",
+        "新事实",
+        {"_extraction_strategy": "episodic", "_consolidation_prompt_episodic": "episodic"},
+    )
+    evolver = DynamicEvolver(
+        extractor=_FallbackExtractor(),
+        abstractor=object(),
+        associator=object(),
+        index_builder=index,
+        storage=storage,
+        message_store=storage.kv,
+        dedup=dedup,
+        llm=llm,
+        layer_annotator=None,
+        prompt_registry=registry,
+    )
+
+    result = evolver.evolve([candidate], EvolveMode.EXTRACT)
+
+    # UPDATE 照常执行，但 content 为降级拼接（非空串）
+    assert result.updated_ids == ["existing"]
+    assert result.created_ids == []
+    kept = loads(kv.get(existing.scope, memory_key(existing.id)))
+    assert kept.content == "旧事实\n新事实"
 
 
 @pytest.mark.unit
@@ -478,6 +536,38 @@ def test_dynamic_evolver_high_similarity_skips_llm_judge():
 
 
 @pytest.mark.unit
+def test_dynamic_evolver_judge_routes_high_similarity_delta_to_llm():
+    """DynamicEvolver._judge：高相似但有月份差异 → 不走 direct_noop，改走 LLM。"""
+    existing = _unit("existing", "会议定于3月举行")
+    evolver, _, _ = _make_evolver(
+        dedup_hits=[(existing, 0.95)],
+        prompts={"consolidate": {"episodic": "事件变化时替换旧记忆"}},
+    )
+    setattr(evolver, "_dedup_high_similarity", 0.9)
+    candidate = _unit(
+        "candidate",
+        "会议定于5月举行",
+        {
+            "_extraction_strategy": "episodic",
+            "_consolidation_prompt_episodic": "episodic",
+        },
+    )
+    llm = getattr(evolver, "_llm")
+    llm.responses = [
+        json.dumps({"decision": "supersede", "existing_id": "existing", "reason": "月份更新"})
+    ]
+
+    decision, existing_hit, similarity = getattr(evolver, "_judge")(
+        candidate, [(existing, 0.95)]
+    )
+
+    assert llm.messages, "有实质差异时应走 LLM 而非 direct_noop"
+    assert decision == DedupDecision.SUPERSEDE
+    assert existing_hit is not None and existing_hit.id == "existing"
+    assert similarity == pytest.approx(0.95)
+
+
+@pytest.mark.unit
 def test_dynamic_evolver_procedural_falls_back_to_parent():
     """procedural=true 走父类行为（不判定、直接落盘）。"""
     evolver, kv, _ = _make_evolver()
@@ -496,7 +586,7 @@ def test_dynamic_evolver_procedural_falls_back_to_parent():
 
 @pytest.mark.unit
 def test_default_engine_writes_through_without_consolidator():
-    from api.memory_api_impl import build_kernel
+    from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 
     kernel = build_kernel(
         config=Config.from_dict(
@@ -509,8 +599,8 @@ def test_default_engine_writes_through_without_consolidator():
     )
     scope = Scope(org="org", user="user")
 
-    first = kernel.api.write("完全相同的记忆", scope, identity=scope)
-    second = kernel.api.write("完全相同的记忆", scope, identity=scope)
+    first = kernel.api.add("完全相同的记忆", scope, security=legacy_request_context(scope))
+    second = kernel.api.add("完全相同的记忆", scope, security=legacy_request_context(scope))
 
     # 默认直写路径：两次都落盘，不去重（去重交给显式 evolve）
     assert len(first) == 1
@@ -524,7 +614,7 @@ def test_default_engine_writes_through_without_consolidator():
 
 @pytest.mark.unit
 def test_evolver_producer_registers_dynamic():
-    from construction import bootstrap
+    from jiuwen_memory.construction import bootstrap
 
     bootstrap.register_constructors()
 

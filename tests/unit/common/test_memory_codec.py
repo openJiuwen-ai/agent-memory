@@ -7,10 +7,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from common.type_def import MemoryUnit, Segment
-from common.type_def.memory import LifecycleState, MemoryTier, Modality
-from common.type_def.memory_codec import dumps, loads
-from common.type_def.scope import Scope
+from jiuwen_memory.common.type_def import MemoryUnit, Segment
+from jiuwen_memory.common.type_def.memory import ChunkVector, LifecycleState, MemoryTier, Modality
+from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.common.type_def.scope import Scope
 
 pytestmark = pytest.mark.unit
 
@@ -36,7 +36,8 @@ def test_roundtrip_preserves_fields(unit_factory) -> None:
         supersedes="u0",
         tags=["x", "y"],
     )
-    unit.metadata = {"confidence": "0.9"}
+    unit.system_metadata = {"confidence": "0.9"}
+    unit.user_metadata = {"project": "alpha"}
 
     back = loads(dumps(unit))
 
@@ -47,13 +48,14 @@ def test_roundtrip_preserves_fields(unit_factory) -> None:
     assert back.lifecycle == LifecycleState.ACTIVE
     assert back.supersedes == "u0"
     assert back.tags == ["x", "y"]
-    assert back.metadata == {"confidence": "0.9"}
+    assert back.system_metadata == {"confidence": "0.9"}
+    assert back.user_metadata == {"project": "alpha"}
     assert back.temporal.t_valid == t_valid
 
 
 def test_dumps_carries_schema_version(unit_factory) -> None:
     obj = json.loads(dumps(unit_factory("u1", "x")).decode("utf-8"))
-    assert obj["_v"] == 3
+    assert obj["_v"] == 4
 
 
 def test_roundtrip_preserves_multiple_segments() -> None:
@@ -77,10 +79,11 @@ def test_roundtrip_preserves_multiple_segments() -> None:
     assert back.scope.space == "p"
 
 
-def test_loads_v2_scope_defaults_space() -> None:
+@pytest.mark.parametrize("version", [1, 2, 3])
+def test_loads_rejects_pre_split_metadata_versions(version: int) -> None:
     raw = json.dumps(
         {
-            "_v": 2,
+            "_v": version,
             "id": "old2",
             "scope": ["o", "u", "a", "s"],
             "tier": "semantic",
@@ -88,34 +91,8 @@ def test_loads_v2_scope_defaults_space() -> None:
         }
     ).encode("utf-8")
 
-    back = loads(raw)
-
-    assert back.scope.org == "o"
-    assert back.scope.space == ""
-    assert back.scope.user == "u"
-    assert back.scope.agent == "a"
-    assert back.scope.session == "s"
-
-
-def test_loads_v1_flat_data_becomes_single_segment() -> None:
-    raw = json.dumps(
-        {
-            "_v": 1,
-            "id": "old1",
-            "scope": ["o", "a", "", ""],
-            "tier": "semantic",
-            "content": "旧内容",
-            "assets": ["a.png"],
-            "source": "image",
-        }
-    ).encode("utf-8")
-
-    back = loads(raw)
-
-    assert len(back.segments) == 1
-    assert back.content == "旧内容"
-    assert back.assets == ["a.png"]
-    assert back.source == Modality.IMAGE
+    with pytest.raises(ValueError, match="explicit metadata migration"):
+        loads(raw)
 
 
 def test_loads_ignores_unknown_fields(unit_factory) -> None:
@@ -127,15 +104,23 @@ def test_loads_ignores_unknown_fields(unit_factory) -> None:
     assert back.id == "u1"
 
 
-def test_loads_takes_defaults_for_missing_fields() -> None:
+def test_roundtrip_preserves_vector(unit_factory) -> None:
+    """vectors 字段（F08 加字段兼容演进）：chunk 级向量往返保留，缺省读为空列表。"""
+    unit = unit_factory("u1", "alice likes coffee")
+    unit.vectors = [ChunkVector(id="0", seq=0, vector=[0.1, -0.2, 0.3])]
+
+    back = loads(dumps(unit))
+
+    assert back.vectors == [ChunkVector(id="0", seq=0, vector=[0.1, -0.2, 0.3])]
+
+    # 老数据无 vectors 键：缺省取空列表，无迁移读出
+    obj = json.loads(dumps(unit_factory("u2", "x")).decode("utf-8"))
+    obj.pop("vectors")
+    assert loads(json.dumps(obj).encode("utf-8")).vectors == []
+
+
+def test_loads_rejects_unversioned_legacy_payload() -> None:
     raw = json.dumps({"id": "only_id"}).encode("utf-8")
 
-    back = loads(raw)
-
-    assert back.id == "only_id"
-    assert back.content == ""
-    assert back.tier == MemoryTier.EPISODIC
-    assert back.source == Modality.TEXT
-    assert back.lifecycle == LifecycleState.ACTIVE
-    assert back.scope.org == ""
-    assert back.temporal.t_valid is None
+    with pytest.raises(ValueError, match="explicit metadata migration"):
+        loads(raw)

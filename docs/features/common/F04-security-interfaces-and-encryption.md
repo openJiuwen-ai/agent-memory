@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-27 |
-| 影响范围 | `src/common/security/`、`src/storage/kv_impl/`、`src/control/engine_impl/`、`docs/specs/S07-common.md`、`docs/specs/S06-storage.md` |
+| 影响范围 | `jiuwen_memory/common/security/`、`jiuwen_memory/storage/kv_impl/`、`jiuwen_memory/control/engine_impl/`、`docs/specs/S07-common.md`、`docs/specs/S06-storage.md` |
 | 测试基线 | `local` SecurityProvider 直接行为校验通过，`EncryptedKVStore` 单测函数直接执行通过；当前环境缺少 pytest/ruff runner |
 
 本文由原 `docs/security/security.md` 迁入 common 特性归档，作为认证、授权、隔离、加密与审计的安全设计基线。后续 `common/security` 接口、`EncryptedKVStore`、`cloud_engine` 读写编排与安全配置均以本文为设计入口。
@@ -67,7 +67,7 @@
 3. **单次验证、上下文传播**：认证中间件只验证一次身份，结果注入请求上下文，后续流程不再重复校验身份。
 4. **常时间比较（timing-safe）**：所有密钥比对必须使用 `hmac.compare_digest` 或等价的常时间函数。
 5. **可插拔算子用注册式工厂（Factory + Producer）**：`agent-memory` mem2.0 的所有核心抽象（PermissionManager / AuditLogger / Governor / Engine / KVStore 等）用 `XxxProducer(Factory)` + `@Producer.register("name")` 自注册，装配时 `Producer.dep(root, default="name")` 按名取实例。安全模块的认证/权限/审计算子同样遵循此模式。
-6. **应用层 bootstrap 已生成**：`bootstrap/` 下有 CLI / HTTP server / MCP server / SDK 四种接入形态的薄封装，安全模块通过 bootstrap 挂载。`deploy/` 下有 Docker / local 部署方案。
+6. **应用层 bootstrap 已生成**：`jiuwen_memory_entry/` 下有 CLI / HTTP server / MCP server / SDK 四种接入形态的薄封装，安全模块通过 bootstrap 挂载。`deploy/` 下有 Docker / local 部署方案。
 
 ### 2.2 三种认证模式
 
@@ -1070,6 +1070,12 @@ class LocalProvider(KeyProvider):
     async def decrypt_key(self, ciphertext: bytes, iv: bytes, org_id: str) -> bytes:
         org_key = await self.derive_org_key(org_id)
         return await aes_gcm_decrypt(org_key, iv, ciphertext)
+```
+
+> **`create_key_file` 默认值**：当前 `agent-memory` mem2.0 的 `LocalKeyProvider`（`jiuwen_memory/common/security/security_impl/local_envelope_security_provider.py`）
+> 把 `create_key_file` 默认值设为 `False`。未注入 `key_hex`/`key_b64`/`key_env` 且 `key_file` 不存在时，
+> `LocalEnvelopeSecurityProvider.__init__` 末尾的预检即抛 `BackendError`，装配阶段 fail-closed，不再静默生成。
+> Dev/单机用户显式 `security.default.params.create_key_file: true` 启用自动生成路径。生成新密钥用 `openssl rand -hex 32`。
 ```
 
 **安全性**：LocalProvider 的 Encryption Root Key 以明文存在磁盘（仅靠文件权限 0600）。**只适合开发/单机**，生产环境应使用 Vault 或云厂商 KMS。

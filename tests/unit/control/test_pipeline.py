@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from api.memory_api_impl import build_kernel
-from common.type_def import Context, Scope
-from config import Config
-from construction.base import OperatorType
-from construction.index_builder import IndexBuilder, IndexBuilderProducer
-from retrieval.base import RetrievalOperatorType
-from retrieval.retriever import Retriever, RetrieverProducer
-from retrieval.types import RetrievalQuery, RetrievalResult, RetrievedItem
+from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
+from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.type_def import Context, Scope
+from jiuwen_memory.config import Config
+from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
+from jiuwen_memory.retrieval.base import RetrievalOperatorType
+from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
+from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult, RetrievedItem
+from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 _INDEX_BUILDERS: dict[str, "RecordingIndexBuilder"] = {}
 
@@ -23,13 +25,13 @@ class RecordingIndexBuilder(IndexBuilder):
     def health(self) -> None:
         return None
 
-    def build(self, units) -> None:
+    def build(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         self.built.extend(unit.content for unit in units)
 
-    def update(self, units) -> None:
+    def update(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         return None
 
-    def remove(self, units) -> None:
+    def remove(self, units, *, mode: IndexRemoveMode = IndexRemoveMode.HARD) -> None:
         return None
 
     def rebuild(self) -> None:
@@ -108,11 +110,11 @@ def test_engine_write_uses_pipeline_profile_from_memory_type() -> None:
     kernel = build_kernel(config=_kernel_config())
     scope = Scope(user="u1")
 
-    kernel.api.write(
+    kernel.api.add(
         "use pytest for this repo",
         scope,
-        identity=scope,
-        metadata={"memory_type": "coding"},
+        security=legacy_request_context(scope),
+        system_metadata={"memory_type": "coding"},
     )
 
     assert _INDEX_BUILDERS["default"].built == []
@@ -123,24 +125,24 @@ def test_engine_recall_uses_pipeline_profile_from_context_extensions() -> None:
     kernel = build_kernel(config=_kernel_config())
     scope = Scope(user="u1")
 
-    result = kernel.api.recall(
+    result = kernel.api.search(
         "test strategy",
         Context(scope=scope, extensions={"memory_type": "coding"}),
-        identity=scope,
+        security=legacy_request_context(scope),
     )
 
     assert [item.unit_id for item in result.items] == ["coding"]
 
 
-def test_engine_recall_uses_pipeline_profile_from_metadata_memory_type_filter() -> None:
+def test_engine_recall_uses_pipeline_profile_from_system_metadata_filter() -> None:
     kernel = build_kernel(config=_kernel_config())
     scope = Scope(user="u1")
 
-    result = kernel.api.recall(
+    result = kernel.api.search(
         "test strategy",
         Context(scope=scope),
-        identity=scope,
-        filters={"metadata.memory_type": "coding"},
+        security=legacy_request_context(scope),
+        filters={"system_metadata.memory_type": "coding"},
     )
 
     assert [item.unit_id for item in result.items] == ["coding"]
@@ -150,10 +152,10 @@ def test_engine_recall_canonicalizes_legacy_memory_type_filter_name() -> None:
     kernel = build_kernel(config=_kernel_config())
     scope = Scope(user="u1")
 
-    result = kernel.api.recall(
+    result = kernel.api.search(
         "test strategy",
         Context(scope=scope),
-        identity=scope,
+        security=legacy_request_context(scope),
         filters={"memory_type": "coding"},
     )
 

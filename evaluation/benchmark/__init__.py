@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """数据集适配器：把各家原生格式归一到 ``MemorySeed`` / ``QueryCase``。"""
 
 from __future__ import annotations

@@ -17,28 +17,35 @@ import asyncio
 
 import pytest
 
-from common.base import PluginType
-from common.llm.base import LLM
-from common.type_def import (
+from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.llm.base import LLM
+from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryTier,
     MemoryUnit,
+    Modality,
+    RawPayload,
     Scope,
+    Segment,
     memory_key,
 )
-from common.type_def.chat import ChatMessage
-from common.type_def.memory_codec import dumps, loads
-from construction import EvolveMode, Evolver, EvolveResult
-from construction.base import OperatorType
-from construction.index_builder import IndexBuilder
-from control.base import ControlOperatorType
-from control.engine_impl.in_memory_engine import InMemoryEngine
-from control.jobs import Job, JobFactory, JobType
-from control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
-from control.lifecycle import LifecycleManager
-from control.types import Channel, JobStatus
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.common.type_def.chat import ChatMessage
+from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
+from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.index_builder import IndexBuilder
+from jiuwen_memory.control.base import ControlOperatorType
+from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
+from jiuwen_memory.control.jobs import Job, JobFactory, JobType
+from jiuwen_memory.control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
+from jiuwen_memory.control.lifecycle import LifecycleManager
+from jiuwen_memory.control.types import Channel, JobStatus
+from jiuwen_memory.ingest.base import IngestOperatorType
+from jiuwen_memory.ingest.ingestor import Ingestor
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 pytestmark = pytest.mark.unit
 
@@ -85,11 +92,15 @@ class _NoopEvolver(Evolver):
 
 
 class _RecordingIndex(IndexBuilder):
-    """记录 build 入参的 IndexBuilder 替身。"""
+    """记录 build 入参的 IndexBuilder 替身，并交付 Storage。
 
-    def __init__(self) -> None:
+    IndexBuilder 是记忆写入的唯一入口，替身必须交付 Storage，否则真源为空。
+    """
+
+    def __init__(self, storage=None) -> None:
         self.built: list[MemoryUnit] = []
         self.removed: list[MemoryUnit] = []
+        self._storage = storage
 
     def operator_type(self) -> OperatorType:
         return OperatorType.INDEX_BUILDER
@@ -97,17 +108,53 @@ class _RecordingIndex(IndexBuilder):
     def health(self) -> None:
         return None
 
-    def build(self, units) -> None:
+    def build(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         self.built.extend(units)
+        if self._storage is not None:
+            for unit in units:
+                self._storage.add(unit.scope, [unit])
 
-    def update(self, units) -> None:
-        return None
+    def update(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
+        if self._storage is not None:
+            for unit in units:
+                self._storage.update(unit.scope, [unit])
 
-    def remove(self, units) -> None:
+    def remove(self, units, *, mode: IndexRemoveMode = IndexRemoveMode.HARD) -> None:
         self.removed.extend(units)
 
     def rebuild(self) -> None:
         return None
+
+
+class _AssetRoutingIngestor(Ingestor):
+    """把资产映射到第二个 Segment，用于验证 Engine 不解释映射关系。"""
+
+    def __init__(self) -> None:
+        self.received_assets: list[list[str]] = []
+
+    @staticmethod
+    def operator_type() -> IngestOperatorType:
+        return IngestOperatorType.INGESTOR
+
+    @staticmethod
+    def health() -> None:
+        return None
+
+    def ingest(self, payloads: list[RawPayload]) -> list[MemoryUnit]:
+        self.received_assets.extend(list(payload.assets) for payload in payloads)
+        return [
+            MemoryUnit(
+                id=payload.id,
+                scope=payload.scope,
+                segments=[
+                    Segment(content=payload.data.decode("utf-8"), source=payload.modality),
+                    Segment(assets=list(payload.assets), source=payload.modality),
+                ],
+                system_metadata=dict(payload.system_metadata),
+                user_metadata=dict(payload.user_metadata),
+            )
+            for payload in payloads
+        ]
 
 
 class _NoopLifecycle(LifecycleManager):
@@ -152,7 +199,6 @@ def _build_engine(
     scheduler=None,
     evolver=None,
     llm=_UNSET,
-    middle_interval: int = 50,
     middle_max_fetch: int = 100,
     middle_batch_size: int = 10,
     middle_concurrency: int = 4,
@@ -167,13 +213,14 @@ def _build_engine(
     ``with_scope`` 方法注册为 builder——运行时 ``get_job`` 取 MiddleToLongJob 实例。
     ``llm=_UNSET`` 是哨兵：区分"显式传 None"（验证 RuntimeError）与"未传"（用 EchoLLM 默认）。
     """
-    from common.normalizer.normalizer_impl.passthrough_normalizer import (
+    from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer import (
         PassthroughNormalizer,
     )
-    from ingest.ingestor_impl.simple_ingestor import SimpleIngestor
+    from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
 
     kv = InMemoryKVStore()
-    index = _RecordingIndex()
+    storage = CompositeStorage(kv=kv)
+    index = _RecordingIndex(storage)
     scheduler = scheduler or _RecordingScheduler()
     evolver = evolver or _NoopEvolver()
     lifecycle = _NoopLifecycle()
@@ -183,12 +230,12 @@ def _build_engine(
         llm = _EchoLLM()
 
     # 构造测试 JobFactory——MiddleToLongJobSpec 固化依赖与业务参数，
-    # with_scope 在运行时补 scope+interval 生成完整 Job 实例。
+    # with_scope 在运行时补 scope 生成完整 Job 实例。
     factory = JobFactory()
     factory.register(
         JobType.MIDDLE_TO_LONG,
         MiddleToLongJobSpec(
-            storage=CompositeStorage(kv=kv),
+            storage=storage,
             evolver=evolver,
             lifecycle=lifecycle,
             index=index,
@@ -199,24 +246,56 @@ def _build_engine(
         ).with_scope,
     )
 
-    # 本测试聚焦 write middle 路径——不依赖 retriever。Retriever 用 None（write 路径不调 retriever）。
+    # 本测试聚焦 write middle 路径，不依赖 retriever。
+    # Retriever 用 None（write 路径不调 retriever）。
     engine = InMemoryEngine(
         ingestor=ingestor,
         index_builder=index,
         retriever=None,
-        storage=CompositeStorage(kv=kv),
+        storage=storage,
         scheduler=scheduler,
         evolver=evolver,
         lifecycle=lifecycle,
         classifier=None,
         pipeline=None,
         job_factory=factory,
-        middle_interval=middle_interval,
     )
     return engine, scheduler, index, kv
 
 
+def _build_assets_engine(ingestor: Ingestor) -> InMemoryEngine:
+    storage = CompositeStorage(kv=InMemoryKVStore())
+    return InMemoryEngine(
+        ingestor=ingestor,
+        index_builder=_RecordingIndex(storage),
+        retriever=None,
+        storage=storage,
+        scheduler=_RecordingScheduler(),
+        evolver=_NoopEvolver(),
+        lifecycle=_NoopLifecycle(),
+    )
+
+
 # ---- 路径选择 ----
+
+
+def test_write_delegates_assets_mapping_to_ingestor() -> None:
+    ingestor = _AssetRoutingIngestor()
+    engine = _build_assets_engine(ingestor)
+    assets = ["file:///video.mp4", "file:///transcript.json"]
+
+    units = asyncio.run(
+        engine.write(
+            "normalized content",
+            Scope(org="acme", user="alice"),
+            source=Modality.TEXT,
+            assets=assets,
+        )
+    )
+
+    assert ingestor.received_assets == [assets]
+    assert units[0].segments[0].assets == []
+    assert units[0].segments[1].assets == assets
 
 
 def test_write_procedural_takes_precedence_over_middle() -> None:
@@ -245,7 +324,7 @@ def test_write_procedural_takes_precedence_over_middle() -> None:
         engine.write(
             "hello",
             scope,
-            metadata={"procedural": "true", "middle": "true"},
+            system_metadata={"procedural": "true", "middle": "true"},
         )
     )
 
@@ -264,7 +343,7 @@ def test_write_infer_middle_submits_middle_to_long_job() -> None:
         engine.write(
             "alice likes tea",
             scope,
-            metadata={"infer": "true", "middle": "true"},
+            system_metadata={"infer": "true", "middle": "true"},
         )
     )
 
@@ -274,7 +353,7 @@ def test_write_infer_middle_submits_middle_to_long_job() -> None:
     assert channel == Channel.BACKGROUND
     # 验证 Job 字段
     assert job.scope == scope
-    assert job.interval == 50  # 默认 middle_interval
+    assert job.interval == 50  # metadata 未传 middle_interval，回退 Spec 装配期默认
     assert job._max_fetch == 100  # pylint: disable=protected-access
     assert job._batch_size == 10  # pylint: disable=protected-access
     assert job._concurrency == 4  # pylint: disable=protected-access
@@ -282,23 +361,31 @@ def test_write_infer_middle_submits_middle_to_long_job() -> None:
     assert len(units) >= 1
     persisted = loads(kv.get(scope, memory_key(units[0].id)))
     assert persisted.tier == MemoryTier.WORKING
-    assert persisted.metadata.get("middle") == "true"
+    assert persisted.system_metadata.get("middle") == "true"
     # 立即可检索（index.build 已调）
     assert index.built == units
 
 
 def test_write_infer_middle_passes_engine_middle_params_to_job() -> None:
-    """Engine 的 middle_* 参数透传到 MiddleToLongJob。"""
-    engine, scheduler, _, _ = _build_engine(
-        middle_interval=30, middle_max_fetch=50, middle_batch_size=5, middle_concurrency=2
+    """middle_* 装配期参数 + middle_interval metadata 覆盖透传到 MiddleToLongJob。
+
+    - middle_max_fetch/batch_size/concurrency 经 JobSpec 装配期固化；
+    - middle_interval 经 write metadata 透传（瞬态 key），覆盖 Spec 装配期默认 50。
+    """
+    engine, scheduler, _, kv = _build_engine(
+        middle_max_fetch=50, middle_batch_size=5, middle_concurrency=2
     )
     scope = Scope(org="acme", user="u1")
 
-    asyncio.run(
+    units = asyncio.run(
         engine.write(
             "x",
             scope,
-            metadata={"infer": "true", "middle": "true"},
+            system_metadata={
+                "infer": "true",
+                "middle": "true",
+                "middle_interval": "30",  # 经 metadata 透传，覆盖 Spec 默认 50
+            },
         )
     )
 
@@ -307,6 +394,8 @@ def test_write_infer_middle_passes_engine_middle_params_to_job() -> None:
     assert job._max_fetch == 50  # pylint: disable=protected-access
     assert job._batch_size == 5  # pylint: disable=protected-access
     assert job._concurrency == 2  # pylint: disable=protected-access
+    persisted = loads(kv.get(scope, memory_key(units[0].id)))
+    assert "middle_interval" not in persisted.system_metadata
 
 
 def test_write_infer_without_middle_does_not_submit_job() -> None:
@@ -327,7 +416,7 @@ def test_write_infer_without_middle_does_not_submit_job() -> None:
     scope = Scope(org="acme", user="u1")
 
     units = asyncio.run(
-        engine.write("hello", scope, metadata={"infer": "true"})
+        engine.write("hello", scope, system_metadata={"infer": "true"})
     )
 
     assert scheduler.calls == []
@@ -345,11 +434,38 @@ def test_write_default_path_persists_original_without_middle() -> None:
     assert units
     persisted = loads(kv.get(scope, memory_key(units[0].id)))
     assert persisted.tier == MemoryTier.EPISODIC
-    assert persisted.metadata.get("middle") is None
+    assert persisted.system_metadata.get("middle") is None
     assert index.built == units  # 默认路径也建索引
 
 
 # ---- _write_middle_path 错误分支 ----
+
+
+@pytest.mark.parametrize(
+    "middle_interval",
+    ["abc", "0", "-1"],
+)
+def test_write_middle_invalid_interval_raises_before_persist(middle_interval: str) -> None:
+    """非法 middle_interval 在落盘前 fail fast，不残留 KV/索引/Job（Refs #182）。"""
+    engine, scheduler, index, kv = _build_engine()
+    scope = Scope(org="acme", user="u1")
+
+    with pytest.raises(ValidationError, match=r"middle_interval"):
+        asyncio.run(
+            engine.write(
+                "oscar likes pottery",
+                scope,
+                system_metadata={
+                    "infer": "true",
+                    "middle": "true",
+                    "middle_interval": middle_interval,
+                },
+            )
+        )
+
+    assert scheduler.calls == []
+    assert index.built == []
+    assert kv.list(scope, limit=100).entries == []
 
 
 def test_write_middle_raises_when_job_factory_is_none() -> None:
@@ -364,7 +480,7 @@ def test_write_middle_raises_when_job_factory_is_none() -> None:
 
     with pytest.raises(RuntimeError, match="middle path requires job_factory"):
         asyncio.run(
-            engine.write("x", scope, metadata={"infer": "true", "middle": "true"})
+            engine.write("x", scope, system_metadata={"infer": "true", "middle": "true"})
         )
 
 
@@ -376,7 +492,7 @@ def test_write_middle_raises_when_evolver_is_none() -> None:
 
     with pytest.raises(RuntimeError, match="middle=true requires an Evolver"):
         asyncio.run(
-            engine.write("x", scope, metadata={"infer": "true", "middle": "true"})
+            engine.write("x", scope, system_metadata={"infer": "true", "middle": "true"})
         )
 
 
@@ -392,8 +508,8 @@ def test_write_middle_repeated_submits_jobs_to_scheduler() -> None:
     engine, scheduler, _, _ = _build_engine()
     scope = Scope(org="acme", user="u1")
 
-    asyncio.run(engine.write("first", scope, metadata={"infer": "true", "middle": "true"}))
-    asyncio.run(engine.write("second", scope, metadata={"infer": "true", "middle": "true"}))
+    asyncio.run(engine.write("first", scope, system_metadata={"infer": "true", "middle": "true"}))
+    asyncio.run(engine.write("second", scope, system_metadata={"infer": "true", "middle": "true"}))
 
     # Engine 不感知 Scheduler 的复用语义——每次都 submit
     assert len(scheduler.calls) == 2
@@ -425,7 +541,7 @@ def test_write_middle_with_in_process_scheduler_runs_job_to_completion() -> None
     `await scheduler.submit` → TypeError: object str can't be used in 'await'。
     修复后:submit 改 async,Engine 直接 await,Job 真实跑完返回 SUCCEEDED。
     """
-    from control.scheduler_impl.in_process_scheduler import InProcessScheduler
+    from jiuwen_memory.control.scheduler_impl.in_process_scheduler import InProcessScheduler
 
     # 用真实 InProcessScheduler,不用 _RecordingScheduler
     scheduler = InProcessScheduler()
@@ -433,14 +549,14 @@ def test_write_middle_with_in_process_scheduler_runs_job_to_completion() -> None
     scope = Scope(org="acme", user="u1")
 
     units = asyncio.run(
-        engine.write("alice likes tea", scope, metadata={"infer": "true", "middle": "true"})
+        engine.write("alice likes tea", scope, system_metadata={"infer": "true", "middle": "true"})
     )
 
     # 原文落盘 + tier=WORKING + metadata.middle=true
     assert len(units) >= 1
     persisted = loads(kv.get(scope, memory_key(units[0].id)))
     assert persisted.tier == MemoryTier.WORKING
-    assert persisted.metadata.get("middle") == "true"
+    assert persisted.system_metadata.get("middle") == "true"
     assert index.built == units  # 立即建索引
 
     # InProcessScheduler 立即跑完 MiddleToLongJob.run——KV 只有 1 条原文
@@ -459,7 +575,7 @@ def test_write_middle_with_in_process_scheduler_preserves_originals_on_failure()
     路径 ③ 边界:evolver 全失败时,_archive_originals 不被调,原文保留 ACTIVE+WORKING,
     下轮 MiddleToLongJob 重试。验证 InProcessScheduler 链路下失败传播正确。
     """
-    from control.scheduler_impl.in_process_scheduler import InProcessScheduler
+    from jiuwen_memory.control.scheduler_impl.in_process_scheduler import InProcessScheduler
 
     class _FailingEvolver(_NoopEvolver):
         def evolve(self, units, mode):
@@ -472,7 +588,7 @@ def test_write_middle_with_in_process_scheduler_preserves_originals_on_failure()
     scope = Scope(org="acme", user="u1")
 
     units = asyncio.run(
-        engine.write("alice likes tea", scope, metadata={"infer": "true", "middle": "true"})
+        engine.write("alice likes tea", scope, system_metadata={"infer": "true", "middle": "true"})
     )
 
     # Job FAILED——evolver 抛错,串行分支 try/except 吞掉 + 不归档原文

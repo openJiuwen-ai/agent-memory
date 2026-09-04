@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """端到端 benchmark 评测入口（骨架）——write→recall→(LLM judge) 答案级评测。
 
     python3 evaluation/scripts/run_e2e_eval.py --dataset locomo [--data PATH]
@@ -19,9 +20,8 @@ import sys
 from importlib import import_module
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-for _p in (os.path.join(_ROOT, "src"), _ROOT):
-    if _p not in sys.path:
-        sys.path.append(_p)
+if _ROOT not in sys.path:
+    sys.path.append(_ROOT)
 
 to_markdown = import_module("evaluation.core.report").to_markdown
 Runner = import_module("evaluation.core.runner").Runner

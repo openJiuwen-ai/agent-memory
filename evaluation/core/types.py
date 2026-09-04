@@ -1,8 +1,9 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """评估框架的数据契约：语料、查询样例、单例观测、指标与运行结果。
 
 设计要点：
 - **逻辑 key vs 物理 id**：数据集用稳定的 ``key`` 标识每条语料；真实 ``unit_id``
-  在写入时由 ``MemoryAPI.write`` 返回后捕获。标准相关集以 ``key`` 表达，跑分前
+  在写入时由 ``MemoryAPI.add`` 返回后捕获。标准相关集以 ``key`` 表达，跑分前
   经 harness 的 ``key→unit_id`` 映射落到物理 id，再与召回结果比对。
 - **IR 与 QA 共用一套 case**：``relevant_keys`` 服务 IR 排序指标；``expected_answer``
   服务端到端 QA 指标。二者可并存，按注入的 metric 各取所需。
@@ -15,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Sequence, Set
 
-from common.type_def import FilterClause, Scope
+from jiuwen_memory.common.type_def import FilterClause, Scope
 
 
 @dataclass
@@ -52,7 +53,7 @@ class CaseOutcome:
 
     query_id: str
     query_text: str
-    ranked_unit_ids: List[str]  # recall 返回的有序 unit_id
+    ranked_unit_ids: List[str]  # search 返回的有序 unit_id
     relevant_unit_ids: Set[str]  # relevant_keys 经 key→id 映射后的物理 id 集
     contents: List[str]  # 返回项内容（QA 合成 / token 估算用）
     trajectory: List[object]  # list[TrajectoryStep]：阶段耗时/候选数/降级

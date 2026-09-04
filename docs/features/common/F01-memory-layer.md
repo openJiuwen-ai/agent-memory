@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-07（初版）/ 2026-07-03（落地修订） |
-| 影响范围 | src/common/type_def/memory.py、src/common/type_def/memory_codec.py、src/construction/layer_annotator.py、src/construction/layer_annotator_impl/、src/construction/evolver_impl/orchestrating_evolver.py、src/construction/index_builder_impl/、src/construction/base.py、src/construction/bootstrap.py、docs/specs/S05-construction.md、docs/specs/S07-common.md |
+| 影响范围 | jiuwen_memory/common/type_def/memory.py、jiuwen_memory/common/type_def/memory_codec.py、jiuwen_memory/construction/layer_annotator.py、jiuwen_memory/construction/layer_annotator_impl/、jiuwen_memory/construction/evolver_impl/orchestrating_evolver.py、jiuwen_memory/construction/index_builder_impl/、jiuwen_memory/construction/base.py、jiuwen_memory/construction/bootstrap.py、docs/specs/S05-construction.md、docs/specs/S07-common.md |
 | 测试基线 | `tests/unit/construction/test_layer_annotator.py`（10 passed）、`tests/unit/construction/test_layers_index.py`（10 passed）、全量 `tests/` 426 passed / 54 skipped |
 | Refs | — |
 
@@ -21,7 +21,7 @@ architecture §4 定义了长时记忆的纵向抽象分层：低抽象事实/�
 
 落地前的状态（已克服）：`MemoryUnit` 只有 `segments`/`content` 合并视图，L0/L1 不在数据结构中；构建管线不产出 L0/L1；索引只基于 `unit.content`。
 
-本特性已落地 **MemoryUnit 内建内容层 + 构建层标注 + 层级索引记录**，召回/披露端消费尚未接入（见已知遗留）。纵向抽象级别不在本特性中建模。
+本特性已落地 **MemoryUnit 内建内容层 + 构建层标注 + 分层索引记录 + 分层召回与披露**。纵向抽象级别不在本特性中建模；跨 `MemoryUnit` 的树结构也不属于本特性。
 
 ## 决策
 
@@ -312,7 +312,7 @@ RetrievedItem（abstract/overview/content + level）
     "vector": {...}, "vector_l0": {"target": "vector_l0"}, "vector_l1": {"target": "vector_l1"},
     "graph": {...},
 },
-"retriever": {
+"storage": {
     _D: {
         "params": {
             "keyword_recaller": "keyword", "vector_recaller": "vector", "graph_recaller": "graph",
@@ -324,6 +324,10 @@ RetrievedItem（abstract/overview/content + level）
     },
 },
 ```
+
+> 注：召回路选择键最初挂在 `retriever.default.params`，后随召回路装配内收到
+> `CompositeStorage` 工厂而移至 `storage.default.params`（见
+> `docs/features/storage/F06-composite-recaller-assembly.md`）。
 
 构建侧 `constructor`（HybridIndexBuilder）经 `_opt_dep(VectorProducer, "layers_l0/l1")`
 取具名实例注入——`layers_index_enabled`（默认 true）开且 layers 非空才建 L0/L1 分表。
@@ -353,9 +357,9 @@ L0/L1/L2 分别落独立 Milvus collection，共用同一维度与 COSINE 度量
 - `loads` 读回构造 `ContentLayers`，缺失取空串（老数据无迁移读出）。
 - 未知字段继续忽略，保持向前兼容。
 
-## 后续扩展：层级展开
+## 后续扩展：树结构层级展开（交由 F08）
 
-本特性只处理同一 unit 内的 L0/L1/L2 内容层。若后续要支持目录、主题、聚类等父子结构，需要另立 feature：
+本特性只处理同一 unit 内由 `DisclosureLevel` 表达的 L0/L1/L2 压缩度；它不表示跨 unit 的父子关系。若后续要支持目录、主题、聚类等父子结构，需要另立 feature：
 
 1. 引入 `parent_id` / `parent_uri` 或主题节点。
 2. 支持父节点摘要命中后展开子节点。
@@ -376,9 +380,9 @@ L0/L1/L2 分别落独立 Milvus collection，共用同一维度与 COSINE 度量
 
 拒绝。L2 等于 `unit.content`，重复存储会造成 segments 与 layers.l2 的一致性问题。
 
-### 方案 D：本次引入父子层级展开
+### 方案 D：本次引入树结构展开
 
-拒绝作为本次范围。父子层级展开需要新增主题/目录节点、父子关系、分数传播和展开策略，超出同一 `MemoryUnit` 内容层的边界。
+拒绝作为本次范围。该决定保留为 F01 的历史范围取舍：树结构展开超出同一 `MemoryUnit` 内容层的边界。树结构现已由 [F08-memory-tree.md](F08-memory-tree.md) 独立完成设计，但仍未实现。
 
 ## 验证
 
@@ -395,7 +399,7 @@ L0/L1/L2 分别落独立 Milvus collection，共用同一维度与 COSINE 度量
 - [ ] delete/lifecycle 转换不修改 layers，PURGE 删除真源与索引（未落地）
 - [x] VectorIndexBuilder 为 L0/L1/L2 建层级记录，metadata 含 `content_layer`（分表、store None 跳过）
 - [x] FulltextIndexBuilder 为 L0/L1/L2 建层级文档，metadata 含 `content_layer`（分表、store None 跳过）
-- [x] Recaller 聚合层级命中到 `unit_id`，多路多层级经 Fuser RRF 聚合（已实施，§6）
+- [x] Recaller 聚合层级命中到 `unit_id`：同通道多层命中取 MaxP，跨通道由所选 Fuser 聚合（已实施，§6）
 - [x] TruncatingDiscloser 优先读 layers，空值回退原截断逻辑（已实施，§6）
 - [x] StructuredDiscloser 优先读 layers，空值回退原结构化逻辑（已实施，§6）
 - [x] RetrievedItem 三层一次性填充（abstract/overview/content，已实施，§6）
@@ -407,7 +411,7 @@ L0/L1/L2 分别落独立 Milvus collection，共用同一维度与 COSINE 度量
    原始 unit 无 layers。后续接 write 路径时再实现。
 2. **update/delete 路径未接**：update 不会自动重标注（layers 随版本语义继承/清空）；delete 不
    修改 layers。后续接 update 路径时实现 patch 触发重标注。
-3. **父子层级展开未实现**：本次只做同一 unit 的 L0/L1/L2 内容层，不做目录/主题节点展开。
+3. **树结构展开未实现**：本次只做同一 unit 的 L0/L1/L2 内容层；跨 unit 的结构设计见 [F08-memory-tree.md](F08-memory-tree.md)。
 4. **KeywordLayerAnnotator 质量有限**：规则标注无法保证 LLM 级语义浓缩，hot path 接受该折衷。
 5. **抽象粒度字段未建模**：低/中/高抽象分层仍由 `tier/tags/metadata/provenance` 间接表达；如需
    一等字段，应另立纵向抽象分层 feature。

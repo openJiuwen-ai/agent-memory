@@ -4,16 +4,17 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from api import Scope
-from api.memory_api_impl import build_kernel
-from common.errors import NotFoundError, PolicyError, ValidationError
-from common.type_def import LifecycleState, memory_key
-from common.type_def.memory_codec import dumps, loads
-from config.config import Config
-from control.lifecycle_impl.kv_lifecycle_manager import KVLifecycleManager
-from control.policy_impl.dict_policy_manager import DictPolicyManager
-from storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.api import Scope
+from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
+from jiuwen_memory.common.errors import NotFoundError, PolicyError, ValidationError
+from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.type_def import LifecycleState, memory_key
+from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.config.config import Config
+from jiuwen_memory.control.lifecycle_impl.kv_lifecycle_manager import KVLifecycleManager
+from jiuwen_memory.control.policy_impl.dict_policy_manager import DictPolicyManager
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
 
@@ -210,17 +211,30 @@ def test_default_kernel_exposes_lifecycle_policy_keys() -> None:
     api = build_kernel().api
     root = Scope()
 
-    assert api.admin_get("lifecycle.expired_active.target", identity=root) == "forgotten"
-    assert api.admin_get("lifecycle.superseded.target", identity=root) == "forgotten"
+    assert (
+        api.admin_get("lifecycle.expired_active.target", security=legacy_request_context(root))
+        == "forgotten"
+    )
+    assert (
+        api.admin_get("lifecycle.superseded.target", security=legacy_request_context(root))
+        == "forgotten"
+    )
 
-    api.admin_set("lifecycle.expired_active.target", "archived", identity=root)
-    assert api.admin_get("lifecycle.expired_active.target", identity=root) == "archived"
+    api.admin_set(
+        "lifecycle.expired_active.target", "archived", security=legacy_request_context(root)
+    )
+    assert (
+        api.admin_get("lifecycle.expired_active.target", security=legacy_request_context(root))
+        == "archived"
+    )
 
 
 def test_default_kernel_lifecycle_sweep_uses_runtime_policy(unit_factory) -> None:
     scope = Scope(org="acme", user="u1", agent="a1", session="s1")
     root = Scope()
+    kv = InMemoryKVStore()
     kernel = build_kernel(
+        kv=kv,
         config=Config.from_dict(
             {
                 "security": {
@@ -236,11 +250,13 @@ def test_default_kernel_lifecycle_sweep_uses_runtime_policy(unit_factory) -> Non
         lifecycle=LifecycleState.ACTIVE,
         t_invalid=datetime.now(timezone.utc) - timedelta(days=1),
     )
-    kernel.kv.insert(scope, memory_key(expired.id), dumps(expired))
+    kv.insert(scope, memory_key(expired.id), dumps(expired))
 
-    api.admin_set("lifecycle.expired_active.target", "archived", identity=root)
+    api.admin_set(
+        "lifecycle.expired_active.target", "archived", security=legacy_request_context(root)
+    )
     swept = getattr(getattr(api, "_engine"), "_lifecycle").sweep()
 
-    stored = loads(kernel.kv.get(scope, memory_key(expired.id)))
+    stored = loads(kv.get(scope, memory_key(expired.id)))
     assert swept == [expired.id]
     assert stored.lifecycle == LifecycleState.ARCHIVED

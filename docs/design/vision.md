@@ -88,12 +88,12 @@ agent-memory 致力于成为智能体世界的「记忆底座」：
                                           ▼
                           ┌───────────────────────────────┐
                           │      agent-memory 内核        │
-                          │  (记忆接口层: write/recall      │
+                          │  (记忆接口层: add/search         │
                           │   /update/delete/evolve ...)   │
                           └───────────────────────────────┘
 ```
 
-- **CLI**：`agent-memory write/recall/...`，适合脚本、调试、端侧工具与编码 Agent（对齐 Codex/Claude Code/memSearch 的 CLI 习惯）。
+- **CLI**：`agent-memory add/search/...`，适合脚本、调试、端侧工具与编码 Agent（对齐 Codex/Claude Code/memSearch 的 CLI 习惯）。
 - **Skill**：以「技能包」形式被 OpenClaw 等 Agent 生态加载。
 - **SDK**：**以 Python 为主**（首发与一等支持），后续按生态需求评估其他语言；提供 in-process 嵌入。
 - **API**：HTTP/gRPC 远程服务，供任意语言/分布式系统调用。
@@ -194,10 +194,10 @@ agent-memory 致力于成为智能体世界的「记忆底座」：
  │ 一个 Agent 独占其记忆    │  │ 各 Agent 私有记忆 + 按需共享池 │
  │ scope=单一 user/agent   │  │ scope 隔离 + 显式授权共享     │
  └────────────────────────┘  └────────────────────────────┘
-        ▲ 同一套 scope 模型（org / user / agent / session）既管隔离，也管共享 ▲
+        ▲ 同一套 scope 模型（org / space / user / agent / session）既管隔离，也管共享 ▲
 ```
 
-- **scope 模型**：记忆按 `org / user / agent / session` 多维 scope 归属；检索/写入默认在 scope 内，跨 scope 需显式授权。这同一套模型既决定**多 Agent 隔离与共享**，也决定**端云协同时数据的分级放置与同步粒度**（即支柱四与本支柱的连接点）。
+- **scope 模型**：记忆按 `org / space / user / agent / session` 多维 scope 归属；检索/写入默认在 scope 内，跨 scope 需显式授权。这同一套模型既决定**多 Agent 隔离与共享**，也决定**端云协同时数据的分级放置与同步粒度**（即支柱四与本支柱的连接点）。
 - **隔离**：单 Agent 私有记忆、多租户互不可见，满足隐私与权限边界。
 - **共享**：支持「一处更新、多 Agent 可见」的共享记忆池，便于多 Agent 协作与知识复用（借鉴 Letta 共享 block、MemOS memory cube）。
 - **与部署正交**：单/多 Agent 可运行在端、云或端云协同任一形态上（如端侧多 Agent、云侧多 Agent 集群、端私有 + 云共享池）。
@@ -209,7 +209,7 @@ agent-memory 致力于成为智能体世界的「记忆底座」：
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  调用与数据接入层   CLI·Skill·SDK(Python)·HTTP/gRPC·MCP ＋ 多模态信息源接入  │
-│  （记忆接口）         write · recall · update · delete · link · evolve        │
+│  （记忆接口）         add · search · update · delete · link · evolve           │
 ├──────────────────────────────────────────────────────────────────────────┤
 │  记忆管理层         生命周期 · 治理(检视/编辑/审计/遗忘) · 权限 · 配置/策略   │
 ├──────────────────────────────────────────────────────────────────────────┤

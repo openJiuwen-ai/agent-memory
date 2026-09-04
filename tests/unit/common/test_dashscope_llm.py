@@ -7,11 +7,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from common.errors import ValidationError
-from common.llm.llm_impl import LlmProducer
-from common.llm.llm_impl.dashscope_llm import DashScopeLLM
-from common.type_def import ChatMessage
-from config import AssemblyContext
+from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.llm.llm_impl import LlmProducer
+from jiuwen_memory.common.llm.llm_impl.dashscope_llm import DashScopeLLM
+from jiuwen_memory.common.type_def import ChatMessage
+from jiuwen_memory.config import AssemblyContext
 
 pytestmark = pytest.mark.unit
 
@@ -28,7 +28,7 @@ def _mock_llm(**kwargs) -> DashScopeLLM:
     client = MagicMock()
     client.chat.completions.create.return_value = _response()
     with patch(
-        "common.llm.llm_impl.openai_llm.openai.OpenAI",
+        "jiuwen_memory.common.llm.llm_impl.openai_llm.openai.OpenAI",
         return_value=client,
     ):
         llm = DashScopeLLM(**kwargs)
@@ -40,7 +40,7 @@ def _mock_produced_llm(params: dict[str, object]) -> DashScopeLLM:
     client = MagicMock()
     client.chat.completions.create.return_value = _response()
     with patch(
-        "common.llm.llm_impl.openai_llm.openai.OpenAI",
+        "jiuwen_memory.common.llm.llm_impl.openai_llm.openai.OpenAI",
         return_value=client,
     ):
         llm = LlmProducer.build("dashscope", params, AssemblyContext())

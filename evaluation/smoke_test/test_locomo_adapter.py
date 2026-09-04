@@ -22,8 +22,8 @@ pytestmark = pytest.mark.integration
 _MINI = os.path.join(os.path.dirname(__file__), "locomo_mini.json")
 
 
-@pytest.fixture(scope="module")
-def dataset() -> LoCoMoDataset:
+@pytest.fixture(name="dataset", scope="module")
+def _dataset_fixture() -> LoCoMoDataset:
     return LoCoMoDataset(_MINI)
 
 

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-28 |
-| 影响范围 | src/construction/，docs/specs/S05-construction.md |
+| 影响范围 | jiuwen_memory/construction/，docs/specs/S05-construction.md |
 | 测试基线 | construction 148 passed；全量 unit 519 passed / 1 skipped |
 
 ## 背景

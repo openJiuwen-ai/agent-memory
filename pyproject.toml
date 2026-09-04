@@ -30,15 +30,18 @@ embed = [
     # transformers 5.x 移除了 FlagReranker 仍调用的 prepare_for_model，会令 bge reranker 崩；固定在 4.x。
     "transformers>=4.39,<5",
 ]
+multimodal = [
+    "dashscope>=1.24.0",
+]
 # 接真后端部署所需的客户端库（Milvus / Elasticsearch / Redis / PostgreSQL）+ YAML 配置解析。
 deploy = [
     "pymilvus>=2.4",
     "elasticsearch>=8,<9",
     "redis>=5",
-    "psycopg[binary,pool]>=3.1",
+    "asyncpg>=0.30",
     "pyyaml>=6",
 ]
-# MCP surface（bootstrap/mcp_server）：把记忆动词暴露为 Model Context Protocol 工具。
+# MCP surface（jiuwen_memory_entry/mcp_server）：把记忆动词暴露为 Model Context Protocol 工具。
 mcp = [
     "mcp>=1.2",
     "pyyaml>=6",
@@ -57,21 +60,19 @@ url = "https://mirrors.aliyun.com/pypi/simple/"
 default = true
 
 [tool.setuptools.packages.find]
-where = ["src", "."]
+where = ["."]
 include = [
-    "api*",
-    "common*",
-    "config*",
-    "construction*",
-    "control*",
-    "ingest*",
-    "retrieval*",
-    "storage*",
-    "agent_plugin*",
+    "jiuwen_memory*",
+    "jiuwen_memory_adapter*",
+    "jiuwen_memory_entry*",
+]
+exclude = [
+    "jiuwen_memory_entry.cli*",
+    "jiuwen_memory_entry.mcp_server*",
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-ra -q"
 markers = [

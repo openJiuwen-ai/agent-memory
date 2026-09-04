@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-08-03 |
-| 影响范围 | `src/common/lock/`（新增）、`src/common/_support.py`（接收从 storage 下沉的公共件）、`src/common/bootstrap.py`、`src/common/AGENTS.md`、`src/storage/_support.py`（改为再导出）、`examples/config_template.yml`、`docs/specs/S07-common.md` |
+| 影响范围 | `jiuwen_memory/common/lock/`（新增）、`jiuwen_memory/common/_support.py`（接收从 storage 下沉的公共件）、`jiuwen_memory/common/bootstrap.py`、`jiuwen_memory/common/AGENTS.md`、`jiuwen_memory/storage/_support.py`（改为再导出）、`examples/config_template.yml`、`docs/specs/S07-common.md` |
 | 测试基线 | `tests/unit/common/test_distributed_lock.py` 37 passed；独立 `redis:7-alpine` 容器黑盒验证通过（跨实例互斥、TTL 后旧 token 不释放新锁、自动续期、失锁通知、PING），未新增真实 Redis 集成测试；全量 `tests/unit` 862 passed、9 failed、4 skipped（失败与跳过均因环境缺少 `cryptography` / `torch` / `psycopg_pool`，改动前后一致，与本特性无关）；`ruff check` 对本次改动文件全部通过 |
 | Refs | [S07-common.md](../../specs/S07-common.md)、[F04-security-interfaces-and-encryption.md](F04-security-interfaces-and-encryption.md)、[F05-model-service-ssl.md](F05-model-service-ssl.md) |
 
@@ -22,12 +22,12 @@
 
 ### 一、落位：`common/` 下的横切组件
 
-`src/common/AGENTS.md` 铁律 7 已确立横切组件的形态——`SecurityProvider` 与
+`jiuwen_memory/common/AGENTS.md` 铁律 7 已确立横切组件的形态——`SecurityProvider` 与
 `AuditLogger` 不继承 `Plugin`、不进入 `PluginType`，但仍用独立 Producer 加 `*_impl`
 自注册。锁是第三个同类组件，完全复用该形态。
 
 ```
-src/common/lock/
+jiuwen_memory/common/lock/
 ├── __init__.py                  再导出公开符号
 ├── lock.py                      LockProvider 契约 + LockProducer + 错误类型
 └── lock_impl/
@@ -36,8 +36,9 @@ src/common/lock/
     └── in_memory_lock.py        @LockProducer.register("memory")
 ```
 
-`common/bootstrap.py::register_plugins()` 追加 `import_module("common.lock.lock_impl")`。
-`LockProducer.TOP_NAME = "lock"` 一经导入即成为配置的合法顶层段——`config/context.py`
+`jiuwen_memory/common/bootstrap.py::register_plugins()` 追加
+`import_module("jiuwen_memory.common.lock.lock_impl")`。
+`LockProducer.TOP_NAME = "lock"` 一经导入即成为配置的合法顶层段——`jiuwen_memory/config/context.py`
 的顶层段校验取自 `Factory.known_top_names()`，无需额外登记。
 
 不落在 `storage/`：锁不是记忆数据的读写通道，不参与 `BaseStore` 的 CRUD 动词契约，
@@ -168,9 +169,9 @@ docstring 与配置注释中显式标注。
 
 ### 七、从 storage 下沉的公共件
 
-`common` 不能反向依赖 `storage`，而 Redis 实现需要的四个工具目前都在
-`src/storage/_support.py`。按铁律 9 已确立的做法（SSL 公共件只实现一份，storage 与
-security 共同引用），把以下内容下沉到 `common/_support.py`，`storage/_support.py` 改为
+`jiuwen_memory/common` 不能反向依赖 `jiuwen_memory/storage`，而 Redis 实现需要的四个工具目前都在
+`jiuwen_memory/storage/_support.py`。按铁律 9 已确立的做法（SSL 公共件只实现一份，storage 与
+security 共同引用），把以下内容下沉到 `jiuwen_memory/common/_support.py`，`jiuwen_memory/storage/_support.py` 改为
 再导出：
 
 | 符号 | 说明 |
@@ -181,8 +182,9 @@ security 共同引用），把以下内容下沉到 `common/_support.py`，`stor
 | `read_ssl_config` | 组件 `params` 下的 `ssl_verify` / `ssl_ca_cert` 读取与校验 |
 | `reject_url_tls_params` | 连接串自带 `ssl_*` 查询参数的拦截 |
 
-五者均为纯函数，不依赖 storage 任何模块，行为无变更。`scope_dims` 留在 storage——它是
-检索型后端的过滤构造，与命名空间渲染是两回事。`storage/_support.py` 已有向后兼容再导出
+五者均为纯函数，不依赖 `jiuwen_memory/storage` 任何模块，行为无变更。`scope_dims` 留在
+`jiuwen_memory/storage`——它是
+检索型后端的过滤构造，与命名空间渲染是两回事。`jiuwen_memory/storage/_support.py` 已有向后兼容再导出
 块，追加即可，现有 import 路径不变。
 
 ### 八、配置

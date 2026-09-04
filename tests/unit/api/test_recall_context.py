@@ -1,13 +1,14 @@
-"""recall 的 Context 契约：max_tokens 经 Context.extensions 下达自适应披露。"""
+"""search 的 Context 契约：max_tokens 经 Context.extensions 下达自适应披露。"""
 
 from __future__ import annotations
 
 import pytest
 
-from api.memory_api_impl import assemble
-from common.type_def import EXT_MAX_TOKENS, Context, Modality, Scope
-from config import Config
-from retrieval.types import DisclosureLevel
+from jiuwen_memory.api.memory_api_impl import assemble
+from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.type_def import EXT_MAX_TOKENS, Context, Modality, Scope
+from jiuwen_memory.config import Config
+from jiuwen_memory.retrieval.types import DisclosureLevel
 
 # discloser 用结构化披露（自适应分级）
 _CONFIG = {"discloser": {"default": "structured"}}
@@ -25,12 +26,12 @@ def _api():
 
 def test_context_max_tokens_reaches_adaptive_disclosure() -> None:
     api = _api()
-    api.write(_TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR)
+    api.add(_TEXT, _SCOPE, source=Modality.TEXT, security=legacy_request_context(_ACTOR))
 
-    res = api.recall(
+    res = api.search(
         "coffee",
         Context(_SCOPE, extensions={EXT_MAX_TOKENS: "300"}),
-        identity=_ACTOR,
+        security=legacy_request_context(_ACTOR),
         disclosure=DisclosureLevel.ADAPTIVE,
         with_trajectory=True,
     )
@@ -41,12 +42,12 @@ def test_context_max_tokens_reaches_adaptive_disclosure() -> None:
 
 def test_context_without_max_tokens_uses_default() -> None:
     api = _api()
-    api.write(_TEXT, _SCOPE, source=Modality.TEXT, identity=_ACTOR)
+    api.add(_TEXT, _SCOPE, source=Modality.TEXT, security=legacy_request_context(_ACTOR))
 
-    res = api.recall(
+    res = api.search(
         "coffee",
         Context(_SCOPE),  # 不给预算 → max_tokens=None
-        identity=_ACTOR,
+        security=legacy_request_context(_ACTOR),
         disclosure=DisclosureLevel.ADAPTIVE,
         with_trajectory=True,
     )

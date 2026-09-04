@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # 预下载本地嵌入/精排模型到 ../models，供 compose 挂载到容器（/models-local）离线加载。
 #
 # 不在容器启动时联网下载：直连 HuggingFace 在部分网络环境下不稳定，且下载失败时索引

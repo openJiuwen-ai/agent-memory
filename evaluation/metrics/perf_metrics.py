@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """性能/效率指标（对接架构「可观测：检索 token、p50/p95 时延、容量」）。
 
 直接吃检索轨迹（``with_trajectory=True`` 时每步带 ``cost_ms``/``candidate_count``），

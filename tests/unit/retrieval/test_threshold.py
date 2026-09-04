@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from retrieval.retriever_impl.pipeline_retriever import apply_threshold
-from retrieval.types import RecallChannel, ScoredUnit
+from jiuwen_memory.retrieval.retriever_impl.pipeline_retriever import apply_threshold
+from jiuwen_memory.retrieval.types import RecallChannel, ScoredUnit
 
 pytestmark = pytest.mark.unit
 

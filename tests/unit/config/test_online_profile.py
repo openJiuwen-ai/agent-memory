@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from config.context import AssemblyContext
-from config.defaults import default_context
+from jiuwen_memory.config.context import AssemblyContext
+from jiuwen_memory.config.defaults import default_context
 
 pytestmark = pytest.mark.unit
 
