@@ -38,6 +38,7 @@ from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
 from jiuwen_memory.control.engine_impl.list_support import list_page
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
+from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
 from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
@@ -52,6 +53,7 @@ from jiuwen_memory.control.types import (
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
+    SweepResult,
     UpdateMode,
 )
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
@@ -665,6 +667,18 @@ class CloudEngine(MemoryEngine):
         self._remove_indexes([unit for _, _, unit in matches], mode=IndexRemoveMode.SOFT)
         return affected
 
+    async def sweep_expired(self) -> SweepResult:
+        # C-03：lifecycle 只纯计算 transition；索引按各 pipeline 的 builder
+        # 分组做 remove(SOFT)，成功后回写真源（共享编排语义见 sweep_support）。
+        transitions = self._lifecycle.sweep()
+        for transition in transitions:
+            self._ensure_unit_scope(transition.unit, transition.scope)
+        return run_sweep(
+            transitions,
+            self._lifecycle,
+            lambda units: self._remove_indexes(units, mode=IndexRemoveMode.SOFT),
+        )
+
     async def purge_space(self, org: str, space: str) -> list[str]:
         purged: list[str] = []
         for scope in [
@@ -689,13 +703,20 @@ class CloudEngine(MemoryEngine):
     async def evolve(
         self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
     ) -> str:
-        """提交 EvolveJob 到 Scheduler——mode 经构造参数流入 EvolveJob（运行时参数，不进 Spec）。"""
+        """提交 EvolveJob 到 Scheduler——mode/evolver 运行时流入 EvolveJob（不进 Spec 装配）。"""
         if self._job_factory is None:
             raise RuntimeError(
                 "evolve requires job_factory, please configure "
                 "engine.default.job_factory"
             )
-        job = self._job_factory.get_job(JobType.EVOLVE, scope=scope, mode=mode)
+        if self._evolver is None:
+            raise RuntimeError(
+                "CloudEngine.evolve requires an Evolver (装配未注入 evolver)"
+            )
+        # E-06：evolve 必传注入——Job 使用 Engine 装配的同一实例，Spec 不自行解析。
+        job = self._job_factory.get_job(
+            JobType.EVOLVE, scope=scope, mode=mode, evolver=self._evolver
+        )
         job_id = await self._scheduler.submit(job, channel)
         logger.info(
             "CloudEngine.evolve submitted: job_id=%s scope=%s mode=%s channel=%s",

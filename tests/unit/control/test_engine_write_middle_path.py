@@ -39,7 +39,7 @@ from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
 from jiuwen_memory.control.jobs import Job, JobFactory, JobType
 from jiuwen_memory.control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
-from jiuwen_memory.control.lifecycle import LifecycleManager
+from jiuwen_memory.control.lifecycle import LifecycleManager, SweepTransition
 from jiuwen_memory.control.types import Channel, JobStatus
 from jiuwen_memory.ingest.base import IngestOperatorType
 from jiuwen_memory.ingest.ingestor import Ingestor
@@ -170,7 +170,7 @@ class _NoopLifecycle(LifecycleManager):
     def supersede(self, scope, unit_id, invalid_at):
         raise AssertionError("middle path should not call supersede")
 
-    def sweep(self) -> list[str]:
+    def sweep(self) -> list[SweepTransition]:
         return []
 
 

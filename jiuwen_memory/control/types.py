@@ -178,6 +178,19 @@ class MemoryListResult:
 
 
 @dataclass
+class SweepResult:
+    """``MemoryEngine.sweep_expired`` 编排结果。
+
+    ``swept``：索引清理与真源回写均完成的 unit id；
+    ``failed``：任一步失败、真源保持原状态的 unit id——单元未流转，下轮
+    sweep 会重新发现（remove 幂等），重试自愈，不静默当成功。
+    """
+
+    swept: list[str] = field(default_factory=list)
+    failed: list[str] = field(default_factory=list)
+
+
+@dataclass
 class BatchWriteItem:
     """一条批量写入输入；API 归一化后再交给 Engine。"""
 
