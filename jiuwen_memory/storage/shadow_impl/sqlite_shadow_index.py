@@ -801,7 +801,12 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         with self._lock:
             conn = self._ensure_conn()
             tokens = self._tokenizer.tokenize(query.text)
-            match_expr = " ".join(tokens)
+            # OR 连接：FTS5 空格分隔是隐式 AND——查询分词中任一词不在文档里
+            # （如「张三喜欢什么咖啡」里的「什么」）整条 0 命中。自然语言查询
+            # 常带疑问词/停用词，AND 语义让召回普遍落空。改 OR 后任一词命中即
+            # 进入候选，多词同命中的文档靠 bm25 名次靠前；代价是单高频词查询
+            # 可能召回一批弱相关，由 top_k 截断与上层 RRF 名次合并消化。
+            match_expr = " OR ".join(tokens)
             if not match_expr:
                 return []
             projects = self._projects_from_filters(query.filters)

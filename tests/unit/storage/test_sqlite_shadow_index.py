@@ -349,6 +349,28 @@ def test_search_fulltext_returns_ranked_hits(tmp_path) -> None:
     assert all(isinstance(h, ScoredID) for h in hits)
 
 
+def test_search_fulltext_recalls_when_query_has_unseen_token(tmp_path) -> None:
+    """OR 连接：查询含文档没有的词（疑问词/停用词）不应让整条查询落空。
+
+    FTS5 空格分隔是隐式 AND——「张三 喜欢 什么 咖啡」里的「什么」不在任何文档
+    时整条 0 命中。MATCH 串改 ``" OR "`` 连接后，任一词命中即进候选，多词同命中
+    靠 bm25 排到前面（回归锁，防改回 AND）。
+    """
+    store = _store(tmp_path)
+    store.insert_units(
+        SCOPE,
+        [
+            _unit("u1", "张三喜欢喝拿铁咖啡"),
+            _unit("u2", "李四的工位在B区3楼"),
+        ],
+    )
+
+    # 查询分出「什么」，两篇文档都没有——OR 语义下仍应召回 u1。
+    hits = store.search_fulltext(SCOPE, TextQuery(text="张三 喜欢 什么 咖啡", top_k=5))
+
+    assert {h.id for h in hits} == {"u1"}
+
+
 def test_search_fulltext_returns_empty_for_empty_tokens(tmp_path) -> None:
     store = _store(tmp_path)
     store.insert_units(SCOPE, [_unit("u1", "hello world")])

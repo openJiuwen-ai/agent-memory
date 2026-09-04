@@ -613,6 +613,38 @@ def test_the_coordinates_do_not_reach_the_stored_unit_or_the_permission_context(
     )
 
 
+def test_stored_unit_carries_coords_for_md_routing_while_echo_stays_clean(api) -> None:
+    """直写判定路径的存储侧 unit 须带 coords（文档记忆 md 分流依据），回显则剥净。
+
+    coords 在 API 入口被 _take_coords 取出、判定产物只回写标签与类别。不塞回则
+    MarkdownStore._md_path 与影子索引 _project_of 都读不到 coords.project，
+    project_memory 全落 memory/default/。两半约束：
+
+    - 存储侧（dumps 之前的 unit 对象）带 coords——路径计算在序列化之前发生；
+    - 回显给调用方的返回值不带——coords 是判定输入不是条目属性，且是嵌套字典，
+      原样返回等于把瞬态键越过 API 边界暴露成条目属性。
+    """
+    stored: list[MemoryUnit] = []
+
+    def _capture(units, *args, **kwargs):
+        stored.extend(units)
+        raise RuntimeError("stop before persistence")
+
+    original = api._engine._index.build
+    api._engine._index.build = _capture
+    try:
+        api.add(
+            "项目部署在集群 A", scope=Scope(org=ORG), security=SEC_ALICE, system_metadata=COORDS_P1
+        )
+    except RuntimeError:
+        pass
+    finally:
+        api._engine._index.build = original
+
+    assert stored, "index_builder 未被调用，用例前提不成立"
+    assert all(unit.system_metadata.get("coords") == {"project": "p1"} for unit in stored)
+
+
 def test_the_coordinates_do_not_reach_the_retrieval_module(api) -> None:
     """检索侧的坐标取出后即从透传 options 移除，不进自定义检索模块的入参。
 
