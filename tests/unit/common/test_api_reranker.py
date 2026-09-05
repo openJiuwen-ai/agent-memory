@@ -92,6 +92,39 @@ def test_empty_texts_returns_empty() -> None:
     assert _reranker({"results": []}).rerank("q", []) == []
 
 
+# -- 防御：空文档 / 空 query 不透传后端（Issue #189 根因 2） -------------------- #
+
+
+def test_empty_text_elements_excluded_from_request() -> None:
+    # 空串/纯空白文本不进请求（透传会被网关 400 拒绝）；返回仍与输入等长同序，
+    # 被过滤位置保持 0.0。
+    payload = {"results": [{"index": 0, "relevance_score": 0.9}]}
+    reranker, client = _reranker_with_client(payload)
+    scores = reranker.rerank("q", ["", "abc", "   "])
+
+    assert scores == [0.0, 0.9, 0.0], "空文本应得 0.0 分而非透传后端"
+    sent = client.calls[0]["json"]["documents"]
+    assert sent == ["abc"], "空文本元素不得出现在请求体中"
+
+
+def test_all_texts_empty_skips_request_entirely() -> None:
+    # 全部文本为空 → 不发请求，直接返回全 0.0（零网络零错误）
+    reranker, client = _reranker_with_client({"results": []})
+    scores = reranker.rerank("q", ["", "  "])
+
+    assert scores == [0.0, 0.0]
+    assert client.calls == [], "全空文本不应发起任何请求"
+
+
+def test_empty_query_skips_request_entirely() -> None:
+    # 空 query 对 rerank 无意义且同样可能被网关拒绝 → 跳过请求返回全 0.0
+    reranker, client = _reranker_with_client({"results": []})
+    scores = reranker.rerank("   ", ["a", "b"])
+
+    assert scores == [0.0, 0.0]
+    assert client.calls == [], "空 query 不应发起任何请求"
+
+
 def test_backend_error_on_http_failure() -> None:
     reranker = _reranker({}, raise_exc=RuntimeError("502 Bad Gateway"))
     with pytest.raises(BackendError):

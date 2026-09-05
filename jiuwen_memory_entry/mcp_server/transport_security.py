@@ -15,8 +15,7 @@ from typing import Any
 
 from auth_middleware import credentials_from_headers
 
-from jiuwen_memory.common.errors import ValidationError
-from jiuwen_memory.common.security.types import Credentials
+from jiuwen_memory.api import Credentials, ValidationError
 
 _HTTP_TRANSPORTS = frozenset({"http", "streamable-http"})
 _API_KEY_ENV = "AGENT_MEMORY_API_KEY"

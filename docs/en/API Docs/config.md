@@ -27,8 +27,8 @@ Configuration falls into four main categories:
 
 | Category | Purpose | Primary activation time |
 |---|---|---|
-| Assembly topology | Select component implementations, declare instances, and connect dependencies | `build_kernel()` |
-| Global parameters | Provide capability flags and shared parameters to multiple components | Primarily during `build_kernel()` |
+| Assembly topology | Select component implementations, declare instances, and connect dependencies | `assemble()` |
+| Global parameters | Provide capability flags and shared parameters to multiple components | Primarily during `assemble()` |
 | `ConfigSource` | Late-bind models, credentials, connection addresses, and Prompts | Runtime call path |
 | `PolicyManager` | Manage lifecycle, Space, and other business policies | Runtime |
 
@@ -68,13 +68,13 @@ not a constructor parameter.
 
 ## 2. Complete Assembly Flow
 
-Both SDK and service deployments eventually enter `build_kernel()`:
+Both SDK and service deployments eventually enter `assemble()`:
 
 ```text
 SDK
   Config.from_dict / Config.from_yaml
                  ┬
-                 ├─> build_kernel
+                 ├─> assemble
                  │     ├─ Register every Producer target
 HTTP / MCP       │     ├─ Clear the named-instance cache for this assembly
   load_layer     │     ├─ Merge default_context with user overrides
@@ -107,7 +107,7 @@ automatically.
 The SDK can construct kernel configuration directly:
 
 ```python
-from jiuwen_memory.api import build_kernel
+from jiuwen_memory.api import assemble
 from jiuwen_memory.config import Config
 
 config = Config.from_dict(
@@ -127,15 +127,14 @@ config = Config.from_dict(
     }
 )
 
-kernel = build_kernel(config=config)
-memory_api = kernel.api
+api = assemble(config=config)
 ```
 
 It can also read a YAML file that contains kernel configuration only:
 
 ```python
 config = Config.from_yaml("./memory-config.yml")
-kernel = build_kernel(config=config)
+api = assemble(config=config)
 ```
 
 `Config.from_yaml()` only parses YAML; it does not expand `${ENV_VAR}`. In an SDK deployment, the
@@ -167,7 +166,7 @@ memory_api:
 |---|---|
 | `profile` | Service startup profile; not a kernel component namespace |
 | `policies` | Convenience policy configuration passed to `PolicyManager` |
-| `memory_api` | Kernel configuration actually passed to `Config.from_dict()` and `build_kernel()` |
+| `memory_api` | Kernel configuration actually passed to `Config.from_dict()` and `assemble()` |
 
 HTTP/MCP startup performs the following steps:
 
@@ -176,7 +175,7 @@ HTTP/MCP startup performs the following steps:
 3. Merge the service-level configuration layers.
 4. Select only the `memory_api` section.
 5. Construct the kernel `Config`.
-6. Call `build_kernel()`.
+6. Call `assemble()`.
 
 Do not pass a complete deployment configuration containing `profile`, `policies`, and
 `memory_api` directly to the kernel `Config`. Fields such as `profile` would be treated as unknown
@@ -289,7 +288,8 @@ Common namespaces include:
 
 | Category | Namespaces |
 |---|---|
-| Shared components | `tokenizer`, `chunker`, `embedder`, `llm`, `reranker` |
+| Shared components | `tokenizer`, `chunker`, `embedder`, `llm`, `reranker`, `normalizer`, `asr` |
+| Ingest | `ingestor` |
 | Storage | `storage`, `kv_store`, `vector_store`, `fulltext_store`, `graph_store` |
 | Construction | `extractor`, `classifier`, `constructor`, `dedup`, `evolver` |
 | Retrieval | `query_parser`, `recaller`, `fuser`, `discloser`, `retriever` |
@@ -297,6 +297,39 @@ Common namespaces include:
 
 See the API reference for each layer and the registered Producer targets for the available target
 values.
+
+### 4.4 Normalizer Capability Routing
+
+The default assembly uses `normalizer.default=passthrough` and `ingestor.default=simple`. The
+`simple` Ingestor references `normalizer.default` and checks the input modality against
+`Normalizer.modalities()` before normalization.
+
+Multimodal deployments can use the `routing` Normalizer to select an implementation by modality:
+
+```yaml
+normalizer:
+  default:
+    target: routing
+    params:
+      fallback: passthrough
+      routes:
+        video:
+          target: video
+          params:
+            asr_port: video
+            llm_port: video_text
+            vlm_port: video_vision
+```
+
+During assembly, `routing` checks that every route key is included in the target Normalizer's
+`modalities()`. Routing `video` to the text-oriented `passthrough` target therefore makes
+`build_kernel()` raise `ValidationError`. At runtime, input outside the assembled capability set
+raises `UnsupportedCapabilityError` before any MemoryUnit, Storage write, or index write is
+produced. `passthrough` only supports `TEXT` and `CODE` that are already UTF-8 text. CODE input must
+be source text; passthrough does not read source files. Only TEXT retains the compatibility fallback
+that treats `uri` as text when `data` is empty. PDF/Office `DOCUMENT` inputs require a dedicated
+parsing Normalizer. See [`examples/config_multimodal.yml`](../../../examples/config_multimodal.yml)
+for the complete video dependency configuration.
 
 ## 5. Named Instance Structure
 
@@ -485,7 +518,7 @@ instances.
 
 ## 8. Default Configuration and User Overrides
 
-`build_kernel()` first creates the built-in default configuration and then merges user
+`assemble()` first creates the built-in default configuration and then merges user
 configuration over it.
 
 The default configuration is an in-process stack that can run offline:
@@ -672,6 +705,8 @@ The following components are not explicitly overridden and continue to use the d
 
 - `storage.default=composite`
 - `constructor.default=hybrid`
+- `normalizer.default=passthrough`
+- `ingestor.default=simple`
 - `retriever.default=pipeline`
 - `engine.default=in_memory`
 - `scheduler.default=in_process`
@@ -751,7 +786,7 @@ vector_store.uri
 fulltext_store.hosts
 ```
 
-It does not watch the YAML file for changes. After modifying the file, call `build_kernel()` again.
+It does not watch the YAML file for changes. After modifying the file, call `assemble()` again.
 
 ### 12.2 Mutable `dict`
 
@@ -766,14 +801,13 @@ config_source:
         llm.base_url: https://example.com/v1
 ```
 
-After assembly, product-side management code can update the source:
+After assembly, product-side management code can update wired late-bound fields.
+Public `assemble()` / `assemble_runtime()` do not return a `config_source` handle.
+With the `dict` target, the deployer holds the same `DictConfigSource` instance and
+calls `put`, instead of taking a port off Kernel.
 
 ```python
 from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
-
-source = kernel.config_source
-if not isinstance(source, DictConfigSource):
-    raise TypeError("config_source.default is not the dict target")
 
 source.put("llm.model", "qwen-max")
 source.put("llm.api_key", "new-key")
@@ -845,7 +879,7 @@ as `RoutingEmbedder` or `RoutingStorage`.
 To switch an implementation in ordinary configuration:
 
 1. Change the corresponding `default.target`.
-2. Run `build_kernel()` again.
+2. Run `assemble()` again.
 
 ## 13. Boundary Between PolicyManager and ConfigSource
 
@@ -903,7 +937,7 @@ referenced by any component is normally not built, so an invalid target or a mis
 dependency in that instance may not surface during startup.
 
 Deployment validation should explicitly call `health()` on assembled components that expose
-health checks. A successful `build_kernel()` call alone does not prove that external services are
+health checks. A successful `assemble()` call alone does not prove that external services are
 available.
 
 ## 15. Recommendations and Common Issues
@@ -968,4 +1002,4 @@ Users must understand that:
 - `ConfigSource` can dynamically change only fields that are already wired for late binding; it
   cannot rebuild the object topology automatically.
 - Factory named-instance caches are process-level class variables. Do not run multiple
-  `build_kernel()` calls concurrently in the same process.
+  `assemble()` calls concurrently in the same process.

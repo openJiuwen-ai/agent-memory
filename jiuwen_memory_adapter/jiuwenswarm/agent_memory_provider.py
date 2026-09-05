@@ -29,9 +29,16 @@ from typing import Any
 
 from openjiuwen.core.memory.external.provider import MemoryProvider
 
-from jiuwen_memory.common.security.legacy import legacy_request_context
-from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX
-from jiuwen_memory.common.type_def.memory_codec import loads
+from jiuwen_memory.api import (
+    Channel,
+    Context,
+    DisclosureLevel,
+    EvolveMode,
+    Modality,
+    assemble,
+    legacy_request_context,
+)
+from jiuwen_memory.api import Scope as ApiScope
 
 # [本地修改 2026-06-29] provider 通过 PYTHONPATH 以顶层模块 agent_memory_provider 被 import，
 # __name__="agent_memory_provider" 不在 jiuwenswarm/openjiuwen 的 logger 树下，INFO 默认不落文件。
@@ -126,12 +133,14 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         config_path: str | None = None,
         user_id: str = "jiuwenswarm-user",
         agent_id: str = "jiuwenswarm",
+        space: str = "",
         **_kwargs: Any,
     ) -> None:
         self._base_url = base_url or ""
         self._config_path = config_path
         self._user_id = user_id
         self._agent_id = agent_id
+        self._space = space
 
         # Rail 在 before_invoke 首次调 initialize 时传入，覆盖构造默认
         self._scope_id: str = "__default__"
@@ -197,15 +206,22 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         return self._config_path is not None  # 进程内：有配置路径即视为可装配
 
     async def initialize(self, **kwargs: Any) -> None:
-        """Rail ``before_invoke`` 首次调，传 ``user_id``/``scope_id``/``session_id``。"""
+        """Rail ``before_invoke`` 首次调，传 ``user_id``/``scope_id``/``session_id``。
+
+        ``scope_id`` 只映射到 ``org``；``space`` 只认显式传入，不从 ``scope_id`` 猜测。
+        再次调用只更新绑定维度，不重建客户端（同一进程内内核可切换 space）。
+        """
         self._user_id = kwargs.get("user_id") or self._user_id
         self._scope_id = kwargs.get("scope_id", "__default__")
         self._session_id = kwargs.get("session_id", "__default__")
         # 兼容约定：agent_id 可由 kwargs 覆盖
         if kwargs.get("agent_id"):
             self._agent_id = kwargs["agent_id"]
+        if "space" in kwargs:
+            self._space = kwargs.get("space") or ""
 
-        self._client = _build_client(self._base_url, self._config_path)
+        if self._client is None:
+            self._client = _build_client(self._base_url, self._config_path)
         self._initialized = True
         logger.info(
             "[AgentMemoryMemoryProvider] initialized (mode=%s, user=%s, scope=%s, session=%s)",
@@ -229,7 +245,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         logger.info("[AgentMemoryMemoryProvider] handle_tool_call CALLED tool=%s args=%s", tool_name, args)
         if self._client is None:
             return json.dumps({"error": "provider not initialized"})
-        scope = self._scope()
+        scope = self.bound_scope()
 
         try:
             if tool_name == "agent_memory_profile":
@@ -319,14 +335,18 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             logger.info("[AgentMemoryMemoryProvider] prefetch stripped envelope: %r -> %r", query, search_query)
         top_k = min(int(kwargs.get("top_k", _DEFAULT_PREFETCH_TOP_K)), _MAX_TOP_K)
         try:
-            logger.info("[AgentMemoryMemoryProvider] prefetch before search scope=%s top_k=%d", self._scope(), top_k)
-            items = await self._client.search(search_query, self._scope(), top_k=top_k)
+            logger.info(
+                "[AgentMemoryMemoryProvider] prefetch before search scope=%s top_k=%d",
+                self.bound_scope(),
+                top_k,
+            )
+            items = await self._client.search(search_query, self.bound_scope(), top_k=top_k)
             logger.info("[AgentMemoryMemoryProvider] prefetch after search items=%d", len(items))
             lines = [it.get("content", "") for it in items if it.get("content")]
             # [本地修改 2026-06-29] 打印 prefetch 召回的记忆，便于排查外接记忆是否生效。
             logger.info(
                 "[AgentMemoryMemoryProvider] prefetch search_query=%r scope=%s top_k=%d recalled=%d",
-                search_query, self._scope(), top_k, len(lines),
+                search_query, self.bound_scope(), top_k, len(lines),
             )
             for idx, line in enumerate(lines):
                 logger.info(
@@ -362,11 +382,11 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         content = f"user: {user_msg}\nassistant: {assistant_msg}"
         logger.info(
             "[AgentMemoryMemoryProvider] sync_turn add(infer=true) scope=%s content_len=%d",
-            self._scope(), len(content),
+            self.bound_scope(), len(content),
         )
         try:
             await self._client.add(
-                content, self._scope(),
+                content, self.bound_scope(),
                 tags=["conversation"], system_metadata={"infer": "true"},
             )
             logger.info("[AgentMemoryMemoryProvider] sync_turn add(infer=true) done")
@@ -398,16 +418,19 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         """
         if self._client is None:
             return
-        logger.info("[AgentMemoryMemoryProvider] on_session_end CALLED scope=%s, triggering EXTRACT", self._scope())
+        logger.info(
+            "[AgentMemoryMemoryProvider] on_session_end CALLED scope=%s, triggering EXTRACT",
+            self.bound_scope(),
+        )
         try:
-            await self._client.evolve_extract(self._scope())
+            await self._client.evolve_extract(self.bound_scope())
             logger.info("[AgentMemoryMemoryProvider] session-end EXTRACT done")
         except Exception as exc:
             logger.warning("[AgentMemoryMemoryProvider] on_session_end EXTRACT failed: %s", exc)
 
     # -- 内部：Scope 映射 ---------------------------------------------------- #
 
-    def _scope(self):
+    def bound_scope(self):
         """Rail 入参 → 轻量 _Scope（不依赖 AgentMemory api 包，HTTP/进程内通用）。
 
         映射（§4.5）：
@@ -415,6 +438,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         - ``agent_id`` → ``.agent``
         - ``session_id`` → ``.session``（空则跨会话共享，显式传才隔离）
         - ``scope_id`` → ``.org``（作 tenant；部分记忆层忽略 scope_id，AgentMemory 用作租户）
+        - ``space`` → ``.space``（只认显式传入，不从 ``scope_id`` 猜测）
         identity = target（actor==target，单租户，与 HTTP surface 一致）
 
         返回内置 _Scope（而非 api.Scope），让 HTTP 模式无需 AgentMemory src 在 path。
@@ -422,6 +446,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         """
         return _Scope(
             org=self._scope_id,
+            space=self._space,
             user=self._user_id,
             agent=self._agent_id,
             session=self._session_id,
@@ -435,12 +460,13 @@ class AgentMemoryMemoryProvider(MemoryProvider):
 
 @dataclass
 class _Scope:
-    """轻量 Scope（org/user/agent/session 四维），不依赖 AgentMemory api 包。
+    """轻量 Scope（org/space/user/agent/session 五维），不依赖 AgentMemory api 包。
 
     HTTP 模式直接用它的属性拼 payload；进程内模式在 _InProcessClient 里
     转成 api.Scope。这样 HTTP 模式无需 AgentMemory src 在 sys.path。
     """
     org: str = ""
+    space: str = ""
     user: str = ""
     agent: str = ""
     session: str = ""
@@ -519,12 +545,13 @@ class _HttpClient(_AgentMemoryClient):
 
     @staticmethod
     def _scope_payload(scope) -> dict[str, Any]:
-        """AgentMemory HTTP surface 的 scope 映射（``handler.py:57-63``）：
+        """AgentMemory HTTP surface 的 scope 映射：
         ``tenant_id`` → ``Scope.org``，``scope`` → ``Scope.user``。
-        这里把四维拼成 HTTP 期望的 ``tenant_id``/``scope``/``agent_id``/``session_id``。
+        五维拼成 ``tenant_id``/``space``/``scope``/``agent_id``/``session_id``。
         """
         return {
             "tenant_id": scope.org,
+            "space": getattr(scope, "space", ""),
             "scope": scope.user,
             "agent_id": scope.agent,
             "session_id": scope.session,
@@ -636,9 +663,6 @@ class _InProcessClient(_AgentMemoryClient):
     """
 
     def __init__(self, config_path: str | None) -> None:
-        from jiuwen_memory.api import build_kernel
-        from jiuwen_memory.config.config import Config
-
         config = None
         if config_path:
             import json as _json
@@ -646,18 +670,15 @@ class _InProcessClient(_AgentMemoryClient):
 
             p = Path(config_path)
             data = _json.loads(p.read_text(encoding="utf-8")) if p.suffix == ".json" else _load_yaml(p)
-            config = Config.from_dict(data)
-        # 用 build_kernel 而非 assemble，同时持有 api + kv（kv 供 list_semantic 直读真源）
-        kernel = build_kernel(config=config)
-        self._api = kernel.api
-        self._kv = kernel.kv
+            config = data
+        self._api = assemble(config=config)
 
     @staticmethod
     def _to_api_scope(scope):
         """_Scope（轻量）→ api.Scope（进程内 AgentMemory API 期望的类型）。"""
-        from jiuwen_memory.api import Scope as _ApiScope
-        return _ApiScope(
+        return ApiScope(
             org=getattr(scope, "org", ""),
+            space=getattr(scope, "space", ""),
             user=getattr(scope, "user", ""),
             agent=getattr(scope, "agent", ""),
             session=getattr(scope, "session", ""),
@@ -666,7 +687,6 @@ class _InProcessClient(_AgentMemoryClient):
     async def add(
         self, content, scope, *, tags=None, system_metadata=None, user_metadata=None
     ) -> str | None:
-        from jiuwen_memory.api import Modality
         api_scope = self._to_api_scope(scope)
 
         units = await self._api.add_async(
@@ -681,8 +701,6 @@ class _InProcessClient(_AgentMemoryClient):
     async def search(
         self, query, scope, *, top_k=10
     ) -> list[dict[str, Any]]:
-        from jiuwen_memory.api import Context, DisclosureLevel
-
         api_scope = self._to_api_scope(scope)
         # 进程内模式经 search 的 tier filter 下推过滤 semantic。
         filters = [_semantic_filter()]
@@ -701,23 +719,18 @@ class _InProcessClient(_AgentMemoryClient):
         ]
 
     async def list_semantic(self, scope) -> list[dict[str, Any]]:
-        # 进程内无 get_all；经 Kernel.kv 直读真源。与 HTTP /v1/list 对齐：只列建索引的
-        # Memory 记忆（/memory/ 前缀），用 prefix 直取，不再全扫 + tier 过滤——/messages/
-        # 原文（未建索引）与 /index/chunks/ 簿记（loads 返 None）都不在结果中。
-        # （生产应给 MemoryAPI 加 get_all，见 §4.1.3。）
-
         api_scope = self._to_api_scope(scope)
-        raw_pairs = await asyncio.to_thread(self._kv.list, api_scope, MEMORY_KEY_PREFIX)
-        items = []
-        for _id, raw in raw_pairs:
-            unit = loads(raw)
-            if unit is None:
-                continue
-            items.append({"content": unit.content, "item_id": unit.id, "score": 0})
-        return items
+        result = await asyncio.to_thread(
+            self._api.list,
+            api_scope,
+            security=legacy_request_context(api_scope),
+        )
+        return [
+            {"content": unit.content, "item_id": unit.id, "score": 0}
+            for unit in result.items
+        ]
 
     async def evolve_extract(self, scope) -> None:
-        from jiuwen_memory.api import Channel, EvolveMode
         api_scope = self._to_api_scope(scope)
 
         # evolve 是同步+asyncio.run，必须 to_thread

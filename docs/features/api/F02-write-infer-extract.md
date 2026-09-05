@@ -4,9 +4,9 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-06-30 |
+| 日期 | 2026-09-02 |
 | 影响范围 | jiuwen_memory/control/engine_impl/in_memory_engine.py、jiuwen_memory/control/AGENTS.md、jiuwen_memory_entry/core/handler.py、docs/specs/S02-memory-api.md、docs/specs/S03-control.md、docs/features/construction/F01-construction-spec-design.md |
-| 测试基线 | `pytest tests/unit/construction` 全绿（82 passed）；`pytest tests/unit/api` 全绿；`pytest tests/unit` 4 failed（仅 `test_bge_reranker.py`，与本特性无关） |
+| 测试基线 | A-04 定向回归 15 passed；`pytest tests/unit` 仍有 4 个既有失败：2 个因未安装可选依赖 `torch`，2 个因 EntityIndexBuilder logger 名与 caplog 监听名不一致，均与本特性无关 |
 | Refs | — |
 
 > 本文归档 **write 路径演进策略的两点变更**：(1) 默认路径不再自动提交 background EXTRACT；(2) 新增 `metadata["infer"]=="true"` 同步抽取开关。两者是一个连贯决策的两面——把"是否在写入时抽取"的选择权从"框架硬编码自动提交"交还给"调用方按场景显式选择"。
@@ -36,8 +36,9 @@
 `InMemoryEngine.write` 默认分支（`infer` 非真值）流程改为：
 
 ```
-Ingestor.ingest → 补 assets/tags → Classifier.classify → KVStore.insert（真源）
-→ IndexBuilder.build（hot 索引）
+Engine 构造 RawPayload（含 assets）→ Ingestor.ingest（自行映射 assets）
+→ Engine 补 tags 等编排字段 → Classifier.classify
+→ IndexBuilder.build（统一交付 Storage + 构建 hot 索引）
 → 返回 units
 ```
 

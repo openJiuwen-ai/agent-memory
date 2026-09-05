@@ -124,6 +124,27 @@ class BackendError(AgentMemoryError):
     """
 
 
+class UnsupportedCapabilityError(AgentMemoryError):
+    """组件不支持调用方请求的某项能力。"""
+
+    def __init__(
+        self,
+        capability: str,
+        value: str,
+        component: str,
+        message: str = "",
+    ) -> None:
+        """记录不受支持的能力、请求值和组件名。"""
+        self.capability = capability
+        self.value = value
+        self.component = component
+        super().__init__(
+            message
+            or f"{component or 'component'!r} does not support "
+            f"{capability or 'capability'} {value!r}"
+        )
+
+
 class UnsupportedStorageCapabilityError(AgentMemoryError):
     """Storage 未声明调用方请求的底层端口能力。"""
 
@@ -134,3 +155,26 @@ class StorageRetrievalError(AgentMemoryError):
     def __init__(self, errors: list[object]) -> None:
         self.errors = errors
         super().__init__(f"all selected retrieval sources failed: {len(errors)} error(s)")
+
+
+class PartialFailureError(AgentMemoryError):
+    """多步骤操作部分成功：不得报告为完整成功，调用方应按 retry_action 重试。"""
+
+    def __init__(
+        self,
+        *,
+        completed: tuple[str, ...],
+        failed: str,
+        retry_action: str,
+        message: str = "",
+    ) -> None:
+        self.completed = completed
+        self.failed = failed
+        self.retry_action = retry_action
+        super().__init__(
+            message
+            or (
+                f"{failed} failed after {', '.join(completed)}; "
+                f"retry {retry_action}"
+            )
+        )

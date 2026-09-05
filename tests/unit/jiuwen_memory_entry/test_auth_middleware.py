@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """jiuwen_memory_entry/core/auth_middleware：凭据归一 + 请求作用域生命周期。
 
 接口先行版：用 stub Authenticator / limiter / guard 验证中间件的**编排顺序**
@@ -24,6 +25,7 @@ if _CORE_DIR not in sys.path:
 from auth_middleware import authenticated, credentials_from_headers  # noqa: E402
 
 from jiuwen_memory.common.errors import AuthenticationError  # noqa: E402
+from jiuwen_memory.common.security.request_context import get_request_id  # noqa: E402
 from jiuwen_memory.common.security.types import (  # noqa: E402
     AuthContext,
     Credentials,
@@ -209,6 +211,8 @@ def test_authenticated_yields_request_security_context() -> None:
         assert isinstance(security, RequestSecurityContext)
         assert security.actor == Scope(org="acme", user="alice")
         assert security.auth.auth_method == "stub"
+        assert get_request_id() == security.request_id
+    assert get_request_id() is None
 
 
 def test_context_comes_from_the_controlled_constructor() -> None:
@@ -225,6 +229,30 @@ def test_request_id_is_server_generated_and_unique() -> None:
             assert security.request_id
             seen.add(security.request_id)
     assert len(seen) == 3
+
+
+def test_controlled_request_id_is_shared_with_context_and_reset() -> None:
+    """受控适配层的 ID 能关联认证上下文，退出后不残留给下一请求。"""
+    with authenticated(
+        _StubAuthenticator(),
+        Credentials(api_key="k"),
+        request_id="http-edge-request-id",
+    ) as security:
+        assert security.request_id == "http-edge-request-id"
+        assert get_request_id() == "http-edge-request-id"
+    assert get_request_id() is None
+
+
+def test_empty_controlled_request_id_falls_back_to_generated_id() -> None:
+    """空值不应遮蔽构造器生成的 request ID。"""
+    with authenticated(
+        _StubAuthenticator(),
+        Credentials(api_key="k"),
+        request_id="",
+    ) as security:
+        assert security.request_id
+        assert get_request_id() == security.request_id
+    assert get_request_id() is None
 
 
 def test_surface_comes_from_the_adapter_not_the_caller() -> None:
@@ -269,3 +297,4 @@ def test_context_var_is_reset_even_when_body_raises() -> None:
         with authenticated(authenticator, Credentials(api_key="k")):
             raise RuntimeError("boom")
     assert get_current() is None
+    assert get_request_id() is None

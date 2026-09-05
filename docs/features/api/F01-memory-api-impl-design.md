@@ -4,23 +4,23 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-06-24 |
+| 日期 | 2026-09-03 |
 | 影响范围 | jiuwen_memory/api/，jiuwen_memory/control/，jiuwen_memory/storage/，jiuwen_memory/common/type_def/，jiuwen_memory_entry/core/handler.py，docs/specs/S02-memory-api.md，docs/specs/S03-control.md，docs/specs/S06-storage.md，docs/specs/S07-common.md |
 | 测试基线 | list 相关 API/handler/Engine/KV/common/retrieval 单测通过；ruff、compileall 与 `git diff --check` 通过；完整 `tests/unit` 仅两项因环境缺少 torch 失败 |
 | Refs | —（如有 issue 补 `Refs: #<n>`） |
 
-> 本文档归档**记忆接口层实现的设计与取舍**：`MemoryAPI` 的单进程实现 `LocalMemoryAPI`（鉴权/审计执行点）与装配落点 `assembly.py`（`build_kernel`/`assemble`/`Kernel`）。
+> 本文档归档**记忆接口层实现的设计与取舍**：`MemoryAPI` 的单进程实现 `LocalMemoryAPI`（鉴权/审计执行点）与装配落点 `assembly.py`（公开 `assemble` / `assemble_runtime`，内部 `_build_kernel` / `_Kernel`）。
 > `MemoryAPI` 的**公开方法签名 / 参数语义 / 返回类型**以接口 `jiuwen_memory/api/memory_api.py` 与 [S02](../../specs/S02-memory-api.md) 为准，本文不重复罗列签名，只记录「为什么这样实现」。
 
 ---
 
 ## 背景
 
-`MemoryAPI`（`jiuwen_memory/api/memory_api.py`）是内核的**唯一对外入口**，形态无关——SDK/CLI/Skill/MCP/HTTP·gRPC 各接入形态最终都映射到这同一组语义。调用层只依赖 `jiuwen_memory.api` 这一个包即可触达全部能力与所需类型，无需 import 内核其他包：
+`MemoryAPI`（`jiuwen_memory/api/memory_api.py`）是内核的**唯一对外入口**，形态无关——SDK/CLI/Skill/MCP/HTTP·gRPC 各接入形态最终都映射到这同一组语义。调用层只依赖 `api` 这一个包即可触达全部能力与所需类型，无需 import 内核其他包：
 
 ```python
 from jiuwen_memory.api import (
-    assemble, MemoryAPI,               # 入口 + 接口
+    assemble, assemble_runtime, MemoryAPI, MemoryRuntime,  # 入口 + 接口
     Scope, Context, Modality,          # 调用上下文
     MemoryPatch, UpdateMode,           # update
     DeleteSelector, DeleteMode,        # delete
@@ -28,6 +28,8 @@ from jiuwen_memory.api import (
     DisclosureLevel, EvolveMode,       # search / evolve
     Grant, Action, Channel,            # 授权 / 演进通道
     SpaceSpec, SpaceInfo, SpacePolicy, # space 管理
+    ValidationError, Credentials,      # Access 错误映射 / 凭据
+    legacy_request_context,            # 过渡期安全上下文
 )
 ```
 
@@ -36,9 +38,12 @@ from jiuwen_memory.api import (
 | 文件 | 角色 |
 |---|---|
 | `local_memory_api.py` · `LocalMemoryAPI` | 单进程下的 `MemoryAPI` 实现——**鉴权（PEP）+ 入口审计 + 委派**，自身不含编排逻辑 |
-| `assembly.py` · `build_kernel`/`assemble`/`Kernel` | 把各层具体实现经 Producer 串成一个可直接调用的内核——「把整个项目串起来」的落点 |
+| `assembly.py` · `assemble` / `assemble_runtime` / `_build_kernel` | 公开装配只返回 `MemoryAPI` 或 `MemoryRuntime`；内部 `_Kernel` 才持有 KV/Storage |
 
-接口层是控制层（`jiuwen_memory/control`）的**薄封装**：数据面（add/search/list/get/update/delete/evolve）委托 `MemoryEngine`，管理面（任务/治理/授权/admin/space 管理）直达对应控制算子；本层只做**参数装配 + 鉴权 + 入口审计**，编排逻辑全在控制层。
+接口层是控制层（`jiuwen_memory/control`）的**薄封装**：数据面经 `control.application` 的
+`MemoryCommandService` / `MemoryQueryService` 委托 `MemoryEngine`，治理经 `GovernanceService`
+委托 `Governor`，`delete_space` 事务经 `SpaceLifecycleService`；任务/策略/space 普通 CRUD
+仍直达对应控制算子。本层只做**参数装配 + 鉴权 + 入口审计**，编排逻辑全在控制层。
 
 ---
 
@@ -48,14 +53,17 @@ from jiuwen_memory.api import (
 
 `LocalMemoryAPI` 是策略执行点（PEP）。每个涉及租户数据/治理的方法，统一走两个私有公共点：
 
-- `_authorize(identity, target, action)` → `PermissionManager.check(...)`，不通过抛 `PermissionDeniedError`；
-- `_log(identity, action, target_id)` → 落一条 `layer="api"` 的入口审计事件（带 identity）。
+- `_authorize(security.auth.actor, target, action)` → `PermissionManager.check(...)`，不通过抛 `PermissionDeniedError`；
+- `_log(security.auth.actor, action, target_id)` → 落一条 `layer="api"` 的入口审计事件（带认证 actor）。
 
-通过后才委托引擎/控制算子，且**只下沉已鉴权的 target `scope`，identity 不下沉**（下游信任 target）。常见「本人操作自己」场景 `identity == scope`。
+通过后才委托引擎/控制算子，且**只下沉已鉴权的 target `scope`，security 不下沉**（下游信任 target）。常见「本人操作自己」场景是 `security.auth.actor == scope`。
 
-### 2. `identity` 一律 keyword-only
+### 2. `security` 一律 keyword-only
 
-每个方法的 `identity` 都在 `*` 之后、必须具名传 `identity=...`。两者同为 `Scope` 类型（target scope 与 caller identity），强制具名可杜绝位置传反导致的**越权**。这是刻意设计，不是风格偏好。
+每个方法的 `security` 都在 `*` 之后、必须具名传 `security=...`；调用方身份只能从
+`security.auth.actor` 取得。这样不会把安全上下文误当成 target `Scope` 传入，也避免调用方
+伪造 actor。`check_write` 为兼容历史调用保留第二个位置参数，但仍要求传入完整的
+`RequestSecurityContext`。
 
 ### 3. Context 只活在接口层，边界处拆包
 
@@ -92,30 +100,49 @@ admin（运行时策略）与全局 audit 查询**没有具体 target scope**，
 
 ### 9. 装配（assembly.py）：Producer.dep + 默认上下文 + 合并覆盖 + kv 注入
 
-`build_kernel` 的串接策略：
+`assemble` / `_build_kernel` 的串接策略：
 
 - **取依赖统一走 `dep`**：`XProducer.dep(root, default=...)` 按配置值分派（引用名→`build_named` 共享 / 内联 dict→`build` 匿名 / 缺省→按 `default` 匿名新建）；字段名默认取各 Producer 的 `TOP_NAME`。根组件经 `ROOT_PARAMS` 引用各命名空间下的 `default` 实例。
 - **默认装配**：无 config 时用内置默认上下文（`config.defaults`）——纯内存离线栈，用显式具名 + 引用复刻共享拓扑；用户 config 经 `AssemblyContext.merged` **合并覆盖**到其上（只写要改动的部分）。
 - **policies 便捷覆盖**：`policies` 折进 `globals["policies"]`。
 - **真源 kv 注入**：`kv` 入参经 `KvProducer.put(KV_DEFAULT_NAME, kv)` 预置进缓存，**覆盖配置的 kv_store 选择并被各处共享**（如传 `SQLiteKVStore` 即落盘）。
 - **多次装配隔离**：组装前 `_register_all()`（各层 bootstrap 幂等自注册）+ `Factory.reset_all()` 清空具名实例缓存。
-- **Kernel 暴露统一 Storage 与控制句柄**：`build_kernel` 返回
-  `Kernel{api, storage, kv, space, config_source}`，其中 `storage` 是上层统一依赖，`kv` 是迁移期
-  的真源兼容句柄；`assemble` 仍只返回 api。普通数据面能力应走 `MemoryAPI`。
+- **内部 `_Kernel` 持有统一 Storage 与控制句柄**：`_build_kernel` 返回
+  `_Kernel{api, storage, kv, space, config_source}`，不从 `jiuwen_memory.api` 导出；
+  `assemble` 只返回 api，`assemble_runtime` 只返回 api + close。普通数据面能力应走 `MemoryAPI`。
 
 ```python
-from jiuwen_memory.api import assemble, build_kernel
+from jiuwen_memory.api import assemble
 from jiuwen_memory.config import Config
 
 api = assemble()                                  # 默认纯内存离线栈
 api = assemble(config=Config(...), policies={"rerank_enabled": "true"})
 api = assemble(kv=SQLiteKVStore("mem.db"))        # 注入落盘真源
-kernel = build_kernel(config=Config(...))         # 另需真源 kv 句柄时
 ```
 
-### 10. list 升级为正式数据面接口
+### 10. HTTP/多 surface 的结构化 dispatch 边界
 
-`jiuwen_memory_entry` 表面已有 `list` verb，但此前接口层没有正式 `MemoryAPI.list(...)`，
+HTTP、CLI、MCP 和进程内调用共享同一个 handler，但不共享未经约束的 payload 形状。HTTP
+采用嵌套 `target` DTO，并在 adapter 中一次性完成字段白名单、类型和 Scope 校验，再构造
+不可变 `DispatchRequest`；认证 actor 由 `RequestSecurityContext` 提供，绝不从请求体推断。
+这样可以让 actor、target 和业务 payload 在进入 API 前保持明确分离，避免 handler 中存在多套
+隐式兼容解析路径。
+
+`DispatchRequest` 是 transport 与 API 的稳定边界：handler 只消费其中的结构化 actor、target、
+grantee/member 及 batch item，不再读取 `__target`、`__actor` 等保留字段或从 flat 字段重新组装
+Scope。CLI、MCP 和旧进程内调用若仍使用 flat 输入，必须显式经过
+`jiuwen_memory_entry/core/legacy_request_adapter.py`；HTTP adapter 则只接受结构化 DTO。HTTP 的
+`space_id` 兼容别名在 parser 内归一化为 `Scope.space`，后续授权、审计和存储只看到规范 Scope。
+
+该边界同时保证认证、授权和审计使用同一组分离值：认证 actor 从
+`RequestSecurityContext.auth.actor` 取得并以 `security=` 传入 API，嵌套
+`target` 作为授权与审计目标，API 通过 `PermissionManager.check(security.auth.actor, target, action)`
+后仅向 Control 下沉已鉴权 target。batch item target 采用完整替换而非按维度隐式合并；普通
+batch 不支持逐 item actor，避免在单次写入中混淆身份来源。
+
+### 11. list 升级为正式数据面接口
+
+`bootstrap` 表面已有 `list` verb，但此前接口层没有正式 `MemoryAPI.list(...)`，
 容易让不同接入形态各自实现枚举逻辑，甚至把“surface 直扫 KV”误读成长期架构。
 参考 mem1.0 `list_memories(user_id, scope_id, offset, limit, mem_types)` 的核心语义，
 本层把 list 收口到统一 API：
@@ -130,7 +157,7 @@ def list(
     self,
     scope: Scope,
     *,
-    identity: Scope,
+    security: RequestSecurityContext,
     offset: int = 0,
     limit: int = 100,
     memory_types: list[str] | None = None,
@@ -169,7 +196,7 @@ bootstrap payload 兼容：
 | 字段 | 语义 |
 |---|---|
 | `tenant_id` + `scope` | target scope |
-| `actor_*` | 可选调用方身份覆盖，沿用现有 dispatch 身份拆分 |
+| `actor_*` | HTTP 请求拒绝；仅保留为非 HTTP 旧 dispatch 调用的兼容输入，不能作为 HTTP 身份来源 |
 | `offset` | 非负整数，默认 0 |
 | `limit` | 正整数，默认 100 |
 | `memory_types` / `mem_types` / `memory_type` | 记忆类型过滤；可为字符串列表，或逗号分隔字符串 |
@@ -189,7 +216,7 @@ bootstrap payload 兼容：
 - `tests/unit/api/test_dispatch_management_compat.py`：bootstrap `list` 委托 `MemoryAPI.list`，
   以及 handler 对 offset/limit/memory_types 的入参校验。
 
-#### 10.1 List 自定义参数、过滤与结果总数增量设计（2026-07-30，已实现）
+#### 11.1 List 自定义参数、过滤与结果总数增量设计（2026-07-30，已实现）
 
 List 需要在“按 Scope 枚举”基础上支持调用方自定义参数和结构化过滤，同时返回过滤后的
 结果总数。目标接口调整为：
@@ -205,7 +232,7 @@ def list(
     self,
     scope: Scope,
     *,
-    identity: Scope,
+    security: RequestSecurityContext,
     offset: int = 0,
     limit: int = 100,
     memory_types: list[str] | None = None,
@@ -402,7 +429,9 @@ count。
 
 ## 拒绝的方案
 
-- **`identity` 作为位置参数**：被拒。与 target `scope` 同为 `Scope`，位置传反即静默越权；强制 keyword-only 把错误挡在调用处。
+- **`security` 作为位置参数**：被拒。安全上下文必须与 target `scope` 保持不同的类型和
+  参数角色；除 `check_write` 的历史兼容位置外统一强制 keyword-only，避免调用处误传或丢失
+  认证信息。
 - **Context 对象下沉进内核**：被拒。Context 是接口层的打包容器，下沉会让内核耦合「调用形态」；改为边界拆包，scope 独立下推，extensions 中的约定 key 由 API 边界解释，其余 extensions 透传。
 - **接口层承担编排**：被拒。api 层只做 PEP + 参数装配 + 审计，所有编排（add 的规约/索引、search 的多路召回/融合/披露、evolve 的阶段调度）留在 `jiuwen_memory/control` 与各算子层，保证入口薄、可替换接入形态。
 - **管理面也走 MemoryEngine**：被拒。engine 聚焦数据面；任务/策略/治理/授权直达对应控制算子，避免 engine 变成「什么都转发」的上帝对象。
@@ -420,12 +449,16 @@ count。
 - 鉴权/审计语义随控制层 `tests/unit/control/` 一并回归（PEP 在接口层，闸门行为在 `allow_all` 与真实 PermissionManager 下分别覆盖）。
 - list 增量：API、handler、CloudEngine、四个 KV 实现、公共过滤求值相关单测通过；
   ruff、compileall 与 `git diff --check` 通过。
+- HTTP/结构化 dispatch 增量：`tests/unit/bootstrap/test_http_dto.py`、
+  `tests/unit/bootstrap/test_http_server_security.py` 及 HTTP-03 定向回归通过；覆盖
+  `target` 字段映射、未知/保留身份字段拒绝、认证 actor 注入、space 别名冲突、batch item
+  target 和 handler 仅接收 `DispatchRequest`。
 
 ---
 
 ## 已知遗留
 
 - **同步方法不可在运行中的事件循环内调用**：`add`/`search`/… 内部 `asyncio.run`，在已有 event loop 的环境（如 async 框架内）须改用 `add_async` 等协程入口，否则 `asyncio.run` 报错。
-- **identity 不下沉 = 下游信任 target**：鉴权只在接口层做一次，下游算子信任传入的 target scope；若未来出现「下游需二次校验」的场景，需要显式传递鉴权上下文。
+- **security 不下沉 = 下游信任 target**：鉴权只在接口层做一次，下游算子信任传入的 target scope；若未来出现「下游需二次校验」的场景，需要显式传递鉴权上下文。
 - **默认装配是本地 SQLite owner-only ACL**：`assemble()` 默认 `permission=sqlite(db_path=":memory:")`，owner 访问自己的 target scope 默认放行，同租户跨 scope 默认拒绝；测试或开发若要完全放行需显式装配 `allow_all`。
 - **管理面闸门粒度粗**：admin/全局 audit 统一走根 scope，尚无更细的「按策略键/按 layer」分权；待真实 RBAC 后端细化。

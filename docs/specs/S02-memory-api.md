@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-09-01 |
+| 最近一次修订日期 | 2026-09-04 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
 ## 文档分工
 
@@ -33,14 +33,98 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 `system_metadata` 同时是对外入参，因此写入与改写入口拒绝调用方占用这些键
 （`KERNEL_SYSTEM_METADATA_KEYS` 与判定表解析出的标签键集合），见 F07「写入边界校验」。
 
+## HTTP 与协议适配契约
+
+HTTP `/v1/<verb>` 使用嵌套 `target` 作为唯一的范围表达。字段映射为：
+
+```text
+target.tenant_id -> Scope.org
+target.scope     -> Scope.user
+target.space     -> Scope.space
+target.agent     -> Scope.agent
+target.session   -> Scope.session
+```
+
+`target.space_id` 仅是 HTTP 层的兼容别名；与 `target.space` 同时出现时返回 400。
+顶层扁平 Scope 字段不属于 HTTP DTO。`space_id` 在归一化后不再进入 dispatch、授权、审计或存储。
+
+actor 不属于请求 payload。HTTP 在 dispatch 前从凭据建立认证上下文，并以
+`RequestSecurityContext.auth.actor` 作为认证 actor，通过 `security=` 传入 API；`actor_*`、`identity`、`role`、`acting_user`、`principal` 和
+`authenticated_user` 等身份声明字段必须拒绝并返回 400。未装配认证运行时则 fail-closed
+返回 503，不得使用空 Scope 或 payload 身份回退。
+
+DTO 解析一次完成 JSON object、字段 allowlist、类型和 Scope 结构校验；未知字段拒绝，
+扩展必须放在显式 `extensions` 对象中。解析结果转换为不可变 `DispatchRequest`，其中
+`actor` 来自认证上下文，`target` 为结构化 Scope，业务 `payload` 不再携带 Scope/actor
+声明，`grantee`、`member` 和 batch item target 也保持结构化。
+
+共享 handler 只消费 `DispatchRequest`。CLI、MCP 和进程内旧 flat 输入由
+`bootstrap/core/legacy_request_adapter.py` 显式转换；handler 不得根据业务 payload
+隐式猜测或重新解析 Scope、actor。统一流程为：
+
+```text
+transport -> legacy/HTTP adapter -> DispatchRequest -> API 鉴权/审计 -> Control -> response
+```
+
+`batch_add` 的 item target 是完整替换：item 未提供 target 时继承顶层默认 target，提供
+target 时不与顶层 Scope 按维度隐式合并。普通 batch 写入不混用逐 item actor；如需不同 actor，
+应另开管理接口。
+
+单条 `add` 的标准模态字段是 `source`；`modality` 仅作兼容别名。两者同时提供时值必须相同，
+否则 DTO 返回 400，避免适配层静默选择其中一个。`source="video"` 的单条写入必须带非空字符串
+`uri`，供视频摄入任务引用原始资产；`uri` 不属于 `batch_add` 的 defaults 或 item 形态。
+
+`delete_space` 使用 `mode`（`forget`、`archive`、`downweight` 或 `purge`）与
+`MemoryAPI.delete_space(..., mode=...)` 对齐；HTTP 不接受未被 API 消费的 `hard` 和
+`approval_token` 字段。
+
+### HTTP 错误响应与请求关联
+
+HTTP edge 将成功或失败响应统一写入 JSON；错误响应固定包含：
+
+```json
+{
+  "error": "ValidationError",
+  "message": "safe public message",
+  "request_id": "server-generated-id",
+  "retryable": false
+}
+```
+
+`error` 保留异常类名以兼容既有客户端；`message` 是受控的对外文案，400/策略类错误
+经过 `safe_error_message()` 脱敏，其余错误使用固定泛化文案。HTTP 不返回 traceback，
+也不得在响应中暴露 Authorization、token、API key、密码或 URL 凭据。
+
+| 异常或场景 | HTTP | `retryable` | 对外 `message` |
+|---|---:|---:|---|
+| `ValidationError` / 字段非法 | 400 | `false` | 脱敏后的字段级原因 |
+| `UnsupportedCapabilityError` | 400 | `false` | 脱敏后的能力不支持原因 |
+| `PolicyError` | 400 | `false` | 脱敏后的策略错误信息 |
+| 缺失或非法凭据 | 401 | `false` | `authentication failed` |
+| `PermissionDeniedError` | 403 | `false` | `permission denied` |
+| `NotFoundError` / 未知路径或 verb | 404 | `false` | `resource not found` |
+| 未支持的 HTTP 方法 | 405 | `false` | `method not allowed` |
+| `ConflictError` | 409 | `false` | `resource conflict` |
+| `PartialFailureError` | 409 | `false` | 脱敏后的失败原因，并保留 `completed` / `failed` / `retry_action` |
+| `RateLimitedError` | 429 | `true` | `too many requests` |
+| `BackendError` / `HealthCheckError` | 503 | `true` | `service temporarily unavailable` |
+| 请求体超过限制 | 413 | `false` | `request body is too large` |
+| 未预期异常 | 500 | `false` | `internal server error` |
+
+每个 HTTP 请求由服务端在入口生成唯一 `request_id`。所有响应同时在 JSON body 写入
+`request_id`，并在 `X-Request-ID` header 返回相同值；客户端提交的同名 header 会被忽略。
+该 ID 只用于响应、日志和审计关联，不参与 actor、target 或权限判定。429 响应额外返回
+`Retry-After: 1`，表示客户端可按整数秒退避；其他状态不返回该 header。HTTP edge 的
+状态转换不改变 CLI、MCP 和进程内 legacy dispatch 的历史兼容语义。
+
 ## 范围 / 边界
 
 **管什么**：
 - 统一对外 Core API（形态无关）：所有接入形态（SDK/CLI/Skill/MCP/HTTP·gRPC）最终映射到 `MemoryAPI`
-- 鉴权执行点（PEP）：从请求安全上下文取 actor，调用 `PermissionManager.check(identity, scope, action)` 做入口鉴权
+- 鉴权执行点（PEP）：从请求安全上下文取 actor，调用 `PermissionManager.check(security.auth.actor, scope, action)` 做入口鉴权
 - 入口审计：写审计事件到 `AuditLogger`
 - 参数装配：将调用侧参数装配为控制层可消费的内部结构
-- 鉴权驱动的编排：按 `identity` 决定资源可见范围、生成并回注系统谓词、按判权结果决定取数范围。不变量 9（授权路由值回注查询）与 12（分页命中后逐条 READ 鉴权）是这一职责的两处既有形态；跨空间检索的候选空间枚举、逐空间判权与逐空间系统谓词的生成同属此列。**范围以「判权本身及其直接输入输出」为限**，其余属机械计算或 I/O 编排，落控制层 `control/collective/`，本层只提供回调：
+- 鉴权驱动的编排：按 `security.auth.actor` 决定资源可见范围、生成并回注系统谓词、按判权结果决定取数范围。不变量 9（授权路由值回注查询）与 12（分页命中后逐条 READ 鉴权）是这一职责的两处既有形态；跨空间检索的候选空间枚举、逐空间判权与逐空间系统谓词的生成同属此列。**范围以「判权本身及其直接输入输出」为限**，其余属机械计算或 I/O 编排，落控制层 `control/collective/`，本层只提供回调：
 
   | 机械部分 | 落点 | 本层提供 |
   |---|---|---|
@@ -49,7 +133,7 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 - 同步/异步桥接：为同步形态桥接引擎异步协程
 
 **不管什么**：
-- 不做业务编排逻辑（全部委托 `jiuwen_memory/control`）——指内容如何抽取、演进、索引这类加工编排；上条所述的鉴权驱动编排不在此列，它是 PEP 职责的延伸。判据是「移出本层是否还能按 `identity` 裁决」：逐空间判权循环移出即 PEP 分裂为两处，故留本层；候选集合的计算与跨空间的召回扇出都不读 `identity`——前者在判权之前、后者在候选集与谓词都已定妥之后，故不留。逐空间构造 `RetrievalQuery` 的循环本身就是取数编排，随扇出一并移出
+- 不做业务编排逻辑（全部委托 `jiuwen_memory/control`）——指内容如何抽取、演进、索引这类加工编排；上条所述的鉴权驱动编排不在此列，它是 PEP 职责的延伸。判据是「移出本层是否还能按 `security.auth.actor` 裁决」：逐空间判权循环移出即 PEP 分裂为两处，故留本层；候选集合的计算与跨空间的召回扇出都不读 `security`——前者在判权之前、后者在候选集与谓词都已定妥之后，故不留。逐空间构造 `RetrievalQuery` 的循环本身就是取数编排，随扇出一并移出
 - 不直接操作存储
 - 不调用 LLM / 构建 / 检索。此处「调用」指调用该层的**算子**——有 Producer 注册、实现可替换、访问模型或存储的组件（`Router` / `Evolver` / `Classifier` / `IndexBuilder` 等）。引用该层导出的类型与无状态纯函数不在此列（见 `construction/router.py` 模块文档：「API 层引用构建层类型是既有形态，依赖方向为 API → 构建，无环」）。归属判定算子的调用落在控制层的 `control/collective/routing.py`，本层调控制层
 - 不做 admin 策略存储（直达 PolicyManager）
@@ -72,14 +156,15 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 12. **list 按实际资源二次鉴权**：请求显式给出的 `memory_types` 先做类型级鉴权；Engine 再以当前分页实际命中的 MemoryUnit 真源元数据返回权限上下文，API 逐条 READ 鉴权，全部通过后才返回内容。参与权限路由的 extensions 值必须作为系统过滤条件回注。
 13. **list 过滤和计数在 KV 内完成**：API 复制 `extensions`、规范化 `filters` 后完整下推；返回 `MemoryListResult.items` 当前页和分页前精确 `count`，不以 `len(items)` 代替总数。
 14. **六类动态配置不走业务入参**：能力开关、prompt 全文、LLM/Embedder/Reranker 的 model/api_key/url、Store 连接或 `*.active` 等由 `ConfigSource.fetch` 提供（见 S08）；`add`/`search`/`evolve`/`list` 不得把上述值解释为配置写入。调用侧可传 prompt **key**、`memory_type`/pipeline 等业务选择子。
-15. **安全输入唯一且不可自造**：`security` 只能来自受控构造入口——接入形态经 `bootstrap.core.auth_middleware.authenticated()`，进程内直连经 `common.security.request_context.internal_context(authenticator)`。请求 payload 不得声明 actor / request_id / surface。过渡期 `common.security.legacy.legacy_request_context()` 是唯一例外（见 F05 §PR2），随实装 PR 一并删除。
+15. **安全输入唯一且不可自造**：`security` 只能来自受控构造入口——接入形态经 `jiuwen_memory_entry.core.auth_middleware.authenticated()`，进程内直连经 `common.security.request_context.internal_context(authenticator)`。请求 payload 不得声明 actor / request_id / surface。过渡期 `common.security.legacy.legacy_request_context()` 是唯一例外（见 F05 §PR2），随实装 PR 一并删除。
 16. **授权面使用安全域授权类型**：`grant`/`revoke` 的公共类型是 `common.security.types.Grant` / `Action`；目标形态下 `grant_id` 由服务端生成、`revoke` 按 `grant_id` 精确定位。接口先行过渡期只固定签名，`GrantStore` 未实装前不生成 ID、不据 ID 判定，撤销语义与 `mem2.0` 一致（见 F05 §5.4）。
 17. **层级能力默认关闭（目标）**：普通 `add` 默认不建父树；只由显式 `evolve(..., mode=HIERARCHY, hierarchy_options=...)` 或启用的后台策略触发。显式层级请求在 `hierarchy.enabled=false` 时抛 `PolicyError`，不带层级参数的既有操作保持语义。
 18. **三类遍历严格分离（目标）**：`trace` 只沿 `provenance`；树下钻由 `search(..., expand_depth>0)` 沿 `HierarchyRef` 完成；`get(as_of)` 只沿 `supersedes`/valid-time；L0/L1/L2 仅表示同一 unit 的披露层。
 19. **API 与 Control 的职责边界**：API 只负责协议边界工作——输入形状和兼容参数校验、请求对象装配、`security.auth.actor`/target `scope` 的 PEP 鉴权、权限路由过滤回注、入口审计以及同步/异步桥接。API 不得调用 LLM、Extractor、Classifier、IndexBuilder、Retriever 或 Store，也不得实现写入、去重、版本、生命周期、检索排序和后台任务编排。
-20. **委托对象按职责分流**：数据面 add/search/list/get/update/delete/evolve 委托 `MemoryEngine`；治理操作委托 `Governor`；任务状态和取消委托 `Scheduler`/`IngestJobController`；跨 scope 授权在过渡期委托 `PermissionManager`，目标切到 `Authorizer` / `GrantStore`；策略读写委托 `PolicyManager`；space 管理委托 `SpaceManager`。这些是控制算子的直接委托，不属于 API 自行实现业务逻辑。
-21. **允许的 API 协调例外**：`delete_space` 可以在鉴权后先调用 `MemoryEngine.purge_space` 清理记忆，再调用 `SpaceManager.delete` 清理 space 元数据；该方法只负责跨控制算子的事务顺序和结果汇总，不得实现 purge、索引删除或存储遍历本身。
+20. **委托对象按职责分流**：数据面 add/search/list/get/update/delete/evolve 经 `MemoryCommandService` / `MemoryQueryService` 委托 `MemoryEngine`；治理操作经 `GovernanceService` 委托 `Governor`；`delete_space` 的 purge+delete 事务经 `SpaceLifecycleService`；任务状态和取消委托 `Scheduler`/`IngestJobController`；跨 scope 授权在过渡期委托 `PermissionManager`，目标切到 `Authorizer` / `GrantStore`；策略读写委托 `PolicyManager`；space 普通 CRUD 委托 `SpaceManager`。这些是控制层 typed 端口或算子的直接委托，不属于 API 自行实现业务逻辑。
+21. **Space 删除事务在 Control**：`delete_space` 鉴权后调用 `SpaceLifecycleService`（先 `MemoryEngine.purge_space`，再 `SpaceManager.delete`，并把 purge 条数累加进 `deleted_counts` 的 `memory` / `index` / `kv`）。purge 失败则不删 space；purge 成功而 metadata delete 失败时抛 `PartialFailureError`（`retry_action=delete_space`），不得报告完整成功。重试同一入口：purge 对空空间幂等，第二步再删元数据。API 只授权、调用该端口、使 membership 缓存失效并记录入口审计；不得在 API 内联 purge+delete 或实现索引删除/存储遍历。
 22. **业务逻辑下沉可验证**：新增数据面语义时，API 侧只增加契约校验/参数装配/授权映射，具体行为必须在 `MemoryEngine` 或对应 Control/Construction/Retrieval 算子中实现。API 单测应使用 spy/mock 验证委托，Control 单测应覆盖真实行为，禁止只在 API 单测中覆盖业务分支。
+23. **Access 只依赖本包**：`jiuwen_memory_entry/` 与 `jiuwen_memory_adapter/` 只 `import jiuwen_memory.api`，不得 import `jiuwen_memory.api.memory_api_impl` 或其他内核包。协议转换所需的 DTO、枚举、异常、`legacy_request_context` / `Credentials` 由本包重导出。公开装配是 `assemble` / `assemble_runtime`（`config=dict | Config | None`），Access composition root（`jiuwen_memory_entry/core/server.py`）不 import `jiuwen_memory.config`。`Kernel` / `build_kernel` / `LocalMemoryAPI` 不是公开导出；`assemble_runtime` 与 `Server` 不暴露 `kv` / `storage` / `space`。
 
 ## 接口契约
 
@@ -94,6 +179,7 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 | 数据面 | `batch_add` | 已实现 | [batch_add / batch_add_async](#batch_add--batch_add_async) | F03、F04 |
 | 数据面 | `batch_add_async` | 已实现 | [batch_add / batch_add_async](#batch_add--batch_add_async) | F03、F04 |
 | 数据面 | `check_write` | 已实现 | [check_write](#check_write) | 无独立 F；实现见 F01 PEP |
+| 数据面 | `submit_ingest` | 已实现 | [submit_ingest](#submit_ingest) | 无独立 F；实现见 F01 PEP / F05 |
 | 数据面 | `search` | 已实现；层级增量参数尚未实现 | [search](#search) | F01、F04；层级见 F08 |
 | 数据面 | `list` | 已实现 | [list](#list) | F01、F04 |
 | 数据面 | `get` | 已实现 | [get](#get) | 无独立 F；实现见 F01 |
@@ -185,9 +271,11 @@ async def add_async(...) -> list[MemoryUnit]: ...  # 签名同 add
 
 同步写入：鉴权 WRITE→委托 Engine→阻塞至 hot path 完成。infer/procedural 触发时返回 `created_ids` 对应的派生单元（可空），否则返回原始单元。`add_async` 为异步写入：直通 Engine 协程，供事件循环形态使用。
 
+`source` 必须位于当前装配 Normalizer 的 `modalities()` 能力集合内。动态请求不受支持时在规约和落盘前抛 `UnsupportedCapabilityError`；HTTP/CLI 共用 dispatch 稳定映射为 400。媒体 URI 只有在对应模态被 Normalizer 声明支持后才能进入规约逻辑，不支持的媒体不得将 URI 字符串作为 content 写入。
+
 ##### 可选 Entity Schema 装配
 
-Entity Schema 抽取复用统一的 `assemble(config)` / `build_kernel(config)` 装配入口。
+Entity Schema 抽取复用统一的 `assemble(config)` 装配入口。
 `globals.schema_enabled` 默认 `false`；只有装配时显式设为 `true` 才注册 Schema
 target。调用方还必须在配置中显式选择 Schema Extractor 和 Schema Evolver；
 仅打开注册开关不改变默认 target 及写入语义。Schema 写入仍使用
@@ -283,6 +371,28 @@ def check_write(
 ```
 
 Pre-flight WRITE 鉴权，不落盘。用于长耗时摄入任务入队前拒绝无权限请求，避免 DoS（队列被无权限请求占满）。镜像 `add` 的鉴权路径与 space 可写校验，但不调 `engine.write`。后台实际写入仍保留一次鉴权作防御层。
+
+#### submit_ingest
+
+**状态：已实现**
+
+```python
+def submit_ingest(
+    content: str,
+    scope: Scope,
+    source: Modality,
+    *,
+    security: RequestSecurityContext,
+    payload_id: str,
+    source_ref: str,
+    assets: list[str] | None = None,
+    tags: list[str] | None = None,
+    system_metadata: dict[str, MetadataValueType] | None = None,
+    user_metadata: dict[str, MetadataValueType] | None = None,
+) -> IngestSubmission: ...
+```
+
+受鉴权的长耗时摄入入队。本层先做 WRITE 鉴权，再委托 Control 任务控制器；Access / `assemble_runtime()` 不得持有 `IngestJobController`。后台实际 `add` 仍再鉴权一次。
 
 #### search
 
@@ -660,7 +770,7 @@ def delete_space(
 ) -> SpaceDeleteResult: ...
 ```
 
-删除 space；当前只支持 PURGE。API 先经 Engine 清该 `org + space` 下全部 user/agent/session 子 Scope 的 `/memory/` 真源与索引，再委托 SpaceManager 清 KV/messages/metadata。
+删除 space；当前只支持 PURGE。API 鉴权后调用 `SpaceLifecycleService`：先经 Engine 清该 `org + space` 下全部 user/agent/session 子 Scope 的 `/memory/` 真源与索引，再委托 SpaceManager 清 KV/messages/metadata，并汇总 `deleted_counts`。API 随后使 membership 缓存失效并记录入口审计。
 
 **状态：已设计、尚未实现**（`mode` 取 `FORGET` / `ARCHIVE` / `DOWNWEIGHT`）。方法本身已落地，其它 `DeleteMode` 尚未实现。
 
@@ -807,7 +917,7 @@ def admin_all(*, security: RequestSecurityContext) -> dict[str, str]: ...
 | 字段 | 类型 | 语义 |
 |------|------|------|
 | `auth` | AuthContext | 认证产出；`auth.actor` 即调用方身份 Scope |
-| `request_id` | str | 服务端生成，进审计与授权环境，调用方不可指定 |
+| `request_id` | str | 服务端生成，进审计与日志关联，不参与授权判定，调用方不可指定 |
 | `peer` | str | 传输层对端地址（不采信 `X-Forwarded-For` 一类自述 header） |
 | `surface` | Surface | 接入形态（HTTP/MCP/CLI/SDK/INTERNAL），由适配层写入 |
 | `started_at` | datetime | 服务端时钟（带时区），授权时效判定的 now 由它派生 |
@@ -966,6 +1076,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 | `PermissionDeniedError` | 鉴权不通过（`security.auth.actor` 对 target scope 无相应 Action 权限） |
 | `NotFoundError` | `get`、`update` 目标在已鉴权 scope 内不可见 |
 | `ValidationError` | 入参非法（如 `search` 的 `top_k <= 0`；`add`/`batch_add` 的 `content` 非 `str`、空串或纯空白；目标层级的 span、深度、预算、options 或 patch 形状非法） |
+| `UnsupportedCapabilityError` | 请求的 `source` 模态不在当前 Normalizer 声明的能力集合内；在规约、落盘和建索引前失败 |
 | `PolicyError` | `admin_set` 的键未知或为不可变配置；层级功能关闭时发起显式目标层级操作 |
 | `ConflictError` | 写入冲突（如 id 重复）或目标结构前置条件与当前状态冲突 |
 | `BackendError` / `HealthCheckError` | 后端故障 / 健康探测失败 |
@@ -975,12 +1086,12 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 ```
 接入层 → authenticated(...) / internal_context(...) → security: RequestSecurityContext
 调用方 → MemoryAPI.method(scope=target, security=security)
-  → identity = security.auth.actor
-  → PermissionManager.check(actor=identity, target=scope, action=<对应动作>, context=...)
+  → actor = security.auth.actor
+  → PermissionManager.check(actor=security.auth.actor, target=scope, action=<对应动作>, context=...)
     # list/get/update/delete/inspect/trace 的已有资源上下文来自真源和已鉴权 target scope
-    → 通过 → 委托 Engine/Governor/PolicyManager（仅传 scope，不传 identity）
+    → 通过 → 委托 Engine/Governor/PolicyManager（仅传 scope，不传 security）
     → 拒绝 → 抛 PermissionDeniedError
-  → 落审计事件（含 identity + action + target_id + 时间）
+  → 落审计事件（含 actor + action + target_id + 时间）
 ```
 
 > 目标形态下这一步由安全域 `Authorizer` 承担（策略判定、`AuthorizationEnvironment`、
@@ -993,7 +1104,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 jiuwen_memory/api/memory_api_impl/
     __init__.py             # 重导出实现类
     local_memory_api.py     # LocalMemoryAPI：PEP + 委托
-    assembly.py             # build_kernel / assemble
+    assembly.py             # assemble / assemble_runtime / _build_kernel
 ```
 
 ## 与其它 spec 的关系
@@ -1005,5 +1116,5 @@ jiuwen_memory/api/memory_api_impl/
 | S04-retrieval | search 路径中 Engine 委托 Retriever |
 | S05-construction | 目标 `HierarchyComposeOptions` / `EvolveMode.HIERARCHY` 的字段契约 |
 | S08-config | 六类动态配置经 ConfigSource；不经本层业务入参写入 |
-| F07-collective-memory | 本层是空间治理的鉴权点：入口到轴与动作的映射、空间事实一次读取、检索两族谓词的生成与注入均落在本层。多空间读写编排按「是否读 `identity`」拆开——判权与谓词生成留本层，写入候选集的计算与跨空间的召回扇出落控制层 `control/collective/` |
+| F07-collective-memory | 本层是空间治理的鉴权点：入口到轴与动作的映射、空间事实一次读取、检索两族谓词的生成与注入均落在本层。多空间读写编排按「是否读 `security`」拆开——判权与谓词生成留本层，写入候选集的计算与跨空间的召回扇出落控制层 `control/collective/` |
 | architecture.md §6 | 已实现 MemoryAPI 清单 |

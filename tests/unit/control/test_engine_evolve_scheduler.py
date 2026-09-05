@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config.config import Config

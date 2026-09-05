@@ -132,9 +132,25 @@ class APIReranker(Reranker):
         """对候选文本打相关性分，返回与 ``texts`` 等长、同序的分数列表。
 
         每次调用按 ConfigSource 解析 model/api_key/base_url，再按方言拼端点与 body。
+        空/纯空白的 query 或文本元素不透传后端（整批请求会被网关 400 拒绝），对应分数保持 0.0；返回值仍与 ``texts`` 等长同序。
         """
         if not texts:
             return []
+        scores = [0.0] * len(texts)
+        if not (query or "").strip():
+            logger.warning(
+                "APIReranker(%s): empty query, skip rerank for %d texts",
+                self._dialect, len(texts),
+            )
+            return scores
+        valid_idx = [i for i, t in enumerate(texts) if t and t.strip()]
+        if not valid_idx:
+            logger.warning(
+                "APIReranker(%s): all %d texts empty, skip rerank call",
+                self._dialect, len(texts),
+            )
+            return scores
+        docs = [texts[i] for i in valid_idx]
         ep = self._endpoint()
         url = (ep.base_url or self._fallback_base_url).rstrip("/") + self._spec["path"]
         build_body: Callable = self._spec["body"]
@@ -143,7 +159,7 @@ class APIReranker(Reranker):
             resp = self._client.post(
                 url,
                 headers={"Authorization": f"Bearer {ep.api_key}"},
-                json=build_body(ep.model, query, list(texts)),
+                json=build_body(ep.model, query, docs),
             )
             resp.raise_for_status()
             data = resp.json()
@@ -151,12 +167,12 @@ class APIReranker(Reranker):
             logger.error("APIReranker(%s): rerank request failed — %s", self._dialect, exc)
             raise BackendError(f"rerank API call failed: {exc}") from exc
 
-        # 响应按分排序、各带原始 index；据 index 还原到输入顺序（缺失者保持 0.0）。
-        scores = [0.0] * len(texts)
+        # 响应按分排序、各带请求内 index（docs 的下标）；映射回原始 texts 位置，
+        # 缺失者与被过滤的空文本保持 0.0。
         for item in extract(data):
             idx = item.get("index")
-            if isinstance(idx, int) and 0 <= idx < len(scores):
-                scores[idx] = float(item.get("relevance_score", 0.0))
+            if isinstance(idx, int) and 0 <= idx < len(docs):
+                scores[valid_idx[idx]] = float(item.get("relevance_score", 0.0))
         return scores
 
     def _endpoint(self):

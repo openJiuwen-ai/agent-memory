@@ -6,7 +6,7 @@
 披露返回。``key→unit_id`` 映射在写入时捕获（``add`` 返回本次创建的 ``MemoryUnit``），
 使数据集的逻辑相关集能映射到真实 ``unit_id`` 再与召回结果比对。
 
-每个 harness 持有一套独立的内核（``build_kernel``），天然隔离——不同 Config 的对比
+每个 harness 持有一套独立的 ``assemble()`` 运行时，天然隔离——不同 Config 的对比
 跑分各起一套，互不污染。
 """
 
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.api import assemble
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Context
 from jiuwen_memory.config.config import Config
@@ -26,8 +26,7 @@ class EvalHarness:
     """装配内核 → 灌语料 → 跑查询 → 采集观测。"""
 
     def __init__(self, config: Optional[Config] = None) -> None:
-        self._kernel = build_kernel(config=config)
-        self._api = self._kernel.api
+        self._api = assemble(config=config)
         self._key2ids: Dict[str, List[str]] = {}
 
     def ingest(self, seeds: List[MemorySeed]) -> None:

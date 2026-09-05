@@ -31,7 +31,7 @@ after_invoke（每轮结束）
 
 ## 2. 接入步骤概要
 
-1. **安装内核**：在 WorkSwarm 所在的 Python 环境执行 `pip install JiuwenMemory`，并用 `python -c "from jiuwen_memory.api import build_kernel"` 验证；
+1. **安装内核**：在 WorkSwarm 所在的 Python 环境执行 `pip install JiuwenMemory`，并用 `python -c "from jiuwen_memory.api import assemble"` 验证；
 2. **准备后端**：
    - `sdk` 模式：部署 Redis / Milvus / Elasticsearch 三个后端服务（轻量场景可退化为 sqlite / memory 组合）；
    - `server` 模式：按[部署方式概览](../安装指导/部署方式概览.md)启动 agent-memory HTTP 服务；

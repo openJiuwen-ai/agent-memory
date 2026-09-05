@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-08-31 |
+| 日期 | 2026-09-03 |
 | 影响范围 | `jiuwen_memory/construction/index_builder_impl/`（新增 `_index_ops.py`，重构 fulltext / vector / unified）、`jiuwen_memory/common/type_def/`（memory.py / memory_codec.py / `__init__.py`）、`tests/unit/construction/test_index_builder.py`、`tests/unit/common/test_memory_codec.py`、`jiuwen_memory/construction/AGENTS.md`、`docs/specs/S05-construction.md`、`docs/specs/S07-common.md` |
 | 测试基线 | `pytest tests/unit/construction/test_index_builder.py tests/unit/common/test_memory_codec.py`（含 unified 向量化新增 5 项 + codec vector 往返 1 项）；`pytest tests/unit/construction/ tests/unit/common/ tests/unit/retrieval/ tests/unit/control/`（963 passed；2 项 entity_linker 失败为 HEAD 已有测试间干扰，2 项 bge_m3 失败为本地环境缺 torch）；改动文件 `ruff check` 通过 |
 
@@ -109,7 +109,10 @@ F06 初版（2026-08-12）落地的 `UnifiedIndexBuilder` 把 build/update/remov
   区分「源 system_metadata」与「索引投影」或补齐改为 transient 不落盘。
 - unified 不建立派生检索索引（`CompositeStorage` 无投影能力）。其检索能力取决于所注入
   `Storage` 自身支持的 recall/retrieve 管线，不由此 Builder 提供。
-- engine 链路冲突仍未解：InMemoryEngine/CloudEngine 的标准写链路会先调 Storage 写接口
-  再调 IndexBuilder，直接换 `unified` 会重复写本体；启用需 control 路由配合。
+- ~~engine 链路冲突仍未解：InMemoryEngine/CloudEngine 的标准写链路会先调 Storage 写接口
+  再调 IndexBuilder，直接换 `unified` 会重复写本体；启用需 control 路由配合。~~
+  **该项已于 2026-09-03 核实解决**：当前两个 Engine 的标准写链路都只调用所选
+  `IndexBuilder.build`，由 IndexBuilder 决定写入 Storage 或各索引端口；Engine 中残留的
+  `_write_middle_to_kv` / `_write_default_to_kv` 没有调用方，不构成运行时双写。
 - unified 不接 entity 索引；L0/L1 分层文本不向量化（`ChunkVector` 只承载 content
   chunks，分层向量的 record id 约定与 metadata 投影不同，需要时另行扩展）。

@@ -4,11 +4,15 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-08-20（决策 25 于 2026-08-28 追加；2026-08-29 并入原 `S09-collective-memory.md` 的契约章节，该规约随之删除——群体记忆是特性，不占模块规约编号） |
+| 日期 | 2026-09-03 |
 | 影响范围 | `jiuwen_memory/api/`、`jiuwen_memory/control/`、`jiuwen_memory/construction/`、`jiuwen_memory/common/security/`、`jiuwen_memory/common/type_def/memory.py`、`deploy/migration/`、`jiuwen_memory_adapter/jiuwenswarm/`、`docs/specs/S02-memory-api.md`、`docs/specs/S03-control.md`、`docs/specs/S04-retrieval.md`、`docs/specs/S05-construction.md`、`docs/specs/S07-common.md` |
 | 测试基线 | 见「验证」 |
 | 相关规约 | 本文档自带契约章节（接口契约 / 数据结构 / 判定规则 / 配置契约）；跨模块改动同步落 S02、S03、S04、S05、S07；安全横切契约随上游安全模块合入 |
 | Refs | — |
+
+> 历史：本文初版归档于 2026-08-20，决策 25 于 2026-08-28 追加；2026-08-29
+> 并入原 `S09-collective-memory.md` 的契约章节，该规约随之删除——群体记忆是特性，
+> 不占模块规约编号；2026-09-03 修正文档链接。
 
 ## 背景
 
@@ -773,7 +777,7 @@ SPACE_FANOUT_LIMIT: int = 8
 def plan_write_targets(org, coords, naming, *, can_write, limit=SPACE_FANOUT_LIMIT) -> WriteTargets: ...
 ```
 
-`WriteTargets` 落 `control/types.py`（字段见 [S03](S03-control.md)「控制层数据类型」）。
+`WriteTargets` 落 `control/types.py`（字段见 [S03](../../specs/S03-control.md)「控制层数据类型」）。
 
 | 规定 | 内容 |
 |---|---|
@@ -877,7 +881,7 @@ def space_error(space, error_type, message) -> ChannelError: ...
 
 候选不取主体反查索引，尽管索引正是为避免全库扫描而建。
 
-索引的超集契约针对**成员关系**，不针对「有权访问」：写入方只有归属登记与成员记录两类，靠显式授权（`grant`）取得读权的主体不在索引里。以索引作候选，这类调用方直接 `search` 读得到、`list_spaces` 却列不出来，且不报错。与 [F07 决策 23](../features/control/F07-collective-memory-design.md) 撤下 `cascade_delete` 时给出的理由是同一条，读侧同样成立。
+索引的超集契约针对**成员关系**，不针对「有权访问」：写入方只有归属登记与成员记录两类，靠显式授权（`grant`）取得读权的主体不在索引里。以索引作候选，这类调用方直接 `search` 读得到、`list_spaces` 却列不出来，且不报错。与 [F07 决策 23](#决策-23五类空间的开通形态定为契约) 撤下 `cascade_delete` 时给出的理由是同一条，读侧同样成立。
 
 授权记录接入索引是遗留事项，前置条件在索引项的结构上：
 
@@ -1277,7 +1281,7 @@ AND  metadata.session_id IN ["", "S1"]    ← 第二族
 
 **调用方指定的空间必须先经 `create_space` 注册，才能往里写记忆。** 这不是新增的一道存在性校验，而是判定生效后的结果：鉴权的两个判据（归属登记与成员记录）都存放在空间的注册记录里，空间未注册时两者皆空，判定链四条放行路径全部落空，写入得权限拒绝。改造前该路径放行，依据是「调用方 scope 覆盖目标 scope」的前缀判定——身份与目标分离后该判据不再命中。
 
-**`scope.space` 为空时的 fallback 空间是唯一的例外：不存在即按调用方身份自动创建并登记归属，由策略键 `space.auto_create_fallback` 控制，默认开。** 判据是空间名由谁决定——fallback 空间名由内核用调用方自己的身份渲染，别的主体渲染不出它，因此没有抢占面，归属该登记给谁也是确定的；而调用方传入的空间名是任意字符串，内核只有「坐标 → 空间名」的渲染方向、反解不出它归谁，登记给写入者即先写入者占有该空间名。决策与取舍见 [F07 决策 19b](../features/control/F07-collective-memory-design.md)。
+**`scope.space` 为空时的 fallback 空间是唯一的例外：不存在即按调用方身份自动创建并登记归属，由策略键 `space.auto_create_fallback` 控制，默认开。** 判据是空间名由谁决定——fallback 空间名由内核用调用方自己的身份渲染，别的主体渲染不出它，因此没有抢占面，归属该登记给谁也是确定的；而调用方传入的空间名是任意字符串，内核只有「坐标 → 空间名」的渲染方向、反解不出它归谁，登记给写入者即先写入者占有该空间名。决策与取舍见 [F07 决策 19b](#决策-19b调用方指定的空间须显式创建fallback-空间按开关自动创建默认开)。
 
 自动创建的四条边界：
 

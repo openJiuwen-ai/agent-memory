@@ -3,16 +3,15 @@
 
 对每条 ``RawPayload``：调用注入的 Normalizer 规约出 content 文本投影，转换为
 ``MemoryUnit``（分配 id、写双时间）后返回——**不落盘**（落盘归构建层/控制层）。
-``assets``/``tags`` 不在此设置（接入层不感知），由上游 write 入参补齐。
+``assets`` 由本实现复制到当前产出的 Segment；``tags`` 仍由控制层处理。
 """
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import List
 
-from jiuwen_memory.common.normalizer import Normalizer
+from jiuwen_memory.common.normalizer import Normalizer, ensure_normalizer_supports
 from jiuwen_memory.common.normalizer.base import NormalizerProducer
 from jiuwen_memory.common.type_def import MemoryUnit, RawPayload, Segment, Temporal
 from jiuwen_memory.ingest.base import IngestOperatorType
@@ -29,15 +28,18 @@ class SimpleIngestor(Ingestor):
     def __init__(self, normalizer: Normalizer) -> None:
         self._normalizer = normalizer
 
-    def operator_type(self) -> IngestOperatorType:
+    @staticmethod
+    def operator_type() -> IngestOperatorType:
         return IngestOperatorType.INGESTOR
 
-    def health(self) -> None:
+    @staticmethod
+    def health() -> None:
         return None
 
-    def ingest(self, payloads: List[RawPayload]) -> List[MemoryUnit]:
-        units: List[MemoryUnit] = []
+    def ingest(self, payloads: list[RawPayload]) -> list[MemoryUnit]:
+        units: list[MemoryUnit] = []
         for payload in payloads:
+            ensure_normalizer_supports(self._normalizer, payload.modality)
             now = _now()
             units.append(
                 MemoryUnit(
@@ -46,6 +48,7 @@ class SimpleIngestor(Ingestor):
                     segments=[
                         Segment(
                             content=self._normalizer.normalize(payload),
+                            assets=list(payload.assets),
                             source=payload.modality,
                         )
                     ],

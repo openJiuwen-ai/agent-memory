@@ -166,7 +166,7 @@ memory_api:
 ```
 
 - `profile` belongs to the service surface and identifies the active profile.
-- The content under `memory_api` is the two-level component namespace passed to `build_kernel()`.
+- The content under `memory_api` is the two-level component namespace passed to `assemble()`.
 - User configuration is merged over the built-in default assembly, so only implementations that
   need to be replaced must be declared.
 - `${VAR}` and `${VAR:-default}` are expanded recursively by the HTTP startup configuration loader.

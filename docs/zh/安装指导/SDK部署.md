@@ -5,7 +5,7 @@ SDK 部署是指在使用方的 Python 进程中安装和装配 `jiuwen_memory`�
 启动的真实后端。
 
 > 当前 `jiuwen_memory_entry/sdk/__init__.py` 还是空的，项目尚未提供独立封装的 SDK 客户端。
-> 本文以 `jiuwen_memory.api.build_kernel()` 和 `MemoryAPI` 作为当前稳定的 Python 接入入口。
+> 本文以 `jiuwen_memory.api.assemble()` 和 `MemoryAPI` 作为当前稳定的 Python 接入入口。
 
 ## 1. 组合方式
 
@@ -52,41 +52,41 @@ python -m pip install -e '.[embed]'
 
 ## 3. 方式一：内存存储 + 直接调用 MemoryAPI
 
-不传配置时，`build_kernel()` 使用内置离线装配：`CompositeStorage` 组合进程内 KV、Vector、
+不传配置时，`assemble()` 使用内置离线装配：`CompositeStorage` 组合进程内 KV、Vector、
 Fulltext 与 Graph Store，嵌入、LLM 和精排也使用无外部依赖的默认实现。
 
 ```python
-from jiuwen_memory.api import build_kernel
+from jiuwen_memory.api import assemble_runtime
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Context, Scope
 
-kernel = build_kernel()
-api = kernel.api
-
+runtime = assemble_runtime()
+api = runtime.api
 scope = Scope(org="demo", user="alice")
-actor = scope
+security = legacy_request_context(scope)
 
 try:
     units = api.add(
         "用户偏好用 Python 写代码",
         scope,
-        identity=actor,
+        security=security,
         tags=["preference"],
     )
     result = api.search(
         "用户喜欢用什么语言",
         Context(scope),
-        identity=actor,
+        security=security,
         top_k=5,
     )
     print(units[0].id)
     print([item.content for item in result.items])
 finally:
-    kernel.ingest_jobs.close(wait=True)
+    runtime.close(wait=True)
 ```
 
 该模式的所有数据都在当前进程内，进程退出后丢失。它不需要 Docker，也不需要模型服务。
 
-## 4. 方式二：内存存储 + 本地 HTTP 服务
+## 4. 方式二：内存存储 + 本地 HTTP 启动器
 
 在仓库根目录运行：
 
@@ -100,18 +100,29 @@ uv run --no-sync -- ./scripts/run-server.sh --host 127.0.0.1 --port 8137
 ./scripts/run-server.sh --host 127.0.0.1 --port 8137
 ```
 
-另开终端验证：
+另开终端可以验证健康检查：
 
 ```bash
 curl http://127.0.0.1:8137/healthz
+```
+
+HTTP 数据请求必须由可信 `SecurityRuntime` 完成认证后才会 dispatch。当前仓库尚未提供
+`SecurityRuntimeProducer` 的生产装配器，因此通过启动脚本启动的参考服务会对 `POST /v1/<verb>`
+安全地返回 503，而不会回退到请求体中的 actor。集成应用应在调用
+`HttpServer.build(..., security_runtime=runtime)` 时注入认证 runtime；认证成功后的请求体使用嵌套
+`target`，并携带认证头：
+
+```bash
 
 curl -X POST http://127.0.0.1:8137/v1/add \
   -H 'Content-Type: application/json' \
-  -d '{"tenant_id":"demo","scope":"alice","content":"用户偏好用 Python 写代码"}'
+  -H "Authorization: Bearer $AGENT_MEMORY_API_KEY" \
+  -d '{"target":{"tenant_id":"demo","scope":"alice"},"content":"用户偏好用 Python 写代码"}'
 
 curl -X POST http://127.0.0.1:8137/v1/search \
   -H 'Content-Type: application/json' \
-  -d '{"tenant_id":"demo","scope":"alice","query":"用户喜欢用什么语言","k":5}'
+  -H "Authorization: Bearer $AGENT_MEMORY_API_KEY" \
+  -d '{"target":{"tenant_id":"demo","scope":"alice"},"query":"用户喜欢用什么语言","k":5}'
 ```
 
 HTTP 进程内只装配一个 Kernel，请求之间能够共享状态；服务停止后，默认内存数据丢失。
@@ -203,26 +214,29 @@ export PG_DSN='postgresql://agent_memory:请替换密码@127.0.0.1:5432/agent_me
 export ES_HOSTS='http://127.0.0.1:9200'
 ```
 
-直接调用时，`build_kernel()` 只接受 `memory_api` 内部的两级命名空间。为了同时复用 HTTP
+直接调用时，`assemble()` 只接受 `memory_api` 内部的两级命名空间。为了同时复用 HTTP
 配置格式和环境变量展开逻辑，可以这样加载：
 
 ```python
 from jiuwen_memory_entry.core.config_loader import load_layer
-from jiuwen_memory.api import build_kernel
+from jiuwen_memory.api import assemble_runtime
+from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Context, Scope
 from jiuwen_memory.config import Config
 
 layer = load_layer("local-real-storage.yml")
 kernel_config = Config.from_dict(layer["memory_api"])
-kernel = build_kernel(config=kernel_config)
+runtime = assemble_runtime(config=kernel_config)
+api = runtime.api
 
 scope = Scope(org="demo", user="alice")
+security = legacy_request_context(scope)
 try:
-    kernel.api.add("需要持久化的记忆", scope, identity=scope)
-    result = kernel.api.search("持久化", Context(scope), identity=scope, top_k=5)
+    api.add("需要持久化的记忆", scope, security=security)
+    result = api.search("持久化", Context(scope), security=security, top_k=5)
     print([item.content for item in result.items])
 finally:
-    kernel.ingest_jobs.close(wait=True)
+    runtime.close(wait=True)
 ```
 
 不要直接对这份带 `profile`、`memory_api` 外壳的文件调用 `Config.from_yaml()`；那会把服务层键
@@ -287,10 +301,10 @@ kv_store: {}
 如果要直接读取这种不带 `memory_api` 外壳的文件，可以使用：
 
 ```python
-from jiuwen_memory.api import build_kernel
+from jiuwen_memory.api import assemble
 from jiuwen_memory.config import Config
 
-kernel = build_kernel(config=Config.from_yaml("memory-api.yml"))
+api = assemble(config=Config.from_yaml("memory-api.yml"))
 ```
 
 注意，此方式不会自动展开环境变量，应写入已经解析好的值，或由应用先完成环境变量注入。
@@ -315,9 +329,10 @@ evolve、job、inspect、trace、audit、admin、grant/revoke 和 space 管理�
 - 默认内存栈随进程退出丢失；真实后端的数据生命周期由 Docker volume 决定；
 - 本地脚本不会自动读取 `.env`，需要在 shell 中 `export`，或使用其他进程管理工具注入环境变量；
 - 开发环境建议绑定 `127.0.0.1`，不要直接把参考 HTTP 服务暴露到公网；
-- 当前 HTTP 请求中的 actor 是调用方声明值，不等于真实认证身份；
-- 生产场景应增加 TLS、认证、限流、超时、监控、备份和可靠的进程管理；
-- 应用退出前应调用 `kernel.ingest_jobs.close(wait=True)`，等待并释放进程内摄入任务线程池。
+- HTTP actor 仅来自认证上下文，请求体中的 `actor_*`、`identity` 等身份声明会被拒绝；
+- 未装配认证 runtime 的 HTTP 启动器会返回 503，不会降级采用空身份或请求体身份；
+- 生产场景应提供可信认证 runtime，并增加 TLS、限流、超时、监控、备份和可靠的进程管理；
+- 应用退出前应调用 `runtime.close(wait=True)`，等待并释放进程内摄入任务线程池。
 
 ## 11. 相关文档
 

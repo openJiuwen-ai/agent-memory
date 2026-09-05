@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """``RequestSecurityContext`` 的受控构造入口（F05 §RequestSecurityContext、§进程内调用）。
 
 构造点收在这里，不散在各 surface：``request_id`` 由服务端生成、``started_at`` 取服务端
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping
+from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 
 from jiuwen_memory.common.security.types import (
@@ -26,6 +28,23 @@ from jiuwen_memory.common.security.types import (
     _bind_origin,
 )
 
+_REQUEST_ID: ContextVar[str | None] = ContextVar("agent_memory_request_id", default=None)
+
+
+def set_request_id(request_id: str) -> Token[str | None]:
+    """Set the current request ID for logging and audit correlation only."""
+    return _REQUEST_ID.set(request_id)
+
+
+def reset_request_id(token: Token[str | None]) -> None:
+    """Restore the previous request ID after a request scope exits."""
+    _REQUEST_ID.reset(token)
+
+
+def get_request_id() -> str | None:
+    """Return the request ID of the current authenticated request, if any."""
+    return _REQUEST_ID.get()
+
 
 def new_request_context(
     auth: AuthContext,
@@ -33,11 +52,13 @@ def new_request_context(
     surface: Surface,
     peer: str = "",
     attributes: Mapping[str, str] | None = None,
+    request_id: str | None = None,
 ) -> RequestSecurityContext:
     """把一个**已认证**的 :class:`AuthContext` 包成本次请求的安全上下文。
 
-    ``request_id`` 在这里生成，**不接受调用方传入**：它进审计与 ``AuthorizationEnvironment``，
-    能被调用方指定就等于让调用方给自己的行为贴任意标签、或与他人的记录撞号。
+    未传 ``request_id`` 时在这里生成。受控 HTTP 适配层可传入入口刚生成的 ID，
+    让响应、认证上下文与审计记录保持一致；该值不得来自客户端 header、
+    query 或业务 payload。它只用于日志与审计关联，不参与 actor、target 或授权判定。
 
     ``surface`` 无默认值，必须由适配层显式写入——缺省成 ``INTERNAL`` 会让一个漏传的
     HTTP 请求在审计里看起来像进程内调用。
@@ -50,7 +71,7 @@ def new_request_context(
     # 先构造上下文（_origin 用占位符）
     context = RequestSecurityContext(
         auth=auth,
-        request_id=uuid.uuid4().hex,
+        request_id=request_id or uuid.uuid4().hex,
         peer=peer,
         surface=surface,
         started_at=datetime.now(timezone.utc),

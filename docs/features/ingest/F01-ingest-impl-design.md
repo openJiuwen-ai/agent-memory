@@ -4,9 +4,9 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-06-24 |
+| 日期 | 2026-09-02 |
 | 影响范围 | jiuwen_memory/ingest/{ingestor,source}_impl/，docs/specs/S01-ingest-access.md（如有） |
-| 测试基线 | 无专属 ingest 测试目录；写入路径经 e2e/控制层覆盖：`pytest tests/unit/construction/test_e2e_evolution.py tests/unit/api/test_recall_context.py tests/unit/control/` 全绿（exit 0） |
+| 测试基线 | `pytest tests/unit/ingest/test_simple_ingestor.py tests/unit/control/test_cloud_engine.py::test_cloud_engine_delegates_assets_mapping_to_ingestor tests/unit/control/test_engine_write_middle_path.py::test_write_delegates_assets_mapping_to_ingestor` 全绿（exit 0） |
 | Refs | —（如有 issue 补 `Refs: #<n>`） |
 
 > 本文档归档**接入层各实现的实现规约**：每个 `*_impl/` 实现对应哪个接口契约、注册方式（或不注册）、依赖、产出 与各自取舍。接口契约本身（方法签名、错误语义、Write 路径不变量）归 `docs/specs/S01-ingest-access.md`；本文聚焦「当前有哪几种实现、各自怎么落地」。
@@ -39,7 +39,7 @@
 
 | target | 类 | 依赖 | 产出 | 关键语义 |
 |---|---|---|---|---|
-| `simple` | `SimpleIngestor` | `normalizer`（`dep`，缺省 `passthrough`） | `list[MemoryUnit]` | 对每条 `RawPayload`：调 `Normalizer.normalize` 规约出 content，包成单 `Segment(content, source=modality)` 的 `MemoryUnit`；分配 `uuid4` id、`scope` 透传、`source_ref=payload.id`、`metadata` 拷贝 |
+| `simple` | `SimpleIngestor` | `normalizer`（`dep`，缺省 `passthrough`） | `list[MemoryUnit]` | 对每条 `RawPayload`：先校验 modality 在 `Normalizer.modalities()` 中，再调 `normalize` 规约出 content，包成单 `Segment(content, assets=list(payload.assets), source=modality)` 的 `MemoryUnit`；分配 `uuid4` id、`scope` 透传、`source_ref=payload.id`、双 metadata 拷贝 |
 
 **双时间写入**（`Temporal`）：
 
@@ -47,7 +47,7 @@
 - `t_ingest` = `now`（接入时刻）
 - `t_valid` = `now`（自接入起有效）；`t_invalid` 不设（未失效）
 
-**不做的事**（边界）：`assets`/`tags` 不在此设置（接入层不感知，由上游 `write` 入参补齐）；**不落盘**（归构建/控制层）；不分块、不向量化（归构建层）。
+**不做的事**（边界）：`tags` 不在此设置，仍由控制层处理；**不落盘**（归构建/控制层）；不分块、不向量化（归构建层）。资产映射是 Ingestor 责任，但“一个 payload 产出单 MemoryUnit/单 Segment、全部 assets 放该 Segment”只是当前 `simple` 实现策略，不是接口固定数量契约。
 
 ### Source（`ingest/source.py` · 无 Producer，手动构造）
 
@@ -70,14 +70,15 @@
 
 ## 验证
 
-- 无专属 ingest 测试目录；`SimpleIngestor` 经 `write` 路径在 e2e 与控制层测试间接覆盖。
-- `pytest tests/unit/construction/test_e2e_evolution.py tests/unit/api/test_recall_context.py tests/unit/control/` 全绿（exit 0）——覆盖 write→ingest→构建→召回 全链路。
+- `tests/unit/ingest/test_simple_ingestor.py` 直接覆盖 assets 映射及防御性复制。
+- 同文件覆盖不支持模态在 normalize 前失败，以及自定义 Normalizer 声明支持后正常调用。
+- InMemoryEngine/CloudEngine 的定向用例用自定义多 Segment Ingestor 验证 Engine 只透传 assets、不改写映射结果。
 - `TextSource` 为离线/测试连接器，随 write 路径与各源接入用例运行。
 
 ---
 
 ## 已知遗留
 
-- **仅 `simple` 一种 Ingestor**：当前接入编排只有最小实现（单 Segment、不处理 assets）；多 Segment、资产引用记录、批量去重等留待后续。
+- **仅 `simple` 一种 Ingestor**：当前接入编排只有单 Segment 最小实现；更复杂的多 MemoryUnit/多 Segment 映射策略留给后续 Ingestor 实现。
 - **仅 `TextSource` 一种连接器**：真实信息源（对话流/文档/代码库/工具轨迹/图像/音视频/外部导入）的连接器尚未落地，目前以预置文本模拟。
-- **多模态 assets 尚未贯通**：`SimpleIngestor` 不设 `assets`，原模态资产引用的记录路径待补（依赖 FSStore 落原件 + Ingestor 写 assets 引用）。
+- **资产原件存储不在本次范围**：当前贯通的是 `list[str]` 引用传递与映射；引用对应的原件是否由 FSStore 管理，仍由具体接入/部署方案决定。

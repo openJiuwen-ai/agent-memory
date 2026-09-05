@@ -42,12 +42,12 @@ Locate the logs for your runtime form:
 
 Two expectations to set:
 
-- **The HTTP / CLI entry points log only a few lines** (startup/shutdown etc.), with no per-request logging. All request success/failure information lives in the HTTP response body—don't look for request clues in entry-point logs.
+- **The HTTP / CLI entry points normally avoid per-request logging**; internal failures record only a redacted `request_id` and exception type. All request success/failure information lives in the HTTP response body; HTTP responses also provide `request_id` and `X-Request-ID` for correlation with audit records and downstream logs.
 - Log names are self-identified by module prefix (e.g., `agent_memory.construction.index_builder_impl.vector_index_builder`); filter by prefix to distinguish layers.
 
 **How to locate "my request" in a flood of logs**
 
-agent-memory logs **have no request id spanning the whole chain**; correlation relies on two business identifiers:
+HTTP requests receive a server-generated request id that spans the response and audit record; engine logs still primarily rely on two business identifiers:
 
 1. **scope** (`org/space/user/session`) — lines such as `Engine.write ...` / `Recaller ...` all carry the scope; filter logs by it to narrow down to that tenant/session's log segment;
 2. **first 8 characters of the unit id** — `VectorIndexBuilder` WARN lines carry it, letting you map the `item_id` from an add response directly to the specific memory unit.
@@ -66,7 +66,7 @@ The first triage basis is the **HTTP response body** — most problems are half-
 
 Decision priority: a non-empty `error` means failure (enter Scenario 2); `ok=true` only means the request pipeline succeeded — it **does not guarantee the memory is retrievable** (index build failures degrade silently; enter Scenario 3).
 
-Errors use the uniform format `{"error": "<exception class name>", "message": "<reason>"}`. Note: `message` is the raw exception text and is **not guaranteed to be redacted** — redaction only happens on some internal paths such as recall channel errors (see A.3); do not pass plaintext credentials in request parameters.
+Error responses uniformly contain `error`, `message`, `request_id`, and `retryable`, and return the same request id in the `X-Request-ID` header. Messages for 400/policy errors are redacted; 401/403/404/409/429/500/503 use fixed generic text. HTTP responses never include tracebacks or echo credentials.
 
 Once you have the symptom, find your seat:
 
@@ -101,9 +101,10 @@ Problem occurs
 | `InvalidExtractionJSONError` | LLM extraction | Search logs for `Extractor` (including the `LLM response is not valid JSON` WARN); confirm the LLM endpoint is reachable and responses aren't truncated |
 | `LockError` / `LockTimeoutError` / `LockLostError` | Distributed lock | Lock contention from multiple instances concurrently writing the same scope; check Redis lock configuration and instance count |
 | `BackendError` | Storage layer | Backend network/IO failure; go to [Scenario 1](#13-scenario-1-service-unreachable--wont-start) ②③ to inspect per-service container logs |
+| `PayloadTooLarge` | HTTP entry | Request body exceeds the server limit; compress or split the request before sending |
 | `StorageRetrievalError` | Recall layer | Keyword + vector channels failed **simultaneously**; troubleshoot Milvus / ES separately |
 | `UnsupportedStorageCapabilityError` | Assembly configuration | A backend was removed from config but an operator still references its capability; check config-operator consistency |
-| `InternalError` | Internal bug | `message` contains the original exception text; use it as a keyword to search logs for the full stack trace |
+| `InternalError` | Internal bug | The response only contains `internal server error`; use `request_id` to correlate server failure records and audit events |
 
 For the complete status-code mapping, see [Appendix A](#appendix-a-error-code-reference).
 
@@ -187,26 +188,30 @@ The scope (`org` / `space` / `user` / `session`) used for writes and queries mus
 agent-memory's error system is a **two-layer structure** (as opposed to numeric error codes):
 
 1. **Exception layer**: 12 exception classes (base class `AgentMemoryError` + 11 subclasses; plus the lock exception family and extraction exception family, see A.2) — SDK callers can use one uniform exception hierarchy across backends and layers;
-2. **HTTP layer**: the HTTP entry uniformly converts to status codes; the response body is fixed at `{"error": "<exception class name>", "message": "<reason>"}`.
+2. **HTTP layer**: the HTTP entry uniformly converts to status codes; the response body contains `error`, `message`, `request_id`, and `retryable`, and the same request id is returned in `X-Request-ID`.
 
 ### A.1 Exception Class ↔ HTTP Status Code Reference
 
-Mapping rule: **only the first 5 classes in the table below have dedicated status codes**; other `AgentMemoryError` subclasses all map to 400; unexpected non-`AgentMemoryError` exceptions map to 500.
+Mapping rule: the HTTP edge translates exceptions using the stable table below; non-HTTP legacy dispatch keeps its existing compatibility semantics.
 
 | Exception class | HTTP | Semantics | Typical cause |
 |---|---|---|---|
 | `NotFoundError` | 404 | Target entity/record/key doesn't exist | id of get/update/inspect/trace doesn't exist; scope is empty |
+| `MethodNotAllowed` | 405 | HTTP method is not supported | Use only the registered POST/GET endpoints |
 | `PermissionDeniedError` | 403 | actor not allowed to perform the action on the target scope | policy doesn't authorize that actor/action/scope combination |
 | `ConflictError` | 409 | Conflict with an existing record | id already exists on insert; duplicate space name |
+| `PartialFailureError` | 409 | A batch operation partially succeeded | Retry `failed` items using `retry_action`; the response keeps `completed` / `failed` / `retry_action` |
 | `ValidationError` | 400 | Invalid or out-of-range input | metadata contains non-scalar values (dict/list); `k` not a positive integer; missing parameters |
+| `UnsupportedCapabilityError` | 400 | A component doesn't support the requested capability | the requested modality or routing capability isn't configured |
 | `PolicyError` | 400 | Runtime policy operation rejected | unknown policy key; attempt to modify immutable config |
-| `AuthenticationError` | 400* | Credentials missing/malformed/failed validation | wrong or missing API key (*no dedicated status code, maps to 400) |
-| `RateLimitedError` | 400* | Rate limit exceeded (occurs before authentication) | rate-limit bucket drained (*maps to 400 likewise) |
-| `HealthCheckError` | 400* | Component health check failed | health() probe failure of Redis/ES/Milvus/embedder components (raised on SDK or internal paths; if raised through an HTTP request path it maps to 400 — the `/healthz` endpoint itself never raises it and returns 200 directly) |
-| `BackendError` | 400* | Unexpected underlying storage failure | backend network/IO failure; ES/Milvus/Redis unreachable (*no dedicated status code, maps to 400 — **don't look for it under status 500**) |
-| `UnsupportedStorageCapabilityError` | 400* | Storage doesn't declare the requested port capability | a backend was removed from config but an operator still references its capability |
-| `StorageRetrievalError` | 400* | All selected recall entry points failed | keyword + vector channels failed simultaneously |
-| Unexpected exception | 500 | `{"error": "InternalError"}` | internal bug; message contains the original exception |
+| `AuthenticationError` | 401 | Credentials missing/malformed/failed validation | wrong or missing API key; public message is `authentication failed` |
+| `RateLimitedError` | 429 | Rate limit exceeded (occurs before authentication) | rate-limit bucket drained; `retryable=true`, `Retry-After: 1` |
+| `HealthCheckError` | 503 | Component health check failed | health() probe failure of Redis/ES/Milvus/embedder components; `retryable=true` |
+| `BackendError` | 503 | Unexpected underlying storage failure | backend network/IO failure; `retryable=true` |
+| `PayloadTooLarge` | 413 | Request body exceeds the configured limit | Reduce or split the request; `retryable=false` |
+| `UnsupportedStorageCapabilityError` | 400 | Storage doesn't declare the requested port capability | a backend was removed from config but an operator still references its capability |
+| `StorageRetrievalError` | 400 | All selected recall entry points failed | keyword + vector channels failed simultaneously |
+| Unexpected exception | 500 | `{"error": "InternalError", "message": "internal server error"}` | internal bug; use `request_id` to correlate server failure records and audit events |
 
 Unknown verb: 404 `{"error": "UnknownVerb"}`.
 
@@ -219,4 +224,4 @@ Unknown verb: 404 `{"error": "UnknownVerb"}`.
 
 ### A.3 Error Message Redaction
 
-`safe_error_message` replaces `password / passwd / pwd / token / api_key / secret` key-values, `Authorization: Bearer/Basic ...` headers, and URL-embedded credentials (`//user:pass@`) in exception text with `<redacted>`, and truncates to 200 characters. **Currently it is only applied on internal paths such as recall channel error messages (ChannelError's message)** — the `message` field of HTTP error responses is the raw exception text and is not guaranteed to be redacted; also, don't try to reverse-lookup plaintext keys from logs while troubleshooting.
+`safe_error_message` replaces `password / passwd / pwd / token / api_key / secret` key-values, `Authorization: Bearer/Basic ...` headers, and URL-embedded credentials (`//user:pass@`) in exception text with `<redacted>`, and truncates to 200 characters. HTTP 400/policy errors use this helper; 401/403/404/409/429/500/503 use fixed generic text. HTTP responses never include tracebacks; use the response `request_id` to locate server logs and audit records.

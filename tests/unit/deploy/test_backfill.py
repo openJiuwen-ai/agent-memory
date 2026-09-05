@@ -148,7 +148,7 @@ def test_entries_without_principal_dims_are_reported_instead_of_guessed() -> Non
 
 
 def test_provision_main_spaces_registers_each_principal_as_owner() -> None:
-    from jiuwen_memory.api.memory_api_impl import build_kernel
+    from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 
     kernel = build_kernel()
     assert kernel.space is not None

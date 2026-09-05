@@ -16,7 +16,11 @@ from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.errors import BackendError, HealthCheckError, ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger
-from jiuwen_memory.common.normalizer.base import Normalizer, NormalizerProducer
+from jiuwen_memory.common.normalizer.base import (
+    Normalizer,
+    NormalizerProducer,
+    ensure_normalizer_supports,
+)
 from jiuwen_memory.common.type_def import Modality, RawPayload
 
 from .video_asr import VideoAsrProducer, VideoAsrService
@@ -87,10 +91,12 @@ class VideoNormalizer(Normalizer):
             backend=backend,
         )
 
-    def modalities(self) -> list[Modality]:
+    @staticmethod
+    def modalities() -> list[Modality]:
         return [Modality.VIDEO]
 
-    def plugin_type(self) -> PluginType:
+    @staticmethod
+    def plugin_type() -> PluginType:
         return PluginType.NORMALIZER
 
     def health(self) -> None:
@@ -109,10 +115,7 @@ class VideoNormalizer(Normalizer):
             )
 
     def normalize(self, payload: RawPayload) -> str:
-        if payload.modality != Modality.VIDEO:
-            raise ValidationError(
-                f"video normalizer does not support {payload.modality.value!r}"
-            )
+        ensure_normalizer_supports(self, payload.modality)
         clips, events = self._extract_video_memory(payload)
         video_memory = {
             "payload_id": payload.id,

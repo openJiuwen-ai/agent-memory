@@ -42,12 +42,12 @@ memory_api:
 
 两点预期管理：
 
-- **HTTP / CLI 入口自身的日志只有启动/停止等几行**，不记请求级日志。请求的成功/失败信息全部在 HTTP 响应体里，不要到入口日志里找请求线索。
+- **HTTP / CLI 入口通常不记请求级日志**；内部异常仅记录脱敏的 `request_id` 和异常类型。请求的成功/失败信息全部在 HTTP 响应体里；HTTP 响应同时提供 `request_id` 与 `X-Request-ID`，可用于和审计记录、下游日志关联。
 - 日志名以模块前缀自标识（如 `agent_memory.construction.index_builder_impl.vector_index_builder`），按前缀过滤即可区分层。
 
 **如何在海量日志里定位到"我这个请求"的日志段**
 
-agent-memory 日志**没有贯穿全链路的请求 id**，串联靠两个业务标识：
+HTTP 请求由服务端生成贯穿响应与审计的唯一 request id；引擎内部日志仍主要靠两个业务标识串联：
 
 1. **scope**（`org/space/user/session`）——`Engine.write ...` / `Recaller ...` 等行都带 scope，用它过滤日志缩小到该租户/会话的日志段；
 2. **unit id 前 8 位**——`VectorIndexBuilder` 的 WARN 行带它，可从 add 响应的 `item_id` 直接对应到具体记忆单元。
@@ -66,7 +66,7 @@ agent-memory 日志**没有贯穿全链路的请求 id**，串联靠两个业务
 
 判定优先级：`error` 非空即失败（进入场景 2）；`ok=true` 只代表请求链路成功，**不保证记忆已可检索**（索引构建失败会静默降级，进入场景 3）。
 
-错误信息统一格式 `{"error": "<异常类名>", "message": "<原因>"}`。注意：`message` 是异常原文，**不保证脱敏**——脱敏只发生在召回通道错误等部分内部路径（详见 A.3），不要在请求参数中携带明文凭据。
+错误响应统一包含 `error`、`message`、`request_id`、`retryable` 四个字段，并在 `X-Request-ID` header 返回同一个 request id。400/策略类错误的 `message` 会经过脱敏；401/403/404/409/429/500/503 使用固定泛化文案，HTTP 不返回 traceback，也不会回显凭据。
 
 拿到现象后，对号入座：
 
@@ -101,9 +101,10 @@ agent-memory 日志**没有贯穿全链路的请求 id**，串联靠两个业务
 | `InvalidExtractionJSONError` | LLM 抽取 | 日志搜 `Extractor`（含 `LLM response is not valid JSON` WARN），确认 LLM 端点可用、返回未被截断 |
 | `LockError` / `LockTimeoutError` / `LockLostError` | 分布式锁 | 多实例并发写同一 scope 的锁竞争；检查 Redis 锁配置与实例数 |
 | `BackendError` | 存储层 | 后端网络/IO 故障；转[场景 1](#3-场景-1服务不通--起不来) ②③ 分服务看容器日志 |
+| `PayloadTooLarge` | HTTP 入口 | 请求体超过服务端限制；压缩或拆分请求后再发送 |
 | `StorageRetrievalError` | 召回层 | 关键词+向量通道**同时**故障，按 Milvus / ES 分别排查 |
 | `UnsupportedStorageCapabilityError` | 装配配置 | 配置里移除了某后端但算子仍引用其能力，核对 config 与算子一致性 |
-| `InternalError` | 内部 bug | `message` 含原始异常文本，以其为关键词回日志搜完整堆栈 |
+| `InternalError` | 内部 bug | 响应只返回固定 `internal server error`；使用 `request_id` 关联服务端失败记录与审计 |
 
 完整状态码映射见[附录 A](#附录-a错误码对照表)。
 
@@ -187,26 +188,30 @@ POST /v1/<verb>
 agent-memory 的错误体系是**两层结构**（区别于数字错误码）：
 
 1. **异常层**：12 个异常类（基类 `AgentMemoryError` + 11 个子类；另有锁异常族与抽取异常族，见 A.2），SDK 调用方可跨后端、跨层用同一套异常捕获；
-2. **HTTP 层**：HTTP 入口统一转状态码，响应体固定为 `{"error": "<异常类名>", "message": "<原因>"}`。
+2. **HTTP 层**：HTTP 入口统一转状态码，响应体固定包含 `error`、`message`、`request_id`、`retryable`，并通过 `X-Request-ID` 返回同一个 request id。
 
 ### A.1 异常类 ↔ HTTP 状态码对照表
 
-映射规则：**只有下表前 5 个类有专门的状态码**；其余 `AgentMemoryError` 子类一律落 400；非 `AgentMemoryError` 的意外异常落 500。
+映射规则：HTTP edge 按下表将异常翻译成稳定状态；非 HTTP legacy dispatch 保持既有兼容语义。
 
 | 异常类 | HTTP | 语义 | 典型成因 |
 |---|---|---|---|
 | `NotFoundError` | 404 | 目标实体/记录/键不存在 | get/update/inspect/trace 的 id 不存在；scope 为空 |
+| `MethodNotAllowed` | 405 | HTTP 方法不受支持 | 仅使用已注册的 POST/GET 入口 |
 | `PermissionDeniedError` | 403 | actor 无权对 target scope 执行该 action | policy 未授权该 actor/action/scope 组合 |
 | `ConflictError` | 409 | 与现有记录冲突 | insert 时 id 已存在；space 重名 |
+| `PartialFailureError` | 409 | 批量操作部分成功 | 按 `retry_action` 重试 `failed` 项；响应保留 `completed` / `failed` / `retry_action` |
 | `ValidationError` | 400 | 入参非法或越界 | metadata 含非标量值（dict/list）；`k` 非正整数；参数缺失 |
+| `UnsupportedCapabilityError` | 400 | 组件不支持请求能力 | 请求的 modality 或路由能力未装配 |
 | `PolicyError` | 400 | 运行时策略操作被拒 | policy 键未知；试图修改不可变配置 |
-| `AuthenticationError` | 400* | 凭据缺失/格式非法/校验不通过 | API key 错误或缺失（*无专门状态码，落 400） |
-| `RateLimitedError` | 400* | 超出速率上限（发生在认证之前） | 限流桶耗尽（*同上落 400） |
-| `HealthCheckError` | 400* | 组件健康检查失败 | Redis/ES/Milvus/嵌入器等组件 health() 探测失败（SDK 或内部路径调用时抛出；若经 HTTP 请求路径上抛则落 400——`/healthz` 端点本身不抛此错误，直接返回 200） |
-| `BackendError` | 400* | 底层存储非预期失败 | 后端网络/IO 故障；ES/Milvus/Redis 不可达（*无专门状态码，落 400——**不要按状态码 500 找它**） |
-| `UnsupportedStorageCapabilityError` | 400* | Storage 未声明请求的端口能力 | 配置里去掉了某后端但算子仍引用其能力 |
-| `StorageRetrievalError` | 400* | 所有选中召回入口均失败 | 关键词+向量通道同时故障 |
-| 非预期异常 | 500 | `{"error": "InternalError"}` | 内部 bug，message 含原始异常 |
+| `AuthenticationError` | 401 | 凭据缺失/格式非法/校验不通过 | API key 错误或缺失；对外固定 `authentication failed` |
+| `RateLimitedError` | 429 | 超出速率上限（发生在认证之前） | 限流桶耗尽；`retryable=true`，`Retry-After: 1` |
+| `HealthCheckError` | 503 | 组件健康检查失败 | Redis/ES/Milvus/嵌入器等组件 health() 探测失败；`retryable=true` |
+| `BackendError` | 503 | 底层存储非预期失败 | 后端网络/IO 故障；`retryable=true` |
+| `PayloadTooLarge` | 413 | 请求体超过限制 | 缩小或拆分请求；`retryable=false` |
+| `UnsupportedStorageCapabilityError` | 400 | Storage 未声明请求的端口能力 | 配置里去掉了某后端但算子仍引用其能力 |
+| `StorageRetrievalError` | 400 | 所有选中召回入口均失败 | 关键词+向量通道同时故障 |
+| 非预期异常 | 500 | `{"error": "InternalError", "message": "internal server error"}` | 内部 bug；使用 `request_id` 关联服务端失败记录与审计 |
 
 未知 verb：404 `{"error": "UnknownVerb"}`。
 
@@ -219,4 +224,4 @@ agent-memory 的错误体系是**两层结构**（区别于数字错误码）：
 
 ### A.3 错误信息脱敏说明
 
-`safe_error_message` 会将异常文本中的 `password / passwd / pwd / token / api_key / secret` 键值、`Authorization: Bearer/Basic ...` 头、URL 内嵌凭据（`//user:pass@`）统一替换为 `<redacted>`，并截断到 200 字符。**当前它只应用于召回通道错误信息（ChannelError 的 message）等内部路径**——HTTP 错误响应的 `message` 字段是异常原文，不保证脱敏；排障时也不要试图从日志反查明文 key。
+`safe_error_message` 会将异常文本中的 `password / passwd / pwd / token / api_key / secret` 键值、`Authorization: Bearer/Basic ...` 头、URL 内嵌凭据（`//user:pass@`）统一替换为 `<redacted>`，并截断到 200 字符。HTTP 400/策略类错误统一调用该函数；401/403/404/409/429/500/503 使用固定泛化文案。HTTP 不返回 traceback，排障时用响应中的 `request_id` 到服务端日志和审计记录定位。

@@ -49,7 +49,7 @@ from jiuwen_memory.common.security.legacy import legacy_request_context
 # .env 在 .gitignore 内已忽略，不会误提交；缺失也不报错（仅本次测试 skip）。
 load_dotenv()
 
-from jiuwen_memory.api.memory_api_impl import build_kernel
+from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import Context, LifecycleState, MemoryTier, Scope, memory_key
 from jiuwen_memory.common.type_def.memory_codec import loads

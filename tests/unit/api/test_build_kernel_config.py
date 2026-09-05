@@ -10,7 +10,8 @@ from __future__ import annotations
 import pytest
 
 from jiuwen_memory.api import assemble
-from jiuwen_memory.api.memory_api_impl import assembly, build_kernel
+from jiuwen_memory.api.memory_api_impl import assembly
+from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.audit.base import AuditProducer
 from jiuwen_memory.common.errors import BackendError, PermissionDeniedError, ValidationError
 from jiuwen_memory.common.factory.factory import Factory
