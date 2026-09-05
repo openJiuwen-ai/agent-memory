@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-09-04 |
-| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+| 最近一次修订日期 | 2026-09-05 |
+| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
 ## 文档分工
 
@@ -18,7 +18,7 @@
 | [architecture.md §6](../design/architecture.md) | **已实现**接口的清单（方法 / 语义 / 入参 / 出参） |
 | `jiuwen_memory/api/` | **已实现**接口的代码（`memory_api.py` 契约，`memory_api_impl/` 实现） |
 | 本文（S02） | 对外接口的详细介绍与用法：含已实现，以及已设计但尚未实现的增量；尚未实现处用 **状态：已设计、尚未实现** 标明。方法总览同时指向对应特性文档 |
-| `docs/features/api/`（F01–F04） | 特性决策（为什么这样改）；不重复罗列全部方法签名。各 F 覆盖哪些方法见下文方法总览与特性文档对照 |
+| `docs/features/api/`（F01–F05） | 特性决策（为什么这样改）；不重复罗列全部方法签名。各 F 覆盖哪些方法见下文方法总览与特性文档对照 |
 
 已设计但尚未实现的接口完成代码开发上库时：去掉本文（及受影响 F 文档）中的尚未实现标注，并把该方法（或增量入参）补进 architecture.md §6。
 ## Metadata 公共 API 契约
@@ -33,50 +33,65 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 `system_metadata` 同时是对外入参，因此写入与改写入口拒绝调用方占用这些键
 （`KERNEL_SYSTEM_METADATA_KEYS` 与判定表解析出的标签键集合），见 F07「写入边界校验」。
 
-## HTTP 与协议适配契约
+## HTTP / CLI 与协议适配契约
 
-HTTP `/v1/<verb>` 使用嵌套 `target` 作为唯一的范围表达。字段映射为：
-
-```text
-target.tenant_id -> Scope.org
-target.scope     -> Scope.user
-target.space     -> Scope.space
-target.agent     -> Scope.agent
-target.session   -> Scope.session
-```
-
-`target.space_id` 仅是 HTTP 层的兼容别名；与 `target.space` 同时出现时返回 400。
-顶层扁平 Scope 字段不属于 HTTP DTO。`space_id` 在归一化后不再进入 dispatch、授权、审计或存储。
-
-actor 不属于请求 payload。HTTP 在 dispatch 前从凭据建立认证上下文，并以
-`RequestSecurityContext.auth.actor` 作为认证 actor，通过 `security=` 传入 API；`actor_*`、`identity`、`role`、`acting_user`、`principal` 和
-`authenticated_user` 等身份声明字段必须拒绝并返回 400。未装配认证运行时则 fail-closed
-返回 503，不得使用空 Scope 或 payload 身份回退。
-
-DTO 解析一次完成 JSON object、字段 allowlist、类型和 Scope 结构校验；未知字段拒绝，
-扩展必须放在显式 `extensions` 对象中。解析结果转换为不可变 `DispatchRequest`，其中
-`actor` 来自认证上下文，`target` 为结构化 Scope，业务 `payload` 不再携带 Scope/actor
-声明，`grantee`、`member` 和 batch item target 也保持结构化。
-
-共享 handler 只消费 `DispatchRequest`。CLI、MCP 和进程内旧 flat 输入由
-`bootstrap/core/legacy_request_adapter.py` 显式转换；handler 不得根据业务 payload
-隐式猜测或重新解析 Scope、actor。统一流程为：
+HTTP 是 `MemoryAPI` 的远程传输封装，不定义第二套业务接口。当前
+`MemoryAPI.__abstractmethods__` 的 36 个公开方法全部按以下规则暴露：
 
 ```text
-transport -> legacy/HTTP adapter -> DispatchRequest -> API 鉴权/审计 -> Control -> response
+POST /v1/<MemoryAPI 方法名>
+  -> JSON 字段按同名参数反序列化
+  -> 注入认证产生的 security
+  -> 调用同名 MemoryAPI 方法
+  -> 原返回值递归序列化为 JSON
 ```
 
-`batch_add` 的 item target 是完整替换：item 未提供 target 时继承顶层默认 target，提供
-target 时不与顶层 Scope 按维度隐式合并。普通 batch 写入不混用逐 item actor；如需不同 actor，
-应另开管理接口。
+除 `security` 外，请求体字段名、嵌套层级、必填/可选关系和默认值均直接取对应
+`MemoryAPI` 签名。`Scope` 使用 `org` / `space` / `user` / `agent` / `session` 原字段，
+`Context`、`MemoryPatch`、`DeleteSelector`、`Grant`、`SpaceSpec` 等数据类按原字段嵌套；
+枚举使用枚举值字符串，`datetime` 使用 ISO 8601 字符串，`None` 使用 JSON `null`。
+省略可选字段时由 `MemoryAPI` 自身的默认值生效。未知字段和数据类内部未知字段均返回
+400，不接受 `target`、`item_id`、`k`、`hard`、`modality` 等 HTTP 兼容别名。
 
-单条 `add` 的标准模态字段是 `source`；`modality` 仅作兼容别名。两者同时提供时值必须相同，
-否则 DTO 返回 400，避免适配层静默选择其中一个。`source="video"` 的单条写入必须带非空字符串
-`uri`，供视频摄入任务引用原始资产；`uri` 不属于 `batch_add` 的 defaults 或 item 形态。
+`security` 是唯一不从请求体读取的 API 参数。HTTP 从凭据建立认证上下文，并把可信的
+`RequestSecurityContext` 以 `security=` 注入同名方法；请求体中的 `security`、`actor`、
+`actor_*`、`identity`、`acting_user`、`principal` 和 `authenticated_user` 必须拒绝。
+启动器默认使用 `required` 模式；未装配生产认证运行时则 fail-closed 返回 503，不得使用空
+Scope 或请求体身份回退。HTTP 认证模式按 `--auth-mode`、`JIUWEN_MEMORY_HTTP_AUTH_MODE`、
+`required` 的优先级选择。显式 `dev` 只用于本地功能测试：服务端
+忽略凭据并生成固定具名 ROOT 身份，仍经受控入口生成 `RequestSecurityContext`，仍执行
+`MemoryAPI` 授权。dev 模式默认只能绑定 loopback；容器内监听非 loopback 必须显式放行，并由
+部署边界把宿主机端口限制在 loopback。dev 模式不得成为默认值或生产降级路径。
 
-`delete_space` 使用 `mode`（`forget`、`archive`、`downweight` 或 `purge`）与
-`MemoryAPI.delete_space(..., mode=...)` 对齐；HTTP 不接受未被 API 消费的 `hard` 和
-`approval_token` 字段。
+同步与异步只保留 Python 调用方式的差异。普通 `def` 方法直接调用；`add_async`、
+`batch_add_async` 按原生协程语义执行 `await`，完成后直接序列化各自的
+`list[MemoryUnit]` 与 `BatchWriteResult`。HTTP 不因 `async def` 自动返回 202、创建
+另一套 job ID 或增加轮询协议。`evolve` 返回任务 ID、`submit_ingest` 返回
+`IngestSubmission`，是这两个 API 方法本身的返回契约，与 HTTP 或协程无关。
+
+成功响应统一使用 HTTP 200，`None` 序列化为 JSON `null`，不增加 `{ok, op, result}`
+包装，也不向数据类对象插入 `request_id`；错误响应按 HTTP 状态码返回
+`{error, message, request_id, retryable}`。返回数据类递归保留其字段，枚举、时间、
+集合分别转换为 JSON 字符串、ISO 8601 字符串和数组。
+
+上述规则定义对齐契约。当前实现对类型注解之外的运行时扩展仍有缺口（写入
+`system_metadata.coords`），详见 [API F05 已知遗留](../features/api/F05-http-memory-api-alignment.md#已知遗留)；
+方法已暴露不等于所有扩展都已通过传输层验证。
+
+HTTP 与 CLI 共用 `jiuwen_memory_entry/core/api_contract.py` 的 JSON 契约和同名调用逻辑，
+不再经过 legacy `DispatchRequest` / shared handler。CLI 的 36 个命令与参数直接从
+`MemoryAPI` 签名生成：方法名原样作为命令，参数原样作为 `--<parameter_name>`，
+对象使用同字段 JSON；不保留 `--tenant`、`--item-id`、`--k` 等历史转换。
+本地模式直接调用 API，远程模式原样发送 HTTP 请求并读取原 JSON 返回值；`text` /
+`table` / `quiet` 只负责展示，不改变返回契约。
+
+本地 CLI 的 `security` 同样由认证器与受控入口产生，不从业务参数推导 actor。
+默认 `required` 未注入认证器时返回 503；显式 `--auth-mode dev` 才使用固定
+`local/developer` 测试身份，不跳过 API 授权。远程 CLI 发送 Bearer 凭据，
+认证模式由 HTTP 服务端决定。单次本地调用结束后清理上下文，命令结束后关闭 runtime。
+`healthz` 和逐行执行 NDJSON 的 `batch` 是 CLI 辅助命令，不属于 MemoryAPI 方法集，
+后者不等于 API `batch_add`，也不增加事务语义。
+MCP 和其他旧调用方仍可使用 `core/legacy_request_adapter.py`。
 
 ### HTTP 错误响应与请求关联
 
@@ -111,11 +126,13 @@ HTTP edge 将成功或失败响应统一写入 JSON；错误响应固定包含�
 | 请求体超过限制 | 413 | `false` | `request body is too large` |
 | 未预期异常 | 500 | `false` | `internal server error` |
 
-每个 HTTP 请求由服务端在入口生成唯一 `request_id`。所有响应同时在 JSON body 写入
-`request_id`，并在 `X-Request-ID` header 返回相同值；客户端提交的同名 header 会被忽略。
-该 ID 只用于响应、日志和审计关联，不参与 actor、target 或权限判定。429 响应额外返回
-`Retry-After: 1`，表示客户端可按整数秒退避；其他状态不返回该 header。HTTP edge 的
-状态转换不改变 CLI、MCP 和进程内 legacy dispatch 的历史兼容语义。
+每个 HTTP 请求由服务端在入口生成唯一 `request_id`，并在所有响应的 `X-Request-ID`
+header 返回；客户端提交的同名 header 会被忽略。错误响应同时在 JSON body 写入同一个
+`request_id`，成功响应体仍保持 `MemoryAPI` 原返回值，不插入额外字段。该 ID 只用于响应、
+日志和审计关联，不参与 actor、target 或权限判定。429 响应额外返回 `Retry-After: 1`，表示
+客户端可按整数秒退避；其他状态不返回该 header。CLI 本地调用与 HTTP 共用
+`core/error_response.py` 的领域错误状态及脱敏规则，本地错误也带独立 request ID；
+命令行参数解析错误仍使用 CLI 退出码。MCP 与旧进程内 legacy dispatch 不受影响。
 
 ## 范围 / 边界
 
@@ -271,7 +288,7 @@ async def add_async(...) -> list[MemoryUnit]: ...  # 签名同 add
 
 同步写入：鉴权 WRITE→委托 Engine→阻塞至 hot path 完成。infer/procedural 触发时返回 `created_ids` 对应的派生单元（可空），否则返回原始单元。`add_async` 为异步写入：直通 Engine 协程，供事件循环形态使用。
 
-`source` 必须位于当前装配 Normalizer 的 `modalities()` 能力集合内。动态请求不受支持时在规约和落盘前抛 `UnsupportedCapabilityError`；HTTP/CLI 共用 dispatch 稳定映射为 400。媒体 URI 只有在对应模态被 Normalizer 声明支持后才能进入规约逻辑，不支持的媒体不得将 URI 字符串作为 content 写入。
+`source` 必须位于当前装配 Normalizer 的 `modalities()` 能力集合内。动态请求不受支持时在规约和落盘前抛 `UnsupportedCapabilityError`；各接入形态在协议边界稳定映射该领域错误，HTTP 映射为 400。媒体 URI 只有在对应模态被 Normalizer 声明支持后才能进入规约逻辑，不支持的媒体不得将 URI 字符串作为 content 写入。
 
 ##### 可选 Entity Schema 装配
 
@@ -324,8 +341,9 @@ target。调用方还必须在配置中显式选择 Schema Extractor 和 Schema 
 - **infer=true 时 evolver 内部收集上下文**（evolve 接口不变）：`recent_originals`（最近 10 条 infer 原文，做指代消解/语境，不参与去重）+ `related_memories`（`dedup.recall` 召回 10 条相关记忆，做去重提示）。两类参考项只拼进 extractor prompt，不进提取来源；最终判定由所选 Evolver 完成：`OrchestratingEvolver` 走 `_dedup_batch`，`DynamicEvolver` 走 consolidate → reflect → 落盘。详见 F02 决策7。
 - **KV key 前缀分离**：真源 key 按「是否建索引」带前缀——`/memory/{id}`（建索引记忆）、`/messages/{id}`（未建索引 infer 原文）。前缀常量与 helper 在 `common.type_def.memory`/`raw`。详见 F02 决策6。
 - **engine.write infer=false 调 classify**：默认路径调 `classifier.classify` 给原文打 tier+tags（纯 LLM 抽取 episodic/semantic/procedural + tags）；infer=true 不经 classifier（extractor 产派生时自定）。详见 F02 决策9。
-- **`/v1/list` 收窄并上收为 API 契约**：handler `_list` 委托
-  `MemoryAPI.list(scope, security=..., offset, limit, memory_types, extensions, filters)`；
+- **`list` 收窄并上收为 API 契约**：HTTP `/v1/list` 与 CLI `list` 直接调用
+  `MemoryAPI.list(scope, security=..., offset, limit, memory_types, extensions, filters)`，
+  不经过 handler；MCP 等旧调用方的 legacy `_list` 也委托同一 API。
   `KVStore.list` 只查询 `/memory/` 记忆并返回当前页与分页前总数。详见 F02 决策10与
   F01 的 list 决策。
 
@@ -665,7 +683,7 @@ def audit(
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `verify_audit` | `(*, security, after_sequence=0, page_size=1000, max_samples=20, anchor_policy="if_configured") -> AuditVerificationResult` | 审计链完整性验证：按 `VERIFY_AUDIT` 执行管理面根 scope 闸门，与仍使用 legacy `READ` 的既有 `audit` 是两个独立入口；provider 与专用 `audit_verify_guard` 成对注入，全量验证占独立并发槽，耗尽抛 `RateLimitedError`；此时授权事件保持 `decision=allow`，沿用 `workload_guard=exhausted` 明细区分容量准入失败与鉴权拒绝。guard 准入后必须先记录验证尝试再调用 provider，使 provider 抛出的完整性异常仍可追溯发起者与发生时间。输入只允许服务端验证参数，不接受调用方传入 expected digest / key / proof。`after_sequence=N` 必须从同一稳定快照读取并验证第 N 条 checkpoint proof，扫描固定截至快照链头；并发追加留到下一次，checkpoint/序号缺口/截断导致 `incomplete`，不得从 genesis 盲接。`page_size` / `max_samples` 截到服务端可信 `globals.audit_verify_max_page_size` / `globals.audit_verify_max_samples`，装配只接受真正的整数（拒绝 `bool` 和字符串），非法类型、范围或超过硬上限统一抛 `ValidationError`；PEP 再保证返回 samples 不超过有效上限。`truncated` 只表示样本列表截断，`high_water_mark` 是本次连续成功验证到的最高 sequence。未装配 provider 时诚实返回 `unsupported`，不降级成 clean。真实认证接入前 HTTP generic dispatch、MCP tool、CLI command 均不注册，当前一等入口仅为 `MemoryAPI`（见 F05 §6.4） |
+| `verify_audit` | `(*, security, after_sequence=0, page_size=1000, max_samples=20, anchor_policy="if_configured") -> AuditVerificationResult` | 审计链完整性验证：按 `VERIFY_AUDIT` 执行管理面根 scope 闸门，与仍使用 legacy `READ` 的既有 `audit` 是两个独立入口；provider 与专用 `audit_verify_guard` 成对注入，全量验证占独立并发槽，耗尽抛 `RateLimitedError`；此时授权事件保持 `decision=allow`，沿用 `workload_guard=exhausted` 明细区分容量准入失败与鉴权拒绝。guard 准入后必须先记录验证尝试再调用 provider，使 provider 抛出的完整性异常仍可追溯发起者与发生时间。输入只允许服务端验证参数，不接受调用方传入 expected digest / key / proof。`after_sequence=N` 必须从同一稳定快照读取并验证第 N 条 checkpoint proof，扫描固定截至快照链头；并发追加留到下一次，checkpoint/序号缺口/截断导致 `incomplete`，不得从 genesis 盲接。`page_size` / `max_samples` 截到服务端可信 `globals.audit_verify_max_page_size` / `globals.audit_verify_max_samples`，装配只接受真正的整数（拒绝 `bool` 和字符串），非法类型、范围或超过硬上限统一抛 `ValidationError`；PEP 再保证返回 samples 不超过有效上限。`truncated` 只表示样本列表截断，`high_water_mark` 是本次连续成功验证到的最高 sequence。未装配 provider 时诚实返回 `unsupported`，不降级成 clean。HTTP 在认证中间件产出可信 `security` 后以同名 `/v1/verify_audit` 暴露并递归序列化原返回值；CLI 以同名 `verify_audit` 命令暴露；MCP tool 暂无一等入口（见 F05 §6.4） |
 
 ---
 

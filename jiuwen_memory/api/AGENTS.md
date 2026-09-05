@@ -4,7 +4,7 @@
 
 > 本文档只记录相对稳定的模块本地规约（职责边界、行为铁律、本地约束）。特性设计与方案取舍记录在 `docs/features/` 下。
 >
-> **文档分工**：`docs/design/architecture.md` §6 = 已实现接口清单；本目录 = 已实现代码；S02 = 详细用法与方法总览（含尚未实现标注）；`docs/features/api/`（F01–F04）= 特性决策。尚未实现接口上库后须同步 S02 与 §6。
+> **文档分工**：`docs/design/architecture.md` §6 = 已实现接口清单；本目录 = 已实现代码；S02 = 详细用法与方法总览（含尚未实现标注）；`docs/features/api/`（F01–F05）= 特性决策。尚未实现接口上库后须同步 S02 与 §6。
 
 统一对外 Core API，所有接入形态（SDK/CLI/MCP/HTTP）最终映射到 `MemoryAPI`。本层是控制层的薄封装：做参数装配与鉴权，编排逻辑全部在 `jiuwen_memory/control`。
 
@@ -22,6 +22,7 @@
 | `memory_api_impl/query_ops.py` | QueryOpsMixin：search/list/get/update/delete/evolve，鉴权后走 Query/Command |
 | `memory_api_impl/admin_ops.py` | AdminOpsMixin：`submit_ingest`、任务、admin、治理、verify_audit、grant/revoke |
 | `memory_api_impl/space_ops.py` | SpaceOpsMixin：Space CRUD；`delete_space` 经 SpaceLifecycleService |
+| `access_security.py` | Access 安全装配辅助：向 HTTP / CLI 入口提供 dev Authenticator，不向接入层暴露 common 实现路径 |
 
 ## 行为铁律
 
@@ -101,7 +102,7 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
 1. `security` 为必填参数，类型 `common.security.types.RequestSecurityContext`；只能来自 `auth_middleware.authenticated()` 或 `request_context.internal_context()`（过渡期另有 `legacy_request_context()`，实装 PR 删除）。除 `check_write(scope, security, *, ...)` 为兼容旧第二位置参数外，其余公开方法均要求 keyword-only。
 2. 授权面（`grant`/`revoke`）的公共类型是 `common.security.types.Grant`/`Action`；`control.types` 只兼容再导出同一对象，不得定义第二套类型或结构转换。`Grant` 必须兼容旧 `grantor`/`grantee`/`actions` 构造形状，`grant_id` 构造时默认留空，actions 在值对象边界冻结并校验。目标形态下 `grant_id` 服务端生成、`revoke` 按 ID 精确定位；接口先行过渡期撤销语义不变，安全域独有动作在委托旧 `PermissionManager` 前 fail-closed。
 3. 所有数据面方法（add/batch_add/search/list/get/update/delete/evolve）都需要鉴权，治理面（inspect/trace/audit）也需要鉴权。`LocalMemoryAPI._record_audit()` 在存在受控请求上下文时以 `setdefault` 写入 `AuditEvent.detail["request_id"]`，用于与入口响应和日志关联，不覆盖调用方已经传入的可信 detail 值。
-4. `verify_audit`（审计完整性验证，PR3 接口先行）是独立于 `audit` 的管理面入口：新入口按 `VERIFY_AUDIT` 对根 scope 判权；既有 `audit` 为兼容存量按 action 精确匹配的授权记录，仍使用 legacy `READ`，迁移到目标动作 `READ_AUDIT` 不属于本 PR。验证只收服务端参数（不接受调用方传入 digest/key/proof）；provider 与专用 `audit_verify_guard` 必须成对注入，全量验证占一个独立并发槽，耗尽抛 `RateLimitedError`。guard 耗尽发生在授权通过后，审计事件保持 `decision=allow`，并沿用 `workload_guard=exhausted` 表达容量准入失败，不得混入 `decision=deny` 的鉴权拒绝事件。guard 准入后先落验证尝试审计、再调用 provider，provider 抛完整性异常时仍须能追溯发起者与发生时间；成功或异常路径不重复写完成事件。`page_size` / `max_samples` 截到服务端 `globals.audit_verify_max_page_size` / `globals.audit_verify_max_samples` 装配出的可信 `AuditVerificationLimits`；装配边界只接受真正的整数（拒绝 `bool` 和字符串），并把非法类型或范围统一翻译成 `ValidationError`。provider 返回 samples 由 PEP 再截到有效上限。未装配 provider 时返回 `unsupported`，不降级成 clean。真实认证接入前 generic handler 不注册该 verb，HTTP/MCP/CLI 均无一等入口；进程内调用必须显式传安全上下文。
+4. `verify_audit`（审计完整性验证，PR3 接口先行）是独立于 `audit` 的管理面入口：新入口按 `VERIFY_AUDIT` 对根 scope 判权；既有 `audit` 为兼容存量按 action 精确匹配的授权记录，仍使用 legacy `READ`，迁移到目标动作 `READ_AUDIT` 不属于本 PR。验证只收服务端参数（不接受调用方传入 digest/key/proof）；provider 与专用 `audit_verify_guard` 必须成对注入，全量验证占一个独立并发槽，耗尽抛 `RateLimitedError`。guard 耗尽发生在授权通过后，审计事件保持 `decision=allow`，并沿用 `workload_guard=exhausted` 表达容量准入失败，不得混入 `decision=deny` 的鉴权拒绝事件。guard 准入后先落验证尝试审计、再调用 provider，provider 抛完整性异常时仍须能追溯发起者与发生时间；成功或异常路径不重复写完成事件。`page_size` / `max_samples` 截到服务端 `globals.audit_verify_max_page_size` / `globals.audit_verify_max_samples` 装配出的可信 `AuditVerificationLimits`；装配边界只接受真正的整数（拒绝 `bool` 和字符串），并把非法类型或范围统一翻译成 `ValidationError`。provider 返回 samples 由 PEP 再截到有效上限。未装配 provider 时返回 `unsupported`，不降级成 clean。HTTP 在认证中间件产出可信上下文后通过同名 `/v1/verify_audit` 暴露原返回值，容量限流映射为 429；CLI 通过同名 `verify_audit` 命令和同一 JSON 契约暴露；legacy handler 与 MCP tool 暂无一等入口。进程内调用必须显式传安全上下文。
 5. 装配由 `assembly.assemble` / `assembly.assemble_runtime` 完成，内部经 `_build_kernel`
    与各 Producer 的 `dep/build_named/build` 组装；Retriever 与内部 `_Kernel.storage`
    引用同一个 `storage.default` 实例。顺序铁律：
@@ -123,3 +124,4 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
 10. 数据面写经 `MemoryCommandService`，查询经 `MemoryQueryService`，治理经 `GovernanceService`，
     Space 删除事务经 `SpaceLifecycleService`。PEP、路由谓词回注、逐条鉴权仍在本层。
     不得把 `_purge_space_memories` 或内联 purge+delete 收回本类。
+11. `build_dev_authenticator()` 只供 HTTP / CLI 本地功能测试装配固定身份；它不是生产认证 runtime，也不改变 `MemoryAPI` 的授权判定。Access 仍只能从 `jiuwen_memory.api` 取得该能力，不得直接 import `common.security.authentication_impl`。

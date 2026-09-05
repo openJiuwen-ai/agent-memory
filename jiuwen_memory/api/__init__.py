@@ -79,6 +79,7 @@ from jiuwen_memory.retrieval import (
     TrajectoryStep,
 )
 
+from .access_security import build_dev_authenticator
 from .memory_api import MemoryAPI
 from .memory_api_impl import MemoryRuntime, assemble, assemble_runtime
 
@@ -87,6 +88,7 @@ __all__ = [
     "assemble",
     "assemble_runtime",
     "MemoryRuntime",
+    "build_dev_authenticator",
     # 数据模型（common.type_def）
     "Scope",
     "Context",

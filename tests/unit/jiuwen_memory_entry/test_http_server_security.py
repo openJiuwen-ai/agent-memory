@@ -1,15 +1,17 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""HTTP transport authentication and DTO boundary tests."""
+"""HTTP transport authentication and API contract boundary tests."""
 
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
 from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -26,11 +28,11 @@ from jiuwen_memory.common.errors import (
     UnsupportedCapabilityError,
     ValidationError,
 )
+from jiuwen_memory.common.security.authentication.base import Authenticator
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.security.types import (
     Action,
     AuthContext,
-    RequestSecurityContext,
     get_current,
 )
 from jiuwen_memory.common.type_def import Scope
@@ -39,11 +41,13 @@ from jiuwen_memory.control.permission_impl.allow_all_permission_manager import (
     AllowAllPermissionManager,
 )
 from jiuwen_memory.control.types import PermissionContext
-from jiuwen_memory_entry.core.dispatch_request import DispatchRequest
 from jiuwen_memory_entry.core.profiles import OFFLINE, load_config
+from jiuwen_memory_entry.http_server import __main__ as http_server_module
 from jiuwen_memory_entry.http_server.__main__ import HttpServer
+from jiuwen_memory_entry.http_server.dev_security import build_dev_security_runtime
 
 pytestmark = pytest.mark.unit
+_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 class _Authenticator:
@@ -65,6 +69,36 @@ class _RejectingLimiter:
     @staticmethod
     def allow(_peer: str) -> bool:
         return False
+
+
+class _LoopbackAuthenticator(Authenticator):
+    @staticmethod
+    def authenticate(credentials) -> AuthContext:
+        del credentials
+        return AuthContext(actor=Scope(org="acme", user="alice"))
+
+    @staticmethod
+    def mode() -> str:
+        return "third_party"
+
+    @staticmethod
+    def health() -> None:
+        return None
+
+
+class _RemoteAuthenticator(_LoopbackAuthenticator):
+    @staticmethod
+    def requires_loopback_binding() -> bool:
+        return False
+
+
+class _RejectingBindingPolicy:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, bool]] = []
+
+    def check(self, host: str, *, requires_loopback: bool) -> None:
+        self.calls.append((host, requires_loopback))
+        raise ValidationError("binding policy rejected host")
 
 
 class _RecordingAudit:
@@ -129,6 +163,28 @@ def _build_denying_permission_manager(_config) -> _DenyingPermissionManager:
     return manager
 
 
+@pytest.fixture(name="binding_httpd")
+def binding_httpd_fixture(monkeypatch):
+    instances = []
+
+    class _NonBlockingHttpd:
+        def __init__(self, address, handler) -> None:
+            self.address = address
+            self.handler = handler
+            self.served = False
+            self.closed = False
+            instances.append(self)
+
+        def serve_forever(self) -> None:
+            self.served = True
+
+        def server_close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(http_server_module, "ThreadingHTTPServer", _NonBlockingHttpd)
+    return instances
+
+
 @pytest.fixture
 def http_endpoint():
     runtime = SimpleNamespace(
@@ -153,6 +209,23 @@ def http_endpoint():
 @pytest.fixture
 def http_endpoint_without_security_runtime():
     server = HttpServer.build(load_config([OFFLINE]))
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.handler_cls())
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{httpd.server_port}", server
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=2)
+        server.close(wait=True)
+
+
+@pytest.fixture
+def dev_http_endpoint():
+    server = HttpServer.build(
+        load_config([OFFLINE]), security_runtime=build_dev_security_runtime()
+    )
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.handler_cls())
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -225,7 +298,7 @@ def http_endpoint_with_denying_permission():
         server.close(wait=True)
 
 
-def _post(base_url: str, body: object, *, key: str = "test-key") -> tuple[int, dict]:
+def _post(base_url: str, body: object, *, key: str = "test-key") -> tuple[int, Any]:
     data = json.dumps(body).encode("utf-8")
     request = urllib.request.Request(
         f"{base_url}/v1/add",
@@ -234,7 +307,7 @@ def _post(base_url: str, body: object, *, key: str = "test-key") -> tuple[int, d
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=3) as response:
+        with _NO_PROXY_OPENER.open(request, timeout=3) as response:
             return response.status, json.loads(response.read())
     except urllib.error.HTTPError as exc:
         return exc.code, json.loads(exc.read())
@@ -247,7 +320,7 @@ def _request(
     *,
     key: str | None = "test-key",
     headers: dict[str, str] | None = None,
-) -> tuple[int, dict, str]:
+) -> tuple[int, Any, str]:
     status, body, response_headers = _request_with_headers(
         base_url, path, data, key=key, headers=headers
     )
@@ -262,7 +335,7 @@ def _request_with_headers(
     key: str | None = "test-key",
     headers: dict[str, str] | None = None,
     method: str = "POST",
-) -> tuple[int, dict, dict[str, str]]:
+) -> tuple[int, Any, dict[str, str]]:
     request_headers = dict(headers or {})
     if key is not None:
         request_headers["Authorization"] = f"Bearer {key}"
@@ -270,7 +343,7 @@ def _request_with_headers(
         f"{base_url}{path}", data=data, headers=request_headers, method=method
     )
     try:
-        with urllib.request.urlopen(request, timeout=3) as response:
+        with _NO_PROXY_OPENER.open(request, timeout=3) as response:
             return response.status, json.loads(response.read()), {
                 key.lower(): value for key, value in response.headers.items()
             }
@@ -280,15 +353,17 @@ def _request_with_headers(
         }
 
 
-def test_http_uses_authenticated_actor_and_nested_target(http_endpoint) -> None:
+def test_http_uses_authenticated_actor_and_api_scope(http_endpoint) -> None:
     base_url, server = http_endpoint
     status, body = _post(
         base_url,
-        {"target": {"tenant_id": "acme", "scope": "alice"}, "content": "hello"},
+        {"scope": {"org": "acme", "user": "alice"}, "content": "hello"},
     )
 
     assert status == 200, body
-    assert body["request_id"]
+    assert isinstance(body, list)
+    assert body[0]["scope"]["user"] == "alice"
+    assert "request_id" not in body[0]
     actor = Scope(org="acme", user="alice")
     items = server.api.list(
         Scope(org="acme", user="alice"), security=legacy_request_context(actor)
@@ -297,19 +372,19 @@ def test_http_uses_authenticated_actor_and_nested_target(http_endpoint) -> None:
     assert items[0].scope == Scope(org="acme", user="alice")
 
 
-def test_http_rejects_actor_claim_before_business_dispatch(http_endpoint) -> None:
+def test_http_rejects_actor_claim_before_api_call(http_endpoint) -> None:
     base_url, server = http_endpoint
     status, body = _post(
         base_url,
         {
-            "target": {"tenant_id": "acme", "scope": "alice"},
+            "scope": {"org": "acme", "user": "alice"},
             "content": "must not write",
             "actor_scope": "root",
         },
     )
 
     assert status == 400
-    assert "reserved" in body["message"]
+    assert "authentication" in body["message"]
     assert body["request_id"]
     assert (
         server.api.list(
@@ -320,27 +395,27 @@ def test_http_rejects_actor_claim_before_business_dispatch(http_endpoint) -> Non
     )
 
 
-def test_http_rejects_nested_identity_claim_before_business_dispatch(http_endpoint) -> None:
+def test_http_rejects_nested_identity_claim_before_api_call(http_endpoint) -> None:
     base_url, server = http_endpoint
     called = False
 
-    def dispatch(_request):
+    def add(*args, **kwargs):
+        del args, kwargs
         nonlocal called
         called = True
-        return 200, {"ok": True}
+        return []
 
-    server.dispatch = dispatch
+    server.api.add = add
     status, body = _post(
         base_url,
         {
-            "target": {"tenant_id": "acme", "scope": "alice", "identity": "root"},
+            "scope": {"org": "acme", "user": "alice", "identity": "root"},
             "content": "must not write",
         },
     )
 
     assert status == 400
     assert body["error"] == "ValidationError"
-    assert "reserved" in body["message"]
     assert body["request_id"]
     assert called is False
 
@@ -349,16 +424,17 @@ def test_http_missing_credentials_returns_401(http_endpoint) -> None:
     base_url, server = http_endpoint
     called = False
 
-    def dispatch(_request):
+    def add(*args, **kwargs):
+        del args, kwargs
         nonlocal called
         called = True
-        return 200, {"ok": True}
+        return []
 
-    server.dispatch = dispatch
+    server.api.add = add
     status, response, headers = _request_with_headers(
         base_url,
         "/v1/add",
-        b'{"target":{"tenant_id":"acme","scope":"alice"},"content":"x"}',
+        b'{"scope":{"org":"acme","user":"alice"},"content":"x"}',
         key=None,
         headers={"Content-Type": "application/json"},
     )
@@ -380,7 +456,7 @@ def test_http_authentication_denial_audit_shares_edge_request_id(http_endpoint) 
     status, body, _ = _request_with_headers(
         base_url,
         "/v1/add",
-        b'{"target":{"tenant_id":"acme","scope":"alice"},"content":"x"}',
+        b'{"scope":{"org":"acme","user":"alice"},"content":"x"}',
         key=None,
     )
 
@@ -394,12 +470,12 @@ def test_http_invalid_credentials_returns_401_before_dto(http_endpoint) -> None:
     server.security_runtime.authenticator.fail = True
     called = False
 
-    def dispatch(*args, **kwargs):
+    def add(*args, **kwargs):
         nonlocal called
         called = True
-        return 200, {"ok": True}
+        return []
 
-    server.dispatch = dispatch
+    server.api.add = add
     status, body, _ = _request(base_url, "/v1/add", b"not-json", key="bad")
 
     assert status == 401
@@ -408,19 +484,19 @@ def test_http_invalid_credentials_returns_401_before_dto(http_endpoint) -> None:
     assert called is False
 
 
-def test_http_unknown_field_is_400_and_does_not_dispatch(http_endpoint) -> None:
+def test_http_unknown_field_is_400_and_does_not_call_api(http_endpoint) -> None:
     base_url, server = http_endpoint
     called = False
 
-    def dispatch(*args, **kwargs):
+    def add(*args, **kwargs):
         nonlocal called
         called = True
-        return 200, {"ok": True}
+        return []
 
-    server.dispatch = dispatch
+    server.api.add = add
     status, body = _post(
         base_url,
-        {"target": {"tenant_id": "acme"}, "content": "x", "unexpected": True},
+        {"scope": {"org": "acme"}, "content": "x", "unexpected": True},
     )
 
     assert status == 400
@@ -444,15 +520,16 @@ def test_http_without_security_runtime_fails_closed(
     base_url, server = http_endpoint_without_security_runtime
     called = False
 
-    def dispatch(_request):
+    def add(*args, **kwargs):
+        del args, kwargs
         nonlocal called
         called = True
-        return 200, {"ok": True}
+        return []
 
-    server.dispatch = dispatch
+    server.api.add = add
     status, response = _post(
         base_url,
-        {"target": {"tenant_id": "acme"}, "content": "must not execute"},
+        {"scope": {"org": "acme"}, "content": "must not execute"},
     )
 
     assert status == 503
@@ -462,88 +539,204 @@ def test_http_without_security_runtime_fails_closed(
     assert called is False
 
 
-def test_http_authenticated_actor_is_independent_from_target(http_endpoint) -> None:
-    base_url, server = http_endpoint
-    server.security_runtime.authenticator.actor = Scope(org="acme", user="root")
-    captured: dict[str, object] = {}
-
-    def dispatch(request):
-        assert isinstance(request, DispatchRequest)
-        captured["identity"] = request.actor
-        captured["target"] = request.target
-        captured["security"] = request.security
-        return 200, {"ok": True}
-
-    server.dispatch = dispatch
-    status, body = _post(
+def test_dev_authentication_accepts_request_without_credentials(dev_http_endpoint) -> None:
+    base_url, _ = dev_http_endpoint
+    status, body, _ = _request(
         base_url,
-        {"target": {"tenant_id": "acme", "scope": "alice"}, "content": "x"},
+        "/v1/add",
+        json.dumps(
+            {
+                "content": "development request",
+                "scope": {"org": "local", "user": "developer"},
+            }
+        ).encode(),
+        key=None,
     )
 
     assert status == 200, body
-    assert captured["identity"] == Scope(org="acme", user="root")
-    assert captured["target"] == Scope(org="acme", user="alice")
-    security = captured["security"]
-    assert isinstance(security, RequestSecurityContext)
-    assert security.surface.value == "http"
-    assert security.auth.actor == Scope(org="acme", user="root")
-    assert security.request_id == body["request_id"]
+    assert body[0]["scope"]["org"] == "local"
+    assert body[0]["scope"]["user"] == "developer"
 
 
-def test_http_video_request_preserves_source_and_uri_for_dispatch(http_endpoint) -> None:
-    base_url, server = http_endpoint
-    captured: dict[str, object] = {}
+@pytest.mark.parametrize("host", ["0.0.0.0", "::"])
+def test_dev_authentication_rejects_non_loopback_binding(host, binding_httpd) -> None:
+    server = HttpServer.build(
+        load_config([OFFLINE]), security_runtime=build_dev_security_runtime()
+    )
+    with pytest.raises(ValidationError, match="loopback"):
+        server.serve(host, 8137)
 
-    def dispatch(request):
-        captured["request"] = request
-        return 200, {"ok": True}
+    assert binding_httpd == [], "unsafe binding must be rejected before creating a socket"
 
-    server.dispatch = dispatch
+
+def test_dev_authentication_cli_rejects_non_loopback_binding(monkeypatch, binding_httpd) -> None:
+    monkeypatch.delenv("JIUWEN_MEMORY_HTTP_ALLOW_DEV_AUTH_NON_LOOPBACK", raising=False)
+
+    result = http_server_module.main(
+        ["--auth-mode", "dev", "--host", "0.0.0.0", "--port", "8137"]
+    )
+
+    assert result == 2
+    assert binding_httpd == []
+
+
+def test_dev_authentication_allows_explicit_container_binding(binding_httpd, caplog) -> None:
+    server = HttpServer.build(
+        load_config([OFFLINE]), security_runtime=build_dev_security_runtime()
+    )
+
+    with caplog.at_level(logging.WARNING, logger="agent-memory.server"):
+        server.serve("0.0.0.0", 8137, allow_dev_non_loopback=True)
+
+    assert binding_httpd[0].address == ("0.0.0.0", 8137)
+    assert binding_httpd[0].served is True
+    assert binding_httpd[0].closed is True
+    assert "development authentication is listening on non-loopback host" in caplog.text
+
+
+def test_dev_binding_environment_override_warns(monkeypatch, binding_httpd, caplog) -> None:
+    monkeypatch.setenv("JIUWEN_MEMORY_HTTP_ALLOW_DEV_AUTH_NON_LOOPBACK", "true")
+
+    with caplog.at_level(logging.WARNING, logger="agent-memory.server"):
+        result = http_server_module.main(
+            ["--auth-mode", "dev", "--host", "0.0.0.0", "--port", "8137"]
+        )
+
+    assert result == 0
+    assert binding_httpd[0].served is True
+    assert binding_httpd[0].closed is True
+    assert "the deployment boundary must prevent remote access" in caplog.text
+
+
+@pytest.mark.parametrize("allow_override", [False, True])
+@pytest.mark.parametrize("host", ["0.0.0.0", "::"])
+def test_third_party_binding_error_does_not_suggest_dev_override(
+    host, allow_override, binding_httpd
+) -> None:
+    runtime = SimpleNamespace(authenticator=_LoopbackAuthenticator())
+    server = HttpServer.build(load_config([OFFLINE]), security_runtime=runtime)
+
+    with pytest.raises(ValidationError, match="authenticator.*third_party.*loopback") as error:
+        server.serve(host, 8137, allow_dev_non_loopback=allow_override)
+
+    assert "development authentication" not in str(error.value)
+    assert "JIUWEN_MEMORY_HTTP_ALLOW_DEV_AUTH_NON_LOOPBACK" not in str(error.value)
+    assert binding_httpd == []
+
+
+def test_remote_capable_authenticator_binds_without_dev_override(binding_httpd) -> None:
+    runtime = SimpleNamespace(authenticator=_RemoteAuthenticator())
+    server = HttpServer.build(load_config([OFFLINE]), security_runtime=runtime)
+
+    server.serve("0.0.0.0", 8137)
+
+    assert binding_httpd[0].served is True
+    assert binding_httpd[0].closed is True
+
+
+def test_binding_policy_denial_is_not_overridden_by_dev_flag(binding_httpd) -> None:
+    policy = _RejectingBindingPolicy()
+    runtime = SimpleNamespace(
+        authenticator=build_dev_security_runtime().authenticator,
+        binding_policy=policy,
+    )
+    server = HttpServer.build(load_config([OFFLINE]), security_runtime=runtime)
+
+    with pytest.raises(ValidationError, match="binding policy rejected host"):
+        server.serve("0.0.0.0", 8137, allow_dev_non_loopback=True)
+
+    assert policy.calls == [("0.0.0.0", True)]
+    assert binding_httpd == []
+
+
+def test_http_does_not_add_video_specific_add_parameters(http_endpoint) -> None:
+    base_url, _ = http_endpoint
     status, body = _post(
         base_url,
         {
-            "target": {"tenant_id": "acme", "scope": "alice"},
+            "scope": {"org": "acme", "user": "alice"},
             "content": "video ingest",
             "source": "video",
             "uri": "file:///tmp/demo.mp4",
         },
     )
 
-    assert status == 200, body
-    request = captured["request"]
-    assert isinstance(request, DispatchRequest)
-    assert dict(request.payload) == {
-        "content": "video ingest",
-        "source": "video",
-        "uri": "file:///tmp/demo.mp4",
-    }
+    assert status == 400
+    assert body["error"] == "ValidationError"
+    assert "uri" in body["message"]
 
 
-def test_http_delete_space_request_preserves_mode_for_dispatch(http_endpoint) -> None:
+def test_http_delete_space_calls_same_named_api_with_original_parameters(
+    http_endpoint, monkeypatch
+) -> None:
+    """The transport must pass decoded API parameters to the same-named method."""
     base_url, server = http_endpoint
     captured: dict[str, object] = {}
 
-    def dispatch(request):
-        captured["request"] = request
-        return 200, {"ok": True}
+    def delete_space(org, space, *, security, mode):
+        captured.update(org=org, space=space, security=security, mode=mode)
+        return "deleted"
 
-    server.dispatch = dispatch
+    monkeypatch.setattr(server.api, "delete_space", delete_space)
     status, body, _ = _request(
         base_url,
         "/v1/delete_space",
-        json.dumps({"target": {"tenant_id": "acme", "space": "product"}, "mode": "purge"}).encode(),
+        json.dumps({"org": "acme", "space": "product", "mode": "purge"}).encode(),
     )
 
     assert status == 200, body
-    request = captured["request"]
-    assert isinstance(request, DispatchRequest)
-    assert request.target == Scope(org="acme", space="product")
-    assert dict(request.payload) == {"mode": "purge"}
+    assert body == "deleted"
+    assert captured["org"] == "acme"
+    assert captured["space"] == "product"
+    assert captured["mode"].value == "purge"
+    assert captured["security"].surface.value == "http"
 
 
-def test_http_real_dispatch_keeps_actor_and_target_separate_in_permission_and_audit(
+def test_http_async_method_is_awaited_and_returns_raw_value(http_endpoint, monkeypatch) -> None:
+    base_url, server = http_endpoint
+
+    async def add_async(content, scope, *, security, **_kwargs):
+        del content, security
+        return [{"id": "async-unit", "scope": scope}]
+
+    monkeypatch.setattr(server.api, "add_async", add_async)
+    status, body, _ = _request(
+        base_url,
+        "/v1/add_async",
+        json.dumps({"content": "hello", "scope": {"org": "acme", "user": "alice"}}).encode(),
+    )
+
+    assert status == 200
+    assert body == [
+        {
+            "id": "async-unit",
+            "scope": {"org": "acme", "space": "", "user": "alice", "agent": "", "session": ""},
+        }
+    ]
+
+
+def test_http_none_return_value_is_serialized_as_json_null(http_endpoint, monkeypatch) -> None:
+    base_url, server = http_endpoint
+
+    def admin_set(key, value, *, security):
+        del key, value, security
+        return None
+
+    monkeypatch.setattr(server.api, "admin_set", admin_set)
+    status, body, _ = _request(
+        base_url,
+        "/v1/admin_set",
+        json.dumps({"key": "feature", "value": "enabled"}).encode(),
+    )
+
+    assert status == 200
+    assert body is None
+
+
+def test_http_api_call_keeps_actor_and_target_separate_in_permission_and_audit(
     http_endpoint_with_recording_permission,
 ) -> None:
+    """Authenticated actor and API target remain independent through MemoryAPI."""
     base_url, server = http_endpoint_with_recording_permission
     actor = Scope(org="acme", user="root")
     target = Scope(org="acme", user="alice")
@@ -551,7 +744,7 @@ def test_http_real_dispatch_keeps_actor_and_target_separate_in_permission_and_au
 
     status, body = _post(
         base_url,
-        {"target": {"tenant_id": "acme", "scope": "alice"}, "content": "hello"},
+        {"scope": {"org": "acme", "user": "alice"}, "content": "hello"},
     )
 
     assert status == 200, body
@@ -572,7 +765,7 @@ def test_http_cross_scope_denial_uses_authenticated_actor(
     status, body = _post(
         base_url,
         {
-            "target": {"tenant_id": "acme", "scope": "alice"},
+            "scope": {"org": "acme", "user": "alice"},
             "content": "must be denied",
             "actor_scope": "forged",
         },
@@ -584,7 +777,7 @@ def test_http_cross_scope_denial_uses_authenticated_actor(
 
     status, body = _post(
         base_url,
-        {"target": {"tenant_id": "acme", "scope": "alice"}, "content": "must be denied"},
+        {"scope": {"org": "acme", "user": "alice"}, "content": "must be denied"},
     )
 
     assert status == 403
@@ -620,18 +813,19 @@ def test_http_unsupported_method_uses_json_error_contract(http_endpoint, method:
 def test_http_unexpected_error_log_is_redacted(http_endpoint, caplog) -> None:
     base_url, server = http_endpoint
 
-    def failing_dispatch(_request):
+    def failing_add(*args, **kwargs):
+        del args, kwargs
         raise RuntimeError(
             "Authorization: Bearer secret-token password=secret-password "
             "https://user:secret-password@example.com"
         )
 
-    server.dispatch = failing_dispatch
+    server.api.add = failing_add
     with caplog.at_level("ERROR", logger="agent-memory.server"):
         status, body, _ = _request_with_headers(
             base_url,
             "/v1/add",
-            b'{"target":{"tenant_id":"acme","scope":"alice"},"content":"x"}',
+            b'{"scope":{"org":"acme","user":"alice"},"content":"x"}',
         )
 
     assert status == 500
@@ -657,27 +851,27 @@ def test_http_requests_do_not_reuse_authenticated_actor(http_endpoint) -> None:
 
     server.security_runtime.authenticator = _RotatingAuthenticator()
 
-    def dispatch(request):
-        assert isinstance(request, DispatchRequest)
-        security = request.security
-        assert security is not None
-        observed.append((request.actor, security.actor))
-        return 200, {"ok": True}
+    def add(content, scope, *, security, **_kwargs):
+        del content
+        observed.append((scope, security.actor))
+        return []
 
-    server.dispatch = dispatch
+    server.api.add = add
     for scope in ("target-a", "target-b"):
         status, body = _post(
             base_url,
-            {"target": {"tenant_id": "acme", "scope": scope}, "content": "x"},
+            {"scope": {"org": "acme", "user": scope}, "content": "x"},
         )
         assert status == 200, body
 
-    assert observed == [(expected[0], expected[0]), (expected[1], expected[1])]
+    assert observed == [
+        (Scope(org="acme", user="target-a"), expected[0]),
+        (Scope(org="acme", user="target-b"), expected[1]),
+    ]
 
 
 def test_http_clears_auth_context_on_all_request_outcomes(http_endpoint, monkeypatch) -> None:
     base_url, server = http_endpoint
-    from jiuwen_memory_entry.http_server import __main__ as http_server_module
 
     original_authenticated = http_server_module.authenticated
     contexts_after_exit: list[AuthContext | None] = []
@@ -694,27 +888,28 @@ def test_http_clears_auth_context_on_all_request_outcomes(http_endpoint, monkeyp
 
     success_status, success_body = _post(
         base_url,
-        {"target": {"tenant_id": "acme", "scope": "alice"}, "content": "x"},
+        {"scope": {"org": "acme", "user": "alice"}, "content": "x"},
     )
     assert success_status == 200, success_body
 
     dto_status, dto_body = _post(
         base_url,
         {
-            "target": {"tenant_id": "acme", "scope": "alice"},
+            "scope": {"org": "acme", "user": "alice"},
             "content": "x",
             "actor_scope": "forged",
         },
     )
     assert dto_status == 400, dto_body
 
-    def failing_dispatch(_request):
+    def failing_add(*args, **kwargs):
+        del args, kwargs
         raise RuntimeError("business failure")
 
-    server.dispatch = failing_dispatch
+    server.api.add = failing_add
     error_status, error_body = _post(
         base_url,
-        {"target": {"tenant_id": "acme", "scope": "alice"}, "content": "x"},
+        {"scope": {"org": "acme", "user": "alice"}, "content": "x"},
     )
     assert error_status == 500, error_body
 
@@ -725,17 +920,17 @@ def test_http_clears_auth_context_on_all_request_outcomes(http_endpoint, monkeyp
     assert contexts_after_exit == [None, None, None, None]
 
 
-def test_http_rate_limit_returns_429_before_dto_or_dispatch(http_endpoint) -> None:
+def test_http_rate_limit_returns_429_before_dto_or_api_call(http_endpoint) -> None:
     base_url, server = http_endpoint
     server.security_runtime.rate_limiter = _RejectingLimiter()
     called = False
 
-    def dispatch(*args, **kwargs):
+    def add(*args, **kwargs):
         nonlocal called
         called = True
-        return 200, {"ok": True}
+        return []
 
-    server.dispatch = dispatch
+    server.api.add = add
     status, body, content_type = _request(base_url, "/v1/add", b"not-json")
 
     assert status == 429
@@ -757,16 +952,16 @@ def test_http_rate_limit_denial_audit_shares_edge_request_id(http_endpoint) -> N
     assert audit.events[-1].detail["request_id"] == body["request_id"]
 
 
-def test_http_malformed_json_is_400_and_does_not_dispatch(http_endpoint) -> None:
+def test_http_malformed_json_is_400_and_does_not_call_api(http_endpoint) -> None:
     base_url, server = http_endpoint
     called = False
 
-    def dispatch(*args, **kwargs):
+    def add(*args, **kwargs):
         nonlocal called
         called = True
-        return 200, {"ok": True}
+        return []
 
-    server.dispatch = dispatch
+    server.api.add = add
     status, body, _ = _request(base_url, "/v1/add", b"{invalid")
 
     assert status == 400
@@ -800,23 +995,24 @@ def test_http_unknown_path_and_verb_return_404(http_endpoint) -> None:
 def test_healthz_is_json_and_does_not_require_authentication(http_endpoint) -> None:
     base_url, _ = http_endpoint
     request = urllib.request.Request(f"{base_url}/healthz", method="GET")
-    with urllib.request.urlopen(request, timeout=3) as response:
+    with _NO_PROXY_OPENER.open(request, timeout=3) as response:
         body = json.loads(response.read())
         assert response.status == 200
         assert response.headers.get_content_type() == "application/json"
-        assert response.headers["X-Request-ID"] == body["request_id"]
+        assert response.headers["X-Request-ID"]
     assert body["status"] == "ok"
+    assert "request_id" not in body
 
 
-def test_http_request_ids_are_unique(http_endpoint) -> None:
+def test_http_error_request_ids_are_unique(http_endpoint) -> None:
     base_url, _ = http_endpoint
     ids = []
     for _ in range(2):
         status, body = _post(
             base_url,
-            {"target": {"tenant_id": "acme", "scope": "alice"}, "content": "x"},
+            {"scope": {"org": "acme", "user": "alice"}, "content": "x", "extra": True},
         )
-        assert status == 200
+        assert status == 400
         ids.append(body["request_id"])
     assert len(set(ids)) == 2
 
@@ -901,14 +1097,15 @@ def test_http_maps_domain_errors_to_stable_statuses(
 ) -> None:
     base_url, server = http_endpoint
 
-    def failing_dispatch(_request):
+    def failing_add(*args, **kwargs):
+        del args, kwargs
         raise error
 
-    server.dispatch = failing_dispatch
+    server.api.add = failing_add
     status, body, headers = _request_with_headers(
         base_url,
         "/v1/add",
-        b'{"target":{"tenant_id":"acme","scope":"alice"},"content":"x"}',
+        b'{"scope":{"org":"acme","user":"alice"},"content":"x"}',
     )
 
     assert status == expected_status
@@ -925,7 +1122,8 @@ def test_http_maps_domain_errors_to_stable_statuses(
 def test_http_partial_failure_preserves_batch_retry_contract(http_endpoint) -> None:
     base_url, server = http_endpoint
 
-    def failing_dispatch(_request):
+    def failing_batch_add(*args, **kwargs):
+        del args, kwargs
         raise PartialFailureError(
             completed=("ok-1",),
             failed="bad-2",
@@ -933,11 +1131,11 @@ def test_http_partial_failure_preserves_batch_retry_contract(http_endpoint) -> N
             message="partial batch failure",
         )
 
-    server.dispatch = failing_dispatch
+    server.api.batch_add = failing_batch_add
     status, body, headers = _request_with_headers(
         base_url,
         "/v1/batch_add",
-        b'{"target":{"tenant_id":"acme","scope":"alice"},"items":[{"content":"x"}]}',
+        b'{"scope":{"org":"acme","user":"alice"},"items":[{"content":"x"}]}',
     )
 
     assert status == 409
@@ -955,14 +1153,15 @@ def test_http_partial_failure_preserves_batch_retry_contract(http_endpoint) -> N
 def test_http_unexpected_error_is_generic_and_not_retryable(http_endpoint) -> None:
     base_url, server = http_endpoint
 
-    def failing_dispatch(_request):
+    def failing_add(*args, **kwargs):
+        del args, kwargs
         raise RuntimeError("Authorization: Bearer secret-token password=secret-password")
 
-    server.dispatch = failing_dispatch
+    server.api.add = failing_add
     status, body, headers = _request_with_headers(
         base_url,
         "/v1/add",
-        b'{"target":{"tenant_id":"acme","scope":"alice"},"content":"x"}',
+        b'{"scope":{"org":"acme","user":"alice"},"content":"x"}',
     )
 
     assert status == 500
@@ -977,42 +1176,22 @@ def test_http_unexpected_error_is_generic_and_not_retryable(http_endpoint) -> No
     assert "secret-password" not in json.dumps(body)
 
 
-def test_http_unknown_dispatch_error_name_is_generic_server_failure(http_endpoint) -> None:
-    base_url, server = http_endpoint
-
-    def unknown_dispatch(_request):
-        return 500, {"error": "UnexpectedCustomFailure", "message": "token=secret-token"}
-
-    server.dispatch = unknown_dispatch
-    status, body, headers = _request_with_headers(
-        base_url,
-        "/v1/add",
-        b'{"target":{"tenant_id":"acme","scope":"alice"},"content":"x"}',
-    )
-
-    assert status == 500
-    assert body["error"] == "InternalError"
-    assert body["message"] == "internal server error"
-    assert body["retryable"] is False
-    assert body["request_id"] == headers["x-request-id"]
-    assert "secret-token" not in json.dumps(body)
-
-
 def test_http_validation_error_is_redacted(http_endpoint) -> None:
     base_url, server = http_endpoint
 
-    def failing_dispatch(_request):
+    def failing_add(*args, **kwargs):
+        del args, kwargs
         raise ValidationError(
             "Authorization: Bearer secret-token token=secret-token "
             "api_key=secret-key password=secret-password "
             "https://user:secret-password@example.com"
         )
 
-    server.dispatch = failing_dispatch
+    server.api.add = failing_add
     status, body, _ = _request_with_headers(
         base_url,
         "/v1/add",
-        b'{"target":{"tenant_id":"acme","scope":"alice"},"content":"x"}',
+        b'{"scope":{"org":"acme","user":"alice"},"content":"x"}',
     )
 
     encoded = json.dumps(body)
@@ -1032,14 +1211,15 @@ def test_http_audit_detail_contains_response_request_id(
     status, body, headers = _request_with_headers(
         base_url,
         "/v1/add",
-        b'{"target":{"tenant_id":"acme","scope":"alice"},"content":"audit"}',
+        b'{"scope":{"org":"acme","user":"alice"},"content":"audit"}',
     )
 
     assert status == 200
-    assert body["request_id"] == headers["x-request-id"]
+    assert isinstance(body, list)
+    assert headers["x-request-id"]
     events = server.api.audit(
         {"action": "add"},
         security=legacy_request_context(Scope(org="acme", user="alice")),
     )
     event = next(event for event in events if event.action == "add")
-    assert event.detail["request_id"] == body["request_id"]
+    assert event.detail["request_id"] == headers["x-request-id"]

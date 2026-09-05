@@ -4,8 +4,8 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-09-01 |
-| 影响范围 | jiuwen_memory/api/，jiuwen_memory/control/，bootstrap/core/handler.py，docs/specs/S02-memory-api.md，docs/specs/S03-control.md |
+| 日期 | 2026-09-04 |
+| 影响范围 | jiuwen_memory/api/，jiuwen_memory/control/，jiuwen_memory_entry/http_server/，docs/specs/S02-memory-api.md，docs/specs/S03-control.md |
 | 测试基线 | `tests/unit/api/test_batch_write.py`、`test_batch_handler.py`、`tests/unit/control/test_cloud_engine.py` |
 | Refs | — |
 
@@ -266,23 +266,17 @@ API 入口。
 API 层仍负责归一化、鉴权、空间状态和审计；Engine 只接收已鉴权、已归一化的 target item，
 不接收 `security` 或 actor。
 
-### 8. HTTP handler 增加 `/v1/batch_add`
+### 8. HTTP 直接暴露 `/v1/batch_add` 与 `/v1/batch_add_async`
 
-HTTP 面建议新增独立 verb，而不是让 `/v1/add` 同时接受 object/list 两种 payload：
+HTTP 请求字段与 `MemoryAPI.batch_add` 原签名一致，顶层默认值直接使用同名参数，逐项输入
+使用 `BatchWriteItem` 原字段：
 
 ```json
 {
-  "defaults": {
-    "tenant_id": "acme",
-    "space": "prod",
-    "scope": "alice",
-    "source": "text",
-    "metadata": {"infer": "true"},
-    "stream_id": "s1"
-  },
   "items": [
     {
       "content": "Alice likes tea",
+      "scope": {"org": "acme", "space": "prod", "user": "alice"},
       "sequence": 1,
       "idempotency_key": "s1-1"
     },
@@ -294,24 +288,23 @@ HTTP 面建议新增独立 verb，而不是让 `/v1/add` 同时接受 object/lis
       "idempotency_key": "s1-2"
     }
   ],
+  "scope": {"org": "acme", "space": "prod", "user": "alice"},
+  "source": "text",
+  "system_metadata": {"infer": "true"},
+  "stream_id": "s1",
   "continue_on_error": true
 }
 ```
 
-handler 负责把 `defaults` 解析为 `batch_add` 顶层默认参数，把每个 item 解析为
-`BatchWriteItem`。HTTP adapter 从认证上下文生成统一 `RequestSecurityContext`，API 通过
-`security.auth.actor` 取得 actor；item 级范围覆盖使用
-`target` 嵌套对象，按 `tenant_id` / `space` / `scope` / `agent` / `session` 覆盖 defaults；
-内部 dispatch 仍使用 `target_scope` 作为 adapter 产物。
-顶层和 item 的 Scope 只在 typed DTO/`BatchWriteItem` 中表达；handler 不再从 raw payload
-重复解析 Scope 或 actor。非 HTTP 的旧 flat batch 输入统一由
-`bootstrap/core/legacy_request_adapter.py` 转换后再进入同一内部契约。
-`occurred_at` 在 HTTP 中接受 ISO 8601 字符串，defaults 作为顶层默认值、item 可逐项覆盖；
-HTTP 非法 defaults 或 item 属于 DTO 校验并返回 HTTP 400，非 HTTP 兼容 dispatch 仍可保留结构化失败 outcome。
-HTTP `target.tenant_id` 必须是非空字符串；缺少 item target 时继承 defaults，避免把 JSON null 解释为字符串 `"None"`。
-响应固定为 HTTP 200 的 `{ok, op: "batch_add", outcomes}`：每项包含原始 `input`、归一化
-`item`、`items`（MemoryUnit view）、`ok`、`error` 和 `error_type`；部分失败不使用 HTTP 207。
-如果未来需要每个 item 不同 actor，应另开管理接口，不在普通 batch 写入里混用。
+HTTP adapter 将 `items` 递归构造为 `list[BatchWriteItem]`，将 `scope` 构造为 `Scope`，并从
+认证上下文生成统一 `RequestSecurityContext`。item 未提供 `scope` 时，沿用 API 已有的
+顶层 `scope` 默认语义；提供时使用该 item 的完整 Scope。`occurred_at` 接受 ISO 8601
+字符串。非法顶层参数或 item 在调用前返回 HTTP 400。
+
+`/v1/batch_add` 直接调用同步方法；`/v1/batch_add_async` 等待同名协程。两者都直接返回
+`BatchWriteResult` 的 JSON 表达：顶层是 `outcomes`，每项保留 `index`、`item`、`units`、
+`error` 和 `error_type`，不增加 `{ok, op}` 包装，部分失败不使用 HTTP 207。普通 batch
+共享同一个由服务端注入的 `security`，不接受逐 item actor。
 
 ## 拒绝的方案
 
@@ -362,7 +355,7 @@ HTTP `target.tenant_id` 必须是非空字符串；缺少 item target 时继承 
 10. `metadata` 保留 key 和非标量校验复用单条 add。
 11. CloudEngine 下 `message_type` routing 逐 item 生效，并固化 `metadata["pipeline"]`。
 12. 同一 stream 的多条 `infer=true` 按输入顺序执行，后项可看到前项 `/messages/` 上下文。
-13. HTTP `/v1/batch_add` malformed item 返回结构化错误，不产生 HTTP 500。
+13. HTTP `/v1/batch_add` 与 `/v1/batch_add_async` 的 malformed item 返回结构化错误，不产生 HTTP 500。
 14. Engine 运行期非领域异常同样归集为 `InternalError` outcome，并记录异常；单条 `add`
     的异常语义不变。
 

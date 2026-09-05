@@ -31,7 +31,7 @@
 | `llm/` | LLM 插件目录（`echo` / `openai` / `dashscope`） |
 | `reranker/` | Reranker 插件目录 |
 | `audit/` | AuditLogger 插件目录；`protected_audit_logger.py` 的 `ProtectedAuditLogger` 把 record 委派审计完整性 provider、query 透传，并在构造时校验 provider chain store 与 logger 是同一对象（PR3 契约，接口先行） |
-| `security/` | 安全域唯一归属地：F05 契约层（`types.py` 公共值对象、`authentication/` / `authorization/` / `cryptography/` / `protection/` 各能力 base、`request_context.py` 受控构造入口、`runtime.py`）+ 旧 `SecurityProvider` 横切接口（接口 + `local` ENC1 AES-GCM 实现）+ 过渡桥 `legacy.py`。`*_impl` 实现包暂缓合入（接口先行，见 `docs/features/common/F05-security-api-contracts.md`）。另含空间级授权判据：`space_roles.py` 两轴角色与动作矩阵、`space_decision.py` 判定链纯函数、`principal.py` 主体推导与作者标记及内核归属坐标折算、`space_predicates.py` 检索两族系统谓词的生成（收 `actor`、不访问存储，与 `space_decision.py` 的分工：后者判能否进入空间，前者定进入后可见哪些条目）（见 `docs/features/control/F07-collective-memory-design.md`） |
+| `security/` | 安全域唯一归属地：F05 契约层（`types.py` 公共值对象、`authentication/` / `authorization/` / `cryptography/` / `protection/` 各能力 base、`request_context.py` 受控构造入口、`runtime.py`）+ `authentication_impl/dev_authenticator.py` 本地功能测试固定身份认证器 + 旧 `SecurityProvider` 横切接口（接口 + `local` ENC1 AES-GCM 实现）+ 过渡桥 `legacy.py`。除 dev 认证器外的安全 `*_impl` 实现包暂缓合入（接口先行，见 `docs/features/common/F05-security-api-contracts.md`）。另含空间级授权判据：`space_roles.py` 两轴角色与动作矩阵、`space_decision.py` 判定链纯函数、`principal.py` 主体推导与作者标记及内核归属坐标折算、`space_predicates.py` 检索两族系统谓词的生成（收 `actor`、不访问存储，与 `space_decision.py` 的分工：后者判能否进入空间，前者定进入后可见哪些条目）（见 `docs/features/control/F07-collective-memory-design.md`） |
 | `lock/` | LockProvider 横切接口目录：跨实例互斥原语（接口 + `redis` / `memory` 实现）。**common 层唯一的异步契约**，只交付原语、不在业务路径加锁，见 [F06-distributed-lock.md](../../docs/features/common/F06-distributed-lock.md) |
 
 ## 行为铁律
@@ -70,7 +70,7 @@
 - 核心数据类型（MemoryUnit/Scope/Context/Relation/Chunk/AuditEvent 等）
 - 工厂注册基础设施（Factory 基类 + `TOP_NAME` 命名空间 + `build`/`build_named`/`dep` 三接口）
 - 横切接口（AuditLogger / SecurityProvider / LockProvider）
-- 安全域契约（认证/密码学/保护的抽象接口与公共安全值对象；接口先行，实现暂缓）
+- 安全域契约（认证/密码学/保护的抽象接口与公共安全值对象；仅本地测试 dev 认证器已实装，生产实现暂缓）
 - 错误类型
 - 工具函数
 
@@ -106,7 +106,7 @@
 10. LockProvider 的契约是异步的，`health()` 随之异步——这是 common 层唯一的异步组件。
     锁只交付原语，本层不在任何业务路径上加锁；在哪些临界区取锁由各消费方自行论证。
     锁是基于租约的协调机制而非共识算法，依赖方必须能容忍偶发互斥失效或自备第二道防线。
-11. `security/` 是 F05 安全域的契约层：消费方只 import 契约与值对象，不反向 import；接口先行过渡期内不启用任何新认证/授权逻辑，旧 `SecurityProvider` 继续从包顶层导出，新契约异常从各能力子包取。
+11. `security/` 是 F05 安全域的契约与实现归属层：消费方只 import 契约与值对象，不反向 import。接口先行过渡期只实装 `DevAuthenticator`，它忽略凭据、返回具名 ROOT 身份且保持 `requires_loopback_binding=True`，只能由 HTTP / CLI 显式开发模式启用；trusted/api_key、正式授权与保护实现仍暂缓。旧 `SecurityProvider` 继续从包顶层导出，新契约异常从各能力子包取。
 12. `RequestSecurityContext` 只经 `request_context.py` 的 `new_request_context` / `internal_context` 构造，不在各 surface 各自拼装；`legacy.py` 的 `legacy_request_context` 是过渡期唯一例外，实装 PR 与其全部调用点一并删除。request ID 由受控适配层或构造入口生成，只作日志/审计关联；不得来自客户端 header、query 或业务 payload，不参与 actor、target 或授权判定，并必须在请求结束时 reset。
 13. 安全域 `Grant` 在构造边界把动作迭代冻结为 `frozenset[Action]` 并拒绝非 `Action` 成员；`grant_id` 默认留空等待服务端生成，公共导出不得要求既有调用方预先提供服务端标识。
 14. `RoutingFieldsProvider` 是授权策略路由字段的单一 capability 契约；接口先行过渡期的 `PermissionManager` 与目标 `Authorizer` 共同继承，禁止各自复制同名默认实现。

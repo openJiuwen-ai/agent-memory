@@ -39,8 +39,11 @@ For the original Compose parameters, see
 | `local` | BGE embedding and BGE reranking | LLM | Redis + Milvus + ES | Memory content must not be sent to remote embedding/reranking services |
 | `postgres` | None | LLM, embedding, reranking | PostgreSQL KV + pgvector + ES | Fewer Milvus, etcd, and MinIO components are preferred |
 
-All profiles expose HTTP through `POST /v1/<verb>` and provide a health check through
-`GET /healthz`.
+All profiles expose same-named `MemoryAPI` methods through `POST /v1/<method_name>` and provide a
+health check through `GET /healthz`. The current Compose launcher does not assemble a production
+`SecurityRuntime`, so the default `required` mode exposes only the health check and business
+endpoints return 503. Local functional tests can explicitly set
+`JIUWEN_MEMORY_HTTP_AUTH_MODE=dev` in `.env`.
 
 ## 3. Online Model Mode
 
@@ -124,19 +127,41 @@ docker compose ps
 docker compose logs -f agent-memory
 ```
 
-In another terminal, run:
+In another terminal, run the health check:
 
 ```bash
 curl http://localhost:8137/healthz
+```
 
+To test business endpoints, explicitly enable development authentication in the profile's `.env`
+and recreate the application container:
+
+```dotenv
+JIUWEN_MEMORY_HTTP_AUTH_MODE=dev
+HTTP_BIND_ADDRESS=127.0.0.1
+```
+
+```bash
+docker compose up -d --force-recreate agent-memory
+```
+
+Dev mode ignores authentication headers and fixes the actor to the `local/developer` ROOT identity,
+while still running `MemoryAPI` authorization. The process listens on `0.0.0.0` inside the container,
+but `HTTP_BIND_ADDRESS=127.0.0.1` publishes the host port only on loopback. Then use these requests
+to verify an add/search round trip:
+
+```bash
 curl -X POST http://localhost:8137/v1/add \
   -H 'Content-Type: application/json' \
-  -d '{"tenant_id":"demo","scope":"alice","content":"The user prefers to write code in Python"}'
+  -d '{"content":"The user prefers to write code in Python","scope":{"org":"local","space":"","user":"developer","agent":"","session":""}}'
 
 curl -X POST http://localhost:8137/v1/search \
   -H 'Content-Type: application/json' \
-  -d '{"tenant_id":"demo","scope":"alice","query":"Which language does the user prefer","k":5}'
+  -d '{"query":"Which language does the user prefer","context":{"scope":{"org":"local","space":"","user":"developer","agent":"","session":""},"extensions":{}},"top_k":5}'
 ```
+
+Dev mode is for local functional testing only. Shared-network or production deployments must return
+to `required` and inject a trusted production runtime.
 
 A `status: ok` health response only confirms that the HTTP process can respond. Complete availability
 should be verified with a real add/search round trip, because model connectivity, vector dimensions,
@@ -210,16 +235,18 @@ running it.
 
 ## 10. Capabilities Required Before Production Use
 
-The current HTTP service is a reference implementation. It does not include TLS, transport-level
-identity authentication, rate limiting, or multi-process management. Elasticsearch security is also
+The current HTTP service is a reference implementation. It does not include TLS or multi-process
+management. Business identity must be derived from authentication headers by a trusted
+`SecurityRuntime`, which can also integrate rate-limiting and workload-protection policies. The
+current Compose launcher does not provide its production assembler. Elasticsearch security is also
 disabled by default in Compose, and the default database credentials are suitable only for
 development.
 
 Before deployment on a shared network or in production, at least:
 
 - terminate TLS at a reverse proxy or API gateway;
-- derive the actor from a trusted identity system instead of trusting actor fields in the request
-  body;
+- assemble a trusted `SecurityRuntime` that derives `RequestSecurityContext` from authentication
+  information;
 - replace all default passwords and configure backend accounts with least privilege;
 - restrict exposure of PostgreSQL, Elasticsearch, Milvus, and other backend ports;
 - configure TLS for PostgreSQL, Redis, Elasticsearch, Milvus, and model endpoints;

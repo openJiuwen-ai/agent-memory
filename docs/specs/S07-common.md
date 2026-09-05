@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-09-03 |
+| 最近一次修订日期 | 2026-09-05 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F05-security-api-contracts.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
@@ -25,7 +25,7 @@
 - 审计日志（AuditLogger）
 - 数据保护横切接口（SecurityProvider）
 - 跨实例互斥横切接口（LockProvider）
-- 安全域契约（认证/密码学/保护/授权/审计完整性的抽象接口、公共安全值对象、请求上下文受控构造、`SecurityRuntime`；接口先行，实现暂缓）
+- 安全域契约（认证/密码学/保护/授权/审计完整性的抽象接口、公共安全值对象、请求上下文受控构造、`SecurityRuntime`）及本地测试用 dev Authenticator；生产实现暂缓
 - 错误类型（自定义异常）
 - 工具函数（ID 生成/时间解析等）
 
@@ -44,7 +44,7 @@
 5. **工厂注册发生在 import 时**：实现文件尾部 `@XxxProducer.register("name")` 绑定构建函数，`__init__.py` 导入实现文件触发注册。
 6. **LLM Provider 参数不上浮到业务层**：厂商专属请求字段只能由对应 Adapter 生成；消费 `LLM` 的算子只传递通用生成选项。
 7. **SecurityProvider 是字节级横切接口**：调用方在持久化字节写入前加密、读取后解密；接口不绑定 `MemoryUnit` 或存储后端，是否启用由装配配置决定。
-8. **安全域接口先行**：`common/security/` 当前只合入 F05 契约层（types / 各能力 base / request_context / runtime），`*_impl` 实现包与 Server lifecycle 接线暂缓；运行链路不启用任何新认证/授权逻辑，旧 `SecurityProvider` 继续从包顶层导出。`security/legacy.py` 是过渡桥，随实装 PR 删除。
+8. **安全域接口先行**：`common/security/` 当前合入 F05 契约层（types / 各能力 base / request_context / runtime）以及仅供本地功能测试的 `authentication_impl/dev_authenticator.py`。dev 忽略凭据、返回固定具名 ROOT 身份；用于 HTTP 时要求 loopback 绑定。HTTP / CLI 只有显式选择 `dev` 才启用，默认 `required` 不降级。其余生产 `*_impl` 与完整 Server lifecycle 接线暂缓，旧 `SecurityProvider` 继续从包顶层导出。`security/legacy.py` 是过渡桥，随实装 PR 删除。
 9. **`RequestSecurityContext` 只由受控入口构造**：`security/request_context.py` 的 `new_request_context` / `internal_context` 是唯一构造点——`request_id` 服务端生成、`started_at` 取服务端时钟、`attributes` 只由系统组件写入；实例携带来源绑定，`has_valid_origin()` 判定是否出自受控入口。
 10. **标识唯一性分层**：非空 Space id 全局唯一；`MemoryUnit.id` 只要求在完整 Scope 内唯一。
 11. **Scope 位置参数兼容**：`space` 可为空但只能按关键字传入；旧位置参数顺序保持
