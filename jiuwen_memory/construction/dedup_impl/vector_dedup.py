@@ -13,7 +13,11 @@ from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import FilterClause, FilterOp, LifecycleState, MemoryUnit
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.dedup import Dedup, DedupProducer, same_scope
-from jiuwen_memory.storage.storage import Storage, StorageProducer
+from jiuwen_memory.storage.store_manager import (
+    StoreManager,
+    StoreManagerProducer,
+    resolve_name,
+)
 from jiuwen_memory.storage.types import VectorQuery
 
 logger = get_logger(__name__)
@@ -34,22 +38,24 @@ class VectorDedup(Dedup):
 
     def __init__(
         self,
-        storage: Storage,
+        storage: StoreManager,
         embedder: Embedder,
         *,
+        vector_name: str = "default",
+        kv_name: str = "default",
         min_similarity: float = 0.5,
         top_k: int = 5,
         tier_filter: bool = True,
         scope_filter: bool = True,
     ) -> None:
         super().__init__(
-            storage,
+            storage.kv(kv_name),
             min_similarity=min_similarity,
             top_k=top_k,
             tier_filter=tier_filter,
             scope_filter=scope_filter,
         )
-        self._vector_store = storage.vector
+        self._vector_store = storage.vector(vector_name)
         self._embedder = embedder
 
     def operator_type(self) -> OperatorType:
@@ -127,8 +133,10 @@ class VectorDedup(Dedup):
 @DedupProducer.register("vector")
 def _build(config):
     return VectorDedup(
-        storage=StorageProducer.resolve(config),
+        storage=StoreManagerProducer.resolve(config),
         embedder=EmbedderProducer.dep(config, default="hashing"),
+        vector_name=resolve_name(config, "vector_store"),
+        kv_name=resolve_name(config, "kv_store"),
         min_similarity=config.get("dedup_min_similarity", 0.5),
         top_k=config.get("dedup_top_k", 5),
         tier_filter=config.get("dedup_tier_filter", False),

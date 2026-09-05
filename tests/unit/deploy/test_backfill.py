@@ -24,7 +24,7 @@ from jiuwen_memory.control.space_impl.kv_space_manager import (
 )
 from jiuwen_memory.control.types import SpaceMember, SpaceSpec
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
 
 pytestmark = pytest.mark.unit
 
@@ -35,7 +35,7 @@ def _legacy_unit(unit_id: str, scope: Scope) -> MemoryUnit:
 
 def _seed(kv: InMemoryKVStore) -> KVSpaceManager:
     """造一份升级前形态的数据：条目 scope 带主体维、空间无归属登记、成员逐键。"""
-    manager = KVSpaceManager(CompositeStorage(kv=kv))
+    manager = KVSpaceManager(CompositeStoreManager(kv=kv))
     manager.create(SpaceSpec(org="acme", space="team"))
     alice = Scope(org="acme", space="team", user="alice", session="s1")
     kv.insert(alice, memory_key("u1"), dumps(_legacy_unit("u1", alice)))
@@ -137,7 +137,7 @@ def test_rebuild_registry_and_index_run_standalone() -> None:
 def test_entries_without_principal_dims_are_reported_instead_of_guessed() -> None:
     """条目已在两维 scope 下却没有作者标记：作者无从推导，须人工处置而不是猜。"""
     kv = InMemoryKVStore()
-    manager = KVSpaceManager(CompositeStorage(kv=kv))
+    manager = KVSpaceManager(CompositeStoreManager(kv=kv))
     manager.create(SpaceSpec(org="acme", space="team"))
     target = _scope("acme", "team")
     kv.insert(target, memory_key("u9"), dumps(_legacy_unit("u9", target)))

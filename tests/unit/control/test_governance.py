@@ -12,7 +12,7 @@ from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.config.config import Config
 from jiuwen_memory.control.governance_impl.in_memory_governor import InMemoryGovernor
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
 
 pytestmark = pytest.mark.unit
 
@@ -117,7 +117,7 @@ def test_inspect_is_bound_to_the_authorized_scope() -> None:
 
 
 def test_inspect_does_not_hide_storage_failures() -> None:
-    governor = InMemoryGovernor(CompositeStorage(kv=_FailingKV()), _QueryOnlyAuditLogger([]))
+    governor = InMemoryGovernor(CompositeStoreManager(kv=_FailingKV()), _QueryOnlyAuditLogger([]))
 
     with pytest.raises(BackendError, match="storage unavailable"):
         governor.inspect(["unit-id"], Scope(org="acme"))

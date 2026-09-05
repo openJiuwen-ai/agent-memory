@@ -255,3 +255,11 @@ storage.default → RoutingStorage({
 
 - `storage.active`：仅当 `storage.default` 为产品注入的 `RoutingStorage` 时有效。
 - 不变量补充：上层共享的 `storage.default` 可以是 `RoutingStorage`；其 instances 均须为完整 `Storage`。
+
+
+## 后续演进
+
+- [F07（storage 拆分，合并原 F07/F08/F09）](../storage/F07-storage-manager-domain-store-split.md)：`RoutingStorage`
+  拆为 `RoutingStoreManager` + `RoutingDomainStore`，切换键从 `storage.active` 更名
+  `store_manager.active`（配置段 `storage:` → `store_manager:`）。本文的方案 A（产品手工
+  注入、不注册内置 routing target）与惰性端口语义保留。

@@ -55,7 +55,7 @@
    横切：端/云/端云协同部署(§11) · 可观测(检索轨迹) · 多租户隔离 · 安全合规
 ```
 
-> 从下往上看：**数据层（G）持久化原始数据 → 记忆构建层（E）从原始数据提取、经抽象精炼/关联分析挖掘多粒度记忆并构建多形式索引（皆可重建） → 记忆检索层（D）通过统一 Storage 选择检索内核并完成重排与披露 → 记忆管理层（C）做生命周期/治理/权限/配置 → 记忆接口层（B）→ 调用与数据接入层（A）**。记忆存储层（F）以统一 `Storage` 契约屏蔽物理装配，同时按能力暴露标准底层端口；端/云/端云协同为部署维度（§11）。
+> 从下往上看：**数据层（G）持久化原始数据 → 记忆构建层（E）从原始数据提取、经抽象精炼/关联分析挖掘多粒度记忆并构建多形式索引（皆可重建） → 记忆检索层（D）通过数据面 DomainStore 选择检索内核并完成重排与披露 → 记忆管理层（C）做生命周期/治理/权限/配置 → 记忆接口层（B）→ 调用与数据接入层（A）**。记忆存储层（F）以管理面 `StoreManager`（全局唯一，`globals.store_manager` 指名）暴露命名授权端口、以数据面 `DomainStore` 承载领域操作，屏蔽物理装配；端/云/端云协同为部署维度（§11）。
 >
 > **记忆管理层（C）总览**：C 层是管理面，负责生命周期、权限、治理、调度与运行时策略的统一编排；职责总览见 §7。
 
@@ -407,7 +407,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
                          |
              +-----------+-----------+
              |                       |
-      CompositeStorage         IntegratedStorage
+      CompositeStoreManager    IntegratedStoreManager
              |                       |
    KV / Vector / Fulltext /     一体化存储或召回平台
     Graph / Fusion / FS
@@ -416,7 +416,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 - **领域操作**：顶层 `add/update/delete/get/list` 面向 `MemoryUnit`；`add` 只保存上层已经形成的真源记录，不负责接入、抽取、演进或生成索引投影。
 - **标准端口**：`storage.kv/vector/fulltext/graph/fusion/fs` 暴露对应 Store 的完整抽象接口，而非 Redis、Milvus 等具体实现；端口访问仍经过 Storage 的统一授权代理。
 - **能力模型**：`capabilities()` 是全局、不可变的唯一事实来源，`has_kv()`、`has_vector()` 等由其推导。未声明端口被访问时抛 `UnsupportedStorageCapabilityError`。检索 pipeline 不属于 capability，由 `preferred_retrieval_pipeline()` 单独表达。
-- **组合与一体化实现**：`CompositeStorage` 复用已装配的 Store 并提供默认组合能力；`IntegratedStorage` 是面向一体化平台的扩展形态，不要求物理暴露平台内部使用的每一种索引技术。
+- **组合与一体化实现**：`CompositeStoreManager` + `CompositeDomainStore` 复用已装配的 Store 并提供默认组合能力；`IntegratedStoreManager` 是面向一体化平台的扩展形态，不要求物理暴露平台内部使用的每一种索引技术。
 - **两级安全边界**：`Storage.security` 负责可插拔的通用数据面授权，默认 allow-all；各 `Store.security` 负责适配自身数据模型的数据保护，未启用时必须明确为 passthrough。固定调用顺序为 Storage 授权、选择/调用 Store、Store 数据保护、访问后端。
 - **健康检查**：`Storage.health()` 检查其声明的能力、统一 Security 和 Store Security；能力集合不会随单次健康状态动态变化。
 
@@ -429,8 +429,8 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | 全文索引 | SQLite FTS5 | 专用全文引擎 | — |
 | 融合存储 | 本地组合实现 | 一体化检索平台 | — |
 
-> 当前首版已落地 `Storage`、`StorageProducer`、`CompositeStorage`、能力与安全模型；
-> `storage.default` 可选择组合或一体化实现，Kernel 与 Retriever 共享同一具名实例。
+> 当前首版已落地 `StoreManager`/`DomainStore`、`StoreManagerProducer`、`CompositeStoreManager`/`CompositeDomainStore`、能力与安全模型；
+> `store_manager.default`（`globals.store_manager` 指名）可选择组合或一体化实现，`_build_kernel` 装配的 `_Kernel.storage` 与 Retriever 共享同一全局 manager。
 > Construction 与 Control 仍保留部分直接 Store 依赖，后续按模块迁移。
 > `IntegratedStorage` 是已定义的实现方向，尚未提供仓内实现。精确契约见
 > [S06-storage.md](../specs/S06-storage.md)，设计取舍见
@@ -505,7 +505,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | **双时间**（§3.1） | 启用 / 关闭（仅留最新版本） | 启用 | 关闭可省去历史时间维护，适合无回溯需求 |
 | **多模态规约**（§5.1） | 启用的规约器、是否留原模态资产、投影粒度 | 文本+按需图像 | 仅文本，去掉 ASR/OCR/caption 依赖 |
 | **scope / 共享**（§3.2） | `org + space` 隔离粒度、space 级 `principal_path`、共享池、跨 scope 授权策略 | space 隔离 + `user_agent` 默认 | 单租户简化 |
-| **存储后端**（§10.2） | Storage 实现、KV/向量/全文/图/融合/FS 端口选型（extras 选装） | CompositeStorage；端 SQLite / 云 PG+专用库 | 一体化 Storage 或端侧精简能力 |
+| **存储后端**（§10.2） | StoreManager/DomainStore 实现、KV/向量/全文/图/融合/FS 端口选型（extras 选装） | CompositeStoreManager + CompositeDomainStore；端 SQLite / 云 PG+专用库 | 一体化实现或端侧精简能力 |
 | **部署 profile**（§11） | edge / cloud / hybrid | 按场景 | — |
 | **模型**（§12 可插拔） | embedding / LLM 抽取器 / reranker；端侧降级策略 | 可插拔 | 端侧用小模型或规则降级 |
 
@@ -694,10 +694,11 @@ agent-memory/
     │   ├── hierarchy_expander.py   #   [planned] Retriever 内部算子：expand_depth>0 时单 kind 展开（共用 max_tokens）
     │   └── retriever_impl/         #   PipelineRetriever：按 Storage 首选值编排三条 pipeline
     │
-    ├── storage/                    # F 记忆存储层（§10）：统一 Storage 门面 + 六类标准 Store
+    ├── storage/                    # F 记忆存储层（§10）：StoreManager 管理面 + DomainStore 数据面 + 六类标准 Store
     │   ├── storage.py              #   Storage：MemoryUnit 领域操作、能力发现、端口与检索适配入口
     │   ├── security.py             #   StorageSecurity 通用授权 + StoreSecurity 数据保护边界
-    │   ├── storage_impl/           #   CompositeStorage 默认组合实现
+    │   ├── store_manager_impl/     #   CompositeStoreManager 默认管理面实现
+    │   ├── domain_store_impl/      #   CompositeDomainStore 默认数据面实现
     │   ├── base.py                 #   BaseStore（storeType/health/security）+ StoreType 枚举
     │   ├── types.py                #   Storage/Store 数据类型（scope 独立入参 + filters=FilterExpr）
     │   ├── kv.py                   #   KVStore（+exists）
@@ -731,7 +732,7 @@ agent-memory/
 | `jiuwen_memory/control/`            | C 控制层：记忆引擎编排（§6 语义的执行中枢）/ 生命周期（§3.1）/ 治理审计（§12）/ scope 权限（§3.2）/ 演进调度（§9.3）/ 运行时策略（§13.4） |
 | `jiuwen_memory/retrieval/`          | D 记忆检索层（§8）：查询理解 + Storage pipeline 选择 + Fuser + Reranker + 相关性阈值 + 渐进披露 + 轨迹/错误 |
 | `jiuwen_memory/construction/`       | E 记忆构建层 / 分层记忆结构（§4/§9.1/§9.2/§9.3）：**负责 MemoryUnit 落盘**与多形式索引构建、自演进 |
-| `jiuwen_memory/storage/`            | F 记忆存储层（§10）：统一 Storage 领域契约、能力/安全/检索适配，以及六种 Store（kv/fulltext/vector/graph/fusion/fs） |
+| `jiwen_memory/storage/`            | F 记忆存储层（§10）：StoreManager 管理面（能力/安全/命名端口）与 DomainStore 数据面（领域 CRUD/检索适配），以及六种 Store（kv/fulltext/vector/graph/fusion/fs） |
 | `jiuwen_memory/common/`             | 跨层共享：能力插件（Plugin：tokenizer/chunker/embedder/feature_extractor/llm/normalizer/reranker）+ 通用结构体（type_def，含 §3 数据模型）+ 横切组件（audit） |
 | `jiuwen_memory/config/`             | 配置（§13）：装配合并（YAML/defaults）+ 可插拔 `ConfigSource`（晚绑定六类配置）；少量策略键仍归 `jiuwen_memory/control/policy` |
 | `evaluation/`                       | 测评（对接 VISION §7：benchmark / metrics / scripts / smoke_test） |

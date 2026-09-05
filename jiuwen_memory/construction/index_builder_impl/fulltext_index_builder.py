@@ -15,7 +15,11 @@ from jiuwen_memory.common.type_def import MemoryUnit
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
 from jiuwen_memory.storage.fulltext import FulltextStore
-from jiuwen_memory.storage.storage import Storage, StorageProducer
+from jiuwen_memory.storage.store_manager import (
+    StoreManager,
+    StoreManagerProducer,
+    resolve_name,
+)
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 from ._index_ops import (
@@ -38,11 +42,14 @@ class FulltextIndexBuilder(IndexBuilder):
 
     def __init__(
         self,
-        storage: Storage,
+        storage: StoreManager,
         *,
+        fulltext_name: str = "default",
         layers_enabled: bool = True,
     ) -> None:
-        self._store = storage.fulltext if storage.has_fulltext() else None
+        self._store = (
+            storage.fulltext(fulltext_name) if storage.has_fulltext(fulltext_name) else None
+        )
         self._fulltext_l0 = fulltext_port(storage, "layers_l0", layers_enabled)
         self._fulltext_l1 = fulltext_port(storage, "layers_l1", layers_enabled)
 
@@ -133,6 +140,7 @@ class FulltextIndexBuilder(IndexBuilder):
 @IndexBuilderProducer.register("fulltext")
 def _build(config):
     return FulltextIndexBuilder(
-        StorageProducer.resolve(config),
+        StoreManagerProducer.resolve(config),
+        fulltext_name=resolve_name(config, "fulltext_store"),
         layers_enabled=config.get("layers_index_enabled", True),
     )

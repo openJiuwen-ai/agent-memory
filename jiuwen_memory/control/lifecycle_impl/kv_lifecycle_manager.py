@@ -3,9 +3,10 @@
 
 非破坏式状态流转：把记忆单元在真源里改 ``lifecycle``（active→superseded/archived/
 forgotten），不物理删除。``sweep`` 扫描到期（``t_invalid`` 已过）的 active 单元
-和 superseded 旧版本，标记 FORGOTTEN，返回被处理的 id。真源读注入的
-:class:`~storage.kv.KVStore`
-（``scopes()`` + ``scan()`` 跨 scope 扫描，字节经 memory_codec 编解码）。
+和 superseded 旧版本，标记 FORGOTTEN，返回被处理的 id。真源读写直接经注入的
+:class:`~storage.kv.KVStore` 端口（``scopes()`` 跨 scope 扫描 + ``load_units``/
+``list_units`` 读 + ``memory_key``/``dumps`` 回写，同 ``ForwardIndexBuilder``
+模式——回写即正排本体，无检索索引需要拆分）。
 """
 
 from __future__ import annotations
@@ -14,12 +15,18 @@ from datetime import datetime, timezone
 
 from jiuwen_memory.common.errors import NotFoundError, PolicyError, ValidationError
 from jiuwen_memory.common.log import get_logger
-from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit, Scope
+from jiuwen_memory.common.type_def import (
+    LifecycleState,
+    MemoryUnit,
+    Scope,
+    memory_key,
+)
+from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
 from jiuwen_memory.control.policy import PolicyManager, PolicyProducer
-from jiuwen_memory.storage.storage import Storage, StorageProducer
-from jiuwen_memory.storage.types import IndexWriteMode
+from jiuwen_memory.storage.kv import KVStore, list_units, load_units
+from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 
 logger = get_logger(__name__)
 
@@ -94,8 +101,8 @@ def _sweep_target(
 class KVLifecycleManager(LifecycleManager):
     """在 kv 真源上做非破坏式状态流转与到期清扫。"""
 
-    def __init__(self, storage: Storage, policy: PolicyManager | None = None) -> None:
-        self._storage = storage
+    def __init__(self, kv: KVStore, policy: PolicyManager | None = None) -> None:
+        self._kv = kv
         self._policy = policy
 
     def operator_type(self) -> ControlOperatorType:
@@ -104,15 +111,20 @@ class KVLifecycleManager(LifecycleManager):
     def health(self) -> None:
         return None
 
+    def _write_units(self, scope: Scope, units: list[MemoryUnit]) -> None:
+        """回写正排本体（ForwardIndexBuilder 模式）：key=memory_key，value=dumps。"""
+        for unit in units:
+            self._kv.update(scope, memory_key(unit.id), dumps(unit))
+
     def transition(
         self, scope: Scope, unit_ids: list[str], target: LifecycleState
     ) -> None:
-        matches = self._storage.get(scope, unit_ids)
+        matches = load_units(self._kv, scope, unit_ids)
         for unit in matches:
             _ensure_transition_allowed(unit.lifecycle, target, unit.id)
             unit.lifecycle = target
         if matches:
-            self._storage.update(scope, matches, mode=IndexWriteMode.FORWARD_ONLY)
+            self._write_units(scope, matches)
         logger.info(
             "Lifecycle.transition: scope=%s target=%s requested=%d matched=%d",
             scope,
@@ -122,12 +134,12 @@ class KVLifecycleManager(LifecycleManager):
         )
 
     def supersede(self, scope: Scope, unit_id: str, invalid_at: datetime) -> MemoryUnit:
-        units = self._storage.get(scope, [unit_id])
+        units = load_units(self._kv, scope, [unit_id])
         for unit in units:
             _ensure_transition_allowed(unit.lifecycle, LifecycleState.SUPERSEDED, unit.id)
             unit.lifecycle = LifecycleState.SUPERSEDED
             unit.temporal.t_invalid = invalid_at
-            self._storage.update(scope, [unit], mode=IndexWriteMode.FORWARD_ONLY)
+            self._write_units(scope, [unit])
             logger.info(
                 "Lifecycle.supersede: unit_id=%s scope=%s invalid_at=%s",
                 unit_id,
@@ -141,13 +153,13 @@ class KVLifecycleManager(LifecycleManager):
     def sweep(self) -> list[str]:
         now = datetime.now(timezone.utc)
         swept: list[str] = []
-        for scope in self._storage.scopes():
-            units = self._storage.list(scope, limit=1_000_000).items
+        for scope in self._kv.scopes():
+            units, _ = list_units(self._kv, scope, limit=1_000_000)
             for unit in units:
                 target = _sweep_target(unit, now, self._policy)
                 if target is not None:
                     unit.lifecycle = target
-                    self._storage.update(scope, [unit], mode=IndexWriteMode.FORWARD_ONLY)
+                    self._write_units(scope, [unit])
                     swept.append(unit.id)
         swept.sort()
         logger.info("Lifecycle.sweep: swept=%d", len(swept))
@@ -160,6 +172,6 @@ class KVLifecycleManager(LifecycleManager):
 @LifecycleProducer.register("kv")
 def _build(config):
     return KVLifecycleManager(
-        StorageProducer.resolve(config),
+        StoreManagerProducer.resolve(config).kv(resolve_name(config, "kv_store")),
         PolicyProducer.dep(config, default="dict"),
     )

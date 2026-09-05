@@ -29,7 +29,8 @@ from jiuwen_memory.retrieval.types import (
     ScoredUnit,
 )
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from jiuwen_memory.storage.storage_impl import CompositeStorage
+from jiuwen_memory.storage.domain_store_impl import CompositeDomainStore
+from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
 
 pytestmark = pytest.mark.unit
 
@@ -111,15 +112,16 @@ class CountingKVStore(InMemoryKVStore):
 def _build_retriever(
     pipeline: RetrievalPipeline,
     recallers: list[Recaller],
-) -> tuple[PipelineRetriever, CompositeStorage, CountingKVStore, Scope]:
+) -> tuple[PipelineRetriever, CompositeDomainStore, CountingKVStore, Scope]:
     scope = Scope(org="org", space="space", user="user")
     kv = CountingKVStore()
-    storage = CompositeStorage(
-        kv=kv,
-        recallers=recallers,
-        preferred_pipeline=pipeline,
+    manager = CompositeStoreManager(kv=kv)
+    domain_store = CompositeDomainStore(manager=manager, preferred_pipeline=pipeline)
+    domain_store.bind_recallers(recallers)
+    manager.bind_domain_store(domain_store)
+    domain_store.add(
+        scope, [MemoryUnit(id="u1", scope=scope, segments=[Segment(content="one")])]
     )
-    storage.add(scope, [MemoryUnit(id="u1", scope=scope, segments=[Segment(content="one")])])
     kv.read_keys = 0
     retriever = PipelineRetriever(
         StaticParser(),
@@ -127,9 +129,9 @@ def _build_retriever(
         SimpleDiscloser(),
         UnitReader(kv),
         rerank_max=10,
-        storage=storage,
+        domain_store=domain_store,
     )
-    return retriever, storage, kv, scope
+    return retriever, domain_store, kv, scope
 
 
 @pytest.mark.parametrize("pipeline", list(RetrievalPipeline))

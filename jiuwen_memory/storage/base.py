@@ -29,6 +29,12 @@
 - ``kv`` / ``fs`` 是通用键值/二进制原语：``scope`` 入参用于**对 key / 路径做命名
   空间隔离**——同一逻辑 key 在不同 scope 下是相互隔离的不同物理键，由存储层
   原生承担（不再由上层拼前缀）。
+
+``entity`` 是「scope 显式第一入参」的**唯一例外**：它以 ``space_id: str``
+（``space_id_from_scope`` 的算值，走后端 routing）+ ``EntityStoreFilters.actor_id``
+承担隔离，隔离维度与 Scope 五段模型不同构（agent/session 不作隔离维度，实体是
+user 级知识）。理由见 :mod:`storage.entity_store` 模块 docstring；该端口的授权由
+``_AuthorizedEntityStoreProxy`` 专门适配（scope 为有损近似，见其类 docstring）。
 """
 
 from __future__ import annotations
@@ -46,6 +52,7 @@ class StoreType(str, Enum):
     GRAPH = "graph"
     FUSION = "fusion"
     FS = "fs"
+    ENTITY = "entity"
 
 
 class BaseStore(ABC):

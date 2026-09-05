@@ -143,7 +143,10 @@ def test_memory_api_list_filters_before_pagination_and_preserves_total_count() -
 
 
 def test_memory_api_list_copies_extensions_and_forwards_normalized_filters() -> None:
-    kv = InMemoryKVStore()
+    # Kernel.kv 现为 manager 的授权代理（F07/F08），monkey-patch 代理观察不到
+    # 数据面内部调用——改为注入 RecordingKV：注入实例同时是 manager 的 KV 端口
+    # 与数据面真源，list 透传 kwargs 在同一实例上可见。
+    kv = _RecordingKV()
     api = assemble(kv=kv)
     scope = Scope(org="acme", user="owner")
     api.add(
@@ -153,14 +156,6 @@ def test_memory_api_list_copies_extensions_and_forwards_normalized_filters() -> 
         user_metadata={"project": "alpha"},
     )
     extensions = {"vendor_mode": 7}
-    calls = []
-    original_list = kv.list
-
-    def recording_list(target_scope, **kwargs):
-        calls.append((target_scope, kwargs))
-        return original_list(target_scope, **kwargs)
-
-    kv.list = recording_list
     filters = FilterClause("user_metadata.project", FilterOp.EQ, "alpha")
 
     result = api.list(
@@ -172,10 +167,22 @@ def test_memory_api_list_copies_extensions_and_forwards_normalized_filters() -> 
 
     assert result.count == 1
     assert extensions == {"vendor_mode": 7}
-    assert calls[0][0] == scope
-    assert calls[0][1]["extensions"] == {"vendor_mode": "7"}
-    assert calls[0][1]["extensions"] is not extensions
-    assert calls[0][1]["filters"] == filters
+    assert kv.calls[0][0] == scope
+    assert kv.calls[0][1]["extensions"] == {"vendor_mode": "7"}
+    assert kv.calls[0][1]["extensions"] is not extensions
+    assert kv.calls[0][1]["filters"] == filters
+
+
+class _RecordingKV(InMemoryKVStore):
+    """记录 list 入参（scope + kwargs），供透传断言。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[tuple[Scope, dict]] = []
+
+    def list(self, target_scope, **kwargs):
+        self.calls.append((target_scope, kwargs))
+        return super().list(target_scope, **kwargs)
 
 
 def test_memory_api_list_rejects_invalid_extensions_and_scope_filter() -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import pytest
 
@@ -14,7 +14,7 @@ from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_featu
 )
 from jiuwen_memory.common.reranker.reranker_impl.overlap_reranker import OverlapReranker
 from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
-from jiuwen_memory.common.type_def import memory_key
+from jiuwen_memory.common.type_def import RetrievalPipeline, memory_key
 from jiuwen_memory.common.type_def.memory import (
     LifecycleState,
     MemoryTier,
@@ -32,13 +32,41 @@ from jiuwen_memory.retrieval.recaller_impl.keyword_recaller import KeywordRecall
 from jiuwen_memory.retrieval.recaller_impl.vector_recaller import VectorRecaller
 from jiuwen_memory.retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
 from jiuwen_memory.retrieval.retriever_impl.unit_reader import UnitReader
+from jiuwen_memory.storage.domain_store_impl import CompositeDomainStore
 from jiuwen_memory.storage.fulltext_impl.in_memory_fulltext_store import InMemoryFulltextStore
+from jiuwen_memory.storage.graph import GraphStore
+from jiuwen_memory.storage.kv import KVStore
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
 from jiuwen_memory.storage.types import Document, VectorRecord
+from jiuwen_memory.storage.vector import VectorStore
 from jiuwen_memory.storage.vector_impl.in_memory_vector_store import InMemoryVectorStore
 
 DEFAULT_SCOPE = Scope(org="acme", user="u1", agent="a1", session="s1")
+
+
+def make_storage(
+    *,
+    kv: KVStore | None = None,
+    vector: VectorStore | None = None,
+    fulltext: InMemoryFulltextStore | None = None,
+    graph: GraphStore | None = None,
+    security: Any = None,
+    pipeline: RetrievalPipeline = RetrievalPipeline.RECALL_GET_RANK,
+) -> CompositeStoreManager:
+    """CompositeStoreManager + 已绑定 default 数据面（F07/F08 双面结构）。
+
+    端口消费者直接持返回的 manager；数据面消费者经 ``manager.domain_store()``
+    取 DomainStore。recallers 不在此装配——需召回的测试自建
+    ``CompositeDomainStore`` 后 ``bind_recallers`` + ``bind_domain_store``。
+    """
+    manager = CompositeStoreManager(
+        kv=kv, vector=vector, fulltext=fulltext, graph=graph, security=security
+    )
+    manager.bind_domain_store(
+        CompositeDomainStore(manager=manager, preferred_pipeline=pipeline)
+    )
+    return manager
 
 
 @dataclass
@@ -65,11 +93,15 @@ def make_world(rerank: bool = False) -> RetrievalWorld:
     kv = InMemoryKVStore()
     vector = InMemoryVectorStore()
     fulltext = InMemoryFulltextStore(tokenizer)
-    storage = CompositeStorage(kv=kv, vector=vector, fulltext=fulltext)
-    parser = SimpleQueryParser(tokenizer, embedder, feature_extractor=features)
+    storage = CompositeStoreManager(kv=kv, vector=vector, fulltext=fulltext)
+    domain_store = CompositeDomainStore(
+        manager=storage, preferred_pipeline=RetrievalPipeline.RECALL_GET_RANK
+    )
     keyword = KeywordRecaller(storage)
     vector_recaller = VectorRecaller(storage)
-    storage.bind_recallers([keyword, vector_recaller])
+    domain_store.bind_recallers([keyword, vector_recaller])
+    storage.bind_domain_store(domain_store)
+    parser = SimpleQueryParser(tokenizer, embedder, feature_extractor=features)
     discloser = TruncatingDiscloser()
     unit_reader = UnitReader(kv)
     reranker = OverlapReranker(tokenizer) if rerank else None
@@ -79,7 +111,7 @@ def make_world(rerank: bool = False) -> RetrievalWorld:
         discloser,
         unit_reader,
         reranker,
-        storage=storage,
+        domain_store=domain_store,
     )
     return RetrievalWorld(
         tokenizer,

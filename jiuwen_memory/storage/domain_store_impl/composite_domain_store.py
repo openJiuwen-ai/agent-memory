@@ -1,13 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""由现有 Store 和 Recaller 组合而成的默认统一 Storage。
+"""CompositeDomainStore — 默认数据面实现：MemoryUnit 领域 CRUD + 检索适配。
 
-召回路（Recaller）的装配归本实现：工厂按 ``vector_enabled`` / ``graph_enabled`` /
-``layers_index_enabled`` 与 ``*_recaller`` 配置在构建期同步组装，装配错误 fail-fast。
-recaller builder 会经 ``StorageProducer.resolve`` 回取本 Storage 实例，故工厂先把
-构建中的实例预注册进具名缓存再组装召回路，打破循环依赖：具名构建用 ``config.name``
-预注册（recaller 命名空间下具名实例的 ``storage`` 引用走 ``build_named`` 命中缓存）；
-匿名构建无缓存键，用合成名（``id(storage)`` 唯一）预注册并把 storage 引用注入
-recaller params，让 builder 内的 ``resolve`` 走 ``cls.dep`` 第一分支命中合成名缓存。
+构造时注入 ``manager`` 引用，通过 ``manager._stores`` 直接访问原始 KV（未经授权
+代理——领域方法本身已做 ``_authorize``，再走代理是双重）。同包实现协作：本类是
+:class:`~storage.store_manager_impl.CompositeStoreManager` 的内部协作实现，直接访问
+其私有状态属于实现细节，不破坏对外契约。
 """
 
 from __future__ import annotations
@@ -18,11 +15,9 @@ from typing import Any, cast
 from jiuwen_memory.common.errors import (
     NotFoundError,
     StorageRetrievalError,
-    UnsupportedStorageCapabilityError,
     ValidationError,
     safe_error_message,
 )
-from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import (
     CandidateFuser,
     ChannelError,
@@ -41,148 +36,37 @@ from jiuwen_memory.common.type_def import (
     memory_key,
 )
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
-from jiuwen_memory.storage.fs import FsProducer, FSStore
-from jiuwen_memory.storage.fulltext import FulltextProducer, FulltextStore
-from jiuwen_memory.storage.fusion import FusionProducer, FusionStore
-from jiuwen_memory.storage.graph import GraphProducer, GraphStore
-from jiuwen_memory.storage.kv import KvProducer, KVStore
+from jiuwen_memory.storage.domain_store import DomainStore, DomainStoreProducer
 from jiuwen_memory.storage.security import (
-    AllowAllStorageSecurity,
     StorageAccessContext,
     StorageAction,
     StorageSecurity,
 )
-from jiuwen_memory.storage.storage import Storage, StorageCapability, StorageProducer
+from jiuwen_memory.storage.store_manager import (
+    StorageCapability,
+    StoreManager,
+    StoreManagerProducer,
+)
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode, MemoryListResult
-from jiuwen_memory.storage.vector import VectorProducer, VectorStore
 
 
-class _AuthorizedStoreProxy:
-    """给现有 Store 方法增加可选 access，同时避免暴露原始实例。"""
+class CompositeDomainStore(DomainStore):
+    """默认数据面实现：MemoryUnit 领域 CRUD + 检索适配。"""
 
-    def __init__(self, store: Any, security: StorageSecurity, resource: str) -> None:
-        self._store = store
-        self._security = security
-        self._resource = resource
-
-    def __getattr__(self, name: str) -> Any:
-        member = getattr(self._store, name)
-        if not callable(member):
-            return member
-
-        def authorized(*args: Any, **kwargs: Any) -> Any:
-            access = kwargs.pop("access", None)
-            scope = args[0] if args and isinstance(args[0], Scope) else Scope()
-            action = _action_for_store_method(name)
-            self._security.authorize(access, scope, action, self._resource)
-            return member(*args, **kwargs)
-
-        return authorized
-
-
-def _action_for_store_method(name: str) -> StorageAction:
-    if name == "insert":
-        return StorageAction.ADD
-    if name == "update":
-        return StorageAction.UPDATE
-    if name == "delete":
-        return StorageAction.DELETE
-    if name in {"search", "recall", "seed_ids"}:
-        return StorageAction.SEARCH
-    if name in {"get", "mget", "exists", "scan", "list", "stat"}:
-        return StorageAction.GET
-    return StorageAction.ADMIN
-
-
-class CompositeStorage(Storage):
     def __init__(
         self,
         *,
-        kv: KVStore | None = None,
-        vector: VectorStore | None = None,
-        fulltext: FulltextStore | None = None,
-        graph: GraphStore | None = None,
-        fusion: FusionStore | None = None,
-        fs: FSStore | None = None,
-        kv_ports: dict[str, KVStore] | None = None,
-        vector_ports: dict[str, VectorStore] | None = None,
-        fulltext_ports: dict[str, FulltextStore] | None = None,
-        graph_ports: dict[str, GraphStore] | None = None,
-        fusion_ports: dict[str, FusionStore] | None = None,
-        fs_ports: dict[str, FSStore] | None = None,
-        recallers: list[Any] | None = None,
-        preferred_pipeline: RetrievalPipeline = RetrievalPipeline.RECALL_GET_RANK,
-        security: StorageSecurity | None = None,
+        manager: StoreManager,
+        preferred_pipeline: RetrievalPipeline,
     ) -> None:
-        self._stores = {
-            StorageCapability.KV: kv,
-            StorageCapability.VECTOR: vector,
-            StorageCapability.FULLTEXT: fulltext,
-            StorageCapability.GRAPH: graph,
-            StorageCapability.FUSION: fusion,
-            StorageCapability.FS: fs,
-        }
-        self._capabilities = frozenset(
-            capability for capability, store in self._stores.items() if store is not None
-        )
-        configured_ports = {
-            StorageCapability.KV: kv_ports,
-            StorageCapability.VECTOR: vector_ports,
-            StorageCapability.FULLTEXT: fulltext_ports,
-            StorageCapability.GRAPH: graph_ports,
-            StorageCapability.FUSION: fusion_ports,
-            StorageCapability.FS: fs_ports,
-        }
-        self._named_stores: dict[StorageCapability, dict[str, Any]] = {}
-        for capability, store in self._stores.items():
-            ports = dict(configured_ports.get(capability) or {})
-            if store is not None:
-                ports["default"] = store
-            self._named_stores[capability] = ports
-        self._recallers: list[Any] = list(recallers or [])
+        self._manager = manager
         self._preferred_pipeline = preferred_pipeline
-        self._security = security or AllowAllStorageSecurity()
-        self._proxies = {
-            capability: {
-                name: _AuthorizedStoreProxy(store, self._security, capability.value)
-                for name, store in ports.items()
-            }
-            for capability, ports in self._named_stores.items()
-        }
+        # recallers 由 manager _build 工厂装配期通过 bind_recallers 注入；默认空列表。
+        self._recallers: list[Any] = []
 
     @property
     def security(self) -> StorageSecurity:
-        return self._security
-
-    @property
-    def kv(self) -> KVStore:
-        return cast(KVStore, self._port(StorageCapability.KV))
-
-    @property
-    def vector(self) -> VectorStore:
-        return cast(VectorStore, self._port(StorageCapability.VECTOR))
-
-    @property
-    def fulltext(self) -> FulltextStore:
-        return cast(FulltextStore, self._port(StorageCapability.FULLTEXT))
-
-    @property
-    def graph(self) -> GraphStore:
-        return cast(GraphStore, self._port(StorageCapability.GRAPH))
-
-    @property
-    def fusion(self) -> FusionStore:
-        return cast(FusionStore, self._port(StorageCapability.FUSION))
-
-    @property
-    def fs(self) -> FSStore:
-        return cast(FSStore, self._port(StorageCapability.FS))
-
-    @staticmethod
-    def _validate_units(scope: Scope, units: list[MemoryUnit]) -> None:
-        invalid = [unit.id for unit in units if unit.scope != scope]
-        if invalid:
-            raise ValidationError(f"MemoryUnit scope differs from explicit scope: {invalid}")
+        return self._manager.security
 
     @property
     def recallers(self) -> list[Any]:
@@ -190,53 +74,14 @@ class CompositeStorage(Storage):
         return self._recallers
 
     def bind_recallers(self, recallers: list[Any]) -> None:
-        """手动绑定检索适配器（测试/手工装配用）；同一 Storage 不允许绑定两套不同实例。"""
+        """手动绑定检索适配器（测试/手工装配用）；同一实例不允许绑定两套不同 recaller。"""
         bound = list(recallers)
         same_binding = len(self._recallers) == len(bound) and all(
             current is candidate for current, candidate in zip(self._recallers, bound)
         )
         if self._recallers and not same_binding:
-            raise ValidationError("CompositeStorage cannot be rebound to different recallers")
+            raise ValidationError("CompositeDomainStore cannot be rebound to different recallers")
         self._recallers = bound
-
-    def capabilities(self) -> frozenset[StorageCapability]:
-        return self._capabilities
-
-    def has_kv_port(self, name: str = "default") -> bool:
-        return self._has_port(StorageCapability.KV, name)
-
-    def has_vector_port(self, name: str = "default") -> bool:
-        return self._has_port(StorageCapability.VECTOR, name)
-
-    def has_fulltext_port(self, name: str = "default") -> bool:
-        return self._has_port(StorageCapability.FULLTEXT, name)
-
-    def has_graph_port(self, name: str = "default") -> bool:
-        return self._has_port(StorageCapability.GRAPH, name)
-
-    def has_fusion_port(self, name: str = "default") -> bool:
-        return self._has_port(StorageCapability.FUSION, name)
-
-    def has_fs_port(self, name: str = "default") -> bool:
-        return self._has_port(StorageCapability.FS, name)
-
-    def kv_port(self, name: str = "default") -> KVStore:
-        return cast(KVStore, self._port(StorageCapability.KV, name))
-
-    def vector_port(self, name: str = "default") -> VectorStore:
-        return cast(VectorStore, self._port(StorageCapability.VECTOR, name))
-
-    def fulltext_port(self, name: str = "default") -> FulltextStore:
-        return cast(FulltextStore, self._port(StorageCapability.FULLTEXT, name))
-
-    def graph_port(self, name: str = "default") -> GraphStore:
-        return cast(GraphStore, self._port(StorageCapability.GRAPH, name))
-
-    def fusion_port(self, name: str = "default") -> FusionStore:
-        return cast(FusionStore, self._port(StorageCapability.FUSION, name))
-
-    def fs_port(self, name: str = "default") -> FSStore:
-        return cast(FSStore, self._port(StorageCapability.FS, name))
 
     def preferred_retrieval_pipeline(self) -> RetrievalPipeline:
         return self._preferred_pipeline
@@ -383,26 +228,14 @@ class CompositeStorage(Storage):
         return RankedStorageResult(candidates=ranked, errors=materialized.errors)
 
     def health(self) -> None:
-        self._security.health()
-        checked: set[int] = set()
-        for ports in self._named_stores.values():
-            for store in ports.values():
-                if id(store) in checked:
-                    continue
-                checked.add(id(store))
-                store.security.health()
-                store.health()
+        # 数据面无独立资源（recallers 是被注入的，非健康检查对象）；委托 manager 聚合。
+        self._manager.health()
 
-    def _port(self, capability: StorageCapability, name: str = "default") -> Any:
-        try:
-            return self._proxies[capability][name]
-        except KeyError as exc:
-            raise UnsupportedStorageCapabilityError(
-                f"storage capability is not available: {capability.value}.{name}"
-            ) from exc
-
-    def _has_port(self, capability: StorageCapability, name: str) -> bool:
-        return name in self._named_stores[capability]
+    @staticmethod
+    def _validate_units(scope: Scope, units: list[MemoryUnit]) -> None:
+        invalid = [unit.id for unit in units if unit.scope != scope]
+        if invalid:
+            raise ValidationError(f"MemoryUnit scope differs from explicit scope: {invalid}")
 
     def _authorize(
         self,
@@ -411,13 +244,16 @@ class CompositeStorage(Storage):
         action: StorageAction,
         resource: str,
     ) -> None:
-        self._security.authorize(access, scope, action, resource)
+        self._manager.security.authorize(access, scope, action, resource)
 
-    def _raw_kv(self) -> KVStore:
-        store = self._stores[StorageCapability.KV]
+    def _raw_kv(self) -> Any:
+        # 直接访问 manager._stores[KV]（原始 KVStore，未经授权代理）——领域方法已做
+        # _authorize，再走代理是双重。同包实现协作，不破坏对外契约。
+        store = self._manager._stores[StorageCapability.KV]  # pylint: disable=protected-access
         if store is None:
-            self._port(StorageCapability.KV)
-        return cast(KVStore, store)
+            # KV 缺失时调 manager._port 抛 UnsupportedStorageCapabilityError，与原行为一致
+            self._manager._port(StorageCapability.KV)  # pylint: disable=protected-access
+        return cast(Any, store)
 
     def _get_units(self, scope: Scope, unit_ids: list[str]) -> list[MemoryUnit]:
         """批量点读真源：按输入顺序返回，缺失 id 省略，重复 id 各自返回。
@@ -550,49 +386,36 @@ def _recaller_source(recaller: Any) -> str:
     return type(recaller).__name__
 
 
-def _optional_store(
-    producer: type[Factory], config: Any, field: str, *, include_default: bool = False
-) -> Any | None:
-    if field not in config.params:
-        return producer.build("memory", {}, config.ctx) if include_default else None
-    return producer.dep(config, field)
-
-
-def _named_ports(producer: type[Factory], config: Any) -> dict[str, Any]:
-    namespace = config.ctx.namespaces.get(producer.TOP_NAME, {})
-    return {
-        name: producer.build_named(name, config.ctx)
-        for name in ("layers_l0", "layers_l1")
-        if name in namespace
-    }
-
-
-def _assemble_recallers(config: Any, *, storage: "CompositeStorage") -> list[Any]:
+def _assemble_recallers(config: Any, *, storage: StoreManager) -> list[Any]:
     """按能力开关组装召回路；每路 recaller 自取其 Store，可被 config 各自覆盖。
 
-    构建期同步执行，装配错误 fail-fast。具名构建（``config.name`` 非空）由 ``_build``
-    预注册进具名缓存，``RecallerProducer.dep`` 走具名引用路径，recaller builder 内
-    ``StorageProducer.resolve`` 命中缓存打破循环。匿名构建无缓存键，此处用合成名
+    构建期同步执行，装配错误 fail-fast（F06 内收设计保留，调用时机在 manager
+    ``_build`` 末尾）。具名构建（``config.name`` 非空）由 manager ``_build`` 预注册进
+    具名缓存，``RecallerProducer.dep`` 走具名引用路径，recaller builder 内
+    ``StoreManagerProducer.resolve`` 命中缓存打破循环。匿名构建无缓存键，此处用合成名
     （``id(storage)`` 保证唯一）预注册本实例，改走 ``RecallerProducer.build`` 直接把
-    storage 引用注入 params，让 builder 内的 ``resolve`` 走第一分支（``cls.dep``）
-    命中合成名缓存——避免落到第三分支再建一个匿名 CompositeStorage 触发递归。
+    manager 引用注入 params，让 builder 内的 ``resolve`` 走第一分支（``cls.dep``）
+    命中合成名缓存——避免落到第三分支再建一个匿名 manager 触发递归。
     """
     from jiuwen_memory.retrieval.recaller import RecallerProducer
 
     if config.name:
-        # 具名构建：recaller 命名空间下声明的具名实例带 ``storage: <name>`` 引用，
-        # ``dep`` 走 ``build_named`` 命中缓存即可，无需注入。
+        # 具名构建：recaller 命名空间下声明的具名实例带 ``store_manager: <name>``
+        # 引用，``dep`` 走 ``build_named`` 命中缓存即可，无需注入。
         def _dep(key: str, default_target: str) -> Any:
             return RecallerProducer.dep(config, key, default=default_target)
     else:
-        # 匿名构建：无 recaller 命名空间，用合成名注册 + 直接 build 注入 storage 引用，
-        # 让 builder 内 ``StorageProducer.resolve`` 走 ``cls.dep`` 第一分支命中缓存。
-        synthetic_name = f"__anon_storage_{id(storage)}__"
-        StorageProducer.put(synthetic_name, storage)
+        # 匿名构建：无 recaller 命名空间，用合成名注册 + 直接 build 注入 manager
+        # 引用，让 builder 内 ``StoreManagerProducer.resolve`` 走 ``cls.dep`` 第一
+        # 分支命中缓存。
+        synthetic_name = f"__anon_store_manager_{id(storage)}__"
+        StoreManagerProducer.put(synthetic_name, storage)
 
         def _dep(key: str, default_target: str) -> Any:
             target = config.get(key, default_target)
-            return RecallerProducer.build(target, {"storage": synthetic_name}, config.ctx)
+            return RecallerProducer.build(
+                target, {"store_manager": synthetic_name}, config.ctx
+            )
 
     recallers = [_dep("keyword_recaller", "keyword")]
     if config.get("vector_enabled", True):
@@ -610,8 +433,16 @@ def _assemble_recallers(config: Any, *, storage: "CompositeStorage") -> list[Any
     return recallers
 
 
-@StorageProducer.register("composite")
+@DomainStoreProducer.register("composite")
 def _build(config):
+    # 回取 manager：params["store_manager"] 为字符串引用（manager _build 已预注册
+    # 进缓存，dep 走 build_named 命中）。必填、无 default——独立构建会触发 manager
+    # 匿名重建的无限递归，且违背「所有存储类从 StoreManager 获取」原则。
+    manager = StoreManagerProducer.dep(config)
+    if not isinstance(manager, StoreManager):
+        raise TypeError(
+            f"DomainStore builder assembled {type(manager).__name__}, expected StoreManager"
+        )
     pipeline_value = config.get(
         "preferred_retrieval_pipeline", RetrievalPipeline.RECALL_GET_RANK.value
     )
@@ -623,36 +454,4 @@ def _build(config):
             f"Unsupported preferred_retrieval_pipeline {pipeline_value!r}; "
             f"expected one of {supported}"
         ) from exc
-    storage = CompositeStorage(
-        kv=KvProducer.dep(config, default="memory"),
-        vector=_optional_store(
-            VectorProducer,
-            config,
-            "vector_store",
-            include_default=config.get("__default_capabilities", False),
-        ),
-        fulltext=_optional_store(
-            FulltextProducer,
-            config,
-            "fulltext_store",
-            include_default=config.get("__default_capabilities", False),
-        ),
-        graph=_optional_store(
-            GraphProducer,
-            config,
-            "graph_store",
-            include_default=config.get("__default_capabilities", False),
-        ),
-        fusion=_optional_store(FusionProducer, config, "fusion_store"),
-        fs=_optional_store(FsProducer, config, "fs_store"),
-        vector_ports=_named_ports(VectorProducer, config),
-        fulltext_ports=_named_ports(FulltextProducer, config),
-        preferred_pipeline=preferred_pipeline,
-    )
-    # 具名构建先把实例预注册进缓存再组装召回路，打破循环依赖（recaller builder
-    # 经 ``StorageProducer.resolve`` 回取时命中缓存）；匿名构建无缓存键，由
-    # ``_assemble_recallers`` 内部用合成名注册并注入 storage 引用。装配错误构建期暴露。
-    if config.name:
-        StorageProducer.put(config.name, storage)
-    storage.bind_recallers(_assemble_recallers(config, storage=storage))
-    return storage
+    return CompositeDomainStore(manager=manager, preferred_pipeline=preferred_pipeline)

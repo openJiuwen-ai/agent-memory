@@ -35,7 +35,8 @@ from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderP
 from jiuwen_memory.control.jobs import Job, JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
 from jiuwen_memory.control.types import JobInfo, JobStatus
-from jiuwen_memory.storage.storage import Storage, StorageProducer
+from jiuwen_memory.storage.kv import KVStore, list_units
+from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 from jiuwen_memory.storage.types import IndexRemoveMode
 
 logger = get_logger(__name__)
@@ -78,7 +79,7 @@ class MiddleToLongJob(Job):
     def __init__(
         self,
         scope: Scope,
-        storage: Storage,
+        kv: KVStore,
         evolver: Evolver,
         lifecycle: LifecycleManager,
         index: IndexBuilder,
@@ -91,7 +92,7 @@ class MiddleToLongJob(Job):
         lock: LockProvider | None = None,
     ) -> None:
         super().__init__(scope=scope, interval=interval)
-        self._storage = storage
+        self._kv = kv
         self._evolver = evolver
         self._lifecycle = lifecycle
         self._index = index
@@ -287,10 +288,11 @@ class MiddleToLongJob(Job):
         """filter tier=WORKING + lifecycle=ACTIVE + metadata["middle"]="true"
         → 按 t_ingest 升序取最老 max_fetch 条。
 
-        ``kv.scan`` 是同步阻塞 IO，推到独立线程跑避免阻塞事件循环。
+        ``kv.list`` 是同步阻塞 IO，推到独立线程跑避免阻塞事件循环。
         """
-        page = await asyncio.to_thread(self._storage.list, self.scope, limit=1_000_000)
-        units = page.items
+        units, _ = await asyncio.to_thread(
+            list_units, self._kv, self.scope, limit=1_000_000
+        )
         candidates = []
         for u in units:
             if u.tier != MemoryTier.WORKING:
@@ -356,7 +358,7 @@ class MiddleToLongJobSpec:
     固化。运行时 :meth:`with_scope` 补 scope 生成完整 Job 实例。
     """
 
-    storage: Storage
+    kv: KVStore
     evolver: Evolver
     lifecycle: LifecycleManager
     index: IndexBuilder
@@ -380,7 +382,7 @@ class MiddleToLongJobSpec:
         interval = int(kwargs.pop("interval", None) or self.interval)
         return MiddleToLongJob(
             scope=scope,
-            storage=self.storage,
+            kv=self.kv,
             evolver=evolver,
             lifecycle=self.lifecycle,
             index=index,
@@ -405,7 +407,7 @@ def _build_middle_to_long_job_spec(config) -> MiddleToLongJobSpec:
     if config.params.get("lock") is not None:
         lock = LockProducer.dep(config)
     return MiddleToLongJobSpec(
-        storage=StorageProducer.resolve(config),
+        kv=StoreManagerProducer.resolve(config).kv(resolve_name(config, "kv_store")),
         evolver=EvolverProducer.dep(config, default="orchestrating"),
         lifecycle=LifecycleProducer.dep(config, default="kv"),
         index=IndexBuilderProducer.dep(config, "index_builder", default=ib_default),

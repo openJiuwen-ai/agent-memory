@@ -57,7 +57,11 @@ from jiuwen_memory.ingest.bootstrap import register_ingestors
 from jiuwen_memory.retrieval.bootstrap import register_operators
 from jiuwen_memory.storage.bootstrap import register_backends
 from jiuwen_memory.storage.kv import KvProducer, KVStore
-from jiuwen_memory.storage.storage import Storage, StorageProducer
+from jiuwen_memory.storage.store_manager import (
+    StoreManager,
+    StoreManagerProducer,
+    resolve_name,
+)
 
 from ..memory_api import MemoryAPI
 from .local_memory_api import LocalMemoryAPI
@@ -85,11 +89,21 @@ class _Kernel:
 
     不是库的公共能力。Access / SDK / HTTP / MCP 只能拿到 :class:`MemoryAPI`
     或 :class:`MemoryRuntime`。
+
+    Attributes:
+        api: 形态无关的 MemoryAPI 入口
+        kv: 真源 KV（全局 StoreManager 的 KV 端口，与 ``kv_store.default`` 具名实例
+            同源——外部注入的 kv 经 ``KvProducer.put`` 预置缓存后被各处共享；
+            F04 §5.4 默认 raw，opt-in encrypted target 才包装）
+        storage: 上层统一使用的 StoreManager（默认 CompositeStoreManager；数据面
+            领域操作经 ``storage.domain_store()``；配置段名 ``store_manager:``）
+        space: SpaceManager（若装配）
+        config_source: 运行时晚绑定配置来源（默认 YamlDefaultsConfigSource）
     """
 
     api: LocalMemoryAPI
     kv: KVStore
-    storage: Storage
+    storage: StoreManager
     ingest_jobs: IngestJobController
     space: SpaceManager | None = None
     config_source: ConfigSource | None = None
@@ -223,12 +237,16 @@ def _build_kernel(
         )
     ConfigSourceProducer.put("default", config_source)
 
-    kv_store = KvProducer.dep(root, default="memory")
-    storage = StorageProducer.dep(root, default="composite")
-    if not isinstance(storage, Storage):
+    storage = StoreManagerProducer.resolve(root)
+    if not isinstance(storage, StoreManager):
         raise ValidationError(
-            f"storage namespace assembled a non-Storage value: {type(storage).__name__}"
+            f"storage namespace assembled a non-StoreManager value: {type(storage).__name__}"
         )
+    # Kernel.kv 统一从 StoreManager 端口取：composite 的 KV 端口与 kv_store.default
+    # 具名实例同源（外部注入的 kv 经 KvProducer.put 预置缓存，composite 内 dep 命中
+    # 同一实例），授权代理默认 AllowAll、行为与裸 KVStore 一致。ROOT_PARAMS 的
+    # kv_store 键即端口名（用户可指名其他 kv 端口）。
+    kv_store = storage.kv(resolve_name(root, "kv_store"))
 
     ingest_jobs = IngestJobProducer.dep(root, default="in_process")
     if not isinstance(ingest_jobs, IngestJobController):

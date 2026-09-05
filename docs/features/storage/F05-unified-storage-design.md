@@ -384,3 +384,12 @@ Storage 同时暴露领域接口和细粒度 Store 端口，依赖调用纪律�
 - `recall_and_get` 首版以 `recall + get` 组合实现，底层原生回带 MemoryUnit 的通道适配待补。
 - Memory API `write -> add`、API `recall -> search`、Store `search -> recall` 的改名由第三阶段设计确定。
 - 批量 `add` 的原子模式、逐项结果和同一 stream 的时序约束需与批量写设计统一，不在本文重复定义。
+
+
+## 后续演进
+
+- [F07-storage-manager-domain-store-split.md](F07-storage-manager-domain-store-split.md)（合并
+  原 F07/F08/F09）：本文的
+  统一 `Storage` ABC 拆为管理面 `StoreManager` + 数据面 `DomainStore` 两个独立 ABC 与实现；
+  端口接口统一为 `kv(name)` 等带 name 单一入口（删 property 与 `*_port` 双入口）；
+  并进一步引入全局唯一 manager 与命名端口/数据面。

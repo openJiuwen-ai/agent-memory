@@ -18,7 +18,7 @@ from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_featu
 )
 from jiuwen_memory.common.reranker.base import Reranker
 from jiuwen_memory.common.reranker.reranker_impl.overlap_reranker import OverlapReranker
-from jiuwen_memory.common.type_def import FilterClause, FilterOp, memory_key
+from jiuwen_memory.common.type_def import FilterClause, FilterOp, RetrievalPipeline, memory_key
 from jiuwen_memory.common.type_def.memory import LifecycleState
 from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.common.type_def.scope import Scope
@@ -45,7 +45,8 @@ from jiuwen_memory.retrieval.types import (
 from jiuwen_memory.storage.bootstrap import register_backends
 from jiuwen_memory.storage.fulltext import FulltextProducer
 from jiuwen_memory.storage.kv import KvProducer
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.domain_store_impl import CompositeDomainStore
+from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
 from jiuwen_memory.storage.vector import VectorProducer
 from tests.conftest import DEFAULT_SCOPE, index_unit, make_unit, make_world
 
@@ -132,11 +133,17 @@ class SlowRecaller(Recaller):
         return [ScoredUnit(self._unit_id, 1.0, self._channel)]
 
 
-def _storage_for(world, recallers: list) -> CompositeStorage:
-    """复用 world 的各 Store 建 CompositeStorage，并把测试 recaller 绑到它上面。"""
-    return CompositeStorage(
-        kv=world.kv, vector=world.vector, fulltext=world.fulltext, recallers=recallers
+def _storage_for(world, recallers: list) -> CompositeDomainStore:
+    """复用 world 的各 Store 建双面栈（manager + 数据面），绑定测试 recaller。"""
+    manager = CompositeStoreManager(
+        kv=world.kv, vector=world.vector, fulltext=world.fulltext
     )
+    domain_store = CompositeDomainStore(
+        manager=manager, preferred_pipeline=RetrievalPipeline.RECALL_GET_RANK
+    )
+    domain_store.bind_recallers(recallers)
+    manager.bind_domain_store(domain_store)
+    return domain_store
 
 
 @pytest.fixture
@@ -174,6 +181,7 @@ def test_noise_only_query_short_circuits_after_parse(indexed_world, scope) -> No
         RRFFuser(),
         indexed_world.discloser,
         indexed_world.unit_reader,
+        domain_store=_storage_for(indexed_world, []),
     )
 
     result = retriever.retrieve(
@@ -261,7 +269,7 @@ def test_channel_failure_isolated(indexed_world, scope) -> None:
         RRFFuser(),
         indexed_world.discloser,
         indexed_world.unit_reader,
-        storage=_storage_for(indexed_world, [FailingRecaller(), indexed_world.keyword]),
+        domain_store=_storage_for(indexed_world, [FailingRecaller(), indexed_world.keyword]),
     )
 
     result = retriever.retrieve(scope, RetrievalQuery(text="coffee", top_k=5, with_trajectory=True))
@@ -281,7 +289,7 @@ def test_recall_channels_run_in_parallel(scope) -> None:
         RRFFuser(),
         world.discloser,
         world.unit_reader,
-        storage=_storage_for(
+        domain_store=_storage_for(
             world,
             [
                 SlowRecaller(RecallChannel.KEYWORD, "u1", 0.10),
@@ -330,7 +338,7 @@ def test_rerank_filters_zero_score_candidates() -> None:
         world.discloser,
         world.unit_reader,
         OverlapReranker(world.tokenizer),
-        storage=_storage_for(
+        domain_store=_storage_for(
             world,
             [
                 StaticRecaller(
@@ -363,7 +371,7 @@ def test_min_score_applies_when_reranked() -> None:
         world.unit_reader,
         StaticReranker([0.9, 0.45, 0.1]),
         min_score=0.5,
-        storage=_storage_for(
+        domain_store=_storage_for(
             world,
             [
                 StaticRecaller(
@@ -398,7 +406,7 @@ def test_min_score_skipped_when_rerank_disabled() -> None:
         world.unit_reader,
         StaticReranker([0.01, 0.01]),
         min_score=0.4,
-        storage=_storage_for(
+        domain_store=_storage_for(
             world,
             [
                 StaticRecaller(
@@ -432,7 +440,7 @@ def test_threshold_under_fills_below_top_k() -> None:
         world.unit_reader,
         StaticReranker([0.95, 0.7, 0.2]),
         min_score_ratio=0.8,
-        storage=_storage_for(
+        domain_store=_storage_for(
             world,
             [
                 StaticRecaller(
@@ -471,7 +479,7 @@ def test_budget_expands_to_top_k() -> None:
         over_fetch_factor=1,
         over_fetch_floor=1,
         rerank_max=2,
-        storage=_storage_for(world, [StaticRecaller(candidates)]),
+        domain_store=_storage_for(world, [StaticRecaller(candidates)]),
     )
 
     result = retriever.retrieve(DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=4))
@@ -496,7 +504,7 @@ def test_over_fetch_recall_width() -> None:
         world.unit_reader,
         over_fetch_factor=3,
         over_fetch_floor=1,
-        storage=_storage_for(world, [factor_driven]),
+        domain_store=_storage_for(world, [factor_driven]),
     )
     result = retriever.retrieve(DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=2))
     assert factor_driven.calls == [6], "factor 主导：max(2*3, 1) = 6"
@@ -510,7 +518,7 @@ def test_over_fetch_recall_width() -> None:
         world.unit_reader,
         over_fetch_factor=1,
         over_fetch_floor=5,
-        storage=_storage_for(world, [floor_driven]),
+        domain_store=_storage_for(world, [floor_driven]),
     )
     retriever.retrieve(DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=2))
     assert floor_driven.calls == [5], "floor 主导：max(2*1, 5) = 5"
@@ -528,7 +536,7 @@ def test_recall_max_caps_recall_k() -> None:
         over_fetch_factor=4,
         over_fetch_floor=60,
         recall_max=100,
-        storage=_storage_for(world, [recaller]),
+        domain_store=_storage_for(world, [recaller]),
     )
 
     retriever.retrieve(DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=50))
@@ -546,7 +554,7 @@ def test_direct_constructor_default_recall_max_caps_recall_k() -> None:
         RRFFuser(),
         world.discloser,
         world.unit_reader,
-        storage=_storage_for(world, [recaller]),
+        domain_store=_storage_for(world, [recaller]),
     )
 
     retriever.retrieve(DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=50))
@@ -569,8 +577,8 @@ def test_retrieval_over_fetch_read_from_config() -> None:
     raw = default_config_dict()
     raw["globals"]["graph_enabled"] = False
     raw["globals"]["vector_enabled"] = False
-    # recaller 选择键归 storage 命名空间：覆盖 default 实例的 keyword_recaller 装配。
-    raw["storage"]["default"]["params"]["keyword_recaller"] = {
+    # recaller 选择键归 store_manager 命名空间：覆盖 default 实例的 keyword_recaller 装配。
+    raw["store_manager"]["default"]["params"]["keyword_recaller"] = {
         "target": "recording_config_test"
     }
     params = raw["retriever"]["default"]["params"]
@@ -620,7 +628,7 @@ def test_configured_calibrated_threshold_active() -> None:
         world.unit_reader,
         StaticReranker([0.95, 0.2]),
         min_score_ratio=0.6,
-        storage=_storage_for(
+        domain_store=_storage_for(
             world,
             [
                 StaticRecaller(
@@ -658,7 +666,7 @@ def test_configured_uncalibrated_threshold_active() -> None:
         world.discloser,
         world.unit_reader,
         min_score_ratio_uncalibrated=0.3,
-        storage=_storage_for(world, [StaticRecaller(candidates)]),
+        domain_store=_storage_for(world, [StaticRecaller(candidates)]),
     )
 
     result = retriever.retrieve(
@@ -687,7 +695,7 @@ def test_direct_constructor_threshold_off_by_default() -> None:
         RRFFuser(k=0),
         world.discloser,
         world.unit_reader,
-        storage=_storage_for(world, [StaticRecaller(candidates)]),
+        domain_store=_storage_for(world, [StaticRecaller(candidates)]),
     )
 
     result = retriever.retrieve(
@@ -788,7 +796,7 @@ def test_rerank_requested_without_reranker_records_skip() -> None:
         world.discloser,
         world.unit_reader,
         None,
-        storage=_storage_for(world, [world.keyword]),
+        domain_store=_storage_for(world, [world.keyword]),
     )
 
     result = retriever.retrieve(
@@ -820,6 +828,11 @@ def test_recall_max_below_floor_warns(monkeypatch) -> None:
         world.unit_reader,
         over_fetch_floor=60,
         recall_max=30,
+        # 构造期告警测试：不触发召回，数据面给最小可用实例即可。
+        domain_store=CompositeDomainStore(
+            manager=CompositeStoreManager(),
+            preferred_pipeline=RetrievalPipeline.RECALL_GET_RANK,
+        ),
     )
 
     assert warnings, "recall_max < over_fetch_floor 应产生装配期告警"
@@ -841,7 +854,7 @@ def test_adaptive_disclosure_records_actual_levels_in_trajectory() -> None:
         RRFFuser(),
         StructuredDiscloser(),
         world.unit_reader,
-        storage=_storage_for(
+        domain_store=_storage_for(
             world,
             [
                 StaticRecaller(
@@ -897,7 +910,7 @@ def test_weighted_rrf_and_structured_discloser_run_in_pipeline() -> None:
         ),
         StructuredDiscloser(),
         world.unit_reader,
-        storage=_storage_for(
+        domain_store=_storage_for(
             world,
             [
                 StaticRecaller(
@@ -976,7 +989,7 @@ def test_default_config_attaches_l0_l1_recallers() -> None:
         retriever = RetrieverProducer.build_named("default", ctx)
         assert isinstance(retriever, PipelineRetriever)
         storage = retriever.storage
-        assert isinstance(storage, CompositeStorage)
+        assert isinstance(storage, CompositeDomainStore)
 
         # (channel, layer) 联合 key——keyword/vector 各 l0/l1，共四路
         by_key = {

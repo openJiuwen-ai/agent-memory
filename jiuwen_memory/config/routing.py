@@ -9,7 +9,8 @@
 
 分层：
 - **Store 级**（F01）：``RoutingKVStore`` / ``RoutingVectorStore`` 等 + ``*_store.active``
-- **Storage 级**（F02）：``RoutingStorage`` + ``storage.active``（已预装完整 ``Storage`` 实例动态配置）
+- **StoreManager 级**（F02/F08）：``RoutingStoreManager`` + ``RoutingDomainStore``
+  + ``store_manager.active``（已预装完整 ``StoreManager`` 实例动态配置）
 
 均为方案 A：不注册 YAML ``target: routing``；产品手工注入。默认拓扑不预装多后端。
 """
@@ -40,13 +41,15 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.config.active import resolve_active_name
 from jiuwen_memory.config.config_source import ConfigSource
 from jiuwen_memory.storage.base import StoreType
+from jiuwen_memory.storage.domain_store import DomainStore
+from jiuwen_memory.storage.entity_store import EntityStore
 from jiuwen_memory.storage.fs import FSStore
 from jiuwen_memory.storage.fulltext import FulltextStore
 from jiuwen_memory.storage.fusion import FusionStore
 from jiuwen_memory.storage.graph import GraphStore
 from jiuwen_memory.storage.kv import KVStore
 from jiuwen_memory.storage.security import StorageAccessContext, StorageSecurity
-from jiuwen_memory.storage.storage import Storage, StorageCapability
+from jiuwen_memory.storage.store_manager import StorageCapability, StoreManager
 from jiuwen_memory.storage.types import (
     Document,
     Edge,
@@ -411,7 +414,7 @@ class _LazyStorePort:
     """惰性 Store 端口：属性访问时再 ``resolve()``，使构造期缓存的引用仍随 active 切换。
 
     IndexBuilder / Recaller 常在 ``__init__`` 里 ``self._vector = storage.vector``。
-    若 ``storage.vector`` 直接返回某一实例的裸 Store，``storage.active`` 切换后仍打到旧实例。
+    若 ``storage.vector`` 直接返回某一实例的裸 Store，``store_manager.active`` 切换后仍打到旧实例。
     本代理每次方法查找都重新解析当前实例端口（F02 决策 4 选项 b）。
     """
 
@@ -432,101 +435,135 @@ class _LazyStorePort:
         return f"<LazyStorePort -> {type(current).__name__}>"
 
 
-class RoutingStorage(Storage):
-    """按 ``storage.active`` 在已预装的完整 ``Storage`` 实例间动态选用（F02）。
+class RoutingStoreManager(StoreManager):
+    """按 ``store_manager.active`` 在已预装的完整 ``StoreManager`` 实例间动态选用（F02）。
 
-    与 F01 ``Routing*Store`` 分层：本类切换的是整颗 ``Storage``（Composite / 一体化实现），
-    各实例内部仍可继续用 Store 级 Routing 或同实现 url 晚绑定。
+    与 F01 ``Routing*Store`` 分层：本类切换的是整颗 ``StoreManager``（Composite / 一体化
+    实现），各实例内部仍可继续用 Store 级 Routing 或同实现 url 晚绑定。
 
-    领域方法每次 ``router.get()`` 后委托；``.kv`` / ``.vector`` / ``*_port`` 返回稳定的
-    :class:`_LazyStorePort`，兼容构造期缓存端口引用的 IndexBuilder/Recaller。
+    管理面方法每次 ``router.get()`` 后委托；端口方法（``kv(name)`` / ``vector(name)``
+    等）返回稳定的 :class:`_LazyStorePort`——代理按 ``(capability, name)`` 缓存，同键
+    多次调用返回同一代理对象（身份稳定），内部每次方法调用再解析当前实例端口，兼容
+    构造期缓存端口引用的 IndexBuilder/Recaller。:meth:`domain_store` 返回按 name
+    惰性缓存的 :class:`RoutingDomainStore`（同名身份稳定），其内部每次方法调用再解析
+    当前 active 实例的同名数据面，使数据面调用同样随 ``store_manager.active`` 切换。
 
     方案 A：不注册 YAML ``storage.target: routing``；产品手工 ``put`` / 自注册 producer。
     EncryptedKV 只包在各预装实例内部，不在本类外包一层。
     """
 
-    def __init__(self, router: ActiveRouter[Storage]) -> None:
+    def __init__(self, router: ActiveRouter[StoreManager]) -> None:
         self._router = router
-        # 端口代理只建一次：对象身份稳定，内部每次调用再 get() 当前实例
-        self._lazy_kv = _LazyStorePort(lambda: self._router.get().kv)
-        self._lazy_vector = _LazyStorePort(lambda: self._router.get().vector)
-        self._lazy_fulltext = _LazyStorePort(lambda: self._router.get().fulltext)
-        self._lazy_graph = _LazyStorePort(lambda: self._router.get().graph)
-        self._lazy_fusion = _LazyStorePort(lambda: self._router.get().fusion)
-        self._lazy_fs = _LazyStorePort(lambda: self._router.get().fs)
+        # 端口代理按 (capability, name) 缓存：同键身份稳定（F02「构造期缓存端口引用
+        # 仍随 active 切换」依赖），内部每次调用再 get() 当前实例端口。
+        self._lazy_ports: dict[tuple[str, str], _LazyStorePort] = {}
+        # 命名数据面代理按 name 惰性缓存：同名身份稳定，内部每次方法调用再
+        # get() + domain_store(name) 解析当前实例。
+        self._domain_stores: dict[str, RoutingDomainStore] = {}
 
     @property
     def security(self) -> StorageSecurity:
         return self._active().security
 
-    @property
-    def kv(self) -> KVStore:
-        return self._lazy_kv  # type: ignore[return-value]
-
-    @property
-    def vector(self) -> VectorStore:
-        return self._lazy_vector  # type: ignore[return-value]
-
-    @property
-    def fulltext(self) -> FulltextStore:
-        return self._lazy_fulltext  # type: ignore[return-value]
-
-    @property
-    def graph(self) -> GraphStore:
-        return self._lazy_graph  # type: ignore[return-value]
-
-    @property
-    def fusion(self) -> FusionStore:
-        return self._lazy_fusion  # type: ignore[return-value]
-
-    @property
-    def fs(self) -> FSStore:
-        return self._lazy_fs  # type: ignore[return-value]
-
     def capabilities(self) -> frozenset[StorageCapability]:
         return self._active().capabilities()
 
-    def has_kv_port(self, name: str = "default") -> bool:
-        return self._active().has_kv_port(name)
+    def domain_store(self, name: str = "default") -> RoutingDomainStore:
+        proxy = self._domain_stores.get(name)
+        if proxy is None:
+            proxy = RoutingDomainStore(self._router, name)
+            self._domain_stores[name] = proxy
+        return proxy
 
-    def has_vector_port(self, name: str = "default") -> bool:
-        return self._active().has_vector_port(name)
+    def has_domain_store(self, name: str = "default") -> bool:
+        return self._active().has_domain_store(name)
 
-    def has_fulltext_port(self, name: str = "default") -> bool:
-        return self._active().has_fulltext_port(name)
+    def _lazy_port(self, capability: str, name: str) -> _LazyStorePort:
+        key = (capability, name)
+        port = self._lazy_ports.get(key)
+        if port is None:
+            port = _LazyStorePort(
+                lambda c=capability, n=name: getattr(self._router.get(), c)(n)
+            )
+            self._lazy_ports[key] = port
+        return port
 
-    def has_graph_port(self, name: str = "default") -> bool:
-        return self._active().has_graph_port(name)
+    def kv(self, name: str = "default") -> KVStore:
+        return self._lazy_port("kv", name)  # type: ignore[return-value]
 
-    def has_fusion_port(self, name: str = "default") -> bool:
-        return self._active().has_fusion_port(name)
+    def vector(self, name: str = "default") -> VectorStore:
+        return self._lazy_port("vector", name)  # type: ignore[return-value]
 
-    def has_fs_port(self, name: str = "default") -> bool:
-        return self._active().has_fs_port(name)
+    def fulltext(self, name: str = "default") -> FulltextStore:
+        return self._lazy_port("fulltext", name)  # type: ignore[return-value]
 
-    def kv_port(self, name: str = "default") -> KVStore:
-        return _LazyStorePort(lambda n=name: self._router.get().kv_port(n))  # type: ignore[return-value]
+    def graph(self, name: str = "default") -> GraphStore:
+        return self._lazy_port("graph", name)  # type: ignore[return-value]
 
-    def vector_port(self, name: str = "default") -> VectorStore:
-        return _LazyStorePort(lambda n=name: self._router.get().vector_port(n))  # type: ignore[return-value]
+    def fusion(self, name: str = "default") -> FusionStore:
+        return self._lazy_port("fusion", name)  # type: ignore[return-value]
 
-    def fulltext_port(self, name: str = "default") -> FulltextStore:
-        return _LazyStorePort(lambda n=name: self._router.get().fulltext_port(n))  # type: ignore[return-value]
+    def fs(self, name: str = "default") -> FSStore:
+        return self._lazy_port("fs", name)  # type: ignore[return-value]
 
-    def graph_port(self, name: str = "default") -> GraphStore:
-        return _LazyStorePort(lambda n=name: self._router.get().graph_port(n))  # type: ignore[return-value]
+    def entity(self, name: str = "default") -> EntityStore:
+        return self._lazy_port("entity", name)  # type: ignore[return-value]
 
-    def fusion_port(self, name: str = "default") -> FusionStore:
-        return _LazyStorePort(lambda n=name: self._router.get().fusion_port(n))  # type: ignore[return-value]
+    def has_kv(self, name: str = "default") -> bool:
+        return self._active().has_kv(name)
 
-    def fs_port(self, name: str = "default") -> FSStore:
-        return _LazyStorePort(lambda n=name: self._router.get().fs_port(n))  # type: ignore[return-value]
+    def has_vector(self, name: str = "default") -> bool:
+        return self._active().has_vector(name)
+
+    def has_fulltext(self, name: str = "default") -> bool:
+        return self._active().has_fulltext(name)
+
+    def has_graph(self, name: str = "default") -> bool:
+        return self._active().has_graph(name)
+
+    def has_fusion(self, name: str = "default") -> bool:
+        return self._active().has_fusion(name)
+
+    def has_fs(self, name: str = "default") -> bool:
+        return self._active().has_fs(name)
+
+    def has_entity(self, name: str = "default") -> bool:
+        return self._active().has_entity(name)
+
+    def health(self) -> None:
+        self._active().health()
+
+    def _active(self) -> StoreManager:
+        return self._router.get()
+
+
+class RoutingDomainStore(DomainStore):
+    """按 ``store_manager.active`` 委托当前 active ``StoreManager`` 的同名 ``domain_store(name)``。
+
+    共享 :class:`RoutingStoreManager` 的 router（指向底层 ``StoreManager``）；持有
+    数据面名 ``name``，每次方法调用 ``router.get().domain_store(self._name).<method>``
+    委托当前 active 实例的同名数据面。对象身份在 ``RoutingStoreManager`` 内稳定
+    （按 name 惰性缓存一次），保证 :meth:`domain_store` 同名多次返回同一实例——但
+    内部每次方法调用都重解析 active，使切换后调用打到新实例。
+
+    **不实现 ``bind_recallers``**：active 切换语义要求各预装实例装配期各自绑定
+    recallers，对外只读委托；手工接线始终作用于各预装的 ``CompositeDomainStore``
+    实例，不作用于本类。
+    """
+
+    def __init__(self, router: ActiveRouter[StoreManager], name: str = "default") -> None:
+        self._router = router
+        self._name = name
+
+    @property
+    def security(self) -> StorageSecurity:
+        return self._active_domain().security
 
     def preferred_retrieval_pipeline(self) -> RetrievalPipeline:
-        return self._active().preferred_retrieval_pipeline()
+        return self._active_domain().preferred_retrieval_pipeline()
 
     def scopes(self) -> list[Scope]:
-        return self._active().scopes()
+        return self._active_domain().scopes()
 
     def add(
         self,
@@ -537,7 +574,7 @@ class RoutingStorage(Storage):
         access: StorageAccessContext | None = None,
     ) -> None:
         # 意图参数原样下传：落地范围由当前 active 实例按自身能力决定，本类只做路由。
-        self._active().add(scope, units, mode=mode, access=access)
+        self._active_domain().add(scope, units, mode=mode, access=access)
 
     def update(
         self,
@@ -547,7 +584,7 @@ class RoutingStorage(Storage):
         mode: IndexWriteMode = IndexWriteMode.ALL,
         access: StorageAccessContext | None = None,
     ) -> None:
-        self._active().update(scope, units, mode=mode, access=access)
+        self._active_domain().update(scope, units, mode=mode, access=access)
 
     def delete(
         self,
@@ -557,7 +594,7 @@ class RoutingStorage(Storage):
         mode: IndexRemoveMode = IndexRemoveMode.HARD,
         access: StorageAccessContext | None = None,
     ) -> None:
-        self._active().delete(scope, unit_ids, mode=mode, access=access)
+        self._active_domain().delete(scope, unit_ids, mode=mode, access=access)
 
     def get(
         self,
@@ -566,7 +603,7 @@ class RoutingStorage(Storage):
         *,
         access: StorageAccessContext | None = None,
     ) -> list[MemoryUnit]:
-        return self._active().get(scope, unit_ids, access=access)
+        return self._active_domain().get(scope, unit_ids, access=access)
 
     def list(
         self,
@@ -579,7 +616,7 @@ class RoutingStorage(Storage):
         extensions: dict[str, str] | None = None,
         access: StorageAccessContext | None = None,
     ) -> MemoryListResult:
-        return self._active().list(
+        return self._active_domain().list(
             scope,
             offset=offset,
             limit=limit,
@@ -598,7 +635,7 @@ class RoutingStorage(Storage):
         recall_limit: int,
         access: StorageAccessContext | None = None,
     ) -> RecallResult[ScoredUnit]:
-        return self._active().recall(
+        return self._active_domain().recall(
             scope,
             query,
             channels=channels,
@@ -615,7 +652,7 @@ class RoutingStorage(Storage):
         recall_limit: int,
         access: StorageAccessContext | None = None,
     ) -> RecallResult[ScoredMemoryUnit]:
-        return self._active().recall_and_get(
+        return self._active_domain().recall_and_get(
             scope,
             query,
             channels=channels,
@@ -634,7 +671,7 @@ class RoutingStorage(Storage):
         rank_limit: int,
         access: StorageAccessContext | None = None,
     ) -> RankedStorageResult:
-        return self._active().retrieve(
+        return self._active_domain().retrieve(
             scope,
             query,
             fuser,
@@ -645,8 +682,8 @@ class RoutingStorage(Storage):
         )
 
     def health(self) -> None:
-        self._active().health()
+        self._active_domain().health()
 
-    def _active(self) -> Storage:
-        return self._router.get()
+    def _active_domain(self) -> DomainStore:
+        return self._router.get().domain_store(self._name)
 

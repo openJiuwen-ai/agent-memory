@@ -1,4 +1,4 @@
-"""Retriever 通过 StorageProducer 获取共享统一 Storage。"""
+"""Retriever 经 StoreManagerProducer 获取全局共享 StoreManager 与其数据面。"""
 
 from __future__ import annotations
 
@@ -14,8 +14,9 @@ from jiuwen_memory.retrieval.bootstrap import register_operators
 from jiuwen_memory.retrieval.retriever import RetrieverProducer
 from jiuwen_memory.retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
 from jiuwen_memory.storage.bootstrap import register_backends
-from jiuwen_memory.storage.storage import StorageProducer
-from jiuwen_memory.storage.storage_impl import CompositeStorage
+from jiuwen_memory.storage.domain_store_impl import CompositeDomainStore
+from jiuwen_memory.storage.store_manager import StoreManagerProducer
+from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
 
 pytestmark = pytest.mark.unit
 
@@ -27,27 +28,28 @@ def _reset_factories():
     Factory.reset_all()
 
 
-def test_pipeline_retriever_uses_named_storage_instance() -> None:
+def test_pipeline_retriever_uses_named_store_manager_instance() -> None:
     register_plugins()
     register_backends()
     register_operators()
     context = default_context()
 
-    storage = StorageProducer.build_named("default", context)
+    storage = StoreManagerProducer.build_named("default", context)
     retriever = RetrieverProducer.build_named("default", context)
 
-    assert isinstance(storage, CompositeStorage)
+    assert isinstance(storage, CompositeStoreManager)
     assert isinstance(retriever, PipelineRetriever)
-    assert retriever.storage is storage
-    assert storage.recallers
+    assert retriever.storage is storage.domain_store()
+    assert isinstance(retriever.storage, CompositeDomainStore)
+    assert retriever.storage.recallers
 
 
-def test_retriever_override_without_storage_still_uses_default_storage() -> None:
+def test_retriever_override_without_store_manager_still_uses_default() -> None:
     register_plugins()
     register_backends()
     register_operators()
-    # 召回路开关已由 retriever params 移到 storage 层（globals 回退）；retriever
-    # params 只保留本算子私有调参（rerank_enabled 等）。
+    # 召回路开关由 store_manager 层读（globals 回退）；retriever params 只保留
+    # 本算子私有调参（rerank_enabled 等）。
     context = default_context().merged(
         AssemblyContext.from_dict(
             {
@@ -68,13 +70,15 @@ def test_retriever_override_without_storage_still_uses_default_storage() -> None
         )
     )
 
-    storage = StorageProducer.build_named("default", context)
+    storage = StoreManagerProducer.build_named("default", context)
     retriever = RetrieverProducer.build_named("default", context)
 
     assert isinstance(retriever, PipelineRetriever)
-    assert retriever.storage is storage
-    assert isinstance(storage, CompositeStorage)
-    assert [recaller.channel() for recaller in storage.recallers] == [RecallChannel.KEYWORD]
+    assert retriever.storage is storage.domain_store()
+    assert isinstance(storage, CompositeStoreManager)
+    assert [r.channel() for r in storage.domain_store().recallers] == [
+        RecallChannel.KEYWORD
+    ]
 
 
 def test_recaller_assembly_error_surfaces_at_build_time() -> None:
@@ -85,7 +89,7 @@ def test_recaller_assembly_error_surfaces_at_build_time() -> None:
     context = default_context().merged(
         AssemblyContext.from_dict(
             {
-                "storage": {
+                "store_manager": {
                     "default": {
                         "target": "composite",
                         "params": {"vector_recaller": "nonexistent_impl"},
@@ -96,4 +100,4 @@ def test_recaller_assembly_error_surfaces_at_build_time() -> None:
     )
 
     with pytest.raises(ValidationError):
-        StorageProducer.build_named("default", context)
+        StoreManagerProducer.build_named("default", context)

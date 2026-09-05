@@ -294,3 +294,10 @@ QueryParser 属于查询理解，Reranker 属于融合后的精排；二者不�
 - 三条 pipeline 已覆盖路径选择、读取去重、物化 Fuser、部分/全部失败；跨三条路径的复杂
   FilterExpr、双时间和 archived 组合等价性还需要增加参数化测试矩阵。
 - Memory API 与 Store 方法改名、兼容别名和 deprecation 周期另行归档，不混入本特性。
+
+## 后续演进
+
+- [F07（storage 拆分，合并原 F07/F08/F09）](../storage/F07-storage-manager-domain-store-split.md)：本文的三条检索
+  pipeline 语义不变，载体从统一 `Storage` 拆到 `DomainStore`（recall/recall_and_get/retrieve/
+  preferred_retrieval_pipeline）；Retriever 生产装配经 `StoreManagerProducer.resolve` 取全局
+  manager 并持其 `domain_store()`，首选路径可为每套命名数据面单独声明（`domain_stores` 段）。

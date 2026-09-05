@@ -281,11 +281,15 @@ def test_security_namespace_params_apply_on_encrypted_kv_target() -> None:
         }
     )
     kernel = build_kernel(config=cfg)
-    security = getattr(kernel.kv, "_security")
+    # Kernel.kv 是 manager 的授权代理（F07/F08）；代理自带 manager 级 _security，
+    # 加密语义断言须落到被包装的 EncryptedKVStore 上。
+    encrypted = getattr(kernel.kv, "_store")
+    assert isinstance(encrypted, EncryptedKVStore)
+    security = getattr(encrypted, "_security")
     assert isinstance(security, LocalEnvelopeSecurityProvider)
     assert getattr(security, "_allow_plaintext") is False
     assert getattr(getattr(security, "_key_provider"), "_key_hex") == key_hex
 
-    getattr(kernel.kv, "_raw").insert(SCOPE, "plain_key", b"hello-plaintext")
+    getattr(encrypted, "_raw").insert(SCOPE, "plain_key", b"hello-plaintext")
     with pytest.raises(BackendError):
         kernel.kv.get(SCOPE, "plain_key")

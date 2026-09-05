@@ -20,7 +20,6 @@ from jiuwen_memory.control.jobs_impl.evolve_job import EvolveJob
 from jiuwen_memory.control.scheduler_impl.in_process_scheduler import InProcessScheduler
 from jiuwen_memory.control.types import Channel, JobInfo, JobStatus
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
 
@@ -138,7 +137,7 @@ def test_submit_runs_evolve_job_with_units_from_scope() -> None:
 
     job = EvolveJob(
         scope=scope,
-        storage=CompositeStorage(kv=kv),
+        kv=kv,
         evolver=evolver,
         mode=EvolveMode.ASSOCIATE,
     )

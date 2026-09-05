@@ -21,9 +21,11 @@ memory_api:
     graph_enabled: false        # 不启用图召回路
     rerank_enabled: true        # 披露前精排（本地 bge reranker）
     entity_enabled: false       # 实体关联链路总开关：写入侧 HybridIndexBuilder 建实体反向索引、
-                                # 召回侧 KeywordRecaller 注入 entity_store 做 L2 实体扩展。设 true 生效；
-                                # false 时两侧均跳过（entity_store 不装配，零开销）。当前默认关——
-                                # 全链路生效还依赖 unit.entities 明文填充（写入侧 LLM 抽取前移）。
+                                # 召回侧 KeywordRecaller 经 manager 的 ENTITY 端口做 L2 实体扩展。
+                                # 设 true 生效；false 时两侧消费方均跳过（端口仍会被 manager
+                                # 装配并参与 health；若要连装配一起免掉，删下方 entity_store 段）。
+                                # 当前默认关——全链路生效还依赖 unit.entities 明文填充
+                                #（写入侧 LLM 抽取前移）。
 
     # bge-m3 dense 维度 = 1024，必须与 Milvus collection 的 dim 一致
     embedder_dim: 1024
@@ -82,11 +84,15 @@ memory_api:
         dim: 1024
         metric_type: COSINE
 
-  # ---- 实体反向索引（ES；entity_enabled=true 时装配，两侧各自引用同一具名实例）----
-  # entity_store 是独立端口（不进 CompositeStorage/StoreType 枚举），经 EntityStoreProducer
-  # 单独装配。写入侧 HybridIndexBuilder._build 与召回侧 KeywordRecaller._build 各自从自己
-  # params.entity_store 字段读它——故两边 params 都得显式引用同一个 default 具名实例，
-  # 缺一侧则该侧 disabled（不报错，静默降级）。hosts 未配时 ES _build 返 None，链路全关。
+  # ---- 实体反向索引（ES；StoreManager 的 ENTITY 端口 = StorageCapability 第七席）----
+  # entity_store 是 manager 的 ENTITY 端口（F07-D 起纳入 capability，不再旁路装配）。
+  # 端口解析三级：store_manager params 显式引用 → 本 entity_store.default 具名实例 →
+  # 无 ENTITY 能力。故这里声明 default 即自动成为 manager 的 ENTITY 默认端口，无需
+  # （也不建议）为此新增 store_manager 段——实例级覆盖会整体替换 defaults.py 的
+  # store_manager.default.params（含全部 *_recaller 键），漏抄即静默丢一路召回。
+  # hosts 未配时 ES builder 返 None → 无 ENTITY 能力 → 读写两侧自动降级关闭（不报错）。
+  # 声明并构造成功后本端口参与 manager.health() 聚合：ES entity 不可达会让 health 报错
+  # （写入/召回主链路不受影响，两侧各有 try/except 兜底）。
   # entity_text 明文不落 ES（只存 sha256 hash），与 fulltext_store 可共用同一 ES 集群但落独立 index。
   entity_store:
     default:
@@ -99,25 +105,25 @@ memory_api:
         ssl_verify: "${ES_SSL_VERIFY:-false}"
         ssl_ca_cert: "${ES_SSL_CA:-}"
 
-  # constructor（index_builder）：实例级覆盖会整体替换默认 params，故 storage/chunker/
-  # embedder 须写全，否则丢失；entity_store 字段是 hybrid _build 读 entity 链路的入口。
+  # constructor（index_builder）：实例级覆盖会整体替换默认 params，故 chunker/embedder
+  # 须写全，否则丢失。
   constructor:
     default:
       target: hybrid
       params:
-        storage: default
         chunker: default
         embedder: default
-        entity_store: default      # 引用上面的 entity_store.default（写入侧 entity 链路）
+        # ENTITY 端口选择键：值是 manager 的端口名（不是 Producer 引用），params 直读
+        # 不回退 globals，缺省即 "default"。entity 链路是否启用另由 globals.entity_enabled
+        # 决定；读写两侧取的是同一 manager 的同一端口，实例共享由 manager 保证。
+        entity_store: default
 
-  # recaller.keyword 具名实例：实例级覆盖整体替换默认 recaller.keyword params，故 storage
-  # 须写全；entity_store 字段是 keyword _build 读 entity 链路的入口（召回侧）。
+  # recaller.keyword 具名实例：实例级覆盖整体替换默认 recaller.keyword params。
   recaller:
     keyword:
       target: keyword
       params:
-        storage: default
-        entity_store: default      # 引用 entity_store.default（与写入侧共享同一 ES 客户端）
+        entity_store: default      # 同上：ENTITY 端口选择键（召回侧 L2 实体扩展）
     # keyword_l0/keyword_l1/vector* 沿用 defaults.py 默认（不在此重复声明，避免整体替换丢字段）
 
   # query_parser 不走 LLM 改写：对话模型会把 query「答」成长文，反而拖垮召回（语义漂移 +

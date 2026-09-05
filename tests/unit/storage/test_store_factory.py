@@ -30,7 +30,7 @@ from jiuwen_memory.storage.graph import GraphProducer
 from jiuwen_memory.storage.kv import KvProducer
 from jiuwen_memory.storage.kv_impl.postgres_kv import PostgresKVStore
 from jiuwen_memory.storage.kv_impl.redis_kv import RedisKVStore
-from jiuwen_memory.storage.storage import StorageProducer
+from jiuwen_memory.storage.store_manager import StoreManagerProducer
 from jiuwen_memory.storage.types import VectorRecord
 from jiuwen_memory.storage.vector import VectorProducer
 from jiuwen_memory.storage.vector_impl.milvus_vector import MilvusVectorStore
@@ -56,7 +56,7 @@ def test_real_backends_registered() -> None:
     assert "nano_graphrag" in GraphProducer.known()
     assert "local" in FsProducer.known()
     assert "milvus_graph" in FusionProducer.known()
-    assert "composite" in StorageProducer.known()
+    assert "composite" in StoreManagerProducer.known()
 
 
 def test_producer_unknown_backend_raises() -> None:

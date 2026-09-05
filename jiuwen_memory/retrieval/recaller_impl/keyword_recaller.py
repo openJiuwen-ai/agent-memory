@@ -17,6 +17,8 @@ import math
 from collections import defaultdict
 from statistics import median
 
+from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.common.type_def.entity import (
     EntityStoreFilters,
     hash_entity_text,
@@ -24,14 +26,17 @@ from jiuwen_memory.common.type_def.entity import (
 from jiuwen_memory.common.type_def.normalizer import EntityNormalizer
 from jiuwen_memory.common.type_def.retrieval_filter import is_retrieval_candidate
 from jiuwen_memory.common.type_def.scope import space_id_from_scope
-from jiuwen_memory.common.log import get_logger
-from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.recaller import Recaller, RecallerProducer
 from jiuwen_memory.retrieval.types import ParsedQuery, RecallChannel, ScoredUnit
 from jiuwen_memory.storage.entity_store import EntityStore
 from jiuwen_memory.storage.fulltext import FulltextStore
-from jiuwen_memory.storage.storage import Storage, StorageProducer
+from jiuwen_memory.storage.kv import load_units
+from jiuwen_memory.storage.store_manager import (
+    StoreManager,
+    StoreManagerProducer,
+    resolve_name,
+)
 from jiuwen_memory.storage.types import TextQuery
 
 from .unit_aggregation import aggregate_to_units
@@ -49,20 +54,25 @@ class KeywordRecaller(Recaller):
 
     def __init__(
         self,
-        storage: Storage,
+        storage: StoreManager,
         *,
         layer: str = "l2",
         entity_store: EntityStore | None = None,
+        fulltext_name: str | None = None,
+        kv_name: str = "default",
     ) -> None:
-        port_name = "default" if layer == "l2" else f"layers_{layer}"
+        # 端口名：显式配置优先于 layer 推导（l2→default；l0/l1→layers_l0/l1 分表约定）。
+        port_name = fulltext_name or ("default" if layer == "l2" else f"layers_{layer}")
         self._fulltext = (
-            storage.fulltext_port(port_name) if storage.has_fulltext_port(port_name) else None
+            storage.fulltext(port_name) if storage.has_fulltext(port_name) else None
         )
         self._layer = layer  # "l2"(content) | "l0" | "l1"
         self._entity_store = entity_store  # L2 实体关联扩展用；None/非 L2 时不扩展
         # L2 实体扩展需要点读真源做生产过滤（is_retrieval_candidate）；非 L2 不用，
-        # 但持有 storage 无成本，装配期统一注入，避免 __init__ 分层条件分支。
-        self._storage = storage
+        # 但装配期统一注入（避免 __init__ 分层条件分支）。纯按 unit_id 点读走 KV
+        # 端口 + load_units（运行期持最小接口，F08 修订 F07 决策 10）。kv 端口是
+        # 可选依赖：无 KV 的 manager（如分层索引专用装配）下实体扩展自动跳过。
+        self._kv = storage.kv(kv_name) if storage.has_kv(kv_name) else None
 
     @property
     def layer(self) -> str:
@@ -160,7 +170,9 @@ class KeywordRecaller(Recaller):
         后被剔，名单缩水但仍守 top_k 契约——这是容量与假阴性的折中：N=20 让
         高频实体的海量候选先被 IDF 压相关分排到 N 外，再点读，IO 与召回质量平衡。
         """
-        if self._entity_store is None or self._layer != "l2" or not batch1:
+        if self._entity_store is None or self._kv is None:
+            return []
+        if self._layer != "l2" or not batch1:
             return []
 
         # 收集 batch 1 候选记录里的所有 entities 明文，归一化+hash 去重。
@@ -220,7 +232,7 @@ class KeywordRecaller(Recaller):
 
         units = {
             u.id: u
-            for u in self._storage.get(scope, candidate_ids)
+            for u in load_units(self._kv, scope, candidate_ids)
         }
         eligible: list[tuple[str, float]] = []
         for uid, raw in top_n:
@@ -256,15 +268,27 @@ class KeywordRecaller(Recaller):
 
 @RecallerProducer.register("keyword")
 def _build(config):
-    # entity_enabled 默认 False（与构建侧 HybridIndexBuilder 同名同义）。开启时
-    # 注入 EntityStore 做 L2 实体关联扩展；endpoint 未配时 dep 返 None，recall
-    # 侧 _expand_by_entities 自动跳过，不破坏原召回。
+    # entity_enabled 默认 False（与构建侧 HybridIndexBuilder 同名同义）。开启时经
+    # manager 的 ENTITY 端口取 EntityStore 做 L2 实体关联扩展——与写入侧取的是同一
+    # manager 的同一端口，读写共享同一实例由 manager 保证（F07-D），不再依赖两侧各自
+    # 在 params 里引用同一具名实例的配置纪律。端口未装配时关闭扩展，不破坏原召回。
+    manager = StoreManagerProducer.resolve(config)
     entity_store = None
     if config.get("entity_enabled", False):
-        from jiuwen_memory.storage.entity_store import EntityStoreProducer
-        entity_store = EntityStoreProducer.dep(config, default="elasticsearch")
+        entity_name = resolve_name(config, "entity_store")
+        if manager.has_entity(entity_name):
+            entity_store = manager.entity(entity_name)
+        else:
+            logger.info(
+                "entity_enabled=true 但 manager 未装配 entity 端口 %r，L2 实体扩展关闭",
+                entity_name,
+            )
     return KeywordRecaller(
-        StorageProducer.resolve(config), layer="l2", entity_store=entity_store,
+        manager,
+        layer="l2",
+        entity_store=entity_store,
+        fulltext_name=config.params.get("fulltext_store"),
+        kv_name=resolve_name(config, "kv_store"),
     )
 
 
@@ -272,8 +296,8 @@ def _build(config):
 def _build_l0(config):
     # layers_index_enabled 默认 true；未配置命名端口时该层返回空结果。
     if not config.get("layers_index_enabled", True):
-        return KeywordRecaller(StorageProducer.resolve(config), layer="l0")
-    recaller = KeywordRecaller(StorageProducer.resolve(config), layer="l0")
+        return KeywordRecaller(StoreManagerProducer.resolve(config), layer="l0")
+    recaller = KeywordRecaller(StoreManagerProducer.resolve(config), layer="l0")
     if recaller.fulltext_store is None:
         logger.info("KeywordRecaller(keyword_l0): store 未注入，recall 将返空")
     return recaller
@@ -282,8 +306,8 @@ def _build_l0(config):
 @RecallerProducer.register("keyword_l1")
 def _build_l1(config):
     if not config.get("layers_index_enabled", True):
-        return KeywordRecaller(StorageProducer.resolve(config), layer="l1")
-    recaller = KeywordRecaller(StorageProducer.resolve(config), layer="l1")
+        return KeywordRecaller(StoreManagerProducer.resolve(config), layer="l1")
+    recaller = KeywordRecaller(StoreManagerProducer.resolve(config), layer="l1")
     if recaller.fulltext_store is None:
         logger.info("KeywordRecaller(keyword_l1): store 未注入，recall 将返空")
     return recaller
