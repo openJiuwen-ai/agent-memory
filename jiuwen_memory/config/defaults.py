@@ -38,6 +38,11 @@ def default_config_dict() -> dict[str, Any]:
             "rerank_enabled": True,
             "embedder_dim": 64,
             "chunk_size": 120,
+            # 全局唯一 StoreManager 指名（F08）：值为 store_manager 命名空间下的实例名。
+            # 消费者（recaller/retriever/engine/evolver/dedup/lifecycle/governor/
+            # space/job/ingest_job 等）不再逐个声明 storage 引用，统一经
+            # StoreManagerProducer.resolve 读此键取全局共享实例。
+            "store_manager": _D,
         },
         # 顶层 prompts 段：按 phase（consolidate/reflect）→ key → prompt 文本。
         # 与 globals 同级，由 AssemblyContext 抽取到 globals["prompts"] 供
@@ -64,7 +69,7 @@ def default_config_dict() -> dict[str, Any]:
             "layers_l0": {"target": "memory", "params": {"tokenizer": _D}},
             "layers_l1": {"target": "memory", "params": {"tokenizer": _D}},
         },
-        "storage": {
+        "store_manager": {
             _D: {
                 "target": "composite",
                 "params": {
@@ -73,7 +78,7 @@ def default_config_dict() -> dict[str, Any]:
                     "fulltext_store": _D,
                     "graph_store": _D,
                     "preferred_retrieval_pipeline": "recall_get_rank",
-                    # 召回路装配：CompositeStorage 按能力开关（vector_enabled /
+                    # 召回路装配：CompositeStoreManager 按能力开关（vector_enabled /
                     # graph_enabled / layers_index_enabled，回退 globals）启用各
                     # recaller，构建期同步组装。layers_index_enabled 默认 true
                     #（与构建侧对齐：默认建默认查）；不在 params 硬编码，让 get
@@ -99,16 +104,16 @@ def default_config_dict() -> dict[str, Any]:
         "audit": {_D: {"target": "sqlite", "params": {"db_path": ":memory:"}}},
         # -- 检索 ------------------------------------------------------------ #
         "recaller": {
-            "keyword": {"target": "keyword", "params": {"storage": _D}},
+            "keyword": {"target": "keyword"},
             "keyword_l0": {"target": "keyword_l0"},
             "keyword_l1": {"target": "keyword_l1"},
             "vector": {
                 "target": "vector",
-                "params": {"storage": _D, "min_similarity": 0.0},
+                "params": {"min_similarity": 0.0},
             },
             "vector_l0": {"target": "vector_l0"},
             "vector_l1": {"target": "vector_l1"},
-            "graph": {"target": "graph", "params": {"storage": _D}},
+            "graph": {"target": "graph"},
         },
         "query_parser": {
             _D: {
@@ -134,7 +139,6 @@ def default_config_dict() -> dict[str, Any]:
                     "query_parser": _D,
                     "fuser": _D,
                     "discloser": _D,
-                    "storage": _D,
                     # 召回超采样 + 精排预算 + 相关性阈值（本算子私有调参，非跨切面）
                     "over_fetch_factor": 4,
                     "over_fetch_floor": 60,
@@ -166,7 +170,6 @@ def default_config_dict() -> dict[str, Any]:
             _D: {
                 "target": "hybrid",
                 "params": {
-                    "storage": _D,
                     "chunker": _D,
                     "embedder": _D,
                 },
@@ -175,7 +178,7 @@ def default_config_dict() -> dict[str, Any]:
         "dedup": {
             _D: {
                 "target": "vector",
-                "params": {"storage": _D, "embedder": _D},
+                "params": {"embedder": _D},
             }
         },
         "evolver": {
@@ -186,7 +189,6 @@ def default_config_dict() -> dict[str, Any]:
                     "abstractor": _D,
                     "associator": _D,
                     "index_builder": _D,
-                    "storage": _D,
                     # 原文 store：指向 kv_store.default，与正排 KV 是同一实例
                     # （/messages/ 与 /memory/ 靠 key 前缀分离）。要物理拆开，
                     # 声明另一个 kv_store 具名实例并把此处改成它的名字。
@@ -204,7 +206,6 @@ def default_config_dict() -> dict[str, Any]:
                     "abstractor": _D,
                     "associator": _D,
                     "index_builder": _D,
-                    "storage": _D,
                     # 原文 store：指向 kv_store.default，与正排 KV 是同一实例
                     # （/messages/ 与 /memory/ 靠 key 前缀分离）。要物理拆开，
                     # 声明另一个 kv_store 具名实例并把此处改成它的名字。
@@ -224,7 +225,6 @@ def default_config_dict() -> dict[str, Any]:
                     "ingestor": _D,
                     "index_builder": _D,
                     "retriever": _D,
-                    "storage": _D,
                     "scheduler": _D,
                     "evolver": _D,
                     "lifecycle": _D,
@@ -237,8 +237,6 @@ def default_config_dict() -> dict[str, Any]:
             _D: {
                 "target": "default",
                 "params": {
-                    # 与 engine.default 共享统一 Storage 具名实例。
-                    "storage": _D,
                     "evolver": _D,
                     "lifecycle": _D,
                     "index_builder": _D,
@@ -252,14 +250,12 @@ def default_config_dict() -> dict[str, Any]:
         },
         # scheduler 只接收 Job（Job 自带数据源），无 params。
         "scheduler": {_D: {"target": "in_process", "params": {}}},
-        "ingest_job": {
-            _D: {"target": "in_process", "params": {"kv_store": _D}}
-        },
-        "lifecycle": {_D: {"target": "kv", "params": {"storage": _D, "policy": _D}}},
+        "ingest_job": {_D: {"target": "in_process", "params": {}}},
+        "lifecycle": {_D: {"target": "kv", "params": {"policy": _D}}},
         "policy": {_D: "dict"},
-        "governor": {_D: {"target": "in_memory", "params": {"audit": _D, "storage": _D}}},
+        "governor": {_D: {"target": "in_memory", "params": {"audit": _D}}},
         "permission": {_D: {"target": "sqlite", "params": {"db_path": ":memory:"}}},
-        "space": {_D: {"target": "kv", "params": {"storage": _D}}},
+        "space": {_D: {"target": "kv", "params": {}}},
         # 空间授权事实的读取与缓存。params 只引用 space：正查（元数据与成员表）与
         # 反查（主体到空间）都在 SpaceManager 契约内，本算子只依赖它一个。
         "membership": {_D: {"target": "kv", "params": {"space": _D}}},
@@ -269,6 +265,8 @@ def default_config_dict() -> dict[str, Any]:
 
 
 # 根组件（LocalMemoryAPI）对各顶层组件的引用——全部指向各命名空间下的 default 实例。
+# storage 不在此列：全局唯一 StoreManager 经 globals.store_manager 指名，由
+# StoreManagerProducer.resolve 统一解析（Kernel 与各消费者共享同一实例）。
 ROOT_PARAMS: dict[str, str] = {
     "engine": _D,
     "permission": _D,
@@ -279,7 +277,6 @@ ROOT_PARAMS: dict[str, str] = {
     "audit": _D,
     "kv_store": _D,
     "security": _D,
-    "storage": _D,
     "space": _D,
     "membership": _D,
     "config_source": _D,

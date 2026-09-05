@@ -57,7 +57,7 @@ from jiuwen_memory.construction.prompt_strategy import (
     parse_prompt_strategies,
 )
 from jiuwen_memory.construction.router import optional_router
-from jiuwen_memory.storage.storage import StorageProducer
+from jiuwen_memory.storage.store_manager import StoreManagerProducer
 
 logger = get_logger(__name__)
 
@@ -413,7 +413,7 @@ def _build(config):
         abstractor=AbstractorProducer.dep(config, default="concat"),
         associator=AssociatorProducer.dep(config, default="keyword"),
         index_builder=IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
-        storage=StorageProducer.resolve(config),
+        storage=StoreManagerProducer.resolve(config),
         message_store=_resolve_message_store(config),
         dedup=DedupProducer.dep(config, default=dr_default),
         llm=LlmProducer.dep(config, default="echo"),

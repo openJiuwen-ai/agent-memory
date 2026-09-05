@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-08-31 |
+| 最近一次修订日期 | 2026-09-03 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
@@ -53,7 +53,7 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
     「窗内命中 OR 未知放行」，整棵 OR 子树作为外层 AND 的一个 child 不摊平——
     安全谓词不被稀释，同时 `t_event=None` 的派生不被窗下推清空（见过滤表达式段）。
 12. **rank 只包含 Fuser**：Fuser 在物化候选上做分层归并和跨通道融合；Reranker 保持后续
-    独立阶段，不下沉到 Storage 的 retrieve 入口。
+    独立阶段，不下沉到 DomainStore 的 retrieve 入口。
 13. **部分失败显式返回**：部分召回入口失败时继续处理成功候选并返回 `ChannelError`；全部选中
     入口失败抛 `StorageRetrievalError`。显式空 channels 是无效输入。
 14. **结构轴正交**：`ContentLayers`/`DisclosureLevel` 是 unit 内披露，`HierarchyRef` 是跨 unit 结构；CLM/ELM、`MemoryUnit.temporal` 与 `RecallChannel.TEMPORAL` 均不替代 `HierarchyKind.TIME`。
@@ -141,7 +141,7 @@ Expander 先校验 root，再按深度从浅到深遍历；同一父的子顺序
 ```
 QueryParser.parse(query) → ParsedQuery
 → 若 ParsedQuery.raw 为空则短路返回空结果
-→ 按 Storage.preferred_retrieval_pipeline 选择 recall→get、recall_and_get 或 retrieve
+→ 按 DomainStore.preferred_retrieval_pipeline 选择 recall→get、recall_and_get 或 retrieve
 → Fuser 前物化候选并完成 lifecycle/valid-time/event-time/filters 真源复核
 → Fuser.fuse(parsed_query, candidates) → list[ScoredMemoryUnit]
 → 截断精排预算
@@ -416,7 +416,7 @@ jiuwen_memory/retrieval/<算子>_impl/
 | S02-memory_api | MemoryAPI.search → Engine → 本层 Retriever |
 | S03-control | Engine.recall 委托本层 Retriever |
 | S05-construction | 本层消费构建层产出的索引（向量/全文/图） |
-| S06-storage | Retriever 经 StorageProducer 获取统一 Storage；Recaller 作为 CompositeStorage 的兼容检索适配器，由 storage 层工厂按配置装配 |
+| S06-storage | Retriever 经 `StoreManagerProducer.resolve` 取全局 manager 并持其 `domain_store()`；Recaller 作为 CompositeDomainStore 的兼容检索适配器，由 manager 工厂按配置装配；Recaller 端口经 manager 命名端口获取（显式端口名配置优先于 layer 推导） |
 | S07-common | 复用 Tokenizer/Embedder/FeatureExtractor/LLM/Reranker |
 | S08-config | 能力开关与 rerank/embedder 晚绑定经 ConfigSource |
 | architecture.md §8 | 检索链路设计 |

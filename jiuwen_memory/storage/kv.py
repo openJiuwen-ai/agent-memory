@@ -13,8 +13,11 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
+from jiuwen_memory.common.errors import NotFoundError
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.type_def import FilterExpr, Scope
+from jiuwen_memory.common.type_def import FilterExpr, MemoryUnit, Scope
+from jiuwen_memory.common.type_def.memory import memory_key
+from jiuwen_memory.common.type_def.memory_codec import loads
 
 from .base import BaseStore
 from .types import KVMemoryListResult
@@ -92,3 +95,69 @@ class KVStore(BaseStore):
         scope 入参做全局 sweep/offboarding」的管理任务使用。目标治理/生命周期操作
         必须携带显式 Scope，不得仅按 id 借此跨 scope 猜测。顺序由实现定义。
         """
+
+
+# ---------------------------------------------------------------------------
+# 共享读 helper（点读 load_units / 列表读 list_units）
+# ---------------------------------------------------------------------------
+
+
+def list_units(
+    kv: KVStore,
+    scope: Scope,
+    *,
+    offset: int = 0,
+    limit: int = 100,
+    memory_types: list[str] | None = None,
+    filters: FilterExpr | None = None,
+    extensions: dict[str, str] | None = None,
+) -> tuple[list[MemoryUnit], int]:
+    """查询 ``scope`` 下的 MemoryUnit 并反序列化，返回 ``(items, count)``。
+
+    与 :func:`load_units` 对称的列表读 helper（Engine list/全量扫描、Lifecycle
+    sweep、EvolveJob/MiddleToLongJob 候选拉取）：``kv.list`` + 逐条 ``loads``
+    反序列化，非 MemoryUnit 记录（``loads`` 返回 None）自然过滤；``count`` 为
+    分页前匹配总数，透传给分页语义调用方。过滤/排序/分页语义全部由
+    ``KVStore.list`` 契约承担，本 helper 不做二次过滤。
+    """
+    result = kv.list(
+        scope,
+        offset=offset,
+        limit=limit,
+        memory_types=memory_types,
+        filters=filters,
+        extensions=extensions,
+    )
+    items: list[MemoryUnit] = []
+    for _, raw in result.entries:
+        unit = loads(raw)
+        if unit is not None:
+            items.append(unit)
+    return items, result.count
+
+
+def load_units(kv: KVStore, scope: Scope, unit_ids: list[str]) -> list[MemoryUnit]:
+    """按 unit_id 从 KV 真源点读 :class:`~common.type_def.MemoryUnit` 列表。
+
+    纯「按 id 点读」场景的共用支撑件（Dedup._load_unit / Governor._find /
+    Evolver 源读 / KeywordRecaller 实体扩展）：只做 ``memory_key`` 拼装 +
+    ``loads`` 反序列化——**不做**任何过滤/复核（lifecycle/valid-time 判定属
+    调用方职责，与 :class:`~retrieval.retriever_impl.unit_reader.UnitReader`
+    的复核职责分层）。语义与 ``DomainStore.get`` 对齐：
+
+    - 缺失 id 省略（不抛 NotFoundError）；
+    - 按输入顺序返回、重复 id 各自返回（不去重）；
+    - 空入参直接返回空列表。
+    """
+    if not unit_ids:
+        return []
+    units: list[MemoryUnit] = []
+    for unit_id in unit_ids:
+        try:
+            raw = kv.get(scope, memory_key(unit_id))
+        except NotFoundError:
+            continue
+        unit = loads(raw)
+        if unit is not None:
+            units.append(unit)
+    return units

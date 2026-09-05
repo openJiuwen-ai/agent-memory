@@ -57,7 +57,8 @@ from jiuwen_memory.control.types import (
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
-from jiuwen_memory.storage.storage import Storage, StorageProducer
+from jiuwen_memory.storage.kv import KVStore, list_units, load_units
+from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 logger = get_logger(__name__)
@@ -207,7 +208,7 @@ class CloudEngine(MemoryEngine):
         ingestor: Ingestor,
         index_builder: IndexBuilder,
         retriever: Retriever,
-        storage: Storage,
+        kv: KVStore,
         scheduler: Scheduler,
         evolver: Evolver,
         lifecycle: LifecycleManager,
@@ -222,7 +223,7 @@ class CloudEngine(MemoryEngine):
         self._ingestor = ingestor
         self._index = index_builder
         self._retriever = retriever
-        self._storage = storage
+        self._kv = kv
         self._scheduler = scheduler
         self._evolver = evolver
         self._lifecycle = lifecycle
@@ -478,7 +479,7 @@ class CloudEngine(MemoryEngine):
         filters: FilterExpr | None = None,
     ) -> MemoryListResult:
         return list_page(
-            self._storage,
+            self._kv,
             scope,
             offset=offset,
             limit=limit,
@@ -516,7 +517,7 @@ class CloudEngine(MemoryEngine):
     async def permission_contexts_for_delete(
         self, selector: DeleteSelector
     ) -> list[PermissionContext]:
-        scopes = [selector.scope] if selector.scope is not None else self._storage.scopes()
+        scopes = [selector.scope] if selector.scope is not None else self._kv.scopes()
         if not scopes:
             scopes = [Scope()]
         contexts: list[PermissionContext] = []
@@ -603,7 +604,7 @@ class CloudEngine(MemoryEngine):
         if selector_is_empty:
             raise ValidationError("DeleteSelector requires unit_ids, tags, before, or filters")
 
-        scopes = [selector.scope] if selector.scope is not None else self._storage.scopes()
+        scopes = [selector.scope] if selector.scope is not None else self._kv.scopes()
         if not scopes:
             scopes = [Scope()]
 
@@ -669,7 +670,7 @@ class CloudEngine(MemoryEngine):
         purged: list[str] = []
         for scope in [
             candidate
-            for candidate in self._storage.scopes()
+            for candidate in self._kv.scopes()
             if candidate.org == org and candidate.space == space
         ]:
             units = self._list_units(scope)
@@ -715,13 +716,19 @@ class CloudEngine(MemoryEngine):
     async def admin_all(self) -> dict[str, str]:
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")
 
-    def _write_middle_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
-        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
-        self._storage.add(scope, units)
+    def _load(self, scope: Scope, unit_id: str) -> MemoryUnit:
+        units = load_units(self._kv, scope, [unit_id])
+        if not units:
+            raise NotFoundError("memory_unit", unit_id)
+        unit = units[0]
+        self._ensure_unit_scope(unit, scope)
+        return unit
 
-    def _write_default_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
-        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
-        self._storage.add(scope, units)
+    def _list_units(self, scope: Scope) -> list[MemoryUnit]:
+        units, _ = list_units(self._kv, scope, limit=1_000_000)
+        for unit in units:
+            self._ensure_unit_scope(unit, scope)
+        return units
 
     def _normalized_metadata(
         self, metadata: dict[str, MetadataValueType] | None
@@ -811,20 +818,6 @@ class CloudEngine(MemoryEngine):
         for group in self._group_by_index(units):
             group.builder.update(group.units)
 
-    def _load(self, scope: Scope, unit_id: str) -> MemoryUnit:
-        units = self._storage.get(scope, [unit_id])
-        if not units:
-            raise NotFoundError("memory_unit", unit_id)
-        unit = units[0]
-        self._ensure_unit_scope(unit, scope)
-        return unit
-
-    def _list_units(self, scope: Scope) -> list[MemoryUnit]:
-        units = self._storage.list(scope, limit=1_000_000).items
-        for unit in units:
-            self._ensure_unit_scope(unit, scope)
-        return units
-
     def _version_family(self, scope: Scope, unit_id: str) -> list[MemoryUnit]:
         units_by_id = {unit.id: unit for unit in self._list_units(scope)}
         if unit_id not in units_by_id:
@@ -890,7 +883,7 @@ def _build(config):
         IngestorProducer.dep(config, default="simple"),
         IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
         RetrieverProducer.dep(config, default="pipeline"),
-        StorageProducer.resolve(config),
+        StoreManagerProducer.resolve(config).kv(resolve_name(config, "kv_store")),
         SchedulerProducer.dep(config, default="in_process"),
         EvolverProducer.dep(config, default="orchestrating"),
         LifecycleProducer.dep(config, default="kv"),

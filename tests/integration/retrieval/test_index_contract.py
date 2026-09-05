@@ -17,6 +17,7 @@ from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_featu
     KeywordFeatureExtractor,
 )
 from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
+from jiuwen_memory.common.type_def import RetrievalPipeline
 from jiuwen_memory.construction.index_builder_impl.hybrid_index_builder import HybridIndexBuilder
 from jiuwen_memory.retrieval.discloser_impl.truncating_discloser import TruncatingDiscloser
 from jiuwen_memory.retrieval.fuser_impl.rrf_fuser import RRFFuser
@@ -28,7 +29,8 @@ from jiuwen_memory.retrieval.retriever_impl.unit_reader import UnitReader
 from jiuwen_memory.retrieval.types import RecallChannel, RetrievalQuery
 from jiuwen_memory.storage.fulltext_impl.in_memory_fulltext_store import InMemoryFulltextStore
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.domain_store_impl import CompositeDomainStore
+from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
 from jiuwen_memory.storage.vector_impl.in_memory_vector_store import InMemoryVectorStore
 from tests.conftest import make_unit
 
@@ -46,9 +48,13 @@ def indexed_via_builder():
     fulltext = InMemoryFulltextStore(tokenizer)
     # size 调小，强制把内容切成多个 chunk，覆盖「同 unit 多 chunk → MaxP 折叠」
     chunker = FixedWindowChunker(size=20)
-    storage = CompositeStorage(kv=kv, vector=vector, fulltext=fulltext)
-    storage.bind_recallers([KeywordRecaller(storage), VectorRecaller(storage)])
-    index_builder = HybridIndexBuilder(storage, chunker, embedder)
+    manager = CompositeStoreManager(kv=kv, vector=vector, fulltext=fulltext)
+    domain_store = CompositeDomainStore(
+        manager=manager, preferred_pipeline=RetrievalPipeline.RECALL_GET_RANK
+    )
+    domain_store.bind_recallers([KeywordRecaller(manager), VectorRecaller(manager)])
+    manager.bind_domain_store(domain_store)
+    index_builder = HybridIndexBuilder(manager, chunker, embedder)
 
     parser = SimpleQueryParser(tokenizer, embedder, feature_extractor=features)
     retriever = PipelineRetriever(
@@ -56,7 +62,7 @@ def indexed_via_builder():
         RRFFuser(),
         TruncatingDiscloser(),
         UnitReader(kv),
-        storage=storage,
+        domain_store=domain_store,
     )
 
     unit = make_unit("u_long", "alice loves iced americano coffee every single morning before work")

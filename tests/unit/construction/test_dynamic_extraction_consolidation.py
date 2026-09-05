@@ -37,8 +37,8 @@ from jiuwen_memory.construction.prompt_registry import (
 )
 from jiuwen_memory.storage.graph_impl.in_memory_graph_store import InMemoryGraphStore
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 from jiuwen_memory.storage.types import IndexWriteMode
+from tests.conftest import make_storage
 
 _TEST_KEY_HEX = "00" * 32
 
@@ -170,8 +170,8 @@ def _make_evolver(
     prompts: dict | None = None,
 ) -> tuple[DynamicEvolver, InMemoryKVStore, _Index]:
     kv = InMemoryKVStore()
-    storage = CompositeStorage(kv=kv, graph=InMemoryGraphStore())
-    index = _Index(storage)
+    storage = make_storage(kv=kv, graph=InMemoryGraphStore())
+    index = _Index(storage.domain_store())
     extractor = _FallbackExtractor()
     dedup = _Dedup(dedup_hits)
     registry = PromptRegistry.from_dict(prompts or {})
@@ -181,7 +181,7 @@ def _make_evolver(
         associator=object(),  # EXTRACT 路径不触发 associator
         index_builder=index,
         storage=storage,
-        message_store=storage.kv,
+        message_store=storage.kv(),
         dedup=dedup,
         llm=llm or _ScriptedLLM(),
         layer_annotator=None,
@@ -419,8 +419,8 @@ def test_dynamic_evolver_supersedes_existing_via_llm_judge():
     existing = _unit("existing", "旧事实")
     kv = InMemoryKVStore()
     kv.insert(existing.scope, memory_key(existing.id), dumps(existing))
-    storage = CompositeStorage(kv=kv, graph=InMemoryGraphStore())
-    index = _Index(storage)
+    storage = make_storage(kv=kv, graph=InMemoryGraphStore())
+    index = _Index(storage.domain_store())
     extractor = _FallbackExtractor()
     dedup = _Dedup([(existing, 0.8)])
     registry = PromptRegistry.from_dict(
@@ -443,7 +443,7 @@ def test_dynamic_evolver_supersedes_existing_via_llm_judge():
         associator=object(),
         index_builder=index,
         storage=storage,
-        message_store=storage.kv,
+        message_store=storage.kv(),
         dedup=dedup,
         llm=llm,
         layer_annotator=None,
@@ -465,8 +465,8 @@ def test_dynamic_evolver_update_empty_merge_falls_back_to_concatenation():
     existing = _unit("existing", "旧事实")
     kv = InMemoryKVStore()
     kv.insert(existing.scope, memory_key(existing.id), dumps(existing))
-    storage = CompositeStorage(kv=kv, graph=InMemoryGraphStore())
-    index = _Index(storage)
+    storage = make_storage(kv=kv, graph=InMemoryGraphStore())
+    index = _Index(storage.domain_store())
     dedup = _Dedup([(existing, 0.8)])
     registry = PromptRegistry.from_dict({"consolidate": {"episodic": "巩固判定"}})
     llm = _ScriptedLLM(
@@ -486,7 +486,7 @@ def test_dynamic_evolver_update_empty_merge_falls_back_to_concatenation():
         associator=object(),
         index_builder=index,
         storage=storage,
-        message_store=storage.kv,
+        message_store=storage.kv(),
         dedup=dedup,
         llm=llm,
         layer_annotator=None,

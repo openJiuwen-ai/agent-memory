@@ -17,7 +17,6 @@ from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.control.jobs_impl.evolve_job import EvolveJob
 from jiuwen_memory.control.types import JobStatus
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
 
@@ -75,7 +74,7 @@ def test_run_loads_all_scope_units_and_calls_evolver_with_default_extract_mode()
     )
     evolver = RecordingEvolver()
 
-    job = EvolveJob(scope=scope, storage=CompositeStorage(kv=kv), evolver=evolver)
+    job = EvolveJob(scope=scope, kv=kv, evolver=evolver)
     info = asyncio.run(job.run())
 
     assert len(evolver.calls) == 1
@@ -103,7 +102,7 @@ def test_run_calls_evolver_with_explicit_mode_from_constructor() -> None:
 
     job = EvolveJob(
         scope=scope,
-        storage=CompositeStorage(kv=kv),
+        kv=kv,
         evolver=evolver,
         mode=EvolveMode.CONSOLIDATE,
     )
@@ -128,7 +127,7 @@ def test_run_skips_non_memory_unit_records_via_loads_filter() -> None:
     kv.insert(scope, "/memory/index-only", b"[1, 2, 3]")
     evolver = RecordingEvolver()
 
-    job = EvolveJob(scope=scope, storage=CompositeStorage(kv=kv), evolver=evolver)
+    job = EvolveJob(scope=scope, kv=kv, evolver=evolver)
     info = asyncio.run(job.run())
 
     units, _ = evolver.calls[0]
@@ -142,7 +141,7 @@ def test_run_with_empty_scope_still_calls_evolver_with_empty_list() -> None:
     kv = InMemoryKVStore()
     evolver = RecordingEvolver()
 
-    job = EvolveJob(scope=scope, storage=CompositeStorage(kv=kv), evolver=evolver)
+    job = EvolveJob(scope=scope, kv=kv, evolver=evolver)
     info = asyncio.run(job.run())
 
     units, _ = evolver.calls[0]
@@ -169,7 +168,7 @@ def test_run_excludes_middle_marked_units_from_evolver_input() -> None:
     kv.insert(scope, memory_key("mid-2"), dumps(_make_middle_unit("mid-2", scope, "another middle")))
     evolver = RecordingEvolver()
 
-    job = EvolveJob(scope=scope, storage=CompositeStorage(kv=kv), evolver=evolver)
+    job = EvolveJob(scope=scope, kv=kv, evolver=evolver)
     info = asyncio.run(job.run())
 
     units, _ = evolver.calls[0]
@@ -182,7 +181,7 @@ def test_job_default_interval_is_zero_meaning_one_shot() -> None:
     scope = Scope(org="acme", user="u1")
     job = EvolveJob(
         scope=scope,
-        storage=CompositeStorage(kv=InMemoryKVStore()),
+        kv=InMemoryKVStore(),
         evolver=RecordingEvolver(),
     )
     assert job.interval == 0
@@ -193,7 +192,7 @@ def test_job_accepts_explicit_interval_for_timer_declaration() -> None:
     scope = Scope(org="acme", user="u1")
     job = EvolveJob(
         scope=scope,
-        storage=CompositeStorage(kv=InMemoryKVStore()),
+        kv=InMemoryKVStore(),
         evolver=RecordingEvolver(),
         interval=50,
     )

@@ -13,7 +13,11 @@ from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.recaller import Recaller, RecallerProducer
 from jiuwen_memory.retrieval.types import ParsedQuery, RecallChannel, ScoredUnit
-from jiuwen_memory.storage.storage import Storage, StorageProducer
+from jiuwen_memory.storage.store_manager import (
+    StoreManager,
+    StoreManagerProducer,
+    resolve_name,
+)
 from jiuwen_memory.storage.types import GraphQuery
 
 
@@ -23,8 +27,14 @@ class GraphRecaller(Recaller):
     :class:`~storage.graph.GraphStore`（``seed_ids`` + ``search``），不绑定具体后端。
     """
 
-    def __init__(self, storage: Storage, depth: int = 1) -> None:
-        self._graph = storage.graph
+    def __init__(
+        self, storage: StoreManager, depth: int = 1, *, graph_name: str = "default"
+    ) -> None:
+        # graph 端口是可选依赖：未声明该端口的 manager（最小装配）下 store 为
+        # None，recall 返空——与 vector/keyword recaller 的 store None 约定一致。
+        self._graph = (
+            storage.graph(graph_name) if storage.has_graph(graph_name) else None
+        )
         self._depth = depth
 
     def operator_type(self) -> RetrievalOperatorType:
@@ -37,6 +47,8 @@ class GraphRecaller(Recaller):
         return RecallChannel.GRAPH
 
     def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]:
+        if self._graph is None:
+            return []  # store 未注入（该端口未配）→ 跳过
         # 种子词项 = 关键词 ∪ 实体文本（实体更精准地定位图入口）。
         terms = set(query.keywords) | {e.text for e in query.entities if e.text}
         seeds = self._graph.seed_ids(scope, terms)
@@ -62,6 +74,7 @@ class GraphRecaller(Recaller):
 @RecallerProducer.register("graph")
 def _build(config):
     return GraphRecaller(
-        StorageProducer.resolve(config),
+        StoreManagerProducer.resolve(config),
         depth=Factory.cfg_get(config, "depth", 1),
+        graph_name=resolve_name(config, "graph_store"),
     )

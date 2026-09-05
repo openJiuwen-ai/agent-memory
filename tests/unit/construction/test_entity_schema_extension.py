@@ -11,7 +11,7 @@ import pytest
 
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.base import PluginType
-from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.errors import NotFoundError, ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import (
@@ -27,6 +27,7 @@ from jiuwen_memory.common.type_def import (
     Segment,
     Temporal,
 )
+from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.defaults import default_config_dict
 from jiuwen_memory.construction.entity_schema import EntitySchemaCatalog
@@ -41,6 +42,7 @@ from jiuwen_memory.construction.extractor_impl.entity_schema_extractor import (
     _parse_json_object,
 )
 from jiuwen_memory.construction.index_builder_impl.entity_index_builder import EntityLinkService
+from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.entity_store import EntityStore
 from jiuwen_memory.storage.types import IndexWriteMode
 
@@ -512,16 +514,28 @@ def test_unsupported_entity_type_is_corrected_instead_of_retyped() -> None:
 
 
 class _Storage:
+    """Fake StoreManager：kv 端口暴露真源（memory_key → dumps(unit)），无 graph。
+
+    F08 双面结构下 evolver 经 ``storage.has_graph(name)`` 查端口、经
+    ``storage.kv(name)`` 取点读 KV（``load_units`` 消费 KVStore.get 形态）；
+    写入仍经 _Index 替身的 add/update 落 ``units``，两侧同源。
+    """
+
     def __init__(self) -> None:
         self.units: dict[str, MemoryUnit] = {}
-        self.kv = SimpleNamespace()
 
     @staticmethod
-    def has_graph() -> bool:
+    def has_graph(name: str = "default") -> bool:
         return False
 
-    def get(self, _scope, unit_ids):
-        return [self.units[unit_id] for unit_id in unit_ids if unit_id in self.units]
+    def kv(self, name: str = "default") -> "_Storage":
+        return self
+
+    def get(self, scope, key):
+        unit_id = key.rsplit("/", 1)[-1]
+        if unit_id not in self.units:
+            raise NotFoundError(key)
+        return dumps(self.units[unit_id])
 
     def add(self, _scope, units):
         for unit in units:
@@ -687,8 +701,8 @@ class _MemoryEntityStore(EntityStore):
     def __init__(self) -> None:
         self.records: dict[str, EntityRecord] = {}
 
-    def store_type(self):
-        return None
+    def store_type(self) -> StoreType:
+        return StoreType.ENTITY
 
     def health(self) -> None:
         return None
@@ -773,7 +787,7 @@ def test_schema_is_disabled_in_default_assembly_config() -> None:
     assert defaults["globals"]["schema_enabled"] is False
     assert defaults["extractor"]["default"]["target"] == "dynamic_llm"
     assert defaults["evolver"]["default"]["target"] == "orchestrating"
-    assert defaults["storage"]["default"]["target"] == "composite"
+    assert defaults["store_manager"]["default"]["target"] == "composite"
 
 
 def test_schema_target_requires_enabled_assembly_switch() -> None:

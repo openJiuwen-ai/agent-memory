@@ -20,7 +20,11 @@ from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
 from jiuwen_memory.storage.kv import KVStore
-from jiuwen_memory.storage.storage import Storage, StorageProducer
+from jiuwen_memory.storage.store_manager import (
+    StoreManager,
+    StoreManagerProducer,
+    resolve_name,
+)
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 logger = get_logger(__name__)
@@ -29,15 +33,15 @@ logger = get_logger(__name__)
 class ForwardIndexBuilder(IndexBuilder):
     """把 MemoryUnit 落成正排 KV 记录。
 
-    ``storage.kv`` 在装配期即解析：Storage 没有 KV 能力时立刻抛
+    ``storage.kv()`` 在装配期即解析：StorageManager 没有 KV 能力时立刻抛
     :class:`~common.errors.UnsupportedStorageCapabilityError`，而不是拖到首次写入
     才暴露——正排是真源，缺了它整条读路径都无从谈起。
     """
 
-    def __init__(self, storage: Storage) -> None:
-        # 构造即解析：Storage 无 KV 能力时此处直接抛 UnsupportedStorageCapabilityError，
-        # 不拖到首次写入才以 AttributeError 的形式暴露。
-        self._kv = storage.kv
+    def __init__(self, storage: StoreManager, *, kv_name: str = "default") -> None:
+        # 构造即解析：manager 无该命名端口时此处直接抛
+        # UnsupportedStorageCapabilityError，不拖到首次写入才以 AttributeError 暴露。
+        self._kv = storage.kv(kv_name)
 
     @property
     def kv_store(self) -> KVStore:
@@ -88,4 +92,7 @@ class ForwardIndexBuilder(IndexBuilder):
 
 @IndexBuilderProducer.register("forward")
 def _build(config):
-    return ForwardIndexBuilder(StorageProducer.resolve(config))
+    return ForwardIndexBuilder(
+        StoreManagerProducer.resolve(config),
+        kv_name=resolve_name(config, "kv_store"),
+    )

@@ -44,8 +44,8 @@ from jiuwen_memory.retrieval.types import (
     RetrievalResult,
     TrajectoryStep,
 )
-from jiuwen_memory.storage.storage import Storage, StorageProducer
-from jiuwen_memory.storage.storage_impl import CompositeStorage
+from jiuwen_memory.storage.domain_store import DomainStore
+from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 
 from .predicate_builder import build_system_filters
 from .unit_reader import UnitReader
@@ -72,17 +72,14 @@ class PipelineRetriever(Retriever):
         min_score_ratio: float = 0.0,
         min_score_ratio_uncalibrated: float = 0.0,
         min_results: int = 0,
-        storage: Storage | None = None,
+        *,
+        domain_store: DomainStore,
     ) -> None:
         self._parser = parser
         self._fuser = fuser
         self._discloser = discloser
         self._reader = unit_reader
-        if storage is None:
-            if unit_reader is None:
-                raise ValidationError("PipelineRetriever requires storage or unit_reader")
-            storage = CompositeStorage(kv=unit_reader.kv)
-        self._storage = storage
+        self._domain = domain_store
         self._reranker = reranker
         # 召回超采样：每路取 max(top_k*factor, floor)，撒宽网喂融合。
         self._over_fetch_factor = max(1, int(over_fetch_factor))
@@ -106,9 +103,13 @@ class PipelineRetriever(Retriever):
         self._min_results = max(0, int(min_results))
 
     @property
-    def storage(self) -> Storage:
-        """当前 Retriever 使用的统一 Storage 实例。"""
-        return self._storage
+    def storage(self) -> DomainStore:
+        """当前 Retriever 使用的数据面 DomainStore 实例。
+
+        F07：需要管理面能力时由装配层经 ``StoreManagerProducer`` 取 manager，
+        Retriever 运行期只持数据面。
+        """
+        return self._domain
 
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.RETRIEVER
@@ -216,21 +217,21 @@ class PipelineRetriever(Retriever):
             recall_k = min(recall_k, self._recall_max)  # 硬上限：封顶后端召回压力
         budget_n = max(self._rerank_max, query.top_k)
 
-        # [3b-6] Storage 的全局首选值选择三条 recall/get/rank 路径。
-        pipeline = self._storage.preferred_retrieval_pipeline()
+        # [3b-6] DomainStore 的全局首选值选择三条 recall/get/rank 路径。
+        pipeline = self._domain.preferred_retrieval_pipeline()
         t0 = perf_counter()
         errors: list[ChannelError]
         if pipeline == RetrievalPipeline.RECALL_GET_RANK:
-            recalled = self._storage.recall(
+            recalled = self._domain.recall(
                 scope, parsed, channels=enabled, recall_limit=recall_k
             )
-            materialized = _materialize_recalled(self._storage, scope, recalled, parsed)
+            materialized = _materialize_recalled(self._domain, scope, recalled, parsed)
             fused = self._fuser.fuse(
                 parsed, [batch.candidates for batch in materialized.batches]
             )
             errors = materialized.errors
         elif pipeline == RetrievalPipeline.RECALL_AND_GET_RANK:
-            materialized = self._storage.recall_and_get(
+            materialized = self._domain.recall_and_get(
                 scope, parsed, channels=enabled, recall_limit=recall_k
             )
             materialized = _filter_materialized(materialized, parsed)
@@ -239,7 +240,7 @@ class PipelineRetriever(Retriever):
             )
             errors = materialized.errors
         else:
-            ranked = self._storage.retrieve(
+            ranked = self._domain.retrieve(
                 scope,
                 parsed,
                 self._fuser,
@@ -374,9 +375,10 @@ class PipelineRetriever(Retriever):
 
 @RetrieverProducer.register("pipeline")
 def _build(config):
-    # 召回路装配归 CompositeStorage 工厂（按 vector_enabled 等开关构建期同步组装）；
-    # 这里只取统一 Storage——非 Composite 实现自带检索路径，无需 recaller。
-    storage = StorageProducer.resolve(config)
+    # 召回路装配归 CompositeStoreManager 工厂（按 vector_enabled 等开关构建期同步
+    # 组装）；这里只取 manager 与其 domain_store——非 Composite 实现自带检索路径。
+    manager = StoreManagerProducer.resolve(config)
+    kv_name = resolve_name(config, "kv_store")
     # 精排器与 UnitReader 的真源 kv 与索引/构建侧共享同一实例。
     reranker = (
         RerankerProducer.dep(config, default="overlap")
@@ -387,7 +389,7 @@ def _build(config):
         QueryParserProducer.dep(config, default="simple"),
         FuserProducer.dep(config, default="rrf"),
         DiscloserProducer.dep(config, default="truncating"),
-        UnitReader(storage.kv) if storage.has_kv() else None,
+        UnitReader(manager.kv(kv_name)) if manager.has_kv(kv_name) else None,
         reranker,
         over_fetch_factor=int(Factory.cfg_get(config, "over_fetch_factor", 4)),
         over_fetch_floor=int(Factory.cfg_get(config, "over_fetch_floor", 60)),
@@ -401,7 +403,7 @@ def _build(config):
             Factory.cfg_get(config, "min_score_ratio_uncalibrated", 0.0)
         ),
         min_results=int(Factory.cfg_get(config, "min_results", 0)),
-        storage=storage,
+        domain_store=manager.domain_store(resolve_name(config, "domain_store")),
     )
 
 
@@ -505,7 +507,7 @@ def _safe_error(exc: Exception) -> str:
 
 
 def _materialize_recalled(
-    storage: Storage,
+    domain: DomainStore,
     scope: Scope,
     recalled: RecallResult[ScoredUnit],
     query,
@@ -518,7 +520,7 @@ def _materialize_recalled(
             if candidate.unit_id not in seen:
                 seen.add(candidate.unit_id)
                 unit_ids.append(candidate.unit_id)
-    units = {unit.id: unit for unit in storage.get(scope, unit_ids)}
+    units = {unit.id: unit for unit in domain.get(scope, unit_ids)}
     batches: list[RecallBatch[ScoredMemoryUnit]] = []
     errors = list(recalled.errors)
     for batch in recalled.batches:

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-08-26 |
+| 最近一次修订日期 | 2026-09-03 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 装配开关见 `docs/features/construction/F08-entity-schema-extension.md` |
 
 ## 范围 / 边界
@@ -24,16 +24,19 @@
 - 不承载调用级业务 options（见 S02 `Context.extensions` / 方法参数）
 - 不做 Store 数据迁移、向量索引重建
 - 不规定产品配置中心的推送/TTL/缓存失效运维接口（实现方可自管缓存，首版契约不要求 invalidate）
-- **不**在未使用 `RoutingStorage` 时原地拆换同一 `CompositeStorage` 内部端口拓扑；Store 级异质切换落在各 `*_store.active` + `Routing*Store`（方案 A，F01 §2.1.5）
-- **允许**装配期预装多套完整 `Storage`，经 `RoutingStorage` + `storage.active` 动态选用（F02，已落地）；**禁止**把「同实现换连接 / 只换某一 Store」误做成多套 `Storage` + `storage.active`
+- **不**在未使用 `RoutingStoreManager` 时原地拆换同一 `CompositeStoreManager` 内部端口拓扑；Store 级异质切换落在各 `*_store.active` + `Routing*Store`（方案 A，F01 §2.1.5）
+- **允许**装配期预装多套完整 `StoreManager`，经 `RoutingStoreManager` + `store_manager.active` 动态选用（F02/F08，已落地）；**禁止**把「同实现换连接 / 只换某一 Store」误做成多套 manager + `store_manager.active`
 
 ## 不变量
 
 1. **默认可运行**：未注入自定义 `ConfigSource` 时，行为等价于当前 `defaults.py` + 可选用户 YAML 合并后的装配结果。
 2. **A/B 两层分离**：更换 `ConfigSource` 实现类或增减预装配组件属于装配/重建（A）；在已注入来源上 `fetch` 取值属于运行时（B）。
 3. **注册 ≠ 预装配**：Producer 已注册的 target 不等于进程内已有实例；运行时 `*.active` 只能指向装配期已创建的具名实例。
-4. **统一 Storage 具名共享**：`storage.default` 选择统一 Storage 实现；其下层 Store 参数使用
-   对应命名空间的具名引用。Kernel 与 Retriever 必须复用该 Storage 实例。
+4. **全局唯一 StoreManager 具名共享（F08）**：`store_manager.default` 选择统一 manager 实现
+   （配置段名 F08 起从 `storage` 更名）；全局实例由 `globals.store_manager` 指名，消费者不逐个
+   声明 storage 引用，统一经 `StoreManagerProducer.resolve` 解析。其下层 Store 参数使用对应
+   命名空间的具名引用；六类 `*_store` 命名空间下所有非 `default` 具名实例自动成为 manager
+   命名端口（声明即端口）。
    `security.default` 同样必须从根组件显式引用，使用户的安全参数覆盖实际作用于
    `EncryptedKVStore`，不得静默退回默认密钥文件。
 5. **同实现多套凭证优先晚绑定**：同一 LLM/Embedder/Reranker/Store 实现上切换 model/api_key/base_url/url/hosts/uri，须在调用/取连接路径 `fetch` 对应 key；**不得**把同构多 Key/URL 的首选做成多具名实例 + `*.active`。`*.active` 仅用于异质实现互切或产品明确要求的实例隔离。
@@ -94,7 +97,7 @@ ConfigSource
 | Graph | `graph_store.working_dir` | `graph_store.active` |
 | Fusion | `fusion_store.uri`、`fusion_store.working_dir` | `fusion_store.active` |
 | FS | `fs_store.root` | `fs_store.active` |
-| Storage 实例选用（F02） | — | `storage.active`（仅当 `storage.default` 为 `RoutingStorage`） |
+| StoreManager 实例选用（F02/F08） | — | `store_manager.active`（仅当 `store_manager.default` 为 `RoutingStoreManager`） |
 
 说明：
 
@@ -123,18 +126,19 @@ ConfigSource
     → 未知 active → ValidationError，禁止静默落到错误实例
 ```
 
-### 与统一 Storage（CompositeStorage）的关系
+### 与统一 StoreManager（CompositeStoreManager）的关系
 
-- `storage.default` 是 Kernel / Retriever 共享的统一入口：可以是单套 `composite`，也可以是
-  产品注入的 `RoutingStorage`（F02）；下层端口仍引用各预装实例内的 `kv_store` / `vector_store` / …。
+- `store_manager.default` 是全局共享的统一入口（`globals.store_manager` 指名）：可以是单套
+  `composite`，也可以是产品注入的 `RoutingStoreManager`（F02）；下层端口仍引用各预装实例内
+  的 `kv_store` / `vector_store` / …。
 - **Store 级**：ConfigSource 的连接改值 / `*_store.active` 作用于**端口背后的 Store**（含
   `Routing*Store`，F01）。
-- **Storage 级**：`storage.active` 仅当 `storage.default` 为 `RoutingStorage` 时，在已预装的完整
-  `Storage` 实例间选用（F02）；二者诉求不同，勿混用。
+- **StoreManager 级**：`store_manager.active` 仅当全局 manager 为 `RoutingStoreManager` 时，
+  在已预装的完整 manager 实例间选用（F02/F08）；二者诉求不同，勿混用。
 - **EncryptedKV 为 F04 opt-in**（`258f398` 起）：`build_kernel` **不再**默认外包加密层；
   产品以 `kv_store.*.target=encrypted`（或等价）显式启用。启用时 `RoutingKVStore` 必须作为
   **raw** 包在 `EncryptedKVStore` 之内，禁止 Routing 包在加密层外。
-- Store 级接线真值表见 F01 §2.1.5；Storage 实例动态配置见 F02。
+- Store 级接线真值表见 F01 §2.1.5；StoreManager 实例动态配置见 F02/F08。
 
 ### 与业务 API 的关系
 
@@ -164,6 +168,6 @@ ConfigSource
 | S03-control | PolicyManager 与 ConfigSource 分工 |
 | S05-construction | PromptRegistry / Evolver / IndexBuilder 消费 fetch |
 | S04-retrieval | 能力开关与 rerank/embedder 晚绑定 |
-| S06-storage | `storage` 选择统一实现，Store 命名空间配置其下层端口；连接/`active` 晚绑定不做迁移 |
+| S06-storage | `store_manager` 选择统一实现（globals.store_manager 指名），Store 命名空间配置其下层端口与命名端口；连接/`active` 晚绑定不做迁移 |
 | S07-common | 插件实现与 Factory 注册；配置数据在 `jiuwen_memory/config` |
 | architecture.md §13 | 可配置化分层与落点 |

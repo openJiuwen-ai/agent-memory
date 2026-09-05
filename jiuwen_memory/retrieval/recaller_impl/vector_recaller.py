@@ -21,7 +21,10 @@ from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.recaller import Recaller, RecallerProducer
 from jiuwen_memory.retrieval.types import ParsedQuery, RecallChannel, ScoredUnit
-from jiuwen_memory.storage.storage import Storage, StorageProducer
+from jiuwen_memory.storage.store_manager import (
+    StoreManager,
+    StoreManagerProducer,
+)
 from jiuwen_memory.storage.types import VectorQuery
 from jiuwen_memory.storage.vector import VectorStore
 
@@ -35,14 +38,16 @@ class VectorRecaller(Recaller):
 
     def __init__(
         self,
-        storage: Storage,
+        storage: StoreManager,
         min_similarity: float = 0.0,
         *,
         layer: str = "l2",
+        vector_name: str | None = None,
     ) -> None:
-        port_name = "default" if layer == "l2" else f"layers_{layer}"
+        # 端口名：显式配置优先于 layer 推导（l2→default；l0/l1→layers_l0/l1 分表约定）。
+        port_name = vector_name or ("default" if layer == "l2" else f"layers_{layer}")
         self._vector = (
-            storage.vector_port(port_name) if storage.has_vector_port(port_name) else None
+            storage.vector(port_name) if storage.has_vector(port_name) else None
         )
         # 语义前置阈值：相似度低于此值的命中直接丢弃（默认 0 关闭）。
         self._min_similarity = float(min_similarity)
@@ -122,9 +127,10 @@ class VectorRecaller(Recaller):
 @RecallerProducer.register("vector")
 def _build(config):
     return VectorRecaller(
-        StorageProducer.resolve(config),
+        StoreManagerProducer.resolve(config),
         min_similarity=float(Factory.cfg_get(config, "min_similarity", 0.0)),
         layer="l2",
+        vector_name=config.params.get("vector_store"),
     )
 
 
@@ -132,8 +138,8 @@ def _build(config):
 def _build_l0(config):
     # layers_index_enabled 默认 true；未配置命名端口时该层返回空结果。
     if not config.get("layers_index_enabled", True):
-        return VectorRecaller(StorageProducer.resolve(config), layer="l0")
-    recaller = VectorRecaller(StorageProducer.resolve(config), layer="l0")
+        return VectorRecaller(StoreManagerProducer.resolve(config), layer="l0")
+    recaller = VectorRecaller(StoreManagerProducer.resolve(config), layer="l0")
     if recaller.vector_store is None:
         logger.info("VectorRecaller(vector_l0): store 未注入，recall 将返空")
     return recaller
@@ -142,8 +148,8 @@ def _build_l0(config):
 @RecallerProducer.register("vector_l1")
 def _build_l1(config):
     if not config.get("layers_index_enabled", True):
-        return VectorRecaller(StorageProducer.resolve(config), layer="l1")
-    recaller = VectorRecaller(StorageProducer.resolve(config), layer="l1")
+        return VectorRecaller(StoreManagerProducer.resolve(config), layer="l1")
+    recaller = VectorRecaller(StoreManagerProducer.resolve(config), layer="l1")
     if recaller.vector_store is None:
         logger.info("VectorRecaller(vector_l1): store 未注入，recall 将返空")
     return recaller

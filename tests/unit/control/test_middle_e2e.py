@@ -45,7 +45,6 @@ from jiuwen_memory.control.scheduler_impl.async_timer_scheduler import AsyncTime
 from jiuwen_memory.control.types import JobStatus
 from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 pytestmark = pytest.mark.unit
@@ -93,15 +92,16 @@ class _StubLLM(LLM):
 
 
 class _RecordingIndex(IndexBuilder):
-    """记录 build/remove 的 IndexBuilder，并交付 Storage。
+    """记录 build/remove 的 IndexBuilder，并交付真源。
 
-    IndexBuilder 是记忆写入的唯一入口，替身必须交付 Storage，否则真源为空。
+    IndexBuilder 是记忆写入的唯一入口，替身必须交付真源，否则 KV 为空。
+    交付走 KV 直写（``memory_key`` + ``dumps``，ForwardIndexBuilder 模式）。
     """
 
-    def __init__(self, storage=None) -> None:
+    def __init__(self, kv=None) -> None:
         self.built: list[MemoryUnit] = []
         self.removed: list[MemoryUnit] = []
-        self._storage = storage
+        self._kv = kv
 
     def operator_type(self) -> OperatorType:
         return OperatorType.INDEX_BUILDER
@@ -111,14 +111,14 @@ class _RecordingIndex(IndexBuilder):
 
     def build(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         self.built.extend(units)
-        if self._storage is not None:
+        if self._kv is not None:
             for unit in units:
-                self._storage.add(unit.scope, [unit])
+                self._kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
 
     def update(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
-        if self._storage is not None:
+        if self._kv is not None:
             for unit in units:
-                self._storage.update(unit.scope, [unit])
+                self._kv.update(unit.scope, memory_key(unit.id), dumps(unit))
 
     def remove(self, units, *, mode: IndexRemoveMode = IndexRemoveMode.HARD) -> None:
         self.removed.extend(units)
@@ -179,8 +179,7 @@ def _build_engine(
     各测试通过 system_metadata={"middle_interval": "1"} 覆盖。
     """
     kv = InMemoryKVStore()
-    storage = CompositeStorage(kv=kv)
-    index = _RecordingIndex(storage)
+    index = _RecordingIndex(kv)
     scheduler = AsyncTimerScheduler(tick_interval=1)
     lifecycle = _KvBackedLifecycle(kv)
     evolver = evolver or _StubEvolver()
@@ -191,7 +190,7 @@ def _build_engine(
     factory.register(
         JobType.MIDDLE_TO_LONG,
         MiddleToLongJobSpec(
-            storage=storage,
+            kv=kv,
             evolver=evolver,
             lifecycle=lifecycle,
             index=index,
@@ -206,7 +205,7 @@ def _build_engine(
         ingestor=ingestor,
         index_builder=index,
         retriever=None,  # write 路径不依赖 retriever
-        storage=storage,
+        kv=kv,
         scheduler=scheduler,
         evolver=evolver,
         lifecycle=lifecycle,

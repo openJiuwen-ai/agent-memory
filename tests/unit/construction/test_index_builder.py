@@ -20,6 +20,7 @@ from jiuwen_memory.common.type_def import (
     memory_key,
 )
 from jiuwen_memory.config.context import AssemblyContext
+from jiuwen_memory.config.defaults import default_context
 from jiuwen_memory.construction.bootstrap import register_constructors
 from jiuwen_memory.construction.index_builder import IndexBuilderProducer
 from jiuwen_memory.construction.index_builder_impl.fulltext_index_builder import (
@@ -29,7 +30,9 @@ from jiuwen_memory.construction.index_builder_impl.hybrid_index_builder import H
 from jiuwen_memory.construction.index_builder_impl.unified_index_builder import UnifiedIndexBuilder
 from jiuwen_memory.construction.index_builder_impl.vector_index_builder import VectorIndexBuilder
 from jiuwen_memory.storage.bootstrap import register_backends
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.domain_store import DomainStore
+from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
+from tests.conftest import make_storage
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode, TextQuery, VectorQuery
 from tests.unit.construction.fixtures import (
     create_test_plugins,
@@ -49,7 +52,7 @@ def _make_fulltext_builder() -> tuple[FulltextIndexBuilder, dict, dict]:
     """创建测试用 FulltextIndexBuilder 及其依赖。"""
     stores = create_test_stores()
     plugins = create_test_plugins()
-    builder = FulltextIndexBuilder(CompositeStorage(fulltext=stores["fulltext"]))
+    builder = FulltextIndexBuilder(CompositeStoreManager(fulltext=stores["fulltext"]))
     return builder, stores, plugins
 
 
@@ -58,7 +61,7 @@ def _make_vector_builder() -> tuple[VectorIndexBuilder, dict, dict]:
     stores = create_test_stores()
     plugins = create_test_plugins()
     builder = VectorIndexBuilder(
-        CompositeStorage(kv=stores["kv"], vector=stores["vector"]),
+        CompositeStoreManager(kv=stores["kv"], vector=stores["vector"]),
         chunker=plugins["chunker"],
         embedder=plugins["embedder"],
     )
@@ -70,7 +73,7 @@ def _make_hybrid_builder() -> tuple[HybridIndexBuilder, dict, dict]:
     stores = create_test_stores()
     plugins = create_test_plugins()
     builder = HybridIndexBuilder(
-        CompositeStorage(
+        CompositeStoreManager(
             kv=stores["kv"], vector=stores["vector"], fulltext=stores["fulltext"]
         ),
         chunker=plugins["chunker"],
@@ -81,11 +84,11 @@ def _make_hybrid_builder() -> tuple[HybridIndexBuilder, dict, dict]:
 
 def _make_unified_builder(
     vector_enabled: bool = True,
-) -> tuple[UnifiedIndexBuilder, CompositeStorage, dict, dict]:
-    """创建测试用 UnifiedIndexBuilder 及其统一 Storage（全部写只经领域接口）。"""
+) -> tuple[UnifiedIndexBuilder, DomainStore, dict, dict]:
+    """创建测试用 UnifiedIndexBuilder 及其数据面 DomainStore（全部写只经领域接口）。"""
     stores = create_test_stores()
     plugins = create_test_plugins()
-    storage = CompositeStorage(kv=stores["kv"])
+    storage = make_storage(kv=stores["kv"]).domain_store()
     builder = UnifiedIndexBuilder(
         storage,
         vector_enabled=vector_enabled,
@@ -280,7 +283,7 @@ def test_unified_builder_vector_enabled_requires_embedder():
     """vector_enabled=True 但缺 chunker/embedder：装配期直接报错，不拖到首次写入。"""
     stores = create_test_stores()
     with pytest.raises(ValueError, match="embedder"):
-        UnifiedIndexBuilder(CompositeStorage(kv=stores["kv"]), vector_enabled=True)
+        UnifiedIndexBuilder(make_storage(kv=stores["kv"]).domain_store(), vector_enabled=True)
 
 
 def test_unified_builder_enriches_index_metadata_into_system_metadata():
@@ -301,7 +304,7 @@ def test_unified_builder_enriches_index_metadata_into_system_metadata():
     assert sm["t_event"] == T_EVENT_UNKNOWN, "t_event None 落哨兵（恒写）"
     assert sm["t_invalid"] == T_INVALID_OPEN, "t_invalid None 落哨兵（恒写）"
     assert "t_valid" not in sm, "t_valid None 不写（下推用 LTE 放行）"
-    # 持久化往返保留：CompositeStorage.add 经 dumps/loads 保留补齐字段
+    # 持久化往返保留：DomainStore.add 经 dumps/loads 保留补齐字段
     persisted = storage.get(scope, ["u1"])[0]
     assert persisted.system_metadata["content_layer"] == "l2"
     assert persisted.system_metadata["t_event"] == T_EVENT_UNKNOWN
@@ -720,6 +723,7 @@ def _layered_ctx():
     """layers_index_enabled=True 且 store 命名空间下声明 layers_l0/l1 具名实例。"""
     return AssemblyContext.from_dict(
         {
+            "globals": {"graph_enabled": False},
             # store 命名空间（_opt_dep 按 VectorProducer/FulltextProducer.TOP_NAME 查这里）
             "vector_store": {
                 "shared": {"target": "memory"},
@@ -732,6 +736,18 @@ def _layered_ctx():
                 "layers_l1": {"target": "memory"},
             },
             "kv_store": {"shared": {"target": "memory"}},
+            # 全局 manager（F08）：工厂经 StoreManagerProducer.resolve 取此实例，
+            # 端口名与 constructor params 的 <ns>_store 引用一致（shared → 具名端口）。
+            "store_manager": {
+                "default": {
+                    "target": "composite",
+                    "params": {
+                        "kv_store": "shared",
+                        "vector_store": "shared",
+                        "fulltext_store": "shared",
+                    },
+                }
+            },
             # 构造器命名空间（IndexBuilderProducer.TOP_NAME == "constructor"）
             "constructor": {
                 "fb": {
@@ -793,10 +809,14 @@ def test_fulltext_factory_skips_layers_when_disabled():
 
 
 def test_unified_factory_resolves_storage_dependency():
-    """注册名 unified 可经 IndexBuilderProducer 装配统一 Storage。"""
+    """注册名 unified 可经 IndexBuilderProducer 装配统一数据面。"""
     teardown = _bootstrap_factories()
     try:
-        ctx = AssemblyContext.from_dict({"constructor": {"ub": "unified"}})
+        # unified 工厂经 globals.store_manager 解析全局 manager（F08）；默认拓扑
+        # 提供完整端口（含 graph），否则 recaller 装配期失败。
+        ctx = default_context().merged(
+            AssemblyContext.from_dict({"constructor": {"ub": "unified"}})
+        )
         builder = IndexBuilderProducer.build_named("ub", ctx)
         assert isinstance(builder, UnifiedIndexBuilder)
     finally:
@@ -807,11 +827,13 @@ def test_unified_factory_vector_disabled_assembles_without_vector_plugins():
     """globals.vector_enabled=False 时 unified 工厂不解析 embedder 即可装配。"""
     teardown = _bootstrap_factories()
     try:
-        ctx = AssemblyContext.from_dict(
-            {
-                "globals": {"vector_enabled": False},
-                "constructor": {"ub": "unified"},
-            }
+        ctx = default_context().merged(
+            AssemblyContext.from_dict(
+                {
+                    "globals": {"vector_enabled": False},
+                    "constructor": {"ub": "unified"},
+                }
+            )
         )
         builder = IndexBuilderProducer.build_named("ub", ctx)
         assert isinstance(builder, UnifiedIndexBuilder)
@@ -848,7 +870,7 @@ def test_build_layers_runs_even_when_no_content_chunks():
     stores = create_test_stores()
     plugins = create_test_plugins()
     builder = VectorIndexBuilder(
-        CompositeStorage(
+        CompositeStoreManager(
             kv=stores["kv"],
             vector=content_store,
             vector_ports={"layers_l0": vector_l0, "layers_l1": vector_l1},
@@ -961,7 +983,7 @@ def test_hybrid_remove_hard_deletes_body_last():
 
 
 def test_unified_builder_passes_mode_through_to_storage():
-    """unified 原样透传枚举：SOFT 在 CompositeStorage 上为空操作，本体保留。"""
+    """unified 原样透传枚举：SOFT 在 CompositeDomainStore 上为空操作，本体保留。"""
     builder, storage, _, _ = _make_unified_builder()
     scope = Scope(org="test", user="alice")
     unit = create_test_unit("u1", "first version", scope=scope)

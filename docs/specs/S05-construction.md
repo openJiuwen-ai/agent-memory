@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-09-01 |
+| 最近一次修订日期 | 2026-09-03 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
@@ -37,7 +37,7 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 
 ## 不变量
 
-1. **落盘由本层负责**：接入层产出 MemoryUnit 后，记忆本体的写入由本层完成——统一经 `IndexBuilder`，由其内部调用 Storage。
+1. **落盘由本层负责**：接入层产出 MemoryUnit 后，记忆本体的写入由本层完成——统一经 `IndexBuilder`，由其内部调用注入的 StoreManager/DomainStore（端口名可经 `params.<ns>_store` 具名选择）。
 2. **索引是可重建派生（目标契约）**：索引应全部从真源重建，`IndexBuilder.rebuild()` 应提供
    非破坏式恢复保障。当前实现中的 Forward/Fulltext/Vector/Hybrid/Unified/Entity Builder
    `rebuild()` 均为 no-op，不能据此宣称已具备“删索引不丢数据”的恢复能力；该缺口需要按本
@@ -68,17 +68,18 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
     `T_EVENT_UNKNOWN=0`（F07 派生常为此值，避免事件窗下推按缺失字段排他），
     不改写真源。
 14. **索引删除按 MemoryUnit 定位**：`IndexBuilder.remove` 接收带 Scope 的 MemoryUnit，禁止维护仅按 unit id 的单值 Scope 缓存；同一逻辑 id 在不同 Scope 的索引互不影响。
-15. **记忆写入只经 IndexBuilder**：Evolver 与上层调用方不得直接调用 `Storage` 的
+15. **记忆写入只经 IndexBuilder**：Evolver 与上层调用方不得直接调用 `DomainStore` 的
     `add`/`update`/`delete`；正排与各派生索引由 `IndexBuilder` 统一编排，使调用方不感知
-    底层存储拓扑。剩余的合法调用方只有 `UnifiedIndexBuilder`（全部写经 Storage 领域接口，
+    底层存储拓扑。剩余的合法调用方只有 `UnifiedIndexBuilder`（全部写经 DomainStore 领域接口，
     自身只做 `vector_enabled` 门控的 content 向量化并回填 `MemoryUnit.vector` 随本体下传）与
     `LifecycleManager`（状态回写）。读取（`get`/`list`/`scopes`）不受此约束。
 16. **索引状态由调用方判定，构建算子不解读 `lifecycle`**：记忆处于什么状态、因而该对索引
     做什么，由调用方判断后调对应方法；`IndexBuilder` 只执行被要求的操作。如归档/遗忘为
     `update(mode=FORWARD_ONLY)`（回写本体新状态）+ `remove(mode=SOFT)`
     （移出检索）两条互不重叠的指令。
-17. **一个子 builder 只负责一种索引形式，端口统一从 `Storage` 取**：写侧子 builder 与读侧
-    recaller 因此取自同一个 `Storage` 实例的同一端口，读写不分叉。
+17. **一个子 builder 只负责一种索引形式，端口统一从 `StoreManager` 取**：写侧子 builder 与
+    读侧 recaller 因此取自同一个全局 manager 的同一命名端口（`params.<ns>_store` 指名），
+    读写不分叉。
 18. **正排最先出现、最后消失**：`build`/`update` 正排在前，`remove` 正排最后。正排先删会
     留下孤儿派生索引，而删除路径的扫描源正是正排，此后无法清理。
 19. **叶权威、父可重建**（目标契约，尚未实现）：普通写入或来源转换产生的叶是权威事实；
@@ -256,7 +257,7 @@ Schema Evolver 对非 procedural 写入采用 Source-first，并将属性候选�
 多形式索引构建与维护。
 
 **IndexBuilder 是记忆写入的唯一入口**：调用方只调本接口，正排（记忆本体）与各派生索引
-由实现内部编排；上层不得自行调用 `Storage` 的写接口（见不变量 15）。
+由实现内部编排；上层不得自行调用 `DomainStore` 的写接口（见不变量 15）。
 
 **正排是一种索引形式**，与倒排、向量、实体反向平级，由 `ForwardIndexBuilder` 承载。
 
@@ -322,7 +323,7 @@ MemoryUnit
 │   → 失败全程 try/except 吞异常，不中断 build 主链路（增强层，坏了不拖累主流程）
 ├─ HybridIndexBuilder：纯编排，组合 forward / fulltext / vector / entity 四个子 builder
 │   （默认实现；entity 子 builder 在 entity_linker=None 时跳过）
-└─ 统一存储直写路：由 Storage 自身建立全部索引时，实现退化为按 Scope 转发
+└─ 统一存储直写路：由 DomainStore 实现按自身能力建立索引时，实现退化为按 Scope 转发
 ```
 
 > 注：文档索引（path → unit_id 映射）与 FusionStore 融合索引不属于本文已固化的构建接口契约，属设计预留。
@@ -527,7 +528,7 @@ class EvolveResult:
 | `system_metadata` / `user_metadata` | dict[str, MetadataValueType] | 系统/用户双命名空间元数据（保留 JSON 标量原生类型，见 F04-memory-metadata-separation） |
 | `lifecycle` | LifecycleState | 生命周期状态 |
 | `entities` | list[str] | L2 记忆里由大模型抽取得到的实体文本（明文）。entity linker 建反向索引时只消费本字段构造 `EntityMention`，为空时直接跳过该 unit（已砍 spaCy 兜底，无回退抽取，见 [F06](../features/retrieval/F06-entity-recall-channel.md)）。默认空，向后兼容 |
-| `vectors` | list[ChunkVector] | content 的 chunk 级向量投影：构建期由 IndexBuilder 在 `vector_enabled` 时按 VectorIndexBuilder 同管线（Chunker 切片 → 共享 Embedder 逐 chunk embed）填充，`id`/`seq` 与 Chunk 对齐，随本体经 `Storage.add/update` 下传；一体化 Storage 消费它自建 chunk 级向量索引（record id 沿用 `{unit_id}-{chunk_id}`），CompositeStorage 仅随本体持久化。空列表表示未向量化；codec 加字段兼容演进，`_v` 不升（见 F06-unified-index-builder） |
+| `vectors` | list[ChunkVector] | content 的 chunk 级向量投影：构建期由 IndexBuilder 在 `vector_enabled` 时按 VectorIndexBuilder 同管线（Chunker 切片 → 共享 Embedder 逐 chunk embed）填充，`id`/`seq` 与 Chunk 对齐，随本体经 `DomainStore.add/update` 下传；一体化数据面实现消费它自建 chunk 级向量索引（record id 沿用 `{unit_id}-{chunk_id}`），CompositeDomainStore 仅随本体持久化。空列表表示未向量化；codec 加字段兼容演进，`_v` 不升（见 F06-unified-index-builder） |
 
 构建层直接消费 S07 定义的 `HierarchyRef` 和层级枚举。目标父节点复用既有
 segments、layers、tier 和 metadata 槽位，结构边只写 hierarchy；`content/assets/source`

@@ -1,10 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """统一存储直写的 :class:`~construction.index_builder.IndexBuilder` 实现。
 
-全部写入只经注入的 :class:`~storage.storage.Storage` 领域接口（``add``/``update``/
-``delete``，``mode`` 原样透传）：一体化实现可在一次 ``add`` 内建立全部索引形式，
-``CompositeStorage`` 只落记忆本体——覆盖范围由该实现按自身能力决定，本类不触碰
-``storage.kv``/``vector``/``fulltext`` 等任何底层端口。
+全部写入只经注入的 :class:`~storage.domain_store.DomainStore` 领域接口（``add``/
+``update``/``delete``，``mode`` 原样透传）：一体化实现可在一次 ``add`` 内建立全部索引
+形式，``CompositeDomainStore`` 只落记忆本体——覆盖范围由该实现按自身能力决定，本类
+不触碰 ``manager.kv()``/``vector()``/``fulltext()`` 等任何底层端口。
 
 构建侧仍由本类完成两件事：
 
@@ -35,7 +35,8 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
-from jiuwen_memory.storage.storage import Storage, StorageProducer
+from jiuwen_memory.storage.domain_store import DomainStore
+from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 from ._index_ops import group_units_by_scope, vectorize_unit
@@ -44,11 +45,11 @@ logger = get_logger(__name__)
 
 
 class UnifiedIndexBuilder(IndexBuilder):
-    """全部写委托 Storage 领域接口；``vector_enabled`` 时自建 chunk 级向量投影挂到 unit 上。"""
+    """全部写委托 DomainStore 领域接口；``vector_enabled`` 时自建 chunk 级向量投影挂到 unit 上。"""
 
     def __init__(
         self,
-        storage: Storage,
+        domain_store: DomainStore,
         *,
         vector_enabled: bool = True,
         chunker: Chunker | None = None,
@@ -59,7 +60,7 @@ class UnifiedIndexBuilder(IndexBuilder):
             raise ValueError(
                 "UnifiedIndexBuilder: vector_enabled=True 需要注入 chunker 与 embedder"
             )
-        self._storage = storage
+        self._domain = domain_store
         self._vector_enabled = vector_enabled
         self._chunker = chunker
         self._embedder = embedder
@@ -71,27 +72,27 @@ class UnifiedIndexBuilder(IndexBuilder):
         return None
 
     def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
-        """补齐索引过滤字段 + 向量化（开关门控）后按 Scope 分组委托 ``Storage.add``。"""
+        """补齐索引过滤字段 + 向量化（开关门控）后按 Scope 分组委托 ``DomainStore.add``。"""
         self._enrich_index_metadata(units)
         self._maybe_vectorize(units)
         for scope, scoped_units in group_units_by_scope(units):
-            self._storage.add(scope, scoped_units, mode=mode)
+            self._domain.add(scope, scoped_units, mode=mode)
 
     def update(
         self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL
     ) -> None:
-        """同 :meth:`build`：重补过滤字段 + 重新向量化后委托 ``Storage.update``。"""
+        """同 :meth:`build`：重补过滤字段 + 重新向量化后委托 ``DomainStore.update``。"""
         self._enrich_index_metadata(units)
         self._maybe_vectorize(units)
         for scope, scoped_units in group_units_by_scope(units):
-            self._storage.update(scope, scoped_units, mode=mode)
+            self._domain.update(scope, scoped_units, mode=mode)
 
     def remove(
         self, units: list[MemoryUnit], *, mode: IndexRemoveMode = IndexRemoveMode.HARD
     ) -> None:
-        """按 Scope 分组委托 ``Storage.delete``；``mode`` 原样下传，同 :meth:`build`。"""
+        """按 Scope 分组委托 ``DomainStore.delete``；``mode`` 原样下传，同 :meth:`build`。"""
         for scope, scoped_units in group_units_by_scope(units):
-            self._storage.delete(scope, [unit.id for unit in scoped_units], mode=mode)
+            self._domain.delete(scope, [unit.id for unit in scoped_units], mode=mode)
 
     def rebuild(self) -> None:
         # 最小实现：统一存储与真源同生命周期，无独立重建路径。
@@ -159,7 +160,9 @@ def _build(config):
         chunker = ChunkerProducer.dep(config, default="fixed_window")
         embedder = EmbedderProducer.dep(config, default="hashing")
     return UnifiedIndexBuilder(
-        StorageProducer.resolve(config),
+        StoreManagerProducer.resolve(config).domain_store(
+            resolve_name(config, "domain_store")
+        ),
         vector_enabled=vector_enabled,
         chunker=chunker,
         embedder=embedder,

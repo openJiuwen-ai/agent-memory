@@ -26,8 +26,12 @@ from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
 from jiuwen_memory.construction.prompt_strategy import copy_consolidation_prompts
-from jiuwen_memory.storage.kv import KVStore
-from jiuwen_memory.storage.storage import Storage, StorageProducer
+from jiuwen_memory.storage.kv import KVStore, load_units
+from jiuwen_memory.storage.store_manager import (
+    StoreManager,
+    StoreManagerProducer,
+    resolve_name,
+)
 from jiuwen_memory.storage.types import IndexWriteMode
 
 logger = get_logger(__name__)
@@ -42,12 +46,13 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver):
         abstractor: Abstractor,
         associator: Associator,
         index_builder: IndexBuilder,
-        storage: Storage,
+        storage: StoreManager,
         message_store: KVStore,
         dedup: Dedup,
         llm: LLM,
         layer_annotator: LayerAnnotator | None = None,
         *,
+        kv_name: str = "default",
         dedup_medium_similarity: float = 0.7,
         dedup_high_similarity: float = 0.9,
     ) -> None:
@@ -64,13 +69,13 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver):
             dedup_medium_similarity=dedup_medium_similarity,
             dedup_high_similarity=dedup_high_similarity,
         )
-        # Official IndexBuilder owns all writes. Storage is retained for source reads only.
-        self._source_storage = storage
+        # Official IndexBuilder owns all writes. KV port is retained for source reads only.
+        self._source_kv = storage.kv(kv_name)
 
     def _persist_source_evidence(self, units: list[MemoryUnit]) -> list[str]:
         created: list[str] = []
         for unit in units:
-            if self._source_storage.get(unit.scope, [unit.id]):
+            if load_units(self._source_kv, unit.scope, [unit.id]):
                 continue
             source = copy.deepcopy(unit)
             source.system_metadata = dict(source.system_metadata)
@@ -114,7 +119,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver):
             if not terms:
                 continue
             input_source = source_by_id[source_id]
-            stored = self._source_storage.get(input_source.scope, [source_id])
+            stored = load_units(self._source_kv, input_source.scope, [source_id])
             if not stored:
                 logger.warning(
                     "SchemaOrchestratingEvolver: persisted source %s is missing during writeback",
@@ -184,7 +189,7 @@ def _build(config):
     vector_on = config.get("vector_enabled", True)
     index_default = "hybrid" if vector_on else "fulltext"
     dedup_default = "vector" if vector_on else "keyword"
-    storage = StorageProducer.resolve(config)
+    storage = StoreManagerProducer.resolve(config)
     return SchemaOrchestratingEvolver(
         extractor=ExtractorProducer.dep(config, default="entity_schema"),
         abstractor=AbstractorProducer.dep(config, default="concat"),
@@ -195,6 +200,7 @@ def _build(config):
         dedup=DedupProducer.dep(config, default=dedup_default),
         llm=LlmProducer.dep(config, default="echo"),
         layer_annotator=_optional_layer_annotator(config),
+        kv_name=resolve_name(config, "kv_store"),
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
         dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
     )

@@ -7,6 +7,7 @@ import pytest
 from jiuwen_memory.common.embedder.embedder_impl.hashing_embedder import HashingEmbedder
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
+from jiuwen_memory.common.type_def import RetrievalPipeline
 from jiuwen_memory.retrieval.discloser_impl.truncating_discloser import TruncatingDiscloser
 from jiuwen_memory.retrieval.fuser_impl.rrf_fuser import RRFFuser
 from jiuwen_memory.retrieval.query_parser_impl.simple_query_parser import SimpleQueryParser
@@ -18,7 +19,8 @@ from jiuwen_memory.retrieval.retriever_impl.unit_reader import UnitReader
 from jiuwen_memory.retrieval.types import ParsedQuery, RecallChannel, RetrievalQuery
 from jiuwen_memory.storage.graph_impl.in_memory_graph_store import InMemoryGraphStore
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.domain_store_impl import CompositeDomainStore
+from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
 from jiuwen_memory.storage.types import Edge, Node
 
 pytestmark = pytest.mark.unit
@@ -99,7 +101,7 @@ def test_vector_recaller_forwards_runtime_extension_identity(scope) -> None:
     """Unit boundary: VectorRecaller preserves a live extension object into VectorQuery."""
     marker = object()
     vector_store = _RecordingVectorStore()
-    vector = VectorRecaller(CompositeStorage(vector=vector_store))
+    vector = VectorRecaller(CompositeStoreManager(vector=vector_store))
     vector.recall(
         scope,
         ParsedQuery(raw="x", vector=[0.1], extensions={"db_query_service": marker}),
@@ -112,7 +114,7 @@ def test_keyword_recaller_forwards_runtime_extension_identity(scope) -> None:
     """Unit boundary: KeywordRecaller preserves a live extension object into TextQuery."""
     marker = object()
     fulltext_store = _RecordingFulltextStore()
-    keyword = KeywordRecaller(CompositeStorage(fulltext=fulltext_store))
+    keyword = KeywordRecaller(CompositeStoreManager(fulltext=fulltext_store))
     keyword.recall(
         scope,
         ParsedQuery(raw="x", extensions={"encryption_port": marker}),
@@ -125,7 +127,7 @@ def test_graph_recaller_forwards_runtime_extension_identity(scope) -> None:
     """Unit boundary: GraphRecaller preserves a live extension object into GraphQuery."""
     marker = object()
     graph_store = _RecordingGraphStore()
-    recaller = GraphRecaller(CompositeStorage(graph=graph_store))
+    recaller = GraphRecaller(CompositeStoreManager(graph=graph_store))
 
     recaller.recall(
         scope,
@@ -145,7 +147,7 @@ def test_pipeline_forwards_runtime_extension_identity_to_all_store_queries(scope
     vector_store = _RecordingVectorStore()
     fulltext_store = _RecordingFulltextStore()
     graph_store = _RecordingGraphStore()
-    storage = CompositeStorage(
+    storage = CompositeStoreManager(
         kv=InMemoryKVStore(),
         vector=vector_store,
         fulltext=fulltext_store,
@@ -158,13 +160,17 @@ def test_pipeline_forwards_runtime_extension_identity_to_all_store_queries(scope
         KeywordRecaller(storage),
         GraphRecaller(storage),
     ]
-    storage.bind_recallers(recallers)
+    domain_store = CompositeDomainStore(
+        manager=storage, preferred_pipeline=RetrievalPipeline.RECALL_GET_RANK
+    )
+    domain_store.bind_recallers(recallers)
+    storage.bind_domain_store(domain_store)
     retriever = PipelineRetriever(
         parser,
         RRFFuser(),
         TruncatingDiscloser(),
-        UnitReader(storage.kv),
-        storage=storage,
+        UnitReader(storage.kv()),
+        domain_store=domain_store,
     )
     vector_marker = object()
     text_marker = object()
@@ -197,7 +203,7 @@ def test_vector_recall_min_similarity_filters(indexed_world, scope) -> None:
     top = baseline[0].score
 
     # 阈值高于最高分 → 全部砍掉（证明前置过滤生效）。
-    storage = CompositeStorage(vector=indexed_world.vector)
+    storage = CompositeStoreManager(vector=indexed_world.vector)
     strict = VectorRecaller(storage, min_similarity=top + 0.01)
     assert strict.recall(scope, parsed, 10) == []
 
@@ -218,10 +224,10 @@ class _LowerIsBetterStore:
 def test_vector_recaller_rejects_lower_is_better_metric() -> None:
     # MaxP 与融合统一要求高分优先；距离型度量无论是否开阈值都拒绝。
     with pytest.raises(ValidationError):
-        VectorRecaller(CompositeStorage(vector=_LowerIsBetterStore()), min_similarity=0.5)
+        VectorRecaller(CompositeStoreManager(vector=_LowerIsBetterStore()), min_similarity=0.5)
 
     with pytest.raises(ValidationError):
-        VectorRecaller(CompositeStorage(vector=_LowerIsBetterStore()), min_similarity=0.0)
+        VectorRecaller(CompositeStoreManager(vector=_LowerIsBetterStore()), min_similarity=0.0)
 
 
 def test_graph_recaller_returns_seed_neighbor(scope) -> None:
@@ -234,7 +240,7 @@ def test_graph_recaller_returns_seed_neighbor(scope) -> None:
         ],
         edges=[Edge(id="e", source="A", target="B", relation="related")],
     )
-    recaller = GraphRecaller(CompositeStorage(graph=graph))
+    recaller = GraphRecaller(CompositeStoreManager(graph=graph))
 
     results = recaller.recall(scope, ParsedQuery(raw="coffee", keywords=["coffee"]), 10)
 
@@ -248,7 +254,7 @@ def test_graph_recaller_returns_seed_neighbor(scope) -> None:
 
 def test_vector_recaller_layer_none_store_returns_empty(scope) -> None:
     """L0/L1 recaller store 未注入（None）→ recall 返空，不报错。"""
-    storage = CompositeStorage()
+    storage = CompositeStoreManager()
     recaller = VectorRecaller(storage, layer="l0")
     parsed = ParsedQuery(raw="x", vector=[0.1, 0.2, 0.3])
     assert recaller.recall(scope, parsed, 10) == []
@@ -259,14 +265,14 @@ def test_vector_recaller_layer_none_store_returns_empty(scope) -> None:
 
 def test_keyword_recaller_layer_none_store_returns_empty(scope) -> None:
     """L0/L1 keyword recaller store 未注入 → recall 返空。"""
-    recaller = KeywordRecaller(CompositeStorage(), layer="l0")
+    recaller = KeywordRecaller(CompositeStoreManager(), layer="l0")
     parsed = ParsedQuery(raw="x", keywords=["x"])
     assert recaller.recall(scope, parsed, 10) == []
 
 
 def test_vector_recaller_layer_param_set() -> None:
     """layer 参数正确传入（l2/l0/l1）。"""
-    storage = CompositeStorage()
+    storage = CompositeStoreManager()
     r_l2 = VectorRecaller(storage, layer="l2")
     r_l0 = VectorRecaller(storage, layer="l0")
     r_l1 = VectorRecaller(storage, layer="l1")
@@ -277,7 +283,7 @@ def test_vector_recaller_layer_param_set() -> None:
 
 def test_keyword_recaller_layer_param_set() -> None:
     """layer 参数正确传入。"""
-    storage = CompositeStorage()
+    storage = CompositeStoreManager()
     assert KeywordRecaller(storage, layer="l2").layer == "l2"
     assert KeywordRecaller(storage, layer="l0").layer == "l0"
     assert KeywordRecaller(storage, layer="l1").layer == "l1"

@@ -23,14 +23,18 @@ NS_FULLTEXT_STORE = "fulltext_store"
 NS_GRAPH_STORE = "graph_store"
 NS_FUSION_STORE = "fusion_store"
 NS_FS_STORE = "fs_store"
-# 统一 Storage 命名空间（F02 RoutingStorage；与底层 *_store 命名空间分层）
-NS_STORAGE = "storage"
+# StoreManager 命名空间（F08 起顶层段名从 storage 改为 store_manager；与底层 *_store 命名空间分层）
+NS_STORE_MANAGER = "store_manager"
 
 # 晚绑定字段名
 FIELD_ACTIVE = "active"
 FIELD_MODEL = "model"
 FIELD_API_KEY = "api_key"
 FIELD_BASE_URL = "base_url"
+
+# globals.store_manager：全局共享 StoreManager 的指名键（值 = store_manager 命名空间下的实例名）。
+# 消费者不再逐个声明 storage 引用；StoreManagerProducer.resolve 统一经此键取全局实例。
+GLOBALS_STORAGE_MANAGER = "store_manager"
 
 
 def global_key(name: str) -> str:

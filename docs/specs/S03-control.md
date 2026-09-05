@@ -5,10 +5,10 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-09-02 |
+| 最近一次修订日期 | 2026-09-04 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md（合并原 F07/F08/F09） |
 
 ## Metadata 编排契约
 
@@ -83,14 +83,14 @@ class ControlOperator(ABC):
 
 ### MemoryEngine（`engine.py`）
 
-编排接口层各语义的中枢。注入依赖：Ingestor、Classifier、IndexBuilder、Evolver、Retriever、Storage、Scheduler、LifecycleManager；可选注入 MemoryPipeline 做按记忆类型或 message_type 的 profile 选择。Evolver 有两个平级注册实现：`OrchestratingEvolver`（注册名 `orchestrating`）与其子类 `DynamicEvolver`（注册名 `dynamic`，EXTRACT 走 extract→consolidate→reflect→落盘）；装配或 profile 选择决定实际路径。
+编排接口层各语义的中枢。注入依赖：Ingestor、Classifier、IndexBuilder、Evolver、Retriever、KVStore（真源端口，读经 `load_units`/`list_units` helper）、Scheduler、LifecycleManager；可选注入 MemoryPipeline 做按记忆类型或 message_type 的 profile 选择。Evolver 有两个平级注册实现：`OrchestratingEvolver`（注册名 `orchestrating`）与其子类 `DynamicEvolver`（注册名 `dynamic`，EXTRACT 走 extract→consolidate→reflect→落盘）；装配或 profile 选择决定实际路径。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
 | `write` | `async (content, scope, source, *, assets, tags, system_metadata, user_metadata, occurred_at) -> list[MemoryUnit]` | 规约→可选抽取/分类→落盘+建索引；`infer=true` 时返回 `created_ids` 对应的派生结果，否则处理原始单元（直写不去重） |
 | `batch_write` | `async (items: list[BatchWriteItem], *, continue_on_error=True) -> BatchWriteResult` | 只接收 API 已归一化并完成鉴权/space 前置校验的项；按输入顺序复用 `write`，归集领域异常及非领域异常（后者为 `InternalError`）；fail-fast 时填充 `Skipped` outcomes |
 | `recall` | `async (scope, query: RetrievalQuery) -> RetrievalResult` | 委托 Retriever 完整检索链路（含目标 `expand_depth>0` 时的内部展开） |
-| `list` | `async (scope, *, offset=0, limit=100, memory_types=None, extensions=None, filters=None) -> MemoryListResult` | 校验分页参数并完整委托 `Storage.list`；返回当前页和分页前匹配总数 |
+| `list` | `async (scope, *, offset=0, limit=100, memory_types=None, extensions=None, filters=None) -> MemoryListResult` | 校验分页参数并完整委托 `KVStore.list`（经 `list_units` helper 反序列化）；返回当前页和分页前匹配总数 |
 | `permission_context_for_unit` | `async (unit_id, scope) -> PermissionContext` | 读取已有记忆的权限上下文，只返回 memory_type/tags/metadata 等鉴权元数据，不返回 content/assets |
 | `list_with_permission_contexts` | `async (同 list 参数) -> tuple[MemoryListResult, list[PermissionContext]]` | 从同一次 KV 查询的当前页构造逐项真源权限上下文，items/count/context 不做二次读取 |
 | `permission_contexts_for_delete` | `async (selector: DeleteSelector) -> list[PermissionContext]` | 解析 delete selector 命中的候选 unit 权限上下文，供 API 层逐条鉴权 |
@@ -487,7 +487,7 @@ jiuwen_memory/control/<算子>_impl/
 | S02-memory_api | 数据面委托 MemoryEngine；治理/授权/调度/策略/space 管理面直达控制算子 |
 | S04-retrieval | Retriever 检索链路 |
 | S05-construction | Engine/Scheduler 驱动构建层 IndexBuilder/Evolver；演进逻辑由构建层执行 |
-| S06-storage | 控制层经 IndexBuilder 写正排与派生索引，直接调用 Storage 只读（get/list/scopes）；LifecycleManager/Governor 的目标操作按显式 Scope 点查或枚举，只有 sweep/offboarding 这类全局管理任务使用 `kv.scopes()` |
+| S06-storage | 控制层经 IndexBuilder 写正排与派生索引，真源读写直连注入的 KVStore 端口（点读 `load_units` / 列表 `list_units` / 枚举 `kv.scopes()`，Governor 同为 KVStore 点读）；LifecycleManager/Governor 的目标操作按显式 Scope 点查或枚举，只有 sweep/offboarding 这类全局管理任务跨 Scope 枚举 |
 | S07-common | 控制层消费 `MemoryUnit`、`AuditEvent`、错误类型等公共结构 |
 | F07-collective-memory | 两轴角色、归属登记、空间授权事实快照落本层类型；`MembershipResolver` 是本层新增算子，`SpaceManager` 增 `spaces_for` 反查；授权判定迁出本层 |
 | architecture.md §3.1 | MemoryUnit 数据模型（lifecycle / temporal / supersedes / provenance）由 `common/type_def` 定义，控制层消费 |

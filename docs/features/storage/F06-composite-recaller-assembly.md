@@ -102,3 +102,14 @@
   次匿名构建会累积少量死条目，但 `Factory.reset_all` 在每次装配前清空。
 - 用户自定义配置里写在 `retriever.*.params` 的 `*_recaller` 覆盖键不再生效，需迁移到
   `storage.*.params`（globals 里的能力开关不受影响）。
+
+
+## 后续演进
+
+- [F07-storage-manager-domain-store-split.md](F07-storage-manager-domain-store-split.md)（合并
+  原 F07/F08/F09）：本文的召回
+  装配链路整体保留（仍由 manager `_build` 工厂末尾调 `_assemble_recallers`），仅符号随
+  拆分更名（`CompositeStorage` → `CompositeStoreManager`/`CompositeDomainStore`、
+  `StorageProducer.resolve` → `StoreManagerProducer.resolve`、合成名
+  `__anon_storage_{id}__` → `__anon_store_manager_{id}__`、recaller 具名实例的 storage 引用
+  键改为 `store_manager`）。

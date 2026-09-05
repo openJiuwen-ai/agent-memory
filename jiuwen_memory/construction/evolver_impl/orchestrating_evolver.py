@@ -65,7 +65,11 @@ from jiuwen_memory.construction.router import (
     route_batch,
 )
 from jiuwen_memory.storage.kv import KvProducer, KVStore
-from jiuwen_memory.storage.storage import Storage, StorageProducer
+from jiuwen_memory.storage.store_manager import (
+    StoreManager,
+    StoreManagerProducer,
+    resolve_name,
+)
 from jiuwen_memory.storage.types import Edge, IndexRemoveMode, IndexWriteMode, Node
 
 logger = get_logger(__name__)
@@ -180,13 +184,14 @@ class OrchestratingEvolver(Evolver):
         abstractor: Abstractor,
         associator: Associator,
         index_builder: IndexBuilder,
-        storage: Storage,
+        storage: StoreManager,
         message_store: KVStore,
         dedup: Dedup,
         llm: LLM,
         layer_annotator: LayerAnnotator | None = None,
         router: Router | None = None,
         *,
+        graph_name: str = "default",
         dedup_medium_similarity: float = 0.7,
         dedup_high_similarity: float = 0.9,
     ) -> None:
@@ -195,7 +200,7 @@ class OrchestratingEvolver(Evolver):
         self._associator = associator
         self._index = index_builder
         # storage 只用于在此取图端口；MemoryUnit 的写入一律经 self._index，故不留字段。
-        self._graph = storage.graph if storage.has_graph() else None
+        self._graph = storage.graph(graph_name) if storage.has_graph(graph_name) else None
         # 原文（/messages/）专用：不是索引形式，不经 IndexBuilder。缺省与正排 KV 同实例。
         self._message_store = message_store
         self._dedup = dedup
@@ -1040,7 +1045,7 @@ def _resolve_message_store(config) -> KVStore:
     ``evolver.default``（如 examples/config_template.yml 里启用 dynamic 的写法），内置
     params 里的 ``message_store`` 就随之消失。
 
-    与 :meth:`StorageProducer.resolve` 同款兜底——两者都是**有状态**依赖，新建一个等于换后端。
+    与 :meth:`StoreManagerProducer.resolve` 同款兜底——两者都是**有状态**依赖，新建一个等于换后端。
     """
     if "message_store" in config.params:
         return KvProducer.dep(config, "message_store")
@@ -1086,12 +1091,13 @@ def _build(config):
         abstractor=AbstractorProducer.dep(config, default="concat"),
         associator=AssociatorProducer.dep(config, default="keyword"),
         index_builder=IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
-        storage=StorageProducer.resolve(config),
+        storage=StoreManagerProducer.resolve(config),
         message_store=_resolve_message_store(config),
         dedup=DedupProducer.dep(config, default=dr_default),
         llm=LlmProducer.dep(config, default="echo"),
         layer_annotator=_opt_annotator(),
         router=optional_router(config),
+        graph_name=resolve_name(config, "graph_store"),
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
         dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
     )

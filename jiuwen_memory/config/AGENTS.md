@@ -19,7 +19,7 @@
 | `project.py` | `AssemblyContext` → 扁平 key→str 投影 |
 | `active.py` | `resolve_active_name` / `resolve_bound_value` |
 | `binding.py` | 调用路径晚绑定：`resolve_endpoint` / `resolve_connection_url` |
-| `routing.py` | `ActiveRouter` + `RoutingEmbedder`/`RoutingLLM`/`RoutingReranker` + `RoutingKVStore`/`RoutingVectorStore`/`RoutingFulltextStore`/`RoutingGraphStore`/`RoutingFusionStore`/`RoutingFSStore`（F01 Store 级）+ `RoutingStorage`（F02：`Storage` 实例动态配置；方案 A 手工注入） |
+| `routing.py` | `ActiveRouter` + `RoutingEmbedder`/`RoutingLLM`/`RoutingReranker` + `RoutingKVStore`/`RoutingVectorStore`/`RoutingFulltextStore`/`RoutingGraphStore`/`RoutingFusionStore`/`RoutingFSStore`（F01 Store 级）+ `RoutingStoreManager`/`RoutingDomainStore`（F02/F08：StoreManager 实例动态配置，`store_manager.active`；方案 A 手工注入） |
 
 ## 行为铁律
 
@@ -42,14 +42,17 @@
 6. **与 PolicyManager 边界**  
    lifecycle / `scope.require_space` 等已知策略键仍走 `PolicyManager`；六类动态配置走 `ConfigSource`。
 
-7. **统一 Storage 使用具名共享实例；多套 Storage 动态选用走 RoutingStorage（F02）**
-   `storage.default` 选择统一 Storage 实现（可为 `RoutingStorage`）；Retriever 与 Kernel
-   都引用该名称。CompositeStorage 的 `kv_store` / `vector_store` / `fulltext_store` /
-   `graph_store` 等参数只引用下层具名 Store，不复制连接配置。Construction、Retrieval、Control
-   的组件参数只引用 `storage`，不得再直接引用下层 Store 命名空间。
-   **禁止**运行时拆换**同一** `CompositeStorage` 实例的内部端口拓扑。
-   **允许**装配期预装多套完整 `Storage`，经 `RoutingStorage` + `storage.active` 动态选用（F02）；
-   不注册默认 YAML `target: routing`。各实例内部的 Store 级 Routing / url 晚绑定仍归 F01。
+7. **全局唯一 StoreManager 由 globals 指名；多套 manager 动态选用走 RoutingStoreManager（F02/F08）**
+   `store_manager.default` 是统一 manager 实现（配置段名 F08 起从 `storage` 更名）；全局实例由
+   `globals.store_manager` 指名，消费者不再逐个声明 storage 引用，统一经
+   `StoreManagerProducer.resolve` 解析。manager 的 `kv_store` / `vector_store` / `fulltext_store` /
+   `graph_store` 等参数只引用下层具名 Store（非 default 具名实例自动成为命名端口），不复制连接
+   配置；`domain_stores` 段声明命名数据面。Construction、Retrieval、Control 的组件参数经
+   `params.<ns>_store` / `params.domain_store` 指名端口/数据面，不得直接引用 Store Producer。
+   **禁止**运行时拆换**同一** `CompositeStoreManager` 实例的内部端口拓扑。
+   **允许**装配期预装多套完整 manager，经 `RoutingStoreManager` + `store_manager.active`
+   动态选用（F02/F08）；不注册默认 YAML `target: routing`。各实例内部的 Store 级 Routing /
+   url 晚绑定仍归 F01。
 
 8. **安全提供者必须经根引用装配**
    `ROOT_PARAMS["security"]` 指向 `security.default`；`build_kernel` 创建加密 KV 时必须通过该
@@ -66,6 +69,6 @@
 
 ## 与其他子目录的边界
 
-**本模块管**：装配合并、ConfigSource 契约与默认实现、active/晚绑定解析辅助、多实例 Routing（`Routing*` / `RoutingStorage`）。
+**本模块管**：装配合并、ConfigSource 契约与默认实现、active/晚绑定解析辅助、多实例 Routing（`Routing*` / `RoutingStoreManager`/`RoutingDomainStore`）。
 
 **本模块不管**：业务编排、Policy 策略语义、调用级 options、Store 数据迁移、配置中心 invalidate API。
