@@ -2,9 +2,11 @@
 """最小实现：:class:`~control.lifecycle.LifecycleManager`。
 
 非破坏式状态流转：把记忆单元在真源里改 ``lifecycle``（active→superseded/archived/
-forgotten），不物理删除。``sweep`` 扫描到期（``t_invalid`` 已过）的 active 单元
-和 superseded 旧版本，标记 FORGOTTEN，返回被处理的 id。真源读注入的
-:class:`~storage.kv.KVStore`
+forgotten），不物理删除。``sweep`` 是**纯计算**——扫描到期（``t_invalid`` 已过）
+的 active 单元和 superseded 旧版本，返回待执行的
+:class:`~control.lifecycle.SweepTransition`，不改真源、不触碰检索索引；索引清理与
+真源回写由 Engine/Governance 编排执行（见 ``MemoryEngine.sweep_expired``）。
+真源读注入的 :class:`~storage.kv.KVStore`
 （``scopes()`` + ``scan()`` 跨 scope 扫描，字节经 memory_codec 编解码）。
 """
 
@@ -16,7 +18,11 @@ from jiuwen_memory.common.errors import NotFoundError, PolicyError, ValidationEr
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit, Scope
 from jiuwen_memory.control.base import ControlOperatorType
-from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
+from jiuwen_memory.control.lifecycle import (
+    LifecycleManager,
+    LifecycleProducer,
+    SweepTransition,
+)
 from jiuwen_memory.control.policy import PolicyManager, PolicyProducer
 from jiuwen_memory.storage.storage import Storage, StorageProducer
 from jiuwen_memory.storage.types import IndexWriteMode
@@ -138,20 +144,27 @@ class KVLifecycleManager(LifecycleManager):
         logger.warning("Lifecycle.supersede missing unit: unit_id=%s scope=%s", unit_id, scope)
         raise NotFoundError("memory_unit", unit_id)
 
-    def sweep(self) -> list[str]:
+    def sweep(self) -> list[SweepTransition]:
         now = datetime.now(timezone.utc)
-        swept: list[str] = []
+        transitions: list[SweepTransition] = []
         for scope in self._storage.scopes():
             units = self._storage.list(scope, limit=1_000_000).items
             for unit in units:
                 target = _sweep_target(unit, now, self._policy)
-                if target is not None:
-                    unit.lifecycle = target
-                    self._storage.update(scope, [unit], mode=IndexWriteMode.FORWARD_ONLY)
-                    swept.append(unit.id)
-        swept.sort()
-        logger.info("Lifecycle.sweep: swept=%d", len(swept))
-        return swept
+                if target is None:
+                    continue
+                transitions.append(
+                    SweepTransition(
+                        scope=scope,
+                        unit_id=unit.id,
+                        from_state=unit.lifecycle,
+                        to_state=target,
+                        unit=unit,
+                    )
+                )
+        transitions.sort(key=lambda t: t.unit_id)
+        logger.info("Lifecycle.sweep: pending=%d", len(transitions))
+        return transitions
 
 
 # -- 注册到 LifecycleProducer（实现自注册，新增无需改 producer/build_kernel） -------- #

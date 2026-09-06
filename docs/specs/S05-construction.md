@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-09-01 |
+| 最近一次修订日期 | 2026-09-03 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
@@ -76,7 +76,9 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 16. **索引状态由调用方判定，构建算子不解读 `lifecycle`**：记忆处于什么状态、因而该对索引
     做什么，由调用方判断后调对应方法；`IndexBuilder` 只执行被要求的操作。如归档/遗忘为
     `update(mode=FORWARD_ONLY)`（回写本体新状态）+ `remove(mode=SOFT)`
-    （移出检索）两条互不重叠的指令。
+    （移出检索）两条互不重叠的指令。到期清扫（sweep）的索引移出由控制层
+    `MemoryEngine.sweep_expired` 编排（先 `remove(SOFT)`、成功后回写真源，见 S03），
+    `LifecycleManager` 不直接触碰索引。
 17. **一个子 builder 只负责一种索引形式，端口统一从 `Storage` 取**：写侧子 builder 与读侧
     recaller 因此取自同一个 `Storage` 实例的同一端口，读写不分叉。
 18. **正排最先出现、最后消失**：`build`/`update` 正排在前，`remove` 正排最后。正排先删会

@@ -37,6 +37,7 @@ from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
 from jiuwen_memory.control.engine_impl.list_support import list_page
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
+from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
 from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
@@ -51,6 +52,7 @@ from jiuwen_memory.control.types import (
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
+    SweepResult,
     UpdateMode,
 )
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
@@ -682,6 +684,15 @@ class InMemoryEngine(MemoryEngine):
         )
         return affected
 
+    async def sweep_expired(self) -> SweepResult:
+        # C-03：lifecycle 只纯计算 transition，索引清理与真源回写由本编排完成。
+        transitions = self._lifecycle.sweep()
+        return run_sweep(
+            transitions,
+            self._lifecycle,
+            lambda units: self._index.remove(units, mode=IndexRemoveMode.SOFT),
+        )
+
     async def purge_space(self, org: str, space: str) -> list[str]:
         _ensure_local_scope(Scope(org=org, space=space))
         purged_units: list[MemoryUnit] = []
@@ -704,7 +715,15 @@ class InMemoryEngine(MemoryEngine):
                 "evolve requires job_factory, please configure "
                 "engine.default.job_factory"
             )
-        job = self._job_factory.get_job(JobType.EVOLVE, scope=scope, mode=mode)
+        if self._evolver is None:
+            raise RuntimeError(
+                "Engine.evolve requires an Evolver (装配未注入 evolver)"
+            )
+        # E-06：evolver 必传注入——Job 使用 Engine 装配的同一实例，
+        # 不允许 Spec 侧自行解析另一套（middle 路径的 index/evolver 同理）。
+        job = self._job_factory.get_job(
+            JobType.EVOLVE, scope=scope, mode=mode, evolver=self._evolver
+        )
         job_id = await self._scheduler.submit(job, channel)
         logger.info(
             "Engine.evolve submitted: job_id=%s scope=%s mode=%s channel=%s",

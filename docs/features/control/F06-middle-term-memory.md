@@ -4,10 +4,10 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-07-31（决策 9 分布式锁接入：2026-08-17） |
+| 日期 | 2026-07-31（决策 9 分布式锁接入：2026-08-17；E-06 Builder 对齐收口：2026-09-03，见 [`F08-engine-job-builder-alignment`](F08-engine-job-builder-alignment.md)） |
 | 影响范围 | `jiuwen_memory/control/jobs.py`、`jiuwen_memory/control/jobs_impl/`（含 `MiddleToLongJob` 加 `lock` 字段）、`jiuwen_memory/control/scheduler.py`、`jiuwen_memory/control/scheduler_impl/async_timer_scheduler.py`、`jiuwen_memory/control/scheduler_impl/in_process_scheduler.py`、`jiuwen_memory/control/engine_impl/in_memory_engine.py`、`jiuwen_memory/control/engine_impl/cloud_engine.py`、`jiuwen_memory/control/bootstrap.py`、`jiuwen_memory/construction/dedup_impl/keyword_dedup.py`、`jiuwen_memory/construction/dedup_impl/vector_dedup.py`、`jiuwen_memory/config/defaults.py`；决策 9 复用 [`F06-distributed-lock`](../common/F06-distributed-lock.md) 的 `LockProvider` 横切原语 |
 | 测试基线 | `pytest tests/unit/control tests/unit/construction` 全绿（307 passed）；`test_middle_e2e_real_llm.py` 4 个 e2e 用例**默认 skip**（依赖外部 LLM 凭证）；`test_middle_two_instances_e2e.py` 双实例 e2e 用例**默认 skip**（依赖真实 Redis 容器，验证跨实例互斥语义）|
-| Refs | [`F02-write-infer-extract`](../api/F02-write-infer-extract.md)、[`F01-control-impl-design`](F01-control-impl-design.md)、[`F05-cloud-engine-design`](F05-cloud-engine-design.md)、[`F06-distributed-lock`](../common/F06-distributed-lock.md) |
+| Refs | [`F02-write-infer-extract`](../api/F02-write-infer-extract.md)、[`F01-control-impl-design`](F01-control-impl-design.md)、[`F05-cloud-engine-design`](F05-cloud-engine-design.md)、[`F06-distributed-lock`](../common/F06-distributed-lock.md)、[`F08-engine-job-builder-alignment`](F08-engine-job-builder-alignment.md) |
 
 > 本文档归档 **中期记忆（mem2.0）落地的设计与实现规约**：在 add 路径新增 `middle=true` 子分支作为中期缓冲，配合 `Job` 抽象 + `AsyncTimerScheduler` 周期触发 + `MiddleToLongJob` 做连续性切批抽取与归档，替代 mem1.0 自带的 `_middle_memory_loop`。
 
@@ -82,9 +82,9 @@ mem2.0 把这件事拆回控制层标准范式：
 
 1. 给 unit 打 `tier=WORKING` + `metadata["middle"]="true"` 标记。
 2. `kv.insert` 落 `/memory/{id}`（与建索引记忆同前缀，被 `_list_working_units` 扫到）+ `index_builder.build(units)`（原文立即可检索）。
-3. `job_factory.get_job(JobType.MIDDLE_TO_LONG, scope=scope, evolver=evolver, index=index_builder, **interval_kw)` 取实例 + `scheduler.submit(job, channel=Channel.BACKGROUND)`。其中 `interval_kw` 由 write 入参 `metadata["middle_interval"]` 透传（pop 后不落盘到 unit.metadata），缺省不传由 `MiddleToLongJobSpec.interval` 装配期默认 50 兜底——与 `evolver=` / `index=` 运行时覆盖入参模式一致。
+3. `job_factory.get_job(JobType.MIDDLE_TO_LONG, scope=scope, evolver=evolver, index=index_builder, **interval_kw)` 取实例 + `scheduler.submit(job, channel=Channel.BACKGROUND)`。其中 `interval_kw` 由 write 入参 `metadata["middle_interval"]` 透传（pop 后不落盘到 unit.metadata），缺省不传由 `MiddleToLongJobSpec.interval` 装配期默认 50 兜底——与 `evolver=` / `index=` 运行时注入入参模式一致（E-06 收口后该二者为必传注入，见 [`F08`](F08-engine-job-builder-alignment.md)）。
 
-`CloudEngine._write_middle_path` 多 profile 适配：按 `message_type` 选 binding，每个 profile 有自己的 evolver/index。JobFactory Spec 装配期固化的是 default evolver/index——若直接用 Spec 的，原文用 `chat_index` 建索引但归档时调 `default_index.remove`，原文索引不会被正确清理。故此处通过 `JobFactory.get_job` 的**运行时覆盖入参** `evolver=` / `index=` 注入 binding 的——`MiddleToLongJobSpec.with_scope` 从 `kwargs` 弹出 `evolver` / `index` 覆盖 Spec 装配期固化的默认值，保证 Job 内部的 evolver/index 与原文落盘时一致。
+`CloudEngine._write_middle_path` 多 profile 适配：按 `message_type` 选 binding，每个 profile 有自己的 evolver/index。E-06 收口（[`F08`](F08-engine-job-builder-alignment.md)）后 Spec 装配期**不再固化** default evolver/index——若 Job 自行解析默认实例，原文用 `chat_index` 建索引但归档时调 `default_index.remove`，原文索引不会被正确清理。故此处通过 `JobFactory.get_job` 的**运行时注入入参** `evolver=` / `index=` 传 binding 的组件——`MiddleToLongJobSpec.with_scope` 从 `kwargs` 弹出 `evolver` / `index`（运行时注入优先，Spec 字段仅作手工装配兜底），缺失注入时 `with_scope` 直接抛 `ValidationError`，保证 Job 内部的 evolver/index 与原文落盘时一致。
 
 **关键权衡**：
 
@@ -96,7 +96,7 @@ mem2.0 把这件事拆回控制层标准范式：
 
 `jiuwen_memory/control/jobs_impl/evolve_job.py` 注册到 `JobType.EVOLVE`。`run()` 流程：`kv.scan(scope, MEMORY_KEY_PREFIX)` → 反序列化 + 过滤 `metadata["middle"]!="true"`（中期记忆由 MiddleToLongJob 专门处理，避免同一原文被两次处理）→ `evolver.evolve(units, mode)`。`mode` 由构造参数注入，支持 EXTRACT/ASSOCIATE/CONSOLIDATE/FORGET 任意值，忠实于原 `submit(scope, mode, channel)` 的 mode 语义。
 
-`Engine.evolve` 不再直接 new EvolveJob，走 `JobFactory.get_job(JobType.EVOLVE, scope=scope, mode=mode)`——与 MiddleToLongJob 创建路径统一。
+`Engine.evolve` 不再直接 new EvolveJob，走 `JobFactory.get_job(JobType.EVOLVE, scope=scope, mode=mode, evolver=self._evolver)`——与 MiddleToLongJob 创建路径统一。`evolver=` 是 E-06 收口（[`F08`](F08-engine-job-builder-alignment.md)）新增的必传注入：Engine 侧缺 evolver 装配时抛 `RuntimeError`，`EvolveJobSpec` 不再自行解析 default。
 
 ### 决策 6：Scheduler 接口由同步改 async
 

@@ -34,7 +34,7 @@ from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.jobs_impl.middle_to_long_job import MiddleToLongJob
-from jiuwen_memory.control.lifecycle import LifecycleManager
+from jiuwen_memory.control.lifecycle import LifecycleManager, SweepTransition
 from jiuwen_memory.control.types import JobStatus
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
@@ -86,7 +86,7 @@ class _RecordingLifecycle(LifecycleManager):
     def supersede(self, scope: Scope, unit_id: str, invalid_at: datetime) -> MemoryUnit:
         raise AssertionError("MiddleToLongJob should not call supersede")
 
-    def sweep(self) -> list[str]:
+    def sweep(self) -> list[SweepTransition]:
         return []
 
 
