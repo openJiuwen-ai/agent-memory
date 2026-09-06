@@ -27,7 +27,8 @@ from jiuwen_memory.control.ingest_job import (
     IngestSubmission,
     IngestTask,
 )
-from jiuwen_memory.storage.kv import KvProducer, KVStore
+from jiuwen_memory.storage.kv import KVStore
+from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 
 logger = get_logger(__name__)
 
@@ -295,5 +296,5 @@ def _build(config):
     return InProcessIngestJobController(
         max_workers=int(config.get("ingest_max_workers", 1)),
         max_pending_jobs=int(config.get("ingest_max_pending_jobs", 2)),
-        kv=KvProducer.dep(config, default="memory"),
+        kv=StoreManagerProducer.resolve(config).kv(resolve_name(config, "kv_store")),
     )

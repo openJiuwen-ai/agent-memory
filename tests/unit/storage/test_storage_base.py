@@ -1,4 +1,8 @@
-"""Storage 基类默认行为：能力推导、命名端口异常类型与纯领域接口实现。"""
+"""StoreManager/DomainStore 基类默认行为：能力推导、命名端口异常与纯领域接口实现。
+
+F07 拆分后原 ``UnitOnlyStorage`` fake 对应两个独立测试面：管理面无端口 fake
+（端口异常与 ``has_*`` 默认推导）+ 数据面纯领域 fake（add/get/list/scopes 闭环）。
+"""
 
 from __future__ import annotations
 
@@ -15,18 +19,16 @@ from jiuwen_memory.common.type_def import (
     Scope,
     Segment,
 )
+from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.security import AllowAllStorageSecurity, StorageSecurity
-from jiuwen_memory.storage.storage import Storage, StorageCapability
+from jiuwen_memory.storage.store_manager import StorageCapability, StoreManager
 from jiuwen_memory.storage.types import MemoryListResult
 
 pytestmark = pytest.mark.unit
 
 
-class UnitOnlyStorage(Storage):
-    """不暴露任何底层端口的一体化 Storage：只实现 MemoryUnit 领域接口。"""
-
-    def __init__(self) -> None:
-        self._units: dict[str, MemoryUnit] = {}
+class UnitOnlyStoreManager(StoreManager):
+    """不暴露任何底层端口的管理面 fake：端口访问统一抛不支持异常。"""
 
     @property
     def security(self) -> StorageSecurity:
@@ -35,33 +37,54 @@ class UnitOnlyStorage(Storage):
     def capabilities(self) -> frozenset[StorageCapability]:
         return frozenset()
 
+    def domain_store(self, name: str = "default") -> DomainStore:
+        raise UnsupportedStorageCapabilityError(
+            f"domain_store is not available: {name!r}"
+        )
+
+    def has_domain_store(self, name: str = "default") -> bool:
+        return False
+
     @staticmethod
-    def _unsupported(name: str) -> Any:
-        raise UnsupportedStorageCapabilityError(f"storage capability is not available: {name}")
+    def _unsupported(name: str, port: str) -> Any:
+        raise UnsupportedStorageCapabilityError(
+            f"storage capability is not available: {port}.{name}"
+        )
+
+    def kv(self, name: str = "default") -> Any:
+        self._unsupported(name, "kv")
+
+    def vector(self, name: str = "default") -> Any:
+        self._unsupported(name, "vector")
+
+    def fulltext(self, name: str = "default") -> Any:
+        self._unsupported(name, "fulltext")
+
+    def graph(self, name: str = "default") -> Any:
+        self._unsupported(name, "graph")
+
+    def fusion(self, name: str = "default") -> Any:
+        self._unsupported(name, "fusion")
+
+    def fs(self, name: str = "default") -> Any:
+        self._unsupported(name, "fs")
+
+    def entity(self, name: str = "default") -> Any:
+        self._unsupported(name, "entity")
+
+    def health(self) -> None:
+        return None
+
+
+class UnitOnlyDomainStore(DomainStore):
+    """只实现 MemoryUnit 领域接口的数据面 fake：不经任何底层 Store。"""
+
+    def __init__(self) -> None:
+        self._units: dict[str, MemoryUnit] = {}
 
     @property
-    def kv(self) -> Any:
-        return self._unsupported("kv")
-
-    @property
-    def vector(self) -> Any:
-        return self._unsupported("vector")
-
-    @property
-    def fulltext(self) -> Any:
-        return self._unsupported("fulltext")
-
-    @property
-    def graph(self) -> Any:
-        return self._unsupported("graph")
-
-    @property
-    def fusion(self) -> Any:
-        return self._unsupported("fusion")
-
-    @property
-    def fs(self) -> Any:
-        return self._unsupported("fs")
+    def security(self) -> StorageSecurity:
+        return AllowAllStorageSecurity()
 
     def preferred_retrieval_pipeline(self) -> RetrievalPipeline:
         return RetrievalPipeline.RECALL_GET_RANK
@@ -107,34 +130,42 @@ class UnitOnlyStorage(Storage):
 
 
 def test_base_named_ports_raise_unsupported_capability() -> None:
-    storage = UnitOnlyStorage()
+    manager = UnitOnlyStoreManager()
 
-    assert storage.capabilities() == frozenset()
-    assert not storage.has_kv()
-    assert not storage.has_vector()
-    assert not storage.has_vector_port("layers_l0")
+    assert manager.capabilities() == frozenset()
+    assert not manager.has_kv()
+    assert not manager.has_vector()
+    assert not manager.has_vector("layers_l0")
+    assert not manager.has_entity()
+    assert not manager.has_domain_store("default")
 
     # 未声明端口统一抛 UnsupportedStorageCapabilityError，不抛 NotImplementedError。
     for port, name in (
-        (storage.kv_port, "truth"),
-        (storage.vector_port, "layers_l0"),
-        (storage.fulltext_port, "layers_l1"),
-        (storage.graph_port, "kg"),
-        (storage.fusion_port, "hybrid"),
-        (storage.fs_port, "assets"),
+        (manager.kv, "truth"),
+        (manager.vector, "layers_l0"),
+        (manager.fulltext, "layers_l1"),
+        (manager.graph, "kg"),
+        (manager.fusion, "hybrid"),
+        (manager.fs, "assets"),
+        (manager.entity, "entities"),
     ):
         with pytest.raises(UnsupportedStorageCapabilityError):
             port(name)
 
+    with pytest.raises(UnsupportedStorageCapabilityError):
+        manager.domain_store()
 
-def test_storage_without_ports_serves_memory_units_through_domain_api() -> None:
+
+def test_domain_store_without_ports_serves_memory_units() -> None:
     scope = Scope(org="org", space="space")
-    storage = UnitOnlyStorage()
+    domain_store = UnitOnlyDomainStore()
 
-    storage.add(scope, [MemoryUnit(id="u1", scope=scope, segments=[Segment(content="one")])])
-    assert [unit.id for unit in storage.get(scope, ["u1"])] == ["u1"]
-    assert storage.list(scope).count == 1
-    assert storage.scopes() == [scope]
+    domain_store.add(
+        scope, [MemoryUnit(id="u1", scope=scope, segments=[Segment(content="one")])]
+    )
+    assert [unit.id for unit in domain_store.get(scope, ["u1"])] == ["u1"]
+    assert domain_store.list(scope).count == 1
+    assert domain_store.scopes() == [scope]
 
-    storage.delete(scope, ["u1"])
-    assert storage.get(scope, ["u1"]) == []
+    domain_store.delete(scope, ["u1"])
+    assert domain_store.get(scope, ["u1"]) == []

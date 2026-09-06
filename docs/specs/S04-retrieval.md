@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-08-31 |
+| 最近一次修订日期 | 2026-09-03 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
@@ -43,7 +43,7 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
 6. **所有算子必须实现 `operator_type()` 和 `health()`**：继承自 `RetrievalOperator`。
 7. **scalar_filters 与软召回信号分离**：ParsedQuery 中 `scalar_filters`（硬前置过滤）与 `tokens/keywords/entities/vector`（软召回信号）不能互相折叠。
 8. **双时间轴独立**：`as_of`（valid-time 回溯点）与 `time_from/time_to`（event-time 范围）是两条独立时间轴。
-9. **召回分数高分优先**：chunk→unit MaxP、分层归并与融合排序统一按「分越大越相关」处理；向量 Recaller 不接受 L2 等 lower-is-better 度量。
+9. **召回分数高分优先**：chunk→unit MaxP、分层归并与融合排序统一按「分越大越相关」处理；向量 Recaller（存储层数据面）不接受 L2 等 lower-is-better 度量。
 10. **生产过滤先于 top-k**：Milvus / Elasticsearch / pgvector 必须在
     `limit/top_k` 前完整下推 `FilterExpr`；UnitReader 的真源复核只做纵深防御，
     不能补回已被截断的候选。
@@ -53,7 +53,7 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
     「窗内命中 OR 未知放行」，整棵 OR 子树作为外层 AND 的一个 child 不摊平——
     安全谓词不被稀释，同时 `t_event=None` 的派生不被窗下推清空（见过滤表达式段）。
 12. **rank 只包含 Fuser**：Fuser 在物化候选上做分层归并和跨通道融合；Reranker 保持后续
-    独立阶段，不下沉到 Storage 的 retrieve 入口。
+    独立阶段，不下沉到 DomainStore 的 retrieve 入口。
 13. **部分失败显式返回**：部分召回入口失败时继续处理成功候选并返回 `ChannelError`；全部选中
     入口失败抛 `StorageRetrievalError`。显式空 channels 是无效输入。
 14. **结构轴正交**：`ContentLayers`/`DisclosureLevel` 是 unit 内披露，`HierarchyRef` 是跨 unit 结构；CLM/ELM、`MemoryUnit.temporal` 与 `RecallChannel.TEMPORAL` 均不替代 `HierarchyKind.TIME`。
@@ -103,13 +103,16 @@ FORGOTTEN/SUPERSEDED 不可见，ARCHIVED 仅在 `include_archived=true` 时可�
 可见活动角色均可参与。过滤后的候选仍走既有融合、重排和阈值链路，因此层级父节点
 不是一条绕过相关性判断的特殊结果通道。默认不展开。
 
-### QueryParser / Recaller / Fuser
+### QueryParser / Fuser
 
 | 接口 | 签名 | 语义 |
 |---|---|---|
 | `QueryParser.parse` | `(query: RetrievalQuery) -> ParsedQuery` | 产生规范化文本、软召回信号、硬过滤条件和时间条件；完整保留层级查询字段 |
-| `Recaller.recall` | `(scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]` | 在 scope 和硬过滤约束内执行单路召回 |
 | `Fuser.fuse` | `(query: ParsedQuery, candidates: list[list[ScoredUnit]]) -> list[ScoredUnit]` | 按 unit_id 融合多路、多内容层候选并稳定排序 |
+
+单路召回（`Recaller`）不是本层算子：它是 `CompositeDomainStore` 的内部件，契约与实现
+在 `storage/domain_store_impl/`，签名见 S06-storage。本层只经数据面的
+`recall` / `recall_and_get` / `retrieve` 消费其结果。
 
 `RecallChannel.TEMPORAL` 仅应用 event-time/valid-time 条件，不创建、过滤或展开 `HierarchyKind.TIME` 树。TIME 层级过滤必须来自明确的 hierarchy 字段。
 
@@ -141,7 +144,7 @@ Expander 先校验 root，再按深度从浅到深遍历；同一父的子顺序
 ```
 QueryParser.parse(query) → ParsedQuery
 → 若 ParsedQuery.raw 为空则短路返回空结果
-→ 按 Storage.preferred_retrieval_pipeline 选择 recall→get、recall_and_get 或 retrieve
+→ 按 DomainStore.preferred_retrieval_pipeline 选择 recall→get、recall_and_get 或 retrieve
 → Fuser 前物化候选并完成 lifecycle/valid-time/event-time/filters 真源复核
 → Fuser.fuse(parsed_query, candidates) → list[ScoredMemoryUnit]
 → 截断精排预算
@@ -223,15 +226,6 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 属性问（多大/几岁/爱好/是谁/住址/名字/生日/年龄…）即便含时间词也清空
 `time_from/to` 不下推——属性问不是事件时间检索，误下推会放大 `t_event=None`
 派生的误伤。`time_parse` 入口对此类 query 直接返回 `(None, None)`。
-
-### Recaller（`recaller.py`）
-
-单路召回算子。一个 Recaller 对应一条召回通道。
-
-| 方法 | 签名 | 语义 |
-|------|------|------|
-| `channel` | `() -> RecallChannel` | 返回本召回路对应的通道 |
-| `recall` | `(scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]` | 在 scope 范围内本通道内召回 top-k 候选 |
 
 ### Fuser（`fuser.py`）
 
@@ -406,8 +400,10 @@ jiuwen_memory/retrieval/<算子>_impl/
     <impl_class_snake>.py   # 具体实现 + 尾部 @XxxProducer.register("name")
 ```
 
-各 Producer：`QueryParserProducer` / `RecallerProducer` / `FuserProducer` / `DiscloserProducer` / `RetrieverProducer`。
-注册由 `retrieval.bootstrap.register_operators` 统一触发。
+各 Producer：`QueryParserProducer` / `FuserProducer` / `DiscloserProducer` / `RetrieverProducer`。
+注册由 `retrieval.bootstrap.register_operators` 统一触发。`RecallerProducer` 归存储层
+（`storage/domain_store_impl/recaller.py`，注册随 `storage.bootstrap.register_backends`
+触发）；YAML 命名空间仍是 `recaller`，配置写法不变。
 
 ## 与其它 spec 的关系
 
@@ -416,7 +412,7 @@ jiuwen_memory/retrieval/<算子>_impl/
 | S02-memory_api | MemoryAPI.search → Engine → 本层 Retriever |
 | S03-control | Engine.recall 委托本层 Retriever |
 | S05-construction | 本层消费构建层产出的索引（向量/全文/图） |
-| S06-storage | Retriever 经 StorageProducer 获取统一 Storage；Recaller 作为 CompositeStorage 的兼容检索适配器，由 storage 层工厂按配置装配 |
+| S06-storage | Retriever 经 `StoreManagerProducer.resolve` 取全局 manager 并持其 `domain_store()`；`Recaller` 契约、实现与装配全在存储层数据面（`domain_stores.<name>` 的选择键 → `for_manager` 组装），本层不持有召回路 |
 | S07-common | 复用 Tokenizer/Embedder/FeatureExtractor/LLM/Reranker |
 | S08-config | 能力开关与 rerank/embedder 晚绑定经 ConfigSource |
 | architecture.md §8 | 检索链路设计 |

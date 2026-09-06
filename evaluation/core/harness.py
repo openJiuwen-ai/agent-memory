@@ -37,7 +37,7 @@ class EvalHarness:
                 seed.scope,
                 security=legacy_request_context(seed.scope),
                 tags=list(seed.tags),
-                metadata=dict(seed.metadata),
+                user_metadata=dict(seed.metadata),
                 occurred_at=seed.occurred_at,
             )
             self._key2ids[seed.key] = [u.id for u in units]

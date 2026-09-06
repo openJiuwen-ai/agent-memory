@@ -22,8 +22,9 @@ from jiuwen_memory.common.llm.base import LLM
 from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer import (
     PassthroughNormalizer,
 )
-from jiuwen_memory.common.type_def import MemoryUnit, Scope
+from jiuwen_memory.common.type_def import MemoryUnit, Scope, memory_key
 from jiuwen_memory.common.type_def.chat import ChatMessage
+from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder
@@ -36,7 +37,6 @@ from jiuwen_memory.control.lifecycle import LifecycleManager, SweepTransition
 from jiuwen_memory.control.types import Channel, JobStatus
 from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 pytestmark = pytest.mark.unit
@@ -67,12 +67,12 @@ class _RecordingScheduler:
 
 
 class _RecordingIndex(IndexBuilder):
-    """记录 build/remove 的 IndexBuilder 替身（build 交付 Storage）。"""
+    """记录 build/remove 的 IndexBuilder 替身（build 经 KV 端口交付正排本体）。"""
 
-    def __init__(self, storage=None) -> None:
+    def __init__(self, kv=None) -> None:
         self.built: list[MemoryUnit] = []
         self.removed: list[MemoryUnit] = []
-        self._storage = storage
+        self._kv = kv
 
     def operator_type(self) -> OperatorType:
         return OperatorType.INDEX_BUILDER
@@ -82,14 +82,14 @@ class _RecordingIndex(IndexBuilder):
 
     def build(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         self.built.extend(units)
-        if self._storage is not None:
+        if self._kv is not None:
             for unit in units:
-                self._storage.add(unit.scope, [unit])
+                self._kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
 
     def update(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
-        if self._storage is not None:
+        if self._kv is not None:
             for unit in units:
-                self._storage.update(unit.scope, [unit])
+                self._kv.update(unit.scope, memory_key(unit.id), dumps(unit))
 
     def remove(self, units, *, mode: IndexRemoveMode = IndexRemoveMode.HARD) -> None:
         self.removed.extend(units)
@@ -146,9 +146,8 @@ class _NoopLifecycle(LifecycleManager):
 
 def test_middle_to_long_spec_without_injection_raises() -> None:
     """E-06：Spec 不再自解析 index/evolver——缺注入时 with_scope 显式失败。"""
-    storage = CompositeStorage(kv=InMemoryKVStore())
     spec = MiddleToLongJobSpec(
-        storage=storage, lifecycle=_NoopLifecycle(), llm=_ContinuityLLM()
+        kv=InMemoryKVStore(), lifecycle=_NoopLifecycle(), llm=_ContinuityLLM()
     )
 
     with pytest.raises(ValidationError, match="Evolver"):
@@ -159,11 +158,10 @@ def test_middle_to_long_spec_without_injection_raises() -> None:
 
 def test_middle_to_long_runtime_injection_overrides_spec_fallback() -> None:
     """Engine 注入优先：Spec 持有另一套 Builder/Evolver 时，Job 用注入的。"""
-    storage = CompositeStorage(kv=InMemoryKVStore())
     spec_builder = _RecordingIndex()  # Spec 兜底（另一套）
     spec_evolver = _StubEvolver()
     spec = MiddleToLongJobSpec(
-        storage=storage,
+        kv=InMemoryKVStore(),
         lifecycle=_NoopLifecycle(),
         llm=_ContinuityLLM(),
         index=spec_builder,
@@ -183,8 +181,7 @@ def test_middle_to_long_runtime_injection_overrides_spec_fallback() -> None:
 
 def test_evolve_spec_without_injection_raises() -> None:
     """E-06：EvolveJobSpec 不再自解析 evolver——缺注入时 with_scope 显式失败。"""
-    storage = CompositeStorage(kv=InMemoryKVStore())
-    spec = EvolveJobSpec(storage=storage)
+    spec = EvolveJobSpec(kv=InMemoryKVStore())
 
     with pytest.raises(ValidationError, match="Evolver"):
         spec.with_scope(_SCOPE, mode=EvolveMode.EXTRACT)
@@ -197,7 +194,7 @@ def _evolve_job_factory() -> JobFactory:
     factory = JobFactory()
     factory.register(
         JobType.EVOLVE,
-        EvolveJobSpec(storage=CompositeStorage(kv=InMemoryKVStore())).with_scope,
+        EvolveJobSpec(kv=InMemoryKVStore()).with_scope,
     )
     return factory
 
@@ -210,7 +207,7 @@ def test_engine_evolve_injects_own_evolver_into_job() -> None:
         ingestor=None,
         index_builder=None,
         retriever=None,
-        storage=CompositeStorage(kv=InMemoryKVStore()),
+        kv=InMemoryKVStore(),
         scheduler=scheduler,
         evolver=evolver,
         lifecycle=None,
@@ -230,7 +227,7 @@ def test_engine_evolve_without_evolver_raises() -> None:
         ingestor=None,
         index_builder=None,
         retriever=None,
-        storage=CompositeStorage(kv=InMemoryKVStore()),
+        kv=InMemoryKVStore(),
         scheduler=_RecordingScheduler(),
         evolver=None,
         lifecycle=None,
@@ -251,8 +248,7 @@ def test_middle_job_uses_engine_builder_not_spec_fallback() -> None:
     注入必须覆盖它：原文检索索引的写入与移除同源。
     """
     kv = InMemoryKVStore()
-    storage = CompositeStorage(kv=kv)
-    builder_a = _RecordingIndex(storage)  # Engine 写入用
+    builder_a = _RecordingIndex(kv)  # Engine 写入用
     builder_b = _RecordingIndex()  # Spec 兜底——绝不该被调到
     evolver = _StubEvolver()
     lifecycle = _NoopLifecycle()
@@ -260,7 +256,7 @@ def test_middle_job_uses_engine_builder_not_spec_fallback() -> None:
     factory.register(
         JobType.MIDDLE_TO_LONG,
         MiddleToLongJobSpec(
-            storage=storage,
+            kv=kv,
             lifecycle=lifecycle,
             llm=_ContinuityLLM(),
             index=builder_b,
@@ -272,7 +268,7 @@ def test_middle_job_uses_engine_builder_not_spec_fallback() -> None:
         ingestor=SimpleIngestor(normalizer=PassthroughNormalizer()),
         index_builder=builder_a,
         retriever=None,
-        storage=storage,
+        kv=kv,
         scheduler=scheduler,
         evolver=evolver,
         lifecycle=lifecycle,

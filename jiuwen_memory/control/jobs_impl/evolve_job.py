@@ -3,7 +3,7 @@
 
 数据来源、调用方式与原 ``InProcessScheduler._execute_task`` 一致——
 mode 由构造参数注入，Scheduler 不再持有 kv/evolver。装配期依赖
-（storage）固化到 :class:`EvolveJobSpec`；evolver 由 Engine 经
+（真源 KV 端口）固化到 :class:`EvolveJobSpec`；evolver 由 Engine 经
 :class:`JobFactory.get_job` 运行时注入（E-06：Job 与 Engine 共用同一
 实例，Spec 不自行解析）。
 """
@@ -18,7 +18,8 @@ from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.construction import EvolveMode, Evolver
 from jiuwen_memory.control.jobs import Job
 from jiuwen_memory.control.types import JobInfo, JobStatus
-from jiuwen_memory.storage.storage import Storage, StorageProducer
+from jiuwen_memory.storage.kv import KVStore, list_units
+from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 
 
 class EvolveJob(Job):
@@ -31,13 +32,13 @@ class EvolveJob(Job):
     def __init__(
         self,
         scope: Scope,
-        storage: Storage,
+        kv: KVStore,
         evolver: Evolver,
         mode: EvolveMode = EvolveMode.EXTRACT,
         interval: int = 0,
     ) -> None:
         super().__init__(scope=scope, interval=interval)
-        self._storage = storage
+        self._kv = kv
         self._evolver = evolver
         self._mode = mode
 
@@ -48,9 +49,11 @@ class EvolveJob(Job):
     async def run(self) -> JobInfo:
         # 排除中期记忆：middle 路径写入的 unit 由 MiddleToLongJob 专门处理，
         # 避免同一原文被两次处理。
-        page = await asyncio.to_thread(self._storage.list, self.scope, limit=1_000_000)
+        units, _ = await asyncio.to_thread(
+            list_units, self._kv, self.scope, limit=1_000_000
+        )
         units = [
-            unit for unit in page.items if unit.system_metadata.get("middle") != "true"
+            unit for unit in units if unit.system_metadata.get("middle") != "true"
         ]
         result = await asyncio.to_thread(self._evolver.evolve, units, self._mode)
         return JobInfo(
@@ -79,7 +82,7 @@ class EvolveJobSpec:
     缺失时显式报错，不回退默认实现。
     """
 
-    storage: Storage
+    kv: KVStore
     evolver: Evolver | None = None
 
     def with_scope(self, scope: Scope, **kwargs) -> EvolveJob:
@@ -90,7 +93,7 @@ class EvolveJobSpec:
                 "EvolveJob requires an Evolver (由 Engine 经 get_job 运行时注入，"
                 "Spec 不自行解析)"
             )
-        return EvolveJob(scope=scope, storage=self.storage, evolver=evolver, **kwargs)
+        return EvolveJob(scope=scope, kv=self.kv, evolver=evolver, **kwargs)
 
 
 def _build_evolve_job_spec(config) -> EvolveJobSpec:
@@ -99,4 +102,6 @@ def _build_evolve_job_spec(config) -> EvolveJobSpec:
     E-06：evolver 不在此解析——Engine.evolve 提交时注入装配给 Engine 的
     同一实例，Job 不得自行解析另一套。
     """
-    return EvolveJobSpec(storage=StorageProducer.resolve(config))
+    return EvolveJobSpec(
+        kv=StoreManagerProducer.resolve(config).kv(resolve_name(config, "kv_store"))
+    )
