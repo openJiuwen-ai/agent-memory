@@ -1,7 +1,7 @@
 # agent-memory架构设计（Architecture）
 
 > 文档性质：总体架构设计（概念、分层、组件与依赖方向）
-> 版本：v0.2 ｜ 日期：2026-09-03
+> 版本：v0.2 ｜ 日期：2026-09-05
 > 关联文档：[愿景 VISION](./vision.md) ｜ [统一 Storage](../features/storage/F05-unified-storage-design.md) ｜ [Storage 检索 Pipeline](../features/retrieval/F05-storage-retrieval-pipelines.md) ｜ [Benchmark 调研](./memory_benchmarks.md)
 > 说明：本文描述系统级架构方向；精确接口契约以 `docs/specs/` 为准，特性取舍与首版实现边界以 `docs/features/` 为准。
 
@@ -183,6 +183,10 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 > 核心主张是**框架无关**：SDK 提供嵌入，CLI/Skill/MCP/API 提供接入，二者共同支撑「不绑定单一框架」。
 
+当前 HTTP 以 `POST /v1/<MemoryAPI 方法名>` 一对一暴露全部公开方法，请求字段与 API 参数
+同名、同层级，成功响应是原返回值的 JSON 表达；`security` 由认证边界构造并注入。HTTP
+不经过 legacy handler；CLI 使用同名命令、同名参数和相同 JSON 契约，MCP 仍使用 legacy dispatch。
+
 ### 5.1 多模态数据接入与规约
 
 多模态体现在**数据输入侧**：图像/音频/视频/文档/代码等均可作为记忆来源。接入层对每种模态做两件事，**检索链路本身不感知模态**：
@@ -212,7 +216,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 所有接入形态最终映射到同一组语义。接口已落地为 `jiuwen_memory/api/memory_api.py` 的 `MemoryAPI`（统一 Core API，形态无关）。它是**控制层的薄封装且为鉴权/审计执行点（PEP）**：数据面（add/search/list/get/update/delete/evolve）委托 `jiuwen_memory/control/engine.py` 的 `MemoryEngine`（编排中枢），管理面查询（任务状态、治理、授权、space 管理）直达对应控制算子（Scheduler/Governor/PermissionManager/SpaceManager），admin 直达 PolicyManager。每个涉及租户数据/治理的方法都收 `scope`（目标范围 target）与必填 `security: RequestSecurityContext`——除 `check_write` 为兼容旧第二位置参数外均为 keyword-only。调用方身份只取自 `security.auth.actor`；接口先行过渡期由 `PermissionManager` 判定，实装后切到 `Authorizer`。鉴权通过后才委托，下游只收已鉴权的 target scope（签名以代码为准）。写入类方法及 `MemoryPatch` 分别接收 `system_metadata` 与 `user_metadata`，不再接收混合 `metadata`。Space 管理接口已由 `SpaceManager` 承接。
 
-本章**只列出当前代码已实现的对外接口**，一方法一行。详细用法、数据结构、特性文档对照、**已设计但尚未实现**的增量见 [S02-memory-api.md](../specs/S02-memory-api.md)。代码落地后须：去掉 S02（及受影响 F 文档）中的「尚未实现」标注，并把该方法（或增量入参）补进本表。
+本章**只列出当前代码已实现的 36 个对外接口**，一方法一行。详细用法、数据结构、特性文档对照、**已设计但尚未实现**的增量见 [S02-memory-api.md](../specs/S02-memory-api.md)。代码落地后须：去掉 S02（及受影响 F 文档）中的「尚未实现」标注，并把该方法（或增量入参）补进本表。
 
 | 对外接口方法 | 语义 | 入参 | 出参 |
 | --- | --- | --- | --- |
@@ -220,6 +224,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | `add_async` | **异步**写入记忆：签名/语义同 `add`，直通引擎异步 `write`，供事件循环/高并发接入形态（HTTP/MCP）非阻塞调用 | 同 `add` | `list[MemoryUnit]` |
 | `batch_add` | **同步**批量写入。`BatchWriteItem` 含 `content` 及可选 `scope/source/assets/tags/system_metadata/user_metadata/occurred_at/stream_id/sequence/idempotency_key`。顶层参数作批次默认值，单项可覆盖。结果 `outcomes` 与输入索引一一对应；默认归集单项错误，`continue_on_error=False` 时后续项为跳过 | `items: list[BatchWriteItem]`；`scope: Scope \| None = None`；`source: Modality = TEXT`；`*`；`security: RequestSecurityContext`；`tags: list[str] \| None = None`；`system_metadata` / `user_metadata`（同 `add`）；`occurred_at: datetime \| None = None`；`stream_id: str = ""`；`continue_on_error: bool = True` | `BatchWriteResult` |
 | `batch_add_async` | **异步**批量写入：签名/语义同 `batch_add`，串行保序 | 同 `batch_add` | `BatchWriteResult` |
+| `submit_ingest` | 受鉴权的长耗时摄入入队；先校验 WRITE，再委托 Control 创建或复用任务，后台执行 `add` 时再次鉴权。返回提交状态，不表示摄入已完成 | `content: str`；`scope: Scope`；`source: Modality`；`*`；`security: RequestSecurityContext`；`payload_id: str`；`source_ref: str`；`assets: list[str] \| None = None`；`tags: list[str] \| None = None`；`system_metadata` / `user_metadata`（同 `add`） | `IngestSubmission` |
 | `check_write` | Pre-flight WRITE 鉴权，不落盘。镜像 `add` 的鉴权与 space 可写校验，供长耗时摄入任务入队前拒绝无权限请求 | `scope: Scope`；`security: RequestSecurityContext`；`*`；`tags: list[str] \| None = None`；`system_metadata` / `user_metadata`（同 `add`） | `None` |
 | `search` | 混合检索召回。`context.scope` 为目标范围；`context.extensions["max_tokens"]` 由本层解析为披露预算后从透传中移除。`filters` 为结构化过滤（FilterExpr / 旧 list / dict DSL）。`as_of` 为 valid-time 回溯。`RetrievalResult` 含命中项、可选轨迹和通道错误 | `query: str`；`context: Context`；`*`；`security: RequestSecurityContext`；`filters: FilterExpr \| list[FilterClause] \| dict \| None = None`；`as_of: datetime \| None = None`；`top_k: int = 10`；`disclosure: DisclosureLevel = L0`；`with_trajectory: bool = False` | `RetrievalResult` |
 | `list` | 列出 scope 下已建索引记忆（只含 `/memory/`，不含 infer 原文）。支持类型/结构化过滤、自定义透传与分页；`items` 为当前页，`count` 为分页前精确总数。`memory_types` 与 `filters` 取 AND；`org/space/user/agent/session` 不得出现在 filters | `scope: Scope`；`*`；`security: RequestSecurityContext`；`offset: int = 0`；`limit: int = 100`；`memory_types: list[str] \| None = None`；`extensions: dict[str, Any] \| None = None`；`filters: FilterExpr \| list[FilterClause] \| dict \| None = None` | `MemoryListResult` |
@@ -232,6 +237,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | `inspect` | 治理·检视：读取完整内容与治理字段（含已失效版本，委托 Governor） | `unit_ids: list[str]`；`scope: Scope`；`*`；`security: RequestSecurityContext` | `list[MemoryUnit]` |
 | `trace` | 治理·血缘回溯：沿 `provenance` 追溯演进来源链（委托 Governor；不沿层级树、不沿 `supersedes`） | `unit_id: str`；`scope: Scope`；`*`；`security: RequestSecurityContext` | `list[MemoryUnit]` |
 | `audit` | 治理·审计查询：按 actor/target/action/layer/时间段等检索审计留痕（委托 Governor）。无具体 target scope 时以根 `Scope()` 为鉴权闸门 | `filters: dict[str, str]`；`*`；`security: RequestSecurityContext`；`limit: int = 100` | `list[AuditEvent]` |
+| `verify_audit` | 审计链完整性验证，按 `VERIFY_AUDIT` 执行管理面鉴权；参数受服务端上限和独立并发预算约束，未装配 provider 时返回 `unsupported` | `*`；`security: RequestSecurityContext`；`after_sequence: int = 0`；`page_size: int = 1000`；`max_samples: int = 20`；`anchor_policy: str = "if_configured"` | `AuditVerificationResult` |
 | `grant` | 跨 scope 授权。公共 `Grant` 来自安全域，包含 `grant_id`、`revoked` 与冻结后的动作集合；当前过渡态委托 `PermissionManager`，目标切到 `Authorizer` / `GrantStore` | `grant: Grant`；`*`；`security: RequestSecurityContext` | `Grant` |
 | `revoke` | 回收授权；当前过渡态按旧授权条件撤销，目标形态按 `grant_id` 精确定位 | `grant: Grant`；`*`；`security: RequestSecurityContext` | `None` |
 | `create_space` | 创建 space，并写入 `principal_path`、状态、metadata 与初始 policy。以 `Scope(org=spec.org)` 做 WRITE 鉴权 | `spec: SpaceSpec`；`*`；`security: RequestSecurityContext` | `SpaceInfo` |
@@ -630,7 +636,7 @@ agent-memory/
 │   └── hermes/
 │
 ├── jiuwen_memory_entry/                      # A 调用层（§5）：内核的薄封装（多形态接入），各 surface 共用 core
-│   ├── core/                       #   共享应用核：Server 装配 + 共享 dispatch + profiles + config_loader
+│   ├── core/                       #   共享应用核：Server 装配 + legacy dispatch + profiles + config_loader
 │   ├── http_server/                #   HTTP/REST surface（POST /v1/<verb>）
 │   ├── mcp_server/                 #   MCP surface（FastMCP：记忆 API → MCP 工具）
 │   ├── cli/                        #   CLI surface（client + 命令表）
@@ -745,7 +751,7 @@ agent-memory/
 - **共享插件保证两侧一致**：分词/切分/向量化/特征抽取/LLM/规约/重排抽到 `jiuwen_memory/common`，构建侧与检索侧（以及重建/演进路径）注入**同一实现**——同词表、同向量空间、同切分规则、同规约器，是「派生可重建」与召回对齐的前提。
 - **依赖方向**：`jiuwen_memory/common` 承载跨层数据契约与插件；`jiuwen_memory/storage` 只依赖 common，不反向依赖 Retrieval。Retrieval 依赖统一 Storage 和 common，QueryParser/Fuser 等算法仍归 Retrieval。Construction/Control 的目标依赖也是 Storage 契约，但首版仍有直接 Store 依赖待迁移；API 继续作为 control/retrieval/construction 的薄封装。
 - **鉴权/隔离/异常的统一落点**：① `MemoryAPI` 是公开接口 PEP，分离 `security.auth.actor` 与 target `scope`；② `StorageSecurity` 是可插拔的数据面授权边界，默认 allow-all，各 Store Security 负责后端数据保护；③ scope 作为 Storage/Store 专用入参做原生隔离，`FilterExpr` 不承载 scope；④ `common/errors` 提供跨层异常契约；⑤版本链走 `supersedes`，演进血缘走 `provenance`。
-- **一个内核，多形态接入**：`jiuwen_memory_entry/*` 与 `jiuwen_memory_adapter/*` 依赖内核、仅做协议/参数转换后调用 `jiuwen_memory/api`，不含业务逻辑，也不得 import `jiuwen_memory.common` / `control` / `construction` / `retrieval` / `config` / `storage`。`jiuwen_memory_entry/core` 是各 surface 共享的应用核；其中 **`jiuwen_memory_entry/core/server.py` 是 Access composition root**（调用 `jiuwen_memory.api.assemble_runtime` 装配，传入 dict，不解析内核 `Config` 类型，公开面只有 `api` / `dispatch` / lifecycle）。其上 `http_server`（HTTP/REST）与 `mcp_server`（MCP）作为独立服务对外提供、`sdk` 作为库嵌入、`cli` 作为命令行——四个 surface 彼此解耦，共用同一 `core` 与 `jiuwen_memory/api`。
+- **一个内核，多形态接入**：`jiuwen_memory_entry/*` 与 `jiuwen_memory_adapter/*` 依赖内核、仅做协议/参数转换后调用 `jiuwen_memory/api`，不含业务逻辑，也不得 import `jiuwen_memory.common` / `control` / `construction` / `retrieval` / `config` / `storage`。`jiuwen_memory_entry/core` 是各 surface 共享的装配核；其中 **`jiuwen_memory_entry/core/server.py` 是 Access composition root**（调用 `jiuwen_memory.api.assemble_runtime` 装配，传入 dict，不解析内核 `Config` 类型，公开面只有 `api` / `dispatch` / lifecycle）。HTTP 与本地 CLI 经 `Server.api` 直接调用同名 `MemoryAPI` 并返回原值；远程 CLI 原样发送 HTTP 参数并接收原响应，MCP/旧进程内调用可继续经 `dispatch` 使用显式 legacy adapter。其上 `http_server`（HTTP/REST）与 `mcp_server`（MCP）作为独立服务对外提供、`sdk` 作为库嵌入、`cli` 作为命令行——四个 surface 彼此解耦，共用同一装配与 `jiuwen_memory/api`。
 - **端/云/混合**靠 `jiuwen_memory/config` 的部署 profile 装配不同后端组合（端侧 SQLite+轻向量，云侧 PG+Milvus+Neo4j），逻辑模型不变。
 
 > 当前状态：主要接口与默认实现已存在。本轮统一 Storage 首版已完成 Retriever 接入；

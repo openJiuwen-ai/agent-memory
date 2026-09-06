@@ -1,8 +1,18 @@
 # WorkSwarm 接入
 
+最近一次修订日期：2026-09-05
+
 本文说明如何把 WorkSwarm（原 JiuwenSwarm，官网已更名；gitcode 仓库与代码标识仍为 `jiuwenswarm`）接入 agent-memory 记忆引擎，使 Agent 获得跨会话的持久记忆。WorkSwarm 通过 **JiuwenMemory** 外接记忆 provider 接入 agent-memory，支持 `server`（远程 HTTP）与 `sdk`（进程内装配内核）两种模式。
 
 完整的安装、配置与排障步骤维护在 WorkSwarm 仓库的 [JiuwenMemory-SDK 接入指导](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/zh/JiuwenMemory-SDK%E6%8E%A5%E5%85%A5.md)，本文只概述接入原理、步骤概要与本仓库侧的参考入口。
+
+> 当前兼容性：本仓库附带的 [provider](../../../jiuwen_memory_adapter/jiuwenswarm/agent_memory_provider.py)
+> 的远程客户端尚未适配新 HTTP 契约。它仍发送 flat `tenant_id` / `scope` / `k`，并读取
+> `ok` / `item_id` / `hits`；当前服务要求 Scope/Context JSON 和 `top_k`，并返回 API 原值。
+> 因此不能仅启动当前 HTTP 服务就使用这份 adapter 的 `server` 模式，开启 dev 也不能解决
+> 格式不兼容。`sdk` 模式不经过 HTTP，但仍使用过渡安全上下文，不代表生产认证已经完善。
+> 若使用 WorkSwarm 仓库自带 provider，需要另行确认其版本是否支持新协议；此处结论仅针对
+> 本仓库代码，不替代外部 provider 的版本说明。
 
 ## 1. 接入原理
 
@@ -10,10 +20,11 @@
 
 | 模式 | 原理 | 适用场景 |
 |---|---|---|
-| `server` | 远程 HTTP 调用 agent-memory server（`POST /v1/<verb>`） | 生产部署、多端共享同一个记忆服务 |
+| `server` | 远程 HTTP 调用 agent-memory server（`POST /v1/<method_name>`） | 多端共享服务；须先完成客户端契约适配及可信认证装配，仓内旧客户端当前不能直接使用 |
 | `sdk` | 在 WorkSwarm 进程内装配 agent-memory 内核，直接调用，无 HTTP 跳转 | 单机嵌入、不想额外起 HTTP 服务、对延迟敏感 |
 
-两种模式最终都落到同一组 `MemoryAPI` 语义：`add` 写记忆、`search` 检记忆。上层 Agent 对模式无感。
+两种模式的设计目标都是落到同一组 `MemoryAPI` 语义：`add` 写记忆、`search` 检记忆。
+当前远程模式仍有上述兼容缺口，不能据此推断两种模式已具备相同可用性。
 
 ### 1.2 记忆轨道自动驱动
 
@@ -34,7 +45,7 @@ after_invoke（每轮结束）
 1. **安装内核**：在 WorkSwarm 所在的 Python 环境执行 `pip install JiuwenMemory`，并用 `python -c "from jiuwen_memory.api import assemble"` 验证；
 2. **准备后端**：
    - `sdk` 模式：部署 Redis / Milvus / Elasticsearch 三个后端服务（轻量场景可退化为 sqlite / memory 组合）；
-   - `server` 模式：按[部署方式概览](../安装指导/部署方式概览.md)启动 agent-memory HTTP 服务；
+   - `server` 模式：先确认调用方已适配新 HTTP 契约，再按[部署方式概览](../安装指导/部署方式概览.md)启动服务并配置认证；不能直接复用仓内旧远程客户端；
 3. **配置**：在 WorkSwarm 的 `config.yaml` 的 `memory` 段选择 `provider: jiuwenmemory` 并指定 `mode`，`sdk` 模式还需在 `jiwen.sdk` 子段填写三个后端的 `type` / `url`；
 4. **验证**：启动后日志出现 `JiuwenMemory provider built` 关键行即挂载成功；对话中让 Agent 记一件事，隔几轮或换会话再问，能召回即接入生效。
 
