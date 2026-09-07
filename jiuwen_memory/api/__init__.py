@@ -26,6 +26,7 @@ from jiuwen_memory.common.security.request_context import (
     set_request_id,
 )
 from jiuwen_memory.common.security.types import (
+    SECRET_PARAM_KEYS,
     Action,
     Credentials,
     Grant,
@@ -33,6 +34,7 @@ from jiuwen_memory.common.security.types import (
     Surface,
     reset_current,
     set_current,
+    validate_actor_form,
 )
 from jiuwen_memory.common.type_def import (
     EXT_MAX_TOKENS,
@@ -79,7 +81,7 @@ from jiuwen_memory.retrieval import (
     TrajectoryStep,
 )
 
-from .access_security import build_dev_authenticator
+from .access_security import build_configured_security_runtime, build_dev_authenticator
 from .memory_api import MemoryAPI
 from .memory_api_impl import MemoryRuntime, assemble, assemble_runtime
 
@@ -89,6 +91,7 @@ __all__ = [
     "assemble_runtime",
     "MemoryRuntime",
     "build_dev_authenticator",
+    "build_configured_security_runtime",
     # 数据模型（common.type_def）
     "Scope",
     "Context",
@@ -137,6 +140,7 @@ __all__ = [
     "Action",
     "Credentials",
     "RequestSecurityContext",
+    "SECRET_PARAM_KEYS",
     "Surface",
     "legacy_request_context",
     "new_request_context",
@@ -145,6 +149,7 @@ __all__ = [
     "set_request_id",
     "set_current",
     "reset_current",
+    "validate_actor_form",
     # Access 错误映射（公开异常，transport 不识别内核内部模块）
     "AgentMemoryError",
     "AuthenticationError",

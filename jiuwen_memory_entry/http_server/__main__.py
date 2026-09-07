@@ -18,19 +18,19 @@ requests. Authentication supplies the sole non-JSON API argument, ``security``.
 from __future__ import annotations
 
 import argparse
-import ipaddress
 import json
 import logging
 import os
 import sys
+import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import import_module
 from typing import Any
 
 from jiuwen_memory_entry.core.api_contract import invoke_api, is_known_verb
+from jiuwen_memory_entry.core.dev_security import with_local_dev_security
 from jiuwen_memory_entry.core.error_response import error_response
-from jiuwen_memory_entry.http_server.dev_security import build_dev_security_runtime
 
 # 共享应用核（server / profiles / handler / config_loader）住在 jiuwen_memory_entry/core；
 # 加入 sys.path 后 flat-import 复用——本 surface 只做 HTTP 传输。
@@ -53,52 +53,104 @@ RateLimitedError = _api_module.RateLimitedError
 ValidationError = _api_module.ValidationError
 
 logger = logging.getLogger("agent-memory.server")
+_StdThreadingHTTPServer = ThreadingHTTPServer
+
+_MAX_BODY_BYTES = 4 * 1024 * 1024
+_READ_TIMEOUT = 30
+_MAX_CONCURRENT_REQUESTS = 256
 
 _AUTH_MODE_ENV = "JIUWEN_MEMORY_HTTP_AUTH_MODE"
-_ALLOW_DEV_NON_LOOPBACK_ENV = "JIUWEN_MEMORY_HTTP_ALLOW_DEV_AUTH_NON_LOOPBACK"
 _AUTH_MODES = frozenset({"required", "dev"})
-_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
-_FALSE_VALUES = frozenset({"0", "false", "no", "off", ""})
 
 
-def _read_env_flag(name: str) -> bool:
-    raw = os.getenv(name, "").strip().lower()
-    if raw in _TRUE_VALUES:
-        return True
-    if raw in _FALSE_VALUES:
-        return False
-    raise ValidationError(f"environment variable {name} must be a boolean value")
-
-
-def _is_loopback_host(host: str) -> bool:
-    if host.lower() == "localhost":
-        return True
+def _parse_content_length(headers, *, max_body_bytes: int = _MAX_BODY_BYTES) -> tuple[int, int]:
+    """只校验 Content-Length；返回 ``(HTTP status, length)``。"""
+    raw_length = headers.get("Content-Length", "0")
     try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
+        length = int(raw_length)
+    except (TypeError, ValueError):
+        return 400, 0
+    if length < 0:
+        return 400, 0
+    if length > max_body_bytes:
+        return 413, 0
+    return 200, length
+
+
+def _read_body(rfile, length: int) -> bytes:
+    """按已校验长度读取请求体。"""
+    return rfile.read(length) if length else b""
+
+
+class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """限制并发处理线程，避免慢连接无界耗尽进程资源。"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._slots = threading.BoundedSemaphore(_MAX_CONCURRENT_REQUESTS)
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            try:
+                self._send_503(request)
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+        thread = threading.Thread(
+            target=self._process_and_release,
+            args=(request, client_address),
+            daemon=self.daemon_threads,
+        )
+        thread.start()
+
+    def _process_and_release(self, request, client_address):
+        try:
+            self.finish_request(request, client_address)
+        except Exception:
+            self.handle_error(request, client_address)
+        finally:
+            self.shutdown_request(request)
+            self._slots.release()
+
+    @staticmethod
+    def _send_503(request) -> None:
+        body = b'{"error":"ServiceUnavailable","message":"too many connections"}'
+        crlf = b"\r\n"
+        request.sendall(
+            b"HTTP/1.0 503 Service Unavailable"
+            + crlf
+            + b"Content-Length: "
+            + str(len(body)).encode()
+            + crlf
+            + b"Content-Type: application/json"
+            + crlf
+            + crlf
+            + body
+        )
 
 
 class HttpServer(Server):
     """The HTTP/socket surface over same-named ``MemoryAPI`` calls."""
 
-    max_body_bytes = 1024 * 1024
+    max_body_bytes = _MAX_BODY_BYTES
 
-    def __init__(self, config, kernel, *, security_runtime=None) -> None:
-        super().__init__(config, kernel)
-        self.security_runtime = security_runtime
+    def __init__(self, config, runtime, security_runtime=None) -> None:
+        super().__init__(config, runtime, security_runtime)
 
     @classmethod
     def build(cls, config, spaces=None, *, security_runtime=None):
         """Build the shared kernel and attach the HTTP security runtime."""
-        server = super().build(config, spaces)
-        server.security_runtime = security_runtime
-        return server
+        if security_runtime is None:
+            return super().build(config, spaces)
+        return super().build(config, spaces, security_runtime=security_runtime)
 
     def handler_cls(self):
         srv = self
 
         class Handler(BaseHTTPRequestHandler):
+            timeout = _READ_TIMEOUT
+
             def handle_get(self) -> None:
                 request_id = uuid.uuid4().hex
                 if self.path.rstrip("/") == "/healthz":
@@ -120,16 +172,15 @@ class HttpServer(Server):
                 if not is_known_verb(verb):
                     self._send_error("UnknownVerb", verb, request_id=request_id)
                     return
-                try:
-                    length = int(self.headers.get("Content-Length", 0))
-                except (TypeError, ValueError):
+                length_status, length = _parse_content_length(
+                    self.headers, max_body_bytes=srv.max_body_bytes
+                )
+                if length_status == 400:
                     self._send_error("BadRequest", "invalid Content-Length", request_id=request_id)
                     return
-                if length < 0 or length > srv.max_body_bytes:
+                if length_status == 413:
                     self._send_error("PayloadTooLarge", request_id=request_id)
                     return
-                raw = self.rfile.read(length) if length else b""
-
                 runtime = srv.security_runtime
                 if runtime is None:
                     self._send_error("SecurityUnavailable", request_id=request_id)
@@ -142,13 +193,15 @@ class HttpServer(Server):
                     with authenticated(
                         runtime.authenticator,
                         credentials,
-                        audit=getattr(runtime, "audit", None),
+                        audit=getattr(runtime, "audit", None) or srv.audit,
                         limiter=getattr(runtime, "rate_limiter", None),
                         workload_guard=getattr(runtime, "workload_guard", None),
                         surface=Surface.HTTP,
                         request_id=request_id,
                     ) as security:
                         context_request_id = security.request_id
+                        # 凭据和入口保护通过后才读取请求体，慢上传不能绕过认证占用内存。
+                        raw = _read_body(self.rfile, length)
                         try:
                             payload = json.loads(raw) if raw else None
                         except (TypeError, ValueError) as exc:
@@ -222,7 +275,11 @@ class HttpServer(Server):
             setattr(Handler, f"do_{method}", Handler.handle_unsupported)
         return Handler
 
-    def _check_binding(self, host: str, *, allow_dev_non_loopback: bool) -> None:
+    # PR1 兼容名；既有嵌入式调用与资源保护测试仍通过该入口取 Handler。
+    def _handler_cls(self):
+        return self.handler_cls()
+
+    def _check_binding(self, host: str) -> None:
         runtime = self.security_runtime
         if runtime is None:
             return
@@ -230,35 +287,22 @@ class HttpServer(Server):
         requirement = getattr(authenticator, "requires_loopback_binding", None)
         requires_loopback = bool(requirement()) if callable(requirement) else False
         policy = getattr(runtime, "binding_policy", None)
-        if policy is not None:
-            policy.check(host, requires_loopback=requires_loopback)
-            return
-        if not requires_loopback or _is_loopback_host(host):
-            return
-        mode_method = getattr(authenticator, "mode", None)
-        mode = mode_method() if callable(mode_method) else ""
-        if mode == "dev" and allow_dev_non_loopback:
-            logger.warning(
-                "development authentication is listening on non-loopback host %s; "
-                "the deployment boundary must prevent remote access",
-                host,
-            )
-            return
-        if mode == "dev":
-            raise ValidationError(
-                "development authentication may bind only to a loopback host; "
-                f"set {_ALLOW_DEV_NON_LOOPBACK_ENV}=true only inside an isolated container"
-            )
-        raise ValidationError(
-            f"authenticator mode {mode!r} requires a loopback host; "
-            "use an authenticator that supports non-loopback binding"
-        )
+        if policy is None:
+            raise ValidationError("security runtime is missing a binding policy")
+        policy.check(host, requires_loopback=requires_loopback)
 
-    def serve(self, host: str, port: int, *, allow_dev_non_loopback: bool = False) -> None:
+    def serve(self, host: str, port: int) -> None:
         httpd = None
         try:
-            self._check_binding(host, allow_dev_non_loopback=allow_dev_non_loopback)
-            httpd = ThreadingHTTPServer((host, port), self.handler_cls())
+            self._check_binding(host)
+            # 上游嵌入测试会替换标准 server factory；正常运行始终使用有界实现。
+            server_cls = (
+                ThreadingHTTPServer
+                if ThreadingHTTPServer is not _StdThreadingHTTPServer
+                else _BoundedThreadingHTTPServer
+            )
+            httpd = server_cls((host, port), self.handler_cls())
+            httpd.daemon_threads = True
             logger.info(
                 "agent-memory server (profile=%s) on http://%s:%s",
                 self.config.profile,
@@ -292,30 +336,19 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.auth_mode not in _AUTH_MODES:
         parser.error(f"invalid {_AUTH_MODE_ENV}: {args.auth_mode!r}")
-    try:
-        allow_dev_non_loopback = _read_env_flag(_ALLOW_DEV_NON_LOOPBACK_ENV)
-    except ValidationError as exc:
-        parser.error(str(exc))
-
     layers = [OFFLINE]
     for path in args.config:
         layers.append(load_layer(path))
-    security_runtime = None
+    config = load_config(layers)
     if args.auth_mode == "dev":
-        security_runtime = build_dev_security_runtime()
+        config = with_local_dev_security(config)
         logger.warning(
             "development authentication is enabled; credentials are ignored and this mode "
             "must not be used in production"
         )
-    srv = HttpServer.build(
-        load_config(layers), security_runtime=security_runtime
-    )  # 基类 build → HttpServer 实例
+    srv = HttpServer.build(config)  # 基类 build → HttpServer 实例
     try:
-        srv.serve(
-            args.host,
-            args.port,
-            allow_dev_non_loopback=allow_dev_non_loopback,
-        )
+        srv.serve(args.host, args.port)
     except ValidationError as exc:
         logger.error("HTTP server refused to start: %s", exc)
         return 2

@@ -35,7 +35,7 @@
 | `graph_impl/` | GraphStore 实现目录（memory / nano_graphrag）；`working_dir` 晚绑定 |
 | `fulltext_impl/` | FulltextStore 实现目录（memory / elasticsearch）；`hosts` 晚绑定 |
 | `fusion_impl/` | FusionStore 实现目录（memory / milvus_graph）；`uri`/`working_dir` 晚绑定 |
-| `fs_impl/` | FSStore 实现目录（local）；`root` 晚绑定 |
+| `fs_impl/` | FSStore 实现目录（local）；`root` 晚绑定。FS 加密装饰器不在 PR1，后续单独合入 |
 | `entity_impl/` | EntityStore 实现目录（elasticsearch）；经 manager 装配为 ENTITY 端口（params 引用 → `entity_store.default` 兜底）；`hosts` 未配时 builder 返 None → 无 ENTITY 能力（增强层装配期降级，不报错）；`hosts` 晚绑定 |
 | `store_manager_impl/` | 管理面实现目录；`CompositeStoreManager` 以 `composite` target 自注册。双入口：`__init__` 收已构造的 Store 实例（手工/测试），`from_config` 从配置内部构造七类 Store 与全部命名数据面（装配路径，`_build` 即其一行封装）。含 `_AuthorizedStoreProxy` + ENTITY 专用的 `_AuthorizedEntityStoreProxy` 授权代理、七类端口全量聚合、`_build_domain_stores`（`domain_stores` 段逐套装配，`default` 必建且是命名实例的 overlay base）。**manager 段 params 不承载数据面配置**：端口来自命名空间聚合，数据面参数全在 `domain_stores.<name>` |
 | `domain_store_impl/` | 数据面实现目录；`CompositeDomainStore`（`recallers` property + `bind_recallers` 手工接线口 + `for_manager(manager, config)` 供 manager 装配期直接构造——profile 派生、召回路组装与绑定一次完成；真源 KV 端口名由装配期指名，非硬编码 default）、`_assemble_recallers`（F06 内收设计）与**召回路全家**：契约 `recaller.py`（`Recaller` + `RecallerProducer`，`TOP_NAME=recaller`）+ 实现 `keyword_recaller.py` / `vector_recaller.py` / `graph_recaller.py` + 共用的 `unit_aggregation.py`（chunk→unit MaxP 归并）。Recaller 是数据面内部件而非检索层算子，不继承 `RetrievalOperator`（F07） |
@@ -82,9 +82,10 @@
    连接失败/超时/服务不可用等非预期失败统一抛 `BackendError`（不抛泛化的 Exception）。
 
 8. **EncryptedKVStore 只做装饰，不做算法**
-   `encrypted` KV target 必须显式包装一个 raw KVStore，并调用 `common.security.SecurityProvider`
-   做 value 加解密；`list` 必须在解密后执行 MemoryUnit 过滤，不能把过滤下推到密文 raw KV。
-   真实加密算法不放在 storage 层。
+   `encrypted` KV target 必须显式包装一个 raw KVStore，并调用
+   `common.security.cryptography` 的 `CryptographyProvider` 做 value 加解密
+   （旧 `SecurityProvider` 只保留一个发布周期的兼容导出）；`list` 必须在解密后执行
+   MemoryUnit 过滤，不能把过滤下推到密文 raw KV。真实加密算法不放在 storage 层。
 
 9. **过滤保持 metadata 形态语义**
    `EQ` / `IN` 的正向匹配只命中标量，`CONTAINS` 只命中数组成员；`NE` / `NOT_IN`

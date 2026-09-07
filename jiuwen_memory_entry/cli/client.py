@@ -10,11 +10,13 @@ import sys
 import urllib.error
 import urllib.request
 import uuid
+from types import SimpleNamespace
 from typing import Any, Protocol
 
-from jiuwen_memory.api import AgentMemoryError, Credentials, Surface, build_dev_authenticator
+from jiuwen_memory.api import AgentMemoryError, Credentials, Surface
 from jiuwen_memory_entry.core.api_contract import invoke_api, is_known_verb
 from jiuwen_memory_entry.core.auth_middleware import authenticated
+from jiuwen_memory_entry.core.dev_security import with_local_dev_security
 from jiuwen_memory_entry.core.error_response import error_response
 
 _CORE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core")
@@ -43,14 +45,28 @@ class EngineClient(Protocol):
 class InProcessClient:
     """Hold one runtime and directly invoke MemoryAPI with an injected authenticator."""
 
-    def __init__(self, configs: list[str] | None = None, *, authenticator: Any = None) -> None:
+    def __init__(
+        self,
+        configs: list[str] | None = None,
+        *,
+        authenticator: Any = None,
+        dev_authentication: bool = False,
+    ) -> None:
         """Assemble one runtime; identity never comes from business parameters."""
         from config_loader import load_layer
         from profiles import OFFLINE, load_config
         from server import Server
 
-        self._srv = Server.build(load_config([OFFLINE, *(load_layer(p) for p in configs or [])]))
-        self._authenticator = authenticator
+        config = load_config([OFFLINE, *(load_layer(p) for p in configs or [])])
+        if dev_authentication:
+            config = with_local_dev_security(config)
+        if authenticator is None:
+            self._srv = Server.build(config)
+        else:
+            self._srv = Server.build(
+                config,
+                security_runtime=SimpleNamespace(authenticator=authenticator),
+            )
 
     @property
     def server(self):
@@ -65,12 +81,22 @@ class InProcessClient:
         try:
             if not is_known_verb(verb):
                 error = "UnknownVerb"
-            elif self._authenticator is not None:
-                credentials = Credentials(api_key=os.environ.get("AGENT_MEMORY_API_KEY", ""))
-                with authenticated(
-                    self._authenticator, credentials, surface=Surface.CLI, request_id=request_id
-                ) as security:
-                    return 200, invoke_api(self._srv.api, verb, payload, security)
+            else:
+                runtime = self._srv.security_runtime
+                if runtime is not None:
+                    credentials = Credentials(api_key=os.environ.get("AGENT_MEMORY_API_KEY", ""))
+                    guard = getattr(runtime, "workload_guard", None)
+                    if not runtime.authenticator.requires_concurrency_guard():
+                        guard = None
+                    with authenticated(
+                        runtime.authenticator,
+                        credentials,
+                        audit=self._srv.audit,
+                        workload_guard=guard,
+                        surface=Surface.CLI,
+                        request_id=request_id,
+                    ) as security:
+                        return 200, invoke_api(self._srv.api, verb, payload, security)
         except AgentMemoryError as exc:
             error, detail = type(exc), exc
         except Exception as exc:
@@ -150,7 +176,7 @@ def make_client(
         raise ValueError(f"unknown authentication mode: {auth_mode}")
     if server_url:
         return HttpClient(server_url)
-    authenticator = build_dev_authenticator() if auth_mode == "dev" else None
-    if authenticator is not None:
+    dev_authentication = auth_mode == "dev"
+    if dev_authentication:
         logger.warning("development authentication is enabled for local CLI testing")
-    return InProcessClient(configs, authenticator=authenticator)
+    return InProcessClient(configs, dev_authentication=dev_authentication)

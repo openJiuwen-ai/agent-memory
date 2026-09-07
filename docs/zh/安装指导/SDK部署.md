@@ -128,12 +128,11 @@ curl -X POST http://127.0.0.1:8137/v1/search \
 
 HTTP 认证模式按 `--auth-mode`、环境变量 `JIUWEN_MEMORY_HTTP_AUTH_MODE`、默认值
 `required` 的优先级选择。例如，不传该参数但环境变量为 `dev` 时仍会启用开发认证。
-`required` 模式下，当前启动器没有生产 `SecurityRuntimeProducer`，业务接口保持
-fail-closed 返回 503；集成应用应通过
-`HttpServer.build(..., security_runtime=security_runtime)` 注入可信认证 runtime。
-这里的 `security_runtime` 是安全组件容器，不是 `assemble_runtime()` 返回的记忆内核运行时。
-开发启动器使用的 `DevHttpSecurityRuntime` 仅带固定身份认证器，不含限流、并发保护或
-surface 审计组件，但 API 自身的授权与业务审计仍然执行。
+`required` 模式从配置中的 `memory_api.security` 装配生产 `SecurityRuntime`；未配置时业务
+接口 fail-closed 返回 503。集成应用也可通过
+`HttpServer.build(..., security_runtime=security_runtime)` 显式注入可信 runtime。这里的
+`security_runtime` 是安全组件容器，不是 `assemble_runtime()` 返回的记忆内核运行时。
+开发启动器同样装配完整 runtime，包括统一的绑定策略与资源保护能力。
 
 HTTP 进程内只装配一个 Kernel，请求之间能够共享状态；服务停止后，默认内存数据丢失。
 
