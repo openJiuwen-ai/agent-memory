@@ -10,5 +10,6 @@ from jiuwen_memory.construction.dedup import DedupProducer
 
 import_optional(".keyword_dedup", __name__)
 import_optional(".vector_dedup", __name__)
+import_optional(".shadow_dedup", __name__)
 
 __all__ = ["DedupProducer"]

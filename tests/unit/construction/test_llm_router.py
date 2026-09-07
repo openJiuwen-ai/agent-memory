@@ -386,3 +386,31 @@ def test_the_system_prompt_carries_the_classes_and_dimensions() -> None:
     assert "user_memory (FALLBACK)" in prompt
     assert "project_memory" in prompt
     assert "agent_id" in prompt and "session_id" in prompt
+
+
+def test_the_system_prompt_carries_ownership_coordinates() -> None:
+    """归属坐标必须进 prompt：模型据此决定 project/user/team 归属（F08 §1.2 复用 coords）。
+
+    漏掉坐标即模型只按收窄维猜归属——project 级事实可能落 user_memory，召回按 project
+    隔离时丢失。
+    """
+    table = _table()
+    ctx = _ctx(table, project="p1")
+    unit = _unit("项目 p1 部署在集群 A")
+    router, llm = _router(_reply(unit))
+    router.route([unit], ctx)
+    prompt = llm.calls[0][0].content
+    assert "OWNERSHIP COORDINATES" in prompt
+    assert "project=p1" in prompt
+    assert "user=alice" in prompt
+
+
+def test_the_system_prompt_coordinates_default_to_none() -> None:
+    """无坐标时显示 ``(none)``，不因缺项把 prompt 格式化炸掉。"""
+    table = _table()
+    ctx = _ctx(table, user="", agent="", session="")
+    unit = _unit("我偏好深色主题")
+    router, llm = _router(_reply(unit))
+    router.route([unit], ctx)
+    prompt = llm.calls[0][0].content
+    assert "OWNERSHIP COORDINATES" in prompt

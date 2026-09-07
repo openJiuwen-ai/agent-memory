@@ -36,6 +36,7 @@ from jiuwen_memory.common.log import (
     redact_for_log,
 )
 from jiuwen_memory.common.type_def import (
+    COORDS_KEY,
     MESSAGES_KEY_PREFIX,
     DedupDecision,
     LifecycleState,
@@ -49,6 +50,7 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.common.type_def.memory import ROUTE_CTX_KEY, Segment
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction.abstractor import Abstractor, AbstractorProducer
 from jiuwen_memory.construction.associator import Associator, AssociatorProducer
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
@@ -318,6 +320,10 @@ class OrchestratingEvolver(Evolver):
         """
         result = EvolveResult()
         noop_count = 0
+        logger.info(
+            "[trace/consolidate] _dedup_batch ENTER | candidates=%d | dedup_impl=%s",
+            len(candidates), type(self._dedup).__name__,
+        )
 
         # 每条候选的判定上下文：(candidate, best_unit, best_score, hit_units)
         direct_add: list[tuple[MemoryUnit, MemoryUnit | None, float]] = []
@@ -335,6 +341,15 @@ class OrchestratingEvolver(Evolver):
                 )
                 direct_add.append((candidate, None, 0.0))
                 continue
+
+            logger.info(
+                "[trace/dedup] recall | candidate_id=%s | content=%r | hits=%d | dedup_impl=%s | scope=%r",
+                candidate.id[:8],
+                candidate.content[:80],
+                len(hit_units),
+                type(self._dedup).__name__,
+                candidate.scope,
+            )
 
             if not hit_units:
                 direct_add.append((candidate, None, 0.0))
@@ -396,6 +411,14 @@ class OrchestratingEvolver(Evolver):
         result: EvolveResult,
     ) -> int:
         """执行单条候选的去重决策，更新 result；返回 noop 计数（0 或 1）。"""
+        logger.info(
+            "[trace/dedup] decision | candidate_id=%s | decision=%s | existing=%s | similarity=%.3f | content=%r",
+            candidate.id[:8],
+            decision.value,
+            existing_unit.id[:8] if existing_unit else None,
+            similarity,
+            candidate.content[:80],
+        )
         decision_ids_for_log = {candidate.id[:8]}
         if existing_unit is not None:
             decision_ids_for_log.add(existing_unit.id[:8])
@@ -559,8 +582,28 @@ class OrchestratingEvolver(Evolver):
             ChatMessage(role="user", content=user_prompt),
         ]
 
+        # [trace/consolidate] 单条判定路径：打印待消歧候选 + 召回记忆 + 完整 prompt
+        logger.info(
+            "[trace/consolidate] (single) candidate before LLM | candidate_id=%s | content=%r | tier=%s",
+            candidate.id[:8], candidate.content, candidate.tier.value,
+        )
+        for unit, score in hits[:3]:
+            logger.info(
+                "[trace/consolidate]   (single) recalled hit | unit_id=%s " \
+                "| score=%.3f | content=%r | tier=%s | lifecycle=%s",
+                unit.id[:8], score, unit.content, unit.tier.value, unit.lifecycle.value,
+            )
+        logger.info(
+            "[trace/consolidate] (single) llm_prompt | system_len=%d | user_prompt=%s",
+            len(_DEDUP_SYSTEM_PROMPT), user_prompt,
+        )
+
         try:
             response = self._llm.chat(messages, temperature=0, max_tokens=256)
+            logger.info(
+                "[trace/consolidate] (single) llm_raw_response | resp_len=%d | raw_response=%s",
+                len(response) if response else 0, response,
+            )
         except Exception as exc:
             raise RuntimeError(f"LLM dedup call failed: {exc}") from exc
 
@@ -617,8 +660,29 @@ class OrchestratingEvolver(Evolver):
             ChatMessage(role="user", content=user_prompt),
         ]
 
+        # [trace/consolidate] consolidate 调 LLM 前：打印待消歧候选 + 召回记忆 + 完整 prompt
+        for cand, hits in items:
+            logger.info(
+                "[trace/consolidate] candidate before LLM | candidate_id=%s | content=%r | tier=%s",
+                cand.id[:8], cand.content, cand.tier.value,
+            )
+            for unit, score in hits[:3]:
+                logger.info(
+                    "[trace/consolidate]   recalled hit | unit_id=%s" \
+                    " | score=%.3f | content=%r | tier=%s | lifecycle=%s",
+                    unit.id[:8], score, unit.content, unit.tier.value, unit.lifecycle.value,
+                )
+        logger.info(
+            "[trace/consolidate] llm_prompt | system_len=%d | user_prompt=%s",
+            len(_DEDUP_BATCH_SYSTEM_PROMPT), user_prompt,
+        )
+
         try:
             response = self._llm.chat(messages, temperature=0, max_tokens=1024)
+            logger.info(
+                "[trace/consolidate] llm_raw_response | resp_len=%d | raw_response=%s",
+                len(response) if response else 0, response,
+            )
         except Exception as exc:
             logger.warning(
                 "Evolver._llm_dedup_decide_batch: LLM call failed, "
@@ -944,6 +1008,17 @@ class OrchestratingEvolver(Evolver):
             return derived
         decisions = route_batch(self._router, derived, ctx)
         kept = apply_decisions(decisions)
+        # apply_decisions 改 scope/tags/memory_class 但不回写 coords。
+        # 派生 unit 经 inherited_system_metadata 继承源单元 metadata，而源单元的 coords
+        # 已被 API 层 _take_coords 取出、不在 metadata 里 → 派生 unit 也无 coords →
+        # md._project_of 读不到 coords.project 兜底 "default"。从 ctx.coords 回写，
+        # 让文档路径按 project 分流（coords 是 TRANSIENT 键，dumps 进 unit_json 时剥除，
+        # 但 md.write/shadow._project_of 在 dumps 之前从 unit 对象读，路径计算不受影响）。
+        if ctx.coords:
+            for unit in kept:
+                metadata = dict(unit.system_metadata or {})
+                metadata[COORDS_KEY] = dict(ctx.coords)
+                unit.system_metadata = metadata
         spaces = sorted({unit.scope.space for unit in kept})
         degraded = degraded_reasons(decisions)
         if degraded:
@@ -1091,11 +1166,13 @@ def _build(config):
     （``kv_store`` / ``index_builder`` / ``dedup`` / ``graph_store`` / ``llm`` …）与
     ``InMemoryEngine``、``HybridIndexBuilder`` 等共享同一实例，保证去重检索的是已索引的内容。
     """
-    # index_builder / dedup 缺省都随 vector_enabled：向量开走 hybrid+vector，
-    # 只倒排走 fulltext+keyword（去重仍可用——向量路在 fulltext-only 下 VectorStore 恒空，
-    # 会使去重失效，故此时改用倒排召回）。
+    # index_builder 缺省经公共函数 resolve_index_builder_default：文档模式 → document
+    # （全委托 storage，与 engine / job_factory 三处一致，避免缺省判定分叉拿到不一致
+    # 的 IndexBuilder）；非文档模式随 vector_enabled 在 hybrid/fulltext 间择一。
+    # dedup 缺省仍随 vector_enabled：向量开走 vector，fulltext-only 下 VectorStore 恒空
+    # 使去重失效，改用倒排召回（keyword）。
     vector_on = config.get("vector_enabled", True)
-    ib_default = "hybrid" if vector_on else "fulltext"
+    ib_default = resolve_index_builder_default(config)
     dr_default = "vector" if vector_on else "keyword"
     # layer_annotator 可选：本 evolver params 显式声明 ``layer_annotator`` 时按它取
     # （None/空串 → 显式禁用，视频 profile 用此关闭 L0/L1 标注，对齐 F05；

@@ -25,10 +25,13 @@ from jiuwen_memory.common.errors import (
     ValidationError,
     safe_error_message,
 )
+from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
+    MD_FILENAME_KEY,
     CandidateFuser,
     ChannelError,
     FilterExpr,
+    LifecycleState,
     MemoryUnit,
     ParsedQuery,
     RankedStorageResult,
@@ -43,7 +46,9 @@ from jiuwen_memory.common.type_def import (
     memory_key,
 )
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.config.document_flag import WRITE_DOCUMENT_KEY, should_write_document
 from jiuwen_memory.storage.domain_store import DomainStore, DomainStoreProducer
+from jiuwen_memory.storage.kv_impl.memory_list import list_memory_entries
 from jiuwen_memory.storage.security import (
     StorageAccessContext,
     StorageAction,
@@ -53,6 +58,10 @@ from jiuwen_memory.storage.store_manager import (
     StoreManager,
     StoreManagerProducer,
     resolve_name,
+)
+from jiuwen_memory.storage.sync_gate import (
+    close_write_window,
+    open_write_window,
 )
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode, MemoryListResult
 
@@ -77,6 +86,9 @@ def _parse_pipeline(value: RetrievalPipeline | str | None) -> RetrievalPipeline:
         ) from exc
 
 
+logger = get_logger(__name__)
+
+
 class CompositeDomainStore(DomainStore):
     """默认数据面实现：MemoryUnit 领域 CRUD + 检索适配。"""
 
@@ -86,6 +98,7 @@ class CompositeDomainStore(DomainStore):
         manager: StoreManager,
         preferred_pipeline: RetrievalPipeline,
         kv_name: str = "default",
+        write_document: bool = False,
     ) -> None:
         self._manager = manager
         self._preferred_pipeline = preferred_pipeline
@@ -94,6 +107,10 @@ class CompositeDomainStore(DomainStore):
         self._kv_name = kv_name
         # recallers 由 manager 装配期通过 bind_recallers 注入；默认空列表。
         self._recallers: list[Any] = []
+        # write_document 装配期固化（与 _preferred_pipeline 同范式，F07 §2）：
+        # true → 真源写影子索引 + md 人类视图，不写 KV；false → 仅写 KV。
+        # markdown/shadow 端口是否装配与它绑定（manager 扫命名空间决定）。
+        self._write_document = write_document
 
     @classmethod
     def for_manager(cls, manager: StoreManager, config: Any = None) -> CompositeDomainStore:
@@ -104,9 +121,9 @@ class CompositeDomainStore(DomainStore):
         ``DomainStoreProducer`` 按具名引用绕回去解析一次。
 
         ``config`` 是本套数据面的 profile 视图（``domain_stores.<name>`` entry，命名
-        实例已 overlay 在 ``default`` entry 之上）：检索首选路径、真源 KV 端口名与召回
-        路选择键全部从它派生，组装完即 :meth:`bind_recallers` 绑定——这三件事本就同源，
-        分开做只会给出「构造完但还没绑召回路」的半成品状态。
+        实例已 overlay 在 ``default`` entry 之上）：检索首选路径、真源 KV 端口名、召回
+        路选择键与文档模式开关全部从它派生，组装完即 :meth:`bind_recallers` 绑定——这几
+        件事本就同源，分开做只会给出「构造完但还没绑召回路」的半成品状态。
 
         ``config=None`` 是手工/测试接线口：全默认、不装召回路（手工接线的 recaller
         需要先有 manager 实例才能构造，仍走 :meth:`bind_recallers`）。
@@ -117,6 +134,7 @@ class CompositeDomainStore(DomainStore):
             manager=manager,
             preferred_pipeline=_parse_pipeline(config.get("preferred_retrieval_pipeline")),
             kv_name=resolve_name(config, "kv_store"),
+            write_document=should_write_document(config.get(WRITE_DOCUMENT_KEY, False)),
         )
         domain_store.bind_recallers(_assemble_recallers(config, storage=manager))
         return domain_store
@@ -124,6 +142,29 @@ class CompositeDomainStore(DomainStore):
     @property
     def security(self) -> StorageSecurity:
         return self._manager.security
+
+    @staticmethod
+    def _sanitize_document_content(units: list[MemoryUnit]) -> None:
+        """文档路径 content 单行清洗（F07 §12.4 的 enforcement point）。
+
+        块格式契约（``<标题>\\n<正文单行>\\n\\n``、看门狗按行遍历、replace/remove 按
+        ``\\n\\n`` 切块比对正文）建立在「一个 unit 一行正文」上，但上游（LLM 抽取/
+        直写）不保证——content 含换行时：md 块被切碎、replace_content 比对失锚；
+        看门狗按行遍历把第 2+ 行当独立幽灵 unit，且整段 content_hash 与任何单行
+        hash 对不上 → diff 出「删真 unit + 建幽灵 unit（新 uuid，断版本链）」。
+
+        故在 md.write / shadow.insert_units 分叉**之前**对 unit 本体原地折叠
+        ``" ".join(content.split())``——md 视图、unit_json、content_hash、后续
+        replace_content 锚点四方看到同一份单行 content。收口在文档路径入口
+        而非 extractor：单行是文档记忆的**存储层约束**（F07 §12.4），非抽取层
+        约束；KV 路径（结构化记忆）不受影响。
+        """
+        for unit in units:
+            if not unit.segments:
+                continue
+            content = unit.segments[0].content
+            if content and "\n" in content:
+                unit.segments[0].content = " ".join(content.split())
 
     @property
     def recallers(self) -> list[Any]:
@@ -139,6 +180,18 @@ class CompositeDomainStore(DomainStore):
         if self._recallers and not same_binding:
             raise ValidationError("CompositeDomainStore cannot be rebound to different recallers")
         self._recallers = bound
+
+    def should_write_document(self) -> bool:
+        """运行期直接读实例属性，不查 config（装配期已固化，见 ``__init__``）。"""
+        return self._write_document
+
+    def _raw_markdown(self) -> Any:
+        """取 markdown 端口；文档模式未装配时 manager 抛 UnsupportedStorageCapabilityError。"""
+        return self._manager.markdown()
+
+    def _raw_shadow_index(self) -> Any:
+        """取 shadow 端口；文档模式未装配时 manager 抛 UnsupportedStorageCapabilityError。"""
+        return self._manager.shadow_index()
 
     def preferred_retrieval_pipeline(self) -> RetrievalPipeline:
         return self._preferred_pipeline
@@ -156,13 +209,45 @@ class CompositeDomainStore(DomainStore):
         **kwargs: Any,
     ) -> None:
         self._authorize(access, scope, StorageAction.ADD, "memory_unit")
-        # 本实现无投影能力，落地范围仅记忆本体：调用方只要检索索引时无事可做。
+        # 本实现无独立投影能力（倒排/向量收进影子索引算子内部）：
+        # 调用方只要检索索引时（RETRIEVAL_ONLY）无事可做。
         if mode is IndexWriteMode.RETRIEVAL_ONLY:
             return
         self._validate_units(scope, units)
-        kv = self._kv()
-        for unit in units:
-            kv.insert(scope, memory_key(unit.id), dumps(unit))
+        if self.should_write_document():
+            # 文档路径：写 md + 建影子索引，不碰 KV（F07 §3.1 互斥路径）。
+            # md.write 内部按文件分组批量写、回填 unit.system_metadata["md_filename"]
+            # + 兜底 memory_class（空落 team_memory，F08 §2）；shadow.insert_units
+            # 从 system_metadata 读 md_filename 建 three-table 索引。
+            # 写窗口：两步写期间 md 与索引短暂不一致，挡住看门狗对账（F07 §12.9 风险 6，
+            # sync_gate 模块说明）——insert_units 含逐条 embed（完整模式远端 HTTP），
+            # 窗口可达秒级，2s debounce 挡不住。
+            self._sanitize_document_content(units)
+            md = self._raw_markdown()
+            shadow = self._raw_shadow_index()
+            open_write_window()
+            try:
+                md.write(scope, units)
+                shadow.insert_units(scope, units)
+            except Exception:
+                for u in units:
+                    fn = (u.system_metadata or {}).get(MD_FILENAME_KEY, "")
+                    c = u.segments[0].content if u.segments else ""
+                    if fn and c:
+                        try:
+                            md.remove_content(scope, fn, c)
+                        except Exception as comp_exc:
+                            logger.warning(
+                                "add 补偿失败 unit=%s: %s", u.id[:8], comp_exc
+                            )
+                raise
+            finally:
+                close_write_window()
+        else:
+            # 非文档路径：KV 真源（原样）。
+            kv = self._kv()
+            for unit in units:
+                kv.insert(scope, memory_key(unit.id), dumps(unit))
 
     def update(
         self,
@@ -178,9 +263,86 @@ class CompositeDomainStore(DomainStore):
         if mode is IndexWriteMode.RETRIEVAL_ONLY:
             return
         self._validate_units(scope, units)
-        kv = self._kv()
-        for unit in units:
-            kv.update(scope, memory_key(unit.id), dumps(unit))
+        if self.should_write_document():
+            # 文档路径：影子索引 update_units 覆写 unit_json（content_hash 判定自动处理——
+            # OVERWRITE content 变 → 重建 FTS5/vec0；SUPERSEDE 状态变 → 只覆写 unit_json），
+            # content 变时同步 md.replace_content 改 md 文件（F07 §5.2.1 步骤③⑤）。
+            # 写窗口（sync_gate，F07 §12.9 风险 6）：update 是「先索引后 md」反序——
+            # update_units（含 OVERWRITE 重建的 re-embed）与 replace_content 之间，索引
+            # 已变而 md 还是旧的，看门狗在此插入会「删真 unit + 建幽灵」。整个 for 循环
+            # 共持一个窗口（批量 update 中途关窗会出现同类窗口）。
+            self._sanitize_document_content(units)
+            shadow = self._raw_shadow_index()
+            md = self._raw_markdown()
+            open_write_window()
+            try:
+                for unit in units:
+                    # 先取旧 unit 拿 old content + md_filename（replace_content 的定位锚与路径）。
+                    olds = shadow.get_units(scope, [unit.id])
+                    old = olds[0] if olds else None
+                    # 影子索引覆写（id 不存在内部报 NotFoundError，对齐 KVStore.update）。
+                    shadow.update_units(scope, [unit])
+                    # md 侧按 content 是否变化分两路：OVERWRITE（content 变）走
+                    # replace_content 改块（§5.2.1）；SUPERSEDE（content 不变、仅
+                    # lifecycle ACTIVE→SUPERSEDED）走 remove_content 删旧块——md 真源
+                    # 不能留"幽灵块"让用户看到新旧两条都在，必须物理删旧块与影子索引
+                    # lifecycle 投影列更新同口径（下方 line 见 remove_content 分支）。
+                    # 对比口径用 segments[0].content（与 md/影子索引 _content_of 同源，§12.4 单段）。
+                    if old is None:
+                        continue
+                    old_content = old.segments[0].content if old.segments else ""
+                    new_content = unit.segments[0].content if unit.segments else ""
+                    if old_content == new_content:
+                        # SUPERSEDE 标记：content 没变但 lifecycle 从 ACTIVE→SUPERSEDED
+                        # （evolver _apply_decision 或 API 层 supersede）。旧版 md 块应删除，
+                        # 与影子索引 unit_json 里 lifecycle 投影列更新同口径——md 真源
+                        # 不能留"幽灵块"让用户看到矛盾两条都在。old 取自本次 update 前影子
+                        # 索引的快照（上方 shadow.get_units），unit.lifecycle 是改过的新值。
+                        if (
+                            old.lifecycle == LifecycleState.ACTIVE
+                            and unit.lifecycle == LifecycleState.SUPERSEDED
+                        ):
+                            md_filename = (old.system_metadata or {}).get(MD_FILENAME_KEY, "")
+                            if md_filename:
+                                # remove_content 未命中（md 与索引漂移）返 False 不抛错，
+                                # 与 replace_content 同款降级——索引侧已更新，漂移交看门狗对账。
+                                try:
+                                    md.remove_content(scope, md_filename, old_content)
+                                except Exception:
+                                    try:
+                                        shadow.update_units(scope, [old])
+                                    except Exception as comp_exc:
+                                        logger.warning(
+                                            "update 补偿失败 unit=%s: %s",
+                                            unit.id[:8], comp_exc,
+                                        )
+                                    raise
+                        continue
+                    md_filename = (old.system_metadata or {}).get(MD_FILENAME_KEY, "")
+                    if md_filename:
+                        # 未命中（md 与索引漂移，如手改 md）返 False——不抛错，索引侧已更新，
+                        # 漂移交看门狗（§12.3）后续对账，避免 update 因 md 异常而整体失败。
+                        # 补偿（F08 决策四「写失败补偿」）：md 抛异常（IO 硬失败）时 shadow
+                        # 已改成 new，回滚 shadow.update_units([old]) 还原旧值（content_hash
+                        # 还原，投影按 hash 变化自动重建回旧态）。返 False 不触发补偿。
+                        try:
+                            md.replace_content(scope, md_filename, old_content, new_content)
+                        except Exception:
+                            try:
+                                shadow.update_units(scope, [old])
+                            except Exception as comp_exc:
+                                logger.warning(
+                                    "update 补偿失败 unit=%s: %s",
+                                    unit.id[:8], comp_exc,
+                                )
+                            raise
+            finally:
+                close_write_window()
+        else:
+            # 非文档路径：KV 真源（原样）。
+            kv = self._kv()
+            for unit in units:
+                kv.update(scope, memory_key(unit.id), dumps(unit))
 
     def delete(
         self,
@@ -192,12 +354,72 @@ class CompositeDomainStore(DomainStore):
         **kwargs: Any,
     ) -> None:
         self._authorize(access, scope, StorageAction.DELETE, "memory_unit")
-        # 同 add：无检索索引可单独移除，软删除保留本体即无事可做。
+        # 同 add：无检索索引可单独移除，软删除保留本体即无事可做（KV 时代语义）。
+        # 文档模式下本实现持有检索索引（FTS5/vec0 在 shadow 库里），但 SOFT 仍为
+        # no-op——检索退出由调用方先 lifecycle.transition 改状态（update(FORWARD_ONLY)
+        # 同步 lifecycle 投影列），检索侧靠谓词下推 + retriever 复核排除实现，
+        # 不在 delete(SOFT) 里删投影（避免 content 变更重建投影使 unit 重回检索）。
         if mode is IndexRemoveMode.SOFT:
             return
-        kv = self._kv()
-        for unit_id in unit_ids:
-            kv.delete(scope, memory_key(unit_id))
+        if self.should_write_document():
+            # 文档路径：影子索引 delete_units 同事务删三表 + md.remove_content 删对应块
+            # （F07 §5.4）。先 get_units 拿旧 unit（md_filename + content 定位 md 块）——
+            # delete_units 幂等不返存在信息，md 块定位靠旧 unit 的 content（类比 update 的
+            # replace_content 用 old_content 定位，§5.2.1 步骤⑤）。
+            # 写窗口（sync_gate，F07 §12.9 风险 6）：delete 也是「先索引后 md」反序——
+            # delete_units 与 remove_content 之间，索引已删而 md 还有行，看门狗在此插入
+            # 会把刚删的 unit 以新 uuid 复活（双写）。
+            shadow = self._raw_shadow_index()
+            md = self._raw_markdown()
+            open_write_window()
+            try:
+                olds = shadow.get_units(scope, unit_ids)
+                # 影子索引删三表（幂等，缺失静默跳过，§12.7 显式删三表不级联）。
+                shadow.delete_units(scope, unit_ids)
+                # md 侧：对每个存在的旧 unit 删对应块。get_units 缺失 id 省略 → 已不存在的
+                # unit 不删 md 块（md 与索引一致，本无块；若漂移交看门狗 §12.3 对账）。
+                # 补偿（F08 决策四「写失败补偿」）：某个 remove_content 抛异常（IO 硬失败）
+                # 时 shadow 已全删，回滚 shadow.insert_units(olds) 把删的全部插回（delete
+                # 后 id 已释放，insert 不冲突，新 rowid 自洽）。**md 侧补偿**：已成功删除的
+                # md 块（循环中失败前的 remove_content 已真删）须回写——记录已删 unit，失败时
+                # md.write 追加回（write 追加写 + _render_block 重建块格式，路径由 old 的
+                # coords 重算与原一致）。单块 remove_content 自身的原子写（_safe_restore）只
+                # 覆盖该次写入失败，跨块的中途失败不在其范围，故须本层显式回写已删块。
+                # 返 False 不触发补偿（软失败，未命中=md 本无该块，删无可删）。
+                removed: list[MemoryUnit] = []
+                try:
+                    for old in olds:
+                        content = old.segments[0].content if old.segments else ""
+                        md_filename = (old.system_metadata or {}).get(MD_FILENAME_KEY, "")
+                        if md_filename:
+                            # 未命中（md 与索引漂移，如手改 md / 看门狗先删）返 False——不抛错，
+                            # 索引侧已删，漂移交看门狗对账，避免 delete 因 md 异常而整体失败。
+                            md.remove_content(scope, md_filename, content)
+                            removed.append(old)
+                except Exception:
+                    # shadow 回滚：把删的全部插回。
+                    try:
+                        shadow.insert_units(scope, olds)
+                    except Exception as comp_exc:
+                        logger.warning("delete 补偿 shadow 回滚失败: %s", comp_exc)
+                    # md 回滚：把已成功删除的块追加回（restore_blocks 按 md_filename 定位，
+                    # 绕过 coords 丢失导致的 _md_path 路径错位）。
+                    if removed:
+                        try:
+                            md.restore_blocks(scope, removed)
+                        except Exception as md_comp_exc:
+                            logger.warning(
+                                "delete 补偿 md 回写失败 %d 块: %s",
+                                len(removed), md_comp_exc,
+                            )
+                    raise
+            finally:
+                close_write_window()
+        else:
+            # 非文档路径：KV 真源（原样）。
+            kv = self._kv()
+            for unit_id in unit_ids:
+                kv.delete(scope, memory_key(unit_id))
 
     def get(
         self,
@@ -223,14 +445,29 @@ class CompositeDomainStore(DomainStore):
         **kwargs: Any,
     ) -> MemoryListResult:
         self._authorize(access, scope, StorageAction.LIST, "memory_unit")
-        result = self._kv().list(
-            scope,
-            offset=offset,
-            limit=limit,
-            memory_types=memory_types,
-            filters=filters,
-            extensions=extensions,
-        )
+        # 文档分流（F07 §5.3 方案A）：文档模式真源是 md+shadow，全量拉走 shadow.list_units
+        # （对应 KV.scan 的角色），过滤/排序/分页原样复用 list_memory_entries——该函数入参是
+        # list[tuple[str, bytes]]，shadow.list_units 产出 (unit_id, unit_json bytes) 正好对齐
+        # （unit_id 当 key、unit_json 当 raw_bytes），无需区分来源。非文档维持原 KV.list 路径。
+        if self.should_write_document():
+            entries = self._raw_shadow_index().list_units(scope)
+            result = list_memory_entries(
+                entries,
+                offset=offset,
+                limit=limit,
+                memory_types=memory_types,
+                filters=filters,
+                extensions=extensions,
+            )
+        else:
+            result = self._kv().list(
+                scope,
+                offset=offset,
+                limit=limit,
+                memory_types=memory_types,
+                filters=filters,
+                extensions=extensions,
+            )
         items: list[MemoryUnit] = []
         for _, raw in result.entries:
             unit = loads(raw)
@@ -320,11 +557,22 @@ class CompositeDomainStore(DomainStore):
     def _get_units(self, scope: Scope, unit_ids: list[str]) -> list[MemoryUnit]:
         """批量点读真源：按输入顺序返回，缺失 id 省略，重复 id 各自返回。
 
-        ``mget`` 不去重且任一 key 缺失即抛 ``NotFoundError``（见 :meth:`KVStore.mget`），
-        故去重与「索引↔真源短暂不一致」的兜底都由本方法承担。
+        文档模式（``write_document=true``）走影子索引 ``shadow.get_units``——
+        真源已从 KV 切到 ``md``+``shadow``，KV 不再持有 MemoryUnit。``shadow.get_units``
+        契约即「缺失省略、按输入顺序保序」，与 KV 路径的语义对齐（§5.6 S2）。
+
+        非文档模式走 KV：``mget`` 不去重且任一 key 缺失即抛 ``NotFoundError``
+        （见 :meth:`KVStore.mget`），故去重与「索引↔真源短暂不一致」的兜底
+        都由本方法承担。影子索引路径无此问题——缺失 id 在 SQL 层自然省略。
         """
         if not unit_ids:
             return []
+        if self.should_write_document():
+            shadow = self._raw_shadow_index()
+            by_id = {unit.id: unit for unit in shadow.get_units(scope, unit_ids)}
+            # shadow.get_units 按 IN 查询返回唯一行，对重复 id 复用同一份 unit 对象，
+            # 与 KV 路径「重复 id 各自返回」行为一致（召回物化侧已 seen 去重，实际无重复）。
+            return [by_id[uid] for uid in unit_ids if uid in by_id]
         kv = self._kv()
         unique = list(dict.fromkeys(unit_ids))
         try:
@@ -482,6 +730,17 @@ def _assemble_recallers(config: Any, *, storage: StoreManager) -> list[Any]:
             return RecallerProducer.build(
                 target, {"store_manager": synthetic_name}, config.ctx
             )
+
+    if should_write_document(config.get(WRITE_DOCUMENT_KEY, False)):
+        # 文档模式：真源 md+shadow，召回统一走 ShadowRecaller（shadow.search_fulltext
+        # + search_vector 复合算子），替代 KV 时代的 keyword+vector+layers 四路——
+        # 那四路取 fulltext/vector 端口，文档模式不装配 → 全返空。graph 路独立于
+        # fulltext/vector 端口，按端口就绪与否决定是否并存（GraphRecaller 构造期硬取
+        # storage.graph，未配 graph store 时装配即抛，故需 has_graph_port 判定）。
+        recallers = [_dep("shadow_recaller", "shadow")]
+        if config.get("graph_enabled", True) and storage.has_graph():
+            recallers.append(_dep("graph_recaller", "graph"))
+        return recallers
 
     recallers = [_dep("keyword_recaller", "keyword")]
     if config.get("vector_enabled", True):

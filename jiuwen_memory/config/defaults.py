@@ -43,6 +43,16 @@ def default_config_dict() -> dict[str, Any]:
             # space/job/ingest_job 等）不再逐个声明 storage 引用，统一经
             # StoreManagerProducer.resolve 读此键取全局共享实例。
             "store_manager": _D,
+            # 文档记忆总开关。false=真源写 KV（默认）；true=真源写影子索引
+            # + md 人类视图，不写 KV。装配期由各消费方 _build 经 config.get 读取并
+            # 归一固化进实例属性（见 should_write_document），运行期方法不再查 config。
+            "write_document": False,
+            # 文档看门狗开关：仅 write_document=true 下有意义；默认随文档开启
+            # （未显式配置取 True）。与装配点 root.get(WATCH_DOCUMENT_KEY, True) 及
+            # resolve_watch_document(None→True) 三处语义一致——用户开 write_document
+            # 但不配本键时，合并保留本默认 True，看门狗随文档启动；用户显式 false 关闭。
+            # 非文档模式 has_shadow_index() 短路，本 True 无副作用。
+            "watch_document": True,
         },
         # 顶层 prompts 段：按 phase（consolidate/reflect）→ key → prompt 文本。
         # 与 globals 同级，由 AssemblyContext 抽取到 globals["prompts"] 供
