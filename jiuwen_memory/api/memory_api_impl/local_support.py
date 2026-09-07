@@ -555,7 +555,7 @@ def _normalize_list_extensions(raw: dict[str, Any] | None) -> dict[str, Any]:
     for key, value in raw.items():
         if not isinstance(key, str):
             raise ValidationError("extensions keys must be strings")
-        normalized[key] = str(value)
+        normalized[key] = value
     return normalized
 
 

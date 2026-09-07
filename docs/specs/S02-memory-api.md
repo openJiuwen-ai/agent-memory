@@ -950,7 +950,7 @@ def admin_all(*, security: RequestSecurityContext) -> dict[str, str]: ...
 | 字段 | 类型 | 默认 | 语义 |
 |------|------|------|------|
 | `scope` | Scope | 空 Scope | 检索目标范围（多租户隔离） |
-| `extensions` | dict[str, str] | `{}` | 调用方自定义透传配置，值须为传输安全的 str；约定 key `"max_tokens"` 表示自适应披露 token 预算，由 API 边界解析为 `RetrievalQuery.max_tokens` |
+| `extensions` | dict[str, Any] | `{}` | 调用方自定义透传配置，值原样透传；约定 key `"max_tokens"` 表示自适应披露 token 预算，由 API 边界解析为 `RetrievalQuery.max_tokens` |
 
 > `extensions["max_tokens"]` 是 API 边界解释的约定 key，解析后从透传 extensions 中移除；无此 key 或空串时披露阶段使用默认策略。
 
