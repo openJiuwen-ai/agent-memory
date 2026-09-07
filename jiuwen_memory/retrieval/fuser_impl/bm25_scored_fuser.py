@@ -232,15 +232,22 @@ class BM25ScoredFuser(Fuser):
                     best[uid] = contribution
                     channel[uid] = RecallChannel.KEYWORD
 
-        fused = [
-            replace(
-                pool[uid],
-                score=score,
-                channel=channel.get(uid, RecallChannel.KEYWORD),
-                evidence=evidence.get(uid, []),
+        fused: list[ScoredCandidate] = []
+        for uid, score in best.items():
+            # uid 只能来自 merged（直接建自 pool）或 lexical（其 key 建自 pool 的
+            # text），因此在 pool 中必然存在；用 .get() 取值 + 显式异常，
+            # 不做裸 dict[key]（G.TYP.07）。
+            candidate = pool.get(uid)
+            if candidate is None:
+                raise KeyError(f"BM25ScoredFuser: candidate {uid!r} scored but missing from pool")
+            fused.append(
+                replace(
+                    candidate,
+                    score=score,
+                    channel=channel.get(uid, RecallChannel.KEYWORD),
+                    evidence=evidence.get(uid, []),
+                )
             )
-            for uid, score in best.items()
-        ]
         fused.sort(key=lambda su: su.score, reverse=True)
         return fused
 
