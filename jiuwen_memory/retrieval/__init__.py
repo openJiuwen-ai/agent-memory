@@ -6,7 +6,6 @@ from .cross_space import TOTAL_FETCH_CAP, allocate_quota, merge
 from .discloser import Discloser
 from .fuser import Fuser
 from .query_parser import QueryParser
-from .recaller import Recaller
 from .retriever import Retriever
 from .types import (
     ChannelEvidence,
@@ -24,7 +23,6 @@ __all__ = [
     "RetrievalOperator",
     "RetrievalOperatorType",
     "QueryParser",
-    "Recaller",
     "Fuser",
     "Discloser",
     "Retriever",

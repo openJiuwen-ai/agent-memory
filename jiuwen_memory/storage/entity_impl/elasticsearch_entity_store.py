@@ -28,6 +28,7 @@ from jiuwen_memory.common.type_def.entity import (
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger
 
+from ..base import StoreType
 from ..entity_store import EntityStore, EntityStoreProducer
 
 logger = get_logger(__name__)
@@ -356,10 +357,8 @@ class ElasticsearchEntityStore(EntityStore):
     # BaseStore 契约
     # ------------------------------------------------------------------
 
-    def store_type(self):
-        # entity_store 不在 StoreType 枚举里（它是独立端口，不走 KV/FULLTEXT/VECTOR
-        # 等分类）；返回 None 供装配层判活用，不参与 store_type 路由。
-        return None
+    def store_type(self) -> StoreType:
+        return StoreType.ENTITY
 
     def health(self) -> None:
         try:

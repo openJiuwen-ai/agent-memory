@@ -11,14 +11,14 @@ from jiuwen_memory.control.membership_impl.kv_membership_resolver import KVMembe
 from jiuwen_memory.control.space_impl.kv_space_manager import KVSpaceManager
 from jiuwen_memory.control.types import SpaceMember, SpaceSpec
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
 
 pytestmark = pytest.mark.unit
 
 
 def _manager() -> KVSpaceManager:
     kv = InMemoryKVStore()
-    return KVSpaceManager(CompositeStorage(kv=kv))
+    return KVSpaceManager(CompositeStoreManager(kv=kv))
 
 
 def _resolver(manager: KVSpaceManager, **kwargs) -> KVMembershipResolver:
@@ -92,7 +92,7 @@ def test_backend_error_propagates_instead_of_serving_stale_facts() -> None:
             raise BackendError("kv", "unavailable")
 
     kv = InMemoryKVStore()
-    manager = _BrokenSpace(CompositeStorage(kv=kv))
+    manager = _BrokenSpace(CompositeStoreManager(kv=kv))
     resolver = _resolver(manager, ttl_seconds=60.0)
     with pytest.raises(BackendError):
         resolver.facts("acme", "team")

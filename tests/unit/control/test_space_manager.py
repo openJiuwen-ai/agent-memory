@@ -20,18 +20,18 @@ from jiuwen_memory.control import (
 from jiuwen_memory.control.membership_impl.kv_membership_resolver import KVMembershipResolver
 from jiuwen_memory.control.space_impl.kv_space_manager import KVSpaceManager
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
 
 pytestmark = pytest.mark.unit
 
 
 def _manager() -> KVSpaceManager:
-    return KVSpaceManager(CompositeStorage(kv=InMemoryKVStore()))
+    return KVSpaceManager(CompositeStoreManager(kv=InMemoryKVStore()))
 
 
 def test_kv_space_manager_crud_policy_members_usage_and_delete() -> None:
     kv = InMemoryKVStore()
-    manager = KVSpaceManager(CompositeStorage(kv=kv))
+    manager = KVSpaceManager(CompositeStoreManager(kv=kv))
 
     info = manager.create(
         SpaceSpec(
@@ -89,7 +89,7 @@ def test_kv_space_manager_crud_policy_members_usage_and_delete() -> None:
 
 def test_kv_space_manager_validates_and_reports_conflicts() -> None:
     kv = InMemoryKVStore()
-    manager = KVSpaceManager(CompositeStorage(kv=kv))
+    manager = KVSpaceManager(CompositeStoreManager(kv=kv))
 
     with pytest.raises(ValidationError):
         manager.create(SpaceSpec(org="acme"))
@@ -169,7 +169,7 @@ def test_health_surfaces_the_kv_failure_that_the_reverse_lookup_also_rides_on() 
         def health(self) -> None:
             raise BackendError("kv", "unavailable")
 
-    manager = KVSpaceManager(CompositeStorage(kv=_BrokenKV()))
+    manager = KVSpaceManager(CompositeStoreManager(kv=_BrokenKV()))
     with pytest.raises(BackendError):
         manager.health()
     with pytest.raises(BackendError):

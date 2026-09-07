@@ -12,7 +12,6 @@ Retrieval 层将检索拆分为五类可插拔算子：
 
 - [`base.py`](../../../jiuwen_memory/retrieval/base.py)
 - [`query_parser.py`](../../../jiuwen_memory/retrieval/query_parser.py)
-- [`recaller.py`](../../../jiuwen_memory/retrieval/recaller.py)
 - [`fuser.py`](../../../jiuwen_memory/retrieval/fuser.py)
 - [`discloser.py`](../../../jiuwen_memory/retrieval/discloser.py)
 - [`retriever.py`](../../../jiuwen_memory/retrieval/retriever.py)
@@ -116,36 +115,17 @@ parsed = parser.parse(query)
 
 查询侧的 Tokenizer、Embedder 和 FeatureExtractor 应与构建索引时使用同一套实例或兼容配置，否则可能出现词表、向量空间或特征口径不一致。
 
-## 5. Recaller API
+## 5. Recaller API（已移至存储层）
+
+`Recaller` 不再是检索层算子。它是 `CompositeDomainStore` 的内部件——生产链路里唯一的消费方
+就是数据面，`Retriever` 只按首选路径委托 `recall` / `recall_and_get` / `retrieve`，不持有召回路。
 
 ```python
-from jiuwen_memory.retrieval.recaller import Recaller
+from jiuwen_memory.storage.domain_store_impl.recaller import Recaller
 ```
 
-### `channel() -> RecallChannel`
-
-返回当前 Recaller 所属的逻辑召回通道。`RecallChannel` 包含：
-
-- `DOCUMENT`：文档定位。
-- `KEYWORD`：关键词/全文召回。
-- `VECTOR`：向量召回。
-- `GRAPH`：图遍历召回。
-- `TEMPORAL`：时序召回或时间约束。
-
-L0/L1/L2 是同一逻辑通道的不同物理索引入口，不会新增 `RecallChannel` 枚举值。
-
-### `recall(scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]`
-
-在指定 Scope 内召回本通道的 top-k 候选。返回的 `ScoredUnit` 包含：
-
-| 字段 | 说明 |
-|---|---|
-| `unit_id` | Scope 内的 MemoryUnit ID |
-| `score` | 本通道的召回分数 |
-| `channel` | 命中的逻辑通道 |
-| `evidence` | 可选通道证据列表 |
-
-Recaller 负责用 `ParsedQuery` 组装底层 Store Query，必须把 `scope` 作为 Store 方法的独立参数，把 `query.scalar_filters` 作为元数据硬过滤。
+完整契约（`channel()` / `recall()` / `health()`、通道枚举、装配与选择键）见
+[storage.md §20](storage.md)。YAML 命名空间仍是 `recaller`，配置写法不变。
 
 ## 6. Fuser API
 
@@ -300,7 +280,6 @@ RetrievalResult(
 | Producer | `TOP_NAME` | 实现目录 |
 |---|---|---|
 | `QueryParserProducer` | `query_parser` | `query_parser_impl/` |
-| `RecallerProducer` | `recaller` | `recaller_impl/` |
 | `FuserProducer` | `fuser` | `fuser_impl/` |
 | `DiscloserProducer` | `discloser` | `discloser_impl/` |
 | `RetrieverProducer` | `retriever` | `retriever_impl/` |
@@ -471,18 +450,14 @@ retriever:
   default:
     target: pipeline
     params:
-      storage: default
       query_parser: default
       fuser: default
       discloser: default
       reranker: default
-      keyword_recaller: keyword
-      keyword_l0_recaller: keyword_l0
-      keyword_l1_recaller: keyword_l1
-      vector_recaller: vector
-      vector_l0_recaller: vector_l0
-      vector_l1_recaller: vector_l1
-      graph_recaller: graph
+      # 召回路选择键（keyword_recaller / vector_recaller / graph_recaller / *_l0 / *_l1）
+      # 不在此段：它们是数据面参数，声明在
+      # store_manager.<inst>.params.domain_stores.<name> 下。Retriever 经
+      # globals.store_manager 取全局 manager 并持其 domain_store()，不持有召回路。
       over_fetch_factor: 4
       over_fetch_floor: 60
       recall_max: 100

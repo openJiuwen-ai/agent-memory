@@ -19,6 +19,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.lock import LockProducer, LockProvider, LockTimeoutError
 from jiuwen_memory.common.log import get_logger
@@ -30,12 +31,12 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.construction import EvolveMode, Evolver
-from jiuwen_memory.construction.evolver import EvolverProducer
-from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
+from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.control.jobs import Job, JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
 from jiuwen_memory.control.types import JobInfo, JobStatus
-from jiuwen_memory.storage.storage import Storage, StorageProducer
+from jiuwen_memory.storage.kv import KVStore, list_units
+from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 from jiuwen_memory.storage.types import IndexRemoveMode
 
 logger = get_logger(__name__)
@@ -78,7 +79,7 @@ class MiddleToLongJob(Job):
     def __init__(
         self,
         scope: Scope,
-        storage: Storage,
+        kv: KVStore,
         evolver: Evolver,
         lifecycle: LifecycleManager,
         index: IndexBuilder,
@@ -91,7 +92,7 @@ class MiddleToLongJob(Job):
         lock: LockProvider | None = None,
     ) -> None:
         super().__init__(scope=scope, interval=interval)
-        self._storage = storage
+        self._kv = kv
         self._evolver = evolver
         self._lifecycle = lifecycle
         self._index = index
@@ -287,10 +288,11 @@ class MiddleToLongJob(Job):
         """filter tier=WORKING + lifecycle=ACTIVE + metadata["middle"]="true"
         → 按 t_ingest 升序取最老 max_fetch 条。
 
-        ``kv.scan`` 是同步阻塞 IO，推到独立线程跑避免阻塞事件循环。
+        ``kv.list`` 是同步阻塞 IO，推到独立线程跑避免阻塞事件循环。
         """
-        page = await asyncio.to_thread(self._storage.list, self.scope, limit=1_000_000)
-        units = page.items
+        units, _ = await asyncio.to_thread(
+            list_units, self._kv, self.scope, limit=1_000_000
+        )
         candidates = []
         for u in units:
             if u.tier != MemoryTier.WORKING:
@@ -354,13 +356,18 @@ class MiddleToLongJobSpec:
 
     依赖、业务参数与定时周期 interval 经 :class:`JobFactoryProducer` 装配期
     固化。运行时 :meth:`with_scope` 补 scope 生成完整 Job 实例。
+
+    ``index`` / ``evolver`` 不在装配期解析（E-06）：索引 Builder 与 Evolver
+    由 Engine 经 ``get_job`` 运行时注入写入用的同一套组件，保证 Job 归档
+    ``index.remove`` 调对 Builder；缺失时 :meth:`with_scope` 显式报错，
+    不回退默认实现。
     """
 
-    storage: Storage
-    evolver: Evolver
+    kv: KVStore
     lifecycle: LifecycleManager
-    index: IndexBuilder
     llm: LLM
+    index: IndexBuilder | None = None
+    evolver: Evolver | None = None
     max_fetch: int = 100
     batch_size: int = 10
     concurrency: int = 4
@@ -371,16 +378,27 @@ class MiddleToLongJobSpec:
     def with_scope(self, scope: Scope, **kwargs) -> MiddleToLongJob:
         """生成完整 Job 实例——``kwargs`` 透传运行时参数（``evolver`` / ``index`` / ``interval``）。
 
-        ``evolver`` / ``index`` 用于多 profile 适配——``CloudEngine._write_middle_path``
-        注入 binding 的，保证 Job 归档原文时 ``index.remove`` 调对正确的 index。
-        ``interval`` 经 write metadata 透传，覆盖 Spec 装配期默认。
+        ``evolver`` / ``index`` 必须由 Engine 注入（E-06）——多 profile 适配时
+        是 binding 选中的，保证 Job 归档原文时 ``index.remove`` 调对写入用的
+        index；缺失即装配错误，显式抛错不猜默认。``interval`` 经 write metadata
+        透传，覆盖 Spec 装配期默认。
         """
         evolver = kwargs.pop("evolver", None) or self.evolver
         index = kwargs.pop("index", None) or self.index
         interval = int(kwargs.pop("interval", None) or self.interval)
+        if evolver is None:
+            raise ValidationError(
+                "MiddleToLongJob requires an Evolver (由 Engine 经 get_job "
+                "运行时注入，Spec 不自行解析)"
+            )
+        if index is None:
+            raise ValidationError(
+                "MiddleToLongJob requires an IndexBuilder (由 Engine 经 get_job "
+                "运行时注入，Spec 不自行解析)"
+            )
         return MiddleToLongJob(
             scope=scope,
-            storage=self.storage,
+            kv=self.kv,
             evolver=evolver,
             lifecycle=self.lifecycle,
             index=index,
@@ -395,9 +413,11 @@ class MiddleToLongJobSpec:
 
 
 def _build_middle_to_long_job_spec(config) -> MiddleToLongJobSpec:
-    """装配期固化 MiddleToLongJob 的依赖与业务参数——返回 Spec dataclass。"""
-    vector_on = config.get("vector_enabled", True)
-    ib_default = "hybrid" if vector_on else "fulltext"
+    """装配期固化 MiddleToLongJob 的依赖与业务参数——返回 Spec dataclass。
+
+    E-06：index/evolver 不在此解析——Engine 写入时经 ``get_job`` 注入当前
+    profile 的同一套组件，Job 不得按 ``vector_enabled`` 自行推导默认 Builder。
+    """
     # lock 段未配置时不调 dep、不报错——LockProducer 不设默认实现，缺配置直接 dep 会
     # 抛 ValidationError。这里探测后再装配，让单实例 / 本地开发无需配 lock 段。
     # 多实例部署显式配 lock 段才生效，符合 F06「避免静默退化为单机锁」精神。
@@ -405,10 +425,8 @@ def _build_middle_to_long_job_spec(config) -> MiddleToLongJobSpec:
     if config.params.get("lock") is not None:
         lock = LockProducer.dep(config)
     return MiddleToLongJobSpec(
-        storage=StorageProducer.resolve(config),
-        evolver=EvolverProducer.dep(config, default="orchestrating"),
+        kv=StoreManagerProducer.resolve(config).kv(resolve_name(config, "kv_store")),
         lifecycle=LifecycleProducer.dep(config, default="kv"),
-        index=IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
         llm=LlmProducer.dep(config, default="echo"),
         max_fetch=int(config.get("middle_max_fetch", 100)),
         batch_size=int(config.get("middle_batch_size", 10)),

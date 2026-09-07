@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-08-05 |
+| 日期 | 2026-09-05 |
 | 影响范围 | `jiuwen_memory_entry/core/`、`jiuwen_memory/control/`、`jiuwen_memory/ingest/`、`jiuwen_memory/construction/`、`jiuwen_memory/retrieval/` |
 | 状态 | **已落地**（视频记忆写入、异步任务管理及多通道检索） |
 
@@ -23,8 +23,9 @@ CLM 组成的事件级摘要。两级结果统一构建为 mem2.0 原生 `Memory
 
 ```text
 视频请求
-  -> Bootstrap 接口适配
-  -> Control 创建后台任务
+  -> POST /v1/submit_ingest
+  -> MemoryAPI.submit_ingest()
+  -> Control 创建或复用后台任务
   -> MemoryAPI.add()
   -> Ingest 视频规约
   -> Construction 构建 CLM/ELM
@@ -39,7 +40,7 @@ CLM 组成的事件级摘要。两级结果统一构建为 mem2.0 原生 `Memory
 
 | 模块 | 代码路径 | 职责 |
 |---|---|---|
-| 接口适配 | `jiuwen_memory_entry/core/handler.py`、`jiuwen_memory_entry/core/server.py` | 识别视频请求、校验参数并组织响应 |
+| 接口适配 | `jiuwen_memory_entry/core/api_contract.py`、`jiuwen_memory_entry/http_server/__main__.py` | 按 `MemoryAPI.submit_ingest` 原参数反序列化、注入安全上下文并序列化原返回值 |
 | 后台任务管理 | `jiuwen_memory/control/ingest_job.py`、`jiuwen_memory/control/job_impl/ingest_job.py` | 定义任务管理接口并实现异步执行、状态和提交幂等 |
 | 视频规约 | `jiuwen_memory/common/normalizer/normalizer_impl/` | 执行视频处理并生成 clips/events 结构化结果 |
 | 多层级记忆构建 | `jiuwen_memory/construction/extractor_impl/video_memory_extractor.py` | 将 clips/events 转换为 CLM/ELM `MemoryUnit` |
@@ -48,31 +49,30 @@ CLM 组成的事件级摘要。两级结果统一构建为 mem2.0 原生 `Memory
 
 ### 1. 接口适配
 
-**代码路径**：`jiuwen_memory_entry/core/handler.py`、`jiuwen_memory_entry/core/server.py`
+**代码路径**：`jiuwen_memory_entry/core/api_contract.py`、`jiuwen_memory_entry/http_server/__main__.py`
 
-**输入输出**：输入视频 URI、scope、`payload_id`、`system_metadata` 和
-`user_metadata`；输出 `ing_` 前缀的`job_id`，由 `/v1/job` 返回后续状态和记忆结果。
+**输入输出**：`POST /v1/submit_ingest` 输入 `content`、`scope`、`source="video"`、
+`payload_id`、`source_ref`、`assets`、`system_metadata` 和 `user_metadata`；输出原生
+`IngestSubmission` JSON，其中 `job.id` 使用 `ing_` 前缀。后续通过
+`POST /v1/job_status` 传入 `job_id` 和该任务的 `scope` 查询状态。
 
-**职责**：`handler.py` 识别 `modality=video`，校验请求并把原生写入调用交给 Control；
-`MemoryAPI` 装配过程创建 `IngestJobController`，`server.py` 只持有该接口并在服务关闭时
-调用 `close()`。Bootstrap 不实现线程池、任务状态或幂等规则。
+**职责**：HTTP 不识别视频分支，也不把 `/v1/add` 改调其他方法，只负责调用同名
+`MemoryAPI.submit_ingest`。`MemoryAPI` 装配过程创建 `IngestJobController`，运行时关闭时调用
+`close()`。HTTP 不实现线程池、任务状态或幂等规则。
 
 核心调用：
 
 ```python
-submission = srv.ingest_jobs.submit(
+submission = srv.api.submit_ingest(
+    content=uri,
+    scope=scope,
+    source=Modality.VIDEO,
+    security=security,
     payload_id=payload_id,
     source_ref=uri,
-    scope=scope,
-    task=lambda: srv.api.add(
-        uri,
-        scope,
-        Modality.VIDEO,
-        identity=identity,
-        assets=assets,
-        system_metadata=system_metadata,
-        user_metadata=user_metadata,
-    ),
+    assets=assets,
+    system_metadata=system_metadata,
+    user_metadata=user_metadata,
 )
 ```
 
@@ -208,8 +208,13 @@ IndexBuilder 建立索引。系统不新增多模态 Store，原始视频不复�
 服务配置文件为 `examples/config_multimodal.yml`，配置完成后可按以下方式启动：
 
 ```bash
-./scripts/run-server.sh --host 127.0.0.1 --port 8002 examples/config_multimodal.yml
+./scripts/run-server.sh --auth-mode dev --host 127.0.0.1 --port 8002 examples/config_multimodal.yml
 ```
+
+上述命令仅用于本地功能测试；业务 `scope` 使用 `{"org":"local","user":"developer"}`
+以匹配默认开发身份。未通过参数或环境变量选择 dev 时，默认 required 且未注入生产认证
+runtime 的业务请求会返回 503。`/v1/submit_ingest` 仍按 API 原契约返回 HTTP 200 和
+`IngestSubmission`，后台任务状态通过 `/v1/job_status` 查询，不额外包装为 202 响应。
 
 视频流水线通过 `asr_port`、`llm_port` 和 `vlm_port` 分别注入语音、文本和视觉模型；
 `asr_port` 是具名实例引用。视频片段以 Base64 Data URL 传给远程 VLM，

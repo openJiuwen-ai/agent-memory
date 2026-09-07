@@ -37,6 +37,7 @@ from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
 from jiuwen_memory.control.engine_impl.list_support import list_page
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
+from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
 from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
@@ -51,12 +52,14 @@ from jiuwen_memory.control.types import (
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
+    SweepResult,
     UpdateMode,
 )
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
-from jiuwen_memory.storage.storage import Storage, StorageProducer
+from jiuwen_memory.storage.kv import KVStore, list_units, load_units
+from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 from jiuwen_memory.storage.types import IndexRemoveMode
 
 logger = get_logger(__name__)
@@ -204,7 +207,7 @@ class InMemoryEngine(MemoryEngine):
         ingestor: Ingestor,
         index_builder: IndexBuilder,
         retriever: Retriever,
-        storage: Storage,
+        kv: KVStore,
         scheduler: Scheduler,
         evolver: Evolver,
         lifecycle: LifecycleManager,
@@ -215,7 +218,7 @@ class InMemoryEngine(MemoryEngine):
         self._ingestor = ingestor
         self._index = index_builder
         self._retriever = retriever
-        self._storage = storage
+        self._kv = kv
         self._scheduler = scheduler
         self._evolver = evolver
         self._lifecycle = lifecycle
@@ -468,7 +471,7 @@ class InMemoryEngine(MemoryEngine):
     ) -> MemoryListResult:
         _ensure_local_scope(scope)
         return list_page(
-            self._storage,
+            self._kv,
             scope,
             offset=offset,
             limit=limit,
@@ -512,7 +515,7 @@ class InMemoryEngine(MemoryEngine):
         scopes = (
             [selector.scope]
             if selector.scope is not None
-            else [scope for scope in self._storage.scopes() if not scope.space]
+            else [scope for scope in self._kv.scopes() if not scope.space]
         )
         if not scopes:
             scopes = [Scope()]
@@ -600,7 +603,7 @@ class InMemoryEngine(MemoryEngine):
         scopes = (
             [selector.scope]
             if selector.scope is not None
-            else [scope for scope in self._storage.scopes() if not scope.space]
+            else [scope for scope in self._kv.scopes() if not scope.space]
         )
         if not scopes:
             scopes = [Scope()]
@@ -682,12 +685,21 @@ class InMemoryEngine(MemoryEngine):
         )
         return affected
 
+    async def sweep_expired(self) -> SweepResult:
+        # C-03：lifecycle 只纯计算 transition，索引清理与真源回写由本编排完成。
+        transitions = self._lifecycle.sweep()
+        return run_sweep(
+            transitions,
+            self._lifecycle,
+            lambda units: self._index.remove(units, mode=IndexRemoveMode.SOFT),
+        )
+
     async def purge_space(self, org: str, space: str) -> list[str]:
         _ensure_local_scope(Scope(org=org, space=space))
         purged_units: list[MemoryUnit] = []
         for scope in [
             candidate
-            for candidate in self._storage.scopes()
+            for candidate in self._kv.scopes()
             if candidate.org == org and candidate.space == space
         ]:
             units = self._list_units(scope)
@@ -704,7 +716,15 @@ class InMemoryEngine(MemoryEngine):
                 "evolve requires job_factory, please configure "
                 "engine.default.job_factory"
             )
-        job = self._job_factory.get_job(JobType.EVOLVE, scope=scope, mode=mode)
+        if self._evolver is None:
+            raise RuntimeError(
+                "Engine.evolve requires an Evolver (装配未注入 evolver)"
+            )
+        # E-06：evolver 必传注入——Job 使用 Engine 装配的同一实例，
+        # 不允许 Spec 侧自行解析另一套（middle 路径的 index/evolver 同理）。
+        job = self._job_factory.get_job(
+            JobType.EVOLVE, scope=scope, mode=mode, evolver=self._evolver
+        )
         job_id = await self._scheduler.submit(job, channel)
         logger.info(
             "Engine.evolve submitted: job_id=%s scope=%s mode=%s channel=%s",
@@ -734,17 +754,9 @@ class InMemoryEngine(MemoryEngine):
             return None
         return self._pipeline.select_for_recall(query)
 
-    def _write_middle_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
-        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
-        self._storage.add(scope, units)
-
-    def _write_default_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
-        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
-        self._storage.add(scope, units)
-
     def _load(self, scope: Scope, unit_id: str) -> MemoryUnit:
         """从真源读字节并反序列化（产出结果的边界点）。"""
-        units = self._storage.get(scope, [unit_id])
+        units = load_units(self._kv, scope, [unit_id])
         if not units:
             raise NotFoundError("memory_unit", unit_id)
         return units[0]
@@ -752,7 +764,8 @@ class InMemoryEngine(MemoryEngine):
     def _list_units(self, scope: Scope) -> list[MemoryUnit]:
         # 只列建索引记忆（/memory/ 前缀）。loads 对非 MemoryUnit 记录返回 None，自然过滤。
         # 版本链（SUPERSEDE/supersedes）只在建索引记忆间；原文 /messages/ 无版本链。
-        return self._storage.list(scope, limit=1_000_000).items
+        units, _ = list_units(self._kv, scope, limit=1_000_000)
+        return units
 
     def _version_family(self, scope: Scope, unit_id: str) -> list[MemoryUnit]:
         units_by_id = {unit.id: unit for unit in self._list_units(scope)}
@@ -820,7 +833,7 @@ def _build(config):
         IngestorProducer.dep(config, default="simple"),
         IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
         RetrieverProducer.dep(config, default="pipeline"),
-        StorageProducer.resolve(config),
+        StoreManagerProducer.resolve(config).kv(resolve_name(config, "kv_store")),
         SchedulerProducer.dep(config, default="in_process"),
         EvolverProducer.dep(config, default="orchestrating"),
         LifecycleProducer.dep(config, default="kv"),

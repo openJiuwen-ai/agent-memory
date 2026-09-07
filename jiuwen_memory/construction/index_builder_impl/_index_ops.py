@@ -22,7 +22,7 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.storage.fulltext import FulltextStore
 from jiuwen_memory.storage.kv import KVStore
-from jiuwen_memory.storage.storage import Storage
+from jiuwen_memory.storage.store_manager import StoreManager
 from jiuwen_memory.storage.types import Document, VectorRecord
 from jiuwen_memory.storage.vector import VectorStore
 
@@ -59,16 +59,16 @@ def group_units_by_scope(units: list[MemoryUnit]) -> list[tuple[Scope, list[Memo
 # ---------------------------------------------------------------------------
 
 
-def fulltext_port(storage: Storage, name: str, enabled: bool) -> FulltextStore | None:
-    if not enabled or not storage.has_fulltext_port(name):
+def fulltext_port(storage: StoreManager, name: str, enabled: bool) -> FulltextStore | None:
+    if not enabled or not storage.has_fulltext(name):
         return None
-    return storage.fulltext_port(name)
+    return storage.fulltext(name)
 
 
-def vector_port(storage: Storage, name: str, enabled: bool) -> VectorStore | None:
-    if not enabled or not storage.has_vector_port(name):
+def vector_port(storage: StoreManager, name: str, enabled: bool) -> VectorStore | None:
+    if not enabled or not storage.has_vector(name):
         return None
-    return storage.vector_port(name)
+    return storage.vector(name)
 
 
 # ---------------------------------------------------------------------------

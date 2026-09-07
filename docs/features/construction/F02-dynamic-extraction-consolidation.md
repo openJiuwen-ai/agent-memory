@@ -3,7 +3,7 @@
 ## 元信息
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-07-25 |
+| 日期 | 2026-09-05 |
 | 影响范围 | jiuwen_memory/construction/，jiuwen_memory/control/，jiuwen_memory/config/，docs/specs/S05-construction.md |
 | 测试基线 | 见“验证” |
 | Refs | — |
@@ -99,8 +99,9 @@ SUPERSEDE/NOOP 判定和写入动作长期藏在 Evolver 内，职责上属于�
 
 ## 已知遗留
 
-- CLI/MCP 尚未为 metadata prompt key 提供专用参数，当前通过 Python API、HTTP payload 或
-  batch NDJSON 传递。
+- CLI 已通过 `--system_metadata` 接收包含 prompt key 的 JSON 对象，HTTP 使用同名
+  `system_metadata` 字段；CLI batch NDJSON 也使用同一字段。MCP 仍走 legacy handler，
+  没有为各个 prompt key 单独增加工具参数。
 - reflect 步默认 no-op，"反思型记忆"的具体语义留待后续特性扩展。
 - 旧 pipeline profile 未声明 evolver 时默认走 `orchestrating`（legacy）；改为 `dynamic`
   才启用动态四步编排。

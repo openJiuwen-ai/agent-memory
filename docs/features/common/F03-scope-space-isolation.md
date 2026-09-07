@@ -4,9 +4,9 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-07-27 |
+| 日期 | 2026-09-05 |
 | 影响范围 | `jiuwen_memory/common/type_def/`、`jiuwen_memory/api/`、`jiuwen_memory/control/`、`jiuwen_memory/storage/`、`jiuwen_memory/retrieval/`、`jiuwen_memory/construction/`、`docs/design/architecture.md`、`docs/specs/S02-memory-api.md`、`docs/specs/S03-control.md`、`docs/specs/S05-construction.md`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md` |
-| 测试基线 | `python3 -m compileall -q jiuwen_memory jiuwen_memory_entry/core tests`；12 个 Scope/Space 关键测试函数直接执行；`git diff --check`。当前环境未安装 pytest 与 ruff，未执行完整测试和 lint |
+| 测试基线 | `python3 -m compileall -q jiuwen_memory jiuwen_memory_entry/core tests`；12 个 Scope/Space 关键测试函数直接执行；`git diff --check`。原实现归档时环境未安装 pytest 与 ruff，未执行完整测试和 lint |
 
 ## 背景
 
@@ -226,7 +226,7 @@ SQLite grant 旧表必须先增加 `grantor_space/grantee_space` 列，再创建
   `MemoryUnit.id` 而不串改、串查或串删。
 - 已创建 space 的 `principal_path` 由 `SpaceManager.get_policy` 注入 `PermissionContext.metadata["principal_path"]`，调用级 metadata 不能临时覆盖 space policy。
 - `AuditEvent` 增加 target scope，内存/SQLite 审计后端支持 `target_org` / `target_space` / `target_user` / `target_agent` / `target_session` 过滤。
-- 非 HTTP 兼容 dispatch payload 支持 `space` / `space_id`、`actor_space` / `actor_space_id`、`grantee_space` / `grantee_space_id`；HTTP DTO 将 target 放入嵌套对象并拒绝 `actor_*`。
+- MCP 等 legacy dispatch payload 支持 `space` / `space_id`、`actor_space` / `actor_space_id`、`grantee_space` / `grantee_space_id`；HTTP / CLI 直接接受 `MemoryAPI` 同名参数，其中 `Scope` 使用 `org` / `space` / `user` / `agent` / `session` 原字段，并拒绝请求体 `security` / `actor_*`。
 
 尚未落地：基于 `SpaceMember.role` 的默认权限矩阵、跨 space recall 的多 target API、index/audit 专用后端的精确 usage 计数、后端原生 namespace/tenant 物理删除适配。
 
@@ -302,10 +302,11 @@ space:
       kv_store: default
 ```
 
-非 HTTP 兼容 dispatch 接入 payload 支持 `space` / `space_id`，actor override 支持
+MCP 等 legacy dispatch 接入 payload 支持 `space` / `space_id`，actor override 支持
 `actor_space` / `actor_space_id`，授权 grantee 支持 `grantee_space` /
-`grantee_space_id`。HTTP 使用 `target.space` / `target.space_id`，并拒绝 actor override；
-未传 space 时是否进入空 space 兼容域由各非 HTTP adapter 决定。
+`grantee_space_id`。HTTP / CLI 不接受这些别名，范围参数按 `MemoryAPI` 原签名使用 `Scope` JSON
+对象；省略 `space` 时使用 `Scope` 的空字符串默认值。HTTP 请求体和 CLI 参数都不能
+覆盖认证产生的 actor。
 
 ## 后续配置草案
 
@@ -423,10 +424,12 @@ memory_api:
 
 - 旧单租户默认配置仍可用，`space=""` 兼容。
 - 旧数据 loads 不失败。
-- CLI/HTTP/MCP 未传 space 时在 `require_space=false` 下行为不变。
+- `require_space=false` 下，HTTP / CLI 的 Scope JSON 省略 `space` 仍取空字符串；
+  MCP 的 legacy payload 继续保留旧别名兼容。此处不意味着 HTTP / CLI 保留旧请求格式。
 
-当前环境未安装 pytest 和 ruff，因此实际执行了 Python 编译、12 个关键测试函数直接调用、
-新增行长检查与 `git diff --check`；完整测试和 lint 仍需在项目开发环境运行。
+原实现归档时环境未安装 pytest 和 ruff，因此当时执行了 Python 编译、12 个关键测试函数直接调用、
+新增行长检查与 `git diff --check`。本次 HTTP / CLI 文档同步的回归基线见
+[API F05](../api/F05-http-memory-api-alignment.md)，不把历史环境限制视为当前状态。
 
 ## 拒绝的方案
 

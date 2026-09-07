@@ -111,6 +111,8 @@ services:
       dockerfile: deploy/docker/local/Dockerfile
     env_file:
       - .env
+    environment:
+      JIUWEN_MEMORY_HTTP_ALLOW_DEV_AUTH_NON_LOOPBACK: "true"
     volumes:
       - ./config.yml:/config/config.yml:ro
       - ../models:/models-local:ro   # 预下载的本地模型（ModelScope，离线加载）：.env 默认指向这里
@@ -118,7 +120,7 @@ services:
       - ../../../jiuwen_memory:/app/jiuwen_memory:ro    # 挂载源码：改 jiuwen_memory 免重镜像（editable 指向 /app/jiuwen_memory）
       - ../../../jiuwen_memory_entry:/app/jiuwen_memory_entry:ro   # 挂载 HTTP 服务面：改 handler/server 免重镜像
     ports:
-      - "8137:8137"
+      - "${HTTP_BIND_ADDRESS:-127.0.0.1}:8137:8137"
     depends_on:
       redis:
         condition: service_healthy

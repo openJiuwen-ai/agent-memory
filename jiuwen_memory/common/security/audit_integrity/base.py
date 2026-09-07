@@ -268,9 +268,9 @@ class AuditVerificationResult:
     def to_body(self) -> dict[str, object]:
         """序列化为 dispatch Body（PR3 接口文档 §6.1 确认的对外契约）。
 
-        纯 dict、无嵌套对象、无敏感字段；供真实认证接入后的 HTTP 及未来 MCP / CLI
-        一等入口复用，避免各 surface 各写一份漂移。当前接口先行阶段尚未注册这些
-        surface 入口。字段名一经发布即为线上契约，变更需评审。
+        纯 dict、无嵌套对象、无敏感字段；供 legacy dispatch 及未来 MCP
+        一等入口复用。与 ``MemoryAPI`` 一对一对齐的 HTTP / CLI 不调用本方法，
+        而是按数据类原字段机械序列化，避免额外 ``op`` 包装。
         """
         return {
             "op": "verify_audit",

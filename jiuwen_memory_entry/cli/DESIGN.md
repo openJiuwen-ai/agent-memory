@@ -1,132 +1,116 @@
-# jiuwen_memory_entry/cli — the command-line surface
+# CLI 与 MemoryAPI 对齐
 
-The **CLI surface**: a §15 protocol adapter peer to `jiuwen_memory_entry/http_server` (the HTTP
-surface). It parses argv into a `(verb, payload)` and routes it through the same
-kernel dispatch the HTTP path uses — **no business logic lives here**. It is the
-concrete, scriptable 对外接口 (external interface) of the memory engine, and the
-interface the LoCoMo evaluation harness drives.
+最近一次修订日期：2026-09-05
 
-- Stdlib only; no third-party deps.
-- Entry: `scripts/run-cli.sh …` → `python3 jiuwen_memory_entry/cli/__main__.py …`.
-- Tests: exercised by the evaluation harness (`evaluation/`, e.g. LoCoMo /
-  LongMemEval) end to end, plus
-  the manual smoke calls below.
+CLI 是 MemoryAPI 的命令行入口，不再兼容 Mem0 风格命令或 legacy payload。
+它与 HTTP 使用同一套方法名、参数名、默认值和返回结构，不包含额外业务编排。
 
-## Two backends, one client shape (`client.py`)
+## 调用路径
 
-Every backend implements `call(verb, payload) -> (status, body)` and
-`healthz()`. `make_client(server_url, configs)` picks one:
+- 本地：命令参数解析/预校验 → 认证上下文 → 共享 JSON 解码 → 同名 MemoryAPI 方法 → 原返回值序列化。
+  直接使用 `InProcessClient.call()` 时，从认证开始执行，再由共享契约解码参数。
+- 远程：命令参数 → 同名 HTTP URL → 服务端认证与同名 MemoryAPI 方法 → 原 JSON 响应。
 
-- **`InProcessClient` (default).** Assembles the engine in *this* process exactly
-  like `jiuwen_memory_entry/http_server/__main__` — `server.build(load_config([OFFLINE,
-  *configs]))` — and routes each call through `handler.dispatch`, the very code
-  path the HTTP surface uses minus the socket. The `Server` is held for the
-  client's lifetime, so repeated writes share the in-memory store.
-- **`HttpClient`.** `POST {base_url}/v1/<verb>` (and `GET /healthz`) over
-  `urllib` against a running `scripts/run-server.sh`. HTTP domain errors (non-2xx
-  JSON bodies) are returned as `(status, body)`; a dead server surfaces as
-  `(0, {"error": "ConnectionError"})`.
+本地不经过 HTTP，也不经过 `handler.dispatch`；远程通过
+`POST /v1/<method_name>` 调用服务。两者共享 `core/api_contract.py` 的参数定义和
+JSON 规则，领域错误共用 `core/error_response.py` 的状态映射和脱敏规则。
+`core/handler.py` 与 `legacy_request_adapter.py` 仅留给 MCP 和旧调用方。
 
-Because both reuse the engine's open `invoke`, **any** verb — built-in or plugged
-in after assembly — is reachable with no CLI change; the command table only
-shapes argv ergonomics.
+## 命令与参数
 
-### The `server` import-root subtlety
+命令集合直接来自 `MemoryAPI.__abstractmethods__`，当前 36 个公开方法均有同名命令。
+参数由方法签名生成，只排除 `self` 和由认证边界注入的 `security`。
 
-`server.py`、`handler.py`、`profiles.py` 是共享目录 `jiuwen_memory_entry/core/` 下的
-flat import root。如果 `jiuwen_memory_entry/` 排在 `jiuwen_memory_entry/core/` 前面，`import server`
-就可能被同名模块遮蔽。因此 CLI 仍以脚本方式启动（不用 `python3 -m`），并由
-`scripts/run-cli.sh` 把仓库根与 `jiuwen_memory_entry/core` 前置到 `PYTHONPATH`，确保
-`import server` 解析到 `core/server.py`（所有 surface 复用的共享应用核），同时
-避免在运行时把路径强插到 `sys.path` 最前。
+- 原样保留参数名，例如 `--unit_id`、`--top_k`、`--continue_on_error`；
+- 字符串、枚举和 ISO 8601 时间直接传文本；
+- 对象、数组、数字、布尔使用 JSON，例如 `--scope '{"org":"local","user":"developer"}'`、
+  `--top_k 3`、`--continue_on_error false`；
+- 可空参数接受 `null`；不传可选参数时由 MemoryAPI 原默认值生效；
+- `Scope`、`Context`、`MemoryPatch`、`DeleteSelector` 等对象保留原字段和嵌套层级；
+- 不保留 `--tenant`、`-u`、`--item-id`、`--k`、`--modality` 等旧别名，不替用户拼装
+  patch / selector，也不执行客户端阈值过滤或“先 list 再逐条 delete”等业务流程。
 
-## Subcommands are a table, not a switch (`commands.py`)
+完整参数可用 `scripts/run-cli.sh <method_name> --help` 查看。
+当前解析例外：写入 `system_metadata.coords` 的对象值不在 API 声明的 `MetadataValueType`
+内，会在 CLI / HTTP 边界被拒绝；该归属判定扩展目前需直接使用 Python API，见
+[API F05 已知遗留](../../docs/features/api/F05-http-memory-api-alignment.md#已知遗留)。
+`add_async` / `batch_add_async` 等待原协程完成，分别返回原记忆列表和批量结果，
+不转换为 job。原本返回任务标识的 `evolve` / `submit_ingest` 保留自身 API 语义。
 
-`COMMANDS: dict[str, Command]` maps each verb to `(add_arguments, build_payload)`.
-The argparse subparser is built from the row and the payload is assembled from the
-parsed args — adding a verb is adding a row, never editing a dispatch `if/else`
-(the same A20 "route by table" rule the engine follows). Conventions:
+## 认证与运行
 
-- Scope is required on every data verb (I1 user isolation): pass `-u/--user-id`
-  (Mem0) or `--scope` (native), or set `$AGENT_MEMORY_USER_ID`; `--trace` is optional.
-- `update` omits content/tags when not given, so a partial update means "leave
-  unchanged" rather than "set empty" (the `None` sentinel, end to end).
-- Output: `-o/--output {json,text,table,quiet}` (default `json`); `--json`/
-  `--agent` force JSON; `--pretty` indents. 2xx → stdout exit 0; errors → stderr
-  exit 1; bad input (missing scope/bad JSON) → exit 2.
+本地默认 `--auth-mode required`。尚未注入 Authenticator 时业务调用返回 503，
+不会从 scope 或 payload 生成身份。程序内可通过
+`InProcessClient(authenticator=...)` 注入认证器；凭据读取 `AGENT_MEMORY_API_KEY`。
 
-## Mem0 compatibility
-
-The verb + flag vocabulary deliberately tracks [Mem0's CLI](https://docs.mem0.ai/platform/cli)
-so a Mem0 user drives agent-memory with the same muscle memory. Verbs already line
-up (`add`/`search`/`list`/`get`/`update`/`delete`); the flags are mapped as:
-
-| Mem0 | here | note |
-|------|------|------|
-| `-u/--user-id` | `-u/--user-id` → scope | primary scoping; `--scope` is the native alias |
-| (n/a) | `--tenant` | our extra multi-tenant dimension; optional, default `default` / `$AGENT_MEMORY_TENANT` |
-| `add 'text'` (positional) | positional `text` (+ `-c/--content`) | |
-| `--messages '[{role,content}]'` | `--messages` | flattened to one memory (`role: content` lines) |
-| `-f/--file` (`-`=stdin) | `-f/--file` | JSON message arrays are flattened; else raw text |
-| `--categories` | `--categories` → tags | Mem0 categories ≈ our tags (`--tags` also works) |
-| `search 'q'`, `-k/--top-k` (def 10) | positional `query`, `-k/--top-k` (def 10) | `--k`, `--query` are aliases |
-| `--threshold` | `--threshold` | hits below the score are filtered client-side |
-| `get/update/delete <id>` (positional) | positional `memory-id` (+ `--item-id`) | |
-| `delete --all` / `--force` | `delete --all` / `--force` | `--all` fans out over a `list` client-side; `--force` is a no-op (we never prompt) |
-| `-o/--output`, `--json/--agent` | same | **default differs: we default to `json`** (programmatic-first surface), use `-o text` for humans |
-| `--base-url`, `status` | `--server`/`--base-url`, `status`/`health` | |
-| `MEM0_USER_ID` / `MEM0_BASE_URL` | `AGENT_MEMORY_USER_ID` / `AGENT_MEMORY_SERVER` | env defaults |
-
-**Intentional divergences** (our engine contract, not Mem0's):
-
-- A `tenant_id` is mandatory in the kernel (I1); Mem0 has no tenant. We default it
-  so a Mem0-shaped call (`add 'x' -u alice`) just works.
-- `agent_id` / `run_id` are not modelled yet (the engine scopes by a single
-  `scope` string) — only `user_id` maps today.
-- `--metadata` is not yet persisted (the engine entity has `tags`, no free-form
-  metadata) — `--categories`/`--tags` is the supported structured field.
-- **`delete` soft-deletes**: it flips `lifecycle_state` to `soft_deleted` but the
-  record (authoritative) still appears in `list` and remains searchable in the
-  current engine — unlike Mem0's hard removal. `--hard` + `--approval-token` is
-  the real removal path. (This is L5/L4 engine behavior, surfaced here as-is.)
-
-### `batch` — one engine, many ops (the stateful path)
-
-`batch` reads NDJSON `{"op": "<verb>", ...payload}` from stdin/a file and runs
-each op on **one** client. In-process this means a single assembled engine, so
-successive `add`s accumulate and a later `search` sees them — the stateful
-session an in-memory store needs **without** a running server. This is the
-ingest primitive the LoCoMo harness uses.
+本地功能测试显式使用 `--auth-mode dev`：固定身份为 `local/developer`，
+仅跳过凭据校验，不跳过 MemoryAPI 授权。每次调用由受控入口生成独立 request ID，
+设置 `Surface.CLI`，请求结束后清理安全上下文；测试身份不能用于生产。
 
 ```bash
-# in-process single shot, Mem0-style (state is NOT shared across invocations)
-scripts/run-cli.sh add    "buy milk" -u alice --categories groceries
-scripts/run-cli.sh search "milk" -u alice -k 3 -o text
+scripts/run-cli.sh --auth-mode dev add \
+  --content 'buy milk' --scope '{"org":"local","user":"developer"}'
 
-# stateful in one process: add ×2 then search, all sharing the store
-printf '%s\n' \
-  '{"op":"add","tenant_id":"default","scope":"bob","content":"the quick brown fox"}' \
-  '{"op":"add","tenant_id":"default","scope":"bob","content":"lazy dog sleeps"}' \
-  '{"op":"search","tenant_id":"default","scope":"bob","query":"quick brown fox","k":3}' \
-  | scripts/run-cli.sh batch --input -
-
-# drive a long-running server instead (state lives on the server)
-scripts/run-server.sh --port 8137 &
-scripts/run-cli.sh --server http://127.0.0.1:8137 add    "hi" -u carol
-scripts/run-cli.sh --server http://127.0.0.1:8137 search "hi" -u carol -k 3
+scripts/run-cli.sh --auth-mode dev search \
+  --query 'milk' --context '{"scope":{"org":"local","user":"developer"}}' --top_k 3
 ```
 
-## Two id spaces (same note as the HTTP surface)
+默认内存后端不跨 CLI 进程保留数据；上面两条命令是独立调用示例，不共享写入记录。
+若要连续验证，使用下节的 batch、持久化后端或远程常驻服务。
 
-`add`/`get`/`list`/`update`/`delete` use the L5 lifecycle's **authoritative** id
-(e.g. `t1:alice:0`); `search` returns the L3-derived **index projection** id
-(e.g. `t1:alice:0-0-0`). 原文存一份, 索引另建 — resolving a hit back to its record
-is a separate `get`.
+远程用 `--server` 或 `AGENT_MEMORY_SERVER` 指定地址；
+`AGENT_MEMORY_API_KEY` 作为 Bearer 凭据发送。认证模式由服务器决定，
+不能用 CLI 的 `--auth-mode dev` 改变远程服务认证。
 
-## Config & profiles (in-process mode)
+```bash
+# 仅用于本地功能测试，服务默认绑定 loopback
+scripts/run-server.sh --auth-mode dev --port 8137
+# 在另一个终端调用
+scripts/run-cli.sh --server http://127.0.0.1:8137 add \
+  --content 'hello' --scope '{"org":"local","user":"developer"}'
+scripts/run-cli.sh --server http://127.0.0.1:8137 list \
+  --scope '{"org":"local","user":"developer"}'
+```
 
-`--config a.json b.json …` stacks JSON layers on top of `OFFLINE` (nearest-wins),
-identical to the server's positional config args. `--server` mode ignores
-`--config` (the server owns its own assembly) and prints a note. Selecting a real
-LLM/storage plugin (e.g. `config/examples/vllm.json`) works the same here as for
-the server, including the loud `vllm`-misconfig refusal at build time.
+## 辅助命令与输出
+
+除 API 同名命令外，仅保留两个接入辅助命令：
+
+- `healthz`：本地检查已构建实例；远程调用 `GET /healthz`。
+- `batch --input <file|->`：逐行读取 NDJSON，每行是
+  `{"op":"<method_name>", ...MemoryAPI参数}`，同一 client 顺序执行。
+  它是会话工具，不是 `batch_add` 的别名；不会增加事务或改变 API 批处理语义。
+  每条结果独立输出 JSON，失败写 stderr、继续处理后续行，任一失败则非零退出。
+
+```bash
+printf '%s\n' \
+  '{"op":"add","content":"coffee","scope":{"org":"local","user":"developer"}}' \
+  '{"op":"search","query":"coffee","context":{"scope":{"org":"local","user":"developer"}},"top_k":3}' \
+  | scripts/run-cli.sh --auth-mode dev batch
+```
+
+默认 `--output json` 直接输出 API JSON 原值：数组仍是数组，字符串仍是字符串，
+`None` 为 `null`，不再添加 `ok` / `op` / `item` / `hits` envelope，
+也不将 `id` 改为 `item_id`。`--pretty` 仅改变缩进。
+`text` / `table` / `quiet` 直接读取原结果字段做展示，不改变 client 的返回结构。
+batch 固定逐行 JSON，不使用展示选项。
+
+成功写 stdout、退出 0；业务/连接错误写 stderr、退出 1；单命令参数错误退出 2。
+客户端内部 `call(method, payload)` 的 `(status, body)` 是执行状态与原响应值的二元组，
+不是写入 JSON 响应的业务包装。
+
+## 配置与生命周期
+
+本地用重复 `--config` 叠加 JSON/YAML 层，例如
+`--config base.yaml --config local.yaml`，在 OFFLINE 基础上按顺序覆盖。
+远程不能同时传本地 `--config`，服务配置由 HTTP 进程负责。
+命令结束（含失败）关闭 client，释放内核运行时资源；batch 在全部记录处理完后关闭。
+
+入口脚本 `scripts/run-cli.sh` 将仓库根与 `jiuwen_memory_entry/core` 加入
+`PYTHONPATH`，以支持现有 core 平面导入。无需另建 CLI 业务实现。
+
+## 验证
+
+`tests/unit/jiuwen_memory_entry/test_cli.py` 覆盖全部方法/参数集合、默认值省略、
+旧字段拒绝、原 JSON 返回、安全身份与目标分离、资源关闭，以及本地/真实 HTTP
+模式的增删改查和异步写入。`examples/demo_cli.py` 提供同进程调用示例。

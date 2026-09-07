@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-08-31 |
+| 最近一次修订日期 | 2026-09-05 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
 ## Metadata 物理存储契约
 
 索引记录保留 `system_metadata.<key>` 和 `user_metadata.<key>` 的逻辑路径。Milvus 与
@@ -16,13 +16,14 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 ## 范围 / 边界
 
 **管什么**：
-- 统一 Storage 契约、CompositeStorage 默认组合实现与底层能力发现
-- StorageProducer 注册与 `storage` 配置命名空间
+- 管理面 `StoreManager` 契约（能力发现、命名端口暴露、统一授权代理、健康聚合）与数据面 `DomainStore` 契约（MemoryUnit 领域 CRUD 与检索适配），分处 `store_manager.py` / `domain_store.py` 两个独立 ABC
+- `CompositeStoreManager` / `CompositeDomainStore` 默认组合实现
+- `StoreManagerProducer` 注册与 `store_manager` 配置命名空间（全局唯一 manager，经 `globals.store_manager` 指名）
 - MemoryUnit 领域 add/update/delete/get/list
 - StorageSecurity 数据面授权和 StoreSecurity 数据保护能力边界
 - 可配置真源（文档/结构化）的 KV 存储抽象
 - KV 加密装饰器（EncryptedKVStore）
-- 多后端索引存储抽象：向量（VectorStore）、全文（FulltextStore）、图（GraphStore）、融合（FusionStore）、文件系统（FSStore）
+- 多后端索引存储抽象：向量（VectorStore）、全文（FulltextStore）、图（GraphStore）、融合（FusionStore）、文件系统（FSStore）、实体反向（EntityStore）
 - 统一 CRUD 动词（insert / delete / update / get）
 - 检索型存储的 search 查询
 - scope 原生隔离（scope 为显式第一入参，物理约束在该 scope 内）
@@ -69,41 +70,131 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 22. **CRUD 不级联层级关系**：KVStore 的 insert/update/delete 只作用于指定 key。删除父或子
     不会自动改写其他 unit；父子双向边维护、剪枝与修复由 construction/control 调用显式
     CRUD 完成。GraphStore 删除节点时清理关联图边的既有语义不适用于 hierarchy。
-23. **Storage capability 唯一来源**：能力集合只包含 KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS；
-    `has_*()` 由集合推导，未声明端口访问抛 `UnsupportedStorageCapabilityError`。
-24. **命名端口仍受 Storage 管控**：`has_vector_port(name)` 与 `vector_port(name)` 等成对使用；
-    默认端口名为 `default`，分层索引可使用 `layers_l0` / `layers_l1`，上层不得绕过
-    StorageProducer 直接解析 Store 具名实例。
-25. **检索路径独立于 capability**：Storage 提供 recall/recall_and_get/retrieve，并以全局稳定的
-    `preferred_retrieval_pipeline()` 选择首选入口；路径值不加入 capability。
-26. **统一授权不可绕过**：MemoryUnit 领域接口和 Storage 暴露的 Store 代理端口都先执行
+23. **Storage capability 唯一来源**：能力集合只包含 KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS/ENTITY
+    （ENTITY 为 F07 新增第七席）。capability 与 `has_*()` **同源于端口表**——某类存储只要有
+    任一端口可用即拥有该 capability，二者不会分叉；
+    `has_*(name)` 由集合/命名端口表推导，未声明端口访问抛 `UnsupportedStorageCapabilityError`。
+24. **端口单一入口且全量自动**：每个 capability 一对 `xxx(name="default")` / `has_xxx(name="default")`
+    方法（无 property 快捷方式、无 `*_port` 后缀双入口）；七类 `*_store` 命名空间下**所有**
+    具名实例（含 `default`）**声明即端口**，端口名即实例名（encrypted KV 的明文 raw 若以具名
+    声明会随之暴露，raw 推荐在 kv 实例 params 内 inline 声明）；上层不得绕过
+    `StoreManagerProducer` 直接解析 Store 具名实例。
+    **manager params 不再用 `<ns>_store` 引用键决定默认端口**：`default` 只是端口表中名为
+    `"default"` 的普通实例。理由是配置合并为实例级整体覆盖（`AssemblyContext.merged` 按实例名
+    update 整个 `RawSpec`，无 params 深合并），部署一旦覆写 `store_manager.default.params`
+    就须全量抄写其全部键，漏一个即静默丢能力。**代价**：manager params 里 inline 声明 Store
+    （`kv_store: {target: ...}`）的写法失效，后端一律经命名空间声明。
+    端口表的值必须非 None——builder 返 None（增强层未配即降级）的实例在
+    `_collect_ports` 统一丢弃。管理面**不校验任何 capability 的必需性**——它只如实报告
+    装配出的能力，「哪类存储不可或缺」是消费方的约束（数据面缺 KV 真源时，其领域方法自会
+    抛 `UnsupportedStorageCapabilityError` 并指明缺失端口）；两条入口据此行为一致。
+25. **检索路径独立于 capability**：`DomainStore` 提供 recall/recall_and_get/retrieve，并以
+    实例级稳定的 `preferred_retrieval_pipeline()` 选择首选入口；路径值不加入 capability。
+26. **统一授权不可绕过**：`DomainStore` 领域接口和 `StoreManager` 暴露的 Store 代理端口都先执行
     `StorageSecurity.authorize`；默认 AllowAll 可省略 access。Store 自身 `security` 表示数据保护。
-27. **写接口覆盖范围由实现决定**：`add`/`update`/`delete` 落成哪些索引形式取决于该 Storage
+    **ENTITY 端口的授权适配**（`_AuthorizedEntityStoreProxy`，与通用代理分开实现）：
+    `find_by_entity_text_hash` / `find_by_linked_memory_id` → `SEARCH`；`execute_operations`
+    → 按 batch 内 op 类型派生动作集逐个授权（`INSERT`→ADD、`LINK`/`UNLINK_UPDATE`→UPDATE、
+    `DELETE`→DELETE；空 batch 零授权，因为它不执行任何动作）；`ensure_index` → `ADMIN`。
+    交给 `authorize` 的 Scope 是**有损近似** `Scope(space=space_id, user=filters.actor_id)`：
+    `space` 是 `space_id_from_scope` 的算值（可能是 space id、org id 或字面量 `"default"`），
+    `org`/`agent`/`session` 恒空，`execute_operations` 无 `filters` 故 `user` 也恒空。
+    自定义 `StorageSecurity` 不得对 `resource == "entity"` 按 org/agent/session 判定；
+    写入侧的 actor 隔离由 `EntityRecord.filters` 记录内字段承担，不由授权入参承担。
+27. **写接口覆盖范围由实现决定**：`DomainStore.add`/`update`/`delete` 落成哪些索引形式取决于该
     实现的能力，调用方不得假定「只写记忆本体」。`IndexWriteMode` / `IndexRemoveMode` 表达调用方
     意图，能否拆分由实现按自身能力决定——不具备检索索引能力的实现在 `RETRIEVAL_ONLY` /
     `SOFT` 时为空操作。差额由 IndexBuilder 补齐，匹配关系由装配期约定保证。
 28. **正排的 key 方案与编解码是跨层共享契约**：`memory_key` 与 `memory_codec` 归口
-    `common.type_def`，写侧在 `ForwardIndexBuilder`、读侧在 `Storage.get`/`list`，`KVStore.list`
+    `common.type_def`，写侧在 `ForwardIndexBuilder` 与 `KVLifecycleManager` 回写、读侧在
+    `DomainStore.get`/`list` 与 `load_units`/`list_units` helper，`KVStore.list`
     本身也按 `MEMORY_KEY_PREFIX` 扫描。这是正排作为唯一需要**两向投影**的索引形式的固有代价：
     实现分居两层，靠这对共享契约对齐。
+29. **命名数据面共享物理 Store 集**：`manager.domain_store(name)` 的多套命名数据面差异仅在
+    检索 profile（`preferred_retrieval_pipeline` + recallers 组合）；同名多次调用返回同一实例。
+    跨 Store 集的整栈切换走 F02 Routing（`store_manager.active`），不属命名数据面语义。
+30. **所有 XXXStore 获取经 StoreManager**：消费者不直接调 Store Producer 解析具名后端
+    （F07 起 `EntityStore` 一并纳入——写入侧 `HybridIndexBuilder` 与召回侧 `KeywordRecaller`
+    改经 `manager.entity(name)`，`EntityStoreProducer.dep` 旁路移除，读写共享同一实例由
+    manager 保证而非配置纪律）；
+    端口选择键（`params.kv_store` / `vector_store` / `entity_store` / ... / `domain_store`）的值是 manager 端口/
+    数据面名（仅字符串，inline dict 拒绝）。纯「按 unit_id 点读」与「列表/全量扫描」场景注入
+    KVStore 端口并用 `load_units` / `list_units` helper，不过度依赖 `DomainStore`——control 面
+    （Engine×2 / LifecycleManager / EvolveJob / MiddleToLongJob）真源读写全部直连 KV 端口，
+    DomainStore 的消费方是检索路径（PipelineRetriever）与一体化写路径（UnifiedIndexBuilder）。
+31. **health 聚合覆盖全部已声明端口**：增强层的降级发生在**装配期**（builder 返 None →
+    无该 capability → 消费方跳过），不在探活期；端口一旦声明且构造成功，后端不可达就应让
+    `manager.health()` 报错，不给任何 capability 开健康豁免。运行期容错仍由消费方各自的
+    try/except 承担（entity 后端故障不影响正排/倒排/向量的写入与召回）。
+    **部署注意**：把 `health()` 当 liveness probe 的部署，增强层后端抖动会触发重启；
+    建议用作 readiness，或在部署侧区分 required/optional 探活。
 
 ## 接口契约
 
-### Storage（统一门面，`storage.py`）
+### StoreManager（管理面，`store_manager.py`）
+
+| 类别 | 接口 | 语义 |
+|---|---|---|
+| 端口 | `kv/vector/fulltext/graph/fusion/fs/entity(name="default")` 及 `has_*(name="default")` | 暴露经过统一授权代理的完整 Store 契约；单一入口（无 property、无 `*_port` 后缀）；未声明端口抛 `UnsupportedStorageCapabilityError` |
+| 数据面 | `domain_store(name="default")` / `has_domain_store(name="default")` | 取命名数据面实例；实现需缓存（同名多次返回同一实例） |
+| 能力 | `capabilities()` | 返回不可变标准端口能力集合 |
+| 横切 | `security` / `health()` | 统一授权入口并聚合全部命名端口的健康检查 |
+
+`CompositeStoreManager` 是默认实现（组合七类 Store + 端口表 + `_AuthorizedStoreProxy`，
+ENTITY 端口用 `_AuthorizedEntityStoreProxy`），提供两条入口：`__init__` 收**已构造的 Store
+实例**（手工接线与测试路径，每类接单实例或 `{name: store}` 端口表）；`from_config(config)`
+从装配配置内部构造全部 Store 与全部命名数据面（装配路径，注册的 `_build` 即其一行封装）。
+数据面在 manager 自身就绪后逐套构造——`domain_store_target` 为 `composite`（默认）时经
+`CompositeDomainStore.for_manager(manager, ds_config)` 直接构造，该方法内部一次完成
+profile 派生、召回路组装与绑定；其余 target 走 `DomainStoreProducer`（自带检索路径，
+不装召回路）。两种情形都经 `bind_domain_store(ds, name)` 注入。
+数据面的真源读写与 control 面走同一条路径——经 `manager.kv(name)` 端口（授权代理在内）：
+领域方法先按 `memory_unit` 授权、端口再按 `kv` 授权，两层 resource 不同，分层授权是预期
+语义；管理面不提供绕过代理的原始端口出口。该 `name` 由装配期 `resolve_name(ds_config,
+"kv_store")` 指名（与其余消费方同一套选择键机制），不在运行期硬编码 `"default"`；
+该 `name` 与其余数据面参数一样声明在 `domain_stores.<name>` 里。`StoreManagerProducer.TOP_NAME = "store_manager"`（F07 起从 `storage` 更名）；统一
+manager 以 target 自注册，默认 `composite`。
+
+**全局唯一 manager（F07）**：进程内共享一个 StoreManager，由 `globals.store_manager` 指名
+（值 = store_manager 命名空间下的实例名）。`StoreManagerProducer.resolve(config)` 按
+params 显式覆盖 → `globals.store_manager` → `"default"` 三级链解析；未声明实例名抛
+`ValidationError`，不做匿名兜底构建。消费者不再逐个声明 `storage` 引用。
+
+**数据面装配参数归位（F07）**：`store_manager.<inst>.params` **不承载任何数据面配置**——
+七类端口由命名空间全量聚合（声明即端口），与 params 无关。数据面的全部装配参数住在
+`store_manager.<inst>.params.domain_stores: {<name>: {...}}`：`preferred_retrieval_pipeline`
+/ `kv_store` / `domain_store_target` / 七个 `*_recaller` 选择键。`default` 可显式声明且
+**必建**（整段缺省时按全默认构造）。
+
+**继承规则只有一条，对所有键统一生效**：`default` entry 是 base，命名 entry overlay 在其
+上，再经 `ComponentConfig.get` 回退 `globals`（`vector_enabled` / `graph_enabled` /
+`layers_index_enabled` 等跨切面开关走这条）。base 是必需而非便利——`Factory.dep` 读
+`config.params` 直读不回退 globals，命名 entry 漏掉 `*_recaller` 键会让 `dep` 落到
+`cls.build(default, {}, ctx)` 匿名新建一套不共享的 recaller，装配不报错、退化全静默。
+
+**消费者具名选择键**：`resolve_name(config, key)` 统一读取——键名与命名空间一致
+（`kv_store` / `vector_store` / `fulltext_store` / `graph_store` / `fusion_store` / `fs_store` /
+`entity_store` / `domain_store`），值必须是 manager 端口/数据面名字符串（params 直读不回退
+globals，inline dict 拒绝），缺省 `"default"`。注意与跨切面开关的读法不对称：`entity_enabled`
+走 `config.get`（回退 globals，表达"要不要用"），端口选择键走 `resolve_name`（params 直读，
+表达"用哪个端口"）；二者是 AND 关系且 `entity_enabled` 优先短路。
+
+### DomainStore（数据面，`domain_store.py`）
 
 | 类别 | 接口 | 语义 |
 |---|---|---|
 | 领域操作 | `add/update(..., mode: IndexWriteMode = ALL)` / `delete(..., mode: IndexRemoveMode = HARD)` / `get` / `list` / `scopes` | 操作或枚举 MemoryUnit 真源；get 保序并省略缺失，list 返回 items 与 count |
-| 能力 | `capabilities()` / `has_kv()` 等 | 返回不可变标准 Store 端口能力 |
-| 端口 | `kv/vector/fulltext/graph/fusion/fs` 及 `*_port(name)` | 暴露经过统一授权代理的完整 Store 契约；命名端口通过 `has_*_port(name)` 判断，未声明能力时报错 |
 | 检索适配 | `preferred_retrieval_pipeline()` / `recall` / `recall_and_get` / `retrieve` | 供 Retriever 选择 recall/get/rank 三步的组合位置 |
-| 横切 | `security` / `health()` | 统一授权入口并聚合声明能力的健康检查 |
+| 横切 | `security` / `health()` | 委托 manager 的统一授权与聚合健康检查 |
 
-`CompositeStorage` 是默认实现。一体化实现可以只实现 Storage 的领域和首选检索入口；只有完整
-提供某个标准 Store 契约时才声明对应 capability。
+`CompositeDomainStore` 是默认实现。一体化实现可以只实现领域和首选检索入口；只有完整提供
+某个标准 Store 契约时才在对应 manager 上声明 capability。
+
+`bind_recallers` 仅落 `CompositeDomainStore`（手工/测试接线口；装配路径由 `for_manager` 内部调用），不下沉 `DomainStore` ABC；
+`RoutingDomainStore` 不实现（active 切换语义要求各预装实例装配期各自绑定）。
 
 **写接口的覆盖范围是实现相关的**：`add`/`update`/`delete` 的语义是「按该实现的能力落地」，
-而非「只写记忆本体」。`CompositeStorage` 不持有 Chunker/Embedder，无投影能力，故只落本体；
+而非「只写记忆本体」。`CompositeDomainStore` 不持有 Chunker/Embedder，无投影能力，故只落本体；
 一体化平台可在一次 `add` 内建立全部索引形式。差额由 `IndexBuilder` 补齐，两者的匹配由
 **装配期约定**保证（见 S05 不变量 15），不引入运行时能力协商。
 
@@ -114,13 +205,53 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 `RETRIEVAL_ONLY` / `SOFT` 时为空操作，而 `FORWARD_ONLY` 时应**至少保证本体被写到**——
 多刷新一次检索索引无害，漏写本体则丢数据。
 
-**原文**（对话消息）不属于 Storage 的领域范围：它既非 MemoryUnit 真源也非索引，不建索引、
-不参与检索，仅供构建层做指代消解与语境补全，条数上限由写入方维护。故不占 Storage 接口——
+**原文**（对话消息）不属于存储层的领域范围：它既非 MemoryUnit 真源也非索引，不建索引、
+不参与检索，仅供构建层做指代消解与语境补全，条数上限由写入方维护。故不占存储层接口——
 构建层注入一个独立的 `KVStore` 直接读写（见 [F07](../features/construction/F07-memory-write-entry.md)）。
 
-`StorageProducer.TOP_NAME = "storage"`。统一 Storage 实现以 target 自注册；默认
-`CompositeStorage` target 为 `composite`。具名引用必须复用同一 Storage 实例，使 Kernel、
-Retriever 及后续迁移的 Construction/Control 不重复装配底层 Store。
+### Recaller（数据面检索适配器，`domain_store_impl/recaller.py`）
+
+单路召回算子。一个 Recaller 对应一条召回通道，消费 `ParsedQuery` 中本通道需要的字段，
+经 `StoreManager` 的对应命名端口召回候选。
+
+| 方法 | 签名 | 语义 |
+|------|------|------|
+| `channel` | `() -> RecallChannel` | 返回本召回路对应的通道 |
+| `recall` | `(scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]` | 在 scope 范围内本通道内召回 top-k 候选 |
+| `health` | `() -> None` | 存活探测；健康返回 None，否则抛异常 |
+
+**归属在存储层而非检索层（F07）**：生产链路里 Recaller 实例的唯一消费方是
+`CompositeDomainStore`，`PipelineRetriever` 只按 `preferred_retrieval_pipeline()` 委托数据面的
+`recall` / `recall_and_get` / `retrieve`，不持有召回路。故契约与实现都在
+`storage/domain_store_impl/`，且**不继承** `RetrievalOperator`——自描述的 `operator_type()`
+对一个不进检索算子表的组件没有意义，`RetrievalOperatorType` 相应不含 `RECALLER`。
+`RecallerProducer.TOP_NAME` 仍是 `recaller`：YAML 命名空间与注册名不变，注册随
+`storage.bootstrap.register_backends` 触发。
+
+**装配**：`CompositeDomainStore.for_manager(manager, ds_config)` 内按能力开关
+（`vector_enabled` / `graph_enabled` / `layers_index_enabled`，`config.get` 回退 globals）与
+`domain_stores.<name>` 的七个 `*_recaller` 选择键同步组装，构建期 fail-fast。手工/测试接线
+走 `bind_recallers`（同一实例不允许绑定两套不同 recaller）。
+
+`scope` 是 `Recaller.recall` 的显式第一入参，不随查询对象携带、不混进 `filters`——与
+S04 的「scope 是独立轴」同一条铁律。召回分数统一「分越大越相关」，chunk→unit 归并由
+同目录 `unit_aggregation.aggregate_to_units` 按 `metadata['unit_id']` 取 MaxP。
+
+### 共享读 helper（`kv.py::load_units` / `list_units`）
+
+`load_units(kv, scope, unit_ids) -> list[MemoryUnit]`：按 unit_id 从 KV 真源点读
+MemoryUnit 列表（`memory_key` + `loads`）——缺失省略、按输入顺序返回、重复 id 各自返回、
+不做任何过滤/复核（lifecycle/valid-time 判定属调用方职责）。
+
+`list_units(kv, scope, *, offset, limit, memory_types, filters, extensions) ->
+tuple[list[MemoryUnit], int]`：列表读的对称件——`kv.list` + 逐条 `loads` 反序列化（非
+MemoryUnit 记录自然过滤），返回 `(items, count)`；过滤/计数/分页语义全部由 `KVStore.list`
+契约承担，helper 不做二次过滤。
+
+两者供 Dedup._load_unit / Governor._find / Evolver 源读 / KeywordRecaller 实体扩展等纯按
+id 点读场景，以及 Engine（点读/全量扫描/分页 list）、LifecycleManager sweep、
+EvolveJob/MiddleToLongJob 候选拉取等列表场景共用——这类场景注入 KVStore 端口而非
+DomainStore。
 
 ### BaseStore（基类，`base.py`）
 
@@ -238,6 +369,33 @@ GraphStore 只承载 `ASSOCIATE` 等路径产生的语义关联、共指、因�
 | `get` | `(scope, ref) -> BinaryIO` | 打开 scope 下 ref 处的文件用于读取，由调用方负责关闭 |
 | `stat` | `(scope, ref) -> FileStat` | 返回 scope 下 ref 处文件的元信息 |
 
+### EntityStore（`entity_store.py`）
+
+实体反向索引（实体 → 关联的 memory）。F07 起是 `StorageCapability` 第七席 ENTITY，经
+`manager.entity(name)` 取用，与其余六类同构。
+
+| 方法 | 签名 | 语义 |
+|------|------|------|
+| `ensure_index` | `() -> None` | 确保索引已创建并就绪；实现可懒触发（首次读写时） |
+| `find_by_entity_text_hash` | `(space_id, entity_text_hashes, *, filters, limit=500) -> list[EntityRecord]` | 按 `entity_text_hash` keyword term 精确查询（不做向量归并） |
+| `find_by_linked_memory_id` | `(space_id, memory_id, *, filters) -> list[EntityRecord]` | 反查：哪些实体关联了该 memory（unlink 用） |
+| `execute_operations` | `(space_id, operations) -> EntityBatchResult` | bulk 变更（INSERT/LINK/UNLINK_UPDATE/DELETE 混合） |
+
+**隔离模型是本层唯一的 scope 契约偏离**：第一入参是 `space_id: str`（`space_id_from_scope`
+的算值：`scope.space` → `scope.org` → 字面量 `"default"` 三级降级，走后端 routing）而非
+`Scope`；额外的隔离维度是 `EntityStoreFilters.actor_id`（= `scope.user`）单段 term。
+agent/session **不作**隔离维度——实体是 user 级知识，同 user 下跨 agent、跨 session 共享。
+隔离仍由存储层强制（不变量 1），只是维度表达与五段模型不同构；代价由授权代理承担
+（不变量 26 的有损 scope 近似）。
+
+**partial failure 语义**：`execute_operations` 是 per-item 粒度——一条失败不影响其他，
+失败 id 经 `EntityBatchResult.failed_ids` 回传，**不抛异常**（与主链路 `BulkWriteError`
+的 all-or-nothing 相反）。
+
+**装配期降级**：entity 是增强层，builder 在必填连接参数（`hosts`）未配时返回 `None` 而
+非抛错 → 无 ENTITY 能力 → 两侧消费方跳过（不变量 24 的端口表 None 过滤、不变量 31）。
+这与其余六类"缺必填参 `require_param` 抛错"的约定不同，是有意的差异。
+
 ## 数据结构
 
 ### KV（`types.py`）
@@ -328,11 +486,16 @@ Document 使用与 VectorRecord 相同的五个 hierarchy metadata 键，并保�
 jiuwen_memory/storage/<store>_impl/
     __init__.py             # 重导出实现类
     <impl_class_snake>.py   # 具体实现 + 尾部 @XxxProducer.register("name")
+
+jiuwen_memory/storage/store_manager_impl/   # 管理面实现（CompositeStoreManager）
+jiuwen_memory/storage/domain_store_impl/    # 数据面实现（CompositeDomainStore + Recaller 全家）
 ```
 
-各 Producer：`StorageProducer` / `KvProducer` / `FulltextProducer` / `VectorProducer` /
-`GraphProducer` / `FusionProducer` / `FsProducer` / `EntityStoreProducer`。
-注册由 `storage.bootstrap.register_backends` 统一触发。
+各 Producer：`StoreManagerProducer` / `DomainStoreProducer` / `RecallerProducer` / `KvProducer` /
+`FulltextProducer` / `VectorProducer` / `GraphProducer` / `FusionProducer` / `FsProducer` /
+`EntityStoreProducer`。
+注册由 `storage.bootstrap.register_backends` 统一触发。`DomainStoreProducer` 不是平级
+YAML 入口——domain_store 由 manager 工厂内构建（manager 是唯一装配入口）。
 
 具体 Store target 名与实现文件列表归 `jiuwen_memory/storage/AGENTS.md` 维护；本 spec 只固化
 Store 抽象、跨后端不变量与注册机制。
@@ -341,8 +504,8 @@ Store 抽象、跨后端不变量与注册机制。
 
 | 关联 spec | 关系 |
 |-----------|------|
-| S03-control | Engine 通过 KVStore 读写真源；目标生命周期/治理操作按显式 Scope 定位，全局 sweep/offboarding 才跨 Scope 枚举 |
-| S04-retrieval | Retriever 经 StorageProducer 获取统一 Storage；CompositeStorage 的兼容 Recaller 由本层工厂按配置在构建期同步组装（具名构建用 `config.name` 预注册、匿名构建用合成名预注册打破循环） |
+| S03-control | Engine/LifecycleManager/Jobs 真源读写直连注入的 KVStore 端口（点读 `load_units` / 列表 `list_units`）；目标生命周期/治理操作按显式 Scope 定位，全局 sweep/offboarding 才跨 Scope 枚举 |
+| S04-retrieval | Retriever 经 `StoreManagerProducer.resolve` 取全局 manager 并持其 `domain_store()`，不持有召回路；`Recaller` 契约与实现归本层数据面，由 `for_manager` 按 `domain_stores.<name>` 的选择键在构建期同步组装（具名构建用 `config.name` 预注册、匿名构建用合成名预注册打破循环） |
 | S05-construction | 构建层通过本层抽象做真源与索引持久化 |
 | S07-common | 定义 `MemoryUnit.hierarchy`、`HierarchyKind`、`HierarchyRole` 与 `FilterClause` |
 | S08-config | Store 连接参数与 `*.active` 可由 ConfigSource 晚绑定；切换后端不包含数据迁移 |

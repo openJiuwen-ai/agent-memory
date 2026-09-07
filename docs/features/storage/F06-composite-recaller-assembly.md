@@ -56,7 +56,8 @@
    bind」；绑定后惰性 loader 作废。重绑守卫不变（不允许绑定两套不同实例）。
 5. **模块依赖方向不破**：`composite_storage.py` 只在 `_assemble_recallers` 函数体内
    惰性 `from jiuwen_memory.retrieval.recaller import RecallerProducer`，模块层面
-   storage 仍不导入 retrieval。
+   storage 仍不导入 retrieval。（F07 E 组把 Recaller 整体移入 storage 数据面后，这条
+   延迟导入连同它绕开的循环一起消失。）
 
 ## 拒绝的方案
 
@@ -102,3 +103,21 @@
   次匿名构建会累积少量死条目，但 `Factory.reset_all` 在每次装配前清空。
 - 用户自定义配置里写在 `retriever.*.params` 的 `*_recaller` 覆盖键不再生效，需迁移到
   `storage.*.params`（globals 里的能力开关不受影响）。
+
+
+## 后续演进
+
+- [F07-storage-manager-domain-store-split.md](F07-storage-manager-domain-store-split.md)：本文的召回
+  装配链路整体保留（仍由 manager `_build` 工厂末尾调 `_assemble_recallers`），仅符号随
+  拆分更名（`CompositeStorage` → `CompositeStoreManager`/`CompositeDomainStore`、
+  `StorageProducer.resolve` → `StoreManagerProducer.resolve`、合成名
+  `__anon_storage_{id}__` → `__anon_store_manager_{id}__`、recaller 具名实例的 storage 引用
+  键改为 `store_manager`）。
+
+  F07 E 组进一步把落点收紧：本文确立的「召回路装配内收到 manager 工厂」保持不变，但
+  `Recaller` 契约与三个实现从 `retrieval/` 移入 `storage/domain_store_impl/`，
+  `_assemble_recallers` 的调用点从 manager `from_config` 下沉进
+  `CompositeDomainStore.for_manager`，本文决策 5 的惰性导入随之删除；`*_recaller` 选择键
+  也从 `store_manager.<inst>.params` 再下移到 `params.domain_stores.<name>`。
+  本文拒绝方案里的「让 recaller 不再依赖 Storage（改注入裸端口）」仍然成立且未被采纳——
+  E 组走的是相反方向：不是把 recaller 从 storage 摘出去，而是把它收进来。

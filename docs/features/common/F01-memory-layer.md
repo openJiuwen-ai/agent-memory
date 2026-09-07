@@ -339,8 +339,8 @@ L0/L1/L2 分别落独立 Milvus collection，共用同一维度与 COSINE 度量
 | 组件 | 变更 |
 |---|---|
 | `retrieval/types.py` | `RetrievedItem` 加 `abstract`/`overview` 字段（content 对应 L2） |
-| `retrieval/recaller_impl/vector_recaller.py` | `VectorRecaller` 加 `layer` 参数；注册 `vector_l0`/`vector_l1` |
-| `retrieval/recaller_impl/keyword_recaller.py` | `KeywordRecaller` 加 `layer` 参数；注册 `keyword_l0`/`keyword_l1` |
+| `storage/domain_store_impl/vector_recaller.py` | `VectorRecaller` 加 `layer` 参数；注册 `vector_l0`/`vector_l1` |
+| `storage/domain_store_impl/keyword_recaller.py` | `KeywordRecaller` 加 `layer` 参数；注册 `keyword_l0`/`keyword_l1` |
 | `retrieval/retriever_impl/pipeline_retriever.py` | `_build` 按 `layers_index_enabled` 接入 L0/L1 recaller |
 | `retrieval/discloser_impl/*.py` | 优先用 `unit.layers.l0/l1`，空则兜底；RetrievedItem 三层填充 |
 | `config/defaults.py` | 加 vector_store/fulltext_store.layers_l0/l1、recaller 具名实例、retriever 接入 |

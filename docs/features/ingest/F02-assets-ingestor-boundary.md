@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-09-03 |
+| 日期 | 2026-09-05 |
 | 影响范围 | `RawPayload` / Ingestor / Normalizer / InMemoryEngine / CloudEngine / 入口错误映射 |
 | 测试基线 | Normalizer、视频入口、批量写入及 CloudEngine 定向回归 59 passed；全量 unit 仅余 2 个既有 entity_linker 日志捕获失败 |
 | Refs | —（如有 issue 补 `Refs: #<n>`） |
@@ -35,7 +35,7 @@
 - SimpleIngestor 用例验证 payload assets 被等值复制到当前 Segment，且不共享可变 list 实例。
 - InMemoryEngine 与 CloudEngine 分别注入“把 assets 放入第二个 Segment”的测试 Ingestor，验证 Engine 传入 assets 且保留 Ingestor 的分段结果。
 - 错误 `video -> passthrough` route 在直接构造与 `build_kernel()` 装配中均失败。
-- SimpleIngestor、PassthroughNormalizer、RoutingNormalizer 和 VideoNormalizer 覆盖统一的运行时能力错误；HTTP/CLI 共用 dispatch 覆盖 400 映射，并区分缺少视频 Normalizer 与缺少 video Evolver。
+- SimpleIngestor、PassthroughNormalizer、RoutingNormalizer 和 VideoNormalizer 覆盖统一的运行时能力错误；HTTP 与 CLI 在直接调用 `MemoryAPI` 的协议边界通过共享错误映射返回 400。
 - TEXT URI 兼容回退和 UTF-8 CODE 文本直通继续通过；DOCUMENT 及媒体模态不会由 passthrough 当作普通 content，非法 UTF-8 文本转为 `ValidationError`。
 
 ## 已知遗留

@@ -1,7 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """MCP surface 入口——基于 FastMCP，把记忆动词暴露为 MCP 工具。
 
-每个工具都是对**共享 ``handler.dispatch``** 的薄封装（HTTP / CLI 用的是同一个 dispatch），
+每个工具都是对 legacy ``handler.dispatch`` 的薄封装（HTTP / CLI 已改为直调 MemoryAPI），
 故本适配器只做协议翻译、零业务逻辑。内核进程内装配一次、跨工具调用持有状态。
 
 启动（stdio 传输，供 Claude Desktop / Claude Code 等 MCP 客户端挂载）::
