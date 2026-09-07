@@ -49,6 +49,11 @@ deploy = [
     "pyyaml>=6",
     # api_reranker 出站 HTTP（部署镜像走外部 rerank 服务时必需）。
     "httpx>=0.27,<1",
+    "watchdog>=4.0",
+    # 文档记忆（F07/F08）影子索引的 vec0 向量表扩展。代码用 try/except ImportError 软依赖——
+    # 不装则降级为「全量+倒排」两表，向量召回缺一路但不抛错（倒排召回照常）。
+    # 装上 + 配 embedder 才进入完整模式（建 memory_vec 表，向量召回可用）。
+    "sqlite-vec>=0.1",
 ]
 # MCP surface（jiuwen_memory_entry/mcp_server）：把记忆动词暴露为 Model Context Protocol 工具。
 mcp = [
