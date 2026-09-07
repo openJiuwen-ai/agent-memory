@@ -92,6 +92,14 @@ class VectorDedup(Dedup):
             )
             return []
 
+        logger.info(
+            "[trace/dedup] vector_recall | candidate_id=%s | vector_store=%s | scope=%r | raw_hits=%d",
+            candidate.id[:8],
+            type(self._vector_store).__name__,
+            scope,
+            len(hits),
+        )
+
         # 过滤掉候选自身的向量记录（unit.id-{chunk.id} 格式）
         hits = [h for h in hits if not h.id.startswith(candidate.id + "-")]
         if not hits:

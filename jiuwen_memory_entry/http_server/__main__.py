@@ -295,6 +295,8 @@ class HttpServer(Server):
         policy.check(host, requires_loopback=requires_loopback)
 
     def serve(self, host: str, port: int) -> None:
+        # 同步宿主无事件循环：起 daemon 线程自持 loop 跑看门狗
+        self._runtime.start()
         httpd = None
         try:
             self._check_binding(host)
