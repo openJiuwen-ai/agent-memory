@@ -5,11 +5,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import fields, replace
+from datetime import datetime, timezone
 from typing import Any
 
 from jiuwen_memory.common.errors import AuthenticationError, ValidationError
 from jiuwen_memory.common.security.authentication.base import Authenticator, AuthProducer
-from jiuwen_memory.common.security.types import AuthContext, Credentials, Role
+from jiuwen_memory.common.security.types import AuthContext, Credentials, Role, validate_actor_form
 from jiuwen_memory.common.type_def.scope import Scope
 
 _ACTOR_FIELDS = frozenset(field.name for field in fields(Scope))
@@ -30,9 +31,20 @@ def _parse_identity(spec: Any) -> AuthContext:
         role = Role(spec.get("role", "user"))
     except (TypeError, ValueError):
         raise ValidationError("dev identity role must be user, admin or root") from None
+    actor = Scope(**raw_actor)
+    _validate_dev_actor(actor)
     return AuthContext(
-        actor=Scope(**raw_actor), role=role, credential_type="dev", auth_method="dev"
+        actor=actor, role=role, credential_type="dev", auth_method="dev"
     )
+
+
+def _validate_dev_actor(actor: Scope) -> None:
+    try:
+        validate_actor_form(actor)
+    except AuthenticationError:
+        raise ValidationError(
+            "dev identity actor must have a non-empty org and exactly one user or agent"
+        ) from None
 
 
 def _parse_identities(identities: Mapping[str, Any]) -> dict[str, AuthContext]:
@@ -58,6 +70,7 @@ class DevAuthenticator(Authenticator):
             raise ValidationError("fixed actor and dev identities are mutually exclusive")
         self._identities = None if identities is None else _parse_identities(identities)
         source = actor or Scope(org="local", user="developer")
+        _validate_dev_actor(source)
         self._default_auth = AuthContext(
             actor=replace(source), role=Role.ROOT, credential_type="dev", auth_method="dev"
         )
@@ -69,7 +82,9 @@ class DevAuthenticator(Authenticator):
             context = self._identities.get(credentials.api_key)
             if context is None:
                 raise AuthenticationError("authentication failed")
-        return replace(context, actor=replace(context.actor))
+        return replace(
+            context, actor=replace(context.actor), authenticated_at=datetime.now(timezone.utc)
+        )
 
     @staticmethod
     def mode() -> str:

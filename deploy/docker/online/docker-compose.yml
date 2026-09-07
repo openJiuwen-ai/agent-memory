@@ -107,8 +107,6 @@ services:
       dockerfile: deploy/docker/online/Dockerfile
     env_file:
       - .env
-    environment:
-      JIUWEN_MEMORY_HTTP_ALLOW_DEV_AUTH_NON_LOOPBACK: "true"
     volumes:
       - ./config.yml:/config/config.yml:ro
       - ../../../jiuwen_memory:/app/jiuwen_memory:ro

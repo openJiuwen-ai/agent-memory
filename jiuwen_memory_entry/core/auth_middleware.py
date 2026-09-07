@@ -41,6 +41,7 @@ from jiuwen_memory.api import (
     reset_request_id,
     set_current,
     set_request_id,
+    validate_actor_form,
 )
 
 _BEARER = "bearer "
@@ -120,6 +121,8 @@ def authenticated(
 
         try:
             ctx = authenticator.authenticate(credentials)
+            # 第三方认证器也必须服从 actor 全局形态不变量；在认证边界统一拒绝。
+            validate_actor_form(ctx.actor)
         except AuthenticationError:
             _record_denial(audit, authenticator, credentials, "authenticate")
             raise
@@ -135,6 +138,7 @@ def authenticated(
             # attributes 留空：业务 payload 不得注入任何系统属性。
             # 可信代理链、mTLS 主体等属性将来只能由服务端组件写入。
         )
+        _record_auth_success(audit, ctx, credentials, surface, security.request_id)
 
         token = set_current(ctx)
         if request_id_token is None:
@@ -195,4 +199,34 @@ def _record_denial(audit, authenticator, credentials, action) -> None:
             )
         )
     except Exception:  # pragma: no cover - 审计后端故障不该把 401/429 变成 500
+        pass
+
+
+def _record_auth_success(audit, ctx, credentials, surface, request_id) -> None:
+    """记录不含明文凭据的认证成功事件，并与请求 ID 关联。"""
+    if audit is None:
+        return
+    try:
+        surface_name = (
+            str(getattr(surface, "value", surface)) if surface is not None else "internal"
+        )
+        audit.record(
+            AuditEvent(
+                actor=ctx.actor,
+                action="authenticate",
+                decision="allow",
+                layer="security",
+                detail={
+                    "mode": str(getattr(ctx.auth_method, "value", ctx.auth_method)),
+                    "peer": _normalized_peer(credentials),
+                    "surface": surface_name,
+                    "request_id": request_id,
+                    "acting_user": ctx.actor.user,
+                    "role": ctx.role.value,
+                    "key_fp": ctx.credential_id,
+                    "auth_mode": ctx.auth_method,
+                },
+            )
+        )
+    except Exception:  # pragma: no cover - 审计故障不应把已认证请求变成 500
         pass

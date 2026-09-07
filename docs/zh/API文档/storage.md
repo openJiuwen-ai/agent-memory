@@ -501,14 +501,19 @@ kv_store:
     target: encrypted
     params:
       raw_kv_store: raw
-      security: default
+      cryptography: default
 
-security:
+cryptography:
+  default:
+    target: local
+    params:
+      key_provider: default
+
+key_provider:
   default:
     target: local
     params:
       key_env: AGENT_MEMORY_ENCRYPTION_ROOT_KEY
-      allow_plaintext: false
 ```
 
 `redis` 开启 `ssl_verify=true` 时，`url` 必须使用 `rediss://`，且必须同时配置 `ssl_ca_cert`。`postgres` 开启后内部使用 `sslmode=verify-full`。
@@ -679,7 +684,9 @@ recaller:
 
 `StorageSecurity` 目前没有独立 Producer 命名空间。`CompositeStorage` 配置构建默认使用 `AllowAllStorageSecurity`；自定义授权实现需要代码构造 `CompositeStorage(..., security=...)` 或由产品装配层注入，不能直接写成 YAML target。
 
-`StoreSecurity` 也不单独选 target：普通 Store 默认为 `PassthroughStoreSecurity`；选择 `kv_store.target=encrypted` 后，`EncryptedKVStore.security` 自动变为已启用状态，真正的加密实现由 `params.security` 引用的 `SecurityProvider` 提供。
+`StoreSecurity` 也不单独选 target：普通 Store 默认为 `PassthroughStoreSecurity`；选择
+`kv_store.target=encrypted` 后，`EncryptedKVStore.security` 自动变为已启用状态，真正的
+加密实现由 `params.cryptography` 引用的 `CryptographyProvider` 提供。
 
 ## 14. 最小调用示例
 

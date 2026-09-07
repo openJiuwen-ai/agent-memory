@@ -28,9 +28,9 @@ pytest.importorskip("mcp.server.fastmcp")
 
 # __main__ 在模块级把 sys.argv[1:] 当配置路径读取、按环境变量装配认证器；
 # pytest 的 argv 与宿主环境不得影响导入结果，先钉住再导入。认证模式环境变量
-# 同样只在导入期被读取一次（模块级 _build_authenticator），导入完成（或失败）
+# 同样只在导入期被读取一次（模块级 _build_server），导入完成（或失败）
 # 后立即还原，不向同进程后续测试泄漏全局状态；测试依赖的 dev 认证器已随导入
-# 固化为 mcp_main._AUTHENTICATOR，还原不影响本文件行为。
+# 固化为 mcp_main._SRV.security_runtime，还原不影响本文件行为。
 _AUTH_MODE_ENV = "JIUWEN_MEMORY_MCP_AUTH_MODE"
 _ORIG_AUTH_MODE = os.environ.get(_AUTH_MODE_ENV)
 os.environ[_AUTH_MODE_ENV] = "dev"
@@ -38,6 +38,7 @@ _ARGV = sys.argv
 sys.argv = ["mcp"]
 try:
     from jiuwen_memory_entry.mcp_server import __main__ as mcp_main
+    from jiuwen_memory_entry.mcp_server.__main__ import _build_server
 finally:
     sys.argv = _ARGV
     if _ORIG_AUTH_MODE is None:
@@ -45,7 +46,7 @@ finally:
     else:
         os.environ[_AUTH_MODE_ENV] = _ORIG_AUTH_MODE
 
-from jiuwen_memory.api import Surface, ValidationError  # noqa: E402
+from jiuwen_memory.api import Credentials, Surface, ValidationError  # noqa: E402
 from jiuwen_memory_entry.core.api_contract import (  # noqa: E402
     is_known_verb,
     method_contract,
@@ -137,7 +138,8 @@ def kernel(monkeypatch):
 
     工具经 ``_invoke`` 在调用时读模块级 ``_SRV``，monkeypatch 即可换芯。
     """
-    srv = mcp_main.Server.build(mcp_main.load_config([mcp_main.OFFLINE]))
+    config = mcp_main.with_local_dev_security(mcp_main.load_config([mcp_main.OFFLINE]))
+    srv = mcp_main.Server.build(config)
     monkeypatch.setattr(mcp_main, "_SRV", srv)
     yield srv
     srv.close(wait=True)
@@ -203,7 +205,7 @@ def test_payload_rejects_legacy_and_identity_fields(field: str) -> None:
 
 
 def test_invoke_fails_closed_without_authenticator(kernel, monkeypatch) -> None:
-    monkeypatch.setattr(mcp_main, "_AUTHENTICATOR", None)
+    monkeypatch.setattr(kernel, "security_runtime", None)
     with pytest.raises(RuntimeError, match="authentication is not configured"):
         asyncio.run(mcp_main.memory_add(content="x", scope=SCOPE))
 
@@ -231,6 +233,52 @@ def test_authenticated_runs_with_mcp_surface_and_dev_identity(
 
 
 # --- D. 功能闭环（任务闭环与血缘链是本特性的核心回归）--------------------------- #
+
+
+def test_required_mode_assembles_configured_api_key_runtime(monkeypatch) -> None:
+    key = "mcp-configured-root-test-key"
+    config = mcp_main.load_config([mcp_main.OFFLINE, {"memory_api": {
+        "security": {"default": {"target": "standard", "params": {
+            "authenticator": {"target": "api_key", "params": {"root_api_key": key}},
+        }}},
+    }}])
+    monkeypatch.setenv(_AUTH_MODE_ENV, "required")
+    monkeypatch.setattr(sys, "argv", ["mcp"])
+    monkeypatch.setattr(mcp_main, "load_config", lambda _layers: config)
+    server = _build_server()
+    try:
+        assert server.authenticator.mode() == "api_key"
+        assert server.authenticator.authenticate(Credentials(api_key=key)).actor.user == "root"
+        assert server.rate_limiter is not None
+        assert server.workload_guard is not None
+        assert server.binding_policy is not None
+        assert "permission" not in config.settings["memory_api"]
+    finally:
+        server.close()
+
+
+def test_mcp_default_required_has_no_implicit_dev_fallback(monkeypatch) -> None:
+    monkeypatch.delenv(_AUTH_MODE_ENV, raising=False)
+    monkeypatch.setattr(sys, "argv", ["mcp"])
+    server = _build_server()
+    try:
+        assert server.authenticator is None
+    finally:
+        server.close()
+
+
+@pytest.mark.parametrize("host,expected_status", [("127.0.0.1", 0), ("0.0.0.0", 2)])
+def test_mcp_dev_binding_has_no_environment_bypass(
+    kernel, monkeypatch, host, expected_status
+) -> None:
+    monkeypatch.setenv("JIUWEN_MEMORY_MCP_ALLOW_DEV_NON_LOOPBACK", "true")
+    monkeypatch.setenv("MCP_HOST", host)
+    monkeypatch.setattr(mcp_main, "_TRANSPORT", "http")
+    run_calls = []
+    monkeypatch.setattr(mcp_main.mcp, "run", lambda **kwargs: run_calls.append(kwargs))
+
+    assert mcp_main.main() == expected_status
+    assert run_calls == ([{"transport": "streamable-http"}] if expected_status == 0 else [])
 
 
 def test_add_returns_original_unit_without_envelope(kernel) -> None:
