@@ -354,6 +354,27 @@ def _take_coords(
     return _parse_coords(metadata[COORDS_KEY]), (rest or None)
 
 
+def _strip_transient_metadata(unit: MemoryUnit) -> MemoryUnit:
+    """把瞬态键从回显给调用方的 unit 剥除（坐标是判定输入，不是条目属性）。
+
+    文档记忆（F08）为 md 路径分流在写入链路中段把 ``coords`` 塞回 unit 对象——
+    ``MarkdownStore.write`` 与影子索引都在序列化之前从 unit 对象读它算落盘路径。
+    序列化（``dumps``）本就剥瞬态键，存储侧因此干净；但 write 返回的 unit 是同
+    一批对象引用，原样回显等于瞬态键越过了 API 边界。与 ``ROUTE_CTX_KEY``
+    同一处置：内部消费完，出口剥净。
+
+    无瞬态键时不复制，原对象直返——多数写入不走判定，避免为不变式买单。
+    """
+    metadata = unit.system_metadata
+    if not metadata or not any(
+        key in metadata for key in TRANSIENT_SYSTEM_METADATA_KEYS
+    ):
+        return unit
+    stripped = {key: value for key, value in metadata.items() if key not in TRANSIENT_SYSTEM_METADATA_KEYS}
+    unit.system_metadata = stripped
+    return unit
+
+
 def _reject_non_scalar_metadata(
     metadata: dict[str, MetadataValueType] | None, *, field_name: str
 ) -> None:

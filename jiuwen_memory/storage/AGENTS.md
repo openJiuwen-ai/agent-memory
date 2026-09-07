@@ -187,6 +187,11 @@
     漏写引用键 → 该能力静默消失」的陷阱（配置合并是实例级整体覆盖，部署一旦覆写
     `store_manager.default.params` 就得全量抄写其全部键）。代价：manager params 里 inline
     声明 Store（`kv_store: {target: ...}`）的写法失效，后端一律经命名空间声明。
+    文档模式（F07）的 markdown / shadow 端口同此范式（`has_markdown(name)` / `markdown(name)` /
+    `has_shadow_index(name)` / `shadow_index(name)`），均为 `StoreManager` ABC 契约方法带缺省
+    实现——未装配文档端口时 `has_*` 返 False、端口方法抛
+    `UnsupportedStorageCapabilityError`；数据面的 `should_write_document()` 是
+    `CompositeDomainStore` 实例属性（装配期经 `document_flag` 归一固化），非 manager 契约。
 13. 连接型后端须支持 ConfigSource 晚绑定（S08 / F01 §2.1.4）：在取客户端/连接路径
     `fetch` 对应 key，值变化则重建连接（同实现换 Redis URL / db_path 走此路径，不必多实例）。
     异质 Store 级 `*.active` 切换由 `config.routing.Routing*Store` 承担（F01）；

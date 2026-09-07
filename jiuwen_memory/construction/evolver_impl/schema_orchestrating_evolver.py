@@ -15,6 +15,7 @@ from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import MemoryUnit
+from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction.abstractor import Abstractor, AbstractorProducer
 from jiuwen_memory.construction.associator import Associator, AssociatorProducer
 from jiuwen_memory.construction.common import merge_unit_tags
@@ -234,7 +235,10 @@ def _optional_layer_annotator(config):
 @EvolverProducer.register("schema_orchestrating")
 def _build(config):
     vector_on = config.get("vector_enabled", True)
-    index_default = "hybrid" if vector_on else "fulltext"
+    # index_builder 缺省经公共函数 resolve_index_builder_default：文档模式 → document
+    # 三处消费方（engine/evolver/job_factory）必须共用本函数，否则缺省判定分叉会让
+    # 同一份装配拿到不一致的 IndexBuilder（见 config.document_flag docstring）。
+    index_default = resolve_index_builder_default(config)
     dedup_default = "vector" if vector_on else "keyword"
     storage = StoreManagerProducer.resolve(config)
     return SchemaOrchestratingEvolver(

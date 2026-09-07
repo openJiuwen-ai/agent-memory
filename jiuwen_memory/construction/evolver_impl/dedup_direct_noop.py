@@ -21,6 +21,14 @@ _CORRECTION_RE = re.compile(
 _DATE_SPAN_RE = re.compile(
     r"\d{4}-\d{2}-\d{2}|\d{4}年\d{1,2}月|\d{1,2}月"
 )
+# 否定标记词——高相似下「一边肯定一边否定」是实质矛盾（喜欢 vs 不喜欢），
+# 禁止 direct_noop 短路，改走 LLM 判 supersede/update。中文否定副词 + 英文 not/no
+# 形式，配对称检测（仅当一边含否定一边不含才判矛盾，两边都否定不触发）。
+_NEGATION_RE = re.compile(
+    r"不|没|无|非|别|勿|未|否"
+    r"|\b(?:not|no|never|n['’]t|without)\b",
+    re.IGNORECASE,
+)
 
 
 def _date_spans(text: str) -> frozenset[str]:
@@ -45,6 +53,17 @@ def _temporal_conflicts(candidate: MemoryUnit, existing: MemoryUnit) -> bool:
     return _events_differ(c_event, e_event)
 
 
+def _has_negation_delta(candidate: MemoryUnit, existing: MemoryUnit) -> bool:
+    """一边含否定标记一边不含——「喜欢 vs 不喜欢」类实质矛盾。
+
+    高相似场景下两条内容高度重合，否定极性反转是仅有的语义分歧，直接 NOOP 会把
+    矛盾修正当重复丢弃。仅当一边含否定一边不含才判矛盾（两边都肯定或都否定不触发）。
+    """
+    c_neg = bool(_NEGATION_RE.search(candidate.content or ""))
+    e_neg = bool(_NEGATION_RE.search(existing.content or ""))
+    return c_neg != e_neg
+
+
 def has_meaningful_delta(candidate: MemoryUnit, existing: MemoryUnit) -> bool:
     """候选相对已有记忆是否存在禁止 direct_noop 的实质差异。"""
     if _temporal_conflicts(candidate, existing):
@@ -52,6 +71,8 @@ def has_meaningful_delta(candidate: MemoryUnit, existing: MemoryUnit) -> bool:
     if _CORRECTION_RE.search(candidate.content or ""):
         return True
     if _date_spans(candidate.content) != _date_spans(existing.content):
+        return True
+    if _has_negation_delta(candidate, existing):
         return True
     return False
 

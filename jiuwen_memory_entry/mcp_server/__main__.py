@@ -24,6 +24,7 @@ import logging
 import os
 import sys
 import uuid
+from collections.abc import AsyncIterator
 from importlib import import_module
 from typing import Any
 
@@ -98,10 +99,21 @@ def _build_authenticator():
 
 _AUTHENTICATOR = _build_authenticator()
 
+
+async def _lifespan(_app: Any) -> AsyncIterator[None]:
+    """FastMCP 会话生命周期：起看门狗（文档模式，绑本协程的 loop，F07 §12.10）。"""
+    await _SRV.start_background()
+    try:
+        yield
+    finally:
+        _SRV.close()
+
+
 mcp = FastMCP(
     "agent-memory",
     host=os.environ.get("MCP_HOST", "127.0.0.1"),
     port=int(os.environ.get("MCP_PORT", "8138")),
+    lifespan=_lifespan,
 )
 
 
