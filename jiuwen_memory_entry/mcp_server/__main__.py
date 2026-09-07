@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import AsyncIterator
 from importlib import import_module
+from typing import Any
 
 # 复用 jiuwen_memory_entry/core 的共享件（server 内核装配 + profiles 配置叠加 + handler dispatch +
 # config_loader 配置加载），与 CLI 相同的 flat-import；启动脚本通过 PYTHONPATH 保证优先级，
@@ -46,10 +48,21 @@ except ImportError as exc:  # pragma: no cover
 # --- 内核：进程内装配一次，跨工具调用共享 --- #
 _SRV = Server.build(load_config([OFFLINE] + [load_layer(p) for p in sys.argv[1:]]))
 
+
+async def _lifespan(_app: Any) -> AsyncIterator[None]:
+    """FastMCP 会话生命周期：起看门狗（文档模式，绑本协程的 loop，F07 §12.10）。"""
+    await _SRV.start_background()
+    try:
+        yield
+    finally:
+        _SRV.close()
+
+
 mcp = FastMCP(
     "agent-memory",
     host=os.environ.get("MCP_HOST", "127.0.0.1"),
     port=int(os.environ.get("MCP_PORT", "8138")),
+    lifespan=_lifespan,
 )
 
 
