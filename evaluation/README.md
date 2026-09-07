@@ -32,7 +32,25 @@ sh evaluation/run.sh
 3. 复用标准端口上已经健康的 Redis、Elasticsearch、Milvus，并拉起缺失服务；
 4. 拉起 SSH 同款的 GLM 抽取代理、回答/判分代理和 BGE embedding 代理；
 5. 执行 mini 样本的写入、抽取、检索、回答和判分；
-6. 把结果写入 `evaluation/outputs/longmemeval/<时间>/`。
+6. 把结果写入 `evaluation/outputs/longmemeval/<run_id>/`。
+
+每次启动都会生成唯一 `run_id`，并将其追加到本轮 `scope_org`。因此即使复用本机
+已有的 Redis、Elasticsearch 和 Milvus，重复运行也不会检索到上一轮留下的记忆。
+后端数据默认保留，方便后续 bad case 和 evidence 溯源；`run_id` 与完整 Scope 会写入
+`result.json`，默认输出目录也使用同一个 `run_id`。
+
+如已确认不再需要从后端复盘本轮数据，可在 `evaluation/config.yml` 中显式开启：
+
+```yaml
+longmemeval:
+  cleanup_after_run: true
+```
+
+默认值为 `false`。开启后，程序会先完成写入、检索、AnswerJudge、指标计算及 evidence
+产物采集，再通过正式 `MemoryAPI` 的 `PURGE` 删除本轮 Scope 下的 Redis 记忆真源及
+Milvus/Elasticsearch 派生索引；`result.json` 和 artifacts 仍保留，并记录清理结果。
+内核按契约保留审计记录。清理失败会返回非零退出码，不会静默报告成功。需要现场
+bad case 分析时请保持关闭。
 
 首次运行需要下载镜像和 Python 包。Docker Desktop 建议预留约 6 GB 内存。默认端口
 为 `6379`、`9200`、`19530`、`9091`、`18937`、`18938`、`18939`。

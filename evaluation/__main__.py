@@ -9,6 +9,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import yaml
 
@@ -41,7 +42,8 @@ def _longmemeval_args(config_file: Path, settings: dict[str, Any]) -> list[str]:
         str(settings.get("output_root", "outputs/longmemeval")),
     )
     timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")
-    output_dir = Path(output_root) / timestamp
+    run_id = f"{timestamp}-{uuid4().hex[:8]}"
+    output_dir = Path(output_root) / run_id
     args = [
         "--data",
         _resolve_path(
@@ -56,6 +58,8 @@ def _longmemeval_args(config_file: Path, settings: dict[str, Any]) -> list[str]:
         str(settings.get("max_questions", 1)),
         "--scope-org",
         str(settings.get("scope_org", "longmemeval-0804")),
+        "--run-id",
+        run_id,
         "--granularity",
         str(settings.get("granularity", "dialogue_turn")),
         "--dialogue-turn-max-chars",
@@ -82,6 +86,8 @@ def _longmemeval_args(config_file: Path, settings: dict[str, Any]) -> list[str]:
         else "--no-oracle-sessions"
     )
     args.append("--infer" if settings.get("infer", True) else "--no-infer")
+    if settings.get("cleanup_after_run", False):
+        args.append("--cleanup-after-run")
     if settings.get("judge_strict", False):
         args.append("--judge-strict")
     os.environ["LONGMEMEVAL_PROXY_RETRY_ATTEMPTS"] = str(

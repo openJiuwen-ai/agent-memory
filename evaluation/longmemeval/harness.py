@@ -5,19 +5,19 @@
 披露返回。``key→unit_id`` 映射在写入时捕获（``write`` 返回本次创建的 ``MemoryUnit``），
 使数据集的逻辑相关集能映射到真实 ``unit_id`` 再与召回结果比对。
 
-每个 harness 持有一套独立的内核（``build_kernel``），天然隔离——不同 Config 的对比
-跑分各起一套，互不污染。
+每个 harness 持有一个正式的 ``MemoryRuntime``，评测结束后显式关闭。持久化后端的
+运行间隔离由调用入口生成的唯一 scope 保证。
 """
 
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from importlib import import_module
 from inspect import signature
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Dict, List, Optional
 
+from jiuwen_memory.api import DeleteMode, DeleteSelector, MemoryRuntime, assemble_runtime
 from jiuwen_memory.common.type_def import Context
 from jiuwen_memory.config.config import Config
 
@@ -31,22 +31,19 @@ from .no_source import assert_no_source, no_source_extraction
 from .types import CaseOutcome, Dataset, MemorySeed, QueryCase
 
 
-def _build_evaluation_kernel(config: Optional[Config]) -> Any:
-    """Build the observable kernel required by the evaluation-only assertions.
+def _shared_evaluation_kv(api: Any) -> Any:
+    """Return the KV already assembled into the API for the raw-source assertion.
 
-    Newer Mem2.0 versions expose ``assemble`` publicly and keep the full kernel
-    builder inside ``memory_api_impl.assembly``.  LongMemEval also verifies the
-    raw KV namespace, so retaining the internal kernel is intentional here and
-    isolated to the evaluation package.
+    ``MemoryAPI.list`` intentionally excludes ``/messages/`` records, so this
+    evaluation-only assertion needs the engine's existing KV port. It does not
+    construct a second store: the returned object is the exact stateful dependency
+    already shared by the official assembly topology.
     """
-    implementation = import_module("jiuwen_memory.api.memory_api_impl")
-    builder = getattr(implementation, "build_kernel", None)
-    if not callable(builder):
-        assembly = import_module("jiuwen_memory.api.memory_api_impl.assembly")
-        builder = getattr(assembly, "_build_kernel", None)
-    if not callable(builder):
-        raise RuntimeError("Mem2.0 evaluation kernel builder is unavailable")
-    return builder(config=config)
+    engine = getattr(api, "_engine", None)
+    kv = getattr(engine, "_kv", None)
+    if not callable(getattr(kv, "scan", None)):
+        raise RuntimeError("Mem2.0 evaluation raw KV observation is unavailable")
+    return kv
 
 
 class EvalHarness:
@@ -57,14 +54,57 @@ class EvalHarness:
         config: Optional[Config] = None,
         artifact_dir: str | Path | None = None,
     ) -> None:
-        self._kernel = _build_evaluation_kernel(config)
-        self._api = self._kernel.api
-        self._key2ids: Dict[str, List[str]] = {}
-        self._artifact_dir = Path(artifact_dir) if artifact_dir else None
-        self._pre_dedup_calls: list[dict] = []
-        self._retrieval_audits: list[dict] = []
-        if self._artifact_dir is not None:
-            self._install_pre_dedup_capture()
+        runtime = assemble_runtime(config=config)
+        self._runtime: MemoryRuntime | None = runtime
+        try:
+            self._api = runtime.api
+            self._kv = _shared_evaluation_kv(self._api)
+            self._key2ids: Dict[str, List[str]] = {}
+            self._artifact_dir = Path(artifact_dir) if artifact_dir else None
+            self._pre_dedup_calls: list[dict] = []
+            self._retrieval_audits: list[dict] = []
+            if self._artifact_dir is not None:
+                self._install_pre_dedup_capture()
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        """Release resources owned by the official runtime exactly once."""
+        runtime = self._runtime
+        if runtime is None:
+            return
+        self._runtime = None
+        runtime.close()
+
+    def purge_run_data(self, dataset: Dataset) -> dict[str, int]:
+        """Physically delete this run's memory units and derived indexes."""
+        scopes: dict[tuple[str, ...], Any] = {}
+        for seed in dataset.seeds():
+            scopes.setdefault(self._scope_key(seed.scope), seed.scope)
+        for case in dataset.queries():
+            scopes.setdefault(self._scope_key(case.scope), case.scope)
+
+        deleted_count = 0
+        for scope in scopes.values():
+            units = self._list_scope_units(scope)
+            if units:
+                delete = self._api.delete
+                deleted = delete(
+                    DeleteSelector(
+                        unit_ids=[unit.id for unit in units],
+                        scope=scope,
+                        mode=DeleteMode.PURGE,
+                    ),
+                    **self._security_kwargs(delete, scope),
+                )
+                deleted_count += len(deleted)
+            remaining = self._list_scope_units(scope)
+            if remaining:
+                raise RuntimeError(
+                    f"evaluation cleanup left {len(remaining)} memory units in scope {scope}"
+                )
+        return {"scopes": len(scopes), "memory_units": deleted_count}
 
     @staticmethod
     def _security_kwargs(method, identity) -> dict:
@@ -295,7 +335,7 @@ class EvalHarness:
         self.ingest(seeds)
         persisted_units = self._list_persisted_units(indexed_cases[0][1].scope)
         assert_no_source(
-            self._kernel,
+            self._kv,
             indexed_cases[0][1].scope,
             persisted_units,
         )
@@ -311,6 +351,9 @@ class EvalHarness:
     def _list_persisted_units(self, scope) -> list[object]:
         if self._artifact_dir is None:
             return []
+        return self._list_scope_units(scope)
+
+    def _list_scope_units(self, scope) -> list[object]:
         offset = 0
         page_size = 100
         units: list[object] = []
@@ -408,9 +451,8 @@ class EvalHarness:
 
     @staticmethod
     def _scope_key(scope) -> tuple[str, ...]:
-        # ``space`` is introduced by the post-9ed Scope API. Keep the
-        # evaluation overlay compatible with the current official 9ed commit,
-        # where Scope does not expose that field yet.
+        # Current Mem2.0 exposes ``space``; getattr keeps the evaluation overlay
+        # readable against older commits that did not yet have that field.
         return (
             scope.org,
             getattr(scope, "space", ""),
@@ -418,3 +460,12 @@ class EvalHarness:
             scope.agent,
             scope.session,
         )
+
+
+def purge_run_data(dataset: Dataset, config: Optional[Config] = None) -> dict[str, int]:
+    """Reassemble the official runtime and purge one completed evaluation run."""
+    harness = EvalHarness(config=config)
+    try:
+        return harness.purge_run_data(dataset)
+    finally:
+        harness.close()

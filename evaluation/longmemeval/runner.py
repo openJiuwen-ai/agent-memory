@@ -47,7 +47,10 @@ class Runner:
         artifact_dir: str | Path | None = None,
     ) -> RunResult:
         harness = EvalHarness(config=config, artifact_dir=artifact_dir)
-        outcomes = harness.evaluate(dataset, concurrency=concurrency)
+        try:
+            outcomes = harness.evaluate(dataset, concurrency=concurrency)
+        finally:
+            harness.close()
         results: List[MetricResult] = []
         for metric in self._metrics:
             results.extend(metric(outcomes))

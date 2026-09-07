@@ -87,10 +87,10 @@ def no_source_extraction() -> Iterator[None]:
         setattr(OrchestratingEvolver, "_evolve_extract", original)
 
 
-def assert_no_source(kernel: Any, scope: Any, returned_units: list[Any]) -> None:
+def assert_no_source(kv: Any, scope: Any, returned_units: list[Any]) -> None:
     from jiuwen_memory.common.type_def import MESSAGES_KEY_PREFIX
 
-    messages = kernel.kv.scan(scope, prefix=MESSAGES_KEY_PREFIX)
+    messages = kv.scan(scope, prefix=MESSAGES_KEY_PREFIX)
     if messages:
         raise RuntimeError(
             f"no-source contract failed: found {len(messages)} raw /messages entries"

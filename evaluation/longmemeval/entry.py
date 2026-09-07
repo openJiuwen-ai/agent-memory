@@ -11,6 +11,7 @@ import urllib.request
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from evaluation.shared.env import EVALUATION_DIR, load_evaluation_env, require_env
 
@@ -117,6 +118,11 @@ def main(argv: list[str] | None = None) -> int:
         "LONGMEMEVAL_EMBED_MODEL",
         "LONGMEMEVAL_EMBED_API_KEY",
     )
+    run_id = _argument_value(args, "--run-id")
+    if not run_id:
+        timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")
+        run_id = f"{timestamp}-{uuid4().hex[:8]}"
+        args.extend(["--run-id", run_id])
     output_raw = _argument_value(args, "--output-dir")
     if output_raw:
         output_dir = Path(output_raw).resolve()
@@ -125,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
             EVALUATION_DIR
             / "outputs"
             / "longmemeval"
-            / datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")
+            / run_id
         )
         args.extend(["--output-dir", str(output_dir)])
     output_dir.mkdir(parents=True, exist_ok=True)

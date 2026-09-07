@@ -12,15 +12,18 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from evaluation.shared.env import load_evaluation_env
 
 load_evaluation_env()
 
 from evaluation.longmemeval.adapter import LongMemEvalDataset  # noqa: E402
+from evaluation.longmemeval.harness import purge_run_data  # noqa: E402
 from evaluation.longmemeval.metrics import mem0_longmemeval_prompt as _prompts  # noqa: E402
 from evaluation.longmemeval.metrics.ir_metrics import ir_metrics  # noqa: E402
 from evaluation.longmemeval.metrics.llm_judge import (  # noqa: E402
@@ -90,9 +93,29 @@ def _load_memory_config(path: Path) -> tuple[Config, dict]:
     return Config.from_dict(payload), payload
 
 
-def _default_output_dir() -> Path:
+def _new_run_id() -> str:
     timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")
-    return _DEFAULT_OUTPUT_ROOT / timestamp
+    return f"{timestamp}-{uuid4().hex[:8]}"
+
+
+def _validated_run_id(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value):
+        raise ValueError("--run-id 只能包含字母、数字、点、下划线和连字符，且最长 128 字符")
+    return value
+
+
+def _isolated_scope_org(scope_org: str, run_id: str) -> str:
+    prefix = scope_org.strip()
+    if not prefix:
+        raise ValueError("--scope-org 不能为空")
+    value = f"{prefix}-{run_id}"
+    if len(value) > 256:
+        raise ValueError("scope_org 与 run_id 拼接后不能超过 256 字符")
+    return value
+
+
+def _default_output_dir(run_id: str) -> Path:
+    return _DEFAULT_OUTPUT_ROOT / run_id
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -112,6 +135,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="最多运行题数；0 表示不限制（默认 1，适合功能冒烟）",
     )
     parser.add_argument("--scope-org", default="longmemeval-0804")
+    parser.add_argument("--run-id", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--cleanup-after-run", action="store_true")
     parser.add_argument(
         "--granularity",
         choices=("turn", "dialogue_turn", "session"),
@@ -182,13 +207,20 @@ def main(argv: list[str] | None = None) -> int:
         if args.max_questions < 0:
             raise ValueError("--max-questions 不能小于 0")
 
+        run_id = _validated_run_id(args.run_id or _new_run_id())
+        scope_org = _isolated_scope_org(args.scope_org, run_id)
+
         samples = _parse_samples(args.samples)
         if args.question_id:
             samples = _question_samples(data_path, args.question_id)
         max_questions = None if args.max_questions == 0 else args.max_questions
         cutoffs = _parse_cutoffs(args.answer_cutoffs)
 
-        output_dir = Path(args.output_dir).resolve() if args.output_dir else _default_output_dir()
+        output_dir = (
+            Path(args.output_dir).resolve()
+            if args.output_dir
+            else _default_output_dir(run_id)
+        )
         output_dir.mkdir(parents=True, exist_ok=True)
         json_path = Path(args.json).resolve() if args.json else output_dir / "result.json"
         one_question = (samples is not None and len(samples) == 1) or (
@@ -205,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
             str(data_path),
             samples=samples,
             max_questions=max_questions,
-            scope_org=args.scope_org,
+            scope_org=scope_org,
             granularity=args.granularity,
             top_k=args.recall_top_k,
             answer_cutoff=args.answer_cutoff,
@@ -267,6 +299,8 @@ def main(argv: list[str] | None = None) -> int:
     payload = to_json(result)
     payload["evaluation_protocol"] = {
         "version": "0804",
+        "run_id": run_id,
+        "scope_org": scope_org,
         "context_mode": "oracle_sessions" if args.oracle_sessions else "full_haystack",
         "granularity": args.granularity,
         "dialogue_turn_max_chars": args.dialogue_turn_max_chars,
@@ -298,13 +332,25 @@ def main(argv: list[str] | None = None) -> int:
     }
     if judge is not None:
         payload["qa_records"] = judge.records
+
+    cleanup_failed = False
+    cleanup = {"requested": bool(args.cleanup_after_run), "status": "retained"}
+    if args.cleanup_after_run:
+        try:
+            cleanup.update(status="purged", **purge_run_data(dataset, config=config))
+        except Exception as exc:  # noqa: BLE001 - persist an explicit cleanup failure result.
+            cleanup_failed = True
+            cleanup.update(status="failed", error_type=type(exc).__name__)
+            logger.error("评测数据清理失败: %s", exc)
+    payload["evaluation_protocol"]["cleanup"] = cleanup
+
     json_path.parent.mkdir(parents=True, exist_ok=True)
     with json_path.open("w", encoding="utf-8") as fh:
         json.dump(payload, fh, ensure_ascii=False, indent=2)
     logger.info("\n[result] %s", json_path)
     if judge is None:
         logger.info("\n[note] 未配置 AnswerJudge，仅输出 IR/性能指标。")
-    return 0
+    return 1 if cleanup_failed else 0
 
 
 if __name__ == "__main__":

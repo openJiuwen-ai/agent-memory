@@ -10,7 +10,10 @@ longmemeval:
   sample_indices: [0]
   max_questions: 1
   concurrency: 1
+  # 运行时自动追加唯一 run_id；复用 Redis/ES/Milvus 也不会读取旧评测数据。
   scope_org: longmemeval-0804-local-smoke
+  # 默认保留本轮后端数据用于 bad case/evidence 溯源；改为 true 才在成功测评后清理。
+  cleanup_after_run: false
   granularity: dialogue_turn
   dialogue_turn_max_chars: 4096
   oracle_sessions: true
