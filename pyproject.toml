@@ -33,13 +33,19 @@ embed = [
 multimodal = [
     "dashscope>=1.24.0",
 ]
-# 接真后端部署所需的客户端库（Milvus / Elasticsearch / Redis / PostgreSQL）+ YAML 配置解析。
+# 接真后端部署所需的客户端库（Milvus / Elasticsearch / Redis / PostgreSQL / WatchDog）
+# + 文档模式向量召回所需的 sqlite-vec + YAML 配置解析。
 deploy = [
     "pymilvus>=2.4",
     "elasticsearch>=8,<9",
     "redis>=5",
     "asyncpg>=0.30",
     "pyyaml>=6",
+    "watchdog>=4.0",
+    # 文档记忆（F07/F08）影子索引的 vec0 向量表扩展。代码用 try/except ImportError 软依赖——
+    # 不装则降级为「全量+倒排」两表，向量召回缺一路但不抛错（倒排召回照常）。
+    # 装上 + 配 embedder 才进入完整模式（建 memory_vec 表，向量召回可用）。
+    "sqlite-vec>=0.1",
 ]
 # MCP surface（jiuwen_memory_entry/mcp_server）：把记忆动词暴露为 Model Context Protocol 工具。
 mcp = [
