@@ -28,7 +28,7 @@ sh evaluation/run.sh
 脚本会依次：
 
 1. 创建或复用仓库根目录的 `.venv`，安装项目和测评依赖；
-2. 清理 `agent-memory-evaluation` 专用 Docker 卷；
+2. 保留 `agent-memory-evaluation` 专用 Docker 卷；
 3. 复用标准端口上已经健康的 Redis、Elasticsearch、Milvus，并拉起缺失服务；
 4. 拉起 SSH 同款的 GLM 抽取代理、回答/判分代理和 BGE embedding 代理；
 5. 执行 mini 样本的写入、抽取、检索、回答和判分；

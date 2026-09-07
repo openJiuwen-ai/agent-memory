@@ -37,9 +37,6 @@ Set-Location $RepoRoot
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $Compose = "evaluation\environment\docker-compose.yml"
-& docker compose -f $Compose down --volumes --remove-orphans
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
 $Services = @()
 if (Test-RedisService) {
     Write-Host "Using existing Redis at 127.0.0.1:6379."

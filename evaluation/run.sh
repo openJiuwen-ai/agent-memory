@@ -6,7 +6,6 @@ cd "$repo_root"
 
 sh evaluation/setup.sh
 compose_file=evaluation/environment/docker-compose.yml
-docker compose -f "$compose_file" down --volumes --remove-orphans
 
 redis_ready() {
   .venv/bin/python -c 'import socket; s=socket.create_connection(("127.0.0.1", 6379), 2); s.settimeout(2); s.sendall(b"*1\r\n$4\r\nPING\r\n"); raise SystemExit(0 if s.recv(64).startswith(b"+PONG") else 1)' >/dev/null 2>&1
