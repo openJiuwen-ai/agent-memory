@@ -19,6 +19,8 @@ dev = [
     "pytest>=8.0,<9.0",
     "pytest-cov>=6.0,<7.0",
     "ruff>=0.8",
+    "argon2-cffi>=23.1",
+
     # 测试套件自身消费的三个未声明依赖（test_outbound_ssl / test_multimodal_adapter /
     # test_middle_e2e_real_llm），缺失会让 pytest 卡在 collection error。
     "httpx>=0.27,<1",
@@ -52,8 +54,16 @@ deploy = [
 ]
 # MCP surface（jiuwen_memory_entry/mcp_server）：把记忆动词暴露为 Model Context Protocol 工具。
 mcp = [
-    "mcp>=1.2",
+    # v1.27.2 修复 Streamable HTTP session 未绑定认证主体的高危漏洞；当前适配器使用
+    # v1 FastMCP API，显式挡住不兼容的 v2 大版本升级。
+    "mcp>=1.27.2,<2",
     "pyyaml>=6",
+]
+# 认证能力（jiuwen_memory/common/security/authentication/key_store）：API Key 的 Argon2id 哈希。标准库无 Argon2id；缺依赖时在
+# 装配期抛 ValidationError，绝不降级为明文比对。
+# 静态加密所需的 cryptography 已在主依赖里（common.security.cryptography 使用）。
+security = [
+    "argon2-cffi>=23.1",
 ]
 
 [dependency-groups]
@@ -61,6 +71,8 @@ dev = [
     "pytest>=8.0,<9.0",
     "pytest-cov>=6.0,<7.0",
     "ruff>=0.8",
+    "argon2-cffi>=23.1",
+
     "httpx>=0.27,<1",
     "requests>=2.31",
     "python-dotenv>=1.0",

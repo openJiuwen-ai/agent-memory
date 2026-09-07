@@ -19,7 +19,6 @@
 """
 
 import asyncio
-import ipaddress
 import logging
 import os
 import sys
@@ -27,6 +26,7 @@ import uuid
 from importlib import import_module
 from typing import Any
 
+from jiuwen_memory_entry.core.dev_security import with_local_dev_security
 from jiuwen_memory_entry.core.import_support import import_required, import_required_attr
 
 # 本文件不用 ``from __future__ import annotations``：FastMCP 依赖运行时注解对象识别
@@ -53,7 +53,6 @@ _api = import_required("jiuwen_memory.api")
 Surface = _api.Surface
 AgentMemoryError = _api.AgentMemoryError
 ValidationError = _api.ValidationError
-build_dev_authenticator = _api.build_dev_authenticator
 invoke_api = import_required_attr("jiuwen_memory_entry.core.api_contract", "invoke_api")
 authenticated = import_required_attr(
     "jiuwen_memory_entry.core.auth_middleware", "authenticated"
@@ -73,30 +72,23 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 _AUTH_MODE_ENV = "JIUWEN_MEMORY_MCP_AUTH_MODE"
-_ALLOW_DEV_NON_LOOPBACK_ENV = "JIUWEN_MEMORY_MCP_ALLOW_DEV_NON_LOOPBACK"
 _AUTH_MODES = frozenset({"required", "dev"})
-_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _TRANSPORT = os.environ.get("MCP_TRANSPORT", "stdio").strip().lower()
 
-# --- 内核：进程内装配一次，跨工具调用共享 --- #
-_SRV = Server.build(load_config([OFFLINE] + [load_layer(p) for p in sys.argv[1:]]))
-
-
-def _build_authenticator():
-    """required 失闭（未装配生产认证器时拒绝业务调用）；dev 固定测试身份。"""
+def _build_server():
+    """按显式模式装配完整 Runtime；未配置认证能力时保持失闭。"""
     mode = os.environ.get(_AUTH_MODE_ENV, "required").strip().lower()
     if mode not in _AUTH_MODES:
         raise ValidationError(f"invalid {_AUTH_MODE_ENV}: {mode!r}")
+    config = load_config([OFFLINE] + [load_layer(p) for p in sys.argv[1:]])
     if mode == "dev":
-        logger.warning(
-            "development authentication is enabled; credentials are ignored "
-            "and this mode must not be used in production"
-        )
-        return build_dev_authenticator()
-    return None
+        config = with_local_dev_security(config)
+        logger.warning("development authentication is enabled; do not use in production")
+    return Server.build(config)
 
 
-_AUTHENTICATOR = _build_authenticator()
+# 认证、绑定策略、资源保护始终从同一个 Runtime 取得。
+_SRV = _build_server()
 
 mcp = FastMCP(
     "agent-memory",
@@ -113,7 +105,7 @@ def _invoke_blocking(verb: str, payload: dict, *, context: Any = None):
     "cannot be called from a running event loop"。
     """
     request_id = uuid.uuid4().hex
-    if _AUTHENTICATOR is None:
+    if _SRV.authenticator is None:
         raise RuntimeError(
             "MCP authentication is not configured; "
             f"set {_AUTH_MODE_ENV}=dev for local testing"
@@ -124,7 +116,13 @@ def _invoke_blocking(verb: str, payload: dict, *, context: Any = None):
         raise RuntimeError(str(validation_error)) from validation_error
     try:
         with authenticated(
-            _AUTHENTICATOR, credentials, surface=Surface.MCP, request_id=request_id
+            _SRV.authenticator,
+            credentials,
+            audit=_SRV.audit,
+            limiter=_SRV.rate_limiter if _TRANSPORT != "stdio" else None,
+            workload_guard=_SRV.workload_guard,
+            surface=Surface.MCP,
+            request_id=request_id
         ) as security:
             return invoke_api(_SRV.api, verb, payload, security)
     except AgentMemoryError as api_error:
@@ -144,32 +142,14 @@ async def _invoke(verb: str, payload: dict, *, context: Any = None):
     )
 
 
-def _is_loopback_host(host: str) -> bool:
-    if host.lower() == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
-
-
 def _check_binding(host: str) -> None:
-    """dev 认证只允许绑定回环地址；放开须显式环境变量（容器内）。"""
-    requirement = getattr(_AUTHENTICATOR, "requires_loopback_binding", None)
-    requires_loopback = bool(requirement()) if callable(requirement) else False
-    if not requires_loopback or _is_loopback_host(host):
+    """网络入口统一采用 Runtime 绑定策略，DEV 不提供非回环旁路。"""
+    if _SRV.authenticator is None:
         return
-    if os.environ.get(_ALLOW_DEV_NON_LOOPBACK_ENV, "").strip().lower() in _TRUE_VALUES:
-        logger.warning(
-            "development authentication is listening on non-loopback host %s; "
-            "the deployment boundary must prevent remote access",
-            host,
-        )
-        return
-    raise ValidationError(
-        "development authentication may bind only to a loopback host; "
-        f"set {_ALLOW_DEV_NON_LOOPBACK_ENV}=true only inside an isolated container"
-    )
+    policy = _SRV.binding_policy
+    if policy is None:
+        raise ValidationError("security runtime is missing a binding policy")
+    policy.check(host, requires_loopback=_SRV.authenticator.requires_loopback_binding())
 
 
 # --- 工具：记忆生命周期（与 MemoryAPI 同名方法对应；参数名与签名零漂移，经
@@ -574,7 +554,8 @@ def main() -> int:
         level=logging.INFO, format="[%(asctime)s] %(name)s %(levelname)s %(message)s"
     )
     try:
-        _check_binding(os.environ.get("MCP_HOST", "127.0.0.1"))
+        if _TRANSPORT in ("http", "streamable-http"):
+            _check_binding(os.environ.get("MCP_HOST", "127.0.0.1"))
     except ValidationError as bind_error:
         logger.error("MCP server refused to start: %s", bind_error)
         return 2

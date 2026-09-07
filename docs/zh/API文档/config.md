@@ -196,6 +196,7 @@ http:
     test-ops:
       actor:
         org: local
+        user: ops
       role: admin
     test-u1:
       actor:
@@ -205,10 +206,9 @@ http:
       actor:
         org: local
         user: u2
-    test-u1-agent:
+    test-agent:
       actor:
         org: local
-        user: u1
         agent: a1
         session: s1
 ```
@@ -226,7 +226,7 @@ bash scripts/run-server.sh --auth-mode dev --host 127.0.0.1 --port 8137 /path/to
 | 配置项 | 约束 |
 |---|---|
 | 映射键，如 `test-u1` | 非空字符串，不含空白；由测试方自行命名 |
-| `actor` | 仅允许 `org`、`space`、`user`、`agent`、`session`；值必须是字符串，`org` 不能为空白 |
+| `actor` | 仅允许 `org`、`space`、`user`、`agent`、`session`；值必须是字符串，`org` 不能为空白，`user`/`agent` 恰有一个非空 |
 | `role` | 可选，默认为 `user`；可取 `user`、`admin`、`root` |
 
 生效规则：
@@ -236,16 +236,18 @@ bash scripts/run-server.sh --auth-mode dev --host 127.0.0.1 --port 8137 /path/to
 - 映射必须是非空对象，不能是 `{}`、`null` 或列表；非法配置在启动监听前报错。
 - 配置在启动时加载，修改后需要重启；多配置文件的顶层合并规则见第 9 节，后一个 `http` 段整体覆盖前一个。
 - 身份由认证头选择，修改请求体 `scope.user` 不能切换身份；`scope` 仍是业务目标。
-- `role: admin/root` 不等于绕过权限。空间创建、成员管理、写入和检索仍由原有授权规则决定；
-  测试组织级创建空间时，示例 `test-ops` 使用仅含 `org` 的主体，不能只给普通用户改一个 role。
+- 映射 DEV 保留 PermissionManager/SpaceAwarePermissionManager 判定，不自动注入 allow_all。
+  具名 ops 的 admin 角色目前不会授予组织管理权限；角色闸门及 agent 代表 user 的
+  受控委托随 PR2 Authorizer 接入后验收，不以 user+agent 双主体表达委托。
+- 已显式配置 memory_api.security 时保留该运行时，不被 HTTP DEV 便捷配置覆盖。
 
 HTTP 标准启动器负责读取该配置；本地 CLI 的 `--auth-mode dev` 仍使用默认固定身份，
 不会自动读取 `http.dev_identities`。远程 CLI 可通过 `AGENT_MEMORY_API_KEY=test-u1`
 向 HTTP 服务发送对应 Bearer 标识。程序化接入可用公开
 `build_dev_authenticator(identities=...)` 构造测试认证器。
 
-容器内使用相同配置：将此段加入实际挂载的配置文件，保持显式 dev 开关并重建应用容器。
-默认回环限制保持不变；多身份映射不增加生产认证能力，不得用于生产或未隔离的共享网络。
+DEV 严格回环监听，无环境变量旁路。容器若需 0.0.0.0，应使用 required 与声明
+远程暴露能力的 API Key/Trusted 运行时。身份映射不是生产认证。
 
 ## 4. 配置基本结构
 
