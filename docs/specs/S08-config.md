@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-09-03 |
+| 最近一次修订日期 | 2026-09-09 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 装配开关见 `docs/features/construction/F08-entity-schema-extension.md` |
 
 ## 范围 / 边界
@@ -53,7 +53,10 @@
 
 ### Config / AssemblyContext（既有，保留）
 
-- `Config.from_yaml` / `from_dict` → `AssemblyContext`
+- `Config.from_yaml` / `Config.from_yaml_str` / `from_dict` → `AssemblyContext`
+  （`from_yaml_str` 接受 YAML 文本 + 按变量名的覆盖参数；`from_yaml` 读文件后复用同一实现）
+- 文本入口展开 `${VAR}` / `${VAR:-默认值}`，取值优先级：显式传参 > 环境变量 > `:-` 默认值 >
+  空串；`from_dict` 是纯数据入口，不展开
 - `default_context()` 与用户 context `merged`：globals 按 key 覆盖，命名空间按实例名覆盖/新增
 - `ComponentConfig.get`：实例 params > globals > 代码默认
 

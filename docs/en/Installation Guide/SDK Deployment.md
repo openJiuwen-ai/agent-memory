@@ -257,9 +257,7 @@ finally:
 ```
 
 Do not call `Config.from_yaml()` directly on this file with the `profile` and `memory_api` wrapper.
-Doing so treats the service-layer keys as kernel component namespaces. Another difference is that
-`Config.from_yaml()` parses YAML but does not expand `${VAR}`. The `load_layer()` function used above
-performs the environment-variable expansion.
+Doing so treats the service-layer keys as kernel component namespaces.
 
 ## 6. Option Four: Docker-Hosted Backends + Local HTTP Service
 
@@ -330,8 +328,7 @@ from jiuwen_memory.config import Config
 api = assemble(config=Config.from_yaml("memory-api.yml"))
 ```
 
-This form does not expand environment variables automatically. Write already-resolved values or let
-the application inject environment variables first.
+This form also expands `${VAR}` / `${VAR:-default}` placeholders from the process environment.
 
 ## 9. Choosing Between HTTP and MemoryAPI
 

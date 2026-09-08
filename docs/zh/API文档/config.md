@@ -133,8 +133,10 @@ config = Config.from_yaml("./memory-config.yml")
 api = assemble(config=config)
 ```
 
-`Config.from_yaml()` 只负责解析 YAML，不会展开 `${ENV_VAR}`。SDK 场景需要调用方自行读取
-环境变量，或提前构造配置字典。
+`Config.from_yaml()` 解析 YAML，并把字符串里的 `${ENV_VAR}` / `${ENV_VAR:-默认值}` 按进程环境
+变量展开。若配置文本不在磁盘上（例如从配置中心或数据库取出），可用
+`Config.from_yaml_str(yaml_text, DASHSCOPE_API_KEY="sk-...")`：展开优先级为**显式传参 >
+环境变量 > `${VAR:-默认值}` 里的默认值**。`Config.from_dict()` 是纯数据入口，不做任何展开。
 
 ### 3.2 HTTP、MCP 和部署配置
 
@@ -912,7 +914,7 @@ target 或缺失后端依赖可能不会在启动阶段暴露。
 3. 覆盖同名实例时写全仍需保留的 `params` 依赖；
 4. 跨组件能力开关优先放在 `globals`；
 5. 部署配置只把 `memory_api` 段传给内核；
-6. SDK 的 `Config.from_yaml()` 不会展开环境变量；
+6. `${VAR}` 占位符只在 `Config.from_yaml()` / `Config.from_yaml_str()` 展开，`Config.from_dict()` 不展开；
 7. 多个部署文件之间不要拆分 `memory_api`；
 8. 运行时切换凭证或连接地址优先使用 `ConfigSource`；
 9. 修改 target、依赖拓扑或实例数量后重新装配；
