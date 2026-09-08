@@ -630,7 +630,7 @@ agent-memory/
 │   └── RULES.md
 │
 ├── jiuwen_memory_adapter/                   # Agent 插件接入（依赖内核的封装）
-│   ├── JiwenSwarm/
+│   ├── JiuwenSwarm/
 │   ├── openclaw/
 │   ├── codex/
 │   └── hermes/
