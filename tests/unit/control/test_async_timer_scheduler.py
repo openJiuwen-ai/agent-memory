@@ -156,6 +156,25 @@ def test_submit_timer_rejects_interval_below_tick_interval() -> None:
     asyncio.run(_run())
 
 
+# ---- validate（提交前校验——与 submit 共用同一逻辑） ----
+
+
+def test_validate_rejects_interval_below_tick_interval() -> None:
+    """validate：interval < tick_interval → ValueError（submit 前调用的同一校验）。"""
+    scheduler = AsyncTimerScheduler(tick_interval=10)
+    job = _RecordingJob(Scope(user="u1"), interval=5)
+    with pytest.raises(ValueError, match="interval"):
+        scheduler.validate(job)
+
+
+def test_validate_accepts_interval_at_or_above_tick_interval() -> None:
+    """validate：interval == / > tick_interval 均通过，interval=0（一次性）不校验。"""
+    scheduler = AsyncTimerScheduler(tick_interval=10)
+    scheduler.validate(_RecordingJob(Scope(user="u1"), interval=10))  # 等于
+    scheduler.validate(_RecordingJob(Scope(user="u1"), interval=20))  # 大于
+    scheduler.validate(_RecordingJob(Scope(user="u1"), interval=0))  # 一次性任务
+
+
 def test_submit_timer_creates_entry_and_starts_timer_loop() -> None:
     """interval>0 → 创建 entry + 起 Timer 协程。
 

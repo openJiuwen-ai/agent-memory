@@ -114,6 +114,8 @@ Engine 只从 `system_metadata` 读取系统控制字段：
 
 `middle=true` 但没有 `infer=true` 会报错。`infer`、`procedural`、`middle` 等控制字段不得从 `user_metadata` fallback。
 
+`system_metadata` 中的 `middle_interval`（可选）覆盖装配期默认周期；取值必须可解析为正整数（非数字、0、负数抛 `ValidationError`），且最终值（显式传入或装配期默认）必须不小于 scheduler 的 `tick_interval`，否则 write 在落盘前抛错，原文不落盘、不留残留。
+
 ### 3.5 update/delete 语义
 
 - `UpdateMode.SUPERSEDE` 默认生成新 ID，旧单元标记 `SUPERSEDED`，新单元的 `supersedes` 指向旧 ID。

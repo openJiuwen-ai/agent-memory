@@ -127,6 +127,12 @@ Engine reads system control fields only from `system_metadata`:
 `middle=true` without `infer=true` is invalid. Control fields such as `infer`, `procedural`, and
 `middle` must not fall back to `user_metadata`.
 
+`middle_interval` (optional, in `system_metadata`) overrides the assembly-time default period. It
+must parse as a positive integer (non-numeric, 0, or negative values raise `ValidationError`), and
+its final value (explicit or assembly-time default) must be no smaller than the scheduler's
+`tick_interval`; otherwise `write` raises before persistence — nothing is written and no residual
+data is left behind.
+
 ### 3.5 Update and Delete Semantics
 
 - `UpdateMode.SUPERSEDE` creates a new ID by default, marks the old unit `SUPERSEDED`, and sets the

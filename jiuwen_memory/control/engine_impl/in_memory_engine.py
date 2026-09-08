@@ -387,11 +387,8 @@ class InMemoryEngine(MemoryEngine):
                 "Engine.write middle=true requires an Evolver (装配未注入 evolver)"
             )
 
-        for unit in units:
-            unit.tier = MemoryTier.WORKING
-            unit.system_metadata["middle"] = "true"
-        await asyncio.to_thread(index_builder.build, units)
-
+        # 先构造 Job ——middle_interval=None 在此解析为 Spec 装配期
+        # 默认值，validate 看到的是最终 interval。
         job = self._job_factory.get_job(
             JobType.MIDDLE_TO_LONG,
             scope=scope,
@@ -399,6 +396,15 @@ class InMemoryEngine(MemoryEngine):
             index=index_builder,
             interval=middle_interval,
         )
+        # 落盘前校验可调度性（如 interval >= tick_interval）——失败时原文
+        # 未写 Storage、未建索引，不留「报错但数据已残留」的窗口。
+        self._scheduler.validate(job)
+
+        for unit in units:
+            unit.tier = MemoryTier.WORKING
+            unit.system_metadata["middle"] = "true"
+        await asyncio.to_thread(index_builder.build, units)
+
         await self._scheduler.submit(job, channel=Channel.BACKGROUND)
         logger.info(
             "Engine.write middle=True: %d originals buffered, scope=%s interval=%s",

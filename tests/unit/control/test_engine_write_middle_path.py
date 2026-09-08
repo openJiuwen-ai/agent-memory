@@ -61,6 +61,10 @@ class _RecordingScheduler:
 
     def __init__(self) -> None:
         self.calls: list[tuple[Job, Channel]] = []
+        self.validated: list[Job] = []
+
+    def validate(self, job: Job) -> None:
+        self.validated.append(job)
 
     async def submit(self, job: Job, channel: Channel) -> str:
         self.calls.append((job, channel))
@@ -493,6 +497,96 @@ def test_write_middle_raises_when_evolver_is_none() -> None:
         asyncio.run(
             engine.write("x", scope, system_metadata={"infer": "true", "middle": "true"})
         )
+
+
+# ---- 落盘前拦截：scheduler.validate 拒绝时无 KV/索引残留 ----
+
+
+def test_write_middle_interval_below_tick_raises_before_persist() -> None:
+    """middle_interval < tick_interval → write 抛 ValueError 且原文未落盘。
+
+    校验经 ``scheduler.validate`` 在 ``index_builder.build`` 之前调用——
+    消除「submit 拒绝但原文已落 KV + 建索引」的残留窗口。
+    """
+    from jiuwen_memory.control.scheduler_impl.async_timer_scheduler import (
+        AsyncTimerScheduler,
+    )
+
+    scheduler = AsyncTimerScheduler(tick_interval=60)
+    engine, _, index, kv = _build_engine(scheduler=scheduler)
+    scope = Scope(org="acme", user="u1")
+
+    with pytest.raises(ValueError, match="tick_interval"):
+        asyncio.run(
+            engine.write(
+                "alice likes tea",
+                scope,
+                system_metadata={
+                    "infer": "true",
+                    "middle": "true",
+                    "middle_interval": "5",  # 5 < 60
+                },
+            )
+        )
+
+    # 无残留：原文未写 KV、未建索引
+    assert index.built == []
+    assert kv.list(scope, limit=100).entries == []
+
+
+def test_write_middle_spec_default_interval_below_tick_raises_before_persist() -> None:
+    """middle_interval 缺省（Spec 装配期默认 50）+ tick_interval 更大 → 同样落盘前拦截。
+
+    ``get_job`` 先于 ``validate`` 执行——None 已解析为 Spec 默认值，
+    装配期配置错误在首次 write 时即 fail fast，而非残留后靠 submit 拒绝。
+    """
+    from jiuwen_memory.control.scheduler_impl.async_timer_scheduler import (
+        AsyncTimerScheduler,
+    )
+
+    scheduler = AsyncTimerScheduler(tick_interval=60)
+    engine, _, index, kv = _build_engine(scheduler=scheduler)
+    scope = Scope(org="acme", user="u1")
+
+    with pytest.raises(ValueError, match="tick_interval"):
+        asyncio.run(
+            engine.write(
+                "alice likes tea",
+                scope,
+                system_metadata={"infer": "true", "middle": "true"},
+            )
+        )
+
+    assert index.built == []
+    assert kv.list(scope, limit=100).entries == []
+
+
+def test_write_middle_interval_above_tick_persists_and_submits() -> None:
+    """middle_interval >= tick_interval → 正常落盘 + submit（防回归）。"""
+    from jiuwen_memory.control.scheduler_impl.async_timer_scheduler import (
+        AsyncTimerScheduler,
+    )
+
+    scheduler = AsyncTimerScheduler(tick_interval=10)
+    engine, _, index, kv = _build_engine(scheduler=scheduler)
+    scope = Scope(org="acme", user="u1")
+
+    units = asyncio.run(
+        engine.write(
+            "alice likes tea",
+            scope,
+            system_metadata={
+                "infer": "true",
+                "middle": "true",
+                "middle_interval": "20",  # 20 >= 10
+            },
+        )
+    )
+
+    assert len(units) >= 1
+    persisted = loads(kv.get(scope, memory_key(units[0].id)))
+    assert persisted.tier == MemoryTier.WORKING
+    assert index.built == units
 
 
 # ---- 多次 write 重复提交（验证同 scope 同 kind 复用 entry） ----

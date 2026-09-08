@@ -96,14 +96,22 @@ class AsyncTimerScheduler(Scheduler):
 
     # ---- 公开 API ----
 
+    def validate(self, job: Job) -> None:
+        """interval < tick_interval 时定时精度无法保证——submit 前拒绝。
+
+        与 :meth:`submit` 共用同一校验——Engine 落盘前先调本方法 fail fast，
+        避免「submit 拒绝但原文已落盘」的残留窗口。
+        """
+        if job.interval > 0 and job.interval < self._tick_interval:
+            raise ValueError(
+                f"interval {job.interval} < tick_interval {self._tick_interval}: "
+                "定时精度无法保证，请增大 interval 或减小 tick_interval"
+            )
+
     async def submit(self, job: Job, channel: Channel) -> str:
+        self.validate(job)
         scope_key = self._scope_key(job.scope)
         if job.interval > 0:
-            if job.interval < self._tick_interval:
-                raise ValueError(
-                    f"interval {job.interval} < tick_interval {self._tick_interval}: "
-                    "定时精度无法保证，请增大 interval 或减小 tick_interval"
-                )
             return self._submit_timer(scope_key, job, channel)
         return self._submit_once(scope_key, job, channel)
 
