@@ -58,12 +58,14 @@ services:
       dockerfile: deploy/docker/postgres/Dockerfile
     env_file:
       - .env
+    environment:
+      JIUWEN_MEMORY_HTTP_ALLOW_DEV_AUTH_NON_LOOPBACK: "true"
     volumes:
       - ./config.yml:/config/config.yml:ro
       - ../../../jiuwen_memory:/app/jiuwen_memory:ro
       - ../../../jiuwen_memory_entry:/app/jiuwen_memory_entry:ro
     ports:
-      - "8137:8137"
+      - "${HTTP_BIND_ADDRESS:-127.0.0.1}:8137:8137"
     depends_on:
       postgres:
         condition: service_healthy

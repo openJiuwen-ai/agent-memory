@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -14,7 +15,6 @@ from jiuwen_memory.config.config import Config
 from jiuwen_memory.control.lifecycle_impl.kv_lifecycle_manager import KVLifecycleManager
 from jiuwen_memory.control.policy_impl.dict_policy_manager import DictPolicyManager
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 
 pytestmark = pytest.mark.unit
 
@@ -24,7 +24,7 @@ _TEST_KEY_HEX = "00" * 32
 def _store(unit) -> tuple[InMemoryKVStore, KVLifecycleManager]:
     kv = InMemoryKVStore()
     kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
-    return kv, KVLifecycleManager(CompositeStorage(kv=kv))
+    return kv, KVLifecycleManager(kv)
 
 
 def _load(kv: InMemoryKVStore, unit) -> object:
@@ -89,7 +89,7 @@ def test_supersede_rejects_invalid_lifecycle_state(unit_factory) -> None:
 
 
 def test_supersede_raises_not_found_for_missing_unit() -> None:
-    lifecycle = KVLifecycleManager(CompositeStorage(kv=InMemoryKVStore()))
+    lifecycle = KVLifecycleManager(InMemoryKVStore())
 
     with pytest.raises(NotFoundError):
         lifecycle.supersede(
@@ -109,7 +109,7 @@ def test_targeted_transition_does_not_mutate_same_id_in_another_scope(unit_facto
     kv = InMemoryKVStore()
     kv.insert(scope_a, memory_key(unit_a.id), dumps(unit_a))
     kv.insert(scope_b, memory_key(unit_b.id), dumps(unit_b))
-    lifecycle = KVLifecycleManager(CompositeStorage(kv=kv))
+    lifecycle = KVLifecycleManager(kv)
 
     lifecycle.transition(scope_b, [unit_b.id], LifecycleState.FORGOTTEN)
 
@@ -117,7 +117,7 @@ def test_targeted_transition_does_not_mutate_same_id_in_another_scope(unit_facto
     assert _load(kv, unit_b).lifecycle == LifecycleState.FORGOTTEN
 
 
-def test_sweep_forgets_expired_active_and_superseded_units(unit_factory) -> None:
+def test_sweep_returns_pending_transitions_without_mutating_units(unit_factory) -> None:
     now = datetime.now(timezone.utc)
     expired = unit_factory(
         "expired",
@@ -137,13 +137,19 @@ def test_sweep_forgets_expired_active_and_superseded_units(unit_factory) -> None
     kv = InMemoryKVStore()
     for unit in [expired, superseded, active, archived, forgotten]:
         kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
-    lifecycle = KVLifecycleManager(CompositeStorage(kv=kv))
+    lifecycle = KVLifecycleManager(kv)
 
-    swept = lifecycle.sweep()
+    transitions = lifecycle.sweep()
 
-    assert swept == ["expired", "superseded"]
-    assert _load(kv, expired).lifecycle == LifecycleState.FORGOTTEN
-    assert _load(kv, superseded).lifecycle == LifecycleState.FORGOTTEN
+    # 纯计算：只返回到期/旧版的待执行 transition，不改真源（回写由 Engine 编排）。
+    assert [t.unit_id for t in transitions] == ["expired", "superseded"]
+    assert all(t.to_state == LifecycleState.FORGOTTEN for t in transitions)
+    assert all(
+        t.from_state in (LifecycleState.ACTIVE, LifecycleState.SUPERSEDED) for t in transitions
+    )
+    assert all(t.unit.id == t.unit_id for t in transitions)
+    assert _load(kv, expired).lifecycle == LifecycleState.ACTIVE
+    assert _load(kv, superseded).lifecycle == LifecycleState.SUPERSEDED
     assert _load(kv, active).lifecycle == LifecycleState.ACTIVE
     assert _load(kv, archived).lifecycle == LifecycleState.ARCHIVED
     assert _load(kv, forgotten).lifecycle == LifecycleState.FORGOTTEN
@@ -175,11 +181,15 @@ def test_sweep_uses_policy_targets_for_expired_active_and_superseded(unit_factor
             "lifecycle.superseded.target": "archived",
         }
     )
-    lifecycle = KVLifecycleManager(CompositeStorage(kv=kv), policy)
+    lifecycle = KVLifecycleManager(kv, policy)
 
-    assert lifecycle.sweep() == ["expired", "superseded"]
-    assert _load(kv, expired).lifecycle == LifecycleState.ARCHIVED
-    assert _load(kv, superseded).lifecycle == LifecycleState.ARCHIVED
+    transitions = lifecycle.sweep()
+
+    assert [t.unit_id for t in transitions] == ["expired", "superseded"]
+    assert all(t.to_state == LifecycleState.ARCHIVED for t in transitions)
+    # 纯计算：目标态来自策略，但真源回写由 Engine 编排执行。
+    assert _load(kv, expired).lifecycle == LifecycleState.ACTIVE
+    assert _load(kv, superseded).lifecycle == LifecycleState.SUPERSEDED
 
 
 def test_sweep_rejects_invalid_policy_target(unit_factory) -> None:
@@ -198,7 +208,7 @@ def test_sweep_rejects_invalid_policy_target(unit_factory) -> None:
             "lifecycle.superseded.target": "forgotten",
         }
     )
-    lifecycle = KVLifecycleManager(CompositeStorage(kv=kv), policy)
+    lifecycle = KVLifecycleManager(kv, policy)
 
     with pytest.raises(PolicyError):
         lifecycle.sweep()
@@ -207,7 +217,6 @@ def test_sweep_rejects_invalid_policy_target(unit_factory) -> None:
 
 
 def test_default_kernel_exposes_lifecycle_policy_keys() -> None:
-    scope = Scope(org="acme", user="u1", agent="a1", session="s1")
     api = build_kernel().api
     root = Scope()
 
@@ -255,8 +264,10 @@ def test_default_kernel_lifecycle_sweep_uses_runtime_policy(unit_factory) -> Non
     api.admin_set(
         "lifecycle.expired_active.target", "archived", security=legacy_request_context(root)
     )
-    swept = getattr(getattr(api, "_engine"), "_lifecycle").sweep()
+    engine = api._engine  # pylint: disable=protected-access
+    result = asyncio.run(engine.sweep_expired())
 
-    stored = loads(kv.get(scope, memory_key(expired.id)))
-    assert swept == [expired.id]
+    stored = loads(kernel.kv.get(scope, memory_key(expired.id)))
+    assert result.swept == [expired.id]
+    assert result.failed == []
     assert stored.lifecycle == LifecycleState.ARCHIVED

@@ -919,7 +919,94 @@ FS 的 `ref` 是 Store 返回的规范引用，不应由调用方拼接物理路
 | Graph | `memory` | `nano_graphrag` | 外部实现按 Scope 生成独立 GraphML 命名空间 |
 | Fusion | `memory` | `milvus_graph` | `milvus_graph` 当前为“向量种子 + 图扩展”，不实现 BM25 文本融合 |
 | FS | `memory` | `local` | LocalFS 在 `root/<scope>/` 内存储并阻止目录穿越 |
-| Entity | 无 | `elasticsearch` | 独立 Producer，不属于 StorageCapability 六端口 |
+| Entity | 无 | `elasticsearch` | StorageCapability 第七席 ENTITY；hosts 未配时降级为无该能力 |
 
 连接型后端通常在首次访问或 `health()` 时才完成真实连接。配置对象能构建成功，
 不等于远程服务、schema/index 或 TLS 链路已可用；部署验收应显式调用 `health()`。
+
+## 20. Recaller API（数据面检索适配器）
+
+```python
+from jiuwen_memory.storage.domain_store_impl.recaller import Recaller, RecallerProducer
+```
+
+单路召回算子。一个 Recaller 对应一条召回通道，消费 `ParsedQuery` 中本通道需要的字段，
+经 `StoreManager` 的对应命名端口召回候选。
+
+**为什么在存储层**：生产链路里 Recaller 实例的唯一消费方是 `CompositeDomainStore`；
+`Retriever` 只按 `preferred_retrieval_pipeline()` 委托数据面的 `recall` / `recall_and_get` /
+`retrieve`，不持有召回路。故契约与实现都在 `storage/domain_store_impl/`，且不继承
+`RetrievalOperator`——自描述的 `operator_type()` 对一个不进检索算子表的组件没有意义。
+
+### `channel() -> RecallChannel`
+
+返回当前 Recaller 所属的逻辑召回通道。`RecallChannel` 包含：
+
+- `DOCUMENT`：文档定位。
+- `KEYWORD`：关键词/全文召回。
+- `VECTOR`：向量召回。
+- `GRAPH`：图遍历召回。
+- `TEMPORAL`：时序召回或时间约束。
+
+L0/L1/L2 是同一逻辑通道的不同物理索引入口，不会新增 `RecallChannel` 枚举值。
+
+### `recall(scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]`
+
+在指定 Scope 内召回本通道的 top-k 候选。返回的 `ScoredUnit` 包含：
+
+| 字段 | 说明 |
+|---|---|
+| `unit_id` | Scope 内的 MemoryUnit ID |
+| `score` | 本通道的召回分数 |
+| `channel` | 命中的逻辑通道 |
+| `evidence` | 可选通道证据列表 |
+
+Recaller 负责用 `ParsedQuery` 组装底层 Store Query，必须把 `scope` 作为 Store 方法的独立参数，
+把 `query.scalar_filters` 作为元数据硬过滤。
+
+### `health() -> None`
+
+存活探测：健康时返回 `None`，否则抛出异常。
+
+### 内置实现与装配
+
+| 注册名 | 实现 | 说明 |
+|---|---|---|
+| `keyword` / `keyword_l0` / `keyword_l1` | `KeywordRecaller` | 全文 BM25；L2 路额外做实体关联扩展 |
+| `vector` / `vector_l0` / `vector_l1` | `VectorRecaller` | 向量 ANN；命中按 `metadata['unit_id']` 归并到 unit 粒度（MaxP） |
+| `graph` | `GraphRecaller` | 图种子 + BFS 多跳扩展 |
+
+装配由 `CompositeDomainStore.for_manager(manager, ds_config)` 在 manager 构建期同步完成，
+配置错误 fail-fast。选择键与能力开关：
+
+```yaml
+store_manager:
+  default:
+    target: composite
+    params:
+      domain_stores:
+        default:                         # 必建，且是命名实例的 overlay base
+          kv_store: default
+          preferred_retrieval_pipeline: recall_get_rank
+          keyword_recaller: keyword
+          vector_recaller: vector
+          graph_recaller: graph
+          keyword_l0_recaller: keyword_l0
+          keyword_l1_recaller: keyword_l1
+          vector_l0_recaller: vector_l0
+          vector_l1_recaller: vector_l1
+        fast:                            # 命名实例：只写差异，其余继承 default
+          preferred_retrieval_pipeline: retrieve
+
+globals:                                  # 跨切面开关，构建侧与检索侧共读
+  vector_enabled: true
+  graph_enabled: true
+  layers_index_enabled: true
+```
+
+命名实例**必须**能拿到 `*_recaller` 键——继承 default 或自己声明。`Factory.dep` 读
+`config.params` 直读不回退 `globals`，拿不到键时会匿名新建一套不共享的 recaller，装配不报错
+但读写各用一套实例。
+
+手工/测试接线走 `CompositeDomainStore.bind_recallers(recallers)`（同一实例不允许绑定两套
+不同 recaller）。

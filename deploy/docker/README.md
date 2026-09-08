@@ -21,8 +21,9 @@
 | 关键词召回 | Elasticsearch（BM25） | 容器 |
 | 真源 | Redis；PostgreSQL profile 改用 PostgreSQL KVStore | 容器 |
 
-召回采用「向量 + 关键词」双通道，图召回关闭。对外暴露 `POST /v1/<verb>` 的 HTTP 接口，
-单个内核实例随进程生命周期常驻，跨请求保持状态。
+召回采用「向量 + 关键词」双通道，图召回关闭。HTTP 以
+`POST /v1/<MemoryAPI method>` 一一暴露全部公开方法，单个内核实例随进程生命周期常驻，跨请求
+保持状态。
 
 ## 前置条件
 
@@ -119,6 +120,17 @@ docker compose logs -f agent-memory
 
 ## 验证
 
+默认 `JIUWEN_MEMORY_HTTP_AUTH_MODE=required`，在生产认证 runtime 尚未装配时业务接口返回 503。
+仅在本机功能测试时，把当前 profile 的 `.env` 改为：
+
+```dotenv
+JIUWEN_MEMORY_HTTP_AUTH_MODE=dev
+HTTP_BIND_ADDRESS=127.0.0.1
+```
+
+然后执行 `docker compose up -d --force-recreate agent-memory`。dev 认证固定生成
+`local/developer` ROOT 身份、忽略认证头但仍执行 MemoryAPI 授权，并且不得暴露到共享网络或生产环境。
+
 ```bash
 # 健康检查
 curl http://localhost:8137/healthz
@@ -126,22 +138,22 @@ curl http://localhost:8137/healthz
 # 写入一条记忆（首次请求会触发模型载入内存，需等待数秒）
 curl -X POST http://localhost:8137/v1/add \
   -H 'Content-Type: application/json' \
-  -d '{"tenant_id":"demo","scope":"alice","content":"用户偏好用 Python 写代码"}'
+  -d '{"content":"用户偏好用 Python 写代码","scope":{"org":"local","space":"","user":"developer","agent":"","session":""}}'
 
 # 召回
 curl -X POST http://localhost:8137/v1/search \
   -H 'Content-Type: application/json' \
-  -d '{"tenant_id":"demo","scope":"alice","query":"用什么语言","k":5}'
+  -d '{"query":"用什么语言","context":{"scope":{"org":"local","space":"","user":"developer","agent":"","session":""},"extensions":{}},"top_k":5}'
 ```
 
-其他接口参见 [jiuwen_memory_entry/core/handler.py](../../jiuwen_memory_entry/core/handler.py)：
-`add / search / list / get / update / delete / evolve / job / inspect / trace / audit / admin / grant`。
+其他接口参见 [S02 MemoryAPI 规约](../../docs/specs/S02-memory-api.md)；HTTP 参数名、嵌套结构、默认值和
+原返回值均与同名 `MemoryAPI` 方法一致。
 
 ## 端口
 
 | 服务 | 端口 | 用途 |
 |---|---|---|
-| agent-memory | 8137 | HTTP API |
+| agent-memory | `127.0.0.1:8137`（默认宿主机发布地址） | HTTP API |
 | elasticsearch | 9200 | ES REST |
 | milvus | 19530 / 9091 | SDK / healthz |
 | PostgreSQL（PostgreSQL profile） | `${POSTGRES_PORT:-5432}` | 数据库连接 / 排障 |
@@ -207,7 +219,8 @@ command: ["python", "jiuwen_memory_entry/http_server/__main__.py",
 深合并。所以「只覆盖内核里某几项」应写在**单个文件的 `memory_api` 内**（它本就只需写与默认的差异），
 而不要把 `memory_api` 拆到多个文件。分层更适合覆盖 `profile` / `policies` 这类顶层键。
 
-> 不走 docker 直接本地跑同理：`scripts/run-server.sh <配置路径> [更多路径…]`。
+> 不走 docker 直接本地功能测试：
+> `scripts/run-server.sh --auth-mode dev <配置路径> [更多路径…]`。
 
 ## 关停 / 清数据
 

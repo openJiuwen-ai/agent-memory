@@ -42,6 +42,7 @@ from .types import (
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
+    SweepResult,
 )
 
 
@@ -164,6 +165,20 @@ class MemoryEngine(ControlOperator):
     @abstractmethod
     async def delete(self, selector: DeleteSelector) -> list[str]:
         """按选择器遗忘/归档/降权（非破坏式、可审计），返回命中的记忆单元 id。"""
+
+    @abstractmethod
+    async def sweep_expired(self) -> SweepResult:
+        """编排到期清扫（C-03 语义）：``LifecycleManager.sweep()`` 纯计算
+        transition，按 (scope, 目标态) 分组执行——FORGOTTEN 组**先**
+        ``IndexBuilder.remove(mode=SOFT)`` 移出检索索引、成功后回写真源
+        lifecycle；ARCHIVED 组只回写（``include_archived`` 召回与 ``as_of``
+        回溯仍需检索索引，不删）。
+
+        顺序不变量（先删索引、后回写真源）保证失败可重试：remove 失败时
+        单元保持 ACTIVE，下轮 sweep 重新发现；反序会留下真源已 FORGOTTEN
+        但索引未清、且永不再被 sweep 选中的脏条目。任一步失败的组计入
+        ``SweepResult.failed``，不静默当成功。
+        """
 
     @abstractmethod
     async def purge_space(self, org: str, space: str) -> list[str]:

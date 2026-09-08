@@ -182,7 +182,7 @@ def test_graph_persists_across_instances(graph, tmp_path):
         edges=[Edge(id="e1", source="a", target="b", relation="r")],
     )
     # 新实例从同一 working_dir 重新加载
-    reopened = NanoGraphRAGGraphStore(working_dir=getattr(graph, "_working_dir"))
+    reopened = NanoGraphRAGGraphStore(working_dir=getattr(graph, "_fallback_working_dir"))
     assert reopened.get(SCOPE, ["a"])[0].properties == {"k": "v"}
     assert _ids(reopened.search(SCOPE, GraphQuery(start_id="a", relation="r"))) == {"b"}
 

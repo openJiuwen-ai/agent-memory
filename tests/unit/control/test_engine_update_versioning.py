@@ -9,7 +9,7 @@ from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.control.base import ControlOperatorType
-from jiuwen_memory.control.lifecycle import LifecycleManager
+from jiuwen_memory.control.lifecycle import LifecycleManager, SweepTransition
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 
 
@@ -42,7 +42,7 @@ class RecordingLifecycle(LifecycleManager):
                 return unit
         raise AssertionError(f"missing test unit: {unit_id}")
 
-    def sweep(self) -> list[str]:
+    def sweep(self) -> list[SweepTransition]:
         return []
 
 

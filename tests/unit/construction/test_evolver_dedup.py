@@ -38,7 +38,7 @@ from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.graph import GraphStore
 from jiuwen_memory.storage.kv import KVStore
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
+from tests.conftest import make_storage
 from jiuwen_memory.storage.types import (
     IndexRemoveMode,
     IndexWriteMode,
@@ -355,15 +355,15 @@ def _make_evolver(
         for k in ("dedup_medium_similarity", "dedup_high_similarity")
         if k in dedup_kwargs
     }
-    storage = CompositeStorage(kv=kv, vector=vector_store, graph=NoopGraphStore())
+    storage = make_storage(kv=kv, vector=vector_store, graph=NoopGraphStore())
     dedup = VectorDedup(storage=storage, embedder=embedder, **recaller_kwargs)
     return OrchestratingEvolver(
         extractor=NoopExtractor(),
         abstractor=NoopAbstractor(),
         associator=NoopAssociator(),
-        index_builder=NoopIndexBuilder(storage),
+        index_builder=NoopIndexBuilder(storage.domain_store()),
         storage=storage,
-        message_store=storage.kv,
+        message_store=storage.kv(),
         dedup=dedup,
         llm=llm,
         **evolver_kwargs,
@@ -896,7 +896,7 @@ class TestDedupMiddleFilter:
         stores = _create_stores()
         embedder = _HashEmbedder()
         dedup = VectorDedup(
-            storage=CompositeStorage(kv=stores["kv"], vector=stores["vector"]),
+            storage=make_storage(kv=stores["kv"], vector=stores["vector"]),
             embedder=embedder,
             min_similarity=0.0,  # 不过滤低分，便于断言中期原文是否被召回
             top_k=10,
@@ -930,7 +930,7 @@ class TestDedupMiddleFilter:
         stores = _create_stores()
         embedder = _HashEmbedder()
         dedup = VectorDedup(
-            storage=CompositeStorage(kv=stores["kv"], vector=stores["vector"]),
+            storage=make_storage(kv=stores["kv"], vector=stores["vector"]),
             embedder=embedder,
             min_similarity=0.0,
             top_k=10,
@@ -967,7 +967,7 @@ class TestDedupMiddleFilter:
         kv = _MemoryKVStore()
         fulltext = InMemoryFulltextStore(tokenizer=WhitespaceTokenizer())
         dedup = KeywordDedup(
-            storage=CompositeStorage(kv=kv, fulltext=fulltext),
+            storage=make_storage(kv=kv, fulltext=fulltext),
             min_similarity=0.0,
             top_k=10,
             tier_filter=False,
@@ -1019,19 +1019,19 @@ class TestDedupEvolveExtract:
         from jiuwen_memory.construction.dedup_impl.vector_dedup import VectorDedup
 
         dedup = VectorDedup(
-            storage=CompositeStorage(kv=stores["kv"], vector=stores["vector"]),
+            storage=make_storage(kv=stores["kv"], vector=stores["vector"]),
             embedder=plugins["embedder"],
         )
-        storage = CompositeStorage(
+        storage = make_storage(
             kv=stores["kv"], vector=stores["vector"], graph=NoopGraphStore()
         )
         evolver = OrchestratingEvolver(
             extractor=SimpleExtractor(),
             abstractor=NoopAbstractor(),
             associator=NoopAssociator(),
-            index_builder=NoopIndexBuilder(storage),
+            index_builder=NoopIndexBuilder(storage.domain_store()),
             storage=storage,
-            message_store=storage.kv,
+            message_store=storage.kv(),
             dedup=dedup,
             llm=plugins["llm"],
         )

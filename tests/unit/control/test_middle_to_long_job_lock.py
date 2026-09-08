@@ -24,7 +24,6 @@ from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.control.jobs_impl.middle_to_long_job import MiddleToLongJob
 from jiuwen_memory.control.types import JobStatus
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from jiuwen_memory.storage.storage_impl.composite_storage import CompositeStorage
 from tests.unit.control.test_middle_to_long_job import (
     _make_unit,
     _RecordingEvolver,
@@ -50,7 +49,7 @@ def _build_job(
     llm = _ScriptedLLM(['{"results":["true"]}'])
     job = MiddleToLongJob(
         scope=scope,
-        storage=CompositeStorage(kv=kv),
+        kv=kv,
         evolver=evolver,
         lifecycle=lifecycle,
         index=index,

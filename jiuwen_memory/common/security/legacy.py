@@ -1,9 +1,10 @@
 """接口先行过渡期的调用方桥接（**实装 PR 合入时删除**）。
 
 背景：``MemoryAPI`` 公开签名已从 ``identity: Scope`` 固化为
-``security: RequestSecurityContext``（接口契约先行合入），但认证/授权**实现**
-（Authenticator / Authorizer 及各 ``*_impl``）随版本发布安排暂缓合入。过渡期
-内，所有旧调用点（handler / CLI / MCP / 测试 / 示例）用本函数把原来的
+``security: RequestSecurityContext``（接口契约先行合入），但生产认证/授权**实现**
+（trusted/api_key Authenticator、Authorizer 及其余 ``*_impl``）随版本发布安排暂缓合入；
+当前 dev Authenticator 只服务显式本地 HTTP / CLI 功能测试。过渡期
+内，所有旧调用点（handler / MCP / 测试 / 示例）用本函数把原来的
 identity ``Scope`` 包装成 ``RequestSecurityContext`` 继续传入。
 
 **这是假认证**：``AuthContext`` 的 role / credential 字段为占位值，接口 PR 中

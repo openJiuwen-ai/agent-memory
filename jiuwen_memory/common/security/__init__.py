@@ -9,8 +9,9 @@
 其子包取（``common.security.authentication`` 等），避免顶层 ``__init__`` 变成什么都有
 的入口而在装配前意外触发全部 import。
 
-**接口先行过渡期**：本仓库当前只合入 F05 契约层（types / 各能力 base / runtime），
-``*_impl`` 实现包暂缓合入。旧加密模块 :mod:`common.security.security`
+**接口先行过渡期**：本仓库当前合入 F05 契约层（types / 各能力 base / runtime）和仅供本地
+功能测试的 ``authentication_impl.DevAuthenticator``；其余 ``*_impl`` 实现包暂缓合入。
+旧加密模块 :mod:`common.security.security`
 （``SecurityProvider`` 系，服务于存储加密装配）在实现 PR 落地前继续从本顶层
 导出，避免破坏既有消费方；新契约的同名异常（如
 :class:`~common.security.cryptography.base.AuthenticationFailedError`）从各自子包

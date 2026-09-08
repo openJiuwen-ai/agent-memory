@@ -38,6 +38,7 @@ from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
 from jiuwen_memory.control.engine_impl.list_support import list_page
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
+from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
 from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
@@ -52,12 +53,14 @@ from jiuwen_memory.control.types import (
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
+    SweepResult,
     UpdateMode,
 )
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
-from jiuwen_memory.storage.storage import Storage, StorageProducer
+from jiuwen_memory.storage.kv import KVStore, list_units, load_units
+from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 logger = get_logger(__name__)
@@ -207,7 +210,7 @@ class CloudEngine(MemoryEngine):
         ingestor: Ingestor,
         index_builder: IndexBuilder,
         retriever: Retriever,
-        storage: Storage,
+        kv: KVStore,
         scheduler: Scheduler,
         evolver: Evolver,
         lifecycle: LifecycleManager,
@@ -222,7 +225,7 @@ class CloudEngine(MemoryEngine):
         self._ingestor = ingestor
         self._index = index_builder
         self._retriever = retriever
-        self._storage = storage
+        self._kv = kv
         self._scheduler = scheduler
         self._evolver = evolver
         self._lifecycle = lifecycle
@@ -478,7 +481,7 @@ class CloudEngine(MemoryEngine):
         filters: FilterExpr | None = None,
     ) -> MemoryListResult:
         return list_page(
-            self._storage,
+            self._kv,
             scope,
             offset=offset,
             limit=limit,
@@ -516,7 +519,7 @@ class CloudEngine(MemoryEngine):
     async def permission_contexts_for_delete(
         self, selector: DeleteSelector
     ) -> list[PermissionContext]:
-        scopes = [selector.scope] if selector.scope is not None else self._storage.scopes()
+        scopes = [selector.scope] if selector.scope is not None else self._kv.scopes()
         if not scopes:
             scopes = [Scope()]
         contexts: list[PermissionContext] = []
@@ -603,7 +606,7 @@ class CloudEngine(MemoryEngine):
         if selector_is_empty:
             raise ValidationError("DeleteSelector requires unit_ids, tags, before, or filters")
 
-        scopes = [selector.scope] if selector.scope is not None else self._storage.scopes()
+        scopes = [selector.scope] if selector.scope is not None else self._kv.scopes()
         if not scopes:
             scopes = [Scope()]
 
@@ -665,11 +668,23 @@ class CloudEngine(MemoryEngine):
         self._remove_indexes([unit for _, _, unit in matches], mode=IndexRemoveMode.SOFT)
         return affected
 
+    async def sweep_expired(self) -> SweepResult:
+        # C-03：lifecycle 只纯计算 transition；索引按各 pipeline 的 builder
+        # 分组做 remove(SOFT)，成功后回写真源（共享编排语义见 sweep_support）。
+        transitions = self._lifecycle.sweep()
+        for transition in transitions:
+            self._ensure_unit_scope(transition.unit, transition.scope)
+        return run_sweep(
+            transitions,
+            self._lifecycle,
+            lambda units: self._remove_indexes(units, mode=IndexRemoveMode.SOFT),
+        )
+
     async def purge_space(self, org: str, space: str) -> list[str]:
         purged: list[str] = []
         for scope in [
             candidate
-            for candidate in self._storage.scopes()
+            for candidate in self._kv.scopes()
             if candidate.org == org and candidate.space == space
         ]:
             units = self._list_units(scope)
@@ -689,13 +704,20 @@ class CloudEngine(MemoryEngine):
     async def evolve(
         self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
     ) -> str:
-        """提交 EvolveJob 到 Scheduler——mode 经构造参数流入 EvolveJob（运行时参数，不进 Spec）。"""
+        """提交 EvolveJob 到 Scheduler——mode/evolver 运行时流入 EvolveJob（不进 Spec 装配）。"""
         if self._job_factory is None:
             raise RuntimeError(
                 "evolve requires job_factory, please configure "
                 "engine.default.job_factory"
             )
-        job = self._job_factory.get_job(JobType.EVOLVE, scope=scope, mode=mode)
+        if self._evolver is None:
+            raise RuntimeError(
+                "CloudEngine.evolve requires an Evolver (装配未注入 evolver)"
+            )
+        # E-06：evolve 必传注入——Job 使用 Engine 装配的同一实例，Spec 不自行解析。
+        job = self._job_factory.get_job(
+            JobType.EVOLVE, scope=scope, mode=mode, evolver=self._evolver
+        )
         job_id = await self._scheduler.submit(job, channel)
         logger.info(
             "CloudEngine.evolve submitted: job_id=%s scope=%s mode=%s channel=%s",
@@ -715,13 +737,19 @@ class CloudEngine(MemoryEngine):
     async def admin_all(self) -> dict[str, str]:
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")
 
-    def _write_middle_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
-        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
-        self._storage.add(scope, units)
+    def _load(self, scope: Scope, unit_id: str) -> MemoryUnit:
+        units = load_units(self._kv, scope, [unit_id])
+        if not units:
+            raise NotFoundError("memory_unit", unit_id)
+        unit = units[0]
+        self._ensure_unit_scope(unit, scope)
+        return unit
 
-    def _write_default_to_kv(self, scope: Scope, units: list[MemoryUnit]) -> None:
-        """``asyncio.to_thread`` 只接 callable + args，抽成同步方法以便包装。"""
-        self._storage.add(scope, units)
+    def _list_units(self, scope: Scope) -> list[MemoryUnit]:
+        units, _ = list_units(self._kv, scope, limit=1_000_000)
+        for unit in units:
+            self._ensure_unit_scope(unit, scope)
+        return units
 
     def _normalized_metadata(
         self, metadata: dict[str, MetadataValueType] | None
@@ -811,20 +839,6 @@ class CloudEngine(MemoryEngine):
         for group in self._group_by_index(units):
             group.builder.update(group.units)
 
-    def _load(self, scope: Scope, unit_id: str) -> MemoryUnit:
-        units = self._storage.get(scope, [unit_id])
-        if not units:
-            raise NotFoundError("memory_unit", unit_id)
-        unit = units[0]
-        self._ensure_unit_scope(unit, scope)
-        return unit
-
-    def _list_units(self, scope: Scope) -> list[MemoryUnit]:
-        units = self._storage.list(scope, limit=1_000_000).items
-        for unit in units:
-            self._ensure_unit_scope(unit, scope)
-        return units
-
     def _version_family(self, scope: Scope, unit_id: str) -> list[MemoryUnit]:
         units_by_id = {unit.id: unit for unit in self._list_units(scope)}
         if unit_id not in units_by_id:
@@ -890,7 +904,7 @@ def _build(config):
         IngestorProducer.dep(config, default="simple"),
         IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
         RetrieverProducer.dep(config, default="pipeline"),
-        StorageProducer.resolve(config),
+        StoreManagerProducer.resolve(config).kv(resolve_name(config, "kv_store")),
         SchedulerProducer.dep(config, default="in_process"),
         EvolverProducer.dep(config, default="orchestrating"),
         LifecycleProducer.dep(config, default="kv"),

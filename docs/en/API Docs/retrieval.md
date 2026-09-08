@@ -12,7 +12,6 @@ This document is an API reference for the current abstract interfaces and public
 
 - [`base.py`](../../../jiuwen_memory/retrieval/base.py)
 - [`query_parser.py`](../../../jiuwen_memory/retrieval/query_parser.py)
-- [`recaller.py`](../../../jiuwen_memory/retrieval/recaller.py)
 - [`fuser.py`](../../../jiuwen_memory/retrieval/fuser.py)
 - [`discloser.py`](../../../jiuwen_memory/retrieval/discloser.py)
 - [`retriever.py`](../../../jiuwen_memory/retrieval/retriever.py)
@@ -116,36 +115,20 @@ The main `ParsedQuery` fields are:
 
 The query-side Tokenizer, Embedder, and FeatureExtractor should use the same instances or compatible configuration as index construction. Otherwise, the vocabulary, vector space, or feature semantics may diverge.
 
-## 5. Recaller API
+## 5. Recaller API (moved to the storage layer)
+
+`Recaller` is no longer a retrieval-layer operator. It is an internal part of
+`CompositeDomainStore` — the data plane is its only consumer in production, and `Retriever`
+merely delegates to `recall` / `recall_and_get` / `retrieve` along the preferred pipeline
+without holding any recall channels itself.
 
 ```python
-from jiuwen_memory.retrieval.recaller import Recaller
+from jiuwen_memory.storage.domain_store_impl.recaller import Recaller
 ```
 
-### `channel() -> RecallChannel`
-
-Returns the logical recall channel represented by the current Recaller. `RecallChannel` contains:
-
-- `DOCUMENT`: document lookup.
-- `KEYWORD`: keyword/full-text recall.
-- `VECTOR`: vector recall.
-- `GRAPH`: graph-traversal recall.
-- `TEMPORAL`: temporal recall or time constraints.
-
-L0/L1/L2 are different physical index sources within the same logical channel. They do not introduce additional `RecallChannel` enum values.
-
-### `recall(scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]`
-
-Recalls the top-k candidates for this channel within the specified Scope. Each returned `ScoredUnit` contains:
-
-| Field | Description |
-|---|---|
-| `unit_id` | MemoryUnit ID within the Scope |
-| `score` | Recall score from this channel |
-| `channel` | Logical channel that produced the hit |
-| `evidence` | Optional list of channel evidence |
-
-A Recaller uses `ParsedQuery` to assemble the low-level Store Query. It must pass `scope` as an independent Store method argument and use `query.scalar_filters` as the hard metadata predicate.
+For the full contract (`channel()` / `recall()` / `health()`, the channel enum, assembly and
+selector keys) see [storage.md §20](storage.md). The YAML namespace is still `recaller`; no
+configuration change is required.
 
 ## 6. Fuser API
 
@@ -300,7 +283,6 @@ RetrievalResult(
 | Producer | `TOP_NAME` | Implementation directory |
 |---|---|---|
 | `QueryParserProducer` | `query_parser` | `query_parser_impl/` |
-| `RecallerProducer` | `recaller` | `recaller_impl/` |
 | `FuserProducer` | `fuser` | `fuser_impl/` |
 | `DiscloserProducer` | `discloser` | `discloser_impl/` |
 | `RetrieverProducer` | `retriever` | `retriever_impl/` |
@@ -487,18 +469,15 @@ retriever:
   default:
     target: pipeline
     params:
-      storage: default
       query_parser: default
       fuser: default
       discloser: default
       reranker: default
-      keyword_recaller: keyword
-      keyword_l0_recaller: keyword_l0
-      keyword_l1_recaller: keyword_l1
-      vector_recaller: vector
-      vector_l0_recaller: vector_l0
-      vector_l1_recaller: vector_l1
-      graph_recaller: graph
+      # Recaller selector keys (keyword_recaller / vector_recaller / graph_recaller /
+      # *_l0 / *_l1) do NOT live here: they are data-plane parameters declared under
+      # store_manager.<inst>.params.domain_stores.<name>. Retriever resolves the global
+      # manager via globals.store_manager and holds its domain_store(); it owns no
+      # recall channels.
       over_fetch_factor: 4
       over_fetch_floor: 60
       recall_max: 100

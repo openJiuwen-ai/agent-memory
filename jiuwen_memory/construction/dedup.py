@@ -22,7 +22,7 @@ from abc import abstractmethod
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import MemoryUnit, Scope
-from jiuwen_memory.storage.storage import Storage
+from jiuwen_memory.storage.kv import KVStore, load_units
 
 from .base import ConstructionOperator
 
@@ -51,14 +51,14 @@ class Dedup(ConstructionOperator):
 
     def __init__(
         self,
-        storage: Storage,
+        kv: KVStore,
         *,
         min_similarity: float = 0.5,
         top_k: int = 5,
         tier_filter: bool = False,
         scope_filter: bool = True,
     ) -> None:
-        self._storage = storage
+        self._kv = kv
         self._min_similarity = min_similarity
         self._top_k = top_k
         self._tier_filter = tier_filter
@@ -75,13 +75,13 @@ class Dedup(ConstructionOperator):
 
     # -- 共享：从真源按 unit_id 加载 MemoryUnit（跨 scope 回退） ---------------- #
     def _load_unit(self, unit_id: str, scope: Scope) -> MemoryUnit | None:
-        """从统一 Storage 读取 MemoryUnit；缺失时跨作用域回退。"""
+        """从 KV 真源点读 MemoryUnit；缺失时跨作用域回退。"""
         try:
-            units = self._storage.get(scope, [unit_id])
+            units = load_units(self._kv, scope, [unit_id])
             if units:
                 return units[0]
-            for candidate_scope in self._storage.scopes():
-                units = self._storage.get(candidate_scope, [unit_id])
+            for candidate_scope in self._kv.scopes():
+                units = load_units(self._kv, candidate_scope, [unit_id])
                 if units:
                     return units[0]
             return None
