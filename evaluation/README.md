@@ -1,22 +1,18 @@
-# LongMemEval 本地端到端一键测评
+# agent-memory 本地端到端一键测评
 
-本目录提供从 SSH 环境整理出的 LongMemEval 测评实现，不依赖官方旧版
-`evaluation/benchmark`、`evaluation/core`、`evaluation/metrics`、
-`evaluation/scripts` 或 `evaluation/smoke_test`。所有适配代码、模型代理、后端服务
-编排、数据路径和运行配置均位于新的 `evaluation/longmemeval` 及公共目录中，不修改
-agent-memory 记忆内核。
+这个目录可以整体复制到官方 `agent-memory` 仓库中使用，不依赖旧版
+`evaluation/`，也不依赖 `evaluation_legacy_backup/`。所有适配代码、模型代理、
+后端服务编排、数据路径和运行配置都在本目录内；不会修改记忆内核。
 
-mini 数据只减少输入 turn 数；写入、抽取、Redis、Milvus、Elasticsearch、检索、
-答案生成和 AnswerJudge 均走正式链路，不使用 Mock。
+默认运行 **LongMemEval mini**。mini 只减少输入 turn 数，写入、抽取、Redis、
+Milvus、Elasticsearch、检索、答案生成和 AnswerJudge 都走正式链路，不是 Mock。
 
-## 一键运行
+## 一、一键运行
 
-### Windows
-
-在仓库根目录执行：
+### Windows（在仓库根目录执行）
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "$PWD\evaluation\run.ps1"
+powershell -ExecutionPolicy Bypass -File evaluation\run.ps1
 ```
 
 ### Linux / SSH
@@ -25,101 +21,178 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$PWD\evaluation\run.ps1"
 sh evaluation/run.sh
 ```
 
-脚本会依次：
+脚本会自动完成以下事情：
 
-1. 创建或复用仓库根目录的 `.venv`，安装项目和测评依赖；
+1. 创建或复用仓库根目录的 `.venv`，按
+   `evaluation/environment/requirements.txt` 安装项目和测评依赖；
 2. 保留 `agent-memory-evaluation` 专用 Docker 卷；
-3. 复用标准端口上已经健康的 Redis、Elasticsearch、Milvus，并拉起缺失服务；
-4. 拉起 SSH 同款的 GLM 抽取代理、回答/判分代理和 BGE embedding 代理；
-5. 执行 mini 样本的写入、抽取、检索、回答和判分；
-6. 把结果写入 `evaluation/outputs/longmemeval/<run_id>/`。
+3. 复用标准端口上已经健康的 Redis、Elasticsearch、Milvus，由 Compose 拉起缺失的
+   服务并等待健康检查通过；
+4. 按 `evaluation/config.yml` 选择 LongMemEval 或 LoCoMo、mini 数据和题目范围；
+5. LongMemEval 额外拉起 SSH 同款的 GLM 抽取代理、回答/判分代理和 BGE embedding
+   校验代理；
+6. 执行完整写入、抽取、检索、回答和判分链路，将结果写入 `evaluation/outputs/`。
 
-每次启动都会生成唯一 `run_id`，并将其追加到本轮 `scope_org`。因此即使复用本机
-已有的 Redis、Elasticsearch 和 Milvus，重复运行也不会检索到上一轮留下的记忆。
-后端数据默认保留，方便后续 bad case 和 evidence 溯源；`run_id` 与完整 Scope 会写入
-`result.json`，默认输出目录也使用同一个 `run_id`。
+每次启动都会生成唯一 `run_id`。LongMemEval 将它追加到 `scope_org`；LoCoMo 用它
+生成唯一 `SCOPE_TAG/scope_org`。因此即使复用本机已有的 Redis、Elasticsearch 和
+Milvus，重复运行也不会检索到上一轮留下的记忆。两个 runner 都通过官方
+`assemble_runtime()` 装配，并在 `finally` 中关闭进程内写入任务和线程资源。
+
+后端数据与运行产物默认保留，方便后续 bad case 和 evidence 溯源。LongMemEval 将
+`run_id` 与完整 Scope 写入 `result.json`；LoCoMo 将它们写入 `run_meta.json`。
+一键脚本不会自动删除 Docker 卷。
 
 如已确认不再需要从后端复盘本轮数据，可在 `evaluation/config.yml` 中显式开启：
 
 ```yaml
 longmemeval:
   cleanup_after_run: true
+
+locomo:
+  cleanup_after_run: true
 ```
 
 默认值为 `false`。开启后，程序会先完成写入、检索、AnswerJudge、指标计算及 evidence
 产物采集，再通过正式 `MemoryAPI` 的 `PURGE` 删除本轮 Scope 下的 Redis 记忆真源及
 Milvus/Elasticsearch 派生索引；`result.json` 和 artifacts 仍保留，并记录清理结果。
-内核按契约保留审计记录。清理失败会返回非零退出码，不会静默报告成功。需要现场
-bad case 分析时请保持关闭。
+LoCoMo 的 `run_meta.json`、召回、回答、错题和抽取产物同样保留；其仅供抽取上下文使用、
+不参与检索的 `/messages/` 原文缓存以及审计记录按内核契约保留。清理失败会返回非零
+退出码，不会静默报告成功。需要现场 bad case 分析时请保持关闭。
 
-首次运行需要下载镜像和 Python 包。Docker Desktop 建议预留约 6 GB 内存。默认端口
-为 `6379`、`9200`、`19530`、`9091`、`18937`、`18938`、`18939`。
+首次运行需要下载镜像和 Python 包，会比后续运行慢。请为 Docker Desktop 至少预留
+约 6 GB 内存。默认服务端口是 `6379`、`9200`、`19530`、`9091`、
+`18937`、`18938`、`18939`。
 
-## 环境配置
+## 二、环境配置
 
-复制模板：
+真实配置文件是：
+
+```text
+evaluation/environment/.env
+```
+
+本地运行使用该文件保存模型 URL、API Key、embedding、reranker 和存储配置；仓库
+不提供真实值，并通过 `.gitignore` 排除。不要把它提交、粘贴到日志或发给无关人员。
+
+如果把 `evaluation/` 复制到一个全新仓库而没有携带 `.env`，执行：
 
 ```powershell
 Copy-Item evaluation\environment\.env.example evaluation\environment\.env
-notepad evaluation\environment\.env
 ```
 
-至少填写以下上游配置：
+然后填入与 SSH 机器一致的值。LongMemEval 的 `LONGMEMEVAL_CHAT_API_KEYS` 支持多个
+Key，使用英文逗号分隔。
 
-```text
-LONGMEMEVAL_CHAT_UPSTREAM_URL
-LONGMEMEVAL_CHAT_MODEL
-LONGMEMEVAL_CHAT_API_KEYS
-LONGMEMEVAL_EMBED_UPSTREAM_URL
-LONGMEMEVAL_EMBED_MODEL
-LONGMEMEVAL_EMBED_API_KEY
+## 三、切换 LongMemEval / LoCoMo
+
+只编辑 `evaluation/config.yml` 第一项：
+
+```yaml
+benchmark: longmemeval
 ```
 
-`LONGMEMEVAL_CHAT_API_KEYS` 支持多个 Key，使用英文逗号分隔。真实 `.env` 已被 Git
-忽略，不得提交 API Key 或外部模型 URL。
+改成：
 
-## mini 数据
-
-默认输入是：
-
-```text
-evaluation/datasets/longmemeval/longmemeval_mini.json
+```yaml
+benchmark: locomo
 ```
 
-该样本从标准 `longmemeval_oracle.json` 数组下标 `232` 机械截取，
-`question_id=89527b6b`，保留 1 个 Oracle session、2 个原始 turn、原始问题和答案。
-没有改写保留字段。来源和 SHA-256 见
-`evaluation/datasets/longmemeval/README.md`。
+再执行同一条一键命令即可。也可以临时覆盖而不改文件：
 
-## 测评口径
+```powershell
+.\.venv\Scripts\python.exe -m evaluation --config evaluation\config.yml --benchmark locomo
+```
+
+临时覆盖命令只运行 Python，不会自动拉起后端；正常本地测试优先使用 `run.ps1`。
+
+旧版根 README 曾使用 `evaluation/configs/e2e_smoke.yml`。该路径现作为兼容入口保留，
+但同样只运行 Python；从零端到端测试仍应使用 `run.ps1`。
+
+## 四、mini 数据不是伪造样本
+
+### LongMemEval mini
+
+- 来源：`evaluation/datasets/longmemeval/longmemeval_oracle.json`；
+- 原数组下标：`232`；
+- `question_id`：`89527b6b`；
+- 保留 1 个 Oracle session、2 个原始 turn、1 道原始问题；
+- 整个样本原样复制，没有改写对话、时间、答案或证据字段。
+
+### LoCoMo mini
+
+- 来源：`evaluation/datasets/locomo/locomo10.json`；
+- 原数组下标：`1`，`sample_id=conv-30`；
+- 保留 `session_1` 的原始 `D1:1`、`D1:2`；
+- 保留原始 `qa[0]`，其证据是 `D1:2`；
+- 仅裁掉与本题无关的 session、turn 和派生摘要，没有改写保留字段。
+
+数据来源和 SHA-256 记录在两个数据子目录的 README 中。
+
+## 五、两套测评方式明确分开
+
+### LongMemEval
 
 - 按 `dialogue_turn` 写入，相邻 user/assistant 合并为一轮；
 - 单轮超过 4096 字符时按句切分，并携带有界前文；
 - 只写 `answer_session_ids` 指定的 Oracle session；
-- `infer=true`，抽取后验证 `retain_source=false`；
-- Redis 保存真源，Milvus 向量召回，Elasticsearch 关键词召回；
-- weighted RRF 使用 vector `2.0`、keyword `1.0`、`k=20`，关闭 rerank；
-- 召回 Top-200，再按 `50 → 10 → 20` 三个 cutoff 生成答案；
+- `infer=true`，抽取后执行 `retain_source=false` 契约；
+- Redis 保存真源，Milvus 做向量召回，Elasticsearch 做关键词召回；
+- weighted RRF：vector `2.0`、keyword `1.0`、`k=20`，关闭 rerank；
+- 先召回 Top-200，再按 `50 → 10 → 20` 三个 cutoff 生成答案；
 - 使用 LongMemEval 专用 answer prompt 和 AnswerJudge prompt；
-- 抽取代理关闭 GLM thinking，回答和 Judge 代理保留 thinking；
-- 代理对成功但内容为空的 completion 执行重试。
+- 抽取代理关闭 GLM thinking；回答和 Judge 代理保留 thinking；代理对成功但内容为空的
+  completion 进行重试。
 
-## 修改题目范围和并行参数
+### LoCoMo
 
-编辑 `evaluation/config.yml`：
+- 保留 SSH 上的 `test_locomo_v5.py` 写入/检索/生成/判分逻辑；
+- 每条消息独立写入，携带 session 日期，`infer=true`；
+- 默认 `RAW_FALLBACK=0`、`RAW_ALWAYS=0`、`DATE_PREFIX=0`；
+- Redis、Milvus、Elasticsearch 和 weighted RRF 参数与 SSH 配置一致，关闭 rerank；
+- 召回 Top-200，再按 `10 → 20 → 50 → 200` cutoff 生成答案并判分；
+- GLM 调用按 SSH `.env` 设置 `DISABLE_THINKING=1`；
+- mini 默认只跑 1 个 conversation、2 个 turn、1 道 QA（数据中只有这些内容）。
+
+两套 runner、prompt、配置和输出格式分别位于 `longmemeval/` 与 `locomo/`，没有使用
+一个通用适配器替代其中任何一套。
+
+## 六、修改测试范围
+
+所有常用项都在 `evaluation/config.yml`。
+
+LongMemEval 可修改：
 
 ```yaml
 longmemeval:
-  question_ids: []
-  sample_indices: [0]
-  max_questions: 1
+  question_ids: []       # 非空时优先按 question_id 选题
+  sample_indices: [0]    # mini 中只有下标 0
+  max_questions: 1       # 0 表示不限制
   concurrency: 1
 ```
 
-`question_ids` 非空时按题号选择，否则使用 `sample_indices`；`max_questions: 0`
-表示不限制。本阶段建议先保持 mini 和 `concurrency: 1`。
+LoCoMo 可修改：
 
-切换到标准数据集时，只替换数据路径和范围，不替换测评实现：
+```yaml
+locomo:
+  conversation_ids: [0]
+  max_sessions: 0
+  max_turns: 5
+  max_qa: 2
+  concurrency: 1
+  scope_tag: ""          # 正常运行保持为空
+  skip_write: false
+  cleanup_after_run: false
+```
+
+如需用同一批已写入记忆重复测试 LoCoMo 检索，先从原运行目录的 `run_meta.json` 复制
+`effective.SCOPE_TAG`，再设置 `scope_tag` 为该值并将 `skip_write` 改为 `true`。
+复用旧 Scope 时禁止开启 `cleanup_after_run`，避免误删对比基线。
+
+## 七、切换到标准数据集
+
+只换数据路径和范围，不换测评实现。
+
+LongMemEval：
 
 ```yaml
 longmemeval:
@@ -129,30 +202,43 @@ longmemeval:
   max_questions: 0
 ```
 
-完整标准数据默认被 `.gitignore` 排除，不会进入 PR。
+LoCoMo：
 
-## 兼容的直接入口
-
-下面的命令只运行 Python 测评，不创建虚拟环境，也不拉起后端服务：
-
-```powershell
-.\.venv\Scripts\python.exe -m evaluation --config evaluation\configs\e2e_smoke.yml
+```yaml
+locomo:
+  data: datasets/locomo/locomo10.json
+  conversation_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  max_sessions: 0
+  max_turns: 0
+  max_qa: 0
 ```
 
-从零执行端到端测试应使用 `evaluation/run.ps1`。
+本阶段是功能验证，建议先保持 mini 和 `concurrency: 1`，确认端到端通过后再放大。
 
-## 输出与日志
+## 八、结果在哪里
+
+LongMemEval：
 
 ```text
-evaluation/outputs/longmemeval/<时间>/result.json
-evaluation/outputs/longmemeval/<时间>/artifacts/
-evaluation/outputs/longmemeval/<时间>/*_proxy.log
-evaluation/outputs/longmemeval/<时间>/*_proxy_audit.jsonl
+evaluation/outputs/longmemeval/<run_id>/result.json
+evaluation/outputs/longmemeval/<run_id>/artifacts/
+evaluation/outputs/longmemeval/<run_id>/*_proxy.log
+evaluation/outputs/longmemeval/<run_id>/*_proxy_audit.jsonl
 ```
 
-运行产物、日志、缓存和真实 `.env` 均被忽略。
+LoCoMo：
 
-## 停止服务
+```text
+evaluation/outputs/locomo/<run_id>_local-smoke/test_result_v5.json
+evaluation/outputs/locomo/<run_id>_local-smoke/test_metrics_v5.json
+evaluation/outputs/locomo/<run_id>_local-smoke/run_meta.json
+evaluation/outputs/locomo/<run_id>_local-smoke/run.log
+evaluation/outputs/locomo/<run_id>_local-smoke/engine.log
+```
+
+这些运行产物全部被忽略，不会混入测评源码或数据目录。
+
+## 九、停止本地服务
 
 保留数据卷：
 
@@ -160,29 +246,55 @@ evaluation/outputs/longmemeval/<时间>/*_proxy_audit.jsonl
 docker compose -f evaluation\environment\docker-compose.yml stop
 ```
 
-停止容器并删除本测评专用卷：
+确认不再需要后端中的所有历史评测数据后，停止并删除本测评专用容器和卷：
 
 ```powershell
 docker compose -f evaluation\environment\docker-compose.yml down --volumes
 ```
 
-## 常见错误
+## 十、常见错误
 
-- `docker` 命令不存在：安装并启动 Docker Desktop；
-- `port is already allocated`：检查上述默认端口是否被其他服务占用；
-- 缺少环境变量：检查 `evaluation/environment/.env`；
-- 模型回复异常：检查输出目录的 `extract_proxy.log` 和
-  `answer_judge_proxy.log`；
-- embedding 异常：检查 `embed_proxy.log` 和 `embed_proxy_audit.jsonl`；
+- `docker API permission denied`：先启动 Docker Desktop，并确认当前用户有权访问 Docker。
+- `port is already allocated`：关闭占用上述端口的旧服务，再重跑。
+- `缺少环境变量`：检查 `evaluation/environment/.env`，不要只修改根目录 `.env`。
+- LongMemEval 模型异常：先看本轮的 `extract_proxy.log`、`answer_judge_proxy.log`；空回复
+  重试次数在 `evaluation/config.yml` 的 `proxy_retry_attempts`。
+- embedding 异常：看 `embed_proxy.log` 和 `embed_proxy_audit.jsonl`。
 - 后端未健康：执行
-  `docker compose -f evaluation/environment/docker-compose.yml ps`。
+  `docker compose -f evaluation/environment/docker-compose.yml ps` 查看具体服务。
 
-## PR 边界
+## 十一、复制到新的官方仓库
 
-需要提交新的 LongMemEval 源码、公共启动与环境模板、mini 数据和本文档。不得提交：
+1. 克隆官方 `agent-memory`；
+2. 删除新仓库原来的 `evaluation/`；
+3. 把本目录完整复制为新仓库的 `evaluation/`；
+4. 确认两个标准数据文件或 mini 文件位于 `evaluation/datasets/` 对应子目录；
+5. 配置 `evaluation/environment/.env`；
+6. 在新仓库根目录执行一键命令。
 
-- `evaluation/environment/.env`；
-- API Key、外部模型 URL；
-- 完整标准数据；
-- `evaluation/outputs/`、日志、审计记录、缓存和编译产物；
-- `evaluation_legacy_backup/`、`evaluation_backup_*/`。
+运行路径只导入官方仓库的 `jiuwen_memory` 内核包；不会导入旧 evaluation、备份目录或
+当前工作区的其他测评脚本。
+
+## 十二、PR 提交边界
+
+需要提交：
+
+- `evaluation/__init__.py`、`evaluation/__main__.py`、`evaluation/config.yml`、
+  `evaluation/configs/e2e_smoke.yml`；
+- `evaluation/longmemeval/` 与 `evaluation/locomo/` 中的独立 runner、Prompt、指标、
+  代理和内核配置；
+- `evaluation/shared/`、`evaluation/environment/docker-compose.yml`、
+  `evaluation/environment/requirements.txt` 与 `.env.example`；
+- `evaluation/setup.*`、`evaluation/run.*`、README；
+- 两个数据目录的 README 和 `longmemeval_mini.json`、`locomo_mini.json`。
+
+不得提交：
+
+- `evaluation/environment/.env`，以及任何真实 API Key、外部模型 URL；
+- 完整标准数据 `longmemeval_oracle.json`、`locomo10.json`；
+- `evaluation/outputs/`、`__pycache__/`、`*.pyc`、日志、审计记录和结果文件；
+- 根目录的 `evaluation_legacy_backup/`、`evaluation_backup_*/`；
+- 与本次测评无关的仓库改动。
+
+`.gitignore` 已覆盖以上本地产物。`.env.example` 中 API 地址与密钥保持为空，仅保留
+`127.0.0.1` 本地 Redis、Elasticsearch、Milvus 地址，方便一键拉起本地后端。
