@@ -58,6 +58,10 @@ class _RecordingScheduler:
         return "job-1"
 
     @staticmethod
+    def validate(job: Job) -> None:
+        return None
+
+    @staticmethod
     def status(job_id: str):
         ...
 

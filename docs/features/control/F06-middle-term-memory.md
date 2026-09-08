@@ -52,7 +52,7 @@ mem2.0 把这件事拆回控制层标准范式：
 
 - **per scope FIFO 队列** + 单 drain Task：同 scope 串行性由"per scope 单 drain Task"保证——`_ensure_drain_task` 检查 `existing.done()`，旧 drain 没跑完不创建新 drain。单线程事件循环 + 单 drain 协程跑 FIFO，无并发竞争，无需 `asyncio.Lock`。跨 scope 完全并行（不同 drain Task 抢不同队列）。
 - **per scope TimerWheel** + 单 Timer 协程：每 `tick_interval` 秒扫 entries 检查 `next_run_at`，到点生成一次性实例塞 queue（`copy.copy(entry.job)` + `interval=0`），重置 `next_run_at = now + interval`。Timer 协程只做"扫一遍 + append"，不抢 drain Task——一次性任务能在 tick 间隙跑。
-- **精度上限**：触发实际时刻 ∈ [next_run_at, next_run_at + tick_interval]。`interval < tick_interval` 时无法保证触发语义，submit 时校验拒绝。
+- **精度上限**：触发实际时刻 ∈ [next_run_at, next_run_at + tick_interval]。`interval < tick_interval` 时无法保证触发语义，submit 时校验拒绝。校验经 `Scheduler.validate(job)` 暴露（基类默认 no-op，`InProcessScheduler` 无定时精度约束继承默认）：`AsyncTimerScheduler.submit` 内部复用同一实现，Engine 在 `_write_middle_path` 落盘前先调 `validate` fail fast——消除「submit 拒绝但原文已落 KV + 建索引」的残留窗口。
 
 **关键权衡**：
 
@@ -82,7 +82,7 @@ mem2.0 把这件事拆回控制层标准范式：
 
 1. 给 unit 打 `tier=WORKING` + `metadata["middle"]="true"` 标记。
 2. `kv.insert` 落 `/memory/{id}`（与建索引记忆同前缀，被 `_list_working_units` 扫到）+ `index_builder.build(units)`（原文立即可检索）。
-3. `job_factory.get_job(JobType.MIDDLE_TO_LONG, scope=scope, evolver=evolver, index=index_builder, **interval_kw)` 取实例 + `scheduler.submit(job, channel=Channel.BACKGROUND)`。其中 `interval_kw` 由 write 入参 `metadata["middle_interval"]` 透传（pop 后不落盘到 unit.metadata），缺省不传由 `MiddleToLongJobSpec.interval` 装配期默认 50 兜底——与 `evolver=` / `index=` 运行时注入入参模式一致（E-06 收口后该二者为必传注入，见 [`F08`](F08-engine-job-builder-alignment.md)）。
+3. `job_factory.get_job(JobType.MIDDLE_TO_LONG, scope=scope, evolver=evolver, index=index_builder, **interval_kw)` 取实例 + `scheduler.submit(job, channel=Channel.BACKGROUND)`。其中 `interval_kw` 由 write 入参 `metadata["middle_interval"]` 经 :func:`parse_middle_interval`（`engine_impl/middle_support.py`，两个 Engine 共用）解析后透传：非法值（非数字 / 0 / 负数）在落盘前抛 `ValidationError`；缺省 `None` 由 `MiddleToLongJobSpec.interval` 装配期默认 50 兜底——与 `evolver=` / `index=` 运行时注入入参模式一致（E-06 收口后该二者为必传注入，见 [`F08`](F08-engine-job-builder-alignment.md)）。
 
 `CloudEngine._write_middle_path` 多 profile 适配：按 `message_type` 选 binding，每个 profile 有自己的 evolver/index。E-06 收口（[`F08`](F08-engine-job-builder-alignment.md)）后 Spec 装配期**不再固化** default evolver/index——若 Job 自行解析默认实例，原文用 `chat_index` 建索引但归档时调 `default_index.remove`，原文索引不会被正确清理。故此处通过 `JobFactory.get_job` 的**运行时注入入参** `evolver=` / `index=` 传 binding 的组件——`MiddleToLongJobSpec.with_scope` 从 `kwargs` 弹出 `evolver` / `index`（运行时注入优先，Spec 字段仅作手工装配兜底），缺失注入时 `with_scope` 直接抛 `ValidationError`，保证 Job 内部的 evolver/index 与原文落盘时一致。
 
@@ -156,7 +156,7 @@ write 调用时经 `metadata` 传入，是"本次 write 如何处理"的指令�
 |---|---|---|---|
 | `infer` | `"true"` | 同步抽取开关——write 时立即调 `evolver.evolve(EXTRACT)` 走完整派生链路 | engine 内部判定路径分流（见 [F02-write-infer-extract](../api/F02-write-infer-extract.md)） |
 | `middle` | `"true"` | 中期缓冲二级开关——仅在 `infer=true` 下生效；走 `_write_middle_path` 子路径（原文落 `/memory/` + 建索引 + tier=WORKING + 提交 MiddleToLongJob）。**会主动写回 `unit.metadata["middle"]="true"`**——`MiddleToLongJob._list_working_units` 据此过滤候选 | engine 内部 + 写回 unit.metadata 作候选标记 |
-| `middle_interval` | `"30"` 等 | MiddleToLongJob 的运行时周期（覆盖 Spec 装配期默认） | engine 透传到 `factory.get_job(interval=...)` |
+| `middle_interval` | `"30"` 等（必须可解析为正整数） | MiddleToLongJob 的运行时周期（覆盖 Spec 装配期默认）。**约束一**：非法值（非数字 / 0 / 负数）在 write 入口抛 `ValidationError`（`parse_middle_interval`），落盘前 fail fast。**约束二**：最终 interval（显式值或 Spec 默认）须 >= scheduler 的 `tick_interval`——`_write_middle_path` 构造 Job 后、落盘前经 `Scheduler.validate` 校验，不满足则 write 抛 `ValueError` 且原文不落盘（无残留） | engine 透传到 `factory.get_job(interval=...)` |
 | `procedural` | `"true"` | 程序性记忆路径开关（与 infer/middle 互斥的第三条分流） | engine 内部判定路径分流 |
 
 调用示例：
@@ -176,6 +176,8 @@ await engine.write(
 **边界与互斥**：
 
 - `middle=true` 但 `infer!=true` 且 `procedural!=true` → engine 抛 `ValueError`（middle 是 infer 的二级开关，见决策 4 关键权衡）。fail fast 而非静默退化。
+- `middle_interval` 非法（非数字 / 0 / 负数）→ write 入口抛 `ValidationError`（`parse_middle_interval`），原文不落 KV、不建索引、不提交 Job。
+- `middle_interval`（显式值或 Spec 装配期默认）< scheduler `tick_interval` → write 在落盘前抛 `ValueError`（经 `Scheduler.validate`），原文不落 KV、不建索引——与上两条同属无副作用的 fail fast。
 - `middle_interval` 单独传（无 `middle=true`）→ 被 engine pop 但不透传（不进 middle 路径），无副作用。
 - `middle` / `middle_interval` 不落盘到 `unit.metadata`——engine 入口 pop 剥除。`middle=true` 标记是 `_write_middle_path` 内**有意的写回**（候选过滤需要），不是入口 metadata 透传。
 
@@ -219,7 +221,7 @@ await engine.write(
 
 #### 9.4 候选不会丢失
 
-被 skip 的 Job 不动 KV——原文仍是 `tier=WORKING + lifecycle=ACTIVE + metadata.middle="true"`，下个 tick 仍会被 `_list_working_units` 扫到。多实例部署下，只要有一实例的 Job 能取到锁，候选最终都会被处理。**唯一会丢失候选的场景**是所有实例的 Job 都持续取锁失败——但那意味着锁后端故障，是运维问题不是设计问题。
+被 skip 的 Job 不动 KV——原文仍是 `tier=WORKING + lifecycle=ACTIVE + metadata.middle="true"`，下个 tick 仍会被 `_list_working_units` 扫到。多实例部署下，只要有一实例的 Job 能取到锁，候选最终都会被处理。**取锁路径上候选不会丢失**——所有实例持续取锁失败意味着锁后端故障，是运维问题不是设计问题。另一类历史风险「Job 从未注册成功（如 `interval < tick_interval` 被 submit 拒绝，但原文已落盘成孤儿候选）」已通过 `Scheduler.validate` 落盘前校验关闭：write 在落盘前 fail fast，报错与副作用不再共存。
 
 #### 9.5 `wait_timeout_ms=0` 的取舍
 
@@ -332,10 +334,10 @@ job_factory:
 
 | 测试文件 | 用例数 | 覆盖重点 |
 |---|---|---|
-| `tests/unit/control/test_async_timer_scheduler.py` | 18 | per scope FIFO 串行、Timer 协程周期触发、skip-tick、is_done 退出、was_done 不动 next_run_at、CancelledError 分支 |
+| `tests/unit/control/test_async_timer_scheduler.py` | 23 | per scope FIFO 串行、Timer 协程周期触发、skip-tick、is_done 退出、was_done 不动 next_run_at、CancelledError 分支、`validate` 提交前校验 |
 | `tests/unit/control/test_middle_to_long_job.py` | 22 | list 候选过滤、连续性检测 JSON/fallback、串行与并发切批、失败批次隔离、归档 ARCHIVED + index.remove、to_thread 不阻塞事件循环 |
 | `tests/unit/control/test_evolve_job.py` | 7 | mode 注入、middle 过滤、to_thread 包装 |
-| `tests/unit/control/test_engine_write_middle_path.py` | 10 | middle 标记、tier=WORKING、submit 调用、JobFactory 缺失报错 |
+| `tests/unit/control/test_engine_write_middle_path.py` | 17 | middle 标记、tier=WORKING、submit 调用、JobFactory 缺失报错、非法 `middle_interval` 落盘前拦截、interval < tick_interval 落盘前拦截（含 Spec 默认值场景）、正常路径防回归 |
 | `tests/unit/control/test_engine_evolve_scheduler.py` | 2 | Engine.evolve 委托 JobFactory + Scheduler |
 | `tests/unit/control/test_middle_e2e.py` | 6 | 单元层 e2e：write→MiddleToLongJob→归档链路 |
 | `tests/unit/control/test_middle_to_long_job_lock.py` | 4 | 分布式锁接入：`lock=None` 走原路径、取锁成功跑临界区+释放、取锁失败跳过 tick 不调 evolver、同 task 重入 |
@@ -394,6 +396,6 @@ job_factory:
 
 13. **Job 内 `concurrency=4` 假设 Evolver 线程安全**（设计权衡，非 bug）：`MiddleToLongJob` 默认 `middle_concurrency=4`，Job 内并发跑多个 batch——并发的是同一 Job 内不同 batch，不跨 Job。**假设**：Evolver 实现线程安全；若不安全可配 `concurrency=1` 串行。**目标终态**：spec 中明确"concurrency > 1 假设 Evolver 线程安全"契约——文档级遗留。
 
-14. **配置参数无有效性校验**（小改进）：`tick_interval <= 0` / `middle_interval <= 0` / `max_fetch <= 0` / `batch_size <= 0` / `concurrency <= 0` 无装配期校验。**触发条件**：用户主动传非法值。**修复成本**：约 10-20 行装配期 fail fast 校验。低优先级遗留。
+14. **装配期参数无有效性校验**（小改进）：`tick_interval <= 0` / `max_fetch <= 0` / `batch_size <= 0` / `concurrency <= 0` 无装配期校验。**触发条件**：用户在装配 YAML 主动传非法值。**修复成本**：约 10-20 行装配期 fail fast 校验。低优先级遗留。（调用级 `middle_interval` 的合法性校验已由 `parse_middle_interval` 在 write 入口覆盖——非法值落盘前抛 `ValidationError`，不属本遗留。）
 
 15. **三提交规则违反**（流程债）：本特性 commit `a43b7d8` 同时含源码 + 测试 + 文档，违反 `AGENTS.md:66` 三提交规则。**当前状态**：已在 `middle_submit` 分支，后续有 2 个修复 commit，rebase 拆分风险大。**遗留处理**：下次 PR 注意拆分。

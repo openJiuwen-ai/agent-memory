@@ -238,8 +238,8 @@ procedural 分支。直接调用 HTTP `/v1/add` 时传同名 `system_metadata` �
 `add` 的 `infer=true` 分支下按 `middle` 二级开关再分流。`middle=true` 触发中期缓冲子路径，落地细节见 [`F06-middle-term-memory`](../control/F06-middle-term-memory.md)，这里只列与 write 路径决策相关的部分：
 
 - 原文落 `/memory/{id}`（与建索引记忆同前缀，不走 `/messages/`）+ 建索引（原文立即可检索）+ 打 `tier=WORKING` 与 `system_metadata["middle"]="true"` 标记。
-- 提交 `MiddleToLongJob` 给 Scheduler——`interval=self._middle_interval`（编排周期，属 Engine 编排职责，故留 Engine 而非 JobFactory）。Scheduler 把它注册到 per scope TimerWheel，Timer 协程周期生成实例入队，每个实例跑一次 `run()` 即返回。
-- MiddleToLongJob 内做：list 候选（`tier=WORKING + lifecycle=ACTIVE + system_metadata["middle"]="true"`）→ 连续性检测切批 → `evolver.evolve(batch, EXTRACT)` → 原文归档（`lifecycle.transition(ARCHIVED) + index.remove`）。
+- 提交 `MiddleToLongJob` 给 Scheduler——`interval` 经 `factory.get_job(interval=...)` 注入：write 入参 `metadata["middle_interval"]` 在入口经 `parse_middle_interval` 校验（非法值落盘前抛 `ValidationError`），缺省由 `MiddleToLongJobSpec.interval` 装配期默认兜底。Scheduler 把它注册到 per scope TimerWheel，Timer 协程周期生成实例入队，每个实例跑一次 `run()` 即返回。
+- MiddleToLongJob 内做：list 候选（`tier=WORKING + lifecycle=ACTIVE + system_metadata["middle"]=="true"`）→ 连续性检测切批 → `evolver.evolve(batch, EXTRACT)` → 原文归档（`lifecycle.transition(ARCHIVED) + index.remove`）。
 
 **为何 middle 是 infer 的二级开关**：middle 路径要原文立即可检索（落 `/memory/` + 建索引），与 infer=true 同步抽取语义冲突（infer 原文不建索引、走 `/messages/`）。故 middle=true 必须在 infer=true 下生效，且走自己的子分支——分支内不再调 infer 的同步抽取，原文只落 KV 不抽取，抽取由后台 MiddleToLongJob 周期触发。
 

@@ -439,13 +439,9 @@ class CloudEngine(MemoryEngine):
                 "CloudEngine.write middle=true requires an Evolver (装配未注入 evolver)"
             )
 
-        for unit in units:
-            unit.tier = MemoryTier.WORKING
-            unit.system_metadata["middle"] = "true"
-        await asyncio.to_thread(index_builder.build, units)
-
-        # 通过 JobFactory.get_job 的运行时覆盖入参注入 binding 的 evolver/index，
-        # 保证归档时 index.remove 用对正确的 index。
+        # 先构造 Job（纯内存操作）——通过 get_job 运行时覆盖入参注入 binding 的
+        # evolver/index（保证归档时 index.remove 用对正确的 index）；
+        # middle_interval=None 在此解析为 Spec 装配期默认值。
         job = self._job_factory.get_job(
             JobType.MIDDLE_TO_LONG,
             scope=scope,
@@ -453,6 +449,15 @@ class CloudEngine(MemoryEngine):
             index=index_builder,
             interval=middle_interval,
         )
+        # 落盘前校验可调度性（如 interval >= tick_interval）——失败时原文
+        # 未写 Storage、未建索引，不留「报错但数据已残留」的窗口。
+        self._scheduler.validate(job)
+
+        for unit in units:
+            unit.tier = MemoryTier.WORKING
+            unit.system_metadata["middle"] = "true"
+        await asyncio.to_thread(index_builder.build, units)
+
         await self._scheduler.submit(job, channel=Channel.BACKGROUND)
         logger.info(
             "CloudEngine.write middle=True: %d originals buffered, scope=%s "

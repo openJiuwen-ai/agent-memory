@@ -33,6 +33,14 @@ class SchedulerProducer(Factory):
 
 
 class Scheduler(ControlOperator):
+    def validate(self, job: Job) -> None:
+        """提交前校验 job 的可调度性，不可调度时抛错——默认无约束。
+
+        供 Engine 在产生副作用（落盘等）之前 fail fast；
+        实现应与 :meth:`submit` 内部校验保持同一逻辑。
+        """
+        return None
+
     @abstractmethod
     async def submit(self, job: Job, channel: Channel) -> str:
         """提交一次任务（指定通道），返回 job_id。
