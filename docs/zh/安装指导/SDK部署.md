@@ -246,8 +246,7 @@ finally:
 ```
 
 不要直接对这份带 `profile`、`memory_api` 外壳的文件调用 `Config.from_yaml()`；那会把服务层键
-当成内核组件命名空间。另一个区别是 `Config.from_yaml()` 只解析 YAML，不会展开 `${VAR}`；
-上例使用的 `load_layer()` 才会展开环境变量。
+当成内核组件命名空间。
 
 ## 6. 方式四：Docker 后端存储 + 本地 HTTP 服务
 
@@ -314,7 +313,7 @@ from jiuwen_memory.config import Config
 api = assemble(config=Config.from_yaml("memory-api.yml"))
 ```
 
-注意，此方式不会自动展开环境变量，应写入已经解析好的值，或由应用先完成环境变量注入。
+此方式同样会展开 `${VAR}` / `${VAR:-默认值}` 环境变量占位符。
 
 ## 9. HTTP 接口与 MemoryAPI 的选择
 

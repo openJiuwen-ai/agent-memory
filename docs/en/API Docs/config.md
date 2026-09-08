@@ -137,8 +137,15 @@ config = Config.from_yaml("./memory-config.yml")
 api = assemble(config=config)
 ```
 
-`Config.from_yaml()` only parses YAML; it does not expand `${ENV_VAR}`. In an SDK deployment, the
-caller must read environment variables or construct the configuration dictionary in advance.
+`Config.from_yaml()` parses YAML and expands `${ENV_VAR}` / `${ENV_VAR:-default}` from the process
+environment. When the configuration text does not live on disk (for example it comes from a config
+center or a database), use `Config.from_yaml_str(yaml_text, DASHSCOPE_API_KEY="sk-...")`. Expansion
+resolution order is **explicit argument > process environment > the `:-` default**; passing `None`
+as an explicit argument behaves like omitting it and falls through to the next source.
+Only single-level placeholders are supported: nesting (for example `${A:-${B}}`), a `}` inside a
+default value, and any escape syntax for a literal `${...}` are all unavailable. Such input raises
+`ValidationError` during parsing instead of silently producing a wrong value.
+`Config.from_dict()` is the pure-data entry point and does not expand anything.
 
 ### 3.2 HTTP, MCP, and Deployment Configuration
 
@@ -948,7 +955,9 @@ available.
 3. When overriding a named instance, include every `params` dependency that must be preserved.
 4. Put cross-component capability flags in `globals`.
 5. Pass only the `memory_api` section of deployment configuration to the kernel.
-6. Remember that SDK `Config.from_yaml()` does not expand environment variables.
+6. `${VAR}` placeholders are expanded by `Config.from_yaml()` / `Config.from_yaml_str()`;
+   `Config.from_dict()` never expands them, and nesting or a `}` inside a default raises
+   `ValidationError`.
 7. Do not split `memory_api` across multiple deployment files.
 8. Prefer `ConfigSource` for runtime credential or connection-address changes.
 9. Reassemble after changing a target, dependency topology, or instance count.
