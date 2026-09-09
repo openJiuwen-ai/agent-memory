@@ -7,10 +7,11 @@ import argparse
 import inspect
 import json
 import sys
+from collections.abc import Mapping
 from datetime import datetime
 from enum import Enum
 from functools import partial
-from typing import Any, get_args
+from typing import Any, get_args, get_origin
 
 from jiuwen_memory.api import ValidationError
 from jiuwen_memory_entry.core.api_contract import api_method_names, method_contract, parse_request
@@ -30,12 +31,22 @@ def _argument_value(raw: str, *, annotation: Any) -> Any:
     alternatives = get_args(annotation)
     if type(None) in alternatives and raw == "null":
         return None
-    candidates = alternatives or (annotation,)
-    for candidate in candidates:
-        if candidate in (str, datetime):
-            return raw
-        if inspect.isclass(candidate) and issubclass(candidate, Enum):
-            return raw
+    # 集合/映射参数（list[str] 等）：成员类型是 str 不代表参数本身是文本——
+    # 按 DESIGN 约定「对象、数组…使用 JSON」，必须解析而不是原样透传。
+    origin = get_origin(annotation)
+    if origin in (list, set, frozenset, tuple, dict, Mapping):
+        try:
+            return json.loads(raw)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError("expected a JSON value") from exc
+    candidates = [c for c in (alternatives or (annotation,)) if c is not type(None)]
+    text_like = bool(candidates) and all(
+        candidate in (str, datetime)
+        or (inspect.isclass(candidate) and issubclass(candidate, Enum))
+        for candidate in candidates
+    )
+    if text_like:
+        return raw
     try:
         return json.loads(raw)
     except ValueError as exc:
