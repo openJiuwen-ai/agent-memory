@@ -165,7 +165,7 @@ def list(
     offset: int = 0,
     limit: int = 100,
     memory_types: list[str] | None = None,
-    extensions: dict[str, str] | None = None,
+    extensions: dict[str, Any] | None = None,
     filters: FilterExpr | list[FilterClause] | dict | None = None,
 ) -> MemoryListResult:
     ...
@@ -241,7 +241,7 @@ def list(
     offset: int = 0,
     limit: int = 100,
     memory_types: list[str] | None = None,
-    extensions: dict[str, str] | None = None,
+    extensions: dict[str, Any] | None = None,
     filters: FilterExpr | list[FilterClause] | dict | None = None,
 ) -> MemoryListResult:
     ...
@@ -253,8 +253,8 @@ Python API 使用 `filters` 作为规范参数名，与 `search` 保持一致；
 
 `extensions` 的契约与 `RetrievalQuery.extensions` 一致：
 
-- 类型为 `dict[str, str]`；API 边界复制并把传输层值规范为字符串，避免调用方后续修改
-  原字典影响正在执行的请求。
+- 类型为 `dict[str, Any]`；API 边界只复制外层字典并原样透传值，避免调用方后续修改
+  原字典影响正在执行的请求；内核不得隐式调用 `str()`。
 - 内核默认实现不解释业务 key，必须沿
   `MemoryAPI -> MemoryEngine -> KVStore.list` 完整透传；自定义 Engine 或 KV
   后端可按约定消费，未知 key 不报错。

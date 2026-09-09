@@ -168,9 +168,38 @@ def test_memory_api_list_copies_extensions_and_forwards_normalized_filters() -> 
     assert result.count == 1
     assert extensions == {"vendor_mode": 7}
     assert kv.calls[0][0] == scope
-    assert kv.calls[0][1]["extensions"] == {"vendor_mode": "7"}
+    assert kv.calls[0][1]["extensions"] == {"vendor_mode": 7}
     assert kv.calls[0][1]["extensions"] is not extensions
     assert kv.calls[0][1]["filters"] == filters
+
+
+def test_memory_api_list_extensions_pass_through_object_identity() -> None:
+    class _Probe:
+        pass
+
+    kv = _RecordingKV()
+    api = assemble(kv=kv)
+    scope = Scope(org="acme", user="owner")
+    api.add(
+        "identity memory",
+        scope,
+        security=legacy_request_context(scope),
+    )
+    probe = _Probe()
+    extensions = {"probe": probe, "depth": 2, "page_ctx": {"tab": "all"}}
+
+    api.list(
+        scope,
+        security=legacy_request_context(scope),
+        extensions=extensions,
+    )
+
+    received = kv.calls[0][1]["extensions"]
+    assert received["probe"] is probe
+    assert received["depth"] == 2
+    assert isinstance(received["depth"], int)
+    assert received["page_ctx"] == {"tab": "all"}
+    assert received is not extensions
 
 
 class _RecordingKV(InMemoryKVStore):
