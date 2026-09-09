@@ -4,10 +4,14 @@
 import 各实现模块即触发其 ``@IngestorProducer.register(...)`` 自注册；本包只对外暴露工厂 IngestorProducer。
 """
 
+import logging
 from importlib import import_module
 
 from jiuwen_memory.ingest.ingestor import IngestorProducer
 
-import_module(".simple_ingestor", __name__)
+try:
+    import_module(".simple_ingestor", __name__)
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
 
 __all__ = ["IngestorProducer"]

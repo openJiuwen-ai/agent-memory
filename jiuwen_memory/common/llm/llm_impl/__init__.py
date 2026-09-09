@@ -6,16 +6,24 @@ import 各实现模块即触发其 ``@LlmProducer.register(...)`` 自注册；�
 （不连坐默认实现）。
 """
 
+import logging
 from importlib import import_module
 
 from jiuwen_memory.common.llm.base import LlmProducer
 
-import_module(".echo_llm", __name__)
+try:
+    import_module(".echo_llm", __name__)
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
 
 try:  # 可选后端：依赖未安装则跳过注册
     import_module(".openai_llm", __name__)
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+
+try:  # 可选后端：依赖未安装则跳过注册
     import_module(".dashscope_llm", __name__)
-except ImportError:
-    pass
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
 
 __all__ = ["LlmProducer"]

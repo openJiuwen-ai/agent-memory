@@ -5,16 +5,23 @@ import 各实现模块即触发其 ``@EmbedderProducer.register(...)`` 自注册
 可选后端（openai_embedder）依赖可选重包，未安装则跳过注册（不连坐默认实现）。
 """
 
+import logging
 from importlib import import_module
 
 from jiuwen_memory.common.embedder.base import EmbedderProducer
 
-import_module(".hashing_embedder", __name__)
-import_module(".bge_m3_embedder", __name__)
+try:
+    import_module(".hashing_embedder", __name__)
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+try:
+    import_module(".bge_m3_embedder", __name__)
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
 
 try:  # 可选后端：依赖未安装则跳过注册
     import_module(".openai_embedder", __name__)
-except ImportError:
-    pass
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
 
 __all__ = ["EmbedderProducer"]

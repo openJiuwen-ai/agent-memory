@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 from importlib import import_module
 
 _REGISTERED = False
@@ -17,14 +18,44 @@ def register_controllers() -> None:
     global _REGISTERED
     if _REGISTERED:
         return
-    import_module("jiuwen_memory.control.pipeline_impl")
-    import_module("jiuwen_memory.control.engine_impl")
-    import_module("jiuwen_memory.control.governance_impl")
-    import_module("jiuwen_memory.control.lifecycle_impl")
-    import_module("jiuwen_memory.control.membership_impl")
-    import_module("jiuwen_memory.control.permission_impl")
-    import_module("jiuwen_memory.control.policy_impl")
-    import_module("jiuwen_memory.control.scheduler_impl")
-    import_module("jiuwen_memory.control.job_impl")
-    import_module("jiuwen_memory.control.space_impl")
+    try:
+        import_module("jiuwen_memory.control.pipeline_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.control.engine_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.control.governance_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.control.lifecycle_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.control.membership_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.control.permission_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.control.policy_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.control.scheduler_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.control.job_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.control.space_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
     _REGISTERED = True

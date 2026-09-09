@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+import logging
 from importlib import import_module
 
-import_module(".metadata_pipeline", __name__)
+try:
+    import_module(".metadata_pipeline", __name__)
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)

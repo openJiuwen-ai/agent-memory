@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 from importlib import import_module
 
 _REGISTERED = False
@@ -17,5 +18,8 @@ def register_ingestors() -> None:
     global _REGISTERED
     if _REGISTERED:
         return
-    import_module("jiuwen_memory.ingest.ingestor_impl")
+    try:
+        import_module("jiuwen_memory.ingest.ingestor_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
     _REGISTERED = True

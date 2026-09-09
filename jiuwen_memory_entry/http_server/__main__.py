@@ -38,14 +38,38 @@ _CORE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 if _CORE_DIR not in sys.path:
     sys.path.append(_CORE_DIR)
 
-load_layer = import_module("config_loader").load_layer
-_profiles_module = import_module("profiles")
+try:
+    load_layer = import_module("config_loader").load_layer
+except ImportError as exc:
+    logging.getLogger(__name__).warning("required import failed: %s", exc)
+    raise
+try:
+    _profiles_module = import_module("profiles")
+except ImportError as exc:
+    logging.getLogger(__name__).warning("required import failed: %s", exc)
+    raise
 OFFLINE = _profiles_module.OFFLINE
 load_config = _profiles_module.load_config
-Server = import_module("server").Server
-authenticated = import_module("auth_middleware").authenticated
-credentials_from_headers = import_module("auth_middleware").credentials_from_headers
-_api_module = import_module("jiuwen_memory.api")
+try:
+    Server = import_module("server").Server
+except ImportError as exc:
+    logging.getLogger(__name__).warning("required import failed: %s", exc)
+    raise
+try:
+    authenticated = import_module("auth_middleware").authenticated
+except ImportError as exc:
+    logging.getLogger(__name__).warning("required import failed: %s", exc)
+    raise
+try:
+    credentials_from_headers = import_module("auth_middleware").credentials_from_headers
+except ImportError as exc:
+    logging.getLogger(__name__).warning("required import failed: %s", exc)
+    raise
+try:
+    _api_module = import_module("jiuwen_memory.api")
+except ImportError as exc:
+    logging.getLogger(__name__).warning("required import failed: %s", exc)
+    raise
 Surface = _api_module.Surface
 AgentMemoryError = _api_module.AgentMemoryError
 AuthenticationError = _api_module.AuthenticationError
@@ -151,9 +175,11 @@ class HttpServer(Server):
                         context_request_id = security.request_id
                         try:
                             payload = json.loads(raw) if raw else None
-                        except (TypeError, ValueError) as exc:
+                        except (TypeError, ValueError) as json_error:
                             self._send_error(
-                                "BadRequest", f"invalid JSON: {exc}", request_id=security.request_id
+                                "BadRequest",
+                                f"invalid JSON: {json_error}",
+                                request_id=security.request_id,
                             )
                             return
                         body = invoke_api(srv.api, verb, payload, security)
@@ -162,13 +188,13 @@ class HttpServer(Server):
                     self._send_error("AuthenticationError", request_id=request_id)
                 except RateLimitedError:
                     self._send_error("RateLimitedError", request_id=request_id)
-                except AgentMemoryError as exc:
-                    self._send_error(type(exc), exc, request_id=context_request_id)
-                except Exception as exc:
+                except AgentMemoryError as api_error:
+                    self._send_error(type(api_error), api_error, request_id=context_request_id)
+                except Exception as request_error:
                     logger.error(
                         "HTTP request failed request_id=%s error_type=%s",
                         context_request_id,
-                        type(exc).__name__,
+                        type(request_error).__name__,
                     )
                     self._send_error("InternalError", request_id=context_request_id)
 
@@ -294,8 +320,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"invalid {_AUTH_MODE_ENV}: {args.auth_mode!r}")
     try:
         allow_dev_non_loopback = _read_env_flag(_ALLOW_DEV_NON_LOOPBACK_ENV)
-    except ValidationError as exc:
-        parser.error(str(exc))
+    except ValidationError as env_error:
+        parser.error(str(env_error))
 
     layers = [OFFLINE]
     for path in args.config:
@@ -316,8 +342,8 @@ def main(argv: list[str] | None = None) -> int:
             args.port,
             allow_dev_non_loopback=allow_dev_non_loopback,
         )
-    except ValidationError as exc:
-        logger.error("HTTP server refused to start: %s", exc)
+    except ValidationError as start_error:
+        logger.error("HTTP server refused to start: %s", start_error)
         return 2
     return 0
 

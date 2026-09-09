@@ -6,10 +6,14 @@ import 各实现模块即触发其 ``@EntityStoreProducer.register(...)`` 自注
 复用主链路 FulltextStore 同一 ES 集群，index 为 ``memory_entities``。
 """
 
+import logging
 from importlib import import_module
 
 from jiuwen_memory.storage.entity_store import EntityStoreProducer
 
-import_module(".elasticsearch_entity_store", __name__)  # 触发 @EntityStoreProducer.register("elasticsearch")
+try:
+    import_module(".elasticsearch_entity_store", __name__)  # 触发 @EntityStoreProducer.register("elasticsearch")
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
 
 __all__ = ["EntityStoreProducer"]

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 from importlib import import_module
 
 _REGISTERED = False
@@ -17,13 +18,40 @@ def register_constructors() -> None:
     global _REGISTERED
     if _REGISTERED:
         return
-    import_module("jiuwen_memory.construction.abstractor_impl")
-    import_module("jiuwen_memory.construction.associator_impl")
-    import_module("jiuwen_memory.construction.classifier_impl")
-    import_module("jiuwen_memory.construction.dedup_impl")
-    import_module("jiuwen_memory.construction.evolver_impl")
-    import_module("jiuwen_memory.construction.extractor_impl")
-    import_module("jiuwen_memory.construction.index_builder_impl")
-    import_module("jiuwen_memory.construction.layer_annotator_impl")
-    import_module("jiuwen_memory.construction.router_impl")
+    try:
+        import_module("jiuwen_memory.construction.abstractor_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.construction.associator_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.construction.classifier_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.construction.dedup_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.construction.evolver_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.construction.extractor_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.construction.index_builder_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.construction.layer_annotator_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.construction.router_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
     _REGISTERED = True
