@@ -517,14 +517,19 @@ kv_store:
     target: encrypted
     params:
       raw_kv_store: raw
-      security: default
+      cryptography: default
 
-security:
+cryptography:
+  default:
+    target: local
+    params:
+      key_provider: default
+
+key_provider:
   default:
     target: local
     params:
       key_env: AGENT_MEMORY_ENCRYPTION_ROOT_KEY
-      allow_plaintext: false
 ```
 
 When `ssl_verify=true` for Redis, `url` must use `rediss://` and `ssl_ca_cert` must also be set. For
@@ -710,7 +715,7 @@ assembly layer; it cannot be selected directly as a YAML target.
 `StoreSecurity` also has no separately selectable target. Ordinary Stores use
 `PassthroughStoreSecurity` by default. Selecting `kv_store.target=encrypted` makes
 `EncryptedKVStore.security` report enabled, while the actual cryptographic implementation is
-provided by the `SecurityProvider` referenced by `params.security`.
+provided by the `CryptographyProvider` referenced by `params.cryptography`.
 
 ## 14. Minimal Usage Examples
 

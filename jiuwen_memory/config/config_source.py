@@ -1,7 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """ConfigSource — 可插拔配置来源抽象（S08 / F01-config-source）。
 
-与密钥侧 ``KeySource`` 同构：
+与密钥侧 ``KeyProvider``（``common.security.cryptography``）同构：
 - 抽象接口：别人可插自己的来源（配置中心 / DB / HTTP …）
 - 默认实现：对齐 YAML + ``defaults.py`` 装配快照，不配也能跑
 - 装配注入：``build_kernel`` 时装上

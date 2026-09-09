@@ -23,7 +23,6 @@ from jiuwen_memory_entry.cli import client as client_module
 from jiuwen_memory_entry.cli import commands
 from jiuwen_memory_entry.core import api_contract
 from jiuwen_memory_entry.http_server.__main__ import HttpServer
-from jiuwen_memory_entry.http_server.dev_security import build_dev_security_runtime
 
 pytestmark = pytest.mark.unit
 SCOPE = {"org": "local", "user": "developer"}
@@ -131,7 +130,7 @@ def test_http_client_preserves_payload_and_original_response(monkeypatch, body) 
 
 @pytest.fixture(params=["local", "http"])
 def api_client(request, monkeypatch):
-    local = client_module.InProcessClient(authenticator=build_dev_authenticator())
+    local = client_module.InProcessClient(dev_authentication=True)
     if request.param == "local":
         try:
             yield local
@@ -139,7 +138,9 @@ def api_client(request, monkeypatch):
             local.close()
         return
     server = HttpServer(
-        local.server.config, local.server, security_runtime=build_dev_security_runtime()
+        local.server.config,
+        local.server,
+        security_runtime=local.server.security_runtime,
     )
     # HttpServer expects an object with api and close, both supplied by the existing Server.
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.handler_cls())
@@ -243,10 +244,9 @@ def test_inprocess_fails_closed_without_authentication() -> None:
         client.close()
 
 
-def test_dev_authentication_still_checks_business_permissions(api_client) -> None:
+def test_explicit_dev_preserves_cross_org_business_flow(api_client) -> None:
     status, body = api_client.call("add", {"content": "x", "scope": {"org": "another-org"}})
-    assert status == 403
-    assert body["error"] == "PermissionDeniedError"
+    assert status == 200, body
 
 
 @pytest.mark.parametrize(

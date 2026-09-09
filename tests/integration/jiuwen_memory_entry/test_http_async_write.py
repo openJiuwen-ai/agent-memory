@@ -17,10 +17,10 @@ from typing import Any
 
 import pytest
 
+from jiuwen_memory_entry.core.dev_security import with_local_dev_security
 from jiuwen_memory_entry.core.profiles import OFFLINE, load_config
 from jiuwen_memory_entry.http_server import __main__ as http_server_module
 from jiuwen_memory_entry.http_server.__main__ import HttpServer
-from jiuwen_memory_entry.http_server.dev_security import build_dev_security_runtime
 
 pytestmark = pytest.mark.integration
 _NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -39,7 +39,7 @@ def async_http_url_fixture(request, monkeypatch):
     config = load_config(
         [OFFLINE, {"memory_api": {"scheduler": {"default": {"target": request.param}}}}]
     )
-    server = HttpServer.build(config, security_runtime=build_dev_security_runtime())
+    server = HttpServer.build(with_local_dev_security(config))
     with ThreadPoolExecutor(max_workers=1) as executor:
         serving = executor.submit(server.serve, "127.0.0.1", 0)
         httpd = None

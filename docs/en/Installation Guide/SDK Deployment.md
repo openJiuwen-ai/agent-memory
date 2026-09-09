@@ -134,13 +134,12 @@ curl -X POST http://127.0.0.1:8137/v1/search \
 HTTP authentication mode is selected in this order: `--auth-mode`, the
 `JIUWEN_MEMORY_HTTP_AUTH_MODE` environment variable, then `required`. Setting the environment variable
 to `dev` enables development authentication even without the command-line option.
-In `required` mode, the launcher has no production `SecurityRuntimeProducer`, so business endpoints
-fail closed with 503. Integrating applications should inject a trusted security runtime through
+In `required` mode, the launcher builds a production `SecurityRuntime` from
+`memory_api.security`; without that configuration, business endpoints fail closed with 503.
+Integrating applications may also inject a trusted runtime through
 `HttpServer.build(..., security_runtime=security_runtime)`. This security runtime is not the
-memory-kernel runtime returned by `assemble_runtime()`.
-The development launcher uses a minimal `DevHttpSecurityRuntime` with a fixed-identity authenticator
-and no rate limiter, workload guard, or surface audit component. API authorization and business
-auditing still run.
+memory-kernel runtime returned by `assemble_runtime()`. The development launcher also assembles a
+complete runtime, including the shared binding policy and resource-protection capabilities.
 
 The HTTP process assembles one Kernel, so requests share state while the service is running. The
 default in-memory data is lost after the service stops.

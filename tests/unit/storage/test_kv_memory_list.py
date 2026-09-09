@@ -5,7 +5,7 @@ from fnmatch import fnmatch
 
 import pytest
 
-from jiuwen_memory.common.security import SecurityProvider
+from jiuwen_memory.common.security.cryptography import CryptographyProvider
 from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterGroup,
@@ -70,7 +70,7 @@ class _FakeRedisKVStore(RedisKVStore):
         return self.fake_client
 
 
-class _ReverseSecurity(SecurityProvider):
+class _ReverseSecurity(CryptographyProvider):
     def encrypt(self, plaintext, *, context=None, aad=b""):
         _ = context, aad
         return plaintext[::-1]

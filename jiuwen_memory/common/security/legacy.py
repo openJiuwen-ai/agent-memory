@@ -1,17 +1,13 @@
-"""接口先行过渡期的调用方桥接（**实装 PR 合入时删除**）。
+"""PR2 接入前的调用方桥接（**PR2 切 ``security=`` 签名时删除**）。
 
 背景：``MemoryAPI`` 公开签名已从 ``identity: Scope`` 固化为
-``security: RequestSecurityContext``（接口契约先行合入），但生产认证/授权**实现**
-（trusted/api_key Authenticator、Authorizer 及其余 ``*_impl``）随版本发布安排暂缓合入；
-当前 dev Authenticator 只服务显式本地 HTTP / CLI 功能测试。过渡期
-内，所有旧调用点（handler / MCP / 测试 / 示例）用本函数把原来的
-identity ``Scope`` 包装成 ``RequestSecurityContext`` 继续传入。
+``security: RequestSecurityContext``，但 MCP 与历史进程内调用仍持有 ``Scope``。
+PR1 已实装 dev/trusted/api_key 认证；正式角色授权仍由 PR2 Authorizer 接通。
+过渡期调用点用本函数包装原有 identity。
 
-**这是假认证**：``AuthContext`` 的 role / credential 字段为占位值，接口 PR 中
-没有任何代码消费这些字段--:class:`~api.memory_api_impl.local_memory_api.LocalMemoryAPI`
-只取 ``security.auth.actor`` 用于原有的 PermissionManager 路径，鉴权行为与
-identity 直传时代逐位等价。payload 仍携带 identity 属已知临时态（与接口文档
-「payload 不得声明 actor」的评审点冲突），实装 PR 合入时随本模块一并删除。
+这里的 role / credential 字段是 legacy 占位；PR1 的 PermissionManager 只消费 actor，
+不会把占位 ROOT 当成特权。HTTP/CLI 的业务 payload 不得声明 actor；该桥仅保留给受控
+适配层，随 PR2 显式安全上下文接线一并删除。
 """
 
 from __future__ import annotations

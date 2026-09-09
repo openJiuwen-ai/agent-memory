@@ -50,23 +50,17 @@ HTTP verb 集合直接取 `MemoryAPI.__abstractmethods__`。每个方法暴露�
 时继续 fail-closed 返回 503；显式 `dev` 模式仅为本地功能测试提供固定具名 ROOT 身份，仍走
 同一认证上下文构造与授权链路。
 
-HTTP 开发入口装配的是最小 `DevHttpSecurityRuntime`，只提供 dev Authenticator；
-`rate_limiter` / `workload_guard` / surface `audit` 均为空，不是完整生产 `SecurityRuntime`。
-这不关闭 API 本身的授权和业务审计。认证模式按 `--auth-mode`、
+HTTP 开发入口经配置适配器装配完整 `SecurityRuntime`，dev Authenticator、
+`rate_limiter`、`workload_guard` 与 `binding_policy` 均走统一 Producer 装配。
+认证模式按 `--auth-mode`、
 `JIUWEN_MEMORY_HTTP_AUTH_MODE`、`required` 的优先级确定；CLI 本地模式只使用自己的
 `--auth-mode`，不读取 HTTP 认证模式环境变量。
 
 回环保护在 `HttpServer.serve()` 创建 socket 前执行，标准启动脚本经过该入口。
 `handler_cls()` 只生成请求处理器：嵌入方自行创建 HTTP Server 时必须自行保证绑定策略，
 不能把处理器视为独立的监听保护。第三方认证器未覆写 `requires_loopback_binding()` 时
-同样要求回环绑定；拒绝提示使用其中性的模式名称，不引导其开启仅适用于 dev 的例外。
-已注入 `binding_policy` 时由该策略优先裁决，dev 例外不能覆盖策略拒绝。
-
-> **危险开关：`JIUWEN_MEMORY_HTTP_ALLOW_DEV_AUTH_NON_LOOPBACK=true`。**
-> 在未注入独立绑定策略时，它显式解除 dev 的非回环绑定限制，不提供认证、TLS 或限流。
-> 任何能连接该 HTTP 服务的人都会使用相同的测试身份，再接受 API 的业务授权判定。
-> 只允许在部署边界已隔离的测试容器中使用，不能依靠 warning 防止远程访问。
-> 当前记录启动 warning，dev runtime 未装配 surface audit，不产生专门的绑定例外审计事件。
+同样要求回环绑定；缺少 `binding_policy` 的 Runtime 直接拒绝启动。HTTP 不读取任何 DEV
+非回环例外环境变量，也不按 `Authenticator.mode()` 另开旁路。
 
 ### 4. 同名调用并返回原值
 
