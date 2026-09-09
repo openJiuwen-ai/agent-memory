@@ -203,7 +203,11 @@ class QueryOpsMixin:
 
         ``context.scope`` 只取 ``org`` 维定组织边界，空间维由候选集给出、传了不生效。
         """
-        principal.require_principal(identity)
+        # 与单空间路径的鉴权点同一门控（见 :meth:`_authorize_with_context`）：未装配空间
+        # 治理的部署把空身份当运维通道放行，跨空间检索亦然——显式 ``spaces`` 列表的检索
+        # 不经主体反查，空身份点名查几个空间是合法的运维动作。无条件加会收紧既有行为。
+        if self._needs_space_facts():
+            principal.require_principal(identity)
         org = context.scope.org
         normalized_filters = normalize(filters)
 

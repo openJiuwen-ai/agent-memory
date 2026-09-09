@@ -389,7 +389,15 @@ def _with_author_marks(metadata: dict[str, Any] | None, identity: Scope) -> dict
     条件的结果依后端实现而定。
 
     调用点在保留键校验之后：先拒绝调用方占用这些键，再由内核写入，两者不冲突。
+
+    主体维全空的调用方跳过：未装配空间治理的部署（allow_all / sqlite）把空身份当运维
+    通道放行（:func:`require_principal` 的门控见鉴权点），到这里的空身份没有主体可推导，
+    :func:`derive_author` 会抛校验异常。这种部署下作者标记无消费者，跳过即与运维通道的
+    既有行为一致；装配了空间治理的部署里空身份在鉴权点已被 :func:`require_principal`
+    拦截，到不了这里。
     """
+    if not identity.user and not identity.agent:
+        return dict(metadata or {})  # 与正常分支同契约：恒返回新对象
     author_principal, author_agent = principal.derive_author(identity)
     return {
         **(metadata or {}),
