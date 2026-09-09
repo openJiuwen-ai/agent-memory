@@ -143,7 +143,7 @@ class CompositeDomainStore(DomainStore):
     def preferred_retrieval_pipeline(self) -> RetrievalPipeline:
         return self._preferred_pipeline
 
-    def scopes(self) -> list[Scope]:
+    def scopes(self, **kwargs: Any) -> list[Scope]:
         return self._kv().scopes()
 
     def add(
@@ -153,6 +153,7 @@ class CompositeDomainStore(DomainStore):
         *,
         mode: IndexWriteMode = IndexWriteMode.ALL,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> None:
         self._authorize(access, scope, StorageAction.ADD, "memory_unit")
         # 本实现无投影能力，落地范围仅记忆本体：调用方只要检索索引时无事可做。
@@ -170,6 +171,7 @@ class CompositeDomainStore(DomainStore):
         *,
         mode: IndexWriteMode = IndexWriteMode.ALL,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> None:
         # 本实现落地范围仅记忆本体，FORWARD_ONLY 与 ALL 行为相同（无检索索引可跳过）。
         self._authorize(access, scope, StorageAction.UPDATE, "memory_unit")
@@ -187,6 +189,7 @@ class CompositeDomainStore(DomainStore):
         *,
         mode: IndexRemoveMode = IndexRemoveMode.HARD,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> None:
         self._authorize(access, scope, StorageAction.DELETE, "memory_unit")
         # 同 add：无检索索引可单独移除，软删除保留本体即无事可做。
@@ -202,6 +205,7 @@ class CompositeDomainStore(DomainStore):
         unit_ids: list[str],
         *,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> list[MemoryUnit]:
         self._authorize(access, scope, StorageAction.GET, "memory_unit")
         return self._get_units(scope, unit_ids)
@@ -216,6 +220,7 @@ class CompositeDomainStore(DomainStore):
         filters: FilterExpr | None = None,
         extensions: dict[str, str] | None = None,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> MemoryListResult:
         self._authorize(access, scope, StorageAction.LIST, "memory_unit")
         result = self._kv().list(
@@ -241,6 +246,7 @@ class CompositeDomainStore(DomainStore):
         channels: list[RecallChannel] | None,
         recall_limit: int,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> RecallResult[ScoredUnit]:
         self._authorize(access, scope, StorageAction.SEARCH, "memory_unit")
         return self._recall(scope, query, channels=channels, recall_limit=recall_limit)
@@ -253,6 +259,7 @@ class CompositeDomainStore(DomainStore):
         channels: list[RecallChannel] | None,
         recall_limit: int,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> RecallResult[ScoredMemoryUnit]:
         self._authorize(access, scope, StorageAction.SEARCH, "memory_unit")
         return self._recall_and_get(
@@ -269,6 +276,7 @@ class CompositeDomainStore(DomainStore):
         recall_limit: int,
         rank_limit: int,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> RankedStorageResult:
         self._authorize(access, scope, StorageAction.SEARCH, "memory_unit")
         materialized = self._recall_and_get(
