@@ -1,6 +1,6 @@
 # CLI 与 MemoryAPI 对齐
 
-最近一次修订日期：2026-09-05
+最近一次修订日期：2026-09-09
 
 CLI 是 MemoryAPI 的命令行入口，不再兼容 Mem0 风格命令或 legacy payload。
 它与 HTTP 使用同一套方法名、参数名、默认值和返回结构，不包含额外业务编排。
@@ -31,9 +31,11 @@ JSON 规则，领域错误共用 `core/error_response.py` 的状态映射和脱�
   patch / selector，也不执行客户端阈值过滤或“先 list 再逐条 delete”等业务流程。
 
 完整参数可用 `scripts/run-cli.sh <method_name> --help` 查看。
-当前解析例外：写入 `system_metadata.coords` 的对象值不在 API 声明的 `MetadataValueType`
-内，会在 CLI / HTTP 边界被拒绝；该归属判定扩展目前需直接使用 Python API，见
-[API F05 已知遗留](../../docs/features/api/F05-http-memory-api-alignment.md#已知遗留)。
+`add`、`add_async`、`batch_add`、`batch_add_async` 的请求级 `system_metadata.coords`
+已单独按 `dict[str, str]` 校验，其余元数据规则不变。CLI 使用
+`--system_metadata '{"coords":{"team":"t"}}'` 传入；归属判定仍需配置 router、空间及权限。
+批量逐项携带该键仍拒绝，不扩展 `user_metadata`、patch 或 `check_write`，见
+[写入归属坐标](../../docs/zh/安装指导/SDK部署.md#写入归属坐标-coords)。
 `add_async` / `batch_add_async` 等待原协程完成，分别返回原记忆列表和批量结果，
 不转换为 job。原本返回任务标识的 `evolve` / `submit_ingest` 保留自身 API 语义。
 
@@ -61,6 +63,12 @@ scripts/run-cli.sh --auth-mode dev search \
 远程用 `--server` 或 `AGENT_MEMORY_SERVER` 指定地址；
 `AGENT_MEMORY_API_KEY` 作为 Bearer 凭据发送。认证模式由服务器决定，
 不能用 CLI 的 `--auth-mode dev` 改变远程服务认证。
+
+HTTP 配置了 `http.dev_identities` 时，设置 `AGENT_MEMORY_API_KEY=test-u1` 即发送
+`Authorization: Bearer test-u1`，由服务端选择预设身份；缺失或未知标识返回 401。
+本地 CLI 不自动读取该 HTTP 配置，程序化调用可注入
+`build_dev_authenticator(identities=...)`。配置示例见
+[Config 指南](../../docs/zh/API文档/config.md#33-http-开发测试配置多个身份)。
 
 ```bash
 # 仅用于本地功能测试，服务默认绑定 loopback

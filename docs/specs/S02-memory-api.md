@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-09-05 |
+| 最近一次修订日期 | 2026-09-09 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -58,9 +58,13 @@ POST /v1/<MemoryAPI 方法名>
 `actor_*`、`identity`、`acting_user`、`principal` 和 `authenticated_user` 必须拒绝。
 启动器默认使用 `required` 模式；未装配生产认证运行时则 fail-closed 返回 503，不得使用空
 Scope 或请求体身份回退。HTTP 认证模式按 `--auth-mode`、`JIUWEN_MEMORY_HTTP_AUTH_MODE`、
-`required` 的优先级选择。显式 `dev` 只用于本地功能测试：服务端
-忽略凭据并生成固定具名 ROOT 身份，仍经受控入口生成 `RequestSecurityContext`，仍执行
-`MemoryAPI` 授权。dev 模式默认只能绑定 loopback；容器内监听非 loopback 必须显式放行，并由
+`required` 的优先级选择。显式 `dev` 只用于隔离功能测试：未配置身份映射时，服务端
+忽略凭据并生成固定具名 ROOT 身份；配置 `http.dev_identities` 后，使用 Bearer 或 X-API-Key
+选择服务端预设的 actor 与 role，缺失或未知标识返回 401，不回退到默认身份。
+两种模式都经受控入口生成 `RequestSecurityContext`，仍执行 `MemoryAPI` 授权；
+不能把配置的 role 等同于绕过空间权限。配置位置、字段约束与启动示例统一见
+[Config 指南](../zh/API文档/config.md#33-http-开发测试配置多个身份)。
+dev 模式默认只能绑定 loopback；容器内监听非 loopback 必须显式放行，并由
 部署边界把宿主机端口限制在 loopback。dev 模式不得成为默认值或生产降级路径。
 
 同步与异步只保留 Python 调用方式的差异。普通 `def` 方法直接调用；`add_async`、
@@ -74,9 +78,14 @@ Scope 或请求体身份回退。HTTP 认证模式按 `--auth-mode`、`JIUWEN_ME
 `{error, message, request_id, retryable}`。返回数据类递归保留其字段，枚举、时间、
 集合分别转换为 JSON 字符串、ISO 8601 字符串和数组。
 
-上述规则定义对齐契约。当前实现对类型注解之外的运行时扩展仍有缺口（写入
-`system_metadata.coords`），详见 [API F05 已知遗留](../features/api/F05-http-memory-api-alignment.md#已知遗留)；
-方法已暴露不等于所有扩展都已通过传输层验证。
+`add`、`add_async`、`batch_add`、`batch_add_async` 请求级 `system_metadata.coords`
+是普通元数据注解之外的明确例外：JSON 对象按 `dict[str, str]` 单独校验，允许 `{}`，
+不接受 `null`、数组或非字符串键值；其余元数据仍遵守 `MetadataValueType`。
+适配层保持字段原位置，归属判定、身份限制与是否落盘均由 API 决定。批量逐项携带该键仍拒绝，
+不扩展 `user_metadata`、`MemoryPatch` 或 `check_write`。检索的对应字段仍在
+`Context.extensions.coords`。请求示例与使用前提见
+[写入归属坐标](../zh/安装指导/SDK部署.md#写入归属坐标-coords)。
+此规则修复已有运行时契约的传输误拦截，不代表任意未声明的扩展都被允许。
 
 HTTP 与 CLI 共用 `jiuwen_memory_entry/core/api_contract.py` 的 JSON 契约和同名调用逻辑，
 不再经过 legacy `DispatchRequest` / shared handler。CLI 的 36 个命令与参数直接从

@@ -30,6 +30,7 @@ _RESERVED_SECURITY_FIELDS = {
     "principal",
     "authenticated_user",
 }
+_COORDS_WRITE_METHODS = frozenset({"add", "add_async", "batch_add", "batch_add_async"})
 
 
 @dataclasses.dataclass(frozen=True)
@@ -100,8 +101,21 @@ def parse_request(verb: str, raw: Any) -> dict[str, Any]:
     decoded: dict[str, Any] = {}
     for name, value in raw.items():
         annotation = contract.type_hints.get(name, Any)
-        decoded[name] = _decode(value, annotation, path=name)
+        decoded[name] = _decode_argument(verb, name, value, annotation)
     return decoded
+
+
+def _decode_argument(verb: str, name: str, value: Any, annotation: Any) -> Any:
+    # coords 是 API 已有的瞬态输入，不属于落盘 MetadataValueType；只对四个
+    # 写入方法的批级参数袋应用例外，不扩到 user_metadata、patch 或 batch item。
+    if verb in _COORDS_WRITE_METHODS and name == "system_metadata":
+        if isinstance(value, dict) and "coords" in value:
+            metadata = dict(value)
+            coords = metadata.pop("coords")
+            decoded = _decode(metadata, annotation, path=name)
+            decoded["coords"] = _decode(coords, dict[str, str], path="system_metadata.coords")
+            return decoded
+    return _decode(value, annotation, path=name)
 
 
 async def _await_api_result(result: Awaitable[Any]) -> Any:
