@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-09-05 |
+| 日期 | 2026-09-09 |
 | 影响范围 | `jiuwen_memory_entry/http_server/`、`jiuwen_memory_entry/cli/`、`jiuwen_memory_entry/core/api_contract.py`、`jiuwen_memory_entry/core/error_response.py`、`docs/specs/S02-memory-api.md` |
 | 测试基线 | entry / common security / API 相关单测 680 项及真实 HTTP 异步写入集成测试 4 项通过，共 684 项；修改的 Python 文件 Ruff、编译及本地 CodeCheck 结构预检通过，未重跑全仓 UT，未执行云端 CodeCheck |
 | Refs | —（如有 issue 补 `Refs: #<n>`） |
@@ -47,8 +47,10 @@ HTTP verb 集合直接取 `MemoryAPI.__abstractmethods__`。每个方法暴露�
 `security` 仍是 `MemoryAPI` 的正式参数，但不是客户端可填写的业务数据。HTTP 从认证头构造
 可信 `RequestSecurityContext`，再以 `security=` 传给同名方法。请求体声明 `security`、
 `actor`、`actor_*` 或其他身份字段时直接拒绝。启动器默认 `required` 且未装配生产安全运行时
-时继续 fail-closed 返回 503；显式 `dev` 模式仅为本地功能测试提供固定具名 ROOT 身份，仍走
-同一认证上下文构造与授权链路。
+时继续 fail-closed 返回 503；显式 `dev` 模式仅供隔离功能测试，默认提供固定具名 ROOT 身份。
+也支持可选的服务端预设身份映射，仍走同一认证上下文构造与授权链路；配置映射后，
+缺失或未知测试标识返回 401。配置方式见
+[Config 指南](../../zh/API文档/config.md#33-http-开发测试配置多个身份)。
 
 HTTP 开发入口装配的是最小 `DevHttpSecurityRuntime`，只提供 dev Authenticator；
 `rate_limiter` / `workload_guard` / surface `audit` 均为空，不是完整生产 `SecurityRuntime`。
@@ -64,7 +66,8 @@ HTTP 开发入口装配的是最小 `DevHttpSecurityRuntime`，只提供 dev Aut
 
 > **危险开关：`JIUWEN_MEMORY_HTTP_ALLOW_DEV_AUTH_NON_LOOPBACK=true`。**
 > 在未注入独立绑定策略时，它显式解除 dev 的非回环绑定限制，不提供认证、TLS 或限流。
-> 任何能连接该 HTTP 服务的人都会使用相同的测试身份，再接受 API 的业务授权判定。
+> 未配置映射时，任何连接者都会使用默认测试身份；配置映射后，持有测试标识者可选择对应
+> 预设身份，再接受 API 的业务授权判定。测试标识不具备生产凭据管理能力。
 > 只允许在部署边界已隔离的测试容器中使用，不能依靠 warning 防止远程访问。
 > 当前记录启动 warning，dev runtime 未装配 surface audit，不产生专门的绑定例外审计事件。
 
@@ -101,8 +104,10 @@ CLI 当前暴露 36 个 API 同名命令；每个方法的参数由签名生成 
 请求结束清理上下文，命令成功或失败均关闭 client/runtime。
 
 方法集合、参数名和声明类型按 API 对齐；API 在类型注解之外接受的运行时扩展仍需单独核对。
-目前写入 `system_metadata.coords` 存在传输解析缺口，见“已知遗留”，不应把方法覆盖理解为
-所有运行时扩展都已验证等价。
+四个记忆新增入口的请求级 `system_metadata.coords` 已支持按 `dict[str, str]` 单独校验，
+其余元数据规则不变。用法与限制见
+[写入归属坐标](../../zh/安装指导/SDK部署.md#写入归属坐标-coords)。
+不应把该局部修复理解为允许任意未声明的运行时扩展。
 
 MCP 和其他旧调用方的 legacy adapter 保留，本次不改它们的协议。这只保证仍调用
 legacy handler 的入口；旧远程客户端不能因此继续使用已升级的 HTTP 协议。
@@ -172,12 +177,6 @@ legacy handler 的入口；旧远程客户端不能因此继续使用已升级�
 - CLI 的生产认证器尚未接入配置装配；程序内可显式注入 Authenticator，命令行功能测试
   使用 `--auth-mode dev`。默认内存后端不会跨 CLI 进程保留记录，连续调用需 batch、持久化后端或常驻 HTTP。
 - 旧 HTTP URL、CLI 命令别名与旧返回 envelope 不保留兼容；调用方需要一次性迁移。
-- 写入归属坐标尚未完成传输对齐：Python API 的 `system_metadata.coords` 运行时允许
-  `dict[str, str]`，但该值不在 `MetadataValueType` 的声明联合类型内。共享 JSON 解码器
-  按注解校验，会在调用 API 前拒绝它；HTTP 返回 400，CLI 也在调用前报参数错误。
-  需要写入归属判定时，目前应直接调用 Python API。检索侧 `Context.extensions` 声明为
-  `dict[str, Any]`，`extensions.coords` 能通过 JSON 解码，不能与写入侧混为一谈。
-  这是当前实现缺口，不是要改变 S02 中归属坐标的目标契约。
 - 本仓库 `jiuwen_memory_adapter/jiuwenswarm/agent_memory_provider.py` 的远程客户端尚未迁移：
   请求仍使用 flat `tenant_id` / `scope` / `k`，响应仍读取 `ok` / `item_id` / `hits`。
   即使启用 dev 认证，它也不能直接连接当前 HTTP；需调用方后续对齐请求和原返回类型。

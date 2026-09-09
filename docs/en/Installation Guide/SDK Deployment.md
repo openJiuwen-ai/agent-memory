@@ -1,6 +1,6 @@
 # SDK Deployment
 
-Last revised: 2026-09-05
+Last revised: 2026-09-09
 
 SDK deployment means installing and assembling `jiuwen_memory` in the consumer's Python process.
 The process can call `MemoryAPI` directly or run a local HTTP service. Storage can use the default
@@ -114,8 +114,8 @@ In another terminal, verify the health endpoint:
 curl http://127.0.0.1:8137/healthz
 ```
 
-`--auth-mode dev` enables a fixed identity authenticator for local functional testing only. It
-ignores authentication headers, creates the server-side ROOT identity
+`--auth-mode dev` enables an authenticator for isolated functional testing only.
+Without `http.dev_identities`, it ignores authentication headers and creates the server-side ROOT identity
 `Scope(org="local", user="developer")`, and still runs `MemoryAPI` authorization. The examples use
 the same Scope as the business target. This mode binds to loopback by default and must not be used
 in production. The request body keeps the parameter structure of the same-named `MemoryAPI` method:
@@ -138,9 +138,16 @@ In `required` mode, the launcher has no production `SecurityRuntimeProducer`, so
 fail closed with 503. Integrating applications should inject a trusted security runtime through
 `HttpServer.build(..., security_runtime=security_runtime)`. This security runtime is not the
 memory-kernel runtime returned by `assemble_runtime()`.
-The development launcher uses a minimal `DevHttpSecurityRuntime` with a fixed-identity authenticator
+The development launcher uses a minimal `DevHttpSecurityRuntime` with a development authenticator
 and no rate limiter, workload guard, or surface audit component. API authorization and business
 auditing still run.
+
+To test administrators, space members, and multiple users, add
+[`http.dev_identities`](<../API Docs/config.md#33-http-development-tests-multiple-identities>) to
+your own configuration and pass its path to the startup script. With a map configured, select an
+identity through `Authorization: Bearer <test-selector>` or `X-API-Key`. Missing or unknown selectors
+return 401 instead of using `developer`. Changing the request body's `scope` does not switch the
+caller, and roles do not bypass space authorization.
 
 The HTTP process assembles one Kernel, so requests share state while the service is running. The
 default in-memory data is lost after the service stops.
@@ -349,9 +356,45 @@ All ordinary methods are exposed, so the choice usually depends on how the appli
 - an asynchronous HTTP route is still a normal request-response operation: the service waits for
   the same-named async method and does not create another job.
 
-Current exception: HTTP/CLI type decoding rejects the object-valued write-side
-`system_metadata.coords` routing extension. Use the Python API directly for that feature; ordinary
-Scope-based writes are unaffected. See [API F05 limitations](../../features/api/F05-http-memory-api-alignment.md#已知遗留).
+### Write Routing Coordinates: `coords`
+
+HTTP/CLI supports request-level `system_metadata.coords` for `add`, `add_async`, `batch_add`, and
+`batch_add_async`. This is transient business context, not ordinary persisted metadata. The parser
+validates it separately as `dict[str, str]` and passes it unchanged to MemoryAPI; other metadata
+keeps its original type validation.
+
+After configuring `test-u1-agent` as above, for example, send this JSON to `POST /v1/add` with
+`Authorization: Bearer test-u1-agent`:
+
+```json
+{
+  "content": "I prefer Python, and our team requires two reviewers for code reviews",
+  "scope": {
+    "org": "local",
+    "user": "u1",
+    "agent": "a1",
+    "session": "s1"
+  },
+  "system_metadata": {
+    "infer": "true",
+    "coords": {
+      "team": "t"
+    }
+  }
+}
+```
+
+This also requires a named-space-capable engine such as `cloud`, space permissions, and a `router`
+declaring the `team` coordinate and memory classes. Create candidate spaces and required memberships
+first. Dev identity configuration does not perform this setup. Actual routing and extraction counts
+depend on the classes and model output; exactly two memories are not guaranteed.
+
+- `coords` accepts `{}` but rejects `null`, arrays, and non-string keys or values. The kernel still
+  validates coordinate and identity restrictions.
+- Batch methods accept it only in the request-level `system_metadata`, not in individual `items`.
+- This does not extend `user_metadata`, `MemoryPatch`, or `check_write`, or allow arbitrary nested metadata.
+- Retrieval still uses `context.extensions.coords`, a different path from writes.
+
 
 ### CLI Uses the Same Parameters
 
@@ -383,8 +426,9 @@ See the [CLI guide](../../../jiuwen_memory_entry/cli/DESIGN.md) for the full par
   claims in the request body are rejected.
 - In the default `required` mode, a launcher without a production authentication runtime returns
   503 and never falls back to an empty or payload-provided identity.
-- `dev` mode fixes the actor to the `local/developer` ROOT identity, ignores authentication headers,
-  but still runs authorization; use it only for functional tests bound to loopback.
+- Without a map, dev uses the fixed `local/developer` ROOT identity; with a map, test selectors
+  choose the identity. Both still run authorization, are for isolated functional tests only,
+  and require loopback binding by default.
 - Production environments should provide a trusted authentication runtime together with TLS, rate
   limiting, timeouts, monitoring, backups, and reliable process management.
 - Before the application exits, call `runtime.close(wait=True)` to wait for and release

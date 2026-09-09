@@ -559,9 +559,12 @@ def test_dev_authentication_accepts_request_without_credentials(dev_http_endpoin
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "::"])
-def test_dev_authentication_rejects_non_loopback_binding(host, binding_httpd) -> None:
+@pytest.mark.parametrize(
+    "identities", [None, {"test-u1": {"actor": {"org": "local", "user": "u1"}}}]
+)
+def test_dev_authentication_rejects_non_loopback_binding(host, identities, binding_httpd) -> None:
     server = HttpServer.build(
-        load_config([OFFLINE]), security_runtime=build_dev_security_runtime()
+        load_config([OFFLINE]), security_runtime=build_dev_security_runtime(identities=identities)
     )
     with pytest.raises(ValidationError, match="loopback"):
         server.serve(host, 8137)
@@ -647,6 +650,37 @@ def test_binding_policy_denial_is_not_overridden_by_dev_flag(binding_httpd) -> N
 
     assert policy.calls == [("0.0.0.0", True)]
     assert binding_httpd == []
+
+
+@pytest.mark.parametrize(
+    "http_settings", [None, [], {"dev_identities": None}, {"dev_identities": {}}]
+)
+def test_invalid_dev_identity_config_rejects_startup_before_binding(
+    http_settings, monkeypatch, binding_httpd
+) -> None:
+    monkeypatch.setattr(http_server_module, "load_layer", lambda _path: {"http": http_settings})
+
+    result = http_server_module.main(["--auth-mode", "dev", "test-config.json"])
+
+    assert result == 2
+    assert binding_httpd == []
+
+
+def test_required_mode_does_not_activate_configured_dev_identities(monkeypatch) -> None:
+    monkeypatch.setattr(http_server_module, "load_layer", lambda _path: {
+        "http": {"dev_identities": {"test-ops": {"actor": {"org": "local"}}}},
+    })
+    observed = []
+
+    def capture_serve(server, host, port, *, allow_dev_non_loopback=False):
+        del host, port, allow_dev_non_loopback
+        observed.append(server.security_runtime)
+        server.close()
+
+    monkeypatch.setattr(HttpServer, "serve", capture_serve)
+
+    assert http_server_module.main(["--auth-mode", "required", "test-config.json"]) == 0
+    assert observed == [None]
 
 
 def test_http_does_not_add_video_specific_add_parameters(http_endpoint) -> None:

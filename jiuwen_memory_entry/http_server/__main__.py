@@ -300,17 +300,23 @@ def main(argv: list[str] | None = None) -> int:
     layers = [OFFLINE]
     for path in args.config:
         layers.append(load_layer(path))
-    security_runtime = None
-    if args.auth_mode == "dev":
-        security_runtime = build_dev_security_runtime()
-        logger.warning(
-            "development authentication is enabled; credentials are ignored and this mode "
-            "must not be used in production"
-        )
-    srv = HttpServer.build(
-        load_config(layers), security_runtime=security_runtime
-    )  # 基类 build → HttpServer 实例
+    config = load_config(layers)
     try:
+        security_runtime = None
+        if args.auth_mode == "dev":
+            http_settings = config.settings.get("http", {})
+            if not isinstance(http_settings, dict):
+                raise ValidationError("http configuration must be an object")
+            if "dev_identities" in http_settings and http_settings["dev_identities"] is None:
+                raise ValidationError("http.dev_identities must not be null")
+            security_runtime = build_dev_security_runtime(
+                identities=http_settings.get("dev_identities")
+            )
+            logger.warning(
+                "development authentication is enabled; identities are for isolated testing "
+                "only and this mode must not be used in production"
+            )
+        srv = HttpServer.build(config, security_runtime=security_runtime)
         srv.serve(
             args.host,
             args.port,

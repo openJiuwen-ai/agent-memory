@@ -22,7 +22,7 @@
 | `memory_api_impl/query_ops.py` | QueryOpsMixin：search/list/get/update/delete/evolve，鉴权后走 Query/Command |
 | `memory_api_impl/admin_ops.py` | AdminOpsMixin：`submit_ingest`、任务、admin、治理、verify_audit、grant/revoke |
 | `memory_api_impl/space_ops.py` | SpaceOpsMixin：Space CRUD；`delete_space` 经 SpaceLifecycleService |
-| `access_security.py` | Access 安全装配辅助：向 HTTP / CLI 入口提供 dev Authenticator，不向接入层暴露 common 实现路径 |
+| `access_security.py` | Access 安全装配辅助：向 HTTP / CLI 入口提供固定身份或预设身份映射的 dev Authenticator，不向接入层暴露 common 实现路径 |
 
 ## 行为铁律
 
@@ -126,4 +126,4 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
 10. 数据面写经 `MemoryCommandService`，查询经 `MemoryQueryService`，治理经 `GovernanceService`，
     Space 删除事务经 `SpaceLifecycleService`。PEP、路由谓词回注、逐条鉴权仍在本层。
     不得把 `_purge_space_memories` 或内联 purge+delete 收回本类。
-11. `build_dev_authenticator()` 只供 HTTP / CLI 本地功能测试装配固定身份；它不是生产认证 runtime，也不改变 `MemoryAPI` 的授权判定。Access 仍只能从 `jiuwen_memory.api` 取得该能力，不得直接 import `common.security.authentication_impl`。
+11. `build_dev_authenticator()` 只供 HTTP / CLI 隔离功能测试装配固定身份或预设身份映射；映射通过可选 `identities` 参数传入，不从业务 scope 推导身份。它不是生产认证 runtime，也不改变 `MemoryAPI` 的授权判定。Access 仍只能从 `jiuwen_memory.api` 取得该能力，不得直接 import `common.security.authentication_impl`。

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,6 +20,8 @@ class DevHttpSecurityRuntime:
     audit: None = None
 
 
-def build_dev_security_runtime() -> DevHttpSecurityRuntime:
-    """构造无凭据校验、无保护组件的 HTTP 开发运行时。"""
-    return DevHttpSecurityRuntime(authenticator=build_dev_authenticator())
+def build_dev_security_runtime(
+    *, identities: Mapping[str, Any] | None = None
+) -> DevHttpSecurityRuntime:
+    """构造固定身份或预设身份映射的 HTTP 开发运行时，不含生产保护组件。"""
+    return DevHttpSecurityRuntime(authenticator=build_dev_authenticator(identities=identities))

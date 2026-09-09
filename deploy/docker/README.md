@@ -128,8 +128,12 @@ JIUWEN_MEMORY_HTTP_AUTH_MODE=dev
 HTTP_BIND_ADDRESS=127.0.0.1
 ```
 
-然后执行 `docker compose up -d --force-recreate agent-memory`。dev 认证固定生成
-`local/developer` ROOT 身份、忽略认证头但仍执行 MemoryAPI 授权，并且不得暴露到共享网络或生产环境。
+然后执行 `docker compose up -d --force-recreate agent-memory`。未配置身份映射时，dev 固定生成
+`local/developer` ROOT 身份、忽略认证头但仍执行 MemoryAPI 授权。
+多用户测试可在挂载配置中加入与 `memory_api` 同级的
+[`http.dev_identities`](../../docs/zh/API文档/config.md#33-http-开发测试配置多个身份)，重建应用容器后，
+用 Bearer 或 X-API-Key 选择预设身份；缺失或未知标识返回 401。下方无 Header 示例适用于未配置映射时。
+两种模式都不得暴露到共享网络或生产环境，映射不替代空间授权和成员配置。
 
 ```bash
 # 健康检查

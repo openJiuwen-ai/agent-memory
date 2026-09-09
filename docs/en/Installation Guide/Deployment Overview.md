@@ -1,6 +1,6 @@
 # Deployment Overview
 
-Last revised: 2026-09-05
+Last revised: 2026-09-09
 
 This document helps users choose how to run agent-memory before proceeding to detailed installation
 instructions. The project currently supports two broad deployment categories: **containerized
@@ -106,9 +106,11 @@ The HTTP boundary performs only the conversions required by JSON:
 Synchronous methods run directly in the request thread. For asynchronous methods, the HTTP entry
 point waits for the same-named async method and returns its original result instead of creating a
 background job. Direct Python calls are generally chosen for in-process latency, static typing, and
-Python objects, not missing ordinary HTTP methods. One current exception is the write-side
-`system_metadata.coords` routing extension: HTTP/CLI decoding rejects its object value, so use the
-Python API directly for routed writes. See [API F05 limitations](../../features/api/F05-http-memory-api-alignment.md#已知遗留).
+Python objects, not missing ordinary HTTP methods. The four add methods (`add`, `add_async`,
+`batch_add`, and `batch_add_async`) also support request-level `system_metadata.coords` objects,
+validated separately as string key-value pairs. Individual batch items cannot carry this key.
+Routing still requires kernel router, space, and permission configuration; see
+[SDK Deployment](<SDK Deployment.md#write-routing-coordinates-coords>).
 
 ### 3.3 Security Boundary of the Current HTTP Service
 
@@ -117,9 +119,11 @@ The repository provides a reference service based on Python's standard-library
 first establish a trusted `RequestSecurityContext`, and the service rejects `security`, `actor_*`,
 `identity`, and similar identity claims in the request body. In the default `required` mode, a
 missing production runtime makes business endpoints return 503 instead of trusting a payload
-identity. Local functional tests may explicitly enable `dev`, which creates the fixed
-`local/developer` ROOT identity on the server. Dev mode ignores authentication headers but still
-runs MemoryAPI authorization.
+identity. Local functional tests may explicitly enable `dev`. Without an identity map it ignores
+authentication headers and uses the fixed `local/developer` ROOT identity. With
+[`http.dev_identities`](<../API Docs/config.md#33-http-development-tests-multiple-identities>),
+Bearer or X-API-Key test selectors choose server-defined identities; missing or unknown selectors
+return 401. Both modes run MemoryAPI authorization and reject payload-provided identity claims.
 
 The standard `HttpServer.serve()` entry point checks the binding before creating the socket.
 Dev mode allows only loopback hosts by default, such as `127.0.0.1`, `::1`, and `localhost`.
@@ -132,9 +136,10 @@ return to `required`, provide a production-grade authentication runtime, add TLS
 and traffic protection at a gateway, and use appropriate process and availability management.
 
 > **Dangerous override:** `JIUWEN_MEMORY_HTTP_ALLOW_DEV_AUTH_NON_LOOPBACK=true` relaxes the
-> dev binding restriction; it does not add credential verification. Anyone who can reach the
-> service uses the same test identity, subject to API authorization. Restrict access through
-> published ports, container networks, and proxies. A startup warning is not an access control.
+> dev binding restriction; it does not add production authentication. Without a map, anyone who
+> connects uses the default test identity. With a map, holders of test selectors can choose the
+> configured identities, subject to API authorization. Restrict published ports, container networks,
+> and proxies. Neither a startup warning nor test identity mapping replaces production security.
 
 ## 4. Access Methods That Are Not Separate Deployment Options
 

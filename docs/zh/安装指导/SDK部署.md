@@ -1,6 +1,6 @@
 # SDK 部署
 
-最近一次修订日期：2026-09-05
+最近一次修订日期：2026-09-09
 
 SDK 部署是指在使用方的 Python 进程中安装和装配 `jiuwen_memory`。运行形态可以是直接调用
 `MemoryAPI`，也可以是在本机启动 HTTP 服务；存储可以使用默认进程内实现，也可以连接由 Docker
@@ -110,7 +110,7 @@ uv run --no-sync -- ./scripts/run-server.sh --auth-mode dev --host 127.0.0.1 --p
 curl http://127.0.0.1:8137/healthz
 ```
 
-`--auth-mode dev` 会启用仅供本地功能测试的固定身份认证器。它忽略认证头，由服务端生成
+`--auth-mode dev` 会启用仅供隔离功能测试的开发认证器。未配置 `http.dev_identities` 时，它忽略认证头，由服务端生成
 `Scope(org="local", user="developer")` 的 ROOT 身份并继续执行 `MemoryAPI` 的授权检查；因此示例把
 业务目标也设为该 Scope。该模式默认只允许绑定回环地址，不得用于生产环境。请求体保持同名
 `MemoryAPI` 方法的参数结构：
@@ -132,8 +132,13 @@ HTTP 认证模式按 `--auth-mode`、环境变量 `JIUWEN_MEMORY_HTTP_AUTH_MODE`
 fail-closed 返回 503；集成应用应通过
 `HttpServer.build(..., security_runtime=security_runtime)` 注入可信认证 runtime。
 这里的 `security_runtime` 是安全组件容器，不是 `assemble_runtime()` 返回的记忆内核运行时。
-开发启动器使用的 `DevHttpSecurityRuntime` 仅带固定身份认证器，不含限流、并发保护或
+开发启动器使用的 `DevHttpSecurityRuntime` 仅带开发认证器，不含限流、并发保护或
 surface 审计组件，但 API 自身的授权与业务审计仍然执行。
+
+需要测试管理员、空间成员和多个用户时，在自己的配置文件中添加
+[`http.dev_identities`](../API文档/config.md#33-http-开发测试配置多个身份)，并把文件路径传给启动脚本。
+配置后通过 `Authorization: Bearer <测试标识>`（或 `X-API-Key`）选择身份；缺失或未知标识
+返回 401，不再使用固定 `developer`。修改请求体 `scope` 不能代替切换身份，角色也不绕过空间授权。
 
 HTTP 进程内只装配一个 Kernel，请求之间能够共享状态；服务停止后，默认内存数据丢失。
 
@@ -328,8 +333,42 @@ HTTP 服务一一公开 `MemoryAPI` 的全部 36 个方法，统一使用 `POST 
 - 需要跨语言或跨进程访问时，使用 HTTP；
 - 调用异步 HTTP 路由仍是一次普通请求—响应，服务会等待同名异步方法完成，不额外生成 job。
 
-当前例外：写入 `system_metadata.coords` 的归属判定扩展仍会被 HTTP/CLI 的类型解析拒绝，
-需要直接调用 Python API；这不影响常规 Scope 写入。详见 [API F05 已知遗留](../../features/api/F05-http-memory-api-alignment.md#已知遗留)。
+### 写入归属坐标 `coords`
+
+HTTP/CLI 已支持 `add`、`add_async`、`batch_add`、`batch_add_async` 的请求级
+`system_metadata.coords`。它是临时的业务上下文，不是普通落盘元数据：解析层单独按
+`dict[str, str]` 校验后原样传给 MemoryAPI，其余元数据继续按原类型校验。
+
+例如，按上文配置 `test-u1-agent` 后，向 `POST /v1/add` 发送
+`Authorization: Bearer test-u1-agent` 和以下 JSON：
+
+```json
+{
+  "content": "我习惯用 Python 写代码，另外我们团队规定代码评审必须两人",
+  "scope": {
+    "org": "local",
+    "user": "u1",
+    "agent": "a1",
+    "session": "s1"
+  },
+  "system_metadata": {
+    "infer": "true",
+    "coords": {
+      "team": "t"
+    }
+  }
+}
+```
+
+此例还需配置支持具名空间的引擎（如 `cloud`）、空间权限，以及声明 `team` 坐标和记忆类别的
+`router`，并预先创建候选空间、添加所需成员。仅配置 dev 身份不会完成这些准备；
+实际归属和提取数量由类别配置与模型结果决定，不保证固定产生两条记忆。
+
+- `coords` 允许空对象 `{}`，拒绝 `null`、数组及非字符串键值；内核继续校验坐标与身份限制。
+- 批量接口把它放在整个请求的 `system_metadata` 中，不能放在 `items` 每项的元数据中。
+- 不扩展 `user_metadata`、`MemoryPatch` 或 `check_write` 的能力，也不允许任意嵌套元数据。
+- 检索仍使用 `context.extensions.coords`，不是写入的字段路径。
+
 
 ### CLI 使用同一套参数
 
@@ -353,7 +392,8 @@ uv run --no-sync -- ./scripts/run-cli.sh --auth-mode dev add \
 - 开发环境建议绑定 `127.0.0.1`，不要直接把参考 HTTP 服务暴露到公网；
 - HTTP actor 仅来自认证上下文，请求体中的 `actor_*`、`identity` 等身份声明会被拒绝；
 - 默认 `required` 模式未装配生产认证 runtime 时返回 503，不会降级采用空身份或请求体身份；
-- `dev` 模式固定使用 `local/developer` ROOT 身份、忽略认证头但仍执行授权，仅限回环地址上的功能测试；
+- `dev` 未配置映射时使用固定 `local/developer` ROOT 身份，配置映射后按测试标识选择身份；
+  两种模式都执行授权，仅供隔离功能测试，默认要求回环绑定；
 - 生产场景应提供可信认证 runtime，并增加 TLS、限流、超时、监控、备份和可靠的进程管理；
 - 应用退出前应调用 `runtime.close(wait=True)`，等待并释放进程内摄入任务线程池。
 
