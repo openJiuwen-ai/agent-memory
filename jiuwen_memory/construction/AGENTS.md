@@ -36,7 +36,7 @@ Dedup、LayerAnnotator、HierarchyComposer 与 Evolver（默认 `OrchestratingEv
 | `layer_annotator_impl/` | LayerAnnotator 实现目录（keyword / llm）；evolver 抽取后调用，对超阈 content 标注 L0/L1 |
 | `dedup_impl/` | Dedup 实现目录（vector / keyword） |
 | `evolver_impl/` | Evolver 实现目录（orchestrating=legacy / dynamic=动态 prompt 四步 / schema_orchestrating=Source-first Schema 属性抽取） |
-| `hierarchy_composer_impl/` | `default_composer.py`（候选校验与分层提交）、`time_pipeline.py`（snapshot→time_span）、`scene_pipeline.py`（time_span→scene）、`time_hierarchy_pipeline.py`（先结构后摘要编排）、`parent_enrichment.py`（显式模型摘要/父标注）、`profile_config.py`（TIME 两/三层配置解析） |
+| `hierarchy_composer_impl/` | `default_composer.py`（候选校验与分层提交）、`time_pipeline.py`（snapshot→time_span）、`scene_pipeline.py`（time_span→scene）、`event_pipeline.py`（scene→event）、`grouping_support.py`（共享正文选择/相邻余弦）、`time_hierarchy_pipeline.py`（先结构后摘要编排）、`parent_enrichment.py`（显式模型摘要/父标注）、`profile_config.py`（TIME 两/三/四层配置解析） |
 | `bootstrap.py` | 统一触发所有构建算子注册（含 dedup_impl、hierarchy_composer_impl） |
 | `schema_bootstrap.py` | 由统一 assembly 在 Schema 开关开启时内部调用，注册 Schema Extractor/Evolver target；不是独立公共装配入口 |
 
@@ -66,7 +66,7 @@ Evolver.evolve(EvolveRequest(units, mode)):
                IndexBuilder.update(mode=FORWARD_ONLY) 回写本体 +
                IndexBuilder.remove(mode=SOFT) 移出检索
   HIERARCHY  → 显式内部请求：HierarchyComposer.replace_in_span
-               → TIME snapshot→time_span→可选 scene → 父摘要/标注 → 候选树校验
+               → TIME snapshot→time_span→可选 scene→可选 event → 父摘要/标注 → 候选树校验
                → 经 IndexBuilder 分阶段保存
 ```
 
@@ -167,12 +167,12 @@ Evolver.evolve(EvolveRequest(units, mode)):
     `user_metadata` 同名键。投影不等于建树、查询贯通或已实现 rebuild 恢复。
 
 17. **Composer 只处理显式输入，不扫描数据库**
-    只接受 ACTIVE 的 TIME snapshot 与待替换 time_span/scene。请求必须备齐相交旧根
+    只接受 ACTIVE 的 TIME snapshot 与待替换 time_span/scene/event。请求必须备齐相交旧根
     全部父层与叶；不补齐缺失节点、不暗中扩大查询范围。先在副本上生成并校验候选，再写存储。
     叶的正文、时间、tier、来源和生命周期不变，只有 hierarchy 父边改变。
 
 18. **Composer 只经 IndexBuilder 按可恢复顺序写入**
-    新父本体按 scene→time_span 分层 build(FORWARD_ONLY) → 子边 update(FORWARD_ONLY)
+    新父本体按 event→scene→time_span 分层 build(FORWARD_ONLY) → 子边 update(FORWARD_ONLY)
     → 旧父归档并清边
     update(FORWARD_ONLY) → 旧父 remove(SOFT) → 新父与子补建/更新 RETRIEVAL_ONLY。
     本体阶段失败即停；索引阶段保留逐项 repair 报告。失败不承诺回滚或自动修复，也不硬删叶。
@@ -180,8 +180,9 @@ Evolver.evolve(EvolveRequest(units, mode)):
 19. **TIME 先确定结构，再增强父内容**
     snapshot 按 UTC span_start、t_event、输入序稳定排序，按会话/配置上下文/相邻 span
     间隔和结束信号切分；scene 按上下文、结束信号、累计跨度及显式可选相邻向量相似度切分。
-    session 不切 scene，模型摘要不得影响分组。新父默认摘录；显式配置 LLM/LayerAnnotator
-    时才生成摘要/L0/L1，运行期内容增强失败安全降级、不重写 snapshot。event、settle 与
+    event 按上下文、可选实体重叠和相邻向量相似度分组，无时长上限，不重组非相邻场景。
+    session 不切 scene/event，模型摘要不得影响分组。新父默认摘录；显式配置 LLM/LayerAnnotator
+    时才生成摘要/L0/L1，运行期内容增强失败安全降级、不重写 snapshot。settle 与
     自动派生未接入，不得静默接受这些选项。
 
 ## 与其他子目录的边界
@@ -233,5 +234,5 @@ Evolver.evolve(EvolveRequest(units, mode)):
 11. `HierarchyComposerProducer` 的命名空间是 `hierarchy_composer`，当前 target 为 `default`。
     Evolver 只有显式配置 `params.hierarchy_composer` 时才注入，未配置不影响普通写入。
     Composer 必须显式注入与叶写入路径相同的具名 index_builder，读取 hierarchy_profiles 的
-    TIME 两/三层配置及 allow_cross_user。可选 embedder/llm/layer_annotator 必须显式声明；
+    TIME 两/三/四层配置及 allow_cross_user。可选 embedder/llm/layer_annotator 必须显式声明；
     不回落占位模型，开启相应能力却缺依赖时装配失败。

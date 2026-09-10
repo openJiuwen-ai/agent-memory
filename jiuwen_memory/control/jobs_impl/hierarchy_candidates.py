@@ -20,7 +20,11 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.common.type_def.hierarchy import validate_ref
 from jiuwen_memory.common.type_def.memory_codec import loads
-from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
+from jiuwen_memory.construction.hierarchy_composer import (
+    TIME_CHILD_ROLES,
+    TIME_PARENT_ROLES,
+    HierarchyComposeOptions,
+)
 from jiuwen_memory.control.evolution.validation import scope_contains
 from jiuwen_memory.storage.kv import KVStore
 
@@ -46,7 +50,7 @@ class HierarchyJobLimits:
 
 @dataclass
 class HierarchyCandidates:
-    """备齐的两/三层候选；同名 id 按完整 Scope 区分。"""
+    """备齐的两/三/四层候选；同名 id 按完整 Scope 区分。"""
 
     leaves: dict[NodeKey, MemoryUnit] = field(default_factory=dict)
     parents: dict[NodeKey, MemoryUnit] = field(default_factory=dict)
@@ -144,11 +148,11 @@ def _select(
             raise ValidationError("snapshot has parent_scope without parent_id")
         else:
             candidates.leaves[node_key(unit)] = unit
-    elif unit.hierarchy.role in (HierarchyRole.TIME_SPAN, HierarchyRole.SCENE) and (
+    elif unit.hierarchy.role in TIME_PARENT_ROLES and (
         unit.scope == options.tree_home_scope
     ):
-        if unit.hierarchy.role is HierarchyRole.SCENE and unit.hierarchy.parent_id:
-            raise ValidationError("TIME scene candidates must be root nodes; event is unsupported")
+        if unit.hierarchy.role is HierarchyRole.EVENT and unit.hierarchy.parent_id:
+            raise ValidationError("TIME event candidates must be root nodes")
         if not unit.hierarchy.parent_id and unit.hierarchy.parent_scope is not None:
             raise ValidationError("TIME parent_scope requires parent_id")
         if not unit.hierarchy.child_ids:
@@ -159,8 +163,8 @@ def _select(
 def _check_limit(candidates: HierarchyCandidates, max_leaves: int) -> None:
     if len(candidates.leaves) > max_leaves:
         raise ValidationError(f"hierarchy candidate leaves exceed max_leaves={max_leaves}")
-    if len(candidates.parents) > 2 * max_leaves:
-        raise ValidationError(f"hierarchy candidate parents exceed 2 * max_leaves={max_leaves}")
+    if len(candidates.parents) > len(TIME_PARENT_ROLES) * max_leaves:
+        raise ValidationError(f"hierarchy candidate parents exceed 3 * max_leaves={max_leaves}")
 
 
 def _child_requests(
@@ -173,8 +177,8 @@ def _child_requests(
             child_scope = parent.hierarchy.child_scope_at(index, parent.scope)
             if not scope_contains(home, child_scope):
                 raise ValidationError("hierarchy child reference is outside the authorized Scope")
-            if parent.hierarchy.role is HierarchyRole.SCENE and child_scope != home:
-                raise ValidationError("scene child time_span must reside in exact tree_home_scope")
+            if parent.hierarchy.role is not HierarchyRole.TIME_SPAN and child_scope != home:
+                raise ValidationError("parent child must reside in exact tree_home_scope")
             entry = requests.setdefault(scope_key(child_scope), (child_scope, {}))
             if child_id in entry[1]:
                 raise ValidationError("hierarchy child is claimed by more than one old parent")
@@ -186,9 +190,9 @@ def _complete_children(
     kv: KVStore, candidates: HierarchyCandidates, options: HierarchyComposeOptions,
     limits: HierarchyJobLimits,
 ) -> None:
-    # 对已列出的全部边先校验，再按 scene→time_span→snapshot 补齐；不越过授权边界点读。
+    # 先校验已列出的全部边，再按 event→scene→time_span→snapshot 补齐；不越权点读。
     _child_requests(candidates.parents, options.tree_home_scope)
-    for role in (HierarchyRole.SCENE, HierarchyRole.TIME_SPAN):
+    for role in reversed(TIME_PARENT_ROLES):
         level = {key: parent for key, parent in candidates.parents.items()
                  if parent.hierarchy.role is role}
         requests = _child_requests(level, options.tree_home_scope)
@@ -239,19 +243,16 @@ def _validate_complete(candidates: HierarchyCandidates) -> None:
             continue
         parent_scope = parent.hierarchy.resolved_parent_scope(parent.scope)
         root = candidates.parents.get((scope_key(parent_scope), parent.hierarchy.parent_id))
-        if root is None or root.hierarchy.role is not HierarchyRole.SCENE:
-            raise ValidationError("time_span references an unknown or unsupported scene parent")
+        if root is None or TIME_CHILD_ROLES.get(root.hierarchy.role) is not parent.hierarchy.role:
+            raise ValidationError("TIME node references an unknown or unsupported parent")
         declared = {(scope_key(root.hierarchy.child_scope_at(position, root.scope)), uid)
                     for position, uid in enumerate(root.hierarchy.child_ids)}
         if node_key(parent) not in declared:
-            raise ValidationError("scene does not declare the referencing time_span child")
+            raise ValidationError("TIME parent does not declare the referencing child")
 
 
 def _validate_child(child: MemoryUnit, parent: MemoryUnit) -> None:
-    expected_role = (
-        HierarchyRole.SNAPSHOT if parent.hierarchy.role is HierarchyRole.TIME_SPAN
-        else HierarchyRole.TIME_SPAN
-    )
+    expected_role = TIME_CHILD_ROLES[parent.hierarchy.role]
     if not _active_time(child) or child.hierarchy.role is not expected_role:
         raise ValidationError("hierarchy old parent child has an inactive or invalid TIME role")
     validate_ref(child.hierarchy, unit_id=child.id)
@@ -259,7 +260,7 @@ def _validate_child(child: MemoryUnit, parent: MemoryUnit) -> None:
         if child.hierarchy.child_ids or child.hierarchy.child_scopes:
             raise ValidationError("snapshot child must not contain child references")
     elif not child.hierarchy.child_ids:
-        raise ValidationError("time_span child must contain snapshots")
+        raise ValidationError("TIME parent child must contain its direct children")
     if (
         child.hierarchy.parent_id != parent.id
         or child.hierarchy.resolved_parent_scope(child.scope) != parent.scope
@@ -275,7 +276,7 @@ def _validate_child(child: MemoryUnit, parent: MemoryUnit) -> None:
 def collect_candidates(
     kv: KVStore, scope: Scope, options: HierarchyComposeOptions, limits: HierarchyJobLimits,
 ) -> HierarchyCandidates:
-    """完整分页收集新叶与相交旧根，补齐 scene→time_span→snapshot 整棵旧子树。"""
+    """完整分页收集新叶与相交旧根，补齐 event→scene→time_span→snapshot 整棵旧子树。"""
     scoped: dict[ScopeKey, Scope] = {scope_key(scope): scope}
     for stored_scope in kv.scopes():
         if scope_contains(scope, stored_scope):

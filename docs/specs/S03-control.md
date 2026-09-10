@@ -141,7 +141,7 @@ Engine 组装 RawPayload（含 assets 的防御性副本）
 Engine 与各 Job 调用内部 Evolver 时仍统一构造 `EvolveRequest`；公开任务的
 `EvolveTaskOptions` 只封装模式、通道与建树选项，不承载调用方提供的 MemoryUnit 列表。
 
-### 显式 TIME 两/三层建树（阶段 3、7）
+### 显式 TIME 两/三/四层建树（阶段 3、7、8）
 
 ```python
 @dataclass(frozen=True)
@@ -157,7 +157,7 @@ EvolveJob；HIERARCHY 不经普通内容抽取任务，不从 messages 重新提
 
 #### 范围、候选与完整性
 
-- 支持 TIME、叶 SNAPSHOT、父角色列表 [TIME_SPAN] 或 [TIME_SPAN, SCENE]，
+- 支持 TIME、叶 SNAPSHOT、父角色列表为 [TIME_SPAN, SCENE, EVENT] 的非空前缀，
   起止时间必须成对、有界、开始不晚于结束。
   naive datetime 按 UTC 解释；候选按闭区间相交判断。任务 Scope 与 tree_home_scope 必须完全相等。
 - org/space 必须精确相同，包括空字符串；home 的非空 user/agent/session 也必须匹配。
@@ -165,20 +165,21 @@ EvolveJob；HIERARCHY 不经普通内容抽取任务，不从 messages 重新提
   仍不跨 session；scene 可以收拢多个 session 的 time_span。父驻留在指定的较粗
   home Scope，而不是某个子 session。
 - 只读取 `/memory/` 的 ACTIVE 生命周期、ACTIVE 结构、TIME 节点：收集窗口内无父
-  snapshot，以及驻留 home 且与窗口相交的旧 time_span/scene。沿 scene→time_span→snapshot
-  补齐完整旧子树，即使某个兄弟 time_span 或 snapshot 在窗口外也须参与重建；区间落在
-  scene 的子片段间隙时同样重建整棵子树。不按 infer true/false 过滤，不读取 `/messages/`。
+  snapshot，以及驻留 home 且与窗口相交的旧 time_span/scene/event。
+  沿 event→scene→time_span→snapshot 补齐完整旧子树，即使某个兄弟 scene、time_span
+  或 snapshot 在窗口外也须参与重建；区间落在 event/scene 的子节点间隙时同样重建
+  整棵子树。不按 infer true/false 过滤，不读取 `/messages/`。
 - 先完整枚举范围内的精确 Scope，再逐 Scope 分页；count 变化、重复键、提前空页或结果
   超出声明数目均失败。旧父子引用先全量验证 Scope 边界，再按精确 Scope 分批 mget。
-  scene 的 time_span 子必须精确驻留 home。缺子、非法身份、多个旧父声称同一子、
-  反向父引用不符或父不覆盖子区间均失败；旧树引用 event 等未支持父层也失败。
+  event 的 scene 子和 scene 的 time_span 子必须精确驻留 home。缺子、非法身份、
+  多个旧父声称同一子、反向父引用不符或父不覆盖子区间均失败；event 带父引用也失败。
 - 存在旧父时，在范围内再次流式扫描反向引用：区间外节点若仍指向待退役父但未被
   子列表列出，或外部旧父声明占有所选节点，均在写前拒绝，避免留下半棵旧树。
   这会额外扫描一次已授权真源范围，不缓存整个范围，也不扩展 Scope。
 - 无父新叶与旧父全部子叶的并集受 max_leaves 保护；超限拒绝，不以截断后的输入继续。
   窗口内已挂父的叶也必须能够在选定旧父及补齐子集中闭合。没有候选是成功空操作。
-  两层派生父数量最多为 2 × max_leaves；补齐中间层也受 max_leaves 保护，超限即失败。
-  两层旧树可升级为三层；较短角色链不能降级已有 scene 子树。
+  三层派生父数量最多为 3 × max_leaves；补齐各中间层及无父新叶之和也受 max_leaves
+  保护，超限即失败。两/三层旧树可升级；较短角色链不能降级已有 scene/event 子树。
 - 跨 user/agent 的结构限制仍由 Composer 校验及其显式 allow_cross_user 配置约束；
   home 中空维度的读取范围不等于自动获得跨主体建边能力。
 
@@ -618,6 +619,7 @@ jiuwen_memory/control/<算子>_impl/
 
 ## 修订记录
 
+- 2026-09-10：阶段 8 开放 event 四层 TIME 任务与完整旧子树补齐，新增根约束和三层父数量上限；保留统一请求、Scope、锁及部分失败边界。
 - 2026-09-10：阶段 7 开放三层 TIME 任务与完整 scene 子树补齐、写前反向引用核对；保留 Scope/锁/限额/失败语义和统一任务对象。
 - 2026-09-10：阶段 6 在每个空间的 Retriever 内完成上卷，沿用现有跨空间合并；MaxP 固定，不新增 score_propagation 策略键。
 - 2026-09-10：阶段 5 跨空间 recall 延迟展开，先全局选根、再交检索层共享预算收尾；控制层不持有数据面或执行展开算法，自动建树/ensure 仍未实现。

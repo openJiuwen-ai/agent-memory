@@ -231,7 +231,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | `get` | 按 id 读取记忆单元；`as_of` 非空时沿 `supersedes` 版本链返回当时有效版本；不存在抛 `NotFoundError` | `unit_id: str`；`scope: Scope`；`*`；`security: RequestSecurityContext`；`as_of: datetime \| None = None` | `MemoryUnit` |
 | `update` | 修正记忆（仅非 None 字段生效）：`patch.mode` = **SUPERSEDE**（默认、非破坏式：生成新 id 版本、旧版标记 superseded、新版 `supersedes` 记链）/ **OVERWRITE**（同 id 原地覆写、旧内容仅留审计）。`system_metadata` / `user_metadata` 分别合并 | `unit_id: str`；`scope: Scope`；`patch: MemoryPatch`；`*`；`security: RequestSecurityContext` | `MemoryUnit` |
 | `delete` | 按选择器（id / scope / 标签 / 时间，条件取「与」，至少一项）批量执行；`mode` = forget 遗忘 / archive 归档 / downweight 降权（均非破坏式）/ **purge 完全删除**（物理删除真源与全部派生索引，合规删除、不可恢复、仅留审计记录）；返回命中的 id。未给 `selector.scope` 时鉴权退到根 scope | `selector: DeleteSelector`；`*`；`security: RequestSecurityContext` | `list[str]` |
-| `evolve` | 显式触发内容演进或 TIME snapshot→time_span→可选 scene 建树/重建，经控制层 Scheduler 调度，返回任务 id；不自动建树，索引维护仍随数据面操作跟进 | `scope: Scope`；`options: EvolveTaskOptions`（mode / channel / hierarchy_options）；`*`；`security: RequestSecurityContext` | `str`（job id） |
+| `evolve` | 显式触发内容演进或 TIME snapshot→time_span→可选 scene→可选 event 建树/重建，经控制层 Scheduler 调度，返回任务 id；不自动建树，索引维护仍随数据面操作跟进 | `scope: Scope`；`options: EvolveTaskOptions`（mode / channel / hierarchy_options）；`*`；`security: RequestSecurityContext` | `str`（job id） |
 | `job_status` | 查询演进任务或长耗时 Ingest 任务（委托 Scheduler / Ingest 任务表）。Ingest 任务要求传入 target `scope`；API 对任务真实 Scope 执行 READ 鉴权与审计 | `job_id: str`；`*`；`security: RequestSecurityContext`；`scope: Scope \| None = None` | `JobInfo` |
 | `job_cancel` | 取消尚未完成的演进任务（幂等，委托 Scheduler） | `job_id: str`；`*`；`security: RequestSecurityContext` | `None` |
 | `inspect` | 治理·检视：读取完整内容与治理字段（含已失效版本，委托 Governor） | `unit_ids: list[str]`；`scope: Scope`；`*`；`security: RequestSecurityContext` | `list[MemoryUnit]` |
@@ -333,8 +333,8 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | **多维分类**  | 按主题/认知角色/来源/重要度等多维度归类      | 认知角色（working/core/episodic/semantic/procedural/archival）是其中一维，决定常驻上下文 or 按需检索 |
 | **同 unit 内容层标注** | `LayerAnnotator` 生成 L0 概要 / L1 片段；L2 复用全文 | 已接 EXTRACT/CONSOLIDATE 派生 unit；Composer 可显式注入，只标注新父且在持久化前完成 |
 | **时间字段**         | 有效期、时间点、事件先后                                                 | 双时间模型，支持历史回溯与非破坏式更新                                                           |
-| **树结构构建（两/三层 TIME 已实现）** | `HierarchyComposer` 从 snapshot 生成 time_span、可选 scene 和双向父子引用；完整替换旧子树 | event 和其他 kind 算法仍为目标，共享树校验与叶权威约束 |
-| **TIME 树管线（已实现至 scene）** | `TimeHierarchyPipeline` 先确定分组与结构，再生成可选父摘要和 L0/L1 | 分组使用规则/可选相邻向量相似度，不消费 LLM 摘要；`HierarchyRef.span_*` 表示覆盖区间 |
+| **树结构构建（两/三/四层 TIME 已实现）** | `HierarchyComposer` 从 snapshot 生成 time_span、可选 scene/event 和双向父子引用；完整替换旧子树 | 其他 kind 算法仍为目标，共享树校验与叶权威约束 |
+| **TIME 树管线（已实现至 event）** | `TimeHierarchyPipeline` 先确定分组与结构，再生成可选父摘要和 L0/L1 | 分组使用规则、event 可选实体重叠、可选相邻向量相似度，不消费 LLM 摘要；`HierarchyRef.span_*` 表示覆盖区间 |
 
 ### 9.2 多形式索引：文档 / 关键词 / 向量 / 图
 
@@ -366,7 +366,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 - **写入触发**：新内容写入后，hot path 做低时延落盘与轻量索引；需要重推理的抽取、关联、升华与冲突消解进入 background。
 - **周期触发**：按策略对过期、低价值或长期未访问记忆做降权、归档或遗忘（非破坏式，保留血缘）。
-- **显式触发**：调用方通过 `evolve(scope, EvolveTaskOptions(...), security=...)` 触发指定模式。当前 HIERARCHY 仅构建 snapshot→time_span，API 执行 WRITE+UPDATE 与空间 UPDATE 判权，再由 Control 完整收齐有界候选、旧父及其全部子叶。旧独立 mode/channel 调用不兼容；请求示例见 S02。
+- **显式触发**：调用方通过 `evolve(scope, EvolveTaskOptions(...), security=...)` 触发指定模式。当前 HIERARCHY 支持 snapshot→time_span→scene→event 的两/三/四层前缀，API 执行 WRITE+UPDATE 与空间 UPDATE 判权，再由 Control 完整收齐有界候选、旧根及其全部父层/叶。旧独立 mode/channel 调用不兼容；请求示例见 S02。
 - **双通道**：
   - **Hot path（在线）**：低时延的即时记忆写入与轻量更新。
   - **Background（离线）**：异步做重的抽取/升华/重索引，不阻塞主链路。
@@ -376,7 +376,8 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 显式建树是当前交付，写后自动派生、周期建树和召回时 ensure 均未交付。默认策略
 hierarchy.enabled=false；只开启策略不发起任务。每次任务可读取多个 session，但
 TimeSpanMerger 按 session 分组，单个 time_span 不跨 session；scene 可按上下文、结束
-信号、累计跨度及可选相似度收拢多个 session。重建补齐旧 scene 的全部父层和叶，
+信号、累计跨度及可选相似度收拢多个 session。event 按上下文、可选实体重叠/语义相似度
+收拢相邻 scene，无时长上限；默认判据关闭不等于已识别同一任务。重建补齐旧根全部父层和叶，
 写前核对反向引用，避免遗漏区间外兄弟节点。可选锁覆盖完整取数
 至构建，不提供事务回滚或自动修复；任务状态忠实报告 partial failure。
 BACKGROUND 只是通道标签：in_process 等待执行，async_timer 的持续异步执行需宿主持有

@@ -18,10 +18,23 @@ from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import ChatMessage, ContentLayers, HierarchyRole, MemoryUnit
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator
 
-from .scene_pipeline import semantic_text
+from .grouping_support import semantic_text
 from .time_pipeline import excerpt
 
 logger = get_logger(__name__)
+SUMMARY_FIELDS = {
+    HierarchyRole.TIME_SPAN: (("summary", ""),),
+    HierarchyRole.SCENE: (("goal", "目标"), ("actions", "行动"), ("outcome", "结果")),
+    HierarchyRole.EVENT: (("pattern", "任务模式"), ("steps", "步骤"), ("outcome", "结果")),
+}
+SUMMARY_INSTRUCTIONS = {
+    HierarchyRole.TIME_SPAN: "Summarize one continuous activity.",
+    HierarchyRole.SCENE: "Summarize one reviewable scene: its goal, actions and outcome.",
+    HierarchyRole.EVENT: (
+        "Summarize the observed task pattern, steps and outcome across these adjacent scenes. "
+        "Do not claim a common task, reusable skill or causal link without supporting evidence."
+    ),
+}
 
 
 @dataclass
@@ -48,13 +61,8 @@ def summarize_parent(
     """仅覆盖父正文，JSON 不合规或模型失败时保留原摘录。"""
     if options.mode != "llm" or llm is None:
         return
-    fields = (("summary", ""),) if parent.hierarchy.role is HierarchyRole.TIME_SPAN else (
-        ("goal", "目标"), ("actions", "行动"), ("outcome", "结果"),
-    )
-    instruction = (
-        "Summarize one continuous activity." if len(fields) == 1 else
-        "Summarize one reviewable scene: its goal, actions and outcome."
-    )
+    fields = SUMMARY_FIELDS[parent.hierarchy.role]
+    instruction = SUMMARY_INSTRUCTIONS[parent.hierarchy.role]
     schema = {field_name: "nonempty string" for field_name, _ in fields}
     system = (
         f"{instruction} Return ONLY a JSON object matching {json.dumps(schema)}. "

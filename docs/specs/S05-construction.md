@@ -343,12 +343,13 @@ hierarchy metadata 的精确键、空值和区间表示由
 metadata 一致投影到已启用的 L0/L1/L2 索引记录；索引是派生物，必须可从 KV 中的
 `MemoryUnit` 重建。
 
-### HierarchyComposer（TIME 两/三层构建）
+### HierarchyComposer（TIME 两/三/四层构建）
 
 `HierarchyComposer` 与 `Extractor` / `Abstractor` 等并列，同属 `ConstructionOperator`：
 执行建树/区间替换，或由内部 Evolver 的 HIERARCHY 分派调用；不自行鉴权、查库、提交
-后台任务，也不替代 IndexBuilder。支持 TIME 的 snapshot→time_span→scene，scene
-可省略；公开任务由 Control 收齐候选、旧根及完整子树后进入本层，API/Job 契约见 S02/S03。
+后台任务，也不替代 IndexBuilder。支持 TIME 的 snapshot→time_span→scene→event，
+请求可选截至 time_span、scene 或 event 的连续前缀；公开任务由 Control 收齐候选、
+旧根及完整子树后进入本层，API/Job 契约见 S02/S03。
 
 ```python
 @dataclass(frozen=True)
@@ -397,19 +398,20 @@ class HierarchyComposer(ConstructionOperator):
 #### 输入、范围与替换边界
 
 `leaves` 必须非空，每个节点均为生命周期与结构状态 ACTIVE 的 TIME/snapshot；
-`existing_parents` 包含 ACTIVE 的 TIME/time_span、scene，均驻留在 `tree_home_scope`
-且具有直接子节点；scene 必须为根，time_span 可为根或 scene 的直接子。
+`existing_parents` 包含 ACTIVE 的 TIME/time_span、scene、event，均驻留在 `tree_home_scope`
+且具有直接子节点；event 必须为根，scene 可为根或 event 的子，time_span 可为根或 scene 的子。
 节点以完整 Scope + id 去重；同名 id 位于不同 Scope 不算重复。
 kind/role 必须使用 S07 枚举，当前 options 固定 `leaf_role=SNAPSHOT`、
-`parent_roles=[TIME_SPAN]` 或 `[TIME_SPAN, SCENE]`；严格使用枚举和顺序。
+`parent_roles` 是 `[TIME_SPAN, SCENE, EVENT]` 的非空前缀；严格使用枚举和顺序。
 其他 kind、跳层/逆序/空父角色序列拒绝。
 
 `build` 仅用于首次挂接：不接受旧父或已有父引用。请求区间可整体省略；若给出，必须
 成对有效，且每个输入叶与区间相交。`replace_in_span` 必须给出成对有界区间，已提供
 旧根必须与区间相交，并带齐其全部父层和 snapshot，所有引用在输入集合内闭合，
-scene 只能接 time_span，time_span 只能接 snapshot。旧根内部的父/叶可在请求窗口外，
+event 只能接 scene，scene 只能接 time_span，time_span 只能接 snapshot。
+旧根内部的父/叶可在请求窗口外，
 但 Composer 不自动查询补齐；缺任一节点时在写入前拒绝。未挂接叶仍须与请求区间相交。
-支持把完整两层旧树重建为三层；不允许用两层请求降级已有 scene 子树，避免隐式删层。
+支持把完整两/三层旧树重建为更长的受支持链；不允许以较短请求降级已有父层，避免隐式删层。
 
 Composer 不能证明调用方没有遗漏数据库中的其他旧父或叶，范围选择的完整性由调用方
 负责。它只在输入副本上生成候选，校验失败不修改输入对象、不写存储。候选树再经
@@ -444,11 +446,22 @@ session 变化不是 scene 边界；默认 86400 秒是滚动跨度而非自然�
 scene 的 boundary/end-signal 键同时下传给 TimeSpanMerger，避免底层合并丢失切点；
 结束信号只上提组尾值。信号按系统字段非空判断，不作自然语言或字符串布尔推断。
 
+event 在稳定排序的 scene 上，按相邻系统上下文变化、可选实体重叠低于阈值、可选
+相邻余弦低于阈值切分，任一命中即切；不设置时长或自然日限制，不跨过中间节点重组。
+实体重叠为 `|A∩B| / min(|A|, |B|)`，A/B 为相邻 scene 的去重实体集合；任侧为空则
+本判据不触发，恰等于阈值不切。全部判据关闭时，选定范围内所有 scene 为一个 event，
+这不证明它们属于同一任务。event 的 boundary/carry 键逐级下传至 scene 和 time_span，
+防止上下文切点丢失；实体和相似度判据只在已形成的相邻 scene 上生效，不重切原子 scene。
+event 生成 PROCEDURAL 父，正文表头统计直接 scene 及其 time_span 数量；这是分类约定，
+不证明可复用技能已形成。event_type/template_id/confidence 等业务键不自动生成，
+只按请求 metadata 或显式 carry 键传播；LLM 无权回填这些系统字段。
+
 `HierarchyComposeProfile` 承载装配时固定的树形配置。当前 `hierarchy_profiles` 只接受
-`time`，其 leaf_role 缺省为 snapshot，parent_roles 显式为 `[time_span]` 或
-`[time_span, scene]`；单次请求可用配置链的短前缀，但不能超出配置上限。
-未配置 profile 时，两种链都可用算法默认值；运行时 Policy 不修改 profile。
-stage_options 接受 `TimeSpanMerger` 和 `SceneSegmenter`（后者要求配置链包含 scene）。
+`time`，其 leaf_role 缺省为 snapshot，parent_roles 显式为 `[time_span, scene, event]`
+的非空前缀；单次请求可用配置链的短前缀，但不能超出配置上限。
+未配置 profile 时，三种链都可用算法默认值；运行时 Policy 不修改 profile。
+stage_options 接受 `TimeSpanMerger`、`SceneSegmenter`、`EventBuilder`；后两者分别
+要求配置链包含 scene、event。
 TimeSpanMerger 内层配置如下：
 
 | 选项 | 默认 | 约束 |
@@ -471,15 +484,26 @@ summary_mode 同上；其余配置为：
 | summary_max_children | 20 | 正整数；摘要输入最多片段数 |
 | summary_max_chars_per_child | 80 | 正整数；每个输入片段最多字符数 |
 
+EventBuilder 的 boundary_metadata_keys、carry_metadata_keys、summary_mode 同上，
+没有 end_signal_metadata_keys 或 max_duration_seconds；其余配置为：
+
+| 选项 | 默认 | 约束 |
+|---|---|---|
+| entity_overlap_threshold | 缺省关闭 | [0,1] 有限数值；相邻去重实体集合的重叠系数 |
+| similarity_threshold | 缺省关闭 | [0,1] 有限数值；显式 embedder；相等不切 |
+| summary_max_children | 20 | 正整数；摘要输入最多场景数 |
+| summary_max_chars_per_child | 100 | 正整数；每个输入场景最多字符数 |
+
 配置装配把内层非 None 值转成字符串后校验；布尔值不是有效数值阈值。未知键、其他
-stage、event、settle 等选项拒绝。启用相似度却缺 embedder，或 llm 模式缺 llm，装配即失败。
+stage、settle 等选项拒绝。启用相似度却缺 embedder，或 llm 模式缺 llm，装配即失败。
 相似度只使用确定性父摘录、不含时间/数量表头；缺向量、零向量、维度不齐、非有限值或
 调用异常均在写前失败，不静默改用另一种分组算法。
 
 #### 父摘要与 L0/L1
 
 先完成整个结构，再自下向上生成父正文：time_span 的 JSON 只取 `summary`（连续活动），
-scene 只取 `goal/actions/outcome`（目标、行动、结果）；不采纳模型返回的 ID/边/区间/计数。
+scene 只取 `goal/actions/outcome`（目标、行动、结果），event 只取 `pattern/steps/outcome`
+（任务模式、步骤、结果）；不采纳模型返回的 ID/边/区间/计数或系统元数据。
 输入沿 child_ids 顺序按上述条数/字符上限截取；temperature=0，输出 max_tokens=1024。
 JSON 非法、字段缺失/空值/类型错误或调用异常时保留确定性摘录，并记录 warning。
 这是结构化解析与失败降级，不保证模型摘要质量或事实完全正确，质量仍需评测。
@@ -493,7 +517,7 @@ JSON 非法、字段缺失/空值/类型错误或调用异常时保留确定性�
 
 完整候选通过校验后，全部落盘只经同一 IndexBuilder：
 
-1. 新父 `build(FORWARD_ONLY)`，按 scene → time_span 分层交付父本体；
+1. 新父 `build(FORWARD_ONLY)`，按 event → scene → time_span 分层交付父本体；
 2. 子叶 `update(FORWARD_ONLY)`，切换父引用；
 3. 旧父改为 ARCHIVED，清空上下行结构边，再 `update(FORWARD_ONLY)`；
 4. 旧父 `remove(SOFT)` 退出检索，保留归档本体；
@@ -508,7 +532,7 @@ Composer 不提供事务、自动重试、自动修复或并发闸门，不得�
 写入语义，也不提供数据库事务或普通 write/update/delete 的互斥。
 
 阶段 3 已在 Control 实现显式任务和存储读取补齐，Composer 本身仍不查库。
-event/其他 kind、ensure/auto derive 与结构维护器仍是后续目标，
+其他 kind、ensure/auto derive 与结构维护器仍是后续目标，
 不能由当前方法存在推断为已实现。
 
 ### Evolver（`evolver.py`）
@@ -678,12 +702,15 @@ hierarchy_composer:
       index_builder: shared_memory_index
       hierarchy_profiles:
         time:
-          parent_roles: [time_span, scene]
+          parent_roles: [time_span, scene, event]
           stage_options:
             TimeSpanMerger:
               gap_seconds: 7200
             SceneSegmenter:
               max_duration_seconds: 86400
+              summary_mode: structural
+            EventBuilder:
+              boundary_metadata_keys: project_id
               summary_mode: structural
 ```
 
@@ -713,3 +740,4 @@ hierarchy_composer:
 | 2026-09-10 | 阶段 2：固化 EvolveRequest、依赖/选项聚合、最小 TIME Composer 的显式输入与受限替换、profile 装配、按序写入和不完整结果；区分内部能力与尚未开放的公开入口及后续维护能力。 |
 | 2026-09-10 | 阶段 3：同步公开显式两层 TIME 任务接入，明确 Control 负责完整候选及可选锁，本层 EvolveRequest、snapshot→time_span 算法与部分写入契约不变。 |
 | 2026-09-10 | 阶段 7：扩展可选 scene 层、完整旧子树替换、显式可选模型摘要和父 L0/L1，新增配置校验、确定性结构与降级边界；保留两层兼容及既有部分失败契约。 |
+| 2026-09-10 | 阶段 8：补齐 event 四层树、相邻场景分组与实体/语义判据、任务摘要和父标注；四层完整替换及根向下写入，保留两/三层兼容，不接 settle 或自动维护。 |

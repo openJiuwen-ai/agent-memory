@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""TIME 两/三层树：只在副本上生成候选，完整校验后按可恢复顺序写入。
+"""TIME 两/三/四层树：只在副本上生成候选，完整校验后按可恢复顺序写入。
 
 持久化依次写新父本体、切换叶边、归档并断开旧父边、软删除旧父索引、刷新新父与叶索引。
 本体阶段失败立即停止，索引阶段逐项报告失败；不承诺事务回滚，也不自动修复。
@@ -30,6 +30,8 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.hierarchy_composer import (
+    TIME_CHILD_ROLES,
+    TIME_PARENT_ROLES,
     HierarchyComposeOptions,
     HierarchyComposeProfile,
     HierarchyComposer,
@@ -43,6 +45,7 @@ from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderP
 from jiuwen_memory.construction.layer_annotator import LayerAnnotatorProducer
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
+from .event_pipeline import EventBuilderOptions
 from .parent_enrichment import HierarchyModelDependencies
 from .profile_config import build_profiles
 from .scene_pipeline import SceneSegmenterOptions
@@ -56,7 +59,7 @@ NodeKey = tuple[ScopeKey, str]
 
 @dataclass
 class DefaultHierarchyComposer(HierarchyComposer):
-    """snapshot → time_span → scene 构建器，不扫描或补齐数据库节点。"""
+    """snapshot → time_span → scene → event 构建器，不扫描或补齐数据库节点。"""
 
     index_builder: IndexBuilder
     profiles: dict[HierarchyKind, HierarchyComposeProfile] = field(default_factory=dict)
@@ -121,15 +124,15 @@ class DefaultHierarchyComposer(HierarchyComposer):
             if leaf.hierarchy.child_ids:
                 raise ValidationError(f"snapshot 不能包含子节点：{leaf.id}")
         for old_parent in request.existing_parents:
-            _validate_unit(old_parent, (HierarchyRole.TIME_SPAN, HierarchyRole.SCENE))
+            _validate_unit(old_parent, TIME_PARENT_ROLES)
             if old_parent.hierarchy.role not in request.options.parent_roles:
-                raise ValidationError("不得用较短角色链重建已有 scene 子树")
+                raise ValidationError("不得用较短角色链重建已有父层子树")
             if old_parent.scope != request.options.tree_home_scope:
                 raise ValidationError(f"旧父不在 tree_home_scope：{old_parent.id}")
             if not old_parent.hierarchy.child_ids:
                 raise ValidationError(f"旧父必须包含直接子：{old_parent.id}")
-            if old_parent.hierarchy.role is HierarchyRole.SCENE and old_parent.hierarchy.parent_id:
-                raise ValidationError(f"旧 scene 必须是根，不支持 event：{old_parent.id}")
+            if old_parent.hierarchy.role is HierarchyRole.EVENT and old_parent.hierarchy.parent_id:
+                raise ValidationError(f"旧 event 必须是根：{old_parent.id}")
         validate_tree(
             [*request.leaves, *request.existing_parents],
             allow_cross_user=self.allow_cross_user,
@@ -154,6 +157,7 @@ class DefaultHierarchyComposer(HierarchyComposer):
             TimeSpanMergerOptions.from_stage_options(stages.get("TimeSpanMerger", {})),
             SceneSegmenterOptions.from_stage_options(stages.get("SceneSegmenter", {})),
             self.models,
+            EventBuilderOptions.from_stage_options(stages.get("EventBuilder", {})),
         )
 
     def _persist(
@@ -210,7 +214,7 @@ def _validate_options(options: HierarchyComposeOptions) -> None:
     if not isinstance(options, HierarchyComposeOptions):
         raise ValidationError("options 必须是 HierarchyComposeOptions")
     if options.kind is not HierarchyKind.TIME or options.leaf_role is not HierarchyRole.SNAPSHOT:
-        raise ValidationError("当前只支持 TIME 的 snapshot → time_span → scene")
+        raise ValidationError("当前只支持 TIME 的 snapshot → time_span → scene → event")
     validate_time_parent_roles(options.parent_roles)
     _validate_scope(options.tree_home_scope)
     _validate_span(options.span_start, options.span_end)
@@ -283,9 +287,7 @@ def _validate_replacement(request: HierarchyComposeRequest) -> None:
     for old_parent in request.existing_parents:
         if not old_parent.hierarchy.parent_id and not _intersects(old_parent, request.options):
             raise ValidationError(f"旧根必须与请求区间相交：{old_parent.id}")
-        expected_role = HierarchyRole.SNAPSHOT if (
-            old_parent.hierarchy.role is HierarchyRole.TIME_SPAN
-        ) else HierarchyRole.TIME_SPAN
+        expected_role = TIME_CHILD_ROLES[old_parent.hierarchy.role]
         for child_position, child_identifier in enumerate(old_parent.hierarchy.child_ids):
             child_scope = old_parent.hierarchy.child_scope_at(child_position, old_parent.scope)
             child = nodes.get((_scope_key(child_scope), child_identifier))
@@ -330,7 +332,7 @@ def _by_scope(units: list[MemoryUnit]) -> list[list[MemoryUnit]]:
 
 def _parent_write_groups(parents: list[MemoryUnit]) -> list[list[MemoryUnit]]:
     groups = []
-    for role in (HierarchyRole.SCENE, HierarchyRole.TIME_SPAN):
+    for role in reversed(TIME_PARENT_ROLES):
         groups.extend(_by_scope([parent for parent in parents if parent.hierarchy.role is role]))
     return groups
 

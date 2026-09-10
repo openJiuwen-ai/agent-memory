@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-08-15 |
 | 影响范围 | jiuwen_memory/api/、jiuwen_memory/common/、jiuwen_memory/construction/、jiuwen_memory/control/、jiuwen_memory/ingest/、jiuwen_memory/retrieval/、jiuwen_memory/storage/；docs/specs/S01–S07；关联 [`F05-construction-spec-multimodal-design`](../construction/F05-construction-spec-multimodal-design.md) |
-| 测试基线 | 阶段 1：完整 unit 回归 1891 passed；阶段 2：2082 passed；阶段 3：2229 passed；阶段 4：2413 passed；阶段 5：2505 passed；阶段 6：2585 passed；阶段 7：2665 passed。各阶段均为 5 skipped、480 deselected。各阶段变更无新增 Ruff/CodeCheck 本地预审问题，历史诊断见对应阶段验证；未执行云端 CodeCheck |
+| 测试基线 | 阶段 1：完整 unit 回归 1891 passed；阶段 2：2082 passed；阶段 3：2229 passed；阶段 4：2413 passed；阶段 5：2505 passed；阶段 6：2585 passed；阶段 7：2665 passed；阶段 8：2754 passed。各阶段均为 5 skipped、480 deselected。各阶段变更无新增 Ruff/CodeCheck 本地预审问题，历史诊断见对应阶段验证；未执行云端 CodeCheck |
 | Refs | — |
 
 ## 阶段 1 落地（2026-09-10）
@@ -14,7 +14,7 @@
 本次只交付“能表达、接入和存储结构身份”的基础能力，不交付自动建树或层级召回。
 本节记录阶段 1 完成时的状态：当时除本节明确列出的能力及下文叶提示接入外，Composer、
 显式 `evolve(HIERARCHY)`、结构查询/展开/MaxP、后台任务、修复器和各 kind 算法均未实现。
-当前新增交付以阶段 7 小节为准；后文仍保留尚未开放的总体设计。
+当前新增交付以阶段 8 小节为准；后文仍保留尚未开放的总体设计。
 后文 P0–P5 是原设计分期，不等同于已经完成的提交阶段。
 
 ### 已交付与决定
@@ -478,6 +478,80 @@ scene 可以描述“目标：实现锁；行动：设计和验证；结果：�
 未执行 GitCode 云端 CodeCheck，本地检查不代表云端通过。未暂存或提交，原 tree-mem
 分支保持不变。
 
+## 阶段 8 落地（2026-09-10）
+
+本阶段补齐 **snapshot → time_span → scene → event** 四层 TIME 树，保留原两/三层
+请求。继续使用 HierarchyComposeOptions、EvolveTaskOptions、SearchOptions；没有新增
+公开方法或召回参数，仍只通过显式 HIERARCHY 任务构建。
+
+### 做了什么
+
+- EventBuilder 按 UTC 起点稳定排序，只对相邻 scene 分组。配置的系统上下文变化、
+  可选实体重叠低于阈值、可选语义余弦低于阈值，任一命中即切。没有总时长或自然日
+  限制，可以跨天；A/B/A 三段不会绕过 B 把两个 A 重组到一起。
+- 实体重叠取相邻场景的去重集合交集大小，除以较小集合大小；任一为空时不据此切分。
+  阈值范围均为 [0,1] 有限数值，相等不切；相似度默认关闭，启用时必须显式配置
+  Embedder，坏向量或调用异常在任何摘要和写入前拒绝，不静默回退分组算法。
+- 上下文切点逐层保留：event 的 boundary/carry 系统键下传至 scene、time_span。
+  只有显式上下文键会影响下层边界；实体/语义判据只对已形成的 scene 生效，不反向
+  重切 scene。scene 和 event 共用正文选择/向量校验逻辑，跳过时间/数量表头。
+- event 默认正文是有界场景摘录，默认最多 20 个场景、每个 100 字符；完整 child_ids
+  不截断。启用 `summary_mode=llm` 时取 JSON 的 pattern/steps/outcome，生成任务模式/
+  步骤/结果。表头时间、场景/片段数量和所有树边始终由代码生成。
+- 先固定四层结构，再按 time_span→scene→event 做摘要，最后统一标注父 L0/L1。
+  复用既有模型依赖和降级：摘要异常或非法 JSON 保留摘录；标注只采纳新父副本的
+  合法 layers。snapshot 除父边外不改正文、原始时间、来源、tier 或生命周期。
+- event 的 tier 固定 PROCEDURAL，是本算法的分类约定，不表示已形成经验证的技能。
+  event_type/template_id/confidence 等键不从 LLM 自动生成；只接受请求 metadata，
+  或显式配置后上提一致子值。用户元数据继续取相等交集，infer/procedural/middle 不传播。
+- 完整区间重建：命中旧 event 时收齐 scene→time_span→snapshot 全部后代，区间只落在
+  场景间隙或仅覆盖部分后代也一样。所有父驻留 home，叶保留原 Scope；仍按完整 Scope+id
+  点读，先验证边界。缺子、非法角色/反向边/区间、漏列入边、分页漂移和超限都在写前失败。
+- 父总数上限扩为 3 × max_leaves，各层补齐继续受 max_leaves 保护；不截断候选建树。
+  允许两/三层树整体重建升级到 event，不允许以短链隐式降级已有高层。
+- 持久化先依次写 event、scene、time_span 本体，再切换 snapshot 父边，随后归档并
+  清空旧父边、移除旧索引和刷新新索引。沿用 complete/repair 与部分失败语义，不提供事务。
+
+### 例子与召回
+
+周一“分析锁问题并写修复”，周二“跑回归并验证修复”，可以先分别形成两个 scene。
+若 event 的上下文、实体和语义判据未触发切分，它们归到同一个 event；启用 LLM 时，
+可以生成“任务模式：问题修复；步骤：分析、实现、验证；结果：通过”的摘要。
+这段例子不是固定模型输出，真实摘要准确性仍需评测。
+
+`hierarchy_role=EVENT` 默认只返回 event；`expand_depth=1/2/3` 分别展开到 scene、
+time_span、snapshot，仍受共享披露预算及节点数量上限约束。`rollup=True` 复用阶段 6
+的父级准入/MaxP，不重新定义分数算法。两/三层和 SCENE 的深度 2 原文展开继续可用。
+
+### 取舍与未实现范围
+
+- 所有 event 分组判据默认关闭时，选定范围内所有 scene 形成一个 event；这只是默认
+  结构，不是同一任务的语义证明。业务需要通过 profile 显式配置上下文/实体/语义判据。
+- 不采用跨非相邻节点的聚类或多父挂接，保持时间连续与严格树结构。因未设时长上限，
+  event 完整重建可能读取远大于请求时间窗口的后代；超限时拒绝，不能只更新局部。
+- 不让 LLM 改树边或自动生成系统置信度。摘录和模型输入都有上限，可能遗漏细节；
+  event 的 PROCEDURAL 分类或摘要不能替代事实校验，也不保证长期记忆评测提升。
+- 不实现 settle、周期/增量维护（留给阶段 9）、auto derive、ensure、top-M、其他 kind
+  算法或结构生命周期自动联动。不改变 infer 分流、跨 session 原始召回/裸 id 点读、
+  多模态上卷限制和临时事件循环的后台生命周期。
+
+### 验证
+
+定向测试覆盖相邻/跨天分组、实体集合与空实体语义、可选余弦和坏向量、严格参数、
+元数据与原文隔离、先结构后摘要/标注及降级、短链兼容与升级/拒绝降级、四层写入顺序
+和故障、完整重建与窗口外坏子/限额、两种 Engine 的 event 查询、三级展开和 MaxP 组合。
+完整 unit 回归 **2754 passed、5 skipped、480 deselected**（80.88 秒），比阶段 7
+新增 89 个通过项；本阶段 89 项定向测试全部通过。6 项 `python -O` 拒绝路径和合法
+四层角色链冒烟通过，确认运行校验不依赖 assert。5 个 skip 和 5 条既有 asyncio marker
+warning 延续原基线；未运行真实 LLM/外部存储及 LoCoMo、LongMemEval 质量评测。
+
+16 个变更 Python 文件 Ruff 通过，git diff --check 通过。按既有 CodeCheck 十条规则
+检查生产、测试、fixture 与相邻定义，修正 2 处新增推导式变量遮蔽及导入/行长问题；
+没有新增本地预审风险。原有 LayerAnnotator.operator_type 静态化建议及 test_hierarchy_api.py
+4 处推导式变量遮蔽不扩范围修改；抽象契约方法不计为静态化问题。没有新增生产/辅助
+assert、测试 protected-access 或无返回调用赋值。未运行云端 CodeCheck，本地通过不等于
+云端通过。未暂存或提交，不修改原 tree-mem 分支。
+
 ## 背景
 
 现有记忆模型已经覆盖三轴，彼此独立、互不推导：
@@ -537,11 +611,12 @@ scene 可以描述“目标：实现锁；行动：设计和验证；结果：�
 3. 既有非 `HIERARCHY` 演进模式不暗改 `HierarchyRef`；`evolve(HIERARCHY)` 只维护
    树结构边与派生父。
 
-## 决策（总体设计；当前落地范围以阶段 1–6 小节为准）
+## 决策（总体设计；当前落地范围以阶段 1–8 小节为准）
 
 下文包含未来目标，不表示各组件、策略和公开入口已经实现；未落地部分不能作为当前
-运行时行为依据。公开 HIERARCHY 只交付阶段 3 的显式两层 TIME 范围；FORGET 断边、
-LayerAnnotator 父标注、后台自动派生和修复仍为后续目标；展开已在阶段 5、上卷已在阶段 6 落地。
+运行时行为依据。公开 HIERARCHY 已交付阶段 8 的显式两/三/四层 TIME，阶段 7 已接入
+父摘要与 LayerAnnotator 标注；FORGET 断边、后台自动派生和修复仍为后续目标。
+展开已在阶段 5、上卷已在阶段 6 落地。
 
 ### 1. 首期采用内嵌 `HierarchyRef`
 
@@ -1002,7 +1077,7 @@ CloudEngine 不再回注已消费提示。解析路径自行检查字段，不�
 的独立 Composer 构建，阶段 3 的公开任务在收齐输入后调用它。写入路径本身不触发
 建树，后续维护仍未接入。
 
-## 关键数据流（显式两层建树与查询展开已落地）
+## 关键数据流（显式两/三/四层建树与查询展开已落地）
 
 树结构专用路径不写入 architecture §14（该节只保留通用 write/recall/evolve 骨架）；
 建树与按需展开细节如下。
@@ -1013,14 +1088,15 @@ CloudEngine 不再回注已消费提示。解析路径自行检查字段，不�
 evolve(scope, EvolveTaskOptions(mode=HIERARCHY, hierarchy_options=...), security=...)
   → API 校验、WRITE+UPDATE 与空间 UPDATE 判权、hierarchy.enabled 闸门
   → CommandService → Engine 注入同源 Evolver/KV → 专用 HierarchyJob → Scheduler
-  → Job 可选获取 home+kind 锁 → 完整分页 → 相交旧父与全部直接子叶补齐
-  → Evolver(EvolveRequest) → HierarchyComposer 校验与生成 snapshot→time_span
+  → Job 可选获取 home+kind 锁 → 完整分页 → 相交旧根全部父层与叶补齐 → 反向引用核对
+  → Evolver(EvolveRequest) → HierarchyComposer 校验与生成 snapshot→time_span→[scene→[event]]
+  → 结构固定后自下向上增强父正文 → 可选父 L0/L1 标注
   → IndexBuilder 依次写父、更新子边、归档清理旧父、刷新索引
   → HierarchyComposeResult → JobInfo 的终态、计数、complete 与 repair
 ```
 
-普通 add 不建树。目标中的 `hierarchy.auto_derive` 写后派生与 LayerAnnotator 父标注
-仍未实现；不能从上面的显式任务入口推导自动后台触发已经可用。
+普通 add 不建树。LayerAnnotator 父标注已实现，目标中的 `hierarchy.auto_derive` 写后
+派生仍未实现；不能从上面的显式任务入口推导自动后台触发已经可用。
 
 **读取展开路径（仍是 `search`，无公开 `expand`）**
 
@@ -1085,13 +1161,13 @@ expand_depth=0 不准备或展开；rollup 已开放，可准入祖先并传播�
 阶段 3 增加显式任务入口与完整候选读取，完整 unit 回归 2229 passed、5 skipped。
 阶段 4 增加 SearchOptions、直接结构查询与真源复核；阶段 5 交付只读展开与共享预算，
 阶段 6 交付父级准入与 MaxP；阶段 7 交付 scene、父内容增强与完整三层重建，
-不等于后续 top-M、event 或自动演进已实现。
+阶段 8 交付 event 四层构建/重建；不等于后续 top-M 或自动演进已实现。
 不得用已有 pytest 结果替代未交付能力的实现验证。
 
 以下 P0–P5 是决策 19 的原设计验收分组，不是本次按能力整理的提交阶段顺序。
 阶段 1 覆盖模型、叶提示与索引投影，阶段 2 覆盖 P1 的最小内部构建切片，阶段 3
 覆盖显式调用、完整取数与任务状态闭环；阶段 4 覆盖直接层级查询，阶段 5 覆盖展开与预算，
-阶段 6 覆盖父级准入与 MaxP，阶段 7 覆盖三层构建/重建及父内容增强；其余验收保留为后续目标，按实际交付
+阶段 6 覆盖父级准入与 MaxP，阶段 7/8 覆盖三/四层构建、重建及父内容增强；其余验收保留为后续目标，按实际交付
 逐项验证，不因属于同一个原设计分组而提前标记完成。
 
 ### 阶段 0：设计验收
@@ -1116,9 +1192,9 @@ expand_depth=0 不准备或展开；rollup 已开放，可准入祖先并传播�
 - [x] 对显式备齐的输入，`replace_in_span` 替换相交旧根的完整派生子树，不删除权威叶。
 - [x] 父节点内容层在落盘和建索引前按 best-effort 策略生成或安全降级（阶段 7）。
 
-### 后续验收组 P2：构建、检索与预算（阶段 7 部分实现）
+### 后续验收组 P2：构建、检索与预算（阶段 8 部分实现）
 
-- [x] snapshot→time_span→scene 可构建、可重复重建，且权威叶内容零变化（阶段 7）。
+- [x] snapshot→time_span→scene→event 可构建、可重复重建，权威叶内容零变化（阶段 7/8）。
 - [x] 默认父层召回不自动包含子全文。
 - [x] 展开按顺序、深度、kind 与 scope 约束返回子树切片。
 - [x] 检索轨迹分别记录父层命中与展开阶段，并能解释展开深度和预算截断。
@@ -1127,11 +1203,11 @@ expand_depth=0 不准备或展开；rollup 已开放，可准入祖先并传播�
 - [x] 根与后代共享预算，根据 Discloser 实际字段准入节点并确定主 level。
 - [x] `MemoryUnit.temporal`、`RecallChannel.TEMPORAL` 和 `HierarchyKind.TIME` 的过滤行为互不替代。
 
-### 后续验收组 P3：调度、策略与修复（未实现）
+### 后续验收组 P3：调度、策略与修复（任务终态已实现，其余未完成）
 
 - [ ] ensure 阻塞等待任务终态；失败、取消或超时抛 `BackendError`，不静默降级。
 - [ ] auto derive 不阻塞 write，提交失败不回滚已成功写入的叶。
-- [ ] `complete=false` 或存在 `repair_required` 时任务为 FAILED，修复项可观测。
+- [x] `complete=false` 或存在 `repair_required` 时任务为 FAILED，修复项可观测（阶段 3）。
 - [ ] compose profile 变更只通过显式重建生效，不产生两套半成品 role 序列。
 
 ### 后续验收组 P4：多 kind 与回归（未完成）
@@ -1155,7 +1231,7 @@ expand_depth=0 不准备或展开；rollup 已开放，可准入祖先并传播�
 | control 单测 | attach/detach/SUPERSEDE/FORGET 的结构事务；ensure 终态；Policy 关闭 |
 | retrieval 单测 | depth=0；稳定展开顺序；MaxP/top-M；预算截断；坏分支 issue |
 | storage 单测 | hierarchy metadata 投影、区间过滤、从 KV 重建索引 |
-| 集成测试 | P2 起：write snapshots → HIERARCHY → recall scene → expand time_span/snapshot → replace span |
+| 集成测试 | P2 起：write snapshots → HIERARCHY → recall scene/event → expand 到 snapshot → replace span |
 | 回归测试 | hierarchy 关闭、空结构和旧 codec 数据下既有路径零行为变化 |
 
 存储测试使用 in-memory Store；stage 算法使用固定 fixture 和规则 stub，不依赖在线 LLM。

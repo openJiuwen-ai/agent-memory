@@ -8,11 +8,14 @@ from typing import Callable
 
 from jiuwen_memory.common.lock import LockHandle, LockProvider
 from jiuwen_memory.common.lock.lock_impl.in_memory_lock import InMemoryLockProvider
-from jiuwen_memory.common.type_def import MemoryUnit, Scope, memory_key
+from jiuwen_memory.common.type_def import HierarchyKind, MemoryUnit, Scope, memory_key
 from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.evolver import Evolver, EvolveRequest, EvolveResult
-from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
+from jiuwen_memory.construction.hierarchy_composer import (
+    HierarchyComposeOptions,
+    HierarchyComposeProfile,
+)
 from jiuwen_memory.construction.hierarchy_composer_impl import DefaultHierarchyComposer
 from jiuwen_memory.construction.index_builder_impl.hybrid_index_builder import HybridIndexBuilder
 from jiuwen_memory.control.jobs_impl.hierarchy_job import (
@@ -110,7 +113,10 @@ class HierarchyJobHarness:
         self.kv.update(unit.scope, memory_key(unit.id), dumps(unit))
 
 
-def job_harness(leaves: list[MemoryUnit] | None = None) -> HierarchyJobHarness:
+def job_harness(
+    leaves: list[MemoryUnit] | None = None,
+    *, profiles: dict[HierarchyKind, HierarchyComposeProfile] | None = None,
+) -> HierarchyJobHarness:
     """真实内存 IndexBuilder + Composer + Evolver，默认一片叶、跨 session 的 home。"""
     starting_leaves = [make_leaf("one")] if leaves is None else leaves
     stores = create_test_stores()
@@ -120,7 +126,8 @@ def job_harness(leaves: list[MemoryUnit] | None = None) -> HierarchyJobHarness:
     builder = HybridIndexBuilder(manager, plugins["chunker"], plugins["embedder"])
     builder.build(starting_leaves)
     recorder = RecordingIndexBuilder(builder)
-    composition = CompositionHarness(DefaultHierarchyComposer(recorder), recorder, manager)
+    composition = CompositionHarness(DefaultHierarchyComposer(recorder, profiles or {}),
+                                     recorder, manager)
     original = make_request(
         starting_leaves or [make_leaf("unused")],
         span=(ORIGIN, ORIGIN + timedelta(hours=1)),

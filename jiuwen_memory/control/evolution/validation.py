@@ -35,7 +35,7 @@ def scope_contains(home: Scope, candidate: Scope) -> bool:
 
 
 def validate_hierarchy_options(scope: Scope, options: HierarchyComposeOptions) -> None:
-    """要求显式 TIME 两/三层、有界区间，且任务与父驻留 Scope 完全一致。"""
+    """要求显式 TIME 两/三/四层、有界区间，且任务与父驻留 Scope 完全一致。"""
     _validate_scope(scope)
     if not isinstance(options, HierarchyComposeOptions):
         raise ValidationError("HIERARCHY 要求 HierarchyComposeOptions")
@@ -43,7 +43,7 @@ def validate_hierarchy_options(scope: Scope, options: HierarchyComposeOptions) -
     if scope != options.tree_home_scope:
         raise ValidationError("scope 必须等于 tree_home_scope，不得扩大建树范围")
     if options.kind is not HierarchyKind.TIME or options.leaf_role is not HierarchyRole.SNAPSHOT:
-        raise ValidationError("显式建树当前只支持 TIME snapshot → time_span → scene")
+        raise ValidationError("显式建树当前只支持 TIME snapshot → time_span → scene → event")
     validate_time_parent_roles(options.parent_roles)
     if not isinstance(options.span_start, datetime) or not isinstance(options.span_end, datetime):
         raise ValidationError("显式建树要求成对有界的 datetime span")
