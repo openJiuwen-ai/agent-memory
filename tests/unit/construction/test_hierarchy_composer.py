@@ -393,7 +393,7 @@ def test_invalid_direct_profile_is_rejected_during_construction() -> None:
     unsupported = HierarchyComposeProfile(
         kind=HierarchyKind.TIME,
         leaf_role=HierarchyRole.SNAPSHOT,
-        parent_roles=(HierarchyRole.TIME_SPAN, HierarchyRole.SCENE),
+        parent_roles=(HierarchyRole.TIME_SPAN, HierarchyRole.EVENT),
     )
     with pytest.raises(ValidationError, match="parent_roles"):
         DefaultHierarchyComposer(RecordingIndexBuilder(), {HierarchyKind.TIME: unsupported})
@@ -429,14 +429,14 @@ def test_profile_threshold_changes_grouping_and_default_factory_is_registered() 
     "raw_profile",
     [
         [], {"topic": {}}, {"time": []}, {"time": {}},
-        {"time": {"parent_roles": ["time_span", "scene"]}},
+        {"time": {"parent_roles": ["time_span", "event"]}},
         {"time": {"parent_roles": ["time_span"], "leaf_role": "time_span"}},
         {"time": {"parent_roles": ["time_span"], "unknown": True}},
         {"time": {"parent_roles": ["time_span"], "stage_options": []}},
         {"time": {"parent_roles": ["time_span"], "stage_options": {"SceneSegmenter": {}}}},
         {"time": {"parent_roles": ["time_span"], "stage_options": {"TimeSpanMerger": []}}},
         {"time": {"parent_roles": ["time_span"], "stage_options": {
-            "TimeSpanMerger": {"summary_mode": "llm"}}}},
+            "TimeSpanMerger": {"summary_mode": "unknown"}}}},
         {"time": {"parent_roles": ["time_span"], "stage_options": {
             "TimeSpanMerger": {"gap_seconds": True}}}},
         {"time": {"parent_roles": ["time_span"], "stage_options": {

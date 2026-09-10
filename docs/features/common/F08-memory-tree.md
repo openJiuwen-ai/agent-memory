@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-08-15 |
 | 影响范围 | jiuwen_memory/api/、jiuwen_memory/common/、jiuwen_memory/construction/、jiuwen_memory/control/、jiuwen_memory/ingest/、jiuwen_memory/retrieval/、jiuwen_memory/storage/；docs/specs/S01–S07；关联 [`F05-construction-spec-multimodal-design`](../construction/F05-construction-spec-multimodal-design.md) |
-| 测试基线 | 阶段 1：完整 unit 回归 1891 passed；阶段 2：2082 passed；阶段 3：2229 passed；阶段 4：2413 passed；阶段 5：2505 passed；阶段 6：2585 passed。各阶段均为 5 skipped、480 deselected。各阶段变更无新增 Ruff/CodeCheck 本地预审问题，历史诊断见对应阶段验证；未执行云端 CodeCheck |
+| 测试基线 | 阶段 1：完整 unit 回归 1891 passed；阶段 2：2082 passed；阶段 3：2229 passed；阶段 4：2413 passed；阶段 5：2505 passed；阶段 6：2585 passed；阶段 7：2665 passed。各阶段均为 5 skipped、480 deselected。各阶段变更无新增 Ruff/CodeCheck 本地预审问题，历史诊断见对应阶段验证；未执行云端 CodeCheck |
 | Refs | — |
 
 ## 阶段 1 落地（2026-09-10）
@@ -14,7 +14,7 @@
 本次只交付“能表达、接入和存储结构身份”的基础能力，不交付自动建树或层级召回。
 本节记录阶段 1 完成时的状态：当时除本节明确列出的能力及下文叶提示接入外，Composer、
 显式 `evolve(HIERARCHY)`、结构查询/展开/MaxP、后台任务、修复器和各 kind 算法均未实现。
-当前新增交付以阶段 6 小节为准；后文仍保留尚未开放的总体设计。
+当前新增交付以阶段 7 小节为准；后文仍保留尚未开放的总体设计。
 后文 P0–P5 是原设计分期，不等同于已经完成的提交阶段。
 
 ### 已交付与决定
@@ -396,6 +396,87 @@ CodeCheck 十条规则检查生产、测试、fixture 和邻近定义，修正�
 原有多参数、邻近签名/docstring、可静态化及变量遮蔽风险未扩范围重构；无业务 assert、测试
 protected-access 或无返回值调用赋值。未执行 GitCode 云端 CodeCheck，本地检查不代表
 云端通过。不暂存或创建提交，原 tree-mem 分支保持不变。
+
+## 阶段 7 落地（2026-09-10）
+
+本阶段把已有两层 TIME 树扩展为 **snapshot → time_span → scene**，并补齐可选的
+父节点语义摘要与 L0/L1。统一 EvolveTaskOptions、HierarchyComposeOptions、SearchOptions
+继续使用；不新增公开方法、召回参数、周期任务或自动触发入口。
+
+### 做了什么
+
+- 两层兼容：原 `[TIME_SPAN]` 请求继续可用；新增 `[TIME_SPAN, SCENE]`。
+  profile 可声明这两种链，请求可选配置链的短前缀，但不能超出上限。无 profile 时
+  使用默认算法。已有两层旧树可显式重建升级；不支持隐式降级已挂 scene 的树。
+- scene 分组：消费有序 time_span，系统上下文变化、前段非空结束信号、累计跨度
+  超过上限、可选相邻向量余弦低于阈值，任一命中即切；session 变化本身不切 scene。
+  默认跨度为滚动 86400 秒，不是自然日；单个超长 time_span 不强拆。scene 的上下文/
+  结束信号下传给 TimeSpanMerger，避免底层合并吞掉切点；信号只上提组尾非空值。
+- 父正文：默认仍为有界确定性摘录。启用 `summary_mode=llm` 后，time_span 输出
+  连续活动摘要，scene 输出目标/行动/结果。模型只改父正文，ID、父子边、区间和
+  片段/记录计数由代码生成；snapshot 除父边外全部字段保持不变。
+- 先结构后内容增强：可选相似度只消费确定性 time_span 摘录，不含时间表头；
+  全树分组结束后才自下向上做 LLM 摘要，再调用显式注入的 LayerAnnotator。
+  只向 annotator 提供新父副本，只采纳其合法 L0/L1，不采纳正文和结构修改。
+  短正文遵循原阈值，可以没有 L0/L1，不硬凑摘要。
+- 显式依赖：Composer 可配置 `embedder`、`llm`、`layer_annotator`；Python 构造
+  用 HierarchyModelDependencies 聚合。相似度默认关闭；启用却缺模型/向量非法则失败，
+  不替换为占位模型或静默改变切分规则。摘要/标注运行失败保留摘录/空层并记 warning，
+  不把非结构增强失败写成 repair；缺必需依赖是装配错误，不是运行期降级。
+- 完整重建：窗口命中旧 scene 时，收齐它的全部 time_span 与 snapshot，即使窗口
+  只命中第一个片段或落在片段间隙。相交根内部的区间外兄弟也参与，不能只替换局部。
+  读取沿完整 Scope+id，scene 的子父层必须驻留 home；不会扩大授权 Scope。
+  有旧父时再流式扫描一次反向引用，发现漏列的区间外子或外部父重复占有就拒绝写入。
+  叶和父数量都有限额；不缓存全范围节点、不截断候选继续构建。
+- 持久化：先分层保存新 scene，再保存新 time_span，最后切换 snapshot 父边；
+  完成后归档并清空两层旧父的结构边，移除旧索引、刷新新索引。保持既有部分失败与
+  repair 语义，不提供事务、自动回滚或自动修复。
+
+### 例子
+
+上午会话记录“设计锁”，下午另一会话记录“验证锁”：TimeSpanMerger 先按 session
+生成两个 time_span；若满足 scene 的配置判据，它们归入同一 scene。启用模型摘要时，
+scene 可以描述“目标：实现锁；行动：设计和验证；结果：通过”。未启用模型时是两段
+记录的有界摘录，不能把它称为已完成语义理解。
+
+按 `hierarchy_role=SCENE` 查询默认只返回 scene；`expand_depth=1` 可查看 time_span，
+`expand_depth=2` 再看 snapshot 原文。`rollup=True` 继续沿用阶段 6 的父级准入和 MaxP；
+本阶段通过真实建树后的 time_span→scene 链路验证它，不重新实现召回算法。
+
+### 本阶段不采用的方案与边界
+
+- 不让 LLM 决定树边或切分判据，避免摘要生成波动改动结构；但显式语义 Embedder
+  的模型/输入变化仍会影响相似度切分，不能声称所有配置下分组完全不变。
+- 不只重建窗口内叶，也不复用残缺旧中间层；选择整棵相交旧子树重建，代价是读取/
+  摘要范围可能大于原窗口。有旧父时反向核对还会增加一轮已授权范围扫描。
+- 不把摘要/标注失败当作结构失败。日志记录内容增强降级；只保留现有结果 DTO，
+  未新增公开摘要质量诊断字段。截断输入可能丢失细节，模型摘要准确性仍待数据集评测。
+- 不实现 event、其他 kind、settle、auto derive、周期建树、ensure、top-M、结构生命周期
+  自动联动。尚未改变 stage 6 的跨 session 原始召回/裸 id 点读协议及多模态上卷限制。
+  home 里的 time_span/scene 可召回、再按完整子引用展开到各 session，不代表 home
+  普通召回已经能物化所有 session 内 snapshot。
+- 不改变 infer=true/false 的写入分流；只在显式 HIERARCHY 中处理符合条件的 TIME
+  snapshot，不按 infer 再分组或筛除。Scope/路由权限限制、可选锁边界保持不变。
+
+### 验证
+
+确定性测试覆盖 scene 时间边界/UTC/原子超长片段、上下文/结束信号、可选相邻余弦、
+非法向量和配置、模型摘要格式/输入限额/降级、父标注阈值和字段隔离、三层写入失败、
+两层升级、完整旧子树重建/限额/坏边、两种真实 Engine、scene 查询与两级原文展开、
+上卷和 HTTP/CLI 共用协议。
+
+最终完整 unit 回归 **2665 passed、5 skipped、480 deselected**（78.13 秒），比阶段 6
+增加 80 个通过项；新增 80 项定向复查全部通过。3 项 `python -O` 校验冒烟通过，确认
+角色链及相似度参数校验不依赖 assert。5 个跳过仍为真实 LLM/Redis，5 条 warning 仍为
+既有未知 asyncio marker；未运行真实模型/外部存储或 LoCoMo、LongMemEval 质量评测。
+
+18 个变更 Python 文件 Ruff 通过，git diff --check 通过。按既有 CodeCheck 十条规则
+检查生产、测试、fixture 与邻近定义，修正新增推导式变量遮蔽和格式问题；无新增本地
+预审风险。邻近既有的 LayerAnnotator.operator_type 可静态化、test_hierarchy_api.py
+4 处推导式变量遮蔽未扩范围修改；抽象契约方法不作为缺少 staticmethod 处理。
+无新增业务/辅助失败路径 assert、测试 protected-access 或无返回值调用赋值。
+未执行 GitCode 云端 CodeCheck，本地检查不代表云端通过。未暂存或提交，原 tree-mem
+分支保持不变。
 
 ## 背景
 
@@ -1003,13 +1084,14 @@ expand_depth=0 不准备或展开；rollup 已开放，可准入祖先并传播�
 补齐内部最小 TIME 构建及受限替换，完整 unit 回归 2082 passed、5 skipped。
 阶段 3 增加显式任务入口与完整候选读取，完整 unit 回归 2229 passed、5 skipped。
 阶段 4 增加 SearchOptions、直接结构查询与真源复核；阶段 5 交付只读展开与共享预算，
-阶段 6 交付祖先准入与 MaxP，不等于后续 top-M、scene/event 或自动演进已实现。
+阶段 6 交付父级准入与 MaxP；阶段 7 交付 scene、父内容增强与完整三层重建，
+不等于后续 top-M、event 或自动演进已实现。
 不得用已有 pytest 结果替代未交付能力的实现验证。
 
 以下 P0–P5 是决策 19 的原设计验收分组，不是本次按能力整理的提交阶段顺序。
 阶段 1 覆盖模型、叶提示与索引投影，阶段 2 覆盖 P1 的最小内部构建切片，阶段 3
 覆盖显式调用、完整取数与任务状态闭环；阶段 4 覆盖直接层级查询，阶段 5 覆盖展开与预算，
-阶段 6 覆盖祖先准入与 MaxP；其余验收保留为后续目标，按实际交付
+阶段 6 覆盖父级准入与 MaxP，阶段 7 覆盖三层构建/重建及父内容增强；其余验收保留为后续目标，按实际交付
 逐项验证，不因属于同一个原设计分组而提前标记完成。
 
 ### 阶段 0：设计验收
@@ -1031,12 +1113,12 @@ expand_depth=0 不准备或展开；rollup 已开放，可准入祖先并传播�
 
 - [x] 普通 add 不自动构建父树，显式叶写入仍可工作。
 - [x] 内部 EvolveRequest/HIERARCHY 能建立最小父子树；公开任务入口另行验收。
-- [x] 对显式备齐的输入，`replace_in_span` 只替换相交派生父节点，不删除权威叶。
-- [ ] 父节点内容层在落盘和建索引前按 best-effort 策略生成或安全降级。
+- [x] 对显式备齐的输入，`replace_in_span` 替换相交旧根的完整派生子树，不删除权威叶。
+- [x] 父节点内容层在落盘和建索引前按 best-effort 策略生成或安全降级（阶段 7）。
 
-### 后续验收组 P2：构建、检索与预算（阶段 5 部分实现）
+### 后续验收组 P2：构建、检索与预算（阶段 7 部分实现）
 
-- [ ] snapshot→time_span→scene 可构建、可重复重建，且权威叶内容零变化。
+- [x] snapshot→time_span→scene 可构建、可重复重建，且权威叶内容零变化（阶段 7）。
 - [x] 默认父层召回不自动包含子全文。
 - [x] 展开按顺序、深度、kind 与 scope 约束返回子树切片。
 - [x] 检索轨迹分别记录父层命中与展开阶段，并能解释展开深度和预算截断。

@@ -603,7 +603,7 @@ def delete(selector: DeleteSelector, *, security: RequestSecurityContext) -> lis
 #### evolve
 
 **状态：已实现**（`EXTRACT` / `ASSOCIATE` / `CONSOLIDATE` / `FORGET` / `HIERARCHY`）。
-HIERARCHY 当前仅支持显式 TIME snapshot→time_span 两层建树或有界重建。
+HIERARCHY 支持显式 TIME snapshot→time_span→scene 三层建树或有界重建，scene 可省略。
 
 ```python
 def evolve(
@@ -635,7 +635,8 @@ job_id = api.evolve(
 evolve 模式不因这一建树限制改变。
 
 仅 HIERARCHY 接受且必须提供 `options.hierarchy_options`；其他模式携带该字段时抛
-`ValidationError`。建树限定 kind=TIME、leaf_role=SNAPSHOT、parent_roles=[TIME_SPAN]，
+`ValidationError`。建树限定 kind=TIME、leaf_role=SNAPSHOT，
+parent_roles 为 [TIME_SPAN] 或 [TIME_SPAN, SCENE]（枚举、顺序严格校验），
 `span_start/span_end` 必须成对、有界且有序，并要求 `scope == tree_home_scope`。
 策略 `hierarchy.enabled` 默认字符串 `"false"`，未开启时抛 `PolicyError`。
 
@@ -651,7 +652,7 @@ HTTP `POST /v1/evolve`、本地/远程 CLI 使用同一 JSON 形状；认证上�
     "hierarchy_options": {
       "kind": "time",
       "leaf_role": "snapshot",
-      "parent_roles": ["time_span"],
+      "parent_roles": ["time_span", "scene"],
       "tree_home_scope": {"org": "demo", "space": "memory", "user": "u1"},
       "span_start": "2026-09-10T00:00:00Z",
       "span_end": "2026-09-10T23:59:59Z"
@@ -659,6 +660,13 @@ HTTP `POST /v1/evolve`、本地/远程 CLI 使用同一 JSON 形状；认证上�
   }
 }
 ```
+
+该例要求 Composer profile 包含 scene（或未配置 profile 使用默认算法）。命中已有
+scene 时，系统补齐其全部 time_span 和 snapshot 再整体重建；不会截断窗口外的兄弟片段。
+已挂 scene 的树不支持用两层请求直接降级。Scope、权限和默认关闭策略均不变。
+召回沿用 `SearchOptions(hierarchy_kind=TIME, hierarchy_role=SCENE)`；默认只返回 scene，
+`expand_depth=2` 可按已有预算规则展开到 snapshot，`rollup=True` 复用已有 MaxP。
+没有新增召回参数，也不改变普通写入的 infer 路径。
 
 这是有意的破坏性接口迁移：不再接受独立 `mode/channel` 的 Python 旧调用或旧顶层
 JSON 字段。普通模式也必须包装为 `EvolveTaskOptions` / `options`，但其演进算法不变。
@@ -1046,7 +1054,7 @@ def admin_all(*, security: RequestSecurityContext) -> dict[str, str]: ...
 | `system_metadata` | dict[str, MetadataValueType] | 系统扩展字段（infer / procedural / pipeline / prompt key 等） |
 | `user_metadata` | dict[str, MetadataValueType] | 用户业务元数据；保留 JSON 标量原生类型，也可使用字符串数组 |
 | `lifecycle` | LifecycleState | 生命周期状态 |
-| `hierarchy` | HierarchyRef | 已实现的树结构字段；默认 `kind=NONE/role=NONE` 表示未挂树。显式两层 TIME 建树已开放，手工结构 patch 与层级检索仍未开放 |
+| `hierarchy` | HierarchyRef | 已实现的树结构字段；默认 `kind=NONE/role=NONE` 表示未挂树。显式两/三层 TIME 建树、层级查询/展开/上卷已开放，手工结构 patch 仍未开放 |
 
 `Segment`：`content`（可治理文本/结构投影，索引与检索对象）、`assets`（本段原模态资产引用）、`source`（本段来源 Modality）。便捷只读折叠属性：`unit.content`（各段换行连接）、`unit.assets`（各段扁平合并）、`unit.source`（首段模态）——返回新对象，勿就地 `append`。
 
@@ -1221,6 +1229,7 @@ jiuwen_memory/api/memory_api_impl/
 
 ## 修订记录
 
+- 2026-09-10：阶段 7 扩展 HIERARCHY 到可选 scene 三层树，保留 EvolveTaskOptions/SearchOptions 形状，明确完整子树重建和已有召回组合。
 - 2026-09-10：阶段 6 开放 SearchOptions.rollup，明确祖先准入、MaxP、默认兼容及与展开独立；保留精确 Scope 取数限制，多模态包装器明确拒绝上卷。
 
 - 2026-09-10：阶段 5 开放 SearchOptions.expand_depth，明确根 top_k、跨空间共享预算、扁平结果及始终可见的展开诊断；内部延迟展开字段不进入公开协议。
