@@ -80,7 +80,7 @@ def test_invalid_thresholds_rejected_in_direct_options(key, value) -> None:
 
 
 @pytest.mark.parametrize("values", [
-    {"settle_seconds": "5"}, {"max_duration_seconds": "86400"}, {"unknown": "value"},
+    {"settle_seconds": "0"}, {"max_duration_seconds": "86400"}, {"unknown": "value"},
     {"summary_mode": "auto"}, {"summary_max_children": "0"},
     {"summary_max_chars_per_child": True}, {"similarity_threshold": "nan"},
     {"entity_overlap_threshold": "invalid"}, {"entity_overlap_threshold": True},

@@ -3,7 +3,7 @@
 
 无时长限制，不跨过中间场景重组。实体重叠取去重集合交集除以较小集合大小；任侧
 为空时不据此切分。默认所有判据关闭，整个选定范围形成一组，不证明它们属于同一任务。
-PROCEDURAL 仅为 event 的分类，不表示已验证可复用技能；不实现 settle 或自动演进。
+PROCEDURAL 仅为 event 的分类，不表示已验证可复用技能；settle_seconds 仅供增量尾组封口。
 """
 
 from __future__ import annotations
@@ -51,6 +51,7 @@ class EventBuilderOptions:
     summary_mode: str = "structural"
     summary_max_children: int = 20
     summary_max_chars_per_child: int = 100
+    settle_seconds: int = 259200
 
     def __post_init__(self) -> None:
         for name in ("entity_overlap_threshold", "similarity_threshold"):
@@ -60,7 +61,7 @@ class EventBuilderOptions:
                 or not 0 <= threshold <= 1
             ):
                 raise ValidationError(f"{name} 必须是 [0, 1] 的有限数值或 None")
-        for name in ("summary_max_children", "summary_max_chars_per_child"):
+        for name in ("summary_max_children", "summary_max_chars_per_child", "settle_seconds"):
             value = getattr(self, name)
             if type(value) is not int or value <= 0:
                 raise ValidationError(f"{name} 必须是正整数")
@@ -75,7 +76,7 @@ class EventBuilderOptions:
 
     @classmethod
     def from_stage_options(cls, values: dict[str, str]) -> EventBuilderOptions:
-        """严格解析 EventBuilder 配置，尚未实现的 settle 等参数必须报错。"""
+        """严格解析分组、摘要与增量封口配置，未知键报错。"""
         if not isinstance(values, dict) or set(values) - set(cls.__dataclass_fields__):
             raise ValidationError("EventBuilder 配置必须是只含已支持键的字典")
         return cls(
@@ -86,6 +87,7 @@ class EventBuilderOptions:
             summary_mode=values.get("summary_mode", "structural"),
             summary_max_children=positive_int(values, "summary_max_children", 20),
             summary_max_chars_per_child=positive_int(values, "summary_max_chars_per_child", 100),
+            settle_seconds=positive_int(values, "settle_seconds", 259200),
         )
 
 

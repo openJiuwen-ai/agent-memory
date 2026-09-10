@@ -40,7 +40,7 @@ class HierarchyJobDependencies:
 
 
 class HierarchyJob(Job):
-    """固定 snapshot → time_span；不会读取消息、扩展权限或定时自动建树。"""
+    """显式两/三/四层重建；不会读取消息、扩展权限或定时自动建树。"""
 
     def __init__(
         self, scope: Scope, dependencies: HierarchyJobDependencies,
@@ -85,7 +85,7 @@ class HierarchyJob(Job):
 
     async def _run_inner(self, detail: dict[str, str], handle: LockHandle | None) -> JobInfo:
         _ensure_lock(handle)
-        candidates = await _blocking(
+        candidates = await blocking_call(
             collect_candidates,
             (self._dependencies.kv, self._request_scope, self._options, self._limits),
         )
@@ -99,7 +99,7 @@ class HierarchyJob(Job):
             metadata={"trigger": "explicit"},
             hierarchy_options=deepcopy(self._options),
         )
-        evolved = await _blocking(self._dependencies.evolver.evolve, (request,))
+        evolved = await blocking_call(self._dependencies.evolver.evolve, (request,))
         composition = evolved.hierarchy_result
         if not isinstance(composition, HierarchyComposeResult):
             raise ValidationError("Hierarchy Evolver did not return hierarchy_result")
@@ -137,7 +137,8 @@ def _ensure_lock(handle: LockHandle | None) -> None:
         raise LockLostError("hierarchy lock lost; completed writes are not rolled back")
 
 
-async def _blocking(function: Callable[..., ResultType], arguments: tuple) -> ResultType:
+async def blocking_call(function: Callable[..., ResultType], arguments: tuple) -> ResultType:
+    """取消时仍等待同步线程结束，防止持有的层级锁提前释放。"""
     # Cancelled to_thread work keeps running. Wait before releasing the surrounding lock.
     worker = asyncio.create_task(asyncio.to_thread(function, *arguments))
     try:

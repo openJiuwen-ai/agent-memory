@@ -27,7 +27,7 @@ Dedup、LayerAnnotator、HierarchyComposer 与 Evolver（默认 `OrchestratingEv
 | `dedup.py` | Dedup 接口：去重召回（向量/倒排两路）+ DedupProducer 工厂 |
 | `evolver.py` | Evolver 接口：EvolveRequest、五种内部 EvolveMode 与 EvolveResult；HIERARCHY 只委托 Composer |
 | `source_update.py` | 可选 Schema source 更新能力、完整抽取结果、请求内变更计划与严格实体写入上下文；不依赖 control |
-| `hierarchy_composer.py` | HierarchyComposer 接口、Producer，以及 profile / options / request / result / repair 类型 |
+| `hierarchy_composer.py` | HierarchyComposer 接口、Producer，以及 profile / options / request / incremental context / result / repair 类型 |
 | `layer_annotator.py` | LayerAnnotator 接口：分层披露标注（L0/L1 写入 unit.layers）+ LayerAnnotatorProducer 工厂 |
 | `extractor_impl/` | Extractor 实现目录（keyword / llm / dynamic_llm / video_memory，以及显式启用的 entity_schema）；video_memory 将视频规约结果转换为 CLM/ELM |
 | `abstractor_impl/` | Abstractor 实现目录（concat / llm） |
@@ -67,7 +67,7 @@ Evolver.evolve(EvolveRequest(units, mode)):
   FORGET     → _evolve_forget: 遗忘候选筛选→lifecycle 置 FORGOTTEN→
                IndexBuilder.update(mode=FORWARD_ONLY) 回写本体 +
                IndexBuilder.remove(mode=SOFT) 移出检索
-  HIERARCHY  → 显式内部请求：HierarchyComposer.replace_in_span
+  HIERARCHY  → 显式重建：HierarchyComposer.replace_in_span；内部单层增量：build
                → TIME snapshot→time_span→可选 scene→可选 event → 父摘要/标注 → 候选树校验
                → 经 IndexBuilder 分阶段保存
 ```
@@ -169,7 +169,7 @@ Evolver.evolve(EvolveRequest(units, mode)):
     `user_metadata` 同名键。投影不等于建树、查询贯通或已实现 rebuild 恢复。
 
 17. **Composer 只处理显式输入，不扫描数据库**
-    只接受 ACTIVE 的 TIME snapshot 与待替换 time_span/scene/event。请求必须备齐相交旧根
+    显式重建接受 ACTIVE 的 TIME snapshot 与待替换 time_span/scene/event。请求必须备齐相交旧根
     全部父层与叶；不补齐缺失节点、不暗中扩大查询范围。先在副本上生成并校验候选，再写存储。
     叶的正文、时间、tier、来源和生命周期不变，只有 hierarchy 父边改变。
 
@@ -184,8 +184,12 @@ Evolver.evolve(EvolveRequest(units, mode)):
     间隔和结束信号切分；scene 按上下文、结束信号、累计跨度及显式可选相邻向量相似度切分。
     event 按上下文、可选实体重叠和相邻向量相似度分组，无时长上限，不重组非相邻场景。
     session 不切 scene/event，模型摘要不得影响分组。新父默认摘录；显式配置 LLM/LayerAnnotator
-    时才生成摘要/L0/L1，运行期内容增强失败安全降级、不重写 snapshot。settle 与
-    自动派生未接入，不得静默接受这些选项。
+    时才生成摘要/L0/L1，运行期内容增强失败安全降级、不重写 snapshot。
+20. **增量是内部相邻单层构建**
+    `hierarchy_composer_impl/incremental_pipeline.py` 用完整只读子树重建确定性摘录视图，
+    再分组和封口，不用下层已保存的 LLM 摘要决定结构。只为封口组写新父，旧输入仅改
+    父引用，正文/层摘要/子边保持不变。静默封口与下层 pending 边界由 typed context
+    表达；不查库、不自行安排周期，缺少显式 profile 或完整子树时拒绝。
 
 ## 与其他子目录的边界
 

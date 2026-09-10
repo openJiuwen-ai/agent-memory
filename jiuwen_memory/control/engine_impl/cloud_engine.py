@@ -48,10 +48,15 @@ from jiuwen_memory.control.engine_impl.schema_update_support import (
     prepare_schema_update,
 )
 from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
+from jiuwen_memory.control.evolution.background import (
+    BackgroundDependencies,
+    start_hierarchy_derivation,
+)
 from jiuwen_memory.control.evolution.validation import validate_evolve_options
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
 from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
+from jiuwen_memory.control.policy import PolicyManager
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
 from jiuwen_memory.control.types import (
     BatchWriteItem,
@@ -812,6 +817,12 @@ class CloudEngine(MemoryEngine):
             options.channel.value,
         )
         return job_id
+
+    async def start_background_jobs(self, scope: Scope, policy: PolicyManager) -> list[str]:
+        """向周期调度器注册显式 home 的建树任务。"""
+        return await start_hierarchy_derivation(scope, policy, BackgroundDependencies(
+            self._job_factory, self._scheduler, self._evolver, self._hierarchy_kv,
+        ))
 
     async def admin_get(self, key: str) -> str:
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")

@@ -49,7 +49,8 @@ _DEFAULT_POLICIES = {
     "lifecycle.expired_active.target": "forgotten",
     "lifecycle.superseded.target": "forgotten",
     "scope.require_space": "false",
-    "hierarchy.enabled": "false",  # 显式建树门禁；不启用自动派生或召回扩展。
+    "hierarchy.enabled": "false",  # 建树与层级检索总开关。
+    "hierarchy.auto_derive": "false",  # 周期增量独立 opt-in，还需宿主显式启动。
 }
 
 

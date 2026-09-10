@@ -14,10 +14,15 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.type_def import MemoryUnit
+from jiuwen_memory.common.type_def import HierarchyKind, MemoryUnit
 
 from .base import ConstructionOperator
-from .hierarchy_composer import HierarchyComposeOptions, HierarchyComposeResult
+from .hierarchy_composer import (
+    HierarchyComposeOptions,
+    HierarchyComposeProfile,
+    HierarchyComposeResult,
+    HierarchyIncrementalContext,
+)
 
 
 class EvolveMode(str, Enum):
@@ -43,6 +48,7 @@ class EvolveRequest:
     mode: EvolveMode
     metadata: dict[str, str] = field(default_factory=dict)
     hierarchy_options: HierarchyComposeOptions | None = None
+    hierarchy_incremental: HierarchyIncrementalContext | None = None
 
 
 @dataclass
@@ -73,6 +79,11 @@ class EvolverProducer(Factory):
 
 
 class Evolver(ConstructionOperator):
+    @staticmethod
+    def hierarchy_profile(kind: HierarchyKind) -> HierarchyComposeProfile | None:
+        """返回本 Evolver 绑定 Composer 的显式 profile，缺省不启用增量建树。"""
+        return None
+
     @abstractmethod
     def evolve(self, request: EvolveRequest) -> EvolveResult:
         """按请求执行指定模式的演进，返回内容或结构变更结果。"""

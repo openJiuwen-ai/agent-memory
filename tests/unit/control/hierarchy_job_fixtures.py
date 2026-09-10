@@ -62,6 +62,10 @@ class ObservedEvolver(Evolver):
             return self.delegate.evolve(request)
         return self.response
 
+    def hierarchy_profile(self, kind: HierarchyKind) -> HierarchyComposeProfile | None:
+        """保持真实 Composer 配置来源，未设 delegate 时不宣称增量能力。"""
+        return self.delegate.hierarchy_profile(kind) if self.delegate is not None else None
+
 
 class ObservedLock(InMemoryLockProvider):
     """用公开 acquire 凭据观察锁持有和模拟租约失效。"""

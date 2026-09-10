@@ -50,12 +50,22 @@ class HierarchyComposeOptions:
 
 
 @dataclass
+class HierarchyIncrementalContext:
+    """内部单层增量上下文；封口时刻、下层未完成边界与完整子树证据。"""
+
+    settle_at: datetime
+    ready_before: datetime | None = None
+    supporting_units: list[MemoryUnit] = field(default_factory=list)
+
+
+@dataclass
 class HierarchyComposeRequest:
     """完整输入；替换时须包含相交旧根的全部父层和 snapshot，Composer 不查询补齐。"""
 
     leaves: list[MemoryUnit]
     options: HierarchyComposeOptions
     existing_parents: list[MemoryUnit] = field(default_factory=list)
+    incremental: HierarchyIncrementalContext | None = None
 
 
 def validate_time_parent_roles(roles: list[HierarchyRole]) -> None:
@@ -86,6 +96,8 @@ class HierarchyComposeResult:
     replaced_parent_ids: list[str] = field(default_factory=list)
     repair_required: list[HierarchyRepair] = field(default_factory=list)
     complete: bool = True
+    deferred_child_count: int = 0
+    pending_before: datetime | None = None
 
 
 class HierarchyComposerProducer(Factory):
@@ -96,6 +108,11 @@ class HierarchyComposerProducer(Factory):
 
 class HierarchyComposer(ConstructionOperator):
     """校验输入 → 生成候选 → 校验候选树 → 持久化的统一入口。"""
+
+    @staticmethod
+    def get_profile(kind: HierarchyKind) -> HierarchyComposeProfile | None:
+        """返回显式配置快照；未声明增量能力的实现不提供默认 profile。"""
+        return None
 
     @abstractmethod
     def build(self, request: HierarchyComposeRequest) -> HierarchyComposeResult:
