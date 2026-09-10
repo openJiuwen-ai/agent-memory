@@ -34,7 +34,7 @@ from jiuwen_memory.construction.router import (
     parse_route_table,
 )
 from jiuwen_memory.control import SpaceMember, SpaceSpec
-from jiuwen_memory.control.types import MemoryPatch
+from jiuwen_memory.control.types import EvolveTaskOptions, MemoryPatch
 
 logger = logging.getLogger(__name__)
 
@@ -239,10 +239,12 @@ def main() -> None:
     # 4.5) evolve（构建层闭环：抽取低抽象事实 / 升华画像 / 遗忘被取代的旧版） --
     q = "咖啡 项目 评审"
     before = len(api.search(q, Context(scope), security=security, top_k=20).items)
-    api.evolve(scope, EvolveMode.EXTRACT, security=security)  # Extractor：派生事实(记血缘)
-    api.evolve(scope, EvolveMode.CONSOLIDATE, security=security)  # Abstractor：升华 CORE 画像
-    api.evolve(scope, EvolveMode.ASSOCIATE, security=security)  # Associator：发现关联
-    api.evolve(scope, EvolveMode.FORGET, security=security)  # 清理 superseded 旧版
+    # EXTRACT 派生事实并记血缘；CONSOLIDATE 升华 CORE 画像；ASSOCIATE 发现关联；
+    # FORGET 清理 superseded 旧版。统一请求对象保留各模式的默认后台通道。
+    for evolve_mode in (
+        EvolveMode.EXTRACT, EvolveMode.CONSOLIDATE, EvolveMode.ASSOCIATE, EvolveMode.FORGET,
+    ):
+        api.evolve(scope, EvolveTaskOptions(mode=evolve_mode), security=security)
     after = len(api.search(q, Context(scope), security=security, top_k=20).items)
     logger.info(
         "\n[evolve] 召回命中 %s -> %s（extract 派生 + consolidate 画像入索引）", before, after

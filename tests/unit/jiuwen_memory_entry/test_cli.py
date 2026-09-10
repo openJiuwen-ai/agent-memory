@@ -77,6 +77,24 @@ def test_cli_exposes_every_api_parameter(method: str, capsys, monkeypatch) -> No
         ),
         ("admin_set", {"key": "test", "value": "false"}),
         ("list", {"scope": SCOPE, "extensions": None}),
+        ("evolve", {"scope": SCOPE, "options": {"mode": "extract", "channel": "hot"}}),
+        (
+            "evolve",
+            {
+                "scope": SCOPE,
+                "options": {
+                    "mode": "hierarchy",
+                    "hierarchy_options": {
+                        "kind": "time",
+                        "leaf_role": "snapshot",
+                        "parent_roles": ["time_span"],
+                        "tree_home_scope": SCOPE,
+                        "span_start": "2026-09-10T09:00:00+00:00",
+                        "span_end": "2026-09-10T10:00:00+00:00",
+                    },
+                },
+            },
+        ),
     ],
 )
 def test_cli_builds_same_request_without_defaults(method: str, payload: dict) -> None:
@@ -104,6 +122,21 @@ def test_cli_rejects_legacy_options(old_option: str, monkeypatch) -> None:
     status, message = exit_mock.call_args.args
     assert status == 2
     assert f"unrecognized arguments: {old_option} old" in message
+
+
+@pytest.mark.parametrize("old_option", ["--mode", "--channel", "--hierarchy_options"])
+def test_cli_evolve_rejects_top_level_options(old_option: str, monkeypatch) -> None:
+    exit_mock = Mock(side_effect=RuntimeError("parser exit"))
+    monkeypatch.setattr(argparse.ArgumentParser, "exit", exit_mock)
+    with pytest.raises(RuntimeError, match="^parser exit$"):
+        cli.build_parser().parse_args([
+            "evolve", "--scope", json.dumps(SCOPE), "--options", '{"mode":"extract"}',
+            old_option, "old",
+        ])
+    exit_mock.assert_called_once()
+    attempted_status, diagnostic = exit_mock.call_args.args
+    assert attempted_status == 2
+    assert f"unrecognized arguments: {old_option} old" in diagnostic
 
 
 @pytest.mark.parametrize("body", [None, [], "job-1", {"items": [], "count": 0}])
@@ -253,7 +286,7 @@ def test_dev_authentication_still_checks_business_permissions(api_client) -> Non
     ("method", "payload", "expected"),
     [
         ("admin_set", {"key": "test", "value": "false"}, None),
-        ("evolve", {"scope": SCOPE, "mode": "extract"}, "job-1"),
+        ("evolve", {"scope": SCOPE, "options": {"mode": "extract"}}, "job-1"),
     ],
 )
 def test_inprocess_preserves_original_returns(monkeypatch, method, payload, expected) -> None:
@@ -263,6 +296,42 @@ def test_inprocess_preserves_original_returns(monkeypatch, method, payload, expe
         assert client.call(method, payload) == (200, expected)
     finally:
         client.close()
+
+
+@pytest.mark.parametrize("old_field", ["mode", "channel", "hierarchy_options"])
+def test_both_clients_reject_top_level_evolve_options(api_client, old_field: str) -> None:
+    status, body = api_client.call(
+        "evolve",
+        {"scope": SCOPE, "options": {"mode": "extract"}, old_field: "old"},
+    )
+
+    assert status == 400
+    assert body["error"] == "ValidationError"
+    assert f"unknown field for MemoryAPI.evolve: '{old_field}'" in body["message"]
+
+
+def test_both_clients_decode_hierarchy_options_before_policy_gate(api_client) -> None:
+    status, body = api_client.call(
+        "evolve",
+        {
+            "scope": SCOPE,
+            "options": {
+                "mode": "hierarchy",
+                "hierarchy_options": {
+                    "kind": "time",
+                    "leaf_role": "snapshot",
+                    "parent_roles": ["time_span"],
+                    "tree_home_scope": SCOPE,
+                    "span_start": "2026-09-10T09:00:00+00:00",
+                    "span_end": "2026-09-10T10:00:00+00:00",
+                },
+            },
+        },
+    )
+
+    assert status == 400
+    assert body["error"] == "PolicyError"
+    assert "hierarchy.enabled=false" in body["message"]
 
 
 @pytest.mark.parametrize("option", [["--auth-mode", "dev"], ["--config", "local.yaml"]])

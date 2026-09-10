@@ -127,5 +127,9 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
     Space 删除事务经 `SpaceLifecycleService`。PEP、路由谓词回注、逐条鉴权仍在本层。
     不得把 `_purge_space_memories` 或内联 purge+delete 收回本类。
 11. `build_dev_authenticator()` 只供 HTTP / CLI 本地功能测试装配固定身份；它不是生产认证 runtime，也不改变 `MemoryAPI` 的授权判定。Access 仍只能从 `jiuwen_memory.api` 取得该能力，不得直接 import `common.security.authentication_impl`。
-12. `EvolveMode.HIERARCHY` 虽已用于构建层内部，公开 `evolve` 尚不接受建树 options；
-    在既有鉴权和空间可写检查后、提交任务前抛 `ValidationError`。其余四种模式不变。
+12. 公开 `evolve` 统一接收 `EvolveTaskOptions`，不接受旧独立 mode/channel 参数。
+    HIERARCHY 仅开放显式 TIME snapshot→time_span：校验 scope 等于 tree_home_scope
+    和有界区间，经 WRITE+UPDATE、空间 UPDATE 与可写检查，再检查默认关闭的
+    hierarchy.enabled。路由权限声明非空时拒绝该组合，不用批次 Scope 授权绕过
+    尚未实现的候选逐条 PEP；额外父 metadata 仍拒绝系统保留键与路由标签键。
+    API 深拷贝请求后委托 CommandService，不自行查询、补齐或建边；其余四种模式算法不变。

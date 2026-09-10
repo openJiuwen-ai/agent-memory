@@ -6,14 +6,13 @@ from __future__ import annotations
 from datetime import datetime
 
 from jiuwen_memory.common.type_def import MemoryUnit, MetadataValueType, Modality, Scope
-from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.control.engine import MemoryEngine
 from jiuwen_memory.control.types import (
     BatchWriteItem,
     BatchWriteOutcome,
     BatchWriteResult,
-    Channel,
     DeleteSelector,
+    EvolveTaskOptions,
     MemoryPatch,
 )
 
@@ -94,6 +93,7 @@ class MemoryCommandService:
         return await self._engine.delete(selector)
 
     async def evolve(
-        self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
+        self, scope: Scope, options: EvolveTaskOptions
     ) -> str:
-        return await self._engine.evolve(scope, mode, channel)
+        """原样委托统一演进请求，身份与判权不下沉。"""
+        return await self._engine.evolve(scope, options)

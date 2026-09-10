@@ -440,6 +440,7 @@ def _build_middle_to_long_job_spec(config) -> MiddleToLongJobSpec:
 def _build_job_factory(config):
     """装配 JobFactory 并注册各 Job 类型的 Spec。"""
     from jiuwen_memory.control.jobs_impl.evolve_job import _build_evolve_job_spec
+    from jiuwen_memory.control.jobs_impl.hierarchy_job import build_spec as build_hierarchy_spec
 
     factory = JobFactory()
     factory.register(
@@ -450,4 +451,5 @@ def _build_job_factory(config):
         JobType.EVOLVE,
         _build_evolve_job_spec(config).with_scope,
     )
+    factory.register(JobType.HIERARCHY, build_hierarchy_spec(config).with_scope)
     return factory

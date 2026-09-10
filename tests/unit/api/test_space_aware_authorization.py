@@ -32,6 +32,7 @@ from jiuwen_memory.control import (
 )
 from jiuwen_memory.control.types import (
     Action,
+    EvolveTaskOptions,
     MemoryPatch,
     PermissionContext,
     PrincipalPath,
@@ -567,15 +568,15 @@ def test_forget_and_consolidate_are_denied_to_a_contributor(api) -> None:
         ORG, SPACE, _member("bob", SpaceContentRole.CONTRIBUTOR, SpaceGovernanceRole.NONE),
         security=SEC_ALICE,
     )
-    api.evolve(SPACE_SCOPE, EvolveMode.EXTRACT, security=SEC_BOB)
+    api.evolve(SPACE_SCOPE, EvolveTaskOptions(mode=EvolveMode.EXTRACT), security=SEC_BOB)
     for mode in (EvolveMode.FORGET, EvolveMode.CONSOLIDATE):
         with pytest.raises(PermissionDeniedError):
-            api.evolve(SPACE_SCOPE, mode, security=SEC_BOB)
+            api.evolve(SPACE_SCOPE, EvolveTaskOptions(mode=mode), security=SEC_BOB)
 
 
 def test_forget_stays_open_to_the_owner(api) -> None:
     """收紧只针对可贡献档：归属主体本人不受影响。"""
-    assert api.evolve(SPACE_SCOPE, EvolveMode.FORGET, security=SEC_ALICE)
+    assert api.evolve(SPACE_SCOPE, EvolveTaskOptions(mode=EvolveMode.FORGET), security=SEC_ALICE)
 
 
 def test_job_entries_take_the_action_of_the_mode_that_started_the_job(api) -> None:
@@ -587,8 +588,12 @@ def test_job_entries_take_the_action_of_the_mode_that_started_the_job(api) -> No
         ORG, SPACE, _member("bob", SpaceContentRole.CONTRIBUTOR, SpaceGovernanceRole.NONE),
         security=SEC_ALICE,
     )
-    extract_job = api.evolve(SPACE_SCOPE, EvolveMode.EXTRACT, security=SEC_BOB)
-    forget_job = api.evolve(SPACE_SCOPE, EvolveMode.FORGET, security=SEC_ALICE)
+    extract_job = api.evolve(
+        SPACE_SCOPE, EvolveTaskOptions(mode=EvolveMode.EXTRACT), security=SEC_BOB
+    )
+    forget_job = api.evolve(
+        SPACE_SCOPE, EvolveTaskOptions(mode=EvolveMode.FORGET), security=SEC_ALICE
+    )
 
     api.job_status(extract_job, security=SEC_BOB)
     with pytest.raises(PermissionDeniedError):

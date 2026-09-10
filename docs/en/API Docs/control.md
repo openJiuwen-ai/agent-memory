@@ -104,7 +104,7 @@ These methods only return information needed for API authorization. The API itse
 
 | API | Return value | Description |
 |---|---|---|
-| `await evolve(scope, mode, channel=BACKGROUND)` | `str` | Creates an Evolve Job, submits it to Scheduler, and returns its job ID |
+| `await evolve(scope, options: EvolveTaskOptions)` | `str` | Creates EvolveJob for ordinary modes or an explicit two-level TIME HierarchyJob for HIERARCHY, submits it, and returns the job ID |
 | `await admin_get(key)` | `str` | Abstract policy-read entry point |
 | `await admin_set(key, value)` | `None` | Abstract policy-update entry point |
 | `await admin_all()` | `dict[str, str]` | Abstract policy-list entry point |
@@ -265,7 +265,16 @@ from jiuwen_memory.control.jobs import Job, JobFactory, JobType
 | `JobFactory.get_job(job_type, scope, **kwargs)` | `Job` | Supplies runtime Scope and arguments and creates a Job |
 
 `Job.interval=0` means one-time execution; `interval>0` declares a periodic job. Built-in `JobType`
-contains `EVOLVE` and `MIDDLE_TO_LONG`.
+contains `EVOLVE`, `MIDDLE_TO_LONG`, and `HIERARCHY`. HierarchyJob is always one-time;
+periodic tree construction is not supported.
+
+EvolveTaskOptions contains mode, channel (BACKGROUND by default), and hierarchy_options (None
+by default). Separate mode/channel arguments are no longer accepted. HIERARCHY supports only
+snapshot-to-time_span construction with a bounded time interval and task Scope equal to
+tree_home_scope. Engine injects its own Evolver and KV at runtime. The Job collects new leaves
+and every direct child of intersecting old parents, without filtering by infer or reading
+messages. See [S03](../../specs/S03-control.md) for the complete contract and
+[S02](../../specs/S02-memory-api.md) for public authorization, policy gates, and JSON migration.
 
 ## 9. IngestJobController API
 
@@ -443,7 +452,7 @@ selection to the data that policy can access.
 | `ingest_job` | `in_process` | `InProcessIngestJobController` | Background ingestion through ThreadPoolExecutor, persistent KV status, payload idempotency | `ingest_max_workers` default `1`, `ingest_max_pending_jobs` default `2`, `kv_store` |
 | `policy` | `dict` | `DictPolicyManager` | In-process mutable policy map; only known keys may be updated | `policies` |
 | `space` | `kv` | `KVSpaceManager` | Maintains Space metadata, policy, members, usage, and export records through Storage KV | `storage` |
-| `job_factory` | `default` | `JobFactory` | Registers builders for `EvolveJob` and `MiddleToLongJob` | storage, evolver, lifecycle, index_builder, llm; middle parameters and optional lock |
+| `job_factory` | `default` | `JobFactory` | Registers EvolveJob, MiddleToLongJob, and HierarchyJob builders | Source/lifecycle/llm, middle parameters, hierarchy_max_leaves(5000), hierarchy_page_size(200), hierarchy_lock_wait_ms(30000), optional lock; Engine injects Evolver/IndexBuilder at runtime |
 
 For periodic jobs, `async_timer` requires `interval >= tick_interval`. Timing precision is bounded by
 one tick, and jobs of the same type in the same Scope do not accumulate concurrently.
@@ -805,6 +814,7 @@ This table describes built-in targets. It intentionally does not attribute API-l
 ```text
 PENDING -> RUNNING -> SUCCEEDED
                    -> FAILED
+                   -> CANCELLED
 PENDING -> CANCELLED
 ```
 
@@ -816,6 +826,12 @@ PENDING -> CANCELLED
   CANCELLED only while PENDING; running work is not interrupted.
 - A periodic Job's `interval` must be at least `tick_interval`; no later tick fires after
   cancellation.
+- Returned SUCCEEDED/FAILED/CANCELLED states and business details are preserved. Nonterminal
+  returns become FAILED with a diagnostic. Periodic work continues unless is_done=true; its
+  final declaration preserves the last instance's terminal state instead of forcing success.
+  HIERARCHY results with complete=false or any repair item are FAILED.
+- async_timer requires a persistent event loop; background lifetime under temporary asyncio.run
+  calls has not been repaired in this stage.
 
 ## 21. Minimal Usage Example
 

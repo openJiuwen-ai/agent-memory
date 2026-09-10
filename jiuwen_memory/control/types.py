@@ -22,6 +22,8 @@ from jiuwen_memory.common.type_def import (
     Modality,
     Scope,
 )
+from jiuwen_memory.construction.evolver import EvolveMode
+from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 
 
 class PrincipalPath(str, Enum):
@@ -258,6 +260,15 @@ class Channel(str, Enum):
 
     HOT = "hot"  # 在线：低时延的即时写入与轻量更新
     BACKGROUND = "background"  # 离线：异步做重的抽取/升华/重索引
+
+
+@dataclass(frozen=True)
+class EvolveTaskOptions:
+    """显式演进任务请求；Scope 与认证上下文仍由入口分别传入。"""
+
+    mode: EvolveMode
+    channel: Channel = Channel.BACKGROUND
+    hierarchy_options: HierarchyComposeOptions | None = None
 
 
 class JobStatus(str, Enum):

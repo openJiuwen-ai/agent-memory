@@ -37,13 +37,12 @@ from jiuwen_memory.common.type_def import (
     Modality,
     Scope,
 )
-from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.control import (
     BatchWriteItem,
     BatchWriteResult,
-    Channel,
     DeleteMode,
     DeleteSelector,
+    EvolveTaskOptions,
     IngestSubmission,
     JobInfo,
     MemoryListResult,
@@ -282,16 +281,11 @@ class MemoryAPI(ABC):
     def evolve(
         self,
         scope: Scope,
-        mode: EvolveMode,
-        channel: Channel = Channel.BACKGROUND,
+        options: EvolveTaskOptions,
         *,
         security: RequestSecurityContext,
     ) -> str:
-        """触发演进（extract/associate/consolidate/forget）：``scope`` 为演进
-        目标范围、``security`` 为本次请求的安全上下文（本层据二者鉴权）；返回任务
-        id，状态用 :meth:`job_status` 查询。索引维护不在此——它随 add/update/delete
-        自动跟进。
-        """
+        """按统一请求触发内容演进或显式建树，返回可查询状态的任务 id。"""
 
     @abstractmethod
     def check_write(

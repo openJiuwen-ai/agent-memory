@@ -59,14 +59,16 @@
     系统过滤谓词；routing fallback 必须是最小权限策略，不得使用 `allow_all`。
 16. **目标操作使用完整 Scope**：MemoryUnit id 仅在 Scope 内唯一。LifecycleManager、Governor 与 IndexBuilder 的目标修改/读取/删除不得依赖全局 `id -> scope` 猜测，调用方必须显式提供 Scope 或携带 Scope 的 MemoryUnit。
 17. **Engine 部署边界明确**：`InMemoryEngine` 只接受空 `space` 兼容域；具名非空 space 的数据面操作使用 `CloudEngine`。`CloudEngine` 仍兼容空 space，但生产多租户配置应开启 `scope.require_space=true`。
-18. **普通 write 默认不建树（目标）**：`hierarchy.auto_derive` 是独立、默认关闭的后台策略；显式层级 recall/evolve/update 在 `hierarchy.enabled=false` 时抛 `PolicyError`，普通非层级行为兼容。
+18. **普通 write 不自动建树**：当前只开放显式 TIME snapshot→time_span 任务，公开 API 在 `hierarchy.enabled=false` 时抛 `PolicyError`；控制层信任 API 已完成策略与权限检查。自动派生、层级 recall/update 仍为目标，普通四种演进模式不受层级开关影响。
 19. **树结构一致性（目标）**：同一 kind 的父子边必须同 `org+space`、无环、单父、双向一致且顺序稳定；`user`/`agent`/`session` 可按 compose profile 放宽（跨细粒度 scope 时边须可解析定位）；`HierarchyStatus` 只允许 ACTIVE/DISMISSED，且与 `LifecycleState` 分离。
 20. **结构与生命周期事务（目标）**：`provenance`、`supersedes` 与 `hierarchy` 分别表示演进来源、版本替换和父子包含；FORGET/PURGE 不级联删除后代内容。
 21. **重叠 span 串行化（目标）**：同一 `scope + kind` 下 span 相交的 HIERARCHY build/replace、层级 update、FORGET 和 PURGE 必须串行化，或以乐观版本条件在提交前检测冲突；replace 不得吸收未参与初始输入快照的并发叶写入。
 22. **判权范围的裁剪可落本层，判权的执行不可**：`collective/write_targets.py` 决定哪些候选空间被送去判权（候选渲染、排序与上限截断），判权本身经 `can_write` 回调由 API 层执行；本层不持有 `PermissionManager`、不接收 `identity`、不抛权限异常——缺兜底落点时返回 `WriteTargets.fallback=None`，由 PEP 抛出。该裁剪可下沉的前提是失效方向为拒绝：未参与判权的空间不进候选，表现为写不进去而非越权写入。**检索侧的逐空间判权循环不适用本条**，其循环体就是 `PermissionManager.decide` 本身，移出等于把 PEP 分裂为两处；逐空间系统谓词的生成同样留 API 层，它按 `identity` 与空间事实取值。检索侧可下沉的是判权之后的部分：`collective/cross_space_recall.py` 收已判权的空间目标（含各自的谓词）与 `recall` 回调，做取数上界摊配、召回扇出与结果合并，全程不读 `identity`、不做任何裁决，与写入侧同一形态。它把空间级扇出失败与判权剔除分两路交回——并进 `merged.errors` 之后，扇出失败会与检索层的分通道错误混在同一个列表里，API 层要为「整个空间挂了」写审计就只能按 `channel is SPACE` 过滤，那是把审计判据绑在本层的 channel 编码上。
 23. **应用端口不是算子**：`control/application` 的 `MemoryCommandService` / `MemoryQueryService` / `SpaceLifecycleService` / `GovernanceService` 无 Producer、不执行 PEP、不接收 `identity`。它们由已注入的 Engine / Governor / SpaceManager 组成，供 API 与单测复用同一语义，禁止 Service Locator。`delete_space` 的 purge → SpaceManager.delete → `deleted_counts` 汇总只允许出现在 `SpaceLifecycleService`。purge 成功而 metadata delete 失败必须抛 `PartialFailureError`，重试入口仍是 `delete_space`。路由谓词回注、逐空间判权和逐单元结果鉴权仍属 PEP（见不变量 22），不经这些端口下沉。
 24. **Engine 不解释资产映射**：`write` 只把 `assets` 防御性复制到 `RawPayload.assets` 后交给 Ingestor；Ingestor 返回后，Engine 不得按“首个 Segment”或其他假设改写 `Segment.assets`。
-25. **后台 Job 的 IndexBuilder/Evolver 由 Engine 运行时注入**：`EvolveJobSpec` / `MiddleToLongJobSpec` 装配期不解析 Evolver/IndexBuilder（不按 `vector_enabled` 猜默认、不调对应 Producer）；Engine 经 `JobFactory.get_job` 必传注入与写入/演进同源的实例（middle 路径传 pipeline binding 或单 profile 的 `index=`/`evolver=`，`evolve` 传 Engine 装配的 `evolver=`），运行时注入优先于 Spec 兜底字段；缺失注入时 `with_scope` 抛 `ValidationError`，不静默回退默认实现。
+25. **后台 Job 的 IndexBuilder/Evolver 由 Engine 运行时注入**：`EvolveJobSpec` / `MiddleToLongJobSpec` / `HierarchyJobSpec` 装配期不解析 Evolver/IndexBuilder（不按 `vector_enabled` 猜默认、不调对应 Producer）；Engine 经 `JobFactory.get_job` 必传注入与写入/演进同源的实例（middle 路径传 pipeline binding 或单 profile 的 `index=`/`evolver=`，`evolve` 传 Engine 装配的 `evolver=`；HIERARCHY 还传 Engine 的 `kv=`），运行时注入优先于 Spec 兜底字段；缺失各 Job 必需的运行时注入时 `with_scope` 抛 `ValidationError`，不静默回退默认实现。
+26. **建树读取不得扩大已授权范围**：任务 Scope 必须等于 tree_home_scope，org/space 精确相等；其余维度仅在 home 非空时限定。旧父引用在点读前逐一验证边界，按完整 Scope+id 定位。读取不完整、超限、缺子或双向引用非法均拒绝，不截断后建树。
+27. **任务终态忠实于执行结果**：Job.run 必须返回 SUCCEEDED/FAILED/CANCELLED；Scheduler 不把返回的失败改成成功。非终态返回按执行契约错误记录 FAILED，异常和 asyncio 取消语义保留。
 
 ## 接口契约
 
@@ -100,7 +102,7 @@ class ControlOperator(ABC):
 | `delete` | `async (selector: DeleteSelector) -> list[str]` | PURGE 物理删 / 其他委托 LifecycleManager 非破坏式流转；目标需维护受影响层级边 |
 | `purge_space` | `async (org: str, space: str) -> list[str]` | 物理删除该 Space 全部 user/agent/session 子 Scope 的 MemoryUnit 真源与索引，供 offboarding 调用 |
 | `sweep_expired` | `async () -> SweepResult` | 编排到期清扫：`LifecycleManager.sweep()` 纯计算 transition，按 (scope, 目标态) 分组执行——FORGOTTEN 组先 `IndexBuilder.remove(SOFT)` 移出检索索引、成功后 `LifecycleManager.transition` 回写真源；ARCHIVED 组只回写（`include_archived` 召回与 `as_of` 回溯仍需索引，不删）。顺序不变量（先删索引、后回写真源）保证 remove 失败时单元保持 ACTIVE、下轮 sweep 重新发现自愈；任一步失败的组计入 `SweepResult.failed`，不静默当成功。共享编排在 `engine_impl/sweep_support.py`，InMemoryEngine 直调 IndexBuilder，CloudEngine 按各 pipeline 的 builder 分组删除 |
-| `evolve` | `async (scope, mode: EvolveMode, channel=BACKGROUND) -> str` | 提交四种内容演进任务到 Scheduler，返回 job_id；当前 HIERARCHY 在任务提交前抛 `ValidationError`，公开 options 尚未开放。Evolver 由 Engine 经 `get_job(evolver=...)` 注入装配给自身的同一实例（与写入侧同源，不变量 25），Engine 未装配 evolver 时抛 `RuntimeError` |
+| `evolve` | `async (scope: Scope, options: EvolveTaskOptions) -> str` | 普通模式提交内容演进 Job；HIERARCHY 提交专用显式建树 Job，返回 job_id。Engine 注入同源 Evolver；建树同时注入同源 KV。未装配 Evolver 或 JobFactory 时抛 RuntimeError。旧 mode/channel 参数不再接受 |
 | `admin_get/set/all` | — | 管理面语义由 API 层直达 PolicyManager，Engine 不承载策略存储 |
 
 **write 路径**：
@@ -124,9 +126,74 @@ Engine 组装 RawPayload（含 assets 的防御性副本）
 ```
 
 
-Engine、EvolveJob 与 MiddleToLongJob 调用内部 Evolver 时统一构造 `EvolveRequest`。
-内部 HIERARCHY 已具备两层 TIME 建树能力，但控制层尚不装配候选或有界建树 options；
-`Engine.evolve` 因此拒绝 HIERARCHY，不能经普通 EvolveJob 绕过此阶段边界。
+Engine 与各 Job 调用内部 Evolver 时仍统一构造 `EvolveRequest`；公开任务的
+`EvolveTaskOptions` 只封装模式、通道与建树选项，不承载调用方提供的 MemoryUnit 列表。
+
+### 显式 TIME 两层建树（阶段 3）
+
+```python
+@dataclass(frozen=True)
+class EvolveTaskOptions:
+    mode: EvolveMode
+    channel: Channel = Channel.BACKGROUND
+    hierarchy_options: HierarchyComposeOptions | None = None
+```
+
+调用链为 MemoryAPI → MemoryCommandService → MemoryEngine → JobFactory → Scheduler
+→ HierarchyJob → Evolver(EvolveRequest) → HierarchyComposer。普通四种模式继续使用
+EvolveJob；HIERARCHY 不经普通内容抽取任务，不从 messages 重新提取事实。
+
+#### 范围、候选与完整性
+
+- 只支持 TIME、叶 SNAPSHOT、父角色列表 [TIME_SPAN]，起止时间必须成对、有界、开始不晚于结束。
+  naive datetime 按 UTC 解释；候选按闭区间相交判断。任务 Scope 与 tree_home_scope 必须完全相等。
+- org/space 必须精确相同，包括空字符串；home 的非空 user/agent/session 也必须匹配。
+  空 session 可以跨 session 收集叶，但 TimeSpanMerger 按 session 切组，每个新 time_span
+  仍不跨 session；父驻留在指定的较粗 home Scope，而不是某个子 session。
+- 只读取 `/memory/` 的 ACTIVE 生命周期、ACTIVE 结构、TIME 节点：收集窗口内无父
+  snapshot，以及驻留 home 且与窗口相交的旧 time_span。对旧父补齐全部直接 snapshot
+  子叶，即使部分子叶在窗口外也须参与重建。不按 infer true/false 过滤，不读取 `/messages/`。
+- 先完整枚举范围内的精确 Scope，再逐 Scope 分页；count 变化、重复键、提前空页或结果
+  超出声明数目均失败。旧父子引用先全量验证 Scope 边界，再按精确 Scope 分批 mget。
+  缺子、非法身份、多个旧父声称同一子、反向父引用不符或父不覆盖子区间均失败。
+- 无父新叶与旧父全部子叶的并集受 max_leaves 保护；超限拒绝，不以截断后的输入继续。
+  窗口内已挂父的叶也必须能够在选定旧父及补齐子集中闭合。没有候选是成功空操作。
+- 跨 user/agent 的结构限制仍由 Composer 校验及其显式 allow_cross_user 配置约束；
+  home 中空维度的读取范围不等于自动获得跨主体建边能力。
+
+#### 并发与结果
+
+可选共享锁以任务 home Scope 与 `hierarchy:<kind>` 为键，覆盖完整读取至构建写入；
+不按 span 分锁。锁前后检查失锁，超时或失锁返回 FAILED；取消同步线程工作时先等待
+已启动的线程结束，再释放外层锁。未配置锁时直接执行，不宣称并发互斥。
+锁不提供数据库快照或事务，也不覆盖普通 write/update/delete；同 count 的并发内容
+变化不能仅靠分页检查发现，调用方仍须选择稳定输入或协调外部写入。
+
+建树结果缺失、`complete=false`、非空 repair 或取数/构建/锁异常均返回 FAILED。
+已完成写入不会自动回滚，repair 是待修复线索，不是自动恢复承诺。
+
+#### 装配与保护参数
+
+默认 JobFactory 注册 EVOLVE、MIDDLE_TO_LONG 和 HIERARCHY；HierarchyJob 固定 interval=0，
+不接受周期参数。JobFactory 的建树配置仅固化真源读取兜底、限额与可选锁，运行时
+Evolver 必须由 Engine 传入，运行时 KV 优先于装配兜底。Composer 的独立装配见 S05。
+
+```yaml
+job_factory:
+  default:
+    target: default
+    params:
+      kv_store: default
+      hierarchy_max_leaves: 5000
+      hierarchy_page_size: 200
+      hierarchy_lock_wait_ms: 30000
+      # lock: hierarchy_lock  # 可选，引用已装配的共享 LockProvider
+```
+
+max_leaves/page_size 要求真正的正整数，lock_wait_ms 要求非负整数，拒绝 bool 或字符串。
+这些是装配保护参数，不是 HTTP 业务参数或时间切分阈值；同一 Factory 的显式 lock
+引用也供既有 MiddleToLongJob 使用。Engine 必须显式引用该 JobFactory 并注入 Evolver；
+公开 API 另受 S02 的权限与 hierarchy.enabled 策略闸门控制。
 
 ### 树结构目标扩展（尚未实现）
 
@@ -337,13 +404,29 @@ recall 完成权限检查后，API 读取 `PermissionManager.routing_fields()`�
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `submit` | `(scope: Scope, mode: EvolveMode, channel: Channel, *, hierarchy_options: HierarchyComposeOptions | None = None) -> str` | 提交演进任务，返回 job_id；仅 HIERARCHY 接受 options（目标） |
+| `validate` | `(job: Job) -> None` | 提交前验证可调度性；供有副作用的调用方提前拒绝不可调度任务 |
+| `submit` | `async (job: Job, channel: Channel) -> str` | 提交已封装的一次性或周期 Job，返回 job_id；不解析业务建树 options |
 | `status` | `(job_id: str) -> JobInfo` | 查询任务状态 |
 | `cancel` | `(job_id: str) -> None` | 取消尚未完成的任务（幂等） |
 
 **双通道**：HOT（在线低时延：write 返回前完成的轻量索引）；BACKGROUND（离线异步：重的抽取/升华/重索引）。
 
-目标 HIERARCHY 任务必须在 `JobInfo.detail` 中提供稳定字符串键：`hierarchy_kind`、`span_start`/`span_end`、`trigger`（`explicit`/`ensure_on_recall`/`auto_derive`）、`created_parent_count`、`updated_child_count`、`replaced_parent_count`、`repair_required_count`、`complete`、`error`。`detail["repair_required_count"]` 等于 `HierarchyComposeResult.repair_required` 的元素数量。目标 `JobInfo` 增加 `result: EvolveResult | None = None`（结构见 S05）；`complete=false` 或非空 `repair_required` 不得标记 SUCCEEDED。ensure 等待终态；auto derive 不等待。
+通道是业务标签，不保证异步：in_process 在 submit 中等待执行；async_timer 入队后返回，
+需要宿主持续运行事件循环。本阶段没有修复同步 API/HTTP 临时 asyncio.run 的后台
+生命周期，不能将拿到任务 id 等同于后台必然完成。
+
+Job.run 返回的 SUCCEEDED/FAILED/CANCELLED 与 detail 必须保留；返回 PENDING/RUNNING
+或非法 status 时记录 FAILED 与 error_type/error。执行异常仍为 FAILED，CancelledError
+记录 CANCELLED 后继续传播。周期实例未返回 is_done=true 时不停止后续 tick；显式完成
+后周期声明采用最后一次实例的终态和 detail，不再将失败改写为成功。
+
+HIERARCHY 的 `JobInfo.mode` 固定为 `hierarchy`。detail 是字符串映射，包含 `mode`、
+`kind`、`span_start/span_end`、`trigger=explicit`、`created_parent_count`、
+`updated_child_count`、`replaced_parent_count`、`repair_required_count` 与 `complete`。
+执行过 Composer 后，`repair_required` 保存修复项列表的 JSON 字符串；计数等于列表
+元素数量。失败增加 error；无候选时 complete=true 且 reason="no candidates"。
+Scheduler 补 started_at/finished_at，取消路径补 cancelled_at。
+JobInfo 本阶段不新增 result 字段；ensure、auto_derive 不属于当前触发类型。
 
 ### IngestJobController（`ingest_job.py`）
 
@@ -382,18 +465,25 @@ space 元数据、space policy、成员、用量与 offboarding 状态管理。
 | `add_member` | `(org: str, space: str, member: SpaceMember) -> None` | 添加或更新成员角色；成员 scope 的 org/space 归一为目标 space |
 | `remove_member` | `(org: str, space: str, member: Scope) -> None` | 移除成员 |
 
-目标层级策略键：
+已实现的显式建树策略键：
 
 | 键 | 类型与默认 | 语义 |
 |---|---|---|
-| `hierarchy.enabled` | bool，`false` | 层级总开关 |
+| `hierarchy.enabled` | str，`"false"` | API 侧显式建树门禁；仅 trim/lower 后等于 true 时启用，不自动发起任务 |
+
+PolicyManager 对未知键仍拒绝；显式自定义 policies 未声明该键时不补默认配置。
+修改开关不回写既有 unit、不触发建树。其余层级策略仍为目标，尚不可据此调用：
+
+| 键 | 类型与默认 | 语义 |
+|---|---|---|
 | `hierarchy.auto_derive` | bool，`false` | write 后是否后台派生 |
 | `hierarchy.ensure_on_recall` | bool，`false` | 是否对显式有界层级 recall 阻塞确保结构 |
 | `hierarchy.score_propagation` | str，默认 `maxp` | rollup 算法；当前仅接受 `maxp` |
 | `hierarchy.expand_default_depth` | int，`1` | 仅供未显式给 `expand_depth` 的内部/接入形态默认值；公开 recall 默认仍为 0 |
 | `hierarchy.expand_top_m` | int \| None，`None` | 每个父最多保留的直接子数；必须 > 0；`None` 表示不额外裁剪（仍受 depth 与 `max_tokens` 约束） |
 
-`enabled=false` 优先于其他层级键。修改策略不回写已有 unit，不触发隐式重建。未知值或越界值抛 `PolicyError`。
+目标中 `enabled=false` 优先于其它层级策略，未知值或越界值应拒绝；这些自动派生、
+ensure 和召回策略的取值校验不属于阶段 3 已实现能力。
 
 #### 群体记忆带来的控制层变更（F07）
 
@@ -425,9 +515,10 @@ space 元数据、space policy、成员、用量与 offboarding 状态管理。
 | `PermissionContext` | dataclass | resource_type / memory_type / pipeline / unit_id / scope / tags / metadata |
 | `Grant` | 安全域兼容再导出 | 与 `common.security.types.Grant` 为同一对象，不另建四字段选择子 |
 | `Channel` | 枚举 | HOT / BACKGROUND |
+| `EvolveTaskOptions` | frozen dataclass | mode / channel(BACKGROUND) / hierarchy_options(None)；公开任务请求，不包含 MemoryUnit |
 | `WriteTargets` | frozen dataclass | candidates(tuple[Scope]) / fallback(Scope \| None，为 None 即兜底落点不在候选集内，由 PEP 拒绝) |
 | `JobStatus` | 枚举 | PENDING / RUNNING / SUCCEEDED / FAILED / CANCELLED |
-| `JobInfo` | dataclass | id / channel / mode / scope / status / detail；目标增加 result |
+| `JobInfo` | dataclass | id / channel / mode / scope / status / detail；建树结果通过 detail 计数、修复项与 complete 表达，不含 result |
 | `MemoryListResult` | dataclass | items: list[MemoryUnit] / count: int（分页前匹配总数） |
 | `UpdateMode` | 枚举 | SUPERSEDE（默认，新 id）/ OVERWRITE（同 id） |
 | `MemoryPatch` | dataclass | content（修正后的文本投影，应用时更新对应 Segment 内容） / tier / tags / metadata / t_valid / t_invalid / mode(UpdateMode)；目标增加 hierarchy |
@@ -497,7 +588,7 @@ jiuwen_memory/control/<算子>_impl/
 | S07-common | 控制层消费 `MemoryUnit`、`AuditEvent`、错误类型等公共结构 |
 | F07-collective-memory | 两轴角色、归属登记、空间授权事实快照落本层类型；`MembershipResolver` 是本层新增算子，`SpaceManager` 增 `spaces_for` 反查；授权判定迁出本层 |
 | architecture.md §3.1 | MemoryUnit 数据模型（lifecycle / temporal / supersedes / provenance）由 `common/type_def` 定义，控制层消费 |
-| architecture.md §8 | 演进调度（EvolveMode / Channel）映射到 Scheduler 双通道 + Evolver 四阶段 |
+| architecture.md §8 | 演进调度（EvolveTaskOptions / EvolveMode / Channel）映射到 Scheduler 双通道；四种内容模式与独立 HIERARCHY 分支 |
 | architecture.md §9 | `jiuwen_memory/api/MemoryAPI` 是控制层的薄封装 + PEP；数据面委托 Engine，管理面直达各算子 |
 | architecture.md §12 | 横切可观测/治理——Governor.audit 消费 `common/audit/AuditLogger` 记录的审计事件 |
 | architecture.md §13.4 | PolicyManager 是少量已知策略键的 admin 落点；六类动态配置见 S08 ConfigSource |
@@ -506,3 +597,4 @@ jiuwen_memory/control/<算子>_impl/
 ## 修订记录
 
 - 2026-09-10：内部调用迁移为 `EvolveRequest`，公开 Engine 保留原签名并拒绝 HIERARCHY；后台建树、候选补齐与 ensure 仍为目标。
+- 2026-09-10：阶段 3 以 EvolveTaskOptions 打通显式两层 TIME 任务、完整分页与旧父子补齐、同源运行时依赖、可选共享锁及真实失败结果；修正 Scheduler 的 Job 提交和终态契约，自动派生/ensure 仍未实现。

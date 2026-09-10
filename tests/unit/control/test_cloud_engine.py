@@ -40,6 +40,7 @@ from jiuwen_memory.control.types import (
     BatchWriteItem,
     Channel,
     DeleteSelector,
+    EvolveTaskOptions,
     MemoryPatch,
     UpdateMode,
 )
@@ -915,7 +916,8 @@ def test_cloud_engine_evolve_submits_evolve_job_via_job_factory() -> None:
     engine, scheduler, _ = _engine_with_job_factory()
     scope = Scope(org="acme", user="alice")
 
-    job_id = asyncio.run(engine.evolve(scope, EvolveMode.CONSOLIDATE, Channel.HOT))
+    options = EvolveTaskOptions(mode=EvolveMode.CONSOLIDATE, channel=Channel.HOT)
+    job_id = asyncio.run(engine.evolve(scope, options))
 
     assert job_id == "job-1"
     assert len(scheduler.calls) == 1
@@ -924,7 +926,7 @@ def test_cloud_engine_evolve_submits_evolve_job_via_job_factory() -> None:
     assert job.scope == scope
     assert job.interval == 0  # EvolveJob 是一次性任务
     # mode 经构造参数流入。
-    assert job._mode == EvolveMode.CONSOLIDATE  # pylint: disable=protected-access
+    assert job.mode == EvolveMode.CONSOLIDATE.value
 
 
 def test_cloud_engine_evolve_raises_when_job_factory_is_none() -> None:
@@ -933,4 +935,6 @@ def test_cloud_engine_evolve_raises_when_job_factory_is_none() -> None:
     scope = Scope(org="acme", user="alice")
 
     with pytest.raises(RuntimeError, match="evolve requires job_factory"):
-        asyncio.run(engine.evolve(scope, EvolveMode.EXTRACT, Channel.HOT))
+        asyncio.run(engine.evolve(
+            scope, EvolveTaskOptions(mode=EvolveMode.EXTRACT, channel=Channel.HOT)
+        ))

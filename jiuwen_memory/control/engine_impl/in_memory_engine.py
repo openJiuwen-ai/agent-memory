@@ -38,6 +38,7 @@ from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
 from jiuwen_memory.control.engine_impl.list_support import list_page
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
 from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
+from jiuwen_memory.control.evolution.validation import validate_evolve_options
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
 from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
@@ -49,6 +50,7 @@ from jiuwen_memory.control.types import (
     Channel,
     DeleteMode,
     DeleteSelector,
+    EvolveTaskOptions,
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
@@ -715,12 +717,13 @@ class InMemoryEngine(MemoryEngine):
         return [unit.id for unit in purged_units]
 
     async def evolve(
-        self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
+        self, scope: Scope, options: EvolveTaskOptions
     ) -> str:
-        """提交既有内容演进任务；建树任务入口留待下一阶段接入。"""
+        """按统一请求提交内容或建树任务，运行时注入同源 Evolver 与 KV。"""
+        scope = copy.deepcopy(scope)
+        options = copy.deepcopy(options)
         _ensure_local_scope(scope)
-        if mode == EvolveMode.HIERARCHY:
-            raise ValidationError("HIERARCHY 当前仅支持构建算子调用，任务入口尚未开放")
+        validate_evolve_options(scope, options)
         if self._job_factory is None:
             raise RuntimeError(
                 "evolve requires job_factory, please configure "
@@ -732,16 +735,22 @@ class InMemoryEngine(MemoryEngine):
             )
         # E-06：evolver 必传注入——Job 使用 Engine 装配的同一实例，
         # 不允许 Spec 侧自行解析另一套（middle 路径的 index/evolver 同理）。
-        job = self._job_factory.get_job(
-            JobType.EVOLVE, scope=scope, mode=mode, evolver=self._evolver
-        )
-        job_id = await self._scheduler.submit(job, channel)
+        if options.mode is EvolveMode.HIERARCHY:
+            job = self._job_factory.get_job(
+                JobType.HIERARCHY, scope=scope, options=options.hierarchy_options,
+                evolver=self._evolver, kv=self._kv,
+            )
+        else:
+            job = self._job_factory.get_job(
+                JobType.EVOLVE, scope=scope, mode=options.mode, evolver=self._evolver
+            )
+        job_id = await self._scheduler.submit(job, options.channel)
         logger.info(
             "Engine.evolve submitted: job_id=%s scope=%s mode=%s channel=%s",
             job_id,
             scope,
-            mode.value,
-            channel.value,
+            options.mode.value,
+            options.channel.value,
         )
         return job_id
 

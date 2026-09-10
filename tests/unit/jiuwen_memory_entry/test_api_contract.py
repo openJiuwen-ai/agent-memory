@@ -12,10 +12,16 @@ import pytest
 from jiuwen_memory.api import (
     Action,
     BatchWriteItem,
+    Channel,
     Context,
     DeleteMode,
     DeleteSelector,
     DisclosureLevel,
+    EvolveMode,
+    EvolveTaskOptions,
+    HierarchyComposeOptions,
+    HierarchyKind,
+    HierarchyRole,
     MemoryAPI,
     MemoryPatch,
     MemoryTier,
@@ -81,6 +87,132 @@ def test_omitted_optional_fields_are_left_to_memory_api_defaults() -> None:
         "content": "remember",
         "scope": Scope(org="acme", user="alice"),
     }
+
+
+def test_evolve_options_decode_defaults_without_transport_override() -> None:
+    arguments = api_contract.parse_request(
+        "evolve",
+        {"scope": {"user": "alice"}, "options": {"mode": "extract"}},
+    )
+
+    assert arguments == {
+        "scope": Scope(user="alice"),
+        "options": EvolveTaskOptions(mode=EvolveMode.EXTRACT),
+    }
+    assert arguments["options"].channel is Channel.BACKGROUND
+    assert arguments["options"].hierarchy_options is None
+
+
+def test_evolve_decodes_nested_hierarchy_scope_enums_and_datetimes() -> None:
+    scope_json = {"org": "acme", "space": "work", "user": "alice", "agent": "bot"}
+    arguments = api_contract.parse_request(
+        "evolve",
+        {
+            "scope": scope_json,
+            "options": {
+                "mode": "hierarchy",
+                "channel": "hot",
+                "hierarchy_options": {
+                    "kind": "time",
+                    "leaf_role": "snapshot",
+                    "parent_roles": ["time_span"],
+                    "tree_home_scope": scope_json,
+                    "span_start": "2026-09-10T09:00:00+08:00",
+                    "span_end": "2026-09-10T10:00:00+08:00",
+                    "metadata": {"request_source": "cli"},
+                },
+            },
+        },
+    )
+
+    home = Scope(org="acme", space="work", user="alice", agent="bot")
+    assert arguments == {
+        "scope": home,
+        "options": EvolveTaskOptions(
+            mode=EvolveMode.HIERARCHY,
+            channel=Channel.HOT,
+            hierarchy_options=HierarchyComposeOptions(
+                kind=HierarchyKind.TIME,
+                leaf_role=HierarchyRole.SNAPSHOT,
+                parent_roles=[HierarchyRole.TIME_SPAN],
+                tree_home_scope=home,
+                span_start=datetime.fromisoformat("2026-09-10T09:00:00+08:00"),
+                span_end=datetime.fromisoformat("2026-09-10T10:00:00+08:00"),
+                metadata={"request_source": "cli"},
+            ),
+        ),
+    }
+
+
+@pytest.mark.parametrize("old_field", ["mode", "channel", "hierarchy_options"])
+def test_evolve_rejects_old_top_level_options(old_field: str) -> None:
+    payload = {
+        "scope": {"user": "alice"},
+        "options": {"mode": "extract"},
+        old_field: "unexpected",
+    }
+    with pytest.raises(ValidationError, match=f"unknown field.*'{old_field}'"):
+        api_contract.parse_request("evolve", payload)
+
+
+@pytest.mark.parametrize(
+    ("options_json", "diagnostic"),
+    [
+        (None, "options must not be null"),
+        ("extract", "options must be an object"),
+        ({}, "missing required field.*options.*mode"),
+        ({"mode": "unknown"}, "options.mode must be one of"),
+        ({"mode": "extract", "channel": "unknown"}, "options.channel must be one of"),
+        ({"mode": "extract", "security": {}}, "unknown field.*options.*security"),
+        ({"mode": "hierarchy", "hierarchy_options": {}}, "missing required field"),
+    ],
+)
+def test_evolve_rejects_invalid_nested_options(options_json, diagnostic: str) -> None:
+    with pytest.raises(ValidationError, match=diagnostic):
+        api_contract.parse_request(
+            "evolve", {"scope": {"user": "alice"}, "options": options_json}
+        )
+
+
+def test_evolve_requires_options_argument() -> None:
+    with pytest.raises(ValidationError, match="missing required field.*options"):
+        api_contract.parse_request("evolve", {"scope": {"user": "alice"}})
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value", "diagnostic"),
+    [
+        ("kind", "future_kind", "hierarchy_options.kind must be one of"),
+        ("leaf_role", "future_role", "hierarchy_options.leaf_role must be one of"),
+        ("parent_roles", "time_span", "hierarchy_options.parent_roles must be an array"),
+        ("tree_home_scope", {"org": 1}, "tree_home_scope.org must be a string"),
+        ("span_start", "not-a-date", "span_start must be an ISO 8601 datetime"),
+        ("span_end", 123, "span_end must be an ISO 8601 datetime"),
+        ("metadata", {"trace": True}, "metadata.trace must be a string"),
+        ("settle_at", "2026-09-10", "unknown field.*hierarchy_options.*settle_at"),
+    ],
+)
+def test_evolve_rejects_malformed_hierarchy_fields(
+    field_name: str, invalid_value, diagnostic: str
+) -> None:
+    """嵌套建树字段继续由共享 dataclass 解码器严格校验。"""
+    hierarchy_json = {
+        "kind": "time",
+        "leaf_role": "snapshot",
+        "parent_roles": ["time_span"],
+        "tree_home_scope": {"user": "alice"},
+        "span_start": "2026-09-10T09:00:00+00:00",
+        "span_end": "2026-09-10T10:00:00+00:00",
+    }
+    hierarchy_json[field_name] = invalid_value
+    with pytest.raises(ValidationError, match=diagnostic):
+        api_contract.parse_request(
+            "evolve",
+            {
+                "scope": {"user": "alice"},
+                "options": {"mode": "hierarchy", "hierarchy_options": hierarchy_json},
+            },
+        )
 
 
 @pytest.mark.parametrize("body", [None, [], "text", 42])

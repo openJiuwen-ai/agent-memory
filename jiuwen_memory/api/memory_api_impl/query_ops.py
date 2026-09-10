@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from copy import deepcopy
 from datetime import datetime
 from typing import Any
 
@@ -12,6 +13,7 @@ from jiuwen_memory.common.errors import (
     BackendError,
     NotFoundError,
     PermissionDeniedError,
+    PolicyError,
     ValidationError,
 )
 from jiuwen_memory.common.log import get_logger
@@ -34,9 +36,10 @@ from jiuwen_memory.construction.router import (
     reject_kernel_coords,
 )
 from jiuwen_memory.control import collective
+from jiuwen_memory.control.evolution.validation import validate_evolve_options
 from jiuwen_memory.control.types import (
-    Channel,
     DeleteSelector,
+    EvolveTaskOptions,
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
@@ -594,23 +597,36 @@ class QueryOpsMixin:
     def evolve(
         self,
         scope: Scope,
-        mode: EvolveMode,
-        channel: Channel = Channel.BACKGROUND,
+        options: EvolveTaskOptions,
         *,
         security: RequestSecurityContext,
     ) -> str:
-        """鉴权后提交内容演进任务，当前拒绝公开 HIERARCHY 请求。"""
+        """鉴权并快照请求后提交内容演进或显式两层 TIME 建树任务。"""
+        scope = deepcopy(scope)
+        options = deepcopy(options)
+        validate_evolve_options(scope, options)
         identity = security.auth.actor
         auth = self._authorize(
             identity,
             scope,
             Action.WRITE,
             "evolve",
-            space_action=_evolve_space_action(mode),
+            space_action=_evolve_space_action(options.mode),
         )
         self._ensure_space_writable(scope)
-        if mode == EvolveMode.HIERARCHY:
-            raise ValidationError("HIERARCHY 当前仅支持构建算子调用，公开入口尚未开放")
-        job_id = asyncio.run(self._commands.evolve(scope, mode, channel))
+        if options.mode is EvolveMode.HIERARCHY:
+            self._authorize(
+                identity, scope, Action.UPDATE, "evolve",
+                space_action=_evolve_space_action(options.mode),
+            )
+            if str(self._policy.get("hierarchy.enabled")).strip().lower() != "true":
+                raise PolicyError("hierarchy.enabled=false：显式建树功能未开启")
+            if self._perm.routing_fields():
+                raise ValidationError(
+                    "HIERARCHY 暂不支持权限路由：候选逐条鉴权尚未实现，不能使用 fallback 建树"
+                )
+            _reject_kernel_system_metadata(options.hierarchy_options.metadata)
+            _reject_route_tag_keys(options.hierarchy_options.metadata, self._route_table.tag_keys)
+        job_id = asyncio.run(self._commands.evolve(scope, options))
         self._log(identity, "evolve", target_scope=scope, detail={**auth, "job_id": job_id})
         return job_id

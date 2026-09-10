@@ -686,7 +686,8 @@ def _trim_space_policy(info: SpaceInfo, axis: str) -> SpaceInfo:
 def _evolve_space_action(mode: EvolveMode | str) -> SpaceAction:
     """演进模式对应的判定动作（F07「入口到轴与动作的映射」）。
 
-    去重（``CONSOLIDATE``）与遗忘（``FORGET``）改写既有条目，取 ``UPDATE``；其余模式
+    去重（``CONSOLIDATE``）、遗忘（``FORGET``）与建树（``HIERARCHY``）改写既有条目，
+    取 ``UPDATE``；其余模式
     产出新条目，取 ``WRITE``。两者都不放宽到「本人所写」——输入是一批条目，逐条判会使
     一次调用部分生效部分被拒。
 
@@ -698,7 +699,7 @@ def _evolve_space_action(mode: EvolveMode | str) -> SpaceAction:
         resolved = EvolveMode(mode)
     except ValueError:
         return SpaceAction.WRITE
-    if resolved in (EvolveMode.CONSOLIDATE, EvolveMode.FORGET):
+    if resolved in (EvolveMode.CONSOLIDATE, EvolveMode.FORGET, EvolveMode.HIERARCHY):
         return SpaceAction.UPDATE
     return SpaceAction.WRITE
 

@@ -72,7 +72,8 @@ Evolver.evolve(EvolveRequest(units, mode)):
 三个 Evolver 同属 `evolver` 顶层命名空间。`DynamicEvolver` 与显式启用的
 `SchemaOrchestratingEvolver` 都继承 `OrchestratingEvolver`，只覆盖 `_evolve_extract`；
 其余四模式继承父类。装配或 pipeline profile 选择注册名即启用对应 EXTRACT 路径。
-HIERARCHY 尚无公开 API/Engine 任务入口，也不在普通 write 后自动触发。
+公开 HIERARCHY 任务由 Control 收齐有界候选和旧父全部直接子叶后进入内部 Composer；
+普通 write 不自动触发建树。
 
 ## 行为铁律
 

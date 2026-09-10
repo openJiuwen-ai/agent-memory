@@ -88,10 +88,12 @@ class AsyncTimerScheduler(Scheduler):
         """per scope dict key——Scheduler 内部实现细节。"""
         return (scope.org, scope.space, scope.user, scope.agent, scope.session)
 
-    def operator_type(self) -> ControlOperatorType:
+    @staticmethod
+    def operator_type() -> ControlOperatorType:
         return ControlOperatorType.SCHEDULER
 
-    def health(self) -> None:
+    @staticmethod
+    def health() -> None:
         return None
 
     # ---- 公开 API ----
@@ -196,10 +198,9 @@ class AsyncTimerScheduler(Scheduler):
             try:
                 result = await job.run()
                 self._merge_info(info, result)
-                info.status = JobStatus.SUCCEEDED
                 logger.info(
-                    "AsyncTimerScheduler.succeeded: job_id=%s kind=%s scope=%s",
-                    job_id, type(job).__name__, scope_key,
+                    "AsyncTimerScheduler.finished: job_id=%s kind=%s scope=%s status=%s",
+                    job_id, type(job).__name__, scope_key, info.status.value,
                 )
             except asyncio.CancelledError:
                 # 事件循环关闭 / 主动 cancel Task——把状态 + 日志打全再重新 raise，
@@ -384,9 +385,8 @@ class AsyncTimerScheduler(Scheduler):
             # 清理已 is_done 的 entry——原地修改保持 list 对象引用不失效
             wheel.entries[:] = [e for e in wheel.entries if not e.is_done]
 
-        # Timer 自然退出——标完成
+        # Timer 自然退出——终态已由最后一次实例结果传播，不能改写为成功。
         for entry in wheel.entries:
-            self._jobs[entry.job_id].status = JobStatus.SUCCEEDED
             self._jobs[entry.job_id].detail["finished_at"] = self._now_iso()
         self._wheels.pop(wheel.scope_key, None)
 
@@ -394,23 +394,34 @@ class AsyncTimerScheduler(Scheduler):
 
     def _merge_info(self, info: JobInfo, result: JobInfo) -> None:
         """把实例 run() 返回的 JobInfo 合并回主 info，并处理 is_done 传播。"""
-        for k, v in result.detail.items():
-            if k == "is_done" and v == "true":
-                # 实例返回 is_done=true：通知对应 entry 停止下一轮触发
-                parent_id = info.detail.get("parent_timer")
-                if parent_id:
-                    self._mark_timer_done(parent_id)
-            info.detail[k] = v
+        info.detail.update(result.detail)
+        if not isinstance(result.status, JobStatus) or result.status not in (
+            JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED,
+        ):
+            raise ValueError(
+                f"Job.run() must return a terminal status, got {result.status!r}"
+            )
+        info.status = result.status
+        if result.detail.get("is_done") == "true":
+            # 实例返回 is_done=true：通知对应 entry 停止下一轮触发。
+            parent_id = info.detail.get("parent_timer")
+            if parent_id:
+                self._mark_timer_done(parent_id, result)
 
-    def _mark_timer_done(self, parent_timer_id: str) -> None:
+    def _mark_timer_done(self, parent_timer_id: str, result: JobInfo) -> None:
         """按 parent_timer_id 反查 entry 标记 is_done——下次 tick 跳过。"""
         for wheel in self._wheels.values():
             for entry in wheel.entries:
                 if entry.job_id == parent_timer_id:
                     entry.is_done = True
+                    timer_info = self._jobs[parent_timer_id]
+                    timer_info.status = result.status
+                    timer_info.detail.update(result.detail)
+                    timer_info.detail["finished_at"] = self._now_iso()
                     return
 
-    def _now_iso(self) -> str:
+    @staticmethod
+    def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
 
 

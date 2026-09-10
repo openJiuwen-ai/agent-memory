@@ -11,7 +11,7 @@ from jiuwen_memory.construction.evolver import EvolveMode, Evolver, EvolveReques
 from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
 from jiuwen_memory.control.jobs import Job, JobFactory, JobType
 from jiuwen_memory.control.jobs_impl.evolve_job import EvolveJobSpec
-from jiuwen_memory.control.types import BatchWriteItem, Channel, JobStatus
+from jiuwen_memory.control.types import BatchWriteItem, Channel, EvolveTaskOptions, JobStatus
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 
 _TEST_KEY_HEX = "00" * 32
@@ -78,7 +78,8 @@ def test_engine_evolve_only_submits_scheduler_job() -> None:
         job_factory=_build_test_job_factory(evolver),
     )
 
-    job_id = asyncio.run(engine.evolve(scope, EvolveMode.CONSOLIDATE, Channel.HOT))
+    options = EvolveTaskOptions(mode=EvolveMode.CONSOLIDATE, channel=Channel.HOT)
+    job_id = asyncio.run(engine.evolve(scope, options))
 
     assert job_id == "job-1"
     assert len(scheduler.calls) == 1
@@ -87,7 +88,7 @@ def test_engine_evolve_only_submits_scheduler_job() -> None:
     assert job.scope == scope
     assert job.interval == 0
     # mode 经 EvolveJob 构造参数流入——不该由 Scheduler 看到或硬编码
-    assert job._mode == EvolveMode.CONSOLIDATE  # pylint: disable=protected-access
+    assert job.mode == EvolveMode.CONSOLIDATE.value
 
 
 def test_in_memory_batch_write_collects_unexpected_error_and_continues() -> None:
@@ -140,7 +141,9 @@ def test_api_evolve_returns_completed_scheduler_job_with_evolve_result_detail() 
     scope = Scope(user="u1")
     kernel.api.add("Alice likes tea", scope, security=legacy_request_context(scope))
 
-    job_id = kernel.api.evolve(scope, EvolveMode.EXTRACT, security=legacy_request_context(scope))
+    job_id = kernel.api.evolve(
+        scope, EvolveTaskOptions(mode=EvolveMode.EXTRACT), security=legacy_request_context(scope)
+    )
 
     job = kernel.api.job_status(job_id, security=legacy_request_context(scope))
     assert job.status == JobStatus.SUCCEEDED

@@ -342,12 +342,13 @@ hierarchy metadata 的精确键、空值和区间表示由
 metadata 一致投影到已启用的 L0/L1/L2 索引记录；索引是派生物，必须可从 KV 中的
 `MemoryUnit` 重建。
 
-### HierarchyComposer（阶段 2：最小 TIME 构建）
+### HierarchyComposer（最小 TIME 构建）
 
 `HierarchyComposer` 与 `Extractor` / `Abstractor` 等并列，同属 `ConstructionOperator`：
 执行建树/区间替换，或由内部 Evolver 的 HIERARCHY 分派调用；不自行鉴权、查库、提交
-后台任务，也不替代 IndexBuilder。当前仅支持 TIME 的 snapshot→time_span，公开
-`MemoryAPI.evolve` 和 Engine 任务入口明确拒绝 HIERARCHY，后续阶段再接入控制链路。
+后台任务，也不替代 IndexBuilder。当前仅支持 TIME 的 snapshot→time_span；阶段 3 的
+公开任务由 Control 收齐候选、旧父与全部直接子叶后进入本层，API/Job 契约见 S02/S03。
+这里的内部输入与构建算法不因公开任务入口开放而改变。
 
 ```python
 @dataclass(frozen=True)
@@ -462,10 +463,13 @@ scene/event、settle 选项均拒绝，不静默降级。运行时 Policy 不修
 失败累积 `repair_required` 并返回 `complete=false`。各 id 列表只记录已正常返回的本体
 写入批次；底层批次抛错前可能已部分写入，因此修复项不是事务回滚证明。
 `HierarchyRepair.unit_id` 需结合原请求 Scope 定位，不能跨 Scope 仅凭 id 修复。
-本阶段不提供事务、自动重试、自动修复或并发闸门，不得把不完整结果当作成功。
+Composer 不提供事务、自动重试、自动修复或并发闸门，不得把不完整结果当作成功。
+阶段 3 的可选共享锁由 Control Job 持有，覆盖取数至本层调用；它不改变这里的部分
+写入语义，也不提供数据库事务或普通 write/update/delete 的互斥。
 
-父 L0/L1 标注、scene/event/其他 kind、存储读取补齐、控制层任务、ensure/auto derive
-与结构维护器均是后续目标，不能由当前方法存在推断为已实现。
+阶段 3 已在 Control 实现显式任务和存储读取补齐，Composer 本身仍不查库。
+父 L0/L1 标注、scene/event/其他 kind、ensure/auto derive 与结构维护器仍是后续目标，
+不能由当前方法存在推断为已实现。
 
 ### Evolver（`evolver.py`）
 
@@ -482,7 +486,7 @@ FORGET 保持原处理语义；HIERARCHY 单独委托 Composer，不调用抽取
 - `ASSOCIATE` — 关联分析
 - `CONSOLIDATE` — 冲突消解（近重复融合/矛盾标记失效）
 - `FORGET` — 遗忘/降权（过期/低价值记忆归档）
-- `HIERARCHY` — 内部显式创建或重建父节点及双向包含边；尚无公开任务入口
+- `HIERARCHY` — 显式创建或重建父节点及双向包含边；公开任务先由 Control 收齐本层输入
 
 ```python
 @dataclass
@@ -615,7 +619,8 @@ Composer 位于 hierarchy_composer 命名空间；Evolver 只有显式声明
 不是运行时 Policy 开关。
 
 以下仅示意依赖引用；`shared_memory_index` 必须指向部署已配置的、负责叶本体与索引的
-同一实例，其余既有配置省略。显式装配不会打开公开建树任务入口。
+同一实例，其余既有配置省略。仅装配 Composer 不等于开启公开入口：还需要 S03 的
+JobFactory、Engine 同源依赖，以及 S02 的权限和 `hierarchy.enabled` 策略许可。
 
 ```yaml
 evolver:
@@ -657,3 +662,4 @@ hierarchy_composer:
 | 日期 | 内容 |
 |---|---|
 | 2026-09-10 | 阶段 2：固化 EvolveRequest、依赖/选项聚合、最小 TIME Composer 的显式输入与受限替换、profile 装配、按序写入和不完整结果；区分内部能力与尚未开放的公开入口及后续维护能力。 |
+| 2026-09-10 | 阶段 3：同步公开显式两层 TIME 任务接入，明确 Control 负责完整候选及可选锁，本层 EvolveRequest、snapshot→time_span 算法与部分写入契约不变。 |
