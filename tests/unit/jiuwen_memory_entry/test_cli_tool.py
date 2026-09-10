@@ -2,18 +2,22 @@
 """CLI 面验证：契约锁、会话内闭环与辅助命令（重建 test_cli.py 消失后的验证证据）。
 
 CLI 命令集由 ``MemoryAPI.__abstractmethods__`` 反射生成（``cli/__main__.py:42``），
-本文件锁三件事：
+本文件锁四件事：
 1. 契约锁——36 个方法全部有同名子命令、选项名与 ``api_contract`` 零漂移；
 2. 会话内闭环——同一 client 的 add→search→list→get→update→delete→evolve 全链路；
    注意 OFFLINE 内存后端不跨 CLI 进程保留数据，跨调用共享状态的唯一方式是
    同一 client（或 batch 单会话 / 远程常驻服务）；
-3. 失闭——未注入认证器时业务调用拒绝，绝不从 payload 生成身份。
+3. 失闭——未注入认证器时业务调用拒绝，绝不从 payload 生成身份；
+4. 进程级拒绝——argparse 参数错误以子进程真实退出码 2 断言。
 """
 
 from __future__ import annotations
 
 import io
 import json
+import os
+import subprocess
+import sys
 import threading
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -31,7 +35,20 @@ from jiuwen_memory_entry.http_server.dev_security import build_dev_security_runt
 pytestmark = pytest.mark.unit
 
 SCOPE = {"org": "local", "user": "developer"}
-_SYSTEM_EXIT = SystemExit  # 测试断言 argparse 退出异常的别名（规避退出类规则误报）
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _run_cli_process(*argv: str) -> subprocess.CompletedProcess[str]:
+    """以子进程运行 CLI——在真实进程边界下断言 argparse 的退出码。"""
+    env = {
+        **os.environ,
+        "PYTHONPATH": _REPO + os.pathsep
+        + os.path.join(_REPO, "jiuwen_memory_entry", "core"),
+    }
+    return subprocess.run(
+        [sys.executable, "-m", "jiuwen_memory_entry.cli", *argv],
+        capture_output=True, text=True, env=env, timeout=120,
+    )
 
 
 def _subcommand_choices() -> set[str]:
@@ -186,30 +203,28 @@ def test_main_batch_two_ops_share_one_session(capsys, monkeypatch) -> None:
 
 def test_main_rejects_legacy_options() -> None:
     # 旧协议别名（--tenant_id 等）不被接受：argparse 参数错误退出码 2
-    with pytest.raises(_SYSTEM_EXIT) as excinfo:
-        cli_main.main(
-            ["--auth-mode", "dev", "add",
-             "--content", "x", "--scope", json.dumps(SCOPE), "--tenant_id", "demo"]
-        )
-    assert excinfo.value.code == 2
+    proc = _run_cli_process(
+        "--auth-mode", "dev", "add",
+        "--content", "x", "--scope", json.dumps(SCOPE), "--tenant_id", "demo",
+    )
+    assert proc.returncode == 2, proc.stderr
 
 
 def test_main_rejects_identity_fields() -> None:
     # 身份字段是认证边界专属——出现在业务参数里即拒绝
-    with pytest.raises(_SYSTEM_EXIT) as excinfo:
-        cli_main.main(
-            ["--auth-mode", "dev", "add",
-             "--content", "x", "--scope", json.dumps(SCOPE), "--actor", "admin"]
-        )
-    assert excinfo.value.code == 2
+    proc = _run_cli_process(
+        "--auth-mode", "dev", "add",
+        "--content", "x", "--scope", json.dumps(SCOPE), "--actor", "admin",
+    )
+    assert proc.returncode == 2, proc.stderr
 
 
-def test_main_rejects_local_auth_mode_with_server(capsys) -> None:
-    with pytest.raises(_SYSTEM_EXIT) as excinfo:
-        cli_main.main(
-            ["--server", "http://127.0.0.1:8137", "--auth-mode", "dev", "healthz"]
-        )
-    assert excinfo.value.code == 2  # 远程认证模式由服务端决定
+def test_main_rejects_local_auth_mode_with_server() -> None:
+    # 远程认证模式由服务端决定——客户端声明 dev 直接拒绝
+    proc = _run_cli_process(
+        "--server", "http://127.0.0.1:8137", "--auth-mode", "dev", "healthz",
+    )
+    assert proc.returncode == 2, proc.stderr
 
 
 # --- D. 远程等价：本地与 HTTP 完成同样的 CRUD（重建本地=远程证据）----------------- #
@@ -276,7 +291,8 @@ class _FakeResponse:
     def __enter__(self) -> "_FakeResponse":
         return self
 
-    def __exit__(self, *args: object) -> None:
+    @staticmethod
+    def __exit__(*args: object) -> None:
         return None
 
 
