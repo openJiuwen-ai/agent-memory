@@ -20,6 +20,7 @@ from jiuwen_memory.common.type_def import (
     MemoryUnit,
     Scope,
 )
+from jiuwen_memory.common.type_def.memory import MemoryTier
 from jiuwen_memory.storage.fulltext import FulltextStore
 from jiuwen_memory.storage.kv import KVStore
 from jiuwen_memory.storage.store_manager import StoreManager
@@ -218,7 +219,15 @@ def vectorize_unit(
 
     切不出 chunk 或 embed 失败的 unit 返回空列表（不阻断整批）。
     VectorIndexBuilder 与 UnifiedIndexBuilder 共用同一切片-embed 管线。
+
+    procedural tier 用 searchable_text 投影文本（Title+Use Cases+Key Hints）
+    生成向量，而非完整 6 字段 content，保证 embedding 聚焦检索语义。
     """
+    text = unit.content
+    if unit.tier == MemoryTier.PROCEDURAL:
+        searchable = (unit.system_metadata or {}).get("searchable_text")
+        if searchable:
+            text = searchable
     logger.info(
         "index_ops: vectorizing unit id=%s tier=%s provenance=%s content=%s",
         unit.id[:8],
@@ -227,7 +236,7 @@ def vectorize_unit(
         unit.content[:200],
     )
     chunks = chunker.chunk(
-        text=unit.content,
+        text=text,
         unit_id=unit.id,
         metadata={"tier": unit.tier.value},
     )
