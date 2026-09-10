@@ -28,13 +28,14 @@
 2. **端口/数据面无法具名选择**：端口方法 `kv(name)` 签名上有 name，但配置装配只认 `layers_l0/l1` 两个硬编码名，`kv/graph/fusion/fs` 端口完全没有装配路径；`domain_store()` 是唯一无 name 的获取口（单槽）。
 3. **纯点读场景过度注入**：`Dedup._load_unit`、`Governor._find`、Schema Evolver 源读、`KeywordRecaller` 实体扩展只做「按 unit_id 点读」，却注入了整个 `DomainStore`（或整个 manager）——类型层面无法表达「运行期只需要的最小接口」。
 
-**C. 控制面直连 KV**。拆分后 control 侧七个消费者注入了 `DomainStore`：两个 Engine、`list_support`、`KVLifecycleManager`、`EvolveJob`/`MiddleToLongJob` 两个 Job Spec、以及 `PipelineRetriever`。逐一审计实际调用方法：
+**C. 控制面按职责使用存储面**。拆分后 control 侧消费者按运行时需要分别注入 `DomainStore` 或 `KVStore`：`CloudEngine` 读取 MemoryUnit 领域数据，`InMemoryEngine`、`KVLifecycleManager`、`EvolveJob`/`MiddleToLongJob` 仍使用 KV 专用接口，`PipelineRetriever` 使用 DomainStore 检索适配。逐一审计实际调用方法：
 
-- **Engine×2 / list_support / 两个 Job**：只用 `get`/`list`/`scopes`——零检索适配、零领域写；
+- **CloudEngine**：只用 `get`/`list`/`scopes`——零检索适配、零领域写；
+- **EvolveJob / MiddleToLongJob**：只用 KV 点读与列表 helper，保持任务运行期最小接口；
 - **KVLifecycleManager**：`get`/`list`/`scopes` + `update(mode=FORWARD_ONLY)`——唯一的写调用，而 `CompositeDomainStore.update` 对 `FORWARD_ONLY` 与 `ALL` 行为相同（无投影能力，只落本体）；
 - **PipelineRetriever / UnifiedIndexBuilder**：`recall`/`retrieve`/`preferred_retrieval_pipeline` 与带 `mode` 的领域写——DomainStore 的本职消费方。
 
-即 control 侧 6 个文件 5 个类持有的 `DomainStore` 引用实际只用了 KV 等价能力——`CompositeDomainStore` 的 `get`/`list`/`scopes`/`update` 本身就是 `manager._stores[KV]` 的薄包装（loads/dumps + `memory_key`），DomainStore 在这条链路上是纯间接层。B-6 已为纯点读场景立了「运行期持最小接口」的先例，C 组把同一原则推进到 control 面。
+CloudEngine 读取的是 MemoryUnit 领域数据，因此使用 `DomainStore.get`/`list`/`scopes`；InMemoryEngine、EvolveJob、MiddleToLongJob 等只处理自身的 KV 真源任务，继续使用 KV helper。B-6 已为纯点读场景立了「运行期持最小接口」的先例，C 组把职责边界落实到各类 control 消费者。
 
 **D. EntityStore 纳入 manager**。A–C 三组确立的「所有 XXXStore 获取经 StoreManager」（S06 不变量 30）落地时漏掉了 `EntityStore`——A/B/C 的改造对象限定在原 `Storage` ABC 谱系内，而 EntityStore 自诞生起就走独立的 `EntityStoreProducer` + `entity_impl/`，从未进入该谱系，于是被整个绕开：前三组的决策、S06 的接口契约段落、AGENTS.md 的铁律条款均未提及它。留下的是三处**既有规约的存量违例**：
 
@@ -97,7 +98,7 @@ manager params 的键，且默认数据面与命名数据面对 params/globals �
 8. **`RoutingStorage` 同步拆为两个独立类**：`RoutingStoreManager`（内部 `ActiveRouter[StoreManager]`，端口方法返回按 `(capability, name)` 缓存的惰性代理）+ `RoutingDomainStore`（每次方法调用委托当前 active 实例的 `domain_store()`；不实现 `bind_recallers`）。
 9. **`PipelineRetriever` 只持有 `DomainStore`**：构造签名改 keyword-only 必填 `domain_store:`；`storage` property 返回类型改 `DomainStore`（名暂保留）；`_build` 工厂经 `StoreManagerProducer.resolve` 取 manager、取 `domain_store()`、装配期用 `manager.kv()` 构造 `UnitReader`，运行期只持数据面。
 10. **Recaller 持 manager，点读走 `domain_store()`**：Vector/Graph/Keyword Recaller 装配期取端口；KeywordRecaller 运行期实体扩展点读走数据面接口。（**已被 B-6 修订**：点读改走 KV 端口 + `load_units`，Recaller 不再持 manager 字段。）
-11. **上游消费者按职责面切分依赖**：管理面消费者（IndexBuilder*/Dedup*/KvSpaceManager/OrchestratingEvolver 等）持 `StoreManager`；数据面消费者（Engine×2/ListSupport/Jobs/Governor/Lifecycle/UnifiedIndexBuilder 等）持 `DomainStore`；装配层 `_Kernel.storage: StoreManager`，按面注入。
+11. **上游消费者按职责面切分依赖**：管理面消费者（IndexBuilder*/Dedup*/KvSpaceManager/OrchestratingEvolver 等）持 `StoreManager`；数据面消费者（CloudEngine/Jobs/Governor/Lifecycle/UnifiedIndexBuilder 等）持 `DomainStore`；装配层 `_Kernel.storage: StoreManager`，按面注入。
 
 ### B. 全局唯一 manager 与命名实例
 
@@ -110,13 +111,13 @@ manager params 的键，且默认数据面与命名数据面对 params/globals �
 7. **Recaller 端口可选（store None → recall 返空）**：KeywordRecaller 的 kv 端口与 GraphRecaller 的 graph 端口改为可选，与既有 store None 约定对齐。
 8. **`_Kernel.kv` 与 ingest_job 任务 KV 统一走 manager 端口**：`_Kernel.kv = manager.kv(resolve_name(root, "kv_store"))`（`ROOT_PARAMS` 既有 `kv_store` 键复用为端口名）；与 `kv_store.default` 具名实例同源（外部注入 kv 经 `KvProducer.put` 预置缓存后 `dep` 命中同一实例）。
 
-### C. 控制面真源读写直连 KV
+### C. 控制面按职责使用 DomainStore 与 KV
 
-1. **control 侧真源读写全部直连 KV 端口**：两个 Engine、`list_support`、`KVLifecycleManager`、`EvolveJob`/`MiddleToLongJob` 的构造参数 `domain_store: DomainStore` 统一改为 `kv: KVStore`。读：点读走 `load_units`、列表/分页走 `list_units`、跨 scope 枚举走 `kv.scopes()`；写（仅 lifecycle 的非破坏式回写）：`kv.update(scope, memory_key(unit.id), dumps(unit))`——即 `ForwardIndexBuilder` 的写侧模式，回写对象是正排本体本身，无检索索引需要拆分。
-2. **`storage/kv.py` 新增 `list_units` helper**：`list_units(kv, scope, *, offset, limit, memory_types, filters, extensions) -> tuple[list[MemoryUnit], int]`——与 `load_units` 对称的列表读 helper：`kv.list` + 逐条 `loads`（非 MemoryUnit 记录自然过滤），返回 `(items, count)`。过滤/计数/分页语义全部由 `KVStore.list` 契约承担，helper 不做二次过滤。承载 Engine 全量扫描、`list_page` 分页、Lifecycle sweep、两个 Job 的候选拉取。
-3. **装配键复用 `params.kv_store`**：五处 `_build`/Spec builder（cloud/in_memory 两个 Engine、evolve/middle 两个 Job Spec、lifecycle）从 `resolve(config).domain_store(resolve_name(config, "domain_store"))` 改为 `.kv(resolve_name(config, "kv_store"))`。`kv_store` 是 `ROOT_PARAMS` 既有键（B-8 已用），默认值 `"default"`——默认拓扑与既有配置零兼容影响。
-4. **DomainStore 消费方收敛为两类**：检索路径（`PipelineRetriever` 持 `domain_store(name)`）与一体化写路径（`UnifiedIndexBuilder` 领域写 + `mode` 透传）。control 面不再持有 DomainStore 引用。
-5. **删除两个 Engine 中的死代码 `_write_middle_to_kv` / `_write_default_to_kv`**：全库零调用点的历史遗留，且是 engine 内仅存的 `DomainStore.add` 写调用——与「记忆本体的写入一律经 IndexBuilder」铁律冲突的潜在入口，删除而非移植。
+1. **CloudEngine 的 MemoryUnit 读路径使用 DomainStore**：CloudEngine 通过 `StoreManager.domain_store(resolve_name(config, "domain_store"))` 注入数据面，点读走 `get`、列表/分页走 `list`、跨 Scope 枚举走 `scopes()`；写入仍经 `IndexBuilder`，不调用 `DomainStore.add/update/delete`。原始消息、构建层专用数据以及其他 Job 的专用 KV 读写继续保留各自的 KVStore 依赖。
+2. **`storage/kv.py` 读 helper 保留给 KV 专用消费者**：`list_units` 与 `load_units` 继续服务 InMemoryEngine、LifecycleManager、EvolveJob、MiddleToLongJob 等仍以 KV 为运行时最小接口的场景；CloudEngine 的 MemoryUnit 读路径直接使用 DomainStore。
+3. **CloudEngine 装配按命名数据面选择**：CloudEngine 从 `StoreManager.domain_store(resolve_name(config, "domain_store"))` 获取命名 DomainStore；`InMemoryEngine` 与共享 `list_support` 保持原有 KV 路径。
+4. **DomainStore 消费方扩展至控制层**：检索路径（`PipelineRetriever`）、CloudEngine 和一体化写路径（`UnifiedIndexBuilder`）使用 DomainStore；CloudEngine 不调用领域写方法。
+5. **删除 Engine 死代码 `_write_middle_to_kv` / `_write_default_to_kv`（历史决策）**：全库零调用点的历史遗留，且是 engine 内仅存的 `DomainStore.add` 写调用——与「记忆本体的写入一律经 IndexBuilder」铁律冲突的潜在入口，删除而非移植。该决策只说明删除历史死代码，不改变本轮 `InMemoryEngine` 继续使用 KVStore 的读取路径。
 
 ### D. EntityStore 纳入 manager 成为第七 capability
 
@@ -208,12 +209,12 @@ manager params 的键，且默认数据面与命名数据面对 params/globals �
 - **保留 `params.storage` 引用语义兼容**：留着等于给「第二套 manager」留后门，与全局唯一语义矛盾。
 - **Recaller 端口名仅由 layer 推导**：自定义分表/多向量空间场景需要显式指名；显式覆盖优先、缺省推导，两层并存。
 
-### C. 控制面真源读写直连 KV
+### C. 控制面直接依赖 DomainStore
 
-- **保留 DomainStore 依赖（行为等价，不动）**：`CompositeDomainStore` 下行为确实等价，但依赖面更大——未来 DomainStore 获得非 KV 语义（如一体化后端自带索引投影）时，control 面会静默继承它未声明消费的能力。
+- **让 Engine 继续直接持有 KVStore**：虽然 `CompositeDomainStore` 当前可提供等价读操作，但这会让 Engine 绕过数据面契约，未来接入非 KV 真源的一体化 DomainStore 时无法读取真实数据。
 - **消费者持 manager、调时再取端口**：违反「运行期持最小接口」——manager 是装配期对象，端口应在构造期固化（`kv(name)` 返回的 `_LazyStorePort` 代理已保证 active 切换时跟随重解析）。
 - **lifecycle 回写仍走 `DomainStore.update(FORWARD_ONLY)`**：CompositeDomainStore 对 FORWARD_ONLY/ALL 行为相同，调用实际是裸 KV 往返 + 授权代理二跳；且 control 面若为此单独保留 DomainStore 注入点，决策 C-1 的收窄就不彻底。
-- **在 DomainStore ABC 上加纯 KV 便捷方法（`load_units`/`list_units` 成员）**：会把「持最小接口」退化回「持 DomainStore」；模块级函数收 `KVStore` 入参，端口消费者与数据面消费者都可复用。
+- **在 DomainStore ABC 上增加 `load_units`/`list_units` 便捷方法**：会重复已有 `get`/`list` 契约，因此改为直接调用现有领域接口，不扩展公共 ABC。
 
 ### D. EntityStore 纳管
 
@@ -269,11 +270,11 @@ manager params 的键，且默认数据面与命名数据面对 params/globals �
 
 ## 已知遗留
 
-- **「本体不落 KV」的一体化 DomainStore 会破坏 C 组前提**：直连 KV 的等价性依据是 S06 不变量 28（真源恒为 KV `/memory/` 前缀）+ 当前唯一注册的 domain_store 实现是 composite。未来 F05 愿景中「本体进一体化后端、不落独立 KV」的实现落地时，control 面直连 KV 会读不到真源，届时需重新评估（Engine/Jobs/Lifecycle 应改持 DomainStore 或由装配注入统一读端口）。
-- **授权语义变化（B-6 / C-1）**：点读与列表读的授权 resource 从 `DomainStore` 领域动作（`memory_unit` 等）变为 KV 端口代理动作（`kv`，GET/LIST/UPDATE/ADMIN 标签）；且 `_AuthorizedStoreProxy` 对 `load_units` 是每 key 一次授权事件（原 `DomainStore.get/list` 每调用一次），审计事件数量级变大。默认 `AllowAllStorageSecurity` 下零感知，自定义 security 策略需按新 resource/动作名调整。这是收紧而非放松。
+- **「本体不落 KV」的一体化 DomainStore 仍要求 IndexBuilder 与 DomainStore 共享真源**：本次 Engine 已经经 DomainStore 读取，因此未来一体化后端可承接控制层读路径；其写入侧仍需与 Engine 注入的 IndexBuilder 及后台任务保持一致。
+- **授权语义变化**：Engine 的点读与列表读重新经 DomainStore 的 `memory_unit` 领域授权；LifecycleManager、EvolveJob、MiddleToLongJob 等 KV 专用消费者仍按 KV 端口授权。默认 `AllowAllStorageSecurity` 下零感知，自定义 security 策略需分别覆盖对应 resource/action。
 - **YAML 兼容性破坏（B-1）**：用户配置的 `storage:` 顶层段与 `storage.active` 键需改写为 `store_manager:` / `store_manager.active`；旧段装配期明确报错（fail-fast），旧 `params.storage` 键静默无效。
 - **`resolve` 不再匿名兜底**：空 `AssemblyContext`（无 `store_manager` 段）下调用 resolve 报错——手工装配场景需显式声明或 `put` 预置。
-- **`CompositeDomainStore._validate_units` 前置校验在直连 KV 路径不再被执行**（C）：`unit.scope != scope` 的防御性校验丢失。lifecycle 写对象全部从同一 scope 点读而来（一致 by construction），CloudEngine 保留 `_ensure_unit_scope` 读后校验，风险面未扩大；外部构造的 unit 直接调 KV 回写时该不变量由调用方负责。
+- **CloudEngine 的 Scope 校验仍保留**：Engine 通过 DomainStore 读取后继续执行 `_ensure_unit_scope`；KV 专用消费者的直接回写仍由各自调用方保证显式 Scope 一致性。
 - **`pipeline_retriever.py` 的 `storage` property 名保留**（返回类型已是 `DomainStore`），后续可重命名为 `domain_store`。
 - **`bind_recallers` 在 `RoutingDomainStore` 上不可用**：手工接线始终作用于 `CompositeDomainStore` 实例。
 - **`domain_store(name)` 急切构建**：`_named_ports` 与 `domain_stores` 段在 manager 装配期构建全部声明实例，指向外部服务的具名 store 即使无人使用也会被构建，装配失败面变大（设计代价）。

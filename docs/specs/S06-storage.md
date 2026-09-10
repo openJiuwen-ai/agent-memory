@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-09-05 |
+| 最近一次修订日期 | 2026-09-09 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
 ## Metadata 物理存储契约
@@ -118,10 +118,11 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
     改经 `manager.entity(name)`，`EntityStoreProducer.dep` 旁路移除，读写共享同一实例由
     manager 保证而非配置纪律）；
     端口选择键（`params.kv_store` / `vector_store` / `entity_store` / ... / `domain_store`）的值是 manager 端口/
-    数据面名（仅字符串，inline dict 拒绝）。纯「按 unit_id 点读」与「列表/全量扫描」场景注入
-    KVStore 端口并用 `load_units` / `list_units` helper，不过度依赖 `DomainStore`——control 面
-    （Engine×2 / LifecycleManager / EvolveJob / MiddleToLongJob）真源读写全部直连 KV 端口，
-    DomainStore 的消费方是检索路径（PipelineRetriever）与一体化写路径（UnifiedIndexBuilder）。
+    数据面名（仅字符串，inline dict 拒绝）。`CloudEngine` 的 MemoryUnit 点读、列表/全量扫描
+    与 Scope 枚举注入 DomainStore，并通过 `get` / `list` / `scopes` 访问；`InMemoryEngine`、
+    原始消息、LifecycleManager、EvolveJob、MiddleToLongJob 等 KV 专用场景仍直接使用
+    KVStore 端口。DomainStore 同时服务 CloudEngine 的 MemoryUnit 读取、检索路径
+    （PipelineRetriever）与一体化写路径（UnifiedIndexBuilder）。
 31. **health 聚合覆盖全部已声明端口**：增强层的降级发生在**装配期**（builder 返 None →
     无该 capability → 消费方跳过），不在探活期；端口一旦声明且构造成功，后端不可达就应让
     `manager.health()` 报错，不给任何 capability 开健康豁免。运行期容错仍由消费方各自的
@@ -248,10 +249,10 @@ tuple[list[MemoryUnit], int]`：列表读的对称件——`kv.list` + 逐条 `l
 MemoryUnit 记录自然过滤），返回 `(items, count)`；过滤/计数/分页语义全部由 `KVStore.list`
 契约承担，helper 不做二次过滤。
 
-两者供 Dedup._load_unit / Governor._find / Evolver 源读 / KeywordRecaller 实体扩展等纯按
-id 点读场景，以及 Engine（点读/全量扫描/分页 list）、LifecycleManager sweep、
-EvolveJob/MiddleToLongJob 候选拉取等列表场景共用——这类场景注入 KVStore 端口而非
-DomainStore。
+两者供 InMemoryEngine、Dedup._load_unit / Governor._find / Evolver 源读 / KeywordRecaller
+实体扩展等纯按 id 点读场景，以及 LifecycleManager sweep、EvolveJob/MiddleToLongJob
+候选拉取等 KV 专用列表场景共用。CloudEngine 的 MemoryUnit 点读、全量扫描和分页 list
+改经 DomainStore 的 `get` / `list` / `scopes`，不再调用这些 helper。
 
 ### BaseStore（基类，`base.py`）
 
@@ -504,7 +505,7 @@ Store 抽象、跨后端不变量与注册机制。
 
 | 关联 spec | 关系 |
 |-----------|------|
-| S03-control | Engine/LifecycleManager/Jobs 真源读写直连注入的 KVStore 端口（点读 `load_units` / 列表 `list_units`）；目标生命周期/治理操作按显式 Scope 定位，全局 sweep/offboarding 才跨 Scope 枚举 |
+| S03-control | InMemoryEngine 继续使用 KVStore 读取；CloudEngine 的 MemoryUnit 真源读取经注入的 DomainStore（点读 `get` / 列表 `list` / 枚举 `scopes()`）；目标生命周期/治理操作按显式 Scope 定位，全局 sweep/offboarding 才跨 Scope 枚举 |
 | S04-retrieval | Retriever 经 `StoreManagerProducer.resolve` 取全局 manager 并持其 `domain_store()`，不持有召回路；`Recaller` 契约与实现归本层数据面，由 `for_manager` 按 `domain_stores.<name>` 的选择键在构建期同步组装（具名构建用 `config.name` 预注册、匿名构建用合成名预注册打破循环） |
 | S05-construction | 构建层通过本层抽象做真源与索引持久化 |
 | S07-common | 定义 `MemoryUnit.hierarchy`、`HierarchyKind`、`HierarchyRole` 与 `FilterClause` |

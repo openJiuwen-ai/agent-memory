@@ -45,6 +45,7 @@ from jiuwen_memory.retrieval.retriever import Retriever
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult, RetrievedItem
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
+from tests.conftest import make_storage
 
 pytestmark = pytest.mark.unit
 
@@ -237,6 +238,26 @@ class _RecordingKVStore(InMemoryKVStore):
         return super().list(scope, **kwargs)
 
 
+class _RecordingDomainStore:
+    def __init__(self, delegate) -> None:
+        self._delegate = delegate
+        self.get_calls = []
+        self.list_calls = []
+        self.scopes_calls = 0
+
+    def get(self, scope, unit_ids):
+        self.get_calls.append((scope, unit_ids))
+        return self._delegate.get(scope, unit_ids)
+
+    def list(self, scope, **kwargs):
+        self.list_calls.append((scope, kwargs))
+        return self._delegate.list(scope, **kwargs)
+
+    def scopes(self):
+        self.scopes_calls += 1
+        return self._delegate.scopes()
+
+
 class _NoopLifecycle(LifecycleManager):
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.LIFECYCLE
@@ -334,6 +355,7 @@ class _MessageTypePipeline(MemoryPipeline):
 
 def _engine(ingestor: Ingestor | None = None):
     kv = _RecordingKVStore()
+    domain_store = _RecordingDomainStore(make_storage(kv=kv).domain_store())
     chat_index = _RecordingIndexBuilder("chat", kv)
     coding_index = _RecordingIndexBuilder("coding", kv)
     chat_classifier = _RecordingClassifier("chat")
@@ -363,7 +385,7 @@ def _engine(ingestor: Ingestor | None = None):
             ingestor=ingestor or _RecordingIngestor(),
             index_builder=chat_index,
             retriever=chat_retriever,
-            kv=kv,
+            domain_store=domain_store,
             scheduler=InProcessScheduler(),
             evolver=chat_evolver,
             lifecycle=_NoopLifecycle(),
@@ -374,6 +396,7 @@ def _engine(ingestor: Ingestor | None = None):
         ),
         {
             "kv": kv,
+            "domain_store": domain_store,
             "chat_index": chat_index,
             "coding_index": coding_index,
             "chat_classifier": chat_classifier,
@@ -564,7 +587,7 @@ def test_cloud_engine_list_forwards_query_and_returns_total_count() -> None:
     assert result.count == 2
     assert len(result.items) == 1
     assert result.items[0].id in {first.id, second.id}
-    call_scope, call_options = records["kv"].list_calls[0]
+    call_scope, call_options = records["domain_store"].list_calls[0]
     assert call_scope == scope
     assert call_options["offset"] == 1
     assert call_options["limit"] == 1
@@ -673,7 +696,7 @@ def _engine_with_job_factory(
         ingestor=_RecordingIngestor(),
         index_builder=chat_index,
         retriever=_RecordingRetriever("chat"),
-        kv=kv,
+        domain_store=make_storage(kv=kv).domain_store(),
         scheduler=scheduler,
         evolver=chat_evolver,
         lifecycle=lifecycle,
