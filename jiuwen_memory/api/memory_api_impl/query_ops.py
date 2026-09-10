@@ -158,6 +158,7 @@ class QueryOpsMixin:
             span_start=hierarchy.span_start,
             span_end=hierarchy.span_end,
             expand_depth=options.expand_depth,
+            rollup=options.rollup,
         )
         if spaces is not None:
             return self._search_spaces(

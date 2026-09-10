@@ -37,9 +37,13 @@ For the public MemoryAPI, use `api.search(query, context, SearchOptions(...), se
 Import `SearchOptions` from `jiuwen_memory.api`. Omitted options use defaults; old flat option
 keywords are no longer accepted. HTTP/CLI carry the same fields in a nested `options` object.
 Typed hierarchy queries require `hierarchy.enabled=true`, retain existing Scope/permissions,
-and default to direct hits only (`expand_depth=0`). A positive depth explicitly follows child
-references: 1 reads direct children, 2 follows at most two edges. Rollup and automatic construction
-are not implemented.
+and default to direct hits only (`rollup=False`, `expand_depth=0`). A positive depth follows child
+references: 1 reads direct children, 2 follows at most two edges. With `rollup=True`, matching
+descendants can admit the nearest ancestor of the requested role; without a role, direct hits
+remain and their direct parents are added. MaxP takes the highest direct/descendant score after
+reranking, before thresholds and top_k. Rollup does not imply expansion or scan sessions.
+Exact physical-Scope materialization limits still apply; the multimodal wrapper rejects rollup.
+Automatic construction is not implemented.
 See [S02](../../specs/S02-memory-api.md) for the public contract.
 
 ## 2. RetrievalOperator Base Class
@@ -79,6 +83,7 @@ class RetrievalQuery:
     span_end: datetime | None = None
     expand_depth: int = 0
     defer_expansion: bool = False  # Internal protocol; not a SearchOptions field
+    rollup: bool = False
 ```
 
 | Field | Description |
@@ -86,7 +91,7 @@ class RetrievalQuery:
 | `text` | Original natural-language query |
 | `filters` | Hard user-metadata predicate outside the Scope dimensions; normalized to `FilterExpr` when the object is created |
 | `as_of` | A valid-time point for historical lookup; `None` means the current state |
-| `top_k` | Maximum direct-hit roots; must be greater than 0. Expanded children do not consume root slots |
+| `top_k` | Maximum final roots, including admitted ancestors; must be greater than 0. Expanded children do not consume root slots |
 | `disclosure` | Primary disclosure level: `L0`, `L1`, `L2`, or `ADAPTIVE` |
 | `max_tokens` | Token budget for adaptive disclosure; if provided, it must be greater than `0` |
 | `with_trajectory` | Whether to include the retrieval trajectory in the result |
@@ -98,6 +103,7 @@ class RetrievalQuery:
 | `span_start` / `span_end` | Paired, ordered structural closed interval; naive timestamps mean UTC, independent of event-time and valid-time |
 | `expand_depth` | Nonnegative integer, excluding bool; nonzero depth requires an explicit kind |
 | `defer_expansion` | Internal cross-space root-selection protocol; rejected by the public API/HTTP/CLI |
+| `rollup` | Strict bool, default False; True requires kind and enables ancestor admission with MaxP independently of expansion |
 
 Expansion preserves Scope, kind, business/permission filters and temporal visibility; only the
 typed parent-role condition is removed. Roots are admitted first, followed by BFS descendants

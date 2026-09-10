@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-08-15 |
 | 影响范围 | jiuwen_memory/api/、jiuwen_memory/common/、jiuwen_memory/construction/、jiuwen_memory/control/、jiuwen_memory/ingest/、jiuwen_memory/retrieval/、jiuwen_memory/storage/；docs/specs/S01–S07；关联 [`F05-construction-spec-multimodal-design`](../construction/F05-construction-spec-multimodal-design.md) |
-| 测试基线 | 阶段 1：完整 unit 回归 1891 passed；阶段 2：2082 passed；阶段 3：2229 passed；阶段 4：2413 passed；阶段 5：2505 passed。各阶段均为 5 skipped、480 deselected。各阶段变更无新增 Ruff/CodeCheck 本地预审问题，历史诊断见对应阶段验证；未执行云端 CodeCheck |
+| 测试基线 | 阶段 1：完整 unit 回归 1891 passed；阶段 2：2082 passed；阶段 3：2229 passed；阶段 4：2413 passed；阶段 5：2505 passed；阶段 6：2585 passed。各阶段均为 5 skipped、480 deselected。各阶段变更无新增 Ruff/CodeCheck 本地预审问题，历史诊断见对应阶段验证；未执行云端 CodeCheck |
 | Refs | — |
 
 ## 阶段 1 落地（2026-09-10）
@@ -14,7 +14,7 @@
 本次只交付“能表达、接入和存储结构身份”的基础能力，不交付自动建树或层级召回。
 本节记录阶段 1 完成时的状态：当时除本节明确列出的能力及下文叶提示接入外，Composer、
 显式 `evolve(HIERARCHY)`、结构查询/展开/MaxP、后台任务、修复器和各 kind 算法均未实现。
-当前新增交付以阶段 5 小节为准；后文仍保留尚未开放的总体设计。
+当前新增交付以阶段 6 小节为准；后文仍保留尚未开放的总体设计。
 后文 P0–P5 是原设计分期，不等同于已经完成的提交阶段。
 
 ### 已交付与决定
@@ -342,6 +342,61 @@ CodeCheck 规则扫描生产、测试、fixture/stub 与相邻定义：修正新
 4 处可静态化方法风险，均对比 HEAD 确认为原有项，不扩大本阶段重构。
 git diff --check 通过；未执行 GitCode 云端 CodeCheck，本地检查不代表云端批准。
 
+## 阶段 6 落地（2026-09-10）
+
+本阶段交付“叶或中间节点命中后，可以找回原本没有直接命中的父，并提高父的相关性
+得分”。建树仍是 snapshot→time_span 两层，未引入 scene/event 构建或自动演进。
+
+### 做了什么
+
+- 统一 `SearchOptions.rollup=False`，API、HTTP/CLI 共用协议和内部 RetrievalQuery
+  透传；严格 bool，开启要求显式 kind，仍受 hierarchy.enabled 门禁。
+- 上卷时只取消 typed 输出角色的候选下推，父/后代使用同一个融合、精排池。精排之后、
+  最终阈值及 top_k 之前，沿双向可核验的父边准入祖先。指定 role 取最近匹配祖先；
+  不指定 role 保留直接命中，并额外准入直接父，不继续上卷新父。
+- MaxP 取父自身与命中后代最终得分中的最大值，不累加。新父没有独立索引命中时，
+  不复制子 evidence 冒充父命中。原来就命中的父保留自身 evidence。
+- 上卷遍历检查完整 Scope+id、kind、状态、时间、权限/业务过滤、双向引用和 span
+  覆盖；先判断 Scope 再读。单链 32 跳，单 Pipeline 调用共 1000 次父引用尝试，
+  请求内按完整身份缓存；坏分支只读跳过，HIERARCHY/rollup 错误不依赖轨迹开关。
+- 内置 Discloser 使用物化候选自身 unit，保留同 id 不同 Scope 父正文；展开准备按
+  顺序一对一绑定根和来源。跨空间先各自上卷、再全局选根；expand_depth 独立控制
+  向下读取，阶段 5 的根优先和全局共享披露预算保持不变。
+
+### 例子与边界
+
+用户问“数据库超时改成了多少”：snapshot 精排分为 0.9，time_span 自身为 0.2，
+开启 `rollup=True, hierarchy_role=TIME_SPAN` 后父分变为 0.9；即便父没有索引命中也
+可以准入。另一个 snapshot 得 0.7 不会把父分累加成 1.6。默认 depth=0 只返回父，
+depth=1 再按结构读取原始证据。
+
+本次不增加第二次独立归一化的“后代召回池”，避免不可比较分数；也不增加 top-M、
+子相关性排序、score_propagation 策略或新的建树层级。MultimodalRetriever 的分支
+RRF 尚未适配上卷，明确拒绝 rollup=True，不能视作已支持。
+
+上卷只消费既有召回/精排预算内实际物化的候选，不扫描所有 MemoryUnit。
+当前 CompositeDomainStore 裸 id 点读按查询精确物理 Scope 读取，不自动扫描 session；
+默认“session 内 snapshot、home 内 time_span”布局不能保证在 home 查询时召回到叶。
+而 session 限定查询也不能上卷到更宽的 home。跨 session 候选身份/取数与 Fuser 裸 id
+归并是已有边界，未在本阶段做存储协议改造；祖先的完整身份隔离不等于解决了该问题。
+
+### 验证
+
+确定性测试覆盖三条存储路径、三种融合器及有/无精排、父未命中准入、MaxP 不累加、
+最近角色、直接父、范围预检、过滤/历史状态、坏边/环/上限、同名跨 Scope 父的披露及
+展开来源、两种真实 Engine、HTTP/CLI 共用协议和真实跨空间上卷+展开。
+
+完整 unit 回归 **2585 passed、5 skipped、480 deselected**（78.72 秒），比阶段 5
+增加 80 个通过项；阶段 6 的 80 项定向用例复查通过。5 个跳过仍为真实 LLM/Redis
+用例，5 条 warning 仍为既有未知 asyncio marker；未运行真实外部后端或 LoCoMo 等评测。
+
+17 个变更 Python 文件通过 Ruff（含 --fix 后复查），git diff --check 通过。按已有
+CodeCheck 十条规则检查生产、测试、fixture 和邻近定义，修正行长/import、推导式变量
+遮蔽，并将更新的 Discloser 多行签名说明移到模块文档；无新增本地预审风险。
+原有多参数、邻近签名/docstring、可静态化及变量遮蔽风险未扩范围重构；无业务 assert、测试
+protected-access 或无返回值调用赋值。未执行 GitCode 云端 CodeCheck，本地检查不代表
+云端通过。不暂存或创建提交，原 tree-mem 分支保持不变。
+
 ## 背景
 
 现有记忆模型已经覆盖三轴，彼此独立、互不推导：
@@ -401,11 +456,11 @@ git diff --check 通过；未执行 GitCode 云端 CodeCheck，本地检查不�
 3. 既有非 `HIERARCHY` 演进模式不暗改 `HierarchyRef`；`evolve(HIERARCHY)` 只维护
    树结构边与派生父。
 
-## 决策（总体设计；当前落地范围以阶段 1–5 小节为准）
+## 决策（总体设计；当前落地范围以阶段 1–6 小节为准）
 
 下文包含未来目标，不表示各组件、策略和公开入口已经实现；未落地部分不能作为当前
 运行时行为依据。公开 HIERARCHY 只交付阶段 3 的显式两层 TIME 范围；FORGET 断边、
-LayerAnnotator 父标注、分数上卷、后台自动派生和修复仍为后续目标；查询展开已在阶段 5 落地。
+LayerAnnotator 父标注、后台自动派生和修复仍为后续目标；展开已在阶段 5、上卷已在阶段 6 落地。
 
 ### 1. 首期采用内嵌 `HierarchyRef`
 
@@ -564,12 +619,12 @@ TIME 父节点会因切分策略、修正或新增叶而重算。`replace_in_spa
    子节点；展开默认不跨 kind。
 
 父优先使粗粒度摘要成为稳定入口，同时保留“先看概要、再取证据”的交互方式。
-叶命中向父上卷是后续目标，当前不接受 rollup 参数，避免把设计写成已实现能力。
+阶段 6 已开放 rollup，允许实际命中的后代准入父并传播 MaxP，具体边界见阶段 6 小节。
 检索轨迹必须区分父层命中与子树展开阶段，并记录根节点、展开深度、返回节点数和预算
 截断原因，使父→子的证据路径可审计。
 
 `RetrievedItem` 保持扁平，不嵌套 `child_ids` 或树容器。调用方在同一次 `search` 中通过
-非零 `expand_depth` 展开；**不另设公开 `MemoryAPI.expand`**。目标中的 `rollup` 只把后代相关性
+非零 `expand_depth` 展开；**不另设公开 `MemoryAPI.expand`**。`rollup` 把后代相关性
 传播到目标父角色，默认不展开后代；“父命中”“分数上卷”和“内容展开”是三个可独立启用的动作。
 
 层级过滤、展开和结果结构的精确公开契约已写入
@@ -580,8 +635,8 @@ TIME 父节点会因切分策略、修正或新增叶而重算。`replace_in_spa
 
 父子结构新增两类跨节点决策：
 
-- **分数传播（后续阶段）**：拟采用 MaxP，把父自身得分与相关子节点最高分合并；同一父下应有
-  top-M 或阈值收敛，防止候选爆炸。其他传播算法留待后续基准验证。
+- **分数传播（阶段 6）**：已采用 MaxP，把父自身得分与命中后代最高分合并；
+  top-M 或子相关性阈值收敛、其他传播算法仍留待后续基准验证，不属于本次交付。
 - **节点准入与主披露级**：`expand_depth>0` 时，选哪些子节点及每个节点的主
   `DisclosureLevel`，与父命中一起消耗既有 `RetrievalQuery.max_tokens`（来自
   `context.extensions["max_tokens"]`），**不**另设 `expand_budget_tokens` 或独立
@@ -890,14 +945,14 @@ evolve(scope, EvolveTaskOptions(mode=HIERARCHY, hierarchy_options=...), security
 
 ```text
 search(query, context, SearchOptions(hierarchy_kind=..., hierarchy_role=..., expand_depth=N))
-  → 既有 QueryParser → 多路召回 → Fuser → Reranker → 阈值 → top_k
+  → 既有 QueryParser → 多路召回 → Fuser → Reranker → [rollup] 祖先准入/MaxP → 阈值 → top_k
   → Discloser 塑形根；[若 N>0] 内部准备根与来源
   → 单/跨空间最终选根 → 共用 max_tokens 准入根
   → [若 N>0] Expander 按根顺序 BFS：真源复核 → Discloser 塑形子 → 预算准入
   → RetrievalResult（扁平 RetrievedItem + 可选轨迹 + errors）
 ```
 
-expand_depth=0 不准备或展开；rollup 尚未开放，目标中只影响父分、不自动展开。
+expand_depth=0 不准备或展开；rollup 已开放，可准入祖先并传播分数，但不自动展开。
 
 ## 拒绝的方案
 
@@ -948,12 +1003,13 @@ expand_depth=0 不准备或展开；rollup 尚未开放，目标中只影响父�
 补齐内部最小 TIME 构建及受限替换，完整 unit 回归 2082 passed、5 skipped。
 阶段 3 增加显式任务入口与完整候选读取，完整 unit 回归 2229 passed、5 skipped。
 阶段 4 增加 SearchOptions、直接结构查询与真源复核；阶段 5 交付只读展开与共享预算，
-仍不等于后续上卷已经实现。
+阶段 6 交付祖先准入与 MaxP，不等于后续 top-M、scene/event 或自动演进已实现。
 不得用已有 pytest 结果替代未交付能力的实现验证。
 
 以下 P0–P5 是决策 19 的原设计验收分组，不是本次按能力整理的提交阶段顺序。
 阶段 1 覆盖模型、叶提示与索引投影，阶段 2 覆盖 P1 的最小内部构建切片，阶段 3
-覆盖显式调用、完整取数与任务状态闭环；阶段 4 覆盖直接层级查询，阶段 5 覆盖展开与预算；其余验收保留为后续目标，按实际交付
+覆盖显式调用、完整取数与任务状态闭环；阶段 4 覆盖直接层级查询，阶段 5 覆盖展开与预算，
+阶段 6 覆盖祖先准入与 MaxP；其余验收保留为后续目标，按实际交付
 逐项验证，不因属于同一个原设计分组而提前标记完成。
 
 ### 阶段 0：设计验收
@@ -984,7 +1040,8 @@ expand_depth=0 不准备或展开；rollup 尚未开放，目标中只影响父�
 - [x] 默认父层召回不自动包含子全文。
 - [x] 展开按顺序、深度、kind 与 scope 约束返回子树切片。
 - [x] 检索轨迹分别记录父层命中与展开阶段，并能解释展开深度和预算截断。
-- [ ] MaxP 与 top-M 收敛策略有确定性测试。
+- [x] MaxP 上卷与祖先准入有确定性测试（阶段 6）。
+- [ ] top-M 选子收敛策略有确定性测试。
 - [x] 根与后代共享预算，根据 Discloser 实际字段准入节点并确定主 level。
 - [x] `MemoryUnit.temporal`、`RecallChannel.TEMPORAL` 和 `HierarchyKind.TIME` 的过滤行为互不替代。
 

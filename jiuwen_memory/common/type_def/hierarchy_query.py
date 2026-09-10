@@ -78,6 +78,14 @@ def validate_expand_depth(depth: int, kind: HierarchyKind | None) -> None:
         raise ValidationError("非零 expand_depth 要求显式 hierarchy_kind")
 
 
+def validate_rollup(rollup: bool, kind: HierarchyKind | None) -> None:
+    """上卷是显式布尔选项，开启时必须指定单一结构 kind。"""
+    if type(rollup) is not bool:
+        raise ValidationError("rollup 必须是 bool")
+    if rollup and kind is None:
+        raise ValidationError("rollup 要求显式 hierarchy_kind")
+
+
 def matches_hierarchy(unit: MemoryUnit, query: HierarchyQuery) -> bool:
     """真源复核 kind/role/status 与闭区间；缺失或非法 TIME 区间不能匹配。"""
     if not query.enabled:
