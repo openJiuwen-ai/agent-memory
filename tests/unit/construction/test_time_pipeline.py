@@ -74,10 +74,10 @@ def test_stage_options_reject_invalid_positive_integers(field_name, raw_value) -
 @pytest.mark.parametrize(
     "stage_options",
     [
-        {"summary_mode": "llm"},
+        {"summary_mode": "semantic"},
         {"summary_mode": "unknown"},
         {"summary_mode": ""},
-        {"end_signal_metadata_keys": "done"},
+        {"end_signal_metadata_keys": ["done"]},
         {"similarity_threshold": "0.7"},
         {"max_duration_seconds": "60"},
         {"settle_seconds": "60"},

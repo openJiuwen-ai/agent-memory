@@ -6,7 +6,7 @@
 父正文保留两段结构：时间与数量表头，以及有界原文摘录；不是 LLM 语义摘要。
 
 分组只引用输入，建父不改输入；完整流水线深拷贝叶后仅改父边。新增父 UUID 与摄入时间
-不参与分组判据。这里不实现 scene/event、增量封口、Embedding 或 L0/L1 标注。
+不参与分组判据。scene 与可选摘要/L0/L1 由上层 TimeHierarchyPipeline 编排。
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ _SUPPORTED_OPTIONS = frozenset(
         "summary_max_leaves",
         "summary_max_chars_per_leaf",
         "summary_mode",
+        "end_signal_metadata_keys",
     }
 )
 _NON_PROPAGATED_KEYS = frozenset({"infer", "procedural", "middle"})
@@ -53,7 +54,8 @@ def as_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def _positive_int(stage_options: dict[str, str], key: str, fallback: int) -> int:
+def positive_int(stage_options: dict[str, str], key: str, fallback: int) -> int:
+    """解析阶段选项的正整数。"""
     raw = stage_options.get(key)
     if raw is None or str(raw).strip() == "":
         return fallback
@@ -66,7 +68,8 @@ def _positive_int(stage_options: dict[str, str], key: str, fallback: int) -> int
     return parsed
 
 
-def _split_keys(raw: str | None) -> tuple[str, ...]:
+def split_keys(raw: str | None) -> tuple[str, ...]:
+    """解析去重后的系统元数据键。"""
     if raw is None or raw == "":
         return ()
     if not isinstance(raw, str):
@@ -88,13 +91,17 @@ class TimeSpanMergerOptions:
     carry_metadata_keys: tuple[str, ...] = ()
     summary_max_leaves: int = 20
     summary_max_chars_per_leaf: int = 60
+    summary_mode: str = "structural"
+    end_signal_metadata_keys: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("gap_seconds", "summary_max_leaves", "summary_max_chars_per_leaf"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValidationError(f"{name} 必须是正整数，实际 {value!r}")
-        for name in ("boundary_metadata_keys", "carry_metadata_keys"):
+        if self.summary_mode not in ("structural", "llm"):
+            raise ValidationError("summary_mode 必须是 structural 或 llm")
+        for name in ("boundary_metadata_keys", "carry_metadata_keys", "end_signal_metadata_keys"):
             configured = getattr(self, name)
             if not isinstance(configured, tuple):
                 raise ValidationError(f"{name} 必须是不可变的字符串元组")
@@ -104,23 +111,23 @@ class TimeSpanMergerOptions:
 
     @classmethod
     def from_stage_options(cls, stage_options: dict[str, str]) -> TimeSpanMergerOptions:
-        """解析 TimeSpanMerger 的内层配置，拒绝未知键和非 structural 摘要模式。"""
+        """解析 TimeSpanMerger 的内层配置，拒绝未知键。"""
         if not isinstance(stage_options, dict):
             raise ValidationError("TimeSpanMerger stage_options 必须是字典")
         unknown = set(stage_options) - _SUPPORTED_OPTIONS
         if unknown:
             raise ValidationError(f"TimeSpanMerger 不支持这些选项：{sorted(unknown)!r}")
         summary_mode = stage_options.get("summary_mode", "structural")
-        if summary_mode != "structural":
-            raise ValidationError("TimeSpanMerger 本阶段只支持 summary_mode=structural")
         return cls(
-            gap_seconds=_positive_int(stage_options, "gap_seconds", DEFAULT_GAP_SECONDS),
-            boundary_metadata_keys=_split_keys(stage_options.get("boundary_metadata_keys")),
-            carry_metadata_keys=_split_keys(stage_options.get("carry_metadata_keys")),
-            summary_max_leaves=_positive_int(stage_options, "summary_max_leaves", 20),
-            summary_max_chars_per_leaf=_positive_int(
+            gap_seconds=positive_int(stage_options, "gap_seconds", DEFAULT_GAP_SECONDS),
+            boundary_metadata_keys=split_keys(stage_options.get("boundary_metadata_keys")),
+            carry_metadata_keys=split_keys(stage_options.get("carry_metadata_keys")),
+            summary_max_leaves=positive_int(stage_options, "summary_max_leaves", 20),
+            summary_max_chars_per_leaf=positive_int(
                 stage_options, "summary_max_chars_per_leaf", 60
             ),
+            summary_mode=summary_mode,
+            end_signal_metadata_keys=split_keys(stage_options.get("end_signal_metadata_keys")),
         )
 
 
@@ -188,11 +195,14 @@ class TimeSpanMerger:
             after = following.system_metadata.get(metadata_key)
             if before != after:
                 return True
+        if any(previous.system_metadata.get(key) for key in self.options.end_signal_metadata_keys):
+            return True
         gap = as_utc(following.hierarchy.span_start) - as_utc(previous.hierarchy.span_end)
         return gap.total_seconds() > self.options.gap_seconds
 
 
-def _shared_metadata(children: list[MemoryUnit], keys: tuple[str, ...]) -> dict[str, str]:
+def shared_metadata(children: list[MemoryUnit], keys: tuple[str, ...]) -> dict[str, str]:
+    """只上提配置中所有子节点共有的非空系统字符串，排除摄入控制键。"""
     shared: dict[str, str] = {}
     for metadata_key in keys:
         if metadata_key in _NON_PROPAGATED_KEYS:
@@ -205,7 +215,8 @@ def _shared_metadata(children: list[MemoryUnit], keys: tuple[str, ...]) -> dict[
     return shared
 
 
-def _excerpt(text: str, limit: int) -> str:
+def excerpt(text: str, limit: int) -> str:
+    """稳定折叠多行正文并按字符数截断。"""
     parts = [line.strip().lstrip("-").strip() for line in text.splitlines()]
     return " ".join(part for part in parts if part)[:limit]
 
@@ -213,14 +224,15 @@ def _excerpt(text: str, limit: int) -> str:
 def _structural_body(children: list[MemoryUnit], options: TimeSpanMergerOptions) -> str:
     lines = []
     for child in children[: options.summary_max_leaves]:
-        lines.append(f"- {_excerpt(child.content, options.summary_max_chars_per_leaf)}")
+        lines.append(f"- {excerpt(child.content, options.summary_max_chars_per_leaf)}")
     omitted = len(children) - options.summary_max_leaves
     if omitted > 0:
         lines.append(f"- …另有 {omitted} 条")
     return "\n".join(lines)
 
 
-def _union_entities(children: list[MemoryUnit]) -> list[str]:
+def union_entities(children: list[MemoryUnit]) -> list[str]:
+    """保序合并子节点实体。"""
     merged: list[str] = []
     seen: set[str] = set()
     for child in children:
@@ -246,7 +258,12 @@ def build_time_span_parent(
     span_end = max(as_utc(child.hierarchy.span_end) for child in children)
     lifted_keys = options.boundary_metadata_keys + options.carry_metadata_keys
     metadata = deepcopy(extra_metadata or {})
-    metadata.update(_shared_metadata(children, lifted_keys))
+    metadata.update(shared_metadata(children, lifted_keys))
+    for signal_key in options.end_signal_metadata_keys:
+        signal = children[-1].system_metadata.get(signal_key)
+        metadata.pop(signal_key, None)
+        if isinstance(signal, str) and signal:
+            metadata[signal_key] = signal
     for transient_key in _NON_PROPAGATED_KEYS:
         metadata.pop(transient_key, None)
     header = f"{span_start.isoformat()} ~ {span_end.isoformat()}（{len(children)} 条记录）"
@@ -258,7 +275,7 @@ def build_time_span_parent(
         temporal=Temporal(t_ingest=datetime.now(timezone.utc)),
         system_metadata=metadata,
         user_metadata=deepcopy(inherited_user_metadata(children)),
-        entities=_union_entities(children),
+        entities=union_entities(children),
         hierarchy=HierarchyRef(
             kind=HierarchyKind.TIME,
             role=HierarchyRole.TIME_SPAN,

@@ -6,7 +6,10 @@ from datetime import datetime, timezone
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.type_def import HierarchyKind, HierarchyRole, Scope
 from jiuwen_memory.construction.evolver import EvolveMode
-from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
+from jiuwen_memory.construction.hierarchy_composer import (
+    HierarchyComposeOptions,
+    validate_time_parent_roles,
+)
 from jiuwen_memory.control.types import Channel, EvolveTaskOptions
 
 
@@ -32,7 +35,7 @@ def scope_contains(home: Scope, candidate: Scope) -> bool:
 
 
 def validate_hierarchy_options(scope: Scope, options: HierarchyComposeOptions) -> None:
-    """要求显式 TIME 两层、有界区间，且任务与父驻留 Scope 完全一致。"""
+    """要求显式 TIME 两/三层、有界区间，且任务与父驻留 Scope 完全一致。"""
     _validate_scope(scope)
     if not isinstance(options, HierarchyComposeOptions):
         raise ValidationError("HIERARCHY 要求 HierarchyComposeOptions")
@@ -40,13 +43,8 @@ def validate_hierarchy_options(scope: Scope, options: HierarchyComposeOptions) -
     if scope != options.tree_home_scope:
         raise ValidationError("scope 必须等于 tree_home_scope，不得扩大建树范围")
     if options.kind is not HierarchyKind.TIME or options.leaf_role is not HierarchyRole.SNAPSHOT:
-        raise ValidationError("显式建树当前只支持 TIME snapshot → time_span")
-    if (
-        not isinstance(options.parent_roles, list)
-        or len(options.parent_roles) != 1
-        or options.parent_roles[0] is not HierarchyRole.TIME_SPAN
-    ):
-        raise ValidationError("parent_roles 必须是 [HierarchyRole.TIME_SPAN]")
+        raise ValidationError("显式建树当前只支持 TIME snapshot → time_span → scene")
+    validate_time_parent_roles(options.parent_roles)
     if not isinstance(options.span_start, datetime) or not isinstance(options.span_end, datetime):
         raise ValidationError("显式建树要求成对有界的 datetime span")
     start = options.span_start

@@ -106,7 +106,7 @@ def test_one_home_task_can_build_separate_parents_for_multiple_sessions(api) -> 
     {"tree_home_scope": Scope(org="another-org")},
     {"kind": HierarchyKind.TOPIC},
     {"leaf_role": HierarchyRole.SCENE},
-    {"parent_roles": [HierarchyRole.TIME_SPAN, HierarchyRole.SCENE]},
+    {"parent_roles": [HierarchyRole.TIME_SPAN, HierarchyRole.EVENT]},
     {"span_start": None},
     {"span_end": START - timedelta(seconds=1)},
     {"metadata": {"bad": 42}},

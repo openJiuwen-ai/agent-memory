@@ -46,7 +46,7 @@ class HierarchyJobLimits:
 
 @dataclass
 class HierarchyCandidates:
-    """备齐的两层候选；同名 id 按完整 Scope 区分。"""
+    """备齐的两/三层候选；同名 id 按完整 Scope 区分。"""
 
     leaves: dict[NodeKey, MemoryUnit] = field(default_factory=dict)
     parents: dict[NodeKey, MemoryUnit] = field(default_factory=dict)
@@ -144,17 +144,23 @@ def _select(
             raise ValidationError("snapshot has parent_scope without parent_id")
         else:
             candidates.leaves[node_key(unit)] = unit
-    elif unit.hierarchy.role is HierarchyRole.TIME_SPAN and unit.scope == options.tree_home_scope:
-        if unit.hierarchy.parent_id or unit.hierarchy.parent_scope is not None:
-            raise ValidationError("TIME time_span candidates must be root nodes")
+    elif unit.hierarchy.role in (HierarchyRole.TIME_SPAN, HierarchyRole.SCENE) and (
+        unit.scope == options.tree_home_scope
+    ):
+        if unit.hierarchy.role is HierarchyRole.SCENE and unit.hierarchy.parent_id:
+            raise ValidationError("TIME scene candidates must be root nodes; event is unsupported")
+        if not unit.hierarchy.parent_id and unit.hierarchy.parent_scope is not None:
+            raise ValidationError("TIME parent_scope requires parent_id")
         if not unit.hierarchy.child_ids:
-            raise ValidationError("TIME time_span candidate has no children")
+            raise ValidationError("TIME parent candidate has no children")
         candidates.parents[node_key(unit)] = unit
 
 
 def _check_limit(candidates: HierarchyCandidates, max_leaves: int) -> None:
     if len(candidates.leaves) > max_leaves:
         raise ValidationError(f"hierarchy candidate leaves exceed max_leaves={max_leaves}")
+    if len(candidates.parents) > 2 * max_leaves:
+        raise ValidationError(f"hierarchy candidate parents exceed 2 * max_leaves={max_leaves}")
 
 
 def _child_requests(
@@ -167,6 +173,8 @@ def _child_requests(
             child_scope = parent.hierarchy.child_scope_at(index, parent.scope)
             if not scope_contains(home, child_scope):
                 raise ValidationError("hierarchy child reference is outside the authorized Scope")
+            if parent.hierarchy.role is HierarchyRole.SCENE and child_scope != home:
+                raise ValidationError("scene child time_span must reside in exact tree_home_scope")
             entry = requests.setdefault(scope_key(child_scope), (child_scope, {}))
             if child_id in entry[1]:
                 raise ValidationError("hierarchy child is claimed by more than one old parent")
@@ -178,7 +186,20 @@ def _complete_children(
     kv: KVStore, candidates: HierarchyCandidates, options: HierarchyComposeOptions,
     limits: HierarchyJobLimits,
 ) -> None:
-    requests = _child_requests(candidates.parents, options.tree_home_scope)
+    # 对已列出的全部边先校验，再按 scene→time_span→snapshot 补齐；不越过授权边界点读。
+    _child_requests(candidates.parents, options.tree_home_scope)
+    for role in (HierarchyRole.SCENE, HierarchyRole.TIME_SPAN):
+        level = {key: parent for key, parent in candidates.parents.items()
+                 if parent.hierarchy.role is role}
+        requests = _child_requests(level, options.tree_home_scope)
+        _read_children(kv, candidates, requests, limits)
+    _validate_complete(candidates)
+
+
+def _read_children(
+    kv: KVStore, candidates: HierarchyCandidates,
+    requests: dict[ScopeKey, tuple[Scope, dict[str, MemoryUnit]]], limits: HierarchyJobLimits,
+) -> None:
     required_count = sum(len(requested_children) for _, requested_children in requests.values())
     if required_count + len(candidates.leaves) > limits.max_leaves:
         raise ValidationError(f"hierarchy candidate leaves exceed max_leaves={limits.max_leaves}")
@@ -193,8 +214,17 @@ def _complete_children(
             for requested_id, raw_value in zip(selected_ids, raw_values):
                 child = _decode(raw_value, child_scope, memory_key(requested_id))
                 _validate_child(child, references[requested_id])
-                candidates.leaves[node_key(child)] = child
+                target = candidates.leaves if child.hierarchy.role is HierarchyRole.SNAPSHOT else (
+                    candidates.parents
+                )
+                previous = target.get(node_key(child))
+                if previous is not None and previous != child:
+                    raise ValidationError("hierarchy child changed between listing and point read")
+                target[node_key(child)] = child
     _check_limit(candidates, limits.max_leaves)
+
+
+def _validate_complete(candidates: HierarchyCandidates) -> None:
     for attached_key, attached_leaf in candidates.attached.items():
         expected_parent = (
             scope_key(attached_leaf.hierarchy.resolved_parent_scope(attached_leaf.scope)),
@@ -202,14 +232,34 @@ def _complete_children(
         )
         if expected_parent not in candidates.parents or attached_key not in candidates.leaves:
             raise ValidationError("snapshot references an unknown or incomplete old parent")
+        if attached_leaf != candidates.leaves[attached_key]:
+            raise ValidationError("snapshot changed between listing and point read")
+    for parent in candidates.parents.values():
+        if not parent.hierarchy.parent_id:
+            continue
+        parent_scope = parent.hierarchy.resolved_parent_scope(parent.scope)
+        root = candidates.parents.get((scope_key(parent_scope), parent.hierarchy.parent_id))
+        if root is None or root.hierarchy.role is not HierarchyRole.SCENE:
+            raise ValidationError("time_span references an unknown or unsupported scene parent")
+        declared = {(scope_key(root.hierarchy.child_scope_at(position, root.scope)), uid)
+                    for position, uid in enumerate(root.hierarchy.child_ids)}
+        if node_key(parent) not in declared:
+            raise ValidationError("scene does not declare the referencing time_span child")
 
 
 def _validate_child(child: MemoryUnit, parent: MemoryUnit) -> None:
-    if not _active_time(child) or child.hierarchy.role is not HierarchyRole.SNAPSHOT:
-        raise ValidationError("hierarchy old parent child must be an ACTIVE TIME snapshot")
+    expected_role = (
+        HierarchyRole.SNAPSHOT if parent.hierarchy.role is HierarchyRole.TIME_SPAN
+        else HierarchyRole.TIME_SPAN
+    )
+    if not _active_time(child) or child.hierarchy.role is not expected_role:
+        raise ValidationError("hierarchy old parent child has an inactive or invalid TIME role")
     validate_ref(child.hierarchy, unit_id=child.id)
-    if child.hierarchy.child_ids or child.hierarchy.child_scopes:
-        raise ValidationError("snapshot child must not contain child references")
+    if expected_role is HierarchyRole.SNAPSHOT:
+        if child.hierarchy.child_ids or child.hierarchy.child_scopes:
+            raise ValidationError("snapshot child must not contain child references")
+    elif not child.hierarchy.child_ids:
+        raise ValidationError("time_span child must contain snapshots")
     if (
         child.hierarchy.parent_id != parent.id
         or child.hierarchy.resolved_parent_scope(child.scope) != parent.scope
@@ -225,7 +275,7 @@ def _validate_child(child: MemoryUnit, parent: MemoryUnit) -> None:
 def collect_candidates(
     kv: KVStore, scope: Scope, options: HierarchyComposeOptions, limits: HierarchyJobLimits,
 ) -> HierarchyCandidates:
-    """完整分页收集新叶与相交旧父，并补齐旧父的全部直接子叶。"""
+    """完整分页收集新叶与相交旧根，补齐 scene→time_span→snapshot 整棵旧子树。"""
     scoped: dict[ScopeKey, Scope] = {scope_key(scope): scope}
     for stored_scope in kv.scopes():
         if scope_contains(scope, stored_scope):
@@ -236,4 +286,36 @@ def collect_candidates(
             _select(candidate, collected, options)
             _check_limit(collected, limits.max_leaves)
     _complete_children(kv, collected, options, limits)
+    if collected.parents:
+        _validate_reverse_claims(kv, scoped, collected, limits.page_size)
     return collected
+
+
+def _validate_reverse_claims(
+    kv: KVStore, scopes: dict[ScopeKey, Scope], candidates: HierarchyCandidates, page_size: int,
+) -> None:
+    """再次流式核对入边，防止区间外漏列节点仍指向即将退役的旧父。"""
+    nodes = {**candidates.leaves, **candidates.parents}
+    verified: set[NodeKey] = set()
+    for selected_scope in scopes.values():
+        for observed in _read_scope(kv, selected_scope, page_size):
+            key = node_key(observed)
+            previous = nodes.get(key)
+            if previous is not None:
+                if previous != observed:
+                    raise ValidationError("hierarchy candidate changed during completeness check")
+                verified.add(key)
+                continue
+            if not _active_time(observed):
+                continue
+            ref = observed.hierarchy
+            if ref.parent_id:
+                parent_key = (scope_key(ref.resolved_parent_scope(observed.scope)), ref.parent_id)
+                if parent_key in candidates.parents:
+                    raise ValidationError("old subtree omitted an outside-window reverse child")
+            for position, child_id in enumerate(ref.child_ids):
+                child_key = (scope_key(ref.child_scope_at(position, observed.scope)), child_id)
+                if child_key in nodes:
+                    raise ValidationError("outside old parent claims a selected subtree node")
+    if len(verified) != len(nodes):
+        raise ValidationError("hierarchy candidate disappeared during completeness check")
