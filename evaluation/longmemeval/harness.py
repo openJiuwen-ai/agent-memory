@@ -17,7 +17,13 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Dict, List, Optional
 
-from jiuwen_memory.api import DeleteMode, DeleteSelector, MemoryRuntime, assemble_runtime
+from jiuwen_memory.api import (
+    DeleteMode,
+    DeleteSelector,
+    MemoryRuntime,
+    SearchOptions,
+    assemble_runtime,
+)
 from jiuwen_memory.common.type_def import Context
 from jiuwen_memory.config.config import Config
 
@@ -200,11 +206,13 @@ class EvalHarness:
                     case.text,
                     Context(case.scope),
                     **search_security,
-                    filters=list(case.filters) or None,
-                    as_of=case.as_of,
-                    top_k=case.top_k,
-                    disclosure=case.disclosure,
-                    with_trajectory=True,
+                    options=SearchOptions(
+                        filters=list(case.filters) or None,
+                        as_of=case.as_of,
+                        top_k=case.top_k,
+                        disclosure=case.disclosure,
+                        with_trajectory=True,
+                    ),
                 )
             finally:
                 memory_retrieval_e2e_wall_ms = (

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import pytest
 
+from jiuwen_memory.api import SearchOptions
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.tokenizer.tokenizer_impl import TokenizerProducer
@@ -199,5 +200,10 @@ def test_assemble_with_jieba():
         "用户偏好简洁回答", scope, source=Modality.TEXT, security=legacy_request_context(actor)
     )
     assert len(units) == 1
-    result = api.search("偏好", Context(scope), security=legacy_request_context(actor), top_k=10)
+    result = api.search(
+        "偏好",
+        Context(scope),
+        security=legacy_request_context(actor),
+        options=SearchOptions(top_k=10),
+    )
     assert len(result.items) > 0

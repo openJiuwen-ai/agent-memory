@@ -6,6 +6,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from .filter import FilterClause, FilterExpr, FilterOp, evaluate, filter_field_metadata_key
+from .hierarchy import HIERARCHY_INDEX_KEYS, hierarchy_index_metadata
 from .memory import T_EVENT_UNKNOWN, T_INVALID_OPEN, MemoryUnit
 
 
@@ -14,6 +15,12 @@ def _epoch_ms(value: datetime | None) -> int | None:
 
 
 def _field_value(unit: MemoryUnit, field: str):
+    if field in HIERARCHY_INDEX_KEYS:
+        # 裸结构字段读取 HierarchyRef；显式 metadata 命名空间仍只读各自字段。
+        try:
+            return hierarchy_index_metadata(unit.hierarchy).get(field)
+        except (AttributeError, TypeError, ValueError):
+            return None
     if field == "tags":
         return unit.tags
     if field == "tier":
@@ -46,7 +53,11 @@ def _field_value(unit: MemoryUnit, field: str):
 
 
 def _matches_clause(unit: MemoryUnit, clause: FilterClause) -> bool:
-    value = _field_value(unit, clause.field)
+    return matches_filter_value(_field_value(unit, clause.field), clause)
+
+
+def matches_filter_value(value: object, clause: FilterClause) -> bool:
+    """共用标量、集合和缺值比较语义，供真源复核及内存索引过滤使用。"""
     op, target = clause.op, clause.value
 
     if isinstance(value, (list, tuple, set)):  # 集合字段（如 tags）

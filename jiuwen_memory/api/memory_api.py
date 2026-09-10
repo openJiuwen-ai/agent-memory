@@ -56,7 +56,9 @@ from jiuwen_memory.control import (
     SpaceStatus,
     SpaceUsage,
 )
-from jiuwen_memory.retrieval import DisclosureLevel, RetrievalResult
+from jiuwen_memory.retrieval import RetrievalResult
+
+from .search_options import SearchOptions
 
 
 class MemoryAPI(ABC):
@@ -190,37 +192,11 @@ class MemoryAPI(ABC):
         self,
         query: str,
         context: Context,
+        options: SearchOptions | None = None,
         *,
         security: RequestSecurityContext,
-        filters: FilterExpr | list[FilterClause] | dict | None = None,
-        as_of: datetime | None = None,
-        top_k: int = 10,
-        disclosure: DisclosureLevel = DisclosureLevel.L0,
-        with_trajectory: bool = False,
     ) -> RetrievalResult:
-        """执行混合检索；由 ``context`` 指定 scope、透传 options 与披露预算。
-
-        ``context.extensions`` 带 ``spaces`` 键时转为跨空间检索（F07「多空间读写」），
-        取值为 ``list[str]``：**判据取键的有无，不取取值形态**——键不在即单空间检索，
-        行为与本特性之前一字不差；键在即跨空间，空列表表示「调用方可读的全部空间」（由
-        主体反查索引给出），非空即显式候选集。该键在本层即被取出，不随 options 透传给
-        自定义检索模块。取值为 ``None`` 按非法拒绝，不当作空列表——网关把未填字段序列化
-        成 ``null`` 时若按空列表处置，一次本意为单空间的检索会静默扩到全部可读空间。
-
-        跨空间不是新的检索算法，是在单空间召回之上套的一层编排：候选空间 → 逐空间判权
-        → 按上界分配取数 → 逐空间召回 → 跨空间按内容去重、截到 ``top_k``。两族谓词与
-        召回复用同一份实现。不另设入口的理由见 F07「多空间读写」。
-
-        跨空间形态下的三处差异：
-
-        - ``context.scope``：只取 ``org`` 维定组织边界，空间维由候选集给出、传了不生效。
-        - 无权的候选空间：逐个剔除并记入 ``RetrievalResult.errors``，不使整次调用失败；
-          候选集非空而一个都读不到时抛 ``PermissionDeniedError``，与单空间路径同一处置。
-        - 时延：随候选空间数线性增长。召回按并发写就，但引擎侧 ``recall`` 当前是同步实现、
-          实际顺序执行，候选集上限（``space.fanout_limit``）因而同时是时延上界的约束项。
-
-        取同步形态：多空间召回在实现内部完成，不向调用方暴露异步契约。
-        """
+        """按统一选项检索；Context 指定范围、跨空间候选与调用级扩展。"""
 
     @abstractmethod
     def list(

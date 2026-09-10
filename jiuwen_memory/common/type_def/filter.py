@@ -103,6 +103,12 @@ _BUILTIN_FIELDS = frozenset(
         "t_message",
         "content_layer",
         "seq",
+        "hierarchy_kind",
+        "hierarchy_role",
+        "hierarchy_status",
+        "parent_id",
+        "span_start",
+        "span_end",
     }
 )
 
@@ -117,6 +123,8 @@ def canonical_filter_field(name: str) -> str:
         return name
     if name == "memory_type":
         return MEMORY_TYPE_FILTER_FIELD
+    if name == "id":
+        return "unit_id"
     if "." not in name and name not in _BUILTIN_FIELDS:
         return f"user_metadata.{name}"
     return name

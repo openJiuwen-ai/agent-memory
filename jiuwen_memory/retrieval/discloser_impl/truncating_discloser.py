@@ -34,6 +34,7 @@ class TruncatingDiscloser(Discloser):
         level: DisclosureLevel,
         max_tokens: int | None = None,
     ) -> list[RetrievedItem]:
+        """按指定披露粒度返回三层内容与真源父引用。"""
         items: list[RetrievedItem] = []
         effective_level = DisclosureLevel.L0 if level == DisclosureLevel.ADAPTIVE else level
         for su in candidates:
@@ -50,11 +51,13 @@ class TruncatingDiscloser(Discloser):
                     user_metadata=dict(unit.user_metadata),
                     level=effective_level,
                     system_metadata=dict(unit.system_metadata),
+                    parent_id=unit.hierarchy.parent_id,
                 )
             )
         return items
 
-    def _l0(self, unit: MemoryUnit) -> str:
+    @staticmethod
+    def _l0(unit: MemoryUnit) -> str:
         # 优先预生成 l0；空则截断 content 兜底
         if unit.layers.l0:
             return unit.layers.l0
@@ -62,7 +65,8 @@ class TruncatingDiscloser(Discloser):
         limit = _LIMIT[DisclosureLevel.L0]
         return content if len(content) <= limit else content[:limit].rstrip() + "…"
 
-    def _l1(self, unit: MemoryUnit, keywords: list[str]) -> str:
+    @staticmethod
+    def _l1(unit: MemoryUnit, keywords: list[str]) -> str:
         # 优先预生成 l1；空则围绕关键词取窗兜底
         if unit.layers.l1:
             return unit.layers.l1

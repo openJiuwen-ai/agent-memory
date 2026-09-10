@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import pytest
 
+from jiuwen_memory.api import SearchOptions
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
 from jiuwen_memory.common.security.authorization import RoutingFieldsProvider
@@ -133,7 +134,7 @@ def test_search_permission_routes_by_metadata_memory_type_filter() -> None:
             "repo",
             Context(scope=target),
             security=legacy_request_context(actor),
-            filters={"system_metadata.memory_type": "coding"},
+            options=SearchOptions(filters={"system_metadata.memory_type": "coding"}),
         )
 
 
@@ -147,7 +148,7 @@ def test_search_permission_routes_to_lenient_policy_for_declared_type() -> None:
         "general",
         Context(scope=target),
         security=legacy_request_context(actor),
-        filters={"system_metadata.memory_type": "episodic"},
+        options=SearchOptions(filters={"system_metadata.memory_type": "episodic"}),
     )
 
 
@@ -174,7 +175,7 @@ def test_escalation_1_unknown_extensions_value_falls_to_strict_fallback() -> Non
             "repo must use pytest",
             Context(scope=owner, extensions={"memory_type": "unknown"}),
             security=legacy_request_context(reader),
-            filters={"system_metadata.memory_type": "coding"},
+            options=SearchOptions(filters={"system_metadata.memory_type": "coding"}),
         )
 
 
@@ -201,12 +202,14 @@ def test_escalation_3_ambiguous_or_filter_falls_to_strict_fallback() -> None:
             "repo must use pytest",
             Context(scope=owner),
             security=legacy_request_context(reader),
-            filters={
-                "OR": [
-                    {"system_metadata.memory_type": "coding"},
-                    {"system_metadata.memory_type": "general"},
-                ]
-            },
+            options=SearchOptions(
+                filters={
+                    "OR": [
+                        {"system_metadata.memory_type": "coding"},
+                        {"system_metadata.memory_type": "general"},
+                    ]
+                }
+            ),
         )
 
 
@@ -224,8 +227,7 @@ def test_escalation_4_lenient_route_cannot_read_protected_data() -> None:
         "repo must use pytest",
         Context(scope=owner, extensions={"memory_type": "episodic"}),
         security=legacy_request_context(reader),
-        filters={"system_metadata.memory_type": "coding"},
-        top_k=10,
+        options=SearchOptions(filters={"system_metadata.memory_type": "coding"}, top_k=10),
     )
 
     assert result.items == [], "按 episodic 授的权不得读到 coding 数据"
@@ -246,7 +248,7 @@ def test_route_value_injection_still_returns_own_type_data() -> None:
         "lunch plan tomorrow",
         Context(scope=owner, extensions={"memory_type": "episodic"}),
         security=legacy_request_context(reader),
-        top_k=10,
+        options=SearchOptions(top_k=10),
     )
 
     assert [item.content for item in result.items] == ["lunch plan tomorrow"]

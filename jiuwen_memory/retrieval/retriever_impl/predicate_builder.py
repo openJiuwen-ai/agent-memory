@@ -26,6 +26,8 @@ from jiuwen_memory.common.type_def import (
     FilterLogic,
     FilterOp,
 )
+from jiuwen_memory.common.type_def.hierarchy import HierarchyStatus, span_epoch_ms
+from jiuwen_memory.common.type_def.hierarchy_query import HierarchyQuery
 from jiuwen_memory.common.type_def.memory import LifecycleState
 
 # 当前态查询允许的 lifecycle；时间点回溯时排除的 lifecycle。
@@ -35,6 +37,24 @@ _ACTIVE_ARCHIVED = [LifecycleState.ACTIVE.value, LifecycleState.ARCHIVED.value]
 
 def _epoch_ms(dt: datetime) -> int:
     return int(dt.timestamp() * 1000)
+
+
+def build_hierarchy_filters(query: HierarchyQuery) -> list[FilterExpr]:
+    """层级条件以独立 AND 谓词下推；结构时间使用闭区间相交。"""
+    if not query.enabled:
+        return []
+    predicates: list[FilterExpr] = [
+        FilterClause("hierarchy_kind", FilterOp.EQ, query.hierarchy_kind.value),
+        FilterClause("hierarchy_status", FilterOp.EQ, HierarchyStatus.ACTIVE.value),
+    ]
+    if query.hierarchy_role is not None:
+        predicates.append(FilterClause("hierarchy_role", FilterOp.EQ, query.hierarchy_role.value))
+    if query.span_start is not None and query.span_end is not None:
+        predicates.extend([
+            FilterClause("span_start", FilterOp.LTE, span_epoch_ms(query.span_end)),
+            FilterClause("span_end", FilterOp.GTE, span_epoch_ms(query.span_start)),
+        ])
+    return predicates
 
 
 def build_system_filters(
@@ -56,7 +76,11 @@ def build_system_filters(
     else:
         out.append(FilterClause("lifecycle", FilterOp.NE, LifecycleState.FORGOTTEN.value))
         t = _epoch_ms(as_of)
-        out.append(FilterClause("t_valid", FilterOp.LTE, t))
+        # t_valid=None 表示没有生效起始界，索引不写该字段。NOT(GT) 同时放行缺值
+        # 与 t_valid<=as_of；直接 LTE 会按通用范围比较语义排除缺值，造成漏召回。
+        out.append(FilterGroup(
+            FilterLogic.NOT, [FilterClause("t_valid", FilterOp.GT, t)]
+        ))
         # 依赖索引投影的哨兵约定：真源 t_invalid 为空（永久有效）时索引里落
         # ``T_INVALID_OPEN``，故本谓词对开放区间同样成立。若哪天索引改回"空则不写"，
         # 这一行会把活跃记忆整批排他——两处必须同改（见 common.type_def.T_INVALID_OPEN）。

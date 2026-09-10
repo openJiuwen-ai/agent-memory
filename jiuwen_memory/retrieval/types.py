@@ -12,6 +12,8 @@ from jiuwen_memory.common.type_def import (
     ChannelError,
     ChannelEvidence,
     FilterExpr,
+    HierarchyKind,
+    HierarchyRole,
     MetadataValueType,
     ParsedQuery,
     RecallChannel,
@@ -19,6 +21,7 @@ from jiuwen_memory.common.type_def import (
     ScoredUnit,
     normalize,
 )
+from jiuwen_memory.common.type_def.hierarchy_query import HierarchyQuery
 
 __all__ = [
     "ChannelError",
@@ -68,10 +71,17 @@ class RetrievalQuery:
     # 调用方自定义透传配置（源自 Context.extensions）；内核核心不解释，
     # 顺 parser 进 ParsedQuery 供自定义检索模块按约定 key 读取。
     extensions: dict[str, Any] = field(default_factory=dict)
+    hierarchy_kind: HierarchyKind | None = None
+    hierarchy_role: HierarchyRole | None = None
+    span_start: datetime | None = None
+    span_end: datetime | None = None
 
     def __post_init__(self) -> None:
         # 查询对象边界规范化：外部兼容旧输入，内部只保留 FilterExpr | None。
         self.filters = normalize(self.filters)
+        hierarchy = HierarchyQuery.from_query(self)
+        self.span_start = hierarchy.span_start
+        self.span_end = hierarchy.span_end
 
 
 @dataclass
@@ -92,6 +102,7 @@ class RetrievedItem:
     user_metadata: dict[str, MetadataValueType] = field(default_factory=dict)
     level: DisclosureLevel = DisclosureLevel.L0  # 本次披露主层级
     system_metadata: dict[str, MetadataValueType] = field(default_factory=dict)
+    parent_id: str = ""  # 真源结构父节点 id；未挂父或未启用结构时为空
 
 
 @dataclass

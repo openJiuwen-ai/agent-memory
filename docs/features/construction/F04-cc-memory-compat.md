@@ -9,6 +9,13 @@
 | 关联模块 | `jiuwen_memory_adapter/cc_memory`、`jiuwen_memory/construction`、`jiuwen_memory/retrieval`、`evaluation/cc_memory` |
 | 适用调用面 | `MemoryAPI`、构建算子、Recaller、评测运行器、团队同步 adapter |
 
+> 历史归档说明（2026-09-10）：本文保留 2026-07-22 的 cc_memory 方案与评测记录，
+> 其中 `identity`、`Scope(namespace=...)`、平铺搜索参数等示例不是当前分支的可运行 API。
+> 当前分支也未包含本文所述 `jiuwen_memory_adapter/cc_memory` 与 `evaluation/cc_memory`。
+> 当前搜索调用为 `api.search(query, context, options=SearchOptions(...), security=security)`，
+> HTTP/CLI 的检索选项放在 `options` 对象内；现行接口以
+> [S02-memory-api](../../specs/S02-memory-api.md) 为准。
+
 ## 1. 系统目标和边界
 
 cc_memory 是建立在统一 `MemoryAPI` 之上的结构化记忆系统。它支持把对话中的显式记忆指令转成可演进记录，把本地 Markdown 记忆目录接入 DOCUMENT 召回通道，并提供可追踪的多阶段检索评测。

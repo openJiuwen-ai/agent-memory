@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-08-15 |
 | 影响范围 | jiuwen_memory/api/、jiuwen_memory/common/、jiuwen_memory/construction/、jiuwen_memory/control/、jiuwen_memory/ingest/、jiuwen_memory/retrieval/、jiuwen_memory/storage/；docs/specs/S01–S07；关联 [`F05-construction-spec-multimodal-design`](../construction/F05-construction-spec-multimodal-design.md) |
-| 测试基线 | 阶段 1：完整 unit 回归 1891 passed、5 skipped、480 deselected；阶段 2：2082 passed、5 skipped、480 deselected；阶段 3：2229 passed、5 skipped、480 deselected。各阶段本次变更无新增 Ruff/CodeCheck 本地预审问题，历史 Ruff 诊断见对应阶段验证；未执行云端 CodeCheck |
+| 测试基线 | 阶段 1：完整 unit 回归 1891 passed；阶段 2：2082 passed；阶段 3：2229 passed；阶段 4：2413 passed。四阶段均为 5 skipped、480 deselected。各阶段变更无新增 Ruff/CodeCheck 本地预审问题，历史诊断见对应阶段验证；未执行云端 CodeCheck |
 | Refs | — |
 
 ## 阶段 1 落地（2026-09-10）
@@ -14,7 +14,7 @@
 本次只交付“能表达、接入和存储结构身份”的基础能力，不交付自动建树或层级召回。
 本节记录阶段 1 完成时的状态：当时除本节明确列出的能力及下文叶提示接入外，Composer、
 显式 `evolve(HIERARCHY)`、结构查询/展开/MaxP、后台任务、修复器和各 kind 算法均未实现。
-当前新增交付以阶段 3 小节为准；后文仍保留尚未开放的总体设计。
+当前新增交付以阶段 4 小节为准；后文仍保留尚未开放的总体设计。
 后文 P0–P5 是原设计分期，不等同于已经完成的提交阶段。
 
 ### 已交付与决定
@@ -213,6 +213,72 @@ Scheduler 终态 22，以及协议转换和调用边界 35。沿用前两阶段 
 asyncio.run 生命周期问题不在本阶段修复；默认 in_process 在提交中等待执行。
 EXTRACT 的 hierarchy 继承差异和 IndexBuilder 全量 rebuild 恢复能力也仍未统一。
 
+## 阶段 4 落地（2026-09-10）
+
+本阶段把“树已写入且带结构索引”变成“可按树类型、单一节点角色和覆盖区间检索”。
+仍只有 snapshot→time_span 两层建树，不增加树层级或自动维护。
+
+### 交付与调用方式
+
+- 公开入口统一为 `search(query, context, options=None, *, security)`；
+  `SearchOptions` 从 `jiuwen_memory.api` 导入，容纳既有 filters/as_of/top_k/disclosure/
+  with_trajectory，以及 hierarchy_kind/hierarchy_role/span_start/span_end。
+  旧平铺选项关键字是显式破坏性迁移，HTTP/CLI 使用嵌套 `options`，不维护两套协议。
+- 四个结构条件经 `RetrievalQuery` 进入检索；Retriever 在 parse 后强制回填，
+  自定义 Parser 不能丢失或改写。kind/role 必须为对应枚举，role/span 要求 kind，
+  span 必须成对且有序。结构 span、event-time、valid-time 是三条独立时间轴。
+- kind、ACTIVE 状态、可选单角色与结构区间作为外层 AND 与用户/权限/时间谓词合并；
+  全文/向量（含 L0/L1/L2 入口及内存后端）在 top_k 前过滤。六个结构索引裸键不再
+  被 normalize 改写成用户字段；用户同名键须显式写 `user_metadata.<key>`。
+- 三种检索路径及关键词实体扩展共享 `MemoryUnit.hierarchy` 真源复核，拒绝陈旧
+  metadata 伪造的 kind/role/status/span；闭区间端点相等算相交，朴素时间按 UTC，
+  真源保留微秒。TIME 查询可不指定窗口，但节点本身必须有有效 span。
+- 两种 Discloser 返回真实 `parent_id`，默认空串。父/叶仍按其驻留 Scope 查询，
+  不自动扩大到 session 子 Scope；没有 author/coords 的派生父也不会因此绕过权限。
+- API 保留 READ 鉴权、路由谓词、跨空间逐空间判权与预算；extensions 的标准容器
+  复制后透传，不透明运行时插件保留身份。typed 层级请求受默认关闭的
+  `hierarchy.enabled` 控制；普通 search 不增加该策略依赖。
+
+例如查询 TIME 的 `time_span`，返回的是内容相关的时间段父节点；查询 `snapshot`
+返回叶。省略 role 则同 kind 的可见活动节点都能竞争结果，仍需文本相关性，不是全树
+枚举。父内容不会自动附带子全文，也不因“是父节点”获得额外分数。
+
+### 取舍与未交付边界
+
+- 采用一个 SearchOptions，不新增一组平铺参数、列表角色参数或 extensions 暗约定。
+  与第三阶段统一 EvolveTaskOptions 的方式一致，单/跨空间只装配一份查询骨架。
+- 通用 FilterExpr 是底层字段过滤能力，不自动开启 typed hierarchy 的完整语义；
+  `hierarchy.enabled` 不承担访问控制。权限仍由既有 API/Storage 机制决定。
+- 真源复核只防错召，不恢复被陈旧索引或 top_k/limit 丢掉的候选。图通道不下推结构
+  谓词；第三方 RETRIEVE 再次复核、TIME 无窗口的节点区间有效性、毫秒投影边界附近
+  的微秒排除都可能减少返回条数，不能宣称任意后端始终给满 top_k。
+- 不新增 expand、rollup、ensure、scene/event、自动演进、父权限继承或重建恢复。
+  L0/L1/L2 仍是每个节点自己的披露层，不是树的三层。
+
+### 验证
+
+新增确定性测试覆盖参数、真源/索引冲突、三检索路径、两内存索引、实体扩展、两种
+Discloser、单/跨空间权限、真实写入→建树→查询和 HTTP/CLI 嵌套协议。
+最终完整 unit 回归 **2413 passed、5 skipped、480 deselected**（78.87 秒），比阶段 3
+增加 184 个通过项。5 个跳过仍为原有真实 LLM 与 Redis 外部依赖用例；5 条 warnings
+仍为历史 `pytest.mark.asyncio` 未注册提示。沿用前述 `-m unit` 命令，HTTP/CLI 测试
+允许本机回环监听；没有外部模型或正式 benchmark 运行。
+
+独立审查在首轮测试通过后补出了普通查询兼容用例：无 `t_valid` 的历史查询、
+`id/unit_id` 别名、`t_message` 字段过滤。分别以 NOT(GT) 保留无起始界、规范化别名、
+补齐非空时间投影修复，不放宽通用 metadata 比较语义；后两轮完整回归均通过。
+
+依照已有 10 条 CodeCheck 规则复查代码、测试、fixtures/stubs 及相邻定义，修正新
+推导式换行与多行签名缺简短 docstring 的问题。当前累积工作区（包含阶段 3 未提交
+内容）有 75 个修改/新增 Python 文件：73 个 Ruff 通过，另外 2 个保留 27 条历史
+诊断（adapter 的 13 条 E501；真实 LLM 测试的 4 条 E402、3 条 E501、7 条 F541），
+相对 HEAD 无新增 Ruff 诊断。已执行限定文件 `ruff check --fix`、复查及
+`git diff --check`。相邻既有多参数接口等未扩大重构范围，不宣称全仓 CodeCheck 清零。
+
+未验证真实 Milvus/Elasticsearch/Postgres 后端或 GitCode 云端 CodeCheck；尤其 Milvus
+JSON 缺键在 NOT 范围谓词中的版本行为仍需真实后端验证。原有 adapter 的非 search
+旧协议与全量 rebuild 等遗留未改变。
+
 ## 背景
 
 现有记忆模型已经覆盖三轴，彼此独立、互不推导：
@@ -272,7 +338,7 @@ EXTRACT 的 hierarchy 继承差异和 IndexBuilder 全量 rebuild 恢复能力�
 3. 既有非 `HIERARCHY` 演进模式不暗改 `HierarchyRef`；`evolve(HIERARCHY)` 只维护
    树结构边与派生父。
 
-## 决策（总体设计；当前落地范围以阶段 1、2、3 小节为准）
+## 决策（总体设计；当前落地范围以阶段 1、2、3、4 小节为准）
 
 下文包含未来目标，不表示各组件、策略和公开入口已经实现；未落地部分不能作为当前
 运行时行为依据。公开 HIERARCHY 只交付阶段 3 的显式两层 TIME 范围；FORGET 断边、
@@ -817,11 +883,12 @@ search(..., hierarchy_kind=..., hierarchy_role=?, expand_depth=N, rollup=?)
 阶段 1 的模型、接入与索引投影已落地，完整 unit 回归 1891 passed、5 skipped；阶段 2
 补齐内部最小 TIME 构建及受限替换，完整 unit 回归 2082 passed、5 skipped。
 阶段 3 增加显式任务入口与完整候选读取，完整 unit 回归 2229 passed、5 skipped。
+阶段 4 增加 SearchOptions、直接结构查询与真源复核，不等于后续展开/上卷已经实现。
 不得用已有 pytest 结果替代未交付能力的实现验证。
 
 以下 P0–P5 是决策 19 的原设计验收分组，不是本次按能力整理的提交阶段顺序。
 阶段 1 覆盖模型、叶提示与索引投影，阶段 2 覆盖 P1 的最小内部构建切片，阶段 3
-覆盖显式调用、完整取数与任务状态闭环；其余验收保留为后续目标，按实际交付
+覆盖显式调用、完整取数与任务状态闭环；阶段 4 覆盖直接层级查询；其余验收保留为后续目标，按实际交付
 逐项验证，不因属于同一个原设计分组而提前标记完成。
 
 ### 阶段 0：设计验收
@@ -846,10 +913,10 @@ search(..., hierarchy_kind=..., hierarchy_role=?, expand_depth=N, rollup=?)
 - [x] 对显式备齐的输入，`replace_in_span` 只替换相交派生父节点，不删除权威叶。
 - [ ] 父节点内容层在落盘和建索引前按 best-effort 策略生成或安全降级。
 
-### 后续验收组 P2：构建、检索与预算（未实现）
+### 后续验收组 P2：构建、检索与预算（阶段 4 部分实现）
 
 - [ ] snapshot→time_span→scene 可构建、可重复重建，且权威叶内容零变化。
-- [ ] 默认父层召回不自动包含子全文。
+- [x] 默认父层召回不自动包含子全文。
 - [ ] 展开按顺序、深度、kind 与 scope 约束返回子树切片。
 - [ ] 检索轨迹分别记录父层命中与展开阶段，并能解释展开深度和预算截断。
 - [ ] MaxP 与 top-M 收敛策略有确定性测试。
