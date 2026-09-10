@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-08-15 |
 | 影响范围 | jiuwen_memory/api/、jiuwen_memory/common/、jiuwen_memory/construction/、jiuwen_memory/control/、jiuwen_memory/ingest/、jiuwen_memory/retrieval/、jiuwen_memory/storage/；docs/specs/S01–S07；关联 [`F05-construction-spec-multimodal-design`](../construction/F05-construction-spec-multimodal-design.md) |
-| 测试基线 | 阶段 1：完整 unit 回归 1891 passed；阶段 2：2082 passed；阶段 3：2229 passed；阶段 4：2413 passed。四阶段均为 5 skipped、480 deselected。各阶段变更无新增 Ruff/CodeCheck 本地预审问题，历史诊断见对应阶段验证；未执行云端 CodeCheck |
+| 测试基线 | 阶段 1：完整 unit 回归 1891 passed；阶段 2：2082 passed；阶段 3：2229 passed；阶段 4：2413 passed；阶段 5：2505 passed。各阶段均为 5 skipped、480 deselected。各阶段变更无新增 Ruff/CodeCheck 本地预审问题，历史诊断见对应阶段验证；未执行云端 CodeCheck |
 | Refs | — |
 
 ## 阶段 1 落地（2026-09-10）
@@ -14,7 +14,7 @@
 本次只交付“能表达、接入和存储结构身份”的基础能力，不交付自动建树或层级召回。
 本节记录阶段 1 完成时的状态：当时除本节明确列出的能力及下文叶提示接入外，Composer、
 显式 `evolve(HIERARCHY)`、结构查询/展开/MaxP、后台任务、修复器和各 kind 算法均未实现。
-当前新增交付以阶段 4 小节为准；后文仍保留尚未开放的总体设计。
+当前新增交付以阶段 5 小节为准；后文仍保留尚未开放的总体设计。
 后文 P0–P5 是原设计分期，不等同于已经完成的提交阶段。
 
 ### 已交付与决定
@@ -279,6 +279,69 @@ Discloser、单/跨空间权限、真实写入→建树→查询和 HTTP/CLI 嵌
 JSON 缺键在 NOT 范围谓词中的版本行为仍需真实后端验证。原有 adapter 的非 search
 旧协议与全量 rebuild 等遗留未改变。
 
+## 阶段 5 落地（2026-09-10）
+
+本阶段把“只找到树节点”推进到“命中概要后按结构读取证据”。建树仍只有
+snapshot→time_span 两层；展开算法可遍历已有合法的多层引用，不代表更高层 Composer
+已经交付。生产代码、确定性测试与本阶段文档一起交付，不创建提交。
+
+### 已交付与决定
+
+- SearchOptions 新增 expand_depth=0，并沿已有 Python/HTTP/CLI 嵌套请求下传。0 保持
+  直接命中；非零要求正整数和显式 kind，不接受 bool。沿用 hierarchy.enabled 闸门，
+  没有新增公开 expand 方法、独立树预算或自动建树入口。
+- DefaultExpander 由 PipelineRetriever 注入同一 DomainStore，按父声明顺序 BFS 点读。
+  点读前检查 Scope，节点身份用完整 Scope+id；真源核对 kind、ACTIVE 结构状态、
+  反向父引用及 span 覆盖。子保留业务/权限过滤、valid-time/event-time/结构窗口，
+  仅移除 typed 父角色，不根据父可见就跳过子可见性检查。
+- top_k 先选直接命中根，子不占根名额。根先消耗预算，再按根顺序分别 BFS；结果为
+  所有准入根、第一根的后代、第二根的后代等。子继承根分，不另查索引、不独立评分，
+  不实现 rollup/MaxP/top-M。叶根合法，depth 上限本身不算截断。
+- 根与后代共享既有 max_tokens；Discloser 先生成实际字段，再按主字段
+  max(1, ceil(字符数/4)) 准入。固定层级不降级；ADAPTIVE 有限预算按 L2→L1→L0
+  选当前可容纳级别，无上限以 L1 为主。L0 兜底只计实际摘要而非原始长正文。
+  三层字段仍同时返回，所以不是整个响应体的 token/字节硬上限。
+- 跨空间先延迟展开：各空间只返回物化根，沿既有规则合并选根后统一收尾。未选根
+  不读后代；预算与 1000 个子引用尝试上限全局共享（单批最多 64 个）。内部
+  PreparedRetrievalResult/来源依赖不进入公开响应，defer_expansion 不对外开放。
+- 缺子、坏边、不可见、读取失败和截断保留健康兄弟，问题码稳定去重，经 errors 的
+  HIERARCHY 标记返回；不开轨迹也可见。开启轨迹记录 parent_recall 和逐根 expand，
+  展示请求/实际深度、数量、complete/truncated 和累计估算成本，不回显被排除子内容。
+
+例如 time_span 概要为“讨论了数据库超时调整”，两个 snapshot 分别记录问题现象与
+“超时从 500ms 改为 2000ms”。搜索 time_span、top_k=1、expand_depth=1 时，预算
+充足返回概要及两个 snapshot；depth=0 仍只有概要。若关键父本身未被召回，本阶段
+不会凭子相关性找回该父，那是后续上卷阶段的职责。
+
+### 拒绝的方案与边界
+
+- 不在各空间先展开再对扁平列表 top_k 截断：那会浪费未选父的读取、挤掉根或其证据，
+  并把一个预算错误地复制成多份。使用内部准备/收尾协议保留来源。
+- 不用原始 content 长度冒充 L0/L1 成本，也不把树选择职责塞进 Discloser；选择器
+  消费其已渲染字段，只有本阶段展开路径新增统一准入，普通检索保持既有行为。
+- 不声称父相关就意味着每个子相关；当前仅沿边取证并继承分数，后续再独立实现
+  子评分、MaxP 与 top-M。没有 scene/event 构建、周期演进、ensure 或自动修复。
+- MultimodalRetriever 的多分支 RRF 包装尚未适配延迟展开，正深度明确拒绝。
+  基础 PipelineRetriever 的三种存储执行路径均支持，不把包装器静默降级为平面结果。
+- 内部身份按 Scope+id 正确区分，但公开 RetrievedItem 仍只有裸 unit_id/parent_id，
+  不能据此无歧义重建跨 Scope 同名节点的整棵树。没有新增权限继承或事务快照保证。
+
+### 验证
+
+覆盖三条存储路径、关键词/向量父召回、父 top_k 与后代名额、深度/BFS/同名 Scope、
+双向边与范围隔离、历史生命周期、独立时间轴、坏分支、读取失败、共享预算及 L0
+长正文兜底；真实 API 验证两引擎写入→建树→展开、跨空间、策略、HTTP/CLI 共享序列化。
+完整 unit 回归 **2505 passed、5 skipped、480 deselected**（78.50 秒），比阶段 4
+新增 92 个通过项。5 个跳过仍为原有真实 LLM/Redis 外部依赖用例，5 条 warnings 为
+原有 pytest.mark.asyncio 未注册提示；未运行真实后端、模型、正式 benchmark。
+
+本阶段 22 个修改/新增 Python 文件均通过 Ruff（含 --fix 后复查）。依照已有十条
+CodeCheck 规则扫描生产、测试、fixture/stub 与相邻定义：修正新增长行、导入顺序和
+回调参数遮蔽风险，未见新增本地预审问题；赋值调用逐项核对返回契约，未用业务 assert
+或测试 protected-access。相邻既有定义仍有 3 处多参数、6 处多行签名/docstring、
+4 处可静态化方法风险，均对比 HEAD 确认为原有项，不扩大本阶段重构。
+git diff --check 通过；未执行 GitCode 云端 CodeCheck，本地检查不代表云端批准。
+
 ## 背景
 
 现有记忆模型已经覆盖三轴，彼此独立、互不推导：
@@ -338,11 +401,11 @@ JSON 缺键在 NOT 范围谓词中的版本行为仍需真实后端验证。原�
 3. 既有非 `HIERARCHY` 演进模式不暗改 `HierarchyRef`；`evolve(HIERARCHY)` 只维护
    树结构边与派生父。
 
-## 决策（总体设计；当前落地范围以阶段 1、2、3、4 小节为准）
+## 决策（总体设计；当前落地范围以阶段 1–5 小节为准）
 
 下文包含未来目标，不表示各组件、策略和公开入口已经实现；未落地部分不能作为当前
 运行时行为依据。公开 HIERARCHY 只交付阶段 3 的显式两层 TIME 范围；FORGET 断边、
-LayerAnnotator 父标注、查询展开、后台自动派生和修复仍为后续目标。
+LayerAnnotator 父标注、分数上卷、后台自动派生和修复仍为后续目标；查询展开已在阶段 5 落地。
 
 ### 1. 首期采用内嵌 `HierarchyRef`
 
@@ -501,12 +564,12 @@ TIME 父节点会因切分策略、修正或新增叶而重算。`replace_in_spa
    子节点；展开默认不跨 kind。
 
 父优先使粗粒度摘要成为稳定入口，同时保留“先看概要、再取证据”的交互方式。
-叶命中向父上卷是可选策略，默认关闭，避免单个噪声叶把整棵父树带入候选。
+叶命中向父上卷是后续目标，当前不接受 rollup 参数，避免把设计写成已实现能力。
 检索轨迹必须区分父层命中与子树展开阶段，并记录根节点、展开深度、返回节点数和预算
 截断原因，使父→子的证据路径可审计。
 
 `RetrievedItem` 保持扁平，不嵌套 `child_ids` 或树容器。调用方在同一次 `search` 中通过
-非零 `expand_depth` 展开；**不另设公开 `MemoryAPI.expand`**。`rollup` 只把后代相关性
+非零 `expand_depth` 展开；**不另设公开 `MemoryAPI.expand`**。目标中的 `rollup` 只把后代相关性
 传播到目标父角色，默认不展开后代；“父命中”“分数上卷”和“内容展开”是三个可独立启用的动作。
 
 层级过滤、展开和结果结构的精确公开契约已写入
@@ -517,7 +580,7 @@ TIME 父节点会因切分策略、修正或新增叶而重算。`replace_in_spa
 
 父子结构新增两类跨节点决策：
 
-- **分数传播**：首期采用 MaxP，把父自身得分与相关子节点最高分合并；同一父下应有
+- **分数传播（后续阶段）**：拟采用 MaxP，把父自身得分与相关子节点最高分合并；同一父下应有
   top-M 或阈值收敛，防止候选爆炸。其他传播算法留待后续基准验证。
 - **节点准入与主披露级**：`expand_depth>0` 时，选哪些子节点及每个节点的主
   `DisclosureLevel`，与父命中一起消耗既有 `RetrievalQuery.max_tokens`（来自
@@ -525,8 +588,8 @@ TIME 父节点会因切分策略、修正或新增叶而重算。`replace_in_spa
   `tree_budget` 控制面。
 
 现有 Discloser 的职责仍是对**单个 unit**选择或塑形 L0/L1/L2 内容；跨节点遍历由
-Retriever 内的 Expander 在 recall 编排中完成，再调用 Discloser。二者分工不同，但
-token 预算是同一池。
+Retriever 内的 Expander 完成；选子回调调用 Discloser 塑形后，据实际主字段分配
+共享预算。二者分工不同，不在塑形前用原始正文估算所有披露层级。
 由于 `RetrievedItem` 始终返回 abstract/overview/content 全字段，实际响应可超过该逻辑
 预算；严格 wire-size 投影不在当前契约内。
 
@@ -803,7 +866,7 @@ CloudEngine 不再回注已消费提示。解析路径自行检查字段，不�
 的独立 Composer 构建，阶段 3 的公开任务在收齐输入后调用它。写入路径本身不触发
 建树，后续维护仍未接入。
 
-## 关键数据流（显式建树已落地，召回展开仍为目标）
+## 关键数据流（显式两层建树与查询展开已落地）
 
 树结构专用路径不写入 architecture §14（该节只保留通用 write/recall/evolve 骨架）；
 建树与按需展开细节如下。
@@ -826,14 +889,15 @@ evolve(scope, EvolveTaskOptions(mode=HIERARCHY, hierarchy_options=...), security
 **读取展开路径（仍是 `search`，无公开 `expand`）**
 
 ```text
-search(..., hierarchy_kind=..., hierarchy_role=?, expand_depth=N, rollup=?)
+search(query, context, SearchOptions(hierarchy_kind=..., hierarchy_role=..., expand_depth=N))
   → 既有 QueryParser → 多路召回 → Fuser → Reranker → 阈值 → top_k
-  → [若 N>0] Retriever 内 Expander：沿命中父有序 child_ids 选子（共用 max_tokens）
-  → Discloser（单 unit L0/L1/L2）
-  → RetrievalResult（扁平 RetrievedItem + 可选轨迹）
+  → Discloser 塑形根；[若 N>0] 内部准备根与来源
+  → 单/跨空间最终选根 → 共用 max_tokens 准入根
+  → [若 N>0] Expander 按根顺序 BFS：真源复核 → Discloser 塑形子 → 预算准入
+  → RetrievalResult（扁平 RetrievedItem + 可选轨迹 + errors）
 ```
 
-`expand_depth=0` 时无 Expander 步骤；`rollup=true` 只影响父分，不自动展开子全文。
+expand_depth=0 不准备或展开；rollup 尚未开放，目标中只影响父分、不自动展开。
 
 ## 拒绝的方案
 
@@ -876,19 +940,20 @@ search(..., hierarchy_kind=..., hierarchy_role=?, expand_depth=N, rollup=?)
 ### 8. 直接扩展现有 Discloser 负责整棵树预算
 
 拒绝。Discloser 已有清晰的单 unit 披露职责。树遍历、节点选择与跨节点预算是独立
-问题，应在调用 Discloser 之前完成。
+问题，由独立编排负责；准入预算以 Discloser 渲染出的实际主字段为依据。
 
 ## 验证
 
 阶段 1 的模型、接入与索引投影已落地，完整 unit 回归 1891 passed、5 skipped；阶段 2
 补齐内部最小 TIME 构建及受限替换，完整 unit 回归 2082 passed、5 skipped。
 阶段 3 增加显式任务入口与完整候选读取，完整 unit 回归 2229 passed、5 skipped。
-阶段 4 增加 SearchOptions、直接结构查询与真源复核，不等于后续展开/上卷已经实现。
+阶段 4 增加 SearchOptions、直接结构查询与真源复核；阶段 5 交付只读展开与共享预算，
+仍不等于后续上卷已经实现。
 不得用已有 pytest 结果替代未交付能力的实现验证。
 
 以下 P0–P5 是决策 19 的原设计验收分组，不是本次按能力整理的提交阶段顺序。
 阶段 1 覆盖模型、叶提示与索引投影，阶段 2 覆盖 P1 的最小内部构建切片，阶段 3
-覆盖显式调用、完整取数与任务状态闭环；阶段 4 覆盖直接层级查询；其余验收保留为后续目标，按实际交付
+覆盖显式调用、完整取数与任务状态闭环；阶段 4 覆盖直接层级查询，阶段 5 覆盖展开与预算；其余验收保留为后续目标，按实际交付
 逐项验证，不因属于同一个原设计分组而提前标记完成。
 
 ### 阶段 0：设计验收
@@ -913,15 +978,15 @@ search(..., hierarchy_kind=..., hierarchy_role=?, expand_depth=N, rollup=?)
 - [x] 对显式备齐的输入，`replace_in_span` 只替换相交派生父节点，不删除权威叶。
 - [ ] 父节点内容层在落盘和建索引前按 best-effort 策略生成或安全降级。
 
-### 后续验收组 P2：构建、检索与预算（阶段 4 部分实现）
+### 后续验收组 P2：构建、检索与预算（阶段 5 部分实现）
 
 - [ ] snapshot→time_span→scene 可构建、可重复重建，且权威叶内容零变化。
 - [x] 默认父层召回不自动包含子全文。
-- [ ] 展开按顺序、深度、kind 与 scope 约束返回子树切片。
-- [ ] 检索轨迹分别记录父层命中与展开阶段，并能解释展开深度和预算截断。
+- [x] 展开按顺序、深度、kind 与 scope 约束返回子树切片。
+- [x] 检索轨迹分别记录父层命中与展开阶段，并能解释展开深度和预算截断。
 - [ ] MaxP 与 top-M 收敛策略有确定性测试。
-- [ ] 树级预算先选节点与主 `level`，再由 Discloser 处理各节点的同 unit 披露。
-- [ ] `MemoryUnit.temporal`、`RecallChannel.TEMPORAL` 和 `HierarchyKind.TIME` 的过滤行为互不替代。
+- [x] 根与后代共享预算，根据 Discloser 实际字段准入节点并确定主 level。
+- [x] `MemoryUnit.temporal`、`RecallChannel.TEMPORAL` 和 `HierarchyKind.TIME` 的过滤行为互不替代。
 
 ### 后续验收组 P3：调度、策略与修复（未实现）
 

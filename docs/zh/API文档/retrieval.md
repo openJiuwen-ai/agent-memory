@@ -42,14 +42,15 @@ from jiuwen_memory.common.type_def import HierarchyKind, HierarchyRole
 result = api.search(
     "数据库迁移", context,
     SearchOptions(top_k=5, hierarchy_kind=HierarchyKind.TIME,
-                  hierarchy_role=HierarchyRole.TIME_SPAN),
+                  hierarchy_role=HierarchyRole.TIME_SPAN, expand_depth=1),
     security=security,
 )
 ```
 
 省略 options 使用默认值；旧平铺选项关键字不再接受。HTTP/CLI 放在 `options` 对象内。
-typed 层级查询需启用 `hierarchy.enabled`，仅返回当前 Scope 内直接命中节点，
-不自动展开、上卷或建树。完整公开契约见 [S02](../../specs/S02-memory-api.md)。
+typed 层级查询需启用 `hierarchy.enabled`。expand_depth 默认为 0，只返回直接命中；
+上例显式取直接子节点，不做第二次相关性召回，不上卷或建树。
+完整公开契约见 [S02](../../specs/S02-memory-api.md)。
 
 ## 2. RetrievalOperator 基类
 
@@ -64,7 +65,7 @@ from jiuwen_memory.retrieval.base import RetrievalOperator, RetrievalOperatorTyp
 | `operator_type()` | `RetrievalOperatorType` | 返回算子类型 |
 | `health()` | `None` | 健康时返回 `None`，失败时抛异常 |
 
-`RetrievalOperatorType` 包含 `QUERY_PARSER`、`FUSER`、`DISCLOSER`、`RETRIEVER`；Recaller 归 Storage 数据面。
+`RetrievalOperatorType` 包含 `QUERY_PARSER`、`FUSER`、`DISCLOSER`、`EXPANDER`、`RETRIEVER`；Recaller 归 Storage 数据面。
 
 ## 3. RetrievalQuery 请求类型
 
@@ -86,6 +87,8 @@ class RetrievalQuery:
     hierarchy_role: HierarchyRole | None = None
     span_start: datetime | None = None
     span_end: datetime | None = None
+    expand_depth: int = 0
+    defer_expansion: bool = False  # 内部跨空间协议，不属于 SearchOptions
 ```
 
 | 字段 | 说明 |
@@ -93,7 +96,7 @@ class RetrievalQuery:
 | `text` | 原始自然语言查询 |
 | `filters` | Scope 之外的用户元数据硬过滤谓词；进入对象时归一化为 `FilterExpr` |
 | `as_of` | valid-time 回溯时间点；`None` 表示查询当前状态 |
-| `top_k` | 最终返回条数，必须大于 `0` |
+| `top_k` | 直接命中根的条数上限，必须大于 0；展开子不占根名额 |
 | `disclosure` | 主披露层级：`L0`、`L1`、`L2` 或 `ADAPTIVE` |
 | `max_tokens` | 自适应披露的 token 预算；传入时必须大于 `0` |
 | `with_trajectory` | 是否在结果中返回检索轨迹 |
@@ -103,6 +106,15 @@ class RetrievalQuery:
 | `extensions` | 透传给 `ParsedQuery.extensions` 的自定义选项；内核不解释其 key |
 | `hierarchy_kind` / `hierarchy_role` | 单一树类型与可选单角色，role 要求显式 kind |
 | `span_start` / `span_end` | 成对、有序的结构闭区间；朴素时间按 UTC，与 event-time/valid-time 独立 |
+| `expand_depth` | 非负整数，不接受 bool；非零要求 kind，1 为直接子、2 最多两条边 |
+| `defer_expansion` | 内部选根后再展开，不可经公开 API/HTTP/CLI 指定 |
+
+展开保留 kind、Scope、业务/权限过滤与时间可见性，只移除 typed 父角色条件。
+先准入所有根，再逐根按层读取有序 child_ids；子继承根分。预算由
+context.extensions["max_tokens"] 传入，父子及跨空间共用，按实际主字段约每四字符
+一个 token 估算。三层字段仍同时返回，因此不是整个响应体的大小上限。
+缺子、坏边与预算截断始终进入 errors（HIERARCHY），开启轨迹还会展示深度与计数。
+多模态包装器尚未适配非零展开；基础 PipelineRetriever 的三条存储路径均已支持。
 
 `as_of` 表示“在某个系统有效时间点看到什么”。`ParsedQuery.time_from/time_to` 则表示内容中事件发生的时间范围，两者是独立时间轴。
 

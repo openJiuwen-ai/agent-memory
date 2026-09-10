@@ -54,7 +54,9 @@ snapshot 与旧 time_span 全部直接子叶后调用，不由 Composer 自行�
 
 ### retrieval/ — 检索层
 
-五步检索链路：`QueryParser`（查询理解）→ `Recaller`（多路召回）→ `Fuser`（融合+重排）→ `Discloser`（渐进式披露 L0→L1→L2）→ `Retriever`（编排+轨迹）。
+由 Retriever 编排：QueryParser → Storage 首选 recall/get/rank 路径（Recaller 归数据面，
+Fuser 负责融合）→ 可选 Reranker → 阈值/top_k → Discloser；显式 expand_depth>0
+在最终选根后通过 Expander 只读展开，并共享根/后代披露预算与诊断。
 
 ### control/ — 编排层
 

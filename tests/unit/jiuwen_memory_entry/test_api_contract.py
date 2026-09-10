@@ -349,6 +349,7 @@ def test_search_options_decode_hierarchy_enums_and_independent_times() -> None:
                 "as_of": "2026-09-11T00:00:00+00:00",
                 "hierarchy_kind": "time",
                 "hierarchy_role": "time_span",
+                "expand_depth": 1,
                 "span_start": "2026-09-10T09:00:00+08:00",
                 "span_end": "2026-09-10T10:00:00+08:00",
             },
@@ -362,6 +363,7 @@ def test_search_options_decode_hierarchy_enums_and_independent_times() -> None:
         as_of=datetime.fromisoformat("2026-09-11T00:00:00+00:00"),
         hierarchy_kind=HierarchyKind.TIME,
         hierarchy_role=HierarchyRole.TIME_SPAN,
+        expand_depth=1,
         span_start=datetime.fromisoformat("2026-09-10T09:00:00+08:00"),
         span_end=datetime.fromisoformat("2026-09-10T10:00:00+08:00"),
     )
@@ -404,6 +406,8 @@ def test_search_rejects_top_level_options(old_field: str) -> None:
         ({"span_start": "invalid"}, "options.span_start must be an ISO 8601 datetime"),
         ({"top_k": True}, "options.top_k must be an integer"),
         ({"expand": True}, "unknown field.*options.*expand"),
+        ({"expand_depth": True}, "options.expand_depth must be an integer"),
+        ({"defer_expansion": True}, "unknown field.*options.*defer_expansion"),
     ],
 )
 def test_search_rejects_malformed_nested_options(raw_options, diagnostic: str) -> None:

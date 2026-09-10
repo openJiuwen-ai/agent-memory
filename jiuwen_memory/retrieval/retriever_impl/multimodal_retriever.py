@@ -6,7 +6,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 
-from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.errors import UnsupportedCapabilityError, ValidationError
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
     FilterClause,
@@ -53,6 +53,11 @@ class MultimodalRetriever(Retriever):
         self._base.health()
 
     def retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
+        """合并多模态分支；尚未适配延迟展开时明确拒绝非零深度。"""
+        if query.expand_depth:
+            raise UnsupportedCapabilityError(
+                "expand_depth", str(query.expand_depth), "MultimodalRetriever",
+            )
         queries = {
             "native": _with_filters(
                 query,

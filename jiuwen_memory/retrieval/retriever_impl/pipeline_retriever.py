@@ -3,7 +3,7 @@
 
 单次 :meth:`retrieve` 驱动完整链路（Option B：点读/有效性/重排为独立阶段）：
 查询理解 → 前置谓词构造 → 并行多路召回 → 融合 → 截断候选预算 → 点读真源 +
-有效性过滤 → （可选）重排 → 阈值过滤 → 截断 top_k → 渐进式披露 → 返回结果与轨迹。
+有效性过滤 → （可选）重排 → 阈值过滤 → 截断 top_k → 渐进式披露 → 可选子树展开。
 scope 作显式首参贯穿下推；召回/取数/排序全部委托统一 Storage 的三条首选路径，
 本类不含召回/打分逻辑，也不持有召回路（CompositeStorage 的兼容 Recaller 由
 storage 层工厂按配置装配）。
@@ -16,7 +16,11 @@ from dataclasses import replace
 from time import perf_counter
 from uuid import uuid4
 
-from jiuwen_memory.common.errors import ValidationError, safe_error_message
+from jiuwen_memory.common.errors import (
+    UnsupportedCapabilityError,
+    ValidationError,
+    safe_error_message,
+)
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.reranker.base import Reranker, RerankerProducer
@@ -33,9 +37,15 @@ from jiuwen_memory.common.type_def import (
     and_merge,
     is_retrieval_candidate,
 )
-from jiuwen_memory.common.type_def.hierarchy_query import HierarchyQuery
+from jiuwen_memory.common.type_def.hierarchy_query import HierarchyQuery, validate_expand_depth
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.discloser import Discloser, DiscloserProducer
+from jiuwen_memory.retrieval.expander import Expander, ExpanderProducer
+from jiuwen_memory.retrieval.expansion import (
+    ExpansionSource,
+    complete_expansion,
+    prepare_expansion,
+)
 from jiuwen_memory.retrieval.fuser import Fuser, FuserProducer
 from jiuwen_memory.retrieval.query_parser import QueryParser, QueryParserProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
@@ -82,6 +92,7 @@ class PipelineRetriever(Retriever):
         self._discloser = discloser
         self._reader = unit_reader
         self._domain = domain_store
+        self._expander: Expander | None = None
         self._reranker = reranker
         # 召回超采样：每路取 max(top_k*factor, floor)，撒宽网喂融合。
         self._over_fetch_factor = max(1, int(over_fetch_factor))
@@ -116,11 +127,24 @@ class PipelineRetriever(Retriever):
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.RETRIEVER
 
+    def bind_expander(self, expander: Expander) -> None:
+        """装配阶段绑定同源的展开算子，不引入第二份存储配置。"""
+        self._expander = expander
+
     def health(self) -> None:
         return None
 
     def retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
+        """执行直接检索，非零展开深度时在选根后统一读取后代。"""
         hierarchy = HierarchyQuery.from_query(query)
+        validate_expand_depth(query.expand_depth, hierarchy.hierarchy_kind)
+        if query.expand_depth and not isinstance(query.disclosure, DisclosureLevel):
+            raise ValidationError("展开 disclosure 必须是 DisclosureLevel")
+        if query.expand_depth and self._expander is None:
+            raise UnsupportedCapabilityError(
+                "expand_depth", str(query.expand_depth), "PipelineRetriever",
+                "当前 Retriever 未装配 Expander",
+            )
         # 入参校验：top_k 非法直接拒绝（可预期的调用错误）。
         if query.top_k <= 0:
             raise ValidationError(f"top_k must be positive, got {query.top_k}")
@@ -189,7 +213,7 @@ class PipelineRetriever(Retriever):
 
         # [2] 查询理解
         t0 = perf_counter()
-        parsed = self._parser.parse(query)
+        parsed = self._parser.parse(replace(query))
         # 显式结构条件由编排者保真传递，不依赖各自定义 parser 的实现。
         parsed.hierarchy_kind = hierarchy.hierarchy_kind
         parsed.hierarchy_role = hierarchy.hierarchy_role
@@ -354,14 +378,22 @@ class PipelineRetriever(Retriever):
 
         # [9] 截断 top_k
         final = survivors[: query.top_k]
+        if query.expand_depth:
+            record_step("parent_recall", 0.0, n=len(final), detail={"top_k": str(query.top_k)})
 
         # [10] 渐进式披露（纯内容塑形，复用已点读的 units）
         t0 = perf_counter()
         items = self._discloser.disclose(
-            parsed, final, units, query.disclosure, max_tokens=query.max_tokens
+            parsed, final, units,
+            DisclosureLevel.L0 if query.expand_depth else query.disclosure,
+            max_tokens=None if query.expand_depth else query.max_tokens,
         )
         disclose_detail = {}
-        if query.disclosure == DisclosureLevel.ADAPTIVE:
+        if query.expand_depth:
+            disclose_detail = {
+                "mode": "prepare_expansion", "budget": "deferred_until_root_selection",
+            }
+        elif query.disclosure == DisclosureLevel.ADAPTIVE:
             disclose_detail = {
                 "mode": "adaptive",
                 "max_tokens": str(query.max_tokens or ""),
@@ -380,7 +412,25 @@ class PipelineRetriever(Retriever):
             len(items),
             (perf_counter() - started_at) * 1000.0,
         )
-        return RetrievalResult(items=items, trajectory=traj, errors=errors)
+        result = RetrievalResult(items=items, trajectory=traj, errors=errors)
+        if not query.expand_depth:
+            return result
+        parsed_filters = [] if parsed.recheck_filters is None else [parsed.recheck_filters]
+        child_filters = and_merge(query.filters, parsed_filters)
+        source = ExpansionSource(
+            scope=scope,
+            query=replace(
+                parsed, hierarchy_role=None,
+                scalar_filters=child_filters,
+                recheck_filters=child_filters,
+            ),
+            expander=self._expander,
+            discloser=self._discloser,
+        )
+        prepared = prepare_expansion(result, source, final)
+        if query.defer_expansion:
+            return prepared
+        return complete_expansion(result, [prepared], query)
 
 # -- 注册到 RetrieverProducer（实现自注册，新增无需改 producer/装配入口） -------- #
 
@@ -397,7 +447,8 @@ def _build(config):
         if config.get("rerank_enabled", True)
         else None
     )
-    return PipelineRetriever(
+    domain = manager.domain_store(resolve_name(config, "domain_store"))
+    retriever = PipelineRetriever(
         QueryParserProducer.dep(config, default="simple"),
         FuserProducer.dep(config, default="rrf"),
         DiscloserProducer.dep(config, default="truncating"),
@@ -415,8 +466,10 @@ def _build(config):
             Factory.cfg_get(config, "min_score_ratio_uncalibrated", 0.0)
         ),
         min_results=int(Factory.cfg_get(config, "min_results", 0)),
-        domain_store=manager.domain_store(resolve_name(config, "domain_store")),
+        domain_store=domain,
     )
+    retriever.bind_expander(ExpanderProducer.build("default", {"domain_store": domain}, config.ctx))
+    return retriever
 
 
 def _estimate_tokens(text: str) -> int:

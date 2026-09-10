@@ -10,7 +10,7 @@ from jiuwen_memory.retrieval.types import DisclosureLevel
 
 @dataclass(frozen=True)
 class SearchOptions:
-    """普通检索选项与可选层级条件；省略时不启用层级过滤。"""
+    """普通选项、可选结构条件与显式展开深度；默认不沿树边读取后代。"""
 
     filters: FilterExpr | list[FilterClause] | dict | None = None
     as_of: datetime | None = None
@@ -21,3 +21,4 @@ class SearchOptions:
     hierarchy_role: HierarchyRole | None = None
     span_start: datetime | None = None
     span_end: datetime | None = None
+    expand_depth: int = 0

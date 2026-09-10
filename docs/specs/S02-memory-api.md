@@ -414,7 +414,7 @@ def submit_ingest(
 
 #### search
 
-**状态：已实现**（下列签名为当前代码）。层级过滤 / 展开 / rollup 为已设计增量，见本节末。
+**状态：已实现**（下列签名为当前代码）。结构过滤与显式展开已交付，rollup 尚未开放。
 #### 薄封装职责
 
 API 方法的实现顺序应保持为：
@@ -461,10 +461,11 @@ class SearchOptions:
     hierarchy_role: HierarchyRole | None = None
     span_start: datetime | None = None
     span_end: datetime | None = None
+    expand_depth: int = 0
 ```
 
-**状态：阶段 4 已实现**。`SearchOptions` 从 `jiuwen_memory.api` 导入，普通选项与
-四个层级条件统一装配到 `RetrievalQuery`。省略 options 或传 `None` 使用默认值；
+**状态：阶段 5 已实现**。`SearchOptions` 从 `jiuwen_memory.api` 导入，普通选项、
+四个层级条件及 expand_depth 统一装配到 `RetrievalQuery`。省略 options 或传 None 使用默认值；
 旧的平铺 `filters/as_of/top_k/disclosure/with_trajectory` 关键字不再接受。
 HTTP/CLI 将这些字段放在 `options` 对象内；枚举用字符串、datetime 用 ISO 8601：
 
@@ -477,7 +478,8 @@ HTTP/CLI 将这些字段放在 `options` 对象内；枚举用字符串、dateti
     "hierarchy_kind": "time",
     "hierarchy_role": "time_span",
     "span_start": "2026-09-10T00:00:00Z",
-    "span_end": "2026-09-10T23:59:59Z"
+    "span_end": "2026-09-10T23:59:59Z",
+    "expand_depth": 1
   }
 }
 ```
@@ -492,9 +494,16 @@ READ 鉴权、权限路由谓词、跨空间判权、`context.extensions` 中的
 不受影响。该开关不是访问控制，通用 `filters` 中的结构字段仍只是底层字段过滤，
 不自动启用 typed 层级请求的 ACTIVE、kind、span 有效性语义。
 
-本阶段只返回直接命中节点；`RetrievedItem.parent_id` 来自真源引用，空串表示根或
-未挂接节点，不能脱离 Scope 当成全局定位键。`expand_depth`、`rollup` 尚未开放，
-也不接受占位参数；按需下钻、分数上卷、ensure 保留为后续设计。
+expand_depth 默认为 0，只返回直接命中；非零必须为正整数并显式指定 kind，
+1 读取直接子、2 最多读取两条边。typed role 只过滤直接命中，子保留其他可见性约束。
+top_k 限制根数量，子不占根名额；父子共用 max_tokens，跨空间先选根后展开且预算不重置。
+返回项仍为扁平列表，子继承根分数，不表示独立评分。预算按实际渲染主字段估算，
+三层字段仍同时返回，因此不是响应体 token 上限。详细顺序与截断见 S04。
+
+`RetrievedItem.parent_id` 来自真源引用，空串表示根或未挂接节点；结果项不携带完整
+Scope，裸 id 不足以重建跨 Scope 同名节点的树。无公开 MemoryAPI.expand；内部
+defer_expansion 不接受作为 SearchOptions 字段。rollup、ensure 仍未开放。
+多模态包装器尚未适配展开，非零深度明确拒绝，不静默当成普通 search。
 
 #### list
 
@@ -1096,8 +1105,13 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 `DisclosureLevel`：`L0`（摘要）/ `L1`（片段）/ `L2`（全文）/ `ADAPTIVE`（按 `max_tokens` 预算自动选层级）。
 
 `RetrievalResult`：
-- `items: list[RetrievedItem]` —— 每项 `unit_id` / `score`（融合/重排后最终分）/ `content`（按层级加载）/ `level`（实际披露层级）。
-- `trajectory: list[TrajectoryStep]` —— 仅 `with_trajectory=True` 返回。每步 `stage`（parse/recall/fuse/recheck/rerank/threshold/disclose）/ `channel`（召回通道，非召回步为 None）/ `candidate_count` / `cost_ms` / `detail`。
+- `items: list[RetrievedItem]` —— unit_id / score / abstract / overview / content /
+  user_metadata / system_metadata / level / parent_id；三层同时返回，level 标记主层级。
+  直接命中分来自融合/重排，展开后代继承根分。
+- `trajectory: list[TrajectoryStep]` —— 仅 with_trajectory=True 返回；普通步骤之外，
+  展开请求增加 parent_recall、逐根 expand（深度、计数、完整性及预算）。
+- `errors: list[ChannelError]` —— channel / source / error_type / message；展开问题使用
+  HIERARCHY 诊断标记，即使关闭轨迹也返回。SPACE/HIERARCHY 不是可配置召回通道。
 
 ### EvolveTaskOptions / Channel / EvolveMode / JobInfo（evolve / 任务）
 
@@ -1200,6 +1214,8 @@ jiuwen_memory/api/memory_api_impl/
 | architecture.md §6 | 已实现 MemoryAPI 清单 |
 
 ## 修订记录
+
+- 2026-09-10：阶段 5 开放 SearchOptions.expand_depth，明确根 top_k、跨空间共享预算、扁平结果及始终可见的展开诊断；内部延迟展开字段不进入公开协议。
 
 - 2026-09-10：阶段 4 统一 SearchOptions，开放单 kind/role 与结构闭区间查询，补齐嵌套协议、策略门禁及 parent_id；展开和上卷仍未开放。
 

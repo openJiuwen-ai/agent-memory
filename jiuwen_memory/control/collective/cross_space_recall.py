@@ -19,10 +19,10 @@
 一段与鉴权无关的取数编排——逐空间构造 ``RetrievalQuery`` 的循环本身就是取数编排。
 
 **本模块不持有引擎，召回经 ``recall`` 回调传入**，与 :mod:`.write_targets` 收 ``can_write``
-回调同一形态。控制层因此既不 import 引擎实现，也不 import 检索算子；它只 import
-:mod:`~retrieval.cross_space` 的三个纯函数（无 Producer 注册、实现不可替换、不访问存储与
-模型），依赖方向为 control → retrieval，与 ``engine.py`` / ``pipeline.py`` 既有的类型
-依赖同向，检索层不反向依赖控制层，无环。
+回调同一形态。控制层不 import 引擎或检索算子实现；它复用
+:mod:`~retrieval.cross_space` 的纯合并函数。显式展开时先全局选根，再交
+:mod:`~retrieval.expansion` 完成共享预算收尾，不解包来源依赖或直接执行树遍历。
+依赖方向为 control → retrieval，与既有类型依赖同向，检索层不反向依赖控制层。
 
 **扇出失败与判权剔除分两路返回。** 本模块只返回自己产生的那一路（``space_failures``），
 不把它并进 ``merged.errors``。并进去之后，空间级扇出失败（``channel=space``）与检索层的
@@ -41,9 +41,11 @@ import asyncio
 from dataclasses import dataclass, replace
 from typing import Awaitable, Callable, Sequence
 
+from jiuwen_memory.common.errors import UnsupportedCapabilityError
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import ChannelError, FilterClause, Scope, and_merge
 from jiuwen_memory.retrieval.cross_space import allocate_quota, merge, space_error
+from jiuwen_memory.retrieval.expansion import PreparedRetrievalResult, complete_expansion
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
 
 logger = get_logger(__name__)
@@ -114,6 +116,11 @@ async def recall_spaces(
         results.append((space, outcome))
 
     merged = merge(results, top_k=top_k, priority=priority)
+    if query.expand_depth:
+        prepared = [
+            result for _space, result in results if isinstance(result, PreparedRetrievalResult)
+        ]
+        merged = complete_expansion(merged, prepared, query)
     # 各召回器只记本层 hits，收窄与归并之后剩下什么无处可查；返回条目的 id 与所属空间是
     # 判断「谁被收窄掉了」的唯一依据。
     #
@@ -145,6 +152,7 @@ async def _recall_one(
         query,
         top_k=quota.get(target.scope.space, 1),
         extensions=dict(query.extensions or {}),
+        defer_expansion=bool(query.expand_depth),
     )
     if target.clauses:
         # 两族谓词与调用方表达式合成一个 AND 一次下推，在 top-k 截断之前生效——召回后
@@ -159,4 +167,10 @@ async def _recall_one(
         rq.top_k,
         [(c.field, getattr(c.op, "value", c.op), c.value) for c in target.clauses],
     )
-    return await recall(target.scope, rq)
+    result = await recall(target.scope, rq)
+    if query.expand_depth and result.items and not isinstance(result, PreparedRetrievalResult):
+        raise UnsupportedCapabilityError(
+            "defer_expansion", "true", "Retriever",
+            "跨空间展开要求 Retriever 支持延迟展开协议",
+        )
+    return result

@@ -22,5 +22,6 @@ def register_operators() -> None:
     import_module("jiuwen_memory.retrieval.discloser_impl")
     import_module("jiuwen_memory.retrieval.fuser_impl")
     import_module("jiuwen_memory.retrieval.query_parser_impl")
+    import_module("jiuwen_memory.retrieval.expander_impl")
     import_module("jiuwen_memory.retrieval.retriever_impl")
     _REGISTERED = True

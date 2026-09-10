@@ -21,6 +21,9 @@
 | `query_parser.py` | QueryParser 接口：查询理解（去噪/改写/分词/实体/向量化/时间解析） |
 | `fuser.py` | Fuser 接口：多路融合排序（重排由 common `Reranker` 独立阶段承担） |
 | `discloser.py` | Discloser 接口：渐进式披露（L0 摘要/L1 片段/L2 全文） |
+| `expander.py` | Expander 接口、内部请求/诊断与完整 Scope 节点身份；不查询索引、不评分 |
+| `expander_impl/` | 同源 DomainStore 的有界只读 BFS，逐边范围、结构及可见性复核 |
+| `expansion.py` | 准备物化根、单/跨空间共享预算收尾；只依赖接口，内部准备结果不序列化 |
 | `retriever.py` | Retriever 接口：检索层入口，编排完整链路 |
 | `query_parser_impl/` | QueryParser 实现目录（simple_query_parser / sanitize / time_parse） |
 | `fuser_impl/` | Fuser 实现目录（rrf【默认】/ weighted_rrf / score_max）+ `layered_merge` 分层归并前处理 |
@@ -49,7 +52,8 @@
 8. 截断 top_k
      ↓
 9. Discloser.disclose(...) → list[RetrievedItem]
-     ↓ 按层级加载内容（L0/L1/L2）
+     ↓ 塑形 L0/L1/L2 三字段；展开请求暂存根及来源，不读后代
+10. [expand_depth>0] 最终选根后共享预算准入根，再逐根 BFS + 子节点披露
 → RetrievalResult（items + trajectory + errors）
 ```
 
@@ -107,6 +111,17 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
     下推；三条检索路径与关键词实体扩展共用真源复核。span 是独立的闭区间轴，TIME
     查询可不指定窗口，但节点自身必须有有效区间。`parent_id` 从真源返回，不触发遍历。
 
+12. **展开不放宽访问范围**
+    只有显式正整数 expand_depth 才展开。点读前校验 Scope，真源复核双向引用、kind、
+    状态、span 覆盖和既有过滤；仅移除 typed 父角色，不移除业务/权限过滤。
+    按完整 Scope+id 去重，坏分支只读跳过，不自动修复。
+
+13. **先选根、再共享预算展开**
+    top_k 限制直接命中根；跨空间使用内部 defer_expansion 协议，合并选根后才读取
+    后代。节点和主披露级由 retrieval.expansion 据 Discloser 实际字段准入，预算与
+    节点上限跨根、跨空间共享。子继承根分，不冒充独立相关性评分或 MaxP。
+    issues 经 HIERARCHY 诊断返回，即使不开轨迹也不能静默隐藏截断。
+
 ## 与其他子目录的边界
 
 **本模块管**：
@@ -114,6 +129,7 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 - 多路召回结果的编排消费（Retriever；单路 Recaller 归 `storage` 数据面）
 - 融合与重排（Fuser）
 - 渐进式披露（Discloser）
+- 只读结构展开及共享披露预算（Expander / expansion）
 - 检索轨迹记录（TrajectoryStep）
 
 **不管**：
@@ -145,3 +161,4 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 8. `MultimodalRetriever` 只组合已注入的基础 Retriever，不得直接依赖 `KvProducer`、
    扫描 KV 或识别具体存储后端。原生、CLM、ELM 分支分别检索；无视频记忆时两个视频
    分支自然为空，再按 RRF 融合并截断到请求的 `top_k`。
+   未适配延迟展开前必须显式拒绝非零深度，不能静默截断已经展开的子项。

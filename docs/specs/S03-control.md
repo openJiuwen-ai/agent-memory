@@ -34,7 +34,10 @@
 - 不绑定具体存储后端（只通过注入的 Store 抽象读写）
 - 不实现抽取/升华/关联/冲突消解等演进逻辑（由构建层 `Evolver` 负责，控制层仅调度）
 - 不生产记忆（由 `jiuwen_memory/ingest` + `jiuwen_memory/construction` 负责）
-- 不执行检索（由 `jiuwen_memory/retrieval` 负责）。「执行」指调用该层的**算子**——有 Producer 注册、实现可替换、访问存储或模型的组件（`Retriever` / `Recaller` / `Fuser` 等）。两件事不在禁止之列：import 该层导出的类型与无状态纯函数（如 `retrieval/cross_space.py` 的取数上界、结果合并与失败编码），以及经调用方传入的 `recall` 回调调 `MemoryEngine` 门面。两者都不使本层持有检索算子实例，依赖方向仍是 control → retrieval，检索层不反向依赖控制层，无环。缺这条限定，`collective/cross_space_recall.py` 的召回扇出会被读成越界
+- 不实现检索算法（由 `jiuwen_memory/retrieval` 负责）。控制层不直接调用或装配
+  Retriever/Fuser/Expander，不持有 DomainStore。跨空间编排可消费检索层的类型、
+  纯合并函数，经 recall 回调调 Engine，并把已选根交回 retrieval.expansion 收尾。
+  内部准备结果仅携带来源依赖，控制层不解包执行；依赖方向仍是 control → retrieval。
 - 不管不可变/重型配置（由 `jiuwen_memory/config` 在实例初始化时确定）
 
 ## 不变量
@@ -59,7 +62,10 @@
     系统过滤谓词；routing fallback 必须是最小权限策略，不得使用 `allow_all`。
 16. **目标操作使用完整 Scope**：MemoryUnit id 仅在 Scope 内唯一。LifecycleManager、Governor 与 IndexBuilder 的目标修改/读取/删除不得依赖全局 `id -> scope` 猜测，调用方必须显式提供 Scope 或携带 Scope 的 MemoryUnit。
 17. **Engine 部署边界明确**：`InMemoryEngine` 只接受空 `space` 兼容域；具名非空 space 的数据面操作使用 `CloudEngine`。`CloudEngine` 仍兼容空 space，但生产多租户配置应开启 `scope.require_space=true`。
-18. **普通 write 不自动建树**：当前只开放显式 TIME snapshot→time_span 任务，公开 API 在 `hierarchy.enabled=false` 时抛 `PolicyError`；控制层信任 API 已完成策略与权限检查。自动派生、层级 recall/update 仍为目标，普通四种演进模式不受层级开关影响。
+18. **普通 write 不自动建树**：当前开放显式 TIME snapshot→time_span 任务、结构查询和
+    可选向下展开，公开 API 在 hierarchy.enabled=false 时拒绝 typed 层级请求；
+    控制层信任 API 已完成策略与权限检查。自动派生、层级 update 仍为目标，普通四种
+    演进模式不受层级开关影响。
 19. **树结构一致性（目标）**：同一 kind 的父子边必须同 `org+space`、无环、单父、双向一致且顺序稳定；`user`/`agent`/`session` 可按 compose profile 放宽（跨细粒度 scope 时边须可解析定位）；`HierarchyStatus` 只允许 ACTIVE/DISMISSED，且与 `LifecycleState` 分离。
 20. **结构与生命周期事务（目标）**：`provenance`、`supersedes` 与 `hierarchy` 分别表示演进来源、版本替换和父子包含；FORGET/PURGE 不级联删除后代内容。
 21. **重叠 span 串行化（目标）**：同一 `scope + kind` 下 span 相交的 HIERARCHY build/replace、层级 update、FORGET 和 PURGE 必须串行化，或以乐观版本条件在提交前检测冲突；replace 不得吸收未参与初始输入快照的并发叶写入。
@@ -92,7 +98,7 @@ class ControlOperator(ABC):
 |------|------|------|
 | `write` | `async (content, scope, source, *, assets, tags, system_metadata, user_metadata, occurred_at) -> list[MemoryUnit]` | 规约→可选抽取/分类→落盘+建索引；`infer=true` 时返回 `created_ids` 对应的派生结果，否则处理原始单元（直写不去重） |
 | `batch_write` | `async (items: list[BatchWriteItem], *, continue_on_error=True) -> BatchWriteResult` | 只接收 API 已归一化并完成鉴权/space 前置校验的项；按输入顺序复用 `write`，归集领域异常及非领域异常（后者为 `InternalError`）；fail-fast 时填充 `Skipped` outcomes |
-| `recall` | `async (scope, query: RetrievalQuery) -> RetrievalResult` | 委托 Retriever 完整检索链路（含目标 `expand_depth>0` 时的内部展开） |
+| `recall` | `async (scope, query: RetrievalQuery) -> RetrievalResult` | 委托 Retriever 完整检索链路（含 expand_depth>0 时的内部展开） |
 | `list` | `async (scope, *, offset=0, limit=100, memory_types=None, extensions=None, filters=None) -> MemoryListResult` | 校验分页参数并完整委托 `KVStore.list`（经 `list_units` helper 反序列化）；返回当前页和分页前匹配总数 |
 | `permission_context_for_unit` | `async (unit_id, scope) -> PermissionContext` | 读取已有记忆的权限上下文，只返回 memory_type/tags/metadata 等鉴权元数据，不返回 content/assets |
 | `list_with_permission_contexts` | `async (同 list 参数) -> tuple[MemoryListResult, list[PermissionContext]]` | 从同一次 KV 查询的当前页构造逐项真源权限上下文，items/count/context 不做二次读取 |
@@ -104,6 +110,12 @@ class ControlOperator(ABC):
 | `sweep_expired` | `async () -> SweepResult` | 编排到期清扫：`LifecycleManager.sweep()` 纯计算 transition，按 (scope, 目标态) 分组执行——FORGOTTEN 组先 `IndexBuilder.remove(SOFT)` 移出检索索引、成功后 `LifecycleManager.transition` 回写真源；ARCHIVED 组只回写（`include_archived` 召回与 `as_of` 回溯仍需索引，不删）。顺序不变量（先删索引、后回写真源）保证 remove 失败时单元保持 ACTIVE、下轮 sweep 重新发现自愈；任一步失败的组计入 `SweepResult.failed`，不静默当成功。共享编排在 `engine_impl/sweep_support.py`，InMemoryEngine 直调 IndexBuilder，CloudEngine 按各 pipeline 的 builder 分组删除 |
 | `evolve` | `async (scope: Scope, options: EvolveTaskOptions) -> str` | 普通模式提交内容演进 Job；HIERARCHY 提交专用显式建树 Job，返回 job_id。Engine 注入同源 Evolver；建树同时注入同源 KV。未装配 Evolver 或 JobFactory 时抛 RuntimeError。旧 mode/channel 参数不再接受 |
 | `admin_get/set/all` | — | 管理面语义由 API 层直达 PolicyManager，Engine 不承载策略存储 |
+
+跨空间 recall 的展开收尾：API 先对每个空间完成判权与谓词构造，控制层对每次
+recall 设置内部 defer_expansion=True。成功结果暂存物化根和来源，原合并规则先按
+全局 top_k 选根，再调用检索层 complete_expansion。所有选中根共用一个主字段预算
+和引用尝试上限，未选中根不点读后代。不支持该协议的非空结果按空间失败返回；
+本层不重新鉴权、不把前一空间的过滤条件应用到其他空间，也不沿树边跨 space。
 
 **write 路径**：
 ```
@@ -469,7 +481,7 @@ space 元数据、space policy、成员、用量与 offboarding 状态管理。
 
 | 键 | 类型与默认 | 语义 |
 |---|---|---|
-| `hierarchy.enabled` | str，`"false"` | API 侧显式建树门禁；仅 trim/lower 后等于 true 时启用，不自动发起任务 |
+| `hierarchy.enabled` | str，`"false"` | API 侧显式建树、typed 结构查询/展开门禁；仅 trim/lower 后等于 true 时启用，不自动发起任务 |
 
 PolicyManager 对未知键仍拒绝；显式自定义 policies 未声明该键时不补默认配置。
 修改开关不回写既有 unit、不触发建树。其余层级策略仍为目标，尚不可据此调用：
@@ -490,7 +502,7 @@ ensure 和召回策略的取值校验不属于阶段 3 已实现能力。
 | 项 | 内容 | 状态 |
 |---|---|---|
 | 新增算子 `MembershipResolver`（`membership.py`） | 一次读取空间授权事实（元数据 + 已滤除过期记录的成员表）并缓存，向鉴权点提供同一份快照；另提供主体到空间的反查与缓存失效 | 已落地，消费方是空间感知判定实现 |
-| 新增子包 `collective/` | 三个非算子模块，均不含判据、不读 `identity`。`routing.py`：结论直写路径的归属判定调用点，判定算子在构建层、判定输入由 API 层的鉴权点构造，二者之间的调用按 S02 的分层边界落在本层；不接判权回调——`RouteContext.candidates` 是 API 层判权后给出的成品集合。`write_targets.py`：写入候选空间集合的计算，接判权回调（`identity` 由 API 层闭包捕获，不出现在本层签名内），不抛权限异常，见不变量 22。`cross_space_recall.py`：跨空间召回的取数上界摊配、扇出与合并，接 `recall` 回调与已判权的空间目标（含逐空间谓词），只 import `retrieval/cross_space.py` 的三个纯函数、不持有引擎；空间级扇出失败单独返回，不并进 `merged.errors`。带实现的模块收在子包而非顶层，以保持「顶层只定义抽象接口」 | 已落地 |
+| 新增子包 `collective/` | 三个非算子模块，均不含判据、不读 `identity`。`routing.py`：结论直写路径的归属判定调用点，判定算子在构建层、判定输入由 API 层的鉴权点构造，二者之间的调用按 S02 的分层边界落在本层；不接判权回调——`RouteContext.candidates` 是 API 层判权后给出的成品集合。`write_targets.py`：写入候选空间集合的计算，接判权回调（`identity` 由 API 层闭包捕获，不出现在本层签名内），不抛权限异常，见不变量 22。`cross_space_recall.py`：跨空间召回的取数上界摊配、扇出与合并，接 `recall` 回调与已判权的空间目标（含逐空间谓词），复用 `retrieval/cross_space.py` 的纯函数，展开请求在合并选根后交 `retrieval/expansion.py` 统一收尾，不直接调用检索算子或持有数据面；空间级扇出失败单独返回，不并进 `merged.errors`。带实现的模块收在子包而非顶层，以保持「顶层只定义抽象接口」 | 已落地 |
 | `SpaceManager` 新增 `spaces_for` | 主体到空间的反查，取代 `list` 的全 keyspace 遍历。与 `list` 是同一批成员关系的两个查询方向：`list` 按 org 枚举空间，`spaces_for` 按主体反查。KV 没有二级索引，实现须另建一份按主体组织的派生索引并在成员与归属的增删处同步维护，超集语义（允许多给、不允许遗漏）。与 `list` 同为裸算子，不含鉴权 | 已落地 |
 | `SpaceManager` 改造 | 创建时按 `SpaceSpec.owner` 登记归属主体；成员表由逐成员键改单键（破坏性，须回填）；`update` 增状态机校验；拒绝主体两维同时非空的成员记录；四处索引维护 | 已落地 |
 | `types.py` 加字段 | `SpaceMember` 增两轴角色（枚举类型自安全层导入）、`SpaceInfo` 增归属登记、`SpaceSpec` 增创建者身份，另新增空间授权事实快照类型 | 已落地 |
@@ -595,6 +607,8 @@ jiuwen_memory/control/<算子>_impl/
 | S08-config | ConfigSource 与 PolicyManager 分工 |
 
 ## 修订记录
+
+- 2026-09-10：阶段 5 跨空间 recall 延迟展开，先全局选根、再交检索层共享预算收尾；控制层不持有数据面或执行展开算法，自动建树/ensure 仍未实现。
 
 - 2026-09-10：内部调用迁移为 `EvolveRequest`，公开 Engine 保留原签名并拒绝 HIERARCHY；后台建树、候选补齐与 ensure 仍为目标。
 - 2026-09-10：阶段 3 以 EvolveTaskOptions 打通显式两层 TIME 任务、完整分页与旧父子补齐、同源运行时依赖、可选共享锁及真实失败结果；修正 Scheduler 的 Job 提交和终态契约，自动派生/ensure 仍未实现。

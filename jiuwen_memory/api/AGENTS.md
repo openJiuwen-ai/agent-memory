@@ -13,7 +13,7 @@
 | 文件 | 职责 |
 |---|---|
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
-| `search_options.py` | SearchOptions：普通检索选项与单 kind/role、结构区间条件；query、Context、security 独立传入 |
+| `search_options.py` | SearchOptions：普通选项、单 kind/role、结构区间和 expand_depth；query、Context、security 独立传入，内部 defer_expansion 不对外 |
 | `memory_api_impl/` | 具体实现目录 |
 | `memory_api_impl/assembly.py` | 公开装配：`assemble(config) -> MemoryAPI`、`assemble_runtime(config) -> MemoryRuntime`（仅 api+close）；内部 `_build_kernel` 才持有 KV/Storage/ingest |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI facade：构造、属性，公开方法由 mixin 提供 |
@@ -47,6 +47,7 @@
    - 其余 `context.extensions` 写入 `RetrievalQuery.extensions`
    - `options: SearchOptions` 承载普通与层级选项，不接受旧平铺选项关键字；
      typed 层级条件在 READ 鉴权后检查 `hierarchy.enabled`，不扩大 Scope 或放宽权限谓词。
+     expand_depth 默认为 0，非零要求显式 kind；节点选择、遍历和预算均委托检索层。
 
 4. **admin_* 不经 Engine**  
    `admin_get/set/all` 直达 `PolicyManager`，不经过 `MemoryEngine`（Engine 中对应方法抛 NotImplementedError）。

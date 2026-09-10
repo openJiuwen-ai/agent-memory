@@ -37,7 +37,9 @@ For the public MemoryAPI, use `api.search(query, context, SearchOptions(...), se
 Import `SearchOptions` from `jiuwen_memory.api`. Omitted options use defaults; old flat option
 keywords are no longer accepted. HTTP/CLI carry the same fields in a nested `options` object.
 Typed hierarchy queries require `hierarchy.enabled=true`, retain existing Scope/permissions,
-and return direct hits only. Expansion, rollup, and automatic tree construction are not implemented.
+and default to direct hits only (`expand_depth=0`). A positive depth explicitly follows child
+references: 1 reads direct children, 2 follows at most two edges. Rollup and automatic construction
+are not implemented.
 See [S02](../../specs/S02-memory-api.md) for the public contract.
 
 ## 2. RetrievalOperator Base Class
@@ -53,7 +55,7 @@ Every retrieval operator inherits `RetrievalOperator` and implements:
 | `operator_type()` | `RetrievalOperatorType` | Returns the operator type |
 | `health()` | `None` | Returns `None` when healthy and raises an exception on failure |
 
-`RetrievalOperatorType` contains `QUERY_PARSER`, `FUSER`, `DISCLOSER`, and `RETRIEVER`. Recallers belong to the Storage data plane.
+`RetrievalOperatorType` contains `QUERY_PARSER`, `FUSER`, `DISCLOSER`, `EXPANDER`, and `RETRIEVER`. Recallers belong to the Storage data plane.
 
 ## 3. RetrievalQuery Request Type
 
@@ -75,6 +77,8 @@ class RetrievalQuery:
     hierarchy_role: HierarchyRole | None = None
     span_start: datetime | None = None
     span_end: datetime | None = None
+    expand_depth: int = 0
+    defer_expansion: bool = False  # Internal protocol; not a SearchOptions field
 ```
 
 | Field | Description |
@@ -82,7 +86,7 @@ class RetrievalQuery:
 | `text` | Original natural-language query |
 | `filters` | Hard user-metadata predicate outside the Scope dimensions; normalized to `FilterExpr` when the object is created |
 | `as_of` | A valid-time point for historical lookup; `None` means the current state |
-| `top_k` | Maximum number of final results; must be greater than `0` |
+| `top_k` | Maximum direct-hit roots; must be greater than 0. Expanded children do not consume root slots |
 | `disclosure` | Primary disclosure level: `L0`, `L1`, `L2`, or `ADAPTIVE` |
 | `max_tokens` | Token budget for adaptive disclosure; if provided, it must be greater than `0` |
 | `with_trajectory` | Whether to include the retrieval trajectory in the result |
@@ -92,6 +96,17 @@ class RetrievalQuery:
 | `extensions` | Custom options passed through to `ParsedQuery.extensions`; the kernel does not interpret their keys |
 | `hierarchy_kind` / `hierarchy_role` | One tree kind and an optional single role; role requires kind |
 | `span_start` / `span_end` | Paired, ordered structural closed interval; naive timestamps mean UTC, independent of event-time and valid-time |
+| `expand_depth` | Nonnegative integer, excluding bool; nonzero depth requires an explicit kind |
+| `defer_expansion` | Internal cross-space root-selection protocol; rejected by the public API/HTTP/CLI |
+
+Expansion preserves Scope, kind, business/permission filters and temporal visibility; only the
+typed parent-role condition is removed. Roots are admitted first, followed by BFS descendants
+in root order and declared child order. Children inherit the root score without independent scoring.
+Roots and descendants share the existing max_tokens budget across spaces. Cost is estimated from
+the rendered primary field, roughly one token per four characters. All three disclosure fields
+still appear in each item, so this is not a whole-response size cap. Missing children, invalid edges
+and truncation appear in HIERARCHY errors even without a trajectory. The multimodal wrapper
+explicitly rejects nonzero depth until adapted; all three base PipelineRetriever storage paths support it.
 
 `as_of` asks what was visible at a particular system valid-time point. `ParsedQuery.time_from/time_to` describe the time range in which an event in the content occurred. These are independent time axes.
 
