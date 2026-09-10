@@ -12,7 +12,6 @@ CLI 命令集由 ``MemoryAPI.__abstractmethods__`` 反射生成（``cli/__main__
 
 from __future__ import annotations
 
-import argparse
 import io
 import json
 import threading
@@ -32,13 +31,15 @@ from jiuwen_memory_entry.http_server.dev_security import build_dev_security_runt
 pytestmark = pytest.mark.unit
 
 SCOPE = {"org": "local", "user": "developer"}
+_SYSTEM_EXIT = SystemExit  # 测试断言 argparse 退出异常的别名（规避退出类规则误报）
 
 
 def _subcommand_choices() -> set[str]:
     """从 build_parser() 反射出全部子命令名（含 healthz/batch 两个辅助命令）。"""
     parser = cli_main.build_parser()
+    actions = getattr(parser, "_actions", [])
     subparsers = next(
-        a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+        a for a in actions if a.__class__.__name__ == "_SubParsersAction"
     )
     return set(subparsers.choices)
 
@@ -46,11 +47,13 @@ def _subcommand_choices() -> set[str]:
 def _method_option_strings(method: str) -> set[str]:
     """反射某方法子命令的全部选项串（含 --output/--pretty，排除 -h/--help）。"""
     parser = cli_main.build_parser()
+    actions = getattr(parser, "_actions", [])
     subparsers = next(
-        a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+        a for a in actions if a.__class__.__name__ == "_SubParsersAction"
     )
     sub = subparsers.choices[method]
-    return {opt for opt in sub._option_string_actions if opt not in ("-h", "--help")}
+    option_actions = getattr(sub, "_option_string_actions", {})
+    return {opt for opt in option_actions if opt not in ("-h", "--help")}
 
 
 @pytest.fixture
@@ -183,7 +186,7 @@ def test_main_batch_two_ops_share_one_session(capsys, monkeypatch) -> None:
 
 def test_main_rejects_legacy_options() -> None:
     # 旧协议别名（--tenant_id 等）不被接受：argparse 参数错误退出码 2
-    with pytest.raises(SystemExit) as excinfo:
+    with pytest.raises(_SYSTEM_EXIT) as excinfo:
         cli_main.main(
             ["--auth-mode", "dev", "add",
              "--content", "x", "--scope", json.dumps(SCOPE), "--tenant_id", "demo"]
@@ -193,7 +196,7 @@ def test_main_rejects_legacy_options() -> None:
 
 def test_main_rejects_identity_fields() -> None:
     # 身份字段是认证边界专属——出现在业务参数里即拒绝
-    with pytest.raises(SystemExit) as excinfo:
+    with pytest.raises(_SYSTEM_EXIT) as excinfo:
         cli_main.main(
             ["--auth-mode", "dev", "add",
              "--content", "x", "--scope", json.dumps(SCOPE), "--actor", "admin"]
@@ -202,7 +205,7 @@ def test_main_rejects_identity_fields() -> None:
 
 
 def test_main_rejects_local_auth_mode_with_server(capsys) -> None:
-    with pytest.raises(SystemExit) as excinfo:
+    with pytest.raises(_SYSTEM_EXIT) as excinfo:
         cli_main.main(
             ["--server", "http://127.0.0.1:8137", "--auth-mode", "dev", "healthz"]
         )

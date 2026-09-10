@@ -114,15 +114,15 @@ def _invoke_blocking(verb: str, payload: dict, *, context: Any = None):
         )
     try:
         credentials = credentials_for_transport(_TRANSPORT, context=context)
-    except ValidationError as exc:
-        raise RuntimeError(str(exc)) from exc
+    except ValidationError as validation_error:
+        raise RuntimeError(str(validation_error)) from validation_error
     try:
         with authenticated(
             _AUTHENTICATOR, credentials, surface=Surface.MCP, request_id=request_id
         ) as security:
             return invoke_api(_SRV.api, verb, payload, security)
-    except AgentMemoryError as exc:
-        raise RuntimeError(f"{type(exc).__name__}: {exc}") from exc
+    except AgentMemoryError as api_error:
+        raise RuntimeError(f"{type(api_error).__name__}: {api_error}") from api_error
 
 
 async def _invoke(verb: str, payload: dict, *, context: Any = None):
@@ -230,7 +230,8 @@ async def memory_update(unit_id: str, scope: dict, patch: dict,
     """修正一条记忆。patch 仅非 null 字段生效，形如
     {"content": "修正后内容", "tags": ["标签"], "mode": "supersede"}。
     mode: "supersede"（默认，非破坏式——生成新 id 新版本、旧版保留血缘）或
-    "overwrite"（原地覆写同 id）。注意 supersede 返回的 id 可能与传入的不同。"""
+    "overwrite"（原地覆写同 id）。注意 supersede 返回的 id 可能与传入的不同。
+    """
     return await _invoke(
         "update", {"unit_id": unit_id, "scope": scope, "patch": patch}, context=ctx
     )
@@ -243,14 +244,16 @@ async def memory_delete(selector: dict, ctx: Context = None) -> list[str]:
     {"unit_ids": ["mu_..."], "scope": {...}, "tags": ["过期"],
      "before": "2026-01-01T00:00:00", "mode": "forget"}。
     mode: "forget"（默认，遗忘可恢复）/"archive"（归档）/"downweight"（降权）/
-    "purge"（物理删除，不可恢复）。返回命中的记忆单元 id 列表。"""
+    "purge"（物理删除，不可恢复）。返回命中的记忆单元 id 列表。
+    """
     return await _invoke("delete", {"selector": selector}, context=ctx)
 
 
 @mcp.tool()
 async def memory_evolve(scope: dict, mode: str = "extract", ctx: Context = None) -> str:
     """触发记忆演进（extract 抽取派生 / associate 建立关联 / consolidate 巩固升华 /
-    forget 清理过期）。异步执行，返回后台任务 id（job_id），用 memory_job_status 查询进度。"""
+    forget 清理过期）。异步执行，返回后台任务 id（job_id），用 memory_job_status 查询进度。
+    """
     return await _invoke("evolve", {"scope": scope, "mode": mode}, context=ctx)
 
 
@@ -305,7 +308,8 @@ async def memory_inspect(unit_ids: list[str], scope: dict,
 async def memory_trace(unit_id: str, scope: dict, ctx: Context = None) -> list[dict]:
     """血缘回溯：沿 provenance 追溯一条记忆的演进来源链——派生记忆（evolve 抽取/
     巩固的产出）回指它由哪些源记忆演进而来。传入派生单元的 id，
-    返回 [该单元, 各来源单元...]；非派生单元只返回自身。"""
+    返回 [该单元, 各来源单元...]；非派生单元只返回自身。
+    """
     return await _invoke("trace", {"unit_id": unit_id, "scope": scope}, context=ctx)
 
 
@@ -344,7 +348,8 @@ async def memory_batch_add_async(items: list[dict], scope: dict | None = None,
 @mcp.tool()
 async def memory_check_write(scope: dict, ctx: Context = None) -> None:
     """写入预检：校验当前身份对 scope 的 WRITE 权限，不落盘。
-    用于长耗时任务入队前确认权限，避免无权限请求占用队列。"""
+    用于长耗时任务入队前确认权限，避免无权限请求占用队列。
+    """
     return await _invoke("check_write", {"scope": scope}, context=ctx)
 
 
@@ -356,7 +361,8 @@ async def memory_submit_ingest(content: str, scope: dict, source: str,
 
     content: 原始内容文本。scope: 归属坐标。source: 模态（text/document/audio/video）。
     payload_id: 原文缓存标识。source_ref: 源资产引用（如 file:///...）。
-    后台 add 会再鉴权一次；用 memory_job_status 查任务进度。"""
+    后台 add 会再鉴权一次；用 memory_job_status 查任务进度。
+    """
     return await _invoke(
         "submit_ingest",
         {"content": content, "scope": scope, "source": source,
@@ -377,7 +383,8 @@ async def memory_admin_get(key: str, ctx: Context = None) -> str:
 @mcp.tool()
 async def memory_admin_set(key: str, value: str, ctx: Context = None) -> None:
     """调整一项运行时策略（启停索引、检索/演进开关等；未知键抛错）。
-    管理面操作，落审计。"""
+    管理面操作，落审计。
+    """
     return await _invoke("admin_set", {"key": key, "value": value}, context=ctx)
 
 
@@ -405,7 +412,8 @@ async def memory_audit(filters: dict, limit: int = 100, ctx: Context = None) -> 
 async def memory_verify_audit(ctx: Context = None) -> dict:
     """审计链完整性验证：校验审计事件链是否被篡改。
 
-    未装配审计完整性 provider 的部署返回 unsupported 状态（不报错）。"""
+    未装配审计完整性 provider 的部署返回 unsupported 状态（不报错）。
+    """
     return await _invoke("verify_audit", {}, context=ctx)
 
 
@@ -420,7 +428,8 @@ async def memory_grant(grant: dict, ctx: Context = None) -> dict:
     "grantee": {"org":"local","agent":"helper"}, "actions": ["read"]}。
     actions 取值: read/write/update/delete/share/revoke_share/manage_principal/
     manage_space/manage_policy/read_audit/verify_audit/administer_system。
-    返回携带 grant_id 的授权对象（供 revoke 精确撤销）。"""
+    返回携带 grant_id 的授权对象（供 revoke 精确撤销）。
+    """
     return await _invoke("grant", {"grant": grant}, context=ctx)
 
 
@@ -439,7 +448,8 @@ async def memory_create_space(spec: dict, ctx: Context = None) -> dict:
 
     spec: {"org":"local","space":"team-a","display_name":"Team A"}；
     可选 principal_path（"user_agent"/"agent_user"）、policy、metadata、owner。
-    返回 SpaceInfo（含状态与策略）。"""
+    返回 SpaceInfo（含状态与策略）。
+    """
     return await _invoke("create_space", {"spec": spec}, context=ctx)
 
 
@@ -459,7 +469,8 @@ async def memory_list_spaces(org: str, ctx: Context = None) -> list[dict]:
 async def memory_update_space(org: str, space: str, patch: dict,
                         ctx: Context = None) -> dict:
     """修改 space：patch 仅非 null 字段生效，形如
-    {"display_name":"Alpha"} 或 {"status":"frozen"}。"""
+    {"display_name":"Alpha"} 或 {"status":"frozen"}。
+    """
     return await _invoke(
         "update_space", {"org": org, "space": space, "patch": patch}, context=ctx
     )
@@ -503,7 +514,8 @@ async def memory_get_space_policy(org: str, space: str, ctx: Context = None) -> 
 async def memory_set_space_policy(org: str, space: str, policy: dict,
                             ctx: Context = None) -> dict:
     """替换 space 级策略。policy 形如
-    {"require_space": true, "principal_path": "user_agent"}。"""
+    {"require_space": true, "principal_path": "user_agent"}。
+    """
     return await _invoke(
         "set_space_policy",
         {"org": org, "space": space, "policy": policy},
@@ -525,7 +537,8 @@ async def memory_add_space_member(org: str, space: str, member: dict,
     {"scope": {"org":"local","user":"bob"}, "content_role": "contributor",
      "governance_role": "none"}；
     content_role: reader/contributor/editor 等；member.scope 的 user/agent
-    至多一维非空。"""
+    至多一维非空。
+    """
     return await _invoke(
         "add_space_member",
         {"org": org, "space": space, "member": member},
@@ -537,7 +550,8 @@ async def memory_add_space_member(org: str, space: str, member: dict,
 async def memory_remove_space_member(org: str, space: str, member: dict,
                                ctx: Context = None) -> None:
     """移除 space 成员。member 为要移除的主体坐标，
-    如 {"org":"local","user":"bob"}。"""
+    如 {"org":"local","user":"bob"}。
+    """
     return await _invoke(
         "remove_space_member", {"org": org, "space": space, "member": member},
         context=ctx,
@@ -550,8 +564,8 @@ def main() -> int:
     )
     try:
         _check_binding(os.environ.get("MCP_HOST", "127.0.0.1"))
-    except ValidationError as exc:
-        logger.error("MCP server refused to start: %s", exc)
+    except ValidationError as bind_error:
+        logger.error("MCP server refused to start: %s", bind_error)
         return 2
     if _TRANSPORT in ("http", "streamable-http"):
         mcp.run(transport="streamable-http")  # host/port 已在 FastMCP(...) 设好

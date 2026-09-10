@@ -249,8 +249,8 @@ def test_batch_add_outcomes_align_with_input(kernel) -> None:
         )
     )
     outcomes = result["outcomes"]
-    assert [o["index"] for o in outcomes] == [0, 1, 2]
-    assert all(o["units"] for o in outcomes)
+    assert [outcome["index"] for outcome in outcomes] == [0, 1, 2]
+    assert all(outcome["units"] for outcome in outcomes)
 
 
 def test_evolve_job_status_and_cancel_loop(kernel) -> None:
