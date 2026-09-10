@@ -29,6 +29,7 @@ from jiuwen_memory.common.type_def import (
     validate_ref,
 )
 
+from .grouping_support import adjacent_similarities, semantic_text
 from .time_pipeline import (
     as_utc,
     excerpt,
@@ -99,13 +100,6 @@ class SceneSegmenterOptions:
         )
 
 
-def semantic_text(unit: MemoryUnit) -> str:
-    """父节点只取正文，跳过代码生成的时间/数量表头；snapshot 保留完整正文。"""
-    if unit.hierarchy.role in (HierarchyRole.TIME_SPAN, HierarchyRole.SCENE):
-        return "\n".join(segment.content for segment in unit.segments[1:])
-    return unit.content
-
-
 def _validate_spans(spans: list[MemoryUnit]) -> None:
     for span in spans:
         if span.hierarchy.kind is not HierarchyKind.TIME or (
@@ -115,27 +109,6 @@ def _validate_spans(spans: list[MemoryUnit]) -> None:
         validate_ref(span.hierarchy, unit_id=span.id)
         as_utc(span.hierarchy.span_start)
         as_utc(span.hierarchy.span_end)
-
-
-def _normalized_vectors(vectors: list[list[float]], count: int) -> list[list[float]]:
-    if not isinstance(vectors, list) or len(vectors) != count:
-        raise ValidationError("scene embedder 必须按输入顺序返回全部向量")
-    normalized = []
-    dimension = None
-    for vector in vectors:
-        if not isinstance(vector, list) or not vector:
-            raise ValidationError("scene embedder 返回空或非法向量")
-        if dimension is None:
-            dimension = len(vector)
-        if len(vector) != dimension or any(
-            type(value) not in (int, float) or not math.isfinite(value) for value in vector
-        ):
-            raise ValidationError("scene embedder 向量维度或数值非法")
-        norm = math.hypot(*vector)
-        if norm == 0 or not math.isfinite(norm):
-            raise ValidationError("scene embedder 返回零向量或非法范数")
-        normalized.append([coordinate / norm for coordinate in vector])
-    return normalized
 
 
 @dataclass
@@ -158,7 +131,9 @@ class SceneSegmenter:
         ordered = sorted(spans, key=lambda unit: as_utc(unit.hierarchy.span_start))
         if not ordered:
             return []
-        similarities = self._similarities(ordered)
+        similarities = adjacent_similarities(
+            ordered, self.options.similarity_threshold, self.embedder, "scene",
+        )
         groups = [[ordered[0]]]
         window = _SceneWindow(ordered[0], as_utc(ordered[0].hierarchy.span_start),
                               as_utc(ordered[0].hierarchy.span_end))
@@ -174,17 +149,6 @@ class SceneSegmenter:
             window.previous = following
             groups[-1].append(following)
         return groups
-
-    def _similarities(self, ordered: list[MemoryUnit]) -> list[float | None]:
-        if self.options.similarity_threshold is None:
-            return [None] * max(0, len(ordered) - 1)
-        if self.embedder is None:
-            raise ValidationError("scene similarity_threshold 要求显式配置 embedder")
-        vectors = _normalized_vectors(
-            self.embedder.embed([semantic_text(unit) for unit in ordered]), len(ordered),
-        )
-        return [sum(left * right for left, right in zip(before, after))
-                for before, after in zip(vectors, vectors[1:])]
 
     def _boundary(
         self, window: _SceneWindow, following: MemoryUnit, similarity: float | None,

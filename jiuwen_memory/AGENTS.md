@@ -49,7 +49,7 @@ jiuwen_memory/
 接收接入层产出的 `MemoryUnit`，统一经 `IndexBuilder` 交付本体并构建索引；
 Extractor、Abstractor、Classifier、Associator、Router、Dedup、LayerAnnotator 与
 Evolver 负责内容演进。内部 `EvolveRequest` 的 HIERARCHY 分支委托
-`HierarchyComposer` 构建和替换 TIME 的 time_span/scene 父层；公开显式任务由 Control
+`HierarchyComposer` 构建和替换 TIME 的 time_span/scene/event 父层；公开显式任务由 Control
 收齐 snapshot 与旧根的完整子树、核对反向引用后调用，不由 Composer 自行查库或鉴权。
 
 ### retrieval/ — 检索层

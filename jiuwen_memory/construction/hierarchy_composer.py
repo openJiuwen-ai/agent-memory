@@ -3,7 +3,7 @@
 
 叶是权威事实，父是可重建派生物；建树只改变叶的 hierarchy，不改变正文、时间、
 来源或生命周期。节点由完整 Scope + id 定位，父可以驻留在更粗的 tree_home_scope。
-支持 TIME 的 snapshot → time_span → scene（scene 可选），不自行查库、鉴权或调度任务。
+支持 TIME 的 snapshot → time_span → scene → event 前缀，不自行查库、鉴权或调度任务。
 """
 
 from __future__ import annotations
@@ -17,6 +17,13 @@ from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import HierarchyKind, HierarchyRole, MemoryUnit, Scope
 
 from .base import ConstructionOperator
+
+TIME_PARENT_ROLES = (HierarchyRole.TIME_SPAN, HierarchyRole.SCENE, HierarchyRole.EVENT)
+TIME_CHILD_ROLES = {
+    HierarchyRole.TIME_SPAN: HierarchyRole.SNAPSHOT,
+    HierarchyRole.SCENE: HierarchyRole.TIME_SPAN,
+    HierarchyRole.EVENT: HierarchyRole.SCENE,
+}
 
 
 @dataclass(frozen=True)
@@ -52,12 +59,12 @@ class HierarchyComposeRequest:
 
 
 def validate_time_parent_roles(roles: list[HierarchyRole]) -> None:
-    """请求只接受严格枚举组成的 [TIME_SPAN] 或 [TIME_SPAN, SCENE]。"""
-    chain = (HierarchyRole.TIME_SPAN, HierarchyRole.SCENE)
+    """请求只接受 TIME_SPAN → SCENE → EVENT 的非空严格枚举前缀。"""
+    chain = TIME_PARENT_ROLES
     if not isinstance(roles, list) or not 1 <= len(roles) <= len(chain):
-        raise ValidationError("parent_roles 必须是 [TIME_SPAN] 或 [TIME_SPAN, SCENE]")
+        raise ValidationError("parent_roles 必须是 [TIME_SPAN, SCENE, EVENT] 的非空前缀")
     if any(role is not chain[position] for position, role in enumerate(roles)):
-        raise ValidationError("parent_roles 必须按 TIME_SPAN、SCENE 顺序使用 HierarchyRole")
+        raise ValidationError("parent_roles 必须按 TIME_SPAN、SCENE、EVENT 顺序使用 HierarchyRole")
 
 
 @dataclass

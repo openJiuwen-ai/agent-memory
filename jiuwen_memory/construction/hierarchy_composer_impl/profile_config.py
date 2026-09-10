@@ -1,8 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""装配期解析 TIME 两/三层树 profile，拒绝未实现的树形及配置。
+"""装配期解析 TIME 两/三/四层树 profile，拒绝未实现的树形及配置。
 
 hierarchy_profiles.time 可声明 leaf_role=snapshot、parent_roles=[time_span]、
-stage_options.TimeSpanMerger/SceneSegmenter；模型依赖由 Composer 装配时校验。
+stage_options.TimeSpanMerger/SceneSegmenter/EventBuilder；模型依赖由 Composer 装配时校验。
 """
 
 from __future__ import annotations
@@ -11,8 +11,9 @@ from collections.abc import Mapping
 
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.type_def import HierarchyKind, HierarchyRole
-from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeProfile
+from jiuwen_memory.construction.hierarchy_composer import TIME_PARENT_ROLES, HierarchyComposeProfile
 
+from .event_pipeline import EventBuilderOptions
 from .scene_pipeline import SceneSegmenterOptions
 from .time_pipeline import TimeSpanMergerOptions
 
@@ -44,13 +45,18 @@ def _profile(spec: object) -> HierarchyComposeProfile:
         declared_roles = [item.strip() for item in declared_roles.split(",")]
     if not isinstance(declared_roles, (list, tuple)):
         raise ValidationError("hierarchy_profiles.time.parent_roles 必须配置为 [time_span]")
-    if tuple(declared_roles) not in (("time_span",), ("time_span", "scene")):
-        raise ValidationError("parent_roles 只支持 [time_span] 或 [time_span, scene]")
+    if not 1 <= len(declared_roles) <= len(TIME_PARENT_ROLES) or (
+        tuple(declared_roles) != TIME_PARENT_ROLES[:len(declared_roles)]
+    ):
+        raise ValidationError("parent_roles 只支持 [time_span, scene, event] 的非空前缀")
     stage_options = _stage_options(spec.get("stage_options"))
     if "SceneSegmenter" in stage_options and "scene" not in declared_roles:
         raise ValidationError("SceneSegmenter 要求 parent_roles 包含 scene")
+    if "EventBuilder" in stage_options and "event" not in declared_roles:
+        raise ValidationError("EventBuilder 要求 parent_roles 包含 event")
     TimeSpanMergerOptions.from_stage_options(stage_options.get("TimeSpanMerger", {}))
     SceneSegmenterOptions.from_stage_options(stage_options.get("SceneSegmenter", {}))
+    EventBuilderOptions.from_stage_options(stage_options.get("EventBuilder", {}))
     return HierarchyComposeProfile(
         kind=HierarchyKind.TIME,
         leaf_role=HierarchyRole.SNAPSHOT,
@@ -64,8 +70,8 @@ def _stage_options(raw: object) -> dict[str, dict[str, str]]:
         return {}
     if not isinstance(raw, Mapping):
         raise ValidationError("stage_options 必须是映射")
-    if set(raw) - {"TimeSpanMerger", "SceneSegmenter"}:
-        raise ValidationError("stage_options 只支持 TimeSpanMerger/SceneSegmenter")
+    if set(raw) - {"TimeSpanMerger", "SceneSegmenter", "EventBuilder"}:
+        raise ValidationError("stage_options 只支持 TimeSpanMerger/SceneSegmenter/EventBuilder")
     options: dict[str, dict[str, str]] = {}
     for stage_name, stage_values in raw.items():
         if not isinstance(stage_values, Mapping):
