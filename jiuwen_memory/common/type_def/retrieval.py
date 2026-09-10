@@ -19,7 +19,7 @@ class RecallChannel(str, Enum):
 
     ``SPACE`` 不是召回通道，是跨空间检索里「某个空间整体召回失败」的标记位：该失败不属于
     任何一个通道，而 :class:`ChannelError` 是结果对象上唯一的结构化错误载体。它只出现在
-    ``RetrievalResult.errors`` 里，不进候选与融合。``HIERARCHY`` 同样仅用于展开诊断，
+    ``RetrievalResult.errors`` 里，不进候选与融合。``HIERARCHY`` 同样仅用于上卷/展开诊断，
     不作为召回信号或融合证据。
     """
 
@@ -29,7 +29,7 @@ class RecallChannel(str, Enum):
     GRAPH = "graph"
     TEMPORAL = "temporal"
     SPACE = "space"
-    HIERARCHY = "hierarchy"  # 展开诊断，不是召回通道，不参与候选融合
+    HIERARCHY = "hierarchy"  # 结构遍历诊断，不是召回通道，不参与候选融合
 
 
 @dataclass

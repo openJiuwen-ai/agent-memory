@@ -96,14 +96,14 @@ def prepare_expansion(
     result: RetrievalResult, source: ExpansionSource, candidates: list[ScoredMemoryUnit],
 ) -> PreparedRetrievalResult:
     """捕获根及其来源；只有完成全局选根后才调用展开算子。"""
-    by_id = {candidate.unit_id: candidate for candidate in candidates}
+    if len(result.items) != len(candidates):
+        raise BackendError("Discloser 未按候选顺序返回全部展开根")
     prepared = PreparedRetrievalResult(
         items=result.items, trajectory=result.trajectory, errors=result.errors,
     )
-    for item in result.items:
-        candidate = by_id.get(item.unit_id)
-        if candidate is None:
-            raise BackendError("Discloser 返回了候选集之外的展开根")
+    for item, candidate in zip(result.items, candidates):
+        if item.unit_id != candidate.unit_id:
+            raise BackendError("Discloser 未按候选顺序返回对应展开根")
         prepared.expansion_roots.append(ExpansionRoot(item, candidate, source))
     return prepared
 

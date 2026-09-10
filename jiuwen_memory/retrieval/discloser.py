@@ -4,6 +4,10 @@
 按需加载、控制 token：L0 只给摘要，L1 给相关片段，L2 给全文。
 调用方先拿 L0 浏览，需要细节再对单条升级到 L1/L2，避免一次性
 塞入全部原文。
+
+纯内容塑形：候选已经过物化、有效性过滤及评分，必须按候选顺序一对一输出，不能
+再点读、过滤或重排。ScoredMemoryUnit 优先使用其自身 unit 保留完整 Scope 身份；
+units 裸 id 表只兼容 ScoredUnit。query 提供关键词，max_tokens 供自适应披露估算。
 """
 
 from __future__ import annotations
@@ -11,10 +15,19 @@ from __future__ import annotations
 from abc import abstractmethod
 
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.type_def import MemoryUnit, ScoredCandidate
+from jiuwen_memory.common.type_def import MemoryUnit, ScoredCandidate, ScoredMemoryUnit
 
 from .base import RetrievalOperator
 from .types import DisclosureLevel, ParsedQuery, RetrievedItem
+
+
+def candidate_unit(
+    candidate: ScoredCandidate, units: dict[str, MemoryUnit],
+) -> MemoryUnit | None:
+    """物化候选携带完整 Scope 身份；只有旧裸 id 候选才回退查找表。"""
+    if isinstance(candidate, ScoredMemoryUnit):
+        return candidate.unit
+    return units.get(candidate.unit_id)
 
 
 class DiscloserProducer(Factory):
@@ -38,12 +51,4 @@ class Discloser(RetrievalOperator):
         level: DisclosureLevel,
         max_tokens: int | None = None,
     ) -> list[RetrievedItem]:
-        """按披露层级为候选**塑形内容**（L0 摘要 / L1 片段 / L2 全文）。
-
-        纯内容塑形：候选记忆单元已由编排者（Retriever）经 UnitReader 点读、
-        有效性过滤、（可选）重排后给定——``candidates`` 是最终顺序的
-        ``ScoredCandidate`` 列表，``units`` 是 ``unit_id → MemoryUnit`` 的内容查找表。
-        本算子**不**再做点读 / 过滤 / 重排，只按 ``level`` 截/取内容产出结果。
-        ``query`` 提供改写后查询与关键词，L1 据此从全文挑与查询最相关的片段。
-        ``max_tokens`` 用于自适应披露预算估算；非自适应模式可忽略。
-        """
+        """按候选顺序及披露层级塑形 L0 摘要、L1 片段与 L2 全文。"""

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from jiuwen_memory.common.type_def import MemoryUnit, ScoredCandidate
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
-from jiuwen_memory.retrieval.discloser import Discloser, DiscloserProducer
+from jiuwen_memory.retrieval.discloser import Discloser, DiscloserProducer, candidate_unit
 from jiuwen_memory.retrieval.types import DisclosureLevel, ParsedQuery, RetrievedItem
 
 _LIMIT = {DisclosureLevel.L0: 80, DisclosureLevel.L1: 240}
@@ -38,7 +38,7 @@ class TruncatingDiscloser(Discloser):
         items: list[RetrievedItem] = []
         effective_level = DisclosureLevel.L0 if level == DisclosureLevel.ADAPTIVE else level
         for su in candidates:
-            unit = units.get(su.unit_id)
+            unit = candidate_unit(su, units)
             if unit is None:
                 continue  # 编排者已过滤，缺失视为不一致，跳过
             items.append(

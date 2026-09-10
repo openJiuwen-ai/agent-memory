@@ -21,7 +21,11 @@ from jiuwen_memory.common.type_def import (
     ScoredUnit,
     normalize,
 )
-from jiuwen_memory.common.type_def.hierarchy_query import HierarchyQuery, validate_expand_depth
+from jiuwen_memory.common.type_def.hierarchy_query import (
+    HierarchyQuery,
+    validate_expand_depth,
+    validate_rollup,
+)
 
 __all__ = [
     "ChannelError",
@@ -60,7 +64,7 @@ class RetrievalQuery:
     # 标签/元数据前置过滤：树形谓词；旧 list/dict 仅在本查询对象边界兼容。
     filters: FilterExpr | None = None
     as_of: datetime | None = None  # 时间点回溯（双时间模型 valid-time）；None 表示当前
-    top_k: int = 10  # 直接命中根的上限；展开子不占根名额
+    top_k: int = 10  # 最终根的上限（含上卷准入父）；展开子不占根名额
     disclosure: DisclosureLevel = DisclosureLevel.L0  # 结果披露层级
     max_tokens: int | None = None  # 披露预算；展开时根/后代共享，None 不设共享上限
     with_trajectory: bool = False  # 是否返回检索轨迹
@@ -78,12 +82,14 @@ class RetrievalQuery:
     expand_depth: int = 0
     # 内部两阶段合并开关：公开 SearchOptions 不暴露；跨空间先选根，再统一展开。
     defer_expansion: bool = False
+    rollup: bool = False  # 后代匹配准入祖先并传播 MaxP；不隐式展开
 
     def __post_init__(self) -> None:
         # 查询对象边界规范化：外部兼容旧输入，内部只保留 FilterExpr | None。
         self.filters = normalize(self.filters)
         hierarchy = HierarchyQuery.from_query(self)
         validate_expand_depth(self.expand_depth, hierarchy.hierarchy_kind)
+        validate_rollup(self.rollup, hierarchy.hierarchy_kind)
         self.span_start = hierarchy.span_start
         self.span_end = hierarchy.span_end
 
@@ -99,7 +105,7 @@ class RetrievedItem:
     """
 
     unit_id: str = ""  # 记忆单元 id
-    score: float = 0.0  # 直接命中取融合/重排分，展开后代继承根分
+    score: float = 0.0  # 根取融合/重排分或上卷 MaxP，展开后代继承根分
     abstract: str = ""  # L0 摘要（unit.layers.l0，50-100 字）
     overview: str = ""  # L1 片段（unit.layers.l1，200-500 字）
     content: str = ""  # L2 全文（unit.content）

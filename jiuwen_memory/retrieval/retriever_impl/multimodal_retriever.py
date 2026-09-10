@@ -53,7 +53,9 @@ class MultimodalRetriever(Retriever):
         self._base.health()
 
     def retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
-        """合并多模态分支；尚未适配延迟展开时明确拒绝非零深度。"""
+        """合并多模态分支；尚未适配结构上卷/延迟展开时明确拒绝。"""
+        if query.rollup:
+            raise UnsupportedCapabilityError("rollup", "true", "MultimodalRetriever")
         if query.expand_depth:
             raise UnsupportedCapabilityError(
                 "expand_depth", str(query.expand_depth), "MultimodalRetriever",

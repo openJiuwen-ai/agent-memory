@@ -25,6 +25,7 @@
 | `expander_impl/` | 同源 DomainStore 的有界只读 BFS，逐边范围、结构及可见性复核 |
 | `expansion.py` | 准备物化根、单/跨空间共享预算收尾；只依赖接口，内部准备结果不序列化 |
 | `retriever.py` | Retriever 接口：检索层入口，编排完整链路 |
+| `retriever_impl/hierarchy_rollup.py` | 同源数据面有界祖先点读、完整身份聚合与 MaxP；不扫描或写树 |
 | `query_parser_impl/` | QueryParser 实现目录（simple_query_parser / sanitize / time_parse） |
 | `fuser_impl/` | Fuser 实现目录（rrf【默认】/ weighted_rrf / score_max）+ `layered_merge` 分层归并前处理 |
 | `discloser_impl/` | Discloser 实现目录（structured / truncating） |
@@ -46,6 +47,8 @@
 5. 截断精排预算 budget = fused[:max(rerank_max, top_k)]
      ↓
 6. 可选 Reranker 精排（记 calibrated 标志）
+     ↓
+   [rollup=True] 祖先准入 + MaxP；此前候选池只移除 typed 输出角色条件
      ↓
 7. 相关性阈值：绝对 min_score（仅校准路径）+ 相对 ratio（校准/未校准两路，默认关闭）
      ↓ + min_results 从正分候选兜底回填（结果数可 < top_k）
@@ -108,7 +111,8 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 
 11. **结构条件不由 Parser 推断或改写**
     `PipelineRetriever` 在 parse 后从 `RetrievalQuery` 回填 kind/role/span，叠加外层 AND
-    下推；三条检索路径与关键词实体扩展共用真源复核。span 是独立的闭区间轴，TIME
+    下推；rollup=True 时只移除 typed 输出角色，父/后代同池评分。三条检索路径与
+    关键词实体扩展共用真源复核。span 是独立的闭区间轴，TIME
     查询可不指定窗口，但节点自身必须有有效区间。`parent_id` 从真源返回，不触发遍历。
 
 12. **展开不放宽访问范围**
@@ -117,10 +121,19 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
     按完整 Scope+id 去重，坏分支只读跳过，不自动修复。
 
 13. **先选根、再共享预算展开**
-    top_k 限制直接命中根；跨空间使用内部 defer_expansion 协议，合并选根后才读取
+    top_k 限制最终根（含上卷准入父）；跨空间使用内部 defer_expansion 协议，合并选根后才读取
     后代。节点和主披露级由 retrieval.expansion 据 Discloser 实际字段准入，预算与
     节点上限跨根、跨空间共享。子继承根分，不冒充独立相关性评分或 MaxP。
     issues 经 HIERARCHY 诊断返回，即使不开轨迹也不能静默隐藏截断。
+
+14. **上卷与展开独立**
+    MaxP 在精排后、阈值/top_k 前，按完整 Scope+id 取父/后代最高分；不累加、不复制
+    子 evidence 冒充父命中。只读父引用，逐边核对授权范围、可见性、双向边与 span。
+    祖先缓存不能绕过不同子到该父的反向边检查，不能穿过不可见中间节点。
+
+15. **物化披露不退化为裸 id 查找**
+    内置 Discloser 优先取候选自身 unit；旧 ScoredUnit 才查 units 表。按候选顺序
+    一对一返回，展开准备按顺序绑定来源，不允许同名不同 Scope 父覆盖。
 
 ## 与其他子目录的边界
 
@@ -129,7 +142,7 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 - 多路召回结果的编排消费（Retriever；单路 Recaller 归 `storage` 数据面）
 - 融合与重排（Fuser）
 - 渐进式披露（Discloser）
-- 只读结构展开及共享披露预算（Expander / expansion）
+- 只读结构上卷、MaxP、展开及共享披露预算（hierarchy_rollup / Expander / expansion）
 - 检索轨迹记录（TrajectoryStep）
 
 **不管**：
@@ -162,3 +175,4 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
    扫描 KV 或识别具体存储后端。原生、CLM、ELM 分支分别检索；无视频记忆时两个视频
    分支自然为空，再按 RRF 融合并截断到请求的 `top_k`。
    未适配延迟展开前必须显式拒绝非零深度，不能静默截断已经展开的子项。
+   未适配上卷后的分支评分前同样明确拒绝 rollup=True。

@@ -399,6 +399,8 @@ hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
 
 `validate_expand_depth(depth, kind)` 纯校验非负整数（不接受 bool），非零要求显式
 kind。深度由 RetrievalQuery 持有，不新增 ParsedQuery 的时间或结构字段。
+`validate_rollup(rollup, kind)` 仅接受 bool，True 要求显式 kind；不进行父子读取。
+rollup 由 RetrievalQuery 持有，ParsedQuery 不增加对应字段，由检索编排消费开关。
 `RecallChannel.HIERARCHY` 与 SPACE 同为诊断专用值，不是候选通道或融合证据。
 
 `ParsedQuery` 新增同名四字段。`is_retrieval_candidate(unit, query, *, filters)`
@@ -574,6 +576,7 @@ jiuwen_memory/common/<组件>/
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-10 | 阶段 6：rollup 严格布尔及 kind 前置校验；HIERARCHY 诊断覆盖上卷，不扩充树模型 |
 | 2026-09-10 | 阶段 5：展开深度纯校验及 HIERARCHY 诊断值；不改变 HierarchyQuery 四字段或树模型 |
 | 2026-09-10 | 阶段 4：HierarchyQuery、结构真源匹配、ParsedQuery 四字段、统一候选复核及共享字段比较；同步已交付 Composer 校验 |
 | 2026-09-10 | 同步 F08 阶段 1：HierarchyRef 与枚举、纯校验的集合边界、六键投影所需时间语义及 codec _v=4 增量兼容；建树与层级检索仍未实现 |

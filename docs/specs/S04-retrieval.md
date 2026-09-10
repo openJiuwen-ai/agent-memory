@@ -59,8 +59,9 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
     入口失败抛 `StorageRetrievalError`。显式空 channels 是无效输入。
 14. **结构轴正交**：`ContentLayers`/`DisclosureLevel` 是 unit 内披露，`HierarchyRef` 是跨 unit 结构；CLM/ELM、`MemoryUnit.temporal` 与 `RecallChannel.TEMPORAL` 均不替代 `HierarchyKind.TIME`。
 15. **单 kind 层级请求**：一次层级请求只处理一个 `HierarchyKind.TIME|TOPIC|DIRECTORY|CLUSTER|CUSTOM`，不隐式跨 kind。
-16. **层级默认保守**：`expand_depth=0` 只返回直接命中节点；正整数深度显式展开。
-    单一 `hierarchy_role` 只过滤直接命中，展开不套用该角色；`rollup` 尚未开放。
+16. **层级默认保守**：`rollup=False`、`expand_depth=0` 保持直接命中。
+    上卷开启时，单一 `hierarchy_role` 选择输出祖先角色；候选召回及展开不套用该角色。
+    上卷与展开独立，MaxP 在精排后、阈值及 top_k 前执行。
 17. **展开顺序与隔离**：Expander 只沿有序 `child_ids` 按层向下；节点身份是完整
     Scope + id。点读前拒绝跨 org/space，user/agent/session 的非空请求维度不得放宽。
     引用按 `child_scopes`（或缺省父 Scope）解析，不扫描整个 Scope。
@@ -90,14 +91,14 @@ class RetrievalOperator(ABC):
 |---|---|---|
 | `retrieve` | `(scope: Scope, query: RetrievalQuery) -> RetrievalResult` | 在 scope 内执行完整检索链路；层级字段为空时执行既有链路 |
 
-阶段 5 已实现链路：
+阶段 6 已实现链路：
 
 ```text
 QueryParser
-→ hierarchy kind/role/span 硬过滤
+→ hierarchy kind/span 硬过滤（rollup=False 时也下推 role）
 → 既有 L0/L1/L2 内容层多路召回
 → 真源复核（包括 ACTIVE、kind/role、结构闭区间）
-→ fusion → rerank → threshold → top_k
+→ fusion → rerank → [rollup=True] 祖先准入 + MaxP → threshold → top_k
 → Discloser 塑形直接命中；若 expand_depth>0，先准备根
 → [展开请求] 最终选根 → 共享预算准入根 → Expander 按根顺序 BFS + 逐节点披露
 → RetrievalResult
@@ -107,7 +108,7 @@ QueryParser
 `HierarchyStatus.ACTIVE` 的有效结构节点。生命周期过滤与普通 recall 相同：当前态
 只允许 ACTIVE（或显式 include_archived 的 ARCHIVED）；历史 as_of 排除 FORGOTTEN，
 其他生命周期仍按 `[t_valid, t_invalid)` 判定，不另行屏蔽历史 SUPERSEDED 版本。
-指定父侧 `hierarchy_role` 时，召回集合只包含该父角色；省略 role 时，同 kind 下所有
+关闭上卷且指定父侧 `hierarchy_role` 时，召回集合只包含该父角色；省略 role 时，同 kind 下所有
 可见活动角色均可参与。过滤后的候选仍走既有融合、重排和阈值链路，因此层级父节点
 不是一条绕过相关性判断的特殊结果通道。空文本仍短路；展开不另做相关性召回、不上卷、
 不建树。后代继承根的分数，不表示后代经过独立相关性评分。
@@ -122,7 +123,7 @@ QueryParser
 | 接口 | 签名 | 语义 |
 |---|---|---|
 | `QueryParser.parse` | `(query: RetrievalQuery) -> ParsedQuery` | 产生规范化文本、软召回信号、硬过滤条件和时间条件；Retriever 在 parse 后显式回填四个 hierarchy 字段，防止自定义 Parser 丢失或改写 |
-| `Fuser.fuse` | `(query: ParsedQuery, candidates: list[list[ScoredUnit]]) -> list[ScoredUnit]` | 按 unit_id 融合多路、多内容层候选并稳定排序 |
+| `Fuser.fuse` | `(query: ParsedQuery, candidates: list[list[ScoredMemoryUnit]]) -> list[ScoredMemoryUnit]` | 按 unit_id 融合物化的多路、多内容层候选并稳定排序 |
 
 单路召回（`Recaller`）不是本层算子：它是 `CompositeDomainStore` 的内部件，契约与实现
 在 `storage/domain_store_impl/`，签名见 S06-storage。本层只经数据面的
@@ -134,7 +135,7 @@ QueryParser
 
 `cross_space.py` 只提供取数上界、结果合并与失败编码三个纯函数；跨空间的召回扇出编排落控制层 `control/collective/cross_space_recall.py`，它 import 本模块，本模块不反向依赖控制层。
 
-`RecallChannel.HIERARCHY` 同样仅用于诊断，表示展开分支排除或截断，不配置召回权重。
+`RecallChannel.HIERARCHY` 同样仅用于诊断，表示上卷/展开分支排除或截断，不配置召回权重。
 跨空间请求内部设置 `defer_expansion=True`，每个空间只返回物化根；控制层先沿用既有
 全局合并选根，再调用 `expansion.complete_expansion`，未选中的根不读取后代。
 内部 `PreparedRetrievalResult` 持有来源和物化根；公开返回前转换为普通结果，不序列化它。
@@ -178,7 +179,8 @@ QueryParser.parse(query) → ParsedQuery
 → Fuser 前物化候选并完成 lifecycle/valid-time/event-time/filters 真源复核
 → Fuser.fuse(parsed_query, candidates) → list[ScoredMemoryUnit]
 → 截断精排预算
-→ 可选 Reranker 精排 → 相关性阈值过滤（结果数可 < top_k）→ 截断 top_k
+→ 可选 Reranker 精排 → [rollup=True] 祖先准入及 MaxP
+→ 相关性阈值过滤（结果数可 < top_k）→ 截断 top_k
 → Discloser 塑形；若 expand_depth>0，内部准备阶段暂不分配预算、不读后代
 → [展开请求] 最终选根后，共享预算准入根，再执行 Expander + Discloser
 → 组装 RetrievalResult（items + trajectory + errors）
@@ -188,26 +190,53 @@ Expander 是 Retriever 内部算子，仅由 `search(..., expand_depth>0)` 触�
 `ExpandRequest.query` 由 recall 内部装配，保留原调用 filters 与解析后 filters 的 AND，
 以及生命周期、时间可见性。它不依赖 Parser 理解 expand_depth，不为子另查索引。
 
-### 分数传播与相关性收敛（目标契约，尚未实现）
+### 上卷准入与 MaxP（阶段 6 已实现）
 
-父层召回的默认分数保持不变。`rollup=true` 时，检索层增加一条同 query、kind、span
-和 lifecycle 可见性约束下的后代节点召回，不套用目标父角色过滤；命中后沿
-`parent_id` 上卷：
-`hierarchy_role` 非空时取满足该 role 的最近祖先，role 为空时只取直接父节点，再与
-父节点自身召回分融合。该路径不改变输出展开深度，也不把后代自动加入结果。
-默认传播算法是 MaxP：
+`SearchOptions.rollup` / `RetrievalQuery.rollup` 默认 False；仅接受 bool，True 要求
+显式 kind。父和后代不分两次独立归一化：同一批候选只移除 typed 输出 role，仍保留
+kind、span、lifecycle、时间窗、原 filters 与 parser filters 的 AND；统一完成既有
+融合、精排后，再执行祖先准入与 MaxP，随后才做阈值及 top_k。
+
+- 指定 role：直接命中该角色者保留；其他候选沿 parent_id/parent_scope 上卷到最近
+  该角色祖先，可准入从未命中索引的父。中间节点不自动加入结果。
+- 省略 role：保留原直接命中，并额外准入其直接父；不把新准入的父再次递归上卷。
+- 只开 rollup 不自动展开后代。若结果里有直接命中的叶，它来自普通召回；要保证只
+  返回父角色，请显式给 role。expand_depth 仍独立控制最终选中根的向下遍历。
+
+固定算法为 MaxP，不新增 score_propagation 策略键：
 
 ```text
-parent_score = max(parent_recall_score, selected_descendant_scores)
+parent_score = max(存在的父直接命中分, 各已命中后代的最终分)
 ```
 
-后代相关性分数使用与父召回相同的规范化 query 评分口径。传播只在请求 kind 内进行，不改变子项自身分数。
+分数取 max 而非累加；父缺席时直接使用后代分，不虚构父自身检索得分。精排开启时
+使用精排分，否则使用融合分。祖先聚合按完整 Scope+id，保留父自身已有 evidence，
+新准入父不复制子 evidence 冒充父的索引命中；传播统计在 rollup 轨迹中说明。
+
+上卷只用同源 DomainStore 点读，先查授权 Scope，
+再检查本体身份、kind、ACTIVE、生命周期、valid-time、event-time、结构闭区间、
+业务/权限过滤、双向边和父 span 覆盖；任一中间节点不可见即停止，不越过它找更高祖先。
+查询的 org/space 必须相等，非空 user/agent/session 不可放宽，session 限定请求不能
+上卷到更宽的 home Scope。缓存以完整身份为键，不扫描 Scope、不写回或修树。
+
+每条链最多 32 跳，每次 Pipeline 调用共尝试 1000 条父引用（含重复/坏引用），不是
+全局跨空间共享限额。各空间先本地上卷选根，再沿用跨空间合并；展开预算仍在最终
+全局选根后共享。缺失、越界、坏边和上限记录为 source=rollup 的 HIERARCHY 错误，
+即使不开轨迹也返回；不回显被排除节点身份或后端异常。轨迹记录 algorithm、admitted、
+boosted、visited、target_role、complete 和 issues。
+
+**已有边界**：只处理 recall_k / 融合精排 budget_n 内实际得到的候选，不保证全树穷举。
+当前 CompositeDomainStore 的裸 id 候选点读使用查询的精确物理 Scope，不枚举 session；
+因此宽 Scope 索引命中不能据此保证跨 session 叶被物化。原始候选及 Fuser 的裸 id
+归并未在本阶段改造；新增祖先的完整身份隔离不等于原始跨 Scope 同 id 召回已解决。
+
+### 按子相关性收敛（后续目标，尚未实现）
 
 每个父节点最多保留策略 `hierarchy.expand_top_m` 指定的高分直接子节点；同分按 `child_ids` 顺序。某层最高剩余分不超过检索阈值时停止向下，形成确定性收敛。top-M 为空表示不额外裁剪，但仍受深度与 `max_tokens` 约束。
 
 ### 展开准入与预算（阶段 5 已实现）
 
-`top_k` 限制直接命中根的数量，子节点不占根名额。先按最终顺序为所有根分配预算，
+`top_k` 限制最终选中根的数量（含上卷准入父），展开子节点不占根名额。先按最终顺序为所有根分配预算，
 然后逐根 BFS；结果先列所有准入根，再列第一根的 BFS 后代、第二根的 BFS 后代等。
 每个根的选子预算不足时停止该根；根自身不足时停止后续根准入，结果可少于 top_k。
 跨空间选根沿用既有合并/去重规则，后代阶段按完整 Scope + id 去重。
@@ -227,7 +256,8 @@ depth=0 保持既有 Discloser 行为。预算截断记录 `budget_exhausted`。
 多模态 profile 使用 `MultimodalRetriever` 包装基础 Retriever，并行执行原生文本、CLM
 和 ELM 三个过滤分支后按 RRF 融合。该包装器不扫描 KV 判断多模态记忆是否存在，也不
 依赖具体 Store；没有视频记忆时 CLM/ELM 分支返回空，融合结果由原生分支提供。
-该包装器尚未实现延迟展开协议，非零 expand_depth 明确抛 `UnsupportedCapabilityError`，
+该包装器尚未适配上卷后的分支融合及延迟展开，rollup=True 或非零 expand_depth
+明确抛 `UnsupportedCapabilityError`，
 不能视为基础 PipelineRetriever 的三条存储路径不支持展开。
 
 ### QueryParser（`query_parser.py`）
@@ -290,7 +320,10 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 |---|---|---|
 | `disclose` | `(query, candidates, units, level, max_tokens=None) -> list[RetrievedItem]` | 为已选中的单个 unit 候选填充 L0/L1/L2 内容和实际主披露级 |
 
-`RetrievedItem` 始终一次性具有 `abstract`、`overview`、`content` 三个字段；`level` 表示本次主披露级。已有行为必须准确区分：
+`RetrievedItem` 始终一次性具有 `abstract`、`overview`、`content` 三个字段；`level` 表示本次主披露级。
+物化候选优先使用自身 unit，裸 id 查找表仅兼容 ScoredUnit；避免新准入的跨 Scope 同 id
+父内容覆盖。Discloser 必须按候选顺序一对一塑形，延迟展开按该顺序绑定来源，不通过裸
+id 重新配对。结果 DTO 未新增 Scope 字段。已有行为必须准确区分：
 
 - `StructuredDiscloser` 的 `ADAPTIVE` 会先给所有候选 L0；无 `max_tokens` 时尝试把首项提升到 L1；有预算时按预算尝试首项 L1、满足置信差时首项 L2，再依次提升其余项到 L1。
 - 默认 `TruncatingDiscloser` 不实现自适应升级；收到 `ADAPTIVE` 时确定性降为 L0。其 `max_tokens` 不改变该行为。
@@ -298,8 +331,8 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 
 **参数说明**：
 - `query: ParsedQuery` — 提供改写后查询与关键词（L1 据此挑最相关片段）
-- `candidates: list[ScoredUnit]` — 最终顺序的候选列表（已融合/重排）
-- `units: dict[str, MemoryUnit]` — unit_id → MemoryUnit 的内容查找表
+- `candidates: list[ScoredCandidate]` — 最终顺序的候选列表（已融合/重排或上卷）
+- `units: dict[str, MemoryUnit]` — 旧裸 id 候选的兼容查找表；物化候选使用自身 unit
 - `level: DisclosureLevel` — L0/L1/L2/ADAPTIVE
 - `max_tokens: int | None` — 自适应披露预算
 
@@ -309,14 +342,14 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 
 ### RetrievalQuery
 
-内部查询保留既有字段，已实现四个结构条件和展开；仅 rollup 标为未开放目标：
+内部查询保留既有字段，已实现四个结构条件、上卷和展开：
 
 | 字段 | 类型 | 默认 | 语义 |
 |------|------|------|------|
 | `text` | str | `""` | 自然语言查询 |
 | `filters` | FilterExpr \| None | `None` | scope 之外的硬过滤；支持 AND / OR / NOT 树 |
 | `as_of` | datetime \| None | `None` | valid-time 回溯点 |
-| `top_k` | int | `10` | 直接命中节点的结果上限 |
+| `top_k` | int | `10` | 最终根的结果上限，含上卷准入父，不含展开子 |
 | `disclosure` | DisclosureLevel | `L0` | 直接命中节点的请求披露级 |
 | `max_tokens` | int \| None | `None` | 既有披露预算；展开时是根和后代的共享主字段预算 |
 | `with_trajectory` | bool | `False` | 是否返回轨迹 |
@@ -325,12 +358,12 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 | `include_archived` | bool | `False` | 是否纳入归档 unit |
 | `extensions` | dict[str, Any] | `{}` | 调用级透传配置；本地调用可携带运行时对象 |
 | `hierarchy_kind` | HierarchyKind \| None | `None` | 单一结构 kind |
-| `hierarchy_role` | HierarchyRole \| None | `None` | 单一父或叶角色过滤 |
+| `hierarchy_role` | HierarchyRole \| None | `None` | 单一角色；上卷时选择最近该角色祖先 |
 | `span_start` | datetime \| None | `None` | 结构区间起点 |
 | `span_end` | datetime \| None | `None` | 结构区间终点 |
 | `expand_depth` | int | `0` | 后代最大边深度；0 不展开 |
 | `defer_expansion` | bool | `False` | 内部跨空间选根协议；不属于公开 SearchOptions |
-| `rollup`（目标） | bool | `False` | 是否启用后代分数向父传播 |
+| `rollup` | bool | `False` | 显式 kind 下的祖先准入与 MaxP；与展开独立 |
 
 ### ParsedQuery
 
@@ -359,6 +392,7 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 5. `hierarchy_kind=HierarchyKind.TIME` 可省略 query span，此时不限定结构窗口；节点自身仍须有有效 span。这不改变普通 event-time 过滤。朴素时间按 UTC，真源比较保留微秒，索引使用 UTC epoch 毫秒。
 6. 公开 API 在 `hierarchy.enabled=false` 时拒绝 typed 层级查询，普通调用不受影响；直接调用低层 Retriever 不读取 API 策略。通用 filters 不自动补充完整层级语义。
 7. `expand_depth` 必须为非负整数，不接受 bool、字符串或 None；非零必须指定 kind。
+8. `rollup` 必须为 bool，True 要求显式 kind；不受 Parser 改写或丢弃字段影响。
 
 | 类型 | 关键字段 |
 |------|----------|
@@ -434,23 +468,26 @@ NodeKey 为 `(org, space, user, agent, session, id)`。issues 不包含被排除
 
 普通链路沿用 `parse/recall/fuse/rerank/threshold/disclose`。层级召回额外使用：
 
+- `rollup`：阈值前记录最终候选数、MaxP、准入父数、提升直接父数、父引用尝试数、
+  目标角色、complete 和去重问题码。
 - `parent_recall`：展开请求在本地选根后记录 candidate_count 和 top_k。
 - `disclose`：展开准备阶段标记 `prepare_expansion`，不把 L0 准备输出冒充预算分配结果。
 - `expand`：每个处理根记录 root_id/root_scope、kind、请求/实际深度、准入数、引用尝试数、
   complete/truncated、issues 与累计主字段 estimated_tokens。
 
-`with_trajectory=false` 时 trajectory 为空，但展开问题始终在 errors 中，channel 为
-HIERARCHY、source 为 expand。message 仅含已命中根 id 和问题码，不回显后端异常内容。
+`with_trajectory=false` 时 trajectory 为空，但结构问题始终在 errors 中，channel 为
+HIERARCHY、source 为 expand 或 rollup。展开 message 只含已命中根 id 和问题码，
+上卷 message 只含问题码，均不回显后端异常内容。
 
 ## 错误语义
 
 | 异常 | 场景 |
 |---|---|
-| `ValidationError` | 深度、预算、span 或 kind/role 组合非法；root kind 不匹配 |
+| `ValidationError` | rollup、深度、预算、span 或 kind/role 组合非法；root kind 不匹配 |
 | `NotFoundError` | 内部展开的物化 root 不在请求 scope |
 | `PolicyError` | 显式层级召回或展开在 hierarchy 关闭时发起 |
 | `BackendError` | 召回或点读后端失败，且不能按 issue 规则局部处理 |
-| `UnsupportedCapabilityError` | 未装配 Expander，或 Retriever 未适配展开/延迟展开协议 |
+| `UnsupportedCapabilityError` | 未装配 Expander，或 Retriever 未适配上卷/展开/延迟展开协议 |
 
 ## 实现注册机制
 
@@ -482,5 +519,6 @@ jiuwen_memory/retrieval/<算子>_impl/
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-10 | 阶段 6：rollup 统一候选尺度、祖先准入、MaxP、逐边范围/可见性复核及有界诊断；物化披露保留身份；top-M、跨 session 裸 id 召回仍未改造 |
 | 2026-09-10 | 阶段 5：显式 expand_depth、只读 BFS、完整 Scope 身份、跨空间延迟展开、共享主字段预算和诊断；修正目标 DTO 与当前结果字段，rollup/top-M 仍未实现 |
 | 2026-09-10 | 阶段 4：四个结构查询字段、外层 AND 下推、三路径真源复核和 parent_id；区分已实现查询与目标展开/上卷，同步 Recaller 边界和历史版本可见性 |

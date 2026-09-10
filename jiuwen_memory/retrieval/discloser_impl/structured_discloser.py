@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from jiuwen_memory.common.type_def import MemoryUnit, ScoredCandidate
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
-from jiuwen_memory.retrieval.discloser import Discloser, DiscloserProducer
+from jiuwen_memory.retrieval.discloser import Discloser, DiscloserProducer, candidate_unit
 from jiuwen_memory.retrieval.types import DisclosureLevel, ParsedQuery, RetrievedItem
 
 _L0_LIMIT = 120
@@ -63,7 +63,7 @@ class StructuredDiscloser(Discloser):
         items: list[RetrievedItem] = []
         keywords = self._keywords(query)
         for su in candidates:
-            unit = units.get(su.unit_id)
+            unit = candidate_unit(su, units)
             if unit is None:
                 continue
             abstract, _ = self._render(su, unit, DisclosureLevel.L0, keywords)
@@ -94,7 +94,7 @@ class StructuredDiscloser(Discloser):
         keywords = self._keywords(query)
         variants = []
         for scored_unit in candidates:
-            unit = units.get(scored_unit.unit_id)
+            unit = candidate_unit(scored_unit, units)
             if unit is not None:
                 variants.append(self._variants(scored_unit, unit, keywords))
         selected_levels = [DisclosureLevel.L0 for _ in variants]

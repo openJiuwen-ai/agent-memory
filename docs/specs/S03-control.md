@@ -481,16 +481,17 @@ space 元数据、space policy、成员、用量与 offboarding 状态管理。
 
 | 键 | 类型与默认 | 语义 |
 |---|---|---|
-| `hierarchy.enabled` | str，`"false"` | API 侧显式建树、typed 结构查询/展开门禁；仅 trim/lower 后等于 true 时启用，不自动发起任务 |
+| `hierarchy.enabled` | str，`"false"` | API 侧显式建树、typed 结构查询/上卷/展开门禁；仅 trim/lower 后等于 true 时启用，不自动发起任务 |
 
 PolicyManager 对未知键仍拒绝；显式自定义 policies 未声明该键时不补默认配置。
-修改开关不回写既有 unit、不触发建树。其余层级策略仍为目标，尚不可据此调用：
+修改开关不回写既有 unit、不触发建树。阶段 6 的 rollup 固定采用 MaxP，不新增策略键；
+跨空间各自上卷后沿用全局选根和共享展开预算。其余层级策略仍为目标，尚不可据此调用：
 
 | 键 | 类型与默认 | 语义 |
 |---|---|---|
 | `hierarchy.auto_derive` | bool，`false` | write 后是否后台派生 |
 | `hierarchy.ensure_on_recall` | bool，`false` | 是否对显式有界层级 recall 阻塞确保结构 |
-| `hierarchy.score_propagation` | str，默认 `maxp` | rollup 算法；当前仅接受 `maxp` |
+| `hierarchy.score_propagation` | str，默认 `maxp` | 目标中的可配置传播算法；当前未注册该键，阶段 6 固定 MaxP |
 | `hierarchy.expand_default_depth` | int，`1` | 仅供未显式给 `expand_depth` 的内部/接入形态默认值；公开 recall 默认仍为 0 |
 | `hierarchy.expand_top_m` | int \| None，`None` | 每个父最多保留的直接子数；必须 > 0；`None` 表示不额外裁剪（仍受 depth 与 `max_tokens` 约束） |
 
@@ -608,6 +609,7 @@ jiuwen_memory/control/<算子>_impl/
 
 ## 修订记录
 
+- 2026-09-10：阶段 6 在每个空间的 Retriever 内完成上卷，沿用现有跨空间合并；MaxP 固定，不新增 score_propagation 策略键。
 - 2026-09-10：阶段 5 跨空间 recall 延迟展开，先全局选根、再交检索层共享预算收尾；控制层不持有数据面或执行展开算法，自动建树/ensure 仍未实现。
 
 - 2026-09-10：内部调用迁移为 `EvolveRequest`，公开 Engine 保留原签名并拒绝 HIERARCHY；后台建树、候选补齐与 ensure 仍为目标。

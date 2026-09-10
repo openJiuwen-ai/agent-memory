@@ -414,7 +414,7 @@ def submit_ingest(
 
 #### search
 
-**状态：已实现**（下列签名为当前代码）。结构过滤与显式展开已交付，rollup 尚未开放。
+**状态：已实现**（下列签名为当前代码）。结构过滤、显式展开及 rollup/MaxP 已交付。
 #### 薄封装职责
 
 API 方法的实现顺序应保持为：
@@ -462,10 +462,11 @@ class SearchOptions:
     span_start: datetime | None = None
     span_end: datetime | None = None
     expand_depth: int = 0
+    rollup: bool = False
 ```
 
-**状态：阶段 5 已实现**。`SearchOptions` 从 `jiuwen_memory.api` 导入，普通选项、
-四个层级条件及 expand_depth 统一装配到 `RetrievalQuery`。省略 options 或传 None 使用默认值；
+**状态：阶段 6 已实现**。`SearchOptions` 从 `jiuwen_memory.api` 导入，普通选项、
+四个层级条件、expand_depth 及 rollup 统一装配到 `RetrievalQuery`。省略 options 或传 None 使用默认值；
 旧的平铺 `filters/as_of/top_k/disclosure/with_trajectory` 关键字不再接受。
 HTTP/CLI 将这些字段放在 `options` 对象内；枚举用字符串、datetime 用 ISO 8601：
 
@@ -486,7 +487,7 @@ HTTP/CLI 将这些字段放在 `options` 对象内；枚举用字符串、dateti
 
 READ 鉴权、权限路由谓词、跨空间判权、`context.extensions` 中的
 `max_tokens/coords/spaces` 处理保持既有语义。层级条件不放进 extensions，不扩大 Scope。
-指定单一 role 时只查该角色，省略 role 时允许同 kind 的活动节点参与；返回仍受文本
+未开启上卷时，指定单一 role 只查该角色，省略 role 允许同 kind 的活动节点参与；返回仍受文本
 相关性、融合、重排、阈值及 top_k 限制。空文本不变成结构枚举。
 
 校验及闭区间语义见 [S04-retrieval.md](S04-retrieval.md)。typed 层级查询受
@@ -494,16 +495,21 @@ READ 鉴权、权限路由谓词、跨空间判权、`context.extensions` 中的
 不受影响。该开关不是访问控制，通用 `filters` 中的结构字段仍只是底层字段过滤，
 不自动启用 typed 层级请求的 ACTIVE、kind、span 有效性语义。
 
-expand_depth 默认为 0，只返回直接命中；非零必须为正整数并显式指定 kind，
-1 读取直接子、2 最多读取两条边。typed role 只过滤直接命中，子保留其他可见性约束。
+rollup 默认 False；开启时必须是布尔 True 并显式指定 kind。父与后代共用融合/精排池，
+精排后、最终阈值/top_k 前上卷；有 role 时准入最近该角色祖先，没有 role 时保留直接
+命中并增加直接父。父可未直接命中索引，分数取 MaxP 而非累加。不自动扩大查询 Scope，
+不扫描 session；已有精确物理 Scope 点读限制见 S04。上卷与展开独立。
+
+expand_depth 默认为 0，不展开；非零必须为正整数并显式指定 kind，
+1 读取直接子、2 最多读取两条边。typed role 选择根角色，子保留其他可见性约束。
 top_k 限制根数量，子不占根名额；父子共用 max_tokens，跨空间先选根后展开且预算不重置。
 返回项仍为扁平列表，子继承根分数，不表示独立评分。预算按实际渲染主字段估算，
 三层字段仍同时返回，因此不是响应体 token 上限。详细顺序与截断见 S04。
 
 `RetrievedItem.parent_id` 来自真源引用，空串表示根或未挂接节点；结果项不携带完整
 Scope，裸 id 不足以重建跨 Scope 同名节点的树。无公开 MemoryAPI.expand；内部
-defer_expansion 不接受作为 SearchOptions 字段。rollup、ensure 仍未开放。
-多模态包装器尚未适配展开，非零深度明确拒绝，不静默当成普通 search。
+defer_expansion 不接受作为 SearchOptions 字段，ensure 仍未开放。
+多模态包装器尚未适配上卷及展开，rollup=True 或非零深度明确拒绝，不静默当成普通 search。
 
 #### list
 
@@ -702,7 +708,7 @@ HIERARCHY 的空间动作映射到 UPDATE。取消能力受 Scheduler 实现约�
 
 ### 治理面（委托 Governor）
 
-本面不增加新的尚未实现对外方法。不变量 16 要求三类遍历分离：树下钻由 `search(..., expand_depth>0)` 完成（见数据面 search 的尚未实现增量），`trace` 只沿 `provenance`，`get(as_of)` 只沿 `supersedes`；不另设 `MemoryAPI.expand`。
+本面不增加新的尚未实现对外方法。不变量 18 要求三类遍历分离：树下钻由 `search(..., expand_depth>0)` 完成（已实现，见数据面 search），`trace` 只沿 `provenance`，`get(as_of)` 只沿 `supersedes`；不另设 `MemoryAPI.expand`。
 
 #### inspect
 
@@ -1214,6 +1220,8 @@ jiuwen_memory/api/memory_api_impl/
 | architecture.md §6 | 已实现 MemoryAPI 清单 |
 
 ## 修订记录
+
+- 2026-09-10：阶段 6 开放 SearchOptions.rollup，明确祖先准入、MaxP、默认兼容及与展开独立；保留精确 Scope 取数限制，多模态包装器明确拒绝上卷。
 
 - 2026-09-10：阶段 5 开放 SearchOptions.expand_depth，明确根 top_k、跨空间共享预算、扁平结果及始终可见的展开诊断；内部延迟展开字段不进入公开协议。
 
