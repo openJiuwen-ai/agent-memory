@@ -6,8 +6,68 @@
 |---|---|
 | 日期 | 2026-08-15 |
 | 影响范围 | jiuwen_memory/api/、jiuwen_memory/common/、jiuwen_memory/construction/、jiuwen_memory/control/、jiuwen_memory/ingest/、jiuwen_memory/retrieval/、jiuwen_memory/storage/；docs/specs/S01–S07；关联 [`F05-construction-spec-multimodal-design`](../construction/F05-construction-spec-multimodal-design.md) |
-| 测试基线 | 目标设计与 specs 已同步完成，待设计评审；树结构代码尚未实现，无 pytest 结果 |
+| 测试基线 | 阶段 1：完整 unit 回归 1891 passed、5 skipped、480 deselected；变更 Python 文件 Ruff 与 git diff --check 通过；不代表后续建树/检索能力已验收 |
 | Refs | — |
+
+## 阶段 1 落地（2026-09-10）
+
+本次只交付“能表达、接入和存储结构身份”的基础能力，不交付自动建树或层级召回。
+本文保留后续总体设计；除本节明确列出的能力及下文叶提示接入外，Composer、显式
+`evolve(HIERARCHY)`、结构查询/展开/MaxP、后台任务、修复器和各 kind 算法均尚未实现。
+后文 P0–P5 是原设计分期，不等同于已经完成的提交阶段。
+
+### 已交付与决定
+
+- `MemoryUnit` 内嵌默认空的 `HierarchyRef`，包含 kind/role、直接父子引用及可选
+  Scope、覆盖区间、ordinal 与结构状态。五种 kind、七种 role 只是通用词表，
+  不代表五种树算法已可用，也不替代 L0/L1/L2、tier 或多模态构建粒度。
+  `hierarchy` 追加在既有 `vectors` 字段之后，保持原有位置参数顺序。
+- 提供 `validate_ref` / `validate_tree` 两个纯函数；前者检查单引用，后者先检查输入
+  引用字段，再检查非空结构集合的单 kind、Scope、单父、双向引用、环与区间覆盖。不读取全库，
+  不排序；集合外邻居不自动补齐。普通 Ingestor 与 codec 不自动调用这两个函数。
+- codec 保持 `_v=4`，保留 vectors、双 metadata 与系统瞬态键剥除。非空 hierarchy
+  写出，缺少该字段的 `_v=4` 数据读为空结构；未知枚举或时间解析失败降级为空结构
+  并留诊断，不改变 `_v<4` 必须先离线迁移的要求。
+- 只消费 `system_metadata` 中四个叶提示，生成无边的叶引用；未知前缀键、边提示和
+  父角色被拒绝，`user_metadata` 不解释。SimpleIngestor 不落盘，CloudEngine 不重新
+  回注已消费提示，普通 infer/procedural 分流保持原状。
+  仅索引拥有的 `hierarchy_status`、`parent_id`、`span_start`、`span_end` 与叶提示
+  不同：公开 add/update 沿用系统保留键校验明确拒绝这些输入，业务同名字段应放入
+  `user_metadata`，不能接受后再由索引静默丢弃；不新增 API。
+- 全文、向量及一体化写路径投影 `hierarchy_kind`、`hierarchy_role`、`hierarchy_status`、
+  `parent_id`、`span_start`、`span_end` 六键，区间使用 UTC epoch 毫秒。
+  build/update 清除旧投影后以当前引用重新生成；全文/向量不把来自 Unified 的旧系统
+  六键副本继续复制为 `system_metadata.*` 索引字段。一体化路径的系统元数据副本
+  不取代 hierarchy 真源，切换 builder 后也只认当前结构。
+
+### 本阶段不采用的方案
+
+- 不为新增可缺省字段提升 codec 版本：它不改变既有字段含义，缺失可安全读为空；
+  但不借此放开旧混合 metadata 的兼容边界。
+- 不用用户元数据或任意 `hierarchy_` 输入建边：来源只能声明叶身份，不能绕过未来
+  构建边界制造父子关系；已消费提示也不重复保存在系统元数据中。
+- 索引不用 ISO 字符串做范围比较：现有 FilterClause 范围值要求数值，UTC 毫秒与
+  既有时间索引一致。KV 仍保留 ISO 时间，不为后端反写核心字段。
+- 不提前把纯校验插进全部写入链或引入定时/查询入口：阶段 1 保持现有编排，
+  Composer 的提交前校验与其他树能力由后续阶段分别交付。
+
+### 验收范围与已知限制
+
+本阶段验收覆盖引用字段与独立默认值、纯校验正反例、codec 往返与 `_v=4` 无字段
+兼容、vectors/双 metadata/瞬态键共存、四种合法提示字段及拒绝路径、Cloud 消费后
+不回注，以及全文/向量/一体化 build/update 的六键投影与旧值清理；同时覆盖系统索引
+专用键前置拒绝、用户同名值保留，以及 Unified 来源切换到全文/向量后的旧副本清理。
+验证命令：`PYTHONPATH=.:jiuwen_memory_entry/core python -m pytest -p no:cacheprovider -m unit`。
+本轮结果为 **1891 passed、5 skipped、480 deselected**；5 个跳过项是原有真实 LLM / Redis
+用例，另有 5 条原有 `pytest.mark.asyncio` 未注册警告。HTTP 用例需要允许绑定本地回环
+端口；解除测试沙箱的端口限制后，完整 unit 回归通过。变更 Python 文件 Ruff 与
+`git diff --check` 通过。本地 CodeCheck hygiene 预审整理了测试构造参数及公共函数
+说明，未执行 GitCode 云端 CodeCheck。
+
+`infer=true` 不保证派生节点继承 hierarchy：KeywordExtractor 的深复制与 LLM 类
+Extractor 新建 unit 的行为尚未统一。纯校验通过不等于全库引用可解析；结构词表也
+不承诺角色链算法约束。`IndexBuilder.rebuild()` 仍未实现恢复，六键投影不等于公开
+结构过滤、真源复核或层级召回已经打通。以上均是本阶段保留边界，不扩展为本轮修复。
 
 ## 背景
 
@@ -17,7 +77,7 @@
    `MemoryUnit` 以 L0 概要、L1 片段还是 L2 全文进入上下文。L0/L1/L2 只表示
    same-unit compression，不表示节点之间的关系。
 2. **多模态构建轴**：多模态构建（F05）对**一条原始媒体源**（首期视频）产出
-   CLM/ELM 等多条不同概括粒度的 `MemoryUnit`，用 `metadata.memory_level` +
+   CLM/ELM 等多条不同概括粒度的 `MemoryUnit`，用 `system_metadata.memory_level` +
    `provenance` 表达单媒体源构建粒度，不表示跨源的结构包含。
 3. **认知抽象轴**：`MemoryTier` 与既有演进模式区分工作记忆、情景、语义、
    程序性、核心与归档等认知角色。
@@ -68,7 +128,7 @@
 3. 既有非 `HIERARCHY` 演进模式不暗改 `HierarchyRef`；`evolve(HIERARCHY)` 只维护
    树结构边与派生父。
 
-## 决策
+## 决策（总体设计；当前落地范围以阶段 1 小节为准）
 
 ### 1. 首期采用内嵌 `HierarchyRef`
 
@@ -76,7 +136,7 @@
 
 - KV 中的 `MemoryUnit` 继续作为完整真源，目标索引可从真源重建；
 - 父命中后的常用读取是按有序 `child_ids` 点读，首期无需额外 join；
-- 缺少 `hierarchy` 的旧数据可以按“非层级节点”兼容读取；
+- 缺少 `hierarchy` 的 `_v=4` 数据可以按“非层级节点”兼容读取；
 - 可先验证单 kind 严格树、重建与展开语义，再决定是否承担多父图的复杂度。
 
 这是一项首期边界，不是否认独立边存储的长期价值。当同一节点必须在同一种 kind
@@ -147,7 +207,7 @@ Scope 内唯一，跨细粒度 scope 的边必须携带 `child_scopes` / `parent
 | 认知角色             | `MemoryUnit.tier` |
 | 结构身份、父子边、区间、顺序、状态 | `HierarchyRef` |
 | 叶事件时间和双时间语义      | `MemoryUnit.temporal` |
-| 设备、应用、标题、路径、模板、置信度、价值分等领域字段 | `metadata` |
+| 设备、应用、标题、路径、模板、置信度、价值分等领域字段 | `system_metadata` 或 `user_metadata`，按系统解释/用户透传职责区分 |
 | 主题分类             | `tags` |
 | 原模态证据            | `segments[].assets` |
 | 抽取或合成来源          | `provenance`，仅用于真实演进血缘 |
@@ -488,13 +548,15 @@ Policy 键、默认值和校验由
 | P4 | 至少一种非 TIME kind | 复用同一校验、存储与展开协议 |
 | P5 | Maintainer 修正流（dismiss/剪边/空父回收/修复）和性能优化 | 并发冲突与展开性能达到已设基线 |
 
-每个阶段都必须满足：`hierarchy.enabled=false` 时既有 add/evolve/search 结果和错误语义
-不变；没有 `hierarchy` 的历史 `_v=2` 数据无需迁移即可读取；目标接口未启用时不得改变
-现有插件装配和 Store 抽象。
+兼容边界：没有 `hierarchy` 的 `_v=4` 数据无需迁移即可读取，`_v<4` 仍必须先迁移。
+阶段 1 尚无 hierarchy Policy 闸门；无层级提示时保持既有 add/evolve/search 行为。
+后续引入开关后，关闭时应保持普通请求结果和错误语义；目标接口未启用时不改变既有
+插件装配和 Store 抽象。
 
 ## ingest 接入层 （层级叶提示）
 
-Source adapter 可以在 `RawPayload.metadata` 中提供以下保留键：
+本节叶提示接入已在阶段 1 实现。Source adapter 可以在
+`RawPayload.system_metadata` 中提供以下保留键：
 
 | 键 | 类型 | 语义 |
 |---|---|---|
@@ -519,12 +581,14 @@ Ingestor 只允许把一组完整且有效的提示映射到当前 unit 的叶�
 5. `hierarchy_parent_id`、`hierarchy_child_ids` 或其他试图建立边的保留前缀键一律以
    `ValidationError` 拒绝，不作为普通 metadata 静默保留。
 6. 任一叶提示无效时拒绝该 payload 的转换，不产出半有效 `HierarchyRef`；非
-   `hierarchy_` 前缀的 metadata 继续原样透传。
+   `hierarchy_` 前缀的系统 metadata 继续原样透传；用户命名空间全部原样透传。
 
-这些提示只是来源对当前 unit 结构身份的声明，不证明边存在。父子边只能由构建或控制
-契约在持久化阶段校验并维护。
+消费后的四个提示键从产出 unit 的 `system_metadata` 移除，输入 payload 不被修改；
+CloudEngine 不再回注已消费提示。解析路径自行检查字段，不调用公共 `validate_ref` /
+`validate_tree`。这些提示只声明当前 unit 的结构身份，不证明边存在；父子边的
+构建和维护属于后续阶段。
 
-## 关键数据流
+## 关键数据流（后续目标，阶段 1 尚未实现）
 
 树结构专用路径不写入 architecture §14（该节只保留通用 write/recall/evolve 骨架）；
 建树与按需展开细节如下。
@@ -601,12 +665,12 @@ search(..., hierarchy_kind=..., hierarchy_role=?, expand_depth=N, rollup=?)
 
 ## 验证
 
-目标设计和 specs 同步已完成，代码尚未实现，设计评审待完成。不得用现有 pytest
-结果替代本特性的实现验证。分阶段验收如下：
+阶段 1 的模型、接入与索引投影已落地，完整 unit 回归 1891 passed、5 skipped；其余代码与以下
+后续设计验收仍未完成。不得用已有 pytest 结果替代未交付能力的实现验证。
 
-设计验收之后，实施验收依次对应决策 19 的 P0–P5：阶段 1 对应 P0，阶段 2 对应 P1，
-阶段 3 对应 P2，阶段 4 对应 P3，阶段 5 对应 P4，阶段 6 对应 P5。每阶段只以本阶段
-及此前已经交付的能力作为门禁。
+以下 P0–P5 是决策 19 的原设计验收分组，不是本次按能力整理的提交阶段顺序。
+本次阶段 1 覆盖模型、叶提示与索引投影；其余验收组保留为后续目标，按实际交付
+逐项验证，不因属于同一个原设计分组而提前标记完成。
 
 ### 阶段 0：设计验收
 
@@ -615,22 +679,22 @@ search(..., hierarchy_kind=..., hierarchy_role=?, expand_depth=N, rollup=?)
 - [x] 明确首期单 kind 严格树边界，以及迁移到独立边存储的触发条件。
 - [ ] 完成设计评审。
 
-### 阶段 1：模型与树一致性
+### 阶段 1：模型、叶提示与索引投影（已实现并验证）
 
-- [ ] 旧数据缺少 hierarchy 时兼容读取为空结构。
-- [ ] 拒绝跨 org/space、profile 未允许的跨 user/agent、重复子、环和单 kind 多父。
-- [ ] 跨 session（及显式允许的跨 user）边携带可解析 `child_scopes`/`parent_scope`。
-- [ ] 父子双向引用、稳定排序与区间覆盖校验通过。
-- [ ] 索引可以从 KV 真源重建结构过滤 metadata。
+- [x] `_v=4` 数据缺少 hierarchy 时读为空结构，vectors/双 metadata/瞬态键行为保持兼容。
+- [x] 纯校验拒绝传入集合内的非法 Scope、重复子、环和多父，不宣称核对全库引用。
+- [x] 跨 session 及显式允许的跨 user/agent 引用保留完整 Scope，codec 不改变列表顺序。
+- [x] 叶提示只来自系统命名空间，消费后不回注，不生成父节点或改变 infer 分流。
+- [x] build/update 正确生成六键并清理旧投影；全量 rebuild 恢复不作为已实现能力。
 
-### 阶段 2：构建与重建
+### 后续验收组 P1：构建与重建（未实现）
 
 - [ ] 普通 add 不自动构建父树，显式叶写入仍可工作。
 - [ ] `evolve(HIERARCHY)` 能建立最小父子树，其他演进模式不暗改结构字段。
 - [ ] `replace_in_span` 只替换相交派生父节点，不删除权威叶。
 - [ ] 父节点内容层在落盘和建索引前按 best-effort 策略生成或安全降级。
 
-### 阶段 3：P2 构建、检索与预算
+### 后续验收组 P2：构建、检索与预算（未实现）
 
 - [ ] snapshot→time_span→scene 可构建、可重复重建，且权威叶内容零变化。
 - [ ] 默认父层召回不自动包含子全文。
@@ -640,20 +704,20 @@ search(..., hierarchy_kind=..., hierarchy_role=?, expand_depth=N, rollup=?)
 - [ ] 树级预算先选节点与主 `level`，再由 Discloser 处理各节点的同 unit 披露。
 - [ ] `MemoryUnit.temporal`、`RecallChannel.TEMPORAL` 和 `HierarchyKind.TIME` 的过滤行为互不替代。
 
-### 阶段 4：调度、策略与修复
+### 后续验收组 P3：调度、策略与修复（未实现）
 
 - [ ] ensure 阻塞等待任务终态；失败、取消或超时抛 `BackendError`，不静默降级。
 - [ ] auto derive 不阻塞 write，提交失败不回滚已成功写入的叶。
 - [ ] `complete=false` 或存在 `repair_required` 时任务为 FAILED，修复项可观测。
 - [ ] compose profile 变更只通过显式重建生效，不产生两套半成品 role 序列。
 
-### 阶段 5：多 kind 与回归
+### 后续验收组 P4：多 kind 与回归（未完成）
 
 - [ ] 至少一种非 TIME kind 复用相同树校验与展开协议。
 - [ ] hierarchy 关闭或字段为空时，既有 write/evolve/recall 行为保持兼容。
 - [ ] 完成相关单元、集成、序列化兼容、索引重建与性能基线测试。
 
-### 阶段 6：修正流与性能
+### 后续验收组 P5：修正流与性能（未实现）
 
 - [ ] dismiss、剪边、空父回收和显式修复不级联删除权威叶。
 - [ ] 重叠 span 并发冲突和展开性能达到已设基线。
