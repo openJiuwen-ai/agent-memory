@@ -31,6 +31,7 @@ class RetrievalOperatorType(str, Enum):
     FUSER = "fuser"
     DISCLOSER = "discloser"
     RETRIEVER = "retriever"
+    EXPANDER = "expander"
 
 
 class RetrievalOperator(ABC):

@@ -85,7 +85,7 @@ MemoryUnit
 
 - `temporal` 借鉴 Zep **双时间模型**，支持有效期与时间点回溯。
 - **内容真相是 `segments[]`**：`content/assets/source` 均为折叠后的只读兼容视图，不是与 `segments[]` 并列写入的第二份数据。`ContentLayers.l0/l1` 已实现，L2 不重复存储，直接取 `MemoryUnit.content`。
-- **`provenance`、`supersedes`、`hierarchy` 三分**：`provenance` 回答“由哪些 unit 抽取或合成”，供 `trace` 回溯；`supersedes` 回答“本版本取代谁”，供 `as_of` 版本回溯；`HierarchyRef` 回答“结构上包含谁、隶属于谁”，当前用于父子树构建，`search(..., expand_depth>0)` 下钻仍为目标。三者生命周期、遍历方向和治理动作互不替代。
+- **`provenance`、`supersedes`、`hierarchy` 三分**：`provenance` 回答“由哪些 unit 抽取或合成”，供 `trace` 回溯；`supersedes` 回答“本版本取代谁”，供 `as_of` 版本回溯；`HierarchyRef` 回答“结构上包含谁、隶属于谁”，当前用于父子树构建及 `search(..., SearchOptions(expand_depth>0))` 显式下钻。三者生命周期、遍历方向和治理动作互不替代。
 - `lifecycle` 用「标记失效」而非物理删除（非破坏式更新）。`update` 默认 **SUPERSEDE**（生成新 id 版本、旧版标记 superseded、新版 `supersedes` 记链），亦可 **OVERWRITE**（同 id 原地覆写，旧内容仅留审计——非破坏式原则的有意例外）。
 - **多模态**：每个 `Segment` 把可治理文本/结构投影、原模态资产引用与来源模态放在一起；下游索引与检索统一作用于各段合并后的 `content` 视图（详见 §5.1）。
 
@@ -226,7 +226,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | `batch_add_async` | **异步**批量写入：签名/语义同 `batch_add`，串行保序 | 同 `batch_add` | `BatchWriteResult` |
 | `submit_ingest` | 受鉴权的长耗时摄入入队；先校验 WRITE，再委托 Control 创建或复用任务，后台执行 `add` 时再次鉴权。返回提交状态，不表示摄入已完成 | `content: str`；`scope: Scope`；`source: Modality`；`*`；`security: RequestSecurityContext`；`payload_id: str`；`source_ref: str`；`assets: list[str] \| None = None`；`tags: list[str] \| None = None`；`system_metadata` / `user_metadata`（同 `add`） | `IngestSubmission` |
 | `check_write` | Pre-flight WRITE 鉴权，不落盘。镜像 `add` 的鉴权与 space 可写校验，供长耗时摄入任务入队前拒绝无权限请求 | `scope: Scope`；`security: RequestSecurityContext`；`*`；`tags: list[str] \| None = None`；`system_metadata` / `user_metadata`（同 `add`） | `None` |
-| `search` | 混合检索召回。Context 提供范围和 max_tokens/coords/spaces；SearchOptions 统一 filters/as_of/top_k/disclosure/with_trajectory 与可选 hierarchy_kind/hierarchy_role/span_start/span_end。层级查询只返回直接命中，含 parent_id，不自动展开 | `query: str`；`context: Context`；`options: SearchOptions \| None = None`；`*`；`security: RequestSecurityContext` | `RetrievalResult` |
+| `search` | 混合检索召回。Context 提供范围和 max_tokens/coords/spaces；SearchOptions 统一 filters/as_of/top_k/disclosure/with_trajectory 与可选 hierarchy_kind/hierarchy_role/span_start/span_end/expand_depth。默认只返回直接命中，显式正深度按边展开并共用 max_tokens，含 parent_id | `query: str`；`context: Context`；`options: SearchOptions \| None = None`；`*`；`security: RequestSecurityContext` | `RetrievalResult` |
 | `list` | 列出 scope 下已建索引记忆（只含 `/memory/`，不含 infer 原文）。支持类型/结构化过滤、自定义透传与分页；`items` 为当前页，`count` 为分页前精确总数。`memory_types` 与 `filters` 取 AND；`org/space/user/agent/session` 不得出现在 filters | `scope: Scope`；`*`；`security: RequestSecurityContext`；`offset: int = 0`；`limit: int = 100`；`memory_types: list[str] \| None = None`；`extensions: dict[str, Any] \| None = None`；`filters: FilterExpr \| list[FilterClause] \| dict \| None = None` | `MemoryListResult` |
 | `get` | 按 id 读取记忆单元；`as_of` 非空时沿 `supersedes` 版本链返回当时有效版本；不存在抛 `NotFoundError` | `unit_id: str`；`scope: Scope`；`*`；`security: RequestSecurityContext`；`as_of: datetime \| None = None` | `MemoryUnit` |
 | `update` | 修正记忆（仅非 None 字段生效）：`patch.mode` = **SUPERSEDE**（默认、非破坏式：生成新 id 版本、旧版标记 superseded、新版 `supersedes` 记链）/ **OVERWRITE**（同 id 原地覆写、旧内容仅留审计）。`system_metadata` / `user_metadata` 分别合并 | `unit_id: str`；`scope: Scope`；`patch: MemoryPatch`；`*`；`security: RequestSecurityContext` | `MemoryUnit` |
@@ -310,7 +310,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
   Milvus/Elasticsearch 在通道截断前完整执行，物化后再用共享纯函数复核真源。
 - **两条时间轴**：`as_of` 是系统相信时间（valid-time，回溯「T 时刻哪个版本有效」），与从 query 文本解析出的事件时间约束（event-time，`time_from/time_to`，过滤 `t_event`）分开，互不折叠。
 - **通道↔Store 非 1:1**：`RecallChannel` 是逻辑召回路，到物理 Store 的映射由 Storage 装配内部决定（一路对一 Store，多路也可合到 FusionStore 一次召回；TEMPORAL 多为叠加在其他通道上的时间过滤）。未指定通道表示调用全部已配置通道，显式空列表是无效输入。
-- **树结构过滤（已实现）与按需展开（目标）**：SearchOptions 显式给出 kind、可选单 role/span 时叠加结构硬过滤；全文/向量先过滤再 top_k，物化后复核真源。指定父侧 role 只查该类父，叶角色只查叶，均不扩大 Scope 或权限。当前不接受 expand_depth/rollup；后续才沿 child_ids 展开并共用 max_tokens、实现后代分数上卷。`HierarchyKind.TIME` 不等于 `RecallChannel.TEMPORAL`。
+- **树结构过滤与按需展开（已实现）**：SearchOptions 显式给出 kind、可选单 role/span 时叠加结构硬过滤；全文/向量先过滤再 top_k，物化后复核真源。指定父侧 role 只查该类父，叶角色只查叶，均不扩大 Scope 或权限。expand_depth 默认为 0；正深度在最终根 top_k 之后沿有序 child_ids 做有界 BFS。子继承根分，逐子复核原可见性（仅移除 typed 父角色），父子/跨空间共享主字段 max_tokens；rollup 尚未实现。`HierarchyKind.TIME` 不等于 `RecallChannel.TEMPORAL`。
 
 ---
 
@@ -448,7 +448,7 @@ BACKGROUND 只是通道标签：in_process 等待执行，async_timer 的持续�
 > `IntegratedStorage` 是已定义的实现方向，尚未提供仓内实现。精确契约见
 > [S06-storage.md](../specs/S06-storage.md)，设计取舍见
 > [F05-unified-storage-design.md](../features/storage/F05-unified-storage-design.md)。
-> **hierarchy 存储边界**：`HierarchyRef` 已内嵌于 KV 真源的 `MemoryUnit`；kind/role/span 等字段已投影到全文/向量索引 metadata，公开层级过滤与目标全量索引重建仍未交付（rebuild 缺口见 §9.2）。GraphStore 只表达实体、因果、引用等非包含关系，不作为父子树真源；当同 kind 多父、丰富边属性或跨 kind 组合查询成为主路径时，再评估独立边存储。
+> **hierarchy 存储边界**：`HierarchyRef` 已内嵌于 KV 真源的 `MemoryUnit`；kind/role/span 等字段已投影到全文/向量索引 metadata，公开结构过滤与只读展开已实现，全量索引重建仍未交付（rebuild 缺口见 §9.2）。GraphStore 只表达实体、因果、引用等非包含关系，不作为父子树真源；当同 kind 多父、丰富边属性或跨 kind 组合查询成为主路径时，再评估独立边存储。
 
 ---
 
@@ -513,7 +513,7 @@ BACKGROUND 只是通道标签：in_process 等待执行，async_timer 的持续�
 | **真源形态**（§10.1） | 文档 / 结构化 | 按 profile | 切轻量真源降存储与运维 |
 | **索引类型**（§9.2） | 文档 / 关键词 / 向量 / 图 各自开关 | 关键词+向量（图/文档按需启用） | 关图/向量大幅降写入与存储成本 |
 | **检索策略**（§8） | Storage 首选 pipeline、召回通道、重排 on/off、渐进披露层级、`as_of` | 按 Storage 实现选择 + 混合召回 | 关重排/单通道降时延 |
-| **树结构**（§4/§8） | `hierarchy.enabled` 控制显式建树与 typed 层级查询；自动派生、ensure、展开/上卷仍为目标，见 [S03](../specs/S03-control.md)、[S04](../specs/S04-retrieval.md)；分阶段边界见 [F08](../features/common/F08-memory-tree.md) | 默认关闭，普通写入/召回不触发建树 | 仅显式请求新增结构处理 |
+| **树结构**（§4/§8） | `hierarchy.enabled` 控制显式建树与 typed 层级查询；显式展开已实现；自动派生、ensure、上卷仍为目标，见 [S03](../specs/S03-control.md)、[S04](../specs/S04-retrieval.md)；分阶段边界见 [F08](../features/common/F08-memory-tree.md) | 默认关闭，普通写入/召回不触发建树 | 仅显式请求新增结构处理 |
 | **自演进**（§9.3） | 总开关、阶段（extract/associate/consolidate/forget）、hot/background、控制模式 | 全闭环+双通道 | 仅 extract 或纯离线，降在线时延与 LLM 成本 |
 | **双时间**（§3.1） | 启用 / 关闭（仅留最新版本） | 启用 | 关闭可省去历史时间维护，适合无回溯需求 |
 | **多模态规约**（§5.1） | 启用的规约器、是否留原模态资产、投影粒度 | 文本+按需图像 | 仅文本，去掉 ASR/OCR/caption 依赖 |
@@ -699,11 +699,12 @@ agent-memory/
     │   ├── base.py                 #   RetrievalOperator 算子契约
     │   ├── types.py                #   RetrievalQuery / RetrievalResult / RetrievedItem / 轨迹；重导出共享候选类型
     │   ├── query_parser.py         #   查询理解：去噪 / 改写 / 分词 / 实体 / 向量化 / 时间约束解析
-    │   ├── recaller.py             #   单路召回接口：RecallChannel 是逻辑路，物理 Store 映射由 Storage 装配
     │   ├── fuser.py                #   物化候选融合（分层 MaxP + 跨通道融合；不含 Reranker）
     │   ├── discloser.py            #   渐进式披露：disclose(query, …) L0 摘要 → L1 片段 → L2 全文
     │   ├── retriever.py            #   检索入口接口：retrieve(scope, query)
-    │   ├── hierarchy_expander.py   #   [planned] Retriever 内部算子：expand_depth>0 时单 kind 展开（共用 max_tokens）
+    │   ├── expander.py             #   内部只读展开接口与有界请求/诊断
+    │   ├── expander_impl/          #   同源 DomainStore 的按层遍历，复核范围及双向边
+    │   ├── expansion.py            #   单/跨空间延迟展开收尾，共用主字段 token 预算
     │   └── retriever_impl/         #   PipelineRetriever：按 Storage 首选值编排三条 pipeline
     │
     ├── storage/                    # F 记忆存储层（§10）：StoreManager 管理面 + DomainStore 数据面 + 六类标准 Store

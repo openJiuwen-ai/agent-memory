@@ -70,6 +70,14 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def validate_expand_depth(depth: int, kind: HierarchyKind | None) -> None:
+    """展开只接受非负整数深度，非零深度必须显式指定结构 kind。"""
+    if type(depth) is not int or depth < 0:
+        raise ValidationError("expand_depth 必须是非负整数，不能是 bool")
+    if depth and kind is None:
+        raise ValidationError("非零 expand_depth 要求显式 hierarchy_kind")
+
+
 def matches_hierarchy(unit: MemoryUnit, query: HierarchyQuery) -> bool:
     """真源复核 kind/role/status 与闭区间；缺失或非法 TIME 区间不能匹配。"""
     if not query.enabled:

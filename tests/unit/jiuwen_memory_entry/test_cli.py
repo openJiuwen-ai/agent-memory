@@ -78,6 +78,7 @@ def test_cli_exposes_every_api_parameter(method: str, capsys, monkeypatch) -> No
                 "options": {
                     "hierarchy_kind": "time",
                     "hierarchy_role": "time_span",
+                    "expand_depth": 1,
                     "span_start": "2026-09-10T09:00:00+00:00",
                     "span_end": "2026-09-10T10:00:00+00:00",
                 },
