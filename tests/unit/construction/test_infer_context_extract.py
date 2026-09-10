@@ -39,12 +39,14 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.dedup_impl.vector_dedup import VectorDedup
-from jiuwen_memory.construction.evolver import EvolveMode
-from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import OrchestratingEvolver
+from jiuwen_memory.construction.evolver import EvolveMode, EvolveRequest
+from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
+    EvolverDependencies,
+    OrchestratingEvolver,
+)
 from jiuwen_memory.construction.extractor import Extractor
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.kv import KVStore
-from tests.conftest import make_storage
 from jiuwen_memory.storage.types import (
     IndexRemoveMode,
     IndexWriteMode,
@@ -52,6 +54,7 @@ from jiuwen_memory.storage.types import (
     VectorRecord,
 )
 from jiuwen_memory.storage.vector import VectorStore
+from tests.conftest import make_storage
 
 pytestmark = pytest.mark.unit
 
@@ -311,14 +314,16 @@ def _make_evolver(kv, vector_store, embedder, llm, extractor) -> OrchestratingEv
     storage = make_storage(kv=kv, vector=vector_store)
     dedup = VectorDedup(storage=storage, embedder=embedder, tier_filter=False)
     return OrchestratingEvolver(
-        extractor=extractor,
-        abstractor=None,  # EXTRACT 不用
-        associator=None,
-        index_builder=_NoopIndexBuilder(kv),
-        storage=storage,
-        message_store=storage.kv(),
-        dedup=dedup,
-        llm=llm,
+        EvolverDependencies(
+            extractor=extractor,
+            abstractor=None,  # EXTRACT 不用
+            associator=None,
+            index_builder=_NoopIndexBuilder(kv),
+            storage=storage,
+            message_store=storage.kv(),
+            dedup=dedup,
+            llm=llm,
+        ),
     )
 
 
@@ -339,7 +344,7 @@ class TestInferContextCollection:
         evolver = _make_evolver(stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor)
 
         unit = _make_unit("u1", "普通消息")  # 无 metadata.infer
-        evolver.evolve([unit], EvolveMode.EXTRACT)
+        evolver.evolve(EvolveRequest(units=[unit], mode=EvolveMode.EXTRACT))
 
         assert extractor.last_context is None
 
@@ -362,7 +367,7 @@ class TestInferContextCollection:
 
         # 本轮 infer unit（content 与 related 相同，便于召回）
         cur = _make_unit("cur-1", "用户偏好 Python 编程", system_metadata={"infer": "true"})
-        evolver.evolve([cur], EvolveMode.EXTRACT)
+        evolver.evolve(EvolveRequest(units=[cur], mode=EvolveMode.EXTRACT))
 
         ctx = extractor.last_context
         assert ctx is not None
@@ -392,7 +397,7 @@ class TestInferContextCollection:
             stores["kv"].insert(_DEFAULT_SCOPE, messages_key(u.id), dumps(u))
 
         cur = _make_unit("cur", "本轮", system_metadata={"infer": "true"})
-        evolver.evolve([cur], EvolveMode.EXTRACT)
+        evolver.evolve(EvolveRequest(units=[cur], mode=EvolveMode.EXTRACT))
 
         ctx = extractor.last_context
         assert ctx is not None
@@ -416,7 +421,7 @@ class TestRelatedMemoriesDedup:
         _index_related(related, stores["kv"], stores["vector"], plugins["embedder"])
 
         cur = _make_unit("cur-1", "用户偏好 Python 编程", system_metadata={"infer": "true"})
-        evolver.evolve([cur], EvolveMode.EXTRACT)
+        evolver.evolve(EvolveRequest(units=[cur], mode=EvolveMode.EXTRACT))
 
         ctx = extractor.last_context
         assert ctx is not None
@@ -438,7 +443,7 @@ class TestRelatedMemoriesDedup:
         _index_related(related, stores["kv"], stores["vector"], plugins["embedder"])
 
         cur = _make_unit("cur-1", "用户偏好 Python 编程", system_metadata={"infer": "true"})
-        result = evolver.evolve([cur], EvolveMode.EXTRACT)
+        result = evolver.evolve(EvolveRequest(units=[cur], mode=EvolveMode.EXTRACT))
 
         # 候选与 related 同文本 → _dedup_batch 召回 related（cosine=1.0 ≥ high）判 NOOP → 无新增
         assert result.created_ids == []
@@ -456,7 +461,7 @@ class TestRelatedMemoriesDedup:
         _index_related(related, stores["kv"], stores["vector"], plugins["embedder"])
 
         cur = _make_unit("cur-1", "用户在做数据库迁移", system_metadata={"infer": "true"})
-        result = evolver.evolve([cur], EvolveMode.EXTRACT)
+        result = evolver.evolve(EvolveRequest(units=[cur], mode=EvolveMode.EXTRACT))
 
         assert "c-new" in result.created_ids
 
@@ -478,7 +483,7 @@ class TestRelatedMemoriesDedup:
         stores["kv"].insert(_DEFAULT_SCOPE, messages_key(hist.id), dumps(hist))
 
         cur = _make_unit("cur-1", "我在养猫", system_metadata={"infer": "true"})
-        result = evolver.evolve([cur], EvolveMode.EXTRACT)
+        result = evolver.evolve(EvolveRequest(units=[cur], mode=EvolveMode.EXTRACT))
 
         # 原文不参与去重 → 候选保留 → ADD 落盘
         assert "c-1" in result.created_ids
@@ -519,10 +524,10 @@ class TestMessagesUpsertOnRetry:
         message_store = getattr(evolver, "_message_store")
 
         with pytest.raises(RuntimeError, match="inject failure"):
-            evolver.evolve([unit], EvolveMode.EXTRACT)
+            evolver.evolve(EvolveRequest(units=[unit], mode=EvolveMode.EXTRACT))
         assert message_store.exists(_DEFAULT_SCOPE, messages_key(unit.id))
 
-        result = evolver.evolve([unit], EvolveMode.EXTRACT)
+        result = evolver.evolve(EvolveRequest(units=[unit], mode=EvolveMode.EXTRACT))
         assert result.created_ids == []
         assert extractor.calls == 2
 
@@ -549,10 +554,12 @@ class TestEngineInferPersist:
         dedup = VectorDedup(storage=storage, embedder=_HashEmbedder(), tier_filter=False)
         extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=50, overlap_chars=10))
         evolver = OrchestratingEvolver(
-            extractor=extractor, abstractor=None, associator=None,
-            index_builder=_NoopIndexBuilder(stores["kv"]), storage=storage,
-            message_store=storage.kv(),
-            dedup=dedup, llm=_MockLLM(),
+            EvolverDependencies(
+                extractor=extractor, abstractor=None, associator=None,
+                index_builder=_NoopIndexBuilder(stores["kv"]), storage=storage,
+                message_store=storage.kv(),
+                dedup=dedup, llm=_MockLLM(),
+            ),
         )
 
         class _NoopIndex:
@@ -636,7 +643,7 @@ class TestProceduralExtract:
         _index_related(related, stores["kv"], stores["vector"], plugins["embedder"])
 
         cur = _make_unit("cur-1", "user: 查下订单\nassistant: 已返回列表", system_metadata={"procedural": "true"})
-        result = evolver.evolve([cur], EvolveMode.EXTRACT)
+        result = evolver.evolve(EvolveRequest(units=[cur], mode=EvolveMode.EXTRACT))
 
         # procedural 收到 context=None（不收集）
         assert extractor.last_context is None
@@ -665,10 +672,12 @@ class TestProceduralExtract:
         extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=50, overlap_chars=10))
         # keyword_extractor 构造需 chunker + normalizer？看签名——只 chunker
         evolver = OrchestratingEvolver(
-            extractor=extractor, abstractor=None, associator=None,
-            index_builder=_NoopIndexBuilder(stores["kv"]), storage=storage,
-            message_store=storage.kv(),
-            dedup=dedup, llm=_MockLLM(),
+            EvolverDependencies(
+                extractor=extractor, abstractor=None, associator=None,
+                index_builder=_NoopIndexBuilder(stores["kv"]), storage=storage,
+                message_store=storage.kv(),
+                dedup=dedup, llm=_MockLLM(),
+            ),
         )
 
         class _NoopIndex:
@@ -729,10 +738,12 @@ class TestProceduralExtract:
         dedup = VectorDedup(storage=storage, embedder=_HashEmbedder(), tier_filter=False)
         extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=50, overlap_chars=10))
         evolver = OrchestratingEvolver(
-            extractor=extractor, abstractor=None, associator=None,
-            index_builder=_NoopIndexBuilder(stores["kv"]), storage=storage,
-            message_store=storage.kv(),
-            dedup=dedup, llm=_MockLLM(),
+            EvolverDependencies(
+                extractor=extractor, abstractor=None, associator=None,
+                index_builder=_NoopIndexBuilder(stores["kv"]), storage=storage,
+                message_store=storage.kv(),
+                dedup=dedup, llm=_MockLLM(),
+            ),
         )
 
         class _NoopIndex:

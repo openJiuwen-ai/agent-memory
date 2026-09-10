@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.type_def import Scope
-from jiuwen_memory.construction import EvolveMode, Evolver
+from jiuwen_memory.construction import EvolveMode, Evolver, EvolveRequest
 from jiuwen_memory.control.jobs import Job
 from jiuwen_memory.control.types import JobInfo, JobStatus
 from jiuwen_memory.storage.kv import KVStore, list_units
@@ -25,7 +25,7 @@ from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_na
 class EvolveJob(Job):
     """通用演进任务。
 
-    list scope 全部 MemoryUnit → ``evolver.evolve(units, mode)``。
+    list scope 全部 MemoryUnit → ``evolver.evolve(EvolveRequest(units, mode))``。
     ``interval=0``：一次性任务（提交后执行一次即完成）。
     """
 
@@ -55,7 +55,9 @@ class EvolveJob(Job):
         units = [
             unit for unit in units if unit.system_metadata.get("middle") != "true"
         ]
-        result = await asyncio.to_thread(self._evolver.evolve, units, self._mode)
+        result = await asyncio.to_thread(
+            self._evolver.evolve, EvolveRequest(units=units, mode=self._mode)
+        )
         return JobInfo(
             scope=self.scope,
             status=JobStatus.SUCCEEDED,

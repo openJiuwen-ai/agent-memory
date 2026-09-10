@@ -13,8 +13,8 @@ import pytest
 
 from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment, memory_key
 from jiuwen_memory.common.type_def.memory_codec import dumps
-from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
 from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.evolver import EvolveMode, Evolver, EvolveRequest, EvolveResult
 from jiuwen_memory.control.jobs import Job
 from jiuwen_memory.control.jobs_impl.evolve_job import EvolveJob
 from jiuwen_memory.control.scheduler_impl.in_process_scheduler import InProcessScheduler
@@ -59,8 +59,8 @@ class RecordingEvolver(Evolver):
     def health(self) -> None:
         return None
 
-    def evolve(self, units: list[MemoryUnit], mode: EvolveMode) -> EvolveResult:
-        self.calls.append((units, mode))
+    def evolve(self, request: EvolveRequest) -> EvolveResult:
+        self.calls.append((request.units, request.mode))
         return EvolveResult(
             created_ids=["created-1"],
             updated_ids=["updated-1"],

@@ -5,8 +5,17 @@ from .abstractor import Abstractor
 from .associator import Associator
 from .base import ConstructionOperator, OperatorType
 from .classifier import Classifier
-from .evolver import EvolveMode, Evolver, EvolveResult
+from .evolver import EvolveMode, Evolver, EvolveRequest, EvolveResult
 from .extractor import Extractor
+from .hierarchy_composer import (
+    HierarchyComposeOptions,
+    HierarchyComposeProfile,
+    HierarchyComposer,
+    HierarchyComposeRequest,
+    HierarchyComposeResult,
+    HierarchyComposerProducer,
+    HierarchyRepair,
+)
 from .index_builder import IndexBuilder
 from .router import (
     EMPTY_ROUTE_TABLE,
@@ -29,7 +38,15 @@ __all__ = [
     "IndexBuilder",
     "Evolver",
     "EvolveMode",
+    "EvolveRequest",
     "EvolveResult",
+    "HierarchyComposer",
+    "HierarchyComposerProducer",
+    "HierarchyComposeProfile",
+    "HierarchyComposeOptions",
+    "HierarchyComposeRequest",
+    "HierarchyComposeResult",
+    "HierarchyRepair",
     "Router",
     "RouteContext",
     "RouteDecision",
