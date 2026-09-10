@@ -175,7 +175,7 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 14. **六类动态配置不走业务入参**：能力开关、prompt 全文、LLM/Embedder/Reranker 的 model/api_key/url、Store 连接或 `*.active` 等由 `ConfigSource.fetch` 提供（见 S08）；`add`/`search`/`evolve`/`list` 不得把上述值解释为配置写入。调用侧可传 prompt **key**、`memory_type`/pipeline 等业务选择子。
 15. **安全输入唯一且不可自造**：`security` 只能来自受控构造入口——接入形态经 `jiuwen_memory_entry.core.auth_middleware.authenticated()`，进程内直连经 `common.security.request_context.internal_context(authenticator)`。请求 payload 不得声明 actor / request_id / surface。过渡期 `common.security.legacy.legacy_request_context()` 是唯一例外（见 F05 §PR2），随实装 PR 一并删除。
 16. **授权面使用安全域授权类型**：`grant`/`revoke` 的公共类型是 `common.security.types.Grant` / `Action`；目标形态下 `grant_id` 由服务端生成、`revoke` 按 `grant_id` 精确定位。接口先行过渡期只固定签名，`GrantStore` 未实装前不生成 ID、不据 ID 判定，撤销语义与 `mem2.0` 一致（见 F05 §5.4）。
-17. **显式建树默认关闭**：普通 `add` 不建父树；调用方通过 `evolve(scope, EvolveTaskOptions(...), security=...)` 显式发起 TIME snapshot→time_span 任务。`hierarchy.enabled=false` 时抛 `PolicyError`，普通四种演进模式不受该开关影响。后台自动派生与召回时建树仍未实现。
+17. **建树默认关闭**：普通 `add` 不建父树；调用方通过 `evolve(scope, EvolveTaskOptions(...), security=...)` 显式发起 TIME 两/三/四层任务。`hierarchy.enabled=false` 时抛 `PolicyError`，普通四种演进模式不受该开关影响。周期增量须由宿主调用 Runtime 异步入口并独立 opt-in；召回时建树仍未实现。
 18. **三类遍历严格分离（目标）**：`trace` 只沿 `provenance`；树下钻由 `search(..., expand_depth>0)` 沿 `HierarchyRef` 完成；`get(as_of)` 只沿 `supersedes`/valid-time；L0/L1/L2 仅表示同一 unit 的披露层。
 19. **API 与 Control 的职责边界**：API 只负责协议边界工作——输入形状和兼容参数校验、请求对象装配、`security.auth.actor`/target `scope` 的 PEP 鉴权、权限路由过滤回注、入口审计以及同步/异步桥接。API 不得调用 LLM、Extractor、Classifier、IndexBuilder、Retriever 或 Store，也不得实现写入、去重、版本、生命周期、检索排序和后台任务编排。
 20. **委托对象按职责分流**：数据面 add/search/list/get/update/delete/evolve 经 `MemoryCommandService` / `MemoryQueryService` 委托 `MemoryEngine`；治理操作经 `GovernanceService` 委托 `Governor`；`delete_space` 的 purge+delete 事务经 `SpaceLifecycleService`；任务状态和取消委托 `Scheduler`/`IngestJobController`；跨 scope 授权在过渡期委托 `PermissionManager`，目标切到 `Authorizer` / `GrantStore`；策略读写委托 `PolicyManager`；space 普通 CRUD 委托 `SpaceManager`。这些是控制层 typed 端口或算子的直接委托，不属于 API 自行实现业务逻辑。
@@ -681,6 +681,38 @@ JSON 字段。普通模式也必须包装为 `EvolveTaskOptions` / `options`，�
 
 ### 任务面（委托 Scheduler）
 
+#### 宿主周期启动（阶段 9）
+
+`assemble_runtime` 返回的 MemoryRuntime 额外提供宿主生命周期入口，不是 MemoryAPI
+数据面方法，不增加 HTTP/CLI/MCP 路由或工具：
+
+```python
+async def start_background_jobs(
+    self, scope: Scope, *, security: RequestSecurityContext,
+) -> list[str]:
+    """在宿主持续存活的事件循环中注册固定 home 的周期任务。"""
+```
+
+启动时快照 scope，按 WRITE+UPDATE、空间 UPDATE 与可写状态校验，拒绝权限路由字段
+非空的部署，再交 CommandService。API 不读取候选或直接驱动 Composer。
+enabled/auto_derive 默认关闭，关闭或缺显式 TIME profile 返回 []；开启但调度器不支持
+周期则抛 ValidationError。同一 home 重复启动返回相同定时任务 id。
+
+调用必须由长驻异步宿主 `await runtime.start_background_jobs(home, security=security)`。
+Runtime 不自动运行，不创建后台循环/线程；同步 `asyncio.run(...)` 返回后循环关闭，
+不能据此宣称任务持续执行。首次成功注册后绑定该循环，跨循环再次启动或关闭后启动均拒绝。
+普通同步 add/evolve 的临时循环问题未在本阶段重设计。
+
+`close(wait=...)` 取消本 Runtime 注册的后续周期，不中断已运行或已排队的建树轮次；
+wait 仍只等待摄入任务。应在宿主循环退出前关闭。PEP 是启动时授权，不会每轮重新判定
+成员/授权/空间冻结状态；宿主须在权限或空间治理变化时取消任务并重新授权注册，或关闭
+auto_derive。运行时仅每轮重查两项开关，不能当作长期授权刷新机制。
+
+定时 id 的 JobInfo.status 表示注册状态（通常 RUNNING）；最近轮次的终态、id、完成时间
+和字符串化 JSON detail 分别位于 last_run_status、last_run_id、last_finished_at、
+last_run_detail。应同时检查最近轮次的 complete、repair_required_count、needs_rebuild_count；
+注册 RUNNING 不等于最近一轮成功。job_status/job_cancel 继续按 hierarchy 的 UPDATE 权限判定。
+
 显式 HIERARCHY 复用本面已实现的 `job_status` / `job_cancel`，不另开建树任务查询 API。
 Scheduler 接收已封装的 Job，不接收或解析 `hierarchy_options`（见 S03）。
 
@@ -964,9 +996,10 @@ def remove_space_member(
 
 ### 运行时策略面（直达 PolicyManager，不经 Engine）
 
-本面不增加新的对外方法。当前唯一落地的层级策略键是 `hierarchy.enabled`，默认
-`"false"`，可经已有管理面权限下的 `admin_set` 修改；自定义 policies 若未声明该键，
-读取时按未知键拒绝。`hierarchy.auto_derive` / `hierarchy.ensure_on_recall` /
+本面不增加新的对外方法。当前落地的层级策略键是 `hierarchy.enabled` 和
+`hierarchy.auto_derive`，均默认 `"false"`，可经已有管理面权限下的 `admin_set` 修改；
+自定义 policies 未声明的键仍按未知键拒绝；周期路径遇到缺失键按关闭处理。
+`hierarchy.ensure_on_recall` /
 `hierarchy.score_propagation` / `hierarchy.expand_default_depth` 仍为目标，不得据此启用
 未交付能力。S08 的其它动态配置边界不变，不经 `admin_set` 扩展为任意配置树。
 
@@ -1230,6 +1263,8 @@ jiuwen_memory/api/memory_api_impl/
 | architecture.md §6 | 已实现 MemoryAPI 清单 |
 
 ## 修订记录
+
+- 2026-09-10：阶段 9 增加 Runtime 宿主异步周期启动、双开关、启动鉴权与取消边界，明确长驻循环要求及定时 id 的最近轮次诊断；不扩展 HTTP/CLI/MCP，不修复同步入口循环生命周期。
 
 - 2026-09-10：阶段 8 扩展 HIERARCHY 到可选 event 四层树，沿用 EvolveTaskOptions/SearchOptions，说明完整重建与三级原文展开，保留两/三层兼容。
 - 2026-09-10：阶段 7 扩展 HIERARCHY 到可选 scene 三层树，保留 EvolveTaskOptions/SearchOptions 形状，明确完整子树重建和已有召回组合。

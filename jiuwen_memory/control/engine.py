@@ -33,6 +33,7 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.retrieval import RetrievalQuery, RetrievalResult
 
 from .base import ControlOperator
+from .policy import PolicyManager
 from .types import (
     BatchWriteItem,
     BatchWriteResult,
@@ -188,6 +189,11 @@ class MemoryEngine(ControlOperator):
         self, scope: Scope, options: EvolveTaskOptions
     ) -> str:
         """触发一次演进：委托 Scheduler 提交指定阶段与通道，返回任务 id。"""
+
+    @staticmethod
+    async def start_background_jobs(scope: Scope, policy: PolicyManager) -> list[str]:
+        """在宿主持有的循环注册已鉴权 home 的周期任务；默认实现不支持。"""
+        raise NotImplementedError("this engine does not support periodic hierarchy derivation")
 
     @abstractmethod
     async def admin_get(self, key: str) -> str:

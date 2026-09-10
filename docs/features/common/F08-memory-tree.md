@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-08-15 |
 | 影响范围 | jiuwen_memory/api/、jiuwen_memory/common/、jiuwen_memory/construction/、jiuwen_memory/control/、jiuwen_memory/ingest/、jiuwen_memory/retrieval/、jiuwen_memory/storage/；docs/specs/S01–S07；关联 [`F05-construction-spec-multimodal-design`](../construction/F05-construction-spec-multimodal-design.md) |
-| 测试基线 | 阶段 1：完整 unit 回归 1891 passed；阶段 2：2082 passed；阶段 3：2229 passed；阶段 4：2413 passed；阶段 5：2505 passed；阶段 6：2585 passed；阶段 7：2665 passed；阶段 8：2754 passed。各阶段均为 5 skipped、480 deselected。各阶段变更无新增 Ruff/CodeCheck 本地预审问题，历史诊断见对应阶段验证；未执行云端 CodeCheck |
+| 测试基线 | 阶段 1：完整 unit 回归 1891 passed；阶段 2：2082 passed；阶段 3：2229 passed；阶段 4：2413 passed；阶段 5：2505 passed；阶段 6：2585 passed；阶段 7：2665 passed；阶段 8：2754 passed；阶段 9：2800 passed。各阶段均为 5 skipped、480 deselected。各阶段变更无新增 Ruff/CodeCheck 本地预审问题，历史诊断见对应阶段验证；未执行云端 CodeCheck |
 | Refs | — |
 
 ## 阶段 1 落地（2026-09-10）
@@ -14,7 +14,7 @@
 本次只交付“能表达、接入和存储结构身份”的基础能力，不交付自动建树或层级召回。
 本节记录阶段 1 完成时的状态：当时除本节明确列出的能力及下文叶提示接入外，Composer、
 显式 `evolve(HIERARCHY)`、结构查询/展开/MaxP、后台任务、修复器和各 kind 算法均未实现。
-当前新增交付以阶段 8 小节为准；后文仍保留尚未开放的总体设计。
+当前新增交付以阶段 9 小节为准；后文仍保留尚未开放的总体设计。
 后文 P0–P5 是原设计分期，不等同于已经完成的提交阶段。
 
 ### 已交付与决定
@@ -552,6 +552,68 @@ warning 延续原基线；未运行真实 LLM/外部存储及 LoCoMo、LongMemEv
 assert、测试 protected-access 或无返回调用赋值。未运行云端 CodeCheck，本地通过不等于
 云端通过。未暂存或提交，不修改原 tree-mem 分支。
 
+## 阶段 9 落地（2026-09-10）
+
+本阶段让已写入的 TIME 叶在长驻宿主中逐层自动形成父节点，同时保留显式区间重建。
+不是每次 add 都重建四层，也不是在召回时补建；普通写入、infer 分流和 SearchOptions 不变。
+
+### 决策与交付
+
+- 周期独立 opt-in：enabled 与 auto_derive 双开关、显式 TIME profile、支持周期的调度器
+  和宿主异步启动缺一不可。默认均不运行；同 home 重复启动合并，不自动扩大 home。
+  通过 Runtime 生命周期入口接入，不新增 HTTP/CLI/MCP 业务接口。
+- 周期与算法配置分离：默认每 1800 秒检查最近 604800 秒的输入，分组仍只使用绑定
+  Composer 的 profile。逐层 snapshot→time_span→scene→event，仅处理无父输入；
+  较短 profile 只做到其顶层，不重做已挂父节点，不按 infer 区分候选。
+- 尾组封口：时间片按 gap、场景按最大跨度、事件按独立静默期等待，均使用严格大于。
+  event 默认等 259200 秒，并不因此证明任务已经语义完结。下层未完成的起点阻挡上层；
+  重叠区间同样不能让水位越过待定输入。未封口组保留原状，不反复调用摘要 LLM。
+- 上层分组先从完整叶证据还原确定性摘录，不受上一轮父 LLM 摘要影响；新父再按配置
+  增强正文/L0/L1。原输入只改父边，旧正文、层摘要、直接子边和权威叶内容不重写。
+- 迟到/历史回填保守处理：水位取 home 全部活跃同角色父的最大结束，不只看窗口或第一页。
+  未挂父输入不晚于水位、或早于窗口，就明确要求显式重建，不丢弃输入、不生成重复父。
+  同 home 水位不是每个 session 独立的进度，因此旧会话回填也可能被保守拦住。
+- 所有写入沿用 IndexBuilder 及现有部分失败报告。可选 home+kind 锁覆盖整轮读取和各层
+  构建；失败即停止向上。一旦构建调用出现不完整/异常/写后失锁/取消，共享内存故障闸
+  阻止后续轮次继续写，同一 Spec 再注册也不清闸；必须人工处理后再启新 Runtime。
+- 定时任务 id 可查询最近轮次的状态、计数和错误，区分“已注册”与“本轮成功”。
+  Runtime 关闭只取消后续周期，保留正在执行线程的结束/释放锁规则。
+
+### 拒绝的方案与限制
+
+- 不沿用“每次 write 后提交区间替换”：重复摘要、父 id 反复更换和 hot path 耦合较大；
+  改用宿主显式启动的周期单层增量。原总体设计中的写后 auto derive 由本阶段决定替代。
+- 不用临时 asyncio.run 假装后台常驻，不另造线程/服务事件循环。宿主必须持续运行
+  启动所在循环；同步 CLI 和临时循环不会因此获得定时能力。
+- 不忽略迟到输入后继续建更高层、不在失败后自动重试修复。故障闸不是持久化 checkpoint，
+  重启会丢失内存状态，操作方须先处理 repair；目前仍无事务或完整自动恢复。
+- 不承诺在线写入快照隔离。普通 write/update/delete 不受建树锁保护，扫描后的并发
+  插入可在下一轮被判为迟到。大历史/大子树超过保护上限会失败而非截断。
+- PEP 在启动时完成，每轮只重查策略开关；宿主应在授权/成员/空间冻结变化时取消任务，
+  重新授权后注册。自动授权续期、服务生命周期重构和逐候选权限路由仍不在本阶段。
+- 不实现其他 kind、ensure-on-recall、top-M、结构生命周期自动维护或修复器。
+
+### 验证
+
+新增专项 **46 passed**，覆盖四层逐级生成、无新输入空轮次、旧父/叶内容不变、严格
+静默期、重叠区间/下层 pending 保护、确定性结构不受历史 LLM 摘要影响、迟到/等水位/
+过窗/未来数据、分页/限额/读中漂移、失锁/取消/部分写入闸门、同源依赖、运行时开关、
+权限路由拒绝，以及两种 Engine 的真实异步周期启动/去重/空轮次/关闭。
+
+完整 unit 回归 **2800 passed、5 skipped、480 deselected、5 warnings**（91.35 秒）；
+相对阶段 8 增加 46 个通过项。随后补强故障闸保留首次 repair 细节，46 项专项再次通过。
+另执行 `python -O` 的 5 项拒绝路径与四层增量合法冒烟，验证生产校验不依赖 assert。
+命令仍为 `PYTHONPATH=.:jiuwen_memory_entry/core python -m pytest -o addopts='' -m unit
+-q -p no:cacheprovider`，既有 HTTP 单测需要绑定本地回环端口。
+
+共 38 个变更文件（含未跟踪新增），其中 30 个 Python 文件，包含生产代码、测试与
+fixture；Ruff 和 git diff --check 通过。按既有 CodeCheck 十条规则做完整文件及受影响
+定义预审，修正新增遮蔽/静态化/格式问题，无新增本地规则候选。无返回调用赋值经真实
+返回契约复核；未新增生产或辅助 assert、测试 protected-access、复杂推导式或进程退出。
+既有参数数目、文档样式、静态化和变量遮蔽候选不扩范围修改；抽象/协议方法与扫描候选
+仍须人工区分，不能把本地预审当作云端结论。保留原有 5 个 skip 和 5 条 asyncio marker
+警告；未运行云端 CodeCheck、真实 LLM/外部存储或质量评测。未暂存、未提交，原 tree-mem 未改动。
+
 ## 背景
 
 现有记忆模型已经覆盖三轴，彼此独立、互不推导：
@@ -611,11 +673,11 @@ assert、测试 protected-access 或无返回调用赋值。未运行云端 Code
 3. 既有非 `HIERARCHY` 演进模式不暗改 `HierarchyRef`；`evolve(HIERARCHY)` 只维护
    树结构边与派生父。
 
-## 决策（总体设计；当前落地范围以阶段 1–8 小节为准）
+## 决策（总体设计；当前落地范围以阶段 1–9 小节为准）
 
 下文包含未来目标，不表示各组件、策略和公开入口已经实现；未落地部分不能作为当前
 运行时行为依据。公开 HIERARCHY 已交付阶段 8 的显式两/三/四层 TIME，阶段 7 已接入
-父摘要与 LayerAnnotator 标注；FORGET 断边、后台自动派生和修复仍为后续目标。
+父摘要与 LayerAnnotator 标注；阶段 9 已接周期增量。FORGET 断边和自动修复仍为后续目标。
 展开已在阶段 5、上卷已在阶段 6 落地。
 
 ### 1. 首期采用内嵌 `HierarchyRef`
@@ -989,9 +1051,9 @@ Composer 创建父节点时按下列顺序处理：
 | 运行时 Policy | 总开关、auto derive、ensure、MaxP、内部/接入形态默认展开深度、top-M | 可以治理时调整；不回写已有树 |
 | compose profile | kind、leaf role、parent role 序列、stage 启用、硬边界键、阈值、模型/提示版本 | 装配期固定；变更后通过显式 rebuild 生效 |
 
-首期所有运行时能力默认关闭：普通 add 和 search 行为不变。`auto_derive` 只在叶成功
-写入且 profile 能确定有界 span 时提交 BACKGROUND 任务，不阻塞 hot path。
-`ensure_on_recall` 只服务显式 kind+有界 span 的召回，并阻塞等待构建终态，避免调用方
+首期所有运行时能力默认关闭：普通 add 和 search 行为不变。阶段 9 将 `auto_derive`
+落为宿主显式注册的周期单层增量，不在写后提交替换任务，不阻塞 hot path。
+目标中的 `ensure_on_recall` 只服务显式 kind+有界 span 的召回，并阻塞等待构建终态，避免调用方
 请求“确保后召回”却拿到静默的无结构结果。
 
 compose profile 至少定义 `leaf_role`、从近叶到远叶的 `parent_roles` 和每个 stage 的
@@ -1095,8 +1157,8 @@ evolve(scope, EvolveTaskOptions(mode=HIERARCHY, hierarchy_options=...), security
   → HierarchyComposeResult → JobInfo 的终态、计数、complete 与 repair
 ```
 
-普通 add 不建树。LayerAnnotator 父标注已实现，目标中的 `hierarchy.auto_derive` 写后
-派生仍未实现；不能从上面的显式任务入口推导自动后台触发已经可用。
+普通 add 不建树。LayerAnnotator 父标注已实现；`hierarchy.auto_derive` 在阶段 9 采用
+Runtime 显式异步注册的周期路径，并非从上面的显式任务入口或每次写入自动触发。
 
 **读取展开路径（仍是 `search`，无公开 `expand`）**
 
@@ -1161,7 +1223,8 @@ expand_depth=0 不准备或展开；rollup 已开放，可准入祖先并传播�
 阶段 3 增加显式任务入口与完整候选读取，完整 unit 回归 2229 passed、5 skipped。
 阶段 4 增加 SearchOptions、直接结构查询与真源复核；阶段 5 交付只读展开与共享预算，
 阶段 6 交付父级准入与 MaxP；阶段 7 交付 scene、父内容增强与完整三层重建，
-阶段 8 交付 event 四层构建/重建；不等于后续 top-M 或自动演进已实现。
+阶段 8 交付 event 四层构建/重建；阶段 9 交付周期增量/封口/迟到保护，不等于 top-M、
+ensure 或自动修复已实现。
 不得用已有 pytest 结果替代未交付能力的实现验证。
 
 以下 P0–P5 是决策 19 的原设计验收分组，不是本次按能力整理的提交阶段顺序。

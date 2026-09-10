@@ -64,7 +64,7 @@
 17. **Engine 部署边界明确**：`InMemoryEngine` 只接受空 `space` 兼容域；具名非空 space 的数据面操作使用 `CloudEngine`。`CloudEngine` 仍兼容空 space，但生产多租户配置应开启 `scope.require_space=true`。
 18. **普通 write 不自动建树**：当前开放显式 TIME snapshot→time_span 任务、结构查询和
     可选向下展开，公开 API 在 hierarchy.enabled=false 时拒绝 typed 层级请求；
-    控制层信任 API 已完成策略与权限检查。自动派生、层级 update 仍为目标，普通四种
+    控制层信任 API 已完成权限检查。周期增量通过宿主显式异步启动，层级 update 仍为目标，普通四种
     演进模式不受层级开关影响。
 19. **树结构一致性（目标）**：同一 kind 的父子边必须同 `org+space`、无环、单父、双向一致且顺序稳定；`user`/`agent`/`session` 可按 compose profile 放宽（跨细粒度 scope 时边须可解析定位）；`HierarchyStatus` 只允许 ACTIVE/DISMISSED，且与 `LifecycleState` 分离。
 20. **结构与生命周期事务（目标）**：`provenance`、`supersedes` 与 `hierarchy` 分别表示演进来源、版本替换和父子包含；FORGET/PURGE 不级联删除后代内容。
@@ -196,7 +196,7 @@ EvolveJob；HIERARCHY 不经普通内容抽取任务，不从 messages 重新提
 
 #### 装配与保护参数
 
-默认 JobFactory 注册 EVOLVE、MIDDLE_TO_LONG 和 HIERARCHY；HierarchyJob 固定 interval=0，
+默认 JobFactory 注册 EVOLVE、MIDDLE_TO_LONG、HIERARCHY 和 HIERARCHY_DERIVE；HierarchyJob 固定 interval=0，
 不接受周期参数。JobFactory 的建树配置仅固化真源读取兜底、限额与可选锁，运行时
 Evolver 必须由 Engine 传入，运行时 KV 优先于装配兜底。Composer 的独立装配见 S05。
 
@@ -217,9 +217,49 @@ max_leaves/page_size 要求真正的正整数，lock_wait_ms 要求非负整数�
 引用也供既有 MiddleToLongJob 使用。Engine 必须显式引用该 JobFactory 并注入 Evolver；
 公开 API 另受 S02 的权限与 hierarchy.enabled 策略闸门控制。
 
-### 树结构目标扩展（尚未实现）
+### 周期 TIME 增量（阶段 9）
 
-普通 write 默认不建父树。`hierarchy.auto_derive=false` 时不提交任何层级任务。启用后，write 在不可变构建配置已有 compose profile 且本批叶可确定有界 span 时，必须在成功返回后向 BACKGROUND 通道提交 HIERARCHY 区间替换任务；条件不足时不提交，并记录跳过原因。提交失败只记录任务/审计错误，不回滚已经成功的权威叶写入。auto derive 不得改成阻塞 hot path，也不得推断未配置的 kind、role 或无界 span。
+普通 write 不启动层级任务。宿主经 S02 的 Runtime 异步入口完成鉴权后，调用
+`MemoryEngine.start_background_jobs(scope, policy)`；CommandService 只转发已授权 home。
+scope 就是实际 tree_home_scope，不清空 user/agent/session，不自动枚举其它 home。
+enabled 和 auto_derive 均为 true、且绑定 Evolver 提供显式 TIME profile 时才注册；
+关闭或缺 profile 返回空 id 列表。Spec 强制接收同源 Evolver、KV、Policy，不重新装配内容算子。
+
+HIERARCHY_DERIVE 在 BACKGROUND 注册周期任务，mode 为 hierarchy；Scheduler 必须通过
+`supports_periodic()` 明确声明能力，否则启动失败。默认实现返回 false，周期调度实现返回
+true；宿主仍须保持提交所在事件循环运行。首次触发等待一个 interval，同 home 同类型重复
+启动沿用调度器去重规则，不推迟下一次执行。开关每轮重查，关闭后该轮成功跳过。
+
+JobFactory 参数 hierarchy_derive_interval=1800、hierarchy_derive_lookback=604800（均秒），
+要求真正的正整数；interval 不得小于调度器 tick。复用 hierarchy_max_leaves、page_size、
+lock_wait_ms 及共享锁配置。lookback 是输入窗口，不是水位截断或时间分组阈值。
+
+每轮沿显式 profile 逐层处理 snapshot→time_span→scene→event 的配置前缀：
+
+1. 完整分页读取 home 中全部 ACTIVE TIME 同角色父，最大 span_end 为本层水位；
+   不受 lookback 截断，水位父数量超过 3×max_leaves 失败。
+2. 在已授权范围收集 ACTIVE TIME、角色相符且未挂父的输入。非 snapshot 输入必须在
+   exact home；不按 infer 过滤，不读 messages。起点早于窗口或不晚于水位的输入计入
+   needs_rebuild_count，本 home 本轮失败、不写该层、不推进更高层；未来结束的输入保留待定。
+3. 复用完整树读取/双向引用校验，备齐选中输入的全部下层；核对初次候选和最终候选相等，
+   再核对水位父未变。缺子、漂移、超限或较短 profile 与已有父层冲突均失败，不截断后继续。
+4. 以内部 HierarchyIncrementalContext 调用同源 Evolver 单层 build；下层 pending 起点
+   作为上层 ready_before，阻挡上层越过未完成的下层。封口算法由 S05 定义。
+5. 只保存新父与待挂父输入边；已挂父节点不重建。无输入不调用 Composer/摘要器；每层
+   完整成功后才继续上层。一层失败或失锁即停止，不能声称之前的写入已回滚。
+
+可选 home+kind 锁覆盖整轮读取和构建，与显式重建共用；取消时等待已运行线程结束后释放。
+该锁不覆盖普通 write/update/delete，没有后端事务/CAS 保证。初次扫描后的并发新写入
+可能在下一轮被报告为迟到；需要与在线变更并发时由宿主协调，不能宣称全库快照隔离。
+部分写入、构建调用异常、写后失锁或取消会保留跨周期副本共享的内存故障闸；同一 Spec
+再注册不清闸；后续失败轮保留首次错误计数/repair，不用零计数覆盖修复线索。
+闸不是持久化 repair checkpoint，必须先人工核对/显式修复再启动新 Runtime。
+
+JobInfo.detail 保留 created_parent_count、updated_child_count、deferred_child_count（各层送入
+Composer 后待封口的输入数之和，不含未送入的未来结束节点，也不是去重 snapshot 数）、needs_rebuild_count、repair_required_count/repair_required、
+complete、pending_before 与 error。迟到不等于当前写入失败，故不自动进入永久故障闸。
+
+### 树结构目标扩展（尚未实现）
 
 #### ensure_hierarchy
 
@@ -442,6 +482,10 @@ Job.run 返回的 SUCCEEDED/FAILED/CANCELLED 与 detail 必须保留；返回 PE
 记录 CANCELLED 后继续传播。周期实例未返回 is_done=true 时不停止后续 tick；显式完成
 后周期声明采用最后一次实例的终态和 detail，不再将失败改写为成功。
 
+每轮结束还把 last_run_id、last_run_status、last_finished_at 和 last_run_detail（该轮
+detail 的 JSON 字符串）更新到父定时 id，异常/取消也记录。未 is_done 的定时注册仍为
+RUNNING，调用方不能把它等同于本轮成功；取消后的已运行轮次可更新诊断，但不恢复注册。
+
 HIERARCHY 的 `JobInfo.mode` 固定为 `hierarchy`。detail 是字符串映射，包含 `mode`、
 `kind`、`span_start/span_end`、`trigger=explicit`、`created_parent_count`、
 `updated_child_count`、`replaced_parent_count`、`repair_required_count` 与 `complete`。
@@ -492,6 +536,7 @@ space 元数据、space policy、成员、用量与 offboarding 状态管理。
 | 键 | 类型与默认 | 语义 |
 |---|---|---|
 | `hierarchy.enabled` | str，`"false"` | API 侧显式建树、typed 结构查询/上卷/展开门禁；仅 trim/lower 后等于 true 时启用，不自动发起任务 |
+| `hierarchy.auto_derive` | str，`"false"` | 宿主显式注册的周期增量开关；每轮重查，不在 write 后提交任务 |
 
 PolicyManager 对未知键仍拒绝；显式自定义 policies 未声明该键时不补默认配置。
 修改开关不回写既有 unit、不触发建树。阶段 6 的 rollup 固定采用 MaxP，不新增策略键；
@@ -499,13 +544,12 @@ PolicyManager 对未知键仍拒绝；显式自定义 policies 未声明该键�
 
 | 键 | 类型与默认 | 语义 |
 |---|---|---|
-| `hierarchy.auto_derive` | bool，`false` | write 后是否后台派生 |
 | `hierarchy.ensure_on_recall` | bool，`false` | 是否对显式有界层级 recall 阻塞确保结构 |
 | `hierarchy.score_propagation` | str，默认 `maxp` | 目标中的可配置传播算法；当前未注册该键，阶段 6 固定 MaxP |
 | `hierarchy.expand_default_depth` | int，`1` | 仅供未显式给 `expand_depth` 的内部/接入形态默认值；公开 recall 默认仍为 0 |
 | `hierarchy.expand_top_m` | int \| None，`None` | 每个父最多保留的直接子数；必须 > 0；`None` 表示不额外裁剪（仍受 depth 与 `max_tokens` 约束） |
 
-目标中 `enabled=false` 优先于其它层级策略，未知值或越界值应拒绝；这些自动派生、
+目标中 `enabled=false` 优先于其它层级策略，未知值或越界值应拒绝；这些尚未实现的
 ensure 和召回策略的取值校验不属于阶段 3 已实现能力。
 
 #### 群体记忆带来的控制层变更（F07）
@@ -618,6 +662,8 @@ jiuwen_memory/control/<算子>_impl/
 | S08-config | ConfigSource 与 PolicyManager 分工 |
 
 ## 修订记录
+
+- 2026-09-10：阶段 9 增加 HIERARCHY_DERIVE、宿主异步周期注册、同源 profile、逐层未挂父输入与完整水位、迟到/过窗保护和跨轮故障闸；周期 id 暴露最近轮次结果，不接管宿主循环。
 
 - 2026-09-10：阶段 8 开放 event 四层 TIME 任务与完整旧子树补齐，新增根约束和三层父数量上限；保留统一请求、Scope、锁及部分失败边界。
 - 2026-09-10：阶段 7 开放三层 TIME 任务与完整 scene 子树补齐、写前反向引用核对；保留 Scope/锁/限额/失败语义和统一任务对象。

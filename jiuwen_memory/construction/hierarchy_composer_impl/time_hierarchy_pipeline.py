@@ -13,9 +13,13 @@ from dataclasses import dataclass, field, replace
 
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.type_def import HierarchyRole, MemoryUnit, Scope
-from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
+from jiuwen_memory.construction.hierarchy_composer import (
+    HierarchyComposeOptions,
+    HierarchyComposeRequest,
+)
 
 from .event_pipeline import EventBuilder, EventBuilderOptions, build_event_parent
+from .incremental_pipeline import IncrementalBatch, IncrementalTimePipeline
 from .parent_enrichment import (
     HierarchyModelDependencies,
     ParentSummaryOptions,
@@ -75,6 +79,16 @@ class TimeHierarchyPipeline:
         parents = [*events, *scenes, *spans]
         annotate_parents(parents, self.models.layer_annotator)
         return parents, children
+
+    def build_incremental(
+        self, request: HierarchyComposeRequest, chain: tuple[HierarchyRole, ...],
+    ) -> IncrementalBatch:
+        """复用 profile 有效配置，仅构建一层已封口分组，旧子内容保持不变。"""
+        self.validate_dependencies()
+        segmenter = self._effective_segmenter() if HierarchyRole.EVENT in chain else self.segmenter
+        merger = self._effective_merger(segmenter) if HierarchyRole.SCENE in chain else self.merger
+        pipeline = IncrementalTimePipeline(merger, segmenter, self.event_builder, self.models)
+        return pipeline.build(request)
 
     def _effective_segmenter(self) -> SceneSegmenterOptions:
         return replace(

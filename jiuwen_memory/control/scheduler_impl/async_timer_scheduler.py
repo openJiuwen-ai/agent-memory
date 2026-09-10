@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import time
 import uuid
 from collections import defaultdict, deque
@@ -97,6 +98,11 @@ class AsyncTimerScheduler(Scheduler):
         return None
 
     # ---- 公开 API ----
+
+    @staticmethod
+    def supports_periodic() -> bool:
+        """周期依赖提交所在事件循环持续存活。"""
+        return True
 
     def validate(self, job: Job) -> None:
         """interval < tick_interval 时定时精度无法保证——submit 前拒绝。
@@ -222,6 +228,7 @@ class AsyncTimerScheduler(Scheduler):
                 )
             finally:
                 info.detail["finished_at"] = self._now_iso()
+                self._publish_timer_round(info)
 
     # ---- 定时任务路径 ----
 
@@ -391,6 +398,17 @@ class AsyncTimerScheduler(Scheduler):
         self._wheels.pop(wheel.scope_key, None)
 
     # ---- 辅助 ----
+
+    def _publish_timer_round(self, info: JobInfo) -> None:
+        """把最近一轮的终态与诊断投影到可查询的定时任务 id，不改变注册状态。"""
+        parent_id = info.detail.get("parent_timer")
+        timer = self._jobs.get(parent_id) if parent_id else None
+        if timer is not None:
+            timer.detail.update(
+                last_run_id=info.id, last_run_status=info.status.value,
+                last_run_detail=json.dumps(info.detail, ensure_ascii=False),
+                last_finished_at=info.detail["finished_at"],
+            )
 
     def _merge_info(self, info: JobInfo, result: JobInfo) -> None:
         """把实例 run() 返回的 JobInfo 合并回主 info，并处理 is_done 传播。"""

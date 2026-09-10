@@ -7,6 +7,7 @@ from datetime import datetime
 
 from jiuwen_memory.common.type_def import MemoryUnit, MetadataValueType, Modality, Scope
 from jiuwen_memory.control.engine import MemoryEngine
+from jiuwen_memory.control.policy import PolicyManager
 from jiuwen_memory.control.types import (
     BatchWriteItem,
     BatchWriteOutcome,
@@ -97,3 +98,7 @@ class MemoryCommandService:
     ) -> str:
         """原样委托统一演进请求，身份与判权不下沉。"""
         return await self._engine.evolve(scope, options)
+
+    async def start_background_jobs(self, scope: Scope, policy: PolicyManager) -> list[str]:
+        """转发已鉴权 home 和同源策略，不接管事件循环。"""
+        return await self._engine.start_background_jobs(scope, policy)

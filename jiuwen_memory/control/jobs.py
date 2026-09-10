@@ -57,6 +57,7 @@ class JobType(str, Enum):
 
     EVOLVE = "evolve"
     HIERARCHY = "hierarchy"
+    HIERARCHY_DERIVE = "hierarchy_derive"
     MIDDLE_TO_LONG = "middle_to_long"
 
 

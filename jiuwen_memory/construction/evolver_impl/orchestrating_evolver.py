@@ -37,6 +37,7 @@ from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
     MESSAGES_KEY_PREFIX,
     DedupDecision,
+    HierarchyKind,
     HierarchyRef,
     LifecycleState,
     MemoryUnit,
@@ -64,6 +65,7 @@ from jiuwen_memory.construction.evolver_impl.dedup_direct_noop import should_dir
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 from jiuwen_memory.construction.hierarchy_composer import (
     HierarchyComposeOptions,
+    HierarchyComposeProfile,
     HierarchyComposer,
     HierarchyComposeRequest,
     HierarchyComposerProducer,
@@ -287,8 +289,8 @@ class OrchestratingEvolver(Evolver):
             raise ValidationError("evolve 要求 EvolveRequest 与合法 EvolveMode")
         if request.mode is EvolveMode.HIERARCHY:
             return self._evolve_hierarchy(request)
-        if request.hierarchy_options is not None:
-            raise ValidationError("仅 HIERARCHY 模式接受 hierarchy_options")
+        if request.hierarchy_options is not None or request.hierarchy_incremental is not None:
+            raise ValidationError("仅 HIERARCHY 模式接受 hierarchy_options / hierarchy_incremental")
         units, mode = request.units, request.mode
         logger.info("Evolver: evolve mode=%s, %d units", mode.value, len(units))
         for u in units:
@@ -303,6 +305,12 @@ class OrchestratingEvolver(Evolver):
         if mode == EvolveMode.FORGET:
             return self._evolve_forget(units)
         return EvolveResult()
+
+    def hierarchy_profile(self, kind: HierarchyKind) -> HierarchyComposeProfile | None:
+        """配置只取绑定 Composer 的快照，不在控制层复制另一份算法配置。"""
+        if self._hierarchy_composer is None:
+            return None
+        return self._hierarchy_composer.get_profile(kind)
 
     def _evolve_hierarchy(self, request: EvolveRequest) -> EvolveResult:
         """只委托 Composer，不进入抽取、去重或内容合并。"""
@@ -325,9 +333,13 @@ class OrchestratingEvolver(Evolver):
             else:
                 raise ValidationError(f"节点 {unit.id} 的角色不属于本次建树请求")
         compose_request = HierarchyComposeRequest(
-            leaves=leaves, options=options, existing_parents=parents
+            leaves=leaves, options=options, existing_parents=parents,
+            incremental=request.hierarchy_incremental,
         )
-        result = self._hierarchy_composer.replace_in_span(compose_request)
+        if request.hierarchy_incremental is not None:
+            result = self._hierarchy_composer.build(compose_request)
+        else:
+            result = self._hierarchy_composer.replace_in_span(compose_request)
         return EvolveResult(hierarchy_result=result)
 
     # ------------------------------------------------------------------

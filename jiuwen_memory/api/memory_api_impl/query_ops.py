@@ -39,7 +39,7 @@ from jiuwen_memory.construction.router import (
     reject_kernel_coords,
 )
 from jiuwen_memory.control import collective
-from jiuwen_memory.control.evolution.validation import validate_evolve_options
+from jiuwen_memory.control.evolution.validation import scope_contains, validate_evolve_options
 from jiuwen_memory.control.types import (
     DeleteSelector,
     EvolveTaskOptions,
@@ -618,7 +618,7 @@ class QueryOpsMixin:
         *,
         security: RequestSecurityContext,
     ) -> str:
-        """鉴权并快照请求后提交内容演进或显式两层 TIME 建树任务。"""
+        """鉴权并快照请求后提交内容演进或显式两至四层 TIME 建树任务。"""
         scope = deepcopy(scope)
         options = deepcopy(options)
         validate_evolve_options(scope, options)
@@ -647,3 +647,23 @@ class QueryOpsMixin:
         job_id = asyncio.run(self._commands.evolve(scope, options))
         self._log(identity, "evolve", target_scope=scope, detail={**auth, "job_id": job_id})
         return job_id
+
+    async def start_background_jobs(
+        self, scope: Scope, *, security: RequestSecurityContext,
+    ) -> list[str]:
+        """供 Runtime 在长驻循环中启动已鉴权 home，不作为同步数据面接口。"""
+        scope = deepcopy(scope)
+        scope_contains(scope, scope)
+        identity = security.auth.actor
+        auth = self._authorize(identity, scope, Action.WRITE, "evolve",
+                               space_action=_evolve_space_action(EvolveMode.HIERARCHY))
+        self._ensure_space_writable(scope)
+        self._authorize(identity, scope, Action.UPDATE, "evolve",
+                        space_action=_evolve_space_action(EvolveMode.HIERARCHY))
+        if self._perm.routing_fields():
+            raise ValidationError("周期 HIERARCHY 暂不支持权限路由或逐候选鉴权")
+        job_ids = await self._commands.start_background_jobs(scope, self._policy)
+        self._log(identity, "evolve", target_scope=scope, detail={
+            **auth, "trigger": "auto_derive", "job_ids": json.dumps(job_ids),
+        })
+        return job_ids

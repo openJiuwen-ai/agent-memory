@@ -15,7 +15,7 @@
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `search_options.py` | SearchOptions：普通选项、单 kind/role、结构区间、expand_depth 和 rollup；query、Context、security 独立传入，内部 defer_expansion 不对外 |
 | `memory_api_impl/` | 具体实现目录 |
-| `memory_api_impl/assembly.py` | 公开装配：`assemble(config) -> MemoryAPI`、`assemble_runtime(config) -> MemoryRuntime`（仅 api+close）；内部 `_build_kernel` 才持有 KV/Storage/ingest |
+| `memory_api_impl/assembly.py` | 公开装配：`assemble(config) -> MemoryAPI`、`assemble_runtime(config) -> MemoryRuntime`（api、异步周期启动、close）；内部 `_build_kernel` 才持有 KV/Storage/ingest/scheduler |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI facade：构造、属性，公开方法由 mixin 提供 |
 | `memory_api_impl/local_support.py` | 入口校验、过滤/谓词、空间投影等无状态辅助函数 |
 | `memory_api_impl/pep_ops.py` | PepOpsMixin：空间事实、`_authorize`、审计、`check_write` |
@@ -133,8 +133,12 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
     不得把 `_purge_space_memories` 或内联 purge+delete 收回本类。
 11. `build_dev_authenticator()` 只供 HTTP / CLI 本地功能测试装配固定身份；它不是生产认证 runtime，也不改变 `MemoryAPI` 的授权判定。Access 仍只能从 `jiuwen_memory.api` 取得该能力，不得直接 import `common.security.authentication_impl`。
 12. 公开 `evolve` 统一接收 `EvolveTaskOptions`，不接受旧独立 mode/channel 参数。
-    HIERARCHY 仅开放显式 TIME snapshot→time_span：校验 scope 等于 tree_home_scope
+    HIERARCHY 开放显式 TIME snapshot→time_span→scene→event 的连续前缀：校验 scope 等于 tree_home_scope
     和有界区间，经 WRITE+UPDATE、空间 UPDATE 与可写检查，再检查默认关闭的
     hierarchy.enabled。路由权限声明非空时拒绝该组合，不用批次 Scope 授权绕过
     尚未实现的候选逐条 PEP；额外父 metadata 仍拒绝系统保留键与路由标签键。
     API 深拷贝请求后委托 CommandService，不自行查询、补齐或建边；其余四种模式算法不变。
+13. `MemoryRuntime.start_background_jobs` 是宿主异步生命周期入口，不扩展 MemoryAPI、HTTP、
+    CLI 或 MCP 业务方法。启动经过同一 WRITE+UPDATE、空间可写和路由拒绝边界，再委托
+    CommandService；不创建临时循环，不持有或查询原始记忆。Runtime 只取消自身注册的
+    定时任务，不中断已经运行的建树线程；启动绑定一个持续存活的宿主事件循环。

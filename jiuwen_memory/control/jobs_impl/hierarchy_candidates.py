@@ -105,7 +105,8 @@ def _decode(raw: bytes, stored_scope: Scope, stored_key: str) -> MemoryUnit:
     return decoded
 
 
-def _read_scope(kv: KVStore, scope: Scope, page_size: int) -> Iterator[MemoryUnit]:
+def read_scope_units(kv: KVStore, scope: Scope, page_size: int) -> Iterator[MemoryUnit]:
+    """完整分页与精确身份校验，供显式重建和增量扫描共用。"""
     offset = 0
     expected_count: int | None = None
     seen: set[str] = set()
@@ -283,7 +284,7 @@ def collect_candidates(
             scoped[scope_key(stored_scope)] = stored_scope
     collected = HierarchyCandidates()
     for selected_key in sorted(scoped):
-        for candidate in _read_scope(kv, scoped[selected_key], limits.page_size):
+        for candidate in read_scope_units(kv, scoped[selected_key], limits.page_size):
             _select(candidate, collected, options)
             _check_limit(collected, limits.max_leaves)
     _complete_children(kv, collected, options, limits)
@@ -299,7 +300,7 @@ def _validate_reverse_claims(
     nodes = {**candidates.leaves, **candidates.parents}
     verified: set[NodeKey] = set()
     for selected_scope in scopes.values():
-        for observed in _read_scope(kv, selected_scope, page_size):
+        for observed in read_scope_units(kv, selected_scope, page_size):
             key = node_key(observed)
             previous = nodes.get(key)
             if previous is not None:

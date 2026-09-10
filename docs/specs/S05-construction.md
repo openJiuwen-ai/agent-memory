@@ -370,10 +370,17 @@ class HierarchyComposeOptions:
     metadata: dict[str, str] = field(default_factory=dict)
 
 @dataclass
+class HierarchyIncrementalContext:
+    settle_at: datetime
+    ready_before: datetime | None = None
+    supporting_units: list[MemoryUnit] = field(default_factory=list)
+
+@dataclass
 class HierarchyComposeRequest:
     leaves: list[MemoryUnit]
     options: HierarchyComposeOptions
     existing_parents: list[MemoryUnit] = field(default_factory=list)
+    incremental: HierarchyIncrementalContext | None = None
 
 @dataclass
 class HierarchyRepair:
@@ -389,13 +396,15 @@ class HierarchyComposeResult:
     replaced_parent_ids: list[str] = field(default_factory=list)
     repair_required: list[HierarchyRepair] = field(default_factory=list)
     complete: bool = True
+    deferred_child_count: int = 0
+    pending_before: datetime | None = None
 
 class HierarchyComposer(ConstructionOperator):
     def build(self, request: HierarchyComposeRequest) -> HierarchyComposeResult: ...
     def replace_in_span(self, request: HierarchyComposeRequest) -> HierarchyComposeResult: ...
 ```
 
-#### 输入、范围与替换边界
+#### 显式构建、范围与替换边界
 
 `leaves` 必须非空，每个节点均为生命周期与结构状态 ACTIVE 的 TIME/snapshot；
 `existing_parents` 包含 ACTIVE 的 TIME/time_span、scene、event，均驻留在 `tree_home_scope`
@@ -423,6 +432,29 @@ supersedes、lifecycle 或 hierarchy。父用户元数据取子叶的相等交�
 先写请求 metadata，再上提配置键中一致的非空字符串，同名键以一致子值优先。
 不自动全量继承系统字段，且
 `infer` / `procedural` / `middle` 不传播。作者和权限模型没有因建树新增继承机制。
+
+#### 内部单层增量
+
+`HierarchyComposer.get_profile(kind)` 返回显式配置快照；无增量能力或未配置时返回 None，
+不从显式建树的算法默认值推断自动链。`Evolver.hierarchy_profile(kind)` 转发绑定 Composer
+的快照，不在控制层维护另一份分组配置。
+
+`incremental` 仅可用于 `build`。此时 leaf_role 可为 snapshot/time_span/scene，
+parent_roles 只能是配置链中的相邻一层；existing_parents 必须为空，输入根不能有父引用。
+输入须提供有界区间，span_end 不晚于 settle_at；supporting_units 提供完整只读下层子树，
+不能缺子、跨未允许 Scope、重复身份或使用非法角色链。公开 EvolveTaskOptions 不暴露此字段。
+
+增量按同一 profile 分组，先封口、后摘要：末组等待距最大 span_end 严格大于静默阈值；
+time_span 使用 gap_seconds，scene 使用 max_duration_seconds，event 使用 settle_seconds。
+非末组可以提前封口，但已接收组的最大结束必须严格早于所有待定输入和 ready_before
+的最早起点；时间区间重叠时保守保留前缀，不能推进水位越过待定节点。
+event 静默阈值不是语义完结判据，也不成为 EventBuilder 的分组时长上限。
+
+已保存的 time_span/scene 先从完整 snapshot 子树还原确定性摘录临时视图，再用于上层
+分组；不让历史 LLM 摘要反过来改变结构。新父可按原配置生成摘要/L0/L1，旧输入只改
+父引用，不重写正文、披露层或直接子边。未封口组不调用摘要 LLM，不写新父；结果的
+deferred_child_count 是本层待定输入节点数，pending_before 是最早待定起点（含下层边界）。
+无新输入由控制层成功空操作，不调用 Composer。增量不替换/归档已挂父树，不提供自动修复。
 
 #### TIME 规则与 profile
 
@@ -493,9 +525,10 @@ EventBuilder 的 boundary_metadata_keys、carry_metadata_keys、summary_mode 同
 | similarity_threshold | 缺省关闭 | [0,1] 有限数值；显式 embedder；相等不切 |
 | summary_max_children | 20 | 正整数；摘要输入最多场景数 |
 | summary_max_chars_per_child | 100 | 正整数；每个输入场景最多字符数 |
+| settle_seconds | 259200 | 正整数；仅供增量末组静默封口，不限制事件分组总跨度 |
 
 配置装配把内层非 None 值转成字符串后校验；布尔值不是有效数值阈值。未知键、其他
-stage、settle 等选项拒绝。启用相似度却缺 embedder，或 llm 模式缺 llm，装配即失败。
+stage 拒绝；settle_seconds 仅允许在 EventBuilder 配置。启用相似度却缺 embedder，或 llm 模式缺 llm，装配即失败。
 相似度只使用确定性父摘录、不含时间/数量表头；缺向量、零向量、维度不齐、非有限值或
 调用异常均在写前失败，不静默改用另一种分组算法。
 
@@ -532,7 +565,7 @@ Composer 不提供事务、自动重试、自动修复或并发闸门，不得�
 写入语义，也不提供数据库事务或普通 write/update/delete 的互斥。
 
 阶段 3 已在 Control 实现显式任务和存储读取补齐，Composer 本身仍不查库。
-其他 kind、ensure/auto derive 与结构维护器仍是后续目标，
+阶段 9 的周期增量同样由 Control 收齐输入后调用本层。其他 kind、ensure 与结构修复器仍是后续目标，
 不能由当前方法存在推断为已实现。
 
 ### Evolver（`evolver.py`）
@@ -559,6 +592,7 @@ class EvolveRequest:
     mode: EvolveMode
     metadata: dict[str, str] = field(default_factory=dict)
     hierarchy_options: HierarchyComposeOptions | None = None
+    hierarchy_incremental: HierarchyIncrementalContext | None = None
 ```
 
 `metadata` 承载 correlation id、触发来源等请求级透传信息，不写回 unit 核心字段。
@@ -566,8 +600,9 @@ class EvolveRequest:
 tree_home_scope 与有界 span；其他 mode 提供 options 时拒绝。内部调用已统一到
 `evolve(EvolveRequest(...))`，不保留旧的 `evolve(units, mode)` 兼容入口。
 
-HIERARCHY 按请求 role 将 units 拆成叶与旧父，其他角色直接拒绝，然后固定委托
-`replace_in_span`；无旧父时也可以完成有界首次构建。它不从存储补齐单位，不按 infer
+HIERARCHY 按请求 role 将 units 拆成叶与旧父，其他角色直接拒绝；普通请求委托
+`replace_in_span`，携带 hierarchy_incremental 的内部单层请求委托 `build`。
+其余模式不接受 hierarchy_incremental。无旧父时也可以完成有界首次构建。它不从存储补齐单位，不按 infer
 值另做筛选，不执行整个 scope 的自动建树。未注入 Composer 或缺 options 时抛
 ValidationError。请求级 metadata 不自动复制到父，需显式使用 hierarchy_options.metadata。
 
@@ -741,3 +776,4 @@ hierarchy_composer:
 | 2026-09-10 | 阶段 3：同步公开显式两层 TIME 任务接入，明确 Control 负责完整候选及可选锁，本层 EvolveRequest、snapshot→time_span 算法与部分写入契约不变。 |
 | 2026-09-10 | 阶段 7：扩展可选 scene 层、完整旧子树替换、显式可选模型摘要和父 L0/L1，新增配置校验、确定性结构与降级边界；保留两层兼容及既有部分失败契约。 |
 | 2026-09-10 | 阶段 8：补齐 event 四层树、相邻场景分组与实体/语义判据、任务摘要和父标注；四层完整替换及根向下写入，保留两/三层兼容，不接 settle 或自动维护。 |
+| 2026-09-10 | 阶段 9：增加同源 profile 快照与内部相邻单层增量上下文、严格静默封口和 pending 边界；旧子树还原确定性结构，仅增强新父，显式重建契约不变。 |

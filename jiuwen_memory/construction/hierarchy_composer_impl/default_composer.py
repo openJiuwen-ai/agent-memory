@@ -38,6 +38,7 @@ from jiuwen_memory.construction.hierarchy_composer import (
     HierarchyComposeRequest,
     HierarchyComposeResult,
     HierarchyComposerProducer,
+    HierarchyIncrementalContext,
     HierarchyRepair,
     validate_time_parent_roles,
 )
@@ -97,6 +98,8 @@ class DefaultHierarchyComposer(HierarchyComposer):
 
     def build(self, request: HierarchyComposeRequest) -> HierarchyComposeResult:
         """首次建树，已有父引用或携带旧父时拒绝整个请求。"""
+        if isinstance(request, HierarchyComposeRequest) and request.incremental is not None:
+            return self._build_incremental(request)
         self._validate_request(request)
         if request.existing_parents or any(leaf.hierarchy.parent_id for leaf in request.leaves):
             raise ValidationError("build 不得覆盖已有父关系，请使用 replace_in_span")
@@ -105,11 +108,33 @@ class DefaultHierarchyComposer(HierarchyComposer):
 
     def replace_in_span(self, request: HierarchyComposeRequest) -> HierarchyComposeResult:
         """替换相交旧根的完整子树，所有父层与 snapshot 必须由调用方备齐。"""
+        if isinstance(request, HierarchyComposeRequest) and request.incremental is not None:
+            raise ValidationError("增量请求只允许 build，不允许替换旧树")
         self._validate_request(request)
         if request.options.span_start is None or request.options.span_end is None:
             raise ValidationError("replace_in_span 要求成对且有界的 span")
         _validate_replacement(request)
         return self._compose(request)
+
+    def get_profile(self, kind: HierarchyKind) -> HierarchyComposeProfile | None:
+        """返回独立配置快照，周期任务不猜默认链、不修改 Composer 配置。"""
+        return deepcopy(self.profiles.get(kind))
+
+    def _build_incremental(self, request: HierarchyComposeRequest) -> HierarchyComposeResult:
+        profile = self.get_profile(HierarchyKind.TIME)
+        _validate_incremental(request, profile, self.allow_cross_user)
+        candidate = deepcopy(request)
+        batch = self._pipeline().build_incremental(candidate, profile.parent_roles)
+        if not batch.children:
+            return HierarchyComposeResult(
+                deferred_child_count=len(candidate.leaves), pending_before=batch.pending_before,
+            )
+        validate_tree([*batch.parents, *batch.children, *candidate.incremental.supporting_units],
+                      allow_cross_user=self.allow_cross_user)
+        result = self._persist(batch.parents, batch.children, [])
+        result.deferred_child_count = len(candidate.leaves) - len(batch.children)
+        result.pending_before = batch.pending_before
+        return result
 
     def _validate_request(self, request: HierarchyComposeRequest) -> None:
         if not isinstance(request, HierarchyComposeRequest):
@@ -223,6 +248,67 @@ def _validate_options(options: HierarchyComposeOptions) -> None:
     for metadata_key, metadata_value in options.metadata.items():
         if not isinstance(metadata_key, str) or not isinstance(metadata_value, str):
             raise ValidationError("metadata 必须是 dict[str, str]")
+
+
+def _validate_incremental(
+    request: HierarchyComposeRequest, profile: HierarchyComposeProfile | None, cross_user: bool,
+) -> None:
+    """内部增量只接显式 profile 中的相邻单层，输入根及其证据必须完整闭合。"""
+    context, options = request.incremental, request.options
+    if not isinstance(context, HierarchyIncrementalContext) or profile is None:
+        raise ValidationError("增量建树要求显式 profile 与 HierarchyIncrementalContext")
+    if not isinstance(options, HierarchyComposeOptions):
+        raise ValidationError("增量建树要求 HierarchyComposeOptions")
+    normalized = deepcopy(options)
+    normalized.leaf_role = HierarchyRole.SNAPSHOT
+    normalized.parent_roles = list(profile.parent_roles)
+    _validate_options(normalized)
+    if not isinstance(options.parent_roles, list) or len(options.parent_roles) != 1 or (
+        options.parent_roles[0] not in profile.parent_roles
+    ):
+        raise ValidationError("增量 parent_roles 必须是 profile 中的一层")
+    role = options.parent_roles[0]
+    if not isinstance(role, HierarchyRole) or options.leaf_role is not TIME_CHILD_ROLES[role]:
+        raise ValidationError("增量请求只允许 TIME 相邻角色，不得跳层")
+    if not isinstance(context.settle_at, datetime) or (
+        context.ready_before is not None and not isinstance(context.ready_before, datetime)
+    ):
+        raise ValidationError("增量封口时刻与下层边界必须为 datetime")
+    if options.span_start is None or options.span_end is None:
+        raise ValidationError("增量建树要求有界区间")
+    if _as_utc(options.span_end) > _as_utc(context.settle_at):
+        raise ValidationError("增量区间不得超过本轮封口时刻")
+    if request.existing_parents or not isinstance(request.leaves, list) or not request.leaves:
+        raise ValidationError("增量建树需要未挂父输入，不接待替换父")
+    if not isinstance(context.supporting_units, list):
+        raise ValidationError("增量 supporting_units 必须为 MemoryUnit 列表")
+    for unit in request.leaves:
+        _validate_unit(unit, options.leaf_role)
+        if unit.hierarchy.parent_id or unit.hierarchy.parent_scope is not None:
+            raise ValidationError("增量输入不得已经挂父")
+        if unit.hierarchy.role is not HierarchyRole.SNAPSHOT and (
+            unit.scope != options.tree_home_scope
+        ):
+            raise ValidationError("增量中间节点必须驻留 tree_home_scope")
+        if not _intersects(unit, options):
+            raise ValidationError("增量输入必须与请求区间相交")
+    for support in context.supporting_units:
+        _validate_unit(support, (HierarchyRole.SNAPSHOT, *TIME_PARENT_ROLES))
+    nodes = [*request.leaves, *context.supporting_units]
+    validate_tree(nodes, allow_cross_user=cross_user)
+    indexed = {_node_key(evidence): evidence for evidence in nodes}
+    for node in nodes:
+        if node.hierarchy.role is HierarchyRole.SNAPSHOT:
+            if node.hierarchy.child_ids:
+                raise ValidationError("snapshot 不得含子节点")
+            continue
+        if not node.hierarchy.child_ids or node.scope != options.tree_home_scope:
+            raise ValidationError("增量父层必须在 home 且含直接子")
+        for position, child_id in enumerate(node.hierarchy.child_ids):
+            scope = node.hierarchy.child_scope_at(position, node.scope)
+            child = indexed.get((_scope_key(scope), child_id))
+            if child is None or child.hierarchy.role is not TIME_CHILD_ROLES[node.hierarchy.role]:
+                raise ValidationError("增量必须提供完整合法子树证据")
 
 
 def _validate_unit(
