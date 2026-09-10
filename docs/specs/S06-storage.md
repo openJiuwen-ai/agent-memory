@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-09-05 |
+| 最近一次修订日期 | 2026-09-10 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
 ## Metadata 物理存储契约
@@ -60,11 +60,12 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 16. **space 是 scope 的硬分区维度**：`scope_segments(scope)` 使用 `org/space/user/agent/session` 五段；`scope_dims(scope)` 在 `org` 非空时即使 `space==""` 也下推 `space == ""`，避免空 space 查询跨到非空 space。
 17. **标识唯一性分层**：非空 Space id 在 Space 资源注册表中全局唯一；MemoryUnit 与各 Store 记录 id 只要求在完整 Scope 内唯一。
 18. **SSL 声明即生效**：接外部后端的实现统一接受 `ssl_verify` / `ssl_ca_cert` 两个装配参数（默认关闭）。`ssl_verify` 只表示**是否校验服务端证书**，不负责开启加密——加密开关落在连接串上（`rediss://` / `https://` / `sslmode=`）。开启后不得静默降级：缺证书、连接串仍为明文、或连接串自带会覆盖本设置的 TLS 参数，一律在**装配阶段**报错。
-19. **KV 是层级真源**（目标契约，尚未实现）：序列化 `MemoryUnit.hierarchy` 与 unit
+19. **KV 是层级真源**（阶段 1 已实现序列化）：非空 `MemoryUnit.hierarchy` 与 unit
     一同存入 KV。当前契约不新增 hierarchy Store，也不把父子包含边双写到 GraphStore；
     若未来迁移到独立边存储，必须先修订本 spec 和 S07 的数据模型契约。
-20. **层级索引是派生物**：VectorRecord/Document 的 hierarchy metadata 必须能够从 KV
-    中的 `MemoryUnit` 全量重建；索引丢失或不一致时以 KV 为准。
+20. **层级索引是派生物**：VectorRecord/Document 的 hierarchy metadata 由
+    `MemoryUnit.hierarchy` 投影，索引丢失或不一致时以 KV 为准。当前 build/update 会
+    刷新投影；各 IndexBuilder 的 `rebuild()` 仍为 no-op，不能宣称已支持全量恢复。
 21. **GraphStore 边界明确**：GraphStore 表示关联和多跳关系，不表示 hierarchy containment；
     `HierarchyRef.parent_id/child_ids` 不投影为图边。
 22. **CRUD 不级联层级关系**：KVStore 的 insert/update/delete 只作用于指定 key。删除父或子
@@ -411,19 +412,32 @@ agent/session **不作**隔离维度——实体是 user 级知识，同 user �
 | `VectorRecord` | id / vector: list[float] / metadata |
 | `VectorQuery` | vector: list[float] / top_k / filters: FilterExpr \| None / extensions: dict[str, Any] |
 
-目标层级索引 metadata 在既有 `unit_id`、`content_layer`、`tier`、`lifecycle`、`seq`
+阶段 1 的层级索引 metadata 在既有 `unit_id`、`content_layer`、`tier`、`lifecycle`、`seq`
 基础上增加：
 
 | 键 | 表示 |
 |---|---|
 | `hierarchy_kind` | kind 的字符串值；空 hierarchy 时缺省 |
 | `hierarchy_role` | role 的字符串值；空 hierarchy 时缺省 |
+| `hierarchy_status` | status 的字符串值；非空 hierarchy 恒写 |
 | `parent_id` | 直接父 id；根或未挂接时为空串 |
-| `span_start` | ISO 8601 区间起点；未声明区间时缺省 |
-| `span_end` | ISO 8601 区间终点；未声明区间时缺省 |
+| `span_start` | UTC epoch 毫秒整数；未声明区间时缺省 |
+| `span_end` | UTC epoch 毫秒整数；未声明区间时缺省 |
 
 同一 unit 的 L0/L1/L2 VectorRecord 必须携带相同的 hierarchy metadata；现有记录 id
-格式保持不变。
+格式保持不变。空结构不投影六键，未声明区间不写 span 哨兵。build/update 先清除旧
+结构投影，再从当前 `HierarchyRef` 生成，避免清空结构或区间后仍残留旧值。
+
+独立全文/向量写路径将六键置于索引 record metadata 的保留字段；一体化写路径将相同
+投影补入 `unit.system_metadata` 后委托 DomainStore，该命名空间只承载后端建索引所需
+副本，结构真源仍是 `unit.hierarchy`。它也必须在 build/update 时移除旧投影；
+`user_metadata` 不因同名键被覆盖或移除。
+
+全文/向量生成 record metadata 时排除系统命名空间中的旧六键副本，再生成当前裸
+结构投影；来自 Unified 的 unit 改变或清空 hierarchy 后，不能仍携带旧的
+`system_metadata.hierarchy_kind` / `system_metadata.span_start` 等索引副本。
+仅索引拥有的四键由 API 按 S07 系统保留键规则前置拒绝调用方写入，不以静默清理
+代替输入错误；用户命名空间的同名业务值保持独立。
 
 ### 全文（`types.py`）
 
@@ -432,23 +446,25 @@ agent/session **不作**隔离维度——实体是 user 级知识，同 user �
 | `Document` | id / text / metadata |
 | `TextQuery` | text / top_k / filters: FilterExpr \| None / extensions: dict[str, Any] |
 
-Document 使用与 VectorRecord 相同的五个 hierarchy metadata 键，并保留既有
+Document 使用与 VectorRecord 相同的六个 hierarchy metadata 键，并保留既有
 `content_layer`。L0/L1/L2 文档的当前 id 规则保持不变；增加 metadata 不改变主键。
 
-### 层级过滤与区间表示（目标契约，尚未实现）
+### 层级区间表示与后续过滤边界
 
-层级过滤继续使用现有 `FilterClause(field, op, value)`，不新增查询结构：
+阶段 1 只交付索引字段投影，不宣称已贯通公开层级查询、结构过滤下推或真源复核。
+以下是后续层级过滤的目标表达，继续复用 `FilterClause(field, op, value)`：
 
 - kind/role/parent 精确过滤使用 `EQ`，例如
   `field="hierarchy_kind"`、`field="parent_id"`。
 - 区间相交 `[query_start, query_end]` 表示为
   `span_start <= query_end AND span_end >= query_start`，即分别使用 `LTE` 与 `GTE`。
-- 时间值统一写为 ISO 8601 字符串；同一索引内必须规范到可按时间顺序比较的统一时区格式。
+- 索引区间与后续查询比较值使用 UTC epoch 毫秒；朴素 datetime 在投影时按 UTC
+  解释。KV codec 中的 span 仍用 ISO 8601 序列化，两者不能混用。
 - filters 只承载 scope 之外的谓词，scope 仍是 Store 方法的显式第一参数。
 
 后端若不能原生执行区间谓词，可以在同 scope 候选上做等价后过滤，但不得放宽结果语义。
-索引重建必须枚举 KV 真源的 MemoryUnit，重新生成内容层与 hierarchy metadata；不得从
-旧索引反推 hierarchy。
+未来索引重建应枚举 KV 真源的 MemoryUnit，重新生成内容层与 hierarchy metadata，
+不得从旧索引反推 hierarchy；当前 `rebuild()` 未实现该恢复能力。
 
 ### 图（`types.py`）
 
@@ -510,3 +526,9 @@ Store 抽象、跨后端不变量与注册机制。
 | S07-common | 定义 `MemoryUnit.hierarchy`、`HierarchyKind`、`HierarchyRole` 与 `FilterClause` |
 | S08-config | Store 连接参数与 `*.active` 可由 ConfigSource 晚绑定；切换后端不包含数据迁移 |
 | architecture.md §5 | 可配置真源形态（文档/结构化）与多后端 |
+
+## 修订记录
+
+| 日期 | 内容 |
+|---|---|
+| 2026-09-10 | 同步 F08 阶段 1：KV 内嵌 hierarchy、全文/向量/一体化六键投影、UTC epoch 毫秒和旧投影清理；明确查询贯通与 rebuild 恢复尚未实现 |

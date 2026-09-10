@@ -56,6 +56,7 @@ from jiuwen_memory.control.types import (
     SweepResult,
     UpdateMode,
 )
+from jiuwen_memory.ingest.hierarchy_hints import ALLOWED_HINTS
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
@@ -801,7 +802,18 @@ class CloudEngine(MemoryEngine):
     ) -> None:
         for unit in units:
             self._ensure_unit_scope(unit, scope)
-            unit.system_metadata.update(system_metadata)
+            # Ingestor 已将叶提示移入结构时，不把被消费的提示重新写回 metadata。
+            # 其余键仍按既有语义回注；未消费提示的自定义 Ingestor 也保持原行为。
+            consumed_hints = (
+                ALLOWED_HINTS - unit.system_metadata.keys()
+                if not unit.hierarchy.is_empty
+                else frozenset()
+            )
+            unit.system_metadata.update(
+                (key, value)
+                for key, value in system_metadata.items()
+                if key not in consumed_hints
+            )
             unit.tags = list(tags or [])
 
     def _stamp_pipeline(self, units: list[MemoryUnit], pipeline_name: str) -> None:

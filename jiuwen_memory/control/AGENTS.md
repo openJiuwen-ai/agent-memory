@@ -72,6 +72,10 @@
 15. **授权值对象与路由 capability 单一真源**：`Action` / `Grant` 只从 `common.security.types` 兼容再导出，不在 control 重定义；`PermissionManager.routing_fields()` 继承自 `common.security.authorization.RoutingFieldsProvider`，只允许路由实现覆盖。
 16. **Engine 不回填 Segment assets**：`write` 将 API 入参中的 `assets` 复制到 `RawPayload`，之后由 Ingestor 负责映射。Engine 可继续处理 tags 和引擎管理的 metadata，但不得假设首 Segment 并改写 `Segment.assets`。
 17. **后台 Job 的 IndexBuilder/Evolver 由 Engine 运行时注入**：`EvolveJobSpec` / `MiddleToLongJobSpec` 装配期不解析 Evolver/IndexBuilder（不按 `vector_enabled` 猜默认、不调 `EvolverProducer` / `IndexBuilderProducer`）；Engine 提交 Job 时必传注入与写入/演进同源的实例（middle 路径传 pipeline binding 或单 profile 的 `index=` / `evolver=`，`evolve` 传 Engine 装配的 `evolver=`），运行时注入优先于 Spec 兜底字段；缺失注入时 `with_scope` 抛 `ValidationError`，不静默回退默认实现（见 docs/features/control/F08-engine-job-builder-alignment.md）。
+18. **Cloud 写入不回注已消费的叶提示**：Ingestor 已把四个 `hierarchy_` 叶提示映射为
+    `MemoryUnit.hierarchy`；CloudEngine 回注引擎管理的系统元数据时跳过已消费提示，
+    避免把输入提示重新当作普通 metadata 落盘。用户元数据不参与消费，infer/procedural
+    的既有分流不因叶提示改变；本阶段 write 不创建父节点。
 
 ## 双通道调度机制
 

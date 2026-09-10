@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
+from ..log import get_logger
+from .hierarchy import HierarchyKind, HierarchyRef, HierarchyRole, HierarchyStatus
 from .memory import (
     TRANSIENT_SYSTEM_METADATA_KEYS,
     ChunkVector,
@@ -30,6 +32,8 @@ from .memory import (
 )
 from .scope import Scope
 
+logger = get_logger(__name__)
+
 # 正排 JSON schema 版本：写入侧固定写出，读取侧据此分流破坏性结构变更。
 # 「加字段」是兼容演进（靠下方 loads 缺省取默认消化，不升版本）；改字段
 # 含义/结构才升版本并在 loads 里按 _v 分支。
@@ -37,6 +41,8 @@ from .scope import Scope
 #       loads 对 _v<2 的老数据把单一 content/assets/source 读成单元素 segments。
 # _v=4：metadata 破坏性拆分为 system_metadata / user_metadata。不在运行时
 #       猜测旧混合字段的归属；旧数据必须先显式迁移。
+# hierarchy（F08 树结构）是**加字段**，属兼容演进：空结构不写出、缺失读为空
+#       HierarchyRef；已有 _v=4 数据无需迁移，_v<4 仍须先迁移。
 _V = 4
 
 
@@ -91,12 +97,110 @@ def dumps(unit: MemoryUnit) -> bytes:
             "lifecycle": unit.lifecycle.value,
             "entities": list(unit.entities),
             "vectors": [
-                {"id": cv.id, "seq": cv.seq, "vector": list(cv.vector)}
-                for cv in unit.vectors
+                {"id": cv.id, "seq": cv.seq, "vector": list(cv.vector)} for cv in unit.vectors
             ],
+            **({} if unit.hierarchy.is_empty else {"hierarchy": _dump_hierarchy(unit.hierarchy)}),
         },
         ensure_ascii=False,
     ).encode("utf-8")
+
+
+def _dump_scope(scope: Scope | None) -> list[str] | None:
+    if scope is None:
+        return None
+    return [scope.org, scope.space, scope.user, scope.agent, scope.session]
+
+
+def _dump_hierarchy(ref: HierarchyRef) -> dict:
+    """非空 ``HierarchyRef`` → JSON 对象；枚举取 value、时间取 isoformat、Scope 取五段。"""
+    return {
+        "kind": ref.kind.value if ref.kind is not None else None,
+        "role": ref.role.value if ref.role is not None else None,
+        "parent_id": ref.parent_id,
+        "child_ids": list(ref.child_ids),
+        "child_scopes": [_dump_scope(s) for s in ref.child_scopes],
+        "parent_scope": _dump_scope(ref.parent_scope),
+        "span_start": _dt(ref.span_start),
+        "span_end": _dt(ref.span_end),
+        "ordinal": ref.ordinal,
+        "status": ref.status.value,
+    }
+
+
+def _load_scope(value: object) -> Scope | None:
+    """解析完整五段 Scope；仅 None 表示省略，不把损坏引用重定向到 owner。"""
+    if value is None:
+        return None
+    if not isinstance(value, list) or len(value) != 5:
+        raise ValueError("hierarchy scope 必须是完整的五段列表")
+    if any(not isinstance(part, str) for part in value):
+        raise ValueError("hierarchy scope 的各维必须为字符串")
+    return Scope(
+        org=value[0],
+        space=value[1],
+        user=value[2],
+        agent=value[3],
+        session=value[4],
+    )
+
+
+def _load_child_scopes(value: object, child_count: int) -> list[Scope]:
+    """保持 child_scopes 的位置语义；非法项或非空长度不匹配使整段结构降级。"""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("hierarchy child_scopes 必须为列表")
+    if value and len(value) != child_count:
+        raise ValueError("hierarchy child_scopes 非空时必须与 child_ids 等长")
+    scopes = []
+    for item in value:
+        scope = _load_scope(item)
+        if scope is None:
+            raise ValueError("hierarchy child_scopes 不允许空位置")
+        scopes.append(scope)
+    return scopes
+
+
+def _load_hierarchy(value: object, unit_id: str) -> HierarchyRef:
+    """JSON 对象 → ``HierarchyRef``，失败一律降级为空结构并留诊断。
+
+    缺失或非对象读为空结构；未知字段忽略；未知 kind/role/status 或时间解析失败时
+    **不构造半有效结构**——整个 hierarchy 降级为空，避免坏数据被当成有效树参与建树。
+    """
+    if value is None:
+        return HierarchyRef()
+    if not isinstance(value, dict):
+        logger.warning("memory_codec: hierarchy 非对象，降级为空结构 unit_id=%s", unit_id)
+        return HierarchyRef()
+    try:
+        raw_kind = value.get("kind")
+        raw_role = value.get("role")
+        kind = HierarchyKind(raw_kind) if raw_kind is not None else None
+        role = HierarchyRole(raw_role) if raw_role is not None else None
+        status = HierarchyStatus(value.get("status", HierarchyStatus.ACTIVE.value))
+        child_ids = value.get("child_ids")
+        if child_ids is None:
+            child_ids = []
+        if not isinstance(child_ids, list) or any(not isinstance(cid, str) for cid in child_ids):
+            raise ValueError("hierarchy child_ids 必须为字符串列表")
+        child_scopes = _load_child_scopes(value.get("child_scopes"), len(child_ids))
+        return HierarchyRef(
+            kind=kind,
+            role=role,
+            parent_id=str(value.get("parent_id", "") or ""),
+            child_ids=list(child_ids),
+            child_scopes=child_scopes,
+            parent_scope=_load_scope(value.get("parent_scope")),
+            span_start=_pt(value.get("span_start")),
+            span_end=_pt(value.get("span_end")),
+            ordinal=int(value.get("ordinal", 0) or 0),
+            status=status,
+        )
+    except (ValueError, TypeError) as exc:
+        logger.warning(
+            "memory_codec: hierarchy 解析失败，降级为空结构 unit_id=%s err=%s", unit_id, exc
+        )
+        return HierarchyRef()
 
 
 def loads(raw: bytes) -> MemoryUnit | None:
@@ -132,9 +236,7 @@ def loads(raw: bytes) -> MemoryUnit | None:
                 Segment(
                     content=segment_payload.get("content", ""),
                     assets=list(segment_payload.get("assets") or []),
-                    source=Modality(
-                        segment_payload.get("source", Modality.TEXT.value)
-                    ),
+                    source=Modality(segment_payload.get("source", Modality.TEXT.value)),
                 )
             )
     else:
@@ -193,4 +295,5 @@ def loads(raw: bytes) -> MemoryUnit | None:
             )
             for cv in payload.get("vectors") or []
         ],
+        hierarchy=_load_hierarchy(payload.get("hierarchy"), payload.get("id", "")),
     )

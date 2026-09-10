@@ -149,6 +149,13 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
     全部策略失败必须向上抛错。LLM 分层的重复、越界或遗漏 ID 拒绝整批，单条长度异常
     只跳过该条，其余合法结果在结构校验完成后写入。
 
+15. **结构索引投影只认 HierarchyRef**
+    `_index_ops.index_metadata` 为全文与向量路径补结构六键；`UnifiedIndexBuilder`
+    使用同一结构投影，把副本补入 `unit.system_metadata` 后交 DomainStore。build/update
+    均先移除旧结构投影，再从当前引用生成；空结构移除全部六键，无区间不保留旧 span。
+    结构时间使用 UTC epoch 毫秒，与 KV 中 ISO 8601 序列化分开；不得改写
+    `user_metadata` 同名键。投影不等于建树、查询贯通或已实现 rebuild 恢复。
+
 ## 与其他子目录的边界
 
 **本模块管**：

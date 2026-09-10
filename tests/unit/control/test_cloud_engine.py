@@ -6,9 +6,14 @@ from datetime import datetime, timezone
 import pytest
 
 from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer import (
+    PassthroughNormalizer,
+)
 from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterOp,
+    HierarchyKind,
+    HierarchyRole,
     MemoryTier,
     MemoryUnit,
     Modality,
@@ -40,6 +45,7 @@ from jiuwen_memory.control.types import (
 )
 from jiuwen_memory.ingest.base import IngestOperatorType
 from jiuwen_memory.ingest.ingestor import Ingestor
+from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.retriever import Retriever
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult, RetrievedItem
@@ -441,6 +447,103 @@ def test_cloud_engine_write_defaults_to_chat_message_type() -> None:
     assert records["coding_index"].built == []
     assert units[0].system_metadata["message_type"] == "chat"
     assert units[0].system_metadata["pipeline"] == "chat"
+
+
+def test_cloud_engine_does_not_restore_consumed_leaf_hints() -> None:
+    engine, records = _engine(SimpleIngestor(PassthroughNormalizer()))
+    scope = Scope(org="acme", user="alice")
+    metadata = {
+        "hierarchy_kind": "time",
+        "hierarchy_role": "snapshot",
+        "hierarchy_span_start": "2026-08-18T09:30:00+00:00",
+        "hierarchy_span_end": "2026-08-18T09:30:00+00:00",
+        "message_type": "coding",
+        "memory_type": "procedural",
+        "infer": False,
+        "app": "editor",
+    }
+    original = dict(metadata)
+
+    units = asyncio.run(engine.write("leaf evidence", scope, system_metadata=metadata))
+    persisted = loads(records["kv"].get(scope, memory_key(units[0].id)))
+
+    assert len(units) == 1 and persisted.hierarchy == units[0].hierarchy
+    assert persisted.hierarchy.kind is HierarchyKind.TIME
+    assert persisted.hierarchy.role is HierarchyRole.SNAPSHOT
+    assert persisted.hierarchy.parent_id == "" and persisted.hierarchy.child_ids == []
+    assert not any(key.startswith("hierarchy_") for key in persisted.system_metadata)
+    assert persisted.system_metadata["message_type"] == "coding"
+    assert persisted.system_metadata["memory_type"] == "procedural"
+    assert persisted.system_metadata["pipeline"] == "coding"
+    assert persisted.system_metadata["app"] == "editor"
+    assert persisted.system_metadata["infer"] is False
+    assert records["coding_index"].built == ["leaf evidence"]
+    assert records["chat_index"].built == []
+    assert metadata == original
+
+
+def test_cloud_engine_preserves_metadata_reinjection_for_unconsumed_hints() -> None:
+    class DroppingIngestor(_RecordingIngestor):
+        """不消费叶提示的自定义实现，仍沿用 Engine 的既有回注行为。"""
+
+        def ingest(self, payloads: list[RawPayload]) -> list[MemoryUnit]:
+            ingested_units = super().ingest(payloads)
+            for unit in ingested_units:
+                unit.system_metadata = {"message_type": "chat", "app": "ingestor-value"}
+            return ingested_units
+
+    engine, records = _engine(DroppingIngestor())
+    scope = Scope(org="acme", user="alice")
+    metadata = {
+        "message_type": "coding",
+        "app": "caller-value",
+        "hierarchy_custom": "keep",
+        "hierarchy_kind": "topic",
+        "hierarchy_role": "node",
+    }
+
+    units = asyncio.run(engine.write("custom evidence", scope, system_metadata=metadata))
+
+    assert units[0].hierarchy.is_empty
+    assert units[0].system_metadata["hierarchy_custom"] == "keep"
+    assert units[0].system_metadata["hierarchy_kind"] == "topic"
+    assert units[0].system_metadata["hierarchy_role"] == "node"
+    assert units[0].system_metadata["app"] == "caller-value"
+    assert units[0].system_metadata["message_type"] == "coding"
+    assert records["coding_index"].built == ["custom evidence"]
+
+
+def test_cloud_engine_still_overwrites_unconsumed_keys_on_a_structured_unit() -> None:
+    class EditingIngestor(SimpleIngestor):
+        """只消费四提示中的三项，模拟自行保留 metadata 的定制实现。"""
+
+        def ingest(self, payloads: list[RawPayload]) -> list[MemoryUnit]:
+            ingested_units = super().ingest(payloads)
+            for unit in ingested_units:
+                unit.system_metadata["hierarchy_kind"] = "topic"
+                unit.system_metadata["message_type"] = "chat"
+                unit.system_metadata["app"] = "ingestor-value"
+            return ingested_units
+
+    engine, records = _engine(EditingIngestor(PassthroughNormalizer()))
+    scope = Scope(org="acme", user="alice")
+    metadata = {
+        "hierarchy_kind": "time",
+        "hierarchy_role": "snapshot",
+        "hierarchy_span_start": "2026-08-18T09:30:00+00:00",
+        "hierarchy_span_end": "2026-08-18T09:30:00+00:00",
+        "message_type": "coding",
+        "app": "caller-value",
+    }
+
+    units = asyncio.run(engine.write("custom evidence", scope, system_metadata=metadata))
+
+    assert units[0].hierarchy.kind is HierarchyKind.TIME
+    assert units[0].system_metadata["hierarchy_kind"] == "time"
+    assert "hierarchy_role" not in units[0].system_metadata
+    assert units[0].system_metadata["app"] == "caller-value"
+    assert units[0].system_metadata["message_type"] == "coding"
+    assert records["coding_index"].built == ["custom evidence"]
 
 
 def test_cloud_engine_batch_write_preserves_order_and_routes_each_item() -> None:
