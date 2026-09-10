@@ -4,7 +4,7 @@
 CloudEngine 直接实现 :class:`control.engine.MemoryEngine`，不继承
 ``InMemoryEngine``，避免云侧 message_type 路由、安全 KV、scope 一致性校验与本地
 最小实现产生隐式耦合。它只编排已装配的 Ingestor / construction / retrieval /
-KVStore / control 算子，不在 engine 内拼 prompt、选模型或执行鉴权。
+DomainStore / control 算子，不在 engine 内拼 prompt、选模型或执行鉴权。
 """
 
 from __future__ import annotations
@@ -36,7 +36,6 @@ from jiuwen_memory.construction.evolver import Evolver, EvolverProducer
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
-from jiuwen_memory.control.engine_impl.list_support import list_page
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
 from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
@@ -59,7 +58,7 @@ from jiuwen_memory.control.types import (
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
-from jiuwen_memory.storage.kv import KVStore, list_units, load_units
+from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
@@ -210,7 +209,7 @@ class CloudEngine(MemoryEngine):
         ingestor: Ingestor,
         index_builder: IndexBuilder,
         retriever: Retriever,
-        kv: KVStore,
+        domain_store: DomainStore,
         scheduler: Scheduler,
         evolver: Evolver,
         lifecycle: LifecycleManager,
@@ -225,7 +224,7 @@ class CloudEngine(MemoryEngine):
         self._ingestor = ingestor
         self._index = index_builder
         self._retriever = retriever
-        self._kv = kv
+        self._domain_store = domain_store
         self._scheduler = scheduler
         self._evolver = evolver
         self._lifecycle = lifecycle
@@ -485,8 +484,11 @@ class CloudEngine(MemoryEngine):
         extensions: dict[str, str] | None = None,
         filters: FilterExpr | None = None,
     ) -> MemoryListResult:
-        return list_page(
-            self._kv,
+        if offset < 0:
+            raise ValidationError("offset must be >= 0")
+        if limit <= 0:
+            raise ValidationError("limit must be > 0")
+        result = self._domain_store.list(
             scope,
             offset=offset,
             limit=limit,
@@ -494,6 +496,7 @@ class CloudEngine(MemoryEngine):
             extensions=extensions,
             filters=filters,
         )
+        return MemoryListResult(items=result.items, count=result.count)
 
     async def permission_context_for_unit(
         self, unit_id: str, scope: Scope
@@ -524,7 +527,7 @@ class CloudEngine(MemoryEngine):
     async def permission_contexts_for_delete(
         self, selector: DeleteSelector
     ) -> list[PermissionContext]:
-        scopes = [selector.scope] if selector.scope is not None else self._kv.scopes()
+        scopes = [selector.scope] if selector.scope is not None else self._domain_store.scopes()
         if not scopes:
             scopes = [Scope()]
         contexts: list[PermissionContext] = []
@@ -611,7 +614,7 @@ class CloudEngine(MemoryEngine):
         if selector_is_empty:
             raise ValidationError("DeleteSelector requires unit_ids, tags, before, or filters")
 
-        scopes = [selector.scope] if selector.scope is not None else self._kv.scopes()
+        scopes = [selector.scope] if selector.scope is not None else self._domain_store.scopes()
         if not scopes:
             scopes = [Scope()]
 
@@ -689,7 +692,7 @@ class CloudEngine(MemoryEngine):
         purged: list[str] = []
         for scope in [
             candidate
-            for candidate in self._kv.scopes()
+            for candidate in self._domain_store.scopes()
             if candidate.org == org and candidate.space == space
         ]:
             units = self._list_units(scope)
@@ -743,7 +746,7 @@ class CloudEngine(MemoryEngine):
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")
 
     def _load(self, scope: Scope, unit_id: str) -> MemoryUnit:
-        units = load_units(self._kv, scope, [unit_id])
+        units = self._domain_store.get(scope, [unit_id])
         if not units:
             raise NotFoundError("memory_unit", unit_id)
         unit = units[0]
@@ -751,7 +754,7 @@ class CloudEngine(MemoryEngine):
         return unit
 
     def _list_units(self, scope: Scope) -> list[MemoryUnit]:
-        units, _ = list_units(self._kv, scope, limit=1_000_000)
+        units = self._domain_store.list(scope, limit=1_000_000).items
         for unit in units:
             self._ensure_unit_scope(unit, scope)
         return units
@@ -909,7 +912,9 @@ def _build(config):
         IngestorProducer.dep(config, default="simple"),
         IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
         RetrieverProducer.dep(config, default="pipeline"),
-        StoreManagerProducer.resolve(config).kv(resolve_name(config, "kv_store")),
+        StoreManagerProducer.resolve(config).domain_store(
+            resolve_name(config, "domain_store")
+        ),
         SchedulerProducer.dep(config, default="in_process"),
         EvolverProducer.dep(config, default="orchestrating"),
         LifecycleProducer.dep(config, default="kv"),
