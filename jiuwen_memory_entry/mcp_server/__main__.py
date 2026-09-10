@@ -24,6 +24,7 @@ import logging
 import os
 import sys
 import uuid
+from dataclasses import asdict, dataclass
 from importlib import import_module
 from typing import Any
 
@@ -353,22 +354,31 @@ async def memory_check_write(scope: dict, ctx: Context = None) -> None:
     return await _invoke("check_write", {"scope": scope}, context=ctx)
 
 
+@dataclass
+class SubmitIngestArgs:
+    """``memory_submit_ingest`` 的参数袋（G.FNM.03 参数封装）。
+
+    字段名与 ``MemoryAPI.submit_ingest`` 的契约参数一一对应。
+    """
+
+    content: str
+    scope: dict
+    source: str
+    payload_id: str
+    source_ref: str
+
+
 @mcp.tool()
-async def memory_submit_ingest(content: str, scope: dict, source: str,
-                         payload_id: str, source_ref: str,
-                         ctx: Context = None) -> dict:
+async def memory_submit_ingest(args: SubmitIngestArgs,
+                               ctx: Context = None) -> dict:
     """提交长耗时摄入任务（文档/视频等多模态内容），返回任务信息。
 
+    args: 参数袋，字段如下。
     content: 原始内容文本。scope: 归属坐标。source: 模态（text/document/audio/video）。
     payload_id: 原文缓存标识。source_ref: 源资产引用（如 file:///...）。
     后台 add 会再鉴权一次；用 memory_job_status 查任务进度。
     """
-    return await _invoke(
-        "submit_ingest",
-        {"content": content, "scope": scope, "source": source,
-         "payload_id": payload_id, "source_ref": source_ref},
-        context=ctx,
-    )
+    return await _invoke("submit_ingest", asdict(args), context=ctx)
 
 
 # --- 工具：管理面（admin 策略，MANAGE_POLICY 鉴权）------------------------------- #
