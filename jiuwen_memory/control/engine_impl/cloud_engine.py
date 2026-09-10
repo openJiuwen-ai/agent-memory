@@ -48,6 +48,7 @@ from jiuwen_memory.control.engine_impl.schema_update_support import (
     prepare_schema_update,
 )
 from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
+from jiuwen_memory.control.evolution.validation import validate_evolve_options
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
 from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
@@ -59,6 +60,7 @@ from jiuwen_memory.control.types import (
     Channel,
     DeleteMode,
     DeleteSelector,
+    EvolveTaskOptions,
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
@@ -70,6 +72,7 @@ from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
 from jiuwen_memory.storage.domain_store import DomainStore
+from jiuwen_memory.storage.kv import KVStore
 from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
@@ -231,6 +234,7 @@ class CloudEngine(MemoryEngine):
         default_message_type: str = "chat",
         default_pipeline_name: str = "default",
         job_factory: JobFactory | None = None,
+        hierarchy_kv: KVStore | None = None,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
@@ -247,6 +251,8 @@ class CloudEngine(MemoryEngine):
         self._default_message_type = default_message_type.strip()
         self._default_pipeline_name = default_pipeline_name.strip()
         self._job_factory = job_factory
+        # Only hierarchy Jobs consume raw KV; Engine MemoryUnit reads stay on DomainStore.
+        self._hierarchy_kv = hierarchy_kv
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
@@ -770,11 +776,12 @@ class CloudEngine(MemoryEngine):
         return purged
 
     async def evolve(
-        self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
+        self, scope: Scope, options: EvolveTaskOptions
     ) -> str:
-        """提交 EvolveJob 到 Scheduler——mode/evolver 运行时流入 EvolveJob（不进 Spec 装配）。"""
-        if mode == EvolveMode.HIERARCHY:
-            raise ValidationError("HIERARCHY 当前仅支持构建算子调用，任务入口尚未开放")
+        """按统一请求提交内容或建树任务，运行时注入同源 Evolver 与 KV。"""
+        scope = copy.deepcopy(scope)
+        options = copy.deepcopy(options)
+        validate_evolve_options(scope, options)
         if self._job_factory is None:
             raise RuntimeError(
                 "evolve requires job_factory, please configure "
@@ -785,16 +792,24 @@ class CloudEngine(MemoryEngine):
                 "CloudEngine.evolve requires an Evolver (装配未注入 evolver)"
             )
         # E-06：evolve 必传注入——Job 使用 Engine 装配的同一实例，Spec 不自行解析。
-        job = self._job_factory.get_job(
-            JobType.EVOLVE, scope=scope, mode=mode, evolver=self._evolver
-        )
-        job_id = await self._scheduler.submit(job, channel)
+        if options.mode is EvolveMode.HIERARCHY:
+            if self._hierarchy_kv is None:
+                raise ValidationError("CloudEngine hierarchy requires an injected KV read port")
+            job = self._job_factory.get_job(
+                JobType.HIERARCHY, scope=scope, options=options.hierarchy_options,
+                evolver=self._evolver, kv=self._hierarchy_kv,
+            )
+        else:
+            job = self._job_factory.get_job(
+                JobType.EVOLVE, scope=scope, mode=options.mode, evolver=self._evolver
+            )
+        job_id = await self._scheduler.submit(job, options.channel)
         logger.info(
             "CloudEngine.evolve submitted: job_id=%s scope=%s mode=%s channel=%s",
             job_id,
             scope_for_log(scope),
-            mode.value,
-            channel.value,
+            options.mode.value,
+            options.channel.value,
         )
         return job_id
 
@@ -985,11 +1000,12 @@ def _optional_job_factory(config) -> JobFactory | None:
 @EngineProducer.register("cloud")
 def _build(config):
     ib_default = "hybrid" if config.get("vector_enabled", True) else "fulltext"
+    storage = StoreManagerProducer.resolve(config)
     return CloudEngine(
         IngestorProducer.dep(config, default="simple"),
         IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
         RetrieverProducer.dep(config, default="pipeline"),
-        StoreManagerProducer.resolve(config).domain_store(
+        storage.domain_store(
             resolve_name(config, "domain_store")
         ),
         SchedulerProducer.dep(config, default="in_process"),
@@ -1001,4 +1017,5 @@ def _build(config):
         default_message_type=str(config.get("default_message_type", "chat")),
         default_pipeline_name=str(config.get("default_pipeline_name", "default")),
         job_factory=_optional_job_factory(config),
+        hierarchy_kv=storage.kv(resolve_name(config, "kv_store")),
     )

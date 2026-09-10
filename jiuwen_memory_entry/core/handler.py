@@ -44,6 +44,7 @@ from jiuwen_memory.api import (
     DeleteSelector,
     DisclosureLevel,
     EvolveMode,
+    EvolveTaskOptions,
     Grant,
     MemoryPatch,
     MemoryUnit,
@@ -759,7 +760,9 @@ def _evolve(srv, request: DispatchRequest) -> Body:
     payload = request.payload
     scope = _require_target(request)
     mode = EvolveMode(payload.get("mode", "extract"))
-    job_id = srv.api.evolve(scope, mode, security=_request_security(request))
+    job_id = srv.api.evolve(
+        scope, EvolveTaskOptions(mode=mode), security=_request_security(request)
+    )
     return {"ok": True, "op": "evolve", "mode": mode.value, "job_id": job_id}
 
 

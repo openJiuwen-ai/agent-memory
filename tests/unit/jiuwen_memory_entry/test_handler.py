@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from jiuwen_memory.api import EvolveMode, EvolveTaskOptions, Scope
 from jiuwen_memory.common.errors import (
     PartialFailureError,
     RateLimitedError,
@@ -14,6 +15,33 @@ from jiuwen_memory_entry.core import handler
 from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
 
 pytestmark = pytest.mark.unit
+
+
+def test_legacy_evolve_wraps_mode_in_task_options() -> None:
+    calls = []
+
+    class RecordingApi:
+        @staticmethod
+        def evolve(scope, options, *, security):
+            calls.append((scope, options, security))
+            return "job-legacy"
+
+    srv = SimpleNamespace(api=RecordingApi())
+    status, body = handler.dispatch(
+        srv,
+        build_legacy_dispatch_request(
+            "evolve", {"tenant_id": "acme", "scope": "alice", "mode": "consolidate"}
+        ),
+    )
+
+    assert status == 200
+    assert body == {
+        "ok": True, "op": "evolve", "mode": "consolidate", "job_id": "job-legacy",
+    }
+    assert len(calls) == 1
+    assert calls[0][0] == Scope(org="acme", user="alice")
+    assert calls[0][1] == EvolveTaskOptions(mode=EvolveMode.CONSOLIDATE)
+    assert calls[0][2].actor == Scope(org="acme", user="alice")
 
 
 def test_rate_limited_error_preserves_legacy_400_mapping() -> None:

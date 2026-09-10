@@ -49,6 +49,7 @@ _DEFAULT_POLICIES = {
     "lifecycle.expired_active.target": "forgotten",
     "lifecycle.superseded.target": "forgotten",
     "scope.require_space": "false",
+    "hierarchy.enabled": "false",  # 显式建树门禁；不启用自动派生或召回扩展。
 }
 
 

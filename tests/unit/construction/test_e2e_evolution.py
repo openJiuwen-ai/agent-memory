@@ -15,6 +15,7 @@ from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Context, MemoryTier, Modality, Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.construction import EvolveMode
+from jiuwen_memory.control.types import EvolveTaskOptions
 
 DEFAULT_SCOPE = Scope(org="test", user="alice", agent="a1", session="s1")
 DEFAULT_ACTOR = Scope(org="test", user="alice")
@@ -110,7 +111,7 @@ class TestE2EBackgroundExtract:
         # 手动触发演进
         job_id = llm_api.evolve(
             DEFAULT_SCOPE,
-            EvolveMode.EXTRACT,
+            EvolveTaskOptions(mode=EvolveMode.EXTRACT),
             security=legacy_request_context(DEFAULT_ACTOR),
         )
         assert job_id  # 返回 job_id

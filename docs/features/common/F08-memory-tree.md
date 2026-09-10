@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-08-15 |
 | 影响范围 | jiuwen_memory/api/、jiuwen_memory/common/、jiuwen_memory/construction/、jiuwen_memory/control/、jiuwen_memory/ingest/、jiuwen_memory/retrieval/、jiuwen_memory/storage/；docs/specs/S01–S07；关联 [`F05-construction-spec-multimodal-design`](../construction/F05-construction-spec-multimodal-design.md) |
-| 测试基线 | 阶段 1：完整 unit 回归 1891 passed、5 skipped、480 deselected；阶段 2：2082 passed、5 skipped、480 deselected；新增 Python 文件 Ruff 通过、变更代码无新增 Ruff/CodeCheck 本地预审问题，历史 Ruff 诊断见阶段 2 验证；未执行云端 CodeCheck |
+| 测试基线 | 阶段 1：完整 unit 回归 1891 passed、5 skipped、480 deselected；阶段 2：2082 passed、5 skipped、480 deselected；阶段 3：2229 passed、5 skipped、480 deselected。各阶段本次变更无新增 Ruff/CodeCheck 本地预审问题，历史 Ruff 诊断见对应阶段验证；未执行云端 CodeCheck |
 | Refs | — |
 
 ## 阶段 1 落地（2026-09-10）
@@ -14,7 +14,7 @@
 本次只交付“能表达、接入和存储结构身份”的基础能力，不交付自动建树或层级召回。
 本节记录阶段 1 完成时的状态：当时除本节明确列出的能力及下文叶提示接入外，Composer、
 显式 `evolve(HIERARCHY)`、结构查询/展开/MaxP、后台任务、修复器和各 kind 算法均未实现。
-当前新增交付以阶段 2 小节为准；后文仍保留尚未开放的总体设计。
+当前新增交付以阶段 3 小节为准；后文仍保留尚未开放的总体设计。
 后文 P0–P5 是原设计分期，不等同于已经完成的提交阶段。
 
 ### 已交付与决定
@@ -72,9 +72,9 @@ Extractor 新建 unit 的行为尚未统一。纯校验通过不等于全库引�
 
 ## 阶段 2 落地（2026-09-10）
 
-这一阶段补齐“显式给定 snapshot → 生成 time_span → 校验 → 保存或替换父层”的最小
-闭环。它是内部构建能力，不是公开建树任务功能；MemoryAPI 和 Engine 对 HIERARCHY
-仍明确拒绝，普通 add/write 不自动建树。
+本节记录阶段 2 完成时的状态：补齐“显式给定 snapshot → 生成 time_span → 校验 →
+保存或替换父层”的最小闭环。当时它是内部构建能力，不是公开建树任务功能；MemoryAPI
+和 Engine 对 HIERARCHY 仍明确拒绝，普通 add/write 不自动建树。
 
 ### 决策与交付边界
 
@@ -136,6 +136,83 @@ Composer 70、Evolver/Factory/API/Engine 接线与边界 45；另对 12 个既�
 scene/event、其他 kind、层级召回与预算仍未交付。普通 EXTRACT 不同实现对 hierarchy
 的继承差异、IndexBuilder 全量 rebuild 恢复能力也没有在此阶段统一。
 
+## 阶段 3 落地（2026-09-10）
+
+本阶段把“内部能够构建 snapshot→time_span”打通为“外部可显式提交范围，由系统
+收齐输入、执行建树并查询真实结果”。树层级和 TimeSpanMerger 算法不增加；显式提交
+后可由调度器后台执行，不等于系统会自动触发建树。
+
+### 决策与交付边界
+
+- 公开演进使用统一 EvolveTaskOptions，模式、通道和可选建树参数归入同一请求对象，
+  避免继续增加形参。MemoryAPI、CommandService、Engine 以及 HTTP/CLI 同步迁移，
+  不保留旧独立 mode/channel 的调用形式；原四种模式的算法不变。内部 EvolveRequest
+  保持原契约，仍由 Job 传入已经收齐的 MemoryUnit，而不是接收外部原始字典。
+- 显式建树经过 API 的 WRITE 和 UPDATE 双重授权及空间 UPDATE 判权，并要求空间
+  可写、hierarchy.enabled 已开启。默认策略关闭，只改开关不自动提交任务。
+  permission.routing_fields() 非空时拒绝公开 HIERARCHY：本阶段尚未提供候选逐条
+  PEP，不能让仅 Scope 授权绕过按 memory_type/pipeline 路由的细粒度权限。
+- 要求任务范围与父驻留 Scope 完全相同。收叶只在同一 org/space 内展开 home 中的
+  空 user/agent/session 维度；非空维度继续约束。多 session 可在一次任务中被收齐，
+  但 TimeSpanMerger 按 session 分组，因此单个 time_span 不跨 session；父统一驻留
+  指定 home。跨主体能否建边仍由 Composer 原有配置校验，不因范围较宽自动放开。
+- 专用 HierarchyJob 收集 `/memory/` 中窗口内尚未挂父的 ACTIVE TIME snapshot，
+  以及 home 下与窗口相交的旧 time_span；旧父的全部直接子叶均补齐，包含窗口外
+  子叶。不按 infer true/false 筛选，不读取 `/messages/`，不重新调用 Extractor。
+- 读取必须完整分页，旧父子引用先检查 Scope 边界再分批点读。重复分页键、总数变化、
+  提前空页、超限、缺子、非法身份或反向引用不一致都使任务失败；不截断、不静默跳过，
+  避免只用“看见的部分”覆盖旧父。父子身份始终使用完整 Scope 与 id。
+- Engine 在提交时传入自身的 Evolver 与 KV，JobFactory 不另装一套 Evolver。
+  Job 固定一次性，保护参数控制页大小、叶数上限和锁等待；它们不改变时间切分规则。
+  调用参数在边界深拷贝，调用方提交后再修改对象不会改变已捕获的范围。
+- 可选共享锁覆盖取数、候选补齐和 Composer 写入，以 home+kind 串行化显式建树。
+  失锁和超时报告失败；取消时等待已启动的同步线程工作结束后才释放锁。未装配锁时
+  不声称互斥，锁也不覆盖普通 write/update/delete，不提供数据库快照或事务。
+- Job 使用独立 hierarchy_result 判定成功：complete=false 或任何 repair 均为 FAILED。
+  Scheduler 保留 Job 返回的 SUCCEEDED/FAILED/CANCELLED 和业务 detail；非终态返回
+  作为执行契约错误转为 FAILED。已有周期任务仍按 is_done 控制停止，不把业务失败
+  伪装成成功；建树不会因此获得周期自动执行能力。
+
+### 本阶段拒绝的方案
+
+- 不只增加薄接口却让调用方继续手工传所有 MemoryUnit：公开入口必须承担有界完整
+  取数，否则跨窗口旧父的完整性仍取决于外部调用纪律。
+- 不用新的可选形参保留两套公开协议：统一请求对象的兼容性代价明确，Python 与
+  HTTP/CLI 一起迁移，不通过任意 kwargs 隐藏接口或 CodeCheck 参数问题。
+- 不把父引用当作权限凭证：越出 home 的 child Scope 必须在读取前拒绝；尚不支持
+  逐条候选路由权限时明确禁用这一组合，而不是选更宽松的默认策略。
+- 不截断后建树、不忽略 repair：完整性和真实失败比“任务返回成功”更重要。
+  候选读取错误发生在写入前；Composer 部分失败则如实报告可能已有写入。
+- 不将后台调度等同于写入自动派生，不顺带接 scene/event、查询展开、上卷或自动修复。
+
+### 验证与已知限制
+
+阶段 3 完整 unit 回归结果为 **2229 passed、5 skipped、480 deselected**（74.21 秒），
+较阶段 2 增加 147 个通过项。新增覆盖分为 API 建树与权限 38、Job 候选/锁/结果 52、
+Scheduler 终态 22，以及协议转换和调用边界 35。沿用前两阶段 unit 验证命令；5 个跳过
+项为 4 个真实 LLM 用例及 1 个 Redis 双实例用例，另有 5 条原有 asyncio marker 未注册
+警告，不计作新增回归问题。
+
+验证覆盖统一请求的类型/协议拒绝、API 权限
+与策略闸门、Engine 同源注入、完整分页、跨 session 收叶、跨边界拒绝、旧父全子补齐、
+限额、可选锁、无候选、部分失败、Scheduler 真实终态及“写叶→显式建树→查询状态→
+再次重建”的闭环，同时回归普通四种演进模式。
+
+对本次 40 个修改/新增 Python 文件执行已有 10 条 CodeCheck 本地规则检查，无新增
+结构风险；Ruff 中 39 个文件通过，另 1 个 adapter 文件保留与 HEAD 完全相同的
+13 条历史 E501，本次新增诊断为 0。`git diff --check` 通过。这是变更范围的本地预审，
+不是全仓 Ruff 零告警或 GitCode 云端 CodeCheck 通过；第二阶段记录的 22 条历史
+诊断仍作为当时基线保留，不因本轮检查集合不同而宣称已消失。
+
+本阶段不交付自动派生、周期建树、召回时 ensure、层级查询/展开/上卷、scene/event、
+其他 kind 算法、结构生命周期联动、父 L0/L1 或自动修复。不新增父作者和可见性继承
+规则；统一结构读取不代表已完成所有细粒度权限继承。
+
+可选锁只协调采用同一锁协议的显式建树；同数量的并发内容变化不保证被分页校验发现。
+修复项不是事务回滚证明。async_timer 需要持续事件循环，当前同步 API/HTTP 的临时
+asyncio.run 生命周期问题不在本阶段修复；默认 in_process 在提交中等待执行。
+EXTRACT 的 hierarchy 继承差异和 IndexBuilder 全量 rebuild 恢复能力也仍未统一。
+
 ## 背景
 
 现有记忆模型已经覆盖三轴，彼此独立、互不推导：
@@ -195,11 +272,11 @@ scene/event、其他 kind、层级召回与预算仍未交付。普通 EXTRACT �
 3. 既有非 `HIERARCHY` 演进模式不暗改 `HierarchyRef`；`evolve(HIERARCHY)` 只维护
    树结构边与派生父。
 
-## 决策（总体设计；当前落地范围以阶段 1、2 小节为准）
+## 决策（总体设计；当前落地范围以阶段 1、2、3 小节为准）
 
 下文包含未来目标，不表示各组件、策略和公开入口已经实现；未落地部分不能作为当前
-运行时行为依据。尤其公开 HIERARCHY、FORGET 断边、LayerAnnotator 父标注、查询展开、
-后台派生和修复仍为后续目标。
+运行时行为依据。公开 HIERARCHY 只交付阶段 3 的显式两层 TIME 范围；FORGET 断边、
+LayerAnnotator 父标注、查询展开、后台自动派生和修复仍为后续目标。
 
 ### 1. 首期采用内嵌 `HierarchyRef`
 
@@ -461,7 +538,7 @@ Policy，也不自行提交后台任务。
 ### 14. 构建层采用统一 Composer 加 kind pipeline
 
 `HierarchyComposer` 与 `Extractor`/`Abstractor` 等一样，是 `ConstructionOperator`
-实现：由控制层通过 `evolve(..., mode=HIERARCHY)` → Evolver 调度调用，不自行鉴权、
+实现：由控制层通过 `evolve(scope, EvolveTaskOptions(mode=HIERARCHY, ...))` → Evolver 调度调用，不自行鉴权、
 不自行提交后台任务。它是跨 kind 的统一构建入口，负责请求校验、pipeline 选择、
 结构校验、持久化和修复报告；kind 专属算法由可替换 pipeline 承担：
 
@@ -657,9 +734,10 @@ Ingestor 只允许把一组完整且有效的提示映射到当前 unit 的叶�
 消费后的四个提示键从产出 unit 的 `system_metadata` 移除，输入 payload 不被修改；
 CloudEngine 不再回注已消费提示。解析路径自行检查字段，不调用公共 `validate_ref` /
 `validate_tree`。这些提示只声明当前 unit 的结构身份，不证明边存在；父子边由阶段 2
-的独立 Composer 调用构建，写入路径本身不触发建树，后续维护仍未接入。
+的独立 Composer 构建，阶段 3 的公开任务在收齐输入后调用它。写入路径本身不触发
+建树，后续维护仍未接入。
 
-## 关键数据流（公开任务与召回的后续目标，阶段 2 尚未开放）
+## 关键数据流（显式建树已落地，召回展开仍为目标）
 
 树结构专用路径不写入 architecture §14（该节只保留通用 write/recall/evolve 骨架）；
 建树与按需展开细节如下。
@@ -667,17 +745,17 @@ CloudEngine 不再回注已消费提示。解析路径自行检查字段，不�
 **建树路径（`EvolveMode.HIERARCHY`）**
 
 ```text
-evolve(..., mode=HIERARCHY, hierarchy_options=...)
-  → Engine 策略闸门（hierarchy.enabled）
-  → Evolver 委托 HierarchyComposer（ConstructionOperator）
-  → 读权威叶 → stage 生成父 → LayerAnnotator(best-effort)
-  → 结构校验 → KV 写父并回写直接子 parent_id/child_ids
-  → IndexBuilder 投影 hierarchy metadata
-  → HierarchyComposeResult / EvolveResult.hierarchy_result
+evolve(scope, EvolveTaskOptions(mode=HIERARCHY, hierarchy_options=...), security=...)
+  → API 校验、WRITE+UPDATE 与空间 UPDATE 判权、hierarchy.enabled 闸门
+  → CommandService → Engine 注入同源 Evolver/KV → 专用 HierarchyJob → Scheduler
+  → Job 可选获取 home+kind 锁 → 完整分页 → 相交旧父与全部直接子叶补齐
+  → Evolver(EvolveRequest) → HierarchyComposer 校验与生成 snapshot→time_span
+  → IndexBuilder 依次写父、更新子边、归档清理旧父、刷新索引
+  → HierarchyComposeResult → JobInfo 的终态、计数、complete 与 repair
 ```
 
-普通 add 默认不建树；仅当 `hierarchy.auto_derive=true` 且 compose profile/span 完备时，
-write 成功后向 BACKGROUND 提交等价的 HIERARCHY 任务（`replace_existing=true`）。
+普通 add 不建树。目标中的 `hierarchy.auto_derive` 写后派生与 LayerAnnotator 父标注
+仍未实现；不能从上面的显式任务入口推导自动后台触发已经可用。
 
 **读取展开路径（仍是 `search`，无公开 `expand`）**
 
@@ -738,10 +816,12 @@ search(..., hierarchy_kind=..., hierarchy_role=?, expand_depth=N, rollup=?)
 
 阶段 1 的模型、接入与索引投影已落地，完整 unit 回归 1891 passed、5 skipped；阶段 2
 补齐内部最小 TIME 构建及受限替换，完整 unit 回归 2082 passed、5 skipped。
+阶段 3 增加显式任务入口与完整候选读取，完整 unit 回归 2229 passed、5 skipped。
 不得用已有 pytest 结果替代未交付能力的实现验证。
 
 以下 P0–P5 是决策 19 的原设计验收分组，不是本次按能力整理的提交阶段顺序。
-阶段 1 覆盖模型、叶提示与索引投影，阶段 2 覆盖 P1 中的最小内部构建切片；其余验收保留为后续目标，按实际交付
+阶段 1 覆盖模型、叶提示与索引投影，阶段 2 覆盖 P1 的最小内部构建切片，阶段 3
+覆盖显式调用、完整取数与任务状态闭环；其余验收保留为后续目标，按实际交付
 逐项验证，不因属于同一个原设计分组而提前标记完成。
 
 ### 阶段 0：设计验收

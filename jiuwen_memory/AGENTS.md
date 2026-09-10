@@ -49,7 +49,8 @@ jiuwen_memory/
 接收接入层产出的 `MemoryUnit`，统一经 `IndexBuilder` 交付本体并构建索引；
 Extractor、Abstractor、Classifier、Associator、Router、Dedup、LayerAnnotator 与
 Evolver 负责内容演进。内部 `EvolveRequest` 的 HIERARCHY 分支委托
-`HierarchyComposer` 构建和替换最小 TIME 父层；公开 API/Engine 建树任务入口尚未开放。
+`HierarchyComposer` 构建和替换最小 TIME 父层；公开显式任务由 Control 收齐
+snapshot 与旧 time_span 全部直接子叶后调用，不由 Composer 自行查库或鉴权。
 
 ### retrieval/ — 检索层
 
@@ -58,6 +59,9 @@ Evolver 负责内容演进。内部 `EvolveRequest` 的 HIERARCHY 分支委托
 ### control/ — 编排层
 
 `MemoryEngine` 是接口层各语义的编排中枢（异步协程）。`Scheduler` 双通道调度演进任务，`PermissionManager` / `PolicyManager` / `Governor` / `SpaceManager` 管治理面。
+公开演进使用 `EvolveTaskOptions`；HIERARCHY 交给一次性 `HierarchyJob`，读取范围、
+完整分页、旧父子补齐和可选锁在 Control 完成。普通 write 不自动建树；Scheduler
+忠实保留 Job 的终态与失败信息。
 
 ### storage/ — 存储层
 
