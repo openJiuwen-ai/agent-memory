@@ -17,12 +17,13 @@ from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import MemoryUnit
 
 from .base import ConstructionOperator
+from .hierarchy_composer import HierarchyComposeOptions, HierarchyComposeResult
 
 
 class EvolveMode(str, Enum):
-    """演进阶段（对应记忆接口 ``evolve(scope, mode)`` 的 mode）。
+    """内容与结构演进模式；HIERARCHY 当前仅用于内部构建调用。
 
-    仅含**记忆内容**的演进阶段；索引维护不在此列——它随数据面操作
+    包含记忆内容演进及显式树结构构建；独立索引维护不在此列——它随数据面操作
     （write/update/delete）由 IndexBuilder 增量跟进（build/update/remove），
     从真源全量重建则走 IndexBuilder.rebuild() 维护路径，均不作为 evolve 模式。
     """
@@ -31,6 +32,17 @@ class EvolveMode(str, Enum):
     ASSOCIATE = "associate"
     CONSOLIDATE = "consolidate"
     FORGET = "forget"
+    HIERARCHY = "hierarchy"
+
+
+@dataclass
+class EvolveRequest:
+    """一次演进的输入；metadata 仅作请求上下文，不写回记忆。"""
+
+    units: list[MemoryUnit]
+    mode: EvolveMode
+    metadata: dict[str, str] = field(default_factory=dict)
+    hierarchy_options: HierarchyComposeOptions | None = None
 
 
 @dataclass
@@ -47,6 +59,7 @@ class EvolveResult:
     superseded_ids: list[str] = field(default_factory=list)
     forgotten_ids: list[str] = field(default_factory=list)
     created_units: list[MemoryUnit] = field(default_factory=list)
+    hierarchy_result: HierarchyComposeResult | None = None
 
 
 class EvolverProducer(Factory):
@@ -61,5 +74,5 @@ class EvolverProducer(Factory):
 
 class Evolver(ConstructionOperator):
     @abstractmethod
-    def evolve(self, units: list[MemoryUnit], mode: EvolveMode) -> EvolveResult:
-        """对一批记忆单元执行指定阶段的演进，返回变更结果。"""
+    def evolve(self, request: EvolveRequest) -> EvolveResult:
+        """按请求执行指定模式的演进，返回内容或结构变更结果。"""

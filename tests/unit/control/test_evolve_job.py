@@ -12,8 +12,8 @@ import pytest
 
 from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment, memory_key
 from jiuwen_memory.common.type_def.memory_codec import dumps
-from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
 from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.evolver import EvolveMode, Evolver, EvolveRequest, EvolveResult
 from jiuwen_memory.control.jobs_impl.evolve_job import EvolveJob
 from jiuwen_memory.control.types import JobStatus
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
@@ -33,8 +33,8 @@ class RecordingEvolver(Evolver):
     def health(self) -> None:
         return None
 
-    def evolve(self, units: list[MemoryUnit], mode: EvolveMode) -> EvolveResult:
-        self.calls.append((units, mode))
+    def evolve(self, request: EvolveRequest) -> EvolveResult:
+        self.calls.append((request.units, request.mode))
         return EvolveResult(
             created_ids=["created-1"],
             updated_ids=["updated-1"],
@@ -57,7 +57,7 @@ def _make_middle_unit(uid: str, scope: Scope, content: str) -> MemoryUnit:
 
 
 def test_run_loads_all_scope_units_and_calls_evolver_with_default_extract_mode() -> None:
-    """list scope 全部 MemoryUnit + 调 evolver.evolve(units, EXTRACT)。
+    """list scope 全部 MemoryUnit，再封装 EvolveRequest 调内部 Evolver。
 
     默认 mode=EXTRACT（与原 InProcessScheduler.submit 的常用入参一致）。
     """

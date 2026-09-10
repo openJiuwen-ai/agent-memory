@@ -31,7 +31,8 @@ from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.defaults import default_config_dict
 from jiuwen_memory.construction.entity_schema import EntitySchemaCatalog
-from jiuwen_memory.construction.evolver import EvolveMode
+from jiuwen_memory.construction.evolver import EvolveMode, EvolveRequest
+from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import EvolverDependencies
 from jiuwen_memory.construction.evolver_impl.schema_orchestrating_evolver import (
     SchemaOrchestratingEvolver,
 )
@@ -589,14 +590,16 @@ def _evolver(extractor) -> tuple[SchemaOrchestratingEvolver, _Storage, _Index]:
     storage = _Storage()
     index = _Index(storage)
     evolver = _SchemaEvolverHarness(
-        extractor=extractor,
-        abstractor=SimpleNamespace(),
-        associator=SimpleNamespace(),
-        index_builder=index,
-        storage=storage,
-        message_store=SimpleNamespace(),
-        dedup=SimpleNamespace(),
-        llm=SimpleNamespace(),
+        EvolverDependencies(
+            extractor=extractor,
+            abstractor=SimpleNamespace(),
+            associator=SimpleNamespace(),
+            index_builder=index,
+            storage=storage,
+            message_store=SimpleNamespace(),
+            dedup=SimpleNamespace(),
+            llm=SimpleNamespace(),
+        ),
     )
     return evolver, storage, index
 
@@ -610,7 +613,7 @@ def test_schema_failure_keeps_searchable_source_memory() -> None:
 
     evolver, storage, index = _evolver(FailingExtractor())
     source = _source()
-    result = evolver.evolve([source], EvolveMode.EXTRACT)
+    result = evolver.evolve(EvolveRequest(units=[source], mode=EvolveMode.EXTRACT))
 
     assert result.created_ids == [source.id]
     assert index.ids == [source.id]
@@ -627,7 +630,7 @@ def test_invalid_sources_after_all_retries_keep_only_source_memory() -> None:
     extractor = EntitySchemaExtractor(llm=llm, schema=_catalog())
     evolver, storage, index = _evolver(extractor)
 
-    result = evolver.evolve([source], EvolveMode.EXTRACT)
+    result = evolver.evolve(EvolveRequest(units=[source], mode=EvolveMode.EXTRACT))
 
     assert result.created_ids == [source.id]
     assert set(storage.units) == {source.id}
@@ -643,7 +646,7 @@ def test_unsupported_entity_type_after_all_retries_is_not_persisted() -> None:
     extractor = EntitySchemaExtractor(llm=llm, schema=_catalog())
     evolver, storage, index = _evolver(extractor)
 
-    result = evolver.evolve([source], EvolveMode.EXTRACT)
+    result = evolver.evolve(EvolveRequest(units=[source], mode=EvolveMode.EXTRACT))
 
     assert result.created_ids == [source.id]
     assert set(storage.units) == {source.id}
@@ -686,7 +689,7 @@ def test_schema_properties_are_added_without_ordinary_dedup() -> None:
             return [property_unit]
 
     evolver, storage, index = _evolver(SuccessfulExtractor())
-    result = evolver.evolve([source], EvolveMode.EXTRACT)
+    result = evolver.evolve(EvolveRequest(units=[source], mode=EvolveMode.EXTRACT))
 
     assert result.created_ids == [source.id, property_unit.id]
     assert set(storage.units) == {source.id, property_unit.id}

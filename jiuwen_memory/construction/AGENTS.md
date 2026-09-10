@@ -6,7 +6,7 @@
 
 接收接入层产出的 `MemoryUnit`，统一经 `IndexBuilder` 交付本体并构建多形式索引。
 可插拔算子由 Extractor、Abstractor、Associator、Classifier、IndexBuilder、Router、
-Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四步
+Dedup、LayerAnnotator、HierarchyComposer 与 Evolver（默认 `OrchestratingEvolver`、动态四步
 `DynamicEvolver`，以及显式启用的 `SchemaOrchestratingEvolver`）组成。
 
 > 契约（接口签名/数据结构/不变量）见 [`docs/specs/S05-construction.md`](../../docs/specs/S05-construction.md)；设计理念与决策取舍（双通道/演进闭环/依赖关系）见 [`docs/features/construction/F01-construction-spec-design.md`](../../docs/features/construction/F01-construction-spec-design.md)。本文件只记当前实现地图与本地约束。
@@ -25,7 +25,8 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 | `index_builder.py` | IndexBuilder 接口：多形式索引构建（文档/关键词/向量/图） |
 | `router.py` | Router 接口与判定表：按归属坐标判定条目落哪个空间，产出候选空间集合与收窄维标签；另含归属坐标的入口校验 `reject_kernel_coords` 与折算 `narrow_dims_of`（后者入参须为已以身份覆盖过内核三项的坐标，本层不接收 `identity`）。内核三项坐标名 `KERNEL_COORD_KEYS` 在 `common/type_def/scope.py`，本模块引用 |
 | `dedup.py` | Dedup 接口：去重召回（向量/倒排两路）+ DedupProducer 工厂 |
-| `evolver.py` | Evolver 接口：记忆自演进（抽取/关联/巩固/遗忘）+ EvolveMode + EvolveResult |
+| `evolver.py` | Evolver 接口：EvolveRequest、五种内部 EvolveMode 与 EvolveResult；HIERARCHY 只委托 Composer |
+| `hierarchy_composer.py` | HierarchyComposer 接口、Producer，以及 profile / options / request / result / repair 类型 |
 | `layer_annotator.py` | LayerAnnotator 接口：分层披露标注（L0/L1 写入 unit.layers）+ LayerAnnotatorProducer 工厂 |
 | `extractor_impl/` | Extractor 实现目录（keyword / llm / dynamic_llm / video_memory，以及显式启用的 entity_schema）；video_memory 将视频规约结果转换为 CLM/ELM |
 | `abstractor_impl/` | Abstractor 实现目录（concat / llm） |
@@ -35,7 +36,8 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 | `layer_annotator_impl/` | LayerAnnotator 实现目录（keyword / llm）；evolver 抽取后调用，对超阈 content 标注 L0/L1 |
 | `dedup_impl/` | Dedup 实现目录（vector / keyword） |
 | `evolver_impl/` | Evolver 实现目录（orchestrating=legacy / dynamic=动态 prompt 四步 / schema_orchestrating=Source-first Schema 属性抽取） |
-| `bootstrap.py` | 统一触发所有构建算子注册（含 dedup_impl） |
+| `hierarchy_composer_impl/` | `default_composer.py`（校验候选与按序提交）、`time_pipeline.py`（snapshot→time_span 规则分组和父生成）、`profile_config.py`（仅 TIME 两层配置解析） |
+| `bootstrap.py` | 统一触发所有构建算子注册（含 dedup_impl、hierarchy_composer_impl） |
 | `schema_bootstrap.py` | 由统一 assembly 在 Schema 开关开启时内部调用，注册 Schema Extractor/Evolver target；不是独立公共装配入口 |
 
 ## 构建链路
@@ -54,7 +56,7 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
   ↓
 4. Scheduler.submit(scope, EXTRACT, BACKGROUND) → 提交演进任务
   ↓
-（后台）Evolver.evolve(units, mode):
+Evolver.evolve(EvolveRequest(units, mode)):
   EXTRACT     → [orchestrating] _evolve_extract: extract→route→annotate→_dedup_batch(判定+落盘)
               → [dynamic]     _evolve_extract: extract→route→consolidate(判定)→reflect→落盘
               → [schema]      _evolve_extract: Source-first→属性抽取→属性落盘→Source entities 写回
@@ -63,11 +65,14 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
   FORGET     → _evolve_forget: 遗忘候选筛选→lifecycle 置 FORGOTTEN→
                IndexBuilder.update(mode=FORWARD_ONLY) 回写本体 +
                IndexBuilder.remove(mode=SOFT) 移出检索
+  HIERARCHY  → 显式内部请求：HierarchyComposer.replace_in_span
+               → TIME snapshot→time_span → 候选树校验 → 经 IndexBuilder 分阶段保存
 ```
 
 三个 Evolver 同属 `evolver` 顶层命名空间。`DynamicEvolver` 与显式启用的
 `SchemaOrchestratingEvolver` 都继承 `OrchestratingEvolver`，只覆盖 `_evolve_extract`；
-其余三模式继承父类。装配或 pipeline profile 选择注册名即启用对应 EXTRACT 路径。
+其余四模式继承父类。装配或 pipeline profile 选择注册名即启用对应 EXTRACT 路径。
+HIERARCHY 尚无公开 API/Engine 任务入口，也不在普通 write 后自动触发。
 
 ## 行为铁律
 
@@ -88,15 +93,18 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 
 3. **provenance 回指来源**
    派生记忆单元（Extractor/Abstractor 产出）的 `provenance` 字段记录由哪些 unit 演进而来，保证可重建、可审计回溯。
+   Composer 的父子包含只写 `hierarchy`，不借结构派生填充 provenance 或 supersedes。
 
 4. **构建与存储解耦**
    算子负责构建逻辑（生成索引投影：Chunk → VectorRecord/Document/Node，MemoryUnit → KV 记录），持久化由注入的 Store 承担。算子不依赖具体后端。正排与派生索引同此模式——`ForwardIndexBuilder` 写 `manager.kv()`，与 `FulltextIndexBuilder` 写 `manager.fulltext()` 同构；端口名可经 `params.<ns>_store` 具名选择。
 
 5. **scope 原生隔离**
-   构建索引记录时把来源 `MemoryUnit.scope` 落到记录的专用 `scope` 字段（`VectorRecord.scope` / `Document.scope` / `Node.scope`），使检索得以按 scope 原生隔离。
+   构建索引时将来源 `MemoryUnit.scope` 作为 Store 方法的显式参数下推，记录本身不混入
+   scope 字段；跨 Scope 子边使用完整 Scope + id 定位，不能只按 id 建索引或查重。
 
-6. **Evolver 四阶段独立**
-   `EvolveMode.EXTRACT`（信息提取）/ `ASSOCIATE`（关联分析）/ `CONSOLIDATE`（冲突消解/近重复融合）/ `FORGET`（遗忘/降权）四阶段独立，可单独触发。索引维护不作为 evolve 模式。
+6. **Evolver 模式独立**
+   EXTRACT / ASSOCIATE / CONSOLIDATE / FORGET 保留既有内容演进行为；内部 HIERARCHY
+   只委托 Composer，不进入抽取、去重或内容合并。索引维护不作为 evolve 模式。
 
 7. **去重召回与判定分离**
    `Dedup` 接口只管召回（向量化/分词 → Store.search → 加载 → 聚合取 max），判定
@@ -143,18 +151,33 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
     真源仍保留 None，禁止为适配后端改写 MemoryUnit；`memory_filter._field_value`
     对 `t_event` / `t_invalid` 的 None 同步投影为对应哨兵，使后置复核与下推不分叉。
 
-14. **抽取与分层优先保证完整性**
+15. **抽取与分层优先保证完整性**
     派生 L2 只保存紧凑陈述，通过 `source_ref`/`provenance`/`evidence` 回指来源；坏候选
     与坏子批分别隔离，整次抽取无可用候选时才显式失败；动态抽取可隔离单策略失败，但
     全部策略失败必须向上抛错。LLM 分层的重复、越界或遗漏 ID 拒绝整批，单条长度异常
     只跳过该条，其余合法结果在结构校验完成后写入。
 
-15. **结构索引投影只认 HierarchyRef**
+16. **结构索引投影只认 HierarchyRef**
     `_index_ops.index_metadata` 为全文与向量路径补结构六键；`UnifiedIndexBuilder`
     使用同一结构投影，把副本补入 `unit.system_metadata` 后交 DomainStore。build/update
     均先移除旧结构投影，再从当前引用生成；空结构移除全部六键，无区间不保留旧 span。
     结构时间使用 UTC epoch 毫秒，与 KV 中 ISO 8601 序列化分开；不得改写
     `user_metadata` 同名键。投影不等于建树、查询贯通或已实现 rebuild 恢复。
+
+17. **Composer 只处理显式输入，不扫描数据库**
+    只接受 ACTIVE 的 TIME snapshot 与待替换 time_span 根。请求必须备齐已知旧父的全部
+    直接子叶；不补齐缺失节点、不暗中扩大查询范围。先在副本上生成并校验候选，再写存储。
+    叶的正文、时间、tier、来源和生命周期不变，只有 hierarchy 父边改变。
+
+18. **Composer 只经 IndexBuilder 按可恢复顺序写入**
+    新父本体 build(FORWARD_ONLY) → 子边 update(FORWARD_ONLY) → 旧父归档并清边
+    update(FORWARD_ONLY) → 旧父 remove(SOFT) → 新父与子补建/更新 RETRIEVAL_ONLY。
+    本体阶段失败即停；索引阶段保留逐项 repair 报告。失败不承诺回滚或自动修复，也不硬删叶。
+
+19. **最小 TIME 只做规则切分**
+    snapshot 按 UTC span_start、t_event、输入序稳定排序，按会话/配置上下文/相邻 span
+    间隔切分；父为 time_span 摘录。scene/event、模型摘要、父 L0/L1、settle 与自动派生
+    未接入，配置中不得静默接受这些选项。
 
 ## 与其他子目录的边界
 
@@ -168,6 +191,7 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 - 多形式索引构建（IndexBuilder）
 - 去重召回（Dedup）
 - 记忆自演进（Evolver）
+- 显式候选上的 TIME 父层构建、受限替换与失败报告（HierarchyComposer）
 
 **不管**：
 - 鉴权（归 `api`）
@@ -190,11 +214,18 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
    回填 `MemoryUnit.vectors` 随本体下传（单 unit embed 失败不阻断本体写入，vectors 留空）；
    (b) 把 `index_metadata` 过滤投影字段（`content_layer`/`t_valid`/`t_event`/`t_invalid` 哨兵）
    补进 `unit.system_metadata`，一体化后端直接读、无需单独投影下传。
-4. Evolver 返回 `EvolveResult`（created_ids / updated_ids / superseded_ids / forgotten_ids）。
+4. Evolver 接收 `EvolveRequest`，返回 `EvolveResult`（四类 id 列表、内容演进的 created_units，
+   以及仅 HIERARCHY 返回的 hierarchy_result）。内部调用不再支持旧的 `(units, mode)` 形态。
 5. Dedup 必须实现 `recall(candidate) -> list[(MemoryUnit, score)]`；实现内部异常吞掉返回空列表，不阻断演进。
 6. 算子内部调用共享插件（Chunker/Embedder/Tokenizer/FeatureExtractor/LLM）必须使用注入的实例，不自行构造。
-7. `DynamicEvolver` 继承 `OrchestratingEvolver`，复用父类全部依赖（extractor/abstractor/associator/index_builder/kv/graph/dedup/llm/layer_annotator），额外注入 `PromptRegistry`；只覆盖 `_evolve_extract`，其余三模式继承父类。
+7. `OrchestratingEvolver` 以 `EvolverDependencies` 聚合注入算子/存储，以 `EvolverOptions`
+   聚合图端口和去重阈值；`DynamicEvolver` 与 `SchemaOrchestratingEvolver` 复用这两个对象。
+   Dynamic 额外注入 PromptRegistry；两者只覆盖 EXTRACT，其余四模式继承父类。
 8. `DynamicEvolver` 与 IndexBuilder/KVStore/Dedup 必须使用同一 profile 的共享实例；pipeline profile 选 evolver 实现名（`orchestrating` / `dynamic`）即切换 EXTRACT 路径。
 9. `DynamicLLMExtractor` 子类只覆盖 `parse_response` 完成响应解析与构建；策略遍历、fallback、
    `_extraction_strategy` 标记和 consolidation/reflect prompt key 透传由基类统一执行。
 10. `PromptRegistry` 由装配从 `ctx.globals["prompts"]` 加载；`DynamicEvolver._build` 用 `config.get("prompts")` 取该段（params 无 prompts 时回退 globals）构造注册表。
+11. `HierarchyComposerProducer` 的命名空间是 `hierarchy_composer`，当前 target 为 `default`。
+    Evolver 只有显式配置 `params.hierarchy_composer` 时才注入，未配置不影响普通写入。
+    Composer 必须显式注入与叶写入路径相同的具名 index_builder，读取 hierarchy_profiles 的 TIME 两层配置和
+    allow_cross_user；历史 Evolver YAML 参数与依赖引用名不变。

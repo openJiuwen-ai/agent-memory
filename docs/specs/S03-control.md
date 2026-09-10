@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-09-06 |
+| 最近一次修订日期 | 2026-09-10 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
@@ -100,7 +100,7 @@ class ControlOperator(ABC):
 | `delete` | `async (selector: DeleteSelector) -> list[str]` | PURGE 物理删 / 其他委托 LifecycleManager 非破坏式流转；目标需维护受影响层级边 |
 | `purge_space` | `async (org: str, space: str) -> list[str]` | 物理删除该 Space 全部 user/agent/session 子 Scope 的 MemoryUnit 真源与索引，供 offboarding 调用 |
 | `sweep_expired` | `async () -> SweepResult` | 编排到期清扫：`LifecycleManager.sweep()` 纯计算 transition，按 (scope, 目标态) 分组执行——FORGOTTEN 组先 `IndexBuilder.remove(SOFT)` 移出检索索引、成功后 `LifecycleManager.transition` 回写真源；ARCHIVED 组只回写（`include_archived` 召回与 `as_of` 回溯仍需索引，不删）。顺序不变量（先删索引、后回写真源）保证 remove 失败时单元保持 ACTIVE、下轮 sweep 重新发现自愈；任一步失败的组计入 `SweepResult.failed`，不静默当成功。共享编排在 `engine_impl/sweep_support.py`，InMemoryEngine 直调 IndexBuilder，CloudEngine 按各 pipeline 的 builder 分组删除 |
-| `evolve` | `async (scope, mode: EvolveMode, channel=BACKGROUND, *, hierarchy_options=None) -> str` | 提交演进任务到 Scheduler；执行逻辑由构建层 Evolver 完成，返回 job_id；仅目标 HIERARCHY 接受 options。Evolver 由 Engine 经 `get_job(evolver=...)` 注入装配给自身的同一实例（与写入侧同源，不变量 25），Engine 未装配 evolver 时抛 `RuntimeError` |
+| `evolve` | `async (scope, mode: EvolveMode, channel=BACKGROUND) -> str` | 提交四种内容演进任务到 Scheduler，返回 job_id；当前 HIERARCHY 在任务提交前抛 `ValidationError`，公开 options 尚未开放。Evolver 由 Engine 经 `get_job(evolver=...)` 注入装配给自身的同一实例（与写入侧同源，不变量 25），Engine 未装配 evolver 时抛 `RuntimeError` |
 | `admin_get/set/all` | — | 管理面语义由 API 层直达 PolicyManager，Engine 不承载策略存储 |
 
 **write 路径**：
@@ -112,7 +112,7 @@ Engine 组装 RawPayload（含 assets 的防御性副本）
 → MemoryPipeline.select_for_write(units)  # 可选；未注入时使用 Engine 默认组件
 → if str((metadata or {}).get("procedural", "")).strip().lower() == "true"
      or str((metadata or {}).get("infer", "")).strip().lower() == "true":
-      选中 profile 的 Evolver.evolve(units, EXTRACT)
+      选中 profile 的 Evolver.evolve(EvolveRequest(units, EXTRACT))
       # Evolver 实现决定 EXTRACT 路径：
       #   OrchestratingEvolver → _evolve_extract: extract→annotate→_dedup_batch(判定+落盘)
       #   DynamicEvolver       → _evolve_extract: extract→consolidate(判定)→reflect→落盘
@@ -124,9 +124,13 @@ Engine 组装 RawPayload（含 assets 的防御性副本）
 ```
 
 
+Engine、EvolveJob 与 MiddleToLongJob 调用内部 Evolver 时统一构造 `EvolveRequest`。
+内部 HIERARCHY 已具备两层 TIME 建树能力，但控制层尚不装配候选或有界建树 options；
+`Engine.evolve` 因此拒绝 HIERARCHY，不能经普通 EvolveJob 绕过此阶段边界。
+
 ### 树结构目标扩展（尚未实现）
 
-普通 write 默认不建父树。`hierarchy.auto_derive=false` 时不提交任何层级任务。启用后，write 在不可变构建配置已有 compose profile 且本批叶可确定有界 span 时，必须在成功返回后向 BACKGROUND 通道提交 HIERARCHY 任务，并固定组装 `replace_existing=true`；条件不足时不提交，并记录跳过原因。提交失败只记录任务/审计错误，不回滚已经成功的权威叶写入。auto derive 不得改成阻塞 hot path，也不得推断未配置的 kind、role 或无界 span。
+普通 write 默认不建父树。`hierarchy.auto_derive=false` 时不提交任何层级任务。启用后，write 在不可变构建配置已有 compose profile 且本批叶可确定有界 span 时，必须在成功返回后向 BACKGROUND 通道提交 HIERARCHY 区间替换任务；条件不足时不提交，并记录跳过原因。提交失败只记录任务/审计错误，不回滚已经成功的权威叶写入。auto derive 不得改成阻塞 hot path，也不得推断未配置的 kind、role 或无界 span。
 
 #### ensure_hierarchy
 
@@ -137,7 +141,7 @@ Engine 组装 RawPayload（含 assets 的防御性副本）
 3. recall 显式提供一个 `hierarchy_kind`；
 4. `span_start` 与 `span_end` 成对、有效且有界。
 
-每个可 ensure 的 kind 还必须在不可变构建配置中存在 S05 定义的 `HierarchyComposeProfile`。profile 按 kind 唯一查找，提供 `leaf_role/parent_roles` 和 stage options；请求提供 kind+span，Engine 据 profile 组装完整 `HierarchyComposeOptions`，并固定 `replace_existing=true`。缺少 profile 时抛 `PolicyError`。
+每个可 ensure 的 kind 还必须在不可变构建配置中存在 S05 定义的 `HierarchyComposeProfile`。profile 按 kind 唯一查找，提供 `leaf_role/parent_roles` 和 stage options；请求提供 kind+span，Engine 据 profile 组装完整 `HierarchyComposeOptions`，执行区间替换。缺少 profile 时抛 `PolicyError`。
 
 本规约选择**阻塞式 ensure**：Engine 在父层召回前同步提交对应 kind+span 的 HIERARCHY 构建，并等待任务进入终态。SUCCEEDED 且 `complete=true` 后才执行 recall；FAILED、CANCELLED、修复未完成或超过调度器配置的等待期限均抛 `BackendError`。功能关闭时显式层级请求抛 `PolicyError`，不得悄悄退化为无层级结果。该行为只针对明确的有界层级 recall；普通 recall 与无 span 的层级 recall 从不触发 ensure。
 
@@ -498,3 +502,7 @@ jiuwen_memory/control/<算子>_impl/
 | architecture.md §12 | 横切可观测/治理——Governor.audit 消费 `common/audit/AuditLogger` 记录的审计事件 |
 | architecture.md §13.4 | PolicyManager 是少量已知策略键的 admin 落点；六类动态配置见 S08 ConfigSource |
 | S08-config | ConfigSource 与 PolicyManager 分工 |
+
+## 修订记录
+
+- 2026-09-10：内部调用迁移为 `EvolveRequest`，公开 Engine 保留原签名并拒绝 HIERARCHY；后台建树、候选补齐与 ensure 仍为目标。

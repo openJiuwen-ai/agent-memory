@@ -10,25 +10,27 @@ from __future__ import annotations
 
 import copy
 
-from jiuwen_memory.common.llm.base import LLM, LlmProducer
+from jiuwen_memory.common.llm.base import LlmProducer
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import MemoryUnit
-from jiuwen_memory.construction.abstractor import Abstractor, AbstractorProducer
-from jiuwen_memory.construction.associator import Associator, AssociatorProducer
+from jiuwen_memory.construction.abstractor import AbstractorProducer
+from jiuwen_memory.construction.associator import AssociatorProducer
 from jiuwen_memory.construction.common import merge_unit_tags
-from jiuwen_memory.construction.dedup import Dedup, DedupProducer
+from jiuwen_memory.construction.dedup import DedupProducer
 from jiuwen_memory.construction.evolver import EvolveResult, EvolverProducer
 from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
+    EvolverDependencies,
+    EvolverOptions,
     OrchestratingEvolver,
     _resolve_message_store,
+    optional_hierarchy_composer,
 )
-from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
-from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
-from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
+from jiuwen_memory.construction.extractor import ExtractorProducer
+from jiuwen_memory.construction.index_builder import IndexBuilderProducer
+from jiuwen_memory.construction.layer_annotator import LayerAnnotatorProducer
 from jiuwen_memory.construction.prompt_strategy import copy_consolidation_prompts
-from jiuwen_memory.storage.kv import KVStore, load_units
+from jiuwen_memory.storage.kv import load_units
 from jiuwen_memory.storage.store_manager import (
-    StoreManager,
     StoreManagerProducer,
     resolve_name,
 )
@@ -42,35 +44,15 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver):
 
     def __init__(
         self,
-        extractor: Extractor,
-        abstractor: Abstractor,
-        associator: Associator,
-        index_builder: IndexBuilder,
-        storage: StoreManager,
-        message_store: KVStore,
-        dedup: Dedup,
-        llm: LLM,
-        layer_annotator: LayerAnnotator | None = None,
+        dependencies: EvolverDependencies,
+        options: EvolverOptions | None = None,
         *,
         kv_name: str = "default",
-        dedup_medium_similarity: float = 0.7,
-        dedup_high_similarity: float = 0.9,
     ) -> None:
-        super().__init__(
-            extractor=extractor,
-            abstractor=abstractor,
-            associator=associator,
-            index_builder=index_builder,
-            storage=storage,
-            message_store=message_store,
-            dedup=dedup,
-            llm=llm,
-            layer_annotator=layer_annotator,
-            dedup_medium_similarity=dedup_medium_similarity,
-            dedup_high_similarity=dedup_high_similarity,
-        )
+        """Inject shared operators and the source-evidence KV port name."""
+        super().__init__(dependencies, options)
         # Official IndexBuilder owns all writes. KV port is retained for source reads only.
-        self._source_kv = storage.kv(kv_name)
+        self._source_kv = dependencies.storage.kv(kv_name)
 
     def _persist_source_evidence(self, units: list[MemoryUnit]) -> list[str]:
         created: list[str] = []
@@ -191,16 +173,21 @@ def _build(config):
     dedup_default = "vector" if vector_on else "keyword"
     storage = StoreManagerProducer.resolve(config)
     return SchemaOrchestratingEvolver(
-        extractor=ExtractorProducer.dep(config, default="entity_schema"),
-        abstractor=AbstractorProducer.dep(config, default="concat"),
-        associator=AssociatorProducer.dep(config, default="keyword"),
-        index_builder=IndexBuilderProducer.dep(config, "index_builder", default=index_default),
-        storage=storage,
-        message_store=_resolve_message_store(config),
-        dedup=DedupProducer.dep(config, default=dedup_default),
-        llm=LlmProducer.dep(config, default="echo"),
-        layer_annotator=_optional_layer_annotator(config),
+        dependencies=EvolverDependencies(
+            extractor=ExtractorProducer.dep(config, default="entity_schema"),
+            abstractor=AbstractorProducer.dep(config, default="concat"),
+            associator=AssociatorProducer.dep(config, default="keyword"),
+            index_builder=IndexBuilderProducer.dep(config, "index_builder", default=index_default),
+            storage=storage,
+            message_store=_resolve_message_store(config),
+            dedup=DedupProducer.dep(config, default=dedup_default),
+            llm=LlmProducer.dep(config, default="echo"),
+            layer_annotator=_optional_layer_annotator(config),
+            hierarchy_composer=optional_hierarchy_composer(config),
+        ),
+        options=EvolverOptions(
+            dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
+            dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
+        ),
         kv_name=resolve_name(config, "kv_store"),
-        dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
-        dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
     )

@@ -12,6 +12,7 @@
 - :class:`~construction.classifier.Classifier` 多维分类（认知角色/主题/重要度）
 - :class:`~construction.index_builder.IndexBuilder` 多形式索引构建
 - :class:`~construction.evolver.Evolver` 自演进闭环
+- :class:`~construction.hierarchy_composer.HierarchyComposer` 树结构构建
 
 算子内部调用 ``jiuwen_memory/common`` 共享插件（分词/切分/向量化/特征抽取/LLM），
 经 ``jiuwen_memory/storage`` 接口落库；二者均由装配注入，算子不依赖具体后端。
@@ -35,6 +36,7 @@ class OperatorType(str, Enum):
     EVOLVER = "evolver"
     LAYER_ANNOTATOR = "layer_annotator"
     ROUTER = "router"
+    HIERARCHY_COMPOSER = "hierarchy_composer"
 
 
 class ConstructionOperator(ABC):

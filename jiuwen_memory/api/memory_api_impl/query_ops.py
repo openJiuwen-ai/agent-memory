@@ -599,6 +599,7 @@ class QueryOpsMixin:
         *,
         security: RequestSecurityContext,
     ) -> str:
+        """鉴权后提交内容演进任务，当前拒绝公开 HIERARCHY 请求。"""
         identity = security.auth.actor
         auth = self._authorize(
             identity,
@@ -608,6 +609,8 @@ class QueryOpsMixin:
             space_action=_evolve_space_action(mode),
         )
         self._ensure_space_writable(scope)
+        if mode == EvolveMode.HIERARCHY:
+            raise ValidationError("HIERARCHY 当前仅支持构建算子调用，公开入口尚未开放")
         job_id = asyncio.run(self._commands.evolve(scope, mode, channel))
         self._log(identity, "evolve", target_scope=scope, detail={**auth, "job_id": job_id})
         return job_id

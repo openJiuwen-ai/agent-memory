@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-09-05 |
+| 最近一次修订日期 | 2026-09-10 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -306,7 +306,7 @@ target。调用方还必须在配置中显式选择 Schema Extractor 和 Schema 
   空白不敏感，字符串 `"true"` 和布尔值 `True` 均会触发；`"false"`/`False`/缺省/
   空值走默认路径。
 - **`infer="true"`**：原始记忆落 `/messages/{id}` 真源但**不建索引**；hot path
-  同步走 `Engine → Evolver.evolve(units, EXTRACT)`。`OrchestratingEvolver`
+  同步走 `Engine → Evolver.evolve(EvolveRequest(units, EXTRACT))`。`OrchestratingEvolver`
   以 `_dedup_batch` 完成判定与落盘，`DynamicEvolver` 走
   extract → consolidate（只判定）→ reflect → 落盘；**不提交** background EXTRACT。
   Engine 从 `EvolveResult.created_ids` 反查并返回派生单元，因此 ADD/SUPERSEDE
@@ -318,7 +318,7 @@ target。调用方还必须在配置中显式选择 Schema Extractor 和 Schema 
 
 `add` 的 `system_metadata["procedural"]` 是独立于 infer 的调用级开关（详见 F02 决策8）：
 
-- **`procedural="true"`**：原文**不落 KV**；喂 `Evolver.evolve(units, EXTRACT)`。extractor 把本轮汇总成一条 PROCEDURAL 执行历史，再由 Evolver 落盘（`DynamicEvolver` 也走父类 procedural 路径，不判定）。
+- **`procedural="true"`**：原文**不落 KV**；喂 `Evolver.evolve(EvolveRequest(units, EXTRACT))`。extractor 把本轮汇总成一条 PROCEDURAL 执行历史，再由 Evolver 落盘（`DynamicEvolver` 也走父类 procedural 路径，不判定）。
 - procedural 与 infer 同传时按 procedural 语义：原文不落 `/messages/`、不收集
   context、不去重。语义是"把这轮做了什么记成一条可检索 how-to"。
 
@@ -566,7 +566,8 @@ def delete(selector: DeleteSelector, *, security: RequestSecurityContext) -> lis
 
 #### evolve
 
-**状态：已实现**（`EXTRACT` / `ASSOCIATE` / `CONSOLIDATE` / `FORGET`）。`HIERARCHY` 与 `hierarchy_options` 为已设计增量。
+**状态：已实现**（`EXTRACT` / `ASSOCIATE` / `CONSOLIDATE` / `FORGET`）。
+`HIERARCHY` 枚举及构建层内部委托已实现；公开 API 的建树入口与 `hierarchy_options` 尚未开放。
 
 ```python
 def evolve(
@@ -580,7 +581,10 @@ def evolve(
 
 触发演进：鉴权 WRITE→委托 Engine→返回 job_id。当前代码只接受 EXTRACT/ASSOCIATE/CONSOLIDATE/FORGET。调用成功返回 job id，不表示任务已经完成。索引维护不在此（随数据面自动跟进）。
 
-**状态：已设计、尚未实现**（`EvolveMode.HIERARCHY` 与 `hierarchy_options`）
+当前传入 `HIERARCHY` 时，在既有鉴权与空间可写检查之后、任务提交之前抛
+`ValidationError`；不会提交一个没有建树选项的普通演进任务。
+
+**状态：已设计、尚未实现**（公开 `HIERARCHY` 任务入口与 `hierarchy_options`）
 
 ```python
 def evolve(
@@ -593,13 +597,13 @@ def evolve(
 ) -> str: ...
 ```
 
-所有 evolve 模式要求 `Action.WRITE`。`EvolveMode.HIERARCHY` 是目标新增，必须提供
+所有 evolve 模式要求 `Action.WRITE`。未来开放公开 `HIERARCHY` 时必须提供
 [S05-construction.md](S05-construction.md) 定义的 `HierarchyComposeOptions`。S05 是该
 类型字段与默认值的唯一契约来源，API 层不复制定义。
 
 仅 HIERARCHY 接受 `hierarchy_options`；其他模式提供 options 时抛 `ValidationError`。
-HIERARCHY 缺 options 或 options 违反 S05 的 span、role 序列、`replace_existing`
-约束时抛 `ValidationError`。功能关闭时抛 `PolicyError`。建树任务仍走已实现的 `job_status` / `job_cancel`，不另开 MemoryAPI。
+HIERARCHY 缺 options 或 options 违反 S05 的 span、role 序列约束时抛
+`ValidationError`。功能关闭时抛 `PolicyError`。建树任务仍走已实现的 `job_status` / `job_cancel`，不另开 MemoryAPI。
 
 ---
 
@@ -970,7 +974,7 @@ def admin_all(*, security: RequestSecurityContext) -> dict[str, str]: ...
 | `system_metadata` | dict[str, MetadataValueType] | 系统扩展字段（infer / procedural / pipeline / prompt key 等） |
 | `user_metadata` | dict[str, MetadataValueType] | 用户业务元数据；保留 JSON 标量原生类型，也可使用字符串数组 |
 | `lifecycle` | LifecycleState | 生命周期状态 |
-| `hierarchy` | HierarchyRef | **状态：已设计、尚未实现**。目标树结构；为空时不启用层级 |
+| `hierarchy` | HierarchyRef | 已实现的树结构字段；默认 `kind=NONE/role=NONE` 表示未挂树，公开结构修改与层级检索尚未开放 |
 
 `Segment`：`content`（可治理文本/结构投影，索引与检索对象）、`assets`（本段原模态资产引用）、`source`（本段来源 Modality）。便捷只读折叠属性：`unit.content`（各段换行连接）、`unit.assets`（各段扁平合并）、`unit.source`（首段模态）——返回新对象，勿就地 `append`。
 
@@ -1041,7 +1045,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 ### Channel / EvolveMode / JobInfo（evolve / 任务，`control/types.py`）
 
 - `Channel`：`HOT`（在线低时延）/ `BACKGROUND`（离线异步，默认）。
-- `EvolveMode`：`EXTRACT`（抽取低抽象事实）/ `ASSOCIATE`（关联分析）/ `CONSOLIDATE`（升华画像）/ `FORGET`（遗忘/清理）。**状态：已设计、尚未实现**：`HIERARCHY`（显式建树/区间替换）。
+- `EvolveMode`：`EXTRACT`（抽取低抽象事实）/ `ASSOCIATE`（关联分析）/ `CONSOLIDATE`（升华画像）/ `FORGET`（遗忘/清理）/ `HIERARCHY`（显式建树/区间替换）。最后一项当前只在构建层内部可用，公开 `evolve` 拒绝。
 - `JobInfo`（`job_status` 返回）：`id` / `channel` / `mode` / `scope` / `status`（`JobStatus`：PENDING/RUNNING/SUCCEEDED/FAILED/CANCELLED）/ `detail`。
 
 ### Modality / MemoryTier / LifecycleState（`common/type_def/memory.py`）
@@ -1132,7 +1136,11 @@ jiuwen_memory/api/memory_api_impl/
 | S01-ingest_access | add 路径中 Engine 内部调用 Ingestor |
 | S03-control | 数据面委托 MemoryEngine，治理/授权/调度/space 面委托对应算子 |
 | S04-retrieval | search 路径中 Engine 委托 Retriever |
-| S05-construction | 目标 `HierarchyComposeOptions` / `EvolveMode.HIERARCHY` 的字段契约 |
+| S05-construction | 内部 `EvolveRequest` / `HierarchyComposeOptions` / `EvolveMode.HIERARCHY` 契约；公开建树入口仍为目标 |
 | S08-config | 六类动态配置经 ConfigSource；不经本层业务入参写入 |
 | F07-collective-memory | 本层是空间治理的鉴权点：入口到轴与动作的映射、空间事实一次读取、检索两族谓词的生成与注入均落在本层。多空间读写编排按「是否读 `security`」拆开——判权与谓词生成留本层，写入候选集的计算与跨空间的召回扇出落控制层 `control/collective/` |
 | architecture.md §6 | 已实现 MemoryAPI 清单 |
+
+## 修订记录
+
+- 2026-09-10：同步内部 `EvolveRequest` 与 HIERARCHY 枚举，明确公开建树仍拒绝；修正已落地的 hierarchy 字段状态。

@@ -33,8 +33,8 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
-from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
 from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.evolver import Evolver, EvolveRequest, EvolveResult
 from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
@@ -70,7 +70,7 @@ class _StubEvolver(Evolver):
     def health(self) -> None:
         return None
 
-    def evolve(self, units, mode: EvolveMode) -> EvolveResult:
+    def evolve(self, request: EvolveRequest) -> EvolveResult:
         self._call_count += 1
         if self._call_count <= self._fail_first_n:
             raise RuntimeError(f"mock evolve fail on call {self._call_count}")

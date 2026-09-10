@@ -46,7 +46,10 @@ jiuwen_memory/
 
 ### construction/ — 构建层
 
-接收接入层产出的 `MemoryUnit`，调用 `storage` 落盘，在其上构建多形式索引。六个可插拔算子：`Extractor` → `Abstractor` → `Classifier` → `Associator` → `IndexBuilder` → `Evolver`（自演进闭环）。
+接收接入层产出的 `MemoryUnit`，统一经 `IndexBuilder` 交付本体并构建索引；
+Extractor、Abstractor、Classifier、Associator、Router、Dedup、LayerAnnotator 与
+Evolver 负责内容演进。内部 `EvolveRequest` 的 HIERARCHY 分支委托
+`HierarchyComposer` 构建和替换最小 TIME 父层；公开 API/Engine 建树任务入口尚未开放。
 
 ### retrieval/ — 检索层
 
@@ -86,8 +89,9 @@ jiuwen_memory/
 4. **scope 隔离是存储层的原生职责**  
    检索型 Store 的 `search` 物理约束在 `query.scope` 内，绝不跨 scope 返回。隔离必须在存储层强制，上层不依赖调用纪律。
 
-5. **MemoryUnit 是唯一跨层数据结构**  
-   接入层产出它，构建层落盘并建索引，检索层与控制层读取它。不要在层间传递原始字典或临时结构。
+5. **MemoryUnit 是跨层的记忆载体**
+   接入层产出它，构建层落盘并建索引，检索层与控制层读取它。`EvolveRequest` 等类型化
+   请求只封装已有记忆和调用选项，不另造一套记忆模型，也不以原始字典替代 MemoryUnit。
 
 ## 子模块 AGENTS.md 规则
 

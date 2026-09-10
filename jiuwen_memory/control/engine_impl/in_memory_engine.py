@@ -29,7 +29,7 @@ from jiuwen_memory.common.type_def import (
     Segment,
 )
 from jiuwen_memory.common.type_def.memory_filter import matches_memory_unit
-from jiuwen_memory.construction import EvolveMode
+from jiuwen_memory.construction import EvolveMode, EvolveRequest
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
 from jiuwen_memory.construction.evolver import Evolver, EvolverProducer
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
@@ -246,6 +246,7 @@ class InMemoryEngine(MemoryEngine):
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
+        """在本地兼容域摄入并按开关演进或直接落盘。"""
         _ensure_local_scope(scope)
         # 调用级开关（经 metadata 下推，对齐常见记忆层 add(infer=True)）：
         # - procedural=true：过程记忆抽取——原文不落 KV，evolver 让 extractor 把本轮汇总成
@@ -310,7 +311,7 @@ class InMemoryEngine(MemoryEngine):
                     "Engine.write procedural=True requires an Evolver (装配未注入 evolver)"
                 )
             result = await asyncio.to_thread(
-                evolver.evolve, units, EvolveMode.EXTRACT
+                evolver.evolve, EvolveRequest(units=units, mode=EvolveMode.EXTRACT)
             )
             # 落盘产物优先取回传对象：归属判定改写派生单元的 scope 之后，按入参 scope
             # 回读真源会落空。回传为空时回落按 id 回读，兼容不回填该字段的 Evolver 实现。
@@ -340,7 +341,7 @@ class InMemoryEngine(MemoryEngine):
                     "Engine.write infer=True requires an Evolver (装配未注入 evolver)"
                 )
             result = await asyncio.to_thread(
-                evolver.evolve, units, EvolveMode.EXTRACT
+                evolver.evolve, EvolveRequest(units=units, mode=EvolveMode.EXTRACT)
             )
             # 落盘产物优先取回传对象：归属判定改写派生单元的 scope 之后，按入参 scope
             # 回读真源会落空。回传为空时回落按 id 回读，兼容不回填该字段的 Evolver 实现。
@@ -716,7 +717,10 @@ class InMemoryEngine(MemoryEngine):
     async def evolve(
         self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
     ) -> str:
+        """提交既有内容演进任务；建树任务入口留待下一阶段接入。"""
         _ensure_local_scope(scope)
+        if mode == EvolveMode.HIERARCHY:
+            raise ValidationError("HIERARCHY 当前仅支持构建算子调用，任务入口尚未开放")
         if self._job_factory is None:
             raise RuntimeError(
                 "evolve requires job_factory, please configure "

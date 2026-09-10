@@ -6,8 +6,8 @@ from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_ke
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config.config import Config
-from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
 from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.evolver import EvolveMode, Evolver, EvolveRequest, EvolveResult
 from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
 from jiuwen_memory.control.jobs import Job, JobFactory, JobType
 from jiuwen_memory.control.jobs_impl.evolve_job import EvolveJobSpec
@@ -24,7 +24,8 @@ class RaisingEvolver(Evolver):
     def health(self) -> None:
         return None
 
-    def evolve(self, units, mode: EvolveMode) -> EvolveResult:
+    @staticmethod
+    def evolve(request: EvolveRequest) -> EvolveResult:
         raise AssertionError("Engine.evolve should delegate execution to Scheduler")
 
 

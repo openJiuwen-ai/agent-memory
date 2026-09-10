@@ -6,14 +6,15 @@
 |---|---|
 | 日期 | 2026-08-15 |
 | 影响范围 | jiuwen_memory/api/、jiuwen_memory/common/、jiuwen_memory/construction/、jiuwen_memory/control/、jiuwen_memory/ingest/、jiuwen_memory/retrieval/、jiuwen_memory/storage/；docs/specs/S01–S07；关联 [`F05-construction-spec-multimodal-design`](../construction/F05-construction-spec-multimodal-design.md) |
-| 测试基线 | 阶段 1：完整 unit 回归 1891 passed、5 skipped、480 deselected；变更 Python 文件 Ruff 与 git diff --check 通过；不代表后续建树/检索能力已验收 |
+| 测试基线 | 阶段 1：完整 unit 回归 1891 passed、5 skipped、480 deselected；阶段 2：2082 passed、5 skipped、480 deselected；新增 Python 文件 Ruff 通过、变更代码无新增 Ruff/CodeCheck 本地预审问题，历史 Ruff 诊断见阶段 2 验证；未执行云端 CodeCheck |
 | Refs | — |
 
 ## 阶段 1 落地（2026-09-10）
 
 本次只交付“能表达、接入和存储结构身份”的基础能力，不交付自动建树或层级召回。
-本文保留后续总体设计；除本节明确列出的能力及下文叶提示接入外，Composer、显式
-`evolve(HIERARCHY)`、结构查询/展开/MaxP、后台任务、修复器和各 kind 算法均尚未实现。
+本节记录阶段 1 完成时的状态：当时除本节明确列出的能力及下文叶提示接入外，Composer、
+显式 `evolve(HIERARCHY)`、结构查询/展开/MaxP、后台任务、修复器和各 kind 算法均未实现。
+当前新增交付以阶段 2 小节为准；后文仍保留尚未开放的总体设计。
 后文 P0–P5 是原设计分期，不等同于已经完成的提交阶段。
 
 ### 已交付与决定
@@ -68,6 +69,72 @@
 Extractor 新建 unit 的行为尚未统一。纯校验通过不等于全库引用可解析；结构词表也
 不承诺角色链算法约束。`IndexBuilder.rebuild()` 仍未实现恢复，六键投影不等于公开
 结构过滤、真源复核或层级召回已经打通。以上均是本阶段保留边界，不扩展为本轮修复。
+
+## 阶段 2 落地（2026-09-10）
+
+这一阶段补齐“显式给定 snapshot → 生成 time_span → 校验 → 保存或替换父层”的最小
+闭环。它是内部构建能力，不是公开建树任务功能；MemoryAPI 和 Engine 对 HIERARCHY
+仍明确拒绝，普通 add/write 不自动建树。
+
+### 决策与交付边界
+
+- 内部演进调用统一为 EvolveRequest，HIERARCHY 将已提供节点按叶/父角色分开，直接
+  委托 Composer 做有界替换；没有旧父也可首次建树。不进入抽取或去重，不按 infer
+  参数重新筛选。其余四种演进模式保持原行为。依赖和阈值分别用
+  EvolverDependencies / EvolverOptions 聚合，历史 YAML 配置不迁移。
+- Composer 只处理调用方提供的叶、旧父、tree home scope 和区间，不扫描全库。首次
+  build 拒绝覆盖已有父关系；replace 要求已知旧父的全部直接子叶齐全，带父边的叶
+  必须提供其旧父。边界切过旧父时，调用方可显式提供区间外的完整子集，缺子就拒绝，
+  不自行扩大数据库查询。这个边界使“范围选择”和“树结构构建”可以分别验收。
+- 候选在深拷贝上生成，提交前检查字段、完整 Scope+id、租户/主体边界、双向引用、
+  单父、无环与覆盖区间。校验失败零写入、不污染输入对象。session 可跨；org+space
+  不能跨，不同非空 user/agent 默认拒绝，只有构造配置显式允许才放开。
+- TIME 仅有 snapshot→time_span。按 UTC span_start、t_event、原输入序稳定排序；
+  相邻 session 或配置系统上下文变化、相邻 span 间隔大于阈值时切段。默认两小时，
+  等于阈值不切，限制的是相邻间隔而非整组时长；内容主题变化本身不构成判据。
+- 父正文采用时间/数量表头加有限原文摘录，不称为完整语义摘要。每组产生新 UUID 的
+  EPISODIC/time_span，覆盖全部直接子区间并保存有序 Scope 引用；叶正文、时间、tier、
+  来源与生命周期不变，包含关系不写 provenance 或 supersedes。
+- 父用户元数据遵循现有相等交集规则并深拷贝；系统元数据只上提配置的一致非空字符串
+  键及请求额外 metadata，同名时一致子值优先；不全量继承，infer/procedural/middle 不传播。实体保序合并；
+  不借建树重设计作者身份或访问权限继承。
+- Composer 注册为独立可选构建依赖，只有 Evolver 显式引用时才装配。两者必须显式
+  引用同一个具名 IndexBuilder，避免建树写入另一套真源。profile 只接受 TIME 两层
+  配置，未提供 profile 时用规则默认值；未知配置、LLM、scene/event、settle 均拒绝。
+- 保存顺序是新父本体 → 子边 → 旧父归档清边 → 旧父软删索引 → 新父与叶刷新索引，
+  全部经 IndexBuilder 的 FORWARD_ONLY / RETRIEVAL_ONLY / SOFT，不重复插入叶本体。
+  本体阶段失败即停，索引阶段逐项报告；complete=false 不代表回滚完成，也不触发自动修复。
+
+### 本阶段拒绝的方案
+
+- 不从 Composer 查询或“猜齐”缺失叶：自动扩大范围需要控制层读取与并发边界，不能
+  用部分输入构造出表面合法、实际丢失旧子关系的树。
+- 不提前接公开 HIERARCHY 任务、自动派生或召回：本阶段先验证明确输入上的保存契约，
+  不把类型存在当作鉴权、调度与范围查询已经完成。
+- 不引入 scene/event、模型摘要和父 L0/L1：规则摘录已能验证树结构，不用未交付的
+  模型配置假装支持更高层算法。
+- 不复用旧父 id、不硬删旧父或叶：父替换通过新 id 和归档表达；结构关系与版本血缘分离。
+- 不宣称事务和自动恢复：现有 IndexBuilder 没有全流程事务返回契约，批次失败可能
+  已部分写入，只能报告不完整状态并保留修复线索。
+
+### 验证与遗留
+
+阶段 2 测试覆盖排序与 UTC/微秒边界、相邻间隔和上下文分组、有限摘录、父范围与引用、
+元数据边界、输入不变、首次构建/连续重建、缺子拒绝和各保存阶段失败；同时回归原四种
+演进模式与构造配置。完整 unit 回归结果为 **2082 passed、5 skipped、480 deselected**
+（62.92 秒），保留 5 条既有 asyncio marker 警告。新增专项合计 191 例：TIME 规则 76、
+Composer 70、Evolver/Factory/API/Engine 接线与边界 45；另对 12 个既有迁移测试文件
+定向回归，164 passed。命令沿用阶段 1 的 unit 回归命令。
+
+新增生产/测试 Python 文件与修改的生产文件 Ruff 检查通过；既有 4 个测试文件保留
+22 条 HEAD 已存在的诊断（20 条 E501、2 条 F841），本次新增诊断为 0，未扩大范围
+修复历史问题。按已有 10 条 CodeCheck 规则完成本地预审，整理了构造参数、公共函数
+说明、同名遮蔽、无返回值调用与测试辅助断言，未发现新增风险；`git diff --check`
+通过。以上不代表 GitCode 云端扫描通过，也不代表未交付能力已验收。
+
+公开任务入口、自动范围读取、并发冲突控制、自动修复、结构生命周期联动、父 L0/L1、
+scene/event、其他 kind、层级召回与预算仍未交付。普通 EXTRACT 不同实现对 hierarchy
+的继承差异、IndexBuilder 全量 rebuild 恢复能力也没有在此阶段统一。
 
 ## 背景
 
@@ -128,7 +195,11 @@ Extractor 新建 unit 的行为尚未统一。纯校验通过不等于全库引�
 3. 既有非 `HIERARCHY` 演进模式不暗改 `HierarchyRef`；`evolve(HIERARCHY)` 只维护
    树结构边与派生父。
 
-## 决策（总体设计；当前落地范围以阶段 1 小节为准）
+## 决策（总体设计；当前落地范围以阶段 1、2 小节为准）
+
+下文包含未来目标，不表示各组件、策略和公开入口已经实现；未落地部分不能作为当前
+运行时行为依据。尤其公开 HIERARCHY、FORGET 断边、LayerAnnotator 父标注、查询展开、
+后台派生和修复仍为后续目标。
 
 ### 1. 首期采用内嵌 `HierarchyRef`
 
@@ -425,7 +496,7 @@ Dedup 主路径。父摘要的内容去重可以作为以后独立策略加入�
 ### 15. TIME 派生链及各 stage 逻辑
 
 TIME pipeline 的输入是指定 span 内、`role=snapshot`、生命周期和结构状态均可用的权威叶。
-输入先按 `span_start`、`temporal.t_event`、请求中的稳定顺序排序；重复 id、跨 org/space、
+输入先按 `span_start`、`temporal.t_event`、请求中的稳定顺序排序；完整 Scope+id 重复、跨 org/space、
 跨 kind 或区间非法在进入 stage 前拒绝。profile 未允许的跨 user/agent 同样拒绝。
 
 ```text
@@ -436,7 +507,7 @@ snapshot → TimeSpanMerger → time_span
 
 | stage | 输入 | 边界判定 | 输出内容 |
 |---|---|---|---|
-| `TimeSpanMerger` | 连续 snapshot | 设备/会话硬边界、配置的上下文键变化、事件间隔超过阈值时切断；其余相邻叶合并 | 一个连续活动片段，子为 snapshots |
+| `TimeSpanMerger` | 连续 snapshot | 会话硬边界、配置的系统上下文键变化、相邻 span 间隔超过阈值时切断；设备仅在配置其上下文键后参与 | 一个连续活动片段，子为 snapshots；阶段 2 正文仅为有界摘录 |
 | `SceneSegmenter` | 有序 time_spans | 明确上下文切换为硬边界；主题/任务相似度、最大持续时间和显式结束信号形成软边界 | 一个可回顾场景，子为 time_spans |
 | `EventBuilder` | 有序 scenes | 按任务目标、动作序列和实体重合聚合；不得为了相似度打乱时间顺序或让 scene 多父 | 一个任务流程或可复用模式，子为 scenes |
 
@@ -449,9 +520,9 @@ snapshot → TimeSpanMerger → time_span
 | role | span | content / layers | tier |
 |---|---|---|---|
 | `snapshot` | 事件点可表示为起止相同 | 保留权威内容；不由 pipeline 改写 | 通常 `EPISODIC` |
-| `time_span` | 直接 snapshot 区间并集 | 连续活动摘要，保留关键应用/标题等 metadata | 通常 `EPISODIC` |
-| `scene` | 直接 time_span 区间并集 | 目标、关键动作、结果和证据摘要 | 通常 `EPISODIC`，稳定抽象后可为 `SEMANTIC` |
-| `event` | 直接 scene 区间并集 | 任务模式、步骤和结果；可写 `event` 领域 metadata | 通常 `PROCEDURAL` |
+| `time_span` | 直接 snapshot 区间的最小包络 | 连续活动摘要，保留关键应用/标题等 metadata | 通常 `EPISODIC` |
+| `scene` | 直接 time_span 区间的最小包络 | 目标、关键动作、结果和证据摘要 | 通常 `EPISODIC`，稳定抽象后可为 `SEMANTIC` |
+| `event` | 直接 scene 区间的最小包络 | 任务模式、步骤和结果；可写 `event` 领域 metadata | 通常 `PROCEDURAL` |
 
 父 span 默认取直接子 span 的最小起点和最大终点，不得缩小到遗漏直接子。父正文先由
 stage 生成 segments，再由 `LayerAnnotator` best-effort 生成 `layers.l0/l1`。子
@@ -585,10 +656,10 @@ Ingestor 只允许把一组完整且有效的提示映射到当前 unit 的叶�
 
 消费后的四个提示键从产出 unit 的 `system_metadata` 移除，输入 payload 不被修改；
 CloudEngine 不再回注已消费提示。解析路径自行检查字段，不调用公共 `validate_ref` /
-`validate_tree`。这些提示只声明当前 unit 的结构身份，不证明边存在；父子边的
-构建和维护属于后续阶段。
+`validate_tree`。这些提示只声明当前 unit 的结构身份，不证明边存在；父子边由阶段 2
+的独立 Composer 调用构建，写入路径本身不触发建树，后续维护仍未接入。
 
-## 关键数据流（后续目标，阶段 1 尚未实现）
+## 关键数据流（公开任务与召回的后续目标，阶段 2 尚未开放）
 
 树结构专用路径不写入 architecture §14（该节只保留通用 write/recall/evolve 骨架）；
 建树与按需展开细节如下。
@@ -665,11 +736,12 @@ search(..., hierarchy_kind=..., hierarchy_role=?, expand_depth=N, rollup=?)
 
 ## 验证
 
-阶段 1 的模型、接入与索引投影已落地，完整 unit 回归 1891 passed、5 skipped；其余代码与以下
-后续设计验收仍未完成。不得用已有 pytest 结果替代未交付能力的实现验证。
+阶段 1 的模型、接入与索引投影已落地，完整 unit 回归 1891 passed、5 skipped；阶段 2
+补齐内部最小 TIME 构建及受限替换，完整 unit 回归 2082 passed、5 skipped。
+不得用已有 pytest 结果替代未交付能力的实现验证。
 
 以下 P0–P5 是决策 19 的原设计验收分组，不是本次按能力整理的提交阶段顺序。
-本次阶段 1 覆盖模型、叶提示与索引投影；其余验收组保留为后续目标，按实际交付
+阶段 1 覆盖模型、叶提示与索引投影，阶段 2 覆盖 P1 中的最小内部构建切片；其余验收保留为后续目标，按实际交付
 逐项验证，不因属于同一个原设计分组而提前标记完成。
 
 ### 阶段 0：设计验收
@@ -687,11 +759,11 @@ search(..., hierarchy_kind=..., hierarchy_role=?, expand_depth=N, rollup=?)
 - [x] 叶提示只来自系统命名空间，消费后不回注，不生成父节点或改变 infer 分流。
 - [x] build/update 正确生成六键并清理旧投影；全量 rebuild 恢复不作为已实现能力。
 
-### 后续验收组 P1：构建与重建（未实现）
+### 后续验收组 P1：构建与重建（阶段 2 部分实现并验证）
 
-- [ ] 普通 add 不自动构建父树，显式叶写入仍可工作。
-- [ ] `evolve(HIERARCHY)` 能建立最小父子树，其他演进模式不暗改结构字段。
-- [ ] `replace_in_span` 只替换相交派生父节点，不删除权威叶。
+- [x] 普通 add 不自动构建父树，显式叶写入仍可工作。
+- [x] 内部 EvolveRequest/HIERARCHY 能建立最小父子树；公开任务入口另行验收。
+- [x] 对显式备齐的输入，`replace_in_span` 只替换相交派生父节点，不删除权威叶。
 - [ ] 父节点内容层在落盘和建索引前按 best-effort 策略生成或安全降级。
 
 ### 后续验收组 P2：构建、检索与预算（未实现）

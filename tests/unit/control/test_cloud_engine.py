@@ -26,7 +26,7 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.classifier import Classifier
-from jiuwen_memory.construction.evolver import EvolveMode, Evolver, EvolveResult
+from jiuwen_memory.construction.evolver import EvolveMode, Evolver, EvolveRequest, EvolveResult
 from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine_impl.cloud_engine import CloudEngine
@@ -215,10 +215,10 @@ class _RecordingEvolver(Evolver):
     def health(self) -> None:
         return None
 
-    def evolve(self, units: list[MemoryUnit], mode: EvolveMode) -> EvolveResult:
-        self.calls.append(([unit.content for unit in units], mode))
+    def evolve(self, request: EvolveRequest) -> EvolveResult:
+        self.calls.append(([unit.content for unit in request.units], request.mode))
         created_ids: list[str] = []
-        for unit in units:
+        for unit in request.units:
             derived = MemoryUnit(
                 id=f"{self.name}-derived-{len(created_ids)}",
                 scope=unit.scope,

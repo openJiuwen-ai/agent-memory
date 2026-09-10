@@ -76,6 +76,10 @@
     `MemoryUnit.hierarchy`；CloudEngine 回注引擎管理的系统元数据时跳过已消费提示，
     避免把输入提示重新当作普通 metadata 落盘。用户元数据不参与消费，infer/procedural
     的既有分流不因叶提示改变；本阶段 write 不创建父节点。
+19. **内部演进统一请求对象**：Engine、EvolveJob、MiddleToLongJob 调构建层时使用
+    `EvolveRequest`；公开 `Engine.evolve(scope, mode, channel)` 签名不变。
+    HIERARCHY 在任务提交前抛 `ValidationError`，当前不通过普通 EvolveJob 建树；
+    内部建树所需的显式候选与有界区间由构建层调用方提供。
 
 ## 双通道调度机制
 

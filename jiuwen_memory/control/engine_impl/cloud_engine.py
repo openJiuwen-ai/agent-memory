@@ -30,7 +30,7 @@ from jiuwen_memory.common.type_def import (
     Segment,
 )
 from jiuwen_memory.common.type_def.memory_filter import matches_memory_unit
-from jiuwen_memory.construction import EvolveMode
+from jiuwen_memory.construction import EvolveMode, EvolveRequest
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
 from jiuwen_memory.construction.evolver import Evolver, EvolverProducer
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
@@ -257,6 +257,7 @@ class CloudEngine(MemoryEngine):
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
+        """按写入配置摄入、抽取或直接落盘，不隐式创建父节点。"""
         raw_meta = dict(system_metadata or {})
         procedural = _truthy(raw_meta, "procedural")
         infer = _truthy(raw_meta, "infer")
@@ -301,7 +302,7 @@ class CloudEngine(MemoryEngine):
                     "CloudEngine.write procedural=True requires an Evolver (装配未注入 evolver)"
                 )
             result = await asyncio.to_thread(
-                evolver.evolve, units, EvolveMode.EXTRACT
+                evolver.evolve, EvolveRequest(units=units, mode=EvolveMode.EXTRACT)
             )
             # 落盘产物优先取回传对象：归属判定改写派生单元的 scope 之后，按入参 scope
             # 回读真源会落空。回传为空时回落按 id 回读，兼容不回填该字段的 Evolver 实现。
@@ -334,7 +335,7 @@ class CloudEngine(MemoryEngine):
                     "CloudEngine.write infer=True requires an Evolver (装配未注入 evolver)"
                 )
             result = await asyncio.to_thread(
-                evolver.evolve, units, EvolveMode.EXTRACT
+                evolver.evolve, EvolveRequest(units=units, mode=EvolveMode.EXTRACT)
             )
             # 落盘产物优先取回传对象：归属判定改写派生单元的 scope 之后，按入参 scope
             # 回读真源会落空。回传为空时回落按 id 回读，兼容不回填该字段的 Evolver 实现。
@@ -711,6 +712,8 @@ class CloudEngine(MemoryEngine):
         self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
     ) -> str:
         """提交 EvolveJob 到 Scheduler——mode/evolver 运行时流入 EvolveJob（不进 Spec 装配）。"""
+        if mode == EvolveMode.HIERARCHY:
+            raise ValidationError("HIERARCHY 当前仅支持构建算子调用，任务入口尚未开放")
         if self._job_factory is None:
             raise RuntimeError(
                 "evolve requires job_factory, please configure "

@@ -25,8 +25,8 @@ from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer impo
 from jiuwen_memory.common.type_def import MemoryUnit, Scope, memory_key
 from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.common.type_def.memory_codec import dumps
-from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
 from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.evolver import EvolveMode, Evolver, EvolveRequest, EvolveResult
 from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
@@ -111,8 +111,9 @@ class _StubEvolver(Evolver):
     def health(self) -> None:
         return None
 
-    def evolve(self, units, mode: EvolveMode) -> EvolveResult:
-        return EvolveResult(created_ids=[f"derived-{unit.id}" for unit in units])
+    @staticmethod
+    def evolve(request: EvolveRequest) -> EvolveResult:
+        return EvolveResult(created_ids=[f"derived-{unit.id}" for unit in request.units])
 
 
 class _ContinuityLLM(LLM):
