@@ -630,7 +630,7 @@ agent-memory/
 │   └── RULES.md
 │
 ├── jiuwen_memory_adapter/                   # Agent 插件接入（依赖内核的封装）
-│   ├── JiwenSwarm/
+│   ├── jiuwenswarm/
 │   ├── openclaw/
 │   ├── codex/
 │   └── hermes/
@@ -639,8 +639,7 @@ agent-memory/
 │   ├── core/                       #   共享应用核：Server 装配 + legacy dispatch + profiles + config_loader
 │   ├── http_server/                #   HTTP/REST surface（POST /v1/<verb>）
 │   ├── mcp_server/                 #   MCP surface（FastMCP：记忆 API → MCP 工具）
-│   ├── cli/                        #   CLI surface（client + 命令表）
-│   └── sdk/                        #   SDK（Python 库嵌入）
+│   └── cli/                        #   CLI surface（client + 命令表）
 │
 ├── examples/                       # 示例：嵌入用法 / 服务用法 / 端云协同
 │
