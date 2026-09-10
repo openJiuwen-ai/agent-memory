@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from jiuwen_memory.api import SearchOptions
 from jiuwen_memory.api.memory_api_impl import assemble
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Context, MemoryTier, Modality, Scope
@@ -55,7 +56,7 @@ class TestE2EWritePath:
             "简洁",
             Context(DEFAULT_SCOPE),
             security=legacy_request_context(DEFAULT_ACTOR),
-            top_k=10,
+            options=SearchOptions(top_k=10),
         )
         assert len(result.items) > 0
         assert any("简洁" in item.content for item in result.items)
@@ -95,7 +96,7 @@ class TestE2EBackgroundExtract:
             "偏好",
             Context(DEFAULT_SCOPE),
             security=legacy_request_context(DEFAULT_ACTOR),
-            top_k=10,
+            options=SearchOptions(top_k=10),
         )
         assert len(result.items) > 0
 
@@ -140,7 +141,7 @@ class TestE2EOfflineProfile:
             "测试",
             Context(DEFAULT_SCOPE),
             security=legacy_request_context(DEFAULT_ACTOR),
-            top_k=5,
+            options=SearchOptions(top_k=5),
         )
         assert len(result.items) > 0
 
@@ -159,6 +160,6 @@ class TestE2EOfflineProfile:
             "测试",
             Context(DEFAULT_SCOPE),
             security=legacy_request_context(DEFAULT_ACTOR),
-            top_k=5,
+            options=SearchOptions(top_k=5),
         )
         assert len(result.items) > 0

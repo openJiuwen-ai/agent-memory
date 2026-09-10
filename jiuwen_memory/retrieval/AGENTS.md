@@ -39,7 +39,7 @@
      ↓ recall → 去重 id 点读 → 恢复分入口候选
      ↓ 或 recall_and_get → 物化候选
      ↓ 或 Storage.retrieve(parsed, fuser) → 已融合候选
-4. Fuser 前完成真源复核，再对 ScoredMemoryUnit 做分层归并和跨通道融合
+4. Fuser 前完成真源复核（含显式 hierarchy 条件），再做分层归并和跨通道融合
 5. 截断精排预算 budget = fused[:max(rerank_max, top_k)]
      ↓
 6. 可选 Reranker 精排（记 calibrated 标志）
@@ -101,6 +101,11 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 
 10. **Discloser 只做内容塑形**
    候选记忆单元已由 Retriever 经 UnitReader 点读、有效性过滤、（可选）重排后给定。Discloser 不再做点读/过滤/重排，只按 level 截/取内容产出结果。
+
+11. **结构条件不由 Parser 推断或改写**
+    `PipelineRetriever` 在 parse 后从 `RetrievalQuery` 回填 kind/role/span，叠加外层 AND
+    下推；三条检索路径与关键词实体扩展共用真源复核。span 是独立的闭区间轴，TIME
+    查询可不指定窗口，但节点自身必须有有效区间。`parent_id` 从真源返回，不触发遍历。
 
 ## 与其他子目录的边界
 

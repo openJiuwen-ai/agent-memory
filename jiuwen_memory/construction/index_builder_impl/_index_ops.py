@@ -121,9 +121,13 @@ def index_metadata(
         if temporal.t_event is not None
         else T_EVENT_UNKNOWN
     )
-    # t_valid 仍有值才写：未生效记忆本就稀疏，下推用 LTE as_of 即可，缺值放行不破。
+    # t_valid 仍有值才写：None 表示无生效起始界；检索用 NOT(GT as_of) 放行缺值，
+    # 不能用直接 LTE（通用范围比较会排除缺字段）。真源仍保留 None。
     if temporal.t_valid is not None:
         metadata["t_valid"] = int(temporal.t_valid.timestamp() * 1000)
+    # 消息时间是独立的显式过滤字段，保持真源 epoch 毫秒口径；未知时不写哨兵。
+    if temporal.t_message is not None:
+        metadata["t_message"] = int(temporal.t_message.timestamp() * 1000)
     # t_invalid 恒写：空（永久有效）落哨兵值，否则该字段缺失会被 `t_invalid > as_of`
     # 的下推按缺失字段排他——那批正是回溯查询最该命中的活跃记忆。
     metadata["t_invalid"] = (

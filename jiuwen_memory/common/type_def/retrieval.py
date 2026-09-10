@@ -10,6 +10,7 @@ from typing import Any, Generic, Protocol, TypeVar
 
 from .feature import Entity
 from .filter import FilterExpr
+from .hierarchy import HierarchyKind, HierarchyRole
 from .memory import MemoryUnit
 
 
@@ -59,6 +60,10 @@ class ParsedQuery:
     channels: list[RecallChannel] = field(default_factory=list)
     include_archived: bool = False
     extensions: dict[str, Any] = field(default_factory=dict)
+    hierarchy_kind: HierarchyKind | None = None
+    hierarchy_role: HierarchyRole | None = None
+    span_start: datetime | None = None
+    span_end: datetime | None = None
 
 
 @dataclass

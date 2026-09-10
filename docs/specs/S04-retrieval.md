@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-09-03 |
+| 最近一次修订日期 | 2026-09-10 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
@@ -58,9 +58,10 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
     入口失败抛 `StorageRetrievalError`。显式空 channels 是无效输入。
 14. **结构轴正交**：`ContentLayers`/`DisclosureLevel` 是 unit 内披露，`HierarchyRef` 是跨 unit 结构；CLM/ELM、`MemoryUnit.temporal` 与 `RecallChannel.TEMPORAL` 均不替代 `HierarchyKind.TIME`。
 15. **单 kind 层级请求**：一次层级请求只处理一个 `HierarchyKind.TIME|TOPIC|DIRECTORY|CLUSTER|CUSTOM`，不隐式跨 kind。
-16. **层级默认保守**：`expand_depth=0`、`rollup=false`；只返回直接召回命中的节点，不遍历子节点，也不传播后代分数；父优先由显式 `hierarchy_role` 父侧角色过滤实现。
-17. **展开顺序与隔离**：Expander 只沿直接 `child_ids` 向下，且必须保持父节点声明的稳定顺序；跨 org/space 引用不可见；同租户内跨 session/user 的子节点按 `child_scopes`（或缺省父 Scope）解析。
-18. **展开共用既有 token 预算**：`expand_depth>0` 时选子与主披露级分配消耗同一 `RetrievalQuery.max_tokens`（来自 `context.extensions["max_tokens"]`），不另设独立树预算参数；Discloser 仍只负责单个 unit 的内容塑形。`span_start/span_end` 是结构覆盖区间，与 `as_of` 的 valid-time 回溯及 `time_from/time_to` 的 event-time 范围独立。
+16. **层级默认保守**：只返回直接命中节点，不遍历子节点或传播后代分数；单一
+    `hierarchy_role` 可过滤父角色或叶角色。`expand_depth`、`rollup` 尚未开放。
+17. **展开顺序与隔离（目标）**：Expander 只沿直接 `child_ids` 向下，且必须保持父节点声明的稳定顺序；跨 org/space 引用不可见；同租户内跨 session/user 的子节点按 `child_scopes`（或缺省父 Scope）解析。
+18. **展开共用既有 token 预算（目标）**：`expand_depth>0` 时选子与主披露级分配消耗同一 `RetrievalQuery.max_tokens`（来自 `context.extensions["max_tokens"]`），不另设独立树预算参数；Discloser 仍只负责单个 unit 的内容塑形。已实现的 `span_start/span_end` 是结构覆盖区间，与 `as_of` 的 valid-time 回溯及 `time_from/time_to` 的 event-time 范围独立。
 
 ## 接口契约
 
@@ -68,7 +69,7 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
 
 ```python
 class RetrievalOperatorType(str, Enum):
-    QUERY_PARSER / RECALLER / FUSER / DISCLOSER / RETRIEVER
+    QUERY_PARSER / FUSER / DISCLOSER / RETRIEVER
 
 class RetrievalOperator(ABC):
     def operator_type(self) -> RetrievalOperatorType  # 自描述
@@ -83,31 +84,36 @@ class RetrievalOperator(ABC):
 |---|---|---|
 | `retrieve` | `(scope: Scope, query: RetrievalQuery) -> RetrievalResult` | 在 scope 内执行完整检索链路；层级字段为空时执行既有链路 |
 
-目标父优先链路固定为：
+阶段 4 已实现链路：
 
 ```text
 QueryParser
 → hierarchy kind/role/span 硬过滤
 → 既有 L0/L1/L2 内容层多路召回
+→ 真源复核（包括 ACTIVE、kind/role、结构闭区间）
 → fusion → rerank → threshold → top_k
-→ 可选 Expand（expand_depth > 0）
-→ tree score / convergence / tree token budget
 → 对每个保留 unit 调用 Discloser
 → RetrievalResult
 ```
 
 `hierarchy_kind`、`hierarchy_role` 与结构 span 先于内容层召回生效；显式层级召回只接受
-`HierarchyStatus.ACTIVE` 的节点。生命周期过滤与普通 recall 相同：
-FORGOTTEN/SUPERSEDED 不可见，ARCHIVED 仅在 `include_archived=true` 时可见。
+`HierarchyStatus.ACTIVE` 的有效结构节点。生命周期过滤与普通 recall 相同：当前态
+只允许 ACTIVE（或显式 include_archived 的 ARCHIVED）；历史 as_of 排除 FORGOTTEN，
+其他生命周期仍按 `[t_valid, t_invalid)` 判定，不另行屏蔽历史 SUPERSEDED 版本。
 指定父侧 `hierarchy_role` 时，召回集合只包含该父角色；省略 role 时，同 kind 下所有
 可见活动角色均可参与。过滤后的候选仍走既有融合、重排和阈值链路，因此层级父节点
-不是一条绕过相关性判断的特殊结果通道。默认不展开。
+不是一条绕过相关性判断的特殊结果通道。空文本仍短路；本阶段不展开、不上卷、不建树。
+
+三条路径 `RECALL_GET_RANK` / `RECALL_AND_GET_RANK` / `RETRIEVE` 及关键词实体扩展
+都复核 `MemoryUnit.hierarchy`，不信任索引或 metadata 的陈旧投影。内存全文/向量同样
+在 top_k 前过滤。图路径仍是物化后复核，无法补回先被图 limit 截断的正确候选；
+缺失/陈旧索引和毫秒投影导致的额外候选占位也不能由真源复核补齐。
 
 ### QueryParser / Fuser
 
 | 接口 | 签名 | 语义 |
 |---|---|---|
-| `QueryParser.parse` | `(query: RetrievalQuery) -> ParsedQuery` | 产生规范化文本、软召回信号、硬过滤条件和时间条件；完整保留层级查询字段 |
+| `QueryParser.parse` | `(query: RetrievalQuery) -> ParsedQuery` | 产生规范化文本、软召回信号、硬过滤条件和时间条件；Retriever 在 parse 后显式回填四个 hierarchy 字段，防止自定义 Parser 丢失或改写 |
 | `Fuser.fuse` | `(query: ParsedQuery, candidates: list[list[ScoredUnit]]) -> list[ScoredUnit]` | 按 unit_id 融合多路、多内容层候选并稳定排序 |
 
 单路召回（`Recaller`）不是本层算子：它是 `CompositeDomainStore` 的内部件，契约与实现
@@ -212,9 +218,14 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 数组成员；`NE` / `NOT_IN` 分别按对应正向谓词取反。标量 `CONTAINS` 不退化为等值或
 字符串子串，数组 `EQ` / `IN` 也不退化为成员匹配。
 
-历史 `as_of` 查询追加 `lifecycle != forgotten`、`t_valid <= as_of`、
-`t_invalid > as_of`。开放有效期在索引中投影为 `T_INVALID_OPEN`，真源仍保持
+历史 `as_of` 查询追加 `lifecycle != forgotten`、`NOT(t_valid > as_of)`、
+`t_invalid > as_of`。前者保留 `t_valid=None` 的无起始界含义（直接 LTE 会排除缺值）。
+开放有效期在索引中投影为 `T_INVALID_OPEN`，真源仍保持
 `t_invalid=None`；UnitReader 按真源 `[t_valid, t_invalid)` 区间复核。
+
+普通 `id` 字段在 normalize 时统一为索引规范名 `unit_id`，不改
+`user_metadata.id`；非空 `temporal.t_message` 同样投影为 UTC epoch 毫秒，确保内存
+前置过滤与既有真源匹配一致。这些兼容修复不改变 metadata 的通用缺值比较语义。
 
 事件时间窗 `[time_from, time_to)` 下推为 `OR(AND(GTE from, LT to), EQ 0)` 子树：
 `AND` 子组放行窗内已知事件时间 unit，`EQ 0` 分支放行 `t_event=None` 的派生
@@ -258,25 +269,25 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 
 ### RetrievalQuery
 
-既有字段保持兼容，目标新增字段标为“目标”：
+内部查询保留既有字段，已实现四个结构条件；后续字段标为“目标”，当前构造器不接受：
 
 | 字段 | 类型 | 默认 | 语义 |
 |------|------|------|------|
 | `text` | str | `""` | 自然语言查询 |
 | `filters` | FilterExpr \| None | `None` | scope 之外的硬过滤；支持 AND / OR / NOT 树 |
 | `as_of` | datetime \| None | `None` | valid-time 回溯点 |
-| `top_k` | int | `10` | 父层结果上限 |
-| `disclosure` | DisclosureLevel | `L0` | 父结果及后代的请求披露级 |
+| `top_k` | int | `10` | 直接命中节点的结果上限 |
+| `disclosure` | DisclosureLevel | `L0` | 直接命中节点的请求披露级 |
 | `max_tokens` | int \| None | `None` | 既有单 unit 自适应披露预算 |
 | `with_trajectory` | bool | `False` | 是否返回轨迹 |
 | `channels` | list[RecallChannel] \| None | `None` | 覆盖召回通道 |
 | `rerank` | bool \| None | `None` | 覆盖重排开关 |
 | `include_archived` | bool | `False` | 是否纳入归档 unit |
 | `extensions` | dict[str, Any] | `{}` | 调用级透传配置；本地调用可携带运行时对象 |
-| `hierarchy_kind`（目标） | HierarchyKind \| None | `None` | 单一结构 kind |
-| `hierarchy_role`（目标） | HierarchyRole \| None | `None` | 父层角色过滤 |
-| `span_start`（目标） | datetime \| None | `None` | 结构区间起点 |
-| `span_end`（目标） | datetime \| None | `None` | 结构区间终点 |
+| `hierarchy_kind` | HierarchyKind \| None | `None` | 单一结构 kind |
+| `hierarchy_role` | HierarchyRole \| None | `None` | 单一父或叶角色过滤 |
+| `span_start` | datetime \| None | `None` | 结构区间起点 |
+| `span_end` | datetime \| None | `None` | 结构区间终点 |
 | `expand_depth`（目标） | int | `0` | 后代最大边深度；0 不展开 |
 | `rollup`（目标） | bool | `False` | 是否启用后代分数向父传播 |
 
@@ -300,18 +311,18 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 | `include_archived` | bool | 当前态真源复核是否允许 archived |
 | `extensions` | dict[str, Any] | 透传配置 |
 
-1. `top_k > 0`，`expand_depth >= 0`；非空 `max_tokens` 必须大于 0。
-2. `hierarchy_role`、任一 span、`expand_depth > 0` 或 `rollup=true` 都要求显式 `hierarchy_kind`。
+1. `top_k > 0`；非空 `max_tokens` 必须大于 0。Python kind/role 要求枚举对象，HTTP/CLI 负责字符串转换。
+2. `hierarchy_role`、任一 span 都要求显式 `hierarchy_kind`。
 3. span 必须成对出现且 `span_start <= span_end`。
 4. 区间采用闭区间相交：节点满足 `node.span_start <= query.span_end AND node.span_end >= query.span_start`；端点相等算相交。没有 span 的节点不匹配有 span 的查询。
-5. `hierarchy_kind=HierarchyKind.TIME` 的查询可以省略 query span，此时查询已有 TIME 结构的全部范围；但每个匹配节点自身必须具有有效 span。阻塞 ensure 仍要求 query span 有界。这不改变对 `MemoryUnit.temporal.t_event` 的普通时间过滤。
-6. hierarchy 功能关闭时，任何显式层级字段、非零展开深度或 `rollup=true` 都抛 `PolicyError`；没有层级请求的召回不受影响。
+5. `hierarchy_kind=HierarchyKind.TIME` 可省略 query span，此时不限定结构窗口；节点自身仍须有有效 span。这不改变普通 event-time 过滤。朴素时间按 UTC，真源比较保留微秒，索引使用 UTC epoch 毫秒。
+6. 公开 API 在 `hierarchy.enabled=false` 时拒绝 typed 层级查询，普通调用不受影响；直接调用低层 Retriever 不读取 API 策略。通用 filters 不自动补充完整层级语义。
 
 | 类型 | 关键字段 |
 |------|----------|
 | `ScoredUnit` | unit_id / score / channel / evidence: list[ChannelEvidence] |
 | `ChannelEvidence` | channel / rank / score / weight / contribution |
-| `RetrievedItem` | unit_id / score / content / user_metadata / system_metadata / level: DisclosureLevel |
+| `RetrievedItem` | unit_id / score / content / user_metadata / system_metadata / level: DisclosureLevel / parent_id: str = "" |
 | `TrajectoryStep` | stage / channel / candidate_count / cost_ms / detail |
 | `ScoredMemoryUnit` | unit: MemoryUnit / score / channel / evidence |
 | `ChannelError` | channel / source / error_type / message |
@@ -319,7 +330,12 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 
 ### ParsedQuery
 
-`ParsedQuery` 保留既有 `raw/rewritten/intent/tokens/keywords/entities/vector/scalar_filters/as_of/time_from/time_to/channels/extensions`，目标增加与 `RetrievalQuery` 同名的 hierarchy 字段。Parser 不把 hierarchy span 改写成 event-time，也不从 TEMPORAL 通道推导 TIME kind。
+`ParsedQuery` 保留既有字段，增加与 `RetrievalQuery` 同名的四个 hierarchy 字段；它们
+由 Retriever 在 parse 后回填。Parser 不把结构 span 改写成 event-time，也不从
+TEMPORAL 推导 TIME。公共 `HierarchyQuery` 负责参数纯校验与真源匹配，统一检索各路径。
+
+`RetrievedItem.parent_id` 由两个 Discloser 从真源引用直接填充，普通 unit 或根节点为
+空串。它不是全局唯一键，也不表示自动读取父节点；父 Scope 仍由真源引用定位。
 
 ### ExpandRequest / ExpandIssue / ExpandResult（目标契约，尚未实现）
 
@@ -416,3 +432,9 @@ jiuwen_memory/retrieval/<算子>_impl/
 | S07-common | 复用 Tokenizer/Embedder/FeatureExtractor/LLM/Reranker |
 | S08-config | 能力开关与 rerank/embedder 晚绑定经 ConfigSource |
 | architecture.md §8 | 检索链路设计 |
+
+## 修订记录
+
+| 日期 | 内容 |
+|---|---|
+| 2026-09-10 | 阶段 4：四个结构查询字段、外层 AND 下推、三路径真源复核和 parent_id；区分已实现查询与目标展开/上卷，同步 Recaller 边界和历史版本可见性 |

@@ -449,20 +449,28 @@ agent/session **不作**隔离维度——实体是 user 级知识，同 user �
 Document 使用与 VectorRecord 相同的六个 hierarchy metadata 键，并保留既有
 `content_layer`。L0/L1/L2 文档的当前 id 规则保持不变；增加 metadata 不改变主键。
 
-### 层级区间表示与后续过滤边界
+### 层级区间表示与过滤边界
 
-阶段 1 只交付索引字段投影，不宣称已贯通公开层级查询、结构过滤下推或真源复核。
-以下是后续层级过滤的目标表达，继续复用 `FilterClause(field, op, value)`：
+阶段 4 已贯通公开层级查询、全文/向量结构过滤下推和物化后的真源复核，
+继续复用 `FilterClause(field, op, value)`：
 
 - kind/role/parent 精确过滤使用 `EQ`，例如
   `field="hierarchy_kind"`、`field="parent_id"`。
 - 区间相交 `[query_start, query_end]` 表示为
   `span_start <= query_end AND span_end >= query_start`，即分别使用 `LTE` 与 `GTE`。
-- 索引区间与后续查询比较值使用 UTC epoch 毫秒；朴素 datetime 在投影时按 UTC
+- 索引区间与查询比较值使用 UTC epoch 毫秒；朴素 datetime 在投影时按 UTC
   解释。KV codec 中的 span 仍用 ISO 8601 序列化，两者不能混用。
 - filters 只承载 scope 之外的谓词，scope 仍是 Store 方法的显式第一参数。
 
-后端若不能原生执行区间谓词，可以在同 scope 候选上做等价后过滤，但不得放宽结果语义。
+六键均为 normalize 的内置字段，不加 `user_metadata.` 前缀；用户同名键须显式写
+命名空间。KV/检索真源字段过滤从 `unit.hierarchy` 生成六键，不使用同名 metadata。
+内存全文和向量实现也在评分/排序/top_k 前执行表达式，比较语义复用公共
+`matches_filter_value`（标量/数组、缺值、否定语义保持一致）。
+普通 id 别名规范化为 `unit_id`；非空 `t_message` 投影毫秒，空值仍缺省。历史查询
+以 `NOT(t_valid > as_of)` 表达无起始界，避免新增内存过滤排除 t_valid 缺值的合法记忆。
+
+真源复核只能防止错召，不能补回索引滞后、毫秒精度额外命中或先 top_k 后过滤导致的
+漏召。当前 GraphRecaller 不下推结构谓词，图路径仅提供后置复核，不宣称 top_k 完整。
 未来索引重建应枚举 KV 真源的 MemoryUnit，重新生成内容层与 hierarchy metadata，
 不得从旧索引反推 hierarchy；当前 `rebuild()` 未实现该恢复能力。
 
@@ -531,4 +539,5 @@ Store 抽象、跨后端不变量与注册机制。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-10 | 阶段 4：结构六键规范化、全文/向量含内存实现的 pre-top-k 过滤、真源复核与图路径已知限制 |
 | 2026-09-10 | 同步 F08 阶段 1：KV 内嵌 hierarchy、全文/向量/一体化六键投影、UTC epoch 毫秒和旧投影清理；明确查询贯通与 rebuild 恢复尚未实现 |

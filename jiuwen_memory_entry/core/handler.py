@@ -55,6 +55,7 @@ from jiuwen_memory.api import (
     PrincipalPath,
     RequestSecurityContext,
     Scope,
+    SearchOptions,
     SpaceMember,
     SpacePatch,
     SpacePolicy,
@@ -642,10 +643,12 @@ def _search(srv, request: DispatchRequest) -> Body:
         _require(payload, "query"),
         Context(scope, extensions=extensions),
         security=_request_security(request),
-        filters=payload.get("filters"),  # dict DSL / 旧 list：由 API 边界 normalize，非法则 400
-        top_k=int(payload.get("k", 10)),
-        disclosure=DisclosureLevel.L2,
-        with_trajectory=trace,
+        options=SearchOptions(
+            filters=payload.get("filters"),
+            top_k=int(payload.get("k", 10)),
+            disclosure=DisclosureLevel.L2,
+            with_trajectory=trace,
+        ),
     )
     hits = [
         {

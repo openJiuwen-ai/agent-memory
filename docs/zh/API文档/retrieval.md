@@ -1,9 +1,8 @@
 # Retrieval 层 API
 
-Retrieval 层将检索拆分为五类可插拔算子：
+Retrieval 层将检索拆分为四类可插拔算子：
 
 - `QueryParser`：把外部查询解析为结构化表示。
-- `Recaller`：在单个逻辑通道内召回候选。
 - `Fuser`：融合多个召回入口的候选并排序。
 - `Discloser`：将已确定顺序的记忆塑形为 L0/L1/L2 内容。
 - `Retriever`：面向调用方的统一检索入口。
@@ -34,6 +33,24 @@ result: RetrievalResult = retriever.retrieve(
 
 `scope` 是显式的隔离轴，表示“在哪个范围内找”；`RetrievalQuery` 表示“找什么”。两者始终分开传递，不应把 Scope 维度放入 `filters`。
 
+调用公开 MemoryAPI 时使用统一选项对象：
+
+```python
+from jiuwen_memory.api import SearchOptions
+from jiuwen_memory.common.type_def import HierarchyKind, HierarchyRole
+
+result = api.search(
+    "数据库迁移", context,
+    SearchOptions(top_k=5, hierarchy_kind=HierarchyKind.TIME,
+                  hierarchy_role=HierarchyRole.TIME_SPAN),
+    security=security,
+)
+```
+
+省略 options 使用默认值；旧平铺选项关键字不再接受。HTTP/CLI 放在 `options` 对象内。
+typed 层级查询需启用 `hierarchy.enabled`，仅返回当前 Scope 内直接命中节点，
+不自动展开、上卷或建树。完整公开契约见 [S02](../../specs/S02-memory-api.md)。
+
 ## 2. RetrievalOperator 基类
 
 ```python
@@ -47,7 +64,7 @@ from jiuwen_memory.retrieval.base import RetrievalOperator, RetrievalOperatorTyp
 | `operator_type()` | `RetrievalOperatorType` | 返回算子类型 |
 | `health()` | `None` | 健康时返回 `None`，失败时抛异常 |
 
-`RetrievalOperatorType` 包含 `QUERY_PARSER`、`RECALLER`、`FUSER`、`DISCLOSER`、`RETRIEVER`。
+`RetrievalOperatorType` 包含 `QUERY_PARSER`、`FUSER`、`DISCLOSER`、`RETRIEVER`；Recaller 归 Storage 数据面。
 
 ## 3. RetrievalQuery 请求类型
 
@@ -65,6 +82,10 @@ class RetrievalQuery:
     rerank: bool | None = None
     include_archived: bool = False
     extensions: dict[str, Any] = field(default_factory=dict)
+    hierarchy_kind: HierarchyKind | None = None
+    hierarchy_role: HierarchyRole | None = None
+    span_start: datetime | None = None
+    span_end: datetime | None = None
 ```
 
 | 字段 | 说明 |
@@ -80,6 +101,8 @@ class RetrievalQuery:
 | `rerank` | 调用级精排开关；`None` 使用装配默认 |
 | `include_archived` | 当前态查询是否允许 archived 记忆进入候选 |
 | `extensions` | 透传给 `ParsedQuery.extensions` 的自定义选项；内核不解释其 key |
+| `hierarchy_kind` / `hierarchy_role` | 单一树类型与可选单角色，role 要求显式 kind |
+| `span_start` / `span_end` | 成对、有序的结构闭区间；朴素时间按 UTC，与 event-time/valid-time 独立 |
 
 `as_of` 表示“在某个系统有效时间点看到什么”。`ParsedQuery.time_from/time_to` 则表示内容中事件发生的时间范围，两者是独立时间轴。
 
@@ -213,6 +236,11 @@ Storage 召回路径由 `Storage.preferred_retrieval_pipeline()` 决定：
 - `RETRIEVE`：Storage 内完成召回、物化和 Fuser 排序。
 
 不论选择哪条路径，都应在 Fuser 前完成真源复核，包括 lifecycle、valid-time、event-time 和完整 `FilterExpr`。
+
+显式层级条件还检查 `MemoryUnit.hierarchy` 的 kind、role、ACTIVE 状态与有效区间；
+TIME 查询可不带窗口，但节点须有有效 span。四个条件在 parse 后由 Retriever 回填。
+全文/向量（含内存）在 top_k 前过滤，图路径只后置复核；真源复核不能补回已截断候选。
+`RetrievedItem.parent_id` 来自真源，默认空串表示根或未挂接，不能作为跨 Scope 全局键。
 
 ### 边界行为
 

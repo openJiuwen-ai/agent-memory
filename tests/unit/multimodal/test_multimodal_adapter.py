@@ -13,6 +13,7 @@ import pytest
 import requests
 import yaml
 
+from jiuwen_memory.api import SearchOptions
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.errors import BackendError, ValidationError
 from jiuwen_memory.common.normalizer.normalizer_impl import video_asr, video_pipeline
@@ -578,18 +579,16 @@ def test_multimodal_config_add_and_search_end_to_end(tmp_path, monkeypatch) -> N
             encoding="utf-8"
         )
     )["memory_api"]
-    settings["normalizer"]["default"]["params"]["routes"]["video"]["params"][
-        "temp_root"
-    ] = str(tmp_path / "video-work")
+    settings["normalizer"]["default"]["params"]["routes"]["video"]["params"]["temp_root"] = str(
+        tmp_path / "video-work"
+    )
     # Pipeline 被 mock，两个模型端口只需用 echo 完成装配。
     settings["llm"]["video_text"]["target"] = "echo"
     settings["llm"]["video_vision"]["target"] = "echo"
 
     def fake_run_pipeline(self, video_path: Path, run_root: Path):
         del self, video_path, run_root
-        return _video_memory_output(
-            RawPayload(id="video-1", scope=Scope(user="user-1"))
-        )
+        return _video_memory_output(RawPayload(id="video-1", scope=Scope(user="user-1")))
 
     monkeypatch.setattr(VideoNormalizer, "_run_pipeline", fake_run_pipeline)
     video_path = tmp_path / "demo.mp4"
@@ -614,15 +613,12 @@ def test_multimodal_config_add_and_search_end_to_end(tmp_path, monkeypatch) -> N
         "deployment",
         Context(scope),
         security=legacy_request_context(scope),
-        top_k=10,
-        with_trajectory=True,
+        options=SearchOptions(top_k=10, with_trajectory=True),
     )
     assert result.items
     assert {item.unit_id for item in result.items}.issubset({unit.id for unit in units})
     assert {
-        step.detail.get("branch")
-        for step in result.trajectory
-        if step.detail.get("branch")
+        step.detail.get("branch") for step in result.trajectory if step.detail.get("branch")
     } >= {"native", "multimodal_clip", "multimodal_event"}
 
 

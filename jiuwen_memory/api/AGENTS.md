@@ -13,6 +13,7 @@
 | 文件 | 职责 |
 |---|---|
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
+| `search_options.py` | SearchOptions：普通检索选项与单 kind/role、结构区间条件；query、Context、security 独立传入 |
 | `memory_api_impl/` | 具体实现目录 |
 | `memory_api_impl/assembly.py` | 公开装配：`assemble(config) -> MemoryAPI`、`assemble_runtime(config) -> MemoryRuntime`（仅 api+close）；内部 `_build_kernel` 才持有 KV/Storage/ingest |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI facade：构造、属性，公开方法由 mixin 提供 |
@@ -40,10 +41,12 @@
    身份取自 `security.auth.actor`；鉴权通过后只透传已鉴权的 target `scope`，`security` 及其中的 actor 不传入控制层/检索层/构建层/存储层。
 
 3. **search 参数拆分在本层边界**
-   `search(query, context, *, security, ...)` 中的 `context: Context` 在本层拆开：
+   `search(query, context, options=None, *, security)` 中的 `context: Context` 在本层拆开：
    - `context.scope` 作独立轴穿透到 Engine
    - `context.extensions["max_tokens"]` 由 API 边界解析为 `RetrievalQuery.max_tokens`
    - 其余 `context.extensions` 写入 `RetrievalQuery.extensions`
+   - `options: SearchOptions` 承载普通与层级选项，不接受旧平铺选项关键字；
+     typed 层级条件在 READ 鉴权后检查 `hierarchy.enabled`，不扩大 Scope 或放宽权限谓词。
 
 4. **admin_* 不经 Engine**  
    `admin_get/set/all` 直达 `PolicyManager`，不经过 `MemoryEngine`（Engine 中对应方法抛 NotImplementedError）。

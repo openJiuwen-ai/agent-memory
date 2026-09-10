@@ -38,30 +38,20 @@ class _RecordingApi:
         self.add_calls = []
         self.search_calls = []
 
-    def add(
-        self,
-        content,
-        scope,
-        modality,
-        *,
-        security,
-        tags=None,
-        assets=None,
-        system_metadata=None,
-        user_metadata=None,
-    ):
+    def add(self, content, scope, modality, **options):
+        """记录写入身份；其余写入选项由此 stub 原样接收。"""
         self.add_calls.append(
-            {"scope": scope, "identity": security.auth.actor, "modality": modality}
+            {"scope": scope, "identity": options["security"].auth.actor, "modality": modality}
         )
         return [handler.MemoryUnit(id="unit-1", scope=scope, segments=[Segment(content=content)])]
 
-    def search(self, query, context, *, security, filters=None, **options):
+    def search(self, query, context, options=None, *, security):
+        """记录统一搜索选项与独立认证主体。"""
         self.search_calls.append(
             {
                 "query": query,
                 "context": context,
                 "identity": security.auth.actor,
-                "filters": filters,
                 "options": options,
             }
         )
@@ -77,7 +67,8 @@ def _dispatch_add(payload: dict) -> dict:
     srv = _RecordingServer()
     status, body = _dispatch(srv, "add", {"content": "hello", **payload})
 
-    assert status == 200, body
+    if status != 200:
+        pytest.fail(f"dispatch add failed: status={status}, response={body}")
     return srv.api.add_calls[0]
 
 
@@ -133,7 +124,7 @@ def test_search_forwards_filter_dsl_to_api_boundary() -> None:
     )
 
     assert status == 200, body
-    assert srv.api.search_calls[0]["filters"] == filters
+    assert srv.api.search_calls[0]["options"].filters == filters
 
 
 def test_search_preserves_json_extensions_and_returns_both_metadata_namespaces() -> None:
@@ -141,8 +132,9 @@ def test_search_preserves_json_extensions_and_returns_both_metadata_namespaces()
         def __init__(self) -> None:
             self.context = None
 
-        def search(self, query, context, *, security, filters=None, **options):
-            del query, security, filters, options
+        def search(self, query, context, options=None, *, security):
+            """记录上下文并返回双元数据空间的搜索结果。"""
+            del query, security, options
             self.context = context
             return SimpleNamespace(
                 items=[

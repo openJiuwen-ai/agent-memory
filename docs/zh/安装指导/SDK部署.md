@@ -58,7 +58,7 @@ python -m pip install -e '.[embed]'
 Fulltext 与 Graph Store，嵌入、LLM 和精排也使用无外部依赖的默认实现。
 
 ```python
-from jiuwen_memory.api import Context, Scope, assemble_runtime, legacy_request_context
+from jiuwen_memory.api import Context, Scope, SearchOptions, assemble_runtime, legacy_request_context
 
 runtime = assemble_runtime()
 api = runtime.api
@@ -76,7 +76,7 @@ try:
         "用户喜欢用什么语言",
         Context(scope),
         security=security,
-        top_k=5,
+        options=SearchOptions(top_k=5),
     )
     print(units[0].id)
     print([item.content for item in result.items])
@@ -123,7 +123,7 @@ curl -X POST http://127.0.0.1:8137/v1/add \
 
 curl -X POST http://127.0.0.1:8137/v1/search \
   -H 'Content-Type: application/json' \
-  -d '{"query":"用户喜欢用什么语言","context":{"scope":{"org":"local","space":"","user":"developer","agent":"","session":""},"extensions":{}},"top_k":5}'
+  -d '{"query":"用户喜欢用什么语言","context":{"scope":{"org":"local","space":"","user":"developer","agent":"","session":""},"extensions":{}},"options":{"top_k":5}}'
 ```
 
 HTTP 认证模式按 `--auth-mode`、环境变量 `JIUWEN_MEMORY_HTTP_AUTH_MODE`、默认值
@@ -228,7 +228,7 @@ export ES_HOSTS='http://127.0.0.1:9200'
 配置格式和环境变量展开逻辑，可以这样加载：
 
 ```python
-from jiuwen_memory.api import Context, Scope, assemble_runtime, legacy_request_context
+from jiuwen_memory.api import Context, Scope, SearchOptions, assemble_runtime, legacy_request_context
 from jiuwen_memory_entry.core.config_loader import load_layer
 
 layer = load_layer("local-real-storage.yml")
@@ -239,7 +239,9 @@ scope = Scope(org="demo", user="alice")
 security = legacy_request_context(scope)
 try:
     api.add("需要持久化的记忆", scope, security=security)
-    result = api.search("持久化", Context(scope), security=security, top_k=5)
+    result = api.search(
+        "持久化", Context(scope), options=SearchOptions(top_k=5), security=security,
+    )
     print([item.content for item in result.items])
 finally:
     runtime.close(wait=True)

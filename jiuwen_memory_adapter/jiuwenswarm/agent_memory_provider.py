@@ -36,6 +36,7 @@ from jiuwen_memory.api import (
     EvolveMode,
     EvolveTaskOptions,
     Modality,
+    SearchOptions,
     assemble,
     legacy_request_context,
 )
@@ -529,10 +530,10 @@ class _HttpClient(_AgentMemoryClient):
 
     HTTP verb 响应格式（``jiuwen_memory_entry/core/handler.py``）：
     - ``add``    → ``{ok, op, item_id, item}``
-    - ``search`` → ``{ok, op, hits:[{score, item_id, content}], count}``
+    - ``search`` 已对齐公开 MemoryAPI：请求含 ``query/context/options``，响应为 ``RecallResult``。
     - ``list``   → ``{ok, op, items:[_unit_view], count}``
     - ``evolve`` 已对齐公开 MemoryAPI：请求含 ``scope/options``，响应为 job_id 字符串。
-      其余动词仍使用上面的 legacy 形态，后续需单独迁移。
+      ``add/list`` 仍使用上面的 legacy 形态，后续需单独迁移。
     """
 
     def __init__(self, base_url: str) -> None:
@@ -585,21 +586,33 @@ class _HttpClient(_AgentMemoryClient):
     async def search(
         self, query, scope, *, top_k=10
     ) -> list[dict[str, Any]]:
-        # HTTP /v1/search 的 hits 不带 tier 字段（RetrievedItem 只有
-        # unit_id/score/content），HTTP 模式返回全部命中（含 EPISODIC 原文）。
-        payload = self._scope_payload(scope) | {"query": query, "k": top_k}
+        """将统一 HTTP 搜索结果转换为 provider 的命中格式。"""
+        payload = {
+            "query": query,
+            "context": {
+                "scope": {
+                    "org": scope.org,
+                    "space": scope.space,
+                    "user": scope.user,
+                    "agent": scope.agent,
+                    "session": scope.session,
+                },
+            },
+            "options": {"top_k": top_k, "disclosure": "l2"},
+        }
         logger.info(
             "[AgentMemoryMemoryProvider] HTTP POST /v1/search query=%r k=%d",
             query, top_k,
         )
         data = await self._request("/v1/search", payload)
-        hits = data.get("hits", [])
+        hits = [
+            {"content": item["content"], "score": item["score"], "item_id": item["unit_id"]}
+            for item in data.get("items", [])
+        ]
         logger.info(
             "[AgentMemoryMemoryProvider] /v1/search -> count=%d",
             len(hits),
         )
-        if not data.get("ok"):
-            raise RuntimeError(f"search failed: {data.get('error')}")
         return hits
 
     async def list_semantic(self, scope) -> list[dict[str, Any]]:
@@ -709,6 +722,7 @@ class _InProcessClient(_AgentMemoryClient):
     async def search(
         self, query, scope, *, top_k=10
     ) -> list[dict[str, Any]]:
+        """使用统一搜索选项查询 semantic 记忆。"""
         api_scope = self._to_api_scope(scope)
         # 进程内模式经 search 的 tier filter 下推过滤 semantic。
         filters = [_semantic_filter()]
@@ -717,9 +731,11 @@ class _InProcessClient(_AgentMemoryClient):
             query,
             Context(scope=api_scope),
             security=legacy_request_context(api_scope),
-            filters=filters,
-            top_k=top_k,
-            disclosure=DisclosureLevel.L2,
+            options=SearchOptions(
+                filters=filters,
+                top_k=top_k,
+                disclosure=DisclosureLevel.L2,
+            ),
         )
         return [
             {"content": it.content, "score": it.score, "item_id": it.unit_id}

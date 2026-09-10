@@ -64,7 +64,7 @@
 14. **四条层次轴正交**：`ContentLayers`/`DisclosureLevel` 表示同一 unit 的 L0/L1/L2 披露；
     多模态 CLM/ELM（`system_metadata["memory_level"]` + `provenance`）表示单媒体源构建粒度；
     `MemoryTier` 表示认知角色；`HierarchyRef` 表示跨 unit 的树结构包含。
-    阶段 1 已交付结构类型与纯校验，尚未交付建树和检索；任一轴不得推导或代替另外三轴。
+    当前已交付结构类型、两层 TIME 建树和结构查询；任一轴不得推导或代替另外三轴。
 15. **树结构引用一致**（纯校验契约）：`kind` 与 `role` 必须同时设置或同时缺省；
    空 `HierarchyRef` 等价于未启用树结构。非空结构**不得成环**；同一 kind 下采用单父
    严格树；父子引用按完整 Scope+id 双向一致，直接子引用不得重复；不同 Scope 可有同名 id。
@@ -389,7 +389,19 @@ hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
 `validate_tree` 不加载集合外的父子节点，对无法定位到本集合的引用跳过邻居核对，
 因此不能把通过校验等同于“全库树完整”；显式携带的引用 Scope 仍须满足边界规则，
 不能借邻居未传入而放宽。普通 Ingestor 和 codec 均不自动调用这两个函数；
-生产构建的提交前调用将在后续 Composer 阶段接入。
+生产 Composer 已在保存前调用结构校验；这仍不代表读取并检查全库树。
+
+`HierarchyQuery` 承载 kind/role/span 四字段并做纯校验：枚举类型、role/span 要求 kind、
+区间成对有序；朴素时间按 UTC。`matches_hierarchy(unit, query)` 只读当前引用，
+显式请求要求匹配 kind、可选 role、ACTIVE 状态和有效引用，并在请求有窗口时按
+微秒精度检查闭区间相交；TIME 节点即使查询没有窗口也必须有有效 span。普通查询
+不额外筛掉非树记忆或 dismissed 节点。该函数不加载邻居、不读取策略、不建树。
+
+`ParsedQuery` 新增同名四字段。`is_retrieval_candidate(unit, query, *, filters)`
+统一组合既有生命周期/valid-time/event-time、层级与调用路径选择的 FilterExpr。
+结构六个裸字段从 hierarchy 投影，不与 metadata 同名键混淆；
+`matches_filter_value(value, clause)` 复用字段比较语义给内存索引和真源过滤。
+普通过滤别名 `id` 统一规范化为 `unit_id`，显式 `user_metadata.id` 不受影响。
 
 `hierarchy_index_metadata(ref)` 只生成 S06 约定的六个索引字段；空结构返回空 dict。
 `HIERARCHY_INDEX_KEYS` 是这六键的共享集合，供独立索引与一体化写路径统一识别旧
@@ -558,4 +570,5 @@ jiuwen_memory/common/<组件>/
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-10 | 阶段 4：HierarchyQuery、结构真源匹配、ParsedQuery 四字段、统一候选复核及共享字段比较；同步已交付 Composer 校验 |
 | 2026-09-10 | 同步 F08 阶段 1：HierarchyRef 与枚举、纯校验的集合边界、六键投影所需时间语义及 codec _v=4 增量兼容；建树与层级检索仍未实现 |

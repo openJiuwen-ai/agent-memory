@@ -445,35 +445,56 @@ API 不得在上述流程中自行执行以下逻辑：
 def search(
     query: str,
     context: Context,
+    options: SearchOptions | None = None,
     *,
     security: RequestSecurityContext,
-    filters: FilterExpr | list[FilterClause] | dict | None = None,
-    as_of: datetime | None = None,
-    top_k: int = 10,
-    disclosure: DisclosureLevel = DisclosureLevel.L0,
-    with_trajectory: bool = False,
 ) -> RetrievalResult: ...
+
+@dataclass(frozen=True)
+class SearchOptions:
+    filters: FilterExpr | list[FilterClause] | dict | None = None
+    as_of: datetime | None = None
+    top_k: int = 10
+    disclosure: DisclosureLevel = DisclosureLevel.L0
+    with_trajectory: bool = False
+    hierarchy_kind: HierarchyKind | None = None
+    hierarchy_role: HierarchyRole | None = None
+    span_start: datetime | None = None
+    span_end: datetime | None = None
 ```
 
-混合检索：鉴权 READ→拆 Context→装配 RetrievalQuery→委托 Engine。`filters/as_of/top_k/disclosure/with_trajectory` 和 `context.extensions["max_tokens"]` 的既有处理不变。
+**状态：阶段 4 已实现**。`SearchOptions` 从 `jiuwen_memory.api` 导入，普通选项与
+四个层级条件统一装配到 `RetrievalQuery`。省略 options 或传 `None` 使用默认值；
+旧的平铺 `filters/as_of/top_k/disclosure/with_trajectory` 关键字不再接受。
+HTTP/CLI 将这些字段放在 `options` 对象内；枚举用字符串、datetime 用 ISO 8601：
 
-**状态：已设计、尚未实现**（层级增量参数；不另设公开 `MemoryAPI.expand`）
-
-```python
-# 目标增量，尚未出现在 MemoryAPI.search 签名中
-hierarchy_kind: HierarchyKind | None = None
-hierarchy_role: HierarchyRole | None = None
-span_start: datetime | None = None
-span_end: datetime | None = None
-expand_depth: int = 0
-rollup: bool = False
+```json
+{
+  "query": "数据库迁移",
+  "context": {"scope": {"org": "demo", "user": "alice", "agent": "assistant"}},
+  "options": {
+    "top_k": 5,
+    "hierarchy_kind": "time",
+    "hierarchy_role": "time_span",
+    "span_start": "2026-09-10T00:00:00Z",
+    "span_end": "2026-09-10T23:59:59Z"
+  }
+}
 ```
 
-新增参数原样装配到 `RetrievalQuery`。`expand_depth=0`、`rollup=false` 保证默认只返回直接召回命中的节点，不展开后代、不把后代分数上卷；调用方通过 `hierarchy_role` 指定父侧角色时，即形成父节点优先召回。省略 role 时，同 kind 下所有活动角色均可参与召回。span 是 `HierarchyRef` 结构区间，不替代查询文本解析得到的 event-time。
+READ 鉴权、权限路由谓词、跨空间判权、`context.extensions` 中的
+`max_tokens/coords/spaces` 处理保持既有语义。层级条件不放进 extensions，不扩大 Scope。
+指定单一 role 时只查该角色，省略 role 时允许同 kind 的活动节点参与；返回仍受文本
+相关性、融合、重排、阈值及 top_k 限制。空文本不变成结构枚举。
 
-`expand_depth>0` 时，Retriever 在同一次 search 内沿命中父节点展开子证据（单 kind）；**不另设公开 `MemoryAPI.expand`**。展开选子与父命中共用既有 `max_tokens` 上下文预算，不另设独立预算参数。
+校验及闭区间语义见 [S04-retrieval.md](S04-retrieval.md)。typed 层级查询受
+`hierarchy.enabled` 控制（默认 false），关闭时鉴权后抛 `PolicyError`；普通 search
+不受影响。该开关不是访问控制，通用 `filters` 中的结构字段仍只是底层字段过滤，
+不自动启用 typed 层级请求的 ACTIVE、kind、span 有效性语义。
 
-校验和闭区间相交语义以 [S04-retrieval.md](S04-retrieval.md) 为准。任一显式 hierarchy 参数、非零展开深度或 rollup 都构成层级请求；功能关闭时抛 `PolicyError`。普通 search 不因 hierarchy 关闭而失败。
+本阶段只返回直接命中节点；`RetrievedItem.parent_id` 来自真源引用，空串表示根或
+未挂接节点，不能脱离 Scope 当成全局定位键。`expand_depth`、`rollup` 尚未开放，
+也不接受占位参数；按需下钻、分数上卷、ensure 保留为后续设计。
 
 #### list
 
@@ -1179,6 +1200,8 @@ jiuwen_memory/api/memory_api_impl/
 | architecture.md §6 | 已实现 MemoryAPI 清单 |
 
 ## 修订记录
+
+- 2026-09-10：阶段 4 统一 SearchOptions，开放单 kind/role 与结构闭区间查询，补齐嵌套协议、策略门禁及 parent_id；展开和上卷仍未开放。
 
 - 2026-09-10：同步内部 `EvolveRequest` 与 HIERARCHY 枚举，明确公开建树仍拒绝；修正已落地的 hierarchy 字段状态。
 - 2026-09-10：阶段 3 开放显式 TIME snapshot→time_span；公开演进统一为 EvolveTaskOptions，迁移 Python/JSON 契约，明确 WRITE+UPDATE、默认关闭策略、范围边界及真实任务终态。

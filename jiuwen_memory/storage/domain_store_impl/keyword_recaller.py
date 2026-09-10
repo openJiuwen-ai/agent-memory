@@ -125,7 +125,8 @@ class KeywordRecaller(Recaller):
 
         result = self._merge_maxp(batch1, batch2)[:top_k]
         logger.info(
-            "KeywordRecaller: layer=%s scope=%s top_k=%d hits=%d units=%d batch2=%d merged=%d returned=%d%s",
+            "KeywordRecaller: layer=%s scope=%s top_k=%d hits=%d units=%d "
+            "batch2=%d merged=%d returned=%d%s",
             self._layer, scope, top_k, len(hits), len(batch1), len(batch2),
             len(batch1) + len(batch2), len(result),
             " (short-circuit: batch1>=top_k)" if not batch2 and len(batch1) >= top_k else "",
@@ -185,7 +186,8 @@ class KeywordRecaller(Recaller):
         filters = EntityStoreFilters.from_scope(scope)
         try:
             entity_records = self._entity_store.find_by_entity_text_hash(
-                space_id, tuple(hashes), filters=filters, limit=self._entity_list_limit(len(hashes)),
+                space_id, tuple(hashes), filters=filters,
+                limit=self._entity_list_limit(len(hashes)),
             )
         except Exception:
             logger.warning("entity_expansion_lookup_failed space_id=%s", space_id, exc_info=True)
@@ -235,11 +237,8 @@ class KeywordRecaller(Recaller):
                 continue
             if not is_retrieval_candidate(
                 units[uid],
-                as_of=query.as_of,
-                time_from=query.time_from,
-                time_to=query.time_to,
+                query,
                 filters=query.scalar_filters,
-                include_archived=query.include_archived,
             ):
                 continue
             eligible.append((uid, raw))

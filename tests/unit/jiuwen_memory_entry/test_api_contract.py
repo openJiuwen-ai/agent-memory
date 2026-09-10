@@ -28,6 +28,7 @@ from jiuwen_memory.api import (
     MemoryUnit,
     Modality,
     Scope,
+    SearchOptions,
     Segment,
     SpaceMember,
     SpaceSpec,
@@ -169,9 +170,7 @@ def test_evolve_rejects_old_top_level_options(old_field: str) -> None:
 )
 def test_evolve_rejects_invalid_nested_options(options_json, diagnostic: str) -> None:
     with pytest.raises(ValidationError, match=diagnostic):
-        api_contract.parse_request(
-            "evolve", {"scope": {"user": "alice"}, "options": options_json}
-        )
+        api_contract.parse_request("evolve", {"scope": {"user": "alice"}, "options": options_json})
 
 
 def test_evolve_requires_options_argument() -> None:
@@ -323,16 +322,95 @@ def test_search_request_decodes_context_and_keeps_dict_filter_dsl() -> None:
                 "scope": {"org": "acme", "user": "alice"},
                 "extensions": {"language": "zh"},
             },
-            "filters": {"tags": {"contains": "habit"}},
-            "disclosure": "l2",
+            "options": {
+                "filters": {"tags": {"contains": "habit"}},
+                "disclosure": "l2",
+            },
         },
     )
 
     assert arguments["context"] == Context(
         scope=Scope(org="acme", user="alice"), extensions={"language": "zh"}
     )
-    assert arguments["filters"] == {"tags": {"contains": "habit"}}
-    assert arguments["disclosure"] is DisclosureLevel.L2
+    assert arguments["options"].filters == {"tags": {"contains": "habit"}}
+    assert arguments["options"].disclosure is DisclosureLevel.L2
+
+
+def test_search_options_decode_hierarchy_enums_and_independent_times() -> None:
+    arguments = api_contract.parse_request(
+        "search",
+        {
+            "query": "coffee",
+            "context": {"scope": {"user": "alice"}},
+            "options": {
+                "top_k": 3,
+                "disclosure": "l1",
+                "with_trajectory": True,
+                "as_of": "2026-09-11T00:00:00+00:00",
+                "hierarchy_kind": "time",
+                "hierarchy_role": "time_span",
+                "span_start": "2026-09-10T09:00:00+08:00",
+                "span_end": "2026-09-10T10:00:00+08:00",
+            },
+        },
+    )
+
+    assert arguments["options"] == SearchOptions(
+        top_k=3,
+        disclosure=DisclosureLevel.L1,
+        with_trajectory=True,
+        as_of=datetime.fromisoformat("2026-09-11T00:00:00+00:00"),
+        hierarchy_kind=HierarchyKind.TIME,
+        hierarchy_role=HierarchyRole.TIME_SPAN,
+        span_start=datetime.fromisoformat("2026-09-10T09:00:00+08:00"),
+        span_end=datetime.fromisoformat("2026-09-10T10:00:00+08:00"),
+    )
+
+
+@pytest.mark.parametrize("raw_options", [None, {}])
+def test_search_accepts_null_and_empty_options(raw_options) -> None:
+    arguments = api_contract.parse_request(
+        "search",
+        {"query": "coffee", "context": {"scope": {}}, "options": raw_options},
+    )
+
+    expected = None if raw_options is None else SearchOptions()
+    assert arguments["options"] == expected
+
+
+def test_search_omitted_options_use_public_api_default() -> None:
+    arguments = api_contract.parse_request("search", {"query": "coffee", "context": {"scope": {}}})
+
+    assert "options" not in arguments
+
+
+@pytest.mark.parametrize(
+    "old_field", ["filters", "as_of", "top_k", "disclosure", "with_trajectory"]
+)
+def test_search_rejects_top_level_options(old_field: str) -> None:
+    with pytest.raises(ValidationError, match=f"unknown field.*'{old_field}'"):
+        api_contract.parse_request(
+            "search",
+            {"query": "coffee", "context": {"scope": {}}, old_field: "old"},
+        )
+
+
+@pytest.mark.parametrize(
+    ("raw_options", "diagnostic"),
+    [
+        ([], "options must be an object"),
+        ({"hierarchy_kind": "other"}, "options.hierarchy_kind must be one of"),
+        ({"hierarchy_role": ["snapshot"]}, "options.hierarchy_role must be one of"),
+        ({"span_start": "invalid"}, "options.span_start must be an ISO 8601 datetime"),
+        ({"top_k": True}, "options.top_k must be an integer"),
+        ({"expand": True}, "unknown field.*options.*expand"),
+    ],
+)
+def test_search_rejects_malformed_nested_options(raw_options, diagnostic: str) -> None:
+    with pytest.raises(ValidationError, match=diagnostic):
+        api_contract.parse_request(
+            "search", {"query": "coffee", "context": {"scope": {}}, "options": raw_options}
+        )
 
 
 def test_grant_request_decodes_nested_scopes_actions_and_datetime() -> None:

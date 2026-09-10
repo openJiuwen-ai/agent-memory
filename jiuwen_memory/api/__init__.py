@@ -86,9 +86,11 @@ from jiuwen_memory.retrieval import (
 from .access_security import build_dev_authenticator
 from .memory_api import MemoryAPI
 from .memory_api_impl import MemoryRuntime, assemble, assemble_runtime
+from .search_options import SearchOptions
 
 __all__ = [
     "MemoryAPI",
+    "SearchOptions",
     "EvolveTaskOptions",
     "HierarchyComposeOptions",
     "HierarchyKind",

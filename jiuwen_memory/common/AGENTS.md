@@ -17,9 +17,10 @@
 | `type_def/` | 核心数据类型定义目录 |
 | `type_def/memory.py` | MemoryUnit/Relation/Segment/Temporal/ContentLayers 等；MemoryUnit id 在完整 Scope 内唯一；KV key 前缀 `MEMORY_KEY_PREFIX`/`memory_key`（建索引记忆 `/memory/{id}`）。`ContentLayers`(l0/l1) 为分层披露标注，由 LayerAnnotator 对超阈 content 产出 |
 | `type_def/hierarchy.py` | HierarchyKind/Role/Status、HierarchyRef、叶角色映射、结构索引六键投影与 UTC 毫秒转换；`validate_ref` / `validate_tree` 是无存储依赖的纯校验，不负责生成父节点 |
+| `type_def/hierarchy_query.py` | HierarchyQuery 纯校验与真源节点匹配；kind/role、ACTIVE、结构闭区间及 UTC 微秒语义，不访问父子节点或策略 |
 | `type_def/scope.py` | Scope：`org/space/user/agent/session` 五维归属；非空 `space` 是全局唯一的逻辑隔离标识且为 keyword-only，旧位置参数保持 `org/user/agent/session` 顺序。另有 `KERNEL_COORD_KEYS`——内核自带的归属坐标实体名，三项取值必须是 `Scope` 的字段名，故与该类同处 |
 | `type_def/filter.py` | FilterClause/FilterGroup/FilterExpr 及 normalize/evaluate；统一 API、检索和存储的树形过滤契约 |
-| `type_def/memory_filter.py` | MemoryUnit 字段投影与 FilterExpr 公共求值；供 retrieval 真源复核和 KV list 兼容实现共用 |
+| `type_def/memory_filter.py` | MemoryUnit 字段投影与 FilterExpr 公共求值；结构六键从 hierarchy 真源生成；共享 matches_filter_value 为 KV、检索复核及内存全文/向量提供同一字段比较语义 |
 | `type_def/memory_codec.py` | `MemoryUnit` ↔ bytes 编解码（`dumps`/`loads`）；当前 `_v=4`，保留 vectors、双 metadata 与系统瞬态键剥除；非空 hierarchy 序列化、缺失读为空结构，仍拒绝未迁移的 `_v<4` MemoryUnit |
 | `type_def/raw.py` | RawPayload（含交给 Ingestor 映射的 `assets` 资产引用）；KV key 前缀 `MESSAGES_KEY_PREFIX`/`messages_key`（未建索引 infer 原文 `/messages/{id}`） |
 | `type_def/audit.py` | AuditEvent：记录 actor scope、target scope、action、decision、target_id 与 detail |
