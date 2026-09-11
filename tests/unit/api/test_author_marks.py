@@ -60,3 +60,36 @@ def test_batch_add_marks_each_item_without_echoing_the_marks_back() -> None:
         assert _marks(outcome.units[0]) == ("user:alice", "")
         # ……逐项结果回填的仍是调用方输入的归一化形态
         assert outcome.item.user_metadata == {"project": "batch"}
+
+
+def test_add_skips_author_marks_for_empty_principal_when_governance_disabled() -> None:
+    """未装配空间治理时，空身份（运维通道）写入不抛错、不盖作者标记。
+
+    allow_all / sqlite 把空身份当运维通道放行（``require_principal`` 的门控见鉴权点），
+    ``_with_author_marks`` 对空身份跳过 ``derive_author``——否则它抛校验异常，运维通道
+    的写入直接打挂。装配了空间治理的部署里空身份在鉴权点已被拦截，见
+    ``test_space_aware_authorization``。
+    """
+    api = build_kernel().api  # 默认 sqlite：_needs_space_facts() 为假
+    ops = Scope(org="acme")  # 主体维皆空，运维通道形态
+    units = api.add("hello", ops, security=legacy_request_context(ops))
+    assert units
+    metadata = units[0].system_metadata or {}
+    assert AUTHOR_PRINCIPAL not in metadata
+    assert AUTHOR_AGENT not in metadata
+
+
+def test_batch_add_skips_author_marks_for_empty_principal_when_governance_disabled() -> None:
+    """空身份批量写入同样不抛错、逐项不盖作者标记。"""
+    api = build_kernel().api
+    ops = Scope(org="acme")
+    result = api.batch_add(
+        [BatchWriteItem(content="first"), BatchWriteItem(content="second")],
+        ops,
+        security=legacy_request_context(ops),
+    )
+    assert all(not outcome.error for outcome in result.outcomes)
+    for outcome in result.outcomes:
+        metadata = outcome.units[0].system_metadata or {}
+        assert AUTHOR_PRINCIPAL not in metadata
+        assert AUTHOR_AGENT not in metadata

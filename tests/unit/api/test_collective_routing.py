@@ -1471,3 +1471,20 @@ def test_a_normal_decision_writes_no_degradation_record(api) -> None:
         if event.detail.get("entry") == "routing_degraded"
     ]
     assert degraded == []
+
+
+def test_cross_space_search_allows_empty_principal_when_governance_disabled() -> None:
+    """未装配空间治理时，空身份跨空间检索不抛权限错（运维通道）。
+
+    ``_search_spaces`` 的 ``require_principal`` 与单空间鉴权点同一门控：未装配空间治理
+    时不做形态校验。空身份的 ``spaces`` 反查取组织通配桶、空库返回空候选集，检索拿到空
+    结果而非权限拒绝。装配了空间治理的部署里空身份在鉴权点被拦截，见其余用例。
+    """
+    api = build_kernel().api  # 默认 sqlite：_needs_space_facts() 为假
+    ops = Scope(org=ORG)  # 主体维皆空，运维通道形态
+    result = api.search(
+        "hello",
+        Context(scope=Scope(org=ORG), extensions={"spaces": []}),
+        security=legacy_request_context(ops),
+    )
+    assert result.items == []
