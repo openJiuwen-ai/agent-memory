@@ -413,7 +413,7 @@ def _by_scope(units: list[MemoryUnit]) -> list[list[MemoryUnit]]:
     grouped: dict[ScopeKey, list[MemoryUnit]] = {}
     for unit in units:
         grouped.setdefault(_scope_key(unit.scope), []).append(unit)
-    return [grouped[group_key] for group_key in sorted(grouped)]
+    return [group for _, group in sorted(grouped.items())]
 
 
 def _parent_write_groups(parents: list[MemoryUnit]) -> list[list[MemoryUnit]]:

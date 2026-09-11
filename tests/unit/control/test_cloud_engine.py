@@ -29,7 +29,11 @@ from jiuwen_memory.construction.classifier import Classifier
 from jiuwen_memory.construction.evolver import EvolveMode, Evolver, EvolveRequest, EvolveResult
 from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.control.base import ControlOperatorType
-from jiuwen_memory.control.engine_impl.cloud_engine import CloudEngine
+from jiuwen_memory.control.engine_impl.cloud_engine import (
+    CloudEngine,
+    CloudEngineDependencies,
+    CloudEngineOptions,
+)
 from jiuwen_memory.control.jobs import Job, JobFactory, JobType
 from jiuwen_memory.control.jobs_impl.evolve_job import EvolveJobSpec
 from jiuwen_memory.control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
@@ -389,17 +393,18 @@ def _engine(ingestor: Ingestor | None = None):
     }
     return (
         CloudEngine(
-            ingestor=ingestor or _RecordingIngestor(),
-            index_builder=chat_index,
-            retriever=chat_retriever,
-            domain_store=domain_store,
-            scheduler=InProcessScheduler(),
-            evolver=chat_evolver,
-            lifecycle=_NoopLifecycle(),
-            classifier=chat_classifier,
-            pipeline=_MessageTypePipeline(profiles),
-            default_message_type="chat",
-            default_pipeline_name="chat",
+            CloudEngineDependencies(
+                ingestor=ingestor or _RecordingIngestor(),
+                index_builder=chat_index,
+                retriever=chat_retriever,
+                domain_store=domain_store,
+                scheduler=InProcessScheduler(),
+                evolver=chat_evolver,
+                lifecycle=_NoopLifecycle(),
+                classifier=chat_classifier,
+                pipeline=_MessageTypePipeline(profiles),
+            ),
+            CloudEngineOptions(default_message_type="chat", default_pipeline_name="chat"),
         ),
         {
             "kv": kv,
@@ -797,18 +802,19 @@ def _engine_with_job_factory(
         else None
     )
     engine = CloudEngine(
-        ingestor=_RecordingIngestor(),
-        index_builder=chat_index,
-        retriever=_RecordingRetriever("chat"),
-        domain_store=make_storage(kv=kv).domain_store(),
-        scheduler=scheduler,
-        evolver=chat_evolver,
-        lifecycle=lifecycle,
-        classifier=_RecordingClassifier("chat"),
-        pipeline=_MessageTypePipeline(profiles),
-        default_message_type="chat",
-        default_pipeline_name="chat",
-        job_factory=factory,
+        CloudEngineDependencies(
+            ingestor=_RecordingIngestor(),
+            index_builder=chat_index,
+            retriever=_RecordingRetriever("chat"),
+            domain_store=make_storage(kv=kv).domain_store(),
+            scheduler=scheduler,
+            evolver=chat_evolver,
+            lifecycle=lifecycle,
+            classifier=_RecordingClassifier("chat"),
+            pipeline=_MessageTypePipeline(profiles),
+            job_factory=factory,
+        ),
+        CloudEngineOptions(default_message_type="chat", default_pipeline_name="chat"),
     )
     return engine, scheduler, {
         "kv": kv,

@@ -88,7 +88,7 @@ def test_http_coords_write_preserves_authors_landing_and_user_isolation(
         assert stored["system_metadata"] == metadata
     for user, expected in (("u1", {"user_pref", "team_convention"}), ("u2", {"team_convention"})):
         search_status, found = post_as(collective_http_url, f"test-{user}", "search", {
-            "query": "Python 评审 约定 习惯", "top_k": 10,
+            "query": "Python 评审 约定 习惯", "options": {"top_k": 10},
             "context": {"scope": {"org": "local", "user": user}, "extensions": {"spaces": []}},
         })
         assert search_status == 200, found

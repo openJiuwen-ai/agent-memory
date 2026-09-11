@@ -24,7 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from ..errors import ValidationError
 from .scope import Scope
@@ -167,7 +167,9 @@ def validate_ref(ref: HierarchyRef, *, unit_id: str = "") -> None:
     if (ref.kind is None) != (ref.role is None):
         raise ValidationError(f"hierarchy kind 与 role 必须同时设置或同时缺省{where}")
     if ref.is_empty:
-        if ref.parent_id or ref.child_ids or ref.child_scopes or ref.parent_scope is not None:
+        if ref.parent_id or ref.child_ids:
+            raise ValidationError(f"空 hierarchy 不得携带父子引用{where}")
+        if ref.child_scopes or ref.parent_scope is not None:
             raise ValidationError(f"空 hierarchy 不得携带父子引用{where}")
         if ref.span_start is not None or ref.span_end is not None:
             raise ValidationError(f"空 hierarchy 不得携带区间{where}")
@@ -225,7 +227,13 @@ def validate_tree(
 
 # -- 内部实现 --------------------------------------------------------------- #
 
-_NodeKey = tuple[str, str, str, str, str, str]  # (org, space, user, agent, session, id)
+class _NodeKey(NamedTuple):
+    org: str
+    space: str
+    user: str
+    agent: str
+    session: str
+    unit_id: str
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -236,7 +244,7 @@ def _as_utc(value: datetime) -> datetime:
 
 
 def _key(scope: Scope, unit_id: str) -> _NodeKey:
-    return (scope.org, scope.space, scope.user, scope.agent, scope.session, unit_id)
+    return _NodeKey(scope.org, scope.space, scope.user, scope.agent, scope.session, unit_id)
 
 
 def _index_by_key(nodes: list[MemoryUnit]) -> dict[_NodeKey, MemoryUnit]:

@@ -119,10 +119,17 @@ def annotate_parents(parents: list[MemoryUnit], annotator: LayerAnnotator | None
             logger.warning("HierarchyComposer parent layers fallback: invalid item type")
             continue
         layers = annotated.layers
-        if annotated.id != parent.id or annotated.scope != parent.scope or (
-            not isinstance(layers, ContentLayers)
-            or not isinstance(layers.l0, str) or not isinstance(layers.l1, str)
-        ):
+        if annotated.id != parent.id or annotated.scope != parent.scope:
+            logger.warning(
+                "HierarchyComposer parent layers fallback: invalid item id=%s", parent.id,
+            )
+            continue
+        if not isinstance(layers, ContentLayers):
+            logger.warning(
+                "HierarchyComposer parent layers fallback: invalid item id=%s", parent.id,
+            )
+            continue
+        if not isinstance(layers.l0, str) or not isinstance(layers.l1, str):
             logger.warning(
                 "HierarchyComposer parent layers fallback: invalid item id=%s", parent.id,
             )

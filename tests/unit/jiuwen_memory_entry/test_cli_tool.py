@@ -128,7 +128,7 @@ def test_client_roundtrip_add_list_search_update_get_delete(dev_client) -> None:
     assert status == 200 and page["items"][0]["id"] == unit_id
 
     status, found = dev_client.call(
-        "search", {"query": "coffee", "context": {"scope": SCOPE}, "top_k": 3}
+        "search", {"query": "coffee", "context": {"scope": SCOPE}, "options": {"top_k": 3}}
     )
     assert status == 200 and found["items"][0]["unit_id"] == unit_id
     assert "hits" not in found
@@ -153,7 +153,7 @@ def test_client_roundtrip_add_list_search_update_get_delete(dev_client) -> None:
 
 def test_client_evolve_job_status_and_cancel_loop(dev_client) -> None:
     dev_client.call("add", {"content": "hello", "scope": SCOPE})
-    status, job_id = dev_client.call("evolve", {"scope": SCOPE, "mode": "extract"})
+    status, job_id = dev_client.call("evolve", {"scope": SCOPE, "options": {"mode": "extract"}})
     assert status == 200 and isinstance(job_id, str) and job_id
 
     import time
@@ -194,7 +194,7 @@ def test_main_batch_two_ops_share_one_session(capsys, monkeypatch) -> None:
         [
             json.dumps({"op": "add", "content": "batch coffee", "scope": SCOPE}),
             json.dumps({"op": "search", "query": "coffee",
-                        "context": {"scope": SCOPE}, "top_k": 3}),
+                        "context": {"scope": SCOPE}, "options": {"top_k": 3}}),
         ]
     )
     monkeypatch.setattr("sys.stdin", io.StringIO(ndjson))

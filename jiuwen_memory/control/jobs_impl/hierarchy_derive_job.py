@@ -39,6 +39,10 @@ from jiuwen_memory.control.policy import PolicyManager
 from jiuwen_memory.control.types import JobInfo, JobStatus
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 @dataclass(frozen=True)
 class HierarchyDeriveOptions:
     """周期和单轮扫描窗口，算法和静默阈值仍来自 Composer profile。"""
@@ -48,7 +52,9 @@ class HierarchyDeriveOptions:
 
     def __post_init__(self) -> None:
         for value in (self.interval, self.lookback_seconds):
-            if type(value) is not int or value <= 0:
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValidationError("derive interval/lookback must be positive integers")
+            if value <= 0:
                 raise ValidationError("derive interval/lookback must be positive integers")
 
 
@@ -66,7 +72,7 @@ class HierarchyDeriveDependencies:
 
     hierarchy: HierarchyJobDependencies
     policy: PolicyManager
-    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
+    clock: Callable[[], datetime] = _utc_now
 
 
 class HierarchyDeriveJob(Job):

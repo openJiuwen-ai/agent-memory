@@ -72,7 +72,9 @@ def _as_utc(value: datetime) -> datetime:
 
 def validate_expand_depth(depth: int, kind: HierarchyKind | None) -> None:
     """展开只接受非负整数深度，非零深度必须显式指定结构 kind。"""
-    if type(depth) is not int or depth < 0:
+    if isinstance(depth, bool) or not isinstance(depth, int):
+        raise ValidationError("expand_depth 必须是非负整数，不能是 bool")
+    if depth < 0:
         raise ValidationError("expand_depth 必须是非负整数，不能是 bool")
     if depth and kind is None:
         raise ValidationError("非零 expand_depth 要求显式 hierarchy_kind")
@@ -80,7 +82,7 @@ def validate_expand_depth(depth: int, kind: HierarchyKind | None) -> None:
 
 def validate_rollup(rollup: bool, kind: HierarchyKind | None) -> None:
     """上卷是显式布尔选项，开启时必须指定单一结构 kind。"""
-    if type(rollup) is not bool:
+    if not isinstance(rollup, bool):
         raise ValidationError("rollup 必须是 bool")
     if rollup and kind is None:
         raise ValidationError("rollup 要求显式 hierarchy_kind")

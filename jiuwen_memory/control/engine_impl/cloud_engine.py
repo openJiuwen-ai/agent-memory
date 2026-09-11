@@ -220,44 +220,59 @@ def _permission_context_from_unit(unit: MemoryUnit) -> PermissionContext:
     )
 
 
+@dataclass(frozen=True)
+class CloudEngineDependencies:
+    """CloudEngine 使用的共享算子、数据面及建树专用读端口。"""
+
+    ingestor: Ingestor
+    index_builder: IndexBuilder
+    retriever: Retriever
+    domain_store: DomainStore
+    scheduler: Scheduler
+    evolver: Evolver
+    lifecycle: LifecycleManager
+    classifier: Classifier | None = None
+    pipeline: MemoryPipeline | None = None
+    job_factory: JobFactory | None = None
+    hierarchy_kv: KVStore | None = None
+
+
+@dataclass(frozen=True)
+class CloudEngineOptions:
+    """云侧消息类型与默认 pipeline 的装配选项。"""
+
+    message_type_key: str = "message_type"
+    default_message_type: str = "chat"
+    default_pipeline_name: str = "default"
+
+
 class CloudEngine(MemoryEngine):
     """云侧读写编排：以 message_type 选择构建/查询 profile。"""
 
     def __init__(
         self,
-        ingestor: Ingestor,
-        index_builder: IndexBuilder,
-        retriever: Retriever,
-        domain_store: DomainStore,
-        scheduler: Scheduler,
-        evolver: Evolver,
-        lifecycle: LifecycleManager,
-        *,
-        classifier: Classifier | None = None,
-        pipeline: MemoryPipeline | None = None,
-        message_type_key: str = "message_type",
-        default_message_type: str = "chat",
-        default_pipeline_name: str = "default",
-        job_factory: JobFactory | None = None,
-        hierarchy_kv: KVStore | None = None,
+        dependencies: CloudEngineDependencies,
+        options: CloudEngineOptions | None = None,
     ) -> None:
-        self._ingestor = ingestor
-        self._index = index_builder
-        self._retriever = retriever
-        self._domain_store = domain_store
-        self._scheduler = scheduler
-        self._evolver = evolver
-        self._lifecycle = lifecycle
-        self._classifier = classifier
-        self._pipeline = pipeline
-        self._message_type_key = message_type_key.strip()
+        """注入共享依赖，保持常规 DomainStore 读取与建树 Job KV 读取分离。"""
+        settings = options or CloudEngineOptions()
+        self._ingestor = dependencies.ingestor
+        self._index = dependencies.index_builder
+        self._retriever = dependencies.retriever
+        self._domain_store = dependencies.domain_store
+        self._scheduler = dependencies.scheduler
+        self._evolver = dependencies.evolver
+        self._lifecycle = dependencies.lifecycle
+        self._classifier = dependencies.classifier
+        self._pipeline = dependencies.pipeline
+        self._message_type_key = settings.message_type_key.strip()
         if not self._message_type_key:
             raise ValidationError("CloudEngine message_type_key must not be empty")
-        self._default_message_type = default_message_type.strip()
-        self._default_pipeline_name = default_pipeline_name.strip()
-        self._job_factory = job_factory
+        self._default_message_type = settings.default_message_type.strip()
+        self._default_pipeline_name = settings.default_pipeline_name.strip()
+        self._job_factory = dependencies.job_factory
         # Only hierarchy Jobs consume raw KV; Engine MemoryUnit reads stay on DomainStore.
-        self._hierarchy_kv = hierarchy_kv
+        self._hierarchy_kv = dependencies.hierarchy_kv
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
@@ -1013,20 +1028,22 @@ def _build(config):
     ib_default = "hybrid" if config.get("vector_enabled", True) else "fulltext"
     storage = StoreManagerProducer.resolve(config)
     return CloudEngine(
-        IngestorProducer.dep(config, default="simple"),
-        IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
-        RetrieverProducer.dep(config, default="pipeline"),
-        storage.domain_store(
-            resolve_name(config, "domain_store")
+        dependencies=CloudEngineDependencies(
+            ingestor=IngestorProducer.dep(config, default="simple"),
+            index_builder=IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
+            retriever=RetrieverProducer.dep(config, default="pipeline"),
+            domain_store=storage.domain_store(resolve_name(config, "domain_store")),
+            scheduler=SchedulerProducer.dep(config, default="in_process"),
+            evolver=EvolverProducer.dep(config, default="orchestrating"),
+            lifecycle=LifecycleProducer.dep(config, default="kv"),
+            classifier=_optional_classifier(config),
+            pipeline=_optional_pipeline(config),
+            job_factory=_optional_job_factory(config),
+            hierarchy_kv=storage.kv(resolve_name(config, "kv_store")),
         ),
-        SchedulerProducer.dep(config, default="in_process"),
-        EvolverProducer.dep(config, default="orchestrating"),
-        LifecycleProducer.dep(config, default="kv"),
-        classifier=_optional_classifier(config),
-        pipeline=_optional_pipeline(config),
-        message_type_key=str(config.get("message_type_key", "message_type")),
-        default_message_type=str(config.get("default_message_type", "chat")),
-        default_pipeline_name=str(config.get("default_pipeline_name", "default")),
-        job_factory=_optional_job_factory(config),
-        hierarchy_kv=storage.kv(resolve_name(config, "kv_store")),
+        options=CloudEngineOptions(
+            message_type_key=str(config.get("message_type_key", "message_type")),
+            default_message_type=str(config.get("default_message_type", "chat")),
+            default_pipeline_name=str(config.get("default_pipeline_name", "default")),
+        ),
     )

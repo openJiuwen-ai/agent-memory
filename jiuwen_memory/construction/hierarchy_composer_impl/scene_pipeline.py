@@ -58,14 +58,16 @@ class SceneSegmenterOptions:
     def __post_init__(self) -> None:
         for name in ("max_duration_seconds", "summary_max_children", "summary_max_chars_per_child"):
             value = getattr(self, name)
-            if type(value) is not int or value <= 0:
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValidationError(f"{name} 必须是正整数")
+            if value <= 0:
                 raise ValidationError(f"{name} 必须是正整数")
         threshold = self.similarity_threshold
-        if threshold is not None and (
-            type(threshold) not in (int, float) or not math.isfinite(threshold)
-            or not 0 <= threshold <= 1
-        ):
-            raise ValidationError("similarity_threshold 必须是 [0, 1] 的有限数值或 None")
+        if threshold is not None:
+            if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+                raise ValidationError("similarity_threshold 必须是 [0, 1] 的有限数值或 None")
+            if not math.isfinite(threshold) or not 0 <= threshold <= 1:
+                raise ValidationError("similarity_threshold 必须是 [0, 1] 的有限数值或 None")
         for name in ("boundary_metadata_keys", "end_signal_metadata_keys", "carry_metadata_keys"):
             keys = getattr(self, name)
             if not isinstance(keys, tuple):

@@ -86,7 +86,9 @@ def test_all_content_layers_receive_and_clear_hierarchy_projection(kind: str) ->
             "layers_l1": [f"{unit.id}-layer-l1"],
         }
     for name, port in ports.items():
-        records = port.get(unit.scope, record_ids[name])
+        ids = record_ids.get(name)
+        assert ids is not None, f"{kind}/{name} 缺少索引记录 ID"
+        records = port.get(unit.scope, ids)
         assert records, f"{kind}/{name} 必须实际写入索引记录"
         for record in records:
             assert {key: record.metadata.get(key) for key in _TREE_METADATA} == _TREE_METADATA
@@ -95,7 +97,9 @@ def test_all_content_layers_receive_and_clear_hierarchy_projection(kind: str) ->
     unit.hierarchy = HierarchyRef()
     builder.update([unit])
     for name, port in ports.items():
-        records = port.get(unit.scope, record_ids[name])
+        ids = record_ids.get(name)
+        assert ids is not None, f"{kind}/{name} 缺少索引记录 ID"
+        records = port.get(unit.scope, ids)
         assert records, f"{kind}/{name} 退树后保留内容索引"
         assert all(
             not set(_TREE_METADATA).intersection(indexed_record.metadata)
