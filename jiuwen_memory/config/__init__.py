@@ -1,7 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """装配配置：把 YAML/字典解析成 :class:`AssemblyContext`（两级命名空间，纯数据）。
 
-- :class:`Config`：门面，``from_yaml`` / ``from_dict`` 解析，
+- :class:`Config`：门面，``from_yaml``（读文件）/ ``from_yaml_str``（读文本，可按变量名传覆盖值，
+  优先于环境变量）解析并展开 ``${VAR}`` / ``${VAR:-默认}``；``from_dict``（纯数据，不展开）；
   ``context()`` 取 :class:`AssemblyContext`。
 - :class:`AssemblyContext`：全局命名空间（top_name -> name -> RawSpec）+ 跨切面 ``globals``。
 - :class:`ComponentConfig`：传给各 ``_build`` 的 ``config`` 视图

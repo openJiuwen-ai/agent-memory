@@ -10,7 +10,7 @@
 
 | 文件/目录 | 职责 |
 |---|---|
-| `config.py` | `Config`：YAML/字典入口 → `AssemblyContext` |
+| `config.py` | `Config`：YAML/字典入口 → `AssemblyContext`（`from_yaml` 读文件、`from_yaml_str` 读文本，均展开 `${VAR}` / `${VAR:-默认}`，`from_yaml_str` 的显式传参优先于环境变量；`from_dict` 不展开） |
 | `context.py` | `AssemblyContext` / `ComponentConfig` / `RawSpec` |
 | `defaults.py` | 内置默认装配拓扑与 `ROOT_PARAMS` |
 | `config_source.py` | `ConfigSource` ABC + `ConfigSourceProducer` |
