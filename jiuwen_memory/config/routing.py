@@ -48,8 +48,10 @@ from jiuwen_memory.storage.fulltext import FulltextStore
 from jiuwen_memory.storage.fusion import FusionStore
 from jiuwen_memory.storage.graph import GraphStore
 from jiuwen_memory.storage.kv import KVStore
+from jiuwen_memory.storage.markdown import MarkdownStore
 from jiuwen_memory.storage.security import StorageAccessContext, StorageSecurity
 from jiuwen_memory.storage.store_manager import StorageCapability, StoreManager
+from jiuwen_memory.storage.shadow import DocumentShadowIndex
 from jiuwen_memory.storage.types import (
     Document,
     Edge,
@@ -509,6 +511,12 @@ class RoutingStoreManager(StoreManager):
     def entity(self, name: str = "default") -> EntityStore:
         return self._lazy_port("entity", name)  # type: ignore[return-value]
 
+    def markdown(self, name: str = "default") -> MarkdownStore:
+        return self._lazy_port("markdown", name)  # type: ignore[return-value]
+
+    def shadow_index(self, name: str = "default") -> DocumentShadowIndex:
+        return self._lazy_port("shadow_index", name)  # type: ignore[return-value]
+
     def has_kv(self, name: str = "default") -> bool:
         return self._active().has_kv(name)
 
@@ -529,6 +537,12 @@ class RoutingStoreManager(StoreManager):
 
     def has_entity(self, name: str = "default") -> bool:
         return self._active().has_entity(name)
+
+    def has_markdown(self, name: str = "default") -> bool:
+        return self._active().has_markdown(name)
+
+    def has_shadow_index(self, name: str = "default") -> bool:
+        return self._active().has_shadow_index(name)
 
     def health(self) -> None:
         self._active().health()

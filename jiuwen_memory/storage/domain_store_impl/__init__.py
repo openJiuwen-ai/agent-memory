@@ -15,5 +15,6 @@ from .recaller import Recaller, RecallerProducer
 import_module(".graph_recaller", __name__)
 import_module(".keyword_recaller", __name__)
 import_module(".vector_recaller", __name__)
+import_module(".shadow_recaller", __name__)
 
 __all__ = ["CompositeDomainStore", "Recaller", "RecallerProducer"]

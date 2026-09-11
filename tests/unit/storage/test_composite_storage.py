@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+# pylint: disable=protected-access  # 测试直取内部装配与状态以断言接线行为
+
 from typing import Any
 
 import pytest
@@ -13,7 +15,7 @@ from jiuwen_memory.common.errors import (
 )
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
-from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment, memory_key
+from jiuwen_memory.common.type_def import MemoryUnit, RetrievalPipeline, Scope, Segment, memory_key
 from jiuwen_memory.config import AssemblyContext
 from jiuwen_memory.storage.bootstrap import register_backends
 from jiuwen_memory.storage.domain_store_impl import CompositeDomainStore
@@ -269,3 +271,235 @@ def test_domain_store_uses_named_kv_port_from_config() -> None:
     # 真源落在 truth 端口，default 端口是空的
     assert manager.kv("truth").list(scope).count == 1
     assert manager.kv().list(scope).count == 0
+
+
+# -- 文档路径（write_document=True） ---------------------------------------- #
+# 文档模式真源 = md 人类视图 + SQLite 影子索引，KV 不参与（F07 §3.1 互斥路径）。
+# 用真实 LocalMarkdownStore + SqliteDocumentShadowIndex（降级模式，无 embedder）
+# 验证 add/update/delete/get/list 的分流，不 mock 算子——md 落盘与影子索引三表
+# 是文档记忆的核心契约。
+
+from jiuwen_memory.common.type_def import COORDS_KEY, MD_FILENAME_KEY, MEMORY_CLASS_KEY
+from jiuwen_memory.storage.markdown_impl.local_markdown_store import LocalMarkdownStore
+from jiuwen_memory.storage.shadow_impl.sqlite_shadow_index import SqliteDocumentShadowIndex
+
+
+def _doc_storage(tmp_path) -> CompositeDomainStore:
+    manager = CompositeStoreManager(
+        markdown=LocalMarkdownStore(root=str(tmp_path)),
+        shadow_index=SqliteDocumentShadowIndex(
+            db_path=str(tmp_path / "shadow.db"), tokenizer=WhitespaceTokenizer()
+        ),
+    )
+    return CompositeDomainStore(
+        manager=manager,
+        preferred_pipeline=RetrievalPipeline.RECALL_GET_RANK,
+        write_document=True,
+    )
+
+
+def _doc_unit(scope: Scope, unit_id: str, content: str, project: str = "p1") -> MemoryUnit:
+    return MemoryUnit(
+        id=unit_id,
+        scope=scope,
+        segments=[Segment(content=content)],
+        system_metadata={
+            MEMORY_CLASS_KEY: "project_memory",
+            COORDS_KEY: {"project": project},
+        },
+    )
+
+
+def test_write_document_flag_is_fixed_at_assembly(tmp_path) -> None:
+    plain = CompositeDomainStore(
+        manager=CompositeStoreManager(kv=InMemoryKVStore()),
+        preferred_pipeline=RetrievalPipeline.RECALL_GET_RANK,
+    )
+    assert plain.should_write_document() is False
+    assert _doc_storage(tmp_path).should_write_document() is True
+
+
+def test_sanitize_document_content_folds_multiline_to_single_line() -> None:
+    unit = MemoryUnit(
+        id="u1", scope=Scope(org="org"), segments=[Segment(content="line one\nline two\n\nthree")]
+    )
+    CompositeDomainStore._sanitize_document_content([unit])
+    assert unit.segments[0].content == "line one line two three"
+
+
+def test_sanitize_document_content_leaves_single_line_untouched() -> None:
+    unit = MemoryUnit(id="u1", scope=Scope(org="org"), segments=[Segment(content="no newline")])
+    CompositeDomainStore._sanitize_document_content([unit])
+    assert unit.segments[0].content == "no newline"
+
+
+def test_sanitize_document_content_skips_empty_segments() -> None:
+    unit = MemoryUnit(id="u1", scope=Scope(org="org"), segments=[])
+    CompositeDomainStore._sanitize_document_content([unit])  # 不抛
+
+
+def test_document_mode_add_writes_md_and_shadow_not_kv(tmp_path) -> None:
+    scope = Scope(org="org", user="user")
+    storage = _doc_storage(tmp_path)
+    storage.add(scope, [_doc_unit(scope, "u1", "deploy cluster")])
+
+    # 影子索引真源可读（无 kv 端口，get 走 shadow 不碰 KV）。
+    got = storage.get(scope, ["u1"])
+    assert [u.id for u in got] == ["u1"]
+    assert got[0].segments[0].content == "deploy cluster"
+    # md 人类视图落盘。
+    md = tmp_path / "memory" / "p1" / "MEMORY.md"
+    assert md.exists()
+    assert "deploy cluster" in md.read_text(encoding="utf-8")
+
+
+def test_document_mode_add_folds_multiline_content(tmp_path) -> None:
+    """文档路径入口把多行 content 折叠单行，md/索引/后续 replace 锚四方一致。"""
+    scope = Scope(org="org", user="user")
+    storage = _doc_storage(tmp_path)
+    storage.add(scope, [_doc_unit(scope, "u1", "line one\nline two")])
+
+    assert storage.get(scope, ["u1"])[0].segments[0].content == "line one line two"
+    md = (tmp_path / "memory" / "p1" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "line one line two" in md
+    assert "\nline two" not in md
+
+
+def test_document_mode_get_and_list(tmp_path) -> None:
+    scope = Scope(org="org", user="user")
+    storage = _doc_storage(tmp_path)
+    storage.add(scope, [_doc_unit(scope, "u1", "first"), _doc_unit(scope, "u2", "second")])
+
+    assert [u.id for u in storage.get(scope, ["u2", "missing", "u1"])] == ["u2", "u1"]
+    page = storage.list(scope)
+    assert page.count == 2
+    assert {u.id for u in page.items} == {"u1", "u2"}
+
+
+def test_document_mode_update_replaces_md_block(tmp_path) -> None:
+    scope = Scope(org="org", user="user")
+    storage = _doc_storage(tmp_path)
+    storage.add(scope, [_doc_unit(scope, "u1", "old content")])
+
+    (old,) = storage.get(scope, ["u1"])
+    old.segments[0].content = "new content"
+    storage.update(scope, [old])
+
+    assert storage.get(scope, ["u1"])[0].segments[0].content == "new content"
+    md = (tmp_path / "memory" / "p1" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "new content" in md
+    assert "old content" not in md
+
+
+def test_document_mode_delete_removes_md_block(tmp_path) -> None:
+    scope = Scope(org="org", user="user")
+    storage = _doc_storage(tmp_path)
+    storage.add(scope, [_doc_unit(scope, "u1", "gone content")])
+
+    storage.delete(scope, ["u1"])
+
+    assert storage.get(scope, ["u1"]) == []
+    md = (tmp_path / "memory" / "p1" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "gone content" not in md
+
+
+def test_document_mode_delete_batch_removes_all_md_blocks(tmp_path) -> None:
+    """批量删除逐 unit 清 md 块——缩进回归（只清最后一个）会让残留块被看门狗
+    当"用户新增"以新 uuid 复活成幽灵 unit。
+    """
+    scope = Scope(org="org", user="user")
+    storage = _doc_storage(tmp_path)
+    storage.add(scope, [_doc_unit(scope, "u1", "first content"), _doc_unit(scope, "u2", "second content")])
+
+    storage.delete(scope, ["u1", "u2"])
+
+    assert storage.get(scope, ["u1", "u2"]) == []
+    md = (tmp_path / "memory" / "p1" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "first content" not in md
+    assert "second content" not in md
+
+
+def test_document_mode_delete_missing_id_is_noop(tmp_path) -> None:
+    """删不存在的 id 幂等不抛错——olds 为空时 md_filename 未绑定的 NameError 回归。"""
+    scope = Scope(org="org", user="user")
+    storage = _doc_storage(tmp_path)
+
+    storage.delete(scope, ["never-existed"])  # 不抛 NameError
+
+    # 已删 id 重复删同样幂等。
+    storage.add(scope, [_doc_unit(scope, "u1", "real content")])
+    storage.delete(scope, ["u1"])
+    storage.delete(scope, ["u1"])  # 不抛
+    assert storage.get(scope, ["u1"]) == []
+    md = (tmp_path / "memory" / "p1" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "real content" not in md
+
+
+def test_document_mode_soft_delete_exits_retrieval_via_lifecycle(tmp_path) -> None:
+    """SOFT 删除契约：文档模式下 delete(SOFT) 本身是 no-op，检索退出由
+    「先 transition（update FORWARD_ONLY 同步 lifecycle 投影列）再 remove(SOFT)」
+    实现——lifecycle 谓词下推后 FTS 不召回，本体与 md 块保留。
+
+    锁定三重排除机制的第①②环：谓词下推 + 投影列同步。若谓词下推
+    （_compile_system_filters）或 update 投影列覆写被改坏，本测试失败。
+    """
+    from jiuwen_memory.common.type_def import FilterClause, FilterGroup, FilterLogic, FilterOp
+    from jiuwen_memory.common.type_def.memory import LifecycleState
+    from jiuwen_memory.storage.types import IndexWriteMode, TextQuery
+
+    scope = Scope(org="org", user="user")
+    storage = _doc_storage(tmp_path)
+    storage.add(scope, [_doc_unit(scope, "u1", "retired content")])
+
+    # 遗忘流第①步：transition = 改 lifecycle + update(FORWARD_ONLY)（对齐
+    # KVLifecycleManager.transition / InMemoryEngine.delete 的调用序）。
+    (unit,) = storage.get(scope, ["u1"])
+    unit.lifecycle = LifecycleState.FORGOTTEN
+    storage.update(scope, [unit], mode=IndexWriteMode.FORWARD_ONLY)
+    # 遗忘流第②步：remove(SOFT)——文档模式 no-op，不删本体不删 md 块。
+    storage.delete(scope, ["u1"], mode=IndexRemoveMode.SOFT)
+
+    # 本体保留（SOFT 契约）：get 可读，md 块仍在。
+    assert storage.get(scope, ["u1"]) != []
+    md = (tmp_path / "memory" / "p1" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "retired content" in md
+
+    # 检索退出（FORGOTTEN 不召回）：filters = project 谓词（否则批 1 落 default
+    # 不含 p1，断言空洞）+ lifecycle 谓词（对齐 build_system_filters 当前态产出
+    # lifecycle IN ('active')），AND 组合下推。
+    shadow = storage._raw_shadow_index()
+    filters = FilterGroup(
+        FilterLogic.AND,
+        [
+            FilterClause("system_metadata.project", FilterOp.IN, ["p1"]),
+            FilterClause("lifecycle", FilterOp.IN, ["active"]),
+        ],
+    )
+    hits = shadow.search_fulltext(
+        scope, TextQuery(text="retired content", top_k=10, filters=filters)
+    )
+    assert not any(h.id == "u1" for h in hits)
+
+
+def test_document_mode_soft_delete_bare_call_keeps_recall(tmp_path) -> None:
+    """裸调 delete(SOFT)（未经 transition）不使 unit 退出检索——文档模式 SOFT 是
+    no-op 的现状契约，调用方必须先 lifecycle.transition（见上测试）。防止有人
+    以为 SOFT 会删投影而依赖它。
+    """
+    from jiuwen_memory.common.type_def import FilterClause, FilterOp
+    from jiuwen_memory.storage.types import TextQuery
+
+    scope = Scope(org="org", user="user")
+    storage = _doc_storage(tmp_path)
+    storage.add(scope, [_doc_unit(scope, "u1", "still visible")])
+
+    storage.delete(scope, ["u1"], mode=IndexRemoveMode.SOFT)
+
+    # SOFT no-op：本体可读、带 project 谓词的检索仍命中（FORGOTTEN 排除见上测试）。
+    assert storage.get(scope, ["u1"]) != []
+    shadow = storage._raw_shadow_index()
+    filters = FilterClause("system_metadata.project", FilterOp.IN, ["p1"])
+    hits = shadow.search_fulltext(
+        scope, TextQuery(text="still visible", top_k=10, filters=filters)
+    )
+    assert any(h.id == "u1" for h in hits)

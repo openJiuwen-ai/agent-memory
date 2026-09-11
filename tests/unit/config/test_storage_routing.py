@@ -155,3 +155,44 @@ def test_routing_store_manager_delegates_management_to_mock() -> None:
     cfg.put("store_manager.active", "b")
     storage.health()
     b.health.assert_called_once()
+
+
+def test_routing_store_manager_document_ports_follow_active() -> None:
+    """markdown/shadow_index 端口（F07 文档模式）与其余端口同机制随 active 切换。"""
+    a = MagicMock(name="store-manager-a")
+    b = MagicMock(name="store-manager-b")
+    a.capabilities.return_value = frozenset()
+    b.capabilities.return_value = frozenset()
+    a.has_markdown.return_value = False
+    a.has_shadow_index.return_value = False
+    b.has_markdown.return_value = True
+    b.has_shadow_index.return_value = True
+    cfg = DictConfigSource({"store_manager.active": "a"})
+    storage = RoutingStoreManager(
+        ActiveRouter(
+            namespace="store_manager",
+            instances={"a": a, "b": b},
+            config_source=cfg,
+            default_name="a",
+        )
+    )
+
+    assert storage.has_markdown() is False
+    assert storage.has_shadow_index() is False
+
+    # 构造期握端口（与 DocumentIndexBuilder / ShadowRecaller 相同）：惰性代理，不解析。
+    cached_md = storage.markdown()
+    assert cached_md is storage.markdown(), "默认端口代理对象身份应稳定"
+    cached_shadow = storage.shadow_index()
+    assert cached_shadow is storage.shadow_index()
+    a.markdown.assert_not_called()
+    a.shadow_index.assert_not_called()
+
+    cfg.put("store_manager.active", "b")
+    assert storage.has_markdown() is True
+    assert storage.has_shadow_index() is True
+    # 缓存的惰性端口在切换后解析到新实例
+    cached_md.health()
+    b.markdown.assert_called_once_with("default")
+    cached_shadow.health()
+    b.shadow_index.assert_called_once_with("default")

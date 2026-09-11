@@ -37,6 +37,7 @@ from jiuwen_memory.retrieval.discloser import Discloser, DiscloserProducer
 from jiuwen_memory.retrieval.fuser import Fuser, FuserProducer
 from jiuwen_memory.retrieval.query_parser import QueryParser, QueryParserProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
+from jiuwen_memory.config.document_flag import WRITE_DOCUMENT_KEY, should_write_document
 from jiuwen_memory.retrieval.types import (
     DisclosureLevel,
     RecallChannel,
@@ -74,12 +75,20 @@ class PipelineRetriever(Retriever):
         min_results: int = 0,
         *,
         domain_store: DomainStore,
+        doc_mode: bool = False,
     ) -> None:
         self._parser = parser
         self._fuser = fuser
         self._discloser = discloser
         self._reader = unit_reader
         self._domain = domain_store
+        # 文档模式标志：ShadowRecaller.channel()=DOCUMENT，但 parser 产出的
+        # parsed.channels 默认含 [KEYWORD, GRAPH]（+VECTOR）不含 DOCUMENT。
+        # _domain.recall 用 `r.channel() in channels` 过滤 recaller——DOCUMENT 不在
+        # enabled 里则 ShadowRecaller 被过滤 → 召回落空（F08 §5.6 S14 根因之二）。
+        # retrieve() 据此标志把 DOCUMENT 补进 enabled（不改 ShadowRecaller.channel()，
+        # 保持其 DOCUMENT 语义）。
+        self._doc_mode = doc_mode
         self._reranker = reranker
         # 召回超采样：每路取 max(top_k*factor, floor)，撒宽网喂融合。
         self._over_fetch_factor = max(1, int(over_fetch_factor))
@@ -207,6 +216,13 @@ class PipelineRetriever(Retriever):
         if query.channels == []:
             raise ValidationError("channels must be omitted or contain at least one channel")
         enabled = query.channels if query.channels is not None else (parsed.channels or None)
+        # 文档模式：ShadowRecaller.channel()=DOCUMENT 不在 parser 默认 channels 内
+        # （[KEYWORD, GRAPH]+可选 VECTOR），这里补进去——否则 ShadowRecaller 被
+        # `r.channel() in channels` 过滤掉 → 召回落空（F08 §5.6 S14 根因之二）。
+        # 调用方若显式传 query.channels 仍尊重其选择（仅补、不替；DOCUMENT 缺失时才加）。
+        if self._doc_mode and enabled is not None:
+            if RecallChannel.DOCUMENT not in enabled:
+                enabled = [*enabled, RecallChannel.DOCUMENT]
         parsed.include_archived = query.include_archived
         parsed.recheck_filters = user_filters
         # 召回超采样（撒宽网）与精排预算（控成本）解耦：
@@ -385,11 +401,12 @@ def _build(config):
         if config.get("rerank_enabled", True)
         else None
     )
+    doc_mode = should_write_document(config.get(WRITE_DOCUMENT_KEY, False))
     return PipelineRetriever(
         QueryParserProducer.dep(config, default="simple"),
         FuserProducer.dep(config, default="rrf"),
         DiscloserProducer.dep(config, default="truncating"),
-        UnitReader(manager.kv(kv_name)) if manager.has_kv(kv_name) else None,
+        None if doc_mode else (UnitReader(manager.kv(kv_name)) if manager.has_kv(kv_name) else None),
         reranker,
         over_fetch_factor=int(Factory.cfg_get(config, "over_fetch_factor", 4)),
         over_fetch_floor=int(Factory.cfg_get(config, "over_fetch_floor", 60)),
@@ -404,6 +421,7 @@ def _build(config):
         ),
         min_results=int(Factory.cfg_get(config, "min_results", 0)),
         domain_store=manager.domain_store(resolve_name(config, "domain_store")),
+        doc_mode=doc_mode,
     )
 
 
