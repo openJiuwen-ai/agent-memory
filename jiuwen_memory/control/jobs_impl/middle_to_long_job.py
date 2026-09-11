@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.lock import LockProducer, LockProvider, LockTimeoutError
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, scope_for_log
 from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryTier,
@@ -134,7 +134,7 @@ class MiddleToLongJob(Job):
                 if handle.lost.is_set():
                     logger.warning(
                         "MiddleToLongJob: lock lost at start, skip tick, scope=%s",
-                        self.scope,
+                        scope_for_log(self.scope),
                     )
                     return JobInfo(
                         scope=self.scope,
@@ -145,7 +145,7 @@ class MiddleToLongJob(Job):
         except LockTimeoutError:
             logger.info(
                 "MiddleToLongJob: lock held elsewhere, skip tick, scope=%s",
-                self.scope,
+                scope_for_log(self.scope),
             )
             return JobInfo(
                 scope=self.scope,
@@ -160,7 +160,7 @@ class MiddleToLongJob(Job):
             # 候选转完——通知 Scheduler 停止下一轮触发
             logger.info(
                 "MiddleToLongJob: no middle candidates, scope=%s, exit",
-                self.scope,
+                scope_for_log(self.scope),
             )
             return JobInfo(
                 scope=self.scope,
@@ -170,7 +170,9 @@ class MiddleToLongJob(Job):
 
         logger.info(
             "MiddleToLongJob: processing %d candidates (max_fetch=%d), scope=%s",
-            len(candidates), self._max_fetch, self.scope,
+            len(candidates),
+            self._max_fetch,
+            scope_for_log(self.scope),
         )
 
         batches = await self._split_by_continuity(candidates)

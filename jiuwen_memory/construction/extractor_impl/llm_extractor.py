@@ -51,7 +51,11 @@ from datetime import datetime, timezone
 from enum import Enum
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import (
+    get_logger,
+    metadata_for_log,
+    redact_for_log,
+)
 from jiuwen_memory.common.type_def import (
     Entity,
     LifecycleState,
@@ -386,7 +390,10 @@ class ExtractorImpl(Extractor):
     def _log_trailing_json_text(text: str, end: int) -> None:
         trailing = text[end:].strip()
         if trailing:
-            logger.warning("Extractor: ignored trailing LLM text after JSON root: %r", trailing)
+            logger.warning(
+                "Extractor: ignored trailing LLM text after JSON root: %s",
+                redact_for_log(trailing),
+            )
 
     @staticmethod
     def _strip_non_json(text: str) -> str:
@@ -581,19 +588,21 @@ class ExtractorImpl(Extractor):
                 tier=tier,
                 tags=tags,
             ))
-            ev_str = f", evidence={evidence[:100]}" if evidence else ""
-            ed_str = f", event_date={event_date}" if event_date else ""
             logger.info(
-                "Extractor: candidate — source=%s target=%s tier=%s tags=%s, "
-                "confidence=%.2f, content=%s%s%s",
+                "Extractor: candidate — source_unit_id=%s tier=%s metadata=%s",
                 source_id[:8],
-                target.value,
                 tier.value,
-                tags,
-                confidence,
-                item.get("content", "")[:200],
-                ev_str,
-                ed_str,
+                metadata_for_log(
+                    {
+                        "target": target.value,
+                        "confidence": confidence,
+                        "extracted_statement": content.strip(),
+                        "evidence": evidence,
+                        "content": content.strip(),
+                        "event_date": event_date,
+                        "tags": tags,
+                    }
+                ),
             )
 
         if invalid_reasons:
@@ -662,7 +671,10 @@ class ExtractorImpl(Extractor):
         try:
             parsed, _ = decoder.raw_decode(cleaned)
         except json.JSONDecodeError as exc:
-            logger.warning("Extractor: LLM response is not valid JSON; raw_response=%r", response)
+            logger.warning(
+                "Extractor: LLM response is not valid JSON; raw_response=%s",
+                redact_for_log(cleaned),
+            )
             raise InvalidExtractionJSONError("extractor response is not valid JSON") from exc
         raise InvalidExtractionJSONError(
             f"extractor response must be a JSON array or object, got {type(parsed).__name__}"
@@ -748,7 +760,9 @@ class ExtractorImpl(Extractor):
         )
         logger.info(
             "Extractor._extract_procedural: built 1 PROCEDURAL unit id=%s provenance=%s content=%s",
-            unit.id[:8], unit.provenance, unit.content[:200],
+            unit.id[:8],
+            unit.provenance,
+            redact_for_log(unit.content),
         )
         return [unit]
 
@@ -767,7 +781,7 @@ class ExtractorImpl(Extractor):
                 return str(parsed.get("content", "")).strip()
         logger.warning(
             "Extractor._parse_procedural_response: cannot parse as JSON, use raw response: %s",
-            response[:200],
+            redact_for_log(response),
         )
         return response.strip()
 
@@ -790,7 +804,7 @@ class ExtractorImpl(Extractor):
                 u.id[:8],
                 u.tier.value,
                 u.provenance,
-                u.content[:200],
+                redact_for_log(u.content),
             )
             accepted.append(u)
         logger.info("Extractor: preprocess accepted=%d, skipped=%s", len(accepted), skipped_reasons)
@@ -957,9 +971,9 @@ class ExtractorImpl(Extractor):
                 "Extractor: built unit id=%s tier=%s tags=%s provenance=%s content=%s",
                 unit.id[:8],
                 unit.tier.value,
-                unit.tags,
+                metadata_for_log(unit.tags),
                 unit.provenance,
-                unit.content[:200],
+                redact_for_log(unit.content),
             )
 
         logger.info(

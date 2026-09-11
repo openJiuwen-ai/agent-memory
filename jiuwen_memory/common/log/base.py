@@ -20,6 +20,8 @@ from __future__ import annotations
 import logging
 import os
 
+from .privacy_filter import install_privacy_filter
+
 _LOG_PREFIX = "agent_memory"
 
 
@@ -32,7 +34,11 @@ def get_logger(name: str) -> logging.Logger:
     # 去掉包根前缀，保持 logger 名为 agent_memory.<子模块>...
     clean = name.removeprefix("jiuwen_memory.").removeprefix("src.")
     full_name = f"{_LOG_PREFIX}.{clean}" if clean else _LOG_PREFIX
-    return logging.getLogger(full_name)
+    logger = logging.getLogger(full_name)
+    # Filter 挂在产生日志记录的 logger 上，确保测试直挂 Handler、第三方接管
+    # Handler 等场景也会在 Formatter 前完成敏感参数替换。
+    install_privacy_filter(logger)
+    return logger
 
 
 def setup_logging(config=None) -> None:
@@ -81,6 +87,11 @@ def setup_logging(config=None) -> None:
             file_handler.setLevel(level)
             file_handler.setFormatter(formatter)
             root_logger.addHandler(file_handler)
+
+    # 同时挂到所有输出 Handler：覆盖同一命名空间下未通过 get_logger 获取的记录，
+    # 并保证终端和文件落盘采用完全相同的脱敏结果。
+    for handler in root_logger.handlers:
+        install_privacy_filter(handler)
 
     # 阻断向上传播到 Python 全局 root logger（避免第三方库日志混入）
     root_logger.propagate = False

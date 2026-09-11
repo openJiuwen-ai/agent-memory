@@ -17,7 +17,11 @@ from __future__ import annotations
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.errors import HealthCheckError
 from jiuwen_memory.common.feature_extractor.base import FeatureExtractor, FeatureExtractorProducer
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import (
+    get_logger,
+    metadata_for_log,
+    redact_for_log,
+)
 from jiuwen_memory.common.type_def import Entity, FeatureSet
 
 logger = get_logger(__name__)
@@ -256,7 +260,7 @@ class SpacyFeatureExtractor(FeatureExtractor):
         logger.info(
             "SpacyFeatureExtractor: extracting features for text (%d chars): %s",
             len(text),
-            text[:200],
+            redact_for_log(text),
         )
 
         if self._available and self._nlp is not None:
@@ -272,10 +276,17 @@ class SpacyFeatureExtractor(FeatureExtractor):
             return FeatureSet()
 
         logger.info(
-            "SpacyFeatureExtractor: extraction result — keywords=%s, entities=%s, labels=%s",
-            fs.keywords,
-            [{"text": e.text, "type": e.type, "score": e.score} for e in fs.entities],
-            fs.labels,
+            "SpacyFeatureExtractor: extraction metadata=%s",
+            metadata_for_log(
+                {
+                    "keywords": fs.keywords,
+                    "entities": [
+                        {"text": entity.text, "type": entity.type, "score": entity.score}
+                        for entity in fs.entities
+                    ],
+                    "labels": fs.labels,
+                }
+            ),
         )
         return fs
 
@@ -353,12 +364,15 @@ class SpacyFeatureExtractor(FeatureExtractor):
                 )
             )
             logger.debug(
-                "SpacyFeatureExtractor: NER entity - text=%r, spacy_label=%r, "
-                "mapped_type=%r, score=%.2f",
-                ent.text,
-                ent.label_,
-                mapped_type,
-                score,
+                "SpacyFeatureExtractor: NER entity metadata=%s",
+                metadata_for_log(
+                    {
+                        "text": ent.text,
+                        "spacy_label": ent.label_,
+                        "mapped_type": mapped_type,
+                        "score": score,
+                    }
+                ),
             )
 
         # --- 标签：基于关键词和实体的粗分类 ---
@@ -373,7 +387,7 @@ class SpacyFeatureExtractor(FeatureExtractor):
         logger.info(
             "SpacyFeatureExtractor: fallback extraction for text (%d chars): %s",
             len(text),
-            text[:200],
+            redact_for_log(text),
         )
 
         # 中英文混合关键词提取：中文长词 + 双字组合，英文 3 字符以上单词。
@@ -408,18 +422,27 @@ class SpacyFeatureExtractor(FeatureExtractor):
             entity = Entity(text=match.group(), type="ENTITY", score=0.7)
             entities.append(entity)
             logger.debug(
-                "SpacyFeatureExtractor: fallback entity — text='%s', type='ENTITY', score=0.7",
-                match.group(),
+                "SpacyFeatureExtractor: fallback entity metadata=%s",
+                metadata_for_log(
+                    {"text": match.group(), "type": "ENTITY", "score": 0.7}
+                ),
             )
 
         # 标签
         labels = self._infer_labels(text, keywords, entities)
 
         logger.info(
-            "SpacyFeatureExtractor: fallback result — keywords=%s, entities=%s, labels=%s",
-            keywords,
-            [{"text": e.text, "type": e.type, "score": e.score} for e in entities],
-            labels,
+            "SpacyFeatureExtractor: fallback metadata=%s",
+            metadata_for_log(
+                {
+                    "keywords": keywords,
+                    "entities": [
+                        {"text": entity.text, "type": entity.type, "score": entity.score}
+                        for entity in entities
+                    ],
+                    "labels": labels,
+                }
+            ),
         )
 
         return FeatureSet(keywords=keywords, entities=entities, labels=labels)
