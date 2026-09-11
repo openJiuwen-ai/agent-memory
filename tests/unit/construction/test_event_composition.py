@@ -94,7 +94,8 @@ def test_damaged_event_subtree_fails_without_writes(damage) -> None:
     snapshot, span, scene, event = read_event_path(harness, leaves[1])
     if damage.startswith("missing"):
         missing_nodes = {"missing_scene": scene, "missing_span": span, "missing_snapshot": snapshot}
-        missing = missing_nodes[damage]
+        missing = missing_nodes.get(damage)
+        assert missing is not None, f"未知缺失节点损坏类型：{damage}"
         harness.kv.delete(missing.scope, memory_key(missing.id))
     elif damage == "reverse":
         scene.hierarchy.parent_id = "unknown"

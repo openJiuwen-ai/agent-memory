@@ -11,6 +11,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
+from typing import NamedTuple
 
 from jiuwen_memory.common.type_def import HierarchyRole, MemoryUnit
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeRequest
@@ -139,9 +140,18 @@ class IncrementalTimePipeline:
                                     options.summary_max_chars_per_child)
 
 
-def _key(unit: MemoryUnit) -> tuple[str, str, str, str, str, str]:
+class _NodeKey(NamedTuple):
+    org: str
+    space: str
+    user: str
+    agent: str
+    session: str
+    unit_id: str
+
+
+def _key(unit: MemoryUnit) -> _NodeKey:
     scope = unit.scope
-    return scope.org, scope.space, scope.user, scope.agent, scope.session, unit.id
+    return _NodeKey(scope.org, scope.space, scope.user, scope.agent, scope.session, unit.id)
 
 
 def _safe_prefix_length(

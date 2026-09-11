@@ -105,9 +105,11 @@ def test_rollup_uses_common_final_scale_before_threshold_and_top_k(
     link(parent, [child])
     harness.add([parent, child])
     reranker = Mock()
-    reranker.rerank.side_effect = lambda query, texts: [
-        0.9 if "leaf" in text else 0.1 for text in texts
-    ]
+
+    def rerank_scores(_query, texts):
+        return [0.9 if "leaf" in text else 0.1 for text in texts]
+
+    reranker.rerank.side_effect = rerank_scores
     retriever = PipelineRetriever(
         harness.parser, fuser_type(), TruncatingDiscloser(), None,
         reranker if use_reranker else None, min_score=0.5, domain_store=harness.domain,

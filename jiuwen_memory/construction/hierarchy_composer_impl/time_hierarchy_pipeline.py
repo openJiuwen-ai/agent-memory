@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from typing import NamedTuple
 
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.type_def import HierarchyRole, MemoryUnit, Scope
@@ -156,5 +157,14 @@ class TimeHierarchyPipeline:
             summarize_parent(parent, ordered, options, self.models.llm)
 
 
-def _key(scope: Scope, uid: str) -> tuple[str, str, str, str, str, str]:
-    return scope.org, scope.space, scope.user, scope.agent, scope.session, uid
+class _NodeKey(NamedTuple):
+    org: str
+    space: str
+    user: str
+    agent: str
+    session: str
+    unit_id: str
+
+
+def _key(scope: Scope, uid: str) -> _NodeKey:
+    return _NodeKey(scope.org, scope.space, scope.user, scope.agent, scope.session, uid)

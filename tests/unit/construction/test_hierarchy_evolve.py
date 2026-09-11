@@ -238,7 +238,7 @@ def test_factory_selected_profile_and_shared_index_builder_are_effective(target,
 
     result = evolver.evolve(make_evolve_request(leaves))
 
-    assert type(evolver) is evolver_type
+    assert isinstance(evolver, evolver_type)
     assert composer.index_builder is composition.builder
     assert IndexBuilderProducer.build_named("shared", context) is composition.builder
     assert result.hierarchy_result.complete
@@ -266,7 +266,7 @@ def test_factory_does_not_enable_hierarchy_composer_by_default(target, evolver_t
     context = make_factory_context()
     evolver = EvolverProducer.build(target, {"extractor": {"target": "keyword"}}, context)
 
-    assert type(evolver) is evolver_type
+    assert isinstance(evolver, evolver_type)
     assert "hierarchy_composer" not in context.namespaces
     with pytest.raises(ValidationError, match="未装配 HierarchyComposer"):
         evolver.evolve(make_evolve_request([make_leaf("leaf")]))

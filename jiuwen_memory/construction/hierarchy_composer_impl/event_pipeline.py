@@ -56,14 +56,17 @@ class EventBuilderOptions:
     def __post_init__(self) -> None:
         for name in ("entity_overlap_threshold", "similarity_threshold"):
             threshold = getattr(self, name)
-            if threshold is not None and (
-                type(threshold) not in (int, float) or not math.isfinite(threshold)
-                or not 0 <= threshold <= 1
-            ):
+            if threshold is None:
+                continue
+            if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+                raise ValidationError(f"{name} 必须是 [0, 1] 的有限数值或 None")
+            if not math.isfinite(threshold) or not 0 <= threshold <= 1:
                 raise ValidationError(f"{name} 必须是 [0, 1] 的有限数值或 None")
         for name in ("summary_max_children", "summary_max_chars_per_child", "settle_seconds"):
             value = getattr(self, name)
-            if type(value) is not int or value <= 0:
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValidationError(f"{name} 必须是正整数")
+            if value <= 0:
                 raise ValidationError(f"{name} 必须是正整数")
         for name in ("boundary_metadata_keys", "carry_metadata_keys"):
             keys = getattr(self, name)

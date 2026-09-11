@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, NamedTuple
 
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import MemoryUnit, ParsedQuery, Scope
@@ -18,13 +18,26 @@ from jiuwen_memory.common.type_def import MemoryUnit, ParsedQuery, Scope
 from .base import RetrievalOperator
 
 NodeKey = tuple[str, str, str, str, str, str]
+
+
+class _NodeKeyValue(NamedTuple):
+    """保持六元 tuple 兼容的节点身份值。"""
+
+    org: str
+    space: str
+    user: str
+    agent: str
+    session: str
+    unit_id: str
+
+
 MAX_EXPANSION_NODES = 1000
 
 
 def node_key(unit: MemoryUnit) -> NodeKey:
     """节点身份不使用裸 id，允许不同细粒度 Scope 下的同名节点。"""
     scope = unit.scope
-    return (scope.org, scope.space, scope.user, scope.agent, scope.session, unit.id)
+    return _NodeKeyValue(scope.org, scope.space, scope.user, scope.agent, scope.session, unit.id)
 
 
 def within_scope(candidate: Scope, boundary: Scope) -> bool:

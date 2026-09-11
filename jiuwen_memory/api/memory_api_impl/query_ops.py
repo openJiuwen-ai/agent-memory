@@ -93,10 +93,10 @@ def _copy_search_extensions(extensions: dict[str, Any]) -> dict[str, Any]:
         if object_id in visited:
             continue
         visited.add(object_id)
-        if type(current) is dict:
+        if isinstance(current, dict):
             pending.extend(current.keys())
             pending.extend(current.values())
-        elif type(current) in (list, tuple, set, frozenset):
+        elif isinstance(current, (list, tuple, set, frozenset)):
             pending.extend(current)
         else:
             memo[object_id] = current
