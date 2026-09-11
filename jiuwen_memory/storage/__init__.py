@@ -6,6 +6,7 @@
 （F07 拆分，详见 ``docs/features/storage/F07-storage-manager-domain-store-split.md``）。
 """
 
+import logging
 from importlib import import_module
 
 from .base import BaseStore, StoreType
@@ -48,7 +49,10 @@ for _module_name in (
     "store_manager_impl",
     "domain_store_impl",
 ):
-    import_module(f"{__name__}.{_module_name}")
+    try:
+        import_module(f"{__name__}.{_module_name}")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
 
 __all__ = [
     "BaseStore",

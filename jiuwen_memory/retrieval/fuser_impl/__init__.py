@@ -5,12 +5,22 @@ import 各实现模块即触发其 ``@FuserProducer.register(...)`` 自注册；
 FuserProducer。
 """
 
+import logging
 from importlib import import_module
 
 from jiuwen_memory.retrieval.fuser import FuserProducer
 
-import_module(".rrf_fuser", __name__)
-import_module(".weighted_rrf_fuser", __name__)
-import_module(".score_max_fuser", __name__)
+try:
+    import_module(".rrf_fuser", __name__)
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+try:
+    import_module(".weighted_rrf_fuser", __name__)
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+try:
+    import_module(".score_max_fuser", __name__)
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
 
 __all__ = ["FuserProducer"]

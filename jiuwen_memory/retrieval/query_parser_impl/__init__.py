@@ -4,10 +4,14 @@
 import 各实现模块即触发其 ``@QueryParserProducer.register(...)`` 自注册；本包只对外暴露工厂 QueryParserProducer。
 """
 
+import logging
 from importlib import import_module
 
 from jiuwen_memory.retrieval.query_parser import QueryParserProducer
 
-import_module(".simple_query_parser", __name__)
+try:
+    import_module(".simple_query_parser", __name__)
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
 
 __all__ = ["QueryParserProducer"]

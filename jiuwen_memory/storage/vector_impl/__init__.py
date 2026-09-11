@@ -4,12 +4,22 @@
 import 各实现模块即触发其 ``@VectorProducer.register(...)`` 自注册；本包只对外暴露工厂 VectorProducer。
 """
 
+import logging
 from importlib import import_module
 
 from jiuwen_memory.storage.vector import VectorProducer
 
-import_module(".in_memory_vector_store", __name__)
-import_module(".milvus_vector", __name__)
-import_module(".pgvector_vector", __name__)
+try:
+    import_module(".in_memory_vector_store", __name__)
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+try:
+    import_module(".milvus_vector", __name__)
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+try:
+    import_module(".pgvector_vector", __name__)
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
 
 __all__ = ["VectorProducer"]

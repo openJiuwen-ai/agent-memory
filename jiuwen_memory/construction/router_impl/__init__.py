@@ -5,10 +5,14 @@ RouterProducer。首版只交付模型实现，不交付规则实现——规则
 正则」的配置，而类别名来自接入方声明，规则缺失时它整体落 fallback，等同判定关闭。
 """
 
+import logging
 from importlib import import_module
 
 from jiuwen_memory.construction.router import RouterProducer
 
-import_module(".llm_router", __name__)
+try:
+    import_module(".llm_router", __name__)
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
 
 __all__ = ["RouterProducer"]

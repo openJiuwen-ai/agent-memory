@@ -6,11 +6,18 @@ LockProducer。redis 实现把客户端 import 推迟到首次建连，故模块
 无需 try/except 包裹。
 """
 
+import logging
 from importlib import import_module
 
 from jiuwen_memory.common.lock.lock import LockProducer
 
-import_module(".in_memory_lock", __name__)
-import_module(".redis_lock", __name__)
+try:
+    import_module(".in_memory_lock", __name__)
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+try:
+    import_module(".redis_lock", __name__)
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
 
 __all__ = ["LockProducer"]

@@ -7,13 +7,23 @@ Recaller 是数据面的内部件（唯一消费方是 :class:`CompositeDomainSt
 :func:`storage.bootstrap.register_backends` import 本包时统一完成。
 """
 
+import logging
 from importlib import import_module
 
 from .composite_domain_store import CompositeDomainStore
 from .recaller import Recaller, RecallerProducer
 
-import_module(".graph_recaller", __name__)
-import_module(".keyword_recaller", __name__)
-import_module(".vector_recaller", __name__)
+try:
+    import_module(".graph_recaller", __name__)
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+try:
+    import_module(".keyword_recaller", __name__)
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+try:
+    import_module(".vector_recaller", __name__)
+except ImportError as exc:
+    logging.getLogger(__name__).warning("optional import skipped: %s", exc)
 
 __all__ = ["CompositeDomainStore", "Recaller", "RecallerProducer"]

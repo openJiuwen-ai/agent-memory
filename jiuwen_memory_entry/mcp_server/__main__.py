@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from importlib import import_module
@@ -30,15 +31,28 @@ for _p in (os.path.join(_BOOT, "core"), _REPO):
     if _p not in sys.path:
         sys.path.append(_p)
 
-load_layer = import_module("config_loader").load_layer
-_profiles_module = import_module("profiles")
+try:
+    load_layer = import_module("config_loader").load_layer
+except ImportError as exc:
+    logging.getLogger(__name__).warning("required import failed: %s", exc)
+    raise
+try:
+    _profiles_module = import_module("profiles")
+except ImportError as exc:
+    logging.getLogger(__name__).warning("required import failed: %s", exc)
+    raise
 OFFLINE = _profiles_module.OFFLINE
 load_config = _profiles_module.load_config
-Server = import_module("server").Server
+try:
+    Server = import_module("server").Server
+except ImportError as exc:
+    logging.getLogger(__name__).warning("required import failed: %s", exc)
+    raise
 
 try:
     FastMCP = import_module("mcp.server.fastmcp").FastMCP
 except ImportError as exc:  # pragma: no cover
+    logging.getLogger(__name__).warning("required import failed: %s", exc)
     raise RuntimeError(
         'MCP surface 需要 mcp SDK：pip install ".[mcp]"（或 pip install mcp）'
     ) from exc

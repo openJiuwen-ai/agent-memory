@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import logging
 from importlib import import_module
 
 _REGISTERED = False
@@ -19,8 +20,20 @@ def register_operators() -> None:
     global _REGISTERED
     if _REGISTERED:
         return
-    import_module("jiuwen_memory.retrieval.discloser_impl")
-    import_module("jiuwen_memory.retrieval.fuser_impl")
-    import_module("jiuwen_memory.retrieval.query_parser_impl")
-    import_module("jiuwen_memory.retrieval.retriever_impl")
+    try:
+        import_module("jiuwen_memory.retrieval.discloser_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.retrieval.fuser_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.retrieval.query_parser_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.retrieval.retriever_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
     _REGISTERED = True

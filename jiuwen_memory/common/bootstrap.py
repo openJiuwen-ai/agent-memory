@@ -8,6 +8,7 @@ security / lock 为 ``common.<name>.<name>``），消费方只依赖接口层；
 
 from __future__ import annotations
 
+import logging
 from importlib import import_module
 
 _REGISTERED = False
@@ -18,15 +19,48 @@ def register_plugins() -> None:
     global _REGISTERED
     if _REGISTERED:
         return
-    import_module("jiuwen_memory.common.tokenizer.tokenizer_impl")
-    import_module("jiuwen_memory.common.normalizer.normalizer_impl")
-    import_module("jiuwen_memory.common.embedder.embedder_impl")
-    import_module("jiuwen_memory.common.chunker.chunker_impl")
-    import_module("jiuwen_memory.common.feature_extractor.feature_extractor_impl")
-    import_module("jiuwen_memory.common.reranker.reranker_impl")
-    import_module("jiuwen_memory.common.llm.llm_impl")
-    import_module("jiuwen_memory.common.audit.audit_impl")
-    import_module("jiuwen_memory.common.security.authentication_impl")
-    import_module("jiuwen_memory.common.security.security_impl")
-    import_module("jiuwen_memory.common.lock.lock_impl")
+    try:
+        import_module("jiuwen_memory.common.tokenizer.tokenizer_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.common.normalizer.normalizer_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.common.embedder.embedder_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.common.chunker.chunker_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.common.feature_extractor.feature_extractor_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.common.reranker.reranker_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.common.llm.llm_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.common.audit.audit_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.common.security.authentication_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.common.security.security_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
+    try:
+        import_module("jiuwen_memory.common.lock.lock_impl")
+    except ImportError as exc:
+        logging.getLogger(__name__).warning("optional import skipped: %s", exc)
     _REGISTERED = True
