@@ -562,8 +562,8 @@ class RoutingDomainStore(DomainStore):
     def preferred_retrieval_pipeline(self) -> RetrievalPipeline:
         return self._active_domain().preferred_retrieval_pipeline()
 
-    def scopes(self) -> list[Scope]:
-        return self._active_domain().scopes()
+    def scopes(self, **kwargs: Any) -> list[Scope]:
+        return self._active_domain().scopes(**kwargs)
 
     def add(
         self,
@@ -572,9 +572,10 @@ class RoutingDomainStore(DomainStore):
         *,
         mode: IndexWriteMode = IndexWriteMode.ALL,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> None:
         # 意图参数原样下传：落地范围由当前 active 实例按自身能力决定，本类只做路由。
-        self._active_domain().add(scope, units, mode=mode, access=access)
+        self._active_domain().add(scope, units, mode=mode, access=access, **kwargs)
 
     def update(
         self,
@@ -583,8 +584,9 @@ class RoutingDomainStore(DomainStore):
         *,
         mode: IndexWriteMode = IndexWriteMode.ALL,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> None:
-        self._active_domain().update(scope, units, mode=mode, access=access)
+        self._active_domain().update(scope, units, mode=mode, access=access, **kwargs)
 
     def delete(
         self,
@@ -593,8 +595,11 @@ class RoutingDomainStore(DomainStore):
         *,
         mode: IndexRemoveMode = IndexRemoveMode.HARD,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> None:
-        self._active_domain().delete(scope, unit_ids, mode=mode, access=access)
+        self._active_domain().delete(
+            scope, unit_ids, mode=mode, access=access, **kwargs
+        )
 
     def get(
         self,
@@ -602,8 +607,9 @@ class RoutingDomainStore(DomainStore):
         unit_ids: list[str],
         *,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> list[MemoryUnit]:
-        return self._active_domain().get(scope, unit_ids, access=access)
+        return self._active_domain().get(scope, unit_ids, access=access, **kwargs)
 
     def list(
         self,
@@ -615,6 +621,7 @@ class RoutingDomainStore(DomainStore):
         filters: FilterExpr | None = None,
         extensions: dict[str, str] | None = None,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> MemoryListResult:
         return self._active_domain().list(
             scope,
@@ -624,6 +631,7 @@ class RoutingDomainStore(DomainStore):
             filters=filters,
             extensions=extensions,
             access=access,
+            **kwargs,
         )
 
     def recall(
@@ -634,6 +642,7 @@ class RoutingDomainStore(DomainStore):
         channels: list[RecallChannel] | None,
         recall_limit: int,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> RecallResult[ScoredUnit]:
         return self._active_domain().recall(
             scope,
@@ -641,6 +650,7 @@ class RoutingDomainStore(DomainStore):
             channels=channels,
             recall_limit=recall_limit,
             access=access,
+            **kwargs,
         )
 
     def recall_and_get(
@@ -651,6 +661,7 @@ class RoutingDomainStore(DomainStore):
         channels: list[RecallChannel] | None,
         recall_limit: int,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> RecallResult[ScoredMemoryUnit]:
         return self._active_domain().recall_and_get(
             scope,
@@ -658,6 +669,7 @@ class RoutingDomainStore(DomainStore):
             channels=channels,
             recall_limit=recall_limit,
             access=access,
+            **kwargs,
         )
 
     def retrieve(
@@ -670,6 +682,7 @@ class RoutingDomainStore(DomainStore):
         recall_limit: int,
         rank_limit: int,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> RankedStorageResult:
         return self._active_domain().retrieve(
             scope,
@@ -679,6 +692,7 @@ class RoutingDomainStore(DomainStore):
             recall_limit=recall_limit,
             rank_limit=rank_limit,
             access=access,
+            **kwargs,
         )
 
     def health(self) -> None:
@@ -686,4 +700,3 @@ class RoutingDomainStore(DomainStore):
 
     def _active_domain(self) -> DomainStore:
         return self._router.get().domain_store(self._name)
-

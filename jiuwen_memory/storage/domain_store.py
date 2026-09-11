@@ -18,6 +18,7 @@ F07 把原统一 ``Storage`` ABC 拆为管理面 :class:`~storage.store_manager.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import (
@@ -75,7 +76,7 @@ class DomainStore(ABC):
         ...
 
     @abstractmethod
-    def scopes(self) -> list[Scope]:
+    def scopes(self, **kwargs: Any) -> list[Scope]:
         """返回当前存储内已有记忆数据的作用域。"""
         ...
 
@@ -87,6 +88,7 @@ class DomainStore(ABC):
         *,
         mode: IndexWriteMode = IndexWriteMode.ALL,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> None:
         """写入一批记忆。
 
@@ -106,6 +108,7 @@ class DomainStore(ABC):
         *,
         mode: IndexWriteMode = IndexWriteMode.ALL,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> None:
         """更新一批记忆。覆盖范围同 :meth:`add`。
 
@@ -122,6 +125,7 @@ class DomainStore(ABC):
         *,
         mode: IndexRemoveMode = IndexRemoveMode.HARD,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> None:
         """删除一批记忆。覆盖范围同 :meth:`add`。
 
@@ -138,6 +142,7 @@ class DomainStore(ABC):
         unit_ids: list[str],
         *,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> list[MemoryUnit]:
         ...
 
@@ -152,6 +157,7 @@ class DomainStore(ABC):
         filters: FilterExpr | None = None,
         extensions: dict[str, str] | None = None,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> MemoryListResult:
         ...
 
@@ -164,6 +170,7 @@ class DomainStore(ABC):
         channels: list[RecallChannel] | None,
         recall_limit: int,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> RecallResult[ScoredUnit]:
         ...
 
@@ -176,6 +183,7 @@ class DomainStore(ABC):
         channels: list[RecallChannel] | None,
         recall_limit: int,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> RecallResult[ScoredMemoryUnit]:
         ...
 
@@ -190,6 +198,7 @@ class DomainStore(ABC):
         recall_limit: int,
         rank_limit: int,
         access: StorageAccessContext | None = None,
+        **kwargs: Any,
     ) -> RankedStorageResult:
         ...
 
