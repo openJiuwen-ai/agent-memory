@@ -21,6 +21,7 @@ import sys
 import threading
 import urllib.request
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -35,19 +36,23 @@ from jiuwen_memory_entry.http_server.dev_security import build_dev_security_runt
 pytestmark = pytest.mark.unit
 
 SCOPE = {"org": "local", "user": "developer"}
-_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 本文件位于 tests/unit/jiuwen_memory_entry/ 下——向上 4 层才是仓库根。
+# 算错会把 PYTHONPATH 指到 tests/ 下不存在的路径，仅在仓库根运行或已 editable
+# 安装时侥幸通过。
+_REPO = Path(__file__).resolve().parents[3]
 
 
 def _run_cli_process(*argv: str) -> subprocess.CompletedProcess[str]:
     """以子进程运行 CLI——在真实进程边界下断言 argparse 的退出码。"""
     env = {
         **os.environ,
-        "PYTHONPATH": _REPO + os.pathsep
-        + os.path.join(_REPO, "jiuwen_memory_entry", "core"),
+        "PYTHONPATH": os.pathsep.join(
+            [str(_REPO), str(_REPO / "jiuwen_memory_entry" / "core")]
+        ),
     }
     return subprocess.run(
         [sys.executable, "-m", "jiuwen_memory_entry.cli", *argv],
-        capture_output=True, text=True, env=env, timeout=120,
+        capture_output=True, text=True, env=env, cwd=_REPO, timeout=120,
     )
 
 

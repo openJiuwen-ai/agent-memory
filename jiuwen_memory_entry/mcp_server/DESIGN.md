@@ -64,8 +64,10 @@ space_usage、get/set_space_policy、list/add/remove_space_member）。
   stdio 读 ``AGENT_MEMORY_API_KEY``；Streamable HTTP 逐请求读
   ``Authorization: Bearer`` 与 socket peer（拿不到请求上下文属接线错误，
   fail-closed 不回退环境变量）。
-- 限流与 workload_guard：OFFLINE/本地运行时为 None（stdio 无网络对端）；
-  接入生产认证 runtime 后自动生效。
+- 限流与 workload_guard：当前**未接线**——``_invoke_blocking`` 调用认证中间件时
+  不传 ``limiter``/``workload_guard``（OFFLINE/本地运行时为 None，stdio 无网络
+  对端）。两者是 ``authenticated`` 的显式参数，接入生产认证 runtime 时需一并
+  构建传入，**不会随认证器自动生效**（见 docs/features/F03-mcp-surface.md 已知遗留）。
 
 ## 启动方式
 
@@ -136,20 +138,15 @@ config（启动时位置参数传 config.yml，叠加规则同 CLI）。
 
 ## 验证
 
-- 自动化：``python -m pytest tests/unit/jiwen_memory_entry/test_mcp_tools.py -v``
+- 自动化：``python -m pytest tests/unit/jiuwen_memory_entry/test_mcp.py -v``
   （92 用例：36 工具契约锁 + 旧字段/身份字段拒绝 + 失闭与 Surface.MCP 注入 +
   功能闭环含 evolve→job_status 与 consolidate→trace 血缘链 + Schema 无 ctx 泄漏
   + FastMCP.call_tool 协议编组）；传输层凭据另见
-  ``tests/unit/jiwen_memory_entry/test_mcp_transport_security.py``。
+  ``tests/unit/jiuwen_memory_entry/test_mcp_transport_security.py``。
 - 手动：MCP Inspector 逐工具执行（见上）；或挂载 Claude Desktop 后对话验证
   「记住我喜欢喝咖啡」→「我之前喜欢什么」。
 
 ## 已知遗留
 
-1. ``submit_ingest`` 工具 6 参数触发 G.FNM.03（阈值 5）——5 个为契约必填、
-   ctx 为框架注入，无法削减，需平台屏蔽豁免（理由已备）。
-2. 管理面/治理面/Space 工具依赖 ``MANAGE_POLICY``/``MANAGE_SPACE``/``VERIFY_AUDIT``
-   等管理动作的鉴权——dev 身份走旧授权链（按 scope 归属判定、不读 role）
-   时这些操作返回 PermissionDenied（F05 授权链过渡期缺口，非缺陷）；
-   待 ROOT role 接入 PermissionManager 后重测。
-3. OFFLINE 内存栈不跨进程持久——持久化需接真后端 config。
+特性层的方案取舍与已知遗留按仓库归档要求维护在
+[docs/features/F03-mcp-surface.md](../../docs/features/F03-mcp-surface.md)，此处不再重复。
