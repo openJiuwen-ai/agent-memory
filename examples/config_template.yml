@@ -84,12 +84,16 @@ globals:
 #           stage_options:
 #             TimeSpanMerger: {gap_seconds: 7200, summary_mode: structural}
 #             SceneSegmenter: {max_duration_seconds: 86400, summary_mode: structural}
-#             EventBuilder: {settle_seconds: 259200, summary_mode: structural}
+#             EventBuilder:
+#               settle_seconds: 259200
+#               summary_mode: structural
+#               summary_max_chars_per_child: 300  # 每个 scene 的结构摘录与 LLM 输入共用。
 # gap 是相邻叶间隔，max_duration 是 scene 合并跨度，settle 是 event 尾组静默时间；
 # 三者不是同一类窗口，不要求大小单调递增。阈值改变后，既有树需显式区间重建。
 # similarity_threshold 不设通用值，hashing 向量不代表语义相似度。
 # llm 引用上文的具名模型；tree_semantic 须在 embedder 命名空间另配真实模型与维度。
 # 仅绑定 embedder 不启用相似度阈值；凭证由宿主注入，YAML 不自动展开环境变量。
+# LLM 摘要提示词建议 time_span/scene/event 正文分别不超过 200/300/400 字符，不做长度校验。
 
 # ---- TIME 树周期：追加调度配置 ----
 # 在上面显式树配置基础上，将 globals.policies.hierarchy.auto_derive 改为 "true"。

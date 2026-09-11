@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-09-10 |
+| 最近一次修订日期 | 2026-09-11 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
@@ -524,7 +524,7 @@ EventBuilder 的 boundary_metadata_keys、carry_metadata_keys、summary_mode 同
 | entity_overlap_threshold | 缺省关闭 | [0,1] 有限数值；相邻去重实体集合的重叠系数 |
 | similarity_threshold | 缺省关闭 | [0,1] 有限数值；显式 embedder；相等不切 |
 | summary_max_children | 20 | 正整数；摘要输入最多场景数 |
-| summary_max_chars_per_child | 100 | 正整数；每个输入场景最多字符数 |
+| summary_max_chars_per_child | 300 | 正整数；每个输入场景最多字符数，结构摘录与 LLM 输入共用 |
 | settle_seconds | 259200 | 正整数；仅供增量末组静默封口，不限制事件分组总跨度 |
 
 配置装配把内层非 None 值转成字符串后校验；布尔值不是有效数值阈值。未知键、其他
@@ -538,6 +538,8 @@ stage 拒绝；settle_seconds 仅允许在 EventBuilder 配置。启用相似度
 scene 只取 `goal/actions/outcome`（目标、行动、结果），event 只取 `pattern/steps/outcome`
 （任务模式、步骤、结果）；不采纳模型返回的 ID/边/区间/计数或系统元数据。
 输入沿 child_ids 顺序按上述条数/字符上限截取；temperature=0，输出 max_tokens=1024。
+time_span/scene/event 提示词分别建议正文不超过 200/300/400 字符；不增加运行期长度
+校验、超长重试或输出截断，模型可能不遵守长度建议。
 JSON 非法、字段缺失/空值/类型错误或调用异常时保留确定性摘录，并记录 warning。
 这是结构化解析与失败降级，不保证模型摘要质量或事实完全正确，质量仍需评测。
 
@@ -777,3 +779,4 @@ hierarchy_composer:
 | 2026-09-10 | 阶段 7：扩展可选 scene 层、完整旧子树替换、显式可选模型摘要和父 L0/L1，新增配置校验、确定性结构与降级边界；保留两层兼容及既有部分失败契约。 |
 | 2026-09-10 | 阶段 8：补齐 event 四层树、相邻场景分组与实体/语义判据、任务摘要和父标注；四层完整替换及根向下写入，保留两/三层兼容，不接 settle 或自动维护。 |
 | 2026-09-10 | 阶段 9：增加同源 profile 快照与内部相邻单层增量上下文、严格静默封口和 pending 边界；旧子树还原确定性结构，仅增强新父，显式重建契约不变。 |
+| 2026-09-11 | EventBuilder 每个 scene 的默认输入摘录由 100 调整为 300 字符；三层输出分别由提示词建议不超过 200/300/400 字符，不新增运行期长度校验。 |
