@@ -760,7 +760,8 @@ PENDING -> CANCELLED
 - Job.run 返回的 SUCCEEDED/FAILED/CANCELLED 与 detail 原样保留，非终态返回转为
   FAILED 与错误说明。周期任务未返回 is_done=true 时继续执行；显式停止后保留最后
   实例终态，不把业务失败改成成功。HIERARCHY 的 complete=false 或 repair 均为失败。
-- async_timer 需要持续事件循环；临时 asyncio.run 的后台生命周期问题尚未修复。
+- async_timer 使用自身常驻守护事件循环执行任务；调用方临时 asyncio.run 结束不会取消
+  已提交任务，宿主进程仍须存活。
 
 ## 21. 最小调用示例
 

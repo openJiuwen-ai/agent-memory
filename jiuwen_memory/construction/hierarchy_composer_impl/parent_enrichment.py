@@ -28,11 +28,20 @@ SUMMARY_FIELDS = {
     HierarchyRole.EVENT: (("pattern", "任务模式"), ("steps", "步骤"), ("outcome", "结果")),
 }
 SUMMARY_INSTRUCTIONS = {
-    HierarchyRole.TIME_SPAN: "Summarize one continuous activity.",
-    HierarchyRole.SCENE: "Summarize one reviewable scene: its goal, actions and outcome.",
+    HierarchyRole.TIME_SPAN: (
+        "概括这一段连续活动，正文不超过 200 字符。"
+        "优先保留活动对象、关键行动、明确决定和结果，以及必要的具体名称、数字和否定信息。"
+        "省略重复讨论，不补充记录中没有的结论。"
+    ),
+    HierarchyRole.SCENE: (
+        "将这些片段概括为一个场景，包含目标、关键行动和结果，正文合计不超过 300 字符。"
+        "压缩重复背景，为行动和结果保留篇幅；区分计划、讨论与实际完成的事情。"
+        "未说明的结果标为未说明。"
+    ),
     HierarchyRole.EVENT: (
-        "Summarize the observed task pattern, steps and outcome across these adjacent scenes. "
-        "Do not claim a common task, reusable skill or causal link without supporting evidence."
+        "概括这些相邻场景中的任务模式、主要步骤和结果，正文合计不超过 400 字符。"
+        "优先保留关键进展、决定和最终状态。"
+        "没有证据时，不推断共同任务或因果关系；关联未说明时简短注明，不展开冗长解释。"
     ),
 }
 

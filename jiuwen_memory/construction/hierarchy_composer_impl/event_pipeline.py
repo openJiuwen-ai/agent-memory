@@ -50,7 +50,7 @@ class EventBuilderOptions:
     carry_metadata_keys: tuple[str, ...] = ()
     summary_mode: str = "structural"
     summary_max_children: int = 20
-    summary_max_chars_per_child: int = 100
+    summary_max_chars_per_child: int = 300
     settle_seconds: int = 259200
 
     def __post_init__(self) -> None:
@@ -86,7 +86,7 @@ class EventBuilderOptions:
             carry_metadata_keys=split_keys(values.get("carry_metadata_keys")),
             summary_mode=values.get("summary_mode", "structural"),
             summary_max_children=positive_int(values, "summary_max_children", 20),
-            summary_max_chars_per_child=positive_int(values, "summary_max_chars_per_child", 100),
+            summary_max_chars_per_child=positive_int(values, "summary_max_chars_per_child", 300),
             settle_seconds=positive_int(values, "settle_seconds", 259200),
         )
 

@@ -830,8 +830,8 @@ PENDING -> CANCELLED
   returns become FAILED with a diagnostic. Periodic work continues unless is_done=true; its
   final declaration preserves the last instance's terminal state instead of forcing success.
   HIERARCHY results with complete=false or any repair item are FAILED.
-- async_timer requires a persistent event loop; background lifetime under temporary asyncio.run
-  calls has not been repaired in this stage.
+- async_timer executes jobs on its own persistent daemon event loop. Closing a caller's
+  temporary asyncio.run loop does not cancel submitted jobs; the host process must stay alive.
 
 ## 21. Minimal Usage Example
 
