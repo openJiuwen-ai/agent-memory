@@ -1,7 +1,8 @@
-# agent-memory 装配配置示例（被 examples/quickstart.py 通过 Config.from_yaml 解析）
+# agent-memory 装配配置速查（可通过 Config.from_yaml 解析）。
+# 通用 quickstart.py 默认读 config.yml；本文件仅提供可选装配参数，不是独立运行入口。
 #
 # 配置是**两级命名空间**：顶层 = 各组件（Producer 的 TOP_NAME），其下 = 具名实例（target/params）。
-# 用户配置会**合并覆盖**到内置默认（纯内存离线栈）之上——只需写要改动的部分。
+# 用户配置按命名空间/实例名覆盖内置默认；同名实例的 params 不逐键深合并，需保留依赖引用。
 # 依赖写法：「引用名(字符串)」= 共享同一具名实例；「内联(映射)」= 就地建匿名实例。
 #
 # 下面除 globals 外全部注释掉 → 本文件等价于纯默认装配；按需取消注释即可覆盖。
@@ -15,6 +16,12 @@ globals:
   chunk_size: 120
   policies:                   # 运行时可变策略（交 PolicyManager；值保持字符串）
     rerank.enabled: "true"
+    lifecycle.expired_active.target: forgotten
+    lifecycle.superseded.target: forgotten
+    scope.require_space: "false"
+    hierarchy.enabled: "false"
+    hierarchy.auto_derive: "false"
+# policies 是整字典替换；增加树开关时保留已有策略，不要另写一个 globals 顶层键。
 
 # ---- 换存储后端：覆盖各命名空间下的 default 实例（三方后端必填参数在 build 期即校验）----
 # kv_store:
@@ -45,7 +52,66 @@ globals:
 # reranker:
 #   default: { target: bge_reranker, params: { reranker_bge_model: BAAI/bge-reranker-v2-m3 } }
 
-# ---- 跨实例分布式锁（横切原语，当前无消费方，配了也只在有人 dep 时才实例化）----
+# ---- TIME 树：显式建树配置 ----
+# 先在上方已有的 globals.policies 中将 hierarchy.enabled 改为 "true"。
+# 下面仅装配能力：普通 add 不建树，仍需用 EvolveTaskOptions 显式 evolve。
+# 默认 in_process Scheduler 可执行显式任务；只有 TIME 有建树算法，其他 kind 尚未实现。
+# 同名 evolver 实例会整体覆盖，所以保留原有依赖，额外引用独立 Composer。
+# evolver:
+#   default:
+#     target: orchestrating
+#     params:
+#       extractor: default
+#       abstractor: default
+#       associator: default
+#       index_builder: default
+#       message_store: default
+#       dedup: default
+#       llm: default
+#       hierarchy_composer: tree
+# hierarchy_composer:
+#   tree:
+#     target: default
+#     params:
+#       index_builder: default  # 与 Engine/Evolver 同源；不要另建独立存储实例。
+#       # llm: default           # 启用任一 summary_mode=llm 时显式绑定真实模型。
+#       # embedder: tree_semantic # 启用 similarity_threshold 时显式绑定语义模型。
+#       # layer_annotator: default # 可选父节点 L0/L1 标注；与父正文摘要是两件事。
+#       hierarchy_profiles:
+#         time:
+#           leaf_role: snapshot
+#           parent_roles: [time_span, scene, event]
+#           stage_options:
+#             TimeSpanMerger: {gap_seconds: 7200, summary_mode: structural}
+#             SceneSegmenter: {max_duration_seconds: 86400, summary_mode: structural}
+#             EventBuilder: {settle_seconds: 259200, summary_mode: structural}
+# gap 是相邻叶间隔，max_duration 是 scene 合并跨度，settle 是 event 尾组静默时间；
+# 三者不是同一类窗口，不要求大小单调递增。阈值改变后，既有树需显式区间重建。
+# similarity_threshold 不设通用值，hashing 向量不代表语义相似度。
+# llm 引用上文的具名模型；tree_semantic 须在 embedder 命名空间另配真实模型与维度。
+# 仅绑定 embedder 不启用相似度阈值；凭证由宿主注入，YAML 不自动展开环境变量。
+
+# ---- TIME 树周期：追加调度配置 ----
+# 在上面显式树配置基础上，将 globals.policies.hierarchy.auto_derive 改为 "true"。
+# 必须由宿主在持续运行的循环内 await runtime.start_background_jobs(home, security=security)。
+# 注册成功不等于本轮成功：查询 job_status 返回的 last_run_status / last_run_detail。
+# scheduler:
+#   default: {target: async_timer, params: {tick_interval: 10}}
+# job_factory:
+#   default:
+#     target: default
+#     params:
+#       evolver: default
+#       lifecycle: default
+#       index_builder: default
+#       llm: default
+#       hierarchy_derive_interval: 1800  # 秒；必须 >= scheduler.tick_interval。
+#       hierarchy_derive_lookback: 604800 # 秒；扫描窗口不是数据保留期。
+# 不在 JobFactory 重复 hierarchy_profiles；它复用绑定 Composer 的 profile。
+# 不自动发现全库 home，不清空 user/agent；多 home 由宿主逐个授权后注册。
+# close 只取消后续周期，wait 不代表等待所有建树线程，也不会自动修复部分失败。
+
+# ---- 跨实例分布式锁（TIME 显式/周期建树可消费该可选依赖）----
 # 不设默认实现：要用就必须显式配，避免「忘了配 Redis」静默退化成不跨实例的单机锁。
 # memory 实现只供单测与本地开发，不提供跨实例互斥；生产一律用 redis。
 # ssl_verify 只管是否校验服务端证书，加密开关在 url 的 scheme 上（须 rediss://）。
@@ -82,6 +148,7 @@ globals:
 # 可选 target：
 #   - orchestrating  默认。legacy 四模式（EXTRACT/CONSOLIDATE/ASSOCIATE/FORGET），
 #                    EXTRACT 走 _dedup_batch 判定+落盘耦合的旧路径。
+#                    另支持 HIERARCHY；需按上方绑定 Composer，并使用统一 EvolveTaskOptions。
 #   - dynamic        动态 prompt 四步编排（extract→consolidate(判定)→reflect→落盘），
 #                    EXTRACT 走 DynamicEvolver；其余三模式继承 orchestrating 行为。
 # 仅在要调阈值时才写下面两个可选参数。

@@ -11,9 +11,32 @@ import pytest
 from jiuwen_memory.api import JobStatus, assemble_runtime
 from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
 from jiuwen_memory.common.security.legacy import legacy_request_context
-from tests.unit.api.hierarchy_api_fixtures import HOME, ROOT_SECURITY, SECURITY, runtime_config
+from tests.unit.api.hierarchy_api_fixtures import (
+    HOME,
+    ROOT_SECURITY,
+    SECURITY,
+    hierarchy_template_config,
+    runtime_config,
+)
 
 pytestmark = pytest.mark.unit
+
+
+def test_config_template_registers_and_cancels_a_periodic_timer() -> None:
+    runtime = assemble_runtime(config=hierarchy_template_config(periodic=True))
+
+    async def exercise() -> list[str]:
+        """在同一循环内注册和关闭，不等待模板默认的 1800 秒周期。"""
+        try:
+            return await runtime.start_background_jobs(HOME, security=SECURITY)
+        finally:
+            runtime.close()
+
+    timer_ids = asyncio.run(exercise())
+    assert len(timer_ids) == 1
+    info = runtime.api.job_status(timer_ids[0], security=SECURITY)
+    assert info.status is JobStatus.CANCELLED
+    assert "last_run_id" not in info.detail
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "cloud"])
