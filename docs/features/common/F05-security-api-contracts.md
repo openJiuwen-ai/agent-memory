@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-09-05 |
+| 日期 | 2026-09-09 |
 | 影响范围 | `jiuwen_memory/common/security/`、`jiuwen_memory/common/audit/`、`jiuwen_memory/api/`、`jiuwen_memory_entry/core/`、`jiuwen_memory_entry/http_server/`、`jiuwen_memory_entry/mcp_server/transport_security.py`、`docs/specs/S02-memory-api.md`、`docs/specs/S07-common.md` |
 | 关联文档 | [S02 记忆接口层](../../specs/S02-memory-api.md)、[S07 公共组件层](../../specs/S07-common.md)、[F04 安全接口与加密设计](F04-security-interfaces-and-encryption.md) |
 | 状态 | 公共安全契约、HTTP / CLI 认证边界与本地测试用 dev Authenticator 已接线；生产认证及审计完整性 `*_impl` provider 仍暂缓 |
@@ -69,11 +69,16 @@ credentials_for_transport(  # jiuwen_memory_entry/mcp_server/transport_security.
 
 ### 2.4 本地功能测试用 dev Authenticator
 
-`authentication_impl/dev_authenticator.py` 是当前唯一已落地的新认证实现。它忽略凭据并固定
-返回具名 `Scope(org="local", user="developer")` 的 ROOT `AuthContext`，只用于本地或隔离容器中的
-HTTP / CLI 功能测试。它不接受请求体身份、不返回空 Scope、不替代 `PermissionManager` 授权，并保持
+`authentication_impl/dev_authenticator.py` 是当前唯一已落地的新认证实现。未配置身份映射时，
+它忽略凭据并固定返回具名 `Scope(org="local", user="developer")` 的 ROOT `AuthContext`。
+配置服务端预设映射后，按 `Credentials.api_key` 选择 actor 与 role，缺失或未知标识拒绝；
+每个请求取得独立身份副本。HTTP 标准启动器从 `http.dev_identities` 读取映射，只有显式 dev
+模式才生效；CLI 本地默认 dev 行为不变，远程 CLI 可携带相应 Bearer 标识。
+两种模式只用于本地或隔离容器中的 HTTP / CLI 功能测试，不接受请求体身份、不返回空 Scope、
+不替代 `PermissionManager` 授权，并保持
 `requires_loopback_binding=True`；容器因网络命名空间必须监听 `0.0.0.0` 时，需要 HTTP 入口显式
 放行，同时由 Compose 把宿主机发布地址收紧为 `127.0.0.1`。
+配置方式见 [Config 指南](../../zh/API文档/config.md#33-http-开发测试配置多个身份)。
 
 ## 3. 与旧 `SecurityProvider` 的关系
 

@@ -3,10 +3,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from jiuwen_memory.common.security.authentication.base import Authenticator
 from jiuwen_memory.common.security.authentication_impl import DevAuthenticator
 
 
-def build_dev_authenticator() -> Authenticator:
-    """构造仅供本地 HTTP / CLI 功能测试使用的固定身份认证器。"""
-    return DevAuthenticator()
+def build_dev_authenticator(*, identities: Mapping[str, Any] | None = None) -> Authenticator:
+    """构造固定身份或服务端预设身份认证器，仅供 HTTP / CLI 开发测试。"""
+    return DevAuthenticator(identities=identities)

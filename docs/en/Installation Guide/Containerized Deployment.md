@@ -1,5 +1,7 @@
 # Containerized Deployment
 
+Last revised: 2026-09-09
+
 Containerized deployment uses Docker Compose to run the agent-memory HTTP service and backend
 storage together. The repository provides three profiles that can be configured and started
 directly: `online`, `local`, and `postgres`.
@@ -145,7 +147,7 @@ HTTP_BIND_ADDRESS=127.0.0.1
 docker compose up -d --force-recreate agent-memory
 ```
 
-Dev mode ignores authentication headers and fixes the actor to the `local/developer` ROOT identity,
+Without `http.dev_identities`, dev ignores authentication headers and uses the fixed `local/developer` ROOT identity,
 while still running `MemoryAPI` authorization. The process listens on `0.0.0.0` inside the container,
 but `HTTP_BIND_ADDRESS=127.0.0.1` publishes the host port only on loopback. Then use these requests
 to verify an add/search round trip:
@@ -160,7 +162,15 @@ curl -X POST http://localhost:8137/v1/search \
   -d '{"query":"Which language does the user prefer","context":{"scope":{"org":"local","space":"","user":"developer","agent":"","session":""},"extensions":{}},"top_k":5}'
 ```
 
-Dev mode is for local functional testing only. Shared-network or production deployments must return
+For multiple test identities, add
+[`http.dev_identities`](<../API Docs/config.md#33-http-development-tests-multiple-identities>)
+alongside `memory_api` in the profile's mounted `config.yml`, or in your custom mounted file.
+Keep dev mode enabled and recreate the application container to load the changes. Every business
+request must then include a valid Bearer or X-API-Key selector; missing or unknown selectors return 401.
+The map does not create spaces, add members, or bypass authorization. The header-free examples above
+apply only when no map is configured.
+
+Dev mode is for isolated functional testing only. Shared-network or production deployments must return
 to `required` and inject a trusted production runtime.
 
 A `status: ok` health response only confirms that the HTTP process can respond. Complete availability
