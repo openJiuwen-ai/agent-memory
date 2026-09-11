@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import os
 
-from jiuwen_memory.api import assemble
+from jiuwen_memory.api import SearchOptions, assemble
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.security.space_roles import SpaceContentRole, SpaceGovernanceRole
 from jiuwen_memory.common.type_def import Context, Scope
@@ -34,7 +34,7 @@ from jiuwen_memory.construction.router import (
     parse_route_table,
 )
 from jiuwen_memory.control import SpaceMember, SpaceSpec
-from jiuwen_memory.control.types import MemoryPatch
+from jiuwen_memory.control.types import EvolveTaskOptions, MemoryPatch
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +156,10 @@ def _collective(api) -> None:
     #    「调用方可读的全部空间」。一次调用并发召回候选空间，归属坐标转成第二族收窄谓词
     query = "apollo 部署 风格"
     ctx = Context(scope=Scope(org=ORG), extensions={"coords": coords, "spaces": []})
-    mine = {item.content for item in api.search(query, ctx, security=SEC_ALICE, top_k=10).items}
+    alice_results = api.search(
+        query, ctx, security=SEC_ALICE, options=SearchOptions(top_k=10)
+    )
+    mine = {item.content for item in alice_results.items}
     logger.info(
         "  [search across spaces] alice 命中 %s 条，含个人偏好与项目事实：%s / %s",
         len(mine),
@@ -165,7 +168,10 @@ def _collective(api) -> None:
     )
 
     # 4) 隔离：bob 是协作空间的成员，读得到项目事实，读不到 alice 主空间的偏好
-    theirs = {item.content for item in api.search(query, ctx, security=SEC_BOB, top_k=10).items}
+    theirs = {
+        item.content
+        for item in api.search(query, ctx, security=SEC_BOB, options=SearchOptions(top_k=10)).items
+    }
     logger.info(
         "  [isolation] bob 命中 %s 条，项目事实可见：%s，alice 的偏好不可见：%s",
         len(theirs),
@@ -210,7 +216,12 @@ def main() -> None:
 
     # 2) search --------------------------------------------------------------
     logger.info("\n[search] query='咖啡 早上'")
-    res = api.search("咖啡 早上", Context(scope), security=security, top_k=3, with_trajectory=True)
+    res = api.search(
+        "咖啡 早上",
+        Context(scope),
+        security=security,
+        options=SearchOptions(top_k=3, with_trajectory=True),
+    )
     for item in res.items:
         logger.info("  score=%.3f  %s  %s", item.score, item.unit_id[:8], item.content)
     logger.info("  trajectory: %s", [(s.stage, s.candidate_count) for s in res.trajectory])
@@ -238,16 +249,27 @@ def main() -> None:
 
     # 4.5) evolve（构建层闭环：抽取低抽象事实 / 升华画像 / 遗忘被取代的旧版） --
     q = "咖啡 项目 评审"
-    before = len(api.search(q, Context(scope), security=security, top_k=20).items)
-    api.evolve(scope, EvolveMode.EXTRACT, security=security)  # Extractor：派生事实(记血缘)
-    api.evolve(scope, EvolveMode.CONSOLIDATE, security=security)  # Abstractor：升华 CORE 画像
-    api.evolve(scope, EvolveMode.ASSOCIATE, security=security)  # Associator：发现关联
-    api.evolve(scope, EvolveMode.FORGET, security=security)  # 清理 superseded 旧版
-    after = len(api.search(q, Context(scope), security=security, top_k=20).items)
+    before = len(
+        api.search(q, Context(scope), security=security, options=SearchOptions(top_k=20)).items
+    )
+    # EXTRACT 派生事实并记血缘；CONSOLIDATE 升华 CORE 画像；ASSOCIATE 发现关联；
+    # FORGET 清理 superseded 旧版。统一请求对象保留各模式的默认后台通道。
+    for evolve_mode in (
+        EvolveMode.EXTRACT,
+        EvolveMode.CONSOLIDATE,
+        EvolveMode.ASSOCIATE,
+        EvolveMode.FORGET,
+    ):
+        api.evolve(scope, EvolveTaskOptions(mode=evolve_mode), security=security)
+    after = len(
+        api.search(q, Context(scope), security=security, options=SearchOptions(top_k=20)).items
+    )
     logger.info(
         "\n[evolve] 召回命中 %s -> %s（extract 派生 + consolidate 画像入索引）", before, after
     )
-    prof = api.search("画像综合", Context(scope), security=security, top_k=1).items
+    prof = api.search(
+        "画像综合", Context(scope), security=security, options=SearchOptions(top_k=1)
+    ).items
     if prof:
         logger.info("  consolidate 画像 %s: <%s...>", prof[0].unit_id[:8], prof[0].content[:36])
 

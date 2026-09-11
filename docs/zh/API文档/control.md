@@ -94,7 +94,7 @@ Ingestor 在规约前校验 `source` 是否属于当前 `Normalizer.modalities()
 
 | API | 返回值 | 说明 |
 |---|---|---|
-| `await evolve(scope, mode, channel=BACKGROUND)` | `str` | 创建 Evolve Job，提交给 Scheduler 并返回 job id |
+| `await evolve(scope, options: EvolveTaskOptions)` | `str` | 普通模式创建 EvolveJob；HIERARCHY 创建显式两层 TIME HierarchyJob，提交 Scheduler 并返回 job id |
 | `await admin_get(key)` | `str` | 抽象契约中的策略读取入口 |
 | `await admin_set(key, value)` | `None` | 抽象契约中的策略修改入口 |
 | `await admin_all()` | `dict[str, str]` | 抽象契约中的策略列表入口 |
@@ -234,7 +234,15 @@ from jiuwen_memory.control.jobs import Job, JobFactory, JobType
 | `JobFactory.register(job_type, builder)` | `None` | 装配期注册某类 Job builder |
 | `JobFactory.get_job(job_type, scope, **kwargs)` | `Job` | 运行时补充 Scope 和参数并生成 Job |
 
-`Job.interval=0` 表示一次性任务；`interval>0` 表示定时声明。内置 `JobType` 包含 `EVOLVE` 和 `MIDDLE_TO_LONG`。
+`Job.interval=0` 表示一次性任务；`interval>0` 表示定时声明。内置 `JobType` 包含
+`EVOLVE`、`MIDDLE_TO_LONG` 和 `HIERARCHY`；HierarchyJob 固定一次性，不支持周期建树。
+
+EvolveTaskOptions 收 mode、channel（默认 BACKGROUND）与 hierarchy_options（默认 None）；
+旧独立 mode/channel 调用不再接受。HIERARCHY 只支持 snapshot→time_span，要求有界
+区间且任务 Scope 等于 tree_home_scope。Engine 运行时注入同源 Evolver/KV，Job 收齐
+新叶与相交旧父的全部直接子叶，不按 infer 筛选、不读 messages。完整契约见
+[S03](../../specs/S03-control.md)；公开 API 的权限/策略闸门及 JSON 迁移见
+[S02](../../specs/S02-memory-api.md)。
 
 ## 9. IngestJobController API
 
@@ -396,7 +404,7 @@ permission:
 | `ingest_job` | `in_process` | `InProcessIngestJobController` | ThreadPoolExecutor 后台摄入、KV 状态持久化、payload 幂等 | `ingest_max_workers` 默认 `1`、`ingest_max_pending_jobs` 默认 `2`、`kv_store` |
 | `policy` | `dict` | `DictPolicyManager` | 进程内可变策略表，只允许更新已知 key | `policies` |
 | `space` | `kv` | `KVSpaceManager` | 用 Storage KV 维护 Space 元数据、策略、成员、用量和导出记录 | `storage` |
-| `job_factory` | `default` | `JobFactory` | 注册 `EvolveJob` 与 `MiddleToLongJob` builder | storage、evolver、lifecycle、index_builder、llm；middle 调参和可选 lock |
+| `job_factory` | `default` | `JobFactory` | 注册 EvolveJob、MiddleToLongJob 与 HierarchyJob builder | 真源/lifecycle/llm、middle 调参、hierarchy_max_leaves(5000)、hierarchy_page_size(200)、hierarchy_lock_wait_ms(30000) 和可选 lock；Evolver/IndexBuilder 由 Engine 运行时注入 |
 
 `async_timer` 要求定时 Job 的 `interval >= tick_interval`。定时精度上限为一个 tick；同 Scope 同类任务不会并发堆积。
 
@@ -741,6 +749,7 @@ Engine 信任传入 Scope 已通过鉴权。
 ```text
 PENDING -> RUNNING -> SUCCEEDED
                    -> FAILED
+                   -> CANCELLED
 PENDING -> CANCELLED
 ```
 
@@ -748,6 +757,10 @@ PENDING -> CANCELLED
 - `async_timer.submit()` 将一次性任务入队后立即返回；同 Scope FIFO，不同 Scope 可并行。
 - 内置 `cancel()` 是幂等的最尽力取消；一次性任务通常只在 PENDING 时能转为 CANCELLED，不中断已运行任务。
 - 定时 Job 的 `interval` 必须不小于 `tick_interval`；取消后不再触发后续 tick。
+- Job.run 返回的 SUCCEEDED/FAILED/CANCELLED 与 detail 原样保留，非终态返回转为
+  FAILED 与错误说明。周期任务未返回 is_done=true 时继续执行；显式停止后保留最后
+  实例终态，不把业务失败改成成功。HIERARCHY 的 complete=false 或 repair 均为失败。
+- async_timer 需要持续事件循环；临时 asyncio.run 的后台生命周期问题尚未修复。
 
 ## 21. 最小调用示例
 

@@ -14,7 +14,12 @@ from typing import Dict, List, Tuple
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.tokenizer import Tokenizer
 from jiuwen_memory.common.tokenizer.base import TokenizerProducer
-from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.common.type_def import (
+    Scope,
+    evaluate,
+    filter_field_metadata_key,
+    matches_filter_value,
+)
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.fulltext import FulltextProducer, FulltextStore
 from jiuwen_memory.storage.types import Document, ScoredID, TextQuery
@@ -78,6 +83,11 @@ class InMemoryFulltextStore(FulltextStore):
         scored: List[ScoredID] = []
         for doc_id, tokens in self._tokens[key].items():
             if not tokens:
+                continue
+            metadata = self._docs[key][doc_id].metadata
+            if not evaluate(query.filters, lambda clause: matches_filter_value(
+                metadata.get(filter_field_metadata_key(clause.field)), clause
+            )):
                 continue
             hits = sum(1 for t in tokens if t in q_set)
             if hits:

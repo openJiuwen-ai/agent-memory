@@ -2,8 +2,8 @@
 """DynamicEvolver：EXTRACT 走动态 prompt 四步编排的 Evolver 实现。
 
 继承 :class:`OrchestratingEvolver`，只覆盖 ``_evolve_extract``：
-``extract → consolidate(判定) → reflect → 落盘``。其余三模式
-（CONSOLIDATE/ASSOCIATE/FORGET）继承父类行为。
+``extract → consolidate(判定) → reflect → 落盘``。其余模式
+（CONSOLIDATE/ASSOCIATE/FORGET/HIERARCHY）继承父类行为。
 
 与父类 legacy EXTRACT（``_dedup_batch`` 判定+落盘耦合）的区别：
 - consolidate 步只产出 :class:`ConsolidateDecision`，不落盘；
@@ -40,8 +40,11 @@ from jiuwen_memory.construction.dedup import DedupProducer
 from jiuwen_memory.construction.evolver import EvolveResult, EvolverProducer
 from jiuwen_memory.construction.evolver_impl.dedup_direct_noop import should_direct_noop
 from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
+    EvolverDependencies,
+    EvolverOptions,
     OrchestratingEvolver,
     _resolve_message_store,
+    optional_hierarchy_composer,
 )
 from jiuwen_memory.construction.extractor import ExtractorProducer
 from jiuwen_memory.construction.index_builder import IndexBuilderProducer
@@ -82,11 +85,13 @@ class DynamicEvolver(OrchestratingEvolver):
 
     def __init__(
         self,
-        *args,
+        dependencies: EvolverDependencies,
+        options: EvolverOptions | None = None,
+        *,
         prompt_registry: PromptRegistry | None = None,
-        **kwargs,
     ) -> None:
-        super().__init__(*args, **kwargs)
+        """注入共享演进依赖及动态 prompt 注册表。"""
+        super().__init__(dependencies, options)
         self._prompts = prompt_registry or PromptRegistry()
 
     def _evolve_extract(self, units: List[MemoryUnit]) -> EvolveResult:
@@ -409,17 +414,22 @@ def _build(config):
     )
 
     return DynamicEvolver(
-        extractor=ExtractorProducer.dep(config, default="dynamic_llm"),
-        abstractor=AbstractorProducer.dep(config, default="concat"),
-        associator=AssociatorProducer.dep(config, default="keyword"),
-        index_builder=IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
-        storage=StoreManagerProducer.resolve(config),
-        message_store=_resolve_message_store(config),
-        dedup=DedupProducer.dep(config, default=dr_default),
-        llm=LlmProducer.dep(config, default="echo"),
-        layer_annotator=_opt_annotator(),
-        router=optional_router(config),
+        dependencies=EvolverDependencies(
+            extractor=ExtractorProducer.dep(config, default="dynamic_llm"),
+            abstractor=AbstractorProducer.dep(config, default="concat"),
+            associator=AssociatorProducer.dep(config, default="keyword"),
+            index_builder=IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
+            storage=StoreManagerProducer.resolve(config),
+            message_store=_resolve_message_store(config),
+            dedup=DedupProducer.dep(config, default=dr_default),
+            llm=LlmProducer.dep(config, default="echo"),
+            layer_annotator=_opt_annotator(),
+            router=optional_router(config),
+            hierarchy_composer=optional_hierarchy_composer(config),
+        ),
+        options=EvolverOptions(
+            dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
+            dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
+        ),
         prompt_registry=registry,
-        dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
-        dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
     )

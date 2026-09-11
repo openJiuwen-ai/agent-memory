@@ -10,6 +10,7 @@ from typing import Any, Generic, Protocol, TypeVar
 
 from .feature import Entity
 from .filter import FilterExpr
+from .hierarchy import HierarchyKind, HierarchyRole
 from .memory import MemoryUnit
 
 
@@ -18,7 +19,8 @@ class RecallChannel(str, Enum):
 
     ``SPACE`` 不是召回通道，是跨空间检索里「某个空间整体召回失败」的标记位：该失败不属于
     任何一个通道，而 :class:`ChannelError` 是结果对象上唯一的结构化错误载体。它只出现在
-    ``RetrievalResult.errors`` 里，不进候选与融合。
+    ``RetrievalResult.errors`` 里，不进候选与融合。``HIERARCHY`` 同样仅用于上卷/展开诊断，
+    不作为召回信号或融合证据。
     """
 
     DOCUMENT = "document"
@@ -27,6 +29,7 @@ class RecallChannel(str, Enum):
     GRAPH = "graph"
     TEMPORAL = "temporal"
     SPACE = "space"
+    HIERARCHY = "hierarchy"  # 结构遍历诊断，不是召回通道，不参与候选融合
 
 
 @dataclass
@@ -59,6 +62,10 @@ class ParsedQuery:
     channels: list[RecallChannel] = field(default_factory=list)
     include_archived: bool = False
     extensions: dict[str, Any] = field(default_factory=dict)
+    hierarchy_kind: HierarchyKind | None = None
+    hierarchy_role: HierarchyRole | None = None
+    span_start: datetime | None = None
+    span_end: datetime | None = None
 
 
 @dataclass

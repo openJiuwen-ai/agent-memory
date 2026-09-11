@@ -22,8 +22,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+import asyncio
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from jiuwen_memory.common._support import as_bool
@@ -37,6 +38,8 @@ from jiuwen_memory.common.security.audit_integrity.base import (
     DEFAULT_AUDIT_VERIFY_PAGE_SIZE,
     AuditVerificationLimits,
 )
+from jiuwen_memory.common.security.types import RequestSecurityContext
+from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.config_source import ConfigSource, ConfigSourceProducer
 from jiuwen_memory.config.config_source_impl import register_config_sources
@@ -51,7 +54,7 @@ from jiuwen_memory.control.ingest_job import IngestJobController, IngestJobProdu
 from jiuwen_memory.control.membership import MembershipProducer
 from jiuwen_memory.control.permission import PermissionProducer
 from jiuwen_memory.control.policy import PolicyProducer
-from jiuwen_memory.control.scheduler import SchedulerProducer
+from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
 from jiuwen_memory.control.space import SpaceManager, SpaceProducer
 from jiuwen_memory.ingest.bootstrap import register_ingestors
 from jiuwen_memory.retrieval.bootstrap import register_operators
@@ -105,13 +108,14 @@ class _Kernel:
     kv: KVStore
     storage: StoreManager
     ingest_jobs: IngestJobController
+    scheduler: Scheduler
     space: SpaceManager | None = None
     config_source: ConfigSource | None = None
 
 
 @runtime_checkable
 class MemoryRuntime(Protocol):
-    """Access composition root 使用的运行时句柄：只有 API 与关闭语义。"""
+    """宿主运行时：API、显式周期启动与关闭；不暴露原始内核端口。"""
 
     @property
     def api(self) -> MemoryAPI:
@@ -120,13 +124,46 @@ class MemoryRuntime(Protocol):
     def close(self, *, wait: bool = True) -> None:
         ...
 
+    async def start_background_jobs(
+        self, scope: Scope, *, security: RequestSecurityContext,
+    ) -> list[str]:
+        """在宿主持续运行的事件循环内注册固定 home；默认不开启。"""
+        ...
+
 
 @dataclass
 class _MemoryRuntime:
     api: MemoryAPI
     _ingest_jobs: IngestJobController
+    _scheduler: Scheduler
+    _start_jobs: Callable[[Scope, RequestSecurityContext], Awaitable[list[str]]]
+    _job_ids: set[str] = field(default_factory=set)
+    _loop: asyncio.AbstractEventLoop | None = None
+    _closed: bool = False
+
+    async def start_background_jobs(
+        self, scope: Scope, *, security: RequestSecurityContext,
+    ) -> list[str]:
+        """绑定一个宿主循环并记录本 Runtime 启动的定时任务。"""
+        loop = asyncio.get_running_loop()
+        if self._closed or (self._loop is not None and self._loop is not loop):
+            raise ValidationError("runtime is closed or periodic jobs belong to another event loop")
+        job_ids = await self._start_jobs(scope, security)
+        if self._closed:
+            for job_id in job_ids:
+                self._scheduler.cancel(job_id)
+            raise ValidationError("runtime closed during periodic registration")
+        if job_ids:
+            self._loop = loop
+            self._job_ids.update(job_ids)
+        return job_ids
 
     def close(self, *, wait: bool = True) -> None:
+        """取消本 Runtime 的后续周期；wait 只等待摄入任务，不中断正在建树的线程。"""
+        self._closed = True
+        for job_id in self._job_ids:
+            self._scheduler.cancel(job_id)
+        self._job_ids.clear()
         self._ingest_jobs.close(wait=wait)
 
 
@@ -255,11 +292,12 @@ def _build_kernel(
             f"{type(ingest_jobs).__name__}"
         )
     space = SpaceProducer.dep(root, default="kv")
+    scheduler = SchedulerProducer.dep(root, default="in_process")
 
     api = LocalMemoryAPI(
         engine=EngineProducer.dep(root, default="in_memory"),
         permission=PermissionProducer.dep(root, default="sqlite"),
-        scheduler=SchedulerProducer.dep(root, default="in_process"),
+        scheduler=scheduler,
         policy=PolicyProducer.dep(root, default="dict"),
         governor=GovernorProducer.dep(root, default="in_memory"),
         audit_logger=AuditProducer.dep(root, default="sqlite"),
@@ -292,6 +330,7 @@ def _build_kernel(
         storage=storage,
         ingest_jobs=ingest_jobs,
         space=space,
+        scheduler=scheduler,
         config_source=config_source,
     )
 
@@ -330,6 +369,11 @@ def assemble_runtime(
     kv: KVStore | None = None,
     config: Config | Mapping[str, Any] | None = None,
 ) -> MemoryRuntime:
-    """装配 Access 运行时：``api`` + ``close``，不暴露存储或任务控制器端口。"""
+    """装配含显式异步周期启动的 Runtime，不暴露存储或任务控制器端口。"""
     kernel = _build_kernel(policies, kv, config)
-    return _MemoryRuntime(api=kernel.api, _ingest_jobs=kernel.ingest_jobs)
+    return _MemoryRuntime(
+        api=kernel.api, _ingest_jobs=kernel.ingest_jobs, _scheduler=kernel.scheduler,
+        _start_jobs=lambda scope, security: kernel.api.start_background_jobs(
+            scope, security=security,
+        ),
+    )

@@ -15,7 +15,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from jiuwen_memory.api import MemoryAPI, Scope, build_dev_authenticator
+from jiuwen_memory.api import MemoryAPI, Scope, build_dev_authenticator, legacy_request_context
 from jiuwen_memory.common.security.request_context import get_request_id
 from jiuwen_memory.common.security.types import get_current
 from jiuwen_memory_entry.cli import __main__ as cli
@@ -67,7 +67,23 @@ def test_cli_exposes_every_api_parameter(method: str, capsys, monkeypatch) -> No
     ("method", "payload"),
     [
         ("add", {"content": "hello", "scope": SCOPE, "source": "text", "tags": ["a"]}),
-        ("search", {"query": "hello", "context": {"scope": SCOPE}, "top_k": 3}),
+        ("search", {"query": "hello", "context": {"scope": SCOPE}, "options": {"top_k": 3}}),
+        ("search", {"query": "hello", "context": {"scope": SCOPE}, "options": None}),
+        ("search", {"query": "hello", "context": {"scope": SCOPE}, "options": {}}),
+        (
+            "search",
+            {
+                "query": "coffee",
+                "context": {"scope": SCOPE},
+                "options": {
+                    "hierarchy_kind": "time",
+                    "hierarchy_role": "time_span",
+                    "expand_depth": 1,
+                    "span_start": "2026-09-10T09:00:00+00:00",
+                    "span_end": "2026-09-10T10:00:00+00:00",
+                },
+            },
+        ),
         ("get", {"unit_id": "u1", "scope": SCOPE}),
         ("update", {"unit_id": "u1", "scope": SCOPE, "patch": {"content": "new"}}),
         ("delete", {"selector": {"scope": SCOPE, "unit_ids": ["u1"], "mode": "purge"}}),
@@ -77,6 +93,24 @@ def test_cli_exposes_every_api_parameter(method: str, capsys, monkeypatch) -> No
         ),
         ("admin_set", {"key": "test", "value": "false"}),
         ("list", {"scope": SCOPE, "extensions": None}),
+        ("evolve", {"scope": SCOPE, "options": {"mode": "extract", "channel": "hot"}}),
+        (
+            "evolve",
+            {
+                "scope": SCOPE,
+                "options": {
+                    "mode": "hierarchy",
+                    "hierarchy_options": {
+                        "kind": "time",
+                        "leaf_role": "snapshot",
+                        "parent_roles": ["time_span"],
+                        "tree_home_scope": SCOPE,
+                        "span_start": "2026-09-10T09:00:00+00:00",
+                        "span_end": "2026-09-10T10:00:00+00:00",
+                    },
+                },
+            },
+        ),
     ],
 )
 def test_cli_builds_same_request_without_defaults(method: str, payload: dict) -> None:
@@ -106,6 +140,52 @@ def test_cli_rejects_legacy_options(old_option: str, monkeypatch) -> None:
     assert f"unrecognized arguments: {old_option} old" in message
 
 
+@pytest.mark.parametrize("old_option", ["--mode", "--channel", "--hierarchy_options"])
+def test_cli_evolve_rejects_top_level_options(old_option: str, monkeypatch) -> None:
+    exit_mock = Mock(side_effect=RuntimeError("parser exit"))
+    monkeypatch.setattr(argparse.ArgumentParser, "exit", exit_mock)
+    with pytest.raises(RuntimeError, match="^parser exit$"):
+        cli.build_parser().parse_args(
+            [
+                "evolve",
+                "--scope",
+                json.dumps(SCOPE),
+                "--options",
+                '{"mode":"extract"}',
+                old_option,
+                "old",
+            ]
+        )
+    exit_mock.assert_called_once()
+    attempted_status, diagnostic = exit_mock.call_args.args
+    assert attempted_status == 2
+    assert f"unrecognized arguments: {old_option} old" in diagnostic
+
+
+@pytest.mark.parametrize(
+    "old_option", ["--filters", "--as_of", "--top_k", "--disclosure", "--with_trajectory"]
+)
+def test_cli_search_rejects_top_level_options(old_option: str, monkeypatch) -> None:
+    exit_mock = Mock(side_effect=RuntimeError("parser exit"))
+    monkeypatch.setattr(argparse.ArgumentParser, "exit", exit_mock)
+    with pytest.raises(RuntimeError, match="^parser exit$"):
+        cli.build_parser().parse_args(
+            [
+                "search",
+                "--query",
+                "coffee",
+                "--context",
+                json.dumps({"scope": SCOPE}),
+                old_option,
+                "old",
+            ]
+        )
+    exit_mock.assert_called_once()
+    attempted_status, diagnostic = exit_mock.call_args.args
+    assert attempted_status == 2
+    assert f"unrecognized arguments: {old_option} old" in diagnostic
+
+
 @pytest.mark.parametrize("body", [None, [], "job-1", {"items": [], "count": 0}])
 def test_http_client_preserves_payload_and_original_response(monkeypatch, body) -> None:
     seen = []
@@ -131,8 +211,16 @@ def test_http_client_preserves_payload_and_original_response(monkeypatch, body) 
 
 @pytest.fixture(params=["local", "http"])
 def api_client(request, monkeypatch):
+    mode, hierarchy_enabled = (
+        request.param if isinstance(request.param, tuple) else (request.param, False)
+    )
     local = client_module.InProcessClient(authenticator=build_dev_authenticator())
-    if request.param == "local":
+    if hierarchy_enabled:
+        local.server.api.admin_set(
+            "hierarchy.enabled", "true",
+            security=legacy_request_context(Scope()),
+        )
+    if mode == "local":
         try:
             yield local
         finally:
@@ -171,7 +259,7 @@ def test_local_and_http_complete_same_api_crud(api_client) -> None:
     assert page["items"][0]["id"] == unit_id
 
     status, found = api_client.call(
-        "search", {"query": "coffee", "context": {"scope": SCOPE}, "top_k": 1}
+        "search", {"query": "coffee", "context": {"scope": SCOPE}, "options": {"top_k": 1}}
     )
     assert status == 200, found
     assert found["items"][0]["unit_id"] == unit_id
@@ -196,6 +284,70 @@ def test_local_and_http_complete_same_api_crud(api_client) -> None:
     )
     assert status == 200, deleted
     assert deleted == [updated["id"]]
+
+
+@pytest.mark.parametrize("raw_options", [None, {}])
+def test_both_clients_search_with_default_options(api_client, raw_options) -> None:
+    status, units = api_client.call("add", {"content": "default coffee", "scope": SCOPE})
+    assert status == 200, units
+    status, result = api_client.call(
+        "search",
+        {"query": "coffee", "context": {"scope": SCOPE}, "options": raw_options},
+    )
+
+    assert status == 200, result
+    assert result["items"][0]["unit_id"] == units[0]["id"]
+
+
+@pytest.mark.parametrize("api_client", [("local", True), ("http", True)], indirect=True)
+def test_both_clients_search_snapshot_by_structural_time(api_client) -> None:
+    status, units = api_client.call(
+        "add",
+        {
+            "content": "structured coffee",
+            "scope": SCOPE,
+            "system_metadata": {
+                "hierarchy_kind": "time",
+                "hierarchy_role": "snapshot",
+                "hierarchy_span_start": "2026-09-10T09:00:00+00:00",
+                "hierarchy_span_end": "2026-09-10T10:00:00+00:00",
+            },
+        },
+    )
+    assert status == 200, units
+    status, result = api_client.call(
+        "search",
+        {
+            "query": "coffee",
+            "context": {"scope": SCOPE},
+            "options": {
+                "hierarchy_kind": "time",
+                "hierarchy_role": "snapshot",
+                "span_start": "2026-09-10T09:30:00+00:00",
+                "span_end": "2026-09-10T10:30:00+00:00",
+                "top_k": 1,
+                "disclosure": "l2",
+            },
+        },
+    )
+
+    assert status == 200, result
+    assert result["items"][0]["unit_id"] == units[0]["id"]
+    assert result["items"][0]["content"] == "structured coffee"
+    assert result["items"][0]["parent_id"] == ""
+
+
+@pytest.mark.parametrize(
+    "old_field", ["filters", "as_of", "top_k", "disclosure", "with_trajectory"]
+)
+def test_both_clients_reject_top_level_search_options(api_client, old_field: str) -> None:
+    status, body = api_client.call(
+        "search", {"query": "coffee", "context": {"scope": SCOPE}, old_field: "old"}
+    )
+
+    assert status == 400
+    assert body["error"] == "ValidationError"
+    assert f"unknown field for MemoryAPI.search: '{old_field}'" in body["message"]
 
 
 def test_local_and_http_await_original_async_result(api_client) -> None:
@@ -253,7 +405,7 @@ def test_dev_authentication_still_checks_business_permissions(api_client) -> Non
     ("method", "payload", "expected"),
     [
         ("admin_set", {"key": "test", "value": "false"}, None),
-        ("evolve", {"scope": SCOPE, "mode": "extract"}, "job-1"),
+        ("evolve", {"scope": SCOPE, "options": {"mode": "extract"}}, "job-1"),
     ],
 )
 def test_inprocess_preserves_original_returns(monkeypatch, method, payload, expected) -> None:
@@ -263,6 +415,42 @@ def test_inprocess_preserves_original_returns(monkeypatch, method, payload, expe
         assert client.call(method, payload) == (200, expected)
     finally:
         client.close()
+
+
+@pytest.mark.parametrize("old_field", ["mode", "channel", "hierarchy_options"])
+def test_both_clients_reject_top_level_evolve_options(api_client, old_field: str) -> None:
+    status, body = api_client.call(
+        "evolve",
+        {"scope": SCOPE, "options": {"mode": "extract"}, old_field: "old"},
+    )
+
+    assert status == 400
+    assert body["error"] == "ValidationError"
+    assert f"unknown field for MemoryAPI.evolve: '{old_field}'" in body["message"]
+
+
+def test_both_clients_decode_hierarchy_options_before_policy_gate(api_client) -> None:
+    status, body = api_client.call(
+        "evolve",
+        {
+            "scope": SCOPE,
+            "options": {
+                "mode": "hierarchy",
+                "hierarchy_options": {
+                    "kind": "time",
+                    "leaf_role": "snapshot",
+                    "parent_roles": ["time_span"],
+                    "tree_home_scope": SCOPE,
+                    "span_start": "2026-09-10T09:00:00+00:00",
+                    "span_end": "2026-09-10T10:00:00+00:00",
+                },
+            },
+        },
+    )
+
+    assert status == 400
+    assert body["error"] == "PolicyError"
+    assert "hierarchy.enabled=false" in body["message"]
 
 
 @pytest.mark.parametrize("option", [["--auth-mode", "dev"], ["--config", "local.yaml"]])

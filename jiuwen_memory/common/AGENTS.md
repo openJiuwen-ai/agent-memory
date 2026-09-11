@@ -16,10 +16,12 @@
 | `_support.py` | 跨层共用的小工具：配置值布尔归一（`as_bool`）、SSL 配置读取与装配期校验（`SslConfig`/`build_ssl_config`/`require_tls_scheme`/`require_ca_file`/`outbound_verify`/`read_ssl_config`/`reject_url_tls_params`）、scope 命名空间渲染（`SCOPE_DIMS`/`scope_segments`）、后端异常归一（`wrap_backend`）；storage、lock 与出站客户端共用，避免各写一份 |
 | `type_def/` | 核心数据类型定义目录 |
 | `type_def/memory.py` | MemoryUnit/Relation/Segment/Temporal/ContentLayers 等；MemoryUnit id 在完整 Scope 内唯一；KV key 前缀 `MEMORY_KEY_PREFIX`/`memory_key`（建索引记忆 `/memory/{id}`）。`ContentLayers`(l0/l1) 为分层披露标注，由 LayerAnnotator 对超阈 content 产出 |
+| `type_def/hierarchy.py` | HierarchyKind/Role/Status、HierarchyRef、叶角色映射、结构索引六键投影与 UTC 毫秒转换；`validate_ref` / `validate_tree` 是无存储依赖的纯校验，不负责生成父节点 |
+| `type_def/hierarchy_query.py` | HierarchyQuery 纯校验与真源节点匹配、validate_expand_depth/validate_rollup 纯校验；kind/role、ACTIVE、结构闭区间及 UTC 微秒语义，不访问父子节点或策略 |
 | `type_def/scope.py` | Scope：`org/space/user/agent/session` 五维归属；非空 `space` 是全局唯一的逻辑隔离标识且为 keyword-only，旧位置参数保持 `org/user/agent/session` 顺序。另有 `KERNEL_COORD_KEYS`——内核自带的归属坐标实体名，三项取值必须是 `Scope` 的字段名，故与该类同处 |
 | `type_def/filter.py` | FilterClause/FilterGroup/FilterExpr 及 normalize/evaluate；统一 API、检索和存储的树形过滤契约 |
-| `type_def/memory_filter.py` | MemoryUnit 字段投影与 FilterExpr 公共求值；供 retrieval 真源复核和 KV list 兼容实现共用 |
-| `type_def/memory_codec.py` | `MemoryUnit` ↔ bytes 编解码（`dumps`/`loads`）；当前 `_v=4`，分别序列化 `system_metadata` / `user_metadata`，拒绝未迁移的 `_v<4` MemoryUnit |
+| `type_def/memory_filter.py` | MemoryUnit 字段投影与 FilterExpr 公共求值；结构六键从 hierarchy 真源生成；共享 matches_filter_value 为 KV、检索复核及内存全文/向量提供同一字段比较语义 |
+| `type_def/memory_codec.py` | `MemoryUnit` ↔ bytes 编解码（`dumps`/`loads`）；当前 `_v=4`，保留 vectors、双 metadata 与系统瞬态键剥除；非空 hierarchy 序列化、缺失读为空结构，仍拒绝未迁移的 `_v<4` MemoryUnit |
 | `type_def/raw.py` | RawPayload（含交给 Ingestor 映射的 `assets` 资产引用）；KV key 前缀 `MESSAGES_KEY_PREFIX`/`messages_key`（未建索引 infer 原文 `/messages/{id}`） |
 | `type_def/audit.py` | AuditEvent：记录 actor scope、target scope、action、decision、target_id 与 detail |
 | `factory/factory.py` | Factory 基类：`TOP_NAME` 注册 + 三接口 `build`/`build_named`/`dep`（配置数据结构 `ComponentConfig`/`AssemblyContext`/`RawSpec` 在 `config/context.py`） |
@@ -46,8 +48,9 @@
 3. **注册靠 import 触发**
    实现文件尾部 `@XxxProducer.register("name")` 注册 _build 函数，`*_impl/__init__.py` import 各实现模块触发注册，`bootstrap.py::register_plugins()` 在装配前统一触发。
 
-4. **types.py 零依赖其他文件**
-   `type_def/*.py` 是纯数据定义，不 import 本层其他文件，被全局共享依赖。
+4. **公共类型保持纯数据与纯校验边界**
+   `type_def/*.py` 可引用本包类型与 `common.errors` 完成数据转换和纯校验；不得依赖
+   构建、检索、控制或存储实现，不在类型校验中读取存储或执行业务编排。
 
 5. **共享插件必须双侧同一**
    Embedder/Tokenizer/FeatureExtractor 必须在构建侧与检索侧使用同一实现/同一配置，保证同词表/同向量空间。靠配置里「具名 + 引用」显式表达共享：双侧 `dep` 引用同一具名实例 → `build_named` 命中同一缓存键 → 同一实例。
@@ -62,6 +65,12 @@
 
 8. **Normalizer 能力声明必须可执行**
    `modalities()` 不是说明性信息：显式 routing route 在装配时校验，真实 payload 在规约前校验。装配矛盾抛 `ValidationError`，运行时不支持抛 `UnsupportedCapabilityError`。它只决定“是否支持”，不决定 `RawPayload.data` / `uri` 的载体选择。Passthrough 只允许 TEXT 使用 URI 文本回退；CODE 只接 UTF-8 源码文本，DOCUMENT 与不支持的媒体不得借 URI 回退绕过能力门禁。
+
+9. **结构校验不等于全库校验**
+   `validate_ref` 检查单引用，`validate_tree` 先校验输入引用字段，再检查非空结构集合，
+   集合外节点不自动加载，引用按完整 Scope+id 定位；二者均不自动在 Ingestor 或 codec
+   中执行。五种 kind、七种 role 只是
+   结构词表，不代表已实现相应算法；本模块不排序、不建父、不维护持久化边。
 
 ## 与其他子目录的边界
 

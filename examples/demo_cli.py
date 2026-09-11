@@ -51,8 +51,8 @@ def main() -> int:
         unit_id = added[0]["id"]
         logger.info("  id=%s segments=%s", unit_id, added[0]["segments"])
 
-        hr("search — 使用 context / top_k，结果读取 items / unit_id")
-        result = call("search", query="coffee", context={"scope": SCOPE}, top_k=5)
+        hr("search — 使用 context / options，结果读取 items / unit_id")
+        result = call("search", query="coffee", context={"scope": SCOPE}, options={"top_k": 5})
         logger.info("  %s", result["items"])
 
         hr("get / update — 使用 unit_id / scope / patch")

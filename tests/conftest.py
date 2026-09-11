@@ -8,13 +8,12 @@ from typing import Any, Callable, Optional
 
 import pytest
 
+from jiuwen_memory.common.chunker.chunker_impl.fixed_window_chunker import FixedWindowChunker
 from jiuwen_memory.common.embedder.embedder_impl.hashing_embedder import HashingEmbedder
-from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (
-    KeywordFeatureExtractor,
-)
+from jiuwen_memory.common.feature_extractor.feature_extractor_impl import keyword_feature_extractor
 from jiuwen_memory.common.reranker.reranker_impl.overlap_reranker import OverlapReranker
 from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
-from jiuwen_memory.common.type_def import RetrievalPipeline, memory_key
+from jiuwen_memory.common.type_def import RetrievalPipeline
 from jiuwen_memory.common.type_def.memory import (
     LifecycleState,
     MemoryTier,
@@ -23,8 +22,8 @@ from jiuwen_memory.common.type_def.memory import (
     Segment,
     Temporal,
 )
-from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.common.type_def.scope import Scope
+from jiuwen_memory.construction.index_builder_impl.hybrid_index_builder import HybridIndexBuilder
 from jiuwen_memory.retrieval.discloser_impl.truncating_discloser import TruncatingDiscloser
 from jiuwen_memory.retrieval.fuser_impl.rrf_fuser import RRFFuser
 from jiuwen_memory.retrieval.query_parser_impl.simple_query_parser import SimpleQueryParser
@@ -38,7 +37,6 @@ from jiuwen_memory.storage.graph import GraphStore
 from jiuwen_memory.storage.kv import KVStore
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
-from jiuwen_memory.storage.types import Document, VectorRecord
 from jiuwen_memory.storage.vector import VectorStore
 from jiuwen_memory.storage.vector_impl.in_memory_vector_store import InMemoryVectorStore
 
@@ -89,7 +87,7 @@ class RetrievalWorld:
 def make_world(rerank: bool = False) -> RetrievalWorld:
     tokenizer = WhitespaceTokenizer()
     embedder = HashingEmbedder(tokenizer)
-    features = KeywordFeatureExtractor(tokenizer)
+    features = keyword_feature_extractor.KeywordFeatureExtractor(tokenizer)
     kv = InMemoryKVStore()
     vector = InMemoryVectorStore()
     fulltext = InMemoryFulltextStore(tokenizer)
@@ -156,13 +154,19 @@ def make_unit(
 
 
 def index_unit(world: RetrievalWorld, unit: MemoryUnit) -> None:
-    """Mirror the minimal write-side indexing needed by retrieval tests."""
-    world.kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
-    world.vector.insert(
-        unit.scope,
-        [VectorRecord(id=unit.id, vector=world.embedder.embed_query(unit.content))],
+    """Use the production write-side projection for retrieval tests."""
+    storage = CompositeStoreManager(
+        kv=world.kv,
+        vector=world.vector,
+        fulltext=world.fulltext,
     )
-    world.fulltext.insert(unit.scope, [Document(id=unit.id, text=unit.content)])
+    builder = HybridIndexBuilder(
+        storage,
+        FixedWindowChunker(),
+        world.embedder,
+        layers_enabled=False,
+    )
+    builder.build([unit])
 
 
 @pytest.fixture

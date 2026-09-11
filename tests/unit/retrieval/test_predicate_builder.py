@@ -37,11 +37,16 @@ def test_include_archived_widens_lifecycle() -> None:
 
 
 def test_historical_query_emits_time_and_not_forgotten() -> None:
-    fields = {(c.field, c.op) for c in build_system_filters(NOW, None, None)}
+    predicates = build_system_filters(NOW, None, None)
+    expression = FilterGroup(FilterLogic.AND, predicates)
+    fields = {(clause.field, clause.op) for clause in iter_clauses(expression)}
 
     assert ("lifecycle", FilterOp.NE) in fields
-    assert ("t_valid", FilterOp.LTE) in fields
+    assert ("t_valid", FilterOp.GT) in fields
     assert ("t_invalid", FilterOp.GT) in fields
+    assert predicates[1] == FilterGroup(
+        FilterLogic.NOT, [FilterClause("t_valid", FilterOp.GT, int(NOW.timestamp() * 1000))]
+    )
 
 
 def test_t_invalid_pushdown_matches_index_sentinel() -> None:
@@ -50,7 +55,8 @@ def test_t_invalid_pushdown_matches_index_sentinel() -> None:
     索引投影对真源 t_invalid=None 落 T_INVALID_OPEN（见 index_builder），本谓词
     `t_invalid > as_of` 才对"永久有效"成立。两处是一套约定，改一处即破。
     """
-    clause = [c for c in build_system_filters(NOW, None, None) if c.field == "t_invalid"][0]
+    expression = FilterGroup(FilterLogic.AND, build_system_filters(NOW, None, None))
+    clause = [item for item in iter_clauses(expression) if item.field == "t_invalid"][0]
 
     assert clause.op == FilterOp.GT
     assert clause.value < T_INVALID_OPEN, "as_of 阈值超过哨兵时，开放区间记忆将被排他"

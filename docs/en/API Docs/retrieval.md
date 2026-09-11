@@ -1,9 +1,8 @@
 # Retrieval Layer API
 
-The Retrieval layer divides retrieval into five pluggable operator types:
+The Retrieval layer divides retrieval into four pluggable operator types:
 
 - `QueryParser`: parses an external query into a structured representation.
-- `Recaller`: recalls candidates within one logical channel.
 - `Fuser`: merges and ranks candidates from multiple recall sources.
 - `Discloser`: shapes ranked memories into L0/L1/L2 content.
 - `Retriever`: provides the unified retrieval entry point for callers.
@@ -34,6 +33,19 @@ result: RetrievalResult = retriever.retrieve(
 
 `scope` is the explicit isolation axis and specifies where to search. `RetrievalQuery` specifies what to search for. They are always passed separately; Scope dimensions must not be placed in `filters`.
 
+For the public MemoryAPI, use `api.search(query, context, SearchOptions(...), security=security)`.
+Import `SearchOptions` from `jiuwen_memory.api`. Omitted options use defaults; old flat option
+keywords are no longer accepted. HTTP/CLI carry the same fields in a nested `options` object.
+Typed hierarchy queries require `hierarchy.enabled=true`, retain existing Scope/permissions,
+and default to direct hits only (`rollup=False`, `expand_depth=0`). A positive depth follows child
+references: 1 reads direct children, 2 follows at most two edges. With `rollup=True`, matching
+descendants can admit the nearest ancestor of the requested role; without a role, direct hits
+remain and their direct parents are added. MaxP takes the highest direct/descendant score after
+reranking, before thresholds and top_k. Rollup does not imply expansion or scan sessions.
+Exact physical-Scope materialization limits still apply; the multimodal wrapper rejects rollup.
+Automatic construction is not implemented.
+See [S02](../../specs/S02-memory-api.md) for the public contract.
+
 ## 2. RetrievalOperator Base Class
 
 ```python
@@ -47,7 +59,7 @@ Every retrieval operator inherits `RetrievalOperator` and implements:
 | `operator_type()` | `RetrievalOperatorType` | Returns the operator type |
 | `health()` | `None` | Returns `None` when healthy and raises an exception on failure |
 
-`RetrievalOperatorType` contains `QUERY_PARSER`, `RECALLER`, `FUSER`, `DISCLOSER`, and `RETRIEVER`.
+`RetrievalOperatorType` contains `QUERY_PARSER`, `FUSER`, `DISCLOSER`, `EXPANDER`, and `RETRIEVER`. Recallers belong to the Storage data plane.
 
 ## 3. RetrievalQuery Request Type
 
@@ -65,6 +77,13 @@ class RetrievalQuery:
     rerank: bool | None = None
     include_archived: bool = False
     extensions: dict[str, Any] = field(default_factory=dict)
+    hierarchy_kind: HierarchyKind | None = None
+    hierarchy_role: HierarchyRole | None = None
+    span_start: datetime | None = None
+    span_end: datetime | None = None
+    expand_depth: int = 0
+    defer_expansion: bool = False  # Internal protocol; not a SearchOptions field
+    rollup: bool = False
 ```
 
 | Field | Description |
@@ -72,7 +91,7 @@ class RetrievalQuery:
 | `text` | Original natural-language query |
 | `filters` | Hard user-metadata predicate outside the Scope dimensions; normalized to `FilterExpr` when the object is created |
 | `as_of` | A valid-time point for historical lookup; `None` means the current state |
-| `top_k` | Maximum number of final results; must be greater than `0` |
+| `top_k` | Maximum final roots, including admitted ancestors; must be greater than 0. Expanded children do not consume root slots |
 | `disclosure` | Primary disclosure level: `L0`, `L1`, `L2`, or `ADAPTIVE` |
 | `max_tokens` | Token budget for adaptive disclosure; if provided, it must be greater than `0` |
 | `with_trajectory` | Whether to include the retrieval trajectory in the result |
@@ -80,10 +99,31 @@ class RetrievalQuery:
 | `rerank` | Per-call reranking override; `None` uses the assembly default |
 | `include_archived` | Whether an as-current query may include archived memories as candidates |
 | `extensions` | Custom options passed through to `ParsedQuery.extensions`; the kernel does not interpret their keys |
+| `hierarchy_kind` / `hierarchy_role` | One tree kind and an optional single role; role requires kind |
+| `span_start` / `span_end` | Paired, ordered structural closed interval; naive timestamps mean UTC, independent of event-time and valid-time |
+| `expand_depth` | Nonnegative integer, excluding bool; nonzero depth requires an explicit kind |
+| `defer_expansion` | Internal cross-space root-selection protocol; rejected by the public API/HTTP/CLI |
+| `rollup` | Strict bool, default False; True requires kind and enables ancestor admission with MaxP independently of expansion |
+
+Expansion preserves Scope, kind, business/permission filters and temporal visibility; only the
+typed parent-role condition is removed. Roots are admitted first, followed by BFS descendants
+in root order and declared child order. Children inherit the root score without independent scoring.
+Roots and descendants share the existing max_tokens budget across spaces. Cost is estimated from
+the rendered primary field, roughly one token per four characters. All three disclosure fields
+still appear in each item, so this is not a whole-response size cap. Missing children, invalid edges
+and truncation appear in HIERARCHY errors even without a trajectory. The multimodal wrapper
+explicitly rejects nonzero depth until adapted; all three base PipelineRetriever storage paths support it.
 
 `as_of` asks what was visible at a particular system valid-time point. `ParsedQuery.time_from/time_to` describe the time range in which an event in the content occurred. These are independent time axes.
 
 ## 4. QueryParser API
+
+The Retriever restores the four explicit hierarchy fields after parsing. Candidate rechecks use
+`MemoryUnit.hierarchy`, require ACTIVE structure, and retain microsecond precision. TIME nodes
+need valid spans even when the query has no interval. Fulltext/vector stores, including in-memory
+implementations, filter before top-k; graph rechecks cannot recover candidates already truncated.
+Both Disclosers return `RetrievedItem.parent_id` from the source reference; the default empty string
+means a root or unattached node, not a globally unique parent locator.
 
 ```python
 from jiuwen_memory.retrieval.query_parser import QueryParser

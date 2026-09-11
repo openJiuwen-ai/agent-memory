@@ -14,11 +14,13 @@ from jiuwen_memory.common.chunker.base import Chunker
 from jiuwen_memory.common.embedder.base import Embedder
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
+    HIERARCHY_INDEX_KEYS,
     T_EVENT_UNKNOWN,
     T_INVALID_OPEN,
     Chunk,
     MemoryUnit,
     Scope,
+    hierarchy_index_metadata,
 )
 from jiuwen_memory.common.type_def.memory import MemoryTier
 from jiuwen_memory.storage.fulltext import FulltextStore
@@ -76,6 +78,11 @@ def vector_port(storage: StoreManager, name: str, enabled: bool) -> VectorStore 
 # metadata 投影（全文与向量共用同一份可过滤投影）
 # ---------------------------------------------------------------------------
 
+# 双 metadata 命名空间独立保留，不因同名键相互覆盖；层级系统副本不再复制，裸字段
+# 只按 HierarchyRef 真源重新投影，避免 Unified 来源在结构变更后带回旧过滤值。
+# metadata 保留 JSON 原生值，后端据此建 double/boolean/keyword mapping 并在 top-k
+# 截断前原生下推；UnitReader 复核读取真源，投影与真源的取值语义保持一致。
+
 
 def index_metadata(
     unit: MemoryUnit,
@@ -83,15 +90,13 @@ def index_metadata(
     layer: str,
     seq: int | None = None,
 ) -> dict[str, object]:
-    """构造可过滤索引投影，保留双命名空间的逻辑路径；系统真源字段覆盖同名用户字段。
-
-    ``metadata`` 值为 JSON 标量原生类型，后端据此建 double/boolean/keyword mapping
-    并在 top-k 截断前原生下推。UnitReader 复核读的是同一个对象，两侧判定不分叉。
-    """
+    """保留独立双 metadata 路径，并从系统真源字段构造当前可过滤投影。"""
     metadata = {
-        **{f"system_metadata.{key}": value for key, value in unit.system_metadata.items()},
-        **{f"user_metadata.{key}": value for key, value in unit.user_metadata.items()},
+        f"system_metadata.{key}": value
+        for key, value in unit.system_metadata.items()
+        if key not in HIERARCHY_INDEX_KEYS
     }
+    metadata.update({f"user_metadata.{key}": value for key, value in unit.user_metadata.items()})
     metadata.update(
         {
             "unit_id": unit.id,
@@ -104,6 +109,7 @@ def index_metadata(
             "content_layer": layer,  # l2=content 全文；l0/l1 为分层文档（见 F01）
         }
     )
+    metadata.update(hierarchy_index_metadata(unit.hierarchy))
     if seq is not None:
         metadata["seq"] = seq
     temporal = unit.temporal
@@ -115,9 +121,13 @@ def index_metadata(
         if temporal.t_event is not None
         else T_EVENT_UNKNOWN
     )
-    # t_valid 仍有值才写：未生效记忆本就稀疏，下推用 LTE as_of 即可，缺值放行不破。
+    # t_valid 仍有值才写：None 表示无生效起始界；检索用 NOT(GT as_of) 放行缺值，
+    # 不能用直接 LTE（通用范围比较会排除缺字段）。真源仍保留 None。
     if temporal.t_valid is not None:
         metadata["t_valid"] = int(temporal.t_valid.timestamp() * 1000)
+    # 消息时间是独立的显式过滤字段，保持真源 epoch 毫秒口径；未知时不写哨兵。
+    if temporal.t_message is not None:
+        metadata["t_message"] = int(temporal.t_message.timestamp() * 1000)
     # t_invalid 恒写：空（永久有效）落哨兵值，否则该字段缺失会被 `t_invalid > as_of`
     # 的下推按缺失字段排他——那批正是回溯查询最该命中的活跃记忆。
     metadata["t_invalid"] = (

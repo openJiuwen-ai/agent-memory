@@ -1,9 +1,8 @@
 # Retrieval 层 API
 
-Retrieval 层将检索拆分为五类可插拔算子：
+Retrieval 层将检索拆分为四类可插拔算子：
 
 - `QueryParser`：把外部查询解析为结构化表示。
-- `Recaller`：在单个逻辑通道内召回候选。
 - `Fuser`：融合多个召回入口的候选并排序。
 - `Discloser`：将已确定顺序的记忆塑形为 L0/L1/L2 内容。
 - `Retriever`：面向调用方的统一检索入口。
@@ -34,6 +33,28 @@ result: RetrievalResult = retriever.retrieve(
 
 `scope` 是显式的隔离轴，表示“在哪个范围内找”；`RetrievalQuery` 表示“找什么”。两者始终分开传递，不应把 Scope 维度放入 `filters`。
 
+调用公开 MemoryAPI 时使用统一选项对象：
+
+```python
+from jiuwen_memory.api import SearchOptions
+from jiuwen_memory.common.type_def import HierarchyKind, HierarchyRole
+
+result = api.search(
+    "数据库迁移", context,
+    SearchOptions(top_k=5, hierarchy_kind=HierarchyKind.TIME,
+                  hierarchy_role=HierarchyRole.TIME_SPAN, expand_depth=1),
+    security=security,
+)
+```
+
+省略 options 使用默认值；旧平铺选项关键字不再接受。HTTP/CLI 放在 `options` 对象内。
+typed 层级查询需启用 `hierarchy.enabled`。默认 rollup=False、expand_depth=0，
+只返回直接命中；上例显式取直接子节点，不做第二次相关性召回，不上卷或建树。
+另加 `rollup=True` 可从命中后代找回父：有 role 时取最近该角色祖先，无 role 时保留
+直接命中并增加直接父。父分取自身与后代最终分的最大值，在精排后、阈值/top_k 前生效。
+上卷不自动展开，也不扫描 session；精确 Scope 取数限制及多模态包装器不支持上卷见 S04。
+完整公开契约见 [S02](../../specs/S02-memory-api.md)。
+
 ## 2. RetrievalOperator 基类
 
 ```python
@@ -47,7 +68,7 @@ from jiuwen_memory.retrieval.base import RetrievalOperator, RetrievalOperatorTyp
 | `operator_type()` | `RetrievalOperatorType` | 返回算子类型 |
 | `health()` | `None` | 健康时返回 `None`，失败时抛异常 |
 
-`RetrievalOperatorType` 包含 `QUERY_PARSER`、`RECALLER`、`FUSER`、`DISCLOSER`、`RETRIEVER`。
+`RetrievalOperatorType` 包含 `QUERY_PARSER`、`FUSER`、`DISCLOSER`、`EXPANDER`、`RETRIEVER`；Recaller 归 Storage 数据面。
 
 ## 3. RetrievalQuery 请求类型
 
@@ -65,6 +86,13 @@ class RetrievalQuery:
     rerank: bool | None = None
     include_archived: bool = False
     extensions: dict[str, Any] = field(default_factory=dict)
+    hierarchy_kind: HierarchyKind | None = None
+    hierarchy_role: HierarchyRole | None = None
+    span_start: datetime | None = None
+    span_end: datetime | None = None
+    expand_depth: int = 0
+    defer_expansion: bool = False  # 内部跨空间协议，不属于 SearchOptions
+    rollup: bool = False
 ```
 
 | 字段 | 说明 |
@@ -72,7 +100,7 @@ class RetrievalQuery:
 | `text` | 原始自然语言查询 |
 | `filters` | Scope 之外的用户元数据硬过滤谓词；进入对象时归一化为 `FilterExpr` |
 | `as_of` | valid-time 回溯时间点；`None` 表示查询当前状态 |
-| `top_k` | 最终返回条数，必须大于 `0` |
+| `top_k` | 最终根的条数上限（含上卷准入父），必须大于 0；展开子不占根名额 |
 | `disclosure` | 主披露层级：`L0`、`L1`、`L2` 或 `ADAPTIVE` |
 | `max_tokens` | 自适应披露的 token 预算；传入时必须大于 `0` |
 | `with_trajectory` | 是否在结果中返回检索轨迹 |
@@ -80,6 +108,18 @@ class RetrievalQuery:
 | `rerank` | 调用级精排开关；`None` 使用装配默认 |
 | `include_archived` | 当前态查询是否允许 archived 记忆进入候选 |
 | `extensions` | 透传给 `ParsedQuery.extensions` 的自定义选项；内核不解释其 key |
+| `hierarchy_kind` / `hierarchy_role` | 单一树类型与可选单角色，role 要求显式 kind |
+| `span_start` / `span_end` | 成对、有序的结构闭区间；朴素时间按 UTC，与 event-time/valid-time 独立 |
+| `expand_depth` | 非负整数，不接受 bool；非零要求 kind，1 为直接子、2 最多两条边 |
+| `defer_expansion` | 内部选根后再展开，不可经公开 API/HTTP/CLI 指定 |
+| `rollup` | 严格 bool，默认 False；True 要求显式 kind，准入祖先并传播 MaxP，不隐式展开 |
+
+展开保留 kind、Scope、业务/权限过滤与时间可见性，只移除 typed 父角色条件。
+先准入所有根，再逐根按层读取有序 child_ids；子继承根分。预算由
+context.extensions["max_tokens"] 传入，父子及跨空间共用，按实际主字段约每四字符
+一个 token 估算。三层字段仍同时返回，因此不是整个响应体的大小上限。
+缺子、坏边与预算截断始终进入 errors（HIERARCHY），开启轨迹还会展示深度与计数。
+多模态包装器尚未适配非零展开；基础 PipelineRetriever 的三条存储路径均已支持。
 
 `as_of` 表示“在某个系统有效时间点看到什么”。`ParsedQuery.time_from/time_to` 则表示内容中事件发生的时间范围，两者是独立时间轴。
 
@@ -213,6 +253,11 @@ Storage 召回路径由 `Storage.preferred_retrieval_pipeline()` 决定：
 - `RETRIEVE`：Storage 内完成召回、物化和 Fuser 排序。
 
 不论选择哪条路径，都应在 Fuser 前完成真源复核，包括 lifecycle、valid-time、event-time 和完整 `FilterExpr`。
+
+显式层级条件还检查 `MemoryUnit.hierarchy` 的 kind、role、ACTIVE 状态与有效区间；
+TIME 查询可不带窗口，但节点须有有效 span。四个条件在 parse 后由 Retriever 回填。
+全文/向量（含内存）在 top_k 前过滤，图路径只后置复核；真源复核不能补回已截断候选。
+`RetrievedItem.parent_id` 来自真源，默认空串表示根或未挂接，不能作为跨 Scope 全局键。
 
 ### 边界行为
 

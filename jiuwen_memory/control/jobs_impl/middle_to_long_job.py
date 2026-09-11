@@ -2,7 +2,7 @@
 """MiddleToLongJob——中期转长期任务。
 
 Job 内完成：list 候选 → 连续性检测切批 → 串行/并发调
-``evolver.evolve(batch, EXTRACT)`` → 归档原文。evolver 不做任何修改。
+``evolver.evolve(EvolveRequest(batch, EXTRACT))`` → 归档原文。EXTRACT 语义不变。
 
 - ``interval>0`` 作为定时任务声明，submit 时注册到 per scope TimerWheel，
   Timer 协程周期生成实例入队，每个实例跑一次 ``run()`` 即返回；
@@ -30,7 +30,7 @@ from jiuwen_memory.common.type_def import (
     Scope,
 )
 from jiuwen_memory.common.type_def.chat import ChatMessage
-from jiuwen_memory.construction import EvolveMode, Evolver
+from jiuwen_memory.construction import EvolveMode, Evolver, EvolveRequest
 from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.control.jobs import Job, JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
@@ -183,7 +183,7 @@ class MiddleToLongJob(Job):
             for batch in batches:
                 try:
                     r = await asyncio.to_thread(
-                        self._evolver.evolve, batch, EvolveMode.EXTRACT
+                        self._evolver.evolve, EvolveRequest(units=batch, mode=EvolveMode.EXTRACT)
                     )
                     created_ids.extend(r.created_ids)
                     processed_units.extend(batch)
@@ -319,7 +319,7 @@ class MiddleToLongJob(Job):
         async def _run_one(batch):
             async with sem:
                 return await asyncio.to_thread(
-                    self._evolver.evolve, batch, EvolveMode.EXTRACT
+                    self._evolver.evolve, EvolveRequest(units=batch, mode=EvolveMode.EXTRACT)
                 )
 
         return await asyncio.gather(
@@ -440,6 +440,8 @@ def _build_middle_to_long_job_spec(config) -> MiddleToLongJobSpec:
 def _build_job_factory(config):
     """装配 JobFactory 并注册各 Job 类型的 Spec。"""
     from jiuwen_memory.control.jobs_impl.evolve_job import _build_evolve_job_spec
+    from jiuwen_memory.control.jobs_impl.hierarchy_derive_job import build_derive_spec
+    from jiuwen_memory.control.jobs_impl.hierarchy_job import build_spec as build_hierarchy_spec
 
     factory = JobFactory()
     factory.register(
@@ -450,4 +452,6 @@ def _build_job_factory(config):
         JobType.EVOLVE,
         _build_evolve_job_spec(config).with_scope,
     )
+    factory.register(JobType.HIERARCHY, build_hierarchy_spec(config).with_scope)
+    factory.register(JobType.HIERARCHY_DERIVE, build_derive_spec(config).with_scope)
     return factory

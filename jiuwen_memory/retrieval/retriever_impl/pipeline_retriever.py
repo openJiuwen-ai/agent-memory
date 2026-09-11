@@ -1,11 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~retrieval.retriever.Retriever`——检索链路编排者。
 
-单次 :meth:`retrieve` 驱动完整链路（Option B：点读/有效性/重排为独立阶段）：
-查询理解 → 前置谓词构造 → 并行多路召回 → 融合 → 截断候选预算 → 点读真源 +
-有效性过滤 → （可选）重排 → 阈值过滤 → 截断 top_k → 渐进式披露 → 返回结果与轨迹。
+单次 :meth:`retrieve` 驱动完整链路：查询理解 → 前置谓词 → 多路召回 + 物化复核
+→ 融合 → 截断候选预算 → 可选重排 → 可选祖先准入/MaxP → 阈值 → top_k
+→ 披露 → 可选展开。Storage.retrieve 路径在数据面内完成物化复核与融合。
 scope 作显式首参贯穿下推；召回/取数/排序全部委托统一 Storage 的三条首选路径，
-本类不含召回/打分逻辑，也不持有召回路（CompositeStorage 的兼容 Recaller 由
+本类不含单路召回/打分逻辑，也不持有召回路（CompositeStorage 的兼容 Recaller 由
 storage 层工厂按配置装配）。
 """
 
@@ -16,12 +16,17 @@ from dataclasses import replace
 from time import perf_counter
 from uuid import uuid4
 
-from jiuwen_memory.common.errors import ValidationError, safe_error_message
+from jiuwen_memory.common.errors import (
+    UnsupportedCapabilityError,
+    ValidationError,
+    safe_error_message,
+)
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.reranker.base import Reranker, RerankerProducer
 from jiuwen_memory.common.type_def import (
     ChannelError,
+    ParsedQuery,
     RecallBatch,
     RecallResult,
     RetrievalPipeline,
@@ -32,8 +37,19 @@ from jiuwen_memory.common.type_def import (
     and_merge,
     is_retrieval_candidate,
 )
+from jiuwen_memory.common.type_def.hierarchy_query import (
+    HierarchyQuery,
+    validate_expand_depth,
+    validate_rollup,
+)
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.discloser import Discloser, DiscloserProducer
+from jiuwen_memory.retrieval.expander import Expander, ExpanderProducer
+from jiuwen_memory.retrieval.expansion import (
+    ExpansionSource,
+    complete_expansion,
+    prepare_expansion,
+)
 from jiuwen_memory.retrieval.fuser import Fuser, FuserProducer
 from jiuwen_memory.retrieval.query_parser import QueryParser, QueryParserProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
@@ -47,7 +63,8 @@ from jiuwen_memory.retrieval.types import (
 from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 
-from .predicate_builder import build_system_filters
+from .hierarchy_rollup import RollupRequest, rollup_candidates
+from .predicate_builder import build_hierarchy_filters, build_system_filters
 from .unit_reader import UnitReader
 
 logger = get_logger(__name__)
@@ -80,6 +97,7 @@ class PipelineRetriever(Retriever):
         self._discloser = discloser
         self._reader = unit_reader
         self._domain = domain_store
+        self._expander: Expander | None = None
         self._reranker = reranker
         # 召回超采样：每路取 max(top_k*factor, floor)，撒宽网喂融合。
         self._over_fetch_factor = max(1, int(over_fetch_factor))
@@ -114,10 +132,25 @@ class PipelineRetriever(Retriever):
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.RETRIEVER
 
+    def bind_expander(self, expander: Expander) -> None:
+        """装配阶段绑定同源的展开算子，不引入第二份存储配置。"""
+        self._expander = expander
+
     def health(self) -> None:
         return None
 
     def retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
+        """执行检索及可选上卷；非零展开深度时在选根后统一读取后代。"""
+        hierarchy = HierarchyQuery.from_query(query)
+        validate_expand_depth(query.expand_depth, hierarchy.hierarchy_kind)
+        validate_rollup(query.rollup, hierarchy.hierarchy_kind)
+        if query.expand_depth and not isinstance(query.disclosure, DisclosureLevel):
+            raise ValidationError("展开 disclosure 必须是 DisclosureLevel")
+        if query.expand_depth and self._expander is None:
+            raise UnsupportedCapabilityError(
+                "expand_depth", str(query.expand_depth), "PipelineRetriever",
+                "当前 Retriever 未装配 Expander",
+            )
         # 入参校验：top_k 非法直接拒绝（可预期的调用错误）。
         if query.top_k <= 0:
             raise ValidationError(f"top_k must be positive, got {query.top_k}")
@@ -186,13 +219,22 @@ class PipelineRetriever(Retriever):
 
         # [2] 查询理解
         t0 = perf_counter()
-        parsed = self._parser.parse(query)
+        parsed = self._parser.parse(replace(query))
+        # 显式结构条件由编排者保真传递，不依赖各自定义 parser 的实现。
+        parsed.hierarchy_kind = hierarchy.hierarchy_kind
+        # 上卷候选不下推输出角色：父与后代必须在同一融合/精排池里评分。
+        candidate_hierarchy = replace(hierarchy, hierarchy_role=None) if query.rollup else hierarchy
+        parsed.hierarchy_role = candidate_hierarchy.hierarchy_role
+        parsed.span_start = hierarchy.span_start
+        parsed.span_end = hierarchy.span_end
         if not parsed.raw.strip():
             step("parse", t0, detail={"skipped": "empty_after_parse"})
             return RetrievalResult(items=[], trajectory=traj)
         # 调用方自定义透传配置随 parsed 下达各召回路（自定义 Recaller 按约定读取）；
         # 在此统一接力，无需各 parser 实现感知。
         parsed.extensions = dict(query.extensions)
+        if query.rollup and query.as_of is not None:
+            parsed.as_of = query.as_of
         step("parse", t0, n=len(parsed.tokens))
 
         # [3a] 前置谓词：系统谓词（lifecycle×as_of / 时间窗）与用户表达式 AND 外包一同下推。
@@ -200,7 +242,11 @@ class PipelineRetriever(Retriever):
         sys_filters = build_system_filters(
             parsed.as_of, parsed.time_from, parsed.time_to, query.include_archived
         )
+        sys_filters.extend(build_hierarchy_filters(candidate_hierarchy))
         user_filters = parsed.scalar_filters  # parser 已 normalize 的用户表达式（供 §6 复核）
+        if query.rollup:
+            parser_filters = [] if user_filters is None else [user_filters]
+            user_filters = and_merge(query.filters, parser_filters)
         parsed.scalar_filters = and_merge(user_filters, sys_filters)
 
         # 通道选择：调用级 query.channels 覆盖 parser 建议；显式空列表不是“全部”。
@@ -248,7 +294,10 @@ class PipelineRetriever(Retriever):
                 recall_limit=recall_k,
                 rank_limit=budget_n,
             )
-            fused = ranked.candidates
+            # 第三方 DomainStore 也必须经过本体复核，不能只信索引投影。
+            fused = [
+                candidate for candidate in ranked.candidates if _passes_recheck(candidate, parsed)
+            ]
             errors = ranked.errors
 
         for error in errors:
@@ -297,7 +346,6 @@ class PipelineRetriever(Retriever):
 
         # Fuser 后再限制精排预算；Storage.retrieve 已在入口内应用同一个上限。
         survivors = list(fused[:budget_n])
-        units = {candidate.unit_id: candidate.unit for candidate in survivors}
         recheck_dropped = 0
         record_step("recheck", 0.0, n=len(survivors), detail={"dropped": "0"})
         if recheck_dropped:
@@ -315,7 +363,7 @@ class PipelineRetriever(Retriever):
         if do_rerank and self._reranker is not None and survivors:
             t0 = perf_counter()
             scores = self._reranker.rerank(
-                parsed.raw, [units[su.unit_id].content for su in survivors]
+                parsed.raw, [candidate.unit.content for candidate in survivors]
             )
             order = sorted(range(len(survivors)), key=lambda i: scores[i], reverse=True)
             survivors = [replace(survivors[i], score=scores[i]) for i in order]
@@ -326,6 +374,26 @@ class PipelineRetriever(Retriever):
             record_step(
                 "rerank", 0.0, n=len(survivors), detail={"skipped": "no_reranker_configured"}
             )
+
+        # [7b] 上卷放在最终分数生成后、阈值/top_k 前，不被后续精排覆盖。
+        if query.rollup:
+            t0 = perf_counter()
+            rolled = rollup_candidates(self._domain, RollupRequest(
+                scope=scope, query=parsed, target_role=hierarchy.hierarchy_role,
+                candidates=survivors,
+            ))
+            survivors = rolled.candidates
+            errors = list(errors)
+            errors.extend(ChannelError(
+                RecallChannel.HIERARCHY, "rollup", issue, f"rollup: {issue}",
+            ) for issue in rolled.issues)
+            step("rollup", t0, n=len(survivors), detail={
+                "algorithm": "maxp", "admitted": str(rolled.admitted_count),
+                "boosted": str(rolled.boosted_count), "visited": str(rolled.visited_count),
+                "complete": str(not rolled.issues).lower(), "issues": ",".join(rolled.issues),
+                "target_role": hierarchy.hierarchy_role.value if hierarchy.hierarchy_role else "",
+            })
+            parsed.hierarchy_role = hierarchy.hierarchy_role
 
         # [8] 统一阈值过滤：精排路径用校准分；未精排路径仅使用相对阈值。
         t0 = perf_counter()
@@ -342,14 +410,23 @@ class PipelineRetriever(Retriever):
 
         # [9] 截断 top_k
         final = survivors[: query.top_k]
+        units = {candidate.unit_id: candidate.unit for candidate in final}
+        if query.expand_depth:
+            record_step("parent_recall", 0.0, n=len(final), detail={"top_k": str(query.top_k)})
 
         # [10] 渐进式披露（纯内容塑形，复用已点读的 units）
         t0 = perf_counter()
         items = self._discloser.disclose(
-            parsed, final, units, query.disclosure, max_tokens=query.max_tokens
+            parsed, final, units,
+            DisclosureLevel.L0 if query.expand_depth else query.disclosure,
+            max_tokens=None if query.expand_depth else query.max_tokens,
         )
         disclose_detail = {}
-        if query.disclosure == DisclosureLevel.ADAPTIVE:
+        if query.expand_depth:
+            disclose_detail = {
+                "mode": "prepare_expansion", "budget": "deferred_until_root_selection",
+            }
+        elif query.disclosure == DisclosureLevel.ADAPTIVE:
             disclose_detail = {
                 "mode": "adaptive",
                 "max_tokens": str(query.max_tokens or ""),
@@ -368,7 +445,25 @@ class PipelineRetriever(Retriever):
             len(items),
             (perf_counter() - started_at) * 1000.0,
         )
-        return RetrievalResult(items=items, trajectory=traj, errors=errors)
+        result = RetrievalResult(items=items, trajectory=traj, errors=errors)
+        if not query.expand_depth:
+            return result
+        parsed_filters = [] if parsed.recheck_filters is None else [parsed.recheck_filters]
+        child_filters = and_merge(query.filters, parsed_filters)
+        source = ExpansionSource(
+            scope=scope,
+            query=replace(
+                parsed, hierarchy_role=None,
+                scalar_filters=child_filters,
+                recheck_filters=child_filters,
+            ),
+            expander=self._expander,
+            discloser=self._discloser,
+        )
+        prepared = prepare_expansion(result, source, final)
+        if query.defer_expansion:
+            return prepared
+        return complete_expansion(result, [prepared], query)
 
 # -- 注册到 RetrieverProducer（实现自注册，新增无需改 producer/装配入口） -------- #
 
@@ -385,7 +480,8 @@ def _build(config):
         if config.get("rerank_enabled", True)
         else None
     )
-    return PipelineRetriever(
+    domain = manager.domain_store(resolve_name(config, "domain_store"))
+    retriever = PipelineRetriever(
         QueryParserProducer.dep(config, default="simple"),
         FuserProducer.dep(config, default="rrf"),
         DiscloserProducer.dep(config, default="truncating"),
@@ -403,8 +499,10 @@ def _build(config):
             Factory.cfg_get(config, "min_score_ratio_uncalibrated", 0.0)
         ),
         min_results=int(Factory.cfg_get(config, "min_results", 0)),
-        domain_store=manager.domain_store(resolve_name(config, "domain_store")),
+        domain_store=domain,
     )
+    retriever.bind_expander(ExpanderProducer.build("default", {"domain_store": domain}, config.ctx))
+    return retriever
 
 
 def _estimate_tokens(text: str) -> int:
@@ -560,12 +658,9 @@ def _filter_materialized(
     return RecallResult(batches=batches, errors=result.errors)
 
 
-def _passes_recheck(candidate: ScoredMemoryUnit, query) -> bool:
+def _passes_recheck(candidate: ScoredMemoryUnit, query: ParsedQuery) -> bool:
     return is_retrieval_candidate(
         candidate.unit,
-        as_of=query.as_of,
-        time_from=query.time_from,
-        time_to=query.time_to,
+        query,
         filters=query.recheck_filters,
-        include_archived=query.include_archived,
     )

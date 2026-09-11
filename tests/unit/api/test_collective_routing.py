@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from jiuwen_memory.api import SearchOptions
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.errors import NotFoundError, PermissionDeniedError, ValidationError
 from jiuwen_memory.common.security.legacy import legacy_request_context
@@ -741,7 +742,7 @@ def test_a_cross_space_search_merges_results_from_every_readable_space(api) -> N
         "部署 主题",
         Context(scope=Scope(org=ORG), extensions={"spaces": []}),
         security=SEC_ALICE,
-        top_k=10,
+        options=SearchOptions(top_k=10),
     )
     contents = {item.content for item in result.items}
     assert contents == {"项目部署在集群 A", "偏好深色主题"}
@@ -759,7 +760,7 @@ def test_a_cross_space_search_records_the_spaces_the_caller_cannot_read(api) -> 
         "部署 偏好",
         Context(scope=Scope(org=ORG), extensions={"spaces": [PROJECT_SPACE, BOB_SPACE]}),
         security=SEC_ALICE,
-        top_k=10,
+        options=SearchOptions(top_k=10),
     )
     contents = {item.content for item in result.items}
     assert "bob 的私人偏好" not in contents
@@ -782,7 +783,7 @@ def test_a_cross_space_search_raises_when_no_candidate_space_is_readable(api) ->
             "偏好",
             Context(scope=Scope(org=ORG), extensions={"spaces": [BOB_SPACE]}),
             security=SEC_ALICE,
-            top_k=10,
+            options=SearchOptions(top_k=10),
         )
 
 
@@ -792,7 +793,7 @@ def test_an_empty_candidate_set_is_an_empty_result_not_a_denial(api) -> None:
         "偏好",
         Context(scope=Scope(org=ORG), extensions={"spaces": []}),
         security=legacy_request_context(CAROL),
-        top_k=10,
+        options=SearchOptions(top_k=10),
     )
     assert result.items == []
     assert result.errors == []
@@ -807,7 +808,10 @@ def test_the_spaces_key_is_what_turns_a_search_cross_space_not_an_empty_scope(ap
     api.add("偏好深色主题", scope=Scope(org=ORG), security=SEC_ALICE, system_metadata=NO_COORDS)
 
     single = api.search(
-        "部署 主题", Context(scope=Scope(org=ORG, space=ALICE_SPACE)), security=SEC_ALICE, top_k=10
+        "部署 主题",
+        Context(scope=Scope(org=ORG, space=ALICE_SPACE)),
+        security=SEC_ALICE,
+        options=SearchOptions(top_k=10),
     )
     assert {item.content for item in single.items} == {"偏好深色主题"}
 
@@ -815,7 +819,7 @@ def test_the_spaces_key_is_what_turns_a_search_cross_space_not_an_empty_scope(ap
         "部署 主题",
         Context(scope=Scope(org=ORG), extensions={"spaces": []}),
         security=SEC_ALICE,
-        top_k=10,
+        options=SearchOptions(top_k=10),
     )
     assert {item.content for item in across.items} == {"项目部署在集群 A", "偏好深色主题"}
 
@@ -828,7 +832,7 @@ def test_a_cross_space_search_ignores_the_space_axis_of_the_context(api) -> None
         "部署 主题",
         Context(scope=Scope(org=ORG, space=ALICE_SPACE), extensions={"spaces": []}),
         security=SEC_ALICE,
-        top_k=10,
+        options=SearchOptions(top_k=10),
     )
     assert {item.content for item in result.items} == {"项目部署在集群 A", "偏好深色主题"}
 
@@ -845,7 +849,7 @@ def test_a_non_list_of_strings_for_spaces_is_a_validation_error(api, raw) -> Non
             "部署",
             Context(scope=Scope(org=ORG), extensions={"spaces": raw}),
             security=SEC_ALICE,
-            top_k=10,
+            options=SearchOptions(top_k=10),
         )
 
 
@@ -865,7 +869,7 @@ def test_the_spaces_key_does_not_reach_the_permission_context(api) -> None:
             "部署",
             Context(scope=Scope(org=ORG), extensions={"spaces": [ALICE_SPACE]}),
             security=SEC_ALICE,
-            top_k=10,
+            options=SearchOptions(top_k=10),
         )
     finally:
         api._perm.decide = original
@@ -888,7 +892,7 @@ def test_a_cross_space_search_narrows_by_the_second_family_of_predicates(api) ->
             extensions={"coords": {"project": "p2"}, "spaces": [ALICE_SPACE, PROJECT_SPACE]},
         ),
         security=SEC_ALICE,
-        top_k=10,
+        options=SearchOptions(top_k=10),
     )
     contents = {item.content for item in narrowed.items}
     assert "项目部署在集群 A" not in contents
@@ -901,7 +905,7 @@ def test_an_absent_coordinate_does_not_narrow(api) -> None:
         "部署",
         Context(scope=Scope(org=ORG), extensions={"spaces": [PROJECT_SPACE]}),
         security=SEC_ALICE,
-        top_k=10,
+        options=SearchOptions(top_k=10),
     )
     assert [item.content for item in result.items] == ["项目部署在集群 A"]
 
@@ -931,7 +935,7 @@ def test_search_narrows_by_the_session_dimension_taken_from_identity(api) -> Non
         "偏好",
         Context(scope=Scope(org=ORG, space=ALICE_SPACE)),
         security=legacy_request_context(alice_s1),
-        top_k=10,
+        options=SearchOptions(top_k=10),
     )
     contents = {item.content for item in result.items}
     assert "偏好深色主题" in contents
@@ -942,7 +946,9 @@ def test_a_cross_space_search_narrows_by_the_agent_dimension_taken_from_identity
     """agent 维同上，且验的是跨空间入口——两个入口各自折算一次坐标，不共用。"""
     alice_a2 = Scope(org=ORG, user="alice", agent="a2")
     api.add(
-        "偏好深色主题", scope=Scope(org=ORG), security=SEC_ALICE_VIA_A1,
+        "偏好深色主题",
+        scope=Scope(org=ORG),
+        security=SEC_ALICE_VIA_A1,
         system_metadata=NO_COORDS,
     )
     api.add(
@@ -955,7 +961,7 @@ def test_a_cross_space_search_narrows_by_the_agent_dimension_taken_from_identity
         "偏好",
         Context(scope=Scope(org=ORG), extensions={"spaces": [ALICE_SPACE]}),
         security=SEC_ALICE_VIA_A1,
-        top_k=10,
+        options=SearchOptions(top_k=10),
     )
     contents = {item.content for item in result.items}
     assert "偏好深色主题" in contents
@@ -1086,12 +1092,9 @@ def test_a_narrowed_search_recalls_entries_written_with_an_explicit_scope(api) -
 
     result = api.search(
         "深色主题",
-        Context(
-            scope=Scope(org=ORG),
-            extensions={"coords": {"project": "p1"}, "spaces": []},
-        ),
+        Context(scope=Scope(org=ORG), extensions={"coords": {"project": "p1"}, "spaces": []}),
         security=SEC_ALICE,
-        top_k=10,
+        options=SearchOptions(top_k=10),
     )
     assert [item.content for item in result.items] == ["偏好深色主题"]
 
@@ -1122,20 +1125,19 @@ def test_a_cross_space_search_reinjects_the_routing_values_like_the_single_space
         api.search(
             "深色主题",
             Context(
-                scope=Scope(org=ORG),
-                extensions={"memory_type": "notes", "spaces": [ALICE_SPACE]},
+                scope=Scope(org=ORG), extensions={"memory_type": "notes", "spaces": [ALICE_SPACE]}
             ),
             security=SEC_ALICE,
-            top_k=5,
+            options=SearchOptions(top_k=5),
         )
     finally:
         api._engine.recall = original
 
     assert seen, "引擎未被调用"
     clauses = [clause for expr in seen for clause in iter_clauses(expr)]
-    assert any(
-        clause.op is FilterOp.EQ and str(clause.value) == "notes" for clause in clauses
-    ), f"路由值未回注：{clauses}"
+    assert any(clause.op is FilterOp.EQ and str(clause.value) == "notes" for clause in clauses), (
+        f"路由值未回注：{clauses}"
+    )
 
 
 def test_a_failing_space_surfaces_a_channel_error_instead_of_vanishing(api) -> None:
@@ -1156,12 +1158,9 @@ def test_a_failing_space_surfaces_a_channel_error_instead_of_vanishing(api) -> N
     try:
         result = api.search(
             "部署",
-            Context(
-                scope=Scope(org=ORG),
-                extensions={"spaces": [ALICE_SPACE, PROJECT_SPACE]},
-            ),
+            Context(scope=Scope(org=ORG), extensions={"spaces": [ALICE_SPACE, PROJECT_SPACE]}),
             security=SEC_ALICE,
-            top_k=5,
+            options=SearchOptions(top_k=5),
         )
     finally:
         api._engine.recall = original
@@ -1350,7 +1349,7 @@ def test_a_cross_space_search_checks_the_space_lifecycle_state(api) -> None:
             "深色主题",
             Context(scope=Scope(org=ORG), extensions={"spaces": [PROJECT_SPACE, ALICE_SPACE]}),
             security=SEC_ALICE,
-            top_k=10,
+            options=SearchOptions(top_k=10),
         )
     finally:
         api._ensure_space_state_allows = original

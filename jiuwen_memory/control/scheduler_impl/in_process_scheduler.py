@@ -26,10 +26,12 @@ class InProcessScheduler(Scheduler):
     def __init__(self) -> None:
         self._jobs: dict[str, JobInfo] = {}
 
-    def operator_type(self) -> ControlOperatorType:
+    @staticmethod
+    def operator_type() -> ControlOperatorType:
         return ControlOperatorType.SCHEDULER
 
-    def health(self) -> None:
+    @staticmethod
+    def health() -> None:
         return None
 
     async def submit(self, job: Job, channel: Channel) -> str:
@@ -57,10 +59,16 @@ class InProcessScheduler(Scheduler):
             result = await job.run()
             for k, v in result.detail.items():
                 info.detail[k] = v
-            info.status = JobStatus.SUCCEEDED
+            if not isinstance(result.status, JobStatus) or result.status not in (
+                JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED,
+            ):
+                raise ValueError(
+                    f"Job.run() must return a terminal status, got {result.status!r}"
+                )
+            info.status = result.status
             logger.info(
-                "InProcessScheduler.succeeded: job_id=%s kind=%s scope=%s",
-                job_id, type(job).__name__, job.scope,
+                "InProcessScheduler.finished: job_id=%s kind=%s scope=%s status=%s",
+                job_id, type(job).__name__, job.scope, info.status.value,
             )
         except asyncio.CancelledError:
             # 事件循环关闭 / 主动 cancel Task——把状态 + 日志打全再重新 raise，
@@ -109,7 +117,8 @@ class InProcessScheduler(Scheduler):
                 job.status.value,
             )
 
-    def _now_iso(self) -> str:
+    @staticmethod
+    def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
 
 

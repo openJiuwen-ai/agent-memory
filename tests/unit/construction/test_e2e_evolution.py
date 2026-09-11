@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import pytest
 
+from jiuwen_memory.api import SearchOptions
 from jiuwen_memory.api.memory_api_impl import assemble
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Context, MemoryTier, Modality, Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.construction import EvolveMode
+from jiuwen_memory.control.types import EvolveTaskOptions
 
 DEFAULT_SCOPE = Scope(org="test", user="alice", agent="a1", session="s1")
 DEFAULT_ACTOR = Scope(org="test", user="alice")
@@ -54,7 +56,7 @@ class TestE2EWritePath:
             "简洁",
             Context(DEFAULT_SCOPE),
             security=legacy_request_context(DEFAULT_ACTOR),
-            top_k=10,
+            options=SearchOptions(top_k=10),
         )
         assert len(result.items) > 0
         assert any("简洁" in item.content for item in result.items)
@@ -94,7 +96,7 @@ class TestE2EBackgroundExtract:
             "偏好",
             Context(DEFAULT_SCOPE),
             security=legacy_request_context(DEFAULT_ACTOR),
-            top_k=10,
+            options=SearchOptions(top_k=10),
         )
         assert len(result.items) > 0
 
@@ -110,7 +112,7 @@ class TestE2EBackgroundExtract:
         # 手动触发演进
         job_id = llm_api.evolve(
             DEFAULT_SCOPE,
-            EvolveMode.EXTRACT,
+            EvolveTaskOptions(mode=EvolveMode.EXTRACT),
             security=legacy_request_context(DEFAULT_ACTOR),
         )
         assert job_id  # 返回 job_id
@@ -139,7 +141,7 @@ class TestE2EOfflineProfile:
             "测试",
             Context(DEFAULT_SCOPE),
             security=legacy_request_context(DEFAULT_ACTOR),
-            top_k=5,
+            options=SearchOptions(top_k=5),
         )
         assert len(result.items) > 0
 
@@ -158,6 +160,6 @@ class TestE2EOfflineProfile:
             "测试",
             Context(DEFAULT_SCOPE),
             security=legacy_request_context(DEFAULT_ACTOR),
-            top_k=5,
+            options=SearchOptions(top_k=5),
         )
         assert len(result.items) > 0

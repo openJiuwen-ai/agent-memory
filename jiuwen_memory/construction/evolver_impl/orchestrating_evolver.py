@@ -7,6 +7,7 @@
 - ``ASSOCIATE``  → :class:`Associator` 发现关联，落 :class:`~storage.graph.GraphStore`
   （为涉及单元建节点、为关联建边），供检索 GRAPH 通道多跳召回；
 - ``FORGET``     → 把已被取代（SUPERSEDED）的旧版本标记 FORGOTTEN（非破坏式清理）。
+- ``HIERARCHY``  → 委托 HierarchyComposer 重建显式区间内的树，不经过抽取或去重。
 
 去重流程（Dedup.recall → LLM 语义判定）：
 - Step A+B: Dedup.recall() 对候选召回已有相似记忆（向量或倒排，由装配按
@@ -26,15 +27,18 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
-from jiuwen_memory.common.errors import ConflictError
+from jiuwen_memory.common.errors import ConflictError, ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
     MESSAGES_KEY_PREFIX,
     DedupDecision,
+    HierarchyKind,
+    HierarchyRef,
     LifecycleState,
     MemoryUnit,
     Relation,
@@ -50,9 +54,22 @@ from jiuwen_memory.construction.abstractor import Abstractor, AbstractorProducer
 from jiuwen_memory.construction.associator import Associator, AssociatorProducer
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
 from jiuwen_memory.construction.dedup import Dedup, DedupProducer
-from jiuwen_memory.construction.evolver import EvolveMode, Evolver, EvolveResult, EvolverProducer
+from jiuwen_memory.construction.evolver import (
+    EvolveMode,
+    Evolver,
+    EvolveRequest,
+    EvolveResult,
+    EvolverProducer,
+)
 from jiuwen_memory.construction.evolver_impl.dedup_direct_noop import should_direct_noop
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
+from jiuwen_memory.construction.hierarchy_composer import (
+    HierarchyComposeOptions,
+    HierarchyComposeProfile,
+    HierarchyComposer,
+    HierarchyComposeRequest,
+    HierarchyComposerProducer,
+)
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
 from jiuwen_memory.construction.prompt_strategy import copy_consolidation_prompts
@@ -165,8 +182,34 @@ def _route_ctx_of(units: List[MemoryUnit]) -> RouteContext | None:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class EvolverDependencies:
+    """装配注入的算子与存储引用；建树使用同一写入依赖体系。"""
+
+    extractor: Extractor
+    abstractor: Abstractor
+    associator: Associator
+    index_builder: IndexBuilder
+    storage: StoreManager
+    message_store: KVStore
+    dedup: Dedup
+    llm: LLM
+    layer_annotator: LayerAnnotator | None = None
+    router: Router | None = None
+    hierarchy_composer: HierarchyComposer | None = None
+
+
+@dataclass(frozen=True)
+class EvolverOptions:
+    """既有图端口与去重阈值；与算子依赖分开传递。"""
+
+    graph_name: str = "default"
+    dedup_medium_similarity: float = 0.7
+    dedup_high_similarity: float = 0.9
+
+
 class OrchestratingEvolver(Evolver):
-    """编排 extract/associate/consolidate/forget，并把产物落真源 + 建索引 + 图。
+    """编排内容演进与独立建树，并把产物落真源 + 建索引 + 图。
 
     EXTRACT/CONSOLIDATE 模式增加去重决策：
     Dedup.recall 召回 → LLM 语义判定 →
@@ -180,35 +223,30 @@ class OrchestratingEvolver(Evolver):
 
     def __init__(
         self,
-        extractor: Extractor,
-        abstractor: Abstractor,
-        associator: Associator,
-        index_builder: IndexBuilder,
-        storage: StoreManager,
-        message_store: KVStore,
-        dedup: Dedup,
-        llm: LLM,
-        layer_annotator: LayerAnnotator | None = None,
-        router: Router | None = None,
-        *,
-        graph_name: str = "default",
-        dedup_medium_similarity: float = 0.7,
-        dedup_high_similarity: float = 0.9,
+        dependencies: EvolverDependencies,
+        options: EvolverOptions | None = None,
     ) -> None:
-        self._extractor = extractor
-        self._abstractor = abstractor
-        self._associator = associator
-        self._index = index_builder
+        """注入算子依赖及既有图端口、去重阈值配置。"""
+        settings = options or EvolverOptions()
+        self._extractor = dependencies.extractor
+        self._abstractor = dependencies.abstractor
+        self._associator = dependencies.associator
+        self._index = dependencies.index_builder
         # storage 只用于在此取图端口；MemoryUnit 的写入一律经 self._index，故不留字段。
-        self._graph = storage.graph(graph_name) if storage.has_graph(graph_name) else None
+        self._graph = (
+            dependencies.storage.graph(settings.graph_name)
+            if dependencies.storage.has_graph(settings.graph_name)
+            else None
+        )
         # 原文（/messages/）专用：不是索引形式，不经 IndexBuilder。缺省与正排 KV 同实例。
-        self._message_store = message_store
-        self._dedup = dedup
-        self._llm = llm
+        self._message_store = dependencies.message_store
+        self._dedup = dependencies.dedup
+        self._llm = dependencies.llm
         # 分层标注算子：None 表示不标注（向后兼容）；非 None 时在抽取/升华后标注 L0/L1。
-        self._layer_annotator = layer_annotator
+        self._layer_annotator = dependencies.layer_annotator
         # 归属判定算子：None 表示不判定，派生单元沿用源单元的 scope（向后兼容）。
-        self._router = router
+        self._router = dependencies.router
+        self._hierarchy_composer = dependencies.hierarchy_composer
         self.relations: List[Relation] = []  # ASSOCIATE 产物（同时已落图）
 
         # 去重阈值配置（min/top_k/tier_filter/scope_filter 已下沉到 recaller；
@@ -216,15 +254,15 @@ class OrchestratingEvolver(Evolver):
         #   < medium → ADD（低相似，新事实）
         #   medium ~ high → LLM 语义判定
         #   ≥ high → 直接 NOOP（确定性重复，跳过 LLM）；LLM 降级时同样规则兜底）
-        self._dedup_medium_similarity = dedup_medium_similarity
-        self._dedup_high_similarity = dedup_high_similarity
+        self._dedup_medium_similarity = settings.dedup_medium_similarity
+        self._dedup_high_similarity = settings.dedup_high_similarity
 
         # infer 上下文收集的条数（见 F02「上下文增强抽取」）
         self._recent_originals_limit = 10
         self._related_memories_top_k = 10
 
     # ------------------------------------------------------------------
-    # infer=true 上下文收集（evolver 内部，evolve 接口不变）
+    # infer=true 上下文收集（仅在 EXTRACT 内部执行）
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -245,11 +283,15 @@ class OrchestratingEvolver(Evolver):
     # Evolver 契约
     # ------------------------------------------------------------------
 
-    def evolve(
-        self,
-        units: List[MemoryUnit],
-        mode: EvolveMode,
-    ) -> EvolveResult:
+    def evolve(self, request: EvolveRequest) -> EvolveResult:
+        """分派内容演进或显式建树；请求上下文不回填到记忆。"""
+        if not isinstance(request, EvolveRequest) or not isinstance(request.mode, EvolveMode):
+            raise ValidationError("evolve 要求 EvolveRequest 与合法 EvolveMode")
+        if request.mode is EvolveMode.HIERARCHY:
+            return self._evolve_hierarchy(request)
+        if request.hierarchy_options is not None or request.hierarchy_incremental is not None:
+            raise ValidationError("仅 HIERARCHY 模式接受 hierarchy_options / hierarchy_incremental")
+        units, mode = request.units, request.mode
         logger.info("Evolver: evolve mode=%s, %d units", mode.value, len(units))
         for u in units:
             logger.info("Evolver: input unit id=%s tier=%s lifecycle=%s provenance=%s content=%s",
@@ -263,6 +305,42 @@ class OrchestratingEvolver(Evolver):
         if mode == EvolveMode.FORGET:
             return self._evolve_forget(units)
         return EvolveResult()
+
+    def hierarchy_profile(self, kind: HierarchyKind) -> HierarchyComposeProfile | None:
+        """配置只取绑定 Composer 的快照，不在控制层复制另一份算法配置。"""
+        if self._hierarchy_composer is None:
+            return None
+        return self._hierarchy_composer.get_profile(kind)
+
+    def _evolve_hierarchy(self, request: EvolveRequest) -> EvolveResult:
+        """只委托 Composer，不进入抽取、去重或内容合并。"""
+        options = request.hierarchy_options
+        if not isinstance(options, HierarchyComposeOptions):
+            raise ValidationError("HIERARCHY 要求 hierarchy_options")
+        if self._hierarchy_composer is None:
+            raise ValidationError("未装配 HierarchyComposer，无法执行 HIERARCHY")
+        if not isinstance(request.units, list) or not isinstance(options.parent_roles, list):
+            raise ValidationError("HIERARCHY 的 units 与 parent_roles 必须是列表")
+        leaves: list[MemoryUnit] = []
+        parents: list[MemoryUnit] = []
+        for unit in request.units:
+            if not isinstance(unit, MemoryUnit) or not isinstance(unit.hierarchy, HierarchyRef):
+                raise ValidationError("HIERARCHY 要求具有 HierarchyRef 的 MemoryUnit")
+            if unit.hierarchy.role is options.leaf_role:
+                leaves.append(unit)
+            elif unit.hierarchy.role in options.parent_roles:
+                parents.append(unit)
+            else:
+                raise ValidationError(f"节点 {unit.id} 的角色不属于本次建树请求")
+        compose_request = HierarchyComposeRequest(
+            leaves=leaves, options=options, existing_parents=parents,
+            incremental=request.hierarchy_incremental,
+        )
+        if request.hierarchy_incremental is not None:
+            result = self._hierarchy_composer.build(compose_request)
+        else:
+            result = self._hierarchy_composer.replace_in_span(compose_request)
+        return EvolveResult(hierarchy_result=result)
 
     # ------------------------------------------------------------------
     # 落盘辅助
@@ -1054,6 +1132,14 @@ def _resolve_message_store(config) -> KVStore:
     return KvProducer.build("memory", {}, config.ctx)
 
 
+def optional_hierarchy_composer(config) -> HierarchyComposer | None:
+    """仅在 Evolver 显式声明依赖时装配 Composer，普通写入不隐式启用建树。"""
+    configured = config.params.get("hierarchy_composer")
+    if configured is None or configured == "":
+        return None
+    return HierarchyComposerProducer.dep(config, "hierarchy_composer")
+
+
 @EvolverProducer.register("orchestrating")
 def _build(config):
     """装配 OrchestratingEvolver：经各 Producer ``dep`` 取全部算子 + 去重 dedup。
@@ -1087,17 +1173,22 @@ def _build(config):
         return LayerAnnotatorProducer.build_named("default", ctx)
 
     return OrchestratingEvolver(
-        extractor=ExtractorProducer.dep(config, default="keyword"),
-        abstractor=AbstractorProducer.dep(config, default="concat"),
-        associator=AssociatorProducer.dep(config, default="keyword"),
-        index_builder=IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
-        storage=StoreManagerProducer.resolve(config),
-        message_store=_resolve_message_store(config),
-        dedup=DedupProducer.dep(config, default=dr_default),
-        llm=LlmProducer.dep(config, default="echo"),
-        layer_annotator=_opt_annotator(),
-        router=optional_router(config),
-        graph_name=resolve_name(config, "graph_store"),
-        dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
-        dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
+        dependencies=EvolverDependencies(
+            extractor=ExtractorProducer.dep(config, default="keyword"),
+            abstractor=AbstractorProducer.dep(config, default="concat"),
+            associator=AssociatorProducer.dep(config, default="keyword"),
+            index_builder=IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
+            storage=StoreManagerProducer.resolve(config),
+            message_store=_resolve_message_store(config),
+            dedup=DedupProducer.dep(config, default=dr_default),
+            llm=LlmProducer.dep(config, default="echo"),
+            layer_annotator=_opt_annotator(),
+            router=optional_router(config),
+            hierarchy_composer=optional_hierarchy_composer(config),
+        ),
+        options=EvolverOptions(
+            graph_name=resolve_name(config, "graph_store"),
+            dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
+            dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
+        ),
     )

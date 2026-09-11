@@ -30,7 +30,7 @@ from jiuwen_memory.common.type_def import (
     Segment,
 )
 from jiuwen_memory.common.type_def.memory_filter import matches_memory_unit
-from jiuwen_memory.construction import EvolveMode
+from jiuwen_memory.construction import EvolveMode, EvolveRequest
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
 from jiuwen_memory.construction.evolver import Evolver, EvolverProducer
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
@@ -39,9 +39,15 @@ from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
 from jiuwen_memory.control.engine_impl.list_support import list_page
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
 from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
+from jiuwen_memory.control.evolution.background import (
+    BackgroundDependencies,
+    start_hierarchy_derivation,
+)
+from jiuwen_memory.control.evolution.validation import validate_evolve_options
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
 from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
+from jiuwen_memory.control.policy import PolicyManager
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
 from jiuwen_memory.control.types import (
     BatchWriteItem,
@@ -50,12 +56,14 @@ from jiuwen_memory.control.types import (
     Channel,
     DeleteMode,
     DeleteSelector,
+    EvolveTaskOptions,
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
     SweepResult,
     UpdateMode,
 )
+from jiuwen_memory.ingest.hierarchy_hints import ALLOWED_HINTS
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
@@ -256,6 +264,7 @@ class CloudEngine(MemoryEngine):
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
+        """按写入配置摄入、抽取或直接落盘，不隐式创建父节点。"""
         raw_meta = dict(system_metadata or {})
         procedural = _truthy(raw_meta, "procedural")
         infer = _truthy(raw_meta, "infer")
@@ -300,7 +309,7 @@ class CloudEngine(MemoryEngine):
                     "CloudEngine.write procedural=True requires an Evolver (装配未注入 evolver)"
                 )
             result = await asyncio.to_thread(
-                evolver.evolve, units, EvolveMode.EXTRACT
+                evolver.evolve, EvolveRequest(units=units, mode=EvolveMode.EXTRACT)
             )
             # 落盘产物优先取回传对象：归属判定改写派生单元的 scope 之后，按入参 scope
             # 回读真源会落空。回传为空时回落按 id 回读，兼容不回填该字段的 Evolver 实现。
@@ -333,7 +342,7 @@ class CloudEngine(MemoryEngine):
                     "CloudEngine.write infer=True requires an Evolver (装配未注入 evolver)"
                 )
             result = await asyncio.to_thread(
-                evolver.evolve, units, EvolveMode.EXTRACT
+                evolver.evolve, EvolveRequest(units=units, mode=EvolveMode.EXTRACT)
             )
             # 落盘产物优先取回传对象：归属判定改写派生单元的 scope 之后，按入参 scope
             # 回读真源会落空。回传为空时回落按 id 回读，兼容不回填该字段的 Evolver 实现。
@@ -707,9 +716,12 @@ class CloudEngine(MemoryEngine):
         return purged
 
     async def evolve(
-        self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
+        self, scope: Scope, options: EvolveTaskOptions
     ) -> str:
-        """提交 EvolveJob 到 Scheduler——mode/evolver 运行时流入 EvolveJob（不进 Spec 装配）。"""
+        """按统一请求提交内容或建树任务，运行时注入同源 Evolver 与 KV。"""
+        scope = copy.deepcopy(scope)
+        options = copy.deepcopy(options)
+        validate_evolve_options(scope, options)
         if self._job_factory is None:
             raise RuntimeError(
                 "evolve requires job_factory, please configure "
@@ -720,18 +732,30 @@ class CloudEngine(MemoryEngine):
                 "CloudEngine.evolve requires an Evolver (装配未注入 evolver)"
             )
         # E-06：evolve 必传注入——Job 使用 Engine 装配的同一实例，Spec 不自行解析。
-        job = self._job_factory.get_job(
-            JobType.EVOLVE, scope=scope, mode=mode, evolver=self._evolver
-        )
-        job_id = await self._scheduler.submit(job, channel)
+        if options.mode is EvolveMode.HIERARCHY:
+            job = self._job_factory.get_job(
+                JobType.HIERARCHY, scope=scope, options=options.hierarchy_options,
+                evolver=self._evolver, kv=self._kv,
+            )
+        else:
+            job = self._job_factory.get_job(
+                JobType.EVOLVE, scope=scope, mode=options.mode, evolver=self._evolver
+            )
+        job_id = await self._scheduler.submit(job, options.channel)
         logger.info(
             "CloudEngine.evolve submitted: job_id=%s scope=%s mode=%s channel=%s",
             job_id,
             scope,
-            mode.value,
-            channel.value,
+            options.mode.value,
+            options.channel.value,
         )
         return job_id
+
+    async def start_background_jobs(self, scope: Scope, policy: PolicyManager) -> list[str]:
+        """在当前长驻循环注册显式 home 的周期建树。"""
+        return await start_hierarchy_derivation(scope, policy, BackgroundDependencies(
+            self._job_factory, self._scheduler, self._evolver, self._kv,
+        ))
 
     async def admin_get(self, key: str) -> str:
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")
@@ -801,7 +825,18 @@ class CloudEngine(MemoryEngine):
     ) -> None:
         for unit in units:
             self._ensure_unit_scope(unit, scope)
-            unit.system_metadata.update(system_metadata)
+            # Ingestor 已将叶提示移入结构时，不把被消费的提示重新写回 metadata。
+            # 其余键仍按既有语义回注；未消费提示的自定义 Ingestor 也保持原行为。
+            consumed_hints = (
+                ALLOWED_HINTS - unit.system_metadata.keys()
+                if not unit.hierarchy.is_empty
+                else frozenset()
+            )
+            unit.system_metadata.update(
+                (key, value)
+                for key, value in system_metadata.items()
+                if key not in consumed_hints
+            )
             unit.tags = list(tags or [])
 
     def _stamp_pipeline(self, units: list[MemoryUnit], pipeline_name: str) -> None:

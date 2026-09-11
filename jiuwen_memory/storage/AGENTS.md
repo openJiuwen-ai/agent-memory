@@ -77,6 +77,9 @@
 
 6. **检索型 Store 的 search 物理约束在 scope 内**
    `FulltextStore.search(scope, query)` / `VectorStore.search(scope, query)` / `GraphStore.search(scope, query)` 绝不跨 scope 返回。
+   全文/向量（包括内存实现）先应用 FilterExpr 再截断 top_k；结构六键为保留裸字段，
+   用户同名字段须显式写 `user_metadata.<key>`。图召回现有接口只在物化后复核结构，
+   不能保证被图侧 limit 截断的有效候选重新进入结果。
 
 7. **后端不可用统一抛 BackendError**
    连接失败/超时/服务不可用等非预期失败统一抛 `BackendError`（不抛泛化的 Exception）。

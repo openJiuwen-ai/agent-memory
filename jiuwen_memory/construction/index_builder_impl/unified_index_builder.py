@@ -17,7 +17,8 @@
    Embedder 实例才能保证同向量空间，Storage 层不持有插件）。
 2. **索引过滤字段补齐**：把 ``FulltextIndexBuilder``/``VectorIndexBuilder`` 经
    ``_index_ops.index_metadata`` 单独投影的过滤字段（``content_layer``/``t_valid``/
-   ``t_event``/``t_invalid`` 哨兵与 epoch 毫秒）直接写进 ``unit.system_metadata``，
+   ``t_event``/``t_invalid`` 哨兵与 epoch 毫秒，以及层级结构六字段）直接写进
+   ``unit.system_metadata``，
    一体化后端从 ``system_metadata``/``user_metadata`` 直接读取建索引、不再需要
    ``index_metadata`` 投影下传。``seq`` 已在 ``ChunkVector`` 上，per-chunk 不重复。
 """
@@ -28,10 +29,12 @@ from jiuwen_memory.common.chunker.base import Chunker, ChunkerProducer
 from jiuwen_memory.common.embedder.base import Embedder, EmbedderProducer
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
+    HIERARCHY_INDEX_KEYS,
     T_EVENT_UNKNOWN,
     T_INVALID_OPEN,
     ChunkVector,
     MemoryUnit,
+    hierarchy_index_metadata,
 )
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
@@ -98,7 +101,8 @@ class UnifiedIndexBuilder(IndexBuilder):
         # 最小实现：统一存储与真源同生命周期，无独立重建路径。
         return None
 
-    def _enrich_index_metadata(self, units: list[MemoryUnit]) -> None:
+    @staticmethod
+    def _enrich_index_metadata(units: list[MemoryUnit]) -> None:
         """把索引过滤投影字段直接补进 ``unit.system_metadata``，供一体化后端直接读取。
 
         复用 ``system_metadata``/``user_metadata`` 双命名空间承载过滤字段，一体化后端
@@ -112,11 +116,17 @@ class UnifiedIndexBuilder(IndexBuilder):
         - ``t_valid``：epoch 毫秒，``None`` 不写（未生效记忆稀疏，下推用 LTE 放行即可）；
         - ``t_invalid``：epoch 毫秒，``None`` 落哨兵 ``T_INVALID_OPEN``（恒写——
           否则回溯查询最该命中的活跃记忆被排他）。
+        - 层级结构六字段：每次先清理旧投影，再按 ``unit.hierarchy`` 重新生成；
+          区间写 epoch 毫秒，空结构或无区间不残留对应旧字段。
 
         哨兵与 ``memory_filter._field_value`` 的投影对称，使后置复核与下推不分叉。
         """
         for unit in units:
             sm = unit.system_metadata
+            # 结构投影由真源重新生成，退树或清空区间时不得残留旧过滤字段。
+            for key in HIERARCHY_INDEX_KEYS:
+                sm.pop(key, None)
+            sm.update(hierarchy_index_metadata(unit.hierarchy))
             sm["content_layer"] = "l2"
             temporal = unit.temporal
             sm["t_event"] = (

@@ -85,7 +85,7 @@ scripts/run-cli.sh --server http://127.0.0.1:8137 list \
 ```bash
 printf '%s\n' \
   '{"op":"add","content":"coffee","scope":{"org":"local","user":"developer"}}' \
-  '{"op":"search","query":"coffee","context":{"scope":{"org":"local","user":"developer"}},"top_k":3}' \
+  '{"op":"search","query":"coffee","context":{"scope":{"org":"local","user":"developer"}},"options":{"top_k":3}}' \
   | scripts/run-cli.sh --auth-mode dev batch
 ```
 

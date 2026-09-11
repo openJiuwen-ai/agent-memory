@@ -425,11 +425,8 @@ class CompositeDomainStore(DomainStore):
 def _passes(unit: MemoryUnit, query: ParsedQuery) -> bool:
     return is_retrieval_candidate(
         unit,
-        as_of=query.as_of,
-        time_from=query.time_from,
-        time_to=query.time_to,
+        query,
         filters=query.recheck_filters,
-        include_archived=query.include_archived,
     )
 
 

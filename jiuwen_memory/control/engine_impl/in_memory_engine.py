@@ -29,7 +29,7 @@ from jiuwen_memory.common.type_def import (
     Segment,
 )
 from jiuwen_memory.common.type_def.memory_filter import matches_memory_unit
-from jiuwen_memory.construction import EvolveMode
+from jiuwen_memory.construction import EvolveMode, EvolveRequest
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
 from jiuwen_memory.construction.evolver import Evolver, EvolverProducer
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
@@ -38,9 +38,15 @@ from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
 from jiuwen_memory.control.engine_impl.list_support import list_page
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
 from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
+from jiuwen_memory.control.evolution.background import (
+    BackgroundDependencies,
+    start_hierarchy_derivation,
+)
+from jiuwen_memory.control.evolution.validation import validate_evolve_options
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
 from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
+from jiuwen_memory.control.policy import PolicyManager
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
 from jiuwen_memory.control.types import (
     BatchWriteItem,
@@ -49,6 +55,7 @@ from jiuwen_memory.control.types import (
     Channel,
     DeleteMode,
     DeleteSelector,
+    EvolveTaskOptions,
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
@@ -246,6 +253,7 @@ class InMemoryEngine(MemoryEngine):
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
+        """在本地兼容域摄入并按开关演进或直接落盘。"""
         _ensure_local_scope(scope)
         # 调用级开关（经 metadata 下推，对齐常见记忆层 add(infer=True)）：
         # - procedural=true：过程记忆抽取——原文不落 KV，evolver 让 extractor 把本轮汇总成
@@ -310,7 +318,7 @@ class InMemoryEngine(MemoryEngine):
                     "Engine.write procedural=True requires an Evolver (装配未注入 evolver)"
                 )
             result = await asyncio.to_thread(
-                evolver.evolve, units, EvolveMode.EXTRACT
+                evolver.evolve, EvolveRequest(units=units, mode=EvolveMode.EXTRACT)
             )
             # 落盘产物优先取回传对象：归属判定改写派生单元的 scope 之后，按入参 scope
             # 回读真源会落空。回传为空时回落按 id 回读，兼容不回填该字段的 Evolver 实现。
@@ -340,7 +348,7 @@ class InMemoryEngine(MemoryEngine):
                     "Engine.write infer=True requires an Evolver (装配未注入 evolver)"
                 )
             result = await asyncio.to_thread(
-                evolver.evolve, units, EvolveMode.EXTRACT
+                evolver.evolve, EvolveRequest(units=units, mode=EvolveMode.EXTRACT)
             )
             # 落盘产物优先取回传对象：归属判定改写派生单元的 scope 之后，按入参 scope
             # 回读真源会落空。回传为空时回落按 id 回读，兼容不回填该字段的 Evolver 实现。
@@ -714,9 +722,13 @@ class InMemoryEngine(MemoryEngine):
         return [unit.id for unit in purged_units]
 
     async def evolve(
-        self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
+        self, scope: Scope, options: EvolveTaskOptions
     ) -> str:
+        """按统一请求提交内容或建树任务，运行时注入同源 Evolver 与 KV。"""
+        scope = copy.deepcopy(scope)
+        options = copy.deepcopy(options)
         _ensure_local_scope(scope)
+        validate_evolve_options(scope, options)
         if self._job_factory is None:
             raise RuntimeError(
                 "evolve requires job_factory, please configure "
@@ -728,18 +740,31 @@ class InMemoryEngine(MemoryEngine):
             )
         # E-06：evolver 必传注入——Job 使用 Engine 装配的同一实例，
         # 不允许 Spec 侧自行解析另一套（middle 路径的 index/evolver 同理）。
-        job = self._job_factory.get_job(
-            JobType.EVOLVE, scope=scope, mode=mode, evolver=self._evolver
-        )
-        job_id = await self._scheduler.submit(job, channel)
+        if options.mode is EvolveMode.HIERARCHY:
+            job = self._job_factory.get_job(
+                JobType.HIERARCHY, scope=scope, options=options.hierarchy_options,
+                evolver=self._evolver, kv=self._kv,
+            )
+        else:
+            job = self._job_factory.get_job(
+                JobType.EVOLVE, scope=scope, mode=options.mode, evolver=self._evolver
+            )
+        job_id = await self._scheduler.submit(job, options.channel)
         logger.info(
             "Engine.evolve submitted: job_id=%s scope=%s mode=%s channel=%s",
             job_id,
             scope,
-            mode.value,
-            channel.value,
+            options.mode.value,
+            options.channel.value,
         )
         return job_id
+
+    async def start_background_jobs(self, scope: Scope, policy: PolicyManager) -> list[str]:
+        """在当前长驻循环注册 home；保留本地 Engine 的 space 限制。"""
+        _ensure_local_scope(scope)
+        return await start_hierarchy_derivation(scope, policy, BackgroundDependencies(
+            self._job_factory, self._scheduler, self._evolver, self._kv,
+        ))
 
     async def admin_get(self, key: str) -> str:  # 由 API 层直达 PolicyManager
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")

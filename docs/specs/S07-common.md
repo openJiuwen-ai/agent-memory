@@ -5,8 +5,9 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-09-05 |
+| 最近一次修订日期 | 2026-09-10 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
+| 关联树结构特性 | docs/features/common/F08-memory-tree.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F05-security-api-contracts.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -40,7 +41,7 @@
 1. **共享插件必须双侧同一**：Embedder/Tokenizer/FeatureExtractor 等必须在构建侧与检索侧使用同一实现/同一配置，保证同词表/同向量空间。
 2. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
 3. **所有插件必须实现 `plugin_type()` 和 `health()`**：继承自 `Plugin` 基类。
-4. **types.py 零依赖其他文件**：纯数据定义，被全局共享依赖。
+4. **公共类型不依赖业务与存储**：`type_def` 可引用本包类型与 `common.errors` 完成纯数据转换和校验，不依赖构建、检索、控制或存储实现。
 5. **工厂注册发生在 import 时**：实现文件尾部 `@XxxProducer.register("name")` 绑定构建函数，`__init__.py` 导入实现文件触发注册。
 6. **LLM Provider 参数不上浮到业务层**：厂商专属请求字段只能由对应 Adapter 生成；消费 `LLM` 的算子只传递通用生成选项。
 7. **SecurityProvider 是字节级横切接口**：调用方在持久化字节写入前加密、读取后解密；接口不绑定 `MemoryUnit` 或存储后端，是否启用由装配配置决定。
@@ -62,23 +63,25 @@
     以 `LockHandle.lost` 为准。后端不可用时 fail-closed 抛 `BackendError`，不静默降级为无锁。
 14. **四条层次轴正交**：`ContentLayers`/`DisclosureLevel` 表示同一 unit 的 L0/L1/L2 披露；
     多模态 CLM/ELM（`system_metadata["memory_level"]` + `provenance`）表示单媒体源构建粒度；
-    `MemoryTier` 表示认知角色；目标契约中的 `HierarchyRef` 表示跨 unit 的树结构包含。
-    树结构尚未实现；实现后任一轴不得推导或代替另外三轴。
-15. **树结构引用一致**（目标契约，尚未实现）：`kind` 与 `role` 必须同时设置或同时缺省；
+    `MemoryTier` 表示认知角色；`HierarchyRef` 表示跨 unit 的树结构包含。
+    当前已交付结构类型、两层 TIME 建树和结构查询；任一轴不得推导或代替另外三轴。
+15. **树结构引用一致**（纯校验契约）：`kind` 与 `role` 必须同时设置或同时缺省；
    空 `HierarchyRef` 等价于未启用树结构。非空结构**不得成环**；同一 kind 下采用单父
-   严格树；父 `child_ids` 与子 `parent_id` 双向一致且子列表不得重复。
+   严格树；父子引用按完整 Scope+id 双向一致，直接子引用不得重复；不同 Scope 可有同名 id。
    **结构边的 scope 规则（非五维全等）**：
    - **硬边界**：相连节点必须同 `org` 且同 `space`；禁止跨 org / 跨 space 的结构边
      （与 F03 租户隔离一致；跨 space 共享走 grant / shared space，不走树边）。
    - **细粒度可放宽**：`user` / `agent` / `session` **不要求**与父节点五维全等。
      因此「同 scope 连接」**不是**要求 `Scope(org, space, user, agent, session)` 全部一致。
-   - **典型允许**：同 user 跨多个 session 建 TIME 树；同 org+space 下跨多个 user
-     （及各自 session）建树——后者须 compose profile / 策略显式开启，默认关闭。
+   - **典型允许**：同 user 跨多个 session 的 TIME 结构；同 org+space 下跨多个 user
+     （及各自 session）校验——后者须显式传 `allow_cross_user=True`，默认关闭。
+     此参数同时放开 user 和 agent 的多非空值限制，空值表示更粗归属而不算另一主体；
+     后续建树 profile 的接线不属于阶段 1。
    - **引用可解析**：因 `MemoryUnit.id` 仅在完整 Scope 内唯一，当子（或父）与持有边的
      unit 完整 Scope 不完全相同时，边必须携带可定位的子/父 Scope（见下方
      `child_scopes` / `parent_scope`）；二者皆缺省时退化为「与本 unit 完整 Scope 相同」。
-16. **层级区间有效**（目标契约，尚未实现）：`span_start`/`span_end` 必须同时为空或同时存在，存在时 `span_start <= span_end`，父区间覆盖直接子区间；`HierarchyKind.TIME` 的所有节点必须有区间。
-17. **引用语义分离**（目标契约，尚未实现）：`provenance` 只表示演进来源，`supersedes`
+16. **层级区间有效**（纯校验契约）：`span_start`/`span_end` 必须同时为空或同时存在，存在时 `span_start <= span_end`，集合内父区间覆盖直接子区间；`HierarchyKind.TIME` 的所有节点必须有区间。
+17. **引用语义分离**：`provenance` 只表示演进来源，`supersedes`
     只表示版本替换，`hierarchy` 只表示结构包含；生命周期归 `LifecycleState`，结构修正状态归
     `HierarchyStatus`。
 
@@ -265,7 +268,7 @@ F05 公共安全架构的契约层（认证 / 密码学 / 保护 / 授权 / 审�
 
 | 类型 | 关键字段 | 语义 |
 |------|----------|------|
-| `MemoryUnit` | id / scope / tier / layers / segments / source_ref / temporal / provenance / supersedes / tags / system_metadata / user_metadata / lifecycle / entities / vectors | 记忆单元；id 在完整 Scope 内唯一；`content` / `assets` / `source` 是从 `segments` 折叠得到的只读视图；`vectors` 为 chunk 级向量投影（构建期按 Chunker+Embedder 管线填充，随本体经 Storage 领域接口下传，见 F06-unified-index-builder）。尚未实现的 `hierarchy` 见下文“树结构（目标契约，尚未实现）” |
+| `MemoryUnit` | id / scope / tier / layers / hierarchy / segments / source_ref / temporal / provenance / supersedes / tags / system_metadata / user_metadata / lifecycle / entities / vectors | 记忆单元；id 在完整 Scope 内唯一；`content` / `assets` / `source` 是从 `segments` 折叠得到的只读视图；`vectors` 为 chunk 级向量投影（构建期按 Chunker+Embedder 管线填充，随本体经 Storage 领域接口下传，见 F06-unified-index-builder）；`hierarchy` 为默认空的跨 unit 结构引用，见下文 |
 | `ContentLayers` | l0 / l1 | 分层披露标注（l0=50-100 字概要、l1=200-500 字要点 overview）；默认空串，extractor 对超阈 content 产出 |
 | `Segment` | content / assets / source | 内容段；文本投影、原模态资产引用和来源模态一一对应 |
 | `Temporal` | t_event / t_ingest / t_valid / t_invalid / t_message | 事件、摄入、有效期与消息时间字段 |
@@ -292,10 +295,13 @@ F05 公共安全架构的契约层（认证 / 密码学 / 保护 / 授权 / 审�
 | `Modality` | TEXT / IMAGE / AUDIO / VIDEO / CODE / DOCUMENT |
 | `LifecycleState` | ACTIVE / SUPERSEDED / ARCHIVED / FORGOTTEN |
 
-目标新增的 `HierarchyKind`、`HierarchyRole` 和 `HierarchyStatus` 只在下节定义一次，
+已定义的 `HierarchyKind`、`HierarchyRole` 和 `HierarchyStatus` 只在下节定义一次，
 避免摘要表与精确枚举并存后发生漂移。
 
-### 树结构（目标契约，尚未实现）
+### 树结构（阶段 1：类型、纯校验与序列化已实现）
+
+以下五种 kind、七种 role 是结构表达词表，不表示对应建树算法已经实现。阶段 1
+没有 Composer、`evolve(HIERARCHY)`、自动建树或层级检索。
 
 ```python
 class HierarchyKind(str, Enum):
@@ -319,6 +325,7 @@ class HierarchyRole(str, Enum):
 `MemoryTier.CORE`），**不**通过 TIME 的 `parent_id`/`child_ids` 与
 snapshot/time_span/scene/event 互挂；TIME 主树角色仍是 snapshot→time_span→scene→event。
 若用 TOPIC/CUSTOM 组织画像，须单独立项，不得把 TIME 节点挂为 profile 的结构子。
+这是后续构建的目标角色约束；阶段 1 的通用纯校验不检查 TIME 角色链。
 
 ```python
 class HierarchyStatus(str, Enum):
@@ -341,37 +348,76 @@ class HierarchyRef:
     ordinal: int = 0
     status: HierarchyStatus = HierarchyStatus.ACTIVE
 
-# MemoryUnit 的目标增量字段；其余既有字段保持不变
+# MemoryUnit 的可缺省增量字段；其余既有字段保持不变
 hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
 ```
 
-`HierarchyStatus` 只描述结构节点是否有效、被结构修正排除或等待确认，不包含
+`HierarchyStatus` 只描述结构节点有效或被结构修正排除，不包含
 `ARCHIVED`/`FORGOTTEN`；归档、遗忘与版本失效继续由 `LifecycleState` 表达。
 `parent_id=""` 表示根或尚未挂接，`child_ids` 是直接子节点的稳定有序列表，
 `ordinal` 是同一父节点下的排序提示。非 TIME kind 可以不声明区间；一旦声明，仍须满足
 成对、顺序和父覆盖约束。TIME 的区间是结构覆盖范围，不替代
 `MemoryUnit.temporal` 的双时间，也不替代 `RecallChannel.TEMPORAL` 的召回过滤。
 
-目标实现必须满足以下校验不变量：
+结构关系应满足以下约束；当前纯函数的实际检查范围见下表：
 
 - 所有父子引用必须解析到**同 org + 同 space** 的 `MemoryUnit`；禁止跨 org / 跨 space
   结构边；禁止自环、祖先环。
-- `user` / `agent` / `session` 允许按 compose profile 与本 unit 不同；此时必须用
+- `user` / `agent` / `session` 可在允许的范围内与本 unit 不同；此时必须用
   `child_scopes` / `parent_scope` 唯一定位，不得只靠裸 id 在错误命名空间里点读。
 - `child_scopes` 为空时，每个 `child_ids[i]` 在本 unit 的完整 Scope 下解析；非空时
   `len(child_scopes) == len(child_ids)`，且每个 `child_scopes[i]` 与本 unit 同 org+space。
 - 同一 kind 下每个节点最多一个非空 `parent_id`；当前契约不支持同 kind 多父。
-- 对每条边 `P -> C`，`C.parent_id == P.id` 当且仅当 `C.id` 在 `P.child_ids` 中；若使用
-  scope 覆盖，则 `C` 侧 `parent_scope`（或缺省的本 unit scope）必须与 `P` 的驻留 Scope 一致。
-- `child_ids` 不重复；TIME 按区间起点或事件时间稳定排序，其他 kind 按 `ordinal`
-  与领域稳定顺序排序。
+- 对每条集合内边 `P -> C`，父声明的 `(child_scope, child_id)` 必须等于 C 的
+  `(scope, id)`，子声明的 `(parent_scope, parent_id)` 必须等于 P 的 `(scope, id)`；
+  引用 Scope 缺省时使用持有该引用的 unit Scope，不按裸 id 判定双向一致。
+- 直接子引用的 `(Scope, id)` 不重复，不同 Scope 的同名 id 允许共存。列表保存调用方
+  提供的顺序；TIME 按时间、其他 kind 按 ordinal
+  或领域规则稳定排序是后续构建职责，阶段 1 的纯校验不替调用方排序或检查排序。
 - 空结构定义为 `kind is None and role is None`；此时 `parent_id=""`、`child_ids=[]`、
   `child_scopes=[]`、`parent_scope is None`，且不得携带非空父子 id 或 span。旧数据没有
   `hierarchy` 时读取为空结构。
 - `provenance`、`supersedes`、`hierarchy` 不互相回填；披露级、多模态粒度、tier 与
   hierarchy 也不互相推导。
 
-单父限制是本 spec 当前有效的目标契约。未来若引入同 kind 多父，必须先修订本契约和
+| 函数 | 实际范围 |
+|---|---|
+| `validate_ref(ref, *, unit_id="") -> None` | 单节点 kind/role 同空同在、空结构无边无区间、区间成对有序、TIME 区间必填、child scopes 数量、重复子引用；unit_id 用于无需 owner Scope 即可判断的自引用检查 |
+| `validate_tree(units, *, allow_cross_user=False) -> None` | 先检查全部输入引用的字段自洽，再检查非空结构集合：单 kind、同 org+space、跨 user/agent 开关、完整 Scope+id 去重、单父、集合内双向引用与 scope 定位、环、直接子区间覆盖 |
+
+两个函数无副作用、不访问存储，违反已检查约束时抛 `ValidationError`。
+`validate_tree` 不加载集合外的父子节点，对无法定位到本集合的引用跳过邻居核对，
+因此不能把通过校验等同于“全库树完整”；显式携带的引用 Scope 仍须满足边界规则，
+不能借邻居未传入而放宽。普通 Ingestor 和 codec 均不自动调用这两个函数；
+生产 Composer 已在保存前调用结构校验；这仍不代表读取并检查全库树。
+
+`HierarchyQuery` 承载 kind/role/span 四字段并做纯校验：枚举类型、role/span 要求 kind、
+区间成对有序；朴素时间按 UTC。`matches_hierarchy(unit, query)` 只读当前引用，
+显式请求要求匹配 kind、可选 role、ACTIVE 状态和有效引用，并在请求有窗口时按
+微秒精度检查闭区间相交；TIME 节点即使查询没有窗口也必须有有效 span。普通查询
+不额外筛掉非树记忆或 dismissed 节点。该函数不加载邻居、不读取策略、不建树。
+
+`validate_expand_depth(depth, kind)` 纯校验非负整数（不接受 bool），非零要求显式
+kind。深度由 RetrievalQuery 持有，不新增 ParsedQuery 的时间或结构字段。
+`validate_rollup(rollup, kind)` 仅接受 bool，True 要求显式 kind；不进行父子读取。
+rollup 由 RetrievalQuery 持有，ParsedQuery 不增加对应字段，由检索编排消费开关。
+`RecallChannel.HIERARCHY` 与 SPACE 同为诊断专用值，不是候选通道或融合证据。
+
+`ParsedQuery` 新增同名四字段。`is_retrieval_candidate(unit, query, *, filters)`
+统一组合既有生命周期/valid-time/event-time、层级与调用路径选择的 FilterExpr。
+结构六个裸字段从 hierarchy 投影，不与 metadata 同名键混淆；
+`matches_filter_value(value, clause)` 复用字段比较语义给内存索引和真源过滤。
+普通过滤别名 `id` 统一规范化为 `unit_id`，显式 `user_metadata.id` 不受影响。
+
+`hierarchy_index_metadata(ref)` 只生成 S06 约定的六个索引字段；空结构返回空 dict。
+`HIERARCHY_INDEX_KEYS` 是这六键的共享集合，供独立索引与一体化写路径统一识别旧
+系统投影副本，不作用于用户命名空间。
+`span_epoch_ms(datetime)` 生成 UTC epoch 毫秒整数，朴素时间按 UTC 解释；该数值
+用于索引，不改变 codec 中 ISO 8601 时间的序列化契约。
+纯校验中的时间比较同样将朴素时间按 UTC 解释，但保留 datetime 的微秒精度，
+不先截断为索引毫秒再判断区间顺序或覆盖。
+
+单父限制是本 spec 当前有效的结构契约。未来若引入同 kind 多父，必须先修订本契约和
 编解码/存储模型，再按
 [F08-memory-tree.md](../features/common/F08-memory-tree.md) 的独立边存储
 迁移条件更新实现；在此之前，多父输入必须被拒绝。
@@ -379,6 +425,11 @@ hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
 ### metadata 保留键与瞬态键（`type_def/memory.py`）
 
 `KERNEL_SYSTEM_METADATA_KEYS` 是内核占用的键名清单，写入路径据此拒绝调用方经 `system_metadata` 入参使用其中任何一个；`TRANSIENT_SYSTEM_METADATA_KEYS` 中的键只在内存中传递，编解码器序列化时剥除、不落盘。两者的作用域都是 `system_metadata`——`user_metadata` 不受这两份清单约束。
+
+F08 阶段 1 将仅索引拥有的 `hierarchy_status`、`parent_id`、`span_start`、`span_end`
+纳入系统保留键；公开 add/update 使用既有校验拒绝这些系统输入，业务同名字段应
+放在 `user_metadata`，不静默丢弃。`hierarchy_kind` / `hierarchy_role` 兼作接入叶
+提示，仍按 S01 的叶提示规则接受；索引键集合不等同于“全部禁止输入”的保留键集合。
 
 > F07 起：前者增六键——内核按调用方身份写入的两个作者标记键、判定算子写入的命中类别名（`memory_class`），以及三个后续阶段才写入、提前占位以防存量数据占用的溯源键；后者增判定上下文的透传键。两份清单均为扩充，条目结构与序列化版本不变。
 >
@@ -388,12 +439,15 @@ hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
 
 真源 KVStore 存**字节**，`MemoryUnit` 对象只在写入（`dumps`）与产出结果（`loads`）两处出现。编解码与 `MemoryUnit` 同住 `common/type_def`，纯函数、无存储后端依赖。
 
-- `dumps(unit) -> bytes`：`MemoryUnit` → JSON 字节，带 `_v` 版本号、枚举取 `.value`、时间取 isoformat。字段含 `segments`、`layers`（`{l0, l1}`）。
+- `dumps(unit) -> bytes`：`MemoryUnit` → JSON 字节，带 `_v` 版本号、枚举取 `.value`、时间取 isoformat。保留 `segments`、`layers`、`vectors` 与双 metadata；序列化时仍剥除系统瞬态键。非空 hierarchy 写出，空 hierarchy 省略。
 - `loads(raw) -> MemoryUnit | None`：逆 `dumps`；非 dict 返回 `None`（KVStore 中混有索引/跟踪等非 unit 记录，靠此过滤）。
 - **容错演进**：未知字段忽略、缺失字段取默认。加字段是兼容演进（老数据缺省读出，不升 `_v`）；改字段含义/结构才升 `_v` 并在 `loads` 按 `_v` 分支。当前 `_v=4`（`_v=2` 为 segments 列表化；`_v=3` 把 scope 从 `org/user/agent/session` 扩展为 `org/space/user/agent/session`；`_v=4` 将混合 metadata 拆分为 `system_metadata` / `user_metadata`，`_v<4` 数据须离线迁移）。
 - `layers` 字段缺失时 `loads` 取空串 `ContentLayers()`——老数据无迁移读出。
-- 目标树结构尚未进入当前 `MemoryUnit` 和 codec；`hierarchy` 的读取降级及写入校验规则见
-  上文“树结构（目标契约，尚未实现）”，不得将其描述为当前 `_v=4` 已具备的能力。
+- `_v=4` 数据缺少 `hierarchy` 时读为空结构，无需为该增量字段迁移；这不改变
+  `_v<4` 数据被拒绝的边界。hierarchy 未知字段忽略，非对象、未知枚举或无法解析的
+  时间、非法引用 Scope 或子 Scope 数量不匹配均整段降级为空结构并记录诊断，不删除
+  个别 Scope 后把其余 Scope 错配给其他 child_id；正常解析不等于已通过
+  `validate_ref` / `validate_tree`。
 - 只有字段语义或结构发生破坏性变化时才提升 `_v`；增加可选枚举成员或可缺省字段不单独升版。
 
 ### 工厂注册机制（`factory/factory.py`）
@@ -517,3 +571,12 @@ jiuwen_memory/common/<组件>/
 | S08-config | 插件晚绑定 model/api_key/url 等由 ConfigSource 提供；装配拓扑仍走 Factory |
 | F07-collective-memory | 保留键与瞬态键集合扩充（已落地）；两轴角色与身份推导落 `security/space_roles.py` 与 `security/principal.py`（已落地）；空间授权事实经安全层资源描述对象的结构化字段传入判定实现 |
 | architecture.md 全文 | 本层承载全局共享的数据类型与工具 |
+
+## 修订记录
+
+| 日期 | 内容 |
+|---|---|
+| 2026-09-10 | 阶段 6：rollup 严格布尔及 kind 前置校验；HIERARCHY 诊断覆盖上卷，不扩充树模型 |
+| 2026-09-10 | 阶段 5：展开深度纯校验及 HIERARCHY 诊断值；不改变 HierarchyQuery 四字段或树模型 |
+| 2026-09-10 | 阶段 4：HierarchyQuery、结构真源匹配、ParsedQuery 四字段、统一候选复核及共享字段比较；同步已交付 Composer 校验 |
+| 2026-09-10 | 同步 F08 阶段 1：HierarchyRef 与枚举、纯校验的集合边界、六键投影所需时间语义及 codec _v=4 增量兼容；建树与层级检索仍未实现 |
