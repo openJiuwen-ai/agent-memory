@@ -12,5 +12,6 @@ from jiuwen_memory.retrieval.fuser import FuserProducer
 import_module(".rrf_fuser", __name__)
 import_module(".weighted_rrf_fuser", __name__)
 import_module(".score_max_fuser", __name__)
+import_module(".bm25_scored_fuser", __name__)
 
 __all__ = ["FuserProducer"]
