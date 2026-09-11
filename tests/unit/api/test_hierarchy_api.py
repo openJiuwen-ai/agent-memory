@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""API → Engine → Job → Evolver → Composer 的显式两层树链路。"""
+"""API → Engine → Job → Evolver → Composer 的显式建树链路与配置模板。"""
 
 from copy import deepcopy
 from datetime import timedelta
@@ -19,12 +19,39 @@ from tests.unit.api.hierarchy_api_fixtures import (
     ROOT_SECURITY,
     SECURITY,
     START,
+    hierarchy_template_config,
     runtime_config,
     task_options,
     write_snapshot,
 )
 
 pytestmark = pytest.mark.unit
+
+
+def test_config_template_supports_explicit_four_level_construction() -> None:
+    runtime = assemble_runtime(config=hierarchy_template_config())
+    try:
+        leaves = [
+            write_snapshot(runtime.api, minute, session=f"session-{minute}") for minute in (0, 1)
+        ]
+        options = task_options(parent_roles=[
+            HierarchyRole.TIME_SPAN, HierarchyRole.SCENE, HierarchyRole.EVENT,
+        ])
+        job_id = runtime.api.evolve(HOME, options, security=SECURITY)
+        status = runtime.api.job_status(job_id, security=SECURITY)
+        parents = runtime.api.list(HOME, security=SECURITY).items
+        roles = [parent.hierarchy.role for parent in parents]
+        assert status.status is JobStatus.SUCCEEDED, status.detail
+        assert status.detail["created_parent_count"] == "4"
+        assert roles.count(HierarchyRole.TIME_SPAN) == 2
+        assert roles.count(HierarchyRole.SCENE) == 1
+        assert roles.count(HierarchyRole.EVENT) == 1
+        for leaf in leaves:
+            stored = runtime.api.get(leaf.id, leaf.scope, security=SECURITY)
+            assert stored.hierarchy.parent_id
+            assert stored.content == leaf.content
+    finally:
+        runtime.close()
 
 
 @pytest.fixture(name="api", params=["in_memory", "cloud"])

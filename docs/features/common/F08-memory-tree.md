@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-08-15 |
 | 影响范围 | jiuwen_memory/api/、jiuwen_memory/common/、jiuwen_memory/construction/、jiuwen_memory/control/、jiuwen_memory/ingest/、jiuwen_memory/retrieval/、jiuwen_memory/storage/；docs/specs/S01–S07；关联 [`F05-construction-spec-multimodal-design`](../construction/F05-construction-spec-multimodal-design.md) |
-| 测试基线 | 阶段 1：完整 unit 回归 1891 passed；阶段 2：2082 passed；阶段 3：2229 passed；阶段 4：2413 passed；阶段 5：2505 passed；阶段 6：2585 passed；阶段 7：2665 passed；阶段 8：2754 passed；阶段 9：2800 passed。各阶段均为 5 skipped、480 deselected。各阶段变更无新增 Ruff/CodeCheck 本地预审问题，历史诊断见对应阶段验证；未执行云端 CodeCheck |
+| 测试基线 | 阶段 1：完整 unit 回归 1891 passed；阶段 2：2082 passed；阶段 3：2229 passed；阶段 4：2413 passed；阶段 5：2505 passed；阶段 6：2585 passed；阶段 7：2665 passed；阶段 8：2754 passed；阶段 9：2800 passed；阶段 10：2802 passed。各阶段均为 5 skipped、480 deselected。各阶段变更无新增 Ruff/CodeCheck 本地预审问题，历史诊断见对应阶段验证；未执行云端 CodeCheck |
 | Refs | — |
 
 ## 阶段 1 落地（2026-09-10）
@@ -14,7 +14,7 @@
 本次只交付“能表达、接入和存储结构身份”的基础能力，不交付自动建树或层级召回。
 本节记录阶段 1 完成时的状态：当时除本节明确列出的能力及下文叶提示接入外，Composer、
 显式 `evolve(HIERARCHY)`、结构查询/展开/MaxP、后台任务、修复器和各 kind 算法均未实现。
-当前新增交付以阶段 9 小节为准；后文仍保留尚未开放的总体设计。
+当前能力以阶段 9 小节为准，配置说明见阶段 10；后文仍保留尚未开放的总体设计。
 后文 P0–P5 是原设计分期，不等同于已经完成的提交阶段。
 
 ### 已交付与决定
@@ -613,6 +613,44 @@ fixture；Ruff 和 git diff --check 通过。按既有 CodeCheck 十条规则做
 既有参数数目、文档样式、静态化和变量遮蔽候选不扩范围修改；抽象/协议方法与扫描候选
 仍须人工区分，不能把本地预审当作云端结论。保留原有 5 个 skip 和 5 条 asyncio marker
 警告；未运行云端 CodeCheck、真实 LLM/外部存储或质量评测。未暂存、未提交，原 tree-mem 未改动。
+
+## 阶段 10 落地（2026-09-11）
+
+### 决策与交付
+
+- 在已有 `examples/config_template.yml` 中补齐独立 Composer、四层 TIME profile、
+  模型依赖位置与周期调度配置；不新增建树快速开始，也不扩展原有 `quickstart.py`。
+- 明确实例/策略整项覆盖，保留原有依赖和策略；TIME profile 只在 Composer 定义，
+  JobFactory 复用绑定 Composer 的配置。建树与周期开关仍默认关闭。
+- 说明 snapshot → time_span → scene → event 的阶段阈值、结构摘要与可选模型引用。
+  启用语义相似度需真实 embedder，正文摘要与父节点 L0/L1 标注分别配置。
+- 周期维护需双开关、支持周期的 Scheduler、指定 home 和持续运行的宿主循环；
+  区分任务注册与实际轮次成功，说明关闭与失败修复边界。
+- 配置验证并入已有 API 测试与 fixture，直接读取模板注释块后装配 Runtime，
+  不依赖演示脚本。不保留专用示例配置、快速开始指南或演示专属测试。
+
+### 拒绝的方案与限制
+
+- 不复制旧 Evolver 内嵌配置、JobFactory 重复 profile、全库自动发现或临时循环启动方式。
+- 不修改生产算法、业务接口或默认部署配置；不在本阶段接真实模型、补 top-M，
+  也不加入时间阈值递增约束。模型接入仅说明配置位置，不代表语义质量已验证。
+- 宿主负责认证授权、凭证注入、多 home 注册与长期事件循环；close 只取消后续周期，
+  不承诺等待全部建树线程或自动修复部分失败。
+
+### 验证
+
+新增 2 个配置模板用例并入已有 API 测试：显式配置构建四层树，两个 session 的 snapshot
+生成两个 time_span、一个 scene、一个 event；周期配置成功注册并能关闭定时任务，
+不等待模板默认的 1800 秒周期。相关两个测试文件 **42 passed**。
+
+完整 unit 回归 **2802 passed、5 skipped、480 deselected、5 warnings**（82.95 秒），
+相对阶段 9 新增 2 个配置验证单测。5 条警告来自既有
+`test_middle_e2e_real_llm.py` 的未注册 asyncio marker，未扩展修复范围。
+
+Ruff、git diff --check 与既有 CodeCheck 规则人工/AST 预审通过；覆盖变更的三个 Python
+文件及相邻定义，无新增规则候选，未修改无关历史问题。确认原有 quickstart 与 HEAD
+完全一致，已清理被撤销入口的引用。未运行云端 CodeCheck、真实模型质量评测或远程
+存储后端测试；未创建提交，原 tree-mem 分支未改动。
 
 ## 背景
 
