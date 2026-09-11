@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import dataclasses
 import inspect
 import json
 import os
@@ -28,14 +27,23 @@ import pytest
 pytest.importorskip("mcp.server.fastmcp")
 
 # __main__ 在模块级把 sys.argv[1:] 当配置路径读取、按环境变量装配认证器；
-# pytest 的 argv 与宿主环境不得影响导入结果，先钉住再导入。
-os.environ["JIUWEN_MEMORY_MCP_AUTH_MODE"] = "dev"
+# pytest 的 argv 与宿主环境不得影响导入结果，先钉住再导入。认证模式环境变量
+# 同样只在导入期被读取一次（模块级 _build_authenticator），导入完成（或失败）
+# 后立即还原，不向同进程后续测试泄漏全局状态；测试依赖的 dev 认证器已随导入
+# 固化为 mcp_main._AUTHENTICATOR，还原不影响本文件行为。
+_AUTH_MODE_ENV = "JIUWEN_MEMORY_MCP_AUTH_MODE"
+_ORIG_AUTH_MODE = os.environ.get(_AUTH_MODE_ENV)
+os.environ[_AUTH_MODE_ENV] = "dev"
 _ARGV = sys.argv
 sys.argv = ["mcp"]
 try:
     from jiuwen_memory_entry.mcp_server import __main__ as mcp_main
 finally:
     sys.argv = _ARGV
+    if _ORIG_AUTH_MODE is None:
+        os.environ.pop(_AUTH_MODE_ENV, None)
+    else:
+        os.environ[_AUTH_MODE_ENV] = _ORIG_AUTH_MODE
 
 from jiuwen_memory.api import Surface, ValidationError  # noqa: E402
 from jiuwen_memory_entry.core.api_contract import (  # noqa: E402
@@ -155,28 +163,10 @@ def test_mcp_tool_registry_covers_expected_verbs() -> None:
         assert is_known_verb(verb), verb
 
 
-def _tool_forwarded_params(tool_name: str) -> set[str]:
-    """工具实际转发进 payload 的参数名。
-
-    参数袋工具（G.FNM.03，如 memory_submit_ingest）以单个
-    ``args: <dataclass>`` 入参承载契约参数——取其 dataclass 字段名做契约对齐；
-    其余工具直接取签名参数（``__main__.py`` 不做注解字符串化，注解是运行时对象）。
-    """
-    parameters = inspect.signature(getattr(mcp_main, tool_name)).parameters
-    forwarded = set(parameters) - {"ctx"}
-    if forwarded == {"args"}:
-        bag = parameters["args"].annotation
-        assert dataclasses.is_dataclass(bag) and isinstance(bag, type), (
-            f"{tool_name} 的 args 参数袋必须是 dataclass 类型注解"
-        )
-        return {field.name for field in dataclasses.fields(bag)}
-    return forwarded
-
-
 @pytest.mark.parametrize("tool_name", list(TOOL_CASES))
 def test_tool_signature_matches_api_contract(tool_name: str) -> None:
     verb, _payload = TOOL_CASES[tool_name]
-    tool_params = _tool_forwarded_params(tool_name)
+    tool_params = set(inspect.signature(getattr(mcp_main, tool_name)).parameters) - {"ctx"}
     contract = method_contract(verb)
     api_params = set(contract.request_parameters)
     assert tool_params <= api_params, f"{tool_name} 多余参数: {tool_params - api_params}"

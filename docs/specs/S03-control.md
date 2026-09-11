@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-09-06 |
+| 最近一次修订日期 | 2026-09-11 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
@@ -324,10 +324,13 @@ delegate，避免调用方理解授权记录应落在哪个后端。路由值只
 声明的业务值，未知值和直接 policy 名都落 `fallback`；`fallback` 在装配期禁止指向
 `allow_all`。
 
-recall 完成权限检查后，API 读取 `PermissionManager.routing_fields()`，把授权所依据
-的路由值作为等值系统谓词回注查询，并与用户 `FilterExpr` 做外层 `AND`。这保证
-“选择哪条权限策略”和“实际能读取哪类数据”使用同一个值，用户表达式中的 `OR`
-不能绕过该约束。
+recall / list 完成权限检查前，API 构造 `PermissionContext` 时从
+`extensions` 取路由值**只解释 `PermissionManager.routing_fields()` 声明的键**
+（extensions 优先、filter 等值兜底）；其余扩展键对权限层不透明——不进
+`PermissionContext.metadata`，也不被隐式 `str()`。完成权限检查后，API 读取
+`PermissionManager.routing_fields()`，把授权所依据的路由值作为等值系统谓词回注
+查询，并与用户 `FilterExpr` 做外层 `AND`。这保证“选择哪条权限策略”和“实际能读取
+哪类数据”使用同一个值，用户表达式中的 `OR` 不能绕过该约束。
 
 ### Scheduler（`scheduler.py`）
 

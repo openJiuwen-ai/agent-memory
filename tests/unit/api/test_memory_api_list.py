@@ -202,6 +202,41 @@ def test_memory_api_list_extensions_pass_through_object_identity() -> None:
     assert received is not extensions
 
 
+def test_memory_api_list_never_stringifies_extensions_on_full_chain() -> None:
+    """完整 list 链路不隐式调用 str()：str 会抛异常的扩展对象原样到达 KV 端口。
+
+    权限上下文构建（_list_permission_contexts）只解释 routing_fields 声明的
+    路由键；其余扩展值对权限层不透明——若内核在任何阶段 str() 它们，本测试
+    会在进入存储层之前就以 StringifyError 失败。
+    """
+
+    class _StringifyError(Exception):
+        pass
+
+    class _Opaque:
+        def __str__(self) -> str:
+            raise _StringifyError("kernel must not stringify plugin extensions")
+
+    kv = _RecordingKV()
+    api = assemble(kv=kv)
+    scope = Scope(org="acme", user="owner")
+    api.add(
+        "opaque extension memory",
+        scope,
+        security=legacy_request_context(scope),
+    )
+    opaque = _Opaque()
+
+    result = api.list(
+        scope,
+        security=legacy_request_context(scope),
+        extensions={"vendor_runtime": opaque},
+    )
+
+    assert result.count == 1
+    assert kv.calls[0][1]["extensions"]["vendor_runtime"] is opaque
+
+
 class _RecordingKV(InMemoryKVStore):
     """记录 list 入参（scope + kwargs），供透传断言。"""
 
