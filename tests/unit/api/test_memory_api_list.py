@@ -214,7 +214,8 @@ def test_memory_api_list_never_stringifies_extensions_on_full_chain() -> None:
         pass
 
     class _Opaque:
-        def __str__(self) -> str:
+        @staticmethod
+        def __str__() -> str:
             raise _StringifyError("kernel must not stringify plugin extensions")
 
     kv = _RecordingKV()
