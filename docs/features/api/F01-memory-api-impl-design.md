@@ -258,9 +258,13 @@ Python API 使用 `filters` 作为规范参数名，与 `search` 保持一致；
 - 内核默认实现不解释业务 key，必须沿
   `MemoryAPI -> MemoryEngine -> KVStore.list` 完整透传；自定义 Engine 或 KV
   后端可按约定消费，未知 key 不报错。
-- `extensions` 不得改变 `scope`、绕过权限或覆盖系统过滤谓词。若某个扩展值参与权限路由，
-  API 必须像 search 一样把对应路由值回注为系统等值过滤条件，并与用户 filters 做外层
-  `AND`，确保“按什么条件授权，就只列出什么范围的数据”。
+- `extensions` 不得改变 `scope`、绕过权限或覆盖系统过滤谓词。权限上下文构建只
+  解释 `PermissionManager.routing_fields()` 声明的路由键（extensions 优先、filter
+  等值兜底，与 search 同一口径）；其余扩展值对权限层**不透明**——既不进
+  `PermissionContext.metadata`，也不被 `str()`，调用方无法借扩展键向鉴权入参
+  塞入任意判定依据。参与权限路由的键，API 必须像 search 一样把对应路由值回注为
+  系统等值过滤条件，并与用户 filters 做外层 `AND`，确保“按什么条件授权，就只
+  列出什么范围的数据”。
 - `None` 与空字典都表示没有自定义参数。非字典输入在 API/handler 边界抛
   `ValidationError`，不静默丢弃。
 

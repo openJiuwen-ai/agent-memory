@@ -136,7 +136,9 @@ class QueryOpsMixin:
             extensions=options,
         )
         # 权限上下文与 RetrievalQuery 共用同一规范化后的 FilterExpr（不重复转换）。
-        permission_context = _recall_permission_context(context, rq.filters)
+        permission_context = _recall_permission_context(
+            context, rq.filters, self._perm.routing_fields()
+        )
         auth, auth_context = self._authorize_with_context(
             identity,
             context.scope,
@@ -226,6 +228,7 @@ class QueryOpsMixin:
                 _recall_permission_context(
                     Context(scope=target, extensions=dict(context.extensions)),
                     normalized_filters,
+                    self._perm.routing_fields(),
                 ),
                 entry="search",
             )
@@ -384,6 +387,7 @@ class QueryOpsMixin:
             memory_types,
             normalized_filters,
             normalized_extensions,
+            self._perm.routing_fields(),
         )
         auth: dict[str, str] = {}
         auth_context: PermissionContext | None = None
