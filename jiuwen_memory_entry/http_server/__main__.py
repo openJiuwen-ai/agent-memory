@@ -255,6 +255,8 @@ class HttpServer(Server):
         )
 
     def serve(self, host: str, port: int, *, allow_dev_non_loopback: bool = False) -> None:
+        # 同步宿主无事件循环：起 daemon 线程自持 loop 跑看门狗（F07 §12.10）。
+        self._runtime.start()
         httpd = None
         try:
             self._check_binding(host, allow_dev_non_loopback=allow_dev_non_loopback)

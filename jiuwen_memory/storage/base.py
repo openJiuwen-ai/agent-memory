@@ -53,6 +53,8 @@ class StoreType(str, Enum):
     FUSION = "fusion"
     FS = "fs"
     ENTITY = "entity"
+    MARKDOWN = "markdown"
+    DOCUMENT_SHADOW = "document_shadow"
 
 
 class BaseStore(ABC):
