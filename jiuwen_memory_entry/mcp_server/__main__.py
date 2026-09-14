@@ -27,6 +27,8 @@ import uuid
 from importlib import import_module
 from typing import Any
 
+from jiuwen_memory_entry.core.import_support import import_required, import_required_attr
+
 # 本文件不用 ``from __future__ import annotations``：FastMCP 依赖运行时注解对象识别
 # Context 参数并把它从工具 Schema 中排除，字符串化注解会破坏该机制。
 
@@ -38,33 +40,37 @@ for _p in (os.path.join(_BOOT, "core"), _REPO):
     if _p not in sys.path:
         sys.path.append(_p)
 
-load_layer = import_module("config_loader").load_layer
-_profiles_module = import_module("profiles")
+logger = logging.getLogger("agent-memory.mcp")
+
+
+load_layer = import_required_attr("config_loader", "load_layer")
+_profiles_module = import_required("profiles")
 OFFLINE = _profiles_module.OFFLINE
 load_config = _profiles_module.load_config
-Server = import_module("server").Server
+Server = import_required_attr("server", "Server")
 
-_api = import_module("jiuwen_memory.api")
+_api = import_required("jiuwen_memory.api")
 Surface = _api.Surface
 AgentMemoryError = _api.AgentMemoryError
 ValidationError = _api.ValidationError
 build_dev_authenticator = _api.build_dev_authenticator
-invoke_api = import_module("jiuwen_memory_entry.core.api_contract").invoke_api
-authenticated = import_module("jiuwen_memory_entry.core.auth_middleware").authenticated
-credentials_for_transport = import_module(
-    "jiuwen_memory_entry.mcp_server.transport_security"
-).credentials_for_transport
+invoke_api = import_required_attr("jiuwen_memory_entry.core.api_contract", "invoke_api")
+authenticated = import_required_attr(
+    "jiuwen_memory_entry.core.auth_middleware", "authenticated"
+)
+credentials_for_transport = import_required_attr(
+    "jiuwen_memory_entry.mcp_server.transport_security", "credentials_for_transport"
+)
 
 try:
     _fastmcp = import_module("mcp.server.fastmcp")
     FastMCP = _fastmcp.FastMCP
     Context = _fastmcp.Context
 except ImportError as exc:  # pragma: no cover
+    logger.warning("required import failed: %s: %s", "mcp.server.fastmcp", exc)
     raise RuntimeError(
         'MCP surface 需要 mcp SDK：pip install ".[mcp]"（或 pip install mcp）'
     ) from exc
-
-logger = logging.getLogger("agent-memory.mcp")
 
 _AUTH_MODE_ENV = "JIUWEN_MEMORY_MCP_AUTH_MODE"
 _ALLOW_DEV_NON_LOOPBACK_ENV = "JIUWEN_MEMORY_MCP_ALLOW_DEV_NON_LOOPBACK"

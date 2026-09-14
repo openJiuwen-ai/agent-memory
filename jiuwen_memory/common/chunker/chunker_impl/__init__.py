@@ -4,11 +4,10 @@
 import 各实现模块即触发其 ``@ChunkerProducer.register(...)`` 自注册；本包只对外暴露工厂 ChunkerProducer。
 """
 
-from importlib import import_module
-
+from jiuwen_memory.common._import_support import import_optional
 from jiuwen_memory.common.chunker.base import ChunkerProducer
 
-import_module(".fixed_window_chunker", __name__)
-import_module(".recursive_chunker", __name__)
+import_optional(".fixed_window_chunker", __name__)
+import_optional(".recursive_chunker", __name__)
 
 __all__ = ["ChunkerProducer"]

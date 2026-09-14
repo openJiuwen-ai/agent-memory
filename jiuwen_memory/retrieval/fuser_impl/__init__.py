@@ -5,12 +5,11 @@ import 各实现模块即触发其 ``@FuserProducer.register(...)`` 自注册；
 FuserProducer。
 """
 
-from importlib import import_module
-
+from jiuwen_memory.common._import_support import import_optional
 from jiuwen_memory.retrieval.fuser import FuserProducer
 
-import_module(".rrf_fuser", __name__)
-import_module(".weighted_rrf_fuser", __name__)
-import_module(".score_max_fuser", __name__)
+import_optional(".rrf_fuser", __name__)
+import_optional(".weighted_rrf_fuser", __name__)
+import_optional(".score_max_fuser", __name__)
 
 __all__ = ["FuserProducer"]

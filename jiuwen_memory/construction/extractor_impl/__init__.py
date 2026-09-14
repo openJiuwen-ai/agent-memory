@@ -5,13 +5,12 @@ import 各实现模块即触发其 ``@ExtractorProducer.register(...)`` 自注�
 本包只对外暴露工厂 ExtractorProducer。
 """
 
-from importlib import import_module
-
+from jiuwen_memory.common._import_support import import_optional
 from jiuwen_memory.construction.extractor import ExtractorProducer
 
-import_module(".keyword_extractor", __name__)
-import_module(".llm_extractor", __name__)
-import_module(".dynamic_llm_extractor", __name__)
-import_module(".video_memory_extractor", __name__)
+import_optional(".keyword_extractor", __name__)
+import_optional(".llm_extractor", __name__)
+import_optional(".dynamic_llm_extractor", __name__)
+import_optional(".video_memory_extractor", __name__)
 
 __all__ = ["ExtractorProducer"]

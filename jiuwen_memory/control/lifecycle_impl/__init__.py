@@ -4,10 +4,9 @@
 import 各实现模块即触发其 ``@LifecycleProducer.register(...)`` 自注册；本包只对外暴露工厂 LifecycleProducer。
 """
 
-from importlib import import_module
-
+from jiuwen_memory.common._import_support import import_optional
 from jiuwen_memory.control.lifecycle import LifecycleProducer
 
-import_module(".kv_lifecycle_manager", __name__)
+import_optional(".kv_lifecycle_manager", __name__)
 
 __all__ = ["LifecycleProducer"]

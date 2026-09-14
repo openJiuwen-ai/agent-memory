@@ -13,7 +13,7 @@ from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import Scope
 
 from .base import BaseStore
-from .types import ScoredID, ScoredHit, VectorQuery, VectorRecord
+from .types import ScoredHit, ScoredID, VectorQuery, VectorRecord
 
 
 class VectorProducer(Factory):

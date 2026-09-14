@@ -5,11 +5,10 @@ import 各实现模块即触发其 ``@AuditProducer.register(...)`` 自注册；
 本包只对外暴露工厂 AuditProducer。
 """
 
-from importlib import import_module
-
+from jiuwen_memory.common._import_support import import_optional
 from jiuwen_memory.common.audit.base import AuditProducer
 
-import_module(".in_memory_audit_logger", __name__)
-import_module(".sqlite_audit_logger", __name__)
+import_optional(".in_memory_audit_logger", __name__)
+import_optional(".sqlite_audit_logger", __name__)
 
 __all__ = ["AuditProducer"]

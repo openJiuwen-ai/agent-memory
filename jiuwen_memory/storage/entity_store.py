@@ -24,13 +24,13 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
+from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def.entity import (
     EntityBatchResult,
     EntityOperation,
     EntityRecord,
     EntityStoreFilters,
 )
-from jiuwen_memory.common.factory.factory import Factory
 
 from .base import BaseStore
 

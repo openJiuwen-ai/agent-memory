@@ -5,11 +5,10 @@ import 各实现模块即触发其 ``@LayerAnnotatorProducer.register(...)`` 自
 本包只对外暴露工厂 LayerAnnotatorProducer。
 """
 
-from importlib import import_module
-
+from jiuwen_memory.common._import_support import import_optional
 from jiuwen_memory.construction.layer_annotator import LayerAnnotatorProducer
 
-import_module(".keyword_layer_annotator", __name__)
-import_module(".llm_layer_annotator", __name__)
+import_optional(".keyword_layer_annotator", __name__)
+import_optional(".llm_layer_annotator", __name__)
 
 __all__ = ["LayerAnnotatorProducer"]

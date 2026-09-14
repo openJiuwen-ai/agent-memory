@@ -8,6 +8,8 @@
 - :mod:`handler`：verb→``MemoryAPI`` 的唯一 dispatch 表 + JSON 信封整形；
 - :mod:`profiles`：``OFFLINE`` 基线 + ``load_config``（profile / 配置层叠加）；
 - :mod:`config_loader`：``load_layer``——读 YAML/JSON 并展开 ``${VAR}`` / ``${VAR:-默认}``。
+- :mod:`import_support`：``import_required`` / ``import_required_attr``——启动必需导入的统一
+  容错样板（记录缺失目标后原样抛出），各 surface 共用一份，不各自复制。
 
 这些都不含业务逻辑（业务在 ``jiuwen_memory/``），也不绑定任何具体协议；各 surface 通过本地启动脚本
 的 ``PYTHONPATH`` 或 Docker editable 安装保证导入优先级，并以 flat-import 复用

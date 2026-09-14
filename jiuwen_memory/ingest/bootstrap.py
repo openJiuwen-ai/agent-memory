@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from importlib import import_module
+from jiuwen_memory.common._import_support import import_optional
 
 _REGISTERED = False
 
@@ -17,5 +17,5 @@ def register_ingestors() -> None:
     global _REGISTERED
     if _REGISTERED:
         return
-    import_module("jiuwen_memory.ingest.ingestor_impl")
+    import_optional("jiuwen_memory.ingest.ingestor_impl")
     _REGISTERED = True

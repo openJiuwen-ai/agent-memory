@@ -22,6 +22,7 @@ from jiuwen_memory.common._support import (  # noqa: F401
     scope_segments,
     wrap_backend,
 )
+
 # pylint: enable=unused-import
 from jiuwen_memory.common.type_def import Scope
 

@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
-from ..factory.factory import Factory
 from ..base import Plugin
+from ..factory.factory import Factory
 
 
 class TokenizerProducer(Factory):

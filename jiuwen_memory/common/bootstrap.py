@@ -8,7 +8,7 @@ security / lock 为 ``common.<name>.<name>``），消费方只依赖接口层；
 
 from __future__ import annotations
 
-from importlib import import_module
+from jiuwen_memory.common._import_support import import_optional
 
 _REGISTERED = False
 
@@ -18,15 +18,15 @@ def register_plugins() -> None:
     global _REGISTERED
     if _REGISTERED:
         return
-    import_module("jiuwen_memory.common.tokenizer.tokenizer_impl")
-    import_module("jiuwen_memory.common.normalizer.normalizer_impl")
-    import_module("jiuwen_memory.common.embedder.embedder_impl")
-    import_module("jiuwen_memory.common.chunker.chunker_impl")
-    import_module("jiuwen_memory.common.feature_extractor.feature_extractor_impl")
-    import_module("jiuwen_memory.common.reranker.reranker_impl")
-    import_module("jiuwen_memory.common.llm.llm_impl")
-    import_module("jiuwen_memory.common.audit.audit_impl")
-    import_module("jiuwen_memory.common.security.authentication_impl")
-    import_module("jiuwen_memory.common.security.security_impl")
-    import_module("jiuwen_memory.common.lock.lock_impl")
+    import_optional("jiuwen_memory.common.tokenizer.tokenizer_impl")
+    import_optional("jiuwen_memory.common.normalizer.normalizer_impl")
+    import_optional("jiuwen_memory.common.embedder.embedder_impl")
+    import_optional("jiuwen_memory.common.chunker.chunker_impl")
+    import_optional("jiuwen_memory.common.feature_extractor.feature_extractor_impl")
+    import_optional("jiuwen_memory.common.reranker.reranker_impl")
+    import_optional("jiuwen_memory.common.llm.llm_impl")
+    import_optional("jiuwen_memory.common.audit.audit_impl")
+    import_optional("jiuwen_memory.common.security.authentication_impl")
+    import_optional("jiuwen_memory.common.security.security_impl")
+    import_optional("jiuwen_memory.common.lock.lock_impl")
     _REGISTERED = True

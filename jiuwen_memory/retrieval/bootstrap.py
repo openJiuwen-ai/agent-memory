@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from importlib import import_module
+from jiuwen_memory.common._import_support import import_optional
 
 _REGISTERED = False
 
@@ -19,8 +19,8 @@ def register_operators() -> None:
     global _REGISTERED
     if _REGISTERED:
         return
-    import_module("jiuwen_memory.retrieval.discloser_impl")
-    import_module("jiuwen_memory.retrieval.fuser_impl")
-    import_module("jiuwen_memory.retrieval.query_parser_impl")
-    import_module("jiuwen_memory.retrieval.retriever_impl")
+    import_optional("jiuwen_memory.retrieval.discloser_impl")
+    import_optional("jiuwen_memory.retrieval.fuser_impl")
+    import_optional("jiuwen_memory.retrieval.query_parser_impl")
+    import_optional("jiuwen_memory.retrieval.retriever_impl")
     _REGISTERED = True
