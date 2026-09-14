@@ -159,17 +159,17 @@ class HybridIndexBuilder(IndexBuilder):
 def _build(config):
 
     manager = StoreManagerProducer.resolve(config)
-    # entity 链路两道门：entity_enabled 是消费侧意图开关（跨切面，config.get 回退
-    # globals）；has_entity(name) 是能力事实（manager 是否装了该端口）。二者 AND。
-    # 端口未装配时降级关闭（fulltext+vector 继续工作）并留日志——替代 F07 之前
-    # 「两侧各自 EntityStoreProducer.dep，缺一侧静默 disabled」的无痕降级。
+
     entity_linker = None
     if config.get("entity_enabled", False):
         entity_name = resolve_name(config, "entity_store")
         if manager.has_entity(entity_name):
+            entity_embedder = EmbedderProducer.dep(config, default="hashing")
             entity_linker = EntityLinkService(
                 entity_store=manager.entity(entity_name),
+                embedder=entity_embedder,
                 admission_policy=EntityIndexAdmissionPolicy(),
+                semantic_match_threshold=config.get("entity_semantic_match_threshold", 0.95),
             )
         else:
             logger.warning(
@@ -177,7 +177,6 @@ def _build(config):
                 "entity 链路降级关闭（fulltext+vector 继续工作）",
                 entity_name,
             )
-
     return HybridIndexBuilder(
         manager,
         ChunkerProducer.dep(config, default="fixed_window"),

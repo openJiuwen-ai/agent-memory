@@ -7,6 +7,8 @@ from collections import defaultdict
 from dataclasses import dataclass, replace
 from uuid import uuid4
 
+from jiuwen_memory.common.embedder.base import Embedder
+from jiuwen_memory.common.errors import UnsupportedCapabilityError
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
     LifecycleState,
@@ -33,7 +35,7 @@ from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 logger = get_logger(__name__)
 
 _DEFAULT_LIST_LIMIT = 10000
-
+_DEFAULT_SEMANTIC_MATCH_THRESHOLD = 0.95
 
 # ---------------------------------------------------------------------------
 # 准入策略（原 entity_linker/admission.py）
@@ -106,17 +108,6 @@ class EntityLinkService:
     3. **str 化**：``memory_id`` 全程 ``unit.id``（str），
        ``linked_memory_ids`` 存 str，对齐召回侧 ``ScoredUnit.unit_id``。
 
-    **2026-08-12 改造**：
-    - 归并退化为 hash 精确 only。原三级匹配（hash 精确 → 向量语义归并 →
-      INSERT/LINK）砍掉向量语义归并阶段——hash 精确命中 → LINK；未命中 → INSERT
-      当新实体。不再算 entity embedding、不依赖 Embedder。同实体不同表述
-      （"Python" vs "Python 语言"）hash 不同会被建成多条记录，召回质量依赖
-      LLM 抽 entity 的表述稳定性。
-    - **砍掉 spaCy 兜底抽取**：``link_memories`` 只消费 ``unit.entities`` 明文字段
-      构造 ``EntityMention``；``unit.entities`` 为空的 unit 直接跳过（不入实体
-      索引）。不再持有 ``EntityExtractor``，构造函数删除 ``extractor`` 参数。实体
-      抽取职责完全前移到 LLM 写入侧（写入前抽好填进 ``unit.entities``）。
-
     recall 侧的 boost 逻辑迁到 ``EntityRecaller``，本类只管写入侧维护。
     """
 
@@ -124,11 +115,15 @@ class EntityLinkService:
         self,
         *,
         entity_store: EntityStore,
+        embedder: Embedder | None = None,
         admission_policy: EntityIndexAdmissionPolicy | None = None,
+        semantic_match_threshold: float = _DEFAULT_SEMANTIC_MATCH_THRESHOLD,
         list_limit: int = _DEFAULT_LIST_LIMIT,
     ) -> None:
         self._entity_store = entity_store
+        self._embedder = embedder
         self._admission_policy = admission_policy or EntityIndexAdmissionPolicy()
+        self._semantic_match_threshold = semantic_match_threshold
         self._list_limit = list_limit
 
     # ------------------------------------------------------------------
@@ -148,7 +143,9 @@ class EntityLinkService:
                 skipped_count += 1
                 logger.debug(
                     "entity_link_skipped_by_admission unit_id=%s tier=%s reason=%s",
-                    unit.id, unit.tier.value, admission.reason,
+                    unit.id,
+                    unit.tier.value,
+                    admission.reason,
                 )
                 continue
             admitted.append((unit, admission.text))
@@ -272,6 +269,68 @@ class EntityLinkService:
     # _link_group：两级匹配（hash 精确 → INSERT/LINK）
     # ------------------------------------------------------------------
 
+    def _semantic_lookup(
+            self,
+            space_id: str,
+            entity_text: str,
+            filters: EntityStoreFilters,
+    ) -> tuple[list[float] | None, EntityRecord | None, bool]:
+        """向量语义归并阶段：返回 (embedding, 匹配记录 | None, 是否临时失败)。
+
+        - embedder 为 None 或文本空 → hash only 模式，返回 (None, None, False)。
+        - 算 embedding 失败 → (None, None, False)，由调用方走 INSERT。
+        - search 抛 UnsupportedCapabilityError → 稳定的后端能力缺失，降级走
+          INSERT，返回 (embedding, None, False)。
+        - search 抛其他异常 → 临时故障，返回 (embedding, None, True)，由调用方
+          计 failed 不中断（不降级 INSERT，避免语义同实体被建成多条记录导致
+          召回 boost 翻倍）。
+        - score ≥ threshold → (embedding, match, False)，调用方走 LINK。
+        - score < threshold → (embedding, None, False)，调用方走 INSERT。
+        """
+        if self._embedder is None or not entity_text:
+            return None, None, False
+
+        try:
+            embedding = self._embedder.embed([entity_text])[0]
+        except Exception:
+            logger.warning(
+                "entity_embedding_failed entity_text=%r space_id=%s",
+                entity_text,
+                space_id,
+                exc_info=True,
+            )
+            return None, None, False
+
+        if embedding is None:
+            return None, None, False
+
+        try:
+            matches = self._entity_store.search(
+                space_id,
+                embedding,
+                top_k=1,
+                filters=filters,
+            )
+            if matches and matches[0].score >= self._semantic_match_threshold:
+                return embedding, matches[0].record, False
+            return embedding, None, False
+        except UnsupportedCapabilityError:
+            logger.debug(
+                "entity_semantic_search_unsupported entity_text=%r space_id=%s "
+                "backend has no kNN, falling back to INSERT",
+                entity_text,
+                space_id,
+            )
+            return None, None, False
+        except Exception:
+            logger.warning(
+                "entity_semantic_search_failed entity_text=%r space_id=%s",
+                entity_text,
+                space_id,
+                exc_info=True,
+            )
+            return embedding, None, True
+
     def _link_group(
         self,
         space_id: str,
@@ -328,7 +387,22 @@ class EntityLinkService:
         failed_count = 0
         for key, (entity_type, entity_text, _normalized, memory_ids) in entities_by_key.items():
             try:
+                # 阶段1 命中：hash 精确匹配 → LINK
                 match = existing_by_hash.get(key)
+                if match is None:
+                    # 阶段2: 向量语义归并——hash 未命中时算 embedding，search
+                    # top_k=1，score ≥ threshold 当同实体 LINK。embedder 为 None
+                    # 时 _semantic_lookup 直接返回 (None, None, False) → 走 INSERT。
+                    embedding, semantic_match, search_failed = self._semantic_lookup(
+                        space_id,
+                        entity_text,
+                        filters,
+                    )
+                    if search_failed:
+                        failed_count += 1
+                        continue
+                    match = semantic_match
+
                 if match is not None:
                     # LINK：追加新 unit_id（去重已有）
                     ids_to_add = tuple(sorted(set(memory_ids) - set(match.linked_memory_ids), key=str))
@@ -352,6 +426,7 @@ class EntityLinkService:
                             entity_type=entity_type,
                             linked_memory_ids=tuple(sorted(memory_ids, key=str)),  # tuple[str]（unit.id）
                             filters=filters,
+                            embedding=embedding,
                         ),
                     ),
                     key,

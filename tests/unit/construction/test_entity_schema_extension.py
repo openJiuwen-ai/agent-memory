@@ -27,6 +27,7 @@ from jiuwen_memory.common.type_def import (
     Segment,
     Temporal,
 )
+from jiuwen_memory.common.type_def.entity import EntitySearchResult
 from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.defaults import default_config_dict
@@ -760,6 +761,17 @@ class _MemoryEntityStore(EntityStore):
                 )
                 successful.append(existing.id)
         return EntityBatchResult(successful_ids=successful, failed_ids=[])
+
+    def search(
+        self,
+        _space_id: str,
+        _query_vector: list[float],
+        *,
+        top_k: int,
+        filters: EntityStoreFilters,
+    ) -> list[EntitySearchResult]:
+        del top_k, filters
+        return []
 
 
 def test_source_entities_feed_the_official_entity_reverse_index() -> None:

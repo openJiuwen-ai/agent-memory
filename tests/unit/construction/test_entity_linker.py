@@ -28,6 +28,7 @@ from jiuwen_memory.common.type_def.entity import (
     EntityOpType,
     EntityOperation,
     EntityRecord,
+    EntitySearchResult,
     EntityStoreFilters,
     hash_entity_text,
 )
@@ -142,6 +143,18 @@ class InMemoryEntityStore(EntityStore):
                 oid = op.record_id if op.record_id is not None else (op.record.id if op.record else "?")
                 failed.append(str(oid))
         return EntityBatchResult(successful_ids=successful, failed_ids=failed)
+
+    def search(
+        self,
+        space_id: str,
+        query_vector: list[float],
+        *,
+        top_k: int,
+        filters: EntityStoreFilters,
+    ) -> list[EntitySearchResult]:
+        # hash-only 内存实现：无 kNN，返回空（语义归并阶段在 embedder 为 None
+        # 时不会走到这里，见 EntityLinkService._semantic_lookup 的短路）。
+        return []
 
     @staticmethod
     def _matches_filters(rec: EntityRecord, filters: EntityStoreFilters) -> bool:

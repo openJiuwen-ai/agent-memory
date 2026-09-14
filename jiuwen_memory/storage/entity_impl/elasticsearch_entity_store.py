@@ -17,12 +17,14 @@ from __future__ import annotations
 from typing import Any
 
 from jiuwen_memory.common._support import read_ssl_config, require_tls_scheme, wrap_backend
+from jiuwen_memory.common.errors import UnsupportedCapabilityError
 from jiuwen_memory.common.errors import BackendError
 from jiuwen_memory.common.type_def.entity import (
     EntityBatchResult,
     EntityOperation,
     EntityOpType,
     EntityRecord,
+    EntitySearchResult,
     EntityStoreFilters,
 )
 from jiuwen_memory.common.factory.factory import Factory
@@ -157,6 +159,8 @@ class ElasticsearchEntityStore(EntityStore):
             "entity_type": record.entity_type,
             "linked_memory_ids": list(record.linked_memory_ids),
             "actor_id": record.filters.actor_id,
+            "assistant_id": record.filters.assistant_id,
+            "session_id": record.filters.session_id,
         }
         return doc
 
@@ -175,6 +179,8 @@ class ElasticsearchEntityStore(EntityStore):
             linked_memory_ids=tuple(source.get("linked_memory_ids", [])),
             filters=EntityStoreFilters(
                 actor_id=source.get("actor_id"),
+                assistant_id=source.get("assistant_id"),
+                session_id=source.get("session_id"),
             ),
         )
 
@@ -353,6 +359,15 @@ class ElasticsearchEntityStore(EntityStore):
 
         return self._parse_bulk_response(response)
 
+    def search(self, space_id: str, query_vector: list[float], *, top_k: int,
+               filters: EntityStoreFilters,) -> list[EntitySearchResult]:
+        raise UnsupportedCapabilityError(
+            capability="vector_search",
+            value="elasticsearch",
+            component="ElasticsearchEntityStore",
+            message="ElasticsearchEntityStore is hash-only",
+        )
+
     # ------------------------------------------------------------------
     # BaseStore 契约
     # ------------------------------------------------------------------
@@ -405,6 +420,8 @@ class ElasticsearchEntityStore(EntityStore):
                 "entity_type": {"type": "keyword"},
                 "linked_memory_ids": {"type": "keyword"},
                 "actor_id": {"type": "keyword"},
+                "assistant_id": {"type": "keyword"},
+                "session_id": {"type": "keyword"},
             },
         }
 
