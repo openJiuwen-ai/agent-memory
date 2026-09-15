@@ -710,7 +710,10 @@ def _list(srv, request: DispatchRequest) -> Body:
 def _get(srv, request: DispatchRequest) -> Body:
     payload = request.payload
     scope = _require_target(request)
-    unit = srv.api.get(_require(payload, "item_id"), scope, security=_request_security(request))
+    as_of = _parse_occurred_at(payload.get("as_of"), name="get as_of")
+    unit = srv.api.get(
+        _require(payload, "item_id"), scope, security=_request_security(request), as_of=as_of
+    )
     return {"ok": True, "op": "get", "item": _unit_view(unit)}
 
 
