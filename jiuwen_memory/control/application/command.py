@@ -5,8 +5,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from jiuwen_memory.common.security.types import Action
 from jiuwen_memory.common.type_def import MemoryUnit, MetadataValueType, Modality, Scope
 from jiuwen_memory.construction import EvolveMode
+from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.engine import MemoryEngine
 from jiuwen_memory.control.types import (
     BatchWriteItem,
@@ -15,6 +17,7 @@ from jiuwen_memory.control.types import (
     Channel,
     DeleteSelector,
     MemoryPatch,
+    PermissionContext,
 )
 
 
@@ -71,9 +74,7 @@ class MemoryCommandService:
         Engine items may carry author marks; ``origins`` keep the caller-visible
         item so kernel marks are not echoed as if the caller sent them.
         """
-        result = await self._engine.batch_write(
-            engine_items, continue_on_error=continue_on_error
-        )
+        result = await self._engine.batch_write(engine_items, continue_on_error=continue_on_error)
         aligned: list[BatchWriteOutcome] = []
         for outcome, (index, item) in zip(result.outcomes, origins):
             outcome.index = index
@@ -82,13 +83,61 @@ class MemoryCommandService:
         return aligned
 
     @staticmethod
-    def collect_batch_result(
-        outcomes: dict[int, BatchWriteOutcome], size: int
-    ) -> BatchWriteResult:
+    def collect_batch_result(outcomes: dict[int, BatchWriteOutcome], size: int) -> BatchWriteResult:
         return BatchWriteResult(outcomes=[outcomes[index] for index in range(size)])
 
     async def update(self, unit_id: str, scope: Scope, patch: MemoryPatch) -> MemoryUnit:
         return await self._engine.update(unit_id, scope, patch)
+
+    def requires_update_preparation(self, unit: MemoryUnit, patch: MemoryPatch) -> bool:
+        return self._engine.requires_update_preparation(unit, patch)
+
+    async def prepare_update(
+        self, unit_id: str, scope: Scope, patch: MemoryPatch
+    ) -> SourceUpdatePlan | None:
+        return await self._engine.prepare_update(unit_id, scope, patch)
+
+    async def commit_update(self, plan: SourceUpdatePlan) -> MemoryUnit:
+        return await self._engine.commit_update(plan)
+
+    @staticmethod
+    def update_permission_contexts(
+        plan: SourceUpdatePlan,
+    ) -> list[tuple[Action, PermissionContext]]:
+        """Expose both original and prospective routing metadata to the API PEP."""
+        result = []
+        for change in plan.changes:
+            action = (
+                Action.DELETE
+                if change.after is None
+                else Action.WRITE
+                if change.before is None
+                else Action.UPDATE
+            )
+            if change.after is not None and (
+                change.after.id == plan.source_after.id or change.after.supersedes
+            ):
+                action = Action.UPDATE
+            for unit in (change.before, change.after):
+                if unit is None:
+                    continue
+                result.append(
+                    (
+                        action,
+                        PermissionContext(
+                            resource_type="memory_unit",
+                            scope=unit.scope,
+                            unit_id=unit.id,
+                            memory_type=str(unit.system_metadata.get("memory_type", "")).strip(),
+                            pipeline=str(unit.system_metadata.get("pipeline", "")).strip(),
+                            tags=tuple(unit.tags),
+                            metadata={
+                                key: str(value) for key, value in unit.system_metadata.items()
+                            },
+                        ),
+                    )
+                )
+        return result
 
     async def delete(self, selector: DeleteSelector) -> list[str]:
         return await self._engine.delete(selector)

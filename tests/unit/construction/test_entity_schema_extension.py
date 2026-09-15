@@ -532,6 +532,10 @@ class _Storage:
     def kv(self, name: str = "default") -> "_Storage":
         return self
 
+    def scan(self, scope, prefix):
+        return [(f"/memory/{unit.id}", dumps(unit)) for unit in self.units.values()
+                if unit.scope == scope and f"/memory/{unit.id}".startswith(prefix)]
+
     def get(self, scope, key):
         unit_id = key.rsplit("/", 1)[-1]
         if unit_id not in self.units:
