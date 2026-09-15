@@ -9,7 +9,9 @@ fallible LLM extraction and every accepted Schema property is added as one norma
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable
 
+from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import MemoryUnit
@@ -22,10 +24,16 @@ from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
     OrchestratingEvolver,
     _resolve_message_store,
 )
+from jiuwen_memory.construction.evolver_impl.schema_update import SchemaUpdateCoordinator
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
 from jiuwen_memory.construction.prompt_strategy import copy_consolidation_prompts
+from jiuwen_memory.construction.source_update import (
+    SourceExtraction,
+    SourceUpdatePlan,
+    SourceUpdateSupport,
+)
 from jiuwen_memory.storage.kv import KVStore, load_units
 from jiuwen_memory.storage.store_manager import (
     StoreManager,
@@ -37,7 +45,7 @@ from jiuwen_memory.storage.types import IndexWriteMode
 logger = get_logger(__name__)
 
 
-class SchemaOrchestratingEvolver(OrchestratingEvolver):
+class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
     """Persist source evidence first, then add accepted Schema property units."""
 
     def __init__(
@@ -69,8 +77,38 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver):
             dedup_medium_similarity=dedup_medium_similarity,
             dedup_high_similarity=dedup_high_similarity,
         )
-        # Official IndexBuilder owns all writes. KV port is retained for source reads only.
+        # IndexBuilder owns memory writes; KV also holds private update recovery records.
         self._source_kv = storage.kv(kv_name)
+        self._updates = SchemaUpdateCoordinator(self._source_kv, self._extract_source_update)
+
+    def _extract_source_update(self, source: MemoryUnit) -> SourceExtraction:
+        extract = getattr(self._extractor, "extract_for_update", None)
+        if extract is None:
+            raise ValidationError("Configured Schema extractor cannot produce complete updates")
+        return extract(source)
+
+    def source_schema_identity(self) -> tuple[str, str]:
+        identity = getattr(self._extractor, "source_schema_identity", None)
+        if identity is None:
+            raise ValidationError("Configured Schema extractor cannot identify its schema")
+        return identity()
+
+    def prepare_source_update(
+        self, old: MemoryUnit, new: MemoryUnit, *, mode: str, request_key: str
+    ) -> SourceUpdatePlan | None:
+        if old.content == new.content:
+            return self._updates.prepare(old, new, mode=mode, request_key=request_key)
+        name, version = self.source_schema_identity()
+        if (old.system_metadata.get("schema_name", name) != name
+                or old.system_metadata.get("schema_version", version) != version):
+            raise ValidationError("The source's original Schema configuration has changed")
+        new.system_metadata.update(schema_name=name, schema_version=version)
+        return self._updates.prepare(old, new, mode=mode, request_key=request_key)
+
+    def commit_source_update(
+        self, plan: SourceUpdatePlan, *, index_for: Callable[[MemoryUnit], IndexBuilder]
+    ) -> MemoryUnit:
+        return self._updates.commit(plan, index_for=index_for)
 
     def _persist_source_evidence(self, units: list[MemoryUnit]) -> list[str]:
         created: list[str] = []
@@ -85,6 +123,9 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver):
                     "schema_source_evidence": True,
                 }
             )
+            if hasattr(self._extractor, "source_schema_identity"):
+                name, version = self.source_schema_identity()
+                source.system_metadata.update(schema_name=name, schema_version=version)
             source.tags = merge_unit_tags(source.tags, ["source_evidence"])
             created.extend(self._persist([source]))
         return created
@@ -144,6 +185,10 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver):
         if not units:
             return EvolveResult()
 
+        units = self._updates.filter_inputs(units)
+        if not units:
+            return EvolveResult()
+
         # Source persistence is the durability boundary and intentionally fails loudly.
         source_ids = self._persist_source_evidence(units)
         recent = self._persist_and_maintain_messages(units)
@@ -161,6 +206,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver):
             return EvolveResult(created_ids=source_ids)
 
         self.last_schema_error = ""
+        extracted = self._updates.filter_replayed(extracted, units)
         if not extracted:
             return EvolveResult(created_ids=source_ids)
 
