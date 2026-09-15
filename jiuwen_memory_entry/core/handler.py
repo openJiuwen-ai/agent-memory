@@ -17,9 +17,9 @@ from __future__ import annotations
 import os
 import sys
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 
 from jiuwen_memory_entry.core.dispatch_request import DispatchRequest
 

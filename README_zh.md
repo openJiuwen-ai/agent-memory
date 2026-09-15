@@ -99,6 +99,7 @@ pip install -e .                 # 最小内核 + SDK
 pip install -e ".[dev]"          # 追加开发/测试依赖
 pip install -e ".[deploy]"       # 追加真实存储后端（Milvus / ES / Redis / PostgreSQL）
 pip install -e ".[embed]"        # 追加高级 embedding / 重排（torch、BGE 等）
+pip install -e ".[rerank]"       # 追加 httpx，API reranker 所需
 ```
 
 ### 快速集成（SDK 进程内嵌入）

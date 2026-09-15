@@ -17,7 +17,8 @@ from ..factory.factory import Factory
 class EmbedderProducer(Factory):
     """Embedder 的注册式工厂（与契约同处接口层，消费方只依赖接口即可取实例）。
 
-    ``name`` 即实现名。各实现在 ``embedder_impl`` 下以 ``@EmbedderProducer.register("<名>")`` 自注册——
+    ``name`` 即实现名。各实现在 ``embedder_impl`` 下以 ``@EmbedderProducer.register("<名>")``
+    自注册——
     注册发生在 import 实现模块时，由 :func:`common.bootstrap.register_plugins` 统一触发。
     """
 

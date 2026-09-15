@@ -5,8 +5,8 @@
 """
 
 from __future__ import annotations
-# pylint: disable=protected-access  # 测试代码需要访问受保护成员以断言装配链行为
 
+# pylint: disable=protected-access  # 测试代码需要访问受保护成员以断言装配链行为
 import asyncio
 import time
 
@@ -17,8 +17,6 @@ from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.control.jobs import Job
 from jiuwen_memory.control.scheduler_impl.async_timer_scheduler import (
     AsyncTimerScheduler,
-    TimerEntry,
-    TimerWheel,
 )
 from jiuwen_memory.control.types import Channel, JobInfo, JobStatus
 
@@ -294,7 +292,8 @@ def test_submit_timer_changed_interval_recomputes_next_run_at_from_last_fired() 
 def test_submit_timer_changed_interval_recomputes_from_submit_time_when_never_fired() -> None:
     """同 kind + interval 变化 + 从未触发 → next_run_at = submit_time + 新 interval。
 
-    首次 submit 后从未触发时 next_run_at = submit_time + 旧 interval，回退得 submit_time 再加新 interval。
+    首次 submit 后从未触发时 next_run_at = submit_time + 旧 interval，回退得 submit_time 再加新
+    interval。
     """
 
     scheduler = AsyncTimerScheduler(tick_interval=1)

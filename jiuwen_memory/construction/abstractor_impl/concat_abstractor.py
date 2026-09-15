@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import List
 
 from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.type_def import (
@@ -36,7 +35,7 @@ class ConcatAbstractor(Abstractor):
     def health(self) -> None:
         return None
 
-    def abstract(self, units: List[MemoryUnit]) -> List[MemoryUnit]:
+    def abstract(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         sources = [u for u in units if u.lifecycle.value == "active"]
         logger.info(
             "ConcatAbstractor: received %d units, %d active sources", len(units), len(sources)

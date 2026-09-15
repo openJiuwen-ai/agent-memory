@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Optional
+from typing import Any
 
 import pytest
 
 from jiuwen_memory.common.embedder.embedder_impl.hashing_embedder import HashingEmbedder
-from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (
+
+# 模块路径本身已 101 列，无法折行（Python 不允许拆点号路径）。
+from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (  # noqa: E501
     KeywordFeatureExtractor,
 )
 from jiuwen_memory.common.reranker.reranker_impl.overlap_reranker import OverlapReranker
@@ -63,9 +66,7 @@ def make_storage(
     manager = CompositeStoreManager(
         kv=kv, vector=vector, fulltext=fulltext, graph=graph, security=security
     )
-    manager.bind_domain_store(
-        CompositeDomainStore(manager=manager, preferred_pipeline=pipeline)
-    )
+    manager.bind_domain_store(CompositeDomainStore(manager=manager, preferred_pipeline=pipeline))
     return manager
 
 
@@ -134,12 +135,12 @@ def make_unit(
     *,
     scope: Scope = DEFAULT_SCOPE,
     lifecycle: LifecycleState = LifecycleState.ACTIVE,
-    t_event: Optional[datetime] = None,
-    t_valid: Optional[datetime] = None,
-    t_invalid: Optional[datetime] = None,
-    t_message: Optional[datetime] = None,
+    t_event: datetime | None = None,
+    t_valid: datetime | None = None,
+    t_invalid: datetime | None = None,
+    t_message: datetime | None = None,
     supersedes: str = "",
-    tags: Optional[list[str]] = None,
+    tags: list[str] | None = None,
 ) -> MemoryUnit:
     return MemoryUnit(
         id=uid,

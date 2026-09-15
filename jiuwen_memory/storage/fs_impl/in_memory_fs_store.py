@@ -11,7 +11,7 @@ from __future__ import annotations
 import io
 import time
 from collections import defaultdict
-from typing import BinaryIO, Dict, Tuple
+from typing import BinaryIO
 
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.type_def import Scope
@@ -19,7 +19,7 @@ from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.fs import FsProducer, FSStore
 from jiuwen_memory.storage.types import FileStat
 
-_ScopeKey = Tuple[str, str, str, str, str]
+_ScopeKey = tuple[str, str, str, str, str]
 
 
 def _skey(scope: Scope) -> _ScopeKey:
@@ -44,7 +44,7 @@ class InMemoryFSStore(FSStore):
     """纯内存二进制存储：ref 寻址，按 scope 隔离。"""
 
     def __init__(self) -> None:
-        self._data: Dict[_ScopeKey, Dict[str, _Blob]] = defaultdict(dict)
+        self._data: dict[_ScopeKey, dict[str, _Blob]] = defaultdict(dict)
 
     def store_type(self) -> StoreType:
         return StoreType.FS

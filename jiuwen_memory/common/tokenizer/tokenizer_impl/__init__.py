@@ -1,7 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """tokenizer_impl 实现集：工厂 TokenizerProducer + 各实现。
 
-import 各实现模块即触发其 ``@TokenizerProducer.register(...)`` 自注册；本包只对外暴露工厂 TokenizerProducer。
+import 各实现模块即触发其 ``@TokenizerProducer.register(...)`` 自注册；本包只对外暴露工厂
+TokenizerProducer。
 """
 
 from jiuwen_memory.common._import_support import import_optional

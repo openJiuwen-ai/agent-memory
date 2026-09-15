@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import List
 
 from jiuwen_memory.common.audit.base import AuditLogger, AuditProducer
 from jiuwen_memory.common.type_def import AuditEvent
@@ -17,7 +16,7 @@ class InMemoryAuditLogger(AuditLogger):
     """内存审计后端：记录全部事件，供治理 audit 按条件过滤查询。"""
 
     def __init__(self) -> None:
-        self.events: List[AuditEvent] = []
+        self.events: list[AuditEvent] = []
 
     def record(self, event: AuditEvent) -> None:
         self.events.append(event)

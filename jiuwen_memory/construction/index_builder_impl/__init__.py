@@ -1,7 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """index_builder_impl 实现集：工厂 IndexBuilderProducer + 各实现。
 
-import 各实现模块即触发其 ``@IndexBuilderProducer.register(...)`` 自注册；本包只对外暴露工厂 IndexBuilderProducer。
+import 各实现模块即触发其 ``@IndexBuilderProducer.register(...)`` 自注册；本包只对外暴露工厂
+IndexBuilderProducer。
 """
 
 from jiuwen_memory.common._import_support import import_optional

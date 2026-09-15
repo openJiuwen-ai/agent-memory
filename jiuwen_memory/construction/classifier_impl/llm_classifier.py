@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import re
-from typing import List
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger, metadata_for_log, redact_for_log
@@ -132,7 +131,7 @@ class LLMClassifier(Classifier):
 
             raise HealthCheckError(str(exc)) from exc
 
-    def classify(self, units: List[MemoryUnit]) -> List[MemoryUnit]:
+    def classify(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         """对一批 unit 调 LLM 产出 tier+tags，写回 unit.tier/unit.tags。"""
         if not units:
             return units
@@ -160,7 +159,7 @@ class LLMClassifier(Classifier):
                 )
         return units
 
-    def _classify_batch(self, units: List[MemoryUnit]) -> None:
+    def _classify_batch(self, units: list[MemoryUnit]) -> None:
         """单批 LLM 分类：拼 prompt → 调 LLM → 解析 → 回写 tier/tags。"""
         parts = [_SOURCE_PREFIX.format(unit_id=u.id, unit_content=u.content) for u in units]
         user_text = "\n".join(parts)

@@ -16,7 +16,7 @@ COPY jiuwen_memory ./jiuwen_memory
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip \
-    && pip install -e ".[deploy]" "httpx>=0.27,<1"
+    && pip install -e ".[deploy]"
 
 COPY jiuwen_memory_entry ./jiuwen_memory_entry
 COPY scripts ./scripts

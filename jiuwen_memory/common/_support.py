@@ -16,8 +16,9 @@ docs/features/common/F05-model-service-ssl.md。
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Iterator, NamedTuple
+from typing import Any, NamedTuple
 from urllib.parse import parse_qs, urlparse
 
 from jiuwen_memory.common.errors import AgentMemoryError, BackendError, ValidationError

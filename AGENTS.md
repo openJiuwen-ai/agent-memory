@@ -40,7 +40,7 @@ docs/AGENTS.md                   ← 文档归档规约：文档目录结构、�
 ## 环境与运行
 
 - **Python**：`>=3.11`。包为顶层布局（`jiuwen_memory` / `jiuwen_memory_entry` / `jiuwen_memory_adapter`），**无 `src/` 布局**——仓库根存在空的 `src/` 目录但未纳入 `[tool.setuptools.packages.find]`，不要往里放代码或从中导入。
-- **安装**：`pip install -e ".[dev]"` 装开发依赖。按需追加 extras：`deploy`（Milvus/ES/Redis/PG 真后端）、`mcp`（MCP server）、`nlp`（spacy/hanlp）、`embed`（FlagEmbedding/torch）。`pyproject.toml` 已配 uv 阿里云镜像。
+- **安装**：`pip install -e ".[dev]"` 装开发依赖。按需追加 extras：`deploy`（Milvus/ES/Redis/PG 真后端，含 `httpx`）、`mcp`（MCP server）、`nlp`（spacy/hanlp）、`embed`（FlagEmbedding/torch）、`rerank`（`httpx`，APIReranker 所需）、`multimodal`（dashscope/requests）。`pyproject.toml` 已配 uv 阿里云镜像。
 - **运行入口用 `scripts/run-{cli,server,mcp}.sh`**：它们已把 `PYTHONPATH` 设为 `仓库根:jiuwen_memory_entry/core`；直接 `python -m jiuwen_memory_entry...` 会因缺 `jiuwen_memory_entry/core` 路径导致导入失败。
   - CLI：`scripts/run-cli.sh`
   - HTTP server：`scripts/run-server.sh`
