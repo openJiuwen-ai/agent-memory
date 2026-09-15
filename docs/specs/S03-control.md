@@ -5,10 +5,26 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-09-11 |
+| 最近一次修订日期 | 2026-09-15 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
+
+## Schema source 更新准备契约
+
+`requires_update_preparation(unit, patch)` 只检查已经读取的目标，不执行 I/O、patch
+复制或 pipeline 路由。API 和 Engine 用此判断跳过普通记忆的准备阶段，保持原 update
+的读库次数和索引调用；缺省 Engine 返回 False。
+
+Engine 可通过内部 `prepare_update(unit_id, scope, patch)` 返回 `SourceUpdatePlan`，
+不支持或不适用时返回 None；准备阶段不得写业务数据。API 经 command 端口取得计划中
+各变更的权限上下文，全部授权后调用内部 `commit_update(plan)`。这两个方法不是
+MemoryAPI 的公开接口；不经 API 的 Engine 调用仍遵守调用方已完成鉴权的既有约定。
+
+Schema 能力由目标所选 pipeline 的构建算子确定，不取决于实体索引开关或全局默认
+evolver。同步模型/存储工作在工作线程调用；Engine 不实现抽取或 property 匹配算法。
+普通 update 的覆盖、版本和 pipeline 行为保持原协议。参见
+[F09](../features/construction/F09-schema-source-update.md)。
 
 ## Metadata 编排契约
 
