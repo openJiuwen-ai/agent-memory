@@ -16,7 +16,7 @@
 Schema 专用实体真源、实体 ID 或索引协议。
 
 本特性的目标是增加一条显式启用的 Schema 属性抽取路径：调用方提供实体类型及候选属性，
-抽取器只生成白名单内的属性事实。ADD 路径中，属性成功落盘后，其所属实体及属性名写回相应 Source
+抽取器只生成白名单内的属性事实。ADD 路径中，属性成功落盘后，其所属实体名写回相应 Source
 MemoryUnit 的标准 `entities` 字段；后续反向索引继续复用既有 EntityLinkService。
 
 #208 补充 Source 显式更新场景：原 update 直接应用 patch 并刷新索引，正文更换人物时仍
@@ -66,8 +66,9 @@ Schema 发送给属性生成 Prompt。Normalizer 使用同一个选中 Schema �
 - `temporal.t_event`：仅在属性具有可完整解析的日期或时间时填写。
 
 ADD 路径中，属性 Unit 成功持久化后，Evolver 按其 `provenance` 找到对应 Source Unit，把
-`schema_entity_name` 和 `schema_property_name` 去重聚合到 Source 的 `entities`。一个 Source
-支持多个实体和多个属性，Property Unit 仍通过 `source_ref/provenance` 回指 Source。
+`schema_entity_name` 去重聚合到 Source 的 `entities`。一个 Source 支持多个实体和多个属性，
+Property Unit 仍通过 `source_ref/provenance` 回指 Source。属性名只保留在 Property Unit 的
+`schema_property_name` metadata 中，避免不同人物因共享属性名被实体索引错误关联（#209）。
 
 ### 4. Source-first 保证原始信息不丢失
 
@@ -88,10 +89,10 @@ SUPERSEDE。ADD 路径采用 append-only：每次成功抽取的属性都作为�
 ### 5. 复用既有实体链路
 
 Schema Extractor 不生成自定义 `schema_entity_id`，也不维护 Schema Entity Registry。
-ADD 路径中，Evolver 通过 Storage 只读加载 Source MemoryUnit，合并实体名和属性名后调用
+ADD 路径中，Evolver 通过 Storage 只读加载 Source MemoryUnit，合并实体名后调用
 `IndexBuilder.update(mode=ALL)`，由 IndexBuilder 统一回写 Source 本体并刷新检索索引。
 IndexBuilder 看到 Source 的 `entities` 后，按现有配置调用 EntityLinkService；该服务负责
-名称归一化、EntityRecord upsert 以及实体名/属性名→Source MemoryUnit 的反向链接。
+名称归一化、EntityRecord upsert 以及实体名→Source MemoryUnit 的反向链接。
 
 因此，是否建立实体索引仍由 mem2.0 原有 `entity_enabled` 和 EntityStore 配置决定。Schema
 功能本身不新增 `schema_entities` collection/index，也不要求自定义 Storage。
@@ -201,7 +202,7 @@ ADD。Source update 只协调本次显式更新涉及的关联属性，不扩展
 
 - 验证选中属性白名单、空选择语义、严格根 JSON、来源绑定和事件时间映射；
 - 验证来源绑定与实体类型错误参与三次纠错，且未知类型不会被静默改型；
-- 验证一个实体的多个属性生成多个 Unit，Property Unit 的 `entities` 为空，实体名与属性名写回 Source；
+- 验证一个实体的多个属性生成多个 Unit，Property Unit 的 `entities` 为空，只有实体名写回 Source；
 - 验证 Schema 抽取失败后 Source MemoryUnit 仍可读取和检索；
 - 验证 Schema 属性不进入普通 Dedup；
 - 验证标准 EntityLinkService 能从更新后的 Source Unit 建立 EntityRecord 及反向链接；
@@ -240,6 +241,11 @@ ADD。Source update 只协调本次显式更新涉及的关联属性，不扩展
 取消机制后的 Schema 更新、非 Schema 隔离及现有 Schema 抽取回归为 133 passed、
 2 skipped；两项跳过为本地 Engine 不适用的云端迁移用例。此结果包含未提交的本地用例。
 
+Rebase 到最新 mem2.0 并保留 #209 的实体名写回修复后，construction/control/api、
+导入隔离、配置加载和检索日志回归为 981 passed、3 skipped；包含本地更新/隔离用例。
+跳过项为真实 Redis 双实例用例和两个本地 Engine 不适用的云端迁移用例。相关修改文件
+通过 ruff check，分支相对上游没有测试文件改动。
+
 18 个主线隔离用例使用 `schema_enabled=false` 的实际装配，覆盖两 Engine、两 mode、
 实体索引开/关、普通 add、API 与 Engine 直接 update、真源读取/路由/索引调用次数，以及
 实体后端异常、部分失败和 Schema 异常之后普通写入的失败策略。
@@ -252,8 +258,8 @@ ADD。Source update 只协调本次显式更新涉及的关联属性，不扩展
 1. 当前实体统一完全依赖现有 EntityLinkService 的名称归一化能力，不处理复杂别名或同名消歧；
 2. ADD 路径的属性采用 append-only，尚未提供全局按实体和属性的版本合并；Source update
    只处理本次更新涉及的关联属性；
-3. ADD 路径的 Source `entities` 写属性所属实体和属性名，不额外写属性值中提及的其他实体；
-   Source update 则整体替换为新抽取的实体名，不加入 property 名；
+3. ADD 路径的 Source `entities` 合并属性所属实体名，不额外写属性值中提及的其他实体；
+   Source update 则整体替换为新抽取的实体名，两条路径均不加入 property 名；
 4. 关系、图和 Schema 时序检索留待独立特性设计；
 5. `SchemaOrchestratingEvolver` 当前尚未接入 `Router`。启用群体记忆归属判定时，Schema
    派生属性仍沿用 Source MemoryUnit 的 Scope；未配置 Router 时不影响 Schema 抽取、属性

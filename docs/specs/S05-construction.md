@@ -175,8 +175,9 @@ Schema 抽取先选择本轮相关 entity type/property，再使用同一选中�
 属性名、非空事实文本，以及同 Scope 输入中的一个或多个 `source_unit_ids`。
 
 每个合法属性生成一个独立 MemoryUnit。属性 Unit 的 `entities` 为空；Schema 名称、版本、
-实体类型和属性名写系统 metadata。属性成功落盘后，实体明文和属性名聚合写回相应 Source
-MemoryUnit 的 `entities`，并经 `IndexBuilder.update(mode=ALL)` 同时回写本体和刷新检索索引；
+实体类型和属性名写系统 metadata。属性成功落盘后，仅实体明文聚合写回相应 Source
+MemoryUnit 的 `entities`，属性名不得进入实体列表；经 `IndexBuilder.update(mode=ALL)`
+同时回写本体和刷新检索索引；
 来源业务 metadata 仍按通用派生规则写入 user metadata。
 完整可解析的事件日期/时间可写 `temporal.t_event`，但时间不是属性合法性的必要条件。
 
