@@ -21,6 +21,8 @@ Engine 可通过内部 `prepare_update(unit_id, scope, patch)` 返回 `SourceUpd
 各变更的权限上下文，全部授权后调用内部 `commit_update(plan)`。这两个方法不是
 MemoryAPI 的公开接口；不经 API 的 Engine 调用仍遵守调用方已完成鉴权的既有约定。
 
+计划仅在本次请求内使用，不保存私有操作状态或执行进度；失败不自动回滚或断点续写。
+
 Schema 能力由目标所选 pipeline 的构建算子确定，不取决于实体索引开关或全局默认
 evolver。同步模型/存储工作在工作线程调用；Engine 不实现抽取或 property 匹配算法。
 普通 update 的覆盖、版本和 pipeline 行为保持原协议。参见

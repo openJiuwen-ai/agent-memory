@@ -23,19 +23,20 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 `SourceUpdateSupport` 提供 Schema 配置身份、只读准备及计划提交三个内部契约：
 
 - `source_schema_identity() -> tuple[str, str]`：返回 Schema 名和版本。
-- `prepare_source_update(old, new, *, mode, request_key) -> SourceUpdatePlan | None`：
-  使用完整抽取结果产生冻结动作，或者返回持久化的待恢复动作；不写业务数据。
+- `prepare_source_update(old, new, *, mode) -> SourceUpdatePlan | None`：
+  使用完整抽取结果产生本次请求的变更计划；不写业务数据或持久化操作状态。
 - `commit_source_update(plan, *, index_for) -> MemoryUnit`：调用方完成全部权限校验后，
   使用按 unit 路由的 IndexBuilder 提交并返回目标记忆。
 
 `SourceExtraction` 包含独立的 `properties` 和 `entities`，允许实体没有 property。
-`SourceUpdatePlan` 包含操作 ID、请求指纹、source 前后版本、按序 `UnitChange`、
-证据回放关系及完成步骤；每个 `UnitChange` 的 before/after 分别可空，表达新增、
+`SourceUpdatePlan` 包含操作 ID、source 前后版本及按序 `UnitChange`；
+每个 `UnitChange` 的 before/after 分别可空，表达新增、
 更新或删除。这不是公开 MemoryAPI 参数，不能由外部调用方直接提交任意计划。
 
 更新专用抽取不得采用部分成功结果推断属性消失。实体结果整体替换 source 的列表，
 不混入属性名称。派生写入沿用 source 的更新模式和限定来源，不递归改写其他记忆。
-提交中断通过 `PartialFailureError` 报告并支持固定 ID 重试，不承诺跨后端事务。
+提交中断通过 `PartialFailureError` 报告，可能留下部分结果；不保存恢复记录，不承诺
+固定 ID 重试、断点续写或跨后端事务，也不拦截后续 ADD 对旧证据的再次抽取。
 关联决策见 [F08](../features/construction/F08-entity-schema-extension.md)。
 
 ### 常规范围

@@ -26,7 +26,7 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 | `router.py` | Router 接口与判定表：按归属坐标判定条目落哪个空间，产出候选空间集合与收窄维标签；另含归属坐标的入口校验 `reject_kernel_coords` 与折算 `narrow_dims_of`（后者入参须为已以身份覆盖过内核三项的坐标，本层不接收 `identity`）。内核三项坐标名 `KERNEL_COORD_KEYS` 在 `common/type_def/scope.py`，本模块引用 |
 | `dedup.py` | Dedup 接口：去重召回（向量/倒排两路）+ DedupProducer 工厂 |
 | `evolver.py` | Evolver 接口：记忆自演进（抽取/关联/巩固/遗忘）+ EvolveMode + EvolveResult |
-| `source_update.py` | 可选 Schema source 更新能力、完整抽取结果、冻结变更计划与严格实体写入上下文；不依赖 control |
+| `source_update.py` | 可选 Schema source 更新能力、完整抽取结果、请求内变更计划与严格实体写入上下文；不依赖 control |
 | `layer_annotator.py` | LayerAnnotator 接口：分层披露标注（L0/L1 写入 unit.layers）+ LayerAnnotatorProducer 工厂 |
 | `extractor_impl/` | Extractor 实现目录（keyword / llm / dynamic_llm / video_memory，以及显式启用的 entity_schema）；video_memory 将视频规约结果转换为 CLM/ELM |
 | `abstractor_impl/` | Abstractor 实现目录（concat / llm） |
@@ -36,7 +36,7 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 | `layer_annotator_impl/` | LayerAnnotator 实现目录（keyword / llm）；evolver 抽取后调用，对超阈 content 标注 L0/L1 |
 | `dedup_impl/` | Dedup 实现目录（vector / keyword） |
 | `evolver_impl/` | Evolver 实现目录（orchestrating=legacy / dynamic=动态 prompt 四步 / schema_orchestrating=Source-first Schema 属性抽取） |
-| `evolver_impl/schema_update.py` | Schema source/property 对应、模式动作、恢复记录及旧证据过滤；记忆写入只调用 IndexBuilder，私有恢复记录使用注入 KV |
+| `evolver_impl/schema_update.py` | Schema source/property 对应、模式动作和提交前修订检查；记忆写入只调用 IndexBuilder，注入 KV 仅用于读取，不保存恢复记录 |
 | `bootstrap.py` | 统一触发所有构建算子注册（含 dedup_impl） |
 | `schema_bootstrap.py` | 由统一 assembly 在 Schema 开关开启时内部调用，注册 Schema Extractor/Evolver target；不是独立公共装配入口 |
 
