@@ -15,9 +15,11 @@ docs/features/common/F05-model-service-ssl.md。
 
 from __future__ import annotations
 
+import math
 import os
 from contextlib import contextmanager
-from typing import Any, Iterator, NamedTuple
+from typing import Any, NamedTuple
+from collections.abc import Iterator
 from urllib.parse import parse_qs, urlparse
 
 from jiuwen_memory.common.errors import AgentMemoryError, BackendError, ValidationError
@@ -25,6 +27,10 @@ from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import Scope
 
 SCOPE_DIMS = ("org", "space", "user", "agent", "session")
+
+DEFAULT_OUTBOUND_TIMEOUT_SECONDS = 300.0
+OUTBOUND_CONNECT_TIMEOUT_SECONDS = 5.0
+DEFAULT_OUTBOUND_MAX_RETRIES = 0
 
 
 def as_bool(value: Any, *, default: bool) -> bool:
@@ -57,6 +63,63 @@ class SslConfig(NamedTuple):
     ca_cert: str | None
 
 
+class OutboundCallPolicy(NamedTuple):
+    """出站客户端的有限等待策略。
+
+    ``timeout`` 是单次请求的完整等待上限（秒）；``max_retries`` 是客户端库在本次
+    调用内的自动重试次数。默认不重试，避免一次挂死读被 SDK 放大成多次长时间等待。
+    """
+
+    timeout: float
+    max_retries: int
+
+
+def read_outbound_call_policy(
+    config: Any,
+    prefix: str,
+    *,
+    default_timeout: float = DEFAULT_OUTBOUND_TIMEOUT_SECONDS,
+    default_max_retries: int = DEFAULT_OUTBOUND_MAX_RETRIES,
+) -> OutboundCallPolicy:
+    """读取 ``<prefix>_timeout`` / ``<prefix>_max_retries`` 并做装配期校验。
+
+    未配置时使用 300 秒和 0 次重试：既有部署从 SDK 的 600 秒隐式等待收敛为有限
+    等待，慢模型必须显式声明自己的上限。``${VAR}`` 展开后的数字字符串也要能读。
+    """
+    raw_timeout = config.get(f"{prefix}_timeout", default_timeout)
+    if isinstance(raw_timeout, bool):
+        raise ValidationError(f"{prefix}_timeout must be a positive number; got {raw_timeout!r}")
+    try:
+        timeout = float(raw_timeout)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(
+            f"{prefix}_timeout must be a positive number; got {raw_timeout!r}"
+        ) from exc
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValidationError(
+            f"{prefix}_timeout must be a finite positive number; got {raw_timeout!r}"
+        )
+
+    raw_retries = config.get(f"{prefix}_max_retries", default_max_retries)
+
+    if isinstance(raw_retries, bool):
+        raise ValidationError(
+            f"{prefix}_max_retries must be a non-negative integer; got {raw_retries!r}"
+        )
+    try:
+        retries_value = float(raw_retries)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(
+            f"{prefix}_max_retries must be a non-negative integer; got {raw_retries!r}"
+        ) from exc
+    if not math.isfinite(retries_value) or not retries_value.is_integer() or retries_value < 0:
+        raise ValidationError(
+            f"{prefix}_max_retries must be a non-negative integer; got {raw_retries!r}"
+        )
+
+    return OutboundCallPolicy(timeout=timeout, max_retries=int(retries_value))
+
+
 def build_ssl_config(verify: Any, ca_cert: Any) -> SslConfig:
     """把两个原始配置值归一为 :class:`SslConfig`。
 
@@ -76,9 +139,7 @@ def read_outbound_ssl(config: Any, prefix: str) -> SslConfig:
     默认关闭：不配置时完全不干预客户端，行为与引入本参数前一致——``http://`` 明文
     直连（开发自测），``https://`` 仍走 SDK 默认的公共 CA 校验。开启后才接管信任锚。
     """
-    return build_ssl_config(
-        config.get(f"{prefix}_ssl_verify"), config.get(f"{prefix}_ssl_ca_cert")
-    )
+    return build_ssl_config(config.get(f"{prefix}_ssl_verify"), config.get(f"{prefix}_ssl_ca_cert"))
 
 
 def require_tls_scheme(
@@ -165,9 +226,7 @@ def read_ssl_config(config: Any, *, backend: str) -> SslConfig:
         Factory.cfg_get(config, "ssl_verify"), Factory.cfg_get(config, "ssl_ca_cert")
     )
     if ssl.verify and not ssl.ca_cert:
-        raise ValidationError(
-            f"{backend} 配置了 ssl_verify=true，必须同时提供 params.ssl_ca_cert"
-        )
+        raise ValidationError(f"{backend} 配置了 ssl_verify=true，必须同时提供 params.ssl_ca_cert")
     return ssl
 
 
