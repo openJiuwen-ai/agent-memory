@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -22,8 +23,9 @@ from jiuwen_memory.construction.extractor_impl.entity_schema_extractor import (
     InvalidSchemaExtractionError,
 )
 from jiuwen_memory.construction.source_update import STRICT_ENTITY_WRITES
+from jiuwen_memory.control.engine_impl import in_memory_engine
 from jiuwen_memory.control.types import MemoryPatch, UpdateMode
-from tests.unit.control.fixtures import T0, T1, SchemaWorld
+from tests.unit.control.fixtures import T0, T1, SchemaWorld, capture_engine
 
 pytestmark = pytest.mark.unit
 
@@ -115,7 +117,10 @@ def test_failed_extraction_does_not_change_memory_or_entities(world, response, e
 def test_update_only_grant_cannot_create_or_delete_properties(world, denied_action):
     source, _ = world.add("陈静负责推荐算法迭代")
     actor = Scope(org=world.scope.org, user="editor")
-    world.api._perm.grant(Grant(grantor=world.scope, grantee=actor, actions={Action.UPDATE}))
+    world.api.grant(
+        Grant(grantor=world.scope, grantee=actor, actions={Action.UPDATE}),
+        security=world.security,
+    )
     world.llm.facts = [("李红", "occupation", "李红负责算法", "")]
     content = "李红负责算法" if denied_action is Action.WRITE else ""
     before = world.snapshot()
@@ -152,6 +157,8 @@ def test_index_failure_reports_partial_write_without_persistent_recovery(world, 
 @pytest.mark.parametrize("mode", list(UpdateMode))
 def test_schema_disabled_keeps_original_update_path(engine_kind, mode, monkeypatch):
     monkeypatch.setattr("jiuwen_memory.api.memory_api_impl.assembly.setup_logging", lambda _: None)
+    route = Mock(return_value=None)
+    wiring = capture_engine(monkeypatch, engine_kind, SimpleNamespace(select_for_write=route))
     kernel = _build_kernel(
         config={
             "globals": {"schema_enabled": False, "graph_enabled": False, "rerank_enabled": False},
@@ -159,23 +166,28 @@ def test_schema_disabled_keeps_original_update_path(engine_kind, mode, monkeypat
         }
     )
     try:
-        api, engine = kernel.api, kernel.api._engine
+        api, engine = kernel.api, wiring.instance
         scope = Scope(org="ordinary", user="alice")
         security = legacy_request_context(scope)
         source = api.add("Original", scope, security=security)[0]
+        route.reset_mock()
         prepare = Mock(side_effect=AssertionError("ordinary update must bypass Schema preparation"))
-        load = Mock(wraps=engine._load)
-        route = Mock(wraps=engine._write_binding)
+        if engine_kind == "cloud":
+            store = kernel.storage.domain_store()
+            load = Mock(wraps=store.get)
+            monkeypatch.setattr(store, "get", load)
+        else:
+            load = Mock(wraps=in_memory_engine.load_units)
+            monkeypatch.setattr(in_memory_engine, "load_units", load)
         monkeypatch.setattr(engine, "prepare_update", prepare)
-        monkeypatch.setattr(engine, "_load", load)
-        monkeypatch.setattr(engine, "_write_binding", route)
         updated = api.update(
             source.id, scope, MemoryPatch(content="Updated", mode=mode), security=security
         )
         assert updated.content == "Updated"
         assert (updated.id == source.id) == (mode is UpdateMode.OVERWRITE)
         prepare.assert_not_called()
-        assert load.call_count == 3  # Permission context, audit snapshot, original Engine update.
+        # Permission context, audit snapshot and original Engine update each read the source once.
+        assert load.call_count == 3
         assert route.call_count == (2 if engine_kind == "cloud" else 0)
     finally:
         kernel.ingest_jobs.close(wait=True)
