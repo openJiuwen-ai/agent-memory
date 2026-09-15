@@ -34,9 +34,15 @@ from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
 from jiuwen_memory.construction.evolver import Evolver, EvolverProducer
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
+from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
+from jiuwen_memory.control.engine_impl.schema_update_support import (
+    commit_schema_update,
+    is_schema_update_candidate,
+    prepare_schema_update,
+)
 from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
@@ -553,10 +559,34 @@ class CloudEngine(MemoryEngine):
             raise NotFoundError("memory_unit", unit_id)
         return max(candidates, key=_valid_sort_key)
 
+    def requires_update_preparation(self, unit: MemoryUnit, patch: MemoryPatch) -> bool:
+        return is_schema_update_candidate(unit, patch)
+
+    async def prepare_update(
+        self, unit_id: str, scope: Scope, patch: MemoryPatch
+    ) -> SourceUpdatePlan | None:
+        old = self._load(scope, unit_id)
+        if not self.requires_update_preparation(old, patch):
+            return None
+        new = _apply_patch(old, patch)
+        self._normalize_unit_metadata(new)
+        binding = self._write_binding([new])
+        new.system_metadata["pipeline"] = (
+            binding.name if binding is not None else self._default_pipeline_name
+        )
+        return await prepare_schema_update(self, old, new, patch)
+
+    async def commit_update(self, plan: SourceUpdatePlan) -> MemoryUnit:
+        return await commit_schema_update(self, plan)
+
     async def update(
         self, unit_id: str, scope: Scope, patch: MemoryPatch
     ) -> MemoryUnit:
         old = self._load(scope, unit_id)
+        if self.requires_update_preparation(old, patch):
+            plan = await self.prepare_update(unit_id, scope, patch)
+            if plan is not None:
+                return await self.commit_update(plan)
         new = _apply_patch(old, patch)
         self._normalize_unit_metadata(new)
         new_binding = self._write_binding([new])
