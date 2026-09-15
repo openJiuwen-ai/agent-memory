@@ -550,6 +550,14 @@ def update(
 
 修正记忆：鉴权 UPDATE→委托 Engine。`MemoryPatch` 仅非 None 字段生效：`content` / `tier` / `tags`（整体替换）/ `system_metadata`（合并）/ `user_metadata`（合并）/ `t_valid` / `t_invalid` / `mode`。
 
+Schema source 的正文更新还会同步协调同 scope 的 Schema property 与实体关联，保留
+OVERWRITE/SUPERSEDE 的 ID、版本和有效期语义。接口签名与返回类型不变，`content=""`
+表示替换为空正文；不修改原始对话。普通记忆、直接修改 property 和非正文更新保持原行为。
+源记录继续使用 UPDATE 鉴权；派生记录的覆盖/版本修订、新增和删除分别核验 UPDATE、
+WRITE 和 DELETE，并在首次业务写入前全部完成。配置失效、抽取不完整或匹配歧义报错；
+提交中断返回 `PartialFailureError`，使用相同目标和 patch 重试。
+决策与边界见 [F09](../features/construction/F09-schema-source-update.md)。
+
 **状态：已设计、尚未实现**（`MemoryPatch.hierarchy`）
 
 `MemoryPatch` 的既有非空字段为 `content/tier/tags/system_metadata/user_metadata/t_valid/t_invalid/mode`，目标增加：
