@@ -123,7 +123,7 @@ def _downweight_importance(unit: MemoryUnit) -> None:
     raw = unit.system_metadata.get("importance")
     try:
         value = float(raw) if raw is not None else 1.0
-    except ValueError:
+    except (ValueError, TypeError):
         value = 1.0
     unit.system_metadata["importance"] = f"{max(0.0, value * 0.5):g}"
 
