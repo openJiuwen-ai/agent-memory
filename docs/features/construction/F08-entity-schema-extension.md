@@ -211,8 +211,19 @@ ADD。Source update 只协调本次显式更新涉及的关联属性，不扩展
 
 ### Source update 与非 Schema 隔离
 
-新增更新回归、主线隔离回归及夹具按评审范围要求保留在本地，不随分支提交。取消旧证据
-过滤后，原有 Schema 测试存储不再需要额外的 `scan()` 接口，已撤回该适配。
+精简回归 `tests/unit/control/test_schema_update_regression.py` 及其共享夹具
+`tests/unit/control/fixtures.py` 已随分支提交。覆盖两 Engine、两更新模式下的 #208 人物更换、
+共享实体保留、检索和版本关系、合法空正文撤回，以及抽取失败、实际 UPDATE-only 授权、
+实体索引部分失败、无持久化恢复记录和非 Schema 更新的读取/路由次数。
+更完整的 `test_schema_source_update.py`、`test_schema_disabled_isolation.py` 仍保留在本地。
+取消旧证据过滤后，原有 Schema 测试存储不再需要额外的 `scan()` 接口，已撤回该适配。
+
+提交用例的确定性验证为 49 passed（新增 22 项、原有 Schema 抽取 27 项），无跳过项；
+两个新增测试支持文件通过 ruff check。复现命令：
+
+```powershell
+.venv/Scripts/python.exe -X utf8 -m pytest tests/unit/construction/test_entity_schema_extension.py tests/unit/control/test_schema_update_regression.py -o addopts=-ra -q
+```
 
 以下为取消持久化恢复之前的历史验证，包含的恢复与防回放用例不再代表当前功能承诺；
 含本地用例的结果不能仅检出分支复现：
@@ -244,7 +255,7 @@ ADD。Source update 只协调本次显式更新涉及的关联属性，不扩展
 Rebase 到最新 mem2.0 并保留 #209 的实体名写回修复后，construction/control/api、
 导入隔离、配置加载和检索日志回归为 981 passed、3 skipped；包含本地更新/隔离用例。
 跳过项为真实 Redis 双实例用例和两个本地 Engine 不适用的云端迁移用例。相关修改文件
-通过 ruff check，分支相对上游没有测试文件改动。
+通过 ruff check；该轮验证时尚未提交上述精简回归。
 
 18 个主线隔离用例使用 `schema_enabled=false` 的实际装配，覆盖两 Engine、两 mode、
 实体索引开/关、普通 add、API 与 Engine 直接 update、真源读取/路由/索引调用次数，以及
