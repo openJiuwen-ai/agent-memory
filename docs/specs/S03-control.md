@@ -24,7 +24,7 @@ MemoryAPI 的公开接口；不经 API 的 Engine 调用仍遵守调用方已完
 Schema 能力由目标所选 pipeline 的构建算子确定，不取决于实体索引开关或全局默认
 evolver。同步模型/存储工作在工作线程调用；Engine 不实现抽取或 property 匹配算法。
 普通 update 的覆盖、版本和 pipeline 行为保持原协议。参见
-[F09](../features/construction/F09-schema-source-update.md)。
+[F08](../features/construction/F08-entity-schema-extension.md)。
 
 ## Metadata 编排契约
 
