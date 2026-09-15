@@ -593,10 +593,14 @@ class InMemoryEngine(MemoryEngine):
         old = self._load(scope, unit_id)
         if not self.requires_update_preparation(old, patch):
             return None
-        return await prepare_schema_update(self, old, _apply_patch(old, patch), patch)
+        return await prepare_schema_update(
+            self._evolver_for_unit, old, _apply_patch(old, patch), patch
+        )
 
     async def commit_update(self, plan: SourceUpdatePlan) -> MemoryUnit:
-        return await commit_schema_update(self, plan)
+        return await commit_schema_update(
+            self._evolver_for_unit, plan, index_for=self._index_for_unit
+        )
 
     async def update(
         self, unit_id: str, scope: Scope, patch: MemoryPatch
@@ -797,6 +801,14 @@ class InMemoryEngine(MemoryEngine):
         if self._pipeline is None:
             return None
         return self._pipeline.select_for_write(units)
+
+    def _evolver_for_unit(self, unit: MemoryUnit) -> Evolver | None:
+        binding = self._write_binding([unit])
+        return binding.evolver if binding is not None else self._evolver
+
+    def _index_for_unit(self, unit: MemoryUnit) -> IndexBuilder:
+        binding = self._write_binding([unit])
+        return binding.index_builder if binding is not None else self._index
 
     def _recall_binding(self, query: RetrievalQuery) -> PipelineBinding | None:
         if self._pipeline is None:
