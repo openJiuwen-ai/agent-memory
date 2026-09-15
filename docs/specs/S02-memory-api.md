@@ -555,7 +555,8 @@ OVERWRITE/SUPERSEDE 的 ID、版本和有效期语义。接口签名与返回类
 表示替换为空正文；不修改原始对话。普通记忆、直接修改 property 和非正文更新保持原行为。
 源记录继续使用 UPDATE 鉴权；派生记录的覆盖/版本修订、新增和删除分别核验 UPDATE、
 WRITE 和 DELETE，并在首次业务写入前全部完成。配置失效、抽取不完整或匹配歧义报错；
-提交中断返回 `PartialFailureError`，使用相同目标和 patch 重试。
+提交中断返回 `PartialFailureError`，可能留下部分写入；再次操作前需检查受影响记录，
+不承诺断点恢复、固定 ID 重试或原子回滚。
 决策与边界见 [F08](../features/construction/F08-entity-schema-extension.md)。
 
 **状态：已设计、尚未实现**（`MemoryPatch.hierarchy`）
