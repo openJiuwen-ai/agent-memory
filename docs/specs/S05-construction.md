@@ -36,7 +36,7 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 更新专用抽取不得采用部分成功结果推断属性消失。实体结果整体替换 source 的列表，
 不混入属性名称。派生写入沿用 source 的更新模式和限定来源，不递归改写其他记忆。
 提交中断通过 `PartialFailureError` 报告并支持固定 ID 重试，不承诺跨后端事务。
-关联决策见 [F09](../features/construction/F09-schema-source-update.md)。
+关联决策见 [F08](../features/construction/F08-entity-schema-extension.md)。
 
 ### 常规范围
 
