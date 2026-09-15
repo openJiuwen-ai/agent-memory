@@ -15,10 +15,8 @@ import json
 import os
 import re
 
-from jiuwen_memory_entry.core.import_support import import_required_attr
-
 # 公开面白名单内的错误类型：与内核抛出的是同一个类，调用方可统一 except。
-ValidationError = import_required_attr("jiuwen_memory.api", "ValidationError")
+from jiuwen_memory.api import ValidationError
 
 # ${VAR} 或 ${VAR:-默认值}
 _ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
