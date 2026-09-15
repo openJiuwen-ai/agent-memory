@@ -1,0 +1,32 @@
+[
+  {
+    "qa": [
+      {
+        "question": "When Jon has lost his job as a banker?",
+        "answer": "19 January, 2023",
+        "evidence": [
+          "D1:2"
+        ],
+        "category": 2
+      }
+    ],
+    "conversation": {
+      "speaker_a": "Jon",
+      "speaker_b": "Gina",
+      "session_1_date_time": "4:04 pm on 20 January, 2023",
+      "session_1": [
+        {
+          "speaker": "Gina",
+          "dia_id": "D1:1",
+          "text": "Hey Jon! Good to see you. What's up? Anything new?"
+        },
+        {
+          "speaker": "Jon",
+          "dia_id": "D1:2",
+          "text": "Hey Gina! Good to see you too. Lost my job as a banker yesterday, so I'm gonna take a shot at starting my own business."
+        }
+      ]
+    },
+    "sample_id": "conv-30"
+  }
+]
