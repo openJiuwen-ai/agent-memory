@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -448,3 +449,65 @@ def test_e2e_recall_default_returns_active_only() -> None:
 
     # 原文状态：ARCHIVED
     assert state["lifecycle_after"] == LifecycleState.ARCHIVED
+
+
+# ---- 场景 7：sync 写入（临时 loop）关闭后 Timer 仍存活并触发中→长转换 ----
+
+
+def test_e2e_sync_write_temp_loop_shutdown_still_triggers_middle_to_long() -> None:
+    """场景 7（本改造的验收测试）：sync 写入经 ``asyncio.run`` 建临时 loop，
+    接口返回后临时 loop 立即关闭——绑定在临时 loop 上的 Timer Task 在旧实现中
+    随 loop 消亡，中期记忆的后台转换永不触发。
+
+    改造后（Scheduler 自有守护 loop）：
+
+    - write 在临时 loop 里完成（模拟 sync SDK / HTTP 每请求一次 ``asyncio.run``）；
+    - 临时 loop 关闭，且**不再有任何后续写入**；
+    - 等待 interval + tick 后，MiddleToLongJob 仍在 Scheduler 守护 loop 上触发——
+      原文被 ARCHIVED、index.remove 被调、transition 至少一次。
+
+    这正是旧实现必挂、新实现必须通过的场景。
+    """
+    engine, scheduler, index, kv, lifecycle = _build_engine()
+    scope = Scope(org="acme", user="u1")
+
+    # sync 写入 #1：临时 loop A——write + submit 完成后 loop A 关闭
+    units = asyncio.run(
+        engine.write(
+            "alice likes tea",
+            scope,
+            system_metadata={"infer": "true", "middle": "true", "middle_interval": "1"},
+        )
+    )
+    original_id = units[0].id
+
+    # 此处 loop A 已关闭、无后续写入——旧实现下 Timer Task 已随 loop A 消亡，
+    # 下方 sleep 结束后原文永远是 ACTIVE。
+    # 真实驱动 Timer 的不再是任何请求 loop，而是 Scheduler 的守护 loop 线程。
+    time.sleep(3.0)  # 首次触发(t=1s tick) + drain 完成 + 余量
+
+    # 跨 loop 验证（KV/lifecycle 状态已落盘，守护线程独立于任何请求 loop）
+    archived_unit = loads(kv.get(scope, memory_key(original_id)))
+    assert archived_unit.lifecycle == LifecycleState.ARCHIVED, (
+        "sync 写入的临时 loop 关闭后，Timer 必须仍在守护 loop 上触发中→长转换"
+    )
+    assert any(u.id == original_id for u in index.removed)
+    assert any(
+        s == scope and target == LifecycleState.ARCHIVED
+        for s, _, target in lifecycle.transition_calls
+    )
+
+    # sync 写入 #2（不同临时 loop B）：wheel 之前因候选耗尽退出，Timer 应重启
+    units2 = asyncio.run(
+        engine.write(
+            "bob likes coffee",
+            scope,
+            system_metadata={"infer": "true", "middle": "true", "middle_interval": "1"},
+        )
+    )
+    original_id2 = units2[0].id
+    time.sleep(3.0)
+    archived2 = loads(kv.get(scope, memory_key(original_id2)))
+    assert archived2.lifecycle == LifecycleState.ARCHIVED, (
+        "第二次 sync 写入应重新起 Timer 并完成转换——守护 loop 跨请求存活"
+    )
