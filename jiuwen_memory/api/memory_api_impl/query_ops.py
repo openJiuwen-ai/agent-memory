@@ -550,12 +550,15 @@ class QueryOpsMixin:
             unit = asyncio.run(self._commands.update(unit_id, scope, patch))
         update_detail = {}
         if plan is not None:
+            affected_unit_ids = []
+            for change in plan.changes:
+                if change.before is not None:
+                    affected_unit_ids.append(change.before.id)
+                if change.after is not None:
+                    affected_unit_ids.append(change.after.id)
             update_detail = {
                 "schema_update_operation_id": plan.operation_id,
-                "affected_unit_ids": list(dict.fromkeys(
-                    target.id for change in plan.changes
-                    for target in (change.before, change.after) if target is not None
-                )),
+                "affected_unit_ids": list(dict.fromkeys(affected_unit_ids)),
             }
         self._log(
             identity,

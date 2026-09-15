@@ -591,10 +591,12 @@ class CloudEngine(MemoryEngine):
         new.system_metadata["pipeline"] = (
             binding.name if binding is not None else self._default_pipeline_name
         )
-        return await prepare_schema_update(self, old, new, patch)
+        return await prepare_schema_update(self._evolver_for_unit, old, new, patch)
 
     async def commit_update(self, plan: SourceUpdatePlan) -> MemoryUnit:
-        return await commit_schema_update(self, plan)
+        return await commit_schema_update(
+            self._evolver_for_unit, plan, index_for=self._index_for_unit
+        )
 
     async def update(
         self, unit_id: str, scope: Scope, patch: MemoryPatch
@@ -867,6 +869,10 @@ class CloudEngine(MemoryEngine):
         if self._pipeline is None:
             return None
         return self._pipeline.select_for_write(units)
+
+    def _evolver_for_unit(self, unit: MemoryUnit) -> Evolver | None:
+        binding = self._write_binding([unit])
+        return binding.evolver if binding is not None else self._evolver
 
     def _recall_binding(self, query: RetrievalQuery) -> PipelineBinding | None:
         if self._pipeline is None:

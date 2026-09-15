@@ -6,18 +6,22 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import datetime, timezone
 
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.type_def import MemoryUnit
+from jiuwen_memory.construction.evolver import Evolver
+from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.construction.source_update import SourceUpdatePlan, SourceUpdateSupport
 from jiuwen_memory.control.types import MemoryPatch, UpdateMode
 
 
-def _support(engine, unit: MemoryUnit) -> SourceUpdateSupport | None:
-    binding = engine._write_binding([unit])
-    evolver = binding.evolver if binding is not None else engine._evolver
+def _support(
+    evolver_for: Callable[[MemoryUnit], Evolver | None], unit: MemoryUnit
+) -> SourceUpdateSupport | None:
+    evolver = evolver_for(unit)
     return evolver if isinstance(evolver, SourceUpdateSupport) else None
 
 
@@ -31,17 +35,20 @@ def is_schema_update_candidate(unit: MemoryUnit, patch: MemoryPatch) -> bool:
 
 
 async def prepare_schema_update(
-    engine, old: MemoryUnit, new: MemoryUnit, patch: MemoryPatch
+    evolver_for: Callable[[MemoryUnit], Evolver | None],
+    old: MemoryUnit,
+    new: MemoryUnit,
+    patch: MemoryPatch,
 ) -> SourceUpdatePlan | None:
     if not is_schema_update_candidate(old, patch):
         return None
-    support = _support(engine, old)
+    support = _support(evolver_for, old)
     if support is None:
         if patch.content != old.content:
             raise ValidationError("The source's Schema pipeline is no longer configured")
         return None
     if patch.content != old.content:
-        destination = _support(engine, new)
+        destination = _support(evolver_for, new)
         if (
             destination is None
             or destination.source_schema_identity() != support.source_schema_identity()
@@ -59,13 +66,14 @@ async def prepare_schema_update(
     )
 
 
-async def commit_schema_update(engine, plan: SourceUpdatePlan) -> MemoryUnit:
-    support = _support(engine, plan.source_before)
+async def commit_schema_update(
+    evolver_for: Callable[[MemoryUnit], Evolver | None],
+    plan: SourceUpdatePlan,
+    *,
+    index_for: Callable[[MemoryUnit], IndexBuilder],
+) -> MemoryUnit:
+    support = _support(evolver_for, plan.source_before)
     if support is None:
         raise ValidationError("The source's Schema pipeline is no longer configured")
-
-    def index_for(unit):
-        binding = engine._write_binding([unit])
-        return binding.index_builder if binding is not None else engine._index
 
     return await asyncio.to_thread(support.commit_source_update, plan, index_for=index_for)

@@ -145,15 +145,11 @@ class SchemaUpdateCoordinator:
             if record["done"]:
                 if record["source_id"] == old.id and record["request_key"] == request_key:
                     result = load_units(self._kv, old.scope, [record["source_after_id"]])
-                    if (
-                        result
-                        and content_revision(result[0]) == record["source_after_revision"]
-                        and old.lifecycle == LifecycleState.SUPERSEDED
-                        and old.id != result[0].id
-                    ):
-                        return SourceUpdatePlan(
-                            record["operation_id"], request_key, old, result[0], []
-                        )
+                    if result and content_revision(result[0]) == record["source_after_revision"]:
+                        if old.lifecycle == LifecycleState.SUPERSEDED and old.id != result[0].id:
+                            return SourceUpdatePlan(
+                                record["operation_id"], request_key, old, result[0], []
+                            )
             else:
                 pending = _plan(record)
                 if pending.source_before.id == old.id and pending.request_key == request_key:
@@ -176,27 +172,31 @@ class SchemaUpdateCoordinator:
         related = []
         for _, raw in self._kv.scan(old.scope, MEMORY_KEY_PREFIX):
             unit = loads(raw)
+            if unit is None:
+                continue
             if (
-                unit is not None
-                and unit.id != old.id
-                and unit.system_metadata.get("extraction_mode") == "schema"
-                and unit.lifecycle == LifecycleState.ACTIVE
-                and old.id in sources(unit)
-                and (unit.temporal.t_invalid is None or unit.temporal.t_invalid > boundary)
+                unit.id == old.id
+                or unit.system_metadata.get("extraction_mode") != "schema"
+                or unit.lifecycle != LifecycleState.ACTIVE
             ):
-                expected = (
-                    new.system_metadata.get("schema_name"),
-                    new.system_metadata.get("schema_version"),
+                continue
+            if old.id not in sources(unit):
+                continue
+            if unit.temporal.t_invalid is not None and unit.temporal.t_invalid <= boundary:
+                continue
+            expected = (
+                new.system_metadata.get("schema_name"),
+                new.system_metadata.get("schema_version"),
+            )
+            actual = (
+                unit.system_metadata.get("schema_name"),
+                unit.system_metadata.get("schema_version"),
+            )
+            if expected != actual:
+                raise ValidationError(
+                    "Associated properties use a different Schema configuration"
                 )
-                actual = (
-                    unit.system_metadata.get("schema_name"),
-                    unit.system_metadata.get("schema_version"),
-                )
-                if expected != actual:
-                    raise ValidationError(
-                        "Associated properties use a different Schema configuration"
-                    )
-                related.append(unit)
+            related.append(unit)
         new.system_metadata["schema_source_revision"] = str(uuid.uuid4())
         extraction = self._extract(copy.deepcopy(new))
         candidates = extraction.properties
@@ -265,39 +265,39 @@ class SchemaUpdateCoordinator:
                 candidate.temporal.t_valid = boundary if supersede else candidate.temporal.t_valid
                 plan.changes.append(UnitChange(None, candidate))
         # New properties first, then the source, then old versions/deletions.
-        active = [
-            c
-            for c in plan.changes
-            if c.after is not None
-            and c.after.lifecycle == LifecycleState.ACTIVE
-            and (c.after.temporal.t_invalid is None or c.after.temporal.t_invalid > boundary)
-        ]
-        rest = [c for c in plan.changes if c not in active]
+        active = []
+        rest = []
+        for change in plan.changes:
+            after = change.after
+            if after is None or after.lifecycle != LifecycleState.ACTIVE:
+                rest.append(change)
+                continue
+            if after.temporal.t_invalid is not None and after.temporal.t_invalid <= boundary:
+                rest.append(change)
+                continue
+            active.append(change)
         plan.changes = active + [UnitChange(None if supersede else old, new)] + rest
         if supersede:
             plan.changes.append(UnitChange(old, self._retire(old, boundary, replaced=True)))
         for change in plan.changes:
             after = change.after
-            if (
-                after is not None
-                and after.id != new.id
+            if after is None:
+                continue
+            only_source_property = (
+                after.id != new.id
                 and after.lifecycle == LifecycleState.ACTIVE
                 and sources(after) == [new.id]
-                and new.temporal.t_invalid is not None
-                and (
-                    after.temporal.t_invalid is None
-                    or new.temporal.t_invalid < after.temporal.t_invalid
-                )
-            ):
+            )
+            source_expiry = new.temporal.t_invalid
+            if only_source_property and source_expiry is not None:
                 # A conclusion supported only by this source cannot outlive its validity.
-                after.temporal.t_invalid = new.temporal.t_invalid
-            if (
-                after is not None
-                and after.temporal.t_valid is not None
-                and after.temporal.t_invalid is not None
-                and after.temporal.t_invalid <= after.temporal.t_valid
-            ):
-                raise ValidationError("Schema update produces an inverted validity interval")
+                if after.temporal.t_invalid is None or source_expiry < after.temporal.t_invalid:
+                    after.temporal.t_invalid = source_expiry
+            valid_from = after.temporal.t_valid
+            valid_until = after.temporal.t_invalid
+            if valid_from is not None and valid_until is not None:
+                if valid_until <= valid_from:
+                    raise ValidationError("Schema update produces an inverted validity interval")
         return plan
 
     @staticmethod
@@ -354,19 +354,23 @@ class SchemaUpdateCoordinator:
     ) -> list[MemoryUnit]:
         if not inputs:
             return candidates
-        guards_by_scope = {
-            _scope_key(u.scope): [g for record in self._records(u.scope) for g in record["guards"]]
-            for u in inputs
-        }
+        guards_by_scope = {}
+        for unit in inputs:
+            guards = []
+            for record in self._records(unit.scope):
+                guards.extend(record["guards"])
+            guards_by_scope[_scope_key(unit.scope)] = guards
         revisions = {(_scope_key(u.scope), u.id): content_revision(u) for u in inputs}
         result = []
         for unit in candidates:
-            blocked = {
-                g["source_id"]
-                for g in guards_by_scope.get(_scope_key(unit.scope), [])
-                if tuple(g["key"]) == property_key(unit)
-                and revisions.get((_scope_key(unit.scope), g["source_id"])) == g["revision"]
-            }
+            scope_key = _scope_key(unit.scope)
+            key = property_key(unit)
+            blocked = set()
+            for guard in guards_by_scope.get(scope_key, []):
+                if tuple(guard["key"]) != key:
+                    continue
+                if revisions.get((scope_key, guard["source_id"])) == guard["revision"]:
+                    blocked.add(guard["source_id"])
             # A joint conclusion cannot be certified by simply dropping a blocked source.
             if not blocked.intersection(sources(unit)):
                 result.append(unit)
