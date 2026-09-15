@@ -242,6 +242,21 @@ def test_embed_nan_sanitized_no_normalize():
         assert not math.isinf(v)
 
 
+def _install_fake_torch(monkeypatch, *, cuda_available: bool) -> None:
+    """注入 fake torch 模块，与本文件注入 fake FlagEmbedding 的做法一致。
+
+    torch 只在 [embed] extra 里（~2GB，CI 不装）。改用 importorskip 会让 CPU 与
+    CUDA 两个分支在所有常规环境下永久跳过，等于零覆盖；被测代码（bge_m3_embedder
+    的 fp16 降级判断）只调用 torch.cuda.is_available()，注入假模块即可两边都覆盖。
+    """
+    import sys
+    import types
+
+    fake_torch = types.ModuleType("torch")
+    fake_torch.cuda = types.SimpleNamespace(is_available=lambda: cuda_available)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+
 def test_fp16_disabled_on_cpu(monkeypatch):
     """T-BM3-16: CPU-only 运行时（cuda 不可用）下，use_fp16=true 被强制降为 fp32。
 
@@ -253,9 +268,8 @@ def test_fp16_disabled_on_cpu(monkeypatch):
     fake_mod = types.ModuleType("FlagEmbedding")
     fake_mod.BGEM3FlagModel = MockBGEM3Model
     monkeypatch.setitem(sys.modules, "FlagEmbedding", fake_mod)
-    # mock torch.cuda.is_available 返回 False（CPU 环境）
-    import torch
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    # cuda 不可用（CPU 环境）
+    _install_fake_torch(monkeypatch, cuda_available=False)
 
     embedder = BGEM3Embedder(model_name_or_path="BAAI/bge-m3", use_fp16=True, dimension=1024)
     # 触发 _load_model（mock 模型不走真实加载，但会经过 fp16 降级判断）
@@ -270,8 +284,7 @@ def test_fp16_kept_on_cuda(monkeypatch):
     fake_mod = types.ModuleType("FlagEmbedding")
     fake_mod.BGEM3FlagModel = MockBGEM3Model
     monkeypatch.setitem(sys.modules, "FlagEmbedding", fake_mod)
-    import torch
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    _install_fake_torch(monkeypatch, cuda_available=True)
 
     embedder = BGEM3Embedder(model_name_or_path="BAAI/bge-m3", use_fp16=True, dimension=1024)
     getattr(embedder, "_load_model")()

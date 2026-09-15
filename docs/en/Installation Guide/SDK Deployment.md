@@ -51,7 +51,11 @@ The equivalent pip commands are:
 python -m pip install -e .
 python -m pip install -e '.[deploy]'
 python -m pip install -e '.[embed]'
+python -m pip install -e '.[rerank]'
 ```
+
+The `rerank` extra provides `httpx`, which `APIReranker` requires. It is already
+included in `deploy`, so a deployment install does not need it separately.
 
 ## 3. Option One: In-Memory Storage + Direct MemoryAPI Calls
 

@@ -15,10 +15,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# httpx / python-dotenv / requests 是被测代码的真实依赖，缺失时对应用例只会跳过或直接
+# 无法收集，CI 会绿在没有覆盖的地方；故一并纳入 dev。
 dev = [
     "pytest>=8.0,<9.0",
     "pytest-cov>=6.0,<7.0",
     "ruff>=0.8",
+    "httpx>=0.27,<1",
+    "python-dotenv>=1.0",
+    "requests>=2.31",
 ]
 nlp = [
     "spacy>=3.7",
@@ -32,6 +37,12 @@ embed = [
 ]
 multimodal = [
     "dashscope>=1.24.0",
+    # video_asr 的 DashScope ASR 通路直接用 requests 发起上传与轮询。
+    "requests>=2.31",
+]
+# APIReranker 与 jiuwenswarm HTTP 客户端所需的 HTTP 客户端库。
+rerank = [
+    "httpx>=0.27,<1",
 ]
 # 接真后端部署所需的客户端库（Milvus / Elasticsearch / Redis / PostgreSQL）+ YAML 配置解析。
 deploy = [
@@ -40,6 +51,7 @@ deploy = [
     "redis>=5",
     "asyncpg>=0.30",
     "pyyaml>=6",
+    "httpx>=0.27,<1",
 ]
 # MCP surface（jiuwen_memory_entry/mcp_server）：把记忆动词暴露为 Model Context Protocol 工具。
 mcp = [
@@ -52,6 +64,9 @@ dev = [
     "pytest>=8.0,<9.0",
     "pytest-cov>=6.0,<7.0",
     "ruff>=0.8",
+    "httpx>=0.27,<1",
+    "python-dotenv>=1.0",
+    "requests>=2.31",
 ]
 
 [[tool.uv.index]]

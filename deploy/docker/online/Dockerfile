@@ -19,11 +19,11 @@ RUN apt-get update \
 COPY pyproject.toml ./
 COPY jiuwen_memory ./jiuwen_memory
 
-# [deploy] provides Milvus / Elasticsearch / Redis / YAML clients.
-# httpx is required by common.reranker.reranker_impl.api_reranker.
+# [deploy] provides Milvus / Elasticsearch / Redis / YAML clients, plus the httpx
+# required by common.reranker.reranker_impl.api_reranker.
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip \
-    && pip install -e ".[deploy]" "httpx>=0.27,<1"
+    && pip install -e ".[deploy]"
 
 COPY jiuwen_memory_entry ./jiuwen_memory_entry
 COPY scripts ./scripts
