@@ -13,12 +13,17 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 import openai
 
 from jiuwen_memory.common._support import (
+    DEFAULT_OUTBOUND_MAX_RETRIES,
+    DEFAULT_OUTBOUND_TIMEOUT_SECONDS,
+    OUTBOUND_CONNECT_TIMEOUT_SECONDS,
     outbound_verify,
+    read_outbound_call_policy,
     read_outbound_ssl,
     require_ca_file,
     require_https,
@@ -48,6 +53,8 @@ class OpenAIEmbedder(Embedder):
         api_key: API KEY 回落默认；自部署后端可填任意占位值
         dimension: 输出向量维度；text-embedding-3 系列支持 dimensions 截断
         max_batch_size: 单次 API 调用最大文本数（超过自动拆分批次）
+        timeout: 单次出站调用等待上限（秒）
+        max_retries: SDK 单次调用内的自动重试次数
         ssl_verify / ssl_ca_cert: 出站 TLS 校验（见 ``common._support``）
         config_source: 可选；每次调用 ``fetch("embedder.model|api_key|base_url")``
         config_namespace: ConfigSource key 命名空间，默认 ``embedder``
@@ -60,6 +67,8 @@ class OpenAIEmbedder(Embedder):
         api_key: str = "",
         dimension: int = 1536,
         max_batch_size: int = 2048,
+        timeout: float = DEFAULT_OUTBOUND_TIMEOUT_SECONDS,
+        max_retries: int = DEFAULT_OUTBOUND_MAX_RETRIES,
         ssl_verify: bool = False,
         ssl_ca_cert: str | None = None,
         config_source: ConfigSource | None = None,
@@ -71,6 +80,8 @@ class OpenAIEmbedder(Embedder):
         self._fallback_api_key = api_key
         self._dimension = dimension
         self._max_batch_size = max_batch_size
+        self._timeout = timeout
+        self._max_retries = max_retries
         self._ssl_verify = ssl_verify
         self._ssl_ca_cert = (ssl_ca_cert or "").strip() or None
         self._config_source = config_source
@@ -131,11 +142,19 @@ class OpenAIEmbedder(Embedder):
         ep = self._endpoint()
         fingerprint = (ep.api_key, ep.base_url, self._ssl_verify, self._ssl_ca_cert)
         if self._client is None or self._client_fingerprint != fingerprint:
-            client_kwargs: dict = {"api_key": ep.api_key}
+            client_kwargs: dict = {
+                "api_key": ep.api_key,
+                "timeout": openai.Timeout(
+                    timeout=self._timeout,
+                    connect=OUTBOUND_CONNECT_TIMEOUT_SECONDS
+                ),
+                "max_retries": self._max_retries,
+            }
             if ep.base_url is not None:
                 client_kwargs["base_url"] = ep.base_url
             if self._ssl_verify:
-                # 使用 SDK 默认客户端，在注入信任锚的同时保留长读取超时、连接池等
+                # 使用 SDK 默认客户端，在注入信任锚的同时保留连接池等默认参数；
+                # 等待策略由客户端参数显式管理。
                 client_kwargs["http_client"] = openai.DefaultHttpxClient(
                     verify=outbound_verify(self._ssl_ca_cert)
                 )
@@ -147,6 +166,14 @@ class OpenAIEmbedder(Embedder):
         """单批次调用 embeddings API。"""
         model, client = self._ensure_client()
         create_kwargs: dict = {"model": model, "input": texts}
+        logger.info(
+            "OpenAIEmbedder embed started: model=%s items=%d timeout=%.3fs "
+            "max_retries=%d",
+            model,
+            len(texts),
+            self._timeout,
+            self._max_retries,
+        )
         # 支持 Matryoshka 维度截断的模型走 API 原生 dimensions 参数（质量优于手动切片）：
         #   - OpenAI text-embedding-3-*
         #   - 阿里云百炼 text-embedding-v3 / v4
@@ -154,13 +181,26 @@ class OpenAIEmbedder(Embedder):
         # 配置维度小于返回维度时手动截断。
         if self._supports_dimensions(model):
             create_kwargs["dimensions"] = self._dimension
+
+        started_at = time.monotonic()
         try:
             response = client.embeddings.create(**create_kwargs)
-        except openai.APIError as exc:
-            logger.error("OpenAIEmbedder: API error — %s", exc)
+        except openai.APITimeoutError:
+            logger.error(
+                "OpenAIEmbedder embed timed out: model=%s items=%d elapsed=%.3fs "
+                "timeout=%.3fs max_retries=%d",
+                model,
+                len(texts),
+                time.monotonic() - started_at,
+                self._timeout,
+                self._max_retries,
+            )
             raise
         except openai.APIConnectionError as exc:
             logger.error("OpenAIEmbedder: connection error — %s", exc)
+            raise
+        except openai.APIError as exc:
+            logger.error("OpenAIEmbedder: API error — %s", exc)
             raise
 
         # 按索引排序保证顺序与输入一致
@@ -203,6 +243,7 @@ def _build(config):
     """从装配 ComponentConfig 构造；注入内核共享的 default ConfigSource（若已装配）。"""
     base_url = config.get("embedder_base_url", "")
     ssl = read_outbound_ssl(config, "embedder")
+    call_policy = read_outbound_call_policy(config, "embedder")
     if ssl.verify:
         require_https(base_url, component="openai embedder", param="embedder")
         require_ca_file(ssl.ca_cert, component="openai embedder", param="embedder")
@@ -214,6 +255,8 @@ def _build(config):
         api_key=config.get("embedder_api_key") or "",
         dimension=config.get("embedder_dim", 64),
         max_batch_size=config.get("embedder_max_batch") or 2048,
+        timeout=call_policy.timeout,
+        max_retries=call_policy.max_retries,
         ssl_verify=ssl.verify,
         ssl_ca_cert=ssl.ca_cert,
         config_source=ConfigSourceProducer.get_cached("default"),
