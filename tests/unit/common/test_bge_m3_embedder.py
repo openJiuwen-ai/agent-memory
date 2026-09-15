@@ -254,6 +254,7 @@ def test_fp16_disabled_on_cpu(monkeypatch):
     fake_mod.BGEM3FlagModel = MockBGEM3Model
     monkeypatch.setitem(sys.modules, "FlagEmbedding", fake_mod)
     # mock torch.cuda.is_available 返回 False（CPU 环境）
+    pytest.importorskip("torch")
     import torch
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
 
@@ -270,6 +271,7 @@ def test_fp16_kept_on_cuda(monkeypatch):
     fake_mod = types.ModuleType("FlagEmbedding")
     fake_mod.BGEM3FlagModel = MockBGEM3Model
     monkeypatch.setitem(sys.modules, "FlagEmbedding", fake_mod)
+    pytest.importorskip("torch")
     import torch
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
 
