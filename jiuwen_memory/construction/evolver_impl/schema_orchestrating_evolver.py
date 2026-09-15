@@ -77,7 +77,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
             dedup_medium_similarity=dedup_medium_similarity,
             dedup_high_similarity=dedup_high_similarity,
         )
-        # IndexBuilder owns memory writes; KV also holds private update recovery records.
+        # IndexBuilder owns memory writes; KV is used only to read source/property records.
         self._source_kv = storage.kv(kv_name)
         self._updates = SchemaUpdateCoordinator(self._source_kv, self._extract_source_update)
 
@@ -94,16 +94,16 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
         return identity()
 
     def prepare_source_update(
-        self, old: MemoryUnit, new: MemoryUnit, *, mode: str, request_key: str
+        self, old: MemoryUnit, new: MemoryUnit, *, mode: str
     ) -> SourceUpdatePlan | None:
         if old.content == new.content:
-            return self._updates.prepare(old, new, mode=mode, request_key=request_key)
+            return None
         name, version = self.source_schema_identity()
         if (old.system_metadata.get("schema_name", name) != name
                 or old.system_metadata.get("schema_version", version) != version):
             raise ValidationError("The source's original Schema configuration has changed")
         new.system_metadata.update(schema_name=name, schema_version=version)
-        return self._updates.prepare(old, new, mode=mode, request_key=request_key)
+        return self._updates.prepare(old, new, mode=mode)
 
     def commit_source_update(
         self, plan: SourceUpdatePlan, *, index_for: Callable[[MemoryUnit], IndexBuilder]
@@ -185,10 +185,6 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
         if not units:
             return EvolveResult()
 
-        units = self._updates.filter_inputs(units)
-        if not units:
-            return EvolveResult()
-
         # Source persistence is the durability boundary and intentionally fails loudly.
         source_ids = self._persist_source_evidence(units)
         recent = self._persist_and_maintain_messages(units)
@@ -206,7 +202,6 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
             return EvolveResult(created_ids=source_ids)
 
         self.last_schema_error = ""
-        extracted = self._updates.filter_replayed(extracted, units)
         if not extracted:
             return EvolveResult(created_ids=source_ids)
 

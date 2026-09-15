@@ -1,8 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Schema source reconciliation, durable retries and old-evidence replay guards.
+"""Request-local Schema source and property reconciliation.
 
-Only memory bodies go through IndexBuilder. Private operation records use the
-injected KV port. This is a recoverable sequence, not a multi-backend transaction.
+All writes go through IndexBuilder. The injected KV port is read-only here;
+partial failures are reported without persistent recovery or atomic rollback.
 """
 
 from __future__ import annotations
@@ -16,9 +16,9 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 
 from jiuwen_memory.common.errors import ConflictError, PartialFailureError, ValidationError
-from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit, Scope
+from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit
 from jiuwen_memory.common.type_def.memory import MEMORY_KEY_PREFIX
-from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.common.type_def.memory_codec import loads
 from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.construction.source_update import (
     STRICT_ENTITY_WRITES,
@@ -28,15 +28,6 @@ from jiuwen_memory.construction.source_update import (
 )
 from jiuwen_memory.storage.kv import KVStore, load_units
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
-
-_PREFIX = "/schema_updates/"
-
-
-def content_revision(unit: MemoryUnit) -> str:
-    # Explicit overwrites can return to the same text (A -> B -> A). The latest A
-    # is distinct from a replay of the original A, even though its ID is unchanged.
-    revision = unit.system_metadata.get("schema_source_revision", "")
-    return hashlib.sha256(f"{revision}\0{unit.content}".encode("utf-8")).hexdigest()
 
 
 def _revision(unit: MemoryUnit) -> str:
@@ -74,89 +65,14 @@ def sources(unit: MemoryUnit) -> list[str]:
     return list(dict.fromkeys(unit.provenance or ([unit.source_ref] if unit.source_ref else [])))
 
 
-def _scope_key(scope: Scope) -> tuple[str, ...]:
-    return scope.org, scope.space, scope.user, scope.agent, scope.session
-
-
-def _encode_unit(unit: MemoryUnit | None) -> str | None:
-    return dumps(unit).decode("utf-8") if unit is not None else None
-
-
-def _decode_unit(value: str | None) -> MemoryUnit | None:
-    return loads(value.encode("utf-8")) if value is not None else None
-
-
-def _payload(plan: SourceUpdatePlan, *, done: bool = False) -> bytes:
-    if done:
-        # Completed guards retain hashes and IDs, not an extra copy of overwritten memory bodies.
-        return json.dumps(
-            {
-                "operation_id": plan.operation_id,
-                "request_key": plan.request_key,
-                "source_id": plan.source_before.id,
-                "source_revision": content_revision(plan.source_before),
-                "source_after_id": plan.source_after.id,
-                "source_after_revision": content_revision(plan.source_after),
-                "guards": plan.guards,
-                "completed": plan.completed,
-                "done": True,
-            },
-            ensure_ascii=False,
-        ).encode("utf-8")
-    return json.dumps(
-        {
-            "operation_id": plan.operation_id,
-            "request_key": plan.request_key,
-            "source_before": _encode_unit(plan.source_before),
-            "source_after": _encode_unit(plan.source_after),
-            "changes": [[_encode_unit(c.before), _encode_unit(c.after)] for c in plan.changes],
-            "guards": plan.guards,
-            "completed": plan.completed,
-            "done": done,
-        },
-        ensure_ascii=False,
-    ).encode("utf-8")
-
-
-def _plan(data: dict) -> SourceUpdatePlan:
-    return SourceUpdatePlan(
-        data["operation_id"],
-        data["request_key"],
-        _decode_unit(data["source_before"]),
-        _decode_unit(data["source_after"]),
-        [UnitChange(_decode_unit(a), _decode_unit(b)) for a, b in data["changes"]],
-        data["guards"],
-        data["completed"],
-    )
-
-
 class SchemaUpdateCoordinator:
     def __init__(self, kv: KVStore, extract: Callable[[MemoryUnit], SourceExtraction]) -> None:
         self._kv = kv
         self._extract = extract
 
-    def _records(self, scope: Scope) -> list[dict]:
-        return [json.loads(raw) for _, raw in self._kv.scan(scope, _PREFIX)]
-
     def prepare(
-        self, old: MemoryUnit, new: MemoryUnit, *, mode: str, request_key: str
+        self, old: MemoryUnit, new: MemoryUnit, *, mode: str
     ) -> SourceUpdatePlan | None:
-        for record in self._records(old.scope):
-            if record["done"]:
-                if record["source_id"] == old.id and record["request_key"] == request_key:
-                    result = load_units(self._kv, old.scope, [record["source_after_id"]])
-                    if result and content_revision(result[0]) == record["source_after_revision"]:
-                        if old.lifecycle == LifecycleState.SUPERSEDED and old.id != result[0].id:
-                            return SourceUpdatePlan(
-                                record["operation_id"], request_key, old, result[0], []
-                            )
-            else:
-                pending = _plan(record)
-                if pending.source_before.id == old.id and pending.request_key == request_key:
-                    return pending
-                raise ConflictError(
-                    message="resume the pending Schema update before another update"
-                )
         if old.content == new.content:
             return None
         if old.lifecycle != LifecycleState.ACTIVE:
@@ -197,7 +113,6 @@ class SchemaUpdateCoordinator:
                     "Associated properties use a different Schema configuration"
                 )
             related.append(unit)
-        new.system_metadata["schema_source_revision"] = str(uuid.uuid4())
         extraction = self._extract(copy.deepcopy(new))
         candidates = extraction.properties
         for unit in candidates:
@@ -208,7 +123,7 @@ class SchemaUpdateCoordinator:
         new.entities = list(dict.fromkeys(extraction.entities))
         new.layers.l0 = new.layers.l1 = ""
         new.vectors = []
-        plan = SourceUpdatePlan(str(uuid.uuid4()), request_key, copy.deepcopy(old), new, [])
+        plan = SourceUpdatePlan(str(uuid.uuid4()), copy.deepcopy(old), new, [])
         old_groups: dict[tuple, list[MemoryUnit]] = defaultdict(list)
         new_groups: dict[tuple, list[MemoryUnit]] = defaultdict(list)
         for unit in related:
@@ -246,7 +161,6 @@ class SchemaUpdateCoordinator:
                 after.user_metadata = {**before.user_metadata, **candidate.user_metadata}
                 after.system_metadata = {**before.system_metadata, **candidate.system_metadata}
                 self._replace(plan, before, after, supersede, boundary)
-                self._guard(plan, before, only=old.id if same_fact else "")
             for before in previous:
                 remaining = [sid for sid in sources(before) if sid != old.id]
                 if remaining:
@@ -259,8 +173,6 @@ class SchemaUpdateCoordinator:
                     plan.changes.append(UnitChange(before, retired))
                 else:
                     plan.changes.append(UnitChange(before, None))
-                # Only the withdrawn revision, not other supporting sources, is blocked.
-                self._guard(plan, before, only=old.id)
             for candidate in incoming:
                 candidate.temporal.t_valid = boundary if supersede else candidate.temporal.t_valid
                 plan.changes.append(UnitChange(None, candidate))
@@ -335,93 +247,24 @@ class SchemaUpdateCoordinator:
             after.temporal.t_invalid = before.temporal.t_invalid
             plan.changes.append(UnitChange(before, after))
 
-    def _guard(self, plan: SourceUpdatePlan, before: MemoryUnit, *, only: str = "") -> None:
-        for sid in sources(before):
-            if only and sid != only:
-                continue
-            evidence = load_units(self._kv, before.scope, [sid])
-            if evidence:
-                plan.guards.append(
-                    {
-                        "key": list(property_key(before)),
-                        "source_id": sid,
-                        "revision": content_revision(evidence[0]),
-                    }
-                )
-
-    def filter_replayed(
-        self, candidates: list[MemoryUnit], inputs: list[MemoryUnit]
-    ) -> list[MemoryUnit]:
-        if not inputs:
-            return candidates
-        guards_by_scope = {}
-        for unit in inputs:
-            guards = []
-            for record in self._records(unit.scope):
-                guards.extend(record["guards"])
-            guards_by_scope[_scope_key(unit.scope)] = guards
-        revisions = {(_scope_key(u.scope), u.id): content_revision(u) for u in inputs}
-        result = []
-        for unit in candidates:
-            scope_key = _scope_key(unit.scope)
-            key = property_key(unit)
-            blocked = set()
-            for guard in guards_by_scope.get(scope_key, []):
-                if tuple(guard["key"]) != key:
-                    continue
-                if revisions.get((scope_key, guard["source_id"])) == guard["revision"]:
-                    blocked.add(guard["source_id"])
-            # A joint conclusion cannot be certified by simply dropping a blocked source.
-            if not blocked.intersection(sources(unit)):
-                result.append(unit)
-        return result
-
-    def filter_inputs(self, inputs: list[MemoryUnit]) -> list[MemoryUnit]:
-        """A corrected source revision must never be re-extracted by background work."""
-        result = []
-        for unit in inputs:
-            obsolete = []
-            for record in self._records(unit.scope):
-                if record["done"]:
-                    obsolete.append((record["source_id"], record["source_revision"]))
-                else:
-                    old = _decode_unit(record["source_before"])
-                    obsolete.append((old.id, content_revision(old)))
-            if (unit.id, content_revision(unit)) not in obsolete:
-                result.append(unit)
-        return result
-
     def commit(
         self, plan: SourceUpdatePlan, *, index_for: Callable[[MemoryUnit], IndexBuilder]
     ) -> MemoryUnit:
         scope = plan.source_before.scope
-        key = _PREFIX + plan.operation_id
-        if self._kv.exists(scope, key):
-            saved = json.loads(self._kv.get(scope, key))
-            if saved["done"]:
-                current = load_units(self._kv, scope, [saved["source_after_id"]])
-                if not current:
+        for change in plan.changes:
+            if change.before is not None:
+                current = load_units(self._kv, scope, [change.before.id])
+                if not current or _revision(current[0]) != _revision(change.before):
                     raise ConflictError(
-                        message="Completed Schema update result is no longer present"
+                        message="Schema update inputs changed; retry preparation"
                     )
-                return current[0]
-            plan = _plan(saved)
-        else:
-            for change in plan.changes:
-                if change.before is not None:
-                    current = load_units(self._kv, scope, [change.before.id])
-                    if not current or _revision(current[0]) != _revision(change.before):
-                        raise ConflictError(
-                            message="Schema update inputs changed; retry preparation"
-                        )
-            current_source = load_units(self._kv, scope, [plan.source_before.id])
-            if not current_source or _revision(current_source[0]) != _revision(plan.source_before):
-                raise ConflictError(message="Schema source changed; retry preparation")
-            self._kv.insert(scope, key, _payload(plan))
+        current_source = load_units(self._kv, scope, [plan.source_before.id])
+        if not current_source or _revision(current_source[0]) != _revision(plan.source_before):
+            raise ConflictError(message="Schema source changed; retry preparation")
+        completed = 0
         token = STRICT_ENTITY_WRITES.set(True)
         try:
-            for position in range(plan.completed, len(plan.changes)):
-                change = plan.changes[position]
+            for change in plan.changes:
                 if change.after is None:
                     index_for(change.before).remove([change.before])
                 else:
@@ -437,14 +280,12 @@ class SchemaUpdateCoordinator:
                         index.update([unit])
                     else:
                         index.build([unit])
-                plan.completed = position + 1
-                self._kv.update(scope, key, _payload(plan))
-            self._kv.update(scope, key, _payload(plan, done=True))
+                completed += 1
         except Exception as exc:
             raise PartialFailureError(
-                completed=tuple(str(i) for i in range(plan.completed)),
+                completed=tuple(str(i) for i in range(completed)),
                 failed=f"schema_update:{plan.operation_id}",
-                retry_action="update with the same patch",
+                retry_action="inspect affected records before another update",
             ) from exc
         finally:
             STRICT_ENTITY_WRITES.reset(token)
