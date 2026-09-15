@@ -6,7 +6,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from jiuwen_memory.common.type_def import MemoryUnit
 
@@ -30,12 +30,9 @@ class UnitChange:
 @dataclass
 class SourceUpdatePlan:
     operation_id: str
-    request_key: str
     source_before: MemoryUnit
     source_after: MemoryUnit
     changes: list[UnitChange]
-    guards: list[dict] = field(default_factory=list)
-    completed: int = 0
 
 
 class SourceUpdateSupport(ABC):
@@ -47,9 +44,9 @@ class SourceUpdateSupport(ABC):
 
     @abstractmethod
     def prepare_source_update(
-        self, old: MemoryUnit, new: MemoryUnit, *, mode: str, request_key: str
+        self, old: MemoryUnit, new: MemoryUnit, *, mode: str
     ) -> SourceUpdatePlan | None:
-        """Return a frozen plan (or pending retry) without business writes."""
+        """Return a request-local plan without business writes or persistent state."""
 
     @abstractmethod
     def commit_source_update(

@@ -4,10 +4,7 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 from collections.abc import Callable
-from dataclasses import asdict
 from datetime import datetime, timezone
 
 from jiuwen_memory.common.errors import ValidationError
@@ -58,11 +55,8 @@ async def prepare_schema_update(
             )
     if patch.mode == UpdateMode.SUPERSEDE and patch.t_valid is None:
         new.temporal.t_valid = datetime.now(timezone.utc)
-    request_key = hashlib.sha256(
-        json.dumps(asdict(patch), sort_keys=True, default=str).encode("utf-8")
-    ).hexdigest()
     return await asyncio.to_thread(
-        support.prepare_source_update, old, new, mode=patch.mode.value, request_key=request_key
+        support.prepare_source_update, old, new, mode=patch.mode.value
     )
 
 
