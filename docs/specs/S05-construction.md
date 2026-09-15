@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-09-03 |
+| 最近一次修订日期 | 2026-09-15 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
@@ -17,6 +17,28 @@
 IndexBuilder 以带命名空的逻辑路径投影两类字段。
 
 ## 范围 / 边界
+
+### 可选 Schema source 更新能力
+
+`SourceUpdateSupport` 提供 Schema 配置身份、只读准备及计划提交三个内部契约：
+
+- `source_schema_identity() -> tuple[str, str]`：返回 Schema 名和版本。
+- `prepare_source_update(old, new, *, mode, request_key) -> SourceUpdatePlan | None`：
+  使用完整抽取结果产生冻结动作，或者返回持久化的待恢复动作；不写业务数据。
+- `commit_source_update(plan, *, index_for) -> MemoryUnit`：调用方完成全部权限校验后，
+  使用按 unit 路由的 IndexBuilder 提交并返回目标记忆。
+
+`SourceExtraction` 包含独立的 `properties` 和 `entities`，允许实体没有 property。
+`SourceUpdatePlan` 包含操作 ID、请求指纹、source 前后版本、按序 `UnitChange`、
+证据回放关系及完成步骤；每个 `UnitChange` 的 before/after 分别可空，表达新增、
+更新或删除。这不是公开 MemoryAPI 参数，不能由外部调用方直接提交任意计划。
+
+更新专用抽取不得采用部分成功结果推断属性消失。实体结果整体替换 source 的列表，
+不混入属性名称。派生写入沿用 source 的更新模式和限定来源，不递归改写其他记忆。
+提交中断通过 `PartialFailureError` 报告并支持固定 ID 重试，不承诺跨后端事务。
+关联决策见 [F09](../features/construction/F09-schema-source-update.md)。
+
+### 常规范围
 
 **管什么**：
 - 真源落盘（统一经 IndexBuilder 写入记忆单元及派生索引）

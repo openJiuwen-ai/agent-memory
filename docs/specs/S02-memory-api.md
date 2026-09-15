@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-09-14 |
+| 最近一次修订日期 | 2026-09-15 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -549,6 +549,14 @@ def update(
 ```
 
 修正记忆：鉴权 UPDATE→委托 Engine。`MemoryPatch` 仅非 None 字段生效：`content` / `tier` / `tags`（整体替换）/ `system_metadata`（合并）/ `user_metadata`（合并）/ `t_valid` / `t_invalid` / `mode`。
+
+Schema source 的正文更新还会同步协调同 scope 的 Schema property 与实体关联，保留
+OVERWRITE/SUPERSEDE 的 ID、版本和有效期语义。接口签名与返回类型不变，`content=""`
+表示替换为空正文；不修改原始对话。普通记忆、直接修改 property 和非正文更新保持原行为。
+源记录继续使用 UPDATE 鉴权；派生记录的覆盖/版本修订、新增和删除分别核验 UPDATE、
+WRITE 和 DELETE，并在首次业务写入前全部完成。配置失效、抽取不完整或匹配歧义报错；
+提交中断返回 `PartialFailureError`，使用相同目标和 patch 重试。
+决策与边界见 [F09](../features/construction/F09-schema-source-update.md)。
 
 **状态：已设计、尚未实现**（`MemoryPatch.hierarchy`）
 
