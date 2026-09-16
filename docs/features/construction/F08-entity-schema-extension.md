@@ -454,6 +454,10 @@ EncryptedKVStore 首版返回 `None`，继续用已有解密扫描，其 raw KV 
   路由和实际 client 绑定、空间删除回收 TTL 遗留、GET/ADMIN 授权及默认关闭时原 I/O。
 - Ruff（含 protected-access 检查）通过。未修改 API update 与两个 Engine.update，未恢复
   请求持久化或处理此前暂缓的 Engine 内部路由问题。
+- 静态检查补正：两个 KV 的 rebuild 委托父类后使用无返回表达式的提前退出，消除
+  inconsistent-return-statements；禁用时仍抛 UnsupportedCapabilityError。Pylint 的
+  inconsistent-return-statements/unreachable 检查及 Ruff 通过；本次内存/模拟 Redis
+  存储专项 38 passed、8 个不适用组合 skipped，21 个真实 Redis 参数用例未重复运行。
 
 配置示例见 S08。开启 Redis 参数后，由存储管理方在维护窗口获取同一个命名端口执行回填：
 
