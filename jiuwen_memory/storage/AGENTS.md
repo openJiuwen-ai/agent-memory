@@ -31,7 +31,6 @@
 | `_support.py` | 后端实现共用：异常归一（`wrap_backend`）、scope 派生（`scope_dims`/`scope_segments`）、SSL 配置读取（`read_ssl_config`）；`SslConfig` 与 scheme 校验复用 `common._support` |
 | `_pg.py` | PostgreSQL 后端共享基础：asyncpg 惰性连接池（专职事件循环线程桥接同步调用）、schema 工具与 FilterExpr SQL 编译；`dsn` 支持 ConfigSource 晚绑定 |
 | `kv_impl/` | KVStore 实现目录（memory / sqlite / redis / encrypted / postgres）及共用的 `memory_list.py` 兼容逻辑；连接型后端支持 `kv_store.*` 晚绑定 |
-| `kv_impl/schema_source_index.py` / `kv_impl/redis_schema_source_index.py` | Schema property 来源投影与内存关系集合 / Redis 原生 Source Set、单 property Lua 写入、Scope 回填和清理；由启用开关的 KV CRUD 维护 |
 | `vector_impl/` | VectorStore 实现目录（memory / milvus / pgvector）；`uri`/`dsn` 晚绑定 |
 | `graph_impl/` | GraphStore 实现目录（memory / nano_graphrag）；`working_dir` 晚绑定 |
 | `fulltext_impl/` | FulltextStore 实现目录（memory / elasticsearch）；`hosts` 晚绑定 |
@@ -53,12 +52,6 @@
 
 检索型存储额外提供 `search` 查询；kv 提供 MemoryUnit 专用 `list` 和通用 `mget` /
 `exists` / `scan` / `scopes`；fs 提供 `stat`。
-
-KV 还提供可选 `get_schema_properties_by_source`（未支持/未就绪返回 None）与管理用
-`rebuild_schema_source_index` / `clear_schema_source_index`。当前仅内存/Redis 在
-`schema_source_index_enabled` 开启时维护；来源查询授权为 GET，重建/清理为 ADMIN。
-Redis 查询及维护一次绑定实际 client，不缓存跨库就绪状态。Encrypted 的 raw KV 必须关闭
-来源索引；加密包装器使用解密扫描。Scope 清理必须调用清理接口回收 TTL 遗留关系。
 
 ## 行为铁律
 
@@ -222,8 +215,8 @@ Redis 查询及维护一次绑定实际 client，不缓存跨库就绪状态。E
     接线。跨 Store 集的整栈切换走 Routing，不属命名数据面语义。
 17. **纯点读/列表读注入 KVStore 端口**：Dedup `_load_unit` / Governor `_find` / Evolver
     源读 / KeywordRecaller 实体扩展等纯点读场景注入 `manager.kv(name)` + `load_units`；
-    InMemoryEngine / LifecycleManager / EvolveJob / MiddleToLongJob 使用 KV 端口
-    （点读 `load_units` / 列表 `list_units` / 枚举 `kv.scopes()`，lifecycle 回写
-    `memory_key`+`dumps` 同 ForwardIndexBuilder 模式）。CloudEngine 的记忆读取注入
-    DomainStore（get/list/scopes），与检索路径（`PipelineRetriever`）及一体化写路径
-    （`UnifiedIndexBuilder`）共同消费数据面；CompositeDomainStore 的本体写入落到其 KV 端口。
+    control 面（Engine×2 / LifecycleManager / EvolveJob / MiddleToLongJob）真源读写全部直连
+    `manager.kv(name)`（点读 `load_units` / 列表 `list_units` / 枚举 `kv.scopes()`，lifecycle
+    回写 `memory_key`+`dumps` 同 ForwardIndexBuilder 模式）——均不注入 DomainStore（运行期持
+    最小接口，F07 决策 10 修订并推进到 control 面）。DomainStore 消费方只有检索路径
+    （`PipelineRetriever`）与一体化写路径（`UnifiedIndexBuilder`）。

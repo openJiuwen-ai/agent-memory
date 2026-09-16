@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-09-16 |
-| 影响范围 | `jiuwen_memory/api/`、`jiuwen_memory/common/`、`jiuwen_memory/config/`、`jiuwen_memory/construction/`、`jiuwen_memory/control/`、`jiuwen_memory/storage/`、`docs/specs/S02-memory-api.md`、`docs/specs/S03-control.md`、`docs/specs/S05-construction.md`、`docs/specs/S06-storage.md`、`docs/specs/S08-config.md` |
+| 影响范围 | `jiuwen_memory/api/`、`jiuwen_memory/config/`、`jiuwen_memory/construction/`、`jiuwen_memory/control/`、`docs/specs/S02-memory-api.md`、`docs/specs/S03-control.md`、`docs/specs/S05-construction.md`、`docs/specs/S08-config.md` |
 | 测试基线 | `tests/unit/construction/test_entity_schema_extension.py`；source 更新与主线隔离验证见下文 |
 | Refs | #208 |
 
@@ -281,221 +281,19 @@ Rebase 到最新 mem2.0 并保留 #209 的实体名写回修复后，constructio
 同步上游日志脱敏后的结构核对确认 EntityLinkService 与上游一致，EntityIndexBuilder
 非日志逻辑与合并前一致、日志调用与上游一致，保留 Schema 上下文中的失败上抛。
 
-## 按 Source 定位关联 property 的性能优化
+### 暂缓 Source 关联索引优化
 
-2026-09-16 首版实现内存 KV 与单实例 Redis 的可选关联索引；默认关闭，SQLite、PostgreSQL
-及加密 KV 继续扫描。此次只替换候选查询，保留 Source 更新原有的抽取、匹配及提交语义。
+2026-09-16 按本次 PR 范围要求撤回内存/Redis 的 Source→property 反向索引，
+同时移除索引查询、重建与清理接口、写入维护、独立开关及启动联动校验。
+Schema update 恢复按 Scope 扫描 /memory/ 后过滤关联 property；继续使用全部
+provenance，空 provenance 时回退 source_ref，多源处理语义没有取消。
+保留 #208 的属性协调、OVERWRITE/SUPERSEDE、entities 写回、重复读取优化及原有鉴权路径。
+本次不增加持久化恢复机制。查询成本仍随 Scope 记忆数量增长，性能优化后续单独评估。
 
-### 1. 目标与实施边界
-
-把 Schema Source 正文更新的关联查询从扫描 Scope 内 N 条 MemoryUnit，改为定位该 Source
-关联的 k 条 property 后读取真源。k 包括该 Source 关联的历史记录；仍按原规则过滤状态和
-有效期，不把 k 宣称为活跃 property 的数量。内存与 Redis 候选枚举为 O(k)；后续 SQL
-适配目标为 O(log E + k)，E 为索引关系总数。不承诺固定延迟，也不包含 LLM 抽取时间。
-
-此次只优化候选查找，不改变完整抽取、属性匹配、多源更正规则、OVERWRITE/SUPERSEDE、
-entities 写回、API 逐项鉴权或 Engine 现有准备路由。保留请求内计划与修订校验，不增加
-`/schema_updates/`、pending/done、请求重放或自动恢复流程，也不增加跨后端事务承诺。
-
-### 2. 查询协议
-
-在 `KVStore` 增加可选查询能力 `get_schema_properties_by_source`，接收完整 Scope 和 Source ID，
-返回候选真源的 key/value 列表或 `None`。默认返回 `None`，现有第三方后端无需立即实现；
-正式接口契约见 S06。维护入口为按 Scope 的显式重建与清理，均属于存储管理权限。
-
-- `None`：后端不支持、索引尚未建全或索引已失效，协调器使用原有全 Scope 扫描。
-- `[]`：索引覆盖完整，确认没有候选；不能因此再次触发全量扫描。
-- 非空列表：返回候选真源的 key/value，沿用协调器现有 Schema、来源、生命周期、时间及
-  Schema 版本检查。索引只定位 ID，不复制 property 正文或替代真源。
-- 授权失败、连接失败等异常照常上抛，不把异常转换为“无关联”。读取索引后 property
-  已过期/删除时可省略该候选；已存在的真源仍需完整加载，不能因批量读取部分缺失而漏掉其他 ID。
-- 候选不能按 top_k 截断。后端可以分批读完全部关联，再返回完整结果；不得截取部分结果
-  交给完整抽取协调器执行撤回判断。
-
-`SchemaUpdateCoordinator.prepare()` 只将数据来源替换为“可选索引查询 → 不可用时扫描”，
-后面的过滤及匹配保持不变。返回完整字节记录而非让调用方再次解析 KV 端口，可保证一次查询
-使用同一个实际后端；动态路由不得从 A 的索引定位后去 B 读取正文。
-
-### 3. 索引数据模型
-
-关系主键为 `(org, space, user, agent, session, source_id, property_id)`，严格保留 Scope
-五个维度，并归属于 property 真源所在的实际 KV 实例。不同库、命名 KV 或路由实例不共用索引。
-
-只为 `system_metadata.extraction_mode == "schema"` 的 MemoryUnit 建关系。来源规则与
-现有 `sources(unit)` 完全一致：`provenance` 非空时使用其中去重后的全部 ID，否则回退
-`source_ref`。不把 `source_ref` 另行并入非空 provenance，以免扩大现有语义。
-
-例如 P1 的 `provenance=[S1, S2]`、`source_ref=S1`，必须同时有 `S1 → P1` 和 `S2 → P1`。
-还需要按 property 定位其旧来源集合，以便更新、硬删除时撤销旧关系。集合更新使用单条关系
-增删，不对某个 Source 的完整 ID 列表进行无并发保护的读改写。
-
-索引保留历史 property 的来源关系，由查询后的真源过滤决定本次是否关联。不能按当前时间
-直接移除所有过期边，因为 SUPERSEDE 的生效边界可以是过去时间；不能改变现有时间过滤语义。
-
-### 4. 写入位置与一致性
-
-关系维护放在启用了该功能的 KV 后端写入实现内，与 `/memory/{id}` 本体的 insert/update/
-delete 一起执行。构建层仍通过 IndexBuilder 写记忆；协调器仍不直接写 KV。
-
-这样既覆盖 ForwardIndexBuilder，也覆盖 CompositeDomainStore 的写入以及生命周期组件
-对 KV 真源的修改；不能只在 Schema `update()` 或 ADD 后补写，否则会漏掉直接 property
-更新、删除等路径。非 KV 真源的自定义 DomainStore 不自动声称支持此索引。
-
-| 操作 | 关联索引处理 |
-|---|---|
-| ADD 产生 property | 为全部来源增加关联 |
-| OVERWRITE | 根据旧、新 provenance 的差集增删边；内容变化但来源不变时保留边 |
-| 多源 property 撤回一个来源 | 仅删除对应 Source 的边，保留其他来源 |
-| SUPERSEDE | 为新 property 建立新来源关联；旧 property 保留历史关联 |
-| 关闭有效期、软删除或归档 | 保留边，读取真源后按原规则过滤 |
-| 硬删除 property | 删除该 property 的全部边和反向来源记录 |
-| 清空 Scope / 删除 Space | 在清理真源时同步清理该 Scope 的关联数据，不能遗留不可枚举的内部键 |
-
-每条 property 的本体与关系维护须满足后端的一致性约束；不能把“本体成功、关联丢失”当成
-可用索引继续查询。关系缺失会造成漏撤回，不能仅记录日志。索引维护错误上抛；不能证明索引
-完整时，停止使用该索引，后续回退扫描或显式报错。修复方式是重建派生索引，不重放业务请求。
-
-### 5. 后端实现
-
-| 后端 | 读取方式 | 写入及删除方式 |
-|---|---|---|
-| 内存 | `scope → source_id → set[property_id]` 精确定位 | 同一锁内维护本体、正向集合及 property 的旧来源集合 |
-| SQLite / PostgreSQL（后续） | 首版返回 None；后续独立关系表，联合索引覆盖完整 Scope + source_id，另建 Scope + property_id 索引 | 后续使用单条 property 的数据库事务；首版不维护关系 |
-| Redis | 每个 Source 一个原生 Set 保存 property ID，按已知 Set key 取成员，再分批读取本体 | 每个 property 另存来源集合；通过短 Lua 脚本校验旧关联版本并更新本体、相关 Set；发生并发变化则重新读取旧集合后有界重试 |
-
-Redis 不用 `SCAN MATCH` 查关系，也不把全部 property ID 保存成一个 JSON 数组反复覆盖。
-索引集合、property 来源集合和可用标记使用后端保留的内部命名空间；普通 KV.scan 和 scopes
-枚举不得把这些集合当作业务字节记录或额外 Scope。Scope/Space 清理须显式覆盖这些内部键。
-Lua 访问的所有 key 必须作为 KEYS 参数显式传入，旧来源集合与新来源集合共同决定这些 key。
-不在一次脚本中扫描整个 Scope。首版只覆盖现有单实例 Redis 形态；跨槽 Cluster 未经过同槽
-键布局及迁移设计前保持不支持，不静默退化为非原子分步写。
-
-Lua 的执行隔离不等于失败回滚。脚本先校验参数、key 类型和旧关联版本；开始变更前把固定的
-索引可用标记置为不可用，全部成功后仅在入口原本可用时恢复。脚本出错或执行结果不确定时
-保持不可用，后续单次成功写入不能擅自恢复，须显式重建并验证。Redis 使用 noeviction 或
-等价受控淘汰策略，禁止索引集合被单独淘汰而真源仍保留；索引成员不独立设置 TTL。
-本体 TTL 到期可能留下多余关联，读取时跳过缺失真源，显式重建/清理时回收；不能因此漏查
-其他仍存在的 property。
-
-上述可用标记归属于实际 KV 实例，按完整 Scope 保存索引版本与重建世代；不按请求增长，
-不保存业务计划或执行进度。实现采用 Scope 粒度，便于逐 Scope 回填和随空间清理。
-首版内存/Redis 只在单条 property 范围内维护索引，不保证一次 Source 更新涉及的全部
-property、全文、向量、实体存储原子提交。
-
-Redis 语义依据：[Lua 执行与 KEYS 约束](https://redis.io/docs/latest/develop/programmability/eval-intro/)、
-[Redis 事务不提供回滚](https://redis.io/docs/latest/develop/using-commands/transactions/)。
-
-### 6. 启用、回填及兼容
-
-增加存储实例级配置 `schema_source_index_enabled`，默认 false。配置启用时必须同时设置
-`globals.schema_enabled=true`，否则在组件创建前抛 `ValidationError` 并指出配置路径。
-检查所有具名 KV 及内联 raw KV，按 params > globals 取有效值，并沿用现有布尔字符串解析。
-此规则在配置装配入口执行，不检查调用者手工构造或注入的 KV 对象。
-允许 Schema 开启但索引关闭；不将两个开关合并，也不随 Schema 开启自动开启索引，保留
-扫描路径和单独启停优化的能力。未开启索引时不创建索引、不解析额外投影、不增加旧 CRUD
-的 I/O；Schema 查询沿用现有扫描。不要把索引是否维护绑定到单次
-API 请求或该进程是否调用 Schema 抽取：一旦实际真源启用索引，所有写入该真源的进程都必须
-执行相同维护规则，包括通过普通 API 直接修改 property 的进程；通过配置装配的这些
-写入进程也必须开启 Schema 主开关。配置校验不探测其他进程，部署仍须统一维护配置。
-
-启动校验回归覆盖默认/具名 memory、redis、内联 raw KV、开关组合、布尔字符串及全局回退/
-局部覆盖：20 passed。API/config、Schema 构建与更新、来源索引回归合计 467 passed、
-8 skipped（Redis 专项的内存参数组合）；21 个真实 Redis 用例本轮未运行，Redis 模拟用例通过。
-Ruff 及返回一致性、布尔表达式复杂度、受保护成员访问的 Pylint 检查通过。
-
-首版采用明确的维护窗口回填，不设计在线全量扫描与并发写入合并：
-
-1. 升级该真源的全部写入进程，确认不存在绕过索引维护的旧版本或关闭开关的写入者；暂停目标 Scope 写入，并串行执行维护操作。
-2. 调用 `rebuild_schema_source_index(scope)`，先设置不可用状态并清理旧关联，再从
-   `/memory/` 真源回填；不使用旧索引作为回填来源。Redis 回填需有 CONFIG GET 权限以核验 noeviction。
-3. 核对全部预期关系与实际关系，包括多源、空来源、跨 Scope 同 ID 和零关联 Source。
-4. 发布新的就绪世代，恢复写入。失败则保持扫描路径，重建可从头执行，不保存业务恢复日志。
-   Redis 回填期间如果有启用索引的并发写入，该写入会使回填标记失效，禁止发布不完整索引。
-5. 停用前调用 `clear_schema_source_index(scope)` 清理关联和就绪状态；该方法不删除记忆本体。
-
-查询读取候选前后都检查索引可用状态与世代；期间失效或切换则回退或有界重试。
-这些检查不把关联读取变成快照事务，仍保留现有更新链路的并发边界。
-
-内存实例从空库创建并同步维护，可直接使用索引；Redis 包括新建空库也须显式回填后启用。
-关闭查询使用但仍有写入时，要么继续维护，要么先使索引失效；重新开启前重新回填，
-禁止直接复用停用期间的陈旧索引。
-路由切库或连接晚绑定后，按目标实际库的索引状态判定，不能复用进程级“已建好”缓存。
-
-EncryptedKVStore 首版返回 `None`，继续用已有解密扫描，其 raw KV 必须关闭此索引开关；
-不能从 raw 密文解析 provenance，
-也不在未经设计的情况下把加密记录的来源关系变成明文旁路索引。RoutingKVStore 需要把新方法
-转发给一次选定的后端。StoreManager 授权代理将新方法显式映射为与现有 KV.scan 一致的 GET，
-保留完整 Scope；不得落入未映射方法的 ADMIN 默认分支。API 鉴权流程保持原状。
-
-### 7. 修改范围及验证
-
-- `storage/kv.py`：可选查询协议及未支持时的返回语义。
-- `storage/kv_impl/`：共用关系投影、内存/Redis 原生索引、索引版本/可用状态、回填与清理。
-  来源归一化与协调器共用 `common/memory_sources.py`，避免两个实现的 provenance/source_ref 规则漂移。
-- `storage/store_manager_impl/composite_store_manager.py`、`config/routing.py`：授权映射与路由转发。
-- `construction/evolver_impl/schema_update.py`：以索引候选查询替换扫描入口，保留过滤、计划与提交逻辑。
-- `control/space_impl/kv_space_manager.py`：空间删除后清理内部关系，涵盖本体已 TTL 到期的关联。
-- 沿用 F08 归档设计；同步 S06/S08 与模块地图，不新增独立 Schema 特性文件。
-
-首版实现通用协议、内存实现、Redis 原生集合索引及扫描回退。依据是库默认 KV 为 memory，
-仓库 `deploy/docker/local/config.yml` 与 `deploy/docker/online/config.yml` 均配置 Redis；
-这是基于仓库部署模板的实施优先级，并非对实际线上配置的确认。SQLite/PostgreSQL 关系表
-作为后续适配，首版返回 `None` 保留旧行为。Redis 原生索引及维护失败测试未通过前不切换
-对应部署的查询；不能以统一 prefix 冒充已经实现按 Source 精确定位。
-
-验收至少包括：索引查询结果与原扫描集合等价；多源 property 能从每个 Source 找到；两种更新
-模式、直接 property 更新/删除、有效期、TTL、Scope/Space 清理、旧数据回填、加密回退、路由
-切换均正确；模拟写入中断后不把不完整索引当空集合；已就绪且零关联时不触发扫描；关闭开关
-时原主线 I/O 次数不变。原有 #208、entities、权限和修订冲突回归继续保留。
-
-压测分离“关联查找时间”和 LLM 抽取时间，固定 k=3/10，分别使用 N=1千/1万/10万条 Scope，
-比较吞吐、p50/p95、真源读取条数、返回字节与进程内存；同时固定 N、增加 k，验证成本随实际
-关联数增长。就绪路径不得调用全 Scope scan；SQL 检查执行计划，Redis 检查无 SCAN 并使用集合
-操作。以上是验收矩阵，不是已经测得的性能结论。
-
-2026-09-16 验证记录：
-
-- 扩大回归覆盖 storage/config/construction/control/api，以及原有导入隔离和接入配置相关
-  用例：1341 passed、10 skipped。跳过包含仅适用于 Redis 的内存参数组合、可选第三方库、
-  原有双实例任务及本地 Engine 不适用的云端迁移；本次新增 Redis 用例实际连接 Redis 7.4.10。
-- 最后对来源索引、#208、entities 和普通更新隔离执行专项回归：107 passed、8 skipped；
-  8 个跳过仅为 Redis 专项用例的内存参数组合，Redis 模拟及真实实例均执行通过。
-- 新增覆盖：所有 provenance、直接 property 改写/删除、TTL、历史关联、并发集合写入、
-  Lua 部分失败后持续回退、来源 CAS 重试、回填失败/并发写入禁止发布、读取期间索引切换、
-  路由和实际 client 绑定、空间删除回收 TTL 遗留、GET/ADMIN 授权及默认关闭时原 I/O。
-- Ruff（含 protected-access 检查）通过。未修改 API update 与两个 Engine.update，未恢复
-  请求持久化或处理此前暂缓的 Engine 内部路由问题。
-- 静态检查补正：两个 KV 的 rebuild 委托父类后使用无返回表达式的提前退出，消除
-  inconsistent-return-statements；禁用时仍抛 UnsupportedCapabilityError。Pylint 的
-  inconsistent-return-statements/unreachable 检查及 Ruff 通过；本次内存/模拟 Redis
-  存储专项 38 passed、8 个不适用组合 skipped，21 个真实 Redis 参数用例未重复运行。
-
-配置示例见 S08。开启 Redis 参数后，由存储管理方在维护窗口获取同一个命名端口执行回填：
-
-```python
-kv = storage.kv("default")
-kv.rebuild_schema_source_index(scope)
-```
-
-自定义存储授权启用时需传相应管理访问上下文；回填完成后再恢复该 Scope 写入。
-未回填时功能仍正确，但继续走全量扫描，不会自动在一次 update 内进行回填。
-
-本机候选查询对照（2026-09-16）：Windows Python 3.11，Docker Redis 7.4.10，单 Scope
-共 N 条短文本 MemoryUnit，其中两个 Source 分别关联 3/10 条 property，其余为普通记忆。
-每组运行 5 次，以下为中位耗时，单位毫秒；两条路径都包含候选反序列化，旧路径遍历并
-反序列化全部记忆，索引路径只读取对应候选。Redis 使用原 scan 实现，未调整其 SCAN 参数。
-
-| 后端 | N | k=3 旧扫描 / 索引 | k=10 旧扫描 / 索引 |
-|---|---:|---:|---:|
-| 内存 | 1,000 | 20.087 / 0.090 | 19.129 / 0.162 |
-| 内存 | 10,000 | 178.597 / 0.048 | 170.091 / 0.141 |
-| 内存 | 100,000 | 1778.111 / 0.058 | 1657.678 / 0.301 |
-| Redis | 1,000 | 253.457 / 6.345 | 163.833 / 6.700 |
-| Redis | 10,000 | 1605.338 / 6.868 | 1699.547 / 7.026 |
-| Redis | 100,000 | 17022.284 / 4.583 | 18482.784 / 5.422 |
-
-这些是本机查询对照，受 Docker 往返、系统负载和少量样本波动影响，不是生产延迟承诺，
-也不是完整 update 或 LLM 抽取耗时。尚未测量生产并发吞吐、稳定 p95 和持续写入开销。
+回滚后本地回归（含保留在工作区的实体联调及扩展测试）：522 passed、5 skipped。
+覆盖 storage/config、装配、Scope/Space、#208、Schema 关闭隔离和实体召回；跳过为缺少
+可选 ES/Milvus 依赖、已安装 Redis 时不适用的缺包测试，以及本地 Engine 不适用的云端迁移。
+保留 InMemoryKVStore.mget 原有的 list[...] 类型标注修正，避免恢复未定义的 List 名称。
 
 ## 已知遗留
 
@@ -518,7 +316,7 @@ Source update 另有以下边界：
 - 不阻止旧证据被后续 ADD 再次抽取；多源更正只作用于本次匹配到的关联 property。
 - 曾运行旧实现的部署可能留有 `/schema_updates/` 数据，新实现不读取或自动删除它们；
   该变更不包含存量数据清理。
-- 默认仍按 Scope 扫描关联 property；启用并完成回填的内存/Redis Source 索引按关联集合
-  查找。SQLite/PostgreSQL、加密 KV 仍扫描，且此优化不减少 LLM 抽取开销。
+- 当前按 Scope 扫描关联 property，大规模部署可增加专用反向索引；本次
+  不宣称完成性能优化。
 - 不处理普通记忆实体刷新、全库旧脏数据回填、property 反向改 Source/对话、通用人工
   修订保护、递归重建所有下游派生记忆、多源证据充分性推理。
