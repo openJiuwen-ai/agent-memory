@@ -251,6 +251,7 @@ class SchemaUpdateCoordinator:
         self, plan: SourceUpdatePlan, *, index_for: Callable[[MemoryUnit], IndexBuilder]
     ) -> MemoryUnit:
         scope = plan.source_before.scope
+        # Source is included as an overwrite or old-version retirement in both modes.
         for change in plan.changes:
             if change.before is not None:
                 current = load_units(self._kv, scope, [change.before.id])
@@ -258,9 +259,6 @@ class SchemaUpdateCoordinator:
                     raise ConflictError(
                         message="Schema update inputs changed; retry preparation"
                     )
-        current_source = load_units(self._kv, scope, [plan.source_before.id])
-        if not current_source or _revision(current_source[0]) != _revision(plan.source_before):
-            raise ConflictError(message="Schema source changed; retry preparation")
         completed = 0
         token = STRICT_ENTITY_WRITES.set(True)
         try:

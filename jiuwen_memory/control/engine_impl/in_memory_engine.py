@@ -591,6 +591,12 @@ class InMemoryEngine(MemoryEngine):
     ) -> SourceUpdatePlan | None:
         _ensure_local_scope(scope)
         old = self._load(scope, unit_id)
+        return await self._prepare_update_from_old(old, patch)
+
+    async def _prepare_update_from_old(
+        self, old: MemoryUnit, patch: MemoryPatch
+    ) -> SourceUpdatePlan | None:
+        """Prepare against the same source snapshot used for the eligibility check."""
         if not self.requires_update_preparation(old, patch):
             return None
         return await prepare_schema_update(
@@ -608,7 +614,7 @@ class InMemoryEngine(MemoryEngine):
         _ensure_local_scope(scope)
         old = self._load(scope, unit_id)
         if self.requires_update_preparation(old, patch):
-            plan = await self.prepare_update(unit_id, scope, patch)
+            plan = await self._prepare_update_from_old(old, patch)
             if plan is not None:
                 return await self.commit_update(plan)
         new = _apply_patch(old, patch)
