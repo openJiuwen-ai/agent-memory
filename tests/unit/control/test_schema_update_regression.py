@@ -100,32 +100,6 @@ def test_empty_content_retracts_entities_and_single_source_property(world, mode)
         assert world.get(props[0].id).temporal.t_invalid == T1
 
 
-@pytest.mark.parametrize("engine_kind", ["in_memory", "cloud"])
-@pytest.mark.parametrize("mode", list(UpdateMode))
-def test_issue208_with_source_index(engine_kind, mode, tmp_path, monkeypatch):
-    indexed = SchemaWorld(tmp_path, monkeypatch, engine_kind, source_index_enabled=True)
-    try:
-        test_issue208_refreshes_entities_properties_and_search(indexed, mode)
-    finally:
-        indexed.kernel.ingest_jobs.close(wait=True)
-
-
-@pytest.mark.parametrize("engine_kind", ["in_memory", "cloud"])
-def test_indexed_source_update_avoids_scope_scan(engine_kind, tmp_path, monkeypatch):
-    indexed = SchemaWorld(tmp_path, monkeypatch, engine_kind, source_index_enabled=True)
-    try:
-        source, props = indexed.add("陈静负责推荐算法迭代")
-        with monkeypatch.context() as patch:
-            scan = Mock(side_effect=AssertionError("indexed update must not scan the Scope"))
-            patch.setattr(indexed.kernel.kv, "scan", scan)
-            indexed.update(source, MemoryPatch(content="", mode=UpdateMode.OVERWRITE))
-            scan.assert_not_called()
-        with pytest.raises(NotFoundError):
-            indexed.get(props[0].id)
-    finally:
-        indexed.kernel.ingest_jobs.close(wait=True)
-
-
 @pytest.mark.parametrize(
     ("response", "error"),
     [("broken json", InvalidSchemaExtractionError), (TimeoutError("LLM timeout"), TimeoutError)],

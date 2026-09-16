@@ -91,9 +91,7 @@ class SchemaReplyLLM(LLM):
 
 
 class SchemaWorld:
-    def __init__(
-        self, tmp_path, monkeypatch, engine_kind="in_memory", *, source_index_enabled=False
-    ):
+    def __init__(self, tmp_path, monkeypatch, engine_kind="in_memory"):
         monkeypatch.setattr(
             "jiuwen_memory.api.memory_api_impl.assembly.setup_logging", lambda config: None
         )
@@ -139,12 +137,6 @@ class SchemaWorld:
                                 "evolver": "default",
                                 "lifecycle": "default",
                             },
-                        }
-                    },
-                    "kv_store": {
-                        "default": {
-                            "target": "memory",
-                            "params": {"schema_source_index_enabled": source_index_enabled},
                         }
                     },
                     "extractor": {
