@@ -1,4 +1,4 @@
-"""LongMemEval SSH 测评实现的配置入口。"""
+"""两套独立 SSH 测评实现的统一配置入口。"""
 
 from __future__ import annotations
 
@@ -96,14 +96,54 @@ def _longmemeval_args(config_file: Path, settings: dict[str, Any]) -> list[str]:
     return args
 
 
+def _locomo_args(config_file: Path, settings: dict[str, Any]) -> list[str]:
+    conversation_ids = settings.get("conversation_ids", [0])
+    timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")
+    run_id = f"{timestamp}-{uuid4().hex[:8]}"
+    args = [
+        "--data",
+        _resolve_path(config_file, str(settings.get("data", "datasets/locomo/locomo10.json"))),
+        "--config",
+        _resolve_path(config_file, str(settings.get("memory_config", "locomo/config.yml"))),
+        "--output-root",
+        _resolve_path(config_file, str(settings.get("output_root", "outputs/locomo"))),
+        "--conversation-ids",
+        ",".join(str(value) for value in conversation_ids),
+        "--max-sessions",
+        str(settings.get("max_sessions", 0)),
+        "--max-turns",
+        str(settings.get("max_turns", 5)),
+        "--max-qa",
+        str(settings.get("max_qa", 2)),
+        "--concurrency",
+        str(settings.get("concurrency", 1)),
+        "--recall-top-k",
+        str(settings.get("recall_top_k", 200)),
+        "--cutoffs",
+        ",".join(str(value) for value in settings.get("cutoffs", [10, 20, 50, 200])),
+        "--run-tag",
+        str(settings.get("run_tag", "local-smoke")),
+        "--run-id",
+        run_id,
+    ]
+    scope_tag = str(settings.get("scope_tag", "")).strip()
+    if scope_tag:
+        args.extend(["--scope-tag", scope_tag])
+    if settings.get("skip_write", False):
+        args.append("--skip-write")
+    if settings.get("cleanup_after_run", False):
+        args.append("--cleanup-after-run")
+    return args
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="agent-memory LongMemEval 端到端测评")
-    parser.add_argument("--config", default=str(_DEFAULT_CONFIG), help="启动配置 YAML")
+    parser = argparse.ArgumentParser(description="agent-memory 独立端到端测评")
+    parser.add_argument("--config", default=str(_DEFAULT_CONFIG), help="统一启动配置 YAML")
     parser.add_argument(
         "--benchmark",
-        choices=("longmemeval",),
+        choices=("longmemeval", "locomo"),
         default=None,
-        help="兼容统一入口参数；当前分支只提供 longmemeval",
+        help="临时覆盖配置中的 benchmark",
     )
     args = parser.parse_args(argv)
 
@@ -113,15 +153,20 @@ def main(argv: list[str] | None = None) -> int:
     config_file = Path(args.config).resolve()
     config = _load_config(config_file)
     benchmark = args.benchmark or str(config.get("benchmark", "longmemeval"))
-    if benchmark != "longmemeval":
-        raise RuntimeError("当前分支仅提供 longmemeval 测评")
+    if benchmark not in ("longmemeval", "locomo"):
+        raise RuntimeError("benchmark 只能是 longmemeval 或 locomo")
     settings = config.get(benchmark, {})
     if not isinstance(settings, dict):
         raise RuntimeError(f"{benchmark} 配置必须是映射")
 
-    from evaluation.longmemeval.entry import main as benchmark_main
+    if benchmark == "longmemeval":
+        from evaluation.longmemeval.entry import main as benchmark_main
 
-    return benchmark_main(_longmemeval_args(config_file, settings))
+        return benchmark_main(_longmemeval_args(config_file, settings))
+
+    from evaluation.locomo.entry import main as benchmark_main
+
+    return benchmark_main(_locomo_args(config_file, settings))
 
 
 if __name__ == "__main__":

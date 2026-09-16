@@ -1,4 +1,4 @@
-# 只改这个文件即可调整 LongMemEval 的题目范围和并行参数。
+# 只改这个文件即可切换 benchmark、题目范围和并行参数。
 benchmark: longmemeval
 
 longmemeval:
@@ -23,3 +23,22 @@ longmemeval:
   answer_cutoffs: [50, 10, 20]
   judge_strict: false
   proxy_retry_attempts: 4
+
+locomo:
+  data: datasets/locomo/locomo_mini.json
+  memory_config: locomo/config.yml
+  output_root: outputs/locomo
+  conversation_ids: [0]
+  max_sessions: 0
+  max_turns: 5
+  max_qa: 2
+  concurrency: 1
+  recall_top_k: 200
+  cutoffs: [10, 20, 50, 200]
+  # 仅作产物标签；正常写入时程序会追加唯一 run_id 生成独立 Scope。
+  run_tag: local-smoke
+  # 仅在复用旧数据做检索对比时填写此前 run_meta.json 中的 SCOPE_TAG。
+  scope_tag: ""
+  skip_write: false
+  # 默认保留本轮后端数据用于 bad case/evidence 溯源。
+  cleanup_after_run: false
