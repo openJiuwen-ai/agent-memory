@@ -146,7 +146,8 @@ class InMemoryKVStore(KVStore):
 
     def rebuild_schema_source_index(self, scope: Scope) -> None:
         if not self._source_index_enabled:
-            return super().rebuild_schema_source_index(scope)
+            super().rebuild_schema_source_index(scope)
+            return
         with self._lock:
             sk = _skey(scope)
             self._invalid_indexes.add(sk)
