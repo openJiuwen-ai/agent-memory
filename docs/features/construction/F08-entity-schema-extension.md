@@ -118,6 +118,10 @@ API 和 Engine 在已读出的 Unit 上先做无 I/O 候选判断，避免普通
 或在 CloudEngine 中重复复制 patch、解析路由。组件解析留在 Engine 类内，共享更新逻辑
 只调用注入的 Evolver 和 IndexBuilder 解析回调，不跨类读取受保护字段。
 
+两个 Engine 的直接 `update()` 在 Schema 分支中复用本次已加载的 Source 快照，避免
+候选判断与准备阶段重复加载、读到不同版本。独立 `prepare_update()` 仍按原有 ID、Scope、
+patch 协议自行加载一次，两条入口复用相同的内部准备逻辑；普通更新的读取和路由次数不变。
+
 ### 8. 完整抽取后规划变更，再鉴权和提交
 
 更新专用抽取使用完整 Schema 和当前新正文，不附加历史上下文，也不执行常规演进
@@ -155,6 +159,11 @@ Schema Source 记录所用 Schema 名和版本。已有数据缺此记录时，�
 变更计划只在本次请求内使用，包含操作 ID、候选 ID、前后快照和全部动作；提交时重读输入，
 发现已变化则拒绝。全部记忆写入通过 IndexBuilder 完成，不读写 `/schema_updates/`，
 不保存 pending/done 状态、请求指纹或执行进度，也不生成用于防回放的 Source 修订标记。
+
+两种模式的变更列表都包含旧 Source：OVERWRITE 对应覆盖动作，SUPERSEDE 对应旧版退役
+动作。因此 Source 与 property 统一在变更列表中校验修订，不再额外读取 Source 重复校验。
+正常 API Schema 提交减少一次读取，直接 Engine Schema 更新连同准备阶段共减少两次。
+这项优化保留现有 API/Engine 准备路由；修订检查与写入之间仍存在并发窗口，不提供原子事务。
 
 索引失败通过 `PartialFailureError` 暴露已完成步骤，提示再次操作前检查受影响记录。
 失败可能留下部分写入，不自动回滚、不保证相同 patch 复用 ID 或断点续写。实体索引的
@@ -214,16 +223,24 @@ ADD。Source update 只协调本次显式更新涉及的关联属性，不扩展
 精简回归 `tests/unit/control/test_schema_update_regression.py` 及其共享夹具
 `tests/unit/control/fixtures.py` 已随分支提交。覆盖两 Engine、两更新模式下的 #208 人物更换、
 共享实体保留、检索和版本关系、合法空正文撤回，以及抽取失败、实际 UPDATE-only 授权、
-实体索引部分失败、无持久化恢复记录和非 Schema 更新的读取/路由次数。
+实体索引部分失败、无持久化恢复记录和非 Schema 更新的读取/路由次数。另覆盖 Schema
+独立准备和直接 Engine 更新的读取次数，以及两种模式下 Source 被修改或删除、property
+被修改时，提交在任何业务写入前报冲突。
 更完整的 `test_schema_source_update.py`、`test_schema_disabled_isolation.py` 仍保留在本地。
 取消旧证据过滤后，原有 Schema 测试存储不再需要额外的 `scan()` 接口，已撤回该适配。
 
-提交用例的确定性验证为 49 passed（新增 22 项、原有 Schema 抽取 27 项），无跳过项；
-两个新增测试支持文件通过 ruff check。复现命令：
+提交用例的确定性验证为 69 passed（Schema 更新回归 42 项、原有 Schema 抽取 27 项），
+无跳过项；修改的 Python 文件通过 ruff check，测试文件额外检查受保护成员访问。
+复现命令：
 
 ```powershell
 .venv/Scripts/python.exe -X utf8 -m pytest tests/unit/construction/test_entity_schema_extension.py tests/unit/control/test_schema_update_regression.py -o addopts=-ra -q
 ```
+
+2026-09-16 消除重复读取后，construction/control/api、导入隔离、配置加载和检索日志
+回归为 1023 passed、3 skipped，包含未提交的本地更新/隔离用例。跳过项为真实 Redis
+双实例用例和两个本地 Engine 不适用的云端迁移用例。新增读取次数用例在修改前均失败，
+修改后通过；两 Engine 普通 update 主体的 AST 与修改前一致。
 
 以下为取消持久化恢复之前的历史验证，包含的恢复与防回放用例不再代表当前功能承诺；
 含本地用例的结果不能仅检出分支复现：
