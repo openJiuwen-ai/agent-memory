@@ -67,6 +67,11 @@
     `globals.schema_enabled` 默认 `false`；它只在 `build_kernel` 装配期决定是否注册
     Schema target，不是可经 ConfigSource 热切换的运行时能力开关。改值后必须重新装配。
 
+11. **来源索引是独立的存储实例开关**
+    `kv_store.<name>.params.schema_source_index_enabled` 默认 false，目前仅 memory/redis
+    实现；不是按请求热切换的能力。所有写入同一真源的进程必须共同维护。RoutingKVStore
+    转发来源查询、重建、清理时只解析一次目标，索引就绪状态由实际后端判断。
+
 ## 与其他子目录的边界
 
 **本模块管**：装配合并、ConfigSource 契约与默认实现、active/晚绑定解析辅助、多实例 Routing（`Routing*` / `RoutingStoreManager`/`RoutingDomainStore`）。

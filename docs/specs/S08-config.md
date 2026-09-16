@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-09-14 |
+| 最近一次修订日期 | 2026-09-16 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 装配开关见 `docs/features/construction/F08-entity-schema-extension.md` |
 
 ## 范围 / 边界
@@ -68,6 +68,23 @@
 装配拓扑（选哪个 `target`、有哪些具名实例、依赖引用）仍由上述机制在 **`build_kernel` 时**确定。
 `globals.schema_enabled` 是装配期扩展注册开关：为 `true` 时先注册 Schema target，
 再按命名空间中显式配置的 target 解析依赖；为 `false` 时不导入该扩展。
+
+`kv_store.<name>.params.schema_source_index_enabled` 是独立的存储实例装配期开关，默认
+false；当前 memory/redis 支持。关闭时旧 CRUD 不增加关联投影及 I/O。开启后该真源的所有
+写入进程都须使用同样配置（包括直接修改 property 的普通 API），不能和未维护索引的旧
+写入进程混用。Redis 新旧库均须对目标 Scope 显式调用存储管理接口回填后才启用查询，
+运行期间须保持 noeviction；首版不支持 Redis Cluster。停用并继续写入前须先清理就绪索引，
+重新启用前重新回填。连接晚绑定后的就绪状态从实际目标库读取，不在进程中缓存。
+EncryptedKVStore 的 raw KV 必须关闭此开关；加密链路继续解密扫描。
+
+```yaml
+kv_store:
+  default:
+    target: redis
+    params:
+      url: "redis://localhost:6379/0"
+      schema_source_index_enabled: true
+```
 
 ### ConfigSource（新增）
 

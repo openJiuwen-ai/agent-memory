@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-09-09 |
+| 最近一次修订日期 | 2026-09-16 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
 ## Metadata 物理存储契约
@@ -282,8 +282,22 @@ class BaseStore(ABC):
 | `list` | `(scope, *, offset=0, limit=100, memory_types=None, filters=None, extensions=None) -> KVMemoryListResult` | 查询 `/memory/` MemoryUnit；先执行 `memory_types AND filters`，再精确计数、稳定排序和分页 |
 | `scan` | `(scope, prefix="") -> list[tuple[str, bytes]]` | 扫描 scope 下的全部 (key, value)（可选只取 prefix 开头的 key）；顺序由实现定义 |
 | `scopes` | `() -> list[Scope]` | 枚举本存储中已用过的全部 scope |
+| `get_schema_properties_by_source` | `(scope, source_id: str) -> list[tuple[str, bytes]] \| None` | 可选能力：完整关联候选的真源 key/value；默认 None 表示不支持或索引未就绪，空列表表示完整索引确认无关联 |
+| `rebuild_schema_source_index` | `(scope) -> None` | 管理操作：从该 Scope 的真源重建关系；调用方须暂停该 Scope 全部写入并串行维护；默认抛 UnsupportedCapabilityError |
+| `clear_schema_source_index` | `(scope) -> None` | 管理操作：失效并清理该 Scope 的派生关系，不删除真源；默认无操作 |
 
 **ttl** 单位为秒（float），`0` 表示永不过期。
+
+Schema 来源查询保持完整 Scope 隔离，使用全部非空 provenance；provenance 为空时才回退
+source_ref。只索引 extraction_mode=schema 的记忆；保留历史状态与时间信息对应的关系，
+业务过滤由调用方执行。不能只取 top_k 候选，也不能将后端异常转换为空结果。
+索引与真源读取必须绑定同一个实际后端；已物理过期/删除的真源可省略，但不影响其余结果。
+
+启用索引的后端在单条记忆的 CRUD 边界同步维护来源关系，维护不完整时禁止以就绪索引继续
+查询。此约束不改变 CRUD 的单 key 业务语义，也不提供跨记忆或跨后端事务。
+旧库未完成回填时返回 None；清理/回填不保留业务计划或请求恢复日志。
+来源查询在授权代理中映射 GET（与 scan 相同），重建/清理映射 ADMIN；路由包装器一次选定
+后端完成调用。EncryptedKVStore 不提供来源查询，继续解密扫描，raw KV 不得启用此明文索引。
 
 #### EncryptedKVStore（`kv_impl/encrypted_kv_store.py`）
 
