@@ -537,13 +537,35 @@ class QueryOpsMixin:
         )
         self._ensure_space_writable(scope)
         before = asyncio.run(self._queries.get(unit_id, scope, None))
-        unit = asyncio.run(self._commands.update(unit_id, scope, patch))
+        plan = None
+        if self._commands.requires_update_preparation(before, patch):
+            plan = asyncio.run(self._commands.prepare_update(unit_id, scope, patch))
+        if plan is not None:
+            for action, context in self._commands.update_permission_contexts(plan):
+                self._authorize(
+                    identity, context.scope, action, "update", context.unit_id, context=context,
+                )
+            unit = asyncio.run(self._commands.commit_update(plan))
+        else:
+            unit = asyncio.run(self._commands.update(unit_id, scope, patch))
+        update_detail = {}
+        if plan is not None:
+            affected_unit_ids = []
+            for change in plan.changes:
+                if change.before is not None:
+                    affected_unit_ids.append(change.before.id)
+                if change.after is not None:
+                    affected_unit_ids.append(change.after.id)
+            update_detail = {
+                "schema_update_operation_id": plan.operation_id,
+                "affected_unit_ids": list(dict.fromkeys(affected_unit_ids)),
+            }
         self._log(
             identity,
             "update",
             unit_id,
             target_scope=scope,
-            detail={**auth, "before_unit_id": before.id, "after_unit_id": unit.id},
+            detail={**auth, **update_detail, "before_unit_id": before.id, "after_unit_id": unit.id},
         )
         return unit
 

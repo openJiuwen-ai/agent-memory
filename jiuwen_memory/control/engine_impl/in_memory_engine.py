@@ -37,10 +37,16 @@ from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
 from jiuwen_memory.construction.evolver import Evolver, EvolverProducer
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
+from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
 from jiuwen_memory.control.engine_impl.list_support import list_page
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
+from jiuwen_memory.control.engine_impl.schema_update_support import (
+    commit_schema_update,
+    is_schema_update_candidate,
+    prepare_schema_update,
+)
 from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
@@ -577,11 +583,40 @@ class InMemoryEngine(MemoryEngine):
         )
         return selected
 
+    def requires_update_preparation(self, unit: MemoryUnit, patch: MemoryPatch) -> bool:
+        return is_schema_update_candidate(unit, patch)
+
+    async def prepare_update(
+        self, unit_id: str, scope: Scope, patch: MemoryPatch
+    ) -> SourceUpdatePlan | None:
+        _ensure_local_scope(scope)
+        old = self._load(scope, unit_id)
+        return await self._prepare_update_from_old(old, patch)
+
+    async def _prepare_update_from_old(
+        self, old: MemoryUnit, patch: MemoryPatch
+    ) -> SourceUpdatePlan | None:
+        """Prepare against the same source snapshot used for the eligibility check."""
+        if not self.requires_update_preparation(old, patch):
+            return None
+        return await prepare_schema_update(
+            self._evolver_for_unit, old, _apply_patch(old, patch), patch
+        )
+
+    async def commit_update(self, plan: SourceUpdatePlan) -> MemoryUnit:
+        return await commit_schema_update(
+            self._evolver_for_unit, plan, index_for=self._index_for_unit
+        )
+
     async def update(
         self, unit_id: str, scope: Scope, patch: MemoryPatch
     ) -> MemoryUnit:
         _ensure_local_scope(scope)
         old = self._load(scope, unit_id)
+        if self.requires_update_preparation(old, patch):
+            plan = await self._prepare_update_from_old(old, patch)
+            if plan is not None:
+                return await self.commit_update(plan)
         new = _apply_patch(old, patch)
         if patch.mode == UpdateMode.OVERWRITE:
             new.id = old.id
@@ -772,6 +807,14 @@ class InMemoryEngine(MemoryEngine):
         if self._pipeline is None:
             return None
         return self._pipeline.select_for_write(units)
+
+    def _evolver_for_unit(self, unit: MemoryUnit) -> Evolver | None:
+        binding = self._write_binding([unit])
+        return binding.evolver if binding is not None else self._evolver
+
+    def _index_for_unit(self, unit: MemoryUnit) -> IndexBuilder:
+        binding = self._write_binding([unit])
+        return binding.index_builder if binding is not None else self._index
 
     def _recall_binding(self, query: RetrievalQuery) -> PipelineBinding | None:
         if self._pipeline is None:

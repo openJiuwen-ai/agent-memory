@@ -42,6 +42,7 @@ from jiuwen_memory.construction.schema_prompts import (
     ENTITY_GENERATION_PROMPT,
     SCHEMA_SELECTION_FOR_GENERATION_PROMPT,
 )
+from jiuwen_memory.construction.source_update import SourceExtraction
 
 logger = get_logger(__name__)
 
@@ -127,11 +128,14 @@ class SchemaExtractionNormalizer:
         dialogue_timestamp: str,
         *,
         entity_schema: list[dict[str, Any]] | None = None,
+        strict: bool = False,
     ) -> tuple[dict[str, Any], list[str]]:
         del dialogue_timestamp
         raw = copy.deepcopy(raw_memory)
         errors: list[str] = []
 
+        if strict and "entities" not in raw:
+            return raw, ["entities must be explicitly present"]
         entities = raw.setdefault("entities", [])
         if not isinstance(entities, list):
             return raw, ["entities must be an array"]
@@ -144,6 +148,8 @@ class SchemaExtractionNormalizer:
             errors.append("entity names must be unique within one response")
 
         if len(entities) > self._max_entities:
+            if strict:
+                errors.append("entities exceed the complete extraction limit")
             logger.warning(
                 "EntitySchemaExtractor: truncating entities from %d to %d",
                 len(entities),
@@ -179,6 +185,8 @@ class SchemaExtractionNormalizer:
                     errors.append(f"entity {name!r} has unsupported type {entity_type!r}")
                 continue
 
+            if strict and "properties" not in entity:
+                errors.append(f"entity {name!r} must explicitly include properties")
             properties = entity.setdefault("properties", [])
             if not isinstance(properties, list):
                 errors.append(f"entity {name!r} properties must be an array")
@@ -223,6 +231,8 @@ class SchemaExtractionNormalizer:
                 prop["time"] = _normalize_property_time(prop.get("time"), prop["value"])
                 prepared_properties.append(prop)
             if len(prepared_properties) > self._max_properties:
+                if strict:
+                    errors.append(f"entity {name!r} exceeds the complete property extraction limit")
                 logger.warning(
                     "EntitySchemaExtractor: truncating entity %r properties from %d to %d",
                     name,
@@ -317,6 +327,23 @@ class EntitySchemaExtractor(Extractor):
             raise errors[-1]
         return _dedupe_units(result)
 
+    def extract_for_update(self, source: MemoryUnit) -> SourceExtraction:
+        """Extract a complete replacement, without context, persistence or partial success."""
+        if not source.content.strip():
+            return SourceExtraction([], [])
+        schema = self._catalog.schema_for_generation()
+        if not schema:
+            raise InvalidSchemaExtractionError("Schema update requires a nonempty schema")
+        names: list[str] = []
+        candidates = self._extract_candidates(
+            [source], schema, dialogue_timestamp=_dialogue_timestamp([source]),
+            context=None, strict=True, entity_names=names,
+        )
+        return SourceExtraction(_dedupe_units(self._build_units(candidates, [source])), names)
+
+    def source_schema_identity(self) -> tuple[str, str]:
+        return self._catalog.schema_name, self._catalog.schema_version
+
     def _extract_batch(
         self,
         units: list[MemoryUnit],
@@ -375,6 +402,8 @@ class EntitySchemaExtractor(Extractor):
         *,
         dialogue_timestamp: str,
         context: ExtractContext | None,
+        strict: bool = False,
+        entity_names: list[str] | None = None,
     ) -> list[SchemaPropertyCandidate]:
         source_text = "\n".join(
             f"[message_index={index}, unit_id={unit.id}]\n{unit.content}"
@@ -390,6 +419,15 @@ class EntitySchemaExtractor(Extractor):
         )
         if context_block:
             prompt += f"\n\n{context_block}"
+        if strict:
+            prompt += (
+                "\nThis is an explicit replacement of the entire source. Include supported "
+                "negative facts as complete statements; do not turn a denial into a positive fact. "
+                "If an explicit retraction cannot be represented reliably in the schema, list it "
+                "in a root unresolved_retractions array. Include update_complete: true only for "
+                "a complete extraction, and unresolved_retractions: [] when none remain. "
+                "Use entities: [] only when the complete source contains no supported entities."
+            )
 
         last_errors: list[str] = []
         last_response = ""
@@ -406,10 +444,19 @@ class EntitySchemaExtractor(Extractor):
                     raw_memory,
                     dialogue_timestamp,
                     entity_schema=entity_schema,
+                    strict=strict,
                 )
                 candidates, candidate_errors = self._build_candidates(normalized, units)
                 last_errors = [*validation_errors, *candidate_errors]
+                if strict and (raw_memory.get("update_complete") is not True
+                               or raw_memory.get("unresolved_retractions") != []):
+                    last_errors.append("update is incomplete or contains unresolved retractions")
                 if not last_errors:
+                    if entity_names is not None:
+                        entity_names.extend(dict.fromkeys(
+                            [c.entity_name for c in candidates]
+                            + [e["name"] for e in normalized["entities"] if not e["properties"]]
+                        ))
                     return candidates
                 if candidates and len(candidates) >= len(best_candidates):
                     best_candidates = candidates
@@ -424,7 +471,7 @@ class EntitySchemaExtractor(Extractor):
         # Keep valid properties from the best response even when sibling items are bad.
         # This follows Agent Memory's construction integrity rule: isolate bad
         # candidates, and fail a batch only when it produces no usable candidate.
-        if best_candidates:
+        if best_candidates and not strict:
             logger.warning(
                 "EntitySchemaExtractor: validation retries exhausted; preserving valid "
                 "properties and dropping invalid siblings: %s",

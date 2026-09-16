@@ -31,6 +31,7 @@ from jiuwen_memory.common.type_def import (
     Scope,
 )
 from jiuwen_memory.construction import EvolveMode
+from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.retrieval import RetrievalQuery, RetrievalResult
 
 from .base import ControlOperator
@@ -153,6 +154,20 @@ class MemoryEngine(ControlOperator):
         ``supersedes`` 版本链返回 valid 区间含 ``as_of`` 的那一版（双时间
         模型）。不存在时抛 :class:`~common.errors.NotFoundError`。
         """
+
+    def requires_update_preparation(self, unit: MemoryUnit, patch: MemoryPatch) -> bool:
+        """Check an already-loaded target without I/O; ordinary engines retain their update path."""
+        return False
+
+    async def prepare_update(
+        self, unit_id: str, scope: Scope, patch: MemoryPatch
+    ) -> SourceUpdatePlan | None:
+        """Internal preparation for derived-write authorization; no business writes."""
+        return None
+
+    async def commit_update(self, plan: SourceUpdatePlan) -> MemoryUnit:
+        """Commit a prepared and authorized update, using its frozen candidates."""
+        raise NotImplementedError("This engine does not support prepared updates")
 
     @abstractmethod
     async def update(self, unit_id: str, scope: Scope, patch: MemoryPatch) -> MemoryUnit:
