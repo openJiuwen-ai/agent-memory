@@ -12,13 +12,18 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import openai
 
 from jiuwen_memory.common._support import (
+    DEFAULT_OUTBOUND_MAX_RETRIES,
+    DEFAULT_OUTBOUND_TIMEOUT_SECONDS,
+    OUTBOUND_CONNECT_TIMEOUT_SECONDS,
     outbound_verify,
+    read_outbound_call_policy,
     read_outbound_ssl,
     require_ca_file,
     require_https,
@@ -47,6 +52,8 @@ class OpenAILLM(LLM):
         api_key: API KEY 回落默认；自部署后端可填任意占位值
         default_temperature: 默认生成温度（0.0 = 确定性输出）
         default_max_tokens: 默认最大生成 token 数
+        timeout: 单次出站调用等待上限（秒）
+        max_retries: SDK 单次调用内的自动重试次数
         ssl_verify / ssl_ca_cert: 出站 TLS 校验
         config_source: 可选；每次调用 ``fetch("llm.model|api_key|base_url")``
         config_namespace: ConfigSource key 命名空间，默认 ``llm``
@@ -59,6 +66,8 @@ class OpenAILLM(LLM):
         api_key: str = "",
         default_temperature: float = 0.0,
         default_max_tokens: int = 4096,
+        timeout: float = DEFAULT_OUTBOUND_TIMEOUT_SECONDS,
+        max_retries: int = DEFAULT_OUTBOUND_MAX_RETRIES,
         ssl_verify: bool = False,
         ssl_ca_cert: str | None = None,
         config_source: ConfigSource | None = None,
@@ -69,6 +78,8 @@ class OpenAILLM(LLM):
         self._default_max_tokens = default_max_tokens
         self._fallback_api_key = api_key
         self._fallback_base_url = base_url or None  # 空串视作未配置 → 用官方端点
+        self._timeout = timeout
+        self._max_retries = max_retries
         # ssl_verify 只决定是否接管信任锚：关闭时完全不干预（http 明文直连、https
         # 仍走 SDK 默认的公共 CA 校验）；开启时按 ssl_ca_cert 覆盖，缺省回落系统 CA。
         self._ssl_verify = ssl_verify
@@ -88,12 +99,19 @@ class OpenAILLM(LLM):
         ep = self._endpoint()
         fingerprint = (ep.api_key, ep.base_url, self._ssl_verify, self._ssl_ca_cert)
         if self._client is None or self._client_fingerprint != fingerprint:
-            client_kwargs: dict = {"api_key": ep.api_key}
+            client_kwargs: dict = {
+                "api_key": ep.api_key,
+                "timeout": openai.Timeout(
+                    timeout=self._timeout,
+                    connect=OUTBOUND_CONNECT_TIMEOUT_SECONDS
+                ),
+                "max_retries": self._max_retries,
+            }
             if ep.base_url:
                 client_kwargs["base_url"] = ep.base_url
             if self._ssl_verify:
                 # 使用 SDK 提供的默认客户端，在注入信任锚的同时保留其
-                # 长读取超时、连接池和重定向等默认参数。
+                # 连接池和重定向等默认参数；等待策略由客户端参数显式管理。
                 client_kwargs["http_client"] = openai.DefaultHttpxClient(
                     verify=outbound_verify(self._ssl_ca_cert)
                 )
@@ -133,6 +151,12 @@ class OpenAILLM(LLM):
         temperature = options.get("temperature", self._default_temperature)
         max_tokens = options.get("max_tokens", self._default_max_tokens)
         model = self._endpoint().model
+        logger.info(
+            "OpenAILLM chat started: model=%s timeout=%.3fs max_retries=%d",
+            model,
+            self._timeout,
+            self._max_retries,
+        )
 
         create_kwargs: dict[str, object] = {
             "model": model,
@@ -144,13 +168,24 @@ class OpenAILLM(LLM):
         # 透传其他 options（如 top_p、stop、response_format 等）。
         self._merge_request_options(create_kwargs, options)
 
+        started_at = time.monotonic()
         try:
             response = self.client.chat.completions.create(**create_kwargs)
-        except openai.APIError as exc:
-            logger.error("OpenAILLM: API error — %s", exc)
+        except openai.APITimeoutError:
+            logger.error(
+                "OpenAILLM chat timed out: model=%s elapsed=%.3fs timeout=%.3fs "
+                "max_retries=%d",
+                model,
+                time.monotonic() - started_at,
+                self._timeout,
+                self._max_retries,
+            )
             raise
         except openai.APIConnectionError as exc:
             logger.error("OpenAILLM: connection error — %s", exc)
+            raise
+        except openai.APIError as exc:
+            logger.error("OpenAILLM: API error — %s", exc)
             raise
 
         content = response.choices[0].message.content
@@ -203,6 +238,7 @@ def _build(config):
     """从装配 ComponentConfig 构造；注入内核共享的 default ConfigSource（若已装配）。"""
     base_url = config.get("llm_base_url", "")
     ssl = read_outbound_ssl(config, "llm")
+    call_policy = read_outbound_call_policy(config, "llm")
     if ssl.verify:
         require_https(base_url, component="openai LLM", param="llm")
         require_ca_file(ssl.ca_cert, component="openai LLM", param="llm")
@@ -214,6 +250,8 @@ def _build(config):
         api_key=config.get("llm_api_key") or "",
         default_temperature=config.get("llm_temperature", 0.0),
         default_max_tokens=config.get("llm_max_tokens", 4096),
+        timeout=call_policy.timeout,
+        max_retries=call_policy.max_retries,
         ssl_verify=ssl.verify,
         ssl_ca_cert=ssl.ca_cert,
         config_source=ConfigSourceProducer.get_cached("default"),

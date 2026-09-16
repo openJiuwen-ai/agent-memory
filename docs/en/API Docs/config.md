@@ -280,7 +280,17 @@ globals:
   llm_model: qwen-plus
   llm_base_url: https://example.com/v1
   llm_api_key: ${LLM_API_KEY}
+  llm_timeout: 300
+  llm_max_retries: 0
+  embedder_timeout: 300
+  embedder_max_retries: 0
 ```
+
+OpenAI-compatible LLM and Embedder calls wait for at most 300 seconds by default and do
+not use SDK-internal retries; TCP connect is fixed at 5 seconds. `*_timeout` must be a finite
+positive number, and `*_max_retries` must be an integer not less than 0. Increase the
+relevant timeout explicitly for slow reasoning models instead of relying on the implicit
+SDK default. Invalid values fail during assembly.
 
 Components read parameters through `config.get(key, default)` with the following precedence:
 
@@ -740,10 +750,14 @@ memory_api:
     llm_model: qwen-plus
     llm_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
     llm_api_key: "${LLM_API_KEY}"
+    llm_timeout: 300
+    llm_max_retries: 0
 
     embedder_model: bge-m3
     embedder_base_url: "${EMBEDDER_BASE_URL}"
     embedder_api_key: "${MODEL_API_TOKEN}"
+    embedder_timeout: 300
+    embedder_max_retries: 0
 
   llm:
     default:

@@ -266,7 +266,15 @@ globals:
   llm_model: qwen-plus
   llm_base_url: https://example.com/v1
   llm_api_key: ${LLM_API_KEY}
+  llm_timeout: 300
+  llm_max_retries: 0
+  embedder_timeout: 300
+  embedder_max_retries: 0
 ```
+
+OpenAI 兼容 LLM 和 Embedder 的单次出站调用默认等待 300 秒，不做 SDK 内部重试；
+TCP connect 固定为 5 秒。`*_timeout` 必须是有限正数，`*_max_retries` 必须是不小于 0
+的整数。慢思考模型应显式调大对应 timeout，而不是依赖隐式 SDK 默认值。非法值在装配期报错。
 
 组件通过 `config.get(key, default)` 读取参数，优先级为：
 
@@ -707,10 +715,14 @@ memory_api:
     llm_model: qwen-plus
     llm_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
     llm_api_key: "${LLM_API_KEY}"
+    llm_timeout: 300
+    llm_max_retries: 0
 
     embedder_model: bge-m3
     embedder_base_url: "${EMBEDDER_BASE_URL}"
     embedder_api_key: "${MODEL_API_TOKEN}"
+    embedder_timeout: 300
+    embedder_max_retries: 0
 
   llm:
     default:

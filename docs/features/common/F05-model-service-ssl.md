@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-08-01 |
-| 影响范围 | `jiuwen_memory/common/_support.py`（新增，含从 storage 与 security 下沉的公共件）、LLM（openai / dashscope）、embedder（openai）、reranker（api）四个 builder、`deploy/docker/online/`、`deploy/docker/postgres/` |
-| 测试基线 | `tests/unit/common/test_outbound_ssl.py` 44 passed；`pytest -m unit` 542 passed；全量 `tests/unit` 925 passed、2 failed、2 skipped（失败因环境缺少 `torch`，与本特性无关） |
+| 影响范围 | `jiuwen_memory/common/_support.py`（新增，含从 storage 与 security 下沉的公共件）、LLM（openai / dashscope）、embedder（openai）、reranker（api）四个 builder、`deploy/docker/online/`、`deploy/docker/postgres/`、OpenAI 兼容出站调用等待策略 |
+| 测试基线 | `tests/unit/common/test_outbound_ssl.py` 44 passed；`tests/unit/common/test_model_call_timeout.py` 29 passed；`pytest -m unit` 1835 passed、8 skipped；全量 `tests/unit` 925 passed、2 failed、2 skipped（失败因环境缺少 `torch`，与本特性无关） |
 | Refs | [S07-common.md](../../specs/S07-common.md)、[F04-storage-ssl.md](../storage/F04-storage-ssl.md) |
 
 ## 背景
@@ -21,6 +21,10 @@
 
 同时开发侧有相反诉求：本地自测常用 `http://` 直连模型服务，快速验证链路，此时不应
 被任何 SSL 要求阻塞。
+
+OpenAI SDK 默认单次读取/写入/连接池等待为 600 秒，并默认重试 2 次。服务端无响应时，
+一次客户端侧 300 秒超时的 HTTP 请求可能在服务端继续占用请求槽位，日志也缺少发起与
+超时痕迹，难以区分模型慢和网关挂死。
 
 ## 决策
 
@@ -71,15 +75,16 @@ SDK/httpx 默认的公共 CA 校验（实测 openai SDK 默认 `verify_mode=CERT
 
 ### 五、证书文件缺失在装配期拦截
 
-httpx 构造客户端时立即加载证书，路径写错只抛不带上下文的 `FileNotFoundError`。
-容器内路径与宿主机路径写混是常见配置错误，故先行校验并指明组件与参数名。
+httpx 构造客户端时立即加载证书，路径写错只会抛出不带上下文的
+`FileNotFoundError`。容器内路径与宿主机路径写混是常见配置错误，故在此
+先行拦截并指明是哪个组件的哪个参数。
 
 ### 六、仅在需要时注入 `http_client`
 
-openai SDK 自建的客户端带长读取超时、大连接池与自动重定向等默认参数，裸
+openai SDK 自建的客户端保留大连接池与自动重定向等默认参数；裸
 `httpx.Client` 的默认值并不等价。因此只有 `ssl_verify=true` 时才显式传入
 `http_client`，且必须使用 `openai.DefaultHttpxClient(verify=…)`：既注入指定信任锚，
-又保留 SDK 的默认网络参数。
+又保留 SDK 的默认网络参数。出站等待策略见第八节。
 
 `verify` 的取值统一经 `outbound_verify` 翻译（有证书用路径、无证书用 `True`），
 不在各实现里内联——三处内联曾是本特性初版的重复点。
@@ -92,12 +97,30 @@ openai SDK 自建的客户端带长读取超时、大连接池与自动重定向
 |---|---|---|
 | `as_bool`、`SslConfig`、`build_ssl_config` | `read_outbound_ssl`（按 `<prefix>_` 前缀读） | `read_ssl_config`（缺证书即报错） |
 | `require_tls_scheme`、`require_ca_file`、`outbound_verify` | `require_https`（薄封装，`allow_empty=True`） | `reject_url_tls_params`（redis-py 特有） |
+| `OutboundCallPolicy`、`read_outbound_call_policy` | OpenAI 兼容 LLM / Embedder builder 按前缀读等待策略 | — |
 
 `require_tls_scheme` 的 `allow_empty` 参数即为本特性引入：`base_url` 未配置时要回落
 SDK 内置端点，而 storage 侧不允许空连接串。
 
 `common/_support.as_bool` 同时收编了 `common/security` 早先的私有副本，全仓归一逻辑
 只此一份。
+
+### 八、OpenAI 兼容调用等待策略
+
+LLM 与 Embedder 的 OpenAI 兼容实现（含 DashScope LLM）显式传入有限等待策略：
+
+| 配置键 | 默认值 | 校验 |
+|---|---|---|
+| `llm_timeout` / `embedder_timeout` | `300.0` 秒 | 有限正数 |
+| `llm_max_retries` / `embedder_max_retries` | `0` 次 | 不小于 0 的整数 |
+
+配置可写在 `globals` 或对应具名实例 `params`。装配期校验失败抛 `ValidationError`。
+客户端使用 `openai.Timeout(timeout=..., connect=5.0)`：300 秒约束读/写/池等待，
+TCP connect 固定为 5 秒，避免连接阶段的失败被放大。
+
+每次 chat/embed 发起时记录模型、批量大小、timeout 和 retries；不记录 message、输入
+文本或模型原始响应。`APITimeoutError` 单独记录 elapsed、配置上限与重试数后原样抛出。
+连接错误与 API 错误沿用现有错误日志。
 
 ## 两侧矩阵对照
 
@@ -119,11 +142,17 @@ SDK 内置端点，而 storage 侧不允许空连接串。
 | `ssl_verify` 默认 true | 现有 `.env` 未声明该参数，用 `http://` 自部署模型服务的部署会突然装配失败 |
 | `false` 表示跳过校验 | 默认值会把现在校验着的公网连接改成不校验，安全倒退 |
 | 三者共用一组参数 | 可能指向不同端点与证书；共用后无法分别配置 |
+| 继续保留 SDK 600s 默认等待 | 客户端超时后服务端继续占槽，且挂死与慢模型不可区分 |
+| 默认开启 SDK 重试 | 单次挂死读会被放大为多次等待；重试应由部署层按幂等策略决定 |
+| 只在 chat 调用时传 timeout | health 与客户端级等待策略需要统一；配置面也应同时覆盖 Embedder |
+| 同时修改 ASR | ASR 是同类风险但不在本次定位链路，单独跟踪和验证 |
 
 ## 验证
 
 - `tests/unit/common/test_outbound_ssl.py` 44 项：布尔归一、前缀隔离、空串归一、
   verify 取值翻译、https 强制、证书缺失拦截，以及四个组件 × 四种装配状态。
+- `tests/unit/common/test_model_call_timeout.py` 29 项：LLM / Embedder / DashScope 的
+  默认值、显式覆盖、非法值装配失败、客户端参数透传、发起与超时日志脱敏。
 - reranker 侧经注入假 httpx.Client 断言 `verify` 的最终取值，并验证关闭时不传该参数。
 - OpenAI LLM / Embedder 经替身工厂断言使用 `openai.DefaultHttpxClient`，自定义 CA 不再
   把 SDK 的网络默认值退化为裸 httpx 默认值；测试类方法均满足 G.CLS.07。
@@ -134,3 +163,4 @@ SDK 内置端点，而 storage 侧不允许空连接串。
 - **无法跳过校验**：自签且暂时拿不到证书时只能改用 `http://`。这是有意取舍，见「拒绝的方案」。
 - **embedder 在装配期即构造客户端**：与 LLM 的惰性构造不一致（缺 `api_key` 时装配即
   失败）。属既有行为，本次未改动。
+- **ASR 仍使用 SDK 默认 timeout/retry**：同类风险需要后续单独修复。
