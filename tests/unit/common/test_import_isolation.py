@@ -134,5 +134,5 @@ def test_fuser_impl_registration_is_import_isolated(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(importlib, "import_module", fake_import_module)
     importlib.reload(module)
 
-    assert imported_modules == [".rrf_fuser", ".weighted_rrf_fuser", ".score_max_fuser"]
-    assert {"weighted_rrf", "score_max"} <= set(module.FuserProducer.known())
+    assert imported_modules == [".rrf_fuser", ".weighted_rrf_fuser", ".score_max_fuser", ".bm25_scored_fuser"]
+    assert {"weighted_rrf", "score_max", "BM25_scored_fuser"} <= set(module.FuserProducer.known())

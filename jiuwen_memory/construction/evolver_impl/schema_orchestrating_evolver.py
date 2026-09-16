@@ -94,25 +94,31 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver):
         source_units: list[MemoryUnit],
         property_units: list[MemoryUnit],
     ) -> list[str]:
-        """Write extracted entity/property terms back to their persisted sources."""
+        """Write extracted entity names back to their persisted sources.
+
+        Only ``schema_entity_name`` is written back. ``schema_property_name`` is
+        intentionally excluded: ``source.entities`` feeds the entity index
+        (``EntityIndexBuilder``) and L2 expansion (``KeywordRecaller``), both of
+        which treat every term as a proper-noun entity. Writing property names
+        there makes a shared property name (e.g. ``hobby_activity``) act as a fake
+        entity that chains together unrelated memories (BUG-ERC-1001). The property
+        is already durably stored on the property unit's own
+        ``schema_property_name`` metadata, so nothing is lost.
+        """
         source_by_id = {unit.id: unit for unit in source_units}
         terms_by_source: dict[str, list[str]] = {unit.id: [] for unit in source_units}
         for property_unit in property_units:
             entity_name = str(
                 property_unit.system_metadata.get("schema_entity_name") or ""
             ).strip()
-            property_name = str(
-                property_unit.system_metadata.get("schema_property_name") or ""
-            ).strip()
-            terms = [term for term in (entity_name, property_name) if term]
-            if not terms:
+            if not entity_name:
                 continue
             referenced_ids = property_unit.provenance
             if not referenced_ids and property_unit.source_ref:
                 referenced_ids = [property_unit.source_ref]
             for source_id in referenced_ids:
                 if source_id in source_by_id:
-                    terms_by_source[source_id].extend(terms)
+                    terms_by_source[source_id].append(entity_name)
 
         updated_ids: list[str] = []
         for source_id, terms in terms_by_source.items():

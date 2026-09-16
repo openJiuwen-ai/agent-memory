@@ -51,6 +51,7 @@ deploy = [
     "redis>=5",
     "asyncpg>=0.30",
     "pyyaml>=6",
+    # api_reranker 出站 HTTP（部署镜像走外部 rerank 服务时必需）。
     "httpx>=0.27,<1",
 ]
 # MCP surface（jiuwen_memory_entry/mcp_server）：把记忆动词暴露为 Model Context Protocol 工具。
