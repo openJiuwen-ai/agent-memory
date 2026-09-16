@@ -2,9 +2,10 @@
 """MCP 工具面：契约锁、安全注入与功能闭环（与 test_cli.py 同一验证口径）。
 
 MCP 工具是手写的（不像 HTTP/CLI 从 MemoryAPI 反射生成），契约锁测试是防
-「工具签名与 API 签名漂移」的唯一防线：参数名集合、必填覆盖、代表性 payload
-形状全部与 ``api_contract`` 对齐断言。功能闭环重点钉住本特性的两个核心语义：
-evolve→job_status 任务闭环（旧 7 工具时代的断链）与 consolidate→trace 血缘链。
+「工具签名与 API 签名漂移」的唯一防线：参数名集合与契约**全量相等**（as_of 漂移
+的教训——子集锁会放行静默缺失）、代表性 payload 形状全部与 ``api_contract``
+对齐断言。功能闭环重点钉住本特性的核心语义：evolve→job_status 任务闭环（旧 7
+工具时代的断链）与 consolidate→trace 血缘链。
 
 工具为 async（FastMCP 在事件循环线程裸调工具函数，而同步 MemoryAPI 方法内部
 经 asyncio.run 桥接协程，故执行体经 asyncio.to_thread 隔离）；测试用
@@ -20,6 +21,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
@@ -59,25 +61,64 @@ SCOPE = {"org": "local", "user": "developer"}
 # 工具名 → (MemoryAPI 方法名, 代表性最小合法 payload)。payload 同时锁「形状可过
 # parse_request」——工具转发给 _invoke 的键名集合必须与这里给出的契约一致。
 TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
-    "memory_add": ("add", {"content": "hello", "scope": SCOPE}),
-    "memory_add_async": ("add_async", {"content": "hello", "scope": SCOPE}),
-    "memory_batch_add": ("batch_add", {"items": [{"content": "a"}], "scope": SCOPE}),
+    "memory_add": (
+        "add",
+        {"content": "hello", "scope": SCOPE, "source": "text",
+         "assets": ["file:///a.png"], "occurred_at": "2026-06-17T10:00:00+00:00",
+         "system_metadata": {"infer": "true"}, "user_metadata": {"project": "x"}},
+    ),
+    "memory_add_async": (
+        "add_async",
+        {"content": "hello", "scope": SCOPE, "source": "text",
+         "occurred_at": "2026-06-17T10:00:00+00:00",
+         "system_metadata": {"infer": "true"}, "user_metadata": {"project": "x"}},
+    ),
+    "memory_batch_add": (
+        "batch_add",
+        {"items": [{"content": "a"}], "scope": SCOPE, "source": "text",
+         "stream_id": "s1", "occurred_at": "2026-06-17T10:00:00+00:00",
+         "system_metadata": {"batch": "true"}, "user_metadata": {"project": "x"}},
+    ),
     "memory_batch_add_async": (
-        "batch_add_async", {"items": [{"content": "a"}], "scope": SCOPE}),
-    "memory_search": ("search", {"query": "hello", "context": {"scope": SCOPE}}),
-    "memory_list": ("list", {"scope": SCOPE}),
-    "memory_get": ("get", {"unit_id": "u1", "scope": SCOPE}),
+        "batch_add_async",
+        {"items": [{"content": "a"}], "scope": SCOPE, "source": "text",
+         "stream_id": "s1", "occurred_at": "2026-06-17T10:00:00+00:00",
+         "system_metadata": {"batch": "true"}, "user_metadata": {"project": "x"}},
+    ),
+    "memory_search": (
+        "search",
+        {"query": "hello", "context": {"scope": SCOPE},
+         "as_of": "2026-06-17T10:30:00+00:00",
+         "filters": {"field": "tags", "op": "contains", "value": "a"},
+         "disclosure": "l2"},
+    ),
+    "memory_list": (
+        "list",
+        {"scope": SCOPE, "memory_types": ["episodic"],
+         "extensions": {"k": "v"},
+         "filters": {"field": "tier", "op": "eq", "value": "episodic"}},
+    ),
+    "memory_get": (
+        "get", {"unit_id": "u1", "scope": SCOPE, "as_of": "2026-06-17T10:30:00+00:00"}
+    ),
     "memory_update": (
         "update",
         {"unit_id": "u1", "scope": SCOPE, "patch": {"content": "x"}},
     ),
     "memory_delete": ("delete", {"selector": {"unit_ids": ["u1"], "scope": SCOPE}}),
-    "memory_evolve": ("evolve", {"scope": SCOPE, "mode": "extract"}),
-    "memory_check_write": ("check_write", {"scope": SCOPE}),
+    "memory_evolve": ("evolve", {"scope": SCOPE, "mode": "extract",
+                                 "channel": "background"}),
+    "memory_check_write": (
+        "check_write",
+        {"scope": SCOPE, "tags": ["t"], "system_metadata": {"k": "v"},
+         "user_metadata": {"k": "v"}},
+    ),
     "memory_submit_ingest": (
         "submit_ingest",
         {"content": "doc", "scope": SCOPE, "source": "text",
-         "payload_id": "p1", "source_ref": "file:///tmp/a.pdf"},
+         "payload_id": "p1", "source_ref": "file:///tmp/a.pdf",
+         "assets": ["file:///tmp/a.pdf"], "tags": ["doc"],
+         "system_metadata": {"k": "v"}, "user_metadata": {"k": "v"}},
     ),
     "memory_job_status": ("job_status", {"job_id": "j1"}),
     "memory_job_cancel": ("job_cancel", {"job_id": "j1"}),
@@ -87,7 +128,11 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
     "memory_inspect": ("inspect", {"unit_ids": ["u1"], "scope": SCOPE}),
     "memory_trace": ("trace", {"unit_id": "u1", "scope": SCOPE}),
     "memory_audit": ("audit", {"filters": {}}),
-    "memory_verify_audit": ("verify_audit", {}),
+    "memory_verify_audit": (
+        "verify_audit",
+        {"after_sequence": 0, "page_size": 100, "max_samples": 5,
+         "anchor_policy": "if_configured"},
+    ),
     "memory_grant": (
         "grant",
         {"grant": {"grantor": SCOPE, "grantee": {"org": "local", "agent": "helper"},
@@ -103,20 +148,24 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
         {"spec": {"org": "local", "space": "team-a", "display_name": "Team A"}},
     ),
     "memory_get_space": ("get_space", {"org": "local", "space": "team-a"}),
-    "memory_list_spaces": ("list_spaces", {"org": "local"}),
+    "memory_list_spaces": (
+        "list_spaces", {"org": "local", "status": "active", "limit": 10,
+                        "cursor": None},
+    ),
     "memory_update_space": (
         "update_space",
         {"org": "local", "space": "team-a", "patch": {"display_name": "Alpha"}},
     ),
     "memory_archive_space": ("archive_space", {"org": "local", "space": "team-a"}),
-    "memory_delete_space": ("delete_space", {"org": "local", "space": "team-a"}),
+    "memory_delete_space": (
+        "delete_space", {"org": "local", "space": "team-a", "mode": "purge"}
+    ),
     "memory_export_space": ("export_space", {"org": "local", "space": "team-a"}),
     "memory_space_usage": ("space_usage", {"org": "local", "space": "team-a"}),
     "memory_get_space_policy": (
         "get_space_policy", {"org": "local", "space": "team-a"}),
     "memory_set_space_policy": (
-        "set_space_policy",
-        {"org": "local", "space": "team-a", "policy": {}},
+        "set_space_policy", {"org": "local", "space": "team-a", "policy": {}},
     ),
     "memory_list_space_members": (
         "list_space_members", {"org": "local", "space": "team-a"}),
@@ -125,8 +174,7 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
         {"org": "local", "space": "team-a", "member": {"scope": SCOPE}},
     ),
     "memory_remove_space_member": (
-        "remove_space_member",
-        {"org": "local", "space": "team-a", "member": SCOPE},
+        "remove_space_member", {"org": "local", "space": "team-a", "member": SCOPE},
     ),
 }
 
@@ -169,13 +217,13 @@ def test_tool_signature_matches_api_contract(tool_name: str) -> None:
     tool_params = set(inspect.signature(getattr(mcp_main, tool_name)).parameters) - {"ctx"}
     contract = method_contract(verb)
     api_params = set(contract.request_parameters)
-    assert tool_params <= api_params, f"{tool_name} 多余参数: {tool_params - api_params}"
-    required = {
-        name
-        for name, parameter in contract.request_parameters.items()
-        if parameter.default is inspect.Parameter.empty
-    }
-    assert required <= tool_params, f"{tool_name} 缺必填参数: {required - tool_params}"
+    # 全量相等锁：as_of 漂移的教训——此前的子集锁会放行可选参数静默缺失，
+    # MCP 客户端经工具 schema 感知不到该参数。工具面与契约的任何参数差异
+    # 都必须显式决策（改工具或改契约），不允许静默漂移。
+    assert tool_params == api_params, (
+        f"{tool_name} 参数与契约漂移——缺失: {sorted(api_params - tool_params)},"
+        f" 多余: {sorted(tool_params - api_params)}"
+    )
 
 
 @pytest.mark.parametrize("tool_name", list(TOOL_CASES))
@@ -307,6 +355,80 @@ def test_search_returns_original_result_shape(kernel) -> None:
     assert "hits" not in result
 
 
+def test_get_as_of_returns_version_valid_at_that_time(kernel) -> None:
+    # 镜像 tests/unit/control/test_engine_get_as_of.py 的版本链回溯语义；
+    # as_of 取返回单元自身的 temporal.t_valid——与内核时间戳同时钟域，免时区换算。
+    old = asyncio.run(mcp_main.memory_add(content="v1", scope=SCOPE))[0]
+    time.sleep(0.05)
+    new_id = asyncio.run(
+        mcp_main.memory_update(unit_id=old["id"], scope=SCOPE, patch={"content": "v2"})
+    )["id"]
+    as_of = old["temporal"]["t_valid"]
+
+    current = asyncio.run(mcp_main.memory_get(unit_id=new_id, scope=SCOPE))
+    assert current["segments"][0]["content"] == "v2"
+    historical = asyncio.run(
+        mcp_main.memory_get(unit_id=old["id"], scope=SCOPE, as_of=as_of)
+    )
+    assert historical["id"] == old["id"], "as_of 回溯应命中当时有效的旧版本"
+    assert historical["segments"][0]["content"] == "v1"
+    # get 沿 supersedes 链双向回溯——新 id 配旧时刻同样命中旧版本
+    via_new_id = asyncio.run(
+        mcp_main.memory_get(unit_id=new_id, scope=SCOPE, as_of=as_of)
+    )
+    assert via_new_id["id"] == old["id"]
+    # 早于链起点：整条链无有效版本 → NotFound
+    before_chain = (
+        datetime.fromisoformat(as_of) - timedelta(seconds=1)
+    ).isoformat()
+    with pytest.raises(RuntimeError, match="NotFoundError"):
+        asyncio.run(mcp_main.memory_get(unit_id=new_id, scope=SCOPE, as_of=before_chain))
+
+
+def test_search_as_of_excludes_units_not_yet_valid(kernel) -> None:
+    added = asyncio.run(mcp_main.memory_add(content="hello coffee", scope=SCOPE))[0]
+    before_write = (
+        datetime.fromisoformat(added["temporal"]["t_valid"]) - timedelta(seconds=1)
+    ).isoformat()
+
+    past = asyncio.run(
+        mcp_main.memory_search(query="coffee", context={"scope": SCOPE}, as_of=before_write)
+    )
+    assert past["items"] == [], "as_of 早于写入时间（t_valid）不应召回"
+    present = asyncio.run(
+        mcp_main.memory_search(query="coffee", context={"scope": SCOPE})
+    )
+    assert present["items"], "缺省 as_of 应召回当前有效记忆"
+
+
+def test_list_memory_types_filters_results(kernel) -> None:
+    asyncio.run(mcp_main.memory_add(content="hello coffee", scope=SCOPE))
+    matched = asyncio.run(
+        mcp_main.memory_list(scope=SCOPE, memory_types=["episodic"])
+    )
+    assert matched["items"], "episodic 类型应命中（OFFLINE 缺省 tier）"
+    other = asyncio.run(
+        mcp_main.memory_list(scope=SCOPE, memory_types=["core"])
+    )
+    assert other["items"] == [] and other["count"] == 0, "core 类型不应命中"
+
+
+def test_search_filters_narrow_results(kernel) -> None:
+    asyncio.run(
+        mcp_main.memory_add(content="hello coffee", scope=SCOPE, tags=["brew"])
+    )
+    asyncio.run(mcp_main.memory_add(content="hello tea", scope=SCOPE, tags=["leaf"]))
+    filtered = asyncio.run(
+        mcp_main.memory_search(
+            query="hello",
+            context={"scope": SCOPE},
+            filters={"field": "tags", "op": "contains", "value": "leaf"},
+        )
+    )
+    contents = {item.get("content", "") for item in filtered["items"]}
+    assert contents == {"hello tea"}, f"filters 应收敛到带 leaf 标签的记忆: {contents}"
+
+
 def test_delete_requires_real_criterion_besides_scope(kernel) -> None:
     # scope 只是范围限定符、不是选择条件——单独给它必须被拒绝
     with pytest.raises(RuntimeError, match="unit_ids, tags, before, or filters"):
@@ -339,7 +461,9 @@ def test_fastmcp_call_tool_marshals_arguments(kernel) -> None:
     assert json.loads(blocks[0].text)["id"] == units[0]["id"]
     got = asyncio.run(
         mcp_main.mcp.call_tool(
-            "memory_get", {"unit_id": units[0]["id"], "scope": SCOPE}
+            "memory_get",
+            {"unit_id": units[0]["id"], "scope": SCOPE,
+             "as_of": units[0]["temporal"]["t_valid"]},
         )
     )
     assert json.loads(got[0].text)["id"] == units[0]["id"]

@@ -185,7 +185,7 @@ authenticator 产出，不接受调用方以 `Scope` 自述身份，也不再有
 “接口先行、实现暂缓”的边界留给实装 PR。
 
 **`legacy_request_context` 的移除点**：`jiuwen_memory/common/security/legacy.py` 及其全部调用点
-（`jiuwen_memory_entry/core/handler.py`——MCP 和旧调用方仍经它 dispatch，HTTP / CLI 已改走受控认证与 API 直调、
+（`jiuwen_memory_entry/core/handler.py`——历史进程内调用方仍经它 dispatch，HTTP / CLI / MCP 已改走受控认证与 API 直调、
 `jiuwen_memory_adapter/jiuwenswarm/agent_memory_provider.py`、`evaluation/core/harness.py`、
 `examples/quickstart.py`、`tests/`）在 `authentication_impl` 合入、各 surface 接上
 `authenticated()` 的同一个 PR 中删除。届时接入层直接产出 `RequestSecurityContext`，
