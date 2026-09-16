@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
-from jiuwen_memory.common.errors import NotFoundError, UnsupportedCapabilityError
+from jiuwen_memory.common.errors import NotFoundError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import FilterExpr, MemoryUnit, Scope
 from jiuwen_memory.common.type_def.memory import memory_key
@@ -73,23 +73,6 @@ class KVStore(BaseStore):
         key）。物理约束在该 ``scope`` 内，不跨 scope；已过期的键不返回。
         顺序由实现定义（调用方不应依赖）。
         """
-
-    def get_schema_properties_by_source(
-        self, scope: Scope, source_id: str
-    ) -> list[tuple[str, bytes]] | None:
-        """Complete candidates, or None when unsupported/unready; [] means proven empty.
-
-        Read index and bodies from the same actual backend. Missing/expired bodies
-        may be omitted; backend errors must propagate. No candidate truncation.
-        """
-        return None
-
-    def rebuild_schema_source_index(self, scope: Scope) -> None:
-        """Rebuild from truth during a maintenance window with all Scope writers paused."""
-        raise UnsupportedCapabilityError("schema_source_index", "enabled", type(self).__name__)
-
-    def clear_schema_source_index(self, scope: Scope) -> None:
-        """Invalidate and remove derived relations for Scope cleanup or disabling writes."""
 
     @abstractmethod
     def list(

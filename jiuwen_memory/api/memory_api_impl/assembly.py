@@ -83,26 +83,6 @@ def _configured_schema_targets(ctx: AssemblyContext) -> list[str]:
     return sorted(selected)
 
 
-def _validate_schema_source_index_config(ctx: AssemblyContext) -> None:
-    """Reject enabled Source indexes before constructing any configured components."""
-    if as_bool(ctx.globals.get("schema_enabled"), default=False):
-        return
-    pending = []
-    for name, spec in ctx.namespaces.get("kv_store", {}).items():
-        pending.append((f"kv_store.{name}", spec.params))
-    while pending:
-        path, params = pending.pop()
-        config = ComponentConfig(params=params, ctx=ctx)
-        if as_bool(config.get("schema_source_index_enabled"), default=False):
-            raise ValidationError(
-                f"{path}.params.schema_source_index_enabled=true requires "
-                "globals.schema_enabled=true"
-            )
-        raw = params.get("raw_kv_store")
-        if isinstance(raw, Mapping):
-            pending.append((f"{path}.params.raw_kv_store", raw.get("params") or {}))
-
-
 @dataclass
 class _Kernel:
     """装配模块内部工作对象：同时持有 API 与原始端口。
@@ -230,7 +210,6 @@ def _build_kernel(
         ctx = ctx.merged(config.context(known_top_names=Factory.known_top_names()))
     if policies is not None:
         ctx.globals["policies"] = dict(policies)
-    _validate_schema_source_index_config(ctx)
     schema_enabled = as_bool(ctx.globals.get("schema_enabled"), default=False)
     configured_schema_targets = _configured_schema_targets(ctx)
     if configured_schema_targets and not schema_enabled:

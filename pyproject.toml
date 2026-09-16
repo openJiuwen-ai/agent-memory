@@ -24,7 +24,6 @@ dev = [
     "httpx>=0.27,<1",
     "requests>=2.31",
     "python-dotenv>=1.0",
-    "fakeredis[lua]>=2.23,<3",
 ]
 nlp = [
     "spacy>=3.7",
@@ -65,7 +64,6 @@ dev = [
     "httpx>=0.27,<1",
     "requests>=2.31",
     "python-dotenv>=1.0",
-    "fakeredis[lua]>=2.23,<3",
 ]
 
 [[tool.uv.index]]
