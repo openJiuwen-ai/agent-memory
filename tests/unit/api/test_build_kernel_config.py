@@ -7,6 +7,8 @@ target 在 build 阶段报错；顶层段名拼错在解析期报错；具名实
 
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 import pytest
 
 from jiuwen_memory.api import assemble
@@ -191,6 +193,74 @@ def test_unknown_top_name_raises() -> None:
     cfg = Config.from_dict({"vectorstore": {"default": "memory"}})
     with pytest.raises(ValidationError):
         assemble(config=cfg)
+
+
+@pytest.mark.parametrize("backend", ["memory", "redis"])
+@pytest.mark.parametrize("name", ["default", "secondary"])
+@pytest.mark.parametrize("schema, index", [(None, True), (False, True), ("false", "true")])
+def test_source_index_requires_schema_before_component_creation(
+    monkeypatch, backend, name, schema, index,
+) -> None:
+    setup = Mock(side_effect=AssertionError("invalid configuration must fail before setup"))
+    monkeypatch.setattr(assembly, "setup_logging", setup)
+    config = {
+        "globals": {} if schema is None else {"schema_enabled": schema},
+        "kv_store": {name: {"target": backend, "params": {"schema_source_index_enabled": index}}},
+    }
+    with pytest.raises(ValidationError) as exc:
+        assemble(config=config)
+    assert str(exc.value) == (
+        f"kv_store.{name}.params.schema_source_index_enabled=true requires "
+        "globals.schema_enabled=true"
+    )
+    setup.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "schema, index, expected",
+    [(False, False, None), ("false", "false", None), (True, False, None),
+     (True, None, None), (True, True, []), ("true", "true", [])],
+)
+def test_source_index_valid_switch_combinations(monkeypatch, schema, index, expected) -> None:
+    monkeypatch.setattr(assembly, "setup_logging", lambda _: None)
+    params = {} if index is None else {"schema_source_index_enabled": index}
+    kernel = build_kernel(config={
+        "globals": {"schema_enabled": schema},
+        "kv_store": {"default": {"target": "memory", "params": params}},
+    })
+    try:
+        assert kernel.kv.get_schema_properties_by_source(SCOPE, "missing") == expected
+    finally:
+        kernel.ingest_jobs.close(wait=True)
+
+
+def test_source_index_inherits_globals_and_respects_local_override(monkeypatch) -> None:
+    monkeypatch.setattr(assembly, "setup_logging", lambda _: None)
+    config = {"globals": {"schema_source_index_enabled": "true", "schema_enabled": False}}
+    with pytest.raises(ValidationError, match="schema_source_index_enabled=true requires"):
+        assemble(config=config)
+    config["kv_store"] = {
+        "default": {"target": "memory", "params": {"schema_source_index_enabled": "false"}},
+    }
+    kernel = build_kernel(config=config)
+    try:
+        assert kernel.kv.get_schema_properties_by_source(SCOPE, "missing") is None
+    finally:
+        kernel.ingest_jobs.close(wait=True)
+
+
+def test_inline_raw_source_index_requires_schema_before_building_encryption() -> None:
+    config = {
+        "kv_store": {"default": {"target": "encrypted", "params": {
+            "raw_kv_store": {"target": "memory", "params": {"schema_source_index_enabled": True}},
+        }}},
+    }
+    with pytest.raises(ValidationError) as exc:
+        assemble(config=config)
+    assert str(exc.value) == (
+        "kv_store.default.params.raw_kv_store.params.schema_source_index_enabled=true "
+        "requires globals.schema_enabled=true"
+    )
 
 
 def test_named_instance_built_via_its_producer() -> None:
