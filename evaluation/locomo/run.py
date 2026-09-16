@@ -1,5 +1,8 @@
 """LOCOMO 端到端评测（v5，适配 mem2.0 新装配架构）。
 
+注意：本模块导入时即读取并校验环境变量，同时初始化输出目录和日志；
+调用方应先完成运行环境配置，不要在测试或其他模块中裸导入。
+
 把旧 v5（依赖 jiuwen_memory.*）迁移到当前 api.assemble_runtime + LocalMemoryAPI 架构：
 - 精简冒烟规模（默认）：每 conv 前 1 session 前 5 轮对话 + 前 2 道 QA（category>4 跳过）
   全量可用环境变量打开（MAX_SESSIONS=0 MAX_TURNS=0 MAX_QA=0 = 全量）
@@ -33,7 +36,7 @@
     RAW_FALLBACK=0      抽取零产出时按默认路径补写原文（默认关：测纯抽取质量，见下方说明）
     RAW_ALWAYS=0        每个 turn 都额外写一份原文（与 RAW_FALLBACK 互斥的另一方案，A/B 用）
     DATE_PREFIX=0       正文加绝对日期前缀（默认关：新 prompt 的时间锚点取 observation_date 行）
-    DISABLE_THINKING=1  关闭思维链（extra_body 注入），其文本会干扰抽取算子 JSON 解析
+    DISABLE_THINKING=0  默认不注入；仅自建 vLLM GLM 需要时设 1，DeepSeek 保持 0
 
 产物管理：每轮进 outputs/locomo/<RUN_ID>_<RUN_TAG>/，含 test_*_v5<conv>.* + run_meta.json
           + config.snapshot.yml + engine.log + run.log。outputs/locomo/latest.txt 记最近一轮。
@@ -360,6 +363,20 @@ def _append_jsonl(path: str, record: dict, conv_id: int) -> None:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception as e:
         logger.warning("conv %d 写 %s 失败(忽略): %s", conv_id, path, str(e)[:120])
+
+
+def _replace_speaker_names(text: str, speaker_a: str, speaker_b: str) -> str:
+    """将说话人名称映射为评测角色，优先替换较长名称以避免子串碰撞。"""
+    replacements = sorted(
+        ((speaker_a, "user"), (speaker_b, "assistant")),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+    result = text
+    for speaker, role in replacements:
+        if speaker:
+            result = result.replace(speaker, role)
+    return result
 
 
 def _patched_openai_chat(self, messages, **options):
@@ -867,7 +884,7 @@ class ConversationProcessor:
                     )
                 # role 映射：speaker_a→user, speaker_b→assistant，
                 # 与 prompt 中的 "User=main person" 对齐。
-                text = text.replace(speaker_a, "user").replace(speaker_b, "assistant")
+                text = _replace_speaker_names(text, speaker_a, speaker_b)
                 if not text.strip():
                     continue
                 role = "user" if chat.get("speaker") == speaker_a else "assistant"
@@ -955,6 +972,10 @@ class ConversationProcessor:
                     with_trajectory=True,          # 测试参考.md: 返回召回阶段轨迹
                 )
             except Exception as e:
+                import openai as _oa
+                if isinstance(e, (_oa.RateLimitError, _oa.APIConnectionError,
+                                  _oa.APITimeoutError, _oa.InternalServerError)):
+                    raise
                 logger.warning("conv %d recall failed: %s", self.conv_id, str(e)[:120])
                 res = None
         items = (res.items if res else [])
@@ -1077,9 +1098,9 @@ class ConversationProcessor:
                 logger.info("conv %d MAX_QA=%d 已跑完", self.conv_id, MAX_QA)
                 break
             qa_done += 1
-            question = qa["question"].replace(speaker_a, "user").replace(speaker_b, "assistant")
+            question = _replace_speaker_names(qa["question"], speaker_a, speaker_b)
             gold = prompts.preprocess_answer(category, str(qa.get("answer", "")))
-            gold = gold.replace(speaker_a, "user").replace(speaker_b, "assistant")
+            gold = _replace_speaker_names(gold, speaker_a, speaker_b)
             # 召回一次（与 cutoff 数无关，多 cutoff 复用同一批召回结果）
             try:
                 search_results, recall_record = self.recall(question, qa_idx=q_idx)

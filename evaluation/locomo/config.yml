@@ -186,9 +186,10 @@ memory_api:
   # 三者均显式置 0，让融合结果不经阈值再砍，对齐基线口径（全部召回结果进 prompt）。
   # 注：实例级覆盖会整体替换 params，故须写全依赖拓扑，漏写会掉回内核默认值。
   # 容量四参数：recall_max=200 双路每路召回预算（对齐 mem0 beam benchmark 召回 200），
-  # rerank_max=50 精排封顶（无 rerank 时不生效，保留无害），top_k 由 RUN 时给定（=100，对齐 mem0 主测 cutoff）。
+  # rerank_max=50 精排封顶（无 rerank 时不生效，保留无害），top_k 由 RUN 时给定（默认 200，对齐 mem0 召回口径）。
   # 每路实际召回宽度 = max(top_k*over_fetch_factor, over_fetch_floor)，被 recall_max 封顶 → 每路 200。
-  # 融合后取 top_k=100 进 prompt。budget_n=max(rerank_max, top_k)=100。
+  # 融合后最多保留 top_k=200 形成候选池；评测再按 10/20/50/200 cutoff 切片进入 prompt。
+  # 因此本阶段 budget_n=max(rerank_max, top_k)=200，而不是早期注释中的 100。
   retriever:
     default:
       target: pipeline

@@ -150,11 +150,19 @@ benchmark: locomo
 - 默认 `RAW_FALLBACK=0`、`RAW_ALWAYS=0`、`DATE_PREFIX=0`；
 - Redis、Milvus、Elasticsearch 和 weighted RRF 参数与 SSH 配置一致，关闭 rerank；
 - 召回 Top-200，再按 `10 → 20 → 50 → 200` cutoff 生成答案并判分；
-- GLM 调用按 SSH `.env` 设置 `DISABLE_THINKING=1`；
+- `DISABLE_THINKING` 默认保持 `0`；仅自建 vLLM GLM 部署需要时设为 `1`，
+  华为云 MaaS DeepSeek 等托管端点保持默认 `0`；
 - mini 默认只跑 1 个 conversation、2 个 turn、1 道 QA（数据中只有这些内容）。
 
 两套 runner、prompt、配置和输出格式分别位于 `longmemeval/` 与 `locomo/`，没有使用
 一个通用适配器替代其中任何一套。
+
+### 致谢
+
+本评测框架的部分 LoCoMo 答案生成（answer）与判分（judge）提示词参考了
+[Mem0 memory-benchmarks 的 LoCoMo 公开评测实现](https://github.com/mem0ai/memory-benchmarks/tree/main/benchmarks/locomo)。
+感谢 Mem0 项目及其社区在长期记忆评测方法、提示词设计和端到端评测流程方面的开源贡献与启发。
+相关内容已结合 agent-memory 的接口、运行环境与评测口径进行适配，具体实现以本目录代码为准。
 
 ## 六、修改测试范围
 

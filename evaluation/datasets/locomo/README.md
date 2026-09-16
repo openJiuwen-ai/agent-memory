@@ -14,4 +14,5 @@
 
 mini 保留 2 个原始 turn 和原始 `qa[0]`（证据 `D1:2`）。它仍运行远端 v5 的完整
 写入、抽取、Redis/Milvus/Elasticsearch、Top-200 检索、多 cutoff 生成与 Judge 链路。
-mini SHA-256：`EC93C5CEC49BC444A7814D184C5E3E3279B96E833FA7D0E83C1225479545EDDF`。
+mini SHA-256：`C983279B695C284BBE60DB8257DE951C0298D18690F41550100CBEA02E3EB306`。
+以上 SHA-256 均以仓库 raw/Git blob 的原始字节为准，避免 Windows 检出时 CRLF 转换影响校验值。
