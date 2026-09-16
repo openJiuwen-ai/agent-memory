@@ -138,6 +138,9 @@ class EncryptedKVStore(KVStore):
     def scopes(self) -> list[Scope]:
         return self._raw.scopes()
 
+    def clear_schema_source_index(self, scope: Scope) -> None:
+        self._raw.clear_schema_source_index(scope)
+
     def _encrypt(self, scope: Scope, key: str, plaintext: bytes) -> bytes:
         purpose = _purpose_for_key(key)
         context = _security_context(scope, key, purpose)

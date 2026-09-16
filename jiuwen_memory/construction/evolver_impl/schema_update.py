@@ -16,6 +16,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 
 from jiuwen_memory.common.errors import ConflictError, PartialFailureError, ValidationError
+from jiuwen_memory.common.memory_sources import sources
 from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit
 from jiuwen_memory.common.type_def.memory import MEMORY_KEY_PREFIX
 from jiuwen_memory.common.type_def.memory_codec import loads
@@ -61,10 +62,6 @@ def _fact_key(unit: MemoryUnit) -> tuple[str, str]:
     return " ".join(unit.content.split()).casefold(), str(unit.temporal.t_event or "")
 
 
-def sources(unit: MemoryUnit) -> list[str]:
-    return list(dict.fromkeys(unit.provenance or ([unit.source_ref] if unit.source_ref else [])))
-
-
 class SchemaUpdateCoordinator:
     def __init__(self, kv: KVStore, extract: Callable[[MemoryUnit], SourceExtraction]) -> None:
         self._kv = kv
@@ -86,7 +83,10 @@ class SchemaUpdateCoordinator:
         if boundary is None:
             raise ValidationError("Schema update requires a validity boundary")
         related = []
-        for _, raw in self._kv.scan(old.scope, MEMORY_KEY_PREFIX):
+        entries = self._kv.get_schema_properties_by_source(old.scope, old.id)
+        if entries is None:
+            entries = self._kv.scan(old.scope, MEMORY_KEY_PREFIX)
+        for _, raw in entries:
             unit = loads(raw)
             if unit is None:
                 continue

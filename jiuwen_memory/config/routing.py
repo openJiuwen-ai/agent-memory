@@ -218,6 +218,17 @@ class RoutingKVStore(KVStore):
     def scan(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
         return self._router.get().scan(scope, prefix)
 
+    def get_schema_properties_by_source(
+        self, scope: Scope, source_id: str
+    ) -> list[tuple[str, bytes]] | None:
+        return self._router.get().get_schema_properties_by_source(scope, source_id)
+
+    def rebuild_schema_source_index(self, scope: Scope) -> None:
+        self._router.get().rebuild_schema_source_index(scope)
+
+    def clear_schema_source_index(self, scope: Scope) -> None:
+        self._router.get().clear_schema_source_index(scope)
+
     def list(
         self,
         scope: Scope,

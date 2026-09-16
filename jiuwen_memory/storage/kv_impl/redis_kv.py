@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from jiuwen_memory.common._support import as_bool
 from jiuwen_memory.common.errors import (
     BackendError,
     ConflictError,
@@ -35,6 +36,7 @@ from ..base import StoreType
 from ..kv import KVStore
 from ..types import KVMemoryListResult
 from .memory_list import list_memory_entries
+from .redis_schema_source_index import INTERNAL_PREFIX, RedisSchemaSourceIndex, internal_scope
 
 
 def _decode_scope_segment(segment: str) -> str:
@@ -54,6 +56,7 @@ class RedisKVStore(KVStore):
         password: str | None = None,
         config_source=None,
         config_namespace: str = "kv_store",
+        schema_source_index_enabled: bool = False,
         **options: Any,
     ) -> None:
         # 构造期字段为 ConfigSource 缺失时的回落
@@ -64,6 +67,7 @@ class RedisKVStore(KVStore):
         self._fallback_password = password
         self._config_source = config_source
         self._config_namespace = config_namespace
+        self._source_index_enabled = schema_source_index_enabled
         # url 分支走 from_url，不读 host 指纹，故 options 需单独留一份透传（见 client）。
         self._options = dict(options)
         self._client: Any = None
@@ -120,6 +124,10 @@ class RedisKVStore(KVStore):
 
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
         """在 ``scope`` 下新建 ``key``；已存在时报冲突。"""
+        if self._source_index_enabled and key.startswith(MEMORY_KEY_PREFIX):
+            with wrap_backend("redis indexed insert"):
+                self._source_index(scope).write("insert", key, value, self._px(ttl))
+            return
         nk = self._namespaced(scope, key)
         with wrap_backend(f"redis insert {key!r}"):
             ok = self.client.set(nk, value, nx=True, px=self._px(ttl))
@@ -128,6 +136,10 @@ class RedisKVStore(KVStore):
 
     def update(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
         """覆写 ``scope`` 下已有 ``key``；不存在时报缺失。"""
+        if self._source_index_enabled and key.startswith(MEMORY_KEY_PREFIX):
+            with wrap_backend("redis indexed update"):
+                self._source_index(scope).write("update", key, value, self._px(ttl))
+            return
         nk = self._namespaced(scope, key)
         with wrap_backend(f"redis update {key!r}"):
             ok = self.client.set(nk, value, xx=True, px=self._px(ttl))
@@ -136,6 +148,10 @@ class RedisKVStore(KVStore):
 
     def delete(self, scope: Scope, key: str) -> None:
         """删除 ``scope`` 下的 ``key``（幂等）。"""
+        if self._source_index_enabled and key.startswith(MEMORY_KEY_PREFIX):
+            with wrap_backend("redis indexed delete"):
+                self._source_index(scope).write("delete", key)
+            return
         with wrap_backend(f"redis delete {key!r}"):
             self.client.delete(self._namespaced(scope, key))  # 幂等
 
@@ -182,6 +198,28 @@ class RedisKVStore(KVStore):
             out.append((k[len(ns):], value))  # 去掉命名空间前缀还原逻辑 key
         return out
 
+    def _source_index(self, scope: Scope) -> RedisSchemaSourceIndex:
+        return RedisSchemaSourceIndex(self.client, scope, self._namespaced(scope, ""))
+
+    def get_schema_properties_by_source(
+        self, scope: Scope, source_id: str
+    ) -> list[tuple[str, bytes]] | None:
+        if not self._source_index_enabled:
+            return None
+        with wrap_backend("redis schema source lookup"):
+            return self._source_index(scope).get(source_id)
+
+    def rebuild_schema_source_index(self, scope: Scope) -> None:
+        if not self._source_index_enabled:
+            return super().rebuild_schema_source_index(scope)
+        with wrap_backend("redis schema source rebuild"):
+            self._source_index(scope).rebuild()
+
+    def clear_schema_source_index(self, scope: Scope) -> None:
+        if self._source_index_enabled:
+            with wrap_backend("redis schema source clear"):
+                self._source_index(scope).clear()
+
     def list(
         self,
         scope: Scope,
@@ -208,6 +246,10 @@ class RedisKVStore(KVStore):
         with wrap_backend("redis scopes"):
             for raw in self.client.scan_iter(match="*"):
                 k = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+                if k.startswith(INTERNAL_PREFIX) and ":" not in k:
+                    scope = internal_scope(k)
+                    seen.add((scope.org, scope.space, scope.user, scope.agent, scope.session))
+                    continue
                 parts = k.split(":", 5)
                 if len(parts) < 6:  # 非本存储写入的键（不足 5 段 scope + key）
                     continue
@@ -315,5 +357,8 @@ def _build(config):
         db=Factory.cfg_get(config, "db", 0),
         password=Factory.cfg_get(config, "password"),
         config_source=ConfigSourceProducer.get_cached("default"),
+        schema_source_index_enabled=as_bool(
+            Factory.cfg_get(config, "schema_source_index_enabled"), default=False
+        ),
         **options,
     )

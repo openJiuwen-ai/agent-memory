@@ -88,7 +88,7 @@ def _action_for_store_method(name: str) -> Any:
         return StorageAction.DELETE
     if name in {"search", "recall", "seed_ids"}:
         return StorageAction.SEARCH
-    if name in {"get", "mget", "exists", "scan", "list", "stat"}:
+    if name in {"get", "mget", "exists", "scan", "list", "stat", "get_schema_properties_by_source"}:
         return StorageAction.GET
     return StorageAction.ADMIN
 

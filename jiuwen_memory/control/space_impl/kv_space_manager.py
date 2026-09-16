@@ -462,6 +462,7 @@ class KVSpaceManager(SpaceManager):
                     counts["space_metadata"] += 1
                 counts["kv"] += 1
                 self._kv.delete(scope, key)
+            self._kv.clear_schema_source_index(scope)
         registry_key = _registry_key(space)
         if self._kv.exists(_ROOT_SCOPE, registry_key):
             self._kv.delete(_ROOT_SCOPE, registry_key)
