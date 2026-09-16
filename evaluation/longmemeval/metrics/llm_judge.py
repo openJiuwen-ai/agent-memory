@@ -21,10 +21,10 @@ import os
 import re
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Optional
 
 from evaluation.longmemeval.metrics.mem0_longmemeval_prompt import (
     get_answer_generation_prompt as get_longmemeval_answer_prompt,
@@ -41,7 +41,7 @@ ChatFn = Callable[[str, str], str]
 class OpenAIChatOptions:
     """Optional request and audit settings for an OpenAI-compatible chat client."""
 
-    temperature: Optional[float] = None
+    temperature: float | None = None
     max_tokens: int | None = None
     timeout: float = 60.0
     audit_category: str = ""
@@ -101,7 +101,7 @@ def _judge_user(question: str, gold: str, answer: str, strict: bool) -> str:
     )
 
 
-def _parse_correct(content: str) -> Optional[bool]:
+def _parse_correct(content: str) -> bool | None:
     """从 judge 输出里抽取 label（容忍前后缀文字，取首个 JSON 对象）。"""
     text = (content or "").strip()
     start, end = text.find("{"), text.rfind("}")
@@ -118,7 +118,7 @@ def _parse_correct(content: str) -> Optional[bool]:
     return None
 
 
-def _parse_longmemeval_correct(content: str) -> Optional[bool]:
+def _parse_longmemeval_correct(content: str) -> bool | None:
     """Parse the Mem0/LongMemEval judge's final yes/no verdict."""
     text = (content or "").strip().lower()
     marker = "</judge_thinking>"

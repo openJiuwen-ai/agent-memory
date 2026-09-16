@@ -205,7 +205,8 @@ class EntityLinkService:
                 failed_count=result.failed_count + group_result.failed_count,
             )
         logger.info(
-            "entity_link_complete unit_count=%d extracted=%d inserted=%d updated=%d deleted=%d failed=%d",
+            "entity_link_complete unit_count=%d extracted=%d inserted=%d "
+            "updated=%d deleted=%d failed=%d",
             len(units), result.extracted_count, result.inserted_count,
             result.updated_count, result.deleted_count, result.failed_count,
         )
@@ -276,7 +277,9 @@ class EntityLinkService:
                     logger.warning("entity_unlink_failed entity_id=%s space_id=%s memory_id=%s",
                                    str(failed_id), redact_for_log(space_id), memory_id)
 
-        return EntityLinkResult(updated_count=updated_count, deleted_count=deleted_count, failed_count=failed_count)
+        return EntityLinkResult(
+            updated_count=updated_count, deleted_count=deleted_count, failed_count=failed_count
+        )
 
     # ------------------------------------------------------------------
     # _link_group：两级匹配（hash 精确 → INSERT/LINK）
@@ -365,7 +368,9 @@ class EntityLinkService:
                 key = hash_entity_text(normalized)
                 extracted_count += 1
                 if key not in entities_by_key:
-                    entities_by_key[key] = (mention.entity_type, mention.display_name, normalized, {unit.id})
+                    entities_by_key[key] = (
+                        mention.entity_type, mention.display_name, normalized, {unit.id}
+                    )
                 else:
                     entities_by_key[key][3].add(unit.id)  # ← unit.id（str）存进 set
 
@@ -424,10 +429,16 @@ class EntityLinkService:
 
                 if match is not None:
                     # LINK：追加新 unit_id（去重已有）
-                    ids_to_add = tuple(sorted(set(memory_ids) - set(match.linked_memory_ids), key=str))
+                    ids_to_add = tuple(
+                        sorted(set(memory_ids) - set(match.linked_memory_ids), key=str)
+                    )
                     if ids_to_add:
                         pending_ops.append((
-                            EntityOperation(type=EntityOpType.LINK, record_id=match.id, link_memory_ids=ids_to_add),
+                            EntityOperation(
+                                type=EntityOpType.LINK,
+                                record_id=match.id,
+                                link_memory_ids=ids_to_add,
+                            ),
                             key,
                         ))
                         updated_count += 1
@@ -443,7 +454,8 @@ class EntityLinkService:
                             entity_text=entity_text,
                             entity_text_hash=key,
                             entity_type=entity_type,
-                            linked_memory_ids=tuple(sorted(memory_ids, key=str)),  # tuple[str]（unit.id）
+                            # tuple[str]（unit.id）
+                            linked_memory_ids=tuple(sorted(memory_ids, key=str)),
                             filters=filters,
                             embedding=embedding,
                         ),
@@ -622,7 +634,9 @@ class EntityIndexBuilder(IndexBuilder):
         """
         if not unit_ids:
             return
-        logger.info("EntityIndexBuilder: removing entity index for %d unit_ids (by scope)", len(unit_ids))
+        logger.info(
+            "EntityIndexBuilder: removing entity index for %d unit_ids (by scope)", len(unit_ids)
+        )
         for unit_id in unit_ids:
             try:
                 self._linker.unlink_memory(scope=scope, memory_id=unit_id)

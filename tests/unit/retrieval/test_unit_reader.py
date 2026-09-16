@@ -265,7 +265,9 @@ def test_filter_contains_rejects_scalar_even_on_exact_value(unit_factory) -> Non
     assert not matches_filters(
         unit, FilterClause("user_metadata.project", FilterOp.CONTAINS, "homework")
     )
-    assert not matches_filters(unit, FilterClause("user_metadata.project", FilterOp.CONTAINS, "work"))
+    assert not matches_filters(
+        unit, FilterClause("user_metadata.project", FilterOp.CONTAINS, "work")
+    )
 
 
 def test_filter_scalar_ops_do_not_treat_array_as_scalar(unit_factory) -> None:

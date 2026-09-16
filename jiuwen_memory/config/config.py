@@ -30,7 +30,8 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Mapping, Optional
+from collections.abc import Mapping
+from typing import Any
 
 from jiuwen_memory.common.errors import ValidationError
 
@@ -94,11 +95,11 @@ def _expand_env(obj: Any, overrides: Mapping[str, Any] | None = None) -> Any:
 class Config:
     """一次装配的用户配置（两级命名空间字典，解析后只读）。"""
 
-    def __init__(self, data: Optional[Mapping[str, Any]] = None) -> None:
+    def __init__(self, data: Mapping[str, Any] | None = None) -> None:
         self._data = dict(data or {})
 
     @classmethod
-    def from_dict(cls, data: Optional[Mapping[str, Any]]) -> "Config":
+    def from_dict(cls, data: Mapping[str, Any] | None) -> "Config":
         """从配置字典构造。"""
         return cls(data or {})
 
@@ -119,7 +120,7 @@ class Config:
         """
         return cls.from_dict(_expand_env(_load_yaml(yaml_str), args))
 
-    def context(self, known_top_names: Optional[set] = None) -> AssemblyContext:
+    def context(self, known_top_names: set | None = None) -> AssemblyContext:
         """解析成 :class:`AssemblyContext`；``known_top_names`` 非空时校验顶层段名。"""
         return AssemblyContext.from_dict(self._data, known_top_names=known_top_names)
 

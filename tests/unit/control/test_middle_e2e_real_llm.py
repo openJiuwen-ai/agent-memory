@@ -35,8 +35,8 @@ Timer 协程继续转。
 """
 
 from __future__ import annotations
-# pylint: disable=protected-access  # 测试代码需要访问受保护成员以断言装配链行为
 
+# pylint: disable=protected-access  # 测试代码需要访问受保护成员以断言装配链行为
 import asyncio
 import os
 
@@ -49,13 +49,14 @@ from jiuwen_memory.common.security.legacy import legacy_request_context
 # .env 在 .gitignore 内已忽略，不会误提交；缺失也不报错（仅本次测试 skip）。
 load_dotenv()
 
-from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
-from jiuwen_memory.common.log import get_logger
-from jiuwen_memory.common.type_def import Context, LifecycleState, MemoryTier, Scope, memory_key
-from jiuwen_memory.common.type_def.memory_codec import loads
+# 以下 import 刻意留在 load_dotenv() 之后（见上方注释：.env 需先进 os.environ），
+# 因此统一标注 noqa 而非上移重排；顺带把散落在 logger 之后的 Config 并入本组。
+from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel  # noqa: E402
+from jiuwen_memory.common.log import get_logger  # noqa: E402
+from jiuwen_memory.common.type_def import Context, LifecycleState, MemoryTier, Scope  # noqa: E402
+from jiuwen_memory.config.config import Config  # noqa: E402
 
 logger = get_logger(__name__)
-from jiuwen_memory.config.config import Config
 
 pytestmark = [
     pytest.mark.unit,
@@ -378,7 +379,9 @@ async def test_in_memory_in_process() -> None:
             f"got {persisted_s2.lifecycle}"
         )
         assert persisted_s2.tier == MemoryTier.WORKING
-        logger.info(f"\n[step 2] bob write id={bob_original_id} lifecycle={persisted_s2.lifecycle.value}")
+        logger.info(
+            f"\n[step 2] bob write id={bob_original_id} lifecycle={persisted_s2.lifecycle.value}"
+        )
         # 立即 recall + list
         list_after_s2 = await _list_via_thread(api)
         recall_s2 = await _recall_async(kernel, "bob kyoto", ctx)
@@ -396,7 +399,7 @@ async def test_in_memory_in_process() -> None:
         # ---- step 3: await add_async middle=false（carol + python） ----
         units_s3 = await _async_write(api, _STEP3_CONTENT, middle=False)
         assert len(units_s3) >= 1
-        logger.info(f"\n[step 3] carol write")
+        logger.info("\n[step 3] carol write")
         # 立即 recall + list
         list_after_s3 = await _list_via_thread(api)
         recall_s3 = await _recall_async(kernel, "carol python", ctx)
@@ -423,7 +426,9 @@ async def test_in_memory_in_process() -> None:
             f"InProcessScheduler step 4 应立即 ARCHIVED 原文 {dave_original_id}，"
             f"got {persisted_s4.lifecycle}"
         )
-        logger.info(f"\n[step 4] dave write id={dave_original_id} lifecycle={persisted_s4.lifecycle.value}")
+        logger.info(
+            f"\n[step 4] dave write id={dave_original_id} lifecycle={persisted_s4.lifecycle.value}"
+        )
         # 立即 recall + list
         list_after_s4 = await _list_via_thread(api)
         recall_s4 = await _recall_async(kernel, "dave hiking", ctx)
@@ -438,7 +443,8 @@ async def test_in_memory_in_process() -> None:
         assert any("dave" in u.content.lower() or "hiking" in u.content.lower()
                    for u in list_after_s4.items), "step 4 后 list 应有 dave 派生"
 
-        # 最终 list 查看记忆——应有 4 步所有派生记忆（middle=true 路径的派生 + middle=false 路径的派生）
+        # 最终 list 查看记忆——应有 4 步所有派生记忆
+        # （middle=true 路径的派生 + middle=false 路径的派生）
         final_list = await _list_via_thread(api)
         # 4 条派生 + bob 原文 + dave 原文 = 6 条（alice/carol 原文落 /messages/ 不进 /memory/）
         assert len(final_list.items) == 6, (
@@ -502,7 +508,7 @@ async def test_in_memory_async_timer() -> None:
         # ---- step 1: sync write middle=false（alice + green tea） ----
         units_s1 = await _sync_write_via_thread(api, _STEP1_CONTENT, middle=False)
         assert len(units_s1) >= 1
-        logger.info(f"\n[step 1] alice write")
+        logger.info("\n[step 1] alice write")
         list_after_s1 = await _list_via_thread(api)
         recall_s1 = await _recall_async(kernel, "alice green tea", ctx)
         logger.info(f"[step 1] list size={len(list_after_s1.items)}")
@@ -545,7 +551,7 @@ async def test_in_memory_async_timer() -> None:
         # ---- step 3: await add_async middle=false（carol + python） ----
         units_s3 = await _async_write(api, _STEP3_CONTENT, middle=False)
         assert len(units_s3) >= 1
-        logger.info(f"\n[step 3] carol write")
+        logger.info("\n[step 3] carol write")
         list_after_s3 = await _list_via_thread(api)
         recall_s3 = await _recall_async(kernel, "carol python", ctx)
         logger.info(f"[step 3] list size={len(list_after_s3.items)}")
@@ -673,7 +679,7 @@ async def test_cloud_in_process() -> None:
         # ---- step 1: sync write middle=false（alice + green tea） ----
         units_s1 = await _sync_write_via_thread(api, _STEP1_CONTENT, middle=False)
         assert len(units_s1) >= 1
-        logger.info(f"\n[step 1] alice write")
+        logger.info("\n[step 1] alice write")
         list_after_s1 = await _list_via_thread(api)
         recall_s1 = await _recall_async(kernel, "alice green tea", ctx)
         logger.info(f"[step 1] list size={len(list_after_s1.items)}")
@@ -717,7 +723,7 @@ async def test_cloud_in_process() -> None:
         # ---- step 3: await add_async middle=false（carol + python） ----
         units_s3 = await _async_write(api, _STEP3_CONTENT, middle=False)
         assert len(units_s3) >= 1
-        logger.info(f"\n[step 3] carol write")
+        logger.info("\n[step 3] carol write")
         list_after_s3 = await _list_via_thread(api)
         recall_s3 = await _recall_async(kernel, "carol python", ctx)
         logger.info(f"[step 3] list size={len(list_after_s3.items)}")
@@ -811,7 +817,7 @@ async def test_cloud_async_timer() -> None:
         # ---- step 1: sync write middle=false（alice + green tea） ----
         units_s1 = await _sync_write_via_thread(api, _STEP1_CONTENT, middle=False)
         assert len(units_s1) >= 1
-        logger.info(f"\n[step 1] alice write")
+        logger.info("\n[step 1] alice write")
         list_after_s1 = await _list_via_thread(api)
         recall_s1 = await _recall_async(kernel, "alice green tea", ctx)
         logger.info(f"[step 1] list size={len(list_after_s1.items)}")
@@ -853,7 +859,7 @@ async def test_cloud_async_timer() -> None:
         # ---- step 3: await add_async middle=false（carol + python） ----
         units_s3 = await _async_write(api, _STEP3_CONTENT, middle=False)
         assert len(units_s3) >= 1
-        logger.info(f"\n[step 3] carol write")
+        logger.info("\n[step 3] carol write")
         list_after_s3 = await _list_via_thread(api)
         recall_s3 = await _recall_async(kernel, "carol python", ctx)
         logger.info(f"[step 3] list size={len(list_after_s3.items)}")

@@ -38,12 +38,15 @@ class KeywordFeatureExtractor(FeatureExtractor):
             for t in keywords
             if t.isascii() and len(t) >= 3
         ]
-        logger.info("KeywordFeatureExtractor: extracted %d keywords, %d entities", len(keywords), len(entities))
+        logger.info(
+            "KeywordFeatureExtractor: extracted %d keywords, %d entities",
+            len(keywords),
+            len(entities),
+        )
         return FeatureSet(keywords=keywords, entities=entities, labels={})
 
 
 # -- 注册到 FeatureExtractorProducer（实现自注册，新增无需改 producer/build_kernel） ------ #
-
 
 
 @FeatureExtractorProducer.register("keyword")

@@ -11,9 +11,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional, Sequence, Set
 
 from jiuwen_memory.common.type_def import FilterClause, Scope
 from jiuwen_memory.retrieval.types import DisclosureLevel
@@ -26,9 +26,9 @@ class MemorySeed:
     key: str  # 数据集内稳定标识（相关性标注用它表达相关性，不是物理 unit_id）
     content: str
     scope: Scope
-    tags: List[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
     metadata: dict[str, str] = field(default_factory=dict)
-    occurred_at: Optional[datetime] = None
+    occurred_at: datetime | None = None
 
 
 @dataclass
@@ -38,13 +38,13 @@ class QueryCase:
     query_id: str
     text: str
     scope: Scope
-    relevant_keys: Set[str] = field(default_factory=set)  # IR 相关性标注：相关语料的 key
+    relevant_keys: set[str] = field(default_factory=set)  # IR 相关性标注：相关语料的 key
     # 逻辑证据源 -> 组成该源的 seed keys。LongMemEval 用 answer_session_id 作源边界，
     # 避免把一个 session 内的多个 turn 重复计数。
-    relevant_source_keys: dict[str, Set[str]] = field(default_factory=dict)
+    relevant_source_keys: dict[str, set[str]] = field(default_factory=dict)
     expected_answer: str = ""  # QA 参考答案（端到端用，可空）
-    filters: List[FilterClause] = field(default_factory=list)
-    as_of: Optional[datetime] = None
+    filters: list[FilterClause] = field(default_factory=list)
+    as_of: datetime | None = None
     top_k: int = 10
     disclosure: DisclosureLevel = DisclosureLevel.L0
     # 题目标签，用于分桶统计。
@@ -57,13 +57,13 @@ class CaseOutcome:
 
     query_id: str
     query_text: str
-    ranked_unit_ids: List[str]  # recall 返回的有序 unit_id
-    relevant_unit_ids: Set[str]  # relevant_keys 经 key→id 映射后的物理 id 集
-    contents: List[str]  # 返回项内容（QA 合成 / token 估算用）
-    context_dates: List[str]  # 与 contents 对齐的消息时间（旧版回退事件时间；ISO 8601）
-    trajectory: List[object]  # list[TrajectoryStep]：阶段耗时/候选数/降级
-    context_message_dates: List[str] = field(default_factory=list)  # PR197 t_message
-    context_event_dates: List[str] = field(default_factory=list)  # PR197 t_event
+    ranked_unit_ids: list[str]  # recall 返回的有序 unit_id
+    relevant_unit_ids: set[str]  # relevant_keys 经 key→id 映射后的物理 id 集
+    contents: list[str]  # 返回项内容（QA 合成 / token 估算用）
+    context_dates: list[str]  # 与 contents 对齐的消息时间（旧版回退事件时间；ISO 8601）
+    trajectory: list[object]  # list[TrajectoryStep]：阶段耗时/候选数/降级
+    context_message_dates: list[str] = field(default_factory=list)  # PR197 t_message
+    context_event_dates: list[str] = field(default_factory=list)  # PR197 t_event
     # Primary user-facing retrieval latency: wall time from immediately before
     # the public MemoryAPI search/recall call until that call returns. It
     # excludes only evaluator-side temporal inspect plus Answer/Judge.
@@ -74,7 +74,7 @@ class CaseOutcome:
     metadata: dict[str, str] = field(default_factory=dict)  # 透传自 QueryCase（如 category）
     # Preserve the logical evidence-source boundary. One source may produce many
     # derived MemoryUnits, and source-level recall should count it only once.
-    relevant_key_unit_ids: dict[str, List[str]] = field(default_factory=dict)
+    relevant_key_unit_ids: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -92,8 +92,8 @@ class RunResult:
 
     dataset: str
     n_queries: int
-    metrics: List[MetricResult] = field(default_factory=list)
-    per_case: List[CaseOutcome] = field(default_factory=list)
+    metrics: list[MetricResult] = field(default_factory=list)
+    per_case: list[CaseOutcome] = field(default_factory=list)
     config_summary: dict[str, str] = field(default_factory=dict)
 
 

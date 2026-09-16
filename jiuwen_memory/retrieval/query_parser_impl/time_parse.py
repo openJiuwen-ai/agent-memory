@@ -19,9 +19,8 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
 
-TimeWindow = Tuple[Optional[datetime], Optional[datetime]]
+TimeWindow = tuple[datetime | None, datetime | None]
 
 # 属性问强信号关键词：命中即判为属性问，清空时间窗。
 # 必须避开「会议/工作」等中性名词——误判会让真事件问句漏召回；
@@ -86,7 +85,7 @@ def _rule_based(text: str, now: datetime) -> TimeWindow:
 
 def parse_time(
     text: str,
-    now: Optional[datetime] = None,
+    now: datetime | None = None,
     llm: object = None,  # LLM 钩子：注入即在规则未命中时委托其解析（默认不启用）
 ) -> TimeWindow:
     """解析 ``text`` 中的事件时间约束，返回 ``(time_from, time_to)``。

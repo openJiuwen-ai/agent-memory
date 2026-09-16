@@ -262,7 +262,10 @@ def test_list_working_units_truncates_to_max_fetch() -> None:
             memory_key(f"u{i}"),
             dumps(
                 _make_unit(
-                    f"u{i}", scope, f"c{i}", t_ingest=datetime(2026, 1, 1, i, 0, tzinfo=timezone.utc)
+                    f"u{i}",
+                    scope,
+                    f"c{i}",
+                    t_ingest=datetime(2026, 1, 1, i, 0, tzinfo=timezone.utc),
                 )
             ),
         )
@@ -358,7 +361,9 @@ def test_split_by_continuity_continuous_within_batch_size() -> None:
     scope = Scope(user="u1")
     job, _, _, _, _ = _build_job(scope, InMemoryKVStore(), batch_size=10)
     # 注入 LLM 响应——连续 true
-    job._llm._responses = ['{"results":["true"]}'] * 5  # 6 个 unit → 5 次比较  # pylint: disable=protected-access
+    job._llm._responses = [  # pylint: disable=protected-access
+        '{"results":["true"]}'
+    ] * 5  # 6 个 unit → 5 次比较
     units = [_make_unit(f"u{i}", scope, f"c{i}") for i in range(6)]
 
     batches = asyncio.run(job._split_by_continuity(units))  # pylint: disable=protected-access
@@ -371,7 +376,9 @@ def test_split_by_continuity_breaks_on_false() -> None:
     """连续 false → 切批（每个 unit 独立成批）。"""
     scope = Scope(user="u1")
     job, _, _, _, _ = _build_job(scope, InMemoryKVStore())
-    job._llm._responses = ['{"results":["false"]}'] * 3  # 4 个 unit → 3 次比较全 false  # pylint: disable=protected-access
+    job._llm._responses = [  # pylint: disable=protected-access
+        '{"results":["false"]}'
+    ] * 3  # 4 个 unit → 3 次比较全 false
     units = [_make_unit(f"u{i}", scope, f"c{i}") for i in range(4)]
 
     batches = asyncio.run(job._split_by_continuity(units))  # pylint: disable=protected-access
@@ -389,7 +396,9 @@ def test_split_by_continuity_respects_batch_size_upper_bound() -> None:
     """
     scope = Scope(user="u1")
     job, _, _, _, _ = _build_job(scope, InMemoryKVStore(), batch_size=3)
-    job._llm._responses = ['{"results":["true"]}'] * 5  # 全部连续  # pylint: disable=protected-access
+    job._llm._responses = [  # pylint: disable=protected-access
+        '{"results":["true"]}'
+    ] * 5  # 全部连续
     units = [_make_unit(f"u{i}", scope, f"c{i}") for i in range(6)]
 
     batches = asyncio.run(job._split_by_continuity(units))  # pylint: disable=protected-access
@@ -457,10 +466,10 @@ def test_run_serial_path_calls_evolver_and_archives_processed() -> None:
     kv.insert(scope, memory_key("u1"), dumps(_make_unit("u1", scope, "c1")))
     kv.insert(scope, memory_key("u2"), dumps(_make_unit("u2", scope, "c2")))
     # 全部连续 → 1 批
-    job, evolver, lifecycle, index, _ = _build_job(
-        scope, kv, concurrency=1, batch_size=10
-    )
-    job._llm._responses = ['{"results":["true"]}']  # 2 unit → 1 次比较  # pylint: disable=protected-access
+    job, evolver, lifecycle, index, _ = _build_job(scope, kv, concurrency=1, batch_size=10)
+    job._llm._responses = [  # pylint: disable=protected-access
+        '{"results":["true"]}'
+    ]  # 2 unit → 1 次比较
 
     info = asyncio.run(job.run())
 
