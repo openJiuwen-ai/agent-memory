@@ -17,6 +17,7 @@ from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.control.jobs import Job
 from jiuwen_memory.control.scheduler_impl.async_timer_scheduler import (
     AsyncTimerScheduler,
+    TimerWheel,
 )
 from jiuwen_memory.control.types import Channel, JobInfo, JobStatus
 

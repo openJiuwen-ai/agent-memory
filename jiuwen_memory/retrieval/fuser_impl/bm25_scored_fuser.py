@@ -24,8 +24,8 @@ from __future__ import annotations
 
 import math
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import replace
-from typing import Mapping
 
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.tokenizer import Tokenizer
