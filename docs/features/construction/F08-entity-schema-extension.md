@@ -387,10 +387,21 @@ Redis 语义依据：[Lua 执行与 KEYS 约束](https://redis.io/docs/latest/de
 
 ### 6. 启用、回填及兼容
 
-增加存储实例级配置 `schema_source_index_enabled`，默认 false。未开启时不创建索引、不解析
-额外投影、不增加旧 CRUD 的 I/O；Schema 查询沿用现有扫描。不要把索引是否维护绑定到单次
+增加存储实例级配置 `schema_source_index_enabled`，默认 false。配置启用时必须同时设置
+`globals.schema_enabled=true`，否则在组件创建前抛 `ValidationError` 并指出配置路径。
+检查所有具名 KV 及内联 raw KV，按 params > globals 取有效值，并沿用现有布尔字符串解析。
+此规则在配置装配入口执行，不检查调用者手工构造或注入的 KV 对象。
+允许 Schema 开启但索引关闭；不将两个开关合并，也不随 Schema 开启自动开启索引，保留
+扫描路径和单独启停优化的能力。未开启索引时不创建索引、不解析额外投影、不增加旧 CRUD
+的 I/O；Schema 查询沿用现有扫描。不要把索引是否维护绑定到单次
 API 请求或该进程是否调用 Schema 抽取：一旦实际真源启用索引，所有写入该真源的进程都必须
-执行相同维护规则，包括通过普通 API 直接修改 property 的进程。
+执行相同维护规则，包括通过普通 API 直接修改 property 的进程；通过配置装配的这些
+写入进程也必须开启 Schema 主开关。配置校验不探测其他进程，部署仍须统一维护配置。
+
+启动校验回归覆盖默认/具名 memory、redis、内联 raw KV、开关组合、布尔字符串及全局回退/
+局部覆盖：20 passed。API/config、Schema 构建与更新、来源索引回归合计 467 passed、
+8 skipped（Redis 专项的内存参数组合）；21 个真实 Redis 用例本轮未运行，Redis 模拟用例通过。
+Ruff 及返回一致性、布尔表达式复杂度、受保护成员访问的 Pylint 检查通过。
 
 首版采用明确的维护窗口回填，不设计在线全量扫描与并发写入合并：
 

@@ -64,12 +64,16 @@
    未启用加密时，`RoutingKVStore` 可直接作为 `kv_store.default`。
 
 10. **Schema 是装配期开关**
-    `globals.schema_enabled` 默认 `false`；它只在 `build_kernel` 装配期决定是否注册
-    Schema target，不是可经 ConfigSource 热切换的运行时能力开关。改值后必须重新装配。
+    `globals.schema_enabled` 默认 `false`；它在 `build_kernel` 装配期决定是否注册
+    Schema target，并作为来源索引启用的前提，不是可经 ConfigSource 热切换的运行时能力开关。
+    改值后必须重新装配。
 
-11. **来源索引是独立的存储实例开关**
+11. **来源索引是受 Schema 开关约束的存储实例开关**
     `kv_store.<name>.params.schema_source_index_enabled` 默认 false，目前仅 memory/redis
-    实现；不是按请求热切换的能力。所有写入同一真源的进程必须共同维护。RoutingKVStore
+    实现；配置启用时，装配要求 `globals.schema_enabled=true`，否则在创建组件前报
+    ValidationError。校验使用 params > globals 的实际取值，覆盖具名与内联 raw KV；
+    Schema 开启不自动开启索引。两者都不是按请求热切换的能力。
+    所有写入同一真源的进程必须共同维护。RoutingKVStore
     转发来源查询、重建、清理时只解析一次目标，索引就绪状态由实际后端判断。
 
 ## 与其他子目录的边界

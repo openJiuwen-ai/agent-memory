@@ -110,6 +110,9 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
    `store_manager.default`）。顺序铁律：
    ConfigSource → `store_manager.default`（composite 再 dep 各 Store，含 `kv_store.default`；
    若 default 为 encrypted target 则其 raw 指向具名实例）→ `_Kernel.kv = manager.kv(端口名)`。
+   在组件创建前校验配置中的 Source 索引开关：任一 KV 启用
+   `schema_source_index_enabled` 时，`globals.schema_enabled` 必须为 true，否则抛
+   `ValidationError` 并指出配置路径；检查具名 KV、内联 raw KV 和 globals 回退值。
    `RoutingKVStore` 须作为 raw 落在加密层内；同实现换 Redis
    用 `kv_store.url` 晚绑定，不要为换 URL 预装多套 Routing 槽位（F01 §2.1.5 / S08）。
 6. 实现类（LocalMemoryAPI）不对外暴露，外部只依赖 `MemoryAPI` 抽象接口。

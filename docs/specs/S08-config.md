@@ -44,10 +44,12 @@
 7. **key 稳定、值为传输安全字符串**：`fetch` 返回的值以 `str` 为主契约；布尔/数字由消费方解析。缺失 key 的语义由方法约定（返回 `None` 或抛错），实现须文档化且默认源与自定义源一致。
 8. **双侧同配置**：Embedder/Tokenizer 等构建侧与检索侧必须观察到同一 `ConfigSource` 快照语义，避免两侧模型或开关不一致。
 9. **与 PolicyManager 边界**：lifecycle / `scope.require_space` 等已有策略键仍走 `PolicyManager`；六类动态配置（能力开关、prompt、模型凭证、store 端点/`active`）走 `ConfigSource`。
-10. **Schema 默认关闭**：`globals.schema_enabled` 默认为 `false`，只在
+10. **Schema 默认关闭**：`globals.schema_enabled` 默认为 `false`，在
     `build_kernel` 装配期决定是否注册 Schema target。它不是运行时热切换键，
     改值后必须重新装配。开关开启不得自动改写 Extractor/Evolver target。
     开关关闭却出现 Schema target 配置时必须 fail-closed，即使它们曾在同一进程注册过。
+    配置启用 `schema_source_index_enabled` 同样要求此开关为 true；非法组合在创建
+    组件前抛 `ValidationError`，不得静默关闭索引或自动开启 Schema。
 
 ## 接口契约
 
@@ -69,8 +71,13 @@
 `globals.schema_enabled` 是装配期扩展注册开关：为 `true` 时先注册 Schema target，
 再按命名空间中显式配置的 target 解析依赖；为 `false` 时不导入该扩展。
 
-`kv_store.<name>.params.schema_source_index_enabled` 是独立的存储实例装配期开关，默认
-false；当前 memory/redis 支持。关闭时旧 CRUD 不增加关联投影及 I/O。开启后该真源的所有
+`kv_store.<name>.params.schema_source_index_enabled` 是存储实例装配期开关，默认
+false；当前 memory/redis 支持。配置开启时必须同时设置 `globals.schema_enabled=true`，
+否则装配抛 `ValidationError` 并指出 KV 配置路径。校验覆盖所有具名 KV 和内联 raw KV，
+按 params > globals > false 解析索引开关，布尔字符串沿用现有配置规则。
+允许只开启 Schema 而关闭索引；开启 Schema 不自动开启索引。
+此校验针对配置装配，不检查调用者自行构造或注入的 KV 对象。
+关闭索引时旧 CRUD 不增加关联投影及 I/O。开启后该真源的所有
 写入进程都须使用同样配置（包括直接修改 property 的普通 API），不能和未维护索引的旧
 写入进程混用。Redis 新旧库均须对目标 Scope 显式调用存储管理接口回填后才启用查询，
 运行期间须保持 noeviction；首版不支持 Redis Cluster。停用并继续写入前须先清理就绪索引，
@@ -78,6 +85,8 @@ false；当前 memory/redis 支持。关闭时旧 CRUD 不增加关联投影及 
 EncryptedKVStore 的 raw KV 必须关闭此开关；加密链路继续解密扫描。
 
 ```yaml
+globals:
+  schema_enabled: true
 kv_store:
   default:
     target: redis
