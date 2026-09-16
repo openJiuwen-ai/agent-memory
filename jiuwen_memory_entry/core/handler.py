@@ -1,10 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Legacy verb dispatch for MCP and historical in-process callers.
+"""Legacy verb dispatch for historical in-process callers.
 
 ``dispatch(srv, request) -> (status, body)`` routes a structured request to the
 assembled :class:`~server.Server`'s ``MemoryAPI`` and shapes the compatibility
-envelope consumed by legacy surfaces. HTTP and CLI bypass this module and derive their
-JSON contract directly from ``MemoryAPI``. Routing remains a table (A20 "route
+envelope consumed by legacy surfaces. HTTP, CLI and MCP bypass this module and
+derive their JSON contract directly from ``MemoryAPI``
+(``jiuwen_memory_entry/core/api_contract``). Routing remains a table (A20 "route
 by table"), not an if/else ladder; domain exceptions map to status-like codes.
 
 Scope mapping happens before this module through ``legacy_request_adapter``.

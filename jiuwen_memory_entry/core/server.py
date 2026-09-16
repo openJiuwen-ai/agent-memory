@@ -3,8 +3,9 @@
 
 :class:`Server` is the **base class** every protocol surface builds on: it holds
 one assembled runtime (config + api + ingest lifecycle) and exposes :attr:`api`
-plus :meth:`dispatch`. MCP and historical in-process callers use the legacy
-verb router; HTTP and CLI call the same-named ``MemoryAPI`` method directly. A concrete
+plus :meth:`dispatch`. ``dispatch`` serves historical in-process callers of the
+legacy envelope; HTTP, CLI and MCP all call the same-named ``MemoryAPI`` method
+directly through ``api_contract.invoke_api``. A concrete
 surface subclasses this class and adds its transport (see
 :class:`jiuwen_memory_entry.http_server.__main__.HttpServer` for the HTTP/socket
 surface); the CLI's ``InProcessClient`` uses the base directly.
@@ -78,9 +79,9 @@ class Server:
     ) -> tuple[int, dict[str, Any]]:
         """Route a legacy request through the shared handler.
 
-        ``identity`` is an adapter-supplied actor. MCP retains this
-        compatibility path; HTTP and CLI inject their authenticated security context
-        while calling ``api`` directly.
+        ``identity`` is an adapter-supplied actor. This compatibility path serves
+        historical in-process callers; HTTP, CLI and MCP inject their authenticated
+        security context while calling ``api`` directly.
         """
         from handler import dispatch as _dispatch
 
