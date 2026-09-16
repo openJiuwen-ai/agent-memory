@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -12,6 +13,7 @@ import pytest
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel
 from jiuwen_memory.common.errors import (
     BackendError,
+    ConflictError,
     NotFoundError,
     PartialFailureError,
     PermissionDeniedError,
@@ -19,6 +21,7 @@ from jiuwen_memory.common.errors import (
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.security.types import Action, Grant
 from jiuwen_memory.common.type_def import Context, EntityBatchResult, LifecycleState, Scope
+from jiuwen_memory.construction.evolver_impl import schema_update
 from jiuwen_memory.construction.extractor_impl.entity_schema_extractor import (
     InvalidSchemaExtractionError,
 )
@@ -151,6 +154,59 @@ def test_index_failure_reports_partial_write_without_persistent_recovery(world, 
     assert any(u.content == "李红负责算法" for u in world.units())
     assert world.kernel.kv.scan(world.scope, "/schema_updates/") == []
     assert STRICT_ENTITY_WRITES.get() is False
+
+
+@pytest.mark.parametrize("mode", list(UpdateMode))
+@pytest.mark.parametrize("entry", ["prepare", "update"])
+def test_schema_update_does_not_repeat_source_reads(world, monkeypatch, mode, entry):
+    source, _ = world.add("陈静负责推荐算法迭代")
+    world.llm.facts = [("李红", "occupation", "李红负责算法", "")]
+    patch = MemoryPatch(content="李红负责算法", mode=mode, t_valid=T1)
+    store = world.kernel.storage.domain_store()
+    local_reads = Mock(wraps=in_memory_engine.load_units)
+    cloud_reads = Mock(wraps=store.get)
+    commit_reads = Mock(wraps=schema_update.load_units)
+    monkeypatch.setattr(in_memory_engine, "load_units", local_reads)
+    monkeypatch.setattr(store, "get", cloud_reads)
+    monkeypatch.setattr(schema_update, "load_units", commit_reads)
+
+    if entry == "prepare":
+        plan = asyncio.run(world.engine.prepare_update(source.id, world.scope, patch))
+        updated = asyncio.run(world.engine.commit_update(plan))
+    else:
+        updated = asyncio.run(world.engine.update(source.id, world.scope, patch))
+
+    assert updated.content == patch.content
+    assert updated.entities == ["李红"]
+    assert local_reads.call_count + cloud_reads.call_count == 1
+    source_reads = sum(c.args[2] == [source.id] for c in commit_reads.call_args_list)
+    # One revision check and one existence check when writing the source (or retiring its old ID).
+    assert source_reads == 2
+
+
+@pytest.mark.parametrize("mode", list(UpdateMode))
+@pytest.mark.parametrize("change", ["source_modified", "source_deleted", "property_modified"])
+def test_commit_still_rejects_changed_inputs_before_writing(world, mode, change):
+    source, props = world.add("陈静负责推荐算法迭代")
+    world.llm.facts = [("李红", "occupation", "李红负责算法", "")]
+    plan = asyncio.run(world.engine.prepare_update(
+        source.id, world.scope, MemoryPatch(content="李红负责算法", mode=mode, t_valid=T1)
+    ))
+    if change == "source_deleted":
+        world.index.remove([source])
+    else:
+        edited = props[0] if change == "property_modified" else source
+        edited.user_metadata["concurrent_edit"] = True
+        world.index.update([edited])
+    before = world.snapshot()
+    old_links = world.linked("陈静")
+
+    with pytest.raises(ConflictError):
+        asyncio.run(world.engine.commit_update(plan))
+
+    assert world.snapshot() == before
+    assert world.linked("陈静") == old_links
+    assert world.linked("李红") == set()
 
 
 @pytest.mark.parametrize("engine_kind", ["in_memory", "cloud"])
