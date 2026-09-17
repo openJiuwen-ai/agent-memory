@@ -31,4 +31,7 @@ def register_backends() -> None:
     import_optional("jiuwen_memory.storage.store_manager_impl")
     import_optional("jiuwen_memory.storage.domain_store_impl")
     import_optional("jiuwen_memory.storage.entity_impl")
+    import_optional("jiuwen_memory.storage.markdown_impl")
+    import_optional("jiuwen_memory.storage.shadow_impl")
+    import_optional("jiuwen_memory.storage.watchdog_impl")
     _REGISTERED = True

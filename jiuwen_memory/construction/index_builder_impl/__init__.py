@@ -13,5 +13,6 @@ import_optional(".vector_index_builder", __name__)
 import_optional(".hybrid_index_builder", __name__)
 import_optional(".unified_index_builder", __name__)
 import_optional(".entity_index_builder", __name__)
+import_optional(".document_index_builder", __name__)
 
 __all__ = ["IndexBuilderProducer"]

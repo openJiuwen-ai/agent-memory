@@ -38,7 +38,9 @@ from .fulltext import FulltextStore
 from .fusion import FusionStore
 from .graph import GraphStore
 from .kv import KVStore
+from .markdown import MarkdownStore
 from .security import StorageSecurity
+from .shadow import DocumentShadowIndex
 from .vector import VectorStore
 
 
@@ -104,6 +106,8 @@ class StorageCapability(str, Enum):
     FUSION = "fusion"
     FS = "fs"
     ENTITY = "entity"
+    MARKDOWN = "markdown"
+    DOCUMENT_SHADOW = "document_shadow"
 
 
 class StoreManager(ABC):
@@ -166,6 +170,14 @@ class StoreManager(ABC):
         作第一入参（见 :mod:`storage.entity_store`），端口本身的取用方式与其余六类一致。
         """
 
+    @abstractmethod
+    def markdown(self, name: str = "default") -> MarkdownStore:
+        """取 MARKDOWN 端口（文档记忆人类视图，仅文档模式 write_document=true 装配）。"""
+
+    @abstractmethod
+    def shadow_index(self, name: str = "default") -> DocumentShadowIndex:
+        """取 DOCUMENT_SHADOW 端口（文档记忆机器索引，仅文档模式装配）。"""
+
     def has_kv(self, name: str = "default") -> bool:
         return name == "default" and StorageCapability.KV in self.capabilities()
 
@@ -186,6 +198,12 @@ class StoreManager(ABC):
 
     def has_entity(self, name: str = "default") -> bool:
         return name == "default" and StorageCapability.ENTITY in self.capabilities()
+
+    def has_markdown(self, name: str = "default") -> bool:
+        return name == "default" and StorageCapability.MARKDOWN in self.capabilities()
+
+    def has_shadow_index(self, name: str = "default") -> bool:
+        return name == "default" and StorageCapability.DOCUMENT_SHADOW in self.capabilities()
 
     @abstractmethod
     def health(self) -> None:
