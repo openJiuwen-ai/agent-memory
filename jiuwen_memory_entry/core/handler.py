@@ -641,13 +641,14 @@ def _search(srv, request: DispatchRequest) -> Body:
     if max_tokens is not None:
         extensions[EXT_MAX_TOKENS] = str(max_tokens)
     trace = bool(payload.get("trace"))
+    disclosure = _enum_value(DisclosureLevel, payload.get("disclosure", "l0"), name="disclosure")
     res = srv.api.search(
         _require(payload, "query"),
         Context(scope, extensions=extensions),
         security=_request_security(request),
         filters=payload.get("filters"),  # dict DSL / 旧 list：由 API 边界 normalize，非法则 400
         top_k=int(payload.get("k", 10)),
-        disclosure=DisclosureLevel.L2,
+        disclosure=disclosure,
         with_trajectory=trace,
     )
     hits = [
