@@ -227,7 +227,7 @@ class SchemaPropertyMergePlanner:
         texts = [_property_text(unit) for unit in [*candidates, *existing]]
         vectors = self._embedder.embed(texts)
         candidate_vectors = vectors[: len(candidates)]
-        existing_vectors = vectors[len(candidates) :]
+        existing_vectors = vectors[len(candidates):]
         scores: dict[str, float] = {}
         for candidate_vector in candidate_vectors:
             for unit, vector in zip(existing, existing_vectors, strict=True):
@@ -315,16 +315,15 @@ def _apply_decision(
             continue
         target = p_items.get(str(item.get("target") or ""))
         value = str(item.get("value") or "").strip()
-        if (
-            operation == "update"
-            and target is not None
-            and target.id not in affected
-            and value
-            and _same_event(target, source)
-        ):
-            plan.updates.append(SchemaPropertyMergeUpdate(target, value, [source]))
-            affected.add(target.id)
-            consumed.add(item_id)
+        if operation != "update" or target is None:
+            continue
+        if target.id in affected or not value:
+            continue
+        if not _same_event(target, source):
+            continue
+        plan.updates.append(SchemaPropertyMergeUpdate(target, value, [source]))
+        affected.add(target.id)
+        consumed.add(item_id)
     plan.additions.extend(unit for item_id, unit in n_items.items() if item_id not in consumed)
 
 

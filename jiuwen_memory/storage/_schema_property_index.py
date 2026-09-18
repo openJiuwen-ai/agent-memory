@@ -155,7 +155,9 @@ class SchemaPropertyIndex:
         for unit in units:
             scopes.setdefault(_scope_key(unit.scope), unit.scope)
         for key in sorted(scopes):
-            self.invalidate_scope(scopes[key])
+            scope = scopes.get(key)
+            if scope is not None:
+                self.invalidate_scope(scope)
 
     def invalidate_scope(self, scope: Scope) -> None:
         """Remove only the derived commit marker; memberships remain rebuildable."""
