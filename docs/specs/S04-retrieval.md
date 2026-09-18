@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-09-03 |
+| 最近一次修订日期 | 2026-09-18 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
 ## Metadata 检索契约
 
@@ -26,6 +26,7 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
 - 相关性阈值：绝对/相对阈值裁剪低相关候选（结果数可 < top_k），min_results 兜底回填
 - 渐进式披露：L0 摘要/L1 片段/L2 全文 按需加载
 - 检索轨迹：可观测的非黑盒调试信息
+- 可选 Schema TemporalEntity 视图：实体/Property 双路选择、实体内裁剪与双时间轴过滤
 
 **不管什么**：
 - 不做鉴权（由 `jiuwen_memory/api` 层负责）
@@ -61,6 +62,14 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
 16. **层级默认保守**：`expand_depth=0`、`rollup=false`；只返回直接召回命中的节点，不遍历子节点，也不传播后代分数；父优先由显式 `hierarchy_role` 父侧角色过滤实现。
 17. **展开顺序与隔离**：Expander 只沿直接 `child_ids` 向下，且必须保持父节点声明的稳定顺序；跨 org/space 引用不可见；同租户内跨 session/user 的子节点按 `child_scopes`（或缺省父 Scope）解析。
 18. **展开共用既有 token 预算**：`expand_depth>0` 时选子与主披露级分配消耗同一 `RetrievalQuery.max_tokens`（来自 `context.extensions["max_tokens"]`），不另设独立树预算参数；Discloser 仍只负责单个 unit 的内容塑形。`span_start/span_end` 是结构覆盖区间，与 `as_of` 的 valid-time 回溯及 `time_from/time_to` 的 event-time 范围独立。
+19. **TemporalEntity 不是记忆真源**：Schema 时序检索在读取期组装临时实体视图，
+    Property/Source 必须先完成点读与有效性复核。正式结果可把每个实体格式化为
+    一个 `RetrievedItem`，其 id 是 Entity id；该项不是 synthetic MemoryUnit，
+    不支持按 MemoryUnit id 点读。结构化结果同时返回在
+    `RetrievalResult.schema_temporal`。
+20. **Schema 时序两轴先后有序**：`knowledge_as_of` 仅过滤
+    `[t_valid, t_invalid)` 知识版本，`event_at/event_from/event_to` 仅选择
+    事件时间。年/月精度通过半开区间运算，不补造 `t_event`。
 
 ## 接口契约
 
@@ -102,6 +111,33 @@ FORGOTTEN/SUPERSEDED 不可见，ARCHIVED 仅在 `include_archived=true` 时可�
 指定父侧 `hierarchy_role` 时，召回集合只包含该父角色；省略 role 时，同 kind 下所有
 可见活动角色均可参与。过滤后的候选仍走既有融合、重排和阈值链路，因此层级父节点
 不是一条绕过相关性判断的特殊结果通道。默认不展开。
+
+#### Schema TemporalEntity 选择链路
+
+`globals.schema_temporal_enabled=true` 时，Retriever 在普通 Reranker、阈值、top-k
+和 disclosure 完成后执行只读 Schema 时序选择：
+
+```text
+最终普通 MemoryUnit 结果提供 Entity seed
+→ 独立 schema_entities Entity 路径与直达 Property 路径分别召回
+→ 按 schema_entity_key 临时组装 TemporalEntity
+→ 实体内 Property 二次选择
+→ 直达 Property 晚融合 + 同属性前后相邻历史（default_property 除外）
+→ knowledge-time / event-time 选择
+→ 每 Entity 一个格式化 RetrievedItem
+→ 最终按预算融合必要的 Source fallback
+```
+
+Entity 路径的名额不得剪掉已直接命中的 Property；直达属性按 `unit_id`
+保留原分数，并可扩展同实体、同属性时间线的前后邻居（`default_property`
+除外）。各实体独立裁剪，
+不允许因一个实体到达全局上限而中止后续实体。Source fallback 只作为结构化
+Property 缺失或不完整时的证据保全通道，不扫描并平铺整个 Scope。
+
+该链路以可选字段 `RetrievalResult.schema_temporal` 返回结构化时间线，并将
+`items` 替换为实体级视图与必要 Source。未启用硬门、未指定
+`RetrievalQuery.schema_temporal`/`extensions["schema_temporal"]` 且未命中自动
+条件时，必须执行既有链路且 `schema_temporal=None`。
 
 ### QueryParser / Fuser
 
@@ -272,7 +308,7 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 | `channels` | list[RecallChannel] \| None | `None` | 覆盖召回通道 |
 | `rerank` | bool \| None | `None` | 覆盖重排开关 |
 | `include_archived` | bool | `False` | 是否纳入归档 unit |
-| `extensions` | dict[str, Any] | `{}` | 调用级透传配置；本地调用可携带运行时对象 |
+| `extensions` | dict[str, Any] | `{}` | 调用级扩展；`schema_temporal` 是内核保留键，其余 key 透传 |
 | `hierarchy_kind`（目标） | HierarchyKind \| None | `None` | 单一结构 kind |
 | `hierarchy_role`（目标） | HierarchyRole \| None | `None` | 父层角色过滤 |
 | `span_start`（目标） | datetime \| None | `None` | 结构区间起点 |
@@ -320,6 +356,29 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 ### ParsedQuery
 
 `ParsedQuery` 保留既有 `raw/rewritten/intent/tokens/keywords/entities/vector/scalar_filters/as_of/time_from/time_to/channels/extensions`，目标增加与 `RetrievalQuery` 同名的 hierarchy 字段。Parser 不把 hierarchy span 改写成 event-time，也不从 TEMPORAL 通道推导 TIME kind。
+
+`ParsedQuery.extensions["schema_temporal"]` 的规范字典字段如下：
+
+| 字段 | 语义 |
+|---|---|
+| `mode` | `latest` / `snapshot` / `history` / `range` |
+| `event_at` | snapshot 的事件时间点 |
+| `event_from` / `event_to` | range 的事件时间半开边界 |
+| `event_precision` | `unknown` / `year` / `month` / `day` / `datetime` |
+| `knowledge_as_of` | 按 `[t_valid, t_invalid)` 回溯知识版本 |
+| `property_names` | 可选的属性白名单 |
+| `include_undated` | 是否保留没有 event-time 的属性 |
+| `include_archived` | 是否允许归档属性参与 knowledge-time 选择 |
+| `fallback_policy` | snapshot/range 选择为空时的 `none` / `full_timeline` 策略 |
+| `entity_limit` / `per_entity_limit` | 实体数与单实体 Property 数上限 |
+
+为兼容简单调用，值 `true` 表示使用 `latest`，非空字符串表示相应
+`mode`。强类型 `RetrievalQuery.schema_temporal` 以及字典值未显式给出
+`knowledge_as_of/include_archived` 时，继承查询的 `as_of/include_archived`。
+`latest/history` 默认保留无 event-time 属性，
+`snapshot/range` 默认不保留。
+扩展解析或时序选择异常时，Retriever 返回 TEMPORAL `ChannelError`，
+并使用未经时序选择的已融合候选继续后续链路。
 
 ### ExpandRequest / ExpandIssue / ExpandResult（目标契约，尚未实现）
 
@@ -376,7 +435,10 @@ class ExpandResult:
 
 ### 轨迹
 
-普通链路沿用 `parse/recall/fuse/rerank/threshold/disclose`。层级召回额外使用：
+普通链路沿用 `parse/recall/fuse/rerank/threshold/disclose`。Schema 时序选择命中时
+在 `disclose` 之后增加 `schema_temporal` 轨迹，记录组装后的实体数；
+执行失败时记录降级原因并继续使用已融合候选。
+层级召回额外使用：
 
 - `parent_recall`：`detail` 至少记录 `kind`、`role`、span、父候选数。
 - `expand`：每个 root 一步，`detail` 至少记录 `root_id`、`kind`、`requested_depth`、`actual_depth`、`item_count`、`truncated` 和截断原因。
@@ -411,8 +473,8 @@ jiuwen_memory/retrieval/<算子>_impl/
 |-----------|------|
 | S02-memory_api | MemoryAPI.search → Engine → 本层 Retriever |
 | S03-control | Engine.recall 委托本层 Retriever |
-| S05-construction | 本层消费构建层产出的索引（向量/全文/图） |
+| S05-construction | 本层消费构建层产出的内容索引、Schema 时间字段和 Entity → Property 反向索引 |
 | S06-storage | Retriever 经 `StoreManagerProducer.resolve` 取全局 manager 并持其 `domain_store()`；`Recaller` 契约、实现与装配全在存储层数据面（`domain_stores.<name>` 的选择键 → `for_manager` 组装），本层不持有召回路 |
 | S07-common | 复用 Tokenizer/Embedder/FeatureExtractor/LLM/Reranker |
-| S08-config | 能力开关与 rerank/embedder 晚绑定经 ConfigSource |
+| S08-config | Schema TemporalEntity 装配门、自动启用及调优参数；其他能力开关与 rerank/embedder 晚绑定经 ConfigSource |
 | architecture.md §8 | 检索链路设计 |
