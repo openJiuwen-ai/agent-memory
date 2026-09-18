@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -422,15 +423,21 @@ class FragmentMemoryManager(BaseMemoryManager):
             user_id: str,
             scope_id: str,
     ) -> dict[str, str]:
-        old_memories: dict[str, str] = {}
-        old_mem_ids = set()
-        for _, new_mem in new_mem_content.items():
-            search_results = await self.search(
+        # 每条新记忆的相似检索互相独立、且都是只读操作，可以并发执行。
+        # asyncio.gather 的返回值顺序与传入顺序一致，因此下面合并出的
+        # old_memories（包括键的插入顺序）与串行版本完全相同。
+        all_search_results = await asyncio.gather(*(
+            self.search(
                 user_id=user_id,
                 scope_id=scope_id,
                 query=new_mem,
                 top_k=self.UPDATE_CHECK_OLD_MEMORY_NUM,
             )
+            for new_mem in new_mem_content.values()
+        ))
+        old_memories: dict[str, str] = {}
+        old_mem_ids = set()
+        for search_results in all_search_results:
             if search_results:
                 for result in search_results:
                     result_id = result.get("id", "")
