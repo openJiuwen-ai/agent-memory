@@ -125,11 +125,15 @@ class SchemaPropertyCandidate:
     """Extractor 内部的一条实体属性候选。"""
 
     entity_name: str
+    normalized_entity_name: str
     entity_type: str
+    entity_description: str
+    aliases: list[str]
     property_name: str
     value: str
     property_time: str
     source_unit_ids: list[str]
+    identity_kind: str = ""
 
 
 class SchemaExtractionNormalizer:
@@ -199,6 +203,16 @@ class SchemaExtractionNormalizer:
                 errors.append(f"entity {entity_index} has empty name")
                 continue
             entity["name"] = name
+
+            description = str(entity.get("description") or "").strip()
+            aliases = entity.get("aliases", [])
+            if not isinstance(aliases, list) or any(
+                not isinstance(alias, str) for alias in aliases
+            ):
+                errors.append(f"entity {name!r} aliases must be a string array")
+                continue
+            entity["description"] = description
+            entity["aliases"] = _dedupe_strings(aliases)
 
             entity_type = str(entity.get("entity_type") or "").strip()
             if entity_type not in valid_types:
@@ -548,6 +562,8 @@ class EntitySchemaExtractor(Extractor):
                 continue
             entity_name = str(entity.get("name") or "").strip()
             entity_type = str(entity.get("entity_type") or "").strip()
+            entity_description = str(entity.get("description") or "").strip()
+            aliases = _dedupe_strings(entity.get("aliases", []))
             for prop in entity.get("properties", []):
                 if not isinstance(prop, dict):
                     continue
@@ -598,14 +614,23 @@ class EntitySchemaExtractor(Extractor):
                 if speaker_name:
                     if _is_generic_entity_name(entity_name):
                         resolved_name = speaker_name
+                identity_kind = ""
+                if speaker_name and _normalize_entity_name(resolved_name) == _normalize_entity_name(
+                    speaker_name
+                ):
+                    identity_kind = "explicit_speaker"
                 candidates.append(
                     SchemaPropertyCandidate(
                         entity_name=resolved_name,
+                        normalized_entity_name=_normalize_entity_name(resolved_name),
                         entity_type=entity_type,
+                        entity_description=entity_description,
+                        aliases=aliases,
                         property_name=property_name,
                         value=property_value,
                         property_time=str(prop.get("time") or ""),
                         source_unit_ids=source_ids,
+                        identity_kind=identity_kind,
                     )
                 )
 
@@ -629,16 +654,28 @@ class EntitySchemaExtractor(Extractor):
             now = datetime.now(timezone.utc)
             source_tags = [tag for source in source_units for tag in source.tags]
             metadata = _inherited_schema_system_metadata(source_units)
+            entity_key = _schema_entity_key(
+                primary,
+                schema_name=self._catalog.schema_name,
+                entity_type=candidate.entity_type,
+                normalized_name=candidate.normalized_entity_name,
+            )
             metadata.update(
                 {
                     "extraction_mode": "schema",
                     "schema_name": self._catalog.schema_name,
                     "schema_version": self._catalog.schema_version,
+                    "schema_entity_key": entity_key,
                     "schema_entity_name": candidate.entity_name,
+                    "schema_entity_normalized_name": candidate.normalized_entity_name,
                     "schema_entity_type": candidate.entity_type,
+                    "schema_entity_description": candidate.entity_description,
+                    "schema_entity_aliases": candidate.aliases,
                     "schema_property_name": candidate.property_name,
                 }
             )
+            if candidate.identity_kind:
+                metadata["schema_entity_identity_kind"] = candidate.identity_kind
             metadata.update(_event_time_metadata(candidate.property_time))
             event_fields = _event_time_fields(candidate.property_time)
             result.append(
@@ -1144,6 +1181,26 @@ def _self_contained_property_content(
                 f'original relative time: "{phrase}".)'
             )
     return value
+
+
+def _schema_entity_key(
+    source: MemoryUnit,
+    *,
+    schema_name: str,
+    entity_type: str,
+    normalized_name: str,
+) -> str:
+    material = "|".join(
+        [
+            source.scope.org,
+            source.scope.space,
+            source.scope.user,
+            schema_name,
+            entity_type.strip().casefold(),
+            normalized_name,
+        ]
+    )
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, material))
 
 
 def _inherited_schema_system_metadata(

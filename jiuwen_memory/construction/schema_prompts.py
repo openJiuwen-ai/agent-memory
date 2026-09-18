@@ -141,6 +141,8 @@ supported property fact.
     {
       "name": "Jon",
       "entity_type": "person",
+      "description": "Dance performer",
+      "aliases": [],
       "properties": [
         {
           "property_name": "plan_event",
@@ -155,7 +157,91 @@ supported property fact.
 """
 
 
+SINGLE_ENTITY_MERGE_PROMPT = """
+You are a memory integration expert. Decide whether this newly extracted entity should CREATE a
+new entry or UPDATE an existing one.
+
+## New Entity
+- Name: {entity_name}
+- Type: {entity_type}
+- Description: {entity_description}
+
+## Existing Entity Candidates (from vector search)
+{existing_entities}
+
+## Decision Criteria
+
+### Use UPDATE when (PREFERRED — default choice unless clearly wrong):
+1. The entity name matches or is similar to an existing candidate (same person, thing, or event)
+2. The entity could plausibly be the same real-world entity as an existing candidate
+3. Same name with additional context. For example, new facts about Jon's dancing and old facts
+   about Jon's job normally describe the same person.
+4. The target_entity name MUST be one of the candidates listed above
+
+### ⚠️ CRITICAL: Base-Name Matching Rule
+When the new entity and a candidate share the same base name (the part before a parenthetical
+qualifier), they are almost certainly the same entity even when qualifiers differ.
+- "Toby(German Shepherd)" and "Toby(golden retriever)" → **UPDATE**.
+- "Fox Hollow(hiking trail)" and "Fox Hollow(nature reserve)" → **UPDATE**.
+- "Ferrari(sports car)" and "Ferrari(488 GTB)" → **UPDATE**.
+
+**Why:** Parenthetical qualifiers are descriptive annotations, not identity-defining features.
+Conflicting qualifiers usually indicate imprecise descriptions rather than distinct entities.
+
+**Same-speaker context strengthens merge confidence:** If both observations occur in conversations
+between the same speakers, that is strong evidence for the same real-world entity.
+
+### Use CREATE only when:
+1. No candidate in the existing list could possibly match this entity
+2. Explicit evidence identifies different entities, such as different full names and locations.
+3. The entity type is fundamentally incompatible, such as a person versus an organization.
+4. Different parenthetical qualifiers alone are not sufficient evidence for CREATE.
+
+## Output Format (JSON object, NOT array)
+
+For CREATE:
+```json
+{{
+    "action": "create",
+    "relation_candidates": [
+        {{"target_entity": "Existing entity name", "relation": "Relationship description"}}
+    ]
+}}
+```
+
+For UPDATE:
+```json
+{{
+    "action": "update",
+    "target_entity": "Existing entity name to update (MUST be in candidate list above)"
+}}
+```
+
+## Rules
+1. Output exactly ONE decision
+2. When uncertain, prefer UPDATE for the same name unless explicit evidence says otherwise.
+3. Use CREATE only with concrete evidence of a genuinely different identity.
+4. Same base name and entity type means UPDATE; qualifiers do not justify CREATE.
+5. For relation_candidates, only include entities with clear relationships
+6. If no clear relations exist, relation_candidates can be empty []
+7. For UPDATE, target_entity MUST exactly match a name from the candidate list
+
+Output only JSON, no extra text.
+"""
+
+AGENT_MEMORY_ENTITY_MERGE_APPENDIX = """
+## Agent Memory identity boundaries (take precedence)
+1. Generic roles such as User, Assistant, Speaker, or Participant are not aliases for a named
+   person. Never UPDATE a named entity to a generic-role candidate or the reverse.
+2. Different explicit speaker labels identify different people and must CREATE, even if their
+   properties are semantically similar.
+3. Exact explicit speaker names are stronger identity evidence than semantic similarity.
+"""
+
+
 __all__ = [
+    "AGENT_MEMORY_ENTITY_MERGE_APPENDIX",
     "ENTITY_GENERATION_PROMPT",
     "SCHEMA_SELECTION_FOR_GENERATION_PROMPT",
+    "SINGLE_ENTITY_MERGE_PROMPT",
 ]
