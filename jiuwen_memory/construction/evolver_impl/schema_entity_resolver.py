@@ -208,13 +208,14 @@ class SchemaEntityResolver:
         return None
 
     def _load_existing(self, representative: MemoryUnit, schema_name: str) -> list[_EntityView]:
-        registry = [
-            _view_from_unit(unit) for unit in self._registry.list(
-                representative.scope,
-                schema_name,
-                limit=self._fallback_limit,
-            )
-        ]
+        registry: list[_EntityView] = []
+        stored_entities = self._registry.list(
+            representative.scope,
+            schema_name,
+            limit=self._fallback_limit,
+        )
+        for unit in stored_entities:
+            registry.append(_view_from_unit(unit))
         if registry:
             return registry
         grouped: dict[str, list[MemoryUnit]] = {}
