@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-09-16 |
+| 最近一次修订日期 | 2026-09-18 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 装配开关见 `docs/features/construction/F08-entity-schema-extension.md` |
 
 ## 范围 / 边界
@@ -68,6 +68,13 @@
 装配拓扑（选哪个 `target`、有哪些具名实例、依赖引用）仍由上述机制在 **`build_kernel` 时**确定。
 `globals.schema_enabled` 是装配期扩展注册开关：为 `true` 时先注册 Schema target，
 再按命名空间中显式配置的 target 解析依赖；为 `false` 时不导入该扩展。
+
+Schema 构建参数中，`schema_entity_resolution_enabled` 与
+`schema_entity_merge_decision_enabled` 默认均为 `true`，用于 canonical identity 的
+精确名称、别名与 LLM CREATE/UPDATE 判断。
+
+`vector_store.schema_entities` 与 `fulltext_store.schema_entities` 是 canonical Schema
+Entity 的独立命名端口，避免 Entity 与普通 MemoryUnit 混索引。
 
 ### ConfigSource（新增）
 
