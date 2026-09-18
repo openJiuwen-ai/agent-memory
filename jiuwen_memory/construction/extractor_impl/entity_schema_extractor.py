@@ -132,6 +132,7 @@ class SchemaPropertyCandidate:
     property_name: str
     value: str
     property_time: str
+    property_operation: str
     source_unit_ids: list[str]
     identity_kind: str = ""
 
@@ -265,6 +266,14 @@ class SchemaExtractionNormalizer:
                     )
                     continue
                 prop["value"] = value.strip()
+                operation = str(prop.get("operation") or "set").strip().lower()
+                if operation not in {"set", "delete"}:
+                    errors.append(
+                        f"entity {name!r} property {property_name!r} has unsupported "
+                        f"operation {operation!r}"
+                    )
+                    continue
+                prop["operation"] = operation
                 property_time, time_error = _normalize_property_time(
                     prop.get("time", _MISSING_PROPERTY_TIME),
                     prop["value"],
@@ -619,6 +628,7 @@ class EntitySchemaExtractor(Extractor):
                     speaker_name
                 ):
                     identity_kind = "explicit_speaker"
+
                 candidates.append(
                     SchemaPropertyCandidate(
                         entity_name=resolved_name,
@@ -629,6 +639,7 @@ class EntitySchemaExtractor(Extractor):
                         property_name=property_name,
                         value=property_value,
                         property_time=str(prop.get("time") or ""),
+                        property_operation=str(prop.get("operation") or "set").strip().lower(),
                         source_unit_ids=source_ids,
                         identity_kind=identity_kind,
                     )
@@ -672,6 +683,7 @@ class EntitySchemaExtractor(Extractor):
                     "schema_entity_description": candidate.entity_description,
                     "schema_entity_aliases": candidate.aliases,
                     "schema_property_name": candidate.property_name,
+                    "schema_property_operation": candidate.property_operation,
                 }
             )
             if candidate.identity_kind:
@@ -1157,6 +1169,8 @@ def _self_contained_property_content(
     """Add source-time context without manufacturing a property event time."""
 
     value = candidate.value
+    if candidate.property_operation == "delete":
+        return value
     if not candidate.property_time:
         message_time = _source_message_datetime(primary_source)
         if message_time is None:

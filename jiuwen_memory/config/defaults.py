@@ -33,8 +33,10 @@ def default_config_dict() -> dict[str, Any]:
     return {
         "globals": {
             "schema_enabled": False,
+            # Schema 开启后统一实体身份；属性内容合并仍保持显式 opt-in。
             "schema_entity_resolution_enabled": True,
             "schema_entity_merge_decision_enabled": True,
+            "use_property_merge": False,
             "vector_enabled": True,
             "graph_enabled": True,
             "rerank_enabled": True,
@@ -60,6 +62,7 @@ def default_config_dict() -> dict[str, Any]:
         "security": {_D: "local"},
         "vector_store": {
             _D: "memory",
+            # Canonical Schema Entity 使用独立物理端口，避免与 MemoryUnit 混索引。
             "schema_entities": "memory",
             # L0/L1 分表（与构建侧同命名 layers_l0/l1；同后端不同 collection）
             "layers_l0": "memory",
