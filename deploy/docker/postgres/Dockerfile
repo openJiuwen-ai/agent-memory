@@ -13,12 +13,12 @@ RUN apt-get update \
 
 COPY pyproject.toml ./
 COPY jiuwen_memory ./jiuwen_memory
+COPY jiuwen_memory_entry ./jiwen_memory_entry
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip \
     && pip install -e ".[deploy]"
 
-COPY jiuwen_memory_entry ./jiuwen_memory_entry
 COPY scripts ./scripts
 
 RUN groupadd --gid 10001 agentmemory \
