@@ -6,7 +6,7 @@
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
 | 最近一次修订日期 | 2026-09-18 |
-| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 装配开关见 `docs/features/construction/F08-entity-schema-extension.md` |
+| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F07-schema-temporal-entity.md` |
 
 ## 范围 / 边界
 
@@ -48,6 +48,12 @@
     `build_kernel` 装配期决定是否注册 Schema target。它不是运行时热切换键，
     改值后必须重新装配。开关开启不得自动改写 Extractor/Evolver target。
     开关关闭却出现 Schema target 配置时必须 fail-closed，即使它们曾在同一进程注册过。
+11. **Schema TemporalEntity 是独立装配门**：`globals.schema_temporal_enabled`
+    默认为 `false`，仅决定 Retriever 是否装配时序选择器。它不自动开启
+    Schema 抽取，也不改写已选 Extractor/Evolver target。硬门开启后，
+    单次查询仍需 `RetrievalQuery.schema_temporal`（或兼容扩展键）显式请求，
+    或同时开启 `schema_temporal_auto_enabled`，且 Parser 已有时间窗或内置
+    规则能从原始 query 解析出时间窗。
 
 ## 接口契约
 
@@ -79,6 +85,38 @@ Entity 的独立命名端口，避免 Entity 与普通 MemoryUnit 混索引。`s
 时，IndexBuilder 维护 Entity → Property MemoryUnit ID 的 KV 派生反向索引；该索引可由
 Property MemoryUnit 重建，不是事实真源。
 
+`globals.schema_temporal_enabled` 是 Retriever 的装配期硬门。开启后，
+Retriever 参数接受以下 Schema TemporalEntity 调优键：
+
+| 参数 | 默认值 | 语义 |
+|---|---:|---|
+| `schema_temporal_auto_enabled` | `false` | Parser 已有时间窗或原始 query 可解析出时间窗时自动启用 |
+| `schema_temporal_entity_top_k` | `20` | 独立 Entity 全文/向量路径的单路召回上限 |
+| `schema_temporal_property_top_k` | `50` | Property 直达路径的召回上限 |
+| `schema_temporal_property_top_n` | `25` | 直达 Property 进入晚融合的数量上限 |
+| `schema_temporal_rrf_k` | `60` | Entity/Property 信号合并的 RRF 常数 |
+| `schema_temporal_max_properties_per_entity` | `20` | 实体内二次裁剪的基准 Property 条目预算 |
+| `schema_temporal_property_allocation_min_factor` | `0.5` | 小实体相对基准预算的下界因子 |
+| `schema_temporal_property_allocation_max_factor` | `1.5` | 大实体相对基准预算的上界因子 |
+| `schema_temporal_shrink_enabled` | `true` | 是否执行实体内 Property 预算裁剪 |
+| `schema_temporal_property_rerank_enabled` | `true` | 是否复用 Retriever Reranker 做实体内 Property 精排 |
+| `schema_temporal_direct_property_rerank_enabled` | `false` | 是否在 Property 直达路径 Top-N 前精排 |
+| `schema_temporal_entity_rerank_enabled` | `false` | 是否对组装完成的实体结果做最终精排 |
+| `schema_temporal_entity_rerank_max_chars` | `4000` | 单个实体送最终精排的最大字符数 |
+| `schema_temporal_property_extension_step` | `3` | 命中属性前后各扩展的同属性条目数 |
+| `schema_temporal_formatting_enabled` | `true` | 是否把每个 TemporalEntity 投影为一个正式结果项 |
+| `schema_temporal_formatting_max_chars` | `16000` | 每个实体格式化后的独立字符上限 |
+| `schema_temporal_source_fallback_enabled` | `true` | 是否保留受控 Source-first 兜底 |
+| `schema_temporal_source_policy` | `missing_or_incomplete` | Source 策略：none/missing/missing_or_incomplete/always |
+| `schema_temporal_source_top_k` | `20` | Source 兜底通道的最大保留数 |
+| `schema_temporal_source_ratio` | `0.3` | 最终结果为 Source fallback 预留的预算比例 |
+| `schema_temporal_source_max_chars` | `1200` | 单条 Source fallback 的字符上限 |
+
+上述键是装配参数，不是业务数据；请求级的 mode、事件区间、
+`knowledge_as_of`、属性白名单和归档可见性继续通过
+`RetrievalQuery.schema_temporal` 表达；传输层可继续使用
+`RetrievalQuery.extensions["schema_temporal"]`。
+
 ### ConfigSource（新增）
 
 逻辑契约（模块路径以实现为准，落在 `jiuwen_memory/config/`）：
@@ -104,7 +142,7 @@ ConfigSource
 
 | 类别 | 改值 key（优先） | 改选用 key（次选） |
 |---|---|---|
-| 能力开关 | `globals.vector_enabled`、`globals.graph_enabled`、`globals.rerank_enabled`、`globals.layers_index_enabled` | — |
+| 能力开关 | `globals.vector_enabled`、`globals.graph_enabled`、`globals.rerank_enabled`、`globals.layers_index_enabled`、`globals.schema_enabled`、`globals.schema_temporal_enabled` | — |
 | prompt | `prompts.extract.<name>`、`prompts.consolidate.<name>`、`prompts.reflect.<name>` | — |
 | Embedder | `embedder.model`、`embedder.api_key`、`embedder.base_url` | `embedder.active` |
 | LLM | `llm.model`、`llm.api_key`、`llm.base_url` | `llm.active` |
@@ -185,7 +223,7 @@ ConfigSource
 | S02-memory-api | 业务 API 不承载六类配置写入；调用级 options 边界 |
 | S03-control | PolicyManager 与 ConfigSource 分工 |
 | S05-construction | PromptRegistry / Evolver / IndexBuilder 消费 fetch |
-| S04-retrieval | 能力开关与 rerank/embedder 晚绑定 |
+| S04-retrieval | 能力开关、Schema TemporalEntity 装配参数与 rerank/embedder 晚绑定 |
 | S06-storage | `store_manager` 选择统一实现（globals.store_manager 指名），Store 命名空间配置其下层端口与命名端口；连接/`active` 晚绑定不做迁移 |
 | S07-common | 插件实现与 Factory 注册；配置数据在 `jiuwen_memory/config` |
 | architecture.md §13 | 可配置化分层与落点 |

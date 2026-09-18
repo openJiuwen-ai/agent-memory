@@ -26,6 +26,7 @@
 | `fuser_impl/` | Fuser 实现目录（rrf【默认】/ weighted_rrf / score_max）+ `layered_merge` 分层归并前处理 |
 | `discloser_impl/` | Discloser 实现目录（structured / truncating） |
 | `retriever_impl/` | Retriever 实现目录；pipeline 经 `StoreManagerProducer.resolve` 取全局 manager 并持其 `domain_store()`；multimodal 组合原生、CLM、ELM 三个过滤分支并执行 RRF 融合 |
+| `schema_temporal/` | 只读 Schema TemporalEntity 视图：双轴查询、实体/Property 双路、实体内裁剪、邻居扩展与最终 Source fallback；正式输出为每 Entity 一个结果 |
 | `bootstrap.py` | 统一触发所有检索算子注册 |
 
 ## 检索链路
@@ -50,6 +51,8 @@
      ↓
 9. Discloser.disclose(...) → list[RetrievedItem]
      ↓ 按层级加载内容（L0/L1/L2）
+10. 可选 Schema TemporalEntity（最终普通结果作 Entity seed，Property 独立召回）
+     ↓ 组装、实体内裁剪、直达 Property 回融、时间线邻居和 Source fallback
 → RetrievalResult（items + trajectory + errors）
 ```
 
@@ -102,6 +105,17 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 10. **Discloser 只做内容塑形**
    候选记忆单元已由 Retriever 经 UnitReader 点读、有效性过滤、（可选）重排后给定。Discloser 不再做点读/过滤/重排，只按 level 截/取内容产出结果。
 
+11. **Schema TemporalEntity 只读但正式返回**
+   临时视图不持久化，所有 Property/Source 必须先经过点读和生命周期复核。
+   每个 Entity 可投影为一个 `RetrievedItem` 并写入
+   `RetrievalResult.schema_temporal`；其 id 是 Entity id，不得伪装成可点读的
+   MemoryUnit。必要 Source fallback 仍保留真实 MemoryUnit id。
+
+12. **Schema TemporalEntity 保持两条时间轴**
+   `knowledge_as_of` 只选择 `[t_valid, t_invalid)` 内可知的版本；
+   `event_at/event_from/event_to` 只选择事件时间。年/月精度使用区间，
+   不将 Source message time 伪造为 `t_event`。
+
 ## 与其他子目录的边界
 
 **本模块管**：
@@ -110,6 +124,7 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 - 融合与重排（Fuser）
 - 渐进式披露（Discloser）
 - 检索轨迹记录（TrajectoryStep）
+- 只读 Schema TemporalEntity 候选选择（不创建或持久化新记忆）
 
 **不管**：
 - 鉴权（归 `api`）
@@ -125,7 +140,10 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 2. 算子实现通过 `@XxxProducer.register("name")` 自注册。
 3. Retriever 内部 UnitReader 点读后必须复核 lifecycle、valid-time、event-time 和完整
    FilterExpr；当前态也须按当前 UTC 时间检查 `[t_valid, t_invalid)`。
-4. `extensions` 字段透传配置：RetrievalQuery.extensions → ParsedQuery.extensions，供自定义 Recaller 按约定 key 读取，内核核心不解释。
+4. `extensions` 默认透传：RetrievalQuery.extensions → ParsedQuery.extensions。
+   `schema_temporal` 是内核保留键，仅在 `globals.schema_temporal_enabled=true`
+   时解析；支持 `true`、模式字符串或规范字典。其余 key 依旧透传给自定义
+   Recaller，内核不解释。
 5. 显式空 `channels` 无效；`RetrievalQuery.channels=None` 时优先使用
    `QueryParser` 建议的通道，parser 未给出建议时再由 Storage 使用已配置入口。
    部分通道失败返回 items 与 `ChannelError`，全部选中通道失败抛
@@ -140,3 +158,9 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 8. `MultimodalRetriever` 只组合已注入的基础 Retriever，不得直接依赖 `KvProducer`、
    扫描 KV 或识别具体存储后端。原生、CLM、ELM 分支分别检索；无视频记忆时两个视频
    分支自然为空，再按 RRF 融合并截断到请求的 `top_k`。
+9. Schema TemporalEntity 选择器只在普通 Reranker、阈值、top-k 与 disclosure 完成后运行。
+   最终普通结果只提供 Entity seed；Entity 索引与直达 Property 路径独立，直达 Property 不受 Entity 名额截断，
+   并扩展同实体、同属性前后 `property_extension_step` 条（`default_property`
+   除外）。各实体独立截断，不使用全局 `break`。Source fallback 只保留
+   普通融合候选中尚未被直达 Property 充分覆盖的 Source，
+   不将整个 Scope 平铺到候选。
