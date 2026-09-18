@@ -71,10 +71,13 @@
 
 Schema 构建参数中，`schema_entity_resolution_enabled` 与
 `schema_entity_merge_decision_enabled` 默认均为 `true`，用于 canonical identity 的
-精确名称、别名与 LLM CREATE/UPDATE 判断。
+精确名称、别名与 LLM CREATE/UPDATE 判断；`use_property_merge` 默认 `false`，只有显式
+开启后才合并普通 set 属性。显式 delete 始终由 Schema Planner 消费并归档命中旧事实。
 
 `vector_store.schema_entities` 与 `fulltext_store.schema_entities` 是 canonical Schema
-Entity 的独立命名端口，避免 Entity 与普通 MemoryUnit 混索引。
+Entity 的独立命名端口，避免 Entity 与普通 MemoryUnit 混索引。`schema_enabled=true`
+时，IndexBuilder 维护 Entity → Property MemoryUnit ID 的 KV 派生反向索引；该索引可由
+Property MemoryUnit 重建，不是事实真源。
 
 ### ConfigSource（新增）
 
