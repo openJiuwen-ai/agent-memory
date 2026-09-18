@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-09-16 |
+| 日期 | 2026-09-18 |
 | 影响范围 | `jiuwen_memory/api/`、`jiuwen_memory/config/`、`jiuwen_memory/construction/`、`jiuwen_memory/control/`、`docs/specs/S02-memory-api.md`、`docs/specs/S03-control.md`、`docs/specs/S05-construction.md`、`docs/specs/S08-config.md` |
 | 测试基线 | `tests/unit/construction/test_entity_schema_extension.py`；source 更新与主线隔离验证见下文 |
 | Refs | #208 |
@@ -49,6 +49,15 @@ Schema 发送给属性生成 Prompt。Normalizer 使用同一个选中 Schema �
 不会扩展成全量 Schema。Schema Selection 调用或根 JSON 解析失败时降级为完整 Schema；
 合法的 `selected_entities=[]` 表示本轮没有可抽取类型，不再调用属性生成 LLM。
 
+生成 Prompt 采用高召回属性抽取规则：Schema Selection 对不确定候选倾向保留，生成阶段
+执行 zero-fact-loss 检查，强调完整主语、具体名称、数值、地点、建议和相对时间来源。
+Prompt 的输出契约仍收敛为 `entities[].properties[]`，不要求输出未持久化的 edges、
+message mapping 或 Episode。
+
+`examples/entity_schema_locomo_person.json` 提供 LoCoMo 使用的 person-only 高覆盖候选属性集，
+包含静态属性和动态事件属性。它是显式选择的评测/示例配置，不替换通用
+`examples/persona.json`，也不改变 Schema 默认关闭的装配行为。
+
 模型响应必须是单个根 JSON 对象。属性逐条校验 entity type、property name、来源
 `source_unit_ids`、Scope 和显式说话者绑定。未知 entity type 不会被自动改成某个已选类型。
 所有这些错误都会进入同一个纠错 Prompt，默认最多尝试三次；重试耗尽后，保留某次
@@ -61,9 +70,17 @@ Schema 发送给属性生成 Prompt。Normalizer 使用同一个选中 Schema �
 
 - `content`：包含明确主语的属性事实文本；
 - `entities=[]`：Property Unit 本身不进入实体反向索引；
-- `system_metadata`：只保存 Schema 名称、版本、实体类型、实体明文和属性名；
+- `system_metadata`：保存 Schema 名称、版本、实体类型、实体明文、属性名，以及可用的
+  event precision/start/end；
 - `source_ref` 与 `provenance`：回指支持该事实的原始消息；
-- `temporal.t_event`：仅在属性具有可完整解析的日期或时间时填写。
+- `temporal.t_event`：仅在日或日时精度可完整解析时填写；年/月使用
+  `schema_event_start/end/precision` 半开区间，不伪造具体日期。
+
+生成 Prompt 按每个 Source 显式传入 unit id、说话者、角色与
+`temporal.t_message`。若事实没有明确的事件时间，Property content 可追加
+`Source message date` 和 `property event time: not stated`，但 `t_event` 保持为空。
+若事实使用相对时间，content 保留对应 Source 日期与原始相对表达，使下游可核查
+归一化结果。
 
 ADD 路径中，属性 Unit 成功持久化后，Evolver 按其 `provenance` 找到对应 Source Unit，把
 `schema_entity_name` 去重聚合到 Source 的 `entities`。一个 Source 支持多个实体和多个属性，
@@ -212,6 +229,9 @@ ADD。Source update 只协调本次显式更新涉及的关联属性，不扩展
 - 验证选中属性白名单、空选择语义、严格根 JSON、来源绑定和事件时间映射；
 - 验证来源绑定与实体类型错误参与三次纠错，且未知类型不会被静默改型；
 - 验证一个实体的多个属性生成多个 Unit，Property Unit 的 `entities` 为空，只有实体名写回 Source；
+- 验证年/月/日/日时 precision 和半开区间，且年/月不伪造 `t_event`；
+- 验证缺失、非法或与 value 矛盾的 property time 进入纠错重试而非静默清空；
+- 验证无事件时间时 content 携带 Source message date，而 `t_event` 保持为空；
 - 验证 Schema 抽取失败后 Source MemoryUnit 仍可读取和检索；
 - 验证 Schema 属性不进入普通 Dedup；
 - 验证标准 EntityLinkService 能从更新后的 Source Unit 建立 EntityRecord 及反向链接；
