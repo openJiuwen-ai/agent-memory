@@ -33,10 +33,13 @@ def default_config_dict() -> dict[str, Any]:
     return {
         "globals": {
             "schema_enabled": False,
-            # Schema 开启后统一实体身份；属性内容合并仍保持显式 opt-in。
+            # Schema 开启后的 identity 默认统一；属性内容合并保持 opt-in。
             "schema_entity_resolution_enabled": True,
             "schema_entity_merge_decision_enabled": True,
             "use_property_merge": False,
+            # TemporalEntity 是 Schema Property 的只读检索视图；默认不装配，
+            # 不影响普通召回。启用后仍需 query extension 或自动时间分支命中。
+            "schema_temporal_enabled": False,
             "vector_enabled": True,
             "graph_enabled": True,
             "rerank_enabled": True,
@@ -62,7 +65,7 @@ def default_config_dict() -> dict[str, Any]:
         "security": {_D: "local"},
         "vector_store": {
             _D: "memory",
-            # Canonical Schema Entity 使用独立物理端口，避免与 MemoryUnit 混索引。
+            # Canonical Schema Entity 与 Property MemoryUnit 使用不同物理端口。
             "schema_entities": "memory",
             # L0/L1 分表（与构建侧同命名 layers_l0/l1；同后端不同 collection）
             "layers_l0": "memory",
@@ -167,6 +170,30 @@ def default_config_dict() -> dict[str, Any]:
                     "min_score_ratio": 0.0,
                     "min_score_ratio_uncalibrated": 0.0,
                     "min_results": 0,
+                    # Schema TemporalEntity 选配检索：Entity/Property 双路、
+                    # 实体内二次筛选、同属性时间线邻居和 Source-first 兜底。
+                    "schema_temporal_auto_enabled": False,
+                    "schema_temporal_entity_top_k": 20,
+                    "schema_temporal_property_top_k": 50,
+                    "schema_temporal_property_top_n": 25,
+                    "schema_temporal_rrf_k": 60,
+                    "schema_temporal_max_properties_per_entity": 20,
+                    "schema_temporal_property_allocation_min_factor": 0.5,
+                    "schema_temporal_property_allocation_max_factor": 1.5,
+                    "schema_temporal_shrink_enabled": True,
+                    "schema_temporal_property_rerank_enabled": True,
+                    "schema_temporal_direct_property_rerank_enabled": False,
+                    "schema_temporal_entity_rerank_enabled": False,
+                    "schema_temporal_entity_rerank_max_chars": 4000,
+                    "schema_temporal_property_extension_step": 3,
+                    # 正式结果为每个 Entity 一条格式化时间线；字符预算按实体独立应用。
+                    "schema_temporal_formatting_enabled": True,
+                    "schema_temporal_formatting_max_chars": 16000,
+                    "schema_temporal_source_fallback_enabled": True,
+                    "schema_temporal_source_policy": "missing_or_incomplete",
+                    "schema_temporal_source_top_k": 20,
+                    "schema_temporal_source_ratio": 0.3,
+                    "schema_temporal_source_max_chars": 1200,
                 },
             }
         },
