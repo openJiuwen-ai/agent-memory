@@ -65,7 +65,11 @@ class Watchdog(ABC):
 
     @abstractmethod
     def stop(self) -> None:
-        """停止文件监听 + join Observer 线程；幂等。同时取消在途 debounce 定时器。"""
+        """停止文件监听与任务准入，取消定时器并等待已进入数据面的同步工作结束。
+
+        返回后不得再访问 shadow 等依赖；等待不能依赖调用方事件循环继续执行。
+        重复停止保持幂等，装配根随后才可释放依赖。
+        """
 
     @property
     @abstractmethod

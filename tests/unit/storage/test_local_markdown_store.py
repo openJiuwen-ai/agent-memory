@@ -13,7 +13,6 @@ md 是文档记忆的人类可读视图，落盘路径由 memory_class + coords.
 from __future__ import annotations
 
 # pylint: disable=protected-access  # 测试直取内部装配与状态以断言接线行为
-
 import datetime
 import os
 
@@ -109,7 +108,10 @@ def test_unknown_memory_class_falls_back_to_team_memory() -> None:
 def test_resolved_memory_class_defaults_to_team_memory() -> None:
     assert LocalMarkdownStore._resolved_memory_class({}) == "team_memory"
     assert LocalMarkdownStore._resolved_memory_class({MEMORY_CLASS_KEY: ""}) == "team_memory"
-    assert LocalMarkdownStore._resolved_memory_class({MEMORY_CLASS_KEY: "project_memory"}) == "project_memory"
+    assert (
+        LocalMarkdownStore._resolved_memory_class({MEMORY_CLASS_KEY: "project_memory"})
+        == "project_memory"
+    )
 
 
 def test_project_of_reads_coords_dict_only() -> None:
@@ -225,10 +227,17 @@ def test_replace_content_returns_false_when_file_missing(tmp_path) -> None:
 
 def test_remove_content_deletes_matching_block(tmp_path) -> None:
     store = _store(tmp_path)
-    store.write(SCOPE, [
-        _unit("u1", "keep", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}}),
-        _unit("u2", "drop", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}}),
-    ])
+    store.write(
+        SCOPE,
+        [
+            _unit(
+                "u1", "keep", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}}
+            ),
+            _unit(
+                "u2", "drop", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}}
+            ),
+        ],
+    )
 
     removed = store.remove_content(SCOPE, "memory/p1/MEMORY.md", "drop")
 
@@ -240,7 +249,10 @@ def test_remove_content_deletes_matching_block(tmp_path) -> None:
 
 def test_remove_content_returns_false_when_no_match(tmp_path) -> None:
     store = _store(tmp_path)
-    store.write(SCOPE, [_unit("u1", "hello", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}})])
+    store.write(
+        SCOPE,
+        [_unit("u1", "hello", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}})],
+    )
 
     assert store.remove_content(SCOPE, "memory/p1/MEMORY.md", "missing") is False
 
@@ -313,7 +325,8 @@ def test_write_rejects_project_coord_escape(tmp_path) -> None:
 
     store = _store(tmp_path)
     unit = _unit(
-        "u1", "evil",
+        "u1",
+        "evil",
         {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "../../evil"}},
     )
 
@@ -336,7 +349,12 @@ def test_safe_abs_path_rejects_symlink_escape(tmp_path) -> None:
     outside.write_text("# target\n", encoding="utf-8")
     link = root / "memory" / "link.md"
     link.parent.mkdir(parents=True)
-    _os.symlink(outside, link)
+    try:
+        _os.symlink(outside, link)
+    except OSError as exc:
+        if _os.name == "nt" and exc.winerror == 1314:
+            pytest.skip("Windows host lacks the privilege required to create symlinks")
+        raise
 
     store = LocalMarkdownStore(root=str(root))
     with pytest.raises(ValidationError):

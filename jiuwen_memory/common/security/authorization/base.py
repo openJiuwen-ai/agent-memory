@@ -134,19 +134,17 @@ class Authorizer(RoutingFieldsProvider, ABC):
         Store。PEP 的公共 grant/revoke 写这里，与 PDP 读取的同一实例--具名 YAML 令
         Authorizer 引用别的 Store 时，公共 grant 也写入同一 Store，不再双真源。
 
-        **路由场景已弃用本方法**：RoutingAuthorizer 覆盖 :meth:`management_grant_stores`
-        返回全部 policy Store，PEP 写入所有 Store 以统一真源（P1-4）。非路由实现仍可
-        只覆盖本方法，PEP 向下兼容。
+        路由场景同样返回所有可达 policy 共用的唯一 Store；不再弃用此方法。
+        无 Grant 管理真源返回 None，不能把“没有写入”报告为 grant 成功。
         """
         return None
 
     def management_grant_stores(self) -> list[GrantStore]:
-        """本 Authorizer 判定时可能查询的全部 GrantStore（路由场景真源统一，P1-4）。
+        """管理域唯一 GrantStore 的列表视图；保留既有 plural 签名。
 
         默认实现：单 Store 情况返回 ``[management_grant_store()]``（向下兼容），无 Store
-        返回空列表。RoutingAuthorizer 覆盖之，返回全部 delegate policy 的 Store 去重后
-        列表。PEP 的公共 grant/revoke 写入返回的**所有** Store，确保路由命中任一 policy
-        时都能读到授权——单 Store 时行为不变，路由时统一真源。
+        返回空列表。组合策略先按对象身份去重；必须为空或仅含一个共享真源。
+        多个不同 Store 属不支持的管理拓扑，装配及 PEP 均拒绝，不进行扇出写入。
         """
         store = self.management_grant_store()
         return [store] if store is not None else []

@@ -33,11 +33,11 @@ from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_ke
 from jiuwen_memory.api.memory_api_impl.dreaming import (
     DreamingCoordinator,
     DreamingDriverJob,
-    actor_to_dict,
 )
+from jiuwen_memory.api.memory_api_impl.dreaming_security import _registration_identity
 from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
 from jiuwen_memory.common.lock.lock_impl.in_memory_lock import InMemoryLockProvider
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.type_def import (
     FanOutCandidate,
     MemoryUnit,
@@ -60,11 +60,13 @@ from jiuwen_memory.control.scheduler_impl.async_timer_scheduler import AsyncTime
 from jiuwen_memory.control.scheduler_impl.in_process_scheduler import InProcessScheduler
 from jiuwen_memory.control.types import Channel, JobStatus
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
 
 _SCOPE = Scope(org="acme", space="coding", user="alice")
-_ACTOR = Scope(org="acme", space="coding", user="alice", agent="cron")
+_ACTOR = Scope(org="acme", space="coding", user="alice")
+_SECURITY = internal_context(ScopedAuthenticator(_ACTOR))
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +139,7 @@ class _FakeApi:
         self.authorized: list[tuple[Scope, Scope]] = []
 
     def _authorize(self, identity, target, action, entry, *, space_action=None, **_kw):
-        self.authorized.append((identity, target))
+        self.authorized.append((identity.auth.actor, target))
         if target in self.denied:
             raise PermissionDeniedError(action.value)
 
@@ -153,9 +155,7 @@ def test_registration_key_is_unambiguous_for_separator_values() -> None:
     left = Scope(org="a/b", space="c")
     right = Scope(org="a", space="b/c")
 
-    assert DreamingRegistry.key_of(left, "extract") != DreamingRegistry.key_of(
-        right, "extract"
-    )
+    assert DreamingRegistry.key_of(left, "extract") != DreamingRegistry.key_of(right, "extract")
 
 
 def test_registry_uses_configured_lock_provider_lease() -> None:
@@ -199,7 +199,7 @@ def _register(
         channel=Channel.BACKGROUND,
         candidate=candidate,
         interval=interval,
-        actor=actor,
+        security=internal_context(ScopedAuthenticator(actor)),
     )
     job = scheduler.submitted[0][1]
     assert isinstance(job, DreamingDriverJob), "注册提交的是 API 层驱动任务"
@@ -245,27 +245,29 @@ def test_corrupt_created_by_isolated_from_healthy_registry_entries() -> None:
             candidate=None,
             job_id="healthy",
             channel="background",
-            created_by=actor_to_dict(_ACTOR),
+            created_by=_registration_identity(_SECURITY),
         )
     )
 
     entries = registry.load_all()
 
-    assert [(entry.scope, entry.job_id) for entry in entries] == [
-        (healthy_scope, "healthy")
-    ]
+    assert [(entry.scope, entry.job_id) for entry in entries] == [(healthy_scope, "healthy")]
 
 
 def test_space_validation_stops_recurring_driver_and_removes_registration() -> None:
     class _ReadOnlyApi(_FakeApi):
+        archived = False
+
         def _ensure_space_writable(self, scope) -> None:
-            raise ValidationError("space is archived")
+            if self.archived:
+                raise ValidationError("space is archived")
 
     kv = InMemoryKVStore()
     scheduler = _FakeScheduler()
     api = _ReadOnlyApi(scheduler, kv)
     coordinator = _coordinator(api)
     _register(coordinator, scheduler)
+    api.archived = True
     job = scheduler.submitted[0][1]
 
     with pytest.raises(RecurringJobStoppedError) as caught:
@@ -289,7 +291,7 @@ def test_concurrent_registration_keeps_one_live_timer_and_one_entry() -> None:
             channel=Channel.BACKGROUND,
             candidate=None,
             interval=60,
-            actor=_ACTOR,
+            security=_SECURITY,
         )
 
     try:
@@ -337,9 +339,14 @@ class TestRegister:
             "filters": None,
             "window": 3600,
         }, "候选源以 dict DSL 持久化（数据不是代码）"
-        assert entry.created_by == {
-            "org": "acme", "space": "coding", "user": "alice",
-            "agent": "cron", "session": "",
+        actor_fields = ("org", "space", "user", "agent", "session")
+        stored_actor = {key: entry.created_by.get(key) for key in actor_fields}
+        assert stored_actor == {
+            "org": "acme",
+            "space": "coding",
+            "user": "alice",
+            "agent": "",
+            "session": "",
         }, "#2：注册表记录创建者身份（created_by 持续授权锚点）"
 
     def test_register_requires_recurring_scheduler(self) -> None:
@@ -372,7 +379,7 @@ class TestRegister:
                 channel=Channel.BACKGROUND,
                 candidate=None,
                 interval=1,
-                actor=_ACTOR,
+                security=_SECURITY,
             )
 
         assert DreamingRegistry(kv).load_all() == [], "校验全部先于落盘"
@@ -400,13 +407,9 @@ class TestRegister:
         coordinator = _coordinator(api)
 
         _register(coordinator, scheduler, interval=60)
-        _register_via_fresh(
-            coordinator, scheduler, mode=EvolveMode.EXTRACT, interval=120
-        )
+        _register_via_fresh(coordinator, scheduler, mode=EvolveMode.EXTRACT, interval=120)
 
-        assert {e.mode for e in DreamingRegistry(kv).load_all()} == {
-            "forget", "extract"
-        }
+        assert {e.mode for e in DreamingRegistry(kv).load_all()} == {"forget", "extract"}
 
     def test_register_save_failure_rolls_back_submitted_job(self) -> None:
         """D6 写序契约：落盘失败回滚 cancel——不留注销不掉的幽灵定时器。"""
@@ -427,12 +430,10 @@ class TestRegister:
                 channel=Channel.BACKGROUND,
                 candidate=None,
                 interval=60,
-                actor=_ACTOR,
+                security=_SECURITY,
             )
 
-        assert scheduler.cancelled == [scheduler.submitted[0][0]], (
-            "已提交的定时器被回滚取消"
-        )
+        assert scheduler.cancelled == [scheduler.submitted[0][0]], "已提交的定时器被回滚取消"
         assert DreamingRegistry(kv).load_all() == [], "落盘失败的注册不留记录"
 
     def test_update_save_failure_restores_previous_timer(self) -> None:
@@ -460,7 +461,7 @@ class TestRegister:
             channel=Channel.BACKGROUND,
             candidate=None,
             interval=60,
-            actor=_ACTOR,
+            security=_SECURITY,
         )
 
         with pytest.raises(RuntimeError, match="kv write failed"):
@@ -470,7 +471,7 @@ class TestRegister:
                 channel=Channel.BACKGROUND,
                 candidate=None,
                 interval=120,
-                actor=_ACTOR,
+                security=_SECURITY,
             )
 
         assert scheduler.cancelled == [], "已有任务应恢复旧声明而不是被取消"
@@ -516,7 +517,7 @@ class TestRegister:
                     channel=Channel.BACKGROUND,
                     candidate=None,
                     interval=60,
-                    actor=_ACTOR,
+                    security=_SECURITY,
                 )
             except Exception as exc:
                 errors.append(exc)
@@ -556,7 +557,7 @@ def _register_via_fresh(
         channel=Channel.BACKGROUND,
         candidate=None,
         interval=interval,
-        actor=_ACTOR,
+        security=_SECURITY,
     )
     assert scheduler.submitted[-1][0] == job_id
     return job_id
@@ -681,7 +682,7 @@ class TestDriverTick:
         assert call["candidate"] is None
         assert call["buckets"] is None, "非 fan-out 候选源无逐桶语义"
         assert call["denied_scopes"] is None
-        assert api.authorized == [(_ACTOR, _SCOPE)], "每 tick 以注册者身份复验"
+        assert api.authorized == [(_ACTOR, _SCOPE)] * 2, "注册与每 tick 均以可信身份复验"
         assert info.status == JobStatus.SUCCEEDED
         assert info.detail["spawned_job_id"] == "spawn-1"
 
@@ -782,7 +783,7 @@ class TestAuthorizeFanOut:
         coordinator = _coordinator(api)
 
         buckets, denied = coordinator.authorize_fan_out(
-            _ACTOR, _SCOPE, PredicateCandidate(window=60), EvolveMode.FORGET
+            _SECURITY, _SCOPE, PredicateCandidate(window=60), EvolveMode.FORGET
         )
 
         assert buckets is None
@@ -801,7 +802,7 @@ class TestAuthorizeFanOut:
         coordinator = _coordinator(api)
 
         buckets, denied = coordinator.authorize_fan_out(
-            _ACTOR,
+            _SECURITY,
             parent,
             FanOutCandidate(
                 child=PredicateCandidate(),
@@ -824,7 +825,7 @@ class TestAuthorizeFanOut:
         coordinator = _coordinator(api)
 
         buckets, denied = coordinator.authorize_fan_out(
-            _ACTOR,
+            _SECURITY,
             parent,
             {"type": "fan_out", "child": {"filters": None, "window": 60}},
             EvolveMode.FORGET,
@@ -890,9 +891,7 @@ class TestRestore:
         old_entries = DreamingRegistry(kv).load_all()
 
         scheduler2 = _FakeScheduler()
-        coordinator2 = DreamingCoordinator(
-            _FakeApi(scheduler2, kv), registry=_SaveFailing(kv)
-        )
+        coordinator2 = DreamingCoordinator(_FakeApi(scheduler2, kv), registry=_SaveFailing(kv))
 
         restored = coordinator2.restore()
 
@@ -900,9 +899,7 @@ class TestRestore:
         assert scheduler2.cancelled == [scheduler2.submitted[0][0]], (
             "换绑落盘失败的新定时器被回滚取消"
         )
-        assert DreamingRegistry(kv).load_all() == old_entries, (
-            "entry 保留旧值（下次重启可恢复）"
-        )
+        assert DreamingRegistry(kv).load_all() == old_entries, "entry 保留旧值（下次重启可恢复）"
 
     def test_restore_lock_conflict_raises_runtime_error(self) -> None:
         """#6：另一实例持锁（未过期）→ RuntimeError，不静默双跑。"""
@@ -944,8 +941,12 @@ class TestRestore:
         kv = InMemoryKVStore()
         DreamingRegistry(kv).save(
             DreamingEntry(
-                scope=_SCOPE, mode="forget", interval=60,
-                candidate=None, job_id="legacy", channel="background",
+                scope=_SCOPE,
+                mode="forget",
+                interval=60,
+                candidate=None,
+                job_id="legacy",
+                channel="background",
                 created_by=None,
             )
         )
@@ -986,7 +987,7 @@ class TestRestore:
                 candidate=None,
                 job_id="old-process-job",
                 channel="background",
-                created_by=actor_to_dict(_ACTOR),
+                created_by=_registration_identity(_SECURITY),
                 state=DreamingEntryState.CANCEL_REQUESTED.value,
             )
         )
@@ -1005,16 +1006,24 @@ class TestRestore:
 
         registry.save(
             DreamingEntry(
-                scope=_SCOPE, mode="bogus_mode", interval=60,
-                candidate=None, job_id="j1", channel="background",
-                created_by=actor_to_dict(_ACTOR),
+                scope=_SCOPE,
+                mode="bogus_mode",
+                interval=60,
+                candidate=None,
+                job_id="j1",
+                channel="background",
+                created_by=_registration_identity(_SECURITY),
             )
         )
         registry.save(
             DreamingEntry(
-                scope=_SCOPE, mode="forget", interval=60,
-                candidate=None, job_id="j2", channel="bogus_channel",
-                created_by=actor_to_dict(_ACTOR),
+                scope=_SCOPE,
+                mode="forget",
+                interval=60,
+                candidate=None,
+                job_id="j2",
+                channel="bogus_channel",
+                created_by=_registration_identity(_SECURITY),
             )
         )
         api = _FakeApi(_FakeScheduler(), kv)
@@ -1029,9 +1038,13 @@ class TestRestore:
         kv = InMemoryKVStore()
         DreamingRegistry(kv).save(
             DreamingEntry(
-                scope=_SCOPE, mode="forget", interval=60,
-                candidate=None, job_id="j1", channel="background",
-                created_by=actor_to_dict(_ACTOR),
+                scope=_SCOPE,
+                mode="forget",
+                interval=60,
+                candidate=None,
+                job_id="j1",
+                channel="background",
+                created_by=_registration_identity(_SECURITY),
             )
         )
         api = _FakeApi(InProcessScheduler(), kv)
@@ -1074,7 +1087,7 @@ class TestRestore:
                 candidate=None,
                 job_id="written-by-other-leader",
                 channel="background",
-                created_by=actor_to_dict(_ACTOR),
+                created_by=_registration_identity(_SECURITY),
             )
         )
 
@@ -1115,7 +1128,7 @@ class TestRestore:
                 candidate=None,
                 job_id="old-job",
                 channel="background",
-                created_by=actor_to_dict(_ACTOR),
+                created_by=_registration_identity(_SECURITY),
             )
         )
         scheduler = _FakeScheduler()
@@ -1153,7 +1166,9 @@ class TestQueryOpsThreeStates:
                 EvolveMode.EXTRACT,
                 dreaming=True,
                 interval=0,
-                security=legacy_request_context(self._KSCOPE),
+                security=internal_context(
+                    ScopedAuthenticator(Scope(org=self._KSCOPE.org, user=self._KSCOPE.user))
+                ),
             )
 
     def test_register_rejected_on_in_process_scheduler(self) -> None:
@@ -1164,7 +1179,9 @@ class TestQueryOpsThreeStates:
                 EvolveMode.EXTRACT,
                 dreaming=True,
                 interval=60,
-                security=legacy_request_context(self._KSCOPE),
+                security=internal_context(
+                    ScopedAuthenticator(Scope(org=self._KSCOPE.org, user=self._KSCOPE.user))
+                ),
             )
 
     def test_unregister_missing_returns_none(self) -> None:
@@ -1174,6 +1191,8 @@ class TestQueryOpsThreeStates:
             self._KSCOPE,
             EvolveMode.EXTRACT,
             dreaming=False,
-            security=legacy_request_context(self._KSCOPE),
+            security=internal_context(
+                ScopedAuthenticator(Scope(org=self._KSCOPE.org, user=self._KSCOPE.user))
+            ),
         )
         assert result is None

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-10-19 |
+| 最近一次修订日期 | 2026-10-21 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
@@ -388,6 +388,11 @@ recall / list 完成权限检查前，API 构造 `PermissionContext` 时从
 是无缓存副作用的只读查询；payload 幂等映射只在 Scope 一致后维护。接口层通过
 `MemoryAPI.job_status()` 对任务真实 Scope 执行 READ 鉴权与审计。
 
+`close(*, wait=True)` 停止接收新任务，等待全部已提交任务及最终状态写入完成；
+`wait=False` 只请求停机，不取消已提交任务，也不证明任务结束。之后再次调用
+`close(wait=True)` 必须能等待剩余任务；任务结束与入口关闭是不同状态。不得在
+任务写入最终状态需要的锁内等待工作线程。装配根的依赖释放顺序见 S02/S10。
+
 ### PolicyManager（`policy.py`）
 
 | 方法 | 签名 | 语义 |
@@ -442,9 +447,11 @@ space 元数据、space policy、成员、用量与 offboarding 状态管理。
 | `SpaceManager` 改造 | 创建时按 `SpaceSpec.owner` 登记归属主体；成员表由逐成员键改单键（破坏性，须回填）；`update` 增状态机校验；拒绝主体两维同时非空的成员记录；四处索引维护 | 已落地 |
 | `types.py` 加字段 | `SpaceMember` 增两轴角色（枚举类型自安全层导入）、`SpaceInfo` 增归属登记、`SpaceSpec` 增创建者身份，另新增空间授权事实快照类型 | 已落地 |
 | `Scheduler` 两个实现 | `JobInfo.mode` 优先取 `Job.mode` 声明的演进模式，无声明才回落任务类名；一次性任务、定时注册、到点生成的实例三条路径同口径 | 已落地，取值域变更见 S02 契约变更表 |
-| `PermissionManager` | 在上游安全模块合入后退出请求授权路径，只服务兼容测试。授权判定迁至安全层的 `Authorizer` 实现，本层不再承载判定 | 规划中，随上游合入 |
+| `PermissionManager` | 已退出生产请求授权路径，只保留历史兼容。授权判定由安全层 `Authorizer` 提供，本层不再承载判定 | 已落地 |
 
-**两轴角色枚举、三张动作矩阵与身份推导比较函数不落本层**，落 `common/security/`：其元素类型取上游 12 值 `Action`，而本层 `types.py` 已有五值 `Action` 且 `Grant.actions` 仍在使用，同一模块内两者无法共存；更根本的是这些常量与函数的消费方跨安全层、API 层与控制层三侧，落本层即安全层反向依赖控制层。本层只消费它们作为成员记录的字段类型。
+**两轴角色枚举、动作矩阵与身份推导比较函数不落本层**，统一落 `common/security/`。
+本层 `types.py` 兼容再导出同一 `Action` 与 `Grant`，没有独立五值枚举或第二套授权
+值对象；本层消费安全域类型，不使安全层反向依赖控制层。
 
 #### 应用端口（B-03）
 

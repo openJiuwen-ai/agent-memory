@@ -221,7 +221,7 @@ await engine.write(
 
 #### 9.4 候选不会丢失
 
-被 skip 的 Job 不动 KV——原文仍是 `tier=WORKING + lifecycle=ACTIVE + metadata.middle="true"`，下个 tick 仍会被 `_list_working_units` 扫到。多实例部署下，只要有一实例的 Job 能取到锁，候选最终都会被处理。**取锁路径上候选不会丢失**——所有实例持续取锁失败意味着锁后端故障，是运维问题不是设计问题。另一类历史风险「Job 从未注册成功（如 `interval < tick_interval` 被 submit 拒绝，但原文已落盘成孤儿候选）」已通过 `Scheduler.validate` 落盘前校验关闭：write 在落盘前 fail fast，报错与副作用不再共存。
+被 skip 的 Job 不动 KV——原文仍是 `tier=WORKING + lifecycle=ACTIVE + system_metadata.middle="true"`，下个 tick 仍会被 `_list_working_units` 扫到。多实例部署下，只要有一实例的 Job 能取到锁，候选最终都会被处理。**取锁路径上候选不会丢失**——所有实例持续取锁失败意味着锁后端故障，是运维问题不是设计问题。另一类历史风险「Job 从未注册成功（如 `interval < tick_interval` 被 submit 拒绝，但原文已落盘成孤儿候选）」已通过 `Scheduler.validate` 落盘前校验关闭：write 在落盘前 fail fast，报错与副作用不再共存。
 
 #### 9.5 `wait_timeout_ms=0` 的取舍
 

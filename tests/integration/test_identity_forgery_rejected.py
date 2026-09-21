@@ -26,14 +26,14 @@ _CORE_DIR = os.path.join(_ROOT, "jiuwen_memory_entry", "core")
 if _CORE_DIR not in sys.path:
     sys.path.append(_CORE_DIR)
 
-from jiuwen_memory.api import Surface, legacy_request_context  # noqa: E402
 from jiuwen_memory.common.bootstrap import register_plugins  # noqa: E402
 from jiuwen_memory.common.errors import AuthenticationError  # noqa: E402
+from jiuwen_memory.common.security import internal_context  # noqa: E402
 from jiuwen_memory.common.security.authentication.key_store import KeyStoreProducer  # noqa: E402
 from jiuwen_memory.common.security.types import Role, get_current  # noqa: E402
 from jiuwen_memory.common.type_def.scope import Scope  # noqa: E402
 from jiuwen_memory.config.context import AssemblyContext  # noqa: E402
-from jiuwen_memory_entry.core.dispatch_request import DispatchRequest  # noqa: E402
+from tests.support.scoped_authenticator import ScopedAuthenticator  # noqa: E402
 
 pytestmark = pytest.mark.integration
 
@@ -74,7 +74,7 @@ def test_claimed_identity_in_payload_cannot_override_authenticated_actor(srv) ->
     legacy 内部协议为兼容旧调用仍识别这些字段；一旦适配器提供已认证 security，
     其 actor 必须覆盖 payload 声明，不能借字段伪造 Alice。
     """
-    security = legacy_request_context(_MALLORY)
+    security = internal_context(ScopedAuthenticator(_MALLORY))
     for forged in (
         {"actor_scope": "alice"},
         {"actor_tenant_id": "acme", "actor_scope": "alice"},
@@ -94,7 +94,7 @@ def test_identity_comes_from_context_not_payload(srv) -> None:
     这条直接钉死「身份来自上下文」：payload 一字未改，只换了 AuthContext，
     alice 能读、mallory 不能。
     """
-    alice_security = legacy_request_context(_ALICE)
+    alice_security = internal_context(ScopedAuthenticator(_ALICE))
     status, body = _dispatch(
         srv,
         "add",
@@ -109,34 +109,85 @@ def test_identity_comes_from_context_not_payload(srv) -> None:
     assert _dispatch(srv, "get", payload, security=alice_security)[0] == 200
 
     status, body = _dispatch(
-        srv, "get", payload, security=legacy_request_context(_MALLORY)
+        srv, "get", payload, security=internal_context(ScopedAuthenticator(_MALLORY))
     )
     assert status == 403, body
-
-
-def test_http_structured_request_without_security_fails_closed(srv) -> None:
-    """网络适配器漏挂 security 时必须拒绝，不能回退到 legacy 内部身份。"""
-    status, body = srv.dispatch(
-        DispatchRequest(
-            verb="get",
-            actor=_ALICE,
-            target=_ALICE,
-            payload={"item_id": "x"},
-            surface=Surface.HTTP,
-        )
-    )
-    assert status == 400, body
-    assert body["error"] == "ValidationError"
 
 
 # -- 认证与授权确实串起来了 --------------------------------------------------- #
 
 
-def test_api_key_binds_identity_end_to_end(srv) -> None:
-    """用 A 主体的 key 去读 B 主体的数据 → 403（不是 200，也不是 401）。
+def _api_key_named_config() -> dict:
+    """具名形态的 API Key 配置：key_store 与 authenticator 都走具名命名空间。"""
+    return {
+        "memory_api": {
+            "key_store": {"primary": {"target": "memory"}},
+            "authenticator": {
+                "primary": {
+                    "target": "api_key",
+                    "params": {"key_store": "primary", "root_api_key": "root-key-for-tests"},
+                }
+            },
+            "security": {"default": {"target": "standard", "params": {"authenticator": "primary"}}},
+        }
+    }
 
-    401 说明认证没过（key 无效），403 说明认证过了但授权拒了。
-    这条要的是后者——证明 key → AuthContext → PermissionManager 整条链通了。
+
+def test_named_api_key_online_recheck_uses_authenticator_key_store() -> None:
+    """具名 API Key 配置：在线复核必须用 Authenticator 的同一 KeyStore（P1-1）。
+
+    Registry 由 composition root（``Server.build``）从认证器真源调和，不再从 root
+    的 key_store 命名空间猜测 issuer。alice 的 key 写入 200；mallory 跨主体读 403；
+    **撤销后撤销前认证的旧上下文立即拒绝**——在线复核读的就是签发的那份事实。
+    """
+    import server
+    from auth_middleware import authenticated
+    from profiles import OFFLINE, load_config
+
+    from jiuwen_memory.common.security.authentication.key_store import fingerprint
+    from jiuwen_memory.common.security.types import Credentials
+
+    srv = server.build(load_config([OFFLINE, _api_key_named_config()]))
+    assert srv.authenticator.mode() == "api_key"
+
+    auth = srv.authenticator
+    store = auth.key_store
+    alice_key = store.issue(_ALICE, Role.USER)
+    mallory_key = store.issue(_MALLORY, Role.USER)
+
+    with authenticated(auth, Credentials(api_key=alice_key)) as security:
+        status, body = _dispatch(
+            srv,
+            "add",
+            {"tenant_id": "acme", "scope": "alice", "content": "alice secret"},
+            security=security,
+        )
+    assert status == 200, body
+    payload = {"tenant_id": "acme", "scope": "alice", "item_id": body["item_id"]}
+
+    # 跨主体：mallory 的 key 读 alice 的条目 → 403（隔离语义由判定给出）。
+    with authenticated(auth, Credentials(api_key=mallory_key)) as security:
+        status, body = _dispatch(srv, "get", payload, security=security)
+    assert status == 403, body
+    assert body["error"] == "PermissionDeniedError"
+
+    # 撤销生效：撤销前认证的旧上下文必须立即被拒（缓存的 AuthContext 在线复核）。
+    with authenticated(auth, Credentials(api_key=alice_key)) as security:
+        store.revoke(fingerprint(alice_key))
+        status, body = _dispatch(srv, "get", payload, security=security)
+    assert status == 403, body
+
+    # 撤销后的 key 也无法再通过认证。
+    with pytest.raises(AuthenticationError):
+        with authenticated(auth, Credentials(api_key=alice_key)):
+            pass  # pragma: no cover - authenticate 在进入 with 体之前就抛了
+
+
+def test_unreconciled_authenticator_context_fails_closed(srv) -> None:
+    """未与 composition root 调和的认证器上下文必须 fail-closed（400，不是放行）。
+
+    Registry 恒为实例；手工构造、未经 ``Server.build`` 调和的 ApiKeyAuthenticator
+    产出的上下文，其 issuer 未注册，在线复核按 fail-closed 拒绝。
     """
     from jiuwen_memory.common.security.authentication.authentication_impl.api_key_authenticator import (  # noqa: E501
         ApiKeyAuthenticator,
@@ -146,7 +197,6 @@ def test_api_key_binds_identity_end_to_end(srv) -> None:
     register_plugins()
     store = KeyStoreProducer.build("memory", {}, AssemblyContext())
     alice_key = store.issue(_ALICE, Role.USER)
-    mallory_key = store.issue(_MALLORY, Role.USER)
     auth = ApiKeyAuthenticator(key_store=store, root_api_key="")
 
     from auth_middleware import authenticated
@@ -158,20 +208,9 @@ def test_api_key_binds_identity_end_to_end(srv) -> None:
             {"tenant_id": "acme", "scope": "alice", "content": "key-bound secret"},
             security=security,
         )
-        assert status == 200, body
-        item_id = body["item_id"]
-
-    payload = {"tenant_id": "acme", "scope": "alice", "item_id": item_id}
-
-    with authenticated(auth, Credentials(api_key=alice_key)) as security:
-        assert _dispatch(srv, "get", payload, security=security)[0] == 200
-
-    with authenticated(auth, Credentials(api_key=mallory_key)) as security:
-        assert _dispatch(srv, "get", payload, security=security)[0] == 403
-
-    with pytest.raises(AuthenticationError):
-        with authenticated(auth, Credentials(api_key="not-a-real-key")):
-            pass  # pragma: no cover - authenticate 在进入 with 体之前就抛了
+    assert status == 400, body
+    assert body["error"] == "ValidationError"
+    assert "CredentialStatusRegistry" in body["message"]
 
 
 def test_context_is_reset_after_failed_authentication(srv) -> None:

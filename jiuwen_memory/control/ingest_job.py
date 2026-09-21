@@ -62,4 +62,8 @@ class IngestJobController(ControlOperator):
 
     @abstractmethod
     def close(self, *, wait: bool = True) -> None:
-        """Release worker resources."""
+        """停止接收新任务；wait=True 等待全部已提交任务及其状态写入完成。
+
+        wait=False 仅发出停机请求，不代表任务结束；之后的 wait=True 必须仍能等待。
+        重复调用幂等，不取消已提交任务。
+        """

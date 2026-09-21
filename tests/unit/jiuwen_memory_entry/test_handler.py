@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Generic handler 的既有错误映射回归测试。"""
 
-from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -21,15 +20,24 @@ from jiuwen_memory.api import (
     build_dev_authenticator,
 )
 from jiuwen_memory.common.errors import (
+    BackendError,
     PartialFailureError,
     RateLimitedError,
     UnsupportedCapabilityError,
 )
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory_entry.core import handler
 from jiuwen_memory_entry.core.auth_middleware import authenticated
 from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
+
+
+def _dispatch_request(verb: str, payload: dict):
+    """布置一次 dispatch：actor 来自 security（测试辅助构造），payload 只作 target。"""
+    security = internal_context(ScopedAuthenticator(handler.Scope(org="local", user="developer")))
+    return build_legacy_dispatch_request(verb, payload, security=security)
 
 
 def test_rate_limited_error_preserves_legacy_400_mapping() -> None:
@@ -43,7 +51,7 @@ def test_rate_limited_error_preserves_legacy_400_mapping() -> None:
 
     srv = SimpleNamespace(api=_Api())
 
-    status, body = handler.dispatch(srv, build_legacy_dispatch_request("audit", {}))
+    status, body = handler.dispatch(srv, _dispatch_request("audit", {}))
 
     assert status == 400
     assert body == {"error": "RateLimitedError", "message": "rate limit exceeded"}
@@ -65,7 +73,7 @@ def test_partial_failure_error_returns_retry_fields() -> None:
 
     status, body = handler.dispatch(
         srv,
-        build_legacy_dispatch_request(
+        _dispatch_request(
             "delete_space",
             {"tenant_id": "acme", "space": "lab"},
         ),
@@ -92,7 +100,7 @@ def test_unsupported_capability_error_maps_to_400() -> None:
 
     status, body = handler.dispatch(
         srv,
-        build_legacy_dispatch_request(
+        _dispatch_request(
             "add",
             {
                 "tenant_id": "org-1",
@@ -148,7 +156,7 @@ def test_evolve_dreaming_three_states_pass_through() -> None:
     # 注册（dreaming=true）：interval 与候选源 DSL 一并下发。
     status, body = handler.dispatch(
         srv,
-        build_legacy_dispatch_request(
+        _dispatch_request(
             "evolve",
             {
                 "tenant_id": "acme",
@@ -172,7 +180,7 @@ def test_evolve_dreaming_three_states_pass_through() -> None:
     api.job_id = None
     status, body = handler.dispatch(
         srv,
-        build_legacy_dispatch_request(
+        _dispatch_request(
             "evolve",
             {"tenant_id": "acme", "scope": "alice", "mode": "forget", "dreaming": False},
         ),
@@ -185,9 +193,7 @@ def test_evolve_dreaming_three_states_pass_through() -> None:
     # 立即执行（缺省）：dreaming 为 None，candidate 不传。
     handler.dispatch(
         srv,
-        build_legacy_dispatch_request(
-            "evolve", {"tenant_id": "acme", "scope": "alice", "mode": "extract"}
-        ),
+        _dispatch_request("evolve", {"tenant_id": "acme", "scope": "alice", "mode": "extract"}),
     )
     assert api.calls[2]["dreaming"] is None
     assert api.calls[2]["candidate"] is None
@@ -206,7 +212,7 @@ def test_evolve_dreaming_field_type_validation() -> None:
     ):
         status, body = handler.dispatch(
             srv,
-            build_legacy_dispatch_request(
+            _dispatch_request(
                 "evolve",
                 {"tenant_id": "acme", "scope": "alice", "mode": "extract", field: value},
             ),
@@ -245,7 +251,7 @@ def test_search_forwards_as_of() -> None:
 
     status, body = handler.dispatch(
         srv,
-        build_legacy_dispatch_request(
+        _dispatch_request(
             "search",
             {
                 "tenant_id": "acme",
@@ -262,9 +268,7 @@ def test_search_forwards_as_of() -> None:
     # 未传 as_of：保持 None（缺省 = 当前状态），既有行为不变
     handler.dispatch(
         srv,
-        build_legacy_dispatch_request(
-            "search", {"tenant_id": "acme", "scope": "alice", "query": "hello"}
-        ),
+        _dispatch_request("search", {"tenant_id": "acme", "scope": "alice", "query": "hello"}),
     )
     assert api.calls[1]["as_of"] is None
 
@@ -276,7 +280,7 @@ def test_search_rejects_bad_as_of() -> None:
 
     status, body = handler.dispatch(
         srv,
-        build_legacy_dispatch_request(
+        _dispatch_request(
             "search",
             {"tenant_id": "acme", "scope": "alice", "query": "q", "as_of": "yesterday"},
         ),
@@ -293,18 +297,14 @@ def test_search_forwards_top_k() -> None:
 
     status, _body = handler.dispatch(
         srv,
-        build_legacy_dispatch_request(
-            "search", {"tenant_id": "acme", "scope": "alice", "query": "q", "k": 3}
-        ),
+        _dispatch_request("search", {"tenant_id": "acme", "scope": "alice", "query": "q", "k": 3}),
     )
     assert status == 200
     assert api.calls[-1]["top_k"] == 3
 
     handler.dispatch(
         srv,
-        build_legacy_dispatch_request(
-            "search", {"tenant_id": "acme", "scope": "alice", "query": "q"}
-        ),
+        _dispatch_request("search", {"tenant_id": "acme", "scope": "alice", "query": "q"}),
     )
     assert api.calls[-1]["top_k"] == 10
 
@@ -323,7 +323,7 @@ def test_search_rejects_non_positive_k() -> None:
     for bad in (0, -5, "abc", "0"):
         status, body = handler.dispatch(
             srv,
-            build_legacy_dispatch_request(
+            _dispatch_request(
                 "search",
                 {"tenant_id": "acme", "scope": "alice", "query": "q", "k": bad},
             ),
@@ -337,7 +337,7 @@ def test_search_rejects_non_positive_k() -> None:
     # 显式 null 回落 default=10，仍然成功
     status, _body = handler.dispatch(
         srv,
-        build_legacy_dispatch_request(
+        _dispatch_request(
             "search", {"tenant_id": "acme", "scope": "alice", "query": "q", "k": None}
         ),
     )
@@ -364,7 +364,7 @@ def test_delete_honors_mode() -> None:
 
     status, body = handler.dispatch(
         srv,
-        build_legacy_dispatch_request(
+        _dispatch_request(
             "delete",
             {"tenant_id": "acme", "scope": "alice", "item_id": "u1", "mode": "archive"},
         ),
@@ -376,7 +376,7 @@ def test_delete_honors_mode() -> None:
     # 旧的硬删布尔保持兼容
     handler.dispatch(
         srv,
-        build_legacy_dispatch_request(
+        _dispatch_request(
             "delete", {"tenant_id": "acme", "scope": "alice", "item_id": "u1", "hard": True}
         ),
     )
@@ -384,9 +384,7 @@ def test_delete_honors_mode() -> None:
 
     handler.dispatch(
         srv,
-        build_legacy_dispatch_request(
-            "delete", {"tenant_id": "acme", "scope": "alice", "item_id": "u1"}
-        ),
+        _dispatch_request("delete", {"tenant_id": "acme", "scope": "alice", "item_id": "u1"}),
     )
     assert api.selectors[2].mode == DeleteMode.FORGET
 
@@ -412,7 +410,7 @@ def test_delete_hard_is_parsed_boolean_not_truthy() -> None:
     ):
         status, body = handler.dispatch(
             srv,
-            build_legacy_dispatch_request(
+            _dispatch_request(
                 "delete",
                 {"tenant_id": "acme", "scope": "alice", "item_id": "u1", "hard": hard},
             ),
@@ -429,7 +427,7 @@ def test_delete_mode_takes_priority_over_hard() -> None:
 
     status, _body = handler.dispatch(
         srv,
-        build_legacy_dispatch_request(
+        _dispatch_request(
             "delete",
             {
                 "tenant_id": "acme",
@@ -451,7 +449,7 @@ def test_delete_rejects_unknown_mode() -> None:
 
     status, body = handler.dispatch(
         srv,
-        build_legacy_dispatch_request(
+        _dispatch_request(
             "delete",
             {"tenant_id": "acme", "scope": "alice", "item_id": "u1", "mode": "shred"},
         ),
@@ -489,7 +487,7 @@ def test_update_forwards_tier() -> None:
 
     status, body = handler.dispatch(
         srv,
-        build_legacy_dispatch_request(
+        _dispatch_request(
             "update",
             {"tenant_id": "acme", "scope": "alice", "item_id": "u1", "tier": "semantic"},
         ),
@@ -500,9 +498,7 @@ def test_update_forwards_tier() -> None:
 
     handler.dispatch(
         srv,
-        build_legacy_dispatch_request(
-            "update", {"tenant_id": "acme", "scope": "alice", "item_id": "u1"}
-        ),
+        _dispatch_request("update", {"tenant_id": "acme", "scope": "alice", "item_id": "u1"}),
     )
     assert api.patches[1].tier is None
 
@@ -514,7 +510,7 @@ def test_evolve_forwards_channel() -> None:
 
     status, body = handler.dispatch(
         srv,
-        build_legacy_dispatch_request(
+        _dispatch_request(
             "evolve",
             {"tenant_id": "acme", "scope": "alice", "mode": "extract", "channel": "hot"},
         ),
@@ -525,25 +521,22 @@ def test_evolve_forwards_channel() -> None:
 
     handler.dispatch(
         srv,
-        build_legacy_dispatch_request(
-            "evolve", {"tenant_id": "acme", "scope": "alice", "mode": "extract"}
-        ),
+        _dispatch_request("evolve", {"tenant_id": "acme", "scope": "alice", "mode": "extract"}),
     )
     assert api.calls[1]["channel"] == Channel.BACKGROUND
 
 
-@pytest.fixture
-def authenticated_request():
+@pytest.fixture(name="authenticated_request")
+def _authenticated_request():
     """参数透传回归始终携带真实认证边界产出的上下文。"""
     with authenticated(
         build_dev_authenticator(), Credentials(), surface=Surface.INTERNAL
     ) as security:
 
         def build(verb, payload):
-            request = build_legacy_dispatch_request(
-                verb, {"tenant_id": "acme", "scope": "alice", **payload}
+            return build_legacy_dispatch_request(
+                verb, {"tenant_id": "acme", "scope": "alice", **payload}, security=security
             )
-            return replace(request, actor=security.actor, security=security)
 
         yield build
 
@@ -623,3 +616,21 @@ def test_invalid_upstream_parameters_fail_before_api_call(
 
     assert status == 400
     assert body["error"] == "ValidationError"
+
+
+def test_backend_error_maps_to_503_not_400_or_500() -> None:
+    """授权依赖故障是服务端依赖不可用，不是调用方参数错误。"""
+
+    class _Api:
+        @staticmethod
+        def search(_query, _ctx, *, security, **_kwargs):
+            del security
+            raise BackendError("store down")
+
+    srv = SimpleNamespace(api=_Api())
+    request = _dispatch_request("search", {"query": "x"})
+
+    status, body = handler.dispatch(srv, request)
+
+    assert status == 503
+    assert body == {"error": "BackendError", "message": "store down"}

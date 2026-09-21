@@ -401,6 +401,9 @@ class LocalEnvelopeCryptographyProvider(CryptographyProvider):
     def health(self) -> None:
         self._key_provider.health()
 
+    def security_dependencies(self) -> tuple[object, ...]:
+        return (self._key_provider,)
+
     def _unwrap_v1(self, wrapped: WrappedKey, *, org: str) -> bytes:
         """v1 信封的数据密钥解包，只有声明支持的 KeyProvider 能做。"""
         legacy = getattr(self._key_provider, "unwrap_legacy_v1", None)

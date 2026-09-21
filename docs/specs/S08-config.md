@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-09-16 |
+| 最近一次修订日期 | 2026-10-13 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 装配开关见 `docs/features/construction/F08-entity-schema-extension.md` |
 
 ## 范围 / 边界
@@ -66,6 +66,10 @@
 - `ComponentConfig.get`：实例 params > globals > 代码默认
 
 装配拓扑（选哪个 `target`、有哪些具名实例、依赖引用）仍由上述机制在 **`build_kernel` 时**确定。
+具名缓存属于该次装配纪元，根关闭后不得复用其中已关闭的依赖。失败装配的回滚只能
+清理本次新建对象，不能关闭先前借用的存活依赖；旧根关闭不能失效较新装配的缓存。
+同纪元视图由装配根显式绑定生命周期共享协议；纪元与创建观察规则见 S07。此机制仅
+服务装配/关闭，不将 health 故障解释为拓扑切换，也不增加 ConfigSource 热切换键。
 `globals.schema_enabled` 是装配期扩展注册开关：为 `true` 时先注册 Schema target，
 再按命名空间中显式配置的 target 解析依赖；为 `false` 时不导入该扩展。
 

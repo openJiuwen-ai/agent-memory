@@ -60,12 +60,12 @@ combines the in-process KV, Vector, Fulltext, and Graph Store implementations. E
 and reranking also use default implementations with no external dependencies.
 
 ```python
-from jiuwen_memory.api import Context, Scope, assemble_runtime, legacy_request_context
+from jiuwen_memory.api import Context, Scope, assemble_runtime, build_dev_authenticator, internal_context
 
 runtime = assemble_runtime()
 api = runtime.api
 scope = Scope(org="demo", user="alice")
-security = legacy_request_context(scope)
+security = internal_context(build_dev_authenticator())
 
 try:
     units = api.add(
@@ -89,10 +89,13 @@ finally:
 All data in this mode lives in the current process and is lost when the process exits. Docker and
 model services are not required.
 
-The example's `legacy_request_context` is a transitional bridge for local testing; it does not
-validate credentials. Production applications must obtain `RequestSecurityContext` from a trusted
-authentication boundary instead of treating the business `scope` as an authenticated identity.
-HTTP and CLI already use independent authentication boundaries and do not use this legacy bridge.
+The example's `build_dev_authenticator()` is for in-process callers that explicitly cross the
+authentication boundary in local testing and similar scenarios; it does not validate credentials
+and returns a fixed development identity (`local/developer`, ROOT grade). Note that the business
+`scope` is only the operation target, not an identity: `internal_context()` derives the identity
+from the authenticator passed in, so a caller cannot decide who it is. Production applications must
+obtain `RequestSecurityContext` from a trusted authentication boundary. HTTP and CLI already use
+independent authentication boundaries and do not use this local channel.
 
 ## 4. Option Two: In-Memory Storage + Local HTTP Launcher
 
@@ -245,7 +248,7 @@ both the HTTP configuration format and its environment-variable expansion, load 
 follows:
 
 ```python
-from jiuwen_memory.api import Context, Scope, assemble_runtime, legacy_request_context
+from jiuwen_memory.api import Context, Scope, assemble_runtime, build_dev_authenticator, internal_context
 from jiuwen_memory_entry.core.config_loader import load_layer
 
 layer = load_layer("local-real-storage.yml")
@@ -253,7 +256,7 @@ runtime = assemble_runtime(config=layer["memory_api"])
 api = runtime.api
 
 scope = Scope(org="demo", user="alice")
-security = legacy_request_context(scope)
+security = internal_context(build_dev_authenticator())
 try:
     api.add("A memory that must be persisted", scope, security=security)
     result = api.search("persisted memory", Context(scope), security=security, top_k=5)
