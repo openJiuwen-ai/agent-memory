@@ -6,13 +6,14 @@ from jiuwen_memory.api import Scope
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.audit.base import AuditLogger
 from jiuwen_memory.common.errors import BackendError
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.type_def import AuditEvent, MemoryUnit, Segment, memory_key
 from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.config.config import Config
 from jiuwen_memory.control.governance_impl.in_memory_governor import InMemoryGovernor
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
 
@@ -21,11 +22,7 @@ _TEST_KEY_HEX = "00" * 32
 
 def _test_kernel():
     config = Config.from_dict(
-        {
-            "security": {
-                "default": {"target": "local", "params": {"key_hex": _TEST_KEY_HEX}}
-            }
-        }
+        {"security": {"default": {"target": "local", "params": {"key_hex": _TEST_KEY_HEX}}}}
     )
     kv = InMemoryKVStore()
     return build_kernel(kv=kv, config=config), kv
@@ -53,7 +50,7 @@ class _FailingKV:
 
 
 def test_trace_follows_provenance_sources_depth_first() -> None:
-    scope = Scope(user="u1")
+    scope = Scope(org="acme", user="u1")
     kernel, kv = _test_kernel()
     source = MemoryUnit(id="source", scope=scope, segments=[Segment(content="source")])
     direct = MemoryUnit(
@@ -71,27 +68,22 @@ def test_trace_follows_provenance_sources_depth_first() -> None:
     for unit in [source, direct, nested]:
         kv.insert(scope, memory_key(unit.id), dumps(unit))
 
-    assert [
-        unit.id
-        for unit in kernel.api.trace("nested", scope, security=legacy_request_context(scope))
-    ] == [
-        "nested",
-        "direct",
-        "source",
-    ]
+    traced = kernel.api.trace(
+        "nested", scope, security=internal_context(ScopedAuthenticator(scope))
+    )
+    assert [unit.id for unit in traced] == ["nested", "direct", "source"]
 
 
 def test_trace_stops_on_provenance_cycles() -> None:
-    scope = Scope(user="u1")
+    scope = Scope(org="acme", user="u1")
     kernel, kv = _test_kernel()
     a = MemoryUnit(id="a", scope=scope, segments=[Segment(content="a")], provenance=["b"])
     b = MemoryUnit(id="b", scope=scope, segments=[Segment(content="b")], provenance=["a"])
     for unit in [a, b]:
         kv.insert(scope, memory_key(unit.id), dumps(unit))
 
-    assert [
-        unit.id for unit in kernel.api.trace("a", scope, security=legacy_request_context(scope))
-    ] == ["a", "b"]
+    traced = kernel.api.trace("a", scope, security=internal_context(ScopedAuthenticator(scope)))
+    assert [unit.id for unit in traced] == ["a", "b"]
 
 
 def test_inspect_is_bound_to_the_authorized_scope() -> None:
@@ -111,7 +103,9 @@ def test_inspect_is_bound_to_the_authorized_scope() -> None:
     kv.insert(scope_a, memory_key(unit_a.id), dumps(unit_a))
     kv.insert(scope_b, memory_key(unit_b.id), dumps(unit_b))
 
-    inspected = kernel.api.inspect([unit_b.id], scope_b, security=legacy_request_context(scope_b))
+    inspected = kernel.api.inspect(
+        [unit_b.id], scope_b, security=internal_context(ScopedAuthenticator(scope_b))
+    )
 
     assert [unit.content for unit in inspected] == ["space B content"]
 

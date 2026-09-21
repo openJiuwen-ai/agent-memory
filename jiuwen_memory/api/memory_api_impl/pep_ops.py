@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import datetime, timezone
+from typing import NamedTuple, NoReturn
 
 from jiuwen_memory.common.errors import (
-    BackendError,
     ConflictError,
     NotFoundError,
     PermissionDeniedError,
@@ -16,23 +17,41 @@ from jiuwen_memory.common.errors import (
 )
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.security import principal
+from jiuwen_memory.common.security._delegation_binding import (
+    _PROJECTION_PREFIX,
+    _bound_record,
+    _effective_principal,
+    _stores,
+)
 from jiuwen_memory.common.security.request_context import get_request_id
 from jiuwen_memory.common.security.space_decision import (
     ATTR_PRINCIPAL_PATH,
     ATTR_SPACE_ACTION,
     ATTR_SPACE_AXIS,
     ATTR_SPACE_ENTRY,
+    PEP_OWNED_ATTR_KEYS,
+    axes_for,
     content_grade,
     exceeds_governance_ceiling,
     governance_grade,
+    project_facts,
     raises_own_grade,
 )
 from jiuwen_memory.common.security.space_roles import (
+    ENTRY_RULES,
     SpaceAction,
     SpaceAuthorizationFacts,
     SpaceAxis,
 )
-from jiuwen_memory.common.security.types import Action, Grant, RequestSecurityContext
+from jiuwen_memory.common.security.types import (
+    Action,
+    AuthorizationEnvironment,
+    DenyReason,
+    Grant,
+    RequestSecurityContext,
+    ResourceDescriptor,
+    Role,
+)
 from jiuwen_memory.common.type_def import (
     AuditEvent,
     MetadataValueType,
@@ -65,17 +84,77 @@ from .local_support import (
     _reject_non_scalar_metadata,
     _space_scope,
     _space_target_id,
+    _TrustedRequestTarget,
     _write_permission_context,
 )
 
 logger = get_logger("jiuwen_memory.api.memory_api_impl.local_memory_api")
 
+_PEP_OWNED_KEY_SET = frozenset(PEP_OWNED_ATTR_KEYS)
+
+
+def _strip_pep_owned_keys(metadata: Mapping[str, str]) -> dict[str, str]:
+    """剥掉调用方 metadata 里的 PEP 独占键，真值由鉴权点随后写入。
+
+    独占键经属性通道决定判定走向（入口名、轴、动作、主体次序与空间事实投影），调用
+    方可写的 metadata 与之间池：不剥即允许自述判定依据。
+    """
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key not in _PEP_OWNED_KEY_SET and not key.startswith(_PROJECTION_PREFIX)
+    }
+
+
+class _SpaceEntryDecision(NamedTuple):
+    """空间级入口的判定结论：Authorizer 决策折算出鉴权点要用的轴与拒绝码。"""
+
+    allowed: bool
+    rule: str
+    axis: SpaceAxis | None
+    reason_code: str
+
 
 class PepOpsMixin:
     """PEP helpers: space facts, authorize, audit, check_write."""
 
+    def _resource_principal(
+        self, security: RequestSecurityContext, action: Action, target: Scope | None = None
+    ) -> Scope:
+        """从真实委托记录推导归属坐标；不改写认证 actor，也不读取请求 Scope。"""
+        auth = security.auth
+        if not auth.delegation_id or not auth.actor.agent or auth.actor.user:
+            return auth.actor
+        sources = _stores(self._authorizer)
+        records = [s.get(auth.delegation_id) for s in sources]
+        # 既有纯空间委托不携带代写用户，不改变其原有语义。
+        if len([r for r in records if r is not None]) == 1:
+            record = next(r for r in records if r is not None)
+            if not record.delegator.user:
+                return auth.actor
+        try:
+            record = _bound_record(
+                auth, sources, now=datetime.now(timezone.utc), action=action, target=target
+            )
+            return _effective_principal(auth, record)
+        except PermissionDeniedError:
+            return self._deny_authorization(
+                auth.actor,
+                action,
+                action.value,
+                target=Scope(org=auth.actor.org),
+                target_id="",
+                rule="delegation",
+                reason_code="delegation_invalid",
+                context=None,
+            )
+
     def _can_write_space(
-        self, identity: Scope, target: Scope, *, require_writable_state: bool = False
+        self,
+        security: RequestSecurityContext,
+        target: Scope,
+        *,
+        require_writable_state: bool = False,
     ) -> bool:
         """候选空间的写权判定，走与单空间写入入口同一个判定链。
 
@@ -90,6 +169,9 @@ class PepOpsMixin:
 
         逐空间的拒绝不落审计：一次写入对无权空间产生 M 条拒绝记录，审计价值低于噪声成本；
         整次调用仍记一条。与 :meth:`_readable_spaces` 同形。
+
+        调用方（``add`` / ``batch_add``）在落点解析前已过 ``_require_trusted_context``，
+        本方法只补判定本身，不重复可信校验。
         """
         context, facts = self._apply_space_policy_context(
             target,
@@ -97,14 +179,16 @@ class PepOpsMixin:
             entry="add",
         )
         try:
-            outcome = self._perm.decide(identity, target, Action.WRITE, context=context)
+            outcome = self._decide_space_entry(
+                security, target, Action.WRITE, "", context, now=datetime.now(timezone.utc)
+            )
             if not outcome.allowed:
                 return False
             if require_writable_state:
                 self._ensure_space_state_allows(
                     target, Action.WRITE, "add", info=facts.info if facts is not None else None
                 )
-        except (PermissionDeniedError, BackendError, NotFoundError, ValidationError):
+        except (PermissionDeniedError, NotFoundError, ValidationError):
             return False
         return True
 
@@ -150,23 +234,28 @@ class PepOpsMixin:
             detail={"entry": "auto_create_fallback", "owner": owner.user or owner.agent},
         )
 
-    def _route_context(self, identity: Scope, coords: dict[str, str] | None) -> RouteContext:
+    def _route_context(
+        self, security: RequestSecurityContext, coords: dict[str, str] | None
+    ) -> RouteContext:
         """装配判定上下文：坐标以身份覆盖内核三项，候选空间按写权取交。
 
         fallback 空间不可写时 :func:`~control.collective.write_targets.plan_write_targets`
         返回 ``fallback=None``，本方法据此整体拒绝写入——判不准时无处可落，静默落到别处
         等于把兜底落点交给判定实现决定。权限异常在本层抛出，控制层只出集合运算结果。
         """
+        identity = self._resource_principal(security, Action.WRITE)
         table = self._route_table
         resolved = principal.kernel_coords(coords, identity)
         fallback_space = table.naming.fallback_space(resolved)
-        self._ensure_fallback_space(identity, identity.org, fallback_space)
+        # 委托不能借自动开通路径获得委托人当前尚不存在的空间权限。
+        if not security.auth.delegation_id:
+            self._ensure_fallback_space(identity, identity.org, fallback_space)
         targets = collective.plan_write_targets(
             identity.org,
             resolved,
             table.naming,
             can_write=lambda scope, require_state: self._can_write_space(
-                identity, scope, require_writable_state=require_state
+                security, scope, require_writable_state=require_state
             ),
             limit=self._space_fanout_limit(),
         )
@@ -245,7 +334,7 @@ class PepOpsMixin:
         区分性由调用次序保证，不是自动成立的——次序被改动不会使任何既有用例失败。
 
         平台级角色一律通过那一行在本特性内无判据来源（平台级角色不属本特性范围），缺失
-        方向是更严格：冻结空间的运维介入须先解冻。见 F07 决策 4「五步无判据来源」。
+        方向是更严格：冻结空间的运维介入须先解冻。见 F07 决策 4「四步无判据来源」。
         """
         if not target.org or not target.space:
             return
@@ -313,12 +402,21 @@ class PepOpsMixin:
         两处各读一次会使一次调用内的判据基于不同快照。后端异常时事实留空，由判定
         实现按拒绝处理，不沿用过期结果（沿用即为放行方向的失效）。
 
+        **PEP 独占键先剥后写。** 属性通道的键全集（入口名、轴、动作、主体次序与空间
+        事实投影）由本方法写入真值，调用方经 ``system_metadata`` / ``extensions`` 带入的
+        同名键一律先剥掉——留着即允许调用方自述判定依据（如注入 ``space_action=read``
+        让 viewer 过写入口）。
+
         连同读到的整份 :class:`SpaceFacts` 一并返回：生命周期状态不进判定投影，而状态
         校验要看它。返回同一份而非另读一次，使一次调用内的判定与状态校验基于同一快照。
         """
         if not target.org or not target.space:
-            return context, None
-        metadata = dict(context.metadata) if context is not None else {}
+            # 非空间级目标不装配空间属性，但独占键仍须剥离：不剥则调用方注入的
+            # space_entry / 投影键随资源描述进入 Authorizer，被按空间级入口解读。
+            if context is None:
+                return None, None
+            return replace(context, metadata=_strip_pep_owned_keys(context.metadata)), None
+        metadata = _strip_pep_owned_keys(context.metadata) if context is not None else {}
         if entry:
             metadata[ATTR_SPACE_ENTRY] = entry
         if space_action is not None:
@@ -339,9 +437,11 @@ class PepOpsMixin:
         if self._needs_space_facts():
             facts = self._read_space_facts(target)
             if facts is not None:
-                metadata[ATTR_PRINCIPAL_PATH] = facts.info.policy.principal_path.value if (
-                    facts.info is not None
-                ) else PrincipalPath.USER_AGENT.value
+                metadata[ATTR_PRINCIPAL_PATH] = (
+                    facts.info.policy.principal_path.value
+                    if (facts.info is not None)
+                    else PrincipalPath.USER_AGENT.value
+                )
                 space_facts = _project_space_facts(facts)
         else:
             try:
@@ -400,9 +500,12 @@ class PepOpsMixin:
         return replace(member, org=target.org, space=target.space)
 
     def _enforce_member_write_ceilings(
-        self, identity: Scope, target: Scope, member: SpaceMember
+        self, security: RequestSecurityContext, target: Scope, member: SpaceMember
     ) -> None:
         """成员记录写入的两条防护：治理轴授予上界与两轴自提禁止。"""
+        if security.auth.role is Role.ROOT:
+            return
+        identity = security.auth.actor
         facts = self._space_facts_for_guard(target)
         if facts is None:
             return
@@ -422,9 +525,12 @@ class PepOpsMixin:
             raise PermissionDeniedError("a member record must not raise the caller's own grade")
 
     def _enforce_member_removal_ceiling(
-        self, identity: Scope, target: Scope, member: Scope
+        self, security: RequestSecurityContext, target: Scope, member: Scope
     ) -> None:
         """移除成员的授予上界：改前值同受约束，因此不能移除档位高于自己的成员。"""
+        if security.auth.role is Role.ROOT:
+            return
+        identity = security.auth.actor
         facts = self._space_facts_for_guard(target)
         if facts is None:
             return
@@ -440,12 +546,15 @@ class PepOpsMixin:
                 )
             return
 
-    def _enforce_grant_ceiling(self, identity: Scope, grant: Grant) -> None:
+    def _enforce_grant_ceiling(self, security: RequestSecurityContext, grant: Grant) -> None:
         """显式授权的授出上界：授出动作须为授予方内容轴有效集合的子集。
 
         「本人所写」附加集合不计入基数：它以「这一条是本人所写」为条件、逐条成立，
         授出去即失去条件。
         """
+        if security.auth.role is Role.ROOT:
+            return
+        identity = security.auth.actor
         facts = self._space_facts_for_guard(grant.grantor)
         if facts is None:
             return
@@ -477,18 +586,220 @@ class PepOpsMixin:
         self._membership.invalidate(org, space)
 
     def _needs_space_facts(self) -> bool:
-        return self._membership is not None and self._perm.requires_space_facts()
+        """空间级判定是否装配：由 Authorizer 的 capability 声明，不再看旧 Manager。
+
+        ``requires_space_facts`` 不在冻结契约面上，经 ``getattr`` 探测——未声明的实现
+        按不需要空间事实处置，空间级入口对它们走标准链。
+        """
+        requires = getattr(self._authorizer, "requires_space_facts", None)
+        return self._membership is not None and callable(requires) and requires()
+
+    def _routing_fields_for(self, entry: str) -> tuple[str, ...]:
+        """Return routing fields from the component that decides this entry."""
+        if self._needs_space_facts() and _is_space_level_entry(entry):
+            # 空间链不按资源属性路由：候选空间由写权判定收窄，不按 memory_type 等
+            # 路由值选择策略（与改造前 space_aware Manager 未覆写 routing_fields
+            # 的取值一致）。
+            return ()
+        return self._authorizer.routing_fields()
 
     def _read_space_facts(self, target: Scope) -> SpaceFacts | None:
-        """取一次空间授权事实；后端不可用时返回 ``None``，由判定实现按拒绝处理。"""
+        """Read facts without disguising backend failure as permission denial."""
         try:
             return self._membership.facts(target.org, target.space)
-        except (BackendError, NotFoundError):
+        except NotFoundError:
             return None
+
+    @staticmethod
+    def _resource_descriptor(
+        target: Scope,
+        action: Action,
+        target_id: str,
+        context: PermissionContext | None,
+    ) -> ResourceDescriptor:
+        attributes = dict(context.metadata) if context is not None else {}
+        if context is not None:
+            for field, value in (
+                ("memory_type", context.memory_type),
+                ("pipeline", context.pipeline),
+            ):
+                if value:
+                    attributes[field] = value
+        return ResourceDescriptor(
+            action=action,
+            resource_type=context.resource_type if context is not None else "",
+            scope=target,
+            resource_id=target_id,
+            attributes=attributes,
+        )
+
+    def _decide_space_entry(
+        self,
+        security: RequestSecurityContext,
+        target: Scope,
+        action: Action,
+        target_id: str,
+        context: PermissionContext | None,
+        *,
+        now: datetime,
+    ) -> "_SpaceEntryDecision":
+        """空间级入口经唯一 PDP 判定（F11 决策 2：Authorizer 是唯一判定真源）。
+
+        空间事实由 PEP 折算成属性投影随资源描述传入，Authorizer 不自行读取。逐轴
+        调用而非一次判完：``AuthorizationDecision`` 的字段面已冻结、不带轴，鉴权点
+        需要通过的轴（空间策略裁剪复用它）只能从调用序列得知。
+
+        兜底分支（入口未登记或组织级）不应到达——本方法只接空间级入口；真到了说明
+        分流判据与本方法的前提脱了钩，整体走标准链，行为与分支外一致。
+        """
+        base = self._resource_descriptor(target, action, target_id, context)
+        facts = context.space_facts if context is not None else None
+        if facts is not None:
+            delegated = {}
+            if security.auth.delegation_id and action in (
+                Action.READ,
+                Action.WRITE,
+                Action.UPDATE,
+                Action.DELETE,
+            ):
+                effective = self._resource_principal(security, action)
+                if effective != security.auth.actor:
+                    delegated = {
+                        _PROJECTION_PREFIX + key: value
+                        for key, value in project_facts(effective, facts).items()
+                    }
+                    delegated[_PROJECTION_PREFIX + "user"] = effective.user
+            base = replace(
+                base,
+                attributes={
+                    **base.attributes,
+                    **project_facts(security.auth.actor, facts),
+                    **delegated,
+                },
+            )
+        entry = str(base.attributes.get(ATTR_SPACE_ENTRY, "")).strip()
+        requested = str(base.attributes.get(ATTR_SPACE_AXIS, "")).strip()
+        environment = AuthorizationEnvironment.from_request(security, now=now)
+        rule = ENTRY_RULES.get(entry)
+        if rule is None or rule.axis is SpaceAxis.ORG:
+            decision = self._authorizer.authorize(
+                auth=security.auth, resource=base, environment=environment
+            )
+            return _SpaceEntryDecision(
+                allowed=decision.allowed,
+                rule=decision.rule,
+                axis=None,
+                reason_code=decision.reason.value if decision.reason is not None else "",
+            )
+        decision = None
+        axis = None
+        for axis in axes_for(rule.axis, requested):
+            decision = self._authorizer.authorize(
+                auth=security.auth,
+                resource=replace(base, attributes={**base.attributes, ATTR_SPACE_AXIS: axis.value}),
+                environment=environment,
+            )
+            if decision.allowed:
+                return _SpaceEntryDecision(
+                    allowed=True, rule=decision.rule, axis=axis, reason_code=""
+                )
+        return _SpaceEntryDecision(
+            allowed=False,
+            rule=decision.rule if decision is not None else "no_axis_evaluated",
+            axis=axis,
+            reason_code=(
+                decision.reason.value
+                if decision is not None and decision.reason is not None
+                else ""
+            ),
+        )
+
+    def _require_trusted_request(
+        self,
+        security: RequestSecurityContext,
+        request: _TrustedRequestTarget,
+    ) -> None:
+        action, audit_action, target, target_id, context = request
+        if not security.has_valid_origin():
+            self._deny_authorization(
+                security.auth.actor,
+                action,
+                audit_action,
+                target=target,
+                target_id=target_id,
+                rule="untrusted_origin",
+                reason_code=DenyReason.CONTEXT_MISMATCH.value,
+                context=context,
+            )
+        if not security.auth.credential_status_required:
+            return
+        # Registry 恒为实例（空表或已调和）。空表时 is_revoked 对未注册 issuer 抛
+        # ValidationError——fail-closed，语义与此前「未提供 Registry」的 BackendError 一致。
+        if self._credentials.is_revoked(security.auth):
+            self._deny_authorization(
+                security.auth.actor,
+                action,
+                audit_action,
+                target=target,
+                target_id=target_id,
+                rule="credential_revoked",
+                reason_code=DenyReason.CONTEXT_MISMATCH.value,
+                context=context,
+            )
+
+    def _require_trusted_context(
+        self,
+        security: RequestSecurityContext,
+        request: _TrustedRequestTarget,
+    ) -> None:
+        """Validate the complete context before routing or any other side effect."""
+        self._require_trusted_request(security, request)
+        action, audit_action, target, target_id, context = request
+        if security.auth.is_expired():
+            self._deny_authorization(
+                security.auth.actor,
+                action,
+                audit_action,
+                target=target,
+                target_id=target_id,
+                rule="context_expiry",
+                reason_code=DenyReason.EXPIRED_CONTEXT.value,
+                context=context,
+            )
+
+    def _deny_authorization(
+        self,
+        identity: Scope,
+        action: Action,
+        audit_action: str,
+        *,
+        target: Scope,
+        target_id: str,
+        rule: str,
+        reason_code: str,
+        context: PermissionContext | None,
+    ) -> NoReturn:
+        detail = {
+            "permission_check": "enabled",
+            "permission_reason": f"permission denied for action={action.value}",
+            "permission_rule": rule,
+            **_context_detail(context),
+        }
+        if reason_code:
+            detail["permission_reason_code"] = reason_code
+        self._record_audit(
+            identity,
+            audit_action,
+            target_id=target_id,
+            target_scope=target,
+            decision="deny",
+            detail=detail,
+        )
+        raise PermissionDeniedError(action.value)
 
     def _authorize(
         self,
-        identity: Scope,
+        security: RequestSecurityContext,
         target: Scope,
         action: Action,
         audit_action: str,
@@ -504,7 +815,7 @@ class PepOpsMixin:
         space_patch: SpacePatch | None = None,
     ) -> dict[str, str]:
         return self._authorize_with_context(
-            identity,
+            security,
             target,
             action,
             audit_action,
@@ -521,7 +832,7 @@ class PepOpsMixin:
 
     def _authorize_with_context(
         self,
-        identity: Scope,
+        security: RequestSecurityContext,
         target: Scope,
         action: Action,
         audit_action: str,
@@ -542,12 +853,30 @@ class PepOpsMixin:
         （事实带 TTL 缓存，跨越 TTL 边界即两份），使一次调用内的入口鉴权与条目过滤基于
         不同事实——症状是极低频的「刚加的成员搜不到自己刚写的条目」，不可复现。
         """
+        identity = security.auth.actor
         if self._needs_space_facts() and _is_space_level_entry(audit_action):
             # 空间级入口的形态校验：主体维全空即拒绝。两处限定各有理由——
             # 只在空间级判定装配时执行，是因为现有装配把空身份当运维通道，无条件加会
             # 收紧既有行为；只对空间级入口执行，是因为组织级入口由角色闸门裁决，本特性内
             # 无组织级角色、回落父类判据，空身份仍是该通道的唯一形态（如开通服务建空间）。
             principal.require_principal(identity)
+        # 可信校验统一前置（不变量 24）：来源证明与凭据在线复核先于任何空间事实读取、
+        # 缓存访问与其他业务副作用，时效紧随其后。此前它们排在事实读取之后，后端故障
+        # 与装配缺失会以「已读取空间事实」为代价暴露。
+        self._require_trusted_request(
+            security, _TrustedRequestTarget(action, audit_action, target, target_id, context)
+        )
+        if security.auth.is_expired():
+            self._deny_authorization(
+                identity,
+                action,
+                audit_action,
+                target=target,
+                target_id=target_id,
+                rule="context_expiry",
+                reason_code=DenyReason.EXPIRED_CONTEXT.value,
+                context=context,
+            )
         effective_context, space_facts = self._apply_space_policy_context(
             target,
             context,
@@ -580,23 +909,23 @@ class PepOpsMixin:
                 },
                 effective_context,
             )
-        outcome = self._perm.decide(identity, target, action, context=effective_context)
-        if not outcome.allowed:
-            self._record_audit(
-                identity,
-                audit_action,
-                target_id=target_id,
-                target_scope=target,
-                decision="deny",
-                detail={
-                    "permission_check": "enabled",
-                    "permission_reason": f"permission denied for action={action.value}",
-                    "permission_rule": outcome.rule,
-                    **_context_detail(effective_context),
-                },
-            )
-            raise PermissionDeniedError(action.value)
+        now = datetime.now(timezone.utc)
         if self._needs_space_facts() and _is_space_level_entry(audit_action):
+            outcome = self._decide_space_entry(
+                security, target, action, target_id, effective_context, now=now
+            )
+            if not outcome.allowed:
+                self._deny_authorization(
+                    identity,
+                    action,
+                    audit_action,
+                    target=target,
+                    target_id=target_id,
+                    rule=outcome.rule,
+                    reason_code=outcome.reason_code,
+                    context=effective_context,
+                )
+            rule, axis = outcome.rule, outcome.axis
             # 后置校验：排在授权通过之后。只在空间级判定装配时执行，与形态校验同一理由——
             # 改造前只有两处写路径做状态校验，无条件扩到全部入口会改变既有装配的行为。
             self._ensure_space_state_allows(
@@ -606,13 +935,31 @@ class PepOpsMixin:
                 info=space_facts.info if space_facts is not None else None,
                 patch=space_patch,
             )
+        else:
+            decision = self._authorizer.authorize(
+                auth=security.auth,
+                resource=self._resource_descriptor(target, action, target_id, effective_context),
+                environment=AuthorizationEnvironment.from_request(security, now=now),
+            )
+            if not decision.allowed:
+                self._deny_authorization(
+                    identity,
+                    action,
+                    audit_action,
+                    target=target,
+                    target_id=target_id,
+                    rule=decision.rule,
+                    reason_code=decision.reason.value if decision.reason is not None else "",
+                    context=effective_context,
+                )
+            rule, axis = decision.rule, None
         return (
             {
                 "permission_check": "enabled",
                 "permission_reason": "permission check passed",
-                "permission_rule": outcome.rule,
+                "permission_rule": rule,
                 # 通过的轴同时是空间策略裁剪的判据，落审计使「谁凭哪条轴读到了策略」可追溯。
-                "permission_axis": outcome.axis.value if outcome.axis is not None else "",
+                "permission_axis": axis.value if axis is not None else "",
                 **_context_detail(effective_context),
             },
             effective_context,
@@ -649,12 +996,11 @@ class PepOpsMixin:
         """Pre-flight WRITE 鉴权（不落盘）。镜像 add 的鉴权路径，但不调 engine.write；
         供长耗时摄入任务入队前拒绝无权限请求（P1-2 防 DoS）。
         """
-        identity = security.auth.actor
         _reject_non_scalar_metadata(system_metadata, field_name="system_metadata")
         _reject_non_scalar_metadata(user_metadata, field_name="user_metadata")
         permission_context = _write_permission_context(scope, tags, system_metadata)
         self._authorize(
-            identity,
+            security,
             scope,
             Action.WRITE,
             "check_write",

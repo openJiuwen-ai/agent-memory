@@ -6,7 +6,7 @@ import pytest
 
 from jiuwen_memory.api.memory_api_impl import assemble
 from jiuwen_memory.common.errors import ValidationError
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.security.principal import AUTHOR_AGENT, AUTHOR_PRINCIPAL
 from jiuwen_memory.common.type_def import (
     FilterClause,
@@ -19,6 +19,7 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.config import Config
 from jiuwen_memory.control.types import MemoryPatch
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
 
@@ -36,7 +37,7 @@ def test_add_keeps_same_key_in_independent_namespaces() -> None:
         _TEXT,
         _SCOPE,
         source=Modality.TEXT,
-        security=legacy_request_context(_ACTOR),
+        security=internal_context(ScopedAuthenticator(_ACTOR)),
         system_metadata={"infer": False, "project": "system"},
         user_metadata={"infer": True, "project": "user"},
     )[0]
@@ -51,7 +52,7 @@ def test_user_metadata_never_controls_system_write_branch() -> None:
     unit = _api().add(
         _TEXT,
         _SCOPE,
-        security=legacy_request_context(_ACTOR),
+        security=internal_context(ScopedAuthenticator(_ACTOR)),
         user_metadata={"infer": True, "procedural": True, "middle": True},
     )[0]
 
@@ -63,7 +64,7 @@ def test_system_infer_controls_write_while_same_user_key_does_not() -> None:
     units = _api().add(
         _TEXT,
         _SCOPE,
-        security=legacy_request_context(_ACTOR),
+        security=internal_context(ScopedAuthenticator(_ACTOR)),
         system_metadata={"infer": True},
         user_metadata={"infer": False},
     )
@@ -79,7 +80,7 @@ def test_update_merges_namespaces_independently() -> None:
     unit = api.add(
         _TEXT,
         _SCOPE,
-        security=legacy_request_context(_ACTOR),
+        security=internal_context(ScopedAuthenticator(_ACTOR)),
         system_metadata={"pipeline": "default"},
         user_metadata={"project": "alpha"},
     )[0]
@@ -91,7 +92,7 @@ def test_update_merges_namespaces_independently() -> None:
             system_metadata={"dreaming": True},
             user_metadata={"project": "beta", "owner": "alice"},
         ),
-        security=legacy_request_context(_ACTOR),
+        security=internal_context(ScopedAuthenticator(_ACTOR)),
     )
 
     # 作者标记两个键由内核按调用方身份恒写入（F07「作者标记」），与本用例要断言的
@@ -110,18 +111,21 @@ def test_update_merges_namespaces_independently() -> None:
 def test_add_rejects_unsupported_metadata_values(field_name: str, value) -> None:
     kwargs = {field_name: {"x": value}}
     with pytest.raises(ValidationError):
-        _api().add(_TEXT, _SCOPE, security=legacy_request_context(_ACTOR), **kwargs)
+        _api().add(_TEXT, _SCOPE, security=internal_context(ScopedAuthenticator(_ACTOR)), **kwargs)
 
 
 def test_user_metadata_filter_uses_explicit_namespace() -> None:
     api = _api()
     api.add(
-        _TEXT, _SCOPE, security=legacy_request_context(_ACTOR), user_metadata={"project": "alpha"}
+        _TEXT,
+        _SCOPE,
+        security=internal_context(ScopedAuthenticator(_ACTOR)),
+        user_metadata={"project": "alpha"},
     )
 
     result = api.list(
         _SCOPE,
-        security=legacy_request_context(_ACTOR),
+        security=internal_context(ScopedAuthenticator(_ACTOR)),
         filters=FilterClause("user_metadata.project", FilterOp.EQ, "alpha"),
     )
 
@@ -133,7 +137,7 @@ def test_legacy_metadata_filter_namespace_is_rejected() -> None:
     with pytest.raises(ValidationError, match="user_metadata"):
         _api().list(
             _SCOPE,
-            security=legacy_request_context(_ACTOR),
+            security=internal_context(ScopedAuthenticator(_ACTOR)),
             filters=FilterClause("metadata.project", FilterOp.EQ, "alpha"),
         )
 
@@ -141,7 +145,12 @@ def test_legacy_metadata_filter_namespace_is_rejected() -> None:
 @pytest.mark.parametrize("key", ["", "   ", 1])
 def test_metadata_key_must_be_non_empty_string(key) -> None:
     with pytest.raises(ValidationError, match="key"):
-        _api().add(_TEXT, _SCOPE, security=legacy_request_context(_ACTOR), user_metadata={key: "x"})
+        _api().add(
+            _TEXT,
+            _SCOPE,
+            security=internal_context(ScopedAuthenticator(_ACTOR)),
+            user_metadata={key: "x"},
+        )
 
 
 def test_metadata_rejects_non_finite_float() -> None:
@@ -149,7 +158,7 @@ def test_metadata_rejects_non_finite_float() -> None:
         _api().add(
             _TEXT,
             _SCOPE,
-            security=legacy_request_context(_ACTOR),
+            security=internal_context(ScopedAuthenticator(_ACTOR)),
             user_metadata={"score": float("inf")},
         )
 

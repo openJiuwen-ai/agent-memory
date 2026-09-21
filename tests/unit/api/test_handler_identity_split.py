@@ -4,14 +4,17 @@ from __future__ import annotations
 import importlib
 import os
 import sys
-from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
-from jiuwen_memory.common.type_def import Segment
+from jiuwen_memory.common.security import internal_context
+from jiuwen_memory.common.type_def import Scope, Segment
 from jiuwen_memory_entry.core.dispatch_request import DispatchRequest
-from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
+from jiuwen_memory_entry.core.legacy_request_adapter import (
+    build_legacy_dispatch_request,
+)
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
 
@@ -27,9 +30,10 @@ handler = importlib.import_module("handler")
 
 
 def _dispatch(srv, verb: str, payload: dict, *, identity=None):
-    request = build_legacy_dispatch_request(verb, payload)
-    if identity is not None:
-        request = replace(request, actor=identity)
+    """布置一次 dispatch：身份由 security 携带（测试辅助构造），payload 只作 target。"""
+    actor = identity if identity is not None else Scope(org="local", user="developer")
+    security = internal_context(ScopedAuthenticator(actor))
+    request = build_legacy_dispatch_request(verb, payload, security=security)
     return handler.dispatch(srv, request)
 
 
@@ -52,7 +56,12 @@ class _RecordingApi:
         occurred_at=None,
     ):
         self.add_calls.append(
-            {"scope": scope, "identity": security.auth.actor, "modality": modality, "occurred_at": occurred_at}
+            {
+                "scope": scope,
+                "identity": security.auth.actor,
+                "modality": modality,
+                "occurred_at": occurred_at,
+            }
         )
         return [handler.MemoryUnit(id="unit-1", scope=scope, segments=[Segment(content=content)])]
 
@@ -92,19 +101,19 @@ def test_add_forwards_occurred_at_to_api() -> None:
 def test_add_invalid_occurred_at_returns_400() -> None:
     srv = _RecordingServer()
     status, body = _dispatch(
-        srv, "add", {"content": "hello", "occurred_at": "not-a-date"},
+        srv,
+        "add",
+        {"content": "hello", "occurred_at": "not-a-date"},
     )
     assert status == 400
     assert body["error"] == "ValidationError"
 
 
-def test_actor_scope_and_target_scope_match_when_actor_fields_are_omitted() -> None:
+def test_actor_is_independent_of_target_when_actor_fields_are_omitted() -> None:
     call = _dispatch_add({"tenant_id": "acme", "space": "product", "scope": "alice"})
 
-    assert call["identity"] == call["scope"]
-    assert call["identity"].org == "acme"
-    assert call["identity"].space == "product"
-    assert call["identity"].user == "alice"
+    assert call["identity"] == Scope(org="local", user="developer")
+    assert call["scope"] == Scope(org="acme", space="product", user="alice")
 
 
 def test_single_add_uses_source_as_the_canonical_modality_field() -> None:
@@ -113,14 +122,19 @@ def test_single_add_uses_source_as_the_canonical_modality_field() -> None:
     assert call["modality"] is handler.Modality.IMAGE
 
 
-def test_actor_scope_uses_default_scope_when_identity_fields_are_omitted() -> None:
+def test_actor_keeps_authenticated_identity_when_target_is_default() -> None:
     call = _dispatch_add({})
 
-    assert call["identity"] == handler.Scope(org="default", user="")
+    assert call["identity"] == Scope(org="local", user="developer")
     assert call["scope"] == handler.Scope(org="default", user="")
 
 
-def test_actor_scope_override_inherits_target_tenant_when_actor_tenant_not_provided() -> None:
+def test_payload_actor_keys_do_not_construct_identity() -> None:
+    """payload 里的历史 actor_* 键不再构成身份（P1-2）：actor 只来自 security。
+
+    此前 actor_scope=auditor 会让 identity 变成 auditor——身份自述。现在这些键只被
+    剥离出业务 payload，identity 恒等于 security 携带的 actor（本用例为 local/developer）。
+    """
     call = _dispatch_add(
         {
             "tenant_id": "acme",
@@ -130,7 +144,7 @@ def test_actor_scope_override_inherits_target_tenant_when_actor_tenant_not_provi
         }
     )
 
-    assert call["identity"] == handler.Scope(org="acme", space="product", user="auditor")
+    assert call["identity"] == Scope(org="local", user="developer")
     assert call["scope"] == handler.Scope(org="acme", space="product", user="owner")
 
 
@@ -212,7 +226,7 @@ def test_five_dimension_payload_maps_onto_scope() -> None:
         org="acme", space="product", user="alice", agent="bot", session="sess-1"
     )
     assert call["scope"] == expected
-    assert call["identity"] == expected
+    assert call["identity"] == Scope(org="local", user="developer")
 
 
 def test_same_org_different_space_stay_isolated() -> None:
@@ -247,13 +261,16 @@ def test_same_org_different_space_stay_isolated() -> None:
         "space": "beta",
         "scope": "user",
     }
-    status, body = _dispatch(srv, "add", payload_a)
+    actor = Scope(org="acme", space="alpha", user="user")
+    status, body = _dispatch(srv, "add", payload_a, identity=actor)
     assert status == 200, body
-    status, body = _dispatch(srv, "add", payload_b)
+    status, body = _dispatch(
+        srv, "add", payload_b, identity=Scope(org="acme", space="beta", user="user")
+    )
     assert status == 200, body
 
     status, listed = _dispatch(
-        srv, "list", {"tenant_id": "acme", "space": "alpha", "scope": "user"}
+        srv, "list", {"tenant_id": "acme", "space": "alpha", "scope": "user"}, identity=actor
     )
     assert status == 200, listed
     contents = [item["content"] for item in listed["items"]]
@@ -261,7 +278,8 @@ def test_same_org_different_space_stay_isolated() -> None:
     assert "beta-only" not in contents, listed
 
 
-def test_actor_space_override_can_differ_from_target_space() -> None:
+def test_payload_actor_space_keys_cannot_differ_identity_from_target() -> None:
+    """actor_space/actor_scope 不足以让 identity 偏离 security 携带的 actor。"""
     call = _dispatch_add(
         {
             "tenant_id": "acme",
@@ -272,7 +290,7 @@ def test_actor_space_override_can_differ_from_target_space() -> None:
         }
     )
 
-    assert call["identity"] == handler.Scope(org="acme", space="coding", user="reader")
+    assert call["identity"] == Scope(org="local", user="developer")
     assert call["scope"] == handler.Scope(org="acme", space="product", user="owner")
 
 
@@ -306,6 +324,7 @@ def test_structured_request_uses_typed_actor_and_target_not_payload_claims() -> 
             verb="add",
             actor=actor,
             target=target,
+            security=internal_context(ScopedAuthenticator(actor)),
             payload={
                 "content": "hello",
                 "tenant_id": "forged-org",
@@ -324,7 +343,8 @@ def test_structured_request_uses_typed_actor_and_target_not_payload_claims() -> 
     }
 
 
-def test_legacy_adapter_preserves_actor_fallback_without_leaking_scope_fields() -> None:
+def test_legacy_adapter_actor_comes_from_security_not_payload() -> None:
+    """adapter 的 actor 一律取 security：payload 的 actor_* 键不再被解释（P1-2）。"""
     request = build_legacy_dispatch_request(
         "add",
         {
@@ -334,8 +354,11 @@ def test_legacy_adapter_preserves_actor_fallback_without_leaking_scope_fields() 
             "actor_scope": "writer",
             "content": "hello",
         },
+        security=internal_context(
+            ScopedAuthenticator(Scope(org="acme", space="product", user="owner"))
+        ),
     )
 
     assert request.target == handler.Scope(org="acme", space="product", user="owner")
-    assert request.actor == handler.Scope(org="acme", space="product", user="writer")
+    assert request.actor == handler.Scope(org="acme", space="product", user="owner")
     assert dict(request.payload) == {"content": "hello"}

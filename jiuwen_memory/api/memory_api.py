@@ -6,12 +6,11 @@
 
 本层是控制层（``jiuwen_memory/control``）的薄封装：数据面（add/search/list/get/update/
 delete/evolve/admin）委托 :class:`~control.engine.MemoryEngine`，管理面查询
-（任务状态、血缘/审计、跨 scope 授权）直达对应控制算子
-（:class:`~control.scheduler.Scheduler` / :class:`~control.governance.Governor`
-/ :class:`~control.permission.PermissionManager`）——只做参数装配与鉴权，
-编排逻辑全部在 ``jiuwen_memory/control``。接口先行过渡期的授权判定仍走
-``PermissionManager``；目标实现切到
-:class:`~common.security.authorization.Authorizer`（F05 §Authorization）。
+（任务状态、血缘/审计）直达对应控制算子（:class:`~control.scheduler.Scheduler` /
+:class:`~control.governance.Governor`）——只做参数装配与鉴权，
+编排逻辑全部在 ``jiuwen_memory/control``。授权判定统一经
+:class:`~common.security.authorization.Authorizer`（唯一 PDP，含跨 scope 授权的
+GrantStore 真源；F05 §Authorization）。
 调用层（SDK/CLI/MCP 等）只依赖本包即可触达全部对外能力，无需 import 内核其他包。
 """
 
@@ -65,11 +64,11 @@ class MemoryAPI(ABC):
 
     **鉴权与审计的执行点（PEP）在本层，且本层是唯一的业务 PEP**：每个涉及租户
     数据/治理的方法都收 ``scope``（操作的目标范围 target）与 ``security``
-    （本次请求的安全上下文）。接口先行过渡期从 ``security.auth.actor`` 取身份，
-    仍调用 ``PermissionManager``；目标实现再从真源构造
+    （本次请求的安全上下文）。本层从 ``security.auth.actor`` 取身份，先校验
+    上下文可信性（来源证明、时效与需在线复核的凭据），再从真源构造
     :class:`~common.security.types.ResourceDescriptor`、派生
     :class:`~common.security.types.AuthorizationEnvironment` 并调用
-    :class:`~common.security.authorization.Authorizer`。不通过即抛
+    :class:`~common.security.authorization.Authorizer`（唯一 PDP）。不通过即抛
     :class:`~common.errors.PermissionDeniedError`（适用于下列所有方法，各方法不再
     重复说明）；通过后才委托 :class:`~control.engine.MemoryEngine`，且仅透传已鉴权
     的 target ``scope`` 与业务参数（调用方身份不下沉，下游信任 target）；同时在本层
@@ -394,8 +393,7 @@ class MemoryAPI(ABC):
         self, filters: dict[str, str], *, security: RequestSecurityContext, limit: int = 100
     ) -> list[AuditEvent]:
         """审计查询：按条件（actor/action/layer/时间段等）检索审计留痕；
-        当前实现为兼容存量授权记录，仍据 ``security`` 鉴权 ``READ``；迁移到目标动作
-        ``READ_AUDIT`` 必须作为独立兼容性变更处理。
+        本层据 ``security`` 鉴权 ``READ_AUDIT``（管理面角色闸门，默认不可委托）。
         """
 
     @abstractmethod
@@ -418,7 +416,7 @@ class MemoryAPI(ABC):
         ``unsupported`` 状态，不抛错。
         """
 
-    # -- 跨 scope 授权（委托 PermissionManager，架构 §3.2） ------------------- #
+    # -- 跨 scope 授权（安全域 GrantStore） ---------------------------------- #
 
     @abstractmethod
     def grant(self, grant: Grant, *, security: RequestSecurityContext) -> Grant:
@@ -426,20 +424,13 @@ class MemoryAPI(ABC):
         新增一条跨 scope 授权（共享池等）；本层据 ``security`` 鉴权 SHARE
         （须有权再授权 ``grant.grantor`` 范围）。返回值携带该授权的 ``grant_id``，
         供后续精确撤销。
-
-        接口先行过渡期：``GrantStore`` 未实装，服务端尚不生成 ``grant_id``，
-        返回值原样回传入参（见 F05-security-api-contracts §5.4）。
         """
 
     @abstractmethod
     def revoke(self, grant: Grant, *, security: RequestSecurityContext) -> None:
         """
         回收一条授权（幂等）；本层据 ``security`` 鉴权 ``REVOKE_SHARE``。
-        目标语义是按 ``grant.grant_id`` 精确定位。
-
-        接口先行过渡期：``GrantStore`` 未实装，实际仍按
-        ``grantor + grantee + action`` 条件撤销，``grant_id`` 不参与定位
-        （见 F05-security-api-contracts §5.4）。
+        按 ``grant.grant_id`` 精确定位；未知 ID 幂等无副作用，缺失 ID 拒绝。
         """
 
     # -- Space 管理（委托 SpaceManager） ------------------------------------ #

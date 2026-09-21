@@ -6,10 +6,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from jiuwen_memory.api import Scope, Surface
+from jiuwen_memory.api import RequestSecurityContext, Scope
 from jiuwen_memory_entry.core.dispatch_request import DispatchBatchItem, DispatchRequest
 
 _SCOPE_KEYS = {"tenant_id", "scope", "space", "space_id", "agent", "session"}
+# 历史 actor_* 键：不再解释为身份（P1-2——身份只来自 security），但仍是请求信封键，
+# 不透传进业务 payload。
 _ACTOR_KEYS = {
     "actor_tenant_id",
     "actor_scope",
@@ -18,12 +20,16 @@ _ACTOR_KEYS = {
     "actor_agent",
     "actor_session",
 }
-_NON_BUSINESS_KEYS = _SCOPE_KEYS | _ACTOR_KEYS | {
-    "grantee",
-    "member",
-    "target_scope",
-    "items",
-}
+_NON_BUSINESS_KEYS = (
+    _SCOPE_KEYS
+    | _ACTOR_KEYS
+    | {
+        "grantee",
+        "member",
+        "target_scope",
+        "items",
+    }
+)
 _NON_BUSINESS_PREFIXES = ("grantee_", "member_")
 
 
@@ -45,23 +51,6 @@ def _scope(payload: Mapping[str, Any], prefix: str = "", base: Scope | None = No
     )
 
 
-def _actor(payload: Mapping[str, Any], target: Scope) -> Scope:
-    if not any(key in payload for key in _ACTOR_KEYS):
-        return target
-    actor_space = (
-        _space(payload, "actor_")
-        if "actor_space" in payload or "actor_space_id" in payload
-        else target.space
-    )
-    return Scope(
-        org=str(payload.get("actor_tenant_id") or target.org or "default"),
-        space=actor_space,
-        user=str(payload.get("actor_scope", "")),
-        agent=str(payload.get("actor_agent", "")),
-        session=str(payload.get("actor_session", "")),
-    )
-
-
 def _business_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     business: dict[str, Any] = {}
     for key, value in payload.items():
@@ -72,16 +61,23 @@ def _business_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def build_legacy_dispatch_request(
-    verb: str, payload: Mapping[str, Any], *, surface: Surface = Surface.INTERNAL
+    verb: str,
+    payload: Mapping[str, Any],
+    *,
+    security: RequestSecurityContext,
 ) -> DispatchRequest:
-    """Convert the historical flat surface shape to the structured boundary."""
+    """Convert the historical flat surface shape to the structured boundary.
+
+    ``security`` is **required**: a trusted context produced by the composition
+    root's authenticator. No actor is derived from the payload—callers without
+    a trusted identity source must route through HTTP/API-Key instead.
+    """
     target_source = payload
     if verb == "batch_add" and isinstance(payload.get("defaults"), Mapping):
         target_source = payload["defaults"]
     target = _scope(target_source)
-    actor_source = dict(target_source)
-    actor_source.update({key: value for key, value in payload.items() if key in _ACTOR_KEYS})
-    actor = _actor(actor_source, target)
+    # 业务 target 与可信 actor 分离：target 只描述「操作落在哪」，身份只来自 security。
+    actor = security.actor
     grantee = None
     if "grantee" in payload or "grantee_tenant_id" in payload:
         grantee_raw = payload.get("grantee")
@@ -120,8 +116,8 @@ def build_legacy_dispatch_request(
         verb=verb,
         actor=actor,
         target=target,
+        security=security,
         payload=business,
-        surface=surface,
         grantee=grantee,
         member=member,
         batch_items=tuple(items),

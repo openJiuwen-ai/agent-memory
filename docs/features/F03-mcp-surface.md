@@ -106,16 +106,14 @@ space_usage、get/set_space_policy、list/add/remove_space_member）。
 - 认证模式：`JIUWEN_MEMORY_MCP_AUTH_MODE`（required | dev，默认 required，
   失闭）。`required` 未装配生产认证器时业务调用全部拒绝；`dev` 使用固定
   `local/developer` ROOT 测试身份（忽略凭据、保留 MemoryAPI 授权判定），
-  仅供本地功能测试，且只允许绑定回环地址——放开须设
-  `JIUWEN_MEMORY_MCP_ALLOW_DEV_NON_LOOPBACK=true`（仅限隔离容器）。
+  仅供本地功能测试，网络传输严格回环绑定，没有非回环环境变量旁路。
+  stdio 也须显式 dev；required 从 memory_api.security 装配完整 Runtime。
 - 凭据按传输归一（`transport_security.credentials_for_transport`）：
   stdio 读 `AGENT_MEMORY_API_KEY`；Streamable HTTP 逐请求读
   `Authorization: Bearer` 与 socket peer（拿不到请求上下文属接线错误，
   fail-closed 不回退环境变量）。
-- 限流与 workload_guard：当前**未接线**——`_invoke_blocking` 调用认证中间件时
-  不传 `limiter`/`workload_guard`（OFFLINE/本地运行时为 None，stdio 无网络
-  对端）。两者是 `authenticated` 的显式参数，接入生产认证 runtime 时需一并
-  构建传入，**不会随认证器自动生效**（见已知遗留 1）。
+- 网络限流、昂贵认证并发预算与入口审计均从同一 Runtime 传入 authenticated。
+  stdio 无网络对端，不传 IP 限流器，但保留昂贵认证并发预算；网络绑定统一经 binding_policy。
 
 ### 启动方式
 
@@ -196,15 +194,13 @@ config（启动时位置参数传 config.yml，叠加规则同 CLI）。
 
 ## 已知遗留
 
-1. **限流与 workload_guard 未接线**：`_invoke_blocking` 调用 `authenticated` 时不传
-   `limiter`/`workload_guard`，生产认证 runtime 接入时需一并构建传入，不会随认证器
-   自动生效。
+1. **PR1 已接线保护能力**：限流、昂贵认证并发预算及入口审计均来自完整 Runtime。
 2. **`_SRV` 无显式统一关闭**（`__main__.py` 模块级装配、`main()` 阻塞运行）：涉及
    S09 第 13 条生命周期要求，属 cf38c2a 引入的原有待办（非本轮回归），待统一生命
    周期管理时补 stdio/HTTP 两路 shutdown 接线。
 3. **管理面/治理面/Space 工具鉴权依赖管理动作授权**：dev 身份走旧授权链（按 scope
-   归属判定、不读 role）时这些操作返回 PermissionDenied（F05 授权链过渡期缺口，
-   非缺陷）；待 ROOT role 接入 PermissionManager 后重测。
+   归属判定、不读 role）；显式固定 DEV 未配 security/permission 时临时注入 allow_all。
+   具名角色权限随 PR2 Authorizer 接管后重测，不把 role 回灌 PermissionManager。
 4. **部分参数未透传**（add 的 assets/system_metadata/user_metadata/occurred_at、
    search 的 filters/as_of/disclosure）——按「模型对话场景」精选，后续按需补充。
 5. **OFFLINE 内存栈不跨进程持久**——持久化需接真后端 config。

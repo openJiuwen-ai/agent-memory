@@ -19,7 +19,6 @@
 """
 
 import asyncio
-import ipaddress
 import logging
 import os
 import sys
@@ -27,6 +26,7 @@ import uuid
 from importlib import import_module
 from typing import Any
 
+from jiuwen_memory_entry.core.dev_security import with_local_dev_security
 from jiuwen_memory_entry.core.import_support import import_required, import_required_attr
 
 # 本文件不用 ``from __future__ import annotations``：FastMCP 依赖运行时注解对象识别
@@ -53,11 +53,8 @@ _api = import_required("jiuwen_memory.api")
 Surface = _api.Surface
 AgentMemoryError = _api.AgentMemoryError
 ValidationError = _api.ValidationError
-build_dev_authenticator = _api.build_dev_authenticator
 invoke_api = import_required_attr("jiuwen_memory_entry.core.api_contract", "invoke_api")
-authenticated = import_required_attr(
-    "jiuwen_memory_entry.core.auth_middleware", "authenticated"
-)
+authenticated = import_required_attr("jiuwen_memory_entry.core.auth_middleware", "authenticated")
 credentials_for_transport = import_required_attr(
     "jiuwen_memory_entry.mcp_server.transport_security", "credentials_for_transport"
 )
@@ -73,30 +70,24 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 _AUTH_MODE_ENV = "JIUWEN_MEMORY_MCP_AUTH_MODE"
-_ALLOW_DEV_NON_LOOPBACK_ENV = "JIUWEN_MEMORY_MCP_ALLOW_DEV_NON_LOOPBACK"
 _AUTH_MODES = frozenset({"required", "dev"})
-_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _TRANSPORT = os.environ.get("MCP_TRANSPORT", "stdio").strip().lower()
 
-# --- 内核：进程内装配一次，跨工具调用共享 --- #
-_SRV = Server.build(load_config([OFFLINE] + [load_layer(p) for p in sys.argv[1:]]))
 
-
-def _build_authenticator():
-    """required 失闭（未装配生产认证器时拒绝业务调用）；dev 固定测试身份。"""
+def _build_server():
+    """按显式模式装配完整 Runtime；未配置认证能力时保持失闭。"""
     mode = os.environ.get(_AUTH_MODE_ENV, "required").strip().lower()
     if mode not in _AUTH_MODES:
         raise ValidationError(f"invalid {_AUTH_MODE_ENV}: {mode!r}")
+    config = load_config([OFFLINE] + [load_layer(p) for p in sys.argv[1:]])
     if mode == "dev":
-        logger.warning(
-            "development authentication is enabled; credentials are ignored "
-            "and this mode must not be used in production"
-        )
-        return build_dev_authenticator()
-    return None
+        config = with_local_dev_security(config)
+        logger.warning("development authentication is enabled; do not use in production")
+    return Server.build(config)
 
 
-_AUTHENTICATOR = _build_authenticator()
+# 认证、绑定策略、资源保护始终从同一个 Runtime 取得。
+_SRV = _build_server()
 
 mcp = FastMCP(
     "agent-memory",
@@ -113,10 +104,9 @@ def _invoke_blocking(verb: str, payload: dict, *, context: Any = None):
     "cannot be called from a running event loop"。
     """
     request_id = uuid.uuid4().hex
-    if _AUTHENTICATOR is None:
+    if _SRV.authenticator is None:
         raise RuntimeError(
-            "MCP authentication is not configured; "
-            f"set {_AUTH_MODE_ENV}=dev for local testing"
+            f"MCP authentication is not configured; set {_AUTH_MODE_ENV}=dev for local testing"
         )
     try:
         credentials = credentials_for_transport(_TRANSPORT, context=context)
@@ -124,7 +114,13 @@ def _invoke_blocking(verb: str, payload: dict, *, context: Any = None):
         raise RuntimeError(str(validation_error)) from validation_error
     try:
         with authenticated(
-            _AUTHENTICATOR, credentials, surface=Surface.MCP, request_id=request_id
+            _SRV.authenticator,
+            credentials,
+            audit=_SRV.audit,
+            limiter=_SRV.rate_limiter if _TRANSPORT != "stdio" else None,
+            workload_guard=_SRV.workload_guard,
+            surface=Surface.MCP,
+            request_id=request_id,
         ) as security:
             return invoke_api(_SRV.api, verb, payload, security)
     except AgentMemoryError as api_error:
@@ -139,37 +135,17 @@ async def _invoke(verb: str, payload: dict, *, context: Any = None):
     必炸。``asyncio.to_thread`` 把两套 loop 隔离开：工作线程无运行中循环，
     内部桥接照常工作。认证上下文的工作线程内 set/reset 同线程配对。
     """
-    return await asyncio.to_thread(
-        _invoke_blocking, verb, payload, context=context
-    )
-
-
-def _is_loopback_host(host: str) -> bool:
-    if host.lower() == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
+    return await asyncio.to_thread(_invoke_blocking, verb, payload, context=context)
 
 
 def _check_binding(host: str) -> None:
-    """dev 认证只允许绑定回环地址；放开须显式环境变量（容器内）。"""
-    requirement = getattr(_AUTHENTICATOR, "requires_loopback_binding", None)
-    requires_loopback = bool(requirement()) if callable(requirement) else False
-    if not requires_loopback or _is_loopback_host(host):
+    """网络入口统一采用 Runtime 绑定策略，DEV 不提供非回环旁路。"""
+    if _SRV.authenticator is None:
         return
-    if os.environ.get(_ALLOW_DEV_NON_LOOPBACK_ENV, "").strip().lower() in _TRUE_VALUES:
-        logger.warning(
-            "development authentication is listening on non-loopback host %s; "
-            "the deployment boundary must prevent remote access",
-            host,
-        )
-        return
-    raise ValidationError(
-        "development authentication may bind only to a loopback host; "
-        f"set {_ALLOW_DEV_NON_LOOPBACK_ENV}=true only inside an isolated container"
-    )
+    policy = _SRV.binding_policy
+    if policy is None:
+        raise ValidationError("security runtime is missing a binding policy")
+    policy.check(host, requires_loopback=_SRV.authenticator.requires_loopback_binding())
 
 
 # --- 工具：记忆生命周期（与 MemoryAPI 同名方法对应；参数名与签名零漂移，经
@@ -178,8 +154,9 @@ def _check_binding(host: str) -> None:
 
 
 @mcp.tool()
-async def memory_add(content: str, scope: dict, tags: list[str] | None = None,
-               ctx: Context = None) -> list[dict]:
+async def memory_add(
+    content: str, scope: dict, tags: list[str] | None = None, ctx: Context = None
+) -> list[dict]:
     """写入一条记忆。
 
     content: 记忆内容（自然语言文本）。
@@ -188,14 +165,13 @@ async def memory_add(content: str, scope: dict, tags: list[str] | None = None,
     tags: 可选标签列表。
     返回写入的记忆单元列表（含 id，供后续 get/update/delete 引用）。
     """
-    return await _invoke(
-        "add", {"content": content, "scope": scope, "tags": tags}, context=ctx
-    )
+    return await _invoke("add", {"content": content, "scope": scope, "tags": tags}, context=ctx)
 
 
 @mcp.tool()
-async def memory_search(query: str, context: dict, top_k: int = 10,
-                  with_trajectory: bool = False, ctx: Context = None) -> dict:
+async def memory_search(
+    query: str, context: dict, top_k: int = 10, with_trajectory: bool = False, ctx: Context = None
+) -> dict:
     """按「语义 + 关键词」双路混合检索记忆。
 
     query: 查询文本。
@@ -206,22 +182,18 @@ async def memory_search(query: str, context: dict, top_k: int = 10,
     """
     return await _invoke(
         "search",
-        {"query": query, "context": context, "top_k": top_k,
-         "with_trajectory": with_trajectory},
+        {"query": query, "context": context, "top_k": top_k, "with_trajectory": with_trajectory},
         context=ctx,
     )
 
 
 @mcp.tool()
-async def memory_list(scope: dict, offset: int = 0, limit: int = 100,
-                ctx: Context = None) -> dict:
+async def memory_list(scope: dict, offset: int = 0, limit: int = 100, ctx: Context = None) -> dict:
     """列出目标 scope 下已建索引的记忆单元（分页）。
 
     返回 {"items": [...], "count": 分页前匹配总数}。
     """
-    return await _invoke(
-        "list", {"scope": scope, "offset": offset, "limit": limit}, context=ctx
-    )
+    return await _invoke("list", {"scope": scope, "offset": offset, "limit": limit}, context=ctx)
 
 
 @mcp.tool()
@@ -231,8 +203,7 @@ async def memory_get(unit_id: str, scope: dict, ctx: Context = None) -> dict:
 
 
 @mcp.tool()
-async def memory_update(unit_id: str, scope: dict, patch: dict,
-                  ctx: Context = None) -> dict:
+async def memory_update(unit_id: str, scope: dict, patch: dict, ctx: Context = None) -> dict:
     """修正一条记忆。patch 仅非 null 字段生效，形如
     {"content": "修正后内容", "tags": ["标签"], "mode": "supersede"}。
     mode: "supersede"（默认，非破坏式——生成新 id 新版本、旧版保留血缘）或
@@ -264,9 +235,13 @@ async def memory_evolve(scope: dict, mode: str = "extract", ctx: Context = None)
 
 
 @mcp.tool()
-async def memory_batch_add(items: list[dict], scope: dict | None = None,
-                     tags: list[str] | None = None, continue_on_error: bool = True,
-                     ctx: Context = None) -> dict:
+async def memory_batch_add(
+    items: list[dict],
+    scope: dict | None = None,
+    tags: list[str] | None = None,
+    continue_on_error: bool = True,
+    ctx: Context = None,
+) -> dict:
     """批量写入多条记忆（一次调用，结果按输入顺序逐项对齐）。
 
     items: 写入条目数组，每项形如 {"content": "记忆内容"}；content 必填，
@@ -280,15 +255,13 @@ async def memory_batch_add(items: list[dict], scope: dict | None = None,
     """
     return await _invoke(
         "batch_add",
-        {"items": items, "scope": scope, "tags": tags,
-         "continue_on_error": continue_on_error},
+        {"items": items, "scope": scope, "tags": tags, "continue_on_error": continue_on_error},
         context=ctx,
     )
 
 
 @mcp.tool()
-async def memory_job_status(job_id: str, scope: dict | None = None,
-                      ctx: Context = None) -> dict:
+async def memory_job_status(job_id: str, scope: dict | None = None, ctx: Context = None) -> dict:
     """查询后台任务状态——memory_evolve 返回的 job_id 用它查进度。
 
     返回 {"id","channel","mode","scope","status","detail"}；
@@ -304,8 +277,7 @@ async def memory_job_cancel(job_id: str, ctx: Context = None) -> None:
 
 
 @mcp.tool()
-async def memory_inspect(unit_ids: list[str], scope: dict,
-                   ctx: Context = None) -> list[dict]:
+async def memory_inspect(unit_ids: list[str], scope: dict, ctx: Context = None) -> list[dict]:
     """治理检视：按 id 批量读取记忆单元的完整信息（含已失效的历史版本）。"""
     return await _invoke("inspect", {"unit_ids": unit_ids, "scope": scope}, context=ctx)
 
@@ -323,8 +295,9 @@ async def memory_trace(unit_id: str, scope: dict, ctx: Context = None) -> list[d
 
 
 @mcp.tool()
-async def memory_add_async(content: str, scope: dict, tags: list[str] | None = None,
-                           ctx: Context = None) -> list[dict]:
+async def memory_add_async(
+    content: str, scope: dict, tags: list[str] | None = None, ctx: Context = None
+) -> list[dict]:
     """异步写入一条记忆（语义同 memory_add，直通引擎协程，等待完成并返回结果）。
 
     content: 记忆内容。scope: 归属坐标 {"org","user",...}。tags: 可选标签。
@@ -335,15 +308,17 @@ async def memory_add_async(content: str, scope: dict, tags: list[str] | None = N
 
 
 @mcp.tool()
-async def memory_batch_add_async(items: list[dict], scope: dict | None = None,
-                                 tags: list[str] | None = None,
-                                 continue_on_error: bool = True,
-                                 ctx: Context = None) -> dict:
+async def memory_batch_add_async(
+    items: list[dict],
+    scope: dict | None = None,
+    tags: list[str] | None = None,
+    continue_on_error: bool = True,
+    ctx: Context = None,
+) -> dict:
     """异步批量写入（语义同 memory_batch_add，直通引擎协程）。"""
     return await _invoke(
         "batch_add_async",
-        {"items": items, "scope": scope, "tags": tags,
-         "continue_on_error": continue_on_error},
+        {"items": items, "scope": scope, "tags": tags, "continue_on_error": continue_on_error},
         context=ctx,
     )
 
@@ -365,9 +340,9 @@ async def memory_check_write(scope: dict, ctx: Context = None) -> None:
 # 不采用 dataclass 参数袋压参：那会把公开请求从扁平 {"content", "scope", ...}
 # 改成嵌套 {"args": {...}}，破坏既有 MCP 调用方（S09 第 14 条兼容要求）。
 @mcp.tool()
-async def memory_submit_ingest(content: str, scope: dict, source: str,
-                         payload_id: str, source_ref: str,
-                         ctx: Context = None) -> dict:
+async def memory_submit_ingest(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
+    content: str, scope: dict, source: str, payload_id: str, source_ref: str, ctx: Context = None
+) -> dict:
     """提交长耗时摄入任务（文档/视频等多模态内容），返回任务信息。
 
     content: 原始内容文本。scope: 归属坐标。source: 模态（text/document/audio/video）。
@@ -376,8 +351,13 @@ async def memory_submit_ingest(content: str, scope: dict, source: str,
     """
     return await _invoke(
         "submit_ingest",
-        {"content": content, "scope": scope, "source": source,
-         "payload_id": payload_id, "source_ref": source_ref},
+        {
+            "content": content,
+            "scope": scope,
+            "source": source,
+            "payload_id": payload_id,
+            "source_ref": source_ref,
+        },
         context=ctx,
     )
 
@@ -477,14 +457,11 @@ async def memory_list_spaces(org: str, ctx: Context = None) -> list[dict]:
 
 
 @mcp.tool()
-async def memory_update_space(org: str, space: str, patch: dict,
-                        ctx: Context = None) -> dict:
+async def memory_update_space(org: str, space: str, patch: dict, ctx: Context = None) -> dict:
     """修改 space：patch 仅非 null 字段生效，形如
     {"display_name":"Alpha"} 或 {"status":"frozen"}。
     """
-    return await _invoke(
-        "update_space", {"org": org, "space": space, "patch": patch}, context=ctx
-    )
+    return await _invoke("update_space", {"org": org, "space": space, "patch": patch}, context=ctx)
 
 
 @mcp.tool()
@@ -500,11 +477,13 @@ async def memory_delete_space(org: str, space: str, ctx: Context = None) -> dict
 
 
 @mcp.tool()
-async def memory_export_space(org: str, space: str, include_audit: bool = True,
-                        ctx: Context = None) -> str:
+async def memory_export_space(
+    org: str, space: str, include_audit: bool = True, ctx: Context = None
+) -> str:
     """提交 space 导出（含记忆与可选审计），返回 export id。"""
     return await _invoke(
-        "export_space", {"org": org, "space": space, "include_audit": include_audit},
+        "export_space",
+        {"org": org, "space": space, "include_audit": include_audit},
         context=ctx,
     )
 
@@ -522,8 +501,7 @@ async def memory_get_space_policy(org: str, space: str, ctx: Context = None) -> 
 
 
 @mcp.tool()
-async def memory_set_space_policy(org: str, space: str, policy: dict,
-                            ctx: Context = None) -> dict:
+async def memory_set_space_policy(org: str, space: str, policy: dict, ctx: Context = None) -> dict:
     """替换 space 级策略。policy 形如
     {"require_space": true, "principal_path": "user_agent"}。
     """
@@ -535,15 +513,13 @@ async def memory_set_space_policy(org: str, space: str, policy: dict,
 
 
 @mcp.tool()
-async def memory_list_space_members(org: str, space: str,
-                              ctx: Context = None) -> list[dict]:
+async def memory_list_space_members(org: str, space: str, ctx: Context = None) -> list[dict]:
     """列出 space 成员及其两轴角色（content_role 内容轴 / governance_role 治理轴）。"""
     return await _invoke("list_space_members", {"org": org, "space": space}, context=ctx)
 
 
 @mcp.tool()
-async def memory_add_space_member(org: str, space: str, member: dict,
-                            ctx: Context = None) -> None:
+async def memory_add_space_member(org: str, space: str, member: dict, ctx: Context = None) -> None:
     """添加或更新 space 成员。member 形如
     {"scope": {"org":"local","user":"bob"}, "content_role": "contributor",
      "governance_role": "none"}；
@@ -558,13 +534,15 @@ async def memory_add_space_member(org: str, space: str, member: dict,
 
 
 @mcp.tool()
-async def memory_remove_space_member(org: str, space: str, member: dict,
-                               ctx: Context = None) -> None:
+async def memory_remove_space_member(
+    org: str, space: str, member: dict, ctx: Context = None
+) -> None:
     """移除 space 成员。member 为要移除的主体坐标，
     如 {"org":"local","user":"bob"}。
     """
     return await _invoke(
-        "remove_space_member", {"org": org, "space": space, "member": member},
+        "remove_space_member",
+        {"org": org, "space": space, "member": member},
         context=ctx,
     )
 
@@ -574,7 +552,8 @@ def main() -> int:
         level=logging.INFO, format="[%(asctime)s] %(name)s %(levelname)s %(message)s"
     )
     try:
-        _check_binding(os.environ.get("MCP_HOST", "127.0.0.1"))
+        if _TRANSPORT in ("http", "streamable-http"):
+            _check_binding(os.environ.get("MCP_HOST", "127.0.0.1"))
     except ValidationError as bind_error:
         logger.error("MCP server refused to start: %s", bind_error)
         return 2

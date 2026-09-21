@@ -5,11 +5,13 @@ import json
 import re
 import urllib.error
 import urllib.request
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
+from jiuwen_memory.common.security.authentication.key_store import fingerprint
 
 _SOURCE_PATTERN = re.compile(r"\[ID: ([^\]]+)\]\n(.*?)(?=\n\[ID: |\Z)", re.DOTALL)
 
@@ -34,19 +36,28 @@ class _CollectiveLLM(LLM):
         for source_id, content in sources:
             if routing:
                 memory_class = "team_convention" if "团队" in content else "user_pref"
-                items.append({
-                    "source_id": source_id, "memory_class": memory_class,
-                    "narrow": {
-                        "agent_id": False, "session_id": False,
-                        "team_id": memory_class == "team_convention",
-                    },
-                })
+                items.append(
+                    {
+                        "source_id": source_id,
+                        "memory_class": memory_class,
+                        "narrow": {
+                            "agent_id": False,
+                            "session_id": False,
+                            "team_id": memory_class == "team_convention",
+                        },
+                    }
+                )
             else:
                 for extracted in ("用户习惯用 Python 写代码", "团队规定代码评审必须两人"):
-                    items.append({
-                        "source_id": source_id, "content": extracted,
-                        "target": "fact", "tier": "semantic", "confidence": 1.0,
-                    })
+                    items.append(
+                        {
+                            "source_id": source_id,
+                            "content": extracted,
+                            "target": "fact",
+                            "tier": "semantic",
+                            "confidence": 1.0,
+                        }
+                    )
         return json.dumps(items, ensure_ascii=False)
 
 
@@ -57,38 +68,99 @@ def _build_collective_llm(_config):
 
 def collective_settings():
     components = (
-        "ingestor", "index_builder", "retriever", "kv_store", "scheduler", "evolver", "lifecycle",
+        "ingestor",
+        "index_builder",
+        "retriever",
+        "kv_store",
+        "scheduler",
+        "evolver",
+        "lifecycle",
     )
-    identities = {"test-ops": {"actor": {"org": "local"}, "role": "admin"}}
+    identities = {"test-ops": {"actor": {"org": "local", "user": "ops"}, "role": "admin"}}
     for user in ("u1", "u2", "u3"):
         identities[f"test-{user}"] = {"actor": {"org": "local", "user": user}}
     identities["test-u1-agent"] = {
-        "actor": {"org": "local", "user": "u1", "agent": "a1", "session": "s1"},
+        # PR2 将通过受控 delegation 关联 u1；认证 actor 本身始终只有一个主体。
+        "actor": {"org": "local", "agent": "a1", "session": "s1"},
     }
+    identities["test-unbound-agent"] = identities["test-u1-agent"]
     return {
         "http": {"dev_identities": identities},
         "memory_api": {
-            "engine": {"default": {
-                "target": "cloud", "params": dict.fromkeys(components, "default"),
-            }},
-            "permission": {"default": {"target": "space_aware", "params": {"db_path": ":memory:"}}},
+            "security": {
+                "default": {
+                    "target": "standard",
+                    "params": {
+                        "authenticator": {"target": "dev", "params": {"identities": identities}},
+                        "delegation_store": "default",
+                        "delegation_bindings": {fingerprint("test-u1-agent"): "u1-a1"},
+                        "delegations": [
+                            {
+                                "delegation_id": "u1-a1",
+                                "delegator": {"org": "local", "user": "u1"},
+                                "delegate": {"org": "local", "agent": "a1", "session": "s1"},
+                                "actions": ["read", "write", "update", "delete"],
+                                "expires_at": (
+                                    datetime.now(timezone.utc) + timedelta(hours=1)
+                                ).isoformat(),
+                                "allowed_spaces": ["u-u1", "team-t"],
+                                "bound_credential_id": fingerprint("test-u1-agent"),
+                                "bound_session": "s1",
+                            }
+                        ],
+                    },
+                }
+            },
+            "engine": {
+                "default": {
+                    "target": "cloud",
+                    "params": dict.fromkeys(components, "default"),
+                }
+            },
+            "authorizer": {
+                "default": {"target": "space_aware", "params": {"delegate": "standard"}},
+                "standard": {
+                    "target": "standard",
+                    "params": {
+                        "grant_store": "default",
+                        "delegation_store": "default",
+                    },
+                },
+            },
+            "grant_store": {"default": "memory"},
+            "delegation_store": {"default": "memory"},
             "llm": {"http_fixture": "http_collective_fixture"},
             "extractor": {"default": {"target": "llm", "params": {"llm": "http_fixture"}}},
-            "router": {"default": {"target": "llm", "params": {
-                "llm": "http_fixture", "coord_entities": ["team"],
-                "memory_classes": [
-                    {"name": "user_pref", "owner": "user", "space_template": "u-{user}",
-                     "fallback": True},
-                    {"name": "team_convention", "owner": "team", "space_template": "team-{team}",
-                     "cross_user": True, "members": "team participants"},
-                ],
-                "narrow_dims": [
-                    {"entity": "agent", "tag_key": "agent_id"},
-                    {"entity": "session", "tag_key": "session_id"},
-                    {"entity": "team", "tag_key": "team_id"},
-                ],
-                "retry_max_retries": 1,
-            }}},
+            "router": {
+                "default": {
+                    "target": "llm",
+                    "params": {
+                        "llm": "http_fixture",
+                        "coord_entities": ["team"],
+                        "memory_classes": [
+                            {
+                                "name": "user_pref",
+                                "owner": "user",
+                                "space_template": "u-{user}",
+                                "fallback": True,
+                            },
+                            {
+                                "name": "team_convention",
+                                "owner": "team",
+                                "space_template": "team-{team}",
+                                "cross_user": True,
+                                "members": "team participants",
+                            },
+                        ],
+                        "narrow_dims": [
+                            {"entity": "agent", "tag_key": "agent_id"},
+                            {"entity": "session", "tag_key": "session_id"},
+                            {"entity": "team", "tag_key": "team_id"},
+                        ],
+                        "retry_max_retries": 1,
+                    },
+                }
+            },
         },
     }
 
@@ -98,7 +170,10 @@ def post_as(url, token, method, payload):
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(
-        f"{url}/v1/{method}", data=json.dumps(payload).encode(), headers=headers, method="POST",
+        f"{url}/v1/{method}",
+        data=json.dumps(payload).encode(),
+        headers=headers,
+        method="POST",
     )
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
@@ -110,16 +185,30 @@ def post_as(url, token, method, payload):
 
 def provision_spaces(url):
     for space, owner in (("u-u1", "u1"), ("u-u2", "u2"), ("u-u3", "u3"), ("team-t", "u3")):
-        status, body = post_as(url, "test-ops", "create_space", {
-            "spec": {"org": "local", "space": space, "owner": {"org": "local", "user": owner}},
-        })
+        status, body = post_as(
+            url,
+            "test-ops",
+            "create_space",
+            {
+                "spec": {"org": "local", "space": space, "owner": {"org": "local", "user": owner}},
+            },
+        )
         if status != 200:
             pytest.fail(f"create_space({space}) failed: HTTP {status}; response={body}")
     for user in ("u1", "u2"):
-        status, body = post_as(url, "test-u3", "add_space_member", {
-            "org": "local", "space": "team-t", "member": {
-                "scope": {"user": user}, "content_role": "contributor", "governance_role": "none",
+        status, body = post_as(
+            url,
+            "test-u3",
+            "add_space_member",
+            {
+                "org": "local",
+                "space": "team-t",
+                "member": {
+                    "scope": {"user": user},
+                    "content_role": "contributor",
+                    "governance_role": "none",
+                },
             },
-        })
+        )
         if status != 200:
             pytest.fail(f"add_space_member({user}) failed: HTTP {status}; response={body}")

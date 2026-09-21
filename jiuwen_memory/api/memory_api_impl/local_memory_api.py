@@ -14,6 +14,10 @@ from jiuwen_memory.common.security.audit_integrity.base import (
     AuditIntegrityProvider,
     AuditVerificationLimits,
 )
+from jiuwen_memory.common.security.authentication.credential_registry import (
+    CredentialStatusRegistry,
+)
+from jiuwen_memory.common.security.authorization.base import Authorizer
 from jiuwen_memory.common.security.protection.workload_guard import WorkloadGuard
 from jiuwen_memory.construction.router import EMPTY_ROUTE_TABLE, Router, RouteTable
 from jiuwen_memory.control import collective
@@ -75,6 +79,8 @@ class LocalMemoryAPI(
         queries: MemoryQueryService | None = None,
         space_lifecycle: SpaceLifecycleService | None = None,
         governance: GovernanceService | None = None,
+        authorizer: Authorizer | None = None,
+        credential_registry: CredentialStatusRegistry | None = None,
     ) -> None:
         if audit_integrity_provider is not None and audit_verify_guard is None:
             raise ValidationError(
@@ -86,6 +92,10 @@ class LocalMemoryAPI(
             raise ValidationError("audit_verify_limits must be AuditVerificationLimits")
         self._engine = engine
         self._perm = permission
+        if authorizer is None:
+            raise ValidationError("LocalMemoryAPI requires an Authorizer")
+        self._authorizer = authorizer
+        self._credentials = credential_registry or CredentialStatusRegistry()
         self._scheduler = scheduler
         self._policy = policy
         self._governor = governor
@@ -111,11 +121,33 @@ class LocalMemoryAPI(
         self._commands = commands if commands is not None else MemoryCommandService(engine)
         self._queries = queries if queries is not None else MemoryQueryService(engine)
         self._space_lifecycle = (
-            space_lifecycle
-            if space_lifecycle is not None
-            else SpaceLifecycleService(engine, space)
+            space_lifecycle if space_lifecycle is not None else SpaceLifecycleService(engine, space)
         )
         self._governance = governance if governance is not None else GovernanceService(governor)
+
+    def _bind_credential_sources(self, authenticator: object) -> None:
+        """用已装配 Authenticator 的签发真源填充本 PEP 的 CredentialStatusRegistry。
+
+        composition root 在 SecurityRuntime 装配完成后调用（P1-1：Registry 与认证
+        签发必须同源）。注册的 Store/issuer 取自认证器自身——认证签发与撤销复核读
+        同一份事实，撤销后本 PEP 立即看到。该接缝是实现层私有能力，不扩充已经冻结的
+        ``Authenticator`` 公共契约；无签发真源的认证器（dev/trusted）绑定空表。
+        """
+        source_provider = getattr(authenticator, "_credential_sources", None)
+        registry = CredentialStatusRegistry()
+        if callable(source_provider):
+            for credential_type, issuer, store in source_provider():
+                registry.register(credential_type, issuer, store)
+        registry.health()
+        # 显式替换 Runtime 时不得残留被替换认证器的 issuer 真源。
+        self._credentials = registry
+
+    def _bind_authorizer(self, authorizer: Authorizer) -> None:
+        """让显式 SecurityRuntime 与 PEP 使用同一个 PDP 实例。"""
+        requires = getattr(authorizer, "requires_space_facts", None)
+        if self._routing_enabled() and not (callable(requires) and requires()):
+            raise ValidationError("显式 authorizer 不得关闭已配置 router 的空间治理")
+        self._authorizer = authorizer
 
     @property
     def space_governance_enabled(self) -> bool:

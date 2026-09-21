@@ -13,17 +13,16 @@ import pytest
 
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.errors import NotFoundError, PermissionDeniedError, ValidationError
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.security.space_roles import SpaceContentRole, SpaceGovernanceRole
+from jiuwen_memory.common.security.types import Role
 from jiuwen_memory.common.type_def import (
     Context,
     FilterClause,
-    FilterExpr,
     FilterOp,
     MemoryUnit,
     RecallChannel,
     Scope,
-    iter_clauses,
 )
 from jiuwen_memory.config import Config
 from jiuwen_memory.construction.base import OperatorType
@@ -41,21 +40,27 @@ from jiuwen_memory.control.types import (
     DeleteSelector,
     MemoryPatch,
 )
+from tests.support.scoped_authenticator import ScopedAuthenticator
+from tests.unit.api.fixtures import security_for
 
 pytestmark = pytest.mark.unit
 
 ORG = "acme"
-OPS = Scope()
+# 运维主体：建测试空间用。必须具名——PR2 起空 Scope 不再是特权形态，判定实现
+# 的第 2 步直接拒（``empty_actor``），「没填内容的身份即平台管理员」那条线已断。
+OPS = Scope(org=ORG, user="ops")
 ALICE = Scope(org=ORG, user="alice")
 ALICE_VIA_A1 = Scope(org=ORG, user="alice", agent="a1")
 BOB = Scope(org=ORG, user="bob")
 CAROL = Scope(org=ORG, user="carol")  # 不参与任何空间，用于「候选集为空」一例
 
 # 接口先行过渡桥接：identity Scope 包成 RequestSecurityContext（安全实装合入后随接口一并改）
-SEC_ALICE = legacy_request_context(ALICE)
-SEC_ALICE_VIA_A1 = legacy_request_context(ALICE_VIA_A1)
-SEC_BOB = legacy_request_context(BOB)
-SEC_OPS = legacy_request_context(OPS)
+SEC_ALICE = internal_context(ScopedAuthenticator(ALICE))
+SEC_BOB = internal_context(ScopedAuthenticator(BOB))
+# 建空间走管理面 MANAGE_SPACE 闸门，闸门读的是服务端 role，不看 actor 的 Scope 形状——
+# 过渡件默认给 USER（它有生产调用点，默认 ROOT 会把每个认证请求提到最高权限），
+# 运维档要在调用点显式写出。ADMIN 即够：目标 space 带 org，管辖止于本 org。
+SEC_OPS = internal_context(ScopedAuthenticator(OPS, role=Role.ADMIN))
 
 
 # 归属坐标经参数袋传入、不占形参（F07 「归属坐标的承载」）。同一取值在本模块高频复用，
@@ -169,6 +174,18 @@ def _kernel(*, with_router: bool = True, policies: dict[str, str] | None = None)
     config = {
         "engine": {"default": {"target": "cloud", "params": engine_params}},
         "permission": {"default": {"target": "space_aware", "params": {"db_path": ":memory:"}}},
+        "authorizer": {
+            "default": {
+                "target": "space_aware",
+                "params": {"delegate": "standard"},
+            },
+            "standard": {
+                "target": "standard",
+                "params": {"grant_store": "default", "delegation_store": "default"},
+            },
+        },
+        "grant_store": {"default": "memory"},
+        "delegation_store": {"default": "memory"},
     }
     if with_router:
         config["router"] = {"default": {"target": "keyword_stub", "params": dict(ROUTE_TABLE)}}
@@ -209,7 +226,7 @@ def api():
 def _units_in(api, space: str, identity: Scope) -> list[MemoryUnit]:
     return api.list(
         Scope(org=ORG, space=space),
-        security=legacy_request_context(identity),
+        security=security_for(api, identity),
         limit=100,
     ).items
 
@@ -262,7 +279,9 @@ def test_a_user_fact_lands_in_the_individual_space(api) -> None:
 def test_a_record_only_class_lands_in_fallback_and_keeps_its_tag(api) -> None:
     """记录维类别不落独立空间：落 fallback，实体记成标签。"""
     api.add(
-        "团队用同一套评审流程", scope=Scope(org=ORG), security=SEC_ALICE,
+        "团队用同一套评审流程",
+        scope=Scope(org=ORG),
+        security=SEC_ALICE,
         system_metadata={"coords": {"team": "t1"}},
     )
     landed = _units_in(api, ALICE_SPACE, ALICE)
@@ -316,15 +335,25 @@ def test_auto_create_is_switchable_off() -> None:
                 "engine": {
                     "default": {
                         "target": "cloud",
-                        "params": {
-                            name: "default" for name in _ENGINE_COMPONENT_NAMES
-                        },
+                        "params": {name: "default" for name in _ENGINE_COMPONENT_NAMES},
                     }
                 },
                 "permission": {
                     "default": {"target": "space_aware", "params": {"db_path": ":memory:"}}
                 },
                 "router": {"default": {"target": "keyword_stub", "params": dict(ROUTE_TABLE)}},
+                "authorizer": {
+                    "default": {
+                        "target": "space_aware",
+                        "params": {"delegate": "standard"},
+                    },
+                    "standard": {
+                        "target": "standard",
+                        "params": {"grant_store": "default", "delegation_store": "default"},
+                    },
+                },
+                "grant_store": {"default": "memory"},
+                "delegation_store": {"default": "memory"},
             }
         ),
         policies={"space.auto_create_fallback": "false"},
@@ -340,9 +369,7 @@ def test_auto_create_is_switchable_off() -> None:
             security=SEC_ALICE,
             system_metadata=COORDS_P1,
         )
-    assert not api.list(
-        Scope(org=ORG, space=PROJECT_SPACE), security=SEC_ALICE, limit=10
-    ).items
+    assert not api.list(Scope(org=ORG, space=PROJECT_SPACE), security=SEC_ALICE, limit=10).items
 
 
 def test_auto_create_does_not_resurrect_a_space_the_caller_cannot_write(api) -> None:
@@ -411,12 +438,16 @@ def test_the_decision_path_still_checks_the_other_scope_dimensions(api) -> None:
     """
     with pytest.raises(ValidationError, match="does not match the caller identity"):
         api.add(
-            "偏好深色主题", Scope(org=ORG, user="bob"), security=SEC_ALICE,
+            "偏好深色主题",
+            Scope(org=ORG, user="bob"),
+            security=SEC_ALICE,
             system_metadata=NO_COORDS,
         )
     with pytest.raises(ValidationError, match="does not match the caller identity"):
         api.add(
-            "偏好深色主题", Scope(org="other_org"), security=SEC_ALICE,
+            "偏好深色主题",
+            Scope(org="other_org"),
+            security=SEC_ALICE,
             system_metadata=NO_COORDS,
         )
 
@@ -446,7 +477,7 @@ def test_a_routing_table_without_space_authorization_is_rejected_at_assembly() -
         "router": {"default": {"target": "keyword_stub", "params": dict(ROUTE_TABLE)}},
     }
     # 断言取修复动作而非现象描述：报错首句须给出改法，日志截断时正好丢掉指引。
-    with pytest.raises(ValidationError, match="permission.default.target 配成 space_aware"):
+    with pytest.raises(ValidationError, match="authorizer.default.target 配成 space_aware"):
         build_kernel(config=Config.from_dict(config))
 
 
@@ -462,7 +493,8 @@ def test_batch_items_without_a_scope_are_routed_per_item(api) -> None:
     """
     result = api.batch_add(
         [BatchWriteItem(content="项目部署在集群 A"), BatchWriteItem(content="偏好深色主题")],
-        scope=Scope(org=ORG), security=SEC_ALICE,
+        scope=Scope(org=ORG),
+        security=SEC_ALICE,
         system_metadata=COORDS_P1,
     )
     assert [outcome.error for outcome in result.outcomes] == ["", ""]
@@ -480,7 +512,8 @@ def test_routing_probes_carry_unique_ids(api) -> None:
     """
     api.batch_add(
         [BatchWriteItem(content="项目部署在集群 A"), BatchWriteItem(content="偏好深色主题")],
-        scope=Scope(org=ORG), security=SEC_ALICE,
+        scope=Scope(org=ORG),
+        security=SEC_ALICE,
         system_metadata=COORDS_P1,
     )
     batches = [ids for ids in api._router.seen_ids if len(ids) > 1]
@@ -497,7 +530,8 @@ def test_the_derived_units_of_an_infer_write_are_routed_in_the_construction_laye
     """
     units = api.add(
         "项目部署在集群 A",
-        scope=Scope(org=ORG), security=SEC_ALICE,
+        scope=Scope(org=ORG),
+        security=SEC_ALICE,
         system_metadata={"infer": "true", "coords": {"project": "p1"}},
     )
     assert [unit.scope.space for unit in units] == [PROJECT_SPACE]
@@ -514,7 +548,8 @@ def test_the_routing_context_reaches_neither_the_returned_units_nor_the_store(ap
     """
     units = api.add(
         "项目部署在集群 A",
-        scope=Scope(org=ORG), security=SEC_ALICE,
+        scope=Scope(org=ORG),
+        security=SEC_ALICE,
         system_metadata={"infer": "true", "coords": {"project": "p1"}},
     )
     assert all("route_ctx" not in unit.system_metadata for unit in units)
@@ -531,17 +566,18 @@ def test_the_routing_context_does_not_reach_the_write_permission_context(api) ->
     上千字符的对象字面量当成判据传给判定实现。检索侧的兄弟函数一直有对应处理。
     """
     seen: list[dict[str, str]] = []
-    original = api._perm.decide
+    original = api._authorizer.authorize
 
-    def _capture(identity, target, action, *, context=None, **kwargs):
-        if context is not None and context.resource_type == "write_input":
-            seen.append(dict(context.metadata))
-        return original(identity, target, action, context=context, **kwargs)
+    def _capture(*, auth, resource, environment):
+        if resource.resource_type == "write_input":
+            seen.append(dict(resource.attributes))
+        return original(auth=auth, resource=resource, environment=environment)
 
-    api._perm.decide = _capture
+    api._authorizer.authorize = _capture
     api.add(
         "项目部署在集群 A",
-        scope=Scope(org=ORG), security=SEC_ALICE,
+        scope=Scope(org=ORG),
+        security=SEC_ALICE,
         system_metadata={"infer": "true", "coords": {"project": "p1"}},
     )
     assert seen, "写入鉴权上下文未被构造，用例前提不成立"
@@ -552,7 +588,8 @@ def test_the_returned_units_of_a_routed_infer_write_are_readable_by_id(api) -> N
     """落盘产物按回传对象取，不按入参 scope 回读——判定改了 scope，按原 scope 读会落空。"""
     units = api.add(
         "项目部署在集群 A",
-        scope=Scope(org=ORG), security=SEC_ALICE,
+        scope=Scope(org=ORG),
+        security=SEC_ALICE,
         system_metadata={"infer": "true", "coords": {"project": "p1"}},
     )
     fetched = api.get(units[0].id, units[0].scope, security=SEC_ALICE)
@@ -570,7 +607,9 @@ def test_the_caller_cannot_assign_a_kernel_coordinate(api) -> None:
     """
     with pytest.raises(ValidationError, match="不得给内核坐标赋值"):
         api.add(
-            "偏好深色主题", scope=Scope(org=ORG), security=SEC_ALICE,
+            "偏好深色主题",
+            scope=Scope(org=ORG),
+            security=SEC_ALICE,
             system_metadata={"coords": {"user": "bob"}},
         )
     with pytest.raises(ValidationError, match="不得给内核坐标赋值"):
@@ -592,14 +631,14 @@ def test_the_coordinates_do_not_reach_the_stored_unit_or_the_permission_context(
     成 ``"{'project': 'p1'}"``，既污染判据，又可能与某条 policy 的路由字段撞上。
     """
     seen: list[dict[str, str]] = []
-    original = api._perm.decide
+    original = api._authorizer.authorize
 
-    def _capture(identity, target, action, *, context=None, **kwargs):
-        if context is not None and context.resource_type == "write_input":
-            seen.append(dict(context.metadata))
-        return original(identity, target, action, context=context, **kwargs)
+    def _capture(*, auth, resource, environment):
+        if resource.resource_type == "write_input":
+            seen.append(dict(resource.attributes))
+        return original(auth=auth, resource=resource, environment=environment)
 
-    api._perm.decide = _capture
+    api._authorizer.authorize = _capture
     units = api.add(
         "项目部署在集群 A", scope=Scope(org=ORG), security=SEC_ALICE, system_metadata=COORDS_P1
     )
@@ -608,8 +647,7 @@ def test_the_coordinates_do_not_reach_the_stored_unit_or_the_permission_context(
     assert all("coords" not in metadata for metadata in seen)
     assert all("coords" not in unit.system_metadata for unit in units)
     assert all(
-        "coords" not in unit.system_metadata
-        for unit in _units_in(api, PROJECT_SPACE, ALICE)
+        "coords" not in unit.system_metadata for unit in _units_in(api, PROJECT_SPACE, ALICE)
     )
 
 
@@ -649,8 +687,12 @@ def test_a_malformed_coordinate_payload_is_rejected(api) -> None:
     """
     for payload in ("p1", ["p1"], {"project": 1}, {1: "p1"}):
         with pytest.raises(ValidationError, match="coords"):
-            api.add("项目部署在集群 A", scope=Scope(org=ORG), security=SEC_ALICE,
-                    system_metadata={"coords": payload})
+            api.add(
+                "项目部署在集群 A",
+                scope=Scope(org=ORG),
+                security=SEC_ALICE,
+                system_metadata={"coords": payload},
+            )
 
 
 def test_a_batch_item_cannot_carry_its_own_coordinates(api) -> None:
@@ -791,7 +833,7 @@ def test_an_empty_candidate_set_is_an_empty_result_not_a_denial(api) -> None:
     result = api.search(
         "偏好",
         Context(scope=Scope(org=ORG), extensions={"spaces": []}),
-        security=legacy_request_context(CAROL),
+        security=internal_context(ScopedAuthenticator(CAROL)),
         top_k=10,
     )
     assert result.items == []
@@ -852,14 +894,13 @@ def test_a_non_list_of_strings_for_spaces_is_a_validation_error(api, raw) -> Non
 def test_the_spaces_key_does_not_reach_the_permission_context(api) -> None:
     """编排开关不进鉴权入参：留下会被 str 化成 "['u_alice']" 与某条 policy 的路由字段撞上。"""
     seen: list[dict] = []
-    original = api._perm.decide
+    original = api._authorizer.authorize
 
-    def _capture(actor, target, action, context=None):
-        if context is not None:
-            seen.append(dict(context.metadata))
-        return original(actor, target, action, context=context)
+    def _capture(*, auth, resource, environment):
+        seen.append(dict(resource.attributes))
+        return original(auth=auth, resource=resource, environment=environment)
 
-    api._perm.decide = _capture
+    api._authorizer.authorize = _capture
     try:
         api.search(
             "部署",
@@ -868,7 +909,7 @@ def test_the_spaces_key_does_not_reach_the_permission_context(api) -> None:
             top_k=10,
         )
     finally:
-        api._perm.decide = original
+        api._authorizer.authorize = original
 
     assert seen, "判定未被调用"
     assert all("spaces" not in metadata for metadata in seen), seen
@@ -918,19 +959,19 @@ def test_search_narrows_by_the_session_dimension_taken_from_identity(api) -> Non
     api.add(
         "偏好深色主题",
         scope=Scope(org=ORG),
-        security=legacy_request_context(alice_s1),
+        security=security_for(api, alice_s1),
         system_metadata=NO_COORDS,
     )
     api.add(
         "偏好浅色主题",
         scope=Scope(org=ORG),
-        security=legacy_request_context(alice_s2),
+        security=security_for(api, alice_s2),
         system_metadata=NO_COORDS,
     )
     result = api.search(
         "偏好",
         Context(scope=Scope(org=ORG, space=ALICE_SPACE)),
-        security=legacy_request_context(alice_s1),
+        security=security_for(api, alice_s1),
         top_k=10,
     )
     contents = {item.content for item in result.items}
@@ -942,19 +983,21 @@ def test_a_cross_space_search_narrows_by_the_agent_dimension_taken_from_identity
     """agent 维同上，且验的是跨空间入口——两个入口各自折算一次坐标，不共用。"""
     alice_a2 = Scope(org=ORG, user="alice", agent="a2")
     api.add(
-        "偏好深色主题", scope=Scope(org=ORG), security=SEC_ALICE_VIA_A1,
+        "偏好深色主题",
+        scope=Scope(org=ORG),
+        security=security_for(api, ALICE_VIA_A1),
         system_metadata=NO_COORDS,
     )
     api.add(
         "偏好浅色主题",
         scope=Scope(org=ORG),
-        security=legacy_request_context(alice_a2),
+        security=security_for(api, alice_a2),
         system_metadata=NO_COORDS,
     )
     result = api.search(
         "偏好",
         Context(scope=Scope(org=ORG), extensions={"spaces": [ALICE_SPACE]}),
-        security=SEC_ALICE_VIA_A1,
+        security=security_for(api, ALICE_VIA_A1),
         top_k=10,
     )
     contents = {item.content for item in result.items}
@@ -1036,7 +1079,7 @@ def test_a_non_member_cannot_delete_entries_by_predicate(api) -> None:
                 filters=FilterClause("system_metadata.author_principal", FilterOp.EQ, "user:alice"),
                 mode=DeleteMode.PURGE,
             ),
-            security=legacy_request_context(carol),
+            security=internal_context(ScopedAuthenticator(carol)),
         )
 
 
@@ -1099,25 +1142,25 @@ def test_a_narrowed_search_recalls_entries_written_with_an_explicit_scope(api) -
 # -- 跨空间检索的两处对齐（R04 D5 / D6）---------------------------------- #
 
 
-def test_a_cross_space_search_reinjects_the_routing_values_like_the_single_space_path(api) -> None:
-    """授权所依据的路由值在跨空间入口同样回注为系统谓词。
+def test_a_cross_space_search_reinjects_the_routing_values_like_the_single_space_path(
+    api, monkeypatch
+) -> None:
+    """路由值在跨空间入口同样经 resource.attributes 进 Authorizer。
 
     只挂单空间路径时，跨空间路径即该绑定的绕过通道：路由值填宽松策略对应的类型、
-    filters 指向受严格策略保护的数据，即可用 A 的钥匙开 B 的门。
+    filters 指向受严格策略保护的数据，即可用 A 的钥匙开 B 的门。修复后两路径同一
+    鉴权点——路由值不进 filter clause 级回注，而是经 resource.attributes 传给
+    Authorizer 统一判定。
     """
-    seen: list[FilterExpr | None] = []
-    original = api._engine.recall
+    seen: list[dict[str, str]] = []
+    monkeypatch.setattr(api._authorizer, "routing_fields", lambda: ("memory_type",))
+    original = api._authorizer.authorize
 
-    async def _capture(scope, query):
-        seen.append(query.filters)
-        return await original(scope, query)
+    def _capture(*, auth, resource, environment):
+        seen.append(dict(resource.attributes))
+        return original(auth=auth, resource=resource, environment=environment)
 
-    api._engine.recall = _capture
-
-    def _routing_fields() -> tuple[str, ...]:
-        return ("memory_type",)
-
-    api._perm.routing_fields = _routing_fields
+    api._authorizer.authorize = _capture
     try:
         api.search(
             "深色主题",
@@ -1129,13 +1172,12 @@ def test_a_cross_space_search_reinjects_the_routing_values_like_the_single_space
             top_k=5,
         )
     finally:
-        api._engine.recall = original
+        api._authorizer.authorize = original
 
-    assert seen, "引擎未被调用"
-    clauses = [clause for expr in seen for clause in iter_clauses(expr)]
-    assert any(
-        clause.op is FilterOp.EQ and str(clause.value) == "notes" for clause in clauses
-    ), f"路由值未回注：{clauses}"
+    assert seen, "Authorizer 未被调用"
+    assert any(attrs.get("memory_type") == "notes" for attrs in seen), (
+        f"路由值未进 resource.attributes：{seen}"
+    )
 
 
 def test_a_failing_space_surfaces_a_channel_error_instead_of_vanishing(api) -> None:
@@ -1184,7 +1226,9 @@ def test_an_archived_candidate_falls_back_instead_of_failing_the_write(api) -> N
     api.archive_space(ORG, PROJECT_SPACE, security=SEC_ALICE)
 
     units = api.add(
-        "项目 P1 的回滚脚本在 rollback/", scope=Scope(org=ORG), security=SEC_ALICE,
+        "项目 P1 的回滚脚本在 rollback/",
+        scope=Scope(org=ORG),
+        security=SEC_ALICE,
         system_metadata=COORDS_P1,
     )
 
@@ -1211,7 +1255,8 @@ def test_a_batch_is_routed_in_one_call_rather_than_once_per_item(api) -> None:
                 BatchWriteItem(content=text)
                 for text in ("偏好深色主题", "项目部署在集群 A", "团队要两人评审")
             ],
-            scope=Scope(org=ORG), security=SEC_ALICE,
+            scope=Scope(org=ORG),
+            security=SEC_ALICE,
             system_metadata=COORDS_P1,
         )
     finally:
@@ -1293,7 +1338,8 @@ def test_a_middle_write_is_excluded_from_the_decision_path(api) -> None:
     """
     units = api.add(
         "项目部署在集群 A",
-        scope=Scope(org=ORG, space=PROJECT_SPACE), security=SEC_ALICE,
+        scope=Scope(org=ORG, space=PROJECT_SPACE),
+        security=SEC_ALICE,
         system_metadata={"infer": "true", "middle": "true", **COORDS_P1},
     )
     # 落点是入参空间，不是判定给的 fallback。
@@ -1316,7 +1362,8 @@ def test_a_middle_write_without_a_landing_space_is_rejected(api) -> None:
     with pytest.raises(ValidationError, match="写入落点未声明"):
         api.add(
             "项目部署在集群 A",
-            scope=Scope(org=ORG), security=SEC_ALICE,
+            scope=Scope(org=ORG),
+            security=SEC_ALICE,
             system_metadata={"infer": "true", "middle": "true", **COORDS_P1},
         )
 
@@ -1441,7 +1488,9 @@ def test_a_router_failure_is_recorded_in_the_audit_not_only_swallowed(api) -> No
     api._router.route = _boom
     try:
         api.add(
-            "项目部署在集群 A", scope=Scope(org=ORG), security=SEC_ALICE,
+            "项目部署在集群 A",
+            scope=Scope(org=ORG),
+            security=SEC_ALICE,
             system_metadata=COORDS_P1,
         )
     finally:
@@ -1461,9 +1510,7 @@ def test_a_router_failure_is_recorded_in_the_audit_not_only_swallowed(api) -> No
 
 def test_a_normal_decision_writes_no_degradation_record(api) -> None:
     """按判定原样落点的写入不产生降级记录——否则该记录在审计里没有分辨力。"""
-    api.add(
-        "项目部署在集群 A", scope=Scope(org=ORG), security=SEC_ALICE, system_metadata=COORDS_P1
-    )
+    api.add("项目部署在集群 A", scope=Scope(org=ORG), security=SEC_ALICE, system_metadata=COORDS_P1)
 
     degraded = [
         event
@@ -1473,18 +1520,13 @@ def test_a_normal_decision_writes_no_degradation_record(api) -> None:
     assert degraded == []
 
 
-def test_cross_space_search_allows_empty_principal_when_governance_disabled() -> None:
-    """未装配空间治理时，空身份跨空间检索不抛权限错（运维通道）。
-
-    ``_search_spaces`` 的 ``require_principal`` 与单空间鉴权点同一门控：未装配空间治理
-    时不做形态校验。空身份的 ``spaces`` 反查取组织通配桶、空库返回空候选集，检索拿到空
-    结果而非权限拒绝。装配了空间治理的部署里空身份在鉴权点被拦截，见其余用例。
-    """
-    api = build_kernel().api  # 默认 sqlite：_needs_space_facts() 为假
-    ops = Scope(org=ORG)  # 主体维皆空，运维通道形态
+def test_cross_space_search_accepts_named_root_when_governance_disabled() -> None:
+    """空候选集仍可返回空结果，但运维身份必须具名且显式持有 ROOT 角色。"""
+    api = build_kernel().api
+    ops = Scope(org=ORG, user="ops")
     result = api.search(
         "hello",
         Context(scope=Scope(org=ORG), extensions={"spaces": []}),
-        security=legacy_request_context(ops),
+        security=internal_context(ScopedAuthenticator(ops, role=Role.ROOT)),
     )
     assert result.items == []

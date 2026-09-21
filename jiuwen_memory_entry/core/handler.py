@@ -36,6 +36,8 @@ from jiuwen_memory.api import (
     Action,
     AgentMemoryError,
     AuditEvent,
+    AuthenticationError,
+    BackendError,
     BatchWriteItem,
     ConflictError,
     Context,
@@ -59,18 +61,18 @@ from jiuwen_memory.api import (
     SpacePolicy,
     SpaceSpec,
     SpaceStatus,
-    Surface,
     UnsupportedCapabilityError,
     UpdateMode,
     ValidationError,
-    legacy_request_context,
 )
 
 Body = Mapping[str, Any]
 
 _STATUS = {
     NotFoundError: 404,
+    AuthenticationError: 401,
     PermissionDeniedError: 403,
+    BackendError: 503,
     ConflictError: 409,
     PartialFailureError: 409,
     UnsupportedCapabilityError: 400,
@@ -133,15 +135,11 @@ def _require_target(request: DispatchRequest) -> Scope:
 
 
 def _request_security(request: DispatchRequest) -> RequestSecurityContext:
-    """Return the trusted request context, adapting only legacy internal calls."""
+    """Return the trusted request context, validating actor consistency."""
     security = request.security
-    if security is not None:
-        if security.actor != request.actor:
-            raise ValidationError("request security actor does not match request actor")
-        return security
-    if request.surface == Surface.HTTP:
-        raise ValidationError("HTTP request missing security context")
-    return legacy_request_context(request.actor, surface=request.surface)
+    if security.actor != request.actor:
+        raise ValidationError("request security actor does not match request actor")
+    return security
 
 
 def _require_space(request: DispatchRequest) -> str:
@@ -378,9 +376,7 @@ def _ensure_video_chain(srv) -> None:
         raise ValidationError("video ingest requires a configured video evolver")
 
 
-def _submit_video(
-    srv, payload: Body, *, scope: Scope, security: RequestSecurityContext
-) -> Body:
+def _submit_video(srv, payload: Body, *, scope: Scope, security: RequestSecurityContext) -> Body:
     """Submit a video write through the Control-managed ingest queue."""
     uri = str(_require(payload, "uri")).strip()
     if not uri:
@@ -484,9 +480,7 @@ def _add(srv, request: DispatchRequest) -> Body:
         raise ValidationError("system_metadata must be an object")
     if raw_user_metadata is not None and not isinstance(raw_user_metadata, dict):
         raise ValidationError("user_metadata must be an object")
-    occurred_at = _parse_occurred_at(
-        payload.get("occurred_at"), name="add occurred_at"
-    )
+    occurred_at = _parse_occurred_at(payload.get("occurred_at"), name="add occurred_at")
     units = srv.api.add(
         _require(payload, "content"),
         scope,
@@ -796,9 +790,7 @@ def _trace(srv, request: DispatchRequest) -> Body:
     """血缘回溯：沿 supersedes 版本链 → Governor。"""
     payload = request.payload
     scope = _require_target(request)
-    chain = srv.api.trace(
-        _require(payload, "item_id"), scope, security=_request_security(request)
-    )
+    chain = srv.api.trace(_require(payload, "item_id"), scope, security=_request_security(request))
     return {"ok": True, "op": "trace", "items": [_unit_view(u) for u in chain]}
 
 
@@ -869,34 +861,42 @@ def _admin(srv, request: DispatchRequest) -> Body:
 
 
 def _grant(srv, request: DispatchRequest) -> Body:
-    """跨 scope 授权（PermissionManager）。"""
+    """跨 scope 授权并返回服务端生成的 grant_id。"""
     scope = _require_target(request)
     grantee = request.grantee
     if grantee is None:
         raise ValidationError("missing required field: 'grantee'")
     grant = Grant(grantor=scope, grantee=grantee, actions=[Action.READ])
-    srv.api.grant(grant, security=_request_security(request))
+    created = srv.api.grant(grant, security=_request_security(request))
     return {
         "ok": True,
         "op": "grant",
         "grantor": {"space": scope.space, "user": scope.user},
         "grantee": {"space": grantee.space, "user": grantee.user},
+        "grant_id": created.grant_id,
     }
 
 
 def _revoke(srv, request: DispatchRequest) -> Body:
-    """Cross-scope revoke (PermissionManager)."""
+    """Cross-scope revoke by the server-issued grant_id."""
     scope = _require_target(request)
     grantee = request.grantee
     if grantee is None:
         raise ValidationError("missing required field: 'grantee'")
-    grant = Grant(grantor=scope, grantee=grantee, actions=[Action.READ])
+    grant_id = str(_require(request.payload, "grant_id"))
+    grant = Grant(
+        grant_id=grant_id,
+        grantor=scope,
+        grantee=grantee,
+        actions=[Action.READ],
+    )
     srv.api.revoke(grant, security=_request_security(request))
     return {
         "ok": True,
         "op": "revoke",
         "grantor": {"space": scope.space, "user": scope.user},
         "grantee": {"space": grantee.space, "user": grantee.user},
+        "grant_id": grant_id,
     }
 
 

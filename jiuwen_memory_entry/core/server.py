@@ -26,14 +26,19 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import replace
 from typing import Any
 
 from profiles import Config
 
-from jiuwen_memory.api import MemoryRuntime, Surface, assemble_runtime
+from jiuwen_memory.api import (
+    MemoryRuntime,
+    RequestSecurityContext,
+    assemble_runtime,
+)
 from jiuwen_memory_entry.core.dispatch_request import DispatchRequest
 from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
+
+_AUTO_SECURITY = object()
 
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _REPO not in sys.path:
@@ -45,16 +50,50 @@ if _REPO not in sys.path:
 class Server:
     """Assembled runtime + shared dispatch; base for all protocol surfaces."""
 
-    def __init__(self, config: Config, runtime: MemoryRuntime) -> None:
+    def __init__(
+        self, config: Config, runtime: MemoryRuntime, security_runtime: Any = None
+    ) -> None:
         self.config = config
         self._runtime = runtime
+        self.security_runtime = security_runtime
 
     @property
     def api(self):
         return self._runtime.api
 
+    @property
+    def audit(self):
+        """返回供认证边界记录入口事件的共享审计器。"""
+        return getattr(self._runtime, "_audit", None)
+
+    @property
+    def authenticator(self):
+        return getattr(self.security_runtime, "authenticator", None)
+
+    @property
+    def rate_limiter(self):
+        return getattr(self.security_runtime, "rate_limiter", None)
+
+    @property
+    def workload_guard(self):
+        guard = getattr(self.security_runtime, "workload_guard", None)
+        authenticator = self.authenticator
+        if authenticator is None or not authenticator.requires_concurrency_guard():
+            return None
+        return guard
+
+    @property
+    def binding_policy(self):
+        return getattr(self.security_runtime, "binding_policy", None)
+
     @classmethod
-    def build(cls, config: Config, spaces: Any = None) -> "Server":
+    def build(
+        cls,
+        config: Config,
+        spaces: Any = None,
+        *,
+        security_runtime: Any = _AUTO_SECURITY,
+    ) -> "Server":
         """Assemble a runtime from ``config`` and return a ``cls`` instance.
 
         ``config.settings`` 是合并后的完整配置字典，含 profiles 层自有的 ``profile`` /
@@ -64,38 +103,84 @@ class Server:
         校验而报错。无该段时（纯 ``OFFLINE`` 档）``config=None`` 回落进程内默认实现。
         """
         memory_api = config.settings.get("memory_api")
-        return cls(
-            config,
-            assemble_runtime(policies=config.policies or None, config=memory_api),
-        )
+        # composition root 必须调和私有 Runtime/PEP 真源；不扩充冻结的公共句柄。
+        # pylint: disable=protected-access
+        runtime = assemble_runtime(policies=config.policies or None, config=memory_api)
+        auto_security = security_runtime is _AUTO_SECURITY
+        if auto_security:
+            # 内核装配先重置 Factory 缓存并构建存储依赖；安全 Runtime 随后从同一组
+            # 具名缓存取依赖，确保 cryptography 等有状态组件不会被构建成第二份。
+            security_runtime = runtime._security_runtime
+            # AUTO 路径校验 identity：这里 Runtime 与内核 PEP 由同一份配置在同一
+            # 装配纪元（reset 之后）构建，分叉只可能是配置让 Runtime 指到了别的具名
+            # authorizer——那是启动期必须拒绝的配置错误（不变量 30）。
+            # 显式注入路径来自另一装配纪元，不能拿 identity 比较；它在下方改为把 Runtime
+            # 的实例绑定给 PEP，同样收敛成一个对象。
+            runtime_authorizer = getattr(security_runtime, "authorizer", None)
+            if runtime_authorizer is not None and runtime_authorizer is not runtime.api._authorizer:
+                from jiuwen_memory.api import ValidationError
+
+                raise ValidationError(
+                    "security 段的 authorizer 必须与内核 PEP 是同一实例；"
+                    "当前配置使 Runtime 与 PEP 的 Grant/DelegationStore 视图分叉"
+                )
+        if security_runtime is not None:
+            runtime_authorizer = getattr(security_runtime, "authorizer", None)
+            if runtime_authorizer is not None and runtime_authorizer.is_test_only():
+                from jiuwen_memory.api import ValidationError
+
+                raise ValidationError(
+                    "Server refuses a test-only authorizer; configure a production PDP"
+                )
+            if not auto_security and runtime_authorizer is not None:
+                # 显式 Runtime 也必须与 PEP 共用同一个 PDP。先装内核、再绑定调用方已装配
+                # 的实例，避免两个装配纪元各持一份 Grant/DelegationStore（P2-2）。
+                runtime.api._bind_authorizer(runtime_authorizer)
+            # Registry 调和两条路径都做（P1-1/P2-2）：凭据撤销复核的真源只能来自
+            # 实际装配的 Authenticator，与配置写法（内联/具名）无关。显式注入路径也
+            # 完成 PDP 与凭据真源绑定——
+            # Registry 注册的必须是认证器签发用的那一个 Store，否则复核读的是
+            # 另一份事实，撤销在认证侧生效、在 PEP 侧看不见。
+            authenticator = getattr(security_runtime, "authenticator", None)
+            if authenticator is not None:
+                runtime.api._bind_credential_sources(authenticator)
+        return cls(config, runtime, security_runtime)
 
     def dispatch(
         self,
         verb: str | DispatchRequest,
         payload: dict[str, Any] | None = None,
         *,
-        identity=None,
+        security: RequestSecurityContext,
     ) -> tuple[int, dict[str, Any]]:
         """Route a legacy request through the shared handler.
 
-        ``identity`` is an adapter-supplied actor. MCP retains this
-        compatibility path; HTTP and CLI inject their authenticated security context
-        while calling ``api`` directly.
+        ``security`` is an adapter-produced trusted context, **required**. MCP uses
+        this path; HTTP and CLI call ``api`` directly. Callers without a trusted
+        identity source must not use this path—route through HTTP/API-Key instead.
         """
         from handler import dispatch as _dispatch
 
         if isinstance(verb, DispatchRequest):
             status, body = _dispatch(self, verb)
             return status, dict(body)
-        request = build_legacy_dispatch_request(verb, payload or {}, surface=Surface.INTERNAL)
-        if identity is not None:
-            request = replace(request, actor=identity)
+        if security is None:
+            from jiuwen_memory.api import ValidationError
+
+            raise ValidationError("dispatch requires an explicit trusted security context")
+        request = build_legacy_dispatch_request(verb, payload or {}, security=security)
         status, body = _dispatch(self, request)
         return status, dict(body)
 
     def close(self, *, wait: bool = True) -> None:
         """Release the Control-owned ingest worker pool."""
         self._runtime.close(wait=wait)
+        if self.security_runtime is not None and self.security_runtime is not getattr(
+            self._runtime, "_security_runtime", None
+        ):
+            closer = getattr(self.security_runtime, "close", None)
+            if callable(closer):
+                closer()
 
 
 def default_spaces() -> dict[str, Any]:

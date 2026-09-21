@@ -18,10 +18,12 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 
-from jiuwen_memory.api import assemble
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.api import RequestSecurityContext, Surface, assemble
+from jiuwen_memory.common.security import new_request_context
 from jiuwen_memory.common.security.space_roles import SpaceContentRole, SpaceGovernanceRole
+from jiuwen_memory.common.security.types import AuthContext, Role
 from jiuwen_memory.common.type_def import Context, Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.construction import EvolveMode
@@ -45,11 +47,32 @@ ALICE_PERSON = Scope(org=ORG, user="alice")  # 治理动作要求本人直接调
 BOB = Scope(org=ORG, user="bob", agent="assistant", session="s2")
 OPS = Scope()  # 运维身份：管理面入口按根 scope 鉴权
 
-# 接口先行过渡桥接：把 identity Scope 包成 RequestSecurityContext（实装后由认证产出）
-SEC_ALICE = legacy_request_context(ALICE)
-SEC_ALICE_PERSON = legacy_request_context(ALICE_PERSON)
-SEC_BOB = legacy_request_context(BOB)
-SEC_OPS = legacy_request_context(OPS)
+
+def _dev_security(actor: Scope, *, role: Role = Role.USER) -> RequestSecurityContext:
+    """演示用可信上下文（**开发模式**，仅限无网络对端的进程内示例）。
+
+    示例进程即自己的 composition root：没有不可信调用方，身份由本进程显式声明，
+    经冻结公共接口 new_request_context 走完整边界（含 origin 绑定）。多主体演示
+    （alice/bob 隔离）需要互异身份，单一 build_dev_authenticator() 表达不了。
+    生产部署的身份必须由认证边界（API Key / Trusted Gateway）产出，不得自述。
+    """
+    return new_request_context(
+        AuthContext(
+            actor=actor,
+            role=role,
+            credential_type="internal",
+            auth_method="internal",
+            authenticated_at=datetime.now(timezone.utc),
+        ),
+        surface=Surface.INTERNAL,
+    )
+
+
+# 演示身份：示例进程自造（开发模式）。SEC_OPS 走 ROOT 档做管理面演示。
+SEC_ALICE = _dev_security(ALICE)
+SEC_ALICE_PERSON = _dev_security(ALICE_PERSON)
+SEC_BOB = _dev_security(BOB)
+SEC_OPS = _dev_security(OPS, role=Role.ROOT)
 MAIN_SPACE = "u_alice"  # 开启空间治理后 alice 的主空间
 PROJECT_SPACE = "p_apollo"
 
@@ -194,7 +217,7 @@ def main() -> None:
     # 未开启时空间维留空，与改造前一致。后面各节的调用形式两种形态下完全相同。
     scope = _provision(api) if api.space_governance_enabled else ALICE
     actor = ALICE  # 调用方身份始终是本人，与目标 scope 分开
-    security = legacy_request_context(actor)
+    security = _dev_security(actor)
 
     # 1) add -----------------------------------------------------------------
     facts = [
