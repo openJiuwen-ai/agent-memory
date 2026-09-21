@@ -1,27 +1,28 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""HTTP 开发认证模式的最小运行时适配。"""
+"""HTTP 嵌入测试使用的完整 DEV SecurityRuntime 构造辅助。"""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
 from typing import Any
 
-from jiuwen_memory.api import build_dev_authenticator
+from jiuwen_memory.api import build_configured_security_runtime
 
 
-@dataclass(frozen=True)
-class DevHttpSecurityRuntime:
-    """HTTP 中间件所需的最小开发运行时，不冒充完整 SecurityRuntime。"""
-
-    authenticator: Any
-    rate_limiter: None = None
-    workload_guard: None = None
-    audit: None = None
-
-
-def build_dev_security_runtime(
-    *, identities: Mapping[str, Any] | None = None
-) -> DevHttpSecurityRuntime:
-    """构造固定身份或预设身份映射的 HTTP 开发运行时，不含生产保护组件。"""
-    return DevHttpSecurityRuntime(authenticator=build_dev_authenticator(identities=identities))
+def build_dev_security_runtime(*, identities: Mapping[str, Any] | None = None):
+    """构造包含 BindingPolicy 等保护能力的完整 DEV SecurityRuntime。"""
+    runtime = build_configured_security_runtime(
+        {
+            "security": {
+                "default": {
+                    "target": "standard",
+                    "params": {
+                        "authenticator": {"target": "dev", "params": {"identities": identities}}
+                    },
+                }
+            }
+        }
+    )
+    if runtime is None:  # pragma: no cover - 上述固定配置必然产出 Runtime
+        raise RuntimeError("failed to build development security runtime")
+    return runtime

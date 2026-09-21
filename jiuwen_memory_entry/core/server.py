@@ -31,9 +31,16 @@ from typing import Any
 
 from profiles import Config
 
-from jiuwen_memory.api import MemoryRuntime, Surface, assemble_runtime
+from jiuwen_memory.api import (
+    MemoryRuntime,
+    Surface,
+    assemble_runtime,
+    build_configured_security_runtime,
+)
 from jiuwen_memory_entry.core.dispatch_request import DispatchRequest
 from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
+
+_AUTO_SECURITY = object()
 
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _REPO not in sys.path:
@@ -45,16 +52,50 @@ if _REPO not in sys.path:
 class Server:
     """Assembled runtime + shared dispatch; base for all protocol surfaces."""
 
-    def __init__(self, config: Config, runtime: MemoryRuntime) -> None:
+    def __init__(
+        self, config: Config, runtime: MemoryRuntime, security_runtime: Any = None
+    ) -> None:
         self.config = config
         self._runtime = runtime
+        self.security_runtime = security_runtime
 
     @property
     def api(self):
         return self._runtime.api
 
+    @property
+    def audit(self):
+        """返回供认证边界记录入口事件的共享审计器。"""
+        return getattr(self._runtime, "_audit", None)
+
+    @property
+    def authenticator(self):
+        return getattr(self.security_runtime, "authenticator", None)
+
+    @property
+    def rate_limiter(self):
+        return getattr(self.security_runtime, "rate_limiter", None)
+
+    @property
+    def workload_guard(self):
+        guard = getattr(self.security_runtime, "workload_guard", None)
+        authenticator = self.authenticator
+        if authenticator is None or not authenticator.requires_concurrency_guard():
+            return None
+        return guard
+
+    @property
+    def binding_policy(self):
+        return getattr(self.security_runtime, "binding_policy", None)
+
     @classmethod
-    def build(cls, config: Config, spaces: Any = None) -> "Server":
+    def build(
+        cls,
+        config: Config,
+        spaces: Any = None,
+        *,
+        security_runtime: Any = _AUTO_SECURITY,
+    ) -> "Server":
         """Assemble a runtime from ``config`` and return a ``cls`` instance.
 
         ``config.settings`` 是合并后的完整配置字典，含 profiles 层自有的 ``profile`` /
@@ -64,10 +105,12 @@ class Server:
         校验而报错。无该段时（纯 ``OFFLINE`` 档）``config=None`` 回落进程内默认实现。
         """
         memory_api = config.settings.get("memory_api")
-        return cls(
-            config,
-            assemble_runtime(policies=config.policies or None, config=memory_api),
-        )
+        runtime = assemble_runtime(policies=config.policies or None, config=memory_api)
+        if security_runtime is _AUTO_SECURITY:
+            # 内核装配先重置 Factory 缓存并构建存储依赖；安全 Runtime 随后从同一组
+            # 具名缓存取依赖，确保 cryptography 等有状态组件不会被构建成第二份。
+            security_runtime = build_configured_security_runtime(memory_api)
+        return cls(config, runtime, security_runtime)
 
     def dispatch(
         self,
@@ -75,12 +118,13 @@ class Server:
         payload: dict[str, Any] | None = None,
         *,
         identity=None,
+        security=None,
     ) -> tuple[int, dict[str, Any]]:
         """Route a legacy request through the shared handler.
 
-        ``identity`` is an adapter-supplied actor. MCP retains this
-        compatibility path; HTTP and CLI inject their authenticated security context
-        while calling ``api`` directly.
+        ``security`` is an adapter-produced trusted context and overrides every legacy
+        actor field. MCP uses this path; HTTP and CLI call ``api`` directly. ``identity``
+        remains only for historical in-process adapters until PR2 completes the migration.
         """
         from handler import dispatch as _dispatch
 
@@ -88,7 +132,14 @@ class Server:
             status, body = _dispatch(self, verb)
             return status, dict(body)
         request = build_legacy_dispatch_request(verb, payload or {}, surface=Surface.INTERNAL)
-        if identity is not None:
+        if security is not None:
+            request = replace(
+                request,
+                actor=security.actor,
+                surface=security.surface,
+                security=security,
+            )
+        elif identity is not None:
             request = replace(request, actor=identity)
         status, body = _dispatch(self, request)
         return status, dict(body)
@@ -96,6 +147,10 @@ class Server:
     def close(self, *, wait: bool = True) -> None:
         """Release the Control-owned ingest worker pool."""
         self._runtime.close(wait=wait)
+        if self.security_runtime is not None:
+            closer = getattr(self.security_runtime, "close", None)
+            if callable(closer):
+                closer()
 
 
 def default_spaces() -> dict[str, Any]:

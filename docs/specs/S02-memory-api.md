@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-09-15 |
+| 最近一次修订日期 | 2026-09-20 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -64,8 +64,9 @@ Scope 或请求体身份回退。HTTP 认证模式按 `--auth-mode`、`JIUWEN_ME
 两种模式都经受控入口生成 `RequestSecurityContext`，仍执行 `MemoryAPI` 授权；
 不能把配置的 role 等同于绕过空间权限。配置位置、字段约束与启动示例统一见
 [Config 指南](../zh/API文档/config.md#33-http-开发测试配置多个身份)。
-dev 模式默认只能绑定 loopback；容器内监听非 loopback 必须显式放行，并由
-部署边界把宿主机端口限制在 loopback。dev 模式不得成为默认值或生产降级路径。
+仅固定 DEV 且未配置 security/permission 时临时注入 allow_all PermissionManager；
+身份映射模式不注入该兼容项。具名 ADMIN/ROOT 的角色授权随 PR2 接入 Authorizer。
+dev 只能绑定 loopback，没有环境变量旁路，不得成为默认值或生产降级路径。
 
 同步与异步只保留 Python 调用方式的差异。普通 `def` 方法直接调用；`add_async`、
 `batch_add_async` 按原生协程语义执行 `await`，完成后直接序列化各自的
@@ -96,11 +97,16 @@ HTTP 与 CLI 共用 `jiuwen_memory_entry/core/api_contract.py` 的 JSON 契约�
 
 本地 CLI 的 `security` 同样由认证器与受控入口产生，不从业务参数推导 actor。
 默认 `required` 未注入认证器时返回 503；显式 `--auth-mode dev` 才使用固定
-`local/developer` 测试身份，不跳过 API 授权。远程 CLI 发送 Bearer 凭据，
+`local/developer` 测试身份，并使用上述临时 DEV permission 兼容层。远程 CLI 发送 Bearer 凭据，
 认证模式由 HTTP 服务端决定。单次本地调用结束后清理上下文，命令结束后关闭 runtime。
 `healthz` 和逐行执行 NDJSON 的 `batch` 是 CLI 辅助命令，不属于 MemoryAPI 方法集，
 后者不等于 API `batch_add`，也不增加事务语义。
-MCP 和其他旧调用方仍可使用 `core/legacy_request_adapter.py`。
+MCP 与 HTTP/CLI 共用 api_contract.invoke_api，不再经过 legacy dispatch；其他旧调用方
+暂留 legacy_request_adapter。MCP 两种传输均默认 required，只有显式
+JIUWEN_MEMORY_MCP_AUTH_MODE=dev 才启用固定 DEV 及临时 permission 兼容层。
+生产认证从 memory_api.security 装配完整 Runtime；未配置认证时逐请求 fail-closed。
+MCP 在工作线程内认证并注入 security，payload 不能覆盖身份。PR2 必须统一接管上游
+多身份 HTTP、旧空间/成员权限与作者归属链路，不能另建一条平行授权通道。
 
 ### HTTP 错误响应与请求关联
 
