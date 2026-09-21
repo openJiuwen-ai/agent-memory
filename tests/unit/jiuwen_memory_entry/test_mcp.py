@@ -435,6 +435,15 @@ def test_delete_requires_real_criterion_besides_scope(kernel) -> None:
         asyncio.run(mcp_main.memory_delete(selector={"scope": SCOPE, "mode": "forget"}))
 
 
+def test_delete_space_rejects_archive_mode(kernel) -> None:
+    # 检视回归：delete_space 当前仅支持 purge，mode=archive 在 API 边界被拒
+    # （space_ops 在鉴权前校验）；归档的正确入口是 memory_archive_space
+    with pytest.raises(RuntimeError, match="DeleteMode.PURGE only"):
+        asyncio.run(
+            mcp_main.memory_delete_space(org="local", space="no-such", mode="archive")
+        )
+
+
 # --- E. 模型可见 Schema：恰好 12 工具、ctx 不泄漏 -------------------------------- #
 
 

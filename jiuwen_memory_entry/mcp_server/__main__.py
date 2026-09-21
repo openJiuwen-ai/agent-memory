@@ -611,8 +611,9 @@ async def memory_archive_space(org: str, space: str, ctx: Context = None) -> dic
 @mcp.tool()
 async def memory_delete_space(org: str, space: str, mode: str = "purge",
                       ctx: Context = None) -> dict:
-    """删除 space（当前实现仅 purge：物理删除真源与可重建索引，不可恢复）。
-    mode: purge（默认）/ archive（归档语义保留，随实现补齐）。
+    """删除 space（物理删除真源与可重建索引，不可恢复，仅留审计记录）。
+    mode: 当前仅接受 purge（默认）——传 archive 会被直接拒绝；归档请改用
+        memory_archive_space（保留读取、导出与审计能力，停止新写入）。
     """
     return await _invoke(
         "delete_space", {"org": org, "space": space, "mode": mode}, context=ctx
